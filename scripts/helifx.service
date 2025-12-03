@@ -1,0 +1,24 @@
+[Unit]
+Description=Helicopter FX System (KA-50)
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/helifx
+ExecStart=/home/pi/helifx/helifx /home/pi/helifx/config.yaml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Environment
+Environment="HOME=/home/pi"
+
+[Install]
+WantedBy=multi-user.target

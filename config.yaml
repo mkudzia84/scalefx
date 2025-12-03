@@ -1,0 +1,72 @@
+# Helicopter FX Configuration
+# Configuration for both engine and gun effects
+
+# Engine FX Configuration
+engine_fx:
+  enabled: true
+  
+  # Engine Toggle PWM Input
+  engine_toggle:
+    pin: 17                    # GPIO pin for PWM throttle input
+    threshold_us: 1500         # PWM threshold in microseconds (engine on/off)
+  
+  # Sound Files and Transitions
+  sounds:
+    starting:
+      file: "~/assets/engine_start.wav"    # Engine start-up sound (optional)
+    running:
+      file: "~/assets/engine_loop.wav"     # Engine running loop sound (optional)
+    stopping:
+      file: "~/assets/engine_stop.wav"     # Engine shut-down sound (optional)
+    
+    # Transition Offsets
+    transitions:
+      starting_offset_ms: 60000    # Offset when restarting from stopping state
+      stopping_offset_ms: 25000    # Offset when stopping from starting state
+
+# Gun FX Configuration
+gun_fx:
+  enabled: true
+  
+  # Trigger PWM Input
+  trigger:
+    pin: 27                    # GPIO pin for trigger PWM input
+  
+  # Nozzle Flash LED
+  nozzle_flash:
+    enabled: true
+    pin: 23                    # GPIO pin for nozzle flash LED (-1 to disable)
+  
+  # Smoke Generator
+  smoke:
+    enabled: true
+    fan_pin: 24                # GPIO pin for smoke fan control (-1 to disable)
+    heater_pin: 25             # GPIO pin for smoke heater control (-1 to disable)
+    heater_toggle_pin: 22      # GPIO pin for smoke heater toggle PWM (-1 to disable)
+    heater_pwm_threshold_us: 1500  # PWM threshold for heater toggle
+    fan_off_delay_ms: 2000     # Delay before turning smoke fan off after firing stops
+  
+  # Rates of Fire
+  # Each rate defines RPM, PWM threshold, and associated sound
+  # Rates should be ordered from lowest to highest threshold for optimal performance
+  rate_of_fire:
+    - name: "200"
+      rpm: 200                 # Rounds per minute
+      pwm_threshold_us: 1400   # PWM threshold in microseconds
+      sound: "~/assets/gun_200rpm.wav"  # Sound file to play (optional)
+    
+    - name: "550"
+      rpm: 550                 # Rounds per minute
+      pwm_threshold_us: 1600   # PWM threshold in microseconds
+      sound: "~/assets/gun_550rpm.wav"  # Sound file to play (optional)
+  
+  # Hysteresis Settings (internal, not typically changed)
+  # hysteresis_us: 50          # Deadzone for rate switching to prevent oscillation
+
+# Hardware Notes:
+# - WM8960 Audio HAT reserves GPIO 2,3 (I2C), 17 (button), 18-21 (I2S)
+# - Ensure PWM inputs use RC signal (typically 50Hz, 1000-2000µs pulse width)
+# - LED blinks at firing rate (synchronized with rounds per minute)
+# - Sounds loop continuously while in their respective states
+# - Smoke fan continues running for fan_off_delay_ms after firing stops
+# - Smoke heater can be controlled independently via PWM toggle input

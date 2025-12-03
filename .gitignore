@@ -1,0 +1,73 @@
+# Build artifacts
+build/
+*.o
+*.so
+*.a
+*.dylib
+*.exe
+
+# Binaries
+helifx
+mixer_demo
+gpio_demo
+engine_fx_demo
+gun_fx_demo
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.ko
+*.obj
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.la
+
+# Shared objects
+*.dll
+*.so.*
+*.dylib
+
+# Executables
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Core dumps
+core
+core.*
+
+# Logs
+*.log
+logs/
+
+# Config backups
+*.yaml.bak
+*.conf.bak
+
+# System files
+Thumbs.db
