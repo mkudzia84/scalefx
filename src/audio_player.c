@@ -94,8 +94,11 @@ AudioMixer* audio_mixer_create(int max_channels) {
         return NULL;
     }
     
-    // Initialize miniaudio engine
-    ma_result result = ma_engine_init(NULL, &mixer->engine);
+    // Initialize miniaudio engine with proper channel configuration
+    ma_engine_config engineConfig = ma_engine_config_init();
+    engineConfig.channels = 2;  // Force stereo output for WM8960
+    
+    ma_result result = ma_engine_init(&engineConfig, &mixer->engine);
     if (result != MA_SUCCESS) {
         fprintf(stderr, "[AUDIO] Error: Failed to initialize mixer engine\n");
         free(mixer);

@@ -1,11 +1,13 @@
 [Unit]
-Description=Helicopter FX System (KA-50)
-After=network.target sound.target
+Description=Helicopter FX System
+After=network.target sound.target alsa-restore.service multi-user.target
+DefaultDependencies=no
 
 [Service]
 Type=simple
-User=pi
-Group=pi
+User=helisfx
+Group=helisfx
+SupplementaryGroups=audio gpio
 WorkingDirectory=/home/pi/helifx
 ExecStart=/home/pi/helifx/helifx /home/pi/helifx/config.yaml
 Restart=on-failure
@@ -15,10 +17,12 @@ StandardError=journal
 
 # Security settings
 NoNewPrivileges=true
-PrivateTmp=true
+PrivateTmp=false
 
 # Environment
-Environment="HOME=/home/pi"
+Environment="HOME=/home/helisfx"
+Environment="PULSE_RUNTIME_PATH=/run/user/1000/pulse"
+Environment="XDG_RUNTIME_DIR=/run/user/1000"
 
 [Install]
 WantedBy=multi-user.target
