@@ -405,7 +405,7 @@ static void *receive_thread(void *arg) {
             pthread_mutex_lock(&jetiex->mutex);
             
             // Add to buffer
-            if (jetiex->rx_buffer_len < sizeof(jetiex->rx_buffer)) {
+            if (jetiex->rx_buffer_len < (int)sizeof(jetiex->rx_buffer)) {
                 jetiex->rx_buffer[jetiex->rx_buffer_len++] = byte;
                 
                 // Check if we have a complete packet
@@ -583,7 +583,7 @@ JetiEX *jetiex_create(const JetiEXConfig *config) {
     // Initialize mutex
     pthread_mutex_init(&jetiex->mutex, NULL);
     
-    LOG_INIT(LOG_JETIEX, "Initialized on %s at %u baud (Mfr:0x%04X Dev:0x%04X)",
+    LOG_INFO(LOG_JETIEX, "Initialized on %s at %u baud (Mfr:0x%04X Dev:0x%04X)",
              config->serial_port, config->baud_rate,
              config->manufacturer_id, config->device_id);
     
@@ -769,7 +769,9 @@ JetiEXSensor jetiex_sensor_rpm(uint8_t id, const char *label) {
         .enabled = true
     };
     strncpy(sensor.label, label, sizeof(sensor.label) - 1);
+    sensor.label[sizeof(sensor.label) - 1] = '\0';
     strncpy(sensor.unit_label, "rpm", sizeof(sensor.unit_label) - 1);
+    sensor.unit_label[sizeof(sensor.unit_label) - 1] = '\0';
     return sensor;
 }
 
@@ -783,7 +785,9 @@ JetiEXSensor jetiex_sensor_voltage(uint8_t id, const char *label, uint8_t precis
         .enabled = true
     };
     strncpy(sensor.label, label, sizeof(sensor.label) - 1);
+    sensor.label[sizeof(sensor.label) - 1] = '\0';
     strncpy(sensor.unit_label, "V", sizeof(sensor.unit_label) - 1);
+    sensor.unit_label[sizeof(sensor.unit_label) - 1] = '\0';
     return sensor;
 }
 
@@ -797,7 +801,9 @@ JetiEXSensor jetiex_sensor_current(uint8_t id, const char *label, uint8_t precis
         .enabled = true
     };
     strncpy(sensor.label, label, sizeof(sensor.label) - 1);
+    sensor.label[sizeof(sensor.label) - 1] = '\0';
     strncpy(sensor.unit_label, "A", sizeof(sensor.unit_label) - 1);
+    sensor.unit_label[sizeof(sensor.unit_label) - 1] = '\0';
     return sensor;
 }
 
@@ -811,7 +817,9 @@ JetiEXSensor jetiex_sensor_temperature(uint8_t id, const char *label, uint8_t pr
         .enabled = true
     };
     strncpy(sensor.label, label, sizeof(sensor.label) - 1);
+    sensor.label[sizeof(sensor.label) - 1] = '\0';
     strncpy(sensor.unit_label, "°C", sizeof(sensor.unit_label) - 1);
+    sensor.unit_label[sizeof(sensor.unit_label) - 1] = '\0';
     return sensor;
 }
 
@@ -825,7 +833,9 @@ JetiEXSensor jetiex_sensor_percentage(uint8_t id, const char *label) {
         .enabled = true
     };
     strncpy(sensor.label, label, sizeof(sensor.label) - 1);
+    sensor.label[sizeof(sensor.label) - 1] = '\0';
     strncpy(sensor.unit_label, "%", sizeof(sensor.unit_label) - 1);
+    sensor.unit_label[sizeof(sensor.unit_label) - 1] = '\0';
     return sensor;
 }
 
@@ -839,6 +849,7 @@ JetiEXSensor jetiex_sensor_index(uint8_t id, const char *label) {
         .enabled = true
     };
     strncpy(sensor.label, label, sizeof(sensor.label) - 1);
+    sensor.label[sizeof(sensor.label) - 1] = '\0';
     sensor.unit_label[0] = '\0';
     return sensor;
 }
