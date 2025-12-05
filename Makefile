@@ -1,6 +1,6 @@
 # Compiler settings
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -std=c11 -pthread -O2 -D_DEFAULT_SOURCE
+CFLAGS = -Wall -Wextra -Werror -Wno-unused-function -std=c11 -pthread -O2 -D_DEFAULT_SOURCE
 INCLUDES = -I./include
 LIBS = -lpthread -ldl -lm -latomic -lyaml
 

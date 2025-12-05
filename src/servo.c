@@ -232,14 +232,6 @@ void servo_set_input(Servo *servo, int input_us) {
     pthread_mutex_unlock(&servo->mutex);
 }
 
-void servo_set_input(Servo *servo, int input_us) {
-    if (!servo) return;
-    
-    pthread_mutex_lock(&servo->mutex);
-    servo->input_us = input_us;
-    pthread_mutex_unlock(&servo->mutex);
-}
-
 int servo_get_output(const Servo *servo) {
     if (!servo) return 0;
     

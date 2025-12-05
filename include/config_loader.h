@@ -4,7 +4,7 @@
 #include <stdbool.h>
 
 // Rate of fire configuration
-typedef struct {
+typedef struct RateOfFireConfig {
     char name[64];
     int rpm;
     int pwm_threshold_us;
@@ -12,7 +12,7 @@ typedef struct {
 } RateOfFireConfig;
 
 // Servo configuration
-typedef struct {
+typedef struct ServoConfig {
     bool enabled;
     int pwm_pin;
     int output_pin;
@@ -26,7 +26,7 @@ typedef struct {
 } ServoConfig;
 
 // Engine FX configuration
-typedef struct {
+typedef struct EngineFXConfig {
     bool enabled;
     int pin;
     int threshold_us;
@@ -38,7 +38,7 @@ typedef struct {
 } EngineFXConfig;
 
 // Gun FX configuration
-typedef struct {
+typedef struct GunFXConfig {
     bool enabled;
     int trigger_pin;
     
@@ -60,7 +60,7 @@ typedef struct {
 } GunFXConfig;
 
 // Complete helicopter FX configuration
-typedef struct {
+typedef struct HeliFXConfig {
     EngineFXConfig engine;
     GunFXConfig gun;
 } HeliFXConfig;

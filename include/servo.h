@@ -16,18 +16,9 @@
 
 typedef struct Servo Servo;
 
-/**
- * @brief Configuration for servo behavior
- */
-typedef struct {
-    int input_min_us;       // Minimum input PWM pulse width (microseconds)
-    int input_max_us;       // Maximum input PWM pulse width (microseconds)
-    int output_min_us;      // Minimum output PWM pulse width (microseconds)
-    int output_max_us;      // Maximum output PWM pulse width (microseconds)
-    float max_speed_us_per_sec;    // Maximum speed in us/second (0 = unlimited)
-    float max_accel_us_per_sec2;   // Maximum acceleration in us/second² (0 = unlimited)
-    int update_rate_hz;     // Update rate for servo thread (default: 50Hz)
-} ServoConfig;
+// ServoConfig is defined in config_loader.h
+// We include it here to ensure consistent definitions across the codebase
+#include "config_loader.h"
 
 /**
  * @brief Create a new servo controller

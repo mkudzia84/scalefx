@@ -326,7 +326,7 @@ int main(int argc, char *argv[]) {
         .trigger_pin = config.trigger_pin,
         .smoke_enabled = true,
         .smoke_heater_toggle_pin = config.heater_toggle_pin,
-        .smoke_heater_threshold_us = 1500,
+        .smoke_heater_pwm_threshold_us = 1500,
         .smoke_heater_pin = config.smoke_heater_pin,
         .smoke_fan_pin = config.smoke_fan_pin,
         .smoke_fan_off_delay_ms = config.smoke_fan_off_delay_ms,

@@ -250,25 +250,41 @@ static void* gun_fx_processing_thread(void *arg) {
             }
         }
         
-        // Periodic status output (every 5 seconds)
+        // Periodic status output (every 10 seconds)
         struct timespec current_time;
         clock_gettime(CLOCK_MONOTONIC, &current_time);
         double elapsed = (current_time.tv_sec - last_status_time.tv_sec) + 
                         (current_time.tv_nsec - last_status_time.tv_nsec) / 1e9;
         
-        if (elapsed >= 5.0) {
+        if (elapsed >= 10.0) {
             pthread_mutex_lock(&gun->mutex);
             int current_pwm = -1;
             if (gun->trigger_pwm_monitor && pwm_monitor_get_reading(gun->trigger_pwm_monitor, &trigger_reading)) {
                 current_pwm = trigger_reading.duration_us;
             }
             
-            printf("[GUN STATUS] Firing: %s | Rate: %d | RPM: %d | PWM: %d µs | Heater: %s\n",
+            int pitch_pwm = -1;
+            if (gun->pitch_pwm_monitor && pwm_monitor_get_reading(gun->pitch_pwm_monitor, &pitch_reading)) {
+                pitch_pwm = pitch_reading.duration_us;
+            }
+            
+            int yaw_pwm = -1;
+            if (gun->yaw_pwm_monitor && pwm_monitor_get_reading(gun->yaw_pwm_monitor, &yaw_reading)) {
+                yaw_pwm = yaw_reading.duration_us;
+            }
+            
+            printf("[GUN STATUS @ %.1fs] Firing: %s | Rate: %d | RPM: %d | Trigger PWM: %d µs | Heater: %s\n",
+                   elapsed,
                    gun->is_firing ? "YES" : "NO",
                    gun->current_rate_index >= 0 ? gun->current_rate_index + 1 : 0,
                    gun->current_rpm,
                    current_pwm,
                    gun->smoke_heater_on ? "ON" : "OFF");
+            printf("[GUN SERVOS] Pitch: %d µs | Yaw: %d µs | Pitch Servo: %s | Yaw Servo: %s\n",
+                   pitch_pwm,
+                   yaw_pwm,
+                   gun->pitch_servo ? "ACTIVE" : "DISABLED",
+                   gun->yaw_servo ? "ACTIVE" : "DISABLED");
             pthread_mutex_unlock(&gun->mutex);
             
             last_status_time = current_time;
@@ -298,7 +314,7 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     gun->audio_channel = audio_channel;
     gun->trigger_pwm_pin = config->trigger_pin;
     gun->smoke_heater_toggle_pin = config->smoke_heater_toggle_pin;
-    gun->smoke_heater_threshold = config->smoke_heater_threshold_us;
+    gun->smoke_heater_threshold = config->smoke_heater_pwm_threshold_us;
     gun->smoke_fan_off_delay_ms = config->smoke_fan_off_delay_ms;
     gun->rates = NULL;
     gun->rate_count = 0;
@@ -376,9 +392,6 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
         }
     }
     
-    // Create yaw servo if enabled
-    if (config->yaw_servo.enabled) {
-        gun->yaw_servo = servo_create(&config->yaw_servo);
     // Create yaw servo if enabled
     if (config->yaw_servo.enabled) {
         gun->yaw_servo = servo_create(&config->yaw_servo);
@@ -514,10 +527,7 @@ bool gun_fx_is_firing(GunFX *gun) {
     return firing;
 }
 
-void gun_fx_set_smoke_fan_off_delay(GunFX *gun, int delay_ms) {
-    if (!gun) return;
-    gun->smoke_fan_off_delay_ms = delay_ms;
-}
+/* Removed duplicate simple setter; keep mutex-protected version below */
 
 Servo* gun_fx_get_pitch_servo(GunFX *gun) {
     if (!gun) return NULL;
