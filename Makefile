@@ -54,6 +54,11 @@ all: $(TARGETS)
 .PHONY: demo
 demo: $(DEMO_TARGETS)
 
+# Debug target - builds with debug logging enabled
+.PHONY: debug
+debug: CFLAGS += -DDEBUG
+debug: clean all
+
 # Create build directories
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/demo
@@ -156,6 +161,7 @@ help:
 	@echo "Targets:"
 	@echo "  all              - Build all targets (default)"
 	@echo "  demo             - Build demo programs only"
+	@echo "  debug            - Build with debug logging enabled (-DDEBUG)"
 	@echo "  clean            - Remove build artifacts"
 	@echo "  install          - Install binaries to /usr/local/bin"
 	@echo "  install-service  - Install systemd service"
@@ -165,5 +171,6 @@ help:
 	@echo "Examples:"
 	@echo "  make             - Build everything"
 	@echo "  make demo        - Build only demos"
+	@echo "  make debug       - Debug build (with LOG_DEBUG output)"
 	@echo "  make clean all   - Clean rebuild"
 	@echo "  sudo make install - Install to system"
