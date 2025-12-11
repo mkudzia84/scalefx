@@ -124,24 +124,12 @@ gun_fx:
 # JetiEX Telemetry Configuration
 jetiex:
   enabled: false               # Enable JetiEX telemetry
+  remote_config: true          # Enable remote configuration via transmitter
   serial_port: "/dev/ttyAMA0"  # Serial port for telemetry (UART)
   baud_rate: 115200            # Baud rate (9600, 19200, 38400, 57600, 115200, 230400)
   manufacturer_id: 0xA409      # Manufacturer ID (16-bit hex)
   device_id: 0x0001            # Device ID (16-bit hex)
   update_rate_hz: 10           # Telemetry update rate (5-100 Hz)
-  text_messages: true          # Enable text messages to transmitter
-  
-  # Sensors to transmit
-  sensors:
-    gun_rpm:
-      enabled: true            # Gun firing rate in RPM
-      sensor_id: 0             # Sensor ID (0-15)
-      label: "Gun RPM"         # Display label on transmitter
-    
-    engine_rpm:
-      enabled: false           # Engine RPM (if available)
-      sensor_id: 1
-      label: "Engine RPM"
     
     battery_voltage:
       enabled: false           # Battery voltage monitoring

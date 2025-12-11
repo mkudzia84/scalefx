@@ -154,8 +154,8 @@ static const cyaml_schema_value_t gun_fx_schema __attribute__((unused)) = {
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, GunFXConfig, gun_fx_fields),
 };
 
+// JetiEXConfigData schema (loaded but ignored when ENABLE_JETIEX not defined)
 #ifdef ENABLE_JETIEX
-// JetiEXConfigData schema
 static const cyaml_schema_field_t jetiex_fields[] = {
     CYAML_FIELD_BOOL("enabled", CYAML_FLAG_DEFAULT, JetiEXConfigData, enabled),
     CYAML_FIELD_BOOL("remote_config", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, JetiEXConfigData, remote_config),
@@ -166,19 +166,29 @@ static const cyaml_schema_field_t jetiex_fields[] = {
     CYAML_FIELD_UINT("update_rate_hz", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, JetiEXConfigData, update_rate_hz),
     CYAML_FIELD_END
 };
+#else
+// Dummy schema when JetiEX is disabled - accepts and ignores all fields
+static const cyaml_schema_field_t jetiex_fields[] = {
+    CYAML_FIELD_IGNORE("enabled", CYAML_FLAG_DEFAULT),
+    CYAML_FIELD_IGNORE("remote_config", CYAML_FLAG_OPTIONAL),
+    CYAML_FIELD_IGNORE("serial_port", CYAML_FLAG_OPTIONAL),
+    CYAML_FIELD_IGNORE("baud_rate", CYAML_FLAG_OPTIONAL),
+    CYAML_FIELD_IGNORE("manufacturer_id", CYAML_FLAG_OPTIONAL),
+    CYAML_FIELD_IGNORE("device_id", CYAML_FLAG_OPTIONAL),
+    CYAML_FIELD_IGNORE("update_rate_hz", CYAML_FLAG_OPTIONAL),
+    CYAML_FIELD_END
+};
+#endif
 
 static const cyaml_schema_value_t jetiex_schema __attribute__((unused)) = {
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, JetiEXConfigData, jetiex_fields),
 };
-#endif
 
 // Root HeliFXConfig schema
 static const cyaml_schema_field_t helifx_config_fields[] = {
     CYAML_FIELD_MAPPING("engine_fx", CYAML_FLAG_DEFAULT, HeliFXConfig, engine, engine_fx_fields),
     CYAML_FIELD_MAPPING("gun_fx", CYAML_FLAG_DEFAULT, HeliFXConfig, gun, gun_fx_fields),
-#ifdef ENABLE_JETIEX
     CYAML_FIELD_MAPPING("jetiex", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, HeliFXConfig, jetiex, jetiex_fields),
-#endif
     CYAML_FIELD_END
 };
 
@@ -261,6 +271,14 @@ HeliFXConfig* config_load(const char *config_file) {
 
     // Apply defaults for optional fields that weren't in the YAML
     apply_defaults_inline(config);
+
+#ifndef ENABLE_JETIEX
+    // Warn if JetiEX is configured but not compiled in
+    if (config->jetiex.enabled) {
+        LOG_WARN(LOG_CONFIG, "JetiEX telemetry is enabled in config but not compiled (ENABLE_JETIEX=0)");
+        LOG_WARN(LOG_CONFIG, "JetiEX functionality will be ignored");
+    }
+#endif
 
     LOG_INFO(LOG_CONFIG, "Configuration loaded successfully");
     return config;
