@@ -289,7 +289,10 @@ int config_load(const char *config_file, HeliFXConfig *config) {
                         if (servo_cfg) {
                             if (strcmp(value, "enabled") == 0) {
                                 yaml_parser_parse(&parser, &event);
-                                servo_cfg->enabled = strcmp((char *)event.data.scalar.value, "true") == 0;
+                                const char *enable_value = (char *)event.data.scalar.value;
+                                servo_cfg->enabled = strcmp(enable_value, "true") == 0;
+                                printf("[CONFIG DEBUG] Parsed %s servo enabled = %s (result: %s)\n",
+                                       current_key, enable_value, servo_cfg->enabled ? "TRUE" : "FALSE");
                                 yaml_event_delete(&event);
                                 continue;
                             } else if (strcmp(value, "pwm_pin") == 0) {
