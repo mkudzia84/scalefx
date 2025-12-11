@@ -59,23 +59,27 @@ void servo_set_input(Servo *servo, int input_us);
  * @param servo Servo instance
  * @return Current output PWM pulse width in microseconds
  */
-int servo_get_output(const Servo *servo);
+int servo_get_output(Servo *servo);
 
 /**
  * @brief Get current target value (mapped from input)
  * 
+ * Thread-safe method to read the current target value.
+ * 
  * @param servo Servo instance
  * @return Target output PWM pulse width in microseconds
  */
-int servo_get_target(const Servo *servo);
+int servo_get_target(Servo *servo);
 
 /**
  * @brief Get current velocity
  * 
+ * Thread-safe method to read the current velocity.
+ * 
  * @param servo Servo instance
  * @return Current velocity in us/second
  */
-float servo_get_velocity(const Servo *servo);
+float servo_get_velocity(Servo *servo);
 
 /**
  * @brief Reset servo to specific position instantly
@@ -99,11 +103,13 @@ int servo_set_config(Servo *servo, const ServoConfig *config);
 /**
  * @brief Get current servo configuration
  * 
+ * Thread-safe method to read the current configuration.
+ * 
  * @param servo Servo instance
  * @param config Output configuration structure
  * @return 0 on success, -1 on failure
  */
-int servo_get_config(const Servo *servo, ServoConfig *config);
+int servo_get_config(Servo *servo, ServoConfig *config);
 
 /**
  * @brief Set maximum speed

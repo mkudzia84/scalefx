@@ -233,7 +233,7 @@ void servo_set_input(Servo *servo, int input_us) {
     mtx_unlock(&servo->mutex);
 }
 
-int servo_get_output(const Servo *servo) {
+int servo_get_output(Servo *servo) {
     if (!servo) return 0;
     
     int output;
@@ -244,7 +244,7 @@ int servo_get_output(const Servo *servo) {
     return output;
 }
 
-int servo_get_target(const Servo *servo) {
+int servo_get_target(Servo *servo) {
     if (!servo) return 0;
     
     int target;
@@ -255,7 +255,7 @@ int servo_get_target(const Servo *servo) {
     return target;
 }
 
-float servo_get_velocity(const Servo *servo) {
+float servo_get_velocity(Servo *servo) {
     if (!servo) return 0.0f;
     
     float velocity;
@@ -306,7 +306,7 @@ int servo_set_config(Servo *servo, const ServoConfig *config) {
     return 0;
 }
 
-int servo_get_config(const Servo *servo, ServoConfig *config) {
+int servo_get_config(Servo *servo, ServoConfig *config) {
     if (!servo || !config) return -1;
     
     mtx_lock(&servo->mutex);
