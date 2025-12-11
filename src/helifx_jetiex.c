@@ -34,7 +34,7 @@ static struct {
 // Helper: update servo speed/accel for both pitch and yaw
 static void update_servo_setting(bool (*getter)(GunFX*, Servo**), 
                                  void (*setter)(Servo*, float),
-                                 float value, const char *name) {
+                                 float value) {
     if (!g_gun || !g_config->gun.enabled) return;
     
     Servo *servo = nullptr;
