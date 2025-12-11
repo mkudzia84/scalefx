@@ -227,36 +227,24 @@ JetiEX* helifx_jetiex_init(HeliFXConfig *config, const char *config_file_path,
     }
     
     // Register configurable parameters
-    #define REG_PARAM(id, name, type, ptr, min, max) \
-        jetiex_add_parameter(jetiex, &(JetiEXParameter){ \
-            .id = id, .name = name, .type = type, .value_ptr = ptr, \
-            .min_value = min, .max_value = max, .flags = JETIEX_PARAM_PERSISTENT})
+    JetiEXParameter params[] = {
+        {0, "Gun Rate 1 RPM", JETIEX_PARAM_UINT16, &g_parameters.gun_rate_1_rpm, 0, 10000, JETIEX_PARAM_PERSISTENT},
+        {1, "Gun Rate 2 RPM", JETIEX_PARAM_UINT16, &g_parameters.gun_rate_2_rpm, 0, 10000, JETIEX_PARAM_PERSISTENT},
+        {2, "Gun Rate 1 PWM", JETIEX_PARAM_UINT16, &g_parameters.gun_rate_1_pwm, 1000, 2000, JETIEX_PARAM_PERSISTENT},
+        {3, "Gun Rate 2 PWM", JETIEX_PARAM_UINT16, &g_parameters.gun_rate_2_pwm, 1000, 2000, JETIEX_PARAM_PERSISTENT},
+        {4, "Smoke Fan Delay", JETIEX_PARAM_UINT16, &g_parameters.smoke_fan_delay_ms, 0, 10000, JETIEX_PARAM_PERSISTENT},
+        {5, "Heater PWM Threshold", JETIEX_PARAM_UINT16, &g_parameters.heater_pwm_threshold, 1000, 2000, JETIEX_PARAM_PERSISTENT},
+        {6, "Engine PWM Threshold", JETIEX_PARAM_UINT16, &g_parameters.engine_pwm_threshold, 1000, 2000, JETIEX_PARAM_PERSISTENT},
+        {7, "Servo Max Speed", JETIEX_PARAM_UINT16, &g_parameters.servo_max_speed, 100, 5000, JETIEX_PARAM_PERSISTENT},
+        {8, "Servo Max Accel", JETIEX_PARAM_UINT16, &g_parameters.servo_max_accel, 100, 10000, JETIEX_PARAM_PERSISTENT},
+        {9, "Telemetry Rate Hz", JETIEX_PARAM_UINT8, &g_parameters.telemetry_rate_hz, 1, 100, JETIEX_PARAM_PERSISTENT},
+        {10, "Nozzle Flash Enable", JETIEX_PARAM_BOOL, &g_parameters.nozzle_flash_enabled, 0, 1, JETIEX_PARAM_PERSISTENT},
+        {11, "Smoke Enable", JETIEX_PARAM_BOOL, &g_parameters.smoke_enabled, 0, 1, JETIEX_PARAM_PERSISTENT}
+    };
     
-    // Gun rates (0-3)
-    REG_PARAM(0, "Gun Rate 1 RPM", JETIEX_PARAM_UINT16, &g_parameters.gun_rate_1_rpm, 0, 10000);
-    REG_PARAM(1, "Gun Rate 2 RPM", JETIEX_PARAM_UINT16, &g_parameters.gun_rate_2_rpm, 0, 10000);
-    REG_PARAM(2, "Gun Rate 1 PWM", JETIEX_PARAM_UINT16, &g_parameters.gun_rate_1_pwm, 1000, 2000);
-    REG_PARAM(3, "Gun Rate 2 PWM", JETIEX_PARAM_UINT16, &g_parameters.gun_rate_2_pwm, 1000, 2000);
-    
-    // Smoke settings (4-5)
-    REG_PARAM(4, "Smoke Fan Delay", JETIEX_PARAM_UINT16, &g_parameters.smoke_fan_delay_ms, 0, 10000);
-    REG_PARAM(5, "Heater PWM Threshold", JETIEX_PARAM_UINT16, &g_parameters.heater_pwm_threshold, 1000, 2000);
-    
-    // Engine settings (6)
-    REG_PARAM(6, "Engine PWM Threshold", JETIEX_PARAM_UINT16, &g_parameters.engine_pwm_threshold, 1000, 2000);
-    
-    // Servo settings (7-8)
-    REG_PARAM(7, "Servo Max Speed", JETIEX_PARAM_UINT16, &g_parameters.servo_max_speed, 100, 5000);
-    REG_PARAM(8, "Servo Max Accel", JETIEX_PARAM_UINT16, &g_parameters.servo_max_accel, 100, 10000);
-    
-    // Telemetry settings (9)
-    REG_PARAM(9, "Telemetry Rate Hz", JETIEX_PARAM_UINT8, &g_parameters.telemetry_rate_hz, 1, 100);
-    
-    // Feature flags (10-11)
-    REG_PARAM(10, "Nozzle Flash Enable", JETIEX_PARAM_BOOL, &g_parameters.nozzle_flash_enabled, 0, 1);
-    REG_PARAM(11, "Smoke Enable", JETIEX_PARAM_BOOL, &g_parameters.smoke_enabled, 0, 1);
-    
-    #undef REG_PARAM
+    for (int i = 0; i < 12; i++) {
+        jetiex_add_parameter(jetiex, &params[i]);
+    }
     
     LOG_INFO(LOG_JETIEX, "JetiEX initialized successfully");
     return jetiex;
