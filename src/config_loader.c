@@ -151,7 +151,8 @@ int config_load(const char *config_file, HeliFXConfig *config) {
                         strcmp(value, "sounds") == 0 ||
                         strcmp(value, "trigger") == 0 ||
                         strcmp(value, "nozzle_flash") == 0 ||
-                        strcmp(value, "smoke") == 0) {
+                        strcmp(value, "smoke") == 0 ||
+                        strcmp(value, "turret_control") == 0) {
                         strncpy(current_subsection, value, sizeof(current_subsection) - 1);
                     }
                 } else if (depth == 3) {

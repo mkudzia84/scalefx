@@ -216,9 +216,9 @@ int main(int argc, char *argv[]) {
         free(gun_sounds);
     }
     
+    config_free(&config);
     audio_mixer_destroy(mixer);
     gpio_cleanup();
-    config_free(&config);
     
     printf("[HELIFX] Shutdown complete.\n");
     return 0;
