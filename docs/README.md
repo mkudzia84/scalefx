@@ -73,6 +73,10 @@ See [WIRING.md](WIRING.md) for complete wiring diagrams and pin assignments.
 
 ### Prerequisites
 
+**Compiler Requirements:**
+- GCC 14 or later (required for C23 standard support)
+- Check your GCC version: `gcc --version`
+
 Install dependencies:
 ```bash
 sudo apt-get update
@@ -86,6 +90,8 @@ sudo apt-get install -y \
     pigpio \
     python3-pigpio
 ```
+
+**Note:** This project uses the C23 standard (`-std=c23`) and requires a modern compiler with C23 support. If your system GCC version is older than 14, you may need to install a newer version or build from a newer toolchain.
 
 Enable pigpio daemon:
 ```bash
@@ -491,6 +497,7 @@ This will:
 ## Documentation
 
 Additional documentation available:
+- [C23 Migration Guide](C23_MIGRATION.md) - C23 standard migration details and compiler requirements
 - [Wiring Guide](WIRING.md) - Complete wiring diagrams and hardware setup
 - [Logging System](LOGGING.md) - Logging architecture and usage guide
 - [JetiEX Telemetry](JETIEX.md) - Telemetry integration and configuration
@@ -505,6 +512,9 @@ For issues, questions, or contributions, please open an issue on the project rep
 
 ## Technical Specifications
 
+- **Programming Language:** C23 standard (ISO/IEC 9899:2023)
+- **Threading:** C23 standard threads (`<threads.h>`)
+- **Compiler:** GCC 14 or later required
 - **Audio:** 44.1kHz, 16-bit stereo WAV files
 - **PWM Input:** 50Hz (20ms period), 1000-2000µs pulse width
 - **GPIO:** 3.3V logic levels

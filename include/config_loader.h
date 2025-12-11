@@ -13,33 +13,33 @@ typedef struct RateOfFireConfig {
     char *sound_file;
 } RateOfFireConfig;
 
-// Servo configuration
+// Servo configuration with defaults
 typedef struct ServoConfig {
     bool enabled;
     int pwm_pin;
     int output_pin;
-    int input_min_us;
-    int input_max_us;
-    int output_min_us;
-    int output_max_us;
-    float max_speed_us_per_sec;
-    float max_accel_us_per_sec2;
-    int update_rate_hz;
+    int input_min_us;           // Default: 1000
+    int input_max_us;           // Default: 2000
+    int output_min_us;          // Default: 1000
+    int output_max_us;          // Default: 2000
+    float max_speed_us_per_sec; // Default: 500.0
+    float max_accel_us_per_sec2;// Default: 2000.0
+    int update_rate_hz;         // Default: 50
 } ServoConfig;
 
-// Engine FX configuration
+// Engine FX configuration with defaults
 typedef struct EngineFXConfig {
     bool enabled;
     int pin;
-    int threshold_us;
+    int threshold_us;          // Default: 1500
     char *starting_file;
     char *running_file;
     char *stopping_file;
-    int starting_offset_ms;
-    int stopping_offset_ms;
+    int starting_offset_ms;    // Default: 60000 (60 seconds)
+    int stopping_offset_ms;    // Default: 25000 (25 seconds)
 } EngineFXConfig;
 
-// Gun FX configuration
+// Gun FX configuration with defaults
 typedef struct GunFXConfig {
     bool enabled;
     int trigger_pin;
@@ -51,8 +51,8 @@ typedef struct GunFXConfig {
     int smoke_fan_pin;
     int smoke_heater_pin;
     int smoke_heater_toggle_pin;
-    int smoke_heater_pwm_threshold_us;
-    int smoke_fan_off_delay_ms;
+    int smoke_heater_pwm_threshold_us; // Default: 1500
+    int smoke_fan_off_delay_ms;        // Default: 2000
     
     ServoConfig pitch_servo;
     ServoConfig yaw_servo;
@@ -62,7 +62,7 @@ typedef struct GunFXConfig {
 } GunFXConfig;
 
 #ifdef ENABLE_JETIEX
-// JetiEX telemetry configuration
+// JetiEX telemetry configuration with defaults
 typedef struct JetiEXConfigData {
     bool enabled;
     bool remote_config;
@@ -70,7 +70,7 @@ typedef struct JetiEXConfigData {
     uint32_t baud_rate;
     uint16_t manufacturer_id;
     uint16_t device_id;
-    uint8_t update_rate_hz;
+    uint8_t update_rate_hz;  // Default: 5
 } JetiEXConfigData;
 #endif
 

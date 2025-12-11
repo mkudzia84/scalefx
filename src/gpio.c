@@ -432,7 +432,6 @@ static int pwm_monitor_thread(void *arg) {
 }
 
 PWMMonitor* pwm_monitor_create(int pin, PWMCallback callback, void *user_data) {
-PWMMonitor* pwm_monitor_create(int pin, PWMCallback callback, void *user_data) {
     if (!initialized) {
         LOG_ERROR(LOG_GPIO, "GPIO not initialized");
         return nullptr;
@@ -471,7 +470,7 @@ PWMMonitor* pwm_monitor_create(int pin, PWMCallback callback, void *user_data) {
     LOG_INFO(LOG_GPIO, "PWM monitor created for pin %d", pin);
     return monitor;
 }
-void pwm_monitor_destroy(PWMMonitor *monitor) {
+
 void pwm_monitor_destroy(PWMMonitor *monitor) {
     if (!monitor) return;
     

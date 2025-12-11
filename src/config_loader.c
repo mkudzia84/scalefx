@@ -13,21 +13,46 @@
 #include <string.h>
 
 /* ============================================================================
+ * Default Values for Optional Configuration Fields
+ * ============================================================================ */
+
+// Engine FX Defaults
+#define DEFAULT_ENGINE_STARTING_OFFSET_MS   60000   // 60 seconds
+#define DEFAULT_ENGINE_STOPPING_OFFSET_MS   25000   // 25 seconds
+#define DEFAULT_ENGINE_THRESHOLD_US         1500    // PWM threshold
+
+// Gun FX - Smoke Defaults
+#define DEFAULT_SMOKE_FAN_OFF_DELAY_MS      2000    // 2 seconds
+#define DEFAULT_SMOKE_HEATER_THRESHOLD_US   1500    // PWM threshold
+
+// Servo Defaults
+#define DEFAULT_SERVO_INPUT_MIN_US          1000    // Standard RC PWM min
+#define DEFAULT_SERVO_INPUT_MAX_US          2000    // Standard RC PWM max
+#define DEFAULT_SERVO_OUTPUT_MIN_US         1000    // Standard servo min
+#define DEFAULT_SERVO_OUTPUT_MAX_US         2000    // Standard servo max
+#define DEFAULT_SERVO_MAX_SPEED_US_PER_SEC  500.0f  // 500 µs/sec
+#define DEFAULT_SERVO_MAX_ACCEL_US_PER_SEC2 2000.0f // 2000 µs/sec²
+#define DEFAULT_SERVO_UPDATE_RATE_HZ        50      // 50 Hz (standard servo rate)
+
+// JetiEX Defaults
+#define DEFAULT_JETIEX_UPDATE_RATE_HZ       5       // 5 Hz telemetry rate
+
+/* ============================================================================
  * CYAML Schema Definitions
  * ============================================================================ */
 
-// ServoConfig schema
+// ServoConfig schema with defaults
 static const cyaml_schema_field_t servo_fields[] = {
     CYAML_FIELD_BOOL("enabled", CYAML_FLAG_DEFAULT, ServoConfig, enabled),
     CYAML_FIELD_INT("pwm_pin", CYAML_FLAG_DEFAULT, ServoConfig, pwm_pin),
     CYAML_FIELD_INT("output_pin", CYAML_FLAG_DEFAULT, ServoConfig, output_pin),
-    CYAML_FIELD_INT("input_min_us", CYAML_FLAG_DEFAULT, ServoConfig, input_min_us),
-    CYAML_FIELD_INT("input_max_us", CYAML_FLAG_DEFAULT, ServoConfig, input_max_us),
-    CYAML_FIELD_INT("output_min_us", CYAML_FLAG_DEFAULT, ServoConfig, output_min_us),
-    CYAML_FIELD_INT("output_max_us", CYAML_FLAG_DEFAULT, ServoConfig, output_max_us),
-    CYAML_FIELD_FLOAT("max_speed_us_per_sec", CYAML_FLAG_DEFAULT, ServoConfig, max_speed_us_per_sec),
-    CYAML_FIELD_FLOAT("max_accel_us_per_sec2", CYAML_FLAG_DEFAULT, ServoConfig, max_accel_us_per_sec2),
-    CYAML_FIELD_INT("update_rate_hz", CYAML_FLAG_DEFAULT, ServoConfig, update_rate_hz),
+    CYAML_FIELD_INT("input_min_us", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, input_min_us),
+    CYAML_FIELD_INT("input_max_us", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, input_max_us),
+    CYAML_FIELD_INT("output_min_us", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, output_min_us),
+    CYAML_FIELD_INT("output_max_us", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, output_max_us),
+    CYAML_FIELD_FLOAT("max_speed_us_per_sec", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, max_speed_us_per_sec),
+    CYAML_FIELD_FLOAT("max_accel_us_per_sec2", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, max_accel_us_per_sec2),
+    CYAML_FIELD_INT("update_rate_hz", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, update_rate_hz),
     CYAML_FIELD_END
 };
 
@@ -166,6 +191,51 @@ static const cyaml_config_t cyaml_config = {
 };
 
 /* ============================================================================
+ * Helper Functions
+ * ============================================================================ */
+
+// Apply defaults to fields that CYAML set to 0 (using designated initializers pattern)
+#define APPLY_DEFAULT_IF_ZERO(field, default_value) \
+    if ((field) == 0) (field) = (default_value)
+
+static inline void apply_defaults_inline(HeliFXConfig *config) {
+    // Engine defaults
+    APPLY_DEFAULT_IF_ZERO(config->engine.threshold_us, DEFAULT_ENGINE_THRESHOLD_US);
+    APPLY_DEFAULT_IF_ZERO(config->engine.starting_offset_ms, DEFAULT_ENGINE_STARTING_OFFSET_MS);
+    APPLY_DEFAULT_IF_ZERO(config->engine.stopping_offset_ms, DEFAULT_ENGINE_STOPPING_OFFSET_MS);
+    
+    // Gun - Smoke defaults
+    APPLY_DEFAULT_IF_ZERO(config->gun.smoke_heater_pwm_threshold_us, DEFAULT_SMOKE_HEATER_THRESHOLD_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.smoke_fan_off_delay_ms, DEFAULT_SMOKE_FAN_OFF_DELAY_MS);
+    
+    // Gun - Pitch servo defaults
+    APPLY_DEFAULT_IF_ZERO(config->gun.pitch_servo.input_min_us, DEFAULT_SERVO_INPUT_MIN_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.pitch_servo.input_max_us, DEFAULT_SERVO_INPUT_MAX_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.pitch_servo.output_min_us, DEFAULT_SERVO_OUTPUT_MIN_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.pitch_servo.output_max_us, DEFAULT_SERVO_OUTPUT_MAX_US);
+    if (config->gun.pitch_servo.max_speed_us_per_sec == 0.0f)
+        config->gun.pitch_servo.max_speed_us_per_sec = DEFAULT_SERVO_MAX_SPEED_US_PER_SEC;
+    if (config->gun.pitch_servo.max_accel_us_per_sec2 == 0.0f)
+        config->gun.pitch_servo.max_accel_us_per_sec2 = DEFAULT_SERVO_MAX_ACCEL_US_PER_SEC2;
+    APPLY_DEFAULT_IF_ZERO(config->gun.pitch_servo.update_rate_hz, DEFAULT_SERVO_UPDATE_RATE_HZ);
+    
+    // Gun - Yaw servo defaults
+    APPLY_DEFAULT_IF_ZERO(config->gun.yaw_servo.input_min_us, DEFAULT_SERVO_INPUT_MIN_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.yaw_servo.input_max_us, DEFAULT_SERVO_INPUT_MAX_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.yaw_servo.output_min_us, DEFAULT_SERVO_OUTPUT_MIN_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.yaw_servo.output_max_us, DEFAULT_SERVO_OUTPUT_MAX_US);
+    if (config->gun.yaw_servo.max_speed_us_per_sec == 0.0f)
+        config->gun.yaw_servo.max_speed_us_per_sec = DEFAULT_SERVO_MAX_SPEED_US_PER_SEC;
+    if (config->gun.yaw_servo.max_accel_us_per_sec2 == 0.0f)
+        config->gun.yaw_servo.max_accel_us_per_sec2 = DEFAULT_SERVO_MAX_ACCEL_US_PER_SEC2;
+    APPLY_DEFAULT_IF_ZERO(config->gun.yaw_servo.update_rate_hz, DEFAULT_SERVO_UPDATE_RATE_HZ);
+    
+#ifdef ENABLE_JETIEX
+    APPLY_DEFAULT_IF_ZERO(config->jetiex.update_rate_hz, DEFAULT_JETIEX_UPDATE_RATE_HZ);
+#endif
+}
+
+/* ============================================================================
  * Public Functions
  * ============================================================================ */
 
@@ -182,6 +252,9 @@ HeliFXConfig* config_load(const char *config_file) {
         LOG_ERROR(LOG_CONFIG, "Failed to load config: %s", cyaml_strerror(err));
         return nullptr;
     }
+
+    // Apply defaults for optional fields that weren't in the YAML
+    apply_defaults_inline(config);
 
     LOG_INFO(LOG_CONFIG, "Configuration loaded successfully");
     return config;

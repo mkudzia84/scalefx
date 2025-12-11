@@ -123,8 +123,8 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "[HELIFX] Error: Failed to create gun FX controller\n");
         } else {
             // Set rates of fire
-            RateOfFire *rates = malloc(config->gun.rate_count * sizeof(RateOfFire));
-            if (!rates) {
+            RateOfFire *rates = (RateOfFire*)malloc(config->gun.rate_count * sizeof(RateOfFire));
+            if (rates == nullptr) {
                 fprintf(stderr, "[HELIFX] Error: Failed to allocate rates array\n");
                 gun_fx_destroy(gun);
                 gun = nullptr;
