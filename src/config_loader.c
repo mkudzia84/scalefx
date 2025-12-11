@@ -131,8 +131,8 @@ static const cyaml_schema_field_t engine_toggle_fields[] = {
 // EngineFXConfig schema
 static const cyaml_schema_field_t engine_fx_fields[] = {
     CYAML_FIELD_BOOL("enabled", CYAML_FLAG_DEFAULT, EngineFXConfig, enabled),
-    CYAML_FIELD_MAPPING("engine_toggle", CYAML_FLAG_DEFAULT, EngineFXConfig, pin, engine_toggle_fields),
-    CYAML_FIELD_MAPPING("sounds", CYAML_FLAG_DEFAULT, EngineFXConfig, starting_file, engine_sounds_fields),
+    CYAML_FIELD_MAPPING("engine_toggle", CYAML_FLAG_OPTIONAL, EngineFXConfig, pin, engine_toggle_fields),
+    CYAML_FIELD_MAPPING("sounds", CYAML_FLAG_OPTIONAL, EngineFXConfig, starting_file, engine_sounds_fields),
     CYAML_FIELD_END
 };
 
@@ -204,7 +204,7 @@ static const cyaml_schema_value_t helifx_config_schema = {
 static const cyaml_config_t cyaml_config = {
     .log_fn = cyaml_log,
     .mem_fn = cyaml_mem,
-    .log_level = CYAML_LOG_DEBUG,  // Increased for detailed error messages
+    .log_level = CYAML_LOG_WARNING,
 };
 
 /* ============================================================================
