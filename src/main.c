@@ -125,7 +125,7 @@ int main(int argc, char *argv[]) {
     EngineFX *engine = nullptr;
     
     if (config->engine.enabled) {
-        printf("[HELIFX] Initializing Engine FX...\n");
+        LOG_INFO(LOG_HELIFX, "Initializing Engine FX...");
         
         // Load engine sounds
         sound_manager_load_sound(sound_mgr, SOUND_ENGINE_STARTING, config->engine.sounds.starting);
@@ -141,7 +141,7 @@ int main(int argc, char *argv[]) {
                 sound_manager_get_sound(sound_mgr, SOUND_ENGINE_STARTING),
                 sound_manager_get_sound(sound_mgr, SOUND_ENGINE_RUNNING),
                 sound_manager_get_sound(sound_mgr, SOUND_ENGINE_STOPPING));
-            printf("[HELIFX] Engine FX initialized\n");
+            LOG_INFO(LOG_HELIFX, "Engine FX initialized");
         }
     }
     
@@ -149,7 +149,7 @@ int main(int argc, char *argv[]) {
     GunFX *gun = nullptr;
     
     if (config->gun.enabled) {
-        printf("[HELIFX] Initializing Gun FX...\n");
+        LOG_INFO(LOG_HELIFX, "Initializing Gun FX...");
         
         // Load gun sounds (up to 10 rates supported)
         for (int i = 0; i < config->gun.rate_count && i < 10; i++) {
@@ -185,7 +185,7 @@ int main(int argc, char *argv[]) {
                 // Set smoke fan off delay
                 gun_fx_set_smoke_fan_off_delay(gun, config->gun.smoke.fan_off_delay_ms);
                 
-                printf("[HELIFX] Gun FX initialized with %d rates\n", config->gun.rate_count);
+                LOG_INFO(LOG_HELIFX, "Gun FX initialized with %d rates", config->gun.rate_count);
             }
         }
     }

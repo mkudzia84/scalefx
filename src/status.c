@@ -247,12 +247,25 @@ static void print_output_features(GunFX *gun, EngineFX *engine) {
                bool_color(heater_on),
                heater_on ? "ON" : "OFF");
         
-        // Smoke fan (we don't have direct state, infer from firing)
+        // Smoke fan with detailed status
         int smoke_fan_pin = gun_fx_get_smoke_fan_pin(gun);
-        printf("  • Smoke Fan:         GPIO %2d  %s%-10s" COLOR_RESET "\n",
-               smoke_fan_pin,
-               is_firing ? COLOR_GREEN : COLOR_RED,
-               is_firing ? "ON" : "OFF/DELAY");
+        bool fan_pending_off = gun_fx_get_smoke_fan_pending_off(gun);
+        const char *fan_status;
+        const char *fan_color;
+        
+        if (is_firing) {
+            fan_status = "ON";
+            fan_color = COLOR_GREEN;
+        } else if (fan_pending_off) {
+            fan_status = "TURNING OFF";
+            fan_color = COLOR_YELLOW;
+        } else {
+            fan_status = "OFF";
+            fan_color = COLOR_RED;
+        }
+        
+        printf("  • Smoke Fan:         GPIO %2d  %s%-12s" COLOR_RESET "\n",
+               smoke_fan_pin, fan_color, fan_status);
     }
 }
 

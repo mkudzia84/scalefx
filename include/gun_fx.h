@@ -103,5 +103,6 @@ int gun_fx_get_yaw_output_pin(GunFX *gun);
 int gun_fx_get_nozzle_flash_pin(GunFX *gun);
 int gun_fx_get_smoke_fan_pin(GunFX *gun);
 int gun_fx_get_smoke_heater_pin(GunFX *gun);
+bool gun_fx_get_smoke_fan_pending_off(GunFX *gun);
 
 #endif // GUN_FX_H

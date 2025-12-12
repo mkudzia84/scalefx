@@ -642,3 +642,7 @@ int gun_fx_get_smoke_fan_pin(GunFX *gun) {
 int gun_fx_get_smoke_heater_pin(GunFX *gun) {
     return gun ? gun->smoke_heater_pin : -1;
 }
+
+bool gun_fx_get_smoke_fan_pending_off(GunFX *gun) {
+    return gun ? atomic_load(&gun->smoke_fan_pending_off) : false;
+}

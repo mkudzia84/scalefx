@@ -75,11 +75,11 @@ static int engine_fx_processing_thread(void *arg) {
             // Immediate state change based on averaged PWM with hysteresis
             if (pwm_above_threshold && !engine_switch_on) {
                 engine_switch_on = true;
-                printf("[ENGINE] PWM toggle changed: ON (avg=%d us, threshold=%d us)\n",
+                LOG_DEBUG(LOG_ENGINE, "PWM toggle changed: ON (avg=%d us, threshold=%d us)",
                        reading.duration_us, engine->engine_toggle_pwm_threshold);
             } else if (!pwm_above_threshold && engine_switch_on) {
                 engine_switch_on = false;
-                printf("[ENGINE] PWM toggle changed: OFF (avg=%d us, threshold=%d us)\n",
+                LOG_DEBUG(LOG_ENGINE, "PWM toggle changed: OFF (avg=%d us, threshold=%d us)",
                        reading.duration_us, engine->engine_toggle_pwm_threshold);
             }
         }
@@ -254,7 +254,7 @@ EngineFX* engine_fx_create(AudioMixer *mixer, int audio_channel,
             LOG_WARN(LOG_ENGINE, "Failed to create PWM monitor for pin %d", config->engine_toggle.pin);
         } else {
             pwm_monitor_start(engine->engine_toggle_pwm_monitor);
-            printf("[ENGINE] PWM monitoring started on pin %d (threshold: %d us)\n",
+            LOG_DEBUG(LOG_ENGINE, "PWM monitoring started on pin %d (threshold: %d us)",
                    config->engine_toggle.pin, config->engine_toggle.threshold_us);
         }
     }
@@ -303,7 +303,7 @@ int engine_fx_load_sounds(EngineFX *engine, Sound *starting_sound, Sound *runnin
     engine->track_running = running_sound;
     engine->track_stopping = stopping_sound;
     
-    printf("[ENGINE] Sounds loaded (starting: %s, running: %s, stopping: %s)\n",
+    LOG_INFO(LOG_ENGINE, "Sounds loaded (starting: %s, running: %s, stopping: %s)",
            starting_sound ? "yes" : "no",
            running_sound ? "yes" : "no",
            stopping_sound ? "yes" : "no");
