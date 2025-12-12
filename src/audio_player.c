@@ -7,6 +7,7 @@
 #include <string.h>
 #include <threads.h>  // C23 standard threads
 #include <unistd.h>   // For home directory expansion
+#include <pwd.h>      // For getpwnam (user lookup)
 
 // ============================================================================
 // SOUND IMPLEMENTATION - For Loading Audio Files
@@ -19,6 +20,10 @@ struct Sound {
 };
 
 // Expand tilde (~) in path to home directory
+// Supports:
+//   ~ -> current user's home
+//   ~username -> specific user's home
+//   Regular paths -> returned as-is
 static char* expand_path(const char *path) {
     if (!path) return nullptr;
     
@@ -27,24 +32,56 @@ static char* expand_path(const char *path) {
         return strdup(path);
     }
     
-    // Get home directory
-    const char *home = getenv("HOME");
-    if (!home) {
-        // Fallback: try to get from pwd
-        home = ".";
+    // Handle ~username or just ~
+    const char *rest_of_path = nullptr;
+    const char *home = nullptr;
+    
+    if (path[1] == '/' || path[1] == '\0') {
+        // Just ~ or ~/... -> use current user's home
+        home = getenv("HOME");
+        if (!home) home = ".";
+        rest_of_path = path + 1;  // Skip just the ~
+    } else {
+        // ~username or ~username/... -> look up user's home
+        const char *slash = strchr(path, '/');
+        if (slash) {
+            rest_of_path = slash;  // Keep the slash
+        } else {
+            rest_of_path = "";  // No slash, just username
+        }
+        
+        // Extract username
+        size_t username_len = (slash ? (size_t)(slash - path) : strlen(path)) - 1;  // -1 to skip ~
+        char username[256];
+        if (username_len >= sizeof(username)) {
+            return nullptr;  // Username too long
+        }
+        strncpy(username, path + 1, username_len);
+        username[username_len] = '\0';
+        
+        // Look up user's home directory
+        struct passwd *pw = getpwnam(username);
+        if (!pw) {
+            // User not found, fallback to current home
+            home = getenv("HOME");
+            if (!home) home = ".";
+            rest_of_path = path + 1;  // Reset to ~username/...
+        } else {
+            home = pw->pw_dir;
+        }
     }
     
-    // Calculate buffer size: home length + rest of path (skip the ~)
+    // Calculate buffer size: home length + rest of path
     size_t home_len = strlen(home);
-    size_t path_len = strlen(path + 1);  // Skip the ~
-    char *expanded = malloc(home_len + path_len + 1);
+    size_t rest_len = strlen(rest_of_path);
+    char *expanded = malloc(home_len + rest_len + 1);
     
     if (!expanded) {
         return nullptr;
     }
     
     strcpy(expanded, home);
-    strcat(expanded, path + 1);  // Append everything after ~
+    strcat(expanded, rest_of_path);
     
     return expanded;
 }
