@@ -115,8 +115,8 @@ static void on_parameter_change(uint8_t param_id, void *user_data) {
             break;
         case 8: // Servo Max Accel
             if (g_config->gun.enabled) {
-                g_config->gun.pitch_servo.max_accel_us_per_sec2 = (float)g_parameters.servo_max_accel;
-                g_config->gun.yaw_servo.max_accel_us_per_sec2 = (float)g_parameters.servo_max_accel;
+                g_config->gun.turret_control.pitch.max_accel_us_per_sec2 = (float)g_parameters.servo_max_accel;
+                g_config->gun.turret_control.yaw.max_accel_us_per_sec2 = (float)g_parameters.servo_max_accel;
                 if (g_gun) {
                     Servo *pitch = gun_fx_get_pitch_servo(g_gun);
                     if (pitch) servo_set_max_acceleration(pitch, (float)g_parameters.servo_max_accel);
@@ -132,13 +132,13 @@ static void on_parameter_change(uint8_t param_id, void *user_data) {
             break;
         case 10: // Nozzle Flash Enable
             if (g_config->gun.enabled) {
-                g_config->gun.nozzle_flash_enabled = g_parameters.nozzle_flash_enabled;
+                g_config->gun.nozzle_flash.enabled = g_parameters.nozzle_flash_enabled;
                 LOG_INFO(LOG_JETIEX, "Nozzle flash %s", g_parameters.nozzle_flash_enabled ? "enabled" : "disabled");
             }
             break;
         case 11: // Smoke Enable
             if (g_config->gun.enabled) {
-                g_config->gun.smoke_enabled = g_parameters.smoke_enabled;
+                g_config->gun.smoke.enabled = g_parameters.smoke_enabled;
                 LOG_INFO(LOG_JETIEX, "Smoke %s", g_parameters.smoke_enabled ? "enabled" : "disabled");
             }
             break;
