@@ -56,7 +56,7 @@ gun_fx:
   rates_of_fire:
     - name: "200"
       rpm: 200                 # Rounds per minute
-      pwm_threshold_us: 1400   # PWM threshold in microseconds
+      pwm_threshold_us: 1300   # PWM threshold in microseconds
       sound_file: "~/assets/gun_200rpm.wav"  # Sound file to play (optional)
     
     - name: "550"
@@ -75,7 +75,7 @@ gun_fx:
       output_min_us: 1000      # Minimum output PWM pulse width (µs)
       output_max_us: 2000      # Maximum output PWM pulse width (µs)
       max_speed_us_per_sec: 500.0      # Maximum speed (µs/second, 0=unlimited)
-      max_accel_us_per_sec2: 2000.0    # Maximum acceleration (µs/second², 0=unlimited)
+      max_accel_us_per_sec2: 200.0    # Maximum acceleration (µs/second², 0=unlimited)
       update_rate_hz: 50       # Servo update rate (Hz)
     
     yaw:
@@ -87,7 +87,7 @@ gun_fx:
       output_min_us: 1000      # Minimum output PWM pulse width (µs)
       output_max_us: 2000      # Maximum output PWM pulse width (µs)
       max_speed_us_per_sec: 500.0      # Maximum speed (µs/second, 0=unlimited)
-      max_accel_us_per_sec2: 2000.0    # Maximum acceleration (µs/second², 0=unlimited)
+      max_accel_us_per_sec2: 200.0    # Maximum acceleration (µs/second², 0=unlimited)
       update_rate_hz: 50       # Servo update rate (Hz)
   
   # Hysteresis Settings (internal, not typically changed)

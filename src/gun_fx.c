@@ -349,20 +349,19 @@ static void print_status(GunFX *gun, struct timespec *last_status_time) {
     // Pretty single-record status with colors
     LOG_STATUS(
         "\n"
-        COLOR_CYAN COLOR_BOLD "╔═══════════════════════════════════════════════════════════════════════════╗\n" COLOR_RESET
-        COLOR_CYAN COLOR_BOLD "║                          🎯 GUN STATUS @ %.1fs                            ║\n" COLOR_RESET
-        COLOR_CYAN COLOR_BOLD "╠═══════════════════════════════════════════════════════════════════════════╣\n" COLOR_RESET
-        COLOR_CYAN "║" COLOR_RESET " " COLOR_BOLD "Firing:" COLOR_RESET " %s%-4s" COLOR_RESET "  │  " COLOR_BOLD "Rate:" COLOR_RESET " %d  │  " COLOR_BOLD "RPM:" COLOR_RESET " %-4d                             " COLOR_CYAN "║\n" COLOR_RESET
-        COLOR_CYAN "╠═══════════════════════════════════════════════════════════════════════════╣\n" COLOR_RESET
-        COLOR_CYAN "║" COLOR_RESET " " COLOR_MAGENTA COLOR_BOLD "📍 GPIO PINS" COLOR_RESET "                                                              " COLOR_CYAN "║\n" COLOR_RESET
-        COLOR_CYAN "║" COLOR_RESET "   • Trigger:      GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs                               " COLOR_CYAN "║\n" COLOR_RESET
-        COLOR_CYAN "║" COLOR_RESET "   • Heater Tog:   GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs  [%s%-4s" COLOR_RESET "]                      " COLOR_CYAN "║\n" COLOR_RESET
-        COLOR_CYAN "║" COLOR_RESET "   • Pitch Servo:  GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs  [%s%-9s" COLOR_RESET "]                 " COLOR_CYAN "║\n" COLOR_RESET
-        COLOR_CYAN "║" COLOR_RESET "   • Yaw Servo:    GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs  [%s%-9s" COLOR_RESET "]                 " COLOR_CYAN "║\n" COLOR_RESET
-        COLOR_CYAN "║" COLOR_RESET "   • Nozzle Flash: GPIO %2d                                                " COLOR_CYAN "║\n" COLOR_RESET
-        COLOR_CYAN "║" COLOR_RESET "   • Smoke Fan:    GPIO %2d                                                " COLOR_CYAN "║\n" COLOR_RESET
-        COLOR_CYAN "║" COLOR_RESET "   • Smoke Heater: GPIO %2d                                                " COLOR_CYAN "║\n" COLOR_RESET
-        COLOR_CYAN COLOR_BOLD "╚═══════════════════════════════════════════════════════════════════════════╝\n" COLOR_RESET,
+        COLOR_CYAN COLOR_BOLD "🎯 GUN STATUS @ %.1fs\n" COLOR_RESET
+        COLOR_CYAN "═══════════════════════════════════════════════════════════════════════════\n" COLOR_RESET
+        COLOR_BOLD "Firing:" COLOR_RESET " %s%-4s" COLOR_RESET "  │  " COLOR_BOLD "Rate:" COLOR_RESET " %d  │  " COLOR_BOLD "RPM:" COLOR_RESET " %-4d\n"
+        COLOR_CYAN "═══════════════════════════════════════════════════════════════════════════\n" COLOR_RESET
+        COLOR_MAGENTA COLOR_BOLD "📍 GPIO PINS\n" COLOR_RESET
+        "  • Trigger:      GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs\n"
+        "  • Heater Tog:   GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs  [%s%-4s" COLOR_RESET "]\n"
+        "  • Pitch Servo:  GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs  [%s%-9s" COLOR_RESET "]\n"
+        "  • Yaw Servo:    GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs  [%s%-9s" COLOR_RESET "]\n"
+        "  • Nozzle Flash: GPIO %2d\n"
+        "  • Smoke Fan:    GPIO %2d\n"
+        "  • Smoke Heater: GPIO %2d\n"
+        COLOR_CYAN "═══════════════════════════════════════════════════════════════════════════\n" COLOR_RESET,
         elapsed,
         gun->is_firing ? COLOR_GREEN : COLOR_RED, gun->is_firing ? "YES" : "NO",
         gun->current_rate_index >= 0 ? gun->current_rate_index + 1 : 0,
