@@ -124,26 +124,28 @@ static int gun_fx_processing_thread(void *arg) {
     clock_gettime(CLOCK_MONOTONIC, &last_pwm_debug_time);
     
     while (gun->processing_running) {
-        // Update servos from PWM inputs
+        // Update servos from averaged PWM inputs
         if (gun->pitch_servo && gun->pitch_pwm_monitor) {
-            if (pwm_monitor_get_reading(gun->pitch_pwm_monitor, &pitch_reading)) {
-                servo_set_input(gun->pitch_servo, pitch_reading.duration_us);
+            int pitch_avg_us;
+            if (pwm_monitor_get_average(gun->pitch_pwm_monitor, &pitch_avg_us)) {
+                servo_set_input(gun->pitch_servo, pitch_avg_us);
             } else {
                 static int pitch_warn_count = 0;
                 if (pitch_warn_count < 5) {
-                    LOG_WARN(LOG_GUN, "No PWM reading from pitch servo input (GPIO %d)", gun->pitch_pwm_pin);
+                    LOG_WARN(LOG_GUN, "No PWM average from pitch servo input (GPIO %d)", gun->pitch_pwm_pin);
                     pitch_warn_count++;
                 }
             }
         }
         
         if (gun->yaw_servo && gun->yaw_pwm_monitor) {
-            if (pwm_monitor_get_reading(gun->yaw_pwm_monitor, &yaw_reading)) {
-                servo_set_input(gun->yaw_servo, yaw_reading.duration_us);
+            int yaw_avg_us;
+            if (pwm_monitor_get_average(gun->yaw_pwm_monitor, &yaw_avg_us)) {
+                servo_set_input(gun->yaw_servo, yaw_avg_us);
             } else {
                 static int yaw_warn_count = 0;
                 if (yaw_warn_count < 5) {
-                    LOG_WARN(LOG_GUN, "No PWM reading from yaw servo input (GPIO %d)", gun->yaw_pwm_pin);
+                    LOG_WARN(LOG_GUN, "No PWM average from yaw servo input (GPIO %d)", gun->yaw_pwm_pin);
                     yaw_warn_count++;
                 }
             }
@@ -154,10 +156,11 @@ static int gun_fx_processing_thread(void *arg) {
         int previous_rate_index = gun->current_rate_index;
         mtx_unlock(&gun->mutex);
         
-        // Determine new rate based on PWM input
+        // Determine new rate based on averaged PWM input
         int new_rate_index;
-        if (gun->trigger_pwm_monitor && pwm_monitor_get_reading(gun->trigger_pwm_monitor, &trigger_reading)) {
-            new_rate_index = select_rate_of_fire(gun, trigger_reading.duration_us, previous_rate_index);
+        int trigger_avg_us;
+        if (gun->trigger_pwm_monitor && pwm_monitor_get_average(gun->trigger_pwm_monitor, &trigger_avg_us)) {
+            new_rate_index = select_rate_of_fire(gun, trigger_avg_us, previous_rate_index);
             
             // Debug output every 10 seconds
             struct timespec now;
@@ -165,7 +168,7 @@ static int gun_fx_processing_thread(void *arg) {
             long elapsed_ms = (now.tv_sec - last_pwm_debug_time.tv_sec) * 1000 + 
                              (now.tv_nsec - last_pwm_debug_time.tv_nsec) / 1000000;
             if (elapsed_ms >= 10000) {
-                LOG_DEBUG(LOG_GUN, "Trigger PWM: %d µs, rate_index: %d", trigger_reading.duration_us, new_rate_index);
+                LOG_DEBUG(LOG_GUN, "Trigger PWM avg: %d µs, rate_index: %d", trigger_avg_us, new_rate_index);
                 last_pwm_debug_time = now;
             }
             
@@ -187,22 +190,23 @@ static int gun_fx_processing_thread(void *arg) {
             new_rate_index = previous_rate_index;
         }
         
-        // Handle smoke heater toggle
-        if (gun->smoke_heater_toggle_monitor && pwm_monitor_get_reading(gun->smoke_heater_toggle_monitor, &heater_reading)) {
-            bool heater_toggle_on = (heater_reading.duration_us >= gun->smoke_heater_threshold);
-            LOG_DEBUG(LOG_GUN, "Heater toggle PWM: %d µs (threshold: %d µs) -> %s",
-                     heater_reading.duration_us, gun->smoke_heater_threshold, heater_toggle_on ? "ON" : "OFF");
+        // Handle smoke heater toggle (use average)
+        int heater_avg_us;
+        if (gun->smoke_heater_toggle_monitor && pwm_monitor_get_average(gun->smoke_heater_toggle_monitor, &heater_avg_us)) {
+            bool heater_toggle_on = (heater_avg_us >= gun->smoke_heater_threshold);
+            LOG_DEBUG(LOG_GUN, "Heater toggle PWM avg: %d µs (threshold: %d µs) -> %s",
+                     heater_avg_us, gun->smoke_heater_threshold, heater_toggle_on ? "ON" : "OFF");
             
             mtx_lock(&gun->mutex);
             if (heater_toggle_on && !gun->smoke_heater_on) {
                 gun->smoke_heater_on = true;
-                LOG_INFO(LOG_GUN, "Smoke heater ON (PWM: %d µs)", heater_reading.duration_us);
+                LOG_INFO(LOG_GUN, "Smoke heater ON (PWM avg: %d µs)", heater_avg_us);
                 if (gun->smoke) {
                     smoke_generator_heater_on(gun->smoke);
                 }
             } else if (!heater_toggle_on && gun->smoke_heater_on) {
                 gun->smoke_heater_on = false;
-                LOG_INFO(LOG_GUN, "Smoke heater OFF (PWM: %d µs)", heater_reading.duration_us);
+                LOG_INFO(LOG_GUN, "Smoke heater OFF (PWM avg: %d µs)", heater_avg_us);
                 if (gun->smoke) {
                     smoke_generator_heater_off(gun->smoke);
                 }
