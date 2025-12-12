@@ -1,6 +1,11 @@
 # Helicopter FX Configuration
 # Configuration for both engine and gun effects
 
+# IMPORTANT: This system uses pigpio library for GPIO control
+# WM8960 Audio HAT pins MUST be excluded from pigpio to prevent conflicts
+# Run: sudo pigpiod -x 0x3C000C
+# Or configure via systemd override (see docs/PIGPIO_SETUP.md)
+
 # GPIO Pin Layout Strategy:
 # WM8960 Audio HAT reserves: GPIO 2,3 (I2C), GPIO 18,19,20,21 (I2S/PCM)
 # Three groups of adjacent pins:

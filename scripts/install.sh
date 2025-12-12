@@ -45,8 +45,31 @@ apt-get update
 apt-get install -y \
     build-essential \
     libyaml-dev \
-    libasound2-dev
+    libasound2-dev \
+    pigpio
 echo -e "${GREEN}Dependencies installed${NC}"
+echo ""
+
+# Configure pigpio to exclude WM8960 Audio HAT pins
+echo -e "${YELLOW}Configuring pigpio...${NC}"
+# WM8960 Audio HAT uses:
+# - GPIO 2,3 (I2C for control)
+# - GPIO 18,19,20,21 (I2S for audio: BCK, LRCK, ADCDAT, DACDAT)
+# Exclude these pins from pigpio: 0x3C000C = bits 2,3,18,19,20,21
+PIGPIO_EXCLUDE="-x 0x3C000C"
+
+# Create pigpio systemd service override
+mkdir -p /etc/systemd/system/pigpiod.service.d
+cat > /etc/systemd/system/pigpiod.service.d/override.conf << EOF
+[Service]
+ExecStart=
+ExecStart=/usr/bin/pigpiod -l $PIGPIO_EXCLUDE
+EOF
+
+systemctl daemon-reload
+systemctl enable pigpiod
+systemctl restart pigpiod
+echo -e "${GREEN}pigpio configured to exclude WM8960 Audio HAT pins (GPIO 2,3,18,19,20,21)${NC}"
 echo ""
 
 # Build the application
@@ -129,4 +152,7 @@ echo -e "${GREEN}Next steps:${NC}"
 echo "  1. Copy sound files to $INSTALL_DIR/assets/"
 echo "  2. Edit $INSTALL_DIR/config.yaml if needed"
 echo "  3. Start the service: sudo systemctl start $SERVICE_NAME"
+echo ""
+echo -e "${YELLOW}Note:${NC} pigpio is configured to avoid WM8960 Audio HAT pins"
+echo "      (GPIO 2,3,18,19,20,21 are excluded from GPIO control)"
 echo ""

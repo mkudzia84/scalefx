@@ -93,11 +93,26 @@ sudo apt-get install -y \
 
 **Note:** This project uses the C23 standard (`-std=c23`) and requires a modern compiler with C23 support. If your system GCC version is older than 14, you may need to install a newer version or build from a newer toolchain.
 
-Enable pigpio daemon:
+**Configure pigpio for WM8960 Audio HAT:**
+
+The WM8960 Audio HAT uses GPIO pins 2,3 (I2C) and 18,19,20,21 (I2S). These must be excluded from pigpio control:
+
 ```bash
+# Create pigpio service override
+sudo mkdir -p /etc/systemd/system/pigpiod.service.d
+sudo tee /etc/systemd/system/pigpiod.service.d/override.conf << EOF
+[Service]
+ExecStart=
+ExecStart=/usr/bin/pigpiod -l -x 0x3C000C
+EOF
+
+# Enable and start pigpio
+sudo systemctl daemon-reload
 sudo systemctl enable pigpiod
-sudo systemctl start pigpiod
+sudo systemctl restart pigpiod
 ```
+
+See [PIGPIO_SETUP.md](PIGPIO_SETUP.md) for detailed configuration information.
 
 ### Build from Source
 

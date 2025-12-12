@@ -29,14 +29,6 @@ typedef enum {
     GPIO_PULL_UP        // Enable pull-up resistor
 } GPIOPull;
 
-// GPIO edge detection for interrupt handling
-typedef enum {
-    GPIO_EDGE_NONE,     // No edge detection
-    GPIO_EDGE_RISING,   // Detect rising edge (0->1)
-    GPIO_EDGE_FALLING,  // Detect falling edge (1->0)
-    GPIO_EDGE_BOTH      // Detect both edges
-} GPIOEdge;
-
 /**
  * Initialize GPIO subsystem
  * @return 0 on success, -1 on error
@@ -78,38 +70,6 @@ int gpio_write(int pin, bool value);
  * @return true for HIGH, false for LOW, or false on error
  */
 bool gpio_read(int pin);
-
-/**
- * Toggle GPIO pin state
- * @param pin GPIO pin number
- * @return 0 on success, -1 on error
- */
-int gpio_toggle(int pin);
-
-/**
- * Set edge detection for interrupt handling
- * @param pin GPIO pin number
- * @param edge Edge type to detect
- * @return 0 on success, -1 on error
- */
-int gpio_set_edge(int pin, GPIOEdge edge);
-
-/**
- * Wait for edge detection on a GPIO pin (blocking)
- * @param pin GPIO pin number
- * @param timeout_ms Timeout in milliseconds (-1 for infinite)
- * @return 1 if edge detected, 0 if timeout, -1 on error
- */
-int gpio_wait_for_edge(int pin, int timeout_ms);
-
-/**
- * Read PWM signal duration (pulse width) from a GPIO pin
- * Measures the time the signal stays HIGH
- * @param pin GPIO pin number
- * @param timeout_us Timeout in microseconds for pulse detection
- * @return Pulse duration in microseconds, or -1 on error/timeout
- */
-int gpio_read_pwm_duration(int pin, int timeout_us);
 
 // ============================================================================
 // ASYNC PWM MONITOR API

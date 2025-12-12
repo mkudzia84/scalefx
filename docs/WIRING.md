@@ -16,7 +16,11 @@ Complete wiring diagrams and pin assignments for KA-50 helicopter FX system.
 
 The system uses a Raspberry Pi with WM8960 Audio HAT for audio output and GPIO pins for PWM input monitoring and component control.
 
-**Important:** All GPIO signals are 3.3V logic. Never connect 5V signals directly to GPIO pins!
+**Important Notes:**
+- All GPIO signals are 3.3V logic. Never connect 5V signals directly to GPIO pins!
+- This system uses **pigpio library** for GPIO control with hardware-timed PWM
+- WM8960 Audio HAT pins **must be excluded** from pigpio control (see [PIGPIO_SETUP.md](PIGPIO_SETUP.md))
+- The install script automatically configures pigpio with proper pin exclusions
 
 ## GPIO Pin Assignments
 
@@ -37,15 +41,20 @@ The system uses a Raspberry Pi with WM8960 Audio HAT for audio output and GPIO p
 
 ### Reserved Pins (WM8960 Audio HAT)
 
-| Function | GPIO Pin | Notes |
-|----------|----------|-------|
-| I2C SDA | 2 | Audio HAT communication |
-| I2C SCL | 3 | Audio HAT communication |
-| HAT Button | 17 | Can be reused if button not needed |
-| I2S BCK | 18 | Audio data clock |
-| I2S LRCK | 19 | Audio left/right clock |
-| I2S DIN | 20 | Audio data input |
-| I2S DOUT | 21 | Audio data output |
+**⚠️ CRITICAL:** These pins are used by the WM8960 Audio HAT and **MUST be excluded from pigpio control**
+
+| Function | GPIO Pin | Protocol | Notes |
+|----------|----------|----------|-------|
+| I2C SDA | 2 | I2C | Audio HAT communication (codec control) |
+| I2C SCL | 3 | I2C | Audio HAT communication (codec control) |
+| I2S BCK | 18 | I2S | Audio bit clock (serial clock) |
+| I2S LRCK | 19 | I2S | Audio word select (left/right clock) |
+| I2S DIN | 20 | I2S | Audio data input to codec (ADC) |
+| I2S DOUT | 21 | I2S | Audio data output from codec (DAC) |
+
+**pigpio exclusion mask:** `0x3C000C` (excludes GPIO 2,3,18,19,20,21)
+
+See [PIGPIO_SETUP.md](PIGPIO_SETUP.md) for configuration details.
 
 ### Available GPIO Pins
 

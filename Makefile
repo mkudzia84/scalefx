@@ -2,8 +2,11 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -Werror -Wno-unused-function -std=c23 -D_DEFAULT_SOURCE
 INCLUDES = -I./include
-# Note: libcyaml depends on libyaml, so both are required
-LIBS = -ldl -lm -latomic -lcyaml -lyaml
+# Dependencies:
+# - libcyaml (YAML parsing) depends on libyaml
+# - pigpio (GPIO control) - requires pigpiod daemon running
+# - Audio: ALSA libs (libasound2)
+LIBS = -ldl -lm -latomic -lcyaml -lyaml -lpigpio -lrt -lpthread
 
 # Build options
 # Set to 0 to disable JetiEX telemetry support
@@ -26,7 +29,7 @@ SCRIPTS_DIR = scripts
 
 # Output binaries
 HELIFX = $(BUILD_DIR)/helifx
-DEMO_TARGETS = $(BUILD_DIR)/mixer_demo $(BUILD_DIR)/gpio_demo \
+DEMO_TARGETS = $(BUILD_DIR)/mixer_demo \
                $(BUILD_DIR)/engine_fx_demo $(BUILD_DIR)/gun_fx_demo \
                $(BUILD_DIR)/servo_demo
 
@@ -51,7 +54,6 @@ HELIFX_SRCS += $(SRC_DIR)/jetiex.c $(SRC_DIR)/helifx_jetiex.c
 endif
 
 MIXER_DEMO_SRCS = $(DEMO_DIR)/mixer_demo.c $(SRC_DIR)/audio_player.c $(SRC_DIR)/gpio.c
-GPIO_DEMO_SRCS = $(DEMO_DIR)/gpio_demo.c $(SRC_DIR)/gpio.c
 ENGINE_FX_DEMO_SRCS = $(DEMO_DIR)/engine_fx_demo.c $(SRC_DIR)/engine_fx.c \
                       $(SRC_DIR)/audio_player.c $(SRC_DIR)/gpio.c
 GUN_FX_DEMO_SRCS = $(DEMO_DIR)/gun_fx_demo.c $(SRC_DIR)/gun_fx.c \
@@ -63,7 +65,6 @@ JETIEX_DEMO_SRCS = $(DEMO_DIR)/jetiex_demo.c $(SRC_DIR)/jetiex.c
 # Object files
 HELIFX_OBJS = $(HELIFX_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MIXER_DEMO_OBJS = $(BUILD_DIR)/demo/mixer_demo.o $(BUILD_DIR)/audio_player.o $(BUILD_DIR)/gpio.o
-GPIO_DEMO_OBJS = $(BUILD_DIR)/demo/gpio_demo.o $(BUILD_DIR)/gpio.o
 ENGINE_FX_DEMO_OBJS = $(BUILD_DIR)/demo/engine_fx_demo.o $(BUILD_DIR)/engine_fx.o \
                       $(BUILD_DIR)/audio_player.o $(BUILD_DIR)/gpio.o
 GUN_FX_DEMO_OBJS = $(BUILD_DIR)/demo/gun_fx_demo.o $(BUILD_DIR)/gun_fx.o \
@@ -102,9 +103,6 @@ $(HELIFX): $(BUILD_DIR) $(HELIFX_OBJS)
 # Demo programs
 $(BUILD_DIR)/mixer_demo: $(BUILD_DIR) $(MIXER_DEMO_OBJS)
 	$(CC) $(CFLAGS) -o $@ $(MIXER_DEMO_OBJS) $(LIBS)
-
-$(BUILD_DIR)/gpio_demo: $(BUILD_DIR) $(GPIO_DEMO_OBJS)
-	$(CC) $(CFLAGS) -o $@ $(GPIO_DEMO_OBJS) $(LIBS)
 
 $(BUILD_DIR)/engine_fx_demo: $(BUILD_DIR) $(ENGINE_FX_DEMO_OBJS)
 	$(CC) $(CFLAGS) -o $@ $(ENGINE_FX_DEMO_OBJS) $(LIBS)
@@ -166,7 +164,6 @@ install: all
 	sudo install -m 755 $(HELIFX) /usr/local/bin/
 	@echo "Installing demo programs..."
 	sudo install -m 755 $(BUILD_DIR)/mixer_demo /usr/local/bin/
-	sudo install -m 755 $(BUILD_DIR)/gpio_demo /usr/local/bin/
 	sudo install -m 755 $(BUILD_DIR)/engine_fx_demo /usr/local/bin/
 	sudo install -m 755 $(BUILD_DIR)/gun_fx_demo /usr/local/bin/
 	sudo install -m 755 $(BUILD_DIR)/servo_demo /usr/local/bin/
@@ -187,7 +184,6 @@ uninstall:
 	@echo "Removing helifx binaries..."
 	sudo rm -f /usr/local/bin/helifx
 	sudo rm -f /usr/local/bin/mixer_demo
-	sudo rm -f /usr/local/bin/gpio_demo
 	sudo rm -f /usr/local/bin/engine_fx_demo
 	sudo rm -f /usr/local/bin/gun_fx_demo
 	sudo rm -f /usr/local/bin/servo_demo
@@ -198,6 +194,19 @@ uninstall:
 .PHONY: help
 help:
 	@echo "Helicopter FX Build System"
+	@echo ""
+	@echo "Prerequisites:"
+	@echo "  - GCC 14+ (C23 support required)"
+	@echo "  - pigpio library and daemon (GPIO control)"
+	@echo "  - libcyaml, libyaml (configuration)"
+	@echo "  - ALSA development libraries (audio)"
+	@echo ""
+	@echo "Install dependencies:"
+	@echo "  sudo apt-get install build-essential libyaml-dev libasound2-dev pigpio"
+	@echo ""
+	@echo "Configure pigpio for WM8960 Audio HAT:"
+	@echo "  sudo pigpiod -x 0x3C000C"
+	@echo "  (See docs/PIGPIO_SETUP.md for permanent configuration)"
 	@echo ""
 	@echo "Targets:"
 	@echo "  all              - Build all targets (default)"
