@@ -185,7 +185,7 @@ static int engine_fx_processing_thread(void *arg) {
             continue;
         }
         
-        usleep(10000); // 10ms loop delay for smooth audio transitions
+        usleep(1000); // 1ms loop delay for responsive audio transitions
     }
     
     LOG_INFO(LOG_ENGINE, "Processing thread stopped");
