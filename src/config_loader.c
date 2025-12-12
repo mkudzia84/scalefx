@@ -68,7 +68,7 @@ static const cyaml_schema_field_t engine_toggle_config_fields[] = {
     CYAML_FIELD_END
 };
 
-static const cyaml_schema_value_t engine_toggle_config_schema = {
+static const cyaml_schema_value_t engine_toggle_config_schema __attribute__((unused)) = {
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, EngineToggleConfig, engine_toggle_config_fields),
 };
 
@@ -79,7 +79,7 @@ static const cyaml_schema_field_t engine_sounds_transitions_config_fields[] = {
     CYAML_FIELD_END
 };
 
-static const cyaml_schema_value_t engine_sounds_transitions_config_schema = {
+static const cyaml_schema_value_t engine_sounds_transitions_config_schema __attribute__((unused)) = {
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, EngineSoundsTransitionsConfig, engine_sounds_transitions_config_fields),
 };
 
@@ -92,7 +92,7 @@ static const cyaml_schema_field_t engine_sounds_config_fields[] = {
     CYAML_FIELD_END
 };
 
-static const cyaml_schema_value_t engine_sounds_config_schema = {
+static const cyaml_schema_value_t engine_sounds_config_schema __attribute__((unused)) = {
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, EngineSoundsConfig, engine_sounds_config_fields),
 };
 
@@ -122,7 +122,7 @@ static const cyaml_schema_field_t nozzle_flash_config_fields[] = {
     CYAML_FIELD_END
 };
 
-static const cyaml_schema_value_t nozzle_flash_config_schema = {
+static const cyaml_schema_value_t nozzle_flash_config_schema __attribute__((unused)) = {
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, NozzleFlashConfig, nozzle_flash_config_fields),
 };
 
@@ -137,7 +137,7 @@ static const cyaml_schema_field_t smoke_config_fields[] = {
     CYAML_FIELD_END
 };
 
-static const cyaml_schema_value_t smoke_config_schema = {
+static const cyaml_schema_value_t smoke_config_schema __attribute__((unused)) = {
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, SmokeConfig, smoke_config_fields),
 };
 
@@ -148,7 +148,7 @@ static const cyaml_schema_field_t turret_control_config_fields[] = {
     CYAML_FIELD_END
 };
 
-static const cyaml_schema_value_t turret_control_config_schema = {
+static const cyaml_schema_value_t turret_control_config_schema __attribute__((unused)) = {
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, TurretControlConfig, turret_control_config_fields),
 };
 
