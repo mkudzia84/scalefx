@@ -119,12 +119,6 @@ static const cyaml_schema_value_t trigger_config_schema __attribute__((unused)) 
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, TriggerConfig, trigger_config_fields),
 };
 
-// Trigger configuration (simple inline struct)
-static const cyaml_schema_field_t trigger_fields[] = {
-    CYAML_FIELD_INT("pin", CYAML_FLAG_DEFAULT, GunFXConfig, trigger.pin),
-    CYAML_FIELD_END
-};
-
 // NozzleFlashConfig schema
 static const cyaml_schema_field_t nozzle_flash_config_fields[] = {
     CYAML_FIELD_BOOL("enabled", CYAML_FLAG_DEFAULT, NozzleFlashConfig, enabled),
