@@ -52,22 +52,31 @@ apt-get install -y \
 echo -e "${GREEN}All dependencies installed${NC}"
 echo ""
 
-# Disable pigpiod daemon (helifx runs pigpio in-process)
-echo -e "${YELLOW}Configuring pigpio...${NC}"
-echo -e "${YELLOW}Note: helifx runs pigpio library in-process, not as a daemon${NC}"
+# Configure pigpiod daemon with WM8960 Audio HAT pin exclusions
+echo -e "${YELLOW}Configuring pigpiod daemon...${NC}"
 
-# Stop and disable pigpiod service if it's running
+# Create systemd service override with pin exclusion mask
+# Mask 0x3C000C = bits 2,3,18,19,20,21 (GPIO 2,3 for I2C, GPIO 18-21 for I2S)
+mkdir -p /etc/systemd/system/pigpiod.service.d
+cat > /etc/systemd/system/pigpiod.service.d/override.conf << EOF
+[Service]
+ExecStart=
+ExecStart=/usr/bin/pigpiod -l -x 0x3C000C
+EOF
+
+# Enable and start pigpiod daemon
+systemctl daemon-reload
+systemctl enable pigpiod
+systemctl restart pigpiod
+
 if systemctl is-active --quiet pigpiod; then
-    echo -e "${YELLOW}Stopping pigpiod daemon...${NC}"
-    systemctl stop pigpiod
+    echo -e "${GREEN}pigpiod daemon configured and running${NC}"
+    echo -e "${GREEN}WM8960 Audio HAT pins excluded (GPIO 2,3 for I2C, 18-21 for I2S)${NC}"
+else
+    echo -e "${RED}Error: pigpiod daemon failed to start${NC}"
+    echo -e "${YELLOW}Check logs with: sudo journalctl -u pigpiod -n 20${NC}"
+    exit 1
 fi
-
-if systemctl is-enabled --quiet pigpiod 2>/dev/null; then
-    echo -e "${YELLOW}Disabling pigpiod daemon...${NC}"
-    systemctl disable pigpiod
-fi
-
-echo -e "${GREEN}pigpio daemon disabled (helifx manages GPIO directly)${NC}"
 echo ""
 
 # Build the application

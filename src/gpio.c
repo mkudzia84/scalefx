@@ -33,35 +33,33 @@ int gpio_init(void) {
         return 0;
     }
     
-    // Configure pigpio for in-process mode
-    // Note: gpioCfgPermissions() only works in daemon mode
-    // For in-process mode, we simply avoid using the audio HAT pins
+    // Connect to pigpiod daemon (must be running as systemd service)
+    // The daemon must be configured with pin exclusion: pigpiod -l -x 0x3C000C
     
-    // Disable socket interface (we're running in-process, not daemon)
-    gpioCfgSocketPort(0);
+    // Use gpioConnectSerial() to explicitly connect to the daemon via socket
+    // This will fail if pigpiod is not running
+    int status = gpioConnectSerial(NULL);  // NULL = use default socket path
     
-    // Use direct memory access (not /dev/gpiomem) to avoid conflicts
-    gpioCfgMemAlloc(PI_MEM_ALLOC_PAGEMAP);
-    
-    // Initialize pigpio library
-    int status = gpioInitialise();
-    if (status < 0) {
-        LOG_ERROR(LOG_GPIO, "gpioInitialise failed with code %d", status);
+    if (status != 0) {
+        LOG_ERROR(LOG_GPIO, "Failed to connect to pigpiod daemon");
+        LOG_ERROR(LOG_GPIO, "Make sure pigpiod is running: sudo systemctl start pigpiod");
+        LOG_ERROR(LOG_GPIO, "Check status: sudo systemctl status pigpiod");
         return -1;
     }
     
     initialized = true;
-    LOG_INFO(LOG_GPIO, "GPIO subsystem initialized (pigpio version %d)", status);
-    LOG_WARN(LOG_GPIO, "WM8960 Audio HAT pins RESERVED: GPIO 2,3 (I2C), 18-21 (I2S) - DO NOT USE!");
+    LOG_INFO(LOG_GPIO, "Connected to pigpiod daemon via socket");
+    LOG_INFO(LOG_GPIO, "WM8960 Audio HAT pins excluded via daemon: GPIO 2,3 (I2C), 18-21 (I2S)");
     return 0;
 }
 
 void gpio_cleanup(void) {
     if (!initialized) return;
     
-    gpioTerminate();
+    // Disconnect from pigpiod daemon
+    gpioDisconnect();
     initialized = false;
-    LOG_INFO(LOG_GPIO, "GPIO subsystem cleaned up");
+    LOG_INFO(LOG_GPIO, "Disconnected from pigpiod daemon");
 }
 
 int gpio_set_mode(int pin, GPIOMode mode) {

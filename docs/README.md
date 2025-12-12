@@ -52,21 +52,23 @@ Integrated sound and effects system for Kamov KA-50 helicopter RC model, featuri
 
 **After installation:**
 
-1. **Run helifx with sudo** (required for GPIO access):
+1. **Ensure pigpiod daemon is running:**
+   ```bash
+   sudo systemctl status pigpiod
+   sudo systemctl start pigpiod  # Start if not running
+   ```
+
+2. **Run helifx with sudo:**
    ```bash
    sudo ./build/helifx config.yaml
    ```
    
-   Or use the systemd service:
+   Or use the systemd service (recommended):
    ```bash
    sudo systemctl start helifx
    ```
 
-**Note:** helifx runs the pigpio library in-process (not as a daemon). Make sure the `pigpiod` daemon is **not running** to avoid conflicts:
-```bash
-sudo systemctl stop pigpiod
-sudo systemctl disable pigpiod
-```
+**Important:** The installation script automatically configures pigpiod with WM8960 Audio HAT pin exclusions. Audio should work without additional configuration.
 
 See [Troubleshooting](#troubleshooting) for more details.
 
@@ -115,17 +117,15 @@ sudo apt-get install -y \
 
 **Note:** This project uses the C23 standard (`-std=c23`) and requires a modern compiler with C23 support. If your system GCC version is older than 14, you may need to install a newer version or build from a newer toolchain.
 
-**Important - pigpio Configuration:**
+**pigpio Configuration:**
 
-helifx runs the pigpio library **in-process** (not as a daemon). The `pigpiod` daemon must **not** be running:
+helifx uses the **pigpiod daemon** for GPIO control. The installation script automatically:
 
-```bash
-# Ensure pigpiod daemon is not running
-sudo systemctl stop pigpiod
-sudo systemctl disable pigpiod
-```
+1. Installs pigpio and pigpiod
+2. Configures pigpiod with WM8960 Audio HAT pin exclusions
+3. Enables and starts the pigpiod service
 
-The WM8960 Audio HAT pins (GPIO 2,3,18,19,20,21) are automatically excluded from pigpio control in the code.
+The exclusion mask `0x3C000C` prevents pigpiod from controlling GPIO 2,3,18-21 (reserved for I2C/I2S audio).
 
 ### Build from Source
 
@@ -391,30 +391,35 @@ sudo journalctl -u helifx --since today
    amixer  # Check volume levels
    ```
 
-### GPIO Access Denied / "Can't lock /var/run/pigpio.pid"
+### GPIO Access Denied / "Can't lock /var/run/pigpio.pid"### GPIO Access Denied / "Failed to connect to pigpiod daemon"
 
-**This error means the pigpiod daemon is already running**, causing a conflict.
+**This error means the pigpiod daemon is not running.**
 
-**Solution - Stop the pigpiod daemon:**
+**Solution - Start the pigpiod daemon:**
 ```bash
-# Stop pigpiod daemon
-sudo systemctl stop pigpiod
+# Start pigpiod daemon
+sudo systemctl start pigpiod
 
-# Disable it from starting on boot
-sudo systemctl disable pigpiod
+# Enable it to start on boot
+sudo systemctl enable pigpiod
 
-# Verify it's stopped
+# Verify it's running
 sudo systemctl status pigpiod
 ```
 
-**helifx runs pigpio in-process** (not as a daemon), so it needs direct GPIO access and the daemon must not be running.
+The installation script should have automatically configured pigpiod with WM8960 pin exclusions. If you need to verify:
+
+```bash
+cat /etc/systemd/system/pigpiod.service.d/override.conf
+# Should show: ExecStart=/usr/bin/pigpiod -l -x 0x3C000C
+```
 
 **Then run helifx with sudo:**
 ```bash
 sudo ./helifx config.yaml
 ```
 
-**Or use the systemd service** (recommended for production):
+Or use the systemd service (recommended):
 ```bash
 sudo systemctl start helifx
 ```

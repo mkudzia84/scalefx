@@ -2,9 +2,9 @@
 
 ## Overview
 
-The helifx application uses the pigpio library **in-process** (not as a daemon) for GPIO control. When using a WM8960 Audio HAT (or similar I2S audio devices), certain GPIO pins are automatically excluded from pigpio control to prevent conflicts.
+The helifx application uses the **pigpiod daemon** for GPIO control. The daemon must be configured to exclude WM8960 Audio HAT pins (GPIO 2,3,18-21) to allow the kernel I2C and I2S drivers to use those pins for audio.
 
-**Important:** The `pigpiod` daemon must **not** be running when helifx is active, as they would conflict.
+**Important:** The installation script automatically handles this configuration.
 
 ## WM8960 Audio HAT Pin Usage
 
@@ -24,22 +24,30 @@ The WM8960 Audio HAT reserves the following GPIO pins:
 
 The `install.sh` script automatically:
 
-1. Installs pigpio package
-2. **Stops and disables** the pigpiod daemon (to prevent conflicts)
-3. helifx manages pigpio in-process with automatic pin exclusion
+1. Installs pigpio and pigpiod daemon
+2. Creates a systemd service override with pin exclusion mask `0x3C000C`
+3. Enables and starts the pigpiod daemon
 
-The WM8960 pins are **automatically excluded** in the helifx code (GPIO 2,3,18,19,20,21).
+No manual configuration is needed.
 
 ## Running helifx
 
-**Method 1: Direct Execution (Recommended for Testing)**
+Once pigpiod is running with the correct configuration:
 
+**Direct execution:**
 ```bash
-# Run with sudo (required for GPIO access)
 sudo ./build/helifx config.yaml
 ```
 
-**Method 2: Systemd Service (Recommended for Production)**
+**Using systemd service (recommended for production):**
+```bash
+sudo systemctl start helifx
+```
+
+**Verify pigpiod is running:**
+```bash
+sudo systemctl status pigpiod
+```
 
 ```bash
 # Start the helifx service
@@ -52,34 +60,63 @@ sudo systemctl enable helifx
 sudo systemctl status helifx
 ```
 
-## Ensuring No Conflicts
+## Troubleshooting
 
-**If you get "Can't lock /var/run/pigpio.pid" error:**
+### "Failed to connect to pigpiod daemon"
 
-This means the pigpiod daemon is running. Stop it:
+**Cause:** The pigpiod daemon is not running.
+
+**Solution:**
+```bash
+# Start the daemon
+sudo systemctl start pigpiod
+
+# Enable auto-start on boot
+sudo systemctl enable pigpiod
+
+# Verify it's running
+sudo systemctl status pigpiod
+```
+
+### "Unable to create IPC semaphore" or audio not working
+
+**Cause:** pigpiod is interfering with audio HAT pins.
+
+**Solution:** Verify the daemon is configured with pin exclusions:
 
 ```bash
-# Stop the daemon
-sudo systemctl stop pigpiod
+# Check the override configuration
+cat /etc/systemd/system/pigpiod.service.d/override.conf
 
-# Disable it from auto-starting
-sudo systemctl disable pigpiod
+# Should show:
+# [Service]
+# ExecStart=
+# ExecStart=/usr/bin/pigpiod -l -x 0x3C000C
 
-# Verify it's stopped
-sudo systemctl status pigpiod
+# If not configured correctly, run the installation script again
+sudo ./scripts/install.sh
 ```
 
 ## Verification
 
-Test that helifx has GPIO access:
+Test that pigpiod is running correctly:
 
 ```bash
-# Run helifx
-sudo ./build/helifx config.yaml
+# Check daemon status
+sudo systemctl status pigpiod
 
-# You should see:
-# [GPIO] GPIO subsystem initialized (pigpio version XX)
-# [GPIO] WM8960 Audio HAT pins (2,3,18-21) are reserved for I2C/I2S
+# Verify pin exclusions are active
+# These commands should fail (pins excluded):
+pigs m 18 w  # Should fail - GPIO 18 is I2S BCK (excluded)
+pigs m 19 w  # Should fail - GPIO 19 is I2S LRCK (excluded)
+
+# These should succeed (pins available):
+pigs m 5 w   # Should succeed - GPIO 5 is Engine Toggle
+pigs m 6 w   # Should succeed - GPIO 6 is Gun Trigger
+
+# Check helifx can connect
+sudo ./build/helifx config.yaml
+# Should show: "Connected to pigpiod daemon"
 ```
 
 ## Available GPIO Pins
