@@ -3,30 +3,28 @@
 #include "logging.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <threads.h>
 #include <unistd.h>
 #include <sys/time.h>
 
 struct Led {
     int pin;
-    bool is_on;
-    bool is_blinking;
-    int blink_interval_ms;
+    atomic_bool is_on;
+    atomic_bool is_blinking;
+    atomic_int blink_interval_ms;
     
     thrd_t blink_thread;
-    bool blink_thread_running;
-    mtx_t mutex;
+    atomic_bool blink_thread_running;
 };
 
 // Blink thread function
 static int led_blink_thread(void *arg) {
     Led *led = (Led *)arg;
     
-    while (led->blink_thread_running) {
-        mtx_lock(&led->mutex);
-        bool should_blink = led->is_blinking && led->is_on;
-        int interval = led->blink_interval_ms;
-        mtx_unlock(&led->mutex);
+    while (atomic_load(&led->blink_thread_running)) {
+        bool should_blink = atomic_load(&led->is_blinking) && atomic_load(&led->is_on);
+        int interval = atomic_load(&led->blink_interval_ms);
         
         if (!should_blink) {
             usleep(10000); // 10ms sleep when not blinking
@@ -61,16 +59,14 @@ Led* led_create(int pin) {
     }
     
     led->pin = pin;
-    led->is_on = false;
-    led->is_blinking = false;
-    led->blink_interval_ms = 1000; // Default 1 second
-    led->blink_thread_running = false;
-    mtx_init(&led->mutex, mtx_plain);
+    atomic_init(&led->is_on, false);
+    atomic_init(&led->is_blinking, false);
+    atomic_init(&led->blink_interval_ms, 1000); // Default 1 second
+    atomic_init(&led->blink_thread_running, false);
     
     // Set pin as output and initialize to LOW
     if (gpio_set_mode(pin, GPIO_MODE_OUTPUT) < 0) {
         LOG_ERROR(LOG_LIGHTS, "Failed to set pin %d as output", pin);
-        mtx_destroy(&led->mutex);
         free(led);
         return nullptr;
     }
@@ -78,11 +74,10 @@ Led* led_create(int pin) {
     gpio_write(pin, 0);
     
     // Start blink thread
-    led->blink_thread_running = true;
+    atomic_store(&led->blink_thread_running, true);
     if (thrd_create(&led->blink_thread, led_blink_thread, led) != thrd_success) {
         LOG_ERROR(LOG_LIGHTS, "Failed to create blink thread");
-        led->blink_thread_running = false;
-        mtx_destroy(&led->mutex);
+        atomic_store(&led->blink_thread_running, false);
         free(led);
         return nullptr;
     }
@@ -95,15 +90,14 @@ void led_destroy(Led *led) {
     if (!led) return;
     
     // Stop blink thread
-    if (led->blink_thread_running) {
-        led->blink_thread_running = false;
+    if (atomic_load(&led->blink_thread_running)) {
+        atomic_store(&led->blink_thread_running, false);
         thrd_join(led->blink_thread, nullptr);
     }
     
     // Turn off LED
     gpio_write(led->pin, 0);
     
-    mtx_destroy(&led->mutex);
     free(led);
     
     LOG_INFO(LOG_LIGHTS, "LED destroyed");
@@ -112,10 +106,8 @@ void led_destroy(Led *led) {
 int led_on(Led *led) {
     if (!led) return -1;
     
-    mtx_lock(&led->mutex);
-    led->is_on = true;
-    led->is_blinking = false;
-    mtx_unlock(&led->mutex);
+    atomic_store(&led->is_on, true);
+    atomic_store(&led->is_blinking, false);
     
     // Set LED to solid on
     gpio_write(led->pin, 1);
@@ -127,10 +119,8 @@ int led_on(Led *led) {
 int led_off(Led *led) {
     if (!led) return -1;
     
-    mtx_lock(&led->mutex);
-    led->is_on = false;
-    led->is_blinking = false;
-    mtx_unlock(&led->mutex);
+    atomic_store(&led->is_on, false);
+    atomic_store(&led->is_blinking, false);
     
     // Turn LED off
     gpio_write(led->pin, 0);
@@ -142,11 +132,9 @@ int led_off(Led *led) {
 int led_blink(Led *led, int interval_ms) {
     if (!led || interval_ms <= 0) return -1;
     
-    mtx_lock(&led->mutex);
-    led->is_on = true;
-    led->is_blinking = true;
-    led->blink_interval_ms = interval_ms;
-    mtx_unlock(&led->mutex);
+    atomic_store(&led->is_on, true);
+    atomic_store(&led->is_blinking, true);
+    atomic_store(&led->blink_interval_ms, interval_ms);
     
     LOG_INFO(LOG_LIGHTS, "LED blinking (interval: %d ms)", interval_ms);
     return 0;
@@ -155,19 +143,11 @@ int led_blink(Led *led, int interval_ms) {
 bool led_is_on(Led *led) {
     if (!led) return false;
     
-    mtx_lock(&led->mutex);
-    bool on = led->is_on;
-    mtx_unlock(&led->mutex);
-    
-    return on;
+    return atomic_load(&led->is_on);
 }
 
 bool led_is_blinking(Led *led) {
     if (!led) return false;
     
-    mtx_lock(&led->mutex);
-    bool blinking = led->is_blinking;
-    mtx_unlock(&led->mutex);
-    
-    return blinking;
+    return atomic_load(&led->is_blinking);
 }

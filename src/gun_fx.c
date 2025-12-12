@@ -8,6 +8,7 @@
 #include "logging.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <threads.h>
 #include <unistd.h>
 #include <string.h>
@@ -46,20 +47,19 @@ struct GunFX {
     int rate_count;
     
     // Current state
-    bool is_firing;
-    int current_rpm;
-    int current_rate_index;  // Currently active rate (-1 = not firing)
-    bool smoke_heater_on;
+    atomic_bool is_firing;
+    atomic_int current_rpm;
+    atomic_int current_rate_index;  // Currently active rate (-1 = not firing)
+    atomic_bool smoke_heater_on;
     
     // Smoke fan control
     int smoke_fan_off_delay_ms;  // Delay before turning smoke fan off after firing stops
     struct timespec smoke_stop_time;  // Time when firing stopped
-    bool smoke_fan_pending_off;  // True if smoke fan is waiting to turn off
+    atomic_bool smoke_fan_pending_off;  // True if smoke fan is waiting to turn off
     
     // Processing thread
     thrd_t processing_thread;
-    bool processing_running;
-    mtx_t mutex;
+    atomic_bool processing_running;
 };
 
 // Select rate of fire from PWM reading with hysteresis
@@ -184,21 +184,20 @@ static void handle_smoke_heater(GunFX *gun) {
     LOG_DEBUG(LOG_GUN, "Heater toggle PWM avg: %d µs (threshold: %d µs) -> %s",
              heater_avg_us, gun->smoke_heater_threshold, heater_toggle_on ? "ON" : "OFF");
     
-    mtx_lock(&gun->mutex);
-    if (heater_toggle_on && !gun->smoke_heater_on) {
-        gun->smoke_heater_on = true;
+    bool current_heater_on = atomic_load(&gun->smoke_heater_on);
+    if (heater_toggle_on && !current_heater_on) {
+        atomic_store(&gun->smoke_heater_on, true);
         LOG_INFO(LOG_GUN, "Smoke heater ON (PWM avg: %d µs)", heater_avg_us);
         if (gun->smoke) {
             smoke_generator_heater_on(gun->smoke);
         }
-    } else if (!heater_toggle_on && gun->smoke_heater_on) {
-        gun->smoke_heater_on = false;
+    } else if (!heater_toggle_on && current_heater_on) {
+        atomic_store(&gun->smoke_heater_on, false);
         LOG_INFO(LOG_GUN, "Smoke heater OFF (PWM avg: %d µs)", heater_avg_us);
         if (gun->smoke) {
             smoke_generator_heater_off(gun->smoke);
         }
     }
-    mtx_unlock(&gun->mutex);
 }
 
 // Handle firing rate changes
@@ -207,11 +206,9 @@ static void handle_rate_change(GunFX *gun, int new_rate_index, int previous_rate
         return;
     }
     
-    mtx_lock(&gun->mutex);
-    gun->current_rate_index = new_rate_index;
-    gun->is_firing = (new_rate_index >= 0);
-    gun->current_rpm = (new_rate_index >= 0) ? gun->rates[new_rate_index].rounds_per_minute : 0;
-    mtx_unlock(&gun->mutex);
+    atomic_store(&gun->current_rate_index, new_rate_index);
+    atomic_store(&gun->is_firing, (new_rate_index >= 0));
+    atomic_store(&gun->current_rpm, (new_rate_index >= 0) ? gun->rates[new_rate_index].rounds_per_minute : 0);
     
     if (new_rate_index >= 0) {
         // Start or change firing rate
@@ -223,7 +220,7 @@ static void handle_rate_change(GunFX *gun, int new_rate_index, int previous_rate
         
         if (gun->smoke) {
             smoke_generator_fan_on(gun->smoke);
-            gun->smoke_fan_pending_off = false;
+            atomic_store(&gun->smoke_fan_pending_off, false);
         }
         
         if (gun->mixer && gun->rates[new_rate_index].sound) {
@@ -257,7 +254,7 @@ static void handle_rate_change(GunFX *gun, int new_rate_index, int previous_rate
         if (gun->smoke) {
             if (gun->smoke_fan_off_delay_ms > 0) {
                 clock_gettime(CLOCK_MONOTONIC, &gun->smoke_stop_time);
-                gun->smoke_fan_pending_off = true;
+                atomic_store(&gun->smoke_fan_pending_off, true);
                 LOG_STATE(LOG_GUN, "FIRING", "STOPPING");
                 LOG_INFO(LOG_GUN, "Firing stopped | Smoke fan will stop in %d ms", gun->smoke_fan_off_delay_ms);
             } else {
@@ -274,7 +271,7 @@ static void handle_rate_change(GunFX *gun, int new_rate_index, int previous_rate
 
 // Check and handle delayed smoke fan shutdown
 static void handle_smoke_fan_delay(GunFX *gun) {
-    if (!gun->smoke_fan_pending_off || !gun->smoke) {
+    if (!atomic_load(&gun->smoke_fan_pending_off) || !gun->smoke) {
         return;
     }
     
@@ -285,7 +282,7 @@ static void handle_smoke_fan_delay(GunFX *gun) {
     
     if (elapsed_ms >= gun->smoke_fan_off_delay_ms) {
         smoke_generator_fan_off(gun->smoke);
-        gun->smoke_fan_pending_off = false;
+        atomic_store(&gun->smoke_fan_pending_off, false);
         LOG_DEBUG(LOG_GUN, "Smoke fan stopped after %d ms delay (actual: %.1f ms)",
                  gun->smoke_fan_off_delay_ms, elapsed_ms);
     }
@@ -302,7 +299,7 @@ static void print_status(GunFX *gun, struct timespec *last_status_time) {
         return;
     }
     
-    mtx_lock(&gun->mutex);
+    *last_status_time = current_time;
     
     int current_pwm = -1;
     if (gun->trigger_pwm_monitor) {
@@ -363,17 +360,17 @@ static void print_status(GunFX *gun, struct timespec *last_status_time) {
         "  • Smoke Heater: GPIO %2d\n"
         COLOR_CYAN "═══════════════════════════════════════════════════════════════════════════\n" COLOR_RESET,
         elapsed,
-        gun->is_firing ? COLOR_GREEN : COLOR_RED, gun->is_firing ? "YES" : "NO",
-        gun->current_rate_index >= 0 ? gun->current_rate_index + 1 : 0,
-        gun->current_rpm,
+        atomic_load(&gun->is_firing) ? COLOR_GREEN : COLOR_RED, atomic_load(&gun->is_firing) ? "YES" : "NO",
+        atomic_load(&gun->current_rate_index) >= 0 ? atomic_load(&gun->current_rate_index) + 1 : 0,
+        atomic_load(&gun->current_rpm),
         gun->trigger_pwm_pin,
         current_pwm >= 0 ? COLOR_YELLOW : COLOR_RED,
         current_pwm >= 0 ? (char[]){current_pwm/1000 + '0', (current_pwm/100)%10 + '0', (current_pwm/10)%10 + '0', current_pwm%10 + '0', 0} : "n/a",
         gun->smoke_heater_toggle_pin,
         heater_toggle_pwm >= 0 ? COLOR_YELLOW : COLOR_RED,
         heater_toggle_pwm >= 0 ? (char[]){heater_toggle_pwm/1000 + '0', (heater_toggle_pwm/100)%10 + '0', (heater_toggle_pwm/10)%10 + '0', heater_toggle_pwm%10 + '0', 0} : "n/a",
-        gun->smoke_heater_on ? COLOR_GREEN : COLOR_RED,
-        gun->smoke_heater_on ? "ON" : "OFF",
+        atomic_load(&gun->smoke_heater_on) ? COLOR_GREEN : COLOR_RED,
+        atomic_load(&gun->smoke_heater_on) ? "ON" : "OFF",
         gun->pitch_pwm_pin,
         pitch_pwm >= 0 ? COLOR_YELLOW : COLOR_RED,
         pitch_pwm >= 0 ? (char[]){pitch_pwm/1000 + '0', (pitch_pwm/100)%10 + '0', (pitch_pwm/10)%10 + '0', pitch_pwm%10 + '0', 0} : "n/a",
@@ -388,9 +385,6 @@ static void print_status(GunFX *gun, struct timespec *last_status_time) {
         gun->smoke_fan_pin,
         gun->smoke_heater_pin
     );
-    
-    mtx_unlock(&gun->mutex);
-    *last_status_time = current_time;
 }
 
 // Processing thread to monitor PWM and handle firing
@@ -405,14 +399,12 @@ static int gun_fx_processing_thread(void *arg) {
     struct timespec last_pwm_debug_time;
     clock_gettime(CLOCK_MONOTONIC, &last_pwm_debug_time);
     
-    while (gun->processing_running) {
+    while (atomic_load(&gun->processing_running)) {
         // Update servos
         update_servos(gun);
         
         // Get current rate and handle trigger
-        mtx_lock(&gun->mutex);
-        int previous_rate_index = gun->current_rate_index;
-        mtx_unlock(&gun->mutex);
+        int previous_rate_index = atomic_load(&gun->current_rate_index);
         
         int new_rate_index = handle_trigger_input(gun, previous_rate_index, &last_pwm_debug_time);
         
@@ -459,16 +451,15 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     gun->smoke_fan_off_delay_ms = config->smoke.fan_off_delay_ms;
     gun->rates = nullptr;
     gun->rate_count = 0;
-    gun->is_firing = false;
-    gun->current_rpm = 0;
-    gun->current_rate_index = -1;  // Not firing initially
-    gun->smoke_heater_on = false;
-    gun->processing_running = false;
+    atomic_init(&gun->is_firing, false);
+    atomic_init(&gun->current_rpm, 0);
+    atomic_init(&gun->current_rate_index, -1);  // Not firing initially
+    atomic_init(&gun->smoke_heater_on, false);
+    atomic_init(&gun->processing_running, false);
     gun->pitch_servo = nullptr;
     gun->yaw_servo = nullptr;
     gun->pitch_pwm_monitor = nullptr;
     gun->yaw_pwm_monitor = nullptr;
-    mtx_init(&gun->mutex, mtx_plain);
     
     // Create nozzle flash LED if pin specified
     if (config->nozzle_flash.pin >= 0) {
@@ -560,10 +551,10 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     }
     
     // Start processing thread
-    gun->processing_running = true;
+    atomic_store(&gun->processing_running, true);
     if (thrd_create(&gun->processing_thread, gun_fx_processing_thread, gun) != thrd_success) {
         LOG_ERROR(LOG_GUN, "Failed to create processing thread");
-        gun->processing_running = false;
+        atomic_store(&gun->processing_running, false);
         
         if (gun->trigger_pwm_monitor) {
             pwm_monitor_stop(gun->trigger_pwm_monitor);
@@ -575,7 +566,6 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
         }
         if (gun->nozzle_flash) led_destroy(gun->nozzle_flash);
         if (gun->smoke) smoke_generator_destroy(gun->smoke);
-        mtx_destroy(&gun->mutex);
         free(gun);
         return nullptr;
     }
@@ -588,8 +578,8 @@ void gun_fx_destroy(GunFX *gun) {
     if (!gun) return;
     
     // Stop processing thread
-    if (gun->processing_running) {
-        gun->processing_running = false;
+    if (atomic_load(&gun->processing_running)) {
+        atomic_store(&gun->processing_running, false);
         thrd_join(gun->processing_thread, nullptr);
     }
     
@@ -620,7 +610,6 @@ void gun_fx_destroy(GunFX *gun) {
     // Free rates array
     if (gun->rates) free(gun->rates);
     
-    mtx_destroy(&gun->mutex);
     free(gun);
     
     LOG_SHUTDOWN(LOG_GUN, "Gun FX system");
@@ -628,8 +617,6 @@ void gun_fx_destroy(GunFX *gun) {
 
 int gun_fx_set_rates_of_fire(GunFX *gun, const RateOfFire *rates, int count) {
     if (!gun || !rates || count <= 0) return -1;
-    
-    mtx_lock(&gun->mutex);
     
     // Free existing rates
     if (gun->rates) {
@@ -641,14 +628,11 @@ int gun_fx_set_rates_of_fire(GunFX *gun, const RateOfFire *rates, int count) {
     if (!gun->rates) {
         LOG_ERROR(LOG_GUN, "Cannot allocate memory for rates array (%d entries)", count);
         gun->rate_count = 0;
-        mtx_unlock(&gun->mutex);
         return -1;
     }
     
     memcpy(gun->rates, rates, sizeof(RateOfFire) * count);
     gun->rate_count = count;
-    
-    mtx_unlock(&gun->mutex);
     
     LOG_INFO(LOG_GUN, "Configured %d rate(s) of fire", count);
     LOG_DEBUG(LOG_GUN, "Rates: %s", count > 0 ? "updated" : "empty");
@@ -658,31 +642,19 @@ int gun_fx_set_rates_of_fire(GunFX *gun, const RateOfFire *rates, int count) {
 int gun_fx_get_current_rpm(GunFX *gun) {
     if (!gun) return 0;
     
-    mtx_lock(&gun->mutex);
-    int rpm = gun->current_rpm;
-    mtx_unlock(&gun->mutex);
-    
-    return rpm;
+    return atomic_load(&gun->current_rpm);
 }
 
 int gun_fx_get_current_rate_index(GunFX *gun) {
     if (!gun) return -1;
     
-    mtx_lock(&gun->mutex);
-    int rate = gun->current_rate_index;
-    mtx_unlock(&gun->mutex);
-    
-    return rate;
+    return atomic_load(&gun->current_rate_index);
 }
 
 bool gun_fx_is_firing(GunFX *gun) {
     if (!gun) return false;
     
-    mtx_lock(&gun->mutex);
-    bool firing = gun->is_firing;
-    mtx_unlock(&gun->mutex);
-    
-    return firing;
+    return atomic_load(&gun->is_firing);
 }
 
 /* Removed duplicate simple setter; keep mutex-protected version below */
@@ -700,9 +672,7 @@ Servo* gun_fx_get_yaw_servo(GunFX *gun) {
 void gun_fx_set_smoke_fan_off_delay(GunFX *gun, int delay_ms) {
     if (!gun) return;
     
-    mtx_lock(&gun->mutex);
     gun->smoke_fan_off_delay_ms = delay_ms;
-    mtx_unlock(&gun->mutex);
     
     LOG_INFO(LOG_GUN, "Smoke fan off delay set to %d ms", delay_ms);
 }

@@ -8,6 +8,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <threads.h>
+#include <stdatomic.h>
 #include <poll.h>
 #include "logging.h"
 
@@ -16,7 +17,7 @@ static struct gpiod_chip *chip = NULL;
 
 // Single monitoring thread for all PWM pins
 static thrd_t pwm_monitoring_thread;
-static bool pwm_thread_running = false;
+static atomic_bool pwm_thread_running = false;
 static mtx_t pwm_monitors_mutex;
 
 #define MAX_PWM_MONITORS 8
@@ -69,8 +70,8 @@ void gpio_cleanup(void) {
     if (!initialized) return;
     
     // Stop PWM monitoring thread if running
-    if (pwm_thread_running) {
-        pwm_thread_running = false;
+    if (atomic_load(&pwm_thread_running)) {
+        atomic_store(&pwm_thread_running, false);
         thrd_join(pwm_monitoring_thread, NULL);
     }
     
@@ -264,29 +265,30 @@ struct PWMMonitor {
     int pin;
     char *feature_name;
     struct gpiod_line_request *line_request;
-    mtx_t mutex;
     
-    bool active;
-    bool has_new_reading;
-    bool first_signal_received;
+    atomic_bool active;
+    atomic_bool has_new_reading;
+    atomic_bool first_signal_received;
     
-    PWMReading current_reading;
+    // Current reading - written by monitoring thread, read by API
+    atomic_int current_duration_us;
+    atomic_int current_pin;
     
     PWMCallback callback;
     void *user_data;
     
     // Track rising edge for pulse width calculation
     struct timespec rise_time;
-    bool waiting_for_fall;
+    atomic_bool waiting_for_fall;
 
     // Averaging window and ring buffer for recent readings
-    int avg_window_ms;
+    atomic_int avg_window_ms;
     #define PWM_AVG_MAX_SAMPLES 128
     struct {
-        int duration_us;
+        atomic_int duration_us;
         struct timespec ts;
     } samples[PWM_AVG_MAX_SAMPLES];
-    int sample_head;
+    atomic_int sample_head;
 };
 
 // Get microseconds from timespec
@@ -301,8 +303,8 @@ static void process_pwm_event(PWMMonitor *monitor, struct gpiod_edge_event *even
         uint64_t ns = gpiod_edge_event_get_timestamp_ns(event);
         monitor->rise_time.tv_sec = ns / 1000000000;
         monitor->rise_time.tv_nsec = ns % 1000000000;
-        monitor->waiting_for_fall = true;
-    } else if (gpiod_edge_event_get_event_type(event) == GPIOD_EDGE_EVENT_FALLING_EDGE && monitor->waiting_for_fall) {
+        atomic_store(&monitor->waiting_for_fall, true);
+    } else if (gpiod_edge_event_get_event_type(event) == GPIOD_EDGE_EVENT_FALLING_EDGE && atomic_load(&monitor->waiting_for_fall)) {
         // Falling edge - end of pulse, calculate pulse width
         uint64_t ns = gpiod_edge_event_get_timestamp_ns(event);
         struct timespec fall_time = {
@@ -316,35 +318,32 @@ static void process_pwm_event(PWMMonitor *monitor, struct gpiod_edge_event *even
         
         // Sanity check: typical RC PWM is 1000-2000µs, allow 500-3000µs
         if (pulse_width >= 500 && pulse_width <= 3000) {
-            if (!monitor->first_signal_received) {
+            if (!atomic_load(&monitor->first_signal_received)) {
                 LOG_INFO(LOG_GPIO, "First PWM signal received on [%s] pin %d: %d µs",
                          monitor->feature_name ?: "Unknown", monitor->pin, pulse_width);
-                monitor->first_signal_received = true;
+                atomic_store(&monitor->first_signal_received, true);
             }
             
-            PWMReading reading;
-            reading.pin = monitor->pin;
-            reading.duration_us = pulse_width;
-            
-            mtx_lock(&monitor->mutex);
-            
-            // Update current reading
-            monitor->current_reading = reading;
-            monitor->has_new_reading = true;
+            // Update current reading atomically
+            atomic_store(&monitor->current_pin, monitor->pin);
+            atomic_store(&monitor->current_duration_us, pulse_width);
+            atomic_store(&monitor->has_new_reading, true);
             
             // Append to averaging buffer
-            clock_gettime(CLOCK_MONOTONIC, &monitor->samples[monitor->sample_head].ts);
-            monitor->samples[monitor->sample_head].duration_us = pulse_width;
-            monitor->sample_head = (monitor->sample_head + 1) % PWM_AVG_MAX_SAMPLES;
-            
-            mtx_unlock(&monitor->mutex);
+            int head = atomic_load(&monitor->sample_head);
+            clock_gettime(CLOCK_MONOTONIC, &monitor->samples[head].ts);
+            atomic_store(&monitor->samples[head].duration_us, pulse_width);
+            atomic_store(&monitor->sample_head, (head + 1) % PWM_AVG_MAX_SAMPLES);
             
             // Call user callback if set
             if (monitor->callback) {
+                PWMReading reading;
+                reading.pin = monitor->pin;
+                reading.duration_us = pulse_width;
                 monitor->callback(reading, monitor->user_data);
             }
         }
-        monitor->waiting_for_fall = false;
+        atomic_store(&monitor->waiting_for_fall, false);
     }
 }
 
@@ -356,14 +355,14 @@ static int pwm_monitoring_thread_func(void *arg) {
     
     LOG_INFO(LOG_GPIO, "PWM monitoring thread started");
     
-    while (pwm_thread_running) {
+    while (atomic_load(&pwm_thread_running)) {
         // Build pollfd array from active monitors
         int nfds = 0;
         PWMMonitor *monitor_map[MAX_PWM_MONITORS] = {0};  // Map fd index to monitor
         
         mtx_lock(&pwm_monitors_mutex);
         for (int i = 0; i < MAX_PWM_MONITORS; i++) {
-            if (active_monitors[i] && active_monitors[i]->active) {
+            if (active_monitors[i] && atomic_load(&active_monitors[i]->active)) {
                 int fd = gpiod_line_request_get_fd(active_monitors[i]->line_request);
                 if (fd >= 0) {
                     fds[nfds].fd = fd;
@@ -445,17 +444,21 @@ PWMMonitor* pwm_monitor_create_with_name(int pin, const char *feature_name, PWMC
     monitor->feature_name = feature_name ? strdup(feature_name) : nullptr;
     monitor->callback = callback;
     monitor->user_data = user_data;
-    monitor->active = false;
-    monitor->has_new_reading = false;
-    monitor->first_signal_received = false;
-    monitor->waiting_for_fall = false;
-    monitor->avg_window_ms = 200;
-    monitor->sample_head = 0;
+    atomic_init(&monitor->active, false);
+    atomic_init(&monitor->has_new_reading, false);
+    atomic_init(&monitor->first_signal_received, false);
+    atomic_init(&monitor->waiting_for_fall, false);
+    atomic_init(&monitor->avg_window_ms, 200);
+    atomic_init(&monitor->sample_head, 0);
+    atomic_init(&monitor->current_pin, 0);
+    atomic_init(&monitor->current_duration_us, 0);
     
-    // Clear sample buffer
-    memset(monitor->samples, 0, sizeof(monitor->samples));
-    
-    mtx_init(&monitor->mutex, mtx_plain);
+    // Clear sample buffer and initialize atomics
+    for (int i = 0; i < PWM_AVG_MAX_SAMPLES; i++) {
+        atomic_init(&monitor->samples[i].duration_us, 0);
+        monitor->samples[i].ts.tv_sec = 0;
+        monitor->samples[i].ts.tv_nsec = 0;
+    }
     
     // Create line settings for edge detection
     struct gpiod_line_settings *settings = gpiod_line_settings_new();
@@ -530,15 +533,13 @@ PWMMonitor* pwm_monitor_create_with_name(int pin, const char *feature_name, PWMC
 void pwm_monitor_destroy(PWMMonitor *monitor) {
     if (!monitor) return;
     
-    if (monitor->active) {
+    if (atomic_load(&monitor->active)) {
         pwm_monitor_stop(monitor);
     }
     
     if (monitor->line_request) {
         gpiod_line_request_release(monitor->line_request);
     }
-    
-    mtx_destroy(&monitor->mutex);
     
     if (monitor->feature_name) {
         free(monitor->feature_name);
@@ -552,7 +553,7 @@ void pwm_monitor_destroy(PWMMonitor *monitor) {
 int pwm_monitor_start(PWMMonitor *monitor) {
     if (!monitor) return -1;
     
-    if (monitor->active) {
+    if (atomic_load(&monitor->active)) {
         LOG_WARN(LOG_GPIO, "PWM monitor already running");
         return 0;
     }
@@ -576,17 +577,17 @@ int pwm_monitor_start(PWMMonitor *monitor) {
     
     active_monitors[slot] = monitor;
     active_monitor_count++;
-    monitor->active = true;
+    atomic_store(&monitor->active, true);
     
     // Start shared monitoring thread if not running
-    if (!pwm_thread_running) {
-        pwm_thread_running = true;
+    if (!atomic_load(&pwm_thread_running)) {
+        atomic_store(&pwm_thread_running, true);
         if (thrd_create(&pwm_monitoring_thread, pwm_monitoring_thread_func, NULL) != thrd_success) {
             LOG_ERROR(LOG_GPIO, "Failed to create PWM monitoring thread");
             active_monitors[slot] = NULL;
             active_monitor_count--;
-            monitor->active = false;
-            pwm_thread_running = false;
+            atomic_store(&monitor->active, false);
+            atomic_store(&pwm_thread_running, false);
             mtx_unlock(&pwm_monitors_mutex);
             return -1;
         }
@@ -602,7 +603,7 @@ int pwm_monitor_start(PWMMonitor *monitor) {
 int pwm_monitor_stop(PWMMonitor *monitor) {
     if (!monitor) return -1;
     
-    if (!monitor->active) {
+    if (!atomic_load(&monitor->active)) {
         return 0;
     }
     
@@ -617,11 +618,11 @@ int pwm_monitor_stop(PWMMonitor *monitor) {
         }
     }
     
-    monitor->active = false;
+    atomic_store(&monitor->active, false);
     
     // If no more active monitors, stop the shared thread
-    if (active_monitor_count == 0 && pwm_thread_running) {
-        pwm_thread_running = false;
+    if (active_monitor_count == 0 && atomic_load(&pwm_thread_running)) {
+        atomic_store(&pwm_thread_running, false);
         mtx_unlock(&pwm_monitors_mutex);
         thrd_join(pwm_monitoring_thread, NULL);
         mtx_lock(&pwm_monitors_mutex);
@@ -637,15 +638,11 @@ int pwm_monitor_stop(PWMMonitor *monitor) {
 bool pwm_monitor_get_reading(PWMMonitor *monitor, PWMReading *reading) {
     if (!monitor || !reading) return false;
     
-    mtx_lock(&monitor->mutex);
-    
-    bool has_reading = monitor->has_new_reading;
+    bool has_reading = atomic_exchange(&monitor->has_new_reading, false);
     if (has_reading) {
-        *reading = monitor->current_reading;
-        monitor->has_new_reading = false;
+        reading->pin = atomic_load(&monitor->current_pin);
+        reading->duration_us = atomic_load(&monitor->current_duration_us);
     }
-    
-    mtx_unlock(&monitor->mutex);
     
     return has_reading;
 }
@@ -659,15 +656,12 @@ bool pwm_monitor_wait_reading(PWMMonitor *monitor, PWMReading *reading, int time
     clock_gettime(CLOCK_MONOTONIC, &start);
     
     while (1) {
-        mtx_lock(&monitor->mutex);
-        bool has_reading = monitor->has_new_reading;
+        bool has_reading = atomic_exchange(&monitor->has_new_reading, false);
         if (has_reading) {
-            *reading = monitor->current_reading;
-            monitor->has_new_reading = false;
-            mtx_unlock(&monitor->mutex);
+            reading->pin = atomic_load(&monitor->current_pin);
+            reading->duration_us = atomic_load(&monitor->current_duration_us);
             return true;
         }
-        mtx_unlock(&monitor->mutex);
         
         if (timeout_ms >= 0) {
             clock_gettime(CLOCK_MONOTONIC, &now);
@@ -684,42 +678,40 @@ bool pwm_monitor_wait_reading(PWMMonitor *monitor, PWMReading *reading, int time
 
 bool pwm_monitor_is_running(PWMMonitor *monitor) {
     if (!monitor) return false;
-    return monitor->active;
+    return atomic_load(&monitor->active);
 }
 
 void pwm_monitor_set_avg_window_ms(PWMMonitor *monitor, int window_ms) {
     if (!monitor) return;
     if (window_ms < 10) window_ms = 10;
     if (window_ms > 5000) window_ms = 5000;
-    mtx_lock(&monitor->mutex);
-    monitor->avg_window_ms = window_ms;
-    mtx_unlock(&monitor->mutex);
+    atomic_store(&monitor->avg_window_ms, window_ms);
 }
 
 bool pwm_monitor_get_average(PWMMonitor *monitor, int *avg_us) {
     if (!monitor || !avg_us) return false;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    long long window_ns;
-    mtx_lock(&monitor->mutex);
-    window_ns = (long long)monitor->avg_window_ms * 1000000LL;
+    
+    long long window_ns = (long long)atomic_load(&monitor->avg_window_ms) * 1000000LL;
     long long sum = 0;
     int count = 0;
+    
     for (int i = 0; i < PWM_AVG_MAX_SAMPLES; i++) {
         struct timespec ts = monitor->samples[i].ts;
         if (ts.tv_sec == 0 && ts.tv_nsec == 0) continue;
         long long age_ns = ((long long)(now.tv_sec - ts.tv_sec) * 1000000000LL) + (now.tv_nsec - ts.tv_nsec);
         if (age_ns >= 0 && age_ns <= window_ns) {
-            sum += monitor->samples[i].duration_us;
+            sum += atomic_load(&monitor->samples[i].duration_us);
             count++;
         }
     }
+    
     if (count == 0) {
-        mtx_unlock(&monitor->mutex);
         return false;
     }
+    
     *avg_us = (int)(sum / count);
-    mtx_unlock(&monitor->mutex);
     return true;
 }
 

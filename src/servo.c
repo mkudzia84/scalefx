@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <threads.h>
 #include <unistd.h>
 #include <sys/time.h>
@@ -14,12 +15,12 @@ struct Servo {
     float current_output_us;    // Current output position
     float current_velocity_us_per_sec;  // Current velocity
     int target_output_us;       // Target position (mapped from input)
-    int input_us;               // Current input value
+    atomic_int input_us;        // Current input value (read by servo_set_input, read by thread)
     
     // Thread control
     thrd_t thread;
     mtx_t mutex;
-    bool running;
+    atomic_bool running;
 };
 
 /**
@@ -73,7 +74,7 @@ static int servo_thread_func(void *arg) {
     
     LOG_INFO(LOG_SERVO, "Processing thread started");
     
-    while (servo->running) {
+    while (atomic_load(&servo->running)) {
         long long current_time = get_time_ms();
         float delta_time_ms = (float)(current_time - last_time);
         last_time = current_time;
@@ -89,7 +90,8 @@ static int servo_thread_func(void *arg) {
         float delta_time_sec = delta_time_ms / 1000.0f;
         
         // Map input to target output
-        servo->target_output_us = map_input_to_output(&servo->config, servo->input_us);
+        int current_input = atomic_load(&servo->input_us);
+        servo->target_output_us = map_input_to_output(&servo->config, current_input);
         
         // Calculate desired change
         float error = servo->target_output_us - servo->current_output_us;
@@ -187,13 +189,13 @@ Servo* servo_create(const ServoConfig *config) {
     
     // Initialize to center position
     int center_input = (config->input_min_us + config->input_max_us) / 2;
-    servo->input_us = center_input;
+    atomic_init(&servo->input_us, center_input);
     servo->target_output_us = map_input_to_output(config, center_input);
     servo->current_output_us = servo->target_output_us;
     servo->current_velocity_us_per_sec = 0.0f;
     
     mtx_init(&servo->mutex, mtx_plain);
-    servo->running = true;
+    atomic_init(&servo->running, true);
     
     // Start processing thread
     if (thrd_create(&servo->thread, servo_thread_func, servo) != thrd_success) {
@@ -216,7 +218,7 @@ void servo_destroy(Servo *servo) {
     if (!servo) return;
     
     // Stop thread
-    servo->running = false;
+    atomic_store(&servo->running, false);
     thrd_join(servo->thread, nullptr);
     
     mtx_destroy(&servo->mutex);
@@ -228,9 +230,7 @@ void servo_destroy(Servo *servo) {
 void servo_set_input(Servo *servo, int input_us) {
     if (!servo) return;
     
-    mtx_lock(&servo->mutex);
-    servo->input_us = input_us;
-    mtx_unlock(&servo->mutex);
+    atomic_store(&servo->input_us, input_us);
 }
 
 int servo_get_output(Servo *servo) {

@@ -3,14 +3,13 @@
 #include "logging.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <threads.h>
+#include <stdatomic.h>
 
 struct SmokeGenerator {
     int heater_pin;
     int fan_pin;
-    bool heater_on;
-    bool fan_on;
-    mtx_t mutex;
+    atomic_bool heater_on;
+    atomic_bool fan_on;
 };
 
 SmokeGenerator* smoke_generator_create(int heater_pin, int fan_pin) {
@@ -27,21 +26,18 @@ SmokeGenerator* smoke_generator_create(int heater_pin, int fan_pin) {
     
     smoke->heater_pin = heater_pin;
     smoke->fan_pin = fan_pin;
-    smoke->heater_on = false;
-    smoke->fan_on = false;
-    mtx_init(&smoke->mutex, mtx_plain);
+    atomic_init(&smoke->heater_on, false);
+    atomic_init(&smoke->fan_on, false);
     
     // Set pins as outputs and initialize to LOW
     if (gpio_set_mode(heater_pin, GPIO_MODE_OUTPUT) < 0) {
         LOG_ERROR(LOG_SMOKE, "Failed to set heater pin %d as output", heater_pin);
-        mtx_destroy(&smoke->mutex);
         free(smoke);
         return nullptr;
     }
     
     if (gpio_set_mode(fan_pin, GPIO_MODE_OUTPUT) < 0) {
         LOG_ERROR(LOG_SMOKE, "Failed to set fan pin %d as output", fan_pin);
-        mtx_destroy(&smoke->mutex);
         free(smoke);
         return nullptr;
     }
@@ -60,7 +56,6 @@ void smoke_generator_destroy(SmokeGenerator *smoke) {
     gpio_write(smoke->heater_pin, 0);
     gpio_write(smoke->fan_pin, 0);
     
-    mtx_destroy(&smoke->mutex);
     free(smoke);
     
     LOG_INFO(LOG_SMOKE, "Smoke generator destroyed");
@@ -69,9 +64,7 @@ void smoke_generator_destroy(SmokeGenerator *smoke) {
 int smoke_generator_heater_on(SmokeGenerator *smoke) {
     if (!smoke) return -1;
     
-    mtx_lock(&smoke->mutex);
-    smoke->heater_on = true;
-    mtx_unlock(&smoke->mutex);
+    atomic_store(&smoke->heater_on, true);
     
     gpio_write(smoke->heater_pin, 1);
     LOG_INFO(LOG_SMOKE, "Heater ON");
@@ -82,9 +75,7 @@ int smoke_generator_heater_on(SmokeGenerator *smoke) {
 int smoke_generator_heater_off(SmokeGenerator *smoke) {
     if (!smoke) return -1;
     
-    mtx_lock(&smoke->mutex);
-    smoke->heater_on = false;
-    mtx_unlock(&smoke->mutex);
+    atomic_store(&smoke->heater_on, false);
     
     gpio_write(smoke->heater_pin, 0);
     LOG_INFO(LOG_SMOKE, "Heater OFF");
@@ -95,9 +86,7 @@ int smoke_generator_heater_off(SmokeGenerator *smoke) {
 int smoke_generator_fan_on(SmokeGenerator *smoke) {
     if (!smoke) return -1;
     
-    mtx_lock(&smoke->mutex);
-    smoke->fan_on = true;
-    mtx_unlock(&smoke->mutex);
+    atomic_store(&smoke->fan_on, true);
     
     gpio_write(smoke->fan_pin, 1);
     LOG_INFO(LOG_SMOKE, "Fan ON");
@@ -108,9 +97,7 @@ int smoke_generator_fan_on(SmokeGenerator *smoke) {
 int smoke_generator_fan_off(SmokeGenerator *smoke) {
     if (!smoke) return -1;
     
-    mtx_lock(&smoke->mutex);
-    smoke->fan_on = false;
-    mtx_unlock(&smoke->mutex);
+    atomic_store(&smoke->fan_on, false);
     
     gpio_write(smoke->fan_pin, 0);
     LOG_INFO(LOG_SMOKE, "Fan OFF");
@@ -121,20 +108,12 @@ int smoke_generator_fan_off(SmokeGenerator *smoke) {
 bool smoke_generator_is_heater_on(SmokeGenerator *smoke) {
     if (!smoke) return false;
     
-    mtx_lock(&smoke->mutex);
-    bool on = smoke->heater_on;
-    mtx_unlock(&smoke->mutex);
-    
-    return on;
+    return atomic_load(&smoke->heater_on);
 }
 
 bool smoke_generator_is_fan_on(SmokeGenerator *smoke) {
     if (!smoke) return false;
     
-    mtx_lock(&smoke->mutex);
-    bool on = smoke->fan_on;
-    mtx_unlock(&smoke->mutex);
-    
-    return on;
+    return atomic_load(&smoke->fan_on);
 }
 
