@@ -24,23 +24,18 @@ endif
 SRC_DIR = src
 INCLUDE_DIR = include
 BUILD_DIR = build
-DEMO_DIR = demo
 SCRIPTS_DIR = scripts
 
 # Output binaries
 HELIFX = $(BUILD_DIR)/helifx
-DEMO_TARGETS = $(BUILD_DIR)/mixer_demo \
-               $(BUILD_DIR)/engine_fx_demo $(BUILD_DIR)/gun_fx_demo \
-               $(BUILD_DIR)/servo_demo
 
-# Conditionally add JetiEX demo
+# Conditionally add JetiEX support
 ifeq ($(ENABLE_JETIEX),1)
-DEMO_TARGETS += $(BUILD_DIR)/jetiex_demo
 CFLAGS += -DENABLE_JETIEX
 endif
 
 # All targets
-TARGETS = $(HELIFX) $(DEMO_TARGETS)
+TARGETS = $(HELIFX)
 
 # Source files
 HELIFX_SRCS = $(SRC_DIR)/main.c $(SRC_DIR)/config_loader.c \
@@ -83,10 +78,6 @@ all: $(TARGETS)
 nojetiex:
 	$(MAKE) ENABLE_JETIEX=0
 
-# Demo target
-.PHONY: demo
-demo: $(DEMO_TARGETS)
-
 # Debug target - builds with debug logging enabled
 .PHONY: debug
 debug: CFLAGS += -DDEBUG
@@ -94,35 +85,14 @@ debug: clean all
 
 # Create build directories
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/demo
+	mkdir -p $(BUILD_DIR)
 
 # Main application
 $(HELIFX): $(BUILD_DIR) $(HELIFX_OBJS)
 	$(CC) $(CFLAGS) -o $@ $(HELIFX_OBJS) $(LIBS)
 
-# Demo programs
-$(BUILD_DIR)/mixer_demo: $(BUILD_DIR) $(MIXER_DEMO_OBJS)
-	$(CC) $(CFLAGS) -o $@ $(MIXER_DEMO_OBJS) $(LIBS)
-
-$(BUILD_DIR)/engine_fx_demo: $(BUILD_DIR) $(ENGINE_FX_DEMO_OBJS)
-	$(CC) $(CFLAGS) -o $@ $(ENGINE_FX_DEMO_OBJS) $(LIBS)
-
-$(BUILD_DIR)/gun_fx_demo: $(BUILD_DIR) $(GUN_FX_DEMO_OBJS)
-	$(CC) $(CFLAGS) -o $@ $(GUN_FX_DEMO_OBJS) $(LIBS)
-
-$(BUILD_DIR)/servo_demo: $(BUILD_DIR) $(SERVO_DEMO_OBJS)
-	$(CC) $(CFLAGS) -o $@ $(SERVO_DEMO_OBJS) $(LIBS)
-
-$(BUILD_DIR)/jetiex_demo: $(BUILD_DIR) $(JETIEX_DEMO_OBJS)
-	$(CC) $(CFLAGS) -o $@ $(JETIEX_DEMO_OBJS) $(LIBS)
-
 # Compile source files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
-
-# Compile demo files
-$(BUILD_DIR)/demo/%.o: $(DEMO_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
@@ -162,12 +132,6 @@ clean:
 install: all
 	@echo "Installing helifx to /usr/local/bin/"
 	sudo install -m 755 $(HELIFX) /usr/local/bin/
-	@echo "Installing demo programs..."
-	sudo install -m 755 $(BUILD_DIR)/mixer_demo /usr/local/bin/
-	sudo install -m 755 $(BUILD_DIR)/engine_fx_demo /usr/local/bin/
-	sudo install -m 755 $(BUILD_DIR)/gun_fx_demo /usr/local/bin/
-	sudo install -m 755 $(BUILD_DIR)/servo_demo /usr/local/bin/
-	sudo install -m 755 $(BUILD_DIR)/jetiex_demo /usr/local/bin/
 	@echo "Installation complete"
 
 # Install systemd service
@@ -183,11 +147,6 @@ install-service:
 uninstall:
 	@echo "Removing helifx binaries..."
 	sudo rm -f /usr/local/bin/helifx
-	sudo rm -f /usr/local/bin/mixer_demo
-	sudo rm -f /usr/local/bin/engine_fx_demo
-	sudo rm -f /usr/local/bin/gun_fx_demo
-	sudo rm -f /usr/local/bin/servo_demo
-	sudo rm -f /usr/local/bin/jetiex_demo
 	@echo "Uninstallation complete"
 
 # Help target
@@ -209,18 +168,16 @@ help:
 	@echo "  (See docs/PIGPIO_SETUP.md for permanent configuration)"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all              - Build all targets (default)"
-	@echo "  demo             - Build demo programs only"
+	@echo "  all              - Build helifx (default)"
 	@echo "  debug            - Build with debug logging enabled (-DDEBUG)"
 	@echo "  clean            - Remove build artifacts"
-	@echo "  install          - Install binaries to /usr/local/bin"
+	@echo "  install          - Install binary to /usr/local/bin"
 	@echo "  install-service  - Install systemd service"
-	@echo "  uninstall        - Remove installed binaries"
+	@echo "  uninstall        - Remove installed binary"
 	@echo "  help             - Show this help message"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make             - Build everything"
-	@echo "  make demo        - Build only demos"
+	@echo "  make             - Build helifx"
 	@echo "  make debug       - Debug build (with LOG_DEBUG output)"
 	@echo "  make clean all   - Clean rebuild"
 	@echo "  sudo make install - Install to system"

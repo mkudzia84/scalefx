@@ -136,36 +136,8 @@ make
 # Build debug version
 make debug
 
-# Build only demos
-make demo
-
-# Run JetiEX demo
-./build/jetiex_demo
-
 # Install system-wide
 sudo make install
-```
-
-## Demo Options
-
-```bash
-# Default settings
-./build/jetiex_demo
-
-# Custom serial port
-./build/jetiex_demo --serial=/dev/ttyUSB0
-
-# Custom baud rate
-./build/jetiex_demo --baud=9600
-
-# Custom update rate
-./build/jetiex_demo --rate=20
-
-# Custom IDs
-./build/jetiex_demo --manufacturer=0x1234 --device=0x5678
-
-# Show help
-./build/jetiex_demo --help
 ```
 
 ## Common Sensor Configurations
@@ -210,7 +182,7 @@ sudo make install
 ls -l /dev/ttyAMA0
 
 # Test serial output
-./build/jetiex_demo &
+./build/helifx &
 sudo cat /dev/ttyAMA0 | hexdump -C
 
 # Check permissions
@@ -263,6 +235,5 @@ With `-DDEBUG` flag:
 
 - **Header**: `include/jetiex.h`
 - **Implementation**: `src/jetiex.c`
-- **Demo**: `demo/jetiex_demo.c`
 - **Documentation**: `docs/JETIEX.md`
 - **Integration Guide**: `docs/JETIEX_INTEGRATION.md`

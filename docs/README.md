@@ -434,8 +434,7 @@ Common issues:
 ### Building
 
 ```bash
-make             # Build all targets
-make demo        # Build only demos
+make             # Build helifx
 make clean       # Clean build artifacts
 make help        # Show all available targets
 ```
@@ -463,14 +462,8 @@ helifx/
 │   ├── config_loader.h
 │   ├── miniaudio.h
 │   └── pwm_monitor.h
-├── demo/                  # Demo programs
-│   ├── mixer_demo.c
-│   ├── gpio_demo.c
-│   ├── engine_fx_demo.c
-│   └── gun_fx_demo.c
 ├── build/                 # Build output (generated)
 │   ├── helifx             # Main binary
-│   ├── mixer_demo         # Demo binaries
 │   └── *.o                # Object files
 ├── scripts/               # Installation and service scripts
 │   ├── helifx.service     # Systemd service unit
