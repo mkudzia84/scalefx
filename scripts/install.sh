@@ -45,9 +45,11 @@ apt-get update
 apt-get install -y \
     build-essential \
     libyaml-dev \
+    libcyaml-dev \
     libasound2-dev \
     pigpio
-echo -e "${GREEN}Dependencies installed${NC}"
+
+echo -e "${GREEN}All dependencies installed${NC}"
 echo ""
 
 # Configure pigpio to exclude WM8960 Audio HAT pins
