@@ -27,36 +27,64 @@ typedef struct ServoConfig {
     int update_rate_hz;         // Default: 50
 } ServoConfig;
 
+// Engine Toggle configuration
+typedef struct EngineToggleConfig {
+    int pin;
+    int threshold_us;          // Default: 1500
+} EngineToggleConfig;
+
+// Engine Sounds Transitions configuration
+typedef struct EngineSoundsTransitionsConfig {
+    int starting_offset_ms;    // Default: 60000 (60 seconds)
+    int stopping_offset_ms;    // Default: 25000 (25 seconds)
+} EngineSoundsTransitionsConfig;
+
+// Engine Sounds configuration
+typedef struct EngineSoundsConfig {
+    char *starting;
+    char *running;
+    char *stopping;
+    EngineSoundsTransitionsConfig transitions;
+} EngineSoundsConfig;
+
 // Engine FX configuration with defaults
 typedef struct EngineFXConfig {
     bool enabled;
-    int pin;
-    int threshold_us;          // Default: 1500
-    char *starting_file;
-    char *running_file;
-    char *stopping_file;
-    int starting_offset_ms;    // Default: 60000 (60 seconds)
-    int stopping_offset_ms;    // Default: 25000 (25 seconds)
+    EngineToggleConfig engine_toggle;
+    EngineSoundsConfig sounds;
 } EngineFXConfig;
+
+// Nozzle Flash configuration
+typedef struct NozzleFlashConfig {
+    bool enabled;
+    int pin;
+} NozzleFlashConfig;
+
+// Smoke configuration
+typedef struct SmokeConfig {
+    bool enabled;
+    int fan_pin;
+    int heater_pin;
+    int heater_toggle_pin;
+    int heater_pwm_threshold_us; // Default: 1500
+    int fan_off_delay_ms;        // Default: 2000
+} SmokeConfig;
+
+// Turret Control configuration
+typedef struct TurretControlConfig {
+    ServoConfig pitch;
+    ServoConfig yaw;
+} TurretControlConfig;
 
 // Gun FX configuration with defaults
 typedef struct GunFXConfig {
     bool enabled;
-    int trigger_pin;
-    
-    bool nozzle_flash_enabled;
-    int nozzle_flash_pin;
-    
-    bool smoke_enabled;
-    int smoke_fan_pin;
-    int smoke_heater_pin;
-    int smoke_heater_toggle_pin;
-    int smoke_heater_pwm_threshold_us; // Default: 1500
-    int smoke_fan_off_delay_ms;        // Default: 2000
-    
-    ServoConfig pitch_servo;
-    ServoConfig yaw_servo;
-    
+    struct {
+        int pin;
+    } trigger;
+    NozzleFlashConfig nozzle_flash;
+    SmokeConfig smoke;
+    TurretControlConfig turret_control;
     RateOfFireConfig *rates;
     int rate_count;
 } GunFXConfig;

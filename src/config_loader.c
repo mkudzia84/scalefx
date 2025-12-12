@@ -61,12 +61,47 @@ static const cyaml_schema_value_t servo_schema __attribute__((unused)) = {
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, ServoConfig, servo_fields),
 };
 
+// EngineToggleConfig schema
+static const cyaml_schema_field_t engine_toggle_config_fields[] = {
+    CYAML_FIELD_INT("pin", CYAML_FLAG_DEFAULT, EngineToggleConfig, pin),
+    CYAML_FIELD_INT("threshold_us", CYAML_FLAG_DEFAULT, EngineToggleConfig, threshold_us),
+    CYAML_FIELD_END
+};
+
+static const cyaml_schema_value_t engine_toggle_config_schema = {
+    CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, EngineToggleConfig, engine_toggle_config_fields),
+};
+
+// EngineSoundsTransitionsConfig schema
+static const cyaml_schema_field_t engine_sounds_transitions_config_fields[] = {
+    CYAML_FIELD_INT("starting_offset_ms", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, EngineSoundsTransitionsConfig, starting_offset_ms),
+    CYAML_FIELD_INT("stopping_offset_ms", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, EngineSoundsTransitionsConfig, stopping_offset_ms),
+    CYAML_FIELD_END
+};
+
+static const cyaml_schema_value_t engine_sounds_transitions_config_schema = {
+    CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, EngineSoundsTransitionsConfig, engine_sounds_transitions_config_fields),
+};
+
+// EngineSoundsConfig schema
+static const cyaml_schema_field_t engine_sounds_config_fields[] = {
+    CYAML_FIELD_STRING_PTR("starting", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, EngineSoundsConfig, starting, 0, CYAML_UNLIMITED),
+    CYAML_FIELD_STRING_PTR("running", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, EngineSoundsConfig, running, 0, CYAML_UNLIMITED),
+    CYAML_FIELD_STRING_PTR("stopping", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, EngineSoundsConfig, stopping, 0, CYAML_UNLIMITED),
+    CYAML_FIELD_MAPPING("transitions", CYAML_FLAG_OPTIONAL, EngineSoundsConfig, transitions, engine_sounds_transitions_config_fields),
+    CYAML_FIELD_END
+};
+
+static const cyaml_schema_value_t engine_sounds_config_schema = {
+    CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, EngineSoundsConfig, engine_sounds_config_fields),
+};
+
 // RateOfFireConfig schema
 static const cyaml_schema_field_t rate_of_fire_fields[] = {
     CYAML_FIELD_STRING_PTR("name", CYAML_FLAG_POINTER, RateOfFireConfig, name, 0, CYAML_UNLIMITED),
     CYAML_FIELD_INT("rpm", CYAML_FLAG_DEFAULT, RateOfFireConfig, rpm),
     CYAML_FIELD_INT("pwm_threshold_us", CYAML_FLAG_DEFAULT, RateOfFireConfig, pwm_threshold_us),
-    CYAML_FIELD_STRING_PTR("sound_file", CYAML_FLAG_POINTER, RateOfFireConfig, sound_file, 0, CYAML_UNLIMITED),
+    CYAML_FIELD_STRING_PTR("sound_file", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, RateOfFireConfig, sound_file, 0, CYAML_UNLIMITED),
     CYAML_FIELD_END
 };
 
@@ -74,65 +109,54 @@ static const cyaml_schema_value_t rate_of_fire_schema = {
     CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, RateOfFireConfig, rate_of_fire_fields),
 };
 
-// Trigger configuration mapping (inline - maps to same struct)
+// Trigger configuration (simple inline struct)
 static const cyaml_schema_field_t trigger_fields[] = {
-    CYAML_FIELD_INT("pin", CYAML_FLAG_DEFAULT, GunFXConfig, trigger_pin),
+    CYAML_FIELD_INT("pin", CYAML_FLAG_DEFAULT, GunFXConfig, trigger.pin),
     CYAML_FIELD_END
 };
 
-// Nozzle flash configuration mapping (inline - maps to same struct)
-static const cyaml_schema_field_t nozzle_flash_fields[] = {
-    CYAML_FIELD_BOOL("enabled", CYAML_FLAG_DEFAULT, GunFXConfig, nozzle_flash_enabled),
-    CYAML_FIELD_INT("pin", CYAML_FLAG_DEFAULT, GunFXConfig, nozzle_flash_pin),
+// NozzleFlashConfig schema
+static const cyaml_schema_field_t nozzle_flash_config_fields[] = {
+    CYAML_FIELD_BOOL("enabled", CYAML_FLAG_DEFAULT, NozzleFlashConfig, enabled),
+    CYAML_FIELD_INT("pin", CYAML_FLAG_DEFAULT, NozzleFlashConfig, pin),
     CYAML_FIELD_END
 };
 
-// Smoke configuration mapping (inline - maps to same struct)
-static const cyaml_schema_field_t smoke_fields[] = {
-    CYAML_FIELD_BOOL("enabled", CYAML_FLAG_DEFAULT, GunFXConfig, smoke_enabled),
-    CYAML_FIELD_INT("fan_pin", CYAML_FLAG_DEFAULT, GunFXConfig, smoke_fan_pin),
-    CYAML_FIELD_INT("heater_pin", CYAML_FLAG_DEFAULT, GunFXConfig, smoke_heater_pin),
-    CYAML_FIELD_INT("heater_toggle_pin", CYAML_FLAG_DEFAULT, GunFXConfig, smoke_heater_toggle_pin),
-    CYAML_FIELD_INT("heater_pwm_threshold_us", CYAML_FLAG_DEFAULT, GunFXConfig, smoke_heater_pwm_threshold_us),
-    CYAML_FIELD_INT("fan_off_delay_ms", CYAML_FLAG_DEFAULT, GunFXConfig, smoke_fan_off_delay_ms),
+static const cyaml_schema_value_t nozzle_flash_config_schema = {
+    CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, NozzleFlashConfig, nozzle_flash_config_fields),
+};
+
+// SmokeConfig schema
+static const cyaml_schema_field_t smoke_config_fields[] = {
+    CYAML_FIELD_BOOL("enabled", CYAML_FLAG_DEFAULT, SmokeConfig, enabled),
+    CYAML_FIELD_INT("fan_pin", CYAML_FLAG_DEFAULT, SmokeConfig, fan_pin),
+    CYAML_FIELD_INT("heater_pin", CYAML_FLAG_DEFAULT, SmokeConfig, heater_pin),
+    CYAML_FIELD_INT("heater_toggle_pin", CYAML_FLAG_DEFAULT, SmokeConfig, heater_toggle_pin),
+    CYAML_FIELD_INT("heater_pwm_threshold_us", CYAML_FLAG_DEFAULT, SmokeConfig, heater_pwm_threshold_us),
+    CYAML_FIELD_INT("fan_off_delay_ms", CYAML_FLAG_DEFAULT, SmokeConfig, fan_off_delay_ms),
     CYAML_FIELD_END
 };
 
-// Turret control mapping (actual nested structs - pitch and yaw are separate ServoConfig)
-static const cyaml_schema_field_t turret_control_fields[] = {
-    CYAML_FIELD_MAPPING("pitch", CYAML_FLAG_DEFAULT, GunFXConfig, pitch_servo, servo_fields),
-    CYAML_FIELD_MAPPING("yaw", CYAML_FLAG_DEFAULT, GunFXConfig, yaw_servo, servo_fields),
+static const cyaml_schema_value_t smoke_config_schema = {
+    CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, SmokeConfig, smoke_config_fields),
+};
+
+// TurretControlConfig schema
+static const cyaml_schema_field_t turret_control_config_fields[] = {
+    CYAML_FIELD_MAPPING("pitch", CYAML_FLAG_DEFAULT, TurretControlConfig, pitch, servo_fields),
+    CYAML_FIELD_MAPPING("yaw", CYAML_FLAG_DEFAULT, TurretControlConfig, yaw, servo_fields),
     CYAML_FIELD_END
 };
 
-// Engine sounds transitions mapping (inline - maps to same struct)
-static const cyaml_schema_field_t engine_transitions_fields[] = {
-    CYAML_FIELD_INT("starting_offset_ms", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, EngineFXConfig, starting_offset_ms),
-    CYAML_FIELD_INT("stopping_offset_ms", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, EngineFXConfig, stopping_offset_ms),
-    CYAML_FIELD_END
-};
-
-// Engine sounds mapping (inline - maps to same struct)
-static const cyaml_schema_field_t engine_sounds_fields[] = {
-    CYAML_FIELD_STRING_PTR("starting", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, EngineFXConfig, starting_file, 0, CYAML_UNLIMITED),
-    CYAML_FIELD_STRING_PTR("running", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, EngineFXConfig, running_file, 0, CYAML_UNLIMITED),
-    CYAML_FIELD_STRING_PTR("stopping", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, EngineFXConfig, stopping_file, 0, CYAML_UNLIMITED),
-    CYAML_FIELD_MAPPING_INLINE("transitions", CYAML_FLAG_OPTIONAL, EngineFXConfig, engine_transitions_fields),
-    CYAML_FIELD_END
-};
-
-// Engine toggle mapping (inline - maps to same struct)
-static const cyaml_schema_field_t engine_toggle_fields[] = {
-    CYAML_FIELD_INT("pin", CYAML_FLAG_DEFAULT, EngineFXConfig, pin),
-    CYAML_FIELD_INT("threshold_us", CYAML_FLAG_DEFAULT, EngineFXConfig, threshold_us),
-    CYAML_FIELD_END
+static const cyaml_schema_value_t turret_control_config_schema = {
+    CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, TurretControlConfig, turret_control_config_fields),
 };
 
 // EngineFXConfig schema
 static const cyaml_schema_field_t engine_fx_fields[] = {
     CYAML_FIELD_BOOL("enabled", CYAML_FLAG_DEFAULT, EngineFXConfig, enabled),
-    CYAML_FIELD_MAPPING_INLINE("engine_toggle", CYAML_FLAG_DEFAULT, EngineFXConfig, engine_toggle_fields),
-    CYAML_FIELD_MAPPING_INLINE("sounds", CYAML_FLAG_DEFAULT, EngineFXConfig, engine_sounds_fields),
+    CYAML_FIELD_MAPPING("engine_toggle", CYAML_FLAG_DEFAULT, EngineFXConfig, engine_toggle, engine_toggle_config_fields),
+    CYAML_FIELD_MAPPING("sounds", CYAML_FLAG_DEFAULT, EngineFXConfig, sounds, engine_sounds_config_fields),
     CYAML_FIELD_END
 };
 
@@ -143,10 +167,10 @@ static const cyaml_schema_value_t engine_fx_schema __attribute__((unused)) = {
 // GunFXConfig schema
 static const cyaml_schema_field_t gun_fx_fields[] = {
     CYAML_FIELD_BOOL("enabled", CYAML_FLAG_DEFAULT, GunFXConfig, enabled),
-    CYAML_FIELD_MAPPING_INLINE("trigger", CYAML_FLAG_DEFAULT, GunFXConfig, trigger_fields),
-    CYAML_FIELD_MAPPING_INLINE("nozzle_flash", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, GunFXConfig, nozzle_flash_fields),
-    CYAML_FIELD_MAPPING_INLINE("smoke", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, GunFXConfig, smoke_fields),
-    CYAML_FIELD_MAPPING_INLINE("turret_control", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, GunFXConfig, turret_control_fields),
+    CYAML_FIELD_MAPPING("trigger", CYAML_FLAG_DEFAULT, GunFXConfig, trigger, trigger_fields),
+    CYAML_FIELD_MAPPING("nozzle_flash", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, GunFXConfig, nozzle_flash, nozzle_flash_config_fields),
+    CYAML_FIELD_MAPPING("smoke", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, GunFXConfig, smoke, smoke_config_fields),
+    CYAML_FIELD_MAPPING("turret_control", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, GunFXConfig, turret_control, turret_control_config_fields),
     CYAML_FIELD_SEQUENCE_COUNT("rates_of_fire", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, GunFXConfig, rates, rate_count, &rate_of_fire_schema, 0, CYAML_UNLIMITED),
     CYAML_FIELD_END
 };
@@ -217,35 +241,35 @@ static const cyaml_config_t cyaml_config = {
 
 static inline void apply_defaults_inline(HeliFXConfig *config) {
     // Engine defaults
-    APPLY_DEFAULT_IF_ZERO(config->engine.threshold_us, DEFAULT_ENGINE_THRESHOLD_US);
-    APPLY_DEFAULT_IF_ZERO(config->engine.starting_offset_ms, DEFAULT_ENGINE_STARTING_OFFSET_MS);
-    APPLY_DEFAULT_IF_ZERO(config->engine.stopping_offset_ms, DEFAULT_ENGINE_STOPPING_OFFSET_MS);
+    APPLY_DEFAULT_IF_ZERO(config->engine.engine_toggle.threshold_us, DEFAULT_ENGINE_THRESHOLD_US);
+    APPLY_DEFAULT_IF_ZERO(config->engine.sounds.transitions.starting_offset_ms, DEFAULT_ENGINE_STARTING_OFFSET_MS);
+    APPLY_DEFAULT_IF_ZERO(config->engine.sounds.transitions.stopping_offset_ms, DEFAULT_ENGINE_STOPPING_OFFSET_MS);
     
     // Gun - Smoke defaults
-    APPLY_DEFAULT_IF_ZERO(config->gun.smoke_heater_pwm_threshold_us, DEFAULT_SMOKE_HEATER_THRESHOLD_US);
-    APPLY_DEFAULT_IF_ZERO(config->gun.smoke_fan_off_delay_ms, DEFAULT_SMOKE_FAN_OFF_DELAY_MS);
+    APPLY_DEFAULT_IF_ZERO(config->gun.smoke.heater_pwm_threshold_us, DEFAULT_SMOKE_HEATER_THRESHOLD_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.smoke.fan_off_delay_ms, DEFAULT_SMOKE_FAN_OFF_DELAY_MS);
     
     // Gun - Pitch servo defaults
-    APPLY_DEFAULT_IF_ZERO(config->gun.pitch_servo.input_min_us, DEFAULT_SERVO_INPUT_MIN_US);
-    APPLY_DEFAULT_IF_ZERO(config->gun.pitch_servo.input_max_us, DEFAULT_SERVO_INPUT_MAX_US);
-    APPLY_DEFAULT_IF_ZERO(config->gun.pitch_servo.output_min_us, DEFAULT_SERVO_OUTPUT_MIN_US);
-    APPLY_DEFAULT_IF_ZERO(config->gun.pitch_servo.output_max_us, DEFAULT_SERVO_OUTPUT_MAX_US);
-    if (config->gun.pitch_servo.max_speed_us_per_sec == 0.0f)
-        config->gun.pitch_servo.max_speed_us_per_sec = DEFAULT_SERVO_MAX_SPEED_US_PER_SEC;
-    if (config->gun.pitch_servo.max_accel_us_per_sec2 == 0.0f)
-        config->gun.pitch_servo.max_accel_us_per_sec2 = DEFAULT_SERVO_MAX_ACCEL_US_PER_SEC2;
-    APPLY_DEFAULT_IF_ZERO(config->gun.pitch_servo.update_rate_hz, DEFAULT_SERVO_UPDATE_RATE_HZ);
+    APPLY_DEFAULT_IF_ZERO(config->gun.turret_control.pitch.input_min_us, DEFAULT_SERVO_INPUT_MIN_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.turret_control.pitch.input_max_us, DEFAULT_SERVO_INPUT_MAX_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.turret_control.pitch.output_min_us, DEFAULT_SERVO_OUTPUT_MIN_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.turret_control.pitch.output_max_us, DEFAULT_SERVO_OUTPUT_MAX_US);
+    if (config->gun.turret_control.pitch.max_speed_us_per_sec == 0.0f)
+        config->gun.turret_control.pitch.max_speed_us_per_sec = DEFAULT_SERVO_MAX_SPEED_US_PER_SEC;
+    if (config->gun.turret_control.pitch.max_accel_us_per_sec2 == 0.0f)
+        config->gun.turret_control.pitch.max_accel_us_per_sec2 = DEFAULT_SERVO_MAX_ACCEL_US_PER_SEC2;
+    APPLY_DEFAULT_IF_ZERO(config->gun.turret_control.pitch.update_rate_hz, DEFAULT_SERVO_UPDATE_RATE_HZ);
     
     // Gun - Yaw servo defaults
-    APPLY_DEFAULT_IF_ZERO(config->gun.yaw_servo.input_min_us, DEFAULT_SERVO_INPUT_MIN_US);
-    APPLY_DEFAULT_IF_ZERO(config->gun.yaw_servo.input_max_us, DEFAULT_SERVO_INPUT_MAX_US);
-    APPLY_DEFAULT_IF_ZERO(config->gun.yaw_servo.output_min_us, DEFAULT_SERVO_OUTPUT_MIN_US);
-    APPLY_DEFAULT_IF_ZERO(config->gun.yaw_servo.output_max_us, DEFAULT_SERVO_OUTPUT_MAX_US);
-    if (config->gun.yaw_servo.max_speed_us_per_sec == 0.0f)
-        config->gun.yaw_servo.max_speed_us_per_sec = DEFAULT_SERVO_MAX_SPEED_US_PER_SEC;
-    if (config->gun.yaw_servo.max_accel_us_per_sec2 == 0.0f)
-        config->gun.yaw_servo.max_accel_us_per_sec2 = DEFAULT_SERVO_MAX_ACCEL_US_PER_SEC2;
-    APPLY_DEFAULT_IF_ZERO(config->gun.yaw_servo.update_rate_hz, DEFAULT_SERVO_UPDATE_RATE_HZ);
+    APPLY_DEFAULT_IF_ZERO(config->gun.turret_control.yaw.input_min_us, DEFAULT_SERVO_INPUT_MIN_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.turret_control.yaw.input_max_us, DEFAULT_SERVO_INPUT_MAX_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.turret_control.yaw.output_min_us, DEFAULT_SERVO_OUTPUT_MIN_US);
+    APPLY_DEFAULT_IF_ZERO(config->gun.turret_control.yaw.output_max_us, DEFAULT_SERVO_OUTPUT_MAX_US);
+    if (config->gun.turret_control.yaw.max_speed_us_per_sec == 0.0f)
+        config->gun.turret_control.yaw.max_speed_us_per_sec = DEFAULT_SERVO_MAX_SPEED_US_PER_SEC;
+    if (config->gun.turret_control.yaw.max_accel_us_per_sec2 == 0.0f)
+        config->gun.turret_control.yaw.max_accel_us_per_sec2 = DEFAULT_SERVO_MAX_ACCEL_US_PER_SEC2;
+    APPLY_DEFAULT_IF_ZERO(config->gun.turret_control.yaw.update_rate_hz, DEFAULT_SERVO_UPDATE_RATE_HZ);
     
 #ifdef ENABLE_JETIEX
     APPLY_DEFAULT_IF_ZERO(config->jetiex.update_rate_hz, DEFAULT_JETIEX_UPDATE_RATE_HZ);
@@ -316,11 +340,11 @@ int config_validate(const HeliFXConfig *config) {
 
     // Engine validation
     if (config->engine.enabled) {
-        if (config->engine.pin < 0) {
-            LOG_ERROR(LOG_CONFIG, "Invalid engine pin: %d", config->engine.pin);
+        if (config->engine.engine_toggle.pin < 0) {
+            LOG_ERROR(LOG_CONFIG, "Invalid engine pin: %d", config->engine.engine_toggle.pin);
             return -1;
         }
-        if (!config->engine.starting_file || !config->engine.running_file || !config->engine.stopping_file) {
+        if (!config->engine.sounds.starting || !config->engine.sounds.running || !config->engine.sounds.stopping) {
             LOG_ERROR(LOG_CONFIG, "Missing engine sound files");
             return -1;
         }
@@ -328,20 +352,20 @@ int config_validate(const HeliFXConfig *config) {
 
     // Gun validation
     if (config->gun.enabled) {
-        if (config->gun.trigger_pin < 0) {
-            LOG_ERROR(LOG_CONFIG, "Invalid gun trigger pin: %d", config->gun.trigger_pin);
+        if (config->gun.trigger.pin < 0) {
+            LOG_ERROR(LOG_CONFIG, "Invalid gun trigger pin: %d", config->gun.trigger.pin);
             return -1;
         }
         
         // Validate servos
-        if (config->gun.pitch_servo.enabled) {
-            if (config->gun.pitch_servo.pwm_pin < 0 || config->gun.pitch_servo.output_pin < 0) {
+        if (config->gun.turret_control.pitch.enabled) {
+            if (config->gun.turret_control.pitch.pwm_pin < 0 || config->gun.turret_control.pitch.output_pin < 0) {
                 LOG_ERROR(LOG_CONFIG, "Invalid pitch servo pins");
                 return -1;
             }
         }
-        if (config->gun.yaw_servo.enabled) {
-            if (config->gun.yaw_servo.pwm_pin < 0 || config->gun.yaw_servo.output_pin < 0) {
+        if (config->gun.turret_control.yaw.enabled) {
+            if (config->gun.turret_control.yaw.pwm_pin < 0 || config->gun.turret_control.yaw.output_pin < 0) {
                 LOG_ERROR(LOG_CONFIG, "Invalid yaw servo pins");
                 return -1;
             }
@@ -384,67 +408,67 @@ void config_print(const HeliFXConfig *config) {
     printf("\n[Engine FX]\n");
     printf("  Enabled: %s\n", config->engine.enabled ? "true" : "false");
     if (config->engine.enabled) {
-        printf("  Pin: %d\n", config->engine.pin);
-        printf("  Threshold: %d µs\n", config->engine.threshold_us);
-        printf("  Starting: %s\n", config->engine.starting_file ?: "(none)");
-        printf("  Running: %s\n", config->engine.running_file ?: "(none)");
-        printf("  Stopping: %s\n", config->engine.stopping_file ?: "(none)");
-        printf("  Starting Offset: %d ms\n", config->engine.starting_offset_ms);
-        printf("  Stopping Offset: %d ms\n", config->engine.stopping_offset_ms);
+        printf("  Pin: %d\n", config->engine.engine_toggle.pin);
+        printf("  Threshold: %d µs\n", config->engine.engine_toggle.threshold_us);
+        printf("  Starting: %s\n", config->engine.sounds.starting ?: "(none)");
+        printf("  Running: %s\n", config->engine.sounds.running ?: "(none)");
+        printf("  Stopping: %s\n", config->engine.sounds.stopping ?: "(none)");
+        printf("  Starting Offset: %d ms\n", config->engine.sounds.transitions.starting_offset_ms);
+        printf("  Stopping Offset: %d ms\n", config->engine.sounds.transitions.stopping_offset_ms);
     }
     
     // Gun FX
     printf("\n[Gun FX]\n");
     printf("  Enabled: %s\n", config->gun.enabled ? "true" : "false");
     if (config->gun.enabled) {
-        printf("  Trigger Pin: %d\n", config->gun.trigger_pin);
+        printf("  Trigger Pin: %d\n", config->gun.trigger.pin);
         
         printf("\n  [Nozzle Flash]\n");
-        printf("    Enabled: %s\n", config->gun.nozzle_flash_enabled ? "true" : "false");
-        if (config->gun.nozzle_flash_enabled) {
-            printf("    Pin: %d\n", config->gun.nozzle_flash_pin);
+        printf("    Enabled: %s\n", config->gun.nozzle_flash.enabled ? "true" : "false");
+        if (config->gun.nozzle_flash.enabled) {
+            printf("    Pin: %d\n", config->gun.nozzle_flash.pin);
         }
         
         printf("\n  [Smoke]\n");
-        printf("    Enabled: %s\n", config->gun.smoke_enabled ? "true" : "false");
-        if (config->gun.smoke_enabled) {
-            printf("    Fan Pin: %d\n", config->gun.smoke_fan_pin);
-            printf("    Heater Pin: %d\n", config->gun.smoke_heater_pin);
-            printf("    Heater Toggle Pin: %d\n", config->gun.smoke_heater_toggle_pin);
-            printf("    Heater PWM Threshold: %d µs\n", config->gun.smoke_heater_pwm_threshold_us);
-            printf("    Fan Off Delay: %d ms\n", config->gun.smoke_fan_off_delay_ms);
+        printf("    Enabled: %s\n", config->gun.smoke.enabled ? "true" : "false");
+        if (config->gun.smoke.enabled) {
+            printf("    Fan Pin: %d\n", config->gun.smoke.fan_pin);
+            printf("    Heater Pin: %d\n", config->gun.smoke.heater_pin);
+            printf("    Heater Toggle Pin: %d\n", config->gun.smoke.heater_toggle_pin);
+            printf("    Heater PWM Threshold: %d µs\n", config->gun.smoke.heater_pwm_threshold_us);
+            printf("    Fan Off Delay: %d ms\n", config->gun.smoke.fan_off_delay_ms);
         }
         
         printf("\n  [Turret Control - Pitch]\n");
-        printf("    Enabled: %s\n", config->gun.pitch_servo.enabled ? "true" : "false");
-        if (config->gun.pitch_servo.enabled) {
-            printf("    PWM Pin: %d\n", config->gun.pitch_servo.pwm_pin);
-            printf("    Output Pin: %d\n", config->gun.pitch_servo.output_pin);
+        printf("    Enabled: %s\n", config->gun.turret_control.pitch.enabled ? "true" : "false");
+        if (config->gun.turret_control.pitch.enabled) {
+            printf("    PWM Pin: %d\n", config->gun.turret_control.pitch.pwm_pin);
+            printf("    Output Pin: %d\n", config->gun.turret_control.pitch.output_pin);
             printf("    Input Range: %d-%d µs\n", 
-                   config->gun.pitch_servo.input_min_us,
-                   config->gun.pitch_servo.input_max_us);
+                   config->gun.turret_control.pitch.input_min_us,
+                   config->gun.turret_control.pitch.input_max_us);
             printf("    Output Range: %d-%d µs\n",
-                   config->gun.pitch_servo.output_min_us,
-                   config->gun.pitch_servo.output_max_us);
-            printf("    Max Speed: %.1f µs/sec\n", config->gun.pitch_servo.max_speed_us_per_sec);
-            printf("    Max Accel: %.1f µs/sec²\n", config->gun.pitch_servo.max_accel_us_per_sec2);
-            printf("    Update Rate: %d Hz\n", config->gun.pitch_servo.update_rate_hz);
+                   config->gun.turret_control.pitch.output_min_us,
+                   config->gun.turret_control.pitch.output_max_us);
+            printf("    Max Speed: %.1f µs/sec\n", config->gun.turret_control.pitch.max_speed_us_per_sec);
+            printf("    Max Accel: %.1f µs/sec²\n", config->gun.turret_control.pitch.max_accel_us_per_sec2);
+            printf("    Update Rate: %d Hz\n", config->gun.turret_control.pitch.update_rate_hz);
         }
         
         printf("\n  [Turret Control - Yaw]\n");
-        printf("    Enabled: %s\n", config->gun.yaw_servo.enabled ? "true" : "false");
-        if (config->gun.yaw_servo.enabled) {
-            printf("    PWM Pin: %d\n", config->gun.yaw_servo.pwm_pin);
-            printf("    Output Pin: %d\n", config->gun.yaw_servo.output_pin);
+        printf("    Enabled: %s\n", config->gun.turret_control.yaw.enabled ? "true" : "false");
+        if (config->gun.turret_control.yaw.enabled) {
+            printf("    PWM Pin: %d\n", config->gun.turret_control.yaw.pwm_pin);
+            printf("    Output Pin: %d\n", config->gun.turret_control.yaw.output_pin);
             printf("    Input Range: %d-%d µs\n",
-                   config->gun.yaw_servo.input_min_us,
-                   config->gun.yaw_servo.input_max_us);
+                   config->gun.turret_control.yaw.input_min_us,
+                   config->gun.turret_control.yaw.input_max_us);
             printf("    Output Range: %d-%d µs\n",
-                   config->gun.yaw_servo.output_min_us,
-                   config->gun.yaw_servo.output_max_us);
-            printf("    Max Speed: %.1f µs/sec\n", config->gun.yaw_servo.max_speed_us_per_sec);
-            printf("    Max Accel: %.1f µs/sec²\n", config->gun.yaw_servo.max_accel_us_per_sec2);
-            printf("    Update Rate: %d Hz\n", config->gun.yaw_servo.update_rate_hz);
+                   config->gun.turret_control.yaw.output_min_us,
+                   config->gun.turret_control.yaw.output_max_us);
+            printf("    Max Speed: %.1f µs/sec\n", config->gun.turret_control.yaw.max_speed_us_per_sec);
+            printf("    Max Accel: %.1f µs/sec²\n", config->gun.turret_control.yaw.max_accel_us_per_sec2);
+            printf("    Update Rate: %d Hz\n", config->gun.turret_control.yaw.update_rate_hz);
         }
         
         printf("\n  [Rates of Fire]\n");
@@ -453,7 +477,7 @@ void config_print(const HeliFXConfig *config) {
                    config->gun.rates[i].name,
                    config->gun.rates[i].rpm,
                    config->gun.rates[i].pwm_threshold_us,
-                   config->gun.rates[i].sound_file);
+                   config->gun.rates[i].sound_file ?: "(none)");
         }
     }
     

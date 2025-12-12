@@ -98,10 +98,19 @@ int main(int argc, char *argv[]) {
     // Create engine config
     EngineFXConfig engine_config = {
         .enabled = true,
-        .pin = pwm_pin,
-        .threshold_us = threshold,
-        .starting_offset_ms = starting_offset_ms,
-        .stopping_offset_ms = stopping_offset_ms
+        .engine_toggle = {
+            .pin = pwm_pin,
+            .threshold_us = threshold,
+        },
+        .sounds = {
+            .starting = nullptr,
+            .running = nullptr,
+            .stopping = nullptr,
+            .transitions = {
+                .starting_offset_ms = starting_offset_ms,
+                .stopping_offset_ms = stopping_offset_ms,
+            }
+        }
     };
     
     // Create engine FX controller

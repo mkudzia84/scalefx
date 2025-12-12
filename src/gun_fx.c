@@ -343,10 +343,10 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     
     gun->mixer = mixer;
     gun->audio_channel = audio_channel;
-    gun->trigger_pwm_pin = config->trigger_pin;
-    gun->smoke_heater_toggle_pin = config->smoke_heater_toggle_pin;
-    gun->smoke_heater_threshold = config->smoke_heater_pwm_threshold_us;
-    gun->smoke_fan_off_delay_ms = config->smoke_fan_off_delay_ms;
+    gun->trigger_pwm_pin = config->trigger.pin;
+    gun->smoke_heater_toggle_pin = config->smoke.heater_toggle_pin;
+    gun->smoke_heater_threshold = config->smoke.heater_pwm_threshold_us;
+    gun->smoke_fan_off_delay_ms = config->smoke.fan_off_delay_ms;
     gun->rates = nullptr;
     gun->rate_count = 0;
     gun->is_firing = false;
@@ -361,90 +361,90 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     mtx_init(&gun->mutex, mtx_plain);
     
     // Create nozzle flash LED if pin specified
-    if (config->nozzle_flash_pin >= 0) {
-        gun->nozzle_flash = led_create(config->nozzle_flash_pin);
+    if (config->nozzle_flash.pin >= 0) {
+        gun->nozzle_flash = led_create(config->nozzle_flash.pin);
         if (!gun->nozzle_flash) {
-            LOG_WARN(LOG_GUN, "Failed to create nozzle flash LED on GPIO %d", config->nozzle_flash_pin);
+            LOG_WARN(LOG_GUN, "Failed to create nozzle flash LED on GPIO %d", config->nozzle_flash.pin);
         } else {
-            LOG_DEBUG(LOG_GUN, "Nozzle flash LED initialized on GPIO %d", config->nozzle_flash_pin);
+            LOG_DEBUG(LOG_GUN, "Nozzle flash LED initialized on GPIO %d", config->nozzle_flash.pin);
         }
     }
     
     // Create smoke generator if pins specified
     // Create smoke generator if pins specified
-    if (config->smoke_fan_pin >= 0 && config->smoke_heater_pin >= 0) {
-        gun->smoke = smoke_generator_create(config->smoke_heater_pin, config->smoke_fan_pin);
+    if (config->smoke.fan_pin >= 0 && config->smoke.heater_pin >= 0) {
+        gun->smoke = smoke_generator_create(config->smoke.heater_pin, config->smoke.fan_pin);
         if (!gun->smoke) {
             LOG_WARN(LOG_GUN, "Failed to create smoke generator (heater GPIO %d, fan GPIO %d)",
-                    config->smoke_heater_pin, config->smoke_fan_pin);
+                    config->smoke.heater_pin, config->smoke.fan_pin);
         } else {
             LOG_DEBUG(LOG_GUN, "Smoke generator initialized (heater GPIO %d, fan GPIO %d)",
-                     config->smoke_heater_pin, config->smoke_fan_pin);
+                     config->smoke.heater_pin, config->smoke.fan_pin);
         }
     }
     
     // Create trigger PWM monitor if pin specified
-    if (config->trigger_pin >= 0) {
-        gun->trigger_pwm_monitor = pwm_monitor_create(config->trigger_pin, nullptr, nullptr);
+    if (config->trigger.pin >= 0) {
+        gun->trigger_pwm_monitor = pwm_monitor_create(config->trigger.pin, nullptr, nullptr);
         if (!gun->trigger_pwm_monitor) {
-            LOG_WARN(LOG_GUN, "Failed to create trigger PWM monitor on GPIO %d", config->trigger_pin);
+            LOG_WARN(LOG_GUN, "Failed to create trigger PWM monitor on GPIO %d", config->trigger.pin);
         } else {
             pwm_monitor_start(gun->trigger_pwm_monitor);
-            LOG_DEBUG(LOG_GUN, "Trigger PWM monitoring started on GPIO %d", config->trigger_pin);
+            LOG_DEBUG(LOG_GUN, "Trigger PWM monitoring started on GPIO %d", config->trigger.pin);
         }
     }
     
     // Create smoke heater toggle PWM monitor if pin specified
-    if (config->smoke_heater_toggle_pin >= 0) {
-        gun->smoke_heater_toggle_monitor = pwm_monitor_create(config->smoke_heater_toggle_pin, nullptr, nullptr);
+    if (config->smoke.heater_toggle_pin >= 0) {
+        gun->smoke_heater_toggle_monitor = pwm_monitor_create(config->smoke.heater_toggle_pin, nullptr, nullptr);
         if (!gun->smoke_heater_toggle_monitor) {
             LOG_WARN(LOG_GUN, "Failed to create smoke heater toggle monitor on GPIO %d",
-                    config->smoke_heater_toggle_pin);
+                    config->smoke.heater_toggle_pin);
         } else {
             pwm_monitor_start(gun->smoke_heater_toggle_monitor);
             LOG_DEBUG(LOG_GUN, "Smoke heater toggle monitoring started on GPIO %d (threshold: %d µs)",
-                     config->smoke_heater_toggle_pin, config->smoke_heater_pwm_threshold_us);
+                     config->smoke.heater_toggle_pin, config->smoke.heater_pwm_threshold_us);
         }
     }
     
     // Create pitch servo if enabled
-    if (config->pitch_servo.enabled) {
-        gun->pitch_servo = servo_create(&config->pitch_servo);
+    if (config->turret_control.pitch.enabled) {
+        gun->pitch_servo = servo_create(&config->turret_control.pitch);
         if (!gun->pitch_servo) {
             LOG_WARN(LOG_GUN, "Failed to create pitch servo");
         } else {
-            gun->pitch_pwm_monitor = pwm_monitor_create(config->pitch_servo.pwm_pin, nullptr, nullptr);
+            gun->pitch_pwm_monitor = pwm_monitor_create(config->turret_control.pitch.pwm_pin, nullptr, nullptr);
             if (!gun->pitch_pwm_monitor) {
                 LOG_WARN(LOG_GUN, "Failed to create pitch PWM monitor on GPIO %d",
-                        config->pitch_servo.pwm_pin);
+                        config->turret_control.pitch.pwm_pin);
                 servo_destroy(gun->pitch_servo);
                 gun->pitch_servo = nullptr;
             } else {
                 pwm_monitor_start(gun->pitch_pwm_monitor);
-                gun->pitch_pwm_pin = config->pitch_servo.pwm_pin;
+                gun->pitch_pwm_pin = config->turret_control.pitch.pwm_pin;
                 LOG_DEBUG(LOG_GUN, "Pitch servo initialized (input GPIO %d, output GPIO %d)",
-                         config->pitch_servo.pwm_pin, config->pitch_servo.output_pin);
+                         config->turret_control.pitch.pwm_pin, config->turret_control.pitch.output_pin);
             }
         }
     }
     
     // Create yaw servo if enabled
-    if (config->yaw_servo.enabled) {
-        gun->yaw_servo = servo_create(&config->yaw_servo);
+    if (config->turret_control.yaw.enabled) {
+        gun->yaw_servo = servo_create(&config->turret_control.yaw);
         if (!gun->yaw_servo) {
             LOG_WARN(LOG_GUN, "Failed to create yaw servo");
         } else {
-            gun->yaw_pwm_monitor = pwm_monitor_create(config->yaw_servo.pwm_pin, nullptr, nullptr);
+            gun->yaw_pwm_monitor = pwm_monitor_create(config->turret_control.yaw.pwm_pin, nullptr, nullptr);
             if (!gun->yaw_pwm_monitor) {
                 LOG_WARN(LOG_GUN, "Failed to create yaw PWM monitor on GPIO %d",
-                        config->yaw_servo.pwm_pin);
+                        config->turret_control.yaw.pwm_pin);
                 servo_destroy(gun->yaw_servo);
                 gun->yaw_servo = nullptr;
             } else {
                 pwm_monitor_start(gun->yaw_pwm_monitor);
-                gun->yaw_pwm_pin = config->yaw_servo.pwm_pin;
+                gun->yaw_pwm_pin = config->turret_control.yaw.pwm_pin;
                 LOG_DEBUG(LOG_GUN, "Yaw servo initialized (input GPIO %d, output GPIO %d)",
-                         config->yaw_servo.pwm_pin, config->yaw_servo.output_pin);
+                         config->turret_control.yaw.pwm_pin, config->turret_control.yaw.output_pin);
             }
         }
     }

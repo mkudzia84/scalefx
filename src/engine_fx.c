@@ -242,10 +242,10 @@ EngineFX* engine_fx_create(AudioMixer *mixer, int audio_channel,
     engine->state = ENGINE_STOPPED;
     engine->mixer = mixer;
     engine->audio_channel = audio_channel;
-    engine->engine_toggle_pwm_pin = config->pin;
-    engine->engine_toggle_pwm_threshold = config->threshold_us;
-    engine->starting_offset_from_stopping_ms = config->starting_offset_ms;
-    engine->stopping_offset_from_starting_ms = config->stopping_offset_ms;
+    engine->engine_toggle_pwm_pin = config->engine_toggle.pin;
+    engine->engine_toggle_pwm_threshold = config->engine_toggle.threshold_us;
+    engine->starting_offset_from_stopping_ms = config->sounds.transitions.starting_offset_ms;
+    engine->stopping_offset_from_starting_ms = config->sounds.transitions.stopping_offset_ms;
     engine->track_starting = nullptr;
     engine->track_running = nullptr;
     engine->track_stopping = nullptr;
@@ -254,14 +254,14 @@ EngineFX* engine_fx_create(AudioMixer *mixer, int audio_channel,
     mtx_init(&engine->mutex, mtx_plain);
     
     // Create PWM monitor if pin specified
-    if (config->pin >= 0) {
-        engine->engine_toggle_pwm_monitor = pwm_monitor_create(config->pin, nullptr, nullptr);
+    if (config->engine_toggle.pin >= 0) {
+        engine->engine_toggle_pwm_monitor = pwm_monitor_create(config->engine_toggle.pin, nullptr, nullptr);
         if (!engine->engine_toggle_pwm_monitor) {
-            LOG_WARN(LOG_ENGINE, "Failed to create PWM monitor for pin %d", config->pin);
+            LOG_WARN(LOG_ENGINE, "Failed to create PWM monitor for pin %d", config->engine_toggle.pin);
         } else {
             pwm_monitor_start(engine->engine_toggle_pwm_monitor);
             printf("[ENGINE] PWM monitoring started on pin %d (threshold: %d us)\n",
-                   config->pin, config->threshold_us);
+                   config->engine_toggle.pin, config->engine_toggle.threshold_us);
         }
     }
     

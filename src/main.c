@@ -87,9 +87,9 @@ int main(int argc, char *argv[]) {
         printf("[HELIFX] Initializing Engine FX...\n");
         
         // Load engine sounds
-        sound_manager_load_sound(sound_mgr, SOUND_ENGINE_STARTING, config->engine.starting_file);
-        sound_manager_load_sound(sound_mgr, SOUND_ENGINE_RUNNING, config->engine.running_file);
-        sound_manager_load_sound(sound_mgr, SOUND_ENGINE_STOPPING, config->engine.stopping_file);
+        sound_manager_load_sound(sound_mgr, SOUND_ENGINE_STARTING, config->engine.sounds.starting);
+        sound_manager_load_sound(sound_mgr, SOUND_ENGINE_RUNNING, config->engine.sounds.running);
+        sound_manager_load_sound(sound_mgr, SOUND_ENGINE_STOPPING, config->engine.sounds.stopping);
         
         // Create engine FX controller (audio channel 0)
         engine = engine_fx_create(mixer, 0, &config->engine);
@@ -142,7 +142,7 @@ int main(int argc, char *argv[]) {
                 free(rates);
                 
                 // Set smoke fan off delay
-                gun_fx_set_smoke_fan_off_delay(gun, config->gun.smoke_fan_off_delay_ms);
+                gun_fx_set_smoke_fan_off_delay(gun, config->gun.smoke.fan_off_delay_ms);
                 
                 printf("[HELIFX] Gun FX initialized with %d rates\n", config->gun.rate_count);
             }

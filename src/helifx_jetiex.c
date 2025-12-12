@@ -82,28 +82,28 @@ static void on_parameter_change(uint8_t param_id, void *user_data) {
     
     switch (param_id) {
         case 4: // Smoke Fan Delay
-            if (g_config->gun.enabled && g_config->gun.smoke_enabled) {
-                g_config->gun.smoke_fan_off_delay_ms = g_parameters.smoke_fan_delay_ms;
+            if (g_config->gun.enabled && g_config->gun.smoke.enabled) {
+                g_config->gun.smoke.fan_off_delay_ms = g_parameters.smoke_fan_delay_ms;
                 if (g_gun) gun_fx_set_smoke_fan_off_delay(g_gun, g_parameters.smoke_fan_delay_ms);
                 LOG_INFO(LOG_JETIEX, "Smoke fan delay set to %d ms", g_parameters.smoke_fan_delay_ms);
             }
             break;
         case 5: // Heater PWM Threshold
-            if (g_config->gun.enabled && g_config->gun.smoke_enabled) {
-                g_config->gun.smoke_heater_pwm_threshold_us = g_parameters.heater_pwm_threshold;
+            if (g_config->gun.enabled && g_config->gun.smoke.enabled) {
+                g_config->gun.smoke.heater_pwm_threshold_us = g_parameters.heater_pwm_threshold;
                 LOG_INFO(LOG_JETIEX, "Heater PWM threshold set to %d", g_parameters.heater_pwm_threshold);
             }
             break;
         case 6: // Engine PWM Threshold
             if (g_config->engine.enabled) {
-                g_config->engine.threshold_us = g_parameters.engine_pwm_threshold;
+                g_config->engine.engine_toggle.threshold_us = g_parameters.engine_pwm_threshold;
                 LOG_INFO(LOG_JETIEX, "Engine PWM threshold set to %d", g_parameters.engine_pwm_threshold);
             }
             break;
         case 7: // Servo Max Speed
             if (g_config->gun.enabled) {
-                g_config->gun.pitch_servo.max_speed_us_per_sec = (float)g_parameters.servo_max_speed;
-                g_config->gun.yaw_servo.max_speed_us_per_sec = (float)g_parameters.servo_max_speed;
+                g_config->gun.turret_control.pitch.max_speed_us_per_sec = (float)g_parameters.servo_max_speed;
+                g_config->gun.turret_control.yaw.max_speed_us_per_sec = (float)g_parameters.servo_max_speed;
                 if (g_gun) {
                     Servo *pitch = gun_fx_get_pitch_servo(g_gun);
                     if (pitch) servo_set_max_speed(pitch, (float)g_parameters.servo_max_speed);
@@ -185,20 +185,20 @@ JetiEX* helifx_jetiex_init(HeliFXConfig *config, const char *config_file_path,
             g_parameters.gun_rate_2_rpm = config->gun.rates[1].rpm;
             g_parameters.gun_rate_2_pwm = config->gun.rates[1].pwm_threshold_us;
         }
-        g_parameters.smoke_fan_delay_ms = config->gun.smoke_fan_off_delay_ms;
-        g_parameters.heater_pwm_threshold = config->gun.smoke_heater_pwm_threshold_us;
-        g_parameters.nozzle_flash_enabled = config->gun.nozzle_flash_enabled;
-        g_parameters.smoke_enabled = config->gun.smoke_enabled;
+        g_parameters.smoke_fan_delay_ms = config->gun.smoke.fan_off_delay_ms;
+        g_parameters.heater_pwm_threshold = config->gun.smoke.heater_pwm_threshold_us;
+        g_parameters.nozzle_flash_enabled = config->gun.nozzle_flash.enabled;
+        g_parameters.smoke_enabled = config->gun.smoke.enabled;
     }
     
     if (config->engine.enabled) {
-        g_parameters.engine_pwm_threshold = config->engine.threshold_us;
+        g_parameters.engine_pwm_threshold = config->engine.engine_toggle.threshold_us;
     }
     
     if (config->gun.enabled) {
-        if (config->gun.pitch_servo.enabled) {
-            g_parameters.servo_max_speed = (uint16_t)config->gun.pitch_servo.max_speed_us_per_sec;
-            g_parameters.servo_max_accel = (uint16_t)config->gun.pitch_servo.max_accel_us_per_sec2;
+        if (config->gun.turret_control.pitch.enabled) {
+            g_parameters.servo_max_speed = (uint16_t)config->gun.turret_control.pitch.max_speed_us_per_sec;
+            g_parameters.servo_max_accel = (uint16_t)config->gun.turret_control.pitch.max_accel_us_per_sec2;
         }
     }
     
