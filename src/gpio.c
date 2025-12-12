@@ -152,7 +152,8 @@ int gpio_set_mode(int pin, GPIOMode mode) {
         return -1;
     }
     
-    ret = gpiod_line_config_add_line_settings(line_cfg, &pin, 1, settings);
+    unsigned int offset = (unsigned int)pin;
+    ret = gpiod_line_config_add_line_settings(line_cfg, &offset, 1, settings);
     if (ret < 0) {
         gpiod_line_config_free(line_cfg);
         gpiod_request_config_free(req_cfg);
@@ -246,9 +247,8 @@ bool gpio_read(int pin) {
         return false;
     }
     
-    enum gpiod_line_value value;
-    int result = gpiod_line_request_get_value(request, pin, &value);
-    if (result < 0) {
+    enum gpiod_line_value value = gpiod_line_request_get_value(request, (unsigned int)pin);
+    if (value == GPIOD_LINE_VALUE_ERROR) {
         LOG_ERROR(LOG_GPIO, "Failed to read GPIO %d: %s", pin, strerror(errno));
         return false;
     }
@@ -492,7 +492,8 @@ PWMMonitor* pwm_monitor_create_with_name(int pin, const char *feature_name, PWMC
         return nullptr;
     }
     
-    int ret = gpiod_line_config_add_line_settings(line_cfg, &pin, 1, settings);
+    unsigned int offset = (unsigned int)pin;
+    int ret = gpiod_line_config_add_line_settings(line_cfg, &offset, 1, settings);
     if (ret < 0) {
         gpiod_line_config_free(line_cfg);
         gpiod_request_config_free(req_cfg);
