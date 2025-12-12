@@ -120,7 +120,7 @@ bool gpio_read(int pin) {
     return result != 0;
 }
 
-int gpio_set_edge(int pin, GPIOEdge edge) {eout_us) {==========================
+// ============================================================================
 // ASYNC PWM MONITOR IMPLEMENTATION (using pigpio alerts)
 // ============================================================================
 
