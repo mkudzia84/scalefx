@@ -83,13 +83,13 @@ int main(int argc, char *argv[]) {
     // Parse configuration
     HeliFXConfig *config = config_load(config_file);
     if (!config) {
-        fprintf(stderr, "[HELIFX] Failed to load configuration file\n");
+        LOG_ERROR(LOG_HELIFX, "Failed to load configuration file");
         return 1;
     }
     
     // Validate configuration
     if (config_validate(config) != 0) {
-        fprintf(stderr, "[HELIFX] Configuration validation failed\n");
+        LOG_ERROR(LOG_HELIFX, "Configuration validation failed");
         config_free(config);
         return 1;
     }
@@ -99,15 +99,15 @@ int main(int argc, char *argv[]) {
     
     // Initialize GPIO
     if (gpio_init() < 0) {
-        fprintf(stderr, "[HELIFX] Error: Failed to initialize GPIO\n");
-        fprintf(stderr, "[HELIFX] Note: Try running with sudo for GPIO access\n");
+        LOG_ERROR(LOG_HELIFX, "Failed to initialize GPIO");
+        LOG_ERROR(LOG_HELIFX, "Note: Try running with sudo for GPIO access");
         return 1;
     }
     
     // Create audio mixer (8 channels)
     AudioMixer *mixer = audio_mixer_create(8);
     if (!mixer) {
-        fprintf(stderr, "[HELIFX] Error: Failed to create audio mixer\n");
+        LOG_ERROR(LOG_HELIFX, "Failed to create audio mixer");
         gpio_cleanup();
         return 1;
     }
@@ -115,7 +115,7 @@ int main(int argc, char *argv[]) {
     // Create sound manager
     SoundManager *sound_mgr = sound_manager_create();
     if (!sound_mgr) {
-        fprintf(stderr, "[HELIFX] Error: Failed to create sound manager\n");
+        LOG_ERROR(LOG_HELIFX, "Failed to create sound manager");
         audio_mixer_destroy(mixer);
         gpio_cleanup();
         return 1;
@@ -135,7 +135,7 @@ int main(int argc, char *argv[]) {
         // Create engine FX controller (audio channel 0)
         engine = engine_fx_create(mixer, 0, &config->engine);
         if (!engine) {
-            fprintf(stderr, "[HELIFX] Error: Failed to create engine FX controller\n");
+            LOG_ERROR(LOG_HELIFX, "Failed to create engine FX controller");
         } else {
             engine_fx_load_sounds(engine, 
                 sound_manager_get_sound(sound_mgr, SOUND_ENGINE_STARTING),
@@ -161,12 +161,12 @@ int main(int argc, char *argv[]) {
         gun = gun_fx_create(mixer, 1, &config->gun);
         
         if (!gun) {
-            fprintf(stderr, "[HELIFX] Error: Failed to create gun FX controller\n");
+            LOG_ERROR(LOG_HELIFX, "Failed to create gun FX controller");
         } else {
             // Set rates of fire
             RateOfFire *rates = (RateOfFire*)malloc(config->gun.rate_count * sizeof(RateOfFire));
             if (rates == nullptr) {
-                fprintf(stderr, "[HELIFX] Error: Failed to allocate rates array\n");
+                LOG_ERROR(LOG_HELIFX, "Failed to allocate rates array");
                 gun_fx_destroy(gun);
                 gun = nullptr;
             } else {
@@ -177,7 +177,7 @@ int main(int argc, char *argv[]) {
                 }
                 
                 if (gun_fx_set_rates_of_fire(gun, rates, config->gun.rate_count) != 0) {
-                    fprintf(stderr, "[HELIFX] Error: Failed to set rates of fire\n");
+                    LOG_ERROR(LOG_HELIFX, "Failed to set rates of fire");
                 }
                 
                 free(rates);
@@ -200,7 +200,7 @@ int main(int argc, char *argv[]) {
     if (interactive_mode) {
         status = status_display_create(gun, engine, 100);  // 100ms refresh
         if (!status) {
-            fprintf(stderr, "[HELIFX] Warning: Failed to create status display\n");
+            LOG_WARN(LOG_HELIFX, "Failed to create status display");
         }
     }
     

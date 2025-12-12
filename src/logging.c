@@ -185,23 +185,20 @@ void logging_write(const char *level, const char *component, const char *fmt, ..
     vsnprintf(message, sizeof(message), fmt, args);
     va_end(args);
     
-    // Write to console
-    // In interactive mode (file logging enabled): use stderr to keep stdout clean for status display
+    // Write to console only if no file logging (console mode)
+    // In interactive mode (file logging enabled): skip console output entirely (logs only to file)
     // In console mode (no file): use stdout for INFO/DEBUG, stderr for WARN/ERROR
-    bool use_stderr = (strcmp(level, "ERROR") == 0 || strcmp(level, "WARN") == 0);
-    if (logging_state.log_file) {
-        // Interactive mode: all console output to stderr (stdout reserved for status)
-        use_stderr = true;
+    if (!logging_state.log_file) {
+        bool use_stderr = (strcmp(level, "ERROR") == 0 || strcmp(level, "WARN") == 0);
+        FILE *console = use_stderr ? stderr : stdout;
+        fprintf(console, "%s", component);
+        if (strcmp(level, "ERROR") == 0) {
+            fprintf(console, "Error: ");
+        } else if (strcmp(level, "WARN") == 0) {
+            fprintf(console, "Warning: ");
+        }
+        fprintf(console, "%s\n", message);
     }
-    
-    FILE *console = use_stderr ? stderr : stdout;
-    fprintf(console, "%s", component);
-    if (strcmp(level, "ERROR") == 0) {
-        fprintf(console, "Error: ");
-    } else if (strcmp(level, "WARN") == 0) {
-        fprintf(console, "Warning: ");
-    }
-    fprintf(console, "%s\n", message);
     
     // Write to log file if enabled
     if (logging_state.log_file) {

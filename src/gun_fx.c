@@ -387,7 +387,7 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     if (config->trigger.pin >= 0) {
         gun->trigger_pwm_monitor = pwm_monitor_create_with_name(config->trigger.pin, "Gun Trigger", nullptr, nullptr);
         if (!gun->trigger_pwm_monitor) {
-            LOG_WARN(LOG_GUN, "Failed to create trigger PWM monitor on GPIO %d", config->trigger.pin);
+            LOG_ERROR(LOG_GUN, "Failed to create trigger PWM monitor on GPIO %d", config->trigger.pin);
         } else {
             pwm_monitor_start(gun->trigger_pwm_monitor);
             LOG_DEBUG(LOG_GUN, "Trigger PWM monitoring started on GPIO %d", config->trigger.pin);
@@ -411,11 +411,11 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     if (config->turret_control.pitch.enabled) {
         gun->pitch_servo = servo_create(&config->turret_control.pitch);
         if (!gun->pitch_servo) {
-            LOG_WARN(LOG_GUN, "Failed to create pitch servo");
+            LOG_ERROR(LOG_GUN, "Failed to create pitch servo");
         } else {
             gun->pitch_pwm_monitor = pwm_monitor_create_with_name(config->turret_control.pitch.pwm_pin, "Turret Pitch Servo", nullptr, nullptr);
             if (!gun->pitch_pwm_monitor) {
-                LOG_WARN(LOG_GUN, "Failed to create pitch PWM monitor on GPIO %d",
+                LOG_ERROR(LOG_GUN, "Failed to create pitch PWM monitor on GPIO %d",
                         config->turret_control.pitch.pwm_pin);
                 servo_destroy(gun->pitch_servo);
                 gun->pitch_servo = nullptr;
@@ -433,11 +433,11 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     if (config->turret_control.yaw.enabled) {
         gun->yaw_servo = servo_create(&config->turret_control.yaw);
         if (!gun->yaw_servo) {
-            LOG_WARN(LOG_GUN, "Failed to create yaw servo");
+            LOG_ERROR(LOG_GUN, "Failed to create yaw servo");
         } else {
             gun->yaw_pwm_monitor = pwm_monitor_create_with_name(config->turret_control.yaw.pwm_pin, "Turret Yaw Servo", nullptr, nullptr);
             if (!gun->yaw_pwm_monitor) {
-                LOG_WARN(LOG_GUN, "Failed to create yaw PWM monitor on GPIO %d",
+                LOG_ERROR(LOG_GUN, "Failed to create yaw PWM monitor on GPIO %d",
                         config->turret_control.yaw.pwm_pin);
                 servo_destroy(gun->yaw_servo);
                 gun->yaw_servo = nullptr;
