@@ -105,257 +105,326 @@ static int select_rate_of_fire(GunFX *gun, int pwm_duration_us, int previous_rat
     return best_match;  // Returns -1 if no match found (not firing)
 }
 
+// Update servo positions from averaged PWM inputs
+static void update_servos(GunFX *gun) {
+    if (gun->pitch_servo && gun->pitch_pwm_monitor) {
+        int pitch_avg_us;
+        if (pwm_monitor_get_average(gun->pitch_pwm_monitor, &pitch_avg_us)) {
+            servo_set_input(gun->pitch_servo, pitch_avg_us);
+        } else {
+            static int pitch_warn_count = 0;
+            if (pitch_warn_count < 5) {
+                LOG_WARN(LOG_GUN, "No PWM average from pitch servo input (GPIO %d)", gun->pitch_pwm_pin);
+                pitch_warn_count++;
+            }
+        }
+    }
+    
+    if (gun->yaw_servo && gun->yaw_pwm_monitor) {
+        int yaw_avg_us;
+        if (pwm_monitor_get_average(gun->yaw_pwm_monitor, &yaw_avg_us)) {
+            servo_set_input(gun->yaw_servo, yaw_avg_us);
+        } else {
+            static int yaw_warn_count = 0;
+            if (yaw_warn_count < 5) {
+                LOG_WARN(LOG_GUN, "No PWM average from yaw servo input (GPIO %d)", gun->yaw_pwm_pin);
+                yaw_warn_count++;
+            }
+        }
+    }
+}
+
+// Handle trigger input and rate selection
+static int handle_trigger_input(GunFX *gun, int previous_rate_index, struct timespec *last_pwm_debug_time) {
+    int trigger_avg_us;
+    if (!gun->trigger_pwm_monitor || !pwm_monitor_get_average(gun->trigger_pwm_monitor, &trigger_avg_us)) {
+        return previous_rate_index;
+    }
+    
+    int new_rate_index = select_rate_of_fire(gun, trigger_avg_us, previous_rate_index);
+    
+    // Debug output every 10 seconds
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    long elapsed_ms = (now.tv_sec - last_pwm_debug_time->tv_sec) * 1000 + 
+                     (now.tv_nsec - last_pwm_debug_time->tv_nsec) / 1000000;
+    if (elapsed_ms >= 10000) {
+        LOG_DEBUG(LOG_GUN, "Trigger PWM avg: %d µs, rate_index: %d", trigger_avg_us, new_rate_index);
+        *last_pwm_debug_time = now;
+    }
+    
+    // Log rate changes
+    if (new_rate_index != previous_rate_index) {
+        if (new_rate_index >= 0) {
+            LOG_STATE(LOG_GUN, "IDLE", "RATE_SELECTED");
+            LOG_INFO(LOG_GUN, "Rate selected: %d (%d RPM) @ %d µs",
+                   new_rate_index + 1,
+                   gun->rates[new_rate_index].rounds_per_minute,
+                   trigger_avg_us);
+        } else {
+            LOG_STATE(LOG_GUN, "FIRING", "IDLE");
+            LOG_DEBUG(LOG_GUN, "Trigger OFF (PWM avg: %d µs)", trigger_avg_us);
+        }
+    }
+    
+    return new_rate_index;
+}
+
+// Handle smoke heater toggle
+static void handle_smoke_heater(GunFX *gun) {
+    int heater_avg_us;
+    if (!gun->smoke_heater_toggle_monitor || !pwm_monitor_get_average(gun->smoke_heater_toggle_monitor, &heater_avg_us)) {
+        return;
+    }
+    
+    bool heater_toggle_on = (heater_avg_us >= gun->smoke_heater_threshold);
+    LOG_DEBUG(LOG_GUN, "Heater toggle PWM avg: %d µs (threshold: %d µs) -> %s",
+             heater_avg_us, gun->smoke_heater_threshold, heater_toggle_on ? "ON" : "OFF");
+    
+    mtx_lock(&gun->mutex);
+    if (heater_toggle_on && !gun->smoke_heater_on) {
+        gun->smoke_heater_on = true;
+        LOG_INFO(LOG_GUN, "Smoke heater ON (PWM avg: %d µs)", heater_avg_us);
+        if (gun->smoke) {
+            smoke_generator_heater_on(gun->smoke);
+        }
+    } else if (!heater_toggle_on && gun->smoke_heater_on) {
+        gun->smoke_heater_on = false;
+        LOG_INFO(LOG_GUN, "Smoke heater OFF (PWM avg: %d µs)", heater_avg_us);
+        if (gun->smoke) {
+            smoke_generator_heater_off(gun->smoke);
+        }
+    }
+    mtx_unlock(&gun->mutex);
+}
+
+// Handle firing rate changes
+static void handle_rate_change(GunFX *gun, int new_rate_index, int previous_rate_index) {
+    if (new_rate_index == previous_rate_index) {
+        return;
+    }
+    
+    mtx_lock(&gun->mutex);
+    gun->current_rate_index = new_rate_index;
+    gun->is_firing = (new_rate_index >= 0);
+    gun->current_rpm = (new_rate_index >= 0) ? gun->rates[new_rate_index].rounds_per_minute : 0;
+    mtx_unlock(&gun->mutex);
+    
+    if (new_rate_index >= 0) {
+        // Start or change firing rate
+        int shot_interval_ms = (60 * 1000) / gun->rates[new_rate_index].rounds_per_minute;
+        
+        if (gun->nozzle_flash) {
+            led_blink(gun->nozzle_flash, shot_interval_ms);
+        }
+        
+        if (gun->smoke) {
+            smoke_generator_fan_on(gun->smoke);
+            gun->smoke_fan_pending_off = false;
+        }
+        
+        if (gun->mixer && gun->rates[new_rate_index].sound) {
+            PlaybackOptions opts = {.loop = true, .volume = 1.0f};
+            audio_mixer_play(gun->mixer, gun->audio_channel, gun->rates[new_rate_index].sound, &opts);
+        }
+        
+        if (previous_rate_index < 0) {
+            LOG_STATE(LOG_GUN, "IDLE", "FIRING");
+            LOG_INFO(LOG_GUN, "Firing started at %d RPM (rate %d) | Shot interval: %d ms",
+                    gun->rates[new_rate_index].rounds_per_minute,
+                    new_rate_index + 1,
+                    shot_interval_ms);
+        } else {
+            LOG_STATE(LOG_GUN, "FIRING", "RATE_CHANGED");
+            LOG_INFO(LOG_GUN, "Rate changed to %d RPM (rate %d) | Shot interval: %d ms",
+                    gun->rates[new_rate_index].rounds_per_minute,
+                    new_rate_index + 1,
+                    shot_interval_ms);
+        }
+    } else {
+        // Stop firing
+        if (gun->nozzle_flash) {
+            led_off(gun->nozzle_flash);
+        }
+        
+        if (gun->mixer) {
+            audio_mixer_stop_channel(gun->mixer, gun->audio_channel, STOP_IMMEDIATE);
+        }
+        
+        if (gun->smoke) {
+            if (gun->smoke_fan_off_delay_ms > 0) {
+                clock_gettime(CLOCK_MONOTONIC, &gun->smoke_stop_time);
+                gun->smoke_fan_pending_off = true;
+                LOG_STATE(LOG_GUN, "FIRING", "STOPPING");
+                LOG_INFO(LOG_GUN, "Firing stopped | Smoke fan will stop in %d ms", gun->smoke_fan_off_delay_ms);
+            } else {
+                smoke_generator_fan_off(gun->smoke);
+                LOG_STATE(LOG_GUN, "FIRING", "IDLE");
+                LOG_INFO(LOG_GUN, "Firing stopped immediately");
+            }
+        } else {
+            LOG_STATE(LOG_GUN, "FIRING", "IDLE");
+            LOG_INFO(LOG_GUN, "Firing stopped (no smoke)");
+        }
+    }
+}
+
+// Check and handle delayed smoke fan shutdown
+static void handle_smoke_fan_delay(GunFX *gun) {
+    if (!gun->smoke_fan_pending_off || !gun->smoke) {
+        return;
+    }
+    
+    struct timespec current_time_smoke;
+    clock_gettime(CLOCK_MONOTONIC, &current_time_smoke);
+    double elapsed_ms = ((current_time_smoke.tv_sec - gun->smoke_stop_time.tv_sec) * 1000.0) +
+                       ((current_time_smoke.tv_nsec - gun->smoke_stop_time.tv_nsec) / 1e6);
+    
+    if (elapsed_ms >= gun->smoke_fan_off_delay_ms) {
+        smoke_generator_fan_off(gun->smoke);
+        gun->smoke_fan_pending_off = false;
+        LOG_DEBUG(LOG_GUN, "Smoke fan stopped after %d ms delay (actual: %.1f ms)",
+                 gun->smoke_fan_off_delay_ms, elapsed_ms);
+    }
+}
+
+// Print periodic status output
+static void print_status(GunFX *gun, struct timespec *last_status_time) {
+    struct timespec current_time;
+    clock_gettime(CLOCK_MONOTONIC, &current_time);
+    double elapsed = (current_time.tv_sec - last_status_time->tv_sec) + 
+                    (current_time.tv_nsec - last_status_time->tv_nsec) / 1e9;
+    
+    if (elapsed < 10.0) {
+        return;
+    }
+    
+    mtx_lock(&gun->mutex);
+    
+    int current_pwm = -1;
+    if (gun->trigger_pwm_monitor) {
+        int avg;
+        if (pwm_monitor_get_average(gun->trigger_pwm_monitor, &avg)) {
+            current_pwm = avg;
+        }
+    }
+    
+    int pitch_pwm = -1;
+    if (gun->pitch_pwm_monitor) {
+        int avg_pitch;
+        if (pwm_monitor_get_average(gun->pitch_pwm_monitor, &avg_pitch)) {
+            pitch_pwm = avg_pitch;
+        }
+    }
+    
+    int yaw_pwm = -1;
+    if (gun->yaw_pwm_monitor) {
+        int avg_yaw;
+        if (pwm_monitor_get_average(gun->yaw_pwm_monitor, &avg_yaw)) {
+            yaw_pwm = avg_yaw;
+        }
+    }
+    
+    int heater_toggle_pwm = -1;
+    if (gun->smoke_heater_toggle_monitor) {
+        int avg_heater;
+        if (pwm_monitor_get_average(gun->smoke_heater_toggle_monitor, &avg_heater)) {
+            heater_toggle_pwm = avg_heater;
+        }
+    }
+    
+    // ANSI color codes
+    #define COLOR_RESET   "\033[0m"
+    #define COLOR_BOLD    "\033[1m"
+    #define COLOR_GREEN   "\033[32m"
+    #define COLOR_RED     "\033[31m"
+    #define COLOR_YELLOW  "\033[33m"
+    #define COLOR_CYAN    "\033[36m"
+    #define COLOR_MAGENTA "\033[35m"
+    #define COLOR_BLUE    "\033[34m"
+    
+    // Pretty single-record status with colors
+    LOG_STATUS(
+        "\n"
+        COLOR_CYAN COLOR_BOLD "╔═══════════════════════════════════════════════════════════════════════════╗\n" COLOR_RESET
+        COLOR_CYAN COLOR_BOLD "║                          🎯 GUN STATUS @ %.1fs                            ║\n" COLOR_RESET
+        COLOR_CYAN COLOR_BOLD "╠═══════════════════════════════════════════════════════════════════════════╣\n" COLOR_RESET
+        COLOR_CYAN "║" COLOR_RESET " " COLOR_BOLD "Firing:" COLOR_RESET " %s%-4s" COLOR_RESET "  │  " COLOR_BOLD "Rate:" COLOR_RESET " %d  │  " COLOR_BOLD "RPM:" COLOR_RESET " %-4d                             " COLOR_CYAN "║\n" COLOR_RESET
+        COLOR_CYAN "╠═══════════════════════════════════════════════════════════════════════════╣\n" COLOR_RESET
+        COLOR_CYAN "║" COLOR_RESET " " COLOR_MAGENTA COLOR_BOLD "📍 GPIO PINS" COLOR_RESET "                                                              " COLOR_CYAN "║\n" COLOR_RESET
+        COLOR_CYAN "║" COLOR_RESET "   • Trigger:      GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs                               " COLOR_CYAN "║\n" COLOR_RESET
+        COLOR_CYAN "║" COLOR_RESET "   • Heater Tog:   GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs  [%s%-4s" COLOR_RESET "]                      " COLOR_CYAN "║\n" COLOR_RESET
+        COLOR_CYAN "║" COLOR_RESET "   • Pitch Servo:  GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs  [%s%-9s" COLOR_RESET "]                 " COLOR_CYAN "║\n" COLOR_RESET
+        COLOR_CYAN "║" COLOR_RESET "   • Yaw Servo:    GPIO %2d  " COLOR_BOLD "→" COLOR_RESET "  %s%-6s" COLOR_RESET " µs  [%s%-9s" COLOR_RESET "]                 " COLOR_CYAN "║\n" COLOR_RESET
+        COLOR_CYAN "║" COLOR_RESET "   • Nozzle Flash: GPIO %2d                                                " COLOR_CYAN "║\n" COLOR_RESET
+        COLOR_CYAN "║" COLOR_RESET "   • Smoke Fan:    GPIO %2d                                                " COLOR_CYAN "║\n" COLOR_RESET
+        COLOR_CYAN "║" COLOR_RESET "   • Smoke Heater: GPIO %2d                                                " COLOR_CYAN "║\n" COLOR_RESET
+        COLOR_CYAN COLOR_BOLD "╚═══════════════════════════════════════════════════════════════════════════╝\n" COLOR_RESET,
+        elapsed,
+        gun->is_firing ? COLOR_GREEN : COLOR_RED, gun->is_firing ? "YES" : "NO",
+        gun->current_rate_index >= 0 ? gun->current_rate_index + 1 : 0,
+        gun->current_rpm,
+        gun->trigger_pin,
+        current_pwm >= 0 ? COLOR_YELLOW : COLOR_RED,
+        current_pwm >= 0 ? (char[]){current_pwm/1000 + '0', (current_pwm/100)%10 + '0', (current_pwm/10)%10 + '0', current_pwm%10 + '0', 0} : "n/a",
+        gun->smoke_heater_toggle_pin,
+        heater_toggle_pwm >= 0 ? COLOR_YELLOW : COLOR_RED,
+        heater_toggle_pwm >= 0 ? (char[]){heater_toggle_pwm/1000 + '0', (heater_toggle_pwm/100)%10 + '0', (heater_toggle_pwm/10)%10 + '0', heater_toggle_pwm%10 + '0', 0} : "n/a",
+        gun->smoke_heater_on ? COLOR_GREEN : COLOR_RED,
+        gun->smoke_heater_on ? "ON" : "OFF",
+        gun->pitch_pwm_pin,
+        pitch_pwm >= 0 ? COLOR_YELLOW : COLOR_RED,
+        pitch_pwm >= 0 ? (char[]){pitch_pwm/1000 + '0', (pitch_pwm/100)%10 + '0', (pitch_pwm/10)%10 + '0', pitch_pwm%10 + '0', 0} : "n/a",
+        gun->pitch_servo ? COLOR_GREEN : COLOR_RED,
+        gun->pitch_servo ? "ACTIVE" : "DISABLED",
+        gun->yaw_pwm_pin,
+        yaw_pwm >= 0 ? COLOR_YELLOW : COLOR_RED,
+        yaw_pwm >= 0 ? (char[]){yaw_pwm/1000 + '0', (yaw_pwm/100)%10 + '0', (yaw_pwm/10)%10 + '0', yaw_pwm%10 + '0', 0} : "n/a",
+        gun->yaw_servo ? COLOR_GREEN : COLOR_RED,
+        gun->yaw_servo ? "ACTIVE" : "DISABLED",
+        gun->nozzle_flash_pin,
+        gun->smoke_fan_pin,
+        gun->smoke_heater_pin
+    );
+    
+    mtx_unlock(&gun->mutex);
+    *last_status_time = current_time;
+}
+
 // Processing thread to monitor PWM and handle firing
 static int gun_fx_processing_thread(void *arg) {
     GunFX *gun = (GunFX *)arg;
     
     LOG_INFO(LOG_GUN, "Processing thread started");
     
-    // For periodic status output
     struct timespec last_status_time;
     clock_gettime(CLOCK_MONOTONIC, &last_status_time);
     
-    // For periodic PWM debug output (every 10 seconds)
     struct timespec last_pwm_debug_time;
     clock_gettime(CLOCK_MONOTONIC, &last_pwm_debug_time);
     
     while (gun->processing_running) {
-        // Update servos from averaged PWM inputs
-        if (gun->pitch_servo && gun->pitch_pwm_monitor) {
-            int pitch_avg_us;
-            if (pwm_monitor_get_average(gun->pitch_pwm_monitor, &pitch_avg_us)) {
-                servo_set_input(gun->pitch_servo, pitch_avg_us);
-            } else {
-                static int pitch_warn_count = 0;
-                if (pitch_warn_count < 5) {
-                    LOG_WARN(LOG_GUN, "No PWM average from pitch servo input (GPIO %d)", gun->pitch_pwm_pin);
-                    pitch_warn_count++;
-                }
-            }
-        }
+        // Update servos
+        update_servos(gun);
         
-        if (gun->yaw_servo && gun->yaw_pwm_monitor) {
-            int yaw_avg_us;
-            if (pwm_monitor_get_average(gun->yaw_pwm_monitor, &yaw_avg_us)) {
-                servo_set_input(gun->yaw_servo, yaw_avg_us);
-            } else {
-                static int yaw_warn_count = 0;
-                if (yaw_warn_count < 5) {
-                    LOG_WARN(LOG_GUN, "No PWM average from yaw servo input (GPIO %d)", gun->yaw_pwm_pin);
-                    yaw_warn_count++;
-                }
-            }
-        }
-        
-        // Get current rate index
+        // Get current rate and handle trigger
         mtx_lock(&gun->mutex);
         int previous_rate_index = gun->current_rate_index;
         mtx_unlock(&gun->mutex);
         
-        // Determine new rate based on averaged PWM input
-        int new_rate_index;
-        int trigger_avg_us;
-        if (gun->trigger_pwm_monitor && pwm_monitor_get_average(gun->trigger_pwm_monitor, &trigger_avg_us)) {
-            new_rate_index = select_rate_of_fire(gun, trigger_avg_us, previous_rate_index);
-            
-            // Debug output every 10 seconds
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            long elapsed_ms = (now.tv_sec - last_pwm_debug_time.tv_sec) * 1000 + 
-                             (now.tv_nsec - last_pwm_debug_time.tv_nsec) / 1000000;
-            if (elapsed_ms >= 10000) {
-                LOG_DEBUG(LOG_GUN, "Trigger PWM avg: %d µs, rate_index: %d", trigger_avg_us, new_rate_index);
-                last_pwm_debug_time = now;
-            }
-            
-            // Log rate changes
-            if (new_rate_index != previous_rate_index) {
-                if (new_rate_index >= 0) {
-                    LOG_STATE(LOG_GUN, "IDLE", "RATE_SELECTED");
-                    LOG_INFO(LOG_GUN, "Rate selected: %d (%d RPM) @ %d µs",
-                           new_rate_index + 1,
-                           gun->rates[new_rate_index].rounds_per_minute,
-                           trigger_avg_us);
-                } else {
-                    LOG_STATE(LOG_GUN, "FIRING", "IDLE");
-                    LOG_DEBUG(LOG_GUN, "Trigger OFF (PWM avg: %d µs)", trigger_avg_us);
-                }
-            }
-        } else {
-            // No new PWM reading available, keep current rate
-            new_rate_index = previous_rate_index;
-        }
+        int new_rate_index = handle_trigger_input(gun, previous_rate_index, &last_pwm_debug_time);
         
-        // Handle smoke heater toggle (use average)
-        int heater_avg_us;
-        if (gun->smoke_heater_toggle_monitor && pwm_monitor_get_average(gun->smoke_heater_toggle_monitor, &heater_avg_us)) {
-            bool heater_toggle_on = (heater_avg_us >= gun->smoke_heater_threshold);
-            LOG_DEBUG(LOG_GUN, "Heater toggle PWM avg: %d µs (threshold: %d µs) -> %s",
-                     heater_avg_us, gun->smoke_heater_threshold, heater_toggle_on ? "ON" : "OFF");
-            
-            mtx_lock(&gun->mutex);
-            if (heater_toggle_on && !gun->smoke_heater_on) {
-                gun->smoke_heater_on = true;
-                LOG_INFO(LOG_GUN, "Smoke heater ON (PWM avg: %d µs)", heater_avg_us);
-                if (gun->smoke) {
-                    smoke_generator_heater_on(gun->smoke);
-                }
-            } else if (!heater_toggle_on && gun->smoke_heater_on) {
-                gun->smoke_heater_on = false;
-                LOG_INFO(LOG_GUN, "Smoke heater OFF (PWM avg: %d µs)", heater_avg_us);
-                if (gun->smoke) {
-                    smoke_generator_heater_off(gun->smoke);
-                }
-            }
-            mtx_unlock(&gun->mutex);
-        }
-        if (new_rate_index != previous_rate_index) {
-            mtx_lock(&gun->mutex);
-            gun->current_rate_index = new_rate_index;
-            gun->is_firing = (new_rate_index >= 0);
-            gun->current_rpm = (new_rate_index >= 0) ? gun->rates[new_rate_index].rounds_per_minute : 0;
-            mtx_unlock(&gun->mutex);
-            
-            if (new_rate_index >= 0) {
-                // Start or change firing rate
-                int shot_interval_ms = (60 * 1000) / gun->rates[new_rate_index].rounds_per_minute;
-                
-                if (gun->nozzle_flash) {
-                    led_blink(gun->nozzle_flash, shot_interval_ms);
-                }
-                
-                if (gun->smoke) {
-                    smoke_generator_fan_on(gun->smoke);
-                    // Cancel any pending smoke fan off
-                    gun->smoke_fan_pending_off = false;
-                }
-                
-                if (gun->mixer && gun->rates[new_rate_index].sound) {
-                    PlaybackOptions opts = {.loop = true, .volume = 1.0f};
-                    audio_mixer_play(gun->mixer, gun->audio_channel, gun->rates[new_rate_index].sound, &opts);
-                }
-                
-                if (previous_rate_index < 0) {
-                    LOG_STATE(LOG_GUN, "IDLE", "FIRING");
-                    LOG_INFO(LOG_GUN, "Firing started at %d RPM (rate %d) | Shot interval: %d ms",
-                            gun->rates[new_rate_index].rounds_per_minute,
-                            new_rate_index + 1,
-                            shot_interval_ms);
-                } else {
-                    LOG_STATE(LOG_GUN, "FIRING", "RATE_CHANGED");
-                    LOG_INFO(LOG_GUN, "Rate changed to %d RPM (rate %d) | Shot interval: %d ms",
-                            gun->rates[new_rate_index].rounds_per_minute,
-                            new_rate_index + 1,
-                            shot_interval_ms);
-                }
-            } else {
-                // Stop firing
-                if (gun->nozzle_flash) {
-                    led_off(gun->nozzle_flash);
-                }
-                
-                if (gun->mixer) {
-                    audio_mixer_stop_channel(gun->mixer, gun->audio_channel, STOP_IMMEDIATE);
-                }
-                
-                // Handle smoke fan with optional delay
-                if (gun->smoke) {
-                    if (gun->smoke_fan_off_delay_ms > 0) {
-                        // Start delay timer
-                        clock_gettime(CLOCK_MONOTONIC, &gun->smoke_stop_time);
-                        gun->smoke_fan_pending_off = true;
-                        LOG_STATE(LOG_GUN, "FIRING", "STOPPING");
-                        LOG_INFO(LOG_GUN, "Firing stopped | Smoke fan will stop in %d ms", gun->smoke_fan_off_delay_ms);
-                    } else {
-                        // Immediate off
-                        smoke_generator_fan_off(gun->smoke);
-                        LOG_STATE(LOG_GUN, "FIRING", "IDLE");
-                        LOG_INFO(LOG_GUN, "Firing stopped immediately");
-                    }
-                } else {
-                    LOG_STATE(LOG_GUN, "FIRING", "IDLE");
-                    LOG_INFO(LOG_GUN, "Firing stopped (no smoke)");
-                }
-            }
-        }
+        // Handle smoke heater
+        handle_smoke_heater(gun);
         
-        // Check if smoke fan needs to be turned off after delay
-        if (gun->smoke_fan_pending_off && gun->smoke) {
-            struct timespec current_time_smoke;
-            clock_gettime(CLOCK_MONOTONIC, &current_time_smoke);
-            double elapsed_ms = ((current_time_smoke.tv_sec - gun->smoke_stop_time.tv_sec) * 1000.0) +
-                               ((current_time_smoke.tv_nsec - gun->smoke_stop_time.tv_nsec) / 1e6);
-            
-            if (elapsed_ms >= gun->smoke_fan_off_delay_ms) {
-                smoke_generator_fan_off(gun->smoke);
-                gun->smoke_fan_pending_off = false;
-                LOG_DEBUG(LOG_GUN, "Smoke fan stopped after %d ms delay (actual: %.1f ms)",
-                         gun->smoke_fan_off_delay_ms, elapsed_ms);
-            }
-        }
+        // Handle rate changes and firing logic
+        handle_rate_change(gun, new_rate_index, previous_rate_index);
         
-        // Periodic status output (every 10 seconds)
-        struct timespec current_time;
-        clock_gettime(CLOCK_MONOTONIC, &current_time);
-        double elapsed = (current_time.tv_sec - last_status_time.tv_sec) + 
-                        (current_time.tv_nsec - last_status_time.tv_nsec) / 1e9;
+        // Check smoke fan delay
+        handle_smoke_fan_delay(gun);
         
-        if (elapsed >= 10.0) {
-            mtx_lock(&gun->mutex);
-            int current_pwm = -1;
-            if (gun->trigger_pwm_monitor) {
-                int avg;
-                if (pwm_monitor_get_average(gun->trigger_pwm_monitor, &avg)) {
-                    current_pwm = avg;
-                }
-            }
-            
-            int pitch_pwm = -1;
-            if (gun->pitch_pwm_monitor) {
-                int avg_pitch;
-                if (pwm_monitor_get_average(gun->pitch_pwm_monitor, &avg_pitch)) {
-                    pitch_pwm = avg_pitch;
-                }
-            }
-            
-            int yaw_pwm = -1;
-            if (gun->yaw_pwm_monitor) {
-                int avg_yaw;
-                if (pwm_monitor_get_average(gun->yaw_pwm_monitor, &avg_yaw)) {
-                    yaw_pwm = avg_yaw;
-                }
-            }
-            
-                const char *trigger_pwm_str = (current_pwm >= 0) ? "" : "n/a";
-                const char *pitch_pwm_str   = (pitch_pwm   >= 0) ? "" : "n/a";
-                const char *yaw_pwm_str     = (yaw_pwm     >= 0) ? "" : "n/a";
-
-                 // Pretty single-record status
-                 LOG_STATUS(
-                  "\n"
-                  "╔════════════════════════════════════════════════════════╗\n"
-                  "║ GUN STATUS @ %.1fs                                      ║\n"
-                  "╠════════════════════════════════════════════════════════╣\n"
-                  "║ Firing: %s  |  Rate: %d  |  RPM: %d                     \n"
-                  "║ Trigger PWM: %s%d µs  |  Heater: %s                      \n"
-                  "║ Servos → Pitch: %s%d µs  |  Yaw: %s%d µs                \n"
-                  "║ Servo State → Pitch: %s  |  Yaw: %s                     \n"
-                  "╚════════════════════════════════════════════════════════╝\n",
-                  elapsed,
-                  gun->is_firing ? "YES" : "NO",
-                  gun->current_rate_index >= 0 ? gun->current_rate_index + 1 : 0,
-                  gun->current_rpm,
-                  trigger_pwm_str, current_pwm >= 0 ? current_pwm : 0,
-                  gun->smoke_heater_on ? "ON" : "OFF",
-                  pitch_pwm_str,   pitch_pwm >= 0 ? pitch_pwm : 0,
-                  yaw_pwm_str,     yaw_pwm   >= 0 ? yaw_pwm   : 0,
-                  gun->pitch_servo ? "ACTIVE" : "DISABLED",
-                  gun->yaw_servo   ? "ACTIVE" : "DISABLED"
-                 );
-            mtx_unlock(&gun->mutex);
-            
-            last_status_time = current_time;
-        }
+        // Periodic status output
+        print_status(gun, &last_status_time);
         
         usleep(10000); // 10ms loop
     }
