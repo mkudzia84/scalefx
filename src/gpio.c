@@ -113,20 +113,61 @@ int gpio_set_mode(int pin, GPIOMode mode) {
         line_requests[pin] = NULL;
     }
     
-    // Get the GPIO line
-    struct gpiod_line *line = gpiod_chip_get_line(chip, pin);
-    if (!line) {
-        LOG_ERROR(LOG_GPIO, "Failed to get GPIO line %d", pin);
+    // Create line settings
+    struct gpiod_line_settings *settings = gpiod_line_settings_new();
+    if (!settings) {
+        LOG_ERROR(LOG_GPIO, "Failed to create line settings");
         return -1;
     }
     
-    // Request the line with appropriate direction
-    struct gpiod_line_request *request;
-    if (mode == GPIO_MODE_INPUT) {
-        request = gpiod_line_request_input(line, "helifx");
-    } else {
-        request = gpiod_line_request_output(line, "helifx", 0);
+    // Set direction
+    int ret = gpiod_line_settings_set_direction(settings, 
+        mode == GPIO_MODE_INPUT ? GPIOD_LINE_DIRECTION_INPUT : GPIOD_LINE_DIRECTION_OUTPUT);
+    if (ret < 0) {
+        gpiod_line_settings_free(settings);
+        LOG_ERROR(LOG_GPIO, "Failed to set direction");
+        return -1;
     }
+    
+    // Set initial output value to low if output
+    if (mode == GPIO_MODE_OUTPUT) {
+        gpiod_line_settings_set_output_value(settings, GPIOD_LINE_VALUE_INACTIVE);
+    }
+    
+    // Create request config
+    struct gpiod_request_config *req_cfg = gpiod_request_config_new();
+    if (!req_cfg) {
+        gpiod_line_settings_free(settings);
+        LOG_ERROR(LOG_GPIO, "Failed to create request config");
+        return -1;
+    }
+    gpiod_request_config_set_consumer(req_cfg, "helifx");
+    
+    // Create line config
+    struct gpiod_line_config *line_cfg = gpiod_line_config_new();
+    if (!line_cfg) {
+        gpiod_request_config_free(req_cfg);
+        gpiod_line_settings_free(settings);
+        LOG_ERROR(LOG_GPIO, "Failed to create line config");
+        return -1;
+    }
+    
+    ret = gpiod_line_config_add_line_settings(line_cfg, &pin, 1, settings);
+    if (ret < 0) {
+        gpiod_line_config_free(line_cfg);
+        gpiod_request_config_free(req_cfg);
+        gpiod_line_settings_free(settings);
+        LOG_ERROR(LOG_GPIO, "Failed to add line settings");
+        return -1;
+    }
+    
+    // Request the line
+    struct gpiod_line_request *request = gpiod_chip_request_lines(chip, req_cfg, line_cfg);
+    
+    // Cleanup temporary objects
+    gpiod_line_config_free(line_cfg);
+    gpiod_request_config_free(req_cfg);
+    gpiod_line_settings_free(settings);
     
     if (!request) {
         LOG_ERROR(LOG_GPIO, "Failed to request GPIO line %d: %s", pin, strerror(errno));
@@ -162,28 +203,6 @@ int gpio_set_pull(int pin, GPIOPull pull) {
     return 0;
 }
 
-int gpio_set_pull(int pin, GPIOPull pull) {
-    if (!initialized) {
-        LOG_ERROR(LOG_GPIO, "GPIO not initialized");
-        return -1;
-    }
-    
-    if (is_audio_hat_pin(pin)) {
-        LOG_ERROR(LOG_GPIO, "Cannot use GPIO %d - reserved for WM8960 Audio HAT!", pin);
-        return -1;
-    }
-    
-    // Note: libgpiod v1.x doesn't support pull-up/down configuration directly
-    // This is configured in device tree or requires libgpiod v2.x with bias flags
-    // For now, we'll just log a warning if not GPIO_PULL_OFF
-    if (pull != GPIO_PULL_OFF) {
-        LOG_WARN(LOG_GPIO, "Pull-up/down configuration not supported in libgpiod v1.x");
-        LOG_WARN(LOG_GPIO, "Configure pull resistors in device tree if needed");
-    }
-    
-    return 0;
-}
-
 int gpio_write(int pin, bool value) {
     if (!initialized) {
         LOG_ERROR(LOG_GPIO, "GPIO not initialized");
@@ -201,7 +220,7 @@ int gpio_write(int pin, bool value) {
         return -1;
     }
     
-    int result = gpiod_line_request_set_value(request, pin, value ? 1 : 0);
+    int result = gpiod_line_request_set_value(request, pin, value ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE);
     if (result < 0) {
         LOG_ERROR(LOG_GPIO, "Failed to write GPIO %d: %s", pin, strerror(errno));
         return -1;
@@ -227,13 +246,14 @@ bool gpio_read(int pin) {
         return false;
     }
     
-    int result = gpiod_line_request_get_value(request, pin);
+    enum gpiod_line_value value;
+    int result = gpiod_line_request_get_value(request, pin, &value);
     if (result < 0) {
         LOG_ERROR(LOG_GPIO, "Failed to read GPIO %d: %s", pin, strerror(errno));
         return false;
     }
     
-    return result != 0;
+    return value == GPIOD_LINE_VALUE_ACTIVE;
 }
 
 // ============================================================================
@@ -379,11 +399,19 @@ static int pwm_monitoring_thread_func(void *arg) {
                 if (!monitor) continue;
                 
                 // Read all pending events for this monitor
-                struct gpiod_edge_event *event;
-                while ((event = gpiod_line_request_read_edge_events(monitor->line_request)) != NULL) {
-                    process_pwm_event(monitor, event);
-                    gpiod_edge_event_free(event);
+                struct gpiod_edge_event_buffer *buffer = gpiod_edge_event_buffer_new(16);
+                if (!buffer) continue;
+                
+                int ret = gpiod_line_request_read_edge_events(monitor->line_request, buffer, 16);
+                if (ret > 0) {
+                    for (int j = 0; j < ret; j++) {
+                        struct gpiod_edge_event *event = gpiod_edge_event_buffer_get_event(buffer, j);
+                        if (event) {
+                            process_pwm_event(monitor, event);
+                        }
+                    }
                 }
+                gpiod_edge_event_buffer_free(buffer);
             }
         }
     }
@@ -429,18 +457,60 @@ PWMMonitor* pwm_monitor_create_with_name(int pin, const char *feature_name, PWMC
     
     mtx_init(&monitor->mutex, mtx_plain);
     
-    // Get GPIO line for this pin
-    struct gpiod_line *line = gpiod_chip_get_line(chip, pin);
-    if (!line) {
-        LOG_ERROR(LOG_GPIO, "Failed to get GPIO line %d", pin);
+    // Create line settings for edge detection
+    struct gpiod_line_settings *settings = gpiod_line_settings_new();
+    if (!settings) {
+        LOG_ERROR(LOG_GPIO, "Failed to create line settings");
         mtx_destroy(&monitor->mutex);
         free(monitor->feature_name);
         free(monitor);
         return nullptr;
     }
     
-    // Request line for edge events (both rising and falling)
-    struct gpiod_line_request *request = gpiod_line_request_both_edges_events(line, "helifx-pwm");
+    gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_INPUT);
+    gpiod_line_settings_set_edge_detection(settings, GPIOD_LINE_EDGE_BOTH);
+    
+    // Create request config
+    struct gpiod_request_config *req_cfg = gpiod_request_config_new();
+    if (!req_cfg) {
+        gpiod_line_settings_free(settings);
+        mtx_destroy(&monitor->mutex);
+        free(monitor->feature_name);
+        free(monitor);
+        return nullptr;
+    }
+    gpiod_request_config_set_consumer(req_cfg, "helifx-pwm");
+    
+    // Create line config
+    struct gpiod_line_config *line_cfg = gpiod_line_config_new();
+    if (!line_cfg) {
+        gpiod_request_config_free(req_cfg);
+        gpiod_line_settings_free(settings);
+        mtx_destroy(&monitor->mutex);
+        free(monitor->feature_name);
+        free(monitor);
+        return nullptr;
+    }
+    
+    int ret = gpiod_line_config_add_line_settings(line_cfg, &pin, 1, settings);
+    if (ret < 0) {
+        gpiod_line_config_free(line_cfg);
+        gpiod_request_config_free(req_cfg);
+        gpiod_line_settings_free(settings);
+        mtx_destroy(&monitor->mutex);
+        free(monitor->feature_name);
+        free(monitor);
+        return nullptr;
+    }
+    
+    // Request the line
+    struct gpiod_line_request *request = gpiod_chip_request_lines(chip, req_cfg, line_cfg);
+    
+    // Cleanup temporary objects
+    gpiod_line_config_free(line_cfg);
+    gpiod_request_config_free(req_cfg);
+    gpiod_line_settings_free(settings);
+    
     if (!request) {
         LOG_ERROR(LOG_GPIO, "Failed to request edge events for pin %d: %s", pin, strerror(errno));
         mtx_destroy(&monitor->mutex);
