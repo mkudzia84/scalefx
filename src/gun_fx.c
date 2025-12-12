@@ -398,7 +398,7 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     
     // Create trigger PWM monitor if pin specified
     if (config->trigger.pin >= 0) {
-        gun->trigger_pwm_monitor = pwm_monitor_create(config->trigger.pin, nullptr, nullptr);
+        gun->trigger_pwm_monitor = pwm_monitor_create_with_name(config->trigger.pin, "Gun Trigger", nullptr, nullptr);
         if (!gun->trigger_pwm_monitor) {
             LOG_WARN(LOG_GUN, "Failed to create trigger PWM monitor on GPIO %d", config->trigger.pin);
         } else {
@@ -409,7 +409,7 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     
     // Create smoke heater toggle PWM monitor if pin specified
     if (config->smoke.heater_toggle_pin >= 0) {
-        gun->smoke_heater_toggle_monitor = pwm_monitor_create(config->smoke.heater_toggle_pin, nullptr, nullptr);
+        gun->smoke_heater_toggle_monitor = pwm_monitor_create_with_name(config->smoke.heater_toggle_pin, "Smoke Heater Toggle", nullptr, nullptr);
         if (!gun->smoke_heater_toggle_monitor) {
             LOG_WARN(LOG_GUN, "Failed to create smoke heater toggle monitor on GPIO %d",
                     config->smoke.heater_toggle_pin);
@@ -426,7 +426,7 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
         if (!gun->pitch_servo) {
             LOG_WARN(LOG_GUN, "Failed to create pitch servo");
         } else {
-            gun->pitch_pwm_monitor = pwm_monitor_create(config->turret_control.pitch.pwm_pin, nullptr, nullptr);
+            gun->pitch_pwm_monitor = pwm_monitor_create_with_name(config->turret_control.pitch.pwm_pin, "Turret Pitch Servo", nullptr, nullptr);
             if (!gun->pitch_pwm_monitor) {
                 LOG_WARN(LOG_GUN, "Failed to create pitch PWM monitor on GPIO %d",
                         config->turret_control.pitch.pwm_pin);
@@ -447,7 +447,7 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
         if (!gun->yaw_servo) {
             LOG_WARN(LOG_GUN, "Failed to create yaw servo");
         } else {
-            gun->yaw_pwm_monitor = pwm_monitor_create(config->turret_control.yaw.pwm_pin, nullptr, nullptr);
+            gun->yaw_pwm_monitor = pwm_monitor_create_with_name(config->turret_control.yaw.pwm_pin, "Turret Yaw Servo", nullptr, nullptr);
             if (!gun->yaw_pwm_monitor) {
                 LOG_WARN(LOG_GUN, "Failed to create yaw PWM monitor on GPIO %d",
                         config->turret_control.yaw.pwm_pin);

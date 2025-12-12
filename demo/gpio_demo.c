@@ -121,7 +121,7 @@ int main(int argc, char *argv[]) {
     
     if (strcmp(mode, "async") == 0) {
         // Async mode with callback
-        PWMMonitor *monitor = pwm_monitor_create(pin, pwm_callback, &reading_count);
+        PWMMonitor *monitor = pwm_monitor_create_with_name(pin, "Demo PWM Monitor", pwm_callback, &reading_count);
         if (!monitor) {
             fprintf(stderr, "Error: Failed to create PWM monitor\n");
             gpio_cleanup();
@@ -152,7 +152,7 @@ int main(int argc, char *argv[]) {
         
     } else {
         // Sync mode with blocking reads
-        PWMMonitor *monitor = pwm_monitor_create(pin, nullptr, nullptr);
+        PWMMonitor *monitor = pwm_monitor_create_with_name(pin, "Demo PWM Monitor", nullptr, nullptr);
         if (!monitor) {
             fprintf(stderr, "Error: Failed to create PWM monitor\n");
             gpio_cleanup();

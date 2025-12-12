@@ -255,7 +255,7 @@ EngineFX* engine_fx_create(AudioMixer *mixer, int audio_channel,
     
     // Create PWM monitor if pin specified
     if (config->engine_toggle.pin >= 0) {
-        engine->engine_toggle_pwm_monitor = pwm_monitor_create(config->engine_toggle.pin, nullptr, nullptr);
+        engine->engine_toggle_pwm_monitor = pwm_monitor_create_with_name(config->engine_toggle.pin, "Engine Toggle", nullptr, nullptr);
         if (!engine->engine_toggle_pwm_monitor) {
             LOG_WARN(LOG_ENGINE, "Failed to create PWM monitor for pin %d", config->engine_toggle.pin);
         } else {

@@ -362,6 +362,7 @@ int gpio_read_pwm_duration(int pin, int timeout_us) {
 
 struct PWMMonitor {
     int pin;
+    char *feature_name;  // Feature name for logging (e.g., "Trigger", "Pitch Servo")
     thrd_t thread;
     mtx_t mutex;
     cnd_t cond;
@@ -380,10 +381,8 @@ struct PWMMonitor {
 static int pwm_monitor_thread(void *arg) {
     PWMMonitor *monitor = (PWMMonitor *)arg;
     
-    LOG_INFO(LOG_GPIO, "PWM monitor thread started for pin %d (timeout: %d µs)", 
-             monitor->pin, monitor->timeout_us);
-    
-    int timeout_count = 0;
+    LOG_INFO(LOG_GPIO, "PWM monitor thread started for [%s] pin %d (timeout: %d µs)", 
+            monitor->feature_name ?: "Unknown", monitor->pin, monitor->timeout_us);    int timeout_count = 0;
     bool first_signal_received = false;
     
     while (monitor->running) {
@@ -427,11 +426,16 @@ static int pwm_monitor_thread(void *arg) {
         }
     }
     
-    LOG_INFO(LOG_GPIO, "PWM monitor thread stopped for pin %d", monitor->pin);
+    LOG_INFO(LOG_GPIO, "PWM monitor thread stopped for [%s] pin %d", 
+            monitor->feature_name ?: "Unknown", monitor->pin);
     return thrd_success;
 }
 
 PWMMonitor* pwm_monitor_create(int pin, PWMCallback callback, void *user_data) {
+    return pwm_monitor_create_with_name(pin, nullptr, callback, user_data);
+}
+
+PWMMonitor* pwm_monitor_create_with_name(int pin, const char *feature_name, PWMCallback callback, void *user_data) {
     if (!initialized) {
         LOG_ERROR(LOG_GPIO, "GPIO not initialized");
         return nullptr;
@@ -449,6 +453,7 @@ PWMMonitor* pwm_monitor_create(int pin, PWMCallback callback, void *user_data) {
     }
     
     monitor->pin = pin;
+    monitor->feature_name = feature_name ? strdup(feature_name) : nullptr;
     monitor->callback = callback;
     monitor->user_data = user_data;
     monitor->running = false;
@@ -467,7 +472,8 @@ PWMMonitor* pwm_monitor_create(int pin, PWMCallback callback, void *user_data) {
         return nullptr;
     }
     
-    LOG_INFO(LOG_GPIO, "PWM monitor created for pin %d", pin);
+    LOG_INFO(LOG_GPIO, "PWM monitor created for [%s] pin %d", 
+            feature_name ?: "Unknown", pin);
     return monitor;
 }
 
@@ -480,6 +486,11 @@ void pwm_monitor_destroy(PWMMonitor *monitor) {
     
     mtx_destroy(&monitor->mutex);
     cnd_destroy(&monitor->cond);
+    
+    if (monitor->feature_name) {
+        free(monitor->feature_name);
+    }
+    
     free(monitor);
     
     LOG_INFO(LOG_GPIO, "PWM monitor destroyed");
@@ -500,7 +511,8 @@ int pwm_monitor_start(PWMMonitor *monitor) {
         return -1;
     }
     
-    LOG_INFO(LOG_GPIO, "PWM monitor started");
+    LOG_INFO(LOG_GPIO, "PWM monitor started for [%s]", 
+            monitor->feature_name ?: "Unknown");
     return 0;
 }
 
@@ -515,7 +527,8 @@ int pwm_monitor_stop(PWMMonitor *monitor) {
     
     thrd_join(monitor->thread, nullptr);
     
-    LOG_INFO(LOG_GPIO, "PWM monitor stopped");
+    LOG_INFO(LOG_GPIO, "PWM monitor stopped for [%s]", 
+            monitor->feature_name ?: "Unknown");
     return 0;
 }
 

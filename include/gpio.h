@@ -125,6 +125,16 @@ int gpio_read_pwm_duration(int pin, int timeout_us);
 PWMMonitor* pwm_monitor_create(int pin, PWMCallback callback, void *user_data);
 
 /**
+ * Create a PWM monitor with feature name for informative logging
+ * @param pin GPIO pin number to monitor
+ * @param feature_name Name of the feature (e.g., "Trigger", "Pitch Servo") for logging
+ * @param callback Callback function called for each pulse (optional, can be nullptr)
+ * @param user_data User data passed to callback
+ * @return PWMMonitor handle or nullptr on error
+ */
+PWMMonitor* pwm_monitor_create_with_name(int pin, const char *feature_name, PWMCallback callback, void *user_data);
+
+/**
  * Destroy PWM monitor and stop monitoring thread
  * @param monitor PWM monitor handle
  */
