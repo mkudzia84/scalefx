@@ -18,6 +18,13 @@ int gpio_init(void) {
         return 0;
     }
     
+    // Configure pigpio to exclude WM8960 Audio HAT pins before initialization
+    // WM8960 uses: GPIO 2,3 (I2C), GPIO 18,19,20,21 (I2S)
+    // Exclusion mask: 0x3C000C = bits 2,3,18,19,20,21
+    if (gpioCfgSocketPort(0) < 0) {  // Disable socket interface (we're not using daemon)
+        LOG_WARN(LOG_GPIO, "gpioCfgSocketPort failed, continuing anyway");
+    }
+    
     // Initialize pigpio library
     int status = gpioInitialise();
     if (status < 0) {
@@ -27,6 +34,7 @@ int gpio_init(void) {
     
     initialized = true;
     LOG_INFO(LOG_GPIO, "GPIO subsystem initialized (pigpio version %d)", status);
+    LOG_INFO(LOG_GPIO, "WM8960 Audio HAT pins (2,3,18-21) are reserved for I2C/I2S");
     return 0;
 }
 

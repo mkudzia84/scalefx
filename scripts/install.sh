@@ -52,26 +52,22 @@ apt-get install -y \
 echo -e "${GREEN}All dependencies installed${NC}"
 echo ""
 
-# Configure pigpio to exclude WM8960 Audio HAT pins
+# Disable pigpiod daemon (helifx runs pigpio in-process)
 echo -e "${YELLOW}Configuring pigpio...${NC}"
-# WM8960 Audio HAT uses:
-# - GPIO 2,3 (I2C for control)
-# - GPIO 18,19,20,21 (I2S for audio: BCK, LRCK, ADCDAT, DACDAT)
-# Exclude these pins from pigpio: 0x3C000C = bits 2,3,18,19,20,21
-PIGPIO_EXCLUDE="-x 0x3C000C"
+echo -e "${YELLOW}Note: helifx runs pigpio library in-process, not as a daemon${NC}"
 
-# Create pigpio systemd service override
-mkdir -p /etc/systemd/system/pigpiod.service.d
-cat > /etc/systemd/system/pigpiod.service.d/override.conf << EOF
-[Service]
-ExecStart=
-ExecStart=/usr/bin/pigpiod -l $PIGPIO_EXCLUDE
-EOF
+# Stop and disable pigpiod service if it's running
+if systemctl is-active --quiet pigpiod; then
+    echo -e "${YELLOW}Stopping pigpiod daemon...${NC}"
+    systemctl stop pigpiod
+fi
 
-systemctl daemon-reload
-systemctl enable pigpiod
-systemctl restart pigpiod
-echo -e "${GREEN}pigpio configured to exclude WM8960 Audio HAT pins (GPIO 2,3,18,19,20,21)${NC}"
+if systemctl is-enabled --quiet pigpiod 2>/dev/null; then
+    echo -e "${YELLOW}Disabling pigpiod daemon...${NC}"
+    systemctl disable pigpiod
+fi
+
+echo -e "${GREEN}pigpio daemon disabled (helifx manages GPIO directly)${NC}"
 echo ""
 
 # Build the application
