@@ -5,11 +5,11 @@ DefaultDependencies=no
 
 [Service]
 Type=simple
-User=helisfx
-Group=helisfx
+User={{USER}}
+Group={{USER}}
 SupplementaryGroups=audio gpio
-WorkingDirectory=/home/pi/helifx
-ExecStart=/home/pi/helifx/helifx /home/pi/helifx/config.yaml
+WorkingDirectory={{INSTALL_DIR}}
+ExecStart={{INSTALL_DIR}}/helifx {{CONFIG_PATH}}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -20,9 +20,9 @@ NoNewPrivileges=true
 PrivateTmp=false
 
 # Environment
-Environment="HOME=/home/helisfx"
-Environment="PULSE_RUNTIME_PATH=/run/user/1000/pulse"
-Environment="XDG_RUNTIME_DIR=/run/user/1000"
+Environment="HOME={{USER_HOME}}"
+Environment="PULSE_RUNTIME_PATH=/run/user/{{USER_UID}}/pulse"
+Environment="XDG_RUNTIME_DIR=/run/user/{{USER_UID}}"
 
 [Install]
 WantedBy=multi-user.target

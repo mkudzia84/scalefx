@@ -107,12 +107,16 @@ echo -e "${GREEN}Audio service installed${NC}"
 # Install systemd service
 echo -e "${YELLOW}Installing systemd service...${NC}"
 
+# Get user UID for runtime directories
+USER_UID=$(id -u $USER)
+USER_HOME=$(eval echo ~$USER)
+
 # Update service file with user-specific paths and config path
-sed -e "s|User=helisfx|User=$USER|g" \
-    -e "s|Group=helisfx|Group=$USER|g" \
-    -e "s|WorkingDirectory=/home/helisfx/helifx|WorkingDirectory=$INSTALL_DIR|g" \
-    -e "s|ExecStart=/home/helisfx/helifx/helifx .*|ExecStart=$INSTALL_DIR/helifx $CONFIG_PATH|g" \
-    -e "s|Environment=\"HOME=/home/helisfx\"|Environment=\"HOME=/home/$USER\"|g" \
+sed -e "s|{{USER}}|$USER|g" \
+    -e "s|{{USER_HOME}}|$USER_HOME|g" \
+    -e "s|{{USER_UID}}|$USER_UID|g" \
+    -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+    -e "s|{{CONFIG_PATH}}|$CONFIG_PATH|g" \
     "./scripts/helifx.service" > /etc/systemd/system/$SERVICE_NAME
 
 systemctl daemon-reload
