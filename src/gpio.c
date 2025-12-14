@@ -24,6 +24,15 @@ static mtx_t pwm_monitors_mutex;
 static PWMMonitor *active_monitors[MAX_PWM_MONITORS] = {0};
 static int active_monitor_count = 0;
 
+// Single emitting thread for all PWM outputs
+static thrd_t pwm_emitting_thread;
+static atomic_bool emitter_thread_running = false;
+static mtx_t emitters_mutex;
+
+#define MAX_PWM_EMITTERS 8
+static struct PWMEmitter *active_emitters[MAX_PWM_EMITTERS] = {0};
+static int active_emitter_count = 0;
+
 // Audio HAT Reserved Pins - DO NOT USE
 // Supports both WM8960 Audio HAT and Raspberry Pi DigiAMP+
 #define AUDIO_I2C_SDA     2   // I2C Data (both HATs)
@@ -729,7 +738,6 @@ bool gpio_is_initialized(void) {
 // SOFTWARE PWM EMITTER IMPLEMENTATION
 // ============================================================================
 
-#define MAX_PWM_EMITTERS 8
 #define PWM_PERIOD_US 20000  // 50Hz = 20ms period
 
 struct PWMEmitter {
@@ -738,13 +746,6 @@ struct PWMEmitter {
     atomic_int value_us;  // Pulse width in microseconds
     atomic_bool active;
 };
-
-// Global emitter tracking
-static PWMEmitter *active_emitters[MAX_PWM_EMITTERS] = {0};
-static int active_emitter_count = 0;
-static mtx_t emitters_mutex;
-static thrd_t pwm_emitting_thread;
-static atomic_bool emitter_thread_running = false;
 
 // PWM emitting thread - generates PWM signals for all emitters
 static int pwm_emitting_thread_func(void *arg) {
@@ -850,12 +851,6 @@ PWMEmitter* pwm_emitter_create(int pin, const char *feature_name) {
     atomic_init(&emitter->active, true);
     
     // Add to active emitters
-    static bool emitters_mutex_initialized = false;
-    if (!emitters_mutex_initialized) {
-        mtx_init(&emitters_mutex, mtx_plain);
-        emitters_mutex_initialized = true;
-    }
-    
     mtx_lock(&emitters_mutex);
     
     if (active_emitter_count >= MAX_PWM_EMITTERS) {
