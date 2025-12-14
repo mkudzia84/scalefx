@@ -1,3 +1,6 @@
+# Parallel build - use 4 cores
+MAKEFLAGS = -j 4
+
 # Compiler settings
 CC = gcc
 CFLAGS = -Wall -Wextra -Werror -Wno-unused-function -std=c23 -D_DEFAULT_SOURCE
@@ -78,7 +81,7 @@ all: $(TARGETS)
 # Usage: make ENABLE_JETIEX=0
 .PHONY: nojetiex
 nojetiex:
-	$(MAKE) ENABLE_JETIEX=0
+	$(MAKE) -j 4 ENABLE_JETIEX=0
 
 # Debug target - builds with debug logging enabled
 .PHONY: debug
