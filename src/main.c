@@ -97,12 +97,13 @@ int main(int argc, char *argv[]) {
     // Print configuration
     config_print(config);
     
-    // Initialize GPIO
+    // Initialize GPIO (required for PWM emitters, servo control, lights, and general GPIO)
     if (gpio_init() < 0) {
         LOG_ERROR(LOG_HELIFX, "Failed to initialize GPIO");
         LOG_ERROR(LOG_HELIFX, "Note: Try running with sudo for GPIO access");
         return 1;
     }
+    LOG_INFO(LOG_HELIFX, "GPIO subsystem initialized (PWM emitters ready)");
     
     // Create audio mixer (8 channels)
     AudioMixer *mixer = audio_mixer_create(8);

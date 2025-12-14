@@ -1,4 +1,5 @@
 #include "servo.h"
+#include "gpio.h"
 #include "logging.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,9 @@ struct Servo {
     float current_velocity_us_per_sec;  // Current velocity
     int target_output_us;       // Target position (mapped from input)
     atomic_int input_us;        // Current input value (read by servo_set_input, read by thread)
+    
+    // PWM output emitter
+    PWMEmitter *pwm_emitter;
     
     // Thread control
     thrd_t thread;
@@ -147,6 +151,11 @@ static int servo_thread_func(void *arg) {
             servo->current_velocity_us_per_sec = 0.0f;
         }
         
+        // Update PWM output
+        if (servo->pwm_emitter) {
+            pwm_emitter_set_value(servo->pwm_emitter, (int)servo->current_output_us);
+        }
+        
         mtx_unlock(&servo->mutex);
         
         // Calculate sleep time based on update rate
@@ -197,17 +206,38 @@ Servo* servo_create(const ServoConfig *config) {
     mtx_init(&servo->mutex, mtx_plain);
     atomic_init(&servo->running, true);
     
+    // Create PWM emitter if output_pin is configured
+    if (config->output_pin >= 0) {
+        char feature_name[64];
+        snprintf(feature_name, sizeof(feature_name), "servo_pin%d", config->output_pin);
+        servo->pwm_emitter = pwm_emitter_create(config->output_pin, feature_name);
+        if (!servo->pwm_emitter) {
+            LOG_ERROR(LOG_SERVO, "Failed to create PWM emitter on pin %d", config->output_pin);
+            mtx_destroy(&servo->mutex);
+            free(servo);
+            return nullptr;
+        }
+        // Set initial PWM value
+        pwm_emitter_set_value(servo->pwm_emitter, (int)servo->current_output_us);
+    } else {
+        servo->pwm_emitter = nullptr;
+    }
+    
     // Start processing thread
     if (thrd_create(&servo->thread, servo_thread_func, servo) != thrd_success) {
         LOG_ERROR(LOG_SERVO, "Failed to create processing thread");
+        if (servo->pwm_emitter) {
+            pwm_emitter_destroy(servo->pwm_emitter);
+        }
         mtx_destroy(&servo->mutex);
         free(servo);
         return nullptr;
     }
     
-    LOG_INFO(LOG_SERVO, "Created (input: %d-%d us, output: %d-%d us, speed: %.0f us/s, accel: %.0f us/s², rate: %dHz)",
+    LOG_INFO(LOG_SERVO, "Created (input: %d-%d us, output: %d-%d us, pin: %d, speed: %.0f us/s, accel: %.0f us/s², rate: %dHz)",
              config->input_min_us, config->input_max_us,
              config->output_min_us, config->output_max_us,
+             config->output_pin,
              config->max_speed_us_per_sec, config->max_accel_us_per_sec2,
              servo->config.update_rate_hz);
     
@@ -220,6 +250,11 @@ void servo_destroy(Servo *servo) {
     // Stop thread
     atomic_store(&servo->running, false);
     thrd_join(servo->thread, nullptr);
+    
+    // Destroy PWM emitter
+    if (servo->pwm_emitter) {
+        pwm_emitter_destroy(servo->pwm_emitter);
+    }
     
     mtx_destroy(&servo->mutex);
     free(servo);

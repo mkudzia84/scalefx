@@ -73,6 +73,13 @@ int gpio_init(void) {
 void gpio_cleanup(void) {
     if (!initialized) return;
     
+    // Stop PWM emitting thread if running
+    if (atomic_load(&emitter_thread_running)) {
+        atomic_store(&emitter_thread_running, false);
+        thrd_join(pwm_emitting_thread, NULL);
+        LOG_INFO(LOG_GPIO, "PWM emitting thread stopped");
+    }
+    
     // Stop PWM monitoring thread if running
     if (atomic_load(&pwm_thread_running)) {
         atomic_store(&pwm_thread_running, false);
@@ -716,4 +723,223 @@ bool pwm_monitor_get_average(PWMMonitor *monitor, int *avg_us) {
 
 bool gpio_is_initialized(void) {
     return initialized;
+}
+
+// ============================================================================
+// SOFTWARE PWM EMITTER IMPLEMENTATION
+// ============================================================================
+
+#define MAX_PWM_EMITTERS 8
+#define PWM_PERIOD_US 20000  // 50Hz = 20ms period
+
+struct PWMEmitter {
+    int pin;
+    char *feature_name;
+    atomic_int value_us;  // Pulse width in microseconds
+    atomic_bool active;
+};
+
+// Global emitter tracking
+static PWMEmitter *active_emitters[MAX_PWM_EMITTERS] = {0};
+static int active_emitter_count = 0;
+static mtx_t emitters_mutex;
+static thrd_t pwm_emitting_thread;
+static atomic_bool emitter_thread_running = false;
+
+// PWM emitting thread - generates PWM signals for all emitters
+static int pwm_emitting_thread_func(void *arg) {
+    (void)arg;
+    
+    LOG_INFO(LOG_GPIO, "PWM emitting thread started");
+    
+    struct timespec cycle_start, now;
+    
+    while (atomic_load(&emitter_thread_running)) {
+        clock_gettime(CLOCK_MONOTONIC, &cycle_start);
+        
+        // Phase 1: Set all active pins HIGH
+        mtx_lock(&emitters_mutex);
+        for (int i = 0; i < active_emitter_count; i++) {
+            PWMEmitter *emitter = active_emitters[i];
+            if (emitter && atomic_load(&emitter->active)) {
+                int value = atomic_load(&emitter->value_us);
+                if (value > 0) {
+                    gpio_write(emitter->pin, 1);
+                }
+            }
+        }
+        mtx_unlock(&emitters_mutex);
+        
+        // Phase 2: Wait and turn off pins as their pulse width expires
+        // We'll sample at 5us intervals for smooth resolution (200 positions)
+        for (int elapsed_us = 0; elapsed_us < PWM_PERIOD_US; elapsed_us += 5) {
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            int64_t actual_elapsed_us = ((now.tv_sec - cycle_start.tv_sec) * 1000000LL) +
+                                        ((now.tv_nsec - cycle_start.tv_nsec) / 1000LL);
+            
+            // Turn off pins whose pulse width has expired
+            mtx_lock(&emitters_mutex);
+            for (int i = 0; i < active_emitter_count; i++) {
+                PWMEmitter *emitter = active_emitters[i];
+                if (emitter && atomic_load(&emitter->active)) {
+                    int value = atomic_load(&emitter->value_us);
+                    if (value > 0 && actual_elapsed_us >= value) {
+                        gpio_write(emitter->pin, 0);
+                    }
+                }
+            }
+            mtx_unlock(&emitters_mutex);
+            
+            // Sleep for 5us
+            struct timespec sleep_time = {0, 5000};  // 5us
+            nanosleep(&sleep_time, NULL);
+        }
+        
+        // Ensure we complete the full PWM period
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        int64_t elapsed_us = ((now.tv_sec - cycle_start.tv_sec) * 1000000LL) +
+                            ((now.tv_nsec - cycle_start.tv_nsec) / 1000LL);
+        
+        if (elapsed_us < PWM_PERIOD_US) {
+            struct timespec remaining = {
+                .tv_sec = 0,
+                .tv_nsec = (PWM_PERIOD_US - elapsed_us) * 1000LL
+            };
+            nanosleep(&remaining, NULL);
+        }
+    }
+    
+    LOG_INFO(LOG_GPIO, "PWM emitting thread stopped");
+    return 0;
+}
+
+PWMEmitter* pwm_emitter_create(int pin, const char *feature_name) {
+    if (!initialized) {
+        LOG_ERROR(LOG_GPIO, "GPIO not initialized");
+        return NULL;
+    }
+    
+    if (pin < 0 || pin >= 28) {
+        LOG_ERROR(LOG_GPIO, "Invalid GPIO pin %d for PWM emitter", pin);
+        return NULL;
+    }
+    
+    if (is_audio_hat_pin(pin)) {
+        LOG_ERROR(LOG_GPIO, "Cannot use audio HAT pin %d for PWM emitter", pin);
+        return NULL;
+    }
+    
+    // Set pin as output
+    if (gpio_set_mode(pin, GPIO_MODE_OUTPUT) < 0) {
+        LOG_ERROR(LOG_GPIO, "Failed to set pin %d as output for PWM emitter", pin);
+        return NULL;
+    }
+    
+    // Initialize pin to LOW
+    gpio_write(pin, 0);
+    
+    PWMEmitter *emitter = calloc(1, sizeof(PWMEmitter));
+    if (!emitter) {
+        LOG_ERROR(LOG_GPIO, "Failed to allocate PWM emitter");
+        return NULL;
+    }
+    
+    emitter->pin = pin;
+    emitter->feature_name = strdup(feature_name ? feature_name : "unknown");
+    atomic_init(&emitter->value_us, 0);
+    atomic_init(&emitter->active, true);
+    
+    // Add to active emitters
+    static bool emitters_mutex_initialized = false;
+    if (!emitters_mutex_initialized) {
+        mtx_init(&emitters_mutex, mtx_plain);
+        emitters_mutex_initialized = true;
+    }
+    
+    mtx_lock(&emitters_mutex);
+    
+    if (active_emitter_count >= MAX_PWM_EMITTERS) {
+        mtx_unlock(&emitters_mutex);
+        LOG_ERROR(LOG_GPIO, "Maximum number of PWM emitters reached");
+        free(emitter->feature_name);
+        free(emitter);
+        return NULL;
+    }
+    
+    active_emitters[active_emitter_count++] = emitter;
+    
+    // Start emitting thread if not already running
+    if (!atomic_load(&emitter_thread_running)) {
+        atomic_store(&emitter_thread_running, true);
+        if (thrd_create(&pwm_emitting_thread, pwm_emitting_thread_func, NULL) != thrd_success) {
+            LOG_ERROR(LOG_GPIO, "Failed to create PWM emitting thread");
+            active_emitter_count--;
+            atomic_store(&emitter_thread_running, false);
+            mtx_unlock(&emitters_mutex);
+            free(emitter->feature_name);
+            free(emitter);
+            return NULL;
+        }
+        LOG_INFO(LOG_GPIO, "PWM emitting thread created");
+    }
+    
+    mtx_unlock(&emitters_mutex);
+    
+    LOG_INFO(LOG_GPIO, "Created PWM emitter '%s' on pin %d", feature_name, pin);
+    return emitter;
+}
+
+void pwm_emitter_destroy(PWMEmitter *emitter) {
+    if (!emitter) return;
+    
+    atomic_store(&emitter->active, false);
+    
+    // Set pin LOW
+    gpio_write(emitter->pin, 0);
+    
+    // Remove from active emitters
+    mtx_lock(&emitters_mutex);
+    
+    for (int i = 0; i < active_emitter_count; i++) {
+        if (active_emitters[i] == emitter) {
+            // Shift remaining emitters
+            for (int j = i; j < active_emitter_count - 1; j++) {
+                active_emitters[j] = active_emitters[j + 1];
+            }
+            active_emitters[--active_emitter_count] = NULL;
+            break;
+        }
+    }
+    
+    // Stop emitting thread if no more emitters
+    if (active_emitter_count == 0 && atomic_load(&emitter_thread_running)) {
+        atomic_store(&emitter_thread_running, false);
+        mtx_unlock(&emitters_mutex);
+        thrd_join(pwm_emitting_thread, NULL);
+        LOG_INFO(LOG_GPIO, "PWM emitting thread stopped (no active emitters)");
+    } else {
+        mtx_unlock(&emitters_mutex);
+    }
+    
+    LOG_INFO(LOG_GPIO, "Destroyed PWM emitter '%s' on pin %d", emitter->feature_name, emitter->pin);
+    
+    free(emitter->feature_name);
+    free(emitter);
+}
+
+int pwm_emitter_set_value(PWMEmitter *emitter, int value_us) {
+    if (!emitter) return -1;
+    
+    if (value_us < 0 || value_us > PWM_PERIOD_US) {
+        LOG_WARN(LOG_GPIO, "PWM value %d us out of range (0-%d)", value_us, PWM_PERIOD_US);
+        value_us = value_us < 0 ? 0 : PWM_PERIOD_US;
+    }
+    
+    atomic_store(&emitter->value_us, value_us);
+    return 0;
+}
+
+int pwm_emitter_get_value(PWMEmitter *emitter) {
+    if (!emitter) return -1;
+    return atomic_load(&emitter->value_us);
 }

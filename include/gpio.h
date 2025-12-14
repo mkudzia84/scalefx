@@ -6,6 +6,7 @@
 
 // Forward declarations
 typedef struct PWMMonitor PWMMonitor;
+typedef struct PWMEmitter PWMEmitter;
 
 // PWM reading structure
 typedef struct {
@@ -158,6 +159,39 @@ void pwm_monitor_set_avg_window_ms(PWMMonitor *monitor, int window_ms);
  * @return true if average computed from at least 1 sample, false otherwise
  */
 bool pwm_monitor_get_average(PWMMonitor *monitor, int *avg_us);
+
+// ============================================================================
+// SOFTWARE PWM EMITTER API
+// ============================================================================
+
+/**
+ * Create a PWM emitter for software-generated PWM output
+ * @param pin GPIO pin number (BCM numbering)
+ * @param feature_name Name of the feature using this PWM (for logging)
+ * @return PWM emitter handle, or NULL on error
+ */
+PWMEmitter* pwm_emitter_create(int pin, const char *feature_name);
+
+/**
+ * Destroy a PWM emitter and release resources
+ * @param emitter PWM emitter handle
+ */
+void pwm_emitter_destroy(PWMEmitter *emitter);
+
+/**
+ * Set PWM value (pulse width in microseconds)
+ * @param emitter PWM emitter handle
+ * @param value_us Pulse width in microseconds (0-20000 for 50Hz PWM)
+ * @return 0 on success, -1 on error
+ */
+int pwm_emitter_set_value(PWMEmitter *emitter, int value_us);
+
+/**
+ * Get current PWM value
+ * @param emitter PWM emitter handle
+ * @return Current pulse width in microseconds
+ */
+int pwm_emitter_get_value(PWMEmitter *emitter);
 
 
 #endif // GPIO_H
