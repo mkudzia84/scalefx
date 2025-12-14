@@ -135,13 +135,44 @@ mkdir -p functions/ecm.usb0
 echo "48:6f:73:74:50:43" > functions/ecm.usb0/host_addr
 echo "42:61:64:55:53:42" > functions/ecm.usb0/dev_addr
 
-# Link function to configuration
-ln -sf functions/ecm.usb0 configs/c.1/
+# Link function to configuration (avoid duplicate links)
+if [ ! -e configs/c.1/ecm.usb0 ]; then
+    ln -sf functions/ecm.usb0 configs/c.1/
+fi
 
-# Bind to UDC (find the first available UDC)
+# Bind to UDC (find the first available UDC), handle busy device
 UDC=$(ls /sys/class/udc)
 if [ -n "$UDC" ]; then
-    echo "$UDC" > UDC
+    # If already bound, skip
+    CURRENT_UDC=$(cat UDC 2>/dev/null || echo "")
+    if [ -n "$CURRENT_UDC" ]; then
+        exit 0
+    fi
+    # Try to bind, retry if busy
+    for i in 1 2 3; do
+        if echo "$UDC" > UDC 2>/dev/null; then
+            exit 0
+        fi
+        sleep 1
+    done
+    # As a last resort, attempt to unbind any existing gadget and retry
+    for G in $(ls "$GADGET_PATH" | grep -v "$GADGET_NAME"); do
+        if [ -f "$GADGET_PATH/$G/UDC" ]; then
+            echo "" > "$GADGET_PATH/$G/UDC" 2>/dev/null || true
+        fi
+    done
+    echo "$UDC" > UDC 2>/dev/null || true
+fi
+
+# Bring up usb0 interface with a static IP
+/usr/bin/udevadm settle || true
+sleep 1
+if ip link show usb0 >/dev/null 2>&1; then
+    ip link set usb0 up || true
+    # Assign static IP if not present
+    if ! ip -4 addr show usb0 | grep -q '10.55.0.1'; then
+        ip addr add 10.55.0.1/24 dev usb0 || true
+    fi
 fi
 
 exit 0
