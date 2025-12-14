@@ -159,29 +159,6 @@ echo "  sudo helifx-audio-setup --verbose    # Show detailed output"
 echo "  sudo systemctl status helifx-audio   # Check audio service status"
 echo ""
 
-# Optional: Install USB SSH setup
-read -p "Install USB SSH access for development? (y/n): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}Installing USB SSH setup...${NC}"
-    cp ./scripts/setup-usb-ssh.sh /tmp/
-    chmod +x /tmp/setup-usb-ssh.sh
-    
-    read -p "Run USB SSH setup now? (requires reboot) (y/n): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        /tmp/setup-usb-ssh.sh
-        read -p "Reboot now to enable USB SSH? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            reboot
-        fi
-    else
-        echo -e "${YELLOW}To enable USB SSH later, run:${NC}"
-        echo "  sudo /tmp/setup-usb-ssh.sh"
-    fi
-fi
-
 echo ""
 echo -e "${GREEN}======================================${NC}"
 echo -e "${GREEN}Installation Complete!${NC}"
