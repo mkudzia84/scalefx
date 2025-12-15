@@ -775,8 +775,8 @@ static int pwm_emitting_thread_func(void *arg) {
         mtx_unlock(&emitters_mutex);
         
         // Phase 2: Wait and turn off pins as their pulse width expires
-        // We'll sample at 5us intervals for smooth resolution (200 positions)
-        for (int elapsed_us = 0; elapsed_us < PWM_PERIOD_US; elapsed_us += 5) {
+        // Sample at ~10us intervals for ~100 positions per 20ms period
+        for (int elapsed_us = 0; elapsed_us < PWM_PERIOD_US; elapsed_us += 10) {
             clock_gettime(CLOCK_MONOTONIC, &now);
             int64_t actual_elapsed_us = ((now.tv_sec - cycle_start.tv_sec) * 1000000LL) +
                                         ((now.tv_nsec - cycle_start.tv_nsec) / 1000LL);
@@ -794,9 +794,16 @@ static int pwm_emitting_thread_func(void *arg) {
             }
             mtx_unlock(&emitters_mutex);
             
-            // Sleep for 5us
-            struct timespec sleep_time = {0, 5000};  // 5us
-            nanosleep(&sleep_time, NULL);
+            // Sleep for remaining time to reach ~10us step (guard against scheduling overhead)
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            int64_t step_elapsed_us = ((now.tv_sec - cycle_start.tv_sec) * 1000000LL) +
+                                      ((now.tv_nsec - cycle_start.tv_nsec) / 1000LL);
+            int64_t target_next_us = elapsed_us + 10;
+            int64_t remaining_us = target_next_us - step_elapsed_us;
+            if (remaining_us > 0) {
+                struct timespec sleep_time = {0, remaining_us * 1000LL};
+                nanosleep(&sleep_time, NULL);
+            }
         }
         
         // Ensure we complete the full PWM period
