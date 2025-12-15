@@ -729,13 +729,15 @@ bool gpio_is_initialized(void) {
 // SOFTWARE PWM EMITTER IMPLEMENTATION
 // ============================================================================
 
-#define PWM_PERIOD_US 20000  // 50Hz = 20ms period
+// Default PWM frequency: 50Hz (20ms period)
+static const int DEFAULT_PWM_FREQ_HZ = 50;
 
 struct PWMEmitter {
     int pin;
     char *feature_name;
     atomic_int value_us;  // Pulse width in microseconds
     atomic_bool active;
+    atomic_int freq_hz;   // Frequency in Hertz
     thrd_t thread;
 };
 
@@ -747,10 +749,14 @@ static int pwm_emitter_thread_func(void *arg) {
     while (atomic_load(&em->active)) {
         struct timespec start_ts, now;
         clock_gettime(CLOCK_MONOTONIC, &start_ts);
+        
+        int freq = atomic_load(&em->freq_hz);
+        if (freq <= 0) freq = DEFAULT_PWM_FREQ_HZ;
+        int period_us = 1000000 / freq; // integer division ok
 
         int width_us = atomic_load(&em->value_us);
         if (width_us < 0) width_us = 0;
-        if (width_us > PWM_PERIOD_US) width_us = PWM_PERIOD_US;
+        if (width_us > period_us) width_us = period_us;
 
         if (width_us > 0) {
             gpio_write(em->pin, true);
@@ -763,7 +769,7 @@ static int pwm_emitter_thread_func(void *arg) {
         clock_gettime(CLOCK_MONOTONIC, &now);
         long elapsed_us = (long)((now.tv_sec - start_ts.tv_sec) * 1000000L +
                                  (now.tv_nsec - start_ts.tv_nsec) / 1000L);
-        long remain_us = PWM_PERIOD_US - elapsed_us;
+        long remain_us = period_us - elapsed_us;
         if (remain_us > 0) {
             struct timespec low_sleep = {0, remain_us * 1000L};
             nanosleep(&low_sleep, NULL);
@@ -810,6 +816,7 @@ PWMEmitter* pwm_emitter_create(int pin, const char *feature_name) {
     emitter->feature_name = strdup(feature_name ? feature_name : "unknown");
     atomic_init(&emitter->value_us, 0);
     atomic_init(&emitter->active, true);
+    atomic_init(&emitter->freq_hz, DEFAULT_PWM_FREQ_HZ);
     
     // Start per-emitter thread
     if (thrd_create(&emitter->thread, pwm_emitter_thread_func, emitter) != thrd_success) {
@@ -842,10 +849,12 @@ void pwm_emitter_destroy(PWMEmitter *emitter) {
 
 int pwm_emitter_set_value(PWMEmitter *emitter, int value_us) {
     if (!emitter) return -1;
-    
-    if (value_us < 0 || value_us > PWM_PERIOD_US) {
-        LOG_WARN(LOG_GPIO, "PWM value %d us out of range (0-%d)", value_us, PWM_PERIOD_US);
-        value_us = value_us < 0 ? 0 : PWM_PERIOD_US;
+    int freq = atomic_load(&emitter->freq_hz);
+    if (freq <= 0) freq = DEFAULT_PWM_FREQ_HZ;
+    int period_us = 1000000 / freq;
+    if (value_us < 0 || value_us > period_us) {
+        LOG_WARN(LOG_GPIO, "PWM value %d us out of range (0-%d)", value_us, period_us);
+        value_us = value_us < 0 ? 0 : period_us;
     }
     
     atomic_store(&emitter->value_us, value_us);
@@ -855,4 +864,20 @@ int pwm_emitter_set_value(PWMEmitter *emitter, int value_us) {
 int pwm_emitter_get_value(PWMEmitter *emitter) {
     if (!emitter) return -1;
     return atomic_load(&emitter->value_us);
+}
+
+int pwm_emitter_set_frequency(PWMEmitter *emitter, int hz) {
+    if (!emitter) return -1;
+    if (hz <= 0) {
+        LOG_WARN(LOG_GPIO, "Invalid PWM frequency %d Hz; keeping %d Hz", hz, atomic_load(&emitter->freq_hz));
+        return -1;
+    }
+    atomic_store(&emitter->freq_hz, hz);
+    LOG_INFO(LOG_GPIO, "Emitter pin %d frequency set to %d Hz", emitter->pin, hz);
+    return 0;
+}
+
+int pwm_emitter_get_frequency(PWMEmitter *emitter) {
+    if (!emitter) return -1;
+    return atomic_load(&emitter->freq_hz);
 }

@@ -181,7 +181,7 @@ void pwm_emitter_destroy(PWMEmitter *emitter);
 /**
  * Set PWM value (pulse width in microseconds)
  * @param emitter PWM emitter handle
- * @param value_us Pulse width in microseconds (0-20000 for 50Hz PWM)
+ * @param value_us Pulse width in microseconds (0..period_us)
  * @return 0 on success, -1 on error
  */
 int pwm_emitter_set_value(PWMEmitter *emitter, int value_us);
@@ -192,6 +192,21 @@ int pwm_emitter_set_value(PWMEmitter *emitter, int value_us);
  * @return Current pulse width in microseconds
  */
 int pwm_emitter_get_value(PWMEmitter *emitter);
+
+/**
+ * Set PWM frequency for this emitter
+ * @param emitter PWM emitter handle
+ * @param hz Frequency in Hertz (default 50Hz)
+ * @return 0 on success, -1 on error
+ */
+int pwm_emitter_set_frequency(PWMEmitter *emitter, int hz);
+
+/**
+ * Get PWM frequency for this emitter
+ * @param emitter PWM emitter handle
+ * @return Frequency in Hertz
+ */
+int pwm_emitter_get_frequency(PWMEmitter *emitter);
 
 
 #endif // GPIO_H

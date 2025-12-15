@@ -15,13 +15,21 @@ static void handle_sigint(int sig) {
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <gpio_pin> [--verbose]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <gpio_pin> [freq_hz] [--verbose]\n", argv[0]);
         return 1;
     }
 
     int pin = atoi(argv[1]);
+    int freq_hz = 0;
     int verbose = 0;
-    if (argc >= 3 && (strcmp(argv[2], "--verbose") == 0 || strcmp(argv[2], "-v") == 0)) {
+    if (argc >= 3) {
+        if (strcmp(argv[2], "--verbose") == 0 || strcmp(argv[2], "-v") == 0) {
+            verbose = 1;
+        } else {
+            freq_hz = atoi(argv[2]);
+        }
+    }
+    if (argc >= 4 && (strcmp(argv[3], "--verbose") == 0 || strcmp(argv[3], "-v") == 0)) {
         verbose = 1;
     }
 
@@ -33,7 +41,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    LOG_INFO(LOG_SYSTEM, "PWM emitter test starting on GPIO %d", pin);
+    if (freq_hz > 0) {
+        LOG_INFO(LOG_SYSTEM, "PWM emitter test starting on GPIO %d at %d Hz", pin, freq_hz);
+    } else {
+        LOG_INFO(LOG_SYSTEM, "PWM emitter test starting on GPIO %d (default 50 Hz)", pin);
+    }
 
     int exit_code = 0;
     PWMEmitter *emitter = NULL;
@@ -49,6 +61,9 @@ int main(int argc, char *argv[]) {
         LOG_ERROR(LOG_SYSTEM, "Failed to create PWM emitter on pin %d", pin);
         exit_code = 1;
         goto cleanup;
+    }
+    if (freq_hz > 0) {
+        pwm_emitter_set_frequency(emitter, freq_hz);
     }
 
     // Cycle from 1000us to 2000us and back, full cycle every 5 seconds
