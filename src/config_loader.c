@@ -7,6 +7,7 @@
 
 #include "config_loader.h"
 #include "logging.h"
+#include "gpio.h"
 #include <cyaml/cyaml.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +47,7 @@
 // ServoConfig schema with defaults
 static const cyaml_schema_field_t servo_fields[] = {
     CYAML_FIELD_INT("servo_id", CYAML_FLAG_DEFAULT, ServoConfig, servo_id),
-    CYAML_FIELD_INT("pwm_pin", CYAML_FLAG_DEFAULT, ServoConfig, pwm_pin),
+    CYAML_FIELD_INT("input_channel", CYAML_FLAG_DEFAULT, ServoConfig, input_channel),
     CYAML_FIELD_INT("input_min_us", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, input_min_us),
     CYAML_FIELD_INT("input_max_us", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, input_max_us),
     CYAML_FIELD_INT("output_min_us", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, output_min_us),
@@ -54,6 +55,8 @@ static const cyaml_schema_field_t servo_fields[] = {
     CYAML_FIELD_FLOAT("max_speed_us_per_sec", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, max_speed_us_per_sec),
     CYAML_FIELD_FLOAT("max_accel_us_per_sec2", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, max_accel_us_per_sec2),
     CYAML_FIELD_FLOAT("max_decel_us_per_sec2", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, max_decel_us_per_sec2),
+    CYAML_FIELD_INT("recoil_jerk_us", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, recoil_jerk_us),
+    CYAML_FIELD_INT("recoil_jerk_variance_us", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, ServoConfig, recoil_jerk_variance_us),
     CYAML_FIELD_END
 };
 
@@ -63,7 +66,7 @@ static const cyaml_schema_value_t servo_schema __attribute__((unused)) = {
 
 // EngineToggleConfig schema
 static const cyaml_schema_field_t engine_toggle_config_fields[] = {
-    CYAML_FIELD_INT("pin", CYAML_FLAG_DEFAULT, EngineToggleConfig, pin),
+    CYAML_FIELD_INT("input_channel", CYAML_FLAG_DEFAULT, EngineToggleConfig, input_channel),
     CYAML_FIELD_INT("threshold_us", CYAML_FLAG_DEFAULT, EngineToggleConfig, threshold_us),
     CYAML_FIELD_END
 };
@@ -111,7 +114,7 @@ static const cyaml_schema_value_t rate_of_fire_schema = {
 
 // Trigger configuration schema
 static const cyaml_schema_field_t trigger_config_fields[] = {
-    CYAML_FIELD_INT("pin", CYAML_FLAG_DEFAULT, TriggerConfig, pin),
+    CYAML_FIELD_INT("input_channel", CYAML_FLAG_DEFAULT, TriggerConfig, input_channel),
     CYAML_FIELD_END
 };
 
@@ -121,7 +124,7 @@ static const cyaml_schema_value_t trigger_config_schema __attribute__((unused)) 
 
 // SmokeConfig schema
 static const cyaml_schema_field_t smoke_config_fields[] = {
-    CYAML_FIELD_INT("heater_toggle_pin", CYAML_FLAG_DEFAULT, SmokeConfig, heater_toggle_pin),
+    CYAML_FIELD_INT("heater_toggle_channel", CYAML_FLAG_DEFAULT, SmokeConfig, heater_toggle_channel),
     CYAML_FIELD_INT("heater_pwm_threshold_us", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, SmokeConfig, heater_pwm_threshold_us),
     CYAML_FIELD_INT("fan_off_delay_ms", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL, SmokeConfig, fan_off_delay_ms),
     CYAML_FIELD_END
@@ -144,6 +147,7 @@ static const cyaml_schema_value_t turret_control_config_schema __attribute__((un
 
 // EngineFXConfig schema
 static const cyaml_schema_field_t engine_fx_fields[] = {
+    CYAML_FIELD_STRING_PTR("type", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, EngineFXConfig, type, 0, CYAML_UNLIMITED),
     CYAML_FIELD_MAPPING("engine_toggle", CYAML_FLAG_DEFAULT, EngineFXConfig, engine_toggle, engine_toggle_config_fields),
     CYAML_FIELD_MAPPING("sounds", CYAML_FLAG_DEFAULT, EngineFXConfig, sounds, engine_sounds_config_fields),
     CYAML_FIELD_END
@@ -288,44 +292,64 @@ int config_validate(const ScaleFXConfig *config) {
     }
 
     // Detect if engine section is present (optional)
-    bool engine_present = (config->engine.engine_toggle.pin != 0) ||
+    bool engine_present = (config->engine.engine_toggle.input_channel != 0) ||
                           (config->engine.sounds.starting != NULL) ||
                           (config->engine.sounds.running != NULL) ||
                           (config->engine.sounds.stopping != NULL);
 
     // Engine validation (only if present)
     if (engine_present) {
-        if (config->engine.engine_toggle.pin <= 0) {
-            LOG_ERROR(LOG_CONFIG, "Invalid engine pin: %d", config->engine.engine_toggle.pin);
+        if (!is_valid_channel(config->engine.engine_toggle.input_channel)) {
+            LOG_ERROR(LOG_CONFIG, "Invalid engine input_channel: %d (must be 1-12)", 
+                      config->engine.engine_toggle.input_channel);
             return -1;
         }
         // Engine sounds are optional; no strict validation
     }
 
     // Detect if gun section is present (optional)
-    bool gun_present = (config->gun.trigger.pin != 0) ||
+    bool gun_present = (config->gun.trigger.input_channel != 0) ||
                        (config->gun.rate_count > 0) ||
-                       (config->gun.turret_control.pitch.pwm_pin != 0) ||
-                       (config->gun.turret_control.yaw.pwm_pin != 0) ||
-                       (config->gun.smoke.heater_toggle_pin != 0);
+                       (config->gun.turret_control.pitch.input_channel != 0) ||
+                       (config->gun.turret_control.yaw.input_channel != 0) ||
+                       (config->gun.smoke.heater_toggle_channel != 0);
 
     // Gun validation (only if present)
     if (gun_present) {
-        if (config->gun.trigger.pin <= 0) {
-            LOG_ERROR(LOG_CONFIG, "Invalid gun trigger pin: %d", config->gun.trigger.pin);
+        if (!is_valid_channel(config->gun.trigger.input_channel)) {
+            LOG_ERROR(LOG_CONFIG, "Invalid gun trigger input_channel: %d (must be 1-12)", 
+                      config->gun.trigger.input_channel);
+            return -1;
+        }
+        
+        // Validate smoke heater channel if present
+        if (config->gun.smoke.heater_toggle_channel != 0 && 
+            !is_valid_channel(config->gun.smoke.heater_toggle_channel)) {
+            LOG_ERROR(LOG_CONFIG, "Invalid smoke heater_toggle_channel: %d (must be 1-12)", 
+                      config->gun.smoke.heater_toggle_channel);
             return -1;
         }
         // Serial bus is auto-detected over USB; no config validation needed
     }
 
     // Validate servo inputs and servo_id (outputs handled by Pico)
-    if (config->gun.turret_control.pitch.pwm_pin >= 0) {
+    if (config->gun.turret_control.pitch.input_channel > 0) {
+        if (!is_valid_channel(config->gun.turret_control.pitch.input_channel)) {
+            LOG_ERROR(LOG_CONFIG, "Invalid pitch input_channel: %d (must be 1-12)",
+                      config->gun.turret_control.pitch.input_channel);
+            return -1;
+        }
         if (config->gun.turret_control.pitch.servo_id <= 0) {
             LOG_ERROR(LOG_CONFIG, "Invalid pitch servo_id: must be > 0");
             return -1;
         }
     }
-    if (config->gun.turret_control.yaw.pwm_pin >= 0) {
+    if (config->gun.turret_control.yaw.input_channel > 0) {
+        if (!is_valid_channel(config->gun.turret_control.yaw.input_channel)) {
+            LOG_ERROR(LOG_CONFIG, "Invalid yaw input_channel: %d (must be 1-12)",
+                      config->gun.turret_control.yaw.input_channel);
+            return -1;
+        }
         if (config->gun.turret_control.yaw.servo_id <= 0) {
             LOG_ERROR(LOG_CONFIG, "Invalid yaw servo_id: must be > 0");
             return -1;
@@ -364,13 +388,15 @@ void config_print(const ScaleFXConfig *config) {
     printf("\n");
     
     // Engine FX (optional)
-    bool engine_present = (config->engine.engine_toggle.pin != 0) ||
+    bool engine_present = (config->engine.engine_toggle.input_channel != 0) ||
                           (config->engine.sounds.starting != NULL) ||
                           (config->engine.sounds.running != NULL) ||
                           (config->engine.sounds.stopping != NULL);
     if (engine_present) {
-        printf(COLOR_GREEN "✓ Engine FX" COLOR_RESET " | Toggle: GPIO %d (threshold: %d µs)\n", 
-               config->engine.engine_toggle.pin, 
+        int gpio = channel_to_gpio(config->engine.engine_toggle.input_channel);
+        printf(COLOR_GREEN "✓ Engine FX" COLOR_RESET " | Channel: %d (GPIO %d), Threshold: %d µs\\n", 
+               config->engine.engine_toggle.input_channel,
+               gpio,
                config->engine.engine_toggle.threshold_us);
     
     // Sound files
@@ -390,40 +416,58 @@ void config_print(const ScaleFXConfig *config) {
     }
     
     // Gun FX (optional)
-    bool gun_present = (config->gun.trigger.pin != 0) ||
+    bool gun_present = (config->gun.trigger.input_channel != 0) ||
                        (config->gun.rate_count > 0) ||
-                       (config->gun.turret_control.pitch.pwm_pin != 0) ||
-                       (config->gun.turret_control.yaw.pwm_pin != 0) ||
-                       (config->gun.smoke.heater_toggle_pin != 0);
+                       (config->gun.turret_control.pitch.input_channel != 0) ||
+                       (config->gun.turret_control.yaw.input_channel != 0) ||
+                       (config->gun.smoke.heater_toggle_channel != 0);
     if (gun_present) {
-        printf(COLOR_GREEN "✓ Gun FX" COLOR_RESET " | Trigger: GPIO %d\n", config->gun.trigger.pin);
+        int trigger_gpio = channel_to_gpio(config->gun.trigger.input_channel);
+        printf(COLOR_GREEN "✓ Gun FX" COLOR_RESET " | Trigger: Channel %d (GPIO %d)\\n", 
+               config->gun.trigger.input_channel, trigger_gpio);
     
     // Smoke Generator
-    printf("    " COLOR_MAGENTA "Smoke" COLOR_RESET ": Toggle=GPIO %d (threshold=%d µs, fan_delay=%d ms)\n", 
-           config->gun.smoke.heater_toggle_pin,
+    int smoke_gpio = channel_to_gpio(config->gun.smoke.heater_toggle_channel);
+    printf("    " COLOR_MAGENTA "Smoke" COLOR_RESET ": Channel=%d (GPIO %d), Threshold=%d µs, Fan_delay=%d ms\\n", 
+           config->gun.smoke.heater_toggle_channel,
+           smoke_gpio,
            config->gun.smoke.heater_pwm_threshold_us,
            config->gun.smoke.fan_off_delay_ms);
     
     // Turret/Servo Control
-    if (config->gun.turret_control.pitch.pwm_pin >= 0 || config->gun.turret_control.yaw.pwm_pin >= 0) {
+    if (config->gun.turret_control.pitch.input_channel > 0 || config->gun.turret_control.yaw.input_channel > 0) {
         printf("    " COLOR_BLUE "Servos" COLOR_RESET ":\n");
         
-        if (config->gun.turret_control.pitch.pwm_pin >= 0) {
-            printf("      • Pitch: Servo ID=%d, PWM=GPIO %d, Speed=%d µs/s, Accel=%d µs/s², Decel=%d µs/s²\n", 
+        if (config->gun.turret_control.pitch.input_channel > 0) {
+            int pitch_gpio = channel_to_gpio(config->gun.turret_control.pitch.input_channel);
+            printf("      • Pitch: Servo ID=%d, Channel=%d (GPIO %d), Speed=%d µs/s, Accel=%d µs/s², Decel=%d µs/s²\n", 
                    config->gun.turret_control.pitch.servo_id,
-                   config->gun.turret_control.pitch.pwm_pin,
+                   config->gun.turret_control.pitch.input_channel,
+                   pitch_gpio,
                    (int)config->gun.turret_control.pitch.max_speed_us_per_sec,
                    (int)config->gun.turret_control.pitch.max_accel_us_per_sec2,
                    (int)config->gun.turret_control.pitch.max_decel_us_per_sec2);
+            if (config->gun.turret_control.pitch.recoil_jerk_us > 0) {
+                printf("               Recoil Jerk=%d µs, Variance=%d µs\n",
+                       config->gun.turret_control.pitch.recoil_jerk_us,
+                       config->gun.turret_control.pitch.recoil_jerk_variance_us);
+            }
         }
         
-        if (config->gun.turret_control.yaw.pwm_pin >= 0) {
-            printf("      • Yaw:   Servo ID=%d, PWM=GPIO %d, Speed=%d µs/s, Accel=%d µs/s², Decel=%d µs/s²\n", 
+        if (config->gun.turret_control.yaw.input_channel > 0) {
+            int yaw_gpio = channel_to_gpio(config->gun.turret_control.yaw.input_channel);
+            printf("      • Yaw:   Servo ID=%d, Channel=%d (GPIO %d), Speed=%d µs/s, Accel=%d µs/s², Decel=%d µs/s²\n", 
                    config->gun.turret_control.yaw.servo_id,
-                   config->gun.turret_control.yaw.pwm_pin,
+                   config->gun.turret_control.yaw.input_channel,
+                   yaw_gpio,
                    (int)config->gun.turret_control.yaw.max_speed_us_per_sec,
                    (int)config->gun.turret_control.yaw.max_accel_us_per_sec2,
                    (int)config->gun.turret_control.yaw.max_decel_us_per_sec2);
+            if (config->gun.turret_control.yaw.recoil_jerk_us > 0) {
+                printf("               Recoil Jerk=%d µs, Variance=%d µs\n",
+                       config->gun.turret_control.yaw.recoil_jerk_us,
+                       config->gun.turret_control.yaw.recoil_jerk_variance_us);
+            }
         }
     }
     

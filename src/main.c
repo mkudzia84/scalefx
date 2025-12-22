@@ -121,7 +121,7 @@ int main(int argc, char *argv[]) {
     
     // Initialize Engine FX if configured (optional)
     EngineFX *engine = nullptr;
-    bool engine_present = (config->engine.engine_toggle.pin != 0) ||
+    bool engine_present = (config->engine.engine_toggle.input_channel != 0) ||
                           (config->engine.sounds.starting != NULL) ||
                           (config->engine.sounds.running != NULL) ||
                           (config->engine.sounds.stopping != NULL);
@@ -150,11 +150,11 @@ int main(int argc, char *argv[]) {
     
     // Initialize Gun FX if configured (optional)
     GunFX *gun = nullptr;
-    bool gun_present = (config->gun.trigger.pin != 0) ||
+    bool gun_present = (config->gun.trigger.input_channel != 0) ||
                        (config->gun.rate_count > 0) ||
-                       (config->gun.turret_control.pitch.pwm_pin != 0) ||
-                       (config->gun.turret_control.yaw.pwm_pin != 0) ||
-                       (config->gun.smoke.heater_toggle_pin != 0);
+                       (config->gun.turret_control.pitch.input_channel != 0) ||
+                       (config->gun.turret_control.yaw.input_channel != 0) ||
+                       (config->gun.smoke.heater_toggle_channel != 0);
     if (gun_present) {
         LOG_INFO(LOG_SFXHUB, "Initializing Gun FX...");
         

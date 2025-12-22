@@ -75,4 +75,10 @@ int gun_fx_get_pitch_pin(GunFX *gun);
 int gun_fx_get_yaw_pwm(GunFX *gun);
 int gun_fx_get_yaw_pin(GunFX *gun);
 
+// Recoil jerk settings getters
+int gun_fx_get_pitch_recoil_jerk(GunFX *gun);
+int gun_fx_get_pitch_recoil_jerk_variance(GunFX *gun);
+int gun_fx_get_yaw_recoil_jerk(GunFX *gun);
+int gun_fx_get_yaw_recoil_jerk_variance(GunFX *gun);
+
 #endif // GUN_FX_H

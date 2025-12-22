@@ -16,7 +16,7 @@ typedef struct RateOfFireConfig {
 // Servo configuration with defaults
 typedef struct ServoConfig {
     int servo_id;               // Pico servo ID (1, 2, or 3)
-    int pwm_pin;
+    int input_channel;          // Input channel 1-12
     int input_min_us;           // Default: 1000
     int input_max_us;           // Default: 2000
     int output_min_us;          // Default: 1000
@@ -24,17 +24,19 @@ typedef struct ServoConfig {
     float max_speed_us_per_sec; // Default: 4000.0
     float max_accel_us_per_sec2;// Default: 8000.0
     float max_decel_us_per_sec2;// Default: 8000.0
+    int recoil_jerk_us;         // Recoil jerk offset per shot (optional, 0=disabled)
+    int recoil_jerk_variance_us;// Random variance for recoil jerk (optional)
 } ServoConfig;
 
 // Engine Toggle configuration
 typedef struct EngineToggleConfig {
-    int pin;
+    int input_channel;         // Input channel 1-12
     int threshold_us;          // Default: 1500
 } EngineToggleConfig;
 
 // Gun Trigger configuration
 typedef struct TriggerConfig {
-    int pin;
+    int input_channel;         // Input channel 1-12
 } TriggerConfig;// Engine Sounds Transitions configuration
 typedef struct EngineSoundsTransitionsConfig {
     int starting_offset_ms;    // Default: 60000 (60 seconds)
@@ -49,15 +51,24 @@ typedef struct EngineSoundsConfig {
     EngineSoundsTransitionsConfig transitions;
 } EngineSoundsConfig;
 
+// Engine type enumeration
+typedef enum {
+    ENGINE_TYPE_TURBINE = 0,
+    ENGINE_TYPE_RADIAL,      // Future
+    ENGINE_TYPE_DIESEL,      // Future
+    ENGINE_TYPE_COUNT
+} EngineType;
+
 // Engine FX configuration with defaults
 typedef struct EngineFXConfig {
+    char *type;               // Engine type: "turbine", "radial", "diesel" (default: turbine)
     EngineToggleConfig engine_toggle;
     EngineSoundsConfig sounds;
 } EngineFXConfig;
 
 // Smoke configuration
 typedef struct SmokeConfig {
-    int heater_toggle_pin;
+    int heater_toggle_channel; // Input channel 1-12
     int heater_pwm_threshold_us; // Default: 1500
     int fan_off_delay_ms;        // Default: 2000
 } SmokeConfig;

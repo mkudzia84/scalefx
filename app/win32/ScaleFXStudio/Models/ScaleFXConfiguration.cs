@@ -22,9 +22,14 @@ public class ScaleFXConfiguration
 public class EngineFxConfig
 {
     [Category("General")]
-    [Description("Enable or disable engine effects")]
-    [YamlMember(Alias = "enabled")]
+    [Description("Enable or disable engine effects (UI only - not serialized)")]
+    [YamlIgnore]
     public bool Enabled { get; set; } = true;
+
+    [Category("General")]
+    [Description("Engine type: turbine, radial, diesel")]
+    [YamlMember(Alias = "type")]
+    public string Type { get; set; } = "turbine";
 
     [Category("Engine Toggle")]
     [Description("Engine toggle PWM input configuration")]
@@ -40,9 +45,9 @@ public class EngineFxConfig
 public class PwmInputConfig
 {
     [Category("PWM")]
-    [Description("GPIO pin number for PWM input")]
-    [YamlMember(Alias = "pin")]
-    public int Pin { get; set; }
+    [Description("Input channel number (1-12)")]
+    [YamlMember(Alias = "input_channel")]
+    public int InputChannel { get; set; }
 
     [Category("PWM")]
     [Description("PWM threshold in microseconds")]
@@ -53,19 +58,19 @@ public class PwmInputConfig
 public class EngineSoundsConfig
 {
     [Category("Sounds")]
-    [Description("Engine starting sound")]
+    [Description("Engine starting sound file path")]
     [YamlMember(Alias = "starting")]
-    public SoundFileConfig? Starting { get; set; }
+    public string? Starting { get; set; }
 
     [Category("Sounds")]
-    [Description("Engine running loop sound")]
+    [Description("Engine running loop sound file path")]
     [YamlMember(Alias = "running")]
-    public SoundFileConfig? Running { get; set; }
+    public string? Running { get; set; }
 
     [Category("Sounds")]
-    [Description("Engine stopping sound")]
+    [Description("Engine stopping sound file path")]
     [YamlMember(Alias = "stopping")]
-    public SoundFileConfig? Stopping { get; set; }
+    public string? Stopping { get; set; }
 
     [Category("Transitions")]
     [Description("Sound transition timing")]
@@ -98,8 +103,8 @@ public class TransitionsConfig
 public class GunFxConfig
 {
     [Category("General")]
-    [Description("Enable or disable gun effects")]
-    [YamlMember(Alias = "enabled")]
+    [Description("Enable or disable gun effects (UI only - not serialized)")]
+    [YamlIgnore]
     public bool Enabled { get; set; } = true;
 
     [Category("Trigger")]
@@ -119,34 +124,39 @@ public class GunFxConfig
 
     [Category("Rate of Fire")]
     [Description("Rate of fire configurations")]
-    [YamlMember(Alias = "rate_of_fire")]
+    [YamlMember(Alias = "rates_of_fire")]
     public List<RateOfFireConfig>? RateOfFire { get; set; }
 }
 
 public class TriggerConfig
 {
     [Category("Trigger")]
-    [Description("GPIO pin for trigger PWM input")]
-    [YamlMember(Alias = "pin")]
-    public int Pin { get; set; }
+    [Description("Input channel for trigger PWM (1-12)")]
+    [YamlMember(Alias = "input_channel")]
+    public int InputChannel { get; set; }
 }
 
 public class SmokeConfig
 {
     [Category("General")]
-    [Description("Enable smoke generator")]
-    [YamlMember(Alias = "enabled")]
+    [Description("Enable smoke generator (UI only - not serialized)")]
+    [YamlIgnore]
     public bool Enabled { get; set; } = true;
 
     [Category("Heater")]
-    [Description("GPIO pin for heater toggle PWM input")]
-    [YamlMember(Alias = "heater_toggle_pin")]
-    public int HeaterTogglePin { get; set; }
+    [Description("Input channel for heater toggle PWM (1-12)")]
+    [YamlMember(Alias = "heater_toggle_channel")]
+    public int HeaterToggleChannel { get; set; }
 
     [Category("Heater")]
     [Description("PWM threshold for heater activation (µs)")]
     [YamlMember(Alias = "heater_pwm_threshold_us")]
     public int HeaterPwmThresholdUs { get; set; } = 1500;
+
+    [Category("Fan")]
+    [Description("Delay before turning smoke fan off after firing stops (ms)")]
+    [YamlMember(Alias = "fan_off_delay_ms")]
+    public int FanOffDelayMs { get; set; } = 2000;
 }
 
 public class TurretControlConfig
@@ -165,8 +175,8 @@ public class TurretControlConfig
 public class ServoConfig
 {
     [Category("General")]
-    [Description("Enable this servo axis")]
-    [YamlMember(Alias = "enabled")]
+    [Description("Enable this servo axis (UI only - not serialized)")]
+    [YamlIgnore]
     public bool Enabled { get; set; } = true;
 
     [Category("General")]
@@ -175,9 +185,9 @@ public class ServoConfig
     public int ServoId { get; set; } = 1;
 
     [Category("PWM Input")]
-    [Description("GPIO pin for PWM input")]
-    [YamlMember(Alias = "pwm_pin")]
-    public int PwmPin { get; set; }
+    [Description("Input channel (1-12)")]
+    [YamlMember(Alias = "input_channel")]
+    public int InputChannel { get; set; }
 
     [Category("PWM Input")]
     [Description("Minimum input PWM (µs)")]
@@ -210,9 +220,19 @@ public class ServoConfig
     public double MaxAccelUsPerSec2 { get; set; } = 2000.0;
 
     [Category("Motion")]
-    [Description("Servo update rate (Hz)")]
-    [YamlMember(Alias = "update_rate_hz")]
-    public int UpdateRateHz { get; set; } = 50;
+    [Description("Maximum deceleration (µs/sec²)")]
+    [YamlMember(Alias = "max_decel_us_per_sec2")]
+    public double MaxDecelUsPerSec2 { get; set; } = 2000.0;
+
+    [Category("Recoil")]
+    [Description("Recoil jerk offset per shot (µs, 0=disabled)")]
+    [YamlMember(Alias = "recoil_jerk_us")]
+    public int RecoilJerkUs { get; set; } = 0;
+
+    [Category("Recoil")]
+    [Description("Random variance range for recoil jerk (µs)")]
+    [YamlMember(Alias = "recoil_jerk_variance_us")]
+    public int RecoilJerkVarianceUs { get; set; } = 0;
 }
 
 public class RateOfFireConfig
@@ -235,8 +255,8 @@ public class RateOfFireConfig
     [Category("Sound")]
     [Description("Sound file for this firing rate")]
     [Editor(typeof(System.Windows.Forms.Design.FileNameEditor), typeof(System.Drawing.Design.UITypeEditor))]
-    [YamlMember(Alias = "sound")]
-    public string? Sound { get; set; }
+    [YamlMember(Alias = "sound_file")]
+    public string? SoundFile { get; set; }
 
     public override string ToString() => Name ?? $"{Rpm} RPM";
 }

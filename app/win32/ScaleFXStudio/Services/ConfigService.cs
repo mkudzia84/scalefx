@@ -49,64 +49,64 @@ public class ConfigService
         {
             EngineFx = new EngineFxConfig
             {
-                Enabled = true,
-                EngineToggle = new PwmInputConfig { Pin = 17, ThresholdUs = 1500 },
+                Enabled = false,
+                EngineToggle = new PwmInputConfig { InputChannel = 0, ThresholdUs = 1500 },
                 Sounds = new EngineSoundsConfig
                 {
-                    Starting = new SoundFileConfig { File = "~/assets/engine_start.wav" },
-                    Running = new SoundFileConfig { File = "~/assets/engine_loop.wav" },
-                    Stopping = new SoundFileConfig { File = "~/assets/engine_stop.wav" },
+                    Starting = "",
+                    Running = "",
+                    Stopping = "",
                     Transitions = new TransitionsConfig
                     {
-                        StartingOffsetMs = 60000,
-                        StoppingOffsetMs = 25000
+                        StartingOffsetMs = 0,
+                        StoppingOffsetMs = 0
                     }
                 }
             },
             GunFx = new GunFxConfig
             {
-                Enabled = true,
-                Trigger = new TriggerConfig { Pin = 27 },
+                Enabled = false,
+                Trigger = new TriggerConfig { InputChannel = 0 },
                 Smoke = new SmokeConfig
                 {
-                    Enabled = true,
-                    HeaterTogglePin = 22,
+                    Enabled = false,
+                    HeaterToggleChannel = 0,
                     HeaterPwmThresholdUs = 1500
                 },
                 TurretControl = new TurretControlConfig
                 {
                     Pitch = new ServoConfig
                     {
-                        Enabled = true,
-                        ServoId = 1,
-                        PwmPin = 13,
+                        Enabled = false,
+                        ServoId = 0,
+                        InputChannel = 0,
                         InputMinUs = 1000,
                         InputMaxUs = 2000,
                         OutputMinUs = 1000,
                         OutputMaxUs = 2000,
                         MaxSpeedUsPerSec = 500.0,
                         MaxAccelUsPerSec2 = 2000.0,
-                        UpdateRateHz = 50
+                        MaxDecelUsPerSec2 = 2000.0,
+                        RecoilJerkUs = 0,
+                        RecoilJerkVarianceUs = 0
                     },
                     Yaw = new ServoConfig
                     {
-                        Enabled = true,
-                        ServoId = 2,
-                        PwmPin = 16,
+                        Enabled = false,
+                        ServoId = 0,
+                        InputChannel = 0,
                         InputMinUs = 1000,
                         InputMaxUs = 2000,
                         OutputMinUs = 1000,
                         OutputMaxUs = 2000,
                         MaxSpeedUsPerSec = 500.0,
                         MaxAccelUsPerSec2 = 2000.0,
-                        UpdateRateHz = 50
+                        MaxDecelUsPerSec2 = 2000.0,
+                        RecoilJerkUs = 0,
+                        RecoilJerkVarianceUs = 0
                     }
                 },
-                RateOfFire = new List<RateOfFireConfig>
-                {
-                    new() { Name = "200", Rpm = 200, PwmThresholdUs = 1400, Sound = "~/assets/gun_200rpm.wav" },
-                    new() { Name = "550", Rpm = 550, PwmThresholdUs = 1600, Sound = "~/assets/gun_550rpm.wav" }
-                }
+                RateOfFire = new List<RateOfFireConfig>()
             }
         };
     }

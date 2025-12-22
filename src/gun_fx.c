@@ -18,6 +18,7 @@
 // 0x02 TRIGGER_OFF   payload fan_delay_ms:u16le
 // 0x10 SRV_SET       payload servo_id:u8, pulse_us:u16le
 // 0x11 SRV_SETTINGS  payload servo_id:u8, min:u16le, max:u16le, max_speed:u16le, accel:u16le, decel:u16le
+// 0x12 SRV_RECOIL_JERK payload servo_id:u8, jerk_us:u16le, variance_us:u16le
 // 0x20 SMOKE_HEAT    payload on:u8 (0/1)
 // 0xF0 INIT          payload none (daemon initialization - reset to safe state)
 // 0xF1 SHUTDOWN      payload none (daemon shutdown - enter safe state)
@@ -30,6 +31,7 @@ static const uint8_t PKT_TRIGGER_ON   = 0x01;
 static const uint8_t PKT_TRIGGER_OFF  = 0x02;
 static const uint8_t PKT_SRV_SET      = 0x10;
 static const uint8_t PKT_SRV_SETTINGS = 0x11;
+static const uint8_t PKT_SRV_RECOIL_JERK = 0x12;
 static const uint8_t PKT_SMOKE_HEAT   = 0x20;
 
 // Universal protocol packets (high values, used across all modules)
@@ -206,6 +208,22 @@ static void send_servo_setup(GunFX *gun, int servo_id, const ServoConfig *cfg) {
     serial_bus_send_packet(gun->serial_bus, PKT_SRV_SETTINGS, payload, sizeof(payload));
 }
 
+// Send servo recoil jerk settings to Pico
+static void send_servo_recoil_jerk(GunFX *gun, int servo_id, const ServoConfig *cfg) {
+    if (!gun->serial_bus || servo_id <= 0) return;
+    
+    uint8_t payload[5];
+    payload[0] = (uint8_t)servo_id;
+    payload[1] = (uint8_t)(cfg->recoil_jerk_us & 0xFF);
+    payload[2] = (uint8_t)((cfg->recoil_jerk_us >> 8) & 0xFF);
+    payload[3] = (uint8_t)(cfg->recoil_jerk_variance_us & 0xFF);
+    payload[4] = (uint8_t)((cfg->recoil_jerk_variance_us >> 8) & 0xFF);
+    serial_bus_send_packet(gun->serial_bus, PKT_SRV_RECOIL_JERK, payload, sizeof(payload));
+    
+    LOG_DEBUG(LOG_GUN, "Sent recoil jerk for servo %d: jerk=%d, variance=%d", 
+             servo_id, cfg->recoil_jerk_us, cfg->recoil_jerk_variance_us);
+}
+
 // Update servo positions from averaged PWM inputs
 static void update_servos(GunFX *gun) {
     if (gun->pitch_pwm_monitor && gun->pitch_cfg.servo_id > 0) {
@@ -355,33 +373,39 @@ static void handle_rate_change(GunFX *gun, int new_rate_index, int previous_rate
 
 // Setup servo PWM monitoring and send initial servo settings to Pico
 static int setup_servos(GunFX *gun, const GunFXConfig *config) {
-    // Create pitch PWM monitor if pin specified
+    // Create pitch PWM monitor if valid channel specified
     if (gun->pitch_pwm_pin >= 0) {
         gun->pitch_pwm_monitor = pwm_monitor_create_with_name(gun->pitch_pwm_pin, "Turret Pitch Servo", nullptr, nullptr);
         if (!gun->pitch_pwm_monitor) {
-            LOG_ERROR(LOG_GUN, "Failed to create pitch PWM monitor on GPIO %d", gun->pitch_pwm_pin);
+            LOG_ERROR(LOG_GUN, "Failed to create pitch PWM monitor on channel %d (GPIO %d)", 
+                     config->turret_control.pitch.input_channel, gun->pitch_pwm_pin);
             return -1;
         }
         pwm_monitor_start(gun->pitch_pwm_monitor);
-        LOG_DEBUG(LOG_GUN, "Pitch servo input monitoring started on GPIO %d (servo_id=%d)",
-                 gun->pitch_pwm_pin, gun->pitch_cfg.servo_id);
+        LOG_DEBUG(LOG_GUN, "Pitch servo input monitoring started on channel %d (GPIO %d, servo_id=%d)",
+                 config->turret_control.pitch.input_channel, gun->pitch_pwm_pin, gun->pitch_cfg.servo_id);
     }
     
-    // Create yaw PWM monitor if pin specified
+    // Create yaw PWM monitor if valid channel specified
     if (gun->yaw_pwm_pin >= 0) {
         gun->yaw_pwm_monitor = pwm_monitor_create_with_name(gun->yaw_pwm_pin, "Turret Yaw Servo", nullptr, nullptr);
         if (!gun->yaw_pwm_monitor) {
-            LOG_ERROR(LOG_GUN, "Failed to create yaw PWM monitor on GPIO %d", gun->yaw_pwm_pin);
+            LOG_ERROR(LOG_GUN, "Failed to create yaw PWM monitor on channel %d (GPIO %d)", 
+                     config->turret_control.yaw.input_channel, gun->yaw_pwm_pin);
             return -1;
         }
         pwm_monitor_start(gun->yaw_pwm_monitor);
-        LOG_DEBUG(LOG_GUN, "Yaw servo input monitoring started on GPIO %d (servo_id=%d)",
-                 gun->yaw_pwm_pin, gun->yaw_cfg.servo_id);
+        LOG_DEBUG(LOG_GUN, "Yaw servo input monitoring started on channel %d (GPIO %d, servo_id=%d)",
+                 config->turret_control.yaw.input_channel, gun->yaw_pwm_pin, gun->yaw_cfg.servo_id);
     }
     
     // Send initial servo settings to Pico
     send_servo_setup(gun, gun->pitch_cfg.servo_id, &gun->pitch_cfg);
     send_servo_setup(gun, gun->yaw_cfg.servo_id, &gun->yaw_cfg);
+    
+    // Send recoil jerk settings to Pico
+    send_servo_recoil_jerk(gun, gun->pitch_cfg.servo_id, &gun->pitch_cfg);
+    send_servo_recoil_jerk(gun, gun->yaw_cfg.servo_id, &gun->yaw_cfg);
     
     return 0;
 }
@@ -444,13 +468,22 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     
     gun->mixer = mixer;
     gun->audio_channel = audio_channel;
-    gun->trigger_pwm_pin = config->trigger.pin;
-    gun->smoke_heater_toggle_pin = config->smoke.heater_toggle_pin;
+    
+    // Convert input channels to GPIO pins
+    int trigger_gpio = channel_to_gpio(config->trigger.input_channel);
+    int smoke_heater_gpio = channel_to_gpio(config->smoke.heater_toggle_channel);
+    
+    gun->trigger_pwm_pin = trigger_gpio;
+    gun->smoke_heater_toggle_pin = smoke_heater_gpio;
     gun->smoke_heater_threshold = config->smoke.heater_pwm_threshold_us;
     gun->pitch_cfg = config->turret_control.pitch;
     gun->yaw_cfg = config->turret_control.yaw;
-    gun->pitch_pwm_pin = config->turret_control.pitch.pwm_pin;
-    gun->yaw_pwm_pin = config->turret_control.yaw.pwm_pin;
+    
+    // Convert servo input channels to GPIO pins
+    int pitch_gpio = channel_to_gpio(config->turret_control.pitch.input_channel);
+    int yaw_gpio = channel_to_gpio(config->turret_control.yaw.input_channel);
+    gun->pitch_pwm_pin = pitch_gpio;
+    gun->yaw_pwm_pin = yaw_gpio;
     gun->pitch_servo_id = config->turret_control.pitch.servo_id;
     gun->yaw_servo_id = config->turret_control.yaw.servo_id;
     gun->last_pitch_output_us = -1;
@@ -496,27 +529,29 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     // Small delay to allow Pico to respond with INIT_READY
     usleep(100000); // 100ms
 
-    // Create trigger PWM monitor if pin specified
-    if (config->trigger.pin >= 0) {
-        gun->trigger_pwm_monitor = pwm_monitor_create_with_name(config->trigger.pin, "Gun Trigger", nullptr, nullptr);
+    // Create trigger PWM monitor if valid channel specified
+    if (trigger_gpio >= 0) {
+        gun->trigger_pwm_monitor = pwm_monitor_create_with_name(trigger_gpio, "Gun Trigger", nullptr, nullptr);
         if (!gun->trigger_pwm_monitor) {
-            LOG_ERROR(LOG_GUN, "Failed to create trigger PWM monitor on GPIO %d", config->trigger.pin);
+            LOG_ERROR(LOG_GUN, "Failed to create trigger PWM monitor on channel %d (GPIO %d)", 
+                     config->trigger.input_channel, trigger_gpio);
         } else {
             pwm_monitor_start(gun->trigger_pwm_monitor);
-            LOG_DEBUG(LOG_GUN, "Trigger PWM monitoring started on GPIO %d", config->trigger.pin);
+            LOG_DEBUG(LOG_GUN, "Trigger PWM monitoring started on channel %d (GPIO %d)", 
+                     config->trigger.input_channel, trigger_gpio);
         }
     }
     
-    // Create smoke heater toggle PWM monitor if pin specified
-    if (config->smoke.heater_toggle_pin >= 0) {
-        gun->smoke_heater_toggle_monitor = pwm_monitor_create_with_name(config->smoke.heater_toggle_pin, "Smoke Heater Toggle", nullptr, nullptr);
+    // Create smoke heater toggle PWM monitor if valid channel specified
+    if (smoke_heater_gpio >= 0) {
+        gun->smoke_heater_toggle_monitor = pwm_monitor_create_with_name(smoke_heater_gpio, "Smoke Heater Toggle", nullptr, nullptr);
         if (!gun->smoke_heater_toggle_monitor) {
-            LOG_WARN(LOG_GUN, "Failed to create smoke heater toggle monitor on GPIO %d",
-                    config->smoke.heater_toggle_pin);
+            LOG_WARN(LOG_GUN, "Failed to create smoke heater toggle monitor on channel %d (GPIO %d)",
+                    config->smoke.heater_toggle_channel, smoke_heater_gpio);
         } else {
             pwm_monitor_start(gun->smoke_heater_toggle_monitor);
-            LOG_DEBUG(LOG_GUN, "Smoke heater toggle monitoring started on GPIO %d (threshold: %d µs)",
-                     config->smoke.heater_toggle_pin, config->smoke.heater_pwm_threshold_us);
+            LOG_DEBUG(LOG_GUN, "Smoke heater toggle monitoring started on channel %d (GPIO %d, threshold: %d µs)",
+                     config->smoke.heater_toggle_channel, smoke_heater_gpio, config->smoke.heater_pwm_threshold_us);
         }
     }
     
@@ -688,4 +723,21 @@ int gun_fx_get_yaw_pwm(GunFX *gun) {
 
 int gun_fx_get_yaw_pin(GunFX *gun) {
     return gun ? gun->yaw_pwm_pin : -1;
+}
+
+// Recoil jerk getters
+int gun_fx_get_pitch_recoil_jerk(GunFX *gun) {
+    return gun ? gun->pitch_cfg.recoil_jerk_us : 0;
+}
+
+int gun_fx_get_pitch_recoil_jerk_variance(GunFX *gun) {
+    return gun ? gun->pitch_cfg.recoil_jerk_variance_us : 0;
+}
+
+int gun_fx_get_yaw_recoil_jerk(GunFX *gun) {
+    return gun ? gun->yaw_cfg.recoil_jerk_us : 0;
+}
+
+int gun_fx_get_yaw_recoil_jerk_variance(GunFX *gun) {
+    return gun ? gun->yaw_cfg.recoil_jerk_variance_us : 0;
 }

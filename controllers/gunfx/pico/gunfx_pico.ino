@@ -14,6 +14,7 @@
     0x02 TRIGGER_OFF   payload: fan_delay_ms:u16le
     0x10 SRV_SET       payload: servo_id:u8, pulse_us:u16le
     0x11 SRV_SETTINGS  payload: servo_id:u8, min:u16le, max:u16le, max_speed:u16le, accel:u16le, decel:u16le
+    0x12 SRV_RECOIL_JERK payload: servo_id:u8, jerk_us:u16le, variance_us:u16le
     0x20 SMOKE_HEAT    payload: on:u8 (0=off,1=on)
     0xF0 INIT          payload: none (daemon initialization - reset to safe state)
     0xF1 SHUTDOWN      payload: none (daemon shutdown - enter safe state)
@@ -66,28 +67,27 @@ const int SERVO_DEFAULT_DECEL     = 8000;     // us per second^2
 const uint32_t STATUS_INTERVAL_MS = 1000;     // Periodic status interval
 
 // ---------------------- Binary Protocol (COBS framed, delimiter 0x00) ----------------------
-  Packet format (before COBS): [type:u8][len:u8][payload:len bytes][crc:u8]
-  CRC-8 polynomial 0x07 over type+len+payload
-  Command types (Pi -> Pico)
-  0x01: TRIGGER_ON    payload: rpm:u16le
-  0x02: TRIGGER_OFF   payload: fan_delay_ms:u16le
-  0x10: SRV_SET       payload: servo_id:u8, pulse_us:u16le
-  0x11: SRV_SETTINGS  payload: servo_id:u8, min:u16le, max:u16le, max_speed:u16le, accel:u16le, decel:u16le
-  0x20: SMOKE_HEAT    payload: on:u8 (0=off,1=on)
-  0xF0: INIT          payload: none (daemon initialization - reset to safe state)
-  0xF1: SHUTDOWN      payload: none (daemon shutdown - enter safe state)
-  0xF2: KEEPALIVE     payload: none (periodic keepalive from daemon)
-  Telemetry (Pico -> Pi):
-  0xF3: INIT_READY    payload: module_name:string (sent in response to INIT)
-  0xF4: STATUS        payload: flags:u8 (bit0=firing, bit1=flash_active, bit2=flash_fading, bit3=heater_on, bit4=fan_on, bit5=fan_spindown),
-//                               fan_off_remaining_ms:u16le,
-//                               servo_us[3]:u16le each,
-//                               rate_of_fire_rpm:u16le
+//  Packet format (before COBS): [type:u8][len:u8][payload:len bytes][crc:u8]
+//  CRC-8 polynomial 0x07 over type+len+payload
+//  Command types (Pi -> Pico)
+//  0x01: TRIGGER_ON    payload: rpm:u16le
+//  0x02: TRIGGER_OFF   payload: fan_delay_ms:u16le
+//  0x10: SRV_SET       payload: servo_id:u8, pulse_us:u16le
+//  0x11: SRV_SETTINGS  payload: servo_id:u8, min:u16le, max:u16le, max_speed:u16le, accel:u16le, decel:u16le
+//  0x12: SRV_RECOIL_JERK payload: servo_id:u8, jerk_us:u16le, variance_us:u16le
+//  0x20: SMOKE_HEAT    payload: on:u8 (0=off,1=on)
+//  0xF0: INIT          payload: none (daemon initialization - reset to safe state)
+//  0xF1: SHUTDOWN      payload: none (daemon shutdown - enter safe state)
+//  0xF2: KEEPALIVE     payload: none (periodic keepalive from daemon)
+//  Telemetry (Pico -> Pi):
+//  0xF3: INIT_READY    payload: module_name:string (sent in response to INIT)
+//  0xF4: STATUS        payload: flags:u8, fan_off_remaining_ms:u16le, servo_us[3]:u16le each, rate_of_fire_rpm:u16le
 
 const uint8_t PKT_TRIGGER_ON      = 0x01;
 const uint8_t PKT_TRIGGER_OFF     = 0x02;
 const uint8_t PKT_SRV_SET         = 0x10;
 const uint8_t PKT_SRV_SETTINGS    = 0x11;
+const uint8_t PKT_SRV_RECOIL_JERK = 0x12;
 const uint8_t PKT_SMOKE_HEAT      = 0x20;
 
 // Universal protocol packets (high values, used across all modules)
@@ -137,12 +137,14 @@ struct ServoConfig {
   int max_speed;      // Stored for future motion profiling
   int acceleration;   // Stored for future motion profiling
   int deceleration;   // Stored for future motion profiling
+  int recoil_jerk_us; // Recoil jerk offset per shot (0=disabled)
+  int recoil_jerk_variance_us; // Random variance for recoil jerk
 };
 
 ServoConfig servo_configs[] = {
-  { &gun_srv_1, 1, 500, 2500, 0, 0, 0 },
-  { &gun_srv_2, 2, 500, 2500, 0, 0, 0 },
-  { &gun_srv_3, 3, 500, 2500, 0, 0, 0 }
+  { &gun_srv_1, 1, 500, 2500, 0, 0, 0, 0, 0 },
+  { &gun_srv_2, 2, 500, 2500, 0, 0, 0, 0, 0 },
+  { &gun_srv_3, 3, 500, 2500, 0, 0, 0, 0, 0 }
 };
 
 struct ServoMotionState {
@@ -150,12 +152,13 @@ struct ServoMotionState {
   float target_us;
   float velocity_us_per_s;
   uint32_t last_update_ms;
+  float recoil_jerk_offset;  // Active recoil jerk offset (applied during shot)
 };
 
 ServoMotionState servo_motion[] = {
-  { (float)SERVO_DEFAULT_US, (float)SERVO_DEFAULT_US, 0.0f, 0 },
-  { (float)SERVO_DEFAULT_US, (float)SERVO_DEFAULT_US, 0.0f, 0 },
-  { (float)SERVO_DEFAULT_US, (float)SERVO_DEFAULT_US, 0.0f, 0 }
+  { (float)SERVO_DEFAULT_US, (float)SERVO_DEFAULT_US, 0.0f, 0, 0.0f },
+  { (float)SERVO_DEFAULT_US, (float)SERVO_DEFAULT_US, 0.0f, 0, 0.0f },
+  { (float)SERVO_DEFAULT_US, (float)SERVO_DEFAULT_US, 0.0f, 0, 0.0f }
 };
 
 uint32_t next_status_ms = 0;
@@ -405,7 +408,66 @@ void setServoSettings(uint8_t servo_id, int min_limit, int max_limit, int max_sp
   Serial.print(" accel=");
   Serial.print(cfg->acceleration);
   Serial.print(" decel=");
-  Serial.println(cfg->deceleration);
+  Serial.print(cfg->deceleration);
+  Serial.print(" recoil_jerk=");
+  Serial.print(cfg->recoil_jerk_us);
+  Serial.print(" +/-");
+  Serial.println(cfg->recoil_jerk_variance_us);
+}
+
+void setServoRecoilJerk(uint8_t servo_id, int jerk_us, int variance_us) {
+  ServoConfig* cfg = getServoConfig(servo_id);
+  if (!cfg) {
+    Serial.println("ERROR: Invalid servo id");
+    return;
+  }
+
+  cfg->recoil_jerk_us = jerk_us;
+  cfg->recoil_jerk_variance_us = variance_us;
+
+  Serial.print("Servo ");
+  Serial.print(servo_id);
+  Serial.print(" recoil jerk -> ");
+  Serial.print(jerk_us);
+  Serial.print(" +/-");
+  Serial.println(variance_us);
+}
+
+// Apply recoil jerk to all servos (called on each shot)
+void applyRecoilJerk() {
+  for (size_t i = 0; i < (sizeof(servo_configs) / sizeof(ServoConfig)); i++) {
+    ServoConfig* cfg = &servo_configs[i];
+    ServoMotionState* motion = &servo_motion[i];
+    
+    if (cfg->recoil_jerk_us == 0) {
+      motion->recoil_jerk_offset = 0.0f;
+      continue;
+    }
+    
+    // Calculate random direction (+/-)
+    int direction = (random(2) == 0) ? 1 : -1;
+    
+    // Calculate random variance (0 to variance_us)
+    int variance = 0;
+    if (cfg->recoil_jerk_variance_us > 0) {
+      variance = random(cfg->recoil_jerk_variance_us + 1);
+    }
+    
+    // Total jerk = direction * (base_jerk + random_variance)
+    motion->recoil_jerk_offset = (float)(direction * (cfg->recoil_jerk_us + variance));
+    
+    Serial.print("Servo ");
+    Serial.print(i + 1);
+    Serial.print(" recoil jerk applied: ");
+    Serial.println(motion->recoil_jerk_offset);
+  }
+}
+
+// Clear recoil jerk offsets (called after flash ends)
+void clearRecoilJerk() {
+  for (size_t i = 0; i < (sizeof(servo_motion) / sizeof(ServoMotionState)); i++) {
+    servo_motion[i].recoil_jerk_offset = 0.0f;
+  }
 }
 
 // ---------------------- Hardware Output Control ----------------------
@@ -523,7 +585,14 @@ void updateServoMotion(ServoConfig* cfg, ServoMotionState* motion, uint32_t now_
     motion->velocity_us_per_s = 0.0f;
   }
 
-  cfg->servo->writeMicroseconds((int)motion->position_us);
+  // Apply recoil jerk offset to final servo output (only during shot)
+  float output_us = motion->position_us + motion->recoil_jerk_offset;
+  
+  // Clamp output to servo limits
+  if (output_us < cfg->min_us) output_us = (float)cfg->min_us;
+  if (output_us > cfg->max_us) output_us = (float)cfg->max_us;
+
+  cfg->servo->writeMicroseconds((int)output_us);
 }
 
 void updateAllServos() {
@@ -616,6 +685,14 @@ void processPacket(const uint8_t *payload, size_t len) {
       setServoSettings(sid, (int)minv, (int)maxv, (int)max_speed, (int)accel, (int)decel);
       break;
     }
+    case PKT_SRV_RECOIL_JERK: {
+      if (plen != 5) { Serial.println("ERROR: SRV_RECOIL_JERK len"); break; }
+      uint8_t sid = body[0];
+      uint16_t jerk_us = (uint16_t)(body[1] | (body[2] << 8));
+      uint16_t variance_us = (uint16_t)(body[3] | (body[4] << 8));
+      setServoRecoilJerk(sid, (int)jerk_us, (int)variance_us);
+      break;
+    }
     case PKT_SMOKE_HEAT: {
       if (plen != 1) { Serial.println("ERROR: SMOKE_HEAT len"); break; }
       setSmokeHeater(body[0] != 0);
@@ -656,6 +733,7 @@ void updateMuzzleFlash() {
       setNozzleFlash(false);
       flash_active = false;
       flash_fading = false;
+      clearRecoilJerk();  // Clear recoil jerk when not firing
     }
     return;
   }
@@ -666,9 +744,10 @@ void updateMuzzleFlash() {
   if (flash_fading) {
     uint32_t fade_elapsed = now - fade_start_time_ms;
     if (fade_elapsed >= FLASH_FADE_MS) {
-      // Fade complete
+      // Fade complete - clear recoil jerk
       setNozzleFlash(false);
       flash_fading = false;
+      clearRecoilJerk();
     } else {
       // Calculate current brightness (linear fade from 255 to 0)
       uint16_t brightness = map(fade_elapsed, 0, FLASH_FADE_MS, FLASH_PWM_DUTY, 0);
@@ -690,6 +769,7 @@ void updateMuzzleFlash() {
     flash_active = true;
     flash_off_time_ms = now + FLASH_PULSE_MS;
     next_shot_time_ms = now + shot_interval_ms;
+    applyRecoilJerk();  // Apply recoil jerk on each shot
   }
 }
 

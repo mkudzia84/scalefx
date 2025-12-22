@@ -92,6 +92,12 @@ static void print_gun_status(GunFX *gun) {
     int rate_index = gun_fx_get_current_rate_index(gun);
     int rpm = gun_fx_get_current_rpm(gun);
     
+    // Get recoil jerk settings
+    int pitch_jerk = gun_fx_get_pitch_recoil_jerk(gun);
+    int pitch_variance = gun_fx_get_pitch_recoil_jerk_variance(gun);
+    int yaw_jerk = gun_fx_get_yaw_recoil_jerk(gun);
+    int yaw_variance = gun_fx_get_yaw_recoil_jerk_variance(gun);
+    
     printf(COLOR_CYAN "═══════════════════════════════════════════════════════════════════════════\n" COLOR_RESET);
     printf(COLOR_CYAN COLOR_BOLD "🎯 GUN STATUS\n" COLOR_RESET);
     printf(COLOR_CYAN "═══════════════════════════════════════════════════════════════════════════\n" COLOR_RESET);
@@ -99,6 +105,18 @@ static void print_gun_status(GunFX *gun) {
            bool_color(is_firing), is_firing ? "YES" : "NO");
     printf(COLOR_BOLD "Rate:" COLOR_RESET " %d  │  ", rate_index >= 0 ? rate_index + 1 : 0);
     printf(COLOR_BOLD "RPM:" COLOR_RESET " %-4d\n", rpm);
+    
+    // Display recoil jerk settings if any are configured
+    if (pitch_jerk > 0 || yaw_jerk > 0) {
+        printf(COLOR_BOLD "Recoil Jerk:" COLOR_RESET);
+        if (pitch_jerk > 0) {
+            printf(" Pitch=%d±%dµs", pitch_jerk, pitch_variance);
+        }
+        if (yaw_jerk > 0) {
+            printf(" Yaw=%d±%dµs", yaw_jerk, yaw_variance);
+        }
+        printf("\n");
+    }
 }
 
 // Print PWM inputs

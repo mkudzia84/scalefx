@@ -237,7 +237,10 @@ EngineFX* engine_fx_create(AudioMixer *mixer, int audio_channel,
     atomic_init(&engine->state, ENGINE_STOPPED);
     engine->mixer = mixer;
     engine->audio_channel = audio_channel;
-    engine->engine_toggle_pwm_pin = config->engine_toggle.pin;
+    
+    // Convert input channel to GPIO pin
+    int gpio_pin = channel_to_gpio(config->engine_toggle.input_channel);
+    engine->engine_toggle_pwm_pin = gpio_pin;
     engine->engine_toggle_pwm_threshold = config->engine_toggle.threshold_us;
     engine->starting_offset_from_stopping_ms = config->sounds.transitions.starting_offset_ms;
     engine->stopping_offset_from_starting_ms = config->sounds.transitions.stopping_offset_ms;
@@ -247,15 +250,16 @@ EngineFX* engine_fx_create(AudioMixer *mixer, int audio_channel,
     engine->engine_toggle_pwm_monitor = nullptr;
     atomic_init(&engine->processing_running, false);
     
-    // Create PWM monitor if pin specified
-    if (config->engine_toggle.pin >= 0) {
-        engine->engine_toggle_pwm_monitor = pwm_monitor_create_with_name(config->engine_toggle.pin, "Engine Toggle", nullptr, nullptr);
+    // Create PWM monitor if valid channel specified
+    if (gpio_pin >= 0) {
+        engine->engine_toggle_pwm_monitor = pwm_monitor_create_with_name(gpio_pin, "Engine Toggle", nullptr, nullptr);
         if (!engine->engine_toggle_pwm_monitor) {
-            LOG_ERROR(LOG_ENGINE, "Failed to create PWM monitor for pin %d", config->engine_toggle.pin);
+            LOG_ERROR(LOG_ENGINE, "Failed to create PWM monitor for channel %d (GPIO %d)", 
+                     config->engine_toggle.input_channel, gpio_pin);
         } else {
             pwm_monitor_start(engine->engine_toggle_pwm_monitor);
-            LOG_DEBUG(LOG_ENGINE, "PWM monitoring started on pin %d (threshold: %d us)",
-                   config->engine_toggle.pin, config->engine_toggle.threshold_us);
+            LOG_DEBUG(LOG_ENGINE, "PWM monitoring started on channel %d (GPIO %d, threshold: %d us)",
+                   config->engine_toggle.input_channel, gpio_pin, config->engine_toggle.threshold_us);
         }
     }
     

@@ -15,6 +15,38 @@
 static bool initialized = false;
 static struct gpiod_chip *chip = NULL;
 
+/* ============================================================================
+ * Input Channel to GPIO Pin Mapping
+ * These are the fixed GPIO pins on the PCB design (values to be corrected)
+ * ============================================================================ */
+
+static const int CHANNEL_TO_GPIO[INPUT_CHANNEL_MAX + 1] = {
+    -1,     // Channel 0 - invalid (1-indexed)
+    5,      // Channel 1 -> GPIO 5
+    6,      // Channel 2 -> GPIO 6
+    12,     // Channel 3 -> GPIO 12
+    13,     // Channel 4 -> GPIO 13
+    16,     // Channel 5 -> GPIO 16
+    17,     // Channel 6 -> GPIO 17
+    19,     // Channel 7 -> GPIO 19
+    20,     // Channel 8 -> GPIO 20
+    21,     // Channel 9 -> GPIO 21
+    24,     // Channel 10 -> GPIO 24
+    25,     // Channel 11 -> GPIO 25
+    26,     // Channel 12 -> GPIO 26
+};
+
+int channel_to_gpio(int channel) {
+    if (channel < INPUT_CHANNEL_MIN || channel > INPUT_CHANNEL_MAX) {
+        return -1;
+    }
+    return CHANNEL_TO_GPIO[channel];
+}
+
+bool is_valid_channel(int channel) {
+    return channel >= INPUT_CHANNEL_MIN && channel <= INPUT_CHANNEL_MAX;
+}
+
 // Single monitoring thread for all PWM pins
 static thrd_t pwm_monitoring_thread;
 static atomic_bool pwm_thread_running = false;
