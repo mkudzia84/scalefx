@@ -50,6 +50,14 @@
               "version": "[8.0.22, )",
               "autoReferenced": true
             },
+            "SSH.NET": {
+              "target": "Package",
+              "version": "[2024.2.0, )"
+            },
+            "System.Management": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
             "YamlDotNet": {
               "target": "Package",
               "version": "[16.2.0, )"

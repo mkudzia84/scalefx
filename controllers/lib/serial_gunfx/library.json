@@ -1,0 +1,11 @@
+{
+    "name": "serial_gunfx",
+    "version": "1.0.0",
+    "description": "GunFX master/slave serial communication classes",
+    "keywords": ["gunfx", "serial", "cobs", "protocol"],
+    "dependencies": {
+        "serial_common": "*"
+    },
+    "frameworks": "arduino",
+    "platforms": ["raspberrypi"]
+}

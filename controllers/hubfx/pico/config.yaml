@@ -1,0 +1,120 @@
+# ScaleFX Hub Configuration
+# Configuration for both engine and gun effects
+
+# AUDIO HAT COMPATIBILITY:
+# Supports: WM8960 Audio HAT, Raspberry Pi DigiAMP+
+# Reserved pins are automatically protected by software
+
+# Input Channel Mapping (1-10):
+# Channels are mapped to fixed GPIO pins on the PCB design
+# All gun FX outputs (servos, flash, smoke) are controlled via Pico over USB serial
+
+# Engine FX Configuration
+engine_fx:
+  # Engine Type: turbine, radial, diesel (future)
+  type: turbine
+  
+  # Engine Toggle PWM Input
+  engine_toggle:
+    input_channel: 1           # Input channel 1-10 (mapped to GPIO pins on PCB)
+    threshold_us: 1500         # PWM threshold in microseconds (engine on/off)
+  
+  # Sound Files and Transitions
+  sounds:
+    starting: "~scalefx/assets/engine_start.wav"    # Engine start-up sound (optional)
+    running: "~scalefx/assets/engine_loop.wav"      # Engine running loop sound (optional)
+    stopping: "~scalefx/assets/engine_stop.wav"     # Engine shut-down sound (optional)
+    
+    # Transition Offsets
+    transitions:
+      starting_offset_ms: 60000    # Offset when restarting from stopping state
+      stopping_offset_ms: 25000    # Offset when stopping from starting state
+
+# Gun FX Configuration
+gun_fx:
+  # Serial Bus to Pico Controller
+  # Auto-detects gunfx_pico device (VID=0x2e8a, PID=0x0180) over USB
+  # Default: baud_rate=115200, timeout_ms=100
+  
+  # Trigger PWM Input
+  trigger:
+    input_channel: 2           # Input channel 1-10 (mapped to GPIO pins on PCB)
+  
+  # Smoke Generator (heater toggle via Pi, actual control via Pico)
+  smoke:
+    heater_toggle_channel: 3   # Input channel 1-10 for heater toggle
+    heater_pwm_threshold_us: 1500  # PWM threshold for heater toggle
+    fan_off_delay_ms: 2000     # Delay before turning smoke fan off after firing stops
+  
+  # Rates of Fire
+  # Each rate defines RPM, PWM threshold, and associated sound
+  # Rates should be ordered from lowest to highest threshold for optimal performance
+  rates_of_fire:
+    - name: "200"
+      rpm: 200                 # Rounds per minute
+      pwm_threshold_us: 1300   # PWM threshold in microseconds
+      sound_file: "~scalefx/assets/gun_200rpm.wav"  # Sound file to play (optional)
+    
+    - name: "550"
+      rpm: 550                 # Rounds per minute
+      pwm_threshold_us: 1600   # PWM threshold in microseconds
+      sound_file: "~scalefx/assets/gun_550rpm.wav"  # Sound file to play (optional)
+  
+  # Turret Control Servos (via Pico)
+  turret_control:
+    pitch:
+      servo_id: 1              # Pico servo ID (1, 2, or 3)
+      input_channel: 4         # Input channel 1-10 (mapped to GPIO pins on PCB)
+      input_min_us: 1000       # Minimum input PWM pulse width (µs)
+      input_max_us: 2000       # Maximum input PWM pulse width (µs)
+      output_min_us: 1000      # Minimum output PWM pulse width (µs)
+      output_max_us: 2000      # Maximum output PWM pulse width (µs)
+      max_speed_us_per_sec: 4000      # Maximum speed (µs/second) - sent to Pico
+      max_accel_us_per_sec2: 8000     # Maximum acceleration (µs/second²) - sent to Pico
+      max_decel_us_per_sec2: 8000     # Maximum deceleration (µs/second²) - sent to Pico
+      recoil_jerk_us: 0               # Recoil jerk offset per shot (µs, optional, 0=disabled)
+      recoil_jerk_variance_us: 0      # Random variance range for recoil jerk (µs, optional)
+    
+    yaw:
+      servo_id: 2              # Pico servo ID (1, 2, or 3)
+      input_channel: 5         # Input channel 1-10 (mapped to GPIO pins on PCB)
+      input_min_us: 1000       # Minimum input PWM pulse width (µs)
+      input_max_us: 2000       # Maximum input PWM pulse width (µs)
+      output_min_us: 1000      # Minimum output PWM pulse width (µs)
+      output_max_us: 2000      # Maximum output PWM pulse width (µs)
+      max_speed_us_per_sec: 4000      # Maximum speed (µs/second) - sent to Pico
+      max_accel_us_per_sec2: 8000     # Maximum acceleration (µs/second²) - sent to Pico
+      max_decel_us_per_sec2: 8000     # Maximum deceleration (µs/second²) - sent to Pico
+      recoil_jerk_us: 0               # Recoil jerk offset per shot (µs, optional, 0=disabled)
+      recoil_jerk_variance_us: 0      # Random variance range for recoil jerk (µs, optional)
+  
+  # Hysteresis Settings (internal, not typically changed)
+  # hysteresis_us: 50          # Deadzone for rate switching to prevent oscillation
+
+# Hardware Notes:
+# - Audio HAT compatibility: WM8960 Audio HAT, Raspberry Pi DigiAMP+
+# - Reserved pins (protected by software): GPIO 2,3 (I2C), GPIO 18-22 (I2S + shutdown)
+# - GPIO 22 used by DigiAMP+ for shutdown control, do not use for other functions
+# 
+# GPIO Pin Groups (all pins within each group are physically adjacent):
+#
+# INPUT SIGNALS (Physical pins 29,31,32,33,36 - Left side):
+#   GPIO 5  (pin 29) - Engine toggle PWM input
+#   GPIO 6  (pin 31) - Gun trigger PWM input
+#   GPIO 12 (pin 32) - Smoke heater toggle PWM input
+#   GPIO 13 (pin 33) - Pitch servo PWM input
+#   GPIO 16 (pin 36) - Yaw servo PWM input
+#
+# PICO CONTROLLER (via USB serial /dev/ttyACM0):
+#   Servo 1 (GP19) - Pitch turret servo
+#   Servo 2 (GP20) - Yaw turret servo
+#   Servo 3 (GP21) - Reserved/unused
+#   GPIO 22 (GP22) - Nozzle flash LED
+#   GPIO 16 (GP16) - Smoke heater control
+#   GPIO 17 (GP17) - Smoke fan control
+#
+# - Ensure PWM inputs use RC signal (typically 50Hz, 1000-2000µs pulse width)
+# - Gun FX hardware (servos, flash LED, smoke) controlled by Pico over USB serial
+# - Pico handles smooth servo motion with accel/decel and muzzle flash timing
+# - Audio playback handled by main Pi (synced with firing rate)
+# - Smoke heater can be controlled independently via PWM toggle input

@@ -1,10 +1,14 @@
 {
   "version": 2,
-  "dgSpecHash": "6KFjoGYAhKU=",
+  "dgSpecHash": "IdIZMyplZKU=",
   "success": true,
   "projectFilePath": "E:\\data\\OneDrive\\CAD\\CODE\\scalefx\\app\\win32\\ScaleFXStudio\\ScaleFXStudio.csproj",
   "expectedPackageFiles": [
+    "C:\\Users\\marci\\.nuget\\packages\\bouncycastle.cryptography\\2.4.0\\bouncycastle.cryptography.2.4.0.nupkg.sha512",
     "C:\\Users\\marci\\.nuget\\packages\\microsoft.net.illink.tasks\\8.0.22\\microsoft.net.illink.tasks.8.0.22.nupkg.sha512",
+    "C:\\Users\\marci\\.nuget\\packages\\ssh.net\\2024.2.0\\ssh.net.2024.2.0.nupkg.sha512",
+    "C:\\Users\\marci\\.nuget\\packages\\system.codedom\\8.0.0\\system.codedom.8.0.0.nupkg.sha512",
+    "C:\\Users\\marci\\.nuget\\packages\\system.management\\8.0.0\\system.management.8.0.0.nupkg.sha512",
     "C:\\Users\\marci\\.nuget\\packages\\yamldotnet\\16.2.0\\yamldotnet.16.2.0.nupkg.sha512",
     "C:\\Users\\marci\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.22\\microsoft.netcore.app.ref.8.0.22.nupkg.sha512",
     "C:\\Users\\marci\\.nuget\\packages\\microsoft.netcore.app.runtime.win-x64\\8.0.22\\microsoft.netcore.app.runtime.win-x64.8.0.22.nupkg.sha512",

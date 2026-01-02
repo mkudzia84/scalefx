@@ -1,0 +1,16 @@
+{
+    "name": "srv_control",
+    "version": "1.0.0",
+    "description": "Servo output control with motion profiling and recoil effects for ScaleFX controllers",
+    "keywords": ["servo", "pwm", "motion", "acceleration", "recoil", "pico"],
+    "authors": [
+        {
+            "name": "ScaleFX"
+        }
+    ],
+    "frameworks": "arduino",
+    "platforms": "raspberrypi",
+    "dependencies": {
+        "Servo": "*"
+    }
+}

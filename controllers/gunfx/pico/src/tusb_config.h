@@ -20,18 +20,18 @@ extern "C" {
 
 // Device descriptor strings
 #define USB_MANUFACTURER            "MSB (Marcin Scale Builds)"
-#define USB_PRODUCT_NAME            "gunfx"
-#define USB_SERIAL_NUMBER           "gunfx001"
+#define USB_PRODUCT_NAME            "GunFX"
+// Note: USB_SERIAL_NUMBER uses Pico unique ID - see usb_descriptors.c
 
 // =====================================================================
 // Device Configuration
 // =====================================================================
 
 #define CFG_TUSB_RHPORT0_MODE      OPT_MODE_DEVICE
-#define CFG_TUSB_OS                OPT_OS_NONE
+#define CFG_TUSB_OS                OPT_OS_PICO
 
 // Enable Full-Speed (12 Mbps) - Pico supports FS only
-#define CFG_TUSB_CONTROLLER0_SPEED  OPT_HIGH_SPEED
+#define CFG_TUD_MAX_SPEED          OPT_MODE_FULL_SPEED
 
 // CDC (Communication Device Class) - Serial over USB
 #define CFG_TUD_CDC                 1
@@ -54,8 +54,7 @@ extern "C" {
 // Endpoint 0 size
 #define CFG_TUD_ENDPOINT0_SIZE      64
 
-// Descriptor Configuration
-#define TUD_OPT_HIGH_SPEED          0  // Pico supports Full-Speed only
+// Descriptor Configuration (removed unused macro)
 
 // String descriptor support
 #define CFG_TUSB_DEBUG              0

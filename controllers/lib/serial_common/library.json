@@ -1,0 +1,13 @@
+{
+    "name": "serial_common",
+    "version": "1.0.0",
+    "description": "ScaleFX Serial Communication Library - COBS-framed protocol, USB HOST, and serial bus",
+    "keywords": ["scalefx", "serial", "cobs", "usb", "host", "cdc", "pico"],
+    "authors": [
+        {
+            "name": "ScaleFX"
+        }
+    ],
+    "frameworks": "arduino",
+    "platforms": "raspberrypi"
+}
