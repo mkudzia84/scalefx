@@ -13,6 +13,8 @@
 #include <SdFat.h>
 #include <pico/mutex.h>
 
+class AudioCodec;  // Forward declaration
+
 // Type alias for SdFat File
 using File = FsFile;
 
@@ -70,8 +72,8 @@ public:
     AudioMixer& operator=(const AudioMixer&) = delete;
 
     // ---- Initialization ----
-    bool begin(SdFat* sd);
-    bool beginDualCore(SdFat* sd);
+    bool begin(SdFat* sd, uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_lrclk_pin,
+               AudioCodec* codec = nullptr);
     void shutdown();
 
     // ---- Playback Control ----

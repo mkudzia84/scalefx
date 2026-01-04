@@ -24,6 +24,27 @@ bool GunFxSerialMaster::begin(UsbHost* usbHost, int deviceIndex) {
     return true;
 }
 
+void GunFxSerialMaster::setCompatibleVersions(const char** versions, size_t count) {
+    _compatibleVersions = versions;
+    _compatibleVersionCount = count;
+}
+
+bool GunFxSerialMaster::checkVersionCompatibility(const char* version) {
+    // If no compatibility list set, accept any version
+    if (_compatibleVersions == nullptr || _compatibleVersionCount == 0) {
+        return true;
+    }
+    
+    // Check if version matches any in the compatibility list
+    for (size_t i = 0; i < _compatibleVersionCount; i++) {
+        if (strcmp(version, _compatibleVersions[i]) == 0) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
 // ----------------------------------------------------------------------------
 // Trigger Control
 // ----------------------------------------------------------------------------
@@ -87,11 +108,47 @@ void GunFxSerialMaster::handlePacket(uint8_t type, const uint8_t* payload, size_
     switch (type) {
         case SerialProtocol::SFX_PKT_INIT_READY:
             _slaveReady = true;
+            
+            // Parse board info: name|version|platform|cpuMHz|ramBytes
             if (len > 0) {
-                size_t nameLen = (len < sizeof(_slaveName) - 1) ? len : sizeof(_slaveName) - 1;
-                memcpy(_slaveName, payload, nameLen);
-                _slaveName[nameLen] = '\0';
+                // Convert to null-terminated string for parsing
+                char buffer[128];
+                size_t bufLen = (len < sizeof(buffer) - 1) ? len : sizeof(buffer) - 1;
+                memcpy(buffer, payload, bufLen);
+                buffer[bufLen] = '\0';
+                
+                // Parse pipe-delimited format
+                char* name = strtok(buffer, "|");
+                char* version = strtok(nullptr, "|");
+                char* platform = strtok(nullptr, "|");
+                char* cpuStr = strtok(nullptr, "|");
+                char* ramStr = strtok(nullptr, "|");
+                
+                if (name) {
+                    strncpy(_slaveName, name, sizeof(_slaveName) - 1);
+                    _slaveName[sizeof(_slaveName) - 1] = '\0';
+                    strncpy(_boardInfo.deviceName, name, sizeof(_boardInfo.deviceName) - 1);
+                    _boardInfo.deviceName[sizeof(_boardInfo.deviceName) - 1] = '\0';
+                }
+                if (version) {
+                    strncpy(_boardInfo.firmwareVersion, version, sizeof(_boardInfo.firmwareVersion) - 1);
+                    _boardInfo.firmwareVersion[sizeof(_boardInfo.firmwareVersion) - 1] = '\0';
+                }
+                if (platform) {
+                    strncpy(_boardInfo.platform, platform, sizeof(_boardInfo.platform) - 1);
+                    _boardInfo.platform[sizeof(_boardInfo.platform) - 1] = '\0';
+                }
+                if (cpuStr) {
+                    _boardInfo.cpuFrequencyMHz = atoi(cpuStr);
+                }
+                if (ramStr) {
+                    _boardInfo.freeRamBytes = atoi(ramStr);
+                }
+                
+                // Check version compatibility
+                _boardInfo.versionCompatible = checkVersionCompatibility(_boardInfo.firmwareVersion);
             }
+            
             if (_readyCallback) {
                 _readyCallback(_slaveName);
             }
@@ -156,6 +213,20 @@ bool GunFxSerialSlave::begin(Stream* serial, const char* moduleName) {
 
     _initialized = true;
     return true;
+}
+
+void GunFxSerialSlave::setBoardInfo(const char* firmwareVersion, const char* platform,
+                                     uint32_t cpuFrequencyMHz, uint32_t freeRamBytes) {
+    if (firmwareVersion) {
+        strncpy(_firmwareVersion, firmwareVersion, sizeof(_firmwareVersion) - 1);
+        _firmwareVersion[sizeof(_firmwareVersion) - 1] = '\0';
+    }
+    if (platform) {
+        strncpy(_platform, platform, sizeof(_platform) - 1);
+        _platform[sizeof(_platform) - 1] = '\0';
+    }
+    _cpuFrequencyMHz = cpuFrequencyMHz;
+    _freeRamBytes = freeRamBytes;
 }
 
 void GunFxSerialSlave::end() {
@@ -242,6 +313,18 @@ void GunFxSerialSlave::handlePacket(uint8_t type, const uint8_t* payload, size_t
             }
             break;
 
+        case SerialProtocol::SFX_PKT_REBOOT:
+            if (_rebootCallback) {
+                _rebootCallback();
+            }
+            break;
+
+        case SerialProtocol::SFX_PKT_BOOTSEL:
+            if (_bootselCallback) {
+                _bootselCallback();
+            }
+            break;
+
         case SerialProtocol::SFX_PKT_KEEPALIVE:
             // Keepalive received - connection status already updated
             break;
@@ -325,9 +408,18 @@ int GunFxSerialSlave::sendRawPacket(uint8_t type, const uint8_t* payload, size_t
 }
 
 int GunFxSerialSlave::sendInitReady() {
-    size_t nameLen = strlen(_moduleName);
+    // Format: name|version|platform|cpuMHz|ramBytes
+    char buffer[128];
+    snprintf(buffer, sizeof(buffer), "%s|%s|%s|%lu|%lu",
+             _moduleName,
+             _firmwareVersion[0] ? _firmwareVersion : "unknown",
+             _platform[0] ? _platform : "unknown",
+             _cpuFrequencyMHz,
+             _freeRamBytes);
+    
+    size_t len = strlen(buffer);
     return sendRawPacket(SerialProtocol::SFX_PKT_INIT_READY, 
-                         (const uint8_t*)_moduleName, nameLen);
+                         (const uint8_t*)buffer, len);
 }
 
 int GunFxSerialSlave::sendStatus(const GunFxStatus& status) {

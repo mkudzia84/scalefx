@@ -1,5 +1,5 @@
 /**
- * GunFX Pico Controller
+ * GunFX Pico Controller v0.1.0
  * 
  * Slave controller for gun effects - receives commands from main Pi over USB serial.
  * Controls: muzzle flash LED (PWM), smoke heater/fan, 3x gun servos with motion profiling.
@@ -391,6 +391,7 @@ void setup() {
   
   // Initialize serial slave with callbacks
   serialSlave.begin(&Serial, deviceName);
+  serialSlave.setBoardInfo("v0.1.0", "RP2040", F_CPU / 1000000, rp2040.getFreeHeap());
   serialSlave.setConnectionTimeout(90000);
   serialSlave.onTriggerOn([](uint16_t rpm) { startFiring(rpm); });
   serialSlave.onTriggerOff([](uint16_t delay) { stopFiring(delay); });
@@ -409,6 +410,18 @@ void setup() {
   serialSlave.onSmokeHeat(setSmokeHeater);
   serialSlave.onInit([]() { Serial.println("INFO: INIT"); performSafeInit(); });
   serialSlave.onShutdown([]() { Serial.println("INFO: SHUTDOWN"); performSafeShutdown(); });
+  serialSlave.onReboot([]() {
+    Serial.println("INFO: REBOOT");
+    Serial.flush();
+    delay(100);
+    rp2040.reboot();
+  });
+  serialSlave.onBootsel([]() {
+    Serial.println("INFO: BOOTSEL - Entering firmware upload mode...");
+    Serial.flush();
+    delay(500);
+    rp2040.rebootToBootloader();
+  });
   
   Serial.print("GunFX Pico Ready: ");
   Serial.println(deviceName);

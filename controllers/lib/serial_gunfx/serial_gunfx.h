@@ -21,6 +21,18 @@
 // ============================================================================
 
 /**
+ * @brief Board and firmware information from slave
+ */
+struct GunFxBoardInfo {
+    char deviceName[32] = "";
+    char firmwareVersion[16] = "";
+    char platform[32] = "";
+    uint32_t cpuFrequencyMHz = 0;
+    uint32_t freeRamBytes = 0;
+    bool versionCompatible = false;  // True if version matches compatibility list
+};
+
+/**
  * @brief Servo configuration for motion profiling
  */
 struct GunFxServoConfig {
@@ -68,6 +80,10 @@ using GunFxServoSettingsCallback = std::function<void(const GunFxServoConfig& co
 using GunFxSmokeHeatCallback = std::function<void(bool on)>;
 using GunFxInitCallback = std::function<void()>;
 using GunFxShutdownCallback = std::function<void()>;
+using GunFxRebootCallback = std::function<void()>;
+using GunFxBootselCallback = std::function<void()>;
+using GunFxRebootCallback = std::function<void()>;
+using GunFxBootselCallback = std::function<void()>;
 
 // ============================================================================
 // GunFxSerialMaster - For HubFX Pico
@@ -170,6 +186,18 @@ public:
      */
     int sendShutdown() { return SerialBus::sendShutdown(); }
 
+    /**
+     * @brief Send reboot command to slave
+     * @return Bytes sent, or -1 on error
+     */
+    int sendReboot() { return SerialBus::sendReboot(); }
+
+    /**
+     * @brief Send bootsel command to slave
+     * @return Bytes sent, or -1 on error
+     */
+    int sendBootsel() { return SerialBus::sendBootsel(); }
+
     // ========================================================================
     // Callbacks
     // ========================================================================
@@ -208,6 +236,24 @@ public:
      */
     const char* slaveName() const { return _slaveName; }
 
+    /**
+     * @brief Get slave board information
+     */
+    const GunFxBoardInfo& boardInfo() const { return _boardInfo; }
+
+    /**
+     * @brief Set compatible firmware versions for this slave
+     * @param versions Array of version strings (e.g., {"v0.1.0", "v0.1.1"})
+     * @param count Number of versions in array
+     */
+    void setCompatibleVersions(const char** versions, size_t count);
+
+    /**
+     * @brief Check if slave firmware version is compatible
+     * @return true if version matches compatibility list or no list set
+     */
+    bool isVersionCompatible() const { return _boardInfo.versionCompatible; }
+
 private:
     void handlePacket(uint8_t type, const uint8_t* payload, size_t len);
 
@@ -218,6 +264,13 @@ private:
     GunFxStatus _lastStatus;
     bool _slaveReady = false;
     char _slaveName[65] = "";
+    GunFxBoardInfo _boardInfo;
+    
+    // Version compatibility
+    const char** _compatibleVersions = nullptr;
+    size_t _compatibleVersionCount = 0;
+    
+    bool checkVersionCompatibility(const char* version);
 };
 
 // ============================================================================
@@ -246,6 +299,16 @@ public:
      * @return true if successful
      */
     bool begin(Stream* serial, const char* moduleName = "GunFX");
+
+    /**
+     * @brief Set board information for INIT_READY response
+     * @param firmwareVersion Firmware version string (e.g., "v0.1.0")
+     * @param platform Platform string (e.g., "RP2040")
+     * @param cpuFrequencyMHz CPU frequency in MHz
+     * @param freeRamBytes Free RAM in bytes
+     */
+    void setBoardInfo(const char* firmwareVersion, const char* platform, 
+                      uint32_t cpuFrequencyMHz, uint32_t freeRamBytes);
 
     /**
      * @brief End communication
@@ -307,6 +370,8 @@ public:
     void onSmokeHeat(GunFxSmokeHeatCallback callback) { _smokeHeatCallback = callback; }
     void onInit(GunFxInitCallback callback) { _initCallback = callback; }
     void onShutdown(GunFxShutdownCallback callback) { _shutdownCallback = callback; }
+    void onReboot(GunFxRebootCallback callback) { _rebootCallback = callback; }
+    void onBootsel(GunFxBootselCallback callback) { _bootselCallback = callback; }
 
     // ========================================================================
     // Status
@@ -330,6 +395,12 @@ private:
     bool _initialized = false;
     bool _masterConnected = false;
     char _moduleName[65] = "GunFX";
+    
+    // Board info for INIT_READY
+    char _firmwareVersion[16] = "";
+    char _platform[32] = "";
+    uint32_t _cpuFrequencyMHz = 0;
+    uint32_t _freeRamBytes = 0;
 
     uint8_t _rxBuffer[SerialProtocol::COBS_BUFFER_SIZE];
     size_t _rxIndex = 0;
@@ -345,6 +416,8 @@ private:
     GunFxSmokeHeatCallback _smokeHeatCallback;
     GunFxInitCallback _initCallback;
     GunFxShutdownCallback _shutdownCallback;
+    GunFxRebootCallback _rebootCallback;
+    GunFxBootselCallback _bootselCallback;
 };
 
 #endif // SERIAL_GUNFX_H

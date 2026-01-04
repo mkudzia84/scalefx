@@ -13,8 +13,8 @@
 #include <Arduino.h>
 #include <SdFat.h>
 #include <LittleFS.h>
-#include "engine_fx.h"
-#include "gun_fx.h"
+#include "../effects/engine_fx.h"
+#include "../effects/gun_fx.h"
 
 // ============================================================================
 //  CONSTANTS
@@ -86,6 +86,36 @@ public:
      * @brief Load default configuration values
      */
     void loadDefaults();
+    
+    // ---- Saving (Flash only) ----
+    
+    /**
+     * @brief Save configuration to flash
+     * @param yaml YAML content to save
+     * @param length Size of YAML content
+     * @param filename Target file (default: /config.yaml)
+     * @return true if successful
+     */
+    bool save(const char* yaml, size_t length, const char* filename = "/config.yaml");
+    
+    /**
+     * @brief Backup current config to .bak file
+     * @return true if successful
+     */
+    bool backup();
+    
+    /**
+     * @brief Restore config from .bak file
+     * @return true if successful
+     */
+    bool restore();
+    
+    /**
+     * @brief Get size of config file
+     * @param filename Path to file (default: /config.yaml)
+     * @return File size in bytes, or -1 if error
+     */
+    int getSize(const char* filename = "/config.yaml");
 
     // ---- Accessors ----
     

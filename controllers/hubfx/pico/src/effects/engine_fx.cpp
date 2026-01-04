@@ -6,7 +6,7 @@
  */
 
 #include "engine_fx.h"
-#include "audio_mixer.h"
+#include "../audio/audio_mixer.h"
 
 // ============================================================================
 //  DEBUG LOGGING

@@ -6,6 +6,7 @@
  */
 
 #include "audio_mixer.h"
+#include "audio_codec.h"
 #include <I2S.h>
 
 // ============================================================================
@@ -14,11 +15,6 @@
 
 constexpr int FADE_DURATION_MS = 50;
 constexpr float FADE_STEPS = (FADE_DURATION_MS * AUDIO_SAMPLE_RATE) / (1000.0f * AUDIO_MIX_BUFFER_SIZE);
-
-// I2S pin configuration
-constexpr int PIN_I2S_DATA  = 0;   // GP0 - I2S DIN
-constexpr int PIN_I2S_BCLK  = 1;   // GP1 - I2S BCLK
-constexpr int PIN_I2S_LRCLK = 2;   // GP2 - I2S LRCLK/WS
 
 // ============================================================================
 //  STATIC HELPERS
@@ -44,7 +40,8 @@ AudioMixer::~AudioMixer() {
     shutdown();
 }
 
-bool AudioMixer::begin(SdFat* sd) {
+bool AudioMixer::begin(SdFat* sd, uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_lrclk_pin,
+                       AudioCodec* codec) {
     if (_initialized) return true;
     if (!sd) return false;
 
@@ -58,10 +55,10 @@ bool AudioMixer::begin(SdFat* sd) {
         _channelPlaying[i] = false;
         _channelRemainingMs[i] = 0;
     }
-
-    // Configure I2S output
-    i2sOutput.setBCLK(PIN_I2S_BCLK);
-    i2sOutput.setDATA(PIN_I2S_DATA);
+    
+    // Initialize I2S output with provided pins
+    i2sOutput.setBCLK(i2s_bclk_pin);
+    i2sOutput.setDATA(i2s_data_pin);
     i2sOutput.setBitsPerSample(AUDIO_BIT_DEPTH);
 
     if (!i2sOutput.begin(AUDIO_SAMPLE_RATE)) {
@@ -70,22 +67,25 @@ bool AudioMixer::begin(SdFat* sd) {
     }
 
     _i2sRunning = true;
-    _initialized = true;
     
-    Serial.println("[AudioMixer] Initialized (single-core)");
-    return true;
-}
-
-bool AudioMixer::beginDualCore(SdFat* sd) {
-    if (!begin(sd)) return false;
-
-    _dualCoreMode = true;
+    // Initialize audio codec if provided
+    if (codec) {
+        Serial.printf("[AudioMixer] Using %s codec\n", codec->getModelName());
+        // Codec initialization happens externally before mixer.begin()
+    } else {
+        Serial.println("[AudioMixer] No codec provided (I2S only mode)");
+    }
+    
+    // Initialize dual-core mutex
     mutex_init(&_mixerMutex);
     mutex_init(&_cmdMutex);
     _cmdQueueHead = 0;
     _cmdQueueTail = 0;
-
-    Serial.println("[AudioMixer] Initialized (dual-core ready)");
+    _dualCoreMode = true;
+    
+    _initialized = true;
+    
+    Serial.println("[AudioMixer] Initialized");
     return true;
 }
 

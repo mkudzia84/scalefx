@@ -52,6 +52,8 @@ constexpr uint8_t SFX_PKT_STATUS      = 0xF4;
 constexpr uint8_t SFX_PKT_ERROR       = 0xF5;
 constexpr uint8_t SFX_PKT_ACK         = 0xF6;
 constexpr uint8_t SFX_PKT_NACK        = 0xF7;
+constexpr uint8_t SFX_PKT_REBOOT      = 0xF8;
+constexpr uint8_t SFX_PKT_BOOTSEL     = 0xF9;
 
 // GunFX-Specific Packet Types (0x01-0x2F)
 constexpr uint8_t GUNFX_PKT_TRIGGER_ON      = 0x01;
@@ -275,6 +277,8 @@ public:
     int sendPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0);
     int sendInit() { return sendPacket(SerialProtocol::SFX_PKT_INIT); }
     int sendShutdown() { return sendPacket(SerialProtocol::SFX_PKT_SHUTDOWN); }
+    int sendReboot() { return sendPacket(SerialProtocol::SFX_PKT_REBOOT); }
+    int sendBootsel() { return sendPacket(SerialProtocol::SFX_PKT_BOOTSEL); }
     int sendKeepalive();
 
     // Packet reception

@@ -5,7 +5,7 @@
  */
 
 #include "gun_fx.h"
-#include "audio_mixer.h"
+#include "../audio/audio_mixer.h"
 
 // ============================================================================
 //  DEBUG LOGGING
@@ -44,13 +44,25 @@ bool GunFX::begin(UsbHost* usbHost, int deviceIndex,
     
     _serial.setKeepaliveInterval(GunFXConfig::KEEPALIVE_INTERVAL_MS);
     
+    // Set compatible slave firmware versions
+    static const char* compatibleVersions[] = {"v0.1.0"};
+    _serial.setCompatibleVersions(compatibleVersions, 1);
+    
     // Set up status callback
     _serial.onStatus([this](const GunFxStatus& status) {
         // Status received - can add handling here if needed
     });
     
-    _serial.onReady([](const char* name) {
-        LOG("Slave ready: %s", name);
+    _serial.onReady([this](const char* name) {
+        const GunFxBoardInfo& info = _serial.boardInfo();
+        if (_serial.isVersionCompatible()) {
+            LOG("Slave ready: %s (v%s, %s) - COMPATIBLE", 
+                info.deviceName, info.firmwareVersion, info.platform);
+        } else {
+            LOG("Slave ready: %s (v%s, %s) - INCOMPATIBLE VERSION!", 
+                info.deviceName, info.firmwareVersion, info.platform);
+            LOG("Expected versions: v0.1.0");
+        }
     });
     
     // Initialize PWM inputs
@@ -168,8 +180,8 @@ void GunFX::process() {
     _serial.process();
     _serial.processKeepalive();
     
-    // Skip input processing if not connected
-    if (!_serial.isConnected()) return;
+    // Skip input processing if not connected or incompatible version
+    if (!_serial.isConnected() || !_serial.isVersionCompatible()) return;
     
     // Update all PWM inputs
     _triggerInput.update();
@@ -309,7 +321,7 @@ void GunFX::stopFiringSound() {
 // ============================================================================
 
 void GunFX::trigger(int rpm) {
-    if (!_initialized) return;
+    if (!_initialized || !_serial.isVersionCompatible()) return;
     
     if (rpm > 0) {
         _serial.triggerOn(rpm);
@@ -321,7 +333,7 @@ void GunFX::trigger(int rpm) {
 }
 
 void GunFX::ceaseFire() {
-    if (!_initialized) return;
+    if (!_initialized || !_serial.isVersionCompatible()) return;
     
     _isFiring = false;
     _currentRpm = 0;
@@ -333,14 +345,14 @@ void GunFX::ceaseFire() {
 }
 
 void GunFX::setSmokeHeater(bool on) {
-    if (!_initialized) return;
+    if (!_initialized || !_serial.isVersionCompatible()) return;
     
     _smokeHeaterOn = on;
     _serial.setSmokeHeater(on);
 }
 
 void GunFX::setServo(int servoId, int pulseUs) {
-    if (!_initialized) return;
+    if (!_initialized || !_serial.isVersionCompatible()) return;
     _serial.setServoPosition(servoId, pulseUs);
 }
 
@@ -351,9 +363,20 @@ void GunFX::setServo(int servoId, int pulseUs) {
 void GunFX::printStatus() {
     Serial.println("[GunFX] Status:");
     Serial.printf("  Connected: %s\n", isConnected() ? "yes" : "no");
-    Serial.printf("  Slave ready: %s (%s)\n", 
-                  isSlaveReady() ? "yes" : "no",
-                  _serial.slaveName());
+    
+    const GunFxBoardInfo& info = _serial.boardInfo();
+    if (isSlaveReady()) {
+        Serial.printf("  Slave: %s (v%s, %s)\n", 
+                      info.deviceName, info.firmwareVersion, info.platform);
+        Serial.printf("  Version compatible: %s\n", 
+                      _serial.isVersionCompatible() ? "YES" : "NO - INCOMPATIBLE!");
+        if (!_serial.isVersionCompatible()) {
+            Serial.println("  WARNING: Slave not activated due to version mismatch");
+        }
+    } else {
+        Serial.printf("  Slave ready: no\n");
+    }
+    
     Serial.printf("  Firing: %s (%d RPM, rate %d)\n", 
                   _isFiring ? "yes" : "no", _currentRpm, _currentRateIndex);
     Serial.printf("  Heater: %s\n", _smokeHeaterOn ? "ON" : "OFF");

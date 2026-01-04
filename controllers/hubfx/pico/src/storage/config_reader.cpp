@@ -221,6 +221,135 @@ void ConfigReader::loadDefaults() {
 }
 
 // ============================================================================
+//  SAVING (Flash only)
+// ============================================================================
+
+bool ConfigReader::save(const char* yaml, size_t length, const char* filename) {
+    if (_storage != ConfigStorage::Flash) {
+        LOG("Save only supported for flash storage");
+        return false;
+    }
+    
+    if (!_initialized) {
+        LOG("Not initialized");
+        return false;
+    }
+    
+    // Open file for writing
+    File file = LittleFS.open(filename, "w");
+    if (!file) {
+        LOG("Failed to open %s for writing", filename);
+        return false;
+    }
+    
+    // Write data
+    size_t written = file.write((const uint8_t*)yaml, length);
+    file.close();
+    
+    if (written != length) {
+        LOG("Write failed: wrote %d/%d bytes", written, length);
+        return false;
+    }
+    
+    LOG("Saved %d bytes to %s", written, filename);
+    return true;
+}
+
+bool ConfigReader::backup() {
+    if (_storage != ConfigStorage::Flash) {
+        LOG("Backup only supported for flash storage");
+        return false;
+    }
+    
+    // Read current config
+    File src = LittleFS.open("/config.yaml", "r");
+    if (!src) {
+        LOG("No config.yaml to backup");
+        return false;
+    }
+    
+    // Create backup file
+    File dst = LittleFS.open("/config.yaml.bak", "w");
+    if (!dst) {
+        src.close();
+        LOG("Failed to create backup file");
+        return false;
+    }
+    
+    // Copy data
+    uint8_t buf[256];
+    size_t total = 0;
+    while (src.available()) {
+        size_t read = src.read(buf, sizeof(buf));
+        dst.write(buf, read);
+        total += read;
+    }
+    
+    src.close();
+    dst.close();
+    
+    LOG("Backed up %d bytes to config.yaml.bak", total);
+    return true;
+}
+
+bool ConfigReader::restore() {
+    if (_storage != ConfigStorage::Flash) {
+        LOG("Restore only supported for flash storage");
+        return false;
+    }
+    
+    // Read backup
+    File src = LittleFS.open("/config.yaml.bak", "r");
+    if (!src) {
+        LOG("No backup file found");
+        return false;
+    }
+    
+    // Restore to config
+    File dst = LittleFS.open("/config.yaml", "w");
+    if (!dst) {
+        src.close();
+        LOG("Failed to open config.yaml for writing");
+        return false;
+    }
+    
+    // Copy data
+    uint8_t buf[256];
+    size_t total = 0;
+    while (src.available()) {
+        size_t read = src.read(buf, sizeof(buf));
+        dst.write(buf, read);
+        total += read;
+    }
+    
+    src.close();
+    dst.close();
+    
+    LOG("Restored %d bytes from backup", total);
+    return true;
+}
+
+int ConfigReader::getSize(const char* filename) {
+    File file;
+    
+    if (_storage == ConfigStorage::Flash) {
+        file = LittleFS.open(filename, "r");
+    } else {
+        File32 f;
+        if (!f.open(_sd, filename, O_RDONLY)) {
+            return -1;
+        }
+        return f.size();
+    }
+    
+    if (!file) return -1;
+    
+    int size = file.size();
+    file.close();
+    return size;
+}
+
+// ============================================================================
 //  SECTION PARSERS
 // ============================================================================
 
