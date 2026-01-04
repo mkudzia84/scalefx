@@ -10,7 +10,19 @@ SdCardModule::SdCardModule() : initialized(false) {
 }
 
 bool SdCardModule::begin(uint8_t cs_pin, uint8_t sck_pin, uint8_t mosi_pin, uint8_t miso_pin, uint8_t speed_mhz) {
+    // Store pin configuration
+    _cs_pin = cs_pin;
+    _sck_pin = sck_pin;
+    _mosi_pin = mosi_pin;
+    _miso_pin = miso_pin;
+    
     Serial.println("[SD] Initializing SD card...");
+    Serial.printf("[SD] Pin configuration:\n");
+    Serial.printf("[SD]   CS (Chip Select): GP%d\n", cs_pin);
+    Serial.printf("[SD]   SCK (Clock):      GP%d\n", sck_pin);
+    Serial.printf("[SD]   MOSI (Data Out):  GP%d\n", mosi_pin);
+    Serial.printf("[SD]   MISO (Data In):   GP%d\n", miso_pin);
+    Serial.printf("[SD]   Speed:            %d MHz\n", speed_mhz);
     
     // Configure SPI pins
     SPI.setRX(miso_pin);
@@ -18,9 +30,33 @@ bool SdCardModule::begin(uint8_t cs_pin, uint8_t sck_pin, uint8_t mosi_pin, uint
     SPI.setSCK(sck_pin);
     
     // Initialize SD card
+    Serial.println("[SD] Attempting card detection...");
     if (!sd.begin(cs_pin, SD_SCK_MHZ(speed_mhz))) {
-        Serial.println("[SD] Initialization failed!");
-        Serial.println("[SD] Check wiring and card format (FAT32)");
+        Serial.println("[SD] ╔═══════════════════════════════════════╗");
+        Serial.println("[SD] ║  SD CARD INITIALIZATION FAILED!       ║");
+        Serial.println("[SD] ╚═══════════════════════════════════════╝");
+        Serial.println("[SD] ");
+        Serial.println("[SD] Troubleshooting checklist:");
+        Serial.println("[SD] 1. Check wiring:");
+        Serial.printf("[SD]    - CS   → GP%d (Pin %d)\n", cs_pin, cs_pin < 16 ? cs_pin + 1 : (cs_pin == 16 ? 21 : (cs_pin == 17 ? 22 : (cs_pin == 18 ? 24 : (cs_pin == 19 ? 25 : 0)))));
+        Serial.printf("[SD]    - SCK  → GP%d (Pin %d)\n", sck_pin, sck_pin < 16 ? sck_pin + 1 : (sck_pin == 16 ? 21 : (sck_pin == 17 ? 22 : (sck_pin == 18 ? 24 : (sck_pin == 19 ? 25 : 0)))));
+        Serial.printf("[SD]    - MOSI → GP%d (Pin %d)\n", mosi_pin, mosi_pin < 16 ? mosi_pin + 1 : (mosi_pin == 16 ? 21 : (mosi_pin == 17 ? 22 : (mosi_pin == 18 ? 24 : (mosi_pin == 19 ? 25 : 0)))));
+        Serial.printf("[SD]    - MISO → GP%d (Pin %d)\n", miso_pin, miso_pin < 16 ? miso_pin + 1 : (miso_pin == 16 ? 21 : (miso_pin == 17 ? 22 : (miso_pin == 18 ? 24 : (miso_pin == 19 ? 25 : 0)))));
+        Serial.println("[SD]    - VCC  → 3.3V");
+        Serial.println("[SD]    - GND  → GND");
+        Serial.println("[SD] 2. Check SD card:");
+        Serial.println("[SD]    - Card fully inserted");
+        Serial.println("[SD]    - Card formatted as FAT32");
+        Serial.println("[SD]    - Card capacity ≤32GB (SDHC)");
+        Serial.println("[SD]    - Try a different card");
+        Serial.println("[SD] 3. Check module:");
+        Serial.println("[SD]    - Module powered (3.3V)");
+        Serial.println("[SD]    - Module compatible with 3.3V");
+        Serial.println("[SD]    - Good solder joints");
+        Serial.println("[SD] 4. Try slower speed:");
+        Serial.println("[SD]    - Change speed from 25 MHz to 5 MHz");
+        Serial.println("[SD]    - Edit hubfx_pico.ino line 420");
+        Serial.println("[SD] ");
         initialized = false;
         return false;
     }
@@ -31,9 +67,14 @@ bool SdCardModule::begin(uint8_t cs_pin, uint8_t sck_pin, uint8_t mosi_pin, uint
         Serial.printf("[SD] Card size: %lu MB\n", (unsigned long)(size / 2048));
     }
     
-    Serial.println("[SD] Initialization complete");
+    Serial.println("[SD] ✓ Initialization complete");
     initialized = true;
     return true;
+}
+
+bool SdCardModule::retryInit(uint8_t speed_mhz) {
+    Serial.printf("[SD] Retrying initialization at %d MHz...\n", speed_mhz);
+    return begin(_cs_pin, _sck_pin, _mosi_pin, _miso_pin, speed_mhz);
 }
 
 void SdCardModule::listDirectory(const String& path, bool jsonOutput) {
@@ -150,6 +191,48 @@ void SdCardModule::showFile(const String& path) {
     file.close();
     Serial.println();
     Serial.println("====================");
+}
+
+bool SdCardModule::writeFile(const String& path, const uint8_t* data, size_t length, bool append) {
+    if (!initialized) {
+        Serial.println("Error: SD card not initialized");
+        return false;
+    }
+    
+    // Open file for writing (create if doesn't exist)
+    if (!writeFileHandle.isOpen()) {
+        int flags = O_WRONLY | O_CREAT;
+        if (append) {
+            flags |= O_AT_END;
+        } else {
+            flags |= O_TRUNC;  // Truncate if not appending
+        }
+        
+        if (!writeFileHandle.open(path.c_str(), flags)) {
+            Serial.print("Error: Cannot open file for writing: ");
+            Serial.println(path);
+            return false;
+        }
+    }
+    
+    // Write data
+    size_t written = writeFileHandle.write(data, length);
+    if (written != length) {
+        Serial.println("Error: Write failed");
+        writeFileHandle.close();
+        return false;
+    }
+    
+    return true;
+}
+
+bool SdCardModule::closeFile() {
+    if (writeFileHandle.isOpen()) {
+        writeFileHandle.sync();  // Ensure data is flushed
+        writeFileHandle.close();
+        return true;
+    }
+    return false;
 }
 
 void SdCardModule::listDirRecursive(const char* path, int level, bool jsonOutput) {

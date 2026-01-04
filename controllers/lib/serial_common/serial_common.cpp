@@ -170,11 +170,6 @@ bool parsePacket(const uint8_t* input, size_t length, uint8_t* type,
 static UsbHost* g_usbHost = nullptr;
 static pio_usb_configuration_t g_pioUsbConfig = PIO_USB_DEFAULT_CONFIG;
 
-// Legacy callbacks for C-style API
-static UsbMountCallback g_legacyMountCallback = nullptr;
-static UsbUnmountCallback g_legacyUnmountCallback = nullptr;
-static UsbCdcRxCallback g_legacyCdcRxCallback = nullptr;
-
 // ============================================================================
 // UsbHost Implementation
 // ============================================================================
@@ -679,19 +674,11 @@ void tuh_mount_cb(uint8_t dev_addr) {
     if (g_usbHost) {
         g_usbHost->_onDeviceMount(dev_addr);
     }
-    if (g_legacyMountCallback) {
-        uint16_t vid, pid;
-        tuh_vid_pid_get(dev_addr, &vid, &pid);
-        g_legacyMountCallback(dev_addr, vid, pid);
-    }
 }
 
 void tuh_umount_cb(uint8_t dev_addr) {
     if (g_usbHost) {
         g_usbHost->_onDeviceUnmount(dev_addr);
-    }
-    if (g_legacyUnmountCallback) {
-        g_legacyUnmountCallback(dev_addr);
     }
 }
 
@@ -710,19 +697,6 @@ void tuh_cdc_umount_cb(uint8_t idx) {
 void tuh_cdc_rx_cb(uint8_t idx) {
     if (g_usbHost) {
         g_usbHost->_onCdcRx(idx);
-    }
-    if (g_legacyCdcRxCallback && g_usbHost) {
-        uint8_t buf[64];
-        uint32_t count = tuh_cdc_read(idx, buf, sizeof(buf));
-        if (count > 0) {
-            for (int i = 0; i < g_usbHost->cdcDeviceCount(); i++) {
-                const CdcDeviceInfo* dev = g_usbHost->getCdcDevice(i);
-                if (dev && dev->itf_num == idx) {
-                    g_legacyCdcRxCallback(dev->dev_addr, buf, count);
-                    break;
-                }
-            }
-        }
     }
 }
 

@@ -218,6 +218,8 @@ bool load_configuration() {
         return false;
     }
     
+    Serial.println("[MAIN] Flash storage initialized successfully");
+    
     // Try to load from flash
     if (configReader.load("/config.yaml")) {
         Serial.println("[MAIN] Configuration loaded from /config.yaml");
@@ -416,9 +418,26 @@ void setup() {
     // Load configuration from flash (always available)
     config_loaded = load_configuration();
     
-    // Initialize SD card (for audio files only)
-    sdCard.begin(DEFAULT_PIN_SD_CS, DEFAULT_PIN_SD_SCK, DEFAULT_PIN_SD_MOSI, DEFAULT_PIN_SD_MISO, 25);
-    if (!sdCard.isInitialized()) {
+    // Initialize SD card (for audio files only) - try multiple speeds on failure
+    const uint8_t sd_speeds[] = {20, 15, 10, 5};  // MHz - try fastest first
+    bool sd_success = false;
+    for (uint8_t i = 0; i < sizeof(sd_speeds); i++) {
+        Serial.print("[MAIN] Attempting SD init at ");
+        Serial.print(sd_speeds[i]);
+        Serial.println(" MHz...");
+        
+        sdCard.begin(DEFAULT_PIN_SD_CS, DEFAULT_PIN_SD_SCK, DEFAULT_PIN_SD_MOSI, DEFAULT_PIN_SD_MISO, sd_speeds[i]);
+        if (sdCard.isInitialized()) {
+            Serial.print("[MAIN] ✓ SD card initialized at ");
+            Serial.print(sd_speeds[i]);
+            Serial.println(" MHz");
+            sd_success = true;
+            break;
+        }
+        delay(100);  // Brief delay before retry
+    }
+    
+    if (!sd_success) {
         Serial.println("[MAIN] WARNING: Running without SD card (audio disabled)");
     }
     

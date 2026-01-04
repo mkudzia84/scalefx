@@ -38,6 +38,11 @@ public:
     SdFat& getSd() { return sd; }
     
     /**
+     * Retry initialization with different speed
+     */
+    bool retryInit(uint8_t speed_mhz);
+    
+    /**
      * List directory contents
      */
     void listDirectory(const String& path, bool jsonOutput = false);
@@ -57,9 +62,27 @@ public:
      */
     void showFile(const String& path);
     
+    /**
+     * Write data to file (receive via serial in chunks)
+     * Returns true if ready for next chunk, false on error
+     */
+    bool writeFile(const String& path, const uint8_t* data, size_t length, bool append = true);
+    
+    /**
+     * Close and finalize file write
+     */
+    bool closeFile();
+    
 private:
     SdFat sd;
     bool initialized;
+    File32 writeFileHandle;
+    
+    // Store pin configuration for retry
+    uint8_t _cs_pin;
+    uint8_t _sck_pin;
+    uint8_t _mosi_pin;
+    uint8_t _miso_pin;
     
     // Helper functions
     void listDirRecursive(const char* path, int level, bool jsonOutput = false);

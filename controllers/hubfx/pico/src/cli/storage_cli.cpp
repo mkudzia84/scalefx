@@ -8,11 +8,38 @@
 bool StorageCli::handleCommand(const String& cmd) {
     if (!sdCard) return false;
     
+    // ==================== SD CARD COMMANDS ====================
+    
+    // NEW API: sd init [speed] - Initialize SD card with optional speed
+    if (cmd == "sd init" || cmd.startsWith("sd init ")) {
+        String remaining = (cmd == "sd init") ? "" : cmd.substring(8);
+        remaining.trim();
+        
+        uint8_t speed = 20;  // Default to 20 MHz
+        if (remaining.length() > 0) {
+            speed = remaining.toInt();
+            if (speed == 0 || speed > 50) {
+                Serial.println("Error: Speed must be 1-50 MHz");
+                return true;
+            }
+        }
+        
+        Serial.printf("Attempting SD card initialization at %d MHz...\n", speed);
+        if (sdCard->retryInit(speed)) {
+            Serial.println("Success! SD card initialized.");
+        } else {
+            Serial.println("Failed. Try different speed or check wiring.");
+        }
+        return true;
+    }
+    
     // Check if SD is initialized
     if (!sdCard->isInitialized()) {
         // Only show error for SD commands
         if (cmd == "ls" || cmd.startsWith("ls ") || cmd.startsWith("tree") || 
-            cmd.startsWith("sdinfo") || cmd.startsWith("cat ")) {
+            cmd.startsWith("sdinfo") || cmd.startsWith("cat ") ||
+            cmd == "sd ls" || cmd.startsWith("sd ls ") || cmd == "sd tree" || cmd.startsWith("sd tree ") ||
+            cmd == "sd info" || cmd.startsWith("sd info ") || cmd == "sd cat" || cmd.startsWith("sd cat ")) {
             // Check if JSON output was requested
             bool jsonOutput = (cmd.indexOf("--json") >= 0 || cmd.indexOf("-j") >= 0);
             if (jsonOutput) {
@@ -25,9 +52,9 @@ bool StorageCli::handleCommand(const String& cmd) {
         return false;
     }
     
-    // ls [path] [--json|-j]
-    if (cmd == "ls" || cmd.startsWith("ls ")) {
-        String remaining = (cmd == "ls") ? "" : cmd.substring(3);
+    // NEW API: sd ls [path] [--json|-j]
+    if (cmd == "sd ls" || cmd.startsWith("sd ls ")) {
+        String remaining = (cmd == "sd ls") ? "" : cmd.substring(6);
         remaining.trim();
         
         bool jsonOutput = (remaining.indexOf("--json") >= 0 || remaining.indexOf("-j") >= 0);
@@ -43,25 +70,101 @@ bool StorageCli::handleCommand(const String& cmd) {
         return true;
     }
     
-    // tree [--json|-j]
-    if (cmd == "tree" || cmd.startsWith("tree ")) {
+    // NEW API: sd tree [--json|-j]
+    if (cmd == "sd tree" || cmd.startsWith("sd tree ")) {
         bool jsonOutput = (cmd.indexOf("--json") >= 0 || cmd.indexOf("-j") >= 0);
         sdCard->showTree(jsonOutput);
         return true;
     }
     
-    // sdinfo [--json|-j]
-    if (cmd == "sdinfo" || cmd.startsWith("sdinfo ")) {
+    // NEW API: sd info [--json|-j]
+    if (cmd == "sd info" || cmd.startsWith("sd info ")) {
         bool jsonOutput = (cmd.indexOf("--json") >= 0 || cmd.indexOf("-j") >= 0);
         sdCard->showInfo(jsonOutput);
         return true;
     }
     
-    // cat <file>
-    if (cmd.startsWith("cat ")) {
-        String path = cmd.substring(4);
+    // NEW API: sd cat <file>
+    if (cmd.startsWith("sd cat ")) {
+        String path = cmd.substring(7);
         path.trim();
         sdCard->showFile(path);
+        return true;
+    }
+    
+    // NEW API: sd upload <path> <size>
+    if (cmd.startsWith("sd upload ")) {
+        String remaining = cmd.substring(10);
+        remaining.trim();
+        
+        int spaceIdx = remaining.indexOf(' ');
+        if (spaceIdx < 0) {
+            Serial.println("Usage: sd upload <path> <size_bytes>");
+            return true;
+        }
+        
+        String path = remaining.substring(0, spaceIdx);
+        String sizeStr = remaining.substring(spaceIdx + 1);
+        sizeStr.trim();
+        
+        uint32_t totalSize = sizeStr.toInt();
+        if (totalSize == 0 || totalSize > 10485760) {  // Max 10MB
+            Serial.println("Error: Size must be 1 to 10485760 bytes");
+            return true;
+        }
+        
+        Serial.println("READY");  // Signal ready to receive
+        
+        uint32_t bytesReceived = 0;
+        uint8_t buffer[512];
+        uint32_t lastReport = 0;
+        
+        while (bytesReceived < totalSize) {
+            // Wait for data with timeout
+            uint32_t startWait = millis();
+            while (!Serial.available() && (millis() - startWait) < 5000) {
+                delay(1);
+            }
+            
+            if (!Serial.available()) {
+                Serial.println("ERROR: Timeout waiting for data");
+                sdCard->closeFile();
+                return true;
+            }
+            
+            // Read available data
+            size_t toRead = min((size_t)(totalSize - bytesReceived), sizeof(buffer));
+            size_t available = Serial.available();
+            toRead = min(toRead, available);
+            
+            size_t bytesRead = Serial.readBytes(buffer, toRead);
+            
+            // Write to SD card
+            if (!sdCard->writeFile(path, buffer, bytesRead, bytesReceived > 0)) {
+                Serial.println("ERROR: Write failed");
+                sdCard->closeFile();
+                return true;
+            }
+            
+            bytesReceived += bytesRead;
+            
+            // Progress report every 10KB or at completion
+            if (bytesReceived - lastReport >= 10240 || bytesReceived >= totalSize) {
+                Serial.print("PROGRESS: ");
+                Serial.print(bytesReceived);
+                Serial.print("/");
+                Serial.println(totalSize);
+                lastReport = bytesReceived;
+            }
+        }
+        
+        // Close file
+        if (sdCard->closeFile()) {
+            Serial.println("SUCCESS: File uploaded");
+        } else {
+            Serial.println("ERROR: Failed to close file");
+        }
+        
         return true;
     }
     
@@ -69,9 +172,13 @@ bool StorageCli::handleCommand(const String& cmd) {
 }
 
 void StorageCli::printHelp() const {
-    Serial.println("=== Storage Commands ===");
-    Serial.println("  ls [path] [--json]       - List directory contents");
-    Serial.println("  tree [--json]            - Show directory tree");
-    Serial.println("  cat <file>               - Display file contents");
-    Serial.println("  sdinfo [--json]          - Show SD card information");
+    Serial.println("=== Storage Commands (SD Card) ===");
+    Serial.println();
+    Serial.println("SD CARD STORAGE:");
+    Serial.println("  sd init [speed]          - Initialize SD card (default 20 MHz)");
+    Serial.println("  sd ls [path] [--json]    - List directory contents");
+    Serial.println("  sd tree [--json]         - Show directory tree");
+    Serial.println("  sd cat <file>            - Display file contents");
+    Serial.println("  sd upload <path> <size>  - Upload file via serial (max 10MB)");
+    Serial.println("  sd info [--json]         - Show SD card information");
 }

@@ -15,8 +15,8 @@
 
 class AudioCodec;  // Forward declaration
 
-// Type alias for SdFat File
-using File = FsFile;
+// Use explicit FsFile type (SdFat) to avoid conflicts with LittleFS File
+using SdCardFile = FsFile;
 
 // ============================================================================
 //  CONSTANTS
@@ -107,7 +107,7 @@ public:
 private:
     // ---- Internal Types ----
     struct Channel {
-        File file;
+        SdCardFile file;
         bool active           = false;
         bool loop             = false;
         float volume          = 1.0f;

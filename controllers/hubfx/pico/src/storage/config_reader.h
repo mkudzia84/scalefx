@@ -123,6 +123,7 @@ public:
     const EngineFXSettings& engineSettings() const { return _settings.engine; }
     const GunFXSettings& gunSettings() const { return _settings.gun; }
     bool isLoaded() const { return _settings.loaded; }
+    bool isFlashStorage() const { return _storage == ConfigStorage::Flash; }
 
     // ---- Debug ----
     void print() const;
