@@ -193,46 +193,169 @@ void SdCardModule::showFile(const String& path) {
     Serial.println("====================");
 }
 
-bool SdCardModule::writeFile(const String& path, const uint8_t* data, size_t length, bool append) {
+bool SdCardModule::uploadFile(const String& path, uint32_t totalSize, Stream& serial) {
+    if (!initialized) {
+        serial.println("ERROR: SD card not initialized");
+        return false;
+    }
+    
+    // Size validation (max 100MB for SD card)
+    if (totalSize == 0 || totalSize > 104857600) {
+        serial.println("ERROR: Size must be 1 to 104857600 bytes (100MB)");
+        return false;
+    }
+    
+    serial.println("READY");
+    
+    // Open file for writing
+    File32 file = sd.open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
+    if (!file) {
+        serial.print("ERROR: Cannot open file for writing: ");
+        serial.println(path);
+        return false;
+    }
+    
+    uint32_t bytesReceived = 0;
+    uint8_t buffer[512];
+    uint32_t lastReport = 0;
+    
+    while (bytesReceived < totalSize) {
+        // Wait for data with timeout
+        uint32_t startWait = millis();
+        while (!serial.available() && (millis() - startWait) < 5000) {
+            delay(10);
+        }
+        
+        if (!serial.available()) {
+            serial.println("ERROR: Timeout waiting for data");
+            file.close();
+            return false;
+        }
+        
+        // Read available data
+        size_t toRead = min((size_t)(totalSize - bytesReceived), sizeof(buffer));
+        size_t available = serial.available();
+        toRead = min(toRead, available);
+        
+        size_t bytesRead = serial.readBytes(buffer, toRead);
+        
+        // Write to SD card
+        size_t written = file.write(buffer, bytesRead);
+        if (written != bytesRead) {
+            serial.println("ERROR: Write failed");
+            file.close();
+            return false;
+        }
+        
+        bytesReceived += bytesRead;
+        
+        // Progress report every 10KB or at completion
+        if (bytesReceived - lastReport >= 10240 || bytesReceived >= totalSize) {
+            serial.print("PROGRESS: ");
+            serial.print(bytesReceived);
+            serial.print("/");
+            serial.println(totalSize);
+            lastReport = bytesReceived;
+        }
+    }
+    
+    // Close file
+    file.sync();
+    file.close();
+    serial.println("SUCCESS: File uploaded");
+    return true;
+}
+
+bool SdCardModule::downloadFile(const String& path, Stream& serial) {
+    if (!initialized) {
+        serial.println("ERROR: SD card not initialized");
+        return false;
+    }
+    
+    // Open file for reading
+    File32 file = sd.open(path.c_str(), O_RDONLY);
+    if (!file) {
+        serial.print("ERROR: Cannot open file: ");
+        serial.println(path);
+        return false;
+    }
+    
+    uint32_t fileSize = file.size();
+    
+    // Send file size
+    serial.print("SIZE: ");
+    serial.println(fileSize);
+    serial.println("READY");
+    
+    // Wait for START confirmation
+    uint32_t startWait = millis();
+    bool gotStart = false;
+    while (millis() - startWait < 5000) {
+        if (serial.available()) {
+            String response = serial.readStringUntil('\n');
+            response.trim();
+            if (response == "START") {
+                gotStart = true;
+                break;
+            }
+        }
+        delay(10);
+    }
+    
+    if (!gotStart) {
+        serial.println("ERROR: Timeout waiting for START");
+        file.close();
+        return false;
+    }
+    
+    // Send file data in chunks
+    uint8_t buffer[512];
+    uint32_t bytesSent = 0;
+    uint32_t lastReport = 0;
+    
+    while (file.available()) {
+        int bytesRead = file.read(buffer, sizeof(buffer));
+        if (bytesRead > 0) {
+            serial.write(buffer, bytesRead);
+            serial.flush();
+            bytesSent += bytesRead;
+            
+            // Progress report every 10KB
+            if (bytesSent - lastReport >= 10240 || bytesSent >= fileSize) {
+                serial.print("\nPROGRESS: ");
+                serial.print(bytesSent);
+                serial.print("/");
+                serial.print(fileSize);
+                serial.println();
+                lastReport = bytesSent;
+            }
+        }
+    }
+    
+    file.close();
+    serial.println("\nSUCCESS: Download complete");
+    return true;
+}
+
+bool SdCardModule::removeFile(const String& path) {
     if (!initialized) {
         Serial.println("Error: SD card not initialized");
         return false;
     }
     
-    // Open file for writing (create if doesn't exist)
-    if (!writeFileHandle.isOpen()) {
-        int flags = O_WRONLY | O_CREAT;
-        if (append) {
-            flags |= O_AT_END;
-        } else {
-            flags |= O_TRUNC;  // Truncate if not appending
-        }
-        
-        if (!writeFileHandle.open(path.c_str(), flags)) {
-            Serial.print("Error: Cannot open file for writing: ");
-            Serial.println(path);
-            return false;
-        }
+    if (!sd.exists(path.c_str())) {
+        Serial.print("Error: File not found: ");
+        Serial.println(path);
+        return false;
     }
     
-    // Write data
-    size_t written = writeFileHandle.write(data, length);
-    if (written != length) {
-        Serial.println("Error: Write failed");
-        writeFileHandle.close();
+    if (!sd.remove(path.c_str())) {
+        Serial.print("Error: Failed to remove file: ");
+        Serial.println(path);
         return false;
     }
     
     return true;
-}
-
-bool SdCardModule::closeFile() {
-    if (writeFileHandle.isOpen()) {
-        writeFileHandle.sync();  // Ensure data is flushed
-        writeFileHandle.close();
-        return true;
-    }
-    return false;
 }
 
 void SdCardModule::listDirRecursive(const char* path, int level, bool jsonOutput) {

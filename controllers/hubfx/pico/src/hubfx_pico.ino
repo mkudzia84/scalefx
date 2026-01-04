@@ -101,7 +101,7 @@ ConfigReader configReader;
 CommandRouter cmdRouter;
 AudioCli audioCli(&mixer);
 StorageCli storageCli(&sdCard);
-ConfigCli configCli(&configReader);
+ConfigCli configCli(&configReader, &sdCard);
 EngineCli engineCli(&engineFx);
 SystemCli systemCli;
 
@@ -209,18 +209,18 @@ void status_led_update() {
 // ============================================================================
 
 bool load_configuration() {
-    Serial.println("[MAIN] Loading configuration from flash...");
+    Serial.println("[MAIN] Loading configuration from SD card...");
     
-    // Initialize config reader with LittleFS
-    if (!configReader.beginFlash()) {
-        Serial.println("[MAIN] Flash storage init failed");
+    // Initialize config reader with SD card
+    if (!configReader.begin(&sdCard.getSd())) {
+        Serial.println("[MAIN] SD card config init failed");
         configReader.loadDefaults();
         return false;
     }
     
-    Serial.println("[MAIN] Flash storage initialized successfully");
+    Serial.println("[MAIN] SD card config initialized successfully");
     
-    // Try to load from flash
+    // Try to load from SD card root
     if (configReader.load("/config.yaml")) {
         Serial.println("[MAIN] Configuration loaded from /config.yaml");
         configReader.print();
@@ -229,7 +229,7 @@ bool load_configuration() {
     
     // Load defaults
     configReader.loadDefaults();
-    Serial.println("[MAIN] No config file found in flash, using defaults");
+    Serial.println("[MAIN] No config file found on SD card, using defaults");
     configReader.print();
     return true;  // Still OK, just using defaults
 }

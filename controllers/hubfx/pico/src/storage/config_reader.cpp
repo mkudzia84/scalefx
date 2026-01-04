@@ -256,77 +256,141 @@ bool ConfigReader::save(const char* yaml, size_t length, const char* filename) {
 }
 
 bool ConfigReader::backup() {
-    if (_storage != ConfigStorage::Flash) {
-        LOG("Backup only supported for flash storage");
-        return false;
-    }
-    
-    // Read current config
-    File src = LittleFS.open("/config.yaml", "r");
-    if (!src) {
-        LOG("No config.yaml to backup");
-        return false;
-    }
-    
-    // Create backup file
-    File dst = LittleFS.open("/config.yaml.bak", "w");
-    if (!dst) {
+    if (_storage == ConfigStorage::Flash) {
+        // Flash storage backup
+        File src = LittleFS.open("/config.yaml", "r");
+        if (!src) {
+            LOG("No config.yaml to backup");
+            return false;
+        }
+        
+        File dst = LittleFS.open("/config.yaml.bak", "w");
+        if (!dst) {
+            src.close();
+            LOG("Failed to create backup file");
+            return false;
+        }
+        
+        uint8_t buf[256];
+        size_t total = 0;
+        while (src.available()) {
+            size_t read = src.read(buf, sizeof(buf));
+            dst.write(buf, read);
+            total += read;
+        }
+        
         src.close();
-        LOG("Failed to create backup file");
-        return false;
+        dst.close();
+        
+        LOG("Backed up %d bytes to config.yaml.bak", total);
+        return true;
+    } 
+    else if (_storage == ConfigStorage::SD) {
+        // SD card backup
+        if (!_sd) {
+            LOG("SD card not initialized");
+            return false;
+        }
+        
+        File32 src = _sd->open("/config.yaml", O_RDONLY);
+        if (!src) {
+            LOG("No config.yaml to backup");
+            return false;
+        }
+        
+        File32 dst = _sd->open("/config.yaml.bak", O_WRONLY | O_CREAT | O_TRUNC);
+        if (!dst) {
+            src.close();
+            LOG("Failed to create backup file");
+            return false;
+        }
+        
+        uint8_t buf[256];
+        size_t total = 0;
+        int bytesRead;
+        while ((bytesRead = src.read(buf, sizeof(buf))) > 0) {
+            dst.write(buf, bytesRead);
+            total += bytesRead;
+        }
+        
+        src.close();
+        dst.close();
+        
+        LOG("Backed up %d bytes to config.yaml.bak", total);
+        return true;
     }
     
-    // Copy data
-    uint8_t buf[256];
-    size_t total = 0;
-    while (src.available()) {
-        size_t read = src.read(buf, sizeof(buf));
-        dst.write(buf, read);
-        total += read;
-    }
-    
-    src.close();
-    dst.close();
-    
-    LOG("Backed up %d bytes to config.yaml.bak", total);
-    return true;
+    LOG("Backup not supported for current storage type");
+    return false;
 }
 
 bool ConfigReader::restore() {
-    if (_storage != ConfigStorage::Flash) {
-        LOG("Restore only supported for flash storage");
-        return false;
-    }
-    
-    // Read backup
-    File src = LittleFS.open("/config.yaml.bak", "r");
-    if (!src) {
-        LOG("No backup file found");
-        return false;
-    }
-    
-    // Restore to config
-    File dst = LittleFS.open("/config.yaml", "w");
-    if (!dst) {
+    if (_storage == ConfigStorage::Flash) {
+        // Flash storage restore
+        File src = LittleFS.open("/config.yaml.bak", "r");
+        if (!src) {
+            LOG("No backup file found");
+            return false;
+        }
+        
+        File dst = LittleFS.open("/config.yaml", "w");
+        if (!dst) {
+            src.close();
+            LOG("Failed to open config.yaml for writing");
+            return false;
+        }
+        
+        uint8_t buf[256];
+        size_t total = 0;
+        while (src.available()) {
+            size_t read = src.read(buf, sizeof(buf));
+            dst.write(buf, read);
+            total += read;
+        }
+        
         src.close();
-        LOG("Failed to open config.yaml for writing");
-        return false;
+        dst.close();
+        
+        LOG("Restored %d bytes from backup", total);
+        return true;
+    }
+    else if (_storage == ConfigStorage::SD) {
+        // SD card restore
+        if (!_sd) {
+            LOG("SD card not initialized");
+            return false;
+        }
+        
+        File32 src = _sd->open("/config.yaml.bak", O_RDONLY);
+        if (!src) {
+            LOG("No backup file found");
+            return false;
+        }
+        
+        File32 dst = _sd->open("/config.yaml", O_WRONLY | O_CREAT | O_TRUNC);
+        if (!dst) {
+            src.close();
+            LOG("Failed to open config.yaml for writing");
+            return false;
+        }
+        
+        uint8_t buf[256];
+        size_t total = 0;
+        int bytesRead;
+        while ((bytesRead = src.read(buf, sizeof(buf))) > 0) {
+            dst.write(buf, bytesRead);
+            total += bytesRead;
+        }
+        
+        src.close();
+        dst.close();
+        
+        LOG("Restored %d bytes from backup", total);
+        return true;
     }
     
-    // Copy data
-    uint8_t buf[256];
-    size_t total = 0;
-    while (src.available()) {
-        size_t read = src.read(buf, sizeof(buf));
-        dst.write(buf, read);
-        total += read;
-    }
-    
-    src.close();
-    dst.close();
-    
-    LOG("Restored %d bytes from backup", total);
-    return true;
+    LOG("Restore not supported for current storage type");
+    return false;
 }
 
 int ConfigReader::getSize(const char* filename) {

@@ -14,7 +14,8 @@ private:
     SdCardModule* sdCard;
     
 public:
-    StorageCli(SdCardModule* sd_ptr) : sdCard(sd_ptr) {}
+    StorageCli(SdCardModule* sd_ptr) 
+        : sdCard(sd_ptr) {}
     
     bool handleCommand(const String& cmd) override;
     void printHelp() const override;

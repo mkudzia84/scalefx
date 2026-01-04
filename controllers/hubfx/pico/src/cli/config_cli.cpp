@@ -4,6 +4,7 @@
  */
 
 #include "config_cli.h"
+#include "../storage/sd_card.h"
 
 bool ConfigCli::handleCommand(const String& cmd) {
     if (!config) return false;
@@ -45,7 +46,7 @@ bool ConfigCli::handleCommand(const String& cmd) {
         
         // Reload config
         if (subCmd == "reload") {
-            Serial.println("Reloading config from flash...");
+            Serial.println("Reloading config from SD card...");
             if (config->load("/config.yaml")) {
                 Serial.println("✓ Config reloaded successfully");
             } else {
@@ -63,90 +64,31 @@ bool ConfigCli::handleCommand(const String& cmd) {
             return true;
         }
         
-        // Upload config to flash: config upload <size>
+        // Upload config to SD card: config upload <size>
         if (subCmd.startsWith("upload ")) {
+            if (!sdCard) {
+                Serial.println("ERROR: SD card module not available");
+                return true;
+            }
+            
+            if (!sdCard->isInitialized()) {
+                Serial.println("ERROR: SD card not initialized. Run 'sd init' first.");
+                return true;
+            }
+            
             String sizeStr = subCmd.substring(7);
             sizeStr.trim();
             
             uint32_t totalSize = sizeStr.toInt();
             if (totalSize == 0 || totalSize > 102400) {  // Max 100KB for config
-                Serial.println("Error: Size must be 1 to 102400 bytes");
+                Serial.println("ERROR: Size must be 1 to 102400 bytes");
                 return true;
             }
             
-            // Ensure flash is initialized
-            if (!config->isFlashStorage()) {
-                Serial.println("ERROR: Config not initialized with flash storage");
-                Serial.println("This should not happen. Try rebooting.");
-                return true;
+            // Use unified upload method
+            if (sdCard->uploadFile("/config.yaml", totalSize, Serial)) {
+                Serial.println("Run 'config reload' to apply changes");
             }
-            
-            Serial.println("READY");  // Signal ready to receive
-            Serial.flush();
-            
-            // Open file for writing directly (stream, don't buffer entire file)
-            File file = LittleFS.open("/config.yaml", "w");
-            if (!file) {
-                Serial.println("ERROR: Cannot open flash file for writing");
-                return true;
-            }
-            
-            uint32_t bytesReceived = 0;
-            uint8_t buffer[256];  // Smaller buffer for streaming
-            uint32_t lastReport = 0;
-            
-            while (bytesReceived < totalSize) {
-                // Kick watchdog
-                rp2040.wdt_reset();
-                
-                // Wait for data with timeout
-                uint32_t startWait = millis();
-                while (!Serial.available() && (millis() - startWait) < 5000) {
-                    rp2040.wdt_reset();
-                    delay(10);
-                }
-                
-                if (!Serial.available()) {
-                    Serial.println("ERROR: Timeout waiting for data");
-                    file.close();
-                    return true;
-                }
-                
-                // Read available data
-                size_t toRead = min((size_t)(totalSize - bytesReceived), sizeof(buffer));
-                size_t available = Serial.available();
-                toRead = min(toRead, available);
-                
-                size_t bytesRead = Serial.readBytes(buffer, toRead);
-                
-                // Write directly to flash
-                size_t written = file.write(buffer, bytesRead);
-                if (written != bytesRead) {
-                    Serial.println("ERROR: Flash write failed");
-                    file.close();
-                    return true;
-                }
-                
-                bytesReceived += bytesRead;
-                
-                // Progress report every 1KB or at completion
-                if (bytesReceived - lastReport >= 1024 || bytesReceived >= totalSize) {
-                    Serial.print("PROGRESS: ");
-                    Serial.print(bytesReceived);
-                    Serial.print("/");
-                    Serial.println(totalSize);
-                    Serial.flush();
-                    lastReport = bytesReceived;
-                }
-            }
-            
-            // Close and sync file
-            file.flush();
-            file.close();
-            
-            Serial.println("SUCCESS: Config uploaded to flash");
-            Serial.println("Run 'config reload' to apply changes");
-            Serial.flush();
             
             return true;
         }
@@ -162,9 +104,9 @@ bool ConfigCli::handleCommand(const String& cmd) {
 void ConfigCli::printHelp() const {
     Serial.println("=== Config Commands ===");
     Serial.println("  config                   - Display current configuration");
-    Serial.println("  config reload            - Reload config from flash");
-    Serial.println("  config backup            - Backup current config to flash");
+    Serial.println("  config reload            - Reload config from SD card");
+    Serial.println("  config backup            - Backup current config to SD card");
     Serial.println("  config restore           - Restore config from backup");
-    Serial.println("  config upload <size>     - Upload config to flash via serial");
+    Serial.println("  config upload <size>     - Upload config to SD card via serial");
     Serial.println("  config restart           - Restart system");
 }

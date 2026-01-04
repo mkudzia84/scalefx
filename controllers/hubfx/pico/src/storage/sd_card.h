@@ -63,20 +63,37 @@ public:
     void showFile(const String& path);
     
     /**
-     * Write data to file (receive via serial in chunks)
-     * Returns true if ready for next chunk, false on error
+     * Upload file via serial with progress reporting
+     * Unified upload method for config and storage operations
+     * 
+     * @param path File path to write to
+     * @param totalSize Expected file size in bytes
+     * @param serial Serial stream to read from (typically Serial)
+     * @return true if successful, false otherwise
      */
-    bool writeFile(const String& path, const uint8_t* data, size_t length, bool append = true);
+    bool uploadFile(const String& path, uint32_t totalSize, Stream& serial);
     
     /**
-     * Close and finalize file write
+     * Download file via serial with progress reporting
+     * Sends file as binary data with progress updates
+     * 
+     * @param path File path to read from
+     * @param serial Serial stream to write to (typically Serial)
+     * @return true if successful, false otherwise
      */
-    bool closeFile();
+    bool downloadFile(const String& path, Stream& serial);
+    
+    /**
+     * Remove file from SD card
+     * 
+     * @param path File path to remove
+     * @return true if successful, false otherwise
+     */
+    bool removeFile(const String& path);
     
 private:
     SdFat sd;
     bool initialized;
-    File32 writeFileHandle;
     
     // Store pin configuration for retry
     uint8_t _cs_pin;

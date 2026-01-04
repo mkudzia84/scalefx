@@ -9,12 +9,17 @@
 #include "../cli/command_handler.h"
 #include "../storage/config_reader.h"
 
+// Forward declaration
+class SdCardModule;
+
 class ConfigCli : public CommandHandler {
 private:
     ConfigReader* config;
+    SdCardModule* sdCard;
     
 public:
-    ConfigCli(ConfigReader* config_ptr) : config(config_ptr) {}
+    ConfigCli(ConfigReader* config_ptr, SdCardModule* sd_ptr = nullptr) 
+        : config(config_ptr), sdCard(sd_ptr) {}
     
     bool handleCommand(const String& cmd) override;
     void printHelp() const override;

@@ -6,9 +6,9 @@
 #include "storage_cli.h"
 
 bool StorageCli::handleCommand(const String& cmd) {
-    if (!sdCard) return false;
-    
     // ==================== SD CARD COMMANDS ====================
+    
+    if (!sdCard) return false;
     
     // NEW API: sd init [speed] - Initialize SD card with optional speed
     if (cmd == "sd init" || cmd.startsWith("sd init ")) {
@@ -108,63 +108,46 @@ bool StorageCli::handleCommand(const String& cmd) {
         sizeStr.trim();
         
         uint32_t totalSize = sizeStr.toInt();
-        if (totalSize == 0 || totalSize > 10485760) {  // Max 10MB
-            Serial.println("Error: Size must be 1 to 10485760 bytes");
+        if (totalSize == 0 || totalSize > 104857600) {  // Max 100MB
+            Serial.println("Error: Size must be 1 to 104857600 bytes (100MB)");
             return true;
         }
         
-        Serial.println("READY");  // Signal ready to receive
+        // Use unified upload method
+        sdCard->uploadFile(path, totalSize, Serial);
+        return true;
+    }
+    
+    // NEW API: sd download <path>
+    if (cmd.startsWith("sd download ")) {
+        String path = cmd.substring(12);
+        path.trim();
         
-        uint32_t bytesReceived = 0;
-        uint8_t buffer[512];
-        uint32_t lastReport = 0;
-        
-        while (bytesReceived < totalSize) {
-            // Wait for data with timeout
-            uint32_t startWait = millis();
-            while (!Serial.available() && (millis() - startWait) < 5000) {
-                delay(1);
-            }
-            
-            if (!Serial.available()) {
-                Serial.println("ERROR: Timeout waiting for data");
-                sdCard->closeFile();
-                return true;
-            }
-            
-            // Read available data
-            size_t toRead = min((size_t)(totalSize - bytesReceived), sizeof(buffer));
-            size_t available = Serial.available();
-            toRead = min(toRead, available);
-            
-            size_t bytesRead = Serial.readBytes(buffer, toRead);
-            
-            // Write to SD card
-            if (!sdCard->writeFile(path, buffer, bytesRead, bytesReceived > 0)) {
-                Serial.println("ERROR: Write failed");
-                sdCard->closeFile();
-                return true;
-            }
-            
-            bytesReceived += bytesRead;
-            
-            // Progress report every 10KB or at completion
-            if (bytesReceived - lastReport >= 10240 || bytesReceived >= totalSize) {
-                Serial.print("PROGRESS: ");
-                Serial.print(bytesReceived);
-                Serial.print("/");
-                Serial.println(totalSize);
-                lastReport = bytesReceived;
-            }
+        if (path.length() == 0) {
+            Serial.println("Usage: sd download <path>");
+            return true;
         }
         
-        // Close file
-        if (sdCard->closeFile()) {
-            Serial.println("SUCCESS: File uploaded");
+        sdCard->downloadFile(path, Serial);
+        return true;
+    }
+    
+    // NEW API: sd rm <path>
+    if (cmd.startsWith("sd rm ")) {
+        String path = cmd.substring(6);
+        path.trim();
+        
+        if (path.length() == 0) {
+            Serial.println("Usage: sd rm <path>");
+            return true;
+        }
+        
+        if (sdCard->removeFile(path)) {
+            Serial.print("✓ Removed: ");
+            Serial.println(path);
         } else {
-            Serial.println("ERROR: Failed to close file");
+            Serial.println("✗ Failed to remove file");
         }
-        
         return true;
     }
     
@@ -172,13 +155,15 @@ bool StorageCli::handleCommand(const String& cmd) {
 }
 
 void StorageCli::printHelp() const {
-    Serial.println("=== Storage Commands (SD Card) ===");
+    Serial.println("=== Storage Commands ===");
     Serial.println();
     Serial.println("SD CARD STORAGE:");
     Serial.println("  sd init [speed]          - Initialize SD card (default 20 MHz)");
     Serial.println("  sd ls [path] [--json]    - List directory contents");
     Serial.println("  sd tree [--json]         - Show directory tree");
     Serial.println("  sd cat <file>            - Display file contents");
-    Serial.println("  sd upload <path> <size>  - Upload file via serial (max 10MB)");
+    Serial.println("  sd download <file>       - Download file via serial");
+    Serial.println("  sd rm <file>             - Remove file");
+    Serial.println("  sd upload <path> <size>  - Upload file via serial (max 100MB)");
     Serial.println("  sd info [--json]         - Show SD card information");
 }
