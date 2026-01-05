@@ -7,20 +7,13 @@
 
 #include "config_reader.h"
 #include "../audio/audio_channels.h"
+#include "../debug_config.h"
 
 // ============================================================================
-//  DEBUG
+//  DEBUG (uses CONFIG_LOG from debug_config.h)
 // ============================================================================
 
-#ifndef CONFIG_DEBUG
-#define CONFIG_DEBUG 1
-#endif
-
-#if CONFIG_DEBUG
-#define LOG(fmt, ...) Serial.printf("[Config] " fmt "\n", ##__VA_ARGS__)
-#else
-#define LOG(fmt, ...)
-#endif
+#define LOG(fmt, ...) CONFIG_LOG(fmt, ##__VA_ARGS__)
 
 // ============================================================================
 //  PARSING HELPERS (static)

@@ -1,167 +1,192 @@
-# HubFX Pico - Build and Flash Scripts
+# HubFX Pico - Build and Deploy Scripts
 
-Utilities for building, flashing, and uploading firmware to Raspberry Pi Pico.
+Utilities for building firmware and managing files on the Pico.
+
+## Quick Reference
+
+```bash
+# Build and flash firmware
+.\scripts\build_and_flash.ps1
+
+# Upload config with verification
+python scripts/upload_config.py
+
+# Sync sound files to SD card
+python scripts/sync_sounds.py
+```
 
 ## Available Scripts
 
-### Build and Flash
+### `build_and_flash.ps1` - Build and Flash Firmware
 
-#### `build_and_flash.ps1` (Recommended)
-Complete automated build and flash workflow with verification:
+Complete automated build and flash workflow:
+
 ```powershell
+# Full build and flash
 .\scripts\build_and_flash.ps1
+
+# Flash only (skip build)
+.\scripts\build_and_flash.ps1 -NoBuild
+
+# Skip post-flash verification
+.\scripts\build_and_flash.ps1 -SkipVerify
+
+# Custom COM port
+.\scripts\build_and_flash.ps1 -ComPort COM5
 ```
 
 **Features:**
-- Clean build environment
-- Compile firmware with error checking
-- Calculate MD5 checksum
-- Enter BOOTSEL mode automatically
-- Flash firmware to Pico
-- Verify upload integrity
-- Optional: Run tests after flash
+- Builds firmware with PlatformIO
+- Calculates MD5 checksum
+- Triggers BOOTSEL mode via serial (`sys bootsel`)
+- Waits for RPI-RP2 drive
+- Copies firmware and verifies device reboot
+- Displays firmware version after flash
 
-**Usage:**
-```powershell
-# Normal build and flash
-.\scripts\build_and_flash.ps1
+### `upload_config.py` - Upload Configuration
 
-# Skip post-flash tests
-.\scripts\build_and_flash.ps1 -SkipTests
-```
+Upload and verify config.yaml:
 
-#### `upload.ps1`
-Quick upload of pre-built firmware:
-```powershell
-.\scripts\upload.ps1
-```
-Assumes firmware is already built in `.pio/build/pico/firmware.uf2`.
-
-### File Transfer Utilities
-
-#### `upload_file.py`
-Upload individual files to Pico flash filesystem:
 ```bash
-python scripts/upload_file.py <local_file> <remote_path>
+# Upload ./config.yaml (auto-detect port)
+python scripts/upload_config.py
+
+# Upload specific file
+python scripts/upload_config.py myconfig.yaml
+
+# Specify COM port
+python scripts/upload_config.py config.yaml COM5
 ```
 
-**Example:**
+**Features:**
+- Uploads config.yaml to SD card
+- Verifies file size after upload
+- Triggers `config reload`
+- Validates configuration structure
+- Shows config summary (engine/gun settings)
+
+### `sync_sounds.py` - Sync Sound Files
+
+Synchronize local sound files with SD card:
+
 ```bash
-python scripts/upload_file.py config.yaml /config.yaml
-python scripts/upload_file.py sounds/startup.wav /sounds/startup.wav
+# Sync from default media/sounds folder
+python scripts/sync_sounds.py
+
+# Sync from specific folder
+python scripts/sync_sounds.py ./my_sounds
+
+# Sync with delete (remove orphaned files on SD)
+python scripts/sync_sounds.py --delete
+
+# Specify COM port
+python scripts/sync_sounds.py ./sounds COM5
 ```
 
-**Note:** Requires `flash init` to be run on device first.
-
-#### `download_file.py`
-Download files from Pico flash filesystem:
-```bash
-python scripts/download_file.py <remote_path> <local_file>
-```
-
-**Example:**
-```bash
-python scripts/download_file.py /config.yaml config_backup.yaml
-python scripts/download_file.py /logs/boot.log boot_log.txt
-```
+**Features:**
+- Compares local files with SD card contents
+- Only uploads new or modified files (by size)
+- Creates directories automatically
+- Optional `--delete` to remove files not in source
+- Shows detailed progress and statistics
 
 ## Prerequisites
 
 ### PowerShell Scripts
 - Windows PowerShell 5.1+ or PowerShell Core 7+
 - Python 3.7+ with `platformio` installed
-- `pyserial` package: `pip install pyserial`
 
 ### Python Scripts
 - Python 3.7+
 - `pyserial` package: `pip install pyserial`
 
-## Build Process Details
+## Workflow Examples
 
-The automated build process (`build_and_flash.ps1`) performs:
+### First-Time Setup
 
-1. **Clean** - Remove old build artifacts
-2. **Build** - Compile firmware with PlatformIO
-3. **Checksum** - Calculate MD5 hash of firmware
-4. **BOOTSEL** - Enter bootloader mode via serial command
-5. **Flash** - Copy firmware to BOOTSEL drive (G:)
-6. **Verify** - Confirm firmware size and checksum
-7. **Test** (optional) - Run automated tests
+```powershell
+# 1. Build and flash firmware
+.\scripts\build_and_flash.ps1
+
+# 2. Upload configuration
+python scripts/upload_config.py config.yaml
+
+# 3. Sync sound files
+python scripts/sync_sounds.py
+```
+
+### After Code Changes
+
+```powershell
+# Just rebuild and flash
+.\scripts\build_and_flash.ps1
+```
+
+### After Config Changes
+
+```bash
+# Upload and reload
+python scripts/upload_config.py
+```
+
+### After Adding Sound Files
+
+```bash
+# Sync new files
+python scripts/sync_sounds.py
+```
 
 ## Troubleshooting
 
 ### BOOTSEL Mode Issues
 
 **Problem:** Device doesn't enter BOOTSEL mode
-- **Solution 1:** Manually enter BOOTSEL:
+
+- **Solution 1:** Manual BOOTSEL:
   1. Disconnect USB
   2. Hold BOOTSEL button
   3. Connect USB while holding
   4. Release button
 
-- **Solution 2:** Use `reset` command in serial monitor:
+- **Solution 2:** Check if `sys bootsel` command works:
   ```
-  > reset
+  > sys bootsel
   ```
 
 ### COM Port Not Found
 
-**Problem:** Script can't find COM10
-- Check Device Manager for actual COM port
-- Edit script to use correct port:
-  ```powershell
-  $port = New-Object System.IO.Ports.SerialPort "COM5", 115200
-  ```
+**Problem:** Script can't find COM port
 
-### Upload Verification Failed
+- Check Device Manager for actual port
+- Set port explicitly: `-ComPort COM5` or second argument
+- Environment variable: `set PICO_PORT=COM5`
 
-**Problem:** Checksum mismatch after upload
-- Try slower USB port (USB 2.0 instead of 3.0)
-- Use different USB cable
-- Manually copy firmware to BOOTSEL drive
+### Upload Failures
 
-### Flash Filesystem Full
+**Problem:** File upload times out
 
-**Problem:** `upload_file.py` fails with "No space"
-- Check available space: `flash info`
-- Remove unused files: `flash rm <filename>`
-- Increase flash partition size in code (requires reflash)
+- Ensure SD card is initialized: `sd init`
+- Check available space: `sd info`
+- Try smaller files first to test connection
 
-## Advanced Usage
+### Sync Shows All Files as "new"
 
-### Custom Build Flags
+**Problem:** Every file uploads even when unchanged
 
-Edit `platformio.ini` to customize build:
-```ini
-build_flags = 
-    -DAUDIO_SAMPLE_RATE=48000          ; Use 48kHz instead of 44.1kHz
-    -DWM8960_I2C_SPEED=100000          ; Increase I2C speed (good wiring)
-    -DAUDIO_DEBUG_TIMING=1             ; Enable timing diagnostics
-```
+- File comparison uses size only (not checksum)
+- SD card may have different files
+- Run with `--delete` to remove orphaned files
 
-See [../docs/AUDIO_CONFIGURATION.md](../docs/AUDIO_CONFIGURATION.md) for all configuration options.
+## File Locations
 
-### Manual Build Commands
-
-```bash
-# Clean build
-python -m platformio run --target clean
-
-# Build only
-python -m platformio run
-
-# Build and upload via USB (no BOOTSEL)
-python -m platformio run -t upload
-
-# Build for specific environment
-python -m platformio run -e pico
-
-# Verbose output
-python -m platformio run -v
-```
+| Script | Purpose |
+|--------|---------|
+| `build_and_flash.ps1` | Build firmware, flash via BOOTSEL |
+| `upload_config.py` | Upload config.yaml with verification |
+| `sync_sounds.py` | Sync sound files from media/sounds |
 
 ## See Also
 
-- [../tests/README.md](../tests/README.md) - Test scripts
-- [../docs/AUDIO_CONFIGURATION.md](../docs/AUDIO_CONFIGURATION.md) - Configuration guide
+- [../tests/README.md](../tests/README.md) - Automated tests
+- [../docs/AUDIO_CONFIGURATION.md](../docs/AUDIO_CONFIGURATION.md) - Audio setup
 - [../platformio.ini](../platformio.ini) - Build configuration

@@ -15,6 +15,7 @@
 #include <Arduino.h>
 #include <serial_gunfx.h>
 #include <pwm_control.h>
+#include "effects_config.h"
 
 // Forward declarations
 class AudioMixer;
@@ -131,8 +132,10 @@ public:
     int pitchPwm() const { return _pitchInput.average(); }
     int yawPwm() const { return _yawInput.average(); }
     
+#if EFFECTS_DEBUG
     // ---- Debug ----
     void printStatus();
+#endif
 
 private:
     // ---- Rate Selection ----

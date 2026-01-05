@@ -32,6 +32,7 @@
 #include "storage/config_reader.h"
 #include "effects/engine_fx.h"
 #include "effects/gun_fx.h"
+#include "debug_config.h"
 
 // CLI System
 #include "cli/command_router.h"
@@ -139,7 +140,7 @@ void setup1() {
     while (!audio_initialized) {
         delay(10);
     }
-    Serial.println("[CORE1] Audio processing started");
+    CORE1_LOG("Audio processing started");
     core1_running = true;
 }
 
@@ -184,28 +185,32 @@ void status_led_update() {
 // ============================================================================
 
 bool load_configuration() {
-    Serial.println("[MAIN] Loading configuration from SD card...");
+    MAIN_LOG("Loading configuration from SD card...");
     
     // Initialize config reader with SD card
     if (!configReader.begin(&sdCard.getSd())) {
-        Serial.println("[MAIN] SD card config init failed");
+        MAIN_LOG("SD card config init failed");
         configReader.loadDefaults();
         return false;
     }
     
-    Serial.println("[MAIN] SD card config initialized successfully");
+    MAIN_LOG("SD card config initialized successfully");
     
     // Try to load from SD card root
     if (configReader.load("/config.yaml")) {
-        Serial.println("[MAIN] Configuration loaded from /config.yaml");
+        MAIN_LOG("Configuration loaded from /config.yaml");
+#if MAIN_DEBUG
         configReader.print();
+#endif
         return true;
     }
     
     // Load defaults
     configReader.loadDefaults();
-    Serial.println("[MAIN] No config file found on SD card, using defaults");
+    MAIN_LOG("No config file found on SD card, using defaults");
+#if MAIN_DEBUG
     configReader.print();
+#endif
     return true;  // Still OK, just using defaults
 }
 
@@ -214,17 +219,17 @@ bool load_configuration() {
 // ============================================================================
 
 bool init_audio() {
-    Serial.println("[MAIN] Initializing audio system...");
+    MAIN_LOG("Initializing audio system...");
     
     // Initialize audio codec if configured
     if (codec) {
-        Serial.printf("[MAIN] Initializing %s codec...\n", codec->getModelName());
+        MAIN_LOG("Initializing %s codec...", codec->getModelName());
         
         #ifdef USE_WM8960_CODEC
         // WM8960 requires I2C initialization
         if (!audioCodec.begin(Wire, DEFAULT_PIN_I2C_SDA, DEFAULT_PIN_I2C_SCL, AUDIO_SAMPLE_RATE)) {
-            Serial.println("[MAIN] Codec initialization failed!");
-            Serial.println("[MAIN] Check I2C wiring (GP4=SDA, GP5=SCL)");
+            MAIN_LOG("Codec initialization failed!");
+            MAIN_LOG("Check I2C wiring (GP4=SDA, GP5=SCL)");
             return false;
         }
         
@@ -237,8 +242,8 @@ bool init_audio() {
         // TAS5825M requires I2C initialization with supply voltage
         if (!audioCodec.begin(Wire, DEFAULT_PIN_I2C_SDA, DEFAULT_PIN_I2C_SCL, 
                               AUDIO_SAMPLE_RATE, TAS5825M_20V)) {  // 20V supply default
-            Serial.println("[MAIN] Codec initialization failed!");
-            Serial.println("[MAIN] Check I2C wiring (GP4=SDA, GP5=SCL)");
+            MAIN_LOG("Codec initialization failed!");
+            MAIN_LOG("Check I2C wiring (GP4=SDA, GP5=SCL)");
             return false;
         }
         
@@ -248,27 +253,27 @@ bool init_audio() {
         #elif defined(USE_SIMPLE_I2S_CODEC)
         // Simple I2S codec (auto-configure from I2S signals)
         if (!audioCodec.begin(AUDIO_SAMPLE_RATE)) {
-            Serial.println("[MAIN] Codec initialization failed!");
+            MAIN_LOG("Codec initialization failed!");
             return false;
         }
         #endif
         
-        Serial.printf("[MAIN] %s codec initialized\n", codec->getModelName());
+        MAIN_LOG("%s codec initialized", codec->getModelName());
     } else {
-        Serial.println("[MAIN] No codec configured (I2S only mode)");
+        MAIN_LOG("No codec configured (I2S only mode)");
     }
     
     // Initialize I2S output and mixer
-    Serial.println("[MAIN] Initializing audio mixer...");
+    MAIN_LOG("Initializing audio mixer...");
     if (!mixer.begin(&sdCard.getSd(), DEFAULT_PIN_I2S_DATA, DEFAULT_PIN_I2S_BCLK, DEFAULT_PIN_I2S_LRCLK, codec)) {
-        Serial.println("[MAIN] Audio mixer initialization failed!");
+        MAIN_LOG("Audio mixer initialization failed!");
         return false;
     }
     
     // Set mixer volume
     mixer.setVolume(-1, 0.8f);
     
-    Serial.println("[MAIN] Audio system initialized");
+    MAIN_LOG("Audio system initialized");
     return true;
 }
 
@@ -277,18 +282,18 @@ bool init_audio() {
 // ============================================================================
 
 bool init_engine_fx() {
-    Serial.println("[MAIN] Initializing Engine FX...");
+    MAIN_LOG("Initializing Engine FX...");
     
     const EngineFXSettings& settings = configReader.engineSettings();
     
     // Check if engine FX is enabled and sounds are configured
     if (!settings.enabled) {
-        Serial.println("[MAIN] Engine FX disabled in config");
+        MAIN_LOG("Engine FX disabled in config");
         return false;
     }
     
     if (!settings.startupSound.filename && !settings.runningSound.filename) {
-        Serial.println("[MAIN] No engine sounds configured");
+        MAIN_LOG("No engine sounds configured");
         return false;
     }
     
@@ -301,11 +306,11 @@ bool init_engine_fx() {
     
     // Initialize EngineFX with the OOP API
     if (!engineFx.begin(efxSettings, &mixer)) {
-        Serial.println("[MAIN] Engine FX initialization failed!");
+        MAIN_LOG("Engine FX initialization failed!");
         return false;
     }
     
-    Serial.println("[MAIN] Engine FX initialized");
+    MAIN_LOG("Engine FX initialized");
     return true;
 }
 
@@ -361,15 +366,11 @@ void setup() {
     const uint8_t sd_speeds[] = {20, 15, 10, 5};  // MHz - try fastest first
     bool sd_success = false;
     for (uint8_t i = 0; i < sizeof(sd_speeds); i++) {
-        Serial.print("[MAIN] Attempting SD init at ");
-        Serial.print(sd_speeds[i]);
-        Serial.println(" MHz...");
+        MAIN_LOG("Attempting SD init at %d MHz...", sd_speeds[i]);
         
         sdCard.begin(DEFAULT_PIN_SD_CS, DEFAULT_PIN_SD_SCK, DEFAULT_PIN_SD_MOSI, DEFAULT_PIN_SD_MISO, sd_speeds[i]);
         if (sdCard.isInitialized()) {
-            Serial.print("[MAIN] ✓ SD card initialized at ");
-            Serial.print(sd_speeds[i]);
-            Serial.println(" MHz");
+            MAIN_LOG("✓ SD card initialized at %d MHz", sd_speeds[i]);
             sd_success = true;
             break;
         }
@@ -377,37 +378,37 @@ void setup() {
     }
     
     if (!sd_success) {
-        Serial.println("[MAIN] WARNING: Running without SD card (audio playback disabled)");
+        MAIN_LOG("WARNING: Running without SD card (audio playback disabled)");
     }
     
     // Load configuration from SD card (after SD initialization)
     if (sd_success) {
         config_loaded = load_configuration();
     } else {
-        Serial.println("[MAIN] Skipping config load - SD card not available");
+        MAIN_LOG("Skipping config load - SD card not available");
         configReader.loadDefaults();
         config_loaded = false;
     }
     
     // Initialize audio codec (codec doesn't need SD card - only playback does)
-    Serial.println("[MAIN] Initializing audio codec...");
+    MAIN_LOG("Initializing audio codec...");
     audio_initialized = init_audio();
     
     // Register codec with CLI after initialization
     if (codec) {
         audioCli.setCodec(codec);
-        Serial.println("[MAIN] ✓ Codec registered with CLI");
+        MAIN_LOG("✓ Codec registered with CLI");
     } else {
-        Serial.println("[MAIN] WARNING: No codec available");
+        MAIN_LOG("WARNING: No codec available");
     }
     
     // Core 1 will automatically start running setup1() and loop1()
     // Audio processing happens there via mixer.process()
-    Serial.println("[MAIN] Audio processing delegated to Core 1");
+    MAIN_LOG("Audio processing delegated to Core 1");
     
 #if AUDIO_TEST_MODE
     if (audio_initialized) {
-        Serial.println("[MAIN] Use 'test' commands to generate mock audio");
+        MAIN_LOG("Use 'test' commands to generate mock audio");
         AudioTestCLI::setMixer(&mixer);
     }
 #endif
@@ -418,7 +419,7 @@ void setup() {
     }
     
     // Initialize CLI command router
-    Serial.println("[MAIN] Initializing CLI system...");
+    MAIN_LOG("Initializing CLI system...");
     
     // Configure system CLI with version and slave references
     systemCli.setVersion(FIRMWARE_VERSION, BUILD_NUMBER);
@@ -439,11 +440,11 @@ void setup() {
     };
     systemCli.registerHandlers(allHandlers);
     
-    Serial.println("[MAIN] CLI system ready");
+    MAIN_LOG("CLI system ready");
     
     Serial.println();
-    Serial.println("[MAIN] Initialization complete");
-    Serial.println("[MAIN] Type 'help' for commands");
+    MAIN_LOG("Initialization complete");
+    Serial.println("Type 'help' for commands");
     Serial.println();
     
     // Play HubFX initialization sound on system channel
@@ -452,7 +453,7 @@ void setup() {
         opts.volume = 0.8f;
         opts.loop = false;
         mixer.playAsync(SystemSounds::CHANNEL, SystemSounds::HUBFX_INITIALIZED, opts);
-        Serial.println("[MAIN] Queued initialization sound");
+        MAIN_LOG("Queued initialization sound");
     }
 }
 

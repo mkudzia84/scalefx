@@ -5,6 +5,7 @@
  */
 
 #include "sd_card.h"
+#include "storage_config.h"
 
 SdCardModule::SdCardModule() : initialized(false) {
 }
@@ -16,13 +17,13 @@ bool SdCardModule::begin(uint8_t cs_pin, uint8_t sck_pin, uint8_t mosi_pin, uint
     _mosi_pin = mosi_pin;
     _miso_pin = miso_pin;
     
-    Serial.println("[SD] Initializing SD card...");
-    Serial.printf("[SD] Pin configuration:\n");
-    Serial.printf("[SD]   CS (Chip Select): GP%d\n", cs_pin);
-    Serial.printf("[SD]   SCK (Clock):      GP%d\n", sck_pin);
-    Serial.printf("[SD]   MOSI (Data Out):  GP%d\n", mosi_pin);
-    Serial.printf("[SD]   MISO (Data In):   GP%d\n", miso_pin);
-    Serial.printf("[SD]   Speed:            %d MHz\n", speed_mhz);
+    SD_LOG("Initializing SD card...");
+    SD_LOG("Pin configuration:");
+    SD_LOG("  CS (Chip Select): GP%d", cs_pin);
+    SD_LOG("  SCK (Clock):      GP%d", sck_pin);
+    SD_LOG("  MOSI (Data Out):  GP%d", mosi_pin);
+    SD_LOG("  MISO (Data In):   GP%d", miso_pin);
+    SD_LOG("  Speed:            %d MHz", speed_mhz);
     
     // Configure SPI pins
     SPI.setRX(miso_pin);
@@ -30,33 +31,33 @@ bool SdCardModule::begin(uint8_t cs_pin, uint8_t sck_pin, uint8_t mosi_pin, uint
     SPI.setSCK(sck_pin);
     
     // Initialize SD card
-    Serial.println("[SD] Attempting card detection...");
+    SD_LOG("Attempting card detection...");
     if (!sd.begin(cs_pin, SD_SCK_MHZ(speed_mhz))) {
-        Serial.println("[SD] ╔═══════════════════════════════════════╗");
-        Serial.println("[SD] ║  SD CARD INITIALIZATION FAILED!       ║");
-        Serial.println("[SD] ╚═══════════════════════════════════════╝");
-        Serial.println("[SD] ");
-        Serial.println("[SD] Troubleshooting checklist:");
-        Serial.println("[SD] 1. Check wiring:");
-        Serial.printf("[SD]    - CS   → GP%d (Pin %d)\n", cs_pin, cs_pin < 16 ? cs_pin + 1 : (cs_pin == 16 ? 21 : (cs_pin == 17 ? 22 : (cs_pin == 18 ? 24 : (cs_pin == 19 ? 25 : 0)))));
-        Serial.printf("[SD]    - SCK  → GP%d (Pin %d)\n", sck_pin, sck_pin < 16 ? sck_pin + 1 : (sck_pin == 16 ? 21 : (sck_pin == 17 ? 22 : (sck_pin == 18 ? 24 : (sck_pin == 19 ? 25 : 0)))));
-        Serial.printf("[SD]    - MOSI → GP%d (Pin %d)\n", mosi_pin, mosi_pin < 16 ? mosi_pin + 1 : (mosi_pin == 16 ? 21 : (mosi_pin == 17 ? 22 : (mosi_pin == 18 ? 24 : (mosi_pin == 19 ? 25 : 0)))));
-        Serial.printf("[SD]    - MISO → GP%d (Pin %d)\n", miso_pin, miso_pin < 16 ? miso_pin + 1 : (miso_pin == 16 ? 21 : (miso_pin == 17 ? 22 : (miso_pin == 18 ? 24 : (miso_pin == 19 ? 25 : 0)))));
-        Serial.println("[SD]    - VCC  → 3.3V");
-        Serial.println("[SD]    - GND  → GND");
-        Serial.println("[SD] 2. Check SD card:");
-        Serial.println("[SD]    - Card fully inserted");
-        Serial.println("[SD]    - Card formatted as FAT32");
-        Serial.println("[SD]    - Card capacity ≤32GB (SDHC)");
-        Serial.println("[SD]    - Try a different card");
-        Serial.println("[SD] 3. Check module:");
-        Serial.println("[SD]    - Module powered (3.3V)");
-        Serial.println("[SD]    - Module compatible with 3.3V");
-        Serial.println("[SD]    - Good solder joints");
-        Serial.println("[SD] 4. Try slower speed:");
-        Serial.println("[SD]    - Change speed from 25 MHz to 5 MHz");
-        Serial.println("[SD]    - Edit hubfx_pico.ino line 420");
-        Serial.println("[SD] ");
+        SD_LOG("╔═══════════════════════════════════════╗");
+        SD_LOG("║  SD CARD INITIALIZATION FAILED!       ║");
+        SD_LOG("╚═══════════════════════════════════════╝");
+        SD_LOG(" ");
+        SD_LOG("Troubleshooting checklist:");
+        SD_LOG("1. Check wiring:");
+        SD_LOG("   - CS   → GP%d (Pin %d)", cs_pin, cs_pin < 16 ? cs_pin + 1 : (cs_pin == 16 ? 21 : (cs_pin == 17 ? 22 : (cs_pin == 18 ? 24 : (cs_pin == 19 ? 25 : 0)))));
+        SD_LOG("   - SCK  → GP%d (Pin %d)", sck_pin, sck_pin < 16 ? sck_pin + 1 : (sck_pin == 16 ? 21 : (sck_pin == 17 ? 22 : (sck_pin == 18 ? 24 : (sck_pin == 19 ? 25 : 0)))));
+        SD_LOG("   - MOSI → GP%d (Pin %d)", mosi_pin, mosi_pin < 16 ? mosi_pin + 1 : (mosi_pin == 16 ? 21 : (mosi_pin == 17 ? 22 : (mosi_pin == 18 ? 24 : (mosi_pin == 19 ? 25 : 0)))));
+        SD_LOG("   - MISO → GP%d (Pin %d)", miso_pin, miso_pin < 16 ? miso_pin + 1 : (miso_pin == 16 ? 21 : (miso_pin == 17 ? 22 : (miso_pin == 18 ? 24 : (miso_pin == 19 ? 25 : 0)))));
+        SD_LOG("   - VCC  → 3.3V");
+        SD_LOG("   - GND  → GND");
+        SD_LOG("2. Check SD card:");
+        SD_LOG("   - Card fully inserted");
+        SD_LOG("   - Card formatted as FAT32");
+        SD_LOG("   - Card capacity ≤32GB (SDHC)");
+        SD_LOG("   - Try a different card");
+        SD_LOG("3. Check module:");
+        SD_LOG("   - Module powered (3.3V)");
+        SD_LOG("   - Module compatible with 3.3V");
+        SD_LOG("   - Good solder joints");
+        SD_LOG("4. Try slower speed:");
+        SD_LOG("   - Change speed from 25 MHz to 5 MHz");
+        SD_LOG("   - Edit hubfx_pico.ino line 420");
+        SD_LOG(" ");
         initialized = false;
         return false;
     }
@@ -64,16 +65,16 @@ bool SdCardModule::begin(uint8_t cs_pin, uint8_t sck_pin, uint8_t mosi_pin, uint
     // Print card info
     uint32_t size = sd.card()->sectorCount();
     if (size > 0) {
-        Serial.printf("[SD] Card size: %lu MB\n", (unsigned long)(size / 2048));
+        SD_LOG("Card size: %lu MB", (unsigned long)(size / 2048));
     }
     
-    Serial.println("[SD] ✓ Initialization complete");
+    SD_LOG("✓ Initialization complete");
     initialized = true;
     return true;
 }
 
 bool SdCardModule::retryInit(uint8_t speed_mhz) {
-    Serial.printf("[SD] Retrying initialization at %d MHz...\n", speed_mhz);
+    SD_LOG("Retrying initialization at %d MHz...", speed_mhz);
     return begin(_cs_pin, _sck_pin, _mosi_pin, _miso_pin, speed_mhz);
 }
 

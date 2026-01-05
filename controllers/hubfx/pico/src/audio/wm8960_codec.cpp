@@ -43,6 +43,7 @@
 
 #include "wm8960_codec.h"
 #include "audio_config.h"
+#include "../debug_config.h"
 
 WM8960Codec::WM8960Codec() : wire(nullptr), initialized(false) {
     // Clear register cache
@@ -50,7 +51,7 @@ WM8960Codec::WM8960Codec() : wire(nullptr), initialized(false) {
 }
 
 bool WM8960Codec::begin(TwoWire& wire_interface, uint8_t sda_pin, uint8_t scl_pin, uint32_t sample_rate) {
-    Serial.println("[WM8960] Initializing codec...");
+    WM8960_LOG("Initializing codec...");
     
     wire = &wire_interface;
     
@@ -62,11 +63,9 @@ bool WM8960Codec::begin(TwoWire& wire_interface, uint8_t sda_pin, uint8_t scl_pi
     
     delay(10);
     
-#if AUDIO_DEBUG_TIMING
-    Serial.printf("[WM8960] I2C speed: %lu Hz\n", (unsigned long)WM8960_I2C_SPEED);
-    Serial.printf("[WM8960] I2S BCLK: %lu Hz\n", (unsigned long)I2S_BCLK_FREQ);
-    Serial.printf("[WM8960] I2S LRCLK: %lu Hz\n", (unsigned long)I2S_LRCLK_FREQ);
-#endif
+    WM8960_LOG("I2C speed: %lu Hz", (unsigned long)WM8960_I2C_SPEED);
+    WM8960_LOG("I2S BCLK: %lu Hz", (unsigned long)I2S_BCLK_FREQ);
+    WM8960_LOG("I2S LRCLK: %lu Hz", (unsigned long)I2S_LRCLK_FREQ);
     
     // Reset codec
     reset();
@@ -84,7 +83,7 @@ bool WM8960Codec::begin(TwoWire& wire_interface, uint8_t sda_pin, uint8_t scl_pi
     setSpeakerVolume(100);
     
     initialized = true;
-    Serial.println("[WM8960] Initialization complete");
+    WM8960_LOG("Initialization complete");
     
     return true;
 }
@@ -93,14 +92,14 @@ bool WM8960Codec::begin(TwoWire& wire_interface, uint8_t sda_pin, uint8_t scl_pi
 bool WM8960Codec::begin(uint32_t sample_rate) {
     // Default to Wire with standard pins if not already configured
     if (!initialized && wire == nullptr) {
-        Serial.println("[WM8960] Error: Must call begin(Wire, sda, scl) first");
+        WM8960_LOG("Error: Must call begin(Wire, sda, scl) first");
         return false;
     }
     return initialized;
 }
 
 void WM8960Codec::reset() {
-    Serial.println("[WM8960] Resetting codec...");
+    WM8960_LOG("Resetting codec...");
     writeRegister(WM8960_REG_RESET, 0x00);
     delay(10);
     
@@ -129,7 +128,7 @@ bool WM8960Codec::writeRegister(uint8_t reg, uint16_t value) {
         }
         return true;
     } else {
-        Serial.printf("[WM8960] I2C write failed: reg=0x%02X, error=%d\n", reg, result);
+        WM8960_LOG("I2C write failed: reg=0x%02X, error=%d", reg, result);
         return false;
     }
 }
@@ -142,7 +141,7 @@ void WM8960Codec::updateBits(uint8_t reg, uint16_t mask, uint16_t value) {
 }
 
 void WM8960Codec::initPower() {
-    Serial.println("[WM8960] Configuring power management...");
+    WM8960_LOG("Configuring power management...");
     
     // Power Management 1: Enable VMID, VREF, AINL, AINR
     // Bit 7: VMIDSEL[1] = 0 (50k divider)
@@ -170,7 +169,7 @@ void WM8960Codec::initPower() {
 }
 
 void WM8960Codec::initClock(uint32_t sample_rate) {
-    Serial.printf("[WM8960] Configuring clocks for %lu Hz...\n", sample_rate);
+    WM8960_LOG("Configuring clocks for %lu Hz...", sample_rate);
     
     // CRITICAL: No MCLK available - must use PLL from BCLK
     // The Pico I2S only generates BCLK and LRCLK, not MCLK
@@ -193,9 +192,7 @@ void WM8960Codec::initClock(uint32_t sample_rate) {
     writeRegister(WM8960_REG_PLL3, WM8960_PLL_K_MID);   // K[15:8]
     writeRegister(WM8960_REG_PLL4, WM8960_PLL_K_LOW);   // K[7:0]
     
-#if AUDIO_DEBUG_TIMING
-    Serial.printf("[WM8960] PLL K value: 0x%06lX\n", (unsigned long)WM8960_PLL_K_VALUE);
-#endif
+    WM8960_LOG("PLL K value: 0x%06lX", (unsigned long)WM8960_PLL_K_VALUE);
     
     // PLL Control 1: Enable PLL (set bit 6)
     writeRegister(WM8960_REG_PLL1, 0x0060 | WM8960_PLL_PRESCALE);  // Enable PLL + config
@@ -212,11 +209,11 @@ void WM8960Codec::initClock(uint32_t sample_rate) {
     // Additional Control 4: Enable DAC oversampling
     writeRegister(WM8960_REG_ADDCTL4, 0x0000);
     
-    Serial.println("[WM8960] PLL configured from BCLK (no MCLK needed)");
+    WM8960_LOG("PLL configured from BCLK (no MCLK needed)");
 }
 
 void WM8960Codec::initInterface() {
-    Serial.println("[WM8960] Configuring I2S interface...");
+    WM8960_LOG("Configuring I2S interface...");
     
     // Audio Interface 1
     // Bits 7-6: Format = 10 (I2S)
@@ -231,7 +228,7 @@ void WM8960Codec::initInterface() {
 }
 
 void WM8960Codec::initDAC() {
-    Serial.println("[WM8960] Configuring DAC...");
+    WM8960_LOG("Configuring DAC...");
     
     // DAC Control: Enable DAC, no mute
     // Bit 3: DACMU = 0 (no mute)
@@ -245,7 +242,7 @@ void WM8960Codec::initDAC() {
 }
 
 void WM8960Codec::initOutputs() {
-    Serial.println("[WM8960] Configuring outputs...");
+    WM8960_LOG("Configuring outputs...");
     
     // Left Output Mixer: DAC to left output
     // Bit 8: LD2LO = 1 (connect Left DAC to Left Output Mixer)

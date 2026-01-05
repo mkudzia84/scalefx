@@ -8,41 +8,13 @@
 #ifndef AUDIO_CONFIG_H
 #define AUDIO_CONFIG_H
 
+#include "../debug_config.h"
+
 // ============================================================================
 //  TESTING CONFIGURATION
 // ============================================================================
 
-/**
- * Debug Mode
- * 
- * When enabled (1), includes codec debug methods:
- *  - testCommunication()
- *  - readRegisterCache()
- *  - writeRegisterDebug()
- *  - printStatus()
- *  - reinitialize()
- *  - getCommunicationInterface()
- * 
- * Disable to save flash space in production builds.
- */
-#ifndef AUDIO_DEBUG
-#define AUDIO_DEBUG                 1  // 0 = Minimal, 1 = Include debug methods
-#endif
-
-/**
- * Mock I2S Mode
- * 
- * When enabled (1), I2S output is replaced with a mock sink that:
- *  - Captures audio data to memory buffer
- *  - Collects statistics (peak levels, RMS, clipping, etc.)
- *  - Allows testing SD card loading and mixing without hardware
- * 
- * Use this to validate the audio pipeline without codec/speakers.
- * Audio will NOT be sent to physical I2S pins in this mode.
- */
-#ifndef AUDIO_MOCK_I2S
-#define AUDIO_MOCK_I2S              0  // 0 = Real I2S hardware, 1 = Mock sink
-#endif
+// AUDIO_DEBUG and AUDIO_MOCK_I2S are defined in debug_config.h
 
 // ============================================================================
 //  I2S AUDIO CONFIGURATION

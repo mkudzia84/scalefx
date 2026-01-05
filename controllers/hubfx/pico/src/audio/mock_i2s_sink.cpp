@@ -3,6 +3,10 @@
  */
 
 #include "mock_i2s_sink.h"
+#include "../debug_config.h"
+
+// Mock I2S always outputs - it's a debug tool
+#define MOCK_LOG(fmt, ...) Serial.printf("[MockI2S] " fmt "\n", ##__VA_ARGS__)
 
 // Default capture buffer size (stereo samples)
 constexpr size_t DEFAULT_CAPTURE_SIZE = 4096;
@@ -38,16 +42,16 @@ bool MockI2SSink::begin(uint32_t sampleRate) {
     _rmsAccumRight = 0;
     _rmsCount = 0;
     
-    Serial.printf("[MockI2S] Started (sampleRate=%lu Hz, bits=%d)\n", 
+    MOCK_LOG("Started (sampleRate=%lu Hz, bits=%d)", 
                   _sampleRate, _bitsPerSample);
-    Serial.println("[MockI2S] ⚠️  MOCK MODE: Audio data will NOT be sent to hardware");
-    Serial.println("[MockI2S] Statistics collection enabled");
+    MOCK_LOG("⚠️  MOCK MODE: Audio data will NOT be sent to hardware");
+    MOCK_LOG("Statistics collection enabled");
     
     // Allocate capture buffer if needed
     if (_captureEnabled && !_captureBuffer) {
         _captureBuffer = new int16_t[_captureBufferSize * 2]; // Stereo
         _captureCount = 0;
-        Serial.printf("[MockI2S] Capture buffer allocated (%zu samples)\n", _captureBufferSize);
+        MOCK_LOG("Capture buffer allocated (%zu samples)", _captureBufferSize);
     }
     
     return true;
@@ -76,7 +80,7 @@ size_t MockI2SSink::write(const int16_t* buffer, size_t sizeBytes) {
     
     // Size must be multiple of 4 (2 bytes per sample * 2 channels)
     if (sizeBytes % 4 != 0) {
-        Serial.printf("[MockI2S] WARNING: Write size %zu not multiple of 4\n", sizeBytes);
+        MOCK_LOG("WARNING: Write size %zu not multiple of 4", sizeBytes);
         return 0;
     }
     

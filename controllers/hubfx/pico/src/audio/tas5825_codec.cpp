@@ -8,6 +8,7 @@
 
 #include "tas5825_codec.h"
 #include <Arduino.h>
+#include "../debug_config.h"
 
 TAS5825Codec::TAS5825Codec()
     : i2c(nullptr)
@@ -36,7 +37,7 @@ bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
     i2c->begin();
     i2c->setClock(100000);  // 100kHz I2C
 
-    Serial.println("[TAS5825M] Initializing codec...");
+    TAS5825_LOG("Initializing codec...");
 
     // Initial reset sequence
     selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
@@ -46,7 +47,7 @@ bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
 
     // Configure analog gain based on supply voltage
     if (!configureAnalogGain()) {
-        Serial.println("[TAS5825M] Failed to configure analog gain");
+        TAS5825_LOG("Failed to configure analog gain");
         return false;
     }
 
@@ -57,7 +58,7 @@ bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
 
     // Initialize DSP coefficients
     if (!initDSPCoefficients()) {
-        Serial.println("[TAS5825M] Failed to initialize DSP coefficients");
+        TAS5825_LOG("Failed to initialize DSP coefficients");
         return false;
     }
 
@@ -74,7 +75,7 @@ bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
     writeRegister(TAS5825M_REG_FAULT_CLEAR, 0x80);
 
     initialized = true;
-    Serial.printf("[TAS5825M] Initialized successfully (%.1fkHz, %dV supply)\n",
+    TAS5825_LOG("Initialized successfully (%.1fkHz, %dV supply)",
                   sampleRate / 1000.0f,
                   supplyVoltage == TAS5825M_12V ? 12 :
                   supplyVoltage == TAS5825M_15V ? 15 :
@@ -85,7 +86,7 @@ bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
 
 bool TAS5825Codec::begin(uint32_t sample_rate)
 {
-    Serial.println("[TAS5825M] Error: Must call begin(Wire, sda, scl) with I2C parameters");
+    TAS5825_LOG("Error: Must call begin(Wire, sda, scl) with I2C parameters");
     return false;
 }
 
@@ -93,7 +94,7 @@ void TAS5825Codec::reset()
 {
     if (!initialized) return;
 
-    Serial.println("[TAS5825M] Resetting codec...");
+    TAS5825_LOG("Resetting codec...");
     selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
     writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_HIZ);
     writeRegister(0x01, 0x11);  // Reset
@@ -120,7 +121,7 @@ void TAS5825Codec::setVolume(float volume)
     if (!muted) {
         selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
         writeRegister(TAS5825M_REG_DIGITAL_VOL, currentVolume);
-        Serial.printf("[TAS5825M] Volume set to %.1f%% (0x%02X)\n",
+        TAS5825_LOG("Volume set to %.1f%% (0x%02X)",
                       volume * 100.0f, currentVolume);
     }
 }
@@ -145,7 +146,7 @@ void TAS5825Codec::setVolumeDB(float db)
     if (!muted) {
         selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
         writeRegister(TAS5825M_REG_DIGITAL_VOL, currentVolume);
-        Serial.printf("[TAS5825M] Volume set to %.1f dB (0x%02X)\n", db, currentVolume);
+        TAS5825_LOG("Volume set to %.1f dB (0x%02X)", db, currentVolume);
     }
 }
 
@@ -158,10 +159,10 @@ void TAS5825Codec::setMute(bool mute)
 
     if (mute) {
         writeRegister(TAS5825M_REG_DIGITAL_VOL, TAS5825M_VOL_MUTE);
-        Serial.println("[TAS5825M] Muted");
+        TAS5825_LOG("Muted");
     } else {
         writeRegister(TAS5825M_REG_DIGITAL_VOL, currentVolume);
-        Serial.println("[TAS5825M] Unmuted");
+        TAS5825_LOG("Unmuted");
     }
 }
 
@@ -173,7 +174,7 @@ bool TAS5825Codec::clearFaults()
     bool success = writeRegister(TAS5825M_REG_FAULT_CLEAR, 0x80);
     
     if (success) {
-        Serial.println("[TAS5825M] Faults cleared");
+        TAS5825_LOG("Faults cleared");
     }
     
     return success;
@@ -229,7 +230,7 @@ bool TAS5825Codec::writeRegister(uint8_t reg, uint8_t value)
     uint8_t error = i2c->endTransmission();
 
     if (error != 0) {
-        Serial.printf("[TAS5825M] I2C write error %d (reg 0x%02X)\n", error, reg);
+        TAS5825_LOG("I2C write error %d (reg 0x%02X)", error, reg);
         return false;
     }
 
@@ -245,12 +246,12 @@ bool TAS5825Codec::readRegister(uint8_t reg, uint8_t* value)
     uint8_t error = i2c->endTransmission(false);  // Repeated start
 
     if (error != 0) {
-        Serial.printf("[TAS5825M] I2C write error %d during read\n", error);
+        TAS5825_LOG("I2C write error %d during read", error);
         return false;
     }
 
     if (i2c->requestFrom(TAS5825M_I2C_ADDR, (uint8_t)1) != 1) {
-        Serial.println("[TAS5825M] I2C read failed");
+        TAS5825_LOG("I2C read failed");
         return false;
     }
 
@@ -275,7 +276,7 @@ bool TAS5825Codec::configureAnalogGain()
     writeRegister(TAS5825M_REG_AGAIN_L, 0x01);  // Analog gain left enable
     writeRegister(TAS5825M_REG_AGAIN_R, gainValue);  // Analog gain right
 
-    Serial.printf("[TAS5825M] Analog gain configured: 0x%02X\n", gainValue);
+    TAS5825_LOG("Analog gain configured: 0x%02X", gainValue);
     return true;
 }
 
@@ -296,7 +297,7 @@ bool TAS5825Codec::initDSPCoefficients()
     // For full DSP coefficient programming from PPC3, see bassowl-hat install scripts
     // The coefficients are specific to the audio tuning and can be thousands of writes
     
-    Serial.println("[TAS5825M] Initializing DSP coefficients (basic)...");
+    TAS5825_LOG("Initializing DSP coefficients (basic)...");
 
     // Basic DSP initialization sequence
     selectBookPage(0x8C, 0x0B);

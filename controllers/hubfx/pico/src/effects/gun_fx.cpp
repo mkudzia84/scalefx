@@ -350,6 +350,7 @@ void GunFX::setServo(int servoId, int pulseUs) {
 //  DEBUG
 // ============================================================================
 
+#if EFFECTS_DEBUG
 void GunFX::printStatus() {
     Serial.println("[GunFX] Status:");
     Serial.printf("  Connected: %s\n", isConnected() ? "yes" : "no");
@@ -384,3 +385,4 @@ void GunFX::printStatus() {
     Serial.printf("  Packets: TX=%lu, RX=%lu, CRC err=%lu\n",
                   stats.packets_sent, stats.packets_received, stats.crc_errors);
 }
+#endif

@@ -1,63 +1,169 @@
-﻿# HubFX Pico - Test Scripts
+﻿# HubFX Pico - Test Suite
 
-Automated testing and verification scripts for firmware functionality.
+Automated pytest-based testing for CLI commands and firmware functionality.
 
-## Available Tests
+## Quick Start
 
-### Hardware Tests
-
-#### ```test_i2c_scan.py```
-Scans I2C bus for connected devices:
 ```bash
-python tests/test_i2c_scan.py
-```
-Expected devices:
-- ```0x1A``` - WM8960 codec (if connected and powered)
+# Install dependencies
+pip install pytest pyserial
 
-#### ```test_codec.py```
-Comprehensive codec testing:
+# Run all tests
+pytest tests/
+
+# Run specific test file
+pytest tests/test_cli_system.py
+
+# Run with verbose output
+pytest tests/ -v
+
+# Run only JSON output tests
+pytest tests/ -m json
+
+# Run hardware-dependent tests
+pytest tests/ -m hardware
+```
+
+## Test Structure
+
+### Core Framework
+
+#### `conftest.py`
+Pytest configuration and shared fixtures:
+- `SerialConnection` class - Handles serial communication with Pico
+- `serial_port` fixture - Auto-detects COM port
+- `pico` fixture - Module-scoped connection (reused across tests)
+- `fresh_pico` fixture - Function-scoped connection (fresh for each test)
+
+### CLI Test Modules
+
+#### `test_cli_system.py`
+System-level commands:
+- `ping` - Heartbeat/connectivity
+- `version` - Firmware version and build info
+- `status` - System status summary
+- `help` - Command help display
+- Unknown command handling
+- `--json` flag parsing
+
+#### `test_cli_storage.py`
+SD card and storage commands:
+- `sd init` - Initialize SD card
+- `sd ls` - Directory listing
+- `sd tree` - Directory tree view
+- `sd info` - Card info and capacity
+- `sd cat` - File content display
+- `sd rm` - File deletion
+- Upload/download operations
+
+#### `test_cli_engine.py`
+Engine effects control:
+- `engine status` - Effect state
+- `engine start` - Start engine simulation
+- `engine stop` - Stop engine
+- State transition tests
+
+#### `test_cli_gun.py`
+Gun effects control:
+- `gun status` - Gun state
+- `gun fire` - Start firing
+- `gun ceasefire` - Stop firing
+- `gun heater` - Barrel heater control
+- `gun servo` - Servo position control
+- Fire sequence tests
+
+#### `test_cli_config.py`
+Configuration management:
+- `config display` - Show current config
+- `config backup` - Backup to file
+- `config restore` - Restore from backup
+- `config reload` - Reload from disk
+- JSON structure validation
+
+#### `test_cli_audio.py`
+Audio playback and codec:
+- `audio play` - Play sound files
+- `audio stop` - Stop playback
+- `volume` - Volume control
+- `codec dump` - Register dump
+- `codec reset` - Reset codec
+- Codec debug commands
+
+### Legacy Tests
+
+#### `test_audio_mixer.py`
+Comprehensive audio mixer testing (492 lines):
+- Sound file playback
+- Channel management
+- Volume control
+- Loop mode
+- Concurrent playback
+
+## Test Markers
+
+Use markers to filter tests:
+
 ```bash
-python tests/test_codec.py
+# Hardware-dependent tests (require physical connections)
+pytest -m hardware
+
+# JSON output validation tests
+pytest -m json
+
+# Slow tests
+pytest -m slow
 ```
-Tests:
-- I2C communication (```codec scan```)
-- Device response (```codec test```)
-- Register access (```codec status```)
 
-### Boot and Serial Tests
+## Configuration
 
-#### ```check_boot.py```
-Captures and displays boot log:
+### Serial Port
+
+Set via environment variable:
 ```bash
-python tests/check_boot.py
+set PICO_PORT=COM4
+pytest tests/
 ```
-Useful for:
-- Verifying firmware version and build number
-- Checking initialization sequence
-- Debugging startup issues
 
-#### ```test_serial.py```
-Basic serial communication test:
-```bash
-python tests/test_serial.py
+Or auto-detection will find the first available Pico.
+
+### Timeouts
+
+Default timeout is 2 seconds per command. Adjust in test if needed:
+```python
+response = pico.send("slow command", delay=5.0)
 ```
-Sends commands and verifies responses.
 
-### Output Format Tests
+## Writing New Tests
 
-#### ```test_json_output.py```
-Tests JSON-formatted command output:
-```bash
-python tests/test_json_output.py
+### Basic Test Pattern
+
+```python
+def test_example_command(fresh_pico: SerialConnection):
+    """Test description."""
+    response = fresh_pico.send("command args")
+    assert "expected" in response
 ```
-Validates JSON parsing for programmatic access.
 
-#### ```test_extended.py```
-Extended functionality testing:
-```bash
-python tests/test_extended.py
+### JSON Response Pattern
+
+```python
+@pytest.mark.json
+def test_json_command(fresh_pico: SerialConnection):
+    """Test JSON output."""
+    data = fresh_pico.send_json("command --json")
+    assert data["status"] == "ok"
+    assert "field" in data
 ```
-Tests advanced features and edge cases.
+
+### Hardware Test Pattern
+
+```python
+@pytest.mark.hardware
+def test_hardware_feature(fresh_pico: SerialConnection):
+    """Test requiring hardware."""
+    response = fresh_pico.send("codec scan", delay=1.0)
+    assert "device" in response.lower()
+```
 
 ## Common Issues
 
@@ -69,14 +175,14 @@ If you get "Access denied" errors:
 
 ### Device Not Responding
 If tests timeout:
-1. Verify firmware is flashed: ```python tests/check_boot.py```
-2. Check USB connection
-3. Try power cycling the Pico
-4. Verify COM port with ```mode``` command (Windows)
+1. Check USB connection
+2. Try power cycling the Pico
+3. Verify COM port with `mode` command (Windows)
+4. Check if another process has the port open
 
 ### I2C Errors
 - **Error 4 (no device):** Check 3.3V/GND power to codec
-- **Error 5 (timeout):** Lower I2C speed in ```audio_config.h``` to 50kHz or 10kHz
+- **Error 5 (timeout):** Lower I2C speed in `audio_config.h` to 50kHz or 10kHz
 
 ## See Also
 
