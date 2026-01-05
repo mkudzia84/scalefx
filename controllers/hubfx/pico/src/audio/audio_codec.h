@@ -96,6 +96,48 @@ public:
      * Print codec registers or status for debugging
      */
     virtual void dumpRegisters() {}
+    
+    // ========================================================================
+    // DEBUG METHODS (Always compiled - conditional compilation to be added)
+    // ========================================================================
+    
+    /**
+     * Test I2C/SPI communication with codec
+     * @return true if communication successful
+     */
+    virtual bool testCommunication() { return false; }
+    
+    /**
+     * Read from codec register cache (if supported)
+     * @param reg Register address
+     * @return Register value or 0xFFFF if not supported
+     */
+    virtual uint16_t readRegisterCache(uint8_t reg) const { (void)reg; return 0xFFFF; }
+    
+    /**
+     * Write to codec register with debug logging
+     * @param reg Register address
+     * @param value Value to write
+     * @return true if successful
+     */
+    virtual bool writeRegisterDebug(uint8_t reg, uint16_t value) { (void)reg; (void)value; return false; }
+    
+    /**
+     * Print comprehensive codec status
+     */
+    virtual void printStatus() {}
+    
+    /**
+     * Reinitialize codec with current settings
+     * @param sample_rate Sample rate (default: current rate)
+     */
+    virtual void reinitialize(uint32_t sample_rate = 44100) { (void)sample_rate; }
+    
+    /**
+     * Get I2C/SPI interface pointer for bus scanning
+     * @return Pointer to communication interface (TwoWire* or SPIClass*)
+     */
+    virtual void* getCommunicationInterface() { return nullptr; }
 };
 
 #endif // AUDIO_CODEC_H

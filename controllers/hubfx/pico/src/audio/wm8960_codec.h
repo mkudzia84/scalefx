@@ -9,7 +9,7 @@
  *  - DAC path initialization
  *  - Speaker/headphone output control
  *  - Volume control
- *  - I2S interface setup (Slave mode)
+ *  - I2S interface setup (Slave mode, PLL from BCLK - no MCLK required)
  */
 
 #ifndef WM8960_CODEC_H
@@ -121,6 +121,14 @@ public:
     void setSpeakerVolume(uint8_t volume) override;
     void dumpRegisters() override;
     
+    // Debug methods (AudioCodec interface)
+    bool testCommunication() override;
+    uint16_t readRegisterCache(uint8_t reg) const override;
+    bool writeRegisterDebug(uint8_t reg, uint16_t value) override;
+    void printStatus() override;
+    void reinitialize(uint32_t sample_rate = 44100) override;
+    void* getCommunicationInterface() override { return wire; }
+    
 private:
     TwoWire* wire;
     bool initialized;
@@ -146,7 +154,7 @@ private:
     void initPower();
     
     /**
-     * Initialize clocking (for I2S slave mode with external MCLK)
+     * Initialize clocking (I2S slave mode with PLL from BCLK - no MCLK required)
      */
     void initClock(uint32_t sample_rate);
     

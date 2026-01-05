@@ -8,6 +8,59 @@
 
 ---
 
+## Visual Wiring Diagram
+
+### WM8960 Audio HAT 40-Pin Header Layout
+
+```
+    WM8960 HAT (Top View)
+    ═════════════════════════════════════════
+    
+    3.3V  ⚡ [●] 1     2 [●] ⚡ 5V (optional)
+    SDA   🔧 [●] 3     4 [●]
+    SCL   🔧 [●] 5     6 [●] ⚡ GND
+             [●] 7     8 [●]
+             [●] 9    10 [●]
+             [●] 11   12 [●] 🎵 I2S CLK (GPIO18)
+             [●] 13   14 [●]
+             [●] 15   16 [●]
+             [●] 17   18 [●]
+             [●] 19   20 [●]
+             [●] 21   22 [●]
+             [●] 23   24 [●]
+             [●] 25   26 [●]
+             [●] 27   28 [●]
+             [●] 29   30 [●]
+             [●] 31   32 [●]
+             [●] 33   34 [●]
+    I2S LRCLK 🎵 [●] 35   36 [●]
+             [●] 37   38 [●] 🎵 I2S ADC (GPIO20) ⚠️ PLAYBACK
+             [●] 39   40 [●] I2S DAC (GPIO21) ✗ NOT USED
+    
+    ═════════════════════════════════════════
+
+Legend:
+⚡ Power          🔧 I2C Control       🎵 I2S Audio
+⚠️ Connect here   ✗ Do NOT connect
+```
+
+### Pico to WM8960 Connections
+
+| Pico Pin | Pico GPIO | Signal | → | WM8960 Pin | WM8960 GPIO | Function |
+|----------|-----------|--------|---|------------|-------------|----------|
+| Pin 36 | 3V3 OUT | Power | → | **Pin 1** | 3.3V | ⚡ Power Supply |
+| Pin 39 | VSYS | Power | → | **Pin 2** | 5V | ⚡ Amplifier (optional) |
+| Pin 6 | GP4 | I2C | → | **Pin 3** | GPIO2 | 🔧 I2C SDA |
+| Pin 7 | GP5 | I2C | → | **Pin 5** | GPIO3 | 🔧 I2C SCL |
+| Pin 38 | GND | Ground | → | **Pin 6** | GND | ⚡ Ground |
+| Pin 10 | GP7 | I2S | → | **Pin 12** | GPIO18 | 🎵 Bit Clock |
+| Pin 11 | GP8 | I2S | → | **Pin 35** | GPIO19 | 🎵 LR Clock |
+| Pin 9 | GP6 | I2S | → | **Pin 38** | GPIO20 | 🎵 ADC Data ⚠️ |
+
+**Total: 8 wires** (3 power + 2 I2C + 3 I2S)
+
+---
+
 ## Raspberry Pi Pico → WM8960 Audio HAT
 
 The WM8960 Audio HAT requires both **I2S** (for audio streaming) and **I2C** (for codec configuration).
@@ -16,9 +69,13 @@ The WM8960 Audio HAT requires both **I2S** (for audio streaming) and **I2C** (fo
 
 | Pico Pin | GPIO | Function | WM8960 Pin | Notes |
 |----------|------|----------|------------|-------|
-| Pin 9 | GP6 | I2S DATA (DOUT) | DAC (GPIO21) | Audio data from Pico to WM8960 |
-| Pin 10 | GP7 | I2S BCLK | CLK (GPIO18) | Bit clock (Pico is I2S master) |
-| Pin 11 | GP8 | I2S LRCLK | LRCLK (GPIO19) | Left/Right clock (frame sync) |
+| Pin 9 | GP6 | I2S DATA (DOUT) | **ADC (GPIO20/Pin 38)** | ⚠️ Audio data from Pico to WM8960 (playback) |
+| Pin 10 | GP7 | I2S BCLK | CLK (GPIO18/Pin 12) | Bit clock (Pico is I2S master) |
+| Pin 11 | GP8 | I2S LRCLK | LRCLK (GPIO19/Pin 35) | Left/Right clock (frame sync) |
+
+⚠️ **IMPORTANT:** For playback, connect to **ADC (Pin 38)**, NOT DAC (Pin 40).
+- **ADC (Pin 38/GPIO20)** = Input TO WM8960 (for playback) ✓
+- **DAC (Pin 40/GPIO21)** = Output FROM WM8960 (for recording) ✗
 
 ### I2C Control Connections
 
@@ -99,10 +156,13 @@ The WM8960 Audio HAT is designed for Raspberry Pi (40-pin header) with **differe
 
 The WM8960 codec is configured via I2C at address **0x1A**. The `wm8960_codec` module handles all register initialization:
 - I2S Slave mode (Pico provides BCLK/LRCLK)
+- PLL generates internal clocks from BCLK (no MCLK required)
 - 44.1 kHz sample rate
 - 16-bit audio
 - Stereo DAC enabled
 - Speaker and headphone outputs enabled
+
+**Note:** The Pico I2S library only generates BCLK and LRCLK. The WM8960's internal PLL generates the required SYSCLK (system clock) from the BCLK signal, so no MCLK pin connection is needed.
 
 ---
 

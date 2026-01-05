@@ -14,6 +14,9 @@
  *   - Engine FX (RPM-based sound)
  */
 
+#define FIRMWARE_VERSION "1.1.0"
+#define BUILD_NUMBER 100  // Increment this with each build
+
 #include <Arduino.h>
 #include <SPI.h>
 #include <Wire.h>
@@ -135,10 +138,9 @@ static void core1AudioTask() {
         // Process audio - mixes channels, outputs to I2S DMA
         if (audio_initialized) {
             mixer.process();
-        } else {
-            // Small yield when idle
-            delayMicroseconds(1000);  // 1ms polling when no audio
         }
+        // Always yield to allow command processing
+        yield();
     }
     
     Serial.println("[Core1] Task stopped");
@@ -410,15 +412,13 @@ void setup() {
     Serial.println();
     Serial.println("========================================");
     Serial.println("  HubFX Pico - Scale Model FX Controller");
-    Serial.println("  Version 1.1.0 (Dual-Core + USB Host)");
+    Serial.printf("  Version %s (Build %d)\n", FIRMWARE_VERSION, BUILD_NUMBER);
+    Serial.println("  Dual-Core + USB Host");
     Serial.printf("  Core 0: %d MHz\n", rp2040.f_cpu() / 1000000);
     Serial.println("========================================");
     Serial.println();
     
-    // Load configuration from flash (always available)
-    config_loaded = load_configuration();
-    
-    // Initialize SD card (for audio files only) - try multiple speeds on failure
+    // Initialize SD card first - try multiple speeds on failure
     const uint8_t sd_speeds[] = {20, 15, 10, 5};  // MHz - try fastest first
     bool sd_success = false;
     for (uint8_t i = 0; i < sizeof(sd_speeds); i++) {
@@ -438,12 +438,28 @@ void setup() {
     }
     
     if (!sd_success) {
-        Serial.println("[MAIN] WARNING: Running without SD card (audio disabled)");
+        Serial.println("[MAIN] WARNING: Running without SD card (audio playback disabled)");
     }
     
-    // Initialize audio (prepares for Core 1, doesn't start it yet)
-    if (sdCard.isInitialized()) {
-        audio_initialized = init_audio();
+    // Load configuration from SD card (after SD initialization)
+    if (sd_success) {
+        config_loaded = load_configuration();
+    } else {
+        Serial.println("[MAIN] Skipping config load - SD card not available");
+        configReader.loadDefaults();
+        config_loaded = false;
+    }
+    
+    // Initialize audio codec (codec doesn't need SD card - only playback does)
+    Serial.println("[MAIN] Initializing audio codec...");
+    audio_initialized = init_audio();
+    
+    // Register codec with CLI after initialization
+    if (codec) {
+        audioCli.setCodec(codec);
+        Serial.println("[MAIN] ✓ Codec registered with CLI");
+    } else {
+        Serial.println("[MAIN] WARNING: No codec available");
     }
     
     // START CORE 1: Audio task only
@@ -455,11 +471,11 @@ void setup() {
         } else {
             Serial.println("[MAIN] Core 1 started (Audio processing)");
         }
-    }
-    
-    // Play startup sound (now that Core 1 is running)
-    if (audio_initialized) {
-        play_startup_sound();
+        
+        // Play startup sound (only if SD card is available)
+        if (sdCard.isInitialized()) {
+            play_startup_sound();
+        }
     }
     
     // Initialize Engine FX

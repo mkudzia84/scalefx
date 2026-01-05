@@ -129,6 +129,14 @@ public:
      * @brief Dump all important registers via serial
      */
     void dumpRegisters() override;
+    
+    // Debug methods
+    bool testCommunication() override;
+    uint16_t readRegisterCache(uint8_t reg) const override;
+    bool writeRegisterDebug(uint8_t reg, uint16_t value) override;
+    void printStatus() override;
+    void reinitialize(uint32_t sample_rate = 44100) override;
+    void* getCommunicationInterface() override { return i2c; }
 
 private:
     TwoWire* i2c;

@@ -18,21 +18,25 @@ class AudioCodec;  // Forward declaration
 // Use explicit FsFile type (SdFat) to avoid conflicts with LittleFS File
 using SdCardFile = FsFile;
 
+// Include centralized audio configuration (relative path from src/audio/)
+#include "audio_config.h"
+
+// Legacy compatibility - these are now defined in audio_config.h
+// Kept here to avoid breaking existing code that includes only this header
+
+// Legacy compatibility - these are now defined in audio_config.h
+// Kept here to avoid breaking existing code that includes only this header
+
 // ============================================================================
-//  CONSTANTS
+//  CONSTANTS (see audio_config.h for configuration)
 // ============================================================================
 
-#ifndef AUDIO_MAX_CHANNELS
-constexpr int AUDIO_MAX_CHANNELS       = 8;
-#endif
-#ifndef AUDIO_SAMPLE_RATE
-constexpr int AUDIO_SAMPLE_RATE        = 44100;
-#endif
-#ifndef AUDIO_BIT_DEPTH
-constexpr int AUDIO_BIT_DEPTH          = 16;
-#endif
-constexpr int AUDIO_MIX_BUFFER_SIZE    = 512;
-constexpr int AUDIO_STREAM_BUFFER_SIZE = 2048;
+// These values come from audio_config.h - do not redefine here
+// To change settings, edit audio_config.h or use -D flags in platformio.ini
+
+// Ensure audio_config.h values are used (removed duplicate definitions)
+// All configurable parameters now in audio_config.h
+
 constexpr int AUDIO_CMD_QUEUE_SIZE     = 16;
 
 // ============================================================================

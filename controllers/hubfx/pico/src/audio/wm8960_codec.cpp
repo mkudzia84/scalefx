@@ -2,9 +2,47 @@
  * WM8960 Audio Codec Driver - Implementation
  * 
  * Based on WM8960 datasheet and Waveshare WM8960 Audio HAT
+ * 
+ * I2S TIMING CONFIGURATION:
+ * ========================
+ * Sample Rate: 44.1 kHz (AUDIO_SAMPLE_RATE)
+ * Bit Depth:   32 bits per channel (16-bit data in 32-bit frame)
+ * Channels:    2 (stereo)
+ * 
+ * Clock Frequencies:
+ *   LRCLK (Frame Clock):  44,100 Hz         (= sample rate)
+ *   BCLK (Bit Clock):     2,822,400 Hz      (= 44.1k × 32 × 2)
+ *   SYSCLK (Internal):    11,289,600 Hz     (= 44.1k × 256, from PLL)
+ * 
+ * PLL Configuration:
+ *   Input:  BCLK (2.8224 MHz) - Pico I2S output
+ *   Output: SYSCLK (11.2896 MHz) - 4× multiplication
+ *   Mode:   Fractional (SDM), K = 0x0C93E9
+ * 
+ * WIRING REQUIREMENTS:
+ * ===================
+ * Signal integrity is CRITICAL at 2.8 MHz BCLK frequency:
+ * 
+ *   • Wire Length:    Keep ALL I2S wires < 6 inches (< 150mm)
+ *   • Wire Matching:  BCLK, LRCLK, DATA within ±1 inch of each other
+ *   • Ground Return:  Run ground wire parallel to each signal (twisted pair)
+ *   • Wire Gauge:     22-26 AWG solid core (lower capacitance)
+ *   • Separation:     Keep away from power/servo wires (EMI)
+ *   • Clock Skew:     At 2.8 MHz, each bit = 355ns - length matters!
+ * 
+ *   Long wires cause:
+ *     - Increased capacitance (~30-100 pF/foot) → slow edges
+ *     - Clock/data skew → bit errors → audio clicks/pops
+ *     - Signal reflections → jitter
+ * 
+ * I2C CONFIGURATION:
+ * ==================
+ * Speed: 50 kHz (reduced from standard 100 kHz for stability)
+ * Reason: HAT capacitance + wire length causes timeouts at 100 kHz
  */
 
 #include "wm8960_codec.h"
+#include "audio_config.h"
 
 WM8960Codec::WM8960Codec() : wire(nullptr), initialized(false) {
     // Clear register cache
@@ -20,9 +58,15 @@ bool WM8960Codec::begin(TwoWire& wire_interface, uint8_t sda_pin, uint8_t scl_pi
     wire->setSDA(sda_pin);
     wire->setSCL(scl_pin);
     wire->begin();
-    wire->setClock(100000);  // 100kHz I2C
+    wire->setClock(WM8960_I2C_SPEED);
     
     delay(10);
+    
+#if AUDIO_DEBUG_TIMING
+    Serial.printf("[WM8960] I2C speed: %lu Hz\n", (unsigned long)WM8960_I2C_SPEED);
+    Serial.printf("[WM8960] I2S BCLK: %lu Hz\n", (unsigned long)I2S_BCLK_FREQ);
+    Serial.printf("[WM8960] I2S LRCLK: %lu Hz\n", (unsigned long)I2S_LRCLK_FREQ);
+#endif
     
     // Reset codec
     reset();
@@ -128,20 +172,47 @@ void WM8960Codec::initPower() {
 void WM8960Codec::initClock(uint32_t sample_rate) {
     Serial.printf("[WM8960] Configuring clocks for %lu Hz...\n", sample_rate);
     
-    // Clock 1: Use MCLK as system clock source (assuming external MCLK)
-    // For I2S slave mode, we rely on BCLK/LRCLK from master (Pico I2S)
-    // Bit 0: CLKSEL = 0 (MCLK)
-    writeRegister(WM8960_REG_CLOCK1, 0x0000);
+    // CRITICAL: No MCLK available - must use PLL from BCLK
+    // The Pico I2S only generates BCLK and LRCLK, not MCLK
+    
+    // I2S Timing Chain (for 44.1 kHz):
+    //   LRCLK = 44,100 Hz (sample rate)
+    //   BCLK  = 44,100 × 32 bits × 2 channels = 2,822,400 Hz
+    //   SYSCLK = 44,100 × 256 (from PLL) = 11,289,600 Hz
+    //
+    // PLL multiplies BCLK by 4× to generate SYSCLK for internal DAC/ADC
+    
+    // PLL Control 1: Enable PLL, use BCLK as input
+    // Bit 5: SDM = 1 (fractional mode)
+    // Bits 4-0: Prescale divider (from audio_config.h)
+    writeRegister(WM8960_REG_PLL1, 0x0020 | WM8960_PLL_PRESCALE);  // SDM mode + prescale
+    
+    // PLL Control 2-4: K value (fractional multiplier from audio_config.h)
+    // K value is calculated for the configured sample rate
+    writeRegister(WM8960_REG_PLL2, WM8960_PLL_K_HIGH);  // K[23:16]
+    writeRegister(WM8960_REG_PLL3, WM8960_PLL_K_MID);   // K[15:8]
+    writeRegister(WM8960_REG_PLL4, WM8960_PLL_K_LOW);   // K[7:0]
+    
+#if AUDIO_DEBUG_TIMING
+    Serial.printf("[WM8960] PLL K value: 0x%06lX\n", (unsigned long)WM8960_PLL_K_VALUE);
+#endif
+    
+    // PLL Control 1: Enable PLL (set bit 6)
+    writeRegister(WM8960_REG_PLL1, 0x0060 | WM8960_PLL_PRESCALE);  // Enable PLL + config
+    
+    // Clock 1: Use PLL output as system clock (SYSCLK)
+    // Bit 0: CLKSEL = 1 (PLL output)
+    writeRegister(WM8960_REG_CLOCK1, 0x0001);
+    
+    delay(10);  // Wait for PLL to lock
     
     // Additional Control 1: Set GPIO1 as ADCLRC output (optional)
     writeRegister(WM8960_REG_ADDCTL1, 0x00C0);
     
-    // For 44.1kHz with typical 256*Fs MCLK (11.2896 MHz):
-    // No PLL needed if MCLK matches
-    // If no MCLK available, we'd need to enable internal PLL
-    
     // Additional Control 4: Enable DAC oversampling
     writeRegister(WM8960_REG_ADDCTL4, 0x0000);
+    
+    Serial.println("[WM8960] PLL configured from BCLK (no MCLK needed)");
 }
 
 void WM8960Codec::initInterface() {
@@ -278,7 +349,136 @@ void WM8960Codec::setMute(bool mute) {
 void WM8960Codec::dumpRegisters() {
     Serial.println("=== WM8960 Register Dump ===");
     for (uint8_t reg = 0; reg < 56; reg++) {
-        Serial.printf("R%02d (0x%02X): 0x%04X\n", reg, reg, regCache[reg]);
+        Serial.printf("R%02d (0x%02X): 0x%04X", reg, reg, regCache[reg]);
+        
+        // Add register names for key registers
+        switch(reg) {
+            case WM8960_REG_LINVOL: Serial.print(" - Left Input Volume"); break;
+            case WM8960_REG_RINVOL: Serial.print(" - Right Input Volume"); break;
+            case WM8960_REG_LOUT1: Serial.print(" - LOUT1 (Headphone L)"); break;
+            case WM8960_REG_ROUT1: Serial.print(" - ROUT1 (Headphone R)"); break;
+            case WM8960_REG_CLOCK1: Serial.print(" - Clock 1"); break;
+            case WM8960_REG_DACCTL1: Serial.print(" - DAC Control 1"); break;
+            case WM8960_REG_IFACE1: Serial.print(" - Audio Interface 1"); break;
+            case WM8960_REG_POWER1: Serial.print(" - Power Mgmt 1"); break;
+            case WM8960_REG_POWER2: Serial.print(" - Power Mgmt 2"); break;
+            case WM8960_REG_POWER3: Serial.print(" - Power Mgmt 3"); break;
+            case WM8960_REG_LOUT2: Serial.print(" - LOUT2 (Speaker L)"); break;
+            case WM8960_REG_ROUT2: Serial.print(" - ROUT2 (Speaker R)"); break;
+        }
+        Serial.println();
     }
     Serial.println("============================");
+}
+
+// ============================================================================
+//  DEBUG METHODS (AudioCodec Interface)
+// ============================================================================
+
+bool WM8960Codec::testCommunication() {
+    if (!wire) {
+        Serial.println("[WM8960] ERROR: I2C not initialized");
+        return false;
+    }
+    
+    Serial.println("[WM8960] Testing I2C communication...");
+    Serial.printf("[WM8960] I2C Address: 0x%02X\n", WM8960_I2C_ADDR);
+    
+    // Try to write to a safe register (reset register)
+    wire->beginTransmission(WM8960_I2C_ADDR);
+    wire->write(0x0F << 1);  // Reset register
+    wire->write(0x00);
+    uint8_t result = wire->endTransmission();
+    
+    Serial.printf("[WM8960] I2C transmission result: %d\n", result);
+    
+    switch(result) {
+        case 0:
+            Serial.println("[WM8960] SUCCESS: Device responded");
+            return true;
+        case 1:
+            Serial.println("[WM8960] ERROR: Data too long");
+            break;
+        case 2:
+            Serial.println("[WM8960] ERROR: NACK on address (device not found)");
+            break;
+        case 3:
+            Serial.println("[WM8960] ERROR: NACK on data");
+            break;
+        case 4:
+            Serial.println("[WM8960] ERROR: Other I2C error");
+            break;
+        case 5:
+            Serial.println("[WM8960] ERROR: Timeout");
+            break;
+        default:
+            Serial.printf("[WM8960] ERROR: Unknown error code %d\n", result);
+            break;
+    }
+    return false;
+}
+
+uint16_t WM8960Codec::readRegisterCache(uint8_t reg) const {
+    if (reg >= 56) return 0xFFFF;
+    return regCache[reg];
+}
+
+bool WM8960Codec::writeRegisterDebug(uint8_t reg, uint16_t value) {
+    Serial.printf("[WM8960] Writing R%d (0x%02X) = 0x%04X\n", reg, reg, value);
+    bool result = writeRegister(reg, value);
+    if (result) {
+        Serial.println("[WM8960] Write SUCCESS");
+    } else {
+        Serial.println("[WM8960] Write FAILED");
+    }
+    return result;
+}
+
+void WM8960Codec::printStatus() {
+    Serial.println("\n=== WM8960 Codec Status ===");
+    Serial.printf("Initialized: %s\n", initialized ? "YES" : "NO");
+    Serial.printf("I2C Interface: %s\n", wire ? "Connected" : "Not Connected");
+    
+    if (wire) {
+        Serial.println("\nI2C Test:");
+        testCommunication();
+    }
+    
+    Serial.println("\nKey Registers:");
+    Serial.printf("  POWER1 (0x19): 0x%04X\n", regCache[WM8960_REG_POWER1]);
+    Serial.printf("  POWER2 (0x1A): 0x%04X\n", regCache[WM8960_REG_POWER2]);
+    Serial.printf("  POWER3 (0x2F): 0x%04X\n", regCache[WM8960_REG_POWER3]);
+    Serial.printf("  IFACE1 (0x07): 0x%04X\n", regCache[WM8960_REG_IFACE1]);
+    Serial.printf("  CLOCK1 (0x04): 0x%04X\n", regCache[WM8960_REG_CLOCK1]);
+    Serial.printf("  DACCTL1 (0x05): 0x%04X\n", regCache[WM8960_REG_DACCTL1]);
+    Serial.println("===========================\n");
+}
+
+void WM8960Codec::reinitialize(uint32_t sample_rate) {
+    Serial.println("[WM8960] Reinitializing codec...");
+    
+    if (!wire) {
+        Serial.println("[WM8960] ERROR: I2C not configured. Use begin(Wire, sda, scl) first.");
+        return;
+    }
+    
+    initialized = false;
+    
+    // Reset codec
+    reset();
+    delay(100);
+    
+    // Re-initialize subsystems
+    initPower();
+    initClock(sample_rate);
+    initInterface();
+    initDAC();
+    initOutputs();
+    
+    // Set default volume
+    setHeadphoneVolume(100);
+    setSpeakerVolume(100);
+    
+    initialized = true;
+    Serial.println("[WM8960] Reinitialization complete");
 }

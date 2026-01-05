@@ -318,3 +318,129 @@ bool TAS5825Codec::initDSPCoefficients()
     
     return true;
 }
+
+// ============================================================================
+//  DEBUG METHODS
+// ============================================================================
+
+bool TAS5825Codec::testCommunication() {
+    if (!i2c) {
+        Serial.println("[TAS5825M] ERROR: I2C not initialized");
+        return false;
+    }
+    
+    Serial.println("[TAS5825M] Testing I2C communication...");
+    Serial.printf("[TAS5825M] I2C Address: 0x%02X\n", TAS5825M_I2C_ADDR);
+    
+    // Try to read device control register
+    i2c->beginTransmission(TAS5825M_I2C_ADDR);
+    i2c->write(TAS5825M_REG_DEVICE_CTRL);
+    uint8_t result = i2c->endTransmission();
+    
+    Serial.printf("[TAS5825M] I2C transmission result: %d\n", result);
+    
+    switch(result) {
+        case 0:
+            Serial.println("[TAS5825M] SUCCESS: Device responded");
+            return true;
+        case 1:
+            Serial.println("[TAS5825M] ERROR: Data too long");
+            break;
+        case 2:
+            Serial.println("[TAS5825M] ERROR: NACK on address (device not found)");
+            break;
+        case 3:
+            Serial.println("[TAS5825M] ERROR: NACK on data");
+            break;
+        case 4:
+            Serial.println("[TAS5825M] ERROR: Other I2C error");
+            break;
+        case 5:
+            Serial.println("[TAS5825M] ERROR: Timeout");
+            break;
+        default:
+            Serial.printf("[TAS5825M] ERROR: Unknown error code %d\n", result);
+            break;
+    }
+    return false;
+}
+
+uint16_t TAS5825Codec::readRegisterCache(uint8_t reg) const {
+    // TAS5825M doesn't cache registers, so read directly
+    uint8_t value = 0;
+    if (!i2c) return 0xFFFF;
+    
+    // This is a const method but we need to read - use const_cast
+    TAS5825Codec* nonconst = const_cast<TAS5825Codec*>(this);
+    if (!nonconst->readRegister(reg, &value)) {
+        return 0xFFFF;
+    }
+    return value;
+}
+
+bool TAS5825Codec::writeRegisterDebug(uint8_t reg, uint16_t value) {
+    Serial.printf("[TAS5825M] Writing R%d (0x%02X) = 0x%02X\n", reg, reg, (uint8_t)value);
+    bool result = writeRegister(reg, (uint8_t)value);
+    if (result) {
+        Serial.println("[TAS5825M] Write SUCCESS");
+    } else {
+        Serial.println("[TAS5825M] Write FAILED");
+    }
+    return result;
+}
+
+void TAS5825Codec::printStatus() {
+    Serial.println("\n=== TAS5825M Codec Status ===");
+    Serial.printf("Initialized: %s\n", initialized ? "YES" : "NO");
+    Serial.printf("I2C Interface: %s\n", i2c ? "Connected" : "Not Connected");
+    Serial.printf("Sample Rate: %.1f kHz\n", sampleRate / 1000.0f);
+    
+    const char* supplyStr;
+    switch(supplyVoltage) {
+        case TAS5825M_12V: supplyStr = "12V"; break;
+        case TAS5825M_15V: supplyStr = "15V"; break;
+        case TAS5825M_20V: supplyStr = "20V"; break;
+        case TAS5825M_24V: supplyStr = "24V"; break;
+        default: supplyStr = "Unknown"; break;
+    }
+    Serial.printf("Supply Voltage: %s\n", supplyStr);
+    Serial.printf("Muted: %s\n", muted ? "YES" : "NO");
+    Serial.printf("Digital Volume: 0x%02X\n", currentVolume);
+    
+    if (i2c) {
+        Serial.println("\nI2C Test:");
+        testCommunication();
+    }
+    
+    Serial.println("\nKey Registers:");
+    uint8_t deviceCtrl = 0, sigChCtrl = 0, digVol = 0;
+    readRegister(TAS5825M_REG_DEVICE_CTRL, &deviceCtrl);
+    readRegister(TAS5825M_REG_SIG_CH_CTRL, &sigChCtrl);
+    readRegister(TAS5825M_REG_DIGITAL_VOL, &digVol);
+    
+    Serial.printf("  Device Control (0x03): 0x%02X\n", deviceCtrl);
+    Serial.printf("  Signal Ch Ctrl (0x28): 0x%02X\n", sigChCtrl);
+    Serial.printf("  Digital Volume (0x4C): 0x%02X\n", digVol);
+    Serial.println("==============================\n");
+}
+
+void TAS5825Codec::reinitialize(uint32_t sample_rate) {
+    Serial.println("[TAS5825M] Reinitializing codec...");
+    
+    if (!i2c) {
+        Serial.println("[TAS5825M] ERROR: I2C not configured. Use begin(Wire, sda, scl) first.");
+        return;
+    }
+    
+    initialized = false;
+    
+    // Store old sample rate if not specified
+    if (sample_rate == 44100 && sampleRate != 44100) {
+        sample_rate = sampleRate;
+    }
+    
+    // Full reinitialization with stored I2C pins
+    begin(*i2c, sdaPin, sclPin, sample_rate, supplyVoltage);
+    
+    Serial.println("[TAS5825M] Reinitialization complete");
+}

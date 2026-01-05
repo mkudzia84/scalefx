@@ -1,52 +1,84 @@
-# Test Scripts
+﻿# HubFX Pico - Test Scripts
 
-## Flash Upload Tests
+Automated testing and verification scripts for firmware functionality.
 
-### Root Cause: USB/Serial Deadlock ✓ IDENTIFIED
+## Available Tests
 
-**The Problem:**
-Arduino USB CDC (TinyUSB) requires the main loop to return frequently to service USB interrupts and transfer data from hardware buffers. The original upload handler was blocking in a tight loop waiting for serial data while simultaneously performing flash writes, creating a deadlock:
+### Hardware Tests
 
-1. Upload handler blocks in: `while (!Serial.available())`
-2. Simultaneously calls `flash->flushBuffer()` which blocks 10-100ms
-3. USB stack needs main loop to return to transfer data
-4. Deadlock: Can't receive data because we're blocking the main loop
-
-**The Solution:**
-Made the upload handler fully non-blocking:
-- Only read when `Serial.available()` returns true (no blocking wait)
-- Call `yield()` in loop to allow USB stack to run
-- Periodic flush instead of blocking flush
-- Single timeout check instead of nested wait loops
-
-### Tests
-
-1. **Simple test** - `test_flash_simple.ps1`
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\tests\test_flash_simple.ps1
-   ```
-   Tests basic flash init/info/ls commands
-
-2. **Debug upload** - `debug_upload.py`
-   ```bash
-   python tests\debug_upload.py
-   ```
-   Sends 5-byte test file with detailed logging
-
-3. **Full upload test** - `test_flash_upload.ps1`
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\tests\test_flash_upload.ps1
-   ```
-   Complete upload test with flow control
-
-### After Power Cycle
-
-Deploy new firmware with fix:
+#### ```test_i2c_scan.py```
+Scans I2C bus for connected devices:
 ```bash
-.\scripts\upload.ps1
+python tests/test_i2c_scan.py
 ```
+Expected devices:
+- ```0x1A``` - WM8960 codec (if connected and powered)
 
-Then test:
+#### ```test_codec.py```
+Comprehensive codec testing:
 ```bash
-python tests\debug_upload.py
+python tests/test_codec.py
 ```
+Tests:
+- I2C communication (```codec scan```)
+- Device response (```codec test```)
+- Register access (```codec status```)
+
+### Boot and Serial Tests
+
+#### ```check_boot.py```
+Captures and displays boot log:
+```bash
+python tests/check_boot.py
+```
+Useful for:
+- Verifying firmware version and build number
+- Checking initialization sequence
+- Debugging startup issues
+
+#### ```test_serial.py```
+Basic serial communication test:
+```bash
+python tests/test_serial.py
+```
+Sends commands and verifies responses.
+
+### Output Format Tests
+
+#### ```test_json_output.py```
+Tests JSON-formatted command output:
+```bash
+python tests/test_json_output.py
+```
+Validates JSON parsing for programmatic access.
+
+#### ```test_extended.py```
+Extended functionality testing:
+```bash
+python tests/test_extended.py
+```
+Tests advanced features and edge cases.
+
+## Common Issues
+
+### COM Port Access
+If you get "Access denied" errors:
+1. Close any serial monitors (Arduino IDE, PlatformIO, PuTTY)
+2. Disconnect/reconnect USB cable
+3. Check Device Manager for correct COM port
+
+### Device Not Responding
+If tests timeout:
+1. Verify firmware is flashed: ```python tests/check_boot.py```
+2. Check USB connection
+3. Try power cycling the Pico
+4. Verify COM port with ```mode``` command (Windows)
+
+### I2C Errors
+- **Error 4 (no device):** Check 3.3V/GND power to codec
+- **Error 5 (timeout):** Lower I2C speed in ```audio_config.h``` to 50kHz or 10kHz
+
+## See Also
+
+- [../docs/AUDIO_CONFIGURATION.md](../docs/AUDIO_CONFIGURATION.md) - I2C speed tuning
+- [../scripts/](../scripts/) - Build and flash utilities

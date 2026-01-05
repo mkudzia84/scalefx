@@ -29,24 +29,27 @@ Raspberry Pi Pico → Audio Codec (WM8960/TAS5825M) → Speakers
                   → USB Hub → GunFX Controllers
 ```
 
+**Important:** See [docs/WIRING.md](docs/WIRING.md) for:
+- Complete pinout diagrams
+- I2S signal integrity requirements (wire length < 6 inches for BCLK @ 2.8 MHz)
+- Power connection details
+
 ### Pin Connections
 
 | Function | Pico Pin | Notes |
 |----------|----------|-------|
 | **I2S Audio** |
-| DATA     | GP6      | I2S DIN to DAC |
-| BCLK     | GP7      | Bit clock |
-| LRCLK    | GP8      | Word select |
+| DATA     | GP6      | I2S DIN to codec Pin 38 (ADC) |
+| BCLK     | GP7      | Bit clock (2.8 MHz @ 44.1kHz) |
+| LRCLK    | GP8      | Word select (44.1 kHz) |
 | **I2C Control** (codecs only) |
 | SDA      | GP4      | For WM8960/TAS5825M |
 | SCL      | GP5      | For WM8960/TAS5825M |
 | **SD Card (SPI0)** |
 | CS       | GP17     | Chip select |
-| SCK      | GP18     | SPI clock |
+| SCK      | GP18     | SPI clock (20 MHz) |
 | MOSI     | GP19     | Master out |
 | MISO     | GP16     | Master in |
-
-See [docs/WIRING.md](docs/WIRING.md) for complete wiring diagrams.
 
 ### Software Setup
 
@@ -58,17 +61,21 @@ See [docs/WIRING.md](docs/WIRING.md) for complete wiring diagrams.
 2. **Build and upload:**
    ```bash
    cd controllers/hubfx/pico
-   pio run -t upload
+   python -m platformio run -t upload
+   ```
+   Or use automated script:
+   ```powershell
+   .\scripts\build_and_flash.ps1
    ```
 
 3. **Prepare SD card:**
    - Format as FAT32
    - Copy `config.yaml` to root
-   - Create `/sounds/` folder with WAV files
+   - Create `/sounds/` folder with WAV files (44.1kHz, 16-bit, stereo recommended)
 
 4. **Connect serial monitor:**
    ```bash
-   pio device monitor -b 115200
+   python -m platformio device monitor -b 115200
    ```
 
 ## Features
@@ -236,9 +243,12 @@ pio run -t clean
 
 | Document | Description |
 |----------|-------------|
-| [WIRING.md](docs/WIRING.md) | Complete hardware wiring diagrams |
-| [CODECS.md](docs/CODECS.md) | Audio codec architecture and usage |
-| [TAS5825M.md](docs/TAS5825M.md) | TAS5825M high-power amplifier guide |
+| [docs/WIRING.md](docs/WIRING.md) | Complete hardware wiring diagrams and pin assignments |
+| [docs/CODECS.md](docs/CODECS.md) | Audio codec architecture and driver implementation |
+| [docs/TAS5825M.md](docs/TAS5825M.md) | TAS5825M high-power amplifier setup guide |
+| [docs/AUDIO_CONFIGURATION.md](docs/AUDIO_CONFIGURATION.md) | Compile-time audio configuration and tuning |
+| [tests/README.md](tests/README.md) | Automated testing and verification scripts |
+| [scripts/README.md](scripts/README.md) | Build, flash, and file transfer utilities |
 
 ## API Reference
 

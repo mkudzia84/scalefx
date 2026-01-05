@@ -4,9 +4,124 @@
  */
 
 #include "audio_cli.h"
+#include "../audio/audio_codec.h"
+#include <Wire.h>
 
 bool AudioCli::handleCommand(const String& cmd) {
     if (!mixer) return false;
+    
+    // Codec debug commands - work with any codec type
+    if (cmd.startsWith("codec ")) {
+        AudioCodec* activeCodec = this->codec;
+        
+        if (!activeCodec) {
+            Serial.println("Error: No codec configured");
+            return true;
+        }
+        
+        // codec status
+        if (cmd == "codec status") {
+            activeCodec->printStatus();
+            return true;
+        }
+        
+        // codec test
+        if (cmd == "codec test") {
+            activeCodec->testCommunication();
+            return true;
+        }
+        
+        // codec dump
+        if (cmd == "codec dump") {
+            activeCodec->dumpRegisters();
+            return true;
+        }
+        
+        // codec reset
+        if (cmd == "codec reset") {
+            Serial.printf("Resetting %s codec...\n", activeCodec->getModelName());
+            activeCodec->reset();
+            Serial.println("Codec reset complete");
+            return true;
+        }
+        
+        // codec reinit
+        if (cmd == "codec reinit" || cmd == "codec init") {
+            activeCodec->reinitialize();
+            return true;
+        }
+        
+        // codec read <reg>
+        if (cmd.startsWith("codec read ")) {
+            int reg = cmd.substring(11).toInt();
+            if (reg >= 0 && reg < 256) {
+                uint16_t value = activeCodec->readRegisterCache(reg);
+                if (value != 0xFFFF) {
+                    Serial.printf("R%d (0x%02X) = 0x%04X (%d)\n", reg, reg, value, value);
+                } else {
+                    Serial.println("Error: Register read not supported or failed");
+                }
+            } else {
+                Serial.println("Error: Register must be 0-255");
+            }
+            return true;
+        }
+        
+        // codec write <reg> <value>
+        if (cmd.startsWith("codec write ")) {
+            int firstSpace = cmd.indexOf(' ', 12);
+            if (firstSpace > 0) {
+                int reg = cmd.substring(12, firstSpace).toInt();
+                String valueStr = cmd.substring(firstSpace + 1);
+                valueStr.trim();
+                
+                // Support hex (0x) or decimal
+                uint16_t value;
+                if (valueStr.startsWith("0x") || valueStr.startsWith("0X")) {
+                    value = strtol(valueStr.c_str(), NULL, 16);
+                } else {
+                    value = valueStr.toInt();
+                }
+                
+                if (reg >= 0 && reg < 256 && value <= 0xFFFF) {
+                    activeCodec->writeRegisterDebug(reg, value);
+                } else {
+                    Serial.println("Error: Register must be 0-255, value must be 0-0xFFFF");
+                }
+            } else {
+                Serial.println("Usage: codec write <reg> <value>");
+            }
+            return true;
+        }
+        
+        // codec scan - scan I2C bus
+        if (cmd == "codec scan") {
+            Serial.println("Scanning I2C bus...");
+            TwoWire* wire = static_cast<TwoWire*>(activeCodec->getCommunicationInterface());
+            if (wire) {
+                int found = 0;
+                for (uint8_t addr = 1; addr < 127; addr++) {
+                    wire->beginTransmission(addr);
+                    uint8_t error = wire->endTransmission();
+                    if (error == 0) {
+                        Serial.printf("  Device found at 0x%02X\n", addr);
+                        found++;
+                    }
+                }
+                if (found == 0) {
+                    Serial.println("  No I2C devices found");
+                } else {
+                    Serial.printf("\nFound %d device(s)\n", found);
+                }
+            } else {
+                Serial.println("Error: Communication interface not available");
+            }
+            return true;
+        }
+        
+        Serial.println("Unknown codec command. Type 'help' for usage.");
+        return true;
+    }
     
     // Play command - format: play channel filename [loop] [vol X.X] [left|right]
     if (cmd.startsWith("play ")) {
@@ -203,4 +318,14 @@ void AudioCli::printHelp() const {
     Serial.println("  volume <ch> <vol>        - Set channel volume (0.0-1.0)");
     Serial.println("  master <vol>             - Set master volume (0.0-1.0)");
     Serial.println("  status [--json]          - Show all channel status");
+    Serial.println("");
+    Serial.println("=== Codec Debug Commands ===");
+    Serial.println("  codec status             - Show codec initialization status");
+    Serial.println("  codec test               - Test I2C communication");
+    Serial.println("  codec scan               - Scan I2C bus for devices");
+    Serial.println("  codec dump               - Dump all codec registers");
+    Serial.println("  codec read <reg>         - Read register (0-55)");
+    Serial.println("  codec write <reg> <val>  - Write register (hex: 0xXXXX)");
+    Serial.println("  codec reset              - Software reset codec");
+    Serial.println("  codec reinit             - Full codec reinitialization");
 }
