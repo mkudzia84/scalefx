@@ -15,8 +15,7 @@
 //  INITIALIZATION
 // ============================================================================
 
-bool GunFX::begin(UsbHost* usbHost, int deviceIndex, 
-                  AudioMixer* mixer, const GunFXSettings& settings) {
+bool GunFX::begin(UsbHost* usbHost, int deviceIndex, const GunFXSettings& settings) {
     if (!usbHost) return false;
     if (!settings.enabled) {
         LOG("Disabled in settings");
@@ -24,7 +23,6 @@ bool GunFX::begin(UsbHost* usbHost, int deviceIndex,
     }
     
     _settings = settings;
-    _mixer = mixer;
     
     // Initialize serial master
     if (!_serial.begin(usbHost, deviceIndex)) {
@@ -285,7 +283,6 @@ int GunFX::mapServoInput(const ServoInputConfig& cfg, int inputUs) {
 // ============================================================================
 
 void GunFX::playFiringSound(int rateIndex) {
-    if (!_mixer) return;
     if (rateIndex < 0 || rateIndex >= _settings.rateCount) return;
     
     const RateOfFireConfig& rate = _settings.ratesOfFire[rateIndex];
@@ -296,14 +293,12 @@ void GunFX::playFiringSound(int rateIndex) {
     opts.volume = rate.soundVolume;
     opts.output = AudioOutput::Stereo;
     
-    _mixer->playAsync(_settings.audioChannel, rate.soundFile, opts);
+    mixer().playAsync(_settings.audioChannel, rate.soundFile, opts);
     LOG("Playing sound: %s", rate.soundFile);
 }
 
 void GunFX::stopFiringSound() {
-    if (_mixer) {
-        _mixer->stopAsync(_settings.audioChannel, AudioStopMode::Immediate);
-    }
+    mixer().stopAsync(_settings.audioChannel, AudioStopMode::Immediate);
 }
 
 // ============================================================================

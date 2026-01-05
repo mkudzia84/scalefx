@@ -7,19 +7,21 @@
 #define SYSTEM_CLI_H
 
 #include "../cli/command_handler.h"
+#include "../storage/sd_card.h"
 #include <vector>
 
-// Forward declarations for slave status
+// Forward declaration for slave status
 class GunFX;
-class SdCardModule;
 
 class SystemCli : public CommandHandler {
 private:
     std::vector<CommandHandler*> allHandlers;
     GunFX* _gunFx = nullptr;
-    SdCardModule* _sdCard = nullptr;
     const char* _firmwareVersion = "0.1.0";
     int _buildNumber = 0;
+    
+    // Uses SdCardModule singleton directly
+    SdCardModule& sdCard() { return SdCardModule::instance(); }
     
 public:
     SystemCli() {}
@@ -29,7 +31,6 @@ public:
     }
     
     void setGunFX(GunFX* gunFx) { _gunFx = gunFx; }
-    void setSdCard(SdCardModule* sdCard) { _sdCard = sdCard; }
     void setVersion(const char* version, int build) { _firmwareVersion = version; _buildNumber = build; }
     
     bool handleCommand(const String& cmd) override;

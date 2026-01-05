@@ -1,13 +1,15 @@
 /**
  * HubFX Audio Mixer - Implementation
  * 
- * Software audio mixer for Raspberry Pi Pico with I2S output.
+ * Singleton software audio mixer for Raspberry Pi Pico with I2S output.
  * Runs on Core 1 with dual-core mode for optimal performance.
+ * Uses SdCardModule singleton for thread-safe SD card access.
  */
 
 #include "audio_mixer.h"
 #include "audio_config.h"
 #include "audio_codec.h"
+#include "../storage/sd_card.h"
 #include "../debug_config.h"
 
 #if AUDIO_MOCK_I2S
@@ -43,6 +45,11 @@ static inline int16_t softClip(int32_t sample) {
     return static_cast<int16_t>(sample);
 }
 
+// SD access through singleton - provides both SdFat reference and mutex
+#define SD_CARD()   SdCardModule::instance()
+#define SD_LOCK()   SD_CARD().lock()
+#define SD_UNLOCK() SD_CARD().unlock()
+
 // ============================================================================
 //  LIFECYCLE
 // ============================================================================
@@ -51,12 +58,16 @@ AudioMixer::~AudioMixer() {
     shutdown();
 }
 
-bool AudioMixer::begin(SdFat* sd, uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_lrclk_pin,
+bool AudioMixer::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_lrclk_pin,
                        AudioCodec* codec) {
     if (_initialized) return true;
-    if (!sd) return false;
+    
+    // Verify SD card is available via singleton
+    if (!SD_CARD().isInitialized()) {
+        MIXER_LOG("SD card not initialized");
+        return false;
+    }
 
-    _sd = sd;
     _masterVolume = 1.0f;
     _dualCoreMode = false;
 
@@ -80,8 +91,9 @@ bool AudioMixer::begin(SdFat* sd, uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, ui
     _i2sRunning = true;
     
     // Initialize audio codec if provided
-    if (codec) {
-        MIXER_LOG("Using %s codec", codec->getModelName());
+    _codec = codec;
+    if (_codec) {
+        MIXER_LOG("Using %s codec", _codec->getModelName());
         // Codec initialization happens externally before mixer.begin()
     } else {
         MIXER_LOG("No codec provided (I2S only mode)");
@@ -134,13 +146,15 @@ bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOpti
 
     Channel& ch = _channels[channel];
 
-    // Stop current playback on this channel
+    // Stop current playback on this channel (with SD lock)
+    SD_LOCK();
     if (ch.active && ch.file) {
         ch.file.close();
     }
 
-    // Open the WAV file
-    if (!ch.file.open(_sd, filename, O_RDONLY)) {
+    // Open the WAV file using SdCardModule singleton
+    if (!ch.file.open(&SD_CARD().getSd(), filename, O_RDONLY)) {
+        SD_UNLOCK();
         MIXER_LOG("Ch%d: Failed to open: %s", channel, filename);
         return false;
     }
@@ -149,8 +163,10 @@ bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOpti
     if (!parseWavHeader(ch)) {
         MIXER_LOG("Ch%d: Invalid WAV: %s", channel, filename);
         ch.file.close();
+        SD_UNLOCK();
         return false;
     }
+    SD_UNLOCK();
 
     // Apply playback options
     // Handle loop count: if options.loop is true and loopCount not set, use infinite
@@ -275,7 +291,9 @@ void AudioMixer::stop(int channel, AudioStopMode mode) {
     switch (mode) {
         case AudioStopMode::Immediate:
             ch.active = false;
+            SD_LOCK();
             if (ch.file) ch.file.close();
+            SD_UNLOCK();
             _channelPlaying[channel] = false;
             MIXER_LOG("Ch%d: Stopped", channel);
             break;
@@ -557,11 +575,15 @@ void AudioMixer::doMixAndOutput() {
             }
             
             if (shouldLoop) {
+                SD_LOCK();
                 ch.file.seek(ch.dataStart);
+                SD_UNLOCK();
                 ch.samplesRemaining = ch.totalSamples;
             } else {
                 ch.active = false;
+                SD_LOCK();
                 if (ch.file) ch.file.close();
+                SD_UNLOCK();
                 _channelPlaying[i] = false;
                 // Check for queued sounds after playback ends
                 checkAndPlayNextQueued(i);
@@ -647,7 +669,11 @@ void AudioMixer::mixChannel(Channel& ch, int32_t* mixL, int32_t* mixR, int sampl
     int samplesToRead = min(static_cast<uint32_t>(samples), ch.samplesRemaining);
     int bytesToRead = samplesToRead * bytesPerSample;
 
+    // Read from SD card with mutex protection
+    SD_LOCK();
     int bytesRead = ch.file.read(_readBuffer, bytesToRead);
+    SD_UNLOCK();
+    
     int samplesRead = bytesRead / bytesPerSample;
 
     // Apply fade if active

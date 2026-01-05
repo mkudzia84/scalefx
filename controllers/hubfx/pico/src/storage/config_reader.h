@@ -13,6 +13,7 @@
 #include <Arduino.h>
 #include <SdFat.h>
 #include <LittleFS.h>
+#include <pico/mutex.h>
 #include "../effects/engine_fx.h"
 #include "../effects/gun_fx.h"
 
@@ -61,11 +62,16 @@ public:
     // ---- Initialization ----
     
     /**
-     * @brief Initialize with SD card storage
-     * @param sd Pointer to SdFat instance
+     * @brief Initialize with SD card storage (uses SdCardModule singleton)
      * @return true if successful
      */
-    bool begin(SdFat* sd);
+    bool begin();
+    
+    /**
+     * @brief Legacy: Initialize with SD card storage (parameters ignored)
+     * @deprecated Use begin() instead - SdCardModule singleton is used internally
+     */
+    bool begin(SdFat* sd, mutex_t* sdMutex = nullptr);
     
     /**
      * @brief Initialize with LittleFS flash storage
@@ -131,8 +137,12 @@ public:
 private:
     // Storage
     ConfigStorage _storage = ConfigStorage::SD;
-    SdFat* _sd = nullptr;
     bool _initialized = false;
+    
+    // SD locking helpers (use SdCardModule singleton)
+    void sdLock();
+    void sdUnlock();
+    SdFat& sd();
     
     // Configuration output
     HubFXSettings _settings;

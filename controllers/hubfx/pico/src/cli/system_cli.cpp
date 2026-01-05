@@ -72,11 +72,7 @@ bool SystemCli::handleCommand(const String& cmd) {
             
             // SD card status
             Serial.print(",\"sdCard\":{");
-            if (_sdCard) {
-                Serial.printf("\"initialized\":%s", _sdCard->isInitialized() ? "true" : "false");
-            } else {
-                Serial.print("\"initialized\":false");
-            }
+            Serial.printf("\"initialized\":%s", sdCard().isInitialized() ? "true" : "false");
             Serial.print("}");
             
             // Slaves array
@@ -105,11 +101,7 @@ bool SystemCli::handleCommand(const String& cmd) {
             Serial.printf("Uptime: %lu ms\n", millis());
             
             Serial.println("\n=== Storage ===");
-            if (_sdCard) {
-                Serial.printf("SD Card: %s\n", _sdCard->isInitialized() ? "Initialized" : "Not initialized");
-            } else {
-                Serial.println("SD Card: Not configured");
-            }
+            Serial.printf("SD Card: %s\n", sdCard().isInitialized() ? "Initialized" : "Not initialized");
             
             Serial.println("\n=== Connected Slaves ===");
             bool anySlaves = false;

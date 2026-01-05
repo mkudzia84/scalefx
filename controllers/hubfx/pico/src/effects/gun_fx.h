@@ -16,9 +16,9 @@
 #include <serial_gunfx.h>
 #include <pwm_control.h>
 #include "effects_config.h"
+#include "../audio/audio_mixer.h"
 
 // Forward declarations
-class AudioMixer;
 class UsbHost;
 
 // ============================================================================
@@ -99,8 +99,8 @@ public:
     GunFX& operator=(const GunFX&) = delete;
 
     // ---- Initialization ----
-    bool begin(UsbHost* usbHost, int deviceIndex, 
-               AudioMixer* mixer, const GunFXSettings& settings);
+    // Uses AudioMixer singleton internally
+    bool begin(UsbHost* usbHost, int deviceIndex, const GunFXSettings& settings);
     void end();
     
     // ---- Processing ----
@@ -149,7 +149,9 @@ private:
     // ---- State ----
     GunFXSettings _settings;
     GunFxSerialMaster _serial;
-    AudioMixer* _mixer = nullptr;
+    
+    // Uses AudioMixer::instance() directly
+    AudioMixer& mixer() { return AudioMixer::instance(); }
     
     PwmInput _triggerInput;
     PwmInput _heaterToggleInput;

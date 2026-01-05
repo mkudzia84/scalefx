@@ -6,6 +6,7 @@
  */
 
 #include "config_reader.h"
+#include "sd_card.h"
 #include "../audio/audio_channels.h"
 #include "../debug_config.h"
 
@@ -135,21 +136,43 @@ float ConfigReader::parseFloat(const char* value) {
 }
 
 // ============================================================================
+//  SD ACCESS HELPERS (use SdCardModule singleton)
+// ============================================================================
+
+void ConfigReader::sdLock() {
+    SdCardModule::instance().lock();
+}
+
+void ConfigReader::sdUnlock() {
+    SdCardModule::instance().unlock();
+}
+
+SdFat& ConfigReader::sd() {
+    return SdCardModule::instance().getSd();
+}
+
+// ============================================================================
 //  INITIALIZATION
 // ============================================================================
 
-bool ConfigReader::begin(SdFat* sd) {
-    if (!sd) {
-        LOG("SD card pointer required");
+bool ConfigReader::begin() {
+    if (!SdCardModule::instance().isInitialized()) {
+        LOG("SD card not initialized");
         return false;
     }
     
     _storage = ConfigStorage::SD;
-    _sd = sd;
     _initialized = true;
     
-    LOG("Initialized with SD card storage");
+    LOG("Initialized with SD card storage (thread-safe via singleton)");
     return true;
+}
+
+bool ConfigReader::begin(SdFat* sd, mutex_t* sdMutex) {
+    // Legacy overload - parameters are ignored, uses singleton
+    (void)sd;
+    (void)sdMutex;
+    return begin();
 }
 
 bool ConfigReader::beginFlash() {
@@ -295,20 +318,23 @@ bool ConfigReader::backup() {
     } 
     else if (_storage == ConfigStorage::SD) {
         // SD card backup
-        if (!_sd) {
+        if (!_initialized) {
             LOG("SD card not initialized");
             return false;
         }
         
-        File32 src = _sd->open("/config.yaml", O_RDONLY);
+        sdLock();
+        File32 src = sd().open("/config.yaml", O_RDONLY);
         if (!src) {
+            sdUnlock();
             LOG("No config.yaml to backup");
             return false;
         }
         
-        File32 dst = _sd->open("/config.yaml.bak", O_WRONLY | O_CREAT | O_TRUNC);
+        File32 dst = sd().open("/config.yaml.bak", O_WRONLY | O_CREAT | O_TRUNC);
         if (!dst) {
             src.close();
+            sdUnlock();
             LOG("Failed to create backup file");
             return false;
         }
@@ -323,6 +349,7 @@ bool ConfigReader::backup() {
         
         src.close();
         dst.close();
+        sdUnlock();
         
         LOG("Backed up %d bytes to config.yaml.bak", total);
         return true;
@@ -364,20 +391,23 @@ bool ConfigReader::restore() {
     }
     else if (_storage == ConfigStorage::SD) {
         // SD card restore
-        if (!_sd) {
+        if (!_initialized) {
             LOG("SD card not initialized");
             return false;
         }
         
-        File32 src = _sd->open("/config.yaml.bak", O_RDONLY);
+        sdLock();
+        File32 src = sd().open("/config.yaml.bak", O_RDONLY);
         if (!src) {
+            sdUnlock();
             LOG("No backup file found");
             return false;
         }
         
-        File32 dst = _sd->open("/config.yaml", O_WRONLY | O_CREAT | O_TRUNC);
+        File32 dst = sd().open("/config.yaml", O_WRONLY | O_CREAT | O_TRUNC);
         if (!dst) {
             src.close();
+            sdUnlock();
             LOG("Failed to open config.yaml for writing");
             return false;
         }
@@ -392,6 +422,7 @@ bool ConfigReader::restore() {
         
         src.close();
         dst.close();
+        sdUnlock();
         
         LOG("Restored %d bytes from backup", total);
         return true;
@@ -407,11 +438,16 @@ int ConfigReader::getSize(const char* filename) {
     if (_storage == ConfigStorage::Flash) {
         file = LittleFS.open(filename, "r");
     } else {
+        sdLock();
         File32 f;
-        if (!f.open(_sd, filename, O_RDONLY)) {
+        if (!f.open(&sd(), filename, O_RDONLY)) {
+            sdUnlock();
             return -1;
         }
-        return f.size();
+        int size = f.size();
+        f.close();
+        sdUnlock();
+        return size;
     }
     
     if (!file) return -1;
@@ -556,9 +592,11 @@ bool ConfigReader::load(const char* filename) {
     File32 file;
     
     if (_storage == ConfigStorage::SD) {
-        if (!_sd) return false;
-        file = _sd->open(filename, FILE_READ);
+        if (!_initialized) return false;
+        sdLock();
+        file = sd().open(filename, FILE_READ);
         if (!file) {
+            sdUnlock();
             LOG("Failed to open: %s", filename);
             return false;
         }
@@ -567,6 +605,7 @@ bool ConfigReader::load(const char* filename) {
     }
     
     if (!file) {
+        sdUnlock();
         LOG("File invalid after opening: %s", filename);
         return false;
     }
@@ -642,6 +681,7 @@ bool ConfigReader::load(const char* filename) {
     }
     
     file.close();
+    sdUnlock();
     _settings.loaded = true;
     
     LOG("Loaded %d lines", lineNum);

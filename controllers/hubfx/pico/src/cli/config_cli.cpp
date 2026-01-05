@@ -170,16 +170,7 @@ bool ConfigCli::handleCommand(const String& cmd) {
         
         // config upload <size>
         if (p.matches("config", "upload")) {
-            if (!sdCard) {
-                if (json) {
-                    Serial.println("{\"command\":\"upload\",\"success\":false,\"error\":\"SD card module not available\"}");
-                } else {
-                    Serial.println("ERROR: SD card module not available");
-                }
-                return true;
-            }
-            
-            if (!sdCard->isInitialized()) {
+            if (!sdCard().isInitialized()) {
                 if (json) {
                     Serial.println("{\"command\":\"upload\",\"success\":false,\"error\":\"SD card not initialized\"}");
                 } else {
@@ -198,7 +189,7 @@ bool ConfigCli::handleCommand(const String& cmd) {
                 return true;
             }
             
-            bool success = sdCard->uploadFile("/config.yaml", totalSize, Serial);
+            bool success = sdCard().uploadFile("/config.yaml", totalSize, Serial);
             if (!json && success) {
                 Serial.println("Run 'config reload' to apply changes");
             }

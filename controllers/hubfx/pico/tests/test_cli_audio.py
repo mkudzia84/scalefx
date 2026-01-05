@@ -146,8 +146,14 @@ class TestAudioStatus:
     def test_audio_status(self, fresh_pico: SerialConnection):
         """Test audio status display."""
         response = fresh_pico.send("audio status")
-        # Should show mixer status or unknown command
-        assert "audio" in response.lower() or "channel" in response.lower() or "unknown" in response.lower()
+        # Should show Audio Status header and master volume info
+        assert "Audio Status" in response or "Master Volume" in response or "No channels playing" in response
+    
+    def test_audio_status_json(self, fresh_pico: SerialConnection):
+        """Test audio status JSON output."""
+        result = fresh_pico.send_json("audio status")
+        # JSON should have channels array and masterVolume
+        assert "channels" in result or "masterVolume" in result or "error" in result
 
 
 class TestAudioEdgeCases:

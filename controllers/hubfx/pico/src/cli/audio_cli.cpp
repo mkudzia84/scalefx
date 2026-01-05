@@ -32,13 +32,13 @@ static void parseLoopArgs(const String& cmd, AudioPlaybackOptions& opts) {
 }
 
 bool AudioCli::handleCommand(const String& cmd) {
-    if (!mixer) return false;
+    
     
     CommandParser p(cmd);
     
     // ============== CODEC COMMANDS ==============
     if (p.hasPrefix("codec ")) {
-        AudioCodec* activeCodec = this->codec;
+        AudioCodec* activeCodec = mixer().getCodec();
         
         if (!activeCodec) {
             Serial.println("Error: No codec configured");
@@ -132,12 +132,12 @@ bool AudioCli::handleCommand(const String& cmd) {
     // ============== MOCK I2S STATS ==============
 #if AUDIO_MOCK_I2S
     if (p.matches("audio", "stats") || p.matches("audio", "statistics")) {
-        mixer->printMockStatistics();
+        mixer().printMockStatistics();
         return true;
     }
     
     if (p.hasFlag("reset") && p.hasPrefix("audio stats")) {
-        mixer->resetMockStatistics();
+        mixer().resetMockStatistics();
         return true;
     }
 #endif
@@ -172,7 +172,7 @@ bool AudioCli::handleCommand(const String& cmd) {
         }
         Serial.println();
         
-        if (!mixer->playAsync(ch, filename.c_str(), opts)) {
+        if (!mixer().playAsync(ch, filename.c_str(), opts)) {
             Serial.println("Error: Failed to queue play command");
         }
         return true;
@@ -185,12 +185,12 @@ bool AudioCli::handleCommand(const String& cmd) {
             String target = p.arg(1).length() > 0 ? p.arg(1) : "all";
             if (target == "all") {
                 Serial.println("Clearing all channel queues");
-                mixer->clearQueueAsync(-1);
+                mixer().clearQueueAsync(-1);
             } else {
                 int ch = target.toInt();
                 if (ch >= 0 && ch < 8) {
                     Serial.printf("Clearing queue for channel %d\n", ch);
-                    mixer->clearQueueAsync(ch);
+                    mixer().clearQueueAsync(ch);
                 } else {
                     Serial.println("Error: Invalid channel number");
                 }
@@ -244,7 +244,7 @@ bool AudioCli::handleCommand(const String& cmd) {
         if (opts.loop && opts.loopCount > 0) Serial.printf(" (loop %dx)", opts.loopCount);
         Serial.printf(" [%s]\n", behavior == QueueLoopBehavior::StopImmediate ? "stop current" : "finish loop");
         
-        if (!mixer->queueSoundAsync(ch, filename.c_str(), opts, behavior)) {
+        if (!mixer().queueSoundAsync(ch, filename.c_str(), opts, behavior)) {
             Serial.println("Error: Failed to queue sound");
         }
         return true;
@@ -253,7 +253,7 @@ bool AudioCli::handleCommand(const String& cmd) {
     // Handle "audio clear queue" variant
     if (p.matches("audio", "clear") && p.arg(0) == "queue") {
         Serial.println("Clearing all channel queues");
-        mixer->clearQueueAsync(-1);
+        mixer().clearQueueAsync(-1);
         return true;
     }
     
@@ -262,12 +262,12 @@ bool AudioCli::handleCommand(const String& cmd) {
         String target = p.arg(0);
         if (target == "all" || target.length() == 0) {
             Serial.println("Stopping all channels");
-            mixer->stopAsync(-1, AudioStopMode::Immediate);
+            mixer().stopAsync(-1, AudioStopMode::Immediate);
         } else {
             int ch = target.toInt();
             if (ch >= 0 && ch < 8) {
                 Serial.printf("Stopping channel %d\n", ch);
-                mixer->stopAsync(ch, AudioStopMode::Immediate);
+                mixer().stopAsync(ch, AudioStopMode::Immediate);
             } else {
                 Serial.println("Error: Invalid channel number");
             }
@@ -280,7 +280,7 @@ bool AudioCli::handleCommand(const String& cmd) {
         int ch = p.argInt(0, -1);
         if (ch >= 0 && ch < 8) {
             Serial.printf("Fading channel %d\n", ch);
-            mixer->stopAsync(ch, AudioStopMode::Fade);
+            mixer().stopAsync(ch, AudioStopMode::Fade);
         } else {
             Serial.println("Error: Invalid channel number");
         }
@@ -298,7 +298,7 @@ bool AudioCli::handleCommand(const String& cmd) {
             float vol = arg1.toFloat();
             if (ch >= 0 && ch < 8) {
                 Serial.printf("Setting channel %d volume to %.2f\n", ch, vol);
-                mixer->setVolumeAsync(ch, vol);
+                mixer().setVolumeAsync(ch, vol);
             } else {
                 Serial.println("Error: Invalid channel number");
             }
@@ -306,7 +306,7 @@ bool AudioCli::handleCommand(const String& cmd) {
             // Master volume: audio volume <vol>
             float vol = arg0.toFloat();
             Serial.printf("Setting master volume to %.2f\n", vol);
-            mixer->setMasterVolumeAsync(vol);
+            mixer().setMasterVolumeAsync(vol);
         }
         return true;
     }
@@ -315,48 +315,45 @@ bool AudioCli::handleCommand(const String& cmd) {
     if (p.matches("audio", "master")) {
         float vol = p.argFloat(0, 0.5f);
         Serial.printf("Setting master volume to %.2f\n", vol);
-        mixer->setMasterVolumeAsync(vol);
+        mixer().setMasterVolumeAsync(vol);
         return true;
     }
     
     // ============== AUDIO STATUS ==============
-    if (p.matches("audio", "status") || p.is("audio")) {
-        if (p.is("audio") && !p.jsonRequested()) {
-            return false;  // Just "audio" without status - not handled
-        }
-        
+    // Handle "audio status" or "audio --json" (but not bare "audio")
+    if (p.matches("audio", "status") || (p.is("audio") && p.jsonRequested())) {
         if (p.jsonRequested()) {
             Serial.print("{\"channels\":[");
             bool firstChannel = true;
             for (int i = 0; i < 8; i++) {
-                if (mixer->isPlaying(i) || mixer->queueLength(i) > 0) {
+                if (mixer().isPlaying(i) || mixer().queueLength(i) > 0) {
                     if (!firstChannel) Serial.print(",");
                     firstChannel = false;
                     
                     Serial.printf("{\"channel\":%d,\"status\":\"%s\",\"file\":\"%s\",\"volume\":%.2f,"
                                  "\"remainingMs\":%d,\"looping\":%s,\"loopCount\":%d,\"queueLength\":%d,\"output\":\"%s\"}",
                                  i, 
-                                 mixer->isPlaying(i) ? "playing" : "idle",
-                                 mixer->getFilename(i) ?: "",
-                                 mixer->getChannelVolume(i),
-                                 mixer->remainingMs(i), 
-                                 mixer->isLooping(i) ? "true" : "false",
-                                 mixer->getLoopCount(i),
-                                 mixer->queueLength(i),
-                                 mixer->getOutput(i) == AudioOutput::Left ? "left" : 
-                                 (mixer->getOutput(i) == AudioOutput::Right ? "right" : "stereo"));
+                                 mixer().isPlaying(i) ? "playing" : "idle",
+                                 mixer().getFilename(i) ?: "",
+                                 mixer().getChannelVolume(i),
+                                 mixer().remainingMs(i), 
+                                 mixer().isLooping(i) ? "true" : "false",
+                                 mixer().getLoopCount(i),
+                                 mixer().queueLength(i),
+                                 mixer().getOutput(i) == AudioOutput::Left ? "left" : 
+                                 (mixer().getOutput(i) == AudioOutput::Right ? "right" : "stereo"));
                 }
             }
-            Serial.printf("],\"masterVolume\":%.2f}\n", mixer->masterVolume());
+            Serial.printf("],\"masterVolume\":%.2f}\n", mixer().masterVolume());
         } else {
             Serial.println("\n=== Audio Status ===");
             bool anyPlaying = false;
             
             for (int i = 0; i < 8; i++) {
-                if (mixer->isPlaying(i)) {
+                if (mixer().isPlaying(i)) {
                     anyPlaying = true;
-                    const char* fname = mixer->getFilename(i);
-                    AudioOutput out = mixer->getOutput(i);
+                    const char* fname = mixer().getFilename(i);
+                    AudioOutput out = mixer().getOutput(i);
                     
                     Serial.printf("Channel %d: PLAYING\n", i);
                     if (fname) {
@@ -365,9 +362,9 @@ bool AudioCli::handleCommand(const String& cmd) {
                         Serial.printf("  Path:    %s\n", fname);
                     }
                     
-                    if (mixer->isLooping(i)) {
-                        int loopCount = mixer->getLoopCount(i);
-                        int initialLoop = mixer->getInitialLoopCount(i);
+                    if (mixer().isLooping(i)) {
+                        int loopCount = mixer().getLoopCount(i);
+                        int initialLoop = mixer().getInitialLoopCount(i);
                         if (loopCount == LOOP_INFINITE) {
                             Serial.println("  Mode:    LOOP (infinite)");
                         } else if (initialLoop > 0) {
@@ -376,19 +373,19 @@ bool AudioCli::handleCommand(const String& cmd) {
                             Serial.println("  Mode:    LOOP");
                         }
                     } else {
-                        Serial.printf("  Mode:    ONCE (%d ms remaining)\n", mixer->remainingMs(i));
+                        Serial.printf("  Mode:    ONCE (%d ms remaining)\n", mixer().remainingMs(i));
                     }
                     
-                    int qLen = mixer->queueLength(i);
+                    int qLen = mixer().queueLength(i);
                     if (qLen > 0) Serial.printf("  Queue:   %d item(s) waiting\n", qLen);
                     
-                    Serial.printf("  Volume:  %.0f%%\n", mixer->getChannelVolume(i) * 100.0f);
+                    Serial.printf("  Volume:  %.0f%%\n", mixer().getChannelVolume(i) * 100.0f);
                     Serial.printf("  Output:  %s\n", 
                                  out == AudioOutput::Left ? "Left" : 
                                  (out == AudioOutput::Right ? "Right" : "Stereo"));
                     Serial.printf("  Format:  %d Hz, %d-bit, %s\n", 
-                                 mixer->getSampleRate(i), mixer->getBitsPerSample(i),
-                                 mixer->getNumChannels(i) == 1 ? "Mono" : "Stereo");
+                                 mixer().getSampleRate(i), mixer().getBitsPerSample(i),
+                                 mixer().getNumChannels(i) == 1 ? "Mono" : "Stereo");
                     Serial.println();
                 }
             }
@@ -397,14 +394,14 @@ bool AudioCli::handleCommand(const String& cmd) {
             
             bool anyQueued = false;
             for (int i = 0; i < 8; i++) {
-                if (!mixer->isPlaying(i) && mixer->queueLength(i) > 0) {
+                if (!mixer().isPlaying(i) && mixer().queueLength(i) > 0) {
                     if (!anyQueued) { Serial.println("Queued sounds:"); anyQueued = true; }
-                    Serial.printf("  Channel %d: %d item(s) waiting\n", i, mixer->queueLength(i));
+                    Serial.printf("  Channel %d: %d item(s) waiting\n", i, mixer().queueLength(i));
                 }
             }
             if (anyQueued) Serial.println();
             
-            Serial.printf("Master Volume: %.0f%%\n\n", mixer->masterVolume() * 100.0f);
+            Serial.printf("Master Volume: %.0f%%\n\n", mixer().masterVolume() * 100.0f);
         }
         return true;
     }

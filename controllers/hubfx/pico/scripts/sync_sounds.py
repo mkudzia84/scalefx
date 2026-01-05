@@ -55,7 +55,7 @@ class SoundSyncer:
         self.ser = serial.Serial(self.port, self.baudrate, timeout=3)
         time.sleep(1)
         self.ser.reset_input_buffer()
-        print(f"  ✓ Connected")
+        print(f"  [OK] Connected")
         return True
     
     def disconnect(self):
@@ -100,7 +100,7 @@ class SoundSyncer:
         """Initialize SD card."""
         response = self.send_command("sd init")
         if "error" in response.lower() and "already" not in response.lower():
-            print(f"  ✗ SD init failed: {response}")
+            print(f"  [FAIL] SD init failed: {response}")
             return False
         return True
     
@@ -279,7 +279,7 @@ class SoundSyncer:
         
         if not to_upload and not to_delete:
             print("")
-            print("  ✓ Already in sync!")
+            print("  [OK] Already in sync!")
             return True
         
         print("")
@@ -303,10 +303,10 @@ class SoundSyncer:
             print(f"  [{i}/{len(to_upload)}] {name} ({size_str}) [{reason}]...", end=" ", flush=True)
             
             if self.upload_file(local_path, remote_path, show_progress=False):
-                print("✓")
+                print("OK")
                 self.stats["uploaded"] += 1
             else:
-                print("✗")
+                print("FAIL")
                 self.stats["errors"] += 1
         
         # Delete orphaned files
@@ -315,10 +315,10 @@ class SoundSyncer:
             print(f"  Deleting {name}...", end=" ", flush=True)
             
             if self.delete_remote_file(remote_path):
-                print("✓")
+                print("OK")
                 self.stats["deleted"] += 1
             else:
-                print("✗")
+                print("FAIL")
                 self.stats["errors"] += 1
         
         return True
@@ -347,9 +347,9 @@ def main():
     source_folder = Path(source_folder).resolve()
     
     print("")
-    print("╔══════════════════════════════════════════╗")
-    print("║  HubFX Pico - Sound Sync Utility         ║")
-    print("╚══════════════════════════════════════════╝")
+    print("============================================")
+    print("  HubFX Pico - Sound Sync Utility")
+    print("============================================")
     print("")
     
     if not source_folder.exists():
@@ -376,7 +376,7 @@ def main():
         
         # Print summary
         print("")
-        print("═" * 44)
+        print("=" * 44)
         print("  Summary:")
         print(f"    Uploaded: {syncer.stats['uploaded']} files")
         print(f"    Skipped:  {syncer.stats['skipped']} files (unchanged)")
@@ -391,13 +391,13 @@ def main():
         
         print("")
         if syncer.stats['errors'] == 0:
-            print("╔══════════════════════════════════════════╗")
-            print("║  Sync Complete!                          ║")
-            print("╚══════════════════════════════════════════╝")
+            print("============================================")
+            print("  Sync Complete!")
+            print("============================================")
         else:
-            print("╔══════════════════════════════════════════╗")
-            print("║  Sync Complete (with errors)             ║")
-            print("╚══════════════════════════════════════════╝")
+            print("============================================")
+            print("  Sync Complete (with errors)")
+            print("============================================")
         print("")
         
     except serial.SerialException as e:

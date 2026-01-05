@@ -20,9 +20,7 @@
 #include <Arduino.h>
 #include <pwm_control.h>
 #include "../audio/audio_channels.h"
-
-// Forward declaration
-class AudioMixer;
+#include "../audio/audio_mixer.h"
 
 // ============================================================================
 //  CONSTANTS
@@ -90,7 +88,8 @@ public:
     EngineFX& operator=(const EngineFX&) = delete;
 
     // ---- Initialization ----
-    bool begin(const EngineFXSettings& settings, AudioMixer* mixer);
+    // Uses AudioMixer singleton internally
+    bool begin(const EngineFXSettings& settings);
     void end();
 
     // ---- Processing ----
@@ -129,8 +128,10 @@ private:
 
     // ---- State ----
     EngineFXSettings _settings;
-    AudioMixer* _mixer           = nullptr;
     PwmInput _toggleInput;
+    
+    // Uses AudioMixer::instance() directly
+    AudioMixer& mixer() { return AudioMixer::instance(); }
     
     EngineState _state           = EngineState::Stopped;
     EngineState _requestedState  = EngineState::Stopped;

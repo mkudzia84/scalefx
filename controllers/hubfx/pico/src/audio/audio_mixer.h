@@ -1,9 +1,15 @@
 /**
  * HubFX Audio Mixer
  * 
- * Software audio mixer for Raspberry Pi Pico with I2S output.
+ * Singleton software audio mixer for Raspberry Pi Pico with I2S output.
  * Supports 8 simultaneous channels with WAV playback, per-channel volume,
  * loop/one-shot modes, L/R/stereo routing, and soft-clipped mixing.
+ * 
+ * Uses SdCardModule singleton for thread-safe SD card access.
+ * 
+ * Usage:
+ *   AudioMixer& mixer = AudioMixer::instance();
+ *   mixer.begin(i2s_data, i2s_bclk, i2s_lrclk, codec);
  */
 
 #ifndef AUDIO_MIXER_H
@@ -75,20 +81,30 @@ struct QueuedSound {
 };
 
 // ============================================================================
-//  AUDIO MIXER CLASS
+//  AUDIO MIXER CLASS (Singleton)
 // ============================================================================
 
 class AudioMixer {
 public:
-    AudioMixer() = default;
-    ~AudioMixer();
-
-    // Non-copyable
+    /**
+     * Get the singleton instance
+     */
+    static AudioMixer& instance() {
+        static AudioMixer instance;
+        return instance;
+    }
+    
+    // Delete copy/move constructors and assignment operators
     AudioMixer(const AudioMixer&) = delete;
     AudioMixer& operator=(const AudioMixer&) = delete;
+    AudioMixer(AudioMixer&&) = delete;
+    AudioMixer& operator=(AudioMixer&&) = delete;
+    
+    ~AudioMixer();
 
     // ---- Initialization ----
-    bool begin(SdFat* sd, uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_lrclk_pin,
+    // Uses SdCardModule singleton internally for SD access
+    bool begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_lrclk_pin,
                AudioCodec* codec = nullptr);
     void shutdown();
 
@@ -118,6 +134,7 @@ public:
     bool isPlaying(int channel) const;
     bool isAnyPlaying() const;
     int remainingMs(int channel) const;
+    AudioCodec* getCodec() const { return _codec; }
     
 #if AUDIO_MOCK_I2S
     // Mock I2S statistics access
@@ -221,10 +238,13 @@ private:
     bool enqueueToChannel(int channel, const char* filename, const AudioPlaybackOptions& options,
                           QueueLoopBehavior loopBehavior);
     bool dequeueFromChannel(int channel, QueuedSound& out);
+    
+    // Private constructor for singleton
+    AudioMixer() = default;
 
     // ---- State ----
-    SdFat* _sd                = nullptr;
     Channel _channels[AUDIO_MAX_CHANNELS];
+    AudioCodec* _codec        = nullptr;
     float _masterVolume       = 1.0f;
     bool _initialized         = false;
     bool _i2sRunning          = false;

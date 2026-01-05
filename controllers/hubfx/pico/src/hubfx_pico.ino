@@ -15,7 +15,7 @@
  */
 
 #define FIRMWARE_VERSION "1.1.0"
-#define BUILD_NUMBER 127  // Increment this with each build
+#define BUILD_NUMBER 130  // Increment this with each build
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -86,8 +86,8 @@
 // Global Objects
 // ============================================================================
 
-// SD card
-SdCardModule sdCard;
+// SD card (singleton reference)
+SdCardModule& sdCard = SdCardModule::instance();
 
 // Audio codec (polymorphic - can be any codec type)
 #ifdef USE_WM8960_CODEC
@@ -103,8 +103,8 @@ AudioCodec* codec = &audioCodec;
 AudioCodec* codec = nullptr;  // No codec (I2S only)
 #endif
 
-// Audio mixer
-AudioMixer mixer;
+// Audio mixer (singleton reference)
+AudioMixer& mixer = AudioMixer::instance();
 
 // Engine FX
 EngineFX engineFx;
@@ -120,12 +120,12 @@ ConfigReader configReader;
 
 // CLI System
 CommandRouter cmdRouter;
-AudioCli audioCli(&mixer);
-StorageCli storageCli(&sdCard);
-ConfigCli configCli(&configReader, &sdCard);
+AudioCli audioCli;  // Uses AudioMixer singleton (gets codec from mixer)
+StorageCli storageCli;  // Uses SdCardModule singleton
+ConfigCli configCli(&configReader);  // Uses SdCardModule singleton
 EngineCli engineCli(&engineFx);
 GunCli gunCli(&gunFx);
-SystemCli systemCli;
+SystemCli systemCli;  // Uses SdCardModule singleton
 UsbCli usbCli(&usbHost);
 
 // State
@@ -209,8 +209,8 @@ void status_led_update() {
 bool load_configuration() {
     MAIN_LOG("Loading configuration from SD card...");
     
-    // Initialize config reader with SD card
-    if (!configReader.begin(&sdCard.getSd())) {
+    // Initialize config reader (uses SdCardModule singleton internally)
+    if (!configReader.begin()) {
         MAIN_LOG("SD card config init failed");
         configReader.loadDefaults();
         return false;
@@ -286,8 +286,9 @@ bool init_audio() {
     }
     
     // Initialize I2S output and mixer
+    // AudioMixer uses SdCardModule singleton internally for thread-safe SD access
     MAIN_LOG("Initializing audio mixer...");
-    if (!mixer.begin(&sdCard.getSd(), DEFAULT_PIN_I2S_DATA, DEFAULT_PIN_I2S_BCLK, DEFAULT_PIN_I2S_LRCLK, codec)) {
+    if (!mixer.begin(DEFAULT_PIN_I2S_DATA, DEFAULT_PIN_I2S_BCLK, DEFAULT_PIN_I2S_LRCLK, codec)) {
         MAIN_LOG("Audio mixer initialization failed!");
         return false;
     }
@@ -326,8 +327,8 @@ bool init_engine_fx() {
         efxSettings.togglePin = 10 + (settings.togglePin - 1);  // Map channel to GPIO
     }
     
-    // Initialize EngineFX with the OOP API
-    if (!engineFx.begin(efxSettings, &mixer)) {
+    // Initialize EngineFX (uses AudioMixer singleton internally)
+    if (!engineFx.begin(efxSettings)) {
         MAIN_LOG("Engine FX initialization failed!");
         return false;
     }
@@ -416,10 +417,9 @@ void setup() {
     MAIN_LOG("Initializing audio codec...");
     audio_initialized = init_audio();
     
-    // Register codec with CLI after initialization
+    // Codec is now accessible via AudioMixer::instance().getCodec()
     if (codec) {
-        audioCli.setCodec(codec);
-        MAIN_LOG("✓ Codec registered with CLI");
+        MAIN_LOG("✓ Codec registered with AudioMixer");
     } else {
         MAIN_LOG("WARNING: No codec available");
     }
@@ -452,7 +452,6 @@ void setup() {
     
     // Configure system CLI with version and slave references
     systemCli.setVersion(FIRMWARE_VERSION, BUILD_NUMBER);
-    systemCli.setSdCard(&sdCard);
     systemCli.setGunFX(&gunFx);
     
     // Register all command handlers (order matters - first match wins)

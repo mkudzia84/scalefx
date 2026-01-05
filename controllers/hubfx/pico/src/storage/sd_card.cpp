@@ -8,6 +8,7 @@
 #include "storage_config.h"
 
 SdCardModule::SdCardModule() : initialized(false) {
+    mutex_init(&_sdMutex);
 }
 
 bool SdCardModule::begin(uint8_t cs_pin, uint8_t sck_pin, uint8_t mosi_pin, uint8_t miso_pin, uint8_t speed_mhz) {
@@ -79,8 +80,11 @@ bool SdCardModule::retryInit(uint8_t speed_mhz) {
 }
 
 void SdCardModule::listDirectory(const String& path, bool jsonOutput) {
+    lock();  // Acquire SD mutex
+    
     File32 dir = sd.open(path.c_str(), O_RDONLY);
     if (!dir) {
+        unlock();
         if (jsonOutput) {
             Serial.printf("{\"error\":\"Failed to open '%s'\"}\n", path.c_str());
         } else {
@@ -90,12 +94,13 @@ void SdCardModule::listDirectory(const String& path, bool jsonOutput) {
     }
     
     if (!dir.isDirectory()) {
+        dir.close();
+        unlock();
         if (jsonOutput) {
             Serial.printf("{\"error\":\"'%s' is not a directory\"}\n", path.c_str());
         } else {
             Serial.printf("Error: '%s' is not a directory\n", path.c_str());
         }
-        dir.close();
         return;
     }
     
@@ -130,6 +135,7 @@ void SdCardModule::listDirectory(const String& path, bool jsonOutput) {
         entry.close();
     }
     dir.close();
+    unlock();  // Release SD mutex
     
     if (jsonOutput) {
         Serial.printf("],\"total\":%d}\n", count);
@@ -140,6 +146,7 @@ void SdCardModule::listDirectory(const String& path, bool jsonOutput) {
 }
 
 void SdCardModule::showTree(bool jsonOutput) {
+    lock();  // Acquire SD mutex
     if (jsonOutput) {
         Serial.print("{\"tree\":");
         listDirRecursive("/", 0, jsonOutput);
@@ -150,13 +157,16 @@ void SdCardModule::showTree(bool jsonOutput) {
         listDirRecursive("/", 1, jsonOutput);
         Serial.println("====================");
     }
+    unlock();  // Release SD mutex
 }
 
 void SdCardModule::showInfo(bool jsonOutput) {
+    lock();  // Acquire SD mutex
     uint64_t cardSize = sd.card()->sectorCount() * 512ULL;
     uint32_t clusterSize = (unsigned long)sd.clusterCount() * sd.bytesPerCluster() / sd.clusterCount();
     uint32_t totalSpace = (unsigned long)(sd.clusterCount() * sd.bytesPerCluster() / 1048576);
     uint32_t freeSpace = (unsigned long)(sd.freeClusterCount() * sd.bytesPerCluster() / 1048576);
+    unlock();  // Release SD mutex before printing
     
     if (jsonOutput) {
         Serial.printf("{\"cardSizeMB\":%llu,\"volumeType\":\"FAT%d\",\"clusterSizeBytes\":%lu,\"totalSpaceMB\":%lu,\"freeSpaceMB\":%lu}\n",
@@ -173,15 +183,18 @@ void SdCardModule::showInfo(bool jsonOutput) {
 }
 
 void SdCardModule::showFile(const String& path) {
+    lock();  // Acquire SD mutex
     File32 file = sd.open(path.c_str(), O_RDONLY);
     if (!file) {
+        unlock();
         Serial.printf("Error: Failed to open '%s'\n", path.c_str());
         return;
     }
     
     if (file.isDirectory()) {
-        Serial.printf("Error: '%s' is a directory\n", path.c_str());
         file.close();
+        unlock();
+        Serial.printf("Error: '%s' is a directory\n", path.c_str());
         return;
     }
     
@@ -190,6 +203,7 @@ void SdCardModule::showFile(const String& path) {
         Serial.write(file.read());
     }
     file.close();
+    unlock();  // Release SD mutex
     Serial.println();
     Serial.println("====================");
 }
@@ -208,20 +222,23 @@ bool SdCardModule::uploadFile(const String& path, uint32_t totalSize, Stream& se
     
     serial.println("READY");
     
-    // Open file for writing
+    // Open file for writing (with lock)
+    lock();
     File32 file = sd.open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
     if (!file) {
+        unlock();
         serial.print("ERROR: Cannot open file for writing: ");
         serial.println(path);
         return false;
     }
+    unlock();
     
     uint32_t bytesReceived = 0;
     uint8_t buffer[512];
     uint32_t lastReport = 0;
     
     while (bytesReceived < totalSize) {
-        // Wait for data with timeout
+        // Wait for data with timeout (no lock needed)
         uint32_t startWait = millis();
         while (!serial.available() && (millis() - startWait) < 5000) {
             delay(10);
@@ -229,7 +246,9 @@ bool SdCardModule::uploadFile(const String& path, uint32_t totalSize, Stream& se
         
         if (!serial.available()) {
             serial.println("ERROR: Timeout waiting for data");
+            lock();
             file.close();
+            unlock();
             return false;
         }
         
@@ -240,11 +259,16 @@ bool SdCardModule::uploadFile(const String& path, uint32_t totalSize, Stream& se
         
         size_t bytesRead = serial.readBytes(buffer, toRead);
         
-        // Write to SD card
+        // Write to SD card (with lock)
+        lock();
         size_t written = file.write(buffer, bytesRead);
+        unlock();
+        
         if (written != bytesRead) {
             serial.println("ERROR: Write failed");
+            lock();
             file.close();
+            unlock();
             return false;
         }
         
@@ -260,9 +284,12 @@ bool SdCardModule::uploadFile(const String& path, uint32_t totalSize, Stream& se
         }
     }
     
-    // Close file
+    // Close file (with lock)
+    lock();
     file.sync();
     file.close();
+    unlock();
+    
     serial.println("SUCCESS: File uploaded");
     return true;
 }
@@ -273,22 +300,25 @@ bool SdCardModule::downloadFile(const String& path, Stream& serial) {
         return false;
     }
     
-    // Open file for reading
+    // Open file for reading (with lock)
+    lock();
     File32 file = sd.open(path.c_str(), O_RDONLY);
     if (!file) {
+        unlock();
         serial.print("ERROR: Cannot open file: ");
         serial.println(path);
         return false;
     }
     
     uint32_t fileSize = file.size();
+    unlock();
     
     // Send file size
     serial.print("SIZE: ");
     serial.println(fileSize);
     serial.println("READY");
     
-    // Wait for START confirmation
+    // Wait for START confirmation (no lock needed)
     uint32_t startWait = millis();
     bool gotStart = false;
     while (millis() - startWait < 5000) {
@@ -305,7 +335,9 @@ bool SdCardModule::downloadFile(const String& path, Stream& serial) {
     
     if (!gotStart) {
         serial.println("ERROR: Timeout waiting for START");
+        lock();
         file.close();
+        unlock();
         return false;
     }
     
@@ -314,8 +346,11 @@ bool SdCardModule::downloadFile(const String& path, Stream& serial) {
     uint32_t bytesSent = 0;
     uint32_t lastReport = 0;
     
+    lock();
     while (file.available()) {
         int bytesRead = file.read(buffer, sizeof(buffer));
+        unlock();  // Release lock during serial write
+        
         if (bytesRead > 0) {
             serial.write(buffer, bytesRead);
             serial.flush();
@@ -331,9 +366,12 @@ bool SdCardModule::downloadFile(const String& path, Stream& serial) {
                 lastReport = bytesSent;
             }
         }
+        
+        lock();  // Re-acquire for next read
     }
-    
     file.close();
+    unlock();
+    
     serial.println("\nSUCCESS: Download complete");
     return true;
 }
@@ -344,17 +382,55 @@ bool SdCardModule::removeFile(const String& path) {
         return false;
     }
     
+    lock();
     if (!sd.exists(path.c_str())) {
+        unlock();
         Serial.print("Error: File not found: ");
         Serial.println(path);
         return false;
     }
     
     if (!sd.remove(path.c_str())) {
+        unlock();
         Serial.print("Error: Failed to remove file: ");
         Serial.println(path);
         return false;
     }
+    unlock();
+    
+    return true;
+}
+
+bool SdCardModule::makeDirectory(const String& path) {
+    if (!initialized) {
+        Serial.println("Error: SD card not initialized");
+        return false;
+    }
+    
+    lock();
+    // Check if already exists
+    if (sd.exists(path.c_str())) {
+        File32 dir = sd.open(path.c_str(), O_RDONLY);
+        if (dir && dir.isDirectory()) {
+            dir.close();
+            unlock();
+            return true;  // Directory already exists
+        }
+        if (dir) dir.close();
+        unlock();
+        Serial.print("Error: Path exists but is not a directory: ");
+        Serial.println(path);
+        return false;
+    }
+    
+    // Create directory (mkdir creates recursively)
+    if (!sd.mkdir(path.c_str())) {
+        unlock();
+        Serial.print("Error: Failed to create directory: ");
+        Serial.println(path);
+        return false;
+    }
+    unlock();
     
     return true;
 }

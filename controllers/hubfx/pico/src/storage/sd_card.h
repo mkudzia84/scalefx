@@ -1,7 +1,12 @@
 /*
  * SD Card Module - Header
  * 
- * Handles SD card initialization, file operations, and debug commands
+ * Singleton class for SD card initialization, file operations, and debug commands.
+ * Provides thread-safe SPI access via mutex for multi-core operation.
+ * 
+ * Usage:
+ *   SdCardModule& sd = SdCardModule::instance();
+ *   sd.begin(cs, sck, mosi, miso);
  */
 
 #ifndef SD_CARD_H
@@ -10,10 +15,23 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <SdFat.h>
+#include <pico/mutex.h>
 
 class SdCardModule {
 public:
-    SdCardModule();
+    /**
+     * Get the singleton instance
+     */
+    static SdCardModule& instance() {
+        static SdCardModule instance;
+        return instance;
+    }
+    
+    // Delete copy/move constructors and assignment operators
+    SdCardModule(const SdCardModule&) = delete;
+    SdCardModule& operator=(const SdCardModule&) = delete;
+    SdCardModule(SdCardModule&&) = delete;
+    SdCardModule& operator=(SdCardModule&&) = delete;
     
     /**
      * Initialize SD card with given pins
@@ -33,9 +51,25 @@ public:
     bool isInitialized() const { return initialized; }
     
     /**
-     * Get reference to SdFat object (for audio mixer access)
+     * Get reference to SdFat object (for direct SD access)
      */
     SdFat& getSd() { return sd; }
+    
+    /**
+     * Lock SD card for exclusive access (blocking)
+     */
+    void lock() { mutex_enter_blocking(&_sdMutex); }
+    
+    /**
+     * Try to lock SD card for exclusive access (non-blocking)
+     * @return true if lock acquired, false if already locked
+     */
+    bool tryLock() { return mutex_try_enter(&_sdMutex, nullptr); }
+    
+    /**
+     * Unlock SD card after access
+     */
+    void unlock() { mutex_exit(&_sdMutex); }
     
     /**
      * Retry initialization with different speed
@@ -91,9 +125,21 @@ public:
      */
     bool removeFile(const String& path);
     
+    /**
+     * Create directory on SD card (recursive)
+     * 
+     * @param path Directory path to create
+     * @return true if successful or already exists, false otherwise
+     */
+    bool makeDirectory(const String& path);
+    
 private:
+    // Private constructor for singleton
+    SdCardModule();
+    
     SdFat sd;
     bool initialized;
+    mutex_t _sdMutex;
     
     // Store pin configuration for retry
     uint8_t _cs_pin;

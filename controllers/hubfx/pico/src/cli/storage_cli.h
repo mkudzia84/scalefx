@@ -11,11 +11,11 @@
 
 class StorageCli : public CommandHandler {
 private:
-    SdCardModule* sdCard;
+    // Uses SdCardModule singleton directly
+    SdCardModule& sdCard() { return SdCardModule::instance(); }
     
 public:
-    StorageCli(SdCardModule* sd_ptr) 
-        : sdCard(sd_ptr) {}
+    StorageCli() = default;
     
     bool handleCommand(const String& cmd) override;
     void printHelp() const override;
