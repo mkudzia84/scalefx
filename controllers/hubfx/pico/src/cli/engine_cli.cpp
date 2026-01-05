@@ -4,29 +4,30 @@
  */
 
 #include "engine_cli.h"
+#include "command_parser.h"
 
 bool EngineCli::handleCommand(const String& cmd) {
     if (!engine) return false;
     
+    CommandParser p(cmd);
+    
     // Engine start command
-    if (cmd == "engine start" || cmd == "engine") {
+    if (p.is("engine") || p.matches("engine", "start")) {
         Serial.println("Starting engine effects");
         engine->forceStart();
         return true;
     }
     
     // Engine stop command
-    if (cmd == "engine stop") {
+    if (p.matches("engine", "stop")) {
         Serial.println("Stopping engine effects");
         engine->forceStop();
         return true;
     }
     
     // Engine status [--json|-j]
-    if (cmd == "engine status" || cmd.startsWith("engine status ")) {
-        bool jsonOutput = (cmd.indexOf("--json") >= 0 || cmd.indexOf("-j") >= 0);
-        
-        if (jsonOutput) {
+    if (p.matches("engine", "status")) {
+        if (p.jsonRequested()) {
             Serial.printf("{\"state\":\"%s\",\"toggleEngaged\":%s,\"active\":%s}\n",
                          EngineFX::stateString(engine->state()),
                          engine->isToggleEngaged() ? "true" : "false",

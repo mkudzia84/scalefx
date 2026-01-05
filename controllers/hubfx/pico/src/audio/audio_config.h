@@ -9,6 +9,25 @@
 #define AUDIO_CONFIG_H
 
 // ============================================================================
+//  TESTING CONFIGURATION
+// ============================================================================
+
+/**
+ * Mock I2S Mode
+ * 
+ * When enabled (1), I2S output is replaced with a mock sink that:
+ *  - Captures audio data to memory buffer
+ *  - Collects statistics (peak levels, RMS, clipping, etc.)
+ *  - Allows testing SD card loading and mixing without hardware
+ * 
+ * Use this to validate the audio pipeline without codec/speakers.
+ * Audio will NOT be sent to physical I2S pins in this mode.
+ */
+#ifndef AUDIO_MOCK_I2S
+#define AUDIO_MOCK_I2S              0  // 0 = Real I2S hardware, 1 = Mock sink
+#endif
+
+// ============================================================================
 //  I2S AUDIO CONFIGURATION
 // ============================================================================
 

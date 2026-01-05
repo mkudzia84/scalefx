@@ -1,16 +1,19 @@
 /**
  * @file config_cli.cpp
- * @brief Configuration command handler implementation
+ * @brief Configuration command handler implementation (refactored to use CommandParser)
  */
 
 #include "config_cli.h"
+#include "command_parser.h"
 #include "../storage/sd_card.h"
 
 bool ConfigCli::handleCommand(const String& cmd) {
     if (!config) return false;
     
+    CommandParser p(cmd);
+    
     // config - Display current configuration
-    if (cmd == "config") {
+    if (p.is("config")) {
         Serial.println("\n=== Current Configuration ===");
         config->print();
         Serial.println();
@@ -18,45 +21,30 @@ bool ConfigCli::handleCommand(const String& cmd) {
     }
     
     // config <subcommand> - Configuration operations
-    if (cmd.startsWith("config ")) {
-        String subCmd = cmd.substring(7);
-        subCmd.trim();
-        
-        // Backup config
-        if (subCmd == "backup") {
+    if (p.hasPrefix("config ")) {
+        // config backup
+        if (p.matches("config", "backup")) {
             Serial.println("Backing up current config...");
-            if (config->backup()) {
-                Serial.println("✓ Config backed up successfully");
-            } else {
-                Serial.println("✗ Failed to backup config");
-            }
+            Serial.println(config->backup() ? "✓ Config backed up successfully" : "✗ Failed to backup config");
             return true;
         }
         
-        // Restore config
-        if (subCmd == "restore") {
+        // config restore
+        if (p.matches("config", "restore")) {
             Serial.println("Restoring config from backup...");
-            if (config->restore()) {
-                Serial.println("✓ Config restored successfully");
-            } else {
-                Serial.println("✗ Failed to restore config");
-            }
+            Serial.println(config->restore() ? "✓ Config restored successfully" : "✗ Failed to restore config");
             return true;
         }
         
-        // Reload config
-        if (subCmd == "reload") {
+        // config reload
+        if (p.matches("config", "reload")) {
             Serial.println("Reloading config from SD card...");
-            if (config->load("/config.yaml")) {
-                Serial.println("✓ Config reloaded successfully");
-            } else {
-                Serial.println("✗ Failed to reload config");
-            }
+            Serial.println(config->load("/config.yaml") ? "✓ Config reloaded successfully" : "✗ Failed to reload config");
             return true;
         }
         
-        // Restart with config reload
-        if (subCmd == "restart") {
+        // config restart
+        if (p.matches("config", "restart")) {
             Serial.println("Restarting system...");
             Serial.flush();
             delay(100);
@@ -64,8 +52,8 @@ bool ConfigCli::handleCommand(const String& cmd) {
             return true;
         }
         
-        // Upload config to SD card: config upload <size>
-        if (subCmd.startsWith("upload ")) {
+        // config upload <size>
+        if (p.matches("config", "upload")) {
             if (!sdCard) {
                 Serial.println("ERROR: SD card module not available");
                 return true;
@@ -76,20 +64,15 @@ bool ConfigCli::handleCommand(const String& cmd) {
                 return true;
             }
             
-            String sizeStr = subCmd.substring(7);
-            sizeStr.trim();
-            
-            uint32_t totalSize = sizeStr.toInt();
+            uint32_t totalSize = p.argInt(0, 0);
             if (totalSize == 0 || totalSize > 102400) {  // Max 100KB for config
                 Serial.println("ERROR: Size must be 1 to 102400 bytes");
                 return true;
             }
             
-            // Use unified upload method
             if (sdCard->uploadFile("/config.yaml", totalSize, Serial)) {
                 Serial.println("Run 'config reload' to apply changes");
             }
-            
             return true;
         }
         

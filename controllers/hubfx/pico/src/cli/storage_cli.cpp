@@ -1,48 +1,35 @@
 /**
  * @file storage_cli.cpp
- * @brief Storage command handler implementation
+ * @brief Storage command handler implementation (refactored to use CommandParser)
  */
 
 #include "storage_cli.h"
+#include "command_parser.h"
 
 bool StorageCli::handleCommand(const String& cmd) {
-    // ==================== SD CARD COMMANDS ====================
-    
     if (!sdCard) return false;
     
-    // NEW API: sd init [speed] - Initialize SD card with optional speed
-    if (cmd == "sd init" || cmd.startsWith("sd init ")) {
-        String remaining = (cmd == "sd init") ? "" : cmd.substring(8);
-        remaining.trim();
-        
-        uint8_t speed = 20;  // Default to 20 MHz
-        if (remaining.length() > 0) {
-            speed = remaining.toInt();
-            if (speed == 0 || speed > 50) {
-                Serial.println("Error: Speed must be 1-50 MHz");
-                return true;
-            }
+    CommandParser p(cmd);
+    
+    // ==================== SD CARD COMMANDS ====================
+    
+    // sd init [speed] - Initialize SD card with optional speed
+    if (p.matches("sd", "init")) {
+        uint8_t speed = p.argInt(0, 20);  // Default to 20 MHz
+        if (speed == 0 || speed > 50) {
+            Serial.println("Error: Speed must be 1-50 MHz");
+            return true;
         }
         
         Serial.printf("Attempting SD card initialization at %d MHz...\n", speed);
-        if (sdCard->retryInit(speed)) {
-            Serial.println("Success! SD card initialized.");
-        } else {
-            Serial.println("Failed. Try different speed or check wiring.");
-        }
+        Serial.println(sdCard->retryInit(speed) ? "Success! SD card initialized." : "Failed. Try different speed or check wiring.");
         return true;
     }
     
-    // Check if SD is initialized
+    // Check if SD is initialized for commands that need it
     if (!sdCard->isInitialized()) {
-        // Only show error for SD commands
-        if (cmd == "ls" || cmd.startsWith("ls ") || cmd.startsWith("tree") || 
-            cmd.startsWith("sdinfo") || cmd.startsWith("cat ") ||
-            cmd == "sd ls" || cmd.startsWith("sd ls ") || cmd == "sd tree" || cmd.startsWith("sd tree ") ||
-            cmd == "sd info" || cmd.startsWith("sd info ") || cmd == "sd cat" || cmd.startsWith("sd cat ")) {
-            // Check if JSON output was requested
-            bool jsonOutput = (cmd.indexOf("--json") >= 0 || cmd.indexOf("-j") >= 0);
-            if (jsonOutput) {
+        if (p.hasPrefix("sd ")) {
+            if (p.jsonRequested()) {
                 Serial.println("{\"error\":\"SD card not initialized\"}");
             } else {
                 Serial.println("Error: SD card not initialized");
@@ -52,99 +39,76 @@ bool StorageCli::handleCommand(const String& cmd) {
         return false;
     }
     
-    // NEW API: sd ls [path] [--json|-j]
-    if (cmd == "sd ls" || cmd.startsWith("sd ls ")) {
-        String remaining = (cmd == "sd ls") ? "" : cmd.substring(6);
-        remaining.trim();
-        
-        bool jsonOutput = (remaining.indexOf("--json") >= 0 || remaining.indexOf("-j") >= 0);
-        
-        // Extract path (remove flags)
-        String path = remaining;
-        path.replace("--json", "");
-        path.replace("-j", "");
-        path.trim();
-        if (path.length() == 0) path = "/";
-        
-        sdCard->listDirectory(path, jsonOutput);
+    // sd ls [path] [--json|-j]
+    if (p.matches("sd", "ls")) {
+        String path = p.arg(0).length() > 0 ? p.arg(0) : "/";
+        sdCard->listDirectory(path, p.jsonRequested());
         return true;
     }
     
-    // NEW API: sd tree [--json|-j]
-    if (cmd == "sd tree" || cmd.startsWith("sd tree ")) {
-        bool jsonOutput = (cmd.indexOf("--json") >= 0 || cmd.indexOf("-j") >= 0);
-        sdCard->showTree(jsonOutput);
+    // sd tree [--json|-j]
+    if (p.matches("sd", "tree")) {
+        sdCard->showTree(p.jsonRequested());
         return true;
     }
     
-    // NEW API: sd info [--json|-j]
-    if (cmd == "sd info" || cmd.startsWith("sd info ")) {
-        bool jsonOutput = (cmd.indexOf("--json") >= 0 || cmd.indexOf("-j") >= 0);
-        sdCard->showInfo(jsonOutput);
+    // sd info [--json|-j]
+    if (p.matches("sd", "info")) {
+        sdCard->showInfo(p.jsonRequested());
         return true;
     }
     
-    // NEW API: sd cat <file>
-    if (cmd.startsWith("sd cat ")) {
-        String path = cmd.substring(7);
-        path.trim();
+    // sd cat <file>
+    if (p.matches("sd", "cat")) {
+        String path = p.arg(0);
+        if (path.length() == 0) {
+            Serial.println("Usage: sd cat <file>");
+            return true;
+        }
         sdCard->showFile(path);
         return true;
     }
     
-    // NEW API: sd upload <path> <size>
-    if (cmd.startsWith("sd upload ")) {
-        String remaining = cmd.substring(10);
-        remaining.trim();
+    // sd upload <path> <size>
+    if (p.matches("sd", "upload")) {
+        String path = p.arg(0);
+        uint32_t totalSize = p.argInt(1, 0);
         
-        int spaceIdx = remaining.indexOf(' ');
-        if (spaceIdx < 0) {
+        if (path.length() == 0 || totalSize == 0) {
             Serial.println("Usage: sd upload <path> <size_bytes>");
             return true;
         }
         
-        String path = remaining.substring(0, spaceIdx);
-        String sizeStr = remaining.substring(spaceIdx + 1);
-        sizeStr.trim();
-        
-        uint32_t totalSize = sizeStr.toInt();
-        if (totalSize == 0 || totalSize > 104857600) {  // Max 100MB
+        if (totalSize > 104857600) {  // Max 100MB
             Serial.println("Error: Size must be 1 to 104857600 bytes (100MB)");
             return true;
         }
         
-        // Use unified upload method
         sdCard->uploadFile(path, totalSize, Serial);
         return true;
     }
     
-    // NEW API: sd download <path>
-    if (cmd.startsWith("sd download ")) {
-        String path = cmd.substring(12);
-        path.trim();
-        
+    // sd download <path>
+    if (p.matches("sd", "download")) {
+        String path = p.arg(0);
         if (path.length() == 0) {
             Serial.println("Usage: sd download <path>");
             return true;
         }
-        
         sdCard->downloadFile(path, Serial);
         return true;
     }
     
-    // NEW API: sd rm <path>
-    if (cmd.startsWith("sd rm ")) {
-        String path = cmd.substring(6);
-        path.trim();
-        
+    // sd rm <path>
+    if (p.matches("sd", "rm")) {
+        String path = p.arg(0);
         if (path.length() == 0) {
             Serial.println("Usage: sd rm <path>");
             return true;
         }
         
         if (sdCard->removeFile(path)) {
-            Serial.print("✓ Removed: ");
-            Serial.println(path);
+            Serial.printf("✓ Removed: %s\n", path.c_str());
         } else {
             Serial.println("✗ Failed to remove file");
         }

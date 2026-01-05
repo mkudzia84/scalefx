@@ -19,6 +19,7 @@
 
 #include <Arduino.h>
 #include <pwm_control.h>
+#include "../audio/audio_channels.h"
 
 // Forward declaration
 class AudioMixer;
@@ -31,6 +32,7 @@ namespace EngineFXConfig {
     constexpr int CROSSFADE_MS       = 500;   // Crossfade start before sound ends
     constexpr int HYSTERESIS_US      = 100;   // Toggle detection hysteresis
     constexpr int PROCESS_INTERVAL_MS = 10;   // State machine update interval
+    constexpr int MIN_STATE_TIME_MS  = 100;   // Minimum time in state before checking completion
 }
 
 // ============================================================================
@@ -66,10 +68,12 @@ struct EngineFXSettings {
     int startingOffsetFromStoppingMs = 0;
     int stoppingOffsetFromStartingMs = 0;
     
-    // Audio channels
-    int channelStartup  = 0;
-    int channelRunning  = 1;
-    int channelShutdown = 2;
+    // Audio channels (two channels for crossfading)
+    int channelA = AudioChannels::ENGINE_A;  // Primary channel
+    int channelB = AudioChannels::ENGINE_B;  // Secondary for crossfade
+    
+    // Crossfade duration (ms before sound ends to start next)
+    int crossfadeMs = 500;
 };
 
 // ============================================================================
@@ -114,8 +118,14 @@ private:
     // ---- Audio Helpers ----
     void playStartupSound(int offsetMs = 0);
     void playRunningSound();
+    void crossfadeToRunning();  // Start running on channel B while startup fades
     void playShutdownSound(int offsetMs = 0);
     void stopAllSounds();
+    
+    // ---- Channel Helpers ----
+    int activeChannel() const { return _useChannelB ? _settings.channelB : _settings.channelA; }
+    int crossfadeChannel() const { return _useChannelB ? _settings.channelA : _settings.channelB; }
+    void swapChannels() { _useChannelB = !_useChannelB; }
 
     // ---- State ----
     EngineFXSettings _settings;
@@ -127,6 +137,7 @@ private:
     
     bool _toggleEngaged          = false;
     bool _lastToggleState        = false;
+    bool _forceRunning           = false;  // Keep running via CLI command
     
     uint32_t _stateStartMs       = 0;
     uint32_t _lastProcessMs      = 0;
@@ -134,6 +145,9 @@ private:
     bool _startupSoundStarted    = false;
     bool _runningSoundStarted    = false;
     bool _shutdownSoundStarted   = false;
+    bool _crossfadeStarted       = false;
+    
+    bool _useChannelB            = false;  // Track which channel is active
     
     bool _initialized            = false;
 };

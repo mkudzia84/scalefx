@@ -15,8 +15,8 @@
 
 class AudioCodec;  // Forward declaration
 
-// Use explicit FsFile type (SdFat) to avoid conflicts with LittleFS File
-using SdCardFile = FsFile;
+// Use File32 type (SdFat32) for SD card file operations
+using SdCardFile = File32;
 
 // Include centralized audio configuration (relative path from src/audio/)
 #include "audio_config.h"
@@ -55,11 +55,29 @@ enum class AudioStopMode : uint8_t {
     LoopEnd   = 2
 };
 
+// Behavior when a queued item replaces a looping track
+enum class QueueLoopBehavior : uint8_t {
+    StopImmediate = 0,    // Stop loop immediately, start queued item
+    FinishLoop    = 1     // Let current loop iteration finish, then play queued item
+};
+
+// Special value for infinite looping
+constexpr int LOOP_INFINITE = -1;
+
 struct AudioPlaybackOptions {
-    bool loop              = false;
+    bool loop              = false;       // Legacy: simple loop on/off
+    int loopCount          = LOOP_INFINITE;  // Number of loops: -1=infinite, 0=no loop, N=N loops
     float volume           = 1.0f;
     AudioOutput output     = AudioOutput::Stereo;
     int startOffsetMs      = 0;
+};
+
+// Queued sound item
+struct QueuedSound {
+    char filename[128]            = {};
+    AudioPlaybackOptions options  = {};
+    QueueLoopBehavior loopBehavior = QueueLoopBehavior::StopImmediate;
+    bool valid                    = false;
 };
 
 // ============================================================================
@@ -87,6 +105,14 @@ public:
     void stopLooping(int channel);
     void stopLoopingAll();
 
+    // ---- Queue Control ----
+    bool queueSound(int channel, const char* filename, const AudioPlaybackOptions& options = {},
+                    QueueLoopBehavior loopBehavior = QueueLoopBehavior::StopImmediate);
+    void clearQueue(int channel);
+    void clearAllQueues();
+    int queueLength(int channel) const;
+    bool hasQueuedSounds(int channel) const;
+
     // ---- Volume & Routing ----
     void setVolume(int channel, float volume);
     void setMasterVolume(float volume);
@@ -98,6 +124,12 @@ public:
     bool isPlaying(int channel) const;
     bool isAnyPlaying() const;
     int remainingMs(int channel) const;
+    
+#if AUDIO_MOCK_I2S
+    // Mock I2S statistics access
+    void printMockStatistics();
+    void resetMockStatistics();
+#endif
 
     // ---- Processing ----
     void process();
@@ -107,23 +139,43 @@ public:
     void stopAsync(int channel, AudioStopMode mode = AudioStopMode::Immediate);
     void setVolumeAsync(int channel, float volume);
     void setMasterVolumeAsync(float volume);
+    bool queueSoundAsync(int channel, const char* filename, const AudioPlaybackOptions& options = {},
+                         QueueLoopBehavior loopBehavior = QueueLoopBehavior::StopImmediate);
+    void clearQueueAsync(int channel);
 
-#if AUDIO_TEST_MODE
-    // ---- Test Mode ----
-    void activateTestChannel(int channel, float volume = 1.0f);
-    void deactivateTestChannel(int channel);
-    uint32_t getI2SWriteCount() const { return _i2sWriteCount; }
-    void printMixerStatus() const;
-#endif
+    // ---- Channel Info Access ----
+    const char* getFilename(int channel) const;
+    float getChannelVolume(int channel) const;
+    bool isLooping(int channel) const;
+    int getLoopCount(int channel) const;       // Current remaining loops
+    int getInitialLoopCount(int channel) const; // Initial loop count
+    AudioOutput getOutput(int channel) const;
+    uint32_t getSampleRate(int channel) const;
+    uint16_t getNumChannels(int channel) const;
+    uint16_t getBitsPerSample(int channel) const;
+    uint32_t getTotalSamples(int channel) const;
 
 private:
     // ---- Internal Types ----
+    static constexpr int CHANNEL_FILENAME_MAX = 64;
+    static constexpr int QUEUE_SIZE_PER_CHANNEL = 4;  // Max queued sounds per channel
+    
     struct Channel {
         SdCardFile file;
         bool active           = false;
         bool loop             = false;
+        int loopCount         = 0;        // Remaining loops: -1=infinite, 0=no more loops
+        int loopCountInitial  = 0;        // Initial loop count for status
         float volume          = 1.0f;
         AudioOutput output    = AudioOutput::Stereo;
+        char filename[CHANNEL_FILENAME_MAX] = {};
+        
+        // Queue for this channel
+        QueuedSound queue[QUEUE_SIZE_PER_CHANNEL];
+        int queueHead         = 0;
+        int queueTail         = 0;
+        QueueLoopBehavior pendingLoopBehavior = QueueLoopBehavior::StopImmediate;
+        bool hasQueuedItem    = false;    // Flag: queue has waiting item
 
         // WAV info
         uint32_t sampleRate     = 0;
@@ -147,7 +199,9 @@ private:
         SetVolume,
         SetMasterVolume,
         SetOutput,
-        StopLooping
+        StopLooping,
+        QueueSound,
+        ClearQueue
     };
 
     struct Command {
@@ -156,6 +210,7 @@ private:
         char filename[128]    = {};
         AudioPlaybackOptions options;
         AudioStopMode stopMode = AudioStopMode::Immediate;
+        QueueLoopBehavior loopBehavior = QueueLoopBehavior::StopImmediate;
         float volume          = 1.0f;
         AudioOutput output    = AudioOutput::Stereo;
     };
@@ -168,6 +223,10 @@ private:
     bool queueCommand(const Command& cmd);
     void processCommands();
     void executeCommand(const Command& cmd);
+    void checkAndPlayNextQueued(int channel);  // Check queue after track ends
+    bool enqueueToChannel(int channel, const char* filename, const AudioPlaybackOptions& options,
+                          QueueLoopBehavior loopBehavior);
+    bool dequeueFromChannel(int channel, QueuedSound& out);
 
     // ---- State ----
     SdFat* _sd                = nullptr;
@@ -194,11 +253,6 @@ private:
     // Status (Core 1 -> Core 0)
     volatile bool _channelPlaying[AUDIO_MAX_CHANNELS] = {};
     volatile int _channelRemainingMs[AUDIO_MAX_CHANNELS] = {};
-    
-    #if AUDIO_TEST_MODE
-    // Diagnostic counters
-    uint32_t _i2sWriteCount = 0;
-    #endif
 };
 
 #endif // AUDIO_MIXER_H

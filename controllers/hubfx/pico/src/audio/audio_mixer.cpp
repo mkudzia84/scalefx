@@ -2,15 +2,17 @@
  * HubFX Audio Mixer - Implementation
  * 
  * Software audio mixer for Raspberry Pi Pico with I2S output.
- * Supports dual-core operation via external combined Core 1 task.
+ * Runs on Core 1 with dual-core mode for optimal performance.
  */
 
 #include "audio_mixer.h"
+#include "audio_config.h"
 #include "audio_codec.h"
-#include <I2S.h>
 
-#if AUDIO_TEST_MODE
-#include "audio_test_cli.h"
+#if AUDIO_MOCK_I2S
+#include "mock_i2s_sink.h"
+#else
+#include <I2S.h>
 #endif
 
 // ============================================================================
@@ -24,7 +26,11 @@ constexpr float FADE_STEPS = (FADE_DURATION_MS * AUDIO_SAMPLE_RATE) / (1000.0f *
 //  STATIC HELPERS
 // ============================================================================
 
+#if AUDIO_MOCK_I2S
+static MockI2SSink i2sOutput;
+#else
 static I2S i2sOutput(OUTPUT);
+#endif
 
 static inline int16_t softClip(int32_t sample) {
     // Soft clipping with tanh-like curve for overflow protection
@@ -133,7 +139,7 @@ bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOpti
     }
 
     // Open the WAV file
-    if (!ch.file.open(filename, O_RDONLY)) {
+    if (!ch.file.open(_sd, filename, O_RDONLY)) {
         Serial.printf("[AudioMixer] Failed to open: %s\n", filename);
         return false;
     }
@@ -146,7 +152,26 @@ bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOpti
     }
 
     // Apply playback options
-    ch.loop = options.loop;
+    // Handle loop count: if options.loop is true and loopCount not set, use infinite
+    if (options.loop && options.loopCount == LOOP_INFINITE) {
+        ch.loop = true;
+        ch.loopCount = LOOP_INFINITE;
+        ch.loopCountInitial = LOOP_INFINITE;
+    } else if (options.loopCount > 0) {
+        ch.loop = true;
+        ch.loopCount = options.loopCount;
+        ch.loopCountInitial = options.loopCount;
+    } else if (options.loopCount == 0 || !options.loop) {
+        ch.loop = false;
+        ch.loopCount = 0;
+        ch.loopCountInitial = 0;
+    } else {
+        // loopCount == LOOP_INFINITE without loop flag
+        ch.loop = true;
+        ch.loopCount = LOOP_INFINITE;
+        ch.loopCountInitial = LOOP_INFINITE;
+    }
+    
     ch.volume = constrain(options.volume, 0.0f, 1.0f);
     ch.output = options.output;
     ch.fading = false;
@@ -162,12 +187,82 @@ bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOpti
         }
     }
 
+    // Store filename for status display
+    strncpy(ch.filename, filename, CHANNEL_FILENAME_MAX - 1);
+    ch.filename[CHANNEL_FILENAME_MAX - 1] = '\0';
+    
     ch.active = true;
     _channelPlaying[channel] = true;
 
+    // Format loop info for log
+    const char* loopStr;
+    char loopBuf[16];
+    if (ch.loopCount == LOOP_INFINITE) {
+        loopStr = "loop";
+    } else if (ch.loopCount > 0) {
+        snprintf(loopBuf, sizeof(loopBuf), "x%d", ch.loopCount);
+        loopStr = loopBuf;
+    } else {
+        loopStr = "once";
+    }
+    
     Serial.printf("[AudioMixer] Ch%d: Playing %s (%s, vol=%.2f)\n", 
-                  channel, filename, ch.loop ? "loop" : "once", ch.volume);
+                  channel, filename, loopStr, ch.volume);
     return true;
+}
+
+// ============================================================================
+//  CHANNEL INFO GETTERS
+// ============================================================================
+
+const char* AudioMixer::getFilename(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return nullptr;
+    return _channels[channel].active ? _channels[channel].filename : nullptr;
+}
+
+float AudioMixer::getChannelVolume(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0.0f;
+    return _channels[channel].volume;
+}
+
+bool AudioMixer::isLooping(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return false;
+    return _channels[channel].loop;
+}
+
+int AudioMixer::getLoopCount(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
+    return _channels[channel].loopCount;
+}
+
+int AudioMixer::getInitialLoopCount(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
+    return _channels[channel].loopCountInitial;
+}
+
+AudioOutput AudioMixer::getOutput(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return AudioOutput::Stereo;
+    return _channels[channel].output;
+}
+
+uint32_t AudioMixer::getSampleRate(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
+    return _channels[channel].sampleRate;
+}
+
+uint16_t AudioMixer::getNumChannels(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
+    return _channels[channel].numChannels;
+}
+
+uint16_t AudioMixer::getBitsPerSample(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
+    return _channels[channel].bitsPerSample;
+}
+
+uint32_t AudioMixer::getTotalSamples(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
+    return _channels[channel].totalSamples;
 }
 
 void AudioMixer::stop(int channel, AudioStopMode mode) {
@@ -209,11 +304,147 @@ void AudioMixer::stopLooping(int channel) {
     if (!_initialized) return;
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
     _channels[channel].loop = false;
+    _channels[channel].loopCount = 0;
 }
 
 void AudioMixer::stopLoopingAll() {
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         _channels[i].loop = false;
+        _channels[i].loopCount = 0;
+    }
+}
+
+// ============================================================================
+//  QUEUE CONTROL
+// ============================================================================
+
+bool AudioMixer::queueSound(int channel, const char* filename, const AudioPlaybackOptions& options,
+                            QueueLoopBehavior loopBehavior) {
+    if (!_initialized) return false;
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return false;
+    if (!filename) return false;
+    
+    Channel& ch = _channels[channel];
+    
+    // If channel is not playing, just play directly
+    if (!ch.active) {
+        return play(channel, filename, options);
+    }
+    
+    // If current track is looping infinitely and no fixed loop count, 
+    // we can only queue if we handle it via loopBehavior
+    if (ch.loop && ch.loopCount == LOOP_INFINITE) {
+        // For infinite loops, we need to handle based on loopBehavior
+        if (loopBehavior == QueueLoopBehavior::StopImmediate) {
+            // Stop current immediately and play new sound
+            stop(channel, AudioStopMode::Immediate);
+            return play(channel, filename, options);
+        } else {
+            // FinishLoop: mark that we want to stop after current loop finishes
+            ch.loopCount = 0;  // Will finish after this iteration
+            ch.hasQueuedItem = true;
+            ch.pendingLoopBehavior = loopBehavior;
+        }
+    }
+    
+    return enqueueToChannel(channel, filename, options, loopBehavior);
+}
+
+bool AudioMixer::enqueueToChannel(int channel, const char* filename, const AudioPlaybackOptions& options,
+                                   QueueLoopBehavior loopBehavior) {
+    Channel& ch = _channels[channel];
+    
+    // Check if queue is full
+    int nextHead = (ch.queueHead + 1) % QUEUE_SIZE_PER_CHANNEL;
+    if (nextHead == ch.queueTail) {
+        Serial.printf("[AudioMixer] Ch%d: Queue full, cannot enqueue %s\n", channel, filename);
+        return false;
+    }
+    
+    // Validate: looping items can only be queued if they have a fixed loop count
+    if (options.loop && options.loopCount == LOOP_INFINITE) {
+        Serial.printf("[AudioMixer] Ch%d: Cannot queue infinite loop, use fixed loop count\n", channel);
+        return false;
+    }
+    
+    // Add to queue
+    QueuedSound& item = ch.queue[ch.queueHead];
+    strncpy(item.filename, filename, sizeof(item.filename) - 1);
+    item.filename[sizeof(item.filename) - 1] = '\0';
+    item.options = options;
+    item.loopBehavior = loopBehavior;
+    item.valid = true;
+    
+    ch.queueHead = nextHead;
+    ch.hasQueuedItem = true;
+    
+    Serial.printf("[AudioMixer] Ch%d: Queued %s (%s)\n", channel, filename,
+                  loopBehavior == QueueLoopBehavior::StopImmediate ? "stop-immediate" : "finish-loop");
+    return true;
+}
+
+bool AudioMixer::dequeueFromChannel(int channel, QueuedSound& out) {
+    Channel& ch = _channels[channel];
+    
+    if (ch.queueTail == ch.queueHead) {
+        ch.hasQueuedItem = false;
+        return false;
+    }
+    
+    out = ch.queue[ch.queueTail];
+    ch.queue[ch.queueTail].valid = false;
+    ch.queueTail = (ch.queueTail + 1) % QUEUE_SIZE_PER_CHANNEL;
+    
+    // Update hasQueuedItem flag
+    ch.hasQueuedItem = (ch.queueTail != ch.queueHead);
+    
+    return out.valid;
+}
+
+void AudioMixer::clearQueue(int channel) {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
+    
+    Channel& ch = _channels[channel];
+    ch.queueHead = 0;
+    ch.queueTail = 0;
+    ch.hasQueuedItem = false;
+    
+    for (int i = 0; i < QUEUE_SIZE_PER_CHANNEL; i++) {
+        ch.queue[i].valid = false;
+    }
+    
+    Serial.printf("[AudioMixer] Ch%d: Queue cleared\n", channel);
+}
+
+void AudioMixer::clearAllQueues() {
+    for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
+        clearQueue(i);
+    }
+}
+
+int AudioMixer::queueLength(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
+    
+    const Channel& ch = _channels[channel];
+    int len = ch.queueHead - ch.queueTail;
+    if (len < 0) len += QUEUE_SIZE_PER_CHANNEL;
+    return len;
+}
+
+bool AudioMixer::hasQueuedSounds(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return false;
+    return _channels[channel].hasQueuedItem;
+}
+
+void AudioMixer::checkAndPlayNextQueued(int channel) {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
+    
+    Channel& ch = _channels[channel];
+    
+    QueuedSound nextSound;
+    if (dequeueFromChannel(channel, nextSound)) {
+        Serial.printf("[AudioMixer] Ch%d: Playing next from queue: %s\n", channel, nextSound.filename);
+        play(channel, nextSound.filename, nextSound.options);
     }
 }
 
@@ -292,17 +523,48 @@ void AudioMixer::doMixAndOutput() {
             ch.fading = false;
             if (ch.file) ch.file.close();
             _channelPlaying[i] = false;
+            // Check for queued sounds after fade ends
+            checkAndPlayNextQueued(i);
         }
 
         // Handle end of file
         if (ch.samplesRemaining == 0) {
+            bool shouldLoop = false;
+            
             if (ch.loop) {
+                if (ch.loopCount == LOOP_INFINITE) {
+                    // Infinite loop - check for queued items
+                    if (ch.hasQueuedItem) {
+                        // Check the pending loop behavior
+                        if (ch.pendingLoopBehavior == QueueLoopBehavior::FinishLoop) {
+                            // Current loop iteration is finished, play next
+                            shouldLoop = false;
+                        } else {
+                            // StopImmediate was already handled in queueSound()
+                            shouldLoop = true;
+                        }
+                    } else {
+                        shouldLoop = true;
+                    }
+                } else if (ch.loopCount > 0) {
+                    // Finite loops remaining
+                    ch.loopCount--;
+                    shouldLoop = (ch.loopCount >= 0);
+                    if (ch.loopCount == 0) {
+                        ch.loop = false;  // No more loops after this
+                    }
+                }
+            }
+            
+            if (shouldLoop) {
                 ch.file.seek(ch.dataStart);
                 ch.samplesRemaining = ch.totalSamples;
             } else {
                 ch.active = false;
                 if (ch.file) ch.file.close();
                 _channelPlaying[i] = false;
+                // Check for queued sounds after playback ends
+                checkAndPlayNextQueued(i);
             }
         }
 
@@ -380,37 +642,6 @@ void AudioMixer::mixChannel(Channel& ch, int32_t* mixL, int32_t* mixR, int sampl
     // Calculate effective volume (channel * master * fade)
     float effectiveVolume = ch.volume * _masterVolume;
     
-#if AUDIO_TEST_MODE
-    // In test mode, generate test data directly into a buffer
-    int16_t testBuffer[AUDIO_MIX_BUFFER_SIZE * 2];  // Stereo interleaved
-    
-    // Get the channel index
-    int channelIndex = &ch - _channels;
-    
-    // Generate test audio data for this channel
-    AudioTestCLI::injectTestData(channelIndex, testBuffer, samples);
-    
-    // Mix the test buffer into the output
-    for (int i = 0; i < samples; i++) {
-        int32_t sampleL = testBuffer[i * 2];
-        int32_t sampleR = testBuffer[i * 2 + 1];
-        
-        // Apply volume
-        sampleL = static_cast<int32_t>(sampleL * effectiveVolume);
-        sampleR = static_cast<int32_t>(sampleR * effectiveVolume);
-        
-        // Apply output routing
-        if (ch.output == AudioOutput::Left || ch.output == AudioOutput::Stereo) {
-            mixL[i] += sampleL;
-        }
-        if (ch.output == AudioOutput::Right || ch.output == AudioOutput::Stereo) {
-            mixR[i] += sampleR;
-        }
-    }
-    
-    return;  // Skip file-based mixing in test mode
-#endif
-    
     // Normal file-based mixing
     int bytesPerSample = ch.numChannels * (ch.bitsPerSample / 8);
     int samplesToRead = min(static_cast<uint32_t>(samples), ch.samplesRemaining);
@@ -479,10 +710,6 @@ void AudioMixer::outputToI2S(int samples) {
         i2sOutput.write(outL);
         i2sOutput.write(outR);
     }
-    
-    #if AUDIO_TEST_MODE
-    _i2sWriteCount += samples;
-    #endif
 }
 
 // ============================================================================
@@ -539,6 +766,13 @@ void AudioMixer::executeCommand(const Command& cmd) {
         case CommandType::StopLooping:
             if (cmd.channelId < 0) stopLoopingAll();
             else stopLooping(cmd.channelId);
+            break;
+        case CommandType::QueueSound:
+            queueSound(cmd.channelId, cmd.filename, cmd.options, cmd.loopBehavior);
+            break;
+        case CommandType::ClearQueue:
+            if (cmd.channelId < 0) clearAllQueues();
+            else clearQueue(cmd.channelId);
             break;
         default:
             break;
@@ -599,62 +833,42 @@ void AudioMixer::setMasterVolumeAsync(float vol) {
     queueCommand(cmd);
 }
 
-// ============================================================================
-//  TEST MODE (Single-core audio testing with mock data)
-// ============================================================================
+bool AudioMixer::queueSoundAsync(int channel, const char* filename, const AudioPlaybackOptions& options,
+                                  QueueLoopBehavior loopBehavior) {
+    if (!_dualCoreMode) return queueSound(channel, filename, options, loopBehavior);
 
-#if AUDIO_TEST_MODE
-void AudioMixer::activateTestChannel(int channel, float volume) {
-    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
-    
-    Channel& ch = _channels[channel];
-    ch.active = true;
-    ch.volume = volume;
-    ch.loop = false;
-    ch.fading = false;
-    ch.samplesRemaining = 0xFFFFFFFF;  // Infinite samples for test mode
-    
-    // Mark as playing for status queries
-    _channelPlaying[channel] = true;
-    
-    Serial.printf("[MIXER] Test channel %d activated (vol=%.2f)\n", channel, volume);
+    Command cmd{};
+    cmd.type = CommandType::QueueSound;
+    cmd.channelId = channel;
+    strncpy(cmd.filename, filename, sizeof(cmd.filename) - 1);
+    cmd.options = options;
+    cmd.loopBehavior = loopBehavior;
+    return queueCommand(cmd);
 }
 
-void AudioMixer::deactivateTestChannel(int channel) {
-    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
-    
-    Channel& ch = _channels[channel];
-    ch.active = false;
-    _channelPlaying[channel] = false;
-    
-    Serial.printf("[MIXER] Test channel %d deactivated\n", channel);
-}
-
-void AudioMixer::printMixerStatus() const {
-    Serial.println("========================================");
-    Serial.println("MIXER STATUS");
-    Serial.println("========================================");
-    Serial.printf("Initialized:    %s\n", _initialized ? "YES" : "NO");
-    Serial.printf("I2S Running:    %s\n", _i2sRunning ? "YES" : "NO");
-    Serial.printf("Master Volume:  %.2f\n", _masterVolume);
-    Serial.printf("Dual-Core Mode: %s\n", _dualCoreMode ? "YES" : "NO");
-    Serial.printf("I2S Write Count: %lu samples\n", (unsigned long)_i2sWriteCount);
-    Serial.println("");
-    
-    Serial.println("Channel Status:");
-    for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
-        const Channel& ch = _channels[i];
-        Serial.printf("  Ch%d: %s", i, ch.active ? "ACTIVE" : "Inactive");
-        if (ch.active) {
-            Serial.printf(" | Vol: %.2f | Fade: %s | Loop: %s | Samples: %lu",
-                          ch.volume,
-                          ch.fading ? "YES" : "NO",
-                          ch.loop ? "YES" : "NO",
-                          (unsigned long)ch.samplesRemaining);
-        }
-        Serial.println("");
+void AudioMixer::clearQueueAsync(int channel) {
+    if (!_dualCoreMode) {
+        if (channel < 0) clearAllQueues();
+        else clearQueue(channel);
+        return;
     }
-    
-    Serial.println("========================================");
+
+    Command cmd{};
+    cmd.type = CommandType::ClearQueue;
+    cmd.channelId = channel;
+    queueCommand(cmd);
 }
-#endif // AUDIO_TEST_MODE
+
+// ============================================================================
+//  MOCK I2S STATISTICS
+// ============================================================================
+#if AUDIO_MOCK_I2S
+void AudioMixer::printMockStatistics() {
+    i2sOutput.printStatistics();
+}
+
+void AudioMixer::resetMockStatistics() {
+    i2sOutput.resetStatistics();
+    Serial.println("[AudioMixer] Mock I2S statistics reset");
+}
+#endif

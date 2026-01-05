@@ -5,7 +5,7 @@
  * 
  * DUAL-CORE ARCHITECTURE:
  *   Core 0: Main loop, serial commands, config, engine FX logic
- *   Core 1: Dedicated audio processing
+ *   Core 1: Audio processing (mixing, I2S output)
  * 
  * Features:
  *   - 8-channel audio mixer with I2S output
@@ -15,7 +15,7 @@
  */
 
 #define FIRMWARE_VERSION "1.1.0"
-#define BUILD_NUMBER 106  // Increment this with each build
+#define BUILD_NUMBER 120  // Increment this with each build
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -27,6 +27,8 @@
 #include "audio/tas5825_codec.h"
 // #include "audio/simple_i2s_codec.h"  // Alternative: simple I2S DACs
 #include "audio/audio_mixer.h"
+#include "audio/audio_channels.h"
+#include "audio/system_sounds.h"
 #include "storage/config_reader.h"
 #include "effects/engine_fx.h"
 #include "effects/gun_fx.h"
@@ -37,6 +39,7 @@
 #include "cli/storage_cli.h"
 #include "cli/config_cli.h"
 #include "cli/engine_cli.h"
+#include "cli/gun_cli.h"
 #include "cli/system_cli.h"
 #if AUDIO_TEST_MODE
 #include "cli/test_cli.h"
@@ -100,6 +103,9 @@ AudioMixer mixer;
 // Engine FX
 EngineFX engineFx;
 
+// Gun FX (slave controller)
+GunFX gunFx;
+
 // Configuration
 ConfigReader configReader;
 
@@ -109,6 +115,7 @@ AudioCli audioCli(&mixer);
 StorageCli storageCli(&sdCard);
 ConfigCli configCli(&configReader, &sdCard);
 EngineCli engineCli(&engineFx);
+GunCli gunCli(&gunFx);
 SystemCli systemCli;
 
 // State
@@ -117,67 +124,30 @@ bool audio_initialized = false;
 bool engineFxInitialized = false;
 
 // ============================================================================
-// Core 1 Audio Task
+// Audio Processing (Dual-Core Mode - Core 1)
 // ============================================================================
 
-#include <pico/multicore.h>
+// Audio runs on Core 1 for optimal performance
+// Core 0 sends commands via queue, Core 1 does mixing and I2S output
+// Uses mutex-protected command queue for thread-safe communication
 
-static volatile bool g_core1Running = false;
+volatile bool core1_running = false;
 
-/**
- * Core 1 task that handles audio processing.
- * 
- * TIMING:
- *   - Audio: 44.1kHz stereo, 512-sample buffer = 11.6ms per refill
- *   - Double-buffered DMA refills every ~5.8ms
- *   - Loop takes ~3-6ms, primarily gated by I2S DMA blocking
- */
-static void core1AudioTask() {
-    Serial.println("[Core1] Audio task starting");
-    
-    g_core1Running = true;
-    
-    while (g_core1Running) {
-        // Process audio - mixes channels, outputs to I2S DMA
-        if (audio_initialized) {
-            mixer.process();
-        }
-        // Always yield to allow command processing
-        yield();
-    }
-    
-    Serial.println("[Core1] Task stopped");
-}
-
-/**
- * Start the Core 1 audio task
- */
-bool startCore1Task() {
-    if (g_core1Running) return true;
-    
-    Serial.println("[Core1] Launching audio task...");
-    multicore_launch_core1(core1AudioTask);
-    
-    // Wait for startup
-    int timeout = 100;
-    while (!g_core1Running && timeout > 0) {
+// Core 1 setup - called once when Core 1 starts
+void setup1() {
+    // Wait for Core 0 to complete initialization
+    while (!audio_initialized) {
         delay(10);
-        timeout--;
     }
-    
-    return g_core1Running;
+    Serial.println("[CORE1] Audio processing started");
+    core1_running = true;
 }
 
-/**
- * Stop the combined Core 1 task
- */
-void stopCore1Task() {
-    if (!g_core1Running) return;
-    
-    g_core1Running = false;
-    delay(50);
-    multicore_reset_core1();
-    Serial.println("[Core1] Task stopped");
+// Core 1 loop - audio processing
+void loop1() {
+    if (audio_initialized) {
+        mixer.process();
+    }
 }
 
 // ============================================================================
@@ -298,7 +268,7 @@ bool init_audio() {
     // Set mixer volume
     mixer.setVolume(-1, 0.8f);
     
-    Serial.println("[MAIN] Audio system initialized (dual-core ready)");
+    Serial.println("[MAIN] Audio system initialized");
     return true;
 }
 
@@ -337,40 +307,6 @@ bool init_engine_fx() {
     
     Serial.println("[MAIN] Engine FX initialized");
     return true;
-}
-
-// ============================================================================
-// (Gun FX removed - not supported in simplified version)
-// ============================================================================
-
-// ============================================================================
-// Test Functions
-// ============================================================================
-
-void play_startup_sound() {
-    // Try to play a startup sound
-    const char* test_files[] = {
-        "/sounds/startup.wav",
-        "/startup.wav",
-        "/test.wav",
-        "/sounds/test.wav"
-    };
-    
-    AudioPlaybackOptions opts;
-    opts.loop = false;
-    opts.volume = 0.8f;
-    opts.output = AudioOutput::Stereo;
-    opts.startOffsetMs = 0;
-    
-    for (const char* file : test_files) {
-        // Use async version for dual-core safety
-        if (mixer.playAsync(0, file, opts)) {
-            Serial.printf("[MAIN] Playing startup sound: %s\n", file);
-            return;
-        }
-    }
-    
-    Serial.println("[MAIN] No startup sound found");
 }
 
 // ============================================================================
@@ -465,30 +401,14 @@ void setup() {
         Serial.println("[MAIN] WARNING: No codec available");
     }
     
-    // START CORE 1: Audio task only (unless in test mode)
-    // Must happen AFTER audio init but BEFORE we try to play sounds
+    // Core 1 will automatically start running setup1() and loop1()
+    // Audio processing happens there via mixer.process()
+    Serial.println("[MAIN] Audio processing delegated to Core 1");
+    
 #if AUDIO_TEST_MODE
-    Serial.println("[MAIN] TEST MODE: Audio will run on Core 0 in loop()");
     if (audio_initialized) {
-        // Don't play startup sound in test mode
         Serial.println("[MAIN] Use 'test' commands to generate mock audio");
-        
-        // Set mixer reference for test CLI
         AudioTestCLI::setMixer(&mixer);
-    }
-#else
-    if (audio_initialized) {
-        if (!startCore1Task()) {
-            Serial.println("[MAIN] CRITICAL: Failed to start Core 1!");
-            Serial.println("[MAIN] Audio will not function properly.");
-        } else {
-            Serial.println("[MAIN] Core 1 started (Audio processing)");
-        }
-        
-        // Play startup sound (only if SD card is available)
-        if (sdCard.isInitialized()) {
-            play_startup_sound();
-        }
     }
 #endif
     
@@ -500,16 +420,22 @@ void setup() {
     // Initialize CLI command router
     Serial.println("[MAIN] Initializing CLI system...");
     
+    // Configure system CLI with version and slave references
+    systemCli.setVersion(FIRMWARE_VERSION, BUILD_NUMBER);
+    systemCli.setSdCard(&sdCard);
+    systemCli.setGunFX(&gunFx);
+    
     // Register all command handlers (order matters - first match wins)
     cmdRouter.addHandler(&systemCli);   // System commands (help, version, etc.)
     cmdRouter.addHandler(&audioCli);    // Audio commands (play, stop, etc.)
     cmdRouter.addHandler(&storageCli);  // Storage commands (ls, cat, etc.)
     cmdRouter.addHandler(&configCli);   // Config commands
     cmdRouter.addHandler(&engineCli);   // Engine commands
+    cmdRouter.addHandler(&gunCli);      // Gun commands (slave control)
     
     // Register handlers with system CLI for help display
     std::vector<CommandHandler*> allHandlers = {
-        &systemCli, &audioCli, &storageCli, &configCli, &engineCli
+        &systemCli, &audioCli, &storageCli, &configCli, &engineCli, &gunCli
     };
     systemCli.registerHandlers(allHandlers);
     
@@ -519,6 +445,15 @@ void setup() {
     Serial.println("[MAIN] Initialization complete");
     Serial.println("[MAIN] Type 'help' for commands");
     Serial.println();
+    
+    // Play HubFX initialization sound on system channel
+    if (audio_initialized && sdCard.isInitialized()) {
+        AudioPlaybackOptions opts;
+        opts.volume = 0.8f;
+        opts.loop = false;
+        mixer.playAsync(SystemSounds::CHANNEL, SystemSounds::HUBFX_INITIALIZED, opts);
+        Serial.println("[MAIN] Queued initialization sound");
+    }
 }
 
 // ============================================================================
@@ -526,6 +461,9 @@ void setup() {
 // ============================================================================
 
 void loop() {
+    // Audio processing moved to Core 1 (loop1)
+    // Core 0 handles commands and state machines
+    
     // Update status LED
     status_led_update();
     

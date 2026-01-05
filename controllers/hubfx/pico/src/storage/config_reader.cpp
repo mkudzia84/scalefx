@@ -6,6 +6,7 @@
  */
 
 #include "config_reader.h"
+#include "../audio/audio_channels.h"
 
 // ============================================================================
 //  DEBUG
@@ -105,10 +106,20 @@ bool ConfigReader::parseValue(const char* line, char* value, size_t valueSize) {
             len = strlen(start);
         }
         strncpy(value, start, len);
+        value[len] = '\0';
     } else {
+        // Non-quoted: strip comment (# or //)
         strncpy(value, colon, len);
+        value[len] = '\0';
+        
+        // Strip YAML comment (# not in string)
+        char* hash = strchr(value, '#');
+        if (hash) *hash = '\0';
+        
+        // Strip C-style comment
+        char* slash = strstr(value, "//");
+        if (slash) *slash = '\0';
     }
-    value[len] = '\0';
     trimString(value);
     
     return true;
@@ -180,15 +191,19 @@ void ConfigReader::loadDefaults() {
     _settings.engine.toggleThresholdUs = 1500;
     _settings.engine.startingOffsetFromStoppingMs = 60000;
     _settings.engine.stoppingOffsetFromStartingMs = 25000;
-    _settings.engine.channelStartup = 0;
-    _settings.engine.channelRunning = 1;
-    _settings.engine.channelShutdown = 2;
+    _settings.engine.channelA = AudioChannels::ENGINE_A;  // Primary channel
+    _settings.engine.channelB = AudioChannels::ENGINE_B;  // Crossfade channel
+    _settings.engine.crossfadeMs = 500;
+    // Default engine sound volumes
+    _settings.engine.startupSound.volume = 1.0f;
+    _settings.engine.runningSound.volume = 1.0f;
+    _settings.engine.shutdownSound.volume = 1.0f;
     
     // ---- Gun FX Defaults ----
     _settings.gun.enabled = false;
     _settings.gun.triggerChannel = -1;
     _settings.gun.rateCount = 0;
-    _settings.gun.audioChannel = 3;
+    _settings.gun.audioChannel = AudioChannels::GUN;
     
     // Smoke defaults
     _settings.gun.smoke.heaterToggleChannel = -1;
@@ -607,10 +622,14 @@ bool ConfigReader::load(const char* filename) {
             ctx.listIndex = -1;
         }
         else if (indent == 1) {
-            strncpy(ctx.subsection, key, sizeof(ctx.subsection) - 1);
-            ctx.subsubsection[0] = '\0';
-            if (strcmp(key, "rates_of_fire") != 0) {
-                ctx.listIndex = -1;
+            // Only update subsection if this is a section header (no value)
+            // Key-value pairs at indent 1 keep subsection empty
+            if (value[0] == '\0') {
+                strncpy(ctx.subsection, key, sizeof(ctx.subsection) - 1);
+                ctx.subsubsection[0] = '\0';
+                if (strcmp(key, "rates_of_fire") != 0) {
+                    ctx.listIndex = -1;
+                }
             }
         }
         else if (indent == 2 && !listItem) {

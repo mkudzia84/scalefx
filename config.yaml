@@ -21,9 +21,9 @@ engine_fx:
   
   # Sound Files and Transitions
   sounds:
-    starting: "~scalefx/assets/engine_start.wav"    # Engine start-up sound (optional)
-    running: "~scalefx/assets/engine_loop.wav"      # Engine running loop sound (optional)
-    stopping: "~scalefx/assets/engine_stop.wav"     # Engine shut-down sound (optional)
+    starting: "/sounds/KA50/engine_start.wav"    # Engine start-up sound (optional)
+    running: "/sounds/KA50/engine_loop.wav"      # Engine running loop sound (optional)
+    stopping: "/sounds/KA50/engine_stop.wav"     # Engine shut-down sound (optional)
     
     # Transition Offsets
     transitions:
@@ -53,12 +53,12 @@ gun_fx:
     - name: "200"
       rpm: 200                 # Rounds per minute
       pwm_threshold_us: 1300   # PWM threshold in microseconds
-      sound_file: "~scalefx/assets/gun_200rpm.wav"  # Sound file to play (optional)
+      sound_file: "/sounds/2A42/200rpm.wav"  # Sound file to play (optional)
     
     - name: "550"
       rpm: 550                 # Rounds per minute
       pwm_threshold_us: 1600   # PWM threshold in microseconds
-      sound_file: "~scalefx/assets/gun_550rpm.wav"  # Sound file to play (optional)
+      sound_file: "/sounds/2A42/550rpm.wav"  # Sound file to play (optional)
   
   # Turret Control Servos (via Pico)
   turret_control:

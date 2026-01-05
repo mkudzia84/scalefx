@@ -45,6 +45,7 @@ bool EngineFX::begin(const EngineFXSettings& settings, AudioMixer* mixer) {
     _requestedState = EngineState::Stopped;
     _toggleEngaged = false;
     _lastToggleState = false;
+    _forceRunning = false;
     _stateStartMs = millis();
     _lastProcessMs = millis();
     
@@ -103,9 +104,12 @@ void EngineFX::process() {
     }
     
     // Process state machine
+    // Engine should run if toggle is ON or force running is set
+    bool shouldRun = toggleOn || _forceRunning;
+    
     switch (_state) {
         case EngineState::Stopped:
-            if (toggleOn || _requestedState == EngineState::Starting) {
+            if (shouldRun || _requestedState == EngineState::Starting) {
                 _requestedState = EngineState::Stopped;
                 enterState(EngineState::Starting);
                 playStartupSound();
@@ -113,50 +117,73 @@ void EngineFX::process() {
             break;
             
         case EngineState::Starting:
-            if (!toggleOn || _requestedState == EngineState::Stopping) {
+            if ((!shouldRun && _requestedState != EngineState::Starting) || 
+                _requestedState == EngineState::Stopping) {
                 // Toggle turned off while starting
                 _requestedState = EngineState::Stopped;
                 enterState(EngineState::Stopping);
-                _mixer->stopAsync(_settings.channelStartup, AudioStopMode::Immediate);
+                // Stop both channels
+                _mixer->stopAsync(_settings.channelA, AudioStopMode::Immediate);
+                _mixer->stopAsync(_settings.channelB, AudioStopMode::Immediate);
                 _startupSoundStarted = false;
+                _runningSoundStarted = false;
+                _crossfadeStarted = false;
                 playShutdownSound(_settings.stoppingOffsetFromStartingMs);
             } else {
-                // Check crossfade timing
-                int remainingMs = _mixer->remainingMs(_settings.channelStartup);
-                if (remainingMs >= 0 && remainingMs <= EngineFXConfig::CROSSFADE_MS) {
-                    playRunningSound();
+                // Check crossfade timing - start running on other channel near end of startup
+                int remainingMs = _mixer->remainingMs(activeChannel());
+                if (!_crossfadeStarted && remainingMs >= 0 && remainingMs <= _settings.crossfadeMs) {
+                    crossfadeToRunning();
                 }
-                // Check if startup finished
-                if (!_mixer->isPlaying(_settings.channelStartup)) {
+                // Check if startup finished (only check after min time in state)
+                uint32_t timeInState = millis() - _stateStartMs;
+                if (timeInState >= EngineFXConfig::MIN_STATE_TIME_MS &&
+                    _startupSoundStarted && !_mixer->isPlaying(activeChannel())) {
+                    // Startup channel finished, running is on crossfade channel
+                    swapChannels();  // Running is now the active channel
                     enterState(EngineState::Running);
-                    playRunningSound();
+                    if (!_runningSoundStarted) {
+                        playRunningSound();
+                    }
                 }
             }
             break;
             
         case EngineState::Running:
-            playRunningSound();
-            if (!toggleOn || _requestedState == EngineState::Stopping) {
+            // Ensure running sound keeps playing (looped)
+            if (!_mixer->isPlaying(activeChannel())) {
+                playRunningSound();
+            }
+            if (!shouldRun || _requestedState == EngineState::Stopping) {
                 _requestedState = EngineState::Stopped;
                 enterState(EngineState::Stopping);
-                _mixer->stopAsync(_settings.channelRunning, AudioStopMode::Immediate);
+                // Fade out running and play shutdown on other channel
+                _mixer->stopAsync(activeChannel(), AudioStopMode::Fade);
                 _runningSoundStarted = false;
                 playShutdownSound();
             }
             break;
             
         case EngineState::Stopping:
-            if (toggleOn || _requestedState == EngineState::Starting) {
+            if (shouldRun || _requestedState == EngineState::Starting) {
                 // Toggle turned back on while stopping
                 _requestedState = EngineState::Stopped;
                 enterState(EngineState::Starting);
-                _mixer->stopAsync(_settings.channelShutdown, AudioStopMode::Immediate);
+                _mixer->stopAsync(_settings.channelA, AudioStopMode::Immediate);
+                _mixer->stopAsync(_settings.channelB, AudioStopMode::Immediate);
                 _shutdownSoundStarted = false;
                 playStartupSound(_settings.startingOffsetFromStoppingMs);
-            } else if (!_mixer->isPlaying(_settings.channelShutdown)) {
-                // Shutdown finished
-                enterState(EngineState::Stopped);
-                stopAllSounds();
+            } else {
+                // Allow time for async sound to start before checking completion
+                uint32_t timeInState = millis() - _stateStartMs;
+                if (timeInState >= EngineFXConfig::MIN_STATE_TIME_MS &&
+                    _shutdownSoundStarted && 
+                    !_mixer->isPlaying(_settings.channelA) && 
+                    !_mixer->isPlaying(_settings.channelB)) {
+                    // Shutdown finished
+                    enterState(EngineState::Stopped);
+                    stopAllSounds();
+                }
             }
             break;
     }
@@ -178,6 +205,7 @@ void EngineFX::enterState(EngineState newState) {
     _startupSoundStarted = false;
     _runningSoundStarted = false;
     _shutdownSoundStarted = false;
+    _crossfadeStarted = false;
 }
 
 // ============================================================================
@@ -188,15 +216,16 @@ void EngineFX::playStartupSound(int offsetMs) {
     if (_startupSoundStarted) return;
     if (!_settings.startupSound.filename) return;
     
-    LOG("Playing startup: %s (offset=%d ms)", _settings.startupSound.filename, offsetMs);
+    LOG("Playing startup on ch%d: %s (offset=%d ms)", activeChannel(), _settings.startupSound.filename, offsetMs);
     
     AudioPlaybackOptions opts;
     opts.loop = false;
+    opts.loopCount = 0;
     opts.volume = _settings.startupSound.volume;
     opts.output = AudioOutput::Stereo;
     opts.startOffsetMs = offsetMs;
     
-    _mixer->playAsync(_settings.channelStartup, _settings.startupSound.filename, opts);
+    _mixer->playAsync(activeChannel(), _settings.startupSound.filename, opts);
     _startupSoundStarted = true;
 }
 
@@ -204,46 +233,70 @@ void EngineFX::playRunningSound() {
     if (_runningSoundStarted) return;
     if (!_settings.runningSound.filename) return;
     
-    LOG("Playing running: %s", _settings.runningSound.filename);
+    LOG("Playing running on ch%d: %s (looped)", activeChannel(), _settings.runningSound.filename);
     
     AudioPlaybackOptions opts;
     opts.loop = true;
+    opts.loopCount = LOOP_INFINITE;
     opts.volume = _settings.runningSound.volume;
     opts.output = AudioOutput::Stereo;
     opts.startOffsetMs = 0;
     
-    _mixer->playAsync(_settings.channelRunning, _settings.runningSound.filename, opts);
+    _mixer->playAsync(activeChannel(), _settings.runningSound.filename, opts);
     _runningSoundStarted = true;
+}
+
+void EngineFX::crossfadeToRunning() {
+    if (_crossfadeStarted) return;
+    if (!_settings.runningSound.filename) return;
+    
+    LOG("Crossfading to running on ch%d: %s", crossfadeChannel(), _settings.runningSound.filename);
+    
+    AudioPlaybackOptions opts;
+    opts.loop = true;
+    opts.loopCount = LOOP_INFINITE;
+    opts.volume = _settings.runningSound.volume;
+    opts.output = AudioOutput::Stereo;
+    opts.startOffsetMs = 0;
+    
+    // Start running sound on the other channel (crossfade channel)
+    _mixer->playAsync(crossfadeChannel(), _settings.runningSound.filename, opts);
+    _crossfadeStarted = true;
+    _runningSoundStarted = true;  // Mark as started since it's playing on crossfade channel
 }
 
 void EngineFX::playShutdownSound(int offsetMs) {
     if (_shutdownSoundStarted) return;
     if (!_settings.shutdownSound.filename) return;
     
-    LOG("Playing shutdown: %s (offset=%d ms)", _settings.shutdownSound.filename, offsetMs);
+    // Play shutdown on the crossfade channel (other than current)
+    int shutdownCh = crossfadeChannel();
+    LOG("Playing shutdown on ch%d: %s (offset=%d ms)", shutdownCh, _settings.shutdownSound.filename, offsetMs);
     
     AudioPlaybackOptions opts;
     opts.loop = false;
+    opts.loopCount = 0;
     opts.volume = _settings.shutdownSound.volume;
     opts.output = AudioOutput::Stereo;
     opts.startOffsetMs = offsetMs;
     
-    _mixer->playAsync(_settings.channelShutdown, _settings.shutdownSound.filename, opts);
+    _mixer->playAsync(shutdownCh, _settings.shutdownSound.filename, opts);
     _shutdownSoundStarted = true;
+    swapChannels();  // Shutdown is now the active channel
 }
 
 void EngineFX::stopAllSounds() {
     LOG("Stopping all sounds");
     
     if (_mixer) {
-        _mixer->stopAsync(_settings.channelStartup, AudioStopMode::Immediate);
-        _mixer->stopAsync(_settings.channelRunning, AudioStopMode::Immediate);
-        _mixer->stopAsync(_settings.channelShutdown, AudioStopMode::Immediate);
+        _mixer->stopAsync(_settings.channelA, AudioStopMode::Immediate);
+        _mixer->stopAsync(_settings.channelB, AudioStopMode::Immediate);
     }
     
     _startupSoundStarted = false;
     _runningSoundStarted = false;
     _shutdownSoundStarted = false;
+    _crossfadeStarted = false;
 }
 
 // ============================================================================
@@ -252,11 +305,13 @@ void EngineFX::stopAllSounds() {
 
 void EngineFX::forceStart() {
     LOG("Force start requested");
+    _forceRunning = true;
     _requestedState = EngineState::Starting;
 }
 
 void EngineFX::forceStop() {
     LOG("Force stop requested");
+    _forceRunning = false;
     _requestedState = EngineState::Stopping;
 }
 
