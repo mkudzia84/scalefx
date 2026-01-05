@@ -44,14 +44,14 @@ bool SystemCli::handleCommand(const String& cmd) {
     // ---- VERSION [--json] ----
     if (p.is("version") || p.is("ver")) {
         if (p.jsonRequested()) {
-            Serial.printf("{\"firmware\":\"v%s\",\"build\":%d,\"platform\":\"RP2040\","
+            Serial.printf("{\"firmware\":\"%s\",\"build\":%d,\"platform\":\"RP2040\","
                          "\"board\":\"Raspberry Pi Pico\",\"cpuFrequencyMHz\":%lu,"
                          "\"freeRamBytes\":%lu,\"totalRamBytes\":%d}\n",
                          _firmwareVersion, _buildNumber,
                          F_CPU / 1000000, rp2040.getFreeHeap(), 262144);
         } else {
             Serial.println("\n=== HubFX Pico Version Info ===");
-            Serial.printf("Firmware: v%s (Build %d)\n", _firmwareVersion, _buildNumber);
+            Serial.printf("Firmware: %s (Build %d)\n", _firmwareVersion, _buildNumber);
             Serial.println("Platform: RP2040 (Raspberry Pi Pico)");
             Serial.printf("CPU Frequency: %lu MHz\n", F_CPU / 1000000);
             Serial.printf("Free RAM: %lu bytes\n\n", rp2040.getFreeHeap());
@@ -64,7 +64,7 @@ bool SystemCli::handleCommand(const String& cmd) {
         if (p.jsonRequested()) {
             // Comprehensive JSON status for app
             Serial.print("{\"system\":{");
-            Serial.printf("\"firmware\":\"v%s\",\"build\":%d,", _firmwareVersion, _buildNumber);
+            Serial.printf("\"firmware\":\"%s\",\"build\":%d,", _firmwareVersion, _buildNumber);
             Serial.printf("\"platform\":\"RP2040\",\"cpuFrequencyMHz\":%lu,", F_CPU / 1000000);
             Serial.printf("\"freeRamBytes\":%lu,\"totalRamBytes\":%d,", rp2040.getFreeHeap(), 262144);
             Serial.printf("\"uptimeMs\":%lu", millis());
@@ -98,7 +98,7 @@ bool SystemCli::handleCommand(const String& cmd) {
             Serial.println("]}");
         } else {
             Serial.println("\n=== System Status ===");
-            Serial.printf("Firmware: v%s (Build %d)\n", _firmwareVersion, _buildNumber);
+            Serial.printf("Firmware: %s (Build %d)\n", _firmwareVersion, _buildNumber);
             Serial.println("Platform: RP2040 (Raspberry Pi Pico)");
             Serial.printf("CPU: %lu MHz\n", F_CPU / 1000000);
             Serial.printf("Free RAM: %lu bytes\n", rp2040.getFreeHeap());

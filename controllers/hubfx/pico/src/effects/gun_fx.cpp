@@ -46,12 +46,12 @@ bool GunFX::begin(UsbHost* usbHost, int deviceIndex,
     _serial.onReady([this](const char* name) {
         const GunFxBoardInfo& info = _serial.boardInfo();
         if (_serial.isVersionCompatible()) {
-            LOG("Slave ready: %s (v%s, %s) - COMPATIBLE", 
+            LOG("Slave ready: %s (%s, %s) - COMPATIBLE", 
                 info.deviceName, info.firmwareVersion, info.platform);
         } else {
-            LOG("Slave ready: %s (v%s, %s) - INCOMPATIBLE VERSION!", 
+            LOG("Slave ready: %s (%s, %s) - INCOMPATIBLE VERSION!", 
                 info.deviceName, info.firmwareVersion, info.platform);
-            LOG("Expected versions: v0.1.0");
+            LOG("Expected versions: 0.1.0");
         }
     });
     
@@ -357,7 +357,7 @@ void GunFX::printStatus() {
     
     const GunFxBoardInfo& info = _serial.boardInfo();
     if (isSlaveReady()) {
-        Serial.printf("  Slave: %s (v%s, %s)\n", 
+        Serial.printf("  Slave: %s (%s, %s)\n", 
                       info.deviceName, info.firmwareVersion, info.platform);
         Serial.printf("  Version compatible: %s\n", 
                       _serial.isVersionCompatible() ? "YES" : "NO - INCOMPATIBLE!");

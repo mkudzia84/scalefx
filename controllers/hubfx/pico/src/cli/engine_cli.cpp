@@ -11,21 +11,7 @@ bool EngineCli::handleCommand(const String& cmd) {
     
     CommandParser p(cmd);
     
-    // Engine start command
-    if (p.is("engine") || p.matches("engine", "start")) {
-        Serial.println("Starting engine effects");
-        engine->forceStart();
-        return true;
-    }
-    
-    // Engine stop command
-    if (p.matches("engine", "stop")) {
-        Serial.println("Stopping engine effects");
-        engine->forceStop();
-        return true;
-    }
-    
-    // Engine status [--json|-j]
+    // Engine status [--json|-j] - check FIRST before bare "engine"
     if (p.matches("engine", "status")) {
         if (p.jsonRequested()) {
             Serial.printf("{\"state\":\"%s\",\"toggleEngaged\":%s,\"active\":%s}\n",
@@ -40,6 +26,20 @@ bool EngineCli::handleCommand(const String& cmd) {
             Serial.println(engine->isToggleEngaged() ? "YES" : "NO");
             Serial.println();
         }
+        return true;
+    }
+    
+    // Engine stop command
+    if (p.matches("engine", "stop")) {
+        Serial.println("Stopping engine effects");
+        engine->forceStop();
+        return true;
+    }
+    
+    // Engine start command (bare "engine" or "engine start")
+    if (p.is("engine") || p.matches("engine", "start")) {
+        Serial.println("Starting engine effects");
+        engine->forceStart();
         return true;
     }
     

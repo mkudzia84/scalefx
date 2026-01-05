@@ -15,7 +15,7 @@
  */
 
 #define FIRMWARE_VERSION "1.1.0"
-#define BUILD_NUMBER 120  // Increment this with each build
+#define BUILD_NUMBER 127  // Increment this with each build
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -34,6 +34,10 @@
 #include "effects/gun_fx.h"
 #include "debug_config.h"
 
+// USB Host (from serial_common library)
+#include <serial_common.h>
+#include "tusb_config.h"
+
 // CLI System
 #include "cli/command_router.h"
 #include "cli/audio_cli.h"
@@ -42,6 +46,7 @@
 #include "cli/engine_cli.h"
 #include "cli/gun_cli.h"
 #include "cli/system_cli.h"
+#include "cli/usb_cli.h"
 #if AUDIO_TEST_MODE
 #include "cli/test_cli.h"
 #endif
@@ -107,6 +112,9 @@ EngineFX engineFx;
 // Gun FX (slave controller)
 GunFX gunFx;
 
+// USB Host (from serial_common library, runs on Core 1)
+UsbHost usbHost;
+
 // Configuration
 ConfigReader configReader;
 
@@ -118,6 +126,7 @@ ConfigCli configCli(&configReader, &sdCard);
 EngineCli engineCli(&engineFx);
 GunCli gunCli(&gunFx);
 SystemCli systemCli;
+UsbCli usbCli(&usbHost);
 
 // State
 bool config_loaded = false;
@@ -141,14 +150,27 @@ void setup1() {
         delay(10);
     }
     CORE1_LOG("Audio processing started");
+    
+    // Initialize USB Host on Core 1
+    // USB PIO timing is critical and runs better on dedicated core
+    if (usbHost.init()) {
+        CORE1_LOG("USB Host initialized (D+:GP%d, D-:GP%d)", 
+                  PIO_USB_DP_PIN_DEFAULT, PIO_USB_DP_PIN_DEFAULT + 1);
+    } else {
+        CORE1_LOG("WARNING: USB Host init failed");
+    }
+    
     core1_running = true;
 }
 
-// Core 1 loop - audio processing
+// Core 1 loop - audio processing + USB host
 void loop1() {
     if (audio_initialized) {
         mixer.process();
     }
+    
+    // Process USB host tasks (enumeration, hot-plug detection)
+    usbHost.process();
 }
 
 // ============================================================================
@@ -406,6 +428,13 @@ void setup() {
     // Audio processing happens there via mixer.process()
     MAIN_LOG("Audio processing delegated to Core 1");
     
+    // Initialize USB Host (Core 0 setup, Core 1 will call init())
+    if (usbHost.begin()) {
+        MAIN_LOG("USB Host configured (init on Core 1)");
+    } else {
+        MAIN_LOG("WARNING: USB Host config failed");
+    }
+    
 #if AUDIO_TEST_MODE
     if (audio_initialized) {
         MAIN_LOG("Use 'test' commands to generate mock audio");
@@ -433,10 +462,11 @@ void setup() {
     cmdRouter.addHandler(&configCli);   // Config commands
     cmdRouter.addHandler(&engineCli);   // Engine commands
     cmdRouter.addHandler(&gunCli);      // Gun commands (slave control)
+    cmdRouter.addHandler(&usbCli);      // USB host commands
     
     // Register handlers with system CLI for help display
     std::vector<CommandHandler*> allHandlers = {
-        &systemCli, &audioCli, &storageCli, &configCli, &engineCli, &gunCli
+        &systemCli, &audioCli, &storageCli, &configCli, &engineCli, &gunCli, &usbCli
     };
     systemCli.registerHandlers(allHandlers);
     

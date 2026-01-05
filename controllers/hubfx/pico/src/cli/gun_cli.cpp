@@ -11,65 +11,6 @@ bool GunCli::handleCommand(const String& cmd) {
     
     CommandParser p(cmd);
     
-    // ---- GUN STATUS [--json] ----
-    if (p.matches("gun", "status") || p.is("gun")) {
-        if (p.is("gun") && !p.jsonRequested()) {
-            // Just "gun" - show status
-        }
-        
-        const GunFxStatus& slave = gunFx->slaveStatus();
-        
-        if (p.jsonRequested()) {
-            Serial.printf("{\"connected\":%s,\"slaveReady\":%s,"
-                         "\"firing\":%s,\"rpm\":%d,\"rateIndex\":%d,"
-                         "\"heaterOn\":%s,\"triggerPwm\":%d,\"heaterPwm\":%d,"
-                         "\"pitchPwm\":%d,\"yawPwm\":%d,"
-                         "\"slave\":{\"flashActive\":%s,\"fanOn\":%s,\"heaterOn\":%s}}\n",
-                         gunFx->isConnected() ? "true" : "false",
-                         gunFx->isSlaveReady() ? "true" : "false",
-                         gunFx->isFiring() ? "true" : "false",
-                         gunFx->rpm(),
-                         gunFx->rateIndex(),
-                         gunFx->isHeaterOn() ? "true" : "false",
-                         gunFx->triggerPwm(),
-                         gunFx->heaterTogglePwm(),
-                         gunFx->pitchPwm(),
-                         gunFx->yawPwm(),
-                         slave.flashActive ? "true" : "false",
-                         slave.fanOn ? "true" : "false",
-                         slave.heaterOn ? "true" : "false");
-        } else {
-            Serial.println("\n=== Gun FX Status ===");
-            Serial.printf("Connected: %s\n", gunFx->isConnected() ? "YES" : "NO");
-            Serial.printf("Slave Ready: %s\n", gunFx->isSlaveReady() ? "YES" : "NO");
-            Serial.println();
-            
-            Serial.println("--- Firing ---");
-            Serial.printf("Firing: %s\n", gunFx->isFiring() ? "YES" : "NO");
-            Serial.printf("RPM: %d\n", gunFx->rpm());
-            Serial.printf("Rate Index: %d\n", gunFx->rateIndex());
-            Serial.println();
-            
-            Serial.println("--- Smoke ---");
-            Serial.printf("Heater: %s\n", gunFx->isHeaterOn() ? "ON" : "OFF");
-            Serial.println();
-            
-            Serial.println("--- PWM Inputs ---");
-            Serial.printf("Trigger: %d us\n", gunFx->triggerPwm());
-            Serial.printf("Heater Toggle: %d us\n", gunFx->heaterTogglePwm());
-            Serial.printf("Pitch Servo: %d us\n", gunFx->pitchPwm());
-            Serial.printf("Yaw Servo: %d us\n", gunFx->yawPwm());
-            Serial.println();
-            
-            Serial.println("--- Slave Board ---");
-            Serial.printf("Flash Active: %s\n", slave.flashActive ? "YES" : "NO");
-            Serial.printf("Fan On: %s\n", slave.fanOn ? "YES" : "NO");
-            Serial.printf("Heater On: %s\n", slave.heaterOn ? "YES" : "NO");
-            Serial.println();
-        }
-        return true;
-    }
-    
     // ---- GUN FIRE <rpm> ----
     if (p.matches("gun", "fire")) {
         int rpm = p.argInt(0, 600);  // Default 600 RPM
@@ -127,6 +68,62 @@ bool GunCli::handleCommand(const String& cmd) {
             Serial.printf("Setting servo %d to %d us\n", servoId, pulseUs);
         }
         gunFx->setServo(servoId, pulseUs);
+        return true;
+    }
+    
+    // ---- GUN STATUS [--json] ---- (check AFTER subcommands)
+    if (p.matches("gun", "status") || p.is("gun")) {
+        
+        const GunFxStatus& slave = gunFx->slaveStatus();
+        
+        if (p.jsonRequested()) {
+            Serial.printf("{\"connected\":%s,\"slaveReady\":%s,"
+                         "\"firing\":%s,\"rpm\":%d,\"rateIndex\":%d,"
+                         "\"heaterOn\":%s,\"triggerPwm\":%d,\"heaterPwm\":%d,"
+                         "\"pitchPwm\":%d,\"yawPwm\":%d,"
+                         "\"slave\":{\"flashActive\":%s,\"fanOn\":%s,\"heaterOn\":%s}}\n",
+                         gunFx->isConnected() ? "true" : "false",
+                         gunFx->isSlaveReady() ? "true" : "false",
+                         gunFx->isFiring() ? "true" : "false",
+                         gunFx->rpm(),
+                         gunFx->rateIndex(),
+                         gunFx->isHeaterOn() ? "true" : "false",
+                         gunFx->triggerPwm(),
+                         gunFx->heaterTogglePwm(),
+                         gunFx->pitchPwm(),
+                         gunFx->yawPwm(),
+                         slave.flashActive ? "true" : "false",
+                         slave.fanOn ? "true" : "false",
+                         slave.heaterOn ? "true" : "false");
+        } else {
+            Serial.println("\n=== Gun FX Status ===");
+            Serial.printf("Connected: %s\n", gunFx->isConnected() ? "YES" : "NO");
+            Serial.printf("Slave Ready: %s\n", gunFx->isSlaveReady() ? "YES" : "NO");
+            Serial.println();
+            
+            Serial.println("--- Firing ---");
+            Serial.printf("Firing: %s\n", gunFx->isFiring() ? "YES" : "NO");
+            Serial.printf("RPM: %d\n", gunFx->rpm());
+            Serial.printf("Rate Index: %d\n", gunFx->rateIndex());
+            Serial.println();
+            
+            Serial.println("--- Smoke ---");
+            Serial.printf("Heater: %s\n", gunFx->isHeaterOn() ? "ON" : "OFF");
+            Serial.println();
+            
+            Serial.println("--- PWM Inputs ---");
+            Serial.printf("Trigger: %d us\n", gunFx->triggerPwm());
+            Serial.printf("Heater Toggle: %d us\n", gunFx->heaterTogglePwm());
+            Serial.printf("Pitch Servo: %d us\n", gunFx->pitchPwm());
+            Serial.printf("Yaw Servo: %d us\n", gunFx->yawPwm());
+            Serial.println();
+            
+            Serial.println("--- Slave Board ---");
+            Serial.printf("Flash Active: %s\n", slave.flashActive ? "YES" : "NO");
+            Serial.printf("Fan On: %s\n", slave.fanOn ? "YES" : "NO");
+            Serial.printf("Heater On: %s\n", slave.heaterOn ? "YES" : "NO");
+            Serial.println();
+        }
         return true;
     }
     

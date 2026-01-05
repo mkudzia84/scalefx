@@ -114,20 +114,9 @@ bool ConfigCli::handleCommand(const String& cmd) {
     CommandParser p(cmd);
     bool json = p.jsonRequested();
     
-    // config - Display current configuration
-    if (p.is("config") || p.matches("config", "--json")) {
-        if (json) {
-            printConfigJson();
-        } else {
-            Serial.println("\n=== Current Configuration ===");
-            config->print();
-            Serial.println();
-        }
-        return true;
-    }
-    
-    // config <subcommand> - Configuration operations
-    if (p.hasPrefix("config ")) {
+    // Check subcommands FIRST before bare "config" command
+    // Note: "config --json" also has prefix "config " so check for flags-only explicitly
+    if (p.hasPrefix("config ") && !p.matches("config", "--json") && !p.matches("config", "-j")) {
         // config backup
         if (p.matches("config", "backup")) {
             bool success = config->backup();
@@ -221,6 +210,18 @@ bool ConfigCli::handleCommand(const String& cmd) {
         } else {
             Serial.println("Error: Unknown config subcommand");
             Serial.println("Valid: backup, restore, reload, size, upload");
+        }
+        return true;
+    }
+    
+    // config - Display current configuration (no subcommand)
+    if (p.is("config")) {
+        if (json) {
+            printConfigJson();
+        } else {
+            Serial.println("\n=== Current Configuration ===");
+            config->print();
+            Serial.println();
         }
         return true;
     }

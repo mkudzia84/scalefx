@@ -28,6 +28,10 @@ extern "C" {
 #define BOARD_TUD_RHPORT            0   // Native USB for device
 #endif
 
+#ifndef BOARD_TUH_RHPORT
+#define BOARD_TUH_RHPORT            1   // PIO-USB for host
+#endif
+
 // Enable debug output (0 = off, 1 = error, 2 = warning, 3 = info)
 #ifndef CFG_TUSB_DEBUG
 #define CFG_TUSB_DEBUG              0
