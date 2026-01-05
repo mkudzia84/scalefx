@@ -319,8 +319,9 @@ bool TAS5825Codec::initDSPCoefficients()
     return true;
 }
 
+#if AUDIO_DEBUG
 // ============================================================================
-//  DEBUG METHODS
+//  DEBUG METHODS (Compiled when AUDIO_DEBUG=1)
 // ============================================================================
 
 bool TAS5825Codec::testCommunication() {
@@ -444,3 +445,4 @@ void TAS5825Codec::reinitialize(uint32_t sample_rate) {
     
     Serial.println("[TAS5825M] Reinitialization complete");
 }
+#endif // AUDIO_DEBUG

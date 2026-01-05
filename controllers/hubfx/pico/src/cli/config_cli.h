@@ -17,6 +17,8 @@ private:
     ConfigReader* config;
     SdCardModule* sdCard;
     
+    void printConfigJson() const;
+    
 public:
     ConfigCli(ConfigReader* config_ptr, SdCardModule* sd_ptr = nullptr) 
         : config(config_ptr), sdCard(sd_ptr) {}

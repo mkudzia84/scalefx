@@ -21,12 +21,6 @@ using SdCardFile = File32;
 // Include centralized audio configuration (relative path from src/audio/)
 #include "audio_config.h"
 
-// Legacy compatibility - these are now defined in audio_config.h
-// Kept here to avoid breaking existing code that includes only this header
-
-// Legacy compatibility - these are now defined in audio_config.h
-// Kept here to avoid breaking existing code that includes only this header
-
 // ============================================================================
 //  CONSTANTS (see audio_config.h for configuration)
 // ============================================================================

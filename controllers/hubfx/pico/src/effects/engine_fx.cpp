@@ -6,21 +6,11 @@
  */
 
 #include "engine_fx.h"
+#include "effects_config.h"
 #include "../audio/audio_mixer.h"
 
-// ============================================================================
-//  DEBUG LOGGING
-// ============================================================================
-
-#ifndef ENGINE_FX_DEBUG
-#define ENGINE_FX_DEBUG 1
-#endif
-
-#if ENGINE_FX_DEBUG
-#define LOG(fmt, ...) Serial.printf("[EngineFX] " fmt "\n", ##__VA_ARGS__)
-#else
-#define LOG(fmt, ...)
-#endif
+// Debug logging using centralized config
+#define LOG(fmt, ...) EFFECTS_LOG("EngineFX", fmt, ##__VA_ARGS__)
 
 // ============================================================================
 //  INITIALIZATION

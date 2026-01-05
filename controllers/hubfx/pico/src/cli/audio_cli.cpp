@@ -45,8 +45,6 @@ bool AudioCli::handleCommand(const String& cmd) {
             return true;
         }
         
-        if (p.matches("codec", "status"))  { activeCodec->printStatus(); return true; }
-        if (p.matches("codec", "test"))    { activeCodec->testCommunication(); return true; }
         if (p.matches("codec", "dump"))    { activeCodec->dumpRegisters(); return true; }
         
         if (p.matches("codec", "reset")) {
@@ -55,6 +53,10 @@ bool AudioCli::handleCommand(const String& cmd) {
             Serial.println("Codec reset complete");
             return true;
         }
+        
+#if AUDIO_DEBUG
+        if (p.matches("codec", "status"))  { activeCodec->printStatus(); return true; }
+        if (p.matches("codec", "test"))    { activeCodec->testCommunication(); return true; }
         
         if (p.matches("codec", "reinit") || p.matches("codec", "init")) {
             activeCodec->reinitialize();
@@ -121,6 +123,7 @@ bool AudioCli::handleCommand(const String& cmd) {
             }
             return true;
         }
+#endif // AUDIO_DEBUG
         
         Serial.println("Unknown codec command. Type 'help' for usage.");
         return true;

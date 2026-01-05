@@ -121,6 +121,7 @@ public:
     void setSpeakerVolume(uint8_t volume) override;
     void dumpRegisters() override;
     
+#if AUDIO_DEBUG
     // Debug methods (AudioCodec interface)
     bool testCommunication() override;
     uint16_t readRegisterCache(uint8_t reg) const override;
@@ -131,6 +132,7 @@ public:
     
     // Recovery methods
     bool recoverI2C();
+#endif // AUDIO_DEBUG
     
 private:
     TwoWire* wire;

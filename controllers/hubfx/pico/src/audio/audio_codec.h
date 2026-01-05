@@ -10,6 +10,7 @@
 #define AUDIO_CODEC_H
 
 #include <Arduino.h>
+#include "audio_config.h"
 
 /**
  * Abstract base class for audio codec drivers
@@ -97,8 +98,9 @@ public:
      */
     virtual void dumpRegisters() {}
     
+#if AUDIO_DEBUG
     // ========================================================================
-    // DEBUG METHODS (Always compiled - conditional compilation to be added)
+    // DEBUG METHODS (Compiled when AUDIO_DEBUG=1 in audio_config.h)
     // ========================================================================
     
     /**
@@ -138,6 +140,7 @@ public:
      * @return Pointer to communication interface (TwoWire* or SPIClass*)
      */
     virtual void* getCommunicationInterface() { return nullptr; }
+#endif // AUDIO_DEBUG
 };
 
 #endif // AUDIO_CODEC_H

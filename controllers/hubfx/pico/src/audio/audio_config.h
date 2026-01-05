@@ -13,6 +13,23 @@
 // ============================================================================
 
 /**
+ * Debug Mode
+ * 
+ * When enabled (1), includes codec debug methods:
+ *  - testCommunication()
+ *  - readRegisterCache()
+ *  - writeRegisterDebug()
+ *  - printStatus()
+ *  - reinitialize()
+ *  - getCommunicationInterface()
+ * 
+ * Disable to save flash space in production builds.
+ */
+#ifndef AUDIO_DEBUG
+#define AUDIO_DEBUG                 1  // 0 = Minimal, 1 = Include debug methods
+#endif
+
+/**
  * Mock I2S Mode
  * 
  * When enabled (1), I2S output is replaced with a mock sink that:

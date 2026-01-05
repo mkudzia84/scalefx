@@ -371,8 +371,9 @@ void WM8960Codec::dumpRegisters() {
     Serial.println("============================");
 }
 
+#if AUDIO_DEBUG
 // ============================================================================
-//  DEBUG METHODS (AudioCodec Interface)
+//  DEBUG METHODS (AudioCodec Interface) - Compiled when AUDIO_DEBUG=1
 // ============================================================================
 
 bool WM8960Codec::testCommunication() {
@@ -522,3 +523,4 @@ bool WM8960Codec::recoverI2C() {
         return false;
     }
 }
+#endif // AUDIO_DEBUG

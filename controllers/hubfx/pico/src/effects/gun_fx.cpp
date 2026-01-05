@@ -5,21 +5,11 @@
  */
 
 #include "gun_fx.h"
+#include "effects_config.h"
 #include "../audio/audio_mixer.h"
 
-// ============================================================================
-//  DEBUG LOGGING
-// ============================================================================
-
-#ifndef GUN_FX_DEBUG
-#define GUN_FX_DEBUG 1
-#endif
-
-#if GUN_FX_DEBUG
-#define LOG(fmt, ...) Serial.printf("[GunFX] " fmt "\n", ##__VA_ARGS__)
-#else
-#define LOG(fmt, ...)
-#endif
+// Debug logging using centralized config
+#define LOG(fmt, ...) EFFECTS_LOG("GunFX", fmt, ##__VA_ARGS__)
 
 // ============================================================================
 //  INITIALIZATION

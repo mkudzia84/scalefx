@@ -130,6 +130,7 @@ public:
      */
     void dumpRegisters() override;
     
+#if AUDIO_DEBUG
     // Debug methods
     bool testCommunication() override;
     uint16_t readRegisterCache(uint8_t reg) const override;
@@ -137,6 +138,7 @@ public:
     void printStatus() override;
     void reinitialize(uint32_t sample_rate = 44100) override;
     void* getCommunicationInterface() override { return i2c; }
+#endif // AUDIO_DEBUG
 
 private:
     TwoWire* i2c;
