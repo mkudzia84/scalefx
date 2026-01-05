@@ -5,6 +5,7 @@
 
 #include "audio_cli.h"
 #include "../audio/audio_codec.h"
+#include "../audio/wm8960_codec.h"
 #include <Wire.h>
 
 bool AudioCli::handleCommand(const String& cmd) {
@@ -48,6 +49,19 @@ bool AudioCli::handleCommand(const String& cmd) {
         // codec reinit
         if (cmd == "codec reinit" || cmd == "codec init") {
             activeCodec->reinitialize();
+            return true;
+        }
+        
+        // codec recover - I2C bus recovery
+        if (cmd == "codec recover") {
+            // Check if this is a WM8960 codec
+            if (strcmp(activeCodec->getModelName(), "WM8960") == 0) {
+                // Cast to WM8960Codec to access recoverI2C
+                WM8960Codec* wm8960 = static_cast<WM8960Codec*>(activeCodec);
+                wm8960->recoverI2C();
+            } else {
+                Serial.println("Recovery not supported for this codec");
+            }
             return true;
         }
         
@@ -123,14 +137,14 @@ bool AudioCli::handleCommand(const String& cmd) {
         return true;
     }
     
-    // Play command - format: play channel filename [loop] [vol X.X] [left|right]
-    if (cmd.startsWith("play ")) {
-        int firstSpace = cmd.indexOf(' ');
-        int secondSpace = cmd.indexOf(' ', firstSpace + 1);
+    // Play command - format: audio play channel filename [loop] [vol X.X] [left|right]
+    if (cmd.startsWith("audio play ")) {
+        String args = cmd.substring(11);  // Skip "audio play "
+        int firstSpace = args.indexOf(' ');
         
-        if (secondSpace > 0) {
-            int ch = cmd.substring(firstSpace + 1, secondSpace).toInt();
-            String remaining = cmd.substring(secondSpace + 1);
+        if (firstSpace > 0) {
+            int ch = args.substring(0, firstSpace).toInt();
+            String remaining = args.substring(firstSpace + 1);
             
             // Extract filename (first part before any options)
             String filename;
@@ -177,14 +191,14 @@ bool AudioCli::handleCommand(const String& cmd) {
             }
             return true;
         } else {
-            Serial.println("Error: Format is 'play channel filename [loop] [vol X.X] [left|right]'");
+            Serial.println("Error: Format is 'audio play channel filename [loop] [vol X.X] [left|right]'");
             return true;
         }
     }
     
-    // Stop command - format: stop channel|all
-    if (cmd.startsWith("stop ")) {
-        String arg = cmd.substring(5);
+    // Stop command - format: audio stop channel|all
+    if (cmd.startsWith("audio stop ")) {
+        String arg = cmd.substring(11);
         arg.trim();
         
         if (arg == "all") {
@@ -205,9 +219,9 @@ bool AudioCli::handleCommand(const String& cmd) {
         }
     }
     
-    // Fade command - format: fade channel
-    if (cmd.startsWith("fade ")) {
-        int ch = cmd.substring(5).toInt();
+    // Fade command - format: audio fade channel
+    if (cmd.startsWith("audio fade ")) {
+        int ch = cmd.substring(11).toInt();
         if (ch >= 0 && ch < 8) {
             Serial.print("Fading channel ");
             Serial.println(ch);
@@ -219,9 +233,9 @@ bool AudioCli::handleCommand(const String& cmd) {
         }
     }
     
-    // Volume command - format: volume channel level  OR  volume level (for master)
-    if (cmd.startsWith("volume ")) {
-        String args = cmd.substring(7);
+    // Volume command - format: audio volume channel level  OR  audio volume level (for master)
+    if (cmd.startsWith("audio volume ")) {
+        String args = cmd.substring(13);
         args.trim();
         
         int space = args.indexOf(' ');
@@ -251,9 +265,9 @@ bool AudioCli::handleCommand(const String& cmd) {
         }
     }
     
-    // Master volume command - format: master volume
-    if (cmd.startsWith("master ")) {
-        float vol = cmd.substring(7).toFloat();
+    // Master volume command - format: audio master volume
+    if (cmd.startsWith("audio master ")) {
+        float vol = cmd.substring(13).toFloat();
         Serial.print("Setting master volume to ");
         Serial.println(vol);
         mixer->setMasterVolumeAsync(vol);
@@ -261,7 +275,7 @@ bool AudioCli::handleCommand(const String& cmd) {
     }
     
     // Status command [--json|-j]
-    if (cmd == "status" || cmd.startsWith("status ")) {
+    if (cmd == "audio status" || cmd.startsWith("audio status ")) {
         bool jsonOutput = (cmd.indexOf("--json") >= 0 || cmd.indexOf("-j") >= 0);
         
         if (jsonOutput) {
@@ -310,14 +324,14 @@ bool AudioCli::handleCommand(const String& cmd) {
 
 void AudioCli::printHelp() const {
     Serial.println("=== Audio Commands ===");
-    Serial.println("  play <ch> <file> [loop] [vol X.X] [left|right]");
+    Serial.println("  audio play <ch> <file> [loop] [vol X.X] [left|right]");
     Serial.println("                           - Play audio file on channel");
-    Serial.println("  stop <ch|all>            - Stop channel or all channels");
-    Serial.println("  fade <ch>                - Fade out channel");
-    Serial.println("  volume <vol>             - Set master volume (0.0-1.0)");
-    Serial.println("  volume <ch> <vol>        - Set channel volume (0.0-1.0)");
-    Serial.println("  master <vol>             - Set master volume (0.0-1.0)");
-    Serial.println("  status [--json]          - Show all channel status");
+    Serial.println("  audio stop <ch|all>      - Stop channel or all channels");
+    Serial.println("  audio fade <ch>          - Fade out channel");
+    Serial.println("  audio volume <vol>       - Set master volume (0.0-1.0)");
+    Serial.println("  audio volume <ch> <vol>  - Set channel volume (0.0-1.0)");
+    Serial.println("  audio master <vol>       - Set master volume (0.0-1.0)");
+    Serial.println("  audio status [--json]    - Show all channel status");
     Serial.println("");
     Serial.println("=== Codec Debug Commands ===");
     Serial.println("  codec status             - Show codec initialization status");
@@ -328,4 +342,5 @@ void AudioCli::printHelp() const {
     Serial.println("  codec write <reg> <val>  - Write register (hex: 0xXXXX)");
     Serial.println("  codec reset              - Software reset codec");
     Serial.println("  codec reinit             - Full codec reinitialization");
+    Serial.println("  codec recover            - Recover I2C bus (if stuck)");
 }

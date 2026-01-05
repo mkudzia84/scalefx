@@ -12,6 +12,8 @@ Comprehensive guide to all project documentation, organized by topic.
 
 ### Software
 - [AUDIO_CONFIGURATION.md](AUDIO_CONFIGURATION.md) - Compile-time configuration (sample rate, I2C speed, buffers)
+- [AUDIO_TEST_MODE.md](AUDIO_TEST_MODE.md) - Single-core audio testing with mock waveforms
+- [AUDIO_TROUBLESHOOTING.md](AUDIO_TROUBLESHOOTING.md) - **No sound? Start here!**
 - [../README.md](../README.md) - Main project documentation and API reference
 - [../tests/README.md](../tests/README.md) - Testing and verification scripts
 - [../scripts/README.md](../scripts/README.md) - Build and flash utilities
@@ -27,6 +29,11 @@ Comprehensive guide to all project documentation, organized by topic.
 **Configuring Audio:**
 1. [AUDIO_CONFIGURATION.md](AUDIO_CONFIGURATION.md) - Configuration options
 2. [../src/audio/audio_config.h](../src/audio/audio_config.h) - Edit settings here
+
+**Testing Audio:**
+1. [AUDIO_TEST_MODE.md](AUDIO_TEST_MODE.md) - Single-core test mode guide
+2. Set `AUDIO_TEST_MODE 1` in hubfx_pico.ino
+3. Use `test sine/square/noise` commands
 
 **Building & Testing:**
 1. [../scripts/README.md](../scripts/README.md) - Build scripts

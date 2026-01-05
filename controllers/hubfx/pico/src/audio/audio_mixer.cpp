@@ -9,6 +9,10 @@
 #include "audio_codec.h"
 #include <I2S.h>
 
+#if AUDIO_TEST_MODE
+#include "audio_test_cli.h"
+#endif
+
 // ============================================================================
 //  CONSTANTS
 // ============================================================================
@@ -373,6 +377,41 @@ bool AudioMixer::parseWavHeader(Channel& ch) {
 // ============================================================================
 
 void AudioMixer::mixChannel(Channel& ch, int32_t* mixL, int32_t* mixR, int samples) {
+    // Calculate effective volume (channel * master * fade)
+    float effectiveVolume = ch.volume * _masterVolume;
+    
+#if AUDIO_TEST_MODE
+    // In test mode, generate test data directly into a buffer
+    int16_t testBuffer[AUDIO_MIX_BUFFER_SIZE * 2];  // Stereo interleaved
+    
+    // Get the channel index
+    int channelIndex = &ch - _channels;
+    
+    // Generate test audio data for this channel
+    AudioTestCLI::injectTestData(channelIndex, testBuffer, samples);
+    
+    // Mix the test buffer into the output
+    for (int i = 0; i < samples; i++) {
+        int32_t sampleL = testBuffer[i * 2];
+        int32_t sampleR = testBuffer[i * 2 + 1];
+        
+        // Apply volume
+        sampleL = static_cast<int32_t>(sampleL * effectiveVolume);
+        sampleR = static_cast<int32_t>(sampleR * effectiveVolume);
+        
+        // Apply output routing
+        if (ch.output == AudioOutput::Left || ch.output == AudioOutput::Stereo) {
+            mixL[i] += sampleL;
+        }
+        if (ch.output == AudioOutput::Right || ch.output == AudioOutput::Stereo) {
+            mixR[i] += sampleR;
+        }
+    }
+    
+    return;  // Skip file-based mixing in test mode
+#endif
+    
+    // Normal file-based mixing
     int bytesPerSample = ch.numChannels * (ch.bitsPerSample / 8);
     int samplesToRead = min(static_cast<uint32_t>(samples), ch.samplesRemaining);
     int bytesToRead = samplesToRead * bytesPerSample;
@@ -380,8 +419,7 @@ void AudioMixer::mixChannel(Channel& ch, int32_t* mixL, int32_t* mixR, int sampl
     int bytesRead = ch.file.read(_readBuffer, bytesToRead);
     int samplesRead = bytesRead / bytesPerSample;
 
-    // Calculate effective volume (channel * master * fade)
-    float effectiveVolume = ch.volume * _masterVolume;
+    // Apply fade if active
     if (ch.fading) {
         effectiveVolume *= ch.fadeVolume;
         ch.fadeVolume -= ch.fadeStep;
@@ -441,6 +479,10 @@ void AudioMixer::outputToI2S(int samples) {
         i2sOutput.write(outL);
         i2sOutput.write(outR);
     }
+    
+    #if AUDIO_TEST_MODE
+    _i2sWriteCount += samples;
+    #endif
 }
 
 // ============================================================================
@@ -556,3 +598,63 @@ void AudioMixer::setMasterVolumeAsync(float vol) {
     cmd.volume = vol;
     queueCommand(cmd);
 }
+
+// ============================================================================
+//  TEST MODE (Single-core audio testing with mock data)
+// ============================================================================
+
+#if AUDIO_TEST_MODE
+void AudioMixer::activateTestChannel(int channel, float volume) {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
+    
+    Channel& ch = _channels[channel];
+    ch.active = true;
+    ch.volume = volume;
+    ch.loop = false;
+    ch.fading = false;
+    ch.samplesRemaining = 0xFFFFFFFF;  // Infinite samples for test mode
+    
+    // Mark as playing for status queries
+    _channelPlaying[channel] = true;
+    
+    Serial.printf("[MIXER] Test channel %d activated (vol=%.2f)\n", channel, volume);
+}
+
+void AudioMixer::deactivateTestChannel(int channel) {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
+    
+    Channel& ch = _channels[channel];
+    ch.active = false;
+    _channelPlaying[channel] = false;
+    
+    Serial.printf("[MIXER] Test channel %d deactivated\n", channel);
+}
+
+void AudioMixer::printMixerStatus() const {
+    Serial.println("========================================");
+    Serial.println("MIXER STATUS");
+    Serial.println("========================================");
+    Serial.printf("Initialized:    %s\n", _initialized ? "YES" : "NO");
+    Serial.printf("I2S Running:    %s\n", _i2sRunning ? "YES" : "NO");
+    Serial.printf("Master Volume:  %.2f\n", _masterVolume);
+    Serial.printf("Dual-Core Mode: %s\n", _dualCoreMode ? "YES" : "NO");
+    Serial.printf("I2S Write Count: %lu samples\n", (unsigned long)_i2sWriteCount);
+    Serial.println("");
+    
+    Serial.println("Channel Status:");
+    for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
+        const Channel& ch = _channels[i];
+        Serial.printf("  Ch%d: %s", i, ch.active ? "ACTIVE" : "Inactive");
+        if (ch.active) {
+            Serial.printf(" | Vol: %.2f | Fade: %s | Loop: %s | Samples: %lu",
+                          ch.volume,
+                          ch.fading ? "YES" : "NO",
+                          ch.loop ? "YES" : "NO",
+                          (unsigned long)ch.samplesRemaining);
+        }
+        Serial.println("");
+    }
+    
+    Serial.println("========================================");
+}
+#endif // AUDIO_TEST_MODE

@@ -15,7 +15,7 @@
  */
 
 #define FIRMWARE_VERSION "1.1.0"
-#define BUILD_NUMBER 100  // Increment this with each build
+#define BUILD_NUMBER 106  // Increment this with each build
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -38,6 +38,9 @@
 #include "cli/config_cli.h"
 #include "cli/engine_cli.h"
 #include "cli/system_cli.h"
+#if AUDIO_TEST_MODE
+#include "cli/test_cli.h"
+#endif
 
 // ============================================================================
 // Codec Selection
@@ -462,8 +465,18 @@ void setup() {
         Serial.println("[MAIN] WARNING: No codec available");
     }
     
-    // START CORE 1: Audio task only
+    // START CORE 1: Audio task only (unless in test mode)
     // Must happen AFTER audio init but BEFORE we try to play sounds
+#if AUDIO_TEST_MODE
+    Serial.println("[MAIN] TEST MODE: Audio will run on Core 0 in loop()");
+    if (audio_initialized) {
+        // Don't play startup sound in test mode
+        Serial.println("[MAIN] Use 'test' commands to generate mock audio");
+        
+        // Set mixer reference for test CLI
+        AudioTestCLI::setMixer(&mixer);
+    }
+#else
     if (audio_initialized) {
         if (!startCore1Task()) {
             Serial.println("[MAIN] CRITICAL: Failed to start Core 1!");
@@ -477,6 +490,7 @@ void setup() {
             play_startup_sound();
         }
     }
+#endif
     
     // Initialize Engine FX
     if (audio_initialized) {

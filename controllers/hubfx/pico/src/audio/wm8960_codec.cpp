@@ -406,7 +406,8 @@ bool WM8960Codec::testCommunication() {
             Serial.println("[WM8960] ERROR: NACK on data");
             break;
         case 4:
-            Serial.println("[WM8960] ERROR: Other I2C error");
+            Serial.println("[WM8960] ERROR: Other I2C error (bus may be stuck)");
+            Serial.println("[WM8960] Try: codec recover");
             break;
         case 5:
             Serial.println("[WM8960] ERROR: Timeout");
@@ -481,4 +482,43 @@ void WM8960Codec::reinitialize(uint32_t sample_rate) {
     
     initialized = true;
     Serial.println("[WM8960] Reinitialization complete");
+}
+
+bool WM8960Codec::recoverI2C() {
+    if (!wire) {
+        Serial.println("[WM8960] ERROR: I2C not configured");
+        return false;
+    }
+    
+    Serial.println("[WM8960] Attempting I2C bus recovery...");
+    
+    // Method 1: Reset the I2C peripheral
+    Serial.println("[WM8960] Step 1: Resetting I2C peripheral");
+    wire->end();
+    delay(100);
+    wire->begin();
+    wire->setClock(WM8960_I2C_SPEED);
+    delay(100);
+    
+    // Method 2: Generate clock pulses to clear stuck bus
+    Serial.println("[WM8960] Step 2: Generating I2C clock pulses");
+    // This is done automatically by the Wire library on restart
+    
+    // Method 3: Test communication
+    Serial.println("[WM8960] Step 3: Testing communication");
+    wire->beginTransmission(WM8960_I2C_ADDR);
+    uint8_t result = wire->endTransmission();
+    
+    if (result == 0) {
+        Serial.println("[WM8960] Recovery SUCCESS: Device responding");
+        Serial.println("[WM8960] Hint: Run 'codec reinit' to restore codec state");
+        return true;
+    } else {
+        Serial.printf("[WM8960] Recovery FAILED: Error code %d\n", result);
+        Serial.println("[WM8960] Possible causes:");
+        Serial.println("  - I2C wiring disconnected (check SDA/SCL)");
+        Serial.println("  - Codec power issue (check 3.3V)");
+        Serial.println("  - Hardware failure");
+        return false;
+    }
 }

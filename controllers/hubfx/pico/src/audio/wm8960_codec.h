@@ -129,6 +129,9 @@ public:
     void reinitialize(uint32_t sample_rate = 44100) override;
     void* getCommunicationInterface() override { return wire; }
     
+    // Recovery methods
+    bool recoverI2C();
+    
 private:
     TwoWire* wire;
     bool initialized;

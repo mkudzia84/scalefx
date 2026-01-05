@@ -108,6 +108,14 @@ public:
     void setVolumeAsync(int channel, float volume);
     void setMasterVolumeAsync(float volume);
 
+#if AUDIO_TEST_MODE
+    // ---- Test Mode ----
+    void activateTestChannel(int channel, float volume = 1.0f);
+    void deactivateTestChannel(int channel);
+    uint32_t getI2SWriteCount() const { return _i2sWriteCount; }
+    void printMixerStatus() const;
+#endif
+
 private:
     // ---- Internal Types ----
     struct Channel {
@@ -186,6 +194,11 @@ private:
     // Status (Core 1 -> Core 0)
     volatile bool _channelPlaying[AUDIO_MAX_CHANNELS] = {};
     volatile int _channelRemainingMs[AUDIO_MAX_CHANNELS] = {};
+    
+    #if AUDIO_TEST_MODE
+    // Diagnostic counters
+    uint32_t _i2sWriteCount = 0;
+    #endif
 };
 
 #endif // AUDIO_MIXER_H

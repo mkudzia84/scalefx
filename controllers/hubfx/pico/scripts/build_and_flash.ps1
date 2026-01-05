@@ -7,9 +7,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  HubFX Pico - Build & Flash Utility" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  HubFX Pico - Build and Flash Utility" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
 
 # Step 1: Clean build
 Write-Host "[1/6] Cleaning build directory..." -ForegroundColor Yellow
@@ -18,7 +20,8 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "✗ Clean failed!" -ForegroundColor Red
     exit 1
 }
-Write-Host "✓ Clean complete`n" -ForegroundColor Green
+Write-Host "✓ Clean complete" -ForegroundColor Green
+Write-Host ""
 
 # Step 2: Build firmware
 Write-Host "[2/6] Building firmware..." -ForegroundColor Yellow
@@ -29,7 +32,8 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 $flashSize = $buildOutput | Select-String "Flash:" | Select-Object -Last 1
-Write-Host "✓ Build complete - $flashSize`n" -ForegroundColor Green
+Write-Host "✓ Build complete - $flashSize" -ForegroundColor Green
+Write-Host ""
 
 # Step 3: Calculate source checksum
 Write-Host "[3/6] Calculating firmware checksum..." -ForegroundColor Yellow
@@ -40,7 +44,8 @@ if (!(Test-Path $firmwarePath)) {
 }
 $sourceHash = (Get-FileHash $firmwarePath -Algorithm MD5).Hash
 Write-Host "  MD5: $sourceHash" -ForegroundColor Gray
-Write-Host "✓ Checksum calculated`n" -ForegroundColor Green
+Write-Host "✓ Checksum calculated" -ForegroundColor Green
+Write-Host ""
 
 # Step 4: Enter BOOTSEL mode
 Write-Host "[4/6] Entering BOOTSEL mode..." -ForegroundColor Yellow
@@ -62,7 +67,8 @@ if (!$drive) {
     Write-Host "✗ Pico not in BOOTSEL mode!" -ForegroundColor Red
     exit 1
 }
-Write-Host "✓ Pico in BOOTSEL mode (Drive $drive`:)`n" -ForegroundColor Green
+Write-Host "✓ Pico in BOOTSEL mode (Drive $drive`:)" -ForegroundColor Green
+Write-Host ""
 
 # Step 5: Copy firmware with checksum verification
 Write-Host "[5/6] Uploading firmware..." -ForegroundColor Yellow
@@ -72,7 +78,8 @@ Start-Sleep -Seconds 2
 if (Test-Path "${drive}:\firmware.uf2") {
     $destHash = (Get-FileHash "${drive}:\firmware.uf2" -Algorithm MD5).Hash
     if ($sourceHash -eq $destHash) {
-        Write-Host "✓ Checksum verified - Upload complete`n" -ForegroundColor Green
+        Write-Host "✓ Checksum verified - Upload complete" -ForegroundColor Green
+        Write-Host ""
     } else {
         Write-Host "✗ Checksum mismatch!" -ForegroundColor Red
         Write-Host "  Source: $sourceHash" -ForegroundColor Gray
@@ -80,7 +87,8 @@ if (Test-Path "${drive}:\firmware.uf2") {
         exit 1
     }
 } else {
-    Write-Host "✓ Firmware copied - Pico is rebooting`n" -ForegroundColor Green
+    Write-Host "✓ Firmware copied - Pico is rebooting" -ForegroundColor Green
+    Write-Host ""
 }
 
 # Step 6: Wait for reboot and test
@@ -88,12 +96,16 @@ Write-Host "[6/6] Waiting for boot..." -ForegroundColor Yellow
 Start-Sleep -Seconds 7
 
 if (!$SkipTests) {
-    Write-Host "`nRunning codec test..." -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Running codec test..." -ForegroundColor Cyan
     python tests/test_codec.py
 } else {
-    Write-Host "✓ Skipping tests`n" -ForegroundColor Green
+    Write-Host "✓ Skipping tests" -ForegroundColor Green
+    Write-Host ""
 }
 
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Build & Flash Complete!" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
+Write-Host "" 
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  Build and Flash Complete!" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
