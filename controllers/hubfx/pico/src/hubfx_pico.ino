@@ -34,8 +34,8 @@
 #include "effects/gun_fx.h"
 #include "debug_config.h"
 
-// USB Host (from serial_common library)
-#include <serial_common.h>
+// Serial communication (USB Host + GunFX protocol)
+#include <serial.h>
 #include "tusb_config.h"
 
 // CLI System
@@ -112,7 +112,7 @@ EngineFX engineFx;
 // Gun FX (slave controller)
 GunFX gunFx;
 
-// USB Host (from serial_common library, runs on Core 1)
+// USB Host (from serial library, runs on Core 1)
 UsbHost usbHost;
 
 // Configuration

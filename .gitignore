@@ -5,6 +5,7 @@ build/
 *.a
 *.dylib
 *.exe
+*.pyc
 
 # PlatformIO
 .pio/

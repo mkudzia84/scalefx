@@ -102,8 +102,9 @@ void GunFX::setDevice(int deviceIndex) {
 bool GunFX::start() {
     if (!_initialized) return false;
     
-    // Send INIT to GunFX Pico
-    _serial.sendInit();
+    // Send INIT to GunFX Pico with keepalive interval
+    // The slave will use 1.5x this interval for connection timeout
+    _serial.sendInit(GunFXConfig::KEEPALIVE_INTERVAL_MS);
     delay(100);
     
     // Configure pitch servo

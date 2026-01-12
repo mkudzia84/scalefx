@@ -2,14 +2,14 @@
  * @file usb_cli.h
  * @brief USB Host CLI commands
  * 
- * Uses the UsbHost class from serial_common library
+ * Uses the UsbHost class from serial library
  */
 
 #ifndef USB_CLI_H
 #define USB_CLI_H
 
 #include "command_handler.h"
-#include <serial_common.h>
+#include <serial.h>
 
 class UsbCli : public CommandHandler {
 public:

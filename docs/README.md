@@ -503,9 +503,20 @@ scalefx/
 │   └── gpio.c             # GPIO abstraction layer
 ├── include/               # Header files (.h)
 ├── controllers/           # Microcontroller firmware
-│   └── gunfx/pico/        # GunFX Pico controller
-│       ├── gunfx_pico.ino # Arduino sketch
-│       └── README.md      # Pico-specific documentation
+│   ├── gunfx/pico/        # GunFX Pico controller
+│   │   ├── src/           # Firmware source
+│   │   ├── docs/          # GunFX documentation
+│   │   └── README.md      # Controller overview
+│   ├── hubfx/pico/        # HubFX Pico controller
+│   │   ├── src/           # Firmware source
+│   │   ├── docs/          # HubFX documentation
+│   │   └── README.md      # Controller overview
+│   └── lib/               # Shared libraries
+│       ├── led_control/   # LED GPIO control
+│       ├── pwm_control/   # RC PWM input
+│       ├── srv_control/   # Servo motion control
+│       ├── serial/        # Communication protocol
+│       └── README.md      # Library overview
 ├── app/                   # Desktop applications
 │   └── win32/ScaleFXStudio/  # Windows configuration tool
 ├── build/                 # Build output (generated)
@@ -547,9 +558,26 @@ This will:
 
 ## Documentation
 
-Additional documentation available:
-- [Logging System](LOGGING.md) - Logging architecture and usage guide
-- [GunFX Pico Controller](../controllers/gunfx/pico/README.md) - Pico firmware protocol and commands
+### Hub System (This Directory)
+- [WIRING.md](WIRING.md) - Complete system wiring guide
+- [LOGGING.md](LOGGING.md) - Logging architecture
+- [AUDIO_HAT_COMPATIBILITY.md](AUDIO_HAT_COMPATIBILITY.md) - Audio HAT support
+- [PIGPIO_SETUP.md](PIGPIO_SETUP.md) - pigpio daemon configuration
+- [SOFTWARE_PWM.md](SOFTWARE_PWM.md) - Software PWM implementation
+
+### Controllers
+- [GunFX Controller](../controllers/gunfx/pico/README.md) - Gun effects firmware
+  - [GunFX Commands](../controllers/gunfx/pico/docs/COMMANDS.md) - Protocol commands
+  - [GunFX Wiring](../controllers/gunfx/pico/docs/WIRING.md) - Hardware wiring
+- [HubFX Controller](../controllers/hubfx/pico/README.md) - Hub/audio firmware
+  - [HubFX Docs](../controllers/hubfx/pico/docs/README.md) - Documentation index
+
+### Libraries
+- [Library Overview](../controllers/lib/README.md) - Shared libraries
+- [Serial Protocol](../controllers/lib/serial/PROTOCOL.md) - Binary protocol spec
+- [Text Commands](../controllers/lib/serial/docs/TEXT_COMMANDS.md) - Text protocol
+
+### Applications
 - [ScaleFX Studio](../app/win32/ScaleFXStudio/README.md) - Windows configuration tool
 
 ## License

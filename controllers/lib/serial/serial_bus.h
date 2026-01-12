@@ -1,19 +1,11 @@
 /*
- * Serial Common - Main Header
+ * Serial Bus - Binary COBS Protocol Implementation
  * 
  * Object-oriented serial communication library for ScaleFX controllers.
  * 
  * Provides:
- *   - Protocol utilities (COBS framing, CRC-8, packet types) in SerialProtocol namespace
  *   - UsbHost class for USB HOST functionality (PIO-USB for CDC devices)
- *   - SerialBusBase abstract interface
- *   - SerialBus class for binary COBS packet protocol (default)
- *   - SerialBusText class for human-readable text protocol (testing)
- * 
- * Used by:
- *   - HubFX Pico (master controller)
- *   - GunFX Pico (slave controller)
- *   - Future modules
+ *   - SerialBus class for binary COBS packet protocol
  * 
  * Packet Format (before COBS encoding):
  *   [type:u8][len:u8][payload:len bytes][crc:u8]
@@ -23,98 +15,18 @@
  * 
  * CRC:
  *   CRC-8 polynomial 0x07 over type+len+payload
- * 
- * Text Protocol Format:
- *   COMMAND_NAME [key=value ...]\n
- *   Example: TRIGGER_ON rpm=600\n
  */
 
-#ifndef SERIAL_COMMON_H
-#define SERIAL_COMMON_H
+#ifndef SERIAL_BUS_H
+#define SERIAL_BUS_H
 
 #include <Arduino.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <functional>
 
-// Include base class and protocol definitions
 #include "serial_protocol.h"
 #include "serial_bus_base.h"
-
-// ============================================================================
-// Protocol Constants & Utilities (also in serial_protocol.h)
-// ============================================================================
-
-namespace SerialProtocol {
-
-// Buffer sizes
-constexpr size_t MAX_PAYLOAD_SIZE = 64;
-constexpr size_t MAX_PACKET_SIZE = 2 + MAX_PAYLOAD_SIZE + 1;
-constexpr size_t COBS_BUFFER_SIZE = MAX_PACKET_SIZE + MAX_PACKET_SIZE / 254 + 2;
-constexpr uint8_t FRAME_DELIMITER = 0x00;
-
-// Universal Packet Types (0xF0-0xFF)
-constexpr uint8_t SFX_PKT_INIT        = 0xF0;
-constexpr uint8_t SFX_PKT_SHUTDOWN    = 0xF1;
-constexpr uint8_t SFX_PKT_KEEPALIVE   = 0xF2;
-constexpr uint8_t SFX_PKT_INIT_READY  = 0xF3;
-constexpr uint8_t SFX_PKT_STATUS      = 0xF4;
-constexpr uint8_t SFX_PKT_ERROR       = 0xF5;
-constexpr uint8_t SFX_PKT_ACK         = 0xF6;
-constexpr uint8_t SFX_PKT_NACK        = 0xF7;
-constexpr uint8_t SFX_PKT_REBOOT      = 0xF8;
-constexpr uint8_t SFX_PKT_BOOTSEL     = 0xF9;
-
-// GunFX-Specific Packet Types (0x01-0x2F)
-constexpr uint8_t GUNFX_PKT_TRIGGER_ON      = 0x01;
-constexpr uint8_t GUNFX_PKT_TRIGGER_OFF     = 0x02;
-constexpr uint8_t GUNFX_PKT_SRV_SET         = 0x10;
-constexpr uint8_t GUNFX_PKT_SRV_SETTINGS    = 0x11;
-constexpr uint8_t GUNFX_PKT_SRV_RECOIL_JERK = 0x12;
-constexpr uint8_t GUNFX_PKT_SMOKE_HEAT      = 0x20;
-
-// Protocol functions
-uint8_t crc8(const uint8_t* data, size_t len);
-size_t cobsEncode(const uint8_t* input, size_t length, uint8_t* output);
-size_t cobsDecode(const uint8_t* input, size_t length, uint8_t* output, size_t maxOutput);
-size_t buildPacket(uint8_t* output, uint8_t type, const uint8_t* payload, size_t payloadLen);
-size_t encodePacket(uint8_t* output, uint8_t type, const uint8_t* payload, size_t payloadLen);
-bool parsePacket(const uint8_t* input, size_t length, uint8_t* type, 
-                 const uint8_t** payload, size_t* payloadLen);
-
-// Payload encoding helpers
-inline void putU16LE(uint8_t* buf, uint16_t value) {
-    buf[0] = value & 0xFF;
-    buf[1] = (value >> 8) & 0xFF;
-}
-
-inline uint16_t getU16LE(const uint8_t* buf) {
-    return buf[0] | ((uint16_t)buf[1] << 8);
-}
-
-inline void putI16LE(uint8_t* buf, int16_t value) {
-    putU16LE(buf, (uint16_t)value);
-}
-
-inline int16_t getI16LE(const uint8_t* buf) {
-    return (int16_t)getU16LE(buf);
-}
-
-inline void putU32LE(uint8_t* buf, uint32_t value) {
-    buf[0] = value & 0xFF;
-    buf[1] = (value >> 8) & 0xFF;
-    buf[2] = (value >> 16) & 0xFF;
-    buf[3] = (value >> 24) & 0xFF;
-}
-
-inline uint32_t getU32LE(const uint8_t* buf) {
-    return buf[0] | 
-           ((uint32_t)buf[1] << 8) | 
-           ((uint32_t)buf[2] << 16) | 
-           ((uint32_t)buf[3] << 24);
-}
-
-} // namespace SerialProtocol
 
 // ============================================================================
 // USB Host Constants & Types
@@ -255,8 +167,6 @@ private:
 
 constexpr size_t SERIAL_BUS_RX_BUFFER_SIZE = 256;
 
-// Note: SerialBusStats and PacketRxCallback defined in serial_bus_base.h
-
 // ============================================================================
 // SerialBus Class - Binary COBS Protocol (Default Implementation)
 // ============================================================================
@@ -298,8 +208,14 @@ public:
     // Status
     bool isConnected() const override;
     bool isInitialized() const override { return _initialized; }
+    int deviceIndex() const { return _deviceIndex; }
     const SerialBusStats& stats() const override { return _stats; }
     void resetStats() override;
+
+protected:
+    // Timing state - accessible to subclasses for send time tracking
+    unsigned long _lastSendMs = 0;         // Time of last packet sent (any type)
+    unsigned long _keepaliveIntervalMs = 0;
 
 private:
     void processFrame(const uint8_t* frame, size_t frameLen);
@@ -313,12 +229,6 @@ private:
 
     PacketRxCallback _rxCallback;
     SerialBusStats _stats;
-
-    unsigned long _lastKeepaliveMs = 0;
-    unsigned long _keepaliveIntervalMs = 0;
 };
 
-// Include text protocol implementation for testing
-#include "serial_bus_text.h"
-
-#endif // SERIAL_COMMON_H
+#endif // SERIAL_BUS_H

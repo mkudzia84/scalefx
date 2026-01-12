@@ -13,7 +13,7 @@
 #define GUN_FX_H
 
 #include <Arduino.h>
-#include <serial_gunfx.h>
+#include <serial.h>
 #include <pwm_control.h>
 #include "effects_config.h"
 #include "../audio/audio_mixer.h"
@@ -27,7 +27,7 @@ class UsbHost;
 
 namespace GunFXConfig {
     constexpr int RATE_HYSTERESIS_US   = 50;
-    constexpr int KEEPALIVE_INTERVAL_MS = 30000;
+    constexpr int KEEPALIVE_INTERVAL_MS = 5000;
     constexpr int DEBUG_INTERVAL_MS    = 10000;
     constexpr int MAX_RATES_OF_FIRE    = 8;
     constexpr int SERVO_DEADBAND_US    = 5;

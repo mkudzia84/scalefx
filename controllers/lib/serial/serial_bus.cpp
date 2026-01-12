@@ -1,10 +1,10 @@
 /*
- * Serial Common - Implementation
+ * Serial Bus - Binary Protocol Implementation
  * 
  * Object-oriented serial communication library for ScaleFX controllers.
  */
 
-#include "serial_common.h"
+#include "serial_bus.h"
 
 // USB Host functionality is only needed for HubFX (master)
 #ifndef GUNFX_SLAVE
@@ -564,15 +564,12 @@ int SerialBus::sendPacket(uint8_t type, const uint8_t* payload, size_t len) {
     }
     
     _stats.packets_sent++;
+    _lastSendMs = millis();  // Track time of successful send
     return 0;
 }
 
 int SerialBus::sendKeepalive() {
-    int result = sendPacket(SerialProtocol::SFX_PKT_KEEPALIVE);
-    if (result == 0) {
-        _lastKeepaliveMs = millis();
-    }
-    return result;
+    return sendPacket(SerialProtocol::SFX_PKT_KEEPALIVE);
 }
 
 int SerialBus::process() {
@@ -638,14 +635,16 @@ void SerialBus::processFrame(const uint8_t* frame, size_t frameLen) {
 
 void SerialBus::setKeepaliveInterval(unsigned long intervalMs) {
     _keepaliveIntervalMs = intervalMs;
-    _lastKeepaliveMs = millis();
+    _lastSendMs = millis();  // Reset send timer
 }
 
 bool SerialBus::processKeepalive() {
     if (!_initialized || _keepaliveIntervalMs == 0) return false;
     
+    // Only send keepalive if no other message was sent within the interval
+    // This ensures at least one message (of any type) per interval
     unsigned long now = millis();
-    if (now - _lastKeepaliveMs >= _keepaliveIntervalMs) {
+    if (now - _lastSendMs >= _keepaliveIntervalMs) {
         sendKeepalive();
         return true;
     }

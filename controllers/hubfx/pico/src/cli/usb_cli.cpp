@@ -2,7 +2,7 @@
  * @file usb_cli.cpp
  * @brief USB Host CLI command implementation
  * 
- * Uses the UsbHost class from serial_common library
+ * Uses the UsbHost class from serial library
  */
 
 #include "usb_cli.h"
@@ -31,7 +31,7 @@ bool UsbCli::handleCommand(const String& cmd) {
             return true;
         }
         
-        // Use printStatus from serial_common UsbHost
+        // Use printStatus from UsbHost
         if (p.jsonRequested()) {
             int count = _usb->cdcDeviceCount();
             Serial.print("{\"cdcDeviceCount\":");
