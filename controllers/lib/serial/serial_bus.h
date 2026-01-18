@@ -1,20 +1,43 @@
 /*
- * Serial Bus - Binary COBS Protocol Implementation
- * 
- * Object-oriented serial communication library for ScaleFX controllers.
- * 
- * Provides:
- *   - UsbHost class for USB HOST functionality (PIO-USB for CDC devices)
- *   - SerialBus class for binary COBS packet protocol
- * 
- * Packet Format (before COBS encoding):
- *   [type:u8][len:u8][payload:len bytes][crc:u8]
- * 
+ * Serial Bus - USB Host Infrastructure (Master Side)
+ *
+ * USB Host communication for ScaleFX master controllers (HubFX).
+ * Provides PIO-USB host stack integration and COBS-framed serial protocol.
+ *
+ * Components:
+ *   UsbHost   - PIO-USB host manager for CDC devices
+ *   SerialBus - COBS-framed binary protocol (implements ISerialCore)
+ *
+ * This file is for MASTER devices only (HubFX). Slave devices (GunFX Pico,
+ * LightFX Pico) should use CoreCommandHandler from serial_core.h instead.
+ *
+ * Protocol Format (before COBS encoding):
+ *   [type:u8][len:u8][payload:0-64 bytes][crc8:u8]
+ *
  * Framing:
- *   COBS encoded, terminated with 0x00 delimiter
- * 
+ *   COBS encoded packet followed by 0x00 delimiter
+ *
+ * Universal Packet Types (0xF0-0xFF, defined in serial_protocol.h):
+ *   INIT (0xF0)        - Initialize connection
+ *   SHUTDOWN (0xF1)    - Graceful shutdown
+ *   KEEPALIVE (0xF2)   - Connection heartbeat
+ *   INIT_READY (0xF3)  - Slave ready response
+ *   STATUS (0xF4)      - Status payload
+ *   ERROR (0xF5)       - Error notification
+ *   ACK (0xF6)         - Command acknowledged
+ *   NACK (0xF7)        - Command rejected
+ *   REBOOT (0xF8)      - Restart device
+ *   BOOTSEL (0xF9)     - Enter bootloader
+ *   STATUS_REQ (0xFA)  - Request status
+ *
  * CRC:
  *   CRC-8 polynomial 0x07 over type+len+payload
+ *
+ * Usage:
+ *   UsbHost usbHost;
+ *   usbHost.begin();
+ *   GunFxMaster gunfx;  // Extends SerialBus
+ *   gunfx.begin(&usbHost, 0);
  */
 
 #ifndef SERIAL_BUS_H
@@ -25,8 +48,7 @@
 #include <stddef.h>
 #include <functional>
 
-#include "serial_protocol.h"
-#include "serial_bus_base.h"
+#include "serial_core.h"
 
 // ============================================================================
 // USB Host Constants & Types
@@ -168,16 +190,15 @@ private:
 constexpr size_t SERIAL_BUS_RX_BUFFER_SIZE = 256;
 
 // ============================================================================
-// SerialBus Class - Binary COBS Protocol (Default Implementation)
+// SerialBus Class - Binary COBS Protocol
 // ============================================================================
 
 /**
  * @brief COBS-framed serial communication over USB CDC
  * 
- * This is the default binary protocol implementation.
- * For human-readable text protocol (testing), use SerialBusText.
+ * This is the primary serial bus implementation using binary COBS protocol.
  */
-class SerialBus : public SerialBusBase {
+class SerialBus : public ISerialCore {
 public:
     SerialBus() = default;
     ~SerialBus() = default;
@@ -191,10 +212,12 @@ public:
 
     // Packet transmission
     int sendPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0) override;
-    int sendInit() { return sendPacket(SerialProtocol::SFX_PKT_INIT); }
-    int sendShutdown() { return sendPacket(SerialProtocol::SFX_PKT_SHUTDOWN); }
-    int sendReboot() { return sendPacket(SerialProtocol::SFX_PKT_REBOOT); }
-    int sendBootsel() { return sendPacket(SerialProtocol::SFX_PKT_BOOTSEL); }
+    
+    // Convenient overrides for core commands
+    int sendInit() { return sendPacket(CorePacket::INIT); }
+    int sendShutdown() { return sendPacket(CorePacket::SHUTDOWN); }
+    int sendReboot() { return sendPacket(CorePacket::REBOOT); }
+    int sendBootsel() { return sendPacket(CorePacket::BOOTSEL); }
     int sendKeepalive() override;
 
     // Packet reception
@@ -209,7 +232,7 @@ public:
     bool isConnected() const override;
     bool isInitialized() const override { return _initialized; }
     int deviceIndex() const { return _deviceIndex; }
-    const SerialBusStats& stats() const override { return _stats; }
+    const CoreStats& stats() const override { return _stats; }
     void resetStats() override;
 
 protected:
@@ -228,7 +251,7 @@ private:
     size_t _rxIndex = 0;
 
     PacketRxCallback _rxCallback;
-    SerialBusStats _stats;
+    CoreStats _stats;
 };
 
 #endif // SERIAL_BUS_H

@@ -20,7 +20,7 @@
 // Protocol Implementation
 // ============================================================================
 
-namespace SerialProtocol {
+namespace CoreProtocol {
 
 uint8_t crc8(const uint8_t* data, size_t len) {
     uint8_t crc = 0x00;
@@ -160,7 +160,25 @@ bool parsePacket(const uint8_t* input, size_t length, uint8_t* type,
     return true;
 }
 
-} // namespace SerialProtocol
+// Packet type name lookup (for debugging)
+const char* packetTypeToText(uint8_t type) {
+    switch (type) {
+        case CorePacket::INIT:       return "INIT";
+        case CorePacket::SHUTDOWN:   return "SHUTDOWN";
+        case CorePacket::KEEPALIVE:  return "KEEPALIVE";
+        case CorePacket::INIT_READY: return "INIT_READY";
+        case CorePacket::STATUS:     return "STATUS";
+        case CorePacket::ERROR:      return "ERROR";
+        case CorePacket::ACK:        return "ACK";
+        case CorePacket::NACK:       return "NACK";
+        case CorePacket::REBOOT:     return "REBOOT";
+        case CorePacket::BOOTSEL:    return "BOOTSEL";
+        case CorePacket::STATUS_REQ: return "STATUS_REQ";
+        default:                     return "UNKNOWN";
+    }
+}
+
+} // namespace CoreProtocol
 
 #ifndef GUNFX_SLAVE
 // ============================================================================
@@ -548,10 +566,10 @@ void SerialBus::setDevice(int deviceIndex) {
 
 int SerialBus::sendPacket(uint8_t type, const uint8_t* payload, size_t len) {
     if (!_initialized || !_usbHost) return -1;
-    if (len > SerialProtocol::MAX_PAYLOAD_SIZE) return -1;
+    if (len > CoreProtocol::MAX_PAYLOAD_SIZE) return -1;
     
-    uint8_t encoded[SerialProtocol::COBS_BUFFER_SIZE];
-    size_t encLen = SerialProtocol::encodePacket(encoded, type, payload, len);
+    uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
+    size_t encLen = CoreProtocol::encodePacket(encoded, type, payload, len);
     if (encLen == 0) {
         Serial.printf("[SerialBus] Encode failed for type 0x%02X\n", type);
         return -1;
@@ -569,7 +587,7 @@ int SerialBus::sendPacket(uint8_t type, const uint8_t* payload, size_t len) {
 }
 
 int SerialBus::sendKeepalive() {
-    return sendPacket(SerialProtocol::SFX_PKT_KEEPALIVE);
+    return sendPacket(CorePacket::KEEPALIVE);
 }
 
 int SerialBus::process() {
@@ -584,7 +602,7 @@ int SerialBus::process() {
     for (int i = 0; i < n; i++) {
         uint8_t byte = readBuf[i];
         
-        if (byte == SerialProtocol::FRAME_DELIMITER) {
+        if (byte == CoreProtocol::FRAME_DELIMITER) {
             if (_rxIndex > 0) {
                 processFrame(_rxBuffer, _rxIndex);
                 packetsProcessed++;
@@ -609,8 +627,8 @@ void SerialBus::processFrame(const uint8_t* frame, size_t frameLen) {
         return;
     }
     
-    uint8_t decoded[SerialProtocol::MAX_PACKET_SIZE];
-    size_t decLen = SerialProtocol::cobsDecode(frame, frameLen, decoded, sizeof(decoded));
+    uint8_t decoded[CoreProtocol::MAX_PACKET_SIZE];
+    size_t decLen = CoreProtocol::cobsDecode(frame, frameLen, decoded, sizeof(decoded));
     if (decLen < 3) {
         _stats.framing_errors++;
         return;
@@ -620,7 +638,7 @@ void SerialBus::processFrame(const uint8_t* frame, size_t frameLen) {
     const uint8_t* payload;
     size_t payloadLen;
     
-    if (!SerialProtocol::parsePacket(decoded, decLen, &type, &payload, &payloadLen)) {
+    if (!CoreProtocol::parsePacket(decoded, decLen, &type, &payload, &payloadLen)) {
         _stats.crc_errors++;
         Serial.printf("[SerialBus] Packet parse failed, len=%zu\n", decLen);
         return;

@@ -1,27 +1,30 @@
 /*
- * Serial Command Handler - Chain of Responsibility Pattern
- * 
- * Unified command handler framework supporting both text and binary protocols
- * through a common interface. Each handler processes commands it recognizes
- * and returns a result indicating whether it handled the command.
- * 
+ * Serial Command Handler - Binary Protocol Command Routing
+ *
+ * Command handler framework for binary COBS protocol. Each handler processes
+ * commands it recognizes and returns a result indicating whether it handled
+ * the command.
+ *
  * Design Pattern: Chain of Responsibility
- * - Handlers are tried in sequence until one processes the command
- * - If no handler processes it, an error is returned to the sender
- * - Each handler is responsible for its own ACK/NACK responses
- * 
- * Class Hierarchy:
- *   SerialCommand           - Unified representation of text or binary command
- *   CommandHandleResult     - Shared result enum for all handlers
- *   ICommandHandler         - Single interface for all protocol handlers
- *   CommandRouter           - Routes commands through handler chain (any protocol)
- * 
- * Usage:
+ *   - Handlers are tried in sequence until one processes the command
+ *   - If no handler processes it, a NACK is returned to the sender
+ *   - Each handler is responsible for its own ACK/NACK responses
+ *
+ * Key Types:
+ *   CommandHandleResult - Result enum: Handled, NotMyCommand, Error
+ *   ICommandHandler     - Interface for binary command handlers
+ *   CommandRouter       - Routes packets through handler chain
+ *
+ * Usage (Slave Side):
  *   CommandRouter router;
- *   router.begin(&Serial, ProtocolMode::Text, nackCallback);
- *   router.addHandler(&initHandler);
- *   router.addHandler(&protocolSlave);
+ *   router.begin(&Serial, nackCallback);
+ *   router.addHandler(&coreHandler);     // System commands (via CoreCommandHandler)
+ *   router.addHandler(&protocolHandler); // Protocol-specific commands
  *   // In loop(): router.process();
+ *
+ * Binary Packets:
+ *   Routed by packet type byte (0x01-0xFF)
+ *   COBS-encoded with CRC-8 verification
  */
 
 #ifndef SERIAL_COMMAND_HANDLER_H
@@ -30,66 +33,7 @@
 #include <Arduino.h>
 #include <functional>
 #include "serial_error.h"
-#include "serial_protocol.h"
-
-// ============================================================================
-//  PROTOCOL MODE
-// ============================================================================
-
-/**
- * @brief Protocol mode for command routing
- */
-enum class ProtocolMode : uint8_t {
-    Text,       // Newline-delimited text commands
-    Binary      // COBS-encoded binary packets
-};
-
-// ============================================================================
-//  SERIAL COMMAND (Unified Text/Binary Representation)
-// ============================================================================
-
-/**
- * @brief Unified command representation for both text and binary protocols
- * 
- * Allows a single handler interface to process either protocol type.
- * Use isText()/isBinary() to check type, then access appropriate fields.
- */
-struct SerialCommand {
-    ProtocolMode mode;
-    
-    // Text mode data
-    const char* text;           // Null-terminated command line
-    
-    // Binary mode data
-    uint8_t packetType;         // Packet type byte
-    const uint8_t* payload;     // Payload data (may be nullptr)
-    size_t payloadLen;          // Payload length
-    
-    // Convenience accessors
-    bool isText() const { return mode == ProtocolMode::Text; }
-    bool isBinary() const { return mode == ProtocolMode::Binary; }
-    
-    // Factory methods for cleaner construction
-    static SerialCommand fromText(const char* line) {
-        SerialCommand cmd;
-        cmd.mode = ProtocolMode::Text;
-        cmd.text = line;
-        cmd.packetType = 0;
-        cmd.payload = nullptr;
-        cmd.payloadLen = 0;
-        return cmd;
-    }
-    
-    static SerialCommand fromBinary(uint8_t type, const uint8_t* data, size_t len) {
-        SerialCommand cmd;
-        cmd.mode = ProtocolMode::Binary;
-        cmd.text = nullptr;
-        cmd.packetType = type;
-        cmd.payload = data;
-        cmd.payloadLen = len;
-        return cmd;
-    }
-};
+#include "serial_core.h"
 
 // ============================================================================
 //  COMMAND RESULT
@@ -108,76 +52,20 @@ enum class CommandHandleResult : uint8_t {
 };
 
 // ============================================================================
-//  UNIFIED COMMAND HANDLER INTERFACE
+//  COMMAND HANDLER INTERFACE
 // ============================================================================
 
 /**
- * @brief Unified interface for command handlers (text or binary)
+ * @brief Interface for binary command handlers
  * 
  * Implementations should:
- * - Check cmd.isText() or cmd.isBinary() to determine protocol
- * - Return Handled if the command was recognized (send ACK/NACK as appropriate)
- * - Return NotMyCommand if the command should be passed to the next handler
+ * - Return Handled if the packet was recognized (send ACK/NACK as appropriate)
+ * - Return NotMyCommand if the packet should be passed to the next handler
  * - Return Error only for internal handler errors
- * 
- * Handlers can support one or both protocols by checking the command mode.
  */
 class ICommandHandler {
 public:
     virtual ~ICommandHandler() = default;
-    
-    /**
-     * @brief Try to process a command (text or binary)
-     * @param cmd The command to process (check cmd.isText() or cmd.isBinary())
-     * @return CommandHandleResult indicating how the command was handled
-     */
-    virtual CommandHandleResult tryProcess(const SerialCommand& cmd) = 0;
-    
-    /**
-     * @brief Get the name of this handler (for debugging)
-     */
-    virtual const char* handlerName() const = 0;
-};
-
-// ============================================================================
-//  LEGACY INTERFACES (for backward compatibility)
-// ============================================================================
-
-/**
- * @brief Legacy interface for text-only handlers
- * @deprecated Use ICommandHandler with SerialCommand instead
- */
-class ITextCommandHandler : public ICommandHandler {
-public:
-    // Implement unified interface by delegating to text-specific method
-    CommandHandleResult tryProcess(const SerialCommand& cmd) override {
-        if (cmd.isText()) {
-            return tryProcessCommand(cmd.text);
-        }
-        return CommandHandleResult::NotMyCommand;
-    }
-    
-    /**
-     * @brief Try to process a text command line
-     * @param line The complete command line (command + arguments)
-     * @return CommandHandleResult indicating how the command was handled
-     */
-    virtual CommandHandleResult tryProcessCommand(const char* line) = 0;
-};
-
-/**
- * @brief Legacy interface for binary-only handlers
- * @deprecated Use ICommandHandler with SerialCommand instead
- */
-class IBinaryCommandHandler : public ICommandHandler {
-public:
-    // Implement unified interface by delegating to binary-specific method
-    CommandHandleResult tryProcess(const SerialCommand& cmd) override {
-        if (cmd.isBinary()) {
-            return tryProcessPacket(cmd.packetType, cmd.payload, cmd.payloadLen);
-        }
-        return CommandHandleResult::NotMyCommand;
-    }
     
     /**
      * @brief Try to process a binary packet
@@ -186,76 +74,48 @@ public:
      * @param len Length of payload
      * @return CommandHandleResult indicating how the packet was handled
      */
-    virtual CommandHandleResult tryProcessPacket(uint8_t type, const uint8_t* payload, size_t len) = 0;
+    virtual CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) = 0;
+    
+    /**
+     * @brief Get the name of this handler (for debugging)
+     */
+    virtual const char* handlerName() const = 0;
 };
 
 // ============================================================================
-//  UNIFIED COMMAND ROUTER
+//  COMMAND ROUTER
 // ============================================================================
 
+namespace Serial {
+
 /**
- * @brief Routes commands through a chain of handlers (text or binary mode)
+ * @brief Routes binary packets through a chain of handlers
  * 
- * Reads serial input, parses according to protocol mode, and passes commands
+ * Reads serial input, decodes COBS packets, verifies CRC, and passes packets
  * through handlers in sequence until one handles it or all decline.
  */
 class CommandRouter {
 public:
-    static constexpr size_t MAX_HANDLERS = 4;
-    static constexpr size_t RX_BUFFER_SIZE = 256;
+    static constexpr size_t MAX_HANDLERS = 8;
+    static constexpr size_t RX_BUFFER_SIZE = CoreProtocol::COBS_BUFFER_SIZE;
     
-    // Callback types for unhandled commands
-    using TextNackCallback = std::function<void(uint8_t errorCode, const char* cmd)>;
-    using BinaryNackCallback = std::function<void(uint8_t errorCode, uint8_t packetType)>;
+    // Callback type for unhandled packets
+    using NackCallback = std::function<void(uint8_t errorCode, uint8_t packetType)>;
     
     CommandRouter() = default;
     
     /**
-     * @brief Initialize the router in text mode
+     * @brief Initialize the router
      * @param serial Stream to read from
-     * @param sendNackFunc Function to call when no handler processes a command
+     * @param nackFunc Function to call when no handler processes a packet
      */
-    void begin(Stream* serial, TextNackCallback sendNackFunc = nullptr) {
+    void begin(Stream* serial, NackCallback nackFunc = nullptr) {
         _serial = serial;
-        _mode = ProtocolMode::Text;
-        _textNack = sendNackFunc;
-        _binaryNack = nullptr;
+        _nackCallback = nackFunc;
         _rxIndex = 0;
         _handlerCount = 0;
         _lastActivityMs = 0;
     }
-    
-    /**
-     * @brief Initialize the router in specified mode
-     * @param serial Stream to read from
-     * @param mode Protocol mode (Text or Binary)
-     * @param textNack Callback for text mode NACKs (optional)
-     * @param binaryNack Callback for binary mode NACKs (optional)
-     */
-    void begin(Stream* serial, ProtocolMode mode,
-               TextNackCallback textNack = nullptr,
-               BinaryNackCallback binaryNack = nullptr) {
-        _serial = serial;
-        _mode = mode;
-        _textNack = textNack;
-        _binaryNack = binaryNack;
-        _rxIndex = 0;
-        _handlerCount = 0;
-        _lastActivityMs = 0;
-    }
-    
-    /**
-     * @brief Switch protocol mode (e.g., after INIT negotiation)
-     */
-    void setMode(ProtocolMode mode) {
-        _mode = mode;
-        _rxIndex = 0;  // Clear buffer on mode switch
-    }
-    
-    /**
-     * @brief Get current protocol mode
-     */
-    ProtocolMode mode() const { return _mode; }
     
     /**
      * @brief Add a handler to the chain
@@ -278,63 +138,27 @@ public:
     /**
      * @brief Process incoming serial data
      * 
-     * Reads available bytes, parses according to protocol mode, and routes
-     * complete commands through the handler chain.
+     * Reads available bytes, decodes COBS packets, and routes
+     * complete packets through the handler chain.
      * 
-     * @return Number of commands processed
+     * @return Number of packets processed
      */
     int process() {
         if (!_serial) return 0;
         
-        if (_mode == ProtocolMode::Text) {
-            return processText();
-        } else {
-            return processBinary();
-        }
-    }
-    
-    /**
-     * @brief Get time of last activity
-     */
-    unsigned long lastActivityMs() const { return _lastActivityMs; }
-    
-private:
-    int processText() {
-        int commandsProcessed = 0;
-        
-        while (_serial->available()) {
-            char c = _serial->read();
-            _lastActivityMs = millis();
-            
-            if (c == '\n' || c == '\r') {
-                if (_rxIndex > 0) {
-                    _rxBuffer[_rxIndex] = '\0';
-                    routeCommand(SerialCommand::fromText((const char*)_rxBuffer));
-                    commandsProcessed++;
-                    _rxIndex = 0;
-                }
-            } else if (_rxIndex < RX_BUFFER_SIZE - 1) {
-                _rxBuffer[_rxIndex++] = c;
-            }
-        }
-        
-        return commandsProcessed;
-    }
-    
-    int processBinary() {
         int packetsProcessed = 0;
         
         while (_serial->available()) {
             uint8_t b = _serial->read();
             _lastActivityMs = millis();
             
-            if (b == SerialProtocol::FRAME_DELIMITER) {
+            if (b == CoreProtocol::FRAME_DELIMITER) {
                 if (_rxIndex > 0) {
                     processFrame(_rxBuffer, _rxIndex);
                     packetsProcessed++;
                     _rxIndex = 0;
                 }
-            } else if (_rxIndex < SerialProtocol::COBS_BUFFER_SIZE) {
+            } else if (_rxIndex < RX_BUFFER_SIZE) {
                 _rxBuffer[_rxIndex++] = b;
             } else {
                 _rxIndex = 0;  // Buffer overflow - reset
@@ -344,44 +168,46 @@ private:
         return packetsProcessed;
     }
     
+    /**
+     * @brief Get time of last activity
+     */
+    unsigned long lastActivityMs() const { return _lastActivityMs; }
+    
+private:
     void processFrame(const uint8_t* frame, size_t frameLen) {
-        uint8_t decoded[SerialProtocol::MAX_PACKET_SIZE];
-        size_t decodedLen = SerialProtocol::cobsDecode(frame, frameLen, decoded, sizeof(decoded));
+        uint8_t decoded[CoreProtocol::MAX_PACKET_SIZE];
+        size_t decodedLen = CoreProtocol::cobsDecode(frame, frameLen, decoded, sizeof(decoded));
         
-        if (decodedLen < 2) return;
+        if (decodedLen < 3) return;  // Minimum: type + len + crc
         
         uint8_t type;
         const uint8_t* payload;
         size_t payloadLen;
         
-        if (!SerialProtocol::parsePacket(decoded, decodedLen, &type, &payload, &payloadLen)) {
-            return;
+        if (!CoreProtocol::parsePacket(decoded, decodedLen, &type, &payload, &payloadLen)) {
+            return;  // CRC error or malformed packet
         }
         
-        routeCommand(SerialCommand::fromBinary(type, payload, payloadLen));
+        routePacket(type, payload, payloadLen);
     }
     
-    void routeCommand(const SerialCommand& cmd) {
+    void routePacket(uint8_t type, const uint8_t* payload, size_t len) {
         for (size_t i = 0; i < _handlerCount; i++) {
-            CommandHandleResult result = _handlers[i]->tryProcess(cmd);
+            CommandHandleResult result = _handlers[i]->tryProcess(type, payload, len);
             
             if (result == CommandHandleResult::Handled) {
                 return;
             }
         }
         
-        // No handler processed the command
-        if (cmd.isText() && _textNack) {
-            _textNack(SerialError::INVALID_COMMAND, cmd.text);
-        } else if (cmd.isBinary() && _binaryNack) {
-            _binaryNack(SerialError::INVALID_COMMAND, cmd.packetType);
+        // No handler processed the packet
+        if (_nackCallback) {
+            _nackCallback(SerialError::INVALID_COMMAND, type);
         }
     }
     
     Stream* _serial = nullptr;
-    ProtocolMode _mode = ProtocolMode::Text;
-    TextNackCallback _textNack;
-    BinaryNackCallback _binaryNack;
+    NackCallback _nackCallback;
     
     ICommandHandler* _handlers[MAX_HANDLERS] = {nullptr};
     size_t _handlerCount = 0;
@@ -391,11 +217,12 @@ private:
     unsigned long _lastActivityMs = 0;
 };
 
+} // namespace Serial
+
 // ============================================================================
-//  LEGACY ROUTER ALIASES (for backward compatibility)
+//  TYPE ALIASES
 // ============================================================================
 
-using TextCommandRouter = CommandRouter;
-using BinaryCommandRouter = CommandRouter;
+using CommandRouter = Serial::CommandRouter;
 
 #endif // SERIAL_COMMAND_HANDLER_H

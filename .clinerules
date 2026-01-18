@@ -1,0 +1,68 @@
+# ScaleFX Development Rules
+
+## Always Include These Files in Context
+
+When working on this project, always read:
+- `instructions/README.md` - Quick navigation and constants
+- `instructions/04-CHANGE-PROPAGATION.md` - File sync requirements
+
+## Before Making Changes
+
+1. Read the relevant instruction document from `/instructions/`
+2. Understand the file sync requirements
+3. Use the checklist from `04-CHANGE-PROPAGATION.md`
+
+## Protocol Constants
+
+```yaml
+format: "Binary COBS with CRC-8"
+crc_polynomial: 0x07
+baud_rate: 115200
+packet: "[type:u8][len:u8][payload:0-64][crc8:u8]"
+endianness: "little-endian"
+```
+
+## File Sync Points (CRITICAL)
+
+These files must stay in sync:
+- `lib/serial/serial_protocol.h` ↔ `tests/framework/packets.py` (packet constants)
+- `lib/serial/serial_error.h` ↔ `tests/framework/packets.py` (error codes)
+- `lib/serial/serial_xxxfx.h` ↔ `tests/framework/commands.py` (command builders)
+- `lib/serial/serial_xxxfx.h` ↔ `tests/cli/interactive.py` (CLI commands)
+
+## When Adding Commands
+
+Always update ALL of these:
+1. `serial_protocol.h` - Packet type constant
+2. `serial_xxxfx.h` - Handler in slave class
+3. `xxxfx_pico.ino` - Callback implementation
+4. `packets.py` - Python constant
+5. `commands.py` - Python builder
+6. `interactive.py` - CLI command
+7. `README.md` - Protocol documentation
+
+## Code Patterns
+
+### C++ Payload Parsing (little-endian)
+```cpp
+uint16_t val = payload[0] | (payload[1] << 8);
+```
+
+### Python Payload Building (little-endian)
+```python
+payload = struct.pack('<H', value)  # '<' = little-endian
+```
+
+## Validation Commands
+
+```bash
+# Build check
+pio run
+
+# Python syntax check
+python -m py_compile tests/framework/packets.py
+python -m py_compile tests/cli/interactive.py
+
+# Run tests (after flash)
+pytest tests/gunfx/ -v
+```

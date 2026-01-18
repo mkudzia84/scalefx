@@ -3,7 +3,7 @@
  * 
  * Communication wrapper for GunFX slave boards connected over USB.
  * Monitors PWM inputs for trigger, heater toggle, and turret servos,
- * then sends commands to the GunFX Pico via GunFxSerialMaster.
+ * then sends commands to the GunFX Pico via GunFxSerialMasterBinary.
  * 
  * GunFX Pico handles: nozzle flash, smoke heater/fan, 3x servos with recoil
  * This module handles: PWM input monitoring, rate selection, sound playback
@@ -148,7 +148,7 @@ private:
 
     // ---- State ----
     GunFXSettings _settings;
-    GunFxSerialMaster _serial;
+    GunFxSerialMasterBinary _serial;
     
     // Uses AudioMixer::instance() directly
     AudioMixer& mixer() { return AudioMixer::instance(); }

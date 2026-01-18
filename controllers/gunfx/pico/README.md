@@ -6,6 +6,12 @@ Slave microcontroller for gun FX hardware control. Receives commands from the ma
 - Turret servos (pitch, yaw, retract)
 - Status LEDs (heater indicator, firing status)
 
+**Version:** 0.3.0  
+**Protocol:** Binary COBS with CRC-8  
+**Baud Rate:** 115200
+
+---
+
 ## Hardware
 
 The GunFX board connects to the main ScaleFX Hub board via a custom USB-C cable. The USB-C cable provides both power and data communication to the Pico.
@@ -36,32 +42,158 @@ The GunFX board connects to the main ScaleFX Hub board via a custom USB-C cable.
 
 ---
 
-## Protocol Overview
+## Protocol
 
-GunFX supports two communication protocols, negotiated via the `INIT` command:
+### Packet Format
 
-| Protocol | Format | Use Case |
-|----------|--------|----------|
-| **Binary** | COBS-encoded packets | Production use (efficient) |
-| **Text** | Line-based key=value | Testing/debugging via serial terminal |
+Binary COBS-encoded packets terminated by 0x00 delimiter:
 
-**Baud Rate:** 115200
+```
+[type:u8][len:u8][payload:0-64 bytes][crc8:u8]
+```
+
+CRC-8 polynomial 0x07 computed over type + len + payload.
+
+### Packet Type Ranges
+
+| Range | Module | Description |
+|-------|--------|-------------|
+| 0x01-0x2F | GunFX | Controller-specific commands |
+| 0xF0-0xFF | Core | Universal system commands |
 
 ### ACK/NACK Response Protocol
 
 All commands return a response:
-- **ACK** - Command executed successfully
-- **NACK** - Command failed with error code and reason
+- **ACK (0xF6)** - Command executed successfully
+- **NACK (0xF7)** - Command failed with error code and reason
 
 Exceptions (fire-and-forget, no response expected):
-- `REBOOT` - Device reboots immediately
-- `BOOTSEL` - Device enters bootloader immediately
+- `REBOOT (0xF8)` - Device reboots immediately
+- `BOOTSEL (0xF9)` - Device enters bootloader immediately
 
-### Error Codes
+---
 
-Error codes are defined in two layers:
+## System Commands (0xF0-0xFF)
 
-**Generic Errors** (all modules, `SerialError` namespace):
+| Type | Name | Payload | Response | Description |
+|------|------|---------|----------|-------------|
+| 0xF0 | INIT | (none) | INIT_READY | Initialize connection |
+| 0xF1 | SHUTDOWN | (none) | ACK | Safe shutdown, outputs off |
+| 0xF2 | KEEPALIVE | (none) | ACK | Reset watchdog timer |
+| 0xF3 | INIT_READY | (response) | — | Device info response |
+| 0xF4 | STATUS | (response) | — | Status telemetry |
+| 0xF5 | STATUS_REQ | (none) | STATUS | Request status |
+| 0xF6 | ACK | (none) | — | Command success |
+| 0xF7 | NACK | code:u8, reason:str | — | Command failure |
+| 0xF8 | REBOOT | (none) | — | Reboot (fire-and-forget) |
+| 0xF9 | BOOTSEL | (none) | — | Enter bootloader |
+
+### INIT_READY Payload
+
+| Field | Type | Description |
+|-------|------|-------------|
+| name_len | u8 | Device name length |
+| name | string | Device name (e.g., "GunFX-A4B2") |
+| ver_len | u8 | Version length |
+| version | string | Firmware version (e.g., "0.3.0") |
+| plat_len | u8 | Platform length |
+| platform | string | Hardware platform (e.g., "RP2040") |
+| cpuMHz | u16le | CPU frequency in MHz |
+| ramBytes | u32le | Free RAM in bytes |
+| build | u32le | Build number |
+
+---
+
+## GunFX Commands (0x01-0x2F)
+
+### Trigger Control
+
+| Type | Name | Payload | Description |
+|------|------|---------|-------------|
+| 0x01 | TRIGGER_ON | rpm:u16le | Start firing at specified RPM (1-3000) |
+| 0x02 | TRIGGER_OFF | fan_delay_ms:u16le | Stop firing; delay before fan turns off |
+
+**TRIGGER_ON Behavior:**
+1. Starts muzzle flash at specified rate (1-3000 RPM)
+2. Flash pulse: 30ms at full brightness + 80ms fade-out
+3. Smoke fan starts immediately (constant or pulsing mode)
+4. Recoil jerk applied to configured servos
+
+**TRIGGER_OFF Behavior:**
+1. Flash stops immediately
+2. Fan continues for `fan_delay_ms` before turning off
+
+### Servo Control
+
+| Type | Name | Payload | Description |
+|------|------|---------|-------------|
+| 0x10 | SRV_SET | servo_id:u8, pulse_us:u16le | Set servo position (500-2500µs) |
+| 0x11 | SRV_SETTINGS | servo_id:u8, min:u16le, max:u16le, speed:u16le, accel:u16le, decel:u16le | Configure servo limits and motion profile |
+| 0x12 | SRV_RECOIL_JERK | servo_id:u8, jerk_us:u16le, variance_us:u16le | Configure recoil jerk per shot |
+
+**Motion Profile:**
+- Uses trapezoidal velocity profile
+- Accelerate → Cruise → Decelerate
+- Automatic braking on direction reversal
+- Defaults: speed=4000 µs/s, accel=8000 µs/s², decel=8000 µs/s²
+
+**Recoil Jerk Effect:**
+- On each shot, random jerk offset applied to servo
+- Direction: randomly ± (positive or negative)
+- Magnitude: base `jerk_us` + random(0 to `variance_us`)
+- Clears after flash fade completes
+- Example: `jerk_us=50, variance_us=25` → ±50µs to ±75µs per shot
+
+### Smoke Control
+
+| Type | Name | Payload | Description |
+|------|------|---------|-------------|
+| 0x20 | SMOKE_HEAT | on:u8 (0=off, 1=on) | Control smoke heater |
+| 0x21 | SMOKE_SETTINGS | pulsing:u8, speed:u8, pulse_high:u8, pulse_low:u8, pulse_ms:u16le, spindown_ms:u16le | Configure smoke fan behavior |
+
+**Fan Modes:**
+
+| Mode | Description |
+|------|-------------|
+| Constant (pulsing=0) | Fan runs at configured `speed` while firing, spins down after `spindown_ms` |
+| Pulsing (pulsing=1) | Fan pulses with each shot for realistic smoke puffs |
+
+**Pulsing Mode Parameters:**
+- `pulse_high`: Speed during shot (e.g., 255)
+- `pulse_low`: Speed between shots (e.g., 80)
+- `pulse_ms`: High-speed pulse duration (e.g., 50ms)
+
+---
+
+## Status Telemetry
+
+### STATUS Payload (0xF4)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| flags | u8 | Status bit field (see below) |
+| fan_off_ms | u16le | Remaining fan spindown time |
+| servo1_us | u16le | Servo 1 position |
+| servo2_us | u16le | Servo 2 position |
+| servo3_us | u16le | Servo 3 position |
+| rpm | u16le | Current firing rate |
+
+**Status Flags:**
+| Bit | Name | Description |
+|-----|------|-------------|
+| 0 | firing | Currently firing |
+| 1 | flash_active | Flash LED on |
+| 2 | flash_fading | Flash fading out |
+| 3 | heater_on | Smoke heater active |
+| 4 | fan_on | Smoke fan running |
+| 5 | fan_spindown | Fan spinning down |
+
+---
+
+## Error Codes
+
+### Generic Errors (SerialError namespace)
+
 | Code | Name | Description |
 |------|------|-------------|
 | 0x00 | OK | Success |
@@ -78,7 +210,8 @@ Error codes are defined in two layers:
 | 0xF1 | TIMEOUT | Operation timed out |
 | 0xF2 | COMM_ERROR | Communication error |
 
-**GunFX-Specific Errors** (`GunFxError` namespace, 0x20-0x4F):
+### GunFX-Specific Errors (0x20-0x4F)
+
 | Code | Name | Description |
 |------|------|-------------|
 | 0x20 | SERVO_INVALID_ID | Servo ID out of range (1-3) |
@@ -94,181 +227,100 @@ Error codes are defined in two layers:
 
 ---
 
-## Binary Protocol
-
-**Format:** COBS-encoded packets terminated by 0x00 delimiter
-
-Packet format (before COBS encoding):
-```
-[type:u8][len:u8][payload:len bytes][crc8:u8]
-```
-CRC-8 polynomial 0x07 computed over type + len + payload.
-
-### System Commands (0xF0-0xFF)
-
-| Type | Name | Payload | Response | Description |
-|------|------|---------|----------|-------------|
-| 0xF0 | INIT | protocol:u8 (0=text, 1=binary) | INIT_READY | Initialize connection |
-| 0xF1 | SHUTDOWN | (none) | ACK | Safe shutdown, outputs off |
-| 0xF2 | KEEPALIVE | (none) | ACK | Reset watchdog timer |
-| 0xF6 | ACK | (none) | — | Command success response |
-| 0xF7 | NACK | code:u8, reason:string | — | Command failure response |
-| 0xF8 | REBOOT | (none) | — | Reboot device (fire-and-forget) |
-| 0xF9 | BOOTSEL | (none) | — | Enter bootloader (fire-and-forget) |
-
-### GunFX Commands (0x01-0x2F)
-
-| Type | Name | Payload | Description |
-|------|------|---------|-------------|
-| 0x01 | TRIGGER_ON | rpm:u16le | Start firing at specified RPM (1-3000) |
-| 0x02 | TRIGGER_OFF | fan_delay_ms:u16le | Stop firing; delay before fan turns off |
-| 0x10 | SRV_SET | servo_id:u8, pulse_us:u16le | Set servo position (500-2500µs) |
-| 0x11 | SRV_SETTINGS | servo_id:u8, min:u16le, max:u16le, speed:u16le, accel:u16le, decel:u16le | Configure servo limits and motion profile |
-| 0x12 | SRV_RECOIL_JERK | servo_id:u8, jerk_us:u16le, variance_us:u16le | Configure recoil jerk per shot |
-| 0x20 | SMOKE_HEAT | on:u8 (0=off, 1=on) | Control smoke heater |
-| 0x21 | SMOKE_SETTINGS | pulsing:u8, speed:u8, pulse_high:u8, pulse_low:u8, pulse_ms:u16le, spindown_ms:u16le | Configure smoke fan behavior |
-
-### Telemetry (Pico → Hub)
-
-| Type | Name | Payload | Description |
-|------|------|---------|-------------|
-| 0xF3 | INIT_READY | name:str, version:str, platform:str, cpuMHz:u32le, ramBytes:u32le | Device info response |
-| 0xF4 | STATUS | flags:u8, fan_off_ms:u16le, srv1-3:u16le each, rpm:u16le | Periodic status (1Hz) |
-| 0xF5 | ERROR | code:u8, msg:string | Asynchronous error notification |
-
-**Status flags (bit field):**
-| Bit | Name | Description |
-|-----|------|-------------|
-| 0 | firing | Currently firing |
-| 1 | flash_active | Flash LED on |
-| 2 | flash_fading | Flash fading out |
-| 3 | heater_on | Smoke heater active |
-| 4 | fan_on | Smoke fan running |
-| 5 | fan_spindown | Fan spinning down |
-
----
-
-## Text Protocol
-
-**Format:** Line-based commands for testing via serial terminal  
-**Command Format:** `COMMAND_NAME key=value key2=value2\n`
-
-### System Commands
+## Architecture
 
 ```
-INIT protocol=text
-SHUTDOWN
-REBOOT
-BOOTSEL
-KEEPALIVE
+┌─────────────────────────────────────────────────────────────┐
+│                     CommandRouter                            │
+│  Routes COBS packets to handlers in priority order          │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌─────────────────────┐  ┌─────────────────────────────┐  │
+│  │  CoreCommandHandler │  │       GunFxSlave            │  │
+│  │  (Priority 1)       │  │       (Priority 2)          │  │
+│  ├─────────────────────┤  ├─────────────────────────────┤  │
+│  │ INIT, SHUTDOWN      │  │ TRIGGER_ON/OFF              │  │
+│  │ REBOOT, BOOTSEL     │  │ SRV_SET, SRV_SETTINGS       │  │
+│  │ KEEPALIVE, STATUS   │  │ SRV_RECOIL_JERK             │  │
+│  └─────────────────────┘  │ SMOKE_HEAT, SMOKE_SETTINGS  │  │
+│                           └─────────────────────────────┘  │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### GunFX Commands
-
-```
-TRIGGER_ON rpm=600
-TRIGGER_OFF fanDelayMs=3000
-
-SERVO_SET id=1 pulseUs=1500
-SERVO_CONFIG id=1 minUs=1000 maxUs=2000 speed=4000 accel=8000 decel=8000
-SERVO_RECOIL_JERK id=1 jerkUs=50 varianceUs=10
-
-SMOKE_HEAT on=1
-SMOKE_SETTINGS pulsing=1 speed=255 pulseHigh=255 pulseLow=80 pulseMs=50 spindownMs=5000
-```
-
-### Responses
-
-```
-INIT_READY name=GunFX-1A2B version=0.2.0 platform=RP2040 cpuMHz=133 ramBytes=200000
-STATUS firing=1 flash=1 heater=1 fan=1 srv1=1500 srv2=1500 srv3=1500 rpm=600
-ACK
-NACK code=32 reason=Invalid servo ID (use 1-3)
-ERROR code=1 msg=Connection timeout
-```
-
-See [docs/COMMANDS.md](docs/COMMANDS.md) for complete command reference.
-
----
-
-## Behavior Details
-
-### Servo Motion
-
-`SRV_SET` commands move smoothly using trapezoidal velocity profile:
-- Accelerate until max_speed
-- Cruise at max_speed  
-- Decelerate to stop at target
-- Automatic braking/turnaround when reversing direction
-
-**Defaults:** max_speed=4000 µs/s, accel=8000 µs/s², decel=8000 µs/s²
-
-### Recoil Jerk Effect
-
-`SRV_RECOIL_JERK` configures simulated recoil kick effect:
-
-- On each shot, a random jerk offset is applied to servo position
-- Jerk direction is randomly ± (positive or negative)
-- Jerk magnitude = base `jerk_us` + random(0 to `variance_us`)
-- Jerk clears after flash fade completes
-
-**Example:** `jerk_us=50, variance_us=25` → each shot applies ±50µs to ±75µs offset
-
-### Smoke Fan Modes
-
-**Constant Mode** (`pulsing=0`):
-- Fan runs at configured `speed` while firing
-- Spins down after `spindownMs` delay when firing stops
-
-**Pulsing Mode** (`pulsing=1`):
-- Fan pulses with each shot for more realistic smoke puffs
-- `pulseHigh`: Speed during shot (e.g., 255)
-- `pulseLow`: Speed between shots (e.g., 80)
-- `pulseMs`: High-speed pulse duration (e.g., 50ms)
-
-### Firing Behavior
-
-1. `TRIGGER_ON rpm=N` starts muzzle flash at specified rate (1-3000 RPM)
-2. Flash pulse duration: 30ms with 80ms fade-out
-3. Smoke fan starts immediately (constant or pulsing mode)
-4. `TRIGGER_OFF` stops flash immediately
-5. Fan continues for `fanDelayMs` before turning off
+**Chain of Responsibility Pattern:**
+1. `CommandRouter` receives COBS packet
+2. Routes to `CoreCommandHandler` first (system commands)
+3. If not handled, routes to `GunFxSlave` (module commands)
+4. If no handler matches, sends NACK with INVALID_COMMAND
 
 ---
 
 ## Build & Upload
 
-### Using Arduino IDE
-
-1. Install the [Arduino-Pico board package](https://github.com/earlephilhower/arduino-pico)
-   - File → Preferences → Additional Board Manager URLs: `https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json`
-   - Tools → Board → Boards Manager → Search "pico" → Install "Raspberry Pi Pico/RP2040"
-
-2. Open `controllers/gunfx/pico/gunfx_pico.ino`
-
-3. Configure:
-   - Tools → Board → Raspberry Pi Pico/RP2040 → Raspberry Pi Pico
-   - Tools → Port → (select COM port)
-   - Tools → USB Stack → "Pico SDK"
-
-4. Upload
-
-### Using PlatformIO
+### Using PlatformIO (Recommended)
 
 ```bash
 cd controllers/gunfx/pico
+
+# Build
+pio run
+
+# Build and upload (device must be in BOOTSEL mode)
 pio run -t upload
+
+# Clean build
+pio run -t clean
 ```
 
-## Troubleshooting
+### Using build_and_flash.py Script
 
-**Pico not detected:**
-- Hold BOOTSEL button while connecting USB
-- Pico should appear as a mass storage device
-- Drag and drop UF2 file from Arduino IDE build output
+The `scripts/build_and_flash.py` script provides automated build and flash with verification:
 
-**Serial communication issues:**
-- Confirm baud rate (115200)
-- Check USB-C cable (must support data, not just power)
-- On Linux, add user to `dialout` group: `sudo usermod -a -G dialout $USER`
+```bash
+cd controllers/gunfx/pico
+
+# Full build and flash (auto-detects port, sends BOOTSEL command)
+python scripts/build_and_flash.py
+
+# Skip build, flash existing firmware
+python scripts/build_and_flash.py --no-build
+
+# Incremental build (no clean)
+python scripts/build_and_flash.py --no-clean
+
+# Specify port
+python scripts/build_and_flash.py --port COM3
+```
+
+**Script Features:**
+- Increments build number automatically
+- Sends BOOTSEL command over serial (no button press needed)
+- Waits for RPI-RP2 drive to appear
+- Copies UF2 firmware file
+- Verifies post-flash version
+
+### Manual BOOTSEL Method
+
+1. Hold BOOTSEL button on Pico while connecting USB
+2. RPI-RP2 drive appears
+3. Copy `.pio/build/pico/firmware.uf2` to drive
+4. Device auto-reboots with new firmware
+
+---
+
+## Version History
+
+- **v0.3.0** - Binary-only protocol
+  - Removed text protocol support
+  - Using new serial library (CoreCommandHandler + GunFxSlave)
+  - COBS framing with CRC-8 validation
+  - Chain of Responsibility architecture
+
+- **v0.2.0** - Dual protocol support
+  - Added binary COBS protocol
+  - Protocol negotiation via INIT command
+
+- **v0.1.0** - Initial release
+  - Text-based protocol only
 

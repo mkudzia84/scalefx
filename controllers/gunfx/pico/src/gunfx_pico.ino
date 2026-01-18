@@ -1,15 +1,16 @@
 /**
- * GunFX Pico Controller v0.2.0
+ * GunFX Pico Controller v0.3.0
  * 
  * Slave controller for gun effects - receives commands from HubFX over USB serial.
  * Controls: muzzle flash LED (PWM), smoke heater/fan, 3x gun servos with motion profiling.
  * 
  * Hardware: Raspberry Pi Pico (RP2040) + earlephilhower/arduino-pico core
- * Protocol: Protocol negotiation via SerialInitHandler, then binary COBS or text mode
+ * Protocol: Binary COBS with CRC-8
  * 
- * Architecture:
- *   - SerialInitHandler: Handles INIT/INIT_READY handshake + system commands (REBOOT, BOOTSEL)
- *   - IGunFxSlave*: Protocol-agnostic interface for GunFX commands (binary or text)
+ * Architecture (Chain of Responsibility):
+ *   - CoreCommandHandler: Handles INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE
+ *   - GunFxSlave: Handles TRIGGER, SERVO, SMOKE commands
+ *   - CommandRouter: Routes packets to handlers in priority order
  */
 
 #include <Arduino.h>
@@ -20,9 +21,9 @@
 #include <srv_control.h>
 #include <pico/unique_id.h>
 
-// Firmware version - used in INIT_READY response (no "v" prefix)
-#define FIRMWARE_VERSION "0.2.0"
-#define BUILD_NUMBER 10  // Increment this with each build
+// Firmware version
+#define FIRMWARE_VERSION "0.3.0"
+#define BUILD_NUMBER 1
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -42,13 +43,12 @@ const uint8_t PIN_NOZZLE_FLASH = 25;   // Muzzle flash LED (PWM)
 // ============================================================================
 
 // Serial communication
-const uint32_t SERIAL_BAUD         = 115200;
+const uint32_t SERIAL_BAUD = 115200;
 
 // Muzzle flash timing
-const uint8_t  FLASH_PWM_DUTY      = 255;     // Full brightness
-const uint16_t FLASH_PULSE_MS      = 30;      // Duration at full brightness
-const uint16_t FLASH_FADE_MS       = 80;      // Fade-out duration
-const uint8_t  FLASH_FADE_STEPS    = 20;      // Steps in fade animation
+const uint8_t  FLASH_PWM_DUTY   = 255;    // Full brightness
+const uint16_t FLASH_PULSE_MS   = 30;     // Duration at full brightness
+const uint16_t FLASH_FADE_MS    = 80;     // Fade-out duration
 
 // Servo defaults
 const uint16_t SERVO_DEFAULT_US    = 1500;    // Center position
@@ -56,43 +56,34 @@ const int SERVO_DEFAULT_MAX_SPEED  = 4000;    // μs/sec
 const int SERVO_DEFAULT_ACCEL      = 8000;    // μs/sec²
 const int SERVO_DEFAULT_DECEL      = 8000;    // μs/sec²
 
-// Smoke fan PWM (defaults - can be configured via SMOKE_SETTINGS command)
-const uint8_t SMOKE_FAN_DEFAULT_SPEED = 255;  // Default fan speed (0-255)
-const uint8_t SMOKE_FAN_DEFAULT_PULSE_HIGH = 255;  // Default fan speed during shot pulse
-const uint8_t SMOKE_FAN_DEFAULT_PULSE_LOW = 80;    // Default fan speed between shots
-const uint16_t SMOKE_FAN_DEFAULT_PULSE_MS = 50;    // Default pulse duration
-const uint16_t SMOKE_FAN_DEFAULT_SPINDOWN_MS = 5000; // Default spindown delay
+// Smoke fan defaults
+const uint8_t  SMOKE_FAN_DEFAULT_SPEED      = 255;
+const uint8_t  SMOKE_FAN_DEFAULT_PULSE_HIGH = 255;
+const uint8_t  SMOKE_FAN_DEFAULT_PULSE_LOW  = 80;
+const uint16_t SMOKE_FAN_DEFAULT_PULSE_MS   = 50;
+const uint16_t SMOKE_FAN_DEFAULT_SPINDOWN_MS = 5000;
+
+// Connection timeout
+const unsigned long CONNECTION_TIMEOUT_MS = 15000;
+
+// ============================================================================
+//  GLOBAL INSTANCES
+// ============================================================================
+
+// Serial protocol handlers
+CommandRouter commandRouter;
+CoreCommandHandler coreHandler;
+GunFxSlave gunfxSlave;
+
+// Device identification
+char deviceName[24];
 
 // ============================================================================
 //  STATE VARIABLES
 // ============================================================================
 
-// Serial communication - CommandRouter + handlers (Chain of Responsibility)
-CommandRouter commandRouter;
-SerialInitHandler initHandler;
-GunFxSerialSlave binarySlave;
-GunFxSerialSlaveText textSlave;
-IGunFxSlave* activeSlave = nullptr;  // Points to binary or text implementation
-
-char deviceName[24];  // "GunFX-XXXX" with 4-char unique suffix
-
-// Connection timeout - fallback if keepalive not negotiated (3x default keepalive)
-const unsigned long DEFAULT_CONNECTION_TIMEOUT_MS = 15000;
-
-// Connection watchdog
+// Connection state
 bool watchdog_triggered = false;
-bool was_master_connected = false;
-
-/**
- * @brief Get unique 4-character suffix from Pico's flash ID
- */
-void buildDeviceName() {
-    pico_unique_board_id_t id;
-    pico_get_unique_board_id(&id);
-    // Use last 2 bytes of 8-byte ID for 4-char hex suffix
-    snprintf(deviceName, sizeof(deviceName), "GunFX-%02X%02X", 
-             id.id[6], id.id[7]);
-}
 
 // Firing state
 bool is_firing = false;
@@ -109,25 +100,22 @@ uint32_t fade_start_time_ms = 0;
 // Smoke generator state
 bool smoke_heater_on = false;
 bool smoke_fan_on = false;
-uint8_t smoke_fan_speed = SMOKE_FAN_DEFAULT_SPEED;  // Current fan PWM duty (0-255)
+uint8_t smoke_fan_speed = SMOKE_FAN_DEFAULT_SPEED;
 bool smoke_fan_pending_off = false;
 uint32_t smoke_fan_off_time_ms = 0;
 
-// Session metrics (cumulative since boot)
+// Session metrics
 uint32_t total_shots_fired = 0;
-uint32_t heater_on_start_ms = 0;      // When heater was turned on (0 if off)
-uint32_t total_heater_on_time_ms = 0; // Accumulated heater on-time
+uint32_t heater_on_start_ms = 0;
+uint32_t total_heater_on_time_ms = 0;
 
-// Smoke fan pulsing mode
-enum class SmokeFanMode : uint8_t {
-  Constant = 0,   // Constant speed when firing
-  Pulsing  = 1    // Speed varies with RPM (pulse high on each shot)
-};
+// Smoke fan mode
+enum class SmokeFanMode : uint8_t { Constant = 0, Pulsing = 1 };
 SmokeFanMode smoke_fan_mode = SmokeFanMode::Constant;
 bool smoke_fan_pulse_active = false;
 uint32_t smoke_fan_pulse_end_ms = 0;
 
-// Smoke fan configuration (runtime-configurable via SMOKE_SETTINGS)
+// Smoke fan configuration
 uint8_t smoke_fan_cfg_speed = SMOKE_FAN_DEFAULT_SPEED;
 uint8_t smoke_fan_cfg_pulse_high = SMOKE_FAN_DEFAULT_PULSE_HIGH;
 uint8_t smoke_fan_cfg_pulse_low = SMOKE_FAN_DEFAULT_PULSE_LOW;
@@ -143,198 +131,66 @@ RecoilJerkConfig servo_jerk_configs[3] = {{0, 0}, {0, 0}, {0, 0}};
 // Status LEDs
 LedControl led_blue, led_yellow;
 uint32_t blue_led_next_toggle_ms = 0;
-const uint32_t BLUE_LED_WATCHDOG_ON_MS  = 1000;   // Blink on duration
-const uint32_t BLUE_LED_WATCHDOG_OFF_MS = 2000;   // Blink off duration
+const uint32_t BLUE_LED_WATCHDOG_ON_MS  = 1000;
+const uint32_t BLUE_LED_WATCHDOG_OFF_MS = 2000;
 
 // ============================================================================
 //  FORWARD DECLARATIONS
 // ============================================================================
 
-// Smoke control functions (defined later, needed by performSafeShutdown)
 void setSmokeHeater(bool on);
-void setSmokeFan(bool on, uint8_t speed);
+void setSmokeFan(bool on, uint8_t speed = SMOKE_FAN_DEFAULT_SPEED);
 void setNozzleFlash(bool on);
 void stopFiring(uint16_t fanDelayMs);
+void startFiring(int rpm);
 void setServoPulse(uint8_t servo_id, int pulse_us);
+void performSafeShutdown();
+void performSafeInit();
+GunFxStatus buildCurrentStatus(uint32_t now_ms);
+
+// ============================================================================
+//  DEVICE NAME
+// ============================================================================
+
+void buildDeviceName() {
+    pico_unique_board_id_t id;
+    pico_get_unique_board_id(&id);
+    snprintf(deviceName, sizeof(deviceName), "GunFX-%02X%02X", 
+             id.id[6], id.id[7]);
+}
 
 // ============================================================================
 //  CONNECTION MANAGEMENT
 // ============================================================================
 
-/**
- * @brief Get the effective connection timeout based on negotiated keepalive
- * 
- * If keepalive was negotiated in INIT, uses 1.5x the interval.
- * Otherwise falls back to DEFAULT_CONNECTION_TIMEOUT_MS.
- */
-unsigned long getConnectionTimeoutMs() {
-  unsigned long negotiated = initHandler.keepaliveTimeoutMs();
-  return negotiated > 0 ? negotiated : DEFAULT_CONNECTION_TIMEOUT_MS;
-}
-
 void checkConnectionStatus() {
-  // Check timeout via init handler - callback handles the connection loss
-  initHandler.checkTimeout(getConnectionTimeoutMs());
-  
-  // Check if we have an active slave and it's connected
-  bool connected = activeSlave && activeSlave->isMasterConnected();
-  
-  // Detect connection loss (USB disconnect, etc.)
-  if (was_master_connected && !connected) {
-    if (!watchdog_triggered) {
-      performSafeShutdown();
-      watchdog_triggered = true;
+    if (coreHandler.checkTimeout(CONNECTION_TIMEOUT_MS)) {
+        if (!watchdog_triggered) {
+            performSafeShutdown();
+            watchdog_triggered = true;
+        }
     }
-  }
-  
-  // Detect reconnection (handled by initHandler via onInitComplete)
-  was_master_connected = connected;
 }
 
 void performSafeShutdown() {
-  stopFiring(0);
-  setSmokeHeater(false);
-  setSmokeFan(false, 0);  // Turn off fan completely
-  setNozzleFlash(false);
-  
-  // Reset servos to neutral position
-  for (int i = 0; i < 3; i++) {
-    setServoPulse(i + 1, SERVO_DEFAULT_US);
-  }
+    stopFiring(0);
+    setSmokeHeater(false);
+    setSmokeFan(false, 0);
+    setNozzleFlash(false);
+    
+    for (int i = 0; i < 3; i++) {
+        setServoPulse(i + 1, SERVO_DEFAULT_US);
+    }
 }
 
 void performSafeInit() {
-  stopFiring(0);
-  setSmokeHeater(false);
-  watchdog_triggered = false; // Clear watchdog flag on new init
-  // Reset servos to center
-  for (int i = 0; i < 3; i++) {
-    setServoPulse(i + 1, SERVO_DEFAULT_US);
-  }
-}
-
-/**
- * @brief Set up callbacks on the active slave (called after protocol negotiation)
- * 
- * Callbacks return error codes:
- *   - SerialError::OK (0x00) on success -> slave sends ACK
- *   - GunFxError codes for domain errors -> slave sends NACK with code
- *   - SerialError codes for generic errors -> slave sends NACK with code
- */
-void setupSlaveCallbacks() {
-  if (!activeSlave) return;
-  
-  activeSlave->setConnectionTimeout(getConnectionTimeoutMs());
-  
-  // TRIGGER_ON: Start firing at specified RPM
-  activeSlave->onTriggerOn([](uint16_t rpm) -> uint8_t { 
-    // Validate RPM range (1-3000)
-    if (rpm < 1 || rpm > 3000) {
-      return GunFxError::INVALID_RPM;
-    }
-    startFiring(rpm);
-    return SerialError::OK;
-  });
-  
-  // TRIGGER_OFF: Stop firing with optional fan delay
-  activeSlave->onTriggerOff([](uint16_t delay) -> uint8_t { 
-    stopFiring(delay);
-    return SerialError::OK;
-  });
-  
-  // SERVO_SET: Set servo position
-  activeSlave->onServoSet([](uint8_t id, uint16_t us) -> uint8_t { 
-    // Validate servo ID (1-3)
-    if (id < 1 || id > 3) {
-      return GunFxError::SERVO_INVALID_ID;
-    }
-    // Validate pulse width (500-2500µs)
-    if (us < 500 || us > 2500) {
-      return GunFxError::SERVO_PULSE_RANGE;
-    }
-    setServoPulse(id, us);
-    return SerialError::OK;
-  });
-  
-  // SERVO_SETTINGS: Configure servo motion profile
-  activeSlave->onServoSettings([](const GunFxServoConfig& cfg) -> uint8_t {
-    // Validate servo ID (1-3)
-    if (cfg.servoId < 1 || cfg.servoId > 3) {
-      return GunFxError::SERVO_INVALID_ID;
-    }
-    uint8_t idx = cfg.servoId - 1;
+    stopFiring(0);
+    setSmokeHeater(false);
+    watchdog_triggered = false;
     
-    // Validate pulse limits if provided
-    if (cfg.minUs > 0 && (cfg.minUs < 500 || cfg.minUs > 2500)) {
-      return GunFxError::SERVO_PULSE_RANGE;
+    for (int i = 0; i < 3; i++) {
+        setServoPulse(i + 1, SERVO_DEFAULT_US);
     }
-    if (cfg.maxUs > 0 && (cfg.maxUs < 500 || cfg.maxUs > 2500)) {
-      return GunFxError::SERVO_PULSE_RANGE;
-    }
-    if (cfg.minUs > 0 && cfg.maxUs > 0 && cfg.minUs >= cfg.maxUs) {
-      return GunFxError::SERVO_PULSE_RANGE;
-    }
-    
-    // Apply recoil jerk settings
-    if (cfg.recoilJerkUs > 0 || cfg.recoilJerkVarianceUs > 0) {
-      servo_jerk_configs[idx].jerk_us = cfg.recoilJerkUs;
-      servo_jerk_configs[idx].variance_us = cfg.recoilJerkVarianceUs;
-    }
-    
-    // Apply motion profile settings
-    if (cfg.minUs > 0 || cfg.maxUs > 0) {
-      gun_servos[idx].setLimits(cfg.minUs, cfg.maxUs);
-    }
-    if (cfg.maxSpeedUsPerSec > 0 || cfg.maxAccelUsPerSec2 > 0 || cfg.maxDecelUsPerSec2 > 0) {
-      gun_servos[idx].setMotionProfile(cfg.maxSpeedUsPerSec, cfg.maxAccelUsPerSec2, cfg.maxDecelUsPerSec2);
-    }
-    return SerialError::OK;
-  });
-  
-  // SMOKE_HEAT: Enable/disable smoke heater
-  activeSlave->onSmokeHeat([](bool on) -> uint8_t {
-    setSmokeHeater(on);
-    return SerialError::OK;
-  });
-  
-  // SMOKE_SETTINGS: Configure smoke fan parameters
-  activeSlave->onSmokeSettings([](const GunFxSmokeConfig& cfg) -> uint8_t {
-    // Validate fan speeds (0-255 PWM range)
-    // Note: 0 is technically valid (fan off)
-    
-    // Validate pulse timing (sanity check - max 10 seconds)
-    if (cfg.fanPulseMs > 10000) {
-      return GunFxError::INVALID_FAN_SPEED;
-    }
-    if (cfg.fanSpindownMs > 60000) {
-      return GunFxError::INVALID_FAN_SPEED;
-    }
-    
-    // Apply smoke fan settings
-    smoke_fan_mode = cfg.fanPulsing ? SmokeFanMode::Pulsing : SmokeFanMode::Constant;
-    smoke_fan_cfg_speed = cfg.fanSpeed;
-    smoke_fan_cfg_pulse_high = cfg.fanPulseHigh;
-    smoke_fan_cfg_pulse_low = cfg.fanPulseLow;
-    smoke_fan_cfg_pulse_ms = cfg.fanPulseMs;
-    smoke_fan_cfg_spindown_ms = cfg.fanSpindownMs;
-    
-    // If currently firing, update fan speed for new mode
-    if (is_firing && smoke_fan_on) {
-      if (cfg.fanPulsing) {
-        analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_pulse_low);
-        smoke_fan_speed = smoke_fan_cfg_pulse_low;
-      } else {
-        analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_speed);
-        smoke_fan_speed = smoke_fan_cfg_speed;
-      }
-    }
-    return SerialError::OK;
-  });
-  
-  // STATUS_REQ: Master requests current status/metrics
-  activeSlave->onStatusRequest([]() -> GunFxStatus {
-    return buildCurrentStatus(millis());
-  });
 }
 
 // ============================================================================
@@ -342,38 +198,26 @@ void setupSlaveCallbacks() {
 // ============================================================================
 
 void updateYellowLED() {
-  // Yellow LED: solid ON when heater is on
-  led_yellow.set(smoke_heater_on);
+    led_yellow.set(smoke_heater_on);
 }
 
 void updateBlueLED(uint32_t now_ms) {
-  // Blue LED behavior:
-  // - OFF when all is OK (idle, no issues)
-  // - Synced with muzzle flash when firing (same blink rate as nozzle)
-  // - Blinking 1s on / 2s off when watchdog triggered (no signal from main board)
-  
-  if (watchdog_triggered) {
-    // No signal pattern: 1s on, 2s off
-    if (now_ms >= blue_led_next_toggle_ms) {
-      led_blue.toggle();
-      if (led_blue.isOn()) {
-        blue_led_next_toggle_ms = now_ms + BLUE_LED_WATCHDOG_ON_MS;
-      } else {
-        blue_led_next_toggle_ms = now_ms + BLUE_LED_WATCHDOG_OFF_MS;
-      }
+    if (watchdog_triggered) {
+        if (now_ms >= blue_led_next_toggle_ms) {
+            led_blue.toggle();
+            blue_led_next_toggle_ms = now_ms + 
+                (led_blue.isOn() ? BLUE_LED_WATCHDOG_ON_MS : BLUE_LED_WATCHDOG_OFF_MS);
+        }
+    } else if (is_firing && (flash_active || flash_fading)) {
+        led_blue.on();
+    } else {
+        led_blue.off();
     }
-  } else if (is_firing && (flash_active || flash_fading)) {
-    // Sync with muzzle flash - LED on when flash is active or fading
-    led_blue.on();
-  } else {
-    // All OK or between shots: LED off
-    led_blue.off();
-  }
 }
 
 void updateLEDs(uint32_t now_ms) {
-  updateYellowLED();
-  updateBlueLED(now_ms);
+    updateYellowLED();
+    updateBlueLED(now_ms);
 }
 
 // ============================================================================
@@ -381,27 +225,33 @@ void updateLEDs(uint32_t now_ms) {
 // ============================================================================
 
 void setServoPulse(uint8_t servo_id, int pulse_us) {
-  if (servo_id == 0 || servo_id > 3) return;
-  ServoControl* servo = &gun_servos[servo_id - 1];
-  int target = constrain(pulse_us, servo->minLimit(), servo->maxLimit());
-  servo->setTarget(target);
+    if (servo_id == 0 || servo_id > 3) return;
+    ServoControl* servo = &gun_servos[servo_id - 1];
+    int target = constrain(pulse_us, servo->minLimit(), servo->maxLimit());
+    servo->setTarget(target);
 }
 
 void applyRecoilJerk() {
-  for (int i = 0; i < 3; i++) {
-    RecoilJerkConfig* jerk = &servo_jerk_configs[i];
-    if (jerk->jerk_us == 0) {
-      gun_servos[i].clearJerk();
-    } else {
-      int direction = (random(2) == 0) ? 1 : -1;
-      int variance = jerk->variance_us > 0 ? random(jerk->variance_us + 1) : 0;
-      gun_servos[i].applyJerk(direction * (jerk->jerk_us + variance));
+    for (int i = 0; i < 3; i++) {
+        RecoilJerkConfig* jerk = &servo_jerk_configs[i];
+        if (jerk->jerk_us == 0) {
+            gun_servos[i].clearJerk();
+        } else {
+            int direction = (random(2) == 0) ? 1 : -1;
+            int variance = jerk->variance_us > 0 ? random(jerk->variance_us + 1) : 0;
+            gun_servos[i].applyJerk(direction * (jerk->jerk_us + variance));
+        }
     }
-  }
 }
 
 void clearRecoilJerk() {
-  for (int i = 0; i < 3; i++) gun_servos[i].clearJerk();
+    for (int i = 0; i < 3; i++) gun_servos[i].clearJerk();
+}
+
+void updateAllServos() {
+    for (int i = 0; i < 3; i++) {
+        gun_servos[i].update();
+    }
 }
 
 // ============================================================================
@@ -409,66 +259,45 @@ void clearRecoilJerk() {
 // ============================================================================
 
 void setNozzleFlash(bool on) {
-  analogWrite(PIN_NOZZLE_FLASH, on ? FLASH_PWM_DUTY : 0);
+    analogWrite(PIN_NOZZLE_FLASH, on ? FLASH_PWM_DUTY : 0);
 }
 
 void setSmokeHeater(bool on) {
-  // Track heater on-time for metrics
-  if (on && !smoke_heater_on) {
-    // Heater turning on - start tracking
-    heater_on_start_ms = millis();
-  } else if (!on && smoke_heater_on && heater_on_start_ms > 0) {
-    // Heater turning off - accumulate time
-    total_heater_on_time_ms += millis() - heater_on_start_ms;
-    heater_on_start_ms = 0;
-  }
-  
-  smoke_heater_on = on;
-  digitalWrite(PIN_SMOKE_HEATER, on ? HIGH : LOW);
-}
-
-void setSmokeFan(bool on, uint8_t speed = SMOKE_FAN_DEFAULT_SPEED) {
-  smoke_fan_on = on;
-  smoke_fan_speed = speed;
-  smoke_fan_pending_off = false;
-  smoke_fan_pulse_active = false;
-  analogWrite(PIN_SMOKE_FAN, on ? speed : 0);
-}
-
-/**
- * @brief Set smoke fan operating mode
- * @param pulsing true for pulsing mode (varies with RPM), false for constant speed
- */
-void setSmokeFanMode(bool pulsing) {
-  smoke_fan_mode = pulsing ? SmokeFanMode::Pulsing : SmokeFanMode::Constant;
-  
-  // If currently firing, update fan speed immediately
-  if (is_firing && smoke_fan_on) {
-    if (pulsing) {
-      // Switch to low speed (will pulse on shots)
-      analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_pulse_low);
-      smoke_fan_speed = smoke_fan_cfg_pulse_low;
-    } else {
-      // Switch to constant high speed
-      analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_speed);
-      smoke_fan_speed = smoke_fan_cfg_speed;
+    if (on && !smoke_heater_on) {
+        heater_on_start_ms = millis();
+    } else if (!on && smoke_heater_on && heater_on_start_ms > 0) {
+        total_heater_on_time_ms += millis() - heater_on_start_ms;
+        heater_on_start_ms = 0;
     }
-  }
+    
+    smoke_heater_on = on;
+    digitalWrite(PIN_SMOKE_HEATER, on ? HIGH : LOW);
+}
+
+void setSmokeFan(bool on, uint8_t speed) {
+    smoke_fan_on = on;
+    smoke_fan_speed = speed;
+    smoke_fan_pending_off = false;
+    smoke_fan_pulse_active = false;
+    analogWrite(PIN_SMOKE_FAN, on ? speed : 0);
 }
 
 void scheduleSmokeFanOff(uint16_t delay_ms) {
-  if (delay_ms == 0) {
-    setSmokeFan(false);
-  } else {
-    smoke_fan_pending_off = true;
-    smoke_fan_off_time_ms = millis() + delay_ms;
-  }
+    if (delay_ms == 0) {
+        setSmokeFan(false, 0);
+    } else {
+        smoke_fan_pending_off = true;
+        smoke_fan_off_time_ms = millis() + delay_ms;
+    }
 }
 
-void updateAllServos() {
-  for (int i = 0; i < 3; i++) {
-    gun_servos[i].update();
-  }
+void triggerSmokeFanPulse() {
+    if (smoke_fan_mode != SmokeFanMode::Pulsing || !smoke_fan_on) return;
+    
+    smoke_fan_pulse_active = true;
+    smoke_fan_pulse_end_ms = millis() + smoke_fan_cfg_pulse_ms;
+    analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_pulse_high);
+    smoke_fan_speed = smoke_fan_cfg_pulse_high;
 }
 
 // ============================================================================
@@ -476,314 +305,320 @@ void updateAllServos() {
 // ============================================================================
 
 void startFiring(int rpm) {
-  if (rpm <= 0) return;
-  is_firing = true;
-  rate_of_fire_rpm = rpm;
-  shot_interval_ms = 60000UL / rpm;
-  next_shot_time_ms = millis();
-  
-  // Start fan - in pulsing mode, start at low speed (will pulse high on shots)
-  if (smoke_fan_mode == SmokeFanMode::Pulsing) {
-    setSmokeFan(true, smoke_fan_cfg_pulse_low);
-  } else {
-    setSmokeFan(true, smoke_fan_cfg_speed);
-  }
+    if (rpm <= 0) return;
+    is_firing = true;
+    rate_of_fire_rpm = rpm;
+    shot_interval_ms = 60000UL / rpm;
+    next_shot_time_ms = millis();
+    
+    if (smoke_fan_mode == SmokeFanMode::Pulsing) {
+        setSmokeFan(true, smoke_fan_cfg_pulse_low);
+    } else {
+        setSmokeFan(true, smoke_fan_cfg_speed);
+    }
 }
 
 void stopFiring(uint16_t fan_delay_ms) {
-  is_firing = false;
-  rate_of_fire_rpm = 0;
-  setNozzleFlash(false);
-  flash_active = false;
-  scheduleSmokeFanOff(fan_delay_ms);
+    is_firing = false;
+    rate_of_fire_rpm = 0;
+    setNozzleFlash(false);
+    flash_active = false;
+    scheduleSmokeFanOff(fan_delay_ms);
 }
 
 // ============================================================================
-//  PERIODIC UPDATE FUNCTIONS
+//  UPDATE FUNCTIONS
 // ============================================================================
 
 void updateMuzzleFlash() {
-  if (!is_firing) {
-    if (flash_active || flash_fading) {
-      setNozzleFlash(false);
-      flash_active = false;
-      flash_fading = false;
-      clearRecoilJerk();  // Clear recoil jerk when not firing
+    if (!is_firing) {
+        if (flash_active || flash_fading) {
+            setNozzleFlash(false);
+            flash_active = false;
+            flash_fading = false;
+            clearRecoilJerk();
+        }
+        return;
     }
-    return;
-  }
-  
-  uint32_t now = millis();
-  
-  // Handle fade-out
-  if (flash_fading) {
-    uint32_t fade_elapsed = now - fade_start_time_ms;
-    if (fade_elapsed >= FLASH_FADE_MS) {
-      // Fade complete - clear recoil jerk
-      setNozzleFlash(false);
-      flash_fading = false;
-      clearRecoilJerk();
-    } else {
-      // Calculate current brightness (linear fade from 255 to 0)
-      uint16_t brightness = map(fade_elapsed, 0, FLASH_FADE_MS, FLASH_PWM_DUTY, 0);
-      analogWrite(PIN_NOZZLE_FLASH, (uint8_t)brightness);
+    
+    uint32_t now = millis();
+    
+    if (flash_fading) {
+        uint32_t fade_elapsed = now - fade_start_time_ms;
+        if (fade_elapsed >= FLASH_FADE_MS) {
+            setNozzleFlash(false);
+            flash_fading = false;
+            clearRecoilJerk();
+        } else {
+            uint16_t brightness = map(fade_elapsed, 0, FLASH_FADE_MS, FLASH_PWM_DUTY, 0);
+            analogWrite(PIN_NOZZLE_FLASH, (uint8_t)brightness);
+        }
+    } else if (flash_active) {
+        if (now >= flash_off_time_ms) {
+            flash_active = false;
+            flash_fading = true;
+            fade_start_time_ms = now;
+        }
+    } else if (now >= next_shot_time_ms) {
+        setNozzleFlash(true);
+        flash_active = true;
+        flash_off_time_ms = now + FLASH_PULSE_MS;
+        next_shot_time_ms = now + shot_interval_ms;
+        applyRecoilJerk();
+        triggerSmokeFanPulse();
+        total_shots_fired++;
     }
-  }
-  // Handle flash pulse
-  else if (flash_active) {
-    if (now >= flash_off_time_ms) {
-      // Start fade-out
-      flash_active = false;
-      flash_fading = true;
-      fade_start_time_ms = now;
-    }
-  }
-  // Trigger new flash
-  else if (!flash_fading && now >= next_shot_time_ms) {
-    setNozzleFlash(true);
-    flash_active = true;
-    flash_off_time_ms = now + FLASH_PULSE_MS;
-    next_shot_time_ms = now + shot_interval_ms;
-    applyRecoilJerk();  // Apply recoil jerk on each shot
-    triggerSmokeFanPulse();  // Pulse smoke fan on each shot (if in pulsing mode)
-    total_shots_fired++;  // Increment shot counter for metrics
-  }
 }
 
 void updateSmokeFan() {
-  // Handle pending off (spindown delay after firing stops)
-  if (smoke_fan_pending_off) {
-    uint32_t now = millis();
-    if (now >= smoke_fan_off_time_ms) {
-      setSmokeFan(false);
+    if (smoke_fan_pending_off) {
+        if (millis() >= smoke_fan_off_time_ms) {
+            setSmokeFan(false, 0);
+        }
+        return;
     }
-    return;
-  }
-  
-  // Handle pulsing mode - return to low speed after pulse
-  if (smoke_fan_mode == SmokeFanMode::Pulsing && smoke_fan_pulse_active) {
-    uint32_t now = millis();
-    if (now >= smoke_fan_pulse_end_ms) {
-      smoke_fan_pulse_active = false;
-      if (smoke_fan_on && is_firing) {
-        analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_pulse_low);
-        smoke_fan_speed = smoke_fan_cfg_pulse_low;
-      }
+    
+    if (smoke_fan_mode == SmokeFanMode::Pulsing && smoke_fan_pulse_active) {
+        if (millis() >= smoke_fan_pulse_end_ms) {
+            smoke_fan_pulse_active = false;
+            if (smoke_fan_on && is_firing) {
+                analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_pulse_low);
+                smoke_fan_speed = smoke_fan_cfg_pulse_low;
+            }
+        }
     }
-  }
-}
-
-/**
- * @brief Trigger a smoke fan pulse (called on each shot in pulsing mode)
- */
-void triggerSmokeFanPulse() {
-  if (smoke_fan_mode != SmokeFanMode::Pulsing || !smoke_fan_on) return;
-  
-  smoke_fan_pulse_active = true;
-  smoke_fan_pulse_end_ms = millis() + smoke_fan_cfg_pulse_ms;
-  analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_pulse_high);
-  smoke_fan_speed = smoke_fan_cfg_pulse_high;
 }
 
 GunFxStatus buildCurrentStatus(uint32_t now_ms) {
-  GunFxStatus status;
-  
-  // Operational state
-  status.firing = is_firing;
-  status.flashActive = flash_active;
-  status.flashFading = flash_fading;
-  status.heaterOn = smoke_heater_on;
-  status.fanOn = smoke_fan_on;
-  status.fanSpindown = smoke_fan_pending_off;
-  status.fanSpeed = smoke_fan_speed;
+    GunFxStatus status;
+    
+    status.firing = is_firing;
+    status.flashActive = flash_active;
+    status.flashFading = flash_fading;
+    status.heaterOn = smoke_heater_on;
+    status.fanOn = smoke_fan_on;
+    status.fanSpindown = smoke_fan_pending_off;
+    status.fanSpeed = smoke_fan_speed;
 
-  // Fan off remaining time
-  if (smoke_fan_pending_off && smoke_fan_off_time_ms > now_ms) {
-    status.fanOffRemainingMs = (uint16_t)(smoke_fan_off_time_ms - now_ms);
-  } else {
-    status.fanOffRemainingMs = 0;
-  }
+    if (smoke_fan_pending_off && smoke_fan_off_time_ms > now_ms) {
+        status.fanOffRemainingMs = (uint16_t)(smoke_fan_off_time_ms - now_ms);
+    } else {
+        status.fanOffRemainingMs = 0;
+    }
 
-  // Servo positions
-  status.servoUs[0] = (uint16_t)constrain(gun_servos[0].position(), 0, 3000);
-  status.servoUs[1] = (uint16_t)constrain(gun_servos[1].position(), 0, 3000);
-  status.servoUs[2] = (uint16_t)constrain(gun_servos[2].position(), 0, 3000);
+    status.servoUs[0] = (uint16_t)constrain(gun_servos[0].position(), 0, 3000);
+    status.servoUs[1] = (uint16_t)constrain(gun_servos[1].position(), 0, 3000);
+    status.servoUs[2] = (uint16_t)constrain(gun_servos[2].position(), 0, 3000);
 
-  // Rate of fire
-  status.rateOfFireRpm = (uint16_t)rate_of_fire_rpm;
-  
-  // Session metrics
-  status.shotsFired = total_shots_fired;
-  
-  // Calculate total heater on-time (including current session if heater is on)
-  status.heaterOnTimeMs = total_heater_on_time_ms;
-  if (smoke_heater_on && heater_on_start_ms > 0) {
-    status.heaterOnTimeMs += now_ms - heater_on_start_ms;
-  }
-  
-  // System health
-  status.uptimeMs = now_ms;
-  status.freeRam = rp2040.getFreeHeap();
+    status.rateOfFireRpm = (uint16_t)rate_of_fire_rpm;
+    status.shotsFired = total_shots_fired;
+    
+    status.heaterOnTimeMs = total_heater_on_time_ms;
+    if (smoke_heater_on && heater_on_start_ms > 0) {
+        status.heaterOnTimeMs += now_ms - heater_on_start_ms;
+    }
+    
+    status.uptimeMs = now_ms;
+    status.freeRam = rp2040.getFreeHeap();
 
-  return status;
+    return status;
 }
 
 // ============================================================================
-//  ARDUINO SETUP & LOOP
+//  SETUP
 // ============================================================================
 
 void setup() {
-  // Initialize USB serial for protocol communication
-  Serial.begin(SERIAL_BAUD);
-  while (!Serial && millis() < 3000) delay(10);
-  
-  // Initialize GPIO outputs
-  pinMode(PIN_NOZZLE_FLASH, OUTPUT);
-  pinMode(PIN_SMOKE_FAN, OUTPUT);
-  pinMode(PIN_SMOKE_HEATER, OUTPUT);
-  analogWrite(PIN_NOZZLE_FLASH, 0);
-  analogWrite(PIN_SMOKE_FAN, 0);
-  digitalWrite(PIN_SMOKE_HEATER, LOW);
-  
-  // Initialize status LEDs
-  led_blue.begin(PIN_LED_BLUE);
-  led_yellow.begin(PIN_LED_YELLOW);
-  
-  // Initialize servos
-  const uint8_t servoPins[] = {PIN_GUN_SRV_1, PIN_GUN_SRV_2, PIN_GUN_SRV_3};
-  for (int i = 0; i < 3; i++) {
-    gun_servos[i].begin(servoPins[i], 500, 2500, SERVO_DEFAULT_US);
-    gun_servos[i].setId(i + 1);
-  }
-  
-  // Build unique device name from Pico flash ID
-  buildDeviceName();
-  
-  // ========================================================================
-  // Initialize CommandRouter (Chain of Responsibility pattern)
-  // ========================================================================
-  // The router reads serial input and passes commands through handlers in order.
-  // First handler to recognize a command processes it; others pass it along.
-  // If no handler recognizes a command, the router sends NACK.
-  
-  commandRouter.begin(&Serial, [](uint8_t code, const char* cmd) {
-    // Send NACK for unrecognized commands
-    if (activeSlave) {
-      activeSlave->sendNack(code, cmd);
-    }
-  });
-  
-  // ========================================================================
-  // Initialize SerialInitHandler for system commands
-  // ========================================================================
-  initHandler.begin(&Serial, deviceName);
-  initHandler.setBoardInfo(FIRMWARE_VERSION, BUILD_NUMBER, "RP2040", F_CPU / 1000000, rp2040.getFreeHeap());
-  
-  // Add to command chain (first - system commands take priority)
-  commandRouter.addHandler(&initHandler);
-  
-  // Protocol negotiation complete - switch to appropriate protocol handler
-  initHandler.onInitComplete([](ProtocolMode mode) {
+    // Initialize USB serial
+    Serial.begin(SERIAL_BAUD);
+    while (!Serial && millis() < 3000) delay(10);
     
-    // Clean up previous slave if reconnecting
-    if (activeSlave) {
-      activeSlave->end();
-      activeSlave = nullptr;
+    // Initialize GPIO outputs
+    pinMode(PIN_NOZZLE_FLASH, OUTPUT);
+    pinMode(PIN_SMOKE_FAN, OUTPUT);
+    pinMode(PIN_SMOKE_HEATER, OUTPUT);
+    analogWrite(PIN_NOZZLE_FLASH, 0);
+    analogWrite(PIN_SMOKE_FAN, 0);
+    digitalWrite(PIN_SMOKE_HEATER, LOW);
+    
+    // Initialize status LEDs
+    led_blue.begin(PIN_LED_BLUE);
+    led_yellow.begin(PIN_LED_YELLOW);
+    
+    // Initialize servos
+    const uint8_t servoPins[] = {PIN_GUN_SRV_1, PIN_GUN_SRV_2, PIN_GUN_SRV_3};
+    for (int i = 0; i < 3; i++) {
+        gun_servos[i].begin(servoPins[i], 500, 2500, SERVO_DEFAULT_US);
+        gun_servos[i].setId(i + 1);
     }
     
-    // Reset router handlers (keep initHandler first)
-    commandRouter.clearHandlers();
-    commandRouter.addHandler(&initHandler);
+    // Build unique device name
+    buildDeviceName();
     
-    // Switch router to negotiated protocol mode
-    commandRouter.setMode(mode);
+    // ========================================================================
+    // Initialize CoreCommandHandler (system commands)
+    // ========================================================================
+    coreHandler.begin(&Serial);
+    coreHandler.setBoardInfo(deviceName, FIRMWARE_VERSION, "RP2040", 
+                              F_CPU / 1000000, rp2040.getFreeHeap(), BUILD_NUMBER);
     
-    // Initialize appropriate protocol handler and add to router
-    if (mode == ProtocolMode::Binary) {
-      binarySlave.begin(&Serial, deviceName);
-      activeSlave = &binarySlave;
-      commandRouter.addHandler(&binarySlave);
-    } else {
-      textSlave.begin(&Serial, deviceName);
-      activeSlave = &textSlave;
-      commandRouter.addHandler(&textSlave);
-    }
+    coreHandler.onInit([]() {
+        performSafeInit();
+    });
     
-    // Set up GunFX command callbacks
-    setupSlaveCallbacks();
+    coreHandler.onShutdown([]() {
+        performSafeShutdown();
+    });
     
-    // Perform safe initialization
-    performSafeInit();
-  });
-  
-  // Handle reconnection (new INIT received)
-  initHandler.onInitReset([]() {
-    performSafeShutdown();
-    if (activeSlave) {
-      activeSlave->end();
-      activeSlave = nullptr;
-    }
-  });
-  
-  // System commands handled by SerialInitHandler
-  initHandler.onShutdown([]() {
-    performSafeShutdown();
-  });
-  
-  initHandler.onReboot([]() {
-    performSafeShutdown();
-    delay(100);
-    rp2040.reboot();
-  });
-  
-  initHandler.onBootsel([]() {
-    performSafeShutdown();
-    delay(500);
-    rp2040.rebootToBootloader();
-  });
-
-  // Connection loss detection (keepalive timeout)
-  initHandler.onConnectionLoss([]() {
-    // Custom connection loss handling
-    // performSafeShutdown() is a reasonable default, but this callback
-    // allows for custom behavior like LED indication, logging, etc.
-    if (!watchdog_triggered) {
-      performSafeShutdown();
-      watchdog_triggered = true;
-    }
-  });
+    coreHandler.onReboot([]() {
+        performSafeShutdown();
+        delay(100);
+        rp2040.reboot();
+    });
+    
+    coreHandler.onBootsel([]() {
+        performSafeShutdown();
+        delay(500);
+        rp2040.rebootToBootloader();
+    });
+    
+    // ========================================================================
+    // Initialize GunFxSlave (GunFX-specific commands)
+    // ========================================================================
+    gunfxSlave.begin(&Serial, deviceName);
+    
+    // TRIGGER_ON: Start firing at specified RPM
+    gunfxSlave.onTriggerOn([](uint16_t rpm) -> uint8_t {
+        if (rpm < 1 || rpm > 3000) {
+            return GunFxError::INVALID_RPM;
+        }
+        startFiring(rpm);
+        return SerialError::OK;
+    });
+    
+    // TRIGGER_OFF: Stop firing with optional fan delay
+    gunfxSlave.onTriggerOff([](uint16_t delay) -> uint8_t {
+        stopFiring(delay);
+        return SerialError::OK;
+    });
+    
+    // SERVO_SET: Set servo position
+    gunfxSlave.onServoSet([](uint8_t id, uint16_t us) -> uint8_t {
+        if (id < 1 || id > 3) {
+            return GunFxError::SERVO_INVALID_ID;
+        }
+        if (us < 500 || us > 2500) {
+            return GunFxError::SERVO_PULSE_RANGE;
+        }
+        setServoPulse(id, us);
+        return SerialError::OK;
+    });
+    
+    // SERVO_SETTINGS: Configure servo motion profile
+    gunfxSlave.onServoSettings([](const GunFxServoConfig& cfg) -> uint8_t {
+        if (cfg.servoId < 1 || cfg.servoId > 3) {
+            return GunFxError::SERVO_INVALID_ID;
+        }
+        uint8_t idx = cfg.servoId - 1;
+        
+        if (cfg.minUs > 0 && (cfg.minUs < 500 || cfg.minUs > 2500)) {
+            return GunFxError::SERVO_PULSE_RANGE;
+        }
+        if (cfg.maxUs > 0 && (cfg.maxUs < 500 || cfg.maxUs > 2500)) {
+            return GunFxError::SERVO_PULSE_RANGE;
+        }
+        if (cfg.minUs > 0 && cfg.maxUs > 0 && cfg.minUs >= cfg.maxUs) {
+            return GunFxError::SERVO_PULSE_RANGE;
+        }
+        
+        if (cfg.recoilJerkUs > 0 || cfg.recoilJerkVarianceUs > 0) {
+            servo_jerk_configs[idx].jerk_us = cfg.recoilJerkUs;
+            servo_jerk_configs[idx].variance_us = cfg.recoilJerkVarianceUs;
+        }
+        
+        if (cfg.minUs > 0 || cfg.maxUs > 0) {
+            gun_servos[idx].setLimits(cfg.minUs, cfg.maxUs);
+        }
+        if (cfg.maxSpeedUsPerSec > 0 || cfg.maxAccelUsPerSec2 > 0 || cfg.maxDecelUsPerSec2 > 0) {
+            gun_servos[idx].setMotionProfile(cfg.maxSpeedUsPerSec, cfg.maxAccelUsPerSec2, cfg.maxDecelUsPerSec2);
+        }
+        return SerialError::OK;
+    });
+    
+    // SMOKE_HEAT: Enable/disable smoke heater
+    gunfxSlave.onSmokeHeat([](bool on) -> uint8_t {
+        setSmokeHeater(on);
+        return SerialError::OK;
+    });
+    
+    // SMOKE_SETTINGS: Configure smoke fan parameters
+    gunfxSlave.onSmokeSettings([](const GunFxSmokeConfig& cfg) -> uint8_t {
+        if (cfg.fanPulseMs > 10000) {
+            return GunFxError::INVALID_FAN_SPEED;
+        }
+        if (cfg.fanSpindownMs > 60000) {
+            return GunFxError::INVALID_FAN_SPEED;
+        }
+        
+        smoke_fan_mode = cfg.fanPulsing ? SmokeFanMode::Pulsing : SmokeFanMode::Constant;
+        smoke_fan_cfg_speed = cfg.fanSpeed;
+        smoke_fan_cfg_pulse_high = cfg.fanPulseHigh;
+        smoke_fan_cfg_pulse_low = cfg.fanPulseLow;
+        smoke_fan_cfg_pulse_ms = cfg.fanPulseMs;
+        smoke_fan_cfg_spindown_ms = cfg.fanSpindownMs;
+        
+        if (is_firing && smoke_fan_on) {
+            if (cfg.fanPulsing) {
+                analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_pulse_low);
+                smoke_fan_speed = smoke_fan_cfg_pulse_low;
+            } else {
+                analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_speed);
+                smoke_fan_speed = smoke_fan_cfg_speed;
+            }
+        }
+        return SerialError::OK;
+    });
+    
+    // STATUS_REQ: Return current status
+    gunfxSlave.onStatusRequest([]() -> GunFxStatus {
+        return buildCurrentStatus(millis());
+    });
+    
+    // ========================================================================
+    // Initialize CommandRouter (routes packets to handlers)
+    // ========================================================================
+    commandRouter.begin(&Serial, [](uint8_t code, uint8_t type) {
+        gunfxSlave.sendNack(code);
+    });
+    
+    // Add GunFX handler to router
+    commandRouter.addHandler(&gunfxSlave);
 }
 
-void loop() {
-  // ========================================================================
-  // Process commands via CommandRouter (Chain of Responsibility)
-  // ========================================================================
-  // Router handles both text and binary protocols based on current mode.
-  // Handlers are tried in order:
-  // 1. initHandler - INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE, STATUS_REQ
-  // 2. activeSlave - TRIGGER_ON, SERVO_SET, etc.
-  // If no handler processes a command, router sends NACK.
-  
-  commandRouter.process();
-  
-  // Update activity timestamp for timeout detection
-  if (commandRouter.lastActivityMs() > initHandler.lastActivityMs()) {
-    initHandler.updateActivity();
-  }
-  
-  // Update hardware states
-  updateMuzzleFlash();
-  updateSmokeFan();
-  updateAllServos();
+// ============================================================================
+//  LOOP
+// ============================================================================
 
-  uint32_t now = millis();
-  
-  // Update status LEDs
-  updateLEDs(now);
-  
-  // Check connection status (handles watchdog timeout)
-  checkConnectionStatus();
-  
-  // Small delay to prevent tight loop
-  delay(1);
+void loop() {
+    // Process incoming serial packets via CommandRouter
+    // The router decodes COBS packets and routes to handlers
+    commandRouter.process();
+    
+    // Update activity timestamp for core handler timeout detection
+    if (commandRouter.lastActivityMs() > coreHandler.lastActivityMs()) {
+        coreHandler.updateActivity();
+    }
+    
+    // Update hardware states
+    updateMuzzleFlash();
+    updateSmokeFan();
+    updateAllServos();
+    
+    uint32_t now = millis();
+    updateLEDs(now);
+    
+    // Check connection timeout
+    checkConnectionStatus();
+    
+    delay(1);
 }

@@ -60,16 +60,16 @@ System-level commands common to all ScaleFX devices:
 
 | Type | Value | Text Command | Direction | Description |
 |------|-------|--------------|-----------|-------------|
-| `SFX_PKT_INIT` | 0xF0 | `INIT` | Master→Slave | Initialize slave device |
-| `SFX_PKT_SHUTDOWN` | 0xF1 | `SHUTDOWN` | Master→Slave | Shutdown slave device |
-| `SFX_PKT_KEEPALIVE` | 0xF2 | `KEEPALIVE` | Master→Slave | Connection keepalive |
-| `SFX_PKT_INIT_READY` | 0xF3 | `INIT_READY` | Slave→Master | Slave ready response |
-| `SFX_PKT_STATUS` | 0xF4 | `STATUS` | Slave→Master | Status telemetry |
-| `SFX_PKT_ERROR` | 0xF5 | `ERROR` | Slave→Master | Error notification |
-| `SFX_PKT_ACK` | 0xF6 | `ACK` | Slave→Master | Acknowledgment |
-| `SFX_PKT_NACK` | 0xF7 | `NACK` | Slave→Master | Negative acknowledgment |
-| `SFX_PKT_REBOOT` | 0xF8 | `REBOOT` | Master→Slave | Reboot slave device |
-| `SFX_PKT_BOOTSEL` | 0xF9 | `BOOTSEL` | Master→Slave | Enter BOOTSEL mode |
+| `CorePacket::INIT` | 0xF0 | `INIT` | Master→Slave | Initialize slave device |
+| `CorePacket::SHUTDOWN` | 0xF1 | `SHUTDOWN` | Master→Slave | Shutdown slave device |
+| `CorePacket::KEEPALIVE` | 0xF2 | `KEEPALIVE` | Master→Slave | Connection keepalive |
+| `CorePacket::INIT_READY` | 0xF3 | `INIT_READY` | Slave→Master | Slave ready response |
+| `CorePacket::STATUS` | 0xF4 | `STATUS` | Slave→Master | Status telemetry |
+| `CorePacket::ERROR` | 0xF5 | `ERROR` | Slave→Master | Error notification |
+| `CorePacket::ACK` | 0xF6 | `ACK` | Slave→Master | Acknowledgment |
+| `CorePacket::NACK` | 0xF7 | `NACK` | Slave→Master | Negative acknowledgment |
+| `CorePacket::REBOOT` | 0xF8 | `REBOOT` | Master→Slave | Reboot slave device |
+| `CorePacket::BOOTSEL` | 0xF9 | `BOOTSEL` | Master→Slave | Enter BOOTSEL mode |
 
 ### INIT Command
 
@@ -360,6 +360,6 @@ void connectSlave(Stream* serial, bool useBinary) {
 
 - Combined `serial_common` and `serial_gunfx` into unified `serial` library
 - Added text protocol implementations for testing
-- Added `SFX_PKT_REBOOT` (0xF8) for software reset
-- Added `SFX_PKT_BOOTSEL` (0xF9) for remote firmware upload
+- Added `CorePacket::REBOOT` (0xF8) for software reset
+- Added `CorePacket::BOOTSEL` (0xF9) for remote firmware upload
 - Added `TextParse` namespace for parsing key=value arguments

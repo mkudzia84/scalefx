@@ -1,7 +1,7 @@
 /**
  * GunFX - Implementation
  * 
- * Gun effects controller using GunFxSerialMaster and AudioMixer.
+ * Gun effects controller using GunFxSerialMasterBinary and AudioMixer.
  */
 
 #include "gun_fx.h"
@@ -377,7 +377,7 @@ void GunFX::printStatus() {
     Serial.printf("  Servos: %d, %d, %d us\n",
                   status.servoUs[0], status.servoUs[1], status.servoUs[2]);
     
-    const SerialBusStats& stats = _serial.stats();
+    const CoreStats& stats = _serial.stats();
     Serial.printf("  Packets: TX=%lu, RX=%lu, CRC err=%lu\n",
                   stats.packets_sent, stats.packets_received, stats.crc_errors);
 }

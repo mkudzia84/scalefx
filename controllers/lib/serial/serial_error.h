@@ -1,18 +1,27 @@
 /*
  * Serial Error - Generic Error Codes and Command Results
- * 
- * This file contains generic error codes and the CommandResult struct
- * used by all serial protocols for ACK/NACK handling.
- * 
+ *
+ * Error codes and CommandResult struct for ACK/NACK handling.
+ *
  * Error Code Ranges:
- *   0x00-0x0F: General/common errors (defined here)
- *   0x10-0x1F: Parameter validation errors (defined here)
- *   0x20-0x7F: Reserved for domain-specific errors (GunFX, EngineFX, etc.)
- *   0xF0-0xFF: System/transport errors (defined here)
- * 
- * Domain-specific modules should define their own error codes in their
- * respective type headers (e.g., serial_gunfx_types.h) using values
- * in the 0x20-0x7F range.
+ *   0x00-0x0F  General/common errors (OK, UNKNOWN, INVALID_COMMAND, etc.)
+ *   0x10-0x1F  Parameter validation errors (INVALID_PARAM, OUT_OF_RANGE, etc.)
+ *   0x20-0x4F  GunFX-specific errors (SERVO_*, HEATER_*, TRIGGER_*)
+ *   0x50-0x5F  LightFX-specific errors (LED_*, POWER_*)
+ *   0x60-0x8F  Reserved for future modules
+ *   0xF0-0xFF  System/transport errors (TIMEOUT, CRC_ERROR, etc.)
+ *
+ * CommandResult:
+ *   Encapsulates command outcome for blocking operations:
+ *   - Ack()        - Command succeeded
+ *   - Nack(code)   - Command rejected with error code
+ *   - Timeout()    - No response within timeout
+ *   - SendFailed() - Failed to send command
+ *
+ * Usage:
+ *   CommandResult result = master.triggerOn(600);
+ *   if (result.isAck()) { ... }
+ *   else if (result.isNack()) { handleError(result.errorCode()); }
  */
 
 #ifndef SERIAL_ERROR_H
