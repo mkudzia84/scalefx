@@ -19,11 +19,11 @@
  * Components:
  *   CoreProtocol       - COBS encoding, CRC-8, packet utilities
  *   ISerialCore        - Abstract interface for serial communication
- *   CoreCommandHandler - Slave-side system command handler
+ *   CoreCommandServer  - Server-side system command handler
  *   CoreBoardInfo      - Device information for INIT_READY response
  *   CoreStats          - Packet statistics
  *
- * Core Commands (0xF0-0xFF, handled by CoreCommandHandler):
+ * Core Commands (0xF0-0xFF, handled by CoreCommandServer):
  *   INIT (0xF0)        - Initialize connection
  *   SHUTDOWN (0xF1)    - Graceful shutdown
  *   KEEPALIVE (0xF2)   - Connection heartbeat
@@ -38,10 +38,10 @@
  *   ERROR (0xF5)       - Error notification
  *
  * Usage (Slave Side):
- *   CoreCommandHandler coreHandler;
- *   coreHandler.begin(&Serial);
- *   coreHandler.setBoardInfo("GunFX", "1.0.0", "RP2040", 125, 200000);
- *   // In packet callback: coreHandler.tryHandle(type, payload, len);
+ *   CoreCommandServer coreServer;
+ *   coreServer.begin(&Serial);
+ *   coreServer.setBoardInfo("GunFX", "1.0.0", "RP2040", 125, 200000);
+ *   // In packet callback: coreServer.tryHandle(type, payload, len);
  *
  * For Master Side:
  *   See SerialBus in serial_bus.h which implements ISerialCore.
@@ -257,6 +257,18 @@ using CoreRebootCallback = std::function<void()>;
 using CoreBootselCallback = std::function<void()>;
 using CoreKeepaliveCallback = std::function<void()>;
 
+/**
+ * @brief Callback for appending module-specific data to STATUS response
+ * 
+ * Called by CoreCommandServer::sendStatus() after writing the 12-byte core header.
+ * The callback should write module-specific status bytes into the buffer.
+ * 
+ * @param buffer Pointer to write position in payload buffer (after core header)
+ * @param maxLen Maximum bytes available (typically 52 = 64 - 12)
+ * @return Number of bytes written to buffer
+ */
+using StatusDataCallback = std::function<size_t(uint8_t* buffer, size_t maxLen)>;
+
 // ============================================================================
 // ISerialCore - Abstract Interface for Serial Communication
 // ============================================================================
@@ -414,23 +426,66 @@ public:
 };
 
 // ============================================================================
-// CoreCommandHandler (Slave Side)
+// Command Handler Interface
 // ============================================================================
 
 /**
- * @brief Handles core system commands on slave devices
+ * @brief Result of attempting to process a command
+ * 
+ * Used by all command handlers to indicate how a command was processed
+ * in the Chain of Responsibility pattern.
+ */
+enum class CommandHandleResult : uint8_t {
+    Handled,        // Command was recognized and processed (ACK/NACK already sent)
+    NotMyCommand,   // Command not recognized by this handler, try next
+    Error           // Handler error (couldn't process due to internal issue)
+};
+
+/**
+ * @brief Interface for binary command handlers
+ * 
+ * Implementations should:
+ * - Return Handled if the packet was recognized (send ACK/NACK as appropriate)
+ * - Return NotMyCommand if the packet should be passed to the next handler
+ * - Return Error only for internal handler errors
+ */
+class ICommandHandler {
+public:
+    virtual ~ICommandHandler() = default;
+    
+    /**
+     * @brief Try to process a binary packet
+     * @param type Packet type byte
+     * @param payload Pointer to payload data
+     * @param len Length of payload
+     * @return CommandHandleResult indicating how the packet was handled
+     */
+    virtual CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) = 0;
+    
+    /**
+     * @brief Get the name of this handler (for debugging)
+     */
+    virtual const char* handlerName() const = 0;
+};
+
+// ============================================================================
+// CoreCommandServer (Server Side)
+// ============================================================================
+
+/**
+ * @brief Handles core system commands on server devices
  * 
  * Processes INIT, SHUTDOWN, REBOOT, BOOTSEL, and KEEPALIVE commands.
- * Use in the packet receive callback to handle system commands.
+ * Implements ICommandHandler for use with CommandRouter.
  */
-class CoreCommandHandler {
+class CoreCommandServer : public ICommandHandler {
 public:
-    CoreCommandHandler() = default;
-    ~CoreCommandHandler() = default;
+    CoreCommandServer() = default;
+    ~CoreCommandServer() override = default;
     
     /**
      * @brief Initialize the handler
-     * @param serial Serial port for sending responses (slave side uses Serial)
+     * @param serial Serial port for sending responses (server side uses Serial)
      */
     void begin(Stream* serial);
     
@@ -449,6 +504,16 @@ public:
      * @return true if handled (core command), false if not a core command
      */
     bool tryHandle(uint8_t type, const uint8_t* payload, size_t len);
+    
+    // ========================================================================
+    // ICommandHandler Interface
+    // ========================================================================
+    
+    CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override {
+        return tryHandle(type, payload, len) ? CommandHandleResult::Handled : CommandHandleResult::NotMyCommand;
+    }
+    
+    const char* handlerName() const override { return "CoreCommandServer"; }
     
     /**
      * @brief Update last activity timestamp
@@ -485,6 +550,28 @@ public:
     void onKeepalive(CoreKeepaliveCallback callback) { _keepaliveCallback = callback; }
     
     /**
+     * @brief Register callback for appending module-specific data to STATUS response
+     * 
+     * The callback receives a buffer pointer and max length, and should write
+     * module-specific status bytes. The bytes are appended after the 12-byte
+     * core header: [counter:u32LE][uptime:u32LE][freeRam:u32LE].
+     */
+    void onStatusData(StatusDataCallback callback) { _statusDataCallback = callback; }
+    
+    // Statistics
+    uint32_t commandCounter() const { return _commandCounter; }
+    uint32_t keepaliveCounter() const { return _keepaliveCounter; }
+    
+    /**
+     * @brief Update free RAM value for STATUS response (call periodically)
+     * 
+     * The core STATUS header includes freeRam. Since CoreCommandServer
+     * stores this from setBoardInfo(), call this to keep it current.
+     * Example: coreServer.updateFreeRam(rp2040.getFreeHeap());
+     */
+    void updateFreeRam(uint32_t freeRam) { _boardInfo.freeRamBytes = freeRam; }
+    
+    /**
      * @brief Send ACK packet
      */
     void sendAck();
@@ -497,17 +584,21 @@ public:
 private:
     void sendInitReady();
     void handleInit(const uint8_t* payload, size_t len);
+    void sendStatus();
     
     Stream* _serial = nullptr;
     CoreBoardInfo _boardInfo;
     bool _initialized = false;
     unsigned long _lastActivityMs = 0;
+    uint32_t _commandCounter = 0;
+    uint32_t _keepaliveCounter = 0;
     
     CoreInitCallback _initCallback;
     CoreShutdownCallback _shutdownCallback;
     CoreRebootCallback _rebootCallback;
     CoreBootselCallback _bootselCallback;
     CoreKeepaliveCallback _keepaliveCallback;
+    StatusDataCallback _statusDataCallback;
 };
 
 // ============================================================================
@@ -534,5 +625,85 @@ size_t encodeInitReady(const CoreBoardInfo& info, uint8_t* payload);
 bool decodeInitReady(const uint8_t* payload, size_t len, CoreBoardInfo& info);
 
 } // namespace CorePayload
+
+// ============================================================================
+// Server Handler Macros - Reduce Boilerplate in Command Handlers
+// ============================================================================
+//
+// These macros reduce repetitive code in Server::tryProcess() handlers.
+// They use local variables: `len`, `sendNack()`, and return CommandHandleResult.
+//
+// Usage example:
+//   case MyPacket::SOME_CMD:
+//       SFX_REQUIRE_LEN(3);
+//       SFX_VALIDATE(isValid(payload[0]), MyError::INVALID);
+//       SFX_DISPATCH(_callback, payload[0], payload[1]);
+//
+
+/**
+ * @brief Check minimum payload length, NACK and return if too short
+ * 
+ * @param min_len Minimum required payload length
+ */
+#define SFX_REQUIRE_LEN(min_len) \
+    do { \
+        if (len < (min_len)) { \
+            sendNack(SerialError::MISSING_PARAMETER); \
+            return CommandHandleResult::Handled; \
+        } \
+    } while(0)
+
+/**
+ * @brief Validate a condition, NACK and return if false
+ * 
+ * @param condition Boolean expression to validate
+ * @param error_code Error code to send if condition is false
+ */
+#define SFX_VALIDATE(condition, error_code) \
+    do { \
+        if (!(condition)) { \
+            sendNack(error_code); \
+            return CommandHandleResult::Handled; \
+        } \
+    } while(0)
+
+/**
+ * @brief Dispatch to callback and send ACK/NACK based on result
+ * 
+ * If callback is null, sends ACK (no-op mode).
+ * If callback returns 0 (OK), sends ACK.
+ * Otherwise sends NACK with the returned error code.
+ * 
+ * @param callback The callback function pointer/lambda
+ * @param ... Arguments to pass to callback
+ */
+#define SFX_DISPATCH(callback, ...) \
+    do { \
+        if (callback) { \
+            uint8_t _sfx_result = callback(__VA_ARGS__); \
+            if (_sfx_result == 0) sendAck(); \
+            else sendNack(_sfx_result); \
+        } else { \
+            sendAck(); \
+        } \
+        return CommandHandleResult::Handled; \
+    } while(0)
+
+/**
+ * @brief Complete handler for simple single-channel commands
+ * 
+ * Validates channel/ID, then dispatches to callback.
+ * 
+ * @param validator Validation function (e.g., LightFxSpec::isValidLedChannel)
+ * @param error_code Error code if validation fails
+ * @param callback The callback to dispatch to
+ */
+#define SFX_HANDLE_CHANNEL_CMD(validator, error_code, callback) \
+    do { \
+        SFX_REQUIRE_LEN(1); \
+        uint8_t _sfx_ch = payload[0]; \
+        SFX_VALIDATE(validator(_sfx_ch), error_code); \
+        SFX_DISPATCH(callback, _sfx_ch); \
+    } while(0)
 
 #endif // SERIAL_CORE_H

@@ -1,9 +1,9 @@
 /*
- * Serial LightFX Protocol - Binary Protocol Master/Slave
+ * Serial LightFX Protocol - Binary Protocol Client/Server
  *
- * Binary COBS protocol master/slave for LightFX controller.
- *   - LightFxMaster: For HubFX (sends commands via USB)
- *   - LightFxSlave: For LightFX Pico (receives commands, implements ICommandHandler)
+ * Binary COBS protocol client/server for LightFX controller.
+ *   - LightFxClient: For HubFX (sends commands via USB)
+ *   - LightFxServer: For LightFX Pico (receives commands, implements ICommandHandler)
  *
  * Packet Types (0x40-0x5F range):
  *   LED_SET (0x40)         - [ch:u8][brightness:u8]
@@ -47,6 +47,7 @@ namespace LightFxPacket {
     constexpr uint8_t LED_SEQ_RESTART   = 0x46;  // [ch:u8]
     constexpr uint8_t LED_SEQ_STATUS    = 0x47;  // [ch:u8] -> response packet
     constexpr uint8_t LED_STATUS        = 0x48;  // -> response packet
+    constexpr uint8_t LED_SEQ_QUEUE     = 0x49;  // [ch:u8] -> LED_SEQ_QUEUE_RESP
     
     // Servo control
     constexpr uint8_t SERVO_SET         = 0x50;  // [id:u8][pulse:i16]
@@ -54,11 +55,13 @@ namespace LightFxPacket {
     
     // Power monitoring
     constexpr uint8_t POWER_STATUS      = 0x58;  // -> response packet
+    constexpr uint8_t POWER_CONFIG      = 0x59;  // [shunt_mohm:u16][max_current_ma:u16] - configure INA226
     
-    // Response packets (slave -> master)
+    // Response packets (server -> client)
     constexpr uint8_t LED_SEQ_STATUS_RESP  = 0x5A;  // [ch:u8][playing:u8][events:u8][index:u8][loops:u32]
     constexpr uint8_t LED_STATUS_RESP      = 0x5B;  // [ch:u8][brightness:u8][seq_playing:u8][events:u8] x8
     constexpr uint8_t POWER_STATUS_RESP    = 0x5C;  // [voltage:u16(mV)][current:i16(mA)][power:u16(mW)][available:u8]
+    constexpr uint8_t LED_SEQ_QUEUE_RESP   = 0x5D;  // [ch:u8][count:u8][events: type:u8,duration:u16 x count]
 }
 
 // LED event types for binary protocol
@@ -69,6 +72,54 @@ namespace LightFxEventType {
     constexpr uint8_t FADE_IN   = 0x03;  // [duration:u16][brightness:u8]
     constexpr uint8_t FADE_OUT  = 0x04;  // [duration:u16][brightness:u8]
     constexpr uint8_t FADING    = 0x05;  // [cycle:u16][duration:u16][min:u8][max:u8]
+    constexpr uint8_t MAX_TYPE  = 0x05;  // Maximum valid event type
+}
+
+// ============================================================================
+// LightFX Hardware Specification Constants
+// ============================================================================
+
+namespace LightFxSpec {
+    // LED channel limits
+    constexpr uint8_t LED_CHANNEL_MIN = 1;
+    constexpr uint8_t LED_CHANNEL_MAX = 8;
+    constexpr uint8_t LED_BRIGHTNESS_MAX = 255;
+    
+    // Servo limits (standard PWM range)
+    constexpr uint8_t SERVO_ID_MIN = 1;
+    constexpr uint8_t SERVO_ID_MAX = 3;
+    constexpr uint16_t SERVO_PULSE_MIN = 500;    // µs
+    constexpr uint16_t SERVO_PULSE_MAX = 2500;   // µs
+    
+    // INA226 power monitor limits
+    constexpr uint16_t INA226_BUS_VOLTAGE_MAX = 36000;  // mV (36V max)
+    constexpr uint16_t INA226_SHUNT_MOHM_MIN = 1;       // mΩ minimum
+    constexpr uint16_t INA226_SHUNT_MOHM_MAX = 10000;   // mΩ (10Ω max practical)
+    constexpr uint32_t INA226_SHUNT_VOLTAGE_MAX = 81920; // µV (±81.92mV)
+    
+    // Sequence limits
+    constexpr uint8_t SEQ_MAX_EVENTS = 24;
+    
+    // Validation helpers
+    inline bool isValidLedChannel(uint8_t ch) {
+        return ch >= LED_CHANNEL_MIN && ch <= LED_CHANNEL_MAX;
+    }
+    
+    inline bool isValidLedChannelOrAll(uint8_t ch) {
+        return ch == 0 || (ch >= LED_CHANNEL_MIN && ch <= LED_CHANNEL_MAX);
+    }
+    
+    inline bool isValidServoId(uint8_t id) {
+        return id >= SERVO_ID_MIN && id <= SERVO_ID_MAX;
+    }
+    
+    inline bool isValidServoPulse(int16_t pulse) {
+        return pulse == -1 || (pulse >= SERVO_PULSE_MIN && pulse <= SERVO_PULSE_MAX);
+    }
+    
+    inline bool isValidEventType(uint8_t type) {
+        return type <= LightFxEventType::MAX_TYPE;
+    }
 }
 
 // ============================================================================
@@ -122,13 +173,35 @@ struct LightFxChannelStatus {
 };
 
 /**
+ * @brief Single event info for queue query
+ */
+struct LightFxEventInfo {
+    uint8_t type = 0;       // Event type (LightFxEventType::*)
+    uint16_t duration = 0;  // Duration in ms
+    uint8_t param1 = 0;     // Event-specific param (e.g., brightness)
+};
+
+/**
+ * @brief LED sequence queue information
+ */
+struct LightFxSeqQueue {
+    uint8_t channel = 0;
+    uint8_t count = 0;
+    uint8_t currentIndex = 0;
+    bool playing = false;
+    LightFxEventInfo events[24];  // Max 24 events
+};
+
+/**
  * @brief Power monitor status information
  */
 struct LightFxPowerStatus {
     float voltage = 0.0f;      // Bus voltage in V
     float current = 0.0f;      // Current in mA
     float power = 0.0f;        // Power in mW
-    bool available = false;     // INA226 detected
+    bool available = false;    // INA226 detected
+    uint16_t shuntMohm = 100;  // Shunt resistance in milliohms
+    uint16_t maxCurrentMa = 3200;  // Max current in mA
 };
 
 /**
@@ -147,14 +220,14 @@ struct LightFxBoardInfo {
 // Callback Types
 // ============================================================================
 
-// Master callbacks
+// Client callbacks
 using LightFxReadyCallback = std::function<void(const char* deviceName)>;
 using LightFxSeqStatusCallback = std::function<void(const LightFxSeqStatus& status)>;
 using LightFxChannelStatusCallback = std::function<void(const LightFxChannelStatus& status)>;
 using LightFxPowerStatusCallback = std::function<void(const LightFxPowerStatus& status)>;
 using LightFxErrorCallback = std::function<void(uint8_t errorCode, const char* message)>;
 
-// Slave callbacks - return error code (LightFxError::OK for success)
+// Server callbacks - return error code (LightFxError::OK for success)
 using LedSetCallback = std::function<uint8_t(uint8_t channel, uint8_t brightness)>;
 using LedOffCallback = std::function<uint8_t(uint8_t channel)>;
 using LedSeqClearCallback = std::function<uint8_t(uint8_t channel)>;
@@ -165,28 +238,30 @@ using LedSeqStartCallback = std::function<uint8_t(uint8_t channel)>;
 using LedSeqStopCallback = std::function<uint8_t(uint8_t channel)>;
 using LedSeqRestartCallback = std::function<uint8_t(uint8_t channel)>;
 using LedSeqStatusCallback = std::function<void(uint8_t channel, LightFxSeqStatus& status)>;
+using LedSeqQueueCallback = std::function<void(uint8_t channel, LightFxSeqQueue& queue)>;
 using LedChannelStatusCallback = std::function<void(uint8_t channel, LightFxChannelStatus& status)>;
 using ServoSetCallback = std::function<uint8_t(uint8_t id, int pulseUs)>;
 using ServoSettingsCallback = std::function<uint8_t(uint8_t id, int minUs, int maxUs, int speed, int accel, int decel)>;
 using PowerStatusCallback = std::function<void(LightFxPowerStatus& status)>;
+using PowerConfigCallback = std::function<uint8_t(uint16_t shuntMohm, uint16_t maxCurrentMa)>;
 
 // ============================================================================
-// LightFxMaster Class (Binary Protocol)
+// LightFxClient Class (Binary Protocol)
 // ============================================================================
 
 /**
- * @brief Master-side LightFX serial communication (binary COBS protocol)
+ * @brief Client-side LightFX serial communication (binary COBS protocol)
  * 
- * Used by HubFX to send commands to LightFX slave boards over USB.
+ * Used by HubFX to send commands to LightFX server boards over USB.
  * Extends SerialBus with LightFX-specific commands.
  */
-class LightFxMaster : public SerialBus {
+class LightFxClient : public SerialBus {
 public:
-    LightFxMaster() = default;
-    ~LightFxMaster() = default;
+    LightFxClient() = default;
+    ~LightFxClient() = default;
 
-    LightFxMaster(const LightFxMaster&) = delete;
-    LightFxMaster& operator=(const LightFxMaster&) = delete;
+    LightFxClient(const LightFxClient&) = delete;
+    LightFxClient& operator=(const LightFxClient&) = delete;
 
     // ========================================================================
     // Initialization
@@ -269,8 +344,8 @@ public:
     // State
     // ========================================================================
     
-    bool isSlaveReady() const { return _slaveReady; }
-    const char* slaveName() const { return _slaveName; }
+    bool isServerReady() const { return _serverReady; }
+    const char* serverName() const { return _serverName; }
     const LightFxBoardInfo& boardInfo() const { return _boardInfo; }
     bool lastCommandSuccess() const { return _lastAckReceived; }
 
@@ -280,8 +355,8 @@ private:
     bool waitForAckNack();
 
     UsbHost* _usbHostRef = nullptr;
-    bool _slaveReady = false;
-    char _slaveName[32] = "";
+    bool _serverReady = false;
+    char _serverName[32] = "";
     LightFxBoardInfo _boardInfo;
 
     unsigned long _commandTimeoutMs = 1000;
@@ -301,19 +376,19 @@ private:
 };
 
 // ============================================================================
-// LightFxSlave Class (Binary Protocol)
+// LightFxServer Class (Binary Protocol)
 // ============================================================================
 
 /**
- * @brief Slave-side LightFX serial communication (binary COBS protocol)
+ * @brief Server-side LightFX serial communication (binary COBS protocol)
  * 
- * Used by LightFX Pico to receive commands from HubFX master.
+ * Used by LightFX Pico to receive commands from HubFX client.
  * Implements ICommandHandler for use with CommandRouter.
  */
-class LightFxSlave : public ICommandHandler {
+class LightFxServer : public ICommandHandler {
 public:
-    LightFxSlave() = default;
-    ~LightFxSlave() override = default;
+    LightFxServer() = default;
+    ~LightFxServer() override = default;
 
     // ========================================================================
     // Initialization
@@ -327,7 +402,7 @@ public:
     // ========================================================================
     
     CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override;
-    const char* handlerName() const override { return "LightFxSlave"; }
+    const char* handlerName() const override { return "LightFxServer"; }
 
     // ========================================================================
     // Response Methods
@@ -336,6 +411,7 @@ public:
     int sendAck();
     int sendNack(uint8_t errorCode);
     int sendSeqStatus(const LightFxSeqStatus& status);
+    int sendSeqQueue(const LightFxSeqQueue& queue);
     int sendChannelStatus(const LightFxChannelStatus* channels, uint8_t count);
     int sendPowerStatus(const LightFxPowerStatus& status);
 
@@ -351,6 +427,7 @@ public:
     void onLedSeqStop(LedSeqStopCallback cb) { _ledSeqStopCallback = cb; }
     void onLedSeqRestart(LedSeqRestartCallback cb) { _ledSeqRestartCallback = cb; }
     void onLedSeqStatus(LedSeqStatusCallback cb) { _ledSeqStatusCallback = cb; }
+    void onLedSeqQueue(LedSeqQueueCallback cb) { _ledSeqQueueCallback = cb; }
     void onLedStatus(LedChannelStatusCallback cb) { _ledStatusCallback = cb; }
 
     // ========================================================================
@@ -365,6 +442,7 @@ public:
     // ========================================================================
     
     void onPowerStatus(PowerStatusCallback cb) { _powerStatusCallback = cb; }
+    void onPowerConfig(PowerConfigCallback cb) { _powerConfigCallback = cb; }
 
 private:
     int sendRawPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0);
@@ -380,10 +458,12 @@ private:
     LedSeqStopCallback _ledSeqStopCallback;
     LedSeqRestartCallback _ledSeqRestartCallback;
     LedSeqStatusCallback _ledSeqStatusCallback;
+    LedSeqQueueCallback _ledSeqQueueCallback;
     LedChannelStatusCallback _ledStatusCallback;
     ServoSetCallback _servoSetCallback;
     ServoSettingsCallback _servoSettingsCallback;
     PowerStatusCallback _powerStatusCallback;
+    PowerConfigCallback _powerConfigCallback;
 };
 
 #endif // SERIAL_LIGHTFX_H

@@ -212,9 +212,15 @@ Commands specific to GunFX controllers:
 
 ### STATUS
 
-**Binary Payload:**
+**Core Header (12 bytes, always present):**
 ```
-[flags:u8][fanOffRemainingMs:u16][servo0Us:u16][servo1Us:u16][servo2Us:u16][rpm:u16]
+[counter:u32LE][uptime:u32LE][freeRam:u32LE]
+```
+
+**GunFX Module Data (20 bytes, appended to core header):**
+```
+[flags:u8][fanSpeed:u8][fanOffMs:u16][servo0:u16][servo1:u16][servo2:u16]
+[rpm:u16][shots:u32][heaterMs:u32]
 ```
 
 Flags:
@@ -225,10 +231,17 @@ Flags:
 - Bit 4: fanOn
 - Bit 5: fanSpindown
 
-**Text Format:**
+**LightFX Module Data (22 bytes, appended to core header):**
 ```
-STATUS firing=1 flashActive=0 flashFading=0 heaterOn=1 fanOn=1 fanSpindown=0 fanOffRemainingMs=0 servo0=1500 servo1=1500 servo2=1500 rpm=600
+[ledBrightness:u8×8][ledSeqFlags:u8]
+[servo0:u16][servo1:u16][servo2:u16]
+[voltage:u16(mV)][current:i16(mA)][power:u16(mW)][powerAvail:u8]
 ```
+
+- `ledSeqFlags`: Bit N = channel N+1 sequence playing
+- `powerAvail`: 1 if INA226 detected, 0 otherwise
+
+**NoOp:** Core header only (12 bytes, no module data).
 
 ### ERROR
 

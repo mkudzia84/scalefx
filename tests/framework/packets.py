@@ -33,16 +33,25 @@ class GunFxPacket:
 
 class LightFxPacket:
     """LightFX packet types (0x40-0x5F)."""
-    LED_SET         = 0x40
-    LED_OFF         = 0x41
-    LED_SEQ_CLEAR   = 0x42
-    LED_SEQ_ADD     = 0x43
-    LED_SEQ_START   = 0x44
-    LED_SEQ_STOP    = 0x45
-    SERVO_SET       = 0x50
-    SERVO_SETTINGS  = 0x51
-    POWER_STATUS    = 0x58
-    POWER_STATUS_RESP = 0x59
+    LED_SET           = 0x40
+    LED_OFF           = 0x41
+    LED_SEQ_CLEAR     = 0x42
+    LED_SEQ_ADD       = 0x43
+    LED_SEQ_START     = 0x44
+    LED_SEQ_STOP      = 0x45
+    LED_SEQ_RESTART   = 0x46
+    LED_SEQ_STATUS    = 0x47
+    LED_STATUS        = 0x48
+    LED_SEQ_QUEUE     = 0x49
+    SERVO_SET         = 0x50
+    SERVO_SETTINGS    = 0x51
+    POWER_STATUS      = 0x58
+    POWER_CONFIG      = 0x59  # [shunt_mohm:u16][max_current_ma:u16]
+    # Response packet types
+    POWER_STATUS_RESP   = 0x5C
+    LED_STATUS_RESP     = 0x5A
+    LED_SEQ_STATUS_RESP = 0x5B
+    LED_SEQ_QUEUE_RESP  = 0x5D
 
 
 class LightFxEventType:

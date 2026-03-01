@@ -1,15 +1,15 @@
 /**
  * GunFX Pico Controller v0.3.0
  * 
- * Slave controller for gun effects - receives commands from HubFX over USB serial.
+ * Server controller for gun effects - receives commands from HubFX over USB serial.
  * Controls: muzzle flash LED (PWM), smoke heater/fan, 3x gun servos with motion profiling.
  * 
  * Hardware: Raspberry Pi Pico (RP2040) + earlephilhower/arduino-pico core
  * Protocol: Binary COBS with CRC-8
  * 
  * Architecture (Chain of Responsibility):
- *   - CoreCommandHandler: Handles INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE
- *   - GunFxSlave: Handles TRIGGER, SERVO, SMOKE commands
+ *   - CoreCommandServer: Handles INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE
+ *   - GunFxServer: Handles TRIGGER, SERVO, SMOKE commands
  *   - CommandRouter: Routes packets to handlers in priority order
  */
 
@@ -23,7 +23,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.3.0"
-#define BUILD_NUMBER 1
+#define BUILD_NUMBER 3
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -72,8 +72,8 @@ const unsigned long CONNECTION_TIMEOUT_MS = 15000;
 
 // Serial protocol handlers
 CommandRouter commandRouter;
-CoreCommandHandler coreHandler;
-GunFxSlave gunfxSlave;
+CoreCommandServer coreServer;
+GunFxServer gunfxServer;
 
 // Device identification
 char deviceName[24];
@@ -164,7 +164,7 @@ void buildDeviceName() {
 // ============================================================================
 
 void checkConnectionStatus() {
-    if (coreHandler.checkTimeout(CONNECTION_TIMEOUT_MS)) {
+    if (coreServer.checkTimeout(CONNECTION_TIMEOUT_MS)) {
         if (!watchdog_triggered) {
             performSafeShutdown();
             watchdog_triggered = true;
@@ -456,39 +456,39 @@ void setup() {
     buildDeviceName();
     
     // ========================================================================
-    // Initialize CoreCommandHandler (system commands)
+    // Initialize CoreCommandServer (system commands)
     // ========================================================================
-    coreHandler.begin(&Serial);
-    coreHandler.setBoardInfo(deviceName, FIRMWARE_VERSION, "RP2040", 
+    coreServer.begin(&Serial);
+    coreServer.setBoardInfo(deviceName, FIRMWARE_VERSION, "RP2040", 
                               F_CPU / 1000000, rp2040.getFreeHeap(), BUILD_NUMBER);
     
-    coreHandler.onInit([]() {
+    coreServer.onInit([]() {
         performSafeInit();
     });
     
-    coreHandler.onShutdown([]() {
+    coreServer.onShutdown([]() {
         performSafeShutdown();
     });
     
-    coreHandler.onReboot([]() {
+    coreServer.onReboot([]() {
         performSafeShutdown();
         delay(100);
         rp2040.reboot();
     });
     
-    coreHandler.onBootsel([]() {
+    coreServer.onBootsel([]() {
         performSafeShutdown();
         delay(500);
         rp2040.rebootToBootloader();
     });
     
     // ========================================================================
-    // Initialize GunFxSlave (GunFX-specific commands)
+    // Initialize GunFxServer (GunFX-specific commands)
     // ========================================================================
-    gunfxSlave.begin(&Serial, deviceName);
+    gunfxServer.begin(&Serial, deviceName);
     
     // TRIGGER_ON: Start firing at specified RPM
-    gunfxSlave.onTriggerOn([](uint16_t rpm) -> uint8_t {
+    gunfxServer.onTriggerOn([](uint16_t rpm) -> uint8_t {
         if (rpm < 1 || rpm > 3000) {
             return GunFxError::INVALID_RPM;
         }
@@ -497,13 +497,13 @@ void setup() {
     });
     
     // TRIGGER_OFF: Stop firing with optional fan delay
-    gunfxSlave.onTriggerOff([](uint16_t delay) -> uint8_t {
+    gunfxServer.onTriggerOff([](uint16_t delay) -> uint8_t {
         stopFiring(delay);
         return SerialError::OK;
     });
     
     // SERVO_SET: Set servo position
-    gunfxSlave.onServoSet([](uint8_t id, uint16_t us) -> uint8_t {
+    gunfxServer.onServoSet([](uint8_t id, uint16_t us) -> uint8_t {
         if (id < 1 || id > 3) {
             return GunFxError::SERVO_INVALID_ID;
         }
@@ -515,7 +515,7 @@ void setup() {
     });
     
     // SERVO_SETTINGS: Configure servo motion profile
-    gunfxSlave.onServoSettings([](const GunFxServoConfig& cfg) -> uint8_t {
+    gunfxServer.onServoSettings([](const GunFxServoConfig& cfg) -> uint8_t {
         if (cfg.servoId < 1 || cfg.servoId > 3) {
             return GunFxError::SERVO_INVALID_ID;
         }
@@ -546,13 +546,13 @@ void setup() {
     });
     
     // SMOKE_HEAT: Enable/disable smoke heater
-    gunfxSlave.onSmokeHeat([](bool on) -> uint8_t {
+    gunfxServer.onSmokeHeat([](bool on) -> uint8_t {
         setSmokeHeater(on);
         return SerialError::OK;
     });
     
     // SMOKE_SETTINGS: Configure smoke fan parameters
-    gunfxSlave.onSmokeSettings([](const GunFxSmokeConfig& cfg) -> uint8_t {
+    gunfxServer.onSmokeSettings([](const GunFxSmokeConfig& cfg) -> uint8_t {
         if (cfg.fanPulseMs > 10000) {
             return GunFxError::INVALID_FAN_SPEED;
         }
@@ -579,20 +579,51 @@ void setup() {
         return SerialError::OK;
     });
     
-    // STATUS_REQ: Return current status
-    gunfxSlave.onStatusRequest([]() -> GunFxStatus {
+    // STATUS_REQ: Return current status (via GunFxServer - used when standalone)
+    gunfxServer.onStatusRequest([]() -> GunFxStatus {
         return buildCurrentStatus(millis());
+    });
+    
+    // STATUS: Append GunFX module data to core STATUS response
+    // Wire format (20 bytes):
+    //   [flags:u8][fanSpeed:u8][fanOffMs:u16][servo0:u16][servo1:u16][servo2:u16]
+    //   [rpm:u16][shots:u32][heaterMs:u32]
+    coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+        if (maxLen < 20) return 0;
+        
+        GunFxStatus s = buildCurrentStatus(millis());
+        
+        uint8_t flags = 0;
+        if (s.firing)       flags |= 0x01;
+        if (s.flashActive)  flags |= 0x02;
+        if (s.flashFading)  flags |= 0x04;
+        if (s.heaterOn)     flags |= 0x08;
+        if (s.fanOn)        flags |= 0x10;
+        if (s.fanSpindown)  flags |= 0x20;
+        
+        buf[0] = flags;
+        buf[1] = s.fanSpeed;
+        CoreProtocol::putU16LE(&buf[2], s.fanOffRemainingMs);
+        CoreProtocol::putU16LE(&buf[4], s.servoUs[0]);
+        CoreProtocol::putU16LE(&buf[6], s.servoUs[1]);
+        CoreProtocol::putU16LE(&buf[8], s.servoUs[2]);
+        CoreProtocol::putU16LE(&buf[10], s.rateOfFireRpm);
+        CoreProtocol::putU32LE(&buf[12], s.shotsFired);
+        CoreProtocol::putU32LE(&buf[16], s.heaterOnTimeMs);
+        
+        return 20;
     });
     
     // ========================================================================
     // Initialize CommandRouter (routes packets to handlers)
     // ========================================================================
     commandRouter.begin(&Serial, [](uint8_t code, uint8_t type) {
-        gunfxSlave.sendNack(code);
+        gunfxServer.sendNack(code);
     });
     
-    // Add GunFX handler to router
-    commandRouter.addHandler(&gunfxSlave);
+    // Add handlers to router (order = priority)
+    commandRouter.addHandler(&coreServer);      // Priority 1: core/system commands
+    commandRouter.addHandler(&gunfxServer);      // Priority 2: GunFX commands
 }
 
 // ============================================================================
@@ -605,9 +636,12 @@ void loop() {
     commandRouter.process();
     
     // Update activity timestamp for core handler timeout detection
-    if (commandRouter.lastActivityMs() > coreHandler.lastActivityMs()) {
-        coreHandler.updateActivity();
+    if (commandRouter.lastActivityMs() > coreServer.lastActivityMs()) {
+        coreServer.updateActivity();
     }
+    
+    // Keep free RAM current for STATUS response
+    coreServer.updateFreeRam(rp2040.getFreeHeap());
     
     // Update hardware states
     updateMuzzleFlash();

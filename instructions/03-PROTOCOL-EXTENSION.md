@@ -9,17 +9,16 @@
 ```yaml
 Files_To_Modify:
   Always:
-    - "lib/serial/serial_protocol.h"     # Packet type constant
-    - "lib/serial/serial_xxxfx.h"        # Handler logic
-    - "controllers/xxxfx/pico/src/*.ino" # Callback implementation
-    - "tests/framework/packets.py"       # Python constant
-    - "tests/framework/commands.py"      # Python builder
-    - "tests/cli/interactive.py"         # CLI command
-    - "controllers/xxxfx/pico/README.md" # Documentation
+    - "lib/serial/serial_xxxfx.h"           # Packet type constant + handler logic
+    - "controllers/xxxfx/pico/src/*.ino"     # Callback implementation
+    - "tests/framework/packets.py"           # Python constant
+    - "tests/framework/commands.py"          # Python builder
+    - "tests/cli/handlers/xxxfx.py"          # CLI command
+    - "controllers/xxxfx/pico/README.md"     # Documentation
   
   If_New_Error_Codes:
-    - "lib/serial/serial_error.h"        # C++ error constant
-    - "tests/framework/packets.py"       # Python error constant
+    - "lib/serial/serial_error.h"            # C++ error constant
+    - "tests/framework/packets.py"           # Python error constant
 ```
 
 ---
@@ -28,7 +27,7 @@ Files_To_Modify:
 
 ### Step 1: Define Packet Type
 
-**File:** `controllers/lib/serial/serial_protocol.h`
+**File:** `controllers/lib/serial/serial_gunfx.h`
 
 **FIND:**
 ```cpp
@@ -65,7 +64,7 @@ namespace GunFxError {
 
 ---
 
-### Step 3: Add Callback to Slave Class
+### Step 3: Add Callback to Server Class
 
 **File:** `controllers/lib/serial/serial_gunfx.h`
 
@@ -79,17 +78,17 @@ using AmmoSetCallback = std::function<uint8_t(uint16_t count)>;
 void onAmmoSet(AmmoSetCallback cb) { _onAmmoSet = cb; }
 ```
 
-**ACTION 3.3 - Add case in handle():**
+**ACTION 3.3 - Add case in tryProcess() using SFX_* macros:**
 ```cpp
-case GunFxPacket::AMMO_SET:
-    if (len < 2) {
-        result = SerialError::MISSING_PARAMETER;
-    } else if (_onAmmoSet) {
-        uint16_t count = payload[0] | (payload[1] << 8);
-        result = _onAmmoSet(count);
-    }
-    break;
+case GunFxPacket::AMMO_SET: {
+    SFX_REQUIRE_LEN(2);
+    uint16_t count = getU16LE(payload);
+    SFX_VALIDATE(GunFxSpec::isValidAmmoCount(count), GunFxError::AMMO_INVALID);
+    SFX_DISPATCH(_onAmmoSet, count);
+}
 ```
+
+> **Note:** `SFX_REQUIRE_LEN`, `SFX_VALIDATE`, and `SFX_DISPATCH` macros are defined in `serial_core.h`. See `01-ARCHITECTURE.md` for details.
 
 **ACTION 3.4 - Add private member:**
 ```cpp
@@ -121,7 +120,7 @@ uint8_t handleAmmoSet(uint16_t count) {
 
 **ACTION 4.3 - Register in setup():**
 ```cpp
-gunfxSlave.onAmmoSet(handleAmmoSet);
+gunfxServer.onAmmoSet(handleAmmoSet);
 ```
 
 ---
@@ -246,14 +245,14 @@ class TestAmmoSet:
 
 ### Step 8: Add CLI Command
 
-**File:** `tests/cli/interactive.py`
+**File:** `tests/cli/handlers/gunfx.py`
 
-**ACTION 8.1 - Add to gunfx_commands registry:**
+**ACTION 8.1 - Add to get_commands() dict:**
 ```python
 'gunfx.ammo': (self.cmd_gunfx_ammo, CommandInfo(
     'gunfx.ammo', 'gunfx.ammo set <count>',
     'Set ammunition count (0-9999)',
-    requires_init=True, controller=self.CTRL_GUNFX)),
+    requires_init=True)),
 ```
 
 **ACTION 8.2 - Add handler method:**
@@ -307,16 +306,15 @@ def cmd_gunfx_ammo(self, args: List[str]):
 
 ```bash
 # 1. Build firmware
-cd controllers/gunfx/pico
-pio run
+python -m platformio run -e pico -d controllers/gunfx/pico
 
 # 2. Check Python syntax
 python -m py_compile tests/framework/packets.py
 python -m py_compile tests/framework/commands.py
-python -m py_compile tests/cli/interactive.py
+python -m py_compile tests/cli/handlers/gunfx.py
 
 # 3. Flash and test
-python scripts/build_and_flash.py
+python scripts/build_and_flash.py gunfx
 pytest tests/gunfx/test_ammo.py -v
 
 # 4. CLI smoke test
@@ -370,19 +368,20 @@ String:
 
 ```yaml
 Before_Marking_Complete:
-  - [ ] Packet type added to serial_protocol.h
+  - [ ] Packet type added to serial_xxxfx.h (e.g., GunFxPacket namespace)
   - [ ] Error codes added to serial_error.h (if any)
   - [ ] Callback type defined in serial_xxxfx.h
-  - [ ] Registration method added to slave class
-  - [ ] Handler case added to handle() switch
+  - [ ] Registration method added to server class
+  - [ ] Handler case added to tryProcess() switch using SFX_* macros
   - [ ] Private callback member added
+  - [ ] Validation added to XxxFxSpec namespace (if needed)
   - [ ] Callback implemented in firmware
   - [ ] Callback registered in setup()
   - [ ] Python packet constant added
   - [ ] Python error constants added (if any)
   - [ ] Python command builder added
   - [ ] Test file created
-  - [ ] CLI command added to registry
+  - [ ] CLI command added to handlers/xxxfx.py
   - [ ] CLI handler method added
   - [ ] README.md updated with protocol entry
   - [ ] All compile checks pass

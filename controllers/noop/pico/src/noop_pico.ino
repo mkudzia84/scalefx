@@ -18,7 +18,7 @@
  * Protocol: Binary COBS with CRC-8
  * 
  * Architecture:
- *   - CoreCommandHandler: Handles all system commands
+ *   - CoreCommandServer: Handles all system commands
  *   - CommandRouter: Routes packets (no module-specific handlers)
  */
 
@@ -46,7 +46,7 @@ const unsigned long CONNECTION_TIMEOUT_MS = 15000;
 
 // Serial protocol handlers
 CommandRouter commandRouter;
-CoreCommandHandler coreHandler;
+CoreCommandServer coreServer;
 
 // Device identification
 char deviceName[24];
@@ -91,7 +91,7 @@ void blinkLed(int times, int delayMs = 100) {
 // ============================================================================
 
 void checkConnectionStatus() {
-    if (coreHandler.checkTimeout(CONNECTION_TIMEOUT_MS)) {
+    if (coreServer.checkTimeout(CONNECTION_TIMEOUT_MS)) {
         if (!watchdog_triggered) {
             watchdog_triggered = true;
             setLed(false);
@@ -125,28 +125,28 @@ void setup() {
     buildDeviceName();
     
     // ========================================================================
-    // Initialize CoreCommandHandler (system commands)
+    // Initialize CoreCommandServer (system commands)
     // ========================================================================
-    coreHandler.begin(&Serial);
-    coreHandler.setBoardInfo(deviceName, FIRMWARE_VERSION, "RP2040",
+    coreServer.begin(&Serial);
+    coreServer.setBoardInfo(deviceName, FIRMWARE_VERSION, "RP2040",
                               F_CPU / 1000000, rp2040.getFreeHeap(), BUILD_NUMBER);
     
-    coreHandler.onInit([]() {
+    coreServer.onInit([]() {
         performSafeInit();
         blinkLed(2);
     });
     
-    coreHandler.onShutdown([]() {
+    coreServer.onShutdown([]() {
         performSafeShutdown();
     });
     
-    coreHandler.onReboot([]() {
+    coreServer.onReboot([]() {
         performSafeShutdown();
         delay(100);
         rp2040.reboot();
     });
     
-    coreHandler.onBootsel([]() {
+    coreServer.onBootsel([]() {
         performSafeShutdown();
         delay(100);
         rp2040.rebootToBootloader();
@@ -156,11 +156,11 @@ void setup() {
     // Initialize CommandRouter
     // ========================================================================
     commandRouter.begin(&Serial, [](uint8_t code, uint8_t type) {
-        coreHandler.sendNack(code);
+        coreServer.sendNack(code);
     });
     
-    // No module-specific handlers for NoOp
-    // CoreCommandHandler is called directly, not via router
+    // Add CoreCommandServer to handle system commands (INIT, SHUTDOWN, REBOOT, etc.)
+    commandRouter.addHandler(&coreServer);
     
     // Ready indication
     blinkLed(3, 50);
@@ -175,16 +175,19 @@ void loop() {
     commandRouter.process();
     
     // Update activity timestamp
-    if (commandRouter.lastActivityMs() > coreHandler.lastActivityMs()) {
-        coreHandler.updateActivity();
+    if (commandRouter.lastActivityMs() > coreServer.lastActivityMs()) {
+        coreServer.updateActivity();
     }
+    
+    // Keep free RAM current for STATUS response
+    coreServer.updateFreeRam(rp2040.getFreeHeap());
     
     // Check connection timeout
     checkConnectionStatus();
     
     // LED heartbeat when initialized
     static uint32_t lastBlink = 0;
-    if (coreHandler.isInitialized() && millis() - lastBlink > 2000) {
+    if (coreServer.isInitialized() && millis() - lastBlink > 2000) {
         setLed(true);
         delay(10);
         setLed(false);

@@ -6,90 +6,93 @@
 
 ## CLI Architecture
 
+The CLI uses a modular handler architecture. Each controller has its own handler file.
+
 ```yaml
-Command_Registries:
+File_Structure:
+  "tests/cli/base.py": "CommandInfo, OutputMixin, ControllerType, CommandHandlerBase"
+  "tests/cli/parsers.py": "Response packet parsing utilities"
+  "tests/cli/interactive.py": "Main CLI class (~280 lines, composes handlers)"
+  "tests/cli/handlers/core.py": "Core/protocol commands (connect, init, status, reboot)"
+  "tests/cli/handlers/gunfx.py": "GunFX commands (trigger, servo, smoke)"
+  "tests/cli/handlers/lightfx.py": "LightFX commands (led, servo, power)"
+
+Handler_Pattern:
+  base_class: "CommandHandlerBase (from base.py)"
+  registration: "Handlers registered in interactive.py constructor"
+  command_routing: "Each handler returns dict of {name: (method, CommandInfo)}"
+  controller_filtering: "Commands filtered by ControllerType after INIT_READY"
+
+Command_Categories:
   core_commands:
-    availability: "Always"
+    handler: "handlers/core.py"
+    availability: "Always available"
     examples: ["help", "connect", "disconnect", "ports", "exit"]
   
   protocol_commands:
+    handler: "handlers/core.py"
     availability: "When connected"
     examples: ["init", "shutdown", "status", "keepalive", "reboot", "bootsel"]
   
   gunfx_commands:
-    availability: "When connected AND controller_type == CTRL_GUNFX"
+    handler: "handlers/gunfx.py"
+    availability: "When connected AND controller detected as GunFX"
     examples: ["gunfx.trigger", "gunfx.servo", "gunfx.smoke"]
   
   lightfx_commands:
-    availability: "When connected AND controller_type == CTRL_LIGHTFX"
+    handler: "handlers/lightfx.py"
+    availability: "When connected AND controller detected as LightFX"
     examples: ["lightfx.led", "lightfx.servo", "lightfx.power"]
 
 Dynamic_Detection:
   trigger: "INIT_READY response received"
-  method: "Parse device name, set controller_type"
-  result: "Controller-specific commands appear in help"
+  location: "handlers/core.py"
+  method: "Parse device name, set ControllerType"
+  result: "Controller-specific handler's commands appear in help"
 ```
 
 ---
 
-## File Location
+## File Locations
 
-```
-tests/cli/interactive.py
+```yaml
+Main:
+  "tests/cli/interactive.py": "Main CLI class, handler composition"
+  "tests/cli/base.py": "Base classes, CommandInfo, OutputMixin, ControllerType"
+  "tests/cli/parsers.py": "Response packet parsing"
+
+Handlers:
+  "tests/cli/handlers/core.py": "Core and protocol commands"
+  "tests/cli/handlers/gunfx.py": "GunFX controller commands"
+  "tests/cli/handlers/lightfx.py": "LightFX controller commands"
 ```
 
 ---
 
 ## Adding Command to Existing Controller
 
-### Step 1: Add to Command Registry
+### Step 1: Add Handler Method to Handler Class
 
-**FIND:** `_build_command_registry()` method
-
-**ADD to appropriate registry:**
-
-```python
-# For GunFX command
-self.gunfx_commands: Dict[str, Tuple[Callable, CommandInfo]] = {
-    # ...existing commands...
-    
-    'gunfx.newcmd': (self.cmd_gunfx_newcmd, CommandInfo(
-        'gunfx.newcmd',                    # name (matches dict key)
-        'gunfx.newcmd <param1> [param2]',  # usage (shown in help)
-        'Description of what command does', # description
-        requires_init=True,                 # needs init first?
-        controller=self.CTRL_GUNFX         # controller type
-    )),
-}
-```
-
-### Step 2: Add Handler Method
-
-**ADD method to class:**
+**FILE:** `tests/cli/handlers/gunfx.py` (or `lightfx.py`)
 
 ```python
 def cmd_gunfx_newcmd(self, args: List[str]):
     """GunFX new command handler."""
-    # Validate arguments
     if len(args) < 1:
         self.print_error("Usage: gunfx.newcmd <param1> [param2]")
         return
     
     try:
-        # Parse arguments
         param1 = int(args[0])
-        param2 = int(args[1]) if len(args) > 1 else 0  # optional
+        param2 = int(args[1]) if len(args) > 1 else 0
         
-        # Validate ranges
         if param1 < 0 or param1 > 100:
             self.print_error("param1 must be 0-100")
             return
         
-        # Build and send packet
         packet = GunFxCommands.new_command(param1, param2)
         success, response = self.conn.send_expect_ack(packet)
         
-        # Report result
         if success:
             self.print_success(f"Command executed: param1={param1}")
         else:
@@ -99,153 +102,134 @@ def cmd_gunfx_newcmd(self, args: List[str]):
         self.print_error("Invalid parameter value")
 ```
 
-### Step 3: Add Import (if needed)
+### Step 2: Register in get_commands()
 
-**FIND:** Import section at top of file
+**FIND:** `get_commands()` method in the handler class
 
-**ADD if not present:**
+**ADD:**
 
 ```python
-from tests.framework.commands import GunFxCommands  # if not imported
-from tests.framework.packets import GunFxPacket, GunFxError  # if needed
+def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
+    return {
+        # ...existing commands...
+        
+        'gunfx.newcmd': (self.cmd_gunfx_newcmd, CommandInfo(
+            'gunfx.newcmd',                    # name
+            'gunfx.newcmd <param1> [param2]',  # usage
+            'Description of what command does', # description
+            requires_init=True)),              # needs init?
+    }
+```
+
+### Step 3: Add Import (if needed)
+
+```python
+from tests.framework.commands import GunFxCommands
+from tests.framework.packets import GunFxPacket, GunFxError
 ```
 
 ---
 
 ## Adding New Controller Type
 
-### Step 1: Add Controller Constant
+### Step 1: Create Handler File
 
-**FIND:**
-```python
-class InteractiveCLI:
-    CTRL_GUNFX = 'gunfx'
-    CTRL_LIGHTFX = 'lightfx'
-    CTRL_NOOP = 'noop'
-```
-
-**ADD:**
-```python
-    CTRL_NEWFX = 'newfx'
-```
-
-### Step 2: Create Command Registry
-
-**FIND:** `_build_command_registry()` method
-
-**ADD after existing registries:**
+**CREATE:** `tests/cli/handlers/newfx.py`
 
 ```python
-# NewFX-specific commands
-self.newfx_commands: Dict[str, Tuple[Callable, CommandInfo]] = {
-    'newfx.cmd1': (self.cmd_newfx_cmd1, CommandInfo(
-        'newfx.cmd1', 'newfx.cmd1 <param>',
-        'Execute command 1',
-        requires_init=True, controller=self.CTRL_NEWFX)),
-    
-    'newfx.cmd2': (self.cmd_newfx_cmd2, CommandInfo(
-        'newfx.cmd2', 'newfx.cmd2 <id>',
-        'Execute command 2',
-        requires_init=True, controller=self.CTRL_NEWFX)),
-}
-```
-
-### Step 3: Update get_available_commands()
-
-**FIND:**
-```python
-def get_available_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
-    # ...
-    if self.controller_type == self.CTRL_GUNFX:
-        commands.update(self.gunfx_commands)
-    elif self.controller_type == self.CTRL_LIGHTFX:
-        commands.update(self.lightfx_commands)
-```
-
-**ADD:**
-```python
-    elif self.controller_type == self.CTRL_NEWFX:
-        commands.update(self.newfx_commands)
-```
-
-### Step 4: Update Controller Detection
-
-**FIND:** `_parse_init_ready()` method
-
-**ADD detection logic:**
-```python
-name_lower = device_name.lower()
-if 'gunfx' in name_lower or 'gun' in name_lower:
-    self.controller_type = self.CTRL_GUNFX
-    self.print_info("Detected GunFX - gunfx.* commands available")
-elif 'lightfx' in name_lower or 'light' in name_lower:
-    self.controller_type = self.CTRL_LIGHTFX
-    self.print_info("Detected LightFX - lightfx.* commands available")
-elif 'newfx' in name_lower:  # ADD THIS
-    self.controller_type = self.CTRL_NEWFX
-    self.print_info("Detected NewFX - newfx.* commands available")
-elif 'noop' in name_lower:
-    self.controller_type = self.CTRL_NOOP
-```
-
-### Step 5: Update Prompt (Optional)
-
-**FIND:** `prompt` property
-
-**ADD color for new controller:**
-```python
-@property
-def prompt(self) -> str:
-    if self.controller_type:
-        prefix = {
-            self.CTRL_GUNFX: f"{Fore.RED}gunfx",
-            self.CTRL_LIGHTFX: f"{Fore.BLUE}lightfx",
-            self.CTRL_NOOP: f"{Fore.MAGENTA}noop",
-            self.CTRL_NEWFX: f"{Fore.GREEN}newfx",  # ADD
-        }.get(self.controller_type, f"{Fore.CYAN}scalefx")
-```
-
-### Step 6: Add Handler Methods
-
-```python
-def cmd_newfx_cmd1(self, args: List[str]):
-    """NewFX command 1."""
-    if len(args) < 1:
-        self.print_error("Usage: newfx.cmd1 <param>")
-        return
-    try:
-        param = int(args[0])
-        packet = NewFxCommands.command_1(param)
-        success, response = self.conn.send_expect_ack(packet)
-        if success:
-            self.print_success(f"Command 1 executed: {param}")
-        else:
-            self.print_response(response)
-    except ValueError:
-        self.print_error("Invalid parameter")
-
-def cmd_newfx_cmd2(self, args: List[str]):
-    """NewFX command 2."""
-    if len(args) < 1:
-        self.print_error("Usage: newfx.cmd2 <id>")
-        return
-    try:
-        id_val = int(args[0])
-        packet = NewFxCommands.command_2(id_val)
-        success, response = self.conn.send_expect_ack(packet)
-        if success:
-            self.print_success(f"Command 2 executed: id={id_val}")
-        else:
-            self.print_response(response)
-    except ValueError:
-        self.print_error("Invalid id")
-```
-
-### Step 7: Add Imports
-
-```python
+"""NewFX CLI command handler."""
+from typing import Dict, List, Tuple, Callable
+from tests.cli.base import CommandHandlerBase, CommandInfo
 from tests.framework.commands import NewFxCommands
-from tests.framework.packets import NewFxPacket, NewFxError
+from tests.framework.packets import NewFxPacket
+
+
+class NewFxCommandHandler(CommandHandlerBase):
+    """Handler for NewFX controller commands."""
+    
+    def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
+        return {
+            'newfx.cmd1': (self.cmd_newfx_cmd1, CommandInfo(
+                'newfx.cmd1', 'newfx.cmd1 <param>',
+                'Execute command 1',
+                requires_init=True)),
+            
+            'newfx.cmd2': (self.cmd_newfx_cmd2, CommandInfo(
+                'newfx.cmd2', 'newfx.cmd2 <id>',
+                'Execute command 2',
+                requires_init=True)),
+        }
+    
+    def cmd_newfx_cmd1(self, args: List[str]):
+        """NewFX command 1."""
+        if len(args) < 1:
+            self.print_error("Usage: newfx.cmd1 <param>")
+            return
+        try:
+            param = int(args[0])
+            packet = NewFxCommands.command_1(param)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                self.print_success(f"Command 1 executed: {param}")
+            else:
+                self.print_response(response)
+        except ValueError:
+            self.print_error("Invalid parameter")
+    
+    def cmd_newfx_cmd2(self, args: List[str]):
+        """NewFX command 2."""
+        if len(args) < 1:
+            self.print_error("Usage: newfx.cmd2 <id>")
+            return
+        try:
+            id_val = int(args[0])
+            packet = NewFxCommands.command_2(id_val)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                self.print_success(f"Command 2: id={id_val}")
+            else:
+                self.print_response(response)
+        except ValueError:
+            self.print_error("Invalid id")
+```
+
+### Step 2: Add ControllerType
+
+**FILE:** `tests/cli/base.py`
+
+```python
+class ControllerType:
+    GUNFX = 'gunfx'
+    LIGHTFX = 'lightfx'
+    NOOP = 'noop'
+    NEWFX = 'newfx'    # ADD THIS
+```
+
+### Step 3: Register Handler in interactive.py
+
+**FILE:** `tests/cli/interactive.py`
+
+```python
+from tests.cli.handlers.newfx import NewFxCommandHandler
+
+# In constructor:
+self.newfx_handler = NewFxCommandHandler(self.conn)
+
+# In get_available_commands():
+if self.controller_type == ControllerType.NEWFX:
+    commands.update(self.newfx_handler.get_commands())
+```
+
+### Step 4: Add Controller Detection
+
+**FILE:** `tests/cli/handlers/core.py`
+
+```python
+# In _parse_init_ready() or controller detection logic:
+name_lower = device_name.lower()
+if 'newfx' in name_lower:
+    self.controller_type = ControllerType.NEWFX
+    self.print_info("Detected NewFX - newfx.* commands available")
 ```
 
 ---
@@ -253,13 +237,26 @@ from tests.framework.packets import NewFxPacket, NewFxError
 ## CommandInfo Structure
 
 ```python
+# Defined in tests/cli/base.py
 @dataclass
 class CommandInfo:
     name: str           # Command name (e.g., 'gunfx.trigger')
     usage: str          # Usage string for help
     description: str    # One-line description
-    requires_init: bool = False      # Must INIT before using
-    controller: str = None           # Controller type filter
+    requires_init: bool = False  # Must INIT before using
+```
+
+## CommandHandlerBase
+
+```python
+# Defined in tests/cli/base.py
+class CommandHandlerBase(OutputMixin):
+    def __init__(self, conn: ScaleFXConnection):
+        self.conn = conn
+    
+    def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
+        """Return dict of command_name -> (handler_method, CommandInfo)."""
+        raise NotImplementedError
 ```
 
 ---
@@ -331,8 +328,12 @@ self.print_response(response)
 ## Verification
 
 ```bash
-# Syntax check
+# Syntax check (all handler files)
 python -m py_compile tests/cli/interactive.py
+python -m py_compile tests/cli/base.py
+python -m py_compile tests/cli/handlers/core.py
+python -m py_compile tests/cli/handlers/gunfx.py
+python -m py_compile tests/cli/handlers/lightfx.py
 
 # Run CLI
 python -m tests.cli.interactive
@@ -350,23 +351,23 @@ python -m tests.cli.interactive
 
 ```yaml
 Adding_Command:
-  - "[ ] CommandInfo added to correct registry dict"
-  - "[ ] Handler method added with cmd_ prefix"
+  - "[ ] Handler method added to handlers/xxxfx.py"
+  - "[ ] CommandInfo added to get_commands() dict"
   - "[ ] Argument validation in handler"
   - "[ ] Error handling with try/except"
   - "[ ] Imports added if needed"
-  - "[ ] python -m py_compile passes"
+  - "[ ] python -m py_compile passes on handler file"
   - "[ ] Command appears in 'help'"
   - "[ ] Command executes correctly"
 
 Adding_Controller:
-  - "[ ] CTRL_NEWFX constant added"
-  - "[ ] Command registry created"
-  - "[ ] get_available_commands() updated"
-  - "[ ] _parse_init_ready() detection added"
-  - "[ ] Prompt color added (optional)"
-  - "[ ] Handler methods added"
+  - "[ ] Handler file created: tests/cli/handlers/newfx.py"
+  - "[ ] CommandHandlerBase subclass with get_commands()"
+  - "[ ] ControllerType constant added to base.py"
+  - "[ ] Handler registered in interactive.py"
+  - "[ ] Controller detection added to handlers/core.py"
+  - "[ ] Handler methods implemented"
   - "[ ] Imports added"
-  - "[ ] python -m py_compile passes"
+  - "[ ] python -m py_compile passes on all files"
   - "[ ] Commands appear after init with controller"
 ```

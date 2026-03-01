@@ -18,7 +18,88 @@ Run_Specific_Test:
   method: "pytest tests/gunfx/test_trigger.py::TestTriggerOn::test_valid_rpm -v"
 
 With_Port_Override:
-  command: "SCALEFX_PORT=COM5 pytest tests/gunfx/ -v"
+  powershell: "$env:SCALEFX_PORT='COM10'; pytest tests/noop/ -v"
+  bash: "SCALEFX_PORT=COM10 pytest tests/noop/ -v"
+
+Verbose_Output:
+  powershell: "$env:SCALEFX_VERBOSE='1'; pytest tests/noop/ -v -s"
+  bash: "SCALEFX_VERBOSE=1 pytest tests/noop/ -v -s"
+  note: "Use -s to see stdout; verbose mode shows TX/RX packets"
+
+Interactive_CLI:
+  purpose: "Run commands manually for debugging and exploration"
+  powershell: "python -m tests.cli.interactive --port COM10"
+  bash: "python -m tests.cli.interactive --port /dev/ttyACM0"
+```
+
+---
+
+## Interactive CLI Tool
+
+The interactive CLI provides a text-based interface for manually sending commands to controllers. Use it for:
+- **Debugging** protocol issues
+- **Exploring** controller behavior
+- **Testing** new commands before writing automated tests
+- **Verifying** firmware functionality
+
+```yaml
+Start_CLI:
+  command: "python -m tests.cli.interactive"
+  with_port: "python -m tests.cli.interactive --port COM10"
+
+Basic_Commands:
+  help: "Show all available commands"
+  ports: "List available serial ports"
+  connect: "Connect to controller (auto-detects port)"
+  disconnect: "Disconnect from controller"
+  init: "Initialize connection, detect controller type"
+  shutdown: "Graceful shutdown"
+  status: "Request status"
+  keepalive: "Send keepalive"
+  reboot: "Reboot controller"
+
+Controller_Specific:
+  gunfx: "trigger.on, trigger.off, servo.angle, smoke.on, etc."
+  lightfx: "led.on, led.off, servo.angle, power.status, etc."
+```
+
+**Example Session:**
+```
+ScaleFX> connect COM10
+Connected to COM10
+
+ScaleFX> init
+INIT_READY: NoOp v1.0.0 (RP2040)
+
+ScaleFX[noop]> status
+STATUS: counter=5, uptime=1234ms
+
+ScaleFX[noop]> keepalive
+ACK
+
+ScaleFX[noop]> shutdown
+ACK
+```
+
+---
+
+## Environment Variables
+
+```yaml
+SCALEFX_PORT:
+  purpose: "Serial port for controller (e.g., COM10, /dev/ttyACM0)"
+  default: "COM10 on Windows, /dev/ttyACM0 on Linux/Mac"
+  example: "$env:SCALEFX_PORT='COM5'"
+
+SCALEFX_VERBOSE:
+  purpose: "Enable verbose packet logging during tests"
+  values: "'1', 'true', 'yes' to enable"
+  output: |
+    → TX: INIT
+    ← RX: INIT_READY[12B payload]
+    → TX: STATUS_REQ
+    ← RX: STATUS[4B payload]
+  note: "Requires pytest -s flag to see output"
 ```
 
 ---
@@ -31,44 +112,42 @@ Install_Dependencies:
   packages:
     - "pyserial>=3.5"
     - "pytest>=7.0.0"
-    - "colorama>=0.4.6"
+    - "pytest-timeout>=2.0.0"
 
 Hardware_Setup:
   - "Connect controller via USB"
-  - "Ensure no other app uses the port"
-  - "Note port name (COM3, /dev/ttyACM0)"
+  - "Ensure no other app uses the port (close serial monitors)"
+  - "Note port name (COM10, /dev/ttyACM0)"
+  - "Set SCALEFX_PORT environment variable or use --port option"
 ```
 
 ---
 
-## CRITICAL: Build Before Test
+## CRITICAL: Build and Flash Before Test
 
 ```yaml
 Always_Flash_First:
   reason: "Tests may fail if firmware is out of sync with test code"
   
   workflow:
-    1: "cd controllers/gunfx/pico"
-    2: "python scripts/build_and_flash.py"
-    3: "cd ../../.."
-    4: "pytest tests/gunfx/ -v"
+    1: "python scripts/build_and_flash.py noop"
+    2: "$env:SCALEFX_PORT='COM10'; pytest tests/noop/ -v"
 ```
 
 ### Full Test Cycle Script
 
 ```powershell
-# test_controller.ps1
-param([string]$Controller = "gunfx")
+# Build, flash, and test a controller
+param([string]$Controller = "noop", [string]$Port = "COM10")
 
 $ErrorActionPreference = "Stop"
 
 Write-Host "Building and flashing $Controller..." -ForegroundColor Cyan
-Set-Location "controllers\$Controller\pico"
-python scripts\build_and_flash.py
+python scripts/build_and_flash.py $Controller --port $Port
 
 Write-Host "Running tests..." -ForegroundColor Cyan
-Set-Location ..\..\..
-pytest "tests\$Controller\" -v --tb=short
+$env:SCALEFX_PORT = $Port
+pytest "tests/$Controller/" -v --tb=short
 
 Write-Host "Done!" -ForegroundColor Green
 ```
@@ -80,7 +159,7 @@ Write-Host "Done!" -ForegroundColor Green
 ```yaml
 Directory_Layout:
   tests/:
-    conftest.py: "pytest fixtures (connection, etc.)"
+    conftest.py: "pytest fixtures (connection, serial_port, etc.)"
     requirements.txt: "Python dependencies"
     framework/:
       __init__.py: "Public exports"
@@ -89,7 +168,14 @@ Directory_Layout:
       packets.py: "Packet/error constants"
       commands.py: "Command builders"
     cli/:
-      interactive.py: "Interactive CLI"
+      __main__.py: "Entry point"
+      base.py: "CommandInfo, OutputMixin, ControllerType, CommandHandlerBase"
+      parsers.py: "Response packet parsing utilities"
+      interactive.py: "Main CLI class (~280 lines, composes handlers)"
+      handlers/:
+        core.py: "Core/protocol commands (connect, init, status)"
+        gunfx.py: "GunFX commands (trigger, servo, smoke)"
+        lightfx.py: "LightFX commands (led, servo, power)"
     gunfx/:
       test_system.py: "INIT, SHUTDOWN, STATUS"
       test_trigger.py: "Trigger commands"

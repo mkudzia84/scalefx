@@ -2,6 +2,10 @@
 Serial Connection Handler
 
 Manages USB/serial communication with ScaleFX controllers.
+
+Verbose Mode:
+    Set SCALEFX_VERBOSE=1 environment variable or pass verbose=True to enable
+    detailed command/response logging during tests.
 """
 
 import os
@@ -15,6 +19,35 @@ import serial
 
 from .protocol import build_packet, parse_packet, cobs_decode
 from .packets import CorePacket, CoreError
+
+
+# ANSI colors for verbose output
+class _Colors:
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    GRAY = '\033[90m'
+    MAGENTA = '\033[95m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def _packet_type_name(ptype: int) -> str:
+    """Get human-readable packet type name."""
+    names = {
+        CorePacket.INIT: "INIT",
+        CorePacket.INIT_READY: "INIT_READY",
+        CorePacket.ACK: "ACK",
+        CorePacket.NACK: "NACK",
+        CorePacket.STATUS: "STATUS",
+        CorePacket.SHUTDOWN: "SHUTDOWN",
+        CorePacket.REBOOT: "REBOOT",
+        CorePacket.BOOTSEL: "BOOTSEL",
+        CorePacket.KEEPALIVE: "KEEPALIVE",
+        CorePacket.STATUS_REQ: "STATUS_REQ",
+    }
+    return names.get(ptype, f"0x{ptype:02X}")
 
 
 @dataclass
@@ -49,6 +82,16 @@ class Response:
         if self.is_nack and len(self.payload) > 1:
             return self.payload[1:].decode('utf-8', errors='replace')
         return ""
+    
+    def __str__(self) -> str:
+        """Human-readable response string."""
+        name = _packet_type_name(self.packet_type)
+        if self.is_nack:
+            err_name = CoreError.name(self.error_code)
+            return f"{name}({err_name})"
+        elif self.payload:
+            return f"{name}[{len(self.payload)}B]"
+        return name
 
 
 class ScaleFXConnection:
@@ -57,8 +100,11 @@ class ScaleFXConnection:
     
     Handles COBS packet framing, send/receive, and response parsing.
     
+    Verbose Mode:
+        Set SCALEFX_VERBOSE=1 or pass verbose=True to see command/response details.
+    
     Example:
-        conn = ScaleFXConnection(port="COM3")
+        conn = ScaleFXConnection(port="COM3", verbose=True)
         if conn.connect():
             response = conn.send_and_wait(CommandBuilder.init())
             if response and response.is_init_ready:
@@ -70,7 +116,7 @@ class ScaleFXConnection:
     DEFAULT_TIMEOUT = 2.0
     
     def __init__(self, port: Optional[str] = None, baud: int = DEFAULT_BAUD,
-                 timeout: float = DEFAULT_TIMEOUT):
+                 timeout: float = DEFAULT_TIMEOUT, verbose: Optional[bool] = None):
         """
         Initialize connection.
         
@@ -78,6 +124,7 @@ class ScaleFXConnection:
             port: Serial port (e.g., "COM3", "/dev/ttyACM0")
             baud: Baud rate (default 115200)
             timeout: Response timeout in seconds
+            verbose: Enable verbose logging (default: from SCALEFX_VERBOSE env)
         """
         self.port = port or self._default_port()
         self.baud = baud
@@ -87,6 +134,69 @@ class ScaleFXConnection:
         self._lock = threading.Lock()
         self._initialized = False
         self._callbacks: List[Callable[[Response], None]] = []
+        
+        # Verbose mode from env or parameter
+        if verbose is None:
+            self.verbose = os.environ.get('SCALEFX_VERBOSE', '').lower() in ('1', 'true', 'yes')
+        else:
+            self.verbose = verbose
+    
+    def _log_send(self, data: bytes, cmd_name: str = None):
+        """Log outgoing packet if verbose mode enabled."""
+        if not self.verbose:
+            return
+        
+        # Parse packet type from raw data
+        if len(data) >= 2:
+            # COBS decode to get packet type
+            try:
+                parsed = parse_packet(data)
+                if parsed:
+                    ptype, payload = parsed
+                    name = cmd_name or _packet_type_name(ptype)
+                    payload_hex = payload.hex() if payload else ""
+                    print(f"  {_Colors.CYAN}→ TX:{_Colors.RESET} {_Colors.BOLD}{name}{_Colors.RESET}", end="")
+                    if payload_hex:
+                        print(f" {_Colors.GRAY}[{payload_hex}]{_Colors.RESET}", end="")
+                    print()
+                    return
+            except:
+                pass
+        
+        # Fallback: raw hex
+        print(f"  {_Colors.CYAN}→ TX:{_Colors.RESET} {_Colors.GRAY}{data.hex()}{_Colors.RESET}")
+    
+    def _log_recv(self, response: Response):
+        """Log incoming response if verbose mode enabled."""
+        if not self.verbose or response is None:
+            return
+        
+        name = _packet_type_name(response.packet_type)
+        
+        # Color based on response type
+        if response.is_ack:
+            color = _Colors.GREEN
+            detail = ""
+        elif response.is_nack:
+            color = _Colors.RED
+            err_name = CoreError.name(response.error_code)
+            detail = f" {_Colors.RED}[{err_name}]{_Colors.RESET}"
+        elif response.is_init_ready:
+            color = _Colors.GREEN
+            detail = f" {_Colors.GRAY}[{len(response.payload)}B payload]{_Colors.RESET}"
+        else:
+            color = _Colors.YELLOW
+            if response.payload:
+                detail = f" {_Colors.GRAY}[{response.payload.hex()}]{_Colors.RESET}"
+            else:
+                detail = ""
+        
+        print(f"  {_Colors.MAGENTA}← RX:{_Colors.RESET} {color}{_Colors.BOLD}{name}{_Colors.RESET}{detail}")
+    
+    def _log_timeout(self):
+        """Log timeout if verbose mode enabled."""
+        if self.verbose:
+            print(f"  {_Colors.MAGENTA}← RX:{_Colors.RESET} {_Colors.RED}TIMEOUT{_Colors.RESET}")
     
     @staticmethod
     def _default_port() -> str:
@@ -171,6 +281,8 @@ class ScaleFXConnection:
         if not self.is_connected:
             return False
         
+        self._log_send(data)
+        
         with self._lock:
             try:
                 self._serial.write(data)
@@ -213,10 +325,13 @@ class ScaleFXConnection:
                 parsed = parse_packet(packet_data + b'\x00')
                 if parsed:
                     packet_type, payload = parsed
-                    return Response(packet_type, payload, packet_data)
+                    response = Response(packet_type, payload, packet_data)
+                    self._log_recv(response)
+                    return response
             
             time.sleep(0.01)
         
+        self._log_timeout()
         return None
     
     def send_and_wait(self, data: bytes, timeout: Optional[float] = None) -> Optional[Response]:

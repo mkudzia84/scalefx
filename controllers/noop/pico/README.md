@@ -62,7 +62,7 @@ BOOTSEL
 
 - **v0.2.0** - Binary-only protocol
   - Removed text protocol support
-  - Using new serial library (CoreCommandHandler + CommandRouter)
+  - Using new serial library (CoreCommandServer + CommandRouter)
   - COBS framing with CRC-8 validation
 
 - **v0.1.0** - Initial release

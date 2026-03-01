@@ -1,6 +1,6 @@
 # Creating a New Controller
 
-> **ACTION DOCUMENT:** Step-by-step guide for creating a new slave controller.
+> **ACTION DOCUMENT:** Step-by-step guide for creating a new server controller.
 
 ---
 
@@ -33,7 +33,6 @@ Choose_Packet_Range:
 ```bash
 # ACTION: Run these commands
 mkdir -p controllers/newfx/pico/src
-mkdir -p controllers/newfx/pico/scripts
 mkdir -p controllers/newfx/pico/tests
 ```
 
@@ -41,7 +40,6 @@ mkdir -p controllers/newfx/pico/tests
 ```
 controllers/newfx/pico/
 ├── src/
-├── scripts/
 └── tests/
 ```
 
@@ -64,7 +62,7 @@ monitor_speed = 115200
 
 build_flags = 
     -DUSE_TINYUSB=0
-    -DNEWFX_SLAVE
+    -DSCALEFX_SERVER
 
 lib_deps =
     ${common.lib_deps}
@@ -81,9 +79,9 @@ lib_deps =
 
 ## Step 3: Add Packet Types
 
-**File:** `controllers/lib/serial/serial_protocol.h`
+**File:** `controllers/lib/serial/serial_newfx.h` (NEW FILE — packet types live in the module header)
 
-**ACTION:** Add namespace after existing ones:
+**ACTION:** Define packet type namespace in the new header:
 
 ```cpp
 // NewFX packet types (0x60-0x7F)
@@ -123,93 +121,69 @@ namespace NewFxError {
 
 ---
 
-## Step 5: Create Slave Handler
+## Step 5: Create Server Handler
 
 **File:** `controllers/lib/serial/serial_newfx.h` (NEW FILE)
 
 ```cpp
 #pragma once
 
-#include "serial_command_handler.h"
-#include "serial_protocol.h"
+#include "serial_core.h"
 #include "serial_error.h"
 #include <functional>
 
+// NewFX packet types (0x60-0x7F)
+namespace NewFxPacket {
+    constexpr uint8_t COMMAND_1 = 0x60;
+    constexpr uint8_t COMMAND_2 = 0x61;
+}
+
+// NewFX validation constants
+namespace NewFxSpec {
+    constexpr uint8_t MAX_ID = 4;
+    
+    inline bool isValidId(uint8_t id)    { return id >= 1 && id <= MAX_ID; }
+    inline bool isValidParam1(uint16_t v) { return v <= 10000; }
+}
+
 /**
- * NewFxSlave - Command handler for NewFX controller
+ * NewFxServer - Command handler for NewFX controller
  * 
  * Packet range: 0x60-0x7F
+ * Uses SFX_* macros for handler boilerplate (see serial_core.h)
  */
-class NewFxSlave : public ICommandHandler {
+class NewFxServer : public ICommandHandler {
 public:
-    // Define callback types for each command
     using Command1Callback = std::function<uint8_t(uint16_t param1, uint8_t param2)>;
     using Command2Callback = std::function<uint8_t(uint8_t id)>;
     
-    void begin(Stream* serial) {
-        _serial = serial;
-    }
+    void begin(Stream* serial) { _serial = serial; }
     
-    // Callback registration
     void onCommand1(Command1Callback cb) { _onCommand1 = cb; }
     void onCommand2(Command2Callback cb) { _onCommand2 = cb; }
     
-    // ICommandHandler interface
-    bool canHandle(uint8_t packetType) override {
-        return packetType >= 0x60 && packetType <= 0x7F;
-    }
-    
-    bool handle(uint8_t packetType, const uint8_t* payload, uint8_t len) override {
-        uint8_t result = SerialError::INVALID_COMMAND;
-        
-        switch (packetType) {
-            case NewFxPacket::COMMAND_1:
-                if (len < 3) {
-                    result = SerialError::MISSING_PARAMETER;
-                } else if (_onCommand1) {
-                    uint16_t p1 = payload[0] | (payload[1] << 8);  // little-endian
-                    uint8_t p2 = payload[2];
-                    result = _onCommand1(p1, p2);
-                }
-                break;
-                
-            case NewFxPacket::COMMAND_2:
-                if (len < 1) {
-                    result = SerialError::MISSING_PARAMETER;
-                } else if (_onCommand2) {
-                    result = _onCommand2(payload[0]);
-                }
-                break;
-                
+    // Uses SFX_* macros — see serial_core.h for definitions
+    CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override {
+        switch (type) {
+            case NewFxPacket::COMMAND_1: {
+                SFX_REQUIRE_LEN(3);
+                uint16_t p1 = getU16LE(payload);
+                uint8_t p2 = payload[2];
+                SFX_VALIDATE(NewFxSpec::isValidParam1(p1), NewFxError::INVALID_PARAM_1);
+                SFX_DISPATCH(_onCommand1, p1, p2);
+            }
+            case NewFxPacket::COMMAND_2: {
+                SFX_REQUIRE_LEN(1);
+                uint8_t id = payload[0];
+                SFX_VALIDATE(NewFxSpec::isValidId(id), NewFxError::INVALID_PARAM_2);
+                SFX_DISPATCH(_onCommand2, id);
+            }
             default:
-                return false;  // Not handled
+                return CommandHandleResult::NotMyCommand;
         }
-        
-        // Send response
-        if (result == NewFxError::OK) {
-            sendAck();
-        } else {
-            sendNack(result);
-        }
-        return true;
     }
-    
-    void sendAck() {
-        uint8_t packet[4];
-        packet[0] = CorePacket::ACK;
-        packet[1] = 0;  // no payload
-        packet[2] = CoreProtocol::crc8(packet, 2);
-        CoreProtocol::sendPacket(_serial, packet, 3);
-    }
-    
-    void sendNack(uint8_t errorCode) {
-        uint8_t packet[5];
-        packet[0] = CorePacket::NACK;
-        packet[1] = 1;  // 1 byte payload
-        packet[2] = errorCode;
-        packet[3] = CoreProtocol::crc8(packet, 3);
-        CoreProtocol::sendPacket(_serial, packet, 4);
-    }
+
+    const char* handlerName() const override { return "NewFxServer"; }
 
 private:
     Stream* _serial = nullptr;
@@ -252,8 +226,8 @@ private:
 
 // Handlers
 CommandRouter commandRouter;
-CoreCommandHandler coreHandler;
-NewFxSlave newfxSlave;
+CoreCommandServer coreServer;
+NewFxServer newfxServer;
 
 // State variables
 bool initialized = false;
@@ -269,25 +243,25 @@ void setup() {
     while (!Serial && millis() < 3000);  // Wait for USB
     
     // Configure core handler
-    coreHandler.begin(&Serial);
-    coreHandler.setBoardInfo("NewFX", FIRMWARE_VERSION, BOARD_TYPE, 
+    coreServer.begin(&Serial);
+    coreServer.setBoardInfo("NewFX", FIRMWARE_VERSION, BOARD_TYPE, 
                               rp2040.f_cpu() / 1000000, rp2040.getFreeHeap());
-    coreHandler.onInit(performSafeInit);
-    coreHandler.onShutdown(performSafeShutdown);
-    coreHandler.onReboot([]() { rp2040.reboot(); });
-    coreHandler.onBootsel([]() { rp2040.rebootToBootloader(); });
+    coreServer.onInit(performSafeInit);
+    coreServer.onShutdown(performSafeShutdown);
+    coreServer.onReboot([]() { rp2040.reboot(); });
+    coreServer.onBootsel([]() { rp2040.rebootToBootloader(); });
     
     // Configure module handler
-    newfxSlave.begin(&Serial);
-    newfxSlave.onCommand1(handleCommand1);
-    newfxSlave.onCommand2(handleCommand2);
+    newfxServer.begin(&Serial);
+    newfxServer.onCommand1(handleCommand1);
+    newfxServer.onCommand2(handleCommand2);
     
     // Configure router
     commandRouter.begin(&Serial, [](uint8_t err, uint8_t type) {
-        newfxSlave.sendNack(err);
+        newfxServer.sendNack(err);
     });
-    commandRouter.addHandler(&coreHandler);
-    commandRouter.addHandler(&newfxSlave);
+    commandRouter.addHandler(&coreServer);
+    commandRouter.addHandler(&newfxServer);
 }
 
 void loop() {
@@ -389,74 +363,105 @@ class NewFxCommands:
 
 ## Step 10: Add to CLI
 
+### ACTION 10.1: Create Handler File
+
+**File:** `tests/cli/handlers/newfx.py` (NEW FILE)
+
+```python
+"""NewFX CLI command handler."""
+from typing import Dict, List, Tuple, Callable
+from tests.cli.base import CommandHandlerBase, CommandInfo
+from tests.framework.commands import NewFxCommands
+from tests.framework.packets import NewFxPacket
+
+
+class NewFxCommandHandler(CommandHandlerBase):
+    """Handler for NewFX controller commands."""
+    
+    def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
+        return {
+            'newfx.cmd1': (self.cmd_newfx_cmd1, CommandInfo(
+                'newfx.cmd1', 'newfx.cmd1 <param1> <param2>',
+                'Execute command 1', requires_init=True)),
+            'newfx.cmd2': (self.cmd_newfx_cmd2, CommandInfo(
+                'newfx.cmd2', 'newfx.cmd2 <id>',
+                'Execute command 2', requires_init=True)),
+        }
+    
+    def cmd_newfx_cmd1(self, args: List[str]):
+        """NewFX command 1."""
+        if len(args) < 2:
+            self.print_error("Usage: newfx.cmd1 <param1> <param2>")
+            return
+        try:
+            p1, p2 = int(args[0]), int(args[1])
+            packet = NewFxCommands.command_1(p1, p2)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                self.print_success(f"Command 1 executed: p1={p1}, p2={p2}")
+            else:
+                self.print_response(response)
+        except ValueError:
+            self.print_error("Invalid parameters")
+
+    def cmd_newfx_cmd2(self, args: List[str]):
+        """NewFX command 2."""
+        if len(args) < 1:
+            self.print_error("Usage: newfx.cmd2 <id>")
+            return
+        try:
+            id_val = int(args[0])
+            packet = NewFxCommands.command_2(id_val)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                self.print_success(f"Command 2: id={id_val}")
+            else:
+                self.print_response(response)
+        except ValueError:
+            self.print_error("Invalid id")
+```
+
+### ACTION 10.2: Add ControllerType
+
+**File:** `tests/cli/base.py`
+
+```python
+class ControllerType:
+    GUNFX = 'gunfx'
+    LIGHTFX = 'lightfx'
+    NOOP = 'noop'
+    NEWFX = 'newfx'    # ADD THIS
+```
+
+### ACTION 10.3: Register Handler in interactive.py
+
 **File:** `tests/cli/interactive.py`
 
-**ACTION 10.1:** Add controller constant:
-
 ```python
-class InteractiveCLI:
-    CTRL_GUNFX = 'gunfx'
-    CTRL_LIGHTFX = 'lightfx'
-    CTRL_NOOP = 'noop'
-    CTRL_NEWFX = 'newfx'  # ADD THIS
+from tests.cli.handlers.newfx import NewFxCommandHandler
+
+# In constructor:
+self.newfx_handler = NewFxCommandHandler(self.conn)
+
+# In handler list (self._handlers):
+self._handlers = [self.core_handler, self.gunfx_handler, 
+                  self.lightfx_handler, self.newfx_handler]
+
+# In get_available_commands():
+if self.controller_type == ControllerType.NEWFX:
+    commands.update(self.newfx_handler.get_commands())
 ```
 
-**ACTION 10.2:** Add command registry in `_build_command_registry()`:
+### ACTION 10.4: Add Controller Detection
+
+**File:** `tests/cli/handlers/core.py`
 
 ```python
-self.newfx_commands: Dict[str, Tuple[Callable, CommandInfo]] = {
-    'newfx.cmd1': (self.cmd_newfx_cmd1, CommandInfo(
-        'newfx.cmd1', 'newfx.cmd1 <param1> <param2>',
-        'Execute command 1', requires_init=True, controller=self.CTRL_NEWFX)),
-    'newfx.cmd2': (self.cmd_newfx_cmd2, CommandInfo(
-        'newfx.cmd2', 'newfx.cmd2 <id>',
-        'Execute command 2', requires_init=True, controller=self.CTRL_NEWFX)),
-}
-```
-
-**ACTION 10.3:** Update `get_available_commands()`:
-
-```python
-elif self.controller_type == self.CTRL_NEWFX:
-    commands.update(self.newfx_commands)
-```
-
-**ACTION 10.4:** Update `_parse_init_ready()`:
-
-```python
-elif 'newfx' in name_lower:
-    self.controller_type = self.CTRL_NEWFX
-    self.print_info("Detected NewFX controller - newfx.* commands available")
-```
-
-**ACTION 10.5:** Add handler methods:
-
-```python
-def cmd_newfx_cmd1(self, args: List[str]):
-    """NewFX command 1."""
-    if len(args) < 2:
-        self.print_error("Usage: newfx.cmd1 <param1> <param2>")
-        return
-    try:
-        p1, p2 = int(args[0]), int(args[1])
-        packet = NewFxCommands.command_1(p1, p2)
-        success, response = self.conn.send_expect_ack(packet)
-        self.print_response(response)
-    except ValueError:
-        self.print_error("Invalid parameters")
-
-def cmd_newfx_cmd2(self, args: List[str]):
-    """NewFX command 2."""
-    if len(args) < 1:
-        self.print_error("Usage: newfx.cmd2 <id>")
-        return
-    try:
-        id_val = int(args[0])
-        packet = NewFxCommands.command_2(id_val)
-        success, response = self.conn.send_expect_ack(packet)
-        self.print_response(response)
-    except ValueError:
-        self.print_error("Invalid id")
+# In INIT_READY parsing / controller detection:
+name_lower = device_name.lower()
+if 'newfx' in name_lower:
+    self.controller_type = ControllerType.NEWFX
+    self.print_info("Detected NewFX - newfx.* commands available")
 ```
 
 ---
@@ -558,6 +563,7 @@ After_Completion:
   - [ ] "python -m py_compile tests/framework/packets.py" succeeds
   - [ ] "python -m py_compile tests/framework/commands.py" succeeds
   - [ ] "python -m py_compile tests/cli/interactive.py" succeeds
+  - [ ] "python -m py_compile tests/cli/handlers/newfx.py" succeeds
   - [ ] CLI shows newfx.* commands after connecting to device
   - [ ] pytest tests/newfx/ passes with hardware
 ```

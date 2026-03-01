@@ -78,9 +78,9 @@ Serial_Library:
   files:
     - name: "serial.h"
       purpose: "Umbrella header (include this)"
-    - name: "serial_protocol.h"
-      purpose: "Packet type constants, CoreProtocol class"
-      modify_when: "Adding packet types"
+    - name: "serial_core.h"
+      purpose: "CoreProtocol class, packet types, COBS/CRC, SFX_* handler macros"
+      modify_when: "Adding packet types or handler macros"
     - name: "serial_error.h"
       purpose: "Error codes for all modules"
       modify_when: "Adding error codes"
@@ -88,17 +88,17 @@ Serial_Library:
       purpose: "ICommandHandler interface, CommandRouter"
       modify_when: "Never (stable interface)"
     - name: "serial_gunfx.h"
-      purpose: "GunFxSlave, GunFxMaster classes"
+      purpose: "GunFxServer, GunFxClient, GunFxSpec validation"
       modify_when: "Adding GunFX commands"
     - name: "serial_lightfx.h"
-      purpose: "LightFxSlave, LightFxMaster classes"
+      purpose: "LightFxServer, LightFxClient, LightFxSpec validation"
       modify_when: "Adding LightFX commands"
 
 Python_Framework:
   root: "tests/"
   files:
     - name: "framework/packets.py"
-      purpose: "Packet constants (must mirror serial_protocol.h)"
+      purpose: "Packet constants (must mirror serial_core.h)"
       modify_when: "Adding packet types or error codes"
     - name: "framework/commands.py"
       purpose: "Command builder functions"
@@ -106,9 +106,24 @@ Python_Framework:
     - name: "framework/connection.py"
       purpose: "ScaleFXConnection class"
       modify_when: "Rarely"
+    - name: "cli/base.py"
+      purpose: "CommandInfo, OutputMixin, ControllerType, base classes"
+      modify_when: "Adding controller types or output helpers"
+    - name: "cli/parsers.py"
+      purpose: "Response packet parsing utilities"
+      modify_when: "Adding response packet types"
     - name: "cli/interactive.py"
-      purpose: "Interactive CLI"
-      modify_when: "Adding commands or controllers"
+      purpose: "Main CLI class (composes handlers)"
+      modify_when: "Adding controllers or core features"
+    - name: "cli/handlers/core.py"
+      purpose: "Core/protocol commands (connect, init, status)"
+      modify_when: "Modifying core commands"
+    - name: "cli/handlers/gunfx.py"
+      purpose: "GunFX commands (trigger, servo, smoke)"
+      modify_when: "Adding GunFX CLI commands"
+    - name: "cli/handlers/lightfx.py"
+      purpose: "LightFX commands (led, servo, power)"
+      modify_when: "Adding LightFX CLI commands"
 
 Controllers:
   pattern: "controllers/{name}/pico/"
@@ -117,10 +132,15 @@ Controllers:
       purpose: "Main firmware file"
     - name: "platformio.ini"
       purpose: "Build configuration"
-    - name: "scripts/build_and_flash.py"
-      purpose: "Automated build/flash"
     - name: "README.md"
       purpose: "Protocol documentation"
+
+Scripts:
+  root: "scripts/"
+  files:
+    - name: "build_and_flash.py"
+      purpose: "Centralized build/flash for all Pico controllers"
+      usage: "python scripts/build_and_flash.py <controller>"
 ```
 
 ---
@@ -133,7 +153,7 @@ Controllers:
 START: Need to add command to controller
 
 Q1: Is packet type constant defined?
-├─ NO → Add to serial_protocol.h in correct namespace
+├─ NO → Add to serial_xxxfx.h in correct namespace (e.g., GunFxPacket in serial_gunfx.h)
 └─ YES → Continue
 
 Q2: Are new error codes needed?
@@ -145,7 +165,7 @@ Q3: Is callback type defined in serial_xxxfx.h?
 ├─ NO → Add callback typedef
 │        Add registration method: void onXxx(Callback cb)
 │        Add private member: Callback _onXxx
-│        Add case in handle() switch
+│        Add case in tryProcess() switch using SFX_* macros
 └─ YES → Continue
 
 Q4: Is command implemented in firmware?
@@ -163,9 +183,9 @@ Q6: Is test written?
 └─ YES → Continue
 
 Q7: Is CLI updated?
-├─ NO → Add to tests/cli/interactive.py
-│        - Add CommandInfo to registry
-│        - Add handler method
+├─ NO → Add to tests/cli/handlers/xxxfx.py
+│        - Add command method to handler class
+│        - Add CommandInfo to get_commands()
 └─ YES → Continue
 
 Q8: Is documentation updated?
@@ -182,7 +202,7 @@ Q8: Is documentation updated?
 ```yaml
 Sync_Groups:
   - name: "Packet Constants"
-    primary: "lib/serial/serial_protocol.h"
+    primary: "lib/serial/serial_core.h"
     mirrors:
       - "tests/framework/packets.py"
     rule: "Same values, same names (snake_case in Python)"
@@ -197,7 +217,7 @@ Sync_Groups:
     primary: "lib/serial/serial_xxxfx.h"
     mirrors:
       - "tests/framework/commands.py"
-      - "tests/cli/interactive.py"
+      - "tests/cli/handlers/xxxfx.py"
     rule: "Python must expose same commands"
 ```
 
@@ -208,24 +228,14 @@ Sync_Groups:
 ### Callback Registration Pattern (C++)
 
 ```cpp
-// In serial_xxxfx.h
-using CommandCallback = std::function<uint8_t(uint16_t param1, uint8_t param2)>;
-
-void onCommand(CommandCallback cb) { _onCommand = cb; }
-
-bool handle(uint8_t type, const uint8_t* payload, uint8_t len) override {
-    if (type == XxxPacket::COMMAND && _onCommand) {
-        uint16_t p1 = payload[0] | (payload[1] << 8);  // little-endian
-        uint8_t p2 = payload[2];
-        uint8_t err = _onCommand(p1, p2);
-        (err == 0) ? sendAck() : sendNack(err);
-        return true;
-    }
-    return false;
+// In serial_xxxfx.h - handler case using SFX_* macros
+case XxxPacket::COMMAND: {
+    SFX_REQUIRE_LEN(3);
+    uint16_t p1 = getU16LE(payload);
+    uint8_t p2 = payload[2];
+    SFX_VALIDATE(isValid(p1), XxxError::INVALID_PARAM);
+    SFX_DISPATCH(_onCommand, p1, p2);
 }
-
-private:
-    CommandCallback _onCommand;
 ```
 
 ### Command Builder Pattern (Python)
@@ -242,22 +252,26 @@ def command_name(param1: int, param2: int) -> bytes:
 ### CLI Handler Pattern
 
 ```python
-# In interactive.py
-'xxx.command': (self.cmd_xxx_command, CommandInfo(
-    'xxx.command', 'xxx.command <p1> <p2>',
-    'Description here', requires_init=True, controller=self.CTRL_XXX)),
-
-def cmd_xxx_command(self, args: List[str]):
-    if len(args) < 2:
-        self.print_error("Usage: xxx.command <p1> <p2>")
-        return
-    try:
-        p1, p2 = int(args[0]), int(args[1])
-        packet = XxxCommands.command_name(p1, p2)
-        success, response = self.conn.send_expect_ack(packet)
-        self.print_response(response)
-    except ValueError:
-        self.print_error("Invalid parameters")
+# In handlers/xxxfx.py
+class XxxFxCommandHandler(CommandHandlerBase):
+    def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
+        return {
+            'xxx.command': (self.cmd_xxx_command, CommandInfo(
+                'xxx.command', 'xxx.command <p1> <p2>',
+                'Description here', requires_init=True)),
+        }
+    
+    def cmd_xxx_command(self, args: List[str]):
+        if len(args) < 2:
+            self.print_error("Usage: xxx.command <p1> <p2>")
+            return
+        try:
+            p1, p2 = int(args[0]), int(args[1])
+            packet = XxxCommands.command_name(p1, p2)
+            success, response = self.conn.send_expect_ack(packet)
+            self.print_response(response)
+        except ValueError:
+            self.print_error("Invalid parameters")
 ```
 
 ---
@@ -276,12 +290,14 @@ Constants_Match:
   - [ ] Error codes in C++ match Python
   - [ ] Endianness consistent (little-endian)
 
-Tests_Pass:
+Tests_Updated:  # ALWAYS update tests when protocol/features change
   - [ ] Existing tests still pass
   - [ ] New functionality has test coverage
+  - [ ] Test file created/updated in tests/xxxfx/
 
-CLI_Works:
-  - [ ] New commands appear in "help"
+CLI_Updated:  # ALWAYS update CLI when new commands are added
+  - [ ] New commands added to tests/cli/handlers/xxxfx.py
+  - [ ] Commands appear in "help" output
   - [ ] Commands execute correctly
 
 Documentation:

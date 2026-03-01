@@ -9,55 +9,65 @@
 ```yaml
 Change_Type_Matrix:
   New_Command:
-    serial_protocol.h: REQUIRED
+    serial_core.h: IF_NEW_PACKET_TYPE
     serial_error.h: IF_NEW_ERRORS
     serial_xxxfx.h: REQUIRED
     xxxfx_pico.ino: REQUIRED
     packets.py: REQUIRED
     commands.py: REQUIRED
-    interactive.py: REQUIRED
+    test_*.py: REQUIRED          # ALWAYS add tests for new commands
+    cli/handlers/xxxfx.py: REQUIRED
     README.md: REQUIRED
     
   Modify_Command_Payload:
-    serial_protocol.h: NO
+    serial_core.h: NO
     serial_error.h: IF_NEW_ERRORS
     serial_xxxfx.h: REQUIRED
     xxxfx_pico.ino: REQUIRED
     packets.py: IF_CONSTANTS_CHANGED
     commands.py: REQUIRED
-    interactive.py: REQUIRED
+    test_*.py: REQUIRED          # ALWAYS update tests for payload changes
+    cli/handlers/xxxfx.py: REQUIRED
     README.md: REQUIRED
     
   New_Error_Code:
-    serial_protocol.h: NO
+    serial_core.h: NO
     serial_error.h: REQUIRED
     serial_xxxfx.h: NO
     xxxfx_pico.ino: MAYBE
     packets.py: REQUIRED
     commands.py: NO
-    interactive.py: NO
+    test_*.py: RECOMMENDED       # Test error conditions
+    cli/handlers/xxxfx.py: NO
     README.md: REQUIRED
     
   Bug_Fix_In_Handler:
-    serial_protocol.h: NO
+    serial_core.h: NO
     serial_error.h: NO
     serial_xxxfx.h: MAYBE
     xxxfx_pico.ino: REQUIRED
     packets.py: NO
     commands.py: NO
-    interactive.py: NO
+    test_*.py: REQUIRED          # Add regression test for the fix
+    cli/handlers/xxxfx.py: NO
     README.md: NO
     
   New_Controller:
-    serial_protocol.h: REQUIRED
+    serial_core.h: REQUIRED
     serial_error.h: REQUIRED
     serial_newfx.h: CREATE_NEW
     newfx_pico.ino: CREATE_NEW
     packets.py: REQUIRED
     commands.py: REQUIRED
-    interactive.py: REQUIRED
+    test_*.py: REQUIRED          # Create tests/newfx/ directory
+    cli/handlers/newfx.py: CREATE_NEW
+    cli/interactive.py: REQUIRED  # Register new handler
     README.md: CREATE_NEW
 ```
+
+> **CRITICAL:** Tests are not optional. ALWAYS update tests when protocol is changed or new features are added.
+
+> **CRITICAL:** ALWAYS update the CLI handler (`tests/cli/handlers/xxxfx.py`) when new commands are added. The CLI is the primary tool for manual testing and debugging.
 
 ---
 
@@ -69,8 +79,8 @@ Change_Type_Matrix:
 Step_1_Serial_Library:
   location: "controllers/lib/serial/"
   actions:
-    - file: "serial_protocol.h"
-      action: "Add packet type constant in module namespace"
+    - file: "serial_core.h"
+      action: "Add packet type constant in module namespace (if not already defined in serial_xxxfx.h)"
       example: "constexpr uint8_t COMMAND_NAME = 0xNN;"
     
     - file: "serial_error.h"
@@ -79,10 +89,12 @@ Step_1_Serial_Library:
     
     - file: "serial_xxxfx.h"
       action: |
-        1. Add callback typedef
-        2. Add onXxx() registration method
-        3. Add case in handle() switch
-        4. Add private callback member
+        1. Add packet type constant in XxxFxPacket namespace
+        2. Add callback typedef
+        3. Add onXxx() registration method
+        4. Add case in tryProcess() switch using SFX_* macros
+        5. Add private callback member
+        6. Add validation to XxxFxSpec namespace if needed
 
 Step_2_Controller_Firmware:
   location: "controllers/xxxfx/pico/src/"
@@ -116,11 +128,11 @@ Step_3_Python_Framework:
 Step_4_CLI:
   location: "tests/cli/"
   actions:
-    - file: "interactive.py"
+    - file: "handlers/xxxfx.py"
       action: |
-        1. Add CommandInfo to xxxfx_commands dict
-        2. Add handler method cmd_xxxfx_<name>()
-        3. Add import if needed
+        1. Add command method to handler class
+        2. Add CommandInfo to get_commands() dict
+        3. Add import for new command builder if needed
 
 Step_5_Documentation:
   location: "controllers/xxxfx/pico/"
@@ -139,8 +151,8 @@ Step_5_Documentation:
 ```yaml
 Backward_Compatibility:
   questions:
-    - "Will existing masters work with new slaves?"
-    - "Will existing slaves work with new masters?"
+    - "Will existing clients work with new servers?"
+    - "Will existing servers work with new clients?"
     - "Is the payload format changing?"
   
   if_breaking_change:
@@ -151,7 +163,7 @@ Backward_Compatibility:
 Files_To_Update:
   - file: "serial_xxxfx.h"
     changes:
-      - "Update handle() case"
+      - "Update tryProcess() case (SFX_* macros)"
       - "Update callback typedef if signature changed"
   
   - file: "xxxfx_pico.ino"
@@ -167,9 +179,9 @@ Files_To_Update:
       - "Update test assertions"
       - "Add tests for new behavior"
   
-  - file: "interactive.py"
+  - file: "cli/handlers/xxxfx.py"
     changes:
-      - "Update CLI handler"
+      - "Update CLI handler method"
       - "Update usage string"
   
   - file: "README.md"
@@ -222,7 +234,7 @@ Summary_Checklist:
     - "[ ] Create directory structure"
     - "[ ] Create platformio.ini"
     - "[ ] Create newfx_pico.ino"
-    - "[ ] Create scripts/build_and_flash.py"
+    - "[ ] Register coreServer AND newfxServer with commandRouter (both required!)"
   
   Python:
     - "[ ] Add NewFxPacket class to packets.py"
@@ -232,11 +244,9 @@ Summary_Checklist:
     - "[ ] Create test files"
   
   CLI:
-    - "[ ] Add CTRL_NEWFX constant"
-    - "[ ] Create newfx_commands registry"
-    - "[ ] Update get_available_commands()"
-    - "[ ] Update _parse_init_ready()"
-    - "[ ] Add handler methods"
+    - "[ ] Create tests/cli/handlers/newfx.py with CommandHandlerBase subclass"
+    - "[ ] Register handler in tests/cli/interactive.py"
+    - "[ ] Add controller detection in handlers/core.py"
   
   Documentation:
     - "[ ] Create README.md with full protocol docs"
@@ -251,19 +261,23 @@ C++_Serial_Library:
   path: "controllers/lib/serial/"
   files:
     serial.h: "Umbrella header"
-    serial_protocol.h: "Packet type constants"
+    serial_core.h: "Packet types, CoreProtocol, CoreCommandServer, SFX_* macros"
     serial_error.h: "Error code constants"
     serial_command_handler.h: "ICommandHandler, CommandRouter"
-    serial_gunfx.h: "GunFxSlave, GunFxMaster"
-    serial_lightfx.h: "LightFxSlave, LightFxMaster"
+    serial_gunfx.h: "GunFxServer, GunFxClient, GunFxSpec"
+    serial_lightfx.h: "LightFxServer, LightFxClient, LightFxSpec"
 
 Controller_Firmware:
   pattern: "controllers/{name}/pico/"
   files:
     "src/{name}_pico.ino": "Main firmware"
     "platformio.ini": "Build configuration"
-    "scripts/build_and_flash.py": "Automated build/flash"
     "README.md": "Protocol documentation"
+
+Scripts:
+  path: "scripts/"
+  files:
+    "build_and_flash.py": "Centralized build/flash for all Pico controllers"
 
 Python_Framework:
   path: "tests/"
@@ -273,7 +287,12 @@ Python_Framework:
     "framework/protocol.py": "COBS, CRC, packet helpers"
     "framework/packets.py": "Constants (mirror C++)"
     "framework/commands.py": "Command builders"
-    "cli/interactive.py": "Interactive CLI"
+    "cli/base.py": "CommandInfo, OutputMixin, ControllerType, base classes"
+    "cli/parsers.py": "Response packet parsing utilities"
+    "cli/interactive.py": "Main CLI class (composes handlers)"
+    "cli/handlers/core.py": "Core/protocol commands"
+    "cli/handlers/gunfx.py": "GunFX commands"
+    "cli/handlers/lightfx.py": "LightFX commands"
     "conftest.py": "pytest fixtures"
 ```
 
@@ -283,14 +302,21 @@ Python_Framework:
 
 ```bash
 # Build verification
-cd controllers/gunfx/pico && pio run
-cd controllers/lightfx/pico && pio run
-cd controllers/noop/pico && pio run
+python -m platformio run -e pico -d controllers/gunfx/pico
+python -m platformio run -e pico -d controllers/lightfx/pico
+python -m platformio run -e pico -d controllers/noop/pico
+
+# Build and flash (centralized script)
+python scripts/build_and_flash.py gunfx
+python scripts/build_and_flash.py lightfx
+python scripts/build_and_flash.py noop
 
 # Python syntax
 python -m py_compile tests/framework/packets.py
 python -m py_compile tests/framework/commands.py
 python -m py_compile tests/cli/interactive.py
+python -m py_compile tests/cli/handlers/gunfx.py
+python -m py_compile tests/cli/handlers/lightfx.py
 
 # Run tests (requires hardware)
 pytest tests/gunfx/ -v
@@ -306,26 +332,32 @@ python -m tests.cli.interactive
 ## Common Errors and Fixes
 
 ```yaml
+Error: "INIT returns NACK INVALID_COMMAND"
+  Cause: "coreServer not registered with commandRouter"
+  Fix:
+    - "Ensure commandRouter.addHandler(&coreServer) is called BEFORE module handler"
+    - "Both coreServer and xxxfxServer must be added to the router"
+
 Error: "Unknown command type"
   Cause: "Packet constant mismatch between C++ and Python"
   Fix:
-    - "Verify serial_protocol.h constant value"
+    - "Verify serial_core.h / serial_xxxfx.h constant value"
     - "Verify packets.py constant value"
     - "Ensure they are identical"
 
 Error: "NACK with MISSING_PARAMETER"
   Cause: "Payload too short"
   Fix:
-    - "Check handle() length validation"
+    - "Check tryProcess() SFX_REQUIRE_LEN() value"
     - "Check Python struct.pack format string"
     - "Count bytes: B=1, H=2, I=4"
 
 Error: "CLI command not appearing"
-  Cause: "Command not in registry or wrong controller type"
+  Cause: "Command not in handler or wrong controller type"
   Fix:
-    - "Verify command added to xxxfx_commands dict"
-    - "Verify controller detection in _parse_init_ready()"
-    - "Verify get_available_commands() includes it"
+    - "Verify command added to get_commands() in handlers/xxxfx.py"
+    - "Verify controller detection in handlers/core.py"
+    - "Verify handler registered in interactive.py"
 
 Error: "Values appear swapped/corrupted"
   Cause: "Endianness mismatch"

@@ -7,20 +7,24 @@
 ## Quick Commands
 
 ```yaml
+# Centralized build and flash (recommended)
+Build_And_Flash: "python scripts/build_and_flash.py gunfx"
+Build_Only: "python scripts/build_and_flash.py gunfx --no-flash"  # build only
+Flash_Specific_Port: "python scripts/build_and_flash.py lightfx --port COM10"
+Skip_Build: "python scripts/build_and_flash.py noop --no-build"
+
+# PlatformIO direct commands
 GunFX:
-  build: "cd controllers/gunfx/pico && pio run"
-  flash: "python scripts/build_and_flash.py"
-  clean: "pio run -t clean"
+  build: "python -m platformio run -e pico -d controllers/gunfx/pico"
+  clean: "python -m platformio run -t clean -d controllers/gunfx/pico"
 
 LightFX:
-  build: "cd controllers/lightfx/pico && pio run"
-  flash: "python scripts/build_and_flash.py"
-  clean: "pio run -t clean"
+  build: "python -m platformio run -e pico -d controllers/lightfx/pico"
+  clean: "python -m platformio run -t clean -d controllers/lightfx/pico"
 
 NoOp:
-  build: "cd controllers/noop/pico && pio run"
-  flash: "Manual BOOTSEL required"
-  clean: "pio run -t clean"
+  build: "python -m platformio run -e pico -d controllers/noop/pico"
+  clean: "python -m platformio run -t clean -d controllers/noop/pico"
 ```
 
 ---
@@ -34,40 +38,44 @@ Required_Tools:
     verify: "pio --version"
   
   Python_Packages:
-    install: "pip install pyserial colorama"
-    verify: "python -c 'import serial; import colorama'"
+    install: "pip install pyserial"
+    verify: "python -c 'import serial'"
 ```
 
 ---
 
 ## Build Process
 
-### Standard Build
+### Using Centralized Script (Recommended)
 
 ```bash
-cd controllers/gunfx/pico
-pio run
+# Build and flash a controller
+python scripts/build_and_flash.py gunfx
+python scripts/build_and_flash.py lightfx --port COM10
+python scripts/build_and_flash.py noop --no-build
 ```
 
-**Output:** `.pio/build/pico/firmware.uf2`
+**Options:**
+```yaml
+controller: "gunfx | lightfx | noop (required)"
+--port PORT: "Specify serial port (default: auto-detect)"
+--no-build: "Skip build step (use existing firmware)"
+--timeout SEC: "BOOTSEL wait timeout (default: 15s)"
+```
+
+### Using PlatformIO Directly
+
+```bash
+python -m platformio run -e pico -d controllers/gunfx/pico
+```
+
+**Output:** `controllers/gunfx/pico/.pio/build/pico/firmware.uf2`
 
 ### Clean Build
 
 ```bash
-pio run -t clean
-pio run
-```
-
-### Build All Controllers
-
-```bash
-# PowerShell
-@("gunfx", "lightfx", "noop") | ForEach-Object {
-    Write-Host "Building $_..." -ForegroundColor Cyan
-    Set-Location "controllers/$_/pico"
-    pio run
-    Set-Location ../../..
-}
+python -m platformio run -t clean -d controllers/gunfx/pico
+python -m platformio run -e pico -d controllers/gunfx/pico
 ```
 
 ---
@@ -76,31 +84,33 @@ pio run
 
 ### Method 1: build_and_flash.py (Recommended)
 
+The centralized script at `scripts/build_and_flash.py` handles the complete build-and-flash workflow using the binary COBS protocol.
+
 ```bash
-cd controllers/gunfx/pico
-python scripts/build_and_flash.py
+# Build and flash GunFX
+python scripts/build_and_flash.py gunfx
+
+# Flash on specific port
+python scripts/build_and_flash.py gunfx --port COM10
+
+# Flash without rebuilding
+python scripts/build_and_flash.py lightfx --no-build
 ```
 
 **Process:**
 ```
-1. Increment build number in source
-2. Clean build
-3. Compile firmware
-4. Auto-detect serial port
-5. Send BOOTSEL command
-6. Wait for RPI-RP2 drive
-7. Copy firmware.uf2
-8. Verify new version
+1. Build firmware via PlatformIO (unless --no-build)
+2. Detect serial port (auto-detect or --port)
+3. Send binary INIT packet (COBS encoded)
+4. Receive INIT_READY with device info
+5. Send binary BOOTSEL command
+6. Wait for RPI-RP2 drive to appear
+7. Copy firmware.uf2 to drive with MD5 verification
+8. Wait for device reboot
+9. Verify device responds on serial port
 ```
 
-**Options:**
-```yaml
---no-build: "Skip compilation, use existing .uf2"
---no-clean: "Incremental build (faster)"
---skip-verify: "Skip post-flash verification"
---port COM5: "Specify serial port"
---timeout 30: "BOOTSEL wait timeout (seconds)"
-```
+> **Note:** The script uses binary COBS protocol packets from the test framework (`build_packet(CorePacket.INIT)`, `build_packet(CorePacket.BOOTSEL)`). There is no text-mode INIT.
 
 ### Method 2: Manual BOOTSEL
 
@@ -118,8 +128,8 @@ Steps:
 ### Method 3: PlatformIO Upload
 
 ```bash
-# Only works when device is in BOOTSEL mode
-pio run -t upload
+# Only works when device is already in BOOTSEL mode
+python -m platformio run -t upload -d controllers/gunfx/pico
 ```
 
 ---
@@ -129,68 +139,59 @@ pio run -t upload
 ### Script Location
 
 ```
-controllers/{name}/pico/scripts/build_and_flash.py
+scripts/build_and_flash.py    # Single centralized script for all controllers
+```
+
+### Supported Controllers
+
+```yaml
+gunfx: "controllers/gunfx/pico/"
+lightfx: "controllers/lightfx/pico/"
+noop: "controllers/noop/pico/"
 ```
 
 ### Expected Output
 
 ```
-============================================
-  GunFX Pico - Build and Flash
-============================================
+╔══════════════════════════════════════════╗
+║        ScaleFX Build & Flash             ║
+║        Controller: gunfx                 ║
+╚══════════════════════════════════════════╝
 
-[1/6] Incrementing build number...
-    [OK] Build number: 42 → 43
+▶ Building firmware...
+  ✓ Build successful (217,600 bytes)
 
-[2/6] Building firmware...
-    [OK] Firmware: 94352 bytes
-    [OK] Flash: 9.0%, RAM: 8.2%
+▶ Detecting serial port...
+  ✓ Found: COM5 (Raspberry Pi Pico)
 
-[3/6] Detecting serial port...
-    [OK] Found: COM5 (Raspberry Pi Pico)
+▶ Connecting to device...
+  ✓ Connected to GunFX v0.3.0
 
-[4/6] Sending BOOTSEL command...
-    [OK] Connected to GunFX-A4B2 v0.3.0
-    [OK] BOOTSEL command sent
+▶ Entering BOOTSEL mode...
+  ✓ BOOTSEL command sent
+  ✓ RPI-RP2 drive detected: G:
 
-[5/6] Copying firmware...
-    [OK] RPI-RP2 drive detected: E:
-    [OK] Firmware copied
+▶ Flashing firmware...
+  ✓ Copied firmware.uf2 (MD5 verified)
 
-[6/6] Verifying...
-    [OK] Device rebooted
-    [OK] Version: 0.3.0 (build 43)
+▶ Verifying...
+  ✓ Device rebooted successfully
 
-============================================
+══════════════════════════════════════════
   Flash Complete!
-============================================
+══════════════════════════════════════════
 ```
 
 ---
 
-## Creating build_and_flash.py for New Controller
-
-### Copy Template
-
-```bash
-cp controllers/gunfx/pico/scripts/build_and_flash.py \
-   controllers/newfx/pico/scripts/
-```
-
-### Modifications Required
+## Script Location
 
 ```yaml
-1_Source_File_Path:
-  location: "extract_version_from_source()"
-  change: 'source_file = project_dir / "src" / "newfx_pico.ino"'
-
-2_Device_Name:
-  location: "verify_device()"
-  change: 'if "NewFX" not in init_ready_response:'
-
-3_Banner:
-  location: "print_banner()"
-  change: '"NewFX Pico - Build and Flash"'
+Centralized_Script:
+  location: "scripts/build_and_flash.py"
+  usage: "python scripts/build_and_flash.py <controller> [options]"
+  protocol: "Binary COBS (uses test framework's build_packet())"
+  note: "Single script handles all Pico controllers"
 ```
 
 ---
@@ -211,29 +212,27 @@ Build_Errors:
 Flash_Errors:
   "RPI-RP2 drive not appearing":
     causes:
-      - "Device not in BOOTSEL mode"
+      - "Device not responding to BOOTSEL command (old firmware)"
       - "USB cable is charge-only (no data)"
       - "USB port issue"
     fixes:
-      - "Try manual BOOTSEL method"
+      - "Try manual BOOTSEL method (hold button, plug in, release)"
       - "Use different USB cable"
       - "Try different USB port"
   
   "BOOTSEL command not working":
-    cause: "Device not responding to serial"
-    fix: "Manual BOOTSEL: hold button, plug in, release"
+    cause: "Device firmware doesn't support binary BOOTSEL command"
+    fix: "Manual BOOTSEL: hold button while plugging in USB, then release"
   
   "Port not found":
-    fix: "Specify port explicitly: --port COM5"
+    fixes:
+      - "Specify port: --port COM10"
+      - "Check device is connected and recognized by OS"
 
 Post_Flash_Errors:
   "Device not responding after flash":
     cause: "Firmware crash on startup"
     fix: "Flash known-good firmware using manual BOOTSEL"
-  
-  "Version mismatch":
-    cause: "Old firmware cached"
-    fix: "Clean build: pio run -t clean && pio run"
 ```
 
 ---

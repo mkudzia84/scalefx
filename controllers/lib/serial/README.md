@@ -6,9 +6,9 @@ Binary COBS serial communication library for ScaleFX controllers.
 
 This library provides serial communication for ScaleFX controllers:
 
-- **HubFX (Master)** - RP2040 with USB Host, controls multiple slave devices
-- **GunFX (Slave)** - RP2040 Pico, muzzle flash and recoil control
-- **LightFX (Slave)** - RP2040 Pico, LED and servo control
+- **HubFX (Client)** - RP2040 with USB Host, controls multiple server devices
+- **GunFX (Server)** - RP2040 Pico, muzzle flash and recoil control
+- **LightFX (Server)** - RP2040 Pico, LED and servo control
 
 All communication uses binary COBS-encoded packets with CRC-8 verification.
 
@@ -23,25 +23,25 @@ All communication uses binary COBS-encoded packets with CRC-8 verification.
 │  │           serial_core.h              │  │ serial_error.h  │  │
 │  │  CoreProtocol (COBS, CRC, types)     │  │ Error codes     │  │
 │  │  ISerialCore interface               │  └─────────────────┘  │
-│  │  CoreCommandHandler (slave-side)     │                       │
+│  │  CoreCommandServer (server-side)     │                       │
 │  └──────────────────────────────────────┘                       │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │                    serial_bus.h (Master only)             │  │
+│  │                    serial_bus.h (Client only)             │  │
 │  │  UsbHost - PIO-USB CDC host                               │  │
 │  │  SerialBus - COBS protocol over USB (implements ISerialCore) │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │              serial_command_handler.h (Slave only)        │  │
+│  │              serial_command_handler.h (Server only)       │  │
 │  │  ICommandHandler - Chain of Responsibility interface      │  │
 │  │  CommandRouter - Routes packets to handlers               │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                                  │
 │  ┌───────────────────┐  ┌────────────────────┐                  │
 │  │  serial_gunfx.h   │  │  serial_lightfx.h  │                  │
-│  │  GunFxMaster      │  │  LightFxMaster     │                  │
-│  │  GunFxSlave       │  │  LightFxSlave      │                  │
+│  │  GunFxClient      │  │  LightFxClient     │                  │
+│  │  GunFxServer      │  │  LightFxServer     │                  │
 │  └───────────────────┘  └────────────────────┘                  │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -53,11 +53,11 @@ All communication uses binary COBS-encoded packets with CRC-8 verification.
 |--------|-------------|---------|
 | `serial.h` | Umbrella header - includes all | All |
 | `serial_error.h` | Error codes and CommandResult | All |
-| `serial_core.h` | Protocol (COBS, CRC), ISerialCore, CoreCommandHandler | All |
-| `serial_bus.h` | UsbHost, SerialBus (USB Host) | Master only |
-| `serial_command_handler.h` | ICommandHandler, CommandRouter | Slave only |
-| `serial_gunfx.h` | GunFxMaster, GunFxSlave | GunFX |
-| `serial_lightfx.h` | LightFxMaster, LightFxSlave | LightFX |
+| `serial_core.h` | Protocol (COBS, CRC), ISerialCore, CoreCommandServer | All |
+| `serial_bus.h` | UsbHost, SerialBus (USB Host) | Client only |
+| `serial_command_handler.h` | ICommandHandler, CommandRouter | Server only |
+| `serial_gunfx.h` | GunFxClient, GunFxServer | GunFX |
+| `serial_lightfx.h` | LightFxClient, LightFxServer | LightFX |
 
 ## Protocol
 
@@ -76,13 +76,13 @@ See [PROTOCOL.md](PROTOCOL.md) for detailed protocol documentation.
 
 ## Usage
 
-### Master (HubFX)
+### Client (HubFX)
 
 ```cpp
 #include <serial.h>
 
 UsbHost usbHost;
-GunFxMaster gunfx;
+GunFxClient gunfx;
 
 void setup() {
     usbHost.begin();
@@ -107,40 +107,40 @@ void loop() {
 }
 ```
 
-### Slave (GunFX Pico)
+### Server (GunFX Pico)
 
 ```cpp
 #include <serial_gunfx.h>
 
-CoreCommandHandler coreHandler;
-GunFxSlave gunfxSlave;
+CoreCommandServer coreServer;
+GunFxServer gunfxServer;
 CommandRouter router;
 
 void setup() {
     Serial.begin(115200);
     
     // Core system commands
-    coreHandler.begin(&Serial);
-    coreHandler.setBoardInfo("GunFX", "1.0.0", "RP2040", 125, 200000);
-    coreHandler.onReboot([]() { rp2040.reboot(); });
-    coreHandler.onBootsel([]() { rp2040.rebootToBootloader(); });
+    coreServer.begin(&Serial);
+    coreServer.setBoardInfo("GunFX", "1.0.0", "RP2040", 125, 200000);
+    coreServer.onReboot([]() { rp2040.reboot(); });
+    coreServer.onBootsel([]() { rp2040.rebootToBootloader(); });
     
     // GunFX commands
-    gunfxSlave.begin(&Serial);
-    gunfxSlave.onTriggerOn([](uint16_t rpm) -> uint8_t {
+    gunfxServer.begin(&Serial);
+    gunfxServer.onTriggerOn([](uint16_t rpm) -> uint8_t {
         startFiring(rpm);
         return GunFxError::OK;
     });
-    gunfxSlave.onServoSet([](uint8_t id, uint16_t us) -> uint8_t {
+    gunfxServer.onServoSet([](uint8_t id, uint16_t us) -> uint8_t {
         return setServoPosition(id, us);
     });
     
     // Command routing
     router.begin(&Serial, [](uint8_t err, uint8_t type) {
-        gunfxSlave.sendNack(err);
+        gunfxServer.sendNack(err);
     });
-    router.addHandler(&coreHandler);  // System commands first
-    router.addHandler(&gunfxSlave);   // Then GunFX commands
+    router.addHandler(&coreServer);  // System commands first
+    router.addHandler(&gunfxServer);  // Then GunFX commands
 }
 
 void loop() {
@@ -150,14 +150,14 @@ void loop() {
 
 ## Build Configuration
 
-### GUNFX_SLAVE Macro
+### SCALEFX_SERVER Macro
 
-Define `GUNFX_SLAVE` to exclude USB Host code from slave builds:
+Define `SCALEFX_SERVER` to exclude USB Host code from server builds:
 
 ```ini
 # platformio.ini
 [env:gunfx]
-build_flags = -DGUNFX_SLAVE
+build_flags = -DSCALEFX_SERVER
 ```
 
 ## Error Handling
@@ -174,7 +174,7 @@ if (!result.success) {
 Slave callbacks return error codes:
 
 ```cpp
-gunfxSlave.onServoSet([](uint8_t id, uint16_t us) -> uint8_t {
+gunfxServer.onServoSet([](uint8_t id, uint16_t us) -> uint8_t {
     if (id < 1 || id > 3) return GunFxError::SERVO_INVALID_ID;
     if (us < 500 || us > 2500) return GunFxError::SERVO_PULSE_RANGE;
     setServo(id, us);

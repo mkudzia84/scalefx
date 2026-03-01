@@ -16,7 +16,13 @@ tests/
 ├── lightfx/                       # LightFX controller tests
 ├── noop/                          # NoOp controller tests
 └── cli/
-    └── interactive.py             # Interactive text CLI
+    ├── base.py                    # CommandInfo, OutputMixin, ControllerType
+    ├── parsers.py                 # Response packet parsing utilities
+    ├── interactive.py             # Main CLI class (composes handlers)
+    └── handlers/
+        ├── core.py                # Core/protocol commands
+        ├── gunfx.py               # GunFX commands
+        └── lightfx.py             # LightFX commands
 ```
 
 ## Installation
@@ -31,19 +37,14 @@ pip install -r requirements.txt
 
 ```bash
 # Step 1: Build and flash (recommended before each test run)
-cd controllers/gunfx/pico
-python scripts/build_and_flash.py
-cd ../../..
+python scripts/build_and_flash.py noop
 
 # Step 2: Run tests
-pytest tests/gunfx/ -v
-
-# Or run all tests
-pytest tests/ -v
-
-# Run specific controller tests
-pytest tests/lightfx/ -v
 pytest tests/noop/ -v
+
+# Run all tests for a specific controller
+pytest tests/gunfx/ -v
+pytest tests/lightfx/ -v
 
 # Run with specific port (Windows)
 $env:SCALEFX_PORT="COM5"; pytest tests/gunfx/ -v
@@ -51,6 +52,30 @@ $env:SCALEFX_PORT="COM5"; pytest tests/gunfx/ -v
 # Run with specific port (Linux/Mac)
 SCALEFX_PORT=/dev/ttyACM0 pytest tests/gunfx/ -v
 ```
+
+## Verbose Mode
+
+Enable verbose packet logging to see TX/RX commands during tests:
+
+```bash
+# Windows PowerShell
+$env:SCALEFX_VERBOSE="1"; pytest tests/noop/ -v -s
+
+# Linux/Mac
+SCALEFX_VERBOSE=1 pytest tests/noop/ -v -s
+```
+
+Verbose output shows:
+```
+→ TX: INIT
+← RX: INIT_READY [35B payload]
+→ TX: STATUS_REQ
+← RX: STATUS [0a000000]
+→ TX: SHUTDOWN
+← RX: ACK
+```
+
+**Note:** Use `-s` flag with pytest to see verbose output (disables stdout capture).
 
 ## Interactive CLI
 

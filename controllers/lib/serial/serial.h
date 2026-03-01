@@ -7,17 +7,18 @@
  *
  * Architecture:
  *   serial_error.h           - Error codes and CommandResult struct
- *   serial_core.h            - Protocol encoding, ISerialCore interface, CoreCommandHandler
- *   serial_bus.h             - UsbHost and SerialBus (master-side, USB Host)
- *   serial_command_handler.h - Chain of Responsibility command routing (slave-side)
+ *   serial_core.h            - Protocol encoding, ISerialCore interface, CoreCommandServer
+ *   serial_usb_host.h        - UsbHost (client-side, USB Host PIO-USB manager)
+ *   serial_bus.h             - SerialBus (client-side, COBS-framed protocol)
+ *   serial_command_handler.h - Chain of Responsibility command routing (server-side)
  *
  * Protocol Implementations:
- *   serial_gunfx.h           - GunFX master/slave (muzzle flash, servo, smoke)
- *   serial_lightfx.h         - LightFX master/slave (LED, servo, power)
+ *   serial_gunfx.h           - GunFX client/server (muzzle flash, servo, smoke)
+ *   serial_lightfx.h         - LightFX client/server (LED, servo, power)
  *
- * Master vs Slave:
- *   Master (HubFX): Uses UsbHost + SerialBus for USB Host CDC communication
- *   Slave (Pico):   Uses Serial (USB Device) + CoreCommandHandler + CommandRouter
+ * Client vs Server:
+ *   Client (HubFX): Uses UsbHost + SerialBus for USB Host CDC communication
+ *   Server (Pico):  Uses Serial (USB Device) + CoreCommandServer + CommandRouter
  *
  * Usage:
  *   #include <serial.h>              // Everything
@@ -38,7 +39,10 @@
 // Command handler interface and router (Chain of Responsibility pattern)
 #include "serial_command_handler.h"
 
-// Binary protocol implementation
+// USB Host manager for PIO-USB CDC devices (client-side)
+#include "serial_usb_host.h"
+
+// Binary protocol implementation (client-side)
 #include "serial_bus.h"
 
 // GunFX binary implementation

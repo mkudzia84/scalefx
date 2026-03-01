@@ -18,7 +18,7 @@
  * Usage (Slave Side):
  *   CommandRouter router;
  *   router.begin(&Serial, nackCallback);
- *   router.addHandler(&coreHandler);     // System commands (via CoreCommandHandler)
+ *   router.addHandler(&coreServer);      // System commands (via CoreCommandServer)
  *   router.addHandler(&protocolHandler); // Protocol-specific commands
  *   // In loop(): router.process();
  *
@@ -35,58 +35,14 @@
 #include "serial_error.h"
 #include "serial_core.h"
 
-// ============================================================================
-//  COMMAND RESULT
-// ============================================================================
-
-/**
- * @brief Result of attempting to process a command
- * 
- * Used by all command handlers to indicate how a command was processed
- * in the Chain of Responsibility pattern.
- */
-enum class CommandHandleResult : uint8_t {
-    Handled,        // Command was recognized and processed (ACK/NACK already sent)
-    NotMyCommand,   // Command not recognized by this handler, try next
-    Error           // Handler error (couldn't process due to internal issue)
-};
-
-// ============================================================================
-//  COMMAND HANDLER INTERFACE
-// ============================================================================
-
-/**
- * @brief Interface for binary command handlers
- * 
- * Implementations should:
- * - Return Handled if the packet was recognized (send ACK/NACK as appropriate)
- * - Return NotMyCommand if the packet should be passed to the next handler
- * - Return Error only for internal handler errors
- */
-class ICommandHandler {
-public:
-    virtual ~ICommandHandler() = default;
-    
-    /**
-     * @brief Try to process a binary packet
-     * @param type Packet type byte
-     * @param payload Pointer to payload data
-     * @param len Length of payload
-     * @return CommandHandleResult indicating how the packet was handled
-     */
-    virtual CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) = 0;
-    
-    /**
-     * @brief Get the name of this handler (for debugging)
-     */
-    virtual const char* handlerName() const = 0;
-};
+// Note: ICommandHandler and CommandHandleResult are now defined in serial_core.h
+// to allow CoreCommandServer to implement ICommandHandler without circular dependencies.
 
 // ============================================================================
 //  COMMAND ROUTER
 // ============================================================================
 
-namespace Serial {
+namespace ScaleFX {
 
 /**
  * @brief Routes binary packets through a chain of handlers
@@ -217,12 +173,12 @@ private:
     unsigned long _lastActivityMs = 0;
 };
 
-} // namespace Serial
+} // namespace ScaleFX
 
 // ============================================================================
 //  TYPE ALIASES
 // ============================================================================
 
-using CommandRouter = Serial::CommandRouter;
+using CommandRouter = ScaleFX::CommandRouter;
 
 #endif // SERIAL_COMMAND_HANDLER_H

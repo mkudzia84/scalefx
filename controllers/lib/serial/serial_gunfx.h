@@ -1,9 +1,9 @@
 /*
- * Serial GunFX Protocol - Binary Protocol Master/Slave
+ * Serial GunFX Protocol - Binary Protocol Client/Server
  *
- * Binary COBS protocol master/slave for GunFX muzzle flash controller.
- *   - GunFxMaster: For HubFX (sends commands via USB)
- *   - GunFxSlave: For GunFX Pico (receives commands, implements ICommandHandler)
+ * Binary COBS protocol client/server for GunFX muzzle flash controller.
+ *   - GunFxClient: For HubFX (sends commands via USB)
+ *   - GunFxServer: For GunFX Pico (receives commands, implements ICommandHandler)
  *
  * Packet Types (0x01-0x2F range):
  *   TRIGGER_ON (0x01)      - [rpm:u16] Start firing
@@ -82,6 +82,38 @@ namespace GunFxError {
             default:
                 return SerialError::getMessage(code);
         }
+    }
+}
+
+// ============================================================================
+// GunFX Hardware Specification Constants
+// ============================================================================
+
+namespace GunFxSpec {
+    // Servo limits (standard PWM range)
+    constexpr uint8_t SERVO_ID_MIN = 1;
+    constexpr uint8_t SERVO_ID_MAX = 3;
+    constexpr uint16_t SERVO_PULSE_MIN = 500;    // µs
+    constexpr uint16_t SERVO_PULSE_MAX = 2500;   // µs
+    
+    // Trigger limits
+    constexpr uint16_t TRIGGER_RPM_MIN = 1;
+    constexpr uint16_t TRIGGER_RPM_MAX = 3000;
+    
+    // Fan speed limits
+    constexpr uint8_t FAN_SPEED_MAX = 255;       // PWM value
+    
+    // Validation helpers
+    inline bool isValidServoId(uint8_t id) {
+        return id >= SERVO_ID_MIN && id <= SERVO_ID_MAX;
+    }
+    
+    inline bool isValidServoPulse(uint16_t pulse) {
+        return pulse >= SERVO_PULSE_MIN && pulse <= SERVO_PULSE_MAX;
+    }
+    
+    inline bool isValidRpm(uint16_t rpm) {
+        return rpm >= TRIGGER_RPM_MIN && rpm <= TRIGGER_RPM_MAX;
     }
 }
 
@@ -171,22 +203,22 @@ using GunFxSmokeSettingsCallback = std::function<uint8_t(const GunFxSmokeConfig&
 using GunFxStatusRequestCallback = std::function<GunFxStatus()>;
 
 // ============================================================================
-// GunFxMaster Class (Binary Protocol)
+// GunFxClient Class (Binary Protocol)
 // ============================================================================
 
 /**
- * @brief Master-side GunFX serial communication (binary COBS protocol)
+ * @brief Client-side GunFX serial communication (binary COBS protocol)
  * 
- * Used by HubFX to send commands to GunFX slave boards over USB.
+ * Used by HubFX to send commands to GunFX server boards over USB.
  * Extends SerialBus with GunFX-specific commands.
  */
-class GunFxMaster : public SerialBus {
+class GunFxClient : public SerialBus {
 public:
-    GunFxMaster() = default;
-    ~GunFxMaster() = default;
+    GunFxClient() = default;
+    ~GunFxClient() = default;
 
-    GunFxMaster(const GunFxMaster&) = delete;
-    GunFxMaster& operator=(const GunFxMaster&) = delete;
+    GunFxClient(const GunFxClient&) = delete;
+    GunFxClient& operator=(const GunFxClient&) = delete;
 
     // ========================================================================
     // Initialization
@@ -259,9 +291,9 @@ public:
     // State
     // ========================================================================
     
-    bool isSlaveReady() const { return _slaveReady; }
+    bool isServerReady() const { return _serverReady; }
     bool isVersionCompatible() const { return _boardInfo.versionCompatible; }
-    const char* slaveName() const { return _slaveName; }
+    const char* serverName() const { return _serverName; }
     const GunFxBoardInfo& boardInfo() const { return _boardInfo; }
     const GunFxStatus& lastStatus() const { return _lastStatus; }
     CommandResult lastCommandResult() const { return _lastCommandResult; }
@@ -273,8 +305,8 @@ private:
     bool checkVersionCompatibility(const char* version);
 
     UsbHost* _usbHostRef = nullptr;
-    bool _slaveReady = false;
-    char _slaveName[65] = "";
+    bool _serverReady = false;
+    char _serverName[65] = "";
     GunFxBoardInfo _boardInfo;
     GunFxStatus _lastStatus;
 
@@ -297,22 +329,22 @@ private:
 };
 
 // ============================================================================
-// GunFxSlave Class (Binary Protocol)
+// GunFxServer Class (Binary Protocol)
 // ============================================================================
 
 /**
- * @brief Slave-side GunFX serial communication (binary COBS protocol)
+ * @brief Server-side GunFX serial communication (binary COBS protocol)
  * 
- * Used by GunFX Pico to receive commands from HubFX master.
+ * Used by GunFX Pico to receive commands from HubFX client.
  * Implements ICommandHandler for use with CommandRouter.
  */
-class GunFxSlave : public ICommandHandler {
+class GunFxServer : public ICommandHandler {
 public:
-    GunFxSlave() = default;
-    ~GunFxSlave() override = default;
+    GunFxServer() = default;
+    ~GunFxServer() override = default;
 
-    GunFxSlave(const GunFxSlave&) = delete;
-    GunFxSlave& operator=(const GunFxSlave&) = delete;
+    GunFxServer(const GunFxServer&) = delete;
+    GunFxServer& operator=(const GunFxServer&) = delete;
 
     // ========================================================================
     // Initialization
@@ -327,7 +359,7 @@ public:
     // ========================================================================
     
     CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override;
-    const char* handlerName() const override { return "GunFxSlave"; }
+    const char* handlerName() const override { return "GunFxServer"; }
 
     // ========================================================================
     // Response Methods
@@ -355,7 +387,7 @@ public:
     // ========================================================================
     
     bool isInitialized() const { return _initialized; }
-    bool isMasterConnected() const { return _masterConnected; }
+    bool isClientConnected() const { return _clientConnected; }
     void setConnectionTimeout(unsigned long timeoutMs) { _connectionTimeoutMs = timeoutMs; }
 
 private:
@@ -365,7 +397,7 @@ private:
 
     Stream* _serial = nullptr;
     bool _initialized = false;
-    bool _masterConnected = false;
+    bool _clientConnected = false;
     char _moduleName[65] = "GunFX";
 
     uint8_t _rxBuffer[CoreProtocol::COBS_BUFFER_SIZE];

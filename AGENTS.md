@@ -20,9 +20,9 @@ This file provides essential context for AI coding assistants working on the Sca
 ## Project Overview
 
 ScaleFX is a modular scale model effects system:
-- Master-slave architecture over USB serial
+- Client-server architecture over USB serial
 - Binary COBS protocol with CRC-8 validation
-- Controllers: GunFX (weapons), LightFX (lighting), HubFX (master)
+- Controllers: GunFX (weapons), LightFX (lighting), HubFX (client hub)
 - Python test framework with interactive CLI
 
 ## Critical Constants
@@ -42,6 +42,9 @@ ScaleFX is a modular scale model effects system:
 ## File Structure
 
 ```
+scripts/
+└── build_and_flash.py   # Centralized build/flash (binary COBS protocol)
+
 controllers/
 ├── lib/serial/          # Shared serial library (C++)
 ├── gunfx/pico/          # Gun effects controller
@@ -51,7 +54,14 @@ controllers/
 
 tests/
 ├── framework/           # Python test framework
-├── cli/                 # Interactive CLI
+├── cli/                 # Interactive CLI (modular)
+│   ├── base.py          # Base classes, CommandInfo, OutputMixin
+│   ├── parsers.py       # Response packet parsing
+│   ├── interactive.py   # Main CLI (~280 lines)
+│   └── handlers/        # Command handlers
+│       ├── core.py      # Core/protocol commands
+│       ├── gunfx.py     # GunFX commands
+│       └── lightfx.py   # LightFX commands
 ├── gunfx/               # GunFX tests
 ├── lightfx/             # LightFX tests
 └── noop/                # NoOp tests
@@ -63,9 +73,10 @@ When modifying protocol, these file pairs MUST stay in sync:
 
 | C++ File | Python File |
 |----------|-------------|
-| `serial_protocol.h` | `packets.py` |
+| `serial_core.h` | `packets.py` |
 | `serial_error.h` | `packets.py` |
-| `serial_xxxfx.h` | `commands.py`, `interactive.py` |
+| `serial_gunfx.h` | `commands.py`, `cli/handlers/gunfx.py` |
+| `serial_lightfx.h` | `commands.py`, `cli/handlers/lightfx.py` |
 
 ## Change Workflow
 
@@ -73,5 +84,5 @@ When modifying protocol, these file pairs MUST stay in sync:
 2. Make changes following the checklist
 3. Verify C++ compiles: `pio run`
 4. Verify Python syntax: `python -m py_compile <file>`
-5. Flash and test: `python scripts/build_and_flash.py`
+5. Flash and test: `python scripts/build_and_flash.py <controller>`
 6. Run tests: `pytest tests/<module>/ -v`

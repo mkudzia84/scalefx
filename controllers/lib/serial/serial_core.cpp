@@ -18,16 +18,16 @@ int ISerialCore::sendInitReady(const CoreBoardInfo& info) {
 }
 
 // ============================================================================
-// CoreCommandHandler Implementation
+// CoreCommandServer Implementation
 // ============================================================================
 
-void CoreCommandHandler::begin(Stream* serial) {
+void CoreCommandServer::begin(Stream* serial) {
     _serial = serial;
     _initialized = false;
     _lastActivityMs = 0;
 }
 
-void CoreCommandHandler::setBoardInfo(const char* deviceName, const char* firmwareVersion,
+void CoreCommandServer::setBoardInfo(const char* deviceName, const char* firmwareVersion,
                                        const char* platform, uint32_t cpuMHz, uint32_t freeRam,
                                        uint32_t buildNumber) {
     if (deviceName) {
@@ -50,8 +50,14 @@ void CoreCommandHandler::setBoardInfo(const char* deviceName, const char* firmwa
     _boardInfo.buildNumber = buildNumber;
 }
 
-bool CoreCommandHandler::tryHandle(uint8_t type, const uint8_t* payload, size_t len) {
+bool CoreCommandServer::tryHandle(uint8_t type, const uint8_t* payload, size_t len) {
     _lastActivityMs = millis();
+    // Increment with overflow protection (wrap to 1, not 0, to distinguish from reset)
+    if (_commandCounter == UINT32_MAX) {
+        _commandCounter = 1;
+    } else {
+        _commandCounter++;
+    }
     
     switch (type) {
         case CorePacket::INIT:
@@ -74,16 +80,28 @@ bool CoreCommandHandler::tryHandle(uint8_t type, const uint8_t* payload, size_t 
             return true;
             
         case CorePacket::KEEPALIVE:
-            // Keepalive just updates activity timer (already done above)
+            // Keepalive updates activity timer (already done above) and sends ACK
+            // Increment with overflow protection (wrap to 1, not 0, to distinguish from reset)
+            if (_keepaliveCounter == UINT32_MAX) {
+                _keepaliveCounter = 1;
+            } else {
+                _keepaliveCounter++;
+            }
+            sendAck();
             if (_keepaliveCallback) _keepaliveCallback();
             return true;
             
+        case CorePacket::STATUS_REQ:
+            sendStatus();
+            return true;
+            
         default:
+            _commandCounter--;  // Don't count unhandled commands
             return false;
     }
 }
 
-bool CoreCommandHandler::checkTimeout(unsigned long timeoutMs) {
+bool CoreCommandServer::checkTimeout(unsigned long timeoutMs) {
     if (timeoutMs == 0 || _lastActivityMs == 0) return false;
     
     if (millis() - _lastActivityMs > timeoutMs) {
@@ -95,11 +113,11 @@ bool CoreCommandHandler::checkTimeout(unsigned long timeoutMs) {
     return false;
 }
 
-void CoreCommandHandler::reset() {
+void CoreCommandServer::reset() {
     _initialized = false;
 }
 
-void CoreCommandHandler::handleInit(const uint8_t* payload, size_t len) {
+void CoreCommandServer::handleInit(const uint8_t* payload, size_t len) {
     (void)payload;
     (void)len;
     
@@ -118,7 +136,7 @@ void CoreCommandHandler::handleInit(const uint8_t* payload, size_t len) {
     }
 }
 
-void CoreCommandHandler::sendInitReady() {
+void CoreCommandServer::sendInitReady() {
     if (!_serial) return;
     
     uint8_t payload[64];
@@ -132,7 +150,7 @@ void CoreCommandHandler::sendInitReady() {
     }
 }
 
-void CoreCommandHandler::sendAck() {
+void CoreCommandServer::sendAck() {
     if (!_serial) return;
     
     uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
@@ -143,11 +161,40 @@ void CoreCommandHandler::sendAck() {
     }
 }
 
-void CoreCommandHandler::sendNack(uint8_t errorCode) {
+void CoreCommandServer::sendNack(uint8_t errorCode) {
     if (!_serial) return;
     
     uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
     size_t encLen = CoreProtocol::encodePacket(encoded, CorePacket::NACK, &errorCode, 1);
+    
+    if (encLen > 0) {
+        _serial->write(encoded, encLen);
+    }
+}
+
+void CoreCommandServer::sendStatus() {
+    if (!_serial) return;
+    
+    // STATUS payload: [counter:u32LE][uptime:u32LE][freeRam:u32LE][moduleData:0-52]
+    uint8_t payload[CoreProtocol::MAX_PAYLOAD_SIZE];
+    size_t idx = 0;
+    
+    // Core header (12 bytes)
+    CoreProtocol::putU32LE(&payload[idx], _commandCounter);
+    idx += 4;
+    CoreProtocol::putU32LE(&payload[idx], millis());
+    idx += 4;
+    CoreProtocol::putU32LE(&payload[idx], _boardInfo.freeRamBytes);
+    idx += 4;
+    
+    // Module-specific data (appended by callback)
+    if (_statusDataCallback) {
+        size_t moduleLen = _statusDataCallback(&payload[idx], sizeof(payload) - idx);
+        idx += moduleLen;
+    }
+    
+    uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
+    size_t encLen = CoreProtocol::encodePacket(encoded, CorePacket::STATUS, payload, idx);
     
     if (encLen > 0) {
         _serial->write(encoded, encLen);

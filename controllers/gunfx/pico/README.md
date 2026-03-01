@@ -236,7 +236,7 @@ Exceptions (fire-and-forget, no response expected):
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌─────────────────────┐  ┌─────────────────────────────┐  │
-│  │  CoreCommandHandler │  │       GunFxSlave            │  │
+│  │  CoreCommandServer  │  │       GunFxServer             │  │
 │  │  (Priority 1)       │  │       (Priority 2)          │  │
 │  ├─────────────────────┤  ├─────────────────────────────┤  │
 │  │ INIT, SHUTDOWN      │  │ TRIGGER_ON/OFF              │  │
@@ -250,7 +250,7 @@ Exceptions (fire-and-forget, no response expected):
 
 **Chain of Responsibility Pattern:**
 1. `CommandRouter` receives COBS packet
-2. Routes to `CoreCommandHandler` first (system commands)
+2. Routes to `CoreCommandServer` first (system commands)
 3. If not handled, routes to `GunFxSlave` (module commands)
 4. If no handler matches, sends NACK with INVALID_COMMAND
 
@@ -313,7 +313,7 @@ python scripts/build_and_flash.py --port COM3
 
 - **v0.3.0** - Binary-only protocol
   - Removed text protocol support
-  - Using new serial library (CoreCommandHandler + GunFxSlave)
+  - Using new serial library (CoreCommandServer + GunFxServer)
   - COBS framing with CRC-8 validation
   - Chain of Responsibility architecture
 

@@ -108,6 +108,20 @@ Each LED channel has its own sequence that can hold up to 24 events.
 | 0x43 | LED_SEQ_ADD | ch:u8, event... | Add event to sequence |
 | 0x44 | LED_SEQ_START | ch:u8 (0=all) | Start sequence playback |
 | 0x45 | LED_SEQ_STOP | ch:u8 (0=all) | Stop sequence playback |
+| 0x46 | LED_SEQ_RESTART | ch:u8 | Restart sequence from beginning |
+| 0x47 | LED_SEQ_STATUS | ch:u8 | Query sequence status → LED_SEQ_STATUS_RESP |
+| 0x48 | LED_STATUS | (none) | Query all LED channels → LED_STATUS_RESP |
+| 0x49 | LED_SEQ_QUEUE | ch:u8 | Query sequence event queue → LED_SEQ_QUEUE_RESP |
+
+#### Response Packets
+
+| Type | Name | Payload | Description |
+|------|------|---------|-------------|
+| 0x5A | LED_STATUS_RESP | [ch, brightness, playing, count]×N | Status of all channels |
+| 0x5B | LED_SEQ_STATUS_RESP | ch:u8, playing:u8, count:u8, index:u8, loops:u32le | Sequence status |
+| 0x5D | LED_SEQ_QUEUE_RESP | ch:u8, count:u8, index:u8, playing:u8, [events...] | Event queue listing |
+
+**LED_SEQ_QUEUE_RESP Event Format:** Each event is 4 bytes: `type:u8, duration:u16le, param1:u8`
 
 #### LED_SEQ_ADD Event Types
 
@@ -131,9 +145,10 @@ Each LED channel has its own sequence that can hold up to 24 events.
 
 | Type | Name | Payload | Description |
 |------|------|---------|-------------|
-| 0x58 | POWER_STATUS | (none) | Request power readings |
+| 0x58 | POWER_STATUS | (none) | Request power readings and config |
+| 0x59 | POWER_CONFIG | shunt_mohm:u16le, max_current_ma:u16le | Configure INA226 calibration |
 
-**POWER_STATUS Response:**
+**POWER_STATUS Response (11 bytes):**
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -141,6 +156,15 @@ Each LED channel has its own sequence that can hold up to 24 events.
 | current_ma | i16le | Current in milliamps (signed) |
 | power_mw | u16le | Power in milliwatts |
 | available | u8 | 1 if INA226 detected, 0 otherwise |
+| shunt_mohm | u16le | Configured shunt resistance in milliohms |
+| max_current_ma | u16le | Configured max current in milliamps |
+
+**POWER_CONFIG Payload:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| shunt_mohm | u16le | Shunt resistor value in milliohms (e.g., 100 for 0.1Ω) |
+| max_current_ma | u16le | Maximum expected current in milliamps (e.g., 3200 for 3.2A) |
 
 ---
 
@@ -232,7 +256,7 @@ Each LED channel has its own `LedEventSeq` that can play a sequence of events:
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌─────────────────────┐  ┌─────────────────────────────┐  │
-│  │  CoreCommandHandler │  │      LightFxSlave           │  │
+│  │  CoreCommandServer  │  │     LightFxServer            │  │
 │  │  (Priority 1)       │  │      (Priority 2)           │  │
 │  ├─────────────────────┤  ├─────────────────────────────┤  │
 │  │ INIT, SHUTDOWN      │  │ LED_SET, LED_OFF            │  │
@@ -276,7 +300,7 @@ pio run -t clean
 
 - **v0.2.0** - Binary-only protocol
   - Removed text protocol support
-  - Using new serial library (CoreCommandHandler + LightFxSlave)
+  - Using new serial library (CoreCommandServer + LightFxServer)
   - COBS framing with CRC-8 validation
 
 - **v0.1.0** - Initial release

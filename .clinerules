@@ -25,21 +25,20 @@ endianness: "little-endian"
 ## File Sync Points (CRITICAL)
 
 These files must stay in sync:
-- `lib/serial/serial_protocol.h` ↔ `tests/framework/packets.py` (packet constants)
+- `lib/serial/serial_core.h` ↔ `tests/framework/packets.py` (packet constants)
 - `lib/serial/serial_error.h` ↔ `tests/framework/packets.py` (error codes)
 - `lib/serial/serial_xxxfx.h` ↔ `tests/framework/commands.py` (command builders)
-- `lib/serial/serial_xxxfx.h` ↔ `tests/cli/interactive.py` (CLI commands)
+- `lib/serial/serial_xxxfx.h` ↔ `tests/cli/handlers/xxxfx.py` (CLI commands)
 
 ## When Adding Commands
 
 Always update ALL of these:
-1. `serial_protocol.h` - Packet type constant
-2. `serial_xxxfx.h` - Handler in slave class
-3. `xxxfx_pico.ino` - Callback implementation
-4. `packets.py` - Python constant
-5. `commands.py` - Python builder
-6. `interactive.py` - CLI command
-7. `README.md` - Protocol documentation
+1. `serial_xxxfx.h` - Packet type constant + handler using SFX_* macros
+2. `xxxfx_pico.ino` - Callback implementation
+3. `packets.py` - Python constant
+4. `commands.py` - Python builder
+5. `cli/handlers/xxxfx.py` - CLI command
+6. `README.md` - Protocol documentation
 
 ## Code Patterns
 
@@ -57,12 +56,15 @@ payload = struct.pack('<H', value)  # '<' = little-endian
 
 ```bash
 # Build check
-pio run
+python -m platformio run -e pico -d controllers/gunfx/pico
 
 # Python syntax check
 python -m py_compile tests/framework/packets.py
 python -m py_compile tests/cli/interactive.py
+python -m py_compile tests/cli/handlers/gunfx.py
+python -m py_compile tests/cli/handlers/lightfx.py
 
-# Run tests (after flash)
+# Build, flash, and test
+python scripts/build_and_flash.py gunfx
 pytest tests/gunfx/ -v
 ```
