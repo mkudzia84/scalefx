@@ -9,9 +9,10 @@
 ```yaml
 # Centralized build and flash (recommended)
 Build_And_Flash: "python scripts/build_and_flash.py gunfx"
-Build_Only: "python scripts/build_and_flash.py gunfx --no-flash"  # build only
 Flash_Specific_Port: "python scripts/build_and_flash.py lightfx --port COM10"
 Skip_Build: "python scripts/build_and_flash.py noop --no-build"
+Incremental_Build: "python scripts/build_and_flash.py gunfx --no-clean"
+Skip_Verify: "python scripts/build_and_flash.py lightfx --skip-verify"
 
 # PlatformIO direct commands
 GunFX:
@@ -60,6 +61,8 @@ python scripts/build_and_flash.py noop --no-build
 controller: "gunfx | lightfx | noop (required)"
 --port PORT: "Specify serial port (default: auto-detect)"
 --no-build: "Skip build step (use existing firmware)"
+--no-clean: "Skip clean step (incremental build)"
+--skip-verify: "Skip post-flash verification"
 --timeout SEC: "BOOTSEL wait timeout (default: 15s)"
 ```
 
@@ -100,14 +103,15 @@ python scripts/build_and_flash.py lightfx --no-build
 **Process:**
 ```
 1. Build firmware via PlatformIO (unless --no-build)
-2. Detect serial port (auto-detect or --port)
-3. Send binary INIT packet (COBS encoded)
-4. Receive INIT_READY with device info
-5. Send binary BOOTSEL command
-6. Wait for RPI-RP2 drive to appear
-7. Copy firmware.uf2 to drive with MD5 verification
-8. Wait for device reboot
-9. Verify device responds on serial port
+2. Increment BUILD_NUMBER in source (.ino file)
+3. Detect serial port (auto-detect or --port)
+4. Send binary INIT packet (COBS encoded)
+5. Receive INIT_READY, parse binary payload (name, version, platform, build)
+6. Send binary BOOTSEL command
+7. Wait for RPI-RP2 drive to appear
+8. Copy firmware.uf2 to drive
+9. Wait for device reboot
+10. Verify device responds with correct INIT_READY (unless --skip-verify)
 ```
 
 > **Note:** The script uses binary COBS protocol packets from the test framework (`build_packet(CorePacket.INIT)`, `build_packet(CorePacket.BOOTSEL)`). There is no text-mode INIT.

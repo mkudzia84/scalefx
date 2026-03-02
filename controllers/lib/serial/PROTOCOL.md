@@ -4,24 +4,23 @@
 
 Serial communication protocol for ScaleFX controllers (HubFX, GunFX).
 
-**Version:** 0.2.1  
+**Version:** 0.3.0  
 **Binary Framing:** COBS encoding with 0x00 delimiter  
 **CRC:** CRC-8 polynomial 0x07 over type+len+payload  
 
-## Protocol Negotiation
+## Protocol
 
-The INIT handshake is **always text-based** regardless of the final protocol mode.
-This ensures reliable connection establishment before switching to binary mode.
+All communication uses **binary COBS-encoded packets**, including INIT and INIT_READY.
 
 ### Connection Flow
 
 ```
 Master                              Slave
   |                                   |
-  |  INIT protocol=binary\n           |
+  |  INIT (0xF0, binary COBS)         |
   |---------------------------------->|
-  |                                   |  (switches to binary mode)
-  |  INIT_READY name=... version=...\n|
+  |                                   |  (resets state)
+  |  INIT_READY (0xF3, binary COBS)   |
   |<----------------------------------|
   |                                   |
   |  [Binary COBS packets]            |
@@ -32,9 +31,8 @@ Master                              Slave
 
 If the master sends a new INIT command (e.g., after disconnect/reconnect), the slave:
 1. Resets connection state
-2. Processes the new INIT command
-3. Switches to the requested protocol mode
-4. Responds with INIT_READY
+2. Performs safe shutdown
+3. Responds with INIT_READY containing device info
 
 This allows seamless reconnection without requiring slave reboot.
 
@@ -73,63 +71,55 @@ System-level commands common to all ScaleFX devices:
 
 ### INIT Command
 
-**Always sent as text**, even when requesting binary protocol mode.
-
-**Format:**
-```
-INIT protocol=binary keepalive=30000\n
-INIT protocol=text keepalive=off\n
-```
-
-**Parameters:**
-- `protocol` - Protocol mode for subsequent communication: `binary` or `text`
-- `keepalive` - Keepalive interval in milliseconds, or `off` to disable (optional, defaults to `off`)
-
-**Keepalive Behavior:**
-- **Master side:** Emits a KEEPALIVE if no other message has been sent within the interval.
-  This ensures at least one message (of any type) is sent per interval.
-- **Slave side:** Monitors for ANY incoming message within 1.5× the keepalive interval.
-  If no message is received within this timeout, the slave treats it as connection loss
-  and performs a safe shutdown (stops firing, disables heater, etc.).
-
-**Example:**
-- `keepalive=30000` → Master sends at least one message every 30s, slave times out after 45s of silence.
-- `keepalive=off` → No keepalive monitoring (use fallback timeout).
+**Binary packet** (type 0xF0), no payload.
 
 **Behavior:**
 1. Slave resets any existing connection state
-2. Slave stores the negotiated keepalive interval
-3. Slave switches to the requested protocol mode
-4. Slave responds with INIT_READY (always text)
-5. All subsequent communication uses the negotiated protocol
+2. Slave performs safe shutdown of all active operations
+3. Slave responds with INIT_READY containing device info
 
 ### INIT_READY Response
 
-**Always sent as text**, regardless of negotiated protocol mode.
+**Binary packet** (type 0xF3) with length-prefixed strings and u32LE fields.
 
-**Format:**
+**Payload format:**
 ```
-INIT_READY name=GunFX-A4B2 version=0.1.0 build=42 platform=RP2040 cpuMHz=120 ramBytes=221624
+[nameLen:u8][name:N bytes]
+[verLen:u8][version:N bytes]
+[platLen:u8][platform:N bytes]
+[cpuMHz:u32LE]
+[freeRam:u32LE]
+[buildNum:u32LE]
 ```
 
 **Fields:**
 - `name` - Device name with unique ID (e.g., "GunFX-A4B2")
-- `version` - Firmware version without "v" prefix (e.g., "0.1.0")
-- `build` - Build number (incremented with each build)
+- `version` - Firmware version without "v" prefix (e.g., "0.2.0")
 - `platform` - Hardware platform (e.g., "RP2040")
-- `cpuMHz` - CPU frequency in MHz
-- `ramBytes` - Free RAM in bytes
+- `cpuMHz` - CPU frequency in MHz (u32LE)
+- `freeRam` - Free RAM in bytes at boot (u32LE)
+- `buildNum` - Build number, incremented with each build (u32LE)
 
-**Note:** Version should NOT include "v" prefix (use "0.1.0" not "v0.1.0").
+**Example** (38 bytes for LightFX-521C v0.2.0):
+```
+0C "LightFX-521C" 05 "0.2.0" 06 "RP2040" 85000000 50C00300 02000000
+│                  │          │           │        │        └─ build=2
+│                  │          │           │        └─ freeRam=245840
+│                  │          │           └─ cpuMHz=133
+│                  │          └─ platform (6 chars)
+│                  └─ version (5 chars)
+└─ name (12 chars)
+```
+
+**Note:** Version should NOT include "v" prefix (use "0.2.0" not "v0.2.0").
 
 ### SHUTDOWN Command
 
 Requests graceful shutdown of the slave device. The slave performs a safe shutdown
 (stops firing, disables heater/fan, resets servos to neutral) but remains running.
 
-**Text Format:** `SHUTDOWN\n`  
 **Binary Payload:** None  
-**Response:** None (fire-and-forget)
+**Response:** ACK
 
 **Safe Shutdown Actions (GunFX):**
 - Stops firing (rate = 0)
@@ -142,20 +132,13 @@ Requests graceful shutdown of the slave device. The slave performs a safe shutdo
 
 Connection heartbeat to maintain connection state.
 
-**Text Format:** `KEEPALIVE\n`  
-**Binary Payload:** None
-
-**Usage:**
-- Sent automatically by master if no other message was sent within the keepalive interval.
-- Resets the slave's connection timeout timer (just like any other message).
-- If keepalive is disabled (`keepalive=off` in INIT), this command is not sent automatically,
-  but the slave may still use a fallback timeout based on other message activity.
+**Binary Payload:** None  
+**Response:** ACK
 
 ### REBOOT Command
 
 Triggers software reset via `rp2040.reboot()`. Performs safe shutdown before rebooting.
 
-**Text Format:** `REBOOT\n`  
 **Binary Payload:** None  
 **Response:** None (fire-and-forget, device reboots)
 
@@ -163,7 +146,6 @@ Triggers software reset via `rp2040.reboot()`. Performs safe shutdown before reb
 
 Triggers entry to BOOTSEL mode via `rp2040.rebootToBootloader()`. Performs safe shutdown before entering bootloader.
 
-**Text Format:** `BOOTSEL\n`  
 **Binary Payload:** None  
 **Response:** None (fire-and-forget, device enters BOOTSEL mode, RPI-RP2 drive appears)
 
@@ -258,121 +240,96 @@ Flags:
 5. Device auto-reboots with new firmware
 
 ### Serial-Triggered BOOTSEL
-1. Send `BOOTSEL\n` via serial (text command, works in any mode)
-2. Slave enters BOOTSEL mode automatically
-3. RPI-RP2 drive appears
-4. Copy `firmware.uf2` to drive
-5. Device auto-reboots with new firmware
+1. Send INIT (binary) and receive INIT_READY
+2. Send BOOTSEL packet (0xF9, binary COBS, no payload)
+3. Slave enters BOOTSEL mode automatically
+4. RPI-RP2 drive appears
+5. Copy `firmware.uf2` to drive
+6. Device auto-reboots with new firmware
+
+> **Note:** Use `python scripts/build_and_flash.py <controller>` for automated build+flash.
 
 ## Implementation Classes
 
-| Class | Description |
-|-------|-------------|
-| `SerialInitHandler` | Protocol negotiation (always text), handles INIT/INIT_READY |
-| `SerialBus` | Binary COBS protocol over USB CDC |
-| `SerialBusText` | Text protocol over Stream |
-| `GunFxSerialMaster` | GunFX master (binary protocol) |
-| `GunFxSerialSlave` | GunFX slave (binary protocol) |
-| `GunFxSerialMasterText` | GunFX master (text protocol) |
-| `GunFxSerialSlaveText` | GunFX slave (text protocol) |
+| Class | Header | Description |
+|-------|--------|-------------|
+| `CoreProtocol` | `serial_core.h` | COBS encoding, CRC-8, packet building/parsing |
+| `ISerialCore` | `serial_core.h` | Abstract interface for serial I/O |
+| `CoreCommandServer` | `serial_core.h` | Server-side system command handler (INIT, STATUS, REBOOT, etc.) |
+| `ICommandHandler` | `serial_command_handler.h` | Handler interface (`tryProcess()`) |
+| `CommandRouter` | `serial_command_handler.h` | Routes packets to registered handlers |
+| `GunFxServer` | `serial_gunfx.h` | GunFX command handler (server) |
+| `GunFxClient` | `serial_gunfx.h` | GunFX command sender (client/hub) |
+| `LightFxServer` | `serial_lightfx.h` | LightFX command handler (server) |
+| `LightFxClient` | `serial_lightfx.h` | LightFX command sender (client/hub) |
+| `SerialBus` | `serial_bus.h` | Client-side serial bus (USB host) |
+| `UsbHost` | `serial_bus.h` | PIO-USB host for HubFX |
 
-### SerialInitHandler Pattern
+### Server-Side Pattern
 
-The `SerialInitHandler` class handles protocol negotiation separately from the
-protocol-specific handlers. This allows:
-
-1. **Clean separation** - Init logic is reusable across different protocols
-2. **Reconnection support** - New INIT resets state and re-negotiates
-3. **Protocol switching** - Slave can switch between text/binary based on INIT
-
-**Slave-side usage:**
 ```cpp
-SerialInitHandler initHandler;
-GunFxSerialSlave binarySlave;
-GunFxSerialSlaveText textSlave;
-IGunFxSlave* activeSlave = nullptr;
-
-void performSafeShutdown() {
-    // Stop firing, disable heater/fan, reset servos to neutral
-}
+CommandRouter commandRouter;
+CoreCommandServer coreServer;
+GunFxServer gunfxServer;
 
 void setup() {
     Serial.begin(115200);
     
-    initHandler.begin(&Serial, "GunFX-1234");
-    initHandler.setBoardInfo("0.1.0", 1, "RP2040", 120, freeRam);  // version, build, platform, MHz, RAM
+    // Configure core handler
+    coreServer.begin(&Serial);
+    coreServer.setBoardInfo("GunFX-A4B2", FIRMWARE_VERSION, "RP2040",
+                            rp2040.f_cpu() / 1000000, rp2040.getFreeHeap(),
+                            BUILD_NUMBER);
+    coreServer.onInit(performSafeInit);
+    coreServer.onShutdown(performSafeShutdown);
+    coreServer.onReboot([]() { rp2040.reboot(); });
+    coreServer.onBootsel([]() { rp2040.rebootToBootloader(); });
     
-    initHandler.onInitComplete([](ProtocolMode mode) {
-        if (mode == ProtocolMode::Binary) {
-            binarySlave.begin(&Serial, "GunFX-1234");
-            activeSlave = &binarySlave;
-        } else {
-            textSlave.begin(&Serial, "GunFX-1234");
-            activeSlave = &textSlave;
-        }
-        // Register command callbacks on activeSlave...
+    // Register module status callback (appended to core STATUS header)
+    coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+        // Write module-specific status bytes, return count written
+        return writeModuleStatus(buf, maxLen);
     });
     
-    initHandler.onInitReset([]() {
-        performSafeShutdown();
-        if (activeSlave) activeSlave->end();
-        activeSlave = nullptr;
-    });
+    // Configure module handler with callbacks
+    gunfxServer.begin(&Serial);
+    gunfxServer.onTriggerOn(handleTriggerOn);
+    // ... register other callbacks
     
-    initHandler.onShutdown([]() { performSafeShutdown(); });
-    initHandler.onReboot([]() { performSafeShutdown(); rp2040.reboot(); });
-    initHandler.onBootsel([]() { performSafeShutdown(); rp2040.rebootToBootloader(); });
-    initHandler.onConnectionLoss([]() { performSafeShutdown(); });
+    // Register handlers with router (order = priority)
+    // CRITICAL: coreServer MUST be first!
+    commandRouter.begin(&Serial, [](uint8_t err, uint8_t type) {
+        gunfxServer.sendNack(err);
+    });
+    commandRouter.addHandler(&coreServer);   // Priority 1: core commands
+    commandRouter.addHandler(&gunfxServer);   // Priority 2: module commands
 }
 
 void loop() {
-    // InitHandler always processes first (watches for INIT, system commands)
-    if (initHandler.process()) {
-        return; // INIT was handled, protocol may have switched
-    }
-    
-    // Process with active protocol
-    if (activeSlave) {
-        activeSlave->process();
-    }
+    commandRouter.poll();
+    coreServer.updateFreeRam(rp2040.getFreeHeap());  // Keep RAM reading current
 }
 ```
 
-**Master-side usage:**
-```cpp
-// Master sends INIT with protocol preference
-void connectSlave(Stream* serial, bool useBinary) {
-    // Always send text INIT
-    serial->print("INIT protocol=");
-    serial->println(useBinary ? "binary" : "text");
-    
-    // Wait for INIT_READY (text response)
-    // Then switch to appropriate protocol handler
-}
-```
+## Changes in v0.3.0
 
-## Changes in v0.2.1
-
-- **Build number**: Added `build` field to INIT_READY response
-- **System commands**: SHUTDOWN, REBOOT, BOOTSEL are all fire-and-forget (no ACK)
-- **Safe shutdown**: All system commands and connection loss trigger safe shutdown
-  - Stops firing, disables heater/fan, resets servos to neutral
-- **Simplified slave interface**: Removed `setBoardInfo()` from `IGunFxSlave` interface
-  - Board info is only set on `SerialInitHandler` which sends INIT_READY
-- **Connection loss callback**: Added `onConnectionLoss()` to `SerialInitHandler`
+- **Binary-only protocol**: Removed text protocol mode; all packets are binary COBS
+- **Binary INIT_READY**: INIT_READY now uses binary length-prefixed payload instead of text
+  - Format: `[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]`
+- **Rich STATUS**: STATUS response now contains 12-byte core header + module-specific data
+  - Core header: `[counter:u32LE][uptime:u32LE][freeRam:u32LE]`
+  - GunFX appends 20 bytes (flags, fan, servos, RPM, shots, heater)
+  - LightFX appends 22 bytes (LEDs, servos, power readings)
+- **StatusDataCallback**: Modules register `onStatusData()` on CoreCommandServer
+- **updateFreeRam()**: CoreCommandServer tracks live free RAM for STATUS
+- **Removed**: `SerialInitHandler`, `SerialBusText`, text protocol classes
+- **Removed**: `GunFxSerialMaster/Slave`, `GunFxSerialMasterText/SlaveText`
+- **Refactored**: Handler chain uses `ICommandHandler` + `CommandRouter` pattern
+- **SFX_* macros**: `SFX_REQUIRE_LEN`, `SFX_VALIDATE`, `SFX_DISPATCH` reduce handler boilerplate
 
 ## Changes in v0.2.0
 
-- **Protocol negotiation**: INIT command now specifies `protocol=text|binary`
-- **Always-text handshake**: INIT and INIT_READY are always text, regardless of mode
-- **Reconnection support**: New INIT resets connection and re-negotiates protocol
-- **SerialInitHandler**: New class for protocol negotiation (factored out)
-- **Version format**: INIT_READY version field no longer includes "v" prefix
-
-## Changes in v0.1.0
-
-- Combined `serial_common` and `serial_gunfx` into unified `serial` library
-- Added text protocol implementations for testing
 - Added `CorePacket::REBOOT` (0xF8) for software reset
 - Added `CorePacket::BOOTSEL` (0xF9) for remote firmware upload
-- Added `TextParse` namespace for parsing key=value arguments
+- Added build number to INIT_READY
+- Safe shutdown on all system commands and connection loss

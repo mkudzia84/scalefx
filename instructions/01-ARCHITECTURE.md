@@ -78,8 +78,8 @@ Core_Packets:  # 0xF0-0xFF - All controllers
   INIT:        { type: 0xF0, direction: "C→S", payload: "none" }
   SHUTDOWN:    { type: 0xF1, direction: "C→S", payload: "none" }
   KEEPALIVE:   { type: 0xF2, direction: "C→S", payload: "none" }
-  INIT_READY:  { type: 0xF3, direction: "S→C", payload: "device_info" }
-  STATUS:      { type: 0xF4, direction: "S→C", payload: "telemetry" }
+  INIT_READY:  { type: 0xF3, direction: "S→C", payload: "[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]" }
+  STATUS:      { type: 0xF4, direction: "S→C", payload: "[counter:u32LE][uptime:u32LE][freeRam:u32LE][moduleData...]" }
   STATUS_REQ:  { type: 0xF5, direction: "C→S", payload: "none" }
   ACK:         { type: 0xF6, direction: "S→C", payload: "none" }
   NACK:        { type: 0xF7, direction: "S→C", payload: "[error_code:u8]" }
@@ -128,6 +128,7 @@ LightFX_Packets:  # 0x40-0x5F
 │  │ - crc8(data, len) → checksum                              │  │
 │  │ - build_packet(type, payload, len) → packet               │  │
 │  │ - parse_packet(data) → {type, payload, len, valid}        │  │
+│  │ - encodeInitReady(info) / decodeInitReady(payload)        │  │
 │  └───────────────────────────────────────────────────────────┘  │
 │                                                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
@@ -140,7 +141,9 @@ LightFX_Packets:  # 0x40-0x5F
 │  ┌─────────┴─────────┐  ┌────────┴────────┐                    │
 │  │ CoreCommandServer │  │ XxxFxServer     │                    │
 │  │ handles: 0xF0-0xFF│  │ handles: module │                    │
-│  └───────────────────┘  └─────────────────┘                    │
+│  │ onStatusData(cb)  │  └─────────────────┘                    │
+│  │ updateFreeRam(n)  │                                        │
+│  └───────────────────┘                                        │
 │                                                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │ CommandRouter                                             │  │
@@ -149,6 +152,18 @@ LightFX_Packets:  # 0x40-0x5F
 │  └───────────────────────────────────────────────────────────┘  │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+### StatusDataCallback
+
+Modules provide board-specific STATUS data via a callback registered on `CoreCommandServer`.
+When a STATUS_REQ is received, `CoreCommandServer` writes the 12-byte core header
+(`[counter:u32LE][uptime:u32LE][freeRam:u32LE]`) and then calls the module's callback
+to append module-specific bytes.
+
+```cpp
+using StatusDataCallback = std::function<size_t(uint8_t* buffer, size_t maxLen)>;
+// Returns number of bytes written to buffer
 ```
 
 ---
@@ -170,11 +185,19 @@ void setup() {
     
     // 2. Configure core handler
     coreServer.begin(&Serial);
-    coreServer.setBoardInfo("DeviceName", "1.0.0", "RP2040", 125, freeRam);
+    coreServer.setBoardInfo("DeviceName", FIRMWARE_VERSION, "RP2040",
+                            rp2040.f_cpu() / 1000000, rp2040.getFreeHeap(),
+                            BUILD_NUMBER);
     coreServer.onInit([]() { performSafeInit(); });
     coreServer.onShutdown([]() { performSafeShutdown(); });
     coreServer.onReboot([]() { rp2040.reboot(); });
     coreServer.onBootsel([]() { rp2040.rebootToBootloader(); });
+    
+    // 2b. Register module-specific STATUS data callback
+    coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+        // Write module status bytes (appended to 12-byte core header)
+        return writeModuleStatus(buf, maxLen);
+    });
     
     // 3. Configure module handler with callbacks
     xxxfxServer.begin(&Serial);
@@ -196,6 +219,9 @@ void setup() {
 void loop() {
     // 5. Process incoming packets
     commandRouter.poll();
+    
+    // 6. Keep free RAM reading current for STATUS responses
+    coreServer.updateFreeRam(rp2040.getFreeHeap());
 }
 ```
 

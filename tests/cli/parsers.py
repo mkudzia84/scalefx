@@ -323,9 +323,9 @@ def parse_init_ready(payload: bytes) -> Optional[InitReadyInfo]:
         info.platform = payload[offset:offset+plat_len].decode('utf-8', errors='replace')
         offset += plat_len
         
-        # CPU MHz (u16)
-        info.cpu_mhz = read_u16_le(payload, offset)
-        offset += 2
+        # CPU MHz (u32)
+        info.cpu_mhz = read_u32_le(payload, offset)
+        offset += 4
         
         # Free RAM (u32)
         info.free_ram = read_u32_le(payload, offset)

@@ -35,7 +35,7 @@
 // ============================================================================
 
 #define FIRMWARE_VERSION "0.2.0"
-#define BUILD_NUMBER 2
+#define BUILD_NUMBER 4
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -535,11 +535,11 @@ void setup() {
     // Initialize INA226 power monitor
     powerMonitor.begin(Wire, INA226Address::DEFAULT, ina226ShuntOhms, ina226MaxCurrent);
     
-    // Initialize status LEDs
+    // Initialize status LEDs (always on)
     ledBlue.begin(PIN_LED_BLUE, false, false);
     ledYellow.begin(PIN_LED_YELLOW, false, false);
-    ledBlue.off();
-    ledYellow.off();
+    ledBlue.on();
+    ledYellow.on();
     
     // Initialize LED channels with PWM
     for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
@@ -641,9 +641,9 @@ void setup() {
     commandRouter.addHandler(&lightfxServer);    // Priority 2: LightFX commands
     
     // Initial LED blink
-    ledYellow.on();
-    delay(200);
     ledYellow.off();
+    delay(200);
+    ledYellow.on();
 }
 
 // ============================================================================
@@ -679,6 +679,4 @@ void loop() {
         powerMonitor.update();
     }
     
-    // Update status LED
-    updateBlueLED(now);
 }

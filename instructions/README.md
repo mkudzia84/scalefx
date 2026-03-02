@@ -79,8 +79,8 @@ Serial_Library:
     - name: "serial.h"
       purpose: "Umbrella header (include this)"
     - name: "serial_core.h"
-      purpose: "CoreProtocol class, packet types, COBS/CRC, SFX_* handler macros"
-      modify_when: "Adding packet types or handler macros"
+      purpose: "CoreProtocol class, packet types, COBS/CRC, SFX_* handler macros, StatusDataCallback"
+      modify_when: "Adding packet types, handler macros, or modifying STATUS format"
     - name: "serial_error.h"
       purpose: "Error codes for all modules"
       modify_when: "Adding error codes"
@@ -224,6 +224,25 @@ Sync_Groups:
 ---
 
 ## Common Patterns
+
+### Rich STATUS Pattern
+
+Every controller provides board-specific status via `CoreCommandServer`:
+
+```cpp
+// In setup(): Register module status callback
+coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+    buf[0] = myFlag;
+    CoreProtocol::putU16LE(&buf[1], myServo);
+    return 3;  // bytes written
+});
+
+// In loop(): Keep free RAM current
+coreServer.updateFreeRam(rp2040.getFreeHeap());
+```
+
+STATUS response = 12-byte core header + module callback data.
+See PROTOCOL.md for wire format per controller.
 
 ### Callback Registration Pattern (C++)
 

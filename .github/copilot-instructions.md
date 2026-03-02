@@ -25,6 +25,8 @@ python -m platformio run -e pico
 python scripts/build_and_flash.py gunfx
 python scripts/build_and_flash.py lightfx --port COM10
 python scripts/build_and_flash.py noop --no-build
+python scripts/build_and_flash.py gunfx --no-clean      # incremental build
+python scripts/build_and_flash.py lightfx --skip-verify  # skip post-flash check
 
 # Build Raspberry Pi hub (C, requires GCC 14+)
 ssh helifx@helifx "cd ~/helifx/controllers/hubfx/pi && make"
@@ -134,7 +136,7 @@ commandRouter.addHandler(&xxxfxServer);      // ← Missing coreServer!
 
 ### Shared Serial Library (`controllers/lib/serial/`)
 - **serial.h** - Umbrella include (use this)
-- **serial_core.h** - CoreProtocol class, packet types, COBS/CRC, `SFX_*` handler macros
+- **serial_core.h** - CoreProtocol class, packet types, COBS/CRC, `SFX_*` handler macros, `StatusDataCallback`
 - **serial_bus.h** - SerialBus class (client), UsbHost (PIO-USB CDC)
 - **serial_command_handler.h** - ICommandHandler interface, CommandRouter
 - **serial_gunfx.h** - GunFxClient, GunFxServer, `GunFxSpec` validation namespace
@@ -150,6 +152,28 @@ SFX_VALIDATE(cond, err)               // NACK err if !cond
 SFX_DISPATCH(callback, args...)       // Call callback, ACK/NACK on result
 SFX_HANDLE_CHANNEL_CMD(v, err, cb)    // Validate + dispatch single-param cmd
 ```
+
+### Rich STATUS Pattern
+
+Every controller provides board-specific status via `CoreCommandServer`:
+
+```cpp
+// In setup(): Register module status callback
+coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+    buf[0] = myFlag;
+    CoreProtocol::putU16LE(&buf[1], myServo);
+    return 3;  // bytes written
+});
+
+// In loop(): Keep free RAM current
+coreServer.updateFreeRam(rp2040.getFreeHeap());
+```
+
+STATUS response = 12-byte core header `[counter:u32][uptime:u32][freeRam:u32]` + module callback data.
+
+INIT_READY payload = length-prefixed binary: `[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]`
+
+See `controllers/lib/serial/PROTOCOL.md` for full wire format.
 
 ### Python Test Framework (`tests/`)
 ```

@@ -245,7 +245,19 @@ void setup() {
     // Configure core handler
     coreServer.begin(&Serial);
     coreServer.setBoardInfo("NewFX", FIRMWARE_VERSION, BOARD_TYPE, 
-                              rp2040.f_cpu() / 1000000, rp2040.getFreeHeap());
+                              rp2040.f_cpu() / 1000000, rp2040.getFreeHeap(),
+                              BUILD_NUMBER);
+    coreServer.onInit(performSafeInit);
+    coreServer.onShutdown(performSafeShutdown);
+    coreServer.onReboot([]() { rp2040.reboot(); });
+    coreServer.onBootsel([]() { rp2040.rebootToBootloader(); });
+    
+    // Register module-specific STATUS data callback
+    coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+        // Append module-specific bytes to STATUS response
+        // Return number of bytes written
+        return 0;  // TODO: implement module status
+    });
     coreServer.onInit(performSafeInit);
     coreServer.onShutdown(performSafeShutdown);
     coreServer.onReboot([]() { rp2040.reboot(); });
@@ -266,6 +278,7 @@ void setup() {
 
 void loop() {
     commandRouter.poll();
+    coreServer.updateFreeRam(rp2040.getFreeHeap());
     
     // Add periodic tasks here
 }
