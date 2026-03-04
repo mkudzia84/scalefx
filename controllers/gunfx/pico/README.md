@@ -218,9 +218,7 @@ Exceptions (fire-and-forget, no response expected):
 | 0x21 | SERVO_PULSE_RANGE | Pulse width outside 500-2500µs |
 | 0x22 | SERVO_MIN_MAX | minUs >= maxUs |
 | 0x23 | SERVO_NOT_CONFIGURED | Servo not configured |
-| 0x30 | HEATER_SAFETY | Heater safety interlock |
-| 0x31 | FAN_NOT_RUNNING | Fan must be running for heater |
-| 0x32 | INVALID_FAN_SPEED | Invalid fan speed value |
+| 0x30 | INVALID_FAN_SPEED | Invalid fan speed value |
 | 0x40 | INVALID_RPM | RPM out of range (1-3000) |
 | 0x41 | ALREADY_FIRING | Already firing |
 | 0x42 | NOT_FIRING | Not currently firing |
@@ -229,8 +227,13 @@ Exceptions (fire-and-forget, no response expected):
 
 ## Architecture
 
+Uses `PicoServer` component for common server boilerplate (serial init, device naming, indicator LEDs, core protocol, connection management). Module-specific logic is handled by `GunFxServer`.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
+│                      PicoServer                              │
+│  Serial init, device name, indicators, connection timeout   │
+├─────────────────────────────────────────────────────────────┤
 │                     CommandRouter                            │
 │  Routes COBS packets to handlers in priority order          │
 ├─────────────────────────────────────────────────────────────┤
@@ -249,10 +252,11 @@ Exceptions (fire-and-forget, no response expected):
 ```
 
 **Chain of Responsibility Pattern:**
-1. `CommandRouter` receives COBS packet
-2. Routes to `CoreCommandServer` first (system commands)
-3. If not handled, routes to `GunFxSlave` (module commands)
-4. If no handler matches, sends NACK with INVALID_COMMAND
+1. `PicoServer` initializes serial, indicators, and core protocol
+2. `CommandRouter` receives COBS packet
+3. Routes to `CoreCommandServer` first (system commands)
+4. If not handled, routes to `GunFxServer` (module commands)
+5. If no handler matches, sends NACK with INVALID_COMMAND
 
 ---
 

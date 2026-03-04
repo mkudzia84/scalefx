@@ -107,17 +107,6 @@ void LightFxClient::handlePacket(uint8_t type, const uint8_t* payload, size_t le
             }
             break;
 
-        case LightFxPacket::POWER_STATUS_RESP:
-            if (len >= 7) {
-                LightFxPowerStatus status;
-                status.voltage = getU16LE(&payload[0]) / 1000.0f;  // mV to V
-                status.current = (float)(int16_t)getU16LE(&payload[2]);  // mA
-                status.power = (float)getU16LE(&payload[4]);  // mW
-                status.available = payload[6] != 0;
-                if (_powerStatusCallback) _powerStatusCallback(status);
-            }
-            break;
-
         case CorePacket::ACK:
             _receivedAck = true;
             _pendingAckNack = false;
@@ -281,6 +270,11 @@ bool LightFxClient::ledStatus() {
     return sendPacket(LightFxPacket::LED_STATUS, nullptr, 0) > 0;
 }
 
+bool LightFxClient::ledMasterBrightness(uint8_t pct) {
+    uint8_t payload[1] = { pct };
+    return sendPacketBlocking(LightFxPacket::LED_MASTER_BRIGHTNESS, payload, sizeof(payload));
+}
+
 // ============================================================================
 // LightFxClient - Servo Control
 // ============================================================================
@@ -305,11 +299,34 @@ bool LightFxClient::servoSettings(uint8_t id, uint16_t minUs, uint16_t maxUs,
 }
 
 // ============================================================================
-// LightFxClient - Power Monitor
+// LightFxClient - Landing Light Control
 // ============================================================================
 
-bool LightFxClient::powerStatus() {
-    return sendPacket(LightFxPacket::POWER_STATUS, nullptr, 0) > 0;
+bool LightFxClient::landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
+                                     uint16_t deployUs, uint16_t retractUs, uint8_t brightness) {
+    uint8_t payload[8];
+    payload[0] = slot;
+    payload[1] = servoId;
+    payload[2] = ledChannel;
+    putU16LE(&payload[3], deployUs);
+    putU16LE(&payload[5], retractUs);
+    payload[7] = brightness;
+    return sendPacketBlocking(LightFxPacket::LANDING_LIGHT_BIND, payload, sizeof(payload));
+}
+
+bool LightFxClient::landingLightUnbind(uint8_t slot) {
+    uint8_t payload[1] = { slot };
+    return sendPacketBlocking(LightFxPacket::LANDING_LIGHT_UNBIND, payload, sizeof(payload));
+}
+
+bool LightFxClient::landingLightDeploy(uint8_t slot) {
+    uint8_t payload[1] = { slot };
+    return sendPacketBlocking(LightFxPacket::LANDING_LIGHT_DEPLOY, payload, sizeof(payload));
+}
+
+bool LightFxClient::landingLightRetract(uint8_t slot) {
+    uint8_t payload[1] = { slot };
+    return sendPacketBlocking(LightFxPacket::LANDING_LIGHT_RETRACT, payload, sizeof(payload));
 }
 
 // ============================================================================
@@ -416,6 +433,13 @@ CommandHandleResult LightFxServer::tryProcess(uint8_t type, const uint8_t* paylo
             }
             return CommandHandleResult::Handled;
 
+        case LightFxPacket::LED_MASTER_BRIGHTNESS: {
+            SFX_REQUIRE_LEN(1);
+            uint8_t pct = payload[0];
+            SFX_VALIDATE(LightFxSpec::isValidMasterBrightness(pct), SerialError::PARAM_OUT_OF_RANGE);
+            SFX_DISPATCH(_ledMasterBrightnessCallback, pct);
+        }
+
         case LightFxPacket::SERVO_SET: {
             SFX_REQUIRE_LEN(3);
             uint8_t id = payload[0];
@@ -441,23 +465,40 @@ CommandHandleResult LightFxServer::tryProcess(uint8_t type, const uint8_t* paylo
             SFX_DISPATCH(_servoSettingsCallback, id, minUs, maxUs, speed, accel, decel);
         }
 
-        case LightFxPacket::POWER_STATUS:
-            if (_powerStatusCallback) {
-                LightFxPowerStatus status;
-                _powerStatusCallback(status);
-                sendPowerStatus(status);
-            }
-            return CommandHandleResult::Handled;
+        // Landing light control
+        case LightFxPacket::LANDING_LIGHT_BIND: {
+            SFX_REQUIRE_LEN(8);
+            uint8_t slot = payload[0];
+            uint8_t servoId = payload[1];
+            uint8_t ledChannel = payload[2];
+            uint16_t deployUs = getU16LE(&payload[3]);
+            uint16_t retractUs = getU16LE(&payload[5]);
+            uint8_t brightness = payload[7];
+            SFX_VALIDATE(LightFxSpec::isValidLandingLightSlot(slot), LightFxError::INVALID_SLOT);
+            SFX_VALIDATE(LightFxSpec::isValidServoId(servoId), LightFxError::INVALID_SERVO);
+            SFX_VALIDATE(LightFxSpec::isValidLedChannel(ledChannel), LightFxError::INVALID_CHANNEL);
+            SFX_DISPATCH(_landingLightBindCallback, slot, servoId, ledChannel, deployUs, retractUs, brightness);
+        }
 
-        case LightFxPacket::POWER_CONFIG: {
-            SFX_REQUIRE_LEN(4);
-            uint16_t shuntMohm = getU16LE(&payload[0]);
-            uint16_t maxCurrentMa = getU16LE(&payload[2]);
-            SFX_VALIDATE(shuntMohm >= LightFxSpec::INA226_SHUNT_MOHM_MIN &&
-                         shuntMohm <= LightFxSpec::INA226_SHUNT_MOHM_MAX,
-                         SerialError::PARAM_OUT_OF_RANGE);
-            SFX_VALIDATE(maxCurrentMa != 0, SerialError::INVALID_VALUE);
-            SFX_DISPATCH(_powerConfigCallback, shuntMohm, maxCurrentMa);
+        case LightFxPacket::LANDING_LIGHT_UNBIND: {
+            SFX_REQUIRE_LEN(1);
+            uint8_t slot = payload[0];
+            SFX_VALIDATE(LightFxSpec::isValidLandingLightSlotOrAll(slot), LightFxError::INVALID_SLOT);
+            SFX_DISPATCH(_landingLightUnbindCallback, slot);
+        }
+
+        case LightFxPacket::LANDING_LIGHT_DEPLOY: {
+            SFX_REQUIRE_LEN(1);
+            uint8_t slot = payload[0];
+            SFX_VALIDATE(LightFxSpec::isValidLandingLightSlotOrAll(slot), LightFxError::INVALID_SLOT);
+            SFX_DISPATCH(_landingLightDeployCallback, slot);
+        }
+
+        case LightFxPacket::LANDING_LIGHT_RETRACT: {
+            SFX_REQUIRE_LEN(1);
+            uint8_t slot = payload[0];
+            SFX_VALIDATE(LightFxSpec::isValidLandingLightSlotOrAll(slot), LightFxError::INVALID_SLOT);
+            SFX_DISPATCH(_landingLightRetractCallback, slot);
         }
 
         default:
@@ -514,17 +555,6 @@ int LightFxServer::sendChannelStatus(const LightFxChannelStatus* channels, uint8
     }
     
     return sendRawPacket(LightFxPacket::LED_STATUS_RESP, payload, len);
-}
-
-int LightFxServer::sendPowerStatus(const LightFxPowerStatus& status) {
-    uint8_t payload[11];  // 7 bytes + 4 bytes for shunt config
-    putU16LE(&payload[0], (uint16_t)(status.voltage * 1000.0f));  // V to mV
-    putI16LE(&payload[2], (int16_t)status.current);  // mA
-    putU16LE(&payload[4], (uint16_t)status.power);  // mW
-    payload[6] = status.available ? 1 : 0;
-    putU16LE(&payload[7], status.shuntMohm);  // Shunt resistance in mΩ
-    putU16LE(&payload[9], status.maxCurrentMa);  // Max current in mA
-    return sendRawPacket(LightFxPacket::POWER_STATUS_RESP, payload, sizeof(payload));
 }
 
 int LightFxServer::sendSeqQueue(const LightFxSeqQueue& queue) {

@@ -5,7 +5,7 @@
 ## System Architecture
 
 ScaleFX is a modular scale model effects system with three platform targets:
-- **Pico Controllers** (RP2040): Real-time device control (GunFX, LightFX, HubFX Pico)
+- **Pico Controllers** (RP2040): Real-time device control (GunFX, LightFX, GearControl, HubFX Pico)
 - **Raspberry Pi Hub** (Linux/C): Audio mixing and PWM monitoring (HubFX Pi)
 - **Windows Studio** (.NET 8/C#): Visual configuration editor
 
@@ -66,6 +66,7 @@ When modifying serial protocol, these files MUST stay in sync:
 | `controllers/lib/serial/serial_error.h` | `tests/framework/packets.py` | Error codes |
 | `controllers/lib/serial/serial_gunfx.h` | `tests/framework/commands.py` | GunFX commands |
 | `controllers/lib/serial/serial_lightfx.h` | `tests/framework/commands.py` | LightFX commands |
+| `controllers/lib/serial/serial_gearcontrol.h` | `tests/framework/commands.py` | GearControl commands |
 
 **Verification:** Run `python -m py_compile tests/framework/packets.py` after C++ changes.
 
@@ -99,17 +100,176 @@ uint16_t value = payload[0] | (payload[1] << 8);  // Little-endian
 payload = struct.pack('<H', value)  # '<' = little-endian
 ```
 
-### 4. Chain of Responsibility Pattern (Server Controllers)
+### 4. Physical Units in Code (MANDATORY)
 
-Pico server firmware uses handler chain for commands:
+**All variables, parameters, struct fields, and methods that represent physical measurements MUST include the unit and magnitude as a suffix.** This prevents unit-mismatch bugs (e.g., treating milliamps as amps).
+
+**Naming convention:** `<name>_<unit>` where unit is the SI abbreviation with magnitude prefix:
+
+| Quantity | Suffix | Example |
+|----------|--------|---------|
+| Voltage | `_mV`, `_V`, `_uV` | `busVoltage_mV`, `shuntVoltage_uV` |
+| Current | `_mA`, `_A` | `current_mA`, `maxCurrent_A` |
+| Power | `_mW`, `_W` | `power_mW` |
+| Resistance | `_ohms`, `_mohm` | `shuntResistance_mohm` |
+| Time | `_ms`, `_us`, `_s` | `timeout_ms`, `pulseWidth_us` |
+| Frequency | `_Hz`, `_MHz` | `cpuFreq_MHz` |
+| Distance | `_mm`, `_m` | `range_mm` |
+| Temperature | `_C`, `_F` | `temp_C` |
+
+**Rules:**
+1. Method names: `busVoltage_mV()` not `busVoltage()` — the unit is part of the API contract
+2. Struct fields: `float voltage_mV` not `float voltage` — eliminates "what unit is this?" questions
+3. Wire format comments: always annotate `// mV`, `// mA` etc. at packing/unpacking sites
+4. No implicit conversions at call sites — if the method returns mV, the caller should not need `* 1000`
+5. Datasheet references: include section numbers for hardware register constants (e.g., `// INA226 §7.6.2`)
+
+**Anti-pattern (caused a real bug):**
 ```cpp
-CommandRouter router;
-router.addHandler(&coreServer);      // System commands (INIT, REBOOT, etc.)
-router.addHandler(&protocolHandler); // GunFxServer or LightFxServer
-// In loop(): router.process();
+// BAD: busVoltage() returns V, current() returns mA — inconsistent, no units in name
+float v = monitor.busVoltage();        // V? mV? 
+float i = monitor.current() * 1000.0f; // is this A→mA or mA→µA??
+
+// GOOD: units in method names, consistent milli-prefix
+float v = monitor.busVoltage_mV();     // unambiguous: millivolts
+float i = monitor.current_mA();        // unambiguous: milliamps
 ```
 
-Each handler returns `CommandHandleResult::Handled` or `NotMyCommand`.
+### 5. PicoServer Pattern (Server Controllers)
+
+All Pico server controllers use `PicoServer` to eliminate boilerplate:
+```cpp
+PicoServer server;
+XxxFxServer xxxfxServer;
+
+void setup() {
+    server.begin("XxxFX", FIRMWARE_VERSION, BUILD_NUMBER);
+    server.onInit([]()     { performSafeInit(); });
+    server.onShutdown([]() { performSafeShutdown(); });
+    
+    xxxfxServer.begin(&Serial, server.deviceName());
+    // ... register module callbacks ...
+    server.core().onStatusData([](uint8_t* buf, size_t max) -> size_t { ... });
+    
+    server.addModuleHandler(&xxxfxServer);
+}
+
+void loop() {
+    server.loop();       // protocol, timeout, indicators
+    updateHardware();    // module-specific work
+    server.indicators().setErrorCondition(hasError);  // optional
+    delay(1);
+}
+```
+
+PicoServer handles: serial init, device naming, indicator LEDs, CoreCommandServer, CommandRouter, connection timeout, free RAM updates.
+
+### 6. Component Reuse (MANDATORY)
+
+**Always check `controllers/lib/components/` before writing hardware-specific code.** If a generic driver or abstraction already exists, use it.
+
+**Rules:**
+1. **Reuse first:** Before writing any LED, servo, PWM input, I2C, or power monitoring code, check if a component exists in the `components` library
+2. **Generalize new hardware drivers:** When adding support for a new hardware peripheral (sensor, actuator, display, etc.), create the driver in `components/` as a reusable class — not inline in controller firmware
+3. **Controller firmware = glue code:** Controllers should only contain protocol handling and controller-specific logic. Hardware interaction should be delegated to component classes
+4. **Extend I2CDevice:** All new I2C device drivers MUST extend `I2CDevice` and override `identify()` for device verification
+5. **Follow existing patterns:** New components should follow the same API patterns as existing ones (e.g., `begin()` for init, callbacks via `std::function`, state queries)
+
+**When to create a new component:**
+- You need to interact with a hardware peripheral that no existing component covers
+- The same hardware interaction pattern appears in 2+ controllers
+- A controller-specific hardware class could be useful in other contexts
+
+**Anti-pattern:**
+```cpp
+// BAD: Hardware I/O embedded in controller firmware
+void readBattery() {
+    Wire.beginTransmission(0x40);
+    Wire.write(0x02);
+    Wire.endTransmission();
+    Wire.requestFrom(0x40, 2);
+    int raw = Wire.read() << 8 | Wire.read();
+    float voltage = raw * 1.25;  // what unit? what device? no reuse possible
+}
+
+// GOOD: Use component from library
+INA226 batteryMonitor;
+batteryMonitor.begin(Wire, 0x40, 0.1f, 3.2f);
+batteryMonitor.update();
+float v = batteryMonitor.busVoltage_mV();  // clear, reusable, tested
+```
+
+### 7. Indicator LEDs and Error Reporting (MANDATORY)
+
+**All Pico server controllers use `PicoServer` which automatically manages indicator LEDs on GP13/GP14.** Controllers only need to set error/warning conditions.
+
+#### Indicator LED Standard
+
+| LED | Pin | Purpose | Waiting for INIT | Connected | Connection Lost |
+|-----|-----|---------|-----------------|-----------|----------------|
+| **LED 0** | GP13 | Connection | Blink 500ms | Solid ON | OFF |
+| **LED 1** | GP14 | Error | OFF | OFF | OFF (blink 200ms if error) |
+
+#### Required Implementation
+
+Every controller firmware uses `PicoServer` which handles indicators automatically:
+```cpp
+// Declare PicoServer (handles indicators internally)
+PicoServer server;
+
+// In setup():
+server.begin("MyController", FIRMWARE_VERSION, BUILD_NUMBER);
+server.onInit([]()     { performSafeInit(); });
+server.onShutdown([]() { performSafeShutdown(); });
+
+// In loop(): set error/warning conditions, PicoServer updates LEDs
+server.indicators().setErrorCondition(hasError);
+server.indicators().setWarningCondition(hasWarning);
+server.loop();  // Calls indicators.update() automatically
+```
+
+**Connection state rules (handled by PicoServer):**
+- `doInit()` sets `connected = true` and `watchdogTriggered = false`
+- `doShutdown()` sets `connected = false`
+- Connection timeout (15s) triggers `doShutdown()` and sets `watchdogTriggered = true`
+
+#### Error Code Ranges
+
+Each module's error codes MUST be in its assigned range and defined in both C++ and Python:
+
+| Range | Module | C++ Namespace | Python Class |
+|-------|--------|---------------|-------------|
+| `0x00-0x0F` | Generic | `SerialError` | `CoreError` |
+| `0x10-0x1F` | Parameter | `SerialError` | `CoreError` |
+| `0x20-0x4F` | GunFX | `GunFxError` | `GunFxError` |
+| `0x50-0x5F` | LightFX | `LightFxError` | `LightFxError` |
+| `0x60-0x6F` | GearControl | `GearControlError` | `GearControlError` |
+| `0x70-0x8F` | Reserved | — | — |
+| `0xF0-0xFF` | System | `SerialError` | `CoreError` |
+
+**Error code rules:**
+1. Every C++ error constant MUST have a matching Python constant with the same value
+2. Never define error codes outside the module's assigned range
+3. Remove unused/dead error codes — they cause sync confusion
+4. Each error namespace MUST have a `getMessage()` (C++) / `name()` (Python) function
+5. Use generic `SerialError` codes (e.g., `INVALID_ID`, `MISSING_PARAMETER`) where appropriate instead of duplicating concepts per module
+
+### 8. Firmware Versioning (MANDATORY)
+
+Every controller firmware defines `FIRMWARE_VERSION` and `BUILD_NUMBER`:
+```cpp
+#define FIRMWARE_VERSION "0.3.0"
+#define BUILD_NUMBER 3
+```
+
+**Rules:**
+1. **BUILD_NUMBER:** Increment on **every** firmware change that gets flashed, even single-line fixes. This is the primary "did the flash succeed?" indicator — the INIT_READY response includes it, so you can verify the running firmware matches what was built.
+2. **FIRMWARE_VERSION:** Follows semantic versioning (`MAJOR.MINOR.PATCH`):
+   - **PATCH** (0.3.0 → 0.3.1): Bug fixes, internal refactors, no protocol changes
+   - **MINOR** (0.3.0 → 0.4.0): New commands, new features, backward-compatible protocol additions
+   - **MAJOR** (0.3.0 → 1.0.0): Breaking protocol changes (payload format change, removed commands)
+3. **Update together:** When bumping VERSION, also increment BUILD_NUMBER
+4. **README:** Update the version history table in the controller's README.md
 
 ## Key Architecture Patterns
 
@@ -118,20 +278,22 @@ Each handler returns `CommandHandleResult::Handled` or `NotMyCommand`.
 HubFX (Client) - USB Host with RP2040
   ├─ USB Port 0 → GunFX Pico (Server)
   ├─ USB Port 1 → LightFX Pico (Server)
+  ├─ USB Port 2 → GearControl Pico (Server)
   └─ USB Port N → Other Servers
 ```
 
 ### Handler Registration (CRITICAL)
 
-Every Pico server firmware **MUST** register `coreServer` with the `commandRouter` **before** the module handler. Without this, core commands (INIT, REBOOT, BOOTSEL, etc.) return `INVALID_COMMAND`.
+`PicoServer` automatically registers `coreServer` before the module handler. All controllers MUST use `PicoServer.addModuleHandler()` which guarantees correct handler priority.
 
 ```cpp
-// CORRECT - both handlers registered in priority order
-commandRouter.addHandler(&coreServer);      // Priority 1: core/system commands
-commandRouter.addHandler(&xxxfxServer);      // Priority 2: module commands
+// CORRECT - PicoServer handles registration order
+PicoServer server;
+server.begin("XxxFX", FIRMWARE_VERSION, BUILD_NUMBER);
+server.addModuleHandler(&xxxfxServer);  // Core added automatically first
 
-// WRONG - coreServer missing, INIT/REBOOT/BOOTSEL will NACK
-commandRouter.addHandler(&xxxfxServer);      // ← Missing coreServer!
+// WRONG - manual setup without PicoServer (deprecated pattern)
+commandRouter.addHandler(&xxxfxServer);  // ← Missing coreServer!
 ```
 
 ### Shared Serial Library (`controllers/lib/serial/`)
@@ -141,8 +303,22 @@ commandRouter.addHandler(&xxxfxServer);      // ← Missing coreServer!
 - **serial_command_handler.h** - ICommandHandler interface, CommandRouter
 - **serial_gunfx.h** - GunFxClient, GunFxServer, `GunFxSpec` validation namespace
 - **serial_lightfx.h** - LightFxClient, LightFxServer, `LightFxSpec` validation namespace
+- **serial_gearcontrol.h** - GearControlClient, GearControlServer, `GearControlSpec` validation namespace
 
 Include order: `#include "serial.h"` (includes everything needed)
+
+### Components Library (`controllers/lib/components/`)
+Reusable hardware component drivers — use these instead of writing controller-specific code:
+- **battery_monitor.h/.cpp** - ADC battery voltage monitor (LiPo/Li-Ion, cell detection, low-voltage alerts)
+- **i2c_device.h/.cpp** - I2CDevice base class for all I2C peripherals
+- **ina226.h/.cpp** - TI INA226 power/current/voltage monitor (extends I2CDevice)
+- **indicator_leds.h/.cpp** - Connection/error LED state machine (GP13/GP14)
+- **led_control.h/.cpp** - GPIO LED on/off, toggle, active-low, PWM brightness
+- **led_events.h** - ILedEvent interface and built-in animations (LedOn, LedOff, LedFlashing, LedFading, etc.)
+- **led_event_seq.h/.cpp** - Looping sequence of LED events
+- **pico_server.h/.cpp** - Common Pico server controller boilerplate (serial, device name, indicators, core protocol, connection management)
+- **pwm_control.h/.cpp** - RC PWM input with averaging, hysteresis, async callbacks
+- **srv_control.h/.cpp** - Servo output with trapezoidal motion profiling and jerk effects
 
 ### Server Handler Macros (serial_core.h)
 Reduce boilerplate in `tryProcess()` switch cases:
@@ -155,18 +331,17 @@ SFX_HANDLE_CHANNEL_CMD(v, err, cb)    // Validate + dispatch single-param cmd
 
 ### Rich STATUS Pattern
 
-Every controller provides board-specific status via `CoreCommandServer`:
+Every controller provides board-specific status via `PicoServer`:
 
 ```cpp
 // In setup(): Register module status callback
-coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
     buf[0] = myFlag;
     CoreProtocol::putU16LE(&buf[1], myServo);
     return 3;  // bytes written
 });
 
-// In loop(): Keep free RAM current
-coreServer.updateFreeRam(rp2040.getFreeHeap());
+// Free RAM is updated automatically by server.loop()
 ```
 
 STATUS response = 12-byte core header `[counter:u32][uptime:u32][freeRam:u32]` + module callback data.
@@ -189,7 +364,8 @@ cli/
   └── handlers/
       ├── core.py      - Core/protocol commands (connect, init, status)
       ├── gunfx.py     - GunFX commands (trigger, servo, smoke)
-      └── lightfx.py   - LightFX commands (led, servo, power)
+      ├── lightfx.py   - LightFX commands (led, servo, power)
+      └── gearcontrol.py - GearControl commands (gear, servo, yaw)
 {controller}/
   └── test_*.py        - pytest test files (requires hardware)
 ```
@@ -203,7 +379,8 @@ cli/
 | 0x01-0x2F | GunFX | Used | Trigger, servo, smoke |
 | 0x30-0x3F | Reserved | - | Future expansion |
 | 0x40-0x5F | LightFX | Used | LED, servo, power |
-| 0x60-0xEF | Available | Free | New controllers |
+| 0x60-0x7F | GearControl | Used | Gear, servo, yaw |
+| 0x80-0xEF | Available | Free | New controllers |
 | 0xF0-0xFF | Core | Reserved | INIT, ACK, NACK, REBOOT, etc. |
 
 ## Platform-Specific Notes

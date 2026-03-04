@@ -1,8 +1,8 @@
 # LightFX Controller - Raspberry Pi Pico
 
-Lighting effects controller for scale models - manages 8 LED channels with sequence animations, 3 servos, and power monitoring.
+Lighting effects controller for scale models - manages 8 LED channels with sequence animations and 3 servos.
 
-**Version:** 0.2.0  
+**Version:** 0.5.0  
 **Protocol:** Binary COBS with CRC-8  
 **Baud Rate:** 115200
 
@@ -42,13 +42,6 @@ Lighting effects controller for scale models - manages 8 LED channels with seque
 | Servo 1 | 1    | General purpose servo |
 | Servo 2 | 2    | General purpose servo |
 | Servo 3 | 3    | General purpose servo |
-
-#### I2C (INA226 Power Monitor)
-
-| Signal | GPIO |
-|--------|------|
-| SDA    | 4    |
-| SCL    | 5    |
 
 ---
 
@@ -95,8 +88,9 @@ CRC-8 polynomial 0x07 computed over type + len + payload.
 
 | Type | Name | Payload | Description |
 |------|------|---------|-------------|
-| 0x40 | LED_SET | ch:u8, brightness:u8 | Set LED channel brightness (0-255) |
+| 0x40 | LED_SET | ch:u8, brightness:u8 | Set LED channel brightness (0-100%) |
 | 0x41 | LED_OFF | ch:u8 (0=all) | Turn off LED(s) |
+| 0x4A | LED_MASTER_BRIGHTNESS | pct:u8 (0-100) | Set master brightness for all LEDs |
 
 ### LED Sequences
 
@@ -141,59 +135,29 @@ Each LED channel has its own sequence that can hold up to 24 events.
 | 0x50 | SERVO_SET | id:u8, pulse:u16le | Set servo position (500-2500µs) |
 | 0x51 | SERVO_SETTINGS | id:u8, min:u16le, max:u16le, speed:u16le, accel:u16le, decel:u16le | Configure servo |
 
-### Power Monitoring
+### Landing Light Control
+
+Coordinates a retract servo with a landing light LED channel. Up to 3 landing light slots.
 
 | Type | Name | Payload | Description |
 |------|------|---------|-------------|
-| 0x58 | POWER_STATUS | (none) | Request power readings and config |
-| 0x59 | POWER_CONFIG | shunt_mohm:u16le, max_current_ma:u16le | Configure INA226 calibration |
+| 0x52 | LANDING_LIGHT_BIND | slot:u8, servo_id:u8, led_ch:u8, deploy_us:u16le, retract_us:u16le, brightness:u8 | Bind servo + LED as landing light pair |
+| 0x53 | LANDING_LIGHT_UNBIND | slot:u8 (0=all) | Unbind landing light slot |
+| 0x54 | LANDING_LIGHT_DEPLOY | slot:u8 (0=all) | Deploy gear, light on when arrived |
+| 0x55 | LANDING_LIGHT_RETRACT | slot:u8 (0=all) | Light off immediately, then retract gear |
 
-**POWER_STATUS Response (11 bytes):**
+**State Machine:**
+```
+UNCONFIGURED → (bind)    → RETRACTED
+RETRACTED    → (deploy)  → DEPLOYING    [servo moving, light OFF]
+DEPLOYING    → (arrived) → DEPLOYED     [light ON]
+DEPLOYED     → (retract) → RETRACTING   [light OFF immediately, servo moving]
+RETRACTING   → (arrived) → RETRACTED
+```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| voltage_mv | u16le | Bus voltage in millivolts |
-| current_ma | i16le | Current in milliamps (signed) |
-| power_mw | u16le | Power in milliwatts |
-| available | u8 | 1 if INA226 detected, 0 otherwise |
-| shunt_mohm | u16le | Configured shunt resistance in milliohms |
-| max_current_ma | u16le | Configured max current in milliamps |
-
-**POWER_CONFIG Payload:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| shunt_mohm | u16le | Shunt resistor value in milliohms (e.g., 100 for 0.1Ω) |
-| max_current_ma | u16le | Maximum expected current in milliamps (e.g., 3200 for 3.2A) |
-
----
-
-## INA226 Power Monitor
-
-The INA226 is a high-precision current/power monitor from Texas Instruments.
-
-### I2C Address Configuration
-
-Default address: 0x40 (A0=GND, A1=GND)
-
-| A1    | A0    | Address |
-|-------|-------|---------|
-| GND   | GND   | 0x40 |
-| GND   | VS+   | 0x41 |
-| VS+   | GND   | 0x44 |
-| VS+   | VS+   | 0x45 |
-
-### Register Map
-
-| Register | Address | Description |
-|----------|---------|-------------|
-| Configuration | 0x00 | Averaging, conversion time, mode |
-| Shunt Voltage | 0x01 | Shunt voltage measurement |
-| Bus Voltage | 0x02 | Bus voltage measurement |
-| Power | 0x03 | Calculated power |
-| Current | 0x04 | Calculated current |
-| Calibration | 0x05 | Sets current LSB |
-| Manufacturer ID | 0xFE | Returns 0x5449 ("TI") |
+**Sequencing:**
+- **Deploy:** Servo moves to deploy position → light turns ON when servo reaches target
+- **Retract:** Light turns OFF immediately → servo moves to retract position
 
 ---
 
@@ -212,10 +176,10 @@ Each LED channel has its own `LedEventSeq` that can play a sequence of events:
 
 **Example Sequence (strobe beacon):**
 ```
-1. LedFadeIn(500, 255)    # Fade in over 500ms
-2. LedOn(1000, 255)       # Hold at full for 1s
-3. LedFlash(50, 2000, 255, 50)  # Strobe for 2s
-4. LedFadeOut(500, 255)   # Fade out over 500ms
+1. LedFadeIn(500, 100)    # Fade in over 500ms
+2. LedOn(1000, 100)       # Hold at full for 1s
+3. LedFlash(50, 2000, 100, 50)  # Strobe for 2s
+4. LedFadeOut(500, 100)   # Fade out over 500ms
 5. LedOff(1000)           # Off for 1s
 # Sequence loops
 ```
@@ -244,13 +208,19 @@ Each LED channel has its own `LedEventSeq` that can play a sequence of events:
 | 0x33 | INVALID_PARAM | Event parameter out of range |
 | 0x38 | SERVO_INVALID_ID | Servo ID out of range (1-3) |
 | 0x39 | SERVO_PULSE_RANGE | Pulse width outside 500-2500µs |
+| 0x55 | INVALID_SLOT | Invalid landing light slot (1-3) |
 
 ---
 
 ## Architecture
 
+Uses `PicoServer` component for common server boilerplate (serial init, device naming, indicator LEDs, core protocol, connection management). Module-specific logic is handled by `LightFxServer`.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
+│                      PicoServer                              │
+│  Serial init, device name, indicators, connection timeout   │
+├─────────────────────────────────────────────────────────────┤
 │                     CommandRouter                            │
 │  Routes COBS packets to handlers in priority order          │
 ├─────────────────────────────────────────────────────────────┤
@@ -262,8 +232,8 @@ Each LED channel has its own `LedEventSeq` that can play a sequence of events:
 │  │ INIT, SHUTDOWN      │  │ LED_SET, LED_OFF            │  │
 │  │ REBOOT, BOOTSEL     │  │ LED_SEQ_* commands          │  │
 │  │ KEEPALIVE, STATUS   │  │ SERVO_SET, SERVO_SETTINGS   │  │
-│  └─────────────────────┘  │ POWER_STATUS                │  │
-│                           └─────────────────────────────┘  │
+│  └─────────────────────┘  │ LANDING_LIGHT_* commands    │  │
+│                            └─────────────────────────────┘  │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -298,14 +268,36 @@ pio run -t clean
 
 ## Version History
 
+- **v0.5.0** - Brightness 0-100 scale
+  - Changed brightness from 0-255 PWM to 0-100% human-readable scale
+  - Applies to: LED_SET, LED_SEQ_ADD events, LANDING_LIGHT_BIND brightness
+  - LedControl component converts 0-100 → 0-255 PWM at hardware output
+  - Master brightness (0-100%) combined with channel brightness at output
+  - All LED events (LedOn, LedFlashing, LedFadeIn, etc.) use 0-100 scale
+
+- **v0.4.0** - Master brightness control
+  - New `LedControl::setMasterBrightness_pct()` in components library
+  - Global 0-100% brightness scaling applied at PWM output
+  - New command: LED_MASTER_BRIGHTNESS (0x4A)
+  - Reset to 100% on SHUTDOWN/INIT
+  - STATUS response extended to 19 bytes (added master brightness)
+
+- **v0.3.0** - Landing light sequencer
+  - New LandingLight class: binds retract servo with LED channel
+  - Light activates when deployment completes (servo at target)
+  - Light deactivates before retraction starts
+  - Up to 3 landing light slots
+  - New commands: LANDING_LIGHT_BIND/UNBIND/DEPLOY/RETRACT (0x52-0x55)
+  - STATUS response extended to 18 bytes (added landing light states)
+
 - **v0.2.0** - Binary-only protocol
   - Removed text protocol support
   - Using new serial library (CoreCommandServer + LightFxServer)
   - COBS framing with CRC-8 validation
+  - Removed INA226 power monitoring (board redesign)
 
 - **v0.1.0** - Initial release
   - 8-channel LED output with PWM
   - LED event sequences
   - 3 servo outputs with motion profiling
-  - INA226 power monitoring
   - Status LEDs

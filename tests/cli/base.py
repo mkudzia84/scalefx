@@ -29,6 +29,7 @@ except ImportError:
 
 class ControllerType:
     """Controller type constants."""
+    GEARCONTROL = 'gearcontrol'
     GUNFX = 'gunfx'
     LIGHTFX = 'lightfx'
     NOOP = 'noop'
@@ -131,6 +132,7 @@ def get_prompt(controller_type: Optional[str], is_connected: bool) -> str:
     """Generate dynamic prompt based on connection state."""
     if controller_type:
         prefix = {
+            ControllerType.GEARCONTROL: f"{Fore.GREEN}gearcontrol",
             ControllerType.GUNFX: f"{Fore.RED}gunfx",
             ControllerType.LIGHTFX: f"{Fore.BLUE}lightfx",
             ControllerType.NOOP: f"{Fore.MAGENTA}noop",

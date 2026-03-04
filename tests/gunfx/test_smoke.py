@@ -8,8 +8,7 @@ import pytest
 import time
 
 from tests.framework import (
-    ScaleFXConnection, GunFxCommands,
-    GunFxError
+    ScaleFXConnection, GunFxCommands
 )
 
 
@@ -92,22 +91,15 @@ class TestGunFxSmoke:
             gunfx.send(GunFxCommands.smoke_heat(False))
             gunfx.send(GunFxCommands.trigger_off(0))
     
-    def test_smoke_heater_safety_without_fan(self, gunfx: ScaleFXConnection):
-        """Heater should not activate without fan running (safety check)."""
+    def test_smoke_heater_without_fan(self, gunfx: ScaleFXConnection):
+        """Test heater command without fan running."""
         # Make sure firing is stopped
         gunfx.send(GunFxCommands.trigger_off(0))
         time.sleep(0.5)
         
-        # Try to enable heater without fan
+        # Enable heater without fan - firmware allows this (no safety interlock)
         success, response = gunfx.send_expect_ack(GunFxCommands.smoke_heat(True))
-        
-        # Should either fail with safety error, or succeed but not actually heat
-        # Depends on firmware implementation
-        if not success:
-            assert response.error_code in [
-                GunFxError.HEATER_SAFETY,
-                GunFxError.FAN_NOT_RUNNING
-            ]
+        assert success, "SMOKE_HEAT should succeed"
         
         # Make sure heater is off
         gunfx.send(GunFxCommands.smoke_heat(False))

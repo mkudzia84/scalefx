@@ -4,7 +4,6 @@ LightFX Command Handlers
 LightFX-specific CLI commands:
 - LED direct control and sequences
 - Servo control and configuration
-- Power monitoring (INA226)
 """
 
 from typing import List, Dict, Tuple, Callable
@@ -26,7 +25,7 @@ class LightFxCommandHandler(CommandHandlerBase):
         return {
             'lightfx.led': (self.cmd_led, CommandInfo(
                 'lightfx.led', 'lightfx.led set <ch> <brightness> | lightfx.led off [ch]',
-                'Control LED (1-8, 0-255)', requires_init=True, controller=ControllerType.LIGHTFX)),
+                'Control LED (1-8, 0-100%)', requires_init=True, controller=ControllerType.LIGHTFX)),
             'lightfx.led.seq': (self.cmd_led_seq, CommandInfo(
                 'lightfx.led.seq', 'lightfx.led.seq clear|start|stop|restart <ch>',
                 'Control LED sequences', requires_init=True, controller=ControllerType.LIGHTFX)),
@@ -42,18 +41,27 @@ class LightFxCommandHandler(CommandHandlerBase):
             'lightfx.led.status': (self.cmd_led_status, CommandInfo(
                 'lightfx.led.status', 'lightfx.led.status',
                 'Get all LED channel statuses', requires_init=True, controller=ControllerType.LIGHTFX)),
+            'lightfx.brightness': (self.cmd_brightness, CommandInfo(
+                'lightfx.brightness', 'lightfx.brightness <0-100>',
+                'Set master LED brightness (0-100%)', requires_init=True, controller=ControllerType.LIGHTFX)),
             'lightfx.servo': (self.cmd_servo, CommandInfo(
                 'lightfx.servo', 'lightfx.servo set <id> <pulse_us>',
                 'Set servo position (1-3)', requires_init=True, controller=ControllerType.LIGHTFX)),
             'lightfx.servo.config': (self.cmd_servo_config, CommandInfo(
                 'lightfx.servo.config', 'lightfx.servo.config <id> <min> <max> [speed] [accel] [decel]',
                 'Configure servo', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.power': (self.cmd_power, CommandInfo(
-                'lightfx.power', 'lightfx.power',
-                'Request power status (INA226)', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.power.config': (self.cmd_power_config, CommandInfo(
-                'lightfx.power.config', 'lightfx.power.config <shunt_mohm> <max_current_ma>',
-                'Configure INA226 (shunt in mΩ, max current in mA)', requires_init=True, controller=ControllerType.LIGHTFX)),
+            'lightfx.ll.bind': (self.cmd_ll_bind, CommandInfo(
+                'lightfx.ll.bind', 'lightfx.ll.bind <slot> <servo> <led_ch> <deploy_us> <retract_us> [brightness]',
+                'Bind landing light (slot 1-3)', requires_init=True, controller=ControllerType.LIGHTFX)),
+            'lightfx.ll.unbind': (self.cmd_ll_unbind, CommandInfo(
+                'lightfx.ll.unbind', 'lightfx.ll.unbind [slot]',
+                'Unbind landing light (0=all)', requires_init=True, controller=ControllerType.LIGHTFX)),
+            'lightfx.ll.deploy': (self.cmd_ll_deploy, CommandInfo(
+                'lightfx.ll.deploy', 'lightfx.ll.deploy [slot]',
+                'Deploy landing gear + light on (0=all)', requires_init=True, controller=ControllerType.LIGHTFX)),
+            'lightfx.ll.retract': (self.cmd_ll_retract, CommandInfo(
+                'lightfx.ll.retract', 'lightfx.ll.retract [slot]',
+                'Retract landing gear + light off (0=all)', requires_init=True, controller=ControllerType.LIGHTFX)),
         }
     
     # =========================================================================
@@ -78,8 +86,7 @@ class LightFxCommandHandler(CommandHandlerBase):
                 packet = LightFxCommands.led_set(ch, brightness)
                 success, response = self.conn.send_expect_ack(packet)
                 if success:
-                    pct = (brightness / 255) * 100
-                    self.print_ok(f"LED {ch} → {brightness} ({pct:.0f}%)")
+                    self.print_ok(f"LED {ch} → {brightness}%")
                 else:
                     self._print_ack_response(response)
             except ValueError:
@@ -285,10 +292,35 @@ class LightFxCommandHandler(CommandHandlerBase):
             for ch in channels:
                 brightness = ch['brightness']
                 status = "▶" if ch['seq_playing'] else "■"
-                bar = "█" * (brightness // 32) + "░" * (8 - brightness // 32)
-                print(f"  CH{ch['channel']}: {bar} {brightness:3d}/255 | Seq: {status} ({ch['seq_count']} events)")
+                filled = brightness * 8 // 100 if brightness > 0 else 0
+                bar = "█" * filled + "░" * (8 - filled)
+                print(f"  CH{ch['channel']}: {bar} {brightness:3d}% | Seq: {status} ({ch['seq_count']} events)")
         else:
             self._print_ack_response(response)
+    
+    # =========================================================================
+    # Master Brightness
+    # =========================================================================
+    
+    def cmd_brightness(self, args: List[str]):
+        """Set master LED brightness (0-100%)."""
+        if not args:
+            self.print_error("Usage: lightfx.brightness <0-100>")
+            return
+        
+        try:
+            pct = int(args[0])
+            if pct < 0 or pct > 100:
+                self.print_error("Brightness must be 0-100%")
+                return
+            packet = LightFxCommands.led_master_brightness(pct)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                self.print_ok(f"Master brightness → {pct}%")
+            else:
+                self._print_ack_response(response)
+        except ValueError:
+            self.print_error("Invalid brightness value")
     
     # =========================================================================
     # Servo Commands
@@ -336,59 +368,76 @@ class LightFxCommandHandler(CommandHandlerBase):
             self.print_error("Invalid servo config parameters")
     
     # =========================================================================
-    # Power Commands
+    # Landing Light Commands
     # =========================================================================
     
-    def cmd_power(self, args: List[str]):
-        """Request power status (LightFX)."""
-        response = self.conn.send_and_wait(LightFxCommands.power_status())
-        
-        if response is None:
-            self.print_error("No response (timeout)")
-            return
-        
-        if response.is_nack:
-            self._print_ack_response(response)
-            return
-        
-        status = parsers.parse_power_status(response.payload)
-        if status:
-            self.print_ok("Power Status:")
-            print(f"  Voltage: {status['voltage_mv']/1000:.2f}V ({status['voltage_mv']}mV)")
-            print(f"  Current: {status['current_ma']}mA")
-            print(f"  Power:   {status['power_mw']/1000:.2f}W ({status['power_mw']}mW)")
-            print(f"  INA226:  {'Available' if status['available'] else 'Not detected'}")
-            
-            if 'shunt_mohm' in status:
-                print(f"  Config:  Shunt={status['shunt_mohm']}mΩ ({status['shunt_mohm']/1000:.3f}Ω), MaxI={status['max_current_ma']}mA ({status['max_current_ma']/1000:.2f}A)")
-        else:
-            self.print_info(f"Raw: {response.payload.hex()}")
-    
-    def cmd_power_config(self, args: List[str]):
-        """Configure INA226 power monitor."""
-        if len(args) < 2:
-            self.print_error("Usage: lightfx.power.config <shunt_mohm> <max_current_ma>")
-            self.print_info("  shunt_mohm: Shunt resistor value in milliohms (e.g., 100 for 0.1Ω)")
-            self.print_info("  max_current_ma: Maximum expected current in mA (e.g., 3200 for 3.2A)")
+    def cmd_ll_bind(self, args: List[str]):
+        """Bind landing light: servo + LED channel."""
+        if len(args) < 5:
+            self.print_error("Usage: lightfx.ll.bind <slot> <servo_id> <led_ch> <deploy_us> <retract_us> [brightness]")
             return
         
         try:
-            shunt_mohm = int(args[0])
-            max_current_ma = int(args[1])
+            slot = int(args[0])
+            servo_id = int(args[1])
+            led_ch = int(args[2])
+            deploy_us = int(args[3])
+            retract_us = int(args[4])
+            brightness = int(args[5]) if len(args) > 5 else 100
             
-            if shunt_mohm <= 0 or max_current_ma <= 0:
-                self.print_error("Values must be positive")
-                return
-            
-            packet = LightFxCommands.power_config(shunt_mohm, max_current_ma)
+            packet = LightFxCommands.landing_light_bind(
+                slot, servo_id, led_ch, deploy_us, retract_us, brightness)
             success, response = self.conn.send_expect_ack(packet)
-            
             if success:
-                self.print_ok(f"INA226 configured: Shunt={shunt_mohm}mΩ ({shunt_mohm/1000:.3f}Ω), MaxI={max_current_ma}mA ({max_current_ma/1000:.2f}A)")
+                self.print_ok(
+                    f"Landing light {slot}: servo {servo_id} + LED {led_ch}, "
+                    f"deploy {deploy_us}µs, retract {retract_us}µs, brightness {brightness}%")
             else:
                 self._print_ack_response(response)
         except ValueError:
-            self.print_error("Invalid parameters - must be integers")
+            self.print_error("Invalid parameters")
+    
+    def cmd_ll_unbind(self, args: List[str]):
+        """Unbind landing light slot."""
+        slot = int(args[0]) if args else 0
+        try:
+            packet = LightFxCommands.landing_light_unbind(slot)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                target = f"slot {slot}" if slot > 0 else "all slots"
+                self.print_ok(f"Landing light {target} unbound")
+            else:
+                self._print_ack_response(response)
+        except ValueError:
+            self.print_error("Invalid slot number")
+    
+    def cmd_ll_deploy(self, args: List[str]):
+        """Deploy landing gear + activate light."""
+        slot = int(args[0]) if args else 0
+        try:
+            packet = LightFxCommands.landing_light_deploy(slot)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                target = f"slot {slot}" if slot > 0 else "all"
+                self.print_ok(f"Landing light {target} deploying")
+            else:
+                self._print_ack_response(response)
+        except ValueError:
+            self.print_error("Invalid slot number")
+    
+    def cmd_ll_retract(self, args: List[str]):
+        """Retract landing gear + deactivate light."""
+        slot = int(args[0]) if args else 0
+        try:
+            packet = LightFxCommands.landing_light_retract(slot)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                target = f"slot {slot}" if slot > 0 else "all"
+                self.print_ok(f"Landing light {target} retracting")
+            else:
+                self._print_ack_response(response)
+        except ValueError:
+            self.print_error("Invalid slot number")
     
     # =========================================================================
     # Response Handling

@@ -170,59 +170,116 @@ using StatusDataCallback = std::function<size_t(uint8_t* buffer, size_t maxLen)>
 
 ## Handler Registration Pattern
 
-> **CRITICAL:** Every server firmware MUST register `coreServer` before the module handler. Without `coreServer`, core commands (INIT, REBOOT, BOOTSEL, STATUS, etc.) will be rejected with `INVALID_COMMAND`.
+> **All Pico server controllers use `PicoServer`** to handle serial init, device naming, indicator LEDs, core protocol, and connection management. Controller firmware only needs to configure module-specific callbacks and call `server.addModuleHandler()`.
 
 ```cpp
-// STANDARD PATTERN: Every server controller follows this
+// STANDARD PATTERN: Every server controller uses PicoServer
 
-// 1. Declare handlers (global or static)
-CommandRouter commandRouter;
-CoreCommandServer coreServer;
+#include <pico_server.h>
+
+PicoServer server;
 XxxFxServer xxxfxServer;
 
 void setup() {
-    Serial.begin(115200);
+    // 1. Initialize server (serial, device name, indicators, core callbacks)
+    server.begin("XxxFX", FIRMWARE_VERSION, BUILD_NUMBER);
+    server.onInit([]()     { performSafeInit(); });
+    server.onShutdown([]() { performSafeShutdown(); });
     
-    // 2. Configure core handler
-    coreServer.begin(&Serial);
-    coreServer.setBoardInfo("DeviceName", FIRMWARE_VERSION, "RP2040",
-                            rp2040.f_cpu() / 1000000, rp2040.getFreeHeap(),
-                            BUILD_NUMBER);
-    coreServer.onInit([]() { performSafeInit(); });
-    coreServer.onShutdown([]() { performSafeShutdown(); });
-    coreServer.onReboot([]() { rp2040.reboot(); });
-    coreServer.onBootsel([]() { rp2040.rebootToBootloader(); });
+    // 2. Initialize hardware (I2C, servos, LEDs, etc.)
+    initHardware();
     
-    // 2b. Register module-specific STATUS data callback
-    coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+    // 3. Configure module handler with callbacks
+    xxxfxServer.begin(&Serial, server.deviceName());
+    xxxfxServer.onCommand([](params) -> uint8_t {
+        return performCommand(params) ? 0 : ERROR_CODE;
+    });
+    
+    // 4. Register module-specific STATUS data callback
+    server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
         // Write module status bytes (appended to 12-byte core header)
         return writeModuleStatus(buf, maxLen);
     });
     
-    // 3. Configure module handler with callbacks
-    xxxfxServer.begin(&Serial);
-    xxxfxServer.onCommand([](params) -> uint8_t {
-        // Return 0 for success, error code for failure
-        return performCommand(params) ? 0 : ERROR_CODE;
-    });
-    
-    // 4. Register handlers with router (order = priority)
-    //    CRITICAL: coreServer MUST be registered first!
-    //    Without it, INIT/REBOOT/BOOTSEL will NACK with INVALID_COMMAND.
-    commandRouter.begin(&Serial, [](uint8_t err, uint8_t type) {
-        xxxfxServer.sendNack(err);  // Global error handler
-    });
-    commandRouter.addHandler(&coreServer);   // Priority 1: core commands
-    commandRouter.addHandler(&xxxfxServer);   // Priority 2: module commands
+    // 5. Finalize router (core + module handlers)
+    server.addModuleHandler(&xxxfxServer);
 }
 
 void loop() {
-    // 5. Process incoming packets
-    commandRouter.poll();
+    // 6. Process protocol, connection timeout, indicators
+    server.loop();
     
-    // 6. Keep free RAM reading current for STATUS responses
-    coreServer.updateFreeRam(rp2040.getFreeHeap());
+    // 7. Module-specific updates
+    updateHardware();
+    
+    // 8. Optional: set error/warning indicators
+    server.indicators().setErrorCondition(hasError);
+    
+    delay(1);
 }
+```
+
+### PicoServer internals
+
+`PicoServer` encapsulates the following (previously duplicated in every controller):
+- USB serial initialization (115200 baud, 3s wait)
+- Unique device name from Pico board ID (e.g. "GunFX-A1B2")
+- Indicator LEDs on GP13/GP14 via `IndicatorLedManager`
+- `CoreCommandServer` with board info and INIT/SHUTDOWN/REBOOT/BOOTSEL callbacks
+- `CommandRouter` with automatic handler priority (core first, then module)
+- Connection timeout / watchdog detection (15s)
+- Common loop tasks: router process, activity forwarding, free RAM, indicators
+
+For core-only controllers (no module commands), pass `nullptr`:
+```cpp
+server.addModuleHandler(nullptr);  // Core protocol only (e.g. NoOp)
+```
+
+---
+
+## Indicator LED Standard
+
+All Pico server controllers implement **identical** indicator LED behavior on GP13 and GP14. This provides consistent visual diagnostics across all boards.
+
+> **Note:** `PicoServer` manages indicator LEDs automatically via `IndicatorLedManager`. Controllers only need to set error/warning conditions via `server.indicators().setErrorCondition()` and `server.indicators().setWarningCondition()`.
+
+```yaml
+LED_0_Connection:
+  pin: GP13
+  waiting_for_init: "Blink every 500ms"  # (millis() / 500) % 2
+  connected: "Solid ON"
+  connection_lost: "OFF"  # watchdog_triggered = true
+
+LED_1_Error:
+  pin: GP14
+  normal: "OFF"
+  error: "Blink every 200ms"  # (millis() / 200) % 2
+  condition: "Module-specific (e.g., GearControl: any gear in ERROR state)"
+```
+
+### Usage with PicoServer
+
+```cpp
+// PicoServer handles connection LED automatically.
+// Controllers only set error/warning conditions:
+server.indicators().setErrorCondition(hasError);    // Blinks LED 1 fast
+server.indicators().setWarningCondition(hasWarning); // Blinks LED 1 slow
+// server.loop() calls indicators.update() automatically
+```
+
+### State Transitions
+
+```
+Power On → initialized=false, watchdog=false → LED 0 blinks, LED 1 off
+   │
+   ▼ INIT received
+Connected → initialized=true, watchdog=false → LED 0 solid, LED 1 off
+   │
+   ▼ Keepalive timeout (15s)
+Lost → initialized=false, watchdog=true → LED 0 off, LED 1 off
+   │
+   ▼ INIT received again
+Connected → (cycle repeats)
 ```
 
 ---
@@ -340,6 +397,25 @@ Error_Ranges:
       - { code: 0x52, name: "INVALID_EVENT", desc: "Invalid event type" }
       - { code: 0x53, name: "INVALID_PARAM" }
       - { code: 0x54, name: "INVALID_SERVO" }
+  
+  - range: "0x60-0x6F"
+    namespace: "GearControlError"
+    errors:
+      - { code: 0x60, name: "INVALID_GEAR_ID", desc: "Gear ID out of range (0-2)" }
+      - { code: 0x61, name: "INVALID_SERVO_ID", desc: "Servo ID out of range (0-7)" }
+      - { code: 0x62, name: "GEAR_BUSY", desc: "Gear mid-sequence" }
+      - { code: 0x63, name: "MOTOR_STALL", desc: "Motor stall detected" }
+      - { code: 0x64, name: "MOTOR_TIMEOUT", desc: "Operation timed out" }
+      - { code: 0x65, name: "SERVO_OUT_OF_RANGE", desc: "Servo pulse out of range" }
+      - { code: 0x66, name: "INA226_ERROR", desc: "Power monitor communication error" }
+      - { code: 0x67, name: "YAW_NOT_AVAILABLE", desc: "Yaw not configured" }
+      - { code: 0x68, name: "INVALID_ACTION", desc: "Invalid gear-all action" }
+      - { code: 0x69, name: "NO_CURRENT_MONITOR", desc: "INA226 required for calibration" }
+      - { code: 0x6A, name: "NOT_CALIBRATING", desc: "Not currently calibrating" }
+  
+  - range: "0x70-0x8F"
+    namespace: "Reserved"
+    description: "Future controller modules"
   
   - range: "0xF0-0xFF"
     namespace: "SerialError (System)"

@@ -233,9 +233,11 @@ Summary_Checklist:
   Controller:
     - "[ ] Create directory structure"
     - "[ ] Create platformio.ini"
-    - "[ ] Create newfx_pico.ino"
-    - "[ ] Register coreServer AND newfxServer with commandRouter (both required!)"
-  
+    - "[ ] Create newfx_pico.ino using PicoServer pattern"
+    - "[ ] Use server.begin(), server.onInit(), server.onShutdown()"
+    - "[ ] Use server.addModuleHandler(&newfxServer)"
+    - "[ ] Use server.core().onStatusData() for module status"
+    - "[ ] Use server.indicators().setErrorCondition() if needed"  
   Python:
     - "[ ] Add NewFxPacket class to packets.py"
     - "[ ] Add NewFxError class to packets.py"
@@ -266,6 +268,7 @@ C++_Serial_Library:
     serial_command_handler.h: "ICommandHandler, CommandRouter"
     serial_gunfx.h: "GunFxServer, GunFxClient, GunFxSpec"
     serial_lightfx.h: "LightFxServer, LightFxClient, LightFxSpec"
+    serial_gearcontrol.h: "GearControlServer, GearControlClient, GearControlSpec"
 
 Controller_Firmware:
   pattern: "controllers/{name}/pico/"
@@ -293,6 +296,7 @@ Python_Framework:
     "cli/handlers/core.py": "Core/protocol commands"
     "cli/handlers/gunfx.py": "GunFX commands"
     "cli/handlers/lightfx.py": "LightFX commands"
+    "cli/handlers/gearcontrol.py": "GearControl commands"
     "conftest.py": "pytest fixtures"
 ```
 
@@ -304,11 +308,13 @@ Python_Framework:
 # Build verification
 python -m platformio run -e pico -d controllers/gunfx/pico
 python -m platformio run -e pico -d controllers/lightfx/pico
+python -m platformio run -e pico -d controllers/gearcontrol/pico
 python -m platformio run -e pico -d controllers/noop/pico
 
 # Build and flash (centralized script)
 python scripts/build_and_flash.py gunfx
 python scripts/build_and_flash.py lightfx
+python scripts/build_and_flash.py gearcontrol
 python scripts/build_and_flash.py noop
 
 # Python syntax
@@ -317,10 +323,12 @@ python -m py_compile tests/framework/commands.py
 python -m py_compile tests/cli/interactive.py
 python -m py_compile tests/cli/handlers/gunfx.py
 python -m py_compile tests/cli/handlers/lightfx.py
+python -m py_compile tests/cli/handlers/gearcontrol.py
 
 # Run tests (requires hardware)
 pytest tests/gunfx/ -v
 pytest tests/lightfx/ -v
+pytest tests/gearcontrol/ -v
 pytest tests/noop/ -v
 
 # CLI smoke test

@@ -13,7 +13,8 @@
  * Packet Type Ranges:
  *   0x01-0x2F  GunFX commands (trigger, servo, smoke) - see serial_gunfx.h
  *   0x40-0x5F  LightFX commands (LED, servo, power) - see serial_lightfx.h
- *   0x60-0x8F  Reserved for future modules
+ *   0x60-0x7F  GearControl commands (gear, servo, yaw) - see serial_gearcontrol.h
+ *   0x80-0x8F  Reserved for future modules
  *   0xF0-0xFF  Universal system commands (INIT, ACK, NACK, etc.)
  *
  * Components:

@@ -49,7 +49,10 @@ Packet_Ranges:
   - range: "0x40-0x5F"
     module: "LightFX"
     status: "USED"
-  - range: "0x60-0xEF"
+  - range: "0x60-0x7F"
+    module: "GearControl"
+    status: "USED"
+  - range: "0x80-0xEF"
     module: "Available"
     status: "FREE"
   - range: "0xF0-0xFF"
@@ -63,6 +66,9 @@ Controllers:
   - id: "lightfx"
     path: "controllers/lightfx/pico/"
     packet_range: "0x40-0x5F"
+  - id: "gearcontrol"
+    path: "controllers/gearcontrol/pico/"
+    packet_range: "0x60-0x7F"
   - id: "noop"
     path: "controllers/noop/pico/"
     packet_range: "CORE_ONLY"
@@ -93,6 +99,9 @@ Serial_Library:
     - name: "serial_lightfx.h"
       purpose: "LightFxServer, LightFxClient, LightFxSpec validation"
       modify_when: "Adding LightFX commands"
+    - name: "serial_gearcontrol.h"
+      purpose: "GearControlServer, GearControlClient, GearControlSpec validation"
+      modify_when: "Adding GearControl commands"
 
 Python_Framework:
   root: "tests/"
@@ -124,6 +133,9 @@ Python_Framework:
     - name: "cli/handlers/lightfx.py"
       purpose: "LightFX commands (led, servo, power)"
       modify_when: "Adding LightFX CLI commands"
+    - name: "cli/handlers/gearcontrol.py"
+      purpose: "GearControl commands (gear, servo, yaw)"
+      modify_when: "Adding GearControl CLI commands"
 
 Controllers:
   pattern: "controllers/{name}/pico/"
@@ -225,20 +237,50 @@ Sync_Groups:
 
 ## Common Patterns
 
+### Indicator LED Standard
+
+All Pico server controllers use identical indicator LED behavior on GP13/GP14, managed automatically by `PicoServer` via `IndicatorLedManager`:
+
+```yaml
+Indicator_LEDs:
+  LED_0:
+    pin: GP13
+    purpose: "Connection status"
+    states:
+      waiting: "Blink 500ms (power on, no INIT yet)"
+      connected: "Solid ON"
+      lost: "OFF (watchdog triggered)"
+  LED_1:
+    pin: GP14
+    purpose: "Error status"
+    states:
+      normal: "OFF"
+      error: "Blink 200ms (module-specific error detected)"
+
+PicoServer_Pattern:
+  setup: "server.begin('XxxFX', FIRMWARE_VERSION, BUILD_NUMBER)  // LEDs auto-initialized"
+  loop: "server.indicators().setErrorCondition(hasError)  // Set before server.loop()"
+  auto: "server.loop()  // Updates indicators automatically"
+```
+
+**Error condition (LED 1) varies by controller:**
+- **GunFX:** No runtime error conditions (LED 1 always OFF)
+- **LightFX:** No runtime error conditions (LED 1 always OFF)
+- **GearControl:** Any gear in ERROR state → LED 1 blinks
+
 ### Rich STATUS Pattern
 
-Every controller provides board-specific status via `CoreCommandServer`:
+Every controller provides board-specific status via `PicoServer`:
 
 ```cpp
 // In setup(): Register module status callback
-coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
     buf[0] = myFlag;
     CoreProtocol::putU16LE(&buf[1], myServo);
     return 3;  // bytes written
 });
 
-// In loop(): Keep free RAM current
-coreServer.updateFreeRam(rp2040.getFreeHeap());
+// Free RAM is updated automatically by server.loop()
 ```
 
 STATUS response = 12-byte core header + module callback data.
@@ -309,6 +351,13 @@ Constants_Match:
   - [ ] Error codes in C++ match Python
   - [ ] Endianness consistent (little-endian)
 
+Units_Explicit:  # MANDATORY for all physical measurements
+  - [ ] Method names include unit suffix (e.g., busVoltage_mV, current_mA)
+  - [ ] Struct fields include unit suffix (e.g., voltage_mV, power_mW)
+  - [ ] Wire format comments annotate units at pack/unpack sites
+  - [ ] No implicit conversions at call sites
+  - [ ] Datasheet section refs on hardware register constants
+
 Tests_Updated:  # ALWAYS update tests when protocol/features change
   - [ ] Existing tests still pass
   - [ ] New functionality has test coverage
@@ -323,6 +372,11 @@ Documentation:
   - [ ] README.md updated with new protocol entries
   - [ ] Payload format documented
   - [ ] Error codes documented
+
+Versioning:  # MANDATORY for firmware changes
+  - [ ] BUILD_NUMBER incremented (every firmware change)
+  - [ ] FIRMWARE_VERSION bumped if appropriate (semver)
+  - [ ] Version history updated in controller README.md
 ```
 
 ---

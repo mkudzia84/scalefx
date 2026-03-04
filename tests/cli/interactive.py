@@ -28,6 +28,7 @@ Architecture:
     - handlers/core.py: Connection and protocol commands
     - handlers/gunfx.py: GunFX-specific commands
     - handlers/lightfx.py: LightFX-specific commands
+    - handlers/gearcontrol.py: GearControl-specific commands
 """
 
 import sys
@@ -54,7 +55,7 @@ from .base import (
     CommandInfo, OutputMixin, ControllerType,
     get_prompt, Fore, Style
 )
-from .handlers import CoreCommandHandler, GunFxCommandHandler, LightFxCommandHandler
+from .handlers import CoreCommandHandler, GearControlCommandHandler, GunFxCommandHandler, LightFxCommandHandler
 
 
 class InteractiveCLI(OutputMixin):
@@ -63,6 +64,7 @@ class InteractiveCLI(OutputMixin):
     
     Uses the Command Pattern with handler classes for different command groups:
     - CoreCommandHandler: Connection, protocol commands (always available)
+    - GearControlCommandHandler: GearControl-specific (after init on GearControl device)
     - GunFxCommandHandler: GunFX-specific (after init on GunFX device)
     - LightFxCommandHandler: LightFX-specific (after init on LightFX device)
     """
@@ -86,12 +88,14 @@ class InteractiveCLI(OutputMixin):
         self.core_handler.on_quit(self._on_quit)
         
         # Controller-specific handlers
+        self.gearcontrol_handler = GearControlCommandHandler()
         self.gunfx_handler = GunFxCommandHandler()
         self.lightfx_handler = LightFxCommandHandler()
         
         # All handlers for connection sync
         self._handlers = [
             self.core_handler,
+            self.gearcontrol_handler,
             self.gunfx_handler,
             self.lightfx_handler,
         ]
@@ -148,7 +152,9 @@ class InteractiveCLI(OutputMixin):
             commands.update(self.core_handler.get_protocol_commands())
             
             # Controller-specific commands after init
-            if self.controller_type == ControllerType.GUNFX:
+            if self.controller_type == ControllerType.GEARCONTROL:
+                commands.update(self.gearcontrol_handler.get_commands())
+            elif self.controller_type == ControllerType.GUNFX:
                 commands.update(self.gunfx_handler.get_commands())
             elif self.controller_type == ControllerType.LIGHTFX:
                 commands.update(self.lightfx_handler.get_commands())
@@ -217,6 +223,13 @@ class InteractiveCLI(OutputMixin):
     def _suggest_command(self, cmd: str):
         """Suggest similar command or explain why it's not available."""
         # Check if it's a controller-specific command for wrong controller
+        if cmd.startswith('gearcontrol.') and self.controller_type != ControllerType.GEARCONTROL:
+            if self.controller_type:
+                self.print_error(f"'{cmd}' is a GearControl command, but you're connected to {self.controller_type}")
+            else:
+                self.print_error(f"'{cmd}' requires GearControl controller. Run 'init' first.")
+            return
+        
         if cmd.startswith('gunfx.') and self.controller_type != ControllerType.GUNFX:
             if self.controller_type:
                 self.print_error(f"'{cmd}' is a GunFX command, but you're connected to {self.controller_type}")
@@ -234,6 +247,7 @@ class InteractiveCLI(OutputMixin):
         # Check if command exists but needs init
         all_cmds = {}
         all_cmds.update(self.core_handler.get_protocol_commands())
+        all_cmds.update(self.gearcontrol_handler.get_commands())
         all_cmds.update(self.gunfx_handler.get_commands())
         all_cmds.update(self.lightfx_handler.get_commands())
         
@@ -267,6 +281,7 @@ class InteractiveCLI(OutputMixin):
         print()
         if self.controller_type:
             ctrl_color = {
+                ControllerType.GEARCONTROL: Fore.GREEN,
                 ControllerType.GUNFX: Fore.RED,
                 ControllerType.LIGHTFX: Fore.BLUE,
                 ControllerType.NOOP: Fore.MAGENTA,
@@ -299,6 +314,7 @@ class InteractiveCLI(OutputMixin):
         if controller_cmds:
             prefix = self.controller_type or "controller"
             color = {
+                ControllerType.GEARCONTROL: Fore.GREEN,
                 ControllerType.GUNFX: Fore.RED,
                 ControllerType.LIGHTFX: Fore.BLUE,
             }.get(self.controller_type, Fore.CYAN)
@@ -313,6 +329,7 @@ class InteractiveCLI(OutputMixin):
         if not self.controller_type:
             print(f"{Fore.YELLOW}━━━ After Initialization ━━━{Style.RESET_ALL}")
             print(f"  Additional commands will be available based on detected controller type:")
+            print(f"  - {Fore.GREEN}GearControl{Style.RESET_ALL}: gearcontrol.deploy, gearcontrol.retract, gearcontrol.servo, ...")
             print(f"  - {Fore.RED}GunFX{Style.RESET_ALL}: gunfx.trigger, gunfx.servo, gunfx.smoke, ...")
             print(f"  - {Fore.BLUE}LightFX{Style.RESET_ALL}: lightfx.led, lightfx.servo, lightfx.power, ...")
             print(f"  - {Fore.MAGENTA}NoOp{Style.RESET_ALL}: Core commands only (protocol testing)")

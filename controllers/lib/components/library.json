@@ -1,0 +1,23 @@
+{
+    "name": "components",
+    "version": "1.0.0",
+    "description": "Reusable hardware component drivers for ScaleFX controllers: I2C devices, LED control, PWM input, servo output, battery monitoring",
+    "keywords": [
+        "i2c", "ina226", "power", "current", "voltage", "monitor", "sensor",
+        "battery", "lipo", "li-ion", "adc", "cell", "discharge",
+        "led", "gpio", "output",
+        "pwm", "input", "rc", "receiver",
+        "servo", "motion", "acceleration", "recoil",
+        "pico"
+    ],
+    "authors": [
+        {
+            "name": "ScaleFX"
+        }
+    ],
+    "frameworks": "arduino",
+    "platforms": "raspberrypi",
+    "dependencies": {
+        "Servo": "*"
+    }
+}

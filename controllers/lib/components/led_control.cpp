@@ -63,9 +63,9 @@ void LedControl::end() {
 void LedControl::on() {
     if (!_attached) return;
     _state = true;
-    _brightness = 255;
+    _brightness = 100;
     if (_usePwm) {
-        writePwm(255);
+        writePwm(100);
     } else {
         writePin(true);
     }
@@ -85,7 +85,7 @@ void LedControl::off() {
 void LedControl::toggle() {
     if (!_attached) return;
     _state = !_state;
-    _brightness = _state ? 255 : 0;
+    _brightness = _state ? 100 : 0;
     if (_usePwm) {
         writePwm(_brightness);
     } else {
@@ -96,7 +96,7 @@ void LedControl::toggle() {
 void LedControl::set(bool state) {
     if (!_attached) return;
     _state = state;
-    _brightness = state ? 255 : 0;
+    _brightness = state ? 100 : 0;
     if (_usePwm) {
         writePwm(_brightness);
     } else {
@@ -106,6 +106,7 @@ void LedControl::set(bool state) {
 
 void LedControl::setBrightness(uint8_t brightness) {
     if (!_attached) return;
+    if (brightness > 100) brightness = 100;
     _brightness = brightness;
     _state = (brightness > 0);
     if (_usePwm) {
@@ -127,10 +128,23 @@ void LedControl::writePin(bool state) {
     }
 }
 
+void LedControl::setMasterBrightness_pct(uint8_t pct) {
+    _masterBrightness_pct = (pct > 100) ? 100 : pct;
+    // Re-apply current brightness with new master scaling
+    if (_attached && _usePwm) {
+        writePwm(_brightness);
+    } else if (_attached && !_usePwm) {
+        writePin(_state && _masterBrightness_pct > 0);
+    }
+}
+
 void LedControl::writePwm(uint8_t value) {
+    // value is 0-100 brightness, scale by master brightness and convert to 0-255 PWM
+    uint8_t pwm = (uint8_t)((uint32_t)value * _masterBrightness_pct * 255 / 10000);
+
     if (_activeLow) {
-        analogWrite(_pin, 255 - value);
+        analogWrite(_pin, 255 - pwm);
     } else {
-        analogWrite(_pin, value);
+        analogWrite(_pin, pwm);
     }
 }

@@ -262,6 +262,8 @@ Flags:
 | `GunFxClient` | `serial_gunfx.h` | GunFX command sender (client/hub) |
 | `LightFxServer` | `serial_lightfx.h` | LightFX command handler (server) |
 | `LightFxClient` | `serial_lightfx.h` | LightFX command sender (client/hub) |
+| `GearControlServer` | `serial_gearcontrol.h` | GearControl command handler (server) |
+| `GearControlClient` | `serial_gearcontrol.h` | GearControl command sender (client/hub) |
 | `SerialBus` | `serial_bus.h` | Client-side serial bus (USB host) |
 | `UsbHost` | `serial_bus.h` | PIO-USB host for HubFX |
 
@@ -320,6 +322,7 @@ void loop() {
   - Core header: `[counter:u32LE][uptime:u32LE][freeRam:u32LE]`
   - GunFX appends 20 bytes (flags, fan, servos, RPM, shots, heater)
   - LightFX appends 22 bytes (LEDs, servos, power readings)
+  - GearControl appends 26 bytes (gear states, motor current, servos, LEDs, battery)
 - **StatusDataCallback**: Modules register `onStatusData()` on CoreCommandServer
 - **updateFreeRam()**: CoreCommandServer tracks live free RAM for STATUS
 - **Removed**: `SerialInitHandler`, `SerialBusText`, text protocol classes

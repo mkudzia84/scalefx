@@ -34,7 +34,7 @@
  * 
  * Implement this interface to create custom LED animations.
  * The update() method is called repeatedly and should return
- * the desired LED intensity (0-255) or -1 when the event is complete.
+ * the desired LED intensity (0-100) or -1 when the event is complete.
  */
 class ILedEvent {
 public:
@@ -49,7 +49,7 @@ public:
     /**
      * @brief Update the event and get current LED intensity
      * @param now Current time in milliseconds
-     * @return LED intensity 0-255, or -1 if event is complete
+     * @return LED intensity 0-100, or -1 if event is complete
      */
     virtual int16_t update(uint32_t now) = 0;
     
@@ -85,12 +85,12 @@ public:
     /**
      * @brief Create an LED on event
      * @param durationMs Duration in milliseconds (0 = infinite)
-     * @param brightness LED brightness 0-255 (default 255 = full)
+     * @param brightness LED brightness 0-100 (default 100 = full)
      * @param powerSaving If true, use PWM even at full brightness for power saving
-     * @param pwmDuty PWM duty cycle 0-255 when power saving (default 200 = ~78%)
+     * @param pwmDuty Power saving duty 0-100 when power saving (default 78%)
      */
-    explicit LedOn(uint32_t durationMs = 0, uint8_t brightness = 255, 
-                   bool powerSaving = false, uint8_t pwmDuty = 200)
+    explicit LedOn(uint32_t durationMs = 0, uint8_t brightness = 100, 
+                   bool powerSaving = false, uint8_t pwmDuty = 78)
         : _durationMs(durationMs), _brightness(brightness), 
           _powerSaving(powerSaving), _pwmDuty(pwmDuty) {}
     
@@ -106,7 +106,7 @@ public:
             return -1;
         }
         
-        if (_powerSaving && _brightness == 255) {
+        if (_powerSaving && _brightness == 100) {
             return _pwmDuty;  // Power-saving mode
         }
         return _brightness;
@@ -180,11 +180,11 @@ public:
      * @brief Create a flashing LED event
      * @param intervalMs On/Off interval in milliseconds (full cycle = 2x interval)
      * @param durationMs Total duration in milliseconds (0 = infinite)
-     * @param brightness LED brightness when on (0-255)
+     * @param brightness LED brightness when on (0-100)
      * @param dutyPercent Duty cycle percentage (default 50 = equal on/off)
      */
     explicit LedFlashing(uint16_t intervalMs, uint32_t durationMs = 0,
-                         uint8_t brightness = 255, uint8_t dutyPercent = 50)
+                         uint8_t brightness = 100, uint8_t dutyPercent = 50)
         : _intervalMs(intervalMs), _durationMs(durationMs),
           _brightness(brightness), _dutyPercent(dutyPercent) {}
     
@@ -234,9 +234,9 @@ public:
     /**
      * @brief Create a fade-in event
      * @param durationMs Fade duration in milliseconds
-     * @param targetBrightness Final brightness (0-255, default 255)
+     * @param targetBrightness Final brightness (0-100, default 100)
      */
-    explicit LedFadeIn(uint32_t durationMs, uint8_t targetBrightness = 255)
+    explicit LedFadeIn(uint32_t durationMs, uint8_t targetBrightness = 100)
         : _durationMs(durationMs), _targetBrightness(targetBrightness) {}
     
     void start(uint32_t now) override { 
@@ -280,9 +280,9 @@ public:
     /**
      * @brief Create a fade-out event
      * @param durationMs Fade duration in milliseconds
-     * @param startBrightness Initial brightness (0-255, default 255)
+     * @param startBrightness Initial brightness (0-100, default 100)
      */
-    explicit LedFadeOut(uint32_t durationMs, uint8_t startBrightness = 255)
+    explicit LedFadeOut(uint32_t durationMs, uint8_t startBrightness = 100)
         : _durationMs(durationMs), _startBrightness(startBrightness) {}
     
     void start(uint32_t now) override { 
@@ -330,11 +330,11 @@ public:
      * @brief Create a sinusoidal fading event
      * @param cycleDurationMs Duration of one full fade cycle in milliseconds
      * @param durationMs Total event duration in milliseconds (0 = infinite)
-     * @param minBrightness Minimum brightness (0-255, default 0)
-     * @param maxBrightness Maximum brightness (0-255, default 255)
+     * @param minBrightness Minimum brightness (0-100, default 0)
+     * @param maxBrightness Maximum brightness (0-100, default 100)
      */
     explicit LedFading(uint32_t cycleDurationMs, uint32_t durationMs = 0,
-                       uint8_t minBrightness = 0, uint8_t maxBrightness = 255)
+                       uint8_t minBrightness = 0, uint8_t maxBrightness = 100)
         : _cycleDurationMs(cycleDurationMs), _durationMs(durationMs),
           _minBrightness(minBrightness), _maxBrightness(maxBrightness) {}
     

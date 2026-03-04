@@ -71,8 +71,7 @@ lib_deps =
 lib_deps = 
     ../../lib/serial
     ; Add other libs as needed:
-    ; ../../lib/led_control
-    ; ../../lib/srv_control
+    ; ../../lib/components
 ```
 
 ---
@@ -210,109 +209,100 @@ private:
 
 **File:** `controllers/newfx/pico/src/newfx_pico.ino`
 
+> **Note:** All controllers use `PicoServer` for common boilerplate. Controller firmware only contains module-specific logic.
+
 ```cpp
 /**
  * NewFX Pico - [Description]
  * Firmware Version: 0.1.0
+ *
+ * Architecture:
+ *   - PicoServer: Common server boilerplate (serial, indicators, core protocol)
+ *   - NewFxServer: Handles module-specific commands
+ *   - CommandRouter: Routes packets to handlers in priority order
  */
 
 #include <Arduino.h>
-#include <serial.h>
+#include <pico_server.h>
 
 // Version info
 #define FIRMWARE_VERSION "0.1.0"
-#define BOARD_TYPE "RP2040"
 #define BUILD_NUMBER 1
 
-// Handlers
-CommandRouter commandRouter;
-CoreCommandServer coreServer;
+// ============================================================================
+//  GLOBAL INSTANCES
+// ============================================================================
+
+// Server (serial, core protocol, indicators, connection management)
+PicoServer server;
 NewFxServer newfxServer;
 
-// State variables
-bool initialized = false;
-
-// Forward declarations
-void performSafeInit();
-void performSafeShutdown();
-uint8_t handleCommand1(uint16_t param1, uint8_t param2);
-uint8_t handleCommand2(uint8_t id);
-
-void setup() {
-    Serial.begin(115200);
-    while (!Serial && millis() < 3000);  // Wait for USB
-    
-    // Configure core handler
-    coreServer.begin(&Serial);
-    coreServer.setBoardInfo("NewFX", FIRMWARE_VERSION, BOARD_TYPE, 
-                              rp2040.f_cpu() / 1000000, rp2040.getFreeHeap(),
-                              BUILD_NUMBER);
-    coreServer.onInit(performSafeInit);
-    coreServer.onShutdown(performSafeShutdown);
-    coreServer.onReboot([]() { rp2040.reboot(); });
-    coreServer.onBootsel([]() { rp2040.rebootToBootloader(); });
-    
-    // Register module-specific STATUS data callback
-    coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        // Append module-specific bytes to STATUS response
-        // Return number of bytes written
-        return 0;  // TODO: implement module status
-    });
-    coreServer.onInit(performSafeInit);
-    coreServer.onShutdown(performSafeShutdown);
-    coreServer.onReboot([]() { rp2040.reboot(); });
-    coreServer.onBootsel([]() { rp2040.rebootToBootloader(); });
-    
-    // Configure module handler
-    newfxServer.begin(&Serial);
-    newfxServer.onCommand1(handleCommand1);
-    newfxServer.onCommand2(handleCommand2);
-    
-    // Configure router
-    commandRouter.begin(&Serial, [](uint8_t err, uint8_t type) {
-        newfxServer.sendNack(err);
-    });
-    commandRouter.addHandler(&coreServer);
-    commandRouter.addHandler(&newfxServer);
-}
-
-void loop() {
-    commandRouter.poll();
-    coreServer.updateFreeRam(rp2040.getFreeHeap());
-    
-    // Add periodic tasks here
-}
-
-// ============================================================
-// Callbacks
-// ============================================================
+// ============================================================================
+//  CALLBACKS
+// ============================================================================
 
 void performSafeInit() {
     // Initialize hardware to safe state
-    initialized = true;
 }
 
 void performSafeShutdown() {
     // Shutdown hardware safely
-    initialized = false;
 }
 
 uint8_t handleCommand1(uint16_t param1, uint8_t param2) {
-    if (!initialized) return SerialError::INVALID_STATE;
-    
     // Implement command logic
-    // Return NewFxError::OK on success
-    // Return specific error code on failure
-    
-    return NewFxError::OK;
+    return SerialError::OK;
 }
 
 uint8_t handleCommand2(uint8_t id) {
-    if (!initialized) return SerialError::INVALID_STATE;
-    
     // Implement command logic
-    
-    return NewFxError::OK;
+    return SerialError::OK;
+}
+
+// ============================================================================
+//  SETUP
+// ============================================================================
+
+void setup() {
+    // Initialize server (serial, device name, indicators, core callbacks)
+    server.begin("NewFX", FIRMWARE_VERSION, BUILD_NUMBER);
+    server.onInit([]()     { performSafeInit(); });
+    server.onShutdown([]() { performSafeShutdown(); });
+
+    // Initialize hardware (I2C, servos, LEDs, etc.)
+    // ...
+
+    // Configure module handler
+    newfxServer.begin(&Serial, server.deviceName());
+    newfxServer.onCommand1(handleCommand1);
+    newfxServer.onCommand2(handleCommand2);
+
+    // Register module-specific STATUS data callback
+    server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+        // Append module-specific bytes to STATUS response
+        // Return number of bytes written
+        return 0;  // TODO: implement module status
+    });
+
+    // Finalize command router (core + module handlers)
+    server.addModuleHandler(&newfxServer);
+}
+
+// ============================================================================
+//  LOOP
+// ============================================================================
+
+void loop() {
+    // Process protocol, connection timeout, indicators
+    server.loop();
+
+    // Module-specific updates
+    // updateHardware();
+
+    // Optional: set error/warning indicator conditions
+    // server.indicators().setErrorCondition(hasError);
+
+    delay(1);
 }
 ```
 

@@ -51,4 +51,7 @@
 // LightFX binary implementation
 #include "serial_lightfx.h"
 
+// GearControl binary implementation
+#include "serial_gearcontrol.h"
+
 #endif // SERIAL_H

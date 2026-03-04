@@ -19,7 +19,7 @@
 #include <serial.h>
 #include <led_control.h>
 #include <srv_control.h>
-#include <pico/unique_id.h>
+#include <pico_server.h>
 
 // Firmware version
 #define FIRMWARE_VERSION "0.3.0"
@@ -32,8 +32,6 @@
 const uint8_t PIN_GUN_SRV_1    =  1;   // Gun servo 1
 const uint8_t PIN_GUN_SRV_2    =  2;   // Gun servo 2
 const uint8_t PIN_GUN_SRV_3    =  3;   // Gun servo 3
-const uint8_t PIN_LED_BLUE     = 13;   // Status LED (connection/firing)
-const uint8_t PIN_LED_YELLOW   = 14;   // Heater indicator LED
 const uint8_t PIN_SMOKE_FAN    = 16;   // Smoke fan motor relay
 const uint8_t PIN_SMOKE_HEATER = 17;   // Smoke heater relay
 const uint8_t PIN_NOZZLE_FLASH = 25;   // Muzzle flash LED (PWM)
@@ -41,9 +39,6 @@ const uint8_t PIN_NOZZLE_FLASH = 25;   // Muzzle flash LED (PWM)
 // ============================================================================
 //  CONSTANTS
 // ============================================================================
-
-// Serial communication
-const uint32_t SERIAL_BAUD = 115200;
 
 // Muzzle flash timing
 const uint8_t  FLASH_PWM_DUTY   = 255;    // Full brightness
@@ -63,27 +58,19 @@ const uint8_t  SMOKE_FAN_DEFAULT_PULSE_LOW  = 80;
 const uint16_t SMOKE_FAN_DEFAULT_PULSE_MS   = 50;
 const uint16_t SMOKE_FAN_DEFAULT_SPINDOWN_MS = 5000;
 
-// Connection timeout
-const unsigned long CONNECTION_TIMEOUT_MS = 15000;
-
 // ============================================================================
 //  GLOBAL INSTANCES
 // ============================================================================
 
-// Serial protocol handlers
-CommandRouter commandRouter;
-CoreCommandServer coreServer;
+// Server (serial, core protocol, indicators, connection management)
+PicoServer server;
 GunFxServer gunfxServer;
-
-// Device identification
-char deviceName[24];
 
 // ============================================================================
 //  STATE VARIABLES
 // ============================================================================
 
-// Connection state
-bool watchdog_triggered = false;
+// Connection state managed by IndicatorLedManager (indicators)
 
 // Firing state
 bool is_firing = false;
@@ -128,12 +115,6 @@ ServoControl gun_servos[3];
 struct RecoilJerkConfig { int jerk_us, variance_us; };
 RecoilJerkConfig servo_jerk_configs[3] = {{0, 0}, {0, 0}, {0, 0}};
 
-// Status LEDs
-LedControl led_blue, led_yellow;
-uint32_t blue_led_next_toggle_ms = 0;
-const uint32_t BLUE_LED_WATCHDOG_ON_MS  = 1000;
-const uint32_t BLUE_LED_WATCHDOG_OFF_MS = 2000;
-
 // ============================================================================
 //  FORWARD DECLARATIONS
 // ============================================================================
@@ -149,28 +130,8 @@ void performSafeInit();
 GunFxStatus buildCurrentStatus(uint32_t now_ms);
 
 // ============================================================================
-//  DEVICE NAME
-// ============================================================================
-
-void buildDeviceName() {
-    pico_unique_board_id_t id;
-    pico_get_unique_board_id(&id);
-    snprintf(deviceName, sizeof(deviceName), "GunFX-%02X%02X", 
-             id.id[6], id.id[7]);
-}
-
-// ============================================================================
 //  CONNECTION MANAGEMENT
 // ============================================================================
-
-void checkConnectionStatus() {
-    if (coreServer.checkTimeout(CONNECTION_TIMEOUT_MS)) {
-        if (!watchdog_triggered) {
-            performSafeShutdown();
-            watchdog_triggered = true;
-        }
-    }
-}
 
 void performSafeShutdown() {
     stopFiring(0);
@@ -186,38 +147,10 @@ void performSafeShutdown() {
 void performSafeInit() {
     stopFiring(0);
     setSmokeHeater(false);
-    watchdog_triggered = false;
     
     for (int i = 0; i < 3; i++) {
         setServoPulse(i + 1, SERVO_DEFAULT_US);
     }
-}
-
-// ============================================================================
-//  LED CONTROL
-// ============================================================================
-
-void updateYellowLED() {
-    led_yellow.set(smoke_heater_on);
-}
-
-void updateBlueLED(uint32_t now_ms) {
-    if (watchdog_triggered) {
-        if (now_ms >= blue_led_next_toggle_ms) {
-            led_blue.toggle();
-            blue_led_next_toggle_ms = now_ms + 
-                (led_blue.isOn() ? BLUE_LED_WATCHDOG_ON_MS : BLUE_LED_WATCHDOG_OFF_MS);
-        }
-    } else if (is_firing && (flash_active || flash_fading)) {
-        led_blue.on();
-    } else {
-        led_blue.off();
-    }
-}
-
-void updateLEDs(uint32_t now_ms) {
-    updateYellowLED();
-    updateBlueLED(now_ms);
 }
 
 // ============================================================================
@@ -429,9 +362,10 @@ GunFxStatus buildCurrentStatus(uint32_t now_ms) {
 // ============================================================================
 
 void setup() {
-    // Initialize USB serial
-    Serial.begin(SERIAL_BAUD);
-    while (!Serial && millis() < 3000) delay(10);
+    // Initialize server (serial, device name, indicators, core callbacks)
+    server.begin("GunFX", FIRMWARE_VERSION, BUILD_NUMBER);
+    server.onInit([]() { performSafeInit(); });
+    server.onShutdown([]() { performSafeShutdown(); });
     
     // Initialize GPIO outputs
     pinMode(PIN_NOZZLE_FLASH, OUTPUT);
@@ -441,10 +375,6 @@ void setup() {
     analogWrite(PIN_SMOKE_FAN, 0);
     digitalWrite(PIN_SMOKE_HEATER, LOW);
     
-    // Initialize status LEDs
-    led_blue.begin(PIN_LED_BLUE);
-    led_yellow.begin(PIN_LED_YELLOW);
-    
     // Initialize servos
     const uint8_t servoPins[] = {PIN_GUN_SRV_1, PIN_GUN_SRV_2, PIN_GUN_SRV_3};
     for (int i = 0; i < 3; i++) {
@@ -452,40 +382,10 @@ void setup() {
         gun_servos[i].setId(i + 1);
     }
     
-    // Build unique device name
-    buildDeviceName();
-    
-    // ========================================================================
-    // Initialize CoreCommandServer (system commands)
-    // ========================================================================
-    coreServer.begin(&Serial);
-    coreServer.setBoardInfo(deviceName, FIRMWARE_VERSION, "RP2040", 
-                              F_CPU / 1000000, rp2040.getFreeHeap(), BUILD_NUMBER);
-    
-    coreServer.onInit([]() {
-        performSafeInit();
-    });
-    
-    coreServer.onShutdown([]() {
-        performSafeShutdown();
-    });
-    
-    coreServer.onReboot([]() {
-        performSafeShutdown();
-        delay(100);
-        rp2040.reboot();
-    });
-    
-    coreServer.onBootsel([]() {
-        performSafeShutdown();
-        delay(500);
-        rp2040.rebootToBootloader();
-    });
-    
     // ========================================================================
     // Initialize GunFxServer (GunFX-specific commands)
     // ========================================================================
-    gunfxServer.begin(&Serial, deviceName);
+    gunfxServer.begin(&Serial, server.deviceName());
     
     // TRIGGER_ON: Start firing at specified RPM
     gunfxServer.onTriggerOn([](uint16_t rpm) -> uint8_t {
@@ -588,7 +488,7 @@ void setup() {
     // Wire format (20 bytes):
     //   [flags:u8][fanSpeed:u8][fanOffMs:u16][servo0:u16][servo1:u16][servo2:u16]
     //   [rpm:u16][shots:u32][heaterMs:u32]
-    coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+    server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
         if (maxLen < 20) return 0;
         
         GunFxStatus s = buildCurrentStatus(millis());
@@ -614,16 +514,8 @@ void setup() {
         return 20;
     });
     
-    // ========================================================================
-    // Initialize CommandRouter (routes packets to handlers)
-    // ========================================================================
-    commandRouter.begin(&Serial, [](uint8_t code, uint8_t type) {
-        gunfxServer.sendNack(code);
-    });
-    
-    // Add handlers to router (order = priority)
-    commandRouter.addHandler(&coreServer);      // Priority 1: core/system commands
-    commandRouter.addHandler(&gunfxServer);      // Priority 2: GunFX commands
+    // Finalize router (core handler + GunFX handler)
+    server.addModuleHandler(&gunfxServer);
 }
 
 // ============================================================================
@@ -631,28 +523,13 @@ void setup() {
 // ============================================================================
 
 void loop() {
-    // Process incoming serial packets via CommandRouter
-    // The router decodes COBS packets and routes to handlers
-    commandRouter.process();
-    
-    // Update activity timestamp for core handler timeout detection
-    if (commandRouter.lastActivityMs() > coreServer.lastActivityMs()) {
-        coreServer.updateActivity();
-    }
-    
-    // Keep free RAM current for STATUS response
-    coreServer.updateFreeRam(rp2040.getFreeHeap());
+    // Process protocol, connection timeout, indicators
+    server.loop();
     
     // Update hardware states
     updateMuzzleFlash();
     updateSmokeFan();
     updateAllServos();
-    
-    uint32_t now = millis();
-    updateLEDs(now);
-    
-    // Check connection timeout
-    checkConnectionStatus();
     
     delay(1);
 }

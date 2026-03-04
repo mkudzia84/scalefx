@@ -43,12 +43,15 @@ class LightFxPacket:
     LED_SEQ_STATUS    = 0x47
     LED_STATUS        = 0x48
     LED_SEQ_QUEUE     = 0x49
+    LED_MASTER_BRIGHTNESS = 0x4A
     SERVO_SET         = 0x50
     SERVO_SETTINGS    = 0x51
-    POWER_STATUS      = 0x58
-    POWER_CONFIG      = 0x59  # [shunt_mohm:u16][max_current_ma:u16]
+    # Landing light control
+    LANDING_LIGHT_BIND    = 0x52
+    LANDING_LIGHT_UNBIND  = 0x53
+    LANDING_LIGHT_DEPLOY  = 0x54
+    LANDING_LIGHT_RETRACT = 0x55
     # Response packet types
-    POWER_STATUS_RESP   = 0x5C
     LED_STATUS_RESP     = 0x5A
     LED_SEQ_STATUS_RESP = 0x5B
     LED_SEQ_QUEUE_RESP  = 0x5D
@@ -107,9 +110,7 @@ class GunFxError:
     SERVO_PULSE_RANGE   = 0x21
     SERVO_MIN_MAX       = 0x22
     SERVO_NOT_CONFIGURED = 0x23
-    HEATER_SAFETY       = 0x30
-    FAN_NOT_RUNNING     = 0x31
-    INVALID_FAN_SPEED   = 0x32
+    INVALID_FAN_SPEED   = 0x30
     INVALID_RPM         = 0x40
     ALREADY_FIRING      = 0x41
     NOT_FIRING          = 0x42
@@ -122,9 +123,7 @@ class GunFxError:
             0x21: "SERVO_PULSE_RANGE",
             0x22: "SERVO_MIN_MAX",
             0x23: "SERVO_NOT_CONFIGURED",
-            0x30: "HEATER_SAFETY",
-            0x31: "FAN_NOT_RUNNING",
-            0x32: "INVALID_FAN_SPEED",
+            0x30: "INVALID_FAN_SPEED",
             0x40: "INVALID_RPM",
             0x41: "ALREADY_FIRING",
             0x42: "NOT_FIRING",
@@ -139,6 +138,7 @@ class LightFxError:
     INVALID_EVENT   = 0x52
     INVALID_PARAM   = 0x53
     INVALID_SERVO   = 0x54
+    INVALID_SLOT    = 0x55
     
     @staticmethod
     def name(code: int) -> str:
@@ -149,5 +149,79 @@ class LightFxError:
             0x52: "INVALID_EVENT",
             0x53: "INVALID_PARAM",
             0x54: "INVALID_SERVO",
+            0x55: "INVALID_SLOT",
         }
         return names.get(code, CoreError.name(code))
+
+
+class GearControlPacket:
+    """GearControl packet types (0x60-0x7F)."""
+    GEAR_DEPLOY    = 0x60
+    GEAR_RETRACT   = 0x61
+    GEAR_STOP      = 0x62
+    GEAR_ALL       = 0x63
+    SERVO_SET      = 0x64
+    SRV_SETTINGS   = 0x65
+    GEAR_CONFIG    = 0x66
+    DOOR_CONFIG    = 0x67
+    YAW_CONFIG     = 0x68
+    YAW_INPUT      = 0x69
+    GEAR_CALIBRATE    = 0x6A
+    GEAR_CALIB_STATUS = 0x6B
+    GEAR_CALIB_CANCEL = 0x6C
+    BATTERY_CONFIG   = 0x6D
+    DOOR_MODE        = 0x6E
+
+
+class GearControlError:
+    """GearControl-specific error codes (0x60-0x6F)."""
+    INVALID_GEAR_ID    = 0x60
+    INVALID_SERVO_ID   = 0x61
+    GEAR_BUSY          = 0x62
+    MOTOR_STALL        = 0x63
+    MOTOR_TIMEOUT      = 0x64
+    SERVO_OUT_OF_RANGE = 0x65
+    INA226_ERROR       = 0x66
+    YAW_NOT_AVAILABLE  = 0x67
+    INVALID_ACTION     = 0x68
+    NO_CURRENT_MONITOR = 0x69
+    NOT_CALIBRATING    = 0x6A
+    
+    @staticmethod
+    def name(code: int) -> str:
+        """Get error name from code."""
+        names = {
+            0x60: "INVALID_GEAR_ID",
+            0x61: "INVALID_SERVO_ID",
+            0x62: "GEAR_BUSY",
+            0x63: "MOTOR_STALL",
+            0x64: "MOTOR_TIMEOUT",
+            0x65: "SERVO_OUT_OF_RANGE",
+            0x66: "INA226_ERROR",
+            0x67: "YAW_NOT_AVAILABLE",
+            0x68: "INVALID_ACTION",
+            0x69: "NO_CURRENT_MONITOR",
+            0x6A: "NOT_CALIBRATING",
+        }
+        return names.get(code, CoreError.name(code))
+
+
+class DoorMode:
+    """Door activation modes for landing gear sequencing."""
+    NONE       = 0  # No door servos (motor only)
+    SINGLE     = 1  # One door servo (servo 0 only)
+    DUAL_SYNC  = 2  # Two doors, simultaneous (default)
+    DUAL_DELAY = 3  # Two doors, door 1 starts after delay
+    DUAL_SEQ   = 4  # Two doors, door 1 starts after door 0 completes
+
+    @staticmethod
+    def name(mode: int) -> str:
+        """Get mode name from value."""
+        names = {
+            0: "NONE",
+            1: "SINGLE",
+            2: "DUAL_SYNC",
+            3: "DUAL_DELAY",
+            4: "DUAL_SEQ",
+        }
+        return names.get(mode, f"UNKNOWN({mode})")

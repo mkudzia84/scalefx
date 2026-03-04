@@ -18,13 +18,12 @@
  * Protocol: Binary COBS with CRC-8
  * 
  * Architecture:
- *   - CoreCommandServer: Handles all system commands
+ *   - PicoServer: Common server boilerplate (serial, indicators, core protocol)
  *   - CommandRouter: Routes packets (no module-specific handlers)
  */
 
 #include <Arduino.h>
-#include <pico/unique_id.h>
-#include <serial.h>
+#include <pico_server.h>
 
 // Firmware version
 #define FIRMWARE_VERSION "0.2.0"
@@ -34,40 +33,20 @@
 //  CONSTANTS
 // ============================================================================
 
-const uint32_t SERIAL_BAUD = 115200;
 const uint8_t LED_PIN = 25;  // Onboard LED
-
-// Connection timeout
-const unsigned long CONNECTION_TIMEOUT_MS = 15000;
 
 // ============================================================================
 //  GLOBAL INSTANCES
 // ============================================================================
 
-// Serial protocol handlers
-CommandRouter commandRouter;
-CoreCommandServer coreServer;
-
-// Device identification
-char deviceName[24];
+// Server (serial, core protocol, indicators, connection management)
+PicoServer server;
 
 // ============================================================================
 //  STATE VARIABLES
 // ============================================================================
 
-bool watchdog_triggered = false;
 uint32_t commandCount = 0;
-
-// ============================================================================
-//  HELPER FUNCTIONS
-// ============================================================================
-
-void buildDeviceName() {
-    pico_unique_board_id_t id;
-    pico_get_unique_board_id(&id);
-    snprintf(deviceName, sizeof(deviceName), "NoOp-%02X%02X", 
-             id.id[6], id.id[7]);
-}
 
 // ============================================================================
 //  LED CONTROL
@@ -87,21 +66,12 @@ void blinkLed(int times, int delayMs = 100) {
 }
 
 // ============================================================================
-//  CONNECTION MANAGEMENT
+//  CALLBACKS
 // ============================================================================
 
-void checkConnectionStatus() {
-    if (coreServer.checkTimeout(CONNECTION_TIMEOUT_MS)) {
-        if (!watchdog_triggered) {
-            watchdog_triggered = true;
-            setLed(false);
-        }
-    }
-}
-
 void performSafeInit() {
-    watchdog_triggered = false;
     commandCount = 0;
+    blinkLed(2);
 }
 
 void performSafeShutdown() {
@@ -113,54 +83,17 @@ void performSafeShutdown() {
 // ============================================================================
 
 void setup() {
-    // Initialize USB serial
-    Serial.begin(SERIAL_BAUD);
-    while (!Serial && millis() < 3000) delay(10);
+    // Initialize server (serial, device name, indicators, core callbacks)
+    server.begin("NoOp", FIRMWARE_VERSION, BUILD_NUMBER);
+    server.onInit([]() { performSafeInit(); });
+    server.onShutdown([]() { performSafeShutdown(); });
     
-    // Initialize LED
+    // Initialize onboard LED
     pinMode(LED_PIN, OUTPUT);
     setLed(false);
     
-    // Build unique device name
-    buildDeviceName();
-    
-    // ========================================================================
-    // Initialize CoreCommandServer (system commands)
-    // ========================================================================
-    coreServer.begin(&Serial);
-    coreServer.setBoardInfo(deviceName, FIRMWARE_VERSION, "RP2040",
-                              F_CPU / 1000000, rp2040.getFreeHeap(), BUILD_NUMBER);
-    
-    coreServer.onInit([]() {
-        performSafeInit();
-        blinkLed(2);
-    });
-    
-    coreServer.onShutdown([]() {
-        performSafeShutdown();
-    });
-    
-    coreServer.onReboot([]() {
-        performSafeShutdown();
-        delay(100);
-        rp2040.reboot();
-    });
-    
-    coreServer.onBootsel([]() {
-        performSafeShutdown();
-        delay(100);
-        rp2040.rebootToBootloader();
-    });
-    
-    // ========================================================================
-    // Initialize CommandRouter
-    // ========================================================================
-    commandRouter.begin(&Serial, [](uint8_t code, uint8_t type) {
-        coreServer.sendNack(code);
-    });
-    
-    // Add CoreCommandServer to handle system commands (INIT, SHUTDOWN, REBOOT, etc.)
-    commandRouter.addHandler(&coreServer);
+    // Finalize router (core-only, no module handler)
+    server.addModuleHandler(nullptr);
     
     // Ready indication
     blinkLed(3, 50);
@@ -171,23 +104,12 @@ void setup() {
 // ============================================================================
 
 void loop() {
-    // Process serial commands
-    commandRouter.process();
-    
-    // Update activity timestamp
-    if (commandRouter.lastActivityMs() > coreServer.lastActivityMs()) {
-        coreServer.updateActivity();
-    }
-    
-    // Keep free RAM current for STATUS response
-    coreServer.updateFreeRam(rp2040.getFreeHeap());
-    
-    // Check connection timeout
-    checkConnectionStatus();
+    // Process protocol, connection timeout, indicators
+    server.loop();
     
     // LED heartbeat when initialized
     static uint32_t lastBlink = 0;
-    if (coreServer.isInitialized() && millis() - lastBlink > 2000) {
+    if (server.core().isInitialized() && millis() - lastBlink > 2000) {
         setLed(true);
         delay(10);
         setLed(false);

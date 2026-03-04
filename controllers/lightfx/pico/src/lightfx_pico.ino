@@ -2,7 +2,7 @@
  * LightFX Pico Controller v0.2.0
  * 
  * Server controller for lighting effects - receives commands from HubFX over USB serial.
- * Controls: 8-channel LED outputs with sequences, 3 servos, power monitoring via INA226.
+ * Controls: 8-channel LED outputs with sequences, 3 servos.
  * 
  * Hardware: Raspberry Pi Pico (RP2040) + earlephilhower/arduino-pico core
  * Protocol: Binary COBS with CRC-8
@@ -14,28 +14,26 @@
  * 
  * Pin Assignments:
  *   LED Channels: GPIO21-28 (8 channels, PWM capable)
- *   Status LEDs: GPIO13 (blue), GPIO14 (yellow)
+ *   Indicator LEDs: GPIO13 (connection), GPIO14 (error)
  *   Servos: GPIO1-3
- *   I2C (INA226): SDA=GPIO4, SCL=GPIO5
  */
 
 #include <Arduino.h>
 #include <Servo.h>
-#include <Wire.h>
 #include <serial.h>
 #include <led_control.h>
 #include <led_event_seq.h>
 #include <led_events.h>
 #include <srv_control.h>
-#include <pico/unique_id.h>
-#include "ina226.h"
+#include <pico_server.h>
+#include "landing_light.h"
 
 // ============================================================================
 //  FIRMWARE INFO
 // ============================================================================
 
-#define FIRMWARE_VERSION "0.2.0"
-#define BUILD_NUMBER 4
+#define FIRMWARE_VERSION "0.5.0"
+#define BUILD_NUMBER 11
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -51,18 +49,10 @@ const uint8_t PIN_LED_CH6 = 23;
 const uint8_t PIN_LED_CH7 = 22;
 const uint8_t PIN_LED_CH8 = 21;
 
-// Status LEDs
-const uint8_t PIN_LED_BLUE   = 13;
-const uint8_t PIN_LED_YELLOW = 14;
-
 // Servos
 const uint8_t PIN_SERVO_1 = 1;
 const uint8_t PIN_SERVO_2 = 2;
 const uint8_t PIN_SERVO_3 = 3;
-
-// I2C for INA226 Power Monitor
-const uint8_t PIN_I2C_SDA = 4;
-const uint8_t PIN_I2C_SCL = 5;
 
 // Array of LED channel pins
 const uint8_t LED_CHANNEL_PINS[8] = {
@@ -70,16 +60,12 @@ const uint8_t LED_CHANNEL_PINS[8] = {
     PIN_LED_CH5, PIN_LED_CH6, PIN_LED_CH7, PIN_LED_CH8
 };
 
-// INA226 configuration (can be updated via POWER_CONFIG command)
-float ina226ShuntOhms = 0.1f;
-float ina226MaxCurrent = 3.2f;
-
 // ============================================================================
 //  CONSTANTS
 // ============================================================================
 
-const uint32_t SERIAL_BAUD = 115200;
 const uint8_t LED_CHANNEL_COUNT = 8;
+const uint8_t LANDING_LIGHT_COUNT = 3;
 
 // Servo defaults
 const uint16_t SERVO_DEFAULT_US    = 1500;
@@ -87,81 +73,72 @@ const int SERVO_DEFAULT_MAX_SPEED  = 4000;
 const int SERVO_DEFAULT_ACCEL      = 8000;
 const int SERVO_DEFAULT_DECEL      = 8000;
 
-// Status LED timing
-const uint32_t BLUE_LED_WATCHDOG_ON_MS  = 1000;
-const uint32_t BLUE_LED_WATCHDOG_OFF_MS = 2000;
-
-// Connection timeout
-const unsigned long CONNECTION_TIMEOUT_MS = 15000;
-
 // ============================================================================
 //  GLOBAL INSTANCES
 // ============================================================================
 
-// Serial protocol handlers
-CommandRouter commandRouter;
-CoreCommandServer coreServer;
+// Server (serial, core protocol, indicators, connection management)
+PicoServer server;
 LightFxServer lightfxServer;
-
-// Device identification
-char deviceName[24];
 
 // ============================================================================
 //  STATE VARIABLES
 // ============================================================================
 
-// Connection state
-bool watchdog_triggered = false;
+// Connection state managed by IndicatorLedManager (indicators)
 
 // LED channels with PWM control
 LedControl ledChannels[LED_CHANNEL_COUNT];
 LedEventSeq ledSequences[LED_CHANNEL_COUNT];
 
-// Status LEDs
-LedControl ledBlue, ledYellow;
-uint32_t blue_led_next_toggle_ms = 0;
-
 // Servos with motion profiling
 ServoControl servos[3];
 
-// INA226 power monitor
-INA226 powerMonitor;
-uint32_t last_power_read_ms = 0;
-const uint32_t POWER_READ_INTERVAL_MS = 100;
+// Landing light sequencers (bind servo + LED channel)
+LandingLight landingLights[LANDING_LIGHT_COUNT];
+
 
 // ============================================================================
 //  FORWARD DECLARATIONS
 // ============================================================================
 
-void buildDeviceName();
 void performSafeShutdown();
 void performSafeInit();
-void checkConnectionStatus();
-void updateBlueLED(uint32_t now_ms);
-void setLedChannel(uint8_t channel, uint8_t brightness);
 void stopAllLedSequences();
 void setServoPulse(uint8_t servo_id, int pulse_us);
 void setupLightFxCallbacks();
+void updateLandingLights();
 
 // ============================================================================
-//  DEVICE NAME
+//  CONNECTION MANAGEMENT
 // ============================================================================
 
-void buildDeviceName() {
-    pico_unique_board_id_t id;
-    pico_get_unique_board_id(&id);
-    snprintf(deviceName, sizeof(deviceName), "LightFX-%02X%02X", 
-             id.id[6], id.id[7]);
+void performSafeShutdown() {
+    // Shutdown landing lights first (turns off LEDs)
+    for (uint8_t i = 0; i < LANDING_LIGHT_COUNT; i++) {
+        landingLights[i].shutdown();
+    }
+    
+    stopAllLedSequences();
+    
+    // Reset master brightness to 100%
+    for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+        ledChannels[i].setMasterBrightness_pct(100);
+    }
+    
+    for (int i = 0; i < 3; i++) {
+        setServoPulse(i + 1, SERVO_DEFAULT_US);
+    }
+}
+
+void performSafeInit() {
+    // Init resets everything to a known safe state — same as shutdown
+    performSafeShutdown();
 }
 
 // ============================================================================
 //  LED CHANNEL CONTROL
 // ============================================================================
-
-void setLedChannel(uint8_t channel, uint8_t brightness) {
-    if (channel < 1 || channel > LED_CHANNEL_COUNT) return;
-    ledChannels[channel - 1].setBrightness(brightness);
-}
 
 void stopAllLedSequences() {
     for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
@@ -193,57 +170,9 @@ void updateServos() {
     }
 }
 
-// ============================================================================
-//  CONNECTION MANAGEMENT
-// ============================================================================
-
-void checkConnectionStatus() {
-    if (coreServer.checkTimeout(CONNECTION_TIMEOUT_MS)) {
-        if (!watchdog_triggered) {
-            performSafeShutdown();
-            watchdog_triggered = true;
-        }
-    }
-}
-
-void performSafeShutdown() {
-    stopAllLedSequences();
-    
-    for (int i = 0; i < 3; i++) {
-        setServoPulse(i + 1, SERVO_DEFAULT_US);
-    }
-}
-
-void performSafeInit() {
-    stopAllLedSequences();
-    watchdog_triggered = false;
-    
-    for (int i = 0; i < 3; i++) {
-        setServoPulse(i + 1, SERVO_DEFAULT_US);
-    }
-}
-
-// ============================================================================
-//  STATUS LED CONTROL
-// ============================================================================
-
-void updateBlueLED(uint32_t now_ms) {
-    if (!coreServer.isInitialized()) {
-        // Not connected: slow blink
-        if (now_ms >= blue_led_next_toggle_ms) {
-            if (ledBlue.isOn()) {
-                ledBlue.off();
-                blue_led_next_toggle_ms = now_ms + BLUE_LED_WATCHDOG_OFF_MS;
-            } else {
-                ledBlue.on();
-                blue_led_next_toggle_ms = now_ms + BLUE_LED_WATCHDOG_ON_MS;
-            }
-        }
-    } else {
-        // Connected: solid on
-        if (!ledBlue.isOn()) {
-            ledBlue.on();
-        }
+void updateLandingLights() {
+    for (uint8_t i = 0; i < LANDING_LIGHT_COUNT; i++) {
+        landingLights[i].update();
     }
 }
 
@@ -269,13 +198,8 @@ uint8_t eventNameToType(const char* name) {
 // ============================================================================
 
 void setupLightFxCallbacks() {
-    // LED_SET callback
+    // LED_SET callback (channel validated by LightFxSpec before dispatch)
     lightfxServer.onLedSet([](uint8_t channel, uint8_t brightness) -> uint8_t {
-        if (channel < 1 || channel > LED_CHANNEL_COUNT) {
-            return LightFxError::INVALID_CHANNEL;
-        }
-        
-        // Stop any running sequence on this channel
         ledSequences[channel - 1].stop();
         ledChannels[channel - 1].setBrightness(brightness);
         return LightFxError::OK;
@@ -330,7 +254,7 @@ void setupLightFxCallbacks() {
         switch (eventType) {
             case LightFxEventType::ON:
                 // param1=duration, param3=brightness
-                event = new LedOn(param1, param3 > 0 ? param3 : 255);
+                event = new LedOn(param1, param3 > 0 ? param3 : 100);
                 break;
             case LightFxEventType::OFF:
                 // param1=duration
@@ -338,19 +262,19 @@ void setupLightFxCallbacks() {
                 break;
             case LightFxEventType::FLASH:
                 // param1=interval, param2=duration, param3=brightness, param4=duty
-                event = new LedFlashing(param1, param2, param3 > 0 ? param3 : 255, param4 > 0 ? param4 : 50);
+                event = new LedFlashing(param1, param2, param3 > 0 ? param3 : 100, param4 > 0 ? param4 : 50);
                 break;
             case LightFxEventType::FADE_IN:
                 // param1=duration, param3=brightness
-                event = new LedFadeIn(param1, param3 > 0 ? param3 : 255);
+                event = new LedFadeIn(param1, param3 > 0 ? param3 : 100);
                 break;
             case LightFxEventType::FADE_OUT:
                 // param1=duration, param3=brightness
-                event = new LedFadeOut(param1, param3 > 0 ? param3 : 255);
+                event = new LedFadeOut(param1, param3 > 0 ? param3 : 100);
                 break;
             case LightFxEventType::FADING:
                 // param1=cycle, param2=duration, param3=min, param4=max
-                event = new LedFading(param1, param2, param3, param4 > 0 ? param4 : 255);
+                event = new LedFading(param1, param2, param3, param4 > 0 ? param4 : 100);
                 break;
             default:
                 return LightFxError::INVALID_EVENT;
@@ -454,17 +378,15 @@ void setupLightFxCallbacks() {
         }
     });
     
-    // SERVO_SET callback
+    // SERVO_SET callback (servo ID validated by LightFxSpec before dispatch)
     lightfxServer.onServoSet([](uint8_t id, int pulseUs) -> uint8_t {
-        if (id < 1 || id > 3) return LightFxError::INVALID_SERVO;
         servos[id - 1].setTarget(pulseUs);
         return LightFxError::OK;
     });
     
-    // SERVO_SETTINGS callback
+    // SERVO_SETTINGS callback (servo ID validated by LightFxSpec before dispatch)
     lightfxServer.onServoSettings([](uint8_t id, int minUs, int maxUs, 
                                      int speed, int accel, int decel) -> uint8_t {
-        if (id < 1 || id > 3) return LightFxError::INVALID_SERVO;
         
         ServoControl& servo = servos[id - 1];
         
@@ -483,35 +405,62 @@ void setupLightFxCallbacks() {
         return LightFxError::OK;
     });
     
-    // POWER_STATUS callback
-    lightfxServer.onPowerStatus([](LightFxPowerStatus& status) {
-        status.available = powerMonitor.isAvailable();
-        if (status.available) {
-            status.voltage = powerMonitor.busVoltage();
-            status.current = powerMonitor.current() * 1000.0f;  // A to mA
-            status.power = powerMonitor.power() * 1000.0f;      // W to mW
-        }
-        // Include current shunt config
-        status.shuntMohm = (uint16_t)(ina226ShuntOhms * 1000.0f);  // Ohms to milliohms
-        status.maxCurrentMa = (uint16_t)(ina226MaxCurrent * 1000.0f);  // A to mA
-    });
-    
-    // POWER_CONFIG callback - set INA226 shunt resistance and max current
-    lightfxServer.onPowerConfig([](uint16_t shuntMohm, uint16_t maxCurrentMa) -> uint8_t {
-        if (shuntMohm == 0 || maxCurrentMa == 0) {
-            return LightFxError::INVALID_PARAM;
-        }
-        
-        ina226ShuntOhms = shuntMohm / 1000.0f;  // milliohms to ohms
-        ina226MaxCurrent = maxCurrentMa / 1000.0f;  // mA to A
-        
-        // Recalibrate INA226 with new values
-        if (powerMonitor.isAvailable()) {
-            powerMonitor.setCalibration(ina226ShuntOhms, ina226MaxCurrent);
-        }
-        
+    // LANDING_LIGHT_BIND callback
+    lightfxServer.onLandingLightBind([](uint8_t slot, uint8_t servoId, uint8_t ledChannel,
+                                        uint16_t deployUs, uint16_t retractUs,
+                                        uint8_t brightness) -> uint8_t {
+        landingLights[slot - 1].configure(
+            &servos[servoId - 1], &ledChannels[ledChannel - 1],
+            deployUs, retractUs, brightness);
         return LightFxError::OK;
     });
+    
+    // LANDING_LIGHT_UNBIND callback
+    lightfxServer.onLandingLightUnbind([](uint8_t slot) -> uint8_t {
+        if (slot == 0) {
+            for (uint8_t i = 0; i < LANDING_LIGHT_COUNT; i++) {
+                landingLights[i].unconfigure();
+            }
+        } else {
+            landingLights[slot - 1].unconfigure();
+        }
+        return LightFxError::OK;
+    });
+    
+    // LANDING_LIGHT_DEPLOY callback
+    lightfxServer.onLandingLightDeploy([](uint8_t slot) -> uint8_t {
+        if (slot == 0) {
+            for (uint8_t i = 0; i < LANDING_LIGHT_COUNT; i++) {
+                if (landingLights[i].isConfigured()) landingLights[i].deploy();
+            }
+        } else {
+            if (!landingLights[slot - 1].isConfigured()) return LightFxError::INVALID_SLOT;
+            landingLights[slot - 1].deploy();
+        }
+        return LightFxError::OK;
+    });
+    
+    // LANDING_LIGHT_RETRACT callback
+    lightfxServer.onLandingLightRetract([](uint8_t slot) -> uint8_t {
+        if (slot == 0) {
+            for (uint8_t i = 0; i < LANDING_LIGHT_COUNT; i++) {
+                if (landingLights[i].isConfigured()) landingLights[i].retract();
+            }
+        } else {
+            if (!landingLights[slot - 1].isConfigured()) return LightFxError::INVALID_SLOT;
+            landingLights[slot - 1].retract();
+        }
+        return LightFxError::OK;
+    });
+    
+    // LED_MASTER_BRIGHTNESS callback — sets master scaling on all LED channels
+    lightfxServer.onLedMasterBrightness([](uint8_t pct) -> uint8_t {
+        for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+            ledChannels[i].setMasterBrightness_pct(pct);
+        }
+        return LightFxError::OK;
+    });
+    
 }
 
 // ============================================================================
@@ -519,27 +468,10 @@ void setupLightFxCallbacks() {
 // ============================================================================
 
 void setup() {
-    // Build unique device name
-    buildDeviceName();
-    
-    // Initialize serial
-    Serial.begin(SERIAL_BAUD);
-    while (!Serial && millis() < 3000) delay(10);
-    
-    // Initialize I2C for INA226
-    Wire.setSDA(PIN_I2C_SDA);
-    Wire.setSCL(PIN_I2C_SCL);
-    Wire.begin();
-    Wire.setClock(400000);
-    
-    // Initialize INA226 power monitor
-    powerMonitor.begin(Wire, INA226Address::DEFAULT, ina226ShuntOhms, ina226MaxCurrent);
-    
-    // Initialize status LEDs (always on)
-    ledBlue.begin(PIN_LED_BLUE, false, false);
-    ledYellow.begin(PIN_LED_YELLOW, false, false);
-    ledBlue.on();
-    ledYellow.on();
+    // Initialize server (serial, device name, indicators, core callbacks)
+    server.begin("LightFX", FIRMWARE_VERSION, BUILD_NUMBER);
+    server.onInit([]() { performSafeInit(); });
+    server.onShutdown([]() { performSafeShutdown(); });
     
     // Initialize LED channels with PWM
     for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
@@ -555,46 +487,18 @@ void setup() {
         servos[i].setMotionProfile(SERVO_DEFAULT_MAX_SPEED, SERVO_DEFAULT_ACCEL, SERVO_DEFAULT_DECEL);
     }
     
-    // ========================================================================
-    // Initialize CoreCommandServer (system commands)
-    // ========================================================================
-    coreServer.begin(&Serial);
-    coreServer.setBoardInfo(deviceName, FIRMWARE_VERSION, "RP2040",
-                              133, 256*1024, BUILD_NUMBER);
-    
-    coreServer.onInit([]() {
-        performSafeInit();
-    });
-    
-    coreServer.onShutdown([]() {
-        performSafeShutdown();
-    });
-    
-    coreServer.onReboot([]() {
-        performSafeShutdown();
-        delay(100);
-        rp2040.reboot();
-    });
-    
-    coreServer.onBootsel([]() {
-        performSafeShutdown();
-        delay(500);
-        rp2040.rebootToBootloader();
-    });
-    
-    // ========================================================================
-    // Initialize LightFxServer (LightFX-specific commands)
-    // ========================================================================
+    // Initialize LightFxServer
     lightfxServer.begin(&Serial);
     setupLightFxCallbacks();
     
     // STATUS: Append LightFX module data to core STATUS response
-    // Wire format (22 bytes):
+    // Wire format (19 bytes):
     //   [ledBrightness:u8×8][ledSeqFlags:u8]
     //   [servo0:u16][servo1:u16][servo2:u16]
-    //   [voltage:u16(mV)][current:i16(mA)][power:u16(mW)][powerAvail:u8]
-    coreServer.onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        if (maxLen < 22) return 0;
+    //   [landingLightStates:u8×3]
+    //   [masterBrightness_pct:u8]
+    server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+        if (maxLen < 19) return 0;
         
         // LED channel brightness (8 bytes)
         for (uint8_t i = 0; i < 8; i++) {
@@ -613,37 +517,19 @@ void setup() {
         CoreProtocol::putU16LE(&buf[11], (uint16_t)servos[1].position());
         CoreProtocol::putU16LE(&buf[13], (uint16_t)servos[2].position());
         
-        // Power monitor (7 bytes)
-        if (powerMonitor.isAvailable()) {
-            CoreProtocol::putU16LE(&buf[15], (uint16_t)(powerMonitor.busVoltage() * 1000.0f));
-            CoreProtocol::putI16LE(&buf[17], (int16_t)(powerMonitor.current() * 1000.0f));
-            CoreProtocol::putU16LE(&buf[19], (uint16_t)(powerMonitor.power() * 1000.0f));
-            buf[21] = 1;
-        } else {
-            CoreProtocol::putU16LE(&buf[15], 0);
-            CoreProtocol::putI16LE(&buf[17], 0);
-            CoreProtocol::putU16LE(&buf[19], 0);
-            buf[21] = 0;
+        // Landing light states (3 bytes)
+        for (uint8_t i = 0; i < LANDING_LIGHT_COUNT; i++) {
+            buf[15 + i] = (uint8_t)landingLights[i].state();
         }
         
-        return 22;
+        // Master brightness percentage (1 byte)
+        buf[18] = ledChannels[0].masterBrightness_pct();  // all channels share same value
+        
+        return 19;
     });
     
-    // ========================================================================
-    // Initialize CommandRouter (routes packets to handlers)
-    // ========================================================================
-    commandRouter.begin(&Serial, [](uint8_t code, uint8_t type) {
-        lightfxServer.sendNack(code);
-    });
-    
-    // Add handlers to router (order = priority)
-    commandRouter.addHandler(&coreServer);      // Priority 1: core/system commands
-    commandRouter.addHandler(&lightfxServer);    // Priority 2: LightFX commands
-    
-    // Initial LED blink
-    ledYellow.off();
-    delay(200);
-    ledYellow.on();
+    // Finalize router (core handler + LightFX handler)
+    server.addModuleHandler(&lightfxServer);
 }
 
 // ============================================================================
@@ -651,21 +537,8 @@ void setup() {
 // ============================================================================
 
 void loop() {
-    uint32_t now = millis();
-    
-    // Process serial commands via CommandRouter
-    commandRouter.process();
-    
-    // Update activity timestamp for core handler timeout detection
-    if (commandRouter.lastActivityMs() > coreServer.lastActivityMs()) {
-        coreServer.updateActivity();
-    }
-    
-    // Keep free RAM current for STATUS response
-    coreServer.updateFreeRam(rp2040.getFreeHeap());
-    
-    // Check connection status
-    checkConnectionStatus();
+    // Process protocol, connection timeout, indicators
+    server.loop();
     
     // Update LED sequences
     updateLedSequences();
@@ -673,10 +546,8 @@ void loop() {
     // Update servos
     updateServos();
     
-    // Update power monitoring
-    if (now - last_power_read_ms >= POWER_READ_INTERVAL_MS) {
-        last_power_read_ms = now;
-        powerMonitor.update();
-    }
+    // Update landing light sequencers
+    updateLandingLights();
     
+    delay(1);
 }

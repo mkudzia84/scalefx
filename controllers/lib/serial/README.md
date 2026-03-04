@@ -9,6 +9,7 @@ This library provides serial communication for ScaleFX controllers:
 - **HubFX (Client)** - RP2040 with USB Host, controls multiple server devices
 - **GunFX (Server)** - RP2040 Pico, muzzle flash and recoil control
 - **LightFX (Server)** - RP2040 Pico, LED and servo control
+- **GearControl (Server)** - RP2040 Pico, landing gear and servo control
 
 All communication uses binary COBS-encoded packets with CRC-8 verification.
 
@@ -38,11 +39,11 @@ All communication uses binary COBS-encoded packets with CRC-8 verification.
 │  │  CommandRouter - Routes packets to handlers               │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                                  │
-│  ┌───────────────────┐  ┌────────────────────┐                  │
-│  │  serial_gunfx.h   │  │  serial_lightfx.h  │                  │
-│  │  GunFxClient      │  │  LightFxClient     │                  │
-│  │  GunFxServer      │  │  LightFxServer     │                  │
-│  └───────────────────┘  └────────────────────┘                  │
+│  ┌───────────────────┐  ┌────────────────────┐  ┌────────────────────────┐│
+│  │  serial_gunfx.h   │  │  serial_lightfx.h  │  │  serial_gearcontrol.h  ││
+│  │  GunFxClient      │  │  LightFxClient     │  │  GearControlClient     ││
+│  │  GunFxServer      │  │  LightFxServer     │  │  GearControlServer     ││
+│  └───────────────────┘  └────────────────────┘  └────────────────────────┘│
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -58,6 +59,7 @@ All communication uses binary COBS-encoded packets with CRC-8 verification.
 | `serial_command_handler.h` | ICommandHandler, CommandRouter | Server only |
 | `serial_gunfx.h` | GunFxClient, GunFxServer | GunFX |
 | `serial_lightfx.h` | LightFxClient, LightFxServer | LightFX |
+| `serial_gearcontrol.h` | GearControlClient, GearControlServer | GearControl |
 
 ## Protocol
 
@@ -70,6 +72,7 @@ Binary COBS-encoded packets with CRC-8:
 Packet Type Ranges:
 - `0x01-0x2F` - GunFX commands (trigger, servo, smoke)
 - `0x40-0x5F` - LightFX commands (LED, servo, power)
+- `0x60-0x7F` - GearControl commands (gear, servo, yaw)
 - `0xF0-0xFF` - Universal system commands (INIT, ACK, NACK, etc.)
 
 See [PROTOCOL.md](PROTOCOL.md) for detailed protocol documentation.

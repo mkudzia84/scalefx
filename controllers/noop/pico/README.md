@@ -6,6 +6,10 @@ Minimal Raspberry Pi Pico controller that implements only the base protocol laye
 - Template for new controller implementations
 - Protocol development and debugging
 
+## Architecture
+
+Uses `PicoServer` component for common server boilerplate (serial init, device naming, indicator LEDs, core protocol, connection management). No module-specific command handler — core protocol only.
+
 ## Features
 
 Implements only the core system commands via binary COBS protocol:

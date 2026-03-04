@@ -6,9 +6,10 @@
  * Error Code Ranges:
  *   0x00-0x0F  General/common errors (OK, UNKNOWN, INVALID_COMMAND, etc.)
  *   0x10-0x1F  Parameter validation errors (INVALID_PARAM, OUT_OF_RANGE, etc.)
- *   0x20-0x4F  GunFX-specific errors (SERVO_*, HEATER_*, TRIGGER_*)
- *   0x50-0x5F  LightFX-specific errors (LED_*, POWER_*)
- *   0x60-0x8F  Reserved for future modules
+ *   0x20-0x4F  GunFX-specific errors (SERVO_*, SMOKE_*, TRIGGER_*)
+ *   0x50-0x5F  LightFX-specific errors (LED_*, SERVO_*)
+ *   0x60-0x6F  GearControl-specific errors (GEAR_*, MOTOR_*, SERVO_*, YAW_*)
+ *   0x70-0x8F  Reserved for future modules
  *   0xF0-0xFF  System/transport errors (TIMEOUT, CRC_ERROR, etc.)
  *
  * CommandResult:
@@ -61,8 +62,9 @@ namespace SerialError {
     
     // Domain-specific errors: 0x20-0x7F (defined in respective type headers)
     // - GunFX: 0x20-0x4F (servo, smoke, trigger)
-    // - EngineFX: 0x50-0x6F (reserved)
-    // - HubFX: 0x70-0x7F (reserved)
+    // - LightFX: 0x50-0x5F (LED, servo)
+    // - GearControl: 0x60-0x6F (gear, motor, servo, yaw)
+    // - Reserved: 0x70-0x7F
     
     // System/transport errors (0xF0-0xFF)
     constexpr uint8_t INTERNAL_ERROR        = 0xF0;  // Internal error

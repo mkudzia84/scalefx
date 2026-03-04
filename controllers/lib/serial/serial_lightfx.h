@@ -15,9 +15,14 @@
  *   LED_SEQ_RESTART (0x46) - [ch:u8]
  *   LED_SEQ_STATUS (0x47)  - [ch:u8]
  *   LED_STATUS (0x48)      - Query all channels
+ *   LED_SEQ_QUEUE (0x49)   - [ch:u8] -> LED_SEQ_QUEUE_RESP
+ *   LED_MASTER_BRIGHTNESS (0x4A) - [pct:u8] (0-100)
  *   SERVO_SET (0x50)       - [id:u8][pulse:i16]
  *   SERVO_SETTINGS (0x51)  - [id:u8][min:u16][max:u16][speed:u16][accel:u16][decel:u16]
- *   POWER_STATUS (0x58)    - Query power monitor
+ *   LANDING_LIGHT_BIND (0x52)    - [slot:u8][servo:u8][led:u8][deploy:u16][retract:u16][brightness:u8]
+ *   LANDING_LIGHT_UNBIND (0x53)  - [slot:u8] (0=all)
+ *   LANDING_LIGHT_DEPLOY (0x54)  - [slot:u8] (0=all)
+ *   LANDING_LIGHT_RETRACT (0x55) - [slot:u8] (0=all)
  */
 
 #ifndef SERIAL_LIGHTFX_H
@@ -49,18 +54,22 @@ namespace LightFxPacket {
     constexpr uint8_t LED_STATUS        = 0x48;  // -> response packet
     constexpr uint8_t LED_SEQ_QUEUE     = 0x49;  // [ch:u8] -> LED_SEQ_QUEUE_RESP
     
+    // LED master brightness
+    constexpr uint8_t LED_MASTER_BRIGHTNESS = 0x4A;  // [pct:u8] (0-100)
+    
     // Servo control
     constexpr uint8_t SERVO_SET         = 0x50;  // [id:u8][pulse:i16]
     constexpr uint8_t SERVO_SETTINGS    = 0x51;  // [id:u8][min:u16][max:u16][speed:u16][accel:u16][decel:u16]
     
-    // Power monitoring
-    constexpr uint8_t POWER_STATUS      = 0x58;  // -> response packet
-    constexpr uint8_t POWER_CONFIG      = 0x59;  // [shunt_mohm:u16][max_current_ma:u16] - configure INA226
+    // Landing light control
+    constexpr uint8_t LANDING_LIGHT_BIND    = 0x52;  // [slot:u8][servo_id:u8][led_ch:u8][deployUs:u16][retractUs:u16][brightness:u8]
+    constexpr uint8_t LANDING_LIGHT_UNBIND  = 0x53;  // [slot:u8] (0=all)
+    constexpr uint8_t LANDING_LIGHT_DEPLOY  = 0x54;  // [slot:u8] (0=all)
+    constexpr uint8_t LANDING_LIGHT_RETRACT = 0x55;  // [slot:u8] (0=all)
     
     // Response packets (server -> client)
     constexpr uint8_t LED_SEQ_STATUS_RESP  = 0x5A;  // [ch:u8][playing:u8][events:u8][index:u8][loops:u32]
     constexpr uint8_t LED_STATUS_RESP      = 0x5B;  // [ch:u8][brightness:u8][seq_playing:u8][events:u8] x8
-    constexpr uint8_t POWER_STATUS_RESP    = 0x5C;  // [voltage:u16(mV)][current:i16(mA)][power:u16(mW)][available:u8]
     constexpr uint8_t LED_SEQ_QUEUE_RESP   = 0x5D;  // [ch:u8][count:u8][events: type:u8,duration:u16 x count]
 }
 
@@ -83,19 +92,14 @@ namespace LightFxSpec {
     // LED channel limits
     constexpr uint8_t LED_CHANNEL_MIN = 1;
     constexpr uint8_t LED_CHANNEL_MAX = 8;
-    constexpr uint8_t LED_BRIGHTNESS_MAX = 255;
+    constexpr uint8_t LED_BRIGHTNESS_MAX = 100;
+    constexpr uint8_t MASTER_BRIGHTNESS_MAX = 100;  // percent
     
     // Servo limits (standard PWM range)
     constexpr uint8_t SERVO_ID_MIN = 1;
     constexpr uint8_t SERVO_ID_MAX = 3;
     constexpr uint16_t SERVO_PULSE_MIN = 500;    // µs
     constexpr uint16_t SERVO_PULSE_MAX = 2500;   // µs
-    
-    // INA226 power monitor limits
-    constexpr uint16_t INA226_BUS_VOLTAGE_MAX = 36000;  // mV (36V max)
-    constexpr uint16_t INA226_SHUNT_MOHM_MIN = 1;       // mΩ minimum
-    constexpr uint16_t INA226_SHUNT_MOHM_MAX = 10000;   // mΩ (10Ω max practical)
-    constexpr uint32_t INA226_SHUNT_VOLTAGE_MAX = 81920; // µV (±81.92mV)
     
     // Sequence limits
     constexpr uint8_t SEQ_MAX_EVENTS = 24;
@@ -120,6 +124,22 @@ namespace LightFxSpec {
     inline bool isValidEventType(uint8_t type) {
         return type <= LightFxEventType::MAX_TYPE;
     }
+    
+    inline bool isValidMasterBrightness(uint8_t pct) {
+        return pct <= MASTER_BRIGHTNESS_MAX;
+    }
+    
+    // Landing light slot limits
+    constexpr uint8_t LANDING_LIGHT_SLOT_MIN = 1;
+    constexpr uint8_t LANDING_LIGHT_SLOT_MAX = 3;
+    
+    inline bool isValidLandingLightSlot(uint8_t slot) {
+        return slot >= LANDING_LIGHT_SLOT_MIN && slot <= LANDING_LIGHT_SLOT_MAX;
+    }
+    
+    inline bool isValidLandingLightSlotOrAll(uint8_t slot) {
+        return slot == 0 || isValidLandingLightSlot(slot);
+    }
 }
 
 // ============================================================================
@@ -133,6 +153,7 @@ namespace LightFxError {
     constexpr uint8_t INVALID_EVENT     = 0x52;
     constexpr uint8_t INVALID_PARAM     = 0x53;
     constexpr uint8_t INVALID_SERVO     = 0x54;
+    constexpr uint8_t INVALID_SLOT      = 0x55;
     
     inline const char* getMessage(uint8_t code) {
         switch (code) {
@@ -142,6 +163,7 @@ namespace LightFxError {
             case INVALID_EVENT:   return "Invalid event type";
             case INVALID_PARAM:   return "Invalid parameter";
             case INVALID_SERVO:   return "Invalid servo ID";
+            case INVALID_SLOT:    return "Invalid landing light slot";
             default:              return SerialError::getMessage(code);
         }
     }
@@ -193,18 +215,6 @@ struct LightFxSeqQueue {
 };
 
 /**
- * @brief Power monitor status information
- */
-struct LightFxPowerStatus {
-    float voltage = 0.0f;      // Bus voltage in V
-    float current = 0.0f;      // Current in mA
-    float power = 0.0f;        // Power in mW
-    bool available = false;    // INA226 detected
-    uint16_t shuntMohm = 100;  // Shunt resistance in milliohms
-    uint16_t maxCurrentMa = 3200;  // Max current in mA
-};
-
-/**
  * @brief Board information returned during init
  */
 struct LightFxBoardInfo {
@@ -224,7 +234,6 @@ struct LightFxBoardInfo {
 using LightFxReadyCallback = std::function<void(const char* deviceName)>;
 using LightFxSeqStatusCallback = std::function<void(const LightFxSeqStatus& status)>;
 using LightFxChannelStatusCallback = std::function<void(const LightFxChannelStatus& status)>;
-using LightFxPowerStatusCallback = std::function<void(const LightFxPowerStatus& status)>;
 using LightFxErrorCallback = std::function<void(uint8_t errorCode, const char* message)>;
 
 // Server callbacks - return error code (LightFxError::OK for success)
@@ -242,8 +251,12 @@ using LedSeqQueueCallback = std::function<void(uint8_t channel, LightFxSeqQueue&
 using LedChannelStatusCallback = std::function<void(uint8_t channel, LightFxChannelStatus& status)>;
 using ServoSetCallback = std::function<uint8_t(uint8_t id, int pulseUs)>;
 using ServoSettingsCallback = std::function<uint8_t(uint8_t id, int minUs, int maxUs, int speed, int accel, int decel)>;
-using PowerStatusCallback = std::function<void(LightFxPowerStatus& status)>;
-using PowerConfigCallback = std::function<uint8_t(uint16_t shuntMohm, uint16_t maxCurrentMa)>;
+using LedMasterBrightnessCallback = std::function<uint8_t(uint8_t pct)>;
+
+// Landing light callbacks
+using LandingLightBindCallback = std::function<uint8_t(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
+                                                       uint16_t deployUs, uint16_t retractUs, uint8_t brightness)>;
+using LandingLightSlotCallback = std::function<uint8_t(uint8_t slot)>;
 
 // ============================================================================
 // LightFxClient Class (Binary Protocol)
@@ -302,6 +315,7 @@ public:
     bool ledSeqRestart(uint8_t channel);
     bool ledSeqStatus(uint8_t channel);
     bool ledStatus();
+    bool ledMasterBrightness(uint8_t pct);
 
     // ========================================================================
     // Servo Control
@@ -312,10 +326,14 @@ public:
                        uint16_t speed, uint16_t accel, uint16_t decel);
 
     // ========================================================================
-    // Power Monitor
+    // Landing Light Control
     // ========================================================================
     
-    bool powerStatus();
+    bool landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
+                          uint16_t deployUs, uint16_t retractUs, uint8_t brightness = 255);
+    bool landingLightUnbind(uint8_t slot = 0);
+    bool landingLightDeploy(uint8_t slot = 0);
+    bool landingLightRetract(uint8_t slot = 0);
 
     // ========================================================================
     // Connection Management
@@ -337,7 +355,6 @@ public:
     void onReady(LightFxReadyCallback cb) { _readyCallback = cb; }
     void onSeqStatus(LightFxSeqStatusCallback cb) { _seqStatusCallback = cb; }
     void onChannelStatus(LightFxChannelStatusCallback cb) { _channelStatusCallback = cb; }
-    void onPowerStatus(LightFxPowerStatusCallback cb) { _powerStatusCallback = cb; }
     void onError(LightFxErrorCallback cb) { _errorCallback = cb; }
 
     // ========================================================================
@@ -371,7 +388,6 @@ private:
     LightFxReadyCallback _readyCallback;
     LightFxSeqStatusCallback _seqStatusCallback;
     LightFxChannelStatusCallback _channelStatusCallback;
-    LightFxPowerStatusCallback _powerStatusCallback;
     LightFxErrorCallback _errorCallback;
 };
 
@@ -413,7 +429,6 @@ public:
     int sendSeqStatus(const LightFxSeqStatus& status);
     int sendSeqQueue(const LightFxSeqQueue& queue);
     int sendChannelStatus(const LightFxChannelStatus* channels, uint8_t count);
-    int sendPowerStatus(const LightFxPowerStatus& status);
 
     // ========================================================================
     // LED Callbacks
@@ -429,6 +444,7 @@ public:
     void onLedSeqStatus(LedSeqStatusCallback cb) { _ledSeqStatusCallback = cb; }
     void onLedSeqQueue(LedSeqQueueCallback cb) { _ledSeqQueueCallback = cb; }
     void onLedStatus(LedChannelStatusCallback cb) { _ledStatusCallback = cb; }
+    void onLedMasterBrightness(LedMasterBrightnessCallback cb) { _ledMasterBrightnessCallback = cb; }
 
     // ========================================================================
     // Servo Callbacks
@@ -438,11 +454,13 @@ public:
     void onServoSettings(ServoSettingsCallback cb) { _servoSettingsCallback = cb; }
 
     // ========================================================================
-    // Power Callbacks
+    // Landing Light Callbacks
     // ========================================================================
     
-    void onPowerStatus(PowerStatusCallback cb) { _powerStatusCallback = cb; }
-    void onPowerConfig(PowerConfigCallback cb) { _powerConfigCallback = cb; }
+    void onLandingLightBind(LandingLightBindCallback cb) { _landingLightBindCallback = cb; }
+    void onLandingLightUnbind(LandingLightSlotCallback cb) { _landingLightUnbindCallback = cb; }
+    void onLandingLightDeploy(LandingLightSlotCallback cb) { _landingLightDeployCallback = cb; }
+    void onLandingLightRetract(LandingLightSlotCallback cb) { _landingLightRetractCallback = cb; }
 
 private:
     int sendRawPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0);
@@ -460,10 +478,13 @@ private:
     LedSeqStatusCallback _ledSeqStatusCallback;
     LedSeqQueueCallback _ledSeqQueueCallback;
     LedChannelStatusCallback _ledStatusCallback;
+    LedMasterBrightnessCallback _ledMasterBrightnessCallback;
     ServoSetCallback _servoSetCallback;
     ServoSettingsCallback _servoSettingsCallback;
-    PowerStatusCallback _powerStatusCallback;
-    PowerConfigCallback _powerConfigCallback;
+    LandingLightBindCallback _landingLightBindCallback;
+    LandingLightSlotCallback _landingLightUnbindCallback;
+    LandingLightSlotCallback _landingLightDeployCallback;
+    LandingLightSlotCallback _landingLightRetractCallback;
 };
 
 #endif // SERIAL_LIGHTFX_H

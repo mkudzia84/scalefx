@@ -512,9 +512,7 @@ scalefx/
 │   │   ├── docs/          # HubFX documentation
 │   │   └── README.md      # Controller overview
 │   └── lib/               # Shared libraries
-│       ├── led_control/   # LED GPIO control
-│       ├── pwm_control/   # RC PWM input
-│       ├── srv_control/   # Servo motion control
+│       ├── components/    # Hardware drivers (LED, PWM, servo, I2C)
 │       ├── serial/        # Communication protocol
 │       └── README.md      # Library overview
 ├── app/                   # Desktop applications

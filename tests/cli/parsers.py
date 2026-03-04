@@ -7,10 +7,10 @@ Eliminates duplicated parsing logic across command handlers.
 
 from typing import Optional
 from tests.framework import (
-    CorePacket, CoreError, GunFxError, LightFxError,
-    GunFxPacket, LightFxPacket
+    CorePacket, CoreError, GearControlError, GunFxError, LightFxError,
+    GearControlPacket, GunFxPacket, LightFxPacket
 )
-from tests.framework.protocol import read_u16_le, read_i16_le, read_u32_le
+from tests.framework.protocol import read_u16_le, read_u32_le
 from .base import Fore, Style
 
 
@@ -36,6 +36,13 @@ def packet_type_name(ptype: int) -> str:
     if ptype in core_names:
         return core_names[ptype]
     
+    # Check GearControl packet types
+    for name in dir(GearControlPacket):
+        if not name.startswith('_'):
+            val = getattr(GearControlPacket, name)
+            if val == ptype:
+                return f"GEARCONTROL.{name}"
+    
     # Check GunFX packet types
     for name in dir(GunFxPacket):
         if not name.startswith('_'):
@@ -55,7 +62,9 @@ def packet_type_name(ptype: int) -> str:
 
 def error_name(code: int) -> str:
     """Get human-readable error name, checking all modules."""
-    name = GunFxError.name(code)
+    name = GearControlError.name(code)
+    if "UNKNOWN" in name:
+        name = GunFxError.name(code)
     if "UNKNOWN" in name:
         name = LightFxError.name(code)
     if "UNKNOWN" in name:
@@ -150,7 +159,9 @@ def parse_status_payload(payload: bytes, controller_type: str = None) -> None:
         # Module-specific data
         module_data = payload[12:]
         if len(module_data) > 0:
-            if controller_type == 'gunfx':
+            if controller_type == 'gearcontrol':
+                _parse_gearcontrol_status(module_data)
+            elif controller_type == 'gunfx':
                 _parse_gunfx_status(module_data)
             elif controller_type == 'lightfx':
                 _parse_lightfx_status(module_data)
@@ -166,6 +177,87 @@ def parse_status_payload(payload: bytes, controller_type: str = None) -> None:
             print(f"  Extra:     {extra.hex()} ({len(extra)} bytes)")
     else:
         print(f"  Raw: {payload.hex()} ({len(payload)} bytes)")
+
+
+def _parse_gearcontrol_status(data: bytes) -> None:
+    """Parse GearControl module status data (33 bytes).
+    
+    Wire format:
+      Per gear × 3 (9 bytes each = 27 bytes):
+        [state:u8][motor_current_mA:u16][door0_pos_us:u16][door1_pos_us:u16][calibratedStall_mA:u16]
+      [yaw_pos_us:u16]
+      [led_flags:u8]              # bits 0-5 status, 6-7 indicators
+      [battery_voltage_mV:u16]
+      [battery_config_flags:u8]   # bit 0: auto-deploy, bit 1: low voltage triggered
+    """
+    if len(data) < 33:
+        print(f"  GearControl: (incomplete: {data.hex()})")
+        return
+    
+    gear_names = ['Nose', 'Left Main', 'Right Main']
+    state_names = {
+        0: 'UNKNOWN', 1: 'DEPLOYED', 2: 'RETRACTED',
+        3: 'DEPLOYING', 4: 'RETRACTING', 5: 'ERROR',
+        6: 'CALIBRATING',
+    }
+    state_colors = {
+        0: '', 1: Fore.GREEN, 2: Fore.CYAN,
+        3: Fore.YELLOW, 4: Fore.YELLOW, 5: Fore.RED,
+        6: Fore.MAGENTA,
+    }
+    
+    print(f"  ── GearControl ────────────────")
+    
+    for i in range(3):
+        offset = i * 9
+        state = data[offset]
+        current_mA = read_u16_le(data, offset + 1)
+        door0 = read_u16_le(data, offset + 3)
+        door1 = read_u16_le(data, offset + 5)
+        stall_mA = read_u16_le(data, offset + 7)
+        
+        sname = state_names.get(state, f'?({state})')
+        scolor = state_colors.get(state, '')
+        
+        stall_str = f"stall={stall_mA}mA" if stall_mA > 0 else "stall=uncal"
+        print(f"  {gear_names[i]:>10}: {scolor}{sname}{Style.RESET_ALL}  "
+              f"motor={current_mA}mA  doors=[{door0}µs, {door1}µs]  {stall_str}")
+    
+    yaw = read_u16_le(data, 27)
+    led_flags = data[29]
+    battery_mV = read_u16_le(data, 30)
+    battery_flags = data[32]
+    
+    print(f"  Yaw:       {yaw}µs")
+    
+    # Battery voltage and config
+    battery_V = battery_mV / 1000.0
+    auto_deploy = bool(battery_flags & 0x01)
+    low_voltage = bool(battery_flags & 0x02)
+    battery_parts = [f"{battery_V:.1f}V ({battery_mV}mV)"]
+    if auto_deploy:
+        battery_parts.append(f"{Fore.CYAN}auto-deploy{Style.RESET_ALL}")
+    if low_voltage:
+        battery_parts.append(f"{Fore.RED}LOW VOLTAGE{Style.RESET_ALL}")
+    print(f"  Battery:   {', '.join(battery_parts)}")
+    
+    # Status LED flags display
+    led_parts = []
+    led_labels = ['ND', 'NR', 'LD', 'LR', 'RD', 'RR']
+    for i in range(6):
+        if led_flags & (1 << i):
+            led_parts.append(f"{Fore.GREEN}{led_labels[i]}{Style.RESET_ALL}")
+        else:
+            led_parts.append(f"{led_labels[i]}")
+    print(f"  Status:    [{', '.join(led_parts)}]")
+    
+    # Indicator LEDs (bits 6-7)
+    conn_led = bool(led_flags & (1 << 6))
+    err_led = bool(led_flags & (1 << 7))
+    ind_parts = []
+    ind_parts.append(f"{Fore.GREEN}CONN{Style.RESET_ALL}" if conn_led else "CONN")
+    ind_parts.append(f"{Fore.RED}ERR{Style.RESET_ALL}" if err_led else "ERR")
+    print(f"  Indicators:[{', '.join(ind_parts)}]")
 
 
 def _parse_gunfx_status(data: bytes) -> None:
@@ -224,14 +316,13 @@ def _parse_gunfx_status(data: bytes) -> None:
 
 
 def _parse_lightfx_status(data: bytes) -> None:
-    """Parse LightFX module status data (22 bytes).
+    """Parse LightFX module status data (15 bytes).
     
     Wire format:
       [ledBrightness:u8×8][ledSeqFlags:u8]
       [servo0:u16][servo1:u16][servo2:u16]
-      [voltage:u16(mV)][current:i16(mA)][power:u16(mW)][powerAvail:u8]
     """
-    if len(data) < 22:
+    if len(data) < 15:
         print(f"  LightFX:   (incomplete: {data.hex()})")
         return
     
@@ -243,12 +334,6 @@ def _parse_lightfx_status(data: bytes) -> None:
     servo0 = read_u16_le(data, 9)
     servo1 = read_u16_le(data, 11)
     servo2 = read_u16_le(data, 13)
-    
-    # Power
-    voltage_mv = read_u16_le(data, 15)
-    current_ma = read_i16_le(data, 17)
-    power_mw = read_u16_le(data, 19)
-    power_avail = data[21] != 0
     
     print(f"  ── LightFX ────────────────────")
     
@@ -268,13 +353,6 @@ def _parse_lightfx_status(data: bytes) -> None:
     
     # Servos
     print(f"  Servos:    [{servo0}µs, {servo1}µs, {servo2}µs]")
-    
-    # Power
-    if power_avail:
-        voltage_v = voltage_mv / 1000.0
-        print(f"  Power:     {voltage_v:.2f}V  {current_ma}mA  {power_mw}mW")
-    else:
-        print(f"  Power:     INA226 not detected")
 
 
 # =============================================================================
@@ -336,7 +414,9 @@ def parse_init_ready(payload: bytes) -> Optional[InitReadyInfo]:
         
         # Detect controller type from name
         name_lower = info.name.lower()
-        if 'gunfx' in name_lower or 'gun' in name_lower:
+        if 'gearcontrol' in name_lower or 'gear' in name_lower:
+            info.controller_type = ControllerType.GEARCONTROL
+        elif 'gunfx' in name_lower or 'gun' in name_lower:
             info.controller_type = ControllerType.GUNFX
         elif 'lightfx' in name_lower or 'light' in name_lower:
             info.controller_type = ControllerType.LIGHTFX
@@ -423,21 +503,4 @@ def parse_led_status(payload: bytes) -> list:
     return channels
 
 
-def parse_power_status(payload: bytes) -> Optional[dict]:
-    """Parse POWER_STATUS_RESP payload."""
-    if len(payload) < 7:
-        return None
-    
-    result = {
-        'voltage_mv': read_u16_le(payload, 0),
-        'current_ma': read_i16_le(payload, 2),
-        'power_mw': read_u16_le(payload, 4),
-        'available': payload[6] != 0,
-    }
-    
-    # Parse shunt config if present
-    if len(payload) >= 11:
-        result['shunt_mohm'] = read_u16_le(payload, 7)
-        result['max_current_ma'] = read_u16_le(payload, 9)
-    
-    return result
+
