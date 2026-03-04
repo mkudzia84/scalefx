@@ -43,6 +43,10 @@
 #include <serial.h>
 #include "indicator_leds.h"
 
+// Forward declaration
+class I2CDevice;
+class TwoWire;
+
 class PicoServer {
 public:
     PicoServer() = default;
@@ -121,6 +125,33 @@ public:
     /** @brief Get device name (e.g. "GunFX-A1B2") */
     const char* deviceName() const { return _deviceName; }
 
+    // ========================================================================
+    // I2C Bus Scan Support
+    // ========================================================================
+
+    /**
+     * @brief Enable I2C bus scanning via the I2C_SCAN core command
+     *
+     * Registers an I2C scan callback with CoreCommandServer so that when
+     * an I2C_SCAN packet is received, the bus is probed automatically.
+     * Call addExpectedI2CDevice() before this to register expected devices.
+     *
+     * @param wire TwoWire instance to scan (e.g. Wire, Wire1)
+     */
+    void enableI2CScan(TwoWire& wire);
+
+    /**
+     * @brief Register an expected I2C device for bus scan reporting
+     *
+     * Expected devices are reported first in I2C_SCAN_RESULT with found/identified
+     * flags. Any other devices on the bus are listed as "extra".
+     *
+     * @param address 7-bit I2C slave address
+     * @param device Optional I2CDevice instance for identity verification
+     *               (isAvailable() is used for the "identified" flag)
+     */
+    void addExpectedI2CDevice(uint8_t address, I2CDevice* device = nullptr);
+
 private:
     CommandRouter _router;
     CoreCommandServer _core;
@@ -137,6 +168,17 @@ private:
     void doInit();
     void doShutdown();
     void checkConnectionTimeout();
+
+    // I2C scan support
+    static constexpr uint8_t MAX_EXPECTED_I2C = 8;
+    struct ExpectedI2CDevice {
+        uint8_t address = 0;
+        I2CDevice* device = nullptr;
+    };
+    TwoWire* _i2cWire = nullptr;
+    ExpectedI2CDevice _expectedI2C[MAX_EXPECTED_I2C];
+    uint8_t _numExpectedI2C = 0;
+    I2CScanResult performI2CScan();
 };
 
 #endif // PICO_SERVER_H

@@ -18,6 +18,8 @@ class CorePacket:
     REBOOT      = 0xF8
     BOOTSEL     = 0xF9
     STATUS_REQ  = 0xFA
+    I2C_SCAN    = 0xFB
+    I2C_SCAN_RESULT = 0xFC
 
 
 class GunFxPacket:
@@ -225,3 +227,24 @@ class DoorMode:
             4: "DUAL_SEQ",
         }
         return names.get(mode, f"UNKNOWN({mode})")
+
+
+class GearErrorReason:
+    """Per-gear error reason codes (STATUS diagnostic)."""
+    NONE           = 0x00  # No error
+    MONITOR_FAULT  = 0x01  # INA226 I2C init failed
+    MOTOR_STALL    = 0x02  # Motor stall detected during operation
+    MOTOR_TIMEOUT  = 0x03  # Motor operation exceeded timeout
+    SEQUENCE_ERROR = 0x04  # Unexpected state during sequencing
+
+    @staticmethod
+    def name(reason: int) -> str:
+        """Get human-readable error reason."""
+        names = {
+            0x00: "none",
+            0x01: "INA226 init failed",
+            0x02: "motor stall",
+            0x03: "motor timeout",
+            0x04: "sequence error",
+        }
+        return names.get(reason, f"unknown(0x{reason:02X})")

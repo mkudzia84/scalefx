@@ -6,6 +6,8 @@
 
 #include "pico_server.h"
 #include <pico/unique_id.h>
+#include <Wire.h>
+#include <i2c_device.h>
 
 // ============================================================================
 // Initialization
@@ -111,4 +113,59 @@ void PicoServer::checkConnectionTimeout() {
             _indicators.setWatchdogTriggered(true);
         }
     }
+}
+
+// ============================================================================
+// I2C Bus Scan Support
+// ============================================================================
+
+void PicoServer::enableI2CScan(TwoWire& wire) {
+    _i2cWire = &wire;
+    _core.onI2CScan([this]() -> I2CScanResult {
+        return performI2CScan();
+    });
+}
+
+void PicoServer::addExpectedI2CDevice(uint8_t address, I2CDevice* device) {
+    if (_numExpectedI2C < MAX_EXPECTED_I2C) {
+        _expectedI2C[_numExpectedI2C].address = address;
+        _expectedI2C[_numExpectedI2C].device = device;
+        _numExpectedI2C++;
+    }
+}
+
+I2CScanResult PicoServer::performI2CScan() {
+    I2CScanResult result;
+
+    if (!_i2cWire) return result;
+
+    // Check each expected device
+    result.numExpected = _numExpectedI2C;
+    for (uint8_t i = 0; i < _numExpectedI2C; i++) {
+        result.expected[i].address = _expectedI2C[i].address;
+        result.expected[i].found = I2CDevice::probe(*_i2cWire, _expectedI2C[i].address);
+        result.expected[i].identified = _expectedI2C[i].device != nullptr
+                                     && _expectedI2C[i].device->isAvailable();
+    }
+
+    // Scan wider I2C range for unexpected devices (0x08-0x77, standard range)
+    uint8_t allAddrs[32];
+    uint8_t totalFound = I2CDevice::scan(*_i2cWire, 0x08, 0x77, allAddrs, 32);
+
+    // Filter out expected addresses to find extras
+    result.numExtra = 0;
+    for (uint8_t j = 0; j < totalFound; j++) {
+        bool isExpected = false;
+        for (uint8_t i = 0; i < _numExpectedI2C; i++) {
+            if (allAddrs[j] == _expectedI2C[i].address) {
+                isExpected = true;
+                break;
+            }
+        }
+        if (!isExpected && result.numExtra < I2CScanResult::MAX_EXTRA) {
+            result.extraAddresses[result.numExtra++] = allAddrs[j];
+        }
+    }
+
+    return result;
 }

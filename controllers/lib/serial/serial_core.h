@@ -195,6 +195,8 @@ namespace CorePacket {
     constexpr uint8_t REBOOT      = 0xF8;  // Restart device
     constexpr uint8_t BOOTSEL     = 0xF9;  // Enter bootloader
     constexpr uint8_t STATUS_REQ  = 0xFA;  // Request status
+    constexpr uint8_t I2C_SCAN       = 0xFB;  // Request I2C bus scan
+    constexpr uint8_t I2C_SCAN_RESULT = 0xFC;  // I2C scan response
 }
 
 // ============================================================================
@@ -246,6 +248,43 @@ struct CoreBoardInfo {
 };
 
 // ============================================================================
+// I2C Scan Data Types
+// ============================================================================
+
+/**
+ * @brief I2C scan result entry for one expected device
+ */
+struct I2CScanEntry {
+    uint8_t address = 0;       // Expected I2C address
+    bool found = false;        // Device ACK'd the address
+    bool identified = false;   // Device-specific ID verified (e.g., INA226 MFG_ID)
+};
+
+/**
+ * @brief I2C bus scan result
+ *
+ * Contains results for expected devices plus any additional devices
+ * found on the bus.
+ *
+ * Wire format for I2C_SCAN_RESULT (0xFC):
+ *   [numExpected:u8]
+ *   Per expected device × N (3 bytes each):
+ *     [address:u8][found:u8][identified:u8]
+ *   [numExtra:u8]
+ *   Per extra device × M (1 byte each):
+ *     [address:u8]
+ */
+struct I2CScanResult {
+    static constexpr uint8_t MAX_EXPECTED = 8;
+    static constexpr uint8_t MAX_EXTRA = 16;
+
+    I2CScanEntry expected[MAX_EXPECTED];
+    uint8_t numExpected = 0;
+    uint8_t extraAddresses[MAX_EXTRA];
+    uint8_t numExtra = 0;
+};
+
+// ============================================================================
 // Callback Types
 // ============================================================================
 
@@ -269,6 +308,14 @@ using CoreKeepaliveCallback = std::function<void()>;
  * @return Number of bytes written to buffer
  */
 using StatusDataCallback = std::function<size_t(uint8_t* buffer, size_t maxLen)>;
+
+/**
+ * @brief Callback for I2C bus scan
+ * 
+ * Called by CoreCommandServer when I2C_SCAN is received.
+ * The callback should perform the scan and return the result.
+ */
+using I2CScanCallback = std::function<I2CScanResult()>;
 
 // ============================================================================
 // ISerialCore - Abstract Interface for Serial Communication
@@ -559,6 +606,14 @@ public:
      */
     void onStatusData(StatusDataCallback callback) { _statusDataCallback = callback; }
     
+    /**
+     * @brief Register callback for I2C bus scan
+     * 
+     * When I2C_SCAN packet is received, the callback is invoked to perform
+     * the actual bus scan. The result is sent back as I2C_SCAN_RESULT.
+     */
+    void onI2CScan(I2CScanCallback callback) { _i2cScanCallback = callback; }
+    
     // Statistics
     uint32_t commandCounter() const { return _commandCounter; }
     uint32_t keepaliveCounter() const { return _keepaliveCounter; }
@@ -581,6 +636,11 @@ public:
      * @brief Send NACK packet with error code
      */
     void sendNack(uint8_t errorCode);
+    
+    /**
+     * @brief Send I2C_SCAN_RESULT packet
+     */
+    void sendI2CScanResult(const I2CScanResult& result);
 
 private:
     void sendInitReady();
@@ -600,6 +660,7 @@ private:
     CoreBootselCallback _bootselCallback;
     CoreKeepaliveCallback _keepaliveCallback;
     StatusDataCallback _statusDataCallback;
+    I2CScanCallback _i2cScanCallback;
 };
 
 // ============================================================================

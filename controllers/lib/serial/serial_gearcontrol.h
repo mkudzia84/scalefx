@@ -27,8 +27,9 @@
  *   GEAR_CALIBRATE (0x6A) - [gear_id:u8] Start stall current calibration
  *   GEAR_CALIB_STATUS (0x6B) - [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16] Calibration progress (server→client)
  *   GEAR_CALIB_CANCEL (0x6C) - [gear_id:u8] Cancel calibration in progress
- *   BATTERY_CONFIG  (0x6D)  - [auto_deploy:u8] Configure battery low-voltage auto-deploy (0=off, 1=on)
+ *   BATTERY_CONFIG  (0x6D)  - [enabled:u8][auto_deploy:u8] Configure battery monitoring (enable/disable + auto-deploy)
  *   DOOR_MODE      (0x6E)  - [gear_id:u8][mode:u8][delay_ms:u16LE] Configure door activation mode
+ *   (I2C_SCAN moved to CorePacket — handled by PicoServer)
  */
 
 #ifndef SERIAL_GEARCONTROL_H
@@ -70,10 +71,12 @@ namespace GearControlPacket {
     constexpr uint8_t GEAR_CALIB_CANCEL   = 0x6C;  // [gear_id:u8] Cancel calibration in progress
 
     // Battery configuration
-    constexpr uint8_t BATTERY_CONFIG      = 0x6D;  // [auto_deploy:u8] 0=off, 1=deploy all on low voltage
+    constexpr uint8_t BATTERY_CONFIG      = 0x6D;  // [enabled:u8][auto_deploy:u8] Enable monitoring + auto-deploy
 
     // Door mode configuration
     constexpr uint8_t DOOR_MODE           = 0x6E;  // [gear_id:u8][mode:u8][delay_ms:u16LE]
+
+    // Diagnostics — I2C scan is handled by PicoServer (CorePacket::I2C_SCAN)
 }
 
 // ============================================================================
@@ -114,6 +117,29 @@ namespace GearControlError {
             case NOT_CALIBRATING:     return "Gear is not currently calibrating";
             default:
                 return SerialError::getMessage(code);
+        }
+    }
+}
+
+// ============================================================================
+// Gear Error Reason Codes (for STATUS diagnostic)
+// ============================================================================
+
+namespace GearErrorReason {
+    constexpr uint8_t NONE           = 0x00;  // No error
+    constexpr uint8_t MONITOR_FAULT  = 0x01;  // INA226 I2C init failed
+    constexpr uint8_t MOTOR_STALL    = 0x02;  // Motor stall detected during operation
+    constexpr uint8_t MOTOR_TIMEOUT  = 0x03;  // Motor operation exceeded timeout
+    constexpr uint8_t SEQUENCE_ERROR = 0x04;  // Unexpected state during sequencing
+
+    inline const char* getName(uint8_t reason) {
+        switch (reason) {
+            case NONE:           return "none";
+            case MONITOR_FAULT:  return "INA226 init failed";
+            case MOTOR_STALL:    return "motor stall";
+            case MOTOR_TIMEOUT:  return "motor timeout";
+            case SEQUENCE_ERROR: return "sequence error";
+            default:             return "unknown";
         }
     }
 }
@@ -361,7 +387,7 @@ using GearControlYawInputCallback = std::function<uint8_t(uint16_t position_us)>
 using GearControlGearCalibrateCallback = std::function<uint8_t(uint8_t gearId)>;
 using GearControlCalibCancelCallback = std::function<uint8_t(uint8_t gearId)>;
 using GearControlCalibStatusCallback = std::function<void(const GearControlCalibStatus& status)>;
-using GearControlBatteryConfigCallback = std::function<uint8_t(bool autoDeployOnLowVoltage)>;
+using GearControlBatteryConfigCallback = std::function<uint8_t(bool enabled, bool autoDeployOnLowVoltage)>;
 using GearControlDoorModeCallback = std::function<uint8_t(const GearControlDoorModeConfig& config)>;
 
 // ============================================================================
@@ -415,8 +441,9 @@ public:
     CommandResult setDoorConfig(const GearControlDoorConfig& config);
     CommandResult setYawConfig(const GearControlYawConfig& config);
     CommandResult setYawInput(uint16_t position_us);
-    CommandResult setBatteryConfig(bool autoDeployOnLowVoltage);
+    CommandResult setBatteryConfig(bool enabled, bool autoDeployOnLowVoltage = false);
     CommandResult setDoorMode(const GearControlDoorModeConfig& config);
+    CommandResult requestI2CScan();
 
     // ========================================================================
     // Status
@@ -441,6 +468,7 @@ public:
     void onStatus(GearControlStatusCallback cb) { _statusCallback = cb; }
     void onError(GearControlErrorCallback cb) { _errorCallback = cb; }
     void onCalibStatus(GearControlCalibStatusCallback cb) { _calibStatusCallback = cb; }
+    void onI2CScanResult(std::function<void(const I2CScanResult&)> cb) { _i2cScanResultCallback = cb; }
 
     // ========================================================================
     // State
@@ -482,6 +510,7 @@ private:
     GearControlStatusCallback _statusCallback;
     GearControlErrorCallback _errorCallback;
     GearControlCalibStatusCallback _calibStatusCallback;
+    std::function<void(const I2CScanResult&)> _i2cScanResultCallback;
 };
 
 // ============================================================================

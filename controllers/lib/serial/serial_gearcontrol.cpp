@@ -187,6 +187,39 @@ void GearControlClient::handlePacket(uint8_t type, const uint8_t* payload, size_
             }
             break;
 
+        case CorePacket::I2C_SCAN_RESULT:
+            // I2C scan response: [numExp:u8][N×(addr,found,id)][numExtra:u8][M×addr]
+            if (len >= 2 && _i2cScanResultCallback) {
+                I2CScanResult result;
+                size_t idx = 0;
+                result.numExpected = payload[idx++];
+                if (result.numExpected > I2CScanResult::MAX_EXPECTED) {
+                    result.numExpected = I2CScanResult::MAX_EXPECTED;
+                }
+                for (uint8_t i = 0; i < result.numExpected && idx + 2 < len; i++) {
+                    result.expected[i].address = payload[idx++];
+                    result.expected[i].found = payload[idx++] != 0;
+                    result.expected[i].identified = payload[idx++] != 0;
+                }
+                if (idx < len) {
+                    result.numExtra = payload[idx++];
+                    if (result.numExtra > I2CScanResult::MAX_EXTRA) {
+                        result.numExtra = I2CScanResult::MAX_EXTRA;
+                    }
+                    for (uint8_t i = 0; i < result.numExtra && idx < len; i++) {
+                        result.extraAddresses[i] = payload[idx++];
+                    }
+                }
+                _i2cScanResultCallback(result);
+            }
+            // Treat as implicit ACK for blocking calls
+            if (_pendingAckNack) {
+                _receivedAck = true;
+                _pendingAckNack = false;
+                _lastCommandResult = CommandResult::Ack();
+            }
+            break;
+
         default:
             break;
     }
@@ -331,9 +364,10 @@ CommandResult GearControlClient::setYawInput(uint16_t position_us) {
     return sendPacketBlocking(GearControlPacket::YAW_INPUT, payload, sizeof(payload));
 }
 
-CommandResult GearControlClient::setBatteryConfig(bool autoDeployOnLowVoltage) {
-    uint8_t payload[1];
-    payload[0] = autoDeployOnLowVoltage ? 1 : 0;
+CommandResult GearControlClient::setBatteryConfig(bool enabled, bool autoDeployOnLowVoltage) {
+    uint8_t payload[2];
+    payload[0] = enabled ? 1 : 0;
+    payload[1] = autoDeployOnLowVoltage ? 1 : 0;
     return sendPacketBlocking(GearControlPacket::BATTERY_CONFIG, payload, sizeof(payload));
 }
 
@@ -343,6 +377,10 @@ CommandResult GearControlClient::setDoorMode(const GearControlDoorModeConfig& co
     payload[1] = config.mode;
     putU16LE(&payload[2], config.delay_ms);
     return sendPacketBlocking(GearControlPacket::DOOR_MODE, payload, sizeof(payload));
+}
+
+CommandResult GearControlClient::requestI2CScan() {
+    return sendPacketBlocking(CorePacket::I2C_SCAN, nullptr, 0);
 }
 
 // ============================================================================
@@ -554,9 +592,10 @@ CommandHandleResult GearControlServer::handlePacket(uint8_t type, const uint8_t*
         }
 
         case GearControlPacket::BATTERY_CONFIG: {
-            SFX_REQUIRE_LEN(1);
-            bool autoDeploy = payload[0] != 0;
-            SFX_DISPATCH(_batteryConfigCallback, autoDeploy);
+            SFX_REQUIRE_LEN(2);
+            bool enabled = payload[0] != 0;
+            bool autoDeploy = payload[1] != 0;
+            SFX_DISPATCH(_batteryConfigCallback, enabled, autoDeploy);
         }
 
         case GearControlPacket::DOOR_MODE: {

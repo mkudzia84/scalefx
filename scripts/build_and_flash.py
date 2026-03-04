@@ -9,7 +9,7 @@ Usage:
     python scripts/build_and_flash.py <controller> [options]
     
 Controllers:
-    noop, gunfx, lightfx
+    noop, gunfx, lightfx, gearcontrol
 
 Options:
     --port PORT     Serial port (default: auto-detect)
@@ -64,7 +64,7 @@ except ImportError:
 # Constants
 # =============================================================================
 
-CONTROLLERS = ['noop', 'gunfx', 'lightfx']
+CONTROLLERS = ['noop', 'gunfx', 'lightfx', 'gearcontrol']
 BAUD_RATE = 115200
 FRAME_DELIMITER = 0x00
 

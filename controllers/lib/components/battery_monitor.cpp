@@ -29,6 +29,12 @@ static constexpr uint16_t MIN_DETECT_mV     = 3000;   // Minimum voltage for aut
 static constexpr uint16_t HYSTERESIS_PER_CELL_mV = 50;  // Re-arm margin above threshold
 
 // ============================================================================
+// USB Power Detection (RP2040 Pico)
+// ============================================================================
+
+static constexpr uint8_t PICO_VBUS_PIN = 24;   // GPIO24 = VBUS detect (HIGH when USB connected)
+
+// ============================================================================
 // Initialization
 // ============================================================================
 
@@ -50,6 +56,10 @@ void BatteryMonitor::begin(uint8_t adcPin, float dividerMultiplier,
     // Configure ADC pin
     pinMode(_adcPin, INPUT);
 
+    // Configure VBUS detect pin (Pico GP24 = USB VBUS present)
+    pinMode(PICO_VBUS_PIN, INPUT);
+    _usbPowered = digitalRead(PICO_VBUS_PIN) == HIGH;
+
     // Perform initial reading and cell detection
     _voltage_mV = readAdc_mV();
     if (_voltage_mV >= MIN_DETECT_mV) {
@@ -68,6 +78,7 @@ void BatteryMonitor::setCellCount(uint8_t cells) {
     if (cells >= 1 && cells <= MAX_CELLS) {
         _cellCount = cells;
         _cellCountLocked = true;
+        _manualCellCount = true;
     }
 }
 
@@ -105,6 +116,7 @@ void BatteryMonitor::update() {
     _lastRead_ms = now;
 
     _voltage_mV = readAdc_mV();
+    _usbPowered = digitalRead(PICO_VBUS_PIN) == HIGH;
 
     // Auto-detect cell count on first valid reading (if not manually set)
     if (!_cellCountLocked && _voltage_mV >= MIN_DETECT_mV) {
@@ -169,6 +181,14 @@ uint8_t BatteryMonitor::percentage() const {
 
     // Linear interpolation: 0% at critical, 100% at full charge
     return (uint8_t)((uint32_t)(cellV - crit) * 100 / (full - crit));
+}
+
+bool BatteryMonitor::isPresent() const {
+    // No voltage at all → no battery
+    if (_voltage_mV < MIN_DETECT_mV) return false;
+    // USB powered with no manual cell count → likely phantom reading from VSYS/3
+    if (_usbPowered && !_manualCellCount) return false;
+    return true;
 }
 
 // ============================================================================

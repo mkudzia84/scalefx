@@ -244,6 +244,25 @@ public:
     // ========================================================================
 
     /**
+     * @brief Check if a real battery is present
+     *
+     * Returns false when:
+     *   - Voltage is below minimum detection threshold (no battery)
+     *   - USB powered and cell count was auto-detected (likely phantom
+     *     reading from Pico's internal VSYS/3 on GP29)
+     *
+     * Returns true when:
+     *   - Cell count was manually set via setCellCount() (user confirmed battery)
+     *   - Not USB powered and valid voltage detected
+     */
+    bool isPresent() const;
+
+    /**
+     * @brief Check if USB VBUS is detected (Pico GP24)
+     */
+    bool isUsbPowered() const { return _usbPowered; }
+
+    /**
      * @brief Check if voltage is below the low warning threshold
      */
     bool isLow() const;
@@ -281,6 +300,8 @@ private:
     uint16_t _voltage_mV = 0;           // Total pack voltage (mV)
     uint8_t  _cellCount = 0;            // Detected/configured cell count
     bool     _cellCountLocked = false;   // True after detection or manual set
+    bool     _manualCellCount = false;   // True only when setCellCount() called
+    bool     _usbPowered = false;        // True when USB VBUS detected (GP24)
 
     // ---- Timing ----
     uint16_t _readInterval_ms = 500;

@@ -8,7 +8,7 @@ Eliminates duplicated parsing logic across command handlers.
 from typing import Optional
 from tests.framework import (
     CorePacket, CoreError, GearControlError, GunFxError, LightFxError,
-    GearControlPacket, GunFxPacket, LightFxPacket
+    GearControlPacket, GunFxPacket, LightFxPacket, GearErrorReason
 )
 from tests.framework.protocol import read_u16_le, read_u32_le
 from .base import Fore, Style
@@ -32,6 +32,8 @@ def packet_type_name(ptype: int) -> str:
         CorePacket.REBOOT: "REBOOT",
         CorePacket.BOOTSEL: "BOOTSEL",
         CorePacket.KEEPALIVE: "KEEPALIVE",
+        CorePacket.I2C_SCAN: "I2C_SCAN",
+        CorePacket.I2C_SCAN_RESULT: "I2C_SCAN_RESULT",
     }
     if ptype in core_names:
         return core_names[ptype]
@@ -180,7 +182,7 @@ def parse_status_payload(payload: bytes, controller_type: str = None) -> None:
 
 
 def _parse_gearcontrol_status(data: bytes) -> None:
-    """Parse GearControl module status data (33 bytes).
+    """Parse GearControl module status data (36 bytes).
     
     Wire format:
       Per gear × 3 (9 bytes each = 27 bytes):
@@ -188,7 +190,10 @@ def _parse_gearcontrol_status(data: bytes) -> None:
       [yaw_pos_us:u16]
       [led_flags:u8]              # bits 0-5 status, 6-7 indicators
       [battery_voltage_mV:u16]
-      [battery_config_flags:u8]   # bit 0: auto-deploy, bit 1: low voltage triggered
+      [battery_config_flags:u8]   # bit 0: auto-deploy, bit 1: low voltage, bit 2: battery enabled
+      [gear0_error_reason:u8]     # Per-gear error reason (GearErrorReason)
+      [gear1_error_reason:u8]
+      [gear2_error_reason:u8]
     """
     if len(data) < 33:
         print(f"  GearControl: (incomplete: {data.hex()})")
@@ -208,6 +213,11 @@ def _parse_gearcontrol_status(data: bytes) -> None:
     
     print(f"  ── GearControl ────────────────")
     
+    # Parse per-gear error reasons if available (bytes 33-35)
+    error_reasons = [0, 0, 0]
+    if len(data) >= 36:
+        error_reasons = [data[33], data[34], data[35]]
+    
     for i in range(3):
         offset = i * 9
         state = data[offset]
@@ -220,7 +230,13 @@ def _parse_gearcontrol_status(data: bytes) -> None:
         scolor = state_colors.get(state, '')
         
         stall_str = f"stall={stall_mA}mA" if stall_mA > 0 else "stall=uncal"
-        print(f"  {gear_names[i]:>10}: {scolor}{sname}{Style.RESET_ALL}  "
+        
+        # Show error reason when in ERROR state
+        reason_str = ""
+        if state == 5 and error_reasons[i] != 0:  # GearState::ERROR
+            reason_str = f"  {Fore.RED}({GearErrorReason.name(error_reasons[i])}){Style.RESET_ALL}"
+        
+        print(f"  {gear_names[i]:>10}: {scolor}{sname}{Style.RESET_ALL}{reason_str}  "
               f"motor={current_mA}mA  doors=[{door0}µs, {door1}µs]  {stall_str}")
     
     yaw = read_u16_le(data, 27)
@@ -231,15 +247,20 @@ def _parse_gearcontrol_status(data: bytes) -> None:
     print(f"  Yaw:       {yaw}µs")
     
     # Battery voltage and config
-    battery_V = battery_mV / 1000.0
+    battery_enabled = bool(battery_flags & 0x04)
     auto_deploy = bool(battery_flags & 0x01)
     low_voltage = bool(battery_flags & 0x02)
-    battery_parts = [f"{battery_V:.1f}V ({battery_mV}mV)"]
-    if auto_deploy:
-        battery_parts.append(f"{Fore.CYAN}auto-deploy{Style.RESET_ALL}")
-    if low_voltage:
-        battery_parts.append(f"{Fore.RED}LOW VOLTAGE{Style.RESET_ALL}")
-    print(f"  Battery:   {', '.join(battery_parts)}")
+
+    if not battery_enabled:
+        print(f"  Battery:   {Fore.YELLOW}disabled{Style.RESET_ALL}")
+    else:
+        battery_V = battery_mV / 1000.0
+        battery_parts = [f"{battery_V:.1f}V ({battery_mV}mV)"]
+        if auto_deploy:
+            battery_parts.append(f"{Fore.CYAN}auto-deploy{Style.RESET_ALL}")
+        if low_voltage:
+            battery_parts.append(f"{Fore.RED}LOW VOLTAGE{Style.RESET_ALL}")
+        print(f"  Battery:   {', '.join(battery_parts)}")
     
     # Status LED flags display
     led_parts = []
@@ -353,6 +374,63 @@ def _parse_lightfx_status(data: bytes) -> None:
     
     # Servos
     print(f"  Servos:    [{servo0}µs, {servo1}µs, {servo2}µs]")
+
+
+# =============================================================================
+# I2C Scan Result Parser
+# =============================================================================
+
+def parse_i2c_scan_result(payload: bytes) -> None:
+    """Parse I2C_SCAN_RESULT packet payload.
+    
+    Wire format:
+      [numExpected:u8]
+      Per expected device × N (3 bytes each):
+        [address:u8][found:u8][identified:u8]
+      [numExtra:u8]
+      Per extra device × M (1 byte each):
+        [address:u8]
+    """
+    if len(payload) < 2:
+        print(f"  I2C scan: (incomplete: {payload.hex()})")
+        return
+    
+    idx = 0
+    num_expected = payload[idx]; idx += 1
+    
+    print(f"  ── I2C Bus Scan ───────────────")
+    print(f"  Expected devices: {num_expected}")
+    
+    for i in range(num_expected):
+        if idx + 2 >= len(payload):
+            break
+        address = payload[idx]; idx += 1
+        found = payload[idx] != 0; idx += 1
+        identified = payload[idx] != 0; idx += 1
+        
+        if found and identified:
+            status = f"{Fore.GREEN}OK{Style.RESET_ALL} (found + verified)"
+        elif found:
+            status = f"{Fore.YELLOW}FOUND{Style.RESET_ALL} (ACK but not verified)"
+        else:
+            status = f"{Fore.RED}MISSING{Style.RESET_ALL} (no ACK)"
+        
+        print(f"  0x{address:02X}: {status}")
+    
+    # Extra devices
+    if idx < len(payload):
+        num_extra = payload[idx]; idx += 1
+        if num_extra > 0:
+            extra_addrs = []
+            for j in range(num_extra):
+                if idx < len(payload):
+                    extra_addrs.append(f"0x{payload[idx]:02X}")
+                    idx += 1
+            print(f"  Other devices: {', '.join(extra_addrs)}")
+        else:
+            print(f"  Other devices: none")
+    
+    print(f"  ────────────────────────────────")
 
 
 # =============================================================================

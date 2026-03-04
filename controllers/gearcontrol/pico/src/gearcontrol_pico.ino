@@ -1,5 +1,5 @@
 /**
- * GearControl Pico Controller v0.2.0
+ * GearControl Pico Controller v0.5.0
  *
  * Server controller for landing gear effects - receives commands from HubFX over USB serial.
  * Controls: 3 landing gear units (via LandingGear module), yaw steering servo,
@@ -50,13 +50,14 @@
 #include <led_control.h>
 #include <srv_control.h>
 #include <ina226.h>
+#include <i2c_device.h>
 #include <battery_monitor.h>
 #include <pico_server.h>
 #include "landing_gear.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "0.2.0"
-#define BUILD_NUMBER 2
+#define FIRMWARE_VERSION "0.5.0"
+#define BUILD_NUMBER 11
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -131,15 +132,19 @@ GearControlYawConfig yawConfig;
 bool yawConfigured = false;
 
 // Battery auto-deploy configuration
+bool batteryEnabled = false;               // Battery monitoring disabled until host enables via BATTERY_CONFIG
 bool autoDeployOnLowVoltage = false;
 bool lowVoltageTriggered = false;  // Set when auto-deploy fires (persists until reset)
 
+// Per-gear error reason tracking (for STATUS diagnostic reporting)
+uint8_t gearErrorReason[3] = { GearErrorReason::NONE, GearErrorReason::NONE, GearErrorReason::NONE };
+
 // Expected I2C addresses for the 3 INA226 monitors
-// Binary:  1000000, 1000001, 1000010 → 0x40, 0x41, 0x42
+// Binary:  1000000, 1000001, 1000100 → 0x40, 0x41, 0x44
 const uint8_t INA226_ADDR[3] = {
     INA226Address::GND_GND,   // 0x40 - Motor 0
     INA226Address::GND_VS,    // 0x41 - Motor 1
-    INA226Address::GND_SDA,   // 0x42 - Motor 2
+    INA226Address::VS_GND,    // 0x44 - Motor 2
 };
 
 // ============================================================================
@@ -163,7 +168,8 @@ void performSafeShutdown() {
     // Return yaw to center
     yawServo.setPositionImmediate(1500);
 
-    // Disable auto-deploy (requires re-configuration after reconnect)
+    // Disable battery monitoring and auto-deploy (requires re-configuration after reconnect)
+    batteryEnabled = false;
     autoDeployOnLowVoltage = false;
     lowVoltageTriggered = false;
 }
@@ -172,6 +178,13 @@ void performSafeInit() {
     // Reset all gear modules
     for (int i = 0; i < 3; i++) {
         gears[i].reset();
+        // Re-flag monitor fault if INA226 was unavailable at boot
+        if (!ina226Available[i]) {
+            gears[i].flagMonitorFault();
+            gearErrorReason[i] = GearErrorReason::MONITOR_FAULT;
+        } else {
+            gearErrorReason[i] = GearErrorReason::NONE;
+        }
     }
 
     lowVoltageTriggered = false;
@@ -253,6 +266,7 @@ void setup() {
         if (!ina226Available[i]) {
             // INA226 failed I2C init — board fault
             gears[i].flagMonitorFault();
+            gearErrorReason[i] = GearErrorReason::MONITOR_FAULT;
         }
 
         // Register calibration progress callback (emits GEAR_CALIB_STATUS packets)
@@ -270,7 +284,7 @@ void setup() {
 
     // Auto-deploy all gears on low battery voltage (safety feature)
     batteryMonitor.onLowVoltage([](uint16_t voltage_mV, uint8_t cellCount) {
-        if (autoDeployOnLowVoltage && server.indicators().isConnected()) {
+        if (batteryEnabled && autoDeployOnLowVoltage && server.indicators().isConnected()) {
             lowVoltageTriggered = true;
             for (int i = 0; i < 3; i++) {
                 gears[i].markEmergencyDeploy();
@@ -411,9 +425,13 @@ void setup() {
         return gears[gearId].cancelCalibration();
     });
 
-    // BATTERY_CONFIG: Enable/disable auto-deploy on low voltage
-    gearControlServer.onBatteryConfig([](bool autoDeploy) -> uint8_t {
+    // BATTERY_CONFIG: Enable/disable battery monitoring and auto-deploy on low voltage
+    gearControlServer.onBatteryConfig([](bool enabled, bool autoDeploy) -> uint8_t {
+        batteryEnabled = enabled;
         autoDeployOnLowVoltage = autoDeploy;
+        if (!enabled) {
+            lowVoltageTriggered = false;  // Reset low-voltage state when disabling
+        }
         return SerialError::OK;
     });
 
@@ -423,14 +441,22 @@ void setup() {
         return SerialError::OK;
     });
 
+    // I2C bus scan — handled by PicoServer (shared infrastructure)
+    server.enableI2CScan(Wire);
+    for (int i = 0; i < 3; i++) {
+        server.addExpectedI2CDevice(INA226_ADDR[i], &ina226[i]);
+    }
+
     // STATUS: Append GearControl module data to core STATUS response
-    // Wire format (32 bytes):
+    // Wire format (36 bytes):
     //   Per gear (3 × 9 = 27 bytes):
     //     [state:u8][motorCurrent_mA:u16LE][door0Pos_us:u16LE][door1Pos_us:u16LE][calibratedStall_mA:u16LE]
-    //   Yaw + LEDs + Voltage (5 bytes):
-    //     [yawPos_us:u16LE][ledFlags:u8][batteryVoltage_mV:u16LE]
+    //   Yaw + LEDs + Voltage (6 bytes):
+    //     [yawPos_us:u16LE][ledFlags:u8][batteryVoltage_mV:u16LE][batteryConfigFlags:u8]
+    //   Per-gear error reasons (3 bytes):
+    //     [gear0ErrorReason:u8][gear1ErrorReason:u8][gear2ErrorReason:u8]
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        if (maxLen < 33) return 0;
+        if (maxLen < 36) return 0;
 
         for (int i = 0; i < 3; i++) {
             size_t off = i * 9;
@@ -443,12 +469,18 @@ void setup() {
 
         CoreProtocol::putU16LE(&buf[27], (uint16_t)yawServo.position());  // yaw servo
         buf[29] = buildLedFlags();
-        CoreProtocol::putU16LE(&buf[30], batteryMonitor.voltage_mV());  // battery  // mV
-        // Battery config flags: bit 0 = auto-deploy enabled, bit 1 = low voltage triggered
+        CoreProtocol::putU16LE(&buf[30], batteryEnabled ? batteryMonitor.voltage_mV() : (uint16_t)0);  // battery  // mV
+        // Battery config flags: bit 0 = auto-deploy enabled, bit 1 = low voltage triggered, bit 2 = battery monitoring enabled
         buf[32] = (autoDeployOnLowVoltage ? 0x01 : 0x00)
-                | (lowVoltageTriggered    ? 0x02 : 0x00);
+                | (lowVoltageTriggered    ? 0x02 : 0x00)
+                | (batteryEnabled         ? 0x04 : 0x00);
 
-        return 33;
+        // Per-gear error reasons (diagnostic — explains WHY a gear is in ERROR state)
+        buf[33] = gearErrorReason[0];
+        buf[34] = gearErrorReason[1];
+        buf[35] = gearErrorReason[2];
+
+        return 36;
     });
 
     // Finalize command router (core + GearControl handlers)
@@ -479,8 +511,10 @@ void loop() {
     server.indicators().setErrorCondition(anyError);
     server.indicators().setWarningCondition(lowVoltageTriggered);
 
-    // Update battery voltage monitor
-    batteryMonitor.update();
+    // Update battery voltage monitor (only when enabled via BATTERY_CONFIG)
+    if (batteryEnabled) {
+        batteryMonitor.update();
+    }
 
     delay(1);
 }

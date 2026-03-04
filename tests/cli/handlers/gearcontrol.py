@@ -102,8 +102,8 @@ class GearControlCommandHandler(CommandHandlerBase):
                 'Cancel calibration in progress',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
             'gearcontrol.battery': (self.cmd_battery_config, CommandInfo(
-                'gearcontrol.battery', 'gearcontrol.battery autodeploy <on|off>',
-                'Configure battery low-voltage auto-deploy (deploys all gears on low battery)',
+                'gearcontrol.battery', 'gearcontrol.battery <on|off> [autodeploy]',
+                'Enable/disable battery monitoring (off by default, enable when battery connected)',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
         }
 
@@ -420,27 +420,38 @@ class GearControlCommandHandler(CommandHandlerBase):
     # =========================================================================
 
     def cmd_battery_config(self, args: List[str]):
-        """Configure battery low-voltage behavior."""
-        if len(args) < 2 or args[0].lower() != 'autodeploy':
-            self.print_error("Usage: gearcontrol.battery autodeploy <on|off>")
-            self.print_info("  When enabled, all gears auto-deploy on low battery voltage")
-            self.print_info("  (3.2V/cell LiPo threshold)")
+        """Enable/disable battery monitoring and auto-deploy."""
+        if not args:
+            self.print_error("Usage: gearcontrol.battery <on|off> [autodeploy]")
+            self.print_info("  on           Enable battery voltage monitoring")
+            self.print_info("  off          Disable monitoring (default at boot)")
+            self.print_info("  on autodeploy  Enable monitoring + auto-deploy on low voltage")
             return
 
-        value = args[1].lower()
-        if value in ('on', '1', 'true', 'yes'):
-            auto_deploy = True
-        elif value in ('off', '0', 'false', 'no'):
-            auto_deploy = False
+        value = args[0].lower()
+        if value in ('on', '1', 'true', 'yes', 'enable'):
+            enabled = True
+        elif value in ('off', '0', 'false', 'no', 'disable'):
+            enabled = False
         else:
-            self.print_error(f"Invalid value '{args[1]}' — use 'on' or 'off'")
+            self.print_error(f"Invalid value '{args[0]}' — use 'on' or 'off'")
             return
 
-        packet = GearControlCommands.battery_config(auto_deploy)
+        # Check for optional autodeploy flag
+        auto_deploy = False
+        if len(args) > 1 and args[1].lower() == 'autodeploy':
+            auto_deploy = True
+
+        packet = GearControlCommands.battery_config(enabled, auto_deploy)
         success, response = self.conn.send_expect_ack(packet)
         if success:
-            state = "ENABLED" if auto_deploy else "DISABLED"
-            self.print_ok(f"Battery auto-deploy: {state}")
+            if enabled:
+                state = "ENABLED"
+                if auto_deploy:
+                    state += " + auto-deploy"
+            else:
+                state = "DISABLED"
+            self.print_ok(f"Battery monitoring: {state}")
         else:
             self._print_ack_response(response)
 

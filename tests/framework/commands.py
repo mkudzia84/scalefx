@@ -89,6 +89,27 @@ class CommandBuilder:
         """Build STATUS_REQ packet."""
         return build_packet(CorePacket.STATUS_REQ)
 
+    @staticmethod
+    def i2c_scan() -> bytes:
+        """Request I2C bus scan.
+        
+        Scans the I2C bus for expected devices registered with the controller
+        and reports any additional devices found. Returns an I2C_SCAN_RESULT
+        packet instead of ACK.
+        
+        Requires that the controller has I2C scan enabled via PicoServer.
+        If not supported, returns NACK NOT_SUPPORTED.
+        
+        Response wire format:
+          [numExpected:u8]
+          Per expected device × N (3 bytes each):
+            [address:u8][found:u8][identified:u8]
+          [numExtra:u8]
+          Per extra device × M (1 byte each):
+            [address:u8]
+        """
+        return build_packet(CorePacket.I2C_SCAN)
+
 
 class GunFxCommands(CommandBuilder):
     """GunFX-specific commands."""
@@ -853,18 +874,25 @@ class GearControlCommands(CommandBuilder):
         return build_packet(GearControlPacket.GEAR_CALIB_CANCEL, bytes([gear_id]))
 
     @staticmethod
-    def battery_config(auto_deploy: bool) -> bytes:
+    def battery_config(enabled: bool, auto_deploy: bool = False) -> bytes:
         """
-        Configure battery low-voltage behavior.
+        Configure battery monitoring and low-voltage behavior.
         
-        When auto_deploy is enabled, all landing gears will automatically
+        Battery monitoring is disabled by default. The host must explicitly
+        enable it via this command when a battery is physically connected
+        (hardware jumper). When disabled, STATUS reports 0mV and auto-deploy
+        is inactive regardless of the auto_deploy flag.
+        
+        When enabled with auto_deploy, all landing gears will automatically
         deploy when the battery voltage drops below the low warning threshold
         (3.2V/cell for LiPo). This is a safety feature for RC aircraft.
         
         Args:
-            auto_deploy: True to enable auto-deploy on low voltage, False to disable
+            enabled: True to enable battery voltage monitoring, False to disable
+            auto_deploy: True to enable auto-deploy on low voltage (only effective when enabled)
         """
-        return build_packet(GearControlPacket.BATTERY_CONFIG, bytes([1 if auto_deploy else 0]))
+        return build_packet(GearControlPacket.BATTERY_CONFIG,
+                            bytes([1 if enabled else 0, 1 if auto_deploy else 0]))
 
     @staticmethod
     def door_mode(gear_id: int, mode: int, delay_ms: int = 500) -> bytes:

@@ -18,7 +18,7 @@ The yaw steering servo remains in the main controller module but uses `ServoCont
 
 **Hardware:** Raspberry Pi Pico (RP2040)  
 **Protocol:** Binary COBS with CRC-8 (115200 baud)  
-**Firmware:** v0.2.0 (Build 2)
+**Firmware:** v0.4.0 (Build 8)
 
 ## Architecture
 
@@ -109,7 +109,7 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 |-------|---------|----|----|
 | 0 (Nose) | 0x40 | GND | GND |
 | 1 (Left) | 0x41 | VS | GND |
-| 2 (Right) | 0x44 | GND | VS |
+| 2 (Right) | 0x42 | SDA | GND |
 
 ## Protocol
 
@@ -130,8 +130,10 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 | 0x6A | GEAR_CALIBRATE | `[gear_id:u8]` | Start stall current calibration |
 | 0x6B | GEAR_CALIB_STATUS | `[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE]` | Calibration progress (server→client) |
 | 0x6C | GEAR_CALIB_CANCEL | `[gear_id:u8]` | Cancel calibration in progress |
-| 0x6D | BATTERY_CONFIG | `[auto_deploy:u8]` | Configure battery auto-deploy (0=off, 1=on) |
+| 0x6D | BATTERY_CONFIG | `[enabled:u8][auto_deploy:u8]` | Enable/disable battery monitoring + auto-deploy |
 | 0x6E | DOOR_MODE | `[gear_id:u8][mode:u8][delay_ms:u16LE]` | Configure door activation mode |
+| 0x6F | I2C_SCAN | *(no payload)* | Request I2C bus scan |
+| 0x70 | I2C_SCAN_RESULT | `[numExp:u8][N×(addr,found,id)][numExtra:u8][addrs...]` | I2C scan response (server→client) |
 
 ### Error Codes (0x60-0x6F)
 
@@ -157,7 +159,7 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 | 1 | CLOSE_DOORS_ON_DEPLOY | Close doors after gear deploys |
 | 2 | HAS_YAW | This gear has yaw servo (used for steering) |
 
-### STATUS Response (33 bytes module data)
+### STATUS Response (36 bytes module data)
 
 After the 12-byte core header `[counter:u32][uptime:u32][freeRam:u32]`:
 
@@ -173,7 +175,12 @@ Yaw + LEDs + Voltage + Config (6 bytes):
   [yawPos_us:u16LE]           // Yaw servo position in µs
   [ledFlags:u8]               // Bits 0-5 status LEDs, 6-7 indicator LEDs
   [batteryVoltage_mV:u16LE]   // Battery voltage in millivolts
-  [batteryConfigFlags:u8]     // Bit 0: auto-deploy enabled, Bit 1: low voltage triggered
+  [batteryConfigFlags:u8]     // Bit 0: auto-deploy, Bit 1: low voltage, Bit 2: battery enabled
+
+Per-gear error reasons (3 bytes):
+  [gear0ErrorReason:u8]       // Why gear 0 is in ERROR state (GearErrorReason)
+  [gear1ErrorReason:u8]       // Why gear 1 is in ERROR state
+  [gear2ErrorReason:u8]       // Why gear 2 is in ERROR state
 ```
 
 **batteryConfigFlags bits:**
@@ -181,6 +188,16 @@ Yaw + LEDs + Voltage + Config (6 bytes):
 |-----|------|-------------|
 | 0 | AUTO_DEPLOY | Auto-deploy on low voltage is enabled |
 | 1 | LOW_VOLTAGE_TRIGGERED | Low voltage event fired, emergency deploy occurred |
+| 2 | BATTERY_ENABLED | Battery monitoring is active (enabled via BATTERY_CONFIG) |
+
+**GearErrorReason enum:**
+| Value | Name | Description |
+|-------|------|-------------|
+| 0x00 | NONE | No error |
+| 0x01 | MONITOR_FAULT | INA226 I2C init failed at boot |
+| 0x02 | MOTOR_STALL | Motor stall detected during operation |
+| 0x03 | MOTOR_TIMEOUT | Motor operation exceeded timeout |
+| 0x04 | SEQUENCE_ERROR | Unexpected state during sequencing |
 
 **GearState enum:**
 | Value | Name | Description |

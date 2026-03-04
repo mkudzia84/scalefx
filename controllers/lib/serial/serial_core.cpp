@@ -95,6 +95,15 @@ bool CoreCommandServer::tryHandle(uint8_t type, const uint8_t* payload, size_t l
             sendStatus();
             return true;
             
+        case CorePacket::I2C_SCAN:
+            if (_i2cScanCallback) {
+                I2CScanResult result = _i2cScanCallback();
+                sendI2CScanResult(result);
+            } else {
+                sendNack(SerialError::NOT_SUPPORTED);
+            }
+            return true;
+            
         default:
             _commandCounter--;  // Don't count unhandled commands
             return false;
@@ -196,6 +205,33 @@ void CoreCommandServer::sendStatus() {
     uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
     size_t encLen = CoreProtocol::encodePacket(encoded, CorePacket::STATUS, payload, idx);
     
+    if (encLen > 0) {
+        _serial->write(encoded, encLen);
+    }
+}
+
+void CoreCommandServer::sendI2CScanResult(const I2CScanResult& result) {
+    if (!_serial) return;
+
+    // Wire format: [numExpected:u8][N×(addr:u8,found:u8,id:u8)][numExtra:u8][M×addr:u8]
+    uint8_t payload[CoreProtocol::MAX_PAYLOAD_SIZE];
+    size_t idx = 0;
+
+    payload[idx++] = result.numExpected;
+    for (uint8_t i = 0; i < result.numExpected && i < I2CScanResult::MAX_EXPECTED; i++) {
+        payload[idx++] = result.expected[i].address;
+        payload[idx++] = result.expected[i].found ? 1 : 0;
+        payload[idx++] = result.expected[i].identified ? 1 : 0;
+    }
+    payload[idx++] = result.numExtra;
+    for (uint8_t i = 0; i < result.numExtra && i < I2CScanResult::MAX_EXTRA; i++) {
+        if (idx >= sizeof(payload)) break;
+        payload[idx++] = result.extraAddresses[i];
+    }
+
+    uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
+    size_t encLen = CoreProtocol::encodePacket(encoded, CorePacket::I2C_SCAN_RESULT, payload, idx);
+
     if (encLen > 0) {
         _serial->write(encoded, encLen);
     }
