@@ -9,7 +9,7 @@
 ```yaml
 Files_To_Modify:
   Always:
-    - "lib/serial/serial_xxxfx.h"           # Packet type constant + handler logic
+    - "lib/serial/serial_xxxfx.h"           # Packet type, error codes, handler logic
     - "controllers/xxxfx/pico/src/*.ino"     # Callback implementation
     - "tests/framework/packets.py"           # Python constant
     - "tests/framework/commands.py"          # Python builder
@@ -17,7 +17,7 @@ Files_To_Modify:
     - "controllers/xxxfx/pico/README.md"     # Documentation
   
   If_New_Error_Codes:
-    - "lib/serial/serial_error.h"            # C++ error constant
+    - "lib/serial/serial_xxxfx.h"            # C++ error constant (in module's error namespace)
     - "tests/framework/packets.py"           # Python error constant
 ```
 
@@ -46,19 +46,21 @@ namespace GunFxPacket {
 
 ### Step 2: Add Error Code (if needed)
 
-**File:** `controllers/lib/serial/serial_error.h`
+**File:** `controllers/lib/serial/serial_gunfx.h`
+
+Error codes are defined in the module's own header file, not a separate error file.
 
 **FIND:**
 ```cpp
 namespace GunFxError {
-    // ...existing...
+    // ...existing error constants...
 ```
 
 **ADD:**
 ```cpp
-    constexpr uint8_t AMMO_INVALID      = 0x15;
+    constexpr uint8_t AMMO_INVALID      = 0x25;
     
-    // Also update name() function:
+    // Also update getMessage() function:
     case AMMO_INVALID: return "AMMO_INVALID";
 ```
 
@@ -78,11 +80,16 @@ using AmmoSetCallback = std::function<uint8_t(uint16_t count)>;
 void onAmmoSet(AmmoSetCallback cb) { _onAmmoSet = cb; }
 ```
 
-**ACTION 3.3 - Add case in tryProcess() using SFX_* macros:**
+**ACTION 3.3 - Add case in handleModulePacket() using SFX_* macros:**
+
+The `BusServer` base class handles `tryProcess()` by checking the packet type against
+`moduleRangeLow()..moduleRangeHigh()` and delegating to `handleModulePacket()`. You only
+need to add the case in `handleModulePacket()`:
+
 ```cpp
 case GunFxPacket::AMMO_SET: {
     SFX_REQUIRE_LEN(2);
-    uint16_t count = getU16LE(payload);
+    uint16_t count = CoreProtocol::getU16LE(payload);
     SFX_VALIDATE(GunFxSpec::isValidAmmoCount(count), GunFxError::AMMO_INVALID);
     SFX_DISPATCH(_onAmmoSet, count);
 }
@@ -95,6 +102,25 @@ case GunFxPacket::AMMO_SET: {
 private:
     AmmoSetCallback _onAmmoSet;
 ```
+
+---
+
+### Step 3b: Add Client Method (for HubFX)
+
+**File:** `controllers/lib/serial/serial_gunfx.h` (GunFxClient class)
+
+All client methods MUST return `CommandResult`, never `bool`. Choose the pattern based on the response category (see Response Category Decision below).
+
+**For Category 1 (Instant) — this example:**
+```cpp
+CommandResult ammoSet(uint16_t count) {
+    uint8_t payload[2];
+    CoreProtocol::putU16LE(payload, count);
+    return sendCommand(GunFxPacket::AMMO_SET, payload, 2);
+}
+```
+
+> **Note:** For Category 2 (Query) commands, you also need to add `onModulePacket()` handling that resolves the tag. For Category 3 (Long-Running), consider whether the tag should be resolved on a progress/completion packet. See the Response Category Decision section at the end of this document.
 
 ---
 
@@ -368,21 +394,126 @@ String:
 
 ```yaml
 Before_Marking_Complete:
-  - [ ] Packet type added to serial_xxxfx.h (e.g., GunFxPacket namespace)
-  - [ ] Error codes added to serial_error.h (if any)
-  - [ ] Callback type defined in serial_xxxfx.h
-  - [ ] Registration method added to server class
-  - [ ] Handler case added to tryProcess() switch using SFX_* macros
-  - [ ] Private callback member added
-  - [ ] Validation added to XxxFxSpec namespace (if needed)
-  - [ ] Callback implemented in firmware
-  - [ ] Callback registered in setup()
-  - [ ] Python packet constant added
-  - [ ] Python error constants added (if any)
-  - [ ] Python command builder added
-  - [ ] Test file created
-  - [ ] CLI command added to handlers/xxxfx.py
-  - [ ] CLI handler method added
-  - [ ] README.md updated with protocol entry
-  - [ ] All compile checks pass
+  Server_Side:
+    - [ ] Packet type added to serial_xxxfx.h (e.g., GunFxPacket namespace)
+    - [ ] Error codes added to serial_xxxfx.h (e.g., GunFxError namespace, if any)
+    - [ ] Callback type defined in serial_xxxfx.h
+    - [ ] Registration method added to server class
+    - [ ] Handler case added to handleModulePacket() switch using SFX_* macros
+    - [ ] Private callback member added
+    - [ ] Validation added to XxxFxSpec namespace (if needed)
+    - [ ] Callback implemented in firmware
+    - [ ] Callback registered in setup()
+  
+  Client_Side:
+    - [ ] Client method added returning CommandResult (never bool)
+    - [ ] Response category determined (instant / query / long-running)
+    - [ ] "IF query: response packet type defined"
+    - [ ] "IF query: onModulePacket() resolves tag (implicit ACK)"
+    - [ ] "IF long-running: completion signal documented"
+
+  Python_and_CLI:
+    - [ ] Python packet constant added
+    - [ ] Python error constants added (if any)
+    - [ ] Python command builder added
+    - [ ] Test file created
+    - [ ] CLI command added to handlers/xxxfx.py
+    - [ ] CLI handler method added
+  
+  Documentation:
+    - [ ] README.md updated with protocol entry
+    - [ ] Response category noted in protocol table
+    - [ ] All compile checks pass
+```
+
+---
+
+## Response Category Decision
+
+When adding a new command, determine which response category it belongs to. This affects both server handler and client implementation. See `01-ARCHITECTURE.md` § Client Response Handling Design for full details.
+
+### Decision Flow
+
+```
+Q1: Does the command complete before the server handler returns?
+├─ YES → Q2: Does the response carry data beyond ACK?
+│         ├─ NO  → Category 1: INSTANT (use SFX_DISPATCH → auto ACK)
+│         └─ YES → Category 2: QUERY (send data response, client resolves tag as implicit ACK)
+└─ NO  → Category 3: LONG-RUNNING (SFX_DISPATCH → immediate ACK, monitor via STATUS/async)
+```
+
+### Category 1: Instant Command (most common)
+
+Use `SFX_DISPATCH` in server `handleModulePacket()`. Client gets ACK automatically.
+
+**Server:** Standard `SFX_DISPATCH` pattern (ACK/NACK handled by macro).
+**Client:** Just call `sendCommand()` — tag resolved automatically by `BusClient::handlePacket()`.
+
+```cpp
+// Server
+case XxxPacket::MY_CMD: {
+    SFX_REQUIRE_LEN(2);
+    SFX_DISPATCH(_myCallback, payload[0], payload[1]);
+}
+
+// Client
+CommandResult myCommand(uint8_t a, uint8_t b) {
+    uint8_t payload[2] = { a, b };
+    return sendCommand(XxxPacket::MY_CMD, payload, 2);
+}
+```
+
+### Category 2: Query Command (data response)
+
+Server sends a typed response packet. Client MUST resolve the tag in `onModulePacket()`.
+
+**Server:** Handle manually (no `SFX_DISPATCH`), call a `sendXxxResponse()` method.
+**Client:** Override `onModulePacket()`, parse data, fire callback, resolve tag.
+
+```cpp
+// Server — handleModulePacket()
+case XxxPacket::QUERY_STATUS:
+    if (len >= 1 && _queryCallback) {
+        MyStatusData data;
+        _queryCallback(payload[0], data);         // Fill data via firmware
+        sendQueryResponse(data);                  // Send response with _currentTag
+    }
+    return CommandHandleResult::Handled;          // No SFX_DISPATCH!
+
+// Client — onModulePacket() MUST resolve tag
+case XxxPacket::QUERY_STATUS_RESP:
+    if (len >= expectedLen) {
+        // Parse, fire callback
+    }
+    if (tag != CoreProtocol::TAG_ASYNC) {
+        _lastCommandResult = CommandResult::Ack();
+        _resultQueue.resolve(tag, _lastCommandResult);  // CRITICAL
+    }
+    break;
+```
+
+### Category 3: Long-Running Command
+
+Server sends immediate ACK, operation runs asynchronously. Client monitors via STATUS or async packets.
+
+**Server:** Standard `SFX_DISPATCH` (immediate ACK). Optionally store the tag for progress updates.
+**Client:** `sendCommand()` returns quickly. Use STATUS polling or async callbacks to detect completion.
+
+```cpp
+// Server — stores tag for async progress packets
+case XxxPacket::LONG_OP: {
+    SFX_REQUIRE_LEN(1);
+    _operationTag = _currentTag;                  // Store for progress updates
+    SFX_DISPATCH(_longOpCallback, payload[0]);    // Immediate ACK
+}
+
+// Client — optionally resolve tag on final progress packet
+case XxxPacket::LONG_OP_PROGRESS:
+    if (len >= expectedLen) {
+        // Parse progress, fire callback
+        if (progress.finished && tag != CoreProtocol::TAG_ASYNC) {
+            _resultQueue.resolve(tag, CommandResult::Ack());
+        }
+    }
+    break;
 ```

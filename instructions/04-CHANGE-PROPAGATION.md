@@ -9,8 +9,7 @@
 ```yaml
 Change_Type_Matrix:
   New_Command:
-    serial_core.h: IF_NEW_PACKET_TYPE
-    serial_error.h: IF_NEW_ERRORS
+    serial_core.h: IF_NEW_GENERIC_ERROR
     serial_xxxfx.h: REQUIRED
     xxxfx_pico.ino: REQUIRED
     packets.py: REQUIRED
@@ -21,7 +20,6 @@ Change_Type_Matrix:
     
   Modify_Command_Payload:
     serial_core.h: NO
-    serial_error.h: IF_NEW_ERRORS
     serial_xxxfx.h: REQUIRED
     xxxfx_pico.ino: REQUIRED
     packets.py: IF_CONSTANTS_CHANGED
@@ -31,9 +29,8 @@ Change_Type_Matrix:
     README.md: REQUIRED
     
   New_Error_Code:
-    serial_core.h: NO
-    serial_error.h: REQUIRED
-    serial_xxxfx.h: NO
+    serial_core.h: IF_GENERIC_ERROR
+    serial_xxxfx.h: IF_MODULE_ERROR
     xxxfx_pico.ino: MAYBE
     packets.py: REQUIRED
     commands.py: NO
@@ -43,7 +40,6 @@ Change_Type_Matrix:
     
   Bug_Fix_In_Handler:
     serial_core.h: NO
-    serial_error.h: NO
     serial_xxxfx.h: MAYBE
     xxxfx_pico.ino: REQUIRED
     packets.py: NO
@@ -53,8 +49,7 @@ Change_Type_Matrix:
     README.md: NO
     
   New_Controller:
-    serial_core.h: REQUIRED
-    serial_error.h: REQUIRED
+    serial_core.h: IF_NEW_GENERIC_ERROR
     serial_newfx.h: CREATE_NEW
     newfx_pico.ino: CREATE_NEW
     packets.py: REQUIRED
@@ -79,22 +74,23 @@ Change_Type_Matrix:
 Step_1_Serial_Library:
   location: "controllers/lib/serial/"
   actions:
-    - file: "serial_core.h"
-      action: "Add packet type constant in module namespace (if not already defined in serial_xxxfx.h)"
-      example: "constexpr uint8_t COMMAND_NAME = 0xNN;"
-    
-    - file: "serial_error.h"
-      action: "Add error codes if command can fail with new reasons"
-      condition: "IF new error scenarios exist"
-    
-    - file: "serial_xxxfx.h"
+    - file: "serial_xxxfx.h (Server class)"
       action: |
         1. Add packet type constant in XxxFxPacket namespace
-        2. Add callback typedef
-        3. Add onXxx() registration method
-        4. Add case in tryProcess() switch using SFX_* macros
-        5. Add private callback member
-        6. Add validation to XxxFxSpec namespace if needed
+        2. Add error codes in XxxFxError namespace (if needed)
+        3. Add callback typedef
+        4. Add onXxx() registration method
+        5. Add case in handleModulePacket() switch using SFX_* macros
+        6. Add private callback member
+        7. Add validation to XxxFxSpec namespace if needed
+
+    - file: "serial_xxxfx.h (Client class)"
+      action: |
+        1. Add client method returning CommandResult (NEVER bool)
+        2. Determine response category (instant / query / long-running)
+        3. IF QUERY: add response packet type constant
+        4. IF QUERY: add onModulePacket() case that resolves tag
+        5. IF LONG-RUNNING: document completion signal strategy
 
 Step_2_Controller_Firmware:
   location: "controllers/xxxfx/pico/src/"
@@ -163,7 +159,7 @@ Backward_Compatibility:
 Files_To_Update:
   - file: "serial_xxxfx.h"
     changes:
-      - "Update tryProcess() case (SFX_* macros)"
+      - "Update handleModulePacket() case (SFX_* macros)"
       - "Update callback typedef if signature changed"
   
   - file: "xxxfx_pico.ino"
@@ -196,10 +192,10 @@ Files_To_Update:
 
 ```yaml
 Serial_Library:
-  - file: "serial_error.h"
+  - file: "serial_xxxfx.h (or serial_core.h for generic errors)"
     action: |
-      1. Add constant in appropriate namespace
-      2. Add case to name() function
+      1. Add constant in appropriate error namespace
+      2. Add case to getMessage() function
 
 Python_Framework:
   - file: "packets.py"
@@ -225,9 +221,8 @@ Optional:
 ```yaml
 Summary_Checklist:
   Serial_Library:
-    - "[ ] Reserve packet type range (0x60-0xEF available)"
-    - "[ ] Create serial_newfx.h"
-    - "[ ] Add error namespace to serial_error.h"
+    - "[ ] Reserve packet type range (0x80-0xEF available)"
+    - "[ ] Create serial_newfx.h (with NewFxServer, NewFxClient, NewFxPacket, NewFxError, NewFxSpec)"
     - "[ ] Update serial.h umbrella include"
   
   Controller:
@@ -263,12 +258,16 @@ C++_Serial_Library:
   path: "controllers/lib/serial/"
   files:
     serial.h: "Umbrella header"
-    serial_core.h: "Packet types, CoreProtocol, CoreCommandServer, SFX_* macros"
-    serial_error.h: "Error code constants"
-    serial_command_handler.h: "ICommandHandler, CommandRouter"
-    serial_gunfx.h: "GunFxServer, GunFxClient, GunFxSpec"
-    serial_lightfx.h: "LightFxServer, LightFxClient, LightFxSpec"
-    serial_gearcontrol.h: "GearControlServer, GearControlClient, GearControlSpec"
+    serial_core.h: "CoreProtocol, SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros"
+    serial_bus_server.h: "BusServer base class + CoreCommandServer"
+    serial_bus_server.cpp: "BusServer + CoreCommandServer implementations"
+    serial_bus_client.h: "BusClient base class (extends SerialBus)"
+    serial_bus_client.cpp: "BusClient implementation"
+    serial_bus.h: "SerialBus (client-only, COBS over USB CDC)"
+    serial_result_queue.h: "ResultQueue (tag-correlated command/response matching)"
+    serial_gunfx.h: "GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec"
+    serial_lightfx.h: "LightFxServer, LightFxClient, LightFxPacket, LightFxError"
+    serial_gearcontrol.h: "GearControlServer, GearControlClient, GearControlPacket, GearControlError"
 
 Controller_Firmware:
   pattern: "controllers/{name}/pico/"

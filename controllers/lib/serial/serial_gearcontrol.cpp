@@ -1,9 +1,9 @@
 /*
  * Serial GearControl Protocol - Implementation
  *
- * Binary COBS protocol client/server for GearControl landing gear controller.
- *   - GearControlClient: For HubFX (sends commands via USB)
- *   - GearControlServer: For GearControl Pico (receives commands, implements ICommandHandler)
+ * GearControl-specific client/server protocol implementation.
+ *   - GearControlClient: Module-specific commands and response parsing
+ *   - GearControlServer: Module-specific command dispatch and response methods
  */
 
 #include "serial_gearcontrol.h"
@@ -11,97 +11,11 @@
 using namespace CoreProtocol;
 
 // ============================================================================
-// GearControlClient Implementation
+// GearControlClient - Module Packet Handler
 // ============================================================================
 
-bool GearControlClient::begin(UsbHost* usbHost, int deviceIndex) {
-    if (!SerialBus::begin(usbHost, deviceIndex)) {
-        return false;
-    }
-
-    _usbHostRef = usbHost;
-    _serverReady = false;
-    _serverName[0] = '\0';
-    memset(&_boardInfo, 0, sizeof(_boardInfo));
-    memset(&_lastStatus, 0, sizeof(_lastStatus));
-
-    SerialBus::onPacketReceived([this](uint8_t type, const uint8_t* payload, size_t len) {
-        handlePacket(type, payload, len);
-    });
-
-    return true;
-}
-
-int GearControlClient::process() {
-    return SerialBus::process();
-}
-
-int GearControlClient::sendInit(unsigned long keepaliveMs) {
-    if (!_usbHostRef) return -1;
-
-    char buf[64];
-    if (keepaliveMs > 0) {
-        snprintf(buf, sizeof(buf), "INIT protocol=binary keepalive=%lu", keepaliveMs);
-    } else {
-        snprintf(buf, sizeof(buf), "INIT protocol=binary keepalive=off");
-    }
-
-    int written = _usbHostRef->cdcPrintln(SerialBus::deviceIndex(), buf);
-    if (written > 0) {
-        _lastSendMs = millis();
-    }
-    return written;
-}
-
-void GearControlClient::setCompatibleVersions(const char** versions, size_t count) {
-    _compatibleVersions = versions;
-    _compatibleVersionCount = count;
-}
-
-bool GearControlClient::checkVersionCompatibility(const char* version) {
-    if (_compatibleVersions == nullptr || _compatibleVersionCount == 0) {
-        return true;
-    }
-    for (size_t i = 0; i < _compatibleVersionCount; i++) {
-        if (strcmp(version, _compatibleVersions[i]) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void GearControlClient::handlePacket(uint8_t type, const uint8_t* payload, size_t len) {
+void GearControlClient::onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) {
     switch (type) {
-        case CorePacket::INIT_READY:
-            _serverReady = true;
-            if (len > 0) {
-                char buffer[128];
-                size_t bufLen = (len < sizeof(buffer) - 1) ? len : sizeof(buffer) - 1;
-                memcpy(buffer, payload, bufLen);
-                buffer[bufLen] = '\0';
-
-                char* name = strtok(buffer, "|");
-                char* version = strtok(nullptr, "|");
-                char* platform = strtok(nullptr, "|");
-                char* cpuStr = strtok(nullptr, "|");
-                char* ramStr = strtok(nullptr, "|");
-
-                if (name) {
-                    strncpy(_serverName, name, sizeof(_serverName) - 1);
-                    _serverName[sizeof(_serverName) - 1] = '\0';
-                    strncpy(_boardInfo.deviceName, name, sizeof(_boardInfo.deviceName) - 1);
-                }
-                if (version) {
-                    strncpy(_boardInfo.firmwareVersion, version, sizeof(_boardInfo.firmwareVersion) - 1);
-                    _boardInfo.versionCompatible = checkVersionCompatibility(version);
-                }
-                if (platform) strncpy(_boardInfo.platform, platform, sizeof(_boardInfo.platform) - 1);
-                if (cpuStr) _boardInfo.cpuFrequencyMHz = atoi(cpuStr);
-                if (ramStr) _boardInfo.freeRamBytes = atoi(ramStr);
-            }
-            if (_readyCallback) _readyCallback(_serverName);
-            break;
-
         case CorePacket::STATUS:
             // Format: [counter:u32][uptime:u32][freeRam:u32][moduleData:32]
             // Module data per gear (3 × 9 = 27 bytes):
@@ -121,69 +35,67 @@ void GearControlClient::handlePacket(uint8_t type, const uint8_t* payload, size_
                 _lastStatus.ledFlags = mod[29];
                 _lastStatus.batteryVoltage_mV = getU16LE(&mod[30]);
 
-                if (_pendingAckNack) {
-                    _receivedAck = true;
-                    _pendingAckNack = false;
+                if (tag != CoreProtocol::TAG_ASYNC) {
                     _lastCommandResult = CommandResult::Ack();
+                    _resultQueue.resolve(tag, _lastCommandResult);
                 }
                 if (_statusCallback) _statusCallback(_lastStatus);
             } else if (len >= 12) {
-                if (_pendingAckNack) {
-                    _receivedAck = true;
-                    _pendingAckNack = false;
+                if (tag != CoreProtocol::TAG_ASYNC) {
                     _lastCommandResult = CommandResult::Ack();
+                    _resultQueue.resolve(tag, _lastCommandResult);
                 }
                 if (_statusCallback) _statusCallback(_lastStatus);
-            }
-            break;
-
-        case CorePacket::ERROR:
-            if (_errorCallback && len >= 1) {
-                uint8_t errorCode = payload[0];
-                char message[64] = "";
-                if (len > 1) {
-                    size_t msgLen = (len - 1 < sizeof(message) - 1) ? len - 1 : sizeof(message) - 1;
-                    memcpy(message, &payload[1], msgLen);
-                    message[msgLen] = '\0';
-                }
-                _errorCallback(errorCode, message);
-            }
-            break;
-
-        case CorePacket::ACK:
-            _receivedAck = true;
-            _pendingAckNack = false;
-            _lastCommandResult = CommandResult::Ack();
-            break;
-
-        case CorePacket::NACK:
-            _receivedNack = true;
-            _pendingAckNack = false;
-            {
-                uint8_t errorCode = (len >= 1) ? payload[0] : SerialError::UNKNOWN;
-                char reason[64] = "";
-                if (len > 1) {
-                    size_t msgLen = (len - 1 < sizeof(reason) - 1) ? len - 1 : sizeof(reason) - 1;
-                    memcpy(reason, &payload[1], msgLen);
-                    reason[msgLen] = '\0';
-                }
-                _lastNackErrorCode = errorCode;
-                strncpy(_lastNackReason, reason[0] ? reason : GearControlError::getMessage(errorCode),
-                        sizeof(_lastNackReason) - 1);
-                _lastCommandResult = CommandResult::Nack(errorCode, _lastNackReason);
             }
             break;
 
         case GearControlPacket::GEAR_CALIB_STATUS:
-            // Unsolicited calibration progress: [gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE]
-            if (len >= 8 && _calibStatusCallback) {
+            // Calibration progress: [gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8]
+            if (len >= 9) {
                 GearControlCalibStatus cs;
                 cs.gearId = payload[0];
                 cs.phase = static_cast<CalibPhase>(payload[1]);
                 cs.current_mA = getU16LE(&payload[2]);
                 cs.peak_mA = getU16LE(&payload[4]);
                 cs.calibratedStall_mA = getU16LE(&payload[6]);
-                _calibStatusCallback(cs);
+                cs.finished = (payload[8] != 0);
+                if (_calibStatusCallback) _calibStatusCallback(cs);
+
+                // When calibration finishes, resolve the original tag so any
+                // blocking caller waiting on gearCalibrate() gets unblocked
+                if (cs.finished && tag != CoreProtocol::TAG_ASYNC) {
+                    bool isError = (cs.phase == CalibPhase::ERROR);
+                    if (isError) {
+                        _lastCommandResult = CommandResult::Nack(GearControlError::MOTOR_STALL, "Calibration failed");
+                    } else {
+                        _lastCommandResult = CommandResult::Ack();
+                    }
+                    _resultQueue.resolve(tag, _lastCommandResult);
+                }
+            }
+            break;
+
+        case GearControlPacket::GEAR_SEQ_STATUS:
+            // Gear sequence progress: [gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]
+            if (len >= 8) {
+                GearControlSeqStatus ss;
+                ss.gearId = payload[0];
+                ss.phase = payload[1];
+                ss.deploying = (payload[2] != 0);
+                ss.finished = (payload[3] != 0);
+                ss.elapsed_ms = getU32LE(&payload[4]);                       // ms
+                if (_gearSeqStatusCallback) _gearSeqStatusCallback(ss);
+
+                // When sequence finishes, resolve the original tag
+                if (ss.finished && tag != CoreProtocol::TAG_ASYNC) {
+                    bool isError = (ss.phase == GearSeqPhase::SEQ_ERROR);
+                    if (isError) {
+                        _lastCommandResult = CommandResult::Nack(GearControlError::MOTOR_STALL, "Gear sequence error");
+                    } else {
+                        _lastCommandResult = CommandResult::Ack();
+                    }
+                    _resultQueue.resolve(tag, _lastCommandResult);
+                }
             }
             break;
 
@@ -213,10 +125,9 @@ void GearControlClient::handlePacket(uint8_t type, const uint8_t* payload, size_
                 _i2cScanResultCallback(result);
             }
             // Treat as implicit ACK for blocking calls
-            if (_pendingAckNack) {
-                _receivedAck = true;
-                _pendingAckNack = false;
+            if (tag != CoreProtocol::TAG_ASYNC) {
                 _lastCommandResult = CommandResult::Ack();
+                _resultQueue.resolve(tag, _lastCommandResult);
             }
             break;
 
@@ -225,83 +136,38 @@ void GearControlClient::handlePacket(uint8_t type, const uint8_t* payload, size_
     }
 }
 
-CommandResult GearControlClient::sendPacketBlocking(uint8_t type, const uint8_t* payload, size_t len) {
-    if (!isConnected()) {
-        _lastCommandResult = CommandResult::NotConnected();
-        return _lastCommandResult;
-    }
-
-    _pendingAckNack = true;
-    _receivedAck = false;
-    _receivedNack = false;
-    _lastNackErrorCode = 0;
-    _lastNackReason[0] = '\0';
-
-    int sent = sendPacket(type, payload, len);
-    if (sent < 0) {
-        _pendingAckNack = false;
-        _lastCommandResult = CommandResult::SendFailed();
-        return _lastCommandResult;
-    }
-
-    if (!_blockingMode) {
-        _lastCommandResult = CommandResult::Ack();
-        return _lastCommandResult;
-    }
-
-    return waitForAckNack();
-}
-
-CommandResult GearControlClient::waitForAckNack() {
-    unsigned long startMs = millis();
-
-    while (_pendingAckNack) {
-        SerialBus::process();
-
-        if (millis() - startMs > _commandTimeoutMs) {
-            _pendingAckNack = false;
-            _lastCommandResult = CommandResult::Timeout();
-            return _lastCommandResult;
-        }
-
-        delay(1);
-    }
-
-    return _lastCommandResult;
-}
-
 // ============================================================================
 // GearControlClient - Gear Control
 // ============================================================================
 
 CommandResult GearControlClient::gearDeploy(uint8_t gearId) {
     uint8_t payload[1] = { gearId };
-    return sendPacketBlocking(GearControlPacket::GEAR_DEPLOY, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::GEAR_DEPLOY, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::gearRetract(uint8_t gearId) {
     uint8_t payload[1] = { gearId };
-    return sendPacketBlocking(GearControlPacket::GEAR_RETRACT, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::GEAR_RETRACT, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::gearStop(uint8_t gearId) {
     uint8_t payload[1] = { gearId };
-    return sendPacketBlocking(GearControlPacket::GEAR_STOP, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::GEAR_STOP, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::gearAll(uint8_t action) {
     uint8_t payload[1] = { action };
-    return sendPacketBlocking(GearControlPacket::GEAR_ALL, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::GEAR_ALL, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::gearCalibrate(uint8_t gearId) {
     uint8_t payload[1] = { gearId };
-    return sendPacketBlocking(GearControlPacket::GEAR_CALIBRATE, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::GEAR_CALIBRATE, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::gearCalibCancel(uint8_t gearId) {
     uint8_t payload[1] = { gearId };
-    return sendPacketBlocking(GearControlPacket::GEAR_CALIB_CANCEL, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::GEAR_CALIB_CANCEL, payload, sizeof(payload));
 }
 
 // ============================================================================
@@ -312,7 +178,7 @@ CommandResult GearControlClient::setServoPosition(uint8_t servoId, uint16_t puls
     uint8_t payload[3];
     payload[0] = servoId;
     putU16LE(&payload[1], pulse_us);
-    return sendPacketBlocking(GearControlPacket::SERVO_SET, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::SERVO_SET, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::setServoSettings(const GearControlServoConfig& config) {
@@ -323,7 +189,7 @@ CommandResult GearControlClient::setServoSettings(const GearControlServoConfig& 
     putU16LE(&payload[5], config.maxSpeedUsPerSec);     // speed  // µs/s
     putU16LE(&payload[7], config.maxAccelUsPerSec2);    // accel  // µs/s²
     putU16LE(&payload[9], config.maxDecelUsPerSec2);    // decel  // µs/s²
-    return sendPacketBlocking(GearControlPacket::SRV_SETTINGS, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::SRV_SETTINGS, payload, sizeof(payload));
 }
 
 // ============================================================================
@@ -336,7 +202,7 @@ CommandResult GearControlClient::setGearConfig(const GearControlGearConfig& conf
     payload[1] = config.flags;
     putU16LE(&payload[2], config.stallCurrent_mA);
     putU16LE(&payload[4], config.timeout_ms);
-    return sendPacketBlocking(GearControlPacket::GEAR_CONFIG, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::GEAR_CONFIG, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::setDoorConfig(const GearControlDoorConfig& config) {
@@ -346,7 +212,7 @@ CommandResult GearControlClient::setDoorConfig(const GearControlDoorConfig& conf
     putU16LE(&payload[3], config.close0_us);
     putU16LE(&payload[5], config.open1_us);
     putU16LE(&payload[7], config.close1_us);
-    return sendPacketBlocking(GearControlPacket::DOOR_CONFIG, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::DOOR_CONFIG, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::setYawConfig(const GearControlYawConfig& config) {
@@ -355,20 +221,20 @@ CommandResult GearControlClient::setYawConfig(const GearControlYawConfig& config
     putU16LE(&payload[1], config.neutral_us);
     putU16LE(&payload[3], config.min_us);
     putU16LE(&payload[5], config.max_us);
-    return sendPacketBlocking(GearControlPacket::YAW_CONFIG, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::YAW_CONFIG, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::setYawInput(uint16_t position_us) {
     uint8_t payload[2];
     putU16LE(payload, position_us);
-    return sendPacketBlocking(GearControlPacket::YAW_INPUT, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::YAW_INPUT, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::setBatteryConfig(bool enabled, bool autoDeployOnLowVoltage) {
     uint8_t payload[2];
     payload[0] = enabled ? 1 : 0;
     payload[1] = autoDeployOnLowVoltage ? 1 : 0;
-    return sendPacketBlocking(GearControlPacket::BATTERY_CONFIG, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::BATTERY_CONFIG, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::setDoorMode(const GearControlDoorModeConfig& config) {
@@ -376,11 +242,11 @@ CommandResult GearControlClient::setDoorMode(const GearControlDoorModeConfig& co
     payload[0] = config.gearId;
     payload[1] = config.mode;
     putU16LE(&payload[2], config.delay_ms);
-    return sendPacketBlocking(GearControlPacket::DOOR_MODE, payload, sizeof(payload));
+    return sendCommand(GearControlPacket::DOOR_MODE, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::requestI2CScan() {
-    return sendPacketBlocking(CorePacket::I2C_SCAN, nullptr, 0);
+    return sendCommand(CorePacket::I2C_SCAN, nullptr, 0);
 }
 
 // ============================================================================
@@ -388,106 +254,20 @@ CommandResult GearControlClient::requestI2CScan() {
 // ============================================================================
 
 CommandResult GearControlClient::requestStatus() {
-    return sendPacketBlocking(CorePacket::STATUS_REQ, nullptr, 0);
+    return sendCommand(CorePacket::STATUS_REQ, nullptr, 0);
 }
 
 // ============================================================================
-// GearControlServer Implementation
+// GearControlServer - Module Packet Handler
 // ============================================================================
 
-bool GearControlServer::begin(Stream* serial, const char* moduleName) {
-    if (!serial) return false;
-
-    _serial = serial;
-    _rxIndex = 0;
-    _clientConnected = false;
-    _lastRxTimeMs = 0;
-
-    strncpy(_moduleName, moduleName, sizeof(_moduleName) - 1);
-    _moduleName[sizeof(_moduleName) - 1] = '\0';
-
-    _initialized = true;
-    return true;
-}
-
-void GearControlServer::end() {
-    _initialized = false;
-    _serial = nullptr;
-    _clientConnected = false;
-}
-
-int GearControlServer::process() {
-    if (!_initialized || !_serial) return 0;
-
-    int packetsProcessed = 0;
-
-    while (_serial->available()) {
-        uint8_t byte = _serial->read();
-
-        if (byte == FRAME_DELIMITER) {
-            if (_rxIndex > 0) {
-                processFrame(_rxBuffer, _rxIndex);
-                packetsProcessed++;
-                _rxIndex = 0;
-            }
-        } else {
-            if (_rxIndex < sizeof(_rxBuffer)) {
-                _rxBuffer[_rxIndex++] = byte;
-            } else {
-                _rxIndex = 0;
-            }
-        }
-    }
-
-    if (_connectionTimeoutMs > 0 && _clientConnected) {
-        unsigned long now = millis();
-        if (now - _lastRxTimeMs > _connectionTimeoutMs) {
-            _clientConnected = false;
-        }
-    }
-
-    return packetsProcessed;
-}
-
-void GearControlServer::processFrame(const uint8_t* frame, size_t frameLen) {
-    uint8_t decoded[MAX_PACKET_SIZE];
-    size_t decodedLen = cobsDecode(frame, frameLen, decoded, sizeof(decoded));
-
-    if (decodedLen == 0) return;
-
-    uint8_t type;
-    const uint8_t* payload;
-    size_t payloadLen;
-
-    if (!parsePacket(decoded, decodedLen, &type, &payload, &payloadLen)) {
-        return;
-    }
-
-    _lastRxTimeMs = millis();
-    _clientConnected = true;
-
-    handlePacket(type, payload, payloadLen);
-}
-
-CommandHandleResult GearControlServer::tryProcess(uint8_t type, const uint8_t* payload, size_t len) {
-    if (!_initialized || !_serial) return CommandHandleResult::NotMyCommand;
-
-    // Check if packet type is in GearControl range (0x60-0x7F)
-    if (type >= 0x60 && type <= 0x7F) {
-        _lastRxTimeMs = millis();
-        _clientConnected = true;
-        return handlePacket(type, payload, len);
-    }
-
-    return CommandHandleResult::NotMyCommand;
-}
-
-CommandHandleResult GearControlServer::handlePacket(uint8_t type, const uint8_t* payload, size_t len) {
+CommandHandleResult GearControlServer::handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) {
     switch (type) {
         case GearControlPacket::GEAR_DEPLOY: {
             SFX_REQUIRE_LEN(1);
             uint8_t gearId = payload[0];
             SFX_VALIDATE(GearControlSpec::isValidGearId(gearId), GearControlError::INVALID_GEAR_ID);
+            _gearTag[gearId] = _currentTag;  // Store tag for sequence progress responses
             SFX_DISPATCH(_gearDeployCallback, gearId);
         }
 
@@ -495,6 +275,7 @@ CommandHandleResult GearControlServer::handlePacket(uint8_t type, const uint8_t*
             SFX_REQUIRE_LEN(1);
             uint8_t gearId = payload[0];
             SFX_VALIDATE(GearControlSpec::isValidGearId(gearId), GearControlError::INVALID_GEAR_ID);
+            _gearTag[gearId] = _currentTag;  // Store tag for sequence progress responses
             SFX_DISPATCH(_gearRetractCallback, gearId);
         }
 
@@ -509,6 +290,10 @@ CommandHandleResult GearControlServer::handlePacket(uint8_t type, const uint8_t*
             SFX_REQUIRE_LEN(1);
             uint8_t action = payload[0];
             SFX_VALIDATE(GearControlSpec::isValidAction(action), GearControlError::INVALID_ACTION);
+            // Store tag for all gears when deploying/retracting
+            if (action == GearControlSpec::ACTION_DEPLOY || action == GearControlSpec::ACTION_RETRACT) {
+                for (int i = 0; i < 3; i++) _gearTag[i] = _currentTag;
+            }
             SFX_DISPATCH(_gearAllCallback, action);
         }
 
@@ -581,6 +366,7 @@ CommandHandleResult GearControlServer::handlePacket(uint8_t type, const uint8_t*
             SFX_REQUIRE_LEN(1);
             uint8_t gearId = payload[0];
             SFX_VALIDATE(GearControlSpec::isValidGearId(gearId), GearControlError::INVALID_GEAR_ID);
+            _calibTag = _currentTag;  // Store tag for calibration status responses
             SFX_DISPATCH(_gearCalibrateCallback, gearId);
         }
 
@@ -618,61 +404,24 @@ CommandHandleResult GearControlServer::handlePacket(uint8_t type, const uint8_t*
 // GearControlServer - Response Methods
 // ============================================================================
 
-int GearControlServer::sendRawPacket(uint8_t type, const uint8_t* payload, size_t len) {
-    if (!_serial) return -1;
-
-    uint8_t buffer[COBS_BUFFER_SIZE];
-    size_t encodedLen = encodePacket(buffer, type, payload, len);
-
-    if (encodedLen == 0) return -1;
-
-    size_t written = _serial->write(buffer, encodedLen);
-    _serial->write(FRAME_DELIMITER);
-
-    return (int)written;
-}
-
-int GearControlServer::sendAck() {
-    return sendRawPacket(CorePacket::ACK, nullptr, 0);
-}
-
-int GearControlServer::sendNack(uint8_t errorCode, const char* reason) {
-    uint8_t payload[64];
-    payload[0] = errorCode;
-
-    const char* msg = (reason && reason[0]) ? reason : GearControlError::getMessage(errorCode);
-    size_t msgLen = strlen(msg);
-    if (msgLen > sizeof(payload) - 1) {
-        msgLen = sizeof(payload) - 1;
-    }
-    memcpy(&payload[1], msg, msgLen);
-
-    return sendRawPacket(CorePacket::NACK, payload, 1 + msgLen);
-}
-
-int GearControlServer::sendError(uint8_t errorCode, const char* message) {
-    uint8_t payload[64];
-    payload[0] = errorCode;
-
-    size_t len = 1;
-    if (message) {
-        size_t msgLen = strlen(message);
-        if (msgLen > sizeof(payload) - 1) {
-            msgLen = sizeof(payload) - 1;
-        }
-        memcpy(&payload[1], message, msgLen);
-        len += msgLen;
-    }
-
-    return sendRawPacket(CorePacket::ERROR, payload, len);
-}
-
 int GearControlServer::sendCalibStatus(const GearControlCalibStatus& status) {
-    uint8_t payload[8];
+    uint8_t payload[9];
     payload[0] = status.gearId;
     payload[1] = static_cast<uint8_t>(status.phase);
     putU16LE(&payload[2], status.current_mA);          // mA
     putU16LE(&payload[4], status.peak_mA);              // mA
     putU16LE(&payload[6], status.calibratedStall_mA);   // mA
-    return sendRawPacket(GearControlPacket::GEAR_CALIB_STATUS, payload, sizeof(payload));
+    payload[8] = status.finished ? 1 : 0;
+    return sendRawPacket(GearControlPacket::GEAR_CALIB_STATUS, _calibTag, payload, sizeof(payload));
+}
+
+int GearControlServer::sendGearSeqStatus(const GearControlSeqStatus& status) {
+    uint8_t payload[8];
+    payload[0] = status.gearId;
+    payload[1] = status.phase;
+    payload[2] = status.deploying ? 1 : 0;
+    payload[3] = status.finished ? 1 : 0;
+    putU32LE(&payload[4], status.elapsed_ms);                    // ms
+    uint8_t tag = (status.gearId < 3) ? _gearTag[status.gearId] : 0;
+    return sendRawPacket(GearControlPacket::GEAR_SEQ_STATUS, tag, payload, sizeof(payload));
 }

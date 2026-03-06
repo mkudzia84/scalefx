@@ -26,6 +26,7 @@
 #include <Arduino.h>
 #include <led_control.h>
 #include <srv_control.h>
+#include <serial_lightfx.h>  // LightFxLandingLightStatus, LandingLightPhase
 
 // ============================================================================
 // Landing Light State
@@ -141,13 +142,43 @@ public:
     /** @brief Get configured brightness */
     uint8_t brightness() const { return _brightness; }
 
+    // ========================================================================
+    // Progress Callback
+    // ========================================================================
+
+    /**
+     * @brief Callback for deploy/retract progress updates
+     *
+     * Called on each state transition during deploy/retract operations.
+     * Receives a LightFxLandingLightStatus struct matching the
+     * LANDING_LIGHT_STATUS wire format.
+     */
+    using ProgressCallback = std::function<void(const LightFxLandingLightStatus&)>;
+
+    /**
+     * @brief Register callback for deploy/retract progress
+     * @param cb Callback receiving LightFxLandingLightStatus
+     */
+    void onProgress(ProgressCallback cb) { _progressCb = cb; }
+
+    /**
+     * @brief Set the slot ID for progress reporting
+     * @param slot Slot index (1-3)
+     */
+    void setSlot(uint8_t slot) { _slot = slot; }
+
 private:
     ServoControl* _servo = nullptr;
     LedControl* _led = nullptr;
     uint16_t _deployUs = 0;
     uint16_t _retractUs = 0;
     uint8_t _brightness = 255;
+    uint8_t _slot = 0;  // Slot ID for progress reporting (1-3)
     LandingLightState _state = LandingLightState::UNCONFIGURED;
+    ProgressCallback _progressCb;
+
+    // Emit progress to registered callback
+    void _emitProgress(bool finished = false);
 };
 
 #endif // LANDING_LIGHT_H

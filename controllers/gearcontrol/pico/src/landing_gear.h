@@ -70,7 +70,7 @@ namespace LandingGearConfig {
 
     // Default stall detection
     constexpr uint16_t DEFAULT_STALL_CURRENT_mA = 500;
-    constexpr uint16_t DEFAULT_MOTOR_TIMEOUT_ms = 10000;
+    constexpr uint16_t DEFAULT_MOTOR_TIMEOUT_ms = 60000;
     constexpr uint16_t MOTOR_DETECT_THRESHOLD_mA = 20;   // Min current to consider motor present
     constexpr uint16_t STALL_CONFIRM_ms          = 200;   // Stall current must be sustained this long
 
@@ -91,7 +91,9 @@ namespace LandingGearConfig {
 enum class GearSeqStep : uint8_t {
     IDLE = 0,
     OPENING_DOORS,
+    SYNC_DOORS_OPEN,   // Doors finished, waiting for other gears before motor
     RUNNING_MOTOR,
+    SYNC_MOTOR_DONE,   // Motor finished, waiting for other gears before closing
     CLOSING_DOORS,
     ERROR
 };
@@ -276,6 +278,21 @@ public:
     void onCalibrationProgress(StallCalibrator::ProgressCallback cb) { _calibrator.onProgress(cb); }
 
     /**
+     * @brief Callback for deploy/retract sequence progress updates
+     *
+     * Called on each phase transition (OPENING_DOORS, RUNNING_MOTOR,
+     * CLOSING_DOORS, complete/error). Receives a GearControlSeqStatus
+     * struct matching the GEAR_SEQ_STATUS wire format.
+     */
+    using SeqProgressCallback = std::function<void(const GearControlSeqStatus&)>;
+
+    /**
+     * @brief Register callback for deploy/retract sequence progress
+     * @param cb Callback receiving GearControlSeqStatus
+     */
+    void onSequenceProgress(SeqProgressCallback cb) { _seqProgressCb = cb; }
+
+    /**
      * @brief Open all configured door servos immediately
      *
      * Commands all doors based on current door mode:
@@ -376,6 +393,28 @@ public:
     /** @brief Check if gear was deployed by an emergency/safety trigger */
     bool isEmergencyDeployed() const { return _emergencyDeploy && _state == GearState::DEPLOYED; }
 
+    // ========================================================================
+    // Sync Mode (for coordinated all-gear operations)
+    // ========================================================================
+
+    /** @brief Enable/disable sync mode (wait for other gears at phase transitions) */
+    void setSyncMode(bool enabled) { _seq.syncMode = enabled; }
+
+    /** @brief Check if waiting at doors-open sync barrier */
+    bool isWaitingSyncDoorsOpen() const { return _seq.step == GearSeqStep::SYNC_DOORS_OPEN; }
+
+    /** @brief Check if waiting at motor-done sync barrier */
+    bool isWaitingSyncMotorDone() const { return _seq.step == GearSeqStep::SYNC_MOTOR_DONE; }
+
+    /** @brief Check if still opening doors in sync mode */
+    bool isSyncOpeningDoors() const { return _seq.syncMode && _seq.step == GearSeqStep::OPENING_DOORS; }
+
+    /** @brief Check if still running motor in sync mode */
+    bool isSyncRunningMotor() const { return _seq.syncMode && _seq.step == GearSeqStep::RUNNING_MOTOR; }
+
+    /** @brief Advance past a sync barrier (called by coordinator when all gears ready) */
+    void advanceSyncPhase();
+
     /** @brief Check if gear is calibrating */
     bool isCalibrating() const { return _state == GearState::CALIBRATING; }
 
@@ -447,7 +486,9 @@ private:
     struct Sequence {
         GearSeqStep step = GearSeqStep::IDLE;
         bool deploying = false;          // true = deploy, false = retract
+        bool syncMode = false;           // true = synchronized with other gears
         uint32_t stepStartTime_ms = 0;
+        uint32_t sequenceStartTime_ms = 0;  // Start of entire deploy/retract sequence
         bool motorRunning = false;
     } _seq;
 
@@ -466,6 +507,12 @@ private:
     // Configuration
     GearControlGearConfig _gearConfig;
     GearControlDoorConfig _doorConfig;
+
+    // Deploy/retract sequence progress callback
+    SeqProgressCallback _seqProgressCb;
+
+    // Emit sequence progress to registered callback
+    void _emitSeqProgress(bool finished = false);
 
     // Door sequencing helpers
     void advanceToMotor(uint32_t now);     // Transition from doors to motor phase

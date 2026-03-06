@@ -99,23 +99,26 @@ void DoorSequencer::update() {
 
 void DoorSequencer::_updateOpening() {
     uint32_t now = millis();
-    uint32_t elapsed = now - _startTime_ms;
 
     switch (_mode) {
         case DoorMode::SINGLE: {
-            bool ready = _doors[0]->atTarget();
-            if ((ready && elapsed >= DoorSeqConfig::SETTLE_TIME_ms) ||
-                (!ready && elapsed >= DoorSeqConfig::DOOR_TRAVEL_TIME_ms)) {
-                _state = State::COMPLETE;
+            if (_doors[0]->atTarget()) {
+                if (now - _startTime_ms >= DoorSeqConfig::SETTLE_TIME_ms) {
+                    _state = State::COMPLETE;
+                }
+            } else {
+                _startTime_ms = now;  // Reset settle timer while still moving
             }
             break;
         }
 
         case DoorMode::DUAL_SYNC: {
-            bool ready = _doors[0]->atTarget() && _doors[1]->atTarget();
-            if ((ready && elapsed >= DoorSeqConfig::SETTLE_TIME_ms) ||
-                (!ready && elapsed >= DoorSeqConfig::DOOR_TRAVEL_TIME_ms)) {
-                _state = State::COMPLETE;
+            if (_doors[0]->atTarget() && _doors[1]->atTarget()) {
+                if (now - _startTime_ms >= DoorSeqConfig::SETTLE_TIME_ms) {
+                    _state = State::COMPLETE;
+                }
+            } else {
+                _startTime_ms = now;
             }
             break;
         }
@@ -126,36 +129,39 @@ void DoorSequencer::_updateOpening() {
             if (_phase == 0 && phaseElapsed >= _delay_ms) {
                 _doors[1]->setTarget(_config.open1_us);
                 _phase = 1;
+                _startTime_ms = now;  // Reset settle timer for phase 1
             }
             // Wait for all started doors
             bool ready = _doors[0]->atTarget();
             if (_phase == 1) {
                 ready = ready && _doors[1]->atTarget();
             }
-            uint32_t maxTime = DoorSeqConfig::DOOR_TRAVEL_TIME_ms + _delay_ms;
-            if ((ready && elapsed >= DoorSeqConfig::SETTLE_TIME_ms) ||
-                elapsed >= maxTime) {
-                _state = State::COMPLETE;
+            if (ready) {
+                if (now - _startTime_ms >= DoorSeqConfig::SETTLE_TIME_ms) {
+                    _state = State::COMPLETE;
+                }
+            } else {
+                _startTime_ms = now;
             }
             break;
         }
 
         case DoorMode::DUAL_SEQ: {
-            uint32_t phaseElapsed = now - _phaseStart_ms;
             if (_phase == 0) {
                 // Wait for door 0 to complete
-                bool ready = _doors[0]->atTarget();
-                if (ready || phaseElapsed >= DoorSeqConfig::DOOR_TRAVEL_TIME_ms) {
+                if (_doors[0]->atTarget()) {
                     _doors[1]->setTarget(_config.open1_us);
                     _phase = 1;
-                    _phaseStart_ms = now;
+                    _startTime_ms = now;  // Reset settle timer for door 1
                 }
             } else {
                 // Wait for door 1 to complete
-                bool ready = _doors[1]->atTarget();
-                if ((ready && phaseElapsed >= DoorSeqConfig::SETTLE_TIME_ms) ||
-                    phaseElapsed >= DoorSeqConfig::DOOR_TRAVEL_TIME_ms) {
-                    _state = State::COMPLETE;
+                if (_doors[1]->atTarget()) {
+                    if (now - _startTime_ms >= DoorSeqConfig::SETTLE_TIME_ms) {
+                        _state = State::COMPLETE;
+                    }
+                } else {
+                    _startTime_ms = now;
                 }
             }
             break;
@@ -173,23 +179,26 @@ void DoorSequencer::_updateOpening() {
 
 void DoorSequencer::_updateClosing() {
     uint32_t now = millis();
-    uint32_t elapsed = now - _startTime_ms;
 
     switch (_mode) {
         case DoorMode::SINGLE: {
-            bool ready = _doors[0]->atTarget();
-            if ((ready && elapsed >= DoorSeqConfig::SETTLE_TIME_ms) ||
-                elapsed >= DoorSeqConfig::DOOR_TRAVEL_TIME_ms) {
-                _state = State::COMPLETE;
+            if (_doors[0]->atTarget()) {
+                if (now - _startTime_ms >= DoorSeqConfig::SETTLE_TIME_ms) {
+                    _state = State::COMPLETE;
+                }
+            } else {
+                _startTime_ms = now;
             }
             break;
         }
 
         case DoorMode::DUAL_SYNC: {
-            bool ready = _doors[0]->atTarget() && _doors[1]->atTarget();
-            if ((ready && elapsed >= DoorSeqConfig::SETTLE_TIME_ms) ||
-                elapsed >= DoorSeqConfig::DOOR_TRAVEL_TIME_ms) {
-                _state = State::COMPLETE;
+            if (_doors[0]->atTarget() && _doors[1]->atTarget()) {
+                if (now - _startTime_ms >= DoorSeqConfig::SETTLE_TIME_ms) {
+                    _state = State::COMPLETE;
+                }
+            } else {
+                _startTime_ms = now;
             }
             break;
         }
@@ -200,35 +209,38 @@ void DoorSequencer::_updateClosing() {
             if (_phase == 0 && phaseElapsed >= _delay_ms) {
                 _doors[0]->setTarget(_config.close0_us);
                 _phase = 1;
+                _startTime_ms = now;
             }
             bool ready = _doors[1]->atTarget();
             if (_phase == 1) {
                 ready = ready && _doors[0]->atTarget();
             }
-            uint32_t maxTime = DoorSeqConfig::DOOR_TRAVEL_TIME_ms + _delay_ms;
-            if ((ready && elapsed >= DoorSeqConfig::SETTLE_TIME_ms) ||
-                elapsed >= maxTime) {
-                _state = State::COMPLETE;
+            if (ready) {
+                if (now - _startTime_ms >= DoorSeqConfig::SETTLE_TIME_ms) {
+                    _state = State::COMPLETE;
+                }
+            } else {
+                _startTime_ms = now;
             }
             break;
         }
 
         case DoorMode::DUAL_SEQ: {
-            uint32_t phaseElapsed = now - _phaseStart_ms;
             if (_phase == 0) {
                 // Reverse: wait for door 1 to close first
-                bool ready = _doors[1]->atTarget();
-                if (ready || phaseElapsed >= DoorSeqConfig::DOOR_TRAVEL_TIME_ms) {
+                if (_doors[1]->atTarget()) {
                     _doors[0]->setTarget(_config.close0_us);
                     _phase = 1;
-                    _phaseStart_ms = now;
+                    _startTime_ms = now;
                 }
             } else {
                 // Wait for door 0 to close
-                bool ready = _doors[0]->atTarget();
-                if ((ready && phaseElapsed >= DoorSeqConfig::SETTLE_TIME_ms) ||
-                    phaseElapsed >= DoorSeqConfig::DOOR_TRAVEL_TIME_ms) {
-                    _state = State::COMPLETE;
+                if (_doors[0]->atTarget()) {
+                    if (now - _startTime_ms >= DoorSeqConfig::SETTLE_TIME_ms) {
+                        _state = State::COMPLETE;
+                    }
+                } else {
+                    _startTime_ms = now;
                 }
             }
             break;

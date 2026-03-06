@@ -36,7 +36,7 @@ Protocol:
   format: "Binary COBS with CRC-8"
   crc_polynomial: 0x07
   baud_rate: 115200
-  packet_structure: "[type:u8][len:u8][payload:0-64][crc8:u8]"
+  packet_structure: "[type:u8][tag:u8][len:u8][payload:0-64][crc8:u8]"
   endianness: "little-endian"
 
 Packet_Ranges:
@@ -85,23 +85,38 @@ Serial_Library:
     - name: "serial.h"
       purpose: "Umbrella header (include this)"
     - name: "serial_core.h"
-      purpose: "CoreProtocol class, packet types, COBS/CRC, SFX_* handler macros, StatusDataCallback"
-      modify_when: "Adding packet types, handler macros, or modifying STATUS format"
-    - name: "serial_error.h"
-      purpose: "Error codes for all modules"
-      modify_when: "Adding error codes"
-    - name: "serial_command_handler.h"
-      purpose: "ICommandHandler interface, CommandRouter"
-      modify_when: "Never (stable interface)"
+      purpose: "CoreProtocol (COBS/CRC/endian), SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros"
+      modify_when: "Adding generic error codes, handler macros, or modifying core protocol"
+    - name: "serial_core.cpp"
+      purpose: "CoreProtocol implementations, CorePayload encode/decode"
+      modify_when: "Rarely — protocol-level changes only"
+    - name: "serial_bus_server.h"
+      purpose: "BusServer base class + CoreCommandServer"
+      modify_when: "Rarely — base class for all server handlers"
+    - name: "serial_bus_server.cpp"
+      purpose: "BusServer + CoreCommandServer implementations"
+      modify_when: "Rarely"
+    - name: "serial_bus_client.h"
+      purpose: "BusClient base class (extends SerialBus)"
+      modify_when: "Rarely — base class for all client controllers"
+    - name: "serial_bus_client.cpp"
+      purpose: "BusClient implementation"
+      modify_when: "Rarely"
+    - name: "serial_bus.h"
+      purpose: "SerialBus (client-only, COBS over USB CDC)"
+      modify_when: "Never (stable transport layer)"
+    - name: "serial_result_queue.h"
+      purpose: "ResultQueue — tag-correlated command/response matching"
+      modify_when: "Never (stable infrastructure)"
     - name: "serial_gunfx.h"
-      purpose: "GunFxServer, GunFxClient, GunFxSpec validation"
-      modify_when: "Adding GunFX commands"
+      purpose: "GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec"
+      modify_when: "Adding GunFX commands or error codes"
     - name: "serial_lightfx.h"
-      purpose: "LightFxServer, LightFxClient, LightFxSpec validation"
-      modify_when: "Adding LightFX commands"
+      purpose: "LightFxServer, LightFxClient, LightFxPacket, LightFxError"
+      modify_when: "Adding LightFX commands or error codes"
     - name: "serial_gearcontrol.h"
-      purpose: "GearControlServer, GearControlClient, GearControlSpec validation"
-      modify_when: "Adding GearControl commands"
+      purpose: "GearControlServer, GearControlClient, GearControlPacket, GearControlError"
+      modify_when: "Adding GearControl commands or error codes"
 
 Python_Framework:
   root: "tests/"
@@ -168,39 +183,50 @@ Q1: Is packet type constant defined?
 ├─ NO → Add to serial_xxxfx.h in correct namespace (e.g., GunFxPacket in serial_gunfx.h)
 └─ YES → Continue
 
-Q2: Are new error codes needed?
-├─ YES → Add to serial_error.h in module namespace
+Q2: What response category? (See 03-PROTOCOL-EXTENSION.md § Response Category Decision)
+├─ INSTANT → Server uses SFX_DISPATCH, client gets auto-ACK
+├─ QUERY   → Server sends data response, client resolves tag in onModulePacket()
+└─ LONG-RUNNING → Server sends immediate ACK, client monitors via STATUS/async
+
+Q3: Are new error codes needed?
+├─ YES → Add to serial_xxxfx.h in module error namespace (e.g., GunFxError)
 │        Add to tests/framework/packets.py
 └─ NO → Continue
 
-Q3: Is callback type defined in serial_xxxfx.h?
+Q4: Is callback type defined in serial_xxxfx.h?
 ├─ NO → Add callback typedef
 │        Add registration method: void onXxx(Callback cb)
 │        Add private member: Callback _onXxx
-│        Add case in tryProcess() switch using SFX_* macros
+│        Add case in handleModulePacket() switch using SFX_* macros
 └─ YES → Continue
 
-Q4: Is command implemented in firmware?
+Q5: Is client method defined in serial_xxxfx.h?
+├─ NO → Add method returning CommandResult (NEVER bool)
+│        IF QUERY: add response type + onModulePacket() tag resolution
+│        IF LONG-RUNNING: document completion signal
+└─ YES → Continue
+
+Q6: Is command implemented in firmware?
 ├─ NO → Add callback implementation in xxxfx_pico.ino
 │        Register callback in setup()
 └─ YES → Continue
 
-Q5: Is Python command builder defined?
+Q7: Is Python command builder defined?
 ├─ NO → Add to tests/framework/commands.py
 │        Add packet constant to tests/framework/packets.py
 └─ YES → Continue
 
-Q6: Is test written?
+Q8: Is test written?
 ├─ NO → Add test file in tests/xxxfx/
 └─ YES → Continue
 
-Q7: Is CLI updated?
+Q9: Is CLI updated?
 ├─ NO → Add to tests/cli/handlers/xxxfx.py
 │        - Add command method to handler class
 │        - Add CommandInfo to get_commands()
 └─ YES → Continue
 
-Q8: Is documentation updated?
+Q10: Is documentation updated?
 ├─ NO → Update controllers/xxxfx/pico/README.md
 └─ YES → DONE
 ```
@@ -219,10 +245,16 @@ Sync_Groups:
       - "tests/framework/packets.py"
     rule: "Same values, same names (snake_case in Python)"
 
-  - name: "Error Codes"
-    primary: "lib/serial/serial_error.h"
+  - name: "Error Codes (Generic)"
+    primary: "lib/serial/serial_core.h (SerialError namespace)"
     mirrors:
-      - "tests/framework/packets.py"
+      - "tests/framework/packets.py (CoreError class)"
+    rule: "Same values, same names"
+
+  - name: "Error Codes (Module)"
+    primary: "lib/serial/serial_xxxfx.h (XxxError namespace)"
+    mirrors:
+      - "tests/framework/packets.py (XxxError class)"
     rule: "Same values, same names"
 
   - name: "Command Interface"
@@ -286,15 +318,54 @@ server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
 STATUS response = 12-byte core header + module callback data.
 See PROTOCOL.md for wire format per controller.
 
+### Client Response Handling Pattern
+
+All client methods return `CommandResult`, never `bool`. Three response categories determine how tags are resolved:
+
+```yaml
+Response_Categories:
+  Instant:
+    server: "SFX_DISPATCH → ACK/NACK"
+    client: "sendCommand() — tag auto-resolved by BusClient::handlePacket()"
+    example: "ledBrightness(), servoMove(), triggerOn()"
+
+  Query:
+    server: "Custom response packet (no SFX_DISPATCH)"
+    client: "sendCommand() + onModulePacket() resolves tag manually"
+    contract: "parse → fire callback → resolve tag (if tag != TAG_ASYNC)"
+    example: "ledSeqStatus(), ledStatus(), requestStatus()"
+
+  Long_Running:
+    server: "SFX_DISPATCH → immediate ACK (command accepted)"
+    client: "sendCommand() returns ACK quickly, poll STATUS or await async for completion"
+    example: "gearDeploy(), gearCalibrate(), landingLightDeploy()"
+```
+
+**`onModulePacket()` template for query/long-running responses:**
+```cpp
+case XxxPacket::RESPONSE_TYPE:
+    if (len >= expectedLen) {
+        // 1. Parse data
+        // 2. Fire callback
+    }
+    if (tag != CoreProtocol::TAG_ASYNC) {
+        _lastCommandResult = CommandResult::Ack();
+        _resultQueue.resolve(tag, _lastCommandResult);  // implicit ACK
+    }
+    break;
+```
+
+See `01-ARCHITECTURE.md` § Client Response Handling Design for complete details.
+
 ### Callback Registration Pattern (C++)
 
 ```cpp
-// In serial_xxxfx.h - handler case using SFX_* macros
+// In serial_xxxfx.h - case in handleModulePacket() using SFX_* macros
 case XxxPacket::COMMAND: {
     SFX_REQUIRE_LEN(3);
-    uint16_t p1 = getU16LE(payload);
+    uint16_t p1 = CoreProtocol::getU16LE(payload);
     uint8_t p2 = payload[2];
-    SFX_VALIDATE(isValid(p1), XxxError::INVALID_PARAM);
+    SFX_VALIDATE(XxxSpec::isValid(p1), XxxError::INVALID_PARAM);
     SFX_DISPATCH(_onCommand, p1, p2);
 }
 ```
@@ -350,6 +421,12 @@ Constants_Match:
   - [ ] Packet types in C++ match Python
   - [ ] Error codes in C++ match Python
   - [ ] Endianness consistent (little-endian)
+
+Client_Response_Handling:
+  - [ ] All client methods return CommandResult (never bool)
+  - [ ] Response category determined (instant / query / long-running)
+  - [ ] "IF query: onModulePacket() resolves tag as implicit ACK"
+  - [ ] "IF long-running: completion signal documented"
 
 Units_Explicit:  # MANDATORY for all physical measurements
   - [ ] Method names include unit suffix (e.g., busVoltage_mV, current_mA)

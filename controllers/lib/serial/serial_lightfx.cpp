@@ -1,9 +1,9 @@
 /*
  * Serial LightFX Protocol - Implementation
  *
- * Binary COBS protocol client/server for LightFX controller.
- *   - LightFxClient: For HubFX (sends commands via USB)
- *   - LightFxServer: For LightFX Pico (receives commands, implements ICommandHandler)
+ * LightFX-specific client/server protocol implementation.
+ *   - LightFxClient: Module-specific commands and response parsing
+ *   - LightFxServer: Module-specific command dispatch and response methods
  */
 
 #include "serial_lightfx.h"
@@ -11,78 +11,11 @@
 using namespace CoreProtocol;
 
 // ============================================================================
-// LightFxClient Implementation
+// LightFxClient - Module Packet Handler
 // ============================================================================
 
-bool LightFxClient::begin(UsbHost* usbHost, int deviceIndex) {
-    if (!SerialBus::begin(usbHost, deviceIndex)) {
-        return false;
-    }
-
-    _usbHostRef = usbHost;
-    _serverReady = false;
-    _serverName[0] = '\0';
-    memset(&_boardInfo, 0, sizeof(_boardInfo));
-
-    // Set up internal packet handler
-    SerialBus::onPacketReceived([this](uint8_t type, const uint8_t* payload, size_t len) {
-        handlePacket(type, payload, len);
-    });
-
-    return true;
-}
-
-int LightFxClient::process() {
-    return SerialBus::process();
-}
-
-int LightFxClient::sendInit(unsigned long keepaliveMs) {
-    if (!_usbHostRef) return -1;
-    
-    char buf[64];
-    if (keepaliveMs > 0) {
-        snprintf(buf, sizeof(buf), "INIT protocol=binary keepalive=%lu", keepaliveMs);
-    } else {
-        snprintf(buf, sizeof(buf), "INIT protocol=binary keepalive=off");
-    }
-    
-    int written = _usbHostRef->cdcPrintln(SerialBus::deviceIndex(), buf);
-    if (written > 0) {
-        _lastSendMs = millis();
-    }
-    return written;
-}
-
-void LightFxClient::handlePacket(uint8_t type, const uint8_t* payload, size_t len) {
+void LightFxClient::onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) {
     switch (type) {
-        case CorePacket::INIT_READY:
-            _serverReady = true;
-            if (len > 0) {
-                char buffer[128];
-                size_t bufLen = (len < sizeof(buffer) - 1) ? len : sizeof(buffer) - 1;
-                memcpy(buffer, payload, bufLen);
-                buffer[bufLen] = '\0';
-                
-                // Parse pipe-delimited: name|version|platform|cpuMHz|ramBytes
-                char* name = strtok(buffer, "|");
-                char* version = strtok(nullptr, "|");
-                char* platform = strtok(nullptr, "|");
-                char* cpuStr = strtok(nullptr, "|");
-                char* ramStr = strtok(nullptr, "|");
-                
-                if (name) {
-                    strncpy(_serverName, name, sizeof(_serverName) - 1);
-                    _serverName[sizeof(_serverName) - 1] = '\0';
-                    strncpy(_boardInfo.deviceName, name, sizeof(_boardInfo.deviceName) - 1);
-                }
-                if (version) strncpy(_boardInfo.firmwareVersion, version, sizeof(_boardInfo.firmwareVersion) - 1);
-                if (platform) strncpy(_boardInfo.platform, platform, sizeof(_boardInfo.platform) - 1);
-                if (cpuStr) _boardInfo.cpuFrequencyMHz = atoi(cpuStr);
-                if (ramStr) _boardInfo.freeRamBytes = atoi(ramStr);
-            }
-            if (_readyCallback) _readyCallback(_serverName);
-            break;
-
         case LightFxPacket::LED_SEQ_STATUS_RESP:
             if (len >= 8) {
                 LightFxSeqStatus status;
@@ -92,6 +25,11 @@ void LightFxClient::handlePacket(uint8_t type, const uint8_t* payload, size_t le
                 status.currentIndex = payload[3];
                 status.loopCount = getU32LE(&payload[4]);
                 if (_seqStatusCallback) _seqStatusCallback(status);
+            }
+            // Treat response data as implicit ACK for tag correlation
+            if (tag != CoreProtocol::TAG_ASYNC) {
+                _lastCommandResult = CommandResult::Ack();
+                _resultQueue.resolve(tag, _lastCommandResult);
             }
             break;
 
@@ -105,22 +43,58 @@ void LightFxClient::handlePacket(uint8_t type, const uint8_t* payload, size_t le
                 status.seqEventCount = payload[i + 3];
                 if (_channelStatusCallback) _channelStatusCallback(status);
             }
+            // Treat response data as implicit ACK for tag correlation
+            if (tag != CoreProtocol::TAG_ASYNC) {
+                _lastCommandResult = CommandResult::Ack();
+                _resultQueue.resolve(tag, _lastCommandResult);
+            }
             break;
 
-        case CorePacket::ACK:
-            _receivedAck = true;
-            _pendingAckNack = false;
-            _lastAckReceived = true;
+        case LightFxPacket::LED_SEQ_QUEUE_RESP:
+            if (len >= 4) {
+                LightFxSeqQueue queue;
+                queue.channel = payload[0];
+                queue.count = payload[1];
+                queue.currentIndex = payload[2];
+                queue.playing = payload[3] != 0;
+                // Parse events: [type:u8][duration:u16LE][param1:u8] = 4 bytes each
+                uint8_t eventCount = (queue.count <= 24) ? queue.count : 24;
+                for (uint8_t i = 0; i < eventCount && (4 + i * 4 + 4) <= len; i++) {
+                    size_t offset = 4 + (i * 4);
+                    queue.events[i].type = payload[offset];
+                    queue.events[i].duration = getU16LE(&payload[offset + 1]);
+                    queue.events[i].param1 = payload[offset + 3];
+                }
+                if (_seqQueueCallback) _seqQueueCallback(queue);
+            }
+            // Treat response data as implicit ACK for tag correlation
+            if (tag != CoreProtocol::TAG_ASYNC) {
+                _lastCommandResult = CommandResult::Ack();
+                _resultQueue.resolve(tag, _lastCommandResult);
+            }
             break;
 
-        case CorePacket::NACK:
-            _receivedNack = true;
-            _pendingAckNack = false;
-            _lastAckReceived = false;
-            if (len >= 1) {
-                _lastNackErrorCode = payload[0];
-                if (_errorCallback) {
-                    _errorCallback(_lastNackErrorCode, LightFxError::getMessage(_lastNackErrorCode));
+        case CorePacket::STATUS:
+            // Core STATUS response — resolve tag for blocking calls
+            if (tag != CoreProtocol::TAG_ASYNC) {
+                _lastCommandResult = CommandResult::Ack();
+                _resultQueue.resolve(tag, _lastCommandResult);
+            }
+            break;
+
+        case LightFxPacket::LANDING_LIGHT_STATUS:
+            // Landing light progress: [slot:u8][phase:u8][finished:u8]
+            if (len >= 3) {
+                LightFxLandingLightStatus lls;
+                lls.slot = payload[0];
+                lls.phase = payload[1];
+                lls.finished = (payload[2] != 0);
+                if (_landingLightStatusCallback) _landingLightStatusCallback(lls);
+
+                // When operation finishes, resolve the original tag
+                if (lls.finished && tag != CoreProtocol::TAG_ASYNC) {
+                    _lastCommandResult = CommandResult::Ack();
+                    _resultQueue.resolve(tag, _lastCommandResult);
                 }
             }
             break;
@@ -130,81 +104,47 @@ void LightFxClient::handlePacket(uint8_t type, const uint8_t* payload, size_t le
     }
 }
 
-bool LightFxClient::sendPacketBlocking(uint8_t type, const uint8_t* payload, size_t len) {
-    if (!isConnected()) return false;
-    
-    _pendingAckNack = true;
-    _receivedAck = false;
-    _receivedNack = false;
-    
-    int sent = sendPacket(type, payload, len);
-    if (sent < 0) {
-        _pendingAckNack = false;
-        return false;
-    }
-    
-    if (!_blockingMode) return true;
-    return waitForAckNack();
-}
-
-bool LightFxClient::waitForAckNack() {
-    unsigned long startMs = millis();
-    
-    while (_pendingAckNack) {
-        SerialBus::process();
-        
-        if (millis() - startMs > _commandTimeoutMs) {
-            _pendingAckNack = false;
-            _lastAckReceived = false;
-            return false;
-        }
-        delay(1);
-    }
-    
-    return _receivedAck;
-}
-
 // ============================================================================
 // LightFxClient - LED Direct Control
 // ============================================================================
 
-bool LightFxClient::ledSet(uint8_t channel, uint8_t brightness) {
+CommandResult LightFxClient::ledSet(uint8_t channel, uint8_t brightness) {
     uint8_t payload[2] = { channel, brightness };
-    return sendPacketBlocking(LightFxPacket::LED_SET, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SET, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledOff(uint8_t channel) {
+CommandResult LightFxClient::ledOff(uint8_t channel) {
     uint8_t payload[1] = { channel };
-    return sendPacketBlocking(LightFxPacket::LED_OFF, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_OFF, payload, sizeof(payload));
 }
 
 // ============================================================================
 // LightFxClient - LED Sequence Control
 // ============================================================================
 
-bool LightFxClient::ledSeqClear(uint8_t channel) {
+CommandResult LightFxClient::ledSeqClear(uint8_t channel) {
     uint8_t payload[1] = { channel };
-    return sendPacketBlocking(LightFxPacket::LED_SEQ_CLEAR, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SEQ_CLEAR, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledSeqAddOn(uint8_t channel, uint16_t durationMs, uint8_t brightness) {
+CommandResult LightFxClient::ledSeqAddOn(uint8_t channel, uint16_t durationMs, uint8_t brightness) {
     uint8_t payload[5];
     payload[0] = channel;
     payload[1] = LightFxEventType::ON;
     putU16LE(&payload[2], durationMs);
     payload[4] = brightness;
-    return sendPacketBlocking(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledSeqAddOff(uint8_t channel, uint16_t durationMs) {
+CommandResult LightFxClient::ledSeqAddOff(uint8_t channel, uint16_t durationMs) {
     uint8_t payload[4];
     payload[0] = channel;
     payload[1] = LightFxEventType::OFF;
     putU16LE(&payload[2], durationMs);
-    return sendPacketBlocking(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledSeqAddFlash(uint8_t channel, uint16_t intervalMs, uint16_t durationMs,
+CommandResult LightFxClient::ledSeqAddFlash(uint8_t channel, uint16_t intervalMs, uint16_t durationMs,
                                    uint8_t brightness, uint8_t dutyPercent) {
     uint8_t payload[8];
     payload[0] = channel;
@@ -213,28 +153,28 @@ bool LightFxClient::ledSeqAddFlash(uint8_t channel, uint16_t intervalMs, uint16_
     putU16LE(&payload[4], durationMs);
     payload[6] = brightness;
     payload[7] = dutyPercent;
-    return sendPacketBlocking(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledSeqAddFadeIn(uint8_t channel, uint16_t durationMs, uint8_t brightness) {
+CommandResult LightFxClient::ledSeqAddFadeIn(uint8_t channel, uint16_t durationMs, uint8_t brightness) {
     uint8_t payload[5];
     payload[0] = channel;
     payload[1] = LightFxEventType::FADE_IN;
     putU16LE(&payload[2], durationMs);
     payload[4] = brightness;
-    return sendPacketBlocking(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledSeqAddFadeOut(uint8_t channel, uint16_t durationMs, uint8_t brightness) {
+CommandResult LightFxClient::ledSeqAddFadeOut(uint8_t channel, uint16_t durationMs, uint8_t brightness) {
     uint8_t payload[5];
     payload[0] = channel;
     payload[1] = LightFxEventType::FADE_OUT;
     putU16LE(&payload[2], durationMs);
     payload[4] = brightness;
-    return sendPacketBlocking(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledSeqAddFading(uint8_t channel, uint16_t cycleMs, uint16_t durationMs,
+CommandResult LightFxClient::ledSeqAddFading(uint8_t channel, uint16_t cycleMs, uint16_t durationMs,
                                     uint8_t minBrightness, uint8_t maxBrightness) {
     uint8_t payload[8];
     payload[0] = channel;
@@ -243,50 +183,50 @@ bool LightFxClient::ledSeqAddFading(uint8_t channel, uint16_t cycleMs, uint16_t 
     putU16LE(&payload[4], durationMs);
     payload[6] = minBrightness;
     payload[7] = maxBrightness;
-    return sendPacketBlocking(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledSeqStart(uint8_t channel) {
+CommandResult LightFxClient::ledSeqStart(uint8_t channel) {
     uint8_t payload[1] = { channel };
-    return sendPacketBlocking(LightFxPacket::LED_SEQ_START, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SEQ_START, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledSeqStop(uint8_t channel) {
+CommandResult LightFxClient::ledSeqStop(uint8_t channel) {
     uint8_t payload[1] = { channel };
-    return sendPacketBlocking(LightFxPacket::LED_SEQ_STOP, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SEQ_STOP, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledSeqRestart(uint8_t channel) {
+CommandResult LightFxClient::ledSeqRestart(uint8_t channel) {
     uint8_t payload[1] = { channel };
-    return sendPacketBlocking(LightFxPacket::LED_SEQ_RESTART, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_SEQ_RESTART, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledSeqStatus(uint8_t channel) {
+CommandResult LightFxClient::ledSeqStatus(uint8_t channel) {
     uint8_t payload[1] = { channel };
-    return sendPacket(LightFxPacket::LED_SEQ_STATUS, payload, sizeof(payload)) > 0;
+    return sendCommand(LightFxPacket::LED_SEQ_STATUS, payload, sizeof(payload));
 }
 
-bool LightFxClient::ledStatus() {
-    return sendPacket(LightFxPacket::LED_STATUS, nullptr, 0) > 0;
+CommandResult LightFxClient::ledStatus() {
+    return sendCommand(LightFxPacket::LED_STATUS, nullptr, 0);
 }
 
-bool LightFxClient::ledMasterBrightness(uint8_t pct) {
+CommandResult LightFxClient::ledMasterBrightness(uint8_t pct) {
     uint8_t payload[1] = { pct };
-    return sendPacketBlocking(LightFxPacket::LED_MASTER_BRIGHTNESS, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LED_MASTER_BRIGHTNESS, payload, sizeof(payload));
 }
 
 // ============================================================================
 // LightFxClient - Servo Control
 // ============================================================================
 
-bool LightFxClient::servoSet(uint8_t id, int16_t pulseUs) {
+CommandResult LightFxClient::servoSet(uint8_t id, int16_t pulseUs) {
     uint8_t payload[3];
     payload[0] = id;
     putI16LE(&payload[1], pulseUs);
-    return sendPacketBlocking(LightFxPacket::SERVO_SET, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::SERVO_SET, payload, sizeof(payload));
 }
 
-bool LightFxClient::servoSettings(uint8_t id, uint16_t minUs, uint16_t maxUs,
+CommandResult LightFxClient::servoSettings(uint8_t id, uint16_t minUs, uint16_t maxUs,
                                   uint16_t speed, uint16_t accel, uint16_t decel) {
     uint8_t payload[11];
     payload[0] = id;
@@ -295,14 +235,14 @@ bool LightFxClient::servoSettings(uint8_t id, uint16_t minUs, uint16_t maxUs,
     putU16LE(&payload[5], speed);
     putU16LE(&payload[7], accel);
     putU16LE(&payload[9], decel);
-    return sendPacketBlocking(LightFxPacket::SERVO_SETTINGS, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::SERVO_SETTINGS, payload, sizeof(payload));
 }
 
 // ============================================================================
 // LightFxClient - Landing Light Control
 // ============================================================================
 
-bool LightFxClient::landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
+CommandResult LightFxClient::landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
                                      uint16_t deployUs, uint16_t retractUs, uint8_t brightness) {
     uint8_t payload[8];
     payload[0] = slot;
@@ -311,46 +251,37 @@ bool LightFxClient::landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledC
     putU16LE(&payload[3], deployUs);
     putU16LE(&payload[5], retractUs);
     payload[7] = brightness;
-    return sendPacketBlocking(LightFxPacket::LANDING_LIGHT_BIND, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LANDING_LIGHT_BIND, payload, sizeof(payload));
 }
 
-bool LightFxClient::landingLightUnbind(uint8_t slot) {
+CommandResult LightFxClient::landingLightUnbind(uint8_t slot) {
     uint8_t payload[1] = { slot };
-    return sendPacketBlocking(LightFxPacket::LANDING_LIGHT_UNBIND, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LANDING_LIGHT_UNBIND, payload, sizeof(payload));
 }
 
-bool LightFxClient::landingLightDeploy(uint8_t slot) {
+CommandResult LightFxClient::landingLightDeploy(uint8_t slot) {
     uint8_t payload[1] = { slot };
-    return sendPacketBlocking(LightFxPacket::LANDING_LIGHT_DEPLOY, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LANDING_LIGHT_DEPLOY, payload, sizeof(payload));
 }
 
-bool LightFxClient::landingLightRetract(uint8_t slot) {
+CommandResult LightFxClient::landingLightRetract(uint8_t slot) {
     uint8_t payload[1] = { slot };
-    return sendPacketBlocking(LightFxPacket::LANDING_LIGHT_RETRACT, payload, sizeof(payload));
+    return sendCommand(LightFxPacket::LANDING_LIGHT_RETRACT, payload, sizeof(payload));
 }
 
 // ============================================================================
-// LightFxServer Implementation
+// LightFxClient - Status
 // ============================================================================
 
-bool LightFxServer::begin(Stream* serial) {
-    if (!serial) return false;
-    _serial = serial;
-    _initialized = true;
-    return true;
+CommandResult LightFxClient::requestStatus() {
+    return sendCommand(CorePacket::STATUS_REQ, nullptr, 0);
 }
 
-void LightFxServer::end() {
-    _serial = nullptr;
-    _initialized = false;
-}
+// ============================================================================
+// LightFxServer - Module Packet Handler
+// ============================================================================
 
-CommandHandleResult LightFxServer::tryProcess(uint8_t type, const uint8_t* payload, size_t len) {
-    if (!_initialized || !_serial) return CommandHandleResult::NotMyCommand;
-
-    // Check if packet type is in LightFX range (0x40-0x5F)
-    if (type < 0x40 || type > 0x5F) return CommandHandleResult::NotMyCommand;
-
+CommandHandleResult LightFxServer::handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) {
     switch (type) {
         case LightFxPacket::LED_SET: {
             SFX_REQUIRE_LEN(2);
@@ -491,6 +422,12 @@ CommandHandleResult LightFxServer::tryProcess(uint8_t type, const uint8_t* paylo
             SFX_REQUIRE_LEN(1);
             uint8_t slot = payload[0];
             SFX_VALIDATE(LightFxSpec::isValidLandingLightSlotOrAll(slot), LightFxError::INVALID_SLOT);
+            // Store tag for landing light progress responses
+            if (slot == 0) {
+                for (int i = 0; i < 3; i++) _landingLightTag[i] = _currentTag;
+            } else if (slot <= 3) {
+                _landingLightTag[slot - 1] = _currentTag;
+            }
             SFX_DISPATCH(_landingLightDeployCallback, slot);
         }
 
@@ -498,6 +435,12 @@ CommandHandleResult LightFxServer::tryProcess(uint8_t type, const uint8_t* paylo
             SFX_REQUIRE_LEN(1);
             uint8_t slot = payload[0];
             SFX_VALIDATE(LightFxSpec::isValidLandingLightSlotOrAll(slot), LightFxError::INVALID_SLOT);
+            // Store tag for landing light progress responses
+            if (slot == 0) {
+                for (int i = 0; i < 3; i++) _landingLightTag[i] = _currentTag;
+            } else if (slot <= 3) {
+                _landingLightTag[slot - 1] = _currentTag;
+            }
             SFX_DISPATCH(_landingLightRetractCallback, slot);
         }
 
@@ -510,29 +453,6 @@ CommandHandleResult LightFxServer::tryProcess(uint8_t type, const uint8_t* paylo
 // LightFxServer - Response Methods
 // ============================================================================
 
-int LightFxServer::sendRawPacket(uint8_t type, const uint8_t* payload, size_t len) {
-    if (!_serial) return -1;
-    
-    uint8_t buffer[COBS_BUFFER_SIZE];
-    size_t encodedLen = encodePacket(buffer, type, payload, len);
-    
-    if (encodedLen == 0) return -1;
-    
-    size_t written = _serial->write(buffer, encodedLen);
-    _serial->write(FRAME_DELIMITER);
-    
-    return (int)written;
-}
-
-int LightFxServer::sendAck() {
-    return sendRawPacket(CorePacket::ACK, nullptr, 0);
-}
-
-int LightFxServer::sendNack(uint8_t errorCode) {
-    uint8_t payload[1] = { errorCode };
-    return sendRawPacket(CorePacket::NACK, payload, sizeof(payload));
-}
-
 int LightFxServer::sendSeqStatus(const LightFxSeqStatus& status) {
     uint8_t payload[8];
     payload[0] = status.channel;
@@ -540,7 +460,7 @@ int LightFxServer::sendSeqStatus(const LightFxSeqStatus& status) {
     payload[2] = status.eventCount;
     payload[3] = status.currentIndex;
     putU32LE(&payload[4], status.loopCount);
-    return sendRawPacket(LightFxPacket::LED_SEQ_STATUS_RESP, payload, sizeof(payload));
+    return sendRawPacket(LightFxPacket::LED_SEQ_STATUS_RESP, _currentTag, payload, sizeof(payload));
 }
 
 int LightFxServer::sendChannelStatus(const LightFxChannelStatus* channels, uint8_t count) {
@@ -554,7 +474,7 @@ int LightFxServer::sendChannelStatus(const LightFxChannelStatus* channels, uint8
         payload[len++] = channels[i].seqEventCount;
     }
     
-    return sendRawPacket(LightFxPacket::LED_STATUS_RESP, payload, len);
+    return sendRawPacket(LightFxPacket::LED_STATUS_RESP, _currentTag, payload, len);
 }
 
 int LightFxServer::sendSeqQueue(const LightFxSeqQueue& queue) {
@@ -580,5 +500,14 @@ int LightFxServer::sendSeqQueue(const LightFxSeqQueue& queue) {
         payload[offset + 3] = queue.events[i].param1;
     }
     
-    return sendRawPacket(LightFxPacket::LED_SEQ_QUEUE_RESP, payload, payloadLen);
+    return sendRawPacket(LightFxPacket::LED_SEQ_QUEUE_RESP, _currentTag, payload, payloadLen);
+}
+
+int LightFxServer::sendLandingLightStatus(const LightFxLandingLightStatus& status) {
+    uint8_t payload[3];
+    payload[0] = status.slot;
+    payload[1] = status.phase;
+    payload[2] = status.finished ? 1 : 0;
+    uint8_t tag = (status.slot >= 1 && status.slot <= 3) ? _landingLightTag[status.slot - 1] : 0;
+    return sendRawPacket(LightFxPacket::LANDING_LIGHT_STATUS, tag, payload, sizeof(payload));
 }

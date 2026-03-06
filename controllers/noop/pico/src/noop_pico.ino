@@ -117,7 +117,7 @@ public:
 private:
     void sendAck() {
         uint8_t buffer[CoreProtocol::COBS_BUFFER_SIZE];
-        size_t encodedLen = CoreProtocol::encodePacket(buffer, CorePacket::ACK, nullptr, 0);
+        size_t encodedLen = CoreProtocol::encodePacket(buffer, CorePacket::ACK, _currentTag, nullptr, 0);
         if (encodedLen > 0 && _serial) {
             _serial->write(buffer, encodedLen);
             _serial->write(CoreProtocol::FRAME_DELIMITER);
@@ -127,7 +127,7 @@ private:
     void sendNack(uint8_t errorCode) {
         uint8_t payload[2] = { errorCode, 0 };
         uint8_t buffer[CoreProtocol::COBS_BUFFER_SIZE];
-        size_t encodedLen = CoreProtocol::encodePacket(buffer, CorePacket::NACK, payload, 1);
+        size_t encodedLen = CoreProtocol::encodePacket(buffer, CorePacket::NACK, _currentTag, payload, 1);
         if (encodedLen > 0 && _serial) {
             _serial->write(buffer, encodedLen);
             _serial->write(CoreProtocol::FRAME_DELIMITER);

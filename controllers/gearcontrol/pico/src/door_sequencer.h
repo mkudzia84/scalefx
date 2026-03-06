@@ -41,8 +41,7 @@
 // ============================================================================
 
 namespace DoorSeqConfig {
-    constexpr uint16_t DOOR_TRAVEL_TIME_ms  = 1500;  // Max wait for door servo travel
-    constexpr uint16_t SETTLE_TIME_ms       = 200;   // Min time after servo reaches target
+    constexpr uint16_t SETTLE_TIME_ms       = 200;    // Min time after servo reaches target
 }
 
 // ============================================================================

@@ -11,7 +11,7 @@ GearControl-specific CLI commands:
 
 from typing import List, Dict, Tuple, Callable
 
-from tests.framework import GearControlCommands
+from tests.framework import GearControlCommands, CommandBuilder, CorePacket
 from tests.framework.packets import DoorMode
 from ..base import CommandHandlerBase, CommandInfo, ControllerType
 
@@ -53,56 +53,56 @@ class GearControlCommandHandler(CommandHandlerBase):
     def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
         """Return GearControl command registry."""
         return {
-            'gearcontrol.deploy': (self.cmd_deploy, CommandInfo(
-                'gearcontrol.deploy', 'gearcontrol.deploy <gear_id> | all',
+            'gc.deploy': (self.cmd_deploy, CommandInfo(
+                'gc.deploy', 'gc.deploy <gear_id> | all',
                 'Deploy landing gear (0=nose, 1=left, 2=right, all)',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.retract': (self.cmd_retract, CommandInfo(
-                'gearcontrol.retract', 'gearcontrol.retract <gear_id> | all',
+            'gc.retract': (self.cmd_retract, CommandInfo(
+                'gc.retract', 'gc.retract <gear_id> | all',
                 'Retract landing gear',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.stop': (self.cmd_stop, CommandInfo(
-                'gearcontrol.stop', 'gearcontrol.stop <gear_id> | all',
+            'gc.stop': (self.cmd_stop, CommandInfo(
+                'gc.stop', 'gc.stop <gear_id> | all',
                 'Emergency stop motor',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.servo': (self.cmd_servo, CommandInfo(
-                'gearcontrol.servo', 'gearcontrol.servo set <id> <pulse_us>',
+            'gc.servo': (self.cmd_servo, CommandInfo(
+                'gc.servo', 'gc.servo set <id> <pulse_us>',
                 'Set servo position (0-7, 500-2500µs)',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.servo.config': (self.cmd_servo_config, CommandInfo(
-                'gearcontrol.servo.config', 'gearcontrol.servo.config <id> <min> <max> [speed] [accel] [decel]',
-                'Configure servo limits and motion profile (matches GunFX/LightFX pattern)',
+            'gc.servo.config': (self.cmd_servo_config, CommandInfo(
+                'gc.servo.config', 'gc.servo.config <id> <min> <max> [speed] [accel] [decel]',
+                'Configure servo limits and motion profile',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.gear.config': (self.cmd_gear_config, CommandInfo(
-                'gearcontrol.gear.config', 'gearcontrol.gear.config <id> <flags> <stall_mA> <timeout_ms>',
-                'Configure gear behavior',
+            'gc.gear.config': (self.cmd_gear_config, CommandInfo(
+                'gc.gear.config', 'gc.gear.config <id> <flags...> [stall_mA] [timeout_ms]',
+                'Configure gear behavior (flags: close-retract close-deploy yaw none)',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.door.config': (self.cmd_door_config, CommandInfo(
-                'gearcontrol.door.config', 'gearcontrol.door.config <id> <open0> <close0> <open1> <close1>',
+            'gc.door.config': (self.cmd_door_config, CommandInfo(
+                'gc.door.config', 'gc.door.config <id> <open0> <close0> <open1> <close1>',
                 'Configure door servo positions',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.door.mode': (self.cmd_door_mode, CommandInfo(
-                'gearcontrol.door.mode', 'gearcontrol.door.mode <gear_id> <mode> [delay_ms]',
-                'Set door mode (0=none, 1=single, 2=dual-sync, 3=dual-delay, 4=dual-seq)',
+            'gc.door.mode': (self.cmd_door_mode, CommandInfo(
+                'gc.door.mode', 'gc.door.mode <gear_id> <mode> [delay_ms]',
+                'Set door mode (none, single, dual-sync, dual-delay, dual-seq)',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.yaw.config': (self.cmd_yaw_config, CommandInfo(
-                'gearcontrol.yaw.config', 'gearcontrol.yaw.config <gear_id> <neutral> <min> <max>',
+            'gc.yaw.config': (self.cmd_yaw_config, CommandInfo(
+                'gc.yaw.config', 'gc.yaw.config <gear_id> <neutral> <min> <max>',
                 'Configure yaw servo',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.yaw': (self.cmd_yaw_input, CommandInfo(
-                'gearcontrol.yaw', 'gearcontrol.yaw <position_us>',
+            'gc.yaw': (self.cmd_yaw_input, CommandInfo(
+                'gc.yaw', 'gc.yaw <position_us>',
                 'Set yaw position (active when associated gear deployed)',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.calibrate': (self.cmd_calibrate, CommandInfo(
-                'gearcontrol.calibrate', 'gearcontrol.calibrate <gear_id>',
+            'gc.calibrate': (self.cmd_calibrate, CommandInfo(
+                'gc.calibrate', 'gc.calibrate <gear_id>',
                 'Calibrate stall current (runs motor both directions, emits progress)',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.calibrate.cancel': (self.cmd_calibrate_cancel, CommandInfo(
-                'gearcontrol.calibrate.cancel', 'gearcontrol.calibrate.cancel <gear_id>',
+            'gc.calibrate.cancel': (self.cmd_calibrate_cancel, CommandInfo(
+                'gc.calibrate.cancel', 'gc.calibrate.cancel <gear_id>',
                 'Cancel calibration in progress',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
-            'gearcontrol.battery': (self.cmd_battery_config, CommandInfo(
-                'gearcontrol.battery', 'gearcontrol.battery <on|off> [autodeploy]',
+            'gc.battery': (self.cmd_battery_config, CommandInfo(
+                'gc.battery', 'gc.battery <on|off> [autodeploy]',
                 'Enable/disable battery monitoring (off by default, enable when battery connected)',
                 requires_init=True, controller=ControllerType.GEARCONTROL)),
         }
@@ -114,7 +114,7 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_deploy(self, args: List[str]):
         """Deploy landing gear."""
         if not args:
-            self.print_error("Usage: gearcontrol.deploy <gear_id> | all")
+            self.print_error("Usage: gc.deploy <gear_id> | all")
             return
 
         if args[0].lower() == 'all':
@@ -140,7 +140,7 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_retract(self, args: List[str]):
         """Retract landing gear."""
         if not args:
-            self.print_error("Usage: gearcontrol.retract <gear_id> | all")
+            self.print_error("Usage: gc.retract <gear_id> | all")
             return
 
         if args[0].lower() == 'all':
@@ -166,7 +166,7 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_stop(self, args: List[str]):
         """Emergency stop motor."""
         if not args:
-            self.print_error("Usage: gearcontrol.stop <gear_id> | all")
+            self.print_error("Usage: gc.stop <gear_id> | all")
             return
 
         if args[0].lower() == 'all':
@@ -195,7 +195,7 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_servo(self, args: List[str]):
         """GearControl servo control."""
         if len(args) < 3 or args[0].lower() != 'set':
-            self.print_error("Usage: gearcontrol.servo set <id> <pulse_us>")
+            self.print_error("Usage: gc.servo set <id> <pulse_us>")
             return
 
         try:
@@ -213,7 +213,7 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_servo_config(self, args: List[str]):
         """GearControl servo configuration (SRV_SETTINGS pattern)."""
         if len(args) < 3:
-            self.print_error("Usage: gearcontrol.servo.config <id> <min> <max> [speed] [accel] [decel]")
+            self.print_error("Usage: gc.servo.config <id> <min> <max> [speed] [accel] [decel]")
             self.print_info("  Defaults: speed=4000 µs/s, accel=8000 µs/s², decel=8000 µs/s²")
             return
 
@@ -240,27 +240,62 @@ class GearControlCommandHandler(CommandHandlerBase):
     # =========================================================================
 
     def cmd_gear_config(self, args: List[str]):
-        """Configure gear behavior."""
-        if len(args) < 4:
-            self.print_error("Usage: gearcontrol.gear.config <id> <flags> <stall_mA> <timeout_ms>")
-            self.print_info("  Flags: bit0=close doors on retract, bit1=close on deploy, bit2=has yaw")
+        """Configure gear behavior with human-readable flags."""
+        if len(args) < 2:
+            self.print_error("Usage: gc.gear.config <id> <flags...> [stall_mA] [timeout_ms]")
+            self.print_info("  Flags (space-separated):")
+            self.print_info("    close-retract  Close doors after retract")
+            self.print_info("    close-deploy   Close doors after deploy")
+            self.print_info("    yaw            This gear has a yaw servo")
+            self.print_info("    none           No flags (clear all)")
+            self.print_info("  Defaults: stall=500mA, timeout=60000ms (override with calibration)")
+            self.print_info("  Example: gc.gear.config 0 close-retract close-deploy")
             return
+
+        FLAG_MAP = {
+            'close-retract': 0x01,
+            'close-deploy':  0x02,
+            'yaw':           0x04,
+        }
 
         try:
             gear_id = int(args[0])
-            flags = int(args[1])
-            stall_mA = int(args[2])
-            timeout_ms = int(args[3])
+            flags = 0
+            numeric_args = []  # stall_mA, timeout_ms
+            has_flag_token = False
+
+            for arg in args[1:]:
+                lower = arg.lower()
+                if lower in FLAG_MAP:
+                    flags |= FLAG_MAP[lower]
+                    has_flag_token = True
+                elif lower == 'none':
+                    flags = 0
+                    has_flag_token = True
+                else:
+                    # Must be a numeric arg (stall or timeout)
+                    numeric_args.append(int(arg))
+
+            if not has_flag_token and len(numeric_args) == 0:
+                self.print_error("Specify at least one flag: close-retract, close-deploy, yaw, none")
+                return
+
+            # If user only gave numbers (backward compat: first arg could be raw flags value)
+            if not has_flag_token and len(numeric_args) >= 1:
+                flags = numeric_args.pop(0)
+
+            stall_mA = numeric_args[0] if len(numeric_args) > 0 else 500
+            timeout_ms = numeric_args[1] if len(numeric_args) > 1 else 60000
 
             packet = GearControlCommands.gear_config(gear_id, flags, stall_mA, timeout_ms)
             success, response = self.conn.send_expect_ack(packet)
             if success:
                 flag_parts = []
-                if flags & 0x01: flag_parts.append("close-on-retract")
-                if flags & 0x02: flag_parts.append("close-on-deploy")
-                if flags & 0x04: flag_parts.append("has-yaw")
+                if flags & 0x01: flag_parts.append("close-retract")
+                if flags & 0x02: flag_parts.append("close-deploy")
+                if flags & 0x04: flag_parts.append("yaw")
                 flag_str = ', '.join(flag_parts) if flag_parts else "none"
-                self.print_ok(f"Gear {gear_id}: stall={stall_mA}mA, timeout={timeout_ms}ms, flags=[{flag_str}]")
+                self.print_ok(f"Gear {gear_id}: flags=[{flag_str}], stall={stall_mA}mA, timeout={timeout_ms}ms")
             else:
                 self._print_ack_response(response)
         except ValueError:
@@ -269,7 +304,7 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_door_config(self, args: List[str]):
         """Configure door servo positions."""
         if len(args) < 5:
-            self.print_error("Usage: gearcontrol.door.config <gear_id> <open0_us> <close0_us> <open1_us> <close1_us>")
+            self.print_error("Usage: gc.door.config <gear_id> <open0_us> <close0_us> <open1_us> <close1_us>")
             return
 
         try:
@@ -289,15 +324,20 @@ class GearControlCommandHandler(CommandHandlerBase):
             self.print_error("Invalid door config parameters")
 
     def cmd_door_mode(self, args: List[str]):
-        """Configure door activation mode."""
+        """Configure or query door activation mode."""
         if not args:
-            self.print_error("Usage: gearcontrol.door.mode <gear_id> <mode> [delay_ms]")
-            self.print_info("  Modes: 0=none, 1=single, 2=dual-sync, 3=dual-delay, 4=dual-seq")
+            self._show_door_modes()
+            return
+
+        if len(args) == 1 and args[0].lower() in ('help', '?'):
+            self.print_info("Usage: gc.door.mode [gear_id] [mode] [delay_ms]")
+            self.print_info("  No args:  show current door modes")
+            self.print_info("  Modes:    none, single, dual-sync, dual-delay, dual-seq")
             self.print_info("  delay_ms: delay between doors (dual-delay only, default 500)")
             return
 
         if len(args) < 2:
-            self.print_error("Usage: gearcontrol.door.mode <gear_id> <mode> [delay_ms]")
+            self.print_error("Usage: gc.door.mode <gear_id> <mode> [delay_ms]")
             return
 
         try:
@@ -330,6 +370,31 @@ class GearControlCommandHandler(CommandHandlerBase):
         except ValueError:
             self.print_error("Invalid door mode parameters")
 
+    def _show_door_modes(self):
+        """Query STATUS and display current door modes per gear."""
+        gear_names = ['Nose', 'Left Main', 'Right Main']
+
+        response = self.conn.send_and_wait(CommandBuilder.status_req())
+        if response is None:
+            self.print_error("No response (timeout)")
+            return
+        if response.packet_type != CorePacket.STATUS:
+            self.print_error(f"Unexpected response: 0x{response.packet_type:02X}")
+            return
+
+        # Module data starts after 12-byte core header
+        data = response.payload[12:]
+        if len(data) < 47:
+            self.print_error("STATUS payload too short for door mode data")
+            return
+
+        # Door modes at bytes 44-46 of module data
+        self.print_info("Door modes:")
+        for i in range(3):
+            mode = data[44 + i]
+            name = DoorMode.name(mode).lower().replace('_', '-')
+            self.print_info(f"  Gear {i} ({gear_names[i]:>10}): {name}")
+
     # =========================================================================
     # Yaw Commands
     # =========================================================================
@@ -337,7 +402,7 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_yaw_config(self, args: List[str]):
         """Configure yaw servo."""
         if len(args) < 4:
-            self.print_error("Usage: gearcontrol.yaw.config <gear_id> <neutral_us> <min_us> <max_us>")
+            self.print_error("Usage: gc.yaw.config <gear_id> <neutral_us> <min_us> <max_us>")
             return
 
         try:
@@ -358,7 +423,7 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_yaw_input(self, args: List[str]):
         """Set yaw position."""
         if not args:
-            self.print_error("Usage: gearcontrol.yaw <position_us>")
+            self.print_error("Usage: gc.yaw <position_us>")
             return
 
         try:
@@ -379,10 +444,10 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_calibrate(self, args: List[str]):
         """Start stall current calibration for a gear."""
         if not args:
-            self.print_error("Usage: gearcontrol.calibrate <gear_id>")
+            self.print_error("Usage: gc.calibrate <gear_id>")
             self.print_info("  Runs motor in both directions to detect stall current.")
             self.print_info("  Server emits GEAR_CALIB_STATUS packets during calibration.")
-            self.print_info("  Use 'gearcontrol.calibrate.cancel <gear_id>' to abort.")
+            self.print_info("  Use 'gc.calibrate.cancel <gear_id>' to abort.")
             return
 
         try:
@@ -400,7 +465,7 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_calibrate_cancel(self, args: List[str]):
         """Cancel stall current calibration for a gear."""
         if not args:
-            self.print_error("Usage: gearcontrol.calibrate.cancel <gear_id>")
+            self.print_error("Usage: gc.calibrate.cancel <gear_id>")
             return
 
         try:
@@ -422,7 +487,7 @@ class GearControlCommandHandler(CommandHandlerBase):
     def cmd_battery_config(self, args: List[str]):
         """Enable/disable battery monitoring and auto-deploy."""
         if not args:
-            self.print_error("Usage: gearcontrol.battery <on|off> [autodeploy]")
+            self.print_error("Usage: gc.battery <on|off> [autodeploy]")
             self.print_info("  on           Enable battery voltage monitoring")
             self.print_info("  off          Disable monitoring (default at boot)")
             self.print_info("  on autodeploy  Enable monitoring + auto-deploy on low voltage")

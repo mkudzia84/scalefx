@@ -18,7 +18,7 @@ The yaw steering servo remains in the main controller module but uses `ServoCont
 
 **Hardware:** Raspberry Pi Pico (RP2040)  
 **Protocol:** Binary COBS with CRC-8 (115200 baud)  
-**Firmware:** v0.4.0 (Build 8)
+**Firmware:** v0.7.0 (Build 21)
 
 ## Architecture
 
@@ -128,12 +128,13 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 | 0x68 | YAW_CONFIG | `[gear_id:u8][neutral:u16][min:u16][max:u16]` | Configure yaw |
 | 0x69 | YAW_INPUT | `[position_us:u16LE]` | Set yaw position |
 | 0x6A | GEAR_CALIBRATE | `[gear_id:u8]` | Start stall current calibration |
-| 0x6B | GEAR_CALIB_STATUS | `[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE]` | Calibration progress (server→client) |
+| 0x6B | GEAR_CALIB_STATUS | `[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8]` | Calibration progress (server→client, echoes request tag) |
 | 0x6C | GEAR_CALIB_CANCEL | `[gear_id:u8]` | Cancel calibration in progress |
 | 0x6D | BATTERY_CONFIG | `[enabled:u8][auto_deploy:u8]` | Enable/disable battery monitoring + auto-deploy |
 | 0x6E | DOOR_MODE | `[gear_id:u8][mode:u8][delay_ms:u16LE]` | Configure door activation mode |
-| 0x6F | I2C_SCAN | *(no payload)* | Request I2C bus scan |
-| 0x70 | I2C_SCAN_RESULT | `[numExp:u8][N×(addr,found,id)][numExtra:u8][addrs...]` | I2C scan response (server→client) |
+| 0x70 | GEAR_SEQ_STATUS | `[gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]` | Sequence progress with timing (server→client, echoes request tag) |
+
+> **Note:** I2C_SCAN was moved to CorePacket and is handled by PicoServer.
 
 ### Error Codes (0x60-0x6F)
 
@@ -159,17 +160,18 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 | 1 | CLOSE_DOORS_ON_DEPLOY | Close doors after gear deploys |
 | 2 | HAS_YAW | This gear has yaw servo (used for steering) |
 
-### STATUS Response (36 bytes module data)
+### STATUS Response (44 bytes module data)
 
 After the 12-byte core header `[counter:u32][uptime:u32][freeRam:u32]`:
 
 ```
-Per gear (3 × 9 = 27 bytes):
+Per gear (3 × 11 = 33 bytes):
   [state:u8]                   // GearState enum (see below)
   [motorCurrent_mA:u16LE]     // Current motor draw in milliamps
   [door0Pos_us:u16LE]         // Door servo 0 position in µs
   [door1Pos_us:u16LE]         // Door servo 1 position in µs
   [calibratedStall_mA:u16LE]  // Calibrated stall threshold (0 = not calibrated)
+  [shuntVoltage_10uV:i16LE]   // INA226 shunt voltage in 10µV units (diagnostic)
 
 Yaw + LEDs + Voltage + Config (6 bytes):
   [yawPos_us:u16LE]           // Yaw servo position in µs
@@ -181,6 +183,9 @@ Per-gear error reasons (3 bytes):
   [gear0ErrorReason:u8]       // Why gear 0 is in ERROR state (GearErrorReason)
   [gear1ErrorReason:u8]       // Why gear 1 is in ERROR state
   [gear2ErrorReason:u8]       // Why gear 2 is in ERROR state
+
+Shunt config (2 bytes):
+  [shuntResistance_mohm:u16LE] // Configured shunt resistance in milliohms (e.g., 100 = 0.1Ω)
 ```
 
 **batteryConfigFlags bits:**
@@ -399,9 +404,9 @@ endpoint, RETRACT_RUN naturally starts from the correct position.
 - STATUS response includes live `motorCurrent_mA` and `calibratedStall_mA`
 - Server emits `GEAR_CALIB_STATUS` packets every 250ms and on phase transitions
 
-**GEAR_CALIB_STATUS wire format (8 bytes, server→client unsolicited):**
+**GEAR_CALIB_STATUS wire format (9 bytes, server→client, echoes calibrate request tag):**
 ```
-[gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE]
+[gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE][finished:u8]
 ```
 
 | Field | Type | Description |
@@ -411,6 +416,10 @@ endpoint, RETRACT_RUN naturally starts from the correct position.
 | current_mA | u16LE | Live motor current reading (mA) |
 | peak_mA | u16LE | Peak current for current phase (0 during CLEAR phases) (mA) |
 | calibratedStall_mA | u16LE | Final calibrated value (valid when phase=COMPLETE) (mA) |
+| finished | u8 | 1 if calibration is done (COMPLETE/ERROR/CANCELLED), 0 otherwise |
+
+**Tag correlation:** GEAR_CALIB_STATUS packets carry the tag from the original
+GEAR_CALIBRATE request, allowing the client to correlate progress updates.
 
 **CalibPhase enum:**
 | Value | Name | Description |
@@ -445,6 +454,41 @@ If no stall is detected, the peak current observed during the timeout period is
 still used for calibration.
 
 **Payload:** `[gear_id:u8]` — gear index 0-2
+
+### GEAR_SEQ_STATUS (Deploy/Retract Progress)
+
+Emitted by the server during deploy/retract sequences to report progress. Uses the tag from the original GEAR_DEPLOY, GEAR_RETRACT, or GEAR_ALL request, allowing the client to correlate progress updates with the command that started them.
+
+**Wire format (8 bytes, server→client, echoes request tag):**
+```
+[gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| gear_id | u8 | Gear index (0-2) |
+| phase | u8 | GearSeqPhase enum value |
+| deploying | u8 | 1 if deploying, 0 if retracting |
+| finished | u8 | 1 if sequence is complete (IDLE/ERROR), 0 otherwise |
+| elapsed_ms | u32LE | Milliseconds elapsed since sequence started (for metrics) |
+
+**GearSeqPhase enum:**
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | IDLE | No sequence running / sequence just finished |
+| 1 | OPENING_DOORS | Door servos are opening |
+| 2 | RUNNING_MOTOR | Motor is running (deploy or retract) |
+| 3 | CLOSING_DOORS | Door servos are closing after motor finished |
+| 4 | SEQ_ERROR | Sequence failed (timeout, stall error) |
+
+**Emission points:**
+1. Sequence starts → phase=OPENING_DOORS (or RUNNING_MOTOR if no doors)
+2. Doors finished opening → phase=RUNNING_MOTOR
+3. Motor finished → phase=CLOSING_DOORS (if close-doors flag set)
+4. Doors finished closing → phase=IDLE, finished=1
+5. On error/timeout → phase=SEQ_ERROR, finished=1
+
+**Tag correlation:** The client resolves the pending tag when `finished=1`, providing the equivalent of a deferred ACK for the long-running operation.
 
 ## Build
 

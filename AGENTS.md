@@ -29,7 +29,7 @@ ScaleFX is a modular scale model effects system:
 ## Critical Constants
 
 - **Baud rate:** 115200
-- **Packet format:** `[type:u8][len:u8][payload:0-64][crc8:u8]`
+- **Packet format:** `[type:u8][tag:u8][len:u8][payload:0-64][crc8:u8]`
 - **CRC-8 polynomial:** 0x07
 - **Endianness:** Little-endian
 - **Connection timeout:** 15000ms (all controllers)
@@ -92,16 +92,17 @@ When modifying protocol, these file pairs MUST stay in sync:
 | C++ File | Python File |
 |----------|-------------|
 | `serial_core.h` | `packets.py` |
-| `serial_error.h` | `packets.py` |
-| `serial_gunfx.h` | `commands.py`, `cli/handlers/gunfx.py` |
-| `serial_lightfx.h` | `commands.py`, `cli/handlers/lightfx.py` |
-| `serial_gearcontrol.h` | `commands.py`, `cli/handlers/gearcontrol.py` |
+| `serial_gunfx.h` | `packets.py`, `commands.py`, `cli/handlers/gunfx.py` |
+| `serial_lightfx.h` | `packets.py`, `commands.py`, `cli/handlers/lightfx.py` |
+| `serial_gearcontrol.h` | `packets.py`, `commands.py`, `cli/handlers/gearcontrol.py` |
 
 ## Change Workflow
 
 1. Read relevant `/instructions/` document
-2. Make changes following the checklist
-3. Verify C++ compiles: `pio run`
-4. Verify Python syntax: `python -m py_compile <file>`
-5. Flash and test: `python scripts/build_and_flash.py <controller>`
-6. Run tests: `pytest tests/<module>/ -v`
+2. Determine response category if adding commands (instant / query / long-running)
+3. Make changes following the checklist
+4. Ensure all client methods return `CommandResult` (never `bool`)
+5. Verify C++ compiles: `pio run`
+6. Verify Python syntax: `python -m py_compile <file>`
+7. Flash and test: `python scripts/build_and_flash.py <controller>`
+8. Run tests: `pytest tests/<module>/ -v`

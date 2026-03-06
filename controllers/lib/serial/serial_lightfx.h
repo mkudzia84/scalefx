@@ -31,9 +31,8 @@
 #include <Arduino.h>
 #include <functional>
 #include "serial_core.h"
-#include "serial_bus.h"
-#include "serial_error.h"
-#include "serial_command_handler.h"
+#include "serial_bus_client.h"
+#include "serial_bus_server.h"
 
 // ============================================================================
 // LightFX Binary Packet Types (0x40-0x5F range)
@@ -66,6 +65,7 @@ namespace LightFxPacket {
     constexpr uint8_t LANDING_LIGHT_UNBIND  = 0x53;  // [slot:u8] (0=all)
     constexpr uint8_t LANDING_LIGHT_DEPLOY  = 0x54;  // [slot:u8] (0=all)
     constexpr uint8_t LANDING_LIGHT_RETRACT = 0x55;  // [slot:u8] (0=all)
+    constexpr uint8_t LANDING_LIGHT_STATUS  = 0x56;  // [slot:u8][phase:u8][finished:u8] async progress
     
     // Response packets (server -> client)
     constexpr uint8_t LED_SEQ_STATUS_RESP  = 0x5A;  // [ch:u8][playing:u8][events:u8][index:u8][loops:u32]
@@ -82,6 +82,14 @@ namespace LightFxEventType {
     constexpr uint8_t FADE_OUT  = 0x04;  // [duration:u16][brightness:u8]
     constexpr uint8_t FADING    = 0x05;  // [cycle:u16][duration:u16][min:u8][max:u8]
     constexpr uint8_t MAX_TYPE  = 0x05;  // Maximum valid event type
+}
+
+// Landing light sequence phase constants (wire format)
+namespace LandingLightPhase {
+    constexpr uint8_t RETRACTED  = 0;
+    constexpr uint8_t DEPLOYING  = 1;
+    constexpr uint8_t DEPLOYED   = 2;
+    constexpr uint8_t RETRACTING = 3;
 }
 
 // ============================================================================
@@ -215,26 +223,30 @@ struct LightFxSeqQueue {
 };
 
 /**
- * @brief Board information returned during init
+ * @brief Landing light deploy/retract progress status
+ *
+ * Wire format: [slot:u8][phase:u8][finished:u8] = 3 bytes
  */
-struct LightFxBoardInfo {
-    char deviceName[32] = "";
-    char firmwareVersion[16] = "";
-    char platform[16] = "";
-    uint16_t cpuFrequencyMHz = 0;
-    uint32_t freeRamBytes = 0;
-    bool versionCompatible = true;
+struct LightFxLandingLightStatus {
+    uint8_t slot = 0;       // Landing light slot (1-3)
+    uint8_t phase = 0;      // LandingLightPhase value
+    bool finished = false;  // true when operation complete
 };
+
+/**
+ * @brief Board information returned during init (alias for BusClientBoardInfo)
+ */
+using LightFxBoardInfo = BusClientBoardInfo;
 
 // ============================================================================
 // Callback Types
 // ============================================================================
 
 // Client callbacks
-using LightFxReadyCallback = std::function<void(const char* deviceName)>;
 using LightFxSeqStatusCallback = std::function<void(const LightFxSeqStatus& status)>;
 using LightFxChannelStatusCallback = std::function<void(const LightFxChannelStatus& status)>;
-using LightFxErrorCallback = std::function<void(uint8_t errorCode, const char* message)>;
+using LightFxSeqQueueCallback = std::function<void(const LightFxSeqQueue& queue)>;
+using LightFxLandingLightStatusCallback = std::function<void(const LightFxLandingLightStatus& status)>;
 
 // Server callbacks - return error code (LightFxError::OK for success)
 using LedSetCallback = std::function<uint8_t(uint8_t channel, uint8_t brightness)>;
@@ -266,129 +278,79 @@ using LandingLightSlotCallback = std::function<uint8_t(uint8_t slot)>;
  * @brief Client-side LightFX serial communication (binary COBS protocol)
  * 
  * Used by HubFX to send commands to LightFX server boards over USB.
- * Extends SerialBus with LightFX-specific commands.
+ * Extends BusClient with LightFX-specific commands.
  */
-class LightFxClient : public SerialBus {
+class LightFxClient : public BusClient {
 public:
-    LightFxClient() = default;
-    ~LightFxClient() = default;
-
-    LightFxClient(const LightFxClient&) = delete;
-    LightFxClient& operator=(const LightFxClient&) = delete;
-
-    // ========================================================================
-    // Initialization
-    // ========================================================================
-    
-    /**
-     * @brief Initialize with USB host
-     */
-    bool begin(UsbHost* usbHost, int deviceIndex);
-    
-    /**
-     * @brief Process incoming packets (call in loop)
-     */
-    int process();
-
     // ========================================================================
     // LED Direct Control
     // ========================================================================
     
-    bool ledSet(uint8_t channel, uint8_t brightness);
-    bool ledOff(uint8_t channel = 0);
+    CommandResult ledSet(uint8_t channel, uint8_t brightness);
+    CommandResult ledOff(uint8_t channel = 0);
 
     // ========================================================================
     // LED Sequence Control
     // ========================================================================
     
-    bool ledSeqClear(uint8_t channel);
-    bool ledSeqAddOn(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
-    bool ledSeqAddOff(uint8_t channel, uint16_t durationMs);
-    bool ledSeqAddFlash(uint8_t channel, uint16_t intervalMs, uint16_t durationMs,
+    CommandResult ledSeqClear(uint8_t channel);
+    CommandResult ledSeqAddOn(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
+    CommandResult ledSeqAddOff(uint8_t channel, uint16_t durationMs);
+    CommandResult ledSeqAddFlash(uint8_t channel, uint16_t intervalMs, uint16_t durationMs,
                         uint8_t brightness = 255, uint8_t dutyPercent = 50);
-    bool ledSeqAddFadeIn(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
-    bool ledSeqAddFadeOut(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
-    bool ledSeqAddFading(uint8_t channel, uint16_t cycleMs, uint16_t durationMs = 0,
+    CommandResult ledSeqAddFadeIn(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
+    CommandResult ledSeqAddFadeOut(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
+    CommandResult ledSeqAddFading(uint8_t channel, uint16_t cycleMs, uint16_t durationMs = 0,
                          uint8_t minBrightness = 0, uint8_t maxBrightness = 255);
-    bool ledSeqStart(uint8_t channel);
-    bool ledSeqStop(uint8_t channel);
-    bool ledSeqRestart(uint8_t channel);
-    bool ledSeqStatus(uint8_t channel);
-    bool ledStatus();
-    bool ledMasterBrightness(uint8_t pct);
+    CommandResult ledSeqStart(uint8_t channel);
+    CommandResult ledSeqStop(uint8_t channel);
+    CommandResult ledSeqRestart(uint8_t channel);
+    CommandResult ledSeqStatus(uint8_t channel);
+    CommandResult ledStatus();
+    CommandResult ledMasterBrightness(uint8_t pct);
 
     // ========================================================================
     // Servo Control
     // ========================================================================
     
-    bool servoSet(uint8_t id, int16_t pulseUs);
-    bool servoSettings(uint8_t id, uint16_t minUs, uint16_t maxUs,
+    CommandResult servoSet(uint8_t id, int16_t pulseUs);
+    CommandResult servoSettings(uint8_t id, uint16_t minUs, uint16_t maxUs,
                        uint16_t speed, uint16_t accel, uint16_t decel);
 
     // ========================================================================
     // Landing Light Control
     // ========================================================================
     
-    bool landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
+    CommandResult landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
                           uint16_t deployUs, uint16_t retractUs, uint8_t brightness = 255);
-    bool landingLightUnbind(uint8_t slot = 0);
-    bool landingLightDeploy(uint8_t slot = 0);
-    bool landingLightRetract(uint8_t slot = 0);
+    CommandResult landingLightUnbind(uint8_t slot = 0);
+    CommandResult landingLightDeploy(uint8_t slot = 0);
+    CommandResult landingLightRetract(uint8_t slot = 0);
 
     // ========================================================================
-    // Connection Management
+    // Status
     // ========================================================================
-    
-    int sendInit(unsigned long keepaliveMs = 0);
 
-    // ========================================================================
-    // Configuration
-    // ========================================================================
-    
-    void setCommandTimeout(unsigned long timeoutMs) { _commandTimeoutMs = timeoutMs; }
-    void setBlockingMode(bool blocking) { _blockingMode = blocking; }
+    CommandResult requestStatus();
 
     // ========================================================================
     // Callbacks
     // ========================================================================
     
-    void onReady(LightFxReadyCallback cb) { _readyCallback = cb; }
     void onSeqStatus(LightFxSeqStatusCallback cb) { _seqStatusCallback = cb; }
     void onChannelStatus(LightFxChannelStatusCallback cb) { _channelStatusCallback = cb; }
-    void onError(LightFxErrorCallback cb) { _errorCallback = cb; }
+    void onSeqQueue(LightFxSeqQueueCallback cb) { _seqQueueCallback = cb; }
+    void onLandingLightStatus(LightFxLandingLightStatusCallback cb) { _landingLightStatusCallback = cb; }
 
-    // ========================================================================
-    // State
-    // ========================================================================
-    
-    bool isServerReady() const { return _serverReady; }
-    const char* serverName() const { return _serverName; }
-    const LightFxBoardInfo& boardInfo() const { return _boardInfo; }
-    bool lastCommandSuccess() const { return _lastAckReceived; }
+protected:
+    void onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) override;
+    const char* getModuleErrorMessage(uint8_t code) override { return LightFxError::getMessage(code); }
 
 private:
-    void handlePacket(uint8_t type, const uint8_t* payload, size_t len);
-    bool sendPacketBlocking(uint8_t type, const uint8_t* payload, size_t len);
-    bool waitForAckNack();
-
-    UsbHost* _usbHostRef = nullptr;
-    bool _serverReady = false;
-    char _serverName[32] = "";
-    LightFxBoardInfo _boardInfo;
-
-    unsigned long _commandTimeoutMs = 1000;
-    bool _blockingMode = true;
-
-    volatile bool _pendingAckNack = false;
-    volatile bool _lastAckReceived = false;
-    volatile bool _receivedAck = false;
-    volatile bool _receivedNack = false;
-    uint8_t _lastNackErrorCode = 0;
-
-    LightFxReadyCallback _readyCallback;
     LightFxSeqStatusCallback _seqStatusCallback;
     LightFxChannelStatusCallback _channelStatusCallback;
-    LightFxErrorCallback _errorCallback;
+    LightFxSeqQueueCallback _seqQueueCallback;
+    LightFxLandingLightStatusCallback _landingLightStatusCallback;
 };
 
 // ============================================================================
@@ -399,36 +361,20 @@ private:
  * @brief Server-side LightFX serial communication (binary COBS protocol)
  * 
  * Used by LightFX Pico to receive commands from HubFX client.
- * Implements ICommandHandler for use with CommandRouter.
+ * Extends BusServer for use with PicoServer + CommandRouter.
  */
-class LightFxServer : public ICommandHandler {
+class LightFxServer : public BusServer {
 public:
-    LightFxServer() = default;
-    ~LightFxServer() override = default;
-
-    // ========================================================================
-    // Initialization
-    // ========================================================================
-    
-    bool begin(Stream* serial);
-    void end();
-
-    // ========================================================================
-    // ICommandHandler Interface
-    // ========================================================================
-    
-    CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override;
     const char* handlerName() const override { return "LightFxServer"; }
 
     // ========================================================================
     // Response Methods
     // ========================================================================
     
-    int sendAck();
-    int sendNack(uint8_t errorCode);
     int sendSeqStatus(const LightFxSeqStatus& status);
     int sendSeqQueue(const LightFxSeqQueue& queue);
     int sendChannelStatus(const LightFxChannelStatus* channels, uint8_t count);
+    int sendLandingLightStatus(const LightFxLandingLightStatus& status);
 
     // ========================================================================
     // LED Callbacks
@@ -462,12 +408,13 @@ public:
     void onLandingLightDeploy(LandingLightSlotCallback cb) { _landingLightDeployCallback = cb; }
     void onLandingLightRetract(LandingLightSlotCallback cb) { _landingLightRetractCallback = cb; }
 
-private:
-    int sendRawPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0);
-    
-    Stream* _serial = nullptr;
-    bool _initialized = false;
+protected:
+    CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
+    uint8_t moduleRangeLow() const override { return 0x40; }
+    uint8_t moduleRangeHigh() const override { return 0x5F; }
+    const char* getModuleErrorMessage(uint8_t code) override { return LightFxError::getMessage(code); }
 
+private:
     LedSetCallback _ledSetCallback;
     LedOffCallback _ledOffCallback;
     LedSeqClearCallback _ledSeqClearCallback;
@@ -485,6 +432,7 @@ private:
     LandingLightSlotCallback _landingLightUnbindCallback;
     LandingLightSlotCallback _landingLightDeployCallback;
     LandingLightSlotCallback _landingLightRetractCallback;
+    uint8_t _landingLightTag[3] = {};  // Per-slot tag for deploy/retract progress
 };
 
 #endif // SERIAL_LIGHTFX_H

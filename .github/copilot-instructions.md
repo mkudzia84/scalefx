@@ -10,7 +10,7 @@ ScaleFX is a modular scale model effects system with three platform targets:
 - **Windows Studio** (.NET 8/C#): Visual configuration editor
 
 **Communication:** Binary COBS protocol over USB serial (115200 baud)
-- Packet format: `[type:u8][len:u8][payload:0-64][crc8:u8]`
+- Packet format: `[type:u8][tag:u8][len:u8][payload:0-64][crc8:u8]`
 - CRC-8 polynomial: 0x07
 - Endianness: Little-endian for ALL multi-byte values
 
@@ -62,20 +62,18 @@ When modifying serial protocol, these files MUST stay in sync:
 
 | C++ Source | Python Mirror | Content |
 |------------|---------------|---------|
-| `controllers/lib/serial/serial_core.h` | `tests/framework/packets.py` | Packet type constants |
-| `controllers/lib/serial/serial_error.h` | `tests/framework/packets.py` | Error codes |
-| `controllers/lib/serial/serial_gunfx.h` | `tests/framework/commands.py` | GunFX commands |
-| `controllers/lib/serial/serial_lightfx.h` | `tests/framework/commands.py` | LightFX commands |
-| `controllers/lib/serial/serial_gearcontrol.h` | `tests/framework/commands.py` | GearControl commands |
+| `controllers/lib/serial/serial_core.h` | `tests/framework/packets.py` | Packet type constants, generic error codes |
+| `controllers/lib/serial/serial_gunfx.h` | `tests/framework/packets.py`, `commands.py` | GunFX packet types, error codes, commands |
+| `controllers/lib/serial/serial_lightfx.h` | `tests/framework/packets.py`, `commands.py` | LightFX packet types, error codes, commands |
+| `controllers/lib/serial/serial_gearcontrol.h` | `tests/framework/packets.py`, `commands.py` | GearControl packet types, error codes, commands |
 
 **Verification:** Run `python -m py_compile tests/framework/packets.py` after C++ changes.
 
 ### 2. Command Addition Checklist
 
 When adding a new command to an existing controller, update ALL these files:
-1. `serial_core.h` - Add packet type constant in namespace (e.g., `GunFxPacket::NEW_CMD = 0xNN`)
-2. `serial_xxxfx.h` - Add callback typedef, `onNewCmd()` method, handler case using `SFX_*` macros
-3. `xxxfx_pico.ino` - Implement callback, register in `setup()`
+1. `serial_xxxfx.h` - Add packet type constant, callback typedef, `onNewCmd()` method, handler case in `handleModulePacket()` using `SFX_*` macros, error codes if needed
+2. `xxxfx_pico.ino` - Implement callback, register in `setup()`
 4. `tests/framework/packets.py` - Mirror constant in `XxxPacket` class
 5. `tests/framework/commands.py` - Add static builder method in `XxxCommands`
 6. `tests/xxxfx/test_<feature>.py` - **REQUIRED:** Add tests for new functionality
@@ -88,7 +86,40 @@ When adding a new command to an existing controller, update ALL these files:
 
 See `/instructions/03-PROTOCOL-EXTENSION.md` and `/instructions/04-CHANGE-PROPAGATION.md` for details.
 
-### 3. Endianness Pattern (CRITICAL)
+### 3. Client Response Handling (MANDATORY)
+
+All client methods (in `BusClient` subclasses like `GunFxClient`, `LightFxClient`, `GearControlClient`) MUST return `CommandResult`, never `bool`. Every command sent via `sendCommand()` uses **tag correlation** — the `ResultQueue` matches responses to requests by tag.
+
+**Three response categories:**
+
+| Category | Server Pattern | Client Pattern | Tag Resolution |
+|----------|---------------|----------------|----------------|
+| **Instant** | `SFX_DISPATCH` → ACK/NACK | `sendCommand()` returns result | Automatic (`BusClient::handlePacket()`) |
+| **Query** | Custom response packet (no SFX_DISPATCH) | `sendCommand()` + `onModulePacket()` | Manual (`_resultQueue.resolve()` in `onModulePacket()`) |
+| **Long-Running** | `SFX_DISPATCH` → immediate ACK | `sendCommand()` + polling/callbacks | Automatic ACK, optional progress resolution |
+
+**Rules:**
+1. **Never return `bool`** from client methods — always `CommandResult`
+2. **Query responses are implicit ACKs** — when `onModulePacket()` receives a data response, resolve the tag as `CommandResult::Ack()`. The server sending a typed response packet IS the acknowledgment.
+3. **Always check `tag != CoreProtocol::TAG_ASYNC`** before resolving — async/unsolicited packets have no pending request to resolve
+4. **`onModulePacket()` contract:** parse → fire callback → resolve tag (in that order)
+
+**Anti-pattern:**
+```cpp
+// BAD: Returns bool — caller loses error info, tag, and message
+bool ledBrightness(uint8_t ch, uint8_t val) {
+    return sendCommand(LightFxPacket::LED_BRIGHTNESS, ...).success;
+}
+
+// GOOD: Returns CommandResult — full error context preserved
+CommandResult ledBrightness(uint8_t ch, uint8_t val) {
+    return sendCommand(LightFxPacket::LED_BRIGHTNESS, ...);
+}
+```
+
+See `01-ARCHITECTURE.md` § Client Response Handling Design for full details.
+
+### 4. Endianness Pattern (CRITICAL)
 
 **C++ payload parsing:**
 ```cpp
@@ -100,7 +131,7 @@ uint16_t value = payload[0] | (payload[1] << 8);  // Little-endian
 payload = struct.pack('<H', value)  # '<' = little-endian
 ```
 
-### 4. Physical Units in Code (MANDATORY)
+### 5. Physical Units in Code (MANDATORY)
 
 **All variables, parameters, struct fields, and methods that represent physical measurements MUST include the unit and magnitude as a suffix.** This prevents unit-mismatch bugs (e.g., treating milliamps as amps).
 
@@ -135,7 +166,7 @@ float v = monitor.busVoltage_mV();     // unambiguous: millivolts
 float i = monitor.current_mA();        // unambiguous: milliamps
 ```
 
-### 5. PicoServer Pattern (Server Controllers)
+### 6. PicoServer Pattern (Server Controllers)
 
 All Pico server controllers use `PicoServer` to eliminate boilerplate:
 ```cpp
@@ -164,7 +195,7 @@ void loop() {
 
 PicoServer handles: serial init, device naming, indicator LEDs, CoreCommandServer, CommandRouter, connection timeout, free RAM updates.
 
-### 6. Component Reuse (MANDATORY)
+### 7. Component Reuse (MANDATORY)
 
 **Always check `controllers/lib/components/` before writing hardware-specific code.** If a generic driver or abstraction already exists, use it.
 
@@ -199,7 +230,7 @@ batteryMonitor.update();
 float v = batteryMonitor.busVoltage_mV();  // clear, reusable, tested
 ```
 
-### 7. Indicator LEDs and Error Reporting (MANDATORY)
+### 8. Indicator LEDs and Error Reporting (MANDATORY)
 
 **All Pico server controllers use `PicoServer` which automatically manages indicator LEDs on GP13/GP14.** Controllers only need to set error/warning conditions.
 
@@ -254,7 +285,7 @@ Each module's error codes MUST be in its assigned range and defined in both C++ 
 4. Each error namespace MUST have a `getMessage()` (C++) / `name()` (Python) function
 5. Use generic `SerialError` codes (e.g., `INVALID_ID`, `MISSING_PARAMETER`) where appropriate instead of duplicating concepts per module
 
-### 8. Firmware Versioning (MANDATORY)
+### 9. Firmware Versioning (MANDATORY)
 
 Every controller firmware defines `FIRMWARE_VERSION` and `BUILD_NUMBER`:
 ```cpp
@@ -298,12 +329,14 @@ commandRouter.addHandler(&xxxfxServer);  // ← Missing coreServer!
 
 ### Shared Serial Library (`controllers/lib/serial/`)
 - **serial.h** - Umbrella include (use this)
-- **serial_core.h** - CoreProtocol class, packet types, COBS/CRC, `SFX_*` handler macros, `StatusDataCallback`
-- **serial_bus.h** - SerialBus class (client), UsbHost (PIO-USB CDC)
-- **serial_command_handler.h** - ICommandHandler interface, CommandRouter
-- **serial_gunfx.h** - GunFxClient, GunFxServer, `GunFxSpec` validation namespace
-- **serial_lightfx.h** - LightFxClient, LightFxServer, `LightFxSpec` validation namespace
-- **serial_gearcontrol.h** - GearControlClient, GearControlServer, `GearControlSpec` validation namespace
+- **serial_core.h** - CoreProtocol, SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros
+- **serial_bus_server.h** - BusServer base class + CoreCommandServer (server side)
+- **serial_bus_client.h** - BusClient base class (client side, extends SerialBus)
+- **serial_bus.h** - SerialBus (client-only, COBS over USB CDC)
+- **serial_result_queue.h** - ResultQueue (tag-correlated command/response matching)
+- **serial_gunfx.h** - GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec
+- **serial_lightfx.h** - LightFxServer, LightFxClient, LightFxPacket, LightFxError, LightFxSpec
+- **serial_gearcontrol.h** - GearControlServer, GearControlClient, GearControlPacket, GearControlError, GearControlSpec
 
 Include order: `#include "serial.h"` (includes everything needed)
 
@@ -321,7 +354,7 @@ Reusable hardware component drivers — use these instead of writing controller-
 - **srv_control.h/.cpp** - Servo output with trapezoidal motion profiling and jerk effects
 
 ### Server Handler Macros (serial_core.h)
-Reduce boilerplate in `tryProcess()` switch cases:
+Reduce boilerplate in `handleModulePacket()` switch cases:
 ```cpp
 SFX_REQUIRE_LEN(n)                    // NACK MISSING_PARAMETER if len < n
 SFX_VALIDATE(cond, err)               // NACK err if !cond
@@ -409,19 +442,22 @@ cli/
 
 ### Adding a New Command
 1. Read `/instructions/03-PROTOCOL-EXTENSION.md`
-2. Choose packet type ID from available range
-3. Update C++ serial library (serial_core.h, serial_xxxfx.h) — use `SFX_*` macros
-4. Update firmware (xxxfx_pico.ino)
-5. Update Python framework (packets.py, commands.py)
-6. Update CLI handler (tests/cli/handlers/xxxfx.py)
-7. Add test (tests/xxxfx/test_feature.py)
-8. Update README.md protocol table
-9. Verify: `pio run && python -m py_compile tests/framework/packets.py`
+2. Determine response category: instant, query, or long-running
+3. Choose packet type ID from available range
+4. Update C++ serial library (serial_xxxfx.h) — packet type, handler in `handleModulePacket()`, use `SFX_*` macros
+5. Add client method returning `CommandResult` (serial_xxxfx.h client class)
+6. If query: add response handling in `onModulePacket()` with tag resolution
+7. Update firmware (xxxfx_pico.ino)
+8. Update Python framework (packets.py, commands.py)
+9. Update CLI handler (tests/cli/handlers/xxxfx.py)
+10. Add test (tests/xxxfx/test_feature.py)
+11. Update README.md protocol table
+12. Verify: `pio run && python -m py_compile tests/framework/packets.py`
 
 ### Creating a New Controller
 1. Read `/instructions/02-NEW-CONTROLLER.md`
-2. Reserve packet type range (0x60-0xEF available)
-3. Create `controllers/lib/serial/serial_newfx.h` (NewFxClient, NewFxServer)
+2. Reserve packet type range (0x80-0xEF available)
+3. Create `controllers/lib/serial/serial_newfx.h` (NewFxServer extends BusServer, NewFxClient extends BusClient)
 4. Create `controllers/newfx/pico/` directory structure
 5. Create Python test framework classes
 6. Add CLI commands
@@ -429,10 +465,10 @@ cli/
 
 ### Debugging Protocol Issues
 - Use interactive CLI: `python -m tests.cli.interactive`
-- Check constants match: Compare `serial_core.h` vs `packets.py`
+- Check constants match: Compare `serial_core.h` / `serial_xxxfx.h` vs `packets.py`
 - Verify endianness: All multi-byte values are little-endian
-- Check CRC: CRC-8 poly 0x07 over [type][len][payload]
-- NACK codes in `serial_error.h` and `packets.py` must match
+- Check CRC: CRC-8 poly 0x07 over [type][tag][len][payload]
+- NACK error codes in `serial_core.h` (generic) and `serial_xxxfx.h` (module) must match `packets.py`
 
 ## Essential Documentation
 

@@ -1,51 +1,27 @@
 /*
- * Serial Core - Protocol, Interface, and Slave Command Handling
+ * Serial Core - Protocol, Errors, Interfaces, and Command Routing
  *
- * Core serial communication infrastructure for ScaleFX controllers.
- * Provides protocol encoding/decoding, abstract interface for packet-based
- * communication, and the slave-side system command handler.
+ * Central header for ScaleFX serial communication. Contains:
+ *   - Error codes (SerialError namespace) and CommandResult struct
+ *   - Protocol encoding/decoding (CoreProtocol namespace)
+ *   - Core packet types and data structures
+ *   - ICommandHandler interface and CommandRouter
+ *   - Server handler macros (SFX_*)
  *
  * Protocol:
- *   Packet Format: [type:u8][len:u8][payload:0-64 bytes][crc8:u8]
+ *   Packet Format: [type:u8][tag:u8][len:u8][payload:0-64 bytes][crc8:u8]
  *   Framing: COBS encoded, followed by 0x00 frame delimiter
- *   CRC: CRC-8 polynomial 0x07 over type+len+payload
+ *   CRC: CRC-8 polynomial 0x07 over type+tag+len+payload
+ *   Tag: 0x00 = async/unsolicited, 0x01-0xFF = request correlation ID
  *
  * Packet Type Ranges:
- *   0x01-0x2F  GunFX commands (trigger, servo, smoke) - see serial_gunfx.h
- *   0x40-0x5F  LightFX commands (LED, servo, power) - see serial_lightfx.h
- *   0x60-0x7F  GearControl commands (gear, servo, yaw) - see serial_gearcontrol.h
+ *   0x01-0x2F  GunFX commands - see serial_gunfx.h
+ *   0x40-0x5F  LightFX commands - see serial_lightfx.h
+ *   0x60-0x7F  GearControl commands - see serial_gearcontrol.h
  *   0x80-0x8F  Reserved for future modules
  *   0xF0-0xFF  Universal system commands (INIT, ACK, NACK, etc.)
  *
- * Components:
- *   CoreProtocol       - COBS encoding, CRC-8, packet utilities
- *   ISerialCore        - Abstract interface for serial communication
- *   CoreCommandServer  - Server-side system command handler
- *   CoreBoardInfo      - Device information for INIT_READY response
- *   CoreStats          - Packet statistics
- *
- * Core Commands (0xF0-0xFF, handled by CoreCommandServer):
- *   INIT (0xF0)        - Initialize connection
- *   SHUTDOWN (0xF1)    - Graceful shutdown
- *   KEEPALIVE (0xF2)   - Connection heartbeat
- *   INIT_READY (0xF3)  - Slave ready response
- *   REBOOT (0xF8)      - Restart device
- *   BOOTSEL (0xF9)     - Enter bootloader
- *
- * Response Types:
- *   ACK (0xF6)         - Command acknowledged
- *   NACK (0xF7)        - Command rejected with error code
- *   STATUS (0xF4)      - Status payload
- *   ERROR (0xF5)       - Error notification
- *
- * Usage (Slave Side):
- *   CoreCommandServer coreServer;
- *   coreServer.begin(&Serial);
- *   coreServer.setBoardInfo("GunFX", "1.0.0", "RP2040", 125, 200000);
- *   // In packet callback: coreServer.tryHandle(type, payload, len);
- *
- * For Master Side:
- *   See SerialBus in serial_bus.h which implements ISerialCore.
+ * CoreCommandServer is defined in serial_bus_server.h (extends BusServer).
  */
 
 #ifndef SERIAL_CORE_H
@@ -55,10 +31,131 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <functional>
-#include "serial_error.h"
+#include <cstring>
 
-// Forward declaration
-class UsbHost;
+// ============================================================================
+// Generic Error Codes
+// ============================================================================
+
+/**
+ * @brief Generic serial error codes for ACK/NACK responses
+ * 
+ * Error Code Ranges:
+ *   0x00-0x0F  General/common errors (OK, UNKNOWN, INVALID_COMMAND, etc.)
+ *   0x10-0x1F  Parameter validation errors (INVALID_PARAM, OUT_OF_RANGE, etc.)
+ *   0x20-0x4F  GunFX-specific errors (SERVO_*, SMOKE_*, TRIGGER_*)
+ *   0x50-0x5F  LightFX-specific errors (LED_*, SERVO_*)
+ *   0x60-0x6F  GearControl-specific errors (GEAR_*, MOTOR_*, SERVO_*, YAW_*)
+ *   0x70-0x8F  Reserved for future modules
+ *   0xF0-0xFF  System/transport errors (TIMEOUT, CRC_ERROR, etc.)
+ */
+namespace SerialError {
+    // General errors (0x00-0x0F)
+    constexpr uint8_t OK                    = 0x00;
+    constexpr uint8_t UNKNOWN               = 0x01;
+    constexpr uint8_t NOT_INITIALIZED       = 0x02;
+    constexpr uint8_t INVALID_COMMAND       = 0x03;
+    constexpr uint8_t MISSING_PARAMETER     = 0x04;
+    constexpr uint8_t BUSY                  = 0x05;
+    constexpr uint8_t NOT_SUPPORTED         = 0x06;
+    constexpr uint8_t PERMISSION_DENIED     = 0x07;
+    
+    // Parameter validation errors (0x10-0x1F)
+    constexpr uint8_t INVALID_PARAM         = 0x10;
+    constexpr uint8_t PARAM_OUT_OF_RANGE    = 0x11;
+    constexpr uint8_t INVALID_ID            = 0x12;
+    constexpr uint8_t INVALID_VALUE         = 0x13;
+    constexpr uint8_t PARAM_TOO_LONG        = 0x14;
+    
+    // Domain-specific errors: 0x20-0x7F (defined in respective module headers)
+    
+    // System/transport errors (0xF0-0xFF)
+    constexpr uint8_t INTERNAL_ERROR        = 0xF0;
+    constexpr uint8_t TIMEOUT               = 0xF1;
+    constexpr uint8_t COMM_ERROR            = 0xF2;
+    constexpr uint8_t BUFFER_OVERFLOW       = 0xF3;
+    constexpr uint8_t CRC_ERROR             = 0xF4;
+    constexpr uint8_t FRAMING_ERROR         = 0xF5;
+    
+    inline const char* getMessage(uint8_t code) {
+        switch (code) {
+            case OK:                    return "OK";
+            case UNKNOWN:               return "Unknown error";
+            case NOT_INITIALIZED:       return "Not initialized";
+            case INVALID_COMMAND:       return "Invalid command";
+            case MISSING_PARAMETER:     return "Missing parameter";
+            case BUSY:                  return "Busy";
+            case NOT_SUPPORTED:         return "Not supported";
+            case PERMISSION_DENIED:     return "Permission denied";
+            case INVALID_PARAM:         return "Invalid parameter";
+            case PARAM_OUT_OF_RANGE:    return "Parameter out of range";
+            case INVALID_ID:            return "Invalid ID";
+            case INVALID_VALUE:         return "Invalid value";
+            case PARAM_TOO_LONG:        return "Parameter too long";
+            case INTERNAL_ERROR:        return "Internal error";
+            case TIMEOUT:               return "Timeout";
+            case COMM_ERROR:            return "Communication error";
+            case BUFFER_OVERFLOW:       return "Buffer overflow";
+            case CRC_ERROR:             return "CRC error";
+            case FRAMING_ERROR:         return "Framing error";
+            default:
+                if (code >= 0x20 && code <= 0x7F) return "Domain-specific error";
+                return "Unknown error code";
+        }
+    }
+    
+    inline bool isGenericError(uint8_t code) {
+        return (code <= 0x1F) || (code >= 0xF0);
+    }
+    
+    inline bool isDomainError(uint8_t code) {
+        return (code >= 0x20 && code <= 0x7F);
+    }
+}
+
+// ============================================================================
+// Command Result
+// ============================================================================
+
+/**
+ * @brief Result of a command sent to slave
+ * 
+ * Encapsulates the result of a blocking command, including:
+ * - Success/failure status
+ * - Error code (0 = OK)
+ * - Human-readable error message
+ */
+struct CommandResult {
+    bool success = false;
+    uint8_t errorCode = 0;
+    char errorMessage[64] = "";
+    
+    CommandResult() = default;
+    CommandResult(bool ok) : success(ok), errorCode(ok ? SerialError::OK : SerialError::UNKNOWN) {}
+    CommandResult(uint8_t code) : success(code == SerialError::OK), errorCode(code) {
+        if (code != SerialError::OK) {
+            strncpy(errorMessage, SerialError::getMessage(code), sizeof(errorMessage) - 1);
+        }
+    }
+    CommandResult(uint8_t code, const char* msg) : success(code == SerialError::OK), errorCode(code) {
+        if (msg) strncpy(errorMessage, msg, sizeof(errorMessage) - 1);
+    }
+    
+    operator bool() const { return success; }
+    bool isTimeout() const { return errorCode == SerialError::TIMEOUT; }
+    bool isNack() const { return !success && errorCode != SerialError::TIMEOUT; }
+    const char* message() const { 
+        return errorMessage[0] ? errorMessage : SerialError::getMessage(errorCode); 
+    }
+    
+    static CommandResult Ack() { return CommandResult(SerialError::OK); }
+    static CommandResult Nack(uint8_t code, const char* msg = nullptr) { 
+        return CommandResult(code, msg ? msg : SerialError::getMessage(code)); 
+    }
+    static CommandResult Timeout() { return CommandResult(SerialError::TIMEOUT); }
+    static CommandResult SendFailed() { return CommandResult(SerialError::COMM_ERROR, "Send failed"); }
+    static CommandResult NotConnected() { return CommandResult(SerialError::NOT_INITIALIZED, "Not connected"); }
+};
 
 // ============================================================================
 // Protocol Constants & Buffer Sizes
@@ -68,9 +165,12 @@ namespace CoreProtocol {
 
 // Buffer sizes
 constexpr size_t MAX_PAYLOAD_SIZE = 64;
-constexpr size_t MAX_PACKET_SIZE = 2 + MAX_PAYLOAD_SIZE + 1;
+constexpr size_t MAX_PACKET_SIZE = 3 + MAX_PAYLOAD_SIZE + 1;  // type + tag + len + payload + crc
 constexpr size_t COBS_BUFFER_SIZE = MAX_PACKET_SIZE + MAX_PACKET_SIZE / 254 + 2;
 constexpr uint8_t FRAME_DELIMITER = 0x00;
+
+// Tag constants
+constexpr uint8_t TAG_ASYNC = 0x00;  // Unsolicited/async message (no request to match)
 
 // ============================================================================
 // Binary Protocol Functions
@@ -104,35 +204,38 @@ size_t cobsEncode(const uint8_t* input, size_t length, uint8_t* output);
 size_t cobsDecode(const uint8_t* input, size_t length, uint8_t* output, size_t maxOutput);
 
 /**
- * @brief Build raw packet (type + len + payload + crc)
+ * @brief Build raw packet (type + tag + len + payload + crc)
  * @param output Output buffer
  * @param type Packet type
+ * @param tag Request correlation tag (0 = async/unsolicited)
  * @param payload Payload data
  * @param payloadLen Payload length
  * @return Packet length, 0 on error
  */
-size_t buildPacket(uint8_t* output, uint8_t type, const uint8_t* payload, size_t payloadLen);
+size_t buildPacket(uint8_t* output, uint8_t type, uint8_t tag, const uint8_t* payload, size_t payloadLen);
 
 /**
  * @brief Build and COBS-encode packet with frame delimiter
  * @param output Output buffer (must be COBS_BUFFER_SIZE)
  * @param type Packet type
+ * @param tag Request correlation tag (0 = async/unsolicited)
  * @param payload Payload data
  * @param payloadLen Payload length
  * @return Total encoded length including delimiter, 0 on error
  */
-size_t encodePacket(uint8_t* output, uint8_t type, const uint8_t* payload, size_t payloadLen);
+size_t encodePacket(uint8_t* output, uint8_t type, uint8_t tag, const uint8_t* payload, size_t payloadLen);
 
 /**
  * @brief Parse and verify a decoded packet
  * @param input Decoded packet data
  * @param length Packet length
  * @param type Output packet type
+ * @param tag Output request correlation tag
  * @param payload Output pointer to payload
  * @param payloadLen Output payload length
  * @return true if valid, false on CRC error or malformed
  */
-bool parsePacket(const uint8_t* input, size_t length, uint8_t* type, 
+bool parsePacket(const uint8_t* input, size_t length, uint8_t* type, uint8_t* tag,
                  const uint8_t** payload, size_t* payloadLen);
 
 /**
@@ -288,7 +391,7 @@ struct I2CScanResult {
 // Callback Types
 // ============================================================================
 
-using PacketRxCallback = std::function<void(uint8_t type, const uint8_t* payload, size_t len)>;
+using PacketRxCallback = std::function<void(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len)>;
 
 // Core command callbacks
 using CoreInitCallback = std::function<void()>;
@@ -317,161 +420,7 @@ using StatusDataCallback = std::function<size_t(uint8_t* buffer, size_t maxLen)>
  */
 using I2CScanCallback = std::function<I2CScanResult()>;
 
-// ============================================================================
-// ISerialCore - Abstract Interface for Serial Communication
-// ============================================================================
 
-/**
- * @brief Abstract base class for serial bus communication
- * 
- * Defines the interface for packet-based binary serial communication.
- * Only binary COBS-encoded protocol is supported.
- */
-class ISerialCore {
-public:
-    virtual ~ISerialCore() = default;
-
-    // ========================================================================
-    // Lifecycle
-    // ========================================================================
-    
-    /**
-     * @brief Initialize with USB host connection
-     * @param usbHost Pointer to USB host
-     * @param deviceIndex CDC device index
-     * @return true if successful
-     */
-    virtual bool begin(UsbHost* usbHost, int deviceIndex) = 0;
-    
-    /**
-     * @brief End communication
-     */
-    virtual void end() = 0;
-    
-    /**
-     * @brief Set the target device index
-     */
-    virtual void setDevice(int deviceIndex) = 0;
-
-    // ========================================================================
-    // Packet Transmission
-    // ========================================================================
-    
-    /**
-     * @brief Send a packet with optional payload
-     * @param type Packet type
-     * @param payload Payload data (can be nullptr)
-     * @param len Payload length
-     * @return Bytes sent, or -1 on error
-     */
-    virtual int sendPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0) = 0;
-    
-    /**
-     * @brief Send INIT command
-     */
-    virtual int sendInit() { return sendPacket(CorePacket::INIT); }
-    
-    /**
-     * @brief Send SHUTDOWN command
-     * @note Slave will ACK since device stays running
-     */
-    virtual int sendShutdown() { return sendPacket(CorePacket::SHUTDOWN); }
-    
-    /**
-     * @brief Send REBOOT command (fire-and-forget)
-     * @note No ACK expected - device reboots immediately
-     */
-    virtual int sendReboot() { return sendPacket(CorePacket::REBOOT); }
-    
-    /**
-     * @brief Send BOOTSEL command (fire-and-forget)
-     * @note No ACK expected - device enters bootloader immediately
-     */
-    virtual int sendBootsel() { return sendPacket(CorePacket::BOOTSEL); }
-    
-    /**
-     * @brief Send KEEPALIVE packet
-     */
-    virtual int sendKeepalive() { return sendPacket(CorePacket::KEEPALIVE); }
-    
-    /**
-     * @brief Send ACK response
-     */
-    virtual int sendAck() { return sendPacket(CorePacket::ACK); }
-    
-    /**
-     * @brief Send NACK response with error code
-     * @param errorCode Error code from SerialError namespace
-     */
-    virtual int sendNack(uint8_t errorCode) {
-        return sendPacket(CorePacket::NACK, &errorCode, 1);
-    }
-    
-    /**
-     * @brief Send INIT_READY response with board info
-     * @param info Board information
-     */
-    int sendInitReady(const CoreBoardInfo& info);
-    
-    /**
-     * @brief Send STATUS_REQ command
-     */
-    virtual int sendStatusRequest() { return sendPacket(CorePacket::STATUS_REQ); }
-
-    // ========================================================================
-    // Packet Reception
-    // ========================================================================
-    
-    /**
-     * @brief Set callback for received packets
-     */
-    virtual void onPacketReceived(PacketRxCallback callback) = 0;
-    
-    /**
-     * @brief Process incoming data
-     * @return Number of packets processed
-     */
-    virtual int process() = 0;
-
-    // ========================================================================
-    // Keepalive Management
-    // ========================================================================
-    
-    /**
-     * @brief Set keepalive interval (0 to disable)
-     */
-    virtual void setKeepaliveInterval(unsigned long intervalMs) = 0;
-    
-    /**
-     * @brief Process keepalive timing
-     * @return true if keepalive was sent
-     */
-    virtual bool processKeepalive() = 0;
-
-    // ========================================================================
-    // Status
-    // ========================================================================
-    
-    /**
-     * @brief Check if connected to device
-     */
-    virtual bool isConnected() const = 0;
-    
-    /**
-     * @brief Check if initialized
-     */
-    virtual bool isInitialized() const = 0;
-    
-    /**
-     * @brief Get statistics
-     */
-    virtual const CoreStats& stats() const = 0;
-    
-    /**
-     * @brief Reset statistics
-     */
-    virtual void resetStats() = 0;
-};
 
 // ============================================================================
 // Command Handler Interface
@@ -514,154 +463,30 @@ public:
      * @brief Get the name of this handler (for debugging)
      */
     virtual const char* handlerName() const = 0;
+
+    /**
+     * @brief Set the request correlation tag for the current packet being processed.
+     *
+     * Called by CommandRouter before tryProcess(). Handlers should echo this tag
+     * in their ACK/NACK responses so the client can match responses to requests.
+     * Tag 0x00 = unsolicited/async, 0x01-0xFF = client-assigned correlation ID.
+     */
+    void setCurrentTag(uint8_t tag) { _currentTag = tag; }
+    uint8_t currentTag() const { return _currentTag; }
+
+protected:
+    uint8_t _currentTag = 0;  ///< Tag from the request currently being processed
 };
 
 // ============================================================================
-// CoreCommandServer (Server Side)
+// CoreCommandServer — Forward Declaration
 // ============================================================================
-
-/**
- * @brief Handles core system commands on server devices
- * 
- * Processes INIT, SHUTDOWN, REBOOT, BOOTSEL, and KEEPALIVE commands.
- * Implements ICommandHandler for use with CommandRouter.
- */
-class CoreCommandServer : public ICommandHandler {
-public:
-    CoreCommandServer() = default;
-    ~CoreCommandServer() override = default;
-    
-    /**
-     * @brief Initialize the handler
-     * @param serial Serial port for sending responses (server side uses Serial)
-     */
-    void begin(Stream* serial);
-    
-    /**
-     * @brief Set board information for INIT_READY response
-     */
-    void setBoardInfo(const char* deviceName, const char* firmwareVersion,
-                      const char* platform, uint32_t cpuMHz, uint32_t freeRam,
-                      uint32_t buildNumber = 0);
-    
-    /**
-     * @brief Try to handle a received packet
-     * @param type Packet type
-     * @param payload Payload data
-     * @param len Payload length
-     * @return true if handled (core command), false if not a core command
-     */
-    bool tryHandle(uint8_t type, const uint8_t* payload, size_t len);
-    
-    // ========================================================================
-    // ICommandHandler Interface
-    // ========================================================================
-    
-    CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override {
-        return tryHandle(type, payload, len) ? CommandHandleResult::Handled : CommandHandleResult::NotMyCommand;
-    }
-    
-    const char* handlerName() const override { return "CoreCommandServer"; }
-    
-    /**
-     * @brief Update last activity timestamp
-     */
-    void updateActivity() { _lastActivityMs = millis(); }
-    
-    /**
-     * @brief Check for connection timeout
-     * @param timeoutMs Timeout in milliseconds (0 to disable)
-     * @return true if timed out
-     */
-    bool checkTimeout(unsigned long timeoutMs);
-    
-    /**
-     * @brief Get time since last activity
-     */
-    unsigned long lastActivityMs() const { return _lastActivityMs; }
-    
-    /**
-     * @brief Check if initialized (INIT received)
-     */
-    bool isInitialized() const { return _initialized; }
-    
-    /**
-     * @brief Reset state (on connection loss or new INIT)
-     */
-    void reset();
-    
-    // Callbacks
-    void onInit(CoreInitCallback callback) { _initCallback = callback; }
-    void onShutdown(CoreShutdownCallback callback) { _shutdownCallback = callback; }
-    void onReboot(CoreRebootCallback callback) { _rebootCallback = callback; }
-    void onBootsel(CoreBootselCallback callback) { _bootselCallback = callback; }
-    void onKeepalive(CoreKeepaliveCallback callback) { _keepaliveCallback = callback; }
-    
-    /**
-     * @brief Register callback for appending module-specific data to STATUS response
-     * 
-     * The callback receives a buffer pointer and max length, and should write
-     * module-specific status bytes. The bytes are appended after the 12-byte
-     * core header: [counter:u32LE][uptime:u32LE][freeRam:u32LE].
-     */
-    void onStatusData(StatusDataCallback callback) { _statusDataCallback = callback; }
-    
-    /**
-     * @brief Register callback for I2C bus scan
-     * 
-     * When I2C_SCAN packet is received, the callback is invoked to perform
-     * the actual bus scan. The result is sent back as I2C_SCAN_RESULT.
-     */
-    void onI2CScan(I2CScanCallback callback) { _i2cScanCallback = callback; }
-    
-    // Statistics
-    uint32_t commandCounter() const { return _commandCounter; }
-    uint32_t keepaliveCounter() const { return _keepaliveCounter; }
-    
-    /**
-     * @brief Update free RAM value for STATUS response (call periodically)
-     * 
-     * The core STATUS header includes freeRam. Since CoreCommandServer
-     * stores this from setBoardInfo(), call this to keep it current.
-     * Example: coreServer.updateFreeRam(rp2040.getFreeHeap());
-     */
-    void updateFreeRam(uint32_t freeRam) { _boardInfo.freeRamBytes = freeRam; }
-    
-    /**
-     * @brief Send ACK packet
-     */
-    void sendAck();
-    
-    /**
-     * @brief Send NACK packet with error code
-     */
-    void sendNack(uint8_t errorCode);
-    
-    /**
-     * @brief Send I2C_SCAN_RESULT packet
-     */
-    void sendI2CScanResult(const I2CScanResult& result);
-
-private:
-    void sendInitReady();
-    void handleInit(const uint8_t* payload, size_t len);
-    void sendStatus();
-    
-    Stream* _serial = nullptr;
-    CoreBoardInfo _boardInfo;
-    bool _initialized = false;
-    unsigned long _lastActivityMs = 0;
-    uint32_t _commandCounter = 0;
-    uint32_t _keepaliveCounter = 0;
-    
-    CoreInitCallback _initCallback;
-    CoreShutdownCallback _shutdownCallback;
-    CoreRebootCallback _rebootCallback;
-    CoreBootselCallback _bootselCallback;
-    CoreKeepaliveCallback _keepaliveCallback;
-    StatusDataCallback _statusDataCallback;
-    I2CScanCallback _i2cScanCallback;
-};
+//
+// CoreCommandServer extends BusServer and is defined in serial_bus_server.h.
+// This forward declaration allows headers that only need pointers/references
+// (e.g. pico_server.h) to work without pulling in the full definition.
+//
+class CoreCommandServer;
 
 // ============================================================================
 // INIT_READY Payload Encoding/Decoding
@@ -767,5 +592,150 @@ bool decodeInitReady(const uint8_t* payload, size_t len, CoreBoardInfo& info);
         SFX_VALIDATE(validator(_sfx_ch), error_code); \
         SFX_DISPATCH(callback, _sfx_ch); \
     } while(0)
+
+// ============================================================================
+// Command Router - Routes Packets Through Handler Chain
+// ============================================================================
+//
+// Chain of Responsibility pattern: handlers are tried in sequence until one
+// processes the command. If none handles it, a NACK is returned to the sender.
+//
+
+namespace ScaleFX {
+
+/**
+ * @brief Routes binary packets through a chain of handlers
+ * 
+ * Reads serial input, decodes COBS packets, verifies CRC, and passes packets
+ * through handlers in sequence until one handles it or all decline.
+ */
+class CommandRouter {
+public:
+    static constexpr size_t MAX_HANDLERS = 8;
+    static constexpr size_t RX_BUFFER_SIZE = CoreProtocol::COBS_BUFFER_SIZE;
+    
+    // Callback type for unhandled packets
+    using NackCallback = std::function<void(uint8_t errorCode, uint8_t packetType)>;
+    
+    CommandRouter() = default;
+    
+    /**
+     * @brief Initialize the router
+     * @param serial Stream to read from
+     * @param nackFunc Function to call when no handler processes a packet
+     */
+    void begin(Stream* serial, NackCallback nackFunc = nullptr) {
+        _serial = serial;
+        _nackCallback = nackFunc;
+        _rxIndex = 0;
+        _handlerCount = 0;
+        _lastActivityMs = 0;
+    }
+    
+    /**
+     * @brief Add a handler to the chain
+     * @param handler Handler to add (order matters - first added is tried first)
+     * @return true if added successfully
+     */
+    bool addHandler(ICommandHandler* handler) {
+        if (_handlerCount >= MAX_HANDLERS || !handler) return false;
+        _handlers[_handlerCount++] = handler;
+        return true;
+    }
+    
+    /**
+     * @brief Clear all handlers
+     */
+    void clearHandlers() {
+        _handlerCount = 0;
+    }
+    
+    /**
+     * @brief Process incoming serial data
+     * 
+     * Reads available bytes, decodes COBS packets, and routes
+     * complete packets through the handler chain.
+     * 
+     * @return Number of packets processed
+     */
+    int process() {
+        if (!_serial) return 0;
+        
+        int packetsProcessed = 0;
+        
+        while (_serial->available()) {
+            uint8_t b = _serial->read();
+            _lastActivityMs = millis();
+            
+            if (b == CoreProtocol::FRAME_DELIMITER) {
+                if (_rxIndex > 0) {
+                    processFrame(_rxBuffer, _rxIndex);
+                    packetsProcessed++;
+                    _rxIndex = 0;
+                }
+            } else if (_rxIndex < RX_BUFFER_SIZE) {
+                _rxBuffer[_rxIndex++] = b;
+            } else {
+                _rxIndex = 0;  // Buffer overflow - reset
+            }
+        }
+        
+        return packetsProcessed;
+    }
+    
+    /**
+     * @brief Get time of last activity
+     */
+    unsigned long lastActivityMs() const { return _lastActivityMs; }
+    
+private:
+    void processFrame(const uint8_t* frame, size_t frameLen) {
+        uint8_t decoded[CoreProtocol::MAX_PACKET_SIZE];
+        size_t decodedLen = CoreProtocol::cobsDecode(frame, frameLen, decoded, sizeof(decoded));
+        
+        if (decodedLen < 4) return;  // Minimum: type + tag + len + crc
+        
+        uint8_t type;
+        uint8_t tag;
+        const uint8_t* payload;
+        size_t payloadLen;
+        
+        if (!CoreProtocol::parsePacket(decoded, decodedLen, &type, &tag, &payload, &payloadLen)) {
+            return;  // CRC error or malformed packet
+        }
+        
+        routePacket(type, tag, payload, payloadLen);
+    }
+    
+    void routePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) {
+        for (size_t i = 0; i < _handlerCount; i++) {
+            _handlers[i]->setCurrentTag(tag);
+            CommandHandleResult result = _handlers[i]->tryProcess(type, payload, len);
+            
+            if (result == CommandHandleResult::Handled) {
+                return;
+            }
+        }
+        
+        // No handler processed the packet
+        if (_nackCallback) {
+            _nackCallback(SerialError::INVALID_COMMAND, type);
+        }
+    }
+    
+    Stream* _serial = nullptr;
+    NackCallback _nackCallback;
+    
+    ICommandHandler* _handlers[MAX_HANDLERS] = {nullptr};
+    size_t _handlerCount = 0;
+    
+    uint8_t _rxBuffer[RX_BUFFER_SIZE];
+    size_t _rxIndex = 0;
+    unsigned long _lastActivityMs = 0;
+};
+
+} // namespace ScaleFX
+
+using CommandRouter = ScaleFX::CommandRouter;
 
 #endif // SERIAL_CORE_H

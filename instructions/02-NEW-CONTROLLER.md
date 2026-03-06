@@ -10,37 +10,76 @@
 Required:
   - PlatformIO CLI installed
   - Python 3.8+ with pyserial
-  - Unused packet type range (see README.md)
-  
+  - Unused packet type range (see below)
+
 Choose_Packet_Range:
   Available:
-    - "0x60-0x7F"  # Recommended for next controller
-    - "0x80-0x9F"
+    - "0x80-0x9F"  # Recommended for next controller
     - "0xA0-0xBF"
     - "0xC0-0xDF"
     - "0xE0-0xEF"
-  Reserved:
+  Used:
     - "0x01-0x2F"  # GunFX
     - "0x40-0x5F"  # LightFX
+    - "0x60-0x7F"  # GearControl
+  Reserved:
     - "0x30-0x3F"  # Future use
     - "0xF0-0xFF"  # Core system
 ```
 
 ---
 
+## Architecture Overview
+
+Every Pico server controller follows the same architecture:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  PicoServer  (common boilerplate — serial, indicators, etc.) │
+│  ┌────────────────────────┐  ┌─────────────────────────────┐ │
+│  │ CoreCommandServer      │  │ NewFxServer                 │ │
+│  │ (extends BusServer)    │  │ (extends BusServer)         │ │
+│  │ handles: 0xF0-0xFF     │  │ handles: 0x80-0x9F          │ │
+│  └────────────────────────┘  └─────────────────────────────┘ │
+│                 ↑ priority 1             ↑ priority 2        │
+│  ┌──────────────┴────────────────────────┴──────────────────┐│
+│  │                  CommandRouter                            ││
+│  │         Chain of Responsibility dispatch                  ││
+│  └───────────────────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Key classes:**
+- **PicoServer** — Common boilerplate (serial, device name, indicators, CoreCommandServer, CommandRouter, connection timeout)
+- **BusServer** — Base class for all server command handlers (ACK/NACK helpers, packet range routing)
+- **CoreCommandServer** — Handles INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE, STATUS_REQ, I2C_SCAN (extends BusServer)
+- **NewFxServer** — Your module-specific handler (extends BusServer)
+
+**What PicoServer handles automatically:**
+- USB serial init (115200 baud, 3s wait)
+- Unique device name from Pico board ID (e.g., "NewFX-A1B2")
+- Indicator LEDs on GP13/GP14 via `IndicatorLedManager`
+- CoreCommandServer with board info and INIT/SHUTDOWN/REBOOT/BOOTSEL callbacks
+- CommandRouter with automatic handler priority (core first, then module)
+- Connection timeout / watchdog detection (15s)
+- Free RAM updates in STATUS response
+- I2C bus scan infrastructure (optional)
+
+---
+
 ## Step 1: Create Directory Structure
 
 ```bash
-# ACTION: Run these commands
 mkdir -p controllers/newfx/pico/src
-mkdir -p controllers/newfx/pico/tests
 ```
 
 **Result:**
 ```
 controllers/newfx/pico/
 ├── src/
-└── tests/
+│   └── newfx_pico.ino
+├── platformio.ini
+└── README.md
 ```
 
 ---
@@ -60,7 +99,7 @@ board_build.core = earlephilhower
 
 monitor_speed = 115200
 
-build_flags = 
+build_flags =
     -DUSE_TINYUSB=0
     -DSCALEFX_SERVER
 
@@ -68,105 +107,107 @@ lib_deps =
     ${common.lib_deps}
 
 [common]
-lib_deps = 
+lib_deps =
     ../../lib/serial
-    ; Add other libs as needed:
-    ; ../../lib/components
+    ../../lib/components
+    ; Add other component libs as needed:
+    ; ../../lib/led_control
+    ; ../../lib/srv_control
+    ; ../../lib/pwm_control
 ```
+
+**Note:** `SCALEFX_SERVER` macro excludes USB Host / client-side code from the build.
 
 ---
 
-## Step 3: Add Packet Types
-
-**File:** `controllers/lib/serial/serial_newfx.h` (NEW FILE — packet types live in the module header)
-
-**ACTION:** Define packet type namespace in the new header:
-
-```cpp
-// NewFX packet types (0x60-0x7F)
-namespace NewFxPacket {
-    constexpr uint8_t COMMAND_1     = 0x60;
-    constexpr uint8_t COMMAND_2     = 0x61;
-    constexpr uint8_t COMMAND_3     = 0x62;
-    // Add more as needed, stay within 0x60-0x7F
-}
-```
-
----
-
-## Step 4: Add Error Codes
-
-**File:** `controllers/lib/serial/serial_error.h`
-
-**ACTION:** Add namespace after existing ones:
-
-```cpp
-// NewFX-specific errors (0x30-0x3F recommended)
-namespace NewFxError {
-    constexpr uint8_t OK              = 0x00;
-    constexpr uint8_t INVALID_PARAM_1 = 0x30;
-    constexpr uint8_t INVALID_PARAM_2 = 0x31;
-    // Add more as needed
-    
-    inline const char* name(uint8_t code) {
-        switch (code) {
-            case INVALID_PARAM_1: return "INVALID_PARAM_1";
-            case INVALID_PARAM_2: return "INVALID_PARAM_2";
-            default: return SerialError::name(code);
-        }
-    }
-}
-```
-
----
-
-## Step 5: Create Server Handler
+## Step 3: Create Server Handler
 
 **File:** `controllers/lib/serial/serial_newfx.h` (NEW FILE)
 
+This single header contains everything for the new module: packet types, error codes, validation constants, data types, and server class.
+
 ```cpp
-#pragma once
+/*
+ * Serial NewFX Protocol - Binary Protocol Client/Server
+ *
+ * Binary COBS protocol client/server for NewFX controller.
+ *   - NewFxServer: For NewFX Pico (receives commands, extends BusServer)
+ *   - NewFxClient: For HubFX (sends commands, extends BusClient)
+ *
+ * Packet Types (0x80-0x9F range):
+ *   COMMAND_1 (0x80) - [param1:u16LE][param2:u8] Description
+ *   COMMAND_2 (0x81) - [id:u8] Description
+ */
 
-#include "serial_core.h"
-#include "serial_error.h"
+#ifndef SERIAL_NEWFX_H
+#define SERIAL_NEWFX_H
+
+#include <Arduino.h>
 #include <functional>
+#include "serial_bus_client.h"
+#include "serial_bus_server.h"
 
-// NewFX packet types (0x60-0x7F)
+// ============================================================================
+// NewFX Packet Types (0x80-0x9F range)
+// ============================================================================
+
 namespace NewFxPacket {
-    constexpr uint8_t COMMAND_1 = 0x60;
-    constexpr uint8_t COMMAND_2 = 0x61;
+    constexpr uint8_t COMMAND_1 = 0x80;  // [param1:u16LE][param2:u8]
+    constexpr uint8_t COMMAND_2 = 0x81;  // [id:u8]
 }
 
-// NewFX validation constants
+// ============================================================================
+// NewFX Error Codes (use your assigned error range)
+// ============================================================================
+
+namespace NewFxError {
+    using namespace SerialError;  // Import generic error codes
+
+    constexpr uint8_t INVALID_PARAM_1 = 0x70;
+    constexpr uint8_t INVALID_PARAM_2 = 0x71;
+
+    inline const char* getMessage(uint8_t code) {
+        switch (code) {
+            case INVALID_PARAM_1: return "Invalid param1";
+            case INVALID_PARAM_2: return "Invalid param2";
+            default: return SerialError::getMessage(code);
+        }
+    }
+}
+
+// ============================================================================
+// NewFX Validation Constants
+// ============================================================================
+
 namespace NewFxSpec {
     constexpr uint8_t MAX_ID = 4;
-    
-    inline bool isValidId(uint8_t id)    { return id >= 1 && id <= MAX_ID; }
+
+    inline bool isValidId(uint8_t id)     { return id >= 1 && id <= MAX_ID; }
     inline bool isValidParam1(uint16_t v) { return v <= 10000; }
 }
 
-/**
- * NewFxServer - Command handler for NewFX controller
- * 
- * Packet range: 0x60-0x7F
- * Uses SFX_* macros for handler boilerplate (see serial_core.h)
- */
-class NewFxServer : public ICommandHandler {
+// ============================================================================
+// NewFxServer — Command handler (extends BusServer)
+// ============================================================================
+
+class NewFxServer : public BusServer {
 public:
+    // Callback types
     using Command1Callback = std::function<uint8_t(uint16_t param1, uint8_t param2)>;
     using Command2Callback = std::function<uint8_t(uint8_t id)>;
-    
-    void begin(Stream* serial) { _serial = serial; }
-    
+
+    // Callback registration
     void onCommand1(Command1Callback cb) { _onCommand1 = cb; }
     void onCommand2(Command2Callback cb) { _onCommand2 = cb; }
-    
-    // Uses SFX_* macros — see serial_core.h for definitions
-    CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override {
+
+    const char* handlerName() const override { return "NewFxServer"; }
+
+protected:
+    CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override {
         switch (type) {
             case NewFxPacket::COMMAND_1: {
                 SFX_REQUIRE_LEN(3);
-                uint16_t p1 = getU16LE(payload);
+                uint16_t p1 = CoreProtocol::getU16LE(payload);
                 uint8_t p2 = payload[2];
                 SFX_VALIDATE(NewFxSpec::isValidParam1(p1), NewFxError::INVALID_PARAM_1);
                 SFX_DISPATCH(_onCommand1, p1, p2);
@@ -182,50 +223,69 @@ public:
         }
     }
 
-    const char* handlerName() const override { return "NewFxServer"; }
+    const char* getModuleErrorMessage(uint8_t code) override {
+        return NewFxError::getMessage(code);
+    }
+
+    uint8_t moduleRangeLow() const override  { return 0x80; }
+    uint8_t moduleRangeHigh() const override { return 0x9F; }
 
 private:
-    Stream* _serial = nullptr;
     Command1Callback _onCommand1;
     Command2Callback _onCommand2;
 };
+
+#endif // SERIAL_NEWFX_H
 ```
+
+**Key design points:**
+- Server extends `BusServer` (not `ICommandHandler` directly)
+- Override `handleModulePacket()` — BusServer's `tryProcess()` handles range checking
+- Override `moduleRangeLow()`/`moduleRangeHigh()` for automatic packet routing
+- Override `getModuleErrorMessage()` for NACK error text lookup
+- Error codes, packet types, and validation all live in the same header
+- Use `CoreProtocol::getU16LE()` / `CoreProtocol::putU16LE()` for endian-safe reads/writes
 
 ---
 
-## Step 6: Update Umbrella Header
+## Step 4: Update Umbrella Header
 
 **File:** `controllers/lib/serial/serial.h`
 
 **ACTION:** Add include:
 
 ```cpp
+// NewFX binary implementation
 #include "serial_newfx.h"
 ```
 
 ---
 
-## Step 7: Create Main Firmware
+## Step 5: Create Main Firmware
 
 **File:** `controllers/newfx/pico/src/newfx_pico.ino`
 
-> **Note:** All controllers use `PicoServer` for common boilerplate. Controller firmware only contains module-specific logic.
+This is the canonical pattern used by all controllers. Study LightFX and GearControl for real examples.
 
 ```cpp
 /**
- * NewFX Pico - [Description]
- * Firmware Version: 0.1.0
+ * NewFX Pico Controller v0.1.0
  *
- * Architecture:
+ * Server controller for [description].
+ *
+ * Hardware: Raspberry Pi Pico (RP2040) + earlephilhower/arduino-pico core
+ * Protocol: Binary COBS with CRC-8
+ *
+ * Architecture (Chain of Responsibility):
  *   - PicoServer: Common server boilerplate (serial, indicators, core protocol)
  *   - NewFxServer: Handles module-specific commands
  *   - CommandRouter: Routes packets to handlers in priority order
  */
 
 #include <Arduino.h>
+#include <serial.h>
 #include <pico_server.h>
 
-// Version info
 #define FIRMWARE_VERSION "0.1.0"
 #define BUILD_NUMBER 1
 
@@ -233,30 +293,19 @@ private:
 //  GLOBAL INSTANCES
 // ============================================================================
 
-// Server (serial, core protocol, indicators, connection management)
 PicoServer server;
 NewFxServer newfxServer;
 
 // ============================================================================
-//  CALLBACKS
+//  CONNECTION MANAGEMENT
 // ============================================================================
 
-void performSafeInit() {
-    // Initialize hardware to safe state
-}
-
 void performSafeShutdown() {
-    // Shutdown hardware safely
+    // Put ALL hardware into safe state
 }
 
-uint8_t handleCommand1(uint16_t param1, uint8_t param2) {
-    // Implement command logic
-    return SerialError::OK;
-}
-
-uint8_t handleCommand2(uint8_t id) {
-    // Implement command logic
-    return SerialError::OK;
+void performSafeInit() {
+    performSafeShutdown();
 }
 
 // ============================================================================
@@ -264,135 +313,138 @@ uint8_t handleCommand2(uint8_t id) {
 // ============================================================================
 
 void setup() {
-    // Initialize server (serial, device name, indicators, core callbacks)
+    // 1. Initialize PicoServer
     server.begin("NewFX", FIRMWARE_VERSION, BUILD_NUMBER);
-    server.onInit([]()     { performSafeInit(); });
+    server.onInit([]() { performSafeInit(); });
     server.onShutdown([]() { performSafeShutdown(); });
 
-    // Initialize hardware (I2C, servos, LEDs, etc.)
+    // 2. Initialize hardware
     // ...
 
-    // Configure module handler
-    newfxServer.begin(&Serial, server.deviceName());
-    newfxServer.onCommand1(handleCommand1);
-    newfxServer.onCommand2(handleCommand2);
-
-    // Register module-specific STATUS data callback
-    server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        // Append module-specific bytes to STATUS response
-        // Return number of bytes written
-        return 0;  // TODO: implement module status
+    // 3. Initialize module server and register callbacks
+    newfxServer.begin(&Serial);
+    newfxServer.onCommand1([](uint16_t p1, uint8_t p2) -> uint8_t {
+        return SerialError::OK;
+    });
+    newfxServer.onCommand2([](uint8_t id) -> uint8_t {
+        return SerialError::OK;
     });
 
-    // Finalize command router (core + module handlers)
+    // 4. Register STATUS data callback
+    server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+        return 0;  // Module-specific status bytes
+    });
+
+    // 5. Optional: I2C scan
+    // server.enableI2CScan(Wire);
+
+    // 6. Finalize router
     server.addModuleHandler(&newfxServer);
 }
 
 // ============================================================================
-//  LOOP
+//  MAIN LOOP
 // ============================================================================
 
 void loop() {
-    // Process protocol, connection timeout, indicators
     server.loop();
-
-    // Module-specific updates
     // updateHardware();
-
-    // Optional: set error/warning indicator conditions
     // server.indicators().setErrorCondition(hasError);
-
     delay(1);
 }
 ```
 
+### setup() Pattern (6 mandatory steps)
+
+| Step | What | Example |
+|------|------|---------|
+| 1 | `server.begin()` + callbacks | `server.begin("NewFX", VER, BUILD); server.onInit(...); server.onShutdown(...);` |
+| 2 | Hardware init | I2C, GPIO, servo pins, LED pins |
+| 3 | Module server + callbacks | `newfxServer.begin(&Serial); newfxServer.onCommand1(...);` |
+| 4 | STATUS data callback | `server.core().onStatusData([](buf, max) -> size_t { ... });` |
+| 5 | I2C scan (optional) | `server.enableI2CScan(Wire); server.addExpectedI2CDevice(...);` |
+| 6 | Finalize router | `server.addModuleHandler(&newfxServer);` |
+
+### loop() Pattern
+
+| Step | What | Notes |
+|------|------|-------|
+| 1 | `server.loop()` | Protocol, timeout, indicators — always first |
+| 2 | Hardware updates | Sequences, servos, sensors, state machines |
+| 3 | Error conditions | `server.indicators().setErrorCondition(...)` / `.setWarningCondition(...)` |
+| 4 | `delay(1)` | Yield CPU time |
+
 ---
 
-## Step 8: Add Python Packet Constants
+## Step 6: Add Python Packet Constants
 
 **File:** `tests/framework/packets.py`
 
-**ACTION:** Add class:
-
 ```python
 class NewFxPacket:
-    """NewFX packet types (0x60-0x7F)"""
-    COMMAND_1 = 0x60
-    COMMAND_2 = 0x61
-    COMMAND_3 = 0x62
+    """NewFX packet types (0x80-0x9F)"""
+    COMMAND_1 = 0x80
+    COMMAND_2 = 0x81
 
 
 class NewFxError:
-    """NewFX error codes (0x30-0x3F)"""
+    """NewFX error codes"""
     OK = 0x00
-    INVALID_PARAM_1 = 0x30
-    INVALID_PARAM_2 = 0x31
-    
+    INVALID_PARAM_1 = 0x70
+    INVALID_PARAM_2 = 0x71
+
     @staticmethod
     def name(code: int) -> str:
         names = {
-            0x30: "INVALID_PARAM_1",
-            0x31: "INVALID_PARAM_2",
+            0x70: "INVALID_PARAM_1",
+            0x71: "INVALID_PARAM_2",
         }
         return names.get(code, CoreError.name(code))
 ```
 
 ---
 
-## Step 9: Add Python Command Builders
+## Step 7: Add Python Command Builders
 
 **File:** `tests/framework/commands.py`
-
-**ACTION:** Add class:
 
 ```python
 class NewFxCommands:
     """Build NewFX command packets."""
-    
+
     @staticmethod
     def command_1(param1: int, param2: int) -> bytes:
-        """Build COMMAND_1 packet."""
-        payload = struct.pack('<HB', param1, param2)  # little-endian
+        payload = struct.pack('<HB', param1, param2)
         return build_packet(NewFxPacket.COMMAND_1, payload)
-    
+
     @staticmethod
     def command_2(id: int) -> bytes:
-        """Build COMMAND_2 packet."""
         payload = struct.pack('<B', id)
         return build_packet(NewFxPacket.COMMAND_2, payload)
 ```
 
 ---
 
-## Step 10: Add to CLI
+## Step 8: Add to CLI
 
-### ACTION 10.1: Create Handler File
-
-**File:** `tests/cli/handlers/newfx.py` (NEW FILE)
+### 8.1: Create Handler File (`tests/cli/handlers/newfx.py`)
 
 ```python
 """NewFX CLI command handler."""
 from typing import Dict, List, Tuple, Callable
 from tests.cli.base import CommandHandlerBase, CommandInfo
 from tests.framework.commands import NewFxCommands
-from tests.framework.packets import NewFxPacket
 
 
 class NewFxCommandHandler(CommandHandlerBase):
-    """Handler for NewFX controller commands."""
-    
     def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
         return {
             'newfx.cmd1': (self.cmd_newfx_cmd1, CommandInfo(
                 'newfx.cmd1', 'newfx.cmd1 <param1> <param2>',
                 'Execute command 1', requires_init=True)),
-            'newfx.cmd2': (self.cmd_newfx_cmd2, CommandInfo(
-                'newfx.cmd2', 'newfx.cmd2 <id>',
-                'Execute command 2', requires_init=True)),
         }
-    
+
     def cmd_newfx_cmd1(self, args: List[str]):
-        """NewFX command 1."""
         if len(args) < 2:
             self.print_error("Usage: newfx.cmd1 <param1> <param2>")
             return
@@ -401,160 +453,37 @@ class NewFxCommandHandler(CommandHandlerBase):
             packet = NewFxCommands.command_1(p1, p2)
             success, response = self.conn.send_expect_ack(packet)
             if success:
-                self.print_success(f"Command 1 executed: p1={p1}, p2={p2}")
+                self.print_success(f"Command 1: p1={p1}, p2={p2}")
             else:
                 self.print_response(response)
         except ValueError:
             self.print_error("Invalid parameters")
-
-    def cmd_newfx_cmd2(self, args: List[str]):
-        """NewFX command 2."""
-        if len(args) < 1:
-            self.print_error("Usage: newfx.cmd2 <id>")
-            return
-        try:
-            id_val = int(args[0])
-            packet = NewFxCommands.command_2(id_val)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_success(f"Command 2: id={id_val}")
-            else:
-                self.print_response(response)
-        except ValueError:
-            self.print_error("Invalid id")
 ```
 
-### ACTION 10.2: Add ControllerType
+### 8.2: Add ControllerType (`tests/cli/base.py`)
 
-**File:** `tests/cli/base.py`
+### 8.3: Register Handler (`tests/cli/interactive.py`)
 
-```python
-class ControllerType:
-    GUNFX = 'gunfx'
-    LIGHTFX = 'lightfx'
-    NOOP = 'noop'
-    NEWFX = 'newfx'    # ADD THIS
-```
-
-### ACTION 10.3: Register Handler in interactive.py
-
-**File:** `tests/cli/interactive.py`
-
-```python
-from tests.cli.handlers.newfx import NewFxCommandHandler
-
-# In constructor:
-self.newfx_handler = NewFxCommandHandler(self.conn)
-
-# In handler list (self._handlers):
-self._handlers = [self.core_handler, self.gunfx_handler, 
-                  self.lightfx_handler, self.newfx_handler]
-
-# In get_available_commands():
-if self.controller_type == ControllerType.NEWFX:
-    commands.update(self.newfx_handler.get_commands())
-```
-
-### ACTION 10.4: Add Controller Detection
-
-**File:** `tests/cli/handlers/core.py`
-
-```python
-# In INIT_READY parsing / controller detection:
-name_lower = device_name.lower()
-if 'newfx' in name_lower:
-    self.controller_type = ControllerType.NEWFX
-    self.print_info("Detected NewFX - newfx.* commands available")
-```
+### 8.4: Add Controller Detection (`tests/cli/handlers/core.py`)
 
 ---
 
-## Step 11: Create Tests
+## Step 9: Create Tests
 
-**File:** `tests/newfx/test_system.py`
-
-```python
-"""NewFX system command tests."""
-import pytest
-from tests.framework import ScaleFXConnection, CommandBuilder
-
-class TestNewFxInit:
-    def test_init_response(self, connection):
-        """Test INIT returns INIT_READY with NewFX info."""
-        response = connection.send_and_wait(CommandBuilder.init())
-        assert response.is_init_ready
-        assert 'NewFX' in response.device_name
-
-class TestNewFxCommands:
-    def test_command_1_valid(self, connection):
-        """Test COMMAND_1 with valid parameters."""
-        from tests.framework import NewFxCommands
-        connection.send_and_wait(CommandBuilder.init())
-        
-        packet = NewFxCommands.command_1(100, 5)
-        success, response = connection.send_expect_ack(packet)
-        assert success
-    
-    def test_command_1_missing_param(self, connection):
-        """Test COMMAND_1 with missing parameters."""
-        from tests.framework.protocol import build_packet
-        from tests.framework.packets import NewFxPacket, CoreError
-        connection.send_and_wait(CommandBuilder.init())
-        
-        # Send with empty payload
-        packet = build_packet(NewFxPacket.COMMAND_1, b'')
-        success, response = connection.send_expect_ack(packet)
-        assert not success
-        assert response.error_code == CoreError.MISSING_PARAMETER
-```
+**File:** `tests/newfx/__init__.py` (empty)
+**File:** `tests/newfx/test_system.py` (see 06-TEST-SUITE.md)
 
 ---
 
-## Step 12: Create README
+## Step 10: Create README
 
 **File:** `controllers/newfx/pico/README.md`
 
-```markdown
-# NewFX Pico Controller
+---
 
-[Description of what this controller does]
+## Step 11: Register in build_and_flash.py
 
-## Hardware
-
-| Pin | Function |
-|-----|----------|
-| GP0 | ... |
-| GP1 | ... |
-
-## Protocol
-
-### Packet Types (0x60-0x7F)
-
-| Type | Name | Payload | Description |
-|------|------|---------|-------------|
-| 0x60 | COMMAND_1 | `[param1:u16][param2:u8]` | Description |
-| 0x61 | COMMAND_2 | `[id:u8]` | Description |
-
-### Error Codes
-
-| Code | Name | Description |
-|------|------|-------------|
-| 0x30 | INVALID_PARAM_1 | param1 out of range |
-| 0x31 | INVALID_PARAM_2 | param2 out of range |
-
-## Build
-
-\`\`\`bash
-cd controllers/newfx/pico
-pio run
-\`\`\`
-
-## Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 0.1.0 | YYYY-MM-DD | Initial release |
-```
+Add the new controller to the controllers dictionary in `scripts/build_and_flash.py`.
 
 ---
 
@@ -562,11 +491,51 @@ pio run
 
 ```yaml
 After_Completion:
-  - [ ] "pio run" succeeds in controllers/newfx/pico/
-  - [ ] "python -m py_compile tests/framework/packets.py" succeeds
-  - [ ] "python -m py_compile tests/framework/commands.py" succeeds
-  - [ ] "python -m py_compile tests/cli/interactive.py" succeeds
-  - [ ] "python -m py_compile tests/cli/handlers/newfx.py" succeeds
-  - [ ] CLI shows newfx.* commands after connecting to device
-  - [ ] pytest tests/newfx/ passes with hardware
+  Build:
+    - [ ] "pio run" succeeds in controllers/newfx/pico/
+    - [ ] All other controllers still build (gunfx, lightfx, gearcontrol, noop)
+
+  Python:
+    - [ ] "python -m py_compile tests/framework/packets.py"
+    - [ ] "python -m py_compile tests/framework/commands.py"
+    - [ ] "python -m py_compile tests/cli/interactive.py"
+    - [ ] "python -m py_compile tests/cli/handlers/newfx.py"
+
+  Runtime:
+    - [ ] CLI shows newfx.* commands after connecting
+    - [ ] INIT returns INIT_READY with correct device name
+    - [ ] STATUS returns module data
+    - [ ] GP13 blinks→solid on INIT, GP14 blinks on error
+
+  Documentation:
+    - [ ] README.md created with protocol table
+    - [ ] AGENTS.md updated with new packet range
 ```
+
+---
+
+## Real-World Examples
+
+| Controller | Complexity | Key Patterns |
+|-----------|------------|--------------|
+| **NoOp** | Minimal | Core-only + inline ICommandHandler for servo |
+| **GunFX** | Medium | Firing state machine, smoke config, servo jerk |
+| **LightFX** | Medium | 8 LED channels with sequence engine, landing lights |
+| **GearControl** | Complex | I2C (INA226), motor H-bridge, calibration, battery monitor |
+
+### Component Library (`controllers/lib/components/`)
+
+**Always check here before writing hardware-specific code:**
+
+| Component | Header | Purpose |
+|-----------|--------|---------|
+| PicoServer | `pico_server.h` | Server boilerplate (REQUIRED) |
+| LedControl | `led_control.h` | GPIO LED on/off, toggle, PWM brightness |
+| LedEventSeq | `led_event_seq.h` | Looping LED animation sequences |
+| ILedEvent | `led_events.h` | Built-in animations (LedOn, LedOff, LedFlashing, etc.) |
+| ServoControl | `srv_control.h` | Servo with trapezoidal motion profiling |
+| PwmControl | `pwm_control.h` | RC PWM input with averaging and callbacks |
+| INA226 | `ina226.h` | TI INA226 power/current/voltage monitor (I2C) |
+| I2CDevice | `i2c_device.h` | Base class for I2C peripherals |
+| BatteryMonitor | `battery_monitor.h` | ADC battery voltage with low-voltage alerts |
+| IndicatorLedManager | `indicator_leds.h` | Connection/error LED state machine |

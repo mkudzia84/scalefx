@@ -10,7 +10,7 @@ from tests.framework import (
     CorePacket, CoreError, GearControlError, GunFxError, LightFxError,
     GearControlPacket, GunFxPacket, LightFxPacket, GearErrorReason
 )
-from tests.framework.protocol import read_u16_le, read_u32_le
+from tests.framework.protocol import read_u16_le, read_u32_le, read_i16_le
 from .base import Fore, Style
 
 
@@ -182,11 +182,12 @@ def parse_status_payload(payload: bytes, controller_type: str = None) -> None:
 
 
 def _parse_gearcontrol_status(data: bytes) -> None:
-    """Parse GearControl module status data (36 bytes).
+    """Parse GearControl module status data (50 bytes).
     
     Wire format:
-      Per gear × 3 (9 bytes each = 27 bytes):
-        [state:u8][motor_current_mA:u16][door0_pos_us:u16][door1_pos_us:u16][calibratedStall_mA:u16]
+      Per gear × 3 (11 bytes each = 33 bytes):
+        [state:u8][motor_current_mA:u16][door0_pos_us:u16][door1_pos_us:u16]
+        [calibratedStall_mA:u16][shuntVoltage_10uV:i16]
       [yaw_pos_us:u16]
       [led_flags:u8]              # bits 0-5 status, 6-7 indicators
       [battery_voltage_mV:u16]
@@ -194,8 +195,16 @@ def _parse_gearcontrol_status(data: bytes) -> None:
       [gear0_error_reason:u8]     # Per-gear error reason (GearErrorReason)
       [gear1_error_reason:u8]
       [gear2_error_reason:u8]
+      [shuntResistance_mohm:u16]  # Configured shunt resistance in milliohms
+      [gear0_door_mode:u8]        # DoorMode enum per gear
+      [gear1_door_mode:u8]
+      [gear2_door_mode:u8]
+      [gear0_config_flags:u8]     # GearConfigFlags bitmask per gear
+      [gear1_config_flags:u8]
+      [gear2_config_flags:u8]
     """
-    if len(data) < 33:
+    from tests.framework.packets import DoorMode as DoorModeClass
+    if len(data) < 39:
         print(f"  GearControl: (incomplete: {data.hex()})")
         return
     
@@ -213,18 +222,33 @@ def _parse_gearcontrol_status(data: bytes) -> None:
     
     print(f"  ── GearControl ────────────────")
     
-    # Parse per-gear error reasons if available (bytes 33-35)
+    # Parse per-gear error reasons (bytes 39-41)
     error_reasons = [0, 0, 0]
-    if len(data) >= 36:
-        error_reasons = [data[33], data[34], data[35]]
+    if len(data) >= 42:
+        error_reasons = [data[39], data[40], data[41]]
+    
+    # Shunt resistance (bytes 42-43) — configured value in milliohms
+    shunt_mohm = read_u16_le(data, 42) if len(data) >= 44 else 0
+
+    # Door mode per gear (bytes 44-46)
+    door_modes = [0, 0, 0]
+    if len(data) >= 47:
+        door_modes = [data[44], data[45], data[46]]
+
+    # Config flags per gear (bytes 47-49)
+    config_flags = [0, 0, 0]
+    if len(data) >= 50:
+        config_flags = [data[47], data[48], data[49]]
     
     for i in range(3):
-        offset = i * 9
+        offset = i * 11
         state = data[offset]
         current_mA = read_u16_le(data, offset + 1)
         door0 = read_u16_le(data, offset + 3)
         door1 = read_u16_le(data, offset + 5)
         stall_mA = read_u16_le(data, offset + 7)
+        shunt_10uV = read_i16_le(data, offset + 9)  # signed, in 10µV units
+        shunt_mV = shunt_10uV * 10 / 1000.0  # convert to millivolts
         
         sname = state_names.get(state, f'?({state})')
         scolor = state_colors.get(state, '')
@@ -235,16 +259,39 @@ def _parse_gearcontrol_status(data: bytes) -> None:
         reason_str = ""
         if state == 5 and error_reasons[i] != 0:  # GearState::ERROR
             reason_str = f"  {Fore.RED}({GearErrorReason.name(error_reasons[i])}){Style.RESET_ALL}"
+
+        # Door mode display
+        dmode = door_modes[i]
+        dmode_name = DoorModeClass.name(dmode).lower()
+
+        # Config flags display
+        cflags = config_flags[i]
+        cflag_parts = []
+        if cflags & 0x01: cflag_parts.append("close-retract")
+        if cflags & 0x02: cflag_parts.append("close-deploy")
+        if cflags & 0x04: cflag_parts.append("yaw")
+        cflag_str = ', '.join(cflag_parts) if cflag_parts else "none"
+
+        # Door position annotation
+        door_str = f"doors=[{door0}µs, {door1}µs]" if dmode != 0 else "doors=n/a"
         
         print(f"  {gear_names[i]:>10}: {scolor}{sname}{Style.RESET_ALL}{reason_str}  "
-              f"motor={current_mA}mA  doors=[{door0}µs, {door1}µs]  {stall_str}")
+              f"motor={current_mA}mA  shunt={shunt_mV:.1f}mV  "
+              f"{door_str}  {stall_str}")
+        print(f"             door-mode={dmode_name}  flags=[{cflag_str}]")
     
-    yaw = read_u16_le(data, 27)
-    led_flags = data[29]
-    battery_mV = read_u16_le(data, 30)
-    battery_flags = data[32]
+    yaw = read_u16_le(data, 33)
+    led_flags = data[35]
+    battery_mV = read_u16_le(data, 36)
+    battery_flags = data[38]
     
     print(f"  Yaw:       {yaw}µs")
+    
+    # Shunt resistance config
+    if shunt_mohm > 0:
+        shunt_ohm = shunt_mohm / 1000.0
+        max_current = 81.92 / shunt_ohm  # INA226 max shunt voltage = ±81.92mV
+        print(f"  Shunt:     {shunt_mohm}mΩ ({shunt_ohm}Ω)  max={max_current:.0f}mA")
     
     # Battery voltage and config
     battery_enabled = bool(battery_flags & 0x04)
@@ -374,6 +421,150 @@ def _parse_lightfx_status(data: bytes) -> None:
     
     # Servos
     print(f"  Servos:    [{servo0}µs, {servo1}µs, {servo2}µs]")
+
+
+# =============================================================================
+# GearControl Calibration Status Parser
+# =============================================================================
+
+def parse_gear_calib_status(payload: bytes) -> None:
+    """Parse GEAR_CALIB_STATUS packet payload.
+    
+    Wire format (9 bytes):
+      [gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE][finished:u8]
+    """
+    if len(payload) < 9:
+        print(f"  CalibStatus: (incomplete: {payload.hex()})")
+        return
+    
+    gear_id = payload[0]
+    phase = payload[1]
+    current_mA = read_u16_le(payload, 2)
+    peak_mA = read_u16_le(payload, 4)
+    stall_mA = read_u16_le(payload, 6)
+    finished = payload[8] != 0
+    
+    gear_names = {0: 'Nose', 1: 'Left Main', 2: 'Right Main'}
+    gear_name = gear_names.get(gear_id, f'Gear {gear_id}')
+    
+    phase_names = {
+        0: 'IDLE', 1: 'CLEAR_RUN', 2: 'CLEAR_SETTLE',
+        3: 'DEPLOY_RUN', 4: 'MID_SETTLE', 5: 'RETRACT_RUN',
+        6: 'COMPLETE', 7: 'ERROR', 8: 'CANCELLED',
+        9: 'OPENING_DOORS', 10: 'CLOSING_DOORS',
+    }
+    phase_name = phase_names.get(phase, f'?({phase})')
+    
+    # Color based on phase
+    if phase == 6:  # COMPLETE
+        phase_color = Fore.GREEN
+    elif phase == 7:  # ERROR
+        phase_color = Fore.RED
+    elif phase == 8:  # CANCELLED
+        phase_color = Fore.YELLOW
+    elif phase in (1, 3, 5):  # Motor running phases
+        phase_color = Fore.CYAN
+    else:
+        phase_color = ''
+    
+    parts = [f"{phase_color}{phase_name}{Style.RESET_ALL}"]
+    parts.append(f"current={current_mA}mA")
+    if peak_mA > 0:
+        parts.append(f"peak={peak_mA}mA")
+    if stall_mA > 0:
+        parts.append(f"stall={stall_mA}mA")
+    if finished:
+        parts.append(f"{Fore.WHITE}[FINISHED]{Style.RESET_ALL}")
+    
+    print(f"  {Fore.MAGENTA}◆{Style.RESET_ALL} {gear_name} calib: {', '.join(parts)}")
+
+
+# =============================================================================
+# GearControl Sequence Status Parser
+# =============================================================================
+
+def parse_gear_seq_status(payload: bytes) -> None:
+    """Parse GEAR_SEQ_STATUS packet payload.
+    
+    Wire format (8 bytes):
+      [gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]
+    """
+    from tests.framework.packets import GearSeqPhase
+
+    if len(payload) < 8:
+        print(f"  SeqStatus: (incomplete: {payload.hex()})")
+        return
+    
+    gear_id = payload[0]
+    phase = payload[1]
+    deploying = payload[2] != 0
+    finished = payload[3] != 0
+    elapsed_ms = int.from_bytes(payload[4:8], 'little')
+    
+    gear_names = {0: 'Nose', 1: 'Left Main', 2: 'Right Main'}
+    gear_name = gear_names.get(gear_id, f'Gear {gear_id}')
+    phase_name = GearSeqPhase.name(phase)
+    action = "deploy" if deploying else "retract"
+    
+    # Color based on state
+    if finished and phase != GearSeqPhase.SEQ_ERROR:
+        phase_color = Fore.GREEN
+    elif phase == GearSeqPhase.SEQ_ERROR:
+        phase_color = Fore.RED
+    elif phase == GearSeqPhase.RUNNING_MOTOR:
+        phase_color = Fore.CYAN
+    elif phase == GearSeqPhase.SYNC_WAIT:
+        phase_color = Fore.MAGENTA
+    else:
+        phase_color = Fore.YELLOW
+    
+    # Format elapsed time
+    elapsed_sec = elapsed_ms / 1000.0
+    
+    parts = [f"{phase_color}{phase_name}{Style.RESET_ALL}"]
+    parts.append(action)
+    parts.append(f"{elapsed_sec:.1f}s")
+    if finished:
+        parts.append(f"{Fore.WHITE}[FINISHED in {elapsed_sec:.1f}s]{Style.RESET_ALL}")
+    
+    print(f"  {Fore.MAGENTA}▸{Style.RESET_ALL} {gear_name} seq: {', '.join(parts)}")
+
+
+# =============================================================================
+# Landing Light Status Parser
+# =============================================================================
+
+def parse_landing_light_status(payload: bytes) -> None:
+    """Parse LANDING_LIGHT_STATUS packet payload.
+    
+    Wire format (3 bytes):
+      [slot:u8][phase:u8][finished:u8]
+    """
+    from tests.framework.packets import LandingLightPhase
+
+    if len(payload) < 3:
+        print(f"  LandingLightStatus: (incomplete: {payload.hex()})")
+        return
+    
+    slot = payload[0]
+    phase = payload[1]
+    finished = payload[2] != 0
+    
+    phase_name = LandingLightPhase.name(phase)
+    
+    # Color based on state
+    if phase == LandingLightPhase.DEPLOYED:
+        phase_color = Fore.GREEN
+    elif phase == LandingLightPhase.RETRACTED:
+        phase_color = Fore.YELLOW
+    else:
+        phase_color = Fore.CYAN
+    
+    parts = [f"{phase_color}{phase_name}{Style.RESET_ALL}"]
+    if finished:
+        parts.append(f"{Fore.WHITE}[FINISHED]{Style.RESET_ALL}")
+    
+    print(f"  {Fore.BLUE}▸{Style.RESET_ALL} Landing light {slot}: {', '.join(parts)}")
 
 
 # =============================================================================

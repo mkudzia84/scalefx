@@ -13,7 +13,7 @@ This document lists all text protocol commands for manual testing via serial ter
 ## Error Codes
 
 Error codes are defined in two layers:
-- **Generic errors** (`SerialError` namespace in `serial_error.h`): 0x00-0x1F, 0xF0-0xFF
+- **Generic errors** (`SerialError` namespace in `serial_core.h`): 0x00-0x1F, 0xF0-0xFF
 - **Domain-specific errors** (e.g., `GunFxError` namespace): 0x20-0x4F
 
 ### Generic Errors (All Modules)

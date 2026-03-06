@@ -25,7 +25,7 @@
  *   YAW_CONFIG   (0x68)  - [gear_id:u8][neutral:u16][min:u16][max:u16]
  *   YAW_INPUT    (0x69)  - [position_us:u16] Raw yaw steering signal
  *   GEAR_CALIBRATE (0x6A) - [gear_id:u8] Start stall current calibration
- *   GEAR_CALIB_STATUS (0x6B) - [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16] Calibration progress (server→client)
+ *   GEAR_CALIB_STATUS (0x6B) - [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16][finished:u8] Calibration progress (server→client)
  *   GEAR_CALIB_CANCEL (0x6C) - [gear_id:u8] Cancel calibration in progress
  *   BATTERY_CONFIG  (0x6D)  - [enabled:u8][auto_deploy:u8] Configure battery monitoring (enable/disable + auto-deploy)
  *   DOOR_MODE      (0x6E)  - [gear_id:u8][mode:u8][delay_ms:u16LE] Configure door activation mode
@@ -37,10 +37,8 @@
 
 #include <Arduino.h>
 #include <functional>
-#include "serial_core.h"
-#include "serial_bus.h"
-#include "serial_error.h"
-#include "serial_command_handler.h"
+#include "serial_bus_client.h"
+#include "serial_bus_server.h"
 
 // ============================================================================
 // GearControl Binary Packet Types (0x60-0x7F range)
@@ -67,7 +65,7 @@ namespace GearControlPacket {
 
     // Calibration
     constexpr uint8_t GEAR_CALIBRATE      = 0x6A;  // [gear_id:u8] Start stall current calibration
-    constexpr uint8_t GEAR_CALIB_STATUS   = 0x6B;  // [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16] Calibration progress (server→client)
+    constexpr uint8_t GEAR_CALIB_STATUS   = 0x6B;  // [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16][finished:u8] Calibration progress (server→client)
     constexpr uint8_t GEAR_CALIB_CANCEL   = 0x6C;  // [gear_id:u8] Cancel calibration in progress
 
     // Battery configuration
@@ -75,6 +73,9 @@ namespace GearControlPacket {
 
     // Door mode configuration
     constexpr uint8_t DOOR_MODE           = 0x6E;  // [gear_id:u8][mode:u8][delay_ms:u16LE]
+
+    // Sequence progress (server → client, long-running)
+    constexpr uint8_t GEAR_SEQ_STATUS     = 0x70;  // [gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]
 
     // Diagnostics — I2C scan is handled by PicoServer (CorePacket::I2C_SCAN)
 }
@@ -168,7 +169,7 @@ namespace GearControlSpec {
     constexpr uint16_t STALL_CURRENT_MIN_mA   = 50;    // Minimum detectable stall
     constexpr uint16_t STALL_CURRENT_MAX_mA   = 5000;  // Maximum expected stall
     constexpr uint16_t MOTOR_TIMEOUT_MIN_ms   = 500;
-    constexpr uint16_t MOTOR_TIMEOUT_MAX_ms   = 30000;
+    constexpr uint16_t MOTOR_TIMEOUT_MAX_ms   = 65000;
 
     // Gear-all action values
     constexpr uint8_t ACTION_RETRACT  = 0;
@@ -236,10 +237,38 @@ enum class CalibPhase : uint8_t {
 };
 
 /**
- * @brief Calibration status data (sent in GEAR_CALIB_STATUS packets)
+ * @brief Gear sequence phase (wire format for GEAR_SEQ_STATUS)
+ *
+ * Maps to the internal GearSeqStep enum values.
+ */
+namespace GearSeqPhase {
+    constexpr uint8_t IDLE           = 0;
+    constexpr uint8_t OPENING_DOORS  = 1;
+    constexpr uint8_t RUNNING_MOTOR  = 2;
+    constexpr uint8_t CLOSING_DOORS  = 3;
+    constexpr uint8_t SEQ_ERROR      = 4;
+    constexpr uint8_t SYNC_WAIT      = 5;  // Waiting for other gears to reach same phase
+}
+
+/**
+ * @brief Gear sequence status data (sent in GEAR_SEQ_STATUS packets)
  *
  * Wire format (8 bytes):
- *   [gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE]
+ *   [gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]
+ */
+struct GearControlSeqStatus {
+    uint8_t gearId = 0;
+    uint8_t phase = GearSeqPhase::IDLE;  // GearSeqPhase value
+    bool deploying = false;              // true = deploying, false = retracting
+    bool finished = false;               // true when sequence completed (IDLE or ERROR)
+    uint32_t elapsed_ms = 0;             // Time since sequence started               // ms
+};
+
+/**
+ * @brief Calibration status data (sent in GEAR_CALIB_STATUS packets)
+ *
+ * Wire format (9 bytes):
+ *   [gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE][finished:u8]
  */
 struct GearControlCalibStatus {
     uint8_t gearId = 0;
@@ -247,6 +276,7 @@ struct GearControlCalibStatus {
     uint16_t current_mA = 0;           // Live motor current reading         // mA
     uint16_t peak_mA = 0;              // Peak current in current phase      // mA
     uint16_t calibratedStall_mA = 0;   // Final calibrated value (COMPLETE)  // mA
+    bool finished = false;              // True when calibration is done (COMPLETE/ERROR/CANCELLED)
 };
 
 /**
@@ -280,7 +310,7 @@ struct GearControlGearConfig {
     uint8_t gearId = 0;
     uint8_t flags = GearConfigFlags::CLOSE_DOORS_ON_RETRACT;
     uint16_t stallCurrent_mA = 500;    // Current threshold for stall detection
-    uint16_t timeout_ms = 10000;       // Maximum motor run time
+    uint16_t timeout_ms = 60000;       // Maximum motor run time
 };
 
 /**
@@ -353,27 +383,18 @@ struct GearControlStatus {
 };
 
 /**
- * @brief Board information returned during init
+ * @brief Board information returned during init (alias for BusClientBoardInfo)
  */
-struct GearControlBoardInfo {
-    char deviceName[32] = "";
-    char firmwareVersion[16] = "";
-    char platform[16] = "";
-    uint16_t cpuFrequencyMHz = 0;
-    uint32_t freeRamBytes = 0;
-    bool versionCompatible = true;
-};
+using GearControlBoardInfo = BusClientBoardInfo;
 
 // ============================================================================
 // Callback Types
 // ============================================================================
 
-// Master callbacks
+// Module callbacks
 using GearControlStatusCallback = std::function<void(const GearControlStatus& status)>;
-using GearControlReadyCallback = std::function<void(const char* moduleName)>;
-using GearControlErrorCallback = std::function<void(uint8_t errorCode, const char* message)>;
 
-// Slave callbacks - return error code (SerialError::OK for success)
+// Server callbacks - return error code (SerialError::OK for success)
 using GearControlGearDeployCallback = std::function<uint8_t(uint8_t gearId)>;
 using GearControlGearRetractCallback = std::function<uint8_t(uint8_t gearId)>;
 using GearControlGearStopCallback = std::function<uint8_t(uint8_t gearId)>;
@@ -389,6 +410,7 @@ using GearControlCalibCancelCallback = std::function<uint8_t(uint8_t gearId)>;
 using GearControlCalibStatusCallback = std::function<void(const GearControlCalibStatus& status)>;
 using GearControlBatteryConfigCallback = std::function<uint8_t(bool enabled, bool autoDeployOnLowVoltage)>;
 using GearControlDoorModeCallback = std::function<uint8_t(const GearControlDoorModeConfig& config)>;
+using GearControlSeqStatusCallback = std::function<void(const GearControlSeqStatus& status)>;
 
 // ============================================================================
 // GearControlClient Class (Binary Protocol)
@@ -398,22 +420,15 @@ using GearControlDoorModeCallback = std::function<uint8_t(const GearControlDoorM
  * @brief Client-side GearControl serial communication (binary COBS protocol)
  *
  * Used by HubFX to send commands to GearControl server boards over USB.
- * Extends SerialBus with GearControl-specific commands.
+ * Extends BusClient with GearControl-specific commands.
  */
-class GearControlClient : public SerialBus {
+class GearControlClient : public BusClient {
 public:
     GearControlClient() = default;
-    ~GearControlClient() = default;
+    ~GearControlClient() override = default;
 
     GearControlClient(const GearControlClient&) = delete;
     GearControlClient& operator=(const GearControlClient&) = delete;
-
-    // ========================================================================
-    // Initialization
-    // ========================================================================
-
-    bool begin(UsbHost* usbHost, int deviceIndex);
-    int process();
 
     // ========================================================================
     // Gear Control
@@ -452,64 +467,30 @@ public:
     CommandResult requestStatus();
 
     // ========================================================================
-    // Connection Management
-    // ========================================================================
-
-    int sendInit(unsigned long keepaliveMs = 0);
-    void setCommandTimeout(unsigned long timeoutMs) { _commandTimeoutMs = timeoutMs; }
-    void setBlockingMode(bool blocking) { _blockingMode = blocking; }
-    void setCompatibleVersions(const char** versions, size_t count);
-
-    // ========================================================================
     // Callbacks
     // ========================================================================
 
-    void onReady(GearControlReadyCallback cb) { _readyCallback = cb; }
     void onStatus(GearControlStatusCallback cb) { _statusCallback = cb; }
-    void onError(GearControlErrorCallback cb) { _errorCallback = cb; }
     void onCalibStatus(GearControlCalibStatusCallback cb) { _calibStatusCallback = cb; }
+    void onGearSeqStatus(GearControlSeqStatusCallback cb) { _gearSeqStatusCallback = cb; }
     void onI2CScanResult(std::function<void(const I2CScanResult&)> cb) { _i2cScanResultCallback = cb; }
 
     // ========================================================================
     // State
     // ========================================================================
 
-    bool isServerReady() const { return _serverReady; }
-    bool isVersionCompatible() const { return _boardInfo.versionCompatible; }
-    const char* serverName() const { return _serverName; }
-    const GearControlBoardInfo& boardInfo() const { return _boardInfo; }
     const GearControlStatus& lastStatus() const { return _lastStatus; }
-    CommandResult lastCommandResult() const { return _lastCommandResult; }
+
+protected:
+    void onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) override;
+    const char* getModuleErrorMessage(uint8_t code) override { return GearControlError::getMessage(code); }
 
 private:
-    void handlePacket(uint8_t type, const uint8_t* payload, size_t len);
-    CommandResult sendPacketBlocking(uint8_t type, const uint8_t* payload, size_t len);
-    CommandResult waitForAckNack();
-    bool checkVersionCompatibility(const char* version);
-
-    UsbHost* _usbHostRef = nullptr;
-    bool _serverReady = false;
-    char _serverName[65] = "";
-    GearControlBoardInfo _boardInfo;
     GearControlStatus _lastStatus;
 
-    unsigned long _commandTimeoutMs = 1000;
-    bool _blockingMode = true;
-
-    volatile bool _pendingAckNack = false;
-    volatile bool _receivedAck = false;
-    volatile bool _receivedNack = false;
-    uint8_t _lastNackErrorCode = 0;
-    char _lastNackReason[64] = "";
-    CommandResult _lastCommandResult;
-
-    const char** _compatibleVersions = nullptr;
-    size_t _compatibleVersionCount = 0;
-
-    GearControlReadyCallback _readyCallback;
     GearControlStatusCallback _statusCallback;
-    GearControlErrorCallback _errorCallback;
     GearControlCalibStatusCallback _calibStatusCallback;
+    GearControlSeqStatusCallback _gearSeqStatusCallback;
     std::function<void(const I2CScanResult&)> _i2cScanResultCallback;
 };
 
@@ -521,9 +502,9 @@ private:
  * @brief Server-side GearControl serial communication (binary COBS protocol)
  *
  * Used by GearControl Pico to receive commands from HubFX client.
- * Implements ICommandHandler for use with CommandRouter.
+ * Extends BusServer with GearControl-specific command dispatch.
  */
-class GearControlServer : public ICommandHandler {
+class GearControlServer : public BusServer {
 public:
     GearControlServer() = default;
     ~GearControlServer() override = default;
@@ -532,28 +513,17 @@ public:
     GearControlServer& operator=(const GearControlServer&) = delete;
 
     // ========================================================================
-    // Initialization
-    // ========================================================================
-
-    bool begin(Stream* serial, const char* moduleName = "GearControl");
-    void end();
-    int process();
-
-    // ========================================================================
     // ICommandHandler Interface
     // ========================================================================
 
-    CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override;
     const char* handlerName() const override { return "GearControlServer"; }
 
     // ========================================================================
     // Response Methods
     // ========================================================================
 
-    int sendAck();
-    int sendNack(uint8_t errorCode, const char* reason = nullptr);
-    int sendError(uint8_t errorCode, const char* message = nullptr);
     int sendCalibStatus(const GearControlCalibStatus& status);
+    int sendGearSeqStatus(const GearControlSeqStatus& status);
 
     // ========================================================================
     // Callbacks
@@ -574,29 +544,15 @@ public:
     void onBatteryConfig(GearControlBatteryConfigCallback cb) { _batteryConfigCallback = cb; }
     void onDoorMode(GearControlDoorModeCallback cb) { _doorModeCallback = cb; }
 
-    // ========================================================================
-    // State
-    // ========================================================================
-
-    bool isInitialized() const { return _initialized; }
-    bool isClientConnected() const { return _clientConnected; }
-    void setConnectionTimeout(unsigned long timeoutMs) { _connectionTimeoutMs = timeoutMs; }
+protected:
+    CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
+    uint8_t moduleRangeLow() const override { return 0x60; }
+    uint8_t moduleRangeHigh() const override { return 0x7F; }
+    const char* getModuleErrorMessage(uint8_t code) override { return GearControlError::getMessage(code); }
 
 private:
-    CommandHandleResult handlePacket(uint8_t type, const uint8_t* payload, size_t len);
-    void processFrame(const uint8_t* frame, size_t frameLen);
-    int sendRawPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0);
-
-    Stream* _serial = nullptr;
-    bool _initialized = false;
-    bool _clientConnected = false;
-    char _moduleName[65] = "GearControl";
-
-    uint8_t _rxBuffer[CoreProtocol::COBS_BUFFER_SIZE];
-    size_t _rxIndex = 0;
-
-    unsigned long _lastRxTimeMs = 0;
-    unsigned long _connectionTimeoutMs = 5000;
+    uint8_t _calibTag = 0;   // Tag from GEAR_CALIBRATE request, echoed in CALIB_STATUS responses
+    uint8_t _gearTag[3] = {};  // Per-gear tags from GEAR_DEPLOY/RETRACT, echoed in GEAR_SEQ_STATUS
 
     GearControlGearDeployCallback _gearDeployCallback;
     GearControlGearRetractCallback _gearRetractCallback;

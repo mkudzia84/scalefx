@@ -42,9 +42,12 @@ class TestGunFxSystem:
     
     def test_status_request(self, gunfx: ScaleFXConnection):
         """STATUS_REQ should return STATUS packet."""
-        response = gunfx.send_and_wait(CommandBuilder.status_req())
+        response = gunfx.send_and_receive(CommandBuilder.status_req())
         assert response is not None, "No response"
-        assert response.packet_type == CorePacket.STATUS, "Expected STATUS"
+        assert response.packet_type == CorePacket.STATUS, (
+            f"Expected STATUS (0x{CorePacket.STATUS:02X}), "
+            f"got 0x{response.packet_type:02X}"
+        )
     
     def test_shutdown_returns_ack(self, fresh_connection: ScaleFXConnection):
         """SHUTDOWN command should return ACK."""

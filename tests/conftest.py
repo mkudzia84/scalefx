@@ -131,6 +131,10 @@ def exclusive_connection(serial_port, connection) -> Generator[ScaleFXConnection
             time.sleep(0.5)
 
 
+# Alias for exclusive_connection — used by system tests
+fresh_connection = exclusive_connection
+
+
 @pytest.fixture
 def gunfx(connection) -> ScaleFXConnection:
     """GunFX connection fixture."""
@@ -140,6 +144,12 @@ def gunfx(connection) -> ScaleFXConnection:
 @pytest.fixture
 def lightfx(connection) -> ScaleFXConnection:
     """LightFX connection fixture."""
+    return connection
+
+
+@pytest.fixture
+def gearcontrol(connection) -> ScaleFXConnection:
+    """GearControl connection fixture."""
     return connection
 
 
@@ -155,6 +165,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "hardware: requires connected hardware")
     config.addinivalue_line("markers", "gunfx: GunFX controller tests")
     config.addinivalue_line("markers", "lightfx: LightFX controller tests")
+    config.addinivalue_line("markers", "gearcontrol: GearControl controller tests")
     config.addinivalue_line("markers", "noop: NoOp controller tests")
     config.addinivalue_line("markers", "slow: slow running tests")
     config.addinivalue_line("markers", "destructive: tests that reboot device")

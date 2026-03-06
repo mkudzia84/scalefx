@@ -34,6 +34,9 @@ Architecture:
 import sys
 import os
 import argparse
+import threading
+import time
+from queue import Queue, Empty
 
 # readline for command history (pyreadline3 on Windows)
 try:
@@ -49,12 +52,15 @@ from typing import Optional, List, Dict, Callable, Tuple
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from tests.framework import ScaleFXConnection
+from tests.framework import ScaleFXConnection, GearControlPacket, LightFxPacket, CorePacket
+from tests.framework.protocol import parse_packet
+from tests.framework.connection import Response
 
 from .base import (
     CommandInfo, OutputMixin, ControllerType,
     get_prompt, Fore, Style
 )
+from . import parsers
 from .handlers import CoreCommandHandler, GearControlCommandHandler, GunFxCommandHandler, LightFxCommandHandler
 
 
@@ -76,6 +82,11 @@ class InteractiveCLI(OutputMixin):
         self.controller_type: Optional[str] = None
         self.controller_name: Optional[str] = None
         self.controller_version: Optional[str] = None
+        
+        # Async listener state
+        self._listener_thread: Optional[threading.Thread] = None
+        self._listener_stop = threading.Event()
+        self._response_queue: Queue = Queue()  # Async messages received while idle
         
         # Initialize command handlers
         self._init_handlers()
@@ -133,6 +144,101 @@ class InteractiveCLI(OutputMixin):
     def _on_quit(self):
         """Callback for quit command."""
         self.running = False
+        self._stop_listener()
+    
+    # =========================================================================
+    # Async Listener
+    # =========================================================================
+    
+    def _start_listener(self):
+        """Start background thread that reads async packets from serial."""
+        if self._listener_thread and self._listener_thread.is_alive():
+            return
+        
+        self._listener_stop.clear()
+        self._listener_thread = threading.Thread(
+            target=self._listener_loop, daemon=True, name="async-listener")
+        self._listener_thread.start()
+    
+    def _stop_listener(self):
+        """Stop the background listener thread."""
+        self._listener_stop.set()
+        if self._listener_thread:
+            self._listener_thread.join(timeout=2.0)
+            self._listener_thread = None
+    
+    def _listener_loop(self):
+        """Background thread: read async packets from serial and print them."""
+        rx_buffer = bytearray()
+        
+        while not self._listener_stop.is_set():
+            if not self.conn or not self.conn.is_connected or not self.conn._serial:
+                time.sleep(0.1)
+                continue
+            
+            try:
+                ser = self.conn._serial
+                if ser.in_waiting:
+                    data = ser.read(ser.in_waiting)
+                    rx_buffer.extend(data)
+                else:
+                    time.sleep(0.02)
+                    continue
+            except Exception:
+                time.sleep(0.1)
+                continue
+            
+            # Process complete packets (0x00 delimited)
+            while 0x00 in rx_buffer:
+                idx = rx_buffer.index(0x00)
+                packet_data = bytes(rx_buffer[:idx])
+                rx_buffer = rx_buffer[idx + 1:]
+                
+                if not packet_data:
+                    continue
+                
+                delimiter = b'\x00'
+                parsed = parse_packet(packet_data + delimiter)
+                if not parsed:
+                    continue
+                
+                ptype, tag, payload = parsed
+                response = Response(ptype, tag, payload, packet_data)
+                self._print_async_message(response)
+        
+        # Preserve any remaining partial data back into the connection buffer
+        if rx_buffer and self.conn:
+            self.conn._rx_buffer = rx_buffer
+    
+    def _print_async_message(self, response: Response):
+        """Print an unsolicited async packet while at the prompt."""
+        ptype = response.packet_type
+        payload = response.payload
+        
+        # Clear current input line, print message, re-show prompt
+        sys.stdout.write('\r\033[K')  # Clear line
+        
+        if ptype == GearControlPacket.GEAR_CALIB_STATUS:
+            parsers.parse_gear_calib_status(payload)
+        elif ptype == GearControlPacket.GEAR_SEQ_STATUS:
+            parsers.parse_gear_seq_status(payload)
+        elif ptype == LightFxPacket.LANDING_LIGHT_STATUS:
+            parsers.parse_landing_light_status(payload)
+        elif ptype == CorePacket.ERROR:
+            self.print_error("Async ERROR")
+            parsers.parse_error_payload(payload)
+        elif ptype == CorePacket.STATUS:
+            self.print_info("Async STATUS")
+            parsers.parse_status_payload(payload, self.controller_type)
+        else:
+            pname = parsers.packet_type_name(ptype)
+            self.print_info(f"Async: {pname}")
+            if payload:
+                parsers.parse_generic_payload(payload)
+        
+        # Re-display prompt
+        sys.stdout.write(self.prompt)
+        sys.stdout.flush()
     
     @property
     def prompt(self) -> str:
@@ -175,6 +281,9 @@ class InteractiveCLI(OutputMixin):
         
         while self.running:
             try:
+                # Drain any queued responses that arrived between commands
+                self._drain_async_queue()
+                
                 line = input(self.prompt).strip()
                 if not line:
                     continue
@@ -195,10 +304,16 @@ class InteractiveCLI(OutputMixin):
                         self.print_error("This command requires initialization. Run 'init' first.")
                         continue
                     
+                    # Pause listener while command uses serial directly
+                    self._stop_listener()
                     handler(args)
                     
                     # Sync connection after command (may have changed)
                     self._sync_connection()
+                    
+                    # Restart listener if still connected
+                    if self.conn and self.conn.is_connected:
+                        self._start_listener()
                 else:
                     self._suggest_command(cmd)
                     
@@ -210,20 +325,31 @@ class InteractiveCLI(OutputMixin):
     
     def _do_connect(self, port: str):
         """Internal connect helper."""
+        self._stop_listener()
         self.core_handler.set_connection(None)
         self.conn = ScaleFXConnection(port=port)
         if self.conn.connect(init=False):
             self._sync_connection()
             self.print_ok(f"Connected to {port}")
             self.print_info("Run 'init' to initialize and detect controller type")
+            self._start_listener()
         else:
             self.print_error(f"Failed to connect to {port}")
             self.conn = None
     
+    def _drain_async_queue(self):
+        """Print any async responses that arrived while a command was running."""
+        while not self._response_queue.empty():
+            try:
+                response = self._response_queue.get_nowait()
+                self._print_async_message(response)
+            except Empty:
+                break
+    
     def _suggest_command(self, cmd: str):
         """Suggest similar command or explain why it's not available."""
         # Check if it's a controller-specific command for wrong controller
-        if cmd.startswith('gearcontrol.') and self.controller_type != ControllerType.GEARCONTROL:
+        if cmd.startswith('gc.') and self.controller_type != ControllerType.GEARCONTROL:
             if self.controller_type:
                 self.print_error(f"'{cmd}' is a GearControl command, but you're connected to {self.controller_type}")
             else:
@@ -329,7 +455,7 @@ class InteractiveCLI(OutputMixin):
         if not self.controller_type:
             print(f"{Fore.YELLOW}━━━ After Initialization ━━━{Style.RESET_ALL}")
             print(f"  Additional commands will be available based on detected controller type:")
-            print(f"  - {Fore.GREEN}GearControl{Style.RESET_ALL}: gearcontrol.deploy, gearcontrol.retract, gearcontrol.servo, ...")
+            print(f"  - {Fore.GREEN}GearControl{Style.RESET_ALL}: gc.deploy, gc.retract, gc.servo, ...")
             print(f"  - {Fore.RED}GunFX{Style.RESET_ALL}: gunfx.trigger, gunfx.servo, gunfx.smoke, ...")
             print(f"  - {Fore.BLUE}LightFX{Style.RESET_ALL}: lightfx.led, lightfx.servo, lightfx.power, ...")
             print(f"  - {Fore.MAGENTA}NoOp{Style.RESET_ALL}: Core commands only (protocol testing)")

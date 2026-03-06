@@ -21,9 +21,8 @@
 #include <Arduino.h>
 #include <functional>
 #include "serial_core.h"
-#include "serial_bus.h"
-#include "serial_error.h"
-#include "serial_command_handler.h"
+#include "serial_bus_client.h"
+#include "serial_bus_server.h"
 
 // ============================================================================
 // GunFX Binary Packet Types (0x01-0x2F range)
@@ -161,16 +160,9 @@ struct GunFxStatus {
 };
 
 /**
- * @brief Board information returned during init
+ * @brief Board information returned during init (alias for BusClientBoardInfo)
  */
-struct GunFxBoardInfo {
-    char deviceName[32] = "";
-    char firmwareVersion[16] = "";
-    char platform[16] = "";
-    uint16_t cpuFrequencyMHz = 0;
-    uint32_t freeRamBytes = 0;
-    bool versionCompatible = true;
-};
+using GunFxBoardInfo = BusClientBoardInfo;
 
 /**
  * @brief Smoke generator configuration
@@ -188,19 +180,16 @@ struct GunFxSmokeConfig {
 // Callback Types
 // ============================================================================
 
-// Master callbacks
+// Client callback
 using GunFxStatusCallback = std::function<void(const GunFxStatus& status)>;
-using GunFxReadyCallback = std::function<void(const char* moduleName)>;
-using GunFxErrorCallback = std::function<void(uint8_t errorCode, const char* message)>;
 
-// Slave callbacks - return error code (GunFxError::OK for success)
+// Server callbacks - return error code (GunFxError::OK for success)
 using GunFxTriggerOnCallback = std::function<uint8_t(uint16_t rpm)>;
 using GunFxTriggerOffCallback = std::function<uint8_t(uint16_t fanDelayMs)>;
 using GunFxServoSetCallback = std::function<uint8_t(uint8_t servoId, uint16_t pulseUs)>;
 using GunFxServoSettingsCallback = std::function<uint8_t(const GunFxServoConfig& config)>;
 using GunFxSmokeHeatCallback = std::function<uint8_t(bool on)>;
 using GunFxSmokeSettingsCallback = std::function<uint8_t(const GunFxSmokeConfig& config)>;
-using GunFxStatusRequestCallback = std::function<GunFxStatus()>;
 
 // ============================================================================
 // GunFxClient Class (Binary Protocol)
@@ -210,30 +199,10 @@ using GunFxStatusRequestCallback = std::function<GunFxStatus()>;
  * @brief Client-side GunFX serial communication (binary COBS protocol)
  * 
  * Used by HubFX to send commands to GunFX server boards over USB.
- * Extends SerialBus with GunFX-specific commands.
+ * Extends BusClient with GunFX-specific commands and STATUS parsing.
  */
-class GunFxClient : public SerialBus {
+class GunFxClient : public BusClient {
 public:
-    GunFxClient() = default;
-    ~GunFxClient() = default;
-
-    GunFxClient(const GunFxClient&) = delete;
-    GunFxClient& operator=(const GunFxClient&) = delete;
-
-    // ========================================================================
-    // Initialization
-    // ========================================================================
-    
-    /**
-     * @brief Initialize with USB host
-     */
-    bool begin(UsbHost* usbHost, int deviceIndex);
-    
-    /**
-     * @brief Process incoming packets (call in loop)
-     */
-    int process();
-
     // ========================================================================
     // Trigger Control
     // ========================================================================
@@ -263,69 +232,24 @@ public:
     CommandResult requestStatus();
 
     // ========================================================================
-    // Connection Management
-    // ========================================================================
-    
-    /**
-     * @brief Send INIT command with optional keepalive
-     */
-    int sendInit(unsigned long keepaliveMs = 0);
-
-    // ========================================================================
-    // Configuration
-    // ========================================================================
-    
-    void setCommandTimeout(unsigned long timeoutMs) { _commandTimeoutMs = timeoutMs; }
-    void setBlockingMode(bool blocking) { _blockingMode = blocking; }
-    void setCompatibleVersions(const char** versions, size_t count);
-
-    // ========================================================================
     // Callbacks
     // ========================================================================
     
-    void onReady(GunFxReadyCallback cb) { _readyCallback = cb; }
     void onStatus(GunFxStatusCallback cb) { _statusCallback = cb; }
-    void onError(GunFxErrorCallback cb) { _errorCallback = cb; }
 
     // ========================================================================
     // State
     // ========================================================================
     
-    bool isServerReady() const { return _serverReady; }
-    bool isVersionCompatible() const { return _boardInfo.versionCompatible; }
-    const char* serverName() const { return _serverName; }
-    const GunFxBoardInfo& boardInfo() const { return _boardInfo; }
     const GunFxStatus& lastStatus() const { return _lastStatus; }
-    CommandResult lastCommandResult() const { return _lastCommandResult; }
+
+protected:
+    void onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) override;
+    const char* getModuleErrorMessage(uint8_t code) override { return GunFxError::getMessage(code); }
 
 private:
-    void handlePacket(uint8_t type, const uint8_t* payload, size_t len);
-    CommandResult sendPacketBlocking(uint8_t type, const uint8_t* payload, size_t len);
-    CommandResult waitForAckNack();
-    bool checkVersionCompatibility(const char* version);
-
-    UsbHost* _usbHostRef = nullptr;
-    bool _serverReady = false;
-    char _serverName[65] = "";
-    GunFxBoardInfo _boardInfo;
     GunFxStatus _lastStatus;
-
-    unsigned long _commandTimeoutMs = 1000;
-    bool _blockingMode = true;
-
-    volatile bool _pendingAckNack = false;
-    volatile bool _receivedAck = false;
-    volatile bool _receivedNack = false;
-    uint8_t _lastNackErrorCode = 0;
-    char _lastNackReason[64] = "";
-    CommandResult _lastCommandResult;
-
-    const char** _compatibleVersions = nullptr;
-    size_t _compatibleVersionCount = 0;
-
-    GunFxReadyCallback _readyCallback;
     GunFxStatusCallback _statusCallback;
-    GunFxErrorCallback _errorCallback;
 };
 
 // ============================================================================
@@ -336,39 +260,17 @@ private:
  * @brief Server-side GunFX serial communication (binary COBS protocol)
  * 
  * Used by GunFX Pico to receive commands from HubFX client.
- * Implements ICommandHandler for use with CommandRouter.
+ * Extends BusServer for use with PicoServer + CommandRouter.
  */
-class GunFxServer : public ICommandHandler {
+class GunFxServer : public BusServer {
 public:
-    GunFxServer() = default;
-    ~GunFxServer() override = default;
-
-    GunFxServer(const GunFxServer&) = delete;
-    GunFxServer& operator=(const GunFxServer&) = delete;
-
-    // ========================================================================
-    // Initialization
-    // ========================================================================
-    
-    bool begin(Stream* serial, const char* moduleName = "GunFX");
-    void end();
-    int process();
-
-    // ========================================================================
-    // ICommandHandler Interface
-    // ========================================================================
-    
-    CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override;
     const char* handlerName() const override { return "GunFxServer"; }
 
     // ========================================================================
     // Response Methods
     // ========================================================================
     
-    int sendAck();
-    int sendNack(uint8_t errorCode, const char* reason = nullptr);
     int sendStatus(const GunFxStatus& status);
-    int sendError(uint8_t errorCode, const char* message = nullptr);
 
     // ========================================================================
     // Callbacks
@@ -380,39 +282,20 @@ public:
     void onServoSettings(GunFxServoSettingsCallback cb) { _servoSettingsCallback = cb; }
     void onSmokeHeat(GunFxSmokeHeatCallback cb) { _smokeHeatCallback = cb; }
     void onSmokeSettings(GunFxSmokeSettingsCallback cb) { _smokeSettingsCallback = cb; }
-    void onStatusRequest(GunFxStatusRequestCallback cb) { _statusRequestCallback = cb; }
 
-    // ========================================================================
-    // State
-    // ========================================================================
-    
-    bool isInitialized() const { return _initialized; }
-    bool isClientConnected() const { return _clientConnected; }
-    void setConnectionTimeout(unsigned long timeoutMs) { _connectionTimeoutMs = timeoutMs; }
+protected:
+    CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
+    uint8_t moduleRangeLow() const override { return 0x01; }
+    uint8_t moduleRangeHigh() const override { return 0x2F; }
+    const char* getModuleErrorMessage(uint8_t code) override { return GunFxError::getMessage(code); }
 
 private:
-    CommandHandleResult handlePacket(uint8_t type, const uint8_t* payload, size_t len);
-    void processFrame(const uint8_t* frame, size_t frameLen);
-    int sendRawPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0);
-
-    Stream* _serial = nullptr;
-    bool _initialized = false;
-    bool _clientConnected = false;
-    char _moduleName[65] = "GunFX";
-
-    uint8_t _rxBuffer[CoreProtocol::COBS_BUFFER_SIZE];
-    size_t _rxIndex = 0;
-
-    unsigned long _lastRxTimeMs = 0;
-    unsigned long _connectionTimeoutMs = 5000;
-
     GunFxTriggerOnCallback _triggerOnCallback;
     GunFxTriggerOffCallback _triggerOffCallback;
     GunFxServoSetCallback _servoSetCallback;
     GunFxServoSettingsCallback _servoSettingsCallback;
     GunFxSmokeHeatCallback _smokeHeatCallback;
     GunFxSmokeSettingsCallback _smokeSettingsCallback;
-    GunFxStatusRequestCallback _statusRequestCallback;
 };
 
 #endif // SERIAL_GUNFX_H

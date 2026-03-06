@@ -1,5 +1,5 @@
 /**
- * LightFX Pico Controller v0.2.0
+ * LightFX Pico Controller v0.6.0
  * 
  * Server controller for lighting effects - receives commands from HubFX over USB serial.
  * Controls: 8-channel LED outputs with sequences, 3 servos.
@@ -32,8 +32,8 @@
 //  FIRMWARE INFO
 // ============================================================================
 
-#define FIRMWARE_VERSION "0.5.0"
-#define BUILD_NUMBER 11
+#define FIRMWARE_VERSION "0.6.0"
+#define BUILD_NUMBER 12
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -409,9 +409,14 @@ void setupLightFxCallbacks() {
     lightfxServer.onLandingLightBind([](uint8_t slot, uint8_t servoId, uint8_t ledChannel,
                                         uint16_t deployUs, uint16_t retractUs,
                                         uint8_t brightness) -> uint8_t {
+        landingLights[slot - 1].setSlot(slot);  // Set slot ID for progress reporting
         landingLights[slot - 1].configure(
             &servos[servoId - 1], &ledChannels[ledChannel - 1],
             deployUs, retractUs, brightness);
+        // Register progress callback (emits LANDING_LIGHT_STATUS packets)
+        landingLights[slot - 1].onProgress([](const LightFxLandingLightStatus& status) {
+            lightfxServer.sendLandingLightStatus(status);
+        });
         return LightFxError::OK;
     });
     

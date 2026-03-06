@@ -109,16 +109,17 @@ def cobs_decode(data: bytes) -> Optional[bytes]:
     return bytes(output)
 
 
-def build_packet(packet_type: int, payload: bytes = b'') -> bytes:
+def build_packet(packet_type: int, payload: bytes = b'', tag: int = 0) -> bytes:
     """
     Build a complete COBS-encoded packet.
     
     Packet structure (before COBS):
-        [type:u8][len:u8][payload:0-64][crc8:u8]
+        [type:u8][tag:u8][len:u8][payload:0-64][crc8:u8]
     
     Args:
         packet_type: Packet type byte
         payload: Payload bytes (0-64)
+        tag: Request/response correlation tag (0 = async/unsolicited)
     
     Returns:
         COBS encoded packet with 0x00 delimiter
@@ -126,7 +127,7 @@ def build_packet(packet_type: int, payload: bytes = b'') -> bytes:
     if len(payload) > 64:
         raise ValueError(f"Payload too large: {len(payload)} > 64")
     
-    raw = bytes([packet_type, len(payload)]) + payload
+    raw = bytes([packet_type, tag & 0xFF, len(payload)]) + payload
     raw += bytes([crc8(raw)])
     
     encoded = cobs_encode(raw)
@@ -141,23 +142,24 @@ def parse_packet(data: bytes) -> Optional[tuple]:
         data: COBS encoded packet (with or without 0x00 delimiter)
     
     Returns:
-        Tuple of (packet_type, payload) or None if invalid
+        Tuple of (packet_type, tag, payload) or None if invalid
     """
     # Remove delimiter if present
     if data.endswith(b'\x00'):
         data = data[:-1]
     
     decoded = cobs_decode(data)
-    if decoded is None or len(decoded) < 3:
+    if decoded is None or len(decoded) < 4:
         return None
     
     packet_type = decoded[0]
-    length = decoded[1]
+    tag = decoded[1]
+    length = decoded[2]
     
-    if len(decoded) != 3 + length:
+    if len(decoded) != 4 + length:
         return None  # Length mismatch
     
-    payload = decoded[2:2+length]
+    payload = decoded[3:3+length]
     received_crc = decoded[-1]
     
     # Verify CRC
@@ -165,7 +167,7 @@ def parse_packet(data: bytes) -> Optional[tuple]:
     if received_crc != expected_crc:
         return None  # CRC mismatch
     
-    return (packet_type, payload)
+    return (packet_type, tag, payload)
 
 
 # Payload helper functions

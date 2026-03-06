@@ -60,7 +60,7 @@ namespace CalibConfig {
     constexpr uint16_t INRUSH_IGNORE_ms      = 100;    // Skip inrush spike at motor start
     // Baseline window: INRUSH_IGNORE_ms to STARTUP_IGNORE_ms (100-500ms)
     constexpr uint16_t SETTLE_TIME_ms        = 1000;   // Settle between directions
-    constexpr uint16_t TIMEOUT_ms            = 8000;   // Max time per direction
+    constexpr uint16_t TIMEOUT_ms            = 60000;  // Max time per direction
     constexpr uint16_t SAMPLE_INTERVAL_ms    = 20;     // Current sampling interval
 
     // Current thresholds

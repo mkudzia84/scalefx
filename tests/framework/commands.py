@@ -918,4 +918,5 @@ class GearControlCommands(CommandBuilder):
         _warn_u16("delay_ms", delay_ms)
         payload = bytes([gear_id, mode]) + u16_le(delay_ms)
         return build_packet(GearControlPacket.DOOR_MODE, payload)
-    
+
+

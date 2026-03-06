@@ -1,5 +1,5 @@
 /**
- * GearControl Pico Controller v0.5.0
+ * GearControl Pico Controller v0.6.0
  *
  * Server controller for landing gear effects - receives commands from HubFX over USB serial.
  * Controls: 3 landing gear units (via LandingGear module), yaw steering servo,
@@ -56,8 +56,8 @@
 #include "landing_gear.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "0.5.0"
-#define BUILD_NUMBER 11
+#define FIRMWARE_VERSION "0.8.0"
+#define BUILD_NUMBER 33
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -99,8 +99,8 @@ const uint8_t PIN_VSENSE = 29;
 // ============================================================================
 
 // INA226 shunt resistance (depends on hardware)
-const float SHUNT_RESISTANCE_OHMS = 0.1f;     // 100mΩ shunt
-const float MAX_CURRENT_A = 3.0f;              // 3A max expected
+const float SHUNT_RESISTANCE_OHMS = 0.005f;    // 5mΩ shunt (max ≈16.4A with INA226)
+const float MAX_CURRENT_A = 10.0f;             // 10A max expected
 
 // Servo ID mapping: IDs 0-5 = door servos, 6 = yaw, 7 = spare
 const uint8_t SERVO_ID_YAW   = 6;
@@ -140,11 +140,11 @@ bool lowVoltageTriggered = false;  // Set when auto-deploy fires (persists until
 uint8_t gearErrorReason[3] = { GearErrorReason::NONE, GearErrorReason::NONE, GearErrorReason::NONE };
 
 // Expected I2C addresses for the 3 INA226 monitors
-// Binary:  1000000, 1000001, 1000100 → 0x40, 0x41, 0x44
+// Binary:  1000000, 1000100, 1000001 → 0x40, 0x44, 0x41
 const uint8_t INA226_ADDR[3] = {
-    INA226Address::GND_GND,   // 0x40 - Motor 0
-    INA226Address::GND_VS,    // 0x41 - Motor 1
-    INA226Address::VS_GND,    // 0x44 - Motor 2
+    INA226Address::GND_GND,   // 0x40 - Motor 0 (nose)
+    INA226Address::VS_GND,    // 0x44 - Motor 1 (left main)
+    INA226Address::GND_VS,    // 0x41 - Motor 2 (right main)
 };
 
 // ============================================================================
@@ -273,6 +273,11 @@ void setup() {
         gears[i].onCalibrationProgress([](const GearControlCalibStatus& status) {
             gearControlServer.sendCalibStatus(status);
         });
+
+        // Register sequence progress callback (emits GEAR_SEQ_STATUS packets)
+        gears[i].onSequenceProgress([](const GearControlSeqStatus& status) {
+            gearControlServer.sendGearSeqStatus(status);
+        });
     }
 
     // Initialize yaw servo (uses ServoControl for configurability)
@@ -296,15 +301,17 @@ void setup() {
     // ========================================================================
     // Initialize GearControlServer (GearControl-specific commands)
     // ========================================================================
-    gearControlServer.begin(&Serial, server.deviceName());
+    gearControlServer.begin(&Serial);
 
-    // GEAR_DEPLOY: Deploy landing gear
+    // GEAR_DEPLOY: Deploy landing gear (individual, no sync)
     gearControlServer.onGearDeploy([](uint8_t gearId) -> uint8_t {
+        gears[gearId].setSyncMode(false);
         return gears[gearId].deploy();
     });
 
-    // GEAR_RETRACT: Retract landing gear
+    // GEAR_RETRACT: Retract landing gear (individual, no sync)
     gearControlServer.onGearRetract([](uint8_t gearId) -> uint8_t {
+        gears[gearId].setSyncMode(false);
         // If yaw is configured for this gear, center yaw before retract
         if (yawConfigured && yawConfig.gearId == gearId) {
             yawServo.setTarget(yawConfig.neutral_us);
@@ -319,8 +326,13 @@ void setup() {
         return SerialError::OK;
     });
 
-    // GEAR_ALL: Deploy/retract/stop all gears
+    // GEAR_ALL: Deploy/retract/stop all gears (synchronized)
     gearControlServer.onGearAll([](uint8_t action) -> uint8_t {
+        // Enable sync mode for deploy/retract so gears wait at phase barriers
+        if (action == GearControlSpec::ACTION_DEPLOY || action == GearControlSpec::ACTION_RETRACT) {
+            for (int i = 0; i < 3; i++) gears[i].setSyncMode(true);
+        }
+
         uint8_t result = SerialError::OK;
         for (int i = 0; i < 3; i++) {
             uint8_t r;
@@ -448,39 +460,64 @@ void setup() {
     }
 
     // STATUS: Append GearControl module data to core STATUS response
-    // Wire format (36 bytes):
-    //   Per gear (3 × 9 = 27 bytes):
-    //     [state:u8][motorCurrent_mA:u16LE][door0Pos_us:u16LE][door1Pos_us:u16LE][calibratedStall_mA:u16LE]
+    // Wire format (50 bytes):
+    //   Per gear (3 × 11 = 33 bytes):
+    //     [state:u8][motorCurrent_mA:u16LE][door0Pos_us:u16LE][door1Pos_us:u16LE]
+    //     [calibratedStall_mA:u16LE][shuntVoltage_10uV:i16LE]
     //   Yaw + LEDs + Voltage (6 bytes):
     //     [yawPos_us:u16LE][ledFlags:u8][batteryVoltage_mV:u16LE][batteryConfigFlags:u8]
     //   Per-gear error reasons (3 bytes):
     //     [gear0ErrorReason:u8][gear1ErrorReason:u8][gear2ErrorReason:u8]
+    //   Shunt config (2 bytes):
+    //     [shuntResistance_mohm:u16LE]
+    //   Per-gear door mode (3 bytes):
+    //     [gear0DoorMode:u8][gear1DoorMode:u8][gear2DoorMode:u8]
+    //   Per-gear config flags (3 bytes):
+    //     [gear0ConfigFlags:u8][gear1ConfigFlags:u8][gear2ConfigFlags:u8]
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        if (maxLen < 36) return 0;
+        if (maxLen < 50) return 0;
 
         for (int i = 0; i < 3; i++) {
-            size_t off = i * 9;
+            size_t off = i * 11;
             buf[off] = static_cast<uint8_t>(gears[i].state());
-            CoreProtocol::putU16LE(&buf[off + 1], gears[i].readMotorCurrent_mA());
-            CoreProtocol::putU16LE(&buf[off + 3], gears[i].doorPosition_us(0));  // door0
-            CoreProtocol::putU16LE(&buf[off + 5], gears[i].doorPosition_us(1));  // door1
-            CoreProtocol::putU16LE(&buf[off + 7], gears[i].calibratedStall_mA()); // calibrated stall  // mA
+            CoreProtocol::putU16LE(&buf[off + 1], gears[i].readMotorCurrent_mA());  // mA
+            CoreProtocol::putU16LE(&buf[off + 3], gears[i].doorPosition_us(0));  // door0  // µs
+            CoreProtocol::putU16LE(&buf[off + 5], gears[i].doorPosition_us(1));  // door1  // µs
+            CoreProtocol::putU16LE(&buf[off + 7], gears[i].calibratedStall_mA()); // mA
+            // Shunt voltage in 10µV units for diagnostic (INA226 shuntVoltage_uV / 10)
+            int16_t shuntV = ina226Available[i]
+                ? (int16_t)(ina226[i].shuntVoltage_uV() / 10.0f)
+                : 0;
+            CoreProtocol::putU16LE(&buf[off + 9], (uint16_t)shuntV);  // 10µV
         }
 
-        CoreProtocol::putU16LE(&buf[27], (uint16_t)yawServo.position());  // yaw servo
-        buf[29] = buildLedFlags();
-        CoreProtocol::putU16LE(&buf[30], batteryEnabled ? batteryMonitor.voltage_mV() : (uint16_t)0);  // battery  // mV
+        CoreProtocol::putU16LE(&buf[33], (uint16_t)yawServo.position());  // yaw servo  // µs
+        buf[35] = buildLedFlags();
+        CoreProtocol::putU16LE(&buf[36], batteryEnabled ? batteryMonitor.voltage_mV() : (uint16_t)0);  // mV
         // Battery config flags: bit 0 = auto-deploy enabled, bit 1 = low voltage triggered, bit 2 = battery monitoring enabled
-        buf[32] = (autoDeployOnLowVoltage ? 0x01 : 0x00)
+        buf[38] = (autoDeployOnLowVoltage ? 0x01 : 0x00)
                 | (lowVoltageTriggered    ? 0x02 : 0x00)
                 | (batteryEnabled         ? 0x04 : 0x00);
 
         // Per-gear error reasons (diagnostic — explains WHY a gear is in ERROR state)
-        buf[33] = gearErrorReason[0];
-        buf[34] = gearErrorReason[1];
-        buf[35] = gearErrorReason[2];
+        buf[39] = gearErrorReason[0];
+        buf[40] = gearErrorReason[1];
+        buf[41] = gearErrorReason[2];
 
-        return 36;
+        // Configured shunt resistance in milliohms (e.g., 100 = 100mΩ = 0.1Ω)
+        CoreProtocol::putU16LE(&buf[42], (uint16_t)(SHUNT_RESISTANCE_OHMS * 1000.0f));  // mΩ
+
+        // Per-gear door mode (DoorMode enum: 0=none, 1=single, 2=dual-sync, etc.)
+        buf[44] = gears[0].doorMode();
+        buf[45] = gears[1].doorMode();
+        buf[46] = gears[2].doorMode();
+
+        // Per-gear config flags (GearConfigFlags bitmask)
+        buf[47] = gears[0].gearConfig().flags;
+        buf[48] = gears[1].gearConfig().flags;
+        buf[49] = gears[2].gearConfig().flags;
+
+        return 50;
     });
 
     // Finalize command router (core + GearControl handlers)
@@ -495,9 +532,43 @@ void loop() {
     // Process protocol, connection timeout, indicators
     server.loop();
 
+    // Update INA226 current monitors (refresh cached readings for stall detection)
+    for (int i = 0; i < 3; i++) {
+        if (ina226Available[i]) ina226[i].update();
+    }
+
     // Update all landing gear modules (sequencing, door servos, status LEDs)
     for (int i = 0; i < 3; i++) {
         gears[i].update();
+    }
+
+    // Sync coordinator: advance gears past sync barriers when all are ready
+    {
+        // Barrier 1: doors-open → motor start
+        bool anyWaitingDoors = false;
+        bool anyStillOpening = false;
+        for (int i = 0; i < 3; i++) {
+            if (gears[i].isWaitingSyncDoorsOpen()) anyWaitingDoors = true;
+            if (gears[i].isSyncOpeningDoors()) anyStillOpening = true;
+        }
+        if (anyWaitingDoors && !anyStillOpening) {
+            for (int i = 0; i < 3; i++) {
+                if (gears[i].isWaitingSyncDoorsOpen()) gears[i].advanceSyncPhase();
+            }
+        }
+
+        // Barrier 2: motor-done → door close
+        bool anyWaitingMotor = false;
+        bool anyStillRunning = false;
+        for (int i = 0; i < 3; i++) {
+            if (gears[i].isWaitingSyncMotorDone()) anyWaitingMotor = true;
+            if (gears[i].isSyncRunningMotor()) anyStillRunning = true;
+        }
+        if (anyWaitingMotor && !anyStillRunning) {
+            for (int i = 0; i < 3; i++) {
+                if (gears[i].isWaitingSyncMotorDone()) gears[i].advanceSyncPhase();
+            }
+        }
     }
 
     // Update yaw servo motion profiling

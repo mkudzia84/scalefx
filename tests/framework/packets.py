@@ -4,6 +4,9 @@ Packet Type Constants
 Defines all packet types and error codes for ScaleFX protocol.
 """
 
+# Tag value for async/unsolicited server-initiated messages
+TAG_ASYNC = 0x00
+
 
 class CorePacket:
     """Core system packet types (0xF0-0xFF)."""
@@ -53,6 +56,7 @@ class LightFxPacket:
     LANDING_LIGHT_UNBIND  = 0x53
     LANDING_LIGHT_DEPLOY  = 0x54
     LANDING_LIGHT_RETRACT = 0x55
+    LANDING_LIGHT_STATUS  = 0x56  # [slot:u8][phase:u8][finished:u8] Async progress
     # Response packet types
     LED_STATUS_RESP     = 0x5A
     LED_SEQ_STATUS_RESP = 0x5B
@@ -173,6 +177,7 @@ class GearControlPacket:
     GEAR_CALIB_CANCEL = 0x6C
     BATTERY_CONFIG   = 0x6D
     DOOR_MODE        = 0x6E
+    GEAR_SEQ_STATUS  = 0x70  # [gear_id:u8][phase:u8][deploying:u8][finished:u8] Sequence progress
 
 
 class GearControlError:
@@ -248,3 +253,45 @@ class GearErrorReason:
             0x04: "sequence error",
         }
         return names.get(reason, f"unknown(0x{reason:02X})")
+
+
+class GearSeqPhase:
+    """Gear deploy/retract sequence phases (wire format)."""
+    IDLE           = 0
+    OPENING_DOORS  = 1
+    RUNNING_MOTOR  = 2
+    CLOSING_DOORS  = 3
+    SEQ_ERROR      = 4
+    SYNC_WAIT      = 5
+
+    @staticmethod
+    def name(phase: int) -> str:
+        """Get human-readable phase name."""
+        names = {
+            0: "idle",
+            1: "opening doors",
+            2: "running motor",
+            3: "closing doors",
+            4: "error",
+            5: "sync wait",
+        }
+        return names.get(phase, f"unknown({phase})")
+
+
+class LandingLightPhase:
+    """Landing light deploy/retract phases (wire format)."""
+    RETRACTED  = 0
+    DEPLOYING  = 1
+    DEPLOYED   = 2
+    RETRACTING = 3
+
+    @staticmethod
+    def name(phase: int) -> str:
+        """Get human-readable phase name."""
+        names = {
+            0: "retracted",
+            1: "deploying",
+            2: "deployed",
+            3: "retracting",
+        }
+        return names.get(phase, f"unknown({phase})")

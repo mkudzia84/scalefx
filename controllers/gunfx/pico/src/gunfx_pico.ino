@@ -385,7 +385,7 @@ void setup() {
     // ========================================================================
     // Initialize GunFxServer (GunFX-specific commands)
     // ========================================================================
-    gunfxServer.begin(&Serial, server.deviceName());
+    gunfxServer.begin(&Serial);
     
     // TRIGGER_ON: Start firing at specified RPM
     gunfxServer.onTriggerOn([](uint16_t rpm) -> uint8_t {
@@ -477,11 +477,6 @@ void setup() {
             }
         }
         return SerialError::OK;
-    });
-    
-    // STATUS_REQ: Return current status (via GunFxServer - used when standalone)
-    gunfxServer.onStatusRequest([]() -> GunFxStatus {
-        return buildCurrentStatus(millis());
     });
     
     // STATUS: Append GunFX module data to core STATUS response

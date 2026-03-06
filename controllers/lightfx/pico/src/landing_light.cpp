@@ -7,6 +7,29 @@
 #include "landing_light.h"
 
 // ============================================================================
+// Progress Emission
+// ============================================================================
+
+void LandingLight::_emitProgress(bool finished) {
+    if (!_progressCb) return;
+
+    LightFxLandingLightStatus status;
+    status.slot = _slot;
+    status.finished = finished;
+
+    // Map internal state to wire-format phase constants
+    switch (_state) {
+        case LandingLightState::RETRACTED:  status.phase = LandingLightPhase::RETRACTED;  break;
+        case LandingLightState::DEPLOYING:  status.phase = LandingLightPhase::DEPLOYING;  break;
+        case LandingLightState::DEPLOYED:   status.phase = LandingLightPhase::DEPLOYED;   break;
+        case LandingLightState::RETRACTING: status.phase = LandingLightPhase::RETRACTING; break;
+        default:                            status.phase = LandingLightPhase::RETRACTED;  break;
+    }
+
+    _progressCb(status);
+}
+
+// ============================================================================
 // Configuration
 // ============================================================================
 
@@ -44,6 +67,7 @@ void LandingLight::deploy() {
 
     _servo->setTarget(_deployUs);
     _state = LandingLightState::DEPLOYING;
+    _emitProgress();  // Deploying phase started
 }
 
 void LandingLight::retract() {
@@ -55,6 +79,7 @@ void LandingLight::retract() {
     _led->off();
     _servo->setTarget(_retractUs);
     _state = LandingLightState::RETRACTING;
+    _emitProgress();  // Retracting phase started
 }
 
 // ============================================================================
@@ -69,12 +94,14 @@ void LandingLight::update() {
             if (_servo->atTarget()) {
                 _led->setBrightness(_brightness);
                 _state = LandingLightState::DEPLOYED;
+                _emitProgress(true);  // Deploy complete
             }
             break;
 
         case LandingLightState::RETRACTING:
             if (_servo->atTarget()) {
                 _state = LandingLightState::RETRACTED;
+                _emitProgress(true);  // Retract complete
             }
             break;
 

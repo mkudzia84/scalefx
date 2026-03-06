@@ -5,10 +5,10 @@
  * Provides binary protocol encoding/decoding over USB CDC.
  *
  * Components:
- *   SerialBus - COBS-framed binary protocol (implements ISerialCore)
+ *   SerialBus - COBS-framed binary protocol over USB CDC
  *
  * This file is for CLIENT devices only (HubFX). Server devices (GunFX Pico,
- * LightFX Pico) should use CoreCommandServer from serial_core.h instead.
+ * LightFX Pico) should use CoreCommandServer from serial_bus_server.h instead.
  *
  * Protocol Format (before COBS encoding):
  *   [type:u8][len:u8][payload:0-64 bytes][crc8:u8]
@@ -65,42 +65,42 @@ constexpr size_t SERIAL_BUS_RX_BUFFER_SIZE = 256;
  * 
  * This is the primary serial bus implementation using binary COBS protocol.
  */
-class SerialBus : public ISerialCore {
+class SerialBus {
 public:
     SerialBus() = default;
-    ~SerialBus() = default;
+    virtual ~SerialBus() = default;
 
     SerialBus(const SerialBus&) = delete;
     SerialBus& operator=(const SerialBus&) = delete;
 
-    bool begin(UsbHost* usbHost, int deviceIndex) override;
-    void end() override;
-    void setDevice(int deviceIndex) override;
+    // Lifecycle
+    bool begin(UsbHost* usbHost, int deviceIndex);
+    void end();
+    void setDevice(int deviceIndex);
 
     // Packet transmission
-    int sendPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0) override;
-    
-    // Convenient overrides for core commands
+    int sendPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0, uint8_t tag = 0);
     int sendInit() { return sendPacket(CorePacket::INIT); }
     int sendShutdown() { return sendPacket(CorePacket::SHUTDOWN); }
     int sendReboot() { return sendPacket(CorePacket::REBOOT); }
     int sendBootsel() { return sendPacket(CorePacket::BOOTSEL); }
-    int sendKeepalive() override;
+    int sendKeepalive();
+    int sendStatusRequest() { return sendPacket(CorePacket::STATUS_REQ); }
 
     // Packet reception
-    void onPacketReceived(PacketRxCallback callback) override { _rxCallback = callback; }
-    int process() override;
+    void onPacketReceived(PacketRxCallback callback) { _rxCallback = callback; }
+    int process();
 
     // Keepalive management
-    void setKeepaliveInterval(unsigned long intervalMs) override;
-    bool processKeepalive() override;
+    void setKeepaliveInterval(unsigned long intervalMs);
+    bool processKeepalive();
 
     // Status
-    bool isConnected() const override;
-    bool isInitialized() const override { return _initialized; }
+    bool isConnected() const;
+    bool isInitialized() const { return _initialized; }
     int deviceIndex() const { return _deviceIndex; }
-    const CoreStats& stats() const override { return _stats; }
-    void resetStats() override;
+    const CoreStats& stats() const { return _stats; }
+    void resetStats();
 
 protected:
     // Timing state - accessible to subclasses for send time tracking

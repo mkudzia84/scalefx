@@ -403,5 +403,10 @@ void StallCalibrator::_emitStatus(CalibPhase phase) {
 
     status.calibratedStall_mA = _existingCalibStall_mA;
 
+    // Terminal phases indicate calibration is finished
+    status.finished = (phase == CalibPhase::COMPLETE ||
+                       phase == CalibPhase::ERROR ||
+                       phase == CalibPhase::CANCELLED);
+
     _progressCb(status);
 }

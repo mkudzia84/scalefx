@@ -2,7 +2,7 @@
 
 Lighting effects controller for scale models - manages 8 LED channels with sequence animations and 3 servos.
 
-**Version:** 0.5.0  
+**Version:** 0.6.0  
 **Protocol:** Binary COBS with CRC-8  
 **Baud Rate:** 115200
 
@@ -145,6 +145,38 @@ Coordinates a retract servo with a landing light LED channel. Up to 3 landing li
 | 0x53 | LANDING_LIGHT_UNBIND | slot:u8 (0=all) | Unbind landing light slot |
 | 0x54 | LANDING_LIGHT_DEPLOY | slot:u8 (0=all) | Deploy gear, light on when arrived |
 | 0x55 | LANDING_LIGHT_RETRACT | slot:u8 (0=all) | Light off immediately, then retract gear |
+| 0x56 | LANDING_LIGHT_STATUS | slot:u8, phase:u8, finished:u8 | Deploy/retract progress (server→client, echoes request tag) |
+
+#### LANDING_LIGHT_STATUS (Deploy/Retract Progress)
+
+Emitted by the server during landing light deploy/retract to report progress. Uses the tag from the original LANDING_LIGHT_DEPLOY or LANDING_LIGHT_RETRACT request.
+
+**Wire format (3 bytes, server→client, echoes request tag):**
+```
+[slot:u8][phase:u8][finished:u8]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| slot | u8 | Landing light slot (1-3) |
+| phase | u8 | LandingLightPhase enum value |
+| finished | u8 | 1 if transition complete, 0 otherwise |
+
+**LandingLightPhase enum:**
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | RETRACTED | Servo retracted, light off |
+| 1 | DEPLOYING | Servo moving to deploy position, light off |
+| 2 | DEPLOYED | Servo at deploy position, light on |
+| 3 | RETRACTING | Light off, servo moving to retract position |
+
+**Emission points:**
+1. Deploy command → phase=DEPLOYING
+2. Servo reaches deploy target → phase=DEPLOYED, finished=1
+3. Retract command → phase=RETRACTING
+4. Servo reaches retract target → phase=RETRACTED, finished=1
+
+**Tag correlation:** The client resolves the pending tag when `finished=1`, providing the equivalent of a deferred ACK for the long-running operation.
 
 **State Machine:**
 ```
@@ -267,6 +299,12 @@ pio run -t clean
 ---
 
 ## Version History
+
+- **v0.6.0** - Landing light progress reporting
+  - New: LANDING_LIGHT_STATUS (0x56) emitted during deploy/retract sequences
+  - Reports phase transitions (RETRACTED → DEPLOYING → DEPLOYED, and reverse)
+  - Uses tag correlation from original DEPLOY/RETRACT request
+  - Client auto-resolves pending tag when finished=1
 
 - **v0.5.0** - Brightness 0-100 scale
   - Changed brightness from 0-255 PWM to 0-100% human-readable scale

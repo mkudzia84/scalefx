@@ -12,13 +12,13 @@ import os
 import sys
 import time
 import threading
-from typing import Optional, Tuple, Callable, List
+from typing import Optional, Tuple, Callable, List, Dict
 from dataclasses import dataclass
 
 import serial
 
 from .protocol import build_packet, parse_packet, cobs_decode
-from .packets import CorePacket, CoreError
+from .packets import CorePacket, CoreError, TAG_ASYNC
 
 
 # ANSI colors for verbose output
@@ -54,6 +54,7 @@ def _packet_type_name(ptype: int) -> str:
 class Response:
     """Response from controller."""
     packet_type: int
+    tag: int
     payload: bytes
     raw: bytes
     
@@ -134,6 +135,16 @@ class ScaleFXConnection:
         self._lock = threading.Lock()
         self._initialized = False
         self._callbacks: List[Callable[[Response], None]] = []
+        self._next_tag = 1  # Wrapping tag counter (1-255, 0 = async)
+        self._pending: Dict[int, Response] = {}  # Tag -> out-of-order response
+        
+        # Device info (populated from INIT_READY response)
+        self.device_name: Optional[str] = None
+        self.device_version: Optional[str] = None
+        self.device_platform: Optional[str] = None
+        self.device_cpu_mhz: int = 0
+        self.device_free_ram: int = 0
+        self.device_build: int = 0
         
         # Verbose mode from env or parameter
         if verbose is None:
@@ -152,10 +163,12 @@ class ScaleFXConnection:
             try:
                 parsed = parse_packet(data)
                 if parsed:
-                    ptype, payload = parsed
+                    ptype, tag, payload = parsed
                     name = cmd_name or _packet_type_name(ptype)
                     payload_hex = payload.hex() if payload else ""
                     print(f"  {_Colors.CYAN}→ TX:{_Colors.RESET} {_Colors.BOLD}{name}{_Colors.RESET}", end="")
+                    if tag:
+                        print(f" {_Colors.GRAY}tag={tag}{_Colors.RESET}", end="")
                     if payload_hex:
                         print(f" {_Colors.GRAY}[{payload_hex}]{_Colors.RESET}", end="")
                     print()
@@ -191,7 +204,8 @@ class ScaleFXConnection:
             else:
                 detail = ""
         
-        print(f"  {_Colors.MAGENTA}← RX:{_Colors.RESET} {color}{_Colors.BOLD}{name}{_Colors.RESET}{detail}")
+        tag_str = f" {_Colors.GRAY}tag={response.tag}{_Colors.RESET}" if response.tag else ""
+        print(f"  {_Colors.MAGENTA}← RX:{_Colors.RESET} {color}{_Colors.BOLD}{name}{_Colors.RESET}{tag_str}{detail}")
     
     def _log_timeout(self):
         """Log timeout if verbose mode enabled."""
@@ -206,6 +220,12 @@ class ScaleFXConnection:
         if sys.platform == 'win32':
             return 'COM3'
         return '/dev/ttyACM0'
+    
+    def next_tag(self) -> int:
+        """Get next wrapping correlation tag (1-255). 0 is reserved for async."""
+        tag = self._next_tag
+        self._next_tag = (self._next_tag % 255) + 1
+        return tag
     
     @property
     def is_connected(self) -> bool:
@@ -236,6 +256,7 @@ class ScaleFXConnection:
             )
             time.sleep(0.1)  # Wait for device to be ready
             self._rx_buffer.clear()
+            self._pending.clear()
             
             if init:
                 return self.initialize()
@@ -254,10 +275,18 @@ class ScaleFXConnection:
                 pass
             self._serial = None
         self._initialized = False
+        self._pending.clear()
+    
+    def disconnect(self):
+        """Close serial connection (alias for close())."""
+        self.close()
     
     def initialize(self) -> bool:
         """
         Send INIT command and wait for INIT_READY.
+        
+        Parses device info (name, version, platform, cpu, RAM, build)
+        from the INIT_READY payload.
         
         Returns:
             True if initialization successful
@@ -265,8 +294,40 @@ class ScaleFXConnection:
         response = self.send_and_wait(build_packet(CorePacket.INIT))
         if response and response.is_init_ready:
             self._initialized = True
+            self._parse_init_ready(response.payload)
             return True
         return False
+    
+    def _parse_init_ready(self, payload: bytes):
+        """
+        Parse INIT_READY payload and store device info.
+        
+        Wire format:
+            [nameLen:u8][name][verLen:u8][ver][platLen:u8][plat]
+            [cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]
+        """
+        try:
+            offset = 0
+            
+            name_len = payload[offset]; offset += 1
+            self.device_name = payload[offset:offset+name_len].decode('utf-8', errors='replace')
+            offset += name_len
+            
+            ver_len = payload[offset]; offset += 1
+            self.device_version = payload[offset:offset+ver_len].decode('utf-8', errors='replace')
+            offset += ver_len
+            
+            plat_len = payload[offset]; offset += 1
+            self.device_platform = payload[offset:offset+plat_len].decode('utf-8', errors='replace')
+            offset += plat_len
+            
+            self.device_cpu_mhz = int.from_bytes(payload[offset:offset+4], 'little')
+            offset += 4
+            self.device_free_ram = int.from_bytes(payload[offset:offset+4], 'little')
+            offset += 4
+            self.device_build = int.from_bytes(payload[offset:offset+4], 'little')
+        except (IndexError, KeyError):
+            pass  # Best-effort parsing
     
     def send(self, data: bytes) -> bool:
         """
@@ -293,10 +354,31 @@ class ScaleFXConnection:
     
     def receive(self, timeout: Optional[float] = None) -> Optional[Response]:
         """
-        Wait for and parse a response packet.
+        Read the next available packet from serial (any tag).
+        
+        This is the raw read method used by listener threads. For command/response
+        correlation, use send_and_wait() which auto-assigns tags and matches.
         
         Args:
             timeout: Override default timeout
+        
+        Returns:
+            Response object, or None if timeout/error
+        """
+        response = self._read_packet(timeout)
+        if response is None:
+            self._log_timeout()
+        return response
+    
+    def _read_packet(self, timeout: Optional[float] = None) -> Optional[Response]:
+        """
+        Low-level: read a single packet from serial.
+        
+        Returns the next complete packet regardless of tag, or None on timeout.
+        Does NOT log timeouts (caller decides).
+        
+        Args:
+            timeout: Read timeout in seconds
         
         Returns:
             Response object, or None if timeout/error
@@ -324,34 +406,127 @@ class ScaleFXConnection:
                 
                 parsed = parse_packet(packet_data + b'\x00')
                 if parsed:
-                    packet_type, payload = parsed
-                    response = Response(packet_type, payload, packet_data)
+                    packet_type, tag, payload = parsed
+                    response = Response(packet_type, tag, payload, packet_data)
                     self._log_recv(response)
                     return response
             
             time.sleep(0.01)
         
+        return None
+    
+    def _wait_for_tag(self, tag: int, timeout: Optional[float] = None) -> Optional[Response]:
+        """
+        Wait for a response with a specific correlation tag.
+        
+        While waiting, async packets (tag=0) are dispatched to callbacks,
+        and responses with other tags are stashed in self._pending for later.
+        
+        Args:
+            tag: The correlation tag to wait for (1-255)
+            timeout: Override default timeout
+        
+        Returns:
+            Response with matching tag, or None on timeout
+        """
+        # Check if we already have it from a previous read
+        if tag in self._pending:
+            return self._pending.pop(tag)
+        
+        timeout = timeout or self.timeout
+        deadline = time.time() + timeout
+        
+        while time.time() < deadline:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            
+            response = self._read_packet(remaining)
+            if response is None:
+                break  # Timeout or error
+            
+            if response.tag == tag:
+                return response
+            elif response.tag == TAG_ASYNC:
+                # Dispatch async to callbacks
+                for cb in self._callbacks:
+                    try:
+                        cb(response)
+                    except Exception:
+                        pass
+            else:
+                # Stash out-of-order response for its tag
+                self._pending[response.tag] = response
+        
         self._log_timeout()
         return None
     
-    def send_and_wait(self, data: bytes, timeout: Optional[float] = None) -> Optional[Response]:
+    def _inject_tag(self, data: bytes, tag: int) -> bytes:
         """
-        Send command and wait for response.
+        Re-encode a COBS packet with a new correlation tag.
+        
+        Decodes the packet, replaces the tag, and re-encodes.
         
         Args:
-            data: COBS encoded packet
+            data: Original COBS-encoded packet
+            tag: New tag value (1-255)
+        
+        Returns:
+            Re-encoded packet with new tag, or original if decode fails
+        """
+        parsed = parse_packet(data)
+        if not parsed:
+            return data
+        ptype, _old_tag, payload = parsed
+        return build_packet(ptype, payload, tag=tag)
+    
+    def send_and_wait(self, data: bytes, timeout: Optional[float] = None) -> Optional[Response]:
+        """
+        Send command with auto-assigned correlation tag and wait for matching response.
+        
+        Assigns a unique tag (1-255), re-encodes the packet with it, sends it,
+        then blocks until a response with the same tag arrives or timeout.
+        Async packets (tag=0) are dispatched to callbacks while waiting.
+        Out-of-order responses with other tags are queued for later retrieval.
+        
+        Args:
+            data: COBS encoded packet (tag will be replaced)
             timeout: Response timeout
         
         Returns:
-            Response object, or None if failed
+            Response object with matching tag, or None if failed
         """
-        if not self.send(data):
+        tag = self.next_tag()
+        tagged_data = self._inject_tag(data, tag)
+        if not self.send(tagged_data):
             return None
-        return self.receive(timeout)
+        return self._wait_for_tag(tag, timeout)
+    
+    def send_and_receive(self, data: bytes, timeout: Optional[float] = None) -> Optional[Response]:
+        """
+        Send command and wait for any matching response (query pattern).
+        
+        Use for query commands that return typed data response packets
+        (e.g., LED_SEQ_STATUS → LED_SEQ_STATUS_RESP). The caller checks
+        response.packet_type to determine what was received.
+        
+        Equivalent to send_and_wait() — named for clarity at call sites
+        where the expected response is a data packet, not ACK/NACK.
+        
+        Args:
+            data: COBS encoded packet (tag will be auto-assigned)
+            timeout: Response timeout
+        
+        Returns:
+            Response object with matching tag, or None on timeout
+        """
+        return self.send_and_wait(data, timeout)
     
     def send_expect_ack(self, data: bytes, timeout: Optional[float] = None) -> Tuple[bool, Optional[Response]]:
         """
         Send command and expect ACK response.
+        
+        Uses tag-matched send_and_wait internally.
         
         Args:
             data: COBS encoded packet
@@ -366,7 +541,7 @@ class ScaleFXConnection:
         return (response.is_ack, response)
     
     def drain(self):
-        """Drain any pending data from receive buffer."""
+        """Drain any pending data from receive buffer and pending queue."""
         if self.is_connected:
             try:
                 while self._serial.in_waiting:
@@ -375,6 +550,7 @@ class ScaleFXConnection:
             except:
                 pass
         self._rx_buffer.clear()
+        self._pending.clear()
     
     def add_callback(self, callback: Callable[[Response], None]):
         """Add callback for async responses (STATUS, ERROR)."""

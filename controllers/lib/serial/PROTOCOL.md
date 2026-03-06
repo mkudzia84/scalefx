@@ -254,18 +254,21 @@ Flags:
 | Class | Header | Description |
 |-------|--------|-------------|
 | `CoreProtocol` | `serial_core.h` | COBS encoding, CRC-8, packet building/parsing |
-| `ISerialCore` | `serial_core.h` | Abstract interface for serial I/O |
-| `CoreCommandServer` | `serial_core.h` | Server-side system command handler (INIT, STATUS, REBOOT, etc.) |
-| `ICommandHandler` | `serial_command_handler.h` | Handler interface (`tryProcess()`) |
-| `CommandRouter` | `serial_command_handler.h` | Routes packets to registered handlers |
-| `GunFxServer` | `serial_gunfx.h` | GunFX command handler (server) |
-| `GunFxClient` | `serial_gunfx.h` | GunFX command sender (client/hub) |
-| `LightFxServer` | `serial_lightfx.h` | LightFX command handler (server) |
-| `LightFxClient` | `serial_lightfx.h` | LightFX command sender (client/hub) |
-| `GearControlServer` | `serial_gearcontrol.h` | GearControl command handler (server) |
-| `GearControlClient` | `serial_gearcontrol.h` | GearControl command sender (client/hub) |
+| `SerialError` | `serial_core.h` | Generic error code constants |
+| `ICommandHandler` | `serial_core.h` | Handler interface (`tryProcess()`) |
+| `CommandRouter` | `serial_core.h` | Routes packets to registered handlers |
+| `BusServer` | `serial_bus_server.h` | Base class for server command handlers |
+| `CoreCommandServer` | `serial_bus_server.h` | Server-side system command handler (INIT, STATUS, REBOOT, etc.) |
+| `BusClient` | `serial_bus_client.h` | Base class for client controllers |
+| `ResultQueue` | `serial_result_queue.h` | Tag-correlated command/response matching |
+| `GunFxServer` | `serial_gunfx.h` | GunFX command handler (server, extends BusServer) |
+| `GunFxClient` | `serial_gunfx.h` | GunFX command sender (client, extends BusClient) |
+| `LightFxServer` | `serial_lightfx.h` | LightFX command handler (server, extends BusServer) |
+| `LightFxClient` | `serial_lightfx.h` | LightFX command sender (client, extends BusClient) |
+| `GearControlServer` | `serial_gearcontrol.h` | GearControl command handler (server, extends BusServer) |
+| `GearControlClient` | `serial_gearcontrol.h` | GearControl command sender (client, extends BusClient) |
 | `SerialBus` | `serial_bus.h` | Client-side serial bus (USB host) |
-| `UsbHost` | `serial_bus.h` | PIO-USB host for HubFX |
+| `UsbHost` | `serial_usb_host.h` | PIO-USB host for HubFX |
 
 ### Server-Side Pattern
 

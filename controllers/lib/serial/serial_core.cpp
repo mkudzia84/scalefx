@@ -1,241 +1,179 @@
 /*
  * Serial Core - Implementation
  * 
- * Core command handling and INIT_READY payload encoding/decoding.
+ * CoreProtocol functions (CRC-8, COBS, packet build/parse) and
+ * INIT_READY payload encoding/decoding.
+ * CoreCommandServer is implemented in serial_bus_server.cpp.
  */
 
 #include "serial_core.h"
 #include <cstring>
 
 // ============================================================================
-// ISerialCore Implementation
+// CoreProtocol — Binary Protocol Functions
 // ============================================================================
 
-int ISerialCore::sendInitReady(const CoreBoardInfo& info) {
-    uint8_t payload[64];
-    size_t len = CorePayload::encodeInitReady(info, payload);
-    return sendPacket(CorePacket::INIT_READY, payload, len);
-}
+namespace CoreProtocol {
 
-// ============================================================================
-// CoreCommandServer Implementation
-// ============================================================================
-
-void CoreCommandServer::begin(Stream* serial) {
-    _serial = serial;
-    _initialized = false;
-    _lastActivityMs = 0;
-}
-
-void CoreCommandServer::setBoardInfo(const char* deviceName, const char* firmwareVersion,
-                                       const char* platform, uint32_t cpuMHz, uint32_t freeRam,
-                                       uint32_t buildNumber) {
-    if (deviceName) {
-        strncpy(_boardInfo.deviceName, deviceName, sizeof(_boardInfo.deviceName) - 1);
-        _boardInfo.deviceName[sizeof(_boardInfo.deviceName) - 1] = '\0';
-    }
-    if (firmwareVersion) {
-        // Strip "v" or "V" prefix if present
-        const char* ver = firmwareVersion;
-        if (ver[0] == 'v' || ver[0] == 'V') ver++;
-        strncpy(_boardInfo.firmwareVersion, ver, sizeof(_boardInfo.firmwareVersion) - 1);
-        _boardInfo.firmwareVersion[sizeof(_boardInfo.firmwareVersion) - 1] = '\0';
-    }
-    if (platform) {
-        strncpy(_boardInfo.platform, platform, sizeof(_boardInfo.platform) - 1);
-        _boardInfo.platform[sizeof(_boardInfo.platform) - 1] = '\0';
-    }
-    _boardInfo.cpuFrequencyMHz = cpuMHz;
-    _boardInfo.freeRamBytes = freeRam;
-    _boardInfo.buildNumber = buildNumber;
-}
-
-bool CoreCommandServer::tryHandle(uint8_t type, const uint8_t* payload, size_t len) {
-    _lastActivityMs = millis();
-    // Increment with overflow protection (wrap to 1, not 0, to distinguish from reset)
-    if (_commandCounter == UINT32_MAX) {
-        _commandCounter = 1;
-    } else {
-        _commandCounter++;
-    }
-    
-    switch (type) {
-        case CorePacket::INIT:
-            handleInit(payload, len);
-            return true;
-            
-        case CorePacket::SHUTDOWN:
-            sendAck();
-            if (_shutdownCallback) _shutdownCallback();
-            return true;
-            
-        case CorePacket::REBOOT:
-            // No ACK - device reboots immediately
-            if (_rebootCallback) _rebootCallback();
-            return true;
-            
-        case CorePacket::BOOTSEL:
-            // No ACK - device enters bootloader immediately
-            if (_bootselCallback) _bootselCallback();
-            return true;
-            
-        case CorePacket::KEEPALIVE:
-            // Keepalive updates activity timer (already done above) and sends ACK
-            // Increment with overflow protection (wrap to 1, not 0, to distinguish from reset)
-            if (_keepaliveCounter == UINT32_MAX) {
-                _keepaliveCounter = 1;
+uint8_t crc8(const uint8_t* data, size_t len) {
+    uint8_t crc = 0x00;
+    while (len--) {
+        crc ^= *data++;
+        for (int i = 0; i < 8; i++) {
+            if (crc & 0x80) {
+                crc = (crc << 1) ^ 0x07;
             } else {
-                _keepaliveCounter++;
+                crc <<= 1;
             }
-            sendAck();
-            if (_keepaliveCallback) _keepaliveCallback();
-            return true;
-            
-        case CorePacket::STATUS_REQ:
-            sendStatus();
-            return true;
-            
-        case CorePacket::I2C_SCAN:
-            if (_i2cScanCallback) {
-                I2CScanResult result = _i2cScanCallback();
-                sendI2CScanResult(result);
-            } else {
-                sendNack(SerialError::NOT_SUPPORTED);
-            }
-            return true;
-            
-        default:
-            _commandCounter--;  // Don't count unhandled commands
-            return false;
-    }
-}
-
-bool CoreCommandServer::checkTimeout(unsigned long timeoutMs) {
-    if (timeoutMs == 0 || _lastActivityMs == 0) return false;
-    
-    if (millis() - _lastActivityMs > timeoutMs) {
-        if (_initialized) {
-            reset();
         }
-        return true;
     }
-    return false;
+    return crc;
 }
 
-void CoreCommandServer::reset() {
-    _initialized = false;
+size_t cobsEncode(const uint8_t* input, size_t length, uint8_t* output) {
+    if (length == 0 || length > MAX_PACKET_SIZE) {
+        return 0;
+    }
+    
+    size_t readIndex = 0;
+    size_t writeIndex = 1;
+    size_t codeIndex = 0;
+    uint8_t code = 1;
+    
+    while (readIndex < length) {
+        if (input[readIndex] == 0) {
+            output[codeIndex] = code;
+            code = 1;
+            codeIndex = writeIndex++;
+            readIndex++;
+        } else {
+            output[writeIndex++] = input[readIndex++];
+            code++;
+            if (code == 0xFF) {
+                output[codeIndex] = code;
+                code = 1;
+                codeIndex = writeIndex++;
+            }
+        }
+    }
+    output[codeIndex] = code;
+    
+    return writeIndex;
 }
 
-void CoreCommandServer::handleInit(const uint8_t* payload, size_t len) {
-    (void)payload;
-    (void)len;
-    
-    // If already initialized, this is a reconnection
-    if (_initialized) {
-        reset();
+size_t cobsDecode(const uint8_t* input, size_t length, uint8_t* output, size_t maxOutput) {
+    if (length == 0) {
+        return 0;
     }
     
-    // Send INIT_READY response
-    sendInitReady();
+    size_t readIndex = 0;
+    size_t writeIndex = 0;
     
-    _initialized = true;
+    while (readIndex < length) {
+        uint8_t code = input[readIndex++];
+        if (code == 0) {
+            return 0;  // Unexpected zero
+        }
+        
+        for (int i = 1; i < code; i++) {
+            if (readIndex >= length || writeIndex >= maxOutput) {
+                return 0;
+            }
+            output[writeIndex++] = input[readIndex++];
+        }
+        
+        if (code < 0xFF && readIndex < length) {
+            if (writeIndex >= maxOutput) {
+                return 0;
+            }
+            output[writeIndex++] = 0;
+        }
+    }
     
-    if (_initCallback) {
-        _initCallback();
+    return writeIndex;
+}
+
+size_t buildPacket(uint8_t* output, uint8_t type, uint8_t tag, const uint8_t* payload, size_t payloadLen) {
+    if (payloadLen > MAX_PAYLOAD_SIZE) {
+        return 0;
+    }
+    
+    output[0] = type;
+    output[1] = tag;
+    output[2] = (uint8_t)payloadLen;
+    
+    if (payloadLen > 0 && payload != nullptr) {
+        memcpy(&output[3], payload, payloadLen);
+    }
+    
+    size_t packetLen = 3 + payloadLen;
+    output[packetLen] = crc8(output, packetLen);
+    
+    return packetLen + 1;
+}
+
+size_t encodePacket(uint8_t* output, uint8_t type, uint8_t tag, const uint8_t* payload, size_t payloadLen) {
+    uint8_t raw[MAX_PACKET_SIZE];
+    
+    size_t rawLen = buildPacket(raw, type, tag, payload, payloadLen);
+    if (rawLen == 0) {
+        return 0;
+    }
+    
+    size_t encodedLen = cobsEncode(raw, rawLen, output);
+    if (encodedLen == 0) {
+        return 0;
+    }
+    
+    output[encodedLen] = FRAME_DELIMITER;
+    return encodedLen + 1;
+}
+
+bool parsePacket(const uint8_t* input, size_t length, uint8_t* type, uint8_t* tag,
+                 const uint8_t** payload, size_t* payloadLen) {
+    if (length < 4) {
+        return false;  // Minimum: type + tag + len + crc
+    }
+    
+    uint8_t pktType = input[0];
+    uint8_t pktTag = input[1];
+    uint8_t pktLen = input[2];
+    
+    if (length != (size_t)(3 + pktLen + 1)) {
+        return false;
+    }
+    
+    uint8_t crc = crc8(input, 3 + pktLen);
+    if (crc != input[3 + pktLen]) {
+        return false;
+    }
+    
+    *type = pktType;
+    *tag = pktTag;
+    *payload = (pktLen > 0) ? &input[3] : nullptr;
+    *payloadLen = pktLen;
+    
+    return true;
+}
+
+const char* packetTypeToText(uint8_t type) {
+    switch (type) {
+        case CorePacket::INIT:       return "INIT";
+        case CorePacket::SHUTDOWN:   return "SHUTDOWN";
+        case CorePacket::KEEPALIVE:  return "KEEPALIVE";
+        case CorePacket::INIT_READY: return "INIT_READY";
+        case CorePacket::STATUS:     return "STATUS";
+        case CorePacket::ERROR:      return "ERROR";
+        case CorePacket::ACK:        return "ACK";
+        case CorePacket::NACK:       return "NACK";
+        case CorePacket::REBOOT:     return "REBOOT";
+        case CorePacket::BOOTSEL:    return "BOOTSEL";
+        case CorePacket::STATUS_REQ: return "STATUS_REQ";
+        default:                     return "UNKNOWN";
     }
 }
 
-void CoreCommandServer::sendInitReady() {
-    if (!_serial) return;
-    
-    uint8_t payload[64];
-    size_t len = CorePayload::encodeInitReady(_boardInfo, payload);
-    
-    uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
-    size_t encLen = CoreProtocol::encodePacket(encoded, CorePacket::INIT_READY, payload, len);
-    
-    if (encLen > 0) {
-        _serial->write(encoded, encLen);
-    }
-}
-
-void CoreCommandServer::sendAck() {
-    if (!_serial) return;
-    
-    uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
-    size_t encLen = CoreProtocol::encodePacket(encoded, CorePacket::ACK, nullptr, 0);
-    
-    if (encLen > 0) {
-        _serial->write(encoded, encLen);
-    }
-}
-
-void CoreCommandServer::sendNack(uint8_t errorCode) {
-    if (!_serial) return;
-    
-    uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
-    size_t encLen = CoreProtocol::encodePacket(encoded, CorePacket::NACK, &errorCode, 1);
-    
-    if (encLen > 0) {
-        _serial->write(encoded, encLen);
-    }
-}
-
-void CoreCommandServer::sendStatus() {
-    if (!_serial) return;
-    
-    // STATUS payload: [counter:u32LE][uptime:u32LE][freeRam:u32LE][moduleData:0-52]
-    uint8_t payload[CoreProtocol::MAX_PAYLOAD_SIZE];
-    size_t idx = 0;
-    
-    // Core header (12 bytes)
-    CoreProtocol::putU32LE(&payload[idx], _commandCounter);
-    idx += 4;
-    CoreProtocol::putU32LE(&payload[idx], millis());
-    idx += 4;
-    CoreProtocol::putU32LE(&payload[idx], _boardInfo.freeRamBytes);
-    idx += 4;
-    
-    // Module-specific data (appended by callback)
-    if (_statusDataCallback) {
-        size_t moduleLen = _statusDataCallback(&payload[idx], sizeof(payload) - idx);
-        idx += moduleLen;
-    }
-    
-    uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
-    size_t encLen = CoreProtocol::encodePacket(encoded, CorePacket::STATUS, payload, idx);
-    
-    if (encLen > 0) {
-        _serial->write(encoded, encLen);
-    }
-}
-
-void CoreCommandServer::sendI2CScanResult(const I2CScanResult& result) {
-    if (!_serial) return;
-
-    // Wire format: [numExpected:u8][N×(addr:u8,found:u8,id:u8)][numExtra:u8][M×addr:u8]
-    uint8_t payload[CoreProtocol::MAX_PAYLOAD_SIZE];
-    size_t idx = 0;
-
-    payload[idx++] = result.numExpected;
-    for (uint8_t i = 0; i < result.numExpected && i < I2CScanResult::MAX_EXPECTED; i++) {
-        payload[idx++] = result.expected[i].address;
-        payload[idx++] = result.expected[i].found ? 1 : 0;
-        payload[idx++] = result.expected[i].identified ? 1 : 0;
-    }
-    payload[idx++] = result.numExtra;
-    for (uint8_t i = 0; i < result.numExtra && i < I2CScanResult::MAX_EXTRA; i++) {
-        if (idx >= sizeof(payload)) break;
-        payload[idx++] = result.extraAddresses[i];
-    }
-
-    uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
-    size_t encLen = CoreProtocol::encodePacket(encoded, CorePacket::I2C_SCAN_RESULT, payload, idx);
-
-    if (encLen > 0) {
-        _serial->write(encoded, encLen);
-    }
-}
+} // namespace CoreProtocol
 
 // ============================================================================
 // INIT_READY Payload Encoding/Decoding

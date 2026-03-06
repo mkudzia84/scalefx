@@ -391,7 +391,7 @@ def send_bootsel_command(port: str) -> bool:
                         # Try to parse packet
                         result = parse_packet(bytes(rx_buffer) + b'\x00')
                         if result:
-                            ptype, payload = result
+                            ptype, _tag, payload = result
                             if ptype == CorePacket.INIT_READY:
                                 print_ok("Got INIT_READY")
                                 got_init_ready = True
@@ -565,7 +565,7 @@ def verify_flash(port: str, expected_version: str = None) -> bool:
                     if len(rx_buffer) > 0:
                         result = parse_packet(bytes(rx_buffer) + b'\x00')
                         if result:
-                            ptype, payload = result
+                            ptype, _tag, payload = result
                             if ptype == CorePacket.INIT_READY:
                                 # Parse binary INIT_READY payload
                                 device_info = _parse_init_ready_payload(payload)
