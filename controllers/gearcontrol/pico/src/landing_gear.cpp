@@ -27,7 +27,7 @@ void LandingGear::begin(uint8_t gearId, uint8_t motorCwPin, uint8_t motorCcwPin)
 
     // Set default configurations
     _gearConfig.gearId = gearId;
-    _gearConfig.flags = GearConfigFlags::CLOSE_DOORS_ON_RETRACT;
+    _gearConfig.flags = 0;  // No flags by default (door closing controlled by doorPostDeploy)
     _gearConfig.stallCurrent_mA = LandingGearConfig::DEFAULT_STALL_CURRENT_mA;
     _gearConfig.timeout_ms = LandingGearConfig::DEFAULT_MOTOR_TIMEOUT_ms;
 
@@ -47,9 +47,21 @@ void LandingGear::begin(uint8_t gearId, uint8_t motorCwPin, uint8_t motorCcwPin)
         [this]() { return readMotorCurrent_mA(); },
         &_doorSeq);
 
+    // Initialize gear sequencer with door/stall dependencies and motor callbacks
+    _gearSeq.begin(&_doorSeq, &_stallDetector,
+        [this](int8_t dir) { setMotor(dir); },
+        [this]() { return readMotorCurrent_mA(); });
+
+    _gearSeq.onPhaseChange([this](bool finished, bool error) {
+        if (error) {
+            _state = GearState::ERROR;
+        } else if (finished) {
+            _state = _gearSeq.deploying() ? GearState::DEPLOYED : GearState::RETRACTED;
+        }
+        _emitSeqProgress(finished);
+    });
+
     _state = GearState::UNKNOWN;
-    _seq.step = GearSeqStep::IDLE;
-    _seq.motorRunning = false;
 }
 
 bool LandingGear::attachDoorServo(uint8_t doorIndex, int pin,
@@ -104,80 +116,76 @@ const ServoControl& LandingGear::doorServo(uint8_t doorIndex) const {
 // ============================================================================
 
 uint8_t LandingGear::deploy() {
+    // Channel disabled
+    if (!_enabled) return GearControlError::GEAR_DISABLED;
+
     // Already deployed
     if (_state == GearState::DEPLOYED) return SerialError::OK;
 
-    // Busy with another sequence
-    if (_seq.step != GearSeqStep::IDLE) return GearControlError::GEAR_BUSY;
+    // Can't preempt calibration
+    if (_state == GearState::CALIBRATING) return GearControlError::GEAR_BUSY;
 
-    _seq.deploying = true;
-    _seq.motorRunning = false;
-    _seq.sequenceStartTime_ms = millis();
+    // Already deploying — idempotent
+    if (_gearSeq.isActive() && _gearSeq.deploying()) return SerialError::OK;
+
+    // Start deploy (preempts any active retract, including sync sequences)
     _state = GearState::DEPLOYING;
-    _emergencyDeploy = false;  // Normal deploy clears emergency flag
+    _emergencyDeploy = false;
 
-    if (_doorSeq.mode() == DoorMode::NONE) {
-        if (_seq.syncMode) {
-            // No doors but sync mode — wait at barrier for other gears' doors
-            _seq.step = GearSeqStep::SYNC_DOORS_OPEN;
-            _seq.stepStartTime_ms = millis();
-            _emitSeqProgress();
-        } else {
-            // No doors, no sync — start motor directly
-            advanceToMotor(millis());
-        }
-    } else {
-        _doorSeq.startOpen();
-        _seq.step = GearSeqStep::OPENING_DOORS;
-        _seq.stepStartTime_ms = millis();
-        _emitSeqProgress();  // Opening doors phase started
-    }
+    GearSequencer::StallConfig cfg;
+    cfg.startupIgnore_ms = LandingGearConfig::STARTUP_IGNORE_ms;
+    cfg.motorDetectThreshold_mA = LandingGearConfig::MOTOR_DETECT_THRESHOLD_mA;
+    cfg.stallThreshold_mA = effectiveStallThreshold_mA();
+    cfg.stallConfirm_ms = LandingGearConfig::STALL_CONFIRM_ms;
+    cfg.timeout_ms = _gearConfig.timeout_ms;
 
+    _gearSeq.start(true, _nextSyncMode, cfg);
     return SerialError::OK;
 }
 
 uint8_t LandingGear::retract() {
+    // Channel disabled
+    if (!_enabled) return GearControlError::GEAR_DISABLED;
+
     // Already retracted
     if (_state == GearState::RETRACTED) return SerialError::OK;
 
-    // Busy with another sequence
-    if (_seq.step != GearSeqStep::IDLE) return GearControlError::GEAR_BUSY;
+    // Can't preempt calibration
+    if (_state == GearState::CALIBRATING) return GearControlError::GEAR_BUSY;
 
-    _seq.deploying = false;
-    _seq.motorRunning = false;
-    _seq.sequenceStartTime_ms = millis();
+    // Already retracting — idempotent
+    if (_gearSeq.isActive() && !_gearSeq.deploying()) return SerialError::OK;
+
+    // Start retract (preempts any active deploy, including sync sequences)
     _state = GearState::RETRACTING;
 
-    if (_doorSeq.mode() == DoorMode::NONE) {
-        if (_seq.syncMode) {
-            _seq.step = GearSeqStep::SYNC_DOORS_OPEN;
-            _seq.stepStartTime_ms = millis();
-            _emitSeqProgress();
-        } else {
-            advanceToMotor(millis());
-        }
-    } else {
-        _doorSeq.startOpen();
-        _seq.step = GearSeqStep::OPENING_DOORS;
-        _seq.stepStartTime_ms = millis();
-        _emitSeqProgress();  // Opening doors phase started
-    }
+    GearSequencer::StallConfig cfg;
+    cfg.startupIgnore_ms = LandingGearConfig::STARTUP_IGNORE_ms;
+    cfg.motorDetectThreshold_mA = LandingGearConfig::MOTOR_DETECT_THRESHOLD_mA;
+    cfg.stallThreshold_mA = effectiveStallThreshold_mA();
+    cfg.stallConfirm_ms = LandingGearConfig::STALL_CONFIRM_ms;
+    cfg.timeout_ms = _gearConfig.timeout_ms;
 
+    _gearSeq.start(false, _nextSyncMode, cfg);
     return SerialError::OK;
 }
 
 void LandingGear::stop() {
     stopMotor();
-    _seq.step = GearSeqStep::IDLE;
-    _seq.motorRunning = false;
-    _seq.syncMode = false;
+    _gearSeq.stop();
     _calibrator.reset();
-    // Don't change state - leave as last known
+    // If gear was calibrating, transition to UNKNOWN
+    if (_state == GearState::CALIBRATING) {
+        _state = GearState::UNKNOWN;
+    }
 }
 
-uint8_t LandingGear::calibrate() {
+uint8_t LandingGear::calibrate(uint32_t overallTimeout_ms) {
+    // Channel disabled
+    if (!_enabled) return GearControlError::GEAR_DISABLED;
+
     // Must not be busy with a sequence
-    if (_seq.step != GearSeqStep::IDLE) return GearControlError::GEAR_BUSY;
+    if (_gearSeq.isActive()) return GearControlError::GEAR_BUSY;
 
     // Must not already be calibrating
     if (_calibrator.isActive()) return GearControlError::GEAR_BUSY;
@@ -187,7 +195,7 @@ uint8_t LandingGear::calibrate() {
 
     _state = GearState::CALIBRATING;
     _calibrator.setExistingCalibration(_calibratedStall_mA);
-    return _calibrator.start(_gearConfig.stallCurrent_mA);
+    return _calibrator.start(_gearConfig.stallCurrent_mA, overallTimeout_ms);
 }
 
 uint8_t LandingGear::cancelCalibration() {
@@ -251,7 +259,7 @@ void LandingGear::update() {
     }
 
     // Update gear sequencing state machine
-    updateSequence();
+    _gearSeq.update();
 
     // Update calibration state machine and handle terminal phases
     _calibrator.update();
@@ -265,6 +273,7 @@ void LandingGear::update() {
         _calibrator.reset();
     } else if (cp == CalibPhase::ERROR) {
         _state = GearState::ERROR;
+        _lastCalibErrorReason = _calibrator.result().errorReason;
         _calibrator.reset();
     } else if (cp == CalibPhase::CANCELLED) {
         _state = GearState::UNKNOWN;
@@ -273,14 +282,25 @@ void LandingGear::update() {
 
     // Update status LEDs
     updateLEDs();
+
+    // Check for door state transitions and emit events
+    uint8_t currentDoorState = _doorSeq.doorState();
+    if (currentDoorState != _lastEmittedDoorState) {
+        _lastEmittedDoorState = currentDoorState;
+        _emitDoorStatus();
+    }
 }
 
 void LandingGear::shutdown() {
     stopMotor();
-    _seq.step = GearSeqStep::IDLE;
-    _seq.motorRunning = false;
+    _gearSeq.stop();
     _calibrator.reset();
     _doorSeq.reset();
+
+    // If gear was calibrating when shutdown was called, transition to UNKNOWN
+    if (_state == GearState::CALIBRATING) {
+        _state = GearState::UNKNOWN;
+    }
 
     // Return door servos to center
     for (int i = 0; i < LandingGearConfig::DOOR_COUNT; i++) {
@@ -297,12 +317,28 @@ void LandingGear::shutdown() {
 
 void LandingGear::reset() {
     stopMotor();
-    _seq.step = GearSeqStep::IDLE;
-    _seq.motorRunning = false;
+    _gearSeq.stop();
     _calibrator.reset();
     _doorSeq.reset();
     _emergencyDeploy = false;
     // State is preserved for the main module to query
+}
+
+void LandingGear::clearError() {
+    if (_state == GearState::ERROR) {
+        _state = GearState::UNKNOWN;
+        _lastCalibErrorReason = 0;
+    }
+}
+
+void LandingGear::setEnabled(bool enabled) {
+    _enabled = enabled;
+    if (!enabled) {
+        // Stop any active sequence when disabling
+        if (_gearSeq.isActive() || _calibrator.isActive()) {
+            stop();
+        }
+    }
 }
 
 // ============================================================================
@@ -320,136 +356,67 @@ uint16_t LandingGear::doorPosition_us(uint8_t doorIndex) const {
 /**
  * @brief Emit a sequence progress update to the registered callback
  *
- * Maps internal GearSeqStep to wire-format GearSeqPhase constants and
- * sends a GearControlSeqStatus update. Called at each phase transition
- * during deploy/retract sequences.
+ * Maps current queue op to wire-format GearSeqPhase constants and sends
+ * a GearControlSeqStatus update. Called at each phase transition during
+ * deploy/retract sequences.
  */
 void LandingGear::_emitSeqProgress(bool finished) {
     if (!_seqProgressCb) return;
 
     GearControlSeqStatus ss;
     ss.gearId = _gearId;
-    ss.deploying = _seq.deploying;
+    ss.deploying = _gearSeq.deploying();
     ss.finished = finished;
-    ss.elapsed_ms = millis() - _seq.sequenceStartTime_ms;
+    ss.elapsed_ms = _gearSeq.elapsed_ms();
 
-    // Map internal enum to wire-format phase constants
-    switch (_seq.step) {
-        case GearSeqStep::OPENING_DOORS:    ss.phase = GearSeqPhase::OPENING_DOORS; break;
-        case GearSeqStep::SYNC_DOORS_OPEN:  ss.phase = GearSeqPhase::SYNC_WAIT;     break;
-        case GearSeqStep::RUNNING_MOTOR:    ss.phase = GearSeqPhase::RUNNING_MOTOR; break;
-        case GearSeqStep::SYNC_MOTOR_DONE:  ss.phase = GearSeqPhase::SYNC_WAIT;     break;
-        case GearSeqStep::CLOSING_DOORS:    ss.phase = GearSeqPhase::CLOSING_DOORS; break;
-        case GearSeqStep::ERROR:            ss.phase = GearSeqPhase::SEQ_ERROR;     break;
-        default:                            ss.phase = GearSeqPhase::IDLE;          break;
+    // Map queue-derived step to wire-format phase
+    if (_state == GearState::ERROR) {
+        ss.phase = GearSeqPhase::SEQ_ERROR;
+    } else {
+        GearSeqStep s = _gearSeq.step();
+        switch (s) {
+            case GearSeqStep::OPENING_DOORS:    ss.phase = GearSeqPhase::OPENING_DOORS; break;
+            case GearSeqStep::SYNC_DOORS_OPEN:  ss.phase = GearSeqPhase::SYNC_WAIT;     break;
+            case GearSeqStep::RUNNING_MOTOR:    ss.phase = GearSeqPhase::RUNNING_MOTOR; break;
+            case GearSeqStep::SYNC_MOTOR_DONE:  ss.phase = GearSeqPhase::SYNC_WAIT;     break;
+            case GearSeqStep::CLOSING_DOORS:    ss.phase = GearSeqPhase::CLOSING_DOORS; break;
+            default:                            ss.phase = GearSeqPhase::IDLE;          break;
+        }
     }
 
     _seqProgressCb(ss);
 }
 
 /**
- * @brief Complete the motor phase of a gear sequence
+ * @brief Emit a door status update to the registered callback
  *
- * Stops motor, checks close-doors flag, transitions to CLOSING_DOORS or
- * directly to IDLE/DEPLOYED/RETRACTED. Used by:
- *   - RUNNING_MOTOR: motor not detected (unplugged, peak < 20mA)
- *   - RUNNING_MOTOR: stall detected (normal completion)
+ * Builds a GearControlDoorStatus from the current door sequencer state
+ * and calls the registered callback. Called when door state transitions
+ * are detected in update().
  */
-void LandingGear::_completeSequence(uint32_t now) {
-    stopMotor();
-    _seq.motorRunning = false;
+void LandingGear::_emitDoorStatus() {
+    if (!_doorStatusCb) return;
 
-    if (_seq.syncMode) {
-        // Wait at sync barrier for other gears' motors to finish
-        _seq.step = GearSeqStep::SYNC_MOTOR_DONE;
-        _seq.stepStartTime_ms = now;
-        _emitSeqProgress();
-        return;
-    }
+    GearControlDoorStatus ds;
+    ds.gearId = _gearId;
+    ds.state = _doorSeq.doorState();
+    ds.door0Pos_us = _doorSeq.position_us(0);  // µs
+    ds.door1Pos_us = _doorSeq.position_us(1);  // µs
 
-    bool shouldCloseDoors = false;
-    if (_seq.deploying) {
-        shouldCloseDoors = (_gearConfig.flags & GearConfigFlags::CLOSE_DOORS_ON_DEPLOY) != 0;
-    } else {
-        shouldCloseDoors = (_gearConfig.flags & GearConfigFlags::CLOSE_DOORS_ON_RETRACT) != 0;
-    }
-
-    if (shouldCloseDoors && _doorSeq.mode() != DoorMode::NONE) {
-        _doorSeq.startClose();
-        _seq.step = GearSeqStep::CLOSING_DOORS;
-        _seq.stepStartTime_ms = now;
-        _emitSeqProgress();  // Closing doors phase started
-    } else {
-        completeDoorClose();
-    }
+    _doorStatusCb(ds);
 }
 
-void LandingGear::updateSequence() {
-    if (_seq.step == GearSeqStep::IDLE) return;
+// ============================================================================
+// Sync Phase Advancement
+// ============================================================================
 
-    uint32_t now = millis();
-
-    switch (_seq.step) {
-        case GearSeqStep::OPENING_DOORS: {
-            _doorSeq.update();
-            if (_doorSeq.isComplete()) {
-                if (_seq.syncMode) {
-                    // Wait at sync barrier for other gears
-                    _seq.step = GearSeqStep::SYNC_DOORS_OPEN;
-                    _seq.stepStartTime_ms = now;
-                    _emitSeqProgress();
-                } else {
-                    advanceToMotor(now);
-                }
-            }
-            break;
-        }
-
-        case GearSeqStep::SYNC_DOORS_OPEN:
-            // Waiting for coordinator — no-op
-            break;
-
-        case GearSeqStep::SYNC_MOTOR_DONE:
-            // Waiting for coordinator — no-op
-            break;
-
-        case GearSeqStep::RUNNING_MOTOR: {
-            uint16_t current_mA = readMotorCurrent_mA();
-            auto result = _stallDetector.update(current_mA);
-            switch (result) {
-                case StallDetector::Result::RUNNING:
-                    break;
-                case StallDetector::Result::STALL_CONFIRMED:
-                case StallDetector::Result::TIMEOUT_STALL:
-                case StallDetector::Result::NO_MOTOR:
-                    _completeSequence(now);
-                    break;
-                case StallDetector::Result::TIMEOUT_ERROR:
-                    stopMotor();
-                    _seq.motorRunning = false;
-                    _state = GearState::ERROR;
-                    _seq.step = GearSeqStep::ERROR;
-                    _emitSeqProgress(true);  // Sequence error, finished
-                    break;
-            }
-            break;
-        }
-
-        case GearSeqStep::CLOSING_DOORS: {
-            _doorSeq.update();
-            if (_doorSeq.isComplete()) {
-                completeDoorClose();  // Also emits finished progress
-            }
-            break;
-        }
-
-        case GearSeqStep::ERROR:
-            // Stay in error until reset via stop() or reset()
-            break;
-
-        default:
-            break;
-    }
+/**
+ * @brief Advance past a sync barrier (called by coordinator)
+ *
+ * Delegates to GearSequencer which checks the current op and advances.
+ */
+void LandingGear::advanceSyncPhase() {
+    _gearSeq.advanceSyncPhase();
 }
 
 // ============================================================================
@@ -490,8 +457,8 @@ uint16_t LandingGear::effectiveStallThreshold_mA() const {
 // Door Mode Configuration
 // ============================================================================
 
-void LandingGear::setDoorMode(uint8_t mode, uint16_t delay_ms) {
-    _doorSeq.setMode(mode, delay_ms);
+void LandingGear::setDoorMode(uint8_t preDeployMode, uint8_t postDeployMode, uint16_t delay_ms) {
+    _doorSeq.setMode(preDeployMode, postDeployMode, delay_ms);
 }
 
 // ============================================================================
@@ -499,68 +466,6 @@ void LandingGear::setDoorMode(uint8_t mode, uint16_t delay_ms) {
 // ============================================================================
 
 // beginDoorOpen() and beginDoorClose() — removed, logic moved to DoorSequencer
-
-/**
- * @brief Transition from door-opening phase to motor-running phase
- */
-void LandingGear::advanceToMotor(uint32_t now) {
-    setMotor(_seq.deploying ? 1 : -1);
-    _seq.motorRunning = true;
-
-    // Configure and start stall detector
-    StallDetector::Config cfg;
-    cfg.startupIgnore_ms = LandingGearConfig::STARTUP_IGNORE_ms;
-    cfg.motorDetectThreshold_mA = LandingGearConfig::MOTOR_DETECT_THRESHOLD_mA;
-    cfg.stallThreshold_mA = effectiveStallThreshold_mA();
-    cfg.stallConfirm_ms = LandingGearConfig::STALL_CONFIRM_ms;
-    cfg.timeout_ms = _gearConfig.timeout_ms;
-    _stallDetector.configure(cfg);
-    _stallDetector.start();
-
-    _seq.step = GearSeqStep::RUNNING_MOTOR;
-    _seq.stepStartTime_ms = now;
-    _emitSeqProgress();  // Running motor phase started
-}
-
-/**
- * @brief Complete the door-closing phase and finalize the sequence
- */
-void LandingGear::completeDoorClose() {
-    _state = _seq.deploying ? GearState::DEPLOYED : GearState::RETRACTED;
-    _seq.step = GearSeqStep::IDLE;
-    _seq.syncMode = false;  // Clear sync mode when sequence finishes
-    _emitSeqProgress(true);  // Sequence complete
-}
-
-/**
- * @brief Advance past a sync barrier (called by coordinator)
- *
- * SYNC_DOORS_OPEN → start motor
- * SYNC_MOTOR_DONE → close doors (or complete if no close configured)
- */
-void LandingGear::advanceSyncPhase() {
-    uint32_t now = millis();
-
-    if (_seq.step == GearSeqStep::SYNC_DOORS_OPEN) {
-        advanceToMotor(now);
-    } else if (_seq.step == GearSeqStep::SYNC_MOTOR_DONE) {
-        bool shouldCloseDoors = false;
-        if (_seq.deploying) {
-            shouldCloseDoors = (_gearConfig.flags & GearConfigFlags::CLOSE_DOORS_ON_DEPLOY) != 0;
-        } else {
-            shouldCloseDoors = (_gearConfig.flags & GearConfigFlags::CLOSE_DOORS_ON_RETRACT) != 0;
-        }
-
-        if (shouldCloseDoors && _doorSeq.mode() != DoorMode::NONE) {
-            _doorSeq.startClose();
-            _seq.step = GearSeqStep::CLOSING_DOORS;
-            _seq.stepStartTime_ms = now;
-            _emitSeqProgress();
-        } else {
-            completeDoorClose();
-        }
-    }
-}
 
 // ============================================================================
 // Status LED Update

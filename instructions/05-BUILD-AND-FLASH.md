@@ -237,6 +237,37 @@ Post_Flash_Errors:
   "Device not responding after flash":
     cause: "Firmware crash on startup"
     fix: "Flash known-good firmware using manual BOOTSEL"
+
+  "Verification timeout (flash succeeded but script reports failure)":
+    cause: "Device rebooted but COM port reappeared slower than the script timeout"
+    fix: |
+      This is a non-critical error — the UF2 was copied successfully.
+      Run 'python scripts/build_and_flash.py <controller> --no-build' to re-verify.
+      Or connect via CLI and run 'init' to confirm the build number.
+    note: "The script auto-increments BUILD_NUMBER on each build. If a verification
+      timeout occurs, the firmware IS flashed — just the post-check failed."
+
+  "BUILD_NUMBER auto-incremented after failed flash attempt":
+    cause: "build_and_flash.py increments BUILD_NUMBER before flashing"
+    impact: "Non-critical — the next successful flash will carry the incremented number"
+    note: "Track build numbers by checking the device's INIT_READY response, not the
+      source code define alone"
+
+AI_Agent_Troubleshooting:
+  "CLI commands sent to wrong terminal":
+    cause: "VS Code has multiple terminals open; run_in_terminal goes to the active one"
+    fix: |
+      Always quit the interactive CLI session before running shell commands.
+      The CLI session captures stdin — shell commands typed there fail with
+      'Unknown command'. Send 'quit' first, then run the shell command.
+    best_practice: "Use separate terminals for CLI sessions and build commands"
+
+  "python -c with multiline code fails in PowerShell":
+    cause: "PowerShell treats newlines in -c argument as ScriptBlock, not Python code"
+    fix: |
+      Create a temporary .py file instead, or use single-line python -c commands.
+      For complex verification, use the interactive CLI or write a test script.
+    best_practice: "For multi-line Python in PowerShell, write a .py file"
 ```
 
 ---

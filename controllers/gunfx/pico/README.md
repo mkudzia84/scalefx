@@ -6,9 +6,9 @@ Slave microcontroller for gun FX hardware control. Receives commands from the ma
 - Turret servos (pitch, yaw, retract)
 - Status LEDs (heater indicator, firing status)
 
-**Version:** 0.3.0  
+**Version:** 0.4.0  
 **Protocol:** Binary COBS with CRC-8  
-**Baud Rate:** 115200
+**Baud Rate:** 1000000 (1Mbps)
 
 ---
 
@@ -23,22 +23,37 @@ The GunFX board connects to the main ScaleFX Hub board via a custom USB-C cable.
 | 1 | Servo 1 |
 | 2 | Servo 2 |
 | 3 | Servo 3 |
-| 13 | Blue LED (status) |
-| 14 | Yellow LED (heater indicator) |
-| 16 | Smoke Fan Motor (PWM) |
-| 17 | Smoke Heater |
-| 25 | Nozzle Flash (PWM) |
+| 4 | I2C SDA |
+| 5 | I2C SCL |
+| 9 | Nozzle Flash LED (PWM) |
+| 13 | Indicator LED (connection) |
+| 14 | Indicator LED (error) |
+| 15 | Smoke Heater (Motor 0 CW) |
+| 16 | Motor 0 CCW — held LOW |
+| 17 | Smoke Fan Motor PWM (Motor 1 CW) |
+| 18 | Motor 1 CCW — held LOW |
+| 21 | Status LED — heater on (Motor 0) |
+| 23 | Status LED — fan running (Motor 1) |
+| 24 | Status LED — fan spindown (Motor 1) |
+| 25 | Status LED — firing active (Motor 2) |
+| 26 | Status LED — flash pulse (Motor 2) |
+| 29 | Battery voltage ADC (÷6 divider) |
 
 ### Status LED Indicators
 
-**Yellow LED (GPIO 14):**
-- **Solid ON**: Smoke heater is active
-- **OFF**: Heater is off
+LEDs are mapped to GearControl board motor channels:
 
-**Blue LED (GPIO 13):**
-- **OFF**: All OK (idle, normal operation)
-- **Synced with nozzle flash**: Blinks at firing rate when shooting
-- **Slow blink (1s on / 2s off)**: No signal from main board (watchdog timeout)
+| GPIO | Motor Ch | Function |
+|------|----------|----------|
+| 21 | Motor 0 CW | Heater active |
+| 23 | Motor 1 CW | Fan running |
+| 24 | Motor 1 CCW | Fan spinning down |
+| 25 | Motor 2 CW | Firing active |
+| 26 | Motor 2 CCW | Flash pulse |
+
+**Indicator LEDs (PicoServer, GP13/GP14):**
+- GP13: Connection status (blink=waiting, solid=connected, off=lost)
+- GP14: Error (off=normal, fast blink=error)
 
 ---
 
@@ -49,7 +64,7 @@ The GunFX board connects to the main ScaleFX Hub board via a custom USB-C cable.
 Binary COBS-encoded packets terminated by 0x00 delimiter:
 
 ```
-[type:u8][len:u8][payload:0-64 bytes][crc8:u8]
+[type:u8][len:u16LE][payload:0-512 bytes][crc8:u8]
 ```
 
 CRC-8 polynomial 0x07 computed over type + len + payload.
@@ -150,6 +165,8 @@ Exceptions (fire-and-forget, no response expected):
 |------|------|---------|-------------|
 | 0x20 | SMOKE_HEAT | on:u8 (0=off, 1=on) | Control smoke heater |
 | 0x21 | SMOKE_SETTINGS | pulsing:u8, speed:u8, pulse_high:u8, pulse_low:u8, pulse_ms:u16le, spindown_ms:u16le | Configure smoke fan behavior |
+| 0x22 | SMOKE_RESET | (none) | Clear smoke error states (disconnect/overcurrent) |
+| 0x23 | SMOKE_CURRENT_LIMIT | channel:u8 (0=heater, 1=fan), limit_mA:u16le | Set overcurrent protection limit (0=disable) |
 
 **Fan Modes:**
 
@@ -188,6 +205,48 @@ Exceptions (fire-and-forget, no response expected):
 | 4 | fan_on | Smoke fan running |
 | 5 | fan_spindown | Fan spinning down |
 
+### Smoke Error Reasons (STATUS bytes 40-41)
+
+Reported per-channel in STATUS payload:
+
+| Byte | Channel | Description |
+|------|---------|-------------|
+| 40 | Heater | SmokeErrorReason code |
+| 41 | Fan | SmokeErrorReason code |
+
+| Code | Name | Description |
+|------|------|-------------|
+| 0x00 | NONE | No error |
+| 0x01 | HEATER_DISCONNECTED | Heater drawing 0 current while ON |
+| 0x02 | FAN_DISCONNECTED | Fan drawing 0 current while ON |
+| 0x03 | HEATER_OVERCURRENT | Heater current exceeded limit |
+| 0x04 | FAN_OVERCURRENT | Fan current exceeded limit |
+
+### Overcurrent Throttle State (STATUS bytes 42-43)
+
+| Byte | Channel | Description |
+|------|---------|-------------|
+| 42 | Heater | PWM duty cap (255=no throttle) |
+| 43 | Fan | PWM duty cap (255=no throttle) |
+
+**Disconnect Detection:**
+- When heater/fan is ON, INA226 current is monitored
+- 500ms startup ignore period after turn-on
+- If current stays below 5mA for >1 second → flagged as disconnected
+- Error auto-clears when current returns (re-plugged)
+- Error auto-clears when the channel is turned off then on again
+- Explicit clear via `SMOKE_RESET` (0x22) command
+
+**Overcurrent Protection:**
+- Default limits: heater 5000mA, fan 3000mA (configurable via `SMOKE_CURRENT_LIMIT`)
+- When current exceeds limit for >100ms (debounce), PWM is stepped down
+- Step-down rate: -10 duty every 50ms (≈1.25s from full to zero)
+- If PWM reaches 0 and current still over limit → channel shut off, overcurrent error set
+- While throttled and current under limit, throttled duty is maintained (no auto-increase)
+- Throttle state resets on: off→on transition, `SMOKE_RESET`, or `SMOKE_CURRENT_LIMIT` command
+- Set limit to 0 to disable overcurrent protection for a channel
+- Error indicator LED (GP14) blinks when any smoke error is active
+
 ---
 
 ## Error Codes
@@ -219,6 +278,10 @@ Exceptions (fire-and-forget, no response expected):
 | 0x22 | SERVO_MIN_MAX | minUs >= maxUs |
 | 0x23 | SERVO_NOT_CONFIGURED | Servo not configured |
 | 0x30 | INVALID_FAN_SPEED | Invalid fan speed value |
+| 0x31 | HEATER_DISCONNECTED | Heater drawing 0 current while ON |
+| 0x32 | FAN_DISCONNECTED | Fan motor drawing 0 current while ON |
+| 0x33 | HEATER_OVERCURRENT | Heater current exceeded protection limit |
+| 0x34 | FAN_OVERCURRENT | Fan current exceeded protection limit |
 | 0x40 | INVALID_RPM | RPM out of range (1-3000) |
 | 0x41 | ALREADY_FIRING | Already firing |
 | 0x42 | NOT_FIRING | Not currently firing |
@@ -228,6 +291,24 @@ Exceptions (fire-and-forget, no response expected):
 ## Architecture
 
 Uses `PicoServer` component for common server boilerplate (serial init, device naming, indicator LEDs, core protocol, connection management). Module-specific logic is handled by `GunFxServer`.
+
+### Module Architecture
+
+The firmware is organized into self-contained modules following the same pattern as GearControl:
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `MuzzleFlash` | `muzzle_flash.h/cpp` | Flash LED pulse/fade, per-shot recoil jerk on servos |
+| `SmokeGenerator` | `smoke_generator.h/cpp` | Heater relay + PWM fan (constant/pulsing modes) |
+| `ServoControl` | `lib/srv_control/` | Motion-profiled servo positioning (shared library) |
+| `PicoServer` | `lib/components/` | Serial, indicators, core protocol, connection management |
+
+**Module wiring (in `setup()`):**
+```
+MuzzleFlash ──onShot()──→ SmokeGenerator.triggerPulse()
+     │
+     └── attachServo() → ServoControl[0..2] (recoil jerk)
+```
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -248,6 +329,14 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 │  └─────────────────────┘  │ SMOKE_HEAT, SMOKE_SETTINGS  │  │
 │                           └─────────────────────────────┘  │
 │                                                              │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │            Hardware Modules (local to firmware)          ││
+│  │                                                         ││
+│  │  ┌─────────────┐  ┌─────────────────┐  ┌────────────┐ ││
+│  │  │ MuzzleFlash │  │ SmokeGenerator  │  │ServoControl│ ││
+│  │  │ (flash+jerk)│──│ (heater+fan)    │  │ [0..2]     │ ││
+│  │  └─────────────┘  └─────────────────┘  └────────────┘ ││
+│  └─────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -314,6 +403,14 @@ python scripts/build_and_flash.py --port COM3
 ---
 
 ## Version History
+
+- **v0.4.0** - Modular architecture refactoring
+  - Extracted `MuzzleFlash` module (flash pulse/fade, recoil jerk)
+  - Extracted `SmokeGenerator` module (heater + fan, constant/pulsing modes)
+  - Separated SRV_RECOIL_JERK into dedicated callback (was mixed with SRV_SETTINGS)
+  - Removed `GunFxServoConfig.recoilJerkUs/recoilJerkVarianceUs` fields (now in `RecoilJerkConfig`)
+  - Reduced `gunfx_pico.ino` from 531 to ~250 lines (glue code only)
+  - No wire protocol changes — fully backward compatible
 
 - **v0.3.0** - Binary-only protocol
   - Removed text protocol support

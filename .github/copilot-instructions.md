@@ -9,8 +9,8 @@ ScaleFX is a modular scale model effects system with three platform targets:
 - **Raspberry Pi Hub** (Linux/C): Audio mixing and PWM monitoring (HubFX Pi)
 - **Windows Studio** (.NET 8/C#): Visual configuration editor
 
-**Communication:** Binary COBS protocol over USB serial (115200 baud)
-- Packet format: `[type:u8][tag:u8][len:u8][payload:0-64][crc8:u8]`
+**Communication:** Binary COBS protocol over USB serial (1Mbps baud)
+- Packet format: `[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]`
 - CRC-8 polynomial: 0x07
 - Endianness: Little-endian for ALL multi-byte values
 
@@ -301,6 +301,62 @@ Every controller firmware defines `FIRMWARE_VERSION` and `BUILD_NUMBER`:
    - **MAJOR** (0.3.0 → 1.0.0): Breaking protocol changes (payload format change, removed commands)
 3. **Update together:** When bumping VERSION, also increment BUILD_NUMBER
 4. **README:** Update the version history table in the controller's README.md
+
+### 10. Flash Verification and Build Number Tracking (MANDATORY)
+
+**Rules:**
+1. **`build_and_flash.py` auto-increments BUILD_NUMBER** on every build invocation. If a flash fails (verification timeout), the BUILD_NUMBER in source is still incremented. Track the actual running firmware by its INIT_READY response, not the source define alone.
+2. **Verification timeout ≠ flash failure.** If the script copies the UF2 successfully but the post-flash COM port check times out, the firmware IS flashed. Re-run with `--no-build` to verify, or connect via CLI and run `init`.
+3. **Always verify after flash:** Run `init` in the CLI to confirm the device name, version, and build number match expectations. Don't assume a successful UF2 copy means the firmware is running correctly.
+4. **Use `--no-build` for re-flash:** If a flash verification fails, use `--no-build` to skip recompilation and just re-attempt the flash/verify cycle.
+
+### 11. Optional/Backward-Compatible Payload Extension (MANDATORY)
+
+When extending an existing command's payload, **new fields MUST be optional and appended at the end** to preserve backward compatibility.
+
+**Pattern (C++ server):**
+```cpp
+// Read optional field with default fallback
+uint8_t newField = (len >= 2) ? payload[1] : 0;  // Default to 0 if not sent
+```
+
+**Pattern (Python client):**
+```python
+# Only include field in payload when non-default
+if new_field > 0:
+    payload = struct.pack('<BB', required_field, new_field)
+else:
+    payload = struct.pack('<B', required_field)
+```
+
+**Rules:**
+1. **Never change the meaning** of existing payload bytes — append only
+2. **Default = no-op:** The default value for optional fields MUST preserve the original behavior (e.g., `timeout_s=0` means "no timeout")
+3. **Check `len`** on the server side to detect whether the optional field was sent
+4. **Document backward compatibility** in the protocol table (e.g., "2nd byte optional")
+
+### 12. Channel Enable/Disable Pattern (RECOMMENDED)
+
+For controllers with multiple independent channels (gears, LEDs, servos), implement a channel enable/disable mechanism:
+
+**Rules:**
+1. **Guard at the top** of action methods: `if (!_enabled) return ERROR_DISABLED;`
+2. **Safe disable:** When disabling, stop any active operations (sequences, calibrations, motors)
+3. **Default enabled:** All channels start enabled on power-up
+4. **Not persisted:** Enable/disable state resets on reboot (safety — all channels available after power cycle)
+5. **Reflected in STATUS:** Use a runtime-only bit in the config flags (e.g., bit 7 = ENABLED)
+6. **Dedicated error code:** Return a specific "disabled" error, not a generic one — the client needs to distinguish "disabled" from "busy" or "invalid"
+
+### 13. Error State Lifecycle (MANDATORY)
+
+Controllers MUST provide a way to clear error states. Error states should not require a full reboot to recover.
+
+**Rules:**
+1. **Explicit reset command:** Provide a `RESET` or `CLEAR_ERROR` command (not just reboot)
+2. **Transition ERROR → UNKNOWN:** After clearing, the state should be indeterminate (UNKNOWN), not assumed (DEPLOYED/RETRACTED)
+3. **Clear error reason:** Reset both the state and the error reason/diagnostic data
+4. **Reject operations in ERROR:** Commands like deploy/retract should fail when in ERROR state — require explicit reset first
+5. **Report in STATUS:** Error reasons, error state, and clear actions should all be visible in the STATUS response
 
 ## Key Architecture Patterns
 

@@ -56,6 +56,10 @@ namespace LightFxPacket {
     // LED master brightness
     constexpr uint8_t LED_MASTER_BRIGHTNESS = 0x4A;  // [pct:u8] (0-100)
     
+    // LED reset and enable/disable
+    constexpr uint8_t LED_RESET             = 0x4B;  // [ch:u8] (0=all) Reset channel to defaults, re-enable
+    constexpr uint8_t LED_ENABLE            = 0x4C;  // [ch:u8][enabled:u8] Enable/disable LED channel
+    
     // Servo control
     constexpr uint8_t SERVO_SET         = 0x50;  // [id:u8][pulse:i16]
     constexpr uint8_t SERVO_SETTINGS    = 0x51;  // [id:u8][min:u16][max:u16][speed:u16][accel:u16][decel:u16]
@@ -162,6 +166,7 @@ namespace LightFxError {
     constexpr uint8_t INVALID_PARAM     = 0x53;
     constexpr uint8_t INVALID_SERVO     = 0x54;
     constexpr uint8_t INVALID_SLOT      = 0x55;
+    constexpr uint8_t CHANNEL_DISABLED  = 0x56;
     
     inline const char* getMessage(uint8_t code) {
         switch (code) {
@@ -172,6 +177,7 @@ namespace LightFxError {
             case INVALID_PARAM:   return "Invalid parameter";
             case INVALID_SERVO:   return "Invalid servo ID";
             case INVALID_SLOT:    return "Invalid landing light slot";
+            case CHANNEL_DISABLED: return "LED channel disabled";
             default:              return SerialError::getMessage(code);
         }
     }
@@ -264,6 +270,8 @@ using LedChannelStatusCallback = std::function<void(uint8_t channel, LightFxChan
 using ServoSetCallback = std::function<uint8_t(uint8_t id, int pulseUs)>;
 using ServoSettingsCallback = std::function<uint8_t(uint8_t id, int minUs, int maxUs, int speed, int accel, int decel)>;
 using LedMasterBrightnessCallback = std::function<uint8_t(uint8_t pct)>;
+using LedResetCallback = std::function<uint8_t(uint8_t channel)>;
+using LedEnableCallback = std::function<uint8_t(uint8_t channel, uint8_t enabled)>;
 
 // Landing light callbacks
 using LandingLightBindCallback = std::function<uint8_t(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
@@ -326,6 +334,13 @@ public:
     CommandResult landingLightUnbind(uint8_t slot = 0);
     CommandResult landingLightDeploy(uint8_t slot = 0);
     CommandResult landingLightRetract(uint8_t slot = 0);
+
+    // ========================================================================
+    // Channel Management
+    // ========================================================================
+
+    CommandResult ledReset(uint8_t channel = 0);
+    CommandResult ledEnable(uint8_t channel, bool enabled);
 
     // ========================================================================
     // Status
@@ -391,6 +406,8 @@ public:
     void onLedSeqQueue(LedSeqQueueCallback cb) { _ledSeqQueueCallback = cb; }
     void onLedStatus(LedChannelStatusCallback cb) { _ledStatusCallback = cb; }
     void onLedMasterBrightness(LedMasterBrightnessCallback cb) { _ledMasterBrightnessCallback = cb; }
+    void onLedReset(LedResetCallback cb) { _ledResetCallback = cb; }
+    void onLedEnable(LedEnableCallback cb) { _ledEnableCallback = cb; }
 
     // ========================================================================
     // Servo Callbacks
@@ -426,6 +443,8 @@ private:
     LedSeqQueueCallback _ledSeqQueueCallback;
     LedChannelStatusCallback _ledStatusCallback;
     LedMasterBrightnessCallback _ledMasterBrightnessCallback;
+    LedResetCallback _ledResetCallback;
+    LedEnableCallback _ledEnableCallback;
     ServoSetCallback _servoSetCallback;
     ServoSettingsCallback _servoSettingsCallback;
     LandingLightBindCallback _landingLightBindCallback;

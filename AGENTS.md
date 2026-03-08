@@ -28,8 +28,8 @@ ScaleFX is a modular scale model effects system:
 
 ## Critical Constants
 
-- **Baud rate:** 115200
-- **Packet format:** `[type:u8][tag:u8][len:u8][payload:0-64][crc8:u8]`
+- **Baud rate:** 1000000 (1Mbps)
+- **Packet format:** `[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]`
 - **CRC-8 polynomial:** 0x07
 - **Endianness:** Little-endian
 - **Connection timeout:** 15000ms (all controllers)

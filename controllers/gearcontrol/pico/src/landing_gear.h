@@ -53,8 +53,7 @@
 #include <led_control.h>
 #include <ina226.h>
 #include <serial_gearcontrol.h>  // GearState, config structs, CalibPhase, DoorMode
-#include "door_sequencer.h"
-#include "stall_detector.h"
+#include "gear_sequencer.h"
 #include "stall_calibrator.h"
 
 // ============================================================================
@@ -83,20 +82,6 @@ namespace LandingGearConfig {
     constexpr uint16_t BLINK_EMERGENCY_ms  = 500;       // Slow blink rate for emergency deploy
     constexpr uint16_t BLINK_CALIBRATE_ms  = 150;       // Blink rate during calibration
 }
-
-// ============================================================================
-// Gear Sequencing State Machine
-// ============================================================================
-
-enum class GearSeqStep : uint8_t {
-    IDLE = 0,
-    OPENING_DOORS,
-    SYNC_DOORS_OPEN,   // Doors finished, waiting for other gears before motor
-    RUNNING_MOTOR,
-    SYNC_MOTOR_DONE,   // Motor finished, waiting for other gears before closing
-    CLOSING_DOORS,
-    ERROR
-};
 
 // ============================================================================
 // LandingGear Class
@@ -194,18 +179,25 @@ public:
                             int decel_usPerSec2);
 
     /**
-     * @brief Set door activation mode
+     * @brief Set door activation modes
      *
-     * Controls how door servos are used during deploy/retract sequences.
-     * Default is DUAL_SYNC (both doors simultaneously) for backward compatibility.
+     * Two modes control the full deploy/retract cycle:
+     *   doorPreDeploy  - Doors opened before deploy motor, closed after retract motor.
+     *   doorPostDeploy - Doors closed after deploy motor, opened before retract motor.
+     *                    (Retract is the reverse of the deploy operation.)
+     *                    NONE = skip post-deploy close and pre-retract open.
      *
-     * @param mode DoorMode value (NONE, SINGLE, DUAL_SYNC, DUAL_DELAY, DUAL_SEQ)
+     * @param preDeployMode Pre-deploy DoorMode (deploy: open doors, retract: close doors)
+     * @param postDeployMode Post-deploy DoorMode (deploy: close doors, retract: open doors; NONE=skip)
      * @param delay_ms Delay between doors in ms (only used for DUAL_DELAY mode)
      */
-    void setDoorMode(uint8_t mode, uint16_t delay_ms = 500);
+    void setDoorMode(uint8_t preDeployMode, uint8_t postDeployMode = DoorMode::NONE, uint16_t delay_ms = 500);
 
-    /** @brief Get current door mode */
-    uint8_t doorMode() const { return _doorSeq.mode(); }
+    /** @brief Get pre-deploy door mode (deploy: open doors, retract: close doors) */
+    uint8_t doorPreDeploy() const { return _doorSeq.preDeployMode(); }
+
+    /** @brief Get post-deploy door mode (deploy: close doors, retract: open doors) */
+    uint8_t doorPostDeploy() const { return _doorSeq.postDeployMode(); }
 
     /** @brief Get current door delay (for DUAL_DELAY mode) */
     uint16_t doorDelay_ms() const { return _doorSeq.delay_ms(); }
@@ -254,9 +246,10 @@ public:
      *
      * The gear must not be busy. An INA226 current monitor must be attached.
      *
+     * @param overallTimeout_ms Overall timeout for calibration (0 = no timeout)
      * @return Error code (SerialError::OK on success)
      */
-    uint8_t calibrate();
+    uint8_t calibrate(uint32_t overallTimeout_ms = 0);
 
     /**
      * @brief Cancel an in-progress calibration
@@ -268,6 +261,27 @@ public:
      * @return Error code (SerialError::OK on success, NOT_CALIBRATING if idle)
      */
     uint8_t cancelCalibration();
+
+    /**
+     * @brief Clear error state
+     *
+     * If gear is in ERROR state, transitions to UNKNOWN and clears the
+     * error reason. Safe to call on non-errored gears (no-op).
+     */
+    void clearError();
+
+    /**
+     * @brief Enable or disable this gear channel
+     *
+     * When disabled, deploy/retract/calibrate commands are rejected.
+     * stop() always works (safety). Active sequences are stopped.
+     *
+     * @param enabled true to enable, false to disable
+     */
+    void setEnabled(bool enabled);
+
+    /** @brief Check if gear channel is enabled */
+    bool isEnabled() const { return _enabled; }
 
     /**
      * @brief Register callback for calibration progress updates
@@ -291,6 +305,21 @@ public:
      * @param cb Callback receiving GearControlSeqStatus
      */
     void onSequenceProgress(SeqProgressCallback cb) { _seqProgressCb = cb; }
+
+    /**
+     * @brief Callback for door state transition updates
+     *
+     * Called when door state changes (OPENING, OPEN, CLOSING, CLOSED).
+     * Receives a GearControlDoorStatus struct matching the
+     * GEAR_DOOR_STATUS wire format.
+     */
+    using DoorStatusCallback = std::function<void(const GearControlDoorStatus&)>;
+
+    /**
+     * @brief Register callback for door state transitions
+     * @param cb Callback receiving GearControlDoorStatus
+     */
+    void onDoorStatus(DoorStatusCallback cb) { _doorStatusCb = cb; }
 
     /**
      * @brief Open all configured door servos immediately
@@ -370,7 +399,7 @@ public:
     GearState state() const { return _state; }
 
     /** @brief Check if a sequence is in progress */
-    bool isBusy() const { return _seq.step != GearSeqStep::IDLE; }
+    bool isBusy() const { return _gearSeq.isActive(); }
 
     /** @brief Check if gear is deployed */
     bool isDeployed() const { return _state == GearState::DEPLOYED; }
@@ -397,20 +426,20 @@ public:
     // Sync Mode (for coordinated all-gear operations)
     // ========================================================================
 
-    /** @brief Enable/disable sync mode (wait for other gears at phase transitions) */
-    void setSyncMode(bool enabled) { _seq.syncMode = enabled; }
+    /** @brief Set sync mode for the NEXT deploy/retract call (not the active sequence) */
+    void setSyncMode(bool enabled) { _nextSyncMode = enabled; }
 
     /** @brief Check if waiting at doors-open sync barrier */
-    bool isWaitingSyncDoorsOpen() const { return _seq.step == GearSeqStep::SYNC_DOORS_OPEN; }
+    bool isWaitingSyncDoorsOpen() const { return _gearSeq.isWaitingSyncDoorsOpen(); }
 
     /** @brief Check if waiting at motor-done sync barrier */
-    bool isWaitingSyncMotorDone() const { return _seq.step == GearSeqStep::SYNC_MOTOR_DONE; }
+    bool isWaitingSyncMotorDone() const { return _gearSeq.isWaitingSyncMotorDone(); }
 
     /** @brief Check if still opening doors in sync mode */
-    bool isSyncOpeningDoors() const { return _seq.syncMode && _seq.step == GearSeqStep::OPENING_DOORS; }
+    bool isSyncOpeningDoors() const { return _gearSeq.isSyncOpeningDoors(); }
 
     /** @brief Check if still running motor in sync mode */
-    bool isSyncRunningMotor() const { return _seq.syncMode && _seq.step == GearSeqStep::RUNNING_MOTOR; }
+    bool isSyncRunningMotor() const { return _gearSeq.isSyncRunningMotor(); }
 
     /** @brief Advance past a sync barrier (called by coordinator when all gears ready) */
     void advanceSyncPhase();
@@ -423,6 +452,9 @@ public:
 
     /** @brief Get the calibrated free-running baseline (0 if not calibrated) */
     uint16_t calibBaseline_mA() const { return _calibBaseline_mA; }
+
+    /** @brief Get the error reason from the last failed calibration (GearErrorReason code) */
+    uint8_t lastCalibErrorReason() const { return _lastCalibErrorReason; }
 
     /**
      * @brief Get the effective stall threshold with drag headroom
@@ -444,6 +476,9 @@ public:
     /** @brief Get current door servo position */
     uint16_t doorPosition_us(uint8_t doorIndex) const;
 
+    /** @brief Get current door state (DoorState wire value) */
+    uint8_t doorState() const { return _doorSeq.doorState(); }
+
     /** @brief Get the current gear configuration */
     const GearControlGearConfig& gearConfig() const { return _gearConfig; }
 
@@ -451,8 +486,6 @@ public:
     const GearControlDoorConfig& doorConfig() const { return _doorConfig; }
 
 private:
-    void updateSequence();
-    void _completeSequence(uint32_t now);  // Finish motor phase → close doors or complete
     void updateLEDs();
 
     // Identity
@@ -481,16 +514,13 @@ private:
     // State
     GearState _state = GearState::UNKNOWN;
     bool _emergencyDeploy = false;  // Set by emergency/safety deploy triggers
+    bool _enabled = true;           // Channel enabled (disabled rejects deploy/retract/calibrate)
 
-    // Sequencing state machine (simplified — door/stall state in DoorSequencer/StallDetector)
-    struct Sequence {
-        GearSeqStep step = GearSeqStep::IDLE;
-        bool deploying = false;          // true = deploy, false = retract
-        bool syncMode = false;           // true = synchronized with other gears
-        uint32_t stepStartTime_ms = 0;
-        uint32_t sequenceStartTime_ms = 0;  // Start of entire deploy/retract sequence
-        bool motorRunning = false;
-    } _seq;
+    // Op-queue sequencer for deploy/retract lifecycle
+    GearSequencer _gearSeq;
+
+    // Pending sync mode — applied when a new sequence starts (not during active sequence)
+    bool _nextSyncMode = false;
 
     // Stall current calibrator (handles calibration state machine)
     StallCalibrator _calibrator;
@@ -500,6 +530,9 @@ private:
 
     // Calibrated free-running baseline (persisted from calibration)
     uint16_t _calibBaseline_mA = 0;
+
+    // Error reason from last failed calibration (GearErrorReason code)
+    uint8_t _lastCalibErrorReason = 0;
 
     // In-flight drag headroom (percentage of baseline to add to threshold)
     uint8_t _dragHeadroom_pct = LandingGearConfig::DRAG_HEADROOM_PCT;
@@ -511,12 +544,15 @@ private:
     // Deploy/retract sequence progress callback
     SeqProgressCallback _seqProgressCb;
 
+    // Door state transition callback
+    DoorStatusCallback _doorStatusCb;
+    uint8_t _lastEmittedDoorState = DoorState::UNKNOWN;
+
     // Emit sequence progress to registered callback
     void _emitSeqProgress(bool finished = false);
 
-    // Door sequencing helpers
-    void advanceToMotor(uint32_t now);     // Transition from doors to motor phase
-    void completeDoorClose();              // Transition from closing to IDLE
+    // Emit door status to registered callback
+    void _emitDoorStatus();
 };
 
 #endif // LANDING_GEAR_H

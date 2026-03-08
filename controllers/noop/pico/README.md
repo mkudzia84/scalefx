@@ -58,9 +58,9 @@ BOOTSEL
 
 ## Serial Settings
 
-- **Baud**: 115200
+- **Baud**: 1000000 (1Mbps)
 - **Protocol**: Binary COBS with CRC-8
-- **Packet format**: `[type:u8][len:u8][payload:0-64][crc8:u8]` (COBS encoded)
+- **Packet format**: `[type:u8][len:u16LE][payload:0-512][crc8:u8]` (COBS encoded)
 
 ## Version History
 

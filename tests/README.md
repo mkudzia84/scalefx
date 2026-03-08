@@ -135,12 +135,12 @@ lightfx.power                 # Request power status
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SCALEFX_PORT` | COM3 (Win) / /dev/ttyACM0 (Linux) | Serial port |
-| `SCALEFX_BAUD` | 115200 | Baud rate |
+| `SCALEFX_BAUD` | 1000000 | Baud rate |
 | `SCALEFX_TIMEOUT` | 2.0 | Response timeout (seconds) |
 
 ## Protocol Details
 
 All communication uses binary COBS protocol:
-- Packet format: `[type:u8][len:u8][payload:0-64][crc8:u8]`
+- Packet format: `[type:u8][len:u16LE][payload:0-512][crc8:u8]`
 - COBS encoded with 0x00 delimiter
 - CRC-8 polynomial: 0x07

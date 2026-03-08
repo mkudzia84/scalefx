@@ -335,7 +335,7 @@ void UsbHost::_onCdcMount(uint8_t idx) {
     }
     
     cdc_line_coding_t lineCoding = {
-        .bit_rate = 115200,
+        .bit_rate = 1000000,
         .stop_bits = 0,
         .parity = 0,
         .data_bits = 8

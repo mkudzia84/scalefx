@@ -128,12 +128,12 @@ SerialBus (serial_bus.h — COBS framing over USB CDC)
 Binary COBS-encoded packets with CRC-8:
 
 ```
-[type:u8][tag:u8][len:u8][payload:0-64 bytes][crc8:u8]
+[type:u8][tag:u8][len:u16LE][payload:0-512 bytes][crc8:u8]
 ```
 
 - **type** — Packet type identifier
 - **tag** — Correlation tag (1-255 for request/response, 0 for async)
-- **len** — Payload length (0-64)
+- **len** — Payload length, u16 little-endian (0-512)
 - **payload** — Command-specific data
 - **crc8** — CRC-8 (polynomial 0x07) over type+tag+len+payload
 

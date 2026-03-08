@@ -1,62 +1,92 @@
 /**
- * GunFX Pico Controller v0.3.0
- * 
+ * GunFX Pico Controller v0.5.0
+ *
  * Server controller for gun effects - receives commands from HubFX over USB serial.
- * Controls: muzzle flash LED (PWM), smoke heater/fan, 3x gun servos with motion profiling.
- * 
+ * Controls: muzzle flash LED (PWM), smoke heater/fan, 3× gun servos with motion profiling.
+ *
  * Hardware: Raspberry Pi Pico (RP2040) + earlephilhower/arduino-pico core
  * Protocol: Binary COBS with CRC-8
- * 
+ *
  * Architecture (Chain of Responsibility):
- *   - CoreCommandServer: Handles INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE
+ *   - PicoServer: Common server boilerplate (serial, indicators, core protocol)
  *   - GunFxServer: Handles TRIGGER, SERVO, SMOKE commands
  *   - CommandRouter: Routes packets to handlers in priority order
+ *
+ * Module Architecture:
+ *   - MuzzleFlash: Flash LED pulse/fade, per-shot recoil jerk on servos
+ *   - SmokeGenerator: Heater relay + PWM fan (constant/pulsing modes)
+ *   - ServoControl (lib): Motion-profiled servo positioning
+ *
+ * GPIO Pin Mapping (using GearControl board — LEDs match motor channels):
+ *   GP1-3:   Gun servos 1-3 (GearControl door servos 1-3)
+ *   GP4:     I2C SDA (INA226 current monitors)
+ *   GP5:     I2C SCL
+ *   GP9:     Nozzle flash LED (PWM) (GearControl yaw servo output)
+ *   GP13:    Indicator LED (connection status)
+ *   GP14:    Indicator LED (error status)
+ *   GP15:    Smoke heater relay (GearControl motor 0 CW)
+ *   GP16:    Motor 0 CCW — held LOW for single-direction drive
+ *   GP17:    Smoke fan motor (PWM) (GearControl motor 1 CW)
+ *   GP18:    Motor 1 CCW — held LOW for single-direction drive
+ *   GP21:    Status LED — heater on (Motor 0 CW LED)
+ *   GP23:    Status LED — fan running (Motor 1 CW LED)
+ *   GP24:    Status LED — fan spinning down (Motor 1 CCW LED)
+ *   GP25:    Status LED — firing active (Motor 2 CW LED)
+ *   GP26:    Status LED — flash pulse (Motor 2 CCW LED)
+ *   GP29:    Battery voltage ADC (÷6 divider)
  */
 
 #include <Arduino.h>
-#include <Servo.h>
-#include <math.h>
+#include <Wire.h>
 #include <serial.h>
-#include <led_control.h>
 #include <srv_control.h>
 #include <pico_server.h>
+#include <ina226.h>
+#include <battery_monitor.h>
+#include "muzzle_flash.h"
+#include "smoke_generator.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "0.3.0"
-#define BUILD_NUMBER 3
+#define FIRMWARE_VERSION "0.6.0"
+#define BUILD_NUMBER 14
 
 // ============================================================================
 //  PIN CONFIGURATION
 // ============================================================================
 
-const uint8_t PIN_GUN_SRV_1    =  1;   // Gun servo 1
-const uint8_t PIN_GUN_SRV_2    =  2;   // Gun servo 2
-const uint8_t PIN_GUN_SRV_3    =  3;   // Gun servo 3
-const uint8_t PIN_SMOKE_FAN    = 16;   // Smoke fan motor relay
-const uint8_t PIN_SMOKE_HEATER = 17;   // Smoke heater relay
-const uint8_t PIN_NOZZLE_FLASH = 25;   // Muzzle flash LED (PWM)
+const uint8_t PIN_GUN_SRV_1    =  1;   // Gun servo 1 (GearControl door servo 1)
+const uint8_t PIN_GUN_SRV_2    =  2;   // Gun servo 2 (GearControl door servo 2)
+const uint8_t PIN_GUN_SRV_3    =  3;   // Gun servo 3 (GearControl door servo 3)
+const uint8_t PIN_SMOKE_HEATER = 15;   // Smoke heater relay (GearControl motor 0 CW)
+const uint8_t PIN_SMOKE_HTR_B  = 16;   // Motor 0 CCW — held LOW
+const uint8_t PIN_SMOKE_FAN    = 17;   // Smoke fan motor PWM (GearControl motor 1 CW)
+const uint8_t PIN_SMOKE_FAN_B  = 18;   // Motor 1 CCW — held LOW
+const uint8_t PIN_NOZZLE_FLASH =  9;   // Muzzle flash LED PWM (GearControl yaw servo)
+
+// Status LEDs (GearControl motor channel LEDs — match motor assignments)
+const uint8_t PIN_LED_HEATER   = 21;   // Heater on (Motor 0 CW LED)
+const uint8_t PIN_LED_FAN      = 23;   // Fan running (Motor 1 CW LED)
+const uint8_t PIN_LED_SPINDOWN = 24;   // Fan spinning down (Motor 1 CCW LED)
+const uint8_t PIN_LED_FIRING   = 25;   // Firing active (Motor 2 CW LED)
+const uint8_t PIN_LED_FLASH    = 26;   // Flash pulse (Motor 2 CCW LED)
+
+// I2C bus (INA226 current monitors)
+const uint8_t PIN_SDA          =  4;   // I2C SDA
+const uint8_t PIN_SCL          =  5;   // I2C SCL
+
+// Battery voltage sense
+const uint8_t PIN_VSENSE       = 29;   // ADC input (÷6 divider)
 
 // ============================================================================
 //  CONSTANTS
 // ============================================================================
 
-// Muzzle flash timing
-const uint8_t  FLASH_PWM_DUTY   = 255;    // Full brightness
-const uint16_t FLASH_PULSE_MS   = 30;     // Duration at full brightness
-const uint16_t FLASH_FADE_MS    = 80;     // Fade-out duration
-
 // Servo defaults
 const uint16_t SERVO_DEFAULT_US    = 1500;    // Center position
-const int SERVO_DEFAULT_MAX_SPEED  = 4000;    // μs/sec
-const int SERVO_DEFAULT_ACCEL      = 8000;    // μs/sec²
-const int SERVO_DEFAULT_DECEL      = 8000;    // μs/sec²
 
-// Smoke fan defaults
-const uint8_t  SMOKE_FAN_DEFAULT_SPEED      = 255;
-const uint8_t  SMOKE_FAN_DEFAULT_PULSE_HIGH = 255;
-const uint8_t  SMOKE_FAN_DEFAULT_PULSE_LOW  = 80;
-const uint16_t SMOKE_FAN_DEFAULT_PULSE_MS   = 50;
-const uint16_t SMOKE_FAN_DEFAULT_SPINDOWN_MS = 5000;
+// INA226 current monitors (GearControl board shunts)
+const float SHUNT_RESISTANCE_OHMS  = 0.005f;  // 5mΩ shunt (§7.6.2 INA226 datasheet)
+const float MAX_CURRENT_A          = 10.0f;   // 10A max expected
 
 // ============================================================================
 //  GLOBAL INSTANCES
@@ -66,295 +96,62 @@ const uint16_t SMOKE_FAN_DEFAULT_SPINDOWN_MS = 5000;
 PicoServer server;
 GunFxServer gunfxServer;
 
-// ============================================================================
-//  STATE VARIABLES
-// ============================================================================
-
-// Connection state managed by IndicatorLedManager (indicators)
-
-// Firing state
-bool is_firing = false;
-int rate_of_fire_rpm = 0;
-uint32_t shot_interval_ms = 0;
-uint32_t next_shot_time_ms = 0;
-
-// Muzzle flash state
-bool flash_active = false;
-bool flash_fading = false;
-uint32_t flash_off_time_ms = 0;
-uint32_t fade_start_time_ms = 0;
-
-// Smoke generator state
-bool smoke_heater_on = false;
-bool smoke_fan_on = false;
-uint8_t smoke_fan_speed = SMOKE_FAN_DEFAULT_SPEED;
-bool smoke_fan_pending_off = false;
-uint32_t smoke_fan_off_time_ms = 0;
-
-// Session metrics
-uint32_t total_shots_fired = 0;
-uint32_t heater_on_start_ms = 0;
-uint32_t total_heater_on_time_ms = 0;
-
-// Smoke fan mode
-enum class SmokeFanMode : uint8_t { Constant = 0, Pulsing = 1 };
-SmokeFanMode smoke_fan_mode = SmokeFanMode::Constant;
-bool smoke_fan_pulse_active = false;
-uint32_t smoke_fan_pulse_end_ms = 0;
-
-// Smoke fan configuration
-uint8_t smoke_fan_cfg_speed = SMOKE_FAN_DEFAULT_SPEED;
-uint8_t smoke_fan_cfg_pulse_high = SMOKE_FAN_DEFAULT_PULSE_HIGH;
-uint8_t smoke_fan_cfg_pulse_low = SMOKE_FAN_DEFAULT_PULSE_LOW;
-uint16_t smoke_fan_cfg_pulse_ms = SMOKE_FAN_DEFAULT_PULSE_MS;
-uint16_t smoke_fan_cfg_spindown_ms = SMOKE_FAN_DEFAULT_SPINDOWN_MS;
+// Gun effect modules
+MuzzleFlash muzzleFlash;
+SmokeGenerator smokeGen;
 
 // Servos with motion profiling
-ServoControl gun_servos[3];
+ServoControl gunServos[3];
 
-struct RecoilJerkConfig { int jerk_us, variance_us; };
-RecoilJerkConfig servo_jerk_configs[3] = {{0, 0}, {0, 0}, {0, 0}};
+// INA226 current monitors: [0]=heater (Motor 0), [1]=fan (Motor 1)
+INA226 ina226[2];
+bool ina226Available[2] = { false, false };
+const uint8_t INA226_ADDR[2] = {
+    INA226Address::GND_GND,   // 0x40 - Motor 0 (heater)
+    INA226Address::VS_GND,    // 0x44 - Motor 1 (fan)
+};
+
+// Battery voltage monitor (ADC ÷6 divider)
+BatteryMonitor batteryMonitor;
 
 // ============================================================================
 //  FORWARD DECLARATIONS
 // ============================================================================
 
-void setSmokeHeater(bool on);
-void setSmokeFan(bool on, uint8_t speed = SMOKE_FAN_DEFAULT_SPEED);
-void setNozzleFlash(bool on);
-void stopFiring(uint16_t fanDelayMs);
-void startFiring(int rpm);
-void setServoPulse(uint8_t servo_id, int pulse_us);
 void performSafeShutdown();
 void performSafeInit();
-GunFxStatus buildCurrentStatus(uint32_t now_ms);
 
 // ============================================================================
 //  CONNECTION MANAGEMENT
 // ============================================================================
 
 void performSafeShutdown() {
-    stopFiring(0);
-    setSmokeHeater(false);
-    setSmokeFan(false, 0);
-    setNozzleFlash(false);
-    
+    // Stop firing (flash off, jerk cleared)
+    muzzleFlash.stopFiring();
+
+    // Smoke: heater off, fan off immediately
+    smokeGen.shutdown();
+
+    // Return all servos to center
     for (int i = 0; i < 3; i++) {
-        setServoPulse(i + 1, SERVO_DEFAULT_US);
+        gunServos[i].setTarget(SERVO_DEFAULT_US);
     }
 }
 
 void performSafeInit() {
-    stopFiring(0);
-    setSmokeHeater(false);
-    
+    // Stop any active firing
+    muzzleFlash.stopFiring();
+
+    // Heater off (fan left alone — may be spinning down)
+    smokeGen.setHeater(false);
+
+    // Return all servos to center
     for (int i = 0; i < 3; i++) {
-        setServoPulse(i + 1, SERVO_DEFAULT_US);
-    }
-}
-
-// ============================================================================
-//  SERVO CONTROL
-// ============================================================================
-
-void setServoPulse(uint8_t servo_id, int pulse_us) {
-    if (servo_id == 0 || servo_id > 3) return;
-    ServoControl* servo = &gun_servos[servo_id - 1];
-    int target = constrain(pulse_us, servo->minLimit(), servo->maxLimit());
-    servo->setTarget(target);
-}
-
-void applyRecoilJerk() {
-    for (int i = 0; i < 3; i++) {
-        RecoilJerkConfig* jerk = &servo_jerk_configs[i];
-        if (jerk->jerk_us == 0) {
-            gun_servos[i].clearJerk();
-        } else {
-            int direction = (random(2) == 0) ? 1 : -1;
-            int variance = jerk->variance_us > 0 ? random(jerk->variance_us + 1) : 0;
-            gun_servos[i].applyJerk(direction * (jerk->jerk_us + variance));
-        }
-    }
-}
-
-void clearRecoilJerk() {
-    for (int i = 0; i < 3; i++) gun_servos[i].clearJerk();
-}
-
-void updateAllServos() {
-    for (int i = 0; i < 3; i++) {
-        gun_servos[i].update();
-    }
-}
-
-// ============================================================================
-//  HARDWARE OUTPUT CONTROL
-// ============================================================================
-
-void setNozzleFlash(bool on) {
-    analogWrite(PIN_NOZZLE_FLASH, on ? FLASH_PWM_DUTY : 0);
-}
-
-void setSmokeHeater(bool on) {
-    if (on && !smoke_heater_on) {
-        heater_on_start_ms = millis();
-    } else if (!on && smoke_heater_on && heater_on_start_ms > 0) {
-        total_heater_on_time_ms += millis() - heater_on_start_ms;
-        heater_on_start_ms = 0;
-    }
-    
-    smoke_heater_on = on;
-    digitalWrite(PIN_SMOKE_HEATER, on ? HIGH : LOW);
-}
-
-void setSmokeFan(bool on, uint8_t speed) {
-    smoke_fan_on = on;
-    smoke_fan_speed = speed;
-    smoke_fan_pending_off = false;
-    smoke_fan_pulse_active = false;
-    analogWrite(PIN_SMOKE_FAN, on ? speed : 0);
-}
-
-void scheduleSmokeFanOff(uint16_t delay_ms) {
-    if (delay_ms == 0) {
-        setSmokeFan(false, 0);
-    } else {
-        smoke_fan_pending_off = true;
-        smoke_fan_off_time_ms = millis() + delay_ms;
-    }
-}
-
-void triggerSmokeFanPulse() {
-    if (smoke_fan_mode != SmokeFanMode::Pulsing || !smoke_fan_on) return;
-    
-    smoke_fan_pulse_active = true;
-    smoke_fan_pulse_end_ms = millis() + smoke_fan_cfg_pulse_ms;
-    analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_pulse_high);
-    smoke_fan_speed = smoke_fan_cfg_pulse_high;
-}
-
-// ============================================================================
-//  FIRING CONTROL
-// ============================================================================
-
-void startFiring(int rpm) {
-    if (rpm <= 0) return;
-    is_firing = true;
-    rate_of_fire_rpm = rpm;
-    shot_interval_ms = 60000UL / rpm;
-    next_shot_time_ms = millis();
-    
-    if (smoke_fan_mode == SmokeFanMode::Pulsing) {
-        setSmokeFan(true, smoke_fan_cfg_pulse_low);
-    } else {
-        setSmokeFan(true, smoke_fan_cfg_speed);
-    }
-}
-
-void stopFiring(uint16_t fan_delay_ms) {
-    is_firing = false;
-    rate_of_fire_rpm = 0;
-    setNozzleFlash(false);
-    flash_active = false;
-    scheduleSmokeFanOff(fan_delay_ms);
-}
-
-// ============================================================================
-//  UPDATE FUNCTIONS
-// ============================================================================
-
-void updateMuzzleFlash() {
-    if (!is_firing) {
-        if (flash_active || flash_fading) {
-            setNozzleFlash(false);
-            flash_active = false;
-            flash_fading = false;
-            clearRecoilJerk();
-        }
-        return;
-    }
-    
-    uint32_t now = millis();
-    
-    if (flash_fading) {
-        uint32_t fade_elapsed = now - fade_start_time_ms;
-        if (fade_elapsed >= FLASH_FADE_MS) {
-            setNozzleFlash(false);
-            flash_fading = false;
-            clearRecoilJerk();
-        } else {
-            uint16_t brightness = map(fade_elapsed, 0, FLASH_FADE_MS, FLASH_PWM_DUTY, 0);
-            analogWrite(PIN_NOZZLE_FLASH, (uint8_t)brightness);
-        }
-    } else if (flash_active) {
-        if (now >= flash_off_time_ms) {
-            flash_active = false;
-            flash_fading = true;
-            fade_start_time_ms = now;
-        }
-    } else if (now >= next_shot_time_ms) {
-        setNozzleFlash(true);
-        flash_active = true;
-        flash_off_time_ms = now + FLASH_PULSE_MS;
-        next_shot_time_ms = now + shot_interval_ms;
-        applyRecoilJerk();
-        triggerSmokeFanPulse();
-        total_shots_fired++;
-    }
-}
-
-void updateSmokeFan() {
-    if (smoke_fan_pending_off) {
-        if (millis() >= smoke_fan_off_time_ms) {
-            setSmokeFan(false, 0);
-        }
-        return;
-    }
-    
-    if (smoke_fan_mode == SmokeFanMode::Pulsing && smoke_fan_pulse_active) {
-        if (millis() >= smoke_fan_pulse_end_ms) {
-            smoke_fan_pulse_active = false;
-            if (smoke_fan_on && is_firing) {
-                analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_pulse_low);
-                smoke_fan_speed = smoke_fan_cfg_pulse_low;
-            }
-        }
-    }
-}
-
-GunFxStatus buildCurrentStatus(uint32_t now_ms) {
-    GunFxStatus status;
-    
-    status.firing = is_firing;
-    status.flashActive = flash_active;
-    status.flashFading = flash_fading;
-    status.heaterOn = smoke_heater_on;
-    status.fanOn = smoke_fan_on;
-    status.fanSpindown = smoke_fan_pending_off;
-    status.fanSpeed = smoke_fan_speed;
-
-    if (smoke_fan_pending_off && smoke_fan_off_time_ms > now_ms) {
-        status.fanOffRemainingMs = (uint16_t)(smoke_fan_off_time_ms - now_ms);
-    } else {
-        status.fanOffRemainingMs = 0;
+        gunServos[i].setTarget(SERVO_DEFAULT_US);
     }
 
-    status.servoUs[0] = (uint16_t)constrain(gun_servos[0].position(), 0, 3000);
-    status.servoUs[1] = (uint16_t)constrain(gun_servos[1].position(), 0, 3000);
-    status.servoUs[2] = (uint16_t)constrain(gun_servos[2].position(), 0, 3000);
-
-    status.rateOfFireRpm = (uint16_t)rate_of_fire_rpm;
-    status.shotsFired = total_shots_fired;
-    
-    status.heaterOnTimeMs = total_heater_on_time_ms;
-    if (smoke_heater_on && heater_on_start_ms > 0) {
-        status.heaterOnTimeMs += now_ms - heater_on_start_ms;
-    }
-    
-    status.uptimeMs = now_ms;
-    status.freeRam = rp2040.getFreeHeap();
-
-    return status;
+    // Clear smoke protection errors
+    smokeGen.resetErrors();
 }
 
 // ============================================================================
@@ -366,42 +163,83 @@ void setup() {
     server.begin("GunFX", FIRMWARE_VERSION, BUILD_NUMBER);
     server.onInit([]() { performSafeInit(); });
     server.onShutdown([]() { performSafeShutdown(); });
-    
-    // Initialize GPIO outputs
-    pinMode(PIN_NOZZLE_FLASH, OUTPUT);
-    pinMode(PIN_SMOKE_FAN, OUTPUT);
-    pinMode(PIN_SMOKE_HEATER, OUTPUT);
-    analogWrite(PIN_NOZZLE_FLASH, 0);
-    analogWrite(PIN_SMOKE_FAN, 0);
-    digitalWrite(PIN_SMOKE_HEATER, LOW);
-    
-    // Initialize servos
-    const uint8_t servoPins[] = {PIN_GUN_SRV_1, PIN_GUN_SRV_2, PIN_GUN_SRV_3};
-    for (int i = 0; i < 3; i++) {
-        gun_servos[i].begin(servoPins[i], 500, 2500, SERVO_DEFAULT_US);
-        gun_servos[i].setId(i + 1);
+
+    // Hold H-bridge CCW pins LOW (GearControl motor outputs are CW/CCW pairs)
+    pinMode(PIN_SMOKE_FAN_B, OUTPUT);
+    digitalWrite(PIN_SMOKE_FAN_B, LOW);
+    pinMode(PIN_SMOKE_HTR_B, OUTPUT);
+    digitalWrite(PIN_SMOKE_HTR_B, LOW);
+
+    // Initialize status LEDs (GearControl board motor channel LEDs)
+    const uint8_t statusPins[] = { PIN_LED_HEATER, PIN_LED_FAN, PIN_LED_SPINDOWN, PIN_LED_FIRING, PIN_LED_FLASH };
+    for (auto pin : statusPins) {
+        pinMode(pin, OUTPUT);
+        digitalWrite(pin, LOW);
     }
-    
+
+    // Initialize I2C bus (INA226 current monitors)
+    Wire.setSDA(PIN_SDA);
+    Wire.setSCL(PIN_SCL);
+    Wire.begin();
+    Wire.setClock(400000);  // 400kHz fast mode
+
+    // Initialize INA226 current monitors (fan + heater shunts)
+    for (int i = 0; i < 2; i++) {
+        INA226Config cfg;
+        cfg.address = INA226_ADDR[i];
+        cfg.shuntResistance_ohms = SHUNT_RESISTANCE_OHMS;
+        cfg.maxCurrent_A = MAX_CURRENT_A;
+        ina226Available[i] = ina226[i].begin(Wire, cfg);
+    }
+
+    // Initialize battery voltage monitor (ADC ÷6 divider)
+    analogReadResolution(12);
+    batteryMonitor.begin(PIN_VSENSE, 6.0f);
+
+    // Initialize servos
+    const uint8_t servoPins[] = { PIN_GUN_SRV_1, PIN_GUN_SRV_2, PIN_GUN_SRV_3 };
+    for (int i = 0; i < 3; i++) {
+        gunServos[i].begin(servoPins[i], 500, 2500, SERVO_DEFAULT_US);
+        gunServos[i].setId(i + 1);
+    }
+
+    // Initialize muzzle flash module
+    muzzleFlash.begin(PIN_NOZZLE_FLASH);
+    for (int i = 0; i < 3; i++) {
+        muzzleFlash.attachServo(i, &gunServos[i]);
+    }
+
+    // Initialize smoke generator module
+    smokeGen.begin(PIN_SMOKE_HEATER, PIN_SMOKE_FAN);
+
+    // Attach INA226 current monitors to smoke generator
+    if (ina226Available[0]) smokeGen.attachCurrentMonitor(SmokeChannel::Heater, &ina226[0]);
+    if (ina226Available[1]) smokeGen.attachCurrentMonitor(SmokeChannel::Fan,    &ina226[1]);
+
+    // Wire muzzle flash shot event to smoke pulse
+    muzzleFlash.onShot([]() {
+        smokeGen.triggerPulse();
+    });
+
     // ========================================================================
     // Initialize GunFxServer (GunFX-specific commands)
     // ========================================================================
     gunfxServer.begin(&Serial);
-    
+
     // TRIGGER_ON: Start firing at specified RPM
     gunfxServer.onTriggerOn([](uint16_t rpm) -> uint8_t {
-        if (rpm < 1 || rpm > 3000) {
-            return GunFxError::INVALID_RPM;
-        }
-        startFiring(rpm);
+        muzzleFlash.startFiring(rpm);
+        smokeGen.startFan(rpm);
         return SerialError::OK;
     });
-    
+
     // TRIGGER_OFF: Stop firing with optional fan delay
     gunfxServer.onTriggerOff([](uint16_t delay) -> uint8_t {
-        stopFiring(delay);
+        muzzleFlash.stopFiring();
+        smokeGen.stopFan(delay);
         return SerialError::OK;
     });
-    
+
     // SERVO_SET: Set servo position
     gunfxServer.onServoSet([](uint8_t id, uint16_t us) -> uint8_t {
         if (id < 1 || id > 3) {
@@ -410,17 +248,19 @@ void setup() {
         if (us < 500 || us > 2500) {
             return GunFxError::SERVO_PULSE_RANGE;
         }
-        setServoPulse(id, us);
+        uint8_t idx = id - 1;
+        int target = constrain(us, gunServos[idx].minLimit(), gunServos[idx].maxLimit());
+        gunServos[idx].setTarget(target);
         return SerialError::OK;
     });
-    
+
     // SERVO_SETTINGS: Configure servo motion profile
     gunfxServer.onServoSettings([](const GunFxServoConfig& cfg) -> uint8_t {
         if (cfg.servoId < 1 || cfg.servoId > 3) {
             return GunFxError::SERVO_INVALID_ID;
         }
         uint8_t idx = cfg.servoId - 1;
-        
+
         if (cfg.minUs > 0 && (cfg.minUs < 500 || cfg.minUs > 2500)) {
             return GunFxError::SERVO_PULSE_RANGE;
         }
@@ -430,27 +270,32 @@ void setup() {
         if (cfg.minUs > 0 && cfg.maxUs > 0 && cfg.minUs >= cfg.maxUs) {
             return GunFxError::SERVO_PULSE_RANGE;
         }
-        
-        if (cfg.recoilJerkUs > 0 || cfg.recoilJerkVarianceUs > 0) {
-            servo_jerk_configs[idx].jerk_us = cfg.recoilJerkUs;
-            servo_jerk_configs[idx].variance_us = cfg.recoilJerkVarianceUs;
-        }
-        
+
         if (cfg.minUs > 0 || cfg.maxUs > 0) {
-            gun_servos[idx].setLimits(cfg.minUs, cfg.maxUs);
+            gunServos[idx].setLimits(cfg.minUs, cfg.maxUs);
         }
         if (cfg.maxSpeedUsPerSec > 0 || cfg.maxAccelUsPerSec2 > 0 || cfg.maxDecelUsPerSec2 > 0) {
-            gun_servos[idx].setMotionProfile(cfg.maxSpeedUsPerSec, cfg.maxAccelUsPerSec2, cfg.maxDecelUsPerSec2);
+            gunServos[idx].setMotionProfile(cfg.maxSpeedUsPerSec, cfg.maxAccelUsPerSec2, cfg.maxDecelUsPerSec2);
         }
         return SerialError::OK;
     });
-    
-    // SMOKE_HEAT: Enable/disable smoke heater
-    gunfxServer.onSmokeHeat([](bool on) -> uint8_t {
-        setSmokeHeater(on);
+
+    // SRV_RECOIL_JERK: Configure recoil jerk per servo (dedicated callback)
+    gunfxServer.onRecoilJerk([](uint8_t servoId, uint16_t jerkUs, uint16_t varianceUs) -> uint8_t {
+        if (servoId < 1 || servoId > 3) {
+            return GunFxError::SERVO_INVALID_ID;
+        }
+        uint8_t idx = servoId - 1;
+        muzzleFlash.setRecoilJerk(idx, jerkUs, varianceUs);
         return SerialError::OK;
     });
-    
+
+    // SMOKE_HEAT: Enable/disable smoke heater
+    gunfxServer.onSmokeHeat([](bool on) -> uint8_t {
+        smokeGen.setHeater(on);
+        return SerialError::OK;
+    });
+
     // SMOKE_SETTINGS: Configure smoke fan parameters
     gunfxServer.onSmokeSettings([](const GunFxSmokeConfig& cfg) -> uint8_t {
         if (cfg.fanPulseMs > 10000) {
@@ -459,56 +304,117 @@ void setup() {
         if (cfg.fanSpindownMs > 60000) {
             return GunFxError::INVALID_FAN_SPEED;
         }
-        
-        smoke_fan_mode = cfg.fanPulsing ? SmokeFanMode::Pulsing : SmokeFanMode::Constant;
-        smoke_fan_cfg_speed = cfg.fanSpeed;
-        smoke_fan_cfg_pulse_high = cfg.fanPulseHigh;
-        smoke_fan_cfg_pulse_low = cfg.fanPulseLow;
-        smoke_fan_cfg_pulse_ms = cfg.fanPulseMs;
-        smoke_fan_cfg_spindown_ms = cfg.fanSpindownMs;
-        
-        if (is_firing && smoke_fan_on) {
-            if (cfg.fanPulsing) {
-                analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_pulse_low);
-                smoke_fan_speed = smoke_fan_cfg_pulse_low;
-            } else {
-                analogWrite(PIN_SMOKE_FAN, smoke_fan_cfg_speed);
-                smoke_fan_speed = smoke_fan_cfg_speed;
-            }
-        }
+        smokeGen.configure(cfg);
         return SerialError::OK;
     });
-    
-    // STATUS: Append GunFX module data to core STATUS response
-    // Wire format (20 bytes):
-    //   [flags:u8][fanSpeed:u8][fanOffMs:u16][servo0:u16][servo1:u16][servo2:u16]
-    //   [rpm:u16][shots:u32][heaterMs:u32]
-    server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        if (maxLen < 20) return 0;
-        
-        GunFxStatus s = buildCurrentStatus(millis());
-        
-        uint8_t flags = 0;
-        if (s.firing)       flags |= 0x01;
-        if (s.flashActive)  flags |= 0x02;
-        if (s.flashFading)  flags |= 0x04;
-        if (s.heaterOn)     flags |= 0x08;
-        if (s.fanOn)        flags |= 0x10;
-        if (s.fanSpindown)  flags |= 0x20;
-        
-        buf[0] = flags;
-        buf[1] = s.fanSpeed;
-        CoreProtocol::putU16LE(&buf[2], s.fanOffRemainingMs);
-        CoreProtocol::putU16LE(&buf[4], s.servoUs[0]);
-        CoreProtocol::putU16LE(&buf[6], s.servoUs[1]);
-        CoreProtocol::putU16LE(&buf[8], s.servoUs[2]);
-        CoreProtocol::putU16LE(&buf[10], s.rateOfFireRpm);
-        CoreProtocol::putU32LE(&buf[12], s.shotsFired);
-        CoreProtocol::putU32LE(&buf[16], s.heaterOnTimeMs);
-        
-        return 20;
+
+    // SMOKE_RESET: Clear smoke error states
+    gunfxServer.onSmokeReset([]() -> uint8_t {
+        smokeGen.resetErrors();
+        return SerialError::OK;
     });
-    
+
+    // SMOKE_CURRENT_LIMIT: Set overcurrent protection limit per channel
+    gunfxServer.onSmokeCurrentLimit([](uint8_t channel, uint16_t limit_mA) -> uint8_t {
+        smokeGen.setCurrentLimit(SmokeChannel(channel), limit_mA);
+        return SerialError::OK;
+    });
+
+    // STATUS: Append GunFX module data to core STATUS response
+    // Wire format (46 bytes):
+    //   [flags:u8][fanSpeed:u8][fanOffMs:u16LE]
+    //   [servo0:u16LE][servo1:u16LE][servo2:u16LE]
+    //   [rpm:u16LE][shots:u32LE][heaterMs:u32LE]
+    //   Heater INA226: [busV_mV:u16LE][current_mA:u16LE][power_mW:u16LE]
+    //   Fan INA226:    [busV_mV:u16LE][current_mA:u16LE][power_mW:u16LE]
+    //   [batteryV_mV:u16LE][inaFlags:u8][shuntR_mohm:u16LE]
+    //   [ledFlags:u8][cellCount:u8][batteryPct:u8]
+    //   [heaterError:u8][fanError:u8]
+    //   [heaterDuty:u8][fanDuty:u8]
+    server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+        if (maxLen < 46) return 0;
+
+        uint8_t flags = 0;
+        if (muzzleFlash.isFiring())    flags |= 0x01;
+        if (muzzleFlash.isFlashOn())   flags |= 0x02;
+        if (muzzleFlash.isFading())    flags |= 0x04;
+        if (smokeGen.isHeaterOn())     flags |= 0x08;
+        if (smokeGen.isFanOn())        flags |= 0x10;
+        if (smokeGen.isSpinningDown()) flags |= 0x20;
+
+        buf[0] = flags;
+        buf[1] = smokeGen.fanSpeed();
+        CoreProtocol::putU16LE(&buf[2], smokeGen.spindownRemaining_ms());
+        CoreProtocol::putU16LE(&buf[4], (uint16_t)constrain(gunServos[0].position(), 0, 3000));
+        CoreProtocol::putU16LE(&buf[6], (uint16_t)constrain(gunServos[1].position(), 0, 3000));
+        CoreProtocol::putU16LE(&buf[8], (uint16_t)constrain(gunServos[2].position(), 0, 3000));
+        CoreProtocol::putU16LE(&buf[10], muzzleFlash.rpm());
+        CoreProtocol::putU32LE(&buf[12], muzzleFlash.shotsFired());
+        CoreProtocol::putU32LE(&buf[16], smokeGen.heaterOnTime_ms());
+
+        // Heater INA226 (Motor 0 shunt) — bytes 20-25                       // mV, mA, mW
+        if (ina226Available[0]) {
+            CoreProtocol::putU16LE(&buf[20], (uint16_t)constrain(ina226[0].busVoltage_mV(), 0, 65535));
+            CoreProtocol::putU16LE(&buf[22], (uint16_t)constrain(fabsf(ina226[0].current_mA()), 0, 65535));
+            CoreProtocol::putU16LE(&buf[24], (uint16_t)constrain(ina226[0].power_mW(), 0, 65535));
+        } else {
+            memset(&buf[20], 0, 6);
+        }
+
+        // Fan INA226 (Motor 1 shunt) — bytes 26-31                          // mV, mA, mW
+        if (ina226Available[1]) {
+            CoreProtocol::putU16LE(&buf[26], (uint16_t)constrain(ina226[1].busVoltage_mV(), 0, 65535));
+            CoreProtocol::putU16LE(&buf[28], (uint16_t)constrain(fabsf(ina226[1].current_mA()), 0, 65535));
+            CoreProtocol::putU16LE(&buf[30], (uint16_t)constrain(ina226[1].power_mW(), 0, 65535));
+        } else {
+            memset(&buf[26], 0, 6);
+        }
+
+        // Battery voltage — bytes 32-33                                      // mV
+        CoreProtocol::putU16LE(&buf[32], batteryMonitor.voltage_mV());
+
+        // INA availability flags — byte 34 (bit 0=heater, bit 1=fan)
+        uint8_t inaFlags = 0;
+        if (ina226Available[0]) inaFlags |= 0x01;
+        if (ina226Available[1]) inaFlags |= 0x02;
+        buf[34] = inaFlags;
+
+        // Shunt resistance — bytes 35-36                                     // mΩ
+        CoreProtocol::putU16LE(&buf[35], (uint16_t)(SHUNT_RESISTANCE_OHMS * 1000.0f));
+
+        // Status LED states — byte 37
+        uint8_t ledFlags = 0;
+        if (smokeGen.isHeaterOn())       ledFlags |= 0x01;  // Motor 0: heater
+        if (smokeGen.isFanOn())          ledFlags |= 0x02;  // Motor 1: fan
+        if (smokeGen.isSpinningDown())   ledFlags |= 0x04;  // Motor 1: spindown
+        if (muzzleFlash.isFiring())      ledFlags |= 0x08;  // Motor 2: firing
+        if (muzzleFlash.isFlashOn())     ledFlags |= 0x10;  // Motor 2: flash
+        buf[37] = ledFlags;
+
+        // Battery cell info — bytes 38-39
+        buf[38] = batteryMonitor.cellCount();
+        buf[39] = batteryMonitor.percentage();
+
+        // Smoke error reasons — bytes 40-41 (SmokeErrorReason codes)
+        buf[40] = smokeGen.errorReason(SmokeChannel::Heater);
+        buf[41] = smokeGen.errorReason(SmokeChannel::Fan);
+
+        // Overcurrent throttle state — bytes 42-43 (effective PWM duty, 255=no throttle)
+        buf[42] = smokeGen.cappedDuty(SmokeChannel::Heater);
+        buf[43] = smokeGen.cappedDuty(SmokeChannel::Fan);
+
+        // Current limits — bytes 44-45 (mA, high byte only for compact encoding)
+        // Full u16 limits reported via SMOKE_CURRENT_LIMIT response if needed
+
+        return 44;
+    });
+
+    // I2C bus scan — handled by PicoServer (shared infrastructure)
+    server.enableI2CScan(Wire);
+    for (int i = 0; i < 2; i++) {
+        server.addExpectedI2CDevice(INA226_ADDR[i], &ina226[i]);
+    }
+
     // Finalize router (core handler + GunFX handler)
     server.addModuleHandler(&gunfxServer);
 }
@@ -520,11 +426,33 @@ void setup() {
 void loop() {
     // Process protocol, connection timeout, indicators
     server.loop();
-    
-    // Update hardware states
-    updateMuzzleFlash();
-    updateSmokeFan();
-    updateAllServos();
-    
+
+    // Update hardware modules
+    muzzleFlash.update();
+    smokeGen.update();
+
+    // Update INA226 current monitors
+    for (int i = 0; i < 2; i++) {
+        if (ina226Available[i]) ina226[i].update();
+    }
+
+    // Update battery voltage monitor
+    batteryMonitor.update();
+
+    // Update servo motion profiling
+    for (int i = 0; i < 3; i++) {
+        gunServos[i].update();
+    }
+
+    // Update status LEDs (match motor channels)
+    digitalWrite(PIN_LED_HEATER,   smokeGen.isHeaterOn()        ? HIGH : LOW);  // Motor 0
+    digitalWrite(PIN_LED_FAN,      smokeGen.isFanOn()           ? HIGH : LOW);  // Motor 1
+    digitalWrite(PIN_LED_SPINDOWN, smokeGen.isSpinningDown()    ? HIGH : LOW);  // Motor 1
+    digitalWrite(PIN_LED_FIRING,   muzzleFlash.isFiring()       ? HIGH : LOW);  // Motor 2
+    digitalWrite(PIN_LED_FLASH,    muzzleFlash.isFlashOn()      ? HIGH : LOW);  // Motor 2
+
+    // Error indicator LED (GP14) — blink if any smoke channel has error
+    server.indicators().setErrorCondition(smokeGen.hasError());
+
     delay(1);
 }

@@ -56,7 +56,7 @@ Every Pico server controller follows the same architecture:
 - **NewFxServer** — Your module-specific handler (extends BusServer)
 
 **What PicoServer handles automatically:**
-- USB serial init (115200 baud, 3s wait)
+- USB serial init (1Mbps baud, 3s wait)
 - Unique device name from Pico board ID (e.g., "NewFX-A1B2")
 - Indicator LEDs on GP13/GP14 via `IndicatorLedManager`
 - CoreCommandServer with board info and INIT/SHUTDOWN/REBOOT/BOOTSEL callbacks
@@ -97,7 +97,7 @@ board = pico
 framework = arduino
 board_build.core = earlephilhower
 
-monitor_speed = 115200
+monitor_speed = 1000000
 
 build_flags =
     -DUSE_TINYUSB=0

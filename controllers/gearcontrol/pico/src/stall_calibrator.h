@@ -68,6 +68,13 @@ namespace CalibConfig {
     constexpr uint16_t STALL_CONFIRM_ms      = 200;    // Current must stay high this long
     constexpr uint16_t STALL_RISE_mA         = 150;    // Current rise above baseline = stall
 
+    // Motor disconnect detection
+    constexpr uint16_t ZERO_CURRENT_ABORT_ms = 1000;   // Abort if current stays 0 this long after baseline
+    constexpr uint16_t ZERO_CURRENT_THRESH_mA = 5;     // Below this counts as "zero" (noise floor)
+
+    // Overall calibration timeout
+    constexpr uint32_t DEFAULT_OVERALL_TIMEOUT_ms = 60000;  // Default 60s overall timeout
+
     // Result computation
     constexpr float    MARGIN_FACTOR         = 0.80f;  // Use 80% of detected stall as threshold
 }
@@ -104,6 +111,7 @@ public:
         uint16_t baseline_mA = 0;         // Free-running baseline current
         uint16_t peakDeploy_mA = 0;       // Raw deploy peak
         uint16_t peakRetract_mA = 0;      // Raw retract peak
+        uint8_t  errorReason = 0;         // GearErrorReason code (0 = none)
     };
 
     StallCalibrator() = default;
@@ -130,14 +138,17 @@ public:
     /**
      * @brief Start a calibration run
      *
-     * Resets all internal state, opens doors (if configured), then begins
-     * the multi-phase calibration sequence.
+     * Resets all internal state, opens doors (if configured and not already
+     * open), then begins the multi-phase calibration sequence.
+     * Doors are left open after calibration completes/errors/cancels.
      *
      * @param initialStallGuess_mA Stall threshold for endpoint clearing
      *        (typically the current gear config value)
+     * @param overallTimeout_ms Overall timeout for entire calibration
+     *        (0 = default 60s, see CalibConfig::DEFAULT_OVERALL_TIMEOUT_ms)
      * @return SerialError::OK on success
      */
-    uint8_t start(uint16_t initialStallGuess_mA);
+    uint8_t start(uint16_t initialStallGuess_mA, uint32_t overallTimeout_ms = 0);
 
     /**
      * @brief Cancel an in-progress calibration
@@ -212,12 +223,13 @@ private:
 
     // State machine
     CalibPhase _phase = CalibPhase::IDLE;
-    CalibPhase _pendingResult = CalibPhase::IDLE;  // Result to emit after CLOSING_DOORS
 
     // Timing
     uint32_t _phaseStart_ms = 0;
     uint32_t _lastSample_ms = 0;
     uint32_t _lastStatusEmit_ms = 0;
+    uint32_t _overallStart_ms = 0;       // Start of entire calibration
+    uint32_t _overallTimeout_ms = 0;     // Overall timeout (0 = no timeout)
 
     // Measurement state
     uint16_t _initialStallGuess_mA = 500;   // For endpoint clearing detection
@@ -228,6 +240,8 @@ private:
     uint16_t _peakRetract_mA = 0;           // Peak current in retract direction
     uint32_t _stallStart_ms = 0;            // When current first exceeded threshold
     bool     _stallDetected = false;         // Stall confirmation in progress
+    uint32_t _zeroCurrentStart_ms = 0;       // When current first dropped to ~0
+    bool     _zeroCurrentDetected = false;   // Zero-current tracking in progress
 
     // Status emission
     uint16_t _existingCalibStall_mA = 0;    // Previous calibrated value (for reporting)

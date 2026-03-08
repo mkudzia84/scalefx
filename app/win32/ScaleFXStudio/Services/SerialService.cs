@@ -17,7 +17,7 @@ public class SerialService : IDisposable
     /// <summary>
     /// Default baud rate for Raspberry Pi serial console.
     /// </summary>
-    public const int DefaultBaudRate = 115200;
+    public const int DefaultBaudRate = 1000000;
 
     /// <summary>
     /// Gets a value indicating whether the serial port is open.
@@ -88,7 +88,7 @@ public class SerialService : IDisposable
     /// Connects to a serial port.
     /// </summary>
     /// <param name="portName">The name of the serial port (e.g., "COM3").</param>
-    /// <param name="baudRate">The baud rate (default: 115200).</param>
+    /// <param name="baudRate">The baud rate (default: 1000000).</param>
     /// <param name="dataBits">The data bits (default: 8).</param>
     /// <param name="parity">The parity (default: None).</param>
     /// <param name="stopBits">The stop bits (default: One).</param>

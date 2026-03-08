@@ -4,7 +4,7 @@ Lighting effects controller for scale models - manages 8 LED channels with seque
 
 **Version:** 0.6.0  
 **Protocol:** Binary COBS with CRC-8  
-**Baud Rate:** 115200
+**Baud Rate:** 1000000 (1Mbps)
 
 ---
 
@@ -52,7 +52,7 @@ Lighting effects controller for scale models - manages 8 LED channels with seque
 Binary COBS-encoded packets terminated by 0x00 delimiter:
 
 ```
-[type:u8][len:u8][payload:0-64 bytes][crc8:u8]
+[type:u8][len:u16LE][payload:0-512 bytes][crc8:u8]
 ```
 
 CRC-8 polynomial 0x07 computed over type + len + payload.

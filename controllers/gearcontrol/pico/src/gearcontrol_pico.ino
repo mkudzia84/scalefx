@@ -56,8 +56,8 @@
 #include "landing_gear.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "0.8.0"
-#define BUILD_NUMBER 33
+#define FIRMWARE_VERSION "0.10.0"
+#define BUILD_NUMBER 48
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -278,6 +278,11 @@ void setup() {
         gears[i].onSequenceProgress([](const GearControlSeqStatus& status) {
             gearControlServer.sendGearSeqStatus(status);
         });
+
+        // Register door status callback (emits GEAR_DOOR_STATUS packets)
+        gears[i].onDoorStatus([](const GearControlDoorStatus& status) {
+            gearControlServer.sendDoorStatus(status);
+        });
     }
 
     // Initialize yaw servo (uses ServoControl for configurability)
@@ -427,9 +432,10 @@ void setup() {
         return SerialError::OK;
     });
 
-    // GEAR_CALIBRATE: Start stall current calibration
-    gearControlServer.onGearCalibrate([](uint8_t gearId) -> uint8_t {
-        return gears[gearId].calibrate();
+    // GEAR_CALIBRATE: Start stall current calibration (optional timeout in seconds)
+    gearControlServer.onGearCalibrate([](uint8_t gearId, uint8_t timeout_s) -> uint8_t {
+        uint32_t timeout_ms = (uint32_t)timeout_s * 1000;
+        return gears[gearId].calibrate(timeout_ms);
     });
 
     // GEAR_CALIB_CANCEL: Cancel calibration in progress
@@ -447,9 +453,22 @@ void setup() {
         return SerialError::OK;
     });
 
-    // DOOR_MODE: Configure door activation mode per gear
+    // DOOR_MODE: Configure door activation modes per gear
     gearControlServer.onDoorMode([](const GearControlDoorModeConfig& cfg) -> uint8_t {
-        gears[cfg.gearId].setDoorMode(cfg.mode, cfg.delay_ms);
+        gears[cfg.gearId].setDoorMode(cfg.preDeployMode, cfg.postDeployMode, cfg.delay_ms);
+        return SerialError::OK;
+    });
+
+    // GEAR_RESET: Clear error state (ERROR → UNKNOWN)
+    gearControlServer.onGearReset([](uint8_t gearId) -> uint8_t {
+        gears[gearId].clearError();
+        gearErrorReason[gearId] = GearErrorReason::NONE;
+        return SerialError::OK;
+    });
+
+    // GEAR_ENABLE: Enable/disable gear channel
+    gearControlServer.onGearEnable([](uint8_t gearId, bool enabled) -> uint8_t {
+        gears[gearId].setEnabled(enabled);
         return SerialError::OK;
     });
 
@@ -460,7 +479,7 @@ void setup() {
     }
 
     // STATUS: Append GearControl module data to core STATUS response
-    // Wire format (50 bytes):
+    // Wire format (53 bytes):
     //   Per gear (3 × 11 = 33 bytes):
     //     [state:u8][motorCurrent_mA:u16LE][door0Pos_us:u16LE][door1Pos_us:u16LE]
     //     [calibratedStall_mA:u16LE][shuntVoltage_10uV:i16LE]
@@ -470,12 +489,16 @@ void setup() {
     //     [gear0ErrorReason:u8][gear1ErrorReason:u8][gear2ErrorReason:u8]
     //   Shunt config (2 bytes):
     //     [shuntResistance_mohm:u16LE]
-    //   Per-gear door mode (3 bytes):
-    //     [gear0DoorMode:u8][gear1DoorMode:u8][gear2DoorMode:u8]
+    //   Per-gear packed door modes (3 bytes):
+    //     [gear0DoorModes:u8][gear1DoorModes:u8][gear2DoorModes:u8]
+    //     Each byte: low nibble = doorPreDeploy mode
+    //                high nibble = doorPostDeploy mode
     //   Per-gear config flags (3 bytes):
     //     [gear0ConfigFlags:u8][gear1ConfigFlags:u8][gear2ConfigFlags:u8]
+    //   Per-gear door state (3 bytes):
+    //     [gear0DoorState:u8][gear1DoorState:u8][gear2DoorState:u8]
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        if (maxLen < 50) return 0;
+        if (maxLen < 53) return 0;
 
         for (int i = 0; i < 3; i++) {
             size_t off = i * 11;
@@ -507,17 +530,22 @@ void setup() {
         // Configured shunt resistance in milliohms (e.g., 100 = 100mΩ = 0.1Ω)
         CoreProtocol::putU16LE(&buf[42], (uint16_t)(SHUNT_RESISTANCE_OHMS * 1000.0f));  // mΩ
 
-        // Per-gear door mode (DoorMode enum: 0=none, 1=single, 2=dual-sync, etc.)
-        buf[44] = gears[0].doorMode();
-        buf[45] = gears[1].doorMode();
-        buf[46] = gears[2].doorMode();
+        // Per-gear packed door modes: low nibble = doorPreDeploy, high nibble = doorPostDeploy
+        buf[44] = (gears[0].doorPreDeploy() & 0x0F) | ((gears[0].doorPostDeploy() & 0x0F) << 4);
+        buf[45] = (gears[1].doorPreDeploy() & 0x0F) | ((gears[1].doorPostDeploy() & 0x0F) << 4);
+        buf[46] = (gears[2].doorPreDeploy() & 0x0F) | ((gears[2].doorPostDeploy() & 0x0F) << 4);
 
-        // Per-gear config flags (GearConfigFlags bitmask)
-        buf[47] = gears[0].gearConfig().flags;
-        buf[48] = gears[1].gearConfig().flags;
-        buf[49] = gears[2].gearConfig().flags;
+        // Per-gear config flags (GearConfigFlags bitmask + runtime ENABLED bit 7)
+        buf[47] = gears[0].gearConfig().flags | (gears[0].isEnabled() ? GearConfigFlags::ENABLED : 0);
+        buf[48] = gears[1].gearConfig().flags | (gears[1].isEnabled() ? GearConfigFlags::ENABLED : 0);
+        buf[49] = gears[2].gearConfig().flags | (gears[2].isEnabled() ? GearConfigFlags::ENABLED : 0);
 
-        return 50;
+        // Per-gear door state (DoorState values from door sequencer)
+        buf[50] = gears[0].doorState();
+        buf[51] = gears[1].doorState();
+        buf[52] = gears[2].doorState();
+
+        return 53;
     });
 
     // Finalize command router (core + GearControl handlers)
@@ -540,6 +568,11 @@ void loop() {
     // Update all landing gear modules (sequencing, door servos, status LEDs)
     for (int i = 0; i < 3; i++) {
         gears[i].update();
+
+        // Propagate calibration error reason (e.g., motor disconnected)
+        if (gears[i].state() == GearState::ERROR && gears[i].lastCalibErrorReason() != 0) {
+            gearErrorReason[i] = gears[i].lastCalibErrorReason();
+        }
     }
 
     // Sync coordinator: advance gears past sync barriers when all are ready

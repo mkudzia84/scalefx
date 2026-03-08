@@ -13,6 +13,8 @@
  *   SRV_RECOIL_JERK (0x12) - [id:u8][jerkUs:u16][varianceUs:u16]
  *   SMOKE_HEAT (0x20)      - [on:u8] Enable/disable heater
  *   SMOKE_SETTINGS (0x21)  - [pulsing:u8][speed:u8][high:u8][low:u8][pulseMs:u16][spindownMs:u16]
+ *   SMOKE_RESET (0x22)     - [] Clear smoke error states (heater/fan disconnect)
+ *   SMOKE_CURRENT_LIMIT (0x23) - [channel:u8][limit_mA:u16] Set overcurrent protection limit
  */
 
 #ifndef SERIAL_GUNFX_H
@@ -41,6 +43,8 @@ namespace GunFxPacket {
     // Smoke control
     constexpr uint8_t SMOKE_HEAT      = 0x20;  // [on:u8]
     constexpr uint8_t SMOKE_SETTINGS  = 0x21;  // [pulsing:u8][speed:u8][high:u8][low:u8][pulse_ms:u16][spindown_ms:u16]
+    constexpr uint8_t SMOKE_RESET     = 0x22;  // [] Clear smoke error states
+    constexpr uint8_t SMOKE_CURRENT_LIMIT = 0x23;  // [channel:u8][limit_mA:u16LE] Set overcurrent limit
 }
 
 // ============================================================================
@@ -59,6 +63,10 @@ namespace GunFxError {
     
     // Smoke/heater errors (0x30-0x3F)
     constexpr uint8_t INVALID_FAN_SPEED     = 0x30;  // Invalid fan speed value
+    constexpr uint8_t HEATER_DISCONNECTED   = 0x31;  // Heater drawing 0 current
+    constexpr uint8_t FAN_DISCONNECTED      = 0x32;  // Fan motor drawing 0 current
+    constexpr uint8_t HEATER_OVERCURRENT    = 0x33;  // Heater current exceeded limit
+    constexpr uint8_t FAN_OVERCURRENT       = 0x34;  // Fan current exceeded limit
     
     // Trigger errors (0x40-0x4F)
     constexpr uint8_t INVALID_RPM           = 0x40;  // RPM out of range (1-3000)
@@ -75,6 +83,10 @@ namespace GunFxError {
             case SERVO_MIN_MAX:         return "minUs must be less than maxUs";
             case SERVO_NOT_CONFIGURED:  return "Servo not configured";
             case INVALID_FAN_SPEED:     return "Invalid fan speed";
+            case HEATER_DISCONNECTED:   return "Heater disconnected (0 current)";
+            case FAN_DISCONNECTED:      return "Fan disconnected (0 current)";
+            case HEATER_OVERCURRENT:    return "Heater overcurrent protection triggered";
+            case FAN_OVERCURRENT:       return "Fan overcurrent protection triggered";
             case INVALID_RPM:           return "Invalid RPM (use 1-3000)";
             case ALREADY_FIRING:        return "Already firing";
             case NOT_FIRING:            return "Not firing";
@@ -117,6 +129,18 @@ namespace GunFxSpec {
 }
 
 // ============================================================================
+// Smoke Error Reason Codes (STATUS diagnostic)
+// ============================================================================
+
+namespace SmokeErrorReason {
+    constexpr uint8_t NONE                = 0x00;  // No error
+    constexpr uint8_t HEATER_DISCONNECTED = 0x01;  // Heater drawing 0 current while ON
+    constexpr uint8_t FAN_DISCONNECTED    = 0x02;  // Fan drawing 0 current while ON
+    constexpr uint8_t HEATER_OVERCURRENT  = 0x03;  // Heater current exceeded limit
+    constexpr uint8_t FAN_OVERCURRENT     = 0x04;  // Fan current exceeded limit
+}
+
+// ============================================================================
 // GunFX Data Types
 // ============================================================================
 
@@ -130,8 +154,6 @@ struct GunFxServoConfig {
     uint16_t maxSpeedUsPerSec = 0;      // 0 = no limit
     uint16_t maxAccelUsPerSec2 = 0;     // 0 = no limit
     uint16_t maxDecelUsPerSec2 = 0;     // 0 = no limit
-    uint16_t recoilJerkUs = 0;
-    uint16_t recoilJerkVarianceUs = 0;
 };
 
 /**
@@ -172,7 +194,7 @@ struct GunFxSmokeConfig {
     uint8_t fanSpeed = 255;
     uint8_t fanPulseHigh = 255;
     uint8_t fanPulseLow = 80;
-    uint16_t fanPulseMs = 50;
+    uint16_t fanPulseMs = 0;        // 0 = auto-calculate from RPM
     uint16_t fanSpindownMs = 5000;
 };
 
@@ -188,8 +210,11 @@ using GunFxTriggerOnCallback = std::function<uint8_t(uint16_t rpm)>;
 using GunFxTriggerOffCallback = std::function<uint8_t(uint16_t fanDelayMs)>;
 using GunFxServoSetCallback = std::function<uint8_t(uint8_t servoId, uint16_t pulseUs)>;
 using GunFxServoSettingsCallback = std::function<uint8_t(const GunFxServoConfig& config)>;
+using GunFxRecoilJerkCallback = std::function<uint8_t(uint8_t servoId, uint16_t jerkUs, uint16_t varianceUs)>;
 using GunFxSmokeHeatCallback = std::function<uint8_t(bool on)>;
 using GunFxSmokeSettingsCallback = std::function<uint8_t(const GunFxSmokeConfig& config)>;
+using GunFxSmokeResetCallback = std::function<uint8_t()>;
+using GunFxSmokeCurrentLimitCallback = std::function<uint8_t(uint8_t channel, uint16_t limit_mA)>;
 
 // ============================================================================
 // GunFxClient Class (Binary Protocol)
@@ -224,6 +249,8 @@ public:
     
     CommandResult setSmokeHeater(bool on);
     CommandResult setSmokeSettings(const GunFxSmokeConfig& config);
+    CommandResult smokeReset();
+    CommandResult smokeCurrentLimit(uint8_t channel, uint16_t limit_mA);
 
     // ========================================================================
     // Status
@@ -280,8 +307,11 @@ public:
     void onTriggerOff(GunFxTriggerOffCallback cb) { _triggerOffCallback = cb; }
     void onServoSet(GunFxServoSetCallback cb) { _servoSetCallback = cb; }
     void onServoSettings(GunFxServoSettingsCallback cb) { _servoSettingsCallback = cb; }
+    void onRecoilJerk(GunFxRecoilJerkCallback cb) { _recoilJerkCallback = cb; }
     void onSmokeHeat(GunFxSmokeHeatCallback cb) { _smokeHeatCallback = cb; }
     void onSmokeSettings(GunFxSmokeSettingsCallback cb) { _smokeSettingsCallback = cb; }
+    void onSmokeReset(GunFxSmokeResetCallback cb) { _smokeResetCallback = cb; }
+    void onSmokeCurrentLimit(GunFxSmokeCurrentLimitCallback cb) { _smokeCurrentLimitCallback = cb; }
 
 protected:
     CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
@@ -294,8 +324,11 @@ private:
     GunFxTriggerOffCallback _triggerOffCallback;
     GunFxServoSetCallback _servoSetCallback;
     GunFxServoSettingsCallback _servoSettingsCallback;
+    GunFxRecoilJerkCallback _recoilJerkCallback;
     GunFxSmokeHeatCallback _smokeHeatCallback;
     GunFxSmokeSettingsCallback _smokeSettingsCallback;
+    GunFxSmokeResetCallback _smokeResetCallback;
+    GunFxSmokeCurrentLimitCallback _smokeCurrentLimitCallback;
 };
 
 #endif // SERIAL_GUNFX_H

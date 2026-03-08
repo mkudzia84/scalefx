@@ -227,8 +227,8 @@ class GunFxCommands(CommandBuilder):
         return build_packet(GunFxPacket.SMOKE_HEAT, bytes([1 if on else 0]))
     
     @staticmethod
-    def smoke_settings(pulsing: bool, speed: int, pulse_high: int,
-                       pulse_low: int, pulse_ms: int, spindown_ms: int) -> bytes:
+    def smoke_settings(pulsing: bool = False, speed: int = 255, pulse_high: int = 255,
+                       pulse_low: int = 80, pulse_ms: int = 0, spindown_ms: int = 5000) -> bytes:
         """
         Configure smoke fan behavior.
         
@@ -237,8 +237,13 @@ class GunFxCommands(CommandBuilder):
             speed: Fan PWM speed (0-255, where 255 = 100%)
             pulse_high: High speed during pulse (0-255)
             pulse_low: Low speed between pulses (0-255)
-            pulse_ms: Pulse duration in milliseconds
+            pulse_ms: Pulse duration in milliseconds (0 = auto-calculate from RPM)
             spindown_ms: Spindown delay in milliseconds after trigger off
+            
+        Notes:
+            When pulse_ms=0 (default), the firmware auto-calculates pulse
+            duration as 50% of the shot interval based on the current RPM,
+            clamped to 20-250ms. Set pulse_ms > 0 to override with a fixed value.
             
         Warnings:
             Emits UserWarning if speed/pulse values exceed 255.
@@ -251,6 +256,33 @@ class GunFxCommands(CommandBuilder):
         payload = bytes([1 if pulsing else 0, speed, pulse_high, pulse_low])
         payload += u16_le(pulse_ms) + u16_le(spindown_ms)
         return build_packet(GunFxPacket.SMOKE_SETTINGS, payload)
+    
+    @staticmethod
+    def smoke_reset() -> bytes:
+        """Clear smoke error states (heater/fan disconnect, overcurrent)."""
+        return build_packet(GunFxPacket.SMOKE_RESET)
+
+    @staticmethod
+    def smoke_current_limit(channel: int, limit_mA: int) -> bytes:
+        """
+        Set overcurrent protection limit for a smoke channel.
+
+        When current exceeds the limit, PWM is automatically stepped down.
+        If throttling fails to bring current under the limit, the channel
+        is shut off and an overcurrent error is set.
+
+        Args:
+            channel: 0=heater, 1=fan
+            limit_mA: Current limit in milliamps (0=disable protection)
+
+        Warnings:
+            Emits UserWarning if channel not in [0-1].
+            Emits UserWarning if limit_mA exceeds u16 max.
+        """
+        _warn_range("channel", channel, 0, 1)
+        _warn_u16("limit_mA", limit_mA)
+        payload = bytes([channel]) + u16_le(limit_mA)
+        return build_packet(GunFxPacket.SMOKE_CURRENT_LIMIT, payload)
 
 
 class LightFxCommands(CommandBuilder):
@@ -665,6 +697,45 @@ class LightFxCommands(CommandBuilder):
         """
         _warn_range("slot", slot, 0, 3)
         return build_packet(LightFxPacket.LANDING_LIGHT_RETRACT, bytes([slot]))
+    
+    # =========================================================================
+    # Channel Management
+    # =========================================================================
+    
+    @staticmethod
+    def led_reset(channel: int = 0) -> bytes:
+        """
+        Reset LED channel(s) to defaults.
+        
+        Stops sequence, clears sequence, turns off LED, re-enables channel.
+        If channel=0, also resets master brightness to 100%.
+        
+        Args:
+            channel: LED channel (1-8), or 0 for all channels
+            
+        Warnings:
+            Emits UserWarning if channel not in [0-8].
+        """
+        _warn_range("channel", channel, 0, LED_CHANNEL_MAX)
+        return build_packet(LightFxPacket.LED_RESET, bytes([channel]))
+    
+    @staticmethod
+    def led_enable(channel: int, enabled: bool = True) -> bytes:
+        """
+        Enable or disable an LED channel.
+        
+        When disabled, LED operations on the channel return CHANNEL_DISABLED.
+        Disabling stops any active sequence and turns off the LED.
+        
+        Args:
+            channel: LED channel (1-8), or 0 for all channels
+            enabled: True to enable, False to disable
+            
+        Warnings:
+            Emits UserWarning if channel not in [0-8].
+        """
+        _warn_range("channel", channel, 0, LED_CHANNEL_MAX)
+        return build_packet(LightFxPacket.LED_ENABLE, bytes([channel, 1 if enabled else 0]))
 
 
 # =============================================================================
@@ -846,7 +917,7 @@ class GearControlCommands(CommandBuilder):
         return build_packet(GearControlPacket.YAW_INPUT, u16_le(position_us))
 
     @staticmethod
-    def gear_calibrate(gear_id: int) -> bytes:
+    def gear_calibrate(gear_id: int, timeout_s: int = 0) -> bytes:
         """
         Start stall current calibration for a gear.
         
@@ -856,8 +927,12 @@ class GearControlCommands(CommandBuilder):
         
         Args:
             gear_id: Gear index (0=nose, 1=left main, 2=right main)
+            timeout_s: Overall timeout in seconds (0=no timeout, 1-255)
         """
         _warn_range("gear_id", gear_id, GEAR_ID_MIN, GEAR_ID_MAX)
+        if timeout_s > 0:
+            _warn_range("timeout_s", timeout_s, 1, 255, "s")
+            return build_packet(GearControlPacket.GEAR_CALIBRATE, bytes([gear_id, timeout_s]))
         return build_packet(GearControlPacket.GEAR_CALIBRATE, bytes([gear_id]))
 
     @staticmethod
@@ -895,28 +970,65 @@ class GearControlCommands(CommandBuilder):
                             bytes([1 if enabled else 0, 1 if auto_deploy else 0]))
 
     @staticmethod
-    def door_mode(gear_id: int, mode: int, delay_ms: int = 500) -> bytes:
+    def door_mode(gear_id: int, pre_deploy: int, post_deploy: int = 0, delay_ms: int = 500) -> bytes:
         """
-        Configure door activation mode for a gear.
+        Configure door activation modes for a gear (two-mode system).
         
-        Controls how door servos are used during deploy/retract sequences:
-          0 = NONE        No door servos (motor only)
+        doorPreDeploy (pre_deploy): Doors opened before deploy motor, closed after retract motor.
+        doorPostDeploy (post_deploy): Doors closed after deploy motor, opened before retract motor.
+        Retract is the reverse of the deploy operation.
+        
+        Mode values:
+          0 = NONE        No door servos (skip this phase)
           1 = SINGLE      One door servo (servo 0 only)
           2 = DUAL_SYNC   Two doors, simultaneous (default)
           3 = DUAL_DELAY  Two doors, door 1 starts after delay_ms
           4 = DUAL_SEQ    Two doors, door 1 starts after door 0 completes
         
+        Setting post_deploy=NONE skips post-deploy close and pre-retract open phases.
         For DUAL_DELAY/DUAL_SEQ: doors open 0→1, close 1→0 (like real aircraft).
         
         Args:
             gear_id: Gear index (0=nose, 1=left main, 2=right main)
-            mode: DoorMode value (0-4)
+            pre_deploy: doorPreDeploy mode value (0-4)
+            post_deploy: doorPostDeploy mode value (0-4, default 0=NONE=skip)
             delay_ms: Delay between doors in ms (DUAL_DELAY only, default 500)
         """
         _warn_range("gear_id", gear_id, GEAR_ID_MIN, GEAR_ID_MAX)
-        _warn_range("mode", mode, 0, 4)
+        _warn_range("pre_deploy", pre_deploy, 0, 4)
+        _warn_range("post_deploy", post_deploy, 0, 4)
         _warn_u16("delay_ms", delay_ms)
-        payload = bytes([gear_id, mode]) + u16_le(delay_ms)
+        payload = bytes([gear_id, pre_deploy, post_deploy]) + u16_le(delay_ms)
         return build_packet(GearControlPacket.DOOR_MODE, payload)
+
+    @staticmethod
+    def gear_reset(gear_id: int) -> bytes:
+        """
+        Clear error state for a gear (ERROR → UNKNOWN).
+        
+        Clears the error state and error reason. Safe to call on
+        non-errored gears (no-op on server side).
+        
+        Args:
+            gear_id: Gear index (0=nose, 1=left main, 2=right main)
+        """
+        _warn_range("gear_id", gear_id, GEAR_ID_MIN, GEAR_ID_MAX)
+        return build_packet(GearControlPacket.GEAR_RESET, bytes([gear_id]))
+
+    @staticmethod
+    def gear_enable(gear_id: int, enabled: bool) -> bytes:
+        """
+        Enable or disable a gear channel.
+        
+        When disabled, deploy/retract/calibrate commands are rejected.
+        stop() always works (safety). Active sequences are stopped.
+        
+        Args:
+            gear_id: Gear index (0=nose, 1=left main, 2=right main)
+            enabled: True to enable, False to disable
+        """
+        _warn_range("gear_id", gear_id, GEAR_ID_MIN, GEAR_ID_MAX)
+        return build_packet(GearControlPacket.GEAR_ENABLE,
+                            bytes([gear_id, 1 if enabled else 0]))
 
 

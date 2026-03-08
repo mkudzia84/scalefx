@@ -25,7 +25,7 @@ from typing import Optional, List, Tuple
 
 # Configuration
 DEFAULT_PORT = "COM10"
-BAUD_RATE = 115200
+BAUD_RATE = 1000000
 TIMEOUT = 2
 
 # Test sound files (must exist on SD card)

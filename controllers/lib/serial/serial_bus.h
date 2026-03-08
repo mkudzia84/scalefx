@@ -54,7 +54,7 @@
 // Serial Bus Constants & Types
 // ============================================================================
 
-constexpr size_t SERIAL_BUS_RX_BUFFER_SIZE = 256;
+constexpr size_t SERIAL_BUS_RX_BUFFER_SIZE = CoreProtocol::COBS_BUFFER_SIZE;
 
 // ============================================================================
 // SerialBus Class - Binary COBS Protocol

@@ -32,8 +32,10 @@ class GunFxPacket:
     SERVO_SET       = 0x10
     SERVO_SETTINGS  = 0x11
     SERVO_RECOIL    = 0x12
-    SMOKE_HEAT      = 0x20
-    SMOKE_SETTINGS  = 0x21
+    SMOKE_HEAT          = 0x20
+    SMOKE_SETTINGS      = 0x21
+    SMOKE_RESET         = 0x22
+    SMOKE_CURRENT_LIMIT = 0x23
 
 
 class LightFxPacket:
@@ -49,6 +51,8 @@ class LightFxPacket:
     LED_STATUS        = 0x48
     LED_SEQ_QUEUE     = 0x49
     LED_MASTER_BRIGHTNESS = 0x4A
+    LED_RESET             = 0x4B  # [ch:u8] (0=all) Reset channel to defaults, re-enable
+    LED_ENABLE            = 0x4C  # [ch:u8][enabled:u8] Enable/disable LED channel
     SERVO_SET         = 0x50
     SERVO_SETTINGS    = 0x51
     # Landing light control
@@ -117,6 +121,10 @@ class GunFxError:
     SERVO_MIN_MAX       = 0x22
     SERVO_NOT_CONFIGURED = 0x23
     INVALID_FAN_SPEED   = 0x30
+    HEATER_DISCONNECTED = 0x31
+    FAN_DISCONNECTED    = 0x32
+    HEATER_OVERCURRENT  = 0x33
+    FAN_OVERCURRENT     = 0x34
     INVALID_RPM         = 0x40
     ALREADY_FIRING      = 0x41
     NOT_FIRING          = 0x42
@@ -130,11 +138,36 @@ class GunFxError:
             0x22: "SERVO_MIN_MAX",
             0x23: "SERVO_NOT_CONFIGURED",
             0x30: "INVALID_FAN_SPEED",
+            0x31: "HEATER_DISCONNECTED",
+            0x32: "FAN_DISCONNECTED",
+            0x33: "HEATER_OVERCURRENT",
+            0x34: "FAN_OVERCURRENT",
             0x40: "INVALID_RPM",
             0x41: "ALREADY_FIRING",
             0x42: "NOT_FIRING",
         }
         return names.get(code, CoreError.name(code))
+
+
+class SmokeErrorReason:
+    """Per-channel smoke error reason codes (STATUS diagnostic)."""
+    NONE                = 0x00  # No error
+    HEATER_DISCONNECTED = 0x01  # Heater drawing 0 current while ON
+    FAN_DISCONNECTED    = 0x02  # Fan drawing 0 current while ON
+    HEATER_OVERCURRENT  = 0x03  # Heater current exceeded limit
+    FAN_OVERCURRENT     = 0x04  # Fan current exceeded limit
+
+    @staticmethod
+    def name(reason: int) -> str:
+        """Get human-readable error reason."""
+        names = {
+            0x00: "none",
+            0x01: "heater disconnected",
+            0x02: "fan disconnected",
+            0x03: "heater overcurrent",
+            0x04: "fan overcurrent",
+        }
+        return names.get(reason, f"unknown(0x{reason:02X})")
 
 
 class LightFxError:
@@ -145,6 +178,7 @@ class LightFxError:
     INVALID_PARAM   = 0x53
     INVALID_SERVO   = 0x54
     INVALID_SLOT    = 0x55
+    CHANNEL_DISABLED = 0x56
     
     @staticmethod
     def name(code: int) -> str:
@@ -156,6 +190,7 @@ class LightFxError:
             0x53: "INVALID_PARAM",
             0x54: "INVALID_SERVO",
             0x55: "INVALID_SLOT",
+            0x56: "CHANNEL_DISABLED",
         }
         return names.get(code, CoreError.name(code))
 
@@ -177,7 +212,10 @@ class GearControlPacket:
     GEAR_CALIB_CANCEL = 0x6C
     BATTERY_CONFIG   = 0x6D
     DOOR_MODE        = 0x6E
+    GEAR_RESET       = 0x6F  # [gear_id:u8] Clear error state (ERROR → UNKNOWN)
     GEAR_SEQ_STATUS  = 0x70  # [gear_id:u8][phase:u8][deploying:u8][finished:u8] Sequence progress
+    GEAR_ENABLE      = 0x71  # [gear_id:u8][enabled:u8] Enable/disable gear channel
+    GEAR_DOOR_STATUS = 0x72  # [gear_id:u8][state:u8][door0_pos_us:u16LE][door1_pos_us:u16LE] Door state transition
 
 
 class GearControlError:
@@ -193,6 +231,7 @@ class GearControlError:
     INVALID_ACTION     = 0x68
     NO_CURRENT_MONITOR = 0x69
     NOT_CALIBRATING    = 0x6A
+    GEAR_DISABLED      = 0x6B
     
     @staticmethod
     def name(code: int) -> str:
@@ -209,6 +248,7 @@ class GearControlError:
             0x68: "INVALID_ACTION",
             0x69: "NO_CURRENT_MONITOR",
             0x6A: "NOT_CALIBRATING",
+            0x6B: "GEAR_DISABLED",
         }
         return names.get(code, CoreError.name(code))
 
@@ -238,9 +278,12 @@ class GearErrorReason:
     """Per-gear error reason codes (STATUS diagnostic)."""
     NONE           = 0x00  # No error
     MONITOR_FAULT  = 0x01  # INA226 I2C init failed
-    MOTOR_STALL    = 0x02  # Motor stall detected during operation
-    MOTOR_TIMEOUT  = 0x03  # Motor operation exceeded timeout
-    SEQUENCE_ERROR = 0x04  # Unexpected state during sequencing
+    MOTOR_STALL        = 0x02  # Motor stall detected during operation
+    MOTOR_TIMEOUT      = 0x03  # Motor operation exceeded timeout
+    SEQUENCE_ERROR     = 0x04  # Unexpected state during sequencing
+    MOTOR_DISCONNECTED = 0x05  # Motor current dropped to 0 (disconnected)
+    CALIB_TIMEOUT      = 0x06  # Calibration exceeded overall time limit
+    NO_STALL_DETECTED  = 0x07  # No stall current detected in either direction
 
     @staticmethod
     def name(reason: int) -> str:
@@ -251,6 +294,9 @@ class GearErrorReason:
             0x02: "motor stall",
             0x03: "motor timeout",
             0x04: "sequence error",
+            0x05: "motor disconnected",
+            0x06: "calibration timeout",
+            0x07: "no stall detected",
         }
         return names.get(reason, f"unknown(0x{reason:02X})")
 
@@ -276,6 +322,27 @@ class GearSeqPhase:
             5: "sync wait",
         }
         return names.get(phase, f"unknown({phase})")
+
+
+class DoorState:
+    """Door state values (wire format for STATUS and GEAR_DOOR_STATUS)."""
+    UNKNOWN  = 0  # State not determined
+    CLOSED   = 1  # Doors at close position
+    OPEN     = 2  # Doors at open position
+    OPENING  = 3  # Doors moving to open position
+    CLOSING  = 4  # Doors moving to close position
+
+    @staticmethod
+    def name(state: int) -> str:
+        """Get human-readable door state name."""
+        names = {
+            0: "unknown",
+            1: "closed",
+            2: "open",
+            3: "opening",
+            4: "closing",
+        }
+        return names.get(state, f"unknown({state})")
 
 
 class LandingLightPhase:

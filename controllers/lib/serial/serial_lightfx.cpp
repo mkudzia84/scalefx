@@ -216,6 +216,20 @@ CommandResult LightFxClient::ledMasterBrightness(uint8_t pct) {
 }
 
 // ============================================================================
+// LightFxClient - Channel Management
+// ============================================================================
+
+CommandResult LightFxClient::ledReset(uint8_t channel) {
+    uint8_t payload[1] = { channel };
+    return sendCommand(LightFxPacket::LED_RESET, payload, sizeof(payload));
+}
+
+CommandResult LightFxClient::ledEnable(uint8_t channel, bool enabled) {
+    uint8_t payload[2] = { channel, (uint8_t)(enabled ? 1 : 0) };
+    return sendCommand(LightFxPacket::LED_ENABLE, payload, sizeof(payload));
+}
+
+// ============================================================================
 // LightFxClient - Servo Control
 // ============================================================================
 
@@ -369,6 +383,21 @@ CommandHandleResult LightFxServer::handleModulePacket(uint8_t type, const uint8_
             uint8_t pct = payload[0];
             SFX_VALIDATE(LightFxSpec::isValidMasterBrightness(pct), SerialError::PARAM_OUT_OF_RANGE);
             SFX_DISPATCH(_ledMasterBrightnessCallback, pct);
+        }
+
+        case LightFxPacket::LED_RESET: {
+            SFX_REQUIRE_LEN(1);
+            uint8_t channel = payload[0];
+            SFX_VALIDATE(LightFxSpec::isValidLedChannelOrAll(channel), LightFxError::INVALID_CHANNEL);
+            SFX_DISPATCH(_ledResetCallback, channel);
+        }
+
+        case LightFxPacket::LED_ENABLE: {
+            SFX_REQUIRE_LEN(2);
+            uint8_t channel = payload[0];
+            uint8_t enabled = payload[1];
+            SFX_VALIDATE(LightFxSpec::isValidLedChannelOrAll(channel), LightFxError::INVALID_CHANNEL);
+            SFX_DISPATCH(_ledEnableCallback, channel, enabled);
         }
 
         case LightFxPacket::SERVO_SET: {

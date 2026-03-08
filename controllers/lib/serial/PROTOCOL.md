@@ -4,9 +4,9 @@
 
 Serial communication protocol for ScaleFX controllers (HubFX, GunFX).
 
-**Version:** 0.3.0  
+**Version:** 0.4.0  
 **Binary Framing:** COBS encoding with 0x00 delimiter  
-**CRC:** CRC-8 polynomial 0x07 over type+len+payload  
+**CRC:** CRC-8 polynomial 0x07 over type+tag+len(2)+payload  
 
 ## Protocol
 
@@ -42,8 +42,10 @@ This allows seamless reconnection without requiring slave reboot.
 
 Before COBS encoding:
 ```
-[type:u8][len:u8][payload:len bytes][crc:u8]
+[type:u8][tag:u8][len:u16LE][payload:0-512 bytes][crc:u8]
 ```
+
+Header is 4 bytes (type + tag + len_lo + len_hi). MAX_PAYLOAD_SIZE = 512.
 
 ### Text Protocol
 
@@ -278,7 +280,7 @@ CoreCommandServer coreServer;
 GunFxServer gunfxServer;
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(1000000);
     
     // Configure core handler
     coreServer.begin(&Serial);
@@ -315,6 +317,13 @@ void loop() {
     coreServer.updateFreeRam(rp2040.getFreeHeap());  // Keep RAM reading current
 }
 ```
+
+## Changes in v0.4.0
+
+- **len field widened to u16LE**: Packet header is now 4 bytes `[type:u8][tag:u8][len:u16LE]` (was 3 bytes with `len:u8`)
+- **MAX_PAYLOAD_SIZE increased to 512**: Previously 64. Provides headroom for rich STATUS payloads (GearControl: 53 bytes, GunFX: 40 bytes) and future expansion
+- **CRC scope updated**: CRC-8 is computed over `type + tag + len(2 bytes) + payload`
+- **FUTURE**: If payloads > 512 are needed, packet sequencing/fragmentation should be added rather than increasing the buffer further. This is a known design debt item.
 
 ## Changes in v0.3.0
 

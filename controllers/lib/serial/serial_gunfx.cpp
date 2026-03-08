@@ -126,6 +126,17 @@ CommandResult GunFxClient::setSmokeSettings(const GunFxSmokeConfig& config) {
     return sendCommand(GunFxPacket::SMOKE_SETTINGS, payload, sizeof(payload));
 }
 
+CommandResult GunFxClient::smokeReset() {
+    return sendCommand(GunFxPacket::SMOKE_RESET, nullptr, 0);
+}
+
+CommandResult GunFxClient::smokeCurrentLimit(uint8_t channel, uint16_t limit_mA) {
+    uint8_t payload[3];
+    payload[0] = channel;
+    putU16LE(&payload[1], limit_mA);
+    return sendCommand(GunFxPacket::SMOKE_CURRENT_LIMIT, payload, sizeof(payload));
+}
+
 // ============================================================================
 // GunFxClient - Status
 // ============================================================================
@@ -180,12 +191,11 @@ CommandHandleResult GunFxServer::handleModulePacket(uint8_t type, const uint8_t*
 
         case GunFxPacket::SRV_RECOIL_JERK: {
             SFX_REQUIRE_LEN(5);
-            GunFxServoConfig config;
-            config.servoId = payload[0];
-            config.recoilJerkUs = getU16LE(&payload[1]);
-            config.recoilJerkVarianceUs = getU16LE(&payload[3]);
-            SFX_VALIDATE(GunFxSpec::isValidServoId(config.servoId), GunFxError::SERVO_INVALID_ID);
-            SFX_DISPATCH(_servoSettingsCallback, config);
+            uint8_t servoId = payload[0];
+            uint16_t jerkUs = getU16LE(&payload[1]);
+            uint16_t varianceUs = getU16LE(&payload[3]);
+            SFX_VALIDATE(GunFxSpec::isValidServoId(servoId), GunFxError::SERVO_INVALID_ID);
+            SFX_DISPATCH(_recoilJerkCallback, servoId, jerkUs, varianceUs);
         }
 
         case GunFxPacket::SMOKE_HEAT: {
@@ -204,6 +214,18 @@ CommandHandleResult GunFxServer::handleModulePacket(uint8_t type, const uint8_t*
             config.fanPulseMs = getU16LE(&payload[4]);
             config.fanSpindownMs = getU16LE(&payload[6]);
             SFX_DISPATCH(_smokeSettingsCallback, config);
+        }
+
+        case GunFxPacket::SMOKE_RESET: {
+            SFX_DISPATCH(_smokeResetCallback);
+        }
+
+        case GunFxPacket::SMOKE_CURRENT_LIMIT: {
+            SFX_REQUIRE_LEN(3);
+            uint8_t channel = payload[0];
+            uint16_t limit_mA = getU16LE(&payload[1]);
+            SFX_VALIDATE(channel <= 1, SerialError::INVALID_PARAM);
+            SFX_DISPATCH(_smokeCurrentLimitCallback, channel, limit_mA);
         }
 
         default:

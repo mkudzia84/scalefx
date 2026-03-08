@@ -24,11 +24,15 @@
  *   DOOR_CONFIG  (0x67)  - [gear_id:u8][open0:u16][close0:u16][open1:u16][close1:u16]
  *   YAW_CONFIG   (0x68)  - [gear_id:u8][neutral:u16][min:u16][max:u16]
  *   YAW_INPUT    (0x69)  - [position_us:u16] Raw yaw steering signal
- *   GEAR_CALIBRATE (0x6A) - [gear_id:u8] Start stall current calibration
- *   GEAR_CALIB_STATUS (0x6B) - [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16][finished:u8] Calibration progress (server→client)
+ *   GEAR_CALIBRATE (0x6A) - [gear_id:u8][timeout_s:u8(opt)] Start stall current calibration (default 60s timeout)
+ *   GEAR_CALIB_STATUS (0x6B) - [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16][finished:u8][errorReason:u8] Calibration progress (server→client)
  *   GEAR_CALIB_CANCEL (0x6C) - [gear_id:u8] Cancel calibration in progress
  *   BATTERY_CONFIG  (0x6D)  - [enabled:u8][auto_deploy:u8] Configure battery monitoring (enable/disable + auto-deploy)
- *   DOOR_MODE      (0x6E)  - [gear_id:u8][mode:u8][delay_ms:u16LE] Configure door activation mode
+ *   DOOR_MODE      (0x6E)  - [gear_id:u8][pre_deploy:u8][post_deploy:u8][delay_ms:u16LE] Configure door modes
+ *   GEAR_RESET     (0x6F)  - [gear_id:u8] Clear error state (ERROR → UNKNOWN)
+ *   GEAR_SEQ_STATUS(0x70)  - Server→client sequence progress (async)
+ *   GEAR_ENABLE    (0x71)  - [gear_id:u8][enabled:u8] Enable/disable gear channel
+ *   GEAR_DOOR_STATUS(0x72) - Server→client door state transition (async)
  *   (I2C_SCAN moved to CorePacket — handled by PicoServer)
  */
 
@@ -64,18 +68,27 @@ namespace GearControlPacket {
     constexpr uint8_t YAW_INPUT      = 0x69;  // [position_us:u16LE]
 
     // Calibration
-    constexpr uint8_t GEAR_CALIBRATE      = 0x6A;  // [gear_id:u8] Start stall current calibration
-    constexpr uint8_t GEAR_CALIB_STATUS   = 0x6B;  // [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16][finished:u8] Calibration progress (server→client)
+    constexpr uint8_t GEAR_CALIBRATE      = 0x6A;  // [gear_id:u8][timeout_s:u8(opt)] Start stall current calibration
+    constexpr uint8_t GEAR_CALIB_STATUS   = 0x6B;  // [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16][finished:u8][errorReason:u8] Calibration progress (server→client)
     constexpr uint8_t GEAR_CALIB_CANCEL   = 0x6C;  // [gear_id:u8] Cancel calibration in progress
 
     // Battery configuration
     constexpr uint8_t BATTERY_CONFIG      = 0x6D;  // [enabled:u8][auto_deploy:u8] Enable monitoring + auto-deploy
 
     // Door mode configuration
-    constexpr uint8_t DOOR_MODE           = 0x6E;  // [gear_id:u8][mode:u8][delay_ms:u16LE]
+    constexpr uint8_t DOOR_MODE           = 0x6E;  // [gear_id:u8][pre_deploy:u8][post_deploy:u8][delay_ms:u16LE]
+
+    // Error reset
+    constexpr uint8_t GEAR_RESET          = 0x6F;  // [gear_id:u8] Clear error state (ERROR → UNKNOWN)
 
     // Sequence progress (server → client, long-running)
     constexpr uint8_t GEAR_SEQ_STATUS     = 0x70;  // [gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]
+
+    // Channel enable/disable
+    constexpr uint8_t GEAR_ENABLE         = 0x71;  // [gear_id:u8][enabled:u8] Enable/disable gear channel
+
+    // Door status (server → client, async)
+    constexpr uint8_t GEAR_DOOR_STATUS    = 0x72;  // [gear_id:u8][state:u8][door0_pos_us:u16LE][door1_pos_us:u16LE]
 
     // Diagnostics — I2C scan is handled by PicoServer (CorePacket::I2C_SCAN)
 }
@@ -99,6 +112,7 @@ namespace GearControlError {
     constexpr uint8_t INVALID_ACTION      = 0x68;  // Invalid gear-all action
     constexpr uint8_t NO_CURRENT_MONITOR  = 0x69;  // No INA226 attached for calibration
     constexpr uint8_t NOT_CALIBRATING      = 0x6A;  // Gear is not currently calibrating
+    constexpr uint8_t GEAR_DISABLED         = 0x6B;  // Gear channel is disabled
 
     /**
      * @brief Get human-readable error message for GearControl errors
@@ -116,6 +130,7 @@ namespace GearControlError {
             case INVALID_ACTION:      return "Invalid action (use 0=retract, 1=deploy, 2=stop)";
             case NO_CURRENT_MONITOR:  return "No current monitor attached (INA226 required)";
             case NOT_CALIBRATING:     return "Gear is not currently calibrating";
+            case GEAR_DISABLED:      return "Gear channel is disabled";
             default:
                 return SerialError::getMessage(code);
         }
@@ -131,16 +146,22 @@ namespace GearErrorReason {
     constexpr uint8_t MONITOR_FAULT  = 0x01;  // INA226 I2C init failed
     constexpr uint8_t MOTOR_STALL    = 0x02;  // Motor stall detected during operation
     constexpr uint8_t MOTOR_TIMEOUT  = 0x03;  // Motor operation exceeded timeout
-    constexpr uint8_t SEQUENCE_ERROR = 0x04;  // Unexpected state during sequencing
+    constexpr uint8_t SEQUENCE_ERROR     = 0x04;  // Unexpected state during sequencing
+    constexpr uint8_t MOTOR_DISCONNECTED  = 0x05;  // Motor current dropped to 0 (disconnected)
+    constexpr uint8_t CALIB_TIMEOUT        = 0x06;  // Calibration exceeded overall time limit
+    constexpr uint8_t NO_STALL_DETECTED     = 0x07;  // No stall current detected in either direction
 
     inline const char* getName(uint8_t reason) {
         switch (reason) {
-            case NONE:           return "none";
-            case MONITOR_FAULT:  return "INA226 init failed";
-            case MOTOR_STALL:    return "motor stall";
-            case MOTOR_TIMEOUT:  return "motor timeout";
-            case SEQUENCE_ERROR: return "sequence error";
-            default:             return "unknown";
+            case NONE:               return "none";
+            case MONITOR_FAULT:      return "INA226 init failed";
+            case MOTOR_STALL:        return "motor stall";
+            case MOTOR_TIMEOUT:      return "motor timeout";
+            case SEQUENCE_ERROR:     return "sequence error";
+            case MOTOR_DISCONNECTED: return "motor disconnected";
+            case CALIB_TIMEOUT:      return "calibration timeout";
+            case NO_STALL_DETECTED:  return "no stall detected";
+            default:                 return "unknown";
         }
     }
 }
@@ -251,6 +272,17 @@ namespace GearSeqPhase {
 }
 
 /**
+ * @brief Door state (wire format for STATUS and GEAR_DOOR_STATUS)
+ */
+namespace DoorState {
+    constexpr uint8_t UNKNOWN  = 0;  // State not determined (e.g. after reset)
+    constexpr uint8_t CLOSED   = 1;  // Doors at close position
+    constexpr uint8_t OPEN     = 2;  // Doors at open position
+    constexpr uint8_t OPENING  = 3;  // Doors moving to open position
+    constexpr uint8_t CLOSING  = 4;  // Doors moving to close position
+}
+
+/**
  * @brief Gear sequence status data (sent in GEAR_SEQ_STATUS packets)
  *
  * Wire format (8 bytes):
@@ -265,10 +297,24 @@ struct GearControlSeqStatus {
 };
 
 /**
+ * @brief Door status data (sent in GEAR_DOOR_STATUS packets)
+ *
+ * Wire format (6 bytes):
+ *   [gear_id:u8][state:u8][door0_pos_us:u16LE][door1_pos_us:u16LE]
+ */
+struct GearControlDoorStatus {
+    uint8_t gearId = 0;
+    uint8_t state = 0;           // DoorState value
+    uint16_t door0Pos_us = 0;    // Door 0 current position  // µs
+    uint16_t door1Pos_us = 0;    // Door 1 current position  // µs
+};
+
+/**
  * @brief Calibration status data (sent in GEAR_CALIB_STATUS packets)
  *
- * Wire format (9 bytes):
- *   [gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE][finished:u8]
+ * Wire format (10 bytes):
+ *   [gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE][finished:u8][errorReason:u8]
+ *   errorReason: GearErrorReason code (only meaningful when phase=ERROR)
  */
 struct GearControlCalibStatus {
     uint8_t gearId = 0;
@@ -277,23 +323,28 @@ struct GearControlCalibStatus {
     uint16_t peak_mA = 0;              // Peak current in current phase      // mA
     uint16_t calibratedStall_mA = 0;   // Final calibrated value (COMPLETE)  // mA
     bool finished = false;              // True when calibration is done (COMPLETE/ERROR/CANCELLED)
+    uint8_t errorReason = 0;           // GearErrorReason code (only valid when phase=ERROR)
 };
 
 /**
  * @brief Gear configuration flags
  */
 namespace GearConfigFlags {
-    constexpr uint8_t CLOSE_DOORS_ON_RETRACT = 0x01;  // Close doors after retract
-    constexpr uint8_t CLOSE_DOORS_ON_DEPLOY  = 0x02;  // Close doors after deploy
-    constexpr uint8_t HAS_YAW                = 0x04;  // This gear has yaw servo
+    constexpr uint8_t HAS_YAW = 0x01;  // This gear has yaw servo
+    // Runtime flag (set in STATUS, not persisted in config)
+    constexpr uint8_t ENABLED = 0x80;  // Bit 7: gear channel is enabled
 }
 
 /**
  * @brief Door activation modes for landing gear sequencing
  *
- * Controls how door servos are activated during deploy/retract sequences.
- * For DUAL_DELAY and DUAL_SEQ modes, doors open in order 0→1 and close
- * in reverse order 1→0 (mimics real aircraft door behavior).
+ * Two modes per gear control the full deploy/retract cycle:
+ *   doorPreDeploy  - Doors opened before deploy motor, closed after retract motor.
+ *   doorPostDeploy - Doors closed after deploy motor, opened before retract motor.
+ *                    (Retract is the reverse of the deploy operation.)
+ *
+ * When doorPostDeploy == NONE: doors stay open after deploy, retract skips pre-retract open.
+ * For DUAL_DELAY and DUAL_SEQ: doors open 0→1, close 1→0 (mimics real aircraft).
  */
 namespace DoorMode {
     constexpr uint8_t NONE       = 0;  // No door servos (motor only)
@@ -308,7 +359,7 @@ namespace DoorMode {
  */
 struct GearControlGearConfig {
     uint8_t gearId = 0;
-    uint8_t flags = GearConfigFlags::CLOSE_DOORS_ON_RETRACT;
+    uint8_t flags = 0;
     uint16_t stallCurrent_mA = 500;    // Current threshold for stall detection
     uint16_t timeout_ms = 60000;       // Maximum motor run time
 };
@@ -327,12 +378,18 @@ struct GearControlDoorConfig {
 /**
  * @brief Door mode configuration for one gear
  *
- * Wire format (4 bytes): [gear_id:u8][mode:u8][delay_ms:u16LE]
+ * Two modes control the full deploy/retract cycle:
+ *   doorPreDeploy  - Doors opened before deploy motor, closed after retract motor.
+ *   doorPostDeploy - Doors closed after deploy motor, opened before retract motor.
+ *                    NONE = skip post-deploy close and pre-retract open.
+ *
+ * Wire format (5 bytes): [gear_id:u8][pre_deploy:u8][post_deploy:u8][delay_ms:u16LE]
  */
 struct GearControlDoorModeConfig {
     uint8_t gearId = 0;
-    uint8_t mode = DoorMode::DUAL_SYNC;   // Default: two doors simultaneous
-    uint16_t delay_ms = 500;              // Delay between doors (DUAL_DELAY only)
+    uint8_t preDeployMode = DoorMode::DUAL_SYNC;   // Pre-deploy: open before deploy, close after retract
+    uint8_t postDeployMode = DoorMode::NONE;       // Post-deploy: close after deploy, open before retract (NONE=skip)
+    uint16_t delay_ms = 500;                       // Delay between doors (DUAL_DELAY only)
 };
 
 /**
@@ -405,12 +462,15 @@ using GearControlGearConfigCallback = std::function<uint8_t(const GearControlGea
 using GearControlDoorConfigCallback = std::function<uint8_t(const GearControlDoorConfig& config)>;
 using GearControlYawConfigCallback = std::function<uint8_t(const GearControlYawConfig& config)>;
 using GearControlYawInputCallback = std::function<uint8_t(uint16_t position_us)>;
-using GearControlGearCalibrateCallback = std::function<uint8_t(uint8_t gearId)>;
+using GearControlGearCalibrateCallback = std::function<uint8_t(uint8_t gearId, uint8_t timeout_s)>;
 using GearControlCalibCancelCallback = std::function<uint8_t(uint8_t gearId)>;
 using GearControlCalibStatusCallback = std::function<void(const GearControlCalibStatus& status)>;
 using GearControlBatteryConfigCallback = std::function<uint8_t(bool enabled, bool autoDeployOnLowVoltage)>;
 using GearControlDoorModeCallback = std::function<uint8_t(const GearControlDoorModeConfig& config)>;
+using GearControlGearResetCallback = std::function<uint8_t(uint8_t gearId)>;
+using GearControlGearEnableCallback = std::function<uint8_t(uint8_t gearId, bool enabled)>;
 using GearControlSeqStatusCallback = std::function<void(const GearControlSeqStatus& status)>;
+using GearControlDoorStatusCallback = std::function<void(const GearControlDoorStatus& status)>;
 
 // ============================================================================
 // GearControlClient Class (Binary Protocol)
@@ -438,8 +498,10 @@ public:
     CommandResult gearRetract(uint8_t gearId);
     CommandResult gearStop(uint8_t gearId);
     CommandResult gearAll(uint8_t action);
-    CommandResult gearCalibrate(uint8_t gearId);
+    CommandResult gearCalibrate(uint8_t gearId, uint8_t timeout_s = 0);
     CommandResult gearCalibCancel(uint8_t gearId);
+    CommandResult gearReset(uint8_t gearId);
+    CommandResult gearEnable(uint8_t gearId, bool enabled);
 
     // ========================================================================
     // Servo Control
@@ -473,6 +535,7 @@ public:
     void onStatus(GearControlStatusCallback cb) { _statusCallback = cb; }
     void onCalibStatus(GearControlCalibStatusCallback cb) { _calibStatusCallback = cb; }
     void onGearSeqStatus(GearControlSeqStatusCallback cb) { _gearSeqStatusCallback = cb; }
+    void onDoorStatus(GearControlDoorStatusCallback cb) { _doorStatusCallback = cb; }
     void onI2CScanResult(std::function<void(const I2CScanResult&)> cb) { _i2cScanResultCallback = cb; }
 
     // ========================================================================
@@ -491,6 +554,7 @@ private:
     GearControlStatusCallback _statusCallback;
     GearControlCalibStatusCallback _calibStatusCallback;
     GearControlSeqStatusCallback _gearSeqStatusCallback;
+    GearControlDoorStatusCallback _doorStatusCallback;
     std::function<void(const I2CScanResult&)> _i2cScanResultCallback;
 };
 
@@ -524,6 +588,7 @@ public:
 
     int sendCalibStatus(const GearControlCalibStatus& status);
     int sendGearSeqStatus(const GearControlSeqStatus& status);
+    int sendDoorStatus(const GearControlDoorStatus& status);
 
     // ========================================================================
     // Callbacks
@@ -543,6 +608,8 @@ public:
     void onGearCalibCancel(GearControlCalibCancelCallback cb) { _gearCalibCancelCallback = cb; }
     void onBatteryConfig(GearControlBatteryConfigCallback cb) { _batteryConfigCallback = cb; }
     void onDoorMode(GearControlDoorModeCallback cb) { _doorModeCallback = cb; }
+    void onGearReset(GearControlGearResetCallback cb) { _gearResetCallback = cb; }
+    void onGearEnable(GearControlGearEnableCallback cb) { _gearEnableCallback = cb; }
 
 protected:
     CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
@@ -568,6 +635,8 @@ private:
     GearControlCalibCancelCallback _gearCalibCancelCallback;
     GearControlBatteryConfigCallback _batteryConfigCallback;
     GearControlDoorModeCallback _doorModeCallback;
+    GearControlGearResetCallback _gearResetCallback;
+    GearControlGearEnableCallback _gearEnableCallback;
 };
 
 #endif // SERIAL_GEARCONTROL_H

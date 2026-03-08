@@ -35,7 +35,7 @@ engine_fx:
 gun_fx:
   # Serial Bus to Pico Controller
   # Auto-detects gunfx_pico device (VID=0x2e8a, PID=0x0180) over USB
-  # Default: baud_rate=115200, timeout_ms=100
+  # Default: baud_rate=1000000, timeout_ms=100
   
   # Trigger PWM Input
   trigger:

@@ -2,7 +2,7 @@
 
 This document lists all text protocol commands for manual testing via serial terminal.
 
-**Protocol:** Line-based text commands at 115200 baud  
+**Protocol:** Line-based text commands at 1Mbps baud  
 **Format:** `COMMAND_NAME key=value key2=value2\n`  
 **Note:** Parameters are space-separated key=value pairs. Order doesn't matter.
 

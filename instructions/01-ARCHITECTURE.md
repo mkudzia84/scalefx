@@ -36,7 +36,7 @@
 
 ```yaml
 Binary_Packet:
-  structure: "[type:u8][tag:u8][len:u8][payload:0-64][crc8:u8]"
+  structure: "[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]"
   fields:
     - name: "type"
       size: 1
@@ -45,14 +45,14 @@ Binary_Packet:
       size: 1
       description: "Correlation tag (1-255 for request/response, 0 for async)"
     - name: "len"
-      size: 1
-      description: "Payload length (0-64)"
+      size: 2
+      description: "Payload length, u16 little-endian (0-512, protocol max 65535)"
     - name: "payload"
-      size: "0-64"
-      description: "Command-specific data"
+      size: "0-512"
+      description: "Command-specific data (MAX_PAYLOAD_SIZE = 512)"
     - name: "crc8"
       size: 1
-      description: "CRC-8 over type+tag+len+payload"
+      description: "CRC-8 over type+tag+len(2)+payload"
 
 CRC8:
   polynomial: 0x07
@@ -136,8 +136,8 @@ GearControl_Packets:  # 0x60-0x7F
   DOOR_CONFIG:       { type: 0x67, payload: "[gear_id:u8][open0:u16LE][close0:u16LE][open1:u16LE][close1:u16LE]" }
   YAW_CONFIG:        { type: 0x68, payload: "[gear_id:u8][neutral:u16LE][min:u16LE][max:u16LE]" }
   YAW_INPUT:         { type: 0x69, payload: "[position_us:u16LE]" }
-  GEAR_CALIBRATE:    { type: 0x6A, payload: "[gear_id:u8]" }
-  GEAR_CALIB_STATUS: { type: 0x6B, payload: "[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8]" }
+  GEAR_CALIBRATE:    { type: 0x6A, payload: "[gear_id:u8][timeout_s:u8]" }
+  GEAR_CALIB_STATUS: { type: 0x6B, payload: "[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8][errorReason:u8]" }
   GEAR_CALIB_CANCEL: { type: 0x6C, payload: "[gear_id:u8]" }
   BATTERY_CONFIG:    { type: 0x6D, payload: "[enabled:u8][auto_deploy:u8]" }
   DOOR_MODE:         { type: 0x6E, payload: "[gear_id:u8][mode:u8][delay_ms:u16LE]" }

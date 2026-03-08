@@ -182,7 +182,7 @@ def parse_status_payload(payload: bytes, controller_type: str = None) -> None:
 
 
 def _parse_gearcontrol_status(data: bytes) -> None:
-    """Parse GearControl module status data (50 bytes).
+    """Parse GearControl module status data (53 bytes).
     
     Wire format:
       Per gear × 3 (11 bytes each = 33 bytes):
@@ -196,14 +196,15 @@ def _parse_gearcontrol_status(data: bytes) -> None:
       [gear1_error_reason:u8]
       [gear2_error_reason:u8]
       [shuntResistance_mohm:u16]  # Configured shunt resistance in milliohms
-      [gear0_door_mode:u8]        # DoorMode enum per gear
-      [gear1_door_mode:u8]
-      [gear2_door_mode:u8]
+      [gear0_door_modes:u8]       # Packed: low nibble = doorPreDeploy, high nibble = doorPostDeploy
+      [gear1_door_modes:u8]
+      [gear2_door_modes:u8]
       [gear0_config_flags:u8]     # GearConfigFlags bitmask per gear
       [gear1_config_flags:u8]
       [gear2_config_flags:u8]
     """
     from tests.framework.packets import DoorMode as DoorModeClass
+    from tests.framework.packets import DoorState as DoorStateClass
     if len(data) < 39:
         print(f"  GearControl: (incomplete: {data.hex()})")
         return
@@ -230,15 +231,30 @@ def _parse_gearcontrol_status(data: bytes) -> None:
     # Shunt resistance (bytes 42-43) — configured value in milliohms
     shunt_mohm = read_u16_le(data, 42) if len(data) >= 44 else 0
 
-    # Door mode per gear (bytes 44-46)
+    # Packed door modes per gear (bytes 44-46)
     door_modes = [0, 0, 0]
+    post_deploy_modes = [0, 0, 0]
     if len(data) >= 47:
-        door_modes = [data[44], data[45], data[46]]
+        for i in range(3):
+            packed = data[44 + i]
+            door_modes[i] = packed & 0x0F
+            post_deploy_modes[i] = (packed >> 4) & 0x0F
 
     # Config flags per gear (bytes 47-49)
     config_flags = [0, 0, 0]
     if len(data) >= 50:
         config_flags = [data[47], data[48], data[49]]
+
+    # Door state per gear (bytes 50-52) — DoorState values
+    door_states = [0, 0, 0]  # Default UNKNOWN
+    if len(data) >= 53:
+        door_states = [data[50], data[51], data[52]]
+
+    # LED flags and battery (global)
+    yaw = read_u16_le(data, 33)
+    led_flags = data[35]
+    battery_mV = read_u16_le(data, 36)
+    battery_flags = data[38]
     
     for i in range(3):
         offset = i * 11
@@ -252,39 +268,55 @@ def _parse_gearcontrol_status(data: bytes) -> None:
         
         sname = state_names.get(state, f'?({state})')
         scolor = state_colors.get(state, '')
-        
-        stall_str = f"stall={stall_mA}mA" if stall_mA > 0 else "stall=uncal"
-        
-        # Show error reason when in ERROR state
-        reason_str = ""
-        if state == 5 and error_reasons[i] != 0:  # GearState::ERROR
-            reason_str = f"  {Fore.RED}({GearErrorReason.name(error_reasons[i])}){Style.RESET_ALL}"
 
-        # Door mode display
+        # Config flags
+        cflags = config_flags[i]
+        enabled = bool(cflags & 0x80)
+        has_yaw = bool(cflags & 0x01)
+
+        # Build status tags
+        tags = []
+        if not enabled:
+            tags.append(f"{Fore.YELLOW}DISABLED{Style.RESET_ALL}")
+        if state == 5 and error_reasons[i] != 0:  # GearState::ERROR
+            tags.append(f"{Fore.RED}{GearErrorReason.name(error_reasons[i])}{Style.RESET_ALL}")
+        tag_str = f"  [{', '.join(tags)}]" if tags else ""
+
+        # Stall calibration
+        stall_str = f"stall={stall_mA}mA" if stall_mA > 0 else f"{Fore.YELLOW}uncalibrated{Style.RESET_ALL}"
+
+        # Door modes
         dmode = door_modes[i]
         dmode_name = DoorModeClass.name(dmode).lower()
+        pdmode = post_deploy_modes[i]
+        pdmode_name = DoorModeClass.name(pdmode).lower() if pdmode != 0 else "skip"
 
-        # Config flags display
-        cflags = config_flags[i]
-        cflag_parts = []
-        if cflags & 0x01: cflag_parts.append("close-retract")
-        if cflags & 0x02: cflag_parts.append("close-deploy")
-        if cflags & 0x04: cflag_parts.append("yaw")
-        cflag_str = ', '.join(cflag_parts) if cflag_parts else "none"
+        # Line 1: state + motor + stall
+        print(f"  {gear_names[i]:>10}: {scolor}{sname}{Style.RESET_ALL}{tag_str}")
 
-        # Door position annotation
-        door_str = f"doors=[{door0}µs, {door1}µs]" if dmode != 0 else "doors=n/a"
-        
-        print(f"  {gear_names[i]:>10}: {scolor}{sname}{Style.RESET_ALL}{reason_str}  "
-              f"motor={current_mA}mA  shunt={shunt_mV:.1f}mV  "
-              f"{door_str}  {stall_str}")
-        print(f"             door-mode={dmode_name}  flags=[{cflag_str}]")
-    
-    yaw = read_u16_le(data, 33)
-    led_flags = data[35]
-    battery_mV = read_u16_le(data, 36)
-    battery_flags = data[38]
-    
+        # Line 2: current readings + calibration
+        print(f"             motor={current_mA}mA  shunt={shunt_mV:.1f}mV  {stall_str}")
+
+        # Line 3: doors + config
+        dstate = door_states[i]
+        dstate_name = DoorStateClass.name(dstate)
+        dstate_colors = {
+            0: Fore.YELLOW,  # unknown
+            1: Fore.CYAN,    # closed
+            2: Fore.GREEN,   # open
+            3: Fore.YELLOW,  # opening
+            4: Fore.YELLOW,  # closing
+        }
+        dstate_color = dstate_colors.get(dstate, '')
+        if dmode != 0:
+            print(f"             doors=[{door0}µs, {door1}µs]  {dstate_color}{dstate_name}{Style.RESET_ALL}"
+                  f"  pre={dmode_name}  post={pdmode_name}"
+                  f"{'  yaw' if has_yaw else ''}")
+        else:
+            print(f"             doors=none{'  yaw' if has_yaw else ''}")
+
+    # ── Global ──
+    print(f"  ── Global ─────────────────────")
     print(f"  Yaw:       {yaw}µs")
     
     # Shunt resistance config
@@ -309,32 +341,47 @@ def _parse_gearcontrol_status(data: bytes) -> None:
             battery_parts.append(f"{Fore.RED}LOW VOLTAGE{Style.RESET_ALL}")
         print(f"  Battery:   {', '.join(battery_parts)}")
     
-    # Status LED flags display
+    # Status LEDs: per-gear deploy/retract indicators
+    led_labels_full = [
+        ('Nose Deploy', 'Nose Retract'),
+        ('Left Deploy', 'Left Retract'),
+        ('Right Deploy', 'Right Retract'),
+    ]
     led_parts = []
-    led_labels = ['ND', 'NR', 'LD', 'LR', 'RD', 'RR']
-    for i in range(6):
-        if led_flags & (1 << i):
-            led_parts.append(f"{Fore.GREEN}{led_labels[i]}{Style.RESET_ALL}")
+    for gi in range(3):
+        dep_bit = gi * 2
+        ret_bit = gi * 2 + 1
+        dep_on = bool(led_flags & (1 << dep_bit))
+        ret_on = bool(led_flags & (1 << ret_bit))
+        abbr = gear_names[gi][0]  # N, L, R
+        if dep_on and ret_on:
+            led_parts.append(f"{Fore.YELLOW}{abbr}:both{Style.RESET_ALL}")
+        elif dep_on:
+            led_parts.append(f"{Fore.GREEN}{abbr}:dep{Style.RESET_ALL}")
+        elif ret_on:
+            led_parts.append(f"{Fore.CYAN}{abbr}:ret{Style.RESET_ALL}")
         else:
-            led_parts.append(f"{led_labels[i]}")
-    print(f"  Status:    [{', '.join(led_parts)}]")
+            led_parts.append(f"{abbr}:off")
     
     # Indicator LEDs (bits 6-7)
     conn_led = bool(led_flags & (1 << 6))
     err_led = bool(led_flags & (1 << 7))
-    ind_parts = []
-    ind_parts.append(f"{Fore.GREEN}CONN{Style.RESET_ALL}" if conn_led else "CONN")
-    ind_parts.append(f"{Fore.RED}ERR{Style.RESET_ALL}" if err_led else "ERR")
-    print(f"  Indicators:[{', '.join(ind_parts)}]")
+    led_parts.append(f"{Fore.GREEN}CONN{Style.RESET_ALL}" if conn_led else "conn")
+    led_parts.append(f"{Fore.RED}ERR{Style.RESET_ALL}" if err_led else "err")
+    print(f"  LEDs:      [{', '.join(led_parts)}]")
 
 
 def _parse_gunfx_status(data: bytes) -> None:
-    """Parse GunFX module status data (20 bytes).
+    """Parse GunFX module status data (40 bytes).
     
     Wire format:
       [flags:u8][fanSpeed:u8][fanOffMs:u16]
       [servo0:u16][servo1:u16][servo2:u16]
       [rpm:u16][shots:u32][heaterMs:u32]
+      Heater INA226: [busV_mV:u16][current_mA:u16][power_mW:u16]
+      Fan INA226:    [busV_mV:u16][current_mA:u16][power_mW:u16]
+      [batteryV_mV:u16][inaFlags:u8][shuntR_mohm:u16]
+      [ledFlags:u8][cellCount:u8][batteryPct:u8]
     """
     if len(data) < 20:
         print(f"  GunFX:     (incomplete: {data.hex()})")
@@ -369,26 +416,140 @@ def _parse_gunfx_status(data: bytes) -> None:
     
     print(f"  ── GunFX ──────────────────────")
     print(f"  State:     {state_str}")
+
+    # ── Muzzle Flash ──
+    if firing:
+        print(f"  Fire rate: {rpm} RPM")
+    print(f"  Shots:     {shots}")
+
+    # ── Fan ──
     if fan_on or fan_spindown:
         fan_info = f"speed={fan_speed}"
         if fan_spindown and fan_off_ms > 0:
             fan_info += f", off in {fan_off_ms}ms"
         print(f"  Fan:       {fan_info}")
-    print(f"  Servos:    [{servo0}µs, {servo1}µs, {servo2}µs]")
-    if firing:
-        print(f"  Fire rate: {rpm} RPM")
-    print(f"  Shots:     {shots}")
+
+    # ── Heater ──
     if heater_ms > 0:
         heater_sec = heater_ms / 1000
         print(f"  Heater:    {heater_sec:.1f}s total")
 
+    # ── Servos ──
+    print(f"  Servos:    [{servo0}µs, {servo1}µs, {servo2}µs]")
+
+    # ── Extended data (INA226 + battery) ──
+    if len(data) >= 40:
+        # Heater INA226 (bytes 20-25, Motor 0)
+        htr_bus_mV   = read_u16_le(data, 20)
+        htr_cur_mA   = read_u16_le(data, 22)
+        htr_pwr_mW   = read_u16_le(data, 24)
+
+        # Fan INA226 (bytes 26-31, Motor 1)
+        fan_bus_mV   = read_u16_le(data, 26)
+        fan_cur_mA   = read_u16_le(data, 28)
+        fan_pwr_mW   = read_u16_le(data, 30)
+
+        # Battery (bytes 32-33)
+        battery_mV   = read_u16_le(data, 32)
+
+        # INA flags (byte 34)
+        ina_flags    = data[34]
+        htr_ina_ok   = bool(ina_flags & 0x01)
+        fan_ina_ok   = bool(ina_flags & 0x02)
+
+        # Shunt resistance (bytes 35-36)
+        shunt_mohm   = read_u16_le(data, 35)
+
+        # LED flags (byte 37)
+        led_flags    = data[37]
+
+        # Battery cell info (bytes 38-39)
+        cell_count   = data[38]
+        battery_pct  = data[39]
+
+        # ── Power Monitoring ──
+        print(f"  ── Power Monitoring ───────────")
+
+        # Heater INA226 (Motor 0)
+        if htr_ina_ok:
+            htr_bus_V = htr_bus_mV / 1000.0
+            htr_pwr_W = htr_pwr_mW / 1000.0
+            print(f"  Heater:    {htr_bus_V:.2f}V  {htr_cur_mA}mA  {htr_pwr_W:.2f}W")
+        else:
+            print(f"  Heater:    {Fore.YELLOW}INA226 not detected{Style.RESET_ALL}")
+
+        # Fan INA226 (Motor 1)
+        if fan_ina_ok:
+            fan_bus_V = fan_bus_mV / 1000.0
+            fan_pwr_W = fan_pwr_mW / 1000.0
+            print(f"  Fan:       {fan_bus_V:.2f}V  {fan_cur_mA}mA  {fan_pwr_W:.2f}W")
+        else:
+            print(f"  Fan:       {Fore.YELLOW}INA226 not detected{Style.RESET_ALL}")
+
+        # Shunt resistance
+        if shunt_mohm > 0:
+            shunt_ohm = shunt_mohm / 1000.0
+            max_current = 81.92 / shunt_ohm  # INA226 max shunt voltage = ±81.92mV
+            print(f"  Shunt:     {shunt_mohm}mΩ  max={max_current:.0f}mA")
+
+        # Battery
+        battery_V = battery_mV / 1000.0
+        if battery_mV > 0:
+            batt_parts = [f"{battery_V:.2f}V ({battery_mV}mV)"]
+            if cell_count > 0:
+                batt_parts.append(f"{cell_count}S")
+            if battery_pct > 0:
+                pct_color = Fore.GREEN if battery_pct > 30 else (Fore.YELLOW if battery_pct > 10 else Fore.RED)
+                batt_parts.append(f"{pct_color}{battery_pct}%{Style.RESET_ALL}")
+            print(f"  Battery:   {', '.join(batt_parts)}")
+        else:
+            print(f"  Battery:   {Fore.YELLOW}not detected{Style.RESET_ALL}")
+
+        # Status LEDs
+        led_labels = ['HEATER', 'FAN', 'SPINDN', 'FIRING', 'FLASH']
+        led_parts = []
+        for bit, label in enumerate(led_labels):
+            if led_flags & (1 << bit):
+                led_parts.append(f"{Fore.GREEN}{label}{Style.RESET_ALL}")
+            else:
+                led_parts.append(label.lower())
+        print(f"  LEDs:      [{', '.join(led_parts)}]")
+
+    # ── Smoke Error Reasons (bytes 40-41) ──
+    if len(data) >= 42:
+        from tests.framework.packets import SmokeErrorReason
+        htr_err = data[40]
+        fan_err = data[41]
+        if htr_err != SmokeErrorReason.NONE or fan_err != SmokeErrorReason.NONE:
+            print(f"  ── Smoke Errors ──────────────")
+            if htr_err != SmokeErrorReason.NONE:
+                print(f"  Heater:    {Fore.RED}{SmokeErrorReason.name(htr_err)}{Style.RESET_ALL}")
+            if fan_err != SmokeErrorReason.NONE:
+                print(f"  Fan:       {Fore.RED}{SmokeErrorReason.name(fan_err)}{Style.RESET_ALL}")
+
+    # ── Overcurrent Throttle State (bytes 42-43) ──
+    if len(data) >= 44:
+        htr_duty = data[42]
+        fan_duty = data[43]
+        if htr_duty < 255 or fan_duty < 255:
+            print(f"  ── Overcurrent Throttle ──────")
+            if htr_duty < 255:
+                pct = round(htr_duty / 255 * 100)
+                print(f"  Heater:    {Fore.YELLOW}throttled to {pct}% (duty {htr_duty}/255){Style.RESET_ALL}")
+            if fan_duty < 255:
+                pct = round(fan_duty / 255 * 100)
+                print(f"  Fan:       {Fore.YELLOW}throttled to {pct}% (duty {fan_duty}/255){Style.RESET_ALL}")
+
 
 def _parse_lightfx_status(data: bytes) -> None:
-    """Parse LightFX module status data (15 bytes).
+    """Parse LightFX module status data (20 bytes).
     
     Wire format:
       [ledBrightness:u8×8][ledSeqFlags:u8]
       [servo0:u16][servo1:u16][servo2:u16]
+      [landingLightStates:u8×3]
+      [masterBrightness_pct:u8]
+      [ledEnabledFlags:u8]
     """
     if len(data) < 15:
         print(f"  LightFX:   (incomplete: {data.hex()})")
@@ -403,15 +564,32 @@ def _parse_lightfx_status(data: bytes) -> None:
     servo1 = read_u16_le(data, 11)
     servo2 = read_u16_le(data, 13)
     
+    # Landing light states (optional, backward compat)
+    ll_states = []
+    if len(data) >= 18:
+        ll_phase_names = {0: 'RET', 1: 'DEPLOYING', 2: 'DEP', 3: 'RETRACTING'}
+        for i in range(3):
+            phase = data[15 + i]
+            ll_states.append(ll_phase_names.get(phase, f'?({phase})'))
+    
+    # Master brightness (optional, backward compat)
+    master_brightness = data[18] if len(data) >= 19 else 100
+    
+    # Enabled flags (optional, backward compat)
+    enabled_flags = data[19] if len(data) >= 20 else 0xFF  # default all enabled
+    
     print(f"  ── LightFX ────────────────────")
     
-    # LED status (compact format)
+    # LED status (compact format with enabled/disabled indicators)
     led_parts = []
     for i in range(8):
         ch = i + 1
         bri = led_brightness[i]
         seq = bool(seq_flags & (1 << i))
-        if bri > 0 or seq:
+        enabled = bool(enabled_flags & (1 << i))
+        if not enabled:
+            led_parts.append(f"ch{ch}={bri}[DIS]")
+        elif bri > 0 or seq:
             seq_mark = "▶" if seq else ""
             led_parts.append(f"ch{ch}={bri}{seq_mark}")
     if led_parts:
@@ -419,8 +597,17 @@ def _parse_lightfx_status(data: bytes) -> None:
     else:
         print(f"  LEDs:      all off")
     
+    # Master brightness (only show if not 100%)
+    if master_brightness < 100:
+        print(f"  Master:    {master_brightness}%")
+    
     # Servos
     print(f"  Servos:    [{servo0}µs, {servo1}µs, {servo2}µs]")
+    
+    # Landing lights
+    if ll_states:
+        ll_parts = [f"slot{i+1}={s}" for i, s in enumerate(ll_states)]
+        print(f"  Lights:    {', '.join(ll_parts)}")
 
 
 # =============================================================================
@@ -430,8 +617,9 @@ def _parse_lightfx_status(data: bytes) -> None:
 def parse_gear_calib_status(payload: bytes) -> None:
     """Parse GEAR_CALIB_STATUS packet payload.
     
-    Wire format (9 bytes):
-      [gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE][finished:u8]
+    Wire format (10 bytes):
+      [gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE][finished:u8][errorReason:u8]
+      errorReason is optional (backward-compatible).
     """
     if len(payload) < 9:
         print(f"  CalibStatus: (incomplete: {payload.hex()})")
@@ -443,6 +631,7 @@ def parse_gear_calib_status(payload: bytes) -> None:
     peak_mA = read_u16_le(payload, 4)
     stall_mA = read_u16_le(payload, 6)
     finished = payload[8] != 0
+    error_reason = payload[9] if len(payload) >= 10 else 0
     
     gear_names = {0: 'Nose', 1: 'Left Main', 2: 'Right Main'}
     gear_name = gear_names.get(gear_id, f'Gear {gear_id}')
@@ -475,6 +664,10 @@ def parse_gear_calib_status(payload: bytes) -> None:
         parts.append(f"stall={stall_mA}mA")
     if finished:
         parts.append(f"{Fore.WHITE}[FINISHED]{Style.RESET_ALL}")
+    # Show error reason on ERROR phase
+    if phase == 7 and error_reason > 0:
+        reason_name = GearErrorReason.name(error_reason)
+        parts.append(f"{Fore.RED}reason={reason_name}{Style.RESET_ALL}")
     
     print(f"  {Fore.MAGENTA}◆{Style.RESET_ALL} {gear_name} calib: {', '.join(parts)}")
 
@@ -528,6 +721,50 @@ def parse_gear_seq_status(payload: bytes) -> None:
         parts.append(f"{Fore.WHITE}[FINISHED in {elapsed_sec:.1f}s]{Style.RESET_ALL}")
     
     print(f"  {Fore.MAGENTA}▸{Style.RESET_ALL} {gear_name} seq: {', '.join(parts)}")
+
+
+# =============================================================================
+# GearControl Door Status Parser
+# =============================================================================
+
+def parse_gear_door_status(payload: bytes) -> None:
+    """Parse GEAR_DOOR_STATUS packet payload.
+    
+    Wire format (6 bytes):
+      [gear_id:u8][state:u8][door0_pos_us:u16LE][door1_pos_us:u16LE]
+    """
+    from tests.framework.packets import DoorState
+
+    if len(payload) < 2:
+        print(f"  DoorStatus: (incomplete: {payload.hex()})")
+        return
+    
+    gear_id = payload[0]
+    state = payload[1]
+    door0 = read_u16_le(payload, 2) if len(payload) >= 4 else 0
+    door1 = read_u16_le(payload, 4) if len(payload) >= 6 else 0
+    
+    gear_names = {0: 'Nose', 1: 'Left Main', 2: 'Right Main'}
+    gear_name = gear_names.get(gear_id, f'Gear {gear_id}')
+    state_name = DoorState.name(state)
+    
+    # Color based on door state
+    state_colors = {
+        DoorState.UNKNOWN: Fore.YELLOW,
+        DoorState.CLOSED:  Fore.CYAN,
+        DoorState.OPEN:    Fore.GREEN,
+        DoorState.OPENING: Fore.YELLOW,
+        DoorState.CLOSING: Fore.YELLOW,
+    }
+    state_color = state_colors.get(state, '')
+    
+    parts = [f"{state_color}{state_name}{Style.RESET_ALL}"]
+    if len(payload) >= 4:
+        parts.append(f"d0={door0}µs")
+    if len(payload) >= 6:
+        parts.append(f"d1={door1}µs")
+    
+    print(f"  {Fore.MAGENTA}◇{Style.RESET_ALL} {gear_name} doors: {', '.join(parts)}")
 
 
 # =============================================================================

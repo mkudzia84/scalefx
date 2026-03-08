@@ -164,8 +164,12 @@ struct CommandResult {
 namespace CoreProtocol {
 
 // Buffer sizes
-constexpr size_t MAX_PAYLOAD_SIZE = 64;
-constexpr size_t MAX_PACKET_SIZE = 3 + MAX_PAYLOAD_SIZE + 1;  // type + tag + len + payload + crc
+// NOTE: len field is u16LE as of protocol v0.4.0 (was u8, max 64 in v0.3.0).
+// Current MAX_PAYLOAD_SIZE = 512 for headroom. If payloads > 512 are needed,
+// consider packet sequencing/fragmentation rather than increasing further.
+constexpr size_t HEADER_SIZE = 4;          // type(1) + tag(1) + len(2)
+constexpr size_t MAX_PAYLOAD_SIZE = 512;
+constexpr size_t MAX_PACKET_SIZE = HEADER_SIZE + MAX_PAYLOAD_SIZE + 1;  // header + payload + crc
 constexpr size_t COBS_BUFFER_SIZE = MAX_PACKET_SIZE + MAX_PACKET_SIZE / 254 + 2;
 constexpr uint8_t FRAME_DELIMITER = 0x00;
 
@@ -693,7 +697,7 @@ private:
         uint8_t decoded[CoreProtocol::MAX_PACKET_SIZE];
         size_t decodedLen = CoreProtocol::cobsDecode(frame, frameLen, decoded, sizeof(decoded));
         
-        if (decodedLen < 4) return;  // Minimum: type + tag + len + crc
+        if (decodedLen < 5) return;  // Minimum: type + tag + len(2) + crc
         
         uint8_t type;
         uint8_t tag;

@@ -75,7 +75,7 @@ Raspberry Pi Pico → Audio Codec (WM8960/TAS5825M) → Speakers
 
 4. **Connect serial monitor:**
    ```bash
-   python -m platformio device monitor -b 115200
+   python -m platformio device monitor -b 1000000
    ```
 
 ## Features
@@ -145,7 +145,7 @@ engine_fx:
 
 ## Serial Commands
 
-Connect at 115200 baud for interactive control:
+Connect at 1Mbps baud for interactive control:
 
 ### Audio Commands
 ```bash
@@ -367,7 +367,7 @@ EngineState state = engineFx.state();
 - **Platform**: RP2040 @ 120MHz (dual-core Cortex-M0+)
 - **Audio**: I2S master, 44.1kHz stereo, 16-bit
 - **Storage**: SPI SD card (FAT32), LittleFS flash
-- **Communication**: USB CDC serial @ 115200 baud
+- **Communication**: USB CDC serial @ 1Mbps baud
 - **I2C**: 100kHz standard mode for codec control
 - **Build system**: PlatformIO with Arduino framework
 

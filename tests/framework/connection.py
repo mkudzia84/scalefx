@@ -113,7 +113,7 @@ class ScaleFXConnection:
             conn.close()
     """
     
-    DEFAULT_BAUD = 115200
+    DEFAULT_BAUD = 1000000
     DEFAULT_TIMEOUT = 2.0
     
     def __init__(self, port: Optional[str] = None, baud: int = DEFAULT_BAUD,
@@ -123,7 +123,7 @@ class ScaleFXConnection:
         
         Args:
             port: Serial port (e.g., "COM3", "/dev/ttyACM0")
-            baud: Baud rate (default 115200)
+            baud: Baud rate (default 1000000)
             timeout: Response timeout in seconds
             verbose: Enable verbose logging (default: from SCALEFX_VERBOSE env)
         """

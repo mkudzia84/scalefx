@@ -38,10 +38,13 @@ bool StallCalibrator::isActive() const {
 // Operations
 // ============================================================================
 
-uint8_t StallCalibrator::start(uint16_t initialStallGuess_mA) {
+uint8_t StallCalibrator::start(uint16_t initialStallGuess_mA, uint32_t overallTimeout_ms) {
     // Reset all measurement state
     _initialStallGuess_mA = initialStallGuess_mA;
     _phaseStart_ms = millis();
+    _overallStart_ms = millis();
+    // Apply default timeout when none specified (safety — never run calibration indefinitely)
+    _overallTimeout_ms = (overallTimeout_ms > 0) ? overallTimeout_ms : CalibConfig::DEFAULT_OVERALL_TIMEOUT_ms;
     _lastSample_ms = millis();
     _lastStatusEmit_ms = millis();
     _baseline_mA = 0;
@@ -51,11 +54,12 @@ uint8_t StallCalibrator::start(uint16_t initialStallGuess_mA) {
     _peakRetract_mA = 0;
     _stallStart_ms = 0;
     _stallDetected = false;
-    _pendingResult = CalibPhase::IDLE;
+    _zeroCurrentStart_ms = 0;
+    _zeroCurrentDetected = false;
     _result = Result{};
 
     // Open doors first (if configured), then start motor
-    if (_doorSeq->mode() != DoorMode::NONE) {
+    if (_doorSeq->preDeployMode() != DoorMode::NONE) {
         _doorSeq->startOpen();
         _phase = CalibPhase::OPENING_DOORS;
         _emitStatus(CalibPhase::OPENING_DOORS);
@@ -74,15 +78,9 @@ uint8_t StallCalibrator::cancel() {
 
     _motorFn(0);  // Stop motor
 
-    // Close doors if they were opened for calibration
-    if (_doorSeq->mode() != DoorMode::NONE) {
-        _doorSeq->startClose();
-        _phase = CalibPhase::CLOSING_DOORS;
-        _pendingResult = CalibPhase::CANCELLED;
-    } else {
-        _phase = CalibPhase::CANCELLED;
-        _emitStatus(CalibPhase::CANCELLED);
-    }
+    // Doors stay open after calibration (user closes manually or next deploy/retract)
+    _phase = CalibPhase::CANCELLED;
+    _emitStatus(CalibPhase::CANCELLED);
 
     return SerialError::OK;
 }
@@ -96,6 +94,18 @@ void StallCalibrator::update() {
 
     uint32_t now = millis();
     uint32_t elapsed = now - _phaseStart_ms;
+
+    // Overall timeout check (applies across all phases)
+    if (_overallTimeout_ms > 0 && (now - _overallStart_ms >= _overallTimeout_ms)) {
+        _motorFn(0);
+        _result.peakDeploy_mA = _peakDeploy_mA;
+        _result.peakRetract_mA = _peakRetract_mA;
+        _result.errorReason = GearErrorReason::CALIB_TIMEOUT;
+        // Doors stay open after calibration timeout
+        _phase = CalibPhase::ERROR;
+        _emitStatus(CalibPhase::ERROR);
+        return;
+    }
 
     switch (_phase) {
         // -----------------------------------------------------------------
@@ -225,6 +235,27 @@ void StallCalibrator::update() {
                     _baselineSum = 0;
                 }
 
+                // Motor disconnect detection: current near zero after baseline
+                // indicates the motor is disconnected or cable fault
+                if (current_mA <= CalibConfig::ZERO_CURRENT_THRESH_mA) {
+                    if (!_zeroCurrentDetected) {
+                        _zeroCurrentDetected = true;
+                        _zeroCurrentStart_ms = now;
+                    } else if (now - _zeroCurrentStart_ms >= CalibConfig::ZERO_CURRENT_ABORT_ms) {
+                        // Motor disconnected — abort calibration
+                        _motorFn(0);
+                        _result.peakDeploy_mA = _peakDeploy_mA;
+                        _result.peakRetract_mA = _peakRetract_mA;
+                        _result.errorReason = GearErrorReason::MOTOR_DISCONNECTED;
+                        // Doors stay open after calibration error
+                        _phase = CalibPhase::ERROR;
+                        _emitStatus(CalibPhase::ERROR);
+                        break;
+                    }
+                } else {
+                    _zeroCurrentDetected = false;
+                }
+
                 // Track peak current for this direction
                 uint16_t& peak = isDeployPhase ? _peakDeploy_mA : _peakRetract_mA;
                 if (current_mA > peak) {
@@ -298,20 +329,10 @@ void StallCalibrator::update() {
                 _baselineSum = 0;
                 _baselineCount = 0;
                 _stallDetected = false;
+                _zeroCurrentStart_ms = 0;
+                _zeroCurrentDetected = false;
                 _motorFn(-1);
                 _emitStatus(CalibPhase::RETRACT_RUN);
-            }
-            break;
-        }
-
-        // -----------------------------------------------------------------
-        // CLOSING_DOORS: Wait for doors to close after calibration
-        // -----------------------------------------------------------------
-        case CalibPhase::CLOSING_DOORS: {
-            _doorSeq->update();
-            if (_doorSeq->isComplete()) {
-                _phase = _pendingResult;
-                _emitStatus(_pendingResult);
             }
             break;
         }
@@ -350,28 +371,18 @@ void StallCalibrator::_finish() {
         // Update the existing calibration value for status emission
         _existingCalibStall_mA = _result.stallThreshold_mA;
 
-        // Close doors if they were opened for calibration
-        if (_doorSeq->mode() != DoorMode::NONE) {
-            _doorSeq->startClose();
-            _phase = CalibPhase::CLOSING_DOORS;
-            _pendingResult = CalibPhase::COMPLETE;
-        } else {
-            _phase = CalibPhase::COMPLETE;
-            _emitStatus(CalibPhase::COMPLETE);
-        }
+        // Doors stay open after calibration (user closes via deploy/retract)
+        _phase = CalibPhase::COMPLETE;
+        _emitStatus(CalibPhase::COMPLETE);
     } else {
         // No stall detected in either direction
         _result.peakDeploy_mA = _peakDeploy_mA;
         _result.peakRetract_mA = _peakRetract_mA;
+        _result.errorReason = GearErrorReason::NO_STALL_DETECTED;
 
-        if (_doorSeq->mode() != DoorMode::NONE) {
-            _doorSeq->startClose();
-            _phase = CalibPhase::CLOSING_DOORS;
-            _pendingResult = CalibPhase::ERROR;
-        } else {
-            _phase = CalibPhase::ERROR;
-            _emitStatus(CalibPhase::ERROR);
-        }
+        // Doors stay open after calibration error
+        _phase = CalibPhase::ERROR;
+        _emitStatus(CalibPhase::ERROR);
     }
 }
 
@@ -389,7 +400,7 @@ void StallCalibrator::_emitStatus(CalibPhase phase) {
 
     // Report peak for current direction
     if (phase == CalibPhase::CLEAR_RUN || phase == CalibPhase::CLEAR_SETTLE ||
-        phase == CalibPhase::OPENING_DOORS || phase == CalibPhase::CLOSING_DOORS) {
+        phase == CalibPhase::OPENING_DOORS) {
         status.peak_mA = 0;  // No measurement during clearing/door phases
     } else if (phase == CalibPhase::DEPLOY_RUN || phase == CalibPhase::MID_SETTLE) {
         status.peak_mA = _peakDeploy_mA;
@@ -407,6 +418,11 @@ void StallCalibrator::_emitStatus(CalibPhase phase) {
     status.finished = (phase == CalibPhase::COMPLETE ||
                        phase == CalibPhase::ERROR ||
                        phase == CalibPhase::CANCELLED);
+
+    // Include error reason on terminal error phases
+    if (phase == CalibPhase::ERROR) {
+        status.errorReason = _result.errorReason;
+    }
 
     _progressCb(status);
 }

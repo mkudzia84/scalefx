@@ -499,10 +499,10 @@ GunFX* gun_fx_create(AudioMixer *mixer, int audio_channel,
     gun->yaw_pwm_monitor = nullptr;
     
     // Open serial bus to gunfx_pico by USB VID/PID
-    // Use default configuration: baud_rate=115200, timeout_ms=100
+    // Use default configuration: baud_rate=1000000, timeout_ms=100
     SerialBusConfig pico_config = {
         .device_path = "",  // Will be populated by serial_bus_open_by_vid_pid
-        .baud_rate = 115200,
+        .baud_rate = 1000000,
         .timeout_ms = 100
     };
     

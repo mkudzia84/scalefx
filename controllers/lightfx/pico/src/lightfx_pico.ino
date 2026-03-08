@@ -1,5 +1,5 @@
 /**
- * LightFX Pico Controller v0.6.0
+ * LightFX Pico Controller v0.7.0
  * 
  * Server controller for lighting effects - receives commands from HubFX over USB serial.
  * Controls: 8-channel LED outputs with sequences, 3 servos.
@@ -32,8 +32,8 @@
 //  FIRMWARE INFO
 // ============================================================================
 
-#define FIRMWARE_VERSION "0.6.0"
-#define BUILD_NUMBER 12
+#define FIRMWARE_VERSION "0.7.0"
+#define BUILD_NUMBER 13
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -97,6 +97,9 @@ ServoControl servos[3];
 // Landing light sequencers (bind servo + LED channel)
 LandingLight landingLights[LANDING_LIGHT_COUNT];
 
+// LED channel enable/disable state (default: all enabled)
+bool ledEnabled[LED_CHANNEL_COUNT];
+
 
 // ============================================================================
 //  FORWARD DECLARATIONS
@@ -134,6 +137,11 @@ void performSafeShutdown() {
 void performSafeInit() {
     // Init resets everything to a known safe state — same as shutdown
     performSafeShutdown();
+    
+    // Re-enable all LED channels (enable/disable is not persisted)
+    for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+        ledEnabled[i] = true;
+    }
 }
 
 // ============================================================================
@@ -200,6 +208,7 @@ uint8_t eventNameToType(const char* name) {
 void setupLightFxCallbacks() {
     // LED_SET callback (channel validated by LightFxSpec before dispatch)
     lightfxServer.onLedSet([](uint8_t channel, uint8_t brightness) -> uint8_t {
+        if (!ledEnabled[channel - 1]) return LightFxError::CHANNEL_DISABLED;
         ledSequences[channel - 1].stop();
         ledChannels[channel - 1].setBrightness(brightness);
         return LightFxError::OK;
@@ -208,12 +217,14 @@ void setupLightFxCallbacks() {
     // LED_OFF callback
     lightfxServer.onLedOff([](uint8_t channel) -> uint8_t {
         if (channel == 0) {
-            // All channels
+            // All channels — skip disabled silently
             for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+                if (!ledEnabled[i]) continue;
                 ledSequences[i].stop();
                 ledChannels[i].off();
             }
         } else if (channel <= LED_CHANNEL_COUNT) {
+            if (!ledEnabled[channel - 1]) return LightFxError::CHANNEL_DISABLED;
             ledSequences[channel - 1].stop();
             ledChannels[channel - 1].off();
         } else {
@@ -226,10 +237,12 @@ void setupLightFxCallbacks() {
     lightfxServer.onLedSeqClear([](uint8_t channel) -> uint8_t {
         if (channel == 0) {
             for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+                if (!ledEnabled[i]) continue;
                 ledSequences[i].stop();
                 ledSequences[i].clear();
             }
         } else if (channel <= LED_CHANNEL_COUNT) {
+            if (!ledEnabled[channel - 1]) return LightFxError::CHANNEL_DISABLED;
             ledSequences[channel - 1].stop();
             ledSequences[channel - 1].clear();
         } else {
@@ -245,6 +258,7 @@ void setupLightFxCallbacks() {
         if (channel < 1 || channel > LED_CHANNEL_COUNT) {
             return LightFxError::INVALID_CHANNEL;
         }
+        if (!ledEnabled[channel - 1]) return LightFxError::CHANNEL_DISABLED;
         
         LedEventSeq& seq = ledSequences[channel - 1];
         if (seq.isFull()) return LightFxError::SEQ_FULL;
@@ -293,11 +307,13 @@ void setupLightFxCallbacks() {
     lightfxServer.onLedSeqStart([](uint8_t channel) -> uint8_t {
         if (channel == 0) {
             for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+                if (!ledEnabled[i]) continue;
                 if (ledSequences[i].count() > 0) {
                     ledSequences[i].start();
                 }
             }
         } else if (channel <= LED_CHANNEL_COUNT) {
+            if (!ledEnabled[channel - 1]) return LightFxError::CHANNEL_DISABLED;
             ledSequences[channel - 1].start();
         } else {
             return LightFxError::INVALID_CHANNEL;
@@ -309,9 +325,11 @@ void setupLightFxCallbacks() {
     lightfxServer.onLedSeqStop([](uint8_t channel) -> uint8_t {
         if (channel == 0) {
             for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+                if (!ledEnabled[i]) continue;
                 ledSequences[i].stop();
             }
         } else if (channel <= LED_CHANNEL_COUNT) {
+            if (!ledEnabled[channel - 1]) return LightFxError::CHANNEL_DISABLED;
             ledSequences[channel - 1].stop();
         } else {
             return LightFxError::INVALID_CHANNEL;
@@ -323,11 +341,13 @@ void setupLightFxCallbacks() {
     lightfxServer.onLedSeqRestart([](uint8_t channel) -> uint8_t {
         if (channel == 0) {
             for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+                if (!ledEnabled[i]) continue;
                 if (ledSequences[i].count() > 0) {
                     ledSequences[i].start();
                 }
             }
         } else if (channel <= LED_CHANNEL_COUNT) {
+            if (!ledEnabled[channel - 1]) return LightFxError::CHANNEL_DISABLED;
             ledSequences[channel - 1].start();
         } else {
             return LightFxError::INVALID_CHANNEL;
@@ -466,6 +486,52 @@ void setupLightFxCallbacks() {
         return LightFxError::OK;
     });
     
+    // LED_RESET callback — stop sequence, clear, turn off, re-enable
+    lightfxServer.onLedReset([](uint8_t channel) -> uint8_t {
+        auto resetChannel = [](uint8_t idx) {
+            ledSequences[idx].stop();
+            ledSequences[idx].clear();
+            ledChannels[idx].off();
+            ledEnabled[idx] = true;
+        };
+        
+        if (channel == 0) {
+            for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+                resetChannel(i);
+            }
+            // Also reset master brightness
+            for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+                ledChannels[i].setMasterBrightness_pct(100);
+            }
+        } else {
+            resetChannel(channel - 1);
+        }
+        return LightFxError::OK;
+    });
+    
+    // LED_ENABLE callback — enable/disable LED channel
+    lightfxServer.onLedEnable([](uint8_t channel, uint8_t enabled) -> uint8_t {
+        bool en = (enabled != 0);
+        if (channel == 0) {
+            for (uint8_t i = 0; i < LED_CHANNEL_COUNT; i++) {
+                if (!en) {
+                    // Disable: stop activity first
+                    ledSequences[i].stop();
+                    ledChannels[i].off();
+                }
+                ledEnabled[i] = en;
+            }
+        } else {
+            if (!en) {
+                // Disable: stop activity first
+                ledSequences[channel - 1].stop();
+                ledChannels[channel - 1].off();
+            }
+            ledEnabled[channel - 1] = en;
+        }
+        return LightFxError::OK;
+    });
+    
 }
 
 // ============================================================================
@@ -483,6 +549,7 @@ void setup() {
         ledChannels[i].begin(LED_CHANNEL_PINS[i], false, true);
         ledChannels[i].off();
         ledSequences[i].attachLed(&ledChannels[i]);
+        ledEnabled[i] = true;  // All channels enabled by default
     }
     
     // Initialize servos
@@ -497,13 +564,14 @@ void setup() {
     setupLightFxCallbacks();
     
     // STATUS: Append LightFX module data to core STATUS response
-    // Wire format (19 bytes):
+    // Wire format (20 bytes):
     //   [ledBrightness:u8×8][ledSeqFlags:u8]
     //   [servo0:u16][servo1:u16][servo2:u16]
     //   [landingLightStates:u8×3]
     //   [masterBrightness_pct:u8]
+    //   [ledEnabledFlags:u8]  (bit per channel, 1=enabled)
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        if (maxLen < 19) return 0;
+        if (maxLen < 20) return 0;
         
         // LED channel brightness (8 bytes)
         for (uint8_t i = 0; i < 8; i++) {
@@ -530,7 +598,14 @@ void setup() {
         // Master brightness percentage (1 byte)
         buf[18] = ledChannels[0].masterBrightness_pct();  // all channels share same value
         
-        return 19;
+        // LED enabled flags (1 byte, bit per channel, 1=enabled)
+        uint8_t enabledFlags = 0;
+        for (uint8_t i = 0; i < 8; i++) {
+            if (ledEnabled[i]) enabledFlags |= (1 << i);
+        }
+        buf[19] = enabledFlags;
+        
+        return 20;
     });
     
     // Finalize router (core handler + LightFX handler)

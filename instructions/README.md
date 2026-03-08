@@ -35,8 +35,8 @@ Task: "Update CLI"
 Protocol:
   format: "Binary COBS with CRC-8"
   crc_polynomial: 0x07
-  baud_rate: 115200
-  packet_structure: "[type:u8][tag:u8][len:u8][payload:0-64][crc8:u8]"
+  baud_rate: 1000000
+  packet_structure: "[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]"
   endianness: "little-endian"
 
 Packet_Ranges:

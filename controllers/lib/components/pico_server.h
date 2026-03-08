@@ -4,7 +4,7 @@
  * Encapsulates the lifecycle boilerplate shared across all ScaleFX Pico
  * server controllers (GunFX, LightFX, GearControl, etc.):
  *
- *   - USB serial initialization (115200 baud)
+ *   - USB serial initialization (1Mbps baud)
  *   - Unique device name from Pico board ID
  *   - Indicator LEDs (GP13=connection, GP14=error, standard across all boards)
  *   - CoreCommandServer with board info, INIT/SHUTDOWN/REBOOT/BOOTSEL callbacks
@@ -55,7 +55,7 @@ public:
     /**
      * @brief Initialize common server infrastructure
      *
-     * Sets up USB serial (115200 baud), builds device name from Pico
+     * Sets up USB serial (1Mbps baud), builds device name from Pico
      * unique board ID, initializes indicator LEDs, and configures
      * CoreCommandServer with board info and standard system callbacks
      * (INIT, SHUTDOWN, REBOOT, BOOTSEL).
@@ -161,7 +161,7 @@ private:
     std::function<void()> _initCb;
     std::function<void()> _shutdownCb;
 
-    static constexpr uint32_t BAUD_RATE = 115200;
+    static constexpr uint32_t BAUD_RATE = 1000000;
     static constexpr unsigned long CONNECTION_TIMEOUT_ms = 15000;
 
     void buildDeviceName(const char* prefix);

@@ -17,7 +17,7 @@ When working on this project, always read:
 ```yaml
 format: "Binary COBS with CRC-8"
 crc_polynomial: 0x07
-baud_rate: 115200
+baud_rate: 1000000
 packet: "[type:u8][len:u8][payload:0-64][crc8:u8]"
 endianness: "little-endian"
 ```

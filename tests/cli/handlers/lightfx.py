@@ -1,9 +1,11 @@
 """
 LightFX Command Handlers
 
-LightFX-specific CLI commands:
+LightFX-specific CLI commands (lfx.* prefix):
 - LED direct control and sequences
 - Servo control and configuration
+- Landing light control
+- Channel enable/disable and reset
 """
 
 from typing import List, Dict, Tuple, Callable
@@ -23,45 +25,54 @@ class LightFxCommandHandler(CommandHandlerBase):
     def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
         """Return LightFX command registry."""
         return {
-            'lightfx.led': (self.cmd_led, CommandInfo(
-                'lightfx.led', 'lightfx.led set <ch> <brightness> | lightfx.led off [ch]',
+            'lfx.led': (self.cmd_led, CommandInfo(
+                'lfx.led', 'lfx.led set <ch> <brightness> | lfx.led off [ch]',
                 'Control LED (1-8, 0-100%)', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.led.seq': (self.cmd_led_seq, CommandInfo(
-                'lightfx.led.seq', 'lightfx.led.seq clear|start|stop|restart <ch>',
+            'lfx.led.seq': (self.cmd_led_seq, CommandInfo(
+                'lfx.led.seq', 'lfx.led.seq clear|start|stop|restart <ch>',
                 'Control LED sequences', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.led.seq.add': (self.cmd_led_seq_add, CommandInfo(
-                'lightfx.led.seq.add', 'lightfx.led.seq.add <ch> <event> <params...>',
+            'lfx.led.seq.add': (self.cmd_led_seq_add, CommandInfo(
+                'lfx.led.seq.add', 'lfx.led.seq.add <ch> <event> <params...>',
                 'Add sequence event (on/off/flash/fadein/fadeout)', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.led.seq.status': (self.cmd_led_seq_status, CommandInfo(
-                'lightfx.led.seq.status', 'lightfx.led.seq.status <ch>',
+            'lfx.led.seq.status': (self.cmd_led_seq_status, CommandInfo(
+                'lfx.led.seq.status', 'lfx.led.seq.status <ch>',
                 'Get LED sequence status', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.led.seq.queue': (self.cmd_led_seq_queue, CommandInfo(
-                'lightfx.led.seq.queue', 'lightfx.led.seq.queue <ch>',
+            'lfx.led.seq.queue': (self.cmd_led_seq_queue, CommandInfo(
+                'lfx.led.seq.queue', 'lfx.led.seq.queue <ch>',
                 'List LED sequence event queue', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.led.status': (self.cmd_led_status, CommandInfo(
-                'lightfx.led.status', 'lightfx.led.status',
+            'lfx.led.status': (self.cmd_led_status, CommandInfo(
+                'lfx.led.status', 'lfx.led.status',
                 'Get all LED channel statuses', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.brightness': (self.cmd_brightness, CommandInfo(
-                'lightfx.brightness', 'lightfx.brightness <0-100>',
+            'lfx.brightness': (self.cmd_brightness, CommandInfo(
+                'lfx.brightness', 'lfx.brightness <0-100>',
                 'Set master LED brightness (0-100%)', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.servo': (self.cmd_servo, CommandInfo(
-                'lightfx.servo', 'lightfx.servo set <id> <pulse_us>',
+            'lfx.servo': (self.cmd_servo, CommandInfo(
+                'lfx.servo', 'lfx.servo set <id> <pulse_us>',
                 'Set servo position (1-3)', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.servo.config': (self.cmd_servo_config, CommandInfo(
-                'lightfx.servo.config', 'lightfx.servo.config <id> <min> <max> [speed] [accel] [decel]',
+            'lfx.servo.config': (self.cmd_servo_config, CommandInfo(
+                'lfx.servo.config', 'lfx.servo.config <id> <min> <max> [speed] [accel] [decel]',
                 'Configure servo', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.ll.bind': (self.cmd_ll_bind, CommandInfo(
-                'lightfx.ll.bind', 'lightfx.ll.bind <slot> <servo> <led_ch> <deploy_us> <retract_us> [brightness]',
+            'lfx.ll.bind': (self.cmd_ll_bind, CommandInfo(
+                'lfx.ll.bind', 'lfx.ll.bind <slot> <servo> <led_ch> <deploy_us> <retract_us> [brightness]',
                 'Bind landing light (slot 1-3)', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.ll.unbind': (self.cmd_ll_unbind, CommandInfo(
-                'lightfx.ll.unbind', 'lightfx.ll.unbind [slot]',
+            'lfx.ll.unbind': (self.cmd_ll_unbind, CommandInfo(
+                'lfx.ll.unbind', 'lfx.ll.unbind [slot]',
                 'Unbind landing light (0=all)', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.ll.deploy': (self.cmd_ll_deploy, CommandInfo(
-                'lightfx.ll.deploy', 'lightfx.ll.deploy [slot]',
+            'lfx.ll.deploy': (self.cmd_ll_deploy, CommandInfo(
+                'lfx.ll.deploy', 'lfx.ll.deploy [slot]',
                 'Deploy landing gear + light on (0=all)', requires_init=True, controller=ControllerType.LIGHTFX)),
-            'lightfx.ll.retract': (self.cmd_ll_retract, CommandInfo(
-                'lightfx.ll.retract', 'lightfx.ll.retract [slot]',
+            'lfx.ll.retract': (self.cmd_ll_retract, CommandInfo(
+                'lfx.ll.retract', 'lfx.ll.retract [slot]',
                 'Retract landing gear + light off (0=all)', requires_init=True, controller=ControllerType.LIGHTFX)),
+            'lfx.reset': (self.cmd_reset, CommandInfo(
+                'lfx.reset', 'lfx.reset [ch]',
+                'Reset LED channel (stop seq, off, re-enable; 0=all)', requires_init=True, controller=ControllerType.LIGHTFX)),
+            'lfx.enable': (self.cmd_enable, CommandInfo(
+                'lfx.enable', 'lfx.enable <ch>',
+                'Enable LED channel (1-8, 0=all)', requires_init=True, controller=ControllerType.LIGHTFX)),
+            'lfx.disable': (self.cmd_disable, CommandInfo(
+                'lfx.disable', 'lfx.disable <ch>',
+                'Disable LED channel (1-8, 0=all)', requires_init=True, controller=ControllerType.LIGHTFX)),
         }
     
     # =========================================================================
@@ -71,14 +82,14 @@ class LightFxCommandHandler(CommandHandlerBase):
     def cmd_led(self, args: List[str]):
         """LightFX LED control."""
         if not args:
-            self.print_error("Usage: lightfx.led set <ch> <brightness> | lightfx.led off [ch]")
+            self.print_error("Usage: lfx.led set <ch> <brightness> | lfx.led off [ch]")
             return
         
         subcmd = args[0].lower()
         
         if subcmd == 'set':
             if len(args) < 3:
-                self.print_error("Usage: lightfx.led set <channel> <brightness>")
+                self.print_error("Usage: lfx.led set <channel> <brightness>")
                 return
             try:
                 ch = int(args[1])
@@ -111,7 +122,7 @@ class LightFxCommandHandler(CommandHandlerBase):
     def cmd_led_seq(self, args: List[str]):
         """LightFX LED sequence control."""
         if not args:
-            self.print_error("Usage: lightfx.led.seq clear|start|stop|restart <ch>")
+            self.print_error("Usage: lfx.led.seq clear|start|stop|restart <ch>")
             return
         
         subcmd = args[0].lower()
@@ -142,7 +153,7 @@ class LightFxCommandHandler(CommandHandlerBase):
     def cmd_led_seq_add(self, args: List[str]):
         """LightFX LED sequence add event."""
         if len(args) < 2:
-            self.print_error("Usage: lightfx.led.seq.add <ch> <event> <params...>")
+            self.print_error("Usage: lfx.led.seq.add <ch> <event> <params...>")
             self.print_info("Events: on, off, flash, fadein, fadeout")
             return
         
@@ -152,7 +163,7 @@ class LightFxCommandHandler(CommandHandlerBase):
             
             if event == 'on':
                 if len(args) < 4:
-                    self.print_error("Usage: lightfx.led.seq.add <ch> on <duration_ms> <brightness>")
+                    self.print_error("Usage: lfx.led.seq.add <ch> on <duration_ms> <brightness>")
                     return
                 duration = int(args[2])
                 brightness = int(args[3])
@@ -161,7 +172,7 @@ class LightFxCommandHandler(CommandHandlerBase):
                 
             elif event == 'off':
                 if len(args) < 3:
-                    self.print_error("Usage: lightfx.led.seq.add <ch> off <duration_ms>")
+                    self.print_error("Usage: lfx.led.seq.add <ch> off <duration_ms>")
                     return
                 duration = int(args[2])
                 packet = LightFxCommands.led_seq_add_off(ch, duration)
@@ -169,7 +180,7 @@ class LightFxCommandHandler(CommandHandlerBase):
                 
             elif event == 'flash':
                 if len(args) < 5:
-                    self.print_error("Usage: lightfx.led.seq.add <ch> flash <interval_ms> <duration_ms> <brightness> [duty]")
+                    self.print_error("Usage: lfx.led.seq.add <ch> flash <interval_ms> <duration_ms> <brightness> [duty]")
                     return
                 interval = int(args[2])
                 duration = int(args[3])
@@ -180,7 +191,7 @@ class LightFxCommandHandler(CommandHandlerBase):
                 
             elif event == 'fadein':
                 if len(args) < 4:
-                    self.print_error("Usage: lightfx.led.seq.add <ch> fadein <duration_ms> <brightness>")
+                    self.print_error("Usage: lfx.led.seq.add <ch> fadein <duration_ms> <brightness>")
                     return
                 duration = int(args[2])
                 brightness = int(args[3])
@@ -189,7 +200,7 @@ class LightFxCommandHandler(CommandHandlerBase):
                 
             elif event == 'fadeout':
                 if len(args) < 4:
-                    self.print_error("Usage: lightfx.led.seq.add <ch> fadeout <duration_ms> <brightness>")
+                    self.print_error("Usage: lfx.led.seq.add <ch> fadeout <duration_ms> <brightness>")
                     return
                 duration = int(args[2])
                 brightness = int(args[3])
@@ -212,7 +223,7 @@ class LightFxCommandHandler(CommandHandlerBase):
     def cmd_led_seq_status(self, args: List[str]):
         """LightFX LED sequence status."""
         if not args:
-            self.print_error("Usage: lightfx.led.seq.status <ch>")
+            self.print_error("Usage: lfx.led.seq.status <ch>")
             return
         
         try:
@@ -244,7 +255,7 @@ class LightFxCommandHandler(CommandHandlerBase):
     def cmd_led_seq_queue(self, args: List[str]):
         """LightFX LED sequence queue listing."""
         if not args:
-            self.print_error("Usage: lightfx.led.seq.queue <ch>")
+            self.print_error("Usage: lfx.led.seq.queue <ch>")
             return
         
         try:
@@ -305,7 +316,7 @@ class LightFxCommandHandler(CommandHandlerBase):
     def cmd_brightness(self, args: List[str]):
         """Set master LED brightness (0-100%)."""
         if not args:
-            self.print_error("Usage: lightfx.brightness <0-100>")
+            self.print_error("Usage: lfx.brightness <0-100>")
             return
         
         try:
@@ -329,7 +340,7 @@ class LightFxCommandHandler(CommandHandlerBase):
     def cmd_servo(self, args: List[str]):
         """LightFX servo control."""
         if len(args) < 3 or args[0].lower() != 'set':
-            self.print_error("Usage: lightfx.servo set <id> <pulse_us>")
+            self.print_error("Usage: lfx.servo set <id> <pulse_us>")
             return
         
         try:
@@ -347,7 +358,7 @@ class LightFxCommandHandler(CommandHandlerBase):
     def cmd_servo_config(self, args: List[str]):
         """LightFX servo configuration."""
         if len(args) < 3:
-            self.print_error("Usage: lightfx.servo.config <id> <min> <max> [speed] [accel] [decel]")
+            self.print_error("Usage: lfx.servo.config <id> <min> <max> [speed] [accel] [decel]")
             return
         
         try:
@@ -374,7 +385,7 @@ class LightFxCommandHandler(CommandHandlerBase):
     def cmd_ll_bind(self, args: List[str]):
         """Bind landing light: servo + LED channel."""
         if len(args) < 5:
-            self.print_error("Usage: lightfx.ll.bind <slot> <servo_id> <led_ch> <deploy_us> <retract_us> [brightness]")
+            self.print_error("Usage: lfx.ll.bind <slot> <servo_id> <led_ch> <deploy_us> <retract_us> [brightness]")
             return
         
         try:
@@ -438,6 +449,58 @@ class LightFxCommandHandler(CommandHandlerBase):
                 self._print_ack_response(response)
         except ValueError:
             self.print_error("Invalid slot number")
+    
+    # =========================================================================
+    # Channel Management
+    # =========================================================================
+    
+    def cmd_reset(self, args: List[str]):
+        """Reset LED channel(s) — stop seq, turn off, re-enable."""
+        ch = int(args[0]) if args else 0
+        try:
+            packet = LightFxCommands.led_reset(ch)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                target = f"LED {ch}" if ch > 0 else "All LEDs"
+                self.print_ok(f"{target} reset")
+            else:
+                self._print_ack_response(response)
+        except ValueError:
+            self.print_error("Invalid channel number")
+    
+    def cmd_enable(self, args: List[str]):
+        """Enable LED channel."""
+        if not args:
+            self.print_error("Usage: lfx.enable <ch> (1-8, 0=all)")
+            return
+        try:
+            ch = int(args[0])
+            packet = LightFxCommands.led_enable(ch, True)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                target = f"LED {ch}" if ch > 0 else "All LEDs"
+                self.print_ok(f"{target} enabled")
+            else:
+                self._print_ack_response(response)
+        except ValueError:
+            self.print_error("Invalid channel number")
+    
+    def cmd_disable(self, args: List[str]):
+        """Disable LED channel."""
+        if not args:
+            self.print_error("Usage: lfx.disable <ch> (1-8, 0=all)")
+            return
+        try:
+            ch = int(args[0])
+            packet = LightFxCommands.led_enable(ch, False)
+            success, response = self.conn.send_expect_ack(packet)
+            if success:
+                target = f"LED {ch}" if ch > 0 else "All LEDs"
+                self.print_ok(f"{target} disabled")
+            else:
+                self._print_ack_response(response)
+        except ValueError:
+            self.print_error("Invalid channel number")
     
     # =========================================================================
     # Response Handling

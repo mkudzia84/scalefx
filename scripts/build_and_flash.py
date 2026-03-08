@@ -65,7 +65,7 @@ except ImportError:
 # =============================================================================
 
 CONTROLLERS = ['noop', 'gunfx', 'lightfx', 'gearcontrol']
-BAUD_RATE = 115200
+BAUD_RATE = 1000000
 FRAME_DELIMITER = 0x00
 
 

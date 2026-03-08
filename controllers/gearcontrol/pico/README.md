@@ -17,8 +17,8 @@ Each landing gear unit is encapsulated in a `LandingGear` module that binds toge
 The yaw steering servo remains in the main controller module but uses `ServoControl` for configurability.
 
 **Hardware:** Raspberry Pi Pico (RP2040)  
-**Protocol:** Binary COBS with CRC-8 (115200 baud)  
-**Firmware:** v0.7.0 (Build 21)
+**Protocol:** Binary COBS with CRC-8 (1Mbps baud)  
+**Firmware:** v0.10.0 (Build 45)
 
 ## Architecture
 
@@ -127,12 +127,15 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 | 0x67 | DOOR_CONFIG | `[id:u8][open0:u16][close0:u16][open1:u16][close1:u16]` | Configure doors |
 | 0x68 | YAW_CONFIG | `[gear_id:u8][neutral:u16][min:u16][max:u16]` | Configure yaw |
 | 0x69 | YAW_INPUT | `[position_us:u16LE]` | Set yaw position |
-| 0x6A | GEAR_CALIBRATE | `[gear_id:u8]` | Start stall current calibration |
-| 0x6B | GEAR_CALIB_STATUS | `[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8]` | Calibration progress (server→client, echoes request tag) |
+| 0x6A | GEAR_CALIBRATE | `[gear_id:u8][timeout_s:u8]` | Start stall current calibration (timeout_s optional, 0=default 60s) |
+| 0x6B | GEAR_CALIB_STATUS | `[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8][errorReason:u8]` | Calibration progress (server→client, echoes request tag) |
 | 0x6C | GEAR_CALIB_CANCEL | `[gear_id:u8]` | Cancel calibration in progress |
 | 0x6D | BATTERY_CONFIG | `[enabled:u8][auto_deploy:u8]` | Enable/disable battery monitoring + auto-deploy |
 | 0x6E | DOOR_MODE | `[gear_id:u8][mode:u8][delay_ms:u16LE]` | Configure door activation mode |
+| 0x6F | GEAR_RESET | `[gear_id:u8]` | Clear error state (ERROR → UNKNOWN) |
 | 0x70 | GEAR_SEQ_STATUS | `[gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]` | Sequence progress with timing (server→client, echoes request tag) |
+| 0x71 | GEAR_ENABLE | `[gear_id:u8][enabled:u8]` | Enable/disable gear channel (disabled channels reject all commands) |
+| 0x72 | GEAR_DOOR_STATUS | `[gear_id:u8][state:u8][door0_pos_us:u16LE][door1_pos_us:u16LE]` | Door state transition (server→client, async) |
 
 > **Note:** I2C_SCAN was moved to CorePacket and is handled by PicoServer.
 
@@ -151,16 +154,18 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 | 0x68 | INVALID_ACTION | Invalid gear-all action |
 | 0x69 | NO_CURRENT_MONITOR | No INA226 attached (required for calibration) |
 | 0x6A | NOT_CALIBRATING | Gear is not currently calibrating (cancel rejected) |
+| 0x6B | GEAR_DISABLED | Channel is disabled (rejected deploy/retract/calibrate) |
 
 ### GEAR_CONFIG Flags
 
 | Bit | Name | Description |
 |-----|------|-------------|
-| 0 | CLOSE_DOORS_ON_RETRACT | Close doors after gear retracts |
-| 1 | CLOSE_DOORS_ON_DEPLOY | Close doors after gear deploys |
-| 2 | HAS_YAW | This gear has yaw servo (used for steering) |
+| 0 | HAS_YAW | This gear has yaw servo (used for steering) |
+| 7 | ENABLED | **Runtime only (in STATUS)** — gear channel is enabled (1) or disabled (0) |
 
-### STATUS Response (44 bytes module data)
+> **Note:** Bit 7 (ENABLED) is a runtime flag set in STATUS config flags. It is not part of the persisted GEAR_CONFIG; it reflects the current enabled state set by GEAR_ENABLE.
+
+### STATUS Response (53 bytes module data)
 
 After the 12-byte core header `[counter:u32][uptime:u32][freeRam:u32]`:
 
@@ -186,6 +191,21 @@ Per-gear error reasons (3 bytes):
 
 Shunt config (2 bytes):
   [shuntResistance_mohm:u16LE] // Configured shunt resistance in milliohms (e.g., 100 = 0.1Ω)
+
+Per-gear packed door modes (3 bytes):
+  [gear0DoorModes:u8]         // Low nibble = doorPreDeploy, high nibble = doorPostDeploy
+  [gear1DoorModes:u8]
+  [gear2DoorModes:u8]
+
+Per-gear config flags (3 bytes):
+  [gear0ConfigFlags:u8]       // GearConfigFlags bitmask (see below)
+  [gear1ConfigFlags:u8]
+  [gear2ConfigFlags:u8]
+
+Per-gear door state (3 bytes):
+  [gear0DoorState:u8]         // DoorState enum (see below)
+  [gear1DoorState:u8]
+  [gear2DoorState:u8]
 ```
 
 **batteryConfigFlags bits:**
@@ -203,6 +223,9 @@ Shunt config (2 bytes):
 | 0x02 | MOTOR_STALL | Motor stall detected during operation |
 | 0x03 | MOTOR_TIMEOUT | Motor operation exceeded timeout |
 | 0x04 | SEQUENCE_ERROR | Unexpected state during sequencing |
+| 0x05 | MOTOR_DISCONNECTED | Zero current during calibration (motor unplugged) |
+| 0x06 | CALIB_TIMEOUT | Overall calibration timeout exceeded |
+| 0x07 | NO_STALL_DETECTED | No stall current detected in either direction |
 
 **GearState enum:**
 | Value | Name | Description |
@@ -214,6 +237,15 @@ Shunt config (2 bytes):
 | 4 | RETRACTING | Retract sequence in progress |
 | 5 | ERROR | Sequence failed (timeout) |
 | 6 | CALIBRATING | Stall current calibration in progress |
+
+**DoorState enum:**
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | UNKNOWN | State not determined (e.g. after reset) |
+| 1 | CLOSED | Doors at close position |
+| 2 | OPEN | Doors at open position |
+| 3 | OPENING | Doors moving to open position |
+| 4 | CLOSING | Doors moving to close position |
 
 ## Landing Gear Sequencing
 
@@ -400,13 +432,15 @@ endpoint, RETRACT_RUN naturally starts from the correct position.
 
 **During calibration:**
 - Gear state is `CALIBRATING` (6)
+- Doors are opened before calibration if configured (and not already open)
+- **Doors remain open** after calibration completes, errors, or is cancelled
 - Status LEDs show alternating chase pattern
 - STATUS response includes live `motorCurrent_mA` and `calibratedStall_mA`
 - Server emits `GEAR_CALIB_STATUS` packets every 250ms and on phase transitions
 
-**GEAR_CALIB_STATUS wire format (9 bytes, server→client, echoes calibrate request tag):**
+**GEAR_CALIB_STATUS wire format (10 bytes, server→client, echoes calibrate request tag):**
 ```
-[gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE][finished:u8]
+[gear_id:u8][phase:u8][current_mA:u16LE][peak_mA:u16LE][calibratedStall_mA:u16LE][finished:u8][errorReason:u8]
 ```
 
 | Field | Type | Description |
@@ -417,6 +451,7 @@ endpoint, RETRACT_RUN naturally starts from the correct position.
 | peak_mA | u16LE | Peak current for current phase (0 during CLEAR phases) (mA) |
 | calibratedStall_mA | u16LE | Final calibrated value (valid when phase=COMPLETE) (mA) |
 | finished | u8 | 1 if calibration is done (COMPLETE/ERROR/CANCELLED), 0 otherwise |
+| errorReason | u8 | GearErrorReason code when phase=ERROR (0 otherwise, backward-compatible) |
 
 **Tag correlation:** GEAR_CALIB_STATUS packets carry the tag from the original
 GEAR_CALIBRATE request, allowing the client to correlate progress updates.
@@ -436,6 +471,7 @@ GEAR_CALIBRATE request, allowing the client to correlate progress updates.
 
 **After calibration (phase=COMPLETE):**
 - Gear state returns to `UNKNOWN` (position is unknown after motor probing)
+- Doors remain open (closed by next deploy/retract sequence or manual command)
 - `calibratedStall_mA` in STATUS and GEAR_CALIB_STATUS reports the detected threshold
 - The value is used for subsequent deploy/retract stall detection
 
@@ -453,7 +489,11 @@ NACKs with `NOT_CALIBRATING` (0x6A) if gear is not calibrating.
 If no stall is detected, the peak current observed during the timeout period is
 still used for calibration.
 
-**Payload:** `[gear_id:u8]` — gear index 0-2
+**Payload:** `[gear_id:u8][timeout_s:u8]` — gear index 0-2, optional overall timeout in seconds (0 or omit = default 60s)
+
+**Overall Timeout:** The entire calibration sequence (including all phases — clear, deploy, settle, retract) must complete within the overall timeout. Default is 60 seconds when `timeout_s` is 0 or omitted. If exceeded, the calibration aborts with `GearErrorReason::CALIB_TIMEOUT` (0x06) and the gear enters ERROR state. The error reason is included in the final `GEAR_CALIB_STATUS` packet (`errorReason` byte).
+
+**Zero-Current Detection:** If motor current stays below 5mA for 1000ms during any measurement phase (DEPLOY_RUN or RETRACT_RUN), calibration aborts with `GearErrorReason::MOTOR_DISCONNECTED` (0x05). This catches unplugged motors early.
 
 ### GEAR_SEQ_STATUS (Deploy/Retract Progress)
 
@@ -500,3 +540,46 @@ python -m platformio run -e pico
 # Build and flash (centralized script)
 python scripts/build_and_flash.py gearcontrol
 ```
+
+## GEAR_RESET (Error Reset)
+
+Clears the error state of a gear channel. Transitions the gear from ERROR → UNKNOWN state, clearing the stored error reason.
+
+**Wire format:** `[gear_id:u8]`
+
+**Behavior:**
+- Only effective when gear is in ERROR state
+- Clears both the gear state (→ UNKNOWN) and the error reason (→ NONE)
+- Gear is then ready for new deploy/retract/calibrate commands
+- NACKs with `INVALID_GEAR_ID` if gear_id is out of range
+
+**CLI:** `gc.reset <gear_id> | all`
+
+## GEAR_ENABLE (Channel Enable/Disable)
+
+Enables or disables a gear channel. Disabled channels reject all deploy, retract, and calibrate commands with `GEAR_DISABLED` (0x6B).
+
+**Wire format:** `[gear_id:u8][enabled:u8]` — enabled: 1=enable, 0=disable
+
+**Behavior:**
+- When disabling: stops any active sequence or calibration (safe shutdown)
+- When disabled: deploy/retract/calibrate commands are rejected with GEAR_DISABLED
+- Status response shows enabled state in config flags byte (bit 7)
+- All channels start enabled on power-up (default)
+- Enable/disable state is not persisted across reboots
+
+**CLI:**
+- `gc.enable <gear_id> | all`
+- `gc.disable <gear_id> | all`
+
+## Version History
+
+| Build | Version | Changes |
+|-------|---------|---------|
+| 45 | 0.10.0 | Door state in STATUS (DoorState enum), GEAR_DOOR_STATUS (0x72) async door state transition events |
+| 44 | 0.10.0 | Calibration no longer closes doors (fixes stuck CALIBRATING state), doors stay open after calibration |
+| 42 | 0.10.0 | Default 60s calibration timeout, errorReason in GEAR_CALIB_STATUS, NO_STALL_DETECTED error reason |
+| 41 | 0.9.0 | Calibration timeout, error reset (GEAR_RESET), channel enable/disable (GEAR_ENABLE), enhanced CLI status display |
+| 39 | 0.9.0 | Zero-current motor disconnect detection, stuck CALIBRATING state fix |
+| 36 | 0.9.0 | Door pre-deploy/post-deploy two-mode sequencing, full rename |
+| 21 | 0.7.0 | Initial documented build |

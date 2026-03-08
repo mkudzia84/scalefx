@@ -28,7 +28,7 @@
 #define DEFAULT_SMOKE_HEATER_THRESHOLD_US   1500    // PWM threshold
 
 // Gun FX - Serial Bus Defaults
-#define DEFAULT_SERIAL_BAUD_RATE            115200
+#define DEFAULT_SERIAL_BAUD_RATE            1000000
 #define DEFAULT_SERIAL_TIMEOUT_MS           100
 
 // Servo Defaults

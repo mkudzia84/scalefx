@@ -100,13 +100,14 @@ size_t buildPacket(uint8_t* output, uint8_t type, uint8_t tag, const uint8_t* pa
     
     output[0] = type;
     output[1] = tag;
-    output[2] = (uint8_t)payloadLen;
+    output[2] = (uint8_t)(payloadLen & 0xFF);         // len low byte
+    output[3] = (uint8_t)((payloadLen >> 8) & 0xFF);  // len high byte
     
     if (payloadLen > 0 && payload != nullptr) {
-        memcpy(&output[3], payload, payloadLen);
+        memcpy(&output[HEADER_SIZE], payload, payloadLen);
     }
     
-    size_t packetLen = 3 + payloadLen;
+    size_t packetLen = HEADER_SIZE + payloadLen;
     output[packetLen] = crc8(output, packetLen);
     
     return packetLen + 1;
@@ -131,26 +132,26 @@ size_t encodePacket(uint8_t* output, uint8_t type, uint8_t tag, const uint8_t* p
 
 bool parsePacket(const uint8_t* input, size_t length, uint8_t* type, uint8_t* tag,
                  const uint8_t** payload, size_t* payloadLen) {
-    if (length < 4) {
-        return false;  // Minimum: type + tag + len + crc
+    if (length < 5) {
+        return false;  // Minimum: type + tag + len(2) + crc
     }
     
     uint8_t pktType = input[0];
     uint8_t pktTag = input[1];
-    uint8_t pktLen = input[2];
+    uint16_t pktLen = (uint16_t)input[2] | ((uint16_t)input[3] << 8);  // u16LE
     
-    if (length != (size_t)(3 + pktLen + 1)) {
+    if (length != (size_t)(HEADER_SIZE + pktLen + 1)) {
         return false;
     }
     
-    uint8_t crc = crc8(input, 3 + pktLen);
-    if (crc != input[3 + pktLen]) {
+    uint8_t crc = crc8(input, HEADER_SIZE + pktLen);
+    if (crc != input[HEADER_SIZE + pktLen]) {
         return false;
     }
     
     *type = pktType;
     *tag = pktTag;
-    *payload = (pktLen > 0) ? &input[3] : nullptr;
+    *payload = (pktLen > 0) ? &input[HEADER_SIZE] : nullptr;
     *payloadLen = pktLen;
     
     return true;

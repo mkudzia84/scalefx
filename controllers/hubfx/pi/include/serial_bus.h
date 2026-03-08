@@ -11,7 +11,7 @@ typedef struct SerialBus SerialBus;
 // Serial bus configuration
 typedef struct {
     const char *device_path;  // e.g., "/dev/ttyACM0" or "/dev/ttyUSB0"
-    int baud_rate;            // e.g., 115200, 9600
+    int baud_rate;            // e.g., 1000000, 115200
     int timeout_ms;           // Read timeout in milliseconds
 } SerialBusConfig;
 

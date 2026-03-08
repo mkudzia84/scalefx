@@ -2,7 +2,16 @@
  * Door Sequencer Module - Header
  *
  * Mode-aware door servo sequencing for landing gear.
- * Handles open/close sequences respecting door mode configuration:
+ * Two independent modes per gear control the full deploy/retract cycle:
+ *
+ *   doorPreDeploy  - Doors opened before deploy motor, closed after retract motor.
+ *   doorPostDeploy - Doors closed after deploy motor, opened before retract motor.
+ *                    (Retract is the reverse of the deploy operation.)
+ *
+ * When doorPostDeploy == NONE, the post-deploy phase is skipped entirely:
+ *   Deploy leaves doors open, retract skips the pre-retract open phase.
+ *
+ * Available modes:
  *   NONE       - No door servos (immediate completion)
  *   SINGLE     - One door servo (servo 0 only)
  *   DUAL_SYNC  - Two doors, activated simultaneously
@@ -20,13 +29,16 @@
  *   DoorSequencer seq;
  *   seq.begin(&servo0, &servo1);
  *   seq.setConfig(doorConfig);
- *   seq.setMode(DoorMode::DUAL_SEQ);
+ *   seq.setMode(DoorMode::DUAL_SYNC, DoorMode::NONE);
  *
- *   // Start opening:
- *   seq.startOpen();
+ *   // Deploy: open with doorPreDeploy mode
+ *   seq.startOpen(true);   // uses doorPreDeploy
  *   // In loop:
  *   seq.update();
  *   if (seq.isComplete()) { ... }
+ *
+ *   // After motor, close with doorPostDeploy mode
+ *   seq.startClose(true);  // uses doorPostDeploy
  */
 
 #ifndef DOOR_SEQUENCER_H
@@ -95,14 +107,18 @@ public:
     void setConfig(const GearControlDoorConfig& config);
 
     /**
-     * @brief Set door activation mode
-     * @param mode DoorMode value (NONE, SINGLE, DUAL_SYNC, DUAL_DELAY, DUAL_SEQ)
+     * @brief Set door activation modes
+     * @param preDeployMode Pre-deploy mode (deploy: open doors, retract: close doors)
+     * @param postDeployMode Post-deploy mode (deploy: close doors, retract: open doors; NONE=skip)
      * @param delay_ms Delay between doors in ms (only used for DUAL_DELAY mode)
      */
-    void setMode(uint8_t mode, uint16_t delay_ms = 500);
+    void setMode(uint8_t preDeployMode, uint8_t postDeployMode = DoorMode::NONE, uint16_t delay_ms = 500);
 
-    /** @brief Get current door mode */
-    uint8_t mode() const { return _mode; }
+    /** @brief Get pre-deploy door mode (deploy: open doors, retract: close doors) */
+    uint8_t preDeployMode() const { return _preDeployMode; }
+
+    /** @brief Get post-deploy door mode (deploy: close doors, retract: open doors) */
+    uint8_t postDeployMode() const { return _postDeployMode; }
 
     /** @brief Get current door delay (for DUAL_DELAY mode) */
     uint16_t delay_ms() const { return _delay_ms; }
@@ -113,19 +129,28 @@ public:
 
     /**
      * @brief Start mode-aware door opening sequence
+     * @param deploying true = deploy (uses doorPreDeploy), false = retract (uses doorPostDeploy)
      *
-     * For NONE mode: immediately completes (no-op).
-     * For SINGLE/DUAL_SYNC: commands all configured doors immediately.
-     * For DUAL_DELAY/DUAL_SEQ: commands door 0 first (door 1 started by update()).
+     * Mode selection:
+     *   deploying=true  → uses doorPreDeploy (open doors before deploy motor)
+     *   deploying=false → uses doorPostDeploy (open doors before retract motor)
+     *
+     * If selected mode is NONE: immediately completes (no-op).
      */
-    void startOpen();
+
+    void startOpen(bool deploying = true);
 
     /**
      * @brief Start mode-aware door closing sequence
+     * @param deploying true = deploy (uses doorPostDeploy), false = retract (uses doorPreDeploy)
      *
-     * Reverse order for DUAL_DELAY/DUAL_SEQ: door 1 closes first, then door 0.
+     * Mode selection (reverse of open):
+     *   deploying=true  → uses doorPostDeploy (close doors after deploy motor)
+     *   deploying=false → uses doorPreDeploy (close doors after retract motor)
+     *
+     * If selected mode is NONE: immediately completes (no-op).
      */
-    void startClose();
+    void startClose(bool deploying = true);
 
     /**
      * @brief Update door sequencing state machine
@@ -152,6 +177,20 @@ public:
 
     /** @brief Check if a sequence is in progress */
     bool isBusy() const { return _state == State::OPENING || _state == State::CLOSING; }
+
+    /**
+     * @brief Get current door state (wire format DoorState value)
+     *
+     * Maps internal sequencer state to protocol DoorState:
+     *   IDLE + no prior op     → UNKNOWN
+     *   IDLE + last was open   → OPEN
+     *   IDLE + last was close  → CLOSED
+     *   OPENING                → OPENING
+     *   CLOSING                → CLOSING
+     *   COMPLETE + was opening → OPEN
+     *   COMPLETE + was closing → CLOSED
+     */
+    uint8_t doorState() const { return _doorState; }
 
     // ========================================================================
     // Direct Control (bypasses sequencing)
@@ -195,16 +234,29 @@ private:
 
     ServoControl* _doors[2] = { nullptr, nullptr };
     GearControlDoorConfig _config;
-    uint8_t _mode = DoorMode::DUAL_SYNC;
+    uint8_t _preDeployMode = DoorMode::DUAL_SYNC;   // Pre-deploy: open before deploy, close after retract
+    uint8_t _postDeployMode = DoorMode::NONE;        // Post-deploy: close after deploy, open before retract
+    uint8_t _activeMode = DoorMode::DUAL_SYNC; // Mode for current operation
     uint16_t _delay_ms = 500;
 
     State _state = State::IDLE;
+    uint8_t _doorState = DoorState::UNKNOWN;  // Tracks logical door state across reset()
     uint32_t _startTime_ms = 0;
     uint8_t _phase = 0;
     uint32_t _phaseStart_ms = 0;
 
-    void _updateOpening();
-    void _updateClosing();
+    void _updateSequence();
+
+    // Direction context for unified open/close update (set in startOpen/startClose).
+    // Encodes door ordering for DUAL_DELAY/DUAL_SEQ modes:
+    //   Opening: first=0, second=1 (door 0 opens first)
+    //   Closing: first=1, second=0 (door 1 closes first — reverse order)
+    struct {
+        uint8_t firstIdx;           // Door that goes first in DELAY/SEQ
+        uint8_t secondIdx;          // Door that goes second
+        uint16_t secondTarget_us;   // Target µs for the delayed/sequential door
+        uint8_t finalDoorState;     // DoorState::OPEN or DoorState::CLOSED
+    } _dir = {};
 };
 
 #endif // DOOR_SEQUENCER_H

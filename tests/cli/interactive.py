@@ -150,6 +150,11 @@ class InteractiveCLI(OutputMixin):
     # Async Listener
     # =========================================================================
     
+    @property
+    def _debug(self) -> bool:
+        """Check if verbose/debug mode is enabled."""
+        return os.environ.get('SCALEFX_VERBOSE', '').lower() in ('1', 'true', 'yes')
+
     def _start_listener(self):
         """Start background thread that reads async packets from serial."""
         if self._listener_thread and self._listener_thread.is_alive():
@@ -159,17 +164,37 @@ class InteractiveCLI(OutputMixin):
         self._listener_thread = threading.Thread(
             target=self._listener_loop, daemon=True, name="async-listener")
         self._listener_thread.start()
+        if self._debug:
+            buf_size = len(self.conn._rx_buffer) if self.conn else 0
+            print(f"  {Fore.MAGENTA}[listener] started (conn._rx_buffer={buf_size}B){Style.RESET_ALL}")
     
     def _stop_listener(self):
         """Stop the background listener thread."""
         self._listener_stop.set()
         if self._listener_thread:
             self._listener_thread.join(timeout=2.0)
+            if self._listener_thread.is_alive():
+                if self._debug:
+                    print(f"  {Fore.RED}[listener] WARNING: thread did not stop within 2s!{Style.RESET_ALL}")
             self._listener_thread = None
+            if self._debug:
+                buf_size = len(self.conn._rx_buffer) if self.conn else 0
+                print(f"  {Fore.MAGENTA}[listener] stopped (conn._rx_buffer={buf_size}B){Style.RESET_ALL}")
     
     def _listener_loop(self):
         """Background thread: read async packets from serial and print them."""
+        debug = self._debug
+        # Take any buffered data from the connection to maintain continuity.
+        # Without this, partial packets left in conn._rx_buffer after a command
+        # would corrupt the next command's response parsing (stale bytes get
+        # prepended to the ACK, COBS decode fails, command times out).
         rx_buffer = bytearray()
+        if self.conn and self.conn._rx_buffer:
+            taken = len(self.conn._rx_buffer)
+            rx_buffer.extend(self.conn._rx_buffer)
+            self.conn._rx_buffer = bytearray()
+            if debug and taken > 0:
+                print(f"  {Fore.MAGENTA}[listener] took {taken}B from conn._rx_buffer: {rx_buffer.hex()}{Style.RESET_ALL}")
         
         while not self._listener_stop.is_set():
             if not self.conn or not self.conn.is_connected or not self.conn._serial:
@@ -200,15 +225,23 @@ class InteractiveCLI(OutputMixin):
                 delimiter = b'\x00'
                 parsed = parse_packet(packet_data + delimiter)
                 if not parsed:
+                    if debug:
+                        print(f"  {Fore.RED}[listener] unparseable packet: {packet_data.hex()}{Style.RESET_ALL}")
                     continue
                 
                 ptype, tag, payload = parsed
+                if debug:
+                    pname = parsers.packet_type_name(ptype)
+                    print(f"  {Fore.MAGENTA}[listener] received {pname} tag={tag} len={len(payload)}{Style.RESET_ALL}")
                 response = Response(ptype, tag, payload, packet_data)
                 self._print_async_message(response)
         
-        # Preserve any remaining partial data back into the connection buffer
-        if rx_buffer and self.conn:
+        # Always save buffer back to connection (even if empty) to prevent
+        # stale partial data from persisting across listener start/stop cycles
+        if self.conn:
             self.conn._rx_buffer = rx_buffer
+            if debug and len(rx_buffer) > 0:
+                print(f"  {Fore.MAGENTA}[listener] saved {len(rx_buffer)}B to conn._rx_buffer: {rx_buffer.hex()}{Style.RESET_ALL}")
     
     def _print_async_message(self, response: Response):
         """Print an unsolicited async packet while at the prompt."""
@@ -222,6 +255,8 @@ class InteractiveCLI(OutputMixin):
             parsers.parse_gear_calib_status(payload)
         elif ptype == GearControlPacket.GEAR_SEQ_STATUS:
             parsers.parse_gear_seq_status(payload)
+        elif ptype == GearControlPacket.GEAR_DOOR_STATUS:
+            parsers.parse_gear_door_status(payload)
         elif ptype == LightFxPacket.LANDING_LIGHT_STATUS:
             parsers.parse_landing_light_status(payload)
         elif ptype == CorePacket.ERROR:
@@ -329,6 +364,7 @@ class InteractiveCLI(OutputMixin):
         self.core_handler.set_connection(None)
         self.conn = ScaleFXConnection(port=port)
         if self.conn.connect(init=False):
+            self.core_handler.set_connection(self.conn)
             self._sync_connection()
             self.print_ok(f"Connected to {port}")
             self.print_info("Run 'init' to initialize and detect controller type")
@@ -363,7 +399,7 @@ class InteractiveCLI(OutputMixin):
                 self.print_error(f"'{cmd}' requires GunFX controller. Run 'init' first.")
             return
         
-        if cmd.startswith('lightfx.') and self.controller_type != ControllerType.LIGHTFX:
+        if cmd.startswith('lfx.') and self.controller_type != ControllerType.LIGHTFX:
             if self.controller_type:
                 self.print_error(f"'{cmd}' is a LightFX command, but you're connected to {self.controller_type}")
             else:
@@ -465,7 +501,12 @@ class InteractiveCLI(OutputMixin):
 def main():
     parser = argparse.ArgumentParser(description='ScaleFX Interactive CLI')
     parser.add_argument('--port', '-p', help='Serial port (e.g., COM3, /dev/ttyACM0)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Enable verbose TX/RX logging (shows all packets)')
     args = parser.parse_args()
+    
+    if args.verbose:
+        os.environ['SCALEFX_VERBOSE'] = '1'
     
     cli = InteractiveCLI(port=args.port)
     cli.run()

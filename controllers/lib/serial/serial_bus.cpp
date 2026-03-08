@@ -104,7 +104,7 @@ void SerialBus::processFrame(const uint8_t* frame, size_t frameLen) {
     
     uint8_t decoded[CoreProtocol::MAX_PACKET_SIZE];
     size_t decLen = CoreProtocol::cobsDecode(frame, frameLen, decoded, sizeof(decoded));
-    if (decLen < 4) {
+    if (decLen < 5) {
         _stats.framing_errors++;
         return;
     }

@@ -368,7 +368,7 @@ void setup() {
     digitalWrite(PIN_STATUS_LED, HIGH);
     
     // Initialize serial
-    Serial.begin(115200);
+    Serial.begin(1000000);
     
     // Wait for serial (with timeout)
     unsigned long start = millis();

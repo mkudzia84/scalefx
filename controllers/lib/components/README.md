@@ -413,7 +413,7 @@ indicators.update();                   // Call in loop()
 Common server controller boilerplate for all ScaleFX Pico server firmware. Encapsulates the USB serial initialization, device naming, indicator LEDs, core protocol handling, command routing, and connection timeout management that was previously duplicated across every controller.
 
 **What PicoServer handles:**
-- USB serial initialization (115200 baud)
+- USB serial initialization (1Mbps baud)
 - Unique device name from Pico board ID (e.g. "GunFX-A1B2")
 - Indicator LEDs on GP13/GP14 (connection + error status)
 - CoreCommandServer with board info and INIT/SHUTDOWN/REBOOT/BOOTSEL callbacks

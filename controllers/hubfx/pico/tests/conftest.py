@@ -13,7 +13,7 @@ from typing import Optional, Generator
 
 # Configuration
 DEFAULT_PORT = os.environ.get('HUBFX_PORT', 'COM10')
-BAUD_RATE = 115200
+BAUD_RATE = 1000000
 TIMEOUT = 2
 STARTUP_DELAY = 0.5
 

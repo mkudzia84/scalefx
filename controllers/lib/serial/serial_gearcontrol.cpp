@@ -50,7 +50,7 @@ void GearControlClient::onModulePacket(uint8_t type, uint8_t tag, const uint8_t*
             break;
 
         case GearControlPacket::GEAR_CALIB_STATUS:
-            // Calibration progress: [gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8]
+            // Calibration progress: [gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8][errorReason:u8]
             if (len >= 9) {
                 GearControlCalibStatus cs;
                 cs.gearId = payload[0];
@@ -59,6 +59,7 @@ void GearControlClient::onModulePacket(uint8_t type, uint8_t tag, const uint8_t*
                 cs.peak_mA = getU16LE(&payload[4]);
                 cs.calibratedStall_mA = getU16LE(&payload[6]);
                 cs.finished = (payload[8] != 0);
+                cs.errorReason = (len >= 10) ? payload[9] : 0;  // Optional: backward-compatible
                 if (_calibStatusCallback) _calibStatusCallback(cs);
 
                 // When calibration finishes, resolve the original tag so any
@@ -66,7 +67,20 @@ void GearControlClient::onModulePacket(uint8_t type, uint8_t tag, const uint8_t*
                 if (cs.finished && tag != CoreProtocol::TAG_ASYNC) {
                     bool isError = (cs.phase == CalibPhase::ERROR);
                     if (isError) {
-                        _lastCommandResult = CommandResult::Nack(GearControlError::MOTOR_STALL, "Calibration failed");
+                        // Map error reason to appropriate NACK code
+                        uint8_t errCode = GearControlError::MOTOR_STALL;  // default
+                        const char* errMsg = "Calibration failed";
+                        if (cs.errorReason == GearErrorReason::CALIB_TIMEOUT) {
+                            errCode = GearControlError::MOTOR_TIMEOUT;
+                            errMsg = "Calibration timed out";
+                        } else if (cs.errorReason == GearErrorReason::MOTOR_DISCONNECTED) {
+                            errCode = GearControlError::INA226_ERROR;
+                            errMsg = "Motor disconnected during calibration";
+                        } else if (cs.errorReason == GearErrorReason::NO_STALL_DETECTED) {
+                            errCode = GearControlError::MOTOR_STALL;
+                            errMsg = "No stall current detected";
+                        }
+                        _lastCommandResult = CommandResult::Nack(errCode, errMsg);
                     } else {
                         _lastCommandResult = CommandResult::Ack();
                     }
@@ -96,6 +110,18 @@ void GearControlClient::onModulePacket(uint8_t type, uint8_t tag, const uint8_t*
                     }
                     _resultQueue.resolve(tag, _lastCommandResult);
                 }
+            }
+            break;
+
+        case GearControlPacket::GEAR_DOOR_STATUS:
+            // Door state transition: [gear_id:u8][state:u8][door0_pos_us:u16LE][door1_pos_us:u16LE]
+            if (len >= 5) {
+                GearControlDoorStatus ds;
+                ds.gearId = payload[0];
+                ds.state = payload[1];
+                ds.door0Pos_us = (len >= 5) ? getU16LE(&payload[2]) : 0;  // µs
+                ds.door1Pos_us = (len >= 7) ? getU16LE(&payload[4]) : 0;  // µs
+                if (_doorStatusCallback) _doorStatusCallback(ds);
             }
             break;
 
@@ -160,7 +186,11 @@ CommandResult GearControlClient::gearAll(uint8_t action) {
     return sendCommand(GearControlPacket::GEAR_ALL, payload, sizeof(payload));
 }
 
-CommandResult GearControlClient::gearCalibrate(uint8_t gearId) {
+CommandResult GearControlClient::gearCalibrate(uint8_t gearId, uint8_t timeout_s) {
+    if (timeout_s > 0) {
+        uint8_t payload[2] = { gearId, timeout_s };
+        return sendCommand(GearControlPacket::GEAR_CALIBRATE, payload, sizeof(payload));
+    }
     uint8_t payload[1] = { gearId };
     return sendCommand(GearControlPacket::GEAR_CALIBRATE, payload, sizeof(payload));
 }
@@ -168,6 +198,16 @@ CommandResult GearControlClient::gearCalibrate(uint8_t gearId) {
 CommandResult GearControlClient::gearCalibCancel(uint8_t gearId) {
     uint8_t payload[1] = { gearId };
     return sendCommand(GearControlPacket::GEAR_CALIB_CANCEL, payload, sizeof(payload));
+}
+
+CommandResult GearControlClient::gearReset(uint8_t gearId) {
+    uint8_t payload[1] = { gearId };
+    return sendCommand(GearControlPacket::GEAR_RESET, payload, sizeof(payload));
+}
+
+CommandResult GearControlClient::gearEnable(uint8_t gearId, bool enabled) {
+    uint8_t payload[2] = { gearId, (uint8_t)(enabled ? 1 : 0) };
+    return sendCommand(GearControlPacket::GEAR_ENABLE, payload, sizeof(payload));
 }
 
 // ============================================================================
@@ -238,10 +278,11 @@ CommandResult GearControlClient::setBatteryConfig(bool enabled, bool autoDeployO
 }
 
 CommandResult GearControlClient::setDoorMode(const GearControlDoorModeConfig& config) {
-    uint8_t payload[4];
+    uint8_t payload[5];
     payload[0] = config.gearId;
-    payload[1] = config.mode;
-    putU16LE(&payload[2], config.delay_ms);
+    payload[1] = config.preDeployMode;
+    payload[2] = config.postDeployMode;
+    putU16LE(&payload[3], config.delay_ms);
     return sendCommand(GearControlPacket::DOOR_MODE, payload, sizeof(payload));
 }
 
@@ -365,9 +406,10 @@ CommandHandleResult GearControlServer::handleModulePacket(uint8_t type, const ui
         case GearControlPacket::GEAR_CALIBRATE: {
             SFX_REQUIRE_LEN(1);
             uint8_t gearId = payload[0];
+            uint8_t timeout_s = (len >= 2) ? payload[1] : 0;  // Optional overall timeout in seconds
             SFX_VALIDATE(GearControlSpec::isValidGearId(gearId), GearControlError::INVALID_GEAR_ID);
             _calibTag = _currentTag;  // Store tag for calibration status responses
-            SFX_DISPATCH(_gearCalibrateCallback, gearId);
+            SFX_DISPATCH(_gearCalibrateCallback, gearId, timeout_s);
         }
 
         case GearControlPacket::GEAR_CALIB_CANCEL: {
@@ -385,14 +427,31 @@ CommandHandleResult GearControlServer::handleModulePacket(uint8_t type, const ui
         }
 
         case GearControlPacket::DOOR_MODE: {
-            SFX_REQUIRE_LEN(4);
+            SFX_REQUIRE_LEN(5);
             GearControlDoorModeConfig config;
             config.gearId = payload[0];
-            config.mode = payload[1];
-            config.delay_ms = getU16LE(&payload[2]);
+            config.preDeployMode = payload[1];
+            config.postDeployMode = payload[2];
+            config.delay_ms = getU16LE(&payload[3]);
             SFX_VALIDATE(GearControlSpec::isValidGearId(config.gearId), GearControlError::INVALID_GEAR_ID);
-            SFX_VALIDATE(GearControlSpec::isValidDoorMode(config.mode), GearControlError::INVALID_ACTION);
+            SFX_VALIDATE(GearControlSpec::isValidDoorMode(config.preDeployMode), GearControlError::INVALID_ACTION);
+            SFX_VALIDATE(GearControlSpec::isValidDoorMode(config.postDeployMode), GearControlError::INVALID_ACTION);
             SFX_DISPATCH(_doorModeCallback, config);
+        }
+
+        case GearControlPacket::GEAR_RESET: {
+            SFX_REQUIRE_LEN(1);
+            uint8_t gearId = payload[0];
+            SFX_VALIDATE(GearControlSpec::isValidGearId(gearId), GearControlError::INVALID_GEAR_ID);
+            SFX_DISPATCH(_gearResetCallback, gearId);
+        }
+
+        case GearControlPacket::GEAR_ENABLE: {
+            SFX_REQUIRE_LEN(2);
+            uint8_t gearId = payload[0];
+            bool enabled = payload[1] != 0;
+            SFX_VALIDATE(GearControlSpec::isValidGearId(gearId), GearControlError::INVALID_GEAR_ID);
+            SFX_DISPATCH(_gearEnableCallback, gearId, enabled);
         }
 
         default:
@@ -405,13 +464,14 @@ CommandHandleResult GearControlServer::handleModulePacket(uint8_t type, const ui
 // ============================================================================
 
 int GearControlServer::sendCalibStatus(const GearControlCalibStatus& status) {
-    uint8_t payload[9];
+    uint8_t payload[10];
     payload[0] = status.gearId;
     payload[1] = static_cast<uint8_t>(status.phase);
     putU16LE(&payload[2], status.current_mA);          // mA
     putU16LE(&payload[4], status.peak_mA);              // mA
     putU16LE(&payload[6], status.calibratedStall_mA);   // mA
     payload[8] = status.finished ? 1 : 0;
+    payload[9] = status.errorReason;                    // GearErrorReason code
     return sendRawPacket(GearControlPacket::GEAR_CALIB_STATUS, _calibTag, payload, sizeof(payload));
 }
 
@@ -424,4 +484,14 @@ int GearControlServer::sendGearSeqStatus(const GearControlSeqStatus& status) {
     putU32LE(&payload[4], status.elapsed_ms);                    // ms
     uint8_t tag = (status.gearId < 3) ? _gearTag[status.gearId] : 0;
     return sendRawPacket(GearControlPacket::GEAR_SEQ_STATUS, tag, payload, sizeof(payload));
+}
+
+int GearControlServer::sendDoorStatus(const GearControlDoorStatus& status) {
+    uint8_t payload[6];
+    payload[0] = status.gearId;
+    payload[1] = status.state;
+    putU16LE(&payload[2], status.door0Pos_us);  // µs
+    putU16LE(&payload[4], status.door1Pos_us);  // µs
+    // Door status is always async (unsolicited)
+    return sendRawPacket(GearControlPacket::GEAR_DOOR_STATUS, CoreProtocol::TAG_ASYNC, payload, sizeof(payload));
 }

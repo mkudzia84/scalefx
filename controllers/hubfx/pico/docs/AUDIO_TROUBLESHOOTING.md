@@ -309,7 +309,7 @@ Found 1 device(s)
 
 ```bash
 # Boot verification
-<serial monitor at 115200 baud>
+<serial monitor at 1Mbps baud>
 
 # Codec checks
 codec status
