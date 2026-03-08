@@ -1,13 +1,13 @@
 /*
- * Storage Server — Implementation
+ * Storage Server â€” Implementation
  *
  * Handles config + SD card + file transfer commands (0x90-0xA3).
  *
  * Two transfer modes:
- *   DOWNLOAD (server→client): StreamWriter sends STREAM_BEGIN/DATA/END
+ *   DOWNLOAD (serverâ†’client): StreamWriter sends STREAM_BEGIN/DATA/END
  *     (0xA4-0xA6) from serial_stream.h. Fire-and-forget with end-of-stream
  *     CRC-16. Used by FILE_LIST and FILE_DOWNLOAD.
- *   UPLOAD (client→server): Client sends FILE_UPLOAD_BEGIN/DATA/END/CANCEL
+ *   UPLOAD (clientâ†’server): Client sends FILE_UPLOAD_BEGIN/DATA/END/CANCEL
  *     (0xA0-0xA3). Each chunk gets individual ACK/NACK, enabling per-chunk
  *     CRC-16 retry. Upload reuses StreamProtocol::CHUNK_HEADER_SIZE and
  *     StreamProtocol::crc16() for the shared [seqNum:u16LE][crc16:u16LE] format.
@@ -20,7 +20,7 @@ using namespace CoreProtocol;
 
 
 // ============================================================================
-// handleModulePacket — Storage Commands (0x90-0xA6)
+// handleModulePacket â€” Storage Commands (0x90-0xA6)
 // ============================================================================
 
 CommandHandleResult StorageServer::handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) {
@@ -129,7 +129,7 @@ void StorageServer::handleSdInit(const uint8_t* payload, size_t len) {
     uint8_t speed_mhz = (len >= 1) ? payload[0] : 20;  // Default 20 MHz
 
     if (speed_mhz == 0 || speed_mhz > 50) {
-        sendNack(SerialError::PARAM_RANGE);
+        sendNack(SerialError::PARAM_OUT_OF_RANGE);
         return;
     }
 
@@ -142,7 +142,7 @@ void StorageServer::handleSdInit(const uint8_t* payload, size_t len) {
 
 void StorageServer::handleSdStatusReq() {
     if (!sd().isInitialized()) {
-        // Not initialized — return minimal response
+        // Not initialized â€” return minimal response
         uint8_t buf[1] = { 0 };  // initialized = false
         sendRawPacket(HubFxPacket::SD_STATUS_RESP, currentTag(), buf, 1);
         return;
@@ -178,7 +178,7 @@ void StorageServer::handleFileList(const uint8_t* payload, size_t len) {
 
     char path[128];
     if (!extractPath(payload, len, path, sizeof(path))) {
-        sendNack(SerialError::MISSING_PARAM);
+        sendNack(SerialError::MISSING_PARAMETER);
         return;
     }
 
@@ -196,7 +196,7 @@ void StorageServer::handleFileList(const uint8_t* payload, size_t len) {
     });
 
     if (err != SdError::OK && err != SdError::NOT_FOUND) {
-        // Stream may be partially written — still send END for clean close
+        // Stream may be partially written â€” still send END for clean close
     }
 
     stream.end();
@@ -207,7 +207,7 @@ void StorageServer::handleFileDelete(const uint8_t* payload, size_t len) {
 
     char path[128];
     if (!extractPath(payload, len, path, sizeof(path))) {
-        sendNack(SerialError::MISSING_PARAM);
+        sendNack(SerialError::MISSING_PARAMETER);
         return;
     }
 
@@ -224,7 +224,7 @@ void StorageServer::handleFileMkdir(const uint8_t* payload, size_t len) {
 
     char path[128];
     if (!extractPath(payload, len, path, sizeof(path))) {
-        sendNack(SerialError::MISSING_PARAM);
+        sendNack(SerialError::MISSING_PARAMETER);
         return;
     }
 
@@ -241,7 +241,7 @@ void StorageServer::handleFileInfo(const uint8_t* payload, size_t len) {
 
     char path[128];
     if (!extractPath(payload, len, path, sizeof(path))) {
-        sendNack(SerialError::MISSING_PARAM);
+        sendNack(SerialError::MISSING_PARAMETER);
         return;
     }
 
@@ -268,7 +268,7 @@ void StorageServer::handleFileDownload(const uint8_t* payload, size_t len) {
 
     char path[128];
     if (!extractPath(payload, len, path, sizeof(path))) {
-        sendNack(SerialError::MISSING_PARAM);
+        sendNack(SerialError::MISSING_PARAMETER);
         return;
     }
 
@@ -327,14 +327,14 @@ void StorageServer::handleUploadBegin(const uint8_t* payload, size_t len) {
 
     // FILE_UPLOAD_BEGIN: [size:u32LE][pathLen:u8][path:str]
     if (len < 5) {
-        sendNack(SerialError::MISSING_PARAM);
+        sendNack(SerialError::MISSING_PARAMETER);
         return;
     }
 
     uint32_t expectedSize = getU32LE(payload);
     char path[128];
     if (!extractPath(payload + 4, len - 4, path, sizeof(path))) {
-        sendNack(SerialError::MISSING_PARAM);
+        sendNack(SerialError::MISSING_PARAMETER);
         return;
     }
 
@@ -367,7 +367,7 @@ void StorageServer::handleUploadData(const uint8_t* payload, size_t len) {
 
     // FILE_UPLOAD_DATA: [seqNum:u16LE][crc16:u16LE][data:N]
     if (len < StreamProtocol::CHUNK_HEADER_SIZE) {
-        sendNack(SerialError::MISSING_PARAM);
+        sendNack(SerialError::MISSING_PARAMETER);
         return;
     }
 
@@ -378,14 +378,14 @@ void StorageServer::handleUploadData(const uint8_t* payload, size_t len) {
 
     // Verify sequence number
     if (seqNum != _upload.expectedSeq) {
-        sendNack(SerialError::PARAM_RANGE);
+        sendNack(SerialError::PARAM_OUT_OF_RANGE);
         return;
     }
 
     // Verify CRC-16
     uint16_t computedCrc = StreamProtocol::crc16(data, dataLen);
     if (computedCrc != crc16) {
-        // CRC mismatch — client should retry this segment
+        // CRC mismatch â€” client should retry this segment
         sendNack(SerialError::CRC_ERROR);
         return;
     }
@@ -396,7 +396,7 @@ void StorageServer::handleUploadData(const uint8_t* payload, size_t len) {
     sd().unlock();
 
     if (written != dataLen) {
-        // I/O error — abort upload
+        // I/O error â€” abort upload
         sd().lock();
         _upload.file.close();
         sd().unlock();
@@ -462,7 +462,7 @@ uint8_t StorageServer::mapSdError(uint8_t sdErr) {
         case SdError::IO_ERROR:        return HubFxError::FILE_IO_ERROR;
         case SdError::IS_DIRECTORY:    return HubFxError::FILE_NOT_FOUND;
         case SdError::ALREADY_EXISTS:  return HubFxError::FILE_ALREADY_EXISTS;
-        default:                       return SerialError::INTERNAL;
+        default:                       return SerialError::INTERNAL_ERROR;
     }
 }
 

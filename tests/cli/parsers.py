@@ -34,6 +34,7 @@ def packet_type_name(ptype: int) -> str:
         CorePacket.KEEPALIVE: "KEEPALIVE",
         CorePacket.I2C_SCAN: "I2C_SCAN",
         CorePacket.I2C_SCAN_RESULT: "I2C_SCAN_RESULT",
+        CorePacket.IDENTIFY: "IDENTIFY",
     }
     if ptype in core_names:
         return core_names[ptype]

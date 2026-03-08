@@ -7,6 +7,8 @@
 
 #include "audio_server.h"
 #include "audio_mixer.h"
+#include "audio_codec.h"
+#include "audio_config.h"
 
 using namespace CoreProtocol;
 
@@ -281,15 +283,46 @@ void AudioServer::handleStatusReq() {
         return;
     }
 
-    // Build response: [masterVol:u8][activeMask:u8][per-active-channel data]
-    // Per channel (only active channels): [ch:u8][vol:u8][playing:u8][looping:u8]
-    //   [loopCount:u16LE][remaining_ms:u16LE][queueLen:u8][output:u8]
-    uint8_t buf[256];
+    // Build response (v2 extended format):
+    //   Header:
+    //     [masterVol:u8][flags:u8][sampleRate_Hz:u16LE][bitDepth:u8]
+    //     [maxChannels:u8][codecNameLen:u8][codecName:str]
+    //   Per-channel (only active):
+    //     [activeMask:u8]
+    //     [ch:u8][vol:u8][playing:u8][looping:u8][loopCount:u16LE]
+    //     [remaining_ms:u16LE][queueLen:u8][output:u8]
+    //     [wavRate_Hz:u16LE][wavCh:u8][wavBits:u8]
+    //     [filenameLen:u8][filename:str]
+
+    uint8_t buf[512];
     size_t pos = 0;
 
+    // --- System header ---
     buf[pos++] = (uint8_t)(_mixer->masterVolume() * 100.0f);  // masterVol 0-100
 
-    // Count active channels
+    // Flags: bit0=initialized, bit1=i2sRunning, bit2=hasCodec
+    uint8_t flags = 0;
+    if (_mixer->isInitialized())  flags |= 0x01;
+    if (_mixer->isI2SRunning())   flags |= 0x02;
+    if (_mixer->getCodec())       flags |= 0x04;
+    buf[pos++] = flags;
+
+    // I2S config
+    putU16LE(&buf[pos], AUDIO_SAMPLE_RATE);  // sampleRate_Hz
+    pos += 2;
+    buf[pos++] = AUDIO_BIT_DEPTH;            // bitDepth
+    buf[pos++] = AUDIO_MAX_CHANNELS;         // maxChannels
+
+    // Codec name (length-prefixed)
+    const char* codecName = _mixer->getCodec() ? _mixer->getCodec()->getModelName() : "";
+    uint8_t codecLen = (uint8_t)strlen(codecName);
+    buf[pos++] = codecLen;
+    if (codecLen > 0) {
+        memcpy(&buf[pos], codecName, codecLen);
+        pos += codecLen;
+    }
+
+    // --- Per-channel data ---
     uint8_t activeMask = 0;
     for (int i = 0; i < 8; i++) {
         if (_mixer->isPlaying(i) || _mixer->queueLength(i) > 0) {
@@ -298,10 +331,9 @@ void AudioServer::handleStatusReq() {
     }
     buf[pos++] = activeMask;
 
-    // Per-channel data for active channels
     for (int i = 0; i < 8; i++) {
         if (!(activeMask & (1 << i))) continue;
-        if (pos > sizeof(buf) - 10) break;
+        if (pos > sizeof(buf) - 64) break;  // safety margin for filename
 
         buf[pos++] = (uint8_t)i;                                         // ch
         buf[pos++] = (uint8_t)(_mixer->getChannelVolume(i) * 100.0f);    // vol 0-100
@@ -314,6 +346,21 @@ void AudioServer::handleStatusReq() {
         pos += 2;
         buf[pos++] = (uint8_t)_mixer->queueLength(i);                    // queueLen
         buf[pos++] = (uint8_t)_mixer->getOutput(i);                      // output
+
+        // WAV format info
+        putU16LE(&buf[pos], (uint16_t)_mixer->getSampleRate(i));          // wavRate_Hz
+        pos += 2;
+        buf[pos++] = (uint8_t)_mixer->getNumChannels(i);                  // wavCh
+        buf[pos++] = (uint8_t)_mixer->getBitsPerSample(i);                // wavBits
+
+        // Filename (length-prefixed)
+        const char* fname = _mixer->getFilename(i);
+        uint8_t fnameLen = fname ? (uint8_t)strlen(fname) : 0;
+        buf[pos++] = fnameLen;
+        if (fnameLen > 0) {
+            memcpy(&buf[pos], fname, fnameLen);
+            pos += fnameLen;
+        }
     }
 
     sendRawPacket(HubFxPacket::AUDIO_STATUS_RESP, currentTag(), buf, pos);

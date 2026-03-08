@@ -588,7 +588,8 @@ cli/
 4. Create `controllers/newfx/pico/` directory structure
 5. Create Python test framework classes
 6. Add CLI commands
-7. Document in `README.md`
+7. Register in `scripts/build_and_flash.py` (add to `CONTROLLERS` list and docstring)
+8. Document in `README.md`
 
 ### Debugging Protocol Issues
 - Use interactive CLI: `python -m tests.cli.interactive`

@@ -184,7 +184,34 @@ Slave types: 1=GunFX, 2=LightFX, 3=GearControl
 | `AUDIO_QUEUE` | 0x88 | `[ch:u8][vol:u8][loopCount:u16LE][behavior:u8][pathLen:u8][path:str]` | ACK/NACK |
 | `AUDIO_QUEUE_CLEAR` | 0x89 | `[ch:u8]` (0xFF=all) | ACK |
 | `AUDIO_STATUS_REQ` | 0x8A | (none) | AUDIO_STATUS_RESP |
-| `AUDIO_STATUS_RESP` | 0x8B | `[masterVol:u8][activeCh:u8][per-channel data...]` | — |
+| `AUDIO_STATUS_RESP` | 0x8B | see below | — |
+
+**AUDIO_STATUS_RESP (v2) payload:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| masterVol | u8 | Master volume 0-100 |
+| flags | u8 | bit0=initialized, bit1=i2sRunning, bit2=hasCodec |
+| sampleRate_Hz | u16LE | I2S sample rate (e.g. 44100) |
+| bitDepth | u8 | I2S bit depth (e.g. 16) |
+| maxChannels | u8 | Maximum mixer channels (8) |
+| codecNameLen | u8 | Length of codec name string |
+| codecName | str | Codec model name (e.g. "TAS5825M") |
+| activeMask | u8 | Bitmask of active channels |
+| *per active channel:* | | |
+| ch | u8 | Channel index 0-7 |
+| vol | u8 | Channel volume 0-100 |
+| playing | u8 | 1=playing, 0=queued only |
+| looping | u8 | 1=looping, 0=one-shot |
+| loopCount | u16LE | Remaining loops (0xFFFF=infinite) |
+| remaining_ms | u16LE | Remaining playback time (ms) |
+| queueLen | u8 | Number of queued sounds |
+| output | u8 | 0=stereo, 1=left, 2=right |
+| wavRate_Hz | u16LE | WAV sample rate |
+| wavCh | u8 | WAV channels (1=mono, 2=stereo) |
+| wavBits | u8 | WAV bits per sample (8/16) |
+| filenameLen | u8 | Length of filename string |
+| filename | str | Currently playing filename |
 
 Audio outputs: 0=Stereo, 1=Left, 2=Right.
 Loop modes: 0=None, 1=Finite(N), 2=Infinite.

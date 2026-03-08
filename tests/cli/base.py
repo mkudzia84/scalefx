@@ -48,6 +48,7 @@ class CommandInfo:
     description: str
     requires_init: bool = False
     controller: Optional[str] = None  # None = all, 'gunfx', 'lightfx', 'noop'
+    group: Optional[str] = None  # Sub-group for help display (e.g., 'Audio', 'GunFX Slave')
 
 
 # =============================================================================

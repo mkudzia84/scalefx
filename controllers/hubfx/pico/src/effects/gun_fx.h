@@ -123,7 +123,7 @@ public:
     int rateIndex() const { return _currentRateIndex; }
     bool isHeaterOn() const { return _smokeHeaterOn; }
     bool isConnected() const { return _serial.isConnected(); }
-    bool isSlaveReady() const { return _serial.isSlaveReady(); }
+    bool isSlaveReady() const { return _serial.isServerReady(); }
     const GunFxStatus& slaveStatus() const { return _serial.lastStatus(); }
     
     // ---- PWM Readings ----
@@ -148,7 +148,7 @@ private:
 
     // ---- State ----
     GunFXSettings _settings;
-    GunFxSerialMasterBinary _serial;
+    GunFxClient _serial;
     
     // Uses AudioMixer::instance() directly
     AudioMixer& mixer() { return AudioMixer::instance(); }

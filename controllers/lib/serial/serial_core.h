@@ -306,6 +306,7 @@ namespace CorePacket {
     constexpr uint8_t I2C_SCAN       = 0xFB;  // Request I2C bus scan
     constexpr uint8_t I2C_SCAN_RESULT = 0xFC;  // I2C scan response
     constexpr uint8_t LOG_MESSAGE     = 0xFD;  // [level:u8][millis:u32LE][message:str] (async, unsolicited)
+    constexpr uint8_t IDENTIFY        = 0xFE;  // Query board info without triggering INIT (response uses same type + INIT_READY payload format)
 }
 
 // ============================================================================

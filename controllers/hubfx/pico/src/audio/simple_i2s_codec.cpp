@@ -7,7 +7,8 @@
 
 // Simple I2S codec log macro - takes runtime name as first arg
 #if AUDIO_DEBUG
-#define I2S_LOG(name, fmt, ...) Serial.printf("[%s] " fmt "\n", name, ##__VA_ARGS__)
+#define I2S_LOG(name, fmt, ...) \
+    do { DiagLog::instance().info("[%s] " fmt, name, ##__VA_ARGS__); } while(0)
 #else
 #define I2S_LOG(name, fmt, ...)
 #endif

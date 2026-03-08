@@ -403,7 +403,9 @@ class InteractiveCLI(OutputMixin):
             self.core_handler.set_connection(self.conn)
             self._sync_connection()
             self.print_ok(f"Connected to {port}")
-            self.print_info("Run 'init' to initialize and detect controller type")
+            # Auto-discover controller type via IDENTIFY, then INIT if needed
+            self.core_handler._identify_and_init()
+            self._sync_connection()  # Re-sync after detection
             self._start_listener()
         else:
             self.print_error(f"Failed to connect to {port}")
@@ -422,7 +424,9 @@ class InteractiveCLI(OutputMixin):
         """Suggest similar command or explain why it's not available."""
         # Check if it's a controller-specific command for wrong controller
         if cmd.startswith('gc.') and self.controller_type != ControllerType.GEARCONTROL:
-            if self.controller_type:
+            if self.controller_type == ControllerType.HUBFX:
+                self.print_error(f"Use 'slave {cmd}' to route to GearControl via hub")
+            elif self.controller_type:
                 self.print_error(f"'{cmd}' is a GearControl command, but you're connected to {self.controller_type}")
             else:
                 self.print_error(f"'{cmd}' requires GearControl controller. Run 'init' first.")
@@ -435,14 +439,26 @@ class InteractiveCLI(OutputMixin):
                 self.print_error(f"'{cmd}' requires GunFX controller. Run 'init' first.")
             return
         
-        if cmd.startswith('lfx.') and self.controller_type != ControllerType.LIGHTFX:
-            if self.controller_type:
+        if cmd.startswith(('lfx.', 'lightfx.')) and self.controller_type != ControllerType.LIGHTFX:
+            if self.controller_type == ControllerType.HUBFX:
+                self.print_error(f"Use 'slave {cmd}' to route to LightFX via hub")
+            elif self.controller_type:
                 self.print_error(f"'{cmd}' is a LightFX command, but you're connected to {self.controller_type}")
             else:
                 self.print_error(f"'{cmd}' requires LightFX controller. Run 'init' first.")
             return
+
+        if cmd.startswith('gfx.'):
+            if self.controller_type == ControllerType.HUBFX:
+                self.print_error(f"Use 'slave {cmd}' to route to GunFX via hub")
+            elif self.controller_type:
+                self.print_error(f"'{cmd}' is a GunFX slave command (HubFX only)")
+            else:
+                self.print_error(f"'{cmd}' requires HubFX controller. Run 'init' first.")
+            return
         
-        if cmd.startswith('hub.') and self.controller_type != ControllerType.HUBFX:
+        hubfx_prefixes = ('hub.', 'audio.', 'engine.', 'config.', 'sd.')
+        if any(cmd.startswith(p) for p in hubfx_prefixes) and self.controller_type != ControllerType.HUBFX:
             if self.controller_type:
                 self.print_error(f"'{cmd}' is a HubFX command, but you're connected to {self.controller_type}")
             else:
@@ -466,8 +482,16 @@ class InteractiveCLI(OutputMixin):
         self.print_error(f"Unknown command: {cmd}. Type 'help' for available commands.")
     
     def _cmd_help(self, args: List[str], available: Dict[str, Tuple[Callable, CommandInfo]]):
-        """Show available commands based on current state."""
-        # Group commands by category
+        """Show available commands based on current state.
+        
+        Usage:
+            help          - Show overview (groups shown as summaries for HubFX)
+            help <group>  - Show commands in a specific group (e.g. help audio)
+            help gfx|lfx|gc - Show slave sub-commands for that controller
+        """
+        from collections import OrderedDict
+
+        # Categorize all commands
         core_cmds = []
         protocol_cmds = []
         controller_cmds = []
@@ -482,8 +506,107 @@ class InteractiveCLI(OutputMixin):
                 protocol_cmds.append(info)
             else:
                 controller_cmds.append(info)
-        
-        # Print header with connection status
+
+        # Build groups dict from controller commands (preserves insertion order)
+        has_groups = any(info.group for info in controller_cmds)
+        groups: OrderedDict[str, list] = OrderedDict()
+        ungrouped = []
+        if has_groups:
+            for info in controller_cmds:
+                if info.group:
+                    groups.setdefault(info.group, []).append(info)
+                else:
+                    ungrouped.append(info)
+
+        # Build slave sub-groups if HubFX is connected
+        slave_groups: OrderedDict[str, list] = OrderedDict()
+        if self.controller_type == ControllerType.HUBFX:
+            slave_cmds = self.hubfx_handler.get_slave_commands()
+            for _subcmd, (_handler, info) in slave_cmds.items():
+                if info.group:
+                    slave_groups.setdefault(info.group, []).append(info)
+
+        # Build a lookup: lowercase alias → (source, group_name)
+        # source = 'group' for controller groups, 'slave' for slave sub-groups
+        group_aliases = {}
+        for gname in groups:
+            key = gname.lower()
+            group_aliases[key] = ('group', gname)
+            first_word = key.split()[0]
+            group_aliases[first_word] = ('group', gname)
+        for gname in slave_groups:
+            key = gname.lower()
+            group_aliases[key] = ('slave', gname)
+            first_word = key.split()[0]
+            group_aliases[first_word] = ('slave', gname)
+        # Explicit short aliases
+        _extra_groups = {
+            'files': ('group', 'SD Card & Files'),
+            'engine': ('group', 'Engine FX'),
+            'slaves': ('group', 'Hub Management'),
+            'hub': ('group', 'Hub Management'),
+        }
+        _extra_slave = {
+            'gfx': ('slave', 'GunFX (gfx.*)'),
+            'gunfx': ('slave', 'GunFX (gfx.*)'),
+            'lfx': ('slave', 'LightFX (lfx.*)'),
+            'lightfx': ('slave', 'LightFX (lfx.*)'),
+            'gc': ('slave', 'GearControl (gc.*)'),
+            'gearcontrol': ('slave', 'GearControl (gc.*)'),
+            'gear': ('slave', 'GearControl (gc.*)'),
+        }
+        for alias, val in {**_extra_groups, **_extra_slave}.items():
+            source, gname = val
+            target = groups if source == 'group' else slave_groups
+            if gname in target:
+                group_aliases[alias] = val
+
+        # ── "help <group>" — show a single group's or slave group's commands ──
+        if args and (has_groups or slave_groups):
+            query = args[0].lower()
+            # Special case: "help slave" shows all slave sub-groups
+            if query == 'slave' and slave_groups:
+                color = Fore.CYAN
+                print()
+                print(f"{color}━━━ Slave Controllers ━━━{Style.RESET_ALL}")
+                print(f"  Usage: {Fore.YELLOW}slave <subcmd> [args...]{Style.RESET_ALL}\n")
+                for sg_name, sg_infos in slave_groups.items():
+                    print(f"{color}  ── {sg_name} ──{Style.RESET_ALL}")
+                    for info in sg_infos:
+                        print(f"    {Fore.GREEN}{info.usage:<55}{Style.RESET_ALL} {info.description}")
+                    print()
+                return
+
+            matched = group_aliases.get(query)
+            if matched:
+                source, gname = matched
+                target = groups if source == 'group' else slave_groups
+                if gname in target:
+                    color = {
+                        ControllerType.GEARCONTROL: Fore.GREEN,
+                        ControllerType.GUNFX: Fore.RED,
+                        ControllerType.HUBFX: Fore.CYAN,
+                        ControllerType.LIGHTFX: Fore.BLUE,
+                    }.get(self.controller_type, Fore.CYAN)
+                    print()
+                    if source == 'slave':
+                        print(f"{color}━━━ {gname} ━━━{Style.RESET_ALL}")
+                        print(f"  Usage: {Fore.YELLOW}slave <subcmd> [args...]{Style.RESET_ALL}\n")
+                    else:
+                        print(f"{color}━━━ {gname} ━━━{Style.RESET_ALL}")
+                    for info in target[gname]:
+                        print(f"  {Fore.GREEN}{info.usage:<55}{Style.RESET_ALL} {info.description}")
+                    print()
+                    return
+
+            all_known = set()
+            for _src, gn in group_aliases.values():
+                all_known.add(gn)
+            self.print_error(f"Unknown group '{args[0]}'. Available: {', '.join(sorted(all_known))}")
+            return
+
+        # ── Full help output ──
+        # Connection header
         print()
         if self.controller_type:
             ctrl_color = {
@@ -519,7 +642,6 @@ class InteractiveCLI(OutputMixin):
         
         # Controller-specific commands
         if controller_cmds:
-            prefix = self.controller_type or "controller"
             color = {
                 ControllerType.GEARCONTROL: Fore.GREEN,
                 ControllerType.GUNFX: Fore.RED,
@@ -527,11 +649,36 @@ class InteractiveCLI(OutputMixin):
                 ControllerType.LIGHTFX: Fore.BLUE,
             }.get(self.controller_type, Fore.CYAN)
             
-            print(f"{color}━━━ {prefix.upper()} Commands ━━━{Style.RESET_ALL}")
-            for info in controller_cmds:
-                print(f"  {Fore.GREEN}{info.usage:<55}{Style.RESET_ALL}")
-                print(f"      {info.description}")
-            print()
+            if has_groups:
+                # Show group summaries with command count and hint
+                print(f"{color}━━━ Command Groups ━━━{Style.RESET_ALL}")
+                print(f"  Type {Fore.YELLOW}help <group>{Style.RESET_ALL} to see commands in a group\n")
+                for group_name, group_infos in groups.items():
+                    if group_name == 'Slave Controllers':
+                        continue  # Show separately below
+                    cmd_names = ', '.join(info.name for info in group_infos[:4])
+                    more = f", ... (+{len(group_infos)-4})" if len(group_infos) > 4 else ""
+                    print(f"  {Fore.GREEN}{group_name:<22}{Style.RESET_ALL} {len(group_infos):>2} cmds  │  {cmd_names}{more}")
+
+                # Slave controller summary
+                if slave_groups:
+                    print()
+                    print(f"{color}━━━ Slave Controllers ━━━{Style.RESET_ALL}")
+                    print(f"  Usage: {Fore.YELLOW}slave <subcmd> [args...]{Style.RESET_ALL}")
+                    print(f"  Type {Fore.YELLOW}help gfx{Style.RESET_ALL}, {Fore.YELLOW}help lfx{Style.RESET_ALL}, {Fore.YELLOW}help gc{Style.RESET_ALL}, or {Fore.YELLOW}help slave{Style.RESET_ALL} for details\n")
+                    for sg_name, sg_infos in slave_groups.items():
+                        cmd_names = ', '.join(info.name for info in sg_infos[:4])
+                        more = f", ... (+{len(sg_infos)-4})" if len(sg_infos) > 4 else ""
+                        print(f"  {Fore.GREEN}{sg_name:<26}{Style.RESET_ALL} {len(sg_infos):>2} cmds  │  {cmd_names}{more}")
+                print()
+            else:
+                # Flat list for simple controllers
+                prefix = self.controller_type or "controller"
+                print(f"{color}━━━ {prefix.upper()} Commands ━━━{Style.RESET_ALL}")
+                for info in controller_cmds:
+                    print(f"  {Fore.GREEN}{info.usage:<55}{Style.RESET_ALL}")
+                    print(f"      {info.description}")
+                print()
         
         # Show what's not available
         if not self.controller_type:
@@ -539,7 +686,7 @@ class InteractiveCLI(OutputMixin):
             print(f"  Additional commands will be available based on detected controller type:")
             print(f"  - {Fore.GREEN}GearControl{Style.RESET_ALL}: gc.deploy, gc.retract, gc.servo, ...")
             print(f"  - {Fore.RED}GunFX{Style.RESET_ALL}: gunfx.trigger, gunfx.servo, gunfx.smoke, ...")
-            print(f"  - {Fore.CYAN}HubFX{Style.RESET_ALL}: hub.slaves, hub.init + routed slave commands")
+            print(f"  - {Fore.CYAN}HubFX{Style.RESET_ALL}: audio.*, engine.*, sd.*, config.* + slave gfx|lfx|gc.*")
             print(f"  - {Fore.BLUE}LightFX{Style.RESET_ALL}: lightfx.led, lightfx.servo, lightfx.power, ...")
             print(f"  - {Fore.MAGENTA}NoOp{Style.RESET_ALL}: Core commands only (protocol testing)")
             print()

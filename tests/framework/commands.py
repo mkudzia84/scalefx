@@ -110,6 +110,16 @@ class CommandBuilder:
         """
         return build_packet(CorePacket.I2C_SCAN)
 
+    @staticmethod
+    def identify() -> bytes:
+        """Build IDENTIFY packet.
+
+        Queries board info (name, version, build, platform, CPU, RAM)
+        without triggering INIT callbacks or state changes on the device.
+        Response is an IDENTIFY packet with same payload format as INIT_READY.
+        """
+        return build_packet(CorePacket.IDENTIFY)
+
 
 class GunFxCommands(CommandBuilder):
     """GunFX-specific commands."""

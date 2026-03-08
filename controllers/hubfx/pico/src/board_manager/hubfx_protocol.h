@@ -40,7 +40,10 @@ namespace HubFxPacket {
     constexpr uint8_t AUDIO_QUEUE       = 0x88;  // [ch:u8][vol:u8][loopCount:u16LE][behavior:u8][pathLen:u8][path:str]
     constexpr uint8_t AUDIO_QUEUE_CLEAR = 0x89;  // [ch:u8] (0xFF=all)
     constexpr uint8_t AUDIO_STATUS_REQ  = 0x8A;  // [] → AUDIO_STATUS_RESP
-    constexpr uint8_t AUDIO_STATUS_RESP = 0x8B;  // [masterVol:u8][activeCh:u8][per-channel data...]
+    constexpr uint8_t AUDIO_STATUS_RESP = 0x8B;  // v2: [masterVol:u8][flags:u8][sampleRate:u16LE][bitDepth:u8]
+                                                  //     [maxCh:u8][codecNameLen:u8][codecName:str][activeMask:u8]
+                                                  //     [per-ch: 10B + wavRate:u16LE + wavCh:u8 + wavBits:u8
+                                                  //      + fnameLen:u8 + fname:str]
 
     // --- Engine FX Control (0x8C-0x8F) ---
     constexpr uint8_t ENGINE_START       = 0x8C;  // [] → ACK

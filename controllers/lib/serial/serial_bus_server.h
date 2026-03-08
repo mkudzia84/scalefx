@@ -308,6 +308,7 @@ protected:
 
 private:
     void sendInitReady();
+    void sendIdentify();
     void handleInit(const uint8_t* payload, size_t len);
     void sendStatus();
 

@@ -64,7 +64,7 @@ bool AudioMixer::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_l
     
     // Verify SD card is available via singleton
     if (!SD_CARD().isInitialized()) {
-        MIXER_LOG("SD card not initialized");
+        MIXER_ERROR("SD card not initialized");
         return false;
     }
 
@@ -84,7 +84,7 @@ bool AudioMixer::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_l
     i2sOutput.setBitsPerSample(AUDIO_BIT_DEPTH);
 
     if (!i2sOutput.begin(AUDIO_SAMPLE_RATE)) {
-        MIXER_LOG("Failed to initialize I2S");
+        MIXER_ERROR("I2S init failed (rate=%u, bits=%d)", AUDIO_SAMPLE_RATE, AUDIO_BIT_DEPTH);
         return false;
     }
 
@@ -93,10 +93,7 @@ bool AudioMixer::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_l
     // Initialize audio codec if provided
     _codec = codec;
     if (_codec) {
-        MIXER_LOG("Using %s codec", _codec->getModelName());
         // Codec initialization happens externally before mixer.begin()
-    } else {
-        MIXER_LOG("No codec provided (I2S only mode)");
     }
     
     // Initialize dual-core mutex
@@ -108,7 +105,9 @@ bool AudioMixer::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_l
     
     _initialized = true;
     
-    MIXER_LOG("Initialized");
+    MIXER_LOG("Initialized: I2S %uHz/%dbit, %d channels, codec=%s",
+             AUDIO_SAMPLE_RATE, AUDIO_BIT_DEPTH, AUDIO_MAX_CHANNELS,
+             _codec ? _codec->getModelName() : "none");
     return true;
 }
 
@@ -155,13 +154,13 @@ bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOpti
     // Open the WAV file using SdCardModule singleton
     if (!ch.file.open(&SD_CARD().getSd(), filename, O_RDONLY)) {
         SD_UNLOCK();
-        MIXER_LOG("Ch%d: Failed to open: %s", channel, filename);
+        MIXER_ERROR("Ch%d: Failed to open: %s", channel, filename);
         return false;
     }
 
     // Parse WAV header
     if (!parseWavHeader(ch)) {
-        MIXER_LOG("Ch%d: Invalid WAV: %s", channel, filename);
+        MIXER_ERROR("Ch%d: Invalid WAV: %s", channel, filename);
         ch.file.close();
         SD_UNLOCK();
         return false;
@@ -223,7 +222,10 @@ bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOpti
         loopStr = "once";
     }
     
-    MIXER_LOG("Ch%d: Playing %s (%s, vol=%.2f)", channel, filename, loopStr, ch.volume);
+    MIXER_LOG("Ch%d: Playing %s (%s, vol=%.2f, %luHz %dbit %dch, %lums)",
+             channel, filename, loopStr, ch.volume,
+             (unsigned long)ch.sampleRate, ch.bitsPerSample, ch.numChannels,
+             (unsigned long)(ch.totalSamples * 1000UL / ch.sampleRate));
     return true;
 }
 
@@ -375,13 +377,13 @@ bool AudioMixer::enqueueToChannel(int channel, const char* filename, const Audio
     // Check if queue is full
     int nextHead = (ch.queueHead + 1) % QUEUE_SIZE_PER_CHANNEL;
     if (nextHead == ch.queueTail) {
-        MIXER_LOG("Ch%d: Queue full, cannot enqueue %s", channel, filename);
+        MIXER_WARN("Ch%d: Queue full, cannot enqueue %s", channel, filename);
         return false;
     }
     
     // Validate: looping items can only be queued if they have a fixed loop count
     if (options.loop && options.loopCount == LOOP_INFINITE) {
-        MIXER_LOG("Ch%d: Cannot queue infinite loop, use fixed loop count", channel);
+        MIXER_WARN("Ch%d: Cannot queue infinite loop, use fixed loop count", channel);
         return false;
     }
     
@@ -748,7 +750,8 @@ bool AudioMixer::queueCommand(const Command& cmd) {
     int nextHead = (_cmdQueueHead + 1) % AUDIO_CMD_QUEUE_SIZE;
     if (nextHead == _cmdQueueTail) {
         mutex_exit(&_cmdMutex);
-        return false;  // Queue full
+        MIXER_WARN("Command queue full, dropping command");
+        return false;
     }
 
     _cmdQueue[_cmdQueueHead] = cmd;

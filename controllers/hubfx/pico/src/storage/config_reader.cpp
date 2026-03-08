@@ -693,59 +693,59 @@ bool ConfigReader::load(const char* filename) {
 // ============================================================================
 
 void ConfigReader::print() const {
-    Serial.println("=== HubFX Configuration ===");
+    CONFIG_LOG("=== HubFX Configuration ===");
     
     // Engine FX
-    Serial.println("Engine FX:");
-    Serial.printf("  Enabled: %s\n", _settings.engine.enabled ? "yes" : "no");
-    Serial.printf("  Toggle: pin=%d, threshold=%d us\n",
+    CONFIG_LOG("Engine FX:");
+    CONFIG_LOG("  Enabled: %s", _settings.engine.enabled ? "yes" : "no");
+    CONFIG_LOG("  Toggle: pin=%d, threshold=%d us",
                   _settings.engine.togglePin,
                   _settings.engine.toggleThresholdUs);
-    Serial.println("  Sounds:");
+    CONFIG_LOG("  Sounds:");
     if (_settings.engine.startupSound.filename) {
-        Serial.printf("    Starting: %s\n", _settings.engine.startupSound.filename);
+        CONFIG_LOG("    Starting: %s", _settings.engine.startupSound.filename);
     }
     if (_settings.engine.runningSound.filename) {
-        Serial.printf("    Running: %s\n", _settings.engine.runningSound.filename);
+        CONFIG_LOG("    Running: %s", _settings.engine.runningSound.filename);
     }
     if (_settings.engine.shutdownSound.filename) {
-        Serial.printf("    Stopping: %s\n", _settings.engine.shutdownSound.filename);
+        CONFIG_LOG("    Stopping: %s", _settings.engine.shutdownSound.filename);
     }
-    Serial.printf("  Transitions: start_offset=%d ms, stop_offset=%d ms\n",
+    CONFIG_LOG("  Transitions: start_offset=%d ms, stop_offset=%d ms",
                   _settings.engine.startingOffsetFromStoppingMs,
                   _settings.engine.stoppingOffsetFromStartingMs);
     
     // Gun FX
-    Serial.println("Gun FX:");
-    Serial.printf("  Enabled: %s\n", _settings.gun.enabled ? "yes" : "no");
-    Serial.printf("  Trigger channel: %d\n", _settings.gun.triggerChannel);
-    Serial.printf("  Smoke: heater_ch=%d, threshold=%d us, fan_delay=%d ms\n",
+    CONFIG_LOG("Gun FX:");
+    CONFIG_LOG("  Enabled: %s", _settings.gun.enabled ? "yes" : "no");
+    CONFIG_LOG("  Trigger channel: %d", _settings.gun.triggerChannel);
+    CONFIG_LOG("  Smoke: heater_ch=%d, threshold=%d us, fan_delay=%d ms",
                   _settings.gun.smoke.heaterToggleChannel,
                   _settings.gun.smoke.heaterThresholdUs,
                   _settings.gun.smoke.fanOffDelayMs);
     
     // Rates of fire
-    Serial.printf("  Rates of fire: %d\n", _settings.gun.rateCount);
+    CONFIG_LOG("  Rates of fire: %d", _settings.gun.rateCount);
     for (int i = 0; i < _settings.gun.rateCount; i++) {
         const RateOfFireConfig& rate = _settings.gun.ratesOfFire[i];
-        Serial.printf("    [%d] %d RPM @ %d us\n", i, rate.rpm, rate.pwmThresholdUs);
+        CONFIG_LOG("    [%d] %d RPM @ %d us", i, rate.rpm, rate.pwmThresholdUs);
         if (rate.soundFile) {
-            Serial.printf("        Sound: %s (vol=%.1f)\n", rate.soundFile, rate.soundVolume);
+            CONFIG_LOG("        Sound: %s (vol=%.1f)", rate.soundFile, rate.soundVolume);
         }
     }
     
     // Turret
-    Serial.println("  Turret Control:");
-    Serial.printf("    Pitch: servo=%d, input_ch=%d, range=%d-%d us\n",
+    CONFIG_LOG("  Turret Control:");
+    CONFIG_LOG("    Pitch: servo=%d, input_ch=%d, range=%d-%d us",
                   _settings.gun.pitch.servoId,
                   _settings.gun.pitch.inputChannel,
                   _settings.gun.pitch.outputMinUs,
                   _settings.gun.pitch.outputMaxUs);
-    Serial.printf("    Yaw: servo=%d, input_ch=%d, range=%d-%d us\n",
+    CONFIG_LOG("    Yaw: servo=%d, input_ch=%d, range=%d-%d us",
                   _settings.gun.yaw.servoId,
                   _settings.gun.yaw.inputChannel,
                   _settings.gun.yaw.outputMinUs,
                   _settings.gun.yaw.outputMaxUs);
     
-    Serial.println("===========================");
+    CONFIG_LOG("===========================");
 }

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * HubFX Pico - Autonomous Protocol Router Hub
  *
  * Central hub controller for ScaleFX system. Manages slave Pico controllers
@@ -37,11 +37,19 @@
  */
 
 #define FIRMWARE_VERSION "2.6.0"
-#define BUILD_NUMBER 7
+#define BUILD_NUMBER 9
 
 #include <Arduino.h>
 #include <SPI.h>
 #include <Wire.h>
+
+// ============================================================================
+// Codec Selection (must be before conditional includes)
+// ============================================================================
+
+// #define USE_TAS5825_CODEC
+// #define USE_SIMPLE_I2S_CODEC
+#define USE_PICOAUDIO_CODEC         // Pimoroni Pico Audio Pack (PCM5100A)
 
 // Shared serial protocol library (core, bus, clients)
 #include <serial.h>
@@ -79,14 +87,6 @@
 // Logging — all HubFX modules use macros from hubfx_log.h which route
 // through PicoServer's DiagLog singleton (initialized by PicoServer::begin()).
 #include "hubfx_log.h"
-
-// ============================================================================
-// Codec Selection
-// ============================================================================
-
-// #define USE_TAS5825_CODEC
-// #define USE_SIMPLE_I2S_CODEC
-#define USE_PICOAUDIO_CODEC         // Pimoroni Pico Audio Pack (PCM5100A)
 
 // ============================================================================
 // Pin Definitions

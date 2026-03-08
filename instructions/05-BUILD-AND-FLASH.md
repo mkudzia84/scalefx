@@ -151,6 +151,8 @@ scripts/build_and_flash.py    # Single centralized script for all controllers
 ```yaml
 gunfx: "controllers/gunfx/pico/"
 lightfx: "controllers/lightfx/pico/"
+gearcontrol: "controllers/gearcontrol/pico/"
+hubfx: "controllers/hubfx/pico/"
 noop: "controllers/noop/pico/"
 ```
 

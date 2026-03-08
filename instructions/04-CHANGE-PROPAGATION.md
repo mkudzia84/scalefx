@@ -57,6 +57,7 @@ Change_Type_Matrix:
     test_*.py: REQUIRED          # Create tests/newfx/ directory
     cli/handlers/newfx.py: CREATE_NEW
     cli/interactive.py: REQUIRED  # Register new handler
+    build_and_flash.py: REQUIRED  # Add to CONTROLLERS list
     README.md: CREATE_NEW
 ```
 
@@ -245,6 +246,10 @@ Summary_Checklist:
     - "[ ] Register handler in tests/cli/interactive.py"
     - "[ ] Add controller detection in handlers/core.py"
   
+  Scripts:
+    - "[ ] Add controller to CONTROLLERS list in scripts/build_and_flash.py"
+    - "[ ] Update docstring controller list in build_and_flash.py"
+  
   Documentation:
     - "[ ] Create README.md with full protocol docs"
 ```
@@ -318,6 +323,7 @@ python -m platformio run -e pico -d controllers/noop/pico
 python scripts/build_and_flash.py gunfx
 python scripts/build_and_flash.py lightfx
 python scripts/build_and_flash.py gearcontrol
+python scripts/build_and_flash.py hubfx
 python scripts/build_and_flash.py noop
 
 # Python syntax

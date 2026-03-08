@@ -74,6 +74,7 @@ System-level commands common to all ScaleFX devices:
 | `CorePacket::I2C_SCAN` | 0xFB | — | Master→Slave | Trigger I2C bus scan |
 | `CorePacket::I2C_SCAN_RESULT` | 0xFC | — | Slave→Master | I2C scan results |
 | `CorePacket::LOG_MESSAGE` | 0xFD | — | Slave→Master | Diagnostic log message |
+| `CorePacket::IDENTIFY` | 0xFE | `IDENTIFY` | Master→Slave | Query board info (no state change) |
 
 ### INIT Command
 
@@ -83,6 +84,19 @@ System-level commands common to all ScaleFX devices:
 1. Slave resets any existing connection state
 2. Slave performs safe shutdown of all active operations
 3. Slave responds with INIT_READY containing device info
+
+### IDENTIFY Command
+
+**Binary packet** (type 0xFE), no payload.
+
+**Behavior:**
+1. Slave responds with IDENTIFY (0xFE) containing device info
+2. No state changes — does NOT trigger init callbacks, connection state, or watchdog
+3. Same payload format as INIT_READY
+
+Use IDENTIFY to discover the board type before deciding whether to send INIT.
+HubFX auto-initializes on boot so only needs IDENTIFY; slave controllers need
+INIT after IDENTIFY to start up.
 
 ### INIT_READY Response
 

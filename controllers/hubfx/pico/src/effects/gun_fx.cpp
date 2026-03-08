@@ -348,37 +348,37 @@ void GunFX::setServo(int servoId, int pulseUs) {
 
 #if EFFECTS_DEBUG
 void GunFX::printStatus() {
-    Serial.println("[GunFX] Status:");
-    Serial.printf("  Connected: %s\n", isConnected() ? "yes" : "no");
+    GUNFX_LOG("Status:");
+    GUNFX_LOG("  Connected: %s", isConnected() ? "yes" : "no");
     
     const GunFxBoardInfo& info = _serial.boardInfo();
     if (isSlaveReady()) {
-        Serial.printf("  Slave: %s (%s, %s)\n", 
+        GUNFX_LOG("  Slave: %s (%s, %s)", 
                       info.deviceName, info.firmwareVersion, info.platform);
-        Serial.printf("  Version compatible: %s\n", 
+        GUNFX_LOG("  Version compatible: %s", 
                       _serial.isVersionCompatible() ? "YES" : "NO - INCOMPATIBLE!");
         if (!_serial.isVersionCompatible()) {
-            Serial.println("  WARNING: Slave not activated due to version mismatch");
+            GUNFX_LOG("  WARNING: Slave not activated due to version mismatch");
         }
     } else {
-        Serial.printf("  Slave ready: no\n");
+        GUNFX_LOG("  Slave ready: no");
     }
     
-    Serial.printf("  Firing: %s (%d RPM, rate %d)\n", 
+    GUNFX_LOG("  Firing: %s (%d RPM, rate %d)", 
                   _isFiring ? "yes" : "no", _currentRpm, _currentRateIndex);
-    Serial.printf("  Heater: %s\n", _smokeHeaterOn ? "ON" : "OFF");
-    Serial.printf("  Trigger PWM: %d us\n", triggerPwm());
-    Serial.printf("  Rates configured: %d\n", _settings.rateCount);
+    GUNFX_LOG("  Heater: %s", _smokeHeaterOn ? "ON" : "OFF");
+    GUNFX_LOG("  Trigger PWM: %d us", triggerPwm());
+    GUNFX_LOG("  Rates configured: %d", _settings.rateCount);
     
     const GunFxStatus& status = slaveStatus();
-    Serial.printf("  Slave status: firing=%d, flash=%d, heater=%d, fan=%d\n",
+    GUNFX_LOG("  Slave status: firing=%d, flash=%d, heater=%d, fan=%d",
                   status.firing, status.flashActive, 
                   status.heaterOn, status.fanOn);
-    Serial.printf("  Servos: %d, %d, %d us\n",
+    GUNFX_LOG("  Servos: %d, %d, %d us",
                   status.servoUs[0], status.servoUs[1], status.servoUs[2]);
     
     const CoreStats& stats = _serial.stats();
-    Serial.printf("  Packets: TX=%lu, RX=%lu, CRC err=%lu\n",
+    GUNFX_LOG("  Packets: TX=%lu, RX=%lu, CRC err=%lu",
                   stats.packets_sent, stats.packets_received, stats.crc_errors);
 }
 #endif

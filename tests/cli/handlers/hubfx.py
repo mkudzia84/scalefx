@@ -24,6 +24,7 @@ from tests.framework import (
     HubFxCommands, HubFxPacket, HubFxError, HubFxAudio, EngineState, SlaveType,
     GunFxCommands, LightFxCommands, GearControlCommands, CoreError, StreamPacket,
 )
+from tests.framework.packets import DoorMode
 from tests.framework.protocol import read_u16_le, read_u32_le, crc16_ccitt
 from ..base import CommandHandlerBase, CommandInfo, ControllerType, Fore, Style
 from .. import parsers
@@ -43,166 +44,291 @@ class HubFxCommandHandler(CommandHandlerBase):
     def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
         """Return HubFX command registry."""
         cmds = {
-            # Hub management commands
+            # =================================================================
+            # Hub Management
+            # =================================================================
             'hub.slaves': (self.cmd_slave_list, CommandInfo(
                 'hub.slaves', 'hub.slaves',
                 'List connected slave controllers',
-                requires_init=True, controller=ControllerType.HUBFX)),
+                requires_init=True, controller=ControllerType.HUBFX, group='Hub Management')),
             'hub.init': (self.cmd_slave_init, CommandInfo(
                 'hub.init', 'hub.init <type>',
                 'Init a slave (gunfx|lightfx|gearcontrol or 1|2|3)',
-                requires_init=True, controller=ControllerType.HUBFX)),
+                requires_init=True, controller=ControllerType.HUBFX, group='Hub Management')),
 
-            # Audio control commands
-            'hub.audio.play': (self.cmd_audio_play, CommandInfo(
-                'hub.audio.play', 'hub.audio.play <ch> <path> [vol] [left|right] [loop [N|inf]]',
+            # =================================================================
+            # Audio Control
+            # =================================================================
+            'audio.play': (self.cmd_audio_play, CommandInfo(
+                'audio.play', 'audio.play <ch> <path> [vol] [left|right] [loop [N|inf]]',
                 'Play audio file on channel',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.audio.stop': (self.cmd_audio_stop, CommandInfo(
-                'hub.audio.stop', 'hub.audio.stop [ch|all]',
+                requires_init=True, controller=ControllerType.HUBFX, group='Audio')),
+            'audio.stop': (self.cmd_audio_stop, CommandInfo(
+                'audio.stop', 'audio.stop [ch|all]',
                 'Stop audio (channel or all)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.audio.volume': (self.cmd_audio_volume, CommandInfo(
-                'hub.audio.volume', 'hub.audio.volume <ch|master> <0-100>',
+                requires_init=True, controller=ControllerType.HUBFX, group='Audio')),
+            'audio.volume': (self.cmd_audio_volume, CommandInfo(
+                'audio.volume', 'audio.volume <ch|master> <0-100>',
                 'Set channel or master volume',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.audio.fade': (self.cmd_audio_fade, CommandInfo(
-                'hub.audio.fade', 'hub.audio.fade <ch>',
+                requires_init=True, controller=ControllerType.HUBFX, group='Audio')),
+            'audio.fade': (self.cmd_audio_fade, CommandInfo(
+                'audio.fade', 'audio.fade <ch>',
                 'Fade out audio channel',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.audio.queue': (self.cmd_audio_queue, CommandInfo(
-                'hub.audio.queue', 'hub.audio.queue <ch> <path> [vol] [loop N]',
+                requires_init=True, controller=ControllerType.HUBFX, group='Audio')),
+            'audio.queue': (self.cmd_audio_queue, CommandInfo(
+                'audio.queue', 'audio.queue <ch> <path> [vol] [loop N]',
                 'Queue sound to play after current',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.audio.clear': (self.cmd_audio_queue_clear, CommandInfo(
-                'hub.audio.clear', 'hub.audio.clear [ch|all]',
+                requires_init=True, controller=ControllerType.HUBFX, group='Audio')),
+            'audio.clear': (self.cmd_audio_queue_clear, CommandInfo(
+                'audio.clear', 'audio.clear [ch|all]',
                 'Clear audio queue',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.audio.status': (self.cmd_audio_status, CommandInfo(
-                'hub.audio.status', 'hub.audio.status',
+                requires_init=True, controller=ControllerType.HUBFX, group='Audio')),
+            'audio.status': (self.cmd_audio_status, CommandInfo(
+                'audio.status', 'audio.status',
                 'Show audio mixer status',
-                requires_init=True, controller=ControllerType.HUBFX)),
+                requires_init=True, controller=ControllerType.HUBFX, group='Audio')),
 
-            # Engine FX commands
-            'hub.engine.start': (self.cmd_engine_start, CommandInfo(
-                'hub.engine.start', 'hub.engine.start',
+            # =================================================================
+            # Engine FX
+            # =================================================================
+            'engine.start': (self.cmd_engine_start, CommandInfo(
+                'engine.start', 'engine.start',
                 'Start engine effects',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.engine.stop': (self.cmd_engine_stop, CommandInfo(
-                'hub.engine.stop', 'hub.engine.stop',
+                requires_init=True, controller=ControllerType.HUBFX, group='Engine FX')),
+            'engine.stop': (self.cmd_engine_stop, CommandInfo(
+                'engine.stop', 'engine.stop',
                 'Stop engine effects',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.engine.status': (self.cmd_engine_status, CommandInfo(
-                'hub.engine.status', 'hub.engine.status',
+                requires_init=True, controller=ControllerType.HUBFX, group='Engine FX')),
+            'engine.status': (self.cmd_engine_status, CommandInfo(
+                'engine.status', 'engine.status',
                 'Show engine FX status',
-                requires_init=True, controller=ControllerType.HUBFX)),
+                requires_init=True, controller=ControllerType.HUBFX, group='Engine FX')),
 
-            # Config management commands
-            'hub.config.reload': (self.cmd_config_reload, CommandInfo(
-                'hub.config.reload', 'hub.config.reload',
+            # =================================================================
+            # Config Management
+            # =================================================================
+            'config.reload': (self.cmd_config_reload, CommandInfo(
+                'config.reload', 'config.reload',
                 'Reload config from SD card',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.config.get': (self.cmd_config_get, CommandInfo(
-                'hub.config.get', 'hub.config.get',
+                requires_init=True, controller=ControllerType.HUBFX, group='Config')),
+            'config.get': (self.cmd_config_get, CommandInfo(
+                'config.get', 'config.get',
                 'Get config info (loaded, size)',
-                requires_init=True, controller=ControllerType.HUBFX)),
+                requires_init=True, controller=ControllerType.HUBFX, group='Config')),
 
-            # SD card management commands
-            'hub.sd.init': (self.cmd_sd_init, CommandInfo(
-                'hub.sd.init', 'hub.sd.init [speed_mhz]',
+            # =================================================================
+            # SD Card & Files
+            # =================================================================
+            'sd.init': (self.cmd_sd_init, CommandInfo(
+                'sd.init', 'sd.init [speed_mhz]',
                 'Initialize SD card (default 20 MHz)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.sd.status': (self.cmd_sd_status, CommandInfo(
-                'hub.sd.status', 'hub.sd.status',
+                requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+            'sd.status': (self.cmd_sd_status, CommandInfo(
+                'sd.status', 'sd.status',
                 'Show SD card status',
-                requires_init=True, controller=ControllerType.HUBFX)),
-
-            # File operation commands
-            'hub.ls': (self.cmd_file_list, CommandInfo(
-                'hub.ls', 'hub.ls [path]',
-                'List directory contents (POSIX-style)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.rm': (self.cmd_file_delete, CommandInfo(
-                'hub.rm', 'hub.rm <path>',
+                requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+            'sd.ls': (self.cmd_file_list, CommandInfo(
+                'sd.ls', 'sd.ls [path]',
+                'List directory contents',
+                requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+            'sd.rm': (self.cmd_file_delete, CommandInfo(
+                'sd.rm', 'sd.rm <path>',
                 'Delete a file',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.mkdir': (self.cmd_file_mkdir, CommandInfo(
-                'hub.mkdir', 'hub.mkdir <path>',
+                requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+            'sd.mkdir': (self.cmd_file_mkdir, CommandInfo(
+                'sd.mkdir', 'sd.mkdir <path>',
                 'Create a directory',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.info': (self.cmd_file_info, CommandInfo(
-                'hub.info', 'hub.info <path>',
+                requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+            'sd.info': (self.cmd_file_info, CommandInfo(
+                'sd.info', 'sd.info <path>',
                 'Show file or directory info',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.cat': (self.cmd_file_cat, CommandInfo(
-                'hub.cat', 'hub.cat <path>',
+                requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+            'sd.cat': (self.cmd_file_cat, CommandInfo(
+                'sd.cat', 'sd.cat <path>',
                 'Display file contents',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.download': (self.cmd_file_download, CommandInfo(
-                'hub.download', 'hub.download <remote_path> <local_path>',
+                requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+            'sd.download': (self.cmd_file_download, CommandInfo(
+                'sd.download', 'sd.download <remote_path> <local_path>',
                 'Download file from SD card',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'hub.upload': (self.cmd_file_upload, CommandInfo(
-                'hub.upload', 'hub.upload <local_path> <remote_path>',
+                requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+            'sd.upload': (self.cmd_file_upload, CommandInfo(
+                'sd.upload', 'sd.upload <local_path> <remote_path>',
                 'Upload file to SD card',
-                requires_init=True, controller=ControllerType.HUBFX)),
+                requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+
+            # =================================================================
+            # Slave Controllers (routed via hub)
+            # =================================================================
+            'slave': (self.cmd_slave, CommandInfo(
+                'slave', 'slave <gfx|lfx|gc>.<cmd> [args...]',
+                'Route command to slave controller (help gfx|lfx|gc for details)',
+                requires_init=True, controller=ControllerType.HUBFX, group='Slave Controllers')),
         }
 
-        # =====================================================================
-        # GunFX passthrough commands (sent via hub routing)
-        # =====================================================================
-        cmds.update({
-            'gfx.trigger': (self.cmd_gfx_trigger, CommandInfo(
-                'gfx.trigger', 'gfx.trigger on <rpm> | gfx.trigger off',
-                'GunFX: trigger control (routed via hub)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'gfx.servo': (self.cmd_gfx_servo, CommandInfo(
-                'gfx.servo', 'gfx.servo set <id> <pulse_us>',
-                'GunFX: set servo position (routed via hub)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'gfx.smoke': (self.cmd_gfx_smoke, CommandInfo(
-                'gfx.smoke', 'gfx.smoke heat on|off',
-                'GunFX: smoke heater control (routed via hub)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-        })
-
-        # =====================================================================
-        # LightFX passthrough commands
-        # =====================================================================
-        cmds.update({
-            'lfx.led': (self.cmd_lfx_led, CommandInfo(
-                'lfx.led', 'lfx.led <ch> <brightness>',
-                'LightFX: set LED brightness (routed via hub)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'lfx.led.off': (self.cmd_lfx_led_off, CommandInfo(
-                'lfx.led.off', 'lfx.led.off [ch]',
-                'LightFX: turn off LED (routed via hub)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'lfx.servo': (self.cmd_lfx_servo, CommandInfo(
-                'lfx.servo', 'lfx.servo set <id> <pulse_us>',
-                'LightFX: set servo position (routed via hub)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-        })
-
-        # =====================================================================
-        # GearControl passthrough commands
-        # =====================================================================
-        cmds.update({
-            'gc.deploy': (self.cmd_gc_deploy, CommandInfo(
-                'gc.deploy', 'gc.deploy <gear_id> | gc.deploy all',
-                'GearControl: deploy gear (routed via hub)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'gc.retract': (self.cmd_gc_retract, CommandInfo(
-                'gc.retract', 'gc.retract <gear_id> | gc.retract all',
-                'GearControl: retract gear (routed via hub)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-            'gc.stop': (self.cmd_gc_stop, CommandInfo(
-                'gc.stop', 'gc.stop <gear_id>',
-                'GearControl: emergency stop gear (routed via hub)',
-                requires_init=True, controller=ControllerType.HUBFX)),
-        })
-
         return cmds
+
+    # =========================================================================
+    # Slave Command Dispatcher
+    # =========================================================================
+
+    def get_slave_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
+        """Return slave sub-command registry for help display and dispatch."""
+        if not hasattr(self, '_slave_cache'):
+            self._slave_cache = self._build_slave_registry()
+        return self._slave_cache
+
+    def _build_slave_registry(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
+        """Build the slave sub-command dispatch table."""
+        GFX = 'GunFX (gfx.*)'
+        LFX = 'LightFX (lfx.*)'
+        GC = 'GearControl (gc.*)'
+        return {
+            # GunFX
+            'gfx.trigger': (self.cmd_gfx_trigger, CommandInfo(
+                'gfx.trigger', 'slave gfx.trigger on <rpm> | off [delay_ms]',
+                'Trigger control', group=GFX)),
+            'gfx.servo': (self.cmd_gfx_servo, CommandInfo(
+                'gfx.servo', 'slave gfx.servo set <id> <pulse_us>',
+                'Set servo position (1-3, 500-2500µs)', group=GFX)),
+            'gfx.servo.config': (self.cmd_gfx_servo_config, CommandInfo(
+                'gfx.servo.config', 'slave gfx.servo.config <id> <min> <max> [speed] [accel] [decel]',
+                'Configure servo limits and motion profile', group=GFX)),
+            'gfx.servo.recoil': (self.cmd_gfx_servo_recoil, CommandInfo(
+                'gfx.servo.recoil', 'slave gfx.servo.recoil <id> <jerk_us> <variance_us>',
+                'Configure recoil effect', group=GFX)),
+            'gfx.smoke': (self.cmd_gfx_smoke, CommandInfo(
+                'gfx.smoke', 'slave gfx.smoke heat on|off',
+                'Smoke heater control', group=GFX)),
+            'gfx.smoke.config': (self.cmd_gfx_smoke_config, CommandInfo(
+                'gfx.smoke.config', 'slave gfx.smoke.config [key=value ...]',
+                'Configure smoke fan (pulsing,speed,high,low,pulse_ms,spindown_ms)', group=GFX)),
+            'gfx.smoke.reset': (self.cmd_gfx_smoke_reset, CommandInfo(
+                'gfx.smoke.reset', 'slave gfx.smoke.reset',
+                'Clear smoke error states', group=GFX)),
+            'gfx.smoke.limit': (self.cmd_gfx_smoke_limit, CommandInfo(
+                'gfx.smoke.limit', 'slave gfx.smoke.limit heater|fan <mA>',
+                'Set overcurrent protection limit (0=disable)', group=GFX)),
+            # LightFX
+            'lfx.led': (self.cmd_lfx_led, CommandInfo(
+                'lfx.led', 'slave lfx.led <ch> <brightness> | slave lfx.led off [ch]',
+                'Set LED brightness or turn off', group=LFX)),
+            'lfx.led.off': (self.cmd_lfx_led_off, CommandInfo(
+                'lfx.led.off', 'slave lfx.led.off [ch]',
+                'Turn off LED (0=all)', group=LFX)),
+            'lfx.led.seq': (self.cmd_lfx_led_seq, CommandInfo(
+                'lfx.led.seq', 'slave lfx.led.seq clear|start|stop|restart <ch>',
+                'Control LED sequences', group=LFX)),
+            'lfx.led.seq.add': (self.cmd_lfx_led_seq_add, CommandInfo(
+                'lfx.led.seq.add', 'slave lfx.led.seq.add <ch> <event> <params...>',
+                'Add sequence event (on/off/flash/fadein/fadeout)', group=LFX)),
+            'lfx.brightness': (self.cmd_lfx_brightness, CommandInfo(
+                'lfx.brightness', 'slave lfx.brightness <0-100>',
+                'Set master LED brightness', group=LFX)),
+            'lfx.servo': (self.cmd_lfx_servo, CommandInfo(
+                'lfx.servo', 'slave lfx.servo set <id> <pulse_us>',
+                'Set servo position (1-3)', group=LFX)),
+            'lfx.servo.config': (self.cmd_lfx_servo_config, CommandInfo(
+                'lfx.servo.config', 'slave lfx.servo.config <id> <min> <max> [speed] [accel] [decel]',
+                'Configure servo limits and motion profile', group=LFX)),
+            'lfx.ll.bind': (self.cmd_lfx_ll_bind, CommandInfo(
+                'lfx.ll.bind', 'slave lfx.ll.bind <slot> <servo> <led_ch> <deploy_us> <retract_us> [brightness]',
+                'Bind landing light (slot 1-3)', group=LFX)),
+            'lfx.ll.unbind': (self.cmd_lfx_ll_unbind, CommandInfo(
+                'lfx.ll.unbind', 'slave lfx.ll.unbind [slot]',
+                'Unbind landing light (0=all)', group=LFX)),
+            'lfx.ll.deploy': (self.cmd_lfx_ll_deploy, CommandInfo(
+                'lfx.ll.deploy', 'slave lfx.ll.deploy [slot]',
+                'Deploy landing light + turn on (0=all)', group=LFX)),
+            'lfx.ll.retract': (self.cmd_lfx_ll_retract, CommandInfo(
+                'lfx.ll.retract', 'slave lfx.ll.retract [slot]',
+                'Retract landing light + turn off (0=all)', group=LFX)),
+            'lfx.reset': (self.cmd_lfx_reset, CommandInfo(
+                'lfx.reset', 'slave lfx.reset [ch]',
+                'Reset LED channel (stop seq, off, re-enable; 0=all)', group=LFX)),
+            'lfx.enable': (self.cmd_lfx_enable, CommandInfo(
+                'lfx.enable', 'slave lfx.enable <ch>',
+                'Enable LED channel (1-8, 0=all)', group=LFX)),
+            'lfx.disable': (self.cmd_lfx_disable, CommandInfo(
+                'lfx.disable', 'slave lfx.disable <ch>',
+                'Disable LED channel (1-8, 0=all)', group=LFX)),
+            # GearControl
+            'gc.deploy': (self.cmd_gc_deploy, CommandInfo(
+                'gc.deploy', 'slave gc.deploy <gear_id> | all',
+                'Deploy landing gear (0=nose, 1=left, 2=right)', group=GC)),
+            'gc.retract': (self.cmd_gc_retract, CommandInfo(
+                'gc.retract', 'slave gc.retract <gear_id> | all',
+                'Retract landing gear', group=GC)),
+            'gc.stop': (self.cmd_gc_stop, CommandInfo(
+                'gc.stop', 'slave gc.stop <gear_id> | all',
+                'Emergency stop motor', group=GC)),
+            'gc.servo': (self.cmd_gc_servo, CommandInfo(
+                'gc.servo', 'slave gc.servo set <id> <pulse_us>',
+                'Set servo position (0-7, 500-2500µs)', group=GC)),
+            'gc.servo.config': (self.cmd_gc_servo_config, CommandInfo(
+                'gc.servo.config', 'slave gc.servo.config <id> <min> <max> [speed] [accel] [decel]',
+                'Configure servo limits and motion profile', group=GC)),
+            'gc.gear.config': (self.cmd_gc_gear_config, CommandInfo(
+                'gc.gear.config', 'slave gc.gear.config <id> <flags...> [stall_mA] [timeout_ms]',
+                'Configure gear behavior (flags: yaw none)', group=GC)),
+            'gc.door.config': (self.cmd_gc_door_config, CommandInfo(
+                'gc.door.config', 'slave gc.door.config <id> <open0> <close0> <open1> <close1>',
+                'Configure door servo positions', group=GC)),
+            'gc.door.mode': (self.cmd_gc_door_mode, CommandInfo(
+                'gc.door.mode', 'slave gc.door.mode <gear_id> <pre_deploy> [post_deploy] [delay_ms]',
+                'Set door modes (none/single/dual-sync/dual-delay/dual-seq)', group=GC)),
+            'gc.yaw.config': (self.cmd_gc_yaw_config, CommandInfo(
+                'gc.yaw.config', 'slave gc.yaw.config <gear_id> <neutral> <min> <max>',
+                'Configure yaw servo', group=GC)),
+            'gc.yaw': (self.cmd_gc_yaw, CommandInfo(
+                'gc.yaw', 'slave gc.yaw <position_us>',
+                'Set yaw position (active when associated gear deployed)', group=GC)),
+            'gc.calibrate': (self.cmd_gc_calibrate, CommandInfo(
+                'gc.calibrate', 'slave gc.calibrate <gear_id> | all [timeout_s]',
+                'Calibrate stall current', group=GC)),
+            'gc.calibrate.cancel': (self.cmd_gc_calibrate_cancel, CommandInfo(
+                'gc.calibrate.cancel', 'slave gc.calibrate.cancel <gear_id> | all',
+                'Cancel calibration in progress', group=GC)),
+            'gc.reset': (self.cmd_gc_reset, CommandInfo(
+                'gc.reset', 'slave gc.reset <gear_id> | all',
+                'Clear error state (ERROR → UNKNOWN)', group=GC)),
+            'gc.enable': (self.cmd_gc_enable, CommandInfo(
+                'gc.enable', 'slave gc.enable <gear_id> | all',
+                'Enable gear channel', group=GC)),
+            'gc.disable': (self.cmd_gc_disable, CommandInfo(
+                'gc.disable', 'slave gc.disable <gear_id> | all',
+                'Disable gear channel', group=GC)),
+            'gc.battery': (self.cmd_gc_battery, CommandInfo(
+                'gc.battery', 'slave gc.battery <on|off> [autodeploy]',
+                'Enable/disable battery monitoring', group=GC)),
+        }
+
+    def cmd_slave(self, args: List[str]):
+        """Route a command to a slave controller via hub."""
+        if not self._require_init():
+            return
+
+        if not args:
+            self.print_error("Usage: slave <gfx|lfx|gc>.<cmd> [args...]")
+            self.print_info("  Try: help gfx, help lfx, help gc")
+            return
+
+        subcmd = args[0]
+        rest = args[1:]
+        registry = self.get_slave_commands()
+
+        if subcmd in registry:
+            handler, _info = registry[subcmd]
+            handler(rest)
+        else:
+            # Check if it's a valid prefix
+            prefix = subcmd.split('.')[0] if '.' in subcmd else subcmd
+            matching = [k for k in registry if k.startswith(prefix + '.') or k == prefix]
+            if matching:
+                self.print_error(f"Unknown sub-command: {subcmd}")
+                self.print_info(f"  Available {prefix}.* commands: {', '.join(sorted(matching))}")
+            else:
+                self.print_error(f"Unknown slave command: {subcmd}")
+                self.print_info("  Prefixes: gfx.* (GunFX), lfx.* (LightFX), gc.* (GearControl)")
 
     # =========================================================================
     # Hub Management Commands
@@ -504,13 +630,10 @@ class HubFxCommandHandler(CommandHandlerBase):
             self.print_error(f"Unexpected response: 0x{response.packet_type:02X}")
 
     def _parse_audio_status(self, payload: bytes):
-        """Parse and display AUDIO_STATUS_RESP payload."""
-        if len(payload) < 2:
+        """Parse and display AUDIO_STATUS_RESP payload (v2 extended format)."""
+        if len(payload) < 7:
             self.print_error("Audio status response too short")
             return
-
-        master_vol = payload[0]
-        active_mask = payload[1]
 
         output_names = {
             HubFxAudio.OUTPUT_STEREO: 'stereo',
@@ -518,8 +641,42 @@ class HubFxCommandHandler(CommandHandlerBase):
             HubFxAudio.OUTPUT_RIGHT: 'right',
         }
 
+        pos = 0
+
+        # --- System header ---
+        master_vol = payload[pos]; pos += 1
+        flags = payload[pos]; pos += 1
+        initialized = bool(flags & 0x01)
+        i2s_running = bool(flags & 0x02)
+        has_codec   = bool(flags & 0x04)
+
+        sample_rate = read_u16_le(payload, pos); pos += 2
+        bit_depth   = payload[pos]; pos += 1
+        max_channels = payload[pos]; pos += 1
+
+        codec_name_len = payload[pos]; pos += 1
+        codec_name = payload[pos:pos + codec_name_len].decode('utf-8', errors='replace') if codec_name_len > 0 else ''
+        pos += codec_name_len
+
+        # Display system info
         print(f"\n  {Fore.CYAN}Audio Mixer Status{Style.RESET_ALL}")
-        print(f"    Master Volume: {master_vol}%")
+        init_str = f"{Fore.GREEN}yes{Style.RESET_ALL}" if initialized else f"{Fore.RED}no{Style.RESET_ALL}"
+        i2s_str  = f"{Fore.GREEN}running{Style.RESET_ALL}" if i2s_running else f"{Fore.RED}stopped{Style.RESET_ALL}"
+        print(f"    Initialized: {init_str}")
+        print(f"    I2S:         {i2s_str} ({sample_rate}Hz / {bit_depth}bit)")
+        if has_codec:
+            print(f"    Codec:       {codec_name}")
+        else:
+            print(f"    Codec:       {Fore.YELLOW}none (I2S only){Style.RESET_ALL}")
+        print(f"    Max Ch:      {max_channels}")
+        print(f"    Master Vol:  {master_vol}%")
+
+        if pos >= len(payload):
+            print(f"    {Fore.YELLOW}No channel data{Style.RESET_ALL}")
+            print()
+            return
+
+        active_mask = payload[pos]; pos += 1
 
         if active_mask == 0:
             print(f"    {Fore.YELLOW}No active channels{Style.RESET_ALL}")
@@ -527,36 +684,50 @@ class HubFxCommandHandler(CommandHandlerBase):
             return
 
         active_count = bin(active_mask).count('1')
-        print(f"    Active: {active_count} channel(s) (mask: 0b{active_mask:08b})")
+        print(f"    Active:      {active_count} channel(s) (mask: 0b{active_mask:08b})")
+        print()
 
-        pos = 2
         for _ in range(active_count):
-            if pos + 10 > len(payload):
+            if pos + 14 > len(payload):
                 break
 
-            ch = payload[pos]
-            vol = payload[pos + 1]
-            playing = payload[pos + 2]
-            looping = payload[pos + 3]
-            loop_count = read_u16_le(payload, pos + 4)
-            remaining_ms = read_u16_le(payload, pos + 6)
-            queue_len = payload[pos + 8]
-            output = payload[pos + 9]
-            pos += 10
+            ch = payload[pos]; pos += 1
+            vol = payload[pos]; pos += 1
+            playing = payload[pos]; pos += 1
+            looping = payload[pos]; pos += 1
+            loop_count = read_u16_le(payload, pos); pos += 2
+            remaining_ms = read_u16_le(payload, pos); pos += 2
+            queue_len = payload[pos]; pos += 1
+            output = payload[pos]; pos += 1
 
-            status = f"{Fore.GREEN}▶ playing{Style.RESET_ALL}" if playing else f"{Fore.YELLOW}■ stopped{Style.RESET_ALL}"
+            # WAV format info
+            wav_rate = read_u16_le(payload, pos); pos += 2
+            wav_ch = payload[pos]; pos += 1
+            wav_bits = payload[pos]; pos += 1
+
+            # Filename
+            fname_len = payload[pos]; pos += 1
+            fname = payload[pos:pos + fname_len].decode('utf-8', errors='replace') if fname_len > 0 else ''
+            pos += fname_len
+
+            status = f"{Fore.GREEN}▶ playing{Style.RESET_ALL}" if playing else f"{Fore.YELLOW}■ queued{Style.RESET_ALL}"
             out_name = output_names.get(output, f'out{output}')
             loop_str = ''
             if looping:
                 if loop_count == 0xFFFF:
-                    loop_str = ' (loop ∞)'
+                    loop_str = ' loop=∞'
                 else:
-                    loop_str = f' (loop ×{loop_count})'
+                    loop_str = f' loop=×{loop_count}'
 
             remaining_str = f' {remaining_ms}ms left' if remaining_ms > 0 else ''
             queue_str = f' [queue: {queue_len}]' if queue_len > 0 else ''
+            wav_str = f'{wav_rate}Hz/{wav_bits}bit/{"stereo" if wav_ch == 2 else "mono"}' if wav_rate > 0 else ''
 
             print(f"    ch{ch}: {status} vol={vol}% {out_name}{loop_str}{remaining_str}{queue_str}")
+            if fname:
+                print(f"          file: {fname}")
+            if wav_str:
+                print(f"          wav:  {wav_str}")
 
         print()
 
@@ -1107,12 +1278,139 @@ class HubFxCommandHandler(CommandHandlerBase):
             self.print_error("Usage: gfx.smoke heat on|off")
             return
         if args[0].lower() == 'heat':
-            on = args[1].lower() == 'on'
+            on = args[1].lower() in ('on', '1', 'true', 'yes')
             packet = HubFxCommands.slave_route(GunFxCommands.smoke_heat(on))
             success, response = self.conn.send_expect_ack(packet)
             self._print_ack_nack(success, response, f"Smoke heater {'ON' if on else 'OFF'}")
         else:
             self.print_error("Usage: gfx.smoke heat on|off")
+
+    def cmd_gfx_servo_config(self, args: List[str]):
+        """GunFX servo configuration (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 3:
+            self.print_error("Usage: gfx.servo.config <id> <min> <max> [speed] [accel] [decel]")
+            return
+        try:
+            servo_id = int(args[0])
+            min_us = int(args[1])
+            max_us = int(args[2])
+            speed = int(args[3]) if len(args) > 3 else 4000
+            accel = int(args[4]) if len(args) > 4 else 8000
+            decel = int(args[5]) if len(args) > 5 else 8000
+            packet = HubFxCommands.slave_route(
+                GunFxCommands.servo_settings(servo_id, min_us, max_us, speed, accel, decel))
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response,
+                                 f"Servo {servo_id} configured: range {min_us}-{max_us}µs, speed {speed}µs/s")
+        except ValueError:
+            self.print_error("Invalid servo config parameters")
+
+    def cmd_gfx_servo_recoil(self, args: List[str]):
+        """GunFX servo recoil configuration (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 3:
+            self.print_error("Usage: gfx.servo.recoil <id> <jerk_us> <variance_us>")
+            return
+        try:
+            servo_id = int(args[0])
+            jerk = int(args[1])
+            variance = int(args[2])
+            packet = HubFxCommands.slave_route(
+                GunFxCommands.servo_recoil(servo_id, jerk, variance))
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response,
+                                 f"Servo {servo_id} recoil: jerk {jerk}µs, variance ±{variance}µs")
+        except ValueError:
+            self.print_error("Invalid recoil parameters")
+
+    def cmd_gfx_smoke_config(self, args: List[str]):
+        """GunFX smoke fan configuration (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error(
+                "Usage: gfx.smoke.config [key=value ...]\n"
+                "  Keys: pulsing (0|1), speed (0-255), high (0-255),\n"
+                "        low (0-255), pulse_ms (0=auto), spindown_ms (0-60000)\n"
+                "  Example: gfx.smoke.config pulsing=1 speed=200")
+            return
+        pulsing = False
+        speed = 255
+        high = 255
+        low = 80
+        pulse_ms = 0
+        spindown_ms = 5000
+        try:
+            for arg in args:
+                if '=' not in arg:
+                    self.print_error(f"Invalid parameter '{arg}'. Use key=value format.")
+                    return
+                key, val = arg.split('=', 1)
+                key = key.lower()
+                if key == 'pulsing':
+                    pulsing = val in ('1', 'true', 'on')
+                elif key == 'speed':
+                    speed = int(val)
+                elif key == 'high':
+                    high = int(val)
+                elif key == 'low':
+                    low = int(val)
+                elif key in ('pulse_ms', 'pulse'):
+                    pulse_ms = int(val)
+                elif key in ('spindown_ms', 'spindown'):
+                    spindown_ms = int(val)
+                else:
+                    self.print_error(f"Unknown parameter '{key}'")
+                    return
+            packet = HubFxCommands.slave_route(
+                GunFxCommands.smoke_settings(pulsing, speed, high, low, pulse_ms, spindown_ms))
+            success, response = self.conn.send_expect_ack(packet)
+            mode = "pulsing" if pulsing else "constant"
+            pulse_info = "auto" if pulse_ms == 0 else f"{pulse_ms}ms"
+            self._print_ack_nack(success, response,
+                                 f"Smoke: {mode}, speed={speed}, high/low={high}/{low}, "
+                                 f"pulse={pulse_info}, spindown={spindown_ms}ms")
+        except ValueError:
+            self.print_error("Invalid parameter value (must be numeric)")
+
+    def cmd_gfx_smoke_reset(self, args: List[str]):
+        """Clear GunFX smoke error states (routed via hub)."""
+        if not self._require_init():
+            return
+        packet = HubFxCommands.slave_route(GunFxCommands.smoke_reset())
+        success, response = self.conn.send_expect_ack(packet)
+        self._print_ack_nack(success, response, "Smoke errors cleared")
+
+    def cmd_gfx_smoke_limit(self, args: List[str]):
+        """Set GunFX overcurrent protection limit (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 2:
+            self.print_error("Usage: gfx.smoke.limit heater|fan <mA>  (0=disable)")
+            return
+        ch_name = args[0].lower()
+        if ch_name in ('heater', '0'):
+            channel = 0
+        elif ch_name in ('fan', '1'):
+            channel = 1
+        else:
+            self.print_error("Channel must be 'heater' (0) or 'fan' (1)")
+            return
+        try:
+            limit_mA = int(args[1])
+            packet = HubFxCommands.slave_route(
+                GunFxCommands.smoke_current_limit(channel, limit_mA))
+            success, response = self.conn.send_expect_ack(packet)
+            ch_label = 'Heater' if channel == 0 else 'Fan'
+            if limit_mA == 0:
+                self._print_ack_nack(success, response, f"{ch_label} overcurrent protection disabled")
+            else:
+                self._print_ack_nack(success, response, f"{ch_label} current limit set to {limit_mA} mA")
+        except ValueError:
+            self.print_error("Invalid current limit value")
 
     # =========================================================================
     # LightFX Passthrough Commands
@@ -1122,17 +1420,28 @@ class HubFxCommandHandler(CommandHandlerBase):
         """LightFX LED control (routed via hub)."""
         if not self._require_init():
             return
-        if len(args) < 2:
-            self.print_error("Usage: lfx.led <ch> <brightness>")
+        if not args:
+            self.print_error("Usage: lfx.led <ch> <brightness> | lfx.led off [ch]")
             return
-        try:
-            ch = int(args[0])
-            brightness = int(args[1])
-            packet = HubFxCommands.slave_route(LightFxCommands.led_set(ch, brightness))
+        subcmd = args[0].lower()
+        if subcmd == 'off':
+            ch = int(args[1]) if len(args) > 1 else 0
+            packet = HubFxCommands.slave_route(LightFxCommands.led_off(ch))
             success, response = self.conn.send_expect_ack(packet)
-            self._print_ack_nack(success, response, f"LED ch{ch} → {brightness}%")
-        except ValueError:
-            self.print_error("Invalid LED parameters")
+            target = f"ch{ch}" if ch > 0 else "all"
+            self._print_ack_nack(success, response, f"LED {target} OFF")
+        else:
+            if len(args) < 2:
+                self.print_error("Usage: lfx.led <ch> <brightness>")
+                return
+            try:
+                ch = int(args[0])
+                brightness = int(args[1])
+                packet = HubFxCommands.slave_route(LightFxCommands.led_set(ch, brightness))
+                success, response = self.conn.send_expect_ack(packet)
+                self._print_ack_nack(success, response, f"LED ch{ch} → {brightness}%")
+            except ValueError:
+                self.print_error("Invalid LED parameters")
 
     def cmd_lfx_led_off(self, args: List[str]):
         """LightFX LED off (routed via hub)."""
@@ -1143,6 +1452,113 @@ class HubFxCommandHandler(CommandHandlerBase):
         success, response = self.conn.send_expect_ack(packet)
         target = f"ch{ch}" if ch > 0 else "all"
         self._print_ack_nack(success, response, f"LED {target} OFF")
+
+    def cmd_lfx_led_seq(self, args: List[str]):
+        """LightFX LED sequence control (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: lfx.led.seq clear|start|stop|restart <ch>")
+            return
+        subcmd = args[0].lower()
+        ch = int(args[1]) if len(args) > 1 else 0
+        if subcmd == 'clear':
+            packet = HubFxCommands.slave_route(LightFxCommands.led_seq_clear(ch))
+            msg = f"LED {ch} sequence cleared"
+        elif subcmd == 'start':
+            packet = HubFxCommands.slave_route(LightFxCommands.led_seq_start(ch))
+            msg = f"LED {ch} sequence started"
+        elif subcmd == 'stop':
+            packet = HubFxCommands.slave_route(LightFxCommands.led_seq_stop(ch))
+            msg = f"LED {ch} sequence stopped"
+        elif subcmd == 'restart':
+            packet = HubFxCommands.slave_route(LightFxCommands.led_seq_restart(ch))
+            msg = f"LED {ch} sequence restarted"
+        else:
+            self.print_error(f"Unknown: {subcmd}. Use 'clear', 'start', 'stop', or 'restart'")
+            return
+        success, response = self.conn.send_expect_ack(packet)
+        self._print_ack_nack(success, response, msg)
+
+    def cmd_lfx_led_seq_add(self, args: List[str]):
+        """LightFX LED sequence add event (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 2:
+            self.print_error("Usage: lfx.led.seq.add <ch> <event> <params...>")
+            self.print_info("Events: on, off, flash, fadein, fadeout")
+            return
+        try:
+            ch = int(args[0])
+            event = args[1].lower()
+            if event == 'on':
+                if len(args) < 4:
+                    self.print_error("Usage: lfx.led.seq.add <ch> on <duration_ms> <brightness>")
+                    return
+                duration = int(args[2])
+                brightness = int(args[3])
+                packet = HubFxCommands.slave_route(
+                    LightFxCommands.led_seq_add_on(ch, duration, brightness))
+                msg = f"LED {ch}: ON {duration}ms at {brightness}%"
+            elif event == 'off':
+                if len(args) < 3:
+                    self.print_error("Usage: lfx.led.seq.add <ch> off <duration_ms>")
+                    return
+                duration = int(args[2])
+                packet = HubFxCommands.slave_route(
+                    LightFxCommands.led_seq_add_off(ch, duration))
+                msg = f"LED {ch}: OFF {duration}ms"
+            elif event == 'flash':
+                if len(args) < 5:
+                    self.print_error("Usage: lfx.led.seq.add <ch> flash <interval_ms> <duration_ms> <brightness> [duty]")
+                    return
+                interval = int(args[2])
+                duration = int(args[3])
+                brightness = int(args[4])
+                duty = int(args[5]) if len(args) > 5 else 50
+                packet = HubFxCommands.slave_route(
+                    LightFxCommands.led_seq_add_flash(ch, interval, duration, brightness, duty))
+                msg = f"LED {ch}: FLASH {interval}ms for {duration}ms, {duty}% duty"
+            elif event == 'fadein':
+                if len(args) < 4:
+                    self.print_error("Usage: lfx.led.seq.add <ch> fadein <duration_ms> <brightness>")
+                    return
+                duration = int(args[2])
+                brightness = int(args[3])
+                packet = HubFxCommands.slave_route(
+                    LightFxCommands.led_seq_add_fade_in(ch, duration, brightness))
+                msg = f"LED {ch}: FADE IN {duration}ms to {brightness}%"
+            elif event == 'fadeout':
+                if len(args) < 4:
+                    self.print_error("Usage: lfx.led.seq.add <ch> fadeout <duration_ms> <brightness>")
+                    return
+                duration = int(args[2])
+                brightness = int(args[3])
+                packet = HubFxCommands.slave_route(
+                    LightFxCommands.led_seq_add_fade_out(ch, duration, brightness))
+                msg = f"LED {ch}: FADE OUT {duration}ms from {brightness}%"
+            else:
+                self.print_error(f"Unknown event: {event}. Available: on, off, flash, fadein, fadeout")
+                return
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response, f"Sequence event added: {msg}")
+        except (ValueError, IndexError) as e:
+            self.print_error(f"Invalid parameters: {e}")
+
+    def cmd_lfx_brightness(self, args: List[str]):
+        """Set LightFX master LED brightness (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: lfx.brightness <0-100>")
+            return
+        try:
+            pct = int(args[0])
+            packet = HubFxCommands.slave_route(LightFxCommands.led_master_brightness(pct))
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response, f"Master brightness → {pct}%")
+        except ValueError:
+            self.print_error("Invalid brightness value")
 
     def cmd_lfx_servo(self, args: List[str]):
         """LightFX servo control (routed via hub)."""
@@ -1160,6 +1576,123 @@ class HubFxCommandHandler(CommandHandlerBase):
         except ValueError:
             self.print_error("Invalid servo parameters")
 
+    def cmd_lfx_servo_config(self, args: List[str]):
+        """LightFX servo configuration (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 3:
+            self.print_error("Usage: lfx.servo.config <id> <min> <max> [speed] [accel] [decel]")
+            return
+        try:
+            servo_id = int(args[0])
+            min_us = int(args[1])
+            max_us = int(args[2])
+            speed = int(args[3]) if len(args) > 3 else 4000
+            accel = int(args[4]) if len(args) > 4 else 8000
+            decel = int(args[5]) if len(args) > 5 else 8000
+            packet = HubFxCommands.slave_route(
+                LightFxCommands.servo_settings(servo_id, min_us, max_us, speed, accel, decel))
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response,
+                                 f"Servo {servo_id} configured: range {min_us}-{max_us}µs, speed {speed}µs/s")
+        except ValueError:
+            self.print_error("Invalid servo config parameters")
+
+    def cmd_lfx_ll_bind(self, args: List[str]):
+        """Bind LightFX landing light (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 5:
+            self.print_error("Usage: lfx.ll.bind <slot> <servo_id> <led_ch> <deploy_us> <retract_us> [brightness]")
+            return
+        try:
+            slot = int(args[0])
+            servo_id = int(args[1])
+            led_ch = int(args[2])
+            deploy_us = int(args[3])
+            retract_us = int(args[4])
+            brightness = int(args[5]) if len(args) > 5 else 100
+            packet = HubFxCommands.slave_route(
+                LightFxCommands.landing_light_bind(slot, servo_id, led_ch, deploy_us, retract_us, brightness))
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response,
+                                 f"Landing light {slot}: servo {servo_id} + LED {led_ch}, "
+                                 f"deploy {deploy_us}µs, retract {retract_us}µs, brightness {brightness}%")
+        except ValueError:
+            self.print_error("Invalid parameters")
+
+    def cmd_lfx_ll_unbind(self, args: List[str]):
+        """Unbind LightFX landing light slot (routed via hub)."""
+        if not self._require_init():
+            return
+        slot = int(args[0]) if args else 0
+        packet = HubFxCommands.slave_route(LightFxCommands.landing_light_unbind(slot))
+        success, response = self.conn.send_expect_ack(packet)
+        target = f"slot {slot}" if slot > 0 else "all slots"
+        self._print_ack_nack(success, response, f"Landing light {target} unbound")
+
+    def cmd_lfx_ll_deploy(self, args: List[str]):
+        """Deploy LightFX landing light (routed via hub)."""
+        if not self._require_init():
+            return
+        slot = int(args[0]) if args else 0
+        packet = HubFxCommands.slave_route(LightFxCommands.landing_light_deploy(slot))
+        success, response = self.conn.send_expect_ack(packet)
+        target = f"slot {slot}" if slot > 0 else "all"
+        self._print_ack_nack(success, response, f"Landing light {target} deploying")
+
+    def cmd_lfx_ll_retract(self, args: List[str]):
+        """Retract LightFX landing light (routed via hub)."""
+        if not self._require_init():
+            return
+        slot = int(args[0]) if args else 0
+        packet = HubFxCommands.slave_route(LightFxCommands.landing_light_retract(slot))
+        success, response = self.conn.send_expect_ack(packet)
+        target = f"slot {slot}" if slot > 0 else "all"
+        self._print_ack_nack(success, response, f"Landing light {target} retracting")
+
+    def cmd_lfx_reset(self, args: List[str]):
+        """Reset LightFX LED channel (routed via hub)."""
+        if not self._require_init():
+            return
+        ch = int(args[0]) if args else 0
+        packet = HubFxCommands.slave_route(LightFxCommands.led_reset(ch))
+        success, response = self.conn.send_expect_ack(packet)
+        target = f"LED {ch}" if ch > 0 else "All LEDs"
+        self._print_ack_nack(success, response, f"{target} reset")
+
+    def cmd_lfx_enable(self, args: List[str]):
+        """Enable LightFX LED channel (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: lfx.enable <ch> (1-8, 0=all)")
+            return
+        try:
+            ch = int(args[0])
+            packet = HubFxCommands.slave_route(LightFxCommands.led_enable(ch, True))
+            success, response = self.conn.send_expect_ack(packet)
+            target = f"LED {ch}" if ch > 0 else "All LEDs"
+            self._print_ack_nack(success, response, f"{target} enabled")
+        except ValueError:
+            self.print_error("Invalid channel number")
+
+    def cmd_lfx_disable(self, args: List[str]):
+        """Disable LightFX LED channel (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: lfx.disable <ch> (1-8, 0=all)")
+            return
+        try:
+            ch = int(args[0])
+            packet = HubFxCommands.slave_route(LightFxCommands.led_enable(ch, False))
+            success, response = self.conn.send_expect_ack(packet)
+            target = f"LED {ch}" if ch > 0 else "All LEDs"
+            self._print_ack_nack(success, response, f"{target} disabled")
+        except ValueError:
+            self.print_error("Invalid channel number")
+
     # =========================================================================
     # GearControl Passthrough Commands
     # =========================================================================
@@ -1169,10 +1702,10 @@ class HubFxCommandHandler(CommandHandlerBase):
         if not self._require_init():
             return
         if not args:
-            self.print_error("Usage: gc.deploy <gear_id> | gc.deploy all")
+            self.print_error("Usage: gc.deploy <gear_id> | all")
             return
         if args[0].lower() == 'all':
-            packet = HubFxCommands.slave_route(GearControlCommands.gear_all(deploying=True))
+            packet = HubFxCommands.slave_route(GearControlCommands.gear_all(1))  # ACTION_DEPLOY
             success, response = self.conn.send_expect_ack(packet)
             self._print_ack_nack(success, response, "Deploy ALL gears")
         else:
@@ -1180,7 +1713,8 @@ class HubFxCommandHandler(CommandHandlerBase):
                 gear_id = int(args[0])
                 packet = HubFxCommands.slave_route(GearControlCommands.gear_deploy(gear_id))
                 success, response = self.conn.send_expect_ack(packet)
-                self._print_ack_nack(success, response, f"Deploy gear {gear_id}")
+                names = {0: "nose", 1: "left main", 2: "right main"}
+                self._print_ack_nack(success, response, f"Deploy gear {gear_id} ({names.get(gear_id, '?')})")
             except ValueError:
                 self.print_error("Invalid gear ID")
 
@@ -1189,10 +1723,10 @@ class HubFxCommandHandler(CommandHandlerBase):
         if not self._require_init():
             return
         if not args:
-            self.print_error("Usage: gc.retract <gear_id> | gc.retract all")
+            self.print_error("Usage: gc.retract <gear_id> | all")
             return
         if args[0].lower() == 'all':
-            packet = HubFxCommands.slave_route(GearControlCommands.gear_all(deploying=False))
+            packet = HubFxCommands.slave_route(GearControlCommands.gear_all(0))  # ACTION_RETRACT
             success, response = self.conn.send_expect_ack(packet)
             self._print_ack_nack(success, response, "Retract ALL gears")
         else:
@@ -1200,7 +1734,8 @@ class HubFxCommandHandler(CommandHandlerBase):
                 gear_id = int(args[0])
                 packet = HubFxCommands.slave_route(GearControlCommands.gear_retract(gear_id))
                 success, response = self.conn.send_expect_ack(packet)
-                self._print_ack_nack(success, response, f"Retract gear {gear_id}")
+                names = {0: "nose", 1: "left main", 2: "right main"}
+                self._print_ack_nack(success, response, f"Retract gear {gear_id} ({names.get(gear_id, '?')})")
             except ValueError:
                 self.print_error("Invalid gear ID")
 
@@ -1209,15 +1744,342 @@ class HubFxCommandHandler(CommandHandlerBase):
         if not self._require_init():
             return
         if not args:
-            self.print_error("Usage: gc.stop <gear_id>")
+            self.print_error("Usage: gc.stop <gear_id> | all")
+            return
+        if args[0].lower() == 'all':
+            packet = HubFxCommands.slave_route(GearControlCommands.gear_all(2))  # ACTION_STOP
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response, "STOP ALL motors")
+        else:
+            try:
+                gear_id = int(args[0])
+                packet = HubFxCommands.slave_route(GearControlCommands.gear_stop(gear_id))
+                success, response = self.conn.send_expect_ack(packet)
+                self._print_ack_nack(success, response, f"STOP motor {gear_id}")
+            except ValueError:
+                self.print_error("Invalid gear ID")
+
+    def cmd_gc_servo(self, args: List[str]):
+        """GearControl servo control (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 3 or args[0].lower() != 'set':
+            self.print_error("Usage: gc.servo set <id> <pulse_us>")
+            return
+        try:
+            servo_id = int(args[1])
+            pulse = int(args[2])
+            packet = HubFxCommands.slave_route(GearControlCommands.servo_set(servo_id, pulse))
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response, f"Servo {servo_id} → {pulse}µs")
+        except ValueError:
+            self.print_error("Invalid servo parameters")
+
+    def cmd_gc_servo_config(self, args: List[str]):
+        """GearControl servo configuration (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 3:
+            self.print_error("Usage: gc.servo.config <id> <min> <max> [speed] [accel] [decel]")
+            return
+        try:
+            servo_id = int(args[0])
+            min_us = int(args[1])
+            max_us = int(args[2])
+            speed = int(args[3]) if len(args) > 3 else 4000
+            accel = int(args[4]) if len(args) > 4 else 8000
+            decel = int(args[5]) if len(args) > 5 else 8000
+            packet = HubFxCommands.slave_route(
+                GearControlCommands.servo_settings(servo_id, min_us, max_us, speed, accel, decel))
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response,
+                                 f"Servo {servo_id} configured: range {min_us}-{max_us}µs, speed {speed}µs/s")
+        except ValueError:
+            self.print_error("Invalid servo config parameters")
+
+    def cmd_gc_gear_config(self, args: List[str]):
+        """GearControl gear behavior configuration (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 2:
+            self.print_error("Usage: gc.gear.config <id> <flags...> [stall_mA] [timeout_ms]")
+            self.print_info("  Flags: yaw, none")
+            self.print_info("  Defaults: stall=500mA, timeout=60000ms")
+            return
+        FLAG_MAP = {'yaw': 0x01}
+        try:
+            gear_id = int(args[0])
+            flags = 0
+            numeric_args = []
+            has_flag_token = False
+            for arg in args[1:]:
+                lower = arg.lower()
+                if lower in FLAG_MAP:
+                    flags |= FLAG_MAP[lower]
+                    has_flag_token = True
+                elif lower == 'none':
+                    flags = 0
+                    has_flag_token = True
+                else:
+                    numeric_args.append(int(arg))
+            if not has_flag_token and len(numeric_args) >= 1:
+                flags = numeric_args.pop(0)
+            stall_mA = numeric_args[0] if len(numeric_args) > 0 else 500
+            timeout_ms = numeric_args[1] if len(numeric_args) > 1 else 60000
+            packet = HubFxCommands.slave_route(
+                GearControlCommands.gear_config(gear_id, flags, stall_mA, timeout_ms))
+            success, response = self.conn.send_expect_ack(packet)
+            flag_parts = []
+            if flags & 0x01:
+                flag_parts.append("yaw")
+            flag_str = ', '.join(flag_parts) if flag_parts else "none"
+            self._print_ack_nack(success, response,
+                                 f"Gear {gear_id}: flags=[{flag_str}], stall={stall_mA}mA, timeout={timeout_ms}ms")
+        except ValueError:
+            self.print_error("Invalid gear config parameters")
+
+    def cmd_gc_door_config(self, args: List[str]):
+        """GearControl door servo positions (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 5:
+            self.print_error("Usage: gc.door.config <gear_id> <open0_us> <close0_us> <open1_us> <close1_us>")
             return
         try:
             gear_id = int(args[0])
-            packet = HubFxCommands.slave_route(GearControlCommands.gear_stop(gear_id))
+            open0 = int(args[1])
+            close0 = int(args[2])
+            open1 = int(args[3])
+            close1 = int(args[4])
+            packet = HubFxCommands.slave_route(
+                GearControlCommands.door_config(gear_id, open0, close0, open1, close1))
             success, response = self.conn.send_expect_ack(packet)
-            self._print_ack_nack(success, response, f"Stop gear {gear_id}")
+            self._print_ack_nack(success, response,
+                                 f"Gear {gear_id} doors: A={close0}-{open0}µs, B={close1}-{open1}µs")
         except ValueError:
-            self.print_error("Invalid gear ID")
+            self.print_error("Invalid door config parameters")
+
+    def cmd_gc_door_mode(self, args: List[str]):
+        """GearControl door activation modes (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args or len(args) < 2:
+            self.print_error("Usage: gc.door.mode <gear_id> <pre_deploy> [post_deploy] [delay_ms]")
+            self.print_info("  Modes: none, single, dual-sync, dual-delay, dual-seq")
+            return
+        MODE_MAP = {
+            'none': 0, 'single': 1, 'dual-sync': 2, 'sync': 2,
+            'dual-delay': 3, 'delay': 3, 'dual-seq': 4, 'seq': 4,
+        }
+        def _parse_mode(s: str) -> int:
+            lower = s.lower()
+            if lower in MODE_MAP:
+                return MODE_MAP[lower]
+            return int(s)
+        try:
+            gear_id = int(args[0])
+            mode = _parse_mode(args[1])
+            post_deploy = 0
+            delay_ms = 500
+            if len(args) > 2:
+                try:
+                    post_deploy = _parse_mode(args[2])
+                    delay_ms = int(args[3]) if len(args) > 3 else 500
+                except ValueError:
+                    val = int(args[2])
+                    if val > 4:
+                        delay_ms = val
+                    else:
+                        post_deploy = val
+            packet = HubFxCommands.slave_route(
+                GearControlCommands.door_mode(gear_id, mode, post_deploy, delay_ms))
+            success, response = self.conn.send_expect_ack(packet)
+            mode_name = DoorMode.name(mode)
+            post_name = DoorMode.name(post_deploy)
+            msg = f"Gear {gear_id} pre-deploy={mode_name} post-deploy={post_name}"
+            if mode == DoorMode.DUAL_DELAY or post_deploy == DoorMode.DUAL_DELAY:
+                msg += f" (delay={delay_ms}ms)"
+            self._print_ack_nack(success, response, msg)
+        except ValueError:
+            self.print_error("Invalid door mode parameters")
+
+    def cmd_gc_yaw_config(self, args: List[str]):
+        """GearControl yaw servo configuration (routed via hub)."""
+        if not self._require_init():
+            return
+        if len(args) < 4:
+            self.print_error("Usage: gc.yaw.config <gear_id> <neutral_us> <min_us> <max_us>")
+            return
+        try:
+            gear_id = int(args[0])
+            neutral = int(args[1])
+            min_us = int(args[2])
+            max_us = int(args[3])
+            packet = HubFxCommands.slave_route(
+                GearControlCommands.yaw_config(gear_id, neutral, min_us, max_us))
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response,
+                                 f"Yaw configured: gear={gear_id}, neutral={neutral}µs, range={min_us}-{max_us}µs")
+        except ValueError:
+            self.print_error("Invalid yaw config parameters")
+
+    def cmd_gc_yaw(self, args: List[str]):
+        """GearControl set yaw position (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: gc.yaw <position_us>")
+            return
+        try:
+            position = int(args[0])
+            packet = HubFxCommands.slave_route(GearControlCommands.yaw_input(position))
+            success, response = self.conn.send_expect_ack(packet)
+            self._print_ack_nack(success, response, f"Yaw → {position}µs")
+        except ValueError:
+            self.print_error("Invalid yaw position")
+
+    def cmd_gc_calibrate(self, args: List[str]):
+        """GearControl stall current calibration (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: gc.calibrate <gear_id> | all [timeout_s]")
+            return
+        names = {0: "nose", 1: "left main", 2: "right main"}
+        if args[0].lower() == 'all':
+            timeout_s = int(args[1]) if len(args) > 1 else 0
+            for gear_id in range(3):
+                packet = HubFxCommands.slave_route(
+                    GearControlCommands.gear_calibrate(gear_id, timeout_s))
+                success, response = self.conn.send_expect_ack(packet)
+                timeout_str = f" (timeout={timeout_s}s)" if timeout_s > 0 else ""
+                self._print_ack_nack(success, response,
+                                     f"Calibrating gear {gear_id} ({names.get(gear_id, '?')}){timeout_str}")
+        else:
+            try:
+                gear_id = int(args[0])
+                timeout_s = int(args[1]) if len(args) > 1 else 0
+                packet = HubFxCommands.slave_route(
+                    GearControlCommands.gear_calibrate(gear_id, timeout_s))
+                success, response = self.conn.send_expect_ack(packet)
+                timeout_str = f" (timeout={timeout_s}s)" if timeout_s > 0 else ""
+                self._print_ack_nack(success, response,
+                                     f"Calibrating gear {gear_id} ({names.get(gear_id, '?')}){timeout_str}")
+            except ValueError:
+                self.print_error("Invalid gear ID or timeout")
+
+    def cmd_gc_calibrate_cancel(self, args: List[str]):
+        """Cancel GearControl calibration (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: gc.calibrate.cancel <gear_id> | all")
+            return
+        names = {0: "nose", 1: "left main", 2: "right main"}
+        if args[0].lower() == 'all':
+            for gear_id in range(3):
+                packet = HubFxCommands.slave_route(
+                    GearControlCommands.gear_calib_cancel(gear_id))
+                success, response = self.conn.send_expect_ack(packet)
+                self._print_ack_nack(success, response,
+                                     f"Cancelled calibration for gear {gear_id} ({names.get(gear_id, '?')})")
+        else:
+            try:
+                gear_id = int(args[0])
+                packet = HubFxCommands.slave_route(
+                    GearControlCommands.gear_calib_cancel(gear_id))
+                success, response = self.conn.send_expect_ack(packet)
+                self._print_ack_nack(success, response,
+                                     f"Cancelled calibration for gear {gear_id} ({names.get(gear_id, '?')})")
+            except ValueError:
+                self.print_error("Invalid gear ID")
+
+    def cmd_gc_reset(self, args: List[str]):
+        """Clear GearControl error state (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: gc.reset <gear_id> | all")
+            return
+        names = {0: "nose", 1: "left main", 2: "right main"}
+        if args[0].lower() == 'all':
+            for gear_id in range(3):
+                packet = HubFxCommands.slave_route(GearControlCommands.gear_reset(gear_id))
+                success, response = self.conn.send_expect_ack(packet)
+                self._print_ack_nack(success, response, f"Reset gear {gear_id} ({names.get(gear_id, '?')})")
+        else:
+            try:
+                gear_id = int(args[0])
+                packet = HubFxCommands.slave_route(GearControlCommands.gear_reset(gear_id))
+                success, response = self.conn.send_expect_ack(packet)
+                self._print_ack_nack(success, response, f"Reset gear {gear_id} ({names.get(gear_id, '?')})")
+            except ValueError:
+                self.print_error("Invalid gear ID")
+
+    def cmd_gc_enable(self, args: List[str]):
+        """Enable GearControl gear channel (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: gc.enable <gear_id> | all")
+            return
+        names = {0: "nose", 1: "left main", 2: "right main"}
+        if args[0].lower() == 'all':
+            for gear_id in range(3):
+                packet = HubFxCommands.slave_route(GearControlCommands.gear_enable(gear_id, True))
+                success, response = self.conn.send_expect_ack(packet)
+                self._print_ack_nack(success, response, f"Enabled gear {gear_id} ({names.get(gear_id, '?')})")
+        else:
+            try:
+                gear_id = int(args[0])
+                packet = HubFxCommands.slave_route(GearControlCommands.gear_enable(gear_id, True))
+                success, response = self.conn.send_expect_ack(packet)
+                self._print_ack_nack(success, response, f"Enabled gear {gear_id} ({names.get(gear_id, '?')})")
+            except ValueError:
+                self.print_error("Invalid gear ID")
+
+    def cmd_gc_disable(self, args: List[str]):
+        """Disable GearControl gear channel (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: gc.disable <gear_id> | all")
+            return
+        names = {0: "nose", 1: "left main", 2: "right main"}
+        if args[0].lower() == 'all':
+            for gear_id in range(3):
+                packet = HubFxCommands.slave_route(GearControlCommands.gear_enable(gear_id, False))
+                success, response = self.conn.send_expect_ack(packet)
+                self._print_ack_nack(success, response, f"Disabled gear {gear_id} ({names.get(gear_id, '?')})")
+        else:
+            try:
+                gear_id = int(args[0])
+                packet = HubFxCommands.slave_route(GearControlCommands.gear_enable(gear_id, False))
+                success, response = self.conn.send_expect_ack(packet)
+                self._print_ack_nack(success, response, f"Disabled gear {gear_id} ({names.get(gear_id, '?')})")
+            except ValueError:
+                self.print_error("Invalid gear ID")
+
+    def cmd_gc_battery(self, args: List[str]):
+        """GearControl battery monitoring (routed via hub)."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: gc.battery <on|off> [autodeploy]")
+            return
+        value = args[0].lower()
+        if value in ('on', '1', 'true', 'yes', 'enable'):
+            enabled = True
+        elif value in ('off', '0', 'false', 'no', 'disable'):
+            enabled = False
+        else:
+            self.print_error(f"Invalid value '{args[0]}' — use 'on' or 'off'")
+            return
+        auto_deploy = len(args) > 1 and args[1].lower() == 'autodeploy'
+        packet = HubFxCommands.slave_route(GearControlCommands.battery_config(enabled, auto_deploy))
+        success, response = self.conn.send_expect_ack(packet)
+        state = "ENABLED" + (" + auto-deploy" if auto_deploy else "") if enabled else "DISABLED"
+        self._print_ack_nack(success, response, f"Battery monitoring: {state}")
 
     # =========================================================================
     # Helpers

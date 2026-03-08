@@ -24,6 +24,7 @@ class CorePacket:
     I2C_SCAN    = 0xFB
     I2C_SCAN_RESULT = 0xFC
     LOG_MESSAGE = 0xFD  # [level:u8][millis:u32LE][message:str] (async, universal)
+    IDENTIFY    = 0xFE  # Query board info without triggering INIT (same payload as INIT_READY)
 
 
 class GunFxPacket:
@@ -412,7 +413,10 @@ class HubFxPacket:
     AUDIO_QUEUE       = 0x88  # [ch:u8][vol:u8][loopCount:u16LE][behavior:u8][pathLen:u8][path:str]
     AUDIO_QUEUE_CLEAR = 0x89  # [ch:u8] (0xFF=all)
     AUDIO_STATUS_REQ  = 0x8A  # [] → AUDIO_STATUS_RESP
-    AUDIO_STATUS_RESP = 0x8B  # [masterVol:u8][activeMask:u8][per-channel data...]
+    AUDIO_STATUS_RESP = 0x8B  # v2: [masterVol:u8][flags:u8][sampleRate:u16LE][bitDepth:u8]
+                              #     [maxCh:u8][codecNameLen:u8][codecName:str]
+                              #     [activeMask:u8][per-ch: 10B + wavRate:u16LE + wavCh:u8
+                              #      + wavBits:u8 + fnameLen:u8 + fname:str]
 
     # Engine FX
     ENGINE_START       = 0x8C  # [] → ACK

@@ -246,7 +246,7 @@ uint8_t SdCardModule::openRead(const char* path, File32& file) {
 uint8_t SdCardModule::openWrite(const char* path, File32& file, bool truncate) {
     if (!_initialized) return SdError::NOT_INITIALIZED;
 
-    uint8_t flags = O_WRONLY | O_CREAT;
+    oflag_t flags = O_WRONLY | O_CREAT;
     if (truncate) flags |= O_TRUNC;
 
     file = _sd.open(path, flags);

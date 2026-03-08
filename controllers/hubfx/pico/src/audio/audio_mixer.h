@@ -133,6 +133,8 @@ public:
     // ---- Status ----
     bool isPlaying(int channel) const;
     bool isAnyPlaying() const;
+    bool isInitialized() const { return _initialized; }
+    bool isI2SRunning() const  { return _i2sRunning; }
     int remainingMs(int channel) const;
     AudioCodec* getCodec() const { return _codec; }
     

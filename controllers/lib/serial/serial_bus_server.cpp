@@ -185,6 +185,12 @@ CommandHandleResult CoreCommandServer::handleModulePacket(uint8_t type, const ui
             sendStatus();
             return CommandHandleResult::Handled;
 
+        case CorePacket::IDENTIFY:
+            // Return board info without triggering init callbacks or state changes.
+            // Same payload format as INIT_READY, but response type is IDENTIFY.
+            sendIdentify();
+            return CommandHandleResult::Handled;
+
         case CorePacket::I2C_SCAN:
             if (_i2cScanCallback) {
                 I2CScanResult result = _i2cScanCallback();
@@ -239,6 +245,14 @@ void CoreCommandServer::sendInitReady() {
     uint8_t payload[64];
     size_t len = CorePayload::encodeInitReady(_boardInfo, payload);
     sendRawPacket(CorePacket::INIT_READY, _currentTag, payload, len);
+}
+
+void CoreCommandServer::sendIdentify() {
+    // Same payload as INIT_READY, but uses IDENTIFY packet type.
+    // Does NOT set _initReceived or fire _initCallback.
+    uint8_t payload[64];
+    size_t len = CorePayload::encodeInitReady(_boardInfo, payload);
+    sendRawPacket(CorePacket::IDENTIFY, _currentTag, payload, len);
 }
 
 void CoreCommandServer::sendStatus() {

@@ -129,7 +129,7 @@ uint8_t FlashModule::getFileInfo(const char* path, FileEntry& entry) {
     strncpy(entry.name, name, sizeof(entry.name) - 1);
     entry.name[sizeof(entry.name) - 1] = '\0';
 
-    entry.isDirectory = f.isDir();
+    entry.isDirectory = f.isDirectory();
     entry.size = entry.isDirectory ? 0 : (uint32_t)f.size();
     f.close();
     unlock();
@@ -181,7 +181,7 @@ uint8_t FlashModule::makeDirectory(const char* path) {
     // Already exists as directory? That's OK.
     if (LittleFS.exists(path)) {
         LFSFile f = LittleFS.open(path, "r");
-        bool isDir = f && f.isDir();
+        bool isDir = f && f.isDirectory();
         if (f) f.close();
         unlock();
         return isDir ? FlashError::OK : FlashError::ALREADY_EXISTS;
@@ -203,7 +203,7 @@ uint8_t FlashModule::openRead(const char* path, LFSFile& file) {
     file = LittleFS.open(path, "r");
     if (!file) return FlashError::NOT_FOUND;
 
-    if (file.isDir()) {
+    if (file.isDirectory()) {
         file.close();
         return FlashError::IS_DIRECTORY;
     }

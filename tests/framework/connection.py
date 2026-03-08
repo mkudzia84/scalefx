@@ -46,6 +46,7 @@ def _packet_type_name(ptype: int) -> str:
         CorePacket.BOOTSEL: "BOOTSEL",
         CorePacket.KEEPALIVE: "KEEPALIVE",
         CorePacket.STATUS_REQ: "STATUS_REQ",
+        CorePacket.IDENTIFY: "IDENTIFY",
     }
     return names.get(ptype, f"0x{ptype:02X}")
 
@@ -69,6 +70,10 @@ class Response:
     @property
     def is_init_ready(self) -> bool:
         return self.packet_type == CorePacket.INIT_READY
+    
+    @property
+    def is_identify(self) -> bool:
+        return self.packet_type == CorePacket.IDENTIFY
     
     @property
     def error_code(self) -> int:

@@ -5,9 +5,6 @@
 #include "mock_i2s_sink.h"
 #include "../hubfx_log.h"
 
-// Mock I2S always outputs - it's a debug tool
-#define MOCK_LOG(fmt, ...) Serial.printf("[MockI2S] " fmt "\n", ##__VA_ARGS__)
-
 // Default capture buffer size (stereo samples)
 constexpr size_t DEFAULT_CAPTURE_SIZE = 4096;
 
@@ -69,7 +66,7 @@ void MockI2SSink::end() {
         _captureCount = 0;
     }
     
-    Serial.println("[MockI2S] Stopped");
+    MOCK_LOG("Stopped");
     printStatistics();
 }
 
@@ -210,58 +207,54 @@ void MockI2SSink::updateStatistics(const int16_t* samples, size_t sampleCount) {
 }
 
 void MockI2SSink::printStatistics() const {
-    Serial.println();
-    Serial.println("========================================");
-    Serial.println("    MOCK I2S STATISTICS");
-    Serial.println("========================================");
+    MOCK_LOG("========================================");
+    MOCK_LOG("    MOCK I2S STATISTICS");
+    MOCK_LOG("========================================");
     
     // Basic info
-    Serial.printf("Sample Rate:       %lu Hz\n", _sampleRate);
-    Serial.printf("Running:           %s\n", _running ? "YES" : "NO");
-    Serial.println();
+    MOCK_LOG("Sample Rate:       %lu Hz", _sampleRate);
+    MOCK_LOG("Running:           %s", _running ? "YES" : "NO");
     
     // Write statistics
-    Serial.printf("Write Calls:       %lu\n", _stats.writeCallCount);
-    Serial.printf("Total Samples:     %lu stereo pairs\n", _stats.totalSamplesWritten);
+    MOCK_LOG("Write Calls:       %lu", _stats.writeCallCount);
+    MOCK_LOG("Total Samples:     %lu stereo pairs", _stats.totalSamplesWritten);
     
     // Duration
     if (_stats.totalSamplesWritten > 0) {
         float durationSec = _stats.totalSamplesWritten / (float)_sampleRate;
-        Serial.printf("Duration:          %.2f seconds\n", durationSec);
+        MOCK_LOG("Duration:          %.2f seconds", durationSec);
         
         if (_stats.lastWriteMs > _stats.firstWriteMs) {
             uint32_t elapsedMs = _stats.lastWriteMs - _stats.firstWriteMs;
-            Serial.printf("Real Time:         %.2f seconds\n", elapsedMs / 1000.0f);
-            Serial.printf("Realtime Ratio:    %.2fx\n", (durationSec * 1000.0f) / elapsedMs);
+            MOCK_LOG("Real Time:         %.2f seconds", elapsedMs / 1000.0f);
+            MOCK_LOG("Realtime Ratio:    %.2fx", (durationSec * 1000.0f) / elapsedMs);
         }
     }
-    Serial.println();
     
     // Levels
-    Serial.println("--- LEVELS ---");
-    Serial.printf("Peak Left:         %d (%.1f dB)\n", 
-                  _stats.peakLeft, 
-                  20.0f * log10(abs(_stats.peakLeft) / 32768.0f));
-    Serial.printf("Peak Right:        %d (%.1f dB)\n", 
-                  _stats.peakRight,
-                  20.0f * log10(abs(_stats.peakRight) / 32768.0f));
-    Serial.printf("RMS Left:          %.3f (%.1f dB)\n", 
-                  _stats.rmsLeft,
-                  20.0f * log10(_stats.rmsLeft + 0.0001f));
-    Serial.printf("RMS Right:         %.3f (%.1f dB)\n", 
-                  _stats.rmsRight,
-                  20.0f * log10(_stats.rmsRight + 0.0001f));
-    Serial.println();
+    MOCK_LOG("--- LEVELS ---");
+    MOCK_LOG("Peak Left:         %d (%.1f dB)", 
+              _stats.peakLeft, 
+              20.0f * log10(abs(_stats.peakLeft) / 32768.0f));
+    MOCK_LOG("Peak Right:        %d (%.1f dB)", 
+              _stats.peakRight,
+              20.0f * log10(abs(_stats.peakRight) / 32768.0f));
+    MOCK_LOG("RMS Left:          %.3f (%.1f dB)", 
+              _stats.rmsLeft,
+              20.0f * log10(_stats.rmsLeft + 0.0001f));
+    MOCK_LOG("RMS Right:         %.3f (%.1f dB)", 
+              _stats.rmsRight,
+              20.0f * log10(_stats.rmsRight + 0.0001f));
     
     // Quality indicators
-    Serial.println("--- QUALITY ---");
-    Serial.printf("Clipping (L/R):    %lu / %lu events\n", 
-                  _stats.clippingEventsLeft, _stats.clippingEventsRight);
+    MOCK_LOG("--- QUALITY ---");
+    MOCK_LOG("Clipping (L/R):    %lu / %lu events", 
+              _stats.clippingEventsLeft, _stats.clippingEventsRight);
     
     if (_stats.totalSamplesWritten > 0) {
         float silencePercent = (_stats.silentSamples * 100.0f) / _stats.totalSamplesWritten;
-        Serial.printf("Silent Samples:    %lu (%.1f%%)\n", 
-                      _stats.silentSamples, silencePercent);
+        MOCK_LOG("Silent Samples:    %lu (%.1f%%)", 
+                  _stats.silentSamples, silencePercent);
     }
     
     // Frequency estimation
@@ -269,18 +262,16 @@ void MockI2SSink::printStatistics() const {
         float durationSec = _stats.totalSamplesWritten / (float)_sampleRate;
         float freqLeft = _stats.zeroCrossingsLeft / (2.0f * durationSec);
         float freqRight = _stats.zeroCrossingsRight / (2.0f * durationSec);
-        Serial.printf("Est. Freq (L/R):   %.0f / %.0f Hz\n", freqLeft, freqRight);
+        MOCK_LOG("Est. Freq (L/R):   %.0f / %.0f Hz", freqLeft, freqRight);
     }
     
     // Capture info
     if (_captureEnabled) {
-        Serial.println();
-        Serial.println("--- CAPTURE ---");
-        Serial.printf("Captured Samples:  %zu / %zu\n", _captureCount, _captureBufferSize);
-        Serial.printf("Buffer Full:       %s\n", 
-                      _captureCount >= _captureBufferSize ? "YES" : "NO");
+        MOCK_LOG("--- CAPTURE ---");
+        MOCK_LOG("Captured Samples:  %zu / %zu", _captureCount, _captureBufferSize);
+        MOCK_LOG("Buffer Full:       %s", 
+                  _captureCount >= _captureBufferSize ? "YES" : "NO");
     }
     
-    Serial.println("========================================");
-    Serial.println();
+    MOCK_LOG("========================================");
 }
