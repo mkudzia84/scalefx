@@ -36,8 +36,8 @@
  *   The subcmd byte is the original slave packet type, forwarded as-is.
  */
 
-#define FIRMWARE_VERSION "2.6.0"
-#define BUILD_NUMBER 9
+#define FIRMWARE_VERSION "2.7.0"
+#define BUILD_NUMBER 18
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -177,16 +177,15 @@ void setup1() {
         delay(10);
     }
 
-    // Initialize USB Host on Core 1 (PIO-USB timing requirement)
-    if (usbHost.init()) {
-        SFX_LOG_INFO("USB Host initialized on Core 1 (D+:GP%d, D-:GP%d)",
-                     PIO_USB_DP_PIN_DEFAULT, PIO_USB_DP_PIN_DEFAULT + 1);
-    } else {
-        SFX_LOG_ERROR("USB Host init failed on Core 1");
-    }
+    // PIO-USB disabled for audio debugging
+    // if (usbHost.init()) {
+    //     SFX_LOG_INFO("USB Host initialized on Core 1");
+    // } else {
+    //     SFX_LOG_ERROR("USB Host init failed on Core 1");
+    // }
 
     core1Ready = true;
-    SFX_LOG_INFO("Core 1 ready (audio + USB Host)");
+    SFX_LOG_INFO("Core 1 ready (audio only, USB Host disabled)");
 }
 
 void loop1() {
@@ -195,8 +194,8 @@ void loop1() {
         mixer.process();
     }
 
-    // USB Host task processing (enumeration, hot-plug)
-    usbHost.process();
+    // PIO-USB disabled for audio debugging
+    // usbHost.process();
 }
 
 // ============================================================================
@@ -468,14 +467,15 @@ void setup() {
     // Audio
     audioInitialized = initAudio();
 
-    // USB Host setup (Core 1 will call init())
-    if (usbHost.begin()) {
-        usbHost.onMount(onUsbMount);
-        usbHost.onUnmount(onUsbUnmount);
-        SFX_LOG_INFO("USB Host configured (slave bus ready)");
-    } else {
-        SFX_LOG_ERROR("USB Host setup failed");
-    }
+    // PIO-USB disabled for audio debugging
+    // if (usbHost.begin()) {
+    //     usbHost.onMount(onUsbMount);
+    //     usbHost.onUnmount(onUsbUnmount);
+    //     SFX_LOG_INFO("USB Host configured (slave bus ready)");
+    // } else {
+    //     SFX_LOG_ERROR("USB Host setup failed");
+    // }
+    SFX_LOG_WARN("USB Host DISABLED for audio debugging");
 
     // Pre-register slave slots (clients will be bound when devices are discovered)
     // The registry just tracks the relationship; actual connection happens on USB mount

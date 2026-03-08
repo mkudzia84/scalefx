@@ -38,14 +38,7 @@ import threading
 import time
 from queue import Queue, Empty
 
-# readline for command history (pyreadline3 on Windows)
-try:
-    import readline
-except ImportError:
-    try:
-        import pyreadline3 as readline
-    except ImportError:
-        readline = None  # Command history won't work
+from .output import TerminalUI
 
 from typing import Optional, List, Dict, Callable, Tuple
 
@@ -87,6 +80,9 @@ class InteractiveCLI(OutputMixin):
         self._listener_thread: Optional[threading.Thread] = None
         self._listener_stop = threading.Event()
         self._response_queue: Queue = Queue()  # Async messages received while idle
+        
+        # Terminal UI (created in run())
+        self._ui: Optional[TerminalUI] = None
         
         # Keepalive interval (seconds) — sent automatically while idle
         self.KEEPALIVE_INTERVAL = 5.0
@@ -150,6 +146,8 @@ class InteractiveCLI(OutputMixin):
         """Callback for quit command."""
         self.running = False
         self._stop_listener()
+        if self._ui:
+            self._ui.exit()
     
     # =========================================================================
     # Async Listener
@@ -273,12 +271,13 @@ class InteractiveCLI(OutputMixin):
                 print(f"  {Fore.MAGENTA}[listener] saved {len(rx_buffer)}B to conn._rx_buffer: {rx_buffer.hex()}{Style.RESET_ALL}")
     
     def _print_async_message(self, response: Response):
-        """Print an unsolicited async packet while at the prompt."""
+        """Print an unsolicited async packet.
+        
+        All print() output is captured by TerminalUI to the scrolling
+        output area, so no special terminal handling is needed here.
+        """
         ptype = response.packet_type
         payload = response.payload
-        
-        # Clear current input line, print message, re-show prompt
-        sys.stdout.write('\r\033[K')  # Clear line
         
         if ptype == GearControlPacket.GEAR_CALIB_STATUS:
             parsers.parse_gear_calib_status(payload)
@@ -304,10 +303,6 @@ class InteractiveCLI(OutputMixin):
             self.print_info(f"Async: {pname}")
             if payload:
                 parsers.parse_generic_payload(payload)
-        
-        # Re-display prompt
-        sys.stdout.write(self.prompt)
-        sys.stdout.flush()
     
     @property
     def prompt(self) -> str:
@@ -340,59 +335,77 @@ class InteractiveCLI(OutputMixin):
         return commands
     
     def run(self):
-        """Main command loop."""
+        """Main entry point — launches the split-screen terminal UI."""
+        self._ui = TerminalUI()
+        self._ui.on_command(self._process_command)
+        self._ui.on_exit(self._on_quit)
+        
+        # Capture stdout so all print() goes to the output pane
+        self._ui.install_capture()
+        
+        # Banner
         print(f"\n{Fore.CYAN}╔══════════════════════════════════════════╗{Style.RESET_ALL}")
         print(f"{Fore.CYAN}║{Style.RESET_ALL}       ScaleFX Interactive CLI            {Fore.CYAN}║{Style.RESET_ALL}")
         print(f"{Fore.CYAN}╚══════════════════════════════════════════╝{Style.RESET_ALL}")
         print(f"Type 'help' for commands, 'quit' to exit")
         print(f"Commands are context-sensitive based on connected controller\n")
         
+        # Auto-connect if port specified
         if self.port:
             self._do_connect(self.port)
+            self._ui.set_prompt(self.prompt)
         
-        while self.running:
-            try:
-                # Drain any queued responses that arrived between commands
-                self._drain_async_queue()
-                
-                line = input(self.prompt).strip()
-                if not line:
-                    continue
-                
-                parts = line.split()
-                cmd = parts[0].lower()
-                args = parts[1:]
-                
-                available = self.get_available_commands()
-                
-                if cmd == 'help' or cmd == '?':
-                    self._cmd_help(args, available)
-                elif cmd in available:
-                    handler, info = available[cmd]
-                    
-                    # Check requirements
-                    if info.requires_init and (not self.conn or not self.conn.is_initialized):
-                        self.print_error("This command requires initialization. Run 'init' first.")
-                        continue
-                    
-                    # Pause listener while command uses serial directly
-                    self._stop_listener()
-                    handler(args)
-                    
-                    # Sync connection after command (may have changed)
-                    self._sync_connection()
-                    
-                    # Restart listener if still connected
-                    if self.conn and self.conn.is_connected:
-                        self._start_listener()
-                else:
-                    self._suggest_command(cmd)
-                    
-            except KeyboardInterrupt:
-                print()
-                continue
-            except EOFError:
-                self._on_quit()
+        # Start full-screen UI (blocks until exit)
+        try:
+            self._ui.run()
+        finally:
+            self._ui.restore_stdout()
+            self._stop_listener()
+            if self.conn:
+                try:
+                    self.conn.disconnect()
+                except Exception:
+                    pass
+    
+    def _process_command(self, text: str):
+        """Process a single command (called from TerminalUI command thread).
+        
+        Runs in a background thread. All print() output is captured to the
+        scrolling output area. The serial listener is paused during command
+        execution to avoid port contention.
+        """
+        parts = text.split()
+        cmd = parts[0].lower()
+        args = parts[1:]
+        
+        available = self.get_available_commands()
+        
+        if cmd == 'help' or cmd == '?':
+            self._cmd_help(args, available)
+        elif cmd in available:
+            handler, info = available[cmd]
+            
+            # Check requirements
+            if info.requires_init and (not self.conn or not self.conn.is_initialized):
+                self.print_error("This command requires initialization. Run 'init' first.")
+                return
+            
+            # Pause listener while command uses serial directly
+            self._stop_listener()
+            handler(args)
+            
+            # Sync connection after command (may have changed)
+            self._sync_connection()
+            
+            # Update prompt (may have changed after connect/init/disconnect)
+            if self._ui:
+                self._ui.set_prompt(self.prompt)
+            
+            # Restart listener if still connected
+            if self.conn and self.conn.is_connected:
+                self._start_listener()
+        else:
+            self._suggest_command(cmd)
     
     def _do_connect(self, port: str):
         """Internal connect helper."""

@@ -76,8 +76,9 @@ tests/
 ├── framework/           # Python test framework
 ├── cli/                 # Interactive CLI (modular)
 │   ├── base.py          # Base classes, CommandInfo, OutputMixin
+│   ├── output.py        # TerminalUI split-screen terminal (prompt_toolkit Application)
 │   ├── parsers.py       # Response packet parsing
-│   ├── interactive.py   # Main CLI (~280 lines)
+│   ├── interactive.py   # Main CLI (~350 lines)
 │   └── handlers/        # Command handlers
 │       ├── core.py      # Core/protocol commands
 │       ├── gunfx.py     # GunFX commands
@@ -109,7 +110,8 @@ When modifying protocol, these file pairs MUST stay in sync:
 2. Determine response category if adding commands (instant / query / long-running)
 3. Make changes following the checklist
 4. Ensure all client methods return `CommandResult` (never `bool`)
-5. Verify C++ compiles: `pio run`
-6. Verify Python syntax: `python -m py_compile <file>`
-7. Flash and test: `python scripts/build_and_flash.py <controller>`
-8. Run tests: `pytest tests/<module>/ -v`
+5. **Bump FIRMWARE_VERSION** — MAJOR for wire format changes, MINOR for new features, PATCH for fixes
+6. Verify C++ compiles: `pio run`
+7. Verify Python syntax: `python -m py_compile <file>`
+8. Flash and test: `python scripts/build_and_flash.py <controller>`
+9. Run tests: `pytest tests/<module>/ -v`

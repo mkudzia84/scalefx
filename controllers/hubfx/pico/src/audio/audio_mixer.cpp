@@ -139,9 +139,18 @@ void AudioMixer::shutdown() {
 // ============================================================================
 
 bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOptions& options) {
-    if (!_initialized) return false;
-    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return false;
-    if (!filename) return false;
+    if (!_initialized) {
+        MIXER_ERROR("play() called but mixer not initialized");
+        return false;
+    }
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) {
+        MIXER_ERROR("play() invalid channel: %d", channel);
+        return false;
+    }
+    if (!filename) {
+        MIXER_ERROR("play() null filename on ch%d", channel);
+        return false;
+    }
 
     Channel& ch = _channels[channel];
 
@@ -519,6 +528,14 @@ int AudioMixer::remainingMs(int channel) const {
 // ============================================================================
 
 void AudioMixer::doMixAndOutput() {
+    // One-time Core 1 confirmation
+    static bool firstCall = true;
+    if (firstCall) {
+        MIXER_LOG("doMixAndOutput first call (init=%d i2s=%d dual=%d)",
+                  _initialized, _i2sRunning, _dualCoreMode);
+        firstCall = false;
+    }
+
     if (!_initialized || !_i2sRunning) return;
 
     // Process command queue (dual-core mode)
@@ -758,6 +775,8 @@ bool AudioMixer::queueCommand(const Command& cmd) {
     _cmdQueueHead = nextHead;
 
     mutex_exit(&_cmdMutex);
+    MIXER_LOG("Cmd queued: type=%d ch=%d (head=%d tail=%d)",
+             (int)cmd.type, cmd.channelId, _cmdQueueHead, (int)_cmdQueueTail);
     return true;
 }
 
@@ -775,6 +794,7 @@ void AudioMixer::processCommands() {
 void AudioMixer::executeCommand(const Command& cmd) {
     switch (cmd.type) {
         case CommandType::Play:
+            MIXER_LOG("Core1: Executing play ch%d: %s", cmd.channelId, cmd.filename);
             play(cmd.channelId, cmd.filename, cmd.options);
             break;
         case CommandType::Stop:

@@ -112,9 +112,12 @@ void AudioServer::handlePlay(const uint8_t* payload, size_t len) {
             break;
     }
 
+    MIXER_LOG("Play request: ch%d path=%s vol=%d%% loop=%d", ch, path, volPct, loopMode);
+
     if (_mixer->playAsync(ch, path, opts)) {
         sendAck();
     } else {
+        MIXER_ERROR("playAsync failed for ch%d: %s", ch, path);
         sendNack(HubFxError::AUDIO_ERROR);
     }
 }
@@ -290,7 +293,7 @@ void AudioServer::handleStatusReq() {
     //   Per-channel (only active):
     //     [activeMask:u8]
     //     [ch:u8][vol:u8][playing:u8][looping:u8][loopCount:u16LE]
-    //     [remaining_ms:u16LE][queueLen:u8][output:u8]
+    //     [remaining_ms:u32LE][queueLen:u8][output:u8]
     //     [wavRate_Hz:u16LE][wavCh:u8][wavBits:u8]
     //     [filenameLen:u8][filename:str]
 
@@ -341,9 +344,9 @@ void AudioServer::handleStatusReq() {
         buf[pos++] = _mixer->isLooping(i) ? 1 : 0;                      // looping
         putU16LE(&buf[pos], (uint16_t)_mixer->getLoopCount(i));          // loopCount
         pos += 2;
-        uint16_t remaining = (uint16_t)min(_mixer->remainingMs(i), 65535);
-        putU16LE(&buf[pos], remaining);                                   // remaining_ms
-        pos += 2;
+        uint32_t remaining = (uint32_t)max(_mixer->remainingMs(i), 0);    // remaining_ms
+        putU32LE(&buf[pos], remaining);
+        pos += 4;
         buf[pos++] = (uint8_t)_mixer->queueLength(i);                    // queueLen
         buf[pos++] = (uint8_t)_mixer->getOutput(i);                      // output
 

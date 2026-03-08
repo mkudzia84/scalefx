@@ -27,6 +27,7 @@ Change_Type_Matrix:
     test_*.py: REQUIRED          # ALWAYS update tests for payload changes
     cli/handlers/xxxfx.py: REQUIRED
     README.md: REQUIRED
+    FIRMWARE_VERSION: REQUIRED   # MAJOR if field type/size changed, MINOR if appended
     
   New_Error_Code:
     serial_core.h: IF_GENERIC_ERROR
@@ -151,11 +152,19 @@ Backward_Compatibility:
     - "Will existing clients work with new servers?"
     - "Will existing servers work with new clients?"
     - "Is the payload format changing?"
+    - "Did any field change type or size (e.g., u16→u32)? → BREAKING"
   
   if_breaking_change:
-    - "Increment major version"
+    - "Increment MAJOR version"
     - "Document migration path"
+    - "Update all parsers (C++ and Python) simultaneously"
     - "Consider deprecation period"
+  
+  breaking_change_examples:
+    - "Changing a field's type (u16→u32, u8→u16)"
+    - "Reordering fields in a payload"
+    - "Removing a field or packet type"
+    - "Changing the semantic meaning of an existing field"
 
 Files_To_Update:
   - file: "serial_xxxfx.h"
@@ -298,8 +307,9 @@ Python_Framework:
     "framework/packets.py": "Constants (mirror C++)"
     "framework/commands.py": "Command builders"
     "cli/base.py": "CommandInfo, OutputMixin, ControllerType, base classes"
+    "cli/output.py": "TerminalUI split-screen terminal (prompt_toolkit Application)"
     "cli/parsers.py": "Response packet parsing utilities"
-    "cli/interactive.py": "Main CLI class (composes handlers)"
+    "cli/interactive.py": "Main CLI class (composes handlers + TerminalUI)"
     "cli/handlers/core.py": "Core/protocol commands"
     "cli/handlers/gunfx.py": "GunFX commands"
     "cli/handlers/hubfx.py": "HubFX commands (audio, engine, files, slaves)"

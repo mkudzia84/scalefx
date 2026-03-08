@@ -688,7 +688,7 @@ class HubFxCommandHandler(CommandHandlerBase):
         print()
 
         for _ in range(active_count):
-            if pos + 14 > len(payload):
+            if pos + 16 > len(payload):
                 break
 
             ch = payload[pos]; pos += 1
@@ -696,7 +696,7 @@ class HubFxCommandHandler(CommandHandlerBase):
             playing = payload[pos]; pos += 1
             looping = payload[pos]; pos += 1
             loop_count = read_u16_le(payload, pos); pos += 2
-            remaining_ms = read_u16_le(payload, pos); pos += 2
+            remaining_ms = read_u32_le(payload, pos); pos += 4
             queue_len = payload[pos]; pos += 1
             output = payload[pos]; pos += 1
 
@@ -719,7 +719,12 @@ class HubFxCommandHandler(CommandHandlerBase):
                 else:
                     loop_str = f' loop=×{loop_count}'
 
-            remaining_str = f' {remaining_ms}ms left' if remaining_ms > 0 else ''
+            if remaining_ms > 0:
+                rem_s = remaining_ms // 1000
+                rem_frac = remaining_ms % 1000
+                remaining_str = f' {rem_s}.{rem_frac:03d}s left'
+            else:
+                remaining_str = ''
             queue_str = f' [queue: {queue_len}]' if queue_len > 0 else ''
             wav_str = f'{wav_rate}Hz/{wav_bits}bit/{"stereo" if wav_ch == 2 else "mono"}' if wav_rate > 0 else ''
 

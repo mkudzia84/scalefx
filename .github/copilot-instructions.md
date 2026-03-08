@@ -301,6 +301,21 @@ Every controller firmware defines `FIRMWARE_VERSION` and `BUILD_NUMBER`:
    - **MAJOR** (0.3.0 → 1.0.0): Breaking protocol changes (payload format change, removed commands)
 3. **Update together:** When bumping VERSION, also increment BUILD_NUMBER
 4. **README:** Update the version history table in the controller's README.md
+5. **Agent MUST bump version proactively** — do not wait for the user to ask. Determine the version impact at time of code change:
+   - If you changed a wire format field type (e.g., u16→u32), that is a **MAJOR** breaking change
+   - If you added a new packet type or optional payload field, that is a **MINOR** change
+   - If you only fixed logic without changing any wire format, that is a **PATCH** change
+
+**Breaking change examples (MAJOR):**
+- Changing a payload field's type or size (e.g., `remaining_ms` from u16 to u32)
+- Reordering payload fields
+- Removing a packet type or changing its value
+- Changing the meaning of an existing field
+
+**Non-breaking examples (MINOR):**
+- Adding a new packet type
+- Appending optional fields to the end of an existing payload (with length check)
+- Adding a new error code
 
 ### 10. Flash Verification and Build Number Tracking (MANDATORY)
 
@@ -517,8 +532,9 @@ framework/
   └── commands.py      - High-level command builders (e.g., GunFxCommands.trigger_on())
 cli/
   ├── base.py          - CommandInfo, OutputMixin, ControllerType, base classes
+  ├── output.py        - TerminalUI split-screen terminal (prompt_toolkit Application)
   ├── parsers.py       - Response packet parsing utilities
-  ├── interactive.py   - Main CLI class (composes handlers)
+  ├── interactive.py   - Main CLI class (prompt_toolkit split-screen, async-safe output)
   └── handlers/
       ├── core.py      - Core/protocol commands (connect, init, status)
       ├── gunfx.py     - GunFX commands (trigger, servo, smoke)
@@ -528,7 +544,7 @@ cli/
   └── test_*.py        - pytest test files (requires hardware)
 ```
 
-**Test execution:** Always flash firmware before running tests (`python scripts/build_and_flash.py gunfx`)
+**Dependencies:** `pyserial`, `colorama`, `prompt_toolkit>=3.0.0` (see `tests/requirements.txt`)
 
 ## Packet Type Allocation
 

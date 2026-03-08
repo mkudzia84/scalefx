@@ -8,11 +8,25 @@
 
 The CLI uses a modular handler architecture. Each controller has its own handler file.
 
+### Async Output Handling
+
+The CLI uses a split-screen terminal UI (`output.py`) built with `prompt_toolkit`:
+- **Output area** (top): Scrolling pane showing all command results, log messages, and status updates
+- **Input area** (bottom): Fixed single-line prompt that is never overwritten by async output
+- **Separator**: Horizontal line between output and input areas
+- All `print()` calls from any thread are captured via `sys.stdout` replacement and displayed in the output area
+- The output pane auto-scrolls to show the latest content
+- Command history is available via up/down arrow keys
+- Commands run in a background thread so the UI stays responsive
+
+**Key dependency:** `prompt_toolkit>=3.0.0` (in `tests/requirements.txt`)
+
 ```yaml
 File_Structure:
+  "tests/cli/output.py": "TerminalUI - split-screen terminal with prompt_toolkit Application"
   "tests/cli/base.py": "CommandInfo, OutputMixin, ControllerType, CommandHandlerBase"
   "tests/cli/parsers.py": "Response packet parsing utilities"
-  "tests/cli/interactive.py": "Main CLI class (~280 lines, composes handlers)"
+  "tests/cli/interactive.py": "Main CLI class (~350 lines, composes handlers + TerminalUI)"
   "tests/cli/handlers/core.py": "Core/protocol commands (connect, init, status, reboot)"
   "tests/cli/handlers/gunfx.py": "GunFX commands (trigger, servo, smoke)"
   "tests/cli/handlers/lightfx.py": "LightFX commands (led, servo, power)"
@@ -329,6 +343,7 @@ self.print_response(response)
 
 ```bash
 # Syntax check (all handler files)
+python -m py_compile tests/cli/output.py
 python -m py_compile tests/cli/interactive.py
 python -m py_compile tests/cli/base.py
 python -m py_compile tests/cli/handlers/core.py

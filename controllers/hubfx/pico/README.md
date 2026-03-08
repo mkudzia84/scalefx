@@ -204,7 +204,7 @@ Slave types: 1=GunFX, 2=LightFX, 3=GearControl
 | playing | u8 | 1=playing, 0=queued only |
 | looping | u8 | 1=looping, 0=one-shot |
 | loopCount | u16LE | Remaining loops (0xFFFF=infinite) |
-| remaining_ms | u16LE | Remaining playback time (ms) |
+| remaining_ms | u32LE | Remaining playback time (ms, shown as s.ms) |
 | queueLen | u8 | Number of queued sounds |
 | output | u8 | 0=stereo, 1=left, 2=right |
 | wavRate_Hz | u16LE | WAV sample rate |

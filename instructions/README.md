@@ -154,11 +154,14 @@ Python_Framework:
     - name: "cli/base.py"
       purpose: "CommandInfo, OutputMixin, ControllerType, base classes"
       modify_when: "Adding controller types or output helpers"
+    - name: "cli/output.py"
+      purpose: "TerminalUI split-screen terminal (prompt_toolkit Application)"
+      modify_when: "Changing terminal UI layout or stdout capture behavior"
     - name: "cli/parsers.py"
       purpose: "Response packet parsing utilities"
       modify_when: "Adding response packet types"
     - name: "cli/interactive.py"
-      purpose: "Main CLI class (composes handlers)"
+      purpose: "Main CLI class (composes handlers + TerminalUI)"
       modify_when: "Adding controllers or core features"
     - name: "cli/handlers/core.py"
       purpose: "Core/protocol commands (connect, init, status)"
@@ -518,6 +521,9 @@ Singletons:  # MANDATORY for board-unique resources
 Versioning:  # MANDATORY for firmware changes
   - [ ] BUILD_NUMBER incremented (every firmware change)
   - [ ] FIRMWARE_VERSION bumped if appropriate (semver)
+  - [ ] Breaking wire format changes bump MAJOR (field type/size/order changes)
+  - [ ] New commands/features bump MINOR
+  - [ ] Bug fixes with no wire changes bump PATCH
   - [ ] Version history updated in controller README.md
 ```
 
