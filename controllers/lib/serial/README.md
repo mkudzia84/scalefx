@@ -37,6 +37,18 @@ All communication uses binary COBS-encoded packets with CRC-8 verification.
 │  └──────────────────────────────────┘                           │
 │                                                                  │
 │  ┌──────────────────────────────────┐                           │
+│  │     serial_stream.h              │                           │
+│  │  StreamProtocol (0xA4-0xA6)      │  ← Chunked streaming      │
+│  │  StreamWriter (uses BusServer)   │                           │
+│  └──────────────────────────────────┘                           │
+│                                                                  │
+│  ┌──────────────────────────────────┐                           │
+│  │     serial_diag_log.h            │                           │
+│  │  DiagLog (ring buffer → COBS)    │  ← Diagnostic logging     │
+│  │  LOG_MESSAGE (0xFD, universal)   │                           │
+│  └──────────────────────────────────┘                           │
+│                                                                  │
+│  ┌──────────────────────────────────┐                           │
 │  │     serial_bus_client.h          │                           │
 │  │  BusClient (base for clients)    │  ← Client side            │
 │  └──────────────────────────────────┘                           │
@@ -84,6 +96,11 @@ ICommandHandler (interface in serial_core.h)
         ├── GunFxServer (0x01-0x2F)
         ├── LightFxServer (0x40-0x5F)
         └── GearControlServer (0x60-0x7F)
+
+StreamWriter (serial_stream.h — uses BusServer for packet output)
+  │ begin(totalBytes) / write(data, len) / printf(fmt, ...) / end()
+  │ Uses StreamProtocol::STREAM_BEGIN/DATA/END (0xA4-0xA6)
+  └── Any BusServer subclass can instantiate StreamWriter for large responses
 ```
 
 ### Client Side
@@ -119,6 +136,10 @@ SerialBus (serial_bus.h — COBS framing over USB CDC)
 | `serial_usb_host.h` | UsbHost (PIO-USB manager) | Client only |
 | `serial_result_queue.h` | ResultQueue (tag-correlated request/response) | Client only |
 | `serial_result_queue.cpp` | ResultQueue implementation | Client only |
+| `serial_stream.h` | StreamProtocol constants + StreamWriter (chunked streaming) | Server only |
+| `serial_stream.cpp` | StreamWriter + CRC-16/CCITT implementation | Server only |
+| `serial_diag_log.h` | DiagLog — diagnostic log output over serial protocol | All |
+| `serial_diag_log.cpp` | DiagLog implementation (ring buffer, COBS flush, ingest) | All |
 | `serial_gunfx.h/.cpp` | GunFxServer + GunFxClient + GunFxPacket + GunFxError + GunFxSpec | GunFX |
 | `serial_lightfx.h/.cpp` | LightFxServer + LightFxClient + LightFxPacket + LightFxError | LightFX |
 | `serial_gearcontrol.h/.cpp` | GearControlServer + GearControlClient + GearControlPacket + GearControlError | GearControl |
@@ -141,6 +162,8 @@ Packet Type Ranges:
 - `0x01-0x2F` — GunFX commands (trigger, servo, smoke)
 - `0x40-0x5F` — LightFX commands (LED, servo, power, landing lights)
 - `0x60-0x7F` — GearControl commands (gear, servo, yaw, calibration)
+- `0x80-0xA3` — HubFX commands (slaves, audio, engine, config, SD, files)
+- `0xA4-0xA6` — Streaming protocol (STREAM_BEGIN/DATA/END) — see `serial_stream.h`
 - `0xF0-0xFF` — Core system commands (INIT, ACK, NACK, STATUS, etc.)
 
 See [PROTOCOL.md](PROTOCOL.md) for detailed protocol documentation.

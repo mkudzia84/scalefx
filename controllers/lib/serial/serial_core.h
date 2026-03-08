@@ -9,16 +9,17 @@
  *   - Server handler macros (SFX_*)
  *
  * Protocol:
- *   Packet Format: [type:u8][tag:u8][len:u8][payload:0-64 bytes][crc8:u8]
+ *   Packet Format: [type:u8][tag:u8][len:u16LE][payload:0-512 bytes][crc8:u8]
  *   Framing: COBS encoded, followed by 0x00 frame delimiter
- *   CRC: CRC-8 polynomial 0x07 over type+tag+len+payload
+ *   CRC: CRC-8 polynomial 0x07 over type+tag+len(2 bytes)+payload
  *   Tag: 0x00 = async/unsolicited, 0x01-0xFF = request correlation ID
  *
  * Packet Type Ranges:
  *   0x01-0x2F  GunFX commands - see serial_gunfx.h
  *   0x40-0x5F  LightFX commands - see serial_lightfx.h
  *   0x60-0x7F  GearControl commands - see serial_gearcontrol.h
- *   0x80-0x8F  Reserved for future modules
+ *   0x80-0xA3  HubFX commands - see hubfx_protocol.h
+ *   0xA4-0xA6  Streaming protocol - see serial_stream.h
  *   0xF0-0xFF  Universal system commands (INIT, ACK, NACK, etc.)
  *
  * CoreCommandServer is defined in serial_bus_server.h (extends BusServer).
@@ -304,6 +305,7 @@ namespace CorePacket {
     constexpr uint8_t STATUS_REQ  = 0xFA;  // Request status
     constexpr uint8_t I2C_SCAN       = 0xFB;  // Request I2C bus scan
     constexpr uint8_t I2C_SCAN_RESULT = 0xFC;  // I2C scan response
+    constexpr uint8_t LOG_MESSAGE     = 0xFD;  // [level:u8][millis:u32LE][message:str] (async, unsolicited)
 }
 
 // ============================================================================

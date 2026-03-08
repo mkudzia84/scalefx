@@ -170,6 +170,9 @@ const char* packetTypeToText(uint8_t type) {
         case CorePacket::REBOOT:     return "REBOOT";
         case CorePacket::BOOTSEL:    return "BOOTSEL";
         case CorePacket::STATUS_REQ: return "STATUS_REQ";
+        case 0xA4:                   return "STREAM_BEGIN";
+        case 0xA5:                   return "STREAM_DATA";
+        case 0xA6:                   return "STREAM_END";
         default:                     return "UNKNOWN";
     }
 }

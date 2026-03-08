@@ -358,6 +358,73 @@ Controllers MUST provide a way to clear error states. Error states should not re
 4. **Reject operations in ERROR:** Commands like deploy/retract should fail when in ERROR state — require explicit reset first
 5. **Report in STATUS:** Error reasons, error state, and clear actions should all be visible in the STATUS response
 
+### 14. Singleton Pattern for Board-Unique Resources (MANDATORY)
+
+Any object that exists as a **single instance per board** — whether it wraps a hardware peripheral or represents a logical registry — MUST be implemented as a singleton using the C++11 thread-safe static local pattern.
+
+**Qualifying criteria (any of these → singleton):**
+1. **Single hardware resource:** Only one physical peripheral exists (SD card, flash, USB host, I2S output, audio codec)
+2. **Single logical registry:** Central catalog of system state (slave registry, config reader)
+3. **Board-wide service:** Infrastructure used by multiple modules from any core (diagnostic log)
+
+**Required pattern:**
+```cpp
+class MyModule {
+public:
+    static MyModule& instance() {
+        static MyModule inst;
+        return inst;
+    }
+
+    // Delete copy/move
+    MyModule(const MyModule&) = delete;
+    MyModule& operator=(const MyModule&) = delete;
+    MyModule(MyModule&&) = delete;
+    MyModule& operator=(MyModule&&) = delete;
+
+    bool begin(/* init params */);  // Idempotent initialization
+
+private:
+    MyModule();  // Private constructor
+};
+```
+
+**Current singletons:**
+
+| Class | Location | Resource Type |
+|-------|----------|---------------|
+| `DiagLog` | `lib/serial/serial_diag_log.h` | Board-wide logging service |
+| `SdCardModule` | `hubfx/pico/src/storage/sd_card.h` | Single SPI SD card |
+| `FlashModule` | `hubfx/pico/src/storage/flash.h` | Single onboard LittleFS flash |
+| `AudioMixer` | `hubfx/pico/src/audio/audio_mixer.h` | Single I2S audio output |
+
+**Rules:**
+1. **Access via `::instance()`** — never via global pointer, extern declaration, or injected pointer. Consumers call `MyModule::instance()` directly.
+2. **Private constructor** — prevents accidental stack/heap allocation.
+3. **Deleted copy/move** — enforces single instance.
+4. **Idempotent `begin()`** — safe to call multiple times (e.g., `_mutexInitialized` guard for pico mutexes).
+5. **Pre-`begin()` safety** — methods called before `begin()` must fail gracefully (check `_serial != nullptr` or `_initialized`).
+6. **Thread safety** — if accessed from multiple cores, protect shared state with `mutex_t`. The `static` local initialization itself is thread-safe under C++11.
+7. **No setter injection** — do NOT add `setXxx(Singleton* ptr)` methods to consumers. Consumers access the singleton directly.
+
+**NOT singletons (these are correct as regular instances):**
+- Protocol handlers (`*Server` extending `BusServer`) — receive `Stream*` and participate in `CommandRouter` chain
+- Per-slave clients (`GunFxClient`, `LightFxClient`, etc.) — one per connected slave device
+- Per-channel hardware (`ServoControl[]`, `LedControl[]`, `INA226[]`) — arrays of independent channels
+- Effect modules (`EngineFX`, `MuzzleFlash`, `SmokeGenerator`) — configurable effect instances
+
+**Anti-pattern:**
+```cpp
+// BAD: Global pointer + setter injection for a single-instance resource
+SdCardModule* _sdCard = nullptr;
+void setSdCardModule(SdCardModule* sd) { _sdCard = sd; }
+if (!_sdCard) { sendNack(ERROR); return; }  // Null check everywhere
+
+// GOOD: Singleton — always available, no null checks
+SdCardModule& sd = SdCardModule::instance();
+if (!sd.isInitialized()) { sendNack(ERROR); return; }  // Check state, not existence
+```
+
 ## Key Architecture Patterns
 
 ### Client-Server Topology
@@ -390,6 +457,8 @@ commandRouter.addHandler(&xxxfxServer);  // ← Missing coreServer!
 - **serial_bus_client.h** - BusClient base class (client side, extends SerialBus)
 - **serial_bus.h** - SerialBus (client-only, COBS over USB CDC)
 - **serial_result_queue.h** - ResultQueue (tag-correlated command/response matching)
+- **serial_stream.h** - StreamProtocol constants (0xA4-0xA6) + StreamWriter (chunked data streaming with CRC-16)
+- **serial_diag_log.h/.cpp** - DiagLog diagnostic logging (ring buffer → COBS packets, universal across all boards)
 - **serial_gunfx.h** - GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec
 - **serial_lightfx.h** - LightFxServer, LightFxClient, LightFxPacket, LightFxError, LightFxSpec
 - **serial_gearcontrol.h** - GearControlServer, GearControlClient, GearControlPacket, GearControlError, GearControlSpec
@@ -469,8 +538,10 @@ cli/
 | 0x30-0x3F | Reserved | - | Future expansion |
 | 0x40-0x5F | LightFX | Used | LED, servo, power |
 | 0x60-0x7F | GearControl | Used | Gear, servo, yaw |
-| 0x80-0xEF | Available | Free | New controllers |
-| 0xF0-0xFF | Core | Reserved | INIT, ACK, NACK, REBOOT, etc. |
+| 0x80-0xA3 | HubFX | Used | Slaves, audio, engine, config, SD, files |
+| 0xA4-0xA6 | Streaming | Used | STREAM_BEGIN/DATA/END (`serial_stream.h`) |
+| 0xA7-0xEF | Available | Free | New controllers |
+| 0xF0-0xFF | Core | Reserved | INIT, ACK, NACK, REBOOT, LOG_MESSAGE (0xFD), etc. |
 
 ## Platform-Specific Notes
 
@@ -512,7 +583,7 @@ cli/
 
 ### Creating a New Controller
 1. Read `/instructions/02-NEW-CONTROLLER.md`
-2. Reserve packet type range (0x80-0xEF available)
+2. Reserve packet type range (0xA7-0xEF available)
 3. Create `controllers/lib/serial/serial_newfx.h` (NewFxServer extends BusServer, NewFxClient extends BusClient)
 4. Create `controllers/newfx/pico/` directory structure
 5. Create Python test framework classes

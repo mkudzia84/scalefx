@@ -8,13 +8,13 @@
 #ifndef AUDIO_CONFIG_H
 #define AUDIO_CONFIG_H
 
-#include "../debug_config.h"
+#include "../hubfx_log.h"
 
 // ============================================================================
 //  TESTING CONFIGURATION
 // ============================================================================
 
-// AUDIO_DEBUG and AUDIO_MOCK_I2S are defined in debug_config.h
+// AUDIO_DEBUG and AUDIO_MOCK_I2S are defined in hubfx_log.h
 
 // ============================================================================
 //  I2S AUDIO CONFIGURATION
@@ -24,9 +24,6 @@
  * Sample Rate Selection
  * 
  * Common rates: 44100 (CD quality), 48000 (pro audio), 22050 (lower quality)
- * 
- * WARNING: Changing this requires recalculating WM8960_PLL_K_VALUE!
- * See PLL calculation section below.
  */
 #ifndef AUDIO_SAMPLE_RATE
 #define AUDIO_SAMPLE_RATE           44100
@@ -36,7 +33,7 @@
  * Bit Depth
  * 
  * Supported: 16, 24, 32
- * Note: WM8960 uses 16-bit internally, but I2S frames are always 32-bit
+ * I2S frames are always 32-bit per channel on RP2040.
  */
 #ifndef AUDIO_BIT_DEPTH
 #define AUDIO_BIT_DEPTH             16
@@ -55,65 +52,6 @@
 #define I2S_LRCLK_FREQ              AUDIO_SAMPLE_RATE
 #define I2S_BCLK_FREQ               (AUDIO_SAMPLE_RATE * I2S_BITS_PER_CHANNEL * I2S_CHANNELS)
 #define I2S_DATA_RATE               (AUDIO_SAMPLE_RATE * AUDIO_BIT_DEPTH * I2S_CHANNELS)
-
-// ============================================================================
-//  WM8960 CODEC CONFIGURATION
-// ============================================================================
-
-/**
- * I2C Bus Speed (Hz)
- * 
- * Standard: 100000 (100 kHz)
- * Reduced:  50000  (50 kHz)  - recommended for breadboard/long wires
- * Slow:     10000  (10 kHz)  - for very poor signal integrity
- * 
- * Lower speeds are more tolerant of wire capacitance and length.
- * Use 50 kHz if you experience I2C timeout errors (error code 5).
- */
-#ifndef WM8960_I2C_SPEED
-#define WM8960_I2C_SPEED            50000
-#endif
-
-/**
- * WM8960 PLL Configuration
- * 
- * The WM8960 requires SYSCLK = 256 × sample_rate for optimal operation.
- * Since Pico doesn't generate MCLK, we use the PLL to multiply BCLK.
- * 
- * PLL Input:  BCLK = sample_rate × 64 (for 32-bit stereo I2S)
- * PLL Output: SYSCLK = sample_rate × 256
- * Multiplier: 4× (with fractional adjustment via K value)
- * 
- * K Value Calculation:
- *   K = (SYSCLK × 2^24) / (BCLK × 4)
- * 
- * For 44.1 kHz:
- *   BCLK = 2,822,400 Hz
- *   SYSCLK = 11,289,600 Hz
- *   K = (11,289,600 × 16,777,216) / (2,822,400 × 4) = 0x0C93E9
- * 
- * For 48 kHz:
- *   BCLK = 3,072,000 Hz
- *   SYSCLK = 12,288,000 Hz  
- *   K = (12,288,000 × 16,777,216) / (3,072,000 × 4) = 0x0C0000
- */
-#if AUDIO_SAMPLE_RATE == 44100
-    #define WM8960_PLL_K_VALUE      0x0C93E9    // K for 44.1 kHz
-#elif AUDIO_SAMPLE_RATE == 48000
-    #define WM8960_PLL_K_VALUE      0x0C0000    // K for 48 kHz
-#elif AUDIO_SAMPLE_RATE == 22050
-    #define WM8960_PLL_K_VALUE      0x0C93E9    // Same as 44.1k (half BCLK, half SYSCLK)
-#else
-    #error "Unsupported AUDIO_SAMPLE_RATE - must calculate PLL K value"
-    // Use formula: K = (Fs × 256 × 2^24) / (Fs × 64 × 4)
-    //            = (256 × 16777216) / 256 = 0x0C93E9 (for 44.1k family)
-    //            = (256 × 16777216) / 256 = 0x0C0000 (for 48k family)
-#endif
-
-#define WM8960_PLL_PRESCALE         0x04        // Divide by 4
-#define WM8960_PLL_K_HIGH          ((WM8960_PLL_K_VALUE >> 16) & 0xFF)
-#define WM8960_PLL_K_MID           ((WM8960_PLL_K_VALUE >> 8) & 0xFF)
-#define WM8960_PLL_K_LOW           (WM8960_PLL_K_VALUE & 0xFF)
 
 // ============================================================================
 //  AUDIO MIXER CONFIGURATION

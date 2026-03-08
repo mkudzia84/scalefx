@@ -52,7 +52,13 @@ Packet_Ranges:
   - range: "0x60-0x7F"
     module: "GearControl"
     status: "USED"
-  - range: "0x80-0xEF"
+  - range: "0x80-0xA3"
+    module: "HubFX"
+    status: "USED"
+  - range: "0xA4-0xA6"
+    module: "Streaming"
+    status: "USED"
+  - range: "0xA7-0xEF"
     module: "Available"
     status: "FREE"
   - range: "0xF0-0xFF"
@@ -108,6 +114,18 @@ Serial_Library:
     - name: "serial_result_queue.h"
       purpose: "ResultQueue — tag-correlated command/response matching"
       modify_when: "Never (stable infrastructure)"
+    - name: "serial_stream.h"
+      purpose: "StreamProtocol (0xA4-0xA6) + StreamWriter — chunked data streaming with CRC-16"
+      modify_when: "Adding new streaming features or changing chunk format"
+    - name: "serial_stream.cpp"
+      purpose: "StreamWriter + CRC-16/CCITT implementations"
+      modify_when: "Rarely — streaming infrastructure"
+    - name: "serial_diag_log.h"
+      purpose: "DiagLog — diagnostic log output over serial (ring buffer → COBS, universal)"
+      modify_when: "Changing log wire format or ring buffer behavior"
+    - name: "serial_diag_log.cpp"
+      purpose: "DiagLog implementation (format, flush, ingest for relay)"
+      modify_when: "Rarely — logging infrastructure"
     - name: "serial_gunfx.h"
       purpose: "GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec"
       modify_when: "Adding GunFX commands or error codes"
@@ -300,6 +318,45 @@ PicoServer_Pattern:
 - **LightFX:** No runtime error conditions (LED 1 always OFF)
 - **GearControl:** Any gear in ERROR state → LED 1 blinks
 
+### Singleton Pattern (Board-Unique Resources)
+
+Any object with a single instance per board MUST be a singleton. Access via `::instance()`, never via pointer injection.
+
+```yaml
+Singletons:
+  Current:
+    - class: "DiagLog"
+      location: "lib/serial/serial_diag_log.h"
+      type: "Board-wide logging service"
+    - class: "SdCardModule"
+      location: "hubfx/pico/src/storage/sd_card.h"
+      type: "Single SPI SD card"
+    - class: "FlashModule"
+      location: "hubfx/pico/src/storage/flash.h"
+      type: "Single onboard LittleFS flash"
+    - class: "AudioMixer"
+      location: "hubfx/pico/src/audio/audio_mixer.h"
+      type: "Single I2S audio output"
+
+  Criteria:
+    - "Single hardware resource per board (SD, flash, USB host, I2S, codec)"
+    - "Single logical registry (slave registry, config reader)"
+    - "Board-wide service used by multiple modules (diagnostic log)"
+
+  NOT_Singletons:
+    - "Protocol handlers (*Server) — CommandRouter chain, receive Stream*"
+    - "Per-slave clients (*Client) — one per connected device"
+    - "Per-channel hardware (ServoControl[], LedControl[], INA226[])"
+    - "Effect modules (EngineFX, MuzzleFlash, SmokeGenerator)"
+
+  Pattern: |
+    static MyModule& instance() {
+        static MyModule inst;
+        return inst;
+    }
+    // Private ctor, deleted copy/move, idempotent begin()
+```
+
 ### Rich STATUS Pattern
 
 Every controller provides board-specific status via `PicoServer`:
@@ -449,6 +506,11 @@ Documentation:
   - [ ] README.md updated with new protocol entries
   - [ ] Payload format documented
   - [ ] Error codes documented
+
+Singletons:  # MANDATORY for board-unique resources
+  - [ ] Single-instance resources use ::instance() pattern (not global pointers)
+  - [ ] No setter injection for singletons (consumers access directly)
+  - [ ] Mutex protection if accessed from multiple cores
 
 Versioning:  # MANDATORY for firmware changes
   - [ ] BUILD_NUMBER incremented (every firmware change)

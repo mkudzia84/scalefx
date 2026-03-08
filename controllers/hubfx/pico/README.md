@@ -143,46 +143,139 @@ engine_fx:
     stopping: "/sounds/engine_stop.wav"
 ```
 
-## Serial Commands
+## Serial Protocol
 
-Connect at 1Mbps baud for interactive control:
+Binary COBS protocol at 1Mbps baud. See `controllers/lib/serial/PROTOCOL.md` for
+the full wire format specification.
 
-### Audio Commands
+### Packet Type Allocation (0x80-0xA3)
+
+| Range | Domain | Handler |
+|-------|--------|---------|
+| 0x80-0x83 | Slave management | SlaveServer |
+| 0x84-0x8B | Audio control | AudioServer |
+| 0x8C-0x8F | Engine FX | EngineServer |
+| 0x90-0x95 | Config & SD card | StorageServer |
+| 0x96-0x98 | Slave routing (subcmd) | SlaveServer |
+| 0x99 | Diagnostics (async log) | DiagLog |
+| 0x9A-0xA3 | File operations | StorageServer |
+| 0xA4-0xA6 | Streaming (library) | `serial_stream.h` |
+| 0xF0-0xFF | Core system | CoreCommandServer |
+
+### Slave Management
+
+| Command | Value | Payload | Response |
+|---------|-------|---------|----------|
+| `SLAVE_LIST` | 0x80 | (none) | SLAVE_LIST_RESP |
+| `SLAVE_LIST_RESP` | 0x81 | `[count:u8][entries...]` | — |
+| `SLAVE_INIT` | 0x82 | `[slaveType:u8]` | ACK/NACK |
+| `SLAVE_STATUS` | 0x83 | (none) | ACK (status via core callback) |
+
+Slave types: 1=GunFX, 2=LightFX, 3=GearControl
+
+### Audio Control
+
+| Command | Value | Payload | Response |
+|---------|-------|---------|----------|
+| `AUDIO_PLAY` | 0x84 | `[ch:u8][vol:u8][output:u8][loopMode:u8][loopCount:u16LE][pathLen:u8][path:str]` | ACK/NACK |
+| `AUDIO_STOP` | 0x85 | `[ch:u8]` (0xFF=all) | ACK |
+| `AUDIO_VOLUME` | 0x86 | `[ch:u8][vol:u8]` (0xFF=master, 0-100) | ACK |
+| `AUDIO_FADE` | 0x87 | `[ch:u8]` | ACK |
+| `AUDIO_QUEUE` | 0x88 | `[ch:u8][vol:u8][loopCount:u16LE][behavior:u8][pathLen:u8][path:str]` | ACK/NACK |
+| `AUDIO_QUEUE_CLEAR` | 0x89 | `[ch:u8]` (0xFF=all) | ACK |
+| `AUDIO_STATUS_REQ` | 0x8A | (none) | AUDIO_STATUS_RESP |
+| `AUDIO_STATUS_RESP` | 0x8B | `[masterVol:u8][activeCh:u8][per-channel data...]` | — |
+
+Audio outputs: 0=Stereo, 1=Left, 2=Right.
+Loop modes: 0=None, 1=Finite(N), 2=Infinite.
+
+### Engine FX Control
+
+| Command | Value | Payload | Response |
+|---------|-------|---------|----------|
+| `ENGINE_START` | 0x8C | (none) | ACK/NACK |
+| `ENGINE_STOP` | 0x8D | (none) | ACK |
+| `ENGINE_STATUS_REQ` | 0x8E | (none) | ENGINE_STATUS_RESP |
+| `ENGINE_STATUS_RESP` | 0x8F | `[state:u8][toggleEngaged:u8][active:u8]` | — |
+
+Engine states: 0=Stopped, 1=Starting, 2=Running, 3=Stopping.
+
+### Config & SD Card
+
+| Command | Value | Payload | Response |
+|---------|-------|---------|----------|
+| `CONFIG_RELOAD` | 0x90 | (none) | ACK/NACK |
+| `CONFIG_GET` | 0x91 | (none) | CONFIG_GET_RESP |
+| `CONFIG_GET_RESP` | 0x92 | `[loaded:u8][size:u16LE][reserved:u8]` | — |
+| `SD_INIT` | 0x93 | `[speed_mhz:u8]` (1-50, default 20) | ACK/NACK |
+| `SD_STATUS_REQ` | 0x94 | (none) | SD_STATUS_RESP |
+| `SD_STATUS_RESP` | 0x95 | `[initialized:u8][cardSize_MB:u32LE][totalSpace_MB:u32LE][freeSpace_MB:u32LE][fatType:u8]` | — |
+
+### Slave Routing (Subcmd Pattern)
+
+| Command | Value | Payload | Response |
+|---------|-------|---------|----------|
+| `SLAVE_ROUTE_GUNFX` | 0x96 | `[subcmd:u8][original_payload...]` | Forwarded to GunFX |
+| `SLAVE_ROUTE_LIGHTFX` | 0x97 | `[subcmd:u8][original_payload...]` | Forwarded to LightFX |
+| `SLAVE_ROUTE_GEARCONTROL` | 0x98 | `[subcmd:u8][original_payload...]` | Forwarded to GearControl |
+
+The `subcmd` byte is the original slave packet type. The hub extracts it, creates
+a new packet with that type and the remaining payload, and forwards to the slave.
+
+### Diagnostics
+
+| Command | Value | Payload | Direction |
+|---------|-------|---------|-----------|
+| `LOG_MESSAGE` | 0x99 | `[level:u8][millis:u32LE][message:str]` | Server→Client (async) |
+
+Log levels: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR. Sent with `TAG_ASYNC` (0x00).
+
+### File Operations
+
+| Command | Value | Payload | Response |
+|---------|-------|---------|----------|
+| `FILE_LIST` | 0x9A | `[pathLen:u8][path:str]` | Streamed (STREAM_BEGIN/DATA/END) |
+| `FILE_DELETE` | 0x9B | `[pathLen:u8][path:str]` | ACK/NACK |
+| `FILE_MKDIR` | 0x9C | `[pathLen:u8][path:str]` | ACK/NACK |
+| `FILE_INFO` | 0x9D | `[pathLen:u8][path:str]` | FILE_INFO_RESP |
+| `FILE_INFO_RESP` | 0x9E | `[exists:u8][isDir:u8][size:u32LE]` | — |
+| `FILE_DOWNLOAD` | 0x9F | `[pathLen:u8][path:str]` | Streamed (STREAM_BEGIN/DATA/END) |
+| `FILE_UPLOAD_BEGIN` | 0xA0 | `[size:u32LE][pathLen:u8][path:str]` | ACK |
+| `FILE_UPLOAD_DATA` | 0xA1 | `[seqNum:u16LE][crc16:u16LE][data:N]` | ACK/NACK(CRC_ERROR) |
+| `FILE_UPLOAD_END` | 0xA2 | (none) | ACK/NACK |
+| `FILE_UPLOAD_CANCEL` | 0xA3 | (none) | ACK |
+
+Downloads use `StreamWriter` (fire-and-forget with end-of-stream CRC-16).
+Uploads use per-chunk ACK/NACK with CRC-16 retry.
+See `PROTOCOL.md § File Transfer Protocol` for detailed flow diagrams.
+
+### Error Codes (0x80-0x8F)
+
+| Code | Name | Description |
+|------|------|-------------|
+| 0x80 | `SLAVE_NOT_FOUND` | No slave of requested type |
+| 0x81 | `SLAVE_NOT_CONNECTED` | Slave registered but not connected |
+| 0x82 | `SLAVE_INIT_FAILED` | Slave INIT handshake failed |
+| 0x83 | `NO_SLAVES` | No slaves registered |
+| 0x84 | `SLAVE_COMM_ERROR` | Communication error with slave |
+| 0x85 | `AUDIO_ERROR` | Audio system error |
+| 0x86 | `SD_NOT_INITIALIZED` | SD card not initialized |
+| 0x87 | `ENGINE_NOT_AVAILABLE` | Engine FX not configured |
+| 0x88 | `CONFIG_ERROR` | Config load/reload failed |
+| 0x89 | `INVALID_CHANNEL` | Audio channel out of range |
+| 0x8A | `FILE_NOT_FOUND` | File or directory not found |
+| 0x8B | `FILE_ALREADY_EXISTS` | Path exists but wrong type |
+| 0x8C | `FILE_IO_ERROR` | SD card read/write error |
+| 0x8D | `FILE_TOO_LARGE` | File exceeds size limit |
+| 0x8E | `UPLOAD_IN_PROGRESS` | Another upload is active |
+| 0x8F | `NO_UPLOAD_ACTIVE` | No upload in progress |
+
+### CLI Commands
+
+Connect via the Python interactive CLI:
 ```bash
-play 0 /sounds/engine.wav loop vol 0.5    # Play looping on channel 0
-play 1 /sounds/fire.wav                   # Play one-shot on channel 1
-stop 0                                    # Stop channel 0
-fade 2                                    # Fade out channel 2
-volume 0.8                                # Set master volume to 80%
-status                                    # Show all channel states
+python -m tests.cli.interactive --port COM5
 ```
-
-### Configuration Commands
-```bash
-config                  # Show loaded configuration
-config download         # Download config file
-config upload <size>    # Upload new config
-config reload           # Reload config without restart
-config restart          # Reload and restart
-```
-
-### SD Card Commands
-```bash
-ls /                    # List root directory
-ls /sounds              # List sounds directory
-tree                    # Show directory tree
-cat /config.yaml        # Display file contents
-sdinfo                  # Show SD card information
-```
-
-### Engine Control
-```bash
-engine                  # Show engine state
-engine start            # Force engine start
-engine stop             # Force engine stop
-```
-
-Type `help` for full command list.
 
 ## Code Organization
 

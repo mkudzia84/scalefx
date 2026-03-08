@@ -209,3 +209,28 @@ def read_u32_le(data: bytes, offset: int = 0) -> int:
             (data[offset + 1] << 8) |
             (data[offset + 2] << 16) |
             (data[offset + 3] << 24))
+
+
+def crc16_ccitt(data: bytes, init: int = 0xFFFF) -> int:
+    """
+    Calculate CRC-16/CCITT checksum.
+
+    Matches the C++ StreamProtocol::crc16() implementation.
+    Polynomial 0x1021, initial value 0xFFFF.
+
+    Args:
+        data: Input bytes
+        init: Initial CRC value (default 0xFFFF)
+
+    Returns:
+        CRC-16 value (0-65535)
+    """
+    crc = init
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc

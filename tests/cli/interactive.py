@@ -52,8 +52,8 @@ from typing import Optional, List, Dict, Callable, Tuple
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from tests.framework import ScaleFXConnection, GearControlPacket, LightFxPacket, CorePacket
-from tests.framework.protocol import parse_packet
+from tests.framework import ScaleFXConnection, GearControlPacket, LightFxPacket, HubFxPacket, CorePacket
+from tests.framework.protocol import parse_packet, build_packet
 from tests.framework.connection import Response
 
 from .base import (
@@ -61,7 +61,7 @@ from .base import (
     get_prompt, Fore, Style
 )
 from . import parsers
-from .handlers import CoreCommandHandler, GearControlCommandHandler, GunFxCommandHandler, LightFxCommandHandler
+from .handlers import CoreCommandHandler, GearControlCommandHandler, GunFxCommandHandler, HubFxCommandHandler, LightFxCommandHandler
 
 
 class InteractiveCLI(OutputMixin):
@@ -88,6 +88,9 @@ class InteractiveCLI(OutputMixin):
         self._listener_stop = threading.Event()
         self._response_queue: Queue = Queue()  # Async messages received while idle
         
+        # Keepalive interval (seconds) — sent automatically while idle
+        self.KEEPALIVE_INTERVAL = 5.0
+        
         # Initialize command handlers
         self._init_handlers()
     
@@ -101,6 +104,7 @@ class InteractiveCLI(OutputMixin):
         # Controller-specific handlers
         self.gearcontrol_handler = GearControlCommandHandler()
         self.gunfx_handler = GunFxCommandHandler()
+        self.hubfx_handler = HubFxCommandHandler()
         self.lightfx_handler = LightFxCommandHandler()
         
         # All handlers for connection sync
@@ -108,6 +112,7 @@ class InteractiveCLI(OutputMixin):
             self.core_handler,
             self.gearcontrol_handler,
             self.gunfx_handler,
+            self.hubfx_handler,
             self.lightfx_handler,
         ]
     
@@ -182,7 +187,7 @@ class InteractiveCLI(OutputMixin):
                 print(f"  {Fore.MAGENTA}[listener] stopped (conn._rx_buffer={buf_size}B){Style.RESET_ALL}")
     
     def _listener_loop(self):
-        """Background thread: read async packets from serial and print them."""
+        """Background thread: read async packets from serial and send keepalives."""
         debug = self._debug
         # Take any buffered data from the connection to maintain continuity.
         # Without this, partial packets left in conn._rx_buffer after a command
@@ -196,6 +201,9 @@ class InteractiveCLI(OutputMixin):
             if debug and taken > 0:
                 print(f"  {Fore.MAGENTA}[listener] took {taken}B from conn._rx_buffer: {rx_buffer.hex()}{Style.RESET_ALL}")
         
+        last_keepalive = time.monotonic()
+        keepalive_packet = build_packet(CorePacket.KEEPALIVE)
+        
         while not self._listener_stop.is_set():
             if not self.conn or not self.conn.is_connected or not self.conn._serial:
                 time.sleep(0.1)
@@ -207,6 +215,19 @@ class InteractiveCLI(OutputMixin):
                     data = ser.read(ser.in_waiting)
                     rx_buffer.extend(data)
                 else:
+                    # Send keepalive if interval elapsed and controller is initialized
+                    now = time.monotonic()
+                    if (self.conn.is_initialized
+                            and now - last_keepalive >= self.KEEPALIVE_INTERVAL):
+                        try:
+                            with self.conn._lock:
+                                ser.write(keepalive_packet)
+                                ser.flush()
+                            last_keepalive = now
+                            if debug:
+                                print(f"  {Fore.MAGENTA}[listener] keepalive sent{Style.RESET_ALL}")
+                        except Exception:
+                            pass  # Best-effort
                     time.sleep(0.02)
                     continue
             except Exception:
@@ -230,6 +251,14 @@ class InteractiveCLI(OutputMixin):
                     continue
                 
                 ptype, tag, payload = parsed
+                
+                # Silently consume all ACKs in the listener — they are either
+                # keepalive responses or stale command ACKs, not user-relevant
+                if ptype == CorePacket.ACK:
+                    if debug:
+                        print(f"  {Fore.MAGENTA}[listener] ACK tag={tag} (suppressed){Style.RESET_ALL}")
+                    continue
+                
                 if debug:
                     pname = parsers.packet_type_name(ptype)
                     print(f"  {Fore.MAGENTA}[listener] received {pname} tag={tag} len={len(payload)}{Style.RESET_ALL}")
@@ -259,6 +288,11 @@ class InteractiveCLI(OutputMixin):
             parsers.parse_gear_door_status(payload)
         elif ptype == LightFxPacket.LANDING_LIGHT_STATUS:
             parsers.parse_landing_light_status(payload)
+        elif ptype == CorePacket.LOG_MESSAGE:
+            parsers.parse_log_message(payload)
+        elif ptype == HubFxPacket.SLAVE_LIST_RESP:
+            self.print_info("Async: SLAVE_LIST_RESP")
+            parsers.parse_generic_payload(payload)
         elif ptype == CorePacket.ERROR:
             self.print_error("Async ERROR")
             parsers.parse_error_payload(payload)
@@ -297,6 +331,8 @@ class InteractiveCLI(OutputMixin):
                 commands.update(self.gearcontrol_handler.get_commands())
             elif self.controller_type == ControllerType.GUNFX:
                 commands.update(self.gunfx_handler.get_commands())
+            elif self.controller_type == ControllerType.HUBFX:
+                commands.update(self.hubfx_handler.get_commands())
             elif self.controller_type == ControllerType.LIGHTFX:
                 commands.update(self.lightfx_handler.get_commands())
             # NoOp has no additional commands
@@ -406,11 +442,19 @@ class InteractiveCLI(OutputMixin):
                 self.print_error(f"'{cmd}' requires LightFX controller. Run 'init' first.")
             return
         
+        if cmd.startswith('hub.') and self.controller_type != ControllerType.HUBFX:
+            if self.controller_type:
+                self.print_error(f"'{cmd}' is a HubFX command, but you're connected to {self.controller_type}")
+            else:
+                self.print_error(f"'{cmd}' requires HubFX controller. Run 'init' first.")
+            return
+        
         # Check if command exists but needs init
         all_cmds = {}
         all_cmds.update(self.core_handler.get_protocol_commands())
         all_cmds.update(self.gearcontrol_handler.get_commands())
         all_cmds.update(self.gunfx_handler.get_commands())
+        all_cmds.update(self.hubfx_handler.get_commands())
         all_cmds.update(self.lightfx_handler.get_commands())
         
         if cmd in all_cmds:
@@ -445,6 +489,7 @@ class InteractiveCLI(OutputMixin):
             ctrl_color = {
                 ControllerType.GEARCONTROL: Fore.GREEN,
                 ControllerType.GUNFX: Fore.RED,
+                ControllerType.HUBFX: Fore.CYAN,
                 ControllerType.LIGHTFX: Fore.BLUE,
                 ControllerType.NOOP: Fore.MAGENTA,
             }.get(self.controller_type, Fore.CYAN)
@@ -478,6 +523,7 @@ class InteractiveCLI(OutputMixin):
             color = {
                 ControllerType.GEARCONTROL: Fore.GREEN,
                 ControllerType.GUNFX: Fore.RED,
+                ControllerType.HUBFX: Fore.CYAN,
                 ControllerType.LIGHTFX: Fore.BLUE,
             }.get(self.controller_type, Fore.CYAN)
             
@@ -493,6 +539,7 @@ class InteractiveCLI(OutputMixin):
             print(f"  Additional commands will be available based on detected controller type:")
             print(f"  - {Fore.GREEN}GearControl{Style.RESET_ALL}: gc.deploy, gc.retract, gc.servo, ...")
             print(f"  - {Fore.RED}GunFX{Style.RESET_ALL}: gunfx.trigger, gunfx.servo, gunfx.smoke, ...")
+            print(f"  - {Fore.CYAN}HubFX{Style.RESET_ALL}: hub.slaves, hub.init + routed slave commands")
             print(f"  - {Fore.BLUE}LightFX{Style.RESET_ALL}: lightfx.led, lightfx.servo, lightfx.power, ...")
             print(f"  - {Fore.MAGENTA}NoOp{Style.RESET_ALL}: Core commands only (protocol testing)")
             print()

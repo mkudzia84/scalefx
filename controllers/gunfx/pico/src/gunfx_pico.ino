@@ -48,7 +48,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.6.0"
-#define BUILD_NUMBER 14
+#define BUILD_NUMBER 15
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -126,6 +126,8 @@ void performSafeInit();
 // ============================================================================
 
 void performSafeShutdown() {
+    SFX_LOG_INFO("Shutdown — stop firing, heater off, servos center");
+
     // Stop firing (flash off, jerk cleared)
     muzzleFlash.stopFiring();
 
@@ -139,6 +141,8 @@ void performSafeShutdown() {
 }
 
 void performSafeInit() {
+    SFX_LOG_INFO("Init — safe reset");
+
     // Stop any active firing
     muzzleFlash.stopFiring();
 
@@ -190,6 +194,8 @@ void setup() {
         cfg.shuntResistance_ohms = SHUNT_RESISTANCE_OHMS;
         cfg.maxCurrent_A = MAX_CURRENT_A;
         ina226Available[i] = ina226[i].begin(Wire, cfg);
+        SFX_LOG_INFO("INA226[%d] (0x%02X): %s", i, INA226_ADDR[i],
+                     ina226Available[i] ? "OK" : "NOT FOUND");
     }
 
     // Initialize battery voltage monitor (ADC ÷6 divider)

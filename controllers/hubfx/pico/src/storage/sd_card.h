@@ -1,12 +1,29 @@
 /*
- * SD Card Module - Header
- * 
- * Singleton class for SD card initialization, file operations, and debug commands.
- * Provides thread-safe SPI access via mutex for multi-core operation.
- * 
+ * SD Card Module — Thread-Safe File Operations
+ *
+ * Singleton class for SD card initialization and file operations.
+ * Provides thread-safe SPI access via pico mutex for multi-core safety.
+ *
+ * All methods return SdError codes (0 = OK) and never write to Serial.
+ * Protocol output is handled by StorageServer using StreamWriter.
+ *
  * Usage:
  *   SdCardModule& sd = SdCardModule::instance();
  *   sd.begin(cs, sck, mosi, miso);
+ *
+ *   // Thread-safe listing
+ *   sd.listDirectory("/", [](const FileEntry& e) {
+ *       // ... process entry
+ *       return true;  // continue
+ *   });
+ *
+ *   // File I/O (caller manages lock + file lifetime)
+ *   sd.lock();
+ *   File32 file;
+ *   sd.openRead("/config.yaml", file);
+ *   int n = file.read(buf, sizeof(buf));
+ *   file.close();
+ *   sd.unlock();
  */
 
 #ifndef SD_CARD_H
@@ -16,139 +33,202 @@
 #include <SPI.h>
 #include <SdFat.h>
 #include <pico/mutex.h>
+#include <functional>
+
+#include "storage_types.h"
+
+
+// ============================================================================
+// Error Codes (module-internal, mapped to HubFxError in StorageServer)
+// ============================================================================
+
+namespace SdError {
+    constexpr uint8_t OK              = 0;
+    constexpr uint8_t NOT_INITIALIZED = 1;
+    constexpr uint8_t NOT_FOUND       = 2;
+    constexpr uint8_t IO_ERROR        = 3;
+    constexpr uint8_t IS_DIRECTORY    = 4;
+    constexpr uint8_t ALREADY_EXISTS  = 5;
+}
+
+
+// ============================================================================
+// Data Structures
+// ============================================================================
+
+/**
+ * @brief SD card storage information
+ */
+struct StorageInfo {
+    bool initialized;
+    uint32_t cardSize_MB;
+    uint32_t totalSpace_MB;
+    uint32_t freeSpace_MB;
+    uint8_t fatType;
+    uint32_t clusterSize_bytes;
+};
+
+
+// ============================================================================
+// SdCardModule
+// ============================================================================
 
 class SdCardModule {
 public:
-    /**
-     * Get the singleton instance
-     */
+    /// Get the singleton instance
     static SdCardModule& instance() {
-        static SdCardModule instance;
-        return instance;
+        static SdCardModule inst;
+        return inst;
     }
-    
-    // Delete copy/move constructors and assignment operators
+
+    // Delete copy/move
     SdCardModule(const SdCardModule&) = delete;
     SdCardModule& operator=(const SdCardModule&) = delete;
     SdCardModule(SdCardModule&&) = delete;
     SdCardModule& operator=(SdCardModule&&) = delete;
-    
+
+    // ========================================================================
+    // Lifecycle
+    // ========================================================================
+
     /**
-     * Initialize SD card with given pins
-     * 
-     * @param cs_pin Chip select pin
-     * @param sck_pin SPI clock pin
-     * @param mosi_pin SPI MOSI pin
-     * @param miso_pin SPI MISO pin
-     * @param speed_mhz SPI speed in MHz
-     * @return true if successful, false otherwise
+     * @brief Initialize SD card with given SPI pins
+     * @return true on success
      */
-    bool begin(uint8_t cs_pin, uint8_t sck_pin, uint8_t mosi_pin, uint8_t miso_pin, uint8_t speed_mhz = 25);
-    
+    bool begin(uint8_t cs_pin, uint8_t sck_pin, uint8_t mosi_pin,
+               uint8_t miso_pin, uint8_t speed_mhz = 25);
+
     /**
-     * Check if SD card is initialized
-     */
-    bool isInitialized() const { return initialized; }
-    
-    /**
-     * Get reference to SdFat object (for direct SD access)
-     */
-    SdFat& getSd() { return sd; }
-    
-    /**
-     * Lock SD card for exclusive access (blocking)
-     */
-    void lock() { mutex_enter_blocking(&_sdMutex); }
-    
-    /**
-     * Try to lock SD card for exclusive access (non-blocking)
-     * @return true if lock acquired, false if already locked
-     */
-    bool tryLock() { return mutex_try_enter(&_sdMutex, nullptr); }
-    
-    /**
-     * Unlock SD card after access
-     */
-    void unlock() { mutex_exit(&_sdMutex); }
-    
-    /**
-     * Retry initialization with different speed
+     * @brief Retry initialization at different speed
+     * @return true on success
      */
     bool retryInit(uint8_t speed_mhz);
-    
+
+    /// Check if SD card is initialized and ready
+    bool isInitialized() const { return _initialized; }
+
+    // ========================================================================
+    // Directory Operations (thread-safe, lock acquired internally)
+    // ========================================================================
+
     /**
-     * List directory contents
+     * @brief List directory contents
+     *
+     * Calls the callback for each entry. Return false from callback to stop.
+     * Acquires mutex internally.
+     *
+     * @param path Directory path (e.g., "/", "/sounds")
+     * @param callback Called for each FileEntry
+     * @return SdError code
      */
-    void listDirectory(const String& path, bool jsonOutput = false);
-    
+    uint8_t listDirectory(const char* path,
+                          std::function<bool(const FileEntry&)> callback);
+
     /**
-     * Show directory tree from root
+     * @brief List directory tree recursively
+     *
+     * Calls the callback for each entry with depth level.
+     * Acquires mutex internally.
+     *
+     * @param path Root path
+     * @param callback Called with (entry, depth_level)
+     * @return SdError code
      */
-    void showTree(bool jsonOutput = false);
-    
+    uint8_t listTree(const char* path,
+                     std::function<bool(const FileEntry&, int depth)> callback);
+
+    // ========================================================================
+    // File Information (thread-safe, lock acquired internally)
+    // ========================================================================
+
     /**
-     * Show SD card information
+     * @brief Get file or directory information
+     * @param path File path
+     * @param entry Output file entry
+     * @return SdError code
      */
-    void showInfo(bool jsonOutput = false);
-    
+    uint8_t getFileInfo(const char* path, FileEntry& entry);
+
     /**
-     * Display file contents
+     * @brief Get SD card storage information
+     * @param info Output storage info
+     * @return SdError code
      */
-    void showFile(const String& path);
-    
+    uint8_t getStorageInfo(StorageInfo& info);
+
+    // ========================================================================
+    // File Modification (thread-safe, lock acquired internally)
+    // ========================================================================
+
     /**
-     * Upload file via serial with progress reporting
-     * Unified upload method for config and storage operations
-     * 
-     * @param path File path to write to
-     * @param totalSize Expected file size in bytes
-     * @param serial Serial stream to read from (typically Serial)
-     * @return true if successful, false otherwise
+     * @brief Remove a file
+     * @param path File path
+     * @return SdError code
      */
-    bool uploadFile(const String& path, uint32_t totalSize, Stream& serial);
-    
+    uint8_t removeFile(const char* path);
+
     /**
-     * Download file via serial with progress reporting
-     * Sends file as binary data with progress updates
-     * 
-     * @param path File path to read from
-     * @param serial Serial stream to write to (typically Serial)
-     * @return true if successful, false otherwise
+     * @brief Create directory (recursive)
+     * @param path Directory path
+     * @return SdError code
      */
-    bool downloadFile(const String& path, Stream& serial);
-    
+    uint8_t makeDirectory(const char* path);
+
+    // ========================================================================
+    // File I/O (caller MUST hold lock via lock()/unlock())
+    // ========================================================================
+
     /**
-     * Remove file from SD card
-     * 
-     * @param path File path to remove
-     * @return true if successful, false otherwise
+     * @brief Open file for reading
+     *
+     * Caller MUST lock() before and unlock() after all file operations.
+     *
+     * @param path File path
+     * @param file Output file handle
+     * @return SdError code
      */
-    bool removeFile(const String& path);
-    
+    uint8_t openRead(const char* path, File32& file);
+
     /**
-     * Create directory on SD card (recursive)
-     * 
-     * @param path Directory path to create
-     * @return true if successful or already exists, false otherwise
+     * @brief Open file for writing
+     *
+     * Caller MUST lock() before and unlock() after all file operations.
+     *
+     * @param path File path
+     * @param file Output file handle
+     * @param truncate If true, truncate existing file
+     * @return SdError code
      */
-    bool makeDirectory(const String& path);
-    
+    uint8_t openWrite(const char* path, File32& file, bool truncate = true);
+
+    // ========================================================================
+    // Mutex Access
+    // ========================================================================
+
+    void lock()     { mutex_enter_blocking(&_sdMutex); }
+    bool tryLock()  { return mutex_try_enter(&_sdMutex, nullptr); }
+    void unlock()   { mutex_exit(&_sdMutex); }
+
+    /// Direct SdFat access (caller must hold lock)
+    SdFat& getSd()  { return _sd; }
+
 private:
-    // Private constructor for singleton
     SdCardModule();
-    
-    SdFat sd;
-    bool initialized;
+
+    SdFat _sd;
+    bool _initialized;
     mutex_t _sdMutex;
-    
-    // Store pin configuration for retry
+
+    // Stored pin config for retry
     uint8_t _cs_pin;
     uint8_t _sck_pin;
     uint8_t _mosi_pin;
     uint8_t _miso_pin;
-    
-    // Helper functions
-    void listDirRecursive(const char* path, int level, bool jsonOutput = false);
+
+    // Internal recursive tree listing (caller holds lock)
+    void listTreeRecursive(const char* path, int depth,
+                           std::function<bool(const FileEntry&, int)>& callback,
+                           bool& shouldContinue);
 };
 
 #endif // SD_CARD_H

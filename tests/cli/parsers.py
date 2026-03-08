@@ -7,8 +7,8 @@ Eliminates duplicated parsing logic across command handlers.
 
 from typing import Optional
 from tests.framework import (
-    CorePacket, CoreError, GearControlError, GunFxError, LightFxError,
-    GearControlPacket, GunFxPacket, LightFxPacket, GearErrorReason
+    CorePacket, CoreError, GearControlError, GunFxError, LightFxError, HubFxError,
+    GearControlPacket, GunFxPacket, LightFxPacket, HubFxPacket, GearErrorReason
 )
 from tests.framework.protocol import read_u16_le, read_u32_le, read_i16_le
 from .base import Fore, Style
@@ -59,6 +59,13 @@ def packet_type_name(ptype: int) -> str:
             if val == ptype:
                 return f"LIGHTFX.{name}"
     
+    # Check HubFX packet types
+    for name in dir(HubFxPacket):
+        if not name.startswith('_'):
+            val = getattr(HubFxPacket, name)
+            if val == ptype:
+                return f"HUBFX.{name}"
+    
     return f"UNKNOWN (0x{ptype:02X})"
 
 
@@ -69,6 +76,8 @@ def error_name(code: int) -> str:
         name = GunFxError.name(code)
     if "UNKNOWN" in name:
         name = LightFxError.name(code)
+    if "UNKNOWN" in name:
+        name = HubFxError.name(code)
     if "UNKNOWN" in name:
         name = CoreError.name(code)
     return name
@@ -120,21 +129,68 @@ def parse_error_payload(payload: bytes) -> None:
         print(f"  Message: {msg}")
 
 
+# =============================================================================
+# Log Message Parser
+# =============================================================================
+
+_LOG_LEVEL_NAMES = {0: 'DEBUG', 1: 'INFO', 2: 'WARN', 3: 'ERROR'}
+_LOG_LEVEL_COLORS = {
+    0: Style.RESET_ALL,    # DEBUG: default
+    1: Fore.CYAN,          # INFO:  cyan
+    2: Fore.YELLOW,        # WARN:  yellow
+    3: Fore.RED,           # ERROR: red
+}
+
+
+def parse_log_message(payload: bytes) -> None:
+    """Parse LOG_MESSAGE packet payload.
+    
+    Wire format: [level:u8][millis:u32LE][message:str]
+    """
+    if len(payload) < 5:
+        print(f"  Log: (incomplete: {payload.hex()})")
+        return
+    
+    level = payload[0]
+    timestamp_ms = read_u32_le(payload, 1)
+    message = payload[5:].decode('utf-8', errors='replace')
+    
+    level_name = _LOG_LEVEL_NAMES.get(level, f'L{level}')
+    color = _LOG_LEVEL_COLORS.get(level, Style.RESET_ALL)
+    
+    # Format timestamp as seconds.millis
+    secs = timestamp_ms // 1000
+    ms = timestamp_ms % 1000
+    
+    print(f"  {color}[{secs:6d}.{ms:03d}] {level_name:5s} {message}{Style.RESET_ALL}")
+
+
 def parse_status_payload(payload: bytes, controller_type: str = None) -> None:
     """Parse STATUS packet payload with rich board-specific output.
     
-    New format: [counter:u32][uptime:u32][freeRam:u32][moduleData...]
-    Legacy format: [counter:u32] (4 bytes only)
+    New format: [counter:u32][uptime:u32][freeRam:u32][lastActivity:u32][keepalives:u32][moduleData...]
+    Legacy format: [counter:u32][uptime:u32][freeRam:u32][moduleData...] (12-byte header)
     """
     if len(payload) == 0:
         print("  (no payload)")
         return
     
-    # Core header (12 bytes): counter + uptime + freeRam
+    # Core header: 20 bytes (new) or 12 bytes (legacy)
     if len(payload) >= 12:
         counter = read_u32_le(payload, 0)
         uptime_ms = read_u32_le(payload, 4)
         free_ram = read_u32_le(payload, 8)
+        
+        # Extended header fields (20-byte format)
+        has_extended = len(payload) >= 20
+        if has_extended:
+            last_activity_ms = read_u32_le(payload, 12)
+            keepalive_count = read_u32_le(payload, 16)
+            module_data = payload[20:]
+        else:
+            last_activity_ms = None
+            keepalive_count = None
+            module_data = payload[12:]
         
         # Format uptime
         uptime_sec = uptime_ms // 1000
@@ -158,13 +214,28 @@ def parse_status_payload(payload: bytes, controller_type: str = None) -> None:
         print(f"  Uptime:    {uptime_str}")
         print(f"  Free RAM:  {ram_str}")
         
+        # Extended: last activity and keepalive count
+        if has_extended:
+            if last_activity_ms == 0:
+                activity_str = "(first command)"
+            elif last_activity_ms < 1000:
+                activity_str = f"{last_activity_ms}ms ago"
+            else:
+                act_sec = last_activity_ms / 1000
+                if act_sec >= 60:
+                    activity_str = f"{act_sec / 60:.1f}m ago"
+                else:
+                    activity_str = f"{act_sec:.1f}s ago"
+            print(f"  Last seen: {activity_str}  (keepalives: {keepalive_count})")
+        
         # Module-specific data
-        module_data = payload[12:]
         if len(module_data) > 0:
             if controller_type == 'gearcontrol':
                 _parse_gearcontrol_status(module_data)
             elif controller_type == 'gunfx':
                 _parse_gunfx_status(module_data)
+            elif controller_type == 'hubfx':
+                _parse_hubfx_status(module_data)
             elif controller_type == 'lightfx':
                 _parse_lightfx_status(module_data)
             elif len(module_data) > 0:
@@ -539,6 +610,44 @@ def _parse_gunfx_status(data: bytes) -> None:
             if fan_duty < 255:
                 pct = round(fan_duty / 255 * 100)
                 print(f"  Fan:       {Fore.YELLOW}throttled to {pct}% (duty {fan_duty}/255){Style.RESET_ALL}")
+
+
+def _parse_hubfx_status(data: bytes) -> None:
+    """Parse HubFX module status data (8 bytes).
+    
+    Wire format:
+      [readyCount:u8][readyMask:u8][usbDevices:u8][sdOk:u8][audioOk:u8]
+      [pcSerial:u8][reserved:u8×2]
+    """
+    from tests.framework import SlaveType
+    
+    if len(data) < 5:
+        print(f"  Hub data:  {data.hex()} ({len(data)} bytes)")
+        return
+    
+    ready_count = data[0]
+    ready_mask = data[1]
+    usb_devices = data[2]
+    sd_ok = data[3]
+    audio_ok = data[4]
+    pc_serial = data[5] if len(data) >= 6 else 0
+    
+    print(f"\n  {Fore.CYAN}━━━ HubFX Status ━━━{Style.RESET_ALL}")
+    print(f"  USB Devices: {usb_devices}")
+    print(f"  SD Card:     {'OK' if sd_ok else 'Not available'}")
+    print(f"  Audio:       {'OK' if audio_ok else 'Not available'}")
+    pc_color = Fore.GREEN if pc_serial else Fore.YELLOW
+    pc_text = "Connected" if pc_serial else "Not connected"
+    print(f"  PC Serial:   {pc_color}{pc_text}{Style.RESET_ALL}")
+    print(f"  Slaves Ready: {ready_count}")
+    
+    # Decode ready mask
+    slave_names = {0: 'GunFX', 1: 'LightFX', 2: 'GearControl'}
+    for bit, name in slave_names.items():
+        is_ready = bool(ready_mask & (1 << bit))
+        color = Fore.GREEN if is_ready else Fore.RED
+        status = "ready" if is_ready else "not ready"
+        print(f"    {name}: {color}{status}{Style.RESET_ALL}")
 
 
 def _parse_lightfx_status(data: bytes) -> None:
@@ -922,9 +1031,11 @@ def parse_init_ready(payload: bytes) -> Optional[InitReadyInfo]:
         name_lower = info.name.lower()
         if 'gearcontrol' in name_lower or 'gear' in name_lower:
             info.controller_type = ControllerType.GEARCONTROL
-        elif 'gunfx' in name_lower or 'gun' in name_lower:
+        elif 'gunfx' in name_lower:
             info.controller_type = ControllerType.GUNFX
-        elif 'lightfx' in name_lower or 'light' in name_lower:
+        elif 'hubfx' in name_lower:
+            info.controller_type = ControllerType.HUBFX
+        elif 'lightfx' in name_lower:
             info.controller_type = ControllerType.LIGHTFX
         elif 'noop' in name_lower:
             info.controller_type = ControllerType.NOOP

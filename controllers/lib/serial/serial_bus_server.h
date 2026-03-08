@@ -314,6 +314,7 @@ private:
     CoreBoardInfo _boardInfo;
     bool _initReceived = false;
     unsigned long _lastActivityMs = 0;
+    unsigned long _prevActivityMs = 0;
     uint32_t _commandCounter = 0;
     uint32_t _keepaliveCounter = 0;
 

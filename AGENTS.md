@@ -40,8 +40,10 @@ ScaleFX is a modular scale model effects system:
 - `0x01-0x2F`: GunFX (used)
 - `0x40-0x5F`: LightFX (used)
 - `0x60-0x7F`: GearControl (used)
-- `0x80-0xEF`: Available for new controllers
-- `0xF0-0xFF`: Core system commands (reserved)
+- `0x80-0xA3`: HubFX (used) — slaves, audio, engine, config, SD, files
+- `0xA4-0xA6`: Streaming protocol (used) — STREAM_BEGIN/DATA/END (`serial_stream.h`)
+- `0xA7-0xEF`: Available for new controllers
+- `0xF0-0xFF`: Core system commands (reserved) — includes LOG_MESSAGE (0xFD)
 
 ## Error Code Ranges
 
@@ -50,7 +52,9 @@ ScaleFX is a modular scale model effects system:
 - `0x20-0x4F`: GunFX-specific (SERVO_*, SMOKE_*, TRIGGER_*)
 - `0x50-0x5F`: LightFX-specific (LED_*, SERVO_*)
 - `0x60-0x6F`: GearControl-specific (GEAR_*, MOTOR_*, SERVO_*, YAW_*)
-- `0x70-0x8F`: Reserved for future modules
+- `0x70-0x7F`: Reserved for future modules
+- `0x80-0x8F`: HubFX-specific (SLAVE_*, AUDIO_*, SD_*, FILE_*)
+- `0x90-0xEF`: Reserved for future modules
 - `0xF0-0xFF`: System/transport (INTERNAL, TIMEOUT, CRC_ERROR, etc.)
 
 ## File Structure
@@ -77,6 +81,7 @@ tests/
 │   └── handlers/        # Command handlers
 │       ├── core.py      # Core/protocol commands
 │       ├── gunfx.py     # GunFX commands
+│       ├── hubfx.py     # HubFX commands (audio, engine, files, slaves)
 │       ├── lightfx.py   # LightFX commands
 │       └── gearcontrol.py # GearControl commands
 ├── gunfx/               # GunFX tests
@@ -92,9 +97,11 @@ When modifying protocol, these file pairs MUST stay in sync:
 | C++ File | Python File |
 |----------|-------------|
 | `serial_core.h` | `packets.py` |
+| `serial_stream.h` | `packets.py` (StreamPacket class) |
 | `serial_gunfx.h` | `packets.py`, `commands.py`, `cli/handlers/gunfx.py` |
 | `serial_lightfx.h` | `packets.py`, `commands.py`, `cli/handlers/lightfx.py` |
 | `serial_gearcontrol.h` | `packets.py`, `commands.py`, `cli/handlers/gearcontrol.py` |
+| `hubfx_protocol.h` | `packets.py`, `commands.py`, `cli/handlers/hubfx.py` |
 
 ## Change Workflow
 

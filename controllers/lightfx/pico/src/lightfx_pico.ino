@@ -117,6 +117,8 @@ void updateLandingLights();
 // ============================================================================
 
 void performSafeShutdown() {
+    SFX_LOG_INFO("Shutdown — LEDs off, servos center, landing lights off");
+
     // Shutdown landing lights first (turns off LEDs)
     for (uint8_t i = 0; i < LANDING_LIGHT_COUNT; i++) {
         landingLights[i].shutdown();
@@ -135,6 +137,8 @@ void performSafeShutdown() {
 }
 
 void performSafeInit() {
+    SFX_LOG_INFO("Init — safe reset");
+
     // Init resets everything to a known safe state — same as shutdown
     performSafeShutdown();
     

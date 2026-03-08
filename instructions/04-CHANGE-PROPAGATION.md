@@ -259,12 +259,15 @@ C++_Serial_Library:
   files:
     serial.h: "Umbrella header"
     serial_core.h: "CoreProtocol, SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros"
+    serial_core.cpp: "CoreProtocol implementations, CorePayload encode/decode"
     serial_bus_server.h: "BusServer base class + CoreCommandServer"
     serial_bus_server.cpp: "BusServer + CoreCommandServer implementations"
     serial_bus_client.h: "BusClient base class (extends SerialBus)"
     serial_bus_client.cpp: "BusClient implementation"
     serial_bus.h: "SerialBus (client-only, COBS over USB CDC)"
     serial_result_queue.h: "ResultQueue (tag-correlated command/response matching)"
+    serial_stream.h: "StreamProtocol (0xA4-0xA6) + StreamWriter (chunked streaming, CRC-16)"
+    serial_stream.cpp: "StreamWriter + CRC-16/CCITT implementations"
     serial_gunfx.h: "GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec"
     serial_lightfx.h: "LightFxServer, LightFxClient, LightFxPacket, LightFxError"
     serial_gearcontrol.h: "GearControlServer, GearControlClient, GearControlPacket, GearControlError"
@@ -294,6 +297,7 @@ Python_Framework:
     "cli/interactive.py": "Main CLI class (composes handlers)"
     "cli/handlers/core.py": "Core/protocol commands"
     "cli/handlers/gunfx.py": "GunFX commands"
+    "cli/handlers/hubfx.py": "HubFX commands (audio, engine, files, slaves)"
     "cli/handlers/lightfx.py": "LightFX commands"
     "cli/handlers/gearcontrol.py": "GearControl commands"
     "conftest.py": "pytest fixtures"
@@ -321,6 +325,7 @@ python -m py_compile tests/framework/packets.py
 python -m py_compile tests/framework/commands.py
 python -m py_compile tests/cli/interactive.py
 python -m py_compile tests/cli/handlers/gunfx.py
+python -m py_compile tests/cli/handlers/hubfx.py
 python -m py_compile tests/cli/handlers/lightfx.py
 python -m py_compile tests/cli/handlers/gearcontrol.py
 

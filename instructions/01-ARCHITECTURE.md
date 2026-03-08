@@ -222,6 +222,49 @@ PicoServer  (composes everything for Pico server controllers)
   └── Device name (e.g., "GunFX-A1B2" from Pico board ID)
 ```
 
+### Singletons (Board-Unique Resources)
+
+Any class with exactly one instance per board — whether wrapping a hardware peripheral or a logical registry — is implemented as a singleton using C++11 thread-safe static local initialization.
+
+```
+DiagLog::instance()          — Board-wide diagnostic logging (lib/serial/)
+  │ Ring buffer → COBS LOG_MESSAGE packets
+  │ Mutex-protected for dual-core safety
+  │ Compile-time strippable via SFX_ENABLE_DIAG_LOG=0
+  │ Accessed via SFX_LOG_INFO/WARN/ERROR/DEBUG macros
+  │
+SdCardModule::instance()     — Single SPI SD card (hubfx/pico/storage/)
+  │ Thread-safe SPI access via pico mutex
+  │ Used by: StorageServer, ConfigReader, AudioMixer
+  │
+FlashModule::instance()      — Single onboard LittleFS flash (hubfx/pico/storage/)
+  │ Thread-safe access via pico mutex
+  │ Used by: ConfigReader
+  │
+AudioMixer::instance()       — Single I2S audio output (hubfx/pico/audio/)
+  │ Runs on Core 1, thread-safe buffer access
+  │ Uses SdCardModule singleton internally
+```
+
+**Pattern:**
+```cpp
+class MyModule {
+public:
+    static MyModule& instance() {
+        static MyModule inst;  // C++11 thread-safe
+        return inst;
+    }
+    MyModule(const MyModule&) = delete;
+    MyModule& operator=(const MyModule&) = delete;
+private:
+    MyModule();  // Private
+};
+```
+
+**Qualifying criteria:** single hardware resource per board, single logical registry, or board-wide service used from multiple modules/cores.
+
+**NOT singletons:** Protocol handlers (`*Server`), per-slave clients (`*Client`), per-channel hardware (`ServoControl[]`, `LedControl[]`), effect modules (`EngineFX`, `MuzzleFlash`).
+
 ### StatusDataCallback
 
 Modules provide board-specific STATUS data via a callback registered on `CoreCommandServer`:
@@ -731,6 +774,8 @@ DO:
   - Use SFX_* macros in handleModulePacket() for ACK/NACK handling
   - Include unit suffixes on all physical measurements (_mV, _mA, _us, _ms)
   - Put packet types, error codes, and validation in serial_xxxfx.h (single file per module)
+  - Implement board-unique resources as singletons (::instance(), private ctor, deleted copy/move)
+  - Access singletons directly — never via pointer injection or extern globals
 
 DONT:
   - Don't use blocking delays in callbacks (>10ms)

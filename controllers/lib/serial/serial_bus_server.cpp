@@ -100,6 +100,7 @@ void CoreCommandServer::begin(Stream* serial) {
     BusServer::begin(serial);
     _initReceived = false;
     _lastActivityMs = 0;
+    _prevActivityMs = 0;
 }
 
 void CoreCommandServer::setBoardInfo(const char* deviceName, const char* firmwareVersion,
@@ -139,6 +140,7 @@ CommandHandleResult CoreCommandServer::tryProcess(uint8_t type, const uint8_t* p
 }
 
 CommandHandleResult CoreCommandServer::handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) {
+    _prevActivityMs = _lastActivityMs;
     _lastActivityMs = millis();
     // Increment with overflow protection (wrap to 1, not 0, to distinguish from reset)
     if (_commandCounter == UINT32_MAX) {
@@ -240,16 +242,24 @@ void CoreCommandServer::sendInitReady() {
 }
 
 void CoreCommandServer::sendStatus() {
-    // STATUS payload: [counter:u32LE][uptime:u32LE][freeRam:u32LE][moduleData:0-52]
+    // STATUS payload: [counter:u32LE][uptime:u32LE][freeRam:u32LE]
+    //                 [lastActivity_ms:u32LE][keepaliveCount:u32LE][moduleData:0-N]
     uint8_t payload[CoreProtocol::MAX_PAYLOAD_SIZE];
     size_t idx = 0;
 
-    // Core header (12 bytes)
+    // Core header (20 bytes)
     CoreProtocol::putU32LE(&payload[idx], _commandCounter);
     idx += 4;
     CoreProtocol::putU32LE(&payload[idx], millis());
     idx += 4;
     CoreProtocol::putU32LE(&payload[idx], _boardInfo.freeRamBytes);
+    idx += 4;
+    // Time since previous activity (ms) — excludes this STATUS_REQ itself
+    // Uses _prevActivityMs so the report reflects the gap *before* this command
+    uint32_t sinceActivity = (_prevActivityMs > 0) ? (millis() - _prevActivityMs) : 0;
+    CoreProtocol::putU32LE(&payload[idx], sinceActivity);
+    idx += 4;
+    CoreProtocol::putU32LE(&payload[idx], _keepaliveCounter);
     idx += 4;
 
     // Module-specific data (appended by callback)

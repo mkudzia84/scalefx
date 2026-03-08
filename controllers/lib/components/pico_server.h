@@ -88,17 +88,37 @@ public:
     void onShutdown(std::function<void()> cb) { _shutdownCb = cb; }
 
     /**
-     * @brief Add module-specific command handler and finalize router
+     * @brief Add a module-specific command handler to the router
      *
-     * Initializes the CommandRouter with the standard handler chain:
-     *   1. CoreCommandServer (INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE, STATUS)
-     *   2. Module handler (e.g. GunFxServer, LightFxServer)
+     * On first call, initializes the CommandRouter and registers the
+     * CoreCommandServer at priority 1. Each subsequent call adds another
+     * module handler in the order called. Supports multiple handlers for
+     * multi-domain controllers (e.g., HubFX with audio, engine, storage).
+     *
+     * Handler chain (example with 3 module handlers):
+     *   1. CoreCommandServer (auto-registered)
+     *   2. First addModuleHandler() call
+     *   3. Second addModuleHandler() call
+     *   4. Third addModuleHandler() call
      *
      * Must be called after all callbacks are registered.
      *
-     * @param handler  Module-specific ICommandHandler (nullptr for core-only)
+     * @param handler  Module-specific ICommandHandler (nullptr for core-only init)
      */
     void addModuleHandler(ICommandHandler* handler);
+
+    /**
+     * @brief Enable/disable automatic connection timeout
+     *
+     * When disabled, PicoServer will not call doShutdown() on serial
+     * inactivity. Use for master controllers (like HubFX) that operate
+     * independently of any upstream serial connection.
+     *
+     * Default: enabled (standard slave controller behavior)
+     *
+     * @param enabled true = timeout active, false = disabled
+     */
+    void setConnectionTimeoutEnabled(bool enabled) { _timeoutEnabled = enabled; }
 
     /**
      * @brief Process common loop tasks
@@ -121,6 +141,9 @@ public:
 
     /** @brief Access IndicatorLedManager (e.g. for error/warning conditions) */
     IndicatorLedManager& indicators() { return _indicators; }
+
+    /** @brief Access DiagLog singleton (convenience, same as DiagLog::instance()) */
+    DiagLog& diagLog() { return DiagLog::instance(); }
 
     /** @brief Get device name (e.g. "GunFX-A1B2") */
     const char* deviceName() const { return _deviceName; }
@@ -160,6 +183,9 @@ private:
 
     std::function<void()> _initCb;
     std::function<void()> _shutdownCb;
+
+    bool _routerInitialized = false;
+    bool _timeoutEnabled = true;
 
     static constexpr uint32_t BAUD_RATE = 1000000;
     static constexpr unsigned long CONNECTION_TIMEOUT_ms = 15000;

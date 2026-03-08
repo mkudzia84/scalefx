@@ -74,6 +74,7 @@ struct BusClientBoardInfo {
 
 using BusClientReadyCallback = std::function<void(const char* deviceName)>;
 using BusClientErrorCallback = std::function<void(uint8_t errorCode, const char* message)>;
+using BusClientLogCallback = std::function<void(uint8_t level, uint32_t timestamp_ms, const char* message)>;
 
 // ============================================================================
 // BusClient Class
@@ -153,6 +154,7 @@ public:
 
     void onReady(BusClientReadyCallback cb) { _readyCallback = cb; }
     void onError(BusClientErrorCallback cb) { _errorCallback = cb; }
+    void onLogMessage(BusClientLogCallback cb) { _logCallback = cb; }
 
     // ========================================================================
     // State
@@ -228,6 +230,7 @@ private:
 
     BusClientReadyCallback _readyCallback;
     BusClientErrorCallback _errorCallback;
+    BusClientLogCallback _logCallback;
 };
 
 #endif // SERIAL_BUS_CLIENT_H

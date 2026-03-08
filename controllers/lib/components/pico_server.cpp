@@ -26,6 +26,9 @@ void PicoServer::begin(const char* prefix, const char* version,
     // Initialize indicator LEDs (standard GP13/GP14)
     _indicators.begin(connectionPin, errorPin);
 
+    // Initialize diagnostic log singleton (buffered COBS log packets over serial)
+    DiagLog::instance().begin(&Serial);
+
     // Initialize CoreCommandServer
     _core.begin(&Serial);
     _core.setBoardInfo(_deviceName, version, "RP2040",
@@ -49,15 +52,18 @@ void PicoServer::begin(const char* prefix, const char* version,
 }
 
 void PicoServer::addModuleHandler(ICommandHandler* handler) {
-    // Initialize CommandRouter with NACK callback
-    _router.begin(&Serial, [this](uint8_t code, uint8_t /* type */) {
-        _core.sendNack(code);
-    });
+    // Lazy-init: first call sets up the router and adds core handler
+    if (!_routerInitialized) {
+        _router.begin(&Serial, [this](uint8_t code, uint8_t /* type */) {
+            _core.sendNack(code);
+        });
+        _router.addHandler(&_core);  // Priority 1: core/system commands
+        _routerInitialized = true;
+    }
 
-    // Add handlers in priority order
-    _router.addHandler(&_core);        // Priority 1: core/system commands
+    // Add module handler (supports multiple calls for multi-domain servers)
     if (handler) {
-        _router.addHandler(handler);   // Priority 2: module commands
+        _router.addHandler(handler);
     }
 }
 
@@ -77,7 +83,11 @@ void PicoServer::loop() {
     // Keep free RAM current for STATUS response
     _core.updateFreeRam(rp2040.getFreeHeap());
 
-    // Check connection timeout
+    // Flush buffered log messages to serial as COBS packets
+    // (safe even when disconnected — flush() checks _serial != nullptr)
+    DiagLog::instance().flush();
+
+    // Check connection timeout (inactivity)
     checkConnectionTimeout();
 
     // Update indicator LEDs
@@ -107,13 +117,17 @@ void PicoServer::doShutdown() {
 }
 
 void PicoServer::checkConnectionTimeout() {
+    if (!_timeoutEnabled) return;
+
     if (_core.checkTimeout(CONNECTION_TIMEOUT_ms)) {
         if (!_indicators.isWatchdogTriggered()) {
+            SFX_LOG_WARN("Connection timeout (%lums inactivity)", CONNECTION_TIMEOUT_ms);
             doShutdown();
             _indicators.setWatchdogTriggered(true);
         }
     }
 }
+
 
 // ============================================================================
 // I2C Bus Scan Support

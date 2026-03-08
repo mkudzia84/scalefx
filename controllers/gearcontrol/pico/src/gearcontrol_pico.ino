@@ -57,7 +57,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.10.0"
-#define BUILD_NUMBER 48
+#define BUILD_NUMBER 54
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -160,6 +160,8 @@ uint8_t buildLedFlags();
 // ============================================================================
 
 void performSafeShutdown() {
+    SFX_LOG_INFO("Shutdown — motors off, servos center, LEDs off");
+
     // Shutdown all gear modules (stops motors, returns servos to center, LEDs off)
     for (int i = 0; i < 3; i++) {
         gears[i].shutdown();
@@ -175,6 +177,8 @@ void performSafeShutdown() {
 }
 
 void performSafeInit() {
+    SFX_LOG_INFO("Init — reset gears, check monitors");
+
     // Reset all gear modules
     for (int i = 0; i < 3; i++) {
         gears[i].reset();
@@ -182,6 +186,7 @@ void performSafeInit() {
         if (!ina226Available[i]) {
             gears[i].flagMonitorFault();
             gearErrorReason[i] = GearErrorReason::MONITOR_FAULT;
+            SFX_LOG_WARN("Gear %d: INA226 monitor fault (0x%02X)", i, INA226_ADDR[i]);
         } else {
             gearErrorReason[i] = GearErrorReason::NONE;
         }
@@ -247,6 +252,8 @@ void setup() {
         cfg.shuntResistance_ohms = SHUNT_RESISTANCE_OHMS;
         cfg.maxCurrent_A = MAX_CURRENT_A;
         ina226Available[i] = ina226[i].begin(Wire, cfg);
+        SFX_LOG_INFO("INA226[%d] (0x%02X): %s", i, INA226_ADDR[i],
+                     ina226Available[i] ? "OK" : "NOT FOUND");
     }
 
     // Initialize landing gear modules
@@ -295,6 +302,8 @@ void setup() {
     // Auto-deploy all gears on low battery voltage (safety feature)
     batteryMonitor.onLowVoltage([](uint16_t voltage_mV, uint8_t cellCount) {
         if (batteryEnabled && autoDeployOnLowVoltage && server.indicators().isConnected()) {
+            SFX_LOG_WARN("LOW BATTERY %u mV (%uS) — emergency deploy all gears",
+                         voltage_mV, cellCount);
             lowVoltageTriggered = true;
             for (int i = 0; i < 3; i++) {
                 gears[i].markEmergencyDeploy();
@@ -571,7 +580,10 @@ void loop() {
 
         // Propagate calibration error reason (e.g., motor disconnected)
         if (gears[i].state() == GearState::ERROR && gears[i].lastCalibErrorReason() != 0) {
-            gearErrorReason[i] = gears[i].lastCalibErrorReason();
+            if (gearErrorReason[i] != gears[i].lastCalibErrorReason()) {
+                gearErrorReason[i] = gears[i].lastCalibErrorReason();
+                SFX_LOG_ERROR("Gear %d ERROR: reason=0x%02X", i, gearErrorReason[i]);
+            }
         }
     }
 

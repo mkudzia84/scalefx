@@ -70,6 +70,10 @@ System-level commands common to all ScaleFX devices:
 | `CorePacket::NACK` | 0xF7 | `NACK` | Slave→Master | Negative acknowledgment |
 | `CorePacket::REBOOT` | 0xF8 | `REBOOT` | Master→Slave | Reboot slave device |
 | `CorePacket::BOOTSEL` | 0xF9 | `BOOTSEL` | Master→Slave | Enter BOOTSEL mode |
+| `CorePacket::STATUS_REQ` | 0xFA | — | Master→Slave | Request status |
+| `CorePacket::I2C_SCAN` | 0xFB | — | Master→Slave | Trigger I2C bus scan |
+| `CorePacket::I2C_SCAN_RESULT` | 0xFC | — | Slave→Master | I2C scan results |
+| `CorePacket::LOG_MESSAGE` | 0xFD | — | Slave→Master | Diagnostic log message |
 
 ### INIT Command
 
@@ -151,6 +155,25 @@ Triggers entry to BOOTSEL mode via `rp2040.rebootToBootloader()`. Performs safe 
 **Binary Payload:** None  
 **Response:** None (fire-and-forget, device enters BOOTSEL mode, RPI-RP2 drive appears)
 
+### LOG_MESSAGE
+
+Async diagnostic log message emitted by any board via `DiagLog`. Universal across all
+controllers (GunFX, LightFX, GearControl, HubFX). HubFX relays slave log messages into
+its own buffer before flushing to the PC client.
+
+**Binary Payload:**
+```
+[level:u8][millis:u32LE][message:str]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| level | u8 | 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR |
+| millis | u32LE | Board uptime in milliseconds |
+| message | str | UTF-8 log message (no null terminator) |
+
+**Tag:** Always `TAG_ASYNC` (0x00) — unsolicited, no request to correlate.
+
 ## GunFX-Specific Packet Types (0x01-0x2F)
 
 Commands specific to GunFX controllers:
@@ -163,6 +186,213 @@ Commands specific to GunFX controllers:
 | `GUNFX_PKT_SRV_SETTINGS` | 0x11 | `SERVO_CONFIG` | M→S | Configure servo profile |
 | `GUNFX_PKT_SRV_RECOIL_JERK` | 0x12 | `SERVO_RECOIL_JERK` | M→S | Configure recoil jerk |
 | `GUNFX_PKT_SMOKE_HEAT` | 0x20 | `SMOKE_HEAT` | M→S | Control smoke heater |
+
+## Streaming Protocol (0xA4-0xA6)
+
+Reusable chunked data streaming for responses exceeding `MAX_PAYLOAD_SIZE` (512 bytes).
+Defined in `serial_stream.h` / `StreamProtocol` namespace. Any `BusServer` subclass can
+use `StreamWriter` to stream data to the client using these packet types.
+
+**C++:** `StreamProtocol::STREAM_BEGIN/DATA/END` in `serial_stream.h`
+**Python:** `StreamPacket.STREAM_BEGIN/DATA/END` in `packets.py`
+
+### Packet Types
+
+| Type | Value | Direction | Description |
+|------|-------|-----------|-------------|
+| `STREAM_BEGIN` | 0xA4 | Server→Client | Announce start of stream |
+| `STREAM_DATA`  | 0xA5 | Server→Client | Data chunk with per-chunk CRC-16 |
+| `STREAM_END`   | 0xA6 | Server→Client | End of stream with verification |
+
+### Wire Format
+
+**STREAM_BEGIN (0xA4):**
+```
+[totalBytes:u32LE]
+```
+- `totalBytes` — Expected total data size in bytes (0 = unknown size)
+
+**STREAM_DATA (0xA5):**
+```
+[seqNum:u16LE][crc16:u16LE][data:0-508 bytes]
+```
+- `seqNum` — Segment sequence number (0-based, incrementing)
+- `crc16` — CRC-16/CCITT (poly 0x1021, init 0xFFFF) over `data` portion only
+- `data` — Chunk payload, max `MAX_PAYLOAD_SIZE - 4` = 508 bytes
+
+**STREAM_END (0xA6):**
+```
+[totalSegs:u16LE][totalBytes:u32LE][crc16All:u16LE]
+```
+- `totalSegs` — Total number of DATA segments sent
+- `totalBytes` — Actual total data bytes sent (sum of all chunk data)
+- `crc16All` — CRC-16/CCITT over ALL data bytes across all segments (running CRC)
+
+### CRC-16/CCITT
+
+- **Polynomial:** 0x1021 (CCITT standard)
+- **Initial value:** 0xFFFF
+- **Scope:** Per-chunk CRC in `STREAM_DATA`, full-stream CRC in `STREAM_END`
+- **Implementation:** `StreamProtocol::crc16()` (C++), `crc16_ccitt()` (Python)
+
+### Flow Example
+
+```
+Server                                Client
+  |                                     |
+  |  STREAM_BEGIN [totalBytes=1200]     |
+  |------------------------------------>|
+  |                                     |
+  |  STREAM_DATA [seq=0][crc][508 B]    |
+  |------------------------------------>|
+  |                                     |
+  |  STREAM_DATA [seq=1][crc][508 B]    |
+  |------------------------------------>|
+  |                                     |
+  |  STREAM_DATA [seq=2][crc][184 B]    |
+  |------------------------------------>|
+  |                                     |
+  |  STREAM_END [segs=3][1200][crc_all] |
+  |------------------------------------>|
+  |                                     |
+  Client verifies totalBytes and crc_all
+```
+
+All packets in a stream share the same **tag** for correlation. The client
+matches STREAM_BEGIN/DATA/END by tag to associate them with the original request.
+
+### StreamWriter Usage (C++)
+
+```cpp
+#include <serial_stream.h>
+
+// In a BusServer handler — uses default STREAM_BEGIN/DATA/END types:
+StreamWriter stream(*this, currentTag());
+stream.begin(totalSize);                // Send STREAM_BEGIN (0 = unknown)
+stream.write(data, len);               // Auto-chunks at 508 bytes
+stream.printf("%-9lu  %s\n", sz, name); // Printf-style (256 char limit)
+stream.end();                           // Flush + send STREAM_END
+```
+
+### Stream Receiving (Python)
+
+```python
+from tests.framework import StreamPacket
+from tests.framework.protocol import read_u16_le, read_u32_le, crc16_ccitt
+
+data = bytearray()
+while True:
+    pkt = wait_for_tag(tag)
+    if pkt.packet_type == StreamPacket.STREAM_BEGIN:
+        total = read_u32_le(pkt.payload, 0)
+    elif pkt.packet_type == StreamPacket.STREAM_DATA:
+        seq = read_u16_le(pkt.payload, 0)
+        crc = read_u16_le(pkt.payload, 2)
+        chunk = pkt.payload[4:]
+        assert crc16_ccitt(chunk) == crc  # Per-chunk verify
+        data.extend(chunk)
+    elif pkt.packet_type == StreamPacket.STREAM_END:
+        total_segs  = read_u16_le(pkt.payload, 0)
+        total_bytes = read_u32_le(pkt.payload, 2)
+        crc_all     = read_u16_le(pkt.payload, 6)
+        assert crc16_ccitt(data) == crc_all  # Full-stream verify
+        break
+```
+
+## File Transfer Protocol (HubFX)
+
+HubFX provides two file transfer modes for SD card access, both built on top of
+the streaming protocol infrastructure.
+
+### Download (Server→Client)
+
+The server pushes file data using `StreamWriter`. The client reassembles from
+`STREAM_BEGIN/DATA/END` packets. Fire-and-forget — no per-chunk ACK.
+
+| Command | Value | Payload | Response |
+|---------|-------|---------|----------|
+| `FILE_LIST` | 0x9A | `[pathLen:u8][path:str]` | Streamed: POSIX-like text listing |
+| `FILE_DOWNLOAD` | 0x9F | `[pathLen:u8][path:str]` | Streamed: raw file bytes |
+
+**FILE_LIST output format** (one line per entry):
+```
+d          -  sounds/
+-       1234  config.yaml
+```
+Format: `[type:1]  [size:9]  [name]` — `d` for directory, `-` for file.
+
+### Upload (Client→Server)
+
+The client drives the transfer by sending chunks with individual ACK/NACK
+responses, enabling per-chunk retry on CRC failure.
+
+| Command | Value | Payload | Response |
+|---------|-------|---------|----------|
+| `FILE_UPLOAD_BEGIN` | 0xA0 | `[size:u32LE][pathLen:u8][path:str]` | ACK |
+| `FILE_UPLOAD_DATA` | 0xA1 | `[seqNum:u16LE][crc16:u16LE][data:N]` | ACK / NACK(CRC_ERROR) |
+| `FILE_UPLOAD_END` | 0xA2 | (none) | ACK / NACK |
+| `FILE_UPLOAD_CANCEL` | 0xA3 | (none) | ACK |
+
+**Upload flow:**
+```
+Client                                Server
+  |                                     |
+  |  FILE_UPLOAD_BEGIN [1200][path]      |
+  |------------------------------------>|  Opens file for writing
+  |  ACK                                |
+  |<------------------------------------|
+  |                                     |
+  |  FILE_UPLOAD_DATA [seq=0][crc][508B]|
+  |------------------------------------>|  Verify CRC, write chunk
+  |  ACK                                |
+  |<------------------------------------|
+  |                                     |
+  |  FILE_UPLOAD_DATA [seq=1][crc][508B]|
+  |------------------------------------>|  CRC mismatch!
+  |  NACK(CRC_ERROR)                    |
+  |<------------------------------------|
+  |                                     |
+  |  FILE_UPLOAD_DATA [seq=1][crc][508B]|  (retry same seq)
+  |------------------------------------>|  CRC OK, write chunk
+  |  ACK                                |
+  |<------------------------------------|
+  |                                     |
+  |  FILE_UPLOAD_END                    |
+  |------------------------------------>|  Verify total size, close file
+  |  ACK                                |
+  |<------------------------------------|
+```
+
+**Upload chunk format** — reuses `StreamProtocol::CHUNK_HEADER_SIZE` (4 bytes):
+```
+[seqNum:u16LE][crc16:u16LE][data:0-508 bytes]
+```
+
+**Upload error conditions:**
+- `UPLOAD_IN_PROGRESS` (0x8E) — Another upload is already active
+- `NO_UPLOAD_ACTIVE` (0x8F) — No upload to send data to or end
+- `CRC_ERROR` (0xF4) — Chunk CRC mismatch, client should retry
+- `FILE_IO_ERROR` (0x8C) — SD card write error, upload aborted
+
+### Download vs Upload Design
+
+| Aspect | Download (STREAM_*) | Upload (FILE_UPLOAD_*) |
+|--------|---------------------|----------------------|
+| **Direction** | Server → Client | Client → Server |
+| **Packet types** | `StreamProtocol` (0xA4-0xA6) | `HubFxPacket` (0xA0-0xA3) |
+| **Owner** | Reusable library (`serial_stream.h`) | Module-specific (`hubfx_protocol.h`) |
+| **Flow control** | Fire-and-forget stream | Per-chunk ACK/NACK |
+| **CRC verification** | Per-chunk + full-stream (passive) | Per-chunk (active, retry on fail) |
+| **Shared infrastructure** | `StreamWriter`, `StreamProtocol` | `StreamProtocol::CHUNK_HEADER_SIZE`, `crc16()` |
+
+### Other File Operations
+
+| Command | Value | Payload | Response |
+|---------|-------|---------|----------|
+| `FILE_DELETE` | 0x9B | `[pathLen:u8][path:str]` | ACK / NACK |
+| `FILE_MKDIR` | 0x9C | `[pathLen:u8][path:str]` | ACK / NACK |
+| `FILE_INFO` | 0x9D | `[pathLen:u8][path:str]` | FILE_INFO_RESP |
+| `FILE_INFO_RESP` | 0x9E | `[exists:u8][isDir:u8][size:u32LE]` | — |
 
 ### TRIGGER_ON
 
@@ -263,6 +493,8 @@ Flags:
 | `CoreCommandServer` | `serial_bus_server.h` | Server-side system command handler (INIT, STATUS, REBOOT, etc.) |
 | `BusClient` | `serial_bus_client.h` | Base class for client controllers |
 | `ResultQueue` | `serial_result_queue.h` | Tag-correlated command/response matching |
+| `StreamWriter` | `serial_stream.h` | Chunked data streaming with CRC-16 integrity |
+| `StreamProtocol` | `serial_stream.h` | Stream constants (0xA4-0xA6), CRC-16/CCITT |
 | `GunFxServer` | `serial_gunfx.h` | GunFX command handler (server, extends BusServer) |
 | `GunFxClient` | `serial_gunfx.h` | GunFX command sender (client, extends BusClient) |
 | `LightFxServer` | `serial_lightfx.h` | LightFX command handler (server, extends BusServer) |

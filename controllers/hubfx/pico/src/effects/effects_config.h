@@ -1,15 +1,15 @@
 /**
  * Effects Module Configuration
- * 
+ *
  * Compile-time configuration for Engine FX and Gun FX modules.
- * Debug flag controlled by central debug_config.h
+ * Logging macros provided by hubfx_log.h (EFFECTS_LOG).
  */
 
 #ifndef EFFECTS_CONFIG_H
 #define EFFECTS_CONFIG_H
 
-#include "../debug_config.h"
+#include "../hubfx_log.h"
 
-// EFFECTS_DEBUG and EFFECTS_LOG are defined in debug_config.h
+// EFFECTS_LOG is defined in hubfx_log.h — routes through DiagLog
 
 #endif // EFFECTS_CONFIG_H

@@ -31,6 +31,7 @@ class ControllerType:
     """Controller type constants."""
     GEARCONTROL = 'gearcontrol'
     GUNFX = 'gunfx'
+    HUBFX = 'hubfx'
     LIGHTFX = 'lightfx'
     NOOP = 'noop'
 
@@ -134,6 +135,7 @@ def get_prompt(controller_type: Optional[str], is_connected: bool) -> str:
         prefix = {
             ControllerType.GEARCONTROL: f"{Fore.GREEN}gearcontrol",
             ControllerType.GUNFX: f"{Fore.RED}gunfx",
+            ControllerType.HUBFX: f"{Fore.CYAN}hubfx",
             ControllerType.LIGHTFX: f"{Fore.BLUE}lightfx",
             ControllerType.NOOP: f"{Fore.MAGENTA}noop",
         }.get(controller_type, f"{Fore.CYAN}scalefx")

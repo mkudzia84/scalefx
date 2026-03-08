@@ -3,7 +3,7 @@
  */
 
 #include "simple_i2s_codec.h"
-#include "../debug_config.h"
+#include "../hubfx_log.h"
 
 // Simple I2S codec log macro - takes runtime name as first arg
 #if AUDIO_DEBUG

@@ -8,10 +8,10 @@
 #include "config_reader.h"
 #include "sd_card.h"
 #include "../audio/audio_channels.h"
-#include "../debug_config.h"
+#include "../hubfx_log.h"
 
 // ============================================================================
-//  DEBUG (uses CONFIG_LOG from debug_config.h)
+//  DEBUG (uses CONFIG_LOG from hubfx_log.h)
 // ============================================================================
 
 #define LOG(fmt, ...) CONFIG_LOG(fmt, ##__VA_ARGS__)

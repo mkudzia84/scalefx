@@ -8,8 +8,8 @@ hardware specifications.
 """
 
 import warnings
-from .protocol import build_packet, u16_le, i16_le, u32_le
-from .packets import CorePacket, GunFxPacket, LightFxPacket, LightFxEventType, GearControlPacket
+from .protocol import build_packet, parse_packet, u16_le, i16_le, u32_le
+from .packets import CorePacket, GunFxPacket, LightFxPacket, LightFxEventType, GearControlPacket, HubFxPacket, HubFxAudio
 
 
 # =============================================================================
@@ -1030,5 +1030,413 @@ class GearControlCommands(CommandBuilder):
         _warn_range("gear_id", gear_id, GEAR_ID_MIN, GEAR_ID_MAX)
         return build_packet(GearControlPacket.GEAR_ENABLE,
                             bytes([gear_id, 1 if enabled else 0]))
+
+
+class HubFxCommands(CommandBuilder):
+    """HubFX-specific commands (slave management, slave routing, audio, engine, config, SD)."""
+
+    # =========================================================================
+    # Slave Routing (subcmd pattern)
+    # =========================================================================
+
+    @staticmethod
+    def slave_route(slave_packet: bytes) -> bytes:
+        """
+        Wrap a pre-built slave command packet in the appropriate SLAVE_ROUTE_*
+        hub routing packet.
+
+        Unpacks the slave packet to extract (packet_type, payload), determines
+        the target slave from the packet type range, and wraps it as:
+            SLAVE_ROUTE_xxx [subcmd:u8][payload...]
+
+        This allows reusing existing command builders (GunFxCommands,
+        LightFxCommands, GearControlCommands) for hub-routed commands.
+
+        Args:
+            slave_packet: A fully COBS-encoded slave command packet
+                          (as returned by GunFxCommands.*, etc.)
+
+        Returns:
+            COBS-encoded SLAVE_ROUTE_* packet
+
+        Raises:
+            ValueError: If packet cannot be parsed or slave type unknown
+        """
+        parsed = parse_packet(slave_packet)
+        if parsed is None:
+            raise ValueError("Cannot parse slave packet for routing")
+
+        pkt_type, _tag, payload = parsed
+
+        # Determine routing packet type from the slave's packet type range
+        if 0x01 <= pkt_type <= 0x2F:
+            route_type = HubFxPacket.SLAVE_ROUTE_GUNFX
+        elif 0x40 <= pkt_type <= 0x5F:
+            route_type = HubFxPacket.SLAVE_ROUTE_LIGHTFX
+        elif 0x60 <= pkt_type <= 0x7F:
+            route_type = HubFxPacket.SLAVE_ROUTE_GEARCONTROL
+        else:
+            raise ValueError(f"Unknown slave packet type range: 0x{pkt_type:02X}")
+
+        return build_packet(route_type, bytes([pkt_type]) + payload)
+
+    @staticmethod
+    def slave_route_gunfx(subcmd: int, payload: bytes = b'') -> bytes:
+        """
+        Route a command to the GunFX slave via the hub.
+
+        Wire format: SLAVE_ROUTE_GUNFX [subcmd:u8][payload...]
+
+        Args:
+            subcmd: Original GunFX packet type byte (e.g., GunFxPacket.TRIGGER_ON)
+            payload: Original command payload
+        """
+        return build_packet(HubFxPacket.SLAVE_ROUTE_GUNFX, bytes([subcmd]) + payload)
+
+    @staticmethod
+    def slave_route_lightfx(subcmd: int, payload: bytes = b'') -> bytes:
+        """
+        Route a command to the LightFX slave via the hub.
+
+        Args:
+            subcmd: Original LightFX packet type byte
+            payload: Original command payload
+        """
+        return build_packet(HubFxPacket.SLAVE_ROUTE_LIGHTFX, bytes([subcmd]) + payload)
+
+    @staticmethod
+    def slave_route_gearcontrol(subcmd: int, payload: bytes = b'') -> bytes:
+        """
+        Route a command to the GearControl slave via the hub.
+
+        Args:
+            subcmd: Original GearControl packet type byte
+            payload: Original command payload
+        """
+        return build_packet(HubFxPacket.SLAVE_ROUTE_GEARCONTROL, bytes([subcmd]) + payload)
+
+    # =========================================================================
+    # Slave Management
+    # =========================================================================
+
+    @staticmethod
+    def slave_list() -> bytes:
+        """
+        Request list of known slave controllers.
+
+        Response is SLAVE_LIST_RESP with format:
+          [count:u8]
+          Per slave × count:
+            [type:u8][connected:u8][ready:u8][name_len:u8][name:str]
+        """
+        return build_packet(HubFxPacket.SLAVE_LIST)
+
+    @staticmethod
+    def slave_init(slave_type: int) -> bytes:
+        """
+        Send INIT to a specific slave controller by type.
+
+        Args:
+            slave_type: Slave type (1=GunFX, 2=LightFX, 3=GearControl)
+        """
+        _warn_range("slave_type", slave_type, 1, 3)
+        return build_packet(HubFxPacket.SLAVE_INIT, bytes([slave_type]))
+
+    @staticmethod
+    def slave_status() -> bytes:
+        """
+        Request hub-level status.
+
+        Returns ACK; hub status data comes via core STATUS callback.
+        """
+        return build_packet(HubFxPacket.SLAVE_STATUS)
+
+    # =========================================================================
+    # Audio Control
+    # =========================================================================
+
+    @staticmethod
+    def audio_play(channel: int, path: str, volume: int = 100,
+                   output: int = HubFxAudio.OUTPUT_STEREO,
+                   loop_mode: int = HubFxAudio.LOOP_NONE,
+                   loop_count: int = 0) -> bytes:
+        """
+        Play audio file on a channel.
+
+        Args:
+            channel: Audio channel (0-7)
+            path: File path on SD card (e.g., "/sounds/fire.wav")
+            volume: Volume percentage (0-100)
+            output: Output routing (STEREO=0, LEFT=1, RIGHT=2)
+            loop_mode: LOOP_NONE=0, LOOP_FINITE=1, LOOP_INFINITE=2
+            loop_count: Number of loops (for LOOP_FINITE)
+        """
+        _warn_range("channel", channel, 0, 7)
+        _warn_range("volume", volume, 0, 100)
+        path_bytes = path.encode('utf-8')
+        payload = bytes([channel, volume, output, loop_mode])
+        payload += u16_le(loop_count)
+        payload += bytes([len(path_bytes)]) + path_bytes
+        return build_packet(HubFxPacket.AUDIO_PLAY, payload)
+
+    @staticmethod
+    def audio_stop(channel: int = 0xFF) -> bytes:
+        """
+        Stop audio playback.
+
+        Args:
+            channel: Audio channel (0-7) or 0xFF for all channels
+        """
+        return build_packet(HubFxPacket.AUDIO_STOP, bytes([channel]))
+
+    @staticmethod
+    def audio_volume(channel: int, volume: int) -> bytes:
+        """
+        Set audio volume.
+
+        Args:
+            channel: Audio channel (0-7) or 0xFF for master volume
+            volume: Volume percentage (0-100)
+        """
+        _warn_range("volume", volume, 0, 100)
+        return build_packet(HubFxPacket.AUDIO_VOLUME, bytes([channel, volume]))
+
+    @staticmethod
+    def audio_fade(channel: int) -> bytes:
+        """
+        Fade out an audio channel.
+
+        Args:
+            channel: Audio channel (0-7)
+        """
+        _warn_range("channel", channel, 0, 7)
+        return build_packet(HubFxPacket.AUDIO_FADE, bytes([channel]))
+
+    @staticmethod
+    def audio_queue(channel: int, path: str, volume: int = 100,
+                    loop_count: int = 0,
+                    behavior: int = HubFxAudio.QUEUE_FINISH_LOOP) -> bytes:
+        """
+        Queue a sound to play after the current one finishes.
+
+        Args:
+            channel: Audio channel (0-7)
+            path: File path on SD card
+            volume: Volume percentage (0-100)
+            loop_count: Number of loops (0 = play once)
+            behavior: QUEUE_FINISH_LOOP=0, QUEUE_STOP_NOW=1
+        """
+        _warn_range("channel", channel, 0, 7)
+        _warn_range("volume", volume, 0, 100)
+        path_bytes = path.encode('utf-8')
+        payload = bytes([channel, volume])
+        payload += u16_le(loop_count)
+        payload += bytes([behavior, len(path_bytes)]) + path_bytes
+        return build_packet(HubFxPacket.AUDIO_QUEUE, payload)
+
+    @staticmethod
+    def audio_queue_clear(channel: int = 0xFF) -> bytes:
+        """
+        Clear the audio queue for a channel or all channels.
+
+        Args:
+            channel: Audio channel (0-7) or 0xFF for all
+        """
+        return build_packet(HubFxPacket.AUDIO_QUEUE_CLEAR, bytes([channel]))
+
+    @staticmethod
+    def audio_status() -> bytes:
+        """
+        Request audio mixer status.
+
+        Response is AUDIO_STATUS_RESP with format:
+          [masterVol:u8][activeMask:u8]
+          Per active channel:
+            [ch:u8][vol:u8][playing:u8][looping:u8]
+            [loopCount:u16LE][remaining_ms:u16LE][queueLen:u8][output:u8]
+        """
+        return build_packet(HubFxPacket.AUDIO_STATUS_REQ)
+
+    # =========================================================================
+    # Engine FX Control
+    # =========================================================================
+
+    @staticmethod
+    def engine_start() -> bytes:
+        """Start engine effects (force start)."""
+        return build_packet(HubFxPacket.ENGINE_START)
+
+    @staticmethod
+    def engine_stop() -> bytes:
+        """Stop engine effects (force stop)."""
+        return build_packet(HubFxPacket.ENGINE_STOP)
+
+    @staticmethod
+    def engine_status() -> bytes:
+        """
+        Request engine FX status.
+
+        Response is ENGINE_STATUS_RESP:
+          [state:u8][toggleEngaged:u8][active:u8]
+        """
+        return build_packet(HubFxPacket.ENGINE_STATUS_REQ)
+
+    # =========================================================================
+    # Config Management
+    # =========================================================================
+
+    @staticmethod
+    def config_reload() -> bytes:
+        """Reload configuration from SD card (/config.yaml)."""
+        return build_packet(HubFxPacket.CONFIG_RELOAD)
+
+    @staticmethod
+    def config_get() -> bytes:
+        """
+        Get configuration info.
+
+        Response is CONFIG_GET_RESP:
+          [loaded:u8][size:u16LE][reserved:u8]
+        """
+        return build_packet(HubFxPacket.CONFIG_GET)
+
+    # =========================================================================
+    # SD Card Management
+    # =========================================================================
+
+    @staticmethod
+    def sd_init(speed_mhz: int = 20) -> bytes:
+        """
+        Initialize or re-initialize the SD card.
+
+        Args:
+            speed_mhz: SPI clock speed in MHz (1-50, default 20)
+        """
+        _warn_range("speed_mhz", speed_mhz, 1, 50, "MHz")
+        return build_packet(HubFxPacket.SD_INIT, bytes([speed_mhz]))
+
+    @staticmethod
+    def sd_status() -> bytes:
+        """
+        Request SD card status.
+
+        Response is SD_STATUS_RESP:
+          [initialized:u8][cardSize_MB:u32LE][totalSpace_MB:u32LE][freeSpace_MB:u32LE][fatType:u8]
+        """
+        return build_packet(HubFxPacket.SD_STATUS_REQ)
+
+    # =========================================================================
+    # File Operations
+    # =========================================================================
+
+    @staticmethod
+    def file_list(path: str = "/") -> bytes:
+        """
+        List directory contents.
+
+        Response is streamed: STREAM_BEGIN → STREAM_DATA chunks → STREAM_END.
+        Content is POSIX-like text listing.
+
+        Args:
+            path: Directory path (e.g., "/", "/sounds")
+        """
+        path_bytes = path.encode('utf-8')
+        payload = bytes([len(path_bytes)]) + path_bytes
+        return build_packet(HubFxPacket.FILE_LIST, payload)
+
+    @staticmethod
+    def file_delete(path: str) -> bytes:
+        """
+        Delete a file.
+
+        Args:
+            path: File path to delete
+        """
+        path_bytes = path.encode('utf-8')
+        payload = bytes([len(path_bytes)]) + path_bytes
+        return build_packet(HubFxPacket.FILE_DELETE, payload)
+
+    @staticmethod
+    def file_mkdir(path: str) -> bytes:
+        """
+        Create a directory (recursive).
+
+        Args:
+            path: Directory path to create
+        """
+        path_bytes = path.encode('utf-8')
+        payload = bytes([len(path_bytes)]) + path_bytes
+        return build_packet(HubFxPacket.FILE_MKDIR, payload)
+
+    @staticmethod
+    def file_info(path: str) -> bytes:
+        """
+        Get file or directory information.
+
+        Response is FILE_INFO_RESP:
+          [exists:u8][isDir:u8][size:u32LE]
+
+        Args:
+            path: File or directory path
+        """
+        path_bytes = path.encode('utf-8')
+        payload = bytes([len(path_bytes)]) + path_bytes
+        return build_packet(HubFxPacket.FILE_INFO, payload)
+
+    @staticmethod
+    def file_download(path: str) -> bytes:
+        """
+        Download a file.
+
+        Response is streamed: STREAM_BEGIN → STREAM_DATA chunks → STREAM_END.
+        Content is raw file bytes.
+
+        Args:
+            path: File path to download
+        """
+        path_bytes = path.encode('utf-8')
+        payload = bytes([len(path_bytes)]) + path_bytes
+        return build_packet(HubFxPacket.FILE_DOWNLOAD, payload)
+
+    @staticmethod
+    def file_upload_begin(path: str, size: int) -> bytes:
+        """
+        Begin a file upload.
+
+        After ACK, send FILE_UPLOAD_DATA chunks, then FILE_UPLOAD_END.
+
+        Args:
+            path: Destination file path on SD card
+            size: Total file size in bytes
+        """
+        path_bytes = path.encode('utf-8')
+        payload = u32_le(size) + bytes([len(path_bytes)]) + path_bytes
+        return build_packet(HubFxPacket.FILE_UPLOAD_BEGIN, payload)
+
+    @staticmethod
+    def file_upload_data(seq_num: int, data: bytes) -> bytes:
+        """
+        Send an upload data chunk with CRC-16 integrity.
+
+        Server ACKs on success, NACKs with CRC_ERROR for retry.
+
+        Args:
+            seq_num: Sequence number (0-based, incrementing)
+            data: Chunk data (up to 508 bytes)
+        """
+        from tests.framework.protocol import crc16_ccitt
+        crc = crc16_ccitt(data)
+        payload = u16_le(seq_num) + u16_le(crc) + data
+        return build_packet(HubFxPacket.FILE_UPLOAD_DATA, payload)
+
+    @staticmethod
+    def file_upload_end() -> bytes:
+        """End a file upload. Server verifies total size and ACKs."""
+        return build_packet(HubFxPacket.FILE_UPLOAD_END)
+
+    @staticmethod
+    def file_upload_cancel() -> bytes:
+        """Cancel an in-progress upload. Server deletes partial file."""
+        return build_packet(HubFxPacket.FILE_UPLOAD_CANCEL)
 
 

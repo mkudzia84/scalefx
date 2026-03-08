@@ -1,30 +1,34 @@
 /*
- * Flash Module - Header
- * 
- * Handles LittleFS flash file system operations with flow control
- * to prevent USB communication deadlocks during file uploads.
- * 
- * KEY DESIGN DECISIONS (based on Pico documentation):
- * 
- * 1. FLOW CONTROL: Uses XON/XOFF protocol to prevent buffer overflow
- *    - Sends XOFF when buffer is 75% full
- *    - Sends XON when buffer drops below 25%
- *    - 512-byte chunks with acknowledgments
- * 
- * 2. NON-BLOCKING WRITES: LittleFS operations can block for 10-100ms
- *    - Use RAM buffer to receive serial data without blocking
- *    - Write to flash in controlled bursts during idle periods
- *    - Progress reporting doesn't interfere with data reception
- * 
- * 3. NO CORE1 NEEDED: Proper flow control eliminates need for second core
- *    - Core1 is reserved for audio processing
- *    - Chunked writes prevent long blocking periods
- *    - USB stack remains responsive
- * 
- * REFERENCES:
- * - Pico SDK: LittleFS operations are synchronous and can block
- * - USB CDC: 64-byte HW buffer, need software buffering
- * - Flash write: ~10ms per 256-byte page
+ * Flash Module — Thread-Safe LittleFS File Operations
+ *
+ * Singleton class for onboard flash (LittleFS) initialization and
+ * file operations. Provides thread-safe access via pico mutex for
+ * multi-core safety.
+ *
+ * All methods return FlashError codes (0 = OK) and never write to
+ * Serial. Protocol output is handled by StorageServer using
+ * StreamWriter.
+ *
+ * API mirrors SdCardModule so StorageServer can work with either
+ * storage backend uniformly.
+ *
+ * Usage:
+ *   FlashModule& flash = FlashModule::instance();
+ *   flash.begin();
+ *
+ *   // Thread-safe listing
+ *   flash.listDirectory("/", [](const FileEntry& e) {
+ *       // ... process entry
+ *       return true;  // continue
+ *   });
+ *
+ *   // File I/O (caller manages lock + file lifetime)
+ *   flash.lock();
+ *   LFSFile file;
+ *   flash.openRead("/config.yaml", file);
+ *   int n = file.read(buf, sizeof(buf));
+ *   file.close();
+ *   flash.unlock();
  */
 
 #ifndef FLASH_H
@@ -32,127 +36,193 @@
 
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <pico/mutex.h>
+#include <functional>
+
+#include "storage_types.h"
 
 // Use LittleFS File type to avoid ambiguity with SdFat File
 using LFSFile = ::File;
 
-// Flow control characters
-#define XON  0x11   // Resume transmission
-#define XOFF 0x13   // Pause transmission
+
+// ============================================================================
+// Error Codes (module-internal, mapped to HubFxError in StorageServer)
+// ============================================================================
+
+namespace FlashError {
+    constexpr uint8_t OK              = 0;
+    constexpr uint8_t NOT_INITIALIZED = 1;
+    constexpr uint8_t NOT_FOUND       = 2;
+    constexpr uint8_t IO_ERROR        = 3;
+    constexpr uint8_t IS_DIRECTORY    = 4;
+    constexpr uint8_t ALREADY_EXISTS  = 5;
+}
+
+
+// ============================================================================
+// Data Structures
+// ============================================================================
+
+/**
+ * @brief Flash storage information
+ *
+ * Reports LittleFS capacity in bytes (flash is typically < 2 MB,
+ * so byte-level granularity is more useful than MB).
+ */
+struct FlashStorageInfo {
+    bool initialized;
+    uint32_t totalBytes;
+    uint32_t usedBytes;
+    uint32_t freeBytes;
+};
+
+
+// ============================================================================
+// FlashModule
+// ============================================================================
 
 class FlashModule {
 public:
-    FlashModule();
-    
+    /// Get the singleton instance
+    static FlashModule& instance() {
+        static FlashModule inst;
+        return inst;
+    }
+
+    // Delete copy/move
+    FlashModule(const FlashModule&) = delete;
+    FlashModule& operator=(const FlashModule&) = delete;
+    FlashModule(FlashModule&&) = delete;
+    FlashModule& operator=(FlashModule&&) = delete;
+
+    // ========================================================================
+    // Lifecycle
+    // ========================================================================
+
     /**
-     * Initialize flash file system
-     * @return true if successful, false otherwise
+     * @brief Initialize LittleFS flash file system
+     * @return true on success
      */
     bool begin();
-    
+
+    /// Check if flash is initialized and ready
+    bool isInitialized() const { return _initialized; }
+
+    // ========================================================================
+    // Directory Operations (thread-safe, lock acquired internally)
+    // ========================================================================
+
     /**
-     * Check if flash is initialized
+     * @brief List directory contents
+     *
+     * Calls the callback for each entry. Return false from callback to stop.
+     * Acquires mutex internally.
+     *
+     * @param path Directory path (e.g., "/", "/sounds")
+     * @param callback Called for each FileEntry
+     * @return FlashError code
      */
-    bool isInitialized() const { return initialized; }
-    
+    uint8_t listDirectory(const char* path,
+                          std::function<bool(const FileEntry&)> callback);
+
     /**
-     * Get reference to LittleFS object
+     * @brief List directory tree recursively
+     *
+     * Calls the callback for each entry with depth level.
+     * Acquires mutex internally.
+     *
+     * @param path Root path
+     * @param callback Called with (entry, depth_level)
+     * @return FlashError code
      */
-    FS& getFS() { return LittleFS; }
-    
+    uint8_t listTree(const char* path,
+                     std::function<bool(const FileEntry&, int depth)> callback);
+
+    // ========================================================================
+    // File Information (thread-safe, lock acquired internally)
+    // ========================================================================
+
     /**
-     * List directory contents (identical API to SD card)
-     */
-    void listDirectory(const String& path, bool jsonOutput = false);
-    
-    /**
-     * Show directory tree from root
-     */
-    void showTree(bool jsonOutput = false);
-    
-    /**
-     * Show flash information
-     */
-    void showInfo(bool jsonOutput = false);
-    
-    /**
-     * Display file contents
-     */
-    void showFile(const String& path);
-    
-    /**
-     * Delete file from flash
-     */
-    bool deleteFile(const String& path);
-    
-    /**
-     * Upload file via serial with flow control
-     * Unified upload method for both storage and config CLIs
-     * 
-     * @param path File path to write to
-     * @param totalSize Expected file size in bytes
-     * @param serial Serial stream to read from (typically Serial)
-     * @return true if successful, false otherwise
-     */
-    bool uploadFile(const String& path, uint32_t totalSize, Stream& serial);
-    
-    /**
-     * Write data to file with flow control
-     * Uses RAM buffer and chunked writes to prevent USB blocking
-     * 
+     * @brief Get file or directory information
      * @param path File path
-     * @param data Data to write
-     * @param length Data length
-     * @param append True to append, false to overwrite
-     * @return true if successful, false if buffer full (wait for flush)
+     * @param entry Output file entry
+     * @return FlashError code
      */
-    bool writeFile(const String& path, const uint8_t* data, size_t length, bool append = true);
-    
+    uint8_t getFileInfo(const char* path, FileEntry& entry);
+
     /**
-     * Flush buffered data to flash
-     * Call periodically during upload to prevent RAM overflow
-     * Returns true when all data written, false if more data pending
+     * @brief Get flash storage information
+     * @param info Output storage info
+     * @return FlashError code
      */
-    bool flushBuffer();
-    
+    uint8_t getStorageInfo(FlashStorageInfo& info);
+
+    // ========================================================================
+    // File Modification (thread-safe, lock acquired internally)
+    // ========================================================================
+
     /**
-     * Close and finalize file write
-     * Flushes all remaining data
+     * @brief Remove a file
+     * @param path File path
+     * @return FlashError code
      */
-    bool closeFile();
-    
+    uint8_t removeFile(const char* path);
+
     /**
-     * Get buffer status for flow control
-     * Returns percentage full (0-100)
+     * @brief Create directory (recursive)
+     * @param path Directory path
+     * @return FlashError code
      */
-    int getBufferFillPercent() const;
-    
+    uint8_t makeDirectory(const char* path);
+
+    // ========================================================================
+    // File I/O (caller MUST hold lock via lock()/unlock())
+    // ========================================================================
+
     /**
-     * Get size of file
+     * @brief Open file for reading
+     *
+     * Caller MUST lock() before and unlock() after all file operations.
+     *
+     * @param path File path
+     * @param file Output file handle (LFSFile)
+     * @return FlashError code
      */
-    int getFileSize(const String& path);
-    
+    uint8_t openRead(const char* path, LFSFile& file);
+
+    /**
+     * @brief Open file for writing
+     *
+     * Caller MUST lock() before and unlock() after all file operations.
+     *
+     * @param path File path
+     * @param file Output file handle (LFSFile)
+     * @param truncate If true, truncate existing file
+     * @return FlashError code
+     */
+    uint8_t openWrite(const char* path, LFSFile& file, bool truncate = true);
+
+    // ========================================================================
+    // Mutex Access
+    // ========================================================================
+
+    void lock()     { mutex_enter_blocking(&_flashMutex); }
+    bool tryLock()  { return mutex_try_enter(&_flashMutex, nullptr); }
+    void unlock()   { mutex_exit(&_flashMutex); }
+
+    /// Direct LittleFS access (caller must hold lock)
+    FS& getFS()     { return LittleFS; }
+
 private:
-    bool initialized;
-    
-    // Buffered write state
-    LFSFile writeFileHandle;
-    bool writeFileOpen;
-    
-    // RAM buffer for upload (16KB - balance between RAM usage and chunk size)
-    static const size_t BUFFER_SIZE = 16384;
-    uint8_t* ramBuffer;
-    size_t ramBufferUsed;
-    size_t ramBufferFlushed;  // How much of buffer has been written to flash
-    
-    // Flow control thresholds
-    static const int XOFF_THRESHOLD = 75;  // Pause at 75% full
-    static const int XON_THRESHOLD = 25;   // Resume at 25% full
-    bool flowControlPaused;
-    
-    // Helper functions
-    void listDirRecursive(const char* path, int level, bool jsonOutput = false);
-    void sendFlowControl(bool pause);
+    FlashModule();
+
+    bool _initialized;
+    mutex_t _flashMutex;
+
+    // Internal recursive tree listing (caller holds lock)
+    void listTreeRecursive(const char* path, int depth,
+                           std::function<bool(const FileEntry&, int)>& callback,
+                           bool& shouldContinue);
 };
 
 #endif // FLASH_H

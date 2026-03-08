@@ -10,7 +10,7 @@
 #include "audio_config.h"
 #include "audio_codec.h"
 #include "../storage/sd_card.h"
-#include "../debug_config.h"
+#include "../hubfx_log.h"
 
 #if AUDIO_MOCK_I2S
 #include "mock_i2s_sink.h"

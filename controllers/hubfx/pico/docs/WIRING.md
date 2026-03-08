@@ -115,6 +115,8 @@ Standard SPI connection on SPI0 bus.
 
 ## Pin Summary Table
 
+### WM8960 / TAS5825M Configuration
+
 | GPIO | Pico Pin | Function | Connected To |
 |------|----------|----------|--------------|
 | GP4 | 6 | I2C0 SDA | WM8960 SDA |
@@ -127,6 +129,53 @@ Standard SPI connection on SPI0 bus.
 | GP18 | 24 | SPI0 SCK | SD Card SCK |
 | GP19 | 25 | SPI0 MOSI | SD Card MOSI |
 | GP25 | - | Built-in LED | Status indicator |
+
+### Pimoroni Pico Audio Pack Configuration
+
+| GPIO | Pico Pin | Function | Connected To |
+|------|----------|----------|--------------|
+| GP9 | 12 | I2S DATA (DIN) | PCM5100A DIN |
+| GP10 | 14 | I2S BCLK | PCM5100A BCK |
+| GP11 | 15 | I2S LRCLK | PCM5100A LRCK |
+| GP16 | 21 | SPI0 MISO | SD Card MISO |
+| GP17 | 22 | SPI0 CS | SD Card CS |
+| GP18 | 24 | SPI0 SCK | SD Card SCK |
+| GP19 | 25 | SPI0 MOSI | SD Card MOSI |
+| GP22 | 29 | Mute (XSMT) | PCM5100A XSMT (HIGH=unmute) |
+| GP25 | - | Built-in LED | Status indicator |
+
+**Note:** The Pico Audio Pack plugs directly onto the Pico header — no individual wires needed.
+No I2C pins are used (PCM5100A is hardware-controlled).
+
+---
+
+## Pimoroni Pico Audio Pack Notes
+
+### Hardware
+
+The Pico Audio Pack uses a **TI PCM5100A** DAC with a **PAM8908JER** headphone amplifier:
+- **Line Out (3.5mm):** Unamplified stereo, up to 2.1Vᵣₘₛ
+- **Headphone Out (3.5mm):** Amplified stereo (low/high gain switch on board)
+- **Mute Pin (GP22):** Controls PCM5100A XSMT — HIGH=unmute (pulled HIGH by default on board)
+
+### I2S Pin Constraint
+
+The RP2040 PIO state machine requires BCLK and LRCLK to be on **consecutive GPIO pins** (LRCLK = BCLK + 1). The Pico Audio Pack uses GP10 (BCLK) and GP11 (LRCLK) which satisfies this constraint.
+
+### Configuration
+
+No I2C/SPI configuration needed. The PCM5100A auto-detects bit depth and sample rate from I2S clock signals:
+- 16-bit at 44.1kHz (default ScaleFX configuration)
+- Up to 32-bit at 384kHz supported
+
+### Codec Selection
+
+In `hubfx_pico.ino`, uncomment:
+```cpp
+#define USE_PICOAUDIO_CODEC         // Pimoroni Pico Audio Pack (PCM5100A)
+```
+
+This automatically selects the correct I2S pins (GP9/GP10/GP11) and configures the mute pin (GP22).
 
 ---
 

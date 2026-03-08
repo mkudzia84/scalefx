@@ -162,6 +162,20 @@ void BusClient::handlePacket(uint8_t type, uint8_t tag, const uint8_t* payload, 
             }
             break;
 
+        case CorePacket::LOG_MESSAGE:
+            // Relay slave log messages — wire format: [level:u8][millis:u32LE][message:str]
+            if (_logCallback && len >= 6) {
+                uint8_t level = payload[0];
+                uint32_t timestamp_ms = getU32LE(&payload[1]);
+                char message[128] = "";
+                size_t msgLen = len - 5;
+                if (msgLen > sizeof(message) - 1) msgLen = sizeof(message) - 1;
+                memcpy(message, &payload[5], msgLen);
+                message[msgLen] = '\0';
+                _logCallback(level, timestamp_ms, message);
+            }
+            break;
+
         default:
             // Delegate to module-specific handler
             onModulePacket(type, tag, payload, len);

@@ -8,7 +8,7 @@
 
 #include "tas5825_codec.h"
 #include <Arduino.h>
-#include "../debug_config.h"
+#include "../hubfx_log.h"
 
 TAS5825Codec::TAS5825Codec()
     : i2c(nullptr)

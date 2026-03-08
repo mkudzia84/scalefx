@@ -23,6 +23,7 @@ class CorePacket:
     STATUS_REQ  = 0xFA
     I2C_SCAN    = 0xFB
     I2C_SCAN_RESULT = 0xFC
+    LOG_MESSAGE = 0xFD  # [level:u8][millis:u32LE][message:str] (async, universal)
 
 
 class GunFxPacket:
@@ -92,6 +93,7 @@ class CoreError:
     INTERNAL        = 0xF0
     TIMEOUT         = 0xF1
     COMM_ERROR      = 0xF2
+    CRC_ERROR       = 0xF4
     
     @staticmethod
     def name(code: int) -> str:
@@ -110,6 +112,7 @@ class CoreError:
             0xF0: "INTERNAL",
             0xF1: "TIMEOUT",
             0xF2: "COMM_ERROR",
+            0xF4: "CRC_ERROR",
         }
         return names.get(code, f"UNKNOWN(0x{code:02X})")
 
@@ -362,3 +365,206 @@ class LandingLightPhase:
             3: "retracting",
         }
         return names.get(phase, f"unknown({phase})")
+
+
+# =============================================================================
+# Streaming Protocol Packet Types (reusable infrastructure)
+# =============================================================================
+
+class StreamPacket:
+    """Streaming protocol packet types (0xA4-0xA6).
+
+    Protocol-level infrastructure for chunked data transfer.
+    Used by any controller that streams data via StreamWriter.
+    Defined in serial_stream.h (C++) / here (Python).
+
+    Wire format:
+      STREAM_BEGIN: [totalBytes:u32LE]                        (0 = unknown)
+      STREAM_DATA:  [seqNum:u16LE][crc16:u16LE][data:0-508]   per-chunk CRC-16
+      STREAM_END:   [totalSegs:u16LE][totalBytes:u32LE][crc16All:u16LE]
+
+    CRC-16: CCITT polynomial 0x1021, init 0xFFFF.
+    Max chunk data: MAX_PAYLOAD_SIZE(512) - CHUNK_HEADER(4) = 508 bytes.
+    All packets in a stream share the same tag for correlation.
+    """
+    STREAM_BEGIN = 0xA4  # [totalBytes:u32LE] (0 = unknown)
+    STREAM_DATA  = 0xA5  # [seqNum:u16LE][crc16:u16LE][data:N]
+    STREAM_END   = 0xA6  # [totalSegs:u16LE][totalBytes:u32LE][crc16All:u16LE]
+
+
+# =============================================================================
+# HubFX Packet Types and Error Codes
+# =============================================================================
+
+class HubFxPacket:
+    """HubFX packet types (0x80-0x99)."""
+    # Slave management
+    SLAVE_LIST       = 0x80  # [] → SLAVE_LIST_RESP
+    SLAVE_LIST_RESP  = 0x81  # [count:u8][entries...] Response
+    SLAVE_INIT       = 0x82  # [slaveType:u8] Init a slave by type
+    SLAVE_STATUS     = 0x83  # [] Request hub-level status
+
+    # Audio control
+    AUDIO_PLAY        = 0x84  # [ch:u8][vol:u8][output:u8][loopMode:u8][loopCount:u16LE][pathLen:u8][path:str]
+    AUDIO_STOP        = 0x85  # [ch:u8] (0xFF=all)
+    AUDIO_VOLUME      = 0x86  # [ch:u8][vol:u8] (ch 0xFF=master, vol 0-100)
+    AUDIO_FADE        = 0x87  # [ch:u8]
+    AUDIO_QUEUE       = 0x88  # [ch:u8][vol:u8][loopCount:u16LE][behavior:u8][pathLen:u8][path:str]
+    AUDIO_QUEUE_CLEAR = 0x89  # [ch:u8] (0xFF=all)
+    AUDIO_STATUS_REQ  = 0x8A  # [] → AUDIO_STATUS_RESP
+    AUDIO_STATUS_RESP = 0x8B  # [masterVol:u8][activeMask:u8][per-channel data...]
+
+    # Engine FX
+    ENGINE_START       = 0x8C  # [] → ACK
+    ENGINE_STOP        = 0x8D  # [] → ACK
+    ENGINE_STATUS_REQ  = 0x8E  # [] → ENGINE_STATUS_RESP
+    ENGINE_STATUS_RESP = 0x8F  # [state:u8][toggleEngaged:u8][active:u8]
+
+    # Config management
+    CONFIG_RELOAD     = 0x90  # [] → ACK/NACK
+    CONFIG_GET        = 0x91  # [] → CONFIG_GET_RESP
+    CONFIG_GET_RESP   = 0x92  # [loaded:u8][size:u16LE][reserved:u8]
+
+    # SD card management
+    SD_INIT           = 0x93  # [speed_mhz:u8] → ACK/NACK
+    SD_STATUS_REQ     = 0x94  # [] → SD_STATUS_RESP
+    SD_STATUS_RESP    = 0x95  # [initialized:u8]
+
+    # Slave routing (subcmd pattern)
+    # Payload: [subcmd:u8][original_payload...]
+    # subcmd is the original slave packet type, forwarded to the slave.
+    SLAVE_ROUTE_GUNFX       = 0x96  # [subcmd:u8][...] → route to GunFX
+    SLAVE_ROUTE_LIGHTFX     = 0x97  # [subcmd:u8][...] → route to LightFX
+    SLAVE_ROUTE_GEARCONTROL = 0x98  # [subcmd:u8][...] → route to GearControl
+
+    # LOG_MESSAGE moved to CorePacket.LOG_MESSAGE (0xFD) — universal across all boards
+
+    # File operations
+    FILE_LIST          = 0x9A  # [pathLen:u8][path:str] → STREAM_BEGIN + STREAM_DATA + STREAM_END
+    FILE_DELETE        = 0x9B  # [pathLen:u8][path:str] → ACK/NACK
+    FILE_MKDIR         = 0x9C  # [pathLen:u8][path:str] → ACK/NACK
+    FILE_INFO          = 0x9D  # [pathLen:u8][path:str] → FILE_INFO_RESP
+    FILE_INFO_RESP     = 0x9E  # [exists:u8][isDir:u8][size:u32LE]
+    FILE_DOWNLOAD      = 0x9F  # [pathLen:u8][path:str] → STREAM_BEGIN + STREAM_DATA + STREAM_END
+    FILE_UPLOAD_BEGIN  = 0xA0  # [size:u32LE][pathLen:u8][path:str] → ACK
+    FILE_UPLOAD_DATA   = 0xA1  # [seqNum:u16LE][crc16:u16LE][data:N] → ACK/NACK(CRC_ERROR)
+    FILE_UPLOAD_END    = 0xA2  # [] → ACK/NACK
+    FILE_UPLOAD_CANCEL = 0xA3  # [] → ACK
+
+    # Streaming packet types (STREAM_BEGIN/DATA/END) are defined in
+    # StreamPacket class — they are protocol infrastructure reusable
+    # by any controller, not HubFX-specific.
+
+
+class HubFxError:
+    """HubFX-specific error codes (0x80-0x8F)."""
+    SLAVE_NOT_FOUND      = 0x80
+    SLAVE_NOT_CONNECTED  = 0x81
+    SLAVE_INIT_FAILED    = 0x82
+    NO_SLAVES            = 0x83
+    SLAVE_COMM_ERROR     = 0x84
+    AUDIO_ERROR          = 0x85
+    SD_NOT_INITIALIZED   = 0x86
+    ENGINE_NOT_AVAILABLE = 0x87
+    CONFIG_ERROR         = 0x88
+    INVALID_CHANNEL      = 0x89
+
+    # File operation errors (0x8A-0x8F)
+    FILE_NOT_FOUND       = 0x8A
+    FILE_ALREADY_EXISTS  = 0x8B
+    FILE_IO_ERROR        = 0x8C
+    FILE_TOO_LARGE       = 0x8D
+    UPLOAD_IN_PROGRESS   = 0x8E
+    NO_UPLOAD_ACTIVE     = 0x8F
+
+    @staticmethod
+    def name(code: int) -> str:
+        """Get error name from code."""
+        names = {
+            0x80: "SLAVE_NOT_FOUND",
+            0x81: "SLAVE_NOT_CONNECTED",
+            0x82: "SLAVE_INIT_FAILED",
+            0x83: "NO_SLAVES",
+            0x84: "SLAVE_COMM_ERROR",
+            0x85: "AUDIO_ERROR",
+            0x86: "SD_NOT_INITIALIZED",
+            0x87: "ENGINE_NOT_AVAILABLE",
+            0x88: "CONFIG_ERROR",
+            0x89: "INVALID_CHANNEL",
+            0x8A: "FILE_NOT_FOUND",
+            0x8B: "FILE_ALREADY_EXISTS",
+            0x8C: "FILE_IO_ERROR",
+            0x8D: "FILE_TOO_LARGE",
+            0x8E: "UPLOAD_IN_PROGRESS",
+            0x8F: "NO_UPLOAD_ACTIVE",
+        }
+        return names.get(code, CoreError.name(code))
+
+
+class SlaveType:
+    """Slave controller type enumeration (matches C++ SlaveType enum)."""
+    UNKNOWN      = 0
+    GUNFX        = 1
+    LIGHTFX      = 2
+    GEARCONTROL  = 3
+
+    @staticmethod
+    def name(stype: int) -> str:
+        """Get human-readable slave type name."""
+        names = {
+            0: "Unknown",
+            1: "GunFX",
+            2: "LightFX",
+            3: "GearControl",
+        }
+        return names.get(stype, f"Unknown({stype})")
+
+
+class HubFxAudio:
+    """HubFX audio wire format constants (matches C++ HubFxAudio namespace)."""
+    OUTPUT_STEREO = 0
+    OUTPUT_LEFT   = 1
+    OUTPUT_RIGHT  = 2
+
+    LOOP_NONE     = 0  # Play once
+    LOOP_FINITE   = 1  # Loop N times
+    LOOP_INFINITE = 2  # Loop forever
+
+    QUEUE_FINISH_LOOP = 0  # Wait for current loop to finish
+    QUEUE_STOP_NOW    = 1  # Stop current immediately
+
+    CH_ALL        = 0xFF  # All channels / master
+    MAX_CHANNELS  = 8
+
+
+class DiagLevel:
+    """Diagnostic log levels (matches C++ DiagLevel namespace)."""
+    DEBUG = 0
+    INFO  = 1
+    WARN  = 2
+    ERROR = 3
+
+    @staticmethod
+    def name(level: int) -> str:
+        """Get human-readable level name."""
+        names = {0: "DEBUG", 1: "INFO", 2: "WARN", 3: "ERROR"}
+        return names.get(level, f"L{level}")
+
+
+class EngineState:
+    """Engine FX state enumeration (matches C++ EngineState enum)."""
+    STOPPED  = 0
+    STARTING = 1
+    RUNNING  = 2
+    STOPPING = 3
+
+    @staticmethod
+    def name(state: int) -> str:
+        """Get human-readable state name."""
+        names = {
+            0: "Stopped",
+            1: "Starting",
+            2: "Running",
+            3: "Stopping",
+        }
+        return names.get(state, f"Unknown({state})")

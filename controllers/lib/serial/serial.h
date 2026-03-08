@@ -11,6 +11,7 @@
  *   serial_bus.h             - SerialBus (client-side, COBS-framed protocol)
  *   serial_bus_client.h      - BusClient base class (client-side, extends SerialBus)
  *   serial_bus_server.h      - BusServer + CoreCommandServer (server-side, extends ICommandHandler)
+ *   serial_stream.h          - StreamWriter + StreamProtocol (chunked streaming, CRC-16)
  *
  * Protocol Implementations:
  *   serial_gunfx.h           - GunFX client/server (muzzle flash, servo, smoke)
@@ -49,6 +50,12 @@
 
 // Bus server base class (server-side, extends ICommandHandler with ACK/NACK)
 #include "serial_bus_server.h"
+
+// Chunked data streaming over COBS (server-side, uses BusServer for output)
+#include "serial_stream.h"
+
+// Diagnostic log output (ring-buffered, COBS-encoded log packets)
+#include "serial_diag_log.h"
 
 // GunFX binary implementation
 #include "serial_gunfx.h"

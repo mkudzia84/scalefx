@@ -119,7 +119,46 @@ SimpleI2SCodec pcm5102("PCM5102");
 pcm5102.begin(44100);  // Auto-configure from I2S
 ```
 
-### 3. TAS5825Codec
+### 3. Pimoroni Pico Audio Pack (PCM5100A)
+
+**Codec define:** `USE_PICOAUDIO_CODEC`
+
+**Hardware:** Pimoroni Pico Audio Pack
+- TI PCM5100A DAC — hardware-controlled, no I2C/SPI configuration needed
+- PAM8908JER headphone amplifier with low/high gain switch
+- 3.5mm stereo headphone out (amplified)
+- 3.5mm stereo line out (unamplified, up to 2.1Vᵣₘₛ)
+
+**Specifications:**
+| Parameter | Value |
+|-----------|-------|
+| Channels | 2 (stereo) |
+| Bit depth | Up to 32-bit |
+| Sample rate | 8–384 kHz |
+| SNR | 100 dB |
+| THD+N | -90 dB |
+| Control | Hardware only (no registers) |
+
+**Wiring (plugs directly onto Pico header):**
+- I2S: GP9 (DATA/DIN), GP10 (BCLK), GP11 (LRCLK)
+- Mute: GP22 (XSMT pin, HIGH=unmute, pulled HIGH by default)
+
+**I2S Pin Constraint:** LRCLK must always be BCLK+1 (PIO state machine requirement). GP10/GP11 satisfies this.
+
+**Initialization:**
+```cpp
+#define USE_PICOAUDIO_CODEC
+SimpleI2SCodec audioCodec("PCM5100A", PIN_I2S_MUTE);  // GP22 mute
+audioCodec.begin(44100);  // Auto-configure from I2S signals
+```
+
+**Notes:**
+- The PCM5100A auto-detects bit depth and sample rate from I2S clocks
+- No I2C or SPI bus needed — simplest possible wiring
+- XSMT (soft mute) pin is pulled HIGH on the board, so audio plays without touching GP22
+- Volume is controlled in software by the mixer (no hardware volume register)
+
+### 4. TAS5825Codec
 
 **File:** [tas5825_codec.h](src/tas5825_codec.h), [tas5825_codec.cpp](src/tas5825_codec.cpp)
 
@@ -164,9 +203,10 @@ tas5825.dumpRegisters();      // Debug register dump
 
 **Step 1: Choose codec** (uncomment ONE):
 ```cpp
-#define USE_WM8960_CODEC      // Waveshare WM8960 Audio HAT
-// #define USE_TAS5825_CODEC     // TI TAS5825M Digital Amp
-// #define USE_SIMPLE_I2S_CODEC  // Simple I2S DAC
+// #define USE_WM8960_CODEC        // Waveshare WM8960 Audio HAT
+// #define USE_TAS5825_CODEC       // TI TAS5825M Digital Amp
+// #define USE_SIMPLE_I2S_CODEC    // Generic simple I2S DAC
+#define USE_PICOAUDIO_CODEC        // Pimoroni Pico Audio Pack (PCM5100A)
 ```
 
 **Step 2: Codec automatically selected:**
@@ -263,19 +303,20 @@ AudioCodec* codec = &audioCodec;
 
 ## Codec Comparison
 
-| Feature | WM8960 | SimpleI2S | TAS5825M | Custom |
-|---------|--------|-----------|----------|--------|
-| Control Interface | I2C | None | I2C | Varies |
-| Volume Control | Hardware | Software | Hardware (DSP) | Varies |
-| Mute Control | Hardware | Optional GPIO | Hardware | Varies |
-| Speaker Amp | Yes (1W) | No | Yes (High Power) | Varies |
-| Headphone Amp | Yes (40mW) | No | No | Varies |
-| DSP/EQ | No | No | Yes (Advanced) | Varies |
-| Supply Voltage | 3.3V | 3.3V | 12-24V | Varies |
-| Power Output | 1W | N/A | 30W+ (depends) | Varies |
-| Complexity | High | Low | Very High | Varies |
-| Cost | $$$ | $ | $$$$ | Varies |
-| Best For | All-in-one | Development | High-power audio | - |
+| Feature | WM8960 | Pico Audio (PCM5100A) | SimpleI2S | TAS5825M | Custom |
+|---------|--------|----------------------|-----------|----------|--------|
+| Control Interface | I2C | None | None | I2C | Varies |
+| Volume Control | Hardware | Software | Software | Hardware (DSP) | Varies |
+| Mute Control | Hardware | GPIO (GP22) | Optional GPIO | Hardware | Varies |
+| Speaker Amp | Yes (1W) | No | No | Yes (High Power) | Varies |
+| Headphone Amp | Yes (40mW) | Yes (PAM8908) | No | No | Varies |
+| DSP/EQ | No | No | No | Yes (Advanced) | Varies |
+| Supply Voltage | 3.3V | 3.3V | 3.3V | 12-24V | Varies |
+| Power Output | 1W | 40mW (HP) | N/A | 30W+ (depends) | Varies |
+| SNR | 98dB | 100dB | Varies | 104dB | Varies |
+| Complexity | High | Very Low | Low | Very High | Varies |
+| Cost | $$$ | $$ | $ | $$$$ | Varies |
+| Best For | All-in-one | Dev/testing | Bare minimum | High-power audio | - |
 
 ---
 

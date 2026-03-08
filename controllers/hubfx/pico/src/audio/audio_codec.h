@@ -2,7 +2,7 @@
  * Audio Codec Interface - Abstract Base Class
  * 
  * Generic interface for I2S audio codecs with I2C/SPI control.
- * Allows different codec implementations (WM8960, PCM5102, CS4344, etc.)
+ * Allows different codec implementations (PCM5100A, TAS5825M, CS4344, etc.)
  * to be used interchangeably with the audio mixer.
  */
 
@@ -59,7 +59,7 @@ public:
     /**
      * Get codec name/model for identification
      * 
-     * @return Codec model string (e.g., "WM8960", "PCM5102")
+     * @return Codec model string (e.g., "PCM5100A", "TAS5825M")
      */
     virtual const char* getModelName() const = 0;
     

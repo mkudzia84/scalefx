@@ -1,8 +1,8 @@
 {
     "name": "serial",
     "version": "1.0.0",
-    "description": "ScaleFX Serial Communication Library - COBS-framed protocol, USB HOST, serial bus, and GunFX master/slave communication",
-    "keywords": ["scalefx", "serial", "cobs", "usb", "host", "cdc", "pico", "gunfx", "protocol"],
+    "description": "ScaleFX Serial Communication Library - COBS-framed protocol, USB HOST, serial bus, diagnostic logging, and multi-controller communication",
+    "keywords": ["scalefx", "serial", "cobs", "usb", "host", "cdc", "pico", "protocol", "diaglog"],
     "authors": [
         {
             "name": "ScaleFX"

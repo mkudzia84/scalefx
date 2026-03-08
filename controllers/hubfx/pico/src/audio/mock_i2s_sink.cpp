@@ -3,7 +3,7 @@
  */
 
 #include "mock_i2s_sink.h"
-#include "../debug_config.h"
+#include "../hubfx_log.h"
 
 // Mock I2S always outputs - it's a debug tool
 #define MOCK_LOG(fmt, ...) Serial.printf("[MockI2S] " fmt "\n", ##__VA_ARGS__)
