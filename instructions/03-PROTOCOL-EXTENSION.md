@@ -9,7 +9,7 @@
 ```yaml
 Files_To_Modify:
   Always:
-    - "lib/components/serial/xxxfx/xxxfx.h"           # Packet type, error codes, handler logic
+    - "lib/sfx_serial/serial/xxxfx/xxxfx.h"            # Packet type, error codes, handler logic
     - "controllers/xxxfx/pico/src/*.ino"     # Callback implementation
     - "tests/framework/packets.py"           # Python constant
     - "tests/framework/commands.py"          # Python builder
@@ -17,7 +17,7 @@ Files_To_Modify:
     - "controllers/xxxfx/pico/README.md"     # Documentation
   
   If_New_Error_Codes:
-    - "lib/components/serial/xxxfx/xxxfx.h"            # C++ error constant (in module's error namespace)
+    - "lib/sfx_serial/serial/xxxfx/xxxfx.h"             # C++ error constant (in module's error namespace)
     - "tests/framework/packets.py"           # Python error constant
 ```
 
@@ -27,7 +27,7 @@ Files_To_Modify:
 
 ### Step 1: Define Packet Type
 
-**File:** `controllers/lib/components/serial/gunfx/gunfx.h`
+**File:** `controllers/lib/sfx_serial/serial/gunfx/gunfx.h`
 
 **FIND:**
 ```cpp
@@ -46,7 +46,7 @@ namespace GunFxPacket {
 
 ### Step 2: Add Error Code (if needed)
 
-**File:** `controllers/lib/components/serial/gunfx/gunfx.h`
+**File:** `controllers/lib/sfx_serial/serial/gunfx/gunfx.h`
 
 Error codes are defined in the module's own header file, not a separate error file.
 
@@ -68,7 +68,7 @@ namespace GunFxError {
 
 ### Step 3: Add Callback to Server Class
 
-**File:** `controllers/lib/components/serial/gunfx/gunfx.h`
+**File:** `controllers/lib/sfx_serial/serial/gunfx/gunfx.h`
 
 **ACTION 3.1 - Add callback typedef:**
 ```cpp
@@ -107,7 +107,7 @@ private:
 
 ### Step 3b: Add Client Method (for HubFX)
 
-**File:** `controllers/lib/components/serial/gunfx/gunfx.h` (GunFxClient class)
+**File:** `controllers/lib/sfx_serial/serial/gunfx/gunfx.h` (GunFxClient class)
 
 All client methods MUST return `CommandResult`, never `bool`. Choose the pattern based on the response category (see Response Category Decision below).
 

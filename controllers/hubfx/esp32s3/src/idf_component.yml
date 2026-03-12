@@ -1,0 +1,14 @@
+# ESP-IDF Managed Component Dependencies for HubFX ESP32-S3
+#
+# PlatformIO resolves these via the ESP Component Registry.
+# See: https://components.espressif.com/
+#
+# The USB Host CDC-ACM class driver provides high-level CDC device enumeration,
+# line coding configuration, and bulk data transfer on top of the ESP-IDF
+# USB Host Library (which is part of ESP-IDF core).
+#
+# Required because Arduino-ESP32's USB library is device-mode only.
+
+dependencies:
+  espressif/usb_host_cdc_acm:
+    version: "^2.0.0"

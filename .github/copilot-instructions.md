@@ -4,10 +4,12 @@
 
 ## System Architecture
 
-ScaleFX is a modular scale model effects system with two platform targets:
-- **Pico Controllers** (RP2040/RP2350): Real-time device control (GunFX, LightFX, GearControl, HubFX Pico)
-- **ESP32-S3 Controllers**: HubFX ESP32-S3 (migration target from Pico)
+ScaleFX is a modular scale model effects system with three platform targets:
+- **Pico Controllers** (RP2040): Real-time device control (GunFX, LightFX, GearControl)
+- **ESP32-S3 Controller**: HubFX ESP32-S3 (master hub, active development)
 - **Windows Studio** (.NET 8/C#): Visual configuration editor
+
+> **HubFX Pico (RP2350) is OBSOLETE.** The Pico variant (`controllers/hubfx/pico/`) is frozen as a reference implementation. All new HubFX development (features, bug fixes, protocol additions) MUST target `controllers/hubfx/esp32s3/`. See Rule 17.
 
 **Communication:** Binary COBS protocol over USB serial (1Mbps baud)
 - Packet format: `[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]`
@@ -18,7 +20,7 @@ ScaleFX is a modular scale model effects system with two platform targets:
 
 ```bash
 # Build Pico firmware (PlatformIO)
-cd controllers/{gunfx|lightfx|hubfx}/pico
+cd controllers/{gunfx|lightfx|gearcontrol}/pico
 python -m platformio run -e pico
 
 # Build ESP32-S3 firmware (PlatformIO)
@@ -64,11 +66,11 @@ When modifying serial protocol, these files MUST stay in sync:
 
 | C++ Source | Python Mirror | Content |
 |------------|---------------|---------|
-| `controllers/lib/components/serial/core/core.h` | `tests/framework/packets.py` | Packet type constants, generic error codes |
-| `controllers/lib/components/serial/gunfx/gunfx.h` | `tests/framework/packets.py`, `commands.py` | GunFX packet types, error codes, commands |
-| `controllers/lib/components/serial/lightfx/lightfx.h` | `tests/framework/packets.py`, `commands.py` | LightFX packet types, error codes, commands |
-| `controllers/lib/components/serial/gearcontrol/gearcontrol.h` | `tests/framework/packets.py`, `commands.py` | GearControl packet types, error codes, commands |
-| `controllers/lib/components/serial/hubfx/hubfx.h` | `tests/framework/packets.py`, `commands.py` | HubFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/core/core.h` | `tests/framework/packets.py` | Packet type constants, generic error codes |
+| `controllers/lib/sfx_serial/serial/gunfx/gunfx.h` | `tests/framework/packets.py`, `commands.py` | GunFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/lightfx/lightfx.h` | `tests/framework/packets.py`, `commands.py` | LightFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/gearcontrol/gearcontrol.h` | `tests/framework/packets.py`, `commands.py` | GearControl packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/hubfx/hubfx.h` | `tests/framework/packets.py`, `commands.py` | HubFX packet types, error codes, commands |
 
 **Verification:** Run `python -m py_compile tests/framework/packets.py` after C++ changes.
 
@@ -200,11 +202,11 @@ SfxServer handles: serial init, device naming, indicator LEDs, CoreCommandServer
 
 ### 7. Component Reuse (MANDATORY)
 
-**Always check `controllers/lib/components/` before writing hardware-specific code.** If a generic driver or abstraction already exists, use it.
+**Always check `controllers/lib/` before writing hardware-specific code.** If a generic driver or abstraction already exists, use it.
 
 **Rules:**
-1. **Reuse first:** Before writing any LED, servo, PWM input, I2C, or power monitoring code, check if a component exists in the `components` library
-2. **Generalize new hardware drivers:** When adding support for a new hardware peripheral (sensor, actuator, display, etc.), create the driver in `components/` as a reusable class — not inline in controller firmware
+1. **Reuse first:** Before writing any LED, servo, PWM input, I2C, or power monitoring code, check if a component exists in the shared libraries (sfx_peripherals, sfx_audio, sfx_storage, etc.)
+2. **Generalize new hardware drivers:** When adding support for a new hardware peripheral (sensor, actuator, display, etc.), create the driver in the appropriate `lib/sfx_*` library as a reusable class — not inline in controller firmware
 3. **Controller firmware = glue code:** Controllers should only contain protocol handling and controller-specific logic. Hardware interaction should be delegated to component classes
 4. **Extend I2CDevice:** All new I2C device drivers MUST extend `I2CDevice` and override `identify()` for device verification
 5. **Follow existing patterns:** New components should follow the same API patterns as existing ones (e.g., `begin()` for init, callbacks via `std::function`, state queries)
@@ -411,10 +413,10 @@ private:
 
 | Class | Location | Resource Type |
 |-------|----------|---------------|
-| `DiagLog` | `lib/components/serial/core/diag_log.h` | Board-wide logging service |
+| `DiagLog` | `lib/sfx_platform/platform/diag_log.h` | Board-wide logging service |
 | `SdCardModule` | `hubfx/pico/src/storage/sd_card.h` | Single SPI SD card |
 | `FlashModule` | `hubfx/pico/src/storage/flash.h` | Single onboard LittleFS flash |
-| `AudioMixer` | `lib/components/audio/audio_mixer.h` | Single I2S audio output |
+| `AudioMixer` | `lib/sfx_audio/audio/audio_mixer.h` | Single I2S audio output |
 
 **Rules:**
 1. **Access via `::instance()`** — never via global pointer, extern declaration, or injected pointer. Consumers call `MyModule::instance()` directly.
@@ -568,7 +570,7 @@ sfxMutexLock(mtx);                   // mutex_enter_blocking / xSemaphoreTake
 sfxMutexUnlock(mtx);                 // mutex_exit / xSemaphoreGive
 ```
 
-See `controllers/lib/components/platform/sfx_platform.h` for the full abstraction table including GPIO, servo, interrupt, I2S, memory attributes, and dual-core detection.
+See `controllers/lib/sfx_platform/platform/sfx_platform.h` for the full abstraction table including GPIO, servo, interrupt, I2S, memory attributes, and dual-core detection.
 
 **ESP32-S3 specific notes (future HubFX migration):**
 - **FreeRTOS-based** — `delay()` calls `vTaskDelay()` and yields the task (safe, unlike Pico's alarm pool). However, prefer explicit `vTaskDelay(pdMS_TO_TICKS(ms))` for clarity and portability.
@@ -585,15 +587,29 @@ See `controllers/lib/components/platform/sfx_platform.h` for the full abstractio
 5. **New shared components** MUST compile on both RP2040/RP2350 and ESP32-S3 from day one — include `platform/sfx_platform.h` and use its macros/types
 6. **New platform abstractions** go in `sfx_platform.h` — do not scatter `#ifdef` blocks across individual component files
 
+### 17. HubFX Development Target (MANDATORY)
+
+**HubFX Pico (RP2350) is OBSOLETE and FROZEN.** The `controllers/hubfx/pico/` codebase is preserved as a reference implementation only. **All new HubFX development MUST target `controllers/hubfx/esp32s3/`.**
+
+**Rules:**
+1. **No new features** in `controllers/hubfx/pico/` — do not add commands, handlers, or protocol extensions
+2. **No bug fixes** in `controllers/hubfx/pico/` — unless explicitly requested by the user for hardware compatibility
+3. **Reference only** — when implementing features in the ESP32-S3 variant, consult the Pico implementation for protocol patterns and domain logic, then adapt to ESP-IDF/FreeRTOS
+4. **Shared libraries are shared** — changes to `controllers/lib/` that support HubFX ESP32-S3 ARE allowed and expected (with platform guards via `sfx_platform.h`)
+5. **Protocol compatibility** — the ESP32-S3 variant uses the same HubFX packet types (0x80-0xA8) and wire format as the Pico variant. Protocol definitions in `hubfx/hubfx.h` are shared.
+6. **When asked to "work on HubFX"** — always target `controllers/hubfx/esp32s3/` unless the user explicitly says "HubFX Pico"
+
 ## Key Architecture Patterns
 
 ### Client-Server Topology
 ```
-HubFX (Client) - USB Host with RP2040
+HubFX ESP32-S3 (Client) - USB Host
   ├─ USB Port 0 → GunFX Pico (Server)
   ├─ USB Port 1 → LightFX Pico (Server)
   ├─ USB Port 2 → GearControl Pico (Server)
   └─ USB Port N → Other Servers
+
+HubFX Pico (OBSOLETE) - RP2350, frozen reference only
 ```
 
 ### Handler Registration (CRITICAL)
@@ -610,24 +626,21 @@ server.addModuleHandler(&xxxfxServer);  // Core added automatically first
 commandRouter.addHandler(&xxxfxServer);  // ← Missing coreServer!
 ```
 
-### Shared Library (`controllers/lib/components/`)
-Reusable hardware drivers and protocol library organized by domain:
-- **platform/sfx_platform.h** - Cross-platform abstraction (mutexes, delays, GPIO for RP2040/RP2350/ESP32-S3)
-- **audio/** - 8-channel WAV mixer, I2S output, codec drivers (TAS5825M, SimpleI2S), mock I2S sink
-- **led/** - GPIO LED control, event-based animations, sequenced playback
-- **power/** - Battery monitor, I2CDevice base class, INA226 power monitor
-- **pwm/pwm_control.h/.cpp** - RC PWM input with averaging, hysteresis, async callbacks
-- **server/sfx_server.h/.cpp** - Common server controller boilerplate (serial, device name, indicators, core protocol, connection management). Includes nested `SfxServer::IndicatorLedManager` for GP13/GP14 LED state machine.
-- **serial/** - Binary COBS protocol, command handlers, clients (see below)
-- **servo/srv_control.h/.cpp** - Servo output with trapezoidal motion profiling and jerk effects
-- **storage/** - SD card (SdFat), LittleFS flash singletons, shared storage types
+### Shared Libraries (`controllers/lib/`)
+Reusable hardware drivers and protocol library split by domain:
+- **sfx_platform/** - Cross-platform abstraction (mutexes, delays, GPIO, SfxWire encoding, DiagLog)
+- **sfx_serial/** - Binary COBS protocol, command handlers, server/client classes
+- **sfx_server/** - Common server controller boilerplate (SfxServer, indicators, connection management)
+- **sfx_peripherals/** - Hardware drivers (LED, servo, PWM input, I2C, INA226 power monitor)
+- **sfx_audio/** - 8-channel WAV mixer, I2S output, codec drivers (TAS5825M, SimpleI2S), mock I2S sink
+- **sfx_storage/** - SD card (SdFat/ESP SD), LittleFS flash singletons, shared storage types
+- **sfx_usb/** - USB Host abstraction (PicoUsbHost, EspUsbHost), device registry
 
-### Serial Protocol Library (`controllers/lib/components/serial/`)
+### Serial Protocol Library (`controllers/lib/sfx_serial/serial/`)
 - **serial.h** - Umbrella include (use this)
 - **core/core.h** - CoreProtocol, SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros
 - **core/bus_server.h** - BusServer base class + CoreCommandServer (server side)
 - **core/stream.h** - StreamProtocol constants (0xA4-0xA6) + StreamWriter (chunked data streaming with CRC-16)
-- **core/diag_log.h/.cpp** - DiagLog diagnostic logging (ring buffer → COBS packets, universal across all boards)
 - **client/bus.h** - SerialBus (client-only, COBS over USB CDC)
 - **client/bus_client.h** - BusClient base class (client side, extends SerialBus)
 - **client/result_queue.h** - ResultQueue (tag-correlated command/response matching)
@@ -662,11 +675,11 @@ server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
 // Free RAM is updated automatically by server.loop()
 ```
 
-STATUS response = 12-byte core header `[counter:u32][uptime:u32][freeRam:u32]` + module callback data.
+STATUS response = 20-byte core header `[counter:u32][uptime:u32][freeRam:u32][lastActivity_ms:u32][keepaliveCount:u32]` + module callback data.
 
 INIT_READY payload = length-prefixed binary: `[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]`
 
-See `controllers/lib/components/serial/PROTOCOL.md` for full wire format.
+See `controllers/lib/sfx_serial/serial/PROTOCOL.md` for full wire format.
 
 ### Python Test Framework (`tests/`)
 ```
@@ -699,9 +712,9 @@ cli/
 | 0x30-0x3F | Reserved | - | Future expansion |
 | 0x40-0x5F | LightFX | Used | LED, servo, power |
 | 0x60-0x7F | GearControl | Used | Gear, servo, yaw |
-| 0x80-0xA3 | HubFX | Used | Slaves, audio, engine, config, SD, flash, files |
+| 0x80-0xA8 | HubFX | Used | Slaves, audio, engine, config, SD, flash, files, USB diag |
 | 0xA4-0xA6 | Streaming | Used | STREAM_BEGIN/DATA/END (`core/stream.h`) |
-| 0xA7-0xEF | Available | Free | New controllers |
+| 0xA9-0xEF | Available | Free | New controllers |
 | 0xF0-0xFF | Core | Reserved | INIT, ACK, NACK, REBOOT, LOG_MESSAGE (0xFD), etc. |
 
 ## Platform-Specific Notes

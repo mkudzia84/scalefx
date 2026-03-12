@@ -1,0 +1,11 @@
+{
+    "name": "sfx_storage",
+    "version": "1.0.0",
+    "description": "ScaleFX storage abstraction — SD card (SdFat/ESP-SD) and LittleFS flash singletons. Requires SFX_HAS_STORAGE=1 build flag.",
+    "keywords": ["storage", "sd", "sdfat", "flash", "littlefs", "filesystem"],
+    "frameworks": "arduino",
+    "platforms": ["raspberrypi", "espressif32"],
+    "dependencies": [
+        {"name": "sfx_platform"}
+    ]
+}

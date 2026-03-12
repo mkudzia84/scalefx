@@ -399,7 +399,7 @@ class StreamPacket:
 # =============================================================================
 
 class HubFxPacket:
-    """HubFX packet types (0x80-0x99)."""
+    """HubFX packet types (0x80-0xA8)."""
     # Slave management
     SLAVE_LIST       = 0x80  # [] → SLAVE_LIST_RESP
     SLAVE_LIST_RESP  = 0x81  # [count:u8][entries...] Response
@@ -464,6 +464,11 @@ class HubFxPacket:
     # Streaming packet types (STREAM_BEGIN/DATA/END) are defined in
     # StreamPacket class — they are protocol infrastructure reusable
     # by any controller, not HubFX-specific.
+
+    # USB Host Diagnostics (0xA7-0xA8)
+    USB_DEVICES_REQ    = 0xA7  # [] → USB_DEVICES_RESP
+    USB_DEVICES_RESP   = 0xA8  # [initialized:u8][taskRunning:u8][backendLen:u8][backend:str]
+                               #   [deviceCount:u8] per-device: [addr:u8][vid:u16LE][pid:u16LE][state:u8][slaveType:u8]
 
 
 class HubFxError:

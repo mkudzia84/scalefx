@@ -56,6 +56,10 @@ class HubFxCommandHandler(CommandHandlerBase):
                 'hub.init', 'hub.init <type>',
                 'Init a slave (gunfx|lightfx|gearcontrol or 1|2|3)',
                 requires_init=True, controller=ControllerType.HUBFX, group='Hub Management')),
+            'hub.usb': (self.cmd_usb_devices, CommandInfo(
+                'hub.usb', 'hub.usb',
+                'List USB host devices (CDC ports, VID/PID, state)',
+                requires_init=True, controller=ControllerType.HUBFX, group='Hub Management')),
 
             # =================================================================
             # Audio Control
@@ -459,6 +463,94 @@ class HubFxCommandHandler(CommandHandlerBase):
             self.print_error(f"Init failed: {name} (0x{code:02X})")
         else:
             self.print_error("No response (timeout)")
+
+    def cmd_usb_devices(self, args: List[str]):
+        """List USB host devices."""
+        if not self._require_init():
+            return
+
+        packet = HubFxCommands.usb_devices()
+        response = self.conn.send_and_wait(packet)
+
+        if response is None:
+            self.print_error("No response (timeout)")
+            return
+
+        if response.is_nack:
+            code = response.error_code
+            name = HubFxError.name(code)
+            self.print_error(f"NACK: {name} (0x{code:02X})")
+            return
+
+        if response.packet_type == HubFxPacket.USB_DEVICES_RESP:
+            self._parse_usb_devices(response.payload)
+        else:
+            self.print_error(f"Unexpected response: 0x{response.packet_type:02X}")
+
+    def _parse_usb_devices(self, payload: bytes):
+        """Parse and display USB_DEVICES_RESP payload."""
+        if len(payload) < 4:
+            self.print_error("USB devices response too short")
+            return
+
+        pos = 0
+        initialized = payload[pos]; pos += 1
+        task_running = payload[pos]; pos += 1
+        backend_len = payload[pos]; pos += 1
+
+        if pos + backend_len > len(payload):
+            self.print_error("Malformed USB devices response")
+            return
+
+        backend = payload[pos:pos + backend_len].decode('utf-8', errors='replace')
+        pos += backend_len
+
+        if pos >= len(payload):
+            self.print_error("Malformed USB devices response")
+            return
+
+        device_count = payload[pos]; pos += 1
+
+        # Status display
+        init_color = Fore.GREEN if initialized else Fore.RED
+        init_text = "initialized" if initialized else "not initialized"
+        task_color = Fore.GREEN if task_running else Fore.RED
+        task_text = "running" if task_running else "stopped"
+
+        print(f"\n  {Fore.YELLOW}USB Host ({backend}):{Style.RESET_ALL}")
+        print(f"    Status: {init_color}{init_text}{Style.RESET_ALL}, "
+              f"Task: {task_color}{task_text}{Style.RESET_ALL}")
+        print(f"    CDC Devices: {device_count}")
+
+        if device_count == 0:
+            print(f"    {Fore.YELLOW}(no USB devices connected){Style.RESET_ALL}")
+            print()
+            return
+
+        state_names = {0: "Disconnected", 1: "Connected", 2: "Mounted", 3: "Ready"}
+
+        for i in range(device_count):
+            if pos + 7 > len(payload):
+                break
+
+            addr = payload[pos]; pos += 1
+            vid = read_u16_le(payload, pos); pos += 2
+            pid = read_u16_le(payload, pos); pos += 2
+            state = payload[pos]; pos += 1
+            slave_type = payload[pos]; pos += 1
+
+            state_text = state_names.get(state, f"Unknown({state})")
+            state_color = Fore.GREEN if state == 3 else (
+                Fore.YELLOW if state >= 1 else Fore.RED)
+
+            slave_text = ""
+            if slave_type > 0:
+                slave_text = f" → {SlaveType.name(slave_type)}"
+
+            print(f"    [{i}] addr={addr} VID={vid:04X} PID={pid:04X} "
+                  f"{state_color}{state_text}{Style.RESET_ALL}{slave_text}")
+
+        print()
 
     # =========================================================================
     # Audio Control Commands

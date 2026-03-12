@@ -1161,6 +1161,20 @@ class HubFxCommands(CommandBuilder):
         """
         return build_packet(HubFxPacket.SLAVE_STATUS)
 
+    @staticmethod
+    def usb_devices() -> bytes:
+        """
+        Request USB host device list.
+
+        Response is USB_DEVICES_RESP with format:
+          [initialized:u8][taskRunning:u8]
+          [backendLen:u8][backend:str]
+          [deviceCount:u8]
+          Per device × count:
+            [addr:u8][vid:u16LE][pid:u16LE][state:u8][slaveType:u8]
+        """
+        return build_packet(HubFxPacket.USB_DEVICES_REQ)
+
     # =========================================================================
     # Audio Control
     # =========================================================================

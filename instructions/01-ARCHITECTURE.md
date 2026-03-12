@@ -182,7 +182,7 @@ ICommandHandler (interface)
 
 ```
 SerialBus (low-level COBS framing over USB CDC)
-  │ begin(UsbHost*, port) / process()
+  │ begin(deviceIndex) / process()  — uses UsbHost::instance()
   │ sendPacket(type, payload, len, tag)
   │
   └── BusClient (base — INIT handshake, tag queue, ACK/NACK handling)
@@ -227,7 +227,7 @@ SfxServer  (composes everything for Pico server controllers)
 Any class with exactly one instance per board — whether wrapping a hardware peripheral or a logical registry — is implemented as a singleton using C++11 thread-safe static local initialization.
 
 ```
-DiagLog::instance()          — Board-wide diagnostic logging (lib/components/serial/)
+DiagLog::instance()          — Board-wide diagnostic logging (lib/sfx_platform/platform/)
   │ Ring buffer → COBS LOG_MESSAGE packets
   │ Mutex-protected for dual-core safety
   │ Compile-time strippable via SFX_ENABLE_DIAG_LOG=0
@@ -241,7 +241,7 @@ FlashModule::instance()      — Single onboard LittleFS flash (hubfx/pico/stora
   │ Thread-safe access via pico mutex
   │ Used by: ConfigReader
   │
-AudioMixer::instance()       — Single I2S audio output (lib/components/audio/)
+AudioMixer::instance()       — Single I2S audio output (lib/sfx_audio/audio/)
   │ Runs on Core 1, thread-safe buffer access
   │ Uses SdCardModule singleton internally
   │ Platform-conditional buffer sizes (Pico vs ESP32)
@@ -273,8 +273,8 @@ Modules provide board-specific STATUS data via a callback registered on `CoreCom
 ```cpp
 using StatusDataCallback = std::function<size_t(uint8_t* buffer, size_t maxLen)>;
 
-// STATUS response = 12-byte core header + module callback data
-// Core header: [counter:u32LE][uptime:u32LE][freeRam:u32LE]
+// STATUS response = 20-byte core header + module callback data
+// Core header: [counter:u32LE][uptime:u32LE][freeRam:u32LE][lastActivity_ms:u32LE][keepaliveCount:u32LE]
 
 server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
     buf[0] = myFlag;
@@ -637,7 +637,7 @@ Each module defines a `Spec` namespace with constants and inline validators:
 
 ```yaml
 Serial_Library:
-  root: "controllers/lib/components/serial/"
+  root: "controllers/lib/sfx_serial/serial/"
   files:
     serial.h:             "Umbrella header — include this for everything"
     core/core.h:        "CoreProtocol (COBS/CRC/endian), SerialError, CommandResult,

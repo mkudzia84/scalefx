@@ -28,6 +28,11 @@ Task: "Update CLI"
 
 Task: "Work on HubFX audio engine (AudioTools library)"
   → Read: 08-AUDIOTOOLS.md
+
+Task: "Work on HubFX"
+  → Target: controllers/hubfx/esp32s3/ (HubFX Pico is OBSOLETE)
+  → Reference: controllers/hubfx/pico/ (frozen, consult for patterns only)
+  → Read: 01-ARCHITECTURE.md
 ```
 
 ---
@@ -46,17 +51,17 @@ Packet_Ranges:
   GunFX: "0x01-0x2F"
   LightFX: "0x40-0x5F"
   GearControl: "0x60-0x7F"
-  HubFX: "0x80-0xA3"
+  HubFX: "0x80-0xA8"
   Streaming: "0xA4-0xA6"
-  Available: "0xA7-0xEF"
+  Available: "0xA9-0xEF"
   Core: "0xF0-0xFF"
 
 Controllers:
   gunfx: { path: "controllers/gunfx/pico/", range: "0x01-0x2F" }
   lightfx: { path: "controllers/lightfx/pico/", range: "0x40-0x5F" }
   gearcontrol: { path: "controllers/gearcontrol/pico/", range: "0x60-0x7F" }
-  hubfx: { path: "controllers/hubfx/pico/", range: "0x80-0xA3" }
-  hubfx-esp32s3: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xA3" }
+  hubfx: { path: "controllers/hubfx/pico/", range: "0x80-0xA8", status: "OBSOLETE — frozen reference only" }
+  hubfx-esp32s3: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xA8", status: "ACTIVE development target" }
   noop: { path: "controllers/noop/pico/", range: "CORE_ONLY" }
 ```
 
@@ -66,14 +71,20 @@ Controllers:
 
 ```yaml
 Platform_Abstraction:
-  root: "controllers/lib/components/platform/"
+  root: "controllers/lib/sfx_platform/platform/"
   files:
     - name: "sfx_platform.h"
       purpose: "Cross-platform abstraction (mutexes, delays, GPIO, memory, I2S, servo, interrupts)"
       modify_when: "Adding new platform-specific abstractions or supporting a new chip"
+    - name: "sfx_wire.h/.cpp"
+      purpose: "Stateless wire encoding (CRC-8, COBS, packet build/parse, endian helpers)"
+      modify_when: "Changing wire format or adding encoding utilities"
+    - name: "diag_log.h/.cpp"
+      purpose: "DiagLog singleton — ring-buffered diagnostic logging over COBS serial"
+      modify_when: "Changing log format, ring buffer size, or adding log features"
 
 Audio_Library:
-  root: "controllers/lib/components/audio/"
+  root: "controllers/lib/sfx_audio/audio/"
   files:
     - name: "audio_mixer.h/.cpp"
       purpose: "8-channel WAV mixer singleton with I2S output (platform-conditional buffer sizes)"
@@ -101,7 +112,7 @@ Audio_Library:
       modify_when: "Adding test instrumentation"
 
 Serial_Library:
-  root: "controllers/lib/components/serial/"
+  root: "controllers/lib/sfx_serial/serial/"
   files:
     - name: "serial.h"
       purpose: "Umbrella header (include this)"
@@ -135,12 +146,6 @@ Serial_Library:
     - name: "core/stream.cpp"
       purpose: "StreamWriter + CRC-16/CCITT implementations"
       modify_when: "Rarely — streaming infrastructure"
-    - name: "core/diag_log.h"
-      purpose: "DiagLog — diagnostic log output over serial (ring buffer → COBS, universal)"
-      modify_when: "Changing log wire format or ring buffer behavior"
-    - name: "core/diag_log.cpp"
-      purpose: "DiagLog implementation (format, flush, ingest for relay)"
-      modify_when: "Rarely — logging infrastructure"
     - name: "gunfx/gunfx.h"
       purpose: "GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec"
       modify_when: "Adding GunFX commands or error codes"
@@ -279,25 +284,25 @@ Q10: Is documentation updated?
 ```yaml
 Sync_Groups:
   - name: "Packet Constants"
-    primary: "lib/components/serial/core/core.h"
+    primary: "lib/sfx_serial/serial/core/core.h"
     mirrors:
       - "tests/framework/packets.py"
     rule: "Same values, same names (snake_case in Python)"
 
   - name: "Error Codes (Generic)"
-    primary: "lib/components/serial/core/core.h (SerialError namespace)"
+    primary: "lib/sfx_serial/serial/core/core.h (SerialError namespace)"
     mirrors:
       - "tests/framework/packets.py (CoreError class)"
     rule: "Same values, same names"
 
   - name: "Error Codes (Module)"
-    primary: "lib/components/serial/xxxfx/xxxfx.h (XxxError namespace)"
+    primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h (XxxError namespace)"
     mirrors:
       - "tests/framework/packets.py (XxxError class)"
     rule: "Same values, same names"
 
   - name: "Command Interface"
-    primary: "lib/components/serial/xxxfx/xxxfx.h"
+    primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h"
     mirrors:
       - "tests/framework/commands.py"
       - "tests/cli/handlers/xxxfx.py"

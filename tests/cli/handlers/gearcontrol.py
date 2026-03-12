@@ -408,8 +408,8 @@ class GearControlCommandHandler(CommandHandlerBase):
             self.print_error(f"Unexpected response: 0x{response.packet_type:02X}")
             return
 
-        # Module data starts after 12-byte core header
-        data = response.payload[12:]
+        # Module data starts after 20-byte core header
+        data = response.payload[20:]
         if len(data) < 47:
             self.print_error("STATUS payload too short for door mode data")
             return

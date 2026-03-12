@@ -1,0 +1,11 @@
+{
+    "name": "sfx_serial",
+    "version": "3.0.0",
+    "description": "ScaleFX binary COBS serial protocol — core protocol, command routing, bus server/client, module handlers (GunFX, LightFX, GearControl, HubFX). DiagLog and SfxServer have moved to sfx_platform and sfx_server respectively.",
+    "keywords": ["serial", "protocol", "cobs", "crc8", "command", "server", "client"],
+    "frameworks": "arduino",
+    "platforms": ["raspberrypi", "espressif32"],
+    "dependencies": [
+        {"name": "sfx_platform"}
+    ]
+}

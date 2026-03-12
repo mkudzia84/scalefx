@@ -108,8 +108,9 @@ lib_deps =
 
 [common]
 lib_deps =
-    ../../lib/serial
-    ../../lib/components
+    ../../lib/sfx_serial
+    ../../lib/sfx_server
+    ../../lib/sfx_platform
     ; Add other component libs as needed:
     ; ../../lib/led_control
     ; ../../lib/srv_control
@@ -122,7 +123,7 @@ lib_deps =
 
 ## Step 3: Create Server Handler
 
-**File:** `controllers/lib/components/serial/newfx/newfx.h` (NEW FILE)
+**File:** `controllers/lib/sfx_serial/serial/newfx/newfx.h` (NEW FILE)
 
 This single header contains everything for the new module: packet types, error codes, validation constants, data types, and server class.
 
@@ -250,7 +251,7 @@ private:
 
 ## Step 4: Update Umbrella Header
 
-**File:** `controllers/lib/components/serial/serial.h`
+**File:** `controllers/lib/sfx_serial/serial/serial.h`
 
 **ACTION:** Add include:
 
@@ -523,9 +524,9 @@ After_Completion:
 | **LightFX** | Medium | 8 LED channels with sequence engine, landing lights |
 | **GearControl** | Complex | I2C (INA226), motor H-bridge, calibration, battery monitor |
 
-### Component Library (`controllers/lib/components/`)
+### Component Libraries (`controllers/lib/`)
 
-**Always check here before writing hardware-specific code:**
+**Always check here before writing hardware-specific code.** Libraries are split by domain:
 
 | Component | Header | Purpose |
 |-----------|--------|---------|

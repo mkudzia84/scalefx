@@ -1,0 +1,168 @@
+/*
+ * LED Event Sequence Library - Header
+ * 
+ * Manages a sequence of LED events that play in order and loop.
+ * 
+ * Features:
+ *   - Up to 24 events in a sequence
+ *   - Automatic looping when sequence completes
+ *   - Integration with LedControl for PWM output
+ * 
+ * Usage:
+ *   LedEventSeq seq;
+ *   seq.add(new LedOn(500));        // On for 500ms
+ *   seq.add(new LedOff(500));       // Off for 500ms
+ *   seq.add(new LedFadeIn(1000));   // Fade in over 1s
+ *   seq.add(new LedFadeOut(1000));  // Fade out over 1s
+ *   seq.start();
+ *   
+ *   // In loop:
+ *   int16_t pwm = seq.update();     // Get current PWM value
+ */
+
+#ifndef LED_EVENT_SEQ_H
+#define LED_EVENT_SEQ_H
+
+#include <Arduino.h>
+#include "led_events.h"
+
+// Maximum number of events in a sequence
+#define LED_EVENT_SEQ_MAX 24
+
+// Forward declaration
+class LedControl;
+
+// ============================================================================
+// LedEventSeq Class
+// ============================================================================
+
+/**
+ * @brief Manages a looping sequence of LED events
+ * 
+ * Events are played in order, and when the last event completes,
+ * the sequence loops back to the first event.
+ */
+class LedEventSeq {
+public:
+    LedEventSeq() = default;
+    ~LedEventSeq();
+    
+    // ========================================================================
+    // Event Management
+    // ========================================================================
+
+    /**
+     * @brief Add an event to the sequence (takes ownership)
+     * @param event Pointer to event (will be deleted when cleared)
+     * @return true if added, false if sequence is full
+     */
+    bool add(ILedEvent* event);
+
+    /**
+     * @brief Clear all events from the sequence
+     */
+    void clear();
+
+    /**
+     * @brief Get number of events in sequence
+     */
+    uint8_t count() const { return _count; }
+
+    /**
+     * @brief Check if sequence is empty
+     */
+    bool isEmpty() const { return _count == 0; }
+
+    /**
+     * @brief Check if sequence is full
+     */
+    bool isFull() const { return _count >= LED_EVENT_SEQ_MAX; }
+
+    /**
+     * @brief Get event at index (nullptr if out of range)
+     */
+    ILedEvent* eventAt(uint8_t index) const;
+
+    // ========================================================================
+    // Playback Control
+    // ========================================================================
+
+    /**
+     * @brief Start playing the sequence from the beginning
+     */
+    void start();
+
+    /**
+     * @brief Start playing from a specific event index
+     * @param index Event index to start from
+     */
+    void startAt(uint8_t index);
+
+    /**
+     * @brief Stop playback
+     */
+    void stop();
+
+    /**
+     * @brief Update sequence and get current PWM output
+     * @return PWM value 0-255, or -1 if stopped/empty
+     */
+    int16_t update();
+
+    /**
+     * @brief Check if sequence is currently playing
+     */
+    bool isPlaying() const { return _playing; }
+
+    /**
+     * @brief Get current event index
+     */
+    uint8_t currentIndex() const { return _currentIndex; }
+
+    /**
+     * @brief Get current event (nullptr if not playing)
+     */
+    ILedEvent* currentEvent() const;
+
+    /**
+     * @brief Get total duration of one complete sequence cycle (ms)
+     */
+    uint32_t totalDuration() const;
+
+    /**
+     * @brief Get number of times sequence has looped
+     */
+    uint32_t loopCount() const { return _loopCount; }
+
+    // ========================================================================
+    // LedControl Integration
+    // ========================================================================
+
+    /**
+     * @brief Attach to a LedControl for automatic PWM output
+     * @param led Pointer to LedControl instance
+     */
+    void attachLed(LedControl* led) { _led = led; }
+
+    /**
+     * @brief Detach from LedControl
+     */
+    void detachLed() { _led = nullptr; }
+
+    /**
+     * @brief Check if attached to a LedControl
+     */
+    bool hasLed() const { return _led != nullptr; }
+
+private:
+    void advanceToNext();
+
+    ILedEvent* _events[LED_EVENT_SEQ_MAX] = {nullptr};
+    uint8_t _count = 0;
+    uint8_t _currentIndex = 0;
+    bool _playing = false;
+    uint32_t _loopCount = 0;
+    LedControl* _led = nullptr;
+};
+
+#endif // LED_EVENT_SEQ_H

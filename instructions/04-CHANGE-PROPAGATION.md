@@ -74,7 +74,7 @@ Change_Type_Matrix:
 
 ```yaml
 Step_1_Serial_Library:
-  location: "controllers/lib/components/serial/"
+  location: "controllers/lib/sfx_serial/serial/"
   actions:
     - file: "xxxfx/xxxfx.h (Server class)"
       action: |
@@ -269,12 +269,12 @@ Summary_Checklist:
 
 ```yaml
 Platform_Abstraction:
-  path: "controllers/lib/components/platform/"
+  path: "controllers/lib/sfx_platform/platform/"
   files:
     sfx_platform.h: "Cross-platform abstraction (mutexes, delays, GPIO, memory, I2S, servo, interrupts)"
 
 Audio_Library:
-  path: "controllers/lib/components/audio/"
+  path: "controllers/lib/sfx_audio/audio/"
   files:
     audio_mixer.h/.cpp: "8-channel WAV mixer singleton with I2S output"
     audio_ring_buffer.h: "Lock-free SPSC ring buffer (Core 0 → Core 1)"
@@ -286,7 +286,7 @@ Audio_Library:
     mock_i2s_sink.h/.cpp: "Mock I2S output for testing"
 
 C++_Serial_Library:
-  path: "controllers/lib/components/serial/"
+  path: "controllers/lib/sfx_serial/serial/"
   files:
     serial.h: "Umbrella header"
     core/core.h: "CoreProtocol, SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros"

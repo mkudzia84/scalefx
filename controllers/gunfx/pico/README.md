@@ -301,7 +301,7 @@ The firmware is organized into self-contained modules following the same pattern
 | `MuzzleFlash` | `muzzle_flash.h/cpp` | Flash LED pulse/fade, per-shot recoil jerk on servos |
 | `SmokeGenerator` | `smoke_generator.h/cpp` | Heater relay + PWM fan (constant/pulsing modes) |
 | `ServoControl` | `lib/srv_control/` | Motion-profiled servo positioning (shared library) |
-| `PicoServer` | `lib/components/` | Serial, indicators, core protocol, connection management |
+| `SfxServer` | `lib/sfx_server/` + `lib/sfx_serial/` + `lib/sfx_platform/` | Serial, indicators, core protocol, connection management |
 
 **Module wiring (in `setup()`):**
 ```

@@ -62,9 +62,9 @@ class TestStatus:
             f"Expected STATUS (0x{CorePacket.STATUS:02X}), "
             f"got 0x{response.packet_type:02X}"
         )
-        # Core header (12) + GearControl module data (36) = 48 bytes
-        assert len(response.payload) >= 38, (
-            f"Expected ≥38 bytes, got {len(response.payload)}"
+        # Core header (20) + GearControl module data (36) = 56 bytes
+        assert len(response.payload) >= 46, (
+            f"Expected ≥46 bytes, got {len(response.payload)}"
         )
 
     def test_status_gear_states_valid(self, conn):
@@ -73,7 +73,7 @@ class TestStatus:
         packet = CommandBuilder.status_req()
         response = conn.send_and_receive(packet)
         assert response is not None, "No response to STATUS_REQ"
-        module_data = response.payload[12:]
+        module_data = response.payload[20:]
         for i in range(3):
             state = module_data[i * 9]
             assert state <= 6, f"Gear {i} state {state} out of range"

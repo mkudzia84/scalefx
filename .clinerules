@@ -18,22 +18,22 @@ When working on this project, always read:
 format: "Binary COBS with CRC-8"
 crc_polynomial: 0x07
 baud_rate: 1000000
-packet: "[type:u8][len:u8][payload:0-64][crc8:u8]"
+packet: "[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]"
 endianness: "little-endian"
 ```
 
 ## File Sync Points (CRITICAL)
 
 These files must stay in sync:
-- `lib/serial/serial_core.h` ↔ `tests/framework/packets.py` (packet constants)
-- `lib/serial/serial_error.h` ↔ `tests/framework/packets.py` (error codes)
-- `lib/serial/serial_xxxfx.h` ↔ `tests/framework/commands.py` (command builders)
-- `lib/serial/serial_xxxfx.h` ↔ `tests/cli/handlers/xxxfx.py` (CLI commands)
+- `lib/sfx_serial/serial/core/core.h` ↔ `tests/framework/packets.py` (packet constants)
+- `lib/sfx_serial/serial/core/core.h` ↔ `tests/framework/packets.py` (error codes)
+- `lib/sfx_serial/serial/xxxfx/xxxfx.h` ↔ `tests/framework/commands.py` (command builders)
+- `lib/sfx_serial/serial/xxxfx/xxxfx.h` ↔ `tests/cli/handlers/xxxfx.py` (CLI commands)
 
 ## When Adding Commands
 
 Always update ALL of these:
-1. `serial_xxxfx.h` - Packet type constant + handler using SFX_* macros
+1. `xxxfx/xxxfx.h` - Packet type constant + handler using SFX_* macros
 2. `xxxfx_pico.ino` - Callback implementation
 3. `packets.py` - Python constant
 4. `commands.py` - Python builder

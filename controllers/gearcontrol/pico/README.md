@@ -167,7 +167,7 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 
 ### STATUS Response (53 bytes module data)
 
-After the 12-byte core header `[counter:u32][uptime:u32][freeRam:u32]`:
+After the 20-byte core header `[counter:u32][uptime:u32][freeRam:u32][lastActivity_ms:u32][keepaliveCount:u32]`:
 
 ```
 Per gear (3 × 11 = 33 bytes):

@@ -1,0 +1,11 @@
+{
+    "name": "sfx_usb",
+    "version": "2.0.0",
+    "description": "ScaleFX USB Host abstraction — abstract UsbHost interface with PicoUsbHost (PIO-USB/TinyUSB) and EspUsbHost (ESP-IDF USB Host) backends. Client-only (excluded by SCALEFX_SERVER).",
+    "keywords": ["usb", "host", "cdc", "tinyusb", "pio-usb", "esp-idf"],
+    "frameworks": "arduino",
+    "platforms": ["raspberrypi", "espressif32"],
+    "dependencies": [
+        {"name": "sfx_platform"}
+    ]
+}

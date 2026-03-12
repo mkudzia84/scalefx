@@ -7,7 +7,9 @@
 
 ScaleFX is a modular scale model effects system for RC helicopters:
 - **Architecture:** Client-server over USB serial (binary COBS protocol, CRC-8, 1Mbps)
-- **Pico Controllers** (RP2040/RP2350): GunFX (weapons), LightFX (lighting), GearControl (landing gear), HubFX (client hub)
+- **Pico Controllers** (RP2040): GunFX (weapons), LightFX (lighting), GearControl (landing gear)
+- **ESP32-S3 Controller**: HubFX ESP32-S3 (master hub, active development)
+- **HubFX Pico** (RP2350): OBSOLETE — frozen reference implementation, do not modify
 - **Windows Studio** (.NET 8/C#): Visual configuration editor
 - **Python test framework** with interactive CLI
 
@@ -57,18 +59,19 @@ pytest tests/{gunfx|lightfx|gearcontrol|noop}/ -v
 
 ```
 controllers/
-├── lib/components/      # Reusable drivers + serial protocol + platform abstraction
-│   ├── platform/        # sfx_platform.h — cross-platform abstraction (mutexes, delays, GPIO)
-│   ├── audio/           # 8-channel WAV mixer, I2S output, codec drivers, ring buffer
-│   ├── serial/          # COBS protocol, command routing, bus server/client, per-board handlers
-│   ├── server/          # SfxServer common controller boilerplate
-│   ├── storage/         # SD card (SdFat), LittleFS flash singletons
-│   └── (led, power, pwm, servo, indicators)
+├── lib/                 # Shared PlatformIO libraries (7 independent modules)
+│   ├── sfx_platform/    # Cross-platform abstraction (mutexes, delays, GPIO, diag_log)
+│   ├── sfx_serial/      # COBS protocol, command routing, bus server/client, per-board handlers
+│   ├── sfx_server/      # SfxServer common controller boilerplate
+│   ├── sfx_peripherals/ # Hardware drivers (LED, servo, PWM input, I2C, INA226)
+│   ├── sfx_audio/       # 8-channel WAV mixer, I2S output, codec drivers, ring buffer
+│   ├── sfx_storage/     # SD card (SdFat/ESP SD), LittleFS flash singletons
+│   └── sfx_usb/         # USB Host abstraction (PicoUsbHost, EspUsbHost)
 ├── gunfx/pico/          # Gun effects (RP2040 server)
 ├── lightfx/pico/        # Lighting effects (RP2040 server)
 ├── gearcontrol/pico/    # Landing gear (RP2040 server)
-├── hubfx/pico/          # Master hub (RP2350 client, dual-core)
-├── hubfx/esp32s3/       # Master hub (ESP32-S3, migration target)
+├── hubfx/pico/          # Master hub (RP2350 client, dual-core) — OBSOLETE, reference only
+├── hubfx/esp32s3/       # Master hub (ESP32-S3, active development target)
 
 └── noop/pico/           # Protocol test stub
 

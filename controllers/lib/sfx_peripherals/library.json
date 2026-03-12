@@ -1,0 +1,11 @@
+{
+    "name": "sfx_peripherals",
+    "version": "1.0.0",
+    "description": "ScaleFX peripheral drivers — LED control, servo output, PWM input, INA226 power monitoring, battery monitor, I2C device base class.",
+    "keywords": ["led", "servo", "pwm", "ina226", "power", "battery", "i2c", "gpio"],
+    "frameworks": "arduino",
+    "platforms": ["raspberrypi", "espressif32"],
+    "dependencies": [
+        {"name": "sfx_platform"}
+    ]
+}
