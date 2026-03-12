@@ -39,7 +39,7 @@
 #define STALL_CALIBRATOR_H
 
 #include <Arduino.h>
-#include <serial_gearcontrol.h>  // CalibPhase, GearControlCalibStatus, DoorMode
+#include <serial/gearcontrol/gearcontrol.h>  // CalibPhase, GearControlCalibStatus, DoorMode
 #include "door_sequencer.h"
 #include <functional>
 

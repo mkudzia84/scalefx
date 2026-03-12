@@ -13,10 +13,10 @@
 #define GUN_FX_H
 
 #include <Arduino.h>
-#include <serial.h>
-#include <pwm_control.h>
+#include <serial/serial.h>
+#include <pwm/pwm_control.h>
 #include "effects_config.h"
-#include "../audio/audio_mixer.h"
+#include <audio/audio_mixer.h>
 
 // Forward declarations
 class UsbHost;

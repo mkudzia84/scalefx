@@ -25,6 +25,9 @@ Task: "Build and deploy firmware"
 
 Task: "Update CLI"
   → Read: 07-CLI-UPDATES.md
+
+Task: "Work on HubFX audio engine (AudioTools library)"
+  → Read: 08-AUDIOTOOLS.md
 ```
 
 ---
@@ -40,47 +43,21 @@ Protocol:
   endianness: "little-endian"
 
 Packet_Ranges:
-  - range: "0x01-0x2F"
-    module: "GunFX"
-    status: "USED"
-  - range: "0x30-0x3F"
-    module: "Reserved"
-    status: "RESERVED"
-  - range: "0x40-0x5F"
-    module: "LightFX"
-    status: "USED"
-  - range: "0x60-0x7F"
-    module: "GearControl"
-    status: "USED"
-  - range: "0x80-0xA3"
-    module: "HubFX"
-    status: "USED"
-  - range: "0xA4-0xA6"
-    module: "Streaming"
-    status: "USED"
-  - range: "0xA7-0xEF"
-    module: "Available"
-    status: "FREE"
-  - range: "0xF0-0xFF"
-    module: "Core"
-    status: "RESERVED"
+  GunFX: "0x01-0x2F"
+  LightFX: "0x40-0x5F"
+  GearControl: "0x60-0x7F"
+  HubFX: "0x80-0xA3"
+  Streaming: "0xA4-0xA6"
+  Available: "0xA7-0xEF"
+  Core: "0xF0-0xFF"
 
 Controllers:
-  - id: "gunfx"
-    path: "controllers/gunfx/pico/"
-    packet_range: "0x01-0x2F"
-  - id: "lightfx"
-    path: "controllers/lightfx/pico/"
-    packet_range: "0x40-0x5F"
-  - id: "gearcontrol"
-    path: "controllers/gearcontrol/pico/"
-    packet_range: "0x60-0x7F"
-  - id: "hubfx"
-    path: "controllers/hubfx/pico/"
-    packet_range: "0x80-0xA3"
-  - id: "noop"
-    path: "controllers/noop/pico/"
-    packet_range: "CORE_ONLY"
+  gunfx: { path: "controllers/gunfx/pico/", range: "0x01-0x2F" }
+  lightfx: { path: "controllers/lightfx/pico/", range: "0x40-0x5F" }
+  gearcontrol: { path: "controllers/gearcontrol/pico/", range: "0x60-0x7F" }
+  hubfx: { path: "controllers/hubfx/pico/", range: "0x80-0xA3" }
+  hubfx-esp32s3: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xA3" }
+  noop: { path: "controllers/noop/pico/", range: "CORE_ONLY" }
 ```
 
 ---
@@ -88,62 +65,100 @@ Controllers:
 ## File Location Index
 
 ```yaml
+Platform_Abstraction:
+  root: "controllers/lib/components/platform/"
+  files:
+    - name: "sfx_platform.h"
+      purpose: "Cross-platform abstraction (mutexes, delays, GPIO, memory, I2S, servo, interrupts)"
+      modify_when: "Adding new platform-specific abstractions or supporting a new chip"
+
+Audio_Library:
+  root: "controllers/lib/components/audio/"
+  files:
+    - name: "audio_mixer.h/.cpp"
+      purpose: "8-channel WAV mixer singleton with I2S output (platform-conditional buffer sizes)"
+      modify_when: "Changing mixer behavior, buffer sizes, or adding playback features"
+    - name: "audio_ring_buffer.h"
+      purpose: "Lock-free SPSC ring buffer for stereo int16 frames (Core 0 → Core 1)"
+      modify_when: "Changing ring buffer size or DMA attributes"
+    - name: "audio_config.h"
+      purpose: "Compile-time audio constants (sample rate, channels, buffer sizes, I2S pins)"
+      modify_when: "Changing audio defaults or adding platform-conditional sizes"
+    - name: "audio_codec.h"
+      purpose: "Abstract codec base class interface"
+      modify_when: "Adding new codec types"
+    - name: "audio_log.h"
+      purpose: "Audio-specific logging macros (MIXER_LOG, TAS5825_LOG, MOCK_LOG)"
+      modify_when: "Adding new audio module log prefixes"
+    - name: "tas5825_codec.h/.cpp"
+      purpose: "TI TAS5825M digital amplifier driver (I2C)"
+      modify_when: "Changing codec initialization or volume control"
+    - name: "simple_i2s_codec.h/.cpp"
+      purpose: "Generic I2S codec (no I2C control needed)"
+      modify_when: "Rarely"
+    - name: "mock_i2s_sink.h/.cpp"
+      purpose: "Mock I2S output for testing (captures statistics)"
+      modify_when: "Adding test instrumentation"
+
 Serial_Library:
-  root: "controllers/lib/serial/"
+  root: "controllers/lib/components/serial/"
   files:
     - name: "serial.h"
       purpose: "Umbrella header (include this)"
-    - name: "serial_core.h"
+    - name: "core/core.h"
       purpose: "CoreProtocol (COBS/CRC/endian), SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros"
       modify_when: "Adding generic error codes, handler macros, or modifying core protocol"
-    - name: "serial_core.cpp"
+    - name: "core/core.cpp"
       purpose: "CoreProtocol implementations, CorePayload encode/decode"
       modify_when: "Rarely — protocol-level changes only"
-    - name: "serial_bus_server.h"
+    - name: "core/bus_server.h"
       purpose: "BusServer base class + CoreCommandServer"
       modify_when: "Rarely — base class for all server handlers"
-    - name: "serial_bus_server.cpp"
+    - name: "core/bus_server.cpp"
       purpose: "BusServer + CoreCommandServer implementations"
       modify_when: "Rarely"
-    - name: "serial_bus_client.h"
+    - name: "client/bus_client.h"
       purpose: "BusClient base class (extends SerialBus)"
       modify_when: "Rarely — base class for all client controllers"
-    - name: "serial_bus_client.cpp"
+    - name: "client/bus_client.cpp"
       purpose: "BusClient implementation"
       modify_when: "Rarely"
-    - name: "serial_bus.h"
+    - name: "client/bus.h"
       purpose: "SerialBus (client-only, COBS over USB CDC)"
       modify_when: "Never (stable transport layer)"
-    - name: "serial_result_queue.h"
+    - name: "client/result_queue.h"
       purpose: "ResultQueue — tag-correlated command/response matching"
       modify_when: "Never (stable infrastructure)"
-    - name: "serial_stream.h"
+    - name: "core/stream.h"
       purpose: "StreamProtocol (0xA4-0xA6) + StreamWriter — chunked data streaming with CRC-16"
       modify_when: "Adding new streaming features or changing chunk format"
-    - name: "serial_stream.cpp"
+    - name: "core/stream.cpp"
       purpose: "StreamWriter + CRC-16/CCITT implementations"
       modify_when: "Rarely — streaming infrastructure"
-    - name: "serial_diag_log.h"
+    - name: "core/diag_log.h"
       purpose: "DiagLog — diagnostic log output over serial (ring buffer → COBS, universal)"
       modify_when: "Changing log wire format or ring buffer behavior"
-    - name: "serial_diag_log.cpp"
+    - name: "core/diag_log.cpp"
       purpose: "DiagLog implementation (format, flush, ingest for relay)"
       modify_when: "Rarely — logging infrastructure"
-    - name: "serial_gunfx.h"
+    - name: "gunfx/gunfx.h"
       purpose: "GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec"
       modify_when: "Adding GunFX commands or error codes"
-    - name: "serial_lightfx.h"
+    - name: "lightfx/lightfx.h"
       purpose: "LightFxServer, LightFxClient, LightFxPacket, LightFxError"
       modify_when: "Adding LightFX commands or error codes"
-    - name: "serial_gearcontrol.h"
+    - name: "gearcontrol/gearcontrol.h"
       purpose: "GearControlServer, GearControlClient, GearControlPacket, GearControlError"
       modify_when: "Adding GearControl commands or error codes"
+    - name: "hubfx/hubfx.h"
+      purpose: "HubFxAudioServer/Client, HubFxStorageServer/Client, HubFxPacket, HubFxError (NOT auto-included by serial.h)"
+      modify_when: "Adding HubFX audio, storage, or file commands"
 
 Python_Framework:
   root: "tests/"
   files:
     - name: "framework/packets.py"
-      purpose: "Packet constants (must mirror serial_core.h)"
+      purpose: "Packet constants (must mirror core/core.h)"
       modify_when: "Adding packet types or error codes"
     - name: "framework/commands.py"
       purpose: "Command builder functions"
@@ -204,7 +219,7 @@ Scripts:
 START: Need to add command to controller
 
 Q1: Is packet type constant defined?
-├─ NO → Add to serial_xxxfx.h in correct namespace (e.g., GunFxPacket in serial_gunfx.h)
+├─ NO → Add to xxxfx/xxxfx.h in correct namespace (e.g., GunFxPacket in gunfx/gunfx.h)
 └─ YES → Continue
 
 Q2: What response category? (See 03-PROTOCOL-EXTENSION.md § Response Category Decision)
@@ -213,18 +228,18 @@ Q2: What response category? (See 03-PROTOCOL-EXTENSION.md § Response Category D
 └─ LONG-RUNNING → Server sends immediate ACK, client monitors via STATUS/async
 
 Q3: Are new error codes needed?
-├─ YES → Add to serial_xxxfx.h in module error namespace (e.g., GunFxError)
+├─ YES → Add to xxxfx/xxxfx.h in module error namespace (e.g., GunFxError)
 │        Add to tests/framework/packets.py
 └─ NO → Continue
 
-Q4: Is callback type defined in serial_xxxfx.h?
+Q4: Is callback type defined in xxxfx/xxxfx.h?
 ├─ NO → Add callback typedef
 │        Add registration method: void onXxx(Callback cb)
 │        Add private member: Callback _onXxx
 │        Add case in handleModulePacket() switch using SFX_* macros
 └─ YES → Continue
 
-Q5: Is client method defined in serial_xxxfx.h?
+Q5: Is client method defined in xxxfx/xxxfx.h?
 ├─ NO → Add method returning CommandResult (NEVER bool)
 │        IF QUERY: add response type + onModulePacket() tag resolution
 │        IF LONG-RUNNING: document completion signal
@@ -264,268 +279,33 @@ Q10: Is documentation updated?
 ```yaml
 Sync_Groups:
   - name: "Packet Constants"
-    primary: "lib/serial/serial_core.h"
+    primary: "lib/components/serial/core/core.h"
     mirrors:
       - "tests/framework/packets.py"
     rule: "Same values, same names (snake_case in Python)"
 
   - name: "Error Codes (Generic)"
-    primary: "lib/serial/serial_core.h (SerialError namespace)"
+    primary: "lib/components/serial/core/core.h (SerialError namespace)"
     mirrors:
       - "tests/framework/packets.py (CoreError class)"
     rule: "Same values, same names"
 
   - name: "Error Codes (Module)"
-    primary: "lib/serial/serial_xxxfx.h (XxxError namespace)"
+    primary: "lib/components/serial/xxxfx/xxxfx.h (XxxError namespace)"
     mirrors:
       - "tests/framework/packets.py (XxxError class)"
     rule: "Same values, same names"
 
   - name: "Command Interface"
-    primary: "lib/serial/serial_xxxfx.h"
+    primary: "lib/components/serial/xxxfx/xxxfx.h"
     mirrors:
       - "tests/framework/commands.py"
       - "tests/cli/handlers/xxxfx.py"
     rule: "Python must expose same commands"
 ```
 
----
-
-## Common Patterns
-
-### Indicator LED Standard
-
-All Pico server controllers use identical indicator LED behavior on GP13/GP14, managed automatically by `PicoServer` via `IndicatorLedManager`:
-
-```yaml
-Indicator_LEDs:
-  LED_0:
-    pin: GP13
-    purpose: "Connection status"
-    states:
-      waiting: "Blink 500ms (power on, no INIT yet)"
-      connected: "Solid ON"
-      lost: "OFF (watchdog triggered)"
-  LED_1:
-    pin: GP14
-    purpose: "Error status"
-    states:
-      normal: "OFF"
-      error: "Blink 200ms (module-specific error detected)"
-
-PicoServer_Pattern:
-  setup: "server.begin('XxxFX', FIRMWARE_VERSION, BUILD_NUMBER)  // LEDs auto-initialized"
-  loop: "server.indicators().setErrorCondition(hasError)  // Set before server.loop()"
-  auto: "server.loop()  // Updates indicators automatically"
-```
-
-**Error condition (LED 1) varies by controller:**
-- **GunFX:** No runtime error conditions (LED 1 always OFF)
-- **LightFX:** No runtime error conditions (LED 1 always OFF)
-- **GearControl:** Any gear in ERROR state → LED 1 blinks
-
-### Singleton Pattern (Board-Unique Resources)
-
-Any object with a single instance per board MUST be a singleton. Access via `::instance()`, never via pointer injection.
-
-```yaml
-Singletons:
-  Current:
-    - class: "DiagLog"
-      location: "lib/serial/serial_diag_log.h"
-      type: "Board-wide logging service"
-    - class: "SdCardModule"
-      location: "hubfx/pico/src/storage/sd_card.h"
-      type: "Single SPI SD card"
-    - class: "FlashModule"
-      location: "hubfx/pico/src/storage/flash.h"
-      type: "Single onboard LittleFS flash"
-    - class: "AudioMixer"
-      location: "hubfx/pico/src/audio/audio_mixer.h"
-      type: "Single I2S audio output"
-
-  Criteria:
-    - "Single hardware resource per board (SD, flash, USB host, I2S, codec)"
-    - "Single logical registry (slave registry, config reader)"
-    - "Board-wide service used by multiple modules (diagnostic log)"
-
-  NOT_Singletons:
-    - "Protocol handlers (*Server) — CommandRouter chain, receive Stream*"
-    - "Per-slave clients (*Client) — one per connected device"
-    - "Per-channel hardware (ServoControl[], LedControl[], INA226[])"
-    - "Effect modules (EngineFX, MuzzleFlash, SmokeGenerator)"
-
-  Pattern: |
-    static MyModule& instance() {
-        static MyModule inst;
-        return inst;
-    }
-    // Private ctor, deleted copy/move, idempotent begin()
-```
-
-### Rich STATUS Pattern
-
-Every controller provides board-specific status via `PicoServer`:
-
-```cpp
-// In setup(): Register module status callback
-server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-    buf[0] = myFlag;
-    CoreProtocol::putU16LE(&buf[1], myServo);
-    return 3;  // bytes written
-});
-
-// Free RAM is updated automatically by server.loop()
-```
-
-STATUS response = 12-byte core header + module callback data.
-See PROTOCOL.md for wire format per controller.
-
-### Client Response Handling Pattern
-
-All client methods return `CommandResult`, never `bool`. Three response categories determine how tags are resolved:
-
-```yaml
-Response_Categories:
-  Instant:
-    server: "SFX_DISPATCH → ACK/NACK"
-    client: "sendCommand() — tag auto-resolved by BusClient::handlePacket()"
-    example: "ledBrightness(), servoMove(), triggerOn()"
-
-  Query:
-    server: "Custom response packet (no SFX_DISPATCH)"
-    client: "sendCommand() + onModulePacket() resolves tag manually"
-    contract: "parse → fire callback → resolve tag (if tag != TAG_ASYNC)"
-    example: "ledSeqStatus(), ledStatus(), requestStatus()"
-
-  Long_Running:
-    server: "SFX_DISPATCH → immediate ACK (command accepted)"
-    client: "sendCommand() returns ACK quickly, poll STATUS or await async for completion"
-    example: "gearDeploy(), gearCalibrate(), landingLightDeploy()"
-```
-
-**`onModulePacket()` template for query/long-running responses:**
-```cpp
-case XxxPacket::RESPONSE_TYPE:
-    if (len >= expectedLen) {
-        // 1. Parse data
-        // 2. Fire callback
-    }
-    if (tag != CoreProtocol::TAG_ASYNC) {
-        _lastCommandResult = CommandResult::Ack();
-        _resultQueue.resolve(tag, _lastCommandResult);  // implicit ACK
-    }
-    break;
-```
-
-See `01-ARCHITECTURE.md` § Client Response Handling Design for complete details.
-
-### Callback Registration Pattern (C++)
-
-```cpp
-// In serial_xxxfx.h - case in handleModulePacket() using SFX_* macros
-case XxxPacket::COMMAND: {
-    SFX_REQUIRE_LEN(3);
-    uint16_t p1 = CoreProtocol::getU16LE(payload);
-    uint8_t p2 = payload[2];
-    SFX_VALIDATE(XxxSpec::isValid(p1), XxxError::INVALID_PARAM);
-    SFX_DISPATCH(_onCommand, p1, p2);
-}
-```
-
-### Command Builder Pattern (Python)
-
-```python
-# In commands.py
-@staticmethod
-def command_name(param1: int, param2: int) -> bytes:
-    """Build COMMAND_NAME packet."""
-    payload = struct.pack('<HB', param1, param2)  # little-endian
-    return build_packet(XxxPacket.COMMAND_NAME, payload)
-```
-
-### CLI Handler Pattern
-
-```python
-# In handlers/xxxfx.py
-class XxxFxCommandHandler(CommandHandlerBase):
-    def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
-        return {
-            'xxx.command': (self.cmd_xxx_command, CommandInfo(
-                'xxx.command', 'xxx.command <p1> <p2>',
-                'Description here', requires_init=True)),
-        }
-    
-    def cmd_xxx_command(self, args: List[str]):
-        if len(args) < 2:
-            self.print_error("Usage: xxx.command <p1> <p2>")
-            return
-        try:
-            p1, p2 = int(args[0]), int(args[1])
-            packet = XxxCommands.command_name(p1, p2)
-            success, response = self.conn.send_expect_ack(packet)
-            self.print_response(response)
-        except ValueError:
-            self.print_error("Invalid parameters")
-```
-
----
-
-## Validation Checklist
-
-Before completing any task, verify:
-
-```yaml
-Compilation:
-  - [ ] "pio run" succeeds for modified controller
-  - [ ] No Python syntax errors: "python -m py_compile <file>"
-
-Constants_Match:
-  - [ ] Packet types in C++ match Python
-  - [ ] Error codes in C++ match Python
-  - [ ] Endianness consistent (little-endian)
-
-Client_Response_Handling:
-  - [ ] All client methods return CommandResult (never bool)
-  - [ ] Response category determined (instant / query / long-running)
-  - [ ] "IF query: onModulePacket() resolves tag as implicit ACK"
-  - [ ] "IF long-running: completion signal documented"
-
-Units_Explicit:  # MANDATORY for all physical measurements
-  - [ ] Method names include unit suffix (e.g., busVoltage_mV, current_mA)
-  - [ ] Struct fields include unit suffix (e.g., voltage_mV, power_mW)
-  - [ ] Wire format comments annotate units at pack/unpack sites
-  - [ ] No implicit conversions at call sites
-  - [ ] Datasheet section refs on hardware register constants
-
-Tests_Updated:  # ALWAYS update tests when protocol/features change
-  - [ ] Existing tests still pass
-  - [ ] New functionality has test coverage
-  - [ ] Test file created/updated in tests/xxxfx/
-
-CLI_Updated:  # ALWAYS update CLI when new commands are added
-  - [ ] New commands added to tests/cli/handlers/xxxfx.py
-  - [ ] Commands appear in "help" output
-  - [ ] Commands execute correctly
-
-Documentation:
-  - [ ] README.md updated with new protocol entries
-  - [ ] Payload format documented
-  - [ ] Error codes documented
-
-Singletons:  # MANDATORY for board-unique resources
-  - [ ] Single-instance resources use ::instance() pattern (not global pointers)
-  - [ ] No setter injection for singletons (consumers access directly)
-  - [ ] Mutex protection if accessed from multiple cores
-
-Versioning:  # MANDATORY for firmware changes
-  - [ ] BUILD_NUMBER incremented (every firmware change)
-  - [ ] FIRMWARE_VERSION bumped if appropriate (semver)
-  - [ ] Breaking wire format changes bump MAJOR (field type/size/order changes)
-  - [ ] New commands/features bump MINOR
-  - [ ] Bug fixes with no wire changes bump PATCH
-  - [ ] Version history updated in controller README.md
-```
+> **All development rules, patterns, and checklists are in `.github/copilot-instructions.md`** (auto-loaded by VS Code Copilot).
+> This document is the navigation index only — detailed rules are not duplicated here.
 
 ---
 
@@ -533,10 +313,11 @@ Versioning:  # MANDATORY for firmware changes
 
 | Doc | When to Use |
 |-----|-------------|
-| [01-ARCHITECTURE.md](01-ARCHITECTURE.md) | Understand system design, packet format, class hierarchy |
-| [02-NEW-CONTROLLER.md](02-NEW-CONTROLLER.md) | Create entirely new controller type |
-| [03-PROTOCOL-EXTENSION.md](03-PROTOCOL-EXTENSION.md) | Add commands to existing controller |
-| [04-CHANGE-PROPAGATION.md](04-CHANGE-PROPAGATION.md) | Ensure all affected files updated |
-| [05-BUILD-AND-FLASH.md](05-BUILD-AND-FLASH.md) | Build firmware, flash to device |
-| [06-TEST-SUITE.md](06-TEST-SUITE.md) | Run tests, add test coverage |
-| [07-CLI-UPDATES.md](07-CLI-UPDATES.md) | Update interactive CLI |
+| [01-ARCHITECTURE.md](01-ARCHITECTURE.md) | System design, packet format, class hierarchy, response categories |
+| [02-NEW-CONTROLLER.md](02-NEW-CONTROLLER.md) | Create entirely new controller type (templates included) |
+| [03-PROTOCOL-EXTENSION.md](03-PROTOCOL-EXTENSION.md) | Add commands to existing controller (worked example) |
+| [04-CHANGE-PROPAGATION.md](04-CHANGE-PROPAGATION.md) | File sync checklists, change type matrix, verification |
+| [05-BUILD-AND-FLASH.md](05-BUILD-AND-FLASH.md) | Build firmware, flash to device, troubleshooting |
+| [06-TEST-SUITE.md](06-TEST-SUITE.md) | Run tests, write tests, test patterns |
+| [07-CLI-UPDATES.md](07-CLI-UPDATES.md) | Update interactive CLI, async output architecture |
+| [08-AUDIOTOOLS.md](08-AUDIOTOOLS.md) | AudioTools library reference (3rd-party, HubFX audio engine) |

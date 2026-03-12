@@ -8,7 +8,7 @@
  * Protocol: Binary COBS with CRC-8
  *
  * Architecture (Chain of Responsibility):
- *   - PicoServer: Common server boilerplate (serial, indicators, core protocol)
+ *   - SfxServer: Common server boilerplate (serial, indicators, core protocol)
  *   - GunFxServer: Handles TRIGGER, SERVO, SMOKE commands
  *   - CommandRouter: Routes packets to handlers in priority order
  *
@@ -38,11 +38,11 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <serial.h>
-#include <srv_control.h>
-#include <pico_server.h>
-#include <ina226.h>
-#include <battery_monitor.h>
+#include <serial/serial.h>
+#include <servo/srv_control.h>
+#include <server/sfx_server.h>
+#include <power/ina226.h>
+#include <power/battery_monitor.h>
 #include "muzzle_flash.h"
 #include "smoke_generator.h"
 
@@ -93,7 +93,7 @@ const float MAX_CURRENT_A          = 10.0f;   // 10A max expected
 // ============================================================================
 
 // Server (serial, core protocol, indicators, connection management)
-PicoServer server;
+SfxServer server;
 GunFxServer gunfxServer;
 
 // Gun effect modules
@@ -415,7 +415,7 @@ void setup() {
         return 44;
     });
 
-    // I2C bus scan — handled by PicoServer (shared infrastructure)
+    // I2C bus scan — handled by SfxServer (shared infrastructure)
     server.enableI2CScan(Wire);
     for (int i = 0; i < 2; i++) {
         server.addExpectedI2CDevice(INA226_ADDR[i], &ina226[i]);
@@ -460,5 +460,5 @@ void loop() {
     // Error indicator LED (GP14) — blink if any smoke channel has error
     server.indicators().setErrorCondition(smokeGen.hasError());
 
-    delay(1);
+    busy_wait_ms(1);
 }

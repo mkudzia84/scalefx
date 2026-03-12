@@ -51,7 +51,7 @@
  * Extends ICommandHandler with common serial I/O (COBS encode, ACK/NACK/ERROR).
  * Module-specific servers (GunFxServer, LightFxServer, etc.) extend this.
  *
- * When used with PicoServer + CommandRouter (the normal pattern), only
+ * When used with SfxServer + CommandRouter (the normal pattern), only
  * tryProcess() is called — the base handles packet range checking and
  * delegates to the subclass's handleModulePacket().
  */
@@ -184,7 +184,7 @@ protected:
  * and I2C_SCAN commands. Extends BusServer for the core packet range
  * (0xF0-0xFF) and reuses BusServer's sendAck/sendNack/sendRawPacket.
  *
- * Used by PicoServer as the first handler in the CommandRouter chain.
+ * Used by SfxServer as the first handler in the CommandRouter chain.
  */
 class CoreCommandServer : public BusServer {
 public:

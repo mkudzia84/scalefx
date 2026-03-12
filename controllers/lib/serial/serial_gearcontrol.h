@@ -33,7 +33,7 @@
  *   GEAR_SEQ_STATUS(0x70)  - Server→client sequence progress (async)
  *   GEAR_ENABLE    (0x71)  - [gear_id:u8][enabled:u8] Enable/disable gear channel
  *   GEAR_DOOR_STATUS(0x72) - Server→client door state transition (async)
- *   (I2C_SCAN moved to CorePacket — handled by PicoServer)
+ *   (I2C_SCAN moved to CorePacket — handled by SfxServer)
  */
 
 #ifndef SERIAL_GEARCONTROL_H
@@ -90,7 +90,7 @@ namespace GearControlPacket {
     // Door status (server → client, async)
     constexpr uint8_t GEAR_DOOR_STATUS    = 0x72;  // [gear_id:u8][state:u8][door0_pos_us:u16LE][door1_pos_us:u16LE]
 
-    // Diagnostics — I2C scan is handled by PicoServer (CorePacket::I2C_SCAN)
+    // Diagnostics — I2C scan is handled by SfxServer (CorePacket::I2C_SCAN)
 }
 
 // ============================================================================

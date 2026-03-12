@@ -35,7 +35,7 @@ Every Pico server controller follows the same architecture:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  PicoServer  (common boilerplate — serial, indicators, etc.) │
+│  SfxServer  (common boilerplate — serial, indicators, etc.) │
 │  ┌────────────────────────┐  ┌─────────────────────────────┐ │
 │  │ CoreCommandServer      │  │ NewFxServer                 │ │
 │  │ (extends BusServer)    │  │ (extends BusServer)         │ │
@@ -50,15 +50,15 @@ Every Pico server controller follows the same architecture:
 ```
 
 **Key classes:**
-- **PicoServer** — Common boilerplate (serial, device name, indicators, CoreCommandServer, CommandRouter, connection timeout)
+- **SfxServer** — Common boilerplate (serial, device name, indicators, CoreCommandServer, CommandRouter, connection timeout)
 - **BusServer** — Base class for all server command handlers (ACK/NACK helpers, packet range routing)
 - **CoreCommandServer** — Handles INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE, STATUS_REQ, I2C_SCAN (extends BusServer)
 - **NewFxServer** — Your module-specific handler (extends BusServer)
 
-**What PicoServer handles automatically:**
+**What SfxServer handles automatically:**
 - USB serial init (1Mbps baud, 3s wait)
 - Unique device name from Pico board ID (e.g., "NewFX-A1B2")
-- Indicator LEDs on GP13/GP14 via `IndicatorLedManager`
+- Indicator LEDs on GP13/GP14 via nested `SfxServer::IndicatorLedManager`
 - CoreCommandServer with board info and INIT/SHUTDOWN/REBOOT/BOOTSEL callbacks
 - CommandRouter with automatic handler priority (core first, then module)
 - Connection timeout / watchdog detection (15s)
@@ -122,7 +122,7 @@ lib_deps =
 
 ## Step 3: Create Server Handler
 
-**File:** `controllers/lib/serial/serial_newfx.h` (NEW FILE)
+**File:** `controllers/lib/components/serial/newfx/newfx.h` (NEW FILE)
 
 This single header contains everything for the new module: packet types, error codes, validation constants, data types, and server class.
 
@@ -144,8 +144,8 @@ This single header contains everything for the new module: packet types, error c
 
 #include <Arduino.h>
 #include <functional>
-#include "serial_bus_client.h"
-#include "serial_bus_server.h"
+#include "serial/client/bus_client.h"
+#include "serial/core/bus_server.h"
 
 // ============================================================================
 // NewFX Packet Types (0x80-0x9F range)
@@ -250,13 +250,13 @@ private:
 
 ## Step 4: Update Umbrella Header
 
-**File:** `controllers/lib/serial/serial.h`
+**File:** `controllers/lib/components/serial/serial.h`
 
 **ACTION:** Add include:
 
 ```cpp
 // NewFX binary implementation
-#include "serial_newfx.h"
+#include "newfx/newfx.h"
 ```
 
 ---
@@ -277,14 +277,14 @@ This is the canonical pattern used by all controllers. Study LightFX and GearCon
  * Protocol: Binary COBS with CRC-8
  *
  * Architecture (Chain of Responsibility):
- *   - PicoServer: Common server boilerplate (serial, indicators, core protocol)
+ *   - SfxServer: Common server boilerplate (serial, indicators, core protocol)
  *   - NewFxServer: Handles module-specific commands
  *   - CommandRouter: Routes packets to handlers in priority order
  */
 
 #include <Arduino.h>
-#include <serial.h>
-#include <pico_server.h>
+#include <serial/serial.h>
+#include <sfx_server.h>
 
 #define FIRMWARE_VERSION "0.1.0"
 #define BUILD_NUMBER 1
@@ -293,7 +293,7 @@ This is the canonical pattern used by all controllers. Study LightFX and GearCon
 //  GLOBAL INSTANCES
 // ============================================================================
 
-PicoServer server;
+SfxServer server;
 NewFxServer newfxServer;
 
 // ============================================================================
@@ -313,7 +313,7 @@ void performSafeInit() {
 // ============================================================================
 
 void setup() {
-    // 1. Initialize PicoServer
+    // 1. Initialize SfxServer
     server.begin("NewFX", FIRMWARE_VERSION, BUILD_NUMBER);
     server.onInit([]() { performSafeInit(); });
     server.onShutdown([]() { performSafeShutdown(); });
@@ -529,7 +529,7 @@ After_Completion:
 
 | Component | Header | Purpose |
 |-----------|--------|---------|
-| PicoServer | `pico_server.h` | Server boilerplate (REQUIRED) |
+| SfxServer | `sfx_server.h` | Server boilerplate (REQUIRED) |
 | LedControl | `led_control.h` | GPIO LED on/off, toggle, PWM brightness |
 | LedEventSeq | `led_event_seq.h` | Looping LED animation sequences |
 | ILedEvent | `led_events.h` | Built-in animations (LedOn, LedOff, LedFlashing, etc.) |
@@ -538,4 +538,4 @@ After_Completion:
 | INA226 | `ina226.h` | TI INA226 power/current/voltage monitor (I2C) |
 | I2CDevice | `i2c_device.h` | Base class for I2C peripherals |
 | BatteryMonitor | `battery_monitor.h` | ADC battery voltage with low-voltage alerts |
-| IndicatorLedManager | `indicator_leds.h` | Connection/error LED state machine |
+| SfxServer::IndicatorLedManager | `server/sfx_server.h` (nested class) | Connection/error LED state machine |

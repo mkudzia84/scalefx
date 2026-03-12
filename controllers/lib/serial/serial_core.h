@@ -307,6 +307,7 @@ namespace CorePacket {
     constexpr uint8_t I2C_SCAN_RESULT = 0xFC;  // I2C scan response
     constexpr uint8_t LOG_MESSAGE     = 0xFD;  // [level:u8][millis:u32LE][message:str] (async, unsolicited)
     constexpr uint8_t IDENTIFY        = 0xFE;  // Query board info without triggering INIT (response uses same type + INIT_READY payload format)
+    constexpr uint8_t DIAG_HISTORY    = 0xFF;  // Request diagnostic log history (sends buffered LOG_MESSAGE packets without draining)
 }
 
 // ============================================================================
@@ -491,7 +492,7 @@ protected:
 //
 // CoreCommandServer extends BusServer and is defined in serial_bus_server.h.
 // This forward declaration allows headers that only need pointers/references
-// (e.g. pico_server.h) to work without pulling in the full definition.
+// (e.g. sfx_server.h) to work without pulling in the full definition.
 //
 class CoreCommandServer;
 

@@ -25,6 +25,7 @@ class CorePacket:
     I2C_SCAN_RESULT = 0xFC
     LOG_MESSAGE = 0xFD  # [level:u8][millis:u32LE][message:str] (async, universal)
     IDENTIFY    = 0xFE  # Query board info without triggering INIT (same payload as INIT_READY)
+    DIAG_HISTORY = 0xFF  # Request diagnostic log history (sends LOG_MESSAGE packets without draining buffer)
 
 
 class GunFxPacket:
@@ -377,7 +378,7 @@ class StreamPacket:
 
     Protocol-level infrastructure for chunked data transfer.
     Used by any controller that streams data via StreamWriter.
-    Defined in serial_stream.h (C++) / here (Python).
+    Defined in core/stream.h (C++) / here (Python).
 
     Wire format:
       STREAM_BEGIN: [totalBytes:u32LE]                        (0 = unknown)
@@ -413,8 +414,10 @@ class HubFxPacket:
     AUDIO_QUEUE       = 0x88  # [ch:u8][vol:u8][loopCount:u16LE][behavior:u8][pathLen:u8][path:str]
     AUDIO_QUEUE_CLEAR = 0x89  # [ch:u8] (0xFF=all)
     AUDIO_STATUS_REQ  = 0x8A  # [] → AUDIO_STATUS_RESP
-    AUDIO_STATUS_RESP = 0x8B  # v2: [masterVol:u8][flags:u8][sampleRate:u16LE][bitDepth:u8]
+    AUDIO_STATUS_RESP = 0x8B  # v3: [masterVol:u8][flags:u8][sampleRate:u16LE][bitDepth:u8]
                               #     [maxCh:u8][codecNameLen:u8][codecName:str]
+                              #     [ringFillPct:u8][ringAvailRead:u16LE][ringAvailWrite:u16LE]
+                              #     [underruns:u32LE][consumeLoops:u32LE][consumeFrames:u32LE]
                               #     [activeMask:u8][per-ch: 10B + wavRate:u16LE + wavCh:u8
                               #      + wavBits:u8 + fnameLen:u8 + fname:str]
 
@@ -432,7 +435,7 @@ class HubFxPacket:
     # SD card management
     SD_INIT           = 0x93  # [speed_mhz:u8] → ACK/NACK
     SD_STATUS_REQ     = 0x94  # [] → SD_STATUS_RESP
-    SD_STATUS_RESP    = 0x95  # [initialized:u8]
+    SD_STATUS_RESP    = 0x95  # [initialized:u8][cardSize_MB:u32LE][totalSpace_MB:u32LE][freeSpace_MB:u32LE][fatType:u8]
 
     # Slave routing (subcmd pattern)
     # Payload: [subcmd:u8][original_payload...]
@@ -441,16 +444,19 @@ class HubFxPacket:
     SLAVE_ROUTE_LIGHTFX     = 0x97  # [subcmd:u8][...] → route to LightFX
     SLAVE_ROUTE_GEARCONTROL = 0x98  # [subcmd:u8][...] → route to GearControl
 
+    # Flash management
+    FLASH_STATUS_REQ  = 0x99  # [] → response: [initialized:u8][totalBytes:u32LE][usedBytes:u32LE][freeBytes:u32LE]
+
     # LOG_MESSAGE moved to CorePacket.LOG_MESSAGE (0xFD) — universal across all boards
 
-    # File operations
-    FILE_LIST          = 0x9A  # [pathLen:u8][path:str] → STREAM_BEGIN + STREAM_DATA + STREAM_END
-    FILE_DELETE        = 0x9B  # [pathLen:u8][path:str] → ACK/NACK
-    FILE_MKDIR         = 0x9C  # [pathLen:u8][path:str] → ACK/NACK
-    FILE_INFO          = 0x9D  # [pathLen:u8][path:str] → FILE_INFO_RESP
+    # File operations — optional [target:u8] appended to path (0=SD default, 1=Flash)
+    FILE_LIST          = 0x9A  # [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END
+    FILE_DELETE        = 0x9B  # [pathLen:u8][path:str][target:u8?] → ACK/NACK
+    FILE_MKDIR         = 0x9C  # [pathLen:u8][path:str][target:u8?] → ACK/NACK
+    FILE_INFO          = 0x9D  # [pathLen:u8][path:str][target:u8?] → FILE_INFO_RESP
     FILE_INFO_RESP     = 0x9E  # [exists:u8][isDir:u8][size:u32LE]
-    FILE_DOWNLOAD      = 0x9F  # [pathLen:u8][path:str] → STREAM_BEGIN + STREAM_DATA + STREAM_END
-    FILE_UPLOAD_BEGIN  = 0xA0  # [size:u32LE][pathLen:u8][path:str] → ACK
+    FILE_DOWNLOAD      = 0x9F  # [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END
+    FILE_UPLOAD_BEGIN  = 0xA0  # [size:u32LE][pathLen:u8][path:str][target:u8?] → ACK
     FILE_UPLOAD_DATA   = 0xA1  # [seqNum:u16LE][crc16:u16LE][data:N] → ACK/NACK(CRC_ERROR)
     FILE_UPLOAD_END    = 0xA2  # [] → ACK/NACK
     FILE_UPLOAD_CANCEL = 0xA3  # [] → ACK
@@ -539,6 +545,12 @@ class HubFxAudio:
 
     CH_ALL        = 0xFF  # All channels / master
     MAX_CHANNELS  = 8
+
+
+class HubFxStorage:
+    """HubFX storage target constants (matches C++ HubFxStorage namespace)."""
+    TARGET_SD    = 0  # SD card (default)
+    TARGET_FLASH = 1  # Onboard LittleFS flash
 
 
 class DiagLevel:

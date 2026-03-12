@@ -21,7 +21,7 @@
 ┌───────────────────┐  ┌───────────────────┐  ┌────────────────────────┐
 │ GunFX Pico        │  │ LightFX Pico      │  │ GearControl Pico       │
 │ (Server)          │  │ (Server)          │  │ (Server)               │
-│ PicoServer +      │  │ PicoServer +      │  │ PicoServer +           │
+│ SfxServer +      │  │ SfxServer +      │  │ SfxServer +           │
 │ GunFxServer       │  │ LightFxServer     │  │ GearControlServer      │
 │ - Muzzle flash    │  │ - 8 LED channels  │  │ - 3 landing gears      │
 │ - Smoke heater    │  │ - LED sequences   │  │ - INA226 current mon   │
@@ -203,10 +203,10 @@ SerialBus (low-level COBS framing over USB CDC)
               All methods return CommandResult
 ```
 
-### Server Infrastructure (PicoServer)
+### Server Infrastructure (SfxServer)
 
 ```
-PicoServer  (composes everything for Pico server controllers)
+SfxServer  (composes everything for Pico server controllers)
   │
   ├── CommandRouter (Chain of Responsibility dispatcher)
   │     addHandler(ICommandHandler*) — ordered priority
@@ -215,7 +215,7 @@ PicoServer  (composes everything for Pico server controllers)
   ├── CoreCommandServer (first handler — always registered)
   │     INIT/SHUTDOWN/REBOOT/BOOTSEL/KEEPALIVE/STATUS
   │
-  ├── IndicatorLedManager (GP13 connection, GP14 error)
+  ├── IndicatorLedManager (nested class: GP13 connection, GP14 error)
   │     setErrorCondition() / setWarningCondition()
   │     update() — called automatically by server.loop()
   │
@@ -227,7 +227,7 @@ PicoServer  (composes everything for Pico server controllers)
 Any class with exactly one instance per board — whether wrapping a hardware peripheral or a logical registry — is implemented as a singleton using C++11 thread-safe static local initialization.
 
 ```
-DiagLog::instance()          — Board-wide diagnostic logging (lib/serial/)
+DiagLog::instance()          — Board-wide diagnostic logging (lib/components/serial/)
   │ Ring buffer → COBS LOG_MESSAGE packets
   │ Mutex-protected for dual-core safety
   │ Compile-time strippable via SFX_ENABLE_DIAG_LOG=0
@@ -241,9 +241,10 @@ FlashModule::instance()      — Single onboard LittleFS flash (hubfx/pico/stora
   │ Thread-safe access via pico mutex
   │ Used by: ConfigReader
   │
-AudioMixer::instance()       — Single I2S audio output (hubfx/pico/audio/)
+AudioMixer::instance()       — Single I2S audio output (lib/components/audio/)
   │ Runs on Core 1, thread-safe buffer access
   │ Uses SdCardModule singleton internally
+  │ Platform-conditional buffer sizes (Pico vs ESP32)
 ```
 
 **Pattern:**
@@ -314,7 +315,7 @@ Every command falls into one of three categories based on how the server respond
 Server sends `ACK` (success) or `NACK(errorCode)` via `SFX_DISPATCH`. The operation completes before the ACK is sent. `BusClient::handlePacket()` resolves the tag automatically.
 
 ```cpp
-// Server side (serial_xxxfx.h — handleModulePacket)
+// Server side (xxxfx/xxxfx.h — handleModulePacket)
 case XxxPacket::LED_SET: {
     SFX_REQUIRE_LEN(2);
     SFX_DISPATCH(_ledSetCallback, channel, brightness);  // ACK sent by macro
@@ -494,10 +495,10 @@ GearControl:
 
 ## Handler Registration Pattern
 
-All Pico server controllers use `PicoServer` which handles handler registration order automatically:
+All Pico server controllers use `SfxServer` which handles handler registration order automatically:
 
 ```cpp
-PicoServer server;
+SfxServer server;
 GunFxServer gunfxServer;
 
 void setup() {
@@ -528,7 +529,7 @@ server.addModuleHandler(nullptr);  // Core protocol only (e.g., NoOp)
 
 ## Indicator LED Standard
 
-All Pico server controllers use identical indicator LED behavior on GP13/GP14, managed automatically by PicoServer via `IndicatorLedManager`.
+All Pico server controllers use identical indicator LED behavior on GP13/GP14, managed automatically by SfxServer via its nested `IndicatorLedManager` class.
 
 ```yaml
 LED_0_Connection:
@@ -563,7 +564,7 @@ Connected → (cycle repeats)
 
 ## Server Handler Macros (SFX_*)
 
-Server `handleModulePacket()` switch cases use macros from `serial_core.h`:
+Server `handleModulePacket()` switch cases use macros from `core/core.h`:
 
 ```cpp
 SFX_REQUIRE_LEN(n)                    // NACK MISSING_PARAMETER if len < n
@@ -636,27 +637,27 @@ Each module defines a `Spec` namespace with constants and inline validators:
 
 ```yaml
 Serial_Library:
-  root: "controllers/lib/serial/"
+  root: "controllers/lib/components/serial/"
   files:
     serial.h:             "Umbrella header — include this for everything"
-    serial_core.h:        "CoreProtocol (COBS/CRC/endian), SerialError, CommandResult,
+    core/core.h:        "CoreProtocol (COBS/CRC/endian), SerialError, CommandResult,
                            ICommandHandler, CommandRouter, SFX_* macros, callback typedefs"
-    serial_core.cpp:      "CoreProtocol implementations, CorePayload encode/decode"
-    serial_bus_server.h:  "BusServer base class + CoreCommandServer"
-    serial_bus_server.cpp: "BusServer + CoreCommandServer implementations"
-    serial_bus_client.h:  "BusClient base class (extends SerialBus)"
-    serial_bus_client.cpp: "BusClient implementation"
-    serial_bus.h:         "SerialBus (client-only, COBS over USB CDC)"
-    serial_bus.cpp:       "SerialBus implementation (guarded by #ifndef SCALEFX_SERVER)"
-    serial_usb_host.h:    "UsbHost (client-only, PIO-USB manager)"
-    serial_result_queue.h: "ResultQueue — tag-correlated command/response matching"
-    serial_result_queue.cpp: "ResultQueue implementation"
-    serial_gunfx.h:       "GunFxServer + GunFxClient + GunFxPacket + GunFxError + GunFxSpec"
-    serial_gunfx.cpp:     "GunFxClient implementation"
-    serial_lightfx.h:     "LightFxServer + LightFxClient + LightFxPacket + LightFxError"
-    serial_lightfx.cpp:   "LightFxClient implementation"
-    serial_gearcontrol.h: "GearControlServer + GearControlClient + GearControlPacket + GearControlError"
-    serial_gearcontrol.cpp: "GearControlClient implementation"
+    core/core.cpp:      "CoreProtocol implementations, CorePayload encode/decode"
+    core/bus_server.h:  "BusServer base class + CoreCommandServer"
+    core/bus_server.cpp: "BusServer + CoreCommandServer implementations"
+    client/bus_client.h:  "BusClient base class (extends SerialBus)"
+    client/bus_client.cpp: "BusClient implementation"
+    client/bus.h:         "SerialBus (client-only, COBS over USB CDC)"
+    client/bus.cpp:       "SerialBus implementation (guarded by #ifndef SCALEFX_SERVER)"
+    client/usb_host.h:    "UsbHost (client-only, PIO-USB manager)"
+    client/result_queue.h: "ResultQueue — tag-correlated command/response matching"
+    client/result_queue.cpp: "ResultQueue implementation"
+    gunfx/gunfx.h:       "GunFxServer + GunFxClient + GunFxPacket + GunFxError + GunFxSpec"
+    gunfx/gunfx.cpp:     "GunFxClient implementation"
+    lightfx/lightfx.h:     "LightFxServer + LightFxClient + LightFxPacket + LightFxError"
+    lightfx/lightfx.cpp:   "LightFxClient implementation"
+    gearcontrol/gearcontrol.h: "GearControlServer + GearControlClient + GearControlPacket + GearControlError"
+    gearcontrol/gearcontrol.cpp: "GearControlClient implementation"
 ```
 
 ---
@@ -690,15 +691,15 @@ Error_Ranges:
 
   - range: "0x20-0x4F"
     namespace: "GunFxError"
-    defined_in: "serial_gunfx.h"
+    defined_in: "gunfx/gunfx.h"
 
   - range: "0x50-0x5F"
     namespace: "LightFxError"
-    defined_in: "serial_lightfx.h"
+    defined_in: "lightfx/lightfx.h"
 
   - range: "0x60-0x6F"
     namespace: "GearControlError"
-    defined_in: "serial_gearcontrol.h"
+    defined_in: "gearcontrol/gearcontrol.h"
 
   - range: "0x70-0x8F"
     namespace: "Reserved"
@@ -768,12 +769,12 @@ DO:
   - Use CoreProtocol::getU16LE() / putU16LE() for endian-safe reads/writes
   - Return 0 (SerialError::OK) from callbacks on success
   - Return specific error codes on failure
-  - Use PicoServer for all Pico server controllers
+  - Use SfxServer for all Pico server controllers
   - Extend BusServer for module server handlers
   - Extend BusClient for module client controllers
   - Use SFX_* macros in handleModulePacket() for ACK/NACK handling
   - Include unit suffixes on all physical measurements (_mV, _mA, _us, _ms)
-  - Put packet types, error codes, and validation in serial_xxxfx.h (single file per module)
+  - Put packet types, error codes, and validation in xxxfx/xxxfx.h (single file per module)
   - Implement board-unique resources as singletons (::instance(), private ctor, deleted copy/move)
   - Access singletons directly — never via pointer injection or extern globals
 
@@ -782,6 +783,6 @@ DONT:
   - Don't allocate memory in interrupt context
   - Don't assume packet payload is null-terminated
   - Don't hardcode magic numbers (use constants in Spec namespace)
-  - Don't create separate serial_error.h files — errors belong in serial_xxxfx.h
-  - Don't bypass PicoServer for server controllers
+  - Don't create separate error.h files — errors belong in xxxfx/xxxfx.h
+  - Don't bypass SfxServer for server controllers
 ```

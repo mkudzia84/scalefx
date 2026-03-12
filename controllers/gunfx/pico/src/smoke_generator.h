@@ -42,8 +42,8 @@
 #define SMOKE_GENERATOR_H
 
 #include <Arduino.h>
-#include <ina226.h>
-#include <serial_gunfx.h>   // GunFxSmokeConfig, SmokeErrorReason
+#include <power/ina226.h>
+#include <serial/gunfx/gunfx.h>   // GunFxSmokeConfig, SmokeErrorReason
 
 // ============================================================================
 // Constants

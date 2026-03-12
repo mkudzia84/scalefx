@@ -4,8 +4,8 @@ using System.Text;
 namespace ScaleFXStudio.Services;
 
 /// <summary>
-/// Service for managing serial port connections to devices like Raspberry Pi over USB.
-/// Supports USB gadget mode (Pi Zero/4) and USB-to-Serial adapters.
+/// Service for managing serial port connections to Pico controllers over USB.
+/// Supports RP2040/RP2350 CDC serial connections.
 /// </summary>
 public class SerialService : IDisposable
 {
@@ -15,7 +15,7 @@ public class SerialService : IDisposable
     private readonly object _bufferLock = new();
 
     /// <summary>
-    /// Default baud rate for Raspberry Pi serial console.
+    /// Default baud rate for Pico controller serial connections.
     /// </summary>
     public const int DefaultBaudRate = 1000000;
 

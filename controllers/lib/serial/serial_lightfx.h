@@ -376,7 +376,7 @@ private:
  * @brief Server-side LightFX serial communication (binary COBS protocol)
  * 
  * Used by LightFX Pico to receive commands from HubFX client.
- * Extends BusServer for use with PicoServer + CommandRouter.
+ * Extends BusServer for use with SfxServer + CommandRouter.
  */
 class LightFxServer : public BusServer {
 public:

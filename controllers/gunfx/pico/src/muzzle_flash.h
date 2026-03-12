@@ -24,7 +24,7 @@
 #define MUZZLE_FLASH_H
 
 #include <Arduino.h>
-#include <srv_control.h>
+#include <servo/srv_control.h>
 #include <functional>
 
 // ============================================================================

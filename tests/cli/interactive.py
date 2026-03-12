@@ -118,11 +118,21 @@ class InteractiveCLI(OutputMixin):
         If the core handler has a connection that the CLI doesn't know about
         (e.g., after 'connect' command), pull it back to the CLI first.
         Similarly, if the core handler disconnected, clear the CLI's connection.
+        
+        Always ensures _print_async_message is registered as a callback on
+        the active connection. This is critical for LOG_MESSAGE display during
+        command execution (when the listener thread is stopped and
+        _wait_for_tag dispatches async packets via callbacks).
         """
         # Pull connection state from core handler back to CLI
         handler_conn = self.core_handler.conn
         if handler_conn is not self.conn:
             self.conn = handler_conn
+        
+        # Always ensure async callback is registered on active connection.
+        # add_callback is idempotent, so safe to call on every sync.
+        if self.conn is not None:
+            self.conn.add_callback(self._print_async_message)
         
         # Pull controller type from core handler
         if self.core_handler.controller_type and self.core_handler.controller_type != self.controller_type:
@@ -413,6 +423,10 @@ class InteractiveCLI(OutputMixin):
         self.core_handler.set_connection(None)
         self.conn = ScaleFXConnection(port=port)
         if self.conn.connect(init=False):
+            # Register async callback early — before _identify_and_init()
+            # so LOG_MESSAGE packets during INIT are displayed via
+            # _wait_for_tag's callback dispatch.
+            self.conn.add_callback(self._print_async_message)
             self.core_handler.set_connection(self.conn)
             self._sync_connection()
             self.print_ok(f"Connected to {port}")

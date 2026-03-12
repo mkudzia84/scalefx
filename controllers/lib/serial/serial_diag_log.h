@@ -2,10 +2,12 @@
  * DiagLog — Diagnostic Log Output over Serial Protocol (Singleton)
  *
  * Sends human-readable log messages to the PC client as binary COBS packets.
- * Messages are buffered in a ring buffer with mutex protection, allowing safe
- * logging from both cores on RP2040.
+ * Messages are buffered in a rolling ring buffer with mutex protection,
+ * allowing safe logging from both cores on RP2040/RP2350. When the ring
+ * buffer is full, the oldest message is overwritten (rolling/circular
+ * behavior) so new messages are never lost.
  *
- * Universal across all ScaleFX boards — initialized by PicoServer::begin()
+ * Universal across all ScaleFX boards — initialized by SfxServer::begin()
  * so every controller (GunFX, LightFX, GearControl, HubFX) can log via the
  * SFX_LOG_* macros without any local state.
  *
@@ -27,14 +29,15 @@
  * Usage (via singleton directly):
  *   DiagLog::instance().info("Custom message");
  *
- * Initialization (handled by PicoServer::begin()):
+ * Initialization (handled by SfxServer::begin()):
  *   DiagLog::instance().begin(&Serial);
- *   // flush is automatic in PicoServer::loop()
+ *   // messages retrieved on-demand via DIAG_HISTORY command (sendHistory())
  *
  * Thread Safety:
  *   A pico mutex guards the format+enqueue step to prevent interleaved
- *   writes from multiple cores. Only the flushing core reads from the
- *   ring buffer (single-consumer).
+ *   writes from multiple cores. Ring indices (_head, _tail) and the
+ *   overwrite counter use std::atomic with release/acquire ordering
+ *   so sendHistory() can safely snapshot them without the mutex.
  *
  * Compile-time stripping:
  *   Set SFX_ENABLE_DIAG_LOG=0 in build_flags to replace DiagLog with a
@@ -83,6 +86,7 @@ namespace DiagLevel {
 
 #include <stdarg.h>
 #include <pico/mutex.h>
+#include <atomic>
 
 // ============================================================================
 // DiagLog Singleton
@@ -104,7 +108,7 @@ public:
     /**
      * @brief Initialize with serial stream
      *
-     * Must be called once (typically by PicoServer::begin()) before any
+     * Must be called once (typically by SfxServer::begin()) before any
      * logging occurs. Safe to call multiple times — subsequent calls
      * update the stream pointer.
      *
@@ -112,11 +116,11 @@ public:
      * @param packetType Packet type override (default CorePacket::LOG_MESSAGE)
      */
     void begin(Stream* serial, uint8_t packetType = CorePacket::LOG_MESSAGE) {
-        _serial = serial;
+        _serial.store(serial, std::memory_order_release);  // visible to both cores
         _packetType = packetType;
-        if (!_mutexInitialized) {
+        if (!_mutexInitialized.load(std::memory_order_relaxed)) {
             mutex_init(&_mutex);
-            _mutexInitialized = true;
+            _mutexInitialized.store(true, std::memory_order_release);
         }
     }
 
@@ -124,12 +128,22 @@ public:
      * @brief Set minimum log level (messages below this are discarded)
      * @param level Minimum level (DiagLevel::DEBUG..DiagLevel::ERR)
      */
-    void setMinLevel(uint8_t level) { _minLevel = level; }
+    void setMinLevel(uint8_t level) { _minLevel.store(level, std::memory_order_relaxed); }
 
     /**
      * @brief Get current minimum log level
      */
-    uint8_t minLevel() const { return _minLevel; }
+    uint8_t minLevel() const { return _minLevel.load(std::memory_order_relaxed); }
+
+    /**
+     * @brief Check if DiagLog is initialized (serial stream set)
+     * 
+     * Safe to call from any core. Use this from Core 1's setup1() to
+     * wait for Core 0 to initialize DiagLog before logging.
+     */
+    bool isInitialized() const {
+        return _serial.load(std::memory_order_acquire) != nullptr;
+    }
 
     // ========================================================================
     // Logging Methods (safe from any core, mutex-protected, buffered)
@@ -176,26 +190,34 @@ public:
     void ingest(uint8_t level, const char* message);
 
     /**
-     * @brief Flush all buffered log messages to serial as COBS packets
+     * @brief Send all buffered log messages WITHOUT draining the buffer
      *
-     * Called automatically by PicoServer::loop(). Each buffered message
-     * is sent as a LOG_MESSAGE packet with TAG_ASYNC.
+     * Unlike flush(), this method does NOT advance _tail. Use this for
+     * the DIAG_HISTORY command — allows viewing log history without
+     * consuming the rolling 128-message buffer.
      *
-     * @return Number of messages flushed
+     * Messages are sent oldest-first (chronological order).
+     *
+     * @return Number of messages sent
      */
-    uint16_t flush();
+    uint16_t sendHistory();
 
     /**
      * @brief Get number of messages currently buffered
      */
     uint16_t pending() const {
-        return (_head - _tail + RING_SIZE) % RING_SIZE;
+        uint16_t h = _head.load(std::memory_order_acquire);
+        uint16_t t = _tail.load(std::memory_order_acquire);
+        return (h - t + RING_SIZE) % RING_SIZE;
     }
 
     /**
-     * @brief Get count of dropped messages (ring buffer overflow)
+     * @brief Get count of overwritten messages (ring buffer rollover)
+     *
+     * When the ring buffer is full, new messages overwrite the oldest.
+     * This counter tracks how many messages have been lost to rollover.
      */
-    uint32_t droppedCount() const { return _dropped; }
+    uint32_t overwrittenCount() const { return _overwritten.load(std::memory_order_acquire); }
 
 private:
     DiagLog() = default;
@@ -205,7 +227,7 @@ private:
 
     // Ring buffer constants
     static constexpr size_t MAX_MSG_LEN = 128;    // max message text per entry
-    static constexpr uint16_t RING_SIZE = 64;     // power of 2, holds boot + reconnect history
+    static constexpr uint16_t RING_SIZE = 128;    // power of 2, holds boot + reconnect history
 
     // Ring buffer entry — pre-formatted message with metadata
     struct LogEntry {
@@ -216,15 +238,16 @@ private:
     };
 
     LogEntry _ring[RING_SIZE];
-    volatile uint16_t _head = 0;   // next write position
-    volatile uint16_t _tail = 0;   // next read position
-    volatile uint32_t _dropped = 0;
+    std::atomic<uint16_t> _head{0};       // next write position — Core 0/1 write (mutex), sendHistory reads (lock-free)
+    std::atomic<uint16_t> _tail{0};       // oldest entry position — Core 0/1 write (mutex), sendHistory reads (lock-free)
+    std::atomic<uint32_t> _overwritten{0}; // count of entries lost to rollover
 
-    Stream* _serial = nullptr;
+    // Cross-core visibility: Core 0 writes in begin(), Core 1 reads in logv()
+    std::atomic<Stream*> _serial{nullptr};            // Core 0 writes, both cores read
     uint8_t _packetType = CorePacket::LOG_MESSAGE;
-    uint8_t _minLevel = DiagLevel::INFO;  // default: INFO and above
+    std::atomic<uint8_t> _minLevel{DiagLevel::INFO};  // Core 0 writes (setMinLevel), both cores read (logv)
     mutex_t _mutex;
-    bool _mutexInitialized = false;
+    std::atomic<bool> _mutexInitialized{false};       // Core 0 writes, both cores read
 
     /**
      * @brief Format and enqueue a log message (mutex-protected)
@@ -255,9 +278,8 @@ public:
     void error(const char*, ...) {}
 
     void ingest(uint8_t, const char*) {}
-    uint16_t flush() { return 0; }
     uint16_t pending() const { return 0; }
-    uint32_t droppedCount() const { return 0; }
+    uint32_t overwrittenCount() const { return 0; }
 
 private:
     DiagLog() = default;
@@ -277,7 +299,7 @@ private:
 //  SFX_LOG_DEBUG("State=%d val=%u", state, val);
 //
 //  When SFX_ENABLE_DIAG_LOG=0 these compile to nothing (zero overhead).
-//  The singleton is initialized by PicoServer::begin() — logging before
+//  The singleton is initialized by SfxServer::begin() — logging before
 //  that is silently discarded (begin() not yet called → _serial is null).
 
 #if SFX_ENABLE_DIAG_LOG

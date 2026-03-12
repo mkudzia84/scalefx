@@ -2,7 +2,7 @@
  * HubFX Logging Configuration
  *
  * Module-specific logging macros that route through the DiagLog singleton
- * (defined in serial_diag_log.h, initialized by PicoServer::begin()).
+ * (defined in serial_diag_log.h, initialized by SfxServer::begin()).
  * Messages are sent to the PC client as binary COBS packets
  * (CorePacket::LOG_MESSAGE = 0xFD) when connected.
  *
@@ -20,7 +20,7 @@
 #ifndef HUBFX_LOG_H
 #define HUBFX_LOG_H
 
-#include <serial_diag_log.h>
+#include <serial/core/diag_log.h>
 
 // ============================================================================
 //  COMPILE-TIME FEATURE FLAGS

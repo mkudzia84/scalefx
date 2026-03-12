@@ -45,8 +45,8 @@
 #define DOOR_SEQUENCER_H
 
 #include <Arduino.h>
-#include <srv_control.h>
-#include <serial_gearcontrol.h>
+#include <servo/srv_control.h>
+#include <serial/gearcontrol/gearcontrol.h>
 
 // ============================================================================
 // Door Sequencer Configuration

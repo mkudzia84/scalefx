@@ -287,7 +287,7 @@ private:
  * @brief Server-side GunFX serial communication (binary COBS protocol)
  * 
  * Used by GunFX Pico to receive commands from HubFX client.
- * Extends BusServer for use with PicoServer + CommandRouter.
+ * Extends BusServer for use with SfxServer + CommandRouter.
  */
 class GunFxServer : public BusServer {
 public:

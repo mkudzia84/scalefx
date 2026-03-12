@@ -12,7 +12,7 @@
 #define SLAVE_REGISTRY_H
 
 #include <Arduino.h>
-#include <serial_bus_client.h>
+#include <serial/client/bus_client.h>
 
 #include "hubfx_protocol.h"
 

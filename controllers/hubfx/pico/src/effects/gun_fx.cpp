@@ -6,7 +6,7 @@
 
 #include "gun_fx.h"
 #include "effects_config.h"
-#include "../audio/audio_mixer.h"
+#include <audio/audio_mixer.h>
 
 // Debug logging using centralized config
 #define LOG(fmt, ...) EFFECTS_LOG("GunFX", fmt, ##__VA_ARGS__)
@@ -105,7 +105,7 @@ bool GunFX::start() {
     // Send INIT to GunFX Pico with keepalive interval
     // The slave will use 1.5x this interval for connection timeout
     _serial.sendInit(GunFXConfig::KEEPALIVE_INTERVAL_MS);
-    delay(100);
+    busy_wait_ms(100);
     
     // Configure pitch servo
     if (_settings.pitch.servoId > 0) {

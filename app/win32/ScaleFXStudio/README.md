@@ -1,6 +1,6 @@
 # ScaleFX Studio
 
-Windows configuration tool for the ScaleFX Hub system. Provides a graphical interface to create and edit configuration files for the Raspberry Pi-based sound and effects controller.
+Windows visual configuration editor for the ScaleFX effects system. Provides a graphical interface to configure and manage Pico-based scale model effects controllers.
 
 ## Features
 
@@ -52,7 +52,7 @@ dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=
    - Set up servo ranges and motion profiles
    - Add rates of fire with sound file paths
 4. **Save** to generate a `config.yaml` file
-5. **Transfer** the config file to your Raspberry Pi
+5. **Transfer** the config file to your controller
 
 ## Configuration Sections
 

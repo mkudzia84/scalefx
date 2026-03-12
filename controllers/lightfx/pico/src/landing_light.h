@@ -24,9 +24,9 @@
 #define LANDING_LIGHT_H
 
 #include <Arduino.h>
-#include <led_control.h>
-#include <srv_control.h>
-#include <serial_lightfx.h>  // LightFxLandingLightStatus, LandingLightPhase
+#include <led/led_control.h>
+#include <servo/srv_control.h>
+#include <serial/lightfx/lightfx.h>  // LightFxLandingLightStatus, LandingLightPhase
 
 // ============================================================================
 // Landing Light State

@@ -153,6 +153,7 @@ gunfx: "controllers/gunfx/pico/"
 lightfx: "controllers/lightfx/pico/"
 gearcontrol: "controllers/gearcontrol/pico/"
 hubfx: "controllers/hubfx/pico/"
+hubfx-esp32s3: "controllers/hubfx/esp32s3/"   # Uses esptool for upload
 noop: "controllers/noop/pico/"
 ```
 
@@ -270,28 +271,6 @@ AI_Agent_Troubleshooting:
       Create a temporary .py file instead, or use single-line python -c commands.
       For complex verification, use the interactive CLI or write a test script.
     best_practice: "For multi-line Python in PowerShell, write a .py file"
-```
-
----
-
-## Remote Build (HubFX Pi)
-
-```yaml
-Tasks_Available:
-  - label: "Build HubFX Pi on Raspberry Pi (Remote SSH)"
-    command: "ssh helifx@helifx 'cd /home/helifx/helifx/controllers/hubfx/pi && make'"
-  
-  - label: "Clean HubFX Pi on Raspberry Pi (Remote SSH)"
-    command: "ssh helifx@helifx 'cd /home/helifx/helifx/controllers/hubfx/pi && make clean'"
-  
-  - label: "Sync and Build HubFX Pi on Raspberry Pi"
-    command: |
-      scp -r ${workspaceFolder}/controllers/hubfx/pi/* helifx@helifx:/home/helifx/helifx/controllers/hubfx/pi/
-      ssh helifx@helifx 'cd /home/helifx/helifx/controllers/hubfx/pi && make'
-
-Usage:
-  vscode: "Ctrl+Shift+B → Select task"
-  cli: "Use run_task tool with task ID"
 ```
 
 ---

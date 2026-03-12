@@ -9,7 +9,7 @@ hardware specifications.
 
 import warnings
 from .protocol import build_packet, parse_packet, u16_le, i16_le, u32_le
-from .packets import CorePacket, GunFxPacket, LightFxPacket, LightFxEventType, GearControlPacket, HubFxPacket, HubFxAudio
+from .packets import CorePacket, GunFxPacket, LightFxPacket, LightFxEventType, GearControlPacket, HubFxPacket, HubFxAudio, HubFxStorage
 
 
 # =============================================================================
@@ -1335,12 +1335,31 @@ class HubFxCommands(CommandBuilder):
         """
         return build_packet(HubFxPacket.SD_STATUS_REQ)
 
+    @staticmethod
+    def flash_status() -> bytes:
+        """
+        Request onboard flash (LittleFS) status.
+
+        Response is FLASH_STATUS_REQ (same packet type for req/resp):
+          [initialized:u8][totalBytes:u32LE][usedBytes:u32LE][freeBytes:u32LE]
+        """
+        return build_packet(HubFxPacket.FLASH_STATUS_REQ)
+
     # =========================================================================
     # File Operations
     # =========================================================================
 
     @staticmethod
-    def file_list(path: str = "/") -> bytes:
+    def _path_payload(path: str, target: int = 0) -> bytes:
+        """Build [pathLen:u8][path:str][target:u8?] payload."""
+        path_bytes = path.encode('utf-8')
+        payload = bytes([len(path_bytes)]) + path_bytes
+        if target != HubFxStorage.TARGET_SD:
+            payload += bytes([target])
+        return payload
+
+    @staticmethod
+    def file_list(path: str = "/", target: int = 0) -> bytes:
         """
         List directory contents.
 
@@ -1349,37 +1368,34 @@ class HubFxCommands(CommandBuilder):
 
         Args:
             path: Directory path (e.g., "/", "/sounds")
+            target: Storage target (0=SD, 1=Flash)
         """
-        path_bytes = path.encode('utf-8')
-        payload = bytes([len(path_bytes)]) + path_bytes
-        return build_packet(HubFxPacket.FILE_LIST, payload)
+        return build_packet(HubFxPacket.FILE_LIST, HubFxCommands._path_payload(path, target))
 
     @staticmethod
-    def file_delete(path: str) -> bytes:
+    def file_delete(path: str, target: int = 0) -> bytes:
         """
         Delete a file.
 
         Args:
             path: File path to delete
+            target: Storage target (0=SD, 1=Flash)
         """
-        path_bytes = path.encode('utf-8')
-        payload = bytes([len(path_bytes)]) + path_bytes
-        return build_packet(HubFxPacket.FILE_DELETE, payload)
+        return build_packet(HubFxPacket.FILE_DELETE, HubFxCommands._path_payload(path, target))
 
     @staticmethod
-    def file_mkdir(path: str) -> bytes:
+    def file_mkdir(path: str, target: int = 0) -> bytes:
         """
         Create a directory (recursive).
 
         Args:
             path: Directory path to create
+            target: Storage target (0=SD, 1=Flash)
         """
-        path_bytes = path.encode('utf-8')
-        payload = bytes([len(path_bytes)]) + path_bytes
-        return build_packet(HubFxPacket.FILE_MKDIR, payload)
+        return build_packet(HubFxPacket.FILE_MKDIR, HubFxCommands._path_payload(path, target))
 
     @staticmethod
-    def file_info(path: str) -> bytes:
+    def file_info(path: str, target: int = 0) -> bytes:
         """
         Get file or directory information.
 
@@ -1388,13 +1404,12 @@ class HubFxCommands(CommandBuilder):
 
         Args:
             path: File or directory path
+            target: Storage target (0=SD, 1=Flash)
         """
-        path_bytes = path.encode('utf-8')
-        payload = bytes([len(path_bytes)]) + path_bytes
-        return build_packet(HubFxPacket.FILE_INFO, payload)
+        return build_packet(HubFxPacket.FILE_INFO, HubFxCommands._path_payload(path, target))
 
     @staticmethod
-    def file_download(path: str) -> bytes:
+    def file_download(path: str, target: int = 0) -> bytes:
         """
         Download a file.
 
@@ -1403,24 +1418,26 @@ class HubFxCommands(CommandBuilder):
 
         Args:
             path: File path to download
+            target: Storage target (0=SD, 1=Flash)
         """
-        path_bytes = path.encode('utf-8')
-        payload = bytes([len(path_bytes)]) + path_bytes
-        return build_packet(HubFxPacket.FILE_DOWNLOAD, payload)
+        return build_packet(HubFxPacket.FILE_DOWNLOAD, HubFxCommands._path_payload(path, target))
 
     @staticmethod
-    def file_upload_begin(path: str, size: int) -> bytes:
+    def file_upload_begin(path: str, size: int, target: int = 0) -> bytes:
         """
         Begin a file upload.
 
         After ACK, send FILE_UPLOAD_DATA chunks, then FILE_UPLOAD_END.
 
         Args:
-            path: Destination file path on SD card
+            path: Destination file path
             size: Total file size in bytes
+            target: Storage target (0=SD, 1=Flash)
         """
         path_bytes = path.encode('utf-8')
         payload = u32_le(size) + bytes([len(path_bytes)]) + path_bytes
+        if target != HubFxStorage.TARGET_SD:
+            payload += bytes([target])
         return build_packet(HubFxPacket.FILE_UPLOAD_BEGIN, payload)
 
     @staticmethod

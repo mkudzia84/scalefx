@@ -9,8 +9,8 @@
 ```yaml
 Change_Type_Matrix:
   New_Command:
-    serial_core.h: IF_NEW_GENERIC_ERROR
-    serial_xxxfx.h: REQUIRED
+    core/core.h: IF_NEW_GENERIC_ERROR
+    xxxfx/xxxfx.h: REQUIRED
     xxxfx_pico.ino: REQUIRED
     packets.py: REQUIRED
     commands.py: REQUIRED
@@ -19,8 +19,8 @@ Change_Type_Matrix:
     README.md: REQUIRED
     
   Modify_Command_Payload:
-    serial_core.h: NO
-    serial_xxxfx.h: REQUIRED
+    core/core.h: NO
+    xxxfx/xxxfx.h: REQUIRED
     xxxfx_pico.ino: REQUIRED
     packets.py: IF_CONSTANTS_CHANGED
     commands.py: REQUIRED
@@ -30,8 +30,8 @@ Change_Type_Matrix:
     FIRMWARE_VERSION: REQUIRED   # MAJOR if field type/size changed, MINOR if appended
     
   New_Error_Code:
-    serial_core.h: IF_GENERIC_ERROR
-    serial_xxxfx.h: IF_MODULE_ERROR
+    core/core.h: IF_GENERIC_ERROR
+    xxxfx/xxxfx.h: IF_MODULE_ERROR
     xxxfx_pico.ino: MAYBE
     packets.py: REQUIRED
     commands.py: NO
@@ -40,8 +40,8 @@ Change_Type_Matrix:
     README.md: REQUIRED
     
   Bug_Fix_In_Handler:
-    serial_core.h: NO
-    serial_xxxfx.h: MAYBE
+    core/core.h: NO
+    xxxfx/xxxfx.h: MAYBE
     xxxfx_pico.ino: REQUIRED
     packets.py: NO
     commands.py: NO
@@ -50,8 +50,8 @@ Change_Type_Matrix:
     README.md: NO
     
   New_Controller:
-    serial_core.h: IF_NEW_GENERIC_ERROR
-    serial_newfx.h: CREATE_NEW
+    core/core.h: IF_NEW_GENERIC_ERROR
+    newfx/newfx.h: CREATE_NEW
     newfx_pico.ino: CREATE_NEW
     packets.py: REQUIRED
     commands.py: REQUIRED
@@ -74,9 +74,9 @@ Change_Type_Matrix:
 
 ```yaml
 Step_1_Serial_Library:
-  location: "controllers/lib/serial/"
+  location: "controllers/lib/components/serial/"
   actions:
-    - file: "serial_xxxfx.h (Server class)"
+    - file: "xxxfx/xxxfx.h (Server class)"
       action: |
         1. Add packet type constant in XxxFxPacket namespace
         2. Add error codes in XxxFxError namespace (if needed)
@@ -86,7 +86,7 @@ Step_1_Serial_Library:
         6. Add private callback member
         7. Add validation to XxxFxSpec namespace if needed
 
-    - file: "serial_xxxfx.h (Client class)"
+    - file: "xxxfx/xxxfx.h (Client class)"
       action: |
         1. Add client method returning CommandResult (NEVER bool)
         2. Determine response category (instant / query / long-running)
@@ -167,7 +167,7 @@ Backward_Compatibility:
     - "Changing the semantic meaning of an existing field"
 
 Files_To_Update:
-  - file: "serial_xxxfx.h"
+  - file: "xxxfx/xxxfx.h"
     changes:
       - "Update handleModulePacket() case (SFX_* macros)"
       - "Update callback typedef if signature changed"
@@ -202,7 +202,7 @@ Files_To_Update:
 
 ```yaml
 Serial_Library:
-  - file: "serial_xxxfx.h (or serial_core.h for generic errors)"
+  - file: "xxxfx/xxxfx.h (or core/core.h for generic errors)"
     action: |
       1. Add constant in appropriate error namespace
       2. Add case to getMessage() function
@@ -232,13 +232,13 @@ Optional:
 Summary_Checklist:
   Serial_Library:
     - "[ ] Reserve packet type range (0x80-0xEF available)"
-    - "[ ] Create serial_newfx.h (with NewFxServer, NewFxClient, NewFxPacket, NewFxError, NewFxSpec)"
+    - "[ ] Create newfx/newfx.h (with NewFxServer, NewFxClient, NewFxPacket, NewFxError, NewFxSpec)"
     - "[ ] Update serial.h umbrella include"
   
   Controller:
     - "[ ] Create directory structure"
     - "[ ] Create platformio.ini"
-    - "[ ] Create newfx_pico.ino using PicoServer pattern"
+    - "[ ] Create newfx_pico.ino using SfxServer pattern"
     - "[ ] Use server.begin(), server.onInit(), server.onShutdown()"
     - "[ ] Use server.addModuleHandler(&newfxServer)"
     - "[ ] Use server.core().onStatusData() for module status"
@@ -268,23 +268,41 @@ Summary_Checklist:
 ## File Location Reference
 
 ```yaml
+Platform_Abstraction:
+  path: "controllers/lib/components/platform/"
+  files:
+    sfx_platform.h: "Cross-platform abstraction (mutexes, delays, GPIO, memory, I2S, servo, interrupts)"
+
+Audio_Library:
+  path: "controllers/lib/components/audio/"
+  files:
+    audio_mixer.h/.cpp: "8-channel WAV mixer singleton with I2S output"
+    audio_ring_buffer.h: "Lock-free SPSC ring buffer (Core 0 → Core 1)"
+    audio_config.h: "Compile-time audio constants (sample rate, channels, buffer sizes)"
+    audio_codec.h: "Abstract codec base class"
+    audio_log.h: "Audio-specific logging macros"
+    tas5825_codec.h/.cpp: "TI TAS5825M digital amp driver (I2C)"
+    simple_i2s_codec.h/.cpp: "Generic I2S codec (no I2C control)"
+    mock_i2s_sink.h/.cpp: "Mock I2S output for testing"
+
 C++_Serial_Library:
-  path: "controllers/lib/serial/"
+  path: "controllers/lib/components/serial/"
   files:
     serial.h: "Umbrella header"
-    serial_core.h: "CoreProtocol, SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros"
-    serial_core.cpp: "CoreProtocol implementations, CorePayload encode/decode"
-    serial_bus_server.h: "BusServer base class + CoreCommandServer"
-    serial_bus_server.cpp: "BusServer + CoreCommandServer implementations"
-    serial_bus_client.h: "BusClient base class (extends SerialBus)"
-    serial_bus_client.cpp: "BusClient implementation"
-    serial_bus.h: "SerialBus (client-only, COBS over USB CDC)"
-    serial_result_queue.h: "ResultQueue (tag-correlated command/response matching)"
-    serial_stream.h: "StreamProtocol (0xA4-0xA6) + StreamWriter (chunked streaming, CRC-16)"
-    serial_stream.cpp: "StreamWriter + CRC-16/CCITT implementations"
-    serial_gunfx.h: "GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec"
-    serial_lightfx.h: "LightFxServer, LightFxClient, LightFxPacket, LightFxError"
-    serial_gearcontrol.h: "GearControlServer, GearControlClient, GearControlPacket, GearControlError"
+    core/core.h: "CoreProtocol, SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros"
+    core/core.cpp: "CoreProtocol implementations, CorePayload encode/decode"
+    core/bus_server.h: "BusServer base class + CoreCommandServer"
+    core/bus_server.cpp: "BusServer + CoreCommandServer implementations"
+    client/bus_client.h: "BusClient base class (extends SerialBus)"
+    client/bus_client.cpp: "BusClient implementation"
+    client/bus.h: "SerialBus (client-only, COBS over USB CDC)"
+    client/result_queue.h: "ResultQueue (tag-correlated command/response matching)"
+    core/stream.h: "StreamProtocol (0xA4-0xA6) + StreamWriter (chunked streaming, CRC-16)"
+    core/stream.cpp: "StreamWriter + CRC-16/CCITT implementations"
+    gunfx/gunfx.h: "GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec"
+    lightfx/lightfx.h: "LightFxServer, LightFxClient, LightFxPacket, LightFxError"
+    gearcontrol/gearcontrol.h: "GearControlServer, GearControlClient, GearControlPacket, GearControlError"
+    hubfx/hubfx.h: "HubFxAudioServer/Client, HubFxStorageServer/Client, HubFxPacket, HubFxError (NOT auto-included by serial.h)"
 
 Controller_Firmware:
   pattern: "controllers/{name}/pico/"
@@ -296,7 +314,7 @@ Controller_Firmware:
 Scripts:
   path: "scripts/"
   files:
-    "build_and_flash.py": "Centralized build/flash for all Pico controllers"
+    "build_and_flash.py": "Centralized build/flash for all controllers (Pico + ESP32-S3)"
 
 Python_Framework:
   path: "tests/"
@@ -329,11 +347,15 @@ python -m platformio run -e pico -d controllers/lightfx/pico
 python -m platformio run -e pico -d controllers/gearcontrol/pico
 python -m platformio run -e pico -d controllers/noop/pico
 
+# Build ESP32-S3
+python -m platformio run -e esp32s3 -d controllers/hubfx/esp32s3
+
 # Build and flash (centralized script)
 python scripts/build_and_flash.py gunfx
 python scripts/build_and_flash.py lightfx
 python scripts/build_and_flash.py gearcontrol
 python scripts/build_and_flash.py hubfx
+python scripts/build_and_flash.py hubfx-esp32s3
 python scripts/build_and_flash.py noop
 
 # Python syntax
@@ -369,7 +391,7 @@ Error: "INIT returns NACK INVALID_COMMAND"
 Error: "Unknown command type"
   Cause: "Packet constant mismatch between C++ and Python"
   Fix:
-    - "Verify serial_core.h / serial_xxxfx.h constant value"
+    - "Verify core/core.h / xxxfx/xxxfx.h constant value"
     - "Verify packets.py constant value"
     - "Ensure they are identical"
 

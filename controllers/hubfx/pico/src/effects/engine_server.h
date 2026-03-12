@@ -5,7 +5,7 @@
  *   - Start/stop engine effects
  *   - Engine status query
  *
- * Registered as a separate handler in PicoServer's CommandRouter,
+ * Registered as a separate handler in SfxServer's CommandRouter,
  * keeping engine FX concerns isolated from other HubFX domains.
  */
 
@@ -13,7 +13,7 @@
 #define ENGINE_SERVER_H
 
 #include <Arduino.h>
-#include <serial_bus_server.h>
+#include <serial/core/bus_server.h>
 
 #include "../board_manager/hubfx_protocol.h"
 

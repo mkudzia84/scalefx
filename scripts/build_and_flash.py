@@ -2,14 +2,15 @@
 """
 ScaleFX Build and Flash Script
 
-Build and flash firmware for Pico controllers using binary COBS protocol.
-Supports automatic BOOTSEL entry via binary protocol command.
+Build and flash firmware for ScaleFX controllers.
+Supports automatic BOOTSEL entry via 1200 baud reset (Pico controllers)
+and esptool upload (ESP32-S3 controllers).
 
 Usage:
     python scripts/build_and_flash.py <controller> [options]
     
 Controllers:
-    noop, gunfx, lightfx, gearcontrol, hubfx
+    noop, gunfx, lightfx, gearcontrol, hubfx, hubfx-esp32s3
 
 Options:
     --port PORT     Serial port (default: auto-detect)
@@ -23,10 +24,11 @@ Examples:
     python scripts/build_and_flash.py lightfx --port COM10
     python scripts/build_and_flash.py noop --no-build
 
-Protocol:
-    Uses binary COBS protocol (not text):
-    - INIT (0xF0): Initialize connection
-    - BOOTSEL (0xF9): Enter BOOTSEL mode for flashing
+BOOTSEL Entry:
+    Uses 1200 baud reset method (Arduino-pico standard):
+    1. Connect to device at 1200 baud
+    2. Toggle DTR to trigger bootloader
+    3. Close connection - device reboots into BOOTSEL mode
 """
 
 import argparse
@@ -64,8 +66,8 @@ except ImportError:
 # Constants
 # =============================================================================
 
-CONTROLLERS = ['noop', 'gunfx', 'lightfx', 'gearcontrol', 'hubfx']
-BAUD_RATE = 1000000
+CONTROLLERS = ['noop', 'gunfx', 'lightfx', 'gearcontrol', 'hubfx', 'hubfx-esp32s3']
+BAUD_RATE = 1000000  # For verification only
 FRAME_DELIMITER = 0x00
 
 
@@ -134,12 +136,36 @@ def get_workspace_root() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 
+# Controller name → (subdirectory, PlatformIO env name, firmware extension)
+_CONTROLLER_MAP = {
+    'noop':           ('noop/pico',           'pico',    'uf2'),
+    'gunfx':          ('gunfx/pico',          'pico',    'uf2'),
+    'lightfx':        ('lightfx/pico',        'pico',    'uf2'),
+    'gearcontrol':    ('gearcontrol/pico',     'pico',    'uf2'),
+    'hubfx':          ('hubfx/pico',           'pico',    'uf2'),
+    'hubfx-esp32s3':  ('hubfx/esp32s3',        'esp32s3', 'bin'),
+}
+
+
 def get_controller_path(controller: str) -> Path:
-    return get_workspace_root() / "controllers" / controller / "pico"
+    subdir = _CONTROLLER_MAP.get(controller, (controller + '/pico',))[0]
+    return get_workspace_root() / "controllers" / subdir
+
+
+def get_pio_env(controller: str) -> str:
+    return _CONTROLLER_MAP.get(controller, ('', 'pico', 'uf2'))[1]
+
+
+def is_esp32_controller(controller: str) -> bool:
+    return _CONTROLLER_MAP.get(controller, ('', '', 'uf2'))[2] == 'bin'
 
 
 def get_firmware_path(controller: str) -> Path:
-    return get_controller_path(controller) / ".pio" / "build" / "pico" / "firmware.uf2"
+    env_name = get_pio_env(controller)
+    ext = _CONTROLLER_MAP.get(controller, ('', '', 'uf2'))[2]
+    if ext == 'bin':
+        return get_controller_path(controller) / ".pio" / "build" / env_name / "firmware.bin"
+    return get_controller_path(controller) / ".pio" / "build" / env_name / "firmware.uf2"
 
 
 # =============================================================================
@@ -176,7 +202,8 @@ def find_bootsel_drive() -> Optional[Path]:
                 if info_file.exists():
                     try:
                         content = info_file.read_text()
-                        if "RPI-RP2" in content or "RP2040" in content:
+                        # RP2040 = "RPI-RP2", RP2350 = "RP2350"
+                        if "RPI-RP2" in content or "RP2040" in content or "RP2350" in content:
                             return drive_path
                     except:
                         pass
@@ -192,7 +219,7 @@ def find_bootsel_drive() -> Optional[Path]:
                         if info.exists():
                             try:
                                 content = info.read_text()
-                                if "RPI-RP2" in content:
+                                if "RPI-RP2" in content or "RP2350" in content:
                                     return mount
                             except:
                                 pass
@@ -286,16 +313,18 @@ def build_firmware(controller: str, clean: bool = True) -> Optional[BuildInfo]:
     # Clean if requested
     if clean:
         print_info("Cleaning previous build...")
+        env_name = get_pio_env(controller)
         result = subprocess.run(
-            [sys.executable, "-m", "platformio", "run", "-t", "clean"],
+            [sys.executable, "-m", "platformio", "run", "-e", env_name, "-t", "clean"],
             cwd=controller_path,
             capture_output=True,
             text=True
         )
     
     # Build
+    env_name = get_pio_env(controller)
     result = subprocess.run(
-        [sys.executable, "-m", "platformio", "run"],
+        [sys.executable, "-m", "platformio", "run", "-e", env_name],
         cwd=controller_path,
         capture_output=True,
         text=True
@@ -342,82 +371,43 @@ def build_firmware(controller: str, clean: bool = True) -> Optional[BuildInfo]:
 
 
 # =============================================================================
-# Binary Protocol - BOOTSEL Entry
+# BOOTSEL Entry - 1200 Baud Reset
 # =============================================================================
 
-def send_bootsel_command(port: str) -> bool:
+def enter_bootsel_1200_baud(port: str) -> bool:
     """
-    Send BOOTSEL command using binary COBS protocol.
+    Enter BOOTSEL mode using 1200 baud reset method.
     
-    Protocol:
-    1. Send INIT packet (0xF0) 
-    2. Wait for INIT_READY (0xF3)
-    3. Send BOOTSEL packet (0xF9)
-    4. Device reboots into BOOTSEL mode
+    This is the standard Arduino-pico bootloader entry:
+    1. Open serial port at 1200 baud
+    2. Toggle DTR line (triggers bootloader detection)
+    3. Close port - device reboots into BOOTSEL mode
+    
+    This method works universally with arduino-pico core firmware and
+    doesn't require any specific protocol support in the firmware.
     """
     if not SERIAL_AVAILABLE:
         print_err("pyserial not installed")
         return False
     
-    if not PROTOCOL_AVAILABLE:
-        print_err("Protocol module not available")
-        return False
-    
     try:
-        ser = serial.Serial(port, BAUD_RATE, timeout=2)
-        time.sleep(0.1)  # Allow device to settle
+        print_info(f"Opening {port} at 1200 baud...")
+        ser = serial.Serial()
+        ser.port = port
+        ser.baudrate = 1200
+        ser.dtr = True  # Set DTR high initially
+        ser.open()
         
-        # Clear any buffered data
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
+        time.sleep(0.1)
         
-        # Build and send INIT packet
-        print_info("Sending INIT packet (binary)...")
-        init_packet = build_packet(CorePacket.INIT)
-        ser.write(init_packet)
-        ser.flush()
-        
-        # Wait for INIT_READY response
-        print_info("Waiting for INIT_READY...")
-        start = time.time()
-        rx_buffer = bytearray()
-        got_init_ready = False
-        
-        while time.time() - start < 3.0:
-            if ser.in_waiting:
-                byte = ser.read(1)
-                if byte[0] == FRAME_DELIMITER:
-                    if len(rx_buffer) > 0:
-                        # Try to parse packet
-                        result = parse_packet(bytes(rx_buffer) + b'\x00')
-                        if result:
-                            ptype, _tag, payload = result
-                            if ptype == CorePacket.INIT_READY:
-                                print_ok("Got INIT_READY")
-                                got_init_ready = True
-                                break
-                            elif ptype == CorePacket.ACK:
-                                print_info("Got ACK (device was already initialized)")
-                                got_init_ready = True
-                                break
-                        rx_buffer.clear()
-                else:
-                    rx_buffer.append(byte[0])
-            else:
-                time.sleep(0.01)
-        
-        if not got_init_ready:
-            print_warn("No INIT_READY response, sending BOOTSEL anyway...")
-        
-        # Send BOOTSEL command
-        print_info("Sending BOOTSEL packet...")
-        bootsel_packet = build_packet(CorePacket.BOOTSEL)
-        ser.write(bootsel_packet)
-        ser.flush()
+        # Toggle DTR to trigger bootloader
+        ser.dtr = False
+        time.sleep(0.1)
+        ser.dtr = True
         time.sleep(0.1)
         
         ser.close()
-        print_ok("BOOTSEL command sent")
+        print_ok("1200 baud reset sent - device entering BOOTSEL mode")
         return True
         
     except serial.SerialException as e:
@@ -640,18 +630,22 @@ def main():
         print_err("pyserial not installed: pip install pyserial")
         return 1
     
-    if not PROTOCOL_AVAILABLE:
-        print_err("Protocol module not available")
-        return 1
+    if not PROTOCOL_AVAILABLE and not args.skip_verify:
+        print_warn("Protocol module not available - verification will be skipped")
+        args.skip_verify = True
     
     # Determine steps
+    esp32 = is_esp32_controller(args.controller)
     steps = []
     if not args.no_build:
         steps.append("build")
     steps.append("verify_fw")
-    steps.append("bootsel")
-    steps.append("flash")
-    if not args.skip_verify:
+    if esp32:
+        steps.append("upload_esp32")
+    else:
+        steps.append("bootsel")
+        steps.append("flash")
+    if not args.skip_verify and not esp32:
         steps.append("verify_device")
     
     total_steps = len(steps)
@@ -695,37 +689,62 @@ def main():
     print_info(f"MD5:  {build_info.firmware_hash}")
     print_info(f"Version: {build_info.version} (Build {build_info.build_number})")
     
-    # Step 3: Enter BOOTSEL mode
-    current_step += 1
-    print_step(current_step, total_steps, "Entering BOOTSEL mode...")
-    
-    # Check if already in BOOTSEL mode
-    bootsel_drive = find_bootsel_drive()
-    if bootsel_drive:
-        print_ok(f"Already in BOOTSEL mode: {bootsel_drive}")
-    else:
-        # Find serial port
-        port = args.port or find_pico_port()
-        if port:
-            print_info(f"Found device at {port}")
-            send_bootsel_command(port)
-        else:
-            print_info("No serial port found")
-            print_info("Waiting for manual BOOTSEL entry...")
+    # --- ESP32-S3: Upload via PlatformIO/esptool ---
+    if "upload_esp32" in steps:
+        current_step += 1
+        print_step(current_step, total_steps, "Uploading via esptool...")
         
-        # Wait for BOOTSEL drive
-        bootsel_drive = wait_for_bootsel_drive(args.timeout)
-        if not bootsel_drive:
+        env_name = get_pio_env(args.controller)
+        upload_cmd = [sys.executable, "-m", "platformio", "run", "-e", env_name, "-t", "upload"]
+        if args.port:
+            upload_cmd.extend(["--upload-port", args.port])
+        
+        result = subprocess.run(
+            upload_cmd,
+            cwd=get_controller_path(args.controller),
+            capture_output=False  # Show progress in real-time
+        )
+        
+        if result.returncode != 0:
+            print_err("Upload failed")
+            return 1
+        
+        print_ok("Upload complete")
+    
+    # --- Pico: BOOTSEL + UF2 flash ---
+    if "bootsel" in steps:
+        # Step 3: Enter BOOTSEL mode
+        current_step += 1
+        print_step(current_step, total_steps, "Entering BOOTSEL mode...")
+    
+        # Check if already in BOOTSEL mode
+        bootsel_drive = find_bootsel_drive()
+        if bootsel_drive:
+            print_ok(f"Already in BOOTSEL mode: {bootsel_drive}")
+        else:
+            # Find serial port
+            port = args.port or find_pico_port()
+            if port:
+                print_info(f"Found device at {port}")
+                enter_bootsel_1200_baud(port)
+            else:
+                print_info("No serial port found")
+                print_info("Waiting for manual BOOTSEL entry...")
+            
+            # Wait for BOOTSEL drive
+            bootsel_drive = wait_for_bootsel_drive(args.timeout)
+            if not bootsel_drive:
+                return 1
+    
+    if "flash" in steps:
+        # Step 4: Flash firmware
+        current_step += 1
+        print_step(current_step, total_steps, "Flashing firmware...")
+        
+        if not flash_firmware(firmware_path, bootsel_drive):
             return 1
     
-    # Step 4: Flash firmware
-    current_step += 1
-    print_step(current_step, total_steps, "Flashing firmware...")
-    
-    if not flash_firmware(firmware_path, bootsel_drive):
-        return 1
-    
-    # Step 5: Verify device
+    # Step 5: Verify device (Pico only)
     if "verify_device" in steps:
         current_step += 1
         print_step(current_step, total_steps, "Verifying device...")

@@ -12,7 +12,7 @@
  *   serial commands when a terminal is open. All normal operations (slave
  *   management, audio, effects) continue regardless of PC serial state.
  *
- * DUAL-CORE ARCHITECTURE:
+ * DUAL-CORE ARCHITECTURE (RP2350, dual Cortex-M33):
  *   Core 0: Main loop â€” serial protocol processing, slave client polling,
  *           audio mixing commands, effects state machines
  *   Core 1: USB Host task (PIO-USB), audio I2S output
@@ -22,12 +22,12 @@
  *   Downstream: PIO-USB Host CDC â€” binary COBS to each slave Pico
  *
  * MULTI-HANDLER ARCHITECTURE:
- *   Each domain registers its own ICommandHandler with PicoServer:
+ *   Each domain registers its own ICommandHandler with SfxServer:
  *     CoreCommandServer (0xF0-0xFF) â€” system commands (auto-registered)
- *     SlaveServer       (0x80-0x83, 0x96-0x98) â€” slave mgmt + subcmd routing
- *     AudioServer       (0x84-0x8B) â€” audio playback control
- *     EngineServer      (0x8C-0x8F) â€” engine FX control
- *     StorageServer     (0x90-0xA6) â€” config + SD card + file transfer
+ *     SlaveServer          (0x80-0x83, 0x96-0x98) — slave mgmt + subcmd routing
+ *     HubFxAudioServer     (0x84-0x8B) — audio playback control
+ *     EngineServer         (0x8C-0x8F) — engine FX control
+ *     HubFxStorageServer   (0x90-0xA6) — config + SD/flash + file transfer
  *
  * SLAVE ROUTING (subcmd pattern):
  *   Packet type 0x96 (SLAVE_ROUTE_GUNFX)       [subcmd:u8][payload...] â†’ GunFX
@@ -36,46 +36,44 @@
  *   The subcmd byte is the original slave packet type, forwarded as-is.
  */
 
-#define FIRMWARE_VERSION "2.7.0"
-#define BUILD_NUMBER 18
+#define FIRMWARE_VERSION "2.10.0"
+#define BUILD_NUMBER 50
 
 #include <Arduino.h>
 #include <SPI.h>
 #include <Wire.h>
+#include <atomic>
 
 // ============================================================================
 // Codec Selection (must be before conditional includes)
 // ============================================================================
 
 // #define USE_TAS5825_CODEC
-// #define USE_SIMPLE_I2S_CODEC
-#define USE_PICOAUDIO_CODEC         // Pimoroni Pico Audio Pack (PCM5100A)
+#define USE_WAVESHARE_PICOAUDIO     // Waveshare Pico-Audio (PCM5101A, GP26/27/28, no mute)
 
 // Shared serial protocol library (core, bus, clients)
-#include <serial.h>
-#include <pico_server.h>
+#include <serial/serial.h>
+#include <serial/hubfx/hubfx.h>
+#include <server/sfx_server.h>
 
-// Local HubFX modules â€” domain-specific servers
-#include "board_manager/hubfx_protocol.h"
+// Local HubFX modules — domain-specific servers
 #include "board_manager/slave_registry.h"
 #include "board_manager/slave_server.h"
-#include "audio/audio_server.h"
 #include "effects/engine_server.h"
-#include "storage/storage_server.h"
 
 // Audio system
-#include "audio/audio_codec.h"
+#include <audio/audio_codec.h>
 #if defined(USE_TAS5825_CODEC)
-#include "audio/tas5825_codec.h"
-#elif defined(USE_PICOAUDIO_CODEC) || defined(USE_SIMPLE_I2S_CODEC)
-#include "audio/simple_i2s_codec.h"
+#include <audio/tas5825_codec.h>
+#elif defined(USE_WAVESHARE_PICOAUDIO) || defined(USE_SIMPLE_I2S_CODEC)
+#include <audio/simple_i2s_codec.h>
 #endif
-#include "audio/audio_mixer.h"
+#include <audio/audio_mixer.h>
 #include "audio/audio_channels.h"
 #include "audio/system_sounds.h"
 
 // Storage
-#include "storage/sd_card.h"
+#include <storage/sd_card.h>
 #include "storage/config_reader.h"
 
 // Effects
@@ -85,7 +83,7 @@
 #include "tusb_config.h"
 
 // Logging — all HubFX modules use macros from hubfx_log.h which route
-// through PicoServer's DiagLog singleton (initialized by PicoServer::begin()).
+// through SfxServer's DiagLog singleton (initialized by SfxServer::begin()).
 #include "hubfx_log.h"
 
 // ============================================================================
@@ -93,17 +91,17 @@
 // ============================================================================
 
 // I2S Audio Output — pin assignments depend on codec board
-#if defined(USE_PICOAUDIO_CODEC)
-// Pimoroni Pico Audio Pack (PCM5100A DAC)
-#define PIN_I2S_DATA    9   // GP9  — I2S DIN
-#define PIN_I2S_BCLK    10  // GP10 — I2S BCLK
-#define PIN_I2S_LRCLK   11  // GP11 — I2S LRCLK (always BCLK+1)
-#define PIN_I2S_MUTE    22  // GP22 — PCM5100A XSMT (HIGH=unmute)
+#if defined(USE_WAVESHARE_PICOAUDIO)
+// Waveshare Pico-Audio (PCM5101A DAC) — 3-wire I2S, no mute pin
+// Ref: https://www.waveshare.com/wiki/Pico-Audio
+#define PIN_I2S_DATA    26  // GP26 — DIN
+#define PIN_I2S_BCLK    27  // GP27 — BCK
+#define PIN_I2S_LRCLK   28  // GP28 — LRCK (always BCLK+1)
 #else
-// TAS5825M / generic I2S
-#define PIN_I2S_DATA    6   // GP6
-#define PIN_I2S_BCLK    7   // GP7
-#define PIN_I2S_LRCLK   8   // GP8
+// Generic I2S DAC — same pin defaults as Waveshare
+#define PIN_I2S_DATA    26  // GP26
+#define PIN_I2S_BCLK    27  // GP27
+#define PIN_I2S_LRCLK   28  // GP28
 #endif
 
 // I2C for codec control (TAS5825M)
@@ -123,11 +121,11 @@
 // ============================================================================
 
 // Server infrastructure (upstream protocol handling)
-PicoServer server;
+SfxServer server;
 SlaveServer slaveServer;
-AudioServer audioServer;
+HubFxAudioServer audioServer;
 EngineServer engineServer;
-StorageServer storageServer;
+HubFxStorageServer storageServer;
 SlaveRegistry& slaveRegistry = SlaveRegistry::instance();
 
 // USB Host (downstream to slave Picos, runs on Core 1)
@@ -143,8 +141,8 @@ SdCardModule& sdCard = SdCardModule::instance();
 #if defined(USE_TAS5825_CODEC)
 TAS5825Codec audioCodec;
 AudioCodec* codec = &audioCodec;
-#elif defined(USE_PICOAUDIO_CODEC)
-SimpleI2SCodec audioCodec("PCM5100A", PIN_I2S_MUTE);  // mute on GP22
+#elif defined(USE_WAVESHARE_PICOAUDIO)
+SimpleI2SCodec audioCodec("PCM5101A");  // no mute pin, auto-config from I2S clocks
 AudioCodec* codec = &audioCodec;
 #elif defined(USE_SIMPLE_I2S_CODEC)
 SimpleI2SCodec audioCodec("I2S-DAC");
@@ -161,7 +159,7 @@ EngineFX engineFx;
 ConfigReader configReader;
 
 // State
-bool audioInitialized = false;
+std::atomic<bool> audioInitialized{false};   // Core 0 writes, Core 1 reads
 bool sdInitialized = false;
 bool pcSerialConnected = false;  // PC connected over USB CDC serial
 
@@ -169,33 +167,21 @@ bool pcSerialConnected = false;  // PC connected over USB CDC serial
 // Core 1 â€” Audio + USB Host (runs on dedicated core)
 // ============================================================================
 
-volatile bool core1Ready = false;
+std::atomic<bool> core1Ready{false};
 
 void setup1() {
-    // Wait for Core 0 to finish audio init
-    while (!audioInitialized) {
-        delay(10);
-    }
-
-    // PIO-USB disabled for audio debugging
-    // if (usbHost.init()) {
-    //     SFX_LOG_INFO("USB Host initialized on Core 1");
-    // } else {
-    //     SFX_LOG_ERROR("USB Host init failed on Core 1");
-    // }
-
-    core1Ready = true;
-    SFX_LOG_INFO("Core 1 ready (audio only, USB Host disabled)");
+    // Minimal setup — avoid DiagLog mutex, delay(), or any Arduino API
+    // that depends on alarm pools / scheduler (may not be initialized on Core 1)
+    core1Ready.store(true, std::memory_order_release);
 }
 
-void loop1() {
-    // Audio mixing (I2S output)
-    if (audioInitialized) {
-        mixer.process();
-    }
+// Diagnostic: Core 1 loop iteration counter
+std::atomic<uint32_t> loop1Count{0};  // Core 1 writes, Core 0 reads (STATUS)
 
-    // PIO-USB disabled for audio debugging
-    // usbHost.process();
+void loop1() {
+    loop1Count.fetch_add(1, std::memory_order_relaxed);
+    // Use raw busy-wait — delay() uses alarm pool which may crash on Core 1
+    busy_wait_us_32(10000);  // 10ms spin (no scheduler dependency)
 }
 
 // ============================================================================
@@ -265,7 +251,7 @@ SlaveType tryInitSlave(int usbIndex) {
     unsigned long start = millis();
     while (!probe.isServerReady() && (millis() - start < 3000)) {
         probe.process();
-        delay(1);
+        busy_wait_ms(1);
     }
 
     if (!probe.isServerReady()) {
@@ -325,7 +311,7 @@ SlaveType tryInitSlave(int usbIndex) {
     start = millis();
     while (!client->isServerReady() && (millis() - start < 3000)) {
         client->process();
-        delay(1);
+        busy_wait_ms(1);
     }
 
     if (client->isServerReady()) {
@@ -380,7 +366,7 @@ bool initAudio() {
         }
         audioCodec.setVolume(0.7f);
 
-        #elif defined(USE_PICOAUDIO_CODEC) || defined(USE_SIMPLE_I2S_CODEC)
+        #elif defined(USE_WAVESHARE_PICOAUDIO) || defined(USE_SIMPLE_I2S_CODEC)
         if (!audioCodec.begin(AUDIO_SAMPLE_RATE)) {
             SFX_LOG_ERROR("%s codec init failed", audioCodec.getModelName());
             return false;
@@ -413,7 +399,7 @@ bool initSdCard() {
             SFX_LOG_INFO("SD card ready at %d MHz", speeds[i]);
             return true;
         }
-        delay(100);
+        busy_wait_ms(100);
     }
     SFX_LOG_WARN("SD card not found (tried 20/15/10/5 MHz)");
     return false;
@@ -424,7 +410,7 @@ bool initSdCard() {
 // ============================================================================
 
 void setup() {
-    // PicoServer handles serial init, device naming, indicators, core protocol
+    // SfxServer handles serial init, device naming, indicators, core protocol
     server.begin("HubFX", FIRMWARE_VERSION, BUILD_NUMBER);
 
     SFX_LOG_INFO("HubFX v%s build %d booting...", FIRMWARE_VERSION, BUILD_NUMBER);
@@ -438,7 +424,7 @@ void setup() {
         // PC sent INIT â€” starting a configuration/debug session.
         // Re-scan slaves so PC gets fresh state.
         SFX_LOG_INFO("INIT received from PC â re-scanning slaves");
-        if (core1Ready) {
+        if (core1Ready.load(std::memory_order_acquire)) {
             scanAndInitSlaves();
         }
     });
@@ -465,7 +451,7 @@ void setup() {
     }
 
     // Audio
-    audioInitialized = initAudio();
+    audioInitialized.store(initAudio(), std::memory_order_release);
 
     // PIO-USB disabled for audio debugging
     // if (usbHost.begin()) {
@@ -510,15 +496,21 @@ void setup() {
     engineServer.setEngineFX(&engineFx);
 
     storageServer.begin(&Serial);
-    storageServer.setConfigReader(&configReader);
+    storageServer.onConfigReload([&]() -> uint8_t {
+        return configReader.load("/config.yaml") ? SerialError::OK : HubFxError::CONFIG_ERROR;
+    });
+    storageServer.onConfigGet([&](bool& loaded, uint16_t& fileSize) {
+        loaded = configReader.settings().loaded;
+        int sz = configReader.getSize("/config.yaml");
+        fileSize = (uint16_t)(sz >= 0 ? sz : 0);
+    });
 
     SFX_LOG_DEBUG("Domain handlers initialized (slave, audio, engine, storage)");
 
     // STATUS callback â€” report hub-level info
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        if (maxLen < 8) return 0;
+        if (maxLen < 14) return 0;
 
-        // Hub status: [slaveCount:u8][slaveMask:u8][usbDevices:u8][sdOk:u8][audioOk:u8]
         // slaveMask: bit0=GunFX, bit1=LightFX, bit2=GearControl (set if ready)
         uint8_t readyCount = 0;
         uint8_t readyMask = 0;
@@ -533,20 +525,24 @@ void setup() {
         buf[1] = readyMask;
         buf[2] = (uint8_t)usbHost.cdcDeviceCount();
         buf[3] = sdInitialized ? 1 : 0;
-        buf[4] = audioInitialized ? 1 : 0;
+        buf[4] = audioInitialized.load(std::memory_order_acquire) ? 1 : 0;
         buf[5] = pcSerialConnected ? 1 : 0;  // PC connected over USB CDC
-        // Reserved
-        buf[6] = 0;
-        buf[7] = 0;
-        return 8;
+        // loop1Count (diagnostic — confirm Core 1 is iterating)
+        CoreProtocol::putU32LE(&buf[6], loop1Count.load(std::memory_order_acquire));
+        // Consumer loops (from mixer)
+        CoreProtocol::putU16LE(&buf[10], (uint16_t)min(mixer.getConsumeLoops(), 65535U));
+        // Ring buffer fill % and underruns (compact audio health snapshot)
+        buf[12] = (uint8_t)mixer.getRingFillPercent();  // 0-100
+        buf[13] = (uint8_t)min(mixer.getUnderruns(), 255U);  // capped at 255
+        return 14;
     });
 
-    // Register domain-specific handlers with PicoServer's CommandRouter
+    // Register domain-specific handlers with SfxServer's CommandRouter
     // Handler chain: CoreCommandServer (0xF0-0xFF)
-    //              â†’ SlaveServer    (0x80-0x83 mgmt + 0x96-0x98 subcmd routing)
-    //              â†’ AudioServer    (0x84-0x8B)
-    //              â†’ EngineServer   (0x8C-0x8F)
-    //              â†’ StorageServer  (0x90-0xA6)
+    //              → SlaveServer          (0x80-0x83 mgmt + 0x96-0x98 subcmd routing)
+    //              → HubFxAudioServer     (0x84-0x8B)
+    //              → EngineServer         (0x8C-0x8F)
+    //              → HubFxStorageServer   (0x90-0xA6)
     server.addModuleHandler(&slaveServer);
     server.addModuleHandler(&audioServer);
     server.addModuleHandler(&engineServer);
@@ -556,16 +552,17 @@ void setup() {
     server.indicators().setConnected(true);
 
     SFX_LOG_INFO("HubFX ready \xe2\x80\x94 autonomous master mode (SD:%s audio:%s)",
-                 sdInitialized ? "OK" : "NO", audioInitialized ? "OK" : "NO");
+                 sdInitialized ? "OK" : "NO",
+                 audioInitialized.load(std::memory_order_acquire) ? "OK" : "NO");
 
-    // Play init sound
-    if (audioInitialized && sdInitialized) {
-        AudioPlaybackOptions opts;
-        opts.volume = 0.8f;
-        opts.loop = false;
-        mixer.playAsync(SystemSounds::CHANNEL, SystemSounds::HUBFX_INITIALIZED, opts);
-        SFX_LOG_DEBUG("Init sound queued on channel %d", SystemSounds::CHANNEL);
-    }
+    // Play init sound (disabled for debugging)
+    // if (audioInitialized.load(std::memory_order_acquire) && sdInitialized) {
+    //     AudioPlaybackOptions opts;
+    //     opts.volume = 0.8f;
+    //     opts.loop = false;
+    //     mixer.playAsync(SystemSounds::CHANNEL, SystemSounds::HUBFX_INITIALIZED, opts);
+    //     SFX_LOG_DEBUG("Init sound queued on channel %d", SystemSounds::CHANNEL);
+    // }
 }
 
 // ============================================================================
@@ -584,7 +581,7 @@ void loop() {
     // ================================================================
     // PC Serial Detection
     // ================================================================
-    // On RP2040, (bool)Serial checks tud_cdc_connected() â€” returns true
+    // On RP2040/RP2350, (bool)Serial checks tud_cdc_connected() — returns true
     // when a PC terminal has opened the USB CDC port (DTR/RTS asserted).
     // Serial is optional for HubFX; all normal operations continue without it.
 
@@ -606,11 +603,14 @@ void loop() {
     // ================================================================
     if (pcSerialConnected) {
         server.loop();
+
+        // DiagLog uses a rolling ring buffer — no flush needed.
+        // Log messages are retrieved on-demand via DIAG_HISTORY command.
     }
 
     // Hub is always operational â€” keep indicators and RAM stats current
     // even when no PC is connected. Re-assert connected=true to override
-    // any PicoServer shutdown side-effects (e.g. explicit SHUTDOWN cmd).
+    // any SfxServer shutdown side-effects (e.g. explicit SHUTDOWN cmd).
     server.indicators().setConnected(true);
     server.core().updateFreeRam(rp2040.getFreeHeap());
     server.indicators().update();
@@ -631,7 +631,7 @@ void loop() {
     }
 
     // Periodic slave discovery scan (find newly connected devices)
-    if (core1Ready && now - lastDiscoveryScan_ms >= DISCOVERY_SCAN_INTERVAL_ms) {
+    if (core1Ready.load(std::memory_order_acquire) && now - lastDiscoveryScan_ms >= DISCOVERY_SCAN_INTERVAL_ms) {
         lastDiscoveryScan_ms = now;
 
         // Check if any USB devices appeared that we haven't identified yet
@@ -649,5 +649,37 @@ void loop() {
     // Engine FX processing (local audio effects)
     engineFx.process();
 
-    delay(1);
+    // ================================================================
+    // Audio Producer (Core 0 side of SPSC ring buffer)
+    // ================================================================
+    // WAV decode + float mixing → ring buffer. Consumer runs on Core 1.
+    // Produce up to 2048 frames per iteration to keep ring buffer filled.
+    // (The working pico_audio_test uses 2048; 256 was too conservative and
+    // caused the producer to lag behind the consumer at 44.1/48kHz.)
+    if (audioInitialized.load(std::memory_order_acquire)) {
+        mixer.produce(2048);
+    }
+
+    // Periodic diagnostic: log Core 1 loop counter + audio health every 5 seconds
+    static uint32_t lastAudioDiag_ms = 0;
+    {
+        uint32_t now0 = millis();
+        if (now0 - lastAudioDiag_ms >= 5000) {
+            lastAudioDiag_ms = now0;
+            uint32_t c1iters = loop1Count.load(std::memory_order_acquire);
+            SFX_LOG_INFO("[Core0] core1=%u iters, core1Ready=%d",
+                         c1iters, (int)core1Ready.load(std::memory_order_acquire));
+            if (audioInitialized.load(std::memory_order_relaxed)) {
+                SFX_LOG_DEBUG("[Core0] ring=%d%% (%u/%u) produce=%u underruns=%u consumeLoops=%u",
+                              mixer.getRingFillPercent(),
+                              mixer.getRingAvailableRead(),
+                              mixer.getRingCapacity(),
+                              mixer.getConsumeFrames(),
+                              mixer.getUnderruns(),
+                              mixer.getConsumeLoops());
+            }
+        }
+    }
+
+    busy_wait_ms(1);
 }

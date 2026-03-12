@@ -9,7 +9,7 @@
  * Protocol: Binary COBS with CRC-8
  *
  * Architecture (Chain of Responsibility):
- *   - PicoServer: Common server boilerplate (serial, indicators, core protocol)
+ *   - SfxServer: Common server boilerplate (serial, indicators, core protocol)
  *   - GearControlServer: Handles GEAR, SERVO, YAW commands
  *   - CommandRouter: Routes packets to handlers in priority order
  *
@@ -46,13 +46,13 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <serial.h>
-#include <led_control.h>
-#include <srv_control.h>
-#include <ina226.h>
-#include <i2c_device.h>
-#include <battery_monitor.h>
-#include <pico_server.h>
+#include <serial/serial.h>
+#include <led/led_control.h>
+#include <servo/srv_control.h>
+#include <power/ina226.h>
+#include <power/i2c_device.h>
+#include <power/battery_monitor.h>
+#include <server/sfx_server.h>
 #include "landing_gear.h"
 
 // Firmware version
@@ -111,7 +111,7 @@ const uint8_t SERVO_ID_SPARE = 7;
 // ============================================================================
 
 // Server (serial, core protocol, indicators, connection management)
-PicoServer server;
+SfxServer server;
 GearControlServer gearControlServer;
 
 // Landing gear modules (one per gear)
@@ -481,7 +481,7 @@ void setup() {
         return SerialError::OK;
     });
 
-    // I2C bus scan — handled by PicoServer (shared infrastructure)
+    // I2C bus scan — handled by SfxServer (shared infrastructure)
     server.enableI2CScan(Wire);
     for (int i = 0; i < 3; i++) {
         server.addExpectedI2CDevice(INA226_ADDR[i], &ina226[i]);
@@ -632,5 +632,5 @@ void loop() {
         batteryMonitor.update();
     }
 
-    delay(1);
+    busy_wait_ms(1);
 }

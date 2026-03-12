@@ -2,68 +2,34 @@
 
 Shared libraries for ScaleFX microcontroller firmware.
 
-## Library Overview
+## Library
 
 | Library | Purpose | Dependencies |
 |---------|---------|--------------|
-| [components](components/) | Hardware component drivers (I2C, LED, PWM, servo) | Arduino, Wire, Servo |
-| [serial](serial/) | Communication protocol stack | Arduino |
+| [components](components/) | Hardware drivers, serial protocol, platform abstraction, audio, storage | Arduino, Wire, Servo, SdFat |
 
-## Libraries
+All code lives in a single `components` library. The serial protocol stack, audio subsystem, storage drivers, and platform abstraction layer are organized as subdirectories within `components/`.
 
-### components
+**Supported platforms:** RP2040, RP2350, ESP32-S3
 
-Reusable hardware component drivers for all ScaleFX controllers. Contains I2C device framework, LED control, PWM input monitoring, and servo output with motion profiling.
+## Domains
 
-**Includes:**
+| Domain | Include Path | Description |
+|--------|-------------|-------------|
+| Platform | `platform/sfx_platform.h` | Cross-platform abstraction (mutexes, delays, GPIO, memory) |
+| Audio | `audio/audio_mixer.h` | 8-channel WAV mixer, I2S output, codec drivers |
+| LED | `led/led_control.h` | GPIO LED control with event-based animations |
+| Power | `power/ina226.h` | I2C device framework, INA226, battery monitor |
+| PWM | `pwm/pwm_control.h` | RC PWM input with averaging and hysteresis |
+| Serial | `serial/serial.h` | Binary COBS protocol, command routing, clients |
+| Server | `server/sfx_server.h` | Common server controller boilerplate |
+| Servo | `servo/srv_control.h` | Servo motion profiling with jerk effects |
+| Storage | `storage/sd_card.h` | SD card (SdFat), LittleFS flash singletons |
+| Indicators | `indicators/indicator_leds.h` | Standardized status LEDs (GP13/GP14) |
 
-| Module | Headers | Description |
-|--------|---------|-------------|
-| I2C Framework | `i2c_device.h` | Base class for all I2C peripherals |
-| INA226 | `ina226.h` | TI INA226 power/current/voltage monitor |
-| LED Control | `led_control.h`, `led_events.h`, `led_event_seq.h` | GPIO LED control with event-based animations |
-| PWM Input | `pwm_control.h` | RC PWM input with averaging and hysteresis |
-| Servo Output | `srv_control.h` | Servo motion profiling with jerk effects |
+See [components/README.md](components/README.md) for full API documentation.
 
-**Usage:**
-```cpp
-#include <led_control.h>
-#include <srv_control.h>
-#include <pwm_control.h>
-#include <ina226.h>
-
-LedControl statusLed;
-statusLed.begin(13);
-
-ServoControl servo;
-servo.begin(1, 500, 2500);
-servo.setTarget(1800);
-
-PwmInput throttle;
-throttle.begin(PwmInputType::Pwm, 10);
-
-INA226 monitor;
-monitor.begin(Wire, 0x40, 0.1f, 3.2f);
-```
-
-See [components/README.md](components/README.md) for full documentation.
-
----
-
-### serial
-
-Complete serial communication stack for ScaleFX controllers.
-
-**Features:**
-- Binary protocol (COBS framing, CRC-8)
-- Protocol-agnostic interfaces
-- ACK/NACK error handling
-- USB Host support for RP2040
-
-See [serial/README.md](serial/README.md) for full documentation.  
-See [serial/PROTOCOL.md](serial/PROTOCOL.md) for binary protocol specification.
-
----
+See [components/serial/PROTOCOL.md](components/serial/PROTOCOL.md) for binary protocol specification.
 
 ## PlatformIO Configuration
 
@@ -72,4 +38,6 @@ All controllers use auto-discovery:
 lib_extra_dirs = ../../lib
 ```
 
-This makes all libraries under `controllers/lib/` available. PlatformIO resolves dependencies automatically based on `#include` directives in the firmware source.
+This makes the `components` library available to all controllers. PlatformIO resolves dependencies automatically based on `#include` directives in firmware source.
+
+> **Note:** The `serial/` directory at this level contains legacy headers from before the serial library was folded into `components/serial/`. These files are no longer used by any controller and will be removed in a future cleanup.

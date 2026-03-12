@@ -1,5 +1,5 @@
 /*
- * TinyUSB Configuration for HubFX Pico
+ * TinyUSB Configuration for HubFX Pico 2 (RP2350)
  * 
  * Enables both USB Device (native USB for Serial debug) and
  * USB Host (PIO-USB for connecting to GunFX boards)
@@ -23,7 +23,7 @@ extern "C" {
 // Use Pico SDK OS abstraction
 #define CFG_TUSB_OS                 OPT_OS_PICO
 
-// Board support - Raspberry Pi Pico
+// Board support - Raspberry Pi Pico 2 (RP2350)
 #ifndef BOARD_TUD_RHPORT
 #define BOARD_TUD_RHPORT            0   // Native USB for device
 #endif

@@ -157,7 +157,7 @@ void SlaveServer::handleSlaveInit(const uint8_t* payload, size_t len) {
     unsigned long start = millis();
     while (!slave->client->isServerReady() && (millis() - start < 3000)) {
         slave->client->process();
-        delay(1);
+        busy_wait_ms(1);
     }
 
     if (slave->client->isServerReady()) {

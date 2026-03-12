@@ -1,28 +1,57 @@
 # Components Library
 
-Reusable hardware component drivers for ScaleFX controllers. This library provides generic, controller-agnostic building blocks for I2C devices, LEDs, PWM inputs, and servos.
+Reusable hardware component drivers for ScaleFX controllers. This library provides generic, controller-agnostic building blocks for audio, storage, I2C devices, LEDs, PWM inputs, servos, and the binary serial protocol.
+
+**Supported platforms:** RP2040, RP2350, ESP32-S3
 
 ## Architecture
 
 ```
 components/
-├── Battery Monitoring
-│   └── battery_monitor.h/.cpp  ADC battery voltage with cell detection
-├── I2C Device Framework
-│   ├── i2c_device.h/.cpp      Base class for all I2C peripherals
-│   └── ina226.h/.cpp          TI INA226 power monitor driver
-├── LED Control
-│   ├── led_control.h/.cpp     GPIO LED on/off/PWM brightness
-│   ├── led_events.h           Event-based LED animations (ILedEvent)
-│   └── led_event_seq.h/.cpp   Sequenced LED event playback
-├── Indicator LEDs
-│   └── indicator_leds.h/.cpp  Connection/error LED state machine
-├── Pico Server
-│   └── pico_server.h/.cpp     Common server controller boilerplate
-├── PWM Input
-│   └── pwm_control.h/.cpp     RC PWM input with averaging/hysteresis
-└── Servo Output
-    └── srv_control.h/.cpp     Servo motion profiling with jerk effects
+├── platform/
+│   └── sfx_platform.h         Cross-platform abstraction (mutexes, delays, GPIO)
+├── audio/
+│   ├── audio_config.h          Audio system constants (sample rate, channels, I2S pins)
+│   ├── audio_log.h             Audio-specific logging macros (via DiagLog)
+│   ├── audio_ring_buffer.h     Lock-free SPSC ring buffer (DMA-friendly on ESP32)
+│   ├── audio_codec.h           Abstract codec base class
+│   ├── audio_mixer.h/.cpp      8-channel WAV mixer with I2S output
+│   ├── simple_i2s_codec.h/.cpp Generic I2S codec (no I2C control)
+│   ├── tas5825_codec.h/.cpp    TI TAS5825M digital amp driver (I2C)
+│   └── mock_i2s_sink.h/.cpp    Mock I2S for testing (statistics capture)
+├── led/
+│   ├── led_control.h/.cpp      GPIO LED on/off/PWM brightness
+│   ├── led_events.h            Event-based LED animations (ILedEvent)
+│   └── led_event_seq.h/.cpp    Sequenced LED event playback
+├── power/
+│   ├── battery_monitor.h/.cpp  ADC battery voltage with cell detection
+│   ├── i2c_device.h/.cpp       Base class for all I2C peripherals
+│   └── ina226.h/.cpp           TI INA226 power monitor driver
+├── pwm/
+│   └── pwm_control.h/.cpp      RC PWM input with averaging/hysteresis
+├── serial/
+│   ├── serial.h                Umbrella include
+│   ├── core/                   CoreProtocol, COBS, CRC-8, CommandRouter, SFX_* macros
+│   │   ├── core.h/.cpp         Protocol constants, encode/decode, handler interfaces
+│   │   ├── bus_server.h/.cpp   BusServer + CoreCommandServer base classes
+│   │   ├── stream.h/.cpp       StreamWriter (chunked CRC-16 streaming)
+│   │   └── diag_log.h/.cpp     DiagLog singleton (ring buffer → COBS packets)
+│   ├── client/                 Client-side transport (HubFX only)
+│   │   ├── bus.h/.cpp          SerialBus (COBS over USB CDC)
+│   │   ├── bus_client.h/.cpp   BusClient base class
+│   │   ├── usb_host.h/.cpp     PIO-USB host driver
+│   │   └── result_queue.h      Tag-correlated command/response matching
+│   ├── gunfx/gunfx.h           GunFxServer, GunFxClient, GunFxPacket, GunFxError
+│   ├── lightfx/lightfx.h       LightFxServer, LightFxClient, LightFxPacket, LightFxError
+│   └── gearcontrol/gearcontrol.h GearControlServer, GearControlClient, GearControlPacket
+├── server/
+│   └── sfx_server.h/.cpp       Common server controller boilerplate
+├── servo/
+│   └── srv_control.h/.cpp      Servo motion profiling with jerk effects
+└── storage/
+    ├── storage_types.h          Shared enums (StorageType, StorageError)
+    ├── sd_card.h/.cpp           SdFat SD card singleton (SPI)
+    └── flash.h/.cpp             LittleFS onboard flash singleton
 ```
 
 ## Component Reuse Guidelines
@@ -30,6 +59,109 @@ components/
 > **Rule:** When implementing controller firmware, always check the components library first. If a generic hardware abstraction exists here, use it instead of writing controller-specific code.
 
 > **Rule:** When adding support for a new hardware peripheral (sensor, actuator, display, etc.), create the driver here as a reusable component — not embedded in controller code. Controller firmware should only contain controller-specific logic and protocol handling.
+
+---
+
+## Platform Abstraction
+
+### sfx_platform.h
+
+Cross-platform abstraction layer for all shared library code. Provides unified macros, types, and inline functions that compile to the native SDK calls on each platform.
+
+**Location:** `platform/sfx_platform.h`
+
+**Supported platforms:**
+
+| Macro | Platform | Chips |
+|-------|----------|-------|
+| `SFX_PLATFORM_PICO` | Arduino-Pico (Earle Philhower) | RP2040, RP2350 |
+| `SFX_PLATFORM_ESP32` | ESP-IDF Arduino | ESP32-S3 |
+
+**Abstractions provided:**
+
+| Category | API | Pico Native | ESP32 Native |
+|----------|-----|-------------|---------------|
+| Timing | `SFX_DELAY_MS(ms)` | `busy_wait_ms(ms)` | `vTaskDelay(pdMS_TO_TICKS(ms))` |
+| Timing | `SFX_DELAY_US(us)` | `busy_wait_us_32(us)` | `esp_rom_delay_us(us)` |
+| System | `SFX_FREE_HEAP()` | `rp2040.getFreeHeap()` | `esp_get_free_heap_size()` |
+| System | `SFX_REBOOT()` | `rp2040.reboot()` | `esp_restart()` |
+| System | `SFX_CPU_MHZ()` | `F_CPU / 1000000` | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ` |
+| System | `SFX_PLATFORM_NAME` | `"RP2040"` or `"RP2350"` | `"ESP32-S3"` or `"ESP32"` |
+| System | `sfxGetBoardId(buf, len)` | Flash unique ID | MAC address |
+| System | `sfxRebootToBootloader()` | BOOTSEL mode | `esp_restart()` |
+| Mutex | `SfxMutex` | `mutex_t` | FreeRTOS `SemaphoreHandle_t` |
+| Mutex | `sfxMutexInit(mtx)` | `mutex_init(&mtx)` | `xSemaphoreCreateMutex()` |
+| Mutex | `sfxMutexLock(mtx)` | `mutex_enter_blocking(&mtx)` | `xSemaphoreTake(handle, MAX)` |
+| Mutex | `sfxMutexTryLock(mtx)` | `mutex_try_enter(&mtx, nullptr)` | `xSemaphoreTake(handle, 0)` |
+| Mutex | `sfxMutexUnlock(mtx)` | `mutex_exit(&mtx)` | `xSemaphoreGive(handle)` |
+| GPIO | `SFX_VBUS_PIN` | GPIO 24 | 0xFF (N/A) |
+| Servo | `#include <Servo.h>` | PIO-based | LEDC-based (`ESP32Servo.h`) |
+| Interrupt | `SFX_ATTACH_INTERRUPT_PARAM(...)` | `attachInterruptParam()` | `attachInterruptArg()` |
+| I2S | `SFX_I2S_PICO` / `SFX_I2S_ESP32` | PIO I2S | Hardware I2S peripheral |
+| Memory | `SFX_DMA_BUFFER` | (no-op) | `DMA_ATTR DRAM_ATTR` |
+| Memory | `SFX_IRAM_FUNC` | (no-op) | `IRAM_ATTR` |
+| Dual-core | `SFX_DUAL_CORE_PICO` | `setup1()`/`loop1()` | — |
+| Dual-core | `SFX_DUAL_CORE_FREERTOS` | — | `xTaskCreatePinnedToCore()` |
+
+**Usage in shared library code:**
+```cpp
+#include "platform/sfx_platform.h"
+
+SfxMutex _mutex;
+sfxMutexInit(_mutex);
+sfxMutexLock(_mutex);
+// ... critical section ...
+sfxMutexUnlock(_mutex);
+
+SFX_DELAY_MS(10);
+uint32_t heap = SFX_FREE_HEAP();
+```
+
+> **Rule:** Shared library code (`controllers/lib/components/`) MUST use `sfx_platform.h` abstractions instead of raw Pico SDK or ESP-IDF calls. Controller firmware (single-platform) may use platform-native APIs directly.
+
+> **Note:** `millis()` is safe on all platforms and not abstracted — use it freely.
+
+**Components using sfx_platform.h:**
+- `serial/core/diag_log.h/.cpp` — SfxMutex for ring buffer thread safety
+- `serial/client/result_queue.cpp` — SFX_DELAY_MS in tag wait loop
+- `audio/audio_mixer.cpp` — SfxMutex for command queue, SFX_DELAY_MS in I2S init
+- `audio/audio_ring_buffer.h` — SFX_DMA_BUFFER for ESP32 internal SRAM placement
+- `server/sfx_server.cpp` — SFX_FREE_HEAP, SFX_CPU_MHZ, sfxGetBoardId, sfxRebootToBootloader
+
+---
+
+## Audio
+
+### Audio Buffer Architecture
+
+The audio system uses a 5-layer buffer pipeline designed for glitch-free playback on dual-core systems. Buffer sizes are platform-conditional to leverage ESP32-S3's larger RAM.
+
+```
+SD Card → [SD Read Buffer] → WAV Decode → [Per-Channel Float Buffers]
+    → Float Mix → [SPSC Ring Buffer] → [I2S DMA / Batch Buffer] → Speakers
+```
+
+**Buffer sizes (platform-conditional):**
+
+| Buffer | Pico (RP2040/RP2350) | ESP32-S3 | Location |
+|--------|---------------------|----------|----------|
+| Ring buffer | 16K frames (64 KB) | 32K frames (128 KB) | `audio_ring_buffer.h` |
+| Per-channel float | 1,024 frames (8 KB/ch) | 2,048 frames (16 KB/ch) | `audio_mixer.h` |
+| SD read buffer | 4 KB | 16 KB | `audio_mixer.h` |
+| Mix buffer | 512 samples | 1,024 samples | `audio_config.h` |
+| Stream buffer | 2 KB | 8 KB | `audio_config.h` |
+| ESP32 I2S batch | — | 1,024 int16 (2 KB) | `audio_mixer.cpp` |
+| ESP32 I2S DMA | — | 8×512 frames (16 KB) | `audio_mixer.cpp` |
+
+**Core allocation:**
+- **Core 0 (Producer):** SD read → WAV decode → float mix → ring buffer write
+- **Core 1 (Consumer):** Ring buffer read → int16 conversion → I2S DMA output
+
+**Feature guard:** All audio code is compiled only when `-DSFX_HAS_AUDIO=1` is defined (HubFX only). Other controllers compile the components library without any audio overhead.
+
+See `audio_config.h` for configurable constants (sample rate, channel count, I2S pins).
+
+See `audio_mixer.h` for the full `AudioMixer` singleton API.
 
 ---
 
@@ -378,9 +510,9 @@ servo.clearJerk();      // Remove offset
 
 ## Indicator LEDs
 
-### IndicatorLedManager Class
+### SfxServer::IndicatorLedManager (Nested Class)
 
-Manages the two standardized indicator LEDs (GP13=connection, GP14=error) present on all ScaleFX Pico server boards. Encapsulates the blink patterns and state transitions for connection status and error reporting.
+Manages the two standardized indicator LEDs (GP13=connection, GP14=error) present on all ScaleFX Pico server boards. Encapsulates the blink patterns and state transitions for connection status and error reporting. Defined as a nested class inside `SfxServer` since it is only used there.
 
 **States:**
 
@@ -391,31 +523,31 @@ Manages the two standardized indicator LEDs (GP13=connection, GP14=error) presen
 
 **Basic usage:**
 ```cpp
-#include <indicator_leds.h>
+#include <server/sfx_server.h>
 
-IndicatorLedManager indicators;
-indicators.begin(13, 14);              // GP13=connection, GP14=error
-
-indicators.setConnected(true);         // INIT received
-indicators.setErrorCondition(true);    // Module-specific error
-indicators.setWarningCondition(true);  // Module-specific warning
-indicators.update();                   // Call in loop()
+// Access via SfxServer instance:
+server.indicators().setConnected(true);         // INIT received
+server.indicators().setErrorCondition(true);    // Module-specific error
+server.indicators().setWarningCondition(true);  // Module-specific warning
+// update() is called automatically by server.loop()
 ```
 
-> **Note:** When using `PicoServer`, indicator LEDs are managed automatically. Access via `server.indicators()` for setting error/warning conditions.
+> **Note:** Indicator LEDs are managed automatically by `SfxServer`. Access via `server.indicators()` for setting error/warning conditions.
 
 ---
 
-## Pico Server
+## SfxServer
 
-### PicoServer Class
+### SfxServer Class
 
-Common server controller boilerplate for all ScaleFX Pico server firmware. Encapsulates the USB serial initialization, device naming, indicator LEDs, core protocol handling, command routing, and connection timeout management that was previously duplicated across every controller.
+Common server controller boilerplate for all ScaleFX server firmware. Encapsulates the USB serial initialization, device naming, indicator LEDs, core protocol handling, command routing, and connection timeout management that was previously duplicated across every controller.
 
-**What PicoServer handles:**
+Cross-platform: supports RP2040, RP2350, and ESP32-S3 via `sfx_platform.h`.
+
+**What SfxServer handles:**
 - USB serial initialization (1Mbps baud)
-- Unique device name from Pico board ID (e.g. "GunFX-A1B2")
-- Indicator LEDs on GP13/GP14 (connection + error status)
+- Unique device name from board ID (e.g. "GunFX-A1B2")
+- Indicator LEDs on GP13/GP14 (connection + error status) via nested `IndicatorLedManager`
 - CoreCommandServer with board info and INIT/SHUTDOWN/REBOOT/BOOTSEL callbacks
 - CommandRouter with automatic handler priority (core first, then module)
 - Connection timeout / watchdog detection (15s)
@@ -423,9 +555,9 @@ Common server controller boilerplate for all ScaleFX Pico server firmware. Encap
 
 **Basic usage (minimal controller):**
 ```cpp
-#include <pico_server.h>
+#include <server/sfx_server.h>
 
-PicoServer server;
+SfxServer server;
 
 void setup() {
     server.begin("MyController", FIRMWARE_VERSION, BUILD_NUMBER);
@@ -439,16 +571,16 @@ void setup() {
 void loop() {
     server.loop();       // protocol, timeout, indicators
     updateHardware();    // module-specific work
-    delay(1);
+    SFX_DELAY_MS(1);
 }
 ```
 
 **With a module handler:**
 ```cpp
-#include <pico_server.h>
+#include <server/sfx_server.h>
 #include <serial.h>
 
-PicoServer server;
+SfxServer server;
 GunFxServer gunfxServer;
 
 void setup() {
@@ -474,7 +606,7 @@ void setup() {
 void loop() {
     server.loop();          // protocol, timeout, indicators
     updateServos();         // module-specific updates
-    delay(1);
+    SFX_DELAY_MS(1);
 }
 ```
 
@@ -483,7 +615,7 @@ void loop() {
 // In loop(), before server.loop() or after:
 server.indicators().setErrorCondition(hasError);
 server.indicators().setWarningCondition(hasWarning);
-// PicoServer calls indicators.update() automatically in server.loop()
+// SfxServer calls indicators.update() automatically in server.loop()
 ```
 
 **API:**
@@ -504,9 +636,8 @@ server.indicators().setWarningCondition(hasWarning);
 
 ## Dependencies
 
-- Arduino framework (earlephilhower/arduino-pico)
+- Arduino framework (earlephilhower/arduino-pico for RP2040/RP2350, ESP-IDF Arduino for ESP32-S3)
 - Servo library (for srv_control)
 - Wire library (for I2C — provided by Arduino)
 - ADC (for battery_monitor — provided by Arduino)
-- Raspberry Pi Pico (RP2040)
 - C++17 or later

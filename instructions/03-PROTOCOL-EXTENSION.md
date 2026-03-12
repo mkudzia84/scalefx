@@ -9,7 +9,7 @@
 ```yaml
 Files_To_Modify:
   Always:
-    - "lib/serial/serial_xxxfx.h"           # Packet type, error codes, handler logic
+    - "lib/components/serial/xxxfx/xxxfx.h"           # Packet type, error codes, handler logic
     - "controllers/xxxfx/pico/src/*.ino"     # Callback implementation
     - "tests/framework/packets.py"           # Python constant
     - "tests/framework/commands.py"          # Python builder
@@ -17,7 +17,7 @@ Files_To_Modify:
     - "controllers/xxxfx/pico/README.md"     # Documentation
   
   If_New_Error_Codes:
-    - "lib/serial/serial_xxxfx.h"            # C++ error constant (in module's error namespace)
+    - "lib/components/serial/xxxfx/xxxfx.h"            # C++ error constant (in module's error namespace)
     - "tests/framework/packets.py"           # Python error constant
 ```
 
@@ -27,7 +27,7 @@ Files_To_Modify:
 
 ### Step 1: Define Packet Type
 
-**File:** `controllers/lib/serial/serial_gunfx.h`
+**File:** `controllers/lib/components/serial/gunfx/gunfx.h`
 
 **FIND:**
 ```cpp
@@ -46,7 +46,7 @@ namespace GunFxPacket {
 
 ### Step 2: Add Error Code (if needed)
 
-**File:** `controllers/lib/serial/serial_gunfx.h`
+**File:** `controllers/lib/components/serial/gunfx/gunfx.h`
 
 Error codes are defined in the module's own header file, not a separate error file.
 
@@ -68,7 +68,7 @@ namespace GunFxError {
 
 ### Step 3: Add Callback to Server Class
 
-**File:** `controllers/lib/serial/serial_gunfx.h`
+**File:** `controllers/lib/components/serial/gunfx/gunfx.h`
 
 **ACTION 3.1 - Add callback typedef:**
 ```cpp
@@ -95,7 +95,7 @@ case GunFxPacket::AMMO_SET: {
 }
 ```
 
-> **Note:** `SFX_REQUIRE_LEN`, `SFX_VALIDATE`, and `SFX_DISPATCH` macros are defined in `serial_core.h`. See `01-ARCHITECTURE.md` for details.
+> **Note:** `SFX_REQUIRE_LEN`, `SFX_VALIDATE`, and `SFX_DISPATCH` macros are defined in `core/core.h`. See `01-ARCHITECTURE.md` for details.
 
 **ACTION 3.4 - Add private member:**
 ```cpp
@@ -107,7 +107,7 @@ private:
 
 ### Step 3b: Add Client Method (for HubFX)
 
-**File:** `controllers/lib/serial/serial_gunfx.h` (GunFxClient class)
+**File:** `controllers/lib/components/serial/gunfx/gunfx.h` (GunFxClient class)
 
 All client methods MUST return `CommandResult`, never `bool`. Choose the pattern based on the response category (see Response Category Decision below).
 
@@ -395,9 +395,9 @@ String:
 ```yaml
 Before_Marking_Complete:
   Server_Side:
-    - [ ] Packet type added to serial_xxxfx.h (e.g., GunFxPacket namespace)
-    - [ ] Error codes added to serial_xxxfx.h (e.g., GunFxError namespace, if any)
-    - [ ] Callback type defined in serial_xxxfx.h
+    - [ ] Packet type added to xxxfx/xxxfx.h (e.g., GunFxPacket namespace)
+    - [ ] Error codes added to xxxfx/xxxfx.h (e.g., GunFxError namespace, if any)
+    - [ ] Callback type defined in xxxfx/xxxfx.h
     - [ ] Registration method added to server class
     - [ ] Handler case added to handleModulePacket() switch using SFX_* macros
     - [ ] Private callback member added

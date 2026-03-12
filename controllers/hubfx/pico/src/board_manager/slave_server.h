@@ -19,7 +19,7 @@
 #define SLAVE_SERVER_H
 
 #include <Arduino.h>
-#include <serial_bus_server.h>
+#include <serial/core/bus_server.h>
 
 #include "hubfx_protocol.h"
 #include "slave_registry.h"

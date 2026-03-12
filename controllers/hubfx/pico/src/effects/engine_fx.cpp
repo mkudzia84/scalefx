@@ -7,7 +7,7 @@
 
 #include "engine_fx.h"
 #include "effects_config.h"
-#include "../audio/audio_mixer.h"
+#include <audio/audio_mixer.h>
 
 // Debug logging using centralized config
 #define LOG(fmt, ...) EFFECTS_LOG("EngineFX", fmt, ##__VA_ARGS__)

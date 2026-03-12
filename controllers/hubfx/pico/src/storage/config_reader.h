@@ -13,7 +13,7 @@
 #include <Arduino.h>
 #include <SdFat.h>
 #include <LittleFS.h>
-#include <pico/mutex.h>
+#include <platform/sfx_platform.h>
 #include "../effects/engine_fx.h"
 #include "../effects/gun_fx.h"
 

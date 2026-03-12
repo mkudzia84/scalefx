@@ -1,6 +1,6 @@
-# HubFX Pico
+# HubFX Pico 2
 
-High-performance audio and effects controller for scale RC models, built on Raspberry Pi Pico.
+High-performance audio and effects controller for scale RC models, built on Raspberry Pi Pico 2 (RP2350).
 
 ## Overview
 
@@ -18,15 +18,15 @@ HubFX Pico is a dual-core audio system that provides:
 
 **Minimum Configuration:**
 ```
-Raspberry Pi Pico → I2S DAC → Speakers
-                  → SD Card Module
+Raspberry Pi Pico 2 → I2S DAC → Speakers
+                    → SD Card Module
 ```
 
 **Full Configuration:**
 ```
-Raspberry Pi Pico → Audio Codec (WM8960/TAS5825M) → Speakers
-                  → SD Card Module → WAV files
-                  → USB Hub → GunFX Controllers
+Raspberry Pi Pico 2 → Audio Codec (WM8960/TAS5825M) → Speakers
+                    → SD Card Module → WAV files
+                    → USB Hub → GunFX Controllers
 ```
 
 **Important:** See [docs/WIRING.md](docs/WIRING.md) for:
@@ -145,7 +145,7 @@ engine_fx:
 
 ## Serial Protocol
 
-Binary COBS protocol at 1Mbps baud. See `controllers/lib/serial/PROTOCOL.md` for
+Binary COBS protocol at 1Mbps baud. See `controllers/lib/components/serial/PROTOCOL.md` for
 the full wire format specification.
 
 ### Packet Type Allocation (0x80-0xA3)
@@ -159,7 +159,7 @@ the full wire format specification.
 | 0x96-0x98 | Slave routing (subcmd) | SlaveServer |
 | 0x99 | Diagnostics (async log) | DiagLog |
 | 0x9A-0xA3 | File operations | StorageServer |
-| 0xA4-0xA6 | Streaming (library) | `serial_stream.h` |
+| 0xA4-0xA6 | Streaming (library) | `core/stream.h` |
 | 0xF0-0xFF | Core system | CoreCommandServer |
 
 ### Slave Management
@@ -310,12 +310,10 @@ python -m tests.cli.interactive --port COM5
 pico/
 ├── src/
 │   ├── hubfx_pico.ino         # Main application
-│   ├── audio/                 # Audio subsystem
-│   │   ├── audio_codec.h      # Generic codec interface
-│   │   ├── audio_mixer.h/cpp  # 8-channel mixer (Core 1)
-│   │   ├── wm8960_codec.*     # WM8960 I2C driver
-│   │   ├── tas5825_codec.*    # TAS5825M I2C driver
-│   │   └── simple_i2s_codec.* # Simple I2S DACs
+│   ├── audio/                 # Audio subsystem (HubFX-specific)
+│   │   ├── audio_channels.h   # Channel assignment constants
+│   │   ├── audio_server.h/cpp # HubFX audio command handler
+│   │   └── system_sounds.h    # System sound path constants
 │   ├── storage/               # Storage & configuration
 │   │   ├── sd_card.h/cpp      # SD card module
 │   │   └── config_reader.*    # YAML parser
@@ -329,6 +327,10 @@ pico/
 ├── platformio.ini            # Build configuration
 └── config.yaml               # Example configuration
 ```
+
+> **Note:** The core audio mixer, codecs, ring buffer, and I2S backend live in the shared
+> library at `controllers/lib/components/audio/`. HubFX `src/audio/` contains only
+> controller-specific code (command handling, channel assignments, system sounds).
 
 ## Building
 
@@ -355,7 +357,7 @@ pio run -t clean
    ```
    https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
    ```
-3. Tools → Board → Raspberry Pi Pico
+3. Tools → Board → Raspberry Pi Pico 2
 4. Tools → CPU Speed → 120 MHz (for USB host support)
 5. Open `src/hubfx_pico.ino` and upload
 
@@ -484,7 +486,7 @@ EngineState state = engineFx.state();
 
 ## Technical Specifications
 
-- **Platform**: RP2040 @ 120MHz (dual-core Cortex-M0+)
+- **Platform**: RP2350 @ 120MHz (dual-core Cortex-M33)
 - **Audio**: I2S master, 44.1kHz stereo, 16-bit
 - **Storage**: SPI SD card (FAT32), LittleFS flash
 - **Communication**: USB CDC serial @ 1Mbps baud

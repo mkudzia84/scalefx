@@ -4,9 +4,9 @@
 
 ## System Architecture
 
-ScaleFX is a modular scale model effects system with three platform targets:
-- **Pico Controllers** (RP2040): Real-time device control (GunFX, LightFX, GearControl, HubFX Pico)
-- **Raspberry Pi Hub** (Linux/C): Audio mixing and PWM monitoring (HubFX Pi)
+ScaleFX is a modular scale model effects system with two platform targets:
+- **Pico Controllers** (RP2040/RP2350): Real-time device control (GunFX, LightFX, GearControl, HubFX Pico)
+- **ESP32-S3 Controllers**: HubFX ESP32-S3 (migration target from Pico)
 - **Windows Studio** (.NET 8/C#): Visual configuration editor
 
 **Communication:** Binary COBS protocol over USB serial (1Mbps baud)
@@ -21,15 +21,17 @@ ScaleFX is a modular scale model effects system with three platform targets:
 cd controllers/{gunfx|lightfx|hubfx}/pico
 python -m platformio run -e pico
 
+# Build ESP32-S3 firmware (PlatformIO)
+cd controllers/hubfx/esp32s3
+python -m platformio run -e esp32s3
+
 # Build and flash with verification (centralized script)
 python scripts/build_and_flash.py gunfx
 python scripts/build_and_flash.py lightfx --port COM10
 python scripts/build_and_flash.py noop --no-build
 python scripts/build_and_flash.py gunfx --no-clean      # incremental build
 python scripts/build_and_flash.py lightfx --skip-verify  # skip post-flash check
-
-# Build Raspberry Pi hub (C, requires GCC 14+)
-ssh helifx@helifx "cd ~/helifx/controllers/hubfx/pi && make"
+python scripts/build_and_flash.py hubfx-esp32s3          # ESP32-S3 (uses esptool)
 
 # Build Windows Studio (.NET 8)
 cd app/win32/ScaleFXStudio
@@ -62,17 +64,18 @@ When modifying serial protocol, these files MUST stay in sync:
 
 | C++ Source | Python Mirror | Content |
 |------------|---------------|---------|
-| `controllers/lib/serial/serial_core.h` | `tests/framework/packets.py` | Packet type constants, generic error codes |
-| `controllers/lib/serial/serial_gunfx.h` | `tests/framework/packets.py`, `commands.py` | GunFX packet types, error codes, commands |
-| `controllers/lib/serial/serial_lightfx.h` | `tests/framework/packets.py`, `commands.py` | LightFX packet types, error codes, commands |
-| `controllers/lib/serial/serial_gearcontrol.h` | `tests/framework/packets.py`, `commands.py` | GearControl packet types, error codes, commands |
+| `controllers/lib/components/serial/core/core.h` | `tests/framework/packets.py` | Packet type constants, generic error codes |
+| `controllers/lib/components/serial/gunfx/gunfx.h` | `tests/framework/packets.py`, `commands.py` | GunFX packet types, error codes, commands |
+| `controllers/lib/components/serial/lightfx/lightfx.h` | `tests/framework/packets.py`, `commands.py` | LightFX packet types, error codes, commands |
+| `controllers/lib/components/serial/gearcontrol/gearcontrol.h` | `tests/framework/packets.py`, `commands.py` | GearControl packet types, error codes, commands |
+| `controllers/lib/components/serial/hubfx/hubfx.h` | `tests/framework/packets.py`, `commands.py` | HubFX packet types, error codes, commands |
 
 **Verification:** Run `python -m py_compile tests/framework/packets.py` after C++ changes.
 
 ### 2. Command Addition Checklist
 
 When adding a new command to an existing controller, update ALL these files:
-1. `serial_xxxfx.h` - Add packet type constant, callback typedef, `onNewCmd()` method, handler case in `handleModulePacket()` using `SFX_*` macros, error codes if needed
+1. `xxxfx/xxxfx.h` - Add packet type constant, callback typedef, `onNewCmd()` method, handler case in `handleModulePacket()` using `SFX_*` macros, error codes if needed
 2. `xxxfx_pico.ino` - Implement callback, register in `setup()`
 4. `tests/framework/packets.py` - Mirror constant in `XxxPacket` class
 5. `tests/framework/commands.py` - Add static builder method in `XxxCommands`
@@ -166,11 +169,11 @@ float v = monitor.busVoltage_mV();     // unambiguous: millivolts
 float i = monitor.current_mA();        // unambiguous: milliamps
 ```
 
-### 6. PicoServer Pattern (Server Controllers)
+### 6. SfxServer Pattern (Server Controllers)
 
-All Pico server controllers use `PicoServer` to eliminate boilerplate:
+All Pico server controllers use `SfxServer` to eliminate boilerplate:
 ```cpp
-PicoServer server;
+SfxServer server;
 XxxFxServer xxxfxServer;
 
 void setup() {
@@ -189,11 +192,11 @@ void loop() {
     server.loop();       // protocol, timeout, indicators
     updateHardware();    // module-specific work
     server.indicators().setErrorCondition(hasError);  // optional
-    delay(1);
+    busy_wait_ms(1);
 }
 ```
 
-PicoServer handles: serial init, device naming, indicator LEDs, CoreCommandServer, CommandRouter, connection timeout, free RAM updates.
+SfxServer handles: serial init, device naming, indicator LEDs, CoreCommandServer, CommandRouter, connection timeout, free RAM updates.
 
 ### 7. Component Reuse (MANDATORY)
 
@@ -232,7 +235,7 @@ float v = batteryMonitor.busVoltage_mV();  // clear, reusable, tested
 
 ### 8. Indicator LEDs and Error Reporting (MANDATORY)
 
-**All Pico server controllers use `PicoServer` which automatically manages indicator LEDs on GP13/GP14.** Controllers only need to set error/warning conditions.
+**All Pico server controllers use `SfxServer` which automatically manages indicator LEDs on GP13/GP14.** Controllers only need to set error/warning conditions.
 
 #### Indicator LED Standard
 
@@ -243,23 +246,23 @@ float v = batteryMonitor.busVoltage_mV();  // clear, reusable, tested
 
 #### Required Implementation
 
-Every controller firmware uses `PicoServer` which handles indicators automatically:
+Every controller firmware uses `SfxServer` which handles indicators automatically:
 ```cpp
-// Declare PicoServer (handles indicators internally)
-PicoServer server;
+// Declare SfxServer (handles indicators internally)
+SfxServer server;
 
 // In setup():
 server.begin("MyController", FIRMWARE_VERSION, BUILD_NUMBER);
 server.onInit([]()     { performSafeInit(); });
 server.onShutdown([]() { performSafeShutdown(); });
 
-// In loop(): set error/warning conditions, PicoServer updates LEDs
+// In loop(): set error/warning conditions, SfxServer updates LEDs
 server.indicators().setErrorCondition(hasError);
 server.indicators().setWarningCondition(hasWarning);
 server.loop();  // Calls indicators.update() automatically
 ```
 
-**Connection state rules (handled by PicoServer):**
+**Connection state rules (handled by SfxServer):**
 - `doInit()` sets `connected = true` and `watchdogTriggered = false`
 - `doShutdown()` sets `connected = false`
 - Connection timeout (15s) triggers `doShutdown()` and sets `watchdogTriggered = true`
@@ -408,10 +411,10 @@ private:
 
 | Class | Location | Resource Type |
 |-------|----------|---------------|
-| `DiagLog` | `lib/serial/serial_diag_log.h` | Board-wide logging service |
+| `DiagLog` | `lib/components/serial/core/diag_log.h` | Board-wide logging service |
 | `SdCardModule` | `hubfx/pico/src/storage/sd_card.h` | Single SPI SD card |
 | `FlashModule` | `hubfx/pico/src/storage/flash.h` | Single onboard LittleFS flash |
-| `AudioMixer` | `hubfx/pico/src/audio/audio_mixer.h` | Single I2S audio output |
+| `AudioMixer` | `lib/components/audio/audio_mixer.h` | Single I2S audio output |
 
 **Rules:**
 1. **Access via `::instance()`** — never via global pointer, extern declaration, or injected pointer. Consumers call `MyModule::instance()` directly.
@@ -440,6 +443,148 @@ SdCardModule& sd = SdCardModule::instance();
 if (!sd.isInitialized()) { sendNack(ERROR); return; }  // Check state, not existence
 ```
 
+### 15. Dual-Core Thread Safety (MANDATORY — HubFX/RP2350)
+
+**HubFX runs on RP2350 (Pico 2) with dual cores.** Any flag or state variable accessed by both cores MUST use `std::atomic<T>` with explicit memory ordering (`memory_order_release` for writes, `memory_order_acquire` for reads). This replaces manual `volatile` + `__dmb()` with a portable, self-documenting C++ pattern.
+
+**Core responsibilities:**
+| Core | Responsibilities |
+|------|------------------|
+| **Core 0** | Protocol handling, SD card, WAV decoding, mixing (producer) |
+| **Core 1** | Audio I2S output (consumer), USB Host (when enabled) |
+
+**Rules:**
+1. **`std::atomic<T>` for cross-core flags** — any `bool`, `int`, `uint*_t`, or pointer written by one core and read by another MUST be `std::atomic<T>`. The atomic type prevents register caching AND provides memory ordering guarantees.
+2. **`memory_order_release` on writes** — ensures all preceding writes are visible before the flag is set. Replaces the old `volatile` + `__dmb()` pattern.
+3. **`memory_order_acquire` on reads** — ensures subsequent reads see all writes that happened before the corresponding release. Use in poll loops and cross-core guard checks.
+4. **`memory_order_relaxed` for own-index reads** — in SPSC patterns, the owning core can read its own index with relaxed ordering (no barrier needed for self-reads).
+5. **Implicit operators for same-core reads** — `std::atomic<T>::operator T()` uses `seq_cst` by default, which is correct and convenient for reads on the same core that writes.
+6. **Annotate with core ownership** — document which core writes and which reads:
+   ```cpp
+   std::atomic<bool> _initialized{false};   // Core 0 writes, Core 1 reads
+   std::atomic<uint32_t> _writeIdx{0};      // Core 0 writes, Core 1 reads
+   ```
+7. **Use mutex for complex shared state** — for multi-field updates or producer-consumer queues where multiple values must stay consistent, use `mutex_t` with `mutex_enter_blocking()` / `mutex_exit()`. Variables protected by mutex MUST still be `std::atomic` when accessed outside the mutex (e.g., diagnostic reads, status queries).
+8. **No `volatile` — always `std::atomic`** — even diagnostic/status counters (`_underruns`, `_consumeLoops`, `_channelPlaying[]`, etc.) MUST be `std::atomic<T>`. Use `memory_order_relaxed` for same-core or non-critical reads/writes. `volatile` is never correct for cross-core visibility on Cortex-M33.
+9. **Pointer atomics need local extraction** — `std::atomic<T*>` has no `operator->()`. Extract to a local:
+   ```cpp
+   Stream* serial = _serial.load(std::memory_order_acquire);
+   if (!serial) return;
+   serial->write(buf, len);  // use local, not _serial->write()
+   ```
+10. **Zero-tolerance `volatile` audit rule** — when reviewing or modifying any HubFX or shared-library code (`controllers/lib/`), **proactively scan for `volatile` variables and replace them with `std::atomic<T>`**. This applies even if the variable is currently single-core — shared library code may run on multi-core targets. The only acceptable use of `volatile` is for memory-mapped I/O registers (hardware peripheral access), never for inter-thread or inter-core communication.
+11. **Banned Arduino APIs** — see Rule 16 for the full platform-native API table. Key points: `delay()`, `sleep_ms()`, `delayMicroseconds()` are **banned on ALL cores** (use `busy_wait_ms()`/`busy_wait_us_32()`). `Serial.print()` is unsafe on Core 1 (use DiagLog). `setup1()` should be minimal — set an atomic flag and return.
+
+**Current cross-core variables (HubFX):**
+
+| Variable | Type | Location | Owner | Ordering |
+|----------|------|----------|-------|----------|
+| `audioInitialized` | `std::atomic<bool>` | hubfx_pico.ino | Core 0 writes | release/acquire |
+| `core1Ready` | `std::atomic<bool>` | hubfx_pico.ino | Core 1 writes | release/acquire |
+| `loop1Count` | `std::atomic<uint32_t>` | hubfx_pico.ino | Core 1 writes | relaxed/acquire |
+| `_initialized` | `std::atomic<bool>` | AudioMixer | Core 0 writes | release/acquire |
+| `_i2sRunning` | `std::atomic<bool>` | AudioMixer | Core 1 writes | release/acquire |
+| `_serial` | `std::atomic<Stream*>` | DiagLog | Core 0 writes | release/acquire |
+| `_mutexInitialized` | `std::atomic<bool>` | DiagLog | Core 0 writes | release/acquire |
+| `_head` / `_tail` | `std::atomic<uint16_t>` | DiagLog | mutex + atomic | release/acquire |
+| `_overwritten` | `std::atomic<uint32_t>` | DiagLog | mutex + atomic | relaxed/acquire |
+| `_writeIdx` / `_readIdx` | `std::atomic<uint32_t>` | AudioRingBuffer | SPSC | release/acquire |
+| `_cmdQueueHead/Tail` | `std::atomic<int>` | AudioMixer | mutex + atomic | release/acquire |
+| `_underruns` | `std::atomic<uint32_t>` | AudioMixer | Core 1 writes | relaxed/acquire |
+| `_consumeLoops` | `std::atomic<uint32_t>` | AudioMixer | Core 1 writes | relaxed/acquire |
+| `_consumeFrames` | `std::atomic<uint32_t>` | AudioMixer | Core 1 writes | relaxed/acquire |
+| `_channelPlaying[]` | `std::atomic<bool>` | AudioMixer | Core 0 writes | relaxed (same-core) |
+| `_channelRemainingMs[]` | `std::atomic<int>` | AudioMixer | Core 0 writes | relaxed (same-core) |
+| `_minLevel` | `std::atomic<uint8_t>` | DiagLog | Core 0 writes | relaxed/relaxed |
+| `_waitingTag` | `std::atomic<uint8_t>` | ResultQueue | same-core (atomic for policy) | relaxed |
+| `_waitResolved` | `std::atomic<bool>` | ResultQueue | same-core (atomic for policy) | release/acquire |
+
+**Anti-pattern (caused the Core 1 hang bug):**
+```cpp
+// BAD: volatile alone — Core 1 never sees update on Cortex-M33
+volatile bool audioInitialized = false;
+audioInitialized = true;          // Core 0 writes — may sit in write buffer
+// Core 1:
+while (!audioInitialized) {}      // Hangs forever! Write buffer not drained
+
+// GOOD: std::atomic with release/acquire — portable, self-documenting
+std::atomic<bool> audioInitialized{false};
+audioInitialized.store(true, std::memory_order_release);   // Core 0
+// Core 1:
+if (audioInitialized.load(std::memory_order_acquire)) break;  // Sees update
+```
+
+**Single-core controllers (GunFX, LightFX, GearControl):** These rules do not apply — they run single-threaded on Core 0 only. However, shared code (DiagLog) uses `std::atomic` unconditionally for portability — on single-core targets the atomic operations compile to simple loads/stores with negligible overhead.
+
+### 16. Platform-Native API Usage (MANDATORY)
+
+**All firmware code MUST use the native SDK for the target platform, not Arduino wrapper functions.** Arduino wrappers hide platform differences but often use shared resources (alarm pools, interrupt handlers) that cause contention on multi-core chips or have unexpected behavior. Shared library code (`controllers/lib/`) MUST use `#ifdef` guards to select the correct native API per platform.
+
+**Platform detection macros:**
+
+| Macro | When Defined | Platform |
+|-------|-------------|----------|
+| `PICO_RP2040` | RP2040 builds | Pico (GunFX, LightFX, GearControl, NoOp) |
+| `PICO_RP2350` | RP2350 builds | Pico 2 (HubFX current) |
+| `ARDUINO_ARCH_RP2040` | Any RP2xxx Arduino-Pico build | Both RP2040 and RP2350 |
+| `ESP32` or `ARDUINO_ARCH_ESP32` | ESP-IDF Arduino build | ESP32-S3 (HubFX future) |
+| `CONFIG_IDF_TARGET_ESP32S3` | ESP32-S3 specifically | ESP32-S3 only |
+
+**Platform-native API equivalents:**
+
+| Operation | Arduino (AVOID) | Pico SDK (RP2040/RP2350) | ESP-IDF (ESP32-S3) |
+|-----------|----------------|--------------------------|---------------------|
+| Delay (ms) | `delay(ms)` | `busy_wait_ms(ms)` | `vTaskDelay(pdMS_TO_TICKS(ms))` |
+| Delay (µs) | `delayMicroseconds(us)` | `busy_wait_us_32(us)` | `esp_rom_delay_us(us)` |
+| Milliseconds | `millis()` | `to_ms_since_boot(get_absolute_time())` | `esp_timer_get_time() / 1000` |
+| Microseconds | `micros()` | `to_us_since_boot(get_absolute_time())` | `esp_timer_get_time()` |
+| Free heap | `rp2040.getFreeHeap()` | `rp2040.getFreeHeap()` | `esp_get_free_heap_size()` |
+| Reboot | `rp2040.reboot()` | `watchdog_reboot(0,0,0)` | `esp_restart()` |
+| Bootloader | `rp2040.rebootToBootloader()` | `reset_usb_boot(0,0)` | N/A (OTA or USB-DFU) |
+| GPIO write | `digitalWrite(pin, val)` | `gpio_put(pin, val)` | `gpio_set_level(pin, val)` |
+| GPIO read | `digitalRead(pin)` | `gpio_get(pin)` | `gpio_get_level(pin)` |
+| GPIO mode | `pinMode(pin, mode)` | `gpio_init(pin); gpio_set_dir(pin, dir)` | `gpio_set_direction(pin, dir)` |
+| Mutex lock | N/A | `mutex_enter_blocking(&mtx)` | `xSemaphoreTake(mtx, portMAX_DELAY)` |
+| Mutex unlock | N/A | `mutex_exit(&mtx)` | `xSemaphoreGive(mtx)` |
+| Task/core pin | `setup1()`/`loop1()` | Native dual-core | `xTaskCreatePinnedToCore()` |
+| Serial output | `Serial.print()` | DiagLog (mutex-safe) | `ESP_LOG*()` macros |
+
+**Shared library pattern (`controllers/lib/`):**
+
+All platform-specific abstractions are centralized in `platform/sfx_platform.h`. Shared library code MUST use these instead of raw SDK calls:
+
+```cpp
+// In any shared component:
+#include "platform/sfx_platform.h"
+
+SFX_DELAY_MS(10);                    // busy_wait_ms (Pico) / vTaskDelay (ESP32)
+SFX_DELAY_US(100);                   // busy_wait_us_32 (Pico) / esp_rom_delay_us (ESP32)
+uint32_t heap = SFX_FREE_HEAP();     // rp2040.getFreeHeap() / esp_get_free_heap_size()
+SFX_REBOOT();                        // rp2040.reboot() / esp_restart()
+
+SfxMutex mtx;
+sfxMutexInit(mtx);                   // mutex_init (Pico) / xSemaphoreCreateMutex (ESP32)
+sfxMutexLock(mtx);                   // mutex_enter_blocking / xSemaphoreTake
+sfxMutexUnlock(mtx);                 // mutex_exit / xSemaphoreGive
+```
+
+See `controllers/lib/components/platform/sfx_platform.h` for the full abstraction table including GPIO, servo, interrupt, I2S, memory attributes, and dual-core detection.
+
+**ESP32-S3 specific notes (future HubFX migration):**
+- **FreeRTOS-based** — `delay()` calls `vTaskDelay()` and yields the task (safe, unlike Pico's alarm pool). However, prefer explicit `vTaskDelay(pdMS_TO_TICKS(ms))` for clarity and portability.
+- **Dual-core via tasks** — uses `xTaskCreatePinnedToCore()` instead of `setup1()`/`loop1()`. Cross-core sync uses FreeRTOS primitives (`xSemaphore*`, `xQueue*`) or `std::atomic`.
+- **Logging** — use `ESP_LOGI()`, `ESP_LOGW()`, `ESP_LOGE()` instead of `Serial.print()`. These are task-safe with built-in log levels.
+- **`std::atomic`** remains correct and portable for cross-core flags — same patterns as RP2350.
+- **No `busy_wait_*`** — ESP-IDF provides `esp_rom_delay_us()` for µs spin-waits, but prefer `vTaskDelay()` for ms-scale waits to yield CPU to other tasks.
+
+**Rules:**
+1. **Controller firmware** uses platform-native API directly — no abstraction needed for single-platform code
+2. **Shared library code** (`controllers/lib/`) MUST use `sfx_platform.h` abstractions (e.g., `SFX_DELAY_MS`, `SfxMutex`, `SFX_FREE_HEAP`) — never raw Pico SDK or ESP-IDF calls
+3. **`millis()` is acceptable everywhere** — safe on all current platforms (Pico: timer register, ESP32: `gettimeofday` wrapper). Use native API only in performance-critical paths.
+4. **When migrating a controller** to a new platform, audit ALL native API calls and replace with the target platform's equivalents
+5. **New shared components** MUST compile on both RP2040/RP2350 and ESP32-S3 from day one — include `platform/sfx_platform.h` and use its macros/types
+6. **New platform abstractions** go in `sfx_platform.h` — do not scatter `#ifdef` blocks across individual component files
+
 ## Key Architecture Patterns
 
 ### Client-Server Topology
@@ -453,47 +598,47 @@ HubFX (Client) - USB Host with RP2040
 
 ### Handler Registration (CRITICAL)
 
-`PicoServer` automatically registers `coreServer` before the module handler. All controllers MUST use `PicoServer.addModuleHandler()` which guarantees correct handler priority.
+`SfxServer` automatically registers `coreServer` before the module handler. All controllers MUST use `SfxServer.addModuleHandler()` which guarantees correct handler priority.
 
 ```cpp
-// CORRECT - PicoServer handles registration order
-PicoServer server;
+// CORRECT - SfxServer handles registration order
+SfxServer server;
 server.begin("XxxFX", FIRMWARE_VERSION, BUILD_NUMBER);
 server.addModuleHandler(&xxxfxServer);  // Core added automatically first
 
-// WRONG - manual setup without PicoServer (deprecated pattern)
+// WRONG - manual setup without SfxServer (deprecated pattern)
 commandRouter.addHandler(&xxxfxServer);  // ← Missing coreServer!
 ```
 
-### Shared Serial Library (`controllers/lib/serial/`)
+### Shared Library (`controllers/lib/components/`)
+Reusable hardware drivers and protocol library organized by domain:
+- **platform/sfx_platform.h** - Cross-platform abstraction (mutexes, delays, GPIO for RP2040/RP2350/ESP32-S3)
+- **audio/** - 8-channel WAV mixer, I2S output, codec drivers (TAS5825M, SimpleI2S), mock I2S sink
+- **led/** - GPIO LED control, event-based animations, sequenced playback
+- **power/** - Battery monitor, I2CDevice base class, INA226 power monitor
+- **pwm/pwm_control.h/.cpp** - RC PWM input with averaging, hysteresis, async callbacks
+- **server/sfx_server.h/.cpp** - Common server controller boilerplate (serial, device name, indicators, core protocol, connection management). Includes nested `SfxServer::IndicatorLedManager` for GP13/GP14 LED state machine.
+- **serial/** - Binary COBS protocol, command handlers, clients (see below)
+- **servo/srv_control.h/.cpp** - Servo output with trapezoidal motion profiling and jerk effects
+- **storage/** - SD card (SdFat), LittleFS flash singletons, shared storage types
+
+### Serial Protocol Library (`controllers/lib/components/serial/`)
 - **serial.h** - Umbrella include (use this)
-- **serial_core.h** - CoreProtocol, SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros
-- **serial_bus_server.h** - BusServer base class + CoreCommandServer (server side)
-- **serial_bus_client.h** - BusClient base class (client side, extends SerialBus)
-- **serial_bus.h** - SerialBus (client-only, COBS over USB CDC)
-- **serial_result_queue.h** - ResultQueue (tag-correlated command/response matching)
-- **serial_stream.h** - StreamProtocol constants (0xA4-0xA6) + StreamWriter (chunked data streaming with CRC-16)
-- **serial_diag_log.h/.cpp** - DiagLog diagnostic logging (ring buffer → COBS packets, universal across all boards)
-- **serial_gunfx.h** - GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec
-- **serial_lightfx.h** - LightFxServer, LightFxClient, LightFxPacket, LightFxError, LightFxSpec
-- **serial_gearcontrol.h** - GearControlServer, GearControlClient, GearControlPacket, GearControlError, GearControlSpec
+- **core/core.h** - CoreProtocol, SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros
+- **core/bus_server.h** - BusServer base class + CoreCommandServer (server side)
+- **core/stream.h** - StreamProtocol constants (0xA4-0xA6) + StreamWriter (chunked data streaming with CRC-16)
+- **core/diag_log.h/.cpp** - DiagLog diagnostic logging (ring buffer → COBS packets, universal across all boards)
+- **client/bus.h** - SerialBus (client-only, COBS over USB CDC)
+- **client/bus_client.h** - BusClient base class (client side, extends SerialBus)
+- **client/result_queue.h** - ResultQueue (tag-correlated command/response matching)
+- **gunfx/gunfx.h** - GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec
+- **lightfx/lightfx.h** - LightFxServer, LightFxClient, LightFxPacket, LightFxError, LightFxSpec
+- **gearcontrol/gearcontrol.h** - GearControlServer, GearControlClient, GearControlPacket, GearControlError, GearControlSpec
+- **hubfx/hubfx.h** - HubFxAudioServer, HubFxAudioClient, HubFxStorageServer, HubFxStorageClient, HubFxPacket, HubFxError (NOT auto-included by serial.h — heavy deps)
 
-Include order: `#include "serial.h"` (includes everything needed)
+Include order: `#include <serial/serial.h>` (includes everything needed, except hubfx.h)
 
-### Components Library (`controllers/lib/components/`)
-Reusable hardware component drivers — use these instead of writing controller-specific code:
-- **battery_monitor.h/.cpp** - ADC battery voltage monitor (LiPo/Li-Ion, cell detection, low-voltage alerts)
-- **i2c_device.h/.cpp** - I2CDevice base class for all I2C peripherals
-- **ina226.h/.cpp** - TI INA226 power/current/voltage monitor (extends I2CDevice)
-- **indicator_leds.h/.cpp** - Connection/error LED state machine (GP13/GP14)
-- **led_control.h/.cpp** - GPIO LED on/off, toggle, active-low, PWM brightness
-- **led_events.h** - ILedEvent interface and built-in animations (LedOn, LedOff, LedFlashing, LedFading, etc.)
-- **led_event_seq.h/.cpp** - Looping sequence of LED events
-- **pico_server.h/.cpp** - Common Pico server controller boilerplate (serial, device name, indicators, core protocol, connection management)
-- **pwm_control.h/.cpp** - RC PWM input with averaging, hysteresis, async callbacks
-- **srv_control.h/.cpp** - Servo output with trapezoidal motion profiling and jerk effects
-
-### Server Handler Macros (serial_core.h)
+### Server Handler Macros (core/core.h)
 Reduce boilerplate in `handleModulePacket()` switch cases:
 ```cpp
 SFX_REQUIRE_LEN(n)                    // NACK MISSING_PARAMETER if len < n
@@ -504,7 +649,7 @@ SFX_HANDLE_CHANNEL_CMD(v, err, cb)    // Validate + dispatch single-param cmd
 
 ### Rich STATUS Pattern
 
-Every controller provides board-specific status via `PicoServer`:
+Every controller provides board-specific status via `SfxServer`:
 
 ```cpp
 // In setup(): Register module status callback
@@ -521,7 +666,7 @@ STATUS response = 12-byte core header `[counter:u32][uptime:u32][freeRam:u32]` +
 
 INIT_READY payload = length-prefixed binary: `[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]`
 
-See `controllers/lib/serial/PROTOCOL.md` for full wire format.
+See `controllers/lib/components/serial/PROTOCOL.md` for full wire format.
 
 ### Python Test Framework (`tests/`)
 ```
@@ -554,8 +699,8 @@ cli/
 | 0x30-0x3F | Reserved | - | Future expansion |
 | 0x40-0x5F | LightFX | Used | LED, servo, power |
 | 0x60-0x7F | GearControl | Used | Gear, servo, yaw |
-| 0x80-0xA3 | HubFX | Used | Slaves, audio, engine, config, SD, files |
-| 0xA4-0xA6 | Streaming | Used | STREAM_BEGIN/DATA/END (`serial_stream.h`) |
+| 0x80-0xA3 | HubFX | Used | Slaves, audio, engine, config, SD, flash, files |
+| 0xA4-0xA6 | Streaming | Used | STREAM_BEGIN/DATA/END (`core/stream.h`) |
 | 0xA7-0xEF | Available | Free | New controllers |
 | 0xF0-0xFF | Core | Reserved | INIT, ACK, NACK, REBOOT, LOG_MESSAGE (0xFD), etc. |
 
@@ -567,66 +712,19 @@ cli/
 - Key libraries: Servo, Wire (I2C), SD (FatFS), USB Host (PIO-USB for HubFX)
 - BOOTSEL mode: Send `BOOTSEL` command via serial for firmware updates
 
-### Raspberry Pi Hub (C23, Linux)
-- Build with Make: `make` in `controllers/hubfx/pi/`
-- Requires GCC 14+ (C23 standard)
-- Dependencies: libyaml, libasound2, libsndfile1, pigpio
-- Audio: WM8960 Audio HAT (I2C/I2S)
-- PWM input: pigpio daemon required (`sudo systemctl start pigpiod`)
-- Remote build: Use VS Code task "Build HubFX Pi on Raspberry Pi (Remote SSH)"
-
 ### Windows Studio (C# 12, .NET 8)
 - Build: `dotnet build -c Release` in `app/win32/ScaleFXStudio/`
 - Framework: Windows Forms
-- Purpose: Generate `config.yaml` for Raspberry Pi hub
+- Purpose: Visual configuration editor
 - Partial classes: MainForm split across multiple files (Fields, EngineFxTab, GunFxTab, etc.)
 
 ## Common Workflows
 
-### Adding a New Command
-1. Read `/instructions/03-PROTOCOL-EXTENSION.md`
-2. Determine response category: instant, query, or long-running
-3. Choose packet type ID from available range
-4. Update C++ serial library (serial_xxxfx.h) — packet type, handler in `handleModulePacket()`, use `SFX_*` macros
-5. Add client method returning `CommandResult` (serial_xxxfx.h client class)
-6. If query: add response handling in `onModulePacket()` with tag resolution
-7. Update firmware (xxxfx_pico.ino)
-8. Update Python framework (packets.py, commands.py)
-9. Update CLI handler (tests/cli/handlers/xxxfx.py)
-10. Add test (tests/xxxfx/test_feature.py)
-11. Update README.md protocol table
-12. Verify: `pio run && python -m py_compile tests/framework/packets.py`
-
-### Creating a New Controller
-1. Read `/instructions/02-NEW-CONTROLLER.md`
-2. Reserve packet type range (0xA7-0xEF available)
-3. Create `controllers/lib/serial/serial_newfx.h` (NewFxServer extends BusServer, NewFxClient extends BusClient)
-4. Create `controllers/newfx/pico/` directory structure
-5. Create Python test framework classes
-6. Add CLI commands
-7. Register in `scripts/build_and_flash.py` (add to `CONTROLLERS` list and docstring)
-8. Document in `README.md`
-
-### Debugging Protocol Issues
-- Use interactive CLI: `python -m tests.cli.interactive`
-- Check constants match: Compare `serial_core.h` / `serial_xxxfx.h` vs `packets.py`
-- Verify endianness: All multi-byte values are little-endian
-- Check CRC: CRC-8 poly 0x07 over [type][tag][len][payload]
-- NACK error codes in `serial_core.h` (generic) and `serial_xxxfx.h` (module) must match `packets.py`
-
-## Essential Documentation
-
-Comprehensive agent instructions are in `/instructions/`:
-- **README.md** - Quick navigation, constants, file index
-- **01-ARCHITECTURE.md** - System topology, packet format, class hierarchy
-- **02-NEW-CONTROLLER.md** - Step-by-step controller creation
-- **03-PROTOCOL-EXTENSION.md** - Adding commands to existing controllers
-- **04-CHANGE-PROPAGATION.md** - File sync checklists, verification
-- **05-BUILD-AND-FLASH.md** - Build systems, PlatformIO, BOOTSEL
-- **06-TEST-SUITE.md** - pytest usage, test patterns
-- **07-CLI-UPDATES.md** - Interactive CLI modification
-
-Additional references:
-- `controllers/lib/serial/PROTOCOL.md` - Binary protocol specification
-- `controllers/lib/serial/README.md` - Serial library architecture
-- `tests/README.md` - Test framework overview
+See the detailed workflow guides in `/instructions/`:
+- **Adding a command:** `03-PROTOCOL-EXTENSION.md` + `04-CHANGE-PROPAGATION.md`
+- **Creating a controller:** `02-NEW-CONTROLLER.md`
+- **Building/flashing:** `05-BUILD-AND-FLASH.md`
+- **Writing tests:** `06-TEST-SUITE.md`
+- **Updating CLI:** `07-CLI-UPDATES.md`
+- **AudioTools library:** `08-AUDIOTOOLS.md`
+- **System architecture:** `01-ARCHITECTURE.md`

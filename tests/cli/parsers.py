@@ -614,11 +614,12 @@ def _parse_gunfx_status(data: bytes) -> None:
 
 
 def _parse_hubfx_status(data: bytes) -> None:
-    """Parse HubFX module status data (8 bytes).
+    """Parse HubFX module status data (14 bytes).
     
     Wire format:
       [readyCount:u8][readyMask:u8][usbDevices:u8][sdOk:u8][audioOk:u8]
-      [pcSerial:u8][reserved:u8×2]
+      [pcSerial:u8][loop1Count:u32LE][consumeLoops:u16LE]
+      [ringFillPct:u8][underruns:u8]
     """
     from tests.framework import SlaveType
     
@@ -633,13 +634,31 @@ def _parse_hubfx_status(data: bytes) -> None:
     audio_ok = data[4]
     pc_serial = data[5] if len(data) >= 6 else 0
     
+    # Extended fields (bytes 6-13)
+    loop1_count = read_u32_le(data, 6) if len(data) >= 10 else 0
+    consume_loops = read_u16_le(data, 10) if len(data) >= 12 else 0
+    ring_fill_pct = data[12] if len(data) >= 13 else 0
+    underruns = data[13] if len(data) >= 14 else 0
+    
     print(f"\n  {Fore.CYAN}━━━ HubFX Status ━━━{Style.RESET_ALL}")
     print(f"  USB Devices: {usb_devices}")
     print(f"  SD Card:     {'OK' if sd_ok else 'Not available'}")
-    print(f"  Audio:       {'OK' if audio_ok else 'Not available'}")
+    audio_color = Fore.GREEN if audio_ok else Fore.RED
+    print(f"  Audio:       {audio_color}{'OK' if audio_ok else 'Not available'}{Style.RESET_ALL}")
     pc_color = Fore.GREEN if pc_serial else Fore.YELLOW
     pc_text = "Connected" if pc_serial else "Not connected"
     print(f"  PC Serial:   {pc_color}{pc_text}{Style.RESET_ALL}")
+    
+    # Audio health snapshot
+    if len(data) >= 14:
+        fill_color = Fore.GREEN if ring_fill_pct >= 50 else (Fore.YELLOW if ring_fill_pct >= 25 else Fore.RED)
+        underrun_str = f"{Fore.RED}{underruns}{Style.RESET_ALL}" if underruns > 0 else f"{Fore.GREEN}0{Style.RESET_ALL}"
+        print(f"  Ring Buf:    {fill_color}{ring_fill_pct}%{Style.RESET_ALL}  Underruns: {underrun_str}")
+    
+    # Core 1 diagnostics
+    if len(data) >= 12:
+        print(f"  Core 1:      {loop1_count} iters, {consume_loops} consume loops")
+    
     print(f"  Slaves Ready: {ready_count}")
     
     # Decode ready mask

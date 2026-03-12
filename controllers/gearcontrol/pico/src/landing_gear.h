@@ -49,10 +49,10 @@
 #define LANDING_GEAR_H
 
 #include <Arduino.h>
-#include <srv_control.h>
-#include <led_control.h>
-#include <ina226.h>
-#include <serial_gearcontrol.h>  // GearState, config structs, CalibPhase, DoorMode
+#include <servo/srv_control.h>
+#include <led/led_control.h>
+#include <power/ina226.h>
+#include <serial/gearcontrol/gearcontrol.h>  // GearState, config structs, CalibPhase, DoorMode
 #include "gear_sequencer.h"
 #include "stall_calibrator.h"
 

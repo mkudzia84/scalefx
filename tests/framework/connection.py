@@ -558,8 +558,12 @@ class ScaleFXConnection:
         self._pending.clear()
     
     def add_callback(self, callback: Callable[[Response], None]):
-        """Add callback for async responses (STATUS, ERROR)."""
-        self._callbacks.append(callback)
+        """Add callback for async responses (STATUS, ERROR).
+        
+        Idempotent — adding the same callback twice is a no-op.
+        """
+        if callback not in self._callbacks:
+            self._callbacks.append(callback)
     
     def remove_callback(self, callback: Callable[[Response], None]):
         """Remove callback."""

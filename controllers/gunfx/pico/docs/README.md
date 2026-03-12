@@ -12,5 +12,5 @@ Documentation for the GunFX Pico controller.
 ## Quick Links
 
 - [Main README](../README.md) - Controller overview, protocol, build instructions
-- [Serial Library](../../../lib/serial/README.md) - Communication stack documentation
-- [Binary Protocol](../../../lib/serial/PROTOCOL.md) - COBS/CRC protocol specification
+- [Serial Library](../../../lib/components/serial/README.md) - Communication stack documentation
+- [Binary Protocol](../../../lib/components/serial/PROTOCOL.md) - COBS/CRC protocol specification

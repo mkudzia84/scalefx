@@ -172,13 +172,13 @@ See [PROTOCOL.md](PROTOCOL.md) for detailed protocol documentation.
 
 ### Server (Pico — using PicoServer)
 
-All Pico server controllers use `PicoServer` to handle common boilerplate:
+All server controllers use `SfxServer` to handle common boilerplate:
 
 ```cpp
 #include <serial.h>
-#include "pico_server.h"
+#include <server/sfx_server.h>
 
-PicoServer server;
+SfxServer server;
 GunFxServer gunfxServer;
 
 void setup() {

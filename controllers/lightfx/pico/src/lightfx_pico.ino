@@ -20,12 +20,12 @@
 
 #include <Arduino.h>
 #include <Servo.h>
-#include <serial.h>
-#include <led_control.h>
-#include <led_event_seq.h>
-#include <led_events.h>
-#include <srv_control.h>
-#include <pico_server.h>
+#include <serial/serial.h>
+#include <led/led_control.h>
+#include <led/led_event_seq.h>
+#include <led/led_events.h>
+#include <servo/srv_control.h>
+#include <server/sfx_server.h>
 #include "landing_light.h"
 
 // ============================================================================
@@ -78,7 +78,7 @@ const int SERVO_DEFAULT_DECEL      = 8000;
 // ============================================================================
 
 // Server (serial, core protocol, indicators, connection management)
-PicoServer server;
+SfxServer server;
 LightFxServer lightfxServer;
 
 // ============================================================================
@@ -633,5 +633,5 @@ void loop() {
     // Update landing light sequencers
     updateLandingLights();
     
-    delay(1);
+    busy_wait_ms(1);
 }

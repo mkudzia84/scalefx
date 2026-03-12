@@ -6,7 +6,7 @@
  */
 
 #include "config_reader.h"
-#include "sd_card.h"
+#include <storage/sd_card.h>
 #include "../audio/audio_channels.h"
 #include "../hubfx_log.h"
 

@@ -18,9 +18,9 @@
 #define ENGINE_FX_H
 
 #include <Arduino.h>
-#include <pwm_control.h>
+#include <pwm/pwm_control.h>
 #include "../audio/audio_channels.h"
-#include "../audio/audio_mixer.h"
+#include <audio/audio_mixer.h>
 
 // ============================================================================
 //  CONSTANTS

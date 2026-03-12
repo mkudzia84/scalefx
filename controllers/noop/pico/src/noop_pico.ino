@@ -7,7 +7,7 @@
  * - SHUTDOWN / REBOOT / BOOTSEL
  * - KEEPALIVE / STATUS_REQ
  * - SERVO_SET (0x64) - direct servo positioning (same as GearControl)
- * - I2C_SCAN - I2C bus diagnostics (via PicoServer)
+ * - I2C_SCAN - I2C bus diagnostics (via SfxServer)
  * 
  * This is useful for:
  * - Testing serial protocol without full controller firmware
@@ -29,16 +29,16 @@
  *   4: GP7   5: GP8   6: GP9
  *
  * Architecture:
- *   - PicoServer: Common server boilerplate (serial, indicators, core protocol)
+ *   - SfxServer: Common server boilerplate (serial, indicators, core protocol)
  *   - NoOpServoHandler: Inline ICommandHandler for SERVO_SET
  *   - CommandRouter: Routes packets (core + servo handler)
  */
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <pico_server.h>
-#include <srv_control.h>
-#include <serial.h>
+#include <server/sfx_server.h>
+#include <servo/srv_control.h>
+#include <serial/serial.h>
 
 // Firmware version
 #define FIRMWARE_VERSION "0.3.0"
@@ -63,7 +63,7 @@ const uint8_t LED_PIN = 25;
 // ============================================================================
 
 // Server (serial, core protocol, indicators, connection management)
-PicoServer server;
+SfxServer server;
 
 // Servos (direct control, no motion profiling for simplicity)
 ServoControl servos[NUM_SERVOS];
@@ -149,9 +149,9 @@ void setLed(bool on) {
 void blinkLed(int times, int delayMs = 100) {
     for (int i = 0; i < times; i++) {
         setLed(true);
-        delay(delayMs);
+        busy_wait_ms(delayMs);
         setLed(false);
-        if (i < times - 1) delay(delayMs);
+        if (i < times - 1) busy_wait_ms(delayMs);
     }
 }
 
@@ -237,10 +237,10 @@ void loop() {
     static uint32_t lastBlink = 0;
     if (server.core().isInitialized() && millis() - lastBlink > 2000) {
         setLed(true);
-        delay(10);
+        busy_wait_ms(10);
         setLed(false);
         lastBlink = millis();
     }
     
-    delay(1);
+    busy_wait_ms(1);
 }

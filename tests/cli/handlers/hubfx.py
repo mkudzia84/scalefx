@@ -7,7 +7,8 @@ HubFX-specific CLI commands:
 - Engine FX control (start, stop, status)
 - Config management (reload, get)
 - SD card management (init, status)
-- File operations (ls, rm, mkdir, info, download, upload, cat)
+- Flash management (status)
+- File operations (ls, rm, mkdir, info, download, upload, cat) — SD and flash targets
 - Passthrough commands to slave controllers via hub routing (subcmd pattern)
 
 When connected to HubFX, all GunFX/LightFX/GearControl commands are
@@ -21,7 +22,7 @@ import struct
 from typing import List, Dict, Tuple, Callable, Optional
 
 from tests.framework import (
-    HubFxCommands, HubFxPacket, HubFxError, HubFxAudio, EngineState, SlaveType,
+    HubFxCommands, HubFxPacket, HubFxError, HubFxAudio, HubFxStorage, EngineState, SlaveType,
     GunFxCommands, LightFxCommands, GearControlCommands, CoreError, StreamPacket,
 )
 from tests.framework.packets import DoorMode
@@ -155,6 +156,34 @@ class HubFxCommandHandler(CommandHandlerBase):
                 'sd.upload', 'sd.upload <local_path> <remote_path>',
                 'Upload file to SD card',
                 requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+
+            # =================================================================
+            # Flash Storage
+            # =================================================================
+            'flash.status': (self.cmd_flash_status, CommandInfo(
+                'flash.status', 'flash.status',
+                'Show onboard flash status',
+                requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
+            'flash.ls': (self.cmd_flash_list, CommandInfo(
+                'flash.ls', 'flash.ls [path]',
+                'List flash directory contents',
+                requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
+            'flash.rm': (self.cmd_flash_delete, CommandInfo(
+                'flash.rm', 'flash.rm <path>',
+                'Delete a file from flash',
+                requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
+            'flash.mkdir': (self.cmd_flash_mkdir, CommandInfo(
+                'flash.mkdir', 'flash.mkdir <path>',
+                'Create a directory on flash',
+                requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
+            'flash.info': (self.cmd_flash_info, CommandInfo(
+                'flash.info', 'flash.info <path>',
+                'Show file info on flash',
+                requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
+            'flash.cat': (self.cmd_flash_cat, CommandInfo(
+                'flash.cat', 'flash.cat <path>',
+                'Display flash file contents',
+                requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
 
             # =================================================================
             # Slave Controllers (routed via hub)
@@ -630,7 +659,7 @@ class HubFxCommandHandler(CommandHandlerBase):
             self.print_error(f"Unexpected response: 0x{response.packet_type:02X}")
 
     def _parse_audio_status(self, payload: bytes):
-        """Parse and display AUDIO_STATUS_RESP payload (v2 extended format)."""
+        """Parse and display AUDIO_STATUS_RESP payload (v3 extended format with ring stats)."""
         if len(payload) < 7:
             self.print_error("Audio status response too short")
             return
@@ -649,6 +678,7 @@ class HubFxCommandHandler(CommandHandlerBase):
         initialized = bool(flags & 0x01)
         i2s_running = bool(flags & 0x02)
         has_codec   = bool(flags & 0x04)
+        has_ring_stats = bool(flags & 0x08)  # v3: has ring buffer stats
 
         sample_rate = read_u16_le(payload, pos); pos += 2
         bit_depth   = payload[pos]; pos += 1
@@ -657,6 +687,23 @@ class HubFxCommandHandler(CommandHandlerBase):
         codec_name_len = payload[pos]; pos += 1
         codec_name = payload[pos:pos + codec_name_len].decode('utf-8', errors='replace') if codec_name_len > 0 else ''
         pos += codec_name_len
+
+        # --- Ring buffer stats (v3) ---
+        ring_fill_pct = 0
+        ring_avail_read = 0
+        ring_avail_write = 0
+        underruns = 0
+        consume_loops = 0
+        consume_frames = 0
+        if has_ring_stats and pos + 9 <= len(payload):
+            ring_fill_pct = payload[pos]; pos += 1
+            ring_avail_read = read_u16_le(payload, pos); pos += 2
+            ring_avail_write = read_u16_le(payload, pos); pos += 2
+            underruns = read_u32_le(payload, pos); pos += 4
+            # Consumer diagnostic counters (appended after underruns)
+            if pos + 8 <= len(payload):
+                consume_loops = read_u32_le(payload, pos); pos += 4
+                consume_frames = read_u32_le(payload, pos); pos += 4
 
         # Display system info
         print(f"\n  {Fore.CYAN}Audio Mixer Status{Style.RESET_ALL}")
@@ -670,6 +717,15 @@ class HubFxCommandHandler(CommandHandlerBase):
             print(f"    Codec:       {Fore.YELLOW}none (I2S only){Style.RESET_ALL}")
         print(f"    Max Ch:      {max_channels}")
         print(f"    Master Vol:  {master_vol}%")
+
+        # Display ring buffer stats (v3)
+        if has_ring_stats:
+            ring_total = ring_avail_read + ring_avail_write
+            underrun_str = f"{Fore.RED}{underruns}{Style.RESET_ALL}" if underruns > 0 else f"{Fore.GREEN}0{Style.RESET_ALL}"
+            fill_color = Fore.GREEN if ring_fill_pct >= 50 else (Fore.YELLOW if ring_fill_pct >= 25 else Fore.RED)
+            print(f"    Ring Buf:    {fill_color}{ring_fill_pct}%{Style.RESET_ALL} ({ring_avail_read}/{ring_total} frames)")
+            print(f"    Underruns:   {underrun_str}")
+            print(f"    Consumer:    {consume_loops} loops, {consume_frames} frames written to I2S")
 
         if pos >= len(payload):
             print(f"    {Fore.YELLOW}No channel data{Style.RESET_ALL}")
@@ -1227,6 +1283,161 @@ class HubFxCommandHandler(CommandHandlerBase):
         packet = HubFxCommands.file_upload_end()
         success, response = self.conn.send_expect_ack(packet, timeout=10.0)
         self._print_ack_nack(success, response, f"Uploaded {file_size} bytes → {remote_path}")
+
+    # =========================================================================
+    # Flash Storage Commands
+    # =========================================================================
+
+    def cmd_flash_status(self, args: List[str]):
+        """Show onboard flash (LittleFS) status."""
+        if not self._require_init():
+            return
+
+        packet = HubFxCommands.flash_status()
+        response = self.conn.send_and_wait(packet)
+
+        if response is None:
+            self.print_error("No response (timeout)")
+            return
+        if response.is_nack:
+            code = response.error_code
+            self.print_error(f"NACK: {HubFxError.name(code)} (0x{code:02X})")
+            return
+
+        if response.packet_type == HubFxPacket.FLASH_STATUS_REQ:
+            payload = response.payload
+            if len(payload) < 1:
+                self.print_error("Flash status response too short")
+                return
+
+            initialized = payload[0]
+            print(f"\n  {Fore.CYAN}Flash Status{Style.RESET_ALL}")
+            if initialized and len(payload) >= 13:
+                total = read_u32_le(payload, 1)
+                used  = read_u32_le(payload, 5)
+                free  = read_u32_le(payload, 9)
+                print(f"    Status: {Fore.GREEN}initialized{Style.RESET_ALL}")
+                print(f"    Total:  {total} bytes ({total // 1024} KB)")
+                print(f"    Used:   {used} bytes ({used // 1024} KB)")
+                print(f"    Free:   {free} bytes ({free // 1024} KB)")
+            else:
+                print(f"    Status: {Fore.RED}not initialized{Style.RESET_ALL}")
+            print()
+        else:
+            self.print_error(f"Unexpected response: 0x{response.packet_type:02X}")
+
+    def cmd_flash_list(self, args: List[str]):
+        """List flash directory contents."""
+        if not self._require_init():
+            return
+
+        path = args[0] if args else "/"
+        self.print_info(f"Listing flash:{path} ...")
+
+        packet = HubFxCommands.file_list(path, target=HubFxStorage.TARGET_FLASH)
+        tag = self.conn.next_tag()
+        tagged = self.conn._inject_tag(packet, tag)
+        if not self.conn.send(tagged):
+            self.print_error("Send failed")
+            return
+
+        result = self._receive_stream(tag, timeout=10.0)
+        if result is None:
+            return
+
+        data, end_info = result
+        text = data.decode('utf-8', errors='replace')
+
+        print(f"\n  {Fore.CYAN}flash:{path}{Style.RESET_ALL}")
+        for line in text.splitlines():
+            if line.strip():
+                print(f"    {line}")
+        segs = end_info.get('total_segs', '?')
+        total = end_info.get('total_bytes', len(data))
+        print(f"\n    ({total} bytes, {segs} segments)")
+        print()
+
+    def cmd_flash_delete(self, args: List[str]):
+        """Delete a file from flash."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: flash.rm <path>")
+            return
+        path = args[0]
+        packet = HubFxCommands.file_delete(path, target=HubFxStorage.TARGET_FLASH)
+        success, response = self.conn.send_expect_ack(packet, timeout=5.0)
+        self._print_ack_nack(success, response, f"Deleted flash:{path}")
+
+    def cmd_flash_mkdir(self, args: List[str]):
+        """Create a directory on flash."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: flash.mkdir <path>")
+            return
+        path = args[0]
+        packet = HubFxCommands.file_mkdir(path, target=HubFxStorage.TARGET_FLASH)
+        success, response = self.conn.send_expect_ack(packet, timeout=5.0)
+        self._print_ack_nack(success, response, f"Created flash:{path}")
+
+    def cmd_flash_info(self, args: List[str]):
+        """Show file info on flash."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: flash.info <path>")
+            return
+        path = args[0]
+        packet = HubFxCommands.file_info(path, target=HubFxStorage.TARGET_FLASH)
+        response = self.conn.send_and_wait(packet)
+        if response is None:
+            self.print_error("No response (timeout)")
+            return
+        if response.is_nack:
+            code = response.error_code
+            self.print_error(f"NACK: {HubFxError.name(code)} (0x{code:02X})")
+            return
+        if response.packet_type == HubFxPacket.FILE_INFO_RESP and len(response.payload) >= 6:
+            exists = response.payload[0]
+            is_dir = response.payload[1]
+            size   = read_u32_le(response.payload, 2)
+            print(f"\n  {Fore.CYAN}flash:{path}{Style.RESET_ALL}")
+            if exists:
+                kind = "directory" if is_dir else "file"
+                print(f"    Type: {kind}")
+                print(f"    Size: {size} bytes")
+            else:
+                print(f"    {Fore.RED}Not found{Style.RESET_ALL}")
+            print()
+        else:
+            self.print_error(f"Unexpected response: 0x{response.packet_type:02X}")
+
+    def cmd_flash_cat(self, args: List[str]):
+        """Display flash file contents."""
+        if not self._require_init():
+            return
+        if not args:
+            self.print_error("Usage: flash.cat <path>")
+            return
+        path = args[0]
+        self.print_info(f"Reading flash:{path} ...")
+
+        packet = HubFxCommands.file_download(path, target=HubFxStorage.TARGET_FLASH)
+        tag = self.conn.next_tag()
+        tagged = self.conn._inject_tag(packet, tag)
+        if not self.conn.send(tagged):
+            self.print_error("Send failed")
+            return
+
+        result = self._receive_stream(tag, timeout=10.0)
+        if result is None:
+            return
+
+        data, end_info = result
+        text = data.decode('utf-8', errors='replace')
+        print(f"\n  {Fore.CYAN}flash:{path}{Style.RESET_ALL}")
+        print(text)
 
     # =========================================================================
     # GunFX Passthrough Commands
