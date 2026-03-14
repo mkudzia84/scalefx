@@ -32,7 +32,7 @@
 #include <freertos/stream_buffer.h>
 
 // ESP-IDF USB Host Library (part of ESP-IDF core)
-#include "usb/usb_host.h"
+#include "usb/sfx_usb_host.h"
 
 // CDC-ACM Class Driver (managed component: espressif/usb_host_cdc_acm)
 // If not available, USB Host compiles but init() returns false with a clear error.

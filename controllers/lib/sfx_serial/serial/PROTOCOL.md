@@ -45,7 +45,7 @@ Before COBS encoding:
 [type:u8][tag:u8][len:u16LE][payload:0-512 bytes][crc:u8]
 ```
 
-Header is 4 bytes (type + tag + len_lo + len_hi). MAX_PAYLOAD_SIZE = 512.
+Header is 4 bytes (type + tag + len_lo + len_hi). MAX_PAYLOAD_SIZE is platform-specific (512 on Pico, 2048 on ESP32).
 
 ### Text Protocol
 
@@ -167,7 +167,8 @@ Triggers software reset via `rp2040.reboot()`. Performs safe shutdown before reb
 Triggers entry to BOOTSEL mode via `rp2040.rebootToBootloader()`. Performs safe shutdown before entering bootloader.
 
 **Binary Payload:** None  
-**Response:** None (fire-and-forget, device enters BOOTSEL mode, RPI-RP2 drive appears)
+**Response (Pico):** None (fire-and-forget, device enters BOOTSEL mode, RPI-RP2 drive appears)  
+**Response (ESP32):** NACK `NOT_SUPPORTED` (0x06) — ESP32 has no UF2 bootloader, use esptool instead
 
 ### LOG_MESSAGE
 
@@ -203,7 +204,7 @@ Commands specific to GunFX controllers:
 
 ## Streaming Protocol (0xA4-0xA6)
 
-Reusable chunked data streaming for responses exceeding `MAX_PAYLOAD_SIZE` (512 bytes).
+Reusable chunked data streaming for responses exceeding `MAX_PAYLOAD_SIZE` (platform-specific).
 Defined in `core/stream.h` / `StreamProtocol` namespace. Any `BusServer` subclass can
 use `StreamWriter` to stream data to the client using these packet types.
 
@@ -232,7 +233,7 @@ use `StreamWriter` to stream data to the client using these packet types.
 ```
 - `seqNum` — Segment sequence number (0-based, incrementing)
 - `crc16` — CRC-16/CCITT (poly 0x1021, init 0xFFFF) over `data` portion only
-- `data` — Chunk payload, max `MAX_PAYLOAD_SIZE - 4` = 508 bytes
+- `data` — Chunk payload, max `MAX_PAYLOAD_SIZE - 4` bytes (508 on Pico, 2044 on ESP32)
 
 **STREAM_END (0xA6):**
 ```

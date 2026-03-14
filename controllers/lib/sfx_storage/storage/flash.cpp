@@ -42,7 +42,15 @@ FlashModule::FlashModule()
 
 bool FlashModule::begin() {
     lock();
+#if defined(ARDUINO_ARCH_ESP32)
+    // ESP32 LittleFS.begin(formatOnFail, basePath, maxOpenFiles, partitionLabel)
+    //   - formatOnFail=true: auto-format on first boot (no pre-existing filesystem)
+    //   - partitionLabel="littlefs": select the correct partition when multiple
+    //     spiffs-subtype partitions exist (e.g., "littlefs" + "spiffs" for WAV)
+    bool ok = LittleFS.begin(true, "/littlefs", 10, "littlefs");
+#else
     bool ok = LittleFS.begin();
+#endif
     unlock();
 
     _initialized = ok;
@@ -59,6 +67,8 @@ uint8_t FlashModule::listDirectory(const char* path,
     if (!_initialized) return FlashError::NOT_INITIALIZED;
 
     lock();
+    int entryCount = 0;
+    bool limitHit = false;
 
 #if defined(ARDUINO_ARCH_RP2040)
     // Arduino-Pico: Dir iterator API
@@ -66,6 +76,11 @@ uint8_t FlashModule::listDirectory(const char* path,
 
     FileEntry entry;
     while (dir.next()) {
+        if (++entryCount > MAX_TREE_ENTRIES) {
+            limitHit = true;
+            break;
+        }
+
         strncpy(entry.name, dir.fileName().c_str(), sizeof(entry.name) - 1);
         entry.name[sizeof(entry.name) - 1] = '\0';
         entry.isDirectory = dir.isDirectory();
@@ -80,6 +95,12 @@ uint8_t FlashModule::listDirectory(const char* path,
         FileEntry entry;
         File f = dir.openNextFile();
         while (f) {
+            if (++entryCount > MAX_TREE_ENTRIES) {
+                f.close();
+                limitHit = true;
+                break;
+            }
+
             const char* name = f.name();
             // ESP32 File.name() may return full path — extract filename
             const char* slash = strrchr(name, '/');
@@ -98,7 +119,7 @@ uint8_t FlashModule::listDirectory(const char* path,
 #endif
 
     unlock();
-    return FlashError::OK;
+    return limitHit ? FlashError::LIMIT_EXCEEDED : FlashError::OK;
 }
 
 uint8_t FlashModule::listTree(const char* path,
@@ -107,15 +128,25 @@ uint8_t FlashModule::listTree(const char* path,
 
     lock();
     bool shouldContinue = true;
-    listTreeRecursive(path, 0, callback, shouldContinue);
+    int entryCount = 0;
+    bool limitHit = false;
+    listTreeRecursive(path, 0, callback, shouldContinue, entryCount, limitHit);
     unlock();
-    return FlashError::OK;
+    return limitHit ? FlashError::LIMIT_EXCEEDED : FlashError::OK;
 }
 
 void FlashModule::listTreeRecursive(const char* path, int depth,
                                      std::function<bool(const FileEntry&, int)>& callback,
-                                     bool& shouldContinue) {
+                                     bool& shouldContinue, int& entryCount,
+                                     bool& limitHit) {
     if (!shouldContinue) return;
+
+    // Safety: prevent infinite recursion on corrupted directory refs
+    if (depth >= MAX_TREE_DEPTH) {
+        limitHit = true;
+        shouldContinue = false;
+        return;
+    }
 
 #if defined(ARDUINO_ARCH_RP2040)
     // Arduino-Pico: Dir iterator API
@@ -123,6 +154,12 @@ void FlashModule::listTreeRecursive(const char* path, int depth,
 
     FileEntry entry;
     while (shouldContinue && dir.next()) {
+        if (++entryCount > MAX_TREE_ENTRIES) {
+            limitHit = true;
+            shouldContinue = false;
+            break;
+        }
+
         strncpy(entry.name, dir.fileName().c_str(), sizeof(entry.name) - 1);
         entry.name[sizeof(entry.name) - 1] = '\0';
         entry.isDirectory = dir.isDirectory();
@@ -138,7 +175,8 @@ void FlashModule::listTreeRecursive(const char* path, int depth,
             size_t pathLen = strlen(path);
             const char* sep = (pathLen > 0 && path[pathLen - 1] == '/') ? "" : "/";
             snprintf(fullPath, sizeof(fullPath), "%s%s%s", path, sep, entry.name);
-            listTreeRecursive(fullPath, depth + 1, callback, shouldContinue);
+            listTreeRecursive(fullPath, depth + 1, callback, shouldContinue,
+                              entryCount, limitHit);
         }
     }
 #elif defined(ARDUINO_ARCH_ESP32)
@@ -152,6 +190,13 @@ void FlashModule::listTreeRecursive(const char* path, int depth,
     FileEntry entry;
     File f = dir.openNextFile();
     while (shouldContinue && f) {
+        if (++entryCount > MAX_TREE_ENTRIES) {
+            f.close();
+            limitHit = true;
+            shouldContinue = false;
+            break;
+        }
+
         const char* name = f.name();
         const char* slash = strrchr(name, '/');
         const char* baseName = slash ? slash + 1 : name;
@@ -171,7 +216,8 @@ void FlashModule::listTreeRecursive(const char* path, int depth,
             size_t pathLen = strlen(path);
             const char* sep = (pathLen > 0 && path[pathLen - 1] == '/') ? "" : "/";
             snprintf(fullPath, sizeof(fullPath), "%s%s%s", path, sep, entry.name);
-            listTreeRecursive(fullPath, depth + 1, callback, shouldContinue);
+            listTreeRecursive(fullPath, depth + 1, callback, shouldContinue,
+                              entryCount, limitHit);
         }
 
         f = dir.openNextFile();
@@ -254,6 +300,82 @@ uint8_t FlashModule::removeFile(const char* path) {
     bool ok = LittleFS.remove(path);
     unlock();
     return ok ? FlashError::OK : FlashError::IO_ERROR;
+}
+
+uint8_t FlashModule::removeDirectory(const char* path) {
+    if (!_initialized) return FlashError::NOT_INITIALIZED;
+
+    lock();
+
+    // Check path exists and is a directory
+    LFSFile f = LittleFS.open(path, "r");
+    if (!f) {
+        unlock();
+        return FlashError::NOT_FOUND;
+    }
+    bool isDir = f.isDirectory();
+    f.close();
+
+    if (!isDir) {
+        unlock();
+        // Not a directory — use removeFile() instead
+        bool ok = LittleFS.remove(path);
+        return ok ? FlashError::OK : FlashError::IO_ERROR;
+    }
+
+    bool ok = removeDirectoryRecursive(path);
+    unlock();
+    return ok ? FlashError::OK : FlashError::IO_ERROR;
+}
+
+bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
+    // Caller MUST hold lock.
+    // Depth-first: remove all children, then the directory itself.
+
+    // Safety: prevent infinite recursion on corrupted directory refs
+    if (depth >= MAX_TREE_DEPTH) return false;
+
+#if defined(ARDUINO_ARCH_RP2040)
+    Dir dir = LittleFS.openDir(path);
+    while (dir.next()) {
+        char fullPath[192];
+        size_t pathLen = strlen(path);
+        const char* sep = (pathLen > 0 && path[pathLen - 1] == '/') ? "" : "/";
+        snprintf(fullPath, sizeof(fullPath), "%s%s%s", path, sep,
+                 dir.fileName().c_str());
+
+        if (dir.isDirectory()) {
+            if (!removeDirectoryRecursive(fullPath, depth + 1)) return false;
+        } else {
+            if (!LittleFS.remove(fullPath)) return false;
+        }
+    }
+#elif defined(ARDUINO_ARCH_ESP32)
+    File dir = LittleFS.open(path);
+    if (!dir || !dir.isDirectory()) {
+        if (dir) dir.close();
+        return false;
+    }
+
+    File f = dir.openNextFile();
+    while (f) {
+        // ESP32 LittleFS: f.path() returns full path
+        String childPath = String(f.path());
+        bool isDir = f.isDirectory();
+        f.close();
+
+        if (isDir) {
+            if (!removeDirectoryRecursive(childPath.c_str(), depth + 1)) return false;
+        } else {
+            if (!LittleFS.remove(childPath.c_str())) return false;
+        }
+
+        f = dir.openNextFile();
+    }
+    dir.close();
+#endif
+
+    return LittleFS.rmdir(path);
 }
 
 uint8_t FlashModule::makeDirectory(const char* path) {

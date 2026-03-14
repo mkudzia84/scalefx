@@ -1,0 +1,17 @@
+{
+    "name": "esp_cdc_acm",
+    "version": "2.3.0",
+    "description": "ESP-IDF USB Host CDC-ACM Class Driver (vendored from espressif/esp-usb)",
+    "license": "Apache-2.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/espressif/esp-usb.git"
+    },
+    "homepage": "https://github.com/espressif/esp-usb/tree/master/host/class/cdc/usb_host_cdc_acm",
+    "platforms": "espressif32",
+    "frameworks": "*",
+    "build": {
+        "includeDir": "include",
+        "srcDir": "src"
+    }
+}

@@ -155,6 +155,7 @@ class TerminalUI:
         self._command_callback: Optional[Callable] = None
         self._exit_callback: Optional[Callable] = None
         self._busy = False
+        self._cancel_event = threading.Event()
         self._app: Optional[Application] = None
         self._output_window: Optional[Window] = None
 
@@ -208,8 +209,12 @@ class TerminalUI:
 
         @kb.add('c-c')
         def _(event):
-            """Ctrl-C: clear current input."""
-            self._input_buffer.reset()
+            """Ctrl-C: cancel running command, or clear input."""
+            if self._busy:
+                self._cancel_event.set()
+                self.write('\033[33m⚠\033[0m Cancelling...')
+            else:
+                self._input_buffer.reset()
 
         @kb.add('c-d')
         def _(event):
@@ -264,6 +269,7 @@ class TerminalUI:
 
     def _exec_command(self, text: str):
         """Execute command in background thread."""
+        self._cancel_event.clear()
         try:
             if self._command_callback:
                 self._command_callback(text)
@@ -350,3 +356,101 @@ class TerminalUI:
         """Start the full-screen UI. Blocks until exit."""
         if self._app:
             self._app.run()
+
+
+# =============================================================================
+# Simple Terminal (traditional mode)
+# =============================================================================
+
+class SimpleTerminal:
+    """Traditional line-by-line terminal for ScaleFX CLI.
+
+    Uses standard input()/print() — no full-screen layout, no stdout
+    capture. Async output prints directly to the terminal and may
+    occasionally disrupt the prompt (press Enter for a clean prompt).
+
+    Same public API as TerminalUI so InteractiveCLI can swap freely.
+
+    Usage::
+
+        ui = SimpleTerminal()
+        ui.on_command(my_handler)
+        ui.run()                        # Block until exit
+    """
+
+    def __init__(self):
+        self._prompt_text = 'scalefx> '
+        self._command_callback: Optional[Callable] = None
+        self._exit_callback: Optional[Callable] = None
+        self._cancel_event = threading.Event()
+        self._running = False
+
+    # =========================================================================
+    # Public API (matches TerminalUI interface)
+    # =========================================================================
+
+    def write(self, text: str):
+        """Write a line to the terminal. Thread-safe enough for print().
+
+        Args:
+            text: Line of text (may contain ANSI color codes).
+        """
+        print(text)
+
+    def set_prompt(self, prompt: str):
+        """Update the input prompt text.
+
+        Args:
+            prompt: Prompt string (may contain ANSI color codes).
+        """
+        self._prompt_text = prompt
+
+    def on_command(self, callback: Callable[[str], None]):
+        """Set the command handler callback.
+
+        The callback receives the command text (stripped) and runs
+        synchronously in the main thread.
+        """
+        self._command_callback = callback
+
+    def on_exit(self, callback: Callable):
+        """Set the exit cleanup callback (called on quit/Ctrl-D)."""
+        self._exit_callback = callback
+
+    @property
+    def cancel_event(self) -> threading.Event:
+        """Event that is set when the user presses Ctrl+C during a command."""
+        return self._cancel_event
+
+    def exit(self):
+        """Programmatically exit the run loop (e.g., from 'quit' command)."""
+        self._running = False
+
+    def install_capture(self):
+        """No-op — traditional mode writes directly to stdout."""
+        pass
+
+    def restore_stdout(self):
+        """No-op — traditional mode never replaces stdout."""
+        pass
+
+    def run(self):
+        """Simple read-eval loop. Blocks until exit or Ctrl-C/Ctrl-D."""
+        self._running = True
+        while self._running:
+            try:
+                text = input(self._prompt_text).strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                if self._exit_callback:
+                    self._exit_callback()
+                break
+
+            if not text:
+                continue
+
+            if self._command_callback:
+                try:
+                    self._command_callback(text)
+                except Exception as e:
+                    print(f'\033[31m✗\033[0m Error: {e}')

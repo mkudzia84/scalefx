@@ -33,6 +33,8 @@ SdCardModule::SdCardModule()
     , _sdioOneBit(false)
     , _sdioClk(-1), _sdioCmd(-1)
     , _sdioD0(-1), _sdioD1(-1), _sdioD2(-1), _sdioD3(-1)
+    , _sdioFormatIfFailed(true)
+    , _sdioMaxOpenFiles(5)
 #endif
 {
     sfxMutexInit(_sdMutex);
@@ -81,11 +83,15 @@ bool SdCardModule::begin(uint8_t cs_pin, uint8_t sck_pin,
 bool SdCardModule::beginSDIO(bool oneBitMode,
                               int8_t clk, int8_t cmd,
                               int8_t d0, int8_t d1,
-                              int8_t d2, int8_t d3) {
+                              int8_t d2, int8_t d3,
+                              bool formatIfFailed,
+                              uint8_t maxOpenFiles) {
     _busMode    = oneBitMode ? SdBusMode::SDIO_1BIT : SdBusMode::SDIO_4BIT;
     _sdioOneBit = oneBitMode;
     _sdioClk = clk; _sdioCmd = cmd;
     _sdioD0 = d0; _sdioD1 = d1; _sdioD2 = d2; _sdioD3 = d3;
+    _sdioFormatIfFailed = formatIfFailed;
+    _sdioMaxOpenFiles = maxOpenFiles;
 
     // Set custom pins if any specified (all -1 = use platform defaults)
     if (clk >= 0 || cmd >= 0 || d0 >= 0) {
@@ -93,7 +99,9 @@ bool SdCardModule::beginSDIO(bool oneBitMode,
     }
 
     lock();
-    bool ok = SD_MMC.begin("/sdcard", oneBitMode);
+    // Match Freenove reference: begin(mountpoint, mode1bit, format_if_fail, freq, maxFiles)
+    bool ok = SD_MMC.begin("/sdcard", oneBitMode, formatIfFailed,
+                           SDMMC_FREQ_DEFAULT, maxOpenFiles);
     unlock();
 
     if (ok) _fs = &SD_MMC;
@@ -103,12 +111,59 @@ bool SdCardModule::beginSDIO(bool oneBitMode,
 }
 #endif
 
+void SdCardModule::unmount() {
+    lock();
+    _initialized = false;
+#if SFX_SD_BACKEND_SDFAT
+    // SdFat doesn't have an explicit unmount; closing all files suffices
+#elif SFX_SD_BACKEND_ESP
+    if (_busMode == SdBusMode::SPI) {
+        SD.end();
+    } else {
+        SD_MMC.end();
+    }
+    _fs = nullptr;
+#endif
+    unlock();
+}
+
+SdCardType SdCardModule::cardType() const {
+    if (!_initialized) return SdCardType::NONE;
+
+#if SFX_SD_BACKEND_SDFAT
+    uint8_t ct = _sd.card()->type();
+    if (ct == SD_CARD_TYPE_SD1 || ct == SD_CARD_TYPE_SD2) return SdCardType::SD;
+    if (ct == SD_CARD_TYPE_SDHC) return SdCardType::SDHC;
+    return SdCardType::UNKNOWN;
+#elif SFX_SD_BACKEND_ESP
+    sdcard_type_t ct;
+    if (_busMode == SdBusMode::SPI) {
+        ct = SD.cardType();
+    } else {
+        ct = SD_MMC.cardType();
+    }
+    switch (ct) {
+        case CARD_NONE:  return SdCardType::NONE;
+        case CARD_MMC:   return SdCardType::MMC;
+        case CARD_SD:    return SdCardType::SD;
+        case CARD_SDHC:  return SdCardType::SDHC;
+        default:         return SdCardType::UNKNOWN;
+    }
+#else
+    return SdCardType::UNKNOWN;
+#endif
+}
+
 bool SdCardModule::retryInit(uint8_t speed_mhz) {
+    // Must unmount first — SD_MMC.begin() is a no-op if already mounted
+    unmount();
+
 #if SFX_SD_BACKEND_ESP
     if (_busMode != SdBusMode::SPI) {
         // SDIO: retry with same config
         return beginSDIO(_sdioOneBit, _sdioClk, _sdioCmd,
-                         _sdioD0, _sdioD1, _sdioD2, _sdioD3);
+                         _sdioD0, _sdioD1, _sdioD2, _sdioD3,
+                         _sdioFormatIfFailed, _sdioMaxOpenFiles);
     }
 #endif
     if (speed_mhz > 0) _speed_mhz = speed_mhz;
@@ -125,6 +180,8 @@ uint8_t SdCardModule::listDirectory(const char* path,
     if (!_initialized) return SdError::NOT_INITIALIZED;
 
     lock();
+    int entryCount = 0;
+    bool limitHit = false;
 
 #if SFX_SD_BACKEND_SDFAT
     File32 dir = _sd.open(path, O_RDONLY);
@@ -142,6 +199,12 @@ uint8_t SdCardModule::listDirectory(const char* path,
     while (true) {
         File32 f = dir.openNextFile();
         if (!f) break;
+
+        if (++entryCount > MAX_TREE_ENTRIES) {
+            f.close();
+            limitHit = true;
+            break;
+        }
 
         f.getName(entry.name, sizeof(entry.name));
         entry.isDirectory = f.isDirectory();
@@ -163,6 +226,12 @@ uint8_t SdCardModule::listDirectory(const char* path,
     FileEntry entry;
     File f = dir.openNextFile();
     while (f) {
+        if (++entryCount > MAX_TREE_ENTRIES) {
+            f.close();
+            limitHit = true;
+            break;
+        }
+
         const char* name = f.name();
         const char* slash = strrchr(name, '/');
         const char* baseName = slash ? slash + 1 : name;
@@ -179,7 +248,7 @@ uint8_t SdCardModule::listDirectory(const char* path,
 #endif
 
     unlock();
-    return SdError::OK;
+    return limitHit ? SdError::LIMIT_EXCEEDED : SdError::OK;
 }
 
 uint8_t SdCardModule::listTree(const char* path,
@@ -188,15 +257,25 @@ uint8_t SdCardModule::listTree(const char* path,
 
     lock();
     bool shouldContinue = true;
-    listTreeRecursive(path, 0, callback, shouldContinue);
+    int entryCount = 0;
+    bool limitHit = false;
+    listTreeRecursive(path, 0, callback, shouldContinue, entryCount, limitHit);
     unlock();
-    return SdError::OK;
+    return limitHit ? SdError::LIMIT_EXCEEDED : SdError::OK;
 }
 
 void SdCardModule::listTreeRecursive(const char* path, int depth,
                                       std::function<bool(const FileEntry&, int)>& callback,
-                                      bool& shouldContinue) {
+                                      bool& shouldContinue, int& entryCount,
+                                      bool& limitHit) {
     if (!shouldContinue) return;
+
+    // Safety: prevent infinite recursion on corrupted circular directory refs
+    if (depth >= MAX_TREE_DEPTH) {
+        limitHit = true;
+        shouldContinue = false;
+        return;
+    }
 
 #if SFX_SD_BACKEND_SDFAT
     File32 dir = _sd.open(path, O_RDONLY);
@@ -209,6 +288,14 @@ void SdCardModule::listTreeRecursive(const char* path, int depth,
     while (shouldContinue) {
         File32 f = dir.openNextFile();
         if (!f) break;
+
+        // Safety: prevent infinite iteration on corrupted FAT directory chains
+        if (++entryCount > MAX_TREE_ENTRIES) {
+            f.close();
+            limitHit = true;
+            shouldContinue = false;
+            break;
+        }
 
         f.getName(entry.name, sizeof(entry.name));
         entry.isDirectory = f.isDirectory();
@@ -225,7 +312,8 @@ void SdCardModule::listTreeRecursive(const char* path, int depth,
             size_t pathLen = strlen(path);
             const char* sep = (pathLen > 0 && path[pathLen - 1] == '/') ? "" : "/";
             snprintf(fullPath, sizeof(fullPath), "%s%s%s", path, sep, entry.name);
-            listTreeRecursive(fullPath, depth + 1, callback, shouldContinue);
+            listTreeRecursive(fullPath, depth + 1, callback, shouldContinue,
+                              entryCount, limitHit);
         }
     }
 
@@ -240,6 +328,14 @@ void SdCardModule::listTreeRecursive(const char* path, int depth,
     FileEntry entry;
     File f = dir.openNextFile();
     while (shouldContinue && f) {
+        // Safety: prevent infinite iteration on corrupted FAT directory chains
+        if (++entryCount > MAX_TREE_ENTRIES) {
+            f.close();
+            limitHit = true;
+            shouldContinue = false;
+            break;
+        }
+
         const char* name = f.name();
         const char* slash = strrchr(name, '/');
         const char* baseName = slash ? slash + 1 : name;
@@ -259,7 +355,8 @@ void SdCardModule::listTreeRecursive(const char* path, int depth,
             size_t pathLen = strlen(path);
             const char* sep = (pathLen > 0 && path[pathLen - 1] == '/') ? "" : "/";
             snprintf(fullPath, sizeof(fullPath), "%s%s%s", path, sep, entry.name);
-            listTreeRecursive(fullPath, depth + 1, callback, shouldContinue);
+            listTreeRecursive(fullPath, depth + 1, callback, shouldContinue,
+                              entryCount, limitHit);
         }
 
         f = dir.openNextFile();
@@ -330,22 +427,28 @@ uint8_t SdCardModule::getStorageInfo(StorageInfo& info) {
     uint64_t bpc = _sd.bytesPerCluster();
     info.totalSpace_MB = (uint32_t)((uint64_t)clusters * bpc / 1048576ULL);
     info.freeSpace_MB  = (uint32_t)((uint64_t)freeClusters * bpc / 1048576ULL);
+    info.usedSpace_MB  = info.totalSpace_MB > info.freeSpace_MB
+                         ? info.totalSpace_MB - info.freeSpace_MB : 0;
 #elif SFX_SD_BACKEND_ESP
     // ESP32: dispatch to SD or SD_MMC based on bus mode
     if (_busMode == SdBusMode::SPI) {
         info.cardSize_MB   = (uint32_t)(SD.cardSize() / (1024ULL * 1024ULL));
         info.totalSpace_MB = (uint32_t)(SD.totalBytes() / (1024ULL * 1024ULL));
-        uint32_t usedMB    = (uint32_t)(SD.usedBytes() / (1024ULL * 1024ULL));
-        info.freeSpace_MB  = info.totalSpace_MB > usedMB ? info.totalSpace_MB - usedMB : 0;
+        info.usedSpace_MB  = (uint32_t)(SD.usedBytes() / (1024ULL * 1024ULL));
+        info.freeSpace_MB  = info.totalSpace_MB > info.usedSpace_MB
+                             ? info.totalSpace_MB - info.usedSpace_MB : 0;
     } else {
         info.cardSize_MB   = (uint32_t)(SD_MMC.cardSize() / (1024ULL * 1024ULL));
         info.totalSpace_MB = (uint32_t)(SD_MMC.totalBytes() / (1024ULL * 1024ULL));
-        uint32_t usedMB    = (uint32_t)(SD_MMC.usedBytes() / (1024ULL * 1024ULL));
-        info.freeSpace_MB  = info.totalSpace_MB > usedMB ? info.totalSpace_MB - usedMB : 0;
+        info.usedSpace_MB  = (uint32_t)(SD_MMC.usedBytes() / (1024ULL * 1024ULL));
+        info.freeSpace_MB  = info.totalSpace_MB > info.usedSpace_MB
+                             ? info.totalSpace_MB - info.usedSpace_MB : 0;
     }
     info.fatType = 0;           // Not exposed by ESP32 SD APIs
     info.clusterSize_bytes = 0; // Not exposed by ESP32 SD APIs
 #endif
+
+    info.cardType = cardType();
 
     unlock();
     return SdError::OK;
@@ -377,6 +480,104 @@ uint8_t SdCardModule::removeFile(const char* path) {
 
     unlock();
     return ok ? SdError::OK : SdError::IO_ERROR;
+}
+
+uint8_t SdCardModule::removeDirectory(const char* path) {
+    if (!_initialized) return SdError::NOT_INITIALIZED;
+
+    lock();
+
+    // Check path exists and is a directory
+#if SFX_SD_BACKEND_SDFAT
+    File32 f = _sd.open(path, O_RDONLY);
+    if (!f) { unlock(); return SdError::NOT_FOUND; }
+    bool isDir = f.isDirectory();
+    f.close();
+
+    if (!isDir) {
+        bool ok = _sd.remove(path);
+        unlock();
+        return ok ? SdError::OK : SdError::IO_ERROR;
+    }
+#elif SFX_SD_BACKEND_ESP
+    File f = _fs->open(path);
+    if (!f) { unlock(); return SdError::NOT_FOUND; }
+    bool isDir = f.isDirectory();
+    f.close();
+
+    if (!isDir) {
+        bool ok = _fs->remove(path);
+        unlock();
+        return ok ? SdError::OK : SdError::IO_ERROR;
+    }
+#endif
+
+    bool ok = removeDirectoryRecursive(path);
+    unlock();
+    return ok ? SdError::OK : SdError::IO_ERROR;
+}
+
+bool SdCardModule::removeDirectoryRecursive(const char* path, int depth) {
+    // Caller MUST hold lock.
+    // Depth-first: remove all children, then the directory itself.
+
+    // Safety: prevent infinite recursion on corrupted circular directory refs
+    if (depth >= MAX_TREE_DEPTH) return false;
+
+#if SFX_SD_BACKEND_SDFAT
+    File32 dir = _sd.open(path, O_RDONLY);
+    if (!dir || !dir.isDirectory()) {
+        if (dir) dir.close();
+        return false;
+    }
+
+    while (true) {
+        File32 f = dir.openNextFile();
+        if (!f) break;
+
+        char name[64];
+        f.getName(name, sizeof(name));
+        bool isDir = f.isDirectory();
+        f.close();
+
+        char fullPath[192];
+        size_t pathLen = strlen(path);
+        const char* sep = (pathLen > 0 && path[pathLen - 1] == '/') ? "" : "/";
+        snprintf(fullPath, sizeof(fullPath), "%s%s%s", path, sep, name);
+
+        if (isDir) {
+            if (!removeDirectoryRecursive(fullPath, depth + 1)) { dir.close(); return false; }
+        } else {
+            if (!_sd.remove(fullPath)) { dir.close(); return false; }
+        }
+    }
+    dir.close();
+    return _sd.rmdir(path);
+
+#elif SFX_SD_BACKEND_ESP
+    File dir = _fs->open(path);
+    if (!dir || !dir.isDirectory()) {
+        if (dir) dir.close();
+        return false;
+    }
+
+    File f = dir.openNextFile();
+    while (f) {
+        String childPath = String(f.path());
+        bool isDir = f.isDirectory();
+        f.close();
+
+        if (isDir) {
+            if (!removeDirectoryRecursive(childPath.c_str(), depth + 1)) { dir.close(); return false; }
+        } else {
+            if (!_fs->remove(childPath.c_str())) { dir.close(); return false; }
+        }
+
+        f = dir.openNextFile();
+    }
+    dir.close();
+    return _fs->rmdir(path);
+#endif
 }
 
 uint8_t SdCardModule::makeDirectory(const char* path) {

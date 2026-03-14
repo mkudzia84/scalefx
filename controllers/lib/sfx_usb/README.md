@@ -9,7 +9,7 @@ USB Host CDC communication for ScaleFX client controllers (HubFX). Provides a pl
 ```
                         ┌─────────────────────┐
                         │   UsbHost (abstract) │  ← Platform factory singleton
-                        │   usb_host.h/.cpp    │     UsbHost::instance()
+                        │ sfx_usb_host.h/.cpp  │     UsbHost::instance()
                         └──────────┬──────────┘
                    ┌───────────────┴───────────────┐
                    │                               │
@@ -33,13 +33,15 @@ USB Host CDC communication for ScaleFX client controllers (HubFX). Provides a pl
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `usb_host.h` | 252 | Abstract `UsbHost` interface + types + factory singleton declaration |
-| `usb_host.cpp` | 95 | Base class helpers (device tracking) + platform factory (`instance()`) |
+| `sfx_usb_host.h` | 252 | Abstract `UsbHost` interface + types + factory singleton declaration |
+| `sfx_usb_host.cpp` | 95 | Base class helpers (device tracking) + platform factory (`instance()`) |
 | `pico_usb_host.h` | 65 | `PicoUsbHost` class declaration (RP2040/RP2350) |
 | `pico_usb_host.cpp` | 301 | PIO-USB + TinyUSB host implementation |
 | `esp_usb_host.h` | 98 | `EspUsbHost` class declaration (ESP32-S3) |
 | `esp_usb_host.cpp` | 551 | HW USB-OTG + ESP-IDF CDC-ACM driver implementation |
 | `usb_registry.h` | 244 | `UsbRegistry` singleton — tracks connected slave controllers |
+
+> **Header rename:** `usb_host.h` was renamed to `sfx_usb_host.h` to avoid collision with ESP-IDF's `usb/usb_host.h` (C API). Both files lived under `usb/` include paths— the C compiler found our C++ header instead of the ESP-IDF one when compiling the CDC-ACM C source files.
 
 ## UsbHost — Abstract Interface
 
@@ -164,7 +166,7 @@ Native hardware USB-OTG implementation using ESP-IDF's USB Host Library and the 
 ### Requirements
 
 - **ESP32-S3:** Hardware USB-OTG peripheral (fixed GPIO19 D-, GPIO20 D+)
-- **CDC-ACM component:** `espressif/usb_host_cdc_acm ^2.0.0` (managed component)
+- **CDC-ACM component:** Vendored as `controllers/lib/esp_cdc_acm/` (PlatformIO library). PlatformIO Arduino does NOT process `idf_component.yml`, so the component was cloned from `github.com/espressif/esp-usb` (v2.3.0) and added as a proper PlatformIO library with `library.json`.
 - **`cdc_on_boot` disabled:** USB-OTG shared between device/host mode, must be in host mode
 - **Serial debug:** Via UART0 (USB-UART bridge), NOT USB CDC
 
@@ -258,7 +260,8 @@ setConnected(false) → USB disconnect (ready auto-cleared)
 | `sfx_platform` | `sfx_platform.h` (platform macros), `diag_log.h` (logging) |
 | `Arduino` | `<Arduino.h>` (base types) |
 | TinyUSB | Pico backend: PIO-USB host stack |
-| ESP-IDF USB Host | ESP32 backend: `usb_host.h` + `cdc_acm_host.h` |
+| `esp_cdc_acm` | ESP32 backend: vendored CDC-ACM class driver (v2.3.0 from `espressif/esp-usb`) |
+| ESP-IDF USB Host | ESP32 backend: `usb_host.h` (framework-provided) |
 | FreeRTOS | ESP32 backend: tasks, stream buffers |
 
 **No dependency on:** sfx_serial, sfx_peripherals, sfx_audio, sfx_storage, sfx_server.
@@ -266,7 +269,7 @@ setConnected(false) → USB disconnect (ready auto-cleared)
 ## Usage
 
 ```cpp
-#include <usb/usb_host.h>
+#include <usb/sfx_usb_host.h>
 #include <usb/usb_registry.h>
 
 // Core 0 setup

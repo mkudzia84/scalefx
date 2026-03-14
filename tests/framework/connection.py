@@ -118,7 +118,7 @@ class ScaleFXConnection:
             conn.close()
     """
     
-    DEFAULT_BAUD = 1000000
+    DEFAULT_BAUD = 2000000
     DEFAULT_TIMEOUT = 2.0
     
     def __init__(self, port: Optional[str] = None, baud: int = DEFAULT_BAUD,
@@ -128,7 +128,7 @@ class ScaleFXConnection:
         
         Args:
             port: Serial port (e.g., "COM3", "/dev/ttyACM0")
-            baud: Baud rate (default 1000000)
+            baud: Baud rate (default 2000000)
             timeout: Response timeout in seconds
             verbose: Enable verbose logging (default: from SCALEFX_VERBOSE env)
         """
@@ -259,7 +259,7 @@ class ScaleFXConnection:
                 timeout=0.1,
                 write_timeout=1.0
             )
-            time.sleep(0.1)  # Wait for device to be ready
+            time.sleep(0.05)  # Wait for device to be ready
             self._rx_buffer.clear()
             self._pending.clear()
             
@@ -416,7 +416,7 @@ class ScaleFXConnection:
                     self._log_recv(response)
                     return response
             
-            time.sleep(0.01)
+            time.sleep(0.001)
         
         return None
     
@@ -551,7 +551,7 @@ class ScaleFXConnection:
             try:
                 while self._serial.in_waiting:
                     self._serial.read(self._serial.in_waiting)
-                    time.sleep(0.01)
+                    time.sleep(0.001)
             except:
                 pass
         self._rx_buffer.clear()
@@ -599,15 +599,26 @@ def find_scalefx_ports() -> List[Tuple[str, str]]:
     """
     Find serial ports that look like ScaleFX controllers.
     
+    Detects:
+    - Raspberry Pi Pico (RP2040) — USB CDC serial
+    - ESP32 dev boards — USB-UART bridge chips (CP210x, CH340, FTDI)
+    
     Returns:
         List of (port, description) tuples
     """
     import serial.tools.list_ports
     ports = []
     for port in serial.tools.list_ports.comports():
-        # Look for Raspberry Pi Pico or similar
+        # Raspberry Pi Pico / RP2040 CDC
         if 'Pico' in port.description or 'RP2040' in port.description:
             ports.append((port.device, port.description))
         elif port.vid == 0x2E8A:  # Raspberry Pi VID
             ports.append((port.device, port.description))
+        # ESP32 USB-UART bridges (CP210x, CH340, FTDI)
+        elif port.vid == 0x10C4 and port.pid == 0xEA60:  # Silicon Labs CP210x
+            ports.append((port.device, f"{port.description} (CP210x)"))
+        elif port.vid == 0x1A86 and port.pid == 0x7523:  # WCH CH340
+            ports.append((port.device, f"{port.description} (CH340)"))
+        elif port.vid == 0x0403 and port.pid == 0x6001:  # FTDI FT232
+            ports.append((port.device, f"{port.description} (FTDI)"))
     return ports

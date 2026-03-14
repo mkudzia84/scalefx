@@ -14,6 +14,7 @@ Features:
 Usage:
     python -m tests.cli.interactive
     python -m tests.cli.interactive --port COM3
+    python -m tests.cli.interactive --port COM3 --split
     python -m tests.cli.interactive --port /dev/ttyACM0
 
 Architecture:
@@ -38,14 +39,14 @@ import threading
 import time
 from queue import Queue, Empty
 
-from .output import TerminalUI
+from .output import TerminalUI, SimpleTerminal
 
 from typing import Optional, List, Dict, Callable, Tuple
 
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from tests.framework import ScaleFXConnection, GearControlPacket, LightFxPacket, HubFxPacket, CorePacket
+from tests.framework import ScaleFXConnection, GearControlPacket, LightFxPacket, HubFxPacket, CorePacket, CommandBuilder
 from tests.framework.protocol import parse_packet, build_packet
 from tests.framework.connection import Response
 
@@ -68,9 +69,10 @@ class InteractiveCLI(OutputMixin):
     - LightFxCommandHandler: LightFX-specific (after init on LightFX device)
     """
     
-    def __init__(self, port: Optional[str] = None):
+    def __init__(self, port: Optional[str] = None, split_mode: bool = False):
         self.conn: Optional[ScaleFXConnection] = None
         self.port = port
+        self.split_mode = split_mode
         self.running = True
         self.controller_type: Optional[str] = None
         self.controller_name: Optional[str] = None
@@ -81,8 +83,8 @@ class InteractiveCLI(OutputMixin):
         self._listener_stop = threading.Event()
         self._response_queue: Queue = Queue()  # Async messages received while idle
         
-        # Terminal UI (created in run())
-        self._ui: Optional[TerminalUI] = None
+        # Terminal UI (created in run()) — TerminalUI (split) or SimpleTerminal (traditional)
+        self._ui = None
         
         # Keepalive interval (seconds) — sent automatically while idle
         self.KEEPALIVE_INTERVAL = 5.0
@@ -151,6 +153,49 @@ class InteractiveCLI(OutputMixin):
         self.controller_name = name
         self.controller_version = version
         self._sync_connection()
+        # Auto-fetch HubFX feature flags from STATUS
+        if ctrl_type == ControllerType.HUBFX:
+            self._refresh_hubfx_features()
+    
+    def _refresh_hubfx_features(self):
+        """Send STATUS to fetch HubFX feature flags and update handler.
+        
+        Called automatically after HubFX detection. Prints a summary of
+        active features to inform the user.
+        """
+        if not self.conn or not self.conn.is_initialized:
+            return
+        response = self.conn.send_and_wait(CommandBuilder.status_req(), timeout=2.0)
+        if response and response.packet_type == CorePacket.STATUS:
+            features = parsers.extract_hubfx_features(response.payload)
+            if features is not None:
+                self.hubfx_handler.set_active_features(features)
+                # Print summary of active features
+                active = [k for k, v in features.items() if v and not k.startswith('slave:')]
+                slaves = [k.split(':')[1] for k, v in features.items() if v and k.startswith('slave:')]
+                parts = []
+                if active:
+                    parts.append(', '.join(active))
+                if slaves:
+                    parts.append(f"slaves: {', '.join(slaves)}")
+                if parts:
+                    self.print_info(f"Active features: {'; '.join(parts)}")
+                else:
+                    self.print_info("No subsystems active yet")
+    
+    def _refresh_hubfx_features_silent(self):
+        """Re-fetch HubFX feature flags without printing summary.
+        
+        Called after commands that may change subsystem state (status,
+        sd.init, hub.init) to keep the help display up to date.
+        """
+        if not self.conn or not self.conn.is_initialized:
+            return
+        response = self.conn.send_and_wait(CommandBuilder.status_req(), timeout=2.0)
+        if response and response.packet_type == CorePacket.STATUS:
+            features = parsers.extract_hubfx_features(response.payload)
+            if features is not None:
+                self.hubfx_handler.set_active_features(features)
     
     def _on_quit(self):
         """Callback for quit command."""
@@ -345,13 +390,26 @@ class InteractiveCLI(OutputMixin):
         return commands
     
     def run(self):
-        """Main entry point — launches the split-screen terminal UI."""
-        self._ui = TerminalUI()
+        """Main entry point — launches the terminal UI.
+        
+        In split mode, uses a full-screen prompt_toolkit layout with separate
+        output and input areas. In traditional mode, uses standard input()/print().
+        """
+        if self.split_mode:
+            self._ui = TerminalUI()
+        else:
+            self._ui = SimpleTerminal()
+        
         self._ui.on_command(self._process_command)
         self._ui.on_exit(self._on_quit)
         
-        # Capture stdout so all print() goes to the output pane
-        self._ui.install_capture()
+        # Share cancel event with all handlers (Ctrl+C signalling)
+        for handler in self._handlers:
+            handler.set_cancel_event(self._ui.cancel_event)
+        
+        # Capture stdout only in split mode (redirects print() to output pane)
+        if self.split_mode:
+            self._ui.install_capture()
         
         # Banner
         print(f"\n{Fore.CYAN}╔══════════════════════════════════════════╗{Style.RESET_ALL}")
@@ -403,6 +461,10 @@ class InteractiveCLI(OutputMixin):
             # Pause listener while command uses serial directly
             self._stop_listener()
             handler(args)
+            
+            # Refresh HubFX features after status/sd.init commands
+            if self.controller_type == ControllerType.HUBFX and cmd in ('status', 'sd.init', 'hub.init'):
+                self._refresh_hubfx_features_silent()
             
             # Sync connection after command (may have changed)
             self._sync_connection()
@@ -515,6 +577,9 @@ class InteractiveCLI(OutputMixin):
             help          - Show overview (groups shown as summaries for HubFX)
             help <group>  - Show commands in a specific group (e.g. help audio)
             help gfx|lfx|gc - Show slave sub-commands for that controller
+        
+        For HubFX, groups are annotated with feature status — inactive
+        subsystems are dimmed with a reason (e.g. "audio not initialized").
         """
         from collections import OrderedDict
 
@@ -552,6 +617,26 @@ class InteractiveCLI(OutputMixin):
             for _subcmd, (_handler, info) in slave_cmds.items():
                 if info.group:
                     slave_groups.setdefault(info.group, []).append(info)
+
+        # Feature gating helpers (HubFX only)
+        hubfx_handler = self.hubfx_handler if self.controller_type == ControllerType.HUBFX else None
+        has_feature_info = hubfx_handler and hubfx_handler.has_features
+
+        def _is_group_active(group_name: str, is_slave: bool = False) -> bool:
+            """Check if a group's required feature is active."""
+            if not has_feature_info:
+                return True  # No feature info yet — assume all active
+            feature_map = HubFxCommandHandler.SLAVE_GROUP_FEATURES if is_slave else HubFxCommandHandler.GROUP_FEATURES
+            required = feature_map.get(group_name)
+            if required is None:
+                return True  # No feature requirement
+            return hubfx_handler.is_feature_active(required)
+
+        def _group_reason(group_name: str, is_slave: bool = False) -> str:
+            """Get human-readable reason why a group is inactive."""
+            feature_map = HubFxCommandHandler.SLAVE_GROUP_FEATURES if is_slave else HubFxCommandHandler.GROUP_FEATURES
+            required = feature_map.get(group_name, '')
+            return HubFxCommandHandler.FEATURE_LABELS.get(required, 'not available')
 
         # Build a lookup: lowercase alias → (source, group_name)
         # source = 'group' for controller groups, 'slave' for slave sub-groups
@@ -598,9 +683,16 @@ class InteractiveCLI(OutputMixin):
                 print(f"{color}━━━ Slave Controllers ━━━{Style.RESET_ALL}")
                 print(f"  Usage: {Fore.YELLOW}slave <subcmd> [args...]{Style.RESET_ALL}\n")
                 for sg_name, sg_infos in slave_groups.items():
-                    print(f"{color}  ── {sg_name} ──{Style.RESET_ALL}")
-                    for info in sg_infos:
-                        print(f"    {Fore.GREEN}{info.usage:<55}{Style.RESET_ALL} {info.description}")
+                    active = _is_group_active(sg_name, is_slave=True)
+                    if active:
+                        print(f"{color}  ── {sg_name} ──{Style.RESET_ALL}")
+                        for info in sg_infos:
+                            print(f"    {Fore.GREEN}{info.usage:<55}{Style.RESET_ALL} {info.description}")
+                    else:
+                        reason = _group_reason(sg_name, is_slave=True)
+                        print(f"{Fore.LIGHTBLACK_EX}  ── {sg_name} ── ({reason}){Style.RESET_ALL}")
+                        for info in sg_infos:
+                            print(f"    {Fore.LIGHTBLACK_EX}{info.usage:<55} {info.description}{Style.RESET_ALL}")
                     print()
                 return
 
@@ -609,6 +701,8 @@ class InteractiveCLI(OutputMixin):
                 source, gname = matched
                 target = groups if source == 'group' else slave_groups
                 if gname in target:
+                    is_slave = source == 'slave'
+                    active = _is_group_active(gname, is_slave=is_slave)
                     color = {
                         ControllerType.GEARCONTROL: Fore.GREEN,
                         ControllerType.GUNFX: Fore.RED,
@@ -616,13 +710,19 @@ class InteractiveCLI(OutputMixin):
                         ControllerType.LIGHTFX: Fore.BLUE,
                     }.get(self.controller_type, Fore.CYAN)
                     print()
-                    if source == 'slave':
+                    if is_slave:
                         print(f"{color}━━━ {gname} ━━━{Style.RESET_ALL}")
                         print(f"  Usage: {Fore.YELLOW}slave <subcmd> [args...]{Style.RESET_ALL}\n")
                     else:
                         print(f"{color}━━━ {gname} ━━━{Style.RESET_ALL}")
+                    if not active:
+                        reason = _group_reason(gname, is_slave=is_slave)
+                        print(f"  {Fore.YELLOW}⚠ {reason} — commands may not work{Style.RESET_ALL}\n")
                     for info in target[gname]:
-                        print(f"  {Fore.GREEN}{info.usage:<55}{Style.RESET_ALL} {info.description}")
+                        if active:
+                            print(f"  {Fore.GREEN}{info.usage:<55}{Style.RESET_ALL} {info.description}")
+                        else:
+                            print(f"  {Fore.LIGHTBLACK_EX}{info.usage:<55} {info.description}{Style.RESET_ALL}")
                     print()
                     return
 
@@ -683,9 +783,14 @@ class InteractiveCLI(OutputMixin):
                 for group_name, group_infos in groups.items():
                     if group_name == 'Slave Controllers':
                         continue  # Show separately below
-                    cmd_names = ', '.join(info.name for info in group_infos[:4])
-                    more = f", ... (+{len(group_infos)-4})" if len(group_infos) > 4 else ""
-                    print(f"  {Fore.GREEN}{group_name:<22}{Style.RESET_ALL} {len(group_infos):>2} cmds  │  {cmd_names}{more}")
+                    active = _is_group_active(group_name)
+                    if active:
+                        cmd_names = ', '.join(info.name for info in group_infos[:4])
+                        more = f", ... (+{len(group_infos)-4})" if len(group_infos) > 4 else ""
+                        print(f"  {Fore.GREEN}{group_name:<22}{Style.RESET_ALL} {len(group_infos):>2} cmds  │  {cmd_names}{more}")
+                    else:
+                        reason = _group_reason(group_name)
+                        print(f"  {Fore.LIGHTBLACK_EX}{group_name:<22} {len(group_infos):>2} cmds  │  ({reason}){Style.RESET_ALL}")
 
                 # Slave controller summary
                 if slave_groups:
@@ -694,9 +799,14 @@ class InteractiveCLI(OutputMixin):
                     print(f"  Usage: {Fore.YELLOW}slave <subcmd> [args...]{Style.RESET_ALL}")
                     print(f"  Type {Fore.YELLOW}help gfx{Style.RESET_ALL}, {Fore.YELLOW}help lfx{Style.RESET_ALL}, {Fore.YELLOW}help gc{Style.RESET_ALL}, or {Fore.YELLOW}help slave{Style.RESET_ALL} for details\n")
                     for sg_name, sg_infos in slave_groups.items():
-                        cmd_names = ', '.join(info.name for info in sg_infos[:4])
-                        more = f", ... (+{len(sg_infos)-4})" if len(sg_infos) > 4 else ""
-                        print(f"  {Fore.GREEN}{sg_name:<26}{Style.RESET_ALL} {len(sg_infos):>2} cmds  │  {cmd_names}{more}")
+                        active = _is_group_active(sg_name, is_slave=True)
+                        if active:
+                            cmd_names = ', '.join(info.name for info in sg_infos[:4])
+                            more = f", ... (+{len(sg_infos)-4})" if len(sg_infos) > 4 else ""
+                            print(f"  {Fore.GREEN}{sg_name:<26}{Style.RESET_ALL} {len(sg_infos):>2} cmds  │  {cmd_names}{more}")
+                        else:
+                            reason = _group_reason(sg_name, is_slave=True)
+                            print(f"  {Fore.LIGHTBLACK_EX}{sg_name:<26} {len(sg_infos):>2} cmds  │  ({reason}){Style.RESET_ALL}")
                 print()
             else:
                 # Flat list for simple controllers
@@ -722,6 +832,8 @@ class InteractiveCLI(OutputMixin):
 def main():
     parser = argparse.ArgumentParser(description='ScaleFX Interactive CLI')
     parser.add_argument('--port', '-p', help='Serial port (e.g., COM3, /dev/ttyACM0)')
+    parser.add_argument('--split', '-s', action='store_true',
+                        help='Enable split-screen terminal (separate output and input areas)')
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='Enable verbose TX/RX logging (shows all packets)')
     args = parser.parse_args()
@@ -729,7 +841,7 @@ def main():
     if args.verbose:
         os.environ['SCALEFX_VERBOSE'] = '1'
     
-    cli = InteractiveCLI(port=args.port)
+    cli = InteractiveCLI(port=args.port, split_mode=args.split)
     cli.run()
 
 

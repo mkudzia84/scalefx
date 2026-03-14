@@ -11,7 +11,8 @@
  * LightFX Pico) should use CoreCommandServer from core/bus_server.h instead.
  *
  * Protocol Format (before COBS encoding):
- *   [type:u8][tag:u8][len:u16LE][payload:0-512 bytes][crc8:u8]
+ *   [type:u8][tag:u8][len:u16LE][payload:0-N bytes][crc8:u8]
+ *   N = MAX_PAYLOAD_SIZE (platform-specific: 512 Pico, 2048 ESP32)
  *
  * Framing:
  *   COBS encoded packet followed by 0x00 delimiter
@@ -79,6 +80,10 @@ public:
     void end();
     void setDevice(int deviceIndex);
 
+    // Peer payload limit (max payload the remote device can handle)
+    void setPeerMaxPayload(size_t maxPayload) { _peerMaxPayload = maxPayload; }
+    size_t peerMaxPayload() const { return _peerMaxPayload; }
+
     // Packet transmission
     int sendPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0, uint8_t tag = 0);
     int sendInit() { return sendPacket(CorePacket::INIT); }
@@ -113,6 +118,9 @@ private:
 
     bool _initialized = false;
     int _deviceIndex = 0;
+
+    // Default peer max = Pico capacity (clients always talk to Pico servers)
+    size_t _peerMaxPayload = CoreProtocol::PICO_MAX_PAYLOAD;
 
     uint8_t _rxBuffer[SERIAL_BUS_RX_BUFFER_SIZE];
     size_t _rxIndex = 0;

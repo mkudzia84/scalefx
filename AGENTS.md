@@ -6,7 +6,7 @@
 ## Project Overview
 
 ScaleFX is a modular scale model effects system for RC helicopters:
-- **Architecture:** Client-server over USB serial (binary COBS protocol, CRC-8, 1Mbps)
+- **Architecture:** Client-server over USB serial (binary COBS protocol, CRC-8, 2Mbps)
 - **Pico Controllers** (RP2040): GunFX (weapons), LightFX (lighting), GearControl (landing gear)
 - **ESP32-S3 Controller**: HubFX ESP32-S3 (master hub, active development)
 - **HubFX Pico** (RP2350): OBSOLETE — frozen reference implementation, do not modify
@@ -16,7 +16,7 @@ ScaleFX is a modular scale model effects system for RC helicopters:
 ## Critical Constants
 
 - **Packet format:** `[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]`
-- **CRC-8 polynomial:** 0x07 | **Baud rate:** 1Mbps | **Endianness:** Little-endian
+- **CRC-8 polynomial:** 0x07 | **Baud rate:** 2Mbps | **Endianness:** Little-endian
 - **Connection timeout:** 15000ms | **Indicator LEDs:** GP13 (connection), GP14 (error)
 
 ## Instruction Documents
@@ -36,14 +36,14 @@ ScaleFX is a modular scale model effects system for RC helicopters:
 
 ```bash
 # Build Pico firmware
-python -m platformio run -e pico -d controllers/{gunfx|lightfx|gearcontrol|hubfx|noop}/pico
+python -m platformio run -e pico -d controllers/{gunfx|lightfx|gearcontrol|noop}/pico
 
-# Build ESP32-S3 firmware
+# Build ESP32-S3 firmware (HubFX)
 python -m platformio run -e esp32s3 -d controllers/hubfx/esp32s3
 
 # Build and flash
-python scripts/build_and_flash.py {gunfx|lightfx|gearcontrol|hubfx|noop}
-python scripts/build_and_flash.py hubfx-esp32s3  # ESP32-S3 (uses esptool)
+python scripts/build_and_flash.py {gunfx|lightfx|gearcontrol|noop}
+python scripts/build_and_flash.py hubfx  # ESP32-S3 (uses esptool)
 
 # Python syntax check
 python -m py_compile tests/framework/packets.py

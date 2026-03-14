@@ -41,7 +41,7 @@
 // Result queue for tag-correlated command/response matching
 #include "client/result_queue.h"
 
-// NOTE: USB Host (usb/usb_host.h) and USB Registry (usb/usb_registry.h)
+// NOTE: USB Host (usb/sfx_usb_host.h) and USB Registry (usb/usb_registry.h)
 // are in the sfx_usb library. Include them separately if needed.
 
 // Binary protocol implementation (client-side, low-level COBS framing)

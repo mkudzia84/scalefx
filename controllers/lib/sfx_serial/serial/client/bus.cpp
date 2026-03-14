@@ -10,7 +10,7 @@
 
 #ifndef SCALEFX_SERVER
 
-#include "usb/usb_host.h"  // Full include — only needed for client builds
+#include "usb/sfx_usb_host.h"  // Full include — only needed for client builds
 
 // ============================================================================
 // SerialBus Implementation
@@ -43,7 +43,7 @@ void SerialBus::setDevice(int deviceIndex) {
 
 int SerialBus::sendPacket(uint8_t type, const uint8_t* payload, size_t len, uint8_t tag) {
     if (!_initialized) return -1;
-    if (len > CoreProtocol::MAX_PAYLOAD_SIZE) return -1;
+    if (len > _peerMaxPayload) return -1;  // Validate against peer's capacity
     
     UsbHost& usb = UsbHost::instance();
     

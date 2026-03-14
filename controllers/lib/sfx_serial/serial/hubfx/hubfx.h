@@ -2,7 +2,7 @@
  * Serial HubFX Protocol — Protocol Constants and Client Classes
  *
  * This header contains:
- *   - HubFxPacket:  Packet type constants (0x80-0xA8)
+ *   - HubFxPacket:  Packet type constants (0x80-0xA9)
  *   - HubFxError:   Error code constants
  *   - HubFxAudio:   Audio wire format constants
  *   - HubFxStorage: Storage target constants
@@ -30,7 +30,7 @@
 
 
 // ============================================================================
-// HubFX Packet Types (0x80-0xA8)
+// HubFX Packet Types (0x80-0xA9)
 // ============================================================================
 
 namespace HubFxPacket {
@@ -63,9 +63,10 @@ namespace HubFxPacket {
     constexpr uint8_t CONFIG_GET_RESP   = 0x92;  // [loaded:u8][size:u16LE][reserved:u8]
 
     // --- SD Card Management (0x93-0x95) ---
-    constexpr uint8_t SD_INIT           = 0x93;  // [speed_mhz:u8] → ACK/NACK
+    constexpr uint8_t SD_INIT           = 0x93;  // [speed_mhz:u8] → ACK/NACK (remounts card)
     constexpr uint8_t SD_STATUS_REQ     = 0x94;  // [] → SD_STATUS_RESP
     constexpr uint8_t SD_STATUS_RESP    = 0x95;  // [initialized:u8][cardSize_MB:u32LE][totalSpace_MB:u32LE][freeSpace_MB:u32LE][fatType:u8]
+                                                 //   extended (v0.5+): [cardType:u8][busMode:u8][usedSpace_MB:u32LE]
 
     // --- Slave Routing (0x96-0x98) — subcmd pattern ---
     constexpr uint8_t SLAVE_ROUTE_GUNFX       = 0x96;  // [subcmd:u8][...] → route to GunFX
@@ -80,6 +81,10 @@ namespace HubFxPacket {
     constexpr uint8_t USB_DEVICES_RESP   = 0xA8;  // [initialized:u8][taskRunning:u8][backendLen:u8][backend:str]
                                                    //   [deviceCount:u8] per-device: [addr:u8][vid:u16LE][pid:u16LE][state:u8][slaveType:u8]
 
+    // --- File Tree (0xA9) ---
+    constexpr uint8_t FILE_TREE          = 0xA9;  // [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END
+                                                   //   Streamed text: "<depth> <d|f> <name> <size>\n" per entry (recursive)
+
     // --- File Operations (0x9A-0xA3) ---
     // File commands accept an optional [target:u8] at the end of the payload:
     //   0 = SD card (default if omitted, backward-compatible)
@@ -90,9 +95,10 @@ namespace HubFxPacket {
     constexpr uint8_t FILE_INFO          = 0x9D;  // [pathLen:u8][path:str][target:u8?] → FILE_INFO_RESP
     constexpr uint8_t FILE_INFO_RESP     = 0x9E;  // [exists:u8][isDir:u8][size:u32LE]
     constexpr uint8_t FILE_DOWNLOAD      = 0x9F;  // [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END
-    constexpr uint8_t FILE_UPLOAD_BEGIN  = 0xA0;  // [size:u32LE][pathLen:u8][path:str][target:u8?] → ACK
-    constexpr uint8_t FILE_UPLOAD_DATA   = 0xA1;  // [seqNum:u16LE][crc16:u16LE][data:N] → ACK/NACK(CRC_ERROR)
-    constexpr uint8_t FILE_UPLOAD_END    = 0xA2;  // [] → ACK/NACK
+    constexpr uint8_t FILE_UPLOAD_BEGIN  = 0xA0;  // [size:u32LE][pathLen:u8][path:str][target:u8?][mode:u8?] → ACK
+                                                   //   mode: 0=sync (ACK per chunk, default), 1=burst (no per-chunk ACK)
+    constexpr uint8_t FILE_UPLOAD_DATA   = 0xA1;  // [seqNum:u16LE][crc16:u16LE][data:N] → ACK/NACK(CRC_ERROR) (sync) or silent (burst)
+    constexpr uint8_t FILE_UPLOAD_END    = 0xA2;  // [] → ACK[md5:16B] / ACK[md5:16B][crcErrors:u16LE] (burst) / NACK
     constexpr uint8_t FILE_UPLOAD_CANCEL = 0xA3;  // [] → ACK
 }
 
@@ -170,12 +176,21 @@ namespace HubFxAudio {
 
 
 // ============================================================================
-// Storage Target Constants
+// Storage Target & Upload Mode Enums
 // ============================================================================
 
 namespace HubFxStorage {
-    constexpr uint8_t TARGET_SD    = 0;  // SD card (default)
-    constexpr uint8_t TARGET_FLASH = 1;  // Onboard LittleFS flash
+    /// Storage target (SD card or onboard LittleFS flash)
+    enum StorageTarget : uint8_t {
+        TARGET_SD    = 0,  // SD card (default)
+        TARGET_FLASH = 1   // Onboard LittleFS flash
+    };
+
+    /// Upload transfer mode
+    enum UploadMode : uint8_t {
+        UPLOAD_SYNC  = 0,  // ACK per chunk, CRC retry (default)
+        UPLOAD_BURST = 1   // No per-chunk ACK, MD5 verification at end
+    };
 }
 
 
@@ -232,6 +247,10 @@ struct HubFxSdStatus {
     uint32_t totalSpace_MB = 0;
     uint32_t freeSpace_MB  = 0;
     uint8_t fatType        = 0;
+    // Extended fields (v0.5+)
+    uint8_t cardType       = 0;   ///< 0=NONE,1=MMC,2=SD,3=SDHC,4=UNKNOWN
+    uint8_t busMode        = 0;   ///< 0=SPI,1=SDIO_1BIT,2=SDIO_4BIT
+    uint32_t usedSpace_MB  = 0;
 };
 
 /// Flash status (parsed from FLASH_STATUS_REQ response)
@@ -377,20 +396,20 @@ public:
     // ========================================================================
 
     /// Starts streamed listing — handle STREAM_BEGIN/DATA/END via callbacks
-    CommandResult fileList(const char* path, uint8_t target = HubFxStorage::TARGET_SD);
-    CommandResult fileDelete(const char* path, uint8_t target = HubFxStorage::TARGET_SD);
-    CommandResult fileMkdir(const char* path, uint8_t target = HubFxStorage::TARGET_SD);
-    CommandResult fileInfo(const char* path, uint8_t target = HubFxStorage::TARGET_SD);
+    CommandResult fileList(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
+    CommandResult fileDelete(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
+    CommandResult fileMkdir(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
+    CommandResult fileInfo(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
 
     /// Starts streamed download — handle STREAM_BEGIN/DATA/END via callbacks
-    CommandResult fileDownload(const char* path, uint8_t target = HubFxStorage::TARGET_SD);
+    CommandResult fileDownload(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
 
     // ========================================================================
     // Upload Commands
     // ========================================================================
 
     CommandResult uploadBegin(const char* path, uint32_t size,
-                              uint8_t target = HubFxStorage::TARGET_SD);
+                              HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
     CommandResult uploadData(uint16_t seqNum, const uint8_t* data, size_t dataLen);
     CommandResult uploadEnd();
     CommandResult uploadCancel();

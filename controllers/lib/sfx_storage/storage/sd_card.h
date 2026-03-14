@@ -104,6 +104,7 @@ namespace SdError {
     constexpr uint8_t IO_ERROR        = 3;
     constexpr uint8_t IS_DIRECTORY    = 4;
     constexpr uint8_t ALREADY_EXISTS  = 5;
+    constexpr uint8_t LIMIT_EXCEEDED  = 6;  ///< Tree depth or entry count limit hit (result truncated)
 }
 
 
@@ -112,16 +113,29 @@ namespace SdError {
 // ============================================================================
 
 /**
+ * @brief SD card type (matches ESP32 sdcard_type_t values)
+ */
+enum class SdCardType : uint8_t {
+    NONE    = 0,
+    MMC     = 1,
+    SD      = 2,
+    SDHC    = 3,
+    UNKNOWN = 4
+};
+
+/**
  * @brief SD card storage information
  */
 struct StorageInfo {
     bool initialized;
     uint32_t cardSize_MB;
     uint32_t totalSpace_MB;
+    uint32_t usedSpace_MB;        ///< Used space in MB
     uint32_t freeSpace_MB;
-    uint8_t fatType;             ///< FAT16/32 (Pico/SdFat), 0 on ESP32
+    uint8_t fatType;              ///< FAT16/32 (Pico/SdFat), 0 on ESP32
     uint32_t clusterSize_bytes;   ///< Cluster size (Pico/SdFat), 0 on ESP32
     SdBusMode busMode;            ///< Active bus mode
+    SdCardType cardType;          ///< Card type (SD, SDHC, MMC, etc.)
 };
 
 
@@ -177,12 +191,16 @@ public:
      * @param d1   SDIO data 1 pin (-1 = default, 4-bit only)
      * @param d2   SDIO data 2 pin (-1 = default, 4-bit only)
      * @param d3   SDIO data 3 pin (-1 = default, 4-bit only)
+     * @param formatIfFailed Format the card if mount fails (default: true)
+     * @param maxOpenFiles Maximum simultaneous open files (default: 5)
      * @return true on success
      */
     bool beginSDIO(bool oneBitMode = false,
                    int8_t clk = -1, int8_t cmd = -1,
                    int8_t d0 = -1, int8_t d1 = -1,
-                   int8_t d2 = -1, int8_t d3 = -1);
+                   int8_t d2 = -1, int8_t d3 = -1,
+                   bool formatIfFailed = true,
+                   uint8_t maxOpenFiles = 5);
 #endif
 
     /**
@@ -197,6 +215,17 @@ public:
 
     /// Get active bus mode
     SdBusMode busMode() const { return _busMode; }
+
+    /// Get card type (only valid when initialized)
+    SdCardType cardType() const;
+
+    /**
+     * @brief Unmount the SD card
+     *
+     * Must be called before re-mounting (hot-swap or error recovery).
+     * SD_MMC.begin() is a no-op if already mounted.
+     */
+    void unmount();
 
     // ========================================================================
     // Directory Operations (thread-safe, lock acquired internally)
@@ -257,6 +286,13 @@ public:
      * @return SdError code
      */
     uint8_t removeFile(const char* path);
+
+    /**
+     * @brief Remove a directory and all its contents recursively
+     * @param path Directory path
+     * @return SdError code
+     */
+    uint8_t removeDirectory(const char* path);
 
     /**
      * @brief Create directory (recursive)
@@ -331,12 +367,18 @@ private:
     // Stored SDIO config for retryInit()
     bool _sdioOneBit;
     int8_t _sdioClk, _sdioCmd, _sdioD0, _sdioD1, _sdioD2, _sdioD3;
+    bool _sdioFormatIfFailed;
+    uint8_t _sdioMaxOpenFiles;
 #endif
 
     // Internal recursive tree listing (caller holds lock)
     void listTreeRecursive(const char* path, int depth,
                            std::function<bool(const FileEntry&, int)>& callback,
-                           bool& shouldContinue);
+                           bool& shouldContinue, int& entryCount,
+                           bool& limitHit);
+
+    // Internal recursive directory removal (caller holds lock)
+    bool removeDirectoryRecursive(const char* path, int depth = 0);
 };
 
 #endif // SFX_HAS_SD

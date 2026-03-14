@@ -30,7 +30,7 @@
 #ifndef SFX_ESP_USB_HOST_H
 #define SFX_ESP_USB_HOST_H
 
-#include "usb_host.h"  // Must come first — defines SFX_PLATFORM_ESP32
+#include "sfx_usb_host.h"  // Must come first — defines SFX_PLATFORM_ESP32
 
 #if SFX_PLATFORM_ESP32
 

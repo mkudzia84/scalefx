@@ -17,7 +17,7 @@
 #ifndef SFX_PICO_USB_HOST_H
 #define SFX_PICO_USB_HOST_H
 
-#include "usb_host.h"  // Must come first — defines SFX_PLATFORM_PICO
+#include "sfx_usb_host.h"  // Must come first — defines SFX_PLATFORM_PICO
 
 #if SFX_PLATFORM_PICO
 

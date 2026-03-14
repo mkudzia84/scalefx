@@ -79,7 +79,7 @@ void loop() {
 
 ## What `begin()` Does
 
-1. **USB Serial init** — `Serial.begin(1000000)` with 3-second wait for connection
+1. **USB Serial init** — `Serial.begin(2000000)` with 3-second wait for connection
 2. **Device name** — builds unique name from board ID (e.g., `"GunFX"` + last 4 hex of board ID → `"GunFX-A1B2"`)
 3. **Indicator LEDs** — initializes connection (default GP13) and error (default GP14) LEDs
 4. **DiagLog** — initializes diagnostic log singleton with serial output
@@ -219,7 +219,7 @@ server.begin("HubFX", VERSION, BUILD, /*connectionPin=*/2, /*errorPin=*/4);
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `BAUD_RATE` | 1,000,000 | USB serial baud rate |
+| `BAUD_RATE` | 2,000,000 | USB serial baud rate |
 | `CONNECTION_TIMEOUT_ms` | 15,000 | Inactivity before watchdog shutdown |
 | `BLINK_WAITING_ms` | 500 | Connection LED blink rate (waiting) |
 | `BLINK_ERROR_ms` | 200 | Error LED blink rate |

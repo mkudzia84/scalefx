@@ -1387,6 +1387,21 @@ class HubFxCommands(CommandBuilder):
         return build_packet(HubFxPacket.FILE_LIST, HubFxCommands._path_payload(path, target))
 
     @staticmethod
+    def file_tree(path: str = "/", target: int = 0) -> bytes:
+        """
+        Recursive directory tree listing.
+
+        Response is streamed: STREAM_BEGIN → STREAM_DATA chunks → STREAM_END.
+        Content is structured text: "<depth> <d|f> <name> <size>" per line.
+        CLI renders as POSIX-style tree output.
+
+        Args:
+            path: Root directory path (e.g., "/", "/sounds")
+            target: Storage target (0=SD, 1=Flash)
+        """
+        return build_packet(HubFxPacket.FILE_TREE, HubFxCommands._path_payload(path, target))
+
+    @staticmethod
     def file_delete(path: str, target: int = 0) -> bytes:
         """
         Delete a file.
@@ -1437,7 +1452,7 @@ class HubFxCommands(CommandBuilder):
         return build_packet(HubFxPacket.FILE_DOWNLOAD, HubFxCommands._path_payload(path, target))
 
     @staticmethod
-    def file_upload_begin(path: str, size: int, target: int = 0) -> bytes:
+    def file_upload_begin(path: str, size: int, target: int = 0, mode: int = 0) -> bytes:
         """
         Begin a file upload.
 
@@ -1447,10 +1462,14 @@ class HubFxCommands(CommandBuilder):
             path: Destination file path
             size: Total file size in bytes
             target: Storage target (0=SD, 1=Flash)
+            mode: Upload mode (0=sync with per-chunk ACK, 1=burst no per-chunk ACK)
         """
         path_bytes = path.encode('utf-8')
         payload = u32_le(size) + bytes([len(path_bytes)]) + path_bytes
-        if target != HubFxStorage.TARGET_SD:
+        if mode != 0:
+            # Mode requires target to be present (positional)
+            payload += bytes([target, mode])
+        elif target != HubFxStorage.TARGET_SD:
             payload += bytes([target])
         return build_packet(HubFxPacket.FILE_UPLOAD_BEGIN, payload)
 
@@ -1463,7 +1482,7 @@ class HubFxCommands(CommandBuilder):
 
         Args:
             seq_num: Sequence number (0-based, incrementing)
-            data: Chunk data (up to 508 bytes)
+            data: Chunk data (up to MAX_PAYLOAD_SIZE - 4 bytes)
         """
         from tests.framework.protocol import crc16_ccitt
         crc = crc16_ccitt(data)

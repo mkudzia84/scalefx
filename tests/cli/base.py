@@ -7,6 +7,9 @@ Shared infrastructure for the interactive CLI:
 - Controller type constants
 """
 
+import sys
+import threading
+import time
 from dataclasses import dataclass
 from typing import Optional, Callable, List, TYPE_CHECKING
 
@@ -18,9 +21,9 @@ try:
 except ImportError:
     HAS_COLOR = False
     class Fore:  # type: ignore
-        RED = GREEN = YELLOW = CYAN = MAGENTA = BLUE = RESET = ""
+        RED = GREEN = YELLOW = CYAN = MAGENTA = BLUE = LIGHTBLACK_EX = RESET = ""
     class Style:  # type: ignore
-        BRIGHT = RESET_ALL = ""
+        BRIGHT = DIM = RESET_ALL = ""
 
 
 # =============================================================================
@@ -75,6 +78,87 @@ class OutputMixin:
         print(f"{Fore.YELLOW}⚠{Style.RESET_ALL} {msg}")
 
 
+class Spinner:
+    """
+    Context manager showing an animated spinner during long-running operations.
+
+    Usage:
+        with Spinner("Remounting SD card..."):
+            result = some_blocking_call()
+
+        with Spinner("Initializing...") as s:
+            # Can update the message mid-operation
+            s.update("Still working...")
+    """
+    FRAMES = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+
+    def __init__(self, message: str = "Working..."):
+        self._message = message
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def update(self, message: str):
+        """Update the spinner message while running."""
+        self._message = message
+
+    def __enter__(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *args):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1.0)
+        # Clear the spinner line
+        print(f"\r{' ' * 80}\r", end='', flush=True)
+
+    def _spin(self):
+        i = 0
+        while self._running:
+            frame = self.FRAMES[i % len(self.FRAMES)]
+            print(f"\r    {frame} {self._message}", end='', flush=True)
+            time.sleep(0.08)
+            i += 1
+
+
+def format_progress_bar(current: int, total: int, width: int = 30,
+                        start_time: float = 0) -> str:
+    """
+    Build a progress bar string for display.
+
+    Args:
+        current:    Bytes (or units) completed so far
+        total:      Total bytes (or units) expected
+        width:      Character width of the bar
+        start_time: time.time() of the operation start (for speed/ETA)
+
+    Returns:
+        Formatted progress bar string (no trailing newline)
+    """
+    if total <= 0:
+        return ""
+    pct = min(100, (current * 100) // total)
+    filled = (current * width) // total
+    bar = '█' * filled + '░' * (width - filled)
+    size_str = f"{current}/{total}"
+
+    speed_str = "-- KB/s"
+    eta_str = ""
+    if start_time > 0:
+        elapsed = time.time() - start_time
+        if elapsed > 0 and current > 0:
+            speed = current / elapsed
+            speed_str = f"{speed / 1024:.1f} KB/s"
+            remaining = total - current
+            if speed > 0:
+                eta = remaining / speed
+                eta_str = f"ETA {eta:.0f}s"
+
+    return f"    [{bar}] {pct:3d}% {size_str} {speed_str} {eta_str}"
+
+
 # =============================================================================
 # Command Handler Protocol
 # =============================================================================
@@ -93,6 +177,7 @@ class CommandHandlerBase(OutputMixin):
     def __init__(self):
         self.conn: Optional['ScaleFXConnection'] = None
         self.controller_type: Optional[str] = None
+        self._cancel_event: Optional[threading.Event] = None
     
     def set_connection(self, conn: Optional['ScaleFXConnection']):
         """Update connection reference."""
@@ -101,6 +186,15 @@ class CommandHandlerBase(OutputMixin):
     def set_controller_type(self, ctrl_type: Optional[str]):
         """Update controller type."""
         self.controller_type = ctrl_type
+    
+    def set_cancel_event(self, event: threading.Event):
+        """Set the cancel event (shared with UI for Ctrl+C signalling)."""
+        self._cancel_event = event
+
+    @property
+    def cancel_requested(self) -> bool:
+        """Check if the user has requested cancellation via Ctrl+C."""
+        return self._cancel_event is not None and self._cancel_event.is_set()
     
     def _require_connection(self) -> bool:
         """Check if connected, print error if not."""

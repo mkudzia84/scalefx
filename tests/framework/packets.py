@@ -4,6 +4,8 @@ Packet Type Constants
 Defines all packet types and error codes for ScaleFX protocol.
 """
 
+from enum import IntEnum
+
 # Tag value for async/unsolicited server-initiated messages
 TAG_ASYNC = 0x00
 
@@ -92,6 +94,8 @@ class CoreError:
     INVALID_PARAM   = 0x10
     PARAM_RANGE     = 0x11
     INVALID_ID      = 0x12
+    INVALID_VALUE   = 0x13
+    PARAM_TOO_LONG  = 0x14
     INTERNAL        = 0xF0
     TIMEOUT         = 0xF1
     COMM_ERROR      = 0xF2
@@ -111,6 +115,8 @@ class CoreError:
             0x10: "INVALID_PARAM",
             0x11: "PARAM_RANGE",
             0x12: "INVALID_ID",
+            0x13: "INVALID_VALUE",
+            0x14: "PARAM_TOO_LONG",
             0xF0: "INTERNAL",
             0xF1: "TIMEOUT",
             0xF2: "COMM_ERROR",
@@ -433,9 +439,10 @@ class HubFxPacket:
     CONFIG_GET_RESP   = 0x92  # [loaded:u8][size:u16LE][reserved:u8]
 
     # SD card management
-    SD_INIT           = 0x93  # [speed_mhz:u8] → ACK/NACK
+    SD_INIT           = 0x93  # [speed_mhz:u8] → ACK/NACK (remounts card)
     SD_STATUS_REQ     = 0x94  # [] → SD_STATUS_RESP
     SD_STATUS_RESP    = 0x95  # [initialized:u8][cardSize_MB:u32LE][totalSpace_MB:u32LE][freeSpace_MB:u32LE][fatType:u8]
+                              #   extended (v0.5+): [cardType:u8][busMode:u8][usedSpace_MB:u32LE]
 
     # Slave routing (subcmd pattern)
     # Payload: [subcmd:u8][original_payload...]
@@ -464,6 +471,9 @@ class HubFxPacket:
     # Streaming packet types (STREAM_BEGIN/DATA/END) are defined in
     # StreamPacket class — they are protocol infrastructure reusable
     # by any controller, not HubFX-specific.
+
+    # File tree (0xA9)
+    FILE_TREE          = 0xA9  # [pathLen:u8][path:str][target:u8?] → STREAM (recursive listing)
 
     # USB Host Diagnostics (0xA7-0xA8)
     USB_DEVICES_REQ    = 0xA7  # [] → USB_DEVICES_RESP
@@ -553,9 +563,21 @@ class HubFxAudio:
 
 
 class HubFxStorage:
-    """HubFX storage target constants (matches C++ HubFxStorage namespace)."""
-    TARGET_SD    = 0  # SD card (default)
-    TARGET_FLASH = 1  # Onboard LittleFS flash
+    """HubFX storage target and upload mode enums (matches C++ HubFxStorage namespace)."""
+
+    class Target(IntEnum):
+        SD    = 0  # SD card (default)
+        FLASH = 1  # Onboard LittleFS flash
+
+    class UploadMode(IntEnum):
+        SYNC  = 0  # ACK per chunk, CRC retry (default)
+        BURST = 1  # No per-chunk ACK, MD5 verification at end
+
+    # Backward-compatible aliases
+    TARGET_SD    = Target.SD
+    TARGET_FLASH = Target.FLASH
+    UPLOAD_SYNC  = UploadMode.SYNC
+    UPLOAD_BURST = UploadMode.BURST
 
 
 class DiagLevel:

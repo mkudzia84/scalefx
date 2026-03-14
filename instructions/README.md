@@ -43,7 +43,7 @@ Task: "Work on HubFX"
 Protocol:
   format: "Binary COBS with CRC-8"
   crc_polynomial: 0x07
-  baud_rate: 1000000
+  baud_rate: 2000000
   packet_structure: "[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]"
   endianness: "little-endian"
 
@@ -51,17 +51,16 @@ Packet_Ranges:
   GunFX: "0x01-0x2F"
   LightFX: "0x40-0x5F"
   GearControl: "0x60-0x7F"
-  HubFX: "0x80-0xA8"
+  HubFX: "0x80-0xA9"
   Streaming: "0xA4-0xA6"
-  Available: "0xA9-0xEF"
+  Available: "0xAA-0xEF"
   Core: "0xF0-0xFF"
 
 Controllers:
   gunfx: { path: "controllers/gunfx/pico/", range: "0x01-0x2F" }
   lightfx: { path: "controllers/lightfx/pico/", range: "0x40-0x5F" }
   gearcontrol: { path: "controllers/gearcontrol/pico/", range: "0x60-0x7F" }
-  hubfx: { path: "controllers/hubfx/pico/", range: "0x80-0xA8", status: "OBSOLETE — frozen reference only" }
-  hubfx-esp32s3: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xA8", status: "ACTIVE development target" }
+  hubfx: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xA9", platform: "ESP32-S3" }
   noop: { path: "controllers/noop/pico/", range: "CORE_ONLY" }
 ```
 

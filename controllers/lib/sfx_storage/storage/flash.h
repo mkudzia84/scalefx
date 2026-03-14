@@ -56,6 +56,7 @@ namespace FlashError {
     constexpr uint8_t IO_ERROR        = 3;
     constexpr uint8_t IS_DIRECTORY    = 4;
     constexpr uint8_t ALREADY_EXISTS  = 5;
+    constexpr uint8_t LIMIT_EXCEEDED  = 6;  ///< Tree depth or entry count limit hit (result truncated)
 }
 
 
@@ -169,6 +170,13 @@ public:
     uint8_t removeFile(const char* path);
 
     /**
+     * @brief Remove a directory and all its contents recursively
+     * @param path Directory path
+     * @return FlashError code
+     */
+    uint8_t removeDirectory(const char* path);
+
+    /**
      * @brief Create directory (recursive)
      * @param path Directory path
      * @return FlashError code
@@ -222,7 +230,11 @@ private:
     // Internal recursive tree listing (caller holds lock)
     void listTreeRecursive(const char* path, int depth,
                            std::function<bool(const FileEntry&, int)>& callback,
-                           bool& shouldContinue);
+                           bool& shouldContinue, int& entryCount,
+                           bool& limitHit);
+
+    // Internal recursive directory removal (caller holds lock)
+    bool removeDirectoryRecursive(const char* path, int depth = 0);
 };
 
 #endif // FLASH_H

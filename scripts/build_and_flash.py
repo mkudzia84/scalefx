@@ -10,21 +10,26 @@ Usage:
     python scripts/build_and_flash.py <controller> [options]
     
 Controllers:
-    noop, gunfx, lightfx, gearcontrol, hubfx, hubfx-esp32s3
+    noop, gunfx, lightfx, gearcontrol, hubfx
+
+    Pico controllers (noop, gunfx, lightfx, gearcontrol) use UF2 drag-drop
+    flashing via BOOTSEL mode.
+    ESP32-S3 controllers (hubfx) use esptool upload via UART.
 
 Options:
     --port PORT     Serial port (default: auto-detect)
     --no-build      Skip build step (flash existing firmware)
     --no-clean      Skip clean step (incremental build)
     --skip-verify   Skip post-flash verification
-    --timeout SEC   BOOTSEL wait timeout (default: 15)
+    --timeout SEC   BOOTSEL wait timeout (default: 15, Pico only)
 
 Examples:
     python scripts/build_and_flash.py gunfx
     python scripts/build_and_flash.py lightfx --port COM10
+    python scripts/build_and_flash.py hubfx --port COM5
     python scripts/build_and_flash.py noop --no-build
 
-BOOTSEL Entry:
+BOOTSEL Entry (Pico only):
     Uses 1200 baud reset method (Arduino-pico standard):
     1. Connect to device at 1200 baud
     2. Toggle DTR to trigger bootloader
@@ -66,8 +71,8 @@ except ImportError:
 # Constants
 # =============================================================================
 
-CONTROLLERS = ['noop', 'gunfx', 'lightfx', 'gearcontrol', 'hubfx', 'hubfx-esp32s3']
-BAUD_RATE = 1000000  # For verification only
+CONTROLLERS = ['noop', 'gunfx', 'lightfx', 'gearcontrol', 'hubfx']
+BAUD_RATE = 2000000  # For verification only
 FRAME_DELIMITER = 0x00
 
 
@@ -142,8 +147,7 @@ _CONTROLLER_MAP = {
     'gunfx':          ('gunfx/pico',          'pico',    'uf2'),
     'lightfx':        ('lightfx/pico',        'pico',    'uf2'),
     'gearcontrol':    ('gearcontrol/pico',     'pico',    'uf2'),
-    'hubfx':          ('hubfx/pico',           'pico',    'uf2'),
-    'hubfx-esp32s3':  ('hubfx/esp32s3',        'esp32s3', 'bin'),
+    'hubfx':          ('hubfx/esp32s3',        'esp32s3', 'bin'),
 }
 
 
@@ -187,6 +191,38 @@ def find_pico_port() -> Optional[str]:
             return port.device
     
     return None
+
+
+def find_esp32_port() -> Optional[str]:
+    """Find connected ESP32 serial port (USB-UART bridge)."""
+    if not SERIAL_AVAILABLE:
+        return None
+    
+    for port in serial.tools.list_ports.comports():
+        # Common USB-UART bridge chips on ESP32 dev boards
+        # CP2102/CP2104: VID=10C4, PID=EA60
+        # CH340/CH341: VID=1A86, PID=7523
+        # CH343:       VID=1A86, PID=55D3 (USB-Enhanced-SERIAL)
+        # FTDI FT232:  VID=0403, PID=6001
+        if port.vid == 0x10C4 and port.pid == 0xEA60:    # Silicon Labs CP210x
+            return port.device
+        if port.vid == 0x1A86 and port.pid in (0x7523, 0x55D3, 0x55D4):  # WCH CH340/CH343
+            return port.device
+        if port.vid == 0x0403 and port.pid == 0x6001:    # FTDI FT232
+            return port.device
+        # Fallback: description-based detection
+        desc_lower = (port.description or "").lower()
+        if "cp210" in desc_lower or "ch340" in desc_lower or "ch343" in desc_lower or "ft232" in desc_lower:
+            return port.device
+    
+    return None
+
+
+def find_controller_port(controller: str) -> Optional[str]:
+    """Find serial port for the given controller type."""
+    if is_esp32_controller(controller):
+        return find_esp32_port()
+    return find_pico_port()
 
 
 def find_bootsel_drive() -> Optional[Path]:
@@ -513,42 +549,32 @@ def _parse_init_ready_payload(payload: bytes) -> Optional[Tuple[str, str, str, i
         return None
 
 
-def verify_flash(port: str, expected_version: str = None) -> bool:
-    """Verify device is running after flash."""
-    if not SERIAL_AVAILABLE or not PROTOCOL_AVAILABLE:
-        print_warn("Cannot verify - serial or protocol not available")
-        return True
-    
-    print_info("Waiting for device to reboot...")
-    time.sleep(3)
-    
-    # Try to find the port again
-    new_port = port
-    for _ in range(5):
-        new_port = find_pico_port()
-        if new_port:
-            break
-        time.sleep(1)
-    
-    if not new_port:
-        print_warn("Device not found after flash")
-        return False
-    
+def _wait_for_port(find_fn, timeout_s: float = 15.0, poll_interval: float = 0.5) -> Optional[str]:
+    """Poll for a serial port to appear using the given finder function."""
+    start = time.time()
+    while time.time() - start < timeout_s:
+        port = find_fn()
+        if port:
+            return port
+        time.sleep(poll_interval)
+    return None
+
+
+def _send_init_and_wait(port: str, timeout_s: float = 5.0) -> Optional[tuple]:
+    """Open port, send INIT, wait for INIT_READY. Returns device_info tuple or None."""
     try:
-        ser = serial.Serial(new_port, BAUD_RATE, timeout=2)
-        time.sleep(0.1)
+        ser = serial.Serial(port, BAUD_RATE, timeout=2)
+        time.sleep(0.3)
         ser.reset_input_buffer()
         
-        # Send INIT
         init_packet = build_packet(CorePacket.INIT)
         ser.write(init_packet)
         ser.flush()
         
-        # Wait for response
         start = time.time()
         rx_buffer = bytearray()
         
-        while time.time() - start < 3.0:
+        while time.time() - start < timeout_s:
             if ser.in_waiting:
                 byte = ser.read(1)
                 if byte[0] == FRAME_DELIMITER:
@@ -557,28 +583,97 @@ def verify_flash(port: str, expected_version: str = None) -> bool:
                         if result:
                             ptype, _tag, payload = result
                             if ptype == CorePacket.INIT_READY:
-                                # Parse binary INIT_READY payload
                                 device_info = _parse_init_ready_payload(payload)
-                                if device_info:
-                                    name, ver, platform, build_num = device_info
-                                    print_ok(f"Device responding: {name} v{ver} ({platform}, build {build_num})")
-                                else:
-                                    print_ok("Device responding")
                                 ser.close()
-                                return True
-                        rx_buffer.clear()
+                                return device_info
+                    rx_buffer.clear()
                 else:
                     rx_buffer.append(byte[0])
             else:
                 time.sleep(0.01)
         
         ser.close()
-        print_warn("No INIT_READY response during verification")
-        return False
-        
     except Exception as e:
-        print_err(f"Verification failed: {e}")
+        print_err(f"Verification error: {e}")
+    return None
+
+
+def verify_flash_pico(port: str, expected_version: str = None) -> bool:
+    """Verify Pico device is running after UF2 flash."""
+    if not SERIAL_AVAILABLE or not PROTOCOL_AVAILABLE:
+        print_warn("Cannot verify - serial or protocol not available")
+        return True
+    
+    print_info("Waiting for Pico to reboot...")
+    time.sleep(3)
+    
+    new_port = port
+    if not new_port:
+        new_port = _wait_for_port(find_pico_port, timeout_s=10.0)
+    
+    if not new_port:
+        print_warn("Pico not found after flash")
         return False
+    
+    device_info = _send_init_and_wait(new_port, timeout_s=5.0)
+    if device_info:
+        name, ver, platform, build_num = device_info
+        print_ok(f"Device responding: {name} v{ver} ({platform}, build {build_num})")
+        return True
+    
+    print_warn("No INIT_READY response during verification")
+    return False
+
+
+def verify_flash_esp32(port: str, expected_version: str = None) -> bool:
+    """Verify ESP32-S3 device is running after esptool flash.
+    
+    After esptool does 'Hard resetting via RTS pin...', the ESP32 reboots
+    and the USB-UART bridge (CH343/CP210x) re-enumerates. The COM port
+    typically stays the same but may briefly disappear.
+    
+    Strategy: poll for port to appear, then try INIT with retries.
+    """
+    if not SERIAL_AVAILABLE or not PROTOCOL_AVAILABLE:
+        print_warn("Cannot verify - serial or protocol not available")
+        return True
+    
+    # Wait for port to appear (may briefly vanish during reboot)
+    print_info("Waiting for ESP32-S3 to reboot...")
+    
+    new_port = port
+    if not new_port:
+        # Give 2s for reboot to start, then poll for port
+        time.sleep(2)
+        new_port = _wait_for_port(find_esp32_port, timeout_s=15.0, poll_interval=0.5)
+    else:
+        # Port was specified — wait for it to become available
+        time.sleep(3)
+    
+    if not new_port:
+        print_warn("ESP32-S3 not found after flash")
+        return False
+    
+    # Try INIT up to 3 times — the device may still be booting when port first appears
+    for attempt in range(3):
+        device_info = _send_init_and_wait(new_port, timeout_s=4.0)
+        if device_info:
+            name, ver, platform, build_num = device_info
+            print_ok(f"Device responding: {name} v{ver} ({platform}, build {build_num})")
+            return True
+        if attempt < 2:
+            print_info(f"Retry {attempt + 2}/3...")
+            time.sleep(1)
+    
+    print_warn("No INIT_READY response during verification")
+    return False
+
+
+def verify_flash(port: str, expected_version: str = None, esp32: bool = False) -> bool:
+    """Verify device is running after flash. Delegates to platform-specific implementation."""
+    if esp32:
+        return verify_flash_esp32(port, expected_version)
+    return verify_flash_pico(port, expected_version)
 
 
 # =============================================================================
@@ -587,7 +682,7 @@ def verify_flash(port: str, expected_version: str = None) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build and flash ScaleFX Pico firmware"
+        description="Build and flash ScaleFX controller firmware"
     )
     parser.add_argument(
         "controller",
@@ -645,7 +740,7 @@ def main():
     else:
         steps.append("bootsel")
         steps.append("flash")
-    if not args.skip_verify and not esp32:
+    if not args.skip_verify:
         steps.append("verify_device")
     
     total_steps = len(steps)
@@ -744,13 +839,13 @@ def main():
         if not flash_firmware(firmware_path, bootsel_drive):
             return 1
     
-    # Step 5: Verify device (Pico only)
+    # Step 5: Verify device
     if "verify_device" in steps:
         current_step += 1
         print_step(current_step, total_steps, "Verifying device...")
         
-        port = args.port or find_pico_port()
-        if verify_flash(port, build_info.version):
+        port = args.port or find_controller_port(args.controller)
+        if verify_flash(port, build_info.version, esp32=esp32):
             print_ok("Device verified")
         else:
             print_warn("Verification incomplete")

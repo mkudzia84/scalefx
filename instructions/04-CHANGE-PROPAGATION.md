@@ -355,7 +355,6 @@ python scripts/build_and_flash.py gunfx
 python scripts/build_and_flash.py lightfx
 python scripts/build_and_flash.py gearcontrol
 python scripts/build_and_flash.py hubfx
-python scripts/build_and_flash.py hubfx-esp32s3
 python scripts/build_and_flash.py noop
 
 # Python syntax

@@ -11,7 +11,7 @@ ScaleFX is a modular scale model effects system with three platform targets:
 
 > **HubFX Pico (RP2350) is OBSOLETE.** The Pico variant (`controllers/hubfx/pico/`) is frozen as a reference implementation. All new HubFX development (features, bug fixes, protocol additions) MUST target `controllers/hubfx/esp32s3/`. See Rule 17.
 
-**Communication:** Binary COBS protocol over USB serial (1Mbps baud)
+**Communication:** Binary COBS protocol over USB serial (2Mbps baud)
 - Packet format: `[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]`
 - CRC-8 polynomial: 0x07
 - Endianness: Little-endian for ALL multi-byte values
@@ -33,7 +33,7 @@ python scripts/build_and_flash.py lightfx --port COM10
 python scripts/build_and_flash.py noop --no-build
 python scripts/build_and_flash.py gunfx --no-clean      # incremental build
 python scripts/build_and_flash.py lightfx --skip-verify  # skip post-flash check
-python scripts/build_and_flash.py hubfx-esp32s3          # ESP32-S3 (uses esptool)
+python scripts/build_and_flash.py hubfx                  # ESP32-S3 (uses esptool)
 
 # Build Windows Studio (.NET 8)
 cd app/win32/ScaleFXStudio
@@ -202,14 +202,15 @@ SfxServer handles: serial init, device naming, indicator LEDs, CoreCommandServer
 
 ### 7. Component Reuse (MANDATORY)
 
-**Always check `controllers/lib/` before writing hardware-specific code.** If a generic driver or abstraction already exists, use it.
+**Always check `controllers/lib/` before writing hardware-specific code.** If a generic driver or abstraction already exists, use it. If it's close but not quite right, **enhance the existing library** — do not duplicate functionality in controller firmware.
 
 **Rules:**
-1. **Reuse first:** Before writing any LED, servo, PWM input, I2C, or power monitoring code, check if a component exists in the shared libraries (sfx_peripherals, sfx_audio, sfx_storage, etc.)
-2. **Generalize new hardware drivers:** When adding support for a new hardware peripheral (sensor, actuator, display, etc.), create the driver in the appropriate `lib/sfx_*` library as a reusable class — not inline in controller firmware
-3. **Controller firmware = glue code:** Controllers should only contain protocol handling and controller-specific logic. Hardware interaction should be delegated to component classes
-4. **Extend I2CDevice:** All new I2C device drivers MUST extend `I2CDevice` and override `identify()` for device verification
-5. **Follow existing patterns:** New components should follow the same API patterns as existing ones (e.g., `begin()` for init, callbacks via `std::function`, state queries)
+1. **Reuse first:** Before writing any LED, servo, PWM input, I2C, USB, audio, storage, or power monitoring code, check if a component exists in the shared libraries (sfx_peripherals, sfx_audio, sfx_storage, sfx_usb, etc.)
+2. **Enhance, don't bypass:** If an existing library component almost fits but needs a minor addition (new method, new callback, configuration option), add it to the library. Never work around a library limitation by writing inline code in controller firmware.
+3. **Generalize new hardware drivers:** When adding support for a new hardware peripheral (sensor, actuator, display, etc.), create the driver in the appropriate `lib/sfx_*` library as a reusable class — not inline in controller firmware
+4. **Controller firmware = glue code:** Controllers should only contain protocol handling and controller-specific logic. Hardware interaction should be delegated to component classes
+5. **Extend I2CDevice:** All new I2C device drivers MUST extend `I2CDevice` and override `identify()` for device verification
+6. **Follow existing patterns:** New components should follow the same API patterns as existing ones (e.g., `begin()` for init, callbacks via `std::function`, state queries)
 
 **When to create a new component:**
 - You need to interact with a hardware peripheral that no existing component covers
@@ -596,7 +597,7 @@ See `controllers/lib/sfx_platform/platform/sfx_platform.h` for the full abstract
 2. **No bug fixes** in `controllers/hubfx/pico/` — unless explicitly requested by the user for hardware compatibility
 3. **Reference only** — when implementing features in the ESP32-S3 variant, consult the Pico implementation for protocol patterns and domain logic, then adapt to ESP-IDF/FreeRTOS
 4. **Shared libraries are shared** — changes to `controllers/lib/` that support HubFX ESP32-S3 ARE allowed and expected (with platform guards via `sfx_platform.h`)
-5. **Protocol compatibility** — the ESP32-S3 variant uses the same HubFX packet types (0x80-0xA8) and wire format as the Pico variant. Protocol definitions in `hubfx/hubfx.h` are shared.
+5. **Protocol compatibility** — the ESP32-S3 variant uses the same HubFX packet types (0x80-0xA9) and wire format as the Pico variant. Protocol definitions in `hubfx/hubfx.h` are shared.
 6. **When asked to "work on HubFX"** — always target `controllers/hubfx/esp32s3/` unless the user explicitly says "HubFX Pico"
 
 ## Key Architecture Patterns
@@ -712,9 +713,9 @@ cli/
 | 0x30-0x3F | Reserved | - | Future expansion |
 | 0x40-0x5F | LightFX | Used | LED, servo, power |
 | 0x60-0x7F | GearControl | Used | Gear, servo, yaw |
-| 0x80-0xA8 | HubFX | Used | Slaves, audio, engine, config, SD, flash, files, USB diag |
+| 0x80-0xA9 | HubFX | Used | Slaves, audio, engine, config, SD, flash, files, USB diag, tree |
 | 0xA4-0xA6 | Streaming | Used | STREAM_BEGIN/DATA/END (`core/stream.h`) |
-| 0xA9-0xEF | Available | Free | New controllers |
+| 0xAA-0xEF | Available | Free | New controllers |
 | 0xF0-0xFF | Core | Reserved | INIT, ACK, NACK, REBOOT, LOG_MESSAGE (0xFD), etc. |
 
 ## Platform-Specific Notes

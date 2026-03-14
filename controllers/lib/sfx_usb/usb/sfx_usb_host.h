@@ -15,7 +15,7 @@
  * NOTE: Client-only (HubFX). Servers define SCALEFX_SERVER to exclude.
  *
  * Usage:
- *   #include <usb/usb_host.h>
+ *   #include <usb/sfx_usb_host.h>
  *   UsbHost& usb = UsbHost::instance();
  *   usb.begin();
  *   usb.onMount([](uint8_t addr, uint16_t vid, uint16_t pid) { ... });

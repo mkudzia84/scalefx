@@ -47,6 +47,12 @@ void SfxServer::begin(const char* prefix, const char* version,
                       uint32_t buildNumber,
                       uint8_t connectionPin, uint8_t errorPin) {
     // Initialize USB serial
+    // ESP32 UART default RX buffer is 256 bytes — too small for MAX_PAYLOAD_SIZE
+    // (512) packets which COBS-encode to ~520+ bytes. Must set before begin().
+    // Use 4096 for headroom at 2Mbps baud rate.
+#ifdef ESP32
+    Serial.setRxBufferSize(4096);
+#endif
     Serial.begin(BAUD_RATE);
     while (!Serial && millis() < 3000) SFX_DELAY_MS(10);
 
@@ -74,11 +80,14 @@ void SfxServer::begin(const char* prefix, const char* version,
         SFX_REBOOT();
     });
 
+#if SFX_PLATFORM_PICO
     _core.onBootsel([this]() {
         doShutdown();
         SFX_DELAY_MS(500);
         sfxRebootToBootloader();
     });
+#endif
+    // ESP32: no BOOTSEL callback — CoreCommandServer sends NACK NOT_SUPPORTED
 }
 
 void SfxServer::addModuleHandler(ICommandHandler* handler) {

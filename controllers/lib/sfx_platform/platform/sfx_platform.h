@@ -117,9 +117,11 @@
                  mac[2], mac[3], mac[4], mac[5]);
     }
 
-    // No BOOTSEL equivalent on ESP32 — OTA or USB-DFU instead
+    // No BOOTSEL equivalent on ESP32 — OTA or esptool instead.
+    // SfxServer does NOT register a BOOTSEL callback on ESP32;
+    // CoreCommandServer sends NACK NOT_SUPPORTED automatically.
     inline void sfxRebootToBootloader() {
-        // ESP32-S3 USB-DFU: Not directly available, perform normal restart
+        // Fallback: plain restart (no UF2 bootloader on ESP32)
         esp_restart();
     }
 #endif

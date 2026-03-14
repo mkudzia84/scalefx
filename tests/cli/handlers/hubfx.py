@@ -8,7 +8,7 @@ HubFX-specific CLI commands:
 - Config management (reload, get)
 - SD card management (init, status)
 - Flash management (status)
-- File operations (ls, rm, mkdir, info, download, upload, cat) — SD and flash targets
+- File operations (ls, rm, mkdir, info, download, upload, cat) — SD and flash targets, recursive for directories
 - Passthrough commands to slave controllers via hub routing (subcmd pattern)
 
 When connected to HubFX, all GunFX/LightFX/GearControl commands are
@@ -27,7 +27,7 @@ from tests.framework import (
 )
 from tests.framework.packets import DoorMode
 from tests.framework.protocol import read_u16_le, read_u32_le, crc16_ccitt
-from ..base import CommandHandlerBase, CommandInfo, ControllerType, Fore, Style
+from ..base import CommandHandlerBase, CommandInfo, ControllerType, Fore, Style, Spinner, format_progress_bar
 from .. import parsers
 
 
@@ -40,7 +40,62 @@ class HubFxCommandHandler(CommandHandlerBase):
 
     Additionally, this handler exposes passthrough commands for all slave
     controller types — the hub routes them transparently.
+
+    Feature gating: HubFX subsystems (audio, SD, USB) may be inactive.
+    The CLI tracks which features are active and annotates help accordingly.
+    Commands for inactive features are still executable (firmware will NACK
+    if truly not ready) but dimmed in help output.
     """
+
+    # Group → required feature mapping.
+    # Groups not listed here are always available (e.g., Flash Storage).
+    GROUP_FEATURES = {
+        'Audio': 'audio',
+        'Engine FX': 'audio',
+        'Config': 'sd',
+        'SD Card & Files': 'sd',
+        'Hub Management': 'usb',
+        'Slave Controllers': 'usb',
+    }
+
+    # Slave sub-group → required feature mapping.
+    SLAVE_GROUP_FEATURES = {
+        'GunFX (gfx.*)': 'slave:gunfx',
+        'LightFX (lfx.*)': 'slave:lightfx',
+        'GearControl (gc.*)': 'slave:gearcontrol',
+    }
+
+    # Human-readable descriptions for feature requirements.
+    FEATURE_LABELS = {
+        'audio': 'audio not initialized',
+        'sd': 'SD card not ready',
+        'usb': 'USB host not active',
+        'slave:gunfx': 'GunFX not connected',
+        'slave:lightfx': 'LightFX not connected',
+        'slave:gearcontrol': 'GearControl not connected',
+    }
+
+    def __init__(self):
+        super().__init__()
+        self._active_features: dict = {}  # feature name → bool
+
+    def set_active_features(self, features: dict):
+        """Update active feature flags from STATUS response."""
+        self._active_features = dict(features)
+
+    def is_feature_active(self, feature: str) -> bool:
+        """Check if a HubFX feature is currently active."""
+        return self._active_features.get(feature, False)
+
+    @property
+    def active_features(self) -> dict:
+        """Get current feature flags (copy)."""
+        return dict(self._active_features)
+
+    @property
+    def has_features(self) -> bool:
+        """True if feature flags have been fetched at least once."""
+        return len(self._active_features) > 0
 
     def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
         """Return HubFX command registry."""
@@ -125,8 +180,8 @@ class HubFxCommandHandler(CommandHandlerBase):
             # SD Card & Files
             # =================================================================
             'sd.init': (self.cmd_sd_init, CommandInfo(
-                'sd.init', 'sd.init [speed_mhz]',
-                'Initialize SD card (default 20 MHz)',
+                'sd.init', 'sd.init',
+                'Remount SD card (unmounts first, then re-initializes)',
                 requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
             'sd.status': (self.cmd_sd_status, CommandInfo(
                 'sd.status', 'sd.status',
@@ -136,9 +191,13 @@ class HubFxCommandHandler(CommandHandlerBase):
                 'sd.ls', 'sd.ls [path]',
                 'List directory contents',
                 requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
+            'sd.tree': (self.cmd_file_tree, CommandInfo(
+                'sd.tree', 'sd.tree [path]',
+                'Show recursive directory tree',
+                requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
             'sd.rm': (self.cmd_file_delete, CommandInfo(
                 'sd.rm', 'sd.rm <path>',
-                'Delete a file',
+                'Delete a file or directory (recursive)',
                 requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
             'sd.mkdir': (self.cmd_file_mkdir, CommandInfo(
                 'sd.mkdir', 'sd.mkdir <path>',
@@ -154,11 +213,11 @@ class HubFxCommandHandler(CommandHandlerBase):
                 requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
             'sd.download': (self.cmd_file_download, CommandInfo(
                 'sd.download', 'sd.download <remote_path> <local_path>',
-                'Download file from SD card',
+                'Download file or directory from SD card',
                 requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
             'sd.upload': (self.cmd_file_upload, CommandInfo(
-                'sd.upload', 'sd.upload <local_path> <remote_path>',
-                'Upload file to SD card',
+                'sd.upload', 'sd.upload <local_path> <remote_path> [--burst]',
+                'Upload file or directory to SD card',
                 requires_init=True, controller=ControllerType.HUBFX, group='SD Card & Files')),
 
             # =================================================================
@@ -172,9 +231,13 @@ class HubFxCommandHandler(CommandHandlerBase):
                 'flash.ls', 'flash.ls [path]',
                 'List flash directory contents',
                 requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
+            'flash.tree': (self.cmd_flash_tree, CommandInfo(
+                'flash.tree', 'flash.tree [path]',
+                'Show flash recursive directory tree',
+                requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
             'flash.rm': (self.cmd_flash_delete, CommandInfo(
                 'flash.rm', 'flash.rm <path>',
-                'Delete a file from flash',
+                'Delete a file or directory from flash (recursive)',
                 requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
             'flash.mkdir': (self.cmd_flash_mkdir, CommandInfo(
                 'flash.mkdir', 'flash.mkdir <path>',
@@ -187,6 +250,14 @@ class HubFxCommandHandler(CommandHandlerBase):
             'flash.cat': (self.cmd_flash_cat, CommandInfo(
                 'flash.cat', 'flash.cat <path>',
                 'Display flash file contents',
+                requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
+            'flash.download': (self.cmd_flash_download, CommandInfo(
+                'flash.download', 'flash.download <remote_path> <local_path>',
+                'Download file or directory from flash',
+                requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
+            'flash.upload': (self.cmd_flash_upload, CommandInfo(
+                'flash.upload', 'flash.upload <local_path> <remote_path> [--burst]',
+                'Upload file or directory to flash',
                 requires_init=True, controller=ControllerType.HUBFX, group='Flash Storage')),
 
             # =================================================================
@@ -1004,21 +1075,14 @@ class HubFxCommandHandler(CommandHandlerBase):
     # =========================================================================
 
     def cmd_sd_init(self, args: List[str]):
-        """Initialize SD card."""
+        """Remount SD card (unmount + re-initialize)."""
         if not self._require_init():
             return
-        speed = 20
-        if args:
-            try:
-                speed = int(args[0])
-            except ValueError:
-                self.print_error("Usage: hub.sd.init [speed_mhz]")
-                return
 
-        self.print_info(f"Initializing SD card at {speed} MHz...")
-        packet = HubFxCommands.sd_init(speed)
-        success, response = self.conn.send_expect_ack(packet, timeout=5.0)
-        self._print_ack_nack(success, response, f"SD card initialized ({speed} MHz)")
+        packet = HubFxCommands.sd_init(0)  # speed ignored for SDIO
+        with Spinner("Remounting SD card..."):
+            success, response = self.conn.send_expect_ack(packet, timeout=15.0)
+        self._print_ack_nack(success, response, "SD card remounted")
 
     def cmd_sd_status(self, args: List[str]):
         """Show SD card status."""
@@ -1048,11 +1112,13 @@ class HubFxCommandHandler(CommandHandlerBase):
             return
 
         initialized = payload[0]
+        CARD_TYPES = {0: 'NONE', 1: 'MMC', 2: 'SD', 3: 'SDHC', 4: 'UNKNOWN'}
+        BUS_MODES = {0: 'SPI', 1: 'SDIO 1-bit', 2: 'SDIO 4-bit'}
 
         print(f"\n  {Fore.CYAN}SD Card Status{Style.RESET_ALL}")
         if initialized:
             print(f"    Status: {Fore.GREEN}initialized{Style.RESET_ALL}")
-            # Enhanced payload: [init:u8][cardSize_MB:u32][totalSpace_MB:u32][freeSpace_MB:u32][fatType:u8]
+            # Base payload: [init:u8][cardSize_MB:u32][totalSpace_MB:u32][freeSpace_MB:u32][fatType:u8]
             if len(payload) >= 14:
                 card_size   = read_u32_le(payload, 1)    # MB
                 total_space = read_u32_le(payload, 5)    # MB
@@ -1061,25 +1127,46 @@ class HubFxCommandHandler(CommandHandlerBase):
                 print(f"    Card:   {card_size} MB")
                 print(f"    Total:  {total_space} MB")
                 print(f"    Free:   {free_space} MB")
-                print(f"    Type:   FAT{fat_type}")
+                if fat_type > 0:
+                    print(f"    FAT:    FAT{fat_type}")
+
+            # Extended fields (v0.5+): [cardType:u8][busMode:u8][usedSpace_MB:u32LE]
+            if len(payload) >= 20:
+                card_type   = payload[14]
+                bus_mode    = payload[15]
+                used_space  = read_u32_le(payload, 16)
+                type_name   = CARD_TYPES.get(card_type, f'0x{card_type:02X}')
+                bus_name    = BUS_MODES.get(bus_mode, f'0x{bus_mode:02X}')
+                print(f"    Type:   {type_name}")
+                print(f"    Bus:    {bus_name}")
+                print(f"    Used:   {used_space} MB")
         else:
             print(f"    Status: {Fore.RED}not initialized{Style.RESET_ALL}")
+            print(f"    {Fore.YELLOW}Use 'sd.init' to remount{Style.RESET_ALL}")
         print()
 
     # =========================================================================
     # Stream Receiving Helper
     # =========================================================================
 
-    def _receive_stream(self, tag: int, timeout: float = 10.0) -> Optional[Tuple[bytes, dict]]:
+    def _receive_stream(self, tag: int, timeout: float = 10.0,
+                        show_progress: bool = False) -> Optional[Tuple[bytes, dict]]:
         """
         Receive a complete stream (BEGIN + DATA chunks + END).
 
         Returns (data_bytes, end_info) or None on error.
         end_info contains: total_segs, total_bytes, crc_all.
+
+        Args:
+            tag:            Correlation tag for the response stream
+            timeout:        Per-packet timeout in seconds
+            show_progress:  If True, display a progress bar during reception
         """
+        import time as _time
         data = bytearray()
         total_expected = 0
         crc_errors = 0
+        start_time = _time.time() if show_progress else 0
 
         while True:
             response = self.conn._wait_for_tag(tag, timeout=timeout)
@@ -1109,7 +1196,16 @@ class HubFxCommandHandler(CommandHandlerBase):
                     self.print_warning(f"CRC mismatch on segment {seq}")
                 data.extend(chunk)
 
+                # Show progress bar if enabled and total is known
+                if show_progress and total_expected > 0:
+                    bar = format_progress_bar(len(data), total_expected,
+                                              start_time=start_time)
+                    print(f"\r{bar}  ", end='', flush=True)
+
             elif response.packet_type == StreamPacket.STREAM_END:
+                if show_progress and total_expected > 0:
+                    print()  # Newline after progress bar
+
                 end_info = {}
                 if len(response.payload) >= 8:
                     end_info['total_segs']  = read_u16_le(response.payload, 0)
@@ -1130,6 +1226,59 @@ class HubFxCommandHandler(CommandHandlerBase):
     # =========================================================================
     # File Operation Commands
     # =========================================================================
+
+    @staticmethod
+    def _format_size(size: int) -> str:
+        """Format file size in human-readable format."""
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        elif size < 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size / (1024 * 1024 * 1024):.1f} GB"
+
+    def _format_listing(self, text: str, root_path: str):
+        """Format directory listing output with aligned columns."""
+        lines = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith('ERROR'):
+                self.print_error(line)
+                continue
+            parts = line.split(' ', 2)
+            if len(parts) < 3:
+                lines.append(('?', line, 0))
+                continue
+            type_char = parts[0]
+            name = parts[1]
+            try:
+                size = int(parts[2])
+            except ValueError:
+                size = 0
+            lines.append((type_char, name, size))
+
+        if not lines:
+            print(f"\n  {Fore.CYAN}{root_path}{Style.RESET_ALL}")
+            print(f"  (empty)")
+            print()
+            return
+
+        # Find max name length for alignment
+        max_name = max(len(name) for _, name, _ in lines)
+
+        print(f"\n  {Fore.CYAN}{root_path}{Style.RESET_ALL}")
+        for type_char, name, size in lines:
+            if type_char == 'd':
+                display = f"    {Fore.BLUE}{name + '/':<{max_name + 1}}{Style.RESET_ALL}"
+            else:
+                display = f"    {name:<{max_name + 1}}"
+            size_str = self._format_size(size) if type_char == 'f' else ''
+            print(f"{display}  {size_str}")
+        print()
 
     def cmd_file_list(self, args: List[str]):
         """List directory contents."""
@@ -1152,18 +1301,150 @@ class HubFxCommandHandler(CommandHandlerBase):
 
         data, end_info = result
         text = data.decode('utf-8', errors='replace')
+        self._format_listing(text, path)
 
-        print(f"\n  {Fore.CYAN}{path}{Style.RESET_ALL}")
+    def _render_tree(self, text: str, root_path: str, prefix: str = ""):
+        """
+        Render POSIX-style tree output from structured tree data.
+
+        Input lines: "<depth> <d|f> <name> <size>"
+        Output: tree-style with box-drawing characters.
+
+        Example output:
+          /sounds
+          ├── 2A42/
+          │   ├── burst.wav (12,345)
+          │   └── single.wav (6,789)
+          ├── KA50/
+          │   └── hover.wav (23,456)
+          └── sys/
+              └── startup.wav (1,234)
+        """
+        # Parse entries
+        entries = []
         for line in text.splitlines():
-            if line.strip():
-                print(f"    {line}")
-        segs = end_info.get('total_segs', '?')
-        total = end_info.get('total_bytes', len(data))
-        print(f"\n    ({total} bytes, {segs} segments)")
+            line = line.strip()
+            if not line or line.startswith('ERROR'):
+                if line.startswith('ERROR'):
+                    self.print_error(line)
+                continue
+            parts = line.split(' ', 3)
+            if len(parts) < 4:
+                continue
+            try:
+                depth = int(parts[0])
+                is_dir = parts[1] == 'd'
+                name = parts[2]
+                size = int(parts[3])
+                entries.append((depth, is_dir, name, size))
+            except (ValueError, IndexError):
+                continue
+
+        if not entries:
+            print(f"\n  {prefix}{Fore.CYAN}{root_path}{Style.RESET_ALL}")
+            print(f"  (empty)")
+            print()
+            return
+
+        # Build tree structure: group entries by parent and compute is_last
+        # For each depth level, track which entries are the last child at that level
+        # so we know whether to use ├── or └── and whether to continue │ lines.
+
+        # We need to determine, for each entry, if it's the last sibling
+        # at its depth level. Walk forward to find the next entry at the same
+        # or shallower depth.
+        is_last_at_depth = []
+        for i, (depth, is_dir, name, size) in enumerate(entries):
+            # Look ahead: is there another entry at the same depth (same parent)?
+            last = True
+            for j in range(i + 1, len(entries)):
+                jd = entries[j][0]
+                if jd == depth:
+                    last = False  # sibling follows
+                    break
+                if jd < depth:
+                    break  # back to parent — no more siblings
+            is_last_at_depth.append(last)
+
+        print(f"\n  {prefix}{Fore.CYAN}{root_path}{Style.RESET_ALL}")
+
+        # Track which depth levels have continuing lines
+        # depth_continues[d] = True means there are more siblings at depth d
+        depth_continues = {}
+        dir_count = 0
+        file_count = 0
+
+        for i, (depth, is_dir, name, size) in enumerate(entries):
+            is_last = is_last_at_depth[i]
+
+            # Build prefix: for each level from 0 to depth-1
+            line_prefix = "  "  # base indent
+            for d in range(depth):
+                if depth_continues.get(d, False):
+                    line_prefix += "│   "
+                else:
+                    line_prefix += "    "
+
+            # Connector
+            connector = "└── " if is_last else "├── "
+
+            # Format entry
+            if is_dir:
+                dir_count += 1
+                display = f"{Fore.BLUE}{name}/{Style.RESET_ALL}"
+            else:
+                file_count += 1
+                size_str = f"{size:,}"
+                display = f"{name} ({size_str})"
+
+            print(f"{line_prefix}{connector}{display}")
+
+            # Update continuation tracking
+            depth_continues[depth] = not is_last
+            # Clear deeper levels (they'll be set when we encounter entries there)
+            for d in list(depth_continues.keys()):
+                if d > depth:
+                    del depth_continues[d]
+
+        # Summary
+        parts = []
+        if dir_count:
+            parts.append(f"{dir_count} director{'ies' if dir_count != 1 else 'y'}")
+        if file_count:
+            parts.append(f"{file_count} file{'s' if file_count != 1 else ''}")
+        print(f"\n  {', '.join(parts)}")
         print()
 
+    def _do_tree(self, path: str, target: int = 0, prefix: str = ""):
+        """Send FILE_TREE request and render the result."""
+        packet = HubFxCommands.file_tree(path, target=target)
+        tag = self.conn.next_tag()
+        tagged = self.conn._inject_tag(packet, tag)
+        if not self.conn.send(tagged):
+            self.print_error("Send failed")
+            return
+
+        result = self._receive_stream(tag, timeout=30.0)
+        if result is None:
+            return
+
+        data, end_info = result
+        text = data.decode('utf-8', errors='replace')
+
+        root_label = f"{prefix}{path}" if prefix else path
+        self._render_tree(text, root_label)
+
+    def cmd_file_tree(self, args: List[str]):
+        """Show recursive directory tree on SD card."""
+        if not self._require_init():
+            return
+
+        path = args[0] if args else "/"
+        self.print_info(f"Tree {path} ...")
+        self._do_tree(path, target=0)
+
     def cmd_file_delete(self, args: List[str]):
-        """Delete a file."""
+        """Delete a file or directory (recursive)."""
         if not self._require_init():
             return
 
@@ -1260,51 +1541,73 @@ class HubFxCommandHandler(CommandHandlerBase):
         print(f"\n    ({total} bytes)")
 
     def cmd_file_download(self, args: List[str]):
-        """Download file from SD card to local filesystem."""
+        """Download file or directory from SD card to local filesystem."""
         if not self._require_init():
             return
 
         if len(args) < 2:
-            self.print_error("Usage: hub.download <remote_path> <local_path>")
+            self.print_error("Usage: sd.download <remote_path> <local_path>")
             return
 
         remote_path = args[0]
         local_path = args[1]
 
-        self.print_info(f"Downloading {remote_path} ...")
-
-        packet = HubFxCommands.file_download(remote_path)
-        tag = self.conn.next_tag()
-        tagged = self.conn._inject_tag(packet, tag)
-        if not self.conn.send(tagged):
-            self.print_error("Send failed")
-            return
-
-        result = self._receive_stream(tag, timeout=60.0)
-        if result is None:
-            return
-
-        data, end_info = result
-
-        try:
-            with open(local_path, 'wb') as f:
-                f.write(data)
-            total = end_info.get('total_bytes', len(data))
-            self.print_ok(f"Downloaded {total} bytes → {local_path}")
-        except IOError as e:
-            self.print_error(f"Failed to write local file: {e}")
+        # Check if remote path is a directory
+        info = self._get_remote_file_info(remote_path,
+                                          target=HubFxStorage.TARGET_SD)
+        if info and info[0] and info[1]:
+            # It's a directory — recursive download
+            self._do_download_recursive(remote_path, local_path,
+                                        HubFxStorage.TARGET_SD, "SD")
+        else:
+            self._do_download(remote_path, local_path,
+                              HubFxStorage.TARGET_SD, "SD")
 
     def cmd_file_upload(self, args: List[str]):
-        """Upload local file to SD card."""
+        """Upload local file or directory to SD card."""
         if not self._require_init():
             return
 
+        # Check for --burst flag
+        burst = '--burst' in args
+        if burst:
+            args = [a for a in args if a != '--burst']
+
         if len(args) < 2:
-            self.print_error("Usage: hub.upload <local_path> <remote_path>")
+            self.print_error("Usage: sd.upload <local_path> <remote_path> [--burst]")
             return
 
         local_path = args[0]
-        remote_path = args[1]
+        if os.path.isdir(local_path):
+            self._do_upload_recursive(local_path, args[1],
+                                      HubFxStorage.TARGET_SD, "SD",
+                                      burst=burst)
+        else:
+            self._do_upload(local_path, args[1], HubFxStorage.TARGET_SD, "SD",
+                            burst=burst)
+
+    def _do_upload(self, local_path: str, remote_path: str,
+                   target: int, target_name: str,
+                   burst: bool = False) -> bool:
+        """
+        Shared upload implementation for SD and flash targets.
+
+        Supports two modes:
+        - **sync** (default): ACK per chunk with CRC retry. Reliable but slower.
+        - **burst** (--burst): Fire-and-forget chunks, MD5 verification at end. Fast.
+
+        Args:
+            local_path:   Path to local file to upload
+            remote_path:  Destination path on device
+            target:       HubFxStorage.TARGET_SD or TARGET_FLASH
+            target_name:  Display name ("SD" or "flash")
+            burst:        If True, use burst mode (no per-chunk ACK)
+
+        Returns:
+            True on success, False on failure or cancellation.
+        """
+        import time
+        import hashlib
 
         # Read local file
         try:
@@ -1312,69 +1615,411 @@ class HubFxCommandHandler(CommandHandlerBase):
                 file_data = f.read()
         except IOError as e:
             self.print_error(f"Cannot read local file: {e}")
-            return
+            return False
 
         file_size = len(file_data)
-        self.print_info(f"Uploading {local_path} ({file_size} bytes) → {remote_path}")
+        mode_str = "burst" if burst else "sync"
+        self.print_info(f"Uploading {local_path} ({file_size} bytes) → {target_name}:{remote_path} [{mode_str}]")
 
-        # Begin upload
-        packet = HubFxCommands.file_upload_begin(remote_path, file_size)
-        success, response = self.conn.send_expect_ack(packet, timeout=5.0)
+        # Begin upload (with mode flag)
+        upload_mode = HubFxStorage.UPLOAD_BURST if burst else HubFxStorage.UPLOAD_SYNC
+        packet = HubFxCommands.file_upload_begin(remote_path, file_size,
+                                                  target=target, mode=upload_mode)
+        success, response = self.conn.send_expect_ack(packet, timeout=10.0)
         if not success:
             if response:
                 code = response.error_code
                 self.print_error(f"Upload begin failed: {HubFxError.name(code)}")
             else:
                 self.print_error("Upload begin failed (timeout)")
-            return
+            return False
+
+        # Compute local MD5 as we send chunks
+        local_md5 = hashlib.md5()
 
         # Send data chunks
-        chunk_size = 508  # StreamProtocol::MAX_CHUNK_DATA
+        chunk_size = 2044  # MAX_PAYLOAD_SIZE(2048) - 4 (seq + crc16 header)
         offset = 0
         seq = 0
         max_retries = 3
+        start_time = time.time()
 
-        while offset < file_size:
-            chunk = file_data[offset:offset + chunk_size]
-            packet = HubFxCommands.file_upload_data(seq, chunk)
+        try:
+            while offset < file_size:
+                # Check for Ctrl+C cancellation
+                if self.cancel_requested:
+                    print()  # Newline after progress bar
+                    self.print_warning("Upload interrupted — cancelling...")
+                    cancel_pkt = HubFxCommands.file_upload_cancel()
+                    self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
+                    return False
 
-            # Retry loop for CRC errors
-            sent = False
-            for retry in range(max_retries):
-                success, response = self.conn.send_expect_ack(packet, timeout=5.0)
-                if success:
-                    sent = True
-                    break
-                if response and response.error_code == CoreError.CRC_ERROR:
-                    self.print_warning(f"CRC error on segment {seq}, retrying ({retry + 1}/{max_retries})")
-                    continue
-                # Other error — abort
-                code = response.error_code if response else 0
-                self.print_error(f"Upload failed at segment {seq}: {HubFxError.name(code)}")
-                # Cancel the upload
-                cancel_pkt = HubFxCommands.file_upload_cancel()
-                self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
-                return
+                chunk = file_data[offset:offset + chunk_size]
+                packet = HubFxCommands.file_upload_data(seq, chunk)
+                local_md5.update(chunk)
 
-            if not sent:
-                self.print_error(f"Upload failed: max retries on segment {seq}")
-                cancel_pkt = HubFxCommands.file_upload_cancel()
-                self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
-                return
+                if burst:
+                    # Fire-and-forget — no ACK expected
+                    if not self.conn.send(packet):
+                        self.print_error(f"Send failed at segment {seq}")
+                        cancel_pkt = HubFxCommands.file_upload_cancel()
+                        self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
+                        return False
+                else:
+                    # Sync mode — retry loop for CRC errors
+                    sent = False
+                    for retry in range(max_retries):
+                        success, response = self.conn.send_expect_ack(packet, timeout=10.0)
+                        if success:
+                            sent = True
+                            break
+                        if response and response.error_code == CoreError.CRC_ERROR:
+                            self.print_warning(f"CRC error on segment {seq}, retrying ({retry + 1}/{max_retries})")
+                            continue
+                        # Other error — abort
+                        code = response.error_code if response else 0
+                        self.print_error(f"Upload failed at segment {seq}: {HubFxError.name(code)}")
+                        cancel_pkt = HubFxCommands.file_upload_cancel()
+                        self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
+                        return False
 
-            offset += len(chunk)
-            seq += 1
+                    if not sent:
+                        self.print_error(f"Upload failed: max retries on segment {seq}")
+                        cancel_pkt = HubFxCommands.file_upload_cancel()
+                        self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
+                        return False
 
-            # Progress
-            pct = (offset * 100) // file_size
-            print(f"\r    [{pct:3d}%] {offset}/{file_size} bytes ({seq} segments)", end='', flush=True)
+                offset += len(chunk)
+                seq += 1
 
-        print()  # newline after progress
+                # Progress bar (using shared utility)
+                bar = format_progress_bar(offset, file_size, start_time=start_time)
+                print(f"\r{bar}  ", end='', flush=True)
 
-        # End upload
+        except KeyboardInterrupt:
+            print()  # Newline after progress bar
+            self.print_warning("Upload interrupted — cancelling...")
+            cancel_pkt = HubFxCommands.file_upload_cancel()
+            self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
+            return False
+
+        print()  # Newline after progress bar
+
+        # In burst mode wait a short time for server to finish writing before
+        # sending END — the server may still be processing buffered chunks.
+        if burst:
+            time.sleep(0.1)
+
+        # End upload — response now includes MD5 hash
         packet = HubFxCommands.file_upload_end()
         success, response = self.conn.send_expect_ack(packet, timeout=10.0)
-        self._print_ack_nack(success, response, f"Uploaded {file_size} bytes → {remote_path}")
+
+        elapsed = time.time() - start_time
+        if success:
+            speed = file_size / elapsed if elapsed > 0 else 0
+            self.print_ok(f"Uploaded {file_size} bytes → {target_name}:{remote_path} "
+                          f"in {elapsed:.1f}s ({speed / 1024:.1f} KB/s)")
+
+            # MD5 verification (16-byte hash in ACK payload)
+            if response and len(response.payload) >= 16:
+                remote_md5 = response.payload[:16].hex()
+                local_md5_hex = local_md5.hexdigest()
+
+                if remote_md5 == local_md5_hex:
+                    self.print_ok(f"MD5 verified: {remote_md5}")
+                else:
+                    self.print_error(f"MD5 MISMATCH! local={local_md5_hex} remote={remote_md5}")
+
+                # Check for CRC errors reported in burst mode (bytes 16-17)
+                if len(response.payload) >= 18:
+                    crc_errors = int.from_bytes(response.payload[16:18], 'little')
+                    if crc_errors > 0:
+                        self.print_warning(f"Server reported {crc_errors} CRC errors during burst transfer")
+            return True
+        else:
+            code = response.error_code if response else 0
+            self.print_error(f"Upload end failed: {HubFxError.name(code)}")
+            return False
+
+    def _do_download(self, remote_path: str, local_path: str,
+                     target: int, target_name: str,
+                     quiet: bool = False) -> bool:
+        """
+        Shared download implementation for SD and flash targets.
+
+        Args:
+            remote_path:  Source path on device
+            local_path:   Destination path on local filesystem
+            target:       HubFxStorage.TARGET_SD or TARGET_FLASH
+            target_name:  Display name ("SD" or "flash")
+            quiet:        If True, suppress info/ok messages (for recursive)
+
+        Returns:
+            True on success, False on failure.
+        """
+        if not quiet:
+            self.print_info(f"Downloading {target_name}:{remote_path} ...")
+
+        packet = HubFxCommands.file_download(remote_path, target=target)
+        tag = self.conn.next_tag()
+        tagged = self.conn._inject_tag(packet, tag)
+        if not self.conn.send(tagged):
+            self.print_error("Send failed")
+            return False
+
+        result = self._receive_stream(tag, timeout=60.0,
+                                      show_progress=(not quiet))
+        if result is None:
+            return False
+
+        data, end_info = result
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(local_path)), exist_ok=True)
+            with open(local_path, 'wb') as f:
+                f.write(data)
+            total = end_info.get('total_bytes', len(data))
+            if not quiet:
+                self.print_ok(f"Downloaded {total} bytes → {local_path}")
+            return True
+        except IOError as e:
+            self.print_error(f"Failed to write local file: {e}")
+            return False
+
+    def _get_remote_file_info(self, path: str,
+                              target: int) -> Optional[Tuple[bool, bool, int]]:
+        """
+        Query FILE_INFO for a remote path.
+
+        Returns (exists, is_dir, size) or None on comm error.
+        """
+        packet = HubFxCommands.file_info(path, target=target)
+        response = self.conn.send_and_wait(packet)
+        if response is None:
+            return None
+        if response.is_nack:
+            return None
+        if (response.packet_type == HubFxPacket.FILE_INFO_RESP
+                and len(response.payload) >= 6):
+            exists = bool(response.payload[0])
+            is_dir = bool(response.payload[1])
+            size = read_u32_le(response.payload, 2)
+            return (exists, is_dir, size)
+        return None
+
+    def _get_remote_tree_entries(self, path: str, target: int
+                                 ) -> Optional[List[Tuple[int, bool, str, int]]]:
+        """
+        Fetch FILE_TREE and parse into a list of (depth, is_dir, name, size).
+
+        Returns list of entries or None on error.
+        """
+        packet = HubFxCommands.file_tree(path, target=target)
+        tag = self.conn.next_tag()
+        tagged = self.conn._inject_tag(packet, tag)
+        if not self.conn.send(tagged):
+            self.print_error("Send failed")
+            return None
+
+        result = self._receive_stream(tag, timeout=30.0)
+        if result is None:
+            return None
+
+        data, _ = result
+        text = data.decode('utf-8', errors='replace')
+
+        entries = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith('ERROR'):
+                continue
+            parts = line.split(' ', 3)
+            if len(parts) < 4:
+                continue
+            try:
+                depth = int(parts[0])
+                is_dir = parts[1] == 'd'
+                name = parts[2]
+                size = int(parts[3])
+                entries.append((depth, is_dir, name, size))
+            except (ValueError, IndexError):
+                continue
+
+        return entries
+
+    def _do_upload_recursive(self, local_dir: str, remote_dir: str,
+                             target: int, target_name: str,
+                             burst: bool = False):
+        """
+        Recursively upload a local directory to the device.
+
+        Walks the local directory tree, creates remote directories via
+        FILE_MKDIR, and uploads each file via _do_upload().
+
+        Args:
+            local_dir:    Local directory path to upload
+            remote_dir:   Remote base directory
+            target:       HubFxStorage.TARGET_SD or TARGET_FLASH
+            target_name:  Display name ("SD" or "flash")
+            burst:        If True, use burst mode for each file
+        """
+        import time
+
+        if not os.path.isdir(local_dir):
+            self.print_error(f"Not a directory: {local_dir}")
+            return
+
+        # Collect all files and dirs
+        all_dirs = []
+        all_files = []
+        for root, dirs, files in os.walk(local_dir):
+            rel_root = os.path.relpath(root, local_dir).replace('\\', '/')
+            if rel_root == '.':
+                remote_base = remote_dir
+            else:
+                remote_base = f"{remote_dir.rstrip('/')}/{rel_root}"
+            all_dirs.append(remote_base)
+            for f in files:
+                local_file = os.path.join(root, f)
+                remote_file = f"{remote_base.rstrip('/')}/{f}"
+                file_size = os.path.getsize(local_file)
+                all_files.append((local_file, remote_file, file_size))
+
+        total_files = len(all_files)
+        total_bytes = sum(s for _, _, s in all_files)
+        self.print_info(
+            f"Uploading directory {local_dir} → {target_name}:{remote_dir} "
+            f"({total_files} files, {total_bytes:,} bytes)")
+
+        # Create all directories first
+        for d in all_dirs:
+            packet = HubFxCommands.file_mkdir(d, target=target)
+            self.conn.send_expect_ack(packet, timeout=5.0)
+
+        # Upload each file
+        start_time = time.time()
+        uploaded = 0
+        uploaded_bytes = 0
+        failed = 0
+
+        for i, (local_file, remote_file, file_size) in enumerate(all_files, 1):
+            # Check for Ctrl+C before starting next file
+            if self.cancel_requested:
+                self.print_warning(
+                    f"Interrupted after {uploaded}/{total_files} files — "
+                    f"remaining files skipped")
+                break
+
+            print(f"  [{i}/{total_files}] {remote_file} ({file_size:,} bytes)")
+            ok = self._do_upload(local_file, remote_file, target, target_name,
+                                 burst=burst)
+            if ok:
+                uploaded += 1
+                uploaded_bytes += file_size
+
+                # Overall progress
+                bar = format_progress_bar(uploaded_bytes, total_bytes,
+                                          start_time=start_time)
+                print(f"  Overall: {bar}")
+            else:
+                failed += 1
+                # _do_upload returns False on cancel — check if it was Ctrl+C
+                if self.cancel_requested:
+                    self.print_warning(
+                        f"Interrupted after {uploaded}/{total_files} files — "
+                        f"remaining files skipped")
+                    break
+
+        elapsed = time.time() - start_time
+        speed = uploaded_bytes / elapsed if elapsed > 0 else 0
+        status = "Uploaded" if uploaded == total_files else "Partial upload"
+        self.print_ok(
+            f"{status}: {uploaded}/{total_files} files ({uploaded_bytes:,} bytes) "
+            f"in {elapsed:.1f}s ({speed / 1024:.1f} KB/s)"
+            + (f", {failed} failed" if failed else ""))
+
+    def _do_download_recursive(self, remote_dir: str, local_dir: str,
+                               target: int, target_name: str):
+        """
+        Recursively download a remote directory to the local filesystem.
+
+        Uses FILE_TREE to enumerate the remote directory, creates local
+        directories, and downloads each file via _do_download().
+
+        Args:
+            remote_dir:   Remote directory path
+            local_dir:    Local destination directory
+            target:       HubFxStorage.TARGET_SD or TARGET_FLASH
+            target_name:  Display name ("SD" or "flash")
+        """
+        import time
+
+        self.print_info(f"Scanning {target_name}:{remote_dir} ...")
+        entries = self._get_remote_tree_entries(remote_dir, target)
+        if entries is None:
+            self.print_error("Failed to list remote directory")
+            return
+
+        if not entries:
+            self.print_info("Remote directory is empty")
+            return
+
+        # Reconstruct full remote paths from depth-first tree entries.
+        # The tree format gives us: (depth, is_dir, name, size)
+        # We maintain a path stack to rebuild full paths.
+        path_stack = []
+        files_to_download = []
+        dirs_to_create = []
+
+        for depth, is_dir, name, size in entries:
+            # Trim stack to current depth
+            while len(path_stack) > depth:
+                path_stack.pop()
+            path_stack.append(name)
+
+            rel_path = '/'.join(path_stack)
+
+            if is_dir:
+                local_path = os.path.join(local_dir, rel_path.replace('/', os.sep))
+                dirs_to_create.append(local_path)
+            else:
+                remote_path = f"{remote_dir.rstrip('/')}/{rel_path}"
+                local_path = os.path.join(local_dir, rel_path.replace('/', os.sep))
+                files_to_download.append((remote_path, local_path, size))
+
+        total_files = len(files_to_download)
+        total_bytes = sum(s for _, _, s in files_to_download)
+        self.print_info(
+            f"Downloading {total_files} files ({total_bytes:,} bytes) "
+            f"→ {local_dir}")
+
+        # Create local directories
+        os.makedirs(local_dir, exist_ok=True)
+        for d in dirs_to_create:
+            os.makedirs(d, exist_ok=True)
+
+        # Download each file
+        start_time = time.time()
+        downloaded = 0
+        failed = 0
+
+        for i, (remote_path, local_path, size) in enumerate(files_to_download, 1):
+            print(f"  [{i}/{total_files}] {remote_path} ({size:,} bytes)")
+            if self._do_download(remote_path, local_path, target, target_name,
+                                 quiet=True):
+                downloaded += 1
+            else:
+                failed += 1
+
+        elapsed = time.time() - start_time
+        speed = total_bytes / elapsed if elapsed > 0 else 0
+        if failed:
+            self.print_warning(
+                f"Downloaded {downloaded}/{total_files} files "
+                f"({failed} failed) in {elapsed:.1f}s")
+        else:
+            self.print_ok(
+                f"Downloaded {downloaded} files ({total_bytes:,} bytes) "
+                f"in {elapsed:.1f}s ({speed / 1024:.1f} KB/s)")
 
     # =========================================================================
     # Flash Storage Commands
@@ -1439,18 +2084,19 @@ class HubFxCommandHandler(CommandHandlerBase):
 
         data, end_info = result
         text = data.decode('utf-8', errors='replace')
+        self._format_listing(text, f"flash:{path}")
 
-        print(f"\n  {Fore.CYAN}flash:{path}{Style.RESET_ALL}")
-        for line in text.splitlines():
-            if line.strip():
-                print(f"    {line}")
-        segs = end_info.get('total_segs', '?')
-        total = end_info.get('total_bytes', len(data))
-        print(f"\n    ({total} bytes, {segs} segments)")
-        print()
+    def cmd_flash_tree(self, args: List[str]):
+        """Show recursive directory tree on flash."""
+        if not self._require_init():
+            return
+
+        path = args[0] if args else "/"
+        self.print_info(f"Tree flash:{path} ...")
+        self._do_tree(path, target=HubFxStorage.TARGET_FLASH, prefix="flash:")
 
     def cmd_flash_delete(self, args: List[str]):
-        """Delete a file from flash."""
+        """Delete a file or directory from flash (recursive)."""
         if not self._require_init():
             return
         if not args:
@@ -1530,6 +2176,52 @@ class HubFxCommandHandler(CommandHandlerBase):
         text = data.decode('utf-8', errors='replace')
         print(f"\n  {Fore.CYAN}flash:{path}{Style.RESET_ALL}")
         print(text)
+
+    def cmd_flash_download(self, args: List[str]):
+        """Download file or directory from flash to local filesystem."""
+        if not self._require_init():
+            return
+        if len(args) < 2:
+            self.print_error("Usage: flash.download <remote_path> <local_path>")
+            return
+
+        remote_path = args[0]
+        local_path = args[1]
+
+        # Check if remote path is a directory
+        info = self._get_remote_file_info(remote_path,
+                                          target=HubFxStorage.TARGET_FLASH)
+        if info and info[0] and info[1]:
+            # It's a directory — recursive download
+            self._do_download_recursive(remote_path, local_path,
+                                        HubFxStorage.TARGET_FLASH, "flash")
+        else:
+            self._do_download(remote_path, local_path,
+                              HubFxStorage.TARGET_FLASH, "flash")
+
+    def cmd_flash_upload(self, args: List[str]):
+        """Upload local file or directory to onboard flash."""
+        if not self._require_init():
+            return
+
+        # Check for --burst flag
+        burst = '--burst' in args
+        if burst:
+            args = [a for a in args if a != '--burst']
+
+        if len(args) < 2:
+            self.print_error("Usage: flash.upload <local_path> <remote_path> [--burst]")
+            return
+
+        local_path = args[0]
+        if os.path.isdir(local_path):
+            self._do_upload_recursive(local_path, args[1],
+                                      HubFxStorage.TARGET_FLASH, "flash",
+                                      burst=burst)
+        else:
+            self._do_upload(local_path, args[1],
+                            HubFxStorage.TARGET_FLASH, "flash",
+                            burst=burst)
 
     # =========================================================================
     # GunFX Passthrough Commands

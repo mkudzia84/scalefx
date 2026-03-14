@@ -152,8 +152,7 @@ scripts/build_and_flash.py    # Single centralized script for all controllers
 gunfx: "controllers/gunfx/pico/"
 lightfx: "controllers/lightfx/pico/"
 gearcontrol: "controllers/gearcontrol/pico/"
-hubfx: "controllers/hubfx/pico/"
-hubfx-esp32s3: "controllers/hubfx/esp32s3/"   # Uses esptool for upload
+hubfx: "controllers/hubfx/esp32s3/"         # ESP32-S3, uses esptool for upload
 noop: "controllers/noop/pico/"
 ```
 

@@ -9,7 +9,7 @@
  *   - esp_usb_host.cpp  (HW USB-OTG + ESP-IDF)
  */
 
-#include "usb_host.h"
+#include "sfx_usb_host.h"
 
 // USB Host is client-only (HubFX). Server controllers skip this entirely.
 #ifndef SCALEFX_SERVER

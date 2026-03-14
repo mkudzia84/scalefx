@@ -249,7 +249,7 @@ private:
     bool _routerInitialized = false;
     bool _timeoutEnabled = true;
 
-    static constexpr uint32_t BAUD_RATE = 1000000;
+    static constexpr uint32_t BAUD_RATE = 2000000;
     static constexpr unsigned long CONNECTION_TIMEOUT_ms = 15000;
 
     void buildDeviceName(const char* prefix);

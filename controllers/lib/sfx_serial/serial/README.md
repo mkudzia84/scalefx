@@ -235,7 +235,7 @@ STREAM_DATA   → [seqNum:u16LE][crc16:u16LE][data:0-508]  (repeats)
 STREAM_END    → [totalSegs:u16LE][totalBytes:u32LE][crc16All:u16LE]
 ```
 
-Used for file downloads, diagnostic dumps, or any data exceeding MAX_PAYLOAD_SIZE (512 bytes).
+Used for file downloads, diagnostic dumps, or any data exceeding MAX_PAYLOAD_SIZE (platform-specific: 512 on Pico, 2048 on ESP32).
 
 ## Error Code Ranges
 
@@ -329,10 +329,10 @@ This guards `client/bus.cpp` so it only compiles for the HubFX client.
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| `MAX_PAYLOAD_SIZE` | 512 | SfxWire (sfx_platform) |
+| `MAX_PAYLOAD_SIZE` | 512 (Pico) / 2048 (ESP32) | SfxWire (sfx_platform) |
 | `HEADER_SIZE` | 4 | SfxWire |
-| `MAX_PACKET_SIZE` | 517 | SfxWire (4 + 512 + 1) |
-| `COBS_BUFFER_SIZE` | ~634 | SfxWire (MAX_PACKET_SIZE × ~1.2 + delimiter) |
+| `MAX_PACKET_SIZE` | 517/2053 | SfxWire (4 + payload + 1) |
+| `COBS_BUFFER_SIZE` | ~527/~2063 | SfxWire (derived from MAX_PACKET_SIZE) |
 | `MAX_CHUNK_DATA` | 508 | StreamProtocol (512 - 4 byte chunk header) |
 | `MAX_HANDLERS` | 8 | CommandRouter |
 | `MAX_PENDING` | 64 | ResultQueue |

@@ -110,18 +110,18 @@ def build_packet(packet_type: int, payload: bytes = b'', tag: int = 0) -> bytes:
     Build a complete COBS-encoded packet.
     
     Packet structure (before COBS):
-        [type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]
+        [type:u8][tag:u8][len:u16LE][payload:0-2048][crc8:u8]
     
     Args:
         packet_type: Packet type byte
-        payload: Payload bytes (0-512)
+        payload: Payload bytes (0-2048)
         tag: Request/response correlation tag (0 = async/unsolicited)
     
     Returns:
         COBS encoded packet with 0x00 delimiter
     """
-    if len(payload) > 512:
-        raise ValueError(f"Payload too large: {len(payload)} > 512")
+    if len(payload) > 2048:
+        raise ValueError(f"Payload too large: {len(payload)} > 2048")
     
     length = len(payload)
     raw = bytes([packet_type, tag & 0xFF, length & 0xFF, (length >> 8) & 0xFF]) + payload
