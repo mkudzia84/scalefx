@@ -5,7 +5,7 @@
 #if defined(SFX_HAS_AUDIO)
 
 #include "simple_i2s_codec.h"
-#include "audio_log.h"
+#include "../audio/audio_log.h"
 
 // Simple I2S codec log macro - takes runtime name as first arg
 #if AUDIO_DEBUG

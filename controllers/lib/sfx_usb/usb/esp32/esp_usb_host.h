@@ -1,0 +1,155 @@
+/*
+ * EspUsbHost — HW USB-OTG Host Implementation (ESP32-S3)
+ *
+ * Standalone concrete USB Host class for ESP32-S3 using the native
+ * hardware USB-OTG peripheral with ESP-IDF USB Host Library and
+ * CDC-ACM class driver.
+ *
+ * Architecture:
+ *   - USB daemon task: processes USB Host Library HCD events (Core 0)
+ *   - CDC-ACM driver task: handles class-level events and data (Core 0)
+ *   - RX data: CDC data callback → FreeRTOS StreamBuffer → cdcRead()
+ *   - TX data: cdcWrite() → cdc_acm_host_data_tx_blocking()
+ *
+ * Fixed pins: GPIO19 (D-), GPIO20 (D+) on ESP32-S3.
+ *
+ * Auto-selected via `using UsbHost = EspUsbHost;` in sfx_usb_host.h.
+ * Do not include this file directly — include <usb/sfx_usb_host.h>.
+ *
+ * Dependencies (ESP-IDF managed component):
+ *   espressif/usb_host_cdc_acm ^2.0.0  (see src/idf_component.yml)
+ */
+
+#ifndef SFX_ESP_USB_HOST_H
+#define SFX_ESP_USB_HOST_H
+
+#if SFX_PLATFORM_ESP32
+
+class EspUsbHost {
+public:
+    // --- Platform factory singleton -----------------------------------------
+
+    static EspUsbHost& instance() {
+        static EspUsbHost inst;
+        return inst;
+    }
+
+    // Delete copy/move
+    EspUsbHost(const EspUsbHost&) = delete;
+    EspUsbHost& operator=(const EspUsbHost&) = delete;
+    EspUsbHost(EspUsbHost&&) = delete;
+    EspUsbHost& operator=(EspUsbHost&&) = delete;
+
+    // ========================================================================
+    // Lifecycle
+    // ========================================================================
+
+    /// Configure USB host with default port settings
+    bool begin();
+
+    /// Configure USB host with explicit port settings
+    bool begin(const UsbPortConfig* configs, int numPorts);
+
+    /// Deinitialize USB host
+    void end();
+
+    /// Initialize USB stack (installs daemon + CDC-ACM driver tasks)
+    bool init();
+
+    /// No-op on ESP32 (event-driven via FreeRTOS tasks)
+    void process();
+
+    // ========================================================================
+    // CDC Communication
+    // ========================================================================
+
+    /// Check if any CDC device is connected and ready
+    bool cdcConnected() const;
+
+    /// Number of currently tracked CDC devices
+    int cdcDeviceCount() const { return _state.cdcDeviceCount; }
+
+    /// Bytes available to read from a CDC device
+    int cdcAvailable(int devIndex) const;
+
+    /// Read data from a CDC device (returns bytes read, -1 on error)
+    int cdcRead(int devIndex, uint8_t* buffer, size_t maxLen);
+
+    /// Read a single byte from a CDC device (returns byte, -1 on error)
+    int cdcReadByte(int devIndex);
+
+    /// Write data to a CDC device (returns bytes written, -1 on error)
+    int cdcWrite(int devIndex, const uint8_t* data, size_t len);
+
+    /// Flush pending write data for a CDC device
+    void cdcFlush(int devIndex);
+
+    // ========================================================================
+    // Callbacks
+    // ========================================================================
+
+    void onMount(UsbMountCallback cb) { _state.mountCallback = cb; }
+    void onUnmount(UsbUnmountCallback cb) { _state.unmountCallback = cb; }
+    void onCdcReceive(UsbCdcRxCallback cb) { _state.cdcRxCallback = cb; }
+
+    // ========================================================================
+    // Device Info & Diagnostics
+    // ========================================================================
+
+    /// Get info for a tracked CDC device (nullptr if invalid index)
+    const CdcDeviceInfo* getCdcDevice(int devIndex) const {
+        return _state.getCdcDevice(devIndex);
+    }
+
+    /// Log USB host status via DiagLog
+    void printStatus() const;
+
+    /// Get platform backend name
+    const char* backendName() const { return "HW USB-OTG"; }
+
+    // ========================================================================
+    // Status
+    // ========================================================================
+
+    bool isReady() const { return _state.initialized && _state.taskRunning; }
+    bool isInitialized() const { return _state.initialized; }
+    bool isTaskRunning() const { return _state.taskRunning; }
+    const UsbHostStats& stats() const { return _state.stats; }
+
+    // --- Internal callback bridge (not part of public API) ------------------
+    // Called from static C callbacks in esp_usb_host.cpp.
+
+    void _handleNewDevice(void* usbDevHandle);
+    void _handleCdcData(int slotIdx, const uint8_t* data, size_t len);
+    void _handleCdcEvent(int slotIdx, int eventType);
+
+private:
+    EspUsbHost() = default;
+
+    UsbHostState _state;
+
+    /// RX buffer size per CDC device (bytes)
+    static constexpr size_t CDC_RX_BUFFER_SIZE = 4096;
+
+    /// TX timeout for blocking writes (ms)
+    static constexpr uint32_t CDC_TX_TIMEOUT_MS = 100;
+
+    /// Per-CDC-device slot tracking (opaque handles avoid ESP-IDF includes)
+    struct CdcSlot {
+        void* cdcHandle = nullptr;   // cdc_acm_dev_hdl_t (opaque)
+        void* rxStream  = nullptr;   // StreamBufferHandle_t (opaque)
+        uint8_t devAddr = 0;
+        bool open = false;
+    };
+    CdcSlot _slots[USB_HOST_MAX_CDC_DEVICES] = {};
+
+    void* _daemonTaskHandle = nullptr;   // TaskHandle_t (opaque)
+    bool _driverInstalled = false;
+    uint8_t _nextDevAddr = 1;            // Sequential device address counter
+
+    int _findSlotByHandle(void* cdcHandle) const;
+    int _allocateSlot();
+};
+
+#endif // SFX_PLATFORM_ESP32
+#endif // SFX_ESP_USB_HOST_H

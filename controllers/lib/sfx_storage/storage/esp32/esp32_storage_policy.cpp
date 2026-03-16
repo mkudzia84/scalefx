@@ -1,25 +1,25 @@
 /*
- * StorageServerEsp32 — ESP32-S3 Dual-Core Storage Implementation
+ * Esp32StoragePolicy — ESP32-S3 Dual-Core Storage Implementation
  *
- * Platform-specific overrides for StorageServerBase:
+ * Platform-specific methods for StorageServerT<Esp32StoragePolicy>:
  *
  *   Buffer allocation:
- *     - PSRAM double-buffer (512 KB × 2) for chunked uploads
+ *     - PSRAM double-buffer (512 KB x 2) for chunked uploads
  *     - PSRAM ring buffer (1 MB) + staging (128 KB) for stream uploads
- *     - Falls back to internal RAM (64 KB × 2) if PSRAM unavailable
+ *     - Falls back to internal RAM (64 KB x 2) if PSRAM unavailable
  *
  *   Async write offloading:
  *     - Persistent writer task (Core 1): chunked uploads with buffer swap
- *     - Per-upload stream writer task (Core 1): ring buffer → staging → SD
+ *     - Per-upload stream writer task (Core 1): ring buffer -> staging -> SD
  *
- * See storage_server.cpp for the platform-agnostic protocol handlers.
+ * See storage_server.ipp for the platform-agnostic protocol handlers.
  */
 
 #include <platform/sfx_platform.h>
 
 #if SFX_PLATFORM_ESP32
 
-#include "storage_server.h"
+#include <storage/storage_server.h>
 #include <platform/diag_log.h>
 #include <esp_heap_caps.h>
 #include <algorithm>  // std::swap
@@ -31,47 +31,47 @@
 // Buffer Allocation (PSRAM double-buffered)
 // ============================================================================
 
-bool StorageServerEsp32::allocateUploadBuffers() {
-    if (_uploadWriteBuf) return true;  // Already allocated
+bool Esp32StoragePolicy::allocateUploadBuffers() {
+    if (_state->uploadWriteBuf) return true;  // Already allocated
 
     // Try PSRAM first (OPI, 8 MB on N8R8 module)
-    _uploadWriteBuf  = (uint8_t*)heap_caps_malloc(UPLOAD_WRITE_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    _state->uploadWriteBuf  = (uint8_t*)heap_caps_malloc(UPLOAD_WRITE_BUF_SIZE, MALLOC_CAP_SPIRAM);
     _uploadWriteBuf2 = (uint8_t*)heap_caps_malloc(UPLOAD_WRITE_BUF_SIZE, MALLOC_CAP_SPIRAM);
 
-    if (_uploadWriteBuf && _uploadWriteBuf2) {
-        _uploadBufCapacity = UPLOAD_WRITE_BUF_SIZE;
+    if (_state->uploadWriteBuf && _uploadWriteBuf2) {
+        _state->uploadBufCapacity = UPLOAD_WRITE_BUF_SIZE;
         STORAGE_LOG("Allocated PSRAM upload buffers: %u KB x 2 (free PSRAM: %u KB)",
                     (unsigned)(UPLOAD_WRITE_BUF_SIZE / 1024),
                     (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     } else {
         // PSRAM alloc failed — fall back to smaller internal RAM buffers
-        free(_uploadWriteBuf);
+        free(_state->uploadWriteBuf);
         free(_uploadWriteBuf2);
-        _uploadWriteBuf  = (uint8_t*)malloc(UPLOAD_WRITE_BUF_FALLBACK);
+        _state->uploadWriteBuf  = (uint8_t*)malloc(UPLOAD_WRITE_BUF_FALLBACK);
         _uploadWriteBuf2 = (uint8_t*)malloc(UPLOAD_WRITE_BUF_FALLBACK);
-        if (!_uploadWriteBuf || !_uploadWriteBuf2) {
+        if (!_state->uploadWriteBuf || !_uploadWriteBuf2) {
             freeUploadBuffers();
             STORAGE_LOG("Failed to allocate upload buffers (tried %u KB PSRAM, %u KB internal)",
                         (unsigned)(UPLOAD_WRITE_BUF_SIZE / 1024),
                         (unsigned)(UPLOAD_WRITE_BUF_FALLBACK / 1024));
             return false;
         }
-        _uploadBufCapacity = UPLOAD_WRITE_BUF_FALLBACK;
+        _state->uploadBufCapacity = UPLOAD_WRITE_BUF_FALLBACK;
         STORAGE_LOG("PSRAM unavailable — using internal RAM upload buffers: %u KB x 2",
                     (unsigned)(UPLOAD_WRITE_BUF_FALLBACK / 1024));
     }
 
-    _uploadWriteBufLen = 0;
+    _state->uploadWriteBufLen = 0;
     return true;
 }
 
-void StorageServerEsp32::freeUploadBuffers() {
-    free(_uploadWriteBuf);
-    _uploadWriteBuf = nullptr;
+void Esp32StoragePolicy::freeUploadBuffers() {
+    free(_state->uploadWriteBuf);
+    _state->uploadWriteBuf = nullptr;
     free(_uploadWriteBuf2);
     _uploadWriteBuf2 = nullptr;
-    _uploadWriteBufLen = 0;
-    _uploadBufCapacity = 0;
+    _state->uploadWriteBufLen = 0;
+    _state->uploadBufCapacity = 0;
 }
 
 
@@ -79,39 +79,39 @@ void StorageServerEsp32::freeUploadBuffers() {
 // Stream Buffer Allocation (Ring Buffer + Staging from PSRAM)
 // ============================================================================
 
-bool StorageServerEsp32::allocateStreamBuffers() {
+bool Esp32StoragePolicy::allocateStreamBuffers() {
     // Allocate 1 MB ring buffer from PSRAM
-    if (!_streamRingBuf.allocate()) {
+    if (!_streamRingBuf.init()) {
         STORAGE_LOG("Failed to allocate stream ring buffer (%u KB PSRAM)",
-                    (unsigned)(StreamRingBuffer::CAPACITY / 1024));
+                    (unsigned)(StreamRingBuffer::capacity() / 1024));
         return false;
     }
 
     // Allocate staging buffer for SD writes (128 KB from PSRAM)
-    _streamStaging = (uint8_t*)heap_caps_malloc(STREAM_WRITE_CHUNK, MALLOC_CAP_SPIRAM);
-    if (!_streamStaging) {
+    _state->streamStaging = (uint8_t*)heap_caps_malloc(STREAM_WRITE_CHUNK, MALLOC_CAP_SPIRAM);
+    if (!_state->streamStaging) {
         STORAGE_LOG("Failed to allocate stream staging buffer (%u KB PSRAM)",
                     (unsigned)(STREAM_WRITE_CHUNK / 1024));
-        _streamRingBuf.release();
+        _streamRingBuf.shutdown();
         return false;
     }
 
     STORAGE_LOG("Stream buffers allocated: ring=%uKB staging=%uKB (free PSRAM: %uKB)",
-                (unsigned)(StreamRingBuffer::CAPACITY / 1024),
+                (unsigned)(StreamRingBuffer::capacity() / 1024),
                 (unsigned)(STREAM_WRITE_CHUNK / 1024),
                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     return true;
 }
 
-void StorageServerEsp32::freeStreamBuffers() {
-    _streamRingBuf.release();
+void Esp32StoragePolicy::freeStreamBuffers() {
+    _streamRingBuf.shutdown();
     _streamDrainComplete.store(false, std::memory_order_relaxed);
-    if (_streamStaging) {
-        free(_streamStaging);
-        _streamStaging = nullptr;
+    if (_state->streamStaging) {
+        free(_state->streamStaging);
+        _state->streamStaging = nullptr;
     }
-    _streamStagingLen = 0;
-    _streamReceiving = false;
+    _state->streamStagingLen = 0;
+    _state->streamReceiving = false;
 }
 
 
@@ -119,16 +119,16 @@ void StorageServerEsp32::freeStreamBuffers() {
 // Upload Data Handling (Async Writer Submission)
 // ============================================================================
 
-bool StorageServerEsp32::onUploadBufferFull() {
+bool Esp32StoragePolicy::onUploadBufferFull() {
     if (_writerTask) {
         // Async path: swap buffers and submit to writer task
         return submitWriteBuffer();
     }
     // Fallback: blocking write (no writer task started)
-    return flushUploadBuffer();
+    return _state->flushUploadBuffer();
 }
 
-bool StorageServerEsp32::checkAsyncWriterHealth() {
+bool Esp32StoragePolicy::checkAsyncWriterHealth() {
     return !_writerError.load(std::memory_order_acquire);
 }
 
@@ -137,18 +137,18 @@ bool StorageServerEsp32::checkAsyncWriterHealth() {
 // Upload Lifecycle Hooks
 // ============================================================================
 
-void StorageServerEsp32::onUploadActivated(bool isStream) {
+void Esp32StoragePolicy::onUploadActivated(bool isStream) {
     _writerError.store(false, std::memory_order_relaxed);
     if (isStream) {
         _streamDrainComplete.store(false, std::memory_order_release);
     }
 }
 
-bool StorageServerEsp32::onStreamStart() {
+bool Esp32StoragePolicy::onStreamStart() {
     return startStreamWriterTask();
 }
 
-bool StorageServerEsp32::onStreamEnd(const char*& errMsg) {
+bool Esp32StoragePolicy::onStreamEnd(const char*& errMsg) {
     // Wait for stream writer task to finish draining ring buffer
     if (_streamWriterDone) {
         if (xSemaphoreTake(_streamWriterDone, pdMS_TO_TICKS(30000)) != pdTRUE) {
@@ -164,12 +164,12 @@ bool StorageServerEsp32::onStreamEnd(const char*& errMsg) {
     stopStreamWriterTask();
 
     STORAGE_LOG("UPLOAD_END stream: writer drained %lu bytes to SD (%lu KB/s peak)",
-                (unsigned long)_streamBytesWrittenToSD,
+                (unsigned long)_state->streamBytesWrittenToSD,
                 (unsigned long)_streamSdWriteRate_KBps.load(std::memory_order_relaxed));
     return true;
 }
 
-bool StorageServerEsp32::onChunkedEnd(const char*& errMsg) {
+bool Esp32StoragePolicy::onChunkedEnd(const char*& errMsg) {
     // Wait for any in-flight async write to complete
     if (_writerTask && !waitWriterDone()) {
         errMsg = "Async write failed";
@@ -182,11 +182,11 @@ bool StorageServerEsp32::onChunkedEnd(const char*& errMsg) {
     return true;
 }
 
-void StorageServerEsp32::onStreamCleanup() {
+void Esp32StoragePolicy::onStreamCleanup() {
     stopStreamWriterTask();
 }
 
-void StorageServerEsp32::onChunkedCleanup() {
+void Esp32StoragePolicy::onChunkedCleanup() {
     if (_writerTask) {
         waitWriterDone();
     }
@@ -197,10 +197,10 @@ void StorageServerEsp32::onChunkedCleanup() {
 // Stream Data Processing (Ring Buffer Write)
 // ============================================================================
 
-void StorageServerEsp32::onStreamDataReceived(const uint8_t* data, size_t len) {
+void Esp32StoragePolicy::onStreamDataReceived(const uint8_t* data, size_t len) {
     size_t written = 0;
     while (written < len) {
-        size_t w = _streamRingBuf.write(data + written, len - written);
+        size_t w = _streamRingBuf.writeBulk(data + written, len - written);
         written += w;
         if (w == 0) {
             // Ring buffer full — spin-wait for Core 1 to drain
@@ -209,15 +209,15 @@ void StorageServerEsp32::onStreamDataReceived(const uint8_t* data, size_t len) {
     }
 }
 
-void StorageServerEsp32::onStreamReceiveComplete() {
+void Esp32StoragePolicy::onStreamReceiveComplete() {
     _streamDrainComplete.store(true, std::memory_order_release);
     STORAGE_LOG("Stream receive complete: %lu bytes in ring buffer, "
                 "waiting for writer to drain",
-                (unsigned long)(_streamBytesWrittenToSD + _streamRingBuf.used()));
+                (unsigned long)(_state->streamBytesWrittenToSD + _streamRingBuf.availableRead()));
 }
 
-size_t StorageServerEsp32::streamBufferCapacityForLog() const {
-    return StreamRingBuffer::CAPACITY;
+size_t Esp32StoragePolicy::streamBufferCapacityForLog() const {
+    return StreamRingBuffer::capacity();
 }
 
 
@@ -225,7 +225,7 @@ size_t StorageServerEsp32::streamBufferCapacityForLog() const {
 // Chunked Writer Task (Persistent, Dual-Core Double-Buffered)
 // ============================================================================
 
-void StorageServerEsp32::startWriterTask(uint32_t stackSize, UBaseType_t priority) {
+void Esp32StoragePolicy::startWriterTask(uint32_t stackSize, UBaseType_t priority) {
     if (_writerTask) return;  // Already started
 
     _writerDataReady = xSemaphoreCreateBinary();
@@ -251,8 +251,8 @@ void StorageServerEsp32::startWriterTask(uint32_t stackSize, UBaseType_t priorit
                 (unsigned long)stackSize, (unsigned)priority);
 }
 
-void StorageServerEsp32::writerTaskFunc(void* param) {
-    StorageServerEsp32* self = static_cast<StorageServerEsp32*>(param);
+void Esp32StoragePolicy::writerTaskFunc(void* param) {
+    Esp32StoragePolicy* self = static_cast<Esp32StoragePolicy*>(param);
 
     while (self->_writerActive.load(std::memory_order_acquire)) {
         // Wait for submit signal from Core 0
@@ -262,7 +262,7 @@ void StorageServerEsp32::writerTaskFunc(void* param) {
 
         size_t writeLen = self->_writerBufLen.load(std::memory_order_acquire);
         if (writeLen > 0) {
-            size_t written = self->_uploadFile.write(self->_uploadWriteBuf2, writeLen);
+            size_t written = self->_state->uploadFile.write(self->_uploadWriteBuf2, writeLen);
             if (written != writeLen) {
                 STORAGE_LOG("Async write failed: expected %u wrote %u",
                             (unsigned)writeLen, (unsigned)written);
@@ -279,7 +279,7 @@ void StorageServerEsp32::writerTaskFunc(void* param) {
     vTaskDelete(nullptr);
 }
 
-bool StorageServerEsp32::submitWriteBuffer() {
+bool Esp32StoragePolicy::submitWriteBuffer() {
     // Wait for previous async write to complete (buf2 must be free)
     if (xSemaphoreTake(_writerDone, pdMS_TO_TICKS(5000)) != pdTRUE) {
         STORAGE_LOG("submitWriteBuffer: timeout waiting for writer");
@@ -292,9 +292,9 @@ bool StorageServerEsp32::submitWriteBuffer() {
     }
 
     // Pointer swap — zero copy, Core 1 writes from what was the fill buffer
-    _writerBufLen.store(_uploadWriteBufLen, std::memory_order_release);
-    std::swap(_uploadWriteBuf, _uploadWriteBuf2);
-    _uploadWriteBufLen = 0;
+    _writerBufLen.store(_state->uploadWriteBufLen, std::memory_order_release);
+    std::swap(_state->uploadWriteBuf, _uploadWriteBuf2);
+    _state->uploadWriteBufLen = 0;
 
     // Signal writer task that buf2 has data
     xSemaphoreGive(_writerDataReady);
@@ -302,7 +302,7 @@ bool StorageServerEsp32::submitWriteBuffer() {
     return true;
 }
 
-bool StorageServerEsp32::waitWriterDone() {
+bool Esp32StoragePolicy::waitWriterDone() {
     if (!_writerTask) return true;
 
     // Wait for the writer to finish current buffer
@@ -322,23 +322,23 @@ bool StorageServerEsp32::waitWriterDone() {
 // Stream Writer Task (Per-Upload, Ring Buffer Drainer)
 // ============================================================================
 
-void StorageServerEsp32::streamWriterTaskFunc(void* param) {
-    StorageServerEsp32* self = static_cast<StorageServerEsp32*>(param);
+void Esp32StoragePolicy::streamWriterTaskFunc(void* param) {
+    Esp32StoragePolicy* self = static_cast<Esp32StoragePolicy*>(param);
 
     STORAGE_LOG("Stream writer task started on Core %d", xPortGetCoreID());
 
     while (self->_streamWriterActive.load(std::memory_order_acquire)) {
-        size_t avail = self->_streamRingBuf.used();
+        size_t avail = self->_streamRingBuf.availableRead();
         bool drainComplete = self->_streamDrainComplete.load(std::memory_order_acquire);
 
         // Write when we have a full chunk OR when drain is signaled and any data remains
         if (avail >= self->STREAM_WRITE_CHUNK || (drainComplete && avail > 0)) {
             size_t toRead = (avail < self->STREAM_WRITE_CHUNK) ? avail : self->STREAM_WRITE_CHUNK;
-            self->_streamRingBuf.read(self->_streamStaging, toRead);
+            self->_streamRingBuf.readBulk(self->_state->streamStaging, toRead);
 
             // Measure SD write time for DiagLog
             uint32_t t0 = millis();
-            size_t written = self->_uploadFile.write(self->_streamStaging, toRead);
+            size_t written = self->_state->uploadFile.write(self->_state->streamStaging, toRead);
             uint32_t dt = millis() - t0;
 
             if (written != toRead) {
@@ -350,7 +350,7 @@ void StorageServerEsp32::streamWriterTaskFunc(void* param) {
                 break;  // Exit task loop
             }
 
-            self->_streamBytesWrittenToSD += written;
+            self->_state->streamBytesWrittenToSD += written;
 
             // Compute and store SD write rate (KB/s)
             if (dt > 0) {
@@ -359,13 +359,13 @@ void StorageServerEsp32::streamWriterTaskFunc(void* param) {
                 STORAGE_LOG("SD_WRITE: %uKB in %lums (%lu KB/s) ring=%uKB",
                             (unsigned)(toRead / 1024), (unsigned long)dt,
                             (unsigned long)rate,
-                            (unsigned)(self->_streamRingBuf.used() / 1024));
+                            (unsigned)(self->_streamRingBuf.availableRead() / 1024));
             }
 
             // If drain is complete and ring is now empty, signal done
-            if (drainComplete && self->_streamRingBuf.used() == 0) {
+            if (drainComplete && self->_streamRingBuf.availableRead() == 0) {
                 STORAGE_LOG("Stream writer: drain complete (%lu bytes total)",
-                            (unsigned long)self->_streamBytesWrittenToSD);
+                            (unsigned long)self->_state->streamBytesWrittenToSD);
                 xSemaphoreGive(self->_streamWriterDone);
                 break;  // Done — exit task loop
             }
@@ -386,7 +386,7 @@ void StorageServerEsp32::streamWriterTaskFunc(void* param) {
     vTaskSuspend(nullptr);
 }
 
-bool StorageServerEsp32::startStreamWriterTask() {
+bool Esp32StoragePolicy::startStreamWriterTask() {
     if (_streamWriterTask) {
         STORAGE_LOG("Stream writer task already running");
         return false;
@@ -423,7 +423,7 @@ bool StorageServerEsp32::startStreamWriterTask() {
     return true;
 }
 
-void StorageServerEsp32::stopStreamWriterTask() {
+void Esp32StoragePolicy::stopStreamWriterTask() {
     if (!_streamWriterTask) return;
 
     // Signal the task to exit

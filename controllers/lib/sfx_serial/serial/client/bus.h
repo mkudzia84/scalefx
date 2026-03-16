@@ -48,10 +48,6 @@
 
 #include "serial/core/core.h"
 
-// Forward declaration — full include in bus.cpp (sfx_usb library)
-class UsbHost;
-struct CdcDeviceInfo;
-
 // ============================================================================
 // Serial Bus Constants & Types
 // ============================================================================

@@ -6,24 +6,16 @@
  *   Core 1 (Consumer): ring buffer → I2S DMA
  * 
  * All audio math uses float, leveraging hardware FPU where available.
- * File I/O is decoupled via AudioFileOpenFn callback (injected by controller).
+ * File I/O uses SdCardModule singleton directly.
  *
- * I2S output is abstracted via the I2SOutput interface (i2s_output.h).
- * The controller creates a platform-specific implementation (EspI2SOutput,
- * PicoI2SOutput, MockI2SSink) and passes it to begin(). No platform
- * #ifdef blocks exist in this file.
+ * The controller instantiates AudioMixer<ConcreteI2S, ConcreteCodec>.
+ * I2S output and codec are accessed as singletons via TI2S::instance()
+ * and TCodec::instance(). No platform #ifdef blocks in this file.
  */
 
 #if defined(SFX_HAS_AUDIO)
 
-#include "audio_mixer.h"
-#include "audio_config.h"
-#include "audio_codec.h"
-#include "audio_ring_buffer.h"
 #include "audio_log.h"
-
-// I2S output abstraction — platform-specific backend injected via begin()
-#include "i2s_output.h"
 
 // ============================================================================
 //  CONSTANTS
@@ -46,16 +38,17 @@ static inline AudioRingBuffer& ringBuf() {
 //  LIFECYCLE
 // ============================================================================
 
-AudioMixer::~AudioMixer() {
+template<typename TI2S, typename TCodec>
+AudioMixer<TI2S, TCodec>::~AudioMixer() {
     shutdown();
 }
 
-bool AudioMixer::begin(I2SOutput* i2sOutput, uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
-                       uint8_t i2s_lrclk_pin, AudioCodec* codec) {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
+                       uint8_t i2s_lrclk_pin) {
     if (_initialized) return true;
 
     _masterVolume = 1.0f;
-    _i2sOutput = i2sOutput;
 
     // ---- Allocate ring buffer from PSRAM ----
     if (!ringBuf().init()) {
@@ -108,8 +101,6 @@ bool AudioMixer::begin(I2SOutput* i2sOutput, uint8_t i2s_data_pin, uint8_t i2s_b
     _i2sBclkPin  = i2s_bclk_pin;
     _i2sLrclkPin = i2s_lrclk_pin;
     
-    // Initialize audio codec if provided
-    _codec = codec;
     
     // Initialize command queue mutex
     sfxMutexInit(_cmdMutex);
@@ -126,11 +117,12 @@ bool AudioMixer::begin(I2SOutput* i2sOutput, uint8_t i2s_data_pin, uint8_t i2s_b
     
     MIXER_LOG("Phase 1 complete: %d ch, ring=%dKB, wav=%dKB, sd=%dKB (total PSRAM=%dKB), codec=%s",
              AUDIO_MAX_CHANNELS, ringBuf_KB, wavBufTotal_KB, sdBuf_KB, totalPsram_KB,
-             _codec ? _codec->getModelName() : "none");
+             TCodec::instance().getModelName());
     return true;
 }
 
-bool AudioMixer::beginI2S() {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::beginI2S() {
     // MUST be called from Core 1 — I2S library expects init and write on same core
     if (_i2sRunning) return true;
     if (!_initialized) {
@@ -141,15 +133,9 @@ bool AudioMixer::beginI2S() {
     MIXER_LOG("Phase 2: configuring I2S on Core 1 (data=GP%d, bclk=GP%d, lrclk=GP%d)",
              _i2sDataPin, _i2sBclkPin, _i2sLrclkPin);
 
-    // Delegate to the injected I2SOutput backend
-    if (!_i2sOutput) {
-        MIXER_ERROR("No I2SOutput backend — call begin() with a valid I2SOutput*");
-        return false;
-    }
-
     I2SPinConfig pins{_i2sDataPin, _i2sBclkPin, _i2sLrclkPin};
-    if (!_i2sOutput->begin(pins, AUDIO_SAMPLE_RATE, AUDIO_BIT_DEPTH)) {
-        MIXER_ERROR("I2S backend init failed (%s)", _i2sOutput->backendName());
+    if (!TI2S::instance().begin(pins, AUDIO_SAMPLE_RATE, AUDIO_BIT_DEPTH)) {
+        MIXER_ERROR("I2S backend init failed (%s)", TI2S::instance().backendName());
         return false;
     }
 
@@ -164,12 +150,13 @@ bool AudioMixer::beginI2S() {
     _i2sRunning.store(true, std::memory_order_release);  // visible to Core 0
     
     MIXER_LOG("Phase 2 complete: I2S %uHz/%dbit running on Core 1 (%s, data=GP%d, bclk=GP%d)",
-             AUDIO_SAMPLE_RATE, AUDIO_BIT_DEPTH, _i2sOutput->backendName(),
+             AUDIO_SAMPLE_RATE, AUDIO_BIT_DEPTH, TI2S::instance().backendName(),
              _i2sDataPin, _i2sBclkPin);
     return true;
 }
 
-void AudioMixer::shutdown() {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::shutdown() {
     if (!_initialized) return;
 
     // Stop all playback
@@ -188,9 +175,7 @@ void AudioMixer::shutdown() {
         _i2sRunning.store(false, std::memory_order_release);
         SFX_DELAY_MS(2);  // Let Core 1 drain current consumeAndOutput() iteration
 
-        if (_i2sOutput) {
-            _i2sOutput->end();
-        }
+        TI2S::instance().end();
     }
 
     _initialized.store(false, std::memory_order_release);
@@ -218,7 +203,8 @@ void AudioMixer::shutdown() {
 //  PAN CALCULATION
 // ============================================================================
 
-void AudioMixer::updatePan(Channel& ch) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::updatePan(Channel& ch) {
     // Constant-power panning: preserves perceived loudness at center
     //   pan=-1 → L=1.0, R=0.0 | pan=0 → L≈0.707, R≈0.707 | pan=+1 → L=0.0, R=1.0
     float angle = (ch.pan + 1.0f) * 3.14159265f * 0.25f;  // maps [-1,+1] → [0, π/2]
@@ -230,7 +216,8 @@ void AudioMixer::updatePan(Channel& ch) {
 //  PLAYBACK CONTROL
 // ============================================================================
 
-bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOptions& options) {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const AudioPlaybackOptions& options) {
     if (!_initialized) {
         MIXER_ERROR("play() called but mixer not initialized");
         return false;
@@ -257,13 +244,17 @@ bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOpti
     ws.framesRead = 0;
     ws.resampleFrac = 0.0f;
 
-    // Open the WAV file using injected file opener
-    if (!_fileOpener) {
-        MIXER_ERROR("Ch%d: No file opener set", channel);
+    // Open the WAV file via SdCardModule singleton
+    SdCardModule& sd = SdCardModule::instance();
+    if (!sd.isInitialized()) {
+        MIXER_ERROR("Ch%d: SD card not initialized", channel);
         return false;
     }
-    if (!_fileOpener(ws.file, filename)) {
-        MIXER_ERROR("Ch%d: Failed to open: %s", channel, filename);
+    sd.lock();
+    uint8_t sdErr = sd.openRead(filename, ws.file);
+    sd.unlock();
+    if (sdErr != 0) {
+        MIXER_ERROR("Ch%d: Failed to open: %s (err=%d)", channel, filename, sdErr);
         return false;
     }
 
@@ -353,57 +344,68 @@ bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOpti
 //  CHANNEL INFO GETTERS
 // ============================================================================
 
-const char* AudioMixer::getFilename(int channel) const {
+template<typename TI2S, typename TCodec>
+const char* AudioMixer<TI2S, TCodec>::getFilename(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return nullptr;
     return _channels[channel].wav.active ? _channels[channel].filename : nullptr;
 }
 
-float AudioMixer::getChannelVolume(int channel) const {
+template<typename TI2S, typename TCodec>
+float AudioMixer<TI2S, TCodec>::getChannelVolume(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0.0f;
     return _channels[channel].volume;
 }
 
-bool AudioMixer::isLooping(int channel) const {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::isLooping(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return false;
     return _channels[channel].wav.loop;
 }
 
-int AudioMixer::getLoopCount(int channel) const {
+template<typename TI2S, typename TCodec>
+int AudioMixer<TI2S, TCodec>::getLoopCount(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
     return _channels[channel].wav.loopCount;
 }
 
-int AudioMixer::getInitialLoopCount(int channel) const {
+template<typename TI2S, typename TCodec>
+int AudioMixer<TI2S, TCodec>::getInitialLoopCount(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
     return _channels[channel].wav.loopCountInit;
 }
 
-AudioOutput AudioMixer::getOutput(int channel) const {
+template<typename TI2S, typename TCodec>
+AudioOutput AudioMixer<TI2S, TCodec>::getOutput(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return AudioOutput::Stereo;
     return _channels[channel].output;
 }
 
-uint32_t AudioMixer::getSampleRate(int channel) const {
+template<typename TI2S, typename TCodec>
+uint32_t AudioMixer<TI2S, TCodec>::getSampleRate(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
     return _channels[channel].wav.sampleRate_Hz;
 }
 
-uint16_t AudioMixer::getNumChannels(int channel) const {
+template<typename TI2S, typename TCodec>
+uint16_t AudioMixer<TI2S, TCodec>::getNumChannels(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
     return _channels[channel].wav.numChannels;
 }
 
-uint16_t AudioMixer::getBitsPerSample(int channel) const {
+template<typename TI2S, typename TCodec>
+uint16_t AudioMixer<TI2S, TCodec>::getBitsPerSample(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
     return _channels[channel].wav.bitsPerSample;
 }
 
-uint32_t AudioMixer::getTotalSamples(int channel) const {
+template<typename TI2S, typename TCodec>
+uint32_t AudioMixer<TI2S, TCodec>::getTotalSamples(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
     return _channels[channel].wav.totalFrames;
 }
 
-void AudioMixer::stop(int channel, AudioStopMode mode) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::stop(int channel, AudioStopMode mode) {
     if (!_initialized) return;
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
 
@@ -435,20 +437,23 @@ void AudioMixer::stop(int channel, AudioStopMode mode) {
     }
 }
 
-void AudioMixer::stopAll(AudioStopMode mode) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::stopAll(AudioStopMode mode) {
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         stop(i, mode);
     }
 }
 
-void AudioMixer::stopLooping(int channel) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::stopLooping(int channel) {
     if (!_initialized) return;
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
     _channels[channel].wav.loop = false;
     _channels[channel].wav.loopCount = 0;
 }
 
-void AudioMixer::stopLoopingAll() {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::stopLoopingAll() {
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         _channels[i].wav.loop = false;
         _channels[i].wav.loopCount = 0;
@@ -459,7 +464,8 @@ void AudioMixer::stopLoopingAll() {
 //  QUEUE CONTROL
 // ============================================================================
 
-bool AudioMixer::queueSound(int channel, const char* filename, const AudioPlaybackOptions& options,
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::queueSound(int channel, const char* filename, const AudioPlaybackOptions& options,
                             QueueLoopBehavior loopBehavior) {
     if (!_initialized) return false;
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return false;
@@ -490,7 +496,8 @@ bool AudioMixer::queueSound(int channel, const char* filename, const AudioPlayba
     return enqueueToChannel(channel, filename, options, loopBehavior);
 }
 
-bool AudioMixer::enqueueToChannel(int channel, const char* filename, const AudioPlaybackOptions& options,
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::enqueueToChannel(int channel, const char* filename, const AudioPlaybackOptions& options,
                                    QueueLoopBehavior loopBehavior) {
     Channel& ch = _channels[channel];
     
@@ -523,7 +530,8 @@ bool AudioMixer::enqueueToChannel(int channel, const char* filename, const Audio
     return true;
 }
 
-bool AudioMixer::dequeueFromChannel(int channel, QueuedSound& out) {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::dequeueFromChannel(int channel, QueuedSound& out) {
     Channel& ch = _channels[channel];
     
     if (ch.queueTail == ch.queueHead) {
@@ -541,7 +549,8 @@ bool AudioMixer::dequeueFromChannel(int channel, QueuedSound& out) {
     return out.valid;
 }
 
-void AudioMixer::clearQueue(int channel) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::clearQueue(int channel) {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
     
     Channel& ch = _channels[channel];
@@ -556,13 +565,15 @@ void AudioMixer::clearQueue(int channel) {
     MIXER_LOG("Ch%d: Queue cleared", channel);
 }
 
-void AudioMixer::clearAllQueues() {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::clearAllQueues() {
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         clearQueue(i);
     }
 }
 
-int AudioMixer::queueLength(int channel) const {
+template<typename TI2S, typename TCodec>
+int AudioMixer<TI2S, TCodec>::queueLength(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
     
     const Channel& ch = _channels[channel];
@@ -571,12 +582,14 @@ int AudioMixer::queueLength(int channel) const {
     return len;
 }
 
-bool AudioMixer::hasQueuedSounds(int channel) const {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::hasQueuedSounds(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return false;
     return _channels[channel].hasQueuedItem;
 }
 
-void AudioMixer::checkAndPlayNextQueued(int channel) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::checkAndPlayNextQueued(int channel) {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
     
     Channel& ch = _channels[channel];
@@ -592,21 +605,25 @@ void AudioMixer::checkAndPlayNextQueued(int channel) {
 //  VOLUME & ROUTING
 // ============================================================================
 
-void AudioMixer::setVolume(int channel, float vol) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::setVolume(int channel, float vol) {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
     _channels[channel].volume = constrain(vol, 0.0f, 1.0f);
 }
 
-void AudioMixer::setMasterVolume(float vol) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::setMasterVolume(float vol) {
     _masterVolume = constrain(vol, 0.0f, 1.0f);
 }
 
-void AudioMixer::setOutput(int channel, AudioOutput output) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::setOutput(int channel, AudioOutput output) {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
     _channels[channel].output = output;
 }
 
-float AudioMixer::volume(int channel) const {
+template<typename TI2S, typename TCodec>
+float AudioMixer<TI2S, TCodec>::volume(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0.0f;
     return _channels[channel].volume;
 }
@@ -615,19 +632,22 @@ float AudioMixer::volume(int channel) const {
 //  STATUS
 // ============================================================================
 
-bool AudioMixer::isPlaying(int channel) const {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::isPlaying(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return false;
     return _channelPlaying[channel];
 }
 
-bool AudioMixer::isAnyPlaying() const {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::isAnyPlaying() const {
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         if (_channelPlaying[i]) return true;
     }
     return false;
 }
 
-int AudioMixer::remainingMs(int channel) const {
+template<typename TI2S, typename TCodec>
+int AudioMixer<TI2S, TCodec>::remainingMs(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return -1;
     if (!_channelPlaying[channel]) return -1;
     if (_channels[channel].wav.loop) return -1;
@@ -638,7 +658,8 @@ int AudioMixer::remainingMs(int channel) const {
 //  WAV PARSING
 // ============================================================================
 
-bool AudioMixer::parseWavHeader(WavState& ws) {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::parseWavHeader(WavState& ws) {
     uint8_t header[44];
 
     if (ws.file.read(header, 44) != 44) {
@@ -690,7 +711,8 @@ bool AudioMixer::parseWavHeader(WavState& ws) {
 //  WAV BUFFER REFILL (Producer side — Core 0)
 // ============================================================================
 
-bool AudioMixer::refillWavBuffer(WavState& ws) {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::refillWavBuffer(WavState& ws) {
     // Move remaining frames to front of buffer
     int remaining = ws.bufLen - ws.bufPos;
     if (remaining > 0 && ws.bufPos > 0) {
@@ -767,7 +789,8 @@ bool AudioMixer::refillWavBuffer(WavState& ws) {
 //  WAV SAMPLE RETRIEVAL WITH RESAMPLING (Producer side)
 // ============================================================================
 
-bool AudioMixer::getWavSample(WavState& ws, float& outL, float& outR) {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::getWavSample(WavState& ws, float& outL, float& outR) {
     // Ensure at least 2 frames available for linear interpolation
     while (ws.bufPos + 1 >= ws.bufLen) {
         if (!refillWavBuffer(ws)) {
@@ -796,7 +819,8 @@ bool AudioMixer::getWavSample(WavState& ws, float& outL, float& outR) {
 //  FLOAT MIXING PIPELINE — PRODUCER (Core 0)
 // ============================================================================
 
-bool AudioMixer::produceFrame() {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::produceFrame() {
     if (ringBuf().isFull()) return false;
 
     float mixL = 0.0f;
@@ -887,7 +911,8 @@ bool AudioMixer::produceFrame() {
     return true;
 }
 
-int AudioMixer::produce(int maxFrames) {
+template<typename TI2S, typename TCodec>
+int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
     if (!_initialized) return 0;
 
     static uint32_t lastLogTime = 0;
@@ -909,7 +934,8 @@ int AudioMixer::produce(int maxFrames) {
 //  I2S OUTPUT — CONSUMER (Core 1)
 // ============================================================================
 
-void AudioMixer::consumeAndOutput() {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::consumeAndOutput() {
     uint32_t avail = ringBuf().availableRead();
     
     static bool firstLog = true;
@@ -926,22 +952,24 @@ void AudioMixer::consumeAndOutput() {
         for (uint32_t i = 0; i < count; i++) {
             frames[i] = ringBuf().read();
         }
-        _i2sOutput->writeSamples(frames, count);
+        TI2S::instance().writeSamples(frames, count);
         _consumeFrames.fetch_add(count, std::memory_order_relaxed);
     } else {
         // Ring buffer empty — underrun! Write silence to keep I2S clocks running.
         _underruns.fetch_add(1, std::memory_order_relaxed);
-        _i2sOutput->writeSilence();
+        TI2S::instance().writeSilence();
     }
 }
 
-void AudioMixer::consume() {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::consume() {
     _consumeLoops.fetch_add(1, std::memory_order_relaxed);
     if (!_initialized || !_i2sRunning) return;
     consumeAndOutput();
 }
 
-void AudioMixer::process() {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::process() {
     // Legacy single-call: does both produce and consume
     // For optimal performance, call produce() and consume() separately
     // from their respective cores
@@ -953,15 +981,18 @@ void AudioMixer::process() {
 //  RING BUFFER STATS
 // ============================================================================
 
-uint32_t AudioMixer::getRingAvailableRead() const {
+template<typename TI2S, typename TCodec>
+uint32_t AudioMixer<TI2S, TCodec>::getRingAvailableRead() const {
     return ringBuf().availableRead();
 }
 
-uint32_t AudioMixer::getRingAvailableWrite() const {
+template<typename TI2S, typename TCodec>
+uint32_t AudioMixer<TI2S, TCodec>::getRingAvailableWrite() const {
     return ringBuf().availableWrite();
 }
 
-int AudioMixer::getRingFillPercent() const {
+template<typename TI2S, typename TCodec>
+int AudioMixer<TI2S, TCodec>::getRingFillPercent() const {
     return ringBuf().fillPercent();
 }
 
@@ -969,7 +1000,8 @@ int AudioMixer::getRingFillPercent() const {
 //  DUAL-CORE COMMAND QUEUE
 // ============================================================================
 
-bool AudioMixer::queueCommand(const Command& cmd) {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::queueCommand(const Command& cmd) {
     MIXER_LOG(">>> queueCommand: type=%d ch=%d file=%s",
              (int)cmd.type, cmd.channelId, cmd.filename[0] ? cmd.filename : "(none)");
     
@@ -991,7 +1023,8 @@ bool AudioMixer::queueCommand(const Command& cmd) {
     return true;
 }
 
-void AudioMixer::processCommands() {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::processCommands() {
     int processed = 0;
     while (_cmdQueueTail.load(std::memory_order_acquire) != _cmdQueueHead.load(std::memory_order_acquire)) {
         sfxMutexLock(_cmdMutex);
@@ -1009,7 +1042,8 @@ void AudioMixer::processCommands() {
     }
 }
 
-void AudioMixer::executeCommand(const Command& cmd) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::executeCommand(const Command& cmd) {
     switch (cmd.type) {
         case CommandType::Play: {
             MIXER_LOG("executeCommand: PLAY ch%d: %s", cmd.channelId, cmd.filename);
@@ -1052,7 +1086,8 @@ void AudioMixer::executeCommand(const Command& cmd) {
 //  ASYNC API (Safe to call from any core — uses command queue)
 // ============================================================================
 
-bool AudioMixer::playAsync(int channel, const char* filename, const AudioPlaybackOptions& options) {
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::playAsync(int channel, const char* filename, const AudioPlaybackOptions& options) {
     Command cmd{};
     cmd.type = CommandType::Play;
     cmd.channelId = channel;
@@ -1061,7 +1096,8 @@ bool AudioMixer::playAsync(int channel, const char* filename, const AudioPlaybac
     return queueCommand(cmd);
 }
 
-void AudioMixer::stopAsync(int channel, AudioStopMode mode) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::stopAsync(int channel, AudioStopMode mode) {
     Command cmd{};
     cmd.type = (channel < 0) ? CommandType::StopAll : CommandType::Stop;
     cmd.channelId = channel;
@@ -1069,7 +1105,8 @@ void AudioMixer::stopAsync(int channel, AudioStopMode mode) {
     queueCommand(cmd);
 }
 
-void AudioMixer::setVolumeAsync(int channel, float vol) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::setVolumeAsync(int channel, float vol) {
     Command cmd{};
     cmd.type = CommandType::SetVolume;
     cmd.channelId = channel;
@@ -1077,14 +1114,16 @@ void AudioMixer::setVolumeAsync(int channel, float vol) {
     queueCommand(cmd);
 }
 
-void AudioMixer::setMasterVolumeAsync(float vol) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::setMasterVolumeAsync(float vol) {
     Command cmd{};
     cmd.type = CommandType::SetMasterVolume;
     cmd.volume = vol;
     queueCommand(cmd);
 }
 
-bool AudioMixer::queueSoundAsync(int channel, const char* filename, const AudioPlaybackOptions& options,
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::queueSoundAsync(int channel, const char* filename, const AudioPlaybackOptions& options,
                                   QueueLoopBehavior loopBehavior) {
     Command cmd{};
     cmd.type = CommandType::QueueSound;
@@ -1095,25 +1134,13 @@ bool AudioMixer::queueSoundAsync(int channel, const char* filename, const AudioP
     return queueCommand(cmd);
 }
 
-void AudioMixer::clearQueueAsync(int channel) {
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::clearQueueAsync(int channel) {
     Command cmd{};
     cmd.type = CommandType::ClearQueue;
     cmd.channelId = channel;
     queueCommand(cmd);
 }
 
-// ============================================================================
-//  MOCK I2S STATISTICS
-// ============================================================================
-#if AUDIO_MOCK_I2S
-void AudioMixer::printMockStatistics() {
-    i2sOutput.printStatistics();
-}
-
-void AudioMixer::resetMockStatistics() {
-    i2sOutput.resetStatistics();
-    MIXER_LOG("Mock I2S statistics reset");
-}
-#endif
 
 #endif // SFX_HAS_AUDIO

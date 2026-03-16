@@ -24,8 +24,9 @@
 #ifndef TAS5825_CODEC_H
 #define TAS5825_CODEC_H
 
-#include "audio_codec.h"
+#include <Arduino.h>
 #include <Wire.h>
+#include "../audio/audio_config.h"
 
 // TAS5825M I2C Address
 #define TAS5825M_I2C_ADDR  0x4C
@@ -86,7 +87,7 @@ enum TAS5825M_SupplyVoltage {
  * This driver provides full control over the TAS5825M digital audio amplifier
  * including initialization, volume control, mute, and fault monitoring.
  */
-class TAS5825Codec : public AudioCodec {
+class TAS5825Codec {
 public:
     /**
      * @brief Construct a new TAS5825 Codec object
@@ -105,13 +106,13 @@ public:
     bool begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate = 44100,
                TAS5825M_SupplyVoltage supply_voltage = TAS5825M_20V);
 
-    // AudioCodec interface implementation
-    bool begin(uint32_t sample_rate = 44100) override;
-    void reset() override;
-    void setVolume(float volume) override;
-    void setMute(bool mute) override;
-    bool isInitialized() const override { return initialized; }
-    const char* getModelName() const override { return "TAS5825M"; }
+    // Codec interface implementation
+    bool begin(uint32_t sample_rate = 44100);
+    void reset();
+    void setVolume(float volume);
+    void setMute(bool mute);
+    bool isInitialized() const { return initialized; }
+    const char* getModelName() const { return "TAS5825M"; }
 
     /**
      * @brief Set digital volume in dB
@@ -128,16 +129,16 @@ public:
     /**
      * @brief Dump all important registers via serial
      */
-    void dumpRegisters() override;
+    void dumpRegisters();
     
 #if AUDIO_DEBUG
     // Debug methods
-    bool testCommunication() override;
-    uint16_t readRegisterCache(uint8_t reg) const override;
-    bool writeRegisterDebug(uint8_t reg, uint16_t value) override;
-    void printStatus() override;
-    void reinitialize(uint32_t sample_rate = 44100) override;
-    void* getCommunicationInterface() override { return i2c; }
+    bool testCommunication();
+    uint16_t readRegisterCache(uint8_t reg) const;
+    bool writeRegisterDebug(uint8_t reg, uint16_t value);
+    void printStatus();
+    void reinitialize(uint32_t sample_rate = 44100);
+    void* getCommunicationInterface() { return i2c; }
 #endif // AUDIO_DEBUG
 
 private:

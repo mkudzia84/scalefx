@@ -10,7 +10,7 @@
 
 #include "tas5825_codec.h"
 #include <Arduino.h>
-#include "audio_log.h"
+#include "../audio/audio_log.h"
 #include "platform/sfx_platform.h"
 
 TAS5825Codec::TAS5825Codec()

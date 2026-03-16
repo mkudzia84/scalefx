@@ -1,11 +1,12 @@
 {
     "name": "sfx_audio",
     "version": "2.0.0",
-    "description": "ScaleFX audio engine — 8-channel WAV mixer, I2S output, codec drivers (TAS5825M, SimpleI2S), ring buffer, mock sink. File I/O via injected AudioFileOpenFn callback. Requires SFX_HAS_AUDIO=1 build flag.",
+    "description": "ScaleFX audio engine — 8-channel WAV mixer, I2S output, codec drivers (TAS5825M, SimpleI2S), ring buffer, mock sink. Uses SdCardModule singleton for file I/O. Requires SFX_HAS_AUDIO=1 build flag.",
     "keywords": ["audio", "mixer", "i2s", "wav", "codec", "tas5825", "dma"],
     "frameworks": "arduino",
     "platforms": ["raspberrypi", "espressif32"],
     "dependencies": [
-        {"name": "sfx_platform"}
+        {"name": "sfx_platform"},
+        {"name": "sfx_storage"}
     ]
 }

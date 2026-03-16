@@ -1,22 +1,27 @@
-/*
- * Storage Server — Base Class Implementation
+﻿/*
+ * Storage Server — Policy-Based Template Implementation
  *
  * Platform-agnostic protocol handlers for file operations via FlashModule
  * and SdCardModule singletons. File list and download use StreamWriter
  * for chunked transfer.
  *
  * Platform-specific behavior (buffer allocation, async writes, stream
- * data routing) is delegated to derived classes via virtual hooks.
- * See storage_server_esp32.cpp and storage_server_pico.cpp.
+ * data routing) is resolved at compile time via policy composition:
+ * TPolicy provides platform-specific implementations, accessed through
+ * the _policy member (no virtual dispatch, no CRTP self-casting).
  *
  * Buffer sizing rationale (6 Mbps serial):
  *   - Raw byte rate: 750 KB/s, effective ~580 KB/s with UART/COBS overhead
  *   - Each chunk: 2044 data + 4 header = 2048 payload, ~2060 bytes on wire
  *   - Max ~280 chunks/sec at full wire speed
- *   - UART RX buffer: 128 KB — holds ~64 chunks (~220ms of data at line rate)
+ *   - UART RX buffer: 128 KB â€” holds ~64 chunks (~220ms of data at line rate)
+ *
+ * Included from storage_server.h â€” do not include directly.
  */
 
-#include "storage_server.h"
+#ifndef STORAGE_SERVER_IPP
+#define STORAGE_SERVER_IPP
+
 #include <platform/diag_log.h>
 
 #define STORAGE_LOG(fmt, ...) SFX_LOG_INFO("[Storage] " fmt, ##__VA_ARGS__)
@@ -26,7 +31,8 @@
 // Packet Dispatch
 // ============================================================================
 
-CommandHandleResult StorageServerBase::handleModulePacket(
+template <typename TPolicy>
+CommandHandleResult StorageServerT<TPolicy>::handleModulePacket(
         uint8_t type, const uint8_t* payload, size_t len) {
 
     switch (type) {
@@ -94,7 +100,8 @@ CommandHandleResult StorageServerBase::handleModulePacket(
 // Flash Status (0x99)
 // ============================================================================
 
-void StorageServerBase::handleFlashStatus() {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleFlashStatus() {
     FlashModule& flash = FlashModule::instance();
 
     FlashStorageInfo info;
@@ -123,10 +130,11 @@ void StorageServerBase::handleFlashStatus() {
 
 
 // ============================================================================
-// File List (0x9A) — Streamed Response
+// File List (0x9A) â€” Streamed Response
 // ============================================================================
 
-void StorageServerBase::handleFileList(const uint8_t* payload, size_t len) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleFileList(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
 
@@ -169,10 +177,11 @@ void StorageServerBase::handleFileList(const uint8_t* payload, size_t len) {
 
 
 // ============================================================================
-// File Tree (0xA9) — Recursive Directory Listing (Streamed)
+// File Tree (0xA9) â€” Recursive Directory Listing (Streamed)
 // ============================================================================
 
-void StorageServerBase::handleFileTree(const uint8_t* payload, size_t len) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleFileTree(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
 
@@ -220,7 +229,8 @@ void StorageServerBase::handleFileTree(const uint8_t* payload, size_t len) {
 // File Delete (0x9B)
 // ============================================================================
 
-void StorageServerBase::handleFileDelete(const uint8_t* payload, size_t len) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleFileDelete(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
 
@@ -278,7 +288,8 @@ void StorageServerBase::handleFileDelete(const uint8_t* payload, size_t len) {
 // File Mkdir (0x9C)
 // ============================================================================
 
-void StorageServerBase::handleFileMkdir(const uint8_t* payload, size_t len) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleFileMkdir(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
 
@@ -310,7 +321,8 @@ void StorageServerBase::handleFileMkdir(const uint8_t* payload, size_t len) {
 // File Info (0x9D)
 // ============================================================================
 
-void StorageServerBase::handleFileInfo(const uint8_t* payload, size_t len) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleFileInfo(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
 
@@ -349,10 +361,11 @@ void StorageServerBase::handleFileInfo(const uint8_t* payload, size_t len) {
 
 
 // ============================================================================
-// File Download (0x9F) — Streamed Response
+// File Download (0x9F) â€” Streamed Response
 // ============================================================================
 
-void StorageServerBase::handleFileDownload(const uint8_t* payload, size_t len) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleFileDownload(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
 
@@ -404,7 +417,8 @@ void StorageServerBase::handleFileDownload(const uint8_t* payload, size_t len) {
 // File Upload Begin (0xA0)
 // ============================================================================
 
-void StorageServerBase::handleUploadBegin(const uint8_t* payload, size_t len) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t len) {
     // Wire: [size:u32LE][pathLen:u8][path:str][target:u8?]
     if (len < 6) {  // 4 (size) + 1 (pathLen) + 1 (min path char)
         sendNack(SerialError::MISSING_PARAMETER);
@@ -496,9 +510,9 @@ void StorageServerBase::handleUploadBegin(const uint8_t* payload, size_t len) {
     lockStorage(_uploadTarget);
     uint8_t err;
     if (_uploadTarget == HubFxStorage::TARGET_FLASH)
-        err = FlashModule::instance().openWrite(_uploadPath, _uploadFile, true);
+        err = FlashModule::instance().openWrite(_uploadPath, _shared.uploadFile, true);
     else
-        err = SdCardModule::instance().openWrite(_uploadPath, _uploadFile, true);
+        err = SdCardModule::instance().openWrite(_uploadPath, _shared.uploadFile, true);
 
     if (err != 0) {
         unlockStorage(_uploadTarget);
@@ -508,15 +522,15 @@ void StorageServerBase::handleUploadBegin(const uint8_t* payload, size_t len) {
 
     // Allocate upload write buffers (platform-specific: PSRAM on ESP32, heap on Pico)
     if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
-        if (!allocateStreamBuffers()) {
-            _uploadFile.close();
+        if (!_policy.allocateStreamBuffers()) {
+            _shared.uploadFile.close();
             unlockStorage(_uploadTarget);
             sendNack(HubFxError::FILE_IO_ERROR, "Stream buffer alloc failed");
             return;
         }
     } else {
-        if (!allocateUploadBuffers()) {
-            _uploadFile.close();
+        if (!_policy.allocateUploadBuffers()) {
+            _shared.uploadFile.close();
             unlockStorage(_uploadTarget);
             sendNack(HubFxError::FILE_IO_ERROR, "Buffer alloc failed");
             return;
@@ -528,33 +542,33 @@ void StorageServerBase::handleUploadBegin(const uint8_t* payload, size_t len) {
     _uploadBytesWritten = 0;
     _uploadExpectedSeq  = 0;
     _uploadCrcErrors    = 0;
-    _uploadWriteBufLen  = 0;
+    _shared.uploadWriteBufLen  = 0;
     _uploadLastActivity_ms = millis();
     _uploadMd5.begin();
 
     if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
-        // Enter raw stream receive mode — main loop will bypass COBS and
+        // Enter raw stream receive mode â€” main loop will bypass COBS and
         // route Serial data to processStreamData() instead of server.loop()
         _streamBytesRemaining = fileSize;
-        _streamBytesWrittenToSD = 0;
-        _streamStagingLen = 0;
-        _streamWriteError = false;
+        _shared.streamBytesWrittenToSD = 0;
+        _shared.streamStagingLen = 0;
+        _shared.streamWriteError = false;
 
         // Platform hook: start stream writer task (ESP32) or no-op (Pico)
-        if (!onStreamStart()) {
-            _uploadFile.close();
+        if (!_policy.onStreamStart()) {
+            _shared.uploadFile.close();
             unlockStorage(_uploadTarget);
-            freeStreamBuffers();
+            _policy.freeStreamBuffers();
             _uploadActive = false;
             sendNack(HubFxError::FILE_IO_ERROR, "Stream writer task failed");
             return;
         }
 
-        _streamReceiving = true;  // Must be set LAST — gates main loop branching
+        _shared.streamReceiving = true;  // Must be set LAST â€” gates main loop branching
     }
 
     // Platform hook: reset writer error flags, etc.
-    onUploadActivated(_uploadMode == HubFxStorage::UPLOAD_STREAM);
+    _policy.onUploadActivated(_uploadMode == HubFxStorage::UPLOAD_STREAM);
 
     const char* modeStr = "sync";
     if (_uploadMode == HubFxStorage::UPLOAD_BURST) modeStr = "burst";
@@ -564,8 +578,8 @@ void StorageServerBase::handleUploadBegin(const uint8_t* payload, size_t len) {
                 targetName(_uploadTarget), _uploadPath,
                 (unsigned long)fileSize, modeStr,
                 (unsigned)(_uploadMode == HubFxStorage::UPLOAD_STREAM
-                    ? (streamBufferCapacityForLog() / 1024)
-                    : (_uploadBufCapacity / 1024)));
+                    ? (_policy.streamBufferCapacityForLog() / 1024)
+                    : (_shared.uploadBufCapacity / 1024)));
     sendAck();
 }
 
@@ -574,7 +588,8 @@ void StorageServerBase::handleUploadBegin(const uint8_t* payload, size_t len) {
 // File Upload Data (0xA1)
 // ============================================================================
 
-void StorageServerBase::handleUploadData(const uint8_t* payload, size_t len) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleUploadData(const uint8_t* payload, size_t len) {
     // Wire: [seqNum:u16LE][crc16:u16LE][data:N]
     if (!_uploadActive) {
         sendNack(HubFxError::NO_UPLOAD_ACTIVE);
@@ -587,8 +602,8 @@ void StorageServerBase::handleUploadData(const uint8_t* payload, size_t len) {
     }
 
     // Check if background writer reported an error on previous buffer
-    if (!checkAsyncWriterHealth()) {
-        STORAGE_LOG("UPLOAD_DATA: async writer error — aborting upload");
+    if (!_policy.checkAsyncWriterHealth()) {
+        STORAGE_LOG("UPLOAD_DATA: async writer error â€” aborting upload");
         cleanupUpload(true);
         sendNack(HubFxError::FILE_IO_ERROR);
         return;
@@ -649,15 +664,15 @@ void StorageServerBase::handleUploadData(const uint8_t* payload, size_t len) {
     size_t remaining = dataLen;
     const uint8_t* src = data;
     while (remaining > 0) {
-        size_t space = _uploadBufCapacity - _uploadWriteBufLen;
+        size_t space = _shared.uploadBufCapacity - _shared.uploadWriteBufLen;
         size_t toCopy = (remaining < space) ? remaining : space;
-        memcpy(&_uploadWriteBuf[_uploadWriteBufLen], src, toCopy);
-        _uploadWriteBufLen += toCopy;
+        memcpy(&_shared.uploadWriteBuf[_shared.uploadWriteBufLen], src, toCopy);
+        _shared.uploadWriteBufLen += toCopy;
         src += toCopy;
         remaining -= toCopy;
 
-        if (_uploadWriteBufLen >= _uploadBufCapacity) {
-            if (!onUploadBufferFull()) {
+        if (_shared.uploadWriteBufLen >= _shared.uploadBufCapacity) {
+            if (!_policy.onUploadBufferFull()) {
                 cleanupUpload(true);
                 sendNack(HubFxError::FILE_IO_ERROR);
                 return;
@@ -675,7 +690,8 @@ void StorageServerBase::handleUploadData(const uint8_t* payload, size_t len) {
 // File Upload End (0xA2)
 // ============================================================================
 
-void StorageServerBase::handleUploadEnd() {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleUploadEnd() {
     if (!_uploadActive) {
         sendNack(HubFxError::NO_UPLOAD_ACTIVE);
         return;
@@ -693,7 +709,7 @@ void StorageServerBase::handleUploadEnd() {
 
     if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
         // Check for write errors that occurred during streaming
-        if (_streamWriteError) {
+        if (_shared.streamWriteError) {
             cleanupUpload(true);
             sendNack(HubFxError::FILE_IO_ERROR, "Stream write error");
             return;
@@ -701,7 +717,7 @@ void StorageServerBase::handleUploadEnd() {
 
         // Platform hook: wait for writer drain (ESP32) or flush remaining staging (Pico)
         const char* errMsg = nullptr;
-        if (!onStreamEnd(errMsg)) {
+        if (!_policy.onStreamEnd(errMsg)) {
             cleanupUpload(true);
             sendNack(HubFxError::FILE_IO_ERROR, errMsg ? errMsg : "Stream end error");
             return;
@@ -709,17 +725,17 @@ void StorageServerBase::handleUploadEnd() {
     } else {
         // Chunked mode: platform hook for async writer completion
         const char* errMsg = nullptr;
-        if (!onChunkedEnd(errMsg)) {
+        if (!_policy.onChunkedEnd(errMsg)) {
             cleanupUpload(true);
             sendNack(HubFxError::FILE_IO_ERROR, errMsg ? errMsg : "Async write failed");
             return;
         }
     }
 
-    // Flush remaining write buffer to file (blocking — final partial block)
+    // Flush remaining write buffer to file (blocking â€” final partial block)
     // Stream mode has no write buffer (uses ring buffer, already drained above)
-    if (_uploadMode != HubFxStorage::UPLOAD_STREAM && _uploadWriteBufLen > 0) {
-        if (!flushUploadBuffer()) {
+    if (_uploadMode != HubFxStorage::UPLOAD_STREAM && _shared.uploadWriteBufLen > 0) {
+        if (!_shared.flushUploadBuffer()) {
             cleanupUpload(true);
             sendNack(HubFxError::FILE_IO_ERROR, "Final flush failed");
             return;
@@ -727,10 +743,10 @@ void StorageServerBase::handleUploadEnd() {
     }
 
     // Force data to storage media before closing
-    _uploadFile.flush();
+    _shared.uploadFile.flush();
 
     // Close file and release lock
-    _uploadFile.close();
+    _shared.uploadFile.close();
     unlockStorage(_uploadTarget);
 
     // Compute final MD5 digest
@@ -751,9 +767,9 @@ void StorageServerBase::handleUploadEnd() {
 
     // Free the appropriate buffers for the upload mode
     if (isStream) {
-        freeStreamBuffers();
+        _policy.freeStreamBuffers();
     } else {
-        freeUploadBuffers();
+        _policy.freeUploadBuffers();
     }
 
     // ACK payload: [md5:16B] or [md5:16B][crcErrors:u16LE] (burst)
@@ -772,7 +788,8 @@ void StorageServerBase::handleUploadEnd() {
 // File Upload Cancel (0xA3)
 // ============================================================================
 
-void StorageServerBase::handleUploadCancel() {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleUploadCancel() {
     if (!_uploadActive) {
         sendNack(HubFxError::NO_UPLOAD_ACTIVE);
         return;
@@ -792,29 +809,30 @@ void StorageServerBase::handleUploadCancel() {
 // Upload Helpers
 // ============================================================================
 
-void StorageServerBase::cleanupUpload(bool deletePartial) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::cleanupUpload(bool deletePartial) {
     if (!_uploadActive) return;
 
     if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
-        _streamReceiving = false;
-        onStreamCleanup();
-        freeStreamBuffers();
+        _shared.streamReceiving = false;
+        _policy.onStreamCleanup();
+        _policy.freeStreamBuffers();
     } else {
-        onChunkedCleanup();
+        _policy.onChunkedCleanup();
         // Discard any buffered data (don't flush on cleanup/cancel)
-        _uploadWriteBufLen = 0;
-        freeUploadBuffers();
+        _shared.uploadWriteBufLen = 0;
+        _policy.freeUploadBuffers();
     }
 
-    _uploadFile.close();
+    _shared.uploadFile.close();
 
     if (deletePartial) {
         // We already hold the storage lock from handleUploadBegin(),
-        // so use getFS() directly instead of removeFile() which re-locks.
+        // so use policy-level remove directly instead of removeFile() which re-locks.
         if (_uploadTarget == HubFxStorage::TARGET_FLASH) {
             FlashModule::instance().getFS().remove(_uploadPath);
         } else {
-            SdCardModule::instance().getFS().remove(_uploadPath);
+            SdCardModule::instance().policy().removeFile(_uploadPath);
         }
         STORAGE_LOG("Deleted partial upload: %s:%s", targetName(_uploadTarget), _uploadPath);
     }
@@ -823,39 +841,25 @@ void StorageServerBase::cleanupUpload(bool deletePartial) {
     _uploadActive = false;
 }
 
-void StorageServerBase::cancelActiveUpload() {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::cancelActiveUpload() {
     if (_uploadActive) {
         STORAGE_LOG("Cancelling active upload on shutdown: %s", _uploadPath);
         cleanupUpload(true);
     }
 }
 
-bool StorageServerBase::flushUploadBuffer() {
-    if (_uploadWriteBufLen == 0) return true;
-
-    size_t written = _uploadFile.write(_uploadWriteBuf, _uploadWriteBufLen);
-    if (written != _uploadWriteBufLen) {
-        STORAGE_LOG("Write buffer flush failed: expected %u wrote %u",
-                    (unsigned)_uploadWriteBufLen, (unsigned)written);
-        _uploadWriteBufLen = 0;
-        return false;
-    }
-
-    _uploadWriteBufLen = 0;
-    return true;
-}
-
-
 // ============================================================================
 // Raw Stream Data Processing (UPLOAD_STREAM mode, Core 0)
 // ============================================================================
 
-void StorageServerBase::processStreamData(Stream& serial) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::processStreamData(Stream& serial) {
     uint8_t tmp[2048];
 
     while (_streamBytesRemaining > 0) {
         int avail = serial.available();
-        if (avail <= 0) break;  // No data available — return, will be called again
+        if (avail <= 0) break;  // No data available â€” return, will be called again
 
         // Read exactly what we need (no more), clamped to temp buffer size
         size_t toRead = (size_t)avail;
@@ -869,7 +873,7 @@ void StorageServerBase::processStreamData(Stream& serial) {
         _uploadMd5.add(tmp, got);
 
         // Platform-specific: ring buffer (ESP32) or staging + inline flush (Pico)
-        onStreamDataReceived(tmp, got);
+        _policy.onStreamDataReceived(tmp, got);
 
         _streamBytesRemaining -= got;
         _uploadBytesWritten += got;
@@ -877,29 +881,29 @@ void StorageServerBase::processStreamData(Stream& serial) {
     }
 
     // Check if all expected bytes have been received
-    if (_streamBytesRemaining == 0 && _streamReceiving) {
-        _streamReceiving = false;
-        onStreamReceiveComplete();
-    } else if (_streamBytesRemaining > 0 && _streamReceiving) {
-        // Check for stream data stall — if no serial data arrives for
+    if (_streamBytesRemaining == 0 && _shared.streamReceiving) {
+        _shared.streamReceiving = false;
+        _policy.onStreamReceiveComplete();
+    } else if (_streamBytesRemaining > 0 && _shared.streamReceiving) {
+        // Check for stream data stall â€” if no serial data arrives for
         // STREAM_DATA_TIMEOUT_MS, some bytes were likely lost (UART HW FIFO
         // overflow, USB-UART bridge issue, etc.).  Exit stream mode NOW so
         // subsequent COBS packets from the client (UPLOAD_END, UPLOAD_CANCEL)
-        // are parsed as protocol — not consumed as raw file data.
+        // are parsed as protocol â€” not consumed as raw file data.
         uint32_t elapsed = millis() - _uploadLastActivity_ms;
         if (elapsed >= STREAM_DATA_TIMEOUT_MS) {
             STORAGE_LOG("Stream data stall: %lu bytes still expected "
-                        "(received %lu/%lu, gap %lus) — aborting upload",
+                        "(received %lu/%lu, gap %lus) â€” aborting upload",
                         (unsigned long)_streamBytesRemaining,
                         (unsigned long)_uploadBytesWritten,
                         (unsigned long)_uploadExpectedSize,
                         (unsigned long)(elapsed / 1000));
-            _streamReceiving = false;
+            _shared.streamReceiving = false;
             // Let the writer task drain whatever data is in the ring buffer,
             // then clean up immediately (delete partial file, stop writer,
             // free buffers).  This is faster than waiting for the 30s general
             // upload timeout, and leaves the server ready for the next command.
-            onStreamReceiveComplete();
+            _policy.onStreamReceiveComplete();
             cleanupUpload(true);
         }
     }
@@ -910,12 +914,13 @@ void StorageServerBase::processStreamData(Stream& serial) {
 // Upload Timeout
 // ============================================================================
 
-void StorageServerBase::checkUploadTimeout() {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::checkUploadTimeout() {
     if (!_uploadActive) return;
 
     uint32_t elapsed = millis() - _uploadLastActivity_ms;
     if (elapsed >= UPLOAD_TIMEOUT_MS) {
-        STORAGE_LOG("Upload inactivity timeout (%lus) — cancelling %s:%s "
+        STORAGE_LOG("Upload inactivity timeout (%lus) â€” cancelling %s:%s "
                     "(received %lu/%lu bytes)",
                     (unsigned long)(elapsed / 1000),
                     targetName(_uploadTarget), _uploadPath,
@@ -930,7 +935,8 @@ void StorageServerBase::checkUploadTimeout() {
 // Helpers
 // ============================================================================
 
-uint8_t StorageServerBase::mapStorageError(uint8_t err) {
+template <typename TPolicy>
+uint8_t StorageServerT<TPolicy>::mapStorageError(uint8_t err) {
     // FlashError and SdError share identical codes (0-6)
     switch (err) {
         case FlashError::OK:              return SerialError::OK;
@@ -946,19 +952,23 @@ uint8_t StorageServerBase::mapStorageError(uint8_t err) {
 
 
 // ============================================================================
-// SD Card Init (0x93) — Remount SD card
+// SD Card Init (0x93) â€” Remount SD card
 // ============================================================================
 
-void StorageServerBase::handleSdInit(const uint8_t* payload, size_t len) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleSdInit(const uint8_t* payload, size_t len) {
     SdCardModule& sd = SdCardModule::instance();
 
-    // SD_INIT payload: [speed_mhz:u8] — ignored for SDIO mode
+    // SD_INIT payload: [speed_mhz:u8] â€” ignored for SDIO mode
     uint8_t speed = (len >= 1) ? payload[0] : 0;
 
     STORAGE_LOG("SD_INIT: remounting (speed=%u)", speed);
 
-    // retryInit() calls unmount() first, then re-mounts
-    bool ok = sd.retryInit(speed);
+    // Update config speed before retry (meaningful for SPI, ignored for SDIO)
+    if (speed > 0) sd.config().speed_mhz = speed;
+
+    // retryInit() calls unmount() first, then re-mounts with stored config
+    bool ok = sd.retryInit();
     if (ok) {
         StorageInfo info;
         sd.getStorageInfo(info);
@@ -985,7 +995,8 @@ void StorageServerBase::handleSdInit(const uint8_t* payload, size_t len) {
 // SD Card Status (0x94)
 // ============================================================================
 
-void StorageServerBase::handleSdStatus() {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::handleSdStatus() {
     SdCardModule& sd = SdCardModule::instance();
 
     // SD_STATUS_RESP extended:
@@ -1036,7 +1047,8 @@ void StorageServerBase::handleSdStatus() {
 // Storage Helpers
 // ============================================================================
 
-bool StorageServerBase::checkStorageReady(HubFxStorage::StorageTarget target) {
+template <typename TPolicy>
+bool StorageServerT<TPolicy>::checkStorageReady(HubFxStorage::StorageTarget target) {
     if (target == HubFxStorage::TARGET_FLASH) {
         if (!FlashModule::instance().isInitialized()) {
             sendNack(SerialError::NOT_INITIALIZED);
@@ -1051,25 +1063,29 @@ bool StorageServerBase::checkStorageReady(HubFxStorage::StorageTarget target) {
     return true;
 }
 
-void StorageServerBase::lockStorage(HubFxStorage::StorageTarget target) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::lockStorage(HubFxStorage::StorageTarget target) {
     if (target == HubFxStorage::TARGET_FLASH)
         FlashModule::instance().lock();
     else
         SdCardModule::instance().lock();
 }
 
-void StorageServerBase::unlockStorage(HubFxStorage::StorageTarget target) {
+template <typename TPolicy>
+void StorageServerT<TPolicy>::unlockStorage(HubFxStorage::StorageTarget target) {
     if (target == HubFxStorage::TARGET_FLASH)
         FlashModule::instance().unlock();
     else
         SdCardModule::instance().unlock();
 }
 
-const char* StorageServerBase::targetName(HubFxStorage::StorageTarget target) {
+template <typename TPolicy>
+const char* StorageServerT<TPolicy>::targetName(HubFxStorage::StorageTarget target) {
     return (target == HubFxStorage::TARGET_FLASH) ? "flash" : "sd";
 }
 
-uint8_t StorageServerBase::extractPathAndTarget(
+template <typename TPolicy>
+uint8_t StorageServerT<TPolicy>::extractPathAndTarget(
         const uint8_t* payload, size_t len,
         char* path, size_t pathBufSize, HubFxStorage::StorageTarget& target) {
 
@@ -1105,7 +1121,8 @@ uint8_t StorageServerBase::extractPathAndTarget(
 // Path Validation
 // ============================================================================
 
-bool StorageServerBase::isValidPath(const char* path) {
+template <typename TPolicy>
+bool StorageServerT<TPolicy>::isValidPath(const char* path) {
     if (!path || path[0] != '/') return false;
 
     // Reject path traversal: ".." as a path component
@@ -1119,3 +1136,7 @@ bool StorageServerBase::isValidPath(const char* path) {
 
     return true;
 }
+
+#undef STORAGE_LOG
+
+#endif // STORAGE_SERVER_IPP

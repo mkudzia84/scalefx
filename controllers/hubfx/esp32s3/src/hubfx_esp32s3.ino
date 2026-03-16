@@ -31,7 +31,7 @@
  *   [x] Flash storage (LittleFS, file list/info/delete/mkdir/download/upload)
  *   [x] USB device listing (USB_DEVICES_REQ/RESP)
  *   [x] SD card storage (SD_MMC 1-bit SDIO, file ops, upload/download)
- *   [ ] Audio mixer (I2S output via ESP-IDF driver)
+ *   [x] Audio mixer (I2S output via ESP-IDF driver, 8-ch WAV, dual-core)
  *   [ ] Config reader
  *   [ ] Slave management (INIT handshake, SlaveType identification)
  *   [ ] Audio server (protocol handler)
@@ -41,8 +41,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.10.0"
-#define BUILD_NUMBER 58
+#define FIRMWARE_VERSION "0.12.0"
+#define BUILD_NUMBER 60
 
 #include <Arduino.h>
 #include <atomic>
@@ -68,6 +68,15 @@
 #include <storage/storage_server.h>
 #include "protocol/hubfx_usb_server.h"
 
+// Audio mixer and codec (8-channel WAV mixer with I2S output)
+#include <audio/esp_i2s_output.h>
+#include <codec/simple_i2s_codec.h>
+#include <audio/audio_mixer.h>
+#include <audio/audio_log.h>
+
+// AudioMixer type alias for this platform
+using Mixer = AudioMixer<EspI2SOutput, SimpleI2SCodec>;
+
 // ============================================================================
 // Pin Definitions (ESP32-S3 DevKitC-1)
 // ============================================================================
@@ -78,12 +87,11 @@
 #define PIN_LED_CONNECTION  48   // Onboard RGB LED (connection status)
 #define PIN_LED_ERROR       -1   // Disabled (no external error LED)
 
-// I2S Audio Output
-// TODO: Assign pins based on chosen DAC board
-// #define PIN_I2S_DATA    ?
-// #define PIN_I2S_BCLK    ?
-// #define PIN_I2S_LRCLK   ?
-// #define PIN_I2S_MCLK    ?    // ESP32-S3 supports MCLK (Pico does not)
+// I2S Audio Output (Freenove Audio Converter & Amplifier module)
+// No MCLK needed — DAC auto-configures from BCLK/LRCLK
+#define PIN_I2S_DOUT    41   // I2S serial data output (DIN on DAC)
+#define PIN_I2S_BCLK    42   // I2S bit clock (BCK on DAC)
+#define PIN_I2S_LRCLK   14   // I2S word clock / left-right (LCK on DAC)
 
 // SD Card (SD_MMC 1-bit SDIO)
 #define PIN_SD_MMC_CMD  38   // SD_MMC command
@@ -119,15 +127,34 @@ std::atomic<uint32_t> loop1Count{0};         // Core 1 writes, Core 0 reads
  */
 static void core1Task(void* param) {
     core1Ready.store(true, std::memory_order_release);
+    SFX_LOG_INFO("Core 1 task started, waiting for audio init...");
 
+    // Wait for Core 0 to complete Mixer::begin() (Phase 1)
+    while (!audioInitialized.load(std::memory_order_acquire)) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    // Phase 2: Initialize I2S hardware on Core 1
+    // ESP-IDF I2S driver must be installed and written to from the same core.
+    Mixer& mixer = Mixer::instance();
+    if (!mixer.beginI2S()) {
+        SFX_LOG_ERROR("Core 1: I2S init failed — audio disabled");
+        // Fall through to idle loop so task doesn't exit
+        while (true) {
+            loop1Count.fetch_add(1, std::memory_order_relaxed);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+
+    SFX_LOG_INFO("Core 1: I2S running — consumer loop active");
+
+    // Audio consumer loop — reads from SPSC ring buffer, writes to I2S DMA.
+    // i2s_write() blocks when DMA buffers are full, providing natural pacing.
     while (true) {
         loop1Count.fetch_add(1, std::memory_order_relaxed);
-
-        // TODO: Audio I2S consumer loop
-        //   - Read from AudioRingBuffer
-        //   - Write to I2S DMA via ESP-IDF i2s_channel_write()
-
-        vTaskDelay(pdMS_TO_TICKS(10));  // Placeholder — will be replaced by I2S blocking write
+        mixer.consume();
+        // No vTaskDelay needed — i2s_write() in consume() blocks when DMA is full,
+        // naturally pacing the loop at the audio sample rate.
     }
 }
 
@@ -164,6 +191,16 @@ static void logDiagnostics() {
                   c1Count,
                   usbOk ? "ready" : "off",
                   usb.cdcDeviceCount());
+
+    // Audio mixer diagnostics
+    Mixer& mixer = Mixer::instance();
+    if (mixer.isInitialized()) {
+        SFX_LOG_DEBUG("audio: i2s=%s ring=%d%% underruns=%lu playing=%s",
+                      mixer.isI2SRunning() ? "on" : "off",
+                      mixer.getRingFillPercent(),
+                      (unsigned long)mixer.getUnderruns(),
+                      mixer.isAnyPlaying() ? "yes" : "no");
+    }
 }
 
 // ============================================================================
@@ -249,7 +286,8 @@ void setup() {
     // ---- Initialize SD Card (SD_MMC 1-bit SDIO) ----
     {
         SdCardModule& sd = SdCardModule::instance();
-        if (sd.beginSDIO(true, PIN_SD_MMC_CLK, PIN_SD_MMC_CMD, PIN_SD_MMC_D0)) {
+        SdCardModule::Config sdCfg { .clk = PIN_SD_MMC_CLK, .cmd = PIN_SD_MMC_CMD, .d0 = PIN_SD_MMC_D0 };
+        if (sd.begin(sdCfg)) {
             StorageInfo info;
             sd.getStorageInfo(info);
 
@@ -275,7 +313,7 @@ void setup() {
     server.addModuleHandler(&usbServer);
 
     // Start dual-core storage writer task (Core 1 handles SD writes)
-    storageServer.startWriterTask();
+    storageServer.policy().startWriterTask();
 
     // ---- USB Host initialization ----
     // ESP32-S3 HW USB-OTG on fixed GPIO19 (D-) / GPIO20 (D+).
@@ -306,9 +344,27 @@ void setup() {
     }
 
     // TODO: Config reader
-    // TODO: Audio init (codec + mixer)
     // TODO: Domain-specific command handlers (slave, audio, engine)
     //       e.g. server.addModuleHandler(&audioServer);
+
+    // ---- Audio Mixer Initialization (Phase 1 — Core 0) ----
+    // Phase 1: channels, ring buffer, codec, mutex.
+    // Phase 2 (beginI2S) runs on Core 1 after audioInitialized flag is set.
+    {
+        Mixer& mixer = Mixer::instance();
+
+        // Configure codec singleton (model name for log identification)
+        SimpleI2SCodec::instance().setModelName("Freenove");
+        SimpleI2SCodec::instance().begin(AUDIO_SAMPLE_RATE);
+
+        // Phase 1 init: channels, ring buffer, pin storage
+        if (mixer.begin(PIN_I2S_DOUT, PIN_I2S_BCLK, PIN_I2S_LRCLK)) {
+            audioInitialized.store(true, std::memory_order_release);
+            SFX_LOG_INFO("Audio mixer Phase 1 ready — Core 1 will start I2S");
+        } else {
+            SFX_LOG_ERROR("Audio mixer init failed — audio disabled");
+        }
+    }
 
     // Launch Core 1 task for audio consumer
     xTaskCreatePinnedToCore(
@@ -327,6 +383,13 @@ void setup() {
     SFX_LOG_INFO("HubFX ESP32-S3 v%s (build %d) — setup complete", FIRMWARE_VERSION, BUILD_NUMBER);
     SFX_LOG_INFO("Platform: %s @ %lu MHz, heap: %lu bytes",
                  SFX_PLATFORM_NAME, (unsigned long)SFX_CPU_MHZ(), (unsigned long)SFX_FREE_HEAP());
+    if (SFX_HAS_PSRAM) {
+        SFX_LOG_INFO("PSRAM: %lu KB total, %lu KB free",
+                     (unsigned long)(sfxPsramTotal() / 1024),
+                     (unsigned long)(sfxPsramFree_bytes() / 1024));
+    } else {
+        SFX_LOG_WARN("PSRAM: not available");
+    }
 }
 
 // ============================================================================
@@ -347,11 +410,36 @@ void loop() {
     // Check for stuck uploads (client crash, USB disconnect, etc.)
     storageServer.checkUploadTimeout();
 
+    // ---- Audio: stop playback when SD upload starts ----
+    // SD card is shared between audio reads and upload writes.
+    // When an upload begins, stop all audio tracks to avoid
+    // concurrent SD access and file contention.
+    {
+        static bool wasUploading = false;
+        bool uploading = storageServer.isUploadActive();
+        if (uploading && !wasUploading) {
+            Mixer& mixer = Mixer::instance();
+            if (mixer.isAnyPlaying()) {
+                mixer.stopAll();
+                MIXER_LOG("Audio stopped — SD upload starting");
+            }
+        }
+        wasUploading = uploading;
+    }
+
+    // ---- Audio Producer (Core 0) ----
+    // Decode WAV from SD, mix channels, write to SPSC ring buffer.
+    // Skip during active upload to avoid SD card contention.
+    if (audioInitialized.load(std::memory_order_acquire) &&
+        !storageServer.isUploadActive() &&
+        !storageServer.isStreamReceiving()) {
+        Mixer::instance().produce(256);
+    }
+
     // Periodic diagnostic logging (buffered in DiagLog ring, retrieved via `diag`)
     logDiagnostics();
 
     // TODO: Slave polling
-    // TODO: Audio mixer producer (SD reads, WAV decode, mix into ring buffer)
     // TODO: Engine FX state machine
 
     // During active upload or streaming, skip vTaskDelay() to maximize

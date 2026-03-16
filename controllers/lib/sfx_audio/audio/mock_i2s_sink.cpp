@@ -56,6 +56,27 @@ bool MockI2SSink::begin(uint32_t sampleRate) {
     return true;
 }
 
+// ---- I2SOutput interface implementations ----
+
+bool MockI2SSink::begin(const I2SPinConfig& pins, uint32_t sampleRate, uint8_t bitDepth) {
+    _bclkPin = pins.bclkPin;
+    _dataPin = pins.dataPin;
+    _bitsPerSample = bitDepth;
+    return begin(sampleRate);
+}
+
+size_t MockI2SSink::writeSamples(const StereoFrame* frames, size_t count) {
+    // Delegate to existing bulk write (StereoFrame layout matches int16 L/R pairs)
+    return write(reinterpret_cast<const int16_t*>(frames), count * 4) / 4;
+}
+
+void MockI2SSink::writeSilence() {
+    int16_t silence[2] = {0, 0};
+    write(silence, 4);
+}
+
+// ---- Legacy API ----
+
 void MockI2SSink::end() {
     if (!_running) return;
     

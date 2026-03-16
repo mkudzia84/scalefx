@@ -14,7 +14,8 @@
 #ifndef SIMPLE_I2S_CODEC_H
 #define SIMPLE_I2S_CODEC_H
 
-#include "audio_codec.h"
+#include <Arduino.h>
+#include "../audio/audio_config.h"
 
 /**
  * Simple I2S DAC implementation
@@ -24,7 +25,7 @@
  *  - Automatic configuration from I2S signals
  *  - Fixed or pin-controlled volume/mute
  */
-class SimpleI2SCodec : public AudioCodec {
+class SimpleI2SCodec {
 public:
     static SimpleI2SCodec& instance() {
         static SimpleI2SCodec inst;
@@ -42,13 +43,13 @@ public:
     void setMutePin(int8_t pin) { mutPin = pin; }
     void setGainPin(int8_t pin) { gainPin = pin; }
     
-    // AudioCodec interface
-    bool begin(uint32_t sample_rate = 44100) override;
-    void reset() override;
-    void setVolume(float volume) override;
-    void setMute(bool mute) override;
-    bool isInitialized() const override { return initialized; }
-    const char* getModelName() const override { return modelName; }
+    // Codec interface
+    bool begin(uint32_t sample_rate = 44100);
+    void reset();
+    void setVolume(float volume);
+    void setMute(bool mute);
+    bool isInitialized() const { return initialized; }
+    const char* getModelName() const { return modelName; }
     
 private:
     SimpleI2SCodec() = default;

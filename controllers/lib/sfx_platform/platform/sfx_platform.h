@@ -243,6 +243,70 @@
 #endif
 
 // ============================================================================
+//  PSRAM — External SPI RAM (ESP32-S3 OPI PSRAM)
+// ============================================================================
+//
+//  ESP32-S3 N8R8 has 8 MB OPI PSRAM @ 80 MHz (~100 MB/s bandwidth).
+//  Use for large audio buffers that don't need DMA alignment (ring buffers,
+//  WAV decode buffers, SD read buffers). I2S DMA buffers stay in internal SRAM.
+//
+//  On Pico (no PSRAM), all functions fall back to standard heap allocation.
+//  This keeps application code platform-agnostic.
+
+#if SFX_PLATFORM_ESP32
+    #include <esp_heap_caps.h>
+    // psramFound() is provided by Arduino-ESP32 core (esp32-hal-psram.h),
+    // auto-included via Arduino.h — no separate include needed.
+
+    // Runtime PSRAM detection (true if PSRAM is initialized and usable)
+    #define SFX_HAS_PSRAM       (psramFound())
+
+    /**
+     * Allocate memory from PSRAM (external SPI RAM).
+     * Returns nullptr on failure. Caller must free with sfxPsramFree().
+     */
+    inline void* sfxPsramMalloc(size_t size) {
+        return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    }
+
+    /**
+     * Allocate zeroed memory from PSRAM.
+     * Returns nullptr on failure. Caller must free with sfxPsramFree().
+     */
+    inline void* sfxPsramCalloc(size_t n, size_t size) {
+        return heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM);
+    }
+
+    /**
+     * Free memory allocated by sfxPsramMalloc/sfxPsramCalloc.
+     * Safe to call with nullptr.
+     */
+    inline void sfxPsramFree(void* ptr) {
+        if (ptr) heap_caps_free(ptr);
+    }
+
+    /** Total installed PSRAM in bytes */
+    inline size_t sfxPsramTotal() {
+        return heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    }
+
+    /** Free (unallocated) PSRAM in bytes */
+    inline size_t sfxPsramFree_bytes() {
+        return heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    }
+
+#else
+    // No PSRAM on Pico — fall back to standard heap
+    #define SFX_HAS_PSRAM       0
+
+    inline void* sfxPsramMalloc(size_t size)          { return malloc(size); }
+    inline void* sfxPsramCalloc(size_t n, size_t size) { return calloc(n, size); }
+    inline void sfxPsramFree(void* ptr)                { free(ptr); }
+    inline size_t sfxPsramTotal()                      { return 0; }
+    inline size_t sfxPsramFree_bytes()                 { return 0; }
+#endif
+
+// ============================================================================
 //  FILESYSTEM — Platform-Specific Flash Filesystem
 // ============================================================================
 //

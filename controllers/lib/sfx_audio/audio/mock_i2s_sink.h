@@ -24,6 +24,7 @@
 
 #include <Arduino.h>
 #include "audio_config.h"
+#include "audio_ring_buffer.h"
 
 // Statistics structure
 struct I2SStatistics {
@@ -61,21 +62,37 @@ struct I2SStatistics {
 };
 
 /**
- * MockI2SSink - Drop-in replacement for I2S class
+ * MockI2SSink - Drop-in replacement for I2S hardware output
  * 
- * Compatible API with Arduino I2S library but writes to memory buffer instead.
+ * Satisfies the TI2S template concept so it can be used
+ * by AudioMixer<MockI2SSink, TCodec>. Also retains legacy API for direct use in tests.
  */
 class MockI2SSink {
 public:
-    MockI2SSink();
-    
-    // I2S-compatible API
+    static MockI2SSink& instance() {
+        static MockI2SSink inst;
+        return inst;
+    }
+
+    // Delete copy/move
+    MockI2SSink(const MockI2SSink&) = delete;
+    MockI2SSink& operator=(const MockI2SSink&) = delete;
+    MockI2SSink(MockI2SSink&&) = delete;
+    MockI2SSink& operator=(MockI2SSink&&) = delete;
+
+    // ---- I2S output interface ----
+    bool begin(const I2SPinConfig& pins, uint32_t sampleRate, uint8_t bitDepth);
+    void end();
+    size_t writeSamples(const StereoFrame* frames, size_t count);
+    void writeSilence();
+    bool isRunning() const { return _running; }
+    const char* backendName() const { return "Mock-I2S"; }
+
+    // ---- Legacy API (kept for direct test use) ----
     void setBCLK(uint8_t pin) { _bclkPin = pin; }
     void setDATA(uint8_t pin) { _dataPin = pin; }
     void setBitsPerSample(uint8_t bits) { _bitsPerSample = bits; }
-    
     bool begin(uint32_t sampleRate);
-    void end();
     
     /**
      * Write stereo samples to mock buffer
@@ -111,10 +128,10 @@ public:
     size_t getCaptureBufferSize() const { return _captureBufferSize; }
     
     // Configuration
-    bool isRunning() const { return _running; }
     uint32_t getSampleRate() const { return _sampleRate; }
     
 private:
+    MockI2SSink();  // Private constructor for singleton
     // Configuration
     uint8_t _bclkPin;
     uint8_t _dataPin;

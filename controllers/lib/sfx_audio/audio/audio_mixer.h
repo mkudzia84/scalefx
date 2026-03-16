@@ -16,35 +16,24 @@
  * are resampled via linear interpolation.
  * 
  * Uses SdCardModule singleton for SD card access (producer side only).
- * The file opener callback must be set via setFileOpener() before playback.
- * This allows the mixer to be decoupled from the storage implementation.
+ * Audio files are opened directly via SdCardModule::instance().
  * 
  * Usage:
- *   AudioMixer& mixer = AudioMixer::instance();
- *   mixer.begin(i2s_data, i2s_bclk, i2s_lrclk, codec);
- *   // In Core 0 loop: mixer.produce();
- *   // In Core 1 loop: mixer.consume();
+ *   EspI2SOutput i2s;  // singleton — or PicoI2SOutput, MockI2SSink
+ *   SimpleI2SCodec codec;  // singleton
+ *   using Mixer = AudioMixer<EspI2SOutput, SimpleI2SCodec>;
+ *   Mixer::instance().begin(i2s_data, i2s_bclk, i2s_lrclk);
+ *   // In Core 0 loop: Mixer::instance().produce();
+ *   // In Core 1 loop: Mixer::instance().consume();
  */
 
 #ifndef AUDIO_MIXER_H
 #define AUDIO_MIXER_H
 
 #include <Arduino.h>
-#if __has_include(<SdFat.h>)
-    #include <SdFat.h>
-    // Use File32 type (SdFat32) for SD card file operations
-    using SdCardFile = File32;
-#else
-    // SdFat not available on this platform — use Arduino FS.h compatible types
-    #include <FS.h>
-    using SdCardFile = fs::File;
-    using File32 = fs::File;
-#endif
 #include <atomic>
-#include <functional>
 #include "platform/sfx_platform.h"
-
-class AudioCodec;  // Forward declaration
+#include "storage/sd_card.h"
 
 // Include centralized audio configuration
 #include "audio_config.h"
@@ -55,10 +44,13 @@ class AudioCodec;  // Forward declaration
 // ============================================================================
 
 // WAV pre-buffer sizes (float frames per channel)
-// ESP32-S3 has more RAM — larger buffers reduce SD card read frequency.
+// ESP32-S3: Large buffers in PSRAM (8 MB OPI @ 80 MHz). 4096 frames/ch
+//   × 8 channels × 2 (L+R) × 4 bytes = 256 KB total in PSRAM (~85 ms).
+//   SD read batch = 16 KB (4 sectors) reduces SD access frequency.
+// Pico: Smaller buffers in SRAM heap.
 #if SFX_PLATFORM_ESP32
-constexpr int WAV_BUF_FRAMES       = 2048;      // decoded float frames per track
-constexpr int WAV_SD_READ_BYTES    = 16384;     // bytes per SD card read batch
+constexpr int WAV_BUF_FRAMES       = 4096;      // decoded float frames per track (PSRAM)
+constexpr int WAV_SD_READ_BYTES    = 16384;     // bytes per SD card read batch (PSRAM)
 #else
 constexpr int WAV_BUF_FRAMES       = 1024;      // decoded float frames per track
 constexpr int WAV_SD_READ_BYTES    = 4096;      // bytes per SD card read batch
@@ -86,17 +78,7 @@ enum class AudioStopMode : uint8_t {
     LoopEnd   = 2
 };
 
-/**
- * @brief Callback type for opening audio files
- *
- * Injected by the controller to decouple AudioMixer from storage implementation.
- * The callback should open the specified path for reading.
- *
- * @param file Reference to the file object to open (SdCardFile / File32)
- * @param path Path to the audio file on storage
- * @return true if file was opened successfully
- */
-using AudioFileOpenFn = std::function<bool(SdCardFile& file, const char* path)>;
+
 
 // Behavior when a queued item replaces a looping track
 enum class QueueLoopBehavior : uint8_t {
@@ -124,9 +106,14 @@ struct QueuedSound {
 };
 
 // ============================================================================
-//  AUDIO MIXER CLASS (Singleton)
+//  AUDIO MIXER CLASS (Singleton, templatized on I2S output and codec)
 // ============================================================================
 
+/**
+ * @tparam TI2S   Concrete I2SOutput singleton (must have static instance())
+ * @tparam TCodec Concrete AudioCodec singleton (must have static instance())
+ */
+template<typename TI2S, typename TCodec>
 class AudioMixer {
 public:
     /**
@@ -146,26 +133,15 @@ public:
     ~AudioMixer();
 
     // ---- Initialization (TWO-PHASE for dual-core) ----
-    // Phase 1: Call begin() from Core 0 — channels, ring buffer, codec, mutex
-    // Phase 2: Call beginI2S() from Core 1 — I2S hardware init
-    // Uses SdCardModule singleton internally for SD access
-    bool begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin, uint8_t i2s_lrclk_pin,
-               AudioCodec* codec = nullptr);
+    // Phase 1: Call begin() from Core 0 — channels, ring buffer, PSRAM alloc, codec, mutex
+    // Phase 2: Call beginI2S() from Core 1 — I2S hardware init via TI2S::instance()
+    // TI2S and TCodec are accessed as singletons — no DI needed
+    bool begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
+               uint8_t i2s_lrclk_pin);
     bool beginI2S();  // Must be called from Core 1!
     void shutdown();
 
-    /**
-     * @brief Set the file opener callback for audio file access
-     *
-     * Must be called before any playback. The callback provides storage
-     * access without coupling the mixer to a specific storage library.
-     *
-     * Example (SdFat):
-     *   mixer.setFileOpener([](SdCardFile& file, const char* path) -> bool {
-     *       return file.open(&SdCardModule::instance().getSd(), path, O_RDONLY);
-     *   });
-     */
-    void setFileOpener(AudioFileOpenFn fn) { _fileOpener = fn; }
+
 
     // ---- Playback Control ----
     bool play(int channel, const char* filename, const AudioPlaybackOptions& options = {});
@@ -195,13 +171,8 @@ public:
     bool isInitialized() const { return _initialized; }
     bool isI2SRunning() const  { return _i2sRunning; }
     int remainingMs(int channel) const;
-    AudioCodec* getCodec() const { return _codec; }
-    
-#if AUDIO_MOCK_I2S
-    // Mock I2S statistics access
-    void printMockStatistics();
-    void resetMockStatistics();
-#endif
+    TCodec& getCodec() { return TCodec::instance(); }
+    TI2S& getI2SOutput() { return TI2S::instance(); }
 
     // ---- Dual-Core Processing ----
     // Producer (call from Core 0): WAV decode + mixing → ring buffer
@@ -253,7 +224,7 @@ private:
     
     // WAV state for float buffer + resampler
     struct WavState {
-        SdCardFile file;
+        SdFile file;
         bool       active         = false;
         bool       loop           = true;
         int        loopCount      = -1;        // -1=infinite, 0=no loop, N=N loops
@@ -268,8 +239,10 @@ private:
         uint32_t   framesRead     = 0;         // frames consumed from file
 
         // Decoded float buffer for mixing [-1.0, +1.0]
-        float      bufL[WAV_BUF_FRAMES];
-        float      bufR[WAV_BUF_FRAMES];
+        // Dynamically allocated from PSRAM (ESP32-S3) or heap (Pico)
+        // in AudioMixer::begin(). nullptr until allocated.
+        float*     bufL         = nullptr;
+        float*     bufR         = nullptr;
         int        bufLen         = 0;         // valid frames in buffer
         int        bufPos         = 0;         // next frame to consume
 
@@ -353,11 +326,8 @@ private:
     AudioMixer() = default;
 
     // ---- File I/O ----
-    AudioFileOpenFn _fileOpener;    // Injected by controller — opens audio file for reading
-
     // ---- State ----
     Channel _channels[AUDIO_MAX_CHANNELS];
-    AudioCodec* _codec        = nullptr;
     float _masterVolume       = 1.0f;
     std::atomic<bool> _initialized{false};   // Core 0 writes, Core 1 reads
     std::atomic<bool> _i2sRunning{false};     // Core 1 writes, Core 0 reads
@@ -368,7 +338,8 @@ private:
     uint8_t _i2sLrclkPin = 0;
 
     // SD read buffer (shared temp for all channels on producer side)
-    uint8_t _sdReadBuf[WAV_SD_READ_BYTES];
+    // Dynamically allocated from PSRAM in begin(), freed in shutdown().
+    uint8_t* _sdReadBuf = nullptr;
 
     // Command queue mutex (producer-side access to channel state)
     SfxMutex _cmdMutex;
@@ -388,5 +359,8 @@ private:
     std::atomic<bool> _channelPlaying[AUDIO_MAX_CHANNELS]{};
     std::atomic<int> _channelRemainingMs[AUDIO_MAX_CHANNELS]{};
 };
+
+// Template implementation (must be visible at point of instantiation)
+#include "audio_mixer.ipp"
 
 #endif // AUDIO_MIXER_H

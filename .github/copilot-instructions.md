@@ -600,6 +600,149 @@ See `controllers/lib/sfx_platform/platform/sfx_platform.h` for the full abstract
 5. **Protocol compatibility** — the ESP32-S3 variant uses the same HubFX packet types (0x80-0xA9) and wire format as the Pico variant. Protocol definitions in `hubfx/hubfx.h` are shared.
 6. **When asked to "work on HubFX"** — always target `controllers/hubfx/esp32s3/` unless the user explicitly says "HubFX Pico"
 
+### 18. Compile-Time Dispatch — Policy-Based Templates (PREFERRED)
+
+**When a class has platform-specific behavior but only ONE instance exists per binary, use policy-based composition** to achieve compile-time dispatch without virtual functions or CRTP complexity.
+
+**When to use each approach:**
+
+| Technique | When | Example |
+|-----------|------|---------|
+| **Policy-based template** | Platform varies, single instance per binary, large shared protocol code, thin platform hooks | `StorageServerT<TPolicy>` |
+| **Pure arch implementations** | Platform varies, minimal shared logic, large platform-specific implementations | `EspUsbHost` / `PicoUsbHost` |
+| **`#ifdef` in single class** | 1-3 trivial platform differences (a few lines each) | Pin numbers, buffer sizes |
+| **Virtual / ABC** | Runtime polymorphism needed (multiple implementations active simultaneously) | `ICommandHandler` |
+| **CRTP** | Avoid — policy composition is simpler for the same use cases | — |
+
+**Policy-based template pattern:**
+
+```cpp
+// ---- Shared state struct (both protocol code and policy need access) ----
+struct FooSharedState {
+    uint8_t* buffer = nullptr;
+    size_t   bufferLen = 0;
+    // ...inline helper methods if needed by both sides
+};
+
+// ---- Template server (protocol-agnostic, platform-agnostic) ----
+template <typename TPolicy>
+class FooServerT : public BusServer {
+public:
+    FooServerT() { _policy.init(&_shared); }
+    TPolicy&       policy()       { return _policy; }
+    const TPolicy& policy() const { return _policy; }
+
+protected:
+    FooSharedState _shared;
+
+private:
+    TPolicy _policy;
+    // ...protocol state, command handlers...
+};
+
+// ---- Platform policy (one per target) ----
+class Esp32FooPolicy {
+public:
+    void init(FooSharedState* state) { _state = state; }
+    bool allocateBuffers();    // PSRAM, large
+    void startWriterTask();    // Platform-specific public API
+    // ...all required hooks...
+private:
+    FooSharedState* _state = nullptr;
+};
+
+class PicoFooPolicy {
+public:
+    void init(FooSharedState* state) { _state = state; }
+    bool allocateBuffers();    // Heap, small
+    // Trivial hooks inline: bool checkHealth() { return true; }
+private:
+    FooSharedState* _state = nullptr;
+};
+
+// ---- Auto-select at bottom of header ----
+#if SFX_PLATFORM_ESP32
+#include "esp32/esp32_foo_policy.h"
+using FooServer = FooServerT<Esp32FooPolicy>;
+#else
+#include "pico/pico_foo_policy.h"
+using FooServer = FooServerT<PicoFooPolicy>;
+#endif
+```
+
+**Rules:**
+1. **Template implementation in `.ipp`** — keeps the header clean; included at the bottom of the `.h` before the platform policy includes
+2. **SharedState struct** for data both sides need — cleaner than inheritance; policy accesses via `_state->` pointer
+3. **`policy()` accessor** for platform-specific public API (e.g., `server.policy().startWriterTask()`)
+4. **All hooks required** — no default base class implementations. Trivial hooks on simpler platforms are inline one-liners (explicit > implicit)
+5. **Platform guard** in `.cpp` files — `#if SFX_PLATFORM_ESP32` / `#if !SFX_PLATFORM_ESP32` to prevent compilation on wrong target
+6. **`using` alias** — consumers use `FooServer` (the alias), never `FooServerT<Esp32FooPolicy>` directly
+
+**Current policy-based templates:**
+
+| Template | Policies | Location |
+|----------|----------|----------|
+| `StorageServerT<TPolicy>` | `Esp32StoragePolicy`, `PicoStoragePolicy` | `lib/sfx_storage/storage/` |
+| `SdCardModuleT<TPolicy>` | `PicoSpiSdPolicy`, `EspSpiSdPolicy`, `EspSdio1BitPolicy`, `EspSdio4BitPolicy` | `lib/sfx_storage/storage/` |
+
+**Current pure arch implementations:**
+
+| Alias | Concrete Classes | Location |
+|-------|-----------------|----------|
+| `UsbHost` | `EspUsbHost`, `PicoUsbHost` | `lib/sfx_usb/usb/` (`esp32/`, `pico/`) |
+
+**Pure arch implementation pattern:**
+
+When a class has large, fundamentally different implementations per platform but minimal shared logic, use standalone concrete classes with a `using` alias instead of policy templates:
+
+```cpp
+// ---- Shared state struct (device tracking, stats, callbacks) ----
+struct FooState {
+    bool initialized = false;
+    int deviceCount = 0;
+    // ...helper methods for common device tracking logic
+    int findDevice(uint8_t addr) const;
+};
+
+// ---- Main header: types + auto-select ----
+// sfx_foo.h — defines FooState, types, then:
+#if SFX_PLATFORM_ESP32
+#include "esp32/esp_foo.h"
+using Foo = EspFoo;
+#elif SFX_PLATFORM_PICO
+#include "pico/pico_foo.h"
+using Foo = PicoFoo;
+#endif
+
+// ---- Platform implementation (standalone, no inheritance) ----
+class EspFoo {
+public:
+    static EspFoo& instance() { static EspFoo inst; return inst; }
+    // Delete copy/move...
+    bool begin();
+    void process();
+    // Same interface as PicoFoo — no virtual, no ABC
+private:
+    EspFoo() = default;
+    FooState _state;  // Shared state via composition
+    // ...platform-specific members
+};
+```
+
+**Rules for pure arch:**
+1. **No base class** — each platform class is fully standalone with identical public interface
+2. **`FooState` struct** for shared logic — helper methods on the struct, composed via `_state` member
+3. **Platform headers included FROM main header** — they see all types defined above the include point. Add "Do not include directly" comment.
+4. **`using` alias** — consumers use `Foo` (the alias), never `EspFoo` directly
+5. **No forward declarations of the alias** — `class Foo;` is illegal when `Foo` is a `using` alias. Use `#include` instead.
+6. **C callback bridges** use `EspFoo::instance()` directly — no `static_cast` needed since there's no ABC
+
+**Current template-parameterized classes:**
+
+| Template | Parameter | Default | Location |
+|----------|-----------|---------|----------|
+| `UsbRegistryT<MaxSlaves>` | Max slave count | `4` | `lib/sfx_usb/usb/usb_registry.h` |
+
 ## Key Architecture Patterns
 
 ### Client-Server Topology

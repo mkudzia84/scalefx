@@ -68,7 +68,8 @@ enum class SdBusMode : uint8_t {
 
 ```cpp
 SdCardModule& sd = SdCardModule::instance();
-sd.begin(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN, 25);  // 25 MHz SPI clock
+SdCardModule::Config cfg { .cs_pin = 5, .sck_pin = 2, .mosi_pin = 3, .miso_pin = 4, .speed_mhz = 25 };
+sd.begin(cfg);
 ```
 
 ### Lifecycle — SDIO Mode (ESP32 only)
@@ -76,21 +77,29 @@ sd.begin(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN, 25);  // 25 MHz SPI clock
 ```cpp
 SdCardModule& sd = SdCardModule::instance();
 
-// 4-bit SDIO with default pins
-sd.beginSDIO();
+// 1-bit SDIO with custom pins
+SdCardModule::Config cfg { .clk = 7, .cmd = 9, .d0 = 8 };
+sd.begin(cfg);
 
-// 1-bit SDIO with default pins (fewer GPIOs)
-sd.beginSDIO(true);
-
-// 4-bit SDIO with custom pins
-sd.beginSDIO(false, /*clk*/36, /*cmd*/35, /*d0*/37, /*d1*/38, /*d2*/33, /*d3*/34);
+// 4-bit SDIO — use SdCardModuleT<EspSdio4BitPolicy>
+// (change the using alias in sd_card.h to select 4-bit mode)
 ```
 
 ### Retry
 
 ```cpp
-sd.retryInit(10);  // SPI: retry at 10 MHz. SDIO: retry same config.
-sd.retryInit();    // Retry with previously stored settings.
+sd.config().speed_mhz = 10;  // Change SPI speed before retry (ignored for SDIO)
+sd.retryInit();               // Unmounts, then re-mounts with stored config
+```
+
+### Policy Access
+
+```cpp
+// Access the underlying filesystem for low-level operations
+auto& policy = sd.policy();
+
+// Pico: policy.rawSD() returns SdFat&
+// ESP32: policy.rawFS() returns fs::FS& (SD or SD_MMC)
 ```
 
 ### Error Codes (`SdError`)
@@ -104,17 +113,19 @@ sd.retryInit();    // Retry with previously stored settings.
 | IS_DIRECTORY | Expected file, got directory | 4 |
 | ALREADY_EXISTS | File exists where directory expected | 5 |
 
-### Storage Info (`StorageInfo`)
+### StorageInfo
 
 ```cpp
 struct StorageInfo {
     bool initialized;
     uint32_t cardSize_MB;
     uint32_t totalSpace_MB;
+    uint32_t usedSpace_MB;
     uint32_t freeSpace_MB;
     uint8_t fatType;             // FAT16/32 (Pico/SdFat), 0 on ESP32
     uint32_t clusterSize_bytes;  // Pico/SdFat only, 0 on ESP32
     SdBusMode busMode;           // Active bus mode
+    SdCardType cardType;         // Card type (SD, SDHC, MMC, etc.)
 };
 ```
 
@@ -131,14 +142,14 @@ Backend is selected automatically at compile time:
 On Pico, `__has_include(<SdFat.h>)` gracefully degrades if SdFat isn't in the library path.
 On ESP32, `lib_ignore = SdFat` in platformio.ini prevents conflicts with the framework's native `SD.h`.
 
-### Direct Filesystem Access
+### Direct Policy Access
 
 ```cpp
 // Pico (SdFat backend)
-SdFat& raw = sd.getSd();   // SdFat object
+SdFat& raw = sd.policy().rawSD();   // SdFat object
 
 // ESP32 (SD/SD_MMC backend)
-fs::FS& raw = sd.getFS();  // Points to SD or SD_MMC depending on bus mode
+fs::FS& raw = sd.policy().rawFS();  // Points to SD or SD_MMC depending on policy
 ```
 
 ## FlashModule — LittleFS Onboard Flash

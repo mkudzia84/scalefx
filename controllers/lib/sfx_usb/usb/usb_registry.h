@@ -1,7 +1,7 @@
 /*
  * USB Device Registry — Tracks connected USB slave controllers
  *
- * Platform-independent singleton that maintains a registry of connected
+ * Platform-independent template that maintains a registry of connected
  * USB slave devices (identified by SlaveType). Each entry tracks:
  *   - USB CDC device index (into UsbHost)
  *   - Connection state (USB physically attached)
@@ -12,8 +12,8 @@
  * created and managed by the controller firmware. The registry simply
  * provides lookup and state management.
  *
- * Separated from protocol-specific routing so it can be shared across
- * HubFX implementations (Pico, ESP32-S3).
+ * Template parameter MaxSlaves controls the maximum number of tracked
+ * slave devices. Default is 4 (matches current ScaleFX topology).
  *
  * Usage:
  *   #include <usb/usb_registry.h>
@@ -88,23 +88,26 @@ struct SlaveEntry {
  * Provides registration, lookup, and state management for slave devices.
  * Used by HubFX to track which controllers are online and route commands.
  *
+ * @tparam MaxSlaves  Maximum number of slave devices to track (default: 4)
+ *
  * Thread safety: Currently single-core access only. If cross-core access
  * is needed, protect with SfxMutex.
  */
-class UsbRegistry {
+template <size_t MaxSlaves = 4>
+class UsbRegistryT {
 public:
-    static constexpr uint8_t MAX_SLAVES = 4;
+    static constexpr size_t MAX_SLAVES = MaxSlaves;
 
-    static UsbRegistry& instance() {
-        static UsbRegistry inst;
+    static UsbRegistryT& instance() {
+        static UsbRegistryT inst;
         return inst;
     }
 
     // Delete copy/move
-    UsbRegistry(const UsbRegistry&) = delete;
-    UsbRegistry& operator=(const UsbRegistry&) = delete;
-    UsbRegistry(UsbRegistry&&) = delete;
-    UsbRegistry& operator=(UsbRegistry&&) = delete;
+    UsbRegistryT(const UsbRegistryT&) = delete;
+    UsbRegistryT& operator=(const UsbRegistryT&) = delete;
+    UsbRegistryT(UsbRegistryT&&) = delete;
+    UsbRegistryT& operator=(UsbRegistryT&&) = delete;
 
     // ========================================================================
     // Registration
@@ -126,7 +129,7 @@ public:
                 return true;
             }
         }
-        if (_count >= MAX_SLAVES) return false;
+        if (_count >= MaxSlaves) return false;
         _slaves[_count].type = type;
         _slaves[_count].client = client;
         _slaves[_count].usbIndex = usbIndex;
@@ -168,7 +171,7 @@ public:
      * @return nullptr if not found or not ready
      */
     BusClient* getClient(SlaveType type) const {
-        const SlaveEntry* e = findConst(type);
+        const SlaveEntry* e = find(type);
         return (e && e->ready) ? e->client : nullptr;
     }
 
@@ -227,17 +230,13 @@ public:
     }
 
 private:
-    UsbRegistry() = default;
+    UsbRegistryT() = default;
 
-    const SlaveEntry* findConst(SlaveType type) const {
-        for (uint8_t i = 0; i < _count; i++) {
-            if (_slaves[i].type == type) return &_slaves[i];
-        }
-        return nullptr;
-    }
-
-    SlaveEntry _slaves[MAX_SLAVES];
+    SlaveEntry _slaves[MaxSlaves];
     uint8_t _count = 0;
 };
+
+/// Default registry with 4 slave slots (matches ScaleFX topology)
+using UsbRegistry = UsbRegistryT<4>;
 
 #endif // SFX_USB_REGISTRY_H

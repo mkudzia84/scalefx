@@ -20,7 +20,7 @@
  *   espressif/usb_host_cdc_acm managed component (see src/idf_component.yml)
  */
 
-#include "esp_usb_host.h"
+#include <usb/sfx_usb_host.h>
 
 #ifndef SCALEFX_SERVER
 #if SFX_PLATFORM_ESP32
@@ -30,9 +30,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/stream_buffer.h>
-
-// ESP-IDF USB Host Library (part of ESP-IDF core)
-#include "usb/sfx_usb_host.h"
 
 // CDC-ACM Class Driver (managed component: espressif/usb_host_cdc_acm)
 // If not available, USB Host compiles but init() returns false with a clear error.
@@ -79,38 +76,19 @@ static void usbHostDaemonTask(void* arg) {
 // CDC-ACM Static Callbacks → EspUsbHost Singleton Bridge
 // ============================================================================
 
-/**
- * Called when a new USB device is detected and enumerated by the host stack.
- * We attempt to open it as a CDC-ACM device (ScaleFX slave controllers).
- */
 static void cdcNewDeviceCb(usb_device_handle_t usb_dev) {
-    static_cast<EspUsbHost&>(UsbHost::instance())._handleNewDevice((void*)usb_dev);
+    EspUsbHost::instance()._handleNewDevice((void*)usb_dev);
 }
 
-/**
- * Called when CDC data is received from a device.
- * Runs in USB Host task context — must be fast, no blocking.
- *
- * @param data     Pointer to received data buffer
- * @param data_len Number of bytes received
- * @param user_arg Slot index (cast to void*) identifying the CDC device
- * @return true    Data consumed — flush the RX buffer
- */
 static bool cdcDataCb(const uint8_t* data, size_t data_len, void* user_arg) {
     int slotIdx = (int)(uintptr_t)user_arg;
-    static_cast<EspUsbHost&>(UsbHost::instance())._handleCdcData(slotIdx, data, data_len);
+    EspUsbHost::instance()._handleCdcData(slotIdx, data, data_len);
     return true;
 }
 
-/**
- * Called on CDC device events (disconnect, error, serial state change).
- *
- * @param event    Event data (type + union payload)
- * @param user_ctx Slot index (cast to void*) identifying the CDC device
- */
 static void cdcEventCb(const cdc_acm_host_dev_event_data_t* event, void* user_ctx) {
     int slotIdx = (int)(uintptr_t)user_ctx;
-    static_cast<EspUsbHost&>(UsbHost::instance())._handleCdcEvent(slotIdx, (int)event->type);
+    EspUsbHost::instance()._handleCdcEvent(slotIdx, (int)event->type);
 }
 
 #endif // ESP_USB_HAS_CDC_ACM
@@ -128,22 +106,22 @@ bool EspUsbHost::begin() {
 }
 
 bool EspUsbHost::begin(const UsbPortConfig* configs, int numPorts) {
-    if (_initialized) return true;
+    if (_state.initialized) return true;
 
     SFX_LOG_INFO("[UsbHost] Initializing HW USB-OTG backend (ESP32-S3)...");
 
     // Store port configurations (dp_pin ignored — fixed GPIO19 D-, GPIO20 D+)
     for (int i = 0; i < USB_HOST_MAX_PORTS && i < numPorts; i++) {
-        _ports[i] = configs[i];
+        _state.ports[i] = configs[i];
     }
 
-    _initialized = true;
+    _state.initialized = true;
     SFX_LOG_INFO("[UsbHost] HW USB-OTG configured (Fixed pins: GPIO19 D-, GPIO20 D+)");
     return true;
 }
 
 void EspUsbHost::end() {
-    if (!_initialized) return;
+    if (!_state.initialized) return;
 
     SFX_LOG_INFO("[UsbHost] Shutting down HW USB-OTG...");
 
@@ -179,19 +157,19 @@ void EspUsbHost::end() {
     usb_host_uninstall();
 #endif // ESP_USB_HAS_CDC_ACM
 
-    _initialized = false;
-    _taskRunning = false;
-    _cdcDeviceCount = 0;
+    _state.initialized = false;
+    _state.taskRunning = false;
+    _state.cdcDeviceCount = 0;
 
     SFX_LOG_INFO("[UsbHost] HW USB-OTG shut down");
 }
 
 bool EspUsbHost::init() {
-    if (!_initialized) {
+    if (!_state.initialized) {
         SFX_LOG_ERROR("[UsbHost] Not initialized — call begin() first");
         return false;
     }
-    if (_taskRunning) return true;  // Already running
+    if (_state.taskRunning) return true;  // Already running
 
 #if !ESP_USB_HAS_CDC_ACM
     SFX_LOG_ERROR("[UsbHost] CDC-ACM driver not available — install espressif/usb_host_cdc_acm component");
@@ -244,7 +222,7 @@ bool EspUsbHost::init() {
     }
     _driverInstalled = true;
 
-    _taskRunning = true;
+    _state.taskRunning = true;
     SFX_LOG_INFO("[UsbHost] HW USB-OTG ready (CDC-ACM driver installed)");
     return true;
 #endif // ESP_USB_HAS_CDC_ACM
@@ -341,17 +319,17 @@ void EspUsbHost::_handleNewDevice(void* usbDevHandle) {
     _slots[slotIdx].devAddr = devAddr;
     _slots[slotIdx].open = true;
 
-    // Register in base class device tracker
-    int devIdx = addCdcDevice(devAddr, (uint8_t)slotIdx, vid, pid);
+    // Register in shared device tracker
+    int devIdx = _state.addCdcDevice(devAddr, (uint8_t)slotIdx, vid, pid);
     if (devIdx >= 0) {
-        _cdcDevices[devIdx].state = UsbDeviceState::Ready;
+        _state.cdcDevices[devIdx].state = UsbDeviceState::Ready;
     }
 
     SFX_LOG_INFO("[UsbHost] CDC device opened: slot=%d addr=%d VID=%04X PID=%04X",
                  slotIdx, devAddr, vid, pid);
 
     // Fire mount callback (notifies SlaveServer for registration)
-    if (_mountCallback) _mountCallback(devAddr, vid, pid);
+    if (_state.mountCallback) _state.mountCallback(devAddr, vid, pid);
 }
 
 void EspUsbHost::_handleCdcData(int slotIdx, const uint8_t* data, size_t len) {
@@ -369,11 +347,11 @@ void EspUsbHost::_handleCdcData(int slotIdx, const uint8_t* data, size_t len) {
         SFX_LOG_WARN("[UsbHost] RX overflow: slot=%d lost=%d bytes",
                      slotIdx, (int)(len - written));
     }
-    _stats.bytes_received += written;
+    _state.stats.bytes_received += written;
 
     // Fire RX callback if registered
-    if (_cdcRxCallback) {
-        _cdcRxCallback(slot.devAddr, data, len);
+    if (_state.cdcRxCallback) {
+        _state.cdcRxCallback(slot.devAddr, data, len);
     }
 }
 
@@ -388,8 +366,8 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
             uint8_t devAddr = slot.devAddr;
             SFX_LOG_INFO("[UsbHost] CDC device disconnected: slot=%d addr=%d", slotIdx, devAddr);
 
-            // Remove from base class tracker
-            removeCdcDevice(devAddr);
+            // Remove from shared device tracker
+            _state.removeCdcDevice(devAddr);
 
             // Clean up slot resources
             if (slot.rxStream) {
@@ -399,7 +377,7 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
             slot = {};
 
             // Fire unmount callback (notifies SlaveServer)
-            if (_unmountCallback) _unmountCallback(devAddr);
+            if (_state.unmountCallback) _state.unmountCallback(devAddr);
             break;
         }
 
@@ -437,22 +415,27 @@ bool EspUsbHost::cdcConnected() const {
 }
 
 int EspUsbHost::cdcAvailable(int devIndex) const {
-    if (devIndex < 0 || devIndex >= _cdcDeviceCount) return 0;
-    uint8_t slotIdx = _cdcDevices[devIndex].itf_num;
+    if (devIndex < 0 || devIndex >= _state.cdcDeviceCount) return 0;
+    uint8_t slotIdx = _state.cdcDevices[devIndex].itf_num;
     if (slotIdx >= USB_HOST_MAX_CDC_DEVICES) return 0;
     const CdcSlot& slot = _slots[slotIdx];
     if (!slot.open || !slot.rxStream) return 0;
 
+#if ESP_USB_HAS_CDC_ACM
     return (int)xStreamBufferBytesAvailable((StreamBufferHandle_t)slot.rxStream);
+#else
+    return 0;
+#endif
 }
 
 int EspUsbHost::cdcRead(int devIndex, uint8_t* buffer, size_t maxLen) {
-    if (!buffer || devIndex < 0 || devIndex >= _cdcDeviceCount) return -1;
-    uint8_t slotIdx = _cdcDevices[devIndex].itf_num;
+    if (!buffer || devIndex < 0 || devIndex >= _state.cdcDeviceCount) return -1;
+    uint8_t slotIdx = _state.cdcDevices[devIndex].itf_num;
     if (slotIdx >= USB_HOST_MAX_CDC_DEVICES) return -1;
     const CdcSlot& slot = _slots[slotIdx];
     if (!slot.open || !slot.rxStream) return -1;
 
+#if ESP_USB_HAS_CDC_ACM
     // Non-blocking read from the stream buffer
     size_t count = xStreamBufferReceive(
         (StreamBufferHandle_t)slot.rxStream,
@@ -460,6 +443,9 @@ int EspUsbHost::cdcRead(int devIndex, uint8_t* buffer, size_t maxLen) {
         0  // Don't block — caller polls in loop
     );
     return (int)count;
+#else
+    return -1;
+#endif
 }
 
 int EspUsbHost::cdcReadByte(int devIndex) {
@@ -468,8 +454,8 @@ int EspUsbHost::cdcReadByte(int devIndex) {
 }
 
 int EspUsbHost::cdcWrite(int devIndex, const uint8_t* data, size_t len) {
-    if (!data || devIndex < 0 || devIndex >= _cdcDeviceCount) return -1;
-    uint8_t slotIdx = _cdcDevices[devIndex].itf_num;
+    if (!data || devIndex < 0 || devIndex >= _state.cdcDeviceCount) return -1;
+    uint8_t slotIdx = _state.cdcDevices[devIndex].itf_num;
     if (slotIdx >= USB_HOST_MAX_CDC_DEVICES) return -1;
     const CdcSlot& slot = _slots[slotIdx];
     if (!slot.open || !slot.cdcHandle) return -1;
@@ -482,7 +468,7 @@ int EspUsbHost::cdcWrite(int devIndex, const uint8_t* data, size_t len) {
         CDC_TX_TIMEOUT_MS
     );
     if (err == ESP_OK) {
-        _stats.bytes_sent += len;
+        _state.stats.bytes_sent += len;
         return (int)len;
     }
 
@@ -507,15 +493,18 @@ void EspUsbHost::cdcFlush(int devIndex) {
 void EspUsbHost::printStatus() const {
     SFX_LOG_INFO("=== USB Host Status (%s) ===", backendName());
     SFX_LOG_INFO("Initialized: %s, Task: %s, Driver: %s",
-                 _initialized ? "Yes" : "No",
-                 _taskRunning ? "Yes" : "No",
+                 _state.initialized ? "Yes" : "No",
+                 _state.taskRunning ? "Yes" : "No",
                  _driverInstalled ? "Yes" : "No");
     SFX_LOG_INFO("CDC devices: %d, Mounted: %lu, Unmounted: %lu",
-                 _cdcDeviceCount, _stats.devices_mounted, _stats.devices_unmounted);
+                 _state.cdcDeviceCount,
+                 _state.stats.devices_mounted,
+                 _state.stats.devices_unmounted);
     SFX_LOG_INFO("TX: %lu bytes, RX: %lu bytes",
-                 _stats.bytes_sent, _stats.bytes_received);
-    for (int i = 0; i < _cdcDeviceCount; i++) {
-        const CdcDeviceInfo& dev = _cdcDevices[i];
+                 _state.stats.bytes_sent,
+                 _state.stats.bytes_received);
+    for (int i = 0; i < _state.cdcDeviceCount; i++) {
+        const CdcDeviceInfo& dev = _state.cdcDevices[i];
         const char* stateStr = "Unknown";
         switch (dev.state) {
             case UsbDeviceState::Disconnected: stateStr = "Disconnected"; break;

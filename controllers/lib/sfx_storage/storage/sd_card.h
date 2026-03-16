@@ -1,16 +1,26 @@
 /*
- * SD Card Module — Thread-Safe File Operations
+ * SD Card Module — Policy-Based Template for SD Card File Operations
  *
- * Singleton class for SD card initialization and file operations.
- * Provides thread-safe SPI access via platform-abstracted mutex
- * for multi-core safety.
+ * SdCardModuleT<TPolicy> provides thread-safe SD card initialization and
+ * file operations. The bus mode (SPI, SDIO 1-bit, SDIO 4-bit) is selected
+ * at compile time via a policy class that encapsulates all platform-specific
+ * and bus-specific behavior.
  *
- * All methods return SdError codes (0 = OK) and never write to Serial.
- * Protocol output is handled by StorageServer using StreamWriter.
+ * Each policy defines a nested Config type that captures the pin assignments
+ * and driver parameters for that bus mode:
+ *
+ *   PicoSpiSdPolicy::Config   — SPI on Pico (SdFat backend)
+ *   EspSpiSdPolicy::Config    — SPI on ESP32 (SD.h backend)
+ *   EspSdio1BitPolicy::Config — 1-bit SDIO on ESP32 (SD_MMC backend)
+ *   EspSdio4BitPolicy::Config — 4-bit SDIO on ESP32 (SD_MMC backend)
+ *
+ * The correct policy is auto-selected at the bottom of this header based on
+ * the target platform, and aliased as `SdCardModule` for transparent usage.
  *
  * Usage:
  *   SdCardModule& sd = SdCardModule::instance();
- *   sd.begin(cs, sck, mosi, miso);
+ *   SdCardModule::Config cfg { .clk = 7, .cmd = 9, .d0 = 8 };
+ *   sd.begin(cfg);
  *
  *   // Thread-safe listing
  *   sd.listDirectory("/", [](const FileEntry& e) {
@@ -41,19 +51,13 @@
 // ============================================================================
 
 #if SFX_PLATFORM_PICO
-    #include <SPI.h>
     #if __has_include(<SdFat.h>)
-        #include <SdFat.h>
         #define SFX_SD_BACKEND_SDFAT 1
     #else
         #define SFX_SD_BACKEND_SDFAT 0
     #endif
     #define SFX_SD_BACKEND_ESP 0
 #elif SFX_PLATFORM_ESP32
-    #include <SPI.h>
-    #include <FS.h>
-    #include <SD.h>
-    #include <SD_MMC.h>
     #define SFX_SD_BACKEND_SDFAT 0
     #define SFX_SD_BACKEND_ESP 1
 #else
@@ -64,16 +68,6 @@
 #define SFX_HAS_SD (SFX_SD_BACKEND_SDFAT || SFX_SD_BACKEND_ESP)
 
 #if SFX_HAS_SD
-
-// ============================================================================
-// Platform File Type
-// ============================================================================
-
-#if SFX_SD_BACKEND_SDFAT
-    using SdFile = File32;
-#elif SFX_SD_BACKEND_ESP
-    using SdFile = fs::File;
-#endif
 
 
 // ============================================================================
@@ -104,7 +98,7 @@ namespace SdError {
     constexpr uint8_t IO_ERROR        = 3;
     constexpr uint8_t IS_DIRECTORY    = 4;
     constexpr uint8_t ALREADY_EXISTS  = 5;
-    constexpr uint8_t LIMIT_EXCEEDED  = 6;  ///< Tree depth or entry count limit hit (result truncated)
+    constexpr uint8_t LIMIT_EXCEEDED  = 6;  ///< Tree depth or entry count limit hit
 }
 
 
@@ -140,90 +134,101 @@ struct StorageInfo {
 
 
 // ============================================================================
-// SdCardModule
+// SdCardModuleT<TPolicy> — Policy-Based SD Card Singleton
 // ============================================================================
 
-class SdCardModule {
+/**
+ * @brief Thread-safe SD card module parameterized by bus policy.
+ *
+ * TPolicy must provide:
+ *
+ *   // Types
+ *   struct Config { ... };           // Bus-specific pin/driver configuration
+ *   using FileHandle = ...;          // File32 (SdFat) or fs::File (ESP32)
+ *   static constexpr SdBusMode BUS_MODE = ...;
+ *
+ *   // Lifecycle
+ *   bool mount(const Config& cfg);   // Platform-specific mount
+ *   void unmount();                  // Platform-specific unmount
+ *
+ *   // Card queries
+ *   SdCardType cardType();
+ *   void fillStorageInfo(StorageInfo& info);
+ *
+ *   // Filesystem primitives
+ *   FileHandle openDir(const char* path);
+ *   FileHandle openReadFile(const char* path);
+ *   FileHandle openWriteFile(const char* path, bool truncate);
+ *   static FileHandle nextFile(FileHandle& dir);
+ *   bool exists(const char* path);
+ *   bool removeFile(const char* path);
+ *   bool makeDir(const char* path);
+ *   bool removeDir(const char* path);
+ *
+ *   // File handle inspection
+ *   static bool isValid(const FileHandle& f);
+ *   static bool isDirectory(FileHandle& f);
+ *   static uint32_t fileSize(FileHandle& f);
+ *   static void closeFile(FileHandle& f);
+ *   static void extractName(FileHandle& f, char* buf, size_t len);
+ *
+ * @tparam TPolicy  Bus/platform policy (PicoSpiSdPolicy, EspSdio1BitPolicy, etc.)
+ */
+template <typename TPolicy>
+class SdCardModuleT {
 public:
+    using Config     = typename TPolicy::Config;
+    using FileHandle = typename TPolicy::FileHandle;
+    static constexpr SdBusMode BUS_MODE = TPolicy::BUS_MODE;
+
     /// Get the singleton instance
-    static SdCardModule& instance() {
-        static SdCardModule inst;
+    static SdCardModuleT& instance() {
+        static SdCardModuleT inst;
         return inst;
     }
 
     // Delete copy/move
-    SdCardModule(const SdCardModule&) = delete;
-    SdCardModule& operator=(const SdCardModule&) = delete;
-    SdCardModule(SdCardModule&&) = delete;
-    SdCardModule& operator=(SdCardModule&&) = delete;
+    SdCardModuleT(const SdCardModuleT&) = delete;
+    SdCardModuleT& operator=(const SdCardModuleT&) = delete;
+    SdCardModuleT(SdCardModuleT&&) = delete;
+    SdCardModuleT& operator=(SdCardModuleT&&) = delete;
 
     // ========================================================================
     // Lifecycle
     // ========================================================================
 
     /**
-     * @brief Initialize SD card in SPI mode
+     * @brief Initialize the SD card with bus-specific configuration
      *
-     * Works on all platforms. Uses SdFat on Pico, SD.h on ESP32.
-     *
-     * @param cs_pin   SPI chip select
-     * @param sck_pin  SPI clock
-     * @param mosi_pin SPI MOSI
-     * @param miso_pin SPI MISO
-     * @param speed_mhz SPI clock speed (default 25 MHz)
+     * @param cfg  Policy-defined configuration (pin assignments, speed, etc.)
      * @return true on success
      */
-    bool begin(uint8_t cs_pin, uint8_t sck_pin, uint8_t mosi_pin,
-               uint8_t miso_pin, uint8_t speed_mhz = 25);
-
-#if SFX_SD_BACKEND_ESP
-    /**
-     * @brief Initialize SD card in SDIO mode (ESP32 only)
-     *
-     * Uses SD_MMC driver for 1-bit or 4-bit SDIO.
-     * Pass -1 for any pin to use platform defaults.
-     * 4-bit SDIO provides ~20-25 MB/s vs SPI's ~2-4 MB/s.
-     *
-     * @param oneBitMode true for 1-bit SDIO, false for 4-bit (default)
-     * @param clk  SDIO clock pin (-1 = default)
-     * @param cmd  SDIO command pin (-1 = default)
-     * @param d0   SDIO data 0 pin (-1 = default)
-     * @param d1   SDIO data 1 pin (-1 = default, 4-bit only)
-     * @param d2   SDIO data 2 pin (-1 = default, 4-bit only)
-     * @param d3   SDIO data 3 pin (-1 = default, 4-bit only)
-     * @param formatIfFailed Format the card if mount fails (default: true)
-     * @param maxOpenFiles Maximum simultaneous open files (default: 5)
-     * @return true on success
-     */
-    bool beginSDIO(bool oneBitMode = false,
-                   int8_t clk = -1, int8_t cmd = -1,
-                   int8_t d0 = -1, int8_t d1 = -1,
-                   int8_t d2 = -1, int8_t d3 = -1,
-                   bool formatIfFailed = true,
-                   uint8_t maxOpenFiles = 5);
-#endif
+    bool begin(const Config& cfg);
 
     /**
-     * @brief Retry initialization at current or different speed
-     * @param speed_mhz New SPI speed in MHz (0 = same speed, ignored for SDIO)
+     * @brief Retry initialization with stored configuration
+     *
+     * Unmounts first, then re-mounts with the same Config passed to begin().
+     * To change parameters (e.g., SPI speed), modify config() before calling.
+     *
      * @return true on success
      */
-    bool retryInit(uint8_t speed_mhz = 0);
+    bool retryInit();
 
     /// Check if SD card is initialized and ready
     bool isInitialized() const { return _initialized; }
 
-    /// Get active bus mode
-    SdBusMode busMode() const { return _busMode; }
+    /// Get active bus mode (compile-time constant)
+    SdBusMode busMode() const { return BUS_MODE; }
 
     /// Get card type (only valid when initialized)
-    SdCardType cardType() const;
+    SdCardType cardType();
 
     /**
      * @brief Unmount the SD card
      *
      * Must be called before re-mounting (hot-swap or error recovery).
-     * SD_MMC.begin() is a no-op if already mounted.
+     * Some backends (e.g., SD_MMC) are no-ops if already mounted.
      */
     void unmount();
 
@@ -314,7 +319,7 @@ public:
      * @param file Output file handle
      * @return SdError code
      */
-    uint8_t openRead(const char* path, SdFile& file);
+    uint8_t openRead(const char* path, FileHandle& file);
 
     /**
      * @brief Open file for writing
@@ -326,7 +331,7 @@ public:
      * @param truncate If true, truncate existing file
      * @return SdError code
      */
-    uint8_t openWrite(const char* path, SdFile& file, bool truncate = true);
+    uint8_t openWrite(const char* path, FileHandle& file, bool truncate = true);
 
     // ========================================================================
     // Mutex Access
@@ -336,40 +341,25 @@ public:
     bool tryLock()  { return sfxMutexTryLock(_sdMutex); }
     void unlock()   { sfxMutexUnlock(_sdMutex); }
 
-    /// Direct filesystem access (caller must hold lock)
-#if SFX_SD_BACKEND_SDFAT
-    SdFat& getSd()  { return _sd; }
-#elif SFX_SD_BACKEND_ESP
-    fs::FS& getFS() { return *_fs; }
-#endif
+    // ========================================================================
+    // Policy & Config Access
+    // ========================================================================
+
+    /// Access the policy for platform-specific API (e.g., rawFS(), rawSD())
+    TPolicy&       policy()       { return _policy; }
+    const TPolicy& policy() const { return _policy; }
+
+    /// Access stored config (modify before retryInit() to change parameters)
+    Config&       config()       { return _config; }
+    const Config& config() const { return _config; }
 
 private:
-    SdCardModule();
+    SdCardModuleT() { sfxMutexInit(_sdMutex); }
 
-#if SFX_SD_BACKEND_SDFAT
-    SdFat _sd;
-#elif SFX_SD_BACKEND_ESP
-    fs::FS* _fs;                ///< Points to SD or SD_MMC (not owned)
-#endif
-
-    bool _initialized;
+    TPolicy _policy;
+    bool _initialized = false;
     SfxMutex _sdMutex;
-    SdBusMode _busMode;
-
-    // Stored SPI pin config for retryInit()
-    uint8_t _cs_pin;
-    uint8_t _sck_pin;
-    uint8_t _mosi_pin;
-    uint8_t _miso_pin;
-    uint8_t _speed_mhz;
-
-#if SFX_SD_BACKEND_ESP
-    // Stored SDIO config for retryInit()
-    bool _sdioOneBit;
-    int8_t _sdioClk, _sdioCmd, _sdioD0, _sdioD1, _sdioD2, _sdioD3;
-    bool _sdioFormatIfFailed;
-    uint8_t _sdioMaxOpenFiles;
-#endif
+    Config _config{};
 
     // Internal recursive tree listing (caller holds lock)
     void listTreeRecursive(const char* path, int depth,
@@ -380,6 +370,32 @@ private:
     // Internal recursive directory removal (caller holds lock)
     bool removeDirectoryRecursive(const char* path, int depth = 0);
 };
+
+
+// ============================================================================
+// Template Implementation
+// ============================================================================
+
+#include "sd_card.ipp"
+
+
+// ============================================================================
+// Platform Policy Selection + SdCardModule Alias
+// ============================================================================
+
+#if SFX_PLATFORM_PICO
+    #include "pico/pico_sd_policy.h"
+    /// Pico: SPI with SdFat backend
+    using SdCardModule = SdCardModuleT<PicoSpiSdPolicy>;
+#elif SFX_PLATFORM_ESP32
+    #include "esp32/esp32_sd_policies.h"
+    /// ESP32: default to SDIO 1-bit (matches current HubFX hardware config)
+    using SdCardModule = SdCardModuleT<EspSdio1BitPolicy>;
+#endif
+
+/// File handle type alias for external use (AudioMixer, StorageServer)
+using SdFile = SdCardModule::FileHandle;
+
 
 #endif // SFX_HAS_SD
 #endif // SD_CARD_H

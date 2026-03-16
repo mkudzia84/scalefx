@@ -75,6 +75,19 @@
 #define I2S_DATA_RATE               (AUDIO_SAMPLE_RATE * AUDIO_BIT_DEPTH * I2S_CHANNELS)
 
 // ============================================================================
+//  I2S PIN CONFIGURATION
+// ============================================================================
+
+/**
+ * I2S pin assignment — passed to I2S output begin()
+ */
+struct I2SPinConfig {
+    uint8_t dataPin;     // I2S serial data output (DIN/DOUT)
+    uint8_t bclkPin;     // I2S bit clock (BCLK/SCK)
+    uint8_t lrclkPin;    // I2S word select / left-right clock (LRCLK/WS)
+};
+
+// ============================================================================
 //  AUDIO MIXER CONFIGURATION
 // ============================================================================
 
