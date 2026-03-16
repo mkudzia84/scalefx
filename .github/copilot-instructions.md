@@ -11,7 +11,7 @@ ScaleFX is a modular scale model effects system with three platform targets:
 
 > **HubFX Pico (RP2350) is OBSOLETE.** The Pico variant (`controllers/hubfx/pico/`) is frozen as a reference implementation. All new HubFX development (features, bug fixes, protocol additions) MUST target `controllers/hubfx/esp32s3/`. See Rule 17.
 
-**Communication:** Binary COBS protocol over USB serial (2Mbps baud)
+**Communication:** Binary COBS protocol over USB serial (6Mbps baud)
 - Packet format: `[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]`
 - CRC-8 polynomial: 0x07
 - Endianness: Little-endian for ALL multi-byte values
@@ -244,8 +244,8 @@ float v = batteryMonitor.busVoltage_mV();  // clear, reusable, tested
 
 | LED | Pin | Purpose | Waiting for INIT | Connected | Connection Lost |
 |-----|-----|---------|-----------------|-----------|----------------|
-| **LED 0** | GP13 | Connection | Blink 500ms | Solid ON | OFF |
-| **LED 1** | GP14 | Error | OFF | OFF | OFF (blink 200ms if error) |
+| **LED 0** | GP13 (Pico) / GP48 (ESP32-S3) | Connection | Blink 500ms | Solid ON | OFF |
+| **LED 1** | GP14 (Pico) / disabled (ESP32-S3) | Error | OFF | OFF | OFF (blink 200ms if error) |
 
 #### Required Implementation
 

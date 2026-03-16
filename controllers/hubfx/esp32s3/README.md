@@ -314,7 +314,7 @@ board_build.arduino.memory_type = qio_opi
 
 ### No Serial Output After Boot
 
-The firmware uses 1Mbps baud (`Serial.begin(1000000)`) with binary COBS protocol. There is no human-readable output at 1Mbps — use the CLI:
+The firmware uses 6Mbps baud (`Serial.begin(6000000)`) with binary COBS protocol. There is no human-readable output at 6Mbps — use the CLI:
 ```bash
 python -m tests.cli.interactive --port COM15
 ```
@@ -369,6 +369,7 @@ All protocol communication (COBS/INIT/STATUS/DIAG) goes through UART0.
 
 | Version | Build | Date | Changes |
 |---------|-------|------|----------|
+| 0.7.3 | 40 | 2026-03-16 | Fixed loopTask stack overflow on ESP32-S3 — `StreamWriter` 2044-byte chunk buffer moved from stack to heap allocation, loopTask stack increased to 16KB (`ARDUINO_LOOP_STACK_SIZE=16384`). Fixed tab-delimited wire format for FILE_LIST/FILE_TREE (spaces in filenames no longer break parsing). CLI parsers updated with tab-first parsing + space fallback for legacy firmware. |
 | 0.6.0 | 31 | 2026-03-14 | Burst upload mode (`--burst` flag) — fire-and-forget chunks without per-chunk ACK for maximum throughput. MD5 verification on all uploads — server computes running MD5 hash and returns 16-byte digest in FILE_UPLOAD_END ACK payload. CLI compares local vs remote MD5 automatically. Optional `mode` byte in FILE_UPLOAD_BEGIN payload (0=sync, 1=burst). Burst mode reports CRC error count in ACK payload. |
 | 0.5.0 | 29 | 2026-03-13 | FILE_TREE (0xA9) — recursive directory tree via streaming (`sd.tree`/`flash.tree` CLI), improved `sd.ls`/`flash.ls` formatting (human-readable sizes, aligned columns, directory names in blue with trailing /) |
 | 0.4.0 | 23 | 2026-03-13 | File upload support (UPLOAD_BEGIN/DATA/END/CANCEL for flash), CRC-16 per-chunk integrity with retry, shutdown cleanup for stale uploads, UART RX buffer increased to 1024 on ESP32 for large packets, `flash.upload`/`flash.download` CLI commands with visual progress bar |

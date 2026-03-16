@@ -14,9 +14,9 @@
 // IndicatorLedManager (SfxServer nested class)
 // ============================================================================
 
-void SfxServer::IndicatorLedManager::begin(uint8_t connectionPin, uint8_t errorPin) {
-    _leds[0].begin(connectionPin);
-    _leds[1].begin(errorPin);
+void SfxServer::IndicatorLedManager::begin(int connectionPin, int errorPin) {
+    if (connectionPin >= 0) _leds[0].begin(connectionPin);
+    if (errorPin >= 0)      _leds[1].begin(errorPin);
 }
 
 void SfxServer::IndicatorLedManager::update() {
@@ -45,13 +45,15 @@ void SfxServer::IndicatorLedManager::update() {
 
 void SfxServer::begin(const char* prefix, const char* version,
                       uint32_t buildNumber,
-                      uint8_t connectionPin, uint8_t errorPin) {
+                      int connectionPin, int errorPin) {
     // Initialize USB serial
     // ESP32 UART default RX buffer is 256 bytes — too small for MAX_PAYLOAD_SIZE
-    // (512) packets which COBS-encode to ~520+ bytes. Must set before begin().
-    // Use 4096 for headroom at 2Mbps baud rate.
+    // (2048) packets which COBS-encode to ~2060+ bytes. Must set before begin().
+    // 128 KB holds ~64 full packets (~220ms at 6 Mbps line rate), matching the
+    // default window size for sliding-window uploads. This provides headroom for
+    // burst pipelining while Core 1 performs async SD card writes.
 #ifdef ESP32
-    Serial.setRxBufferSize(4096);
+    Serial.setRxBufferSize(131072);
 #endif
     Serial.begin(BAUD_RATE);
     while (!Serial && millis() < 3000) SFX_DELAY_MS(10);

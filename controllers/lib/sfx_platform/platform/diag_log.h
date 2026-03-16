@@ -233,7 +233,11 @@ private:
 
     // Ring buffer constants
     static constexpr size_t MAX_MSG_LEN = 128;    // max message text per entry
-    static constexpr uint16_t RING_SIZE = 128;    // power of 2, holds boot + reconnect history
+#ifdef ESP32
+    static constexpr uint16_t RING_SIZE = 512;    // ESP32: larger history (free SRAM ≈ 300 KB)
+#else
+    static constexpr uint16_t RING_SIZE = 128;    // Pico: conserve RAM
+#endif
 
     // Ring buffer entry — pre-formatted message with metadata
     struct LogEntry {

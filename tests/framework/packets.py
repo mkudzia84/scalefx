@@ -405,7 +405,7 @@ class StreamPacket:
 # =============================================================================
 
 class HubFxPacket:
-    """HubFX packet types (0x80-0xA8)."""
+    """HubFX packet types (0x80-0xAA)."""
     # Slave management
     SLAVE_LIST       = 0x80  # [] → SLAVE_LIST_RESP
     SLAVE_LIST_RESP  = 0x81  # [count:u8][entries...] Response
@@ -570,14 +570,17 @@ class HubFxStorage:
         FLASH = 1  # Onboard LittleFS flash
 
     class UploadMode(IntEnum):
-        SYNC  = 0  # ACK per chunk, CRC retry (default)
-        BURST = 1  # No per-chunk ACK, MD5 verification at end
+        SYNC     = 0  # ACK per chunk, CRC retry (default)
+        BURST    = 1  # No per-chunk ACK, MD5 verification at end
+        # Mode 2 (windowed) removed — use STREAM instead
+        STREAM   = 3  # Raw byte streaming: bypasses COBS, ring buffer + dual-core
 
     # Backward-compatible aliases
     TARGET_SD    = Target.SD
     TARGET_FLASH = Target.FLASH
     UPLOAD_SYNC  = UploadMode.SYNC
     UPLOAD_BURST = UploadMode.BURST
+    UPLOAD_STREAM = UploadMode.STREAM
 
 
 class DiagLevel:

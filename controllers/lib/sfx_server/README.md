@@ -79,9 +79,9 @@ void loop() {
 
 ## What `begin()` Does
 
-1. **USB Serial init** — `Serial.begin(2000000)` with 3-second wait for connection
+1. **USB Serial init** — `Serial.begin(6000000)` with 3-second wait for connection
 2. **Device name** — builds unique name from board ID (e.g., `"GunFX"` + last 4 hex of board ID → `"GunFX-A1B2"`)
-3. **Indicator LEDs** — initializes connection (default GP13) and error (default GP14) LEDs
+3. **Indicator LEDs** — initializes connection (default GP13) and error (default GP14) LEDs. Pass `-1` to disable.
 4. **DiagLog** — initializes diagnostic log singleton with serial output
 5. **CoreCommandServer** — configures board info (name, version, platform, CPU MHz, heap, build number)
 6. **System callbacks** — registers INIT → `doInit()`, SHUTDOWN → `doShutdown()`, REBOOT → `doShutdown()` + `SFX_REBOOT()`, BOOTSEL → `doShutdown()` + `sfxRebootToBootloader()`
@@ -208,18 +208,21 @@ No conditional compilation (`#ifdef`) exists in `sfx_server.h` or `sfx_server.cp
 
 ### Indicator LED Pin Defaults
 
-The default GPIO pins (13, 14) are overridable via `begin()` parameters:
+The default GPIO pins (13, 14) are overridable via `begin()` parameters. Pass `-1` to disable a pin:
 
 ```cpp
 // Custom pins for boards with different LED wiring
 server.begin("HubFX", VERSION, BUILD, /*connectionPin=*/2, /*errorPin=*/4);
+
+// ESP32-S3 DevKitC-1: onboard LED on GPIO48, no error LED
+server.begin("HubFX", VERSION, BUILD, /*connectionPin=*/48, /*errorPin=*/-1);
 ```
 
 ## Constants
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `BAUD_RATE` | 2,000,000 | USB serial baud rate |
+| `BAUD_RATE` | 6,000,000 | USB serial baud rate |
 | `CONNECTION_TIMEOUT_ms` | 15,000 | Inactivity before watchdog shutdown |
 | `BLINK_WAITING_ms` | 500 | Connection LED blink rate (waiting) |
 | `BLINK_ERROR_ms` | 200 | Error LED blink rate |

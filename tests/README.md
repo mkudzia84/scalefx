@@ -135,7 +135,7 @@ lightfx.power                 # Request power status
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SCALEFX_PORT` | COM3 (Win) / /dev/ttyACM0 (Linux) | Serial port |
-| `SCALEFX_BAUD` | 1000000 | Baud rate |
+| `SCALEFX_BAUD` | 6000000 | Baud rate |
 | `SCALEFX_TIMEOUT` | 2.0 | Response timeout (seconds) |
 
 ## Protocol Details

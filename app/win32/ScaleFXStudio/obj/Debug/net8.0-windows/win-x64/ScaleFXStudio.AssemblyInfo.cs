@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ScaleFXStudio")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+bc843dc62da45c516bc5812902b11394217ae882")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+26e1e2f878a4eec4ebd9ad332f0dc37b3ed9ff3b")]
 [assembly: System.Reflection.AssemblyProductAttribute("ScaleFXStudio")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ScaleFXStudio")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

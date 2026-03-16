@@ -41,8 +41,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.7.3"
-#define BUILD_NUMBER 37
+#define FIRMWARE_VERSION "0.10.0"
+#define BUILD_NUMBER 58
 
 #include <Arduino.h>
 #include <atomic>
@@ -65,7 +65,7 @@
 #include <storage/sd_card.h>
 
 // Protocol handlers (HubFX-specific commands)
-#include "protocol/hubfx_storage_server.h"
+#include <storage/storage_server.h>
 #include "protocol/hubfx_usb_server.h"
 
 // ============================================================================
@@ -73,10 +73,10 @@
 // ============================================================================
 
 // Indicator LEDs (directly driven GPIO)
-// DevKitC-1 has a user-addressable RGB LED on GPIO48 — not used here.
-// Use external LEDs on available GPIOs for connection/error indicators.
-#define PIN_LED_CONNECTION  13   // Connection status LED
-#define PIN_LED_ERROR       14   // Error/warning status LED
+// DevKitC-1 N8R8 has a user-addressable RGB LED on GPIO48 (active-high).
+// Use the onboard LED for connection status. Error LED disabled (no external LED).
+#define PIN_LED_CONNECTION  48   // Onboard RGB LED (connection status)
+#define PIN_LED_ERROR       -1   // Disabled (no external error LED)
 
 // I2S Audio Output
 // TODO: Assign pins based on chosen DAC board
@@ -174,7 +174,7 @@ static void logDiagnostics() {
 SfxServer server;
 
 // Module protocol handlers
-HubFxStorageServer storageServer;
+StorageServer storageServer;
 HubFxUsbServer usbServer;
 
 // ============================================================================
@@ -274,6 +274,9 @@ void setup() {
     server.addModuleHandler(&storageServer);
     server.addModuleHandler(&usbServer);
 
+    // Start dual-core storage writer task (Core 1 handles SD writes)
+    storageServer.startWriterTask();
+
     // ---- USB Host initialization ----
     // ESP32-S3 HW USB-OTG on fixed GPIO19 (D-) / GPIO20 (D+).
     // Event-driven: daemon + CDC-ACM tasks run in FreeRTOS background.
@@ -331,8 +334,15 @@ void setup() {
 // ============================================================================
 
 void loop() {
-    // Serial protocol processing (UART0 — COBS packets from CLI/PC)
-    server.loop();
+    // UPLOAD_STREAM mode: bypass COBS/CommandRouter, route Serial data
+    // directly to StorageServer's ring buffer for maximum throughput.
+    // Normal COBS processing resumes after all file_size bytes are received.
+    if (storageServer.isStreamReceiving()) {
+        storageServer.processStreamData(Serial);
+    } else {
+        // Normal serial protocol processing (UART0 — COBS packets from CLI/PC)
+        server.loop();
+    }
 
     // Check for stuck uploads (client crash, USB disconnect, etc.)
     storageServer.checkUploadTimeout();
@@ -344,5 +354,10 @@ void loop() {
     // TODO: Audio mixer producer (SD reads, WAV decode, mix into ring buffer)
     // TODO: Engine FX state machine
 
-    vTaskDelay(pdMS_TO_TICKS(1));  // Yield to FreeRTOS scheduler
+    // During active upload or streaming, skip vTaskDelay() to maximize
+    // throughput. In stream mode, processStreamData() needs to be called
+    // as fast as possible to drain the UART RX buffer into the ring buffer.
+    if (!storageServer.isUploadActive() && !storageServer.isStreamReceiving()) {
+        vTaskDelay(pdMS_TO_TICKS(1));  // Yield to FreeRTOS scheduler
+    }
 }

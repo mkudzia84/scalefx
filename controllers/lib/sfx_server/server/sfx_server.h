@@ -81,8 +81,8 @@ public:
         IndicatorLedManager() = default;
         ~IndicatorLedManager() = default;
 
-        /** @brief Initialize indicator LEDs on specified pins */
-        void begin(uint8_t connectionPin, uint8_t errorPin);
+        /** @brief Initialize indicator LEDs on specified pins (-1 = disabled) */
+        void begin(int connectionPin, int errorPin);
 
         /** @brief Update indicator LED outputs based on current state (call every loop) */
         void update();
@@ -125,11 +125,11 @@ public:
      * @param prefix   Device name prefix (e.g. "GunFX" → "GunFX-A1B2")
      * @param version  Firmware version string (e.g. "0.3.0")
      * @param buildNumber  Build number for INIT_READY response
-     * @param connectionPin  GPIO for connection indicator LED (default GP13)
-     * @param errorPin       GPIO for error indicator LED (default GP14)
+     * @param connectionPin  GPIO for connection indicator LED (default 13, -1 = disabled)
+     * @param errorPin       GPIO for error indicator LED (default 14, -1 = disabled)
      */
     void begin(const char* prefix, const char* version, uint32_t buildNumber,
-               uint8_t connectionPin = 13, uint8_t errorPin = 14);
+               int connectionPin = 13, int errorPin = 14);
 
     /**
      * @brief Register controller-specific init callback
@@ -249,7 +249,7 @@ private:
     bool _routerInitialized = false;
     bool _timeoutEnabled = true;
 
-    static constexpr uint32_t BAUD_RATE = 2000000;
+    static constexpr uint32_t BAUD_RATE = 6000000;
     static constexpr unsigned long CONNECTION_TIMEOUT_ms = 15000;
 
     void buildDeviceName(const char* prefix);

@@ -72,7 +72,7 @@ except ImportError:
 # =============================================================================
 
 CONTROLLERS = ['noop', 'gunfx', 'lightfx', 'gearcontrol', 'hubfx']
-BAUD_RATE = 2000000  # For verification only
+BAUD_RATE = 6000000  # For verification only
 FRAME_DELIMITER = 0x00
 
 

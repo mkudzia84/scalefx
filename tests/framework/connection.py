@@ -118,7 +118,7 @@ class ScaleFXConnection:
             conn.close()
     """
     
-    DEFAULT_BAUD = 2000000
+    DEFAULT_BAUD = 6000000
     DEFAULT_TIMEOUT = 2.0
     
     def __init__(self, port: Optional[str] = None, baud: int = DEFAULT_BAUD,
@@ -128,7 +128,7 @@ class ScaleFXConnection:
         
         Args:
             port: Serial port (e.g., "COM3", "/dev/ttyACM0")
-            baud: Baud rate (default 2000000)
+            baud: Baud rate (default 6000000)
             timeout: Response timeout in seconds
             verbose: Enable verbose logging (default: from SCALEFX_VERBOSE env)
         """
@@ -259,6 +259,14 @@ class ScaleFXConnection:
                 timeout=0.1,
                 write_timeout=1.0
             )
+            # Increase OS serial buffers for pipelined uploads.
+            # Default Windows COM port buffer (~4 KB) bottlenecks burst writes.
+            # 128 KB TX matches the ESP32 RX buffer, allowing a full window of
+            # data to be queued without per-chunk FlushFileBuffers() overhead.
+            try:
+                self._serial.set_buffer_size(rx_size=131072, tx_size=131072)
+            except Exception:
+                pass  # set_buffer_size is Windows-only, ignore on other platforms
             time.sleep(0.05)  # Wait for device to be ready
             self._rx_buffer.clear()
             self._pending.clear()
@@ -334,12 +342,15 @@ class ScaleFXConnection:
         except (IndexError, KeyError):
             pass  # Best-effort parsing
     
-    def send(self, data: bytes) -> bool:
+    def send(self, data: bytes, flush: bool = True) -> bool:
         """
         Send raw bytes (already COBS encoded with delimiter).
         
         Args:
             data: COBS encoded packet bytes
+            flush: If True (default), block until all bytes are physically
+                   transmitted. Set to False for burst/pipelined sends where
+                   the OS serial driver should buffer writes for throughput.
         
         Returns:
             True if sent successfully
@@ -352,7 +363,8 @@ class ScaleFXConnection:
         with self._lock:
             try:
                 self._serial.write(data)
-                self._serial.flush()
+                if flush:
+                    self._serial.flush()
                 return True
             except serial.SerialException:
                 return False

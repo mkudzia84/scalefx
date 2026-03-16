@@ -442,7 +442,16 @@ class InteractiveCLI(OutputMixin):
         scrolling output area. The serial listener is paused during command
         execution to avoid port contention.
         """
-        parts = text.split()
+        import shlex
+        import sys
+        try:
+            # posix=False on Windows to preserve backslashes in paths
+            parts = shlex.split(text, posix=(sys.platform != 'win32'))
+        except ValueError:
+            # Unmatched quotes — fall back to simple split
+            parts = text.split()
+        if not parts:
+            return
         cmd = parts[0].lower()
         args = parts[1:]
         

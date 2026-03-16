@@ -43,7 +43,7 @@ Task: "Work on HubFX"
 Protocol:
   format: "Binary COBS with CRC-8"
   crc_polynomial: 0x07
-  baud_rate: 2000000
+  baud_rate: 6000000
   packet_structure: "[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]"
   endianness: "little-endian"
 

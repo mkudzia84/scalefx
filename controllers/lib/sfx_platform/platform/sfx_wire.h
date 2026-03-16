@@ -39,7 +39,9 @@ namespace SfxWire {
 
 // NOTE: len field is u16LE as of protocol v0.4.0 (was u8, max 64 in v0.3.0).
 // Derived buffers (COBS, CommandRouter, processFrame stack) scale with
-// MAX_PAYLOAD_SIZE. Stack usage stays within 8KB default on all platforms.
+// MAX_PAYLOAD_SIZE. On ESP32-S3, loopTask stack MUST be >= 16KB
+// (set via -DARDUINO_LOOP_STACK_SIZE=16384) when using StreamWriter +
+// sendRawPacket, as the combined stack-allocated COBS buffers exceed 4KB.
 constexpr size_t HEADER_SIZE = 4;          // type(1) + tag(1) + len(2)
 
 // Platform-specific maximum payload size.

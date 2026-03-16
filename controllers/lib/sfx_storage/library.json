@@ -6,6 +6,7 @@
     "frameworks": "arduino",
     "platforms": ["raspberrypi", "espressif32"],
     "dependencies": [
-        {"name": "sfx_platform"}
+        {"name": "sfx_platform"},
+        {"name": "sfx_serial"}
     ]
 }

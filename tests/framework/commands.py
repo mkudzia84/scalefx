@@ -1452,17 +1452,19 @@ class HubFxCommands(CommandBuilder):
         return build_packet(HubFxPacket.FILE_DOWNLOAD, HubFxCommands._path_payload(path, target))
 
     @staticmethod
-    def file_upload_begin(path: str, size: int, target: int = 0, mode: int = 0) -> bytes:
+    def file_upload_begin(path: str, size: int, target: int = 0,
+                          mode: int = 0) -> bytes:
         """
         Begin a file upload.
 
-        After ACK, send FILE_UPLOAD_DATA chunks, then FILE_UPLOAD_END.
+        After ACK, send FILE_UPLOAD_DATA chunks (modes 0-1) or raw bytes
+        (mode 3 = stream), then FILE_UPLOAD_END.
 
         Args:
             path: Destination file path
             size: Total file size in bytes
             target: Storage target (0=SD, 1=Flash)
-            mode: Upload mode (0=sync with per-chunk ACK, 1=burst no per-chunk ACK)
+            mode: Upload mode (0=sync, 1=burst, 3=stream)
         """
         path_bytes = path.encode('utf-8')
         payload = u32_le(size) + bytes([len(path_bytes)]) + path_bytes
