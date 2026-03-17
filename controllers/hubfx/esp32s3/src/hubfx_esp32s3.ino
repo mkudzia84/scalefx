@@ -34,15 +34,15 @@
  *   [x] Audio mixer (I2S output via ESP-IDF driver, 8-ch WAV, dual-core)
  *   [ ] Config reader
  *   [ ] Slave management (INIT handshake, SlaveType identification)
- *   [ ] Audio server (protocol handler)
+ *   [x] Audio server (protocol handler)
  *   [ ] Engine server (protocol handler)
  *   [ ] Engine FX
  *   [ ] Gun FX
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.12.0"
-#define BUILD_NUMBER 60
+#define FIRMWARE_VERSION "0.13.0"
+#define BUILD_NUMBER 61
 
 #include <Arduino.h>
 #include <atomic>
@@ -73,9 +73,13 @@
 #include <codec/simple_i2s_codec.h>
 #include <audio/audio_mixer.h>
 #include <audio/audio_log.h>
+#include <audio/server/audio_server.h>
 
 // AudioMixer type alias for this platform
 using Mixer = AudioMixer<EspI2SOutput, SimpleI2SCodec>;
+
+// Audio protocol server type alias
+using AudioServer = AudioServerT<Mixer>;
 
 // ============================================================================
 // Pin Definitions (ESP32-S3 DevKitC-1)
@@ -213,6 +217,7 @@ SfxServer server;
 // Module protocol handlers
 StorageServer storageServer;
 HubFxUsbServer usbServer;
+AudioServer audioServer;
 
 // ============================================================================
 // Arduino Setup (Core 0)
@@ -309,8 +314,10 @@ void setup() {
     // ---- Register module protocol handlers ----
     storageServer.begin(&Serial);
     usbServer.begin(&Serial);
+    audioServer.begin(&Serial);
     server.addModuleHandler(&storageServer);
     server.addModuleHandler(&usbServer);
+    server.addModuleHandler(&audioServer);
 
     // Start dual-core storage writer task (Core 1 handles SD writes)
     storageServer.policy().startWriterTask();
@@ -344,8 +351,8 @@ void setup() {
     }
 
     // TODO: Config reader
-    // TODO: Domain-specific command handlers (slave, audio, engine)
-    //       e.g. server.addModuleHandler(&audioServer);
+    // TODO: Domain-specific command handlers (slave, engine)
+    //       e.g. server.addModuleHandler(&engineServer);
 
     // ---- Audio Mixer Initialization (Phase 1 — Core 0) ----
     // Phase 1: channels, ring buffer, codec, mutex.

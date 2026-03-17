@@ -1,20 +1,15 @@
 /**
- * Audio Mixer - Implementation
- * 
- * SPSC Ring Buffer Architecture:
- *   Core 0 (Producer): WAV decode + float mixing → ring buffer
- *   Core 1 (Consumer): ring buffer → I2S DMA
- * 
- * All audio math uses float, leveraging hardware FPU where available.
- * File I/O is decoupled via AudioFileOpenFn callback (injected by controller).
+ * Audio Mixer — DEAD FILE
  *
- * I2S output is abstracted via the I2SOutput interface (i2s_output.h).
- * The controller creates a platform-specific implementation (EspI2SOutput,
- * PicoI2SOutput, MockI2SSink) and passes it to begin(). No platform
- * #ifdef blocks exist in this file.
+ * AudioMixer is now a class template (AudioMixer<TI2S, TCodec>).
+ * All method implementations live in audio_mixer.ipp, which is
+ * #included at the bottom of audio_mixer.h.
+ *
+ * This .cpp file is kept empty so PlatformIO's build cache doesn't
+ * break if it still references the object file.
  */
 
-#if defined(SFX_HAS_AUDIO)
+#if 0  // Dead code — AudioMixer is now a template; see audio_mixer.ipp
 
 #include "audio_mixer.h"
 #include "audio_config.h"
