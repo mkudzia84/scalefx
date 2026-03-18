@@ -1,0 +1,190 @@
+/*
+ * HubFX Audio Client — Protocol Implementation
+ *
+ * HubFxAudioClient command methods and AUDIO_STATUS_RESP parsing.
+ * Ported from lib_archive/sfx_common/serial/hubfx/hubfx.cpp.
+ */
+
+#include "audio_client.h"
+
+using namespace CoreProtocol;
+
+// ============================================================================
+// Module Packet Handler (AUDIO_STATUS_RESP parsing)
+// ============================================================================
+
+void HubFxAudioClient::onModulePacket(uint8_t type, uint8_t tag,
+                                       const uint8_t* payload, size_t len) {
+    switch (type) {
+        case HubFxPacket::AUDIO_STATUS_RESP: {
+            if (len < 7) break;  // minimum header
+
+            size_t pos = 0;
+            _lastStatus = {};  // reset
+
+            _lastStatus.masterVolPct = payload[pos++];
+
+            uint8_t flags = payload[pos++];
+            _lastStatus.initialized  = (flags & 0x01) != 0;
+            _lastStatus.i2sRunning   = (flags & 0x02) != 0;
+            _lastStatus.hasCodec     = (flags & 0x04) != 0;
+            _lastStatus.hasRingStats = (flags & 0x08) != 0;
+
+            _lastStatus.sampleRate_Hz = getU16LE(&payload[pos]); pos += 2;
+            _lastStatus.bitDepth      = payload[pos++];
+            _lastStatus.maxChannels   = payload[pos++];
+
+            // Codec name
+            if (pos < len) {
+                uint8_t codecLen = payload[pos++];
+                if (codecLen > 0 && pos + codecLen <= len) {
+                    size_t copyLen = (codecLen < sizeof(_lastStatus.codecName) - 1)
+                                   ? codecLen : sizeof(_lastStatus.codecName) - 1;
+                    memcpy(_lastStatus.codecName, &payload[pos], copyLen);
+                    _lastStatus.codecName[copyLen] = '\0';
+                    pos += codecLen;
+                }
+            }
+
+            // Ring buffer stats (v3)
+            if (_lastStatus.hasRingStats && pos + 15 <= len) {
+                _lastStatus.ringFillPct     = payload[pos++];
+                _lastStatus.ringAvailRead   = getU16LE(&payload[pos]); pos += 2;
+                _lastStatus.ringAvailWrite  = getU16LE(&payload[pos]); pos += 2;
+                _lastStatus.underruns       = getU32LE(&payload[pos]); pos += 4;
+                _lastStatus.consumeLoops    = getU32LE(&payload[pos]); pos += 4;
+                _lastStatus.consumeFrames   = getU32LE(&payload[pos]); pos += 4;
+            }
+
+            // Per-channel data
+            if (pos < len) {
+                _lastStatus.activeMask = payload[pos++];
+                _lastStatus.activeCount = 0;
+
+                for (int i = 0; i < 8 && pos + 15 <= len; i++) {
+                    if (!(_lastStatus.activeMask & (1 << i))) continue;
+
+                    HubFxAudioChannelInfo& ch = _lastStatus.channels[_lastStatus.activeCount];
+                    ch.channel     = payload[pos++];
+                    ch.volumePct   = payload[pos++];
+                    ch.playing     = payload[pos++] != 0;
+                    ch.looping     = payload[pos++] != 0;
+                    ch.loopCount   = getU16LE(&payload[pos]); pos += 2;
+                    ch.remaining_ms = getU32LE(&payload[pos]); pos += 4;
+                    ch.queueLen    = payload[pos++];
+                    ch.output      = payload[pos++];
+
+                    // WAV info
+                    if (pos + 4 <= len) {
+                        ch.wavRate_Hz  = getU16LE(&payload[pos]); pos += 2;
+                        ch.wavChannels = payload[pos++];
+                        ch.wavBits     = payload[pos++];
+                    }
+
+                    // Filename
+                    if (pos < len) {
+                        uint8_t fnameLen = payload[pos++];
+                        if (fnameLen > 0 && pos + fnameLen <= len) {
+                            size_t copyLen = (fnameLen < sizeof(ch.filename) - 1)
+                                           ? fnameLen : sizeof(ch.filename) - 1;
+                            memcpy(ch.filename, &payload[pos], copyLen);
+                            ch.filename[copyLen] = '\0';
+                            pos += fnameLen;
+                        }
+                    }
+
+                    _lastStatus.activeCount++;
+                }
+            }
+
+            if (tag != CoreProtocol::TAG_ASYNC) {
+                _resultQueue.resolve(tag, CommandResult::Ack());
+            }
+            if (_statusCallback) _statusCallback(_lastStatus);
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
+// ============================================================================
+// Playback Control
+// ============================================================================
+
+CommandResult HubFxAudioClient::play(uint8_t channel, const char* path,
+                                      uint8_t volumePct, uint8_t output,
+                                      uint8_t loopMode, uint16_t loopCount) {
+    size_t pathLen = strlen(path);
+    if (pathLen > 127) pathLen = 127;
+
+    uint8_t payload[7 + 127];
+    payload[0] = channel;
+    payload[1] = volumePct;
+    payload[2] = output;
+    payload[3] = loopMode;
+    putU16LE(&payload[4], loopCount);
+    payload[6] = (uint8_t)pathLen;
+    memcpy(&payload[7], path, pathLen);
+
+    return sendCommand(HubFxPacket::AUDIO_PLAY, payload, 7 + pathLen);
+}
+
+CommandResult HubFxAudioClient::stop(uint8_t channel) {
+    uint8_t payload[1] = { channel };
+    return sendCommand(HubFxPacket::AUDIO_STOP, payload, 1);
+}
+
+CommandResult HubFxAudioClient::fade(uint8_t channel) {
+    uint8_t payload[1] = { channel };
+    return sendCommand(HubFxPacket::AUDIO_FADE, payload, 1);
+}
+
+// ============================================================================
+// Volume Control
+// ============================================================================
+
+CommandResult HubFxAudioClient::setVolume(uint8_t channel, uint8_t volumePct) {
+    uint8_t payload[2] = { channel, volumePct };
+    return sendCommand(HubFxPacket::AUDIO_VOLUME, payload, 2);
+}
+
+CommandResult HubFxAudioClient::setMasterVolume(uint8_t volumePct) {
+    uint8_t payload[2] = { HubFxAudio::CH_ALL, volumePct };
+    return sendCommand(HubFxPacket::AUDIO_VOLUME, payload, 2);
+}
+
+// ============================================================================
+// Queue Control
+// ============================================================================
+
+CommandResult HubFxAudioClient::queueSound(uint8_t channel, const char* path,
+                                            uint8_t volumePct, uint16_t loopCount,
+                                            uint8_t behavior) {
+    size_t pathLen = strlen(path);
+    if (pathLen > 127) pathLen = 127;
+
+    uint8_t payload[6 + 127];
+    payload[0] = channel;
+    payload[1] = volumePct;
+    putU16LE(&payload[2], loopCount);
+    payload[4] = behavior;
+    payload[5] = (uint8_t)pathLen;
+    memcpy(&payload[6], path, pathLen);
+
+    return sendCommand(HubFxPacket::AUDIO_QUEUE, payload, 6 + pathLen);
+}
+
+CommandResult HubFxAudioClient::queueClear(uint8_t channel) {
+    uint8_t payload[1] = { channel };
+    return sendCommand(HubFxPacket::AUDIO_QUEUE_CLEAR, payload, 1);
+}
+
+// ============================================================================
+// Status
+// ============================================================================
+
+CommandResult HubFxAudioClient::requestStatus() {
+    return sendCommand(HubFxPacket::AUDIO_STATUS_REQ, nullptr, 0);
+}

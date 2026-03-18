@@ -230,19 +230,23 @@ void AudioServerT<TMixer>::handleQueueClear(const uint8_t* payload, size_t len) 
 // ============================================================================
 // AUDIO_STATUS_REQ (0x8A) → AUDIO_STATUS_RESP (0x8B)
 //
-// Response wire format (v3):
+// Response wire format (v4):
 //   System header:
 //     [masterVol:u8][flags:u8][sampleRate:u16LE][bitDepth:u8][maxChannels:u8]
 //     [codecNameLen:u8][codecName:str]
 //   Ring buffer stats (if flags bit 3):
 //     [ringFillPct:u8][availRead:u16LE][availWrite:u16LE]
 //     [underruns:u32LE][consumeLoops:u32LE][consumeFrames:u32LE]
+//   Buffer capacities (if flags bit 4 — v4):
+//     [wavBufCapacity:u16LE]     // WAV_BUF_FRAMES
+//     [ringCapacity:u16LE]       // RING_FRAMES
 //   Channel data:
 //     [activeMask:u8]
 //     per-active-channel:
 //       [ch:u8][vol:u8][playing:u8][looping:u8][loopCount:u16LE]
 //       [remaining_ms:u32LE][queueLen:u8][output:u8]
 //       [wavRate:u16LE][wavChannels:u8][wavBits:u8]
+//       [wavBufFillPct:u8]               // v4: per-channel WAV buffer fill %
 //       [filenameLen:u8][filename:str]
 // ============================================================================
 
@@ -256,12 +260,13 @@ void AudioServerT<TMixer>::handleStatusReq() {
     // Master volume (0-100)
     buf[pos++] = (uint8_t)(m.masterVolume() * 100.0f);
 
-    // Flags: [bit0:initialized][bit1:i2sRunning][bit2:hasCodec][bit3:hasRingStats]
+    // Flags: [bit0:initialized][bit1:i2sRunning][bit2:hasCodec][bit3:hasRingStats][bit4:hasBufferCaps]
     uint8_t flags = 0;
     if (m.isInitialized()) flags |= 0x01;
     if (m.isI2SRunning())  flags |= 0x02;
     flags |= 0x04;  // always have codec (template parameter)
     flags |= 0x08;  // v3: always include ring buffer stats
+    flags |= 0x10;  // v4: include buffer capacities
     buf[pos++] = flags;
 
     // Audio format
@@ -288,6 +293,10 @@ void AudioServerT<TMixer>::handleStatusReq() {
     CoreProtocol::putU32LE(&buf[pos], m.getUnderruns()); pos += 4;
     CoreProtocol::putU32LE(&buf[pos], m.getConsumeLoops()); pos += 4;
     CoreProtocol::putU32LE(&buf[pos], m.getConsumeFrames()); pos += 4;
+
+    // Buffer capacities (v4)
+    CoreProtocol::putU16LE(&buf[pos], (uint16_t)WAV_BUF_FRAMES); pos += 2;
+    CoreProtocol::putU16LE(&buf[pos], (uint16_t)RING_FRAMES);   pos += 2;
 
     // Active channel bitmask — include channels that are playing OR have queued sounds
     uint8_t activeMask = 0;
@@ -319,6 +328,9 @@ void AudioServerT<TMixer>::handleStatusReq() {
         CoreProtocol::putU16LE(&buf[pos], (uint16_t)m.getSampleRate(i)); pos += 2;
         buf[pos++] = (uint8_t)m.getNumChannels(i);
         buf[pos++] = (uint8_t)m.getBitsPerSample(i);
+
+        // WAV decode buffer fill % (v4)
+        buf[pos++] = (uint8_t)m.getWavBufferFillPercent(i);
 
         // Filename (length-prefixed)
         const char* fname = m.getFilename(i);

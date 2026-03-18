@@ -1,9 +1,12 @@
 /*
- * Serial LightFX Protocol - Binary Protocol Client/Server
+ * Serial LightFX Protocol - Binary Protocol Types and Constants
  *
- * Binary COBS protocol client/server for LightFX controller.
- *   - LightFxClient: For HubFX (sends commands via USB)
- *   - LightFxServer: For LightFX Pico (receives commands, implements ICommandHandler)
+ * Binary COBS protocol definitions for LightFX controller.
+ * This header contains shared protocol types used by both client and server.
+ *
+ * Client/Server classes are in sfx_boards library:
+ *   - LightFxClient: lightfx/client/lightfx_client.h
+ *   - LightFxServer: lightfx/server/lightfx_server.h
  *
  * Packet Types (0x40-0x5F range):
  *   LED_SET (0x40)         - [ch:u8][brightness:u8]
@@ -31,8 +34,6 @@
 #include <Arduino.h>
 #include <functional>
 #include "serial/core/core.h"
-#include "serial/client/bus_client.h"
-#include "serial/core/bus_server.h"
 
 // ============================================================================
 // LightFX Binary Packet Types (0x40-0x5F range)
@@ -239,11 +240,6 @@ struct LightFxLandingLightStatus {
     bool finished = false;  // true when operation complete
 };
 
-/**
- * @brief Board information returned during init (alias for BusClientBoardInfo)
- */
-using LightFxBoardInfo = BusClientBoardInfo;
-
 // ============================================================================
 // Callback Types
 // ============================================================================
@@ -277,181 +273,5 @@ using LedEnableCallback = std::function<uint8_t(uint8_t channel, uint8_t enabled
 using LandingLightBindCallback = std::function<uint8_t(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
                                                        uint16_t deployUs, uint16_t retractUs, uint8_t brightness)>;
 using LandingLightSlotCallback = std::function<uint8_t(uint8_t slot)>;
-
-// ============================================================================
-// LightFxClient Class (Binary Protocol)
-// ============================================================================
-
-/**
- * @brief Client-side LightFX serial communication (binary COBS protocol)
- * 
- * Used by HubFX to send commands to LightFX server boards over USB.
- * Extends BusClient with LightFX-specific commands.
- */
-class LightFxClient : public BusClient {
-public:
-    // ========================================================================
-    // LED Direct Control
-    // ========================================================================
-    
-    CommandResult ledSet(uint8_t channel, uint8_t brightness);
-    CommandResult ledOff(uint8_t channel = 0);
-
-    // ========================================================================
-    // LED Sequence Control
-    // ========================================================================
-    
-    CommandResult ledSeqClear(uint8_t channel);
-    CommandResult ledSeqAddOn(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
-    CommandResult ledSeqAddOff(uint8_t channel, uint16_t durationMs);
-    CommandResult ledSeqAddFlash(uint8_t channel, uint16_t intervalMs, uint16_t durationMs,
-                        uint8_t brightness = 255, uint8_t dutyPercent = 50);
-    CommandResult ledSeqAddFadeIn(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
-    CommandResult ledSeqAddFadeOut(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
-    CommandResult ledSeqAddFading(uint8_t channel, uint16_t cycleMs, uint16_t durationMs = 0,
-                         uint8_t minBrightness = 0, uint8_t maxBrightness = 255);
-    CommandResult ledSeqStart(uint8_t channel);
-    CommandResult ledSeqStop(uint8_t channel);
-    CommandResult ledSeqRestart(uint8_t channel);
-    CommandResult ledSeqStatus(uint8_t channel);
-    CommandResult ledStatus();
-    CommandResult ledMasterBrightness(uint8_t pct);
-
-    // ========================================================================
-    // Servo Control
-    // ========================================================================
-    
-    CommandResult servoSet(uint8_t id, int16_t pulseUs);
-    CommandResult servoSettings(uint8_t id, uint16_t minUs, uint16_t maxUs,
-                       uint16_t speed, uint16_t accel, uint16_t decel);
-
-    // ========================================================================
-    // Landing Light Control
-    // ========================================================================
-    
-    CommandResult landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
-                          uint16_t deployUs, uint16_t retractUs, uint8_t brightness = 255);
-    CommandResult landingLightUnbind(uint8_t slot = 0);
-    CommandResult landingLightDeploy(uint8_t slot = 0);
-    CommandResult landingLightRetract(uint8_t slot = 0);
-
-    // ========================================================================
-    // Channel Management
-    // ========================================================================
-
-    CommandResult ledReset(uint8_t channel = 0);
-    CommandResult ledEnable(uint8_t channel, bool enabled);
-
-    // ========================================================================
-    // Status
-    // ========================================================================
-
-    CommandResult requestStatus();
-
-    // ========================================================================
-    // Callbacks
-    // ========================================================================
-    
-    void onSeqStatus(LightFxSeqStatusCallback cb) { _seqStatusCallback = cb; }
-    void onChannelStatus(LightFxChannelStatusCallback cb) { _channelStatusCallback = cb; }
-    void onSeqQueue(LightFxSeqQueueCallback cb) { _seqQueueCallback = cb; }
-    void onLandingLightStatus(LightFxLandingLightStatusCallback cb) { _landingLightStatusCallback = cb; }
-
-protected:
-    void onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) override;
-    const char* getModuleErrorMessage(uint8_t code) override { return LightFxError::getMessage(code); }
-
-private:
-    LightFxSeqStatusCallback _seqStatusCallback;
-    LightFxChannelStatusCallback _channelStatusCallback;
-    LightFxSeqQueueCallback _seqQueueCallback;
-    LightFxLandingLightStatusCallback _landingLightStatusCallback;
-};
-
-// ============================================================================
-// LightFxServer Class (Binary Protocol)
-// ============================================================================
-
-/**
- * @brief Server-side LightFX serial communication (binary COBS protocol)
- * 
- * Used by LightFX Pico to receive commands from HubFX client.
- * Extends BusServer for use with SfxServer + CommandRouter.
- */
-class LightFxServer : public BusServer {
-public:
-    const char* handlerName() const override { return "LightFxServer"; }
-
-    // ========================================================================
-    // Response Methods
-    // ========================================================================
-    
-    int sendSeqStatus(const LightFxSeqStatus& status);
-    int sendSeqQueue(const LightFxSeqQueue& queue);
-    int sendChannelStatus(const LightFxChannelStatus* channels, uint8_t count);
-    int sendLandingLightStatus(const LightFxLandingLightStatus& status);
-
-    // ========================================================================
-    // LED Callbacks
-    // ========================================================================
-    
-    void onLedSet(LedSetCallback cb) { _ledSetCallback = cb; }
-    void onLedOff(LedOffCallback cb) { _ledOffCallback = cb; }
-    void onLedSeqClear(LedSeqClearCallback cb) { _ledSeqClearCallback = cb; }
-    void onLedSeqAdd(LedSeqAddCallback cb) { _ledSeqAddCallback = cb; }
-    void onLedSeqStart(LedSeqStartCallback cb) { _ledSeqStartCallback = cb; }
-    void onLedSeqStop(LedSeqStopCallback cb) { _ledSeqStopCallback = cb; }
-    void onLedSeqRestart(LedSeqRestartCallback cb) { _ledSeqRestartCallback = cb; }
-    void onLedSeqStatus(LedSeqStatusCallback cb) { _ledSeqStatusCallback = cb; }
-    void onLedSeqQueue(LedSeqQueueCallback cb) { _ledSeqQueueCallback = cb; }
-    void onLedStatus(LedChannelStatusCallback cb) { _ledStatusCallback = cb; }
-    void onLedMasterBrightness(LedMasterBrightnessCallback cb) { _ledMasterBrightnessCallback = cb; }
-    void onLedReset(LedResetCallback cb) { _ledResetCallback = cb; }
-    void onLedEnable(LedEnableCallback cb) { _ledEnableCallback = cb; }
-
-    // ========================================================================
-    // Servo Callbacks
-    // ========================================================================
-    
-    void onServoSet(ServoSetCallback cb) { _servoSetCallback = cb; }
-    void onServoSettings(ServoSettingsCallback cb) { _servoSettingsCallback = cb; }
-
-    // ========================================================================
-    // Landing Light Callbacks
-    // ========================================================================
-    
-    void onLandingLightBind(LandingLightBindCallback cb) { _landingLightBindCallback = cb; }
-    void onLandingLightUnbind(LandingLightSlotCallback cb) { _landingLightUnbindCallback = cb; }
-    void onLandingLightDeploy(LandingLightSlotCallback cb) { _landingLightDeployCallback = cb; }
-    void onLandingLightRetract(LandingLightSlotCallback cb) { _landingLightRetractCallback = cb; }
-
-protected:
-    CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
-    uint8_t moduleRangeLow() const override { return 0x40; }
-    uint8_t moduleRangeHigh() const override { return 0x5F; }
-    const char* getModuleErrorMessage(uint8_t code) override { return LightFxError::getMessage(code); }
-
-private:
-    LedSetCallback _ledSetCallback;
-    LedOffCallback _ledOffCallback;
-    LedSeqClearCallback _ledSeqClearCallback;
-    LedSeqAddCallback _ledSeqAddCallback;
-    LedSeqStartCallback _ledSeqStartCallback;
-    LedSeqStopCallback _ledSeqStopCallback;
-    LedSeqRestartCallback _ledSeqRestartCallback;
-    LedSeqStatusCallback _ledSeqStatusCallback;
-    LedSeqQueueCallback _ledSeqQueueCallback;
-    LedChannelStatusCallback _ledStatusCallback;
-    LedMasterBrightnessCallback _ledMasterBrightnessCallback;
-    LedResetCallback _ledResetCallback;
-    LedEnableCallback _ledEnableCallback;
-    ServoSetCallback _servoSetCallback;
-    ServoSettingsCallback _servoSettingsCallback;
-    LandingLightBindCallback _landingLightBindCallback;
-    LandingLightSlotCallback _landingLightUnbindCallback;
-    LandingLightSlotCallback _landingLightDeployCallback;
-    LandingLightSlotCallback _landingLightRetractCallback;
-    uint8_t _landingLightTag[3] = {};  // Per-slot tag for deploy/retract progress
-};
 
 #endif // SERIAL_LIGHTFX_H

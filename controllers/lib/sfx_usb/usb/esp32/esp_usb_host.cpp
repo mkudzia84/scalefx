@@ -61,13 +61,24 @@ static void usbHostDaemonTask(void* arg) {
     SFX_LOG_INFO("[UsbHost] Daemon task started");
     while (true) {
         uint32_t event_flags;
-        usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
+        esp_err_t err = usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
+
+        if (err != ESP_OK) {
+            EspUsbHost::instance()._stats().hcd_errors++;
+            SFX_LOG_ERROR("[UsbHost] usb_host_lib_handle_events error: %s (0x%X)",
+                          esp_err_to_name(err), err);
+        }
 
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
             SFX_LOG_DEBUG("[UsbHost] All clients deregistered");
         }
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
             SFX_LOG_DEBUG("[UsbHost] All devices freed");
+        }
+
+        // Log all event flags for diagnostics
+        if (event_flags != 0) {
+            SFX_LOG_DEBUG("[UsbHost] HCD event flags: 0x%08lX", (unsigned long)event_flags);
         }
     }
 }
@@ -77,7 +88,27 @@ static void usbHostDaemonTask(void* arg) {
 // ============================================================================
 
 static void cdcNewDeviceCb(usb_device_handle_t usb_dev) {
+    // IMPORTANT: This callback runs in USB Host Library context.
+    // The CDC device CANNOT be opened here (per esp_cdc_acm docs).
+    // We only peek descriptors and queue an open request for the open task.
     EspUsbHost::instance()._handleNewDevice((void*)usb_dev);
+}
+
+/**
+ * Deferred CDC-ACM open task — waits for PendingOpen requests from
+ * the new_dev_cb and performs cdc_acm_host_open() outside USB context.
+ */
+static void usbHostOpenTask(void* arg) {
+    SFX_LOG_INFO("[UsbHost] CDC open task started");
+    EspUsbHost::PendingOpen req;
+    while (true) {
+        // Block until a new device needs opening
+        if (xQueueReceive((QueueHandle_t)EspUsbHost::instance()._openQueue,
+                          &req, portMAX_DELAY) == pdTRUE) {
+            SFX_LOG_INFO("[UsbHost] Open task: processing VID=%04X PID=%04X", req.vid, req.pid);
+            EspUsbHost::instance()._processOpenRequest(req.vid, req.pid);
+        }
+    }
 }
 
 static bool cdcDataCb(const uint8_t* data, size_t data_len, void* user_arg) {
@@ -141,6 +172,16 @@ void EspUsbHost::end() {
     if (_driverInstalled) {
         cdc_acm_host_uninstall();
         _driverInstalled = false;
+    }
+
+    // Stop open task and delete queue
+    if (_openTaskHandle) {
+        vTaskDelete((TaskHandle_t)_openTaskHandle);
+        _openTaskHandle = nullptr;
+    }
+    if (_openQueue) {
+        vQueueDelete((QueueHandle_t)_openQueue);
+        _openQueue = nullptr;
     }
 
     // Stop daemon task
@@ -222,8 +263,42 @@ bool EspUsbHost::init() {
     }
     _driverInstalled = true;
 
+    // Step 4: Create queue + task for deferred CDC-ACM opens
+    // (new_dev_cb runs in USB context where cdc_acm_host_open is NOT safe)
+    _openQueue = (void*)xQueueCreate(USB_HOST_MAX_CDC_DEVICES, sizeof(PendingOpen));
+    if (!_openQueue) {
+        SFX_LOG_ERROR("[UsbHost] Failed to create open queue");
+        cdc_acm_host_uninstall();
+        _driverInstalled = false;
+        vTaskDelete((TaskHandle_t)_daemonTaskHandle);
+        _daemonTaskHandle = nullptr;
+        usb_host_uninstall();
+        return false;
+    }
+
+    ret = xTaskCreatePinnedToCore(
+        usbHostOpenTask,
+        "usb_open",
+        4096,                     // Stack size (bytes)
+        nullptr,                  // No parameters
+        3,                        // Between daemon (2) and CDC driver (5)
+        (TaskHandle_t*)&_openTaskHandle,
+        0                         // Pin to Core 0 (same as protocol handler)
+    );
+    if (ret != pdPASS) {
+        SFX_LOG_ERROR("[UsbHost] Failed to create open task");
+        vQueueDelete((QueueHandle_t)_openQueue);
+        _openQueue = nullptr;
+        cdc_acm_host_uninstall();
+        _driverInstalled = false;
+        vTaskDelete((TaskHandle_t)_daemonTaskHandle);
+        _daemonTaskHandle = nullptr;
+        usb_host_uninstall();
+        return false;
+    }
+
     _state.taskRunning = true;
-    SFX_LOG_INFO("[UsbHost] HW USB-OTG ready (CDC-ACM driver installed)");
+    SFX_LOG_INFO("[UsbHost] HW USB-OTG ready (CDC-ACM driver + open task installed)");
     return true;
 #endif // ESP_USB_HAS_CDC_ACM
 }
@@ -243,20 +318,59 @@ void EspUsbHost::process() {
 
 #if ESP_USB_HAS_CDC_ACM
 
+/**
+ * Called from new_dev_cb (USB Host context).
+ * MUST NOT call cdc_acm_host_open() here — only peek descriptors
+ * and queue an open request for the dedicated open task.
+ */
 void EspUsbHost::_handleNewDevice(void* usbDevHandle) {
     usb_device_handle_t usb_dev = (usb_device_handle_t)usbDevHandle;
+    _state.stats.enum_attempts++;
 
-    // Get device descriptor for VID/PID identification
+    SFX_LOG_INFO("[UsbHost] New device callback fired (attempt #%lu)",
+                 (unsigned long)_state.stats.enum_attempts);
+
+    // Peek device descriptor for VID/PID (this IS safe in USB context)
     const usb_device_desc_t* desc;
     esp_err_t err = usb_host_get_device_descriptor(usb_dev, &desc);
     if (err != ESP_OK) {
-        SFX_LOG_WARN("[UsbHost] Failed to get device descriptor: %s", esp_err_to_name(err));
+        _state.stats.enum_desc_failures++;
+        SFX_LOG_ERROR("[UsbHost] Failed to get device descriptor: %s (attempt #%lu, desc_failures=%lu)",
+                     esp_err_to_name(err),
+                     (unsigned long)_state.stats.enum_attempts,
+                     (unsigned long)_state.stats.enum_desc_failures);
         return;
     }
 
     uint16_t vid = desc->idVendor;
     uint16_t pid = desc->idProduct;
-    SFX_LOG_INFO("[UsbHost] New device: VID=%04X PID=%04X", vid, pid);
+    const char* devName = knownDeviceName(vid, pid);
+    SFX_LOG_INFO("[UsbHost] New device: VID=%04X PID=%04X class=%02X sub=%02X proto=%02X bcdUSB=%04X%s%s",
+                 vid, pid, desc->bDeviceClass, desc->bDeviceSubClass,
+                 desc->bDeviceProtocol, desc->bcdUSB,
+                 devName ? " — " : "", devName ? devName : "");
+
+    // Queue the open request — cdc_acm_host_open() CANNOT be called from USB context
+    if (_openQueue) {
+        PendingOpen req = { vid, pid };
+        if (xQueueSend((QueueHandle_t)_openQueue, &req, 0) != pdTRUE) {
+            SFX_LOG_ERROR("[UsbHost] Open queue full — dropping device VID=%04X PID=%04X", vid, pid);
+            _state.stats.enum_failures++;
+        } else {
+            SFX_LOG_INFO("[UsbHost] Queued open request for VID=%04X PID=%04X", vid, pid);
+        }
+    } else {
+        SFX_LOG_ERROR("[UsbHost] Open queue not created — cannot open device");
+        _state.stats.enum_failures++;
+    }
+}
+
+/**
+ * Called from the dedicated open task (NOT USB context).
+ * Performs the actual cdc_acm_host_open() which is safe here.
+ */
+void EspUsbHost::_processOpenRequest(uint16_t vid, uint16_t pid) {
+    SFX_LOG_INFO("[UsbHost] Processing CDC open: VID=%04X PID=%04X", vid, pid);
 
     // Pre-allocate a tracking slot (used as user_arg in CDC callbacks)
     int slotIdx = _allocateSlot();
@@ -284,12 +398,14 @@ void EspUsbHost::_handleNewDevice(void* usbDevHandle) {
         .user_arg = (void*)(uintptr_t)slotIdx,  // Slot index for callback identification
     };
 
-    // Attempt to open the device as CDC-ACM
+    // Attempt to open the device as CDC-ACM (safe — we're in the open task, not USB context)
     cdc_acm_dev_hdl_t cdc_handle = nullptr;
-    err = cdc_acm_host_open(vid, pid, 0, &dev_config, &cdc_handle);
+    esp_err_t err = cdc_acm_host_open(vid, pid, 0, &dev_config, &cdc_handle);
     if (err != ESP_OK) {
-        SFX_LOG_WARN("[UsbHost] Not a CDC device (VID=%04X PID=%04X): %s",
-                     vid, pid, esp_err_to_name(err));
+        _state.stats.enum_cdc_open_failures++;
+        SFX_LOG_WARN("[UsbHost] CDC-ACM open failed (VID=%04X PID=%04X iface=0): %s (cdc_open_failures=%lu)",
+                     vid, pid, esp_err_to_name(err),
+                     (unsigned long)_state.stats.enum_cdc_open_failures);
         vStreamBufferDelete(rxStream);
         _slots[slotIdx] = {};
         return;
@@ -325,8 +441,10 @@ void EspUsbHost::_handleNewDevice(void* usbDevHandle) {
         _state.cdcDevices[devIdx].state = UsbDeviceState::Ready;
     }
 
-    SFX_LOG_INFO("[UsbHost] CDC device opened: slot=%d addr=%d VID=%04X PID=%04X",
-                 slotIdx, devAddr, vid, pid);
+    const char* devName = knownDeviceName(vid, pid);
+    SFX_LOG_INFO("[UsbHost] CDC device opened: slot=%d addr=%d VID=%04X PID=%04X%s%s",
+                 slotIdx, devAddr, vid, pid,
+                 devName ? " — " : "", devName ? devName : "");
 
     // Fire mount callback (notifies SlaveServer for registration)
     if (_state.mountCallback) _state.mountCallback(devAddr, vid, pid);
@@ -382,7 +500,9 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
         }
 
         case CDC_ACM_HOST_ERROR:
-            SFX_LOG_WARN("[UsbHost] CDC error on slot=%d", slotIdx);
+            _state.stats.hcd_errors++;
+            SFX_LOG_ERROR("[UsbHost] CDC error on slot=%d (hcd_errors=%lu)",
+                         slotIdx, (unsigned long)_state.stats.hcd_errors);
             break;
 
         case CDC_ACM_HOST_SERIAL_STATE:
@@ -503,6 +623,14 @@ void EspUsbHost::printStatus() const {
     SFX_LOG_INFO("TX: %lu bytes, RX: %lu bytes",
                  _state.stats.bytes_sent,
                  _state.stats.bytes_received);
+    SFX_LOG_INFO("Enum: attempts=%lu failures=%lu desc_fail=%lu cdc_open_fail=%lu",
+                 (unsigned long)_state.stats.enum_attempts,
+                 (unsigned long)_state.stats.enum_failures,
+                 (unsigned long)_state.stats.enum_desc_failures,
+                 (unsigned long)_state.stats.enum_cdc_open_failures);
+    SFX_LOG_INFO("Errors: hcd=%lu port=%lu",
+                 (unsigned long)_state.stats.hcd_errors,
+                 (unsigned long)_state.stats.port_errors);
     for (int i = 0; i < _state.cdcDeviceCount; i++) {
         const CdcDeviceInfo& dev = _state.cdcDevices[i];
         const char* stateStr = "Unknown";
@@ -512,8 +640,14 @@ void EspUsbHost::printStatus() const {
             case UsbDeviceState::Mounted:      stateStr = "Mounted"; break;
             case UsbDeviceState::Ready:        stateStr = "Ready"; break;
         }
-        SFX_LOG_INFO("  [%d] addr=%d VID=%04X PID=%04X %s",
-                     i, dev.dev_addr, dev.vid, dev.pid, stateStr);
+        const char* devName = knownDeviceName(dev.vid, dev.pid);
+        if (devName) {
+            SFX_LOG_INFO("  [%d] addr=%d VID=%04X PID=%04X %s — %s",
+                         i, dev.dev_addr, dev.vid, dev.pid, stateStr, devName);
+        } else {
+            SFX_LOG_INFO("  [%d] addr=%d VID=%04X PID=%04X %s",
+                         i, dev.dev_addr, dev.vid, dev.pid, stateStr);
+        }
     }
 }
 

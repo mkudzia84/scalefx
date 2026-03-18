@@ -1,5 +1,5 @@
 /*
- * Serial HubFX Protocol — Protocol Constants and Client Classes
+ * Serial HubFX Protocol — Protocol Constants and Data Types
  *
  * This header contains:
  *   - HubFxPacket:  Packet type constants (0x80-0xA9)
@@ -7,13 +7,15 @@
  *   - HubFxAudio:   Audio wire format constants
  *   - HubFxStorage: Storage target constants
  *   - Data structs: Status/response structs for client-side parsing
- *   - HubFxAudioClient:   Client for sending audio commands
- *   - HubFxStorageClient:  Client for sending storage commands
+ *   - Callback types: Client callback typedefs
  *
- * Server-side command handlers (HubFxAudioServer, HubFxStorageServer) are NOT
- * in this header — they live in the HubFX ESP32-S3 controller codebase because
- * they depend on platform-specific audio/storage backends (AudioMixer, SdFat,
- * LittleFS, etc.) that vary by target.
+ * Client classes live in their domain libraries:
+ *   - HubFxAudioClient:   sfx_audio/client/audio_client.h
+ *   - HubFxStorageClient:  sfx_storage/client/storage_client.h
+ *
+ * Server classes live in their domain libraries:
+ *   - AudioServerT<TMixer>:        sfx_audio/server/audio_server.h
+ *   - StorageServerT<TPolicy>:     sfx_storage/server/storage_server.h
  *
  * NOTE: This header is NOT auto-included by serial.h — include explicitly:
  *   #include <serial/hubfx/hubfx.h>
@@ -25,7 +27,6 @@
 #include <Arduino.h>
 #include <functional>
 #include "serial/core/core.h"
-#include "serial/client/bus_client.h"
 #include "serial/core/stream.h"
 
 
@@ -213,6 +214,7 @@ struct HubFxAudioChannelInfo {
     uint16_t wavRate_Hz  = 0;
     uint8_t wavChannels  = 0;
     uint8_t wavBits      = 0;
+    uint8_t wavBufFillPct = 0;     // v4: WAV decode buffer fill %
     char filename[64]    = {};
 };
 
@@ -223,6 +225,7 @@ struct HubFxAudioStatus {
     bool i2sRunning       = false;
     bool hasCodec         = false;
     bool hasRingStats     = false;  // v3 flag
+    bool hasBufferCaps    = false;  // v4 flag
     uint16_t sampleRate_Hz = 0;
     uint8_t bitDepth      = 0;
     uint8_t maxChannels   = 0;
@@ -235,6 +238,10 @@ struct HubFxAudioStatus {
     uint32_t underruns       = 0;
     uint32_t consumeLoops    = 0;
     uint32_t consumeFrames   = 0;
+
+    // Buffer capacities (v4)
+    uint16_t wavBufCapacity  = 0;  // WAV_BUF_FRAMES
+    uint16_t ringCapacity    = 0;  // RING_FRAMES
 
     // Per-channel
     uint8_t activeMask    = 0;
@@ -286,169 +293,6 @@ using HubFxSdStatusCallback     = std::function<void(const HubFxSdStatus& status
 using HubFxFlashStatusCallback  = std::function<void(const HubFxFlashStatus& status)>;
 using HubFxFileInfoCallback     = std::function<void(const HubFxFileInfo& info)>;
 using HubFxConfigInfoCallback   = std::function<void(const HubFxConfigInfo& info)>;
-
-
-// ============================================================================
-// HubFxAudioClient — Client for Audio Commands
-// ============================================================================
-
-/**
- * @brief Client-side audio serial communication for HubFX.
- *
- * Used by any controller or app that sends audio playback commands
- * to a HubFX hub over USB. Extends BusClient with audio-specific
- * command methods and AUDIO_STATUS_RESP parsing.
- */
-class HubFxAudioClient : public BusClient {
-public:
-    // ========================================================================
-    // Playback Control
-    // ========================================================================
-
-    CommandResult play(uint8_t channel, const char* path, uint8_t volumePct = 100,
-                       uint8_t output = HubFxAudio::OUTPUT_STEREO,
-                       uint8_t loopMode = HubFxAudio::LOOP_NONE,
-                       uint16_t loopCount = 0);
-    CommandResult stop(uint8_t channel = HubFxAudio::CH_ALL);
-    CommandResult fade(uint8_t channel);
-
-    // ========================================================================
-    // Volume Control
-    // ========================================================================
-
-    CommandResult setVolume(uint8_t channel, uint8_t volumePct);
-    CommandResult setMasterVolume(uint8_t volumePct);
-
-    // ========================================================================
-    // Queue Control
-    // ========================================================================
-
-    CommandResult queueSound(uint8_t channel, const char* path, uint8_t volumePct = 100,
-                             uint16_t loopCount = 0,
-                             uint8_t behavior = HubFxAudio::QUEUE_FINISH_LOOP);
-    CommandResult queueClear(uint8_t channel = HubFxAudio::CH_ALL);
-
-    // ========================================================================
-    // Status
-    // ========================================================================
-
-    CommandResult requestStatus();
-
-    // ========================================================================
-    // Callbacks
-    // ========================================================================
-
-    void onAudioStatus(HubFxAudioStatusCallback cb) { _statusCallback = cb; }
-
-    // ========================================================================
-    // State
-    // ========================================================================
-
-    const HubFxAudioStatus& lastStatus() const { return _lastStatus; }
-
-protected:
-    void onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) override;
-    const char* getModuleErrorMessage(uint8_t code) override { return HubFxError::getMessage(code); }
-
-private:
-    HubFxAudioStatus _lastStatus;
-    HubFxAudioStatusCallback _statusCallback;
-};
-
-
-// ============================================================================
-// HubFxStorageClient — Client for Storage Commands
-// ============================================================================
-
-/**
- * @brief Client-side storage serial communication for HubFX.
- *
- * Used by any controller or app that sends config, SD, flash,
- * and file commands to a HubFX hub over USB. Extends BusClient
- * with storage-specific command methods and response parsing.
- *
- * For streaming responses (FILE_LIST, FILE_DOWNLOAD), the client
- * sends the command and the caller must handle STREAM_BEGIN/DATA/END
- * packets separately.
- */
-class HubFxStorageClient : public BusClient {
-public:
-    // ========================================================================
-    // Config Commands
-    // ========================================================================
-
-    CommandResult configReload();
-    CommandResult configGet();
-
-    // ========================================================================
-    // SD Card Commands
-    // ========================================================================
-
-    CommandResult sdInit(uint8_t speed_mhz = 20);
-    CommandResult sdStatus();
-
-    // ========================================================================
-    // Flash Commands
-    // ========================================================================
-
-    CommandResult flashStatus();
-
-    // ========================================================================
-    // File Operations (target: TARGET_SD=0, TARGET_FLASH=1)
-    // ========================================================================
-
-    /// Starts streamed listing — handle STREAM_BEGIN/DATA/END via callbacks
-    CommandResult fileList(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
-    CommandResult fileDelete(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
-    CommandResult fileMkdir(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
-    CommandResult fileInfo(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
-
-    /// Starts streamed download — handle STREAM_BEGIN/DATA/END via callbacks
-    CommandResult fileDownload(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
-
-    // ========================================================================
-    // Upload Commands
-    // ========================================================================
-
-    CommandResult uploadBegin(const char* path, uint32_t size,
-                              HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
-    CommandResult uploadData(uint16_t seqNum, const uint8_t* data, size_t dataLen);
-    CommandResult uploadEnd();
-    CommandResult uploadCancel();
-
-    // ========================================================================
-    // Callbacks
-    // ========================================================================
-
-    void onSdStatus(HubFxSdStatusCallback cb)      { _sdStatusCb = cb; }
-    void onFlashStatus(HubFxFlashStatusCallback cb) { _flashStatusCb = cb; }
-    void onFileInfo(HubFxFileInfoCallback cb)       { _fileInfoCb = cb; }
-    void onConfigInfo(HubFxConfigInfoCallback cb)   { _configInfoCb = cb; }
-
-    // ========================================================================
-    // State
-    // ========================================================================
-
-    const HubFxSdStatus& lastSdStatus() const       { return _lastSdStatus; }
-    const HubFxFlashStatus& lastFlashStatus() const  { return _lastFlashStatus; }
-    const HubFxFileInfo& lastFileInfo() const        { return _lastFileInfo; }
-    const HubFxConfigInfo& lastConfigInfo() const    { return _lastConfigInfo; }
-
-protected:
-    void onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) override;
-    const char* getModuleErrorMessage(uint8_t code) override { return HubFxError::getMessage(code); }
-
-private:
-    HubFxSdStatus _lastSdStatus;
-    HubFxFlashStatus _lastFlashStatus;
-    HubFxFileInfo _lastFileInfo;
-    HubFxConfigInfo _lastConfigInfo;
-
-    HubFxSdStatusCallback _sdStatusCb;
-    HubFxFlashStatusCallback _flashStatusCb;
-    HubFxFileInfoCallback _fileInfoCb;
-    HubFxConfigInfoCallback _configInfoCb;
-};
 
 
 #endif // SERIAL_HUBFX_H

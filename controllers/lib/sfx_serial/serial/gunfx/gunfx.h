@@ -1,9 +1,12 @@
 /*
- * Serial GunFX Protocol - Binary Protocol Client/Server
+ * Serial GunFX Protocol — Protocol Constants, Types, and Callbacks
  *
- * Binary COBS protocol client/server for GunFX muzzle flash controller.
- *   - GunFxClient: For HubFX (sends commands via USB)
- *   - GunFxServer: For GunFX Pico (receives commands, implements ICommandHandler)
+ * Binary COBS protocol definitions for GunFX muzzle flash controller.
+ * This header contains shared protocol types used by both client and server.
+ *
+ * Client/Server classes are in sfx_boards library:
+ *   - GunFxClient: gunfx/client/gunfx_client.h
+ *   - GunFxServer: gunfx/server/gunfx_server.h
  *
  * Packet Types (0x01-0x2F range):
  *   TRIGGER_ON (0x01)      - [rpm:u16] Start firing
@@ -23,8 +26,6 @@
 #include <Arduino.h>
 #include <functional>
 #include "serial/core/core.h"
-#include "serial/client/bus_client.h"
-#include "serial/core/bus_server.h"
 
 // ============================================================================
 // GunFX Binary Packet Types (0x01-0x2F range)
@@ -182,11 +183,6 @@ struct GunFxStatus {
 };
 
 /**
- * @brief Board information returned during init (alias for BusClientBoardInfo)
- */
-using GunFxBoardInfo = BusClientBoardInfo;
-
-/**
  * @brief Smoke generator configuration
  */
 struct GunFxSmokeConfig {
@@ -215,120 +211,5 @@ using GunFxSmokeHeatCallback = std::function<uint8_t(bool on)>;
 using GunFxSmokeSettingsCallback = std::function<uint8_t(const GunFxSmokeConfig& config)>;
 using GunFxSmokeResetCallback = std::function<uint8_t()>;
 using GunFxSmokeCurrentLimitCallback = std::function<uint8_t(uint8_t channel, uint16_t limit_mA)>;
-
-// ============================================================================
-// GunFxClient Class (Binary Protocol)
-// ============================================================================
-
-/**
- * @brief Client-side GunFX serial communication (binary COBS protocol)
- * 
- * Used by HubFX to send commands to GunFX server boards over USB.
- * Extends BusClient with GunFX-specific commands and STATUS parsing.
- */
-class GunFxClient : public BusClient {
-public:
-    // ========================================================================
-    // Trigger Control
-    // ========================================================================
-    
-    CommandResult triggerOn(uint16_t rpm);
-    CommandResult triggerOff(uint16_t fanDelayMs = 0);
-
-    // ========================================================================
-    // Servo Control
-    // ========================================================================
-    
-    CommandResult setServoPosition(uint8_t servoId, uint16_t pulseUs);
-    CommandResult setServoConfig(const GunFxServoConfig& config);
-    CommandResult setRecoilJerk(uint8_t servoId, uint16_t jerkUs, uint16_t varianceUs = 0);
-
-    // ========================================================================
-    // Smoke Control
-    // ========================================================================
-    
-    CommandResult setSmokeHeater(bool on);
-    CommandResult setSmokeSettings(const GunFxSmokeConfig& config);
-    CommandResult smokeReset();
-    CommandResult smokeCurrentLimit(uint8_t channel, uint16_t limit_mA);
-
-    // ========================================================================
-    // Status
-    // ========================================================================
-    
-    CommandResult requestStatus();
-
-    // ========================================================================
-    // Callbacks
-    // ========================================================================
-    
-    void onStatus(GunFxStatusCallback cb) { _statusCallback = cb; }
-
-    // ========================================================================
-    // State
-    // ========================================================================
-    
-    const GunFxStatus& lastStatus() const { return _lastStatus; }
-
-protected:
-    void onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) override;
-    const char* getModuleErrorMessage(uint8_t code) override { return GunFxError::getMessage(code); }
-
-private:
-    GunFxStatus _lastStatus;
-    GunFxStatusCallback _statusCallback;
-};
-
-// ============================================================================
-// GunFxServer Class (Binary Protocol)
-// ============================================================================
-
-/**
- * @brief Server-side GunFX serial communication (binary COBS protocol)
- * 
- * Used by GunFX Pico to receive commands from HubFX client.
- * Extends BusServer for use with SfxServer + CommandRouter.
- */
-class GunFxServer : public BusServer {
-public:
-    const char* handlerName() const override { return "GunFxServer"; }
-
-    // ========================================================================
-    // Response Methods
-    // ========================================================================
-    
-    int sendStatus(const GunFxStatus& status);
-
-    // ========================================================================
-    // Callbacks
-    // ========================================================================
-    
-    void onTriggerOn(GunFxTriggerOnCallback cb) { _triggerOnCallback = cb; }
-    void onTriggerOff(GunFxTriggerOffCallback cb) { _triggerOffCallback = cb; }
-    void onServoSet(GunFxServoSetCallback cb) { _servoSetCallback = cb; }
-    void onServoSettings(GunFxServoSettingsCallback cb) { _servoSettingsCallback = cb; }
-    void onRecoilJerk(GunFxRecoilJerkCallback cb) { _recoilJerkCallback = cb; }
-    void onSmokeHeat(GunFxSmokeHeatCallback cb) { _smokeHeatCallback = cb; }
-    void onSmokeSettings(GunFxSmokeSettingsCallback cb) { _smokeSettingsCallback = cb; }
-    void onSmokeReset(GunFxSmokeResetCallback cb) { _smokeResetCallback = cb; }
-    void onSmokeCurrentLimit(GunFxSmokeCurrentLimitCallback cb) { _smokeCurrentLimitCallback = cb; }
-
-protected:
-    CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
-    uint8_t moduleRangeLow() const override { return 0x01; }
-    uint8_t moduleRangeHigh() const override { return 0x2F; }
-    const char* getModuleErrorMessage(uint8_t code) override { return GunFxError::getMessage(code); }
-
-private:
-    GunFxTriggerOnCallback _triggerOnCallback;
-    GunFxTriggerOffCallback _triggerOffCallback;
-    GunFxServoSetCallback _servoSetCallback;
-    GunFxServoSettingsCallback _servoSettingsCallback;
-    GunFxRecoilJerkCallback _recoilJerkCallback;
-    GunFxSmokeHeatCallback _smokeHeatCallback;
-    GunFxSmokeSettingsCallback _smokeSettingsCallback;
-    GunFxSmokeResetCallback _smokeResetCallback;
-    GunFxSmokeCurrentLimitCallback _smokeCurrentLimitCallback;
-};
 
 #endif // SERIAL_GUNFX_H

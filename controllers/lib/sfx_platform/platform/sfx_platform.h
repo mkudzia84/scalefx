@@ -255,11 +255,12 @@
 
 #if SFX_PLATFORM_ESP32
     #include <esp_heap_caps.h>
-    // psramFound() is provided by Arduino-ESP32 core (esp32-hal-psram.h),
-    // auto-included via Arduino.h — no separate include needed.
 
-    // Runtime PSRAM detection (true if PSRAM is initialized and usable)
-    #define SFX_HAS_PSRAM       (psramFound())
+    // Runtime PSRAM detection (true if PSRAM is initialized and usable).
+    // Uses ESP-IDF heap API directly — Arduino's psramFound() can return false
+    // even when PSRAM is working, because ESP-IDF initializes PSRAM via
+    // sdkconfig (qio_opi memory_type) without setting Arduino's tracking flag.
+    #define SFX_HAS_PSRAM       (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0)
 
     /**
      * Allocate memory from PSRAM (external SPI RAM).

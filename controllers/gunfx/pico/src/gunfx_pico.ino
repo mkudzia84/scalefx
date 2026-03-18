@@ -39,6 +39,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <serial/serial.h>
+#include <gunfx/server/gunfx_server.h>
 #include <servo/srv_control.h>
 #include <server/sfx_server.h>
 #include <power/ina226.h>

@@ -1,9 +1,12 @@
 /*
- * Serial GearControl Protocol - Binary Protocol Client/Server
+ * Serial GearControl Protocol - Binary Protocol Types and Constants
  *
- * Binary COBS protocol client/server for GearControl landing gear controller.
- *   - GearControlClient: For HubFX (sends commands via USB)
- *   - GearControlServer: For GearControl Pico (receives commands, implements ICommandHandler)
+ * Binary COBS protocol definitions for GearControl landing gear controller.
+ * This header contains shared protocol types used by both client and server.
+ *
+ * Client/Server classes are in sfx_boards library:
+ *   - GearControlClient: gearcontrol/client/gearcontrol_client.h
+ *   - GearControlServer: gearcontrol/server/gearcontrol_server.h
  *
  * Hardware:
  *   - 3 motors (H-bridge) for landing gear extend/retract
@@ -41,8 +44,7 @@
 
 #include <Arduino.h>
 #include <functional>
-#include "serial/client/bus_client.h"
-#include "serial/core/bus_server.h"
+#include "serial/core/core.h"
 
 // ============================================================================
 // GearControl Binary Packet Types (0x60-0x7F range)
@@ -439,11 +441,6 @@ struct GearControlStatus {
     uint16_t batteryVoltage_mV = 0;
 };
 
-/**
- * @brief Board information returned during init (alias for BusClientBoardInfo)
- */
-using GearControlBoardInfo = BusClientBoardInfo;
-
 // ============================================================================
 // Callback Types
 // ============================================================================
@@ -471,172 +468,5 @@ using GearControlGearResetCallback = std::function<uint8_t(uint8_t gearId)>;
 using GearControlGearEnableCallback = std::function<uint8_t(uint8_t gearId, bool enabled)>;
 using GearControlSeqStatusCallback = std::function<void(const GearControlSeqStatus& status)>;
 using GearControlDoorStatusCallback = std::function<void(const GearControlDoorStatus& status)>;
-
-// ============================================================================
-// GearControlClient Class (Binary Protocol)
-// ============================================================================
-
-/**
- * @brief Client-side GearControl serial communication (binary COBS protocol)
- *
- * Used by HubFX to send commands to GearControl server boards over USB.
- * Extends BusClient with GearControl-specific commands.
- */
-class GearControlClient : public BusClient {
-public:
-    GearControlClient() = default;
-    ~GearControlClient() override = default;
-
-    GearControlClient(const GearControlClient&) = delete;
-    GearControlClient& operator=(const GearControlClient&) = delete;
-
-    // ========================================================================
-    // Gear Control
-    // ========================================================================
-
-    CommandResult gearDeploy(uint8_t gearId);
-    CommandResult gearRetract(uint8_t gearId);
-    CommandResult gearStop(uint8_t gearId);
-    CommandResult gearAll(uint8_t action);
-    CommandResult gearCalibrate(uint8_t gearId, uint8_t timeout_s = 0);
-    CommandResult gearCalibCancel(uint8_t gearId);
-    CommandResult gearReset(uint8_t gearId);
-    CommandResult gearEnable(uint8_t gearId, bool enabled);
-
-    // ========================================================================
-    // Servo Control
-    // ========================================================================
-
-    CommandResult setServoPosition(uint8_t servoId, uint16_t pulse_us);
-    CommandResult setServoSettings(const GearControlServoConfig& config);
-
-    // ========================================================================
-    // Configuration
-    // ========================================================================
-
-    CommandResult setGearConfig(const GearControlGearConfig& config);
-    CommandResult setDoorConfig(const GearControlDoorConfig& config);
-    CommandResult setYawConfig(const GearControlYawConfig& config);
-    CommandResult setYawInput(uint16_t position_us);
-    CommandResult setBatteryConfig(bool enabled, bool autoDeployOnLowVoltage = false);
-    CommandResult setDoorMode(const GearControlDoorModeConfig& config);
-    CommandResult requestI2CScan();
-
-    // ========================================================================
-    // Status
-    // ========================================================================
-
-    CommandResult requestStatus();
-
-    // ========================================================================
-    // Callbacks
-    // ========================================================================
-
-    void onStatus(GearControlStatusCallback cb) { _statusCallback = cb; }
-    void onCalibStatus(GearControlCalibStatusCallback cb) { _calibStatusCallback = cb; }
-    void onGearSeqStatus(GearControlSeqStatusCallback cb) { _gearSeqStatusCallback = cb; }
-    void onDoorStatus(GearControlDoorStatusCallback cb) { _doorStatusCallback = cb; }
-    void onI2CScanResult(std::function<void(const I2CScanResult&)> cb) { _i2cScanResultCallback = cb; }
-
-    // ========================================================================
-    // State
-    // ========================================================================
-
-    const GearControlStatus& lastStatus() const { return _lastStatus; }
-
-protected:
-    void onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) override;
-    const char* getModuleErrorMessage(uint8_t code) override { return GearControlError::getMessage(code); }
-
-private:
-    GearControlStatus _lastStatus;
-
-    GearControlStatusCallback _statusCallback;
-    GearControlCalibStatusCallback _calibStatusCallback;
-    GearControlSeqStatusCallback _gearSeqStatusCallback;
-    GearControlDoorStatusCallback _doorStatusCallback;
-    std::function<void(const I2CScanResult&)> _i2cScanResultCallback;
-};
-
-// ============================================================================
-// GearControlServer Class (Binary Protocol)
-// ============================================================================
-
-/**
- * @brief Server-side GearControl serial communication (binary COBS protocol)
- *
- * Used by GearControl Pico to receive commands from HubFX client.
- * Extends BusServer with GearControl-specific command dispatch.
- */
-class GearControlServer : public BusServer {
-public:
-    GearControlServer() = default;
-    ~GearControlServer() override = default;
-
-    GearControlServer(const GearControlServer&) = delete;
-    GearControlServer& operator=(const GearControlServer&) = delete;
-
-    // ========================================================================
-    // ICommandHandler Interface
-    // ========================================================================
-
-    const char* handlerName() const override { return "GearControlServer"; }
-
-    // ========================================================================
-    // Response Methods
-    // ========================================================================
-
-    int sendCalibStatus(const GearControlCalibStatus& status);
-    int sendGearSeqStatus(const GearControlSeqStatus& status);
-    int sendDoorStatus(const GearControlDoorStatus& status);
-
-    // ========================================================================
-    // Callbacks
-    // ========================================================================
-
-    void onGearDeploy(GearControlGearDeployCallback cb) { _gearDeployCallback = cb; }
-    void onGearRetract(GearControlGearRetractCallback cb) { _gearRetractCallback = cb; }
-    void onGearStop(GearControlGearStopCallback cb) { _gearStopCallback = cb; }
-    void onGearAll(GearControlGearAllCallback cb) { _gearAllCallback = cb; }
-    void onServoSet(GearControlServoSetCallback cb) { _servoSetCallback = cb; }
-    void onServoSettings(GearControlServoSettingsCallback cb) { _servoSettingsCallback = cb; }
-    void onGearConfig(GearControlGearConfigCallback cb) { _gearConfigCallback = cb; }
-    void onDoorConfig(GearControlDoorConfigCallback cb) { _doorConfigCallback = cb; }
-    void onYawConfig(GearControlYawConfigCallback cb) { _yawConfigCallback = cb; }
-    void onYawInput(GearControlYawInputCallback cb) { _yawInputCallback = cb; }
-    void onGearCalibrate(GearControlGearCalibrateCallback cb) { _gearCalibrateCallback = cb; }
-    void onGearCalibCancel(GearControlCalibCancelCallback cb) { _gearCalibCancelCallback = cb; }
-    void onBatteryConfig(GearControlBatteryConfigCallback cb) { _batteryConfigCallback = cb; }
-    void onDoorMode(GearControlDoorModeCallback cb) { _doorModeCallback = cb; }
-    void onGearReset(GearControlGearResetCallback cb) { _gearResetCallback = cb; }
-    void onGearEnable(GearControlGearEnableCallback cb) { _gearEnableCallback = cb; }
-
-protected:
-    CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
-    uint8_t moduleRangeLow() const override { return 0x60; }
-    uint8_t moduleRangeHigh() const override { return 0x7F; }
-    const char* getModuleErrorMessage(uint8_t code) override { return GearControlError::getMessage(code); }
-
-private:
-    uint8_t _calibTag = 0;   // Tag from GEAR_CALIBRATE request, echoed in CALIB_STATUS responses
-    uint8_t _gearTag[3] = {};  // Per-gear tags from GEAR_DEPLOY/RETRACT, echoed in GEAR_SEQ_STATUS
-
-    GearControlGearDeployCallback _gearDeployCallback;
-    GearControlGearRetractCallback _gearRetractCallback;
-    GearControlGearStopCallback _gearStopCallback;
-    GearControlGearAllCallback _gearAllCallback;
-    GearControlServoSetCallback _servoSetCallback;
-    GearControlServoSettingsCallback _servoSettingsCallback;
-    GearControlGearConfigCallback _gearConfigCallback;
-    GearControlDoorConfigCallback _doorConfigCallback;
-    GearControlYawConfigCallback _yawConfigCallback;
-    GearControlYawInputCallback _yawInputCallback;
-    GearControlGearCalibrateCallback _gearCalibrateCallback;
-    GearControlCalibCancelCallback _gearCalibCancelCallback;
-    GearControlBatteryConfigCallback _batteryConfigCallback;
-    GearControlDoorModeCallback _doorModeCallback;
-    GearControlGearResetCallback _gearResetCallback;
-    GearControlGearEnableCallback _gearEnableCallback;
-};
 
 #endif // SERIAL_GEARCONTROL_H

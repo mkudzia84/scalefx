@@ -44,12 +44,16 @@
 // ============================================================================
 
 // WAV pre-buffer sizes (float frames per channel)
-// ESP32-S3: Large buffers in PSRAM (8 MB OPI @ 80 MHz). 4096 frames/ch
-//   × 8 channels × 2 (L+R) × 4 bytes = 256 KB total in PSRAM (~85 ms).
+// These buffers provide the primary SD-stall resilience — each channel can
+// sustain playback for WAV_BUF_FRAMES / AUDIO_SAMPLE_RATE seconds without
+// any SD reads.  The mixed-audio ring buffer is a small core-to-core FIFO.
+//
+// ESP32-S3: 24000 frames/ch = 0.5 s at 48 kHz.  8 ch × 2 (L+R) × 24000
+//   × 4 bytes = 1.5 MB total in PSRAM (8 MB available).
 //   SD read batch = 16 KB (4 sectors) reduces SD access frequency.
 // Pico: Smaller buffers in SRAM heap.
 #if SFX_PLATFORM_ESP32
-constexpr int WAV_BUF_FRAMES       = 4096;      // decoded float frames per track (PSRAM)
+constexpr int WAV_BUF_FRAMES       = 24000;     // decoded float frames per track (PSRAM, 0.5 s @ 48 kHz)
 constexpr int WAV_SD_READ_BYTES    = 16384;     // bytes per SD card read batch (PSRAM)
 #else
 constexpr int WAV_BUF_FRAMES       = 1024;      // decoded float frames per track
@@ -195,6 +199,11 @@ public:
     uint32_t getRingAvailableWrite() const;
     int getRingFillPercent() const;
     uint32_t getRingCapacity() const { return RING_FRAMES; }
+
+    // Per-channel WAV decode buffer stats
+    int getWavBufferFillPercent(int channel) const;
+    int getWavBufferFrames(int channel) const;       // valid frames in buffer
+    int getWavBufferCapacity() const { return WAV_BUF_FRAMES; }
 
     // Async commands (thread-safe for dual-core)
     bool playAsync(int channel, const char* filename, const AudioPlaybackOptions& options = {});

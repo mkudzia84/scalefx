@@ -119,9 +119,26 @@ public:
     // --- Internal callback bridge (not part of public API) ------------------
     // Called from static C callbacks in esp_usb_host.cpp.
 
+    /// Pending device open request (queued from new_dev_cb, processed in open task)
+    struct PendingOpen {
+        uint16_t vid;
+        uint16_t pid;
+    };
+
+    /// Queue handle for deferred CDC opens (accessible to open task)
+    void* _openQueue = nullptr;          // QueueHandle_t for PendingOpen
+
+    /// Called from new_dev_cb — only peeks descriptors, queues open request
     void _handleNewDevice(void* usbDevHandle);
+
+    /// Called from open task — performs the actual CDC-ACM open (outside USB context)
+    void _processOpenRequest(uint16_t vid, uint16_t pid);
+
     void _handleCdcData(int slotIdx, const uint8_t* data, size_t len);
     void _handleCdcEvent(int slotIdx, int eventType);
+
+    /// Stats accessor for daemon task (internal only)
+    UsbHostStats& _stats() { return _state.stats; }
 
 private:
     EspUsbHost() = default;
@@ -144,6 +161,7 @@ private:
     CdcSlot _slots[USB_HOST_MAX_CDC_DEVICES] = {};
 
     void* _daemonTaskHandle = nullptr;   // TaskHandle_t (opaque)
+    void* _openTaskHandle = nullptr;     // TaskHandle_t for deferred CDC open
     bool _driverInstalled = false;
     uint8_t _nextDevAddr = 1;            // Sequential device address counter
 

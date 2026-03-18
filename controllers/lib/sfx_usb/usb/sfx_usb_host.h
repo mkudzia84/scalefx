@@ -100,7 +100,54 @@ struct UsbHostStats {
     uint32_t devices_unmounted = 0;
     uint32_t bytes_sent = 0;
     uint32_t bytes_received = 0;
+
+    // Enumeration diagnostics — tracks HCD-level failures
+    uint32_t enum_attempts = 0;           // New device connections detected
+    uint32_t enum_failures = 0;           // Enumeration failures (CHECK_SHORT_DEV_DESC, etc.)
+    uint32_t enum_open_failures = 0;      // Failed to open device handle
+    uint32_t enum_desc_failures = 0;      // Failed to read device descriptor
+    uint32_t enum_cdc_open_failures = 0;  // CDC-ACM open failed (not a CDC device)
+    uint32_t hcd_errors = 0;              // Low-level HCD/transfer errors
+    uint32_t port_errors = 0;             // USB port-level errors
 };
+
+// ============================================================================
+// Known Device Identification (VID/PID → friendly name)
+// ============================================================================
+
+/// Raspberry Pi Foundation VID (used by all RP2040/RP2350 Pico boards)
+constexpr uint16_t USB_VID_RASPBERRY_PI = 0x2E8A;
+
+/// Known Pico PIDs — custom ScaleFX assignments (community range 0x0100-0x01FF)
+constexpr uint16_t USB_PID_GUNFX        = 0x0180;
+constexpr uint16_t USB_PID_LIGHTFX      = 0x0181;
+constexpr uint16_t USB_PID_GEARCONTROL  = 0x0182;
+
+/// Default Arduino-Pico CDC PID (earlephilhower core, before tusb_config.h override)
+constexpr uint16_t USB_PID_PICO_DEFAULT = 0x000A;
+
+/**
+ * @brief Look up a friendly name for a USB device by VID/PID
+ *
+ * Returns a human-readable name for known ScaleFX slave controllers,
+ * or nullptr if the device is not recognized.
+ *
+ * NOTE: The default Arduino-Pico PID (0x000A) is used when tusb_config.h
+ * overrides are not picked up by the build system. We map it as
+ * "Pico (default)" since we can't distinguish controllers by PID alone.
+ */
+inline const char* knownDeviceName(uint16_t vid, uint16_t pid) {
+    if (vid == USB_VID_RASPBERRY_PI) {
+        switch (pid) {
+            case USB_PID_GUNFX:       return "GunFX";
+            case USB_PID_LIGHTFX:     return "LightFX";
+            case USB_PID_GEARCONTROL: return "GearControl";
+            case USB_PID_PICO_DEFAULT: return "Pico (default PID)";
+            default:                  return nullptr;
+        }
+    }
+    return nullptr;
+}
 
 // ============================================================================
 // Callback Types

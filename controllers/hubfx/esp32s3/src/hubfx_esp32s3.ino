@@ -41,8 +41,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.13.0"
-#define BUILD_NUMBER 61
+#define FIRMWARE_VERSION "0.14.0"
+#define BUILD_NUMBER 78
 
 #include <Arduino.h>
 #include <atomic>
@@ -65,7 +65,7 @@
 #include <storage/sd_card.h>
 
 // Protocol handlers (HubFX-specific commands)
-#include <storage/storage_server.h>
+#include <server/storage_server.h>
 #include "protocol/hubfx_usb_server.h"
 
 // Audio mixer and codec (8-channel WAV mixer with I2S output)
@@ -73,7 +73,7 @@
 #include <codec/simple_i2s_codec.h>
 #include <audio/audio_mixer.h>
 #include <audio/audio_log.h>
-#include <audio/server/audio_server.h>
+#include <server/audio_server.h>
 
 // AudioMixer type alias for this platform
 using Mixer = AudioMixer<EspI2SOutput, SimpleI2SCodec>;
@@ -331,8 +331,14 @@ void setup() {
         // Register mount/unmount callbacks BEFORE init() so we catch
         // any devices that enumerate during startup.
         usb.onMount([](uint8_t devAddr, uint16_t vid, uint16_t pid) {
-            SFX_LOG_INFO("USB device mounted: addr=%d VID=%04X PID=%04X",
-                         devAddr, vid, pid);
+            const char* name = knownDeviceName(vid, pid);
+            if (name) {
+                SFX_LOG_INFO("USB device mounted: addr=%d VID=%04X PID=%04X — %s",
+                             devAddr, vid, pid, name);
+            } else {
+                SFX_LOG_INFO("USB device mounted: addr=%d VID=%04X PID=%04X (unknown)",
+                             devAddr, vid, pid);
+            }
         });
         usb.onUnmount([](uint8_t devAddr) {
             SFX_LOG_INFO("USB device unmounted: addr=%d", devAddr);

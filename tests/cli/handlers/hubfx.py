@@ -25,7 +25,7 @@ from tests.framework import (
     HubFxCommands, HubFxPacket, HubFxError, HubFxAudio, HubFxStorage, EngineState, SlaveType,
     GunFxCommands, LightFxCommands, GearControlCommands, CoreError, StreamPacket,
 )
-from tests.framework.packets import DoorMode
+from tests.framework.packets import DoorMode, known_device_name
 from tests.framework.protocol import read_u16_le, read_u32_le, crc16_ccitt
 from ..base import CommandHandlerBase, CommandInfo, ControllerType, Fore, Style, Spinner, format_progress_bar
 from .. import parsers
@@ -583,8 +583,12 @@ class HubFxCommandHandler(CommandHandlerBase):
             if slave_type > 0:
                 slave_text = f" → {SlaveType.name(slave_type)}"
 
+            # Look up friendly name from VID/PID
+            dev_name = known_device_name(vid, pid)
+            name_text = f" ({dev_name})" if dev_name else ""
+
             print(f"    [{i}] addr={addr} VID={vid:04X} PID={pid:04X} "
-                  f"{state_color}{state_text}{Style.RESET_ALL}{slave_text}")
+                  f"{state_color}{state_text}{Style.RESET_ALL}{slave_text}{name_text}")
 
         print()
 
@@ -807,6 +811,7 @@ class HubFxCommandHandler(CommandHandlerBase):
         i2s_running = bool(flags & 0x02)
         has_codec   = bool(flags & 0x04)
         has_ring_stats = bool(flags & 0x08)  # v3: has ring buffer stats
+        has_buffer_caps = bool(flags & 0x10)  # v4: has buffer capacities
 
         sample_rate = read_u16_le(payload, pos); pos += 2
         bit_depth   = payload[pos]; pos += 1
@@ -833,6 +838,13 @@ class HubFxCommandHandler(CommandHandlerBase):
                 consume_loops = read_u32_le(payload, pos); pos += 4
                 consume_frames = read_u32_le(payload, pos); pos += 4
 
+        # --- Buffer capacities (v4) ---
+        wav_buf_capacity = 0
+        ring_capacity = 0
+        if has_buffer_caps and pos + 4 <= len(payload):
+            wav_buf_capacity = read_u16_le(payload, pos); pos += 2
+            ring_capacity = read_u16_le(payload, pos); pos += 2
+
         # Display system info
         print(f"\n  {Fore.CYAN}Audio Mixer Status{Style.RESET_ALL}")
         init_str = f"{Fore.GREEN}yes{Style.RESET_ALL}" if initialized else f"{Fore.RED}no{Style.RESET_ALL}"
@@ -851,9 +863,14 @@ class HubFxCommandHandler(CommandHandlerBase):
             ring_total = ring_avail_read + ring_avail_write
             underrun_str = f"{Fore.RED}{underruns}{Style.RESET_ALL}" if underruns > 0 else f"{Fore.GREEN}0{Style.RESET_ALL}"
             fill_color = Fore.GREEN if ring_fill_pct >= 50 else (Fore.YELLOW if ring_fill_pct >= 25 else Fore.RED)
-            print(f"    Ring Buf:    {fill_color}{ring_fill_pct}%{Style.RESET_ALL} ({ring_avail_read}/{ring_total} frames)")
+            ring_cap_str = f"/{ring_capacity}" if ring_capacity > 0 else f"/{ring_total}"
+            ring_ms = f" ({ring_avail_read * 1000 // sample_rate}ms)" if sample_rate > 0 and ring_avail_read > 0 else ""
+            print(f"    Ring Buf:    {fill_color}{ring_fill_pct}%{Style.RESET_ALL} ({ring_avail_read}{ring_cap_str} frames{ring_ms})")
             print(f"    Underruns:   {underrun_str}")
             print(f"    Consumer:    {consume_loops} loops, {consume_frames} frames written to I2S")
+        if has_buffer_caps and wav_buf_capacity > 0:
+            wav_ms = wav_buf_capacity * 1000 // sample_rate if sample_rate > 0 else 0
+            print(f"    WAV Buf:     {wav_buf_capacity} frames/ch ({wav_ms}ms, {wav_buf_capacity * 8 * 2 * 4 // 1024}KB total)")
 
         if pos >= len(payload):
             print(f"    {Fore.YELLOW}No channel data{Style.RESET_ALL}")
@@ -889,6 +906,11 @@ class HubFxCommandHandler(CommandHandlerBase):
             wav_ch = payload[pos]; pos += 1
             wav_bits = payload[pos]; pos += 1
 
+            # WAV decode buffer fill % (v4)
+            wav_buf_fill = 0
+            if has_buffer_caps and pos < len(payload):
+                wav_buf_fill = payload[pos]; pos += 1
+
             # Filename
             fname_len = payload[pos]; pos += 1
             fname = payload[pos:pos + fname_len].decode('utf-8', errors='replace') if fname_len > 0 else ''
@@ -912,7 +934,14 @@ class HubFxCommandHandler(CommandHandlerBase):
             queue_str = f' [queue: {queue_len}]' if queue_len > 0 else ''
             wav_str = f'{wav_rate}Hz/{wav_bits}bit/{"stereo" if wav_ch == 2 else "mono"}' if wav_rate > 0 else ''
 
-            print(f"    ch{ch}: {status} vol={vol}% {out_name}{loop_str}{remaining_str}{queue_str}")
+            # WAV buffer fill indicator
+            if has_buffer_caps and playing:
+                buf_color = Fore.GREEN if wav_buf_fill >= 80 else (Fore.YELLOW if wav_buf_fill >= 40 else Fore.RED)
+                buf_str = f' buf={buf_color}{wav_buf_fill}%{Style.RESET_ALL}'
+            else:
+                buf_str = ''
+
+            print(f"    ch{ch}: {status} vol={vol}% {out_name}{loop_str}{remaining_str}{queue_str}{buf_str}")
             if fname:
                 print(f"          file: {fname}")
             if wav_str:

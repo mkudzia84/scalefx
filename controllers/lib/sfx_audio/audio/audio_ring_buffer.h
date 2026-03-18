@@ -22,14 +22,17 @@
 // Configuration
 // ============================================================================
 
-// Ring buffer size as power of 2
-// ESP32-S3: 65536 frames = 256 KB in PSRAM (~1.36s at 48 kHz).
-//           Large buffer absorbs Core 0 stalls (SD reads, protocol processing).
-// Pico (RP2350): 16384 frames = 64 KB (~341 ms at 48 kHz) — SRAM only.
+// Ring buffer size as power of 2.
+// This is a small FIFO between Core 0 (producer/mixer) and Core 1 (I2S consumer).
+// SD resilience comes from the large per-channel WAV decode buffers (see audio_mixer.h),
+// not from the ring — the ring only needs to absorb timing jitter between cores.
+//
+// ESP32-S3: 4096 frames = 16 KB in PSRAM (~85 ms at 48 kHz).
+// Pico (RP2350): 4096 frames = 16 KB in SRAM (~85 ms at 48 kHz).
 #if SFX_PLATFORM_ESP32
-static constexpr uint32_t RING_FRAMES_LOG2 = 16;                         // 65536 frames = 256 KB
+static constexpr uint32_t RING_FRAMES_LOG2 = 12;                         // 4096 frames = 16 KB
 #else
-static constexpr uint32_t RING_FRAMES_LOG2 = 14;                         // 16384 frames = 64 KB
+static constexpr uint32_t RING_FRAMES_LOG2 = 12;                         // 4096 frames = 16 KB
 #endif
 static constexpr uint32_t RING_FRAMES      = 1u << RING_FRAMES_LOG2;
 static constexpr uint32_t RING_MASK        = RING_FRAMES - 1;

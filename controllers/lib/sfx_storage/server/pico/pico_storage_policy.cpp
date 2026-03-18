@@ -9,7 +9,7 @@
 
 #if !SFX_PLATFORM_ESP32
 
-#include <storage/storage_server.h>
+#include <server/storage_server.h>
 #include <platform/diag_log.h>
 
 #define STORAGE_LOG(fmt, ...) SFX_LOG_INFO("[Storage] " fmt, ##__VA_ARGS__)

@@ -7,15 +7,15 @@
  *   - PSRAM ring buffer + FreeRTOS writer task for stream uploads
  *   - PSRAM staging buffers (128 KB for stream, 512 KB for chunked)
  *
- * Included automatically from storage_server.h — do not include directly.
- * See storage_server.h for the full public API.
+ * Included automatically from server/storage_server.h — do not include directly.
+ * See server/storage_server.h for the full public API.
  */
 
 #ifndef ESP32_STORAGE_POLICY_H
 #define ESP32_STORAGE_POLICY_H
 
 #ifndef STORAGE_SERVER_H
-#error "Include <storage/storage_server.h> instead of this file directly"
+#error "Include <server/storage_server.h> instead of this file directly"
 #endif
 
 #include <platform/spsc_ring_buffer.h>

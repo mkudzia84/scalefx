@@ -267,7 +267,12 @@ class ScaleFXConnection:
                 self._serial.set_buffer_size(rx_size=131072, tx_size=131072)
             except Exception:
                 pass  # set_buffer_size is Windows-only, ignore on other platforms
-            time.sleep(0.05)  # Wait for device to be ready
+            # Wait for device to be ready. ESP32-S3 DevKitC resets on DTR
+            # assertion (USB-UART bridge auto-reset circuit). The bootloader
+            # outputs ~74880-baud junk during boot that corrupts COBS framing.
+            # Wait 500ms for boot output to finish, then drain it all.
+            time.sleep(0.5)
+            self._drain_serial()
             self._rx_buffer.clear()
             self._pending.clear()
             
@@ -342,6 +347,22 @@ class ScaleFXConnection:
         except (IndexError, KeyError):
             pass  # Best-effort parsing
     
+    def _drain_serial(self):
+        """Drain any pending data from the OS serial buffer.
+        
+        Discards all bytes currently in the serial port's receive buffer.
+        Used after opening a connection to clear boot output or stale data
+        before sending protocol packets.
+        """
+        if not self._serial:
+            return
+        try:
+            while self._serial.in_waiting:
+                self._serial.read(self._serial.in_waiting)
+                time.sleep(0.01)  # Brief pause to let more bytes arrive
+        except serial.SerialException:
+            pass
+
     def send(self, data: bytes, flush: bool = True) -> bool:
         """
         Send raw bytes (already COBS encoded with delimiter).

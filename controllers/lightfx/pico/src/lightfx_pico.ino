@@ -21,6 +21,7 @@
 #include <Arduino.h>
 #include <Servo.h>
 #include <serial/serial.h>
+#include <lightfx/server/lightfx_server.h>
 #include <led/led_control.h>
 #include <led/led_event_seq.h>
 #include <led/led_events.h>

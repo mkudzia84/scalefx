@@ -47,6 +47,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <serial/serial.h>
+#include <gearcontrol/server/gearcontrol_server.h>
 #include <led/led_control.h>
 #include <servo/srv_control.h>
 #include <power/ina226.h>
@@ -57,7 +58,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.10.0"
-#define BUILD_NUMBER 54
+#define BUILD_NUMBER 56
 
 // ============================================================================
 //  PIN CONFIGURATION

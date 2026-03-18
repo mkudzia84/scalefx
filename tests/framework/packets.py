@@ -545,6 +545,34 @@ class SlaveType:
         return names.get(stype, f"Unknown({stype})")
 
 
+# ============================================================================
+# Known USB Device Identification (VID/PID → friendly name)
+# Mirrors C++ knownDeviceName() in sfx_usb_host.h
+# ============================================================================
+
+USB_VID_RASPBERRY_PI = 0x2E8A   # Raspberry Pi Foundation
+
+USB_PID_GUNFX        = 0x0180   # gunfx_pico (custom tusb_config.h)
+USB_PID_LIGHTFX      = 0x0181   # lightfx_pico
+USB_PID_GEARCONTROL  = 0x0182   # gearcontrol_pico
+USB_PID_PICO_DEFAULT = 0x000A   # Default Arduino-Pico CDC PID
+
+_KNOWN_DEVICES = {
+    (USB_VID_RASPBERRY_PI, USB_PID_GUNFX):       "GunFX",
+    (USB_VID_RASPBERRY_PI, USB_PID_LIGHTFX):     "LightFX",
+    (USB_VID_RASPBERRY_PI, USB_PID_GEARCONTROL): "GearControl",
+    (USB_VID_RASPBERRY_PI, USB_PID_PICO_DEFAULT): "Pico (default PID)",
+}
+
+def known_device_name(vid: int, pid: int) -> str | None:
+    """Look up a friendly name for a USB device by VID/PID.
+
+    Returns the name string if the device is a known ScaleFX slave,
+    or None if not recognized.
+    """
+    return _KNOWN_DEVICES.get((vid, pid))
+
+
 class HubFxAudio:
     """HubFX audio wire format constants (matches C++ HubFxAudio namespace)."""
     OUTPUT_STEREO = 0

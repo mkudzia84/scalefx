@@ -139,13 +139,9 @@ bool AudioMixer<TI2S, TCodec>::beginI2S() {
         return false;
     }
 
-    // Pre-fill ring buffer with silence so consumer doesn't underrun immediately.
-    uint32_t preFilled = 0;
-    while (ringBuf().availableWrite() > 0) {
-        ringBuf().write(0, 0);
-        preFilled++;
-    }
-    MIXER_LOG("Pre-filled ring buffer with %u frames of silence", preFilled);
+    // No pre-fill needed — consumer writes silence to I2S when ring is empty
+    // (tx_desc_auto_clear = true in I2S config). Keeping the ring empty at
+    // startup ensures low latency when the first play command arrives.
 
     _i2sRunning.store(true, std::memory_order_release);  // visible to Core 0
     
@@ -312,8 +308,14 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     strncpy(ch.filename, filename, CHANNEL_FILENAME_MAX - 1);
     ch.filename[CHANNEL_FILENAME_MAX - 1] = '\0';
 
-    // Pre-fill WAV buffer
-    refillWavBuffer(ws);
+    // Pre-fill WAV buffer — loop until full (multiple SD reads) so the
+    // channel can sustain playback for ~0.5 s even if the SD stalls.
+    while (ws.bufLen < WAV_BUF_FRAMES) {
+        if (!refillWavBuffer(ws)) break;  // EOF or error
+    }
+    MIXER_LOG("Ch%d: Pre-filled WAV buffer %d/%d frames (%.0f ms)",
+             channel, ws.bufLen, WAV_BUF_FRAMES,
+             (float)ws.bufLen / AUDIO_SAMPLE_RATE * 1000.0f);
     
     ws.active = true;
     _channelPlaying[channel] = true;
@@ -797,6 +799,14 @@ bool AudioMixer<TI2S, TCodec>::getWavSample(WavState& ws, float& outL, float& ou
             outL = outR = 0.0f;
             return false;
         }
+        // Safety: if refill returned true but still not enough data for
+        // interpolation, no more progress is possible (e.g., end of file
+        // with exactly 1 frame remaining). Treat as end of track to avoid
+        // an infinite loop that blocks the entire main loop.
+        if (ws.bufPos + 1 >= ws.bufLen) {
+            outL = outR = 0.0f;
+            return false;
+        }
     }
 
     int   idx  = ws.bufPos;
@@ -821,10 +831,14 @@ bool AudioMixer<TI2S, TCodec>::getWavSample(WavState& ws, float& outL, float& ou
 
 template<typename TI2S, typename TCodec>
 bool AudioMixer<TI2S, TCodec>::produceFrame() {
+    // Fill ring to capacity.  The ring is a small FIFO between cores (~85 ms),
+    // so filling it fully adds negligible latency.  SD resilience comes from
+    // the large per-channel WAV decode buffers (0.5 s each).
     if (ringBuf().isFull()) return false;
 
     float mixL = 0.0f;
     float mixR = 0.0f;
+    bool hasAudio = false;
 
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         Channel& ch = _channels[i];
@@ -837,9 +851,10 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
 
         // Get one resampled stereo frame from WAV
         if (!getWavSample(ws, trackL, trackR)) {
-            // End of playback
+            // End of playback — close file and clean up
             ws.active = false;
             _channelPlaying[i] = false;
+            if (ws.file) ws.file.close();
             checkAndPlayNextQueued(i);
             continue;
         }
@@ -859,6 +874,8 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
                 continue;
             }
         }
+
+        hasAudio = true;
 
         // Apply track volume
         trackL *= effectiveVolume;
@@ -893,6 +910,11 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
         }
     }
 
+    // Don't buffer silence — the consumer writes silence to I2S directly
+    // when the ring is empty. Skipping silence keeps the ring near-empty
+    // while idle, so new audio reaches the output within milliseconds.
+    if (!hasAudio) return false;
+
     // Apply master volume
     mixL *= _masterVolume;
     mixR *= _masterVolume;
@@ -921,12 +943,35 @@ int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
     // Process any pending commands first
     processCommands();
 
-    // Produce frames
+    // Produce frames into ring buffer FIRST — this is time-critical.
+    // The ring is a small core-to-core FIFO (~85 ms) that must stay fed
+    // to prevent consumer underruns.
     int produced = 0;
     for (int i = 0; i < maxFrames; i++) {
         if (!produceFrame()) break;
         produced++;
     }
+
+    // Proactively top-up ONE channel's WAV decode buffer per call
+    // (round-robin).  This spreads SD I/O across loop iterations and
+    // avoids the expensive memmove + SD read blocking produce().
+    // Only triggers when buffer drops below 50% — at that point there
+    // is still 250 ms of audio remaining, plenty of runway.
+    {
+        static int refillIdx = 0;
+        for (int attempt = 0; attempt < AUDIO_MAX_CHANNELS; attempt++) {
+            int ch = refillIdx % AUDIO_MAX_CHANNELS;
+            refillIdx++;
+            WavState& ws = _channels[ch].wav;
+            if (!ws.active) continue;
+            int available = ws.bufLen - ws.bufPos;
+            if (available < WAV_BUF_FRAMES / 2) {
+                refillWavBuffer(ws);   // one SD batch (~4096 frames)
+            }
+            break;  // one channel per call
+        }
+    }
+
     return produced;
 }
 
@@ -946,7 +991,9 @@ void AudioMixer<TI2S, TCodec>::consumeAndOutput() {
     }
     
     if (avail > 0) {
-        // Read frames from ring buffer and write to I2S backend
+        // Read frames from ring buffer and write to I2S backend.
+        // i2s_write(portMAX_DELAY) blocks when DMA buffers are full,
+        // naturally pacing the consumer at the audio sample rate.
         uint32_t count = (avail > 512) ? 512 : avail;
         StereoFrame frames[512];
         for (uint32_t i = 0; i < count; i++) {
@@ -955,9 +1002,15 @@ void AudioMixer<TI2S, TCodec>::consumeAndOutput() {
         TI2S::instance().writeSamples(frames, count);
         _consumeFrames.fetch_add(count, std::memory_order_relaxed);
     } else {
-        // Ring buffer empty — underrun! Write silence to keep I2S clocks running.
+        // Ring empty — no audio data available.
+        // Don't spin writing single silence frames (wastes CPU, inflates
+        // underrun counter). I2S tx_desc_auto_clear sends zeros to the
+        // DAC while DMA has no new data, so silence is automatic.
+        // Yield ~1ms and re-check. At 48 kHz the producer adds up to
+        // 256 frames per loop iteration, so 1ms is short enough to
+        // resume promptly when new audio arrives.
         _underruns.fetch_add(1, std::memory_order_relaxed);
-        TI2S::instance().writeSilence();
+        SFX_DELAY_MS(1);
     }
 }
 
@@ -994,6 +1047,27 @@ uint32_t AudioMixer<TI2S, TCodec>::getRingAvailableWrite() const {
 template<typename TI2S, typename TCodec>
 int AudioMixer<TI2S, TCodec>::getRingFillPercent() const {
     return ringBuf().fillPercent();
+}
+
+// ============================================================================
+//  WAV DECODE BUFFER STATS
+// ============================================================================
+
+template<typename TI2S, typename TCodec>
+int AudioMixer<TI2S, TCodec>::getWavBufferFillPercent(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
+    const WavState& ws = _channels[channel].wav;
+    if (!ws.active || WAV_BUF_FRAMES == 0) return 0;
+    int available = ws.bufLen - ws.bufPos;
+    return (available * 100) / WAV_BUF_FRAMES;
+}
+
+template<typename TI2S, typename TCodec>
+int AudioMixer<TI2S, TCodec>::getWavBufferFrames(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
+    const WavState& ws = _channels[channel].wav;
+    if (!ws.active) return 0;
+    return ws.bufLen - ws.bufPos;
 }
 
 // ============================================================================

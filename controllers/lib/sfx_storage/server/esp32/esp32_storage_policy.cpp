@@ -19,7 +19,7 @@
 
 #if SFX_PLATFORM_ESP32
 
-#include <storage/storage_server.h>
+#include <server/storage_server.h>
 #include <platform/diag_log.h>
 #include <esp_heap_caps.h>
 #include <algorithm>  // std::swap
