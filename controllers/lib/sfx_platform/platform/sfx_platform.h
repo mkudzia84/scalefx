@@ -177,7 +177,11 @@
 #if SFX_PLATFORM_PICO
     #include <Servo.h>
 #elif SFX_PLATFORM_ESP32
+    // ESP32Servo pulls in deprecated driver/mcpwm.h — suppress the warning
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wcpp"
     #include <ESP32Servo.h>
+    #pragma GCC diagnostic pop
 #endif
 
 // ============================================================================

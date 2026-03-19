@@ -185,7 +185,7 @@ struct StereoFrame {
 
 | Class | Header | Platform | Description |
 |-------|--------|----------|-------------|
-| `EspI2SOutput` | `audio/esp_i2s_output.h` | ESP32-S3 | ESP-IDF legacy I2S driver (v4.4). Bulk DMA writes via `i2s_write()`. Internal SRAM batch buffer (2 KB). |
+| `EspI2SOutput` | `audio/esp_i2s_output.h` | ESP32-S3 | ESP-IDF v5.x channel-based I2S driver (`driver/i2s_std.h`). Bulk DMA writes via `i2s_channel_write()`. Internal SRAM batch buffer (2 KB). |
 | `PicoI2SOutput` | `audio/pico_i2s_output.h` | RP2040/RP2350 | Arduino-Pico PIO-based I2S. Per-sample `write16()`. LRCLK must be BCLK+1 (PIO constraint). |
 | `MockI2SSink` | `audio/mock_i2s_sink.h` | Any | Mock output for testing. Captures statistics (peak levels, RMS, clipping, zero-crossings) and optional sample buffer. |
 

@@ -128,9 +128,10 @@ Step_4_CLI:
   actions:
     - file: "handlers/xxxfx.py"
       action: |
-        1. Add command method to handler class
+        1. Add command method to handler class using _send_ack() for ACK-based commands
         2. Add CommandInfo to get_commands() dict
         3. Add import for new command builder if needed
+        4. IF query command: add to EXCLUDE set in hubfx.py _build_slave_registry()
 
 Step_5_Documentation:
   location: "controllers/xxxfx/pico/"
@@ -324,15 +325,16 @@ Python_Framework:
     "framework/protocol.py": "COBS, CRC, packet helpers"
     "framework/packets.py": "Constants (mirror C++)"
     "framework/commands.py": "Command builders"
-    "cli/base.py": "CommandInfo, OutputMixin, ControllerType, base classes"
+    "cli/base.py": "CommandHandlerBase (_send_ack, _wrap_packet), CommandInfo, OutputMixin, ControllerType"
     "cli/output.py": "TerminalUI split-screen terminal (prompt_toolkit Application)"
     "cli/parsers.py": "Response packet parsing utilities"
     "cli/interactive.py": "Main CLI class (composes handlers + TerminalUI)"
     "cli/handlers/core.py": "Core/protocol commands"
-    "cli/handlers/gunfx.py": "GunFX commands"
-    "cli/handlers/hubfx.py": "HubFX commands (audio, engine, files, slaves)"
-    "cli/handlers/lightfx.py": "LightFX commands"
-    "cli/handlers/gearcontrol.py": "GearControl commands"
+    "cli/handlers/gunfx.py": "GunFX commands (uses _send_ack for hub routing compatibility)"
+    "cli/handlers/lightfx.py": "LightFX commands (uses _send_ack for hub routing compatibility)"
+    "cli/handlers/gearcontrol.py": "GearControl commands (uses _send_ack for hub routing compatibility)"
+    "cli/handlers/hubfx.py": "HubFX hub commands + composed slave routing"
+    "cli/handlers/storage.py": "Reusable file operations (SD/Flash)"
     "conftest.py": "pytest fixtures"
 ```
 

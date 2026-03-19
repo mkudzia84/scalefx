@@ -17,6 +17,7 @@
 #include <serial/serial.h>
 #include <serial/hubfx/hubfx.h>
 #include <usb/sfx_usb_host.h>
+#include <usb/usb_registry.h>
 
 class HubFxUsbServer : public BusServer {
 public:

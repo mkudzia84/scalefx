@@ -68,7 +68,10 @@ void HubFxUsbServer::handleUsbDevicesReq() {
         CoreProtocol::putU16LE(&resp[pos], dev->vid);   pos += 2;
         CoreProtocol::putU16LE(&resp[pos], dev->pid);   pos += 2;
         resp[pos++] = (uint8_t)dev->state;
-        resp[pos++] = 0;  // slaveType = Unknown (slave routing not migrated)
+
+        // Cross-reference with slave registry to find slave type for this USB index
+        const SlaveEntry* slave = UsbRegistry::instance().findByUsbIndex(i);
+        resp[pos++] = slave ? (uint8_t)slave->type : 0;
     }
 
     USB_LOG("USB_DEVICES_RESP: init=%d task=%d backend=%s devices=%d",

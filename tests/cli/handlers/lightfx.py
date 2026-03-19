@@ -94,24 +94,14 @@ class LightFxCommandHandler(CommandHandlerBase):
             try:
                 ch = int(args[1])
                 brightness = int(args[2])
-                packet = LightFxCommands.led_set(ch, brightness)
-                success, response = self.conn.send_expect_ack(packet)
-                if success:
-                    self.print_ok(f"LED {ch} → {brightness}%")
-                else:
-                    self._print_ack_response(response)
+                self._send_ack(LightFxCommands.led_set(ch, brightness), f"LED {ch} → {brightness}%")
             except ValueError:
                 self.print_error("Invalid LED parameters")
                 
         elif subcmd == 'off':
             ch = int(args[1]) if len(args) > 1 else 0
-            packet = LightFxCommands.led_off(ch)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                target = f"LED {ch}" if ch > 0 else "All LEDs"
-                self.print_ok(f"{target} OFF")
-            else:
-                self._print_ack_response(response)
+            target = f"LED {ch}" if ch > 0 else "All LEDs"
+            self._send_ack(LightFxCommands.led_off(ch), f"{target} OFF")
         else:
             self.print_error(f"Unknown: {subcmd}. Use 'set' or 'off'")
     
@@ -144,11 +134,7 @@ class LightFxCommandHandler(CommandHandlerBase):
             self.print_error(f"Unknown: {subcmd}. Use 'clear', 'start', 'stop', or 'restart'")
             return
         
-        success, response = self.conn.send_expect_ack(packet)
-        if success:
-            self.print_ok(msg)
-        else:
-            self._print_ack_response(response)
+        self._send_ack(packet, msg)
     
     def cmd_led_seq_add(self, args: List[str]):
         """LightFX LED sequence add event."""
@@ -211,11 +197,7 @@ class LightFxCommandHandler(CommandHandlerBase):
                 self.print_info("Available: on, off, flash, fadein, fadeout")
                 return
             
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Sequence event added: {msg}")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(packet, f"Sequence event added: {msg}")
             
         except (ValueError, IndexError) as e:
             self.print_error(f"Invalid parameters: {e}")
@@ -324,12 +306,7 @@ class LightFxCommandHandler(CommandHandlerBase):
             if pct < 0 or pct > 100:
                 self.print_error("Brightness must be 0-100%")
                 return
-            packet = LightFxCommands.led_master_brightness(pct)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Master brightness → {pct}%")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(LightFxCommands.led_master_brightness(pct), f"Master brightness → {pct}%")
         except ValueError:
             self.print_error("Invalid brightness value")
     
@@ -346,12 +323,7 @@ class LightFxCommandHandler(CommandHandlerBase):
         try:
             servo_id = int(args[1])
             pulse = int(args[2])
-            packet = LightFxCommands.servo_set(servo_id, pulse)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Servo {servo_id} → {pulse}µs")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(LightFxCommands.servo_set(servo_id, pulse), f"Servo {servo_id} → {pulse}µs")
         except ValueError:
             self.print_error("Invalid servo parameters")
     
@@ -369,12 +341,9 @@ class LightFxCommandHandler(CommandHandlerBase):
             accel = int(args[4]) if len(args) > 4 else 8000
             decel = int(args[5]) if len(args) > 5 else 8000
             
-            packet = LightFxCommands.servo_settings(servo_id, min_us, max_us, speed, accel, decel)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Servo {servo_id} configured: range {min_us}-{max_us}µs, speed {speed}µs/s")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(
+                LightFxCommands.servo_settings(servo_id, min_us, max_us, speed, accel, decel),
+                f"Servo {servo_id} configured: range {min_us}-{max_us}µs, speed {speed}µs/s")
         except ValueError:
             self.print_error("Invalid servo config parameters")
     
@@ -396,15 +365,11 @@ class LightFxCommandHandler(CommandHandlerBase):
             retract_us = int(args[4])
             brightness = int(args[5]) if len(args) > 5 else 100
             
-            packet = LightFxCommands.landing_light_bind(
-                slot, servo_id, led_ch, deploy_us, retract_us, brightness)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(
-                    f"Landing light {slot}: servo {servo_id} + LED {led_ch}, "
-                    f"deploy {deploy_us}µs, retract {retract_us}µs, brightness {brightness}%")
-            else:
-                self._print_ack_response(response)
+            msg = (f"Landing light {slot}: servo {servo_id} + LED {led_ch}, "
+                   f"deploy {deploy_us}µs, retract {retract_us}µs, brightness {brightness}%")
+            self._send_ack(
+                LightFxCommands.landing_light_bind(slot, servo_id, led_ch, deploy_us, retract_us, brightness),
+                msg)
         except ValueError:
             self.print_error("Invalid parameters")
     
@@ -412,13 +377,8 @@ class LightFxCommandHandler(CommandHandlerBase):
         """Unbind landing light slot."""
         slot = int(args[0]) if args else 0
         try:
-            packet = LightFxCommands.landing_light_unbind(slot)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                target = f"slot {slot}" if slot > 0 else "all slots"
-                self.print_ok(f"Landing light {target} unbound")
-            else:
-                self._print_ack_response(response)
+            target = f"slot {slot}" if slot > 0 else "all slots"
+            self._send_ack(LightFxCommands.landing_light_unbind(slot), f"Landing light {target} unbound")
         except ValueError:
             self.print_error("Invalid slot number")
     
@@ -426,13 +386,8 @@ class LightFxCommandHandler(CommandHandlerBase):
         """Deploy landing gear + activate light."""
         slot = int(args[0]) if args else 0
         try:
-            packet = LightFxCommands.landing_light_deploy(slot)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                target = f"slot {slot}" if slot > 0 else "all"
-                self.print_ok(f"Landing light {target} deploying")
-            else:
-                self._print_ack_response(response)
+            target = f"slot {slot}" if slot > 0 else "all"
+            self._send_ack(LightFxCommands.landing_light_deploy(slot), f"Landing light {target} deploying")
         except ValueError:
             self.print_error("Invalid slot number")
     
@@ -440,13 +395,8 @@ class LightFxCommandHandler(CommandHandlerBase):
         """Retract landing gear + deactivate light."""
         slot = int(args[0]) if args else 0
         try:
-            packet = LightFxCommands.landing_light_retract(slot)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                target = f"slot {slot}" if slot > 0 else "all"
-                self.print_ok(f"Landing light {target} retracting")
-            else:
-                self._print_ack_response(response)
+            target = f"slot {slot}" if slot > 0 else "all"
+            self._send_ack(LightFxCommands.landing_light_retract(slot), f"Landing light {target} retracting")
         except ValueError:
             self.print_error("Invalid slot number")
     
@@ -458,13 +408,8 @@ class LightFxCommandHandler(CommandHandlerBase):
         """Reset LED channel(s) — stop seq, turn off, re-enable."""
         ch = int(args[0]) if args else 0
         try:
-            packet = LightFxCommands.led_reset(ch)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                target = f"LED {ch}" if ch > 0 else "All LEDs"
-                self.print_ok(f"{target} reset")
-            else:
-                self._print_ack_response(response)
+            target = f"LED {ch}" if ch > 0 else "All LEDs"
+            self._send_ack(LightFxCommands.led_reset(ch), f"{target} reset")
         except ValueError:
             self.print_error("Invalid channel number")
     
@@ -475,13 +420,8 @@ class LightFxCommandHandler(CommandHandlerBase):
             return
         try:
             ch = int(args[0])
-            packet = LightFxCommands.led_enable(ch, True)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                target = f"LED {ch}" if ch > 0 else "All LEDs"
-                self.print_ok(f"{target} enabled")
-            else:
-                self._print_ack_response(response)
+            target = f"LED {ch}" if ch > 0 else "All LEDs"
+            self._send_ack(LightFxCommands.led_enable(ch, True), f"{target} enabled")
         except ValueError:
             self.print_error("Invalid channel number")
     
@@ -492,26 +432,8 @@ class LightFxCommandHandler(CommandHandlerBase):
             return
         try:
             ch = int(args[0])
-            packet = LightFxCommands.led_enable(ch, False)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                target = f"LED {ch}" if ch > 0 else "All LEDs"
-                self.print_ok(f"{target} disabled")
-            else:
-                self._print_ack_response(response)
+            target = f"LED {ch}" if ch > 0 else "All LEDs"
+            self._send_ack(LightFxCommands.led_enable(ch, False), f"{target} disabled")
         except ValueError:
             self.print_error("Invalid channel number")
     
-    # =========================================================================
-    # Response Handling
-    # =========================================================================
-    
-    def _print_ack_response(self, response):
-        """Print ACK/NACK response."""
-        if response is None:
-            self.print_error("No response (timeout)")
-        elif response.is_nack:
-            code = response.error_code
-            name = parsers.error_name(code)
-            msg = response.error_message
-            self.print_error(f"NACK: {name} (0x{code:02X})" + (f" - {msg}" if msg else ""))

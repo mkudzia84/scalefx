@@ -77,7 +77,7 @@ controllers/
 
 tests/
 ├── framework/           # packets.py, commands.py, connection.py, protocol.py
-├── cli/handlers/        # CLI command handlers per controller
+├── cli/handlers/        # CLI command handlers (composition-based slave routing via hubfx.py)
 └── {gunfx,lightfx,gearcontrol,noop}/  # pytest test suites
 
 scripts/build_and_flash.py   # Centralized build/flash

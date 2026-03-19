@@ -130,22 +130,13 @@ class GearControlCommandHandler(CommandHandlerBase):
             return
 
         if args[0].lower() == 'all':
-            packet = GearControlCommands.gear_all(1)  # ACTION_DEPLOY
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok("Deploy ALL gears")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.gear_all(1), "Deploy ALL gears")  # ACTION_DEPLOY
         else:
             try:
                 gear_id = int(args[0])
-                packet = GearControlCommands.gear_deploy(gear_id)
-                success, response = self.conn.send_expect_ack(packet)
-                if success:
-                    names = {0: "nose", 1: "left main", 2: "right main"}
-                    self.print_ok(f"Deploy gear {gear_id} ({names.get(gear_id, '?')})")
-                else:
-                    self._print_ack_response(response)
+                names = {0: "nose", 1: "left main", 2: "right main"}
+                self._send_ack(GearControlCommands.gear_deploy(gear_id),
+                               f"Deploy gear {gear_id} ({names.get(gear_id, '?')})")
             except ValueError:
                 self.print_error("Invalid gear ID")
 
@@ -156,22 +147,13 @@ class GearControlCommandHandler(CommandHandlerBase):
             return
 
         if args[0].lower() == 'all':
-            packet = GearControlCommands.gear_all(0)  # ACTION_RETRACT
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok("Retract ALL gears")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.gear_all(0), "Retract ALL gears")  # ACTION_RETRACT
         else:
             try:
                 gear_id = int(args[0])
-                packet = GearControlCommands.gear_retract(gear_id)
-                success, response = self.conn.send_expect_ack(packet)
-                if success:
-                    names = {0: "nose", 1: "left main", 2: "right main"}
-                    self.print_ok(f"Retract gear {gear_id} ({names.get(gear_id, '?')})")
-                else:
-                    self._print_ack_response(response)
+                names = {0: "nose", 1: "left main", 2: "right main"}
+                self._send_ack(GearControlCommands.gear_retract(gear_id),
+                               f"Retract gear {gear_id} ({names.get(gear_id, '?')})")
             except ValueError:
                 self.print_error("Invalid gear ID")
 
@@ -182,21 +164,12 @@ class GearControlCommandHandler(CommandHandlerBase):
             return
 
         if args[0].lower() == 'all':
-            packet = GearControlCommands.gear_all(2)  # ACTION_STOP
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok("STOP ALL motors")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.gear_all(2), "STOP ALL motors")  # ACTION_STOP
         else:
             try:
                 gear_id = int(args[0])
-                packet = GearControlCommands.gear_stop(gear_id)
-                success, response = self.conn.send_expect_ack(packet)
-                if success:
-                    self.print_ok(f"STOP motor {gear_id}")
-                else:
-                    self._print_ack_response(response)
+                self._send_ack(GearControlCommands.gear_stop(gear_id),
+                               f"STOP motor {gear_id}")
             except ValueError:
                 self.print_error("Invalid gear ID")
 
@@ -213,12 +186,8 @@ class GearControlCommandHandler(CommandHandlerBase):
         try:
             servo_id = int(args[1])
             pulse = int(args[2])
-            packet = GearControlCommands.servo_set(servo_id, pulse)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Servo {servo_id} → {pulse}µs")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.servo_set(servo_id, pulse),
+                           f"Servo {servo_id} → {pulse}µs")
         except ValueError:
             self.print_error("Invalid servo parameters")
 
@@ -237,13 +206,9 @@ class GearControlCommandHandler(CommandHandlerBase):
             accel = int(args[4]) if len(args) > 4 else 8000
             decel = int(args[5]) if len(args) > 5 else 8000
 
-            packet = GearControlCommands.servo_settings(servo_id, min_us, max_us, speed, accel, decel)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Servo {servo_id} configured: range {min_us}-{max_us}µs, "
-                              f"speed={speed}µs/s, accel={accel}µs/s², decel={decel}µs/s²")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.servo_settings(servo_id, min_us, max_us, speed, accel, decel),
+                           f"Servo {servo_id} configured: range {min_us}-{max_us}µs, "
+                           f"speed={speed}µs/s, accel={accel}µs/s², decel={decel}µs/s²")
         except ValueError:
             self.print_error("Invalid servo config parameters")
 
@@ -295,15 +260,11 @@ class GearControlCommandHandler(CommandHandlerBase):
             stall_mA = numeric_args[0] if len(numeric_args) > 0 else 500
             timeout_ms = numeric_args[1] if len(numeric_args) > 1 else 60000
 
-            packet = GearControlCommands.gear_config(gear_id, flags, stall_mA, timeout_ms)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                flag_parts = []
-                if flags & 0x01: flag_parts.append("yaw")
-                flag_str = ', '.join(flag_parts) if flag_parts else "none"
-                self.print_ok(f"Gear {gear_id}: flags=[{flag_str}], stall={stall_mA}mA, timeout={timeout_ms}ms")
-            else:
-                self._print_ack_response(response)
+            flag_parts = []
+            if flags & 0x01: flag_parts.append("yaw")
+            flag_str = ', '.join(flag_parts) if flag_parts else "none"
+            self._send_ack(GearControlCommands.gear_config(gear_id, flags, stall_mA, timeout_ms),
+                           f"Gear {gear_id}: flags=[{flag_str}], stall={stall_mA}mA, timeout={timeout_ms}ms")
         except ValueError:
             self.print_error("Invalid gear config parameters")
 
@@ -320,18 +281,18 @@ class GearControlCommandHandler(CommandHandlerBase):
             open1 = int(args[3])
             close1 = int(args[4])
 
-            packet = GearControlCommands.door_config(gear_id, open0, close0, open1, close1)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Gear {gear_id} doors: A={close0}-{open0}µs, B={close1}-{open1}µs")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.door_config(gear_id, open0, close0, open1, close1),
+                           f"Gear {gear_id} doors: A={close0}-{open0}µs, B={close1}-{open1}µs")
         except ValueError:
             self.print_error("Invalid door config parameters")
 
     def cmd_door_mode(self, args: List[str]):
         """Configure or query door activation modes (two-mode system)."""
         if not args:
+            if self._packet_wrapper:
+                self.print_error("Usage: gc.door.mode <gear_id> <pre_deploy> [post_deploy] [delay_ms]")
+                self.print_info("  Modes: none, single, dual-sync, dual-delay, dual-seq")
+                return
             self._show_door_modes()
             return
 
@@ -382,17 +343,12 @@ class GearControlCommandHandler(CommandHandlerBase):
                     else:
                         post_deploy = val
 
-            packet = GearControlCommands.door_mode(gear_id, mode, post_deploy, delay_ms)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                mode_name = DoorMode.name(mode)
-                post_name = DoorMode.name(post_deploy)
-                msg = f"Gear {gear_id} pre-deploy={mode_name} post-deploy={post_name}"
-                if mode == DoorMode.DUAL_DELAY or post_deploy == DoorMode.DUAL_DELAY:
-                    msg += f" (delay={delay_ms}ms)"
-                self.print_ok(msg)
-            else:
-                self._print_ack_response(response)
+            mode_name = DoorMode.name(mode)
+            post_name = DoorMode.name(post_deploy)
+            msg = f"Gear {gear_id} pre-deploy={mode_name} post-deploy={post_name}"
+            if mode == DoorMode.DUAL_DELAY or post_deploy == DoorMode.DUAL_DELAY:
+                msg += f" (delay={delay_ms}ms)"
+            self._send_ack(GearControlCommands.door_mode(gear_id, mode, post_deploy, delay_ms), msg)
         except ValueError:
             self.print_error("Invalid door mode parameters")
 
@@ -441,12 +397,8 @@ class GearControlCommandHandler(CommandHandlerBase):
             min_us = int(args[2])
             max_us = int(args[3])
 
-            packet = GearControlCommands.yaw_config(gear_id, neutral, min_us, max_us)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Yaw configured: gear={gear_id}, neutral={neutral}µs, range={min_us}-{max_us}µs")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.yaw_config(gear_id, neutral, min_us, max_us),
+                           f"Yaw configured: gear={gear_id}, neutral={neutral}µs, range={min_us}-{max_us}µs")
         except ValueError:
             self.print_error("Invalid yaw config parameters")
 
@@ -458,12 +410,8 @@ class GearControlCommandHandler(CommandHandlerBase):
 
         try:
             position = int(args[0])
-            packet = GearControlCommands.yaw_input(position)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Yaw → {position}µs")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.yaw_input(position),
+                           f"Yaw → {position}µs")
         except ValueError:
             self.print_error("Invalid yaw position")
 
@@ -485,26 +433,18 @@ class GearControlCommandHandler(CommandHandlerBase):
 
         if args[0].lower() == 'all':
             timeout_s = int(args[1]) if len(args) > 1 else 0
+            timeout_str = f" (timeout={timeout_s}s)" if timeout_s > 0 else ""
             for gear_id in range(3):
-                packet = GearControlCommands.gear_calibrate(gear_id, timeout_s)
-                success, response = self.conn.send_expect_ack(packet)
-                if success:
-                    timeout_str = f" (timeout={timeout_s}s)" if timeout_s > 0 else ""
-                    self.print_ok(f"Calibrating gear {gear_id} ({names.get(gear_id, '?')}){timeout_str}")
-                else:
-                    self._print_ack_response(response)
+                self._send_ack(GearControlCommands.gear_calibrate(gear_id, timeout_s),
+                               f"Calibrating gear {gear_id} ({names.get(gear_id, '?')}){timeout_str}")
             return
 
         try:
             gear_id = int(args[0])
             timeout_s = int(args[1]) if len(args) > 1 else 0
-            packet = GearControlCommands.gear_calibrate(gear_id, timeout_s)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                timeout_str = f" (timeout={timeout_s}s)" if timeout_s > 0 else ""
-                self.print_ok(f"Calibrating gear {gear_id} ({names.get(gear_id, '?')}) - progress updates incoming{timeout_str}")
-            else:
-                self._print_ack_response(response)
+            timeout_str = f" (timeout={timeout_s}s)" if timeout_s > 0 else ""
+            self._send_ack(GearControlCommands.gear_calibrate(gear_id, timeout_s),
+                           f"Calibrating gear {gear_id} ({names.get(gear_id, '?')}) - progress updates incoming{timeout_str}")
         except ValueError:
             self.print_error("Invalid gear ID or timeout")
 
@@ -518,22 +458,14 @@ class GearControlCommandHandler(CommandHandlerBase):
 
         if args[0].lower() == 'all':
             for gear_id in range(3):
-                packet = GearControlCommands.gear_calib_cancel(gear_id)
-                success, response = self.conn.send_expect_ack(packet)
-                if success:
-                    self.print_ok(f"Cancelled calibration for gear {gear_id} ({names.get(gear_id, '?')})")
-                else:
-                    self._print_ack_response(response)
+                self._send_ack(GearControlCommands.gear_calib_cancel(gear_id),
+                               f"Cancelled calibration for gear {gear_id} ({names.get(gear_id, '?')})")
             return
 
         try:
             gear_id = int(args[0])
-            packet = GearControlCommands.gear_calib_cancel(gear_id)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Cancelled calibration for gear {gear_id} ({names.get(gear_id, '?')})")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.gear_calib_cancel(gear_id),
+                           f"Cancelled calibration for gear {gear_id} ({names.get(gear_id, '?')})")
         except ValueError:
             self.print_error("Invalid gear ID")
 
@@ -551,22 +483,14 @@ class GearControlCommandHandler(CommandHandlerBase):
 
         if args[0].lower() == 'all':
             for gear_id in range(3):
-                packet = GearControlCommands.gear_reset(gear_id)
-                success, response = self.conn.send_expect_ack(packet)
-                if success:
-                    self.print_ok(f"Reset gear {gear_id} ({names.get(gear_id, '?')})")
-                else:
-                    self._print_ack_response(response)
+                self._send_ack(GearControlCommands.gear_reset(gear_id),
+                               f"Reset gear {gear_id} ({names.get(gear_id, '?')})")
             return
 
         try:
             gear_id = int(args[0])
-            packet = GearControlCommands.gear_reset(gear_id)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Reset gear {gear_id} ({names.get(gear_id, '?')})")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.gear_reset(gear_id),
+                           f"Reset gear {gear_id} ({names.get(gear_id, '?')})")
         except ValueError:
             self.print_error("Invalid gear ID")
 
@@ -580,22 +504,14 @@ class GearControlCommandHandler(CommandHandlerBase):
 
         if args[0].lower() == 'all':
             for gear_id in range(3):
-                packet = GearControlCommands.gear_enable(gear_id, True)
-                success, response = self.conn.send_expect_ack(packet)
-                if success:
-                    self.print_ok(f"Enabled gear {gear_id} ({names.get(gear_id, '?')})")
-                else:
-                    self._print_ack_response(response)
+                self._send_ack(GearControlCommands.gear_enable(gear_id, True),
+                               f"Enabled gear {gear_id} ({names.get(gear_id, '?')})")
             return
 
         try:
             gear_id = int(args[0])
-            packet = GearControlCommands.gear_enable(gear_id, True)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Enabled gear {gear_id} ({names.get(gear_id, '?')})")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.gear_enable(gear_id, True),
+                           f"Enabled gear {gear_id} ({names.get(gear_id, '?')})")
         except ValueError:
             self.print_error("Invalid gear ID")
 
@@ -609,22 +525,14 @@ class GearControlCommandHandler(CommandHandlerBase):
 
         if args[0].lower() == 'all':
             for gear_id in range(3):
-                packet = GearControlCommands.gear_enable(gear_id, False)
-                success, response = self.conn.send_expect_ack(packet)
-                if success:
-                    self.print_ok(f"Disabled gear {gear_id} ({names.get(gear_id, '?')})")
-                else:
-                    self._print_ack_response(response)
+                self._send_ack(GearControlCommands.gear_enable(gear_id, False),
+                               f"Disabled gear {gear_id} ({names.get(gear_id, '?')})")
             return
 
         try:
             gear_id = int(args[0])
-            packet = GearControlCommands.gear_enable(gear_id, False)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Disabled gear {gear_id} ({names.get(gear_id, '?')})")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GearControlCommands.gear_enable(gear_id, False),
+                           f"Disabled gear {gear_id} ({names.get(gear_id, '?')})")
         except ValueError:
             self.print_error("Invalid gear ID")
 
@@ -655,31 +563,12 @@ class GearControlCommandHandler(CommandHandlerBase):
         if len(args) > 1 and args[1].lower() == 'autodeploy':
             auto_deploy = True
 
-        packet = GearControlCommands.battery_config(enabled, auto_deploy)
-        success, response = self.conn.send_expect_ack(packet)
-        if success:
-            if enabled:
-                state = "ENABLED"
-                if auto_deploy:
-                    state += " + auto-deploy"
-            else:
-                state = "DISABLED"
-            self.print_ok(f"Battery monitoring: {state}")
+        if enabled:
+            state = "ENABLED"
+            if auto_deploy:
+                state += " + auto-deploy"
         else:
-            self._print_ack_response(response)
+            state = "DISABLED"
+        self._send_ack(GearControlCommands.battery_config(enabled, auto_deploy),
+                       f"Battery monitoring: {state}")
 
-    # =========================================================================
-    # Response Handling
-    # =========================================================================
-
-    def _print_ack_response(self, response):
-        """Print ACK/NACK response."""
-        from .. import parsers
-
-        if response is None:
-            self.print_error("No response (timeout)")
-        elif response.is_nack:
-            code = response.error_code
-            name = parsers.error_name(code)
-            msg = response.error_message
-            self.print_error(f"NACK: {name} (0x{code:02X})" + (f" - {msg}" if msg else ""))

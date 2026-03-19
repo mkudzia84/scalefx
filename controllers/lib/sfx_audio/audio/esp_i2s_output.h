@@ -1,12 +1,15 @@
 /**
  * ESP32 I2S Output — ESP32-S3 Implementation
  *
- * Wraps the ESP-IDF legacy I2S driver (v4.4). Uses bulk i2s_write()
+ * Wraps the ESP-IDF v5.x I2S standard-mode driver. Uses i2s_channel_write()
  * for efficient DMA transfers. Satisfies the TI2S template concept
  * for AudioMixer<TI2S, TCodec>.
  *
  * The batch buffer is allocated from internal SRAM (DMA-capable).
  * I2S DMA descriptors require SRAM — PSRAM is not DMA-accessible.
+ *
+ * Migration note: ESP-IDF 5.x replaced the legacy driver/i2s.h with
+ * driver/i2s_std.h (standard mode), driver/i2s_pdm.h, driver/i2s_tdm.h.
  */
 
 #ifndef ESP_I2S_OUTPUT_H
@@ -17,7 +20,7 @@
 
 #if defined(ARDUINO_ARCH_ESP32)
 
-#include <driver/i2s.h>
+#include <driver/i2s_std.h>
 #include <driver/gpio.h>
 #include "audio_log.h"
 
@@ -37,38 +40,50 @@ public:
     bool begin(const I2SPinConfig& pins, uint32_t sampleRate, uint8_t bitDepth) {
         if (_running) return true;
 
-        // ESP32-S3: Legacy I2S driver (IDF 4.4)
-        i2s_config_t i2s_cfg = {
-            .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-            .sample_rate = sampleRate,
-            .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-            .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-            .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-            .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-            .dma_buf_count = 8,
-            .dma_buf_len = 512,     // 8 × 512 samples = 16 KB DMA total
-            .use_apll = false,
-            .tx_desc_auto_clear = true,
-        };
+        // ESP-IDF 5.x: New I2S channel-based driver
+        // Step 1: Create TX channel
+        i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+        chan_cfg.dma_desc_num = 8;
+        chan_cfg.dma_frame_num = 512;     // 8 × 512 frames = DMA ring buffer
 
-        esp_err_t err = i2s_driver_install(I2S_NUM_0, &i2s_cfg, 0, nullptr);
+        esp_err_t err = i2s_new_channel(&chan_cfg, &_txHandle, nullptr);
         if (err != ESP_OK) {
-            MIXER_ERROR("i2s_driver_install failed: %d", err);
+            MIXER_ERROR("i2s_new_channel failed: %d", err);
             return false;
         }
 
-        i2s_pin_config_t pin_cfg = {
-            .mck_io_num = I2S_PIN_NO_CHANGE,
-            .bck_io_num = (int)pins.bclkPin,
-            .ws_io_num  = (int)pins.lrclkPin,
-            .data_out_num = (int)pins.dataPin,
-            .data_in_num  = I2S_PIN_NO_CHANGE,
+        // Step 2: Configure standard mode (I2S Philips)
+        i2s_std_config_t std_cfg = {
+            .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(sampleRate),
+            .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+            .gpio_cfg = {
+                .mclk = I2S_GPIO_UNUSED,
+                .bclk = (gpio_num_t)pins.bclkPin,
+                .ws   = (gpio_num_t)pins.lrclkPin,
+                .dout = (gpio_num_t)pins.dataPin,
+                .din  = I2S_GPIO_UNUSED,
+                .invert_flags = {
+                    .mclk_inv = false,
+                    .bclk_inv = false,
+                    .ws_inv   = false,
+                },
+            },
         };
 
-        err = i2s_set_pin(I2S_NUM_0, &pin_cfg);
+        err = i2s_channel_init_std_mode(_txHandle, &std_cfg);
         if (err != ESP_OK) {
-            MIXER_ERROR("i2s_set_pin failed: %d", err);
-            i2s_driver_uninstall(I2S_NUM_0);
+            MIXER_ERROR("i2s_channel_init_std_mode failed: %d", err);
+            i2s_del_channel(_txHandle);
+            _txHandle = nullptr;
+            return false;
+        }
+
+        // Step 3: Enable the channel (starts DMA)
+        err = i2s_channel_enable(_txHandle);
+        if (err != ESP_OK) {
+            MIXER_ERROR("i2s_channel_enable failed: %d", err);
+            i2s_del_channel(_txHandle);
+            _txHandle = nullptr;
             return false;
         }
 
@@ -78,8 +93,11 @@ public:
 
     void end() {
         if (!_running) return;
-        i2s_stop(I2S_NUM_0);
-        i2s_driver_uninstall(I2S_NUM_0);
+        if (_txHandle) {
+            i2s_channel_disable(_txHandle);
+            i2s_del_channel(_txHandle);
+            _txHandle = nullptr;
+        }
         _running = false;
     }
 
@@ -95,7 +113,7 @@ public:
                 _batchBuf[i * 2 + 1] = frames[i].right;
             }
             size_t bytesWritten = 0;
-            i2s_write(I2S_NUM_0, _batchBuf, chunk * 4, &bytesWritten, portMAX_DELAY);
+            i2s_channel_write(_txHandle, _batchBuf, chunk * 4, &bytesWritten, portMAX_DELAY);
             totalWritten += bytesWritten / 4;
             frames += chunk;
             count  -= chunk;
@@ -106,18 +124,19 @@ public:
     void writeSilence() {
         int16_t silence[2] = {0, 0};
         size_t bytesWritten = 0;
-        i2s_write(I2S_NUM_0, silence, 4, &bytesWritten, portMAX_DELAY);
+        i2s_channel_write(_txHandle, silence, 4, &bytesWritten, portMAX_DELAY);
     }
 
     bool isRunning() const { return _running; }
 
-    const char* backendName() const { return "ESP-IDF-I2S"; }
+    const char* backendName() const { return "ESP-IDF-I2S-v5"; }
 
 private:
     EspI2SOutput() = default;
 
     static constexpr size_t BATCH_FRAMES = 512;  // 512 stereo frames = 2 KB
     int16_t _batchBuf[BATCH_FRAMES * 2];          // Interleaved L/R in internal SRAM
+    i2s_chan_handle_t _txHandle = nullptr;
     bool _running = false;
 };
 

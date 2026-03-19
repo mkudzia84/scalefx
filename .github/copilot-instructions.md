@@ -833,18 +833,25 @@ framework/
   ├── packets.py       - Constants (MUST mirror C++ headers)
   └── commands.py      - High-level command builders (e.g., GunFxCommands.trigger_on())
 cli/
-  ├── base.py          - CommandInfo, OutputMixin, ControllerType, base classes
+  ├── base.py          - CommandHandlerBase (_send_ack, _wrap_packet), CommandInfo, OutputMixin
   ├── output.py        - TerminalUI split-screen terminal (prompt_toolkit Application)
   ├── parsers.py       - Response packet parsing utilities
   ├── interactive.py   - Main CLI class (prompt_toolkit split-screen, async-safe output)
   └── handlers/
       ├── core.py      - Core/protocol commands (connect, init, status)
       ├── gunfx.py     - GunFX commands (trigger, servo, smoke)
-      ├── lightfx.py   - LightFX commands (led, servo, power)
-      └── gearcontrol.py - GearControl commands (gear, servo, yaw)
+      ├── lightfx.py   - LightFX commands (led, servo, power, sequences)
+      ├── gearcontrol.py - GearControl commands (gear, servo, yaw, calibration)
+      ├── hubfx.py     - HubFX hub commands + composed slave routing
+      └── storage.py   - Reusable file operations (SD/Flash)
 {controller}/
   └── test_*.py        - pytest test files (requires hardware)
 ```
+
+**CLI Composition Pattern:** HubFX handler composes instances of GunFX, LightFX, and GearControl
+handlers with `_packet_wrapper = HubFxCommands.slave_route` for transparent hub routing. All
+ACK-based commands in direct handlers use `_send_ack()` which applies the wrapper when set.
+Query commands are excluded from slave registry since SLAVE_ROUTE only forwards ACK/NACK.
 
 **Dependencies:** `pyserial`, `colorama`, `prompt_toolkit>=3.0.0` (see `tests/requirements.txt`)
 

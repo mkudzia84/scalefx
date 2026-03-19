@@ -172,12 +172,17 @@ class CommandHandlerBase(OutputMixin):
     
     Subclasses implement commands for specific controllers (GunFX, LightFX)
     or command categories (core, protocol).
+    
+    Packet wrapper support: Set ``_packet_wrapper`` to a callable that
+    transforms outgoing packets (e.g., ``HubFxCommands.slave_route``) to
+    enable transparent hub routing of direct handler commands.
     """
     
     def __init__(self):
         self.conn: Optional['ScaleFXConnection'] = None
         self.controller_type: Optional[str] = None
         self._cancel_event: Optional[threading.Event] = None
+        self._packet_wrapper: Optional[Callable] = None
     
     def set_connection(self, conn: Optional['ScaleFXConnection']):
         """Update connection reference."""
@@ -218,6 +223,44 @@ class CommandHandlerBase(OutputMixin):
         Override in subclasses.
         """
         return {}
+
+    # =========================================================================
+    # Packet send helpers
+    # =========================================================================
+
+    def _wrap_packet(self, packet: bytes) -> bytes:
+        """Apply packet wrapper if set (e.g., hub slave routing)."""
+        if self._packet_wrapper:
+            return self._packet_wrapper(packet)
+        return packet
+
+    def _send_ack(self, packet: bytes, ok_msg: str, timeout: float = None) -> bool:
+        """Send a command packet, print ACK/NACK result.
+
+        Applies ``_packet_wrapper`` before sending (no-op when unset).
+        Returns True if the command was acknowledged.
+        """
+        wrapped = self._wrap_packet(packet)
+        if timeout is not None:
+            success, response = self.conn.send_expect_ack(wrapped, timeout=timeout)
+        else:
+            success, response = self.conn.send_expect_ack(wrapped)
+        if success:
+            self.print_ok(ok_msg)
+        else:
+            self._print_ack_response(response)
+        return success
+
+    def _print_ack_response(self, response):
+        """Print NACK or timeout error for a failed command."""
+        from . import parsers
+        if response is None:
+            self.print_error("No response (timeout)")
+        elif response.is_nack:
+            code = response.error_code
+            name = parsers.error_name(code)
+            msg = response.error_message
+            self.print_error(f"NACK: {name} (0x{code:02X})" + (f" - {msg}" if msg else ""))
 
 
 # =============================================================================

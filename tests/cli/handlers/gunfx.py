@@ -68,23 +68,13 @@ class GunFxCommandHandler(CommandHandlerBase):
                 return
             try:
                 rpm = int(args[1])
-                packet = GunFxCommands.trigger_on(rpm)
-                success, response = self.conn.send_expect_ack(packet)
-                if success:
-                    self.print_ok(f"Trigger ON at {rpm} RPM")
-                else:
-                    self._print_ack_response(response)
+                self._send_ack(GunFxCommands.trigger_on(rpm), f"Trigger ON at {rpm} RPM")
             except ValueError:
                 self.print_error("Invalid RPM value")
                 
         elif subcmd == 'off':
             delay = int(args[1]) if len(args) > 1 else 3000
-            packet = GunFxCommands.trigger_off(delay)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Trigger OFF (spin-down: {delay}ms)")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GunFxCommands.trigger_off(delay), f"Trigger OFF (spin-down: {delay}ms)")
         else:
             self.print_error(f"Unknown: {subcmd}. Use 'on' or 'off'")
     
@@ -101,12 +91,7 @@ class GunFxCommandHandler(CommandHandlerBase):
         try:
             servo_id = int(args[1])
             pulse = int(args[2])
-            packet = GunFxCommands.servo_set(servo_id, pulse)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Servo {servo_id} → {pulse}µs")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(GunFxCommands.servo_set(servo_id, pulse), f"Servo {servo_id} → {pulse}µs")
         except ValueError:
             self.print_error("Invalid servo parameters")
     
@@ -124,12 +109,9 @@ class GunFxCommandHandler(CommandHandlerBase):
             accel = int(args[4]) if len(args) > 4 else 8000
             decel = int(args[5]) if len(args) > 5 else 8000
             
-            packet = GunFxCommands.servo_settings(servo_id, min_us, max_us, speed, accel, decel)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Servo {servo_id} configured: range {min_us}-{max_us}µs, speed {speed}µs/s")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(
+                GunFxCommands.servo_settings(servo_id, min_us, max_us, speed, accel, decel),
+                f"Servo {servo_id} configured: range {min_us}-{max_us}µs, speed {speed}µs/s")
         except ValueError:
             self.print_error("Invalid servo config parameters")
     
@@ -143,12 +125,9 @@ class GunFxCommandHandler(CommandHandlerBase):
             servo_id = int(args[0])
             jerk = int(args[1])
             variance = int(args[2])
-            packet = GunFxCommands.servo_recoil(servo_id, jerk, variance)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_ok(f"Servo {servo_id} recoil: jerk {jerk}µs, variance ±{variance}µs")
-            else:
-                self._print_ack_response(response)
+            self._send_ack(
+                GunFxCommands.servo_recoil(servo_id, jerk, variance),
+                f"Servo {servo_id} recoil: jerk {jerk}µs, variance ±{variance}µs")
         except ValueError:
             self.print_error("Invalid recoil parameters")
     
@@ -163,12 +142,7 @@ class GunFxCommandHandler(CommandHandlerBase):
             return
         
         on = args[1].lower() in ('on', '1', 'true', 'yes')
-        packet = GunFxCommands.smoke_heat(on)
-        success, response = self.conn.send_expect_ack(packet)
-        if success:
-            self.print_ok(f"Smoke heater {'ON' if on else 'OFF'}")
-        else:
-            self._print_ack_response(response)
+        self._send_ack(GunFxCommands.smoke_heat(on), f"Smoke heater {'ON' if on else 'OFF'}")
     
     def cmd_smoke_config(self, args: List[str]):
         """GunFX smoke fan configuration (key=value syntax, all optional)."""
@@ -213,26 +187,18 @@ class GunFxCommandHandler(CommandHandlerBase):
                     self.print_error(f"Unknown parameter '{key}'")
                     return
             
-            packet = GunFxCommands.smoke_settings(pulsing, speed, high, low, pulse_ms, spindown_ms)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                mode = "pulsing" if pulsing else "constant"
-                pulse_info = "auto" if pulse_ms == 0 else f"{pulse_ms}ms"
-                self.print_ok(f"Smoke: {mode}, speed={speed}, high/low={high}/{low}, "
-                              f"pulse={pulse_info}, spindown={spindown_ms}ms")
-            else:
-                self._print_ack_response(response)
+            mode = "pulsing" if pulsing else "constant"
+            pulse_info = "auto" if pulse_ms == 0 else f"{pulse_ms}ms"
+            self._send_ack(
+                GunFxCommands.smoke_settings(pulsing, speed, high, low, pulse_ms, spindown_ms),
+                f"Smoke: {mode}, speed={speed}, high/low={high}/{low}, "
+                f"pulse={pulse_info}, spindown={spindown_ms}ms")
         except ValueError:
             self.print_error("Invalid parameter value (must be numeric)")
     
     def cmd_smoke_reset(self, args: List[str]):
         """Clear smoke error states."""
-        packet = GunFxCommands.smoke_reset()
-        success, response = self.conn.send_expect_ack(packet)
-        if success:
-            self.print_ok("Smoke errors cleared")
-        else:
-            self._print_ack_response(response)
+        self._send_ack(GunFxCommands.smoke_reset(), "Smoke errors cleared")
 
     def cmd_smoke_limit(self, args: List[str]):
         """Set overcurrent protection limit."""
@@ -251,31 +217,11 @@ class GunFxCommandHandler(CommandHandlerBase):
 
         try:
             limit_mA = int(args[1])
-            packet = GunFxCommands.smoke_current_limit(channel, limit_mA)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                ch_label = 'Heater' if channel == 0 else 'Fan'
-                if limit_mA == 0:
-                    self.print_ok(f"{ch_label} overcurrent protection disabled")
-                else:
-                    self.print_ok(f"{ch_label} current limit set to {limit_mA} mA")
+            ch_label = 'Heater' if channel == 0 else 'Fan'
+            if limit_mA == 0:
+                msg = f"{ch_label} overcurrent protection disabled"
             else:
-                self._print_ack_response(response)
+                msg = f"{ch_label} current limit set to {limit_mA} mA"
+            self._send_ack(GunFxCommands.smoke_current_limit(channel, limit_mA), msg)
         except ValueError:
             self.print_error("Invalid current limit value")
-    
-    # =========================================================================
-    # Response Handling
-    # =========================================================================
-    
-    def _print_ack_response(self, response):
-        """Print ACK/NACK response."""
-        from .. import parsers
-        
-        if response is None:
-            self.print_error("No response (timeout)")
-        elif response.is_nack:
-            code = response.error_code
-            name = parsers.error_name(code)
-            msg = response.error_message
-            self.print_error(f"NACK: {name} (0x{code:02X})" + (f" - {msg}" if msg else ""))
