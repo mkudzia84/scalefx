@@ -79,11 +79,11 @@ The shared `AudioMixer` already has ESP32-S3 conditionals (`SFX_PLATFORM_ESP32` 
 
 | Status | Item | Details |
 |--------|------|---------|
-| [ ] | **I2S driver** | Pico uses PIO-I2S (`I2S.h`). ESP32-S3 uses hardware I2S via `driver/i2s_std.h`. AudioMixer's `beginI2S()` / `consume()` need ESP32-S3 I2S init + `i2s_channel_write()`. This is the biggest single migration item. |
-| [x] | **Codec init** | TAS5825Codec singleton — `begin(Wire, 8, 9, 48000, TAS5825M_12V)`. Supply voltage configurable. |
-| [ ] | **Audio mixer begin** | `mixer.begin(data, bclk, lrclk, codec)` — shared code, but verify `SdCardModule` singleton works with ESP32 SD lib. |
-| [ ] | **Audio producer** | `mixer.produce(2048)` in `loop()` — shared code, should work as-is. |
-| [ ] | **Audio consumer** | `mixer.consume()` in Core 1 task — shared code, but I2S write path needs ESP32 native driver. |
+| [x] | **I2S driver** | ESP-IDF v5.x standard-mode via `driver/i2s_std.h`. `EspI2SOutput` singleton wraps `i2s_channel_write()` with DMA auto-clear on underrun. Bit depth derived from `AUDIO_BIT_DEPTH` config. |
+| [x] | **Codec init** | TAS5825Codec singleton — `begin(Wire, 8, 9, AUDIO_SAMPLE_RATE, TAS5825M_12V)`. Supply voltage configurable. All codec defaults now use `AUDIO_SAMPLE_RATE`. |
+| [x] | **Audio mixer begin** | `mixer.begin(data, bclk, lrclk)` — Phase 1 on Core 0, Phase 2 (`beginI2S()`) on Core 1. PSRAM buffers: 24000-frame WAV decode per channel, 4096-frame SPSC ring buffer. |
+| [x] | **Audio producer** | `mixer.produce(1024)` in `loop()` — 1024 frames per call (~21 ms). Proactive round-robin WAV refill when buffer < 50%. |
+| [x] | **Audio consumer** | `mixer.consume()` in Core 1 FreeRTOS task — reads ring buffer, batch-writes to I2S via 512-frame internal SRAM buffer. |
 | [ ] | **MCLK support** | ESP32-S3 has native MCLK output (Pico does not). Some DACs need it. Add optional MCLK pin config. |
 
 ### Phase 3 — USB Host (Slave Management)
@@ -423,6 +423,8 @@ All protocol communication (COBS/INIT/STATUS/DIAG) goes through UART0.
 
 | Version | Build | Date | Changes |
 |---------|-------|------|----------|
+| 0.18.1 | 96 | 2026-03-19 | **Audio producer optimization:** Removed DIAG instrumentation from hot paths (per-frame logging in `produceFrame()`, `getWavSample()`, `refillWavBuffer()`, periodic 500ms channel dump). Increased `produce()` budget from 256→1024 frames per main loop iteration. **Audio pipeline consistency cleanup:** All codec `begin()` defaults changed from hardcoded 44100 to `AUDIO_SAMPLE_RATE` (48000). I2S slot config now uses `AUDIO_BIT_DEPTH` instead of hardcoded `I2S_DATA_BIT_WIDTH_16BIT`. TAS5825M constructor default updated. `reinitialize()` sentinel changed from 44100 to 0 for proper default detection. |
+| 0.18.0 | 92 | 2026-03-19 | **PCM5102A codec driver:** New `PCM5102ACodec` singleton for TI PCM5102A DAC (GPIO-only control: XSMT mute, FMT, FLT, DEMP). `CODEC_STATUS` protocol command for runtime codec diagnostics. Audio diagnostic DIAG instrumentation (since removed in 0.18.1). |
 | 0.17.0 | 82 | 2026-03-18 | **TAS5825M codec integration:** Switched audio codec from SimpleI2SCodec to TAS5825Codec (TI TAS5825M stereo Class-D amplifier). I2C control on GPIO 8 (SDA) / GPIO 9 (SCL). TAS5825Codec converted to singleton pattern for AudioMixer compatibility. Supply voltage configurable (12V/15V/20V/24V). Added full wiring guide in README. |
 | 0.16.0 | 80 | 2026-03-17 | **Platform migration:** Arduino ESP32 v2.x (ESP-IDF 4.4.7) → v3.3.7 (ESP-IDF 5.5.x) via pioarduino. Enables USB Hub support (TUSB2046IBVFR) via IDF 5.x internal hub driver. Rewrote `EspI2SOutput` from legacy `driver/i2s.h` to ESP-IDF 5.x channel-based `driver/i2s_std.h` API. Pinned ESP32Servo ≥3.0.5 for Arduino v3.x LEDC compatibility. |
 | 0.7.3 | 40 | 2026-03-16 | Fixed loopTask stack overflow on ESP32-S3 — `StreamWriter` 2044-byte chunk buffer moved from stack to heap allocation, loopTask stack increased to 16KB (`ARDUINO_LOOP_STACK_SIZE=16384`). Fixed tab-delimited wire format for FILE_LIST/FILE_TREE (spaces in filenames no longer break parsing). CLI parsers updated with tab-first parsing + space fallback for legacy firmware. |

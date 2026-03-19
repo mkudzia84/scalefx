@@ -14,12 +14,13 @@ sfx_audio/
 │   ├── audio_mixer.h       # AudioMixer<TI2S, TCodec> template declaration
 │   ├── audio_mixer.ipp     # AudioMixer template implementation (included by .h)
 │   ├── audio_ring_buffer.h # Lock-free SPSC ring buffer (StereoFrame, Core 0 → Core 1)
-│   ├── esp_i2s_output.h    # ESP-IDF legacy I2S driver (ESP32-S3)
+│   ├── esp_i2s_output.h    # ESP-IDF v5.x I2S standard-mode driver (ESP32-S3)
 │   ├── pico_i2s_output.h   # Arduino-Pico PIO I2S driver (RP2040/RP2350)
 │   └── mock_i2s_sink.h/.cpp # Mock I2S output for testing (statistics, capture)
 └── codec/
     ├── simple_i2s_codec.h/.cpp  # No-op codec for DACs with no I2C control
-    └── tas5825_codec.h/.cpp     # TI TAS5825M digital amplifier driver (I2C)
+    ├── tas5825_codec.h/.cpp     # TI TAS5825M digital amplifier driver (I2C)
+    └── pcm5102a_codec.h         # TI PCM5102A stereo DAC (GPIO-only, no I2C)
 ```
 
 ## Architecture
@@ -90,7 +91,7 @@ public:
 
     // Initialize the codec hardware at the given sample rate.
     // Called by AudioMixer::begin(). Must be idempotent.
-    bool begin(uint32_t sample_rate = 44100);
+    bool begin(uint32_t sample_rate = AUDIO_SAMPLE_RATE);
 
     // Reset the codec to power-on state.
     void reset();
@@ -116,7 +117,7 @@ public:
     uint16_t readRegisterCache(uint8_t reg) const;
     bool writeRegisterDebug(uint8_t reg, uint16_t value);
     void printStatus();
-    void reinitialize(uint32_t sample_rate = 44100);
+    void reinitialize(uint32_t sample_rate = 0);
     void* getCommunicationInterface();
     void dumpRegisters();
 ```
@@ -127,8 +128,9 @@ These are only called when `AUDIO_DEBUG` is enabled and are not required for pro
 
 | Class | Header | Description |
 |-------|--------|-------------|
-| `SimpleI2SCodec` | `codec/simple_i2s_codec.h` | No-op codec for DACs without I2C control (e.g., PCM5102A). `begin()`/`setVolume()`/`setMute()` are stubs. |
-| `TAS5825Codec` | `codec/tas5825_codec.h` | TI TAS5825M digital amplifier. Full I2C register control, volume via register 0x4C, hardware mute/unmute, diagnostic registers. |
+| `SimpleI2SCodec` | `codec/simple_i2s_codec.h` | No-op codec for DACs without I2C control. `begin()`/`setVolume()`/`setMute()` are stubs. |
+| `TAS5825Codec` | `codec/tas5825_codec.h` | TI TAS5825M digital amplifier. Full I2C register control, volume via register 0x4C, hardware mute/unmute, diagnostic registers. Singleton. |
+| `PCM5102ACodec` | `codec/pcm5102a_codec.h` | TI PCM5102A stereo DAC. GPIO-only control (XSMT mute, FMT, FLT, DEMP). No I2C — auto-detects sample rate from I2S clocks. Singleton. |
 
 ## I2S Output Concept (Compile-Time Interface)
 
@@ -185,7 +187,7 @@ struct StereoFrame {
 
 | Class | Header | Platform | Description |
 |-------|--------|----------|-------------|
-| `EspI2SOutput` | `audio/esp_i2s_output.h` | ESP32-S3 | ESP-IDF v5.x channel-based I2S driver (`driver/i2s_std.h`). Bulk DMA writes via `i2s_channel_write()`. Internal SRAM batch buffer (2 KB). |
+| `EspI2SOutput` | `audio/esp_i2s_output.h` | ESP32-S3 | ESP-IDF v5.x channel-based I2S standard-mode driver (`driver/i2s_std.h`). Bulk DMA writes via `i2s_channel_write()`. Internal SRAM batch buffer (2 KB). DMA auto-clear on underrun. Bit depth derived from `AUDIO_BIT_DEPTH`. |
 | `PicoI2SOutput` | `audio/pico_i2s_output.h` | RP2040/RP2350 | Arduino-Pico PIO-based I2S. Per-sample `write16()`. LRCLK must be BCLK+1 (PIO constraint). |
 | `MockI2SSink` | `audio/mock_i2s_sink.h` | Any | Mock output for testing. Captures statistics (peak levels, RMS, clipping, zero-crossings) and optional sample buffer. |
 
@@ -201,8 +203,8 @@ All constants are `#ifndef`-guarded — override via `-D` build flags in `platfo
 | `AUDIO_MAX_CHANNELS` | 8 | Max simultaneous mixer channels |
 | `AUDIO_DEBUG` | 0 | Enable verbose debug logging |
 | `AUDIO_MOCK_I2S` | 0 | Use MockI2SSink instead of real hardware |
-| `RING_FRAMES` | 2048 (ESP32) / 512 (Pico) | SPSC ring buffer capacity (stereo frames) |
-| `WAV_BUF_FRAMES` | 4096 (ESP32) / 1024 (Pico) | Float decode buffer per channel |
+| `RING_FRAMES` | 4096 (both) | SPSC ring buffer capacity (stereo frames, ~85 ms @ 48 kHz) |
+| `WAV_BUF_FRAMES` | 24000 (ESP32) / 1024 (Pico) | Float decode buffer per channel (0.5 s @ 48 kHz on ESP32) |
 | `WAV_SD_READ_BYTES` | 16384 (ESP32) / 4096 (Pico) | SD card read batch size |
 
 See [audio_config.h](audio/audio_config.h) for the full list.

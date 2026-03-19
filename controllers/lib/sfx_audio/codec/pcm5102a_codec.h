@@ -85,7 +85,7 @@ public:
      * @param sample_rate Sample rate in Hz (informational only — PCM5102A auto-detects)
      * @return true always (no communication to fail)
      */
-    bool begin(uint32_t sample_rate = 44100);
+    bool begin(uint32_t sample_rate = AUDIO_SAMPLE_RATE);
 
     /** @brief Reset to default state (unmuted, normal filter, no de-emphasis). */
     void reset();

@@ -735,7 +735,10 @@ bool AudioMixer<TI2S, TCodec>::refillWavBuffer(WavState& ws) {
             if (ws.loopCount != LOOP_INFINITE) {
                 if (ws.loopCount <= 0) {
                     ws.loop = false;
-                    ws.active = false;
+                    // Don't set ws.active = false here — the WAV decode
+                    // buffer may still have frames to play.  produceFrame()
+                    // will keep mixing until getWavSample() returns false
+                    // (buffer empty), which triggers proper cleanup.
                     return ws.bufLen > 0;
                 }
                 ws.loopCount--;
@@ -744,7 +747,11 @@ bool AudioMixer<TI2S, TCodec>::refillWavBuffer(WavState& ws) {
             ws.framesRead = 0;
             framesLeft = (int)ws.totalFrames;
         } else {
-            ws.active = false;
+            // Don't set ws.active = false here — the WAV decode
+            // buffer may still have frames to play.  produceFrame()
+            // will keep mixing until getWavSample() returns false
+            // (buffer empty), which triggers proper cleanup and
+            // sets _channelPlaying = false.
             return ws.bufLen > 0;
         }
     }
@@ -854,6 +861,7 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
             // End of playback — close file and clean up
             ws.active = false;
             _channelPlaying[i] = false;
+            _channelRemainingMs[i] = 0;
             if (ws.file) ws.file.close();
             checkAndPlayNextQueued(i);
             continue;
@@ -936,9 +944,6 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
 template<typename TI2S, typename TCodec>
 int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
     if (!_initialized) return 0;
-
-    static uint32_t lastLogTime = 0;
-    static int totalProduced = 0;
     
     // Process any pending commands first
     processCommands();
@@ -1002,13 +1007,11 @@ void AudioMixer<TI2S, TCodec>::consumeAndOutput() {
         TI2S::instance().writeSamples(frames, count);
         _consumeFrames.fetch_add(count, std::memory_order_relaxed);
     } else {
-        // Ring empty — no audio data available.
-        // Don't spin writing single silence frames (wastes CPU, inflates
-        // underrun counter). I2S tx_desc_auto_clear sends zeros to the
-        // DAC while DMA has no new data, so silence is automatic.
-        // Yield ~1ms and re-check. At 48 kHz the producer adds up to
-        // 256 frames per loop iteration, so 1ms is short enough to
-        // resume promptly when new audio arrives.
+        // Ring empty — yield and wait for producer to refill.
+        // auto_clear_after_cb=true in the I2S channel config ensures
+        // DMA buffers are zeroed after transmission, so no manual
+        // silence flush is needed (which would inject audible gaps
+        // if the ring briefly empties during active playback).
         _underruns.fetch_add(1, std::memory_order_relaxed);
         SFX_DELAY_MS(1);
     }

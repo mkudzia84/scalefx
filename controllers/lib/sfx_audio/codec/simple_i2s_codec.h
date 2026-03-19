@@ -44,7 +44,7 @@ public:
     void setGainPin(int8_t pin) { gainPin = pin; }
     
     // Codec interface
-    bool begin(uint32_t sample_rate = 44100);
+    bool begin(uint32_t sample_rate = AUDIO_SAMPLE_RATE);
     void reset();
     void setVolume(float volume);
     void setMute(bool mute);

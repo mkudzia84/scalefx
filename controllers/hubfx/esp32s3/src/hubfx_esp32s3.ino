@@ -41,8 +41,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.18.0"
-#define BUILD_NUMBER 87
+#define FIRMWARE_VERSION "0.18.1"
+#define BUILD_NUMBER 96
 
 #include <Arduino.h>
 #include <atomic>
@@ -659,7 +659,7 @@ void loop() {
     if (audioInitialized.load(std::memory_order_acquire) &&
         !storageServer.isUploadActive() &&
         !storageServer.isStreamReceiving()) {
-        Mixer::instance().produce(256);
+        Mixer::instance().produce(1024);
     }
 
     // Periodic diagnostic logging (buffered in DiagLog ring, retrieved via `diag`)

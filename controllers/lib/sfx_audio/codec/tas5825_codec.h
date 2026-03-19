@@ -105,15 +105,15 @@ public:
      * @param wire I2C interface (Wire or Wire1)
      * @param sda I2C SDA pin
      * @param scl I2C SCL pin
-     * @param sample_rate Sample rate in Hz (default: 44100)
+     * @param sample_rate Sample rate in Hz (default: AUDIO_SAMPLE_RATE)
      * @param supply_voltage Supply voltage configuration (default: 20V)
      * @return true if initialization successful
      */
-    bool begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate = 44100,
+    bool begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate = AUDIO_SAMPLE_RATE,
                TAS5825M_SupplyVoltage supply_voltage = TAS5825M_20V);
 
     // Codec interface implementation
-    bool begin(uint32_t sample_rate = 44100);
+    bool begin(uint32_t sample_rate = AUDIO_SAMPLE_RATE);
     void reset();
     void setVolume(float volume);
     void setMute(bool mute);
@@ -154,7 +154,7 @@ public:
     uint16_t readRegisterCache(uint8_t reg) const;
     bool writeRegisterDebug(uint8_t reg, uint16_t value);
     void printStatus();
-    void reinitialize(uint32_t sample_rate = 44100);
+    void reinitialize(uint32_t sample_rate = 0);
     void* getCommunicationInterface() { return i2c; }
 #endif // AUDIO_DEBUG
 

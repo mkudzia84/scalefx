@@ -17,7 +17,7 @@ TAS5825Codec::TAS5825Codec()
     : i2c(nullptr)
     , sdaPin(-1)
     , sclPin(-1)
-    , sampleRate(44100)
+    , sampleRate(AUDIO_SAMPLE_RATE)
     , supplyVoltage(TAS5825M_20V)
     , initialized(false)
     , muted(false)
@@ -499,8 +499,8 @@ void TAS5825Codec::reinitialize(uint32_t sample_rate) {
     
     initialized = false;
     
-    // Store old sample rate if not specified
-    if (sample_rate == 44100 && sampleRate != 44100) {
+    // Use stored sample rate when caller passes 0 (default)
+    if (sample_rate == 0) {
         sample_rate = sampleRate;
     }
     

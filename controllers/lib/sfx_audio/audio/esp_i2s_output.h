@@ -45,6 +45,7 @@ public:
         i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
         chan_cfg.dma_desc_num = 8;
         chan_cfg.dma_frame_num = 512;     // 8 × 512 frames = DMA ring buffer
+        chan_cfg.auto_clear_after_cb = true;  // Zero DMA buffers after TX — prevents last-buffer loop on underrun
 
         esp_err_t err = i2s_new_channel(&chan_cfg, &_txHandle, nullptr);
         if (err != ESP_OK) {
@@ -53,9 +54,14 @@ public:
         }
 
         // Step 2: Configure standard mode (I2S Philips)
+        // Map bitDepth to ESP-IDF enum (compile-time known, no runtime overhead)
+        constexpr i2s_data_bit_width_t dataBits =
+            (AUDIO_BIT_DEPTH == 32) ? I2S_DATA_BIT_WIDTH_32BIT :
+            (AUDIO_BIT_DEPTH == 24) ? I2S_DATA_BIT_WIDTH_24BIT :
+                                      I2S_DATA_BIT_WIDTH_16BIT;
         i2s_std_config_t std_cfg = {
             .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(sampleRate),
-            .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+            .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(dataBits, I2S_SLOT_MODE_STEREO),
             .gpio_cfg = {
                 .mclk = I2S_GPIO_UNUSED,
                 .bclk = (gpio_num_t)pins.bclkPin,
