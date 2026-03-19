@@ -176,7 +176,7 @@ public:
     bool isAnyPlaying() const;
     bool isInitialized() const { return _initialized; }
     bool isI2SRunning() const  { return _i2sRunning; }
-    int remainingMs(int channel) const;
+    float remainingSec(int channel) const;
     TCodec& getCodec() { return TCodec::instance(); }
     TI2S& getI2SOutput() { return TI2S::instance(); }
 
@@ -394,7 +394,7 @@ private:
 
     // Status (producer task writes, Core 0 reads for status queries)
     std::atomic<bool> _channelPlaying[AUDIO_MAX_CHANNELS]{};
-    std::atomic<int> _channelRemainingMs[AUDIO_MAX_CHANNELS]{};
+    std::atomic<float> _channelRemainingSec[AUDIO_MAX_CHANNELS]{};
 };
 
 // Template implementation (must be visible at point of instantiation)

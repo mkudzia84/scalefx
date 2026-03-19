@@ -1,0 +1,12 @@
+{
+    "name": "sfx_config",
+    "version": "1.0.0",
+    "description": "ScaleFX configuration management — YAML parser, templatized config store, protocol server/client. Requires SFX_HAS_STORAGE=1 for file-based loading.",
+    "keywords": ["config", "yaml", "schema", "validation", "settings"],
+    "frameworks": "arduino",
+    "platforms": ["raspberrypi", "espressif32"],
+    "dependencies": [
+        {"name": "sfx_platform"},
+        {"name": "sfx_serial"}
+    ]
+}

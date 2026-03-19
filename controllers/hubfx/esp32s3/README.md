@@ -63,14 +63,14 @@ Most can be copied verbatim; platform-specific items noted.
 | Status | File | Pico Source | Notes |
 |--------|------|-------------|-------|
 | [ ] | `hubfx_log.h` | `hubfx_log.h` | Copy as-is (DiagLog macros, no platform deps) |
-| [ ] | `audio/audio_channels.h` | `audio/audio_channels.h` | Copy as-is (channel index constants) |
+| [x] | `hubfx_audio.h` | `audio/audio_channels.h` | Rewritten — `Mixer` type alias + `HubFxChannel` namespace (SYSTEM=0, ENGINE_A=1, ENGINE_B=2, GUN=3) |
 | [ ] | `audio/system_sounds.h` | `audio/system_sounds.h` | Copy as-is (file paths, playback config) |
 | [ ] | `board_manager/hubfx_protocol.h` | `board_manager/hubfx_protocol.h` | Copy as-is (just a redirect to shared lib `serial/hubfx/hubfx.h`) |
 | [ ] | `board_manager/slave_registry.h` | `board_manager/slave_registry.h` | Copy as-is (singleton, no platform deps) |
 | [ ] | `board_manager/slave_server.h/.cpp` | `board_manager/slave_server.h/.cpp` | Copy; verify `UsbHost` API compatibility (see Phase 3) |
-| [ ] | `effects/effects_config.h` | `effects/effects_config.h` | Copy as-is (constants) |
-| [ ] | `effects/engine_fx.h/.cpp` | `effects/engine_fx.h/.cpp` | Review for `millis()` usage (safe on ESP32) |
-| [ ] | `effects/engine_server.h/.cpp` | `effects/engine_server.h/.cpp` | Copy as-is (pure protocol handler) |
+| [x] | `config/engine_config.h` | `effects/effects_config.h` | Rewritten — `EngineConfig` struct + declarative YAML schema DSL via `sfx_config` |
+| [x] | `effects/engine_fx.h/.cpp` | `effects/engine_fx.h/.cpp` | Rewritten — singleton, uses `HubFxChannel` enum, `mixer()` accessor to `Mixer::instance()` |
+| [x] | `effects/engine_server.h/.cpp` | `effects/engine_server.h/.cpp` | Rewritten — `EngineServer` BusServer, singleton accessor to `EngineFX::instance()` |
 | [ ] | `effects/gun_fx.h/.cpp` | `effects/gun_fx.h/.cpp` | Review for platform calls |
 | [ ] | `storage/storage_config.h` | `storage/storage_config.h` | Copy as-is (constants) |
 | [ ] | `storage/config_reader.h/.cpp` | `storage/config_reader.h/.cpp` | **Needs work** — uses `SdFat File32` + `LittleFS`. See Phase 4 |
@@ -111,7 +111,7 @@ This is the most significant platform difference. Pico uses PIO-USB (software US
 | [ ] | **SD card library** | Pico uses `SdFat` (Adafruit Fork) with `SdCardModule` singleton. ESP32 Arduino has `SD.h` / `SD_MMC.h`. Options: (a) port SdFat to ESP32 (may work), or (b) adapt `SdCardModule` to use ESP32's `SD` library. `SdCardModule` API (`begin()`, `isInitialized()`, `fs()`) must remain compatible since `AudioMixer` and `HubFxStorageServer` use it. |
 | [ ] | **SD init with fallback** | Pico tries 20/15/10/5 MHz. Same pattern works on ESP32 SPI. |
 | [ ] | **LittleFS flash** | Both platforms support LittleFS via Arduino framework. `FlashModule` singleton should work. Verify ESP32 partition table includes a LittleFS partition. |
-| [ ] | **ConfigReader** | Uses `File32` (SdFat type) for YAML parsing. If SD library changes, file I/O calls need adaptation. The YAML parser logic itself is portable. |
+| [x] | **ConfigReader** | Replaced by `sfx_config` library — `ConfigStore<HubFxConfigSchema>` with declarative YAML schema DSL. No longer uses `SdFat File32`. |
 | [ ] | **File operations** | `HubFxStorageServer` uses `SdCardModule::instance()` and `FlashModule::instance()`. Works if singletons compile on ESP32. |
 
 ### Phase 5 — Main Firmware Integration
@@ -120,7 +120,7 @@ This is the most significant platform difference. Pico uses PIO-USB (software US
 |--------|------|---------|
 | [ ] | **Codec selection** | ~~`#define USE_WAVESHARE_PICOAUDIO`~~ Done — using `TAS5825Codec` singleton via `AudioMixer<EspI2SOutput, TAS5825Codec>`. |
 | [ ] | **SD card init** | `initSdCard()` with fallback speed pattern. |
-| [ ] | **Config loading** | `configReader.begin()` + `configReader.load("/config.yaml")` with defaults fallback. |
+| [x] | **Config loading** | `ConfigServerT<HubFxConfigStore>` handles CONFIG_RELOAD (0x90), CONFIG_STATUS (0x91), CONFIG_SAVE (0xAC). Loads from LittleFS flash via `FlashModule`, fires `onLoaded()` callback. Schema-validated YAML with defaults. |
 | [ ] | **Audio init** | `initAudio()` — codec begin + mixer begin. |
 | [ ] | **USB Host init** | `usbHost.begin()` + mount/unmount callbacks. |
 | [ ] | **Slave pre-registration** | `slaveRegistry.registerSlave()` for GunFX, LightFX, GearControl. |
@@ -425,6 +425,10 @@ All protocol communication (COBS/INIT/STATUS/DIAG) goes through UART0.
 
 | Version | Build | Date | Changes |
 |---------|-------|------|----------|
+| 0.21.2 | 110 | 2026-03-19 | **Engine state machine fix:** Fixed premature Starting→Running transition caused by async playback gap — `isPlaying()` returns false while the mixer command queue pre-fills the WAV buffer (~100-200ms), so the state machine misinterpreted "not yet started" as "finished playing". Added `_startupSoundConfirmed` / `_shutdownSoundConfirmed` flags that track when `isPlaying()` first returns true. State machine now waits for playback confirmation before checking crossfade timing or completion. Safety timeout (2s) prevents stuck states if sound file is missing. Fixed `enterState()` wiping `_runningSoundStarted` flag set by `crossfadeToRunning()`, which caused duplicate `playAsync()` calls — flag is now preserved across the Starting→Running transition. **AudioMixer `remainingMs()` → `remainingSec()` refactor:** Renamed to return `float` seconds (e.g., 90.6 = 90s 600ms) instead of `int` milliseconds — fixes uint32 overflow bug where `framesLeft * 1000` exceeded UINT32_MAX for files >89s at 48kHz, producing garbage values that triggered false crossfades. Calculation now uses simple float division (`framesLeft / sampleRate_Hz`). Wire protocol still sends ms as u32LE for backward compatibility. Engine crossfade constant renamed `CROSSFADE_MS` → `CROSSFADE_SEC` (0.5f). Engine config sound path defaults changed to empty strings — paths come from config.yaml at runtime. |
+| 0.21.1 | 106 | 2026-03-19 | **Protocol rename:** CONFIG_GET/CONFIG_GET_RESP → CONFIG_STATUS/CONFIG_STATUS_RESP (0x91/0x92). CLI command renamed `config.get` → `config.status`. No wire format change (same byte values). **Server boilerplate refactoring:** Extracted 7 repeated patterns across BusServer subclasses into shared helpers/macros (volume formatting, config flag decoding, error message lookup, etc.). Expanded INIT handler with detailed boot diagnostics. Improved SHUTDOWN handler with graceful cleanup sequencing. |
+| 0.21.0 | 101 | 2026-03-20 | **Engine FX port:** Ported engine sound effects state machine from HubFX Pico to ESP32-S3. `EngineFX` singleton with crossfade on channels 1+2 (`HubFxChannel::ENGINE_A/B`). New `hubfx_audio.h` centralizes `Mixer` type alias (`AudioMixer<EspI2SOutput, TAS5825Codec>`) and `HubFxChannel` namespace (SYSTEM=0, ENGINE_A=1, ENGINE_B=2, GUN=3). `EngineServer` BusServer handles ENGINE_START/STOP/STATUS (0x8C-0x8F). `EngineConfig` struct with declarative YAML schema integrated into `ConfigStore<HubFxConfigSchema>` — config reload applies engine settings via `onLoaded()` callback. Fixed `audio_server.h` missing includes (`audio_mixer.h`, `audio_ring_buffer.h`) for self-contained compilation. |
+| 0.20.0 | 100 | 2026-03-19 | **Configuration management:** New `sfx_config` library with declarative YAML schema DSL (`yaml_schema.h`), generic `ConfigStore<TSchema>` with file read/write callbacks, raw YAML caching, and `onLoaded()` callback. `ConfigServerT<TConfigStore>` protocol handler for CONFIG_RELOAD (0x90), CONFIG_STATUS (0x91), CONFIG_SAVE (0xAC). HubFX config schema (`HubFxConfig` + `EngineConfig`) with composable `asGroup()`. Loads from LittleFS flash at boot, fires callback for applying engine settings. CLI: `config.reload`, `config.status`, `config.save`. |
 | 0.19.0 | 99 | 2026-03-19 | **Dual-task Core 1 audio architecture:** Moved audio producer from Core 0 `loop()` to a dedicated FreeRTOS task on Core 1 (priority MAX-2, below consumer at MAX-1). Consumer blocks on `i2s_channel_write()` when DMA is full, yielding CPU to producer. Core 0 now handles only protocol + storage + slave management. Added SD card mutex locking in mixer file I/O (`refillWavBuffer`, `parseWavHeader`, `stop`, `produceFrame` file close) for cross-core safety. Changed direct `stopAll()` call to `stopAsync()` for thread-safe upload guard. Verified on hardware — device reports v0.19.0 build 99. |
 | 0.18.1 | 96 | 2026-03-19 | **Audio producer optimization:** Removed DIAG instrumentation from hot paths (per-frame logging in `produceFrame()`, `getWavSample()`, `refillWavBuffer()`, periodic 500ms channel dump). Increased `produce()` budget from 256→1024 frames per main loop iteration. **Audio pipeline consistency cleanup:** All codec `begin()` defaults changed from hardcoded 44100 to `AUDIO_SAMPLE_RATE` (48000). I2S slot config now uses `AUDIO_BIT_DEPTH` instead of hardcoded `I2S_DATA_BIT_WIDTH_16BIT`. TAS5825M constructor default updated. `reinitialize()` sentinel changed from 44100 to 0 for proper default detection. |
 | 0.18.0 | 92 | 2026-03-19 | **PCM5102A codec driver:** New `PCM5102ACodec` singleton for TI PCM5102A DAC (GPIO-only control: XSMT mute, FMT, FLT, DEMP). `CODEC_STATUS` protocol command for runtime codec diagnostics. Audio diagnostic DIAG instrumentation (since removed in 0.18.1). |

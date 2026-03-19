@@ -71,7 +71,7 @@ bool AudioMixer::begin(I2SOutput* i2sOutput, uint8_t i2s_data_pin, uint8_t i2s_b
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         _channels[i] = Channel{};
         _channelPlaying[i] = false;
-        _channelRemainingMs[i] = 0;
+        _channelRemainingSec[i] = 0.0f;
 
         // Allocate L+R float buffers for WAV decode
         _channels[i].wav.bufL = static_cast<float*>(
@@ -622,11 +622,11 @@ bool AudioMixer::isAnyPlaying() const {
     return false;
 }
 
-int AudioMixer::remainingMs(int channel) const {
-    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return -1;
-    if (!_channelPlaying[channel]) return -1;
-    if (_channels[channel].wav.loop) return -1;
-    return _channelRemainingMs[channel];
+float AudioMixer::remainingSec(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return -1.0f;
+    if (!_channelPlaying[channel]) return -1.0f;
+    if (_channels[channel].wav.loop) return -1.0f;
+    return _channelRemainingSec[channel];
 }
 
 // ============================================================================
@@ -857,10 +857,10 @@ bool AudioMixer::produceFrame() {
         mixL += trackL;
         mixR += trackR;
 
-        // Update remaining time status
+        // Update remaining time status (float seconds — avoids integer overflow for long files)
         if (ws.sampleRate_Hz > 0) {
             uint32_t framesLeft = ws.totalFrames - ws.framesRead + (ws.bufLen - ws.bufPos);
-            _channelRemainingMs[i] = (int)((framesLeft * 1000UL) / ws.sampleRate_Hz);
+            _channelRemainingSec[i] = (float)framesLeft / (float)ws.sampleRate_Hz;
         }
     }
 

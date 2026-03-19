@@ -38,6 +38,8 @@
 #include <serial/serial.h>
 #include <serial/hubfx/hubfx.h>
 #include "audio/audio_config.h"
+#include "audio/audio_mixer.h"
+#include "audio/audio_ring_buffer.h"
 
 /**
  * @brief Protocol server for HubFX audio commands.
@@ -61,7 +63,7 @@
  *   bool isI2SRunning() const;
  *   bool isPlaying(int ch) const;
  *   bool isAnyPlaying() const;
- *   int remainingMs(int ch) const;
+ *   float remainingSec(int ch) const;
  *   int queueLength(int ch) const;
  *   float getChannelVolume(int ch) const;
  *   bool isLooping(int ch) const;

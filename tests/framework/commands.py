@@ -1322,19 +1322,32 @@ class HubFxCommands(CommandBuilder):
     # =========================================================================
 
     @staticmethod
-    def config_reload() -> bytes:
-        """Reload configuration from SD card (/config.yaml)."""
+    def config_reload(path: str = None) -> bytes:
+        """Reload configuration from file (default: /config.yaml)."""
+        if path:
+            path_bytes = path.encode('utf-8')
+            payload = struct.pack('<B', len(path_bytes)) + path_bytes
+            return build_packet(HubFxPacket.CONFIG_RELOAD, payload)
         return build_packet(HubFxPacket.CONFIG_RELOAD)
 
     @staticmethod
-    def config_get() -> bytes:
+    def config_status() -> bytes:
         """
-        Get configuration info.
+        Get configuration status.
 
-        Response is CONFIG_GET_RESP:
-          [loaded:u8][size:u16LE][reserved:u8]
+        Response is CONFIG_STATUS_RESP:
+          [loaded:u8][size:u16LE][validOk:u8]
         """
-        return build_packet(HubFxPacket.CONFIG_GET)
+        return build_packet(HubFxPacket.CONFIG_STATUS)
+
+    @staticmethod
+    def config_save(path: str = None) -> bytes:
+        """Save current config to flash (default: /config.yaml)."""
+        if path:
+            path_bytes = path.encode('utf-8')
+            payload = struct.pack('<B', len(path_bytes)) + path_bytes
+            return build_packet(HubFxPacket.CONFIG_SAVE, payload)
+        return build_packet(HubFxPacket.CONFIG_SAVE)
 
     # =========================================================================
     # SD Card Management

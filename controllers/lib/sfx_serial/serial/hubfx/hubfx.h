@@ -58,10 +58,11 @@ namespace HubFxPacket {
     constexpr uint8_t ENGINE_STATUS_REQ  = 0x8E;  // [] → ENGINE_STATUS_RESP
     constexpr uint8_t ENGINE_STATUS_RESP = 0x8F;  // [state:u8][toggleEngaged:u8][active:u8]
 
-    // --- Config Management (0x90-0x92) ---
-    constexpr uint8_t CONFIG_RELOAD     = 0x90;  // [] → ACK/NACK
-    constexpr uint8_t CONFIG_GET        = 0x91;  // [] → CONFIG_GET_RESP
-    constexpr uint8_t CONFIG_GET_RESP   = 0x92;  // [loaded:u8][size:u16LE][reserved:u8]
+    // --- Config Management (0x90-0x92, 0xAC) ---
+    constexpr uint8_t CONFIG_RELOAD      = 0x90;  // [] or [pathLen:u8][path:str] → ACK/NACK
+    constexpr uint8_t CONFIG_STATUS      = 0x91;  // [] → CONFIG_STATUS_RESP
+    constexpr uint8_t CONFIG_STATUS_RESP = 0x92;  // [loaded:u8][size:u16LE][validOk:u8]
+    constexpr uint8_t CONFIG_SAVE       = 0xAC;  // [] or [pathLen:u8][path:str] → ACK/NACK
 
     // --- SD Card Management (0x93-0x95) ---
     constexpr uint8_t SD_INIT           = 0x93;  // [speed_mhz:u8] → ACK/NACK (remounts card)
@@ -283,10 +284,11 @@ struct HubFxFileInfo {
     uint32_t size        = 0;
 };
 
-/// Config info (parsed from CONFIG_GET_RESP)
+/// Config info (parsed from CONFIG_STATUS_RESP)
 struct HubFxConfigInfo {
     bool loaded          = false;
     uint16_t fileSize    = 0;
+    bool validOk         = false;
 };
 
 

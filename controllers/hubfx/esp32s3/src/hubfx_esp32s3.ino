@@ -33,17 +33,17 @@
  *   [x] USB device listing (USB_DEVICES_REQ/RESP)
  *   [x] SD card storage (SD_MMC 1-bit SDIO, file ops, upload/download)
  *   [x] Audio mixer (I2S output via ESP-IDF driver, 8-ch WAV, dual-core)
- *   [ ] Config reader
+ *   [x] Config reader (YAML from flash, reload/save/get protocol)
  *   [x] Slave management (INIT handshake, SlaveType identification, routing)
  *   [x] Audio server (protocol handler)
- *   [ ] Engine server (protocol handler)
- *   [ ] Engine FX
+ *   [x] Engine server (protocol handler)
+ *   [x] Engine FX
  *   [ ] Gun FX
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.19.0"
-#define BUILD_NUMBER 99
+#define FIRMWARE_VERSION "0.21.2"
+#define BUILD_NUMBER 110
 
 #include <Arduino.h>
 #include <atomic>
@@ -55,6 +55,11 @@
 // Shared serial protocol library
 #include <serial/serial.h>
 #include <server/sfx_server.h>
+
+// Config schemas
+#include "config/hubfx_config.h"
+#include <config/config_store.h>
+#include <server/config_server.h>
 
 // USB Host (CDC-ACM for slave controller communication)
 #include <usb/sfx_usb_host.h>
@@ -77,17 +82,22 @@
 #include <gearcontrol/client/gearcontrol_client.h>
 
 // Audio mixer and codec (8-channel WAV mixer with I2S output)
-#include <audio/esp_i2s_output.h>
-#include <codec/tas5825_codec.h>
-#include <audio/audio_mixer.h>
 #include <audio/audio_log.h>
 #include <server/audio_server.h>
 
-// AudioMixer type alias for this platform
-using Mixer = AudioMixer<EspI2SOutput, TAS5825Codec>;
+// HubFX audio channel assignments and concrete Mixer type
+#include "hubfx_audio.h"
+
+// Engine FX (sound effects state machine + protocol handler)
+#include "effects/engine_fx.h"
+#include "protocol/engine_server.h"
 
 // Audio protocol server type alias
 using AudioServer = AudioServerT<Mixer>;
+
+// Config store and server type aliases
+using HubFxConfigStore  = ConfigStore<HubFxConfigSchema>;
+using HubFxConfigServer = ConfigServerT<HubFxConfigStore>;
 
 // ============================================================================
 // Pin Definitions (ESP32-S3 DevKitC-1)
@@ -242,6 +252,56 @@ StorageServer storageServer;
 HubFxUsbServer usbServer;
 AudioServer audioServer;
 SlaveServer slaveServer;
+HubFxConfigServer configServer;
+EngineServer engineServer;
+
+// ============================================================================
+// Flash File I/O Bridges (for ConfigStore)
+// ============================================================================
+
+/**
+ * @brief Read a file from onboard flash (LittleFS) into a buffer.
+ * @return Bytes read, or -1 on error.
+ */
+static int flashReadFile(const char* path, char* buffer, size_t maxLen) {
+    FlashModule& flash = FlashModule::instance();
+    if (!flash.isInitialized()) return -1;
+
+    flash.lock();
+    LFSFile file;
+    uint8_t err = flash.openRead(path, file);
+    if (err != 0) {    // FlashError::OK == 0
+        flash.unlock();
+        return -1;
+    }
+
+    int bytesRead = file.read((uint8_t*)buffer, maxLen);
+    file.close();
+    flash.unlock();
+    return bytesRead;
+}
+
+/**
+ * @brief Write a buffer to a file on onboard flash (LittleFS).
+ * @return Bytes written, or -1 on error.
+ */
+static int flashWriteFile(const char* path, const char* data, size_t len) {
+    FlashModule& flash = FlashModule::instance();
+    if (!flash.isInitialized()) return -1;
+
+    flash.lock();
+    LFSFile file;
+    uint8_t err = flash.openWrite(path, file, true);  // truncate
+    if (err != 0) {
+        flash.unlock();
+        return -1;
+    }
+
+    int written = file.write((const uint8_t*)data, len);
+    file.close();
+    flash.unlock();
+    return written;
+}
 
 // Slave registry and clients (one per controller type)
 SlaveRegistry& slaveRegistry = SlaveRegistry::instance();
@@ -252,6 +312,21 @@ GearControlClient gearcontrolClient;
 // ============================================================================
 // USB Device Discovery
 // ============================================================================
+
+/**
+ * @brief Poll a BusClient until isServerReady() or timeout.
+ * @param client  BusClient to poll
+ * @param timeout_ms  Maximum wait time (default 3000ms)
+ * @return true if server is ready within timeout
+ */
+static bool awaitInitReady(BusClient& client, uint32_t timeout_ms = 3000) {
+    unsigned long start = millis();
+    while (!client.isServerReady() && (millis() - start < timeout_ms)) {
+        client.process();
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return client.isServerReady();
+}
 
 /**
  * @brief Attempt to init a slave client on a given USB device index.
@@ -274,14 +349,7 @@ static SlaveType tryInitSlave(int usbIndex) {
 
     probe.sendInit();
 
-    // Poll for INIT_READY response (up to 3s)
-    unsigned long start = millis();
-    while (!probe.isServerReady() && (millis() - start < 3000)) {
-        probe.process();
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-
-    if (!probe.isServerReady()) {
+    if (!awaitInitReady(probe)) {
         SFX_LOG_WARN("No INIT_READY from USB index %d (timeout 3s)", usbIndex);
         return SlaveType::Unknown;
     }
@@ -335,13 +403,7 @@ static SlaveType tryInitSlave(int usbIndex) {
     }
 
     // Wait for typed client INIT_READY
-    start = millis();
-    while (!client->isServerReady() && (millis() - start < 3000)) {
-        client->process();
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-
-    if (client->isServerReady()) {
+    if (client->isServerReady() || awaitInitReady(*client)) {
         slaveRegistry.registerSlave(type, client, usbIndex);
         slaveRegistry.setConnected(type, true);
         slaveRegistry.setReady(type, true);
@@ -417,6 +479,179 @@ static void onUsbUnmount(uint8_t devAddr) {
 // Arduino Setup (Core 0)
 // ============================================================================
 
+// ---- Setup helpers (called once from setup()) ----
+
+/** @brief Initialize Flash (LittleFS) and SD card (SDIO 1-bit). */
+static void initStorage() {
+    // Flash (LittleFS)
+    FlashModule& flash = FlashModule::instance();
+    if (flash.begin()) {
+        FlashStorageInfo info;
+        flash.getStorageInfo(info);
+        SFX_LOG_INFO("Flash ready: %lu/%lu bytes used",
+                     (unsigned long)info.usedBytes, (unsigned long)info.totalBytes);
+    } else {
+        SFX_LOG_ERROR("Flash init failed");
+    }
+
+    // SD card (SD_MMC 1-bit SDIO)
+    SdCardModule& sd = SdCardModule::instance();
+    SdCardModule::Config sdCfg { .clk = PIN_SD_MMC_CLK, .cmd = PIN_SD_MMC_CMD, .d0 = PIN_SD_MMC_D0 };
+    if (sd.begin(sdCfg)) {
+        StorageInfo info;
+        sd.getStorageInfo(info);
+
+        static const char* typeNames[] = {"NONE", "MMC", "SD", "SDHC", "UNKNOWN"};
+        uint8_t ct = (uint8_t)info.cardType;
+        const char* typeName = ct <= 4 ? typeNames[ct] : "?";
+
+        SFX_LOG_INFO("SD card ready: %s %lu MB (total=%lu free=%lu used=%lu, SDIO 1-bit)",
+                     typeName,
+                     (unsigned long)info.cardSize_MB,
+                     (unsigned long)info.totalSpace_MB,
+                     (unsigned long)info.freeSpace_MB,
+                     (unsigned long)info.usedSpace_MB);
+    } else {
+        SFX_LOG_WARN("SD card not available (no card inserted?)");
+    }
+}
+
+/** @brief Configure config store with flash I/O and load initial config. */
+static void initConfig() {
+    auto& store = configServer.store();
+    store.setFileReader(flashReadFile);
+    store.setFileWriter(flashWriteFile);
+
+    // Callback fires after every successful config load/reload
+    store.onLoaded([](const HubFxConfig& cfg) {
+        SFX_LOG_INFO("[Config] Applied — engine %s (%s)",
+                     cfg.engineFx.enabled ? "enabled" : "disabled",
+                     cfg.engineFx.type);
+        EngineFX::instance().applyConfig(cfg.engineFx);
+    });
+
+    // Initial load from flash
+    configServer.loadConfig();  // Reads /config.yaml from LittleFS
+}
+
+/** @brief Register module protocol handlers and build the handler chain. */
+static void initProtocolHandlers() {
+    storageServer.begin(&Serial);
+    usbServer.begin(&Serial);
+    audioServer.begin(&Serial);
+    slaveServer.begin(&Serial);
+    configServer.begin(&Serial);
+    engineServer.begin(&Serial);
+
+    // Handler chain: CoreCommandServer (0xF0-0xFF)
+    //              → ConfigServer         (0x90-0x92, 0xAC config)
+    //              → SlaveServer          (0x80-0x83 mgmt + 0x96-0x98 routing)
+    //              → HubFxUsbServer       (0xA7-0xA8 USB diag)
+    //              → AudioServer          (0x84-0x8B audio)
+    //              → EngineServer         (0x8C-0x8F engine FX)
+    //              → StorageServer        (0x93-0xA6 SD/flash + files)
+    server.addModuleHandler(&configServer);
+    server.addModuleHandler(&slaveServer);
+    server.addModuleHandler(&usbServer);
+    server.addModuleHandler(&audioServer);
+    server.addModuleHandler(&engineServer);
+    server.addModuleHandler(&storageServer);
+
+    // Start dual-core storage writer task (Core 1 handles SD writes)
+    storageServer.policy().startWriterTask();
+}
+
+/** @brief Initialize USB Host and register mount/unmount callbacks. */
+static void initUsbHost() {
+    UsbHost& usb = UsbHost::instance();
+
+    // Register mount/unmount callbacks BEFORE init() so we catch
+    // any devices that enumerate during startup.
+    usb.onMount(onUsbMount);
+    usb.onUnmount(onUsbUnmount);
+
+    if (usb.begin()) {
+        if (usb.init()) {
+            usbHostReady.store(true, std::memory_order_release);
+            SFX_LOG_INFO("USB Host ready (%s)", usb.backendName());
+        } else {
+            SFX_LOG_ERROR("USB Host init() failed");
+        }
+    } else {
+        SFX_LOG_ERROR("USB Host begin() failed");
+    }
+}
+
+/** @brief Pre-register slave types and set up slave log relays. */
+static void initSlaves() {
+    slaveRegistry.registerSlave(SlaveType::GunFX, &gunfxClient, -1);
+    slaveRegistry.registerSlave(SlaveType::LightFX, &lightfxClient, -1);
+    slaveRegistry.registerSlave(SlaveType::GearControl, &gearcontrolClient, -1);
+    SFX_LOG_DEBUG("Slave registry: %d slots pre-registered", slaveRegistry.count());
+
+    // Relay slave log messages into HubFX's own diagnostic log buffer
+    auto registerLogRelay = [](BusClient& client, const char* prefix) {
+        client.onLogMessage([prefix](uint8_t level, uint32_t, const char* msg) {
+            char buf[160];
+            snprintf(buf, sizeof(buf), "[%s] %s", prefix, msg);
+            DiagLog::instance().ingest(level, buf);
+        });
+    };
+    registerLogRelay(gunfxClient, "GunFX");
+    registerLogRelay(lightfxClient, "LightFX");
+    registerLogRelay(gearcontrolClient, "GearCtrl");
+}
+
+/** @brief Initialize engine FX from loaded config. */
+static void initEngineFx() {
+    auto& store = configServer.store();
+    if (store.isLoaded()) {
+        EngineFX::instance().begin(store.data().engineFx);
+    } else {
+        SFX_LOG_WARN("Config not loaded — engine FX deferred until config reload");
+    }
+}
+
+/**
+ * @brief Initialize audio mixer (Phase 1) and launch Core 1 consumer task.
+ *
+ * Phase 1 (Core 0): channels, ring buffer, codec init via I2C.
+ * Phase 2 (Core 1): I2S hardware init + producer task launch.
+ */
+static void initAudio() {
+    Mixer& mixer = Mixer::instance();
+
+    // Configure TAS5825M codec singleton via I2C
+    // Supply voltage: TAS5825M_12V for 3S LiPo (~11.1V)
+    //                 TAS5825M_15V for 4S LiPo (~14.8V)
+    //                 TAS5825M_20V / TAS5825M_24V for bench PSU
+    TAS5825Codec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
+                                   AUDIO_SAMPLE_RATE, TAS5825M_12V);
+
+    // Phase 1 init: channels, ring buffer, pin storage
+    if (mixer.begin(PIN_I2S_DOUT, PIN_I2S_BCLK, PIN_I2S_LRCLK)) {
+        audioInitialized.store(true, std::memory_order_release);
+        SFX_LOG_INFO("Audio mixer Phase 1 ready — Core 1 will start I2S");
+    } else {
+        SFX_LOG_ERROR("Audio mixer init failed — audio disabled");
+    }
+
+    // Launch Core 1 task for audio consumer (highest priority)
+    xTaskCreatePinnedToCore(
+        core1Task,          // Task function
+        "AudioConsumer",    // Task name
+        8192,               // Stack size (bytes)
+        nullptr,            // Parameters
+        configMAX_PRIORITIES - 1,  // Highest priority for I2S output
+        &core1TaskHandle,   // Task handle
+        1                   // Pin to Core 1
+    );
+    // Note: Producer task is launched FROM core1Task after I2S init,
+    // ensuring both tasks run on Core 1 and I2S is ready.
+}
+
+// ---- Main setup ----
+
 void setup() {
     // SfxServer handles serial init (UART0 @ 1Mbps), device naming,
     // indicator LEDs, CoreCommandServer, and DiagLog initialization
@@ -428,21 +663,71 @@ void setup() {
 
     server.onInit([]() {
         // PC sent INIT — new session starting.
-        // Cancel any upload left over from a previous session that disconnected
-        // without sending SHUTDOWN (e.g., Ctrl+C, crash, USB unplug).
-        storageServer.cancelActiveUpload();
-        SFX_LOG_INFO("INIT received — debug session active");
+        // Full re-initialization of all subsystems to ensure clean state.
+        SFX_LOG_INFO("INIT received — re-initializing all subsystems");
 
-        // Re-scan slaves so PC gets fresh state
+        // 1. Cancel any upload left over from a previous session that
+        //    disconnected without SHUTDOWN (e.g., Ctrl+C, crash, USB unplug).
+        storageServer.cancelActiveUpload();
+
+        // 2. Stop all audio and reset codec to clean power-on state.
+        //    stopAsync is thread-safe (Core 0 → Core 1 command queue).
+        {
+            Mixer& mixer = Mixer::instance();
+            if (mixer.isInitialized()) {
+                mixer.stopAsync(-1, AudioStopMode::Immediate);
+                mixer.setMasterVolumeAsync(1.0f);
+                mixer.resetUnderruns();
+            }
+
+            // Reset TAS5825M codec (full I2C re-init sequence)
+            TAS5825Codec& codec = TAS5825Codec::instance();
+            if (codec.isInitialized()) {
+                codec.reset();
+                codec.clearFaults();
+                SFX_LOG_INFO("Audio codec reset");
+            }
+        }
+
+        // 3. Reset engine FX state machine (stops sounds, clears state)
+        {
+            EngineFX& engine = EngineFX::instance();
+            if (engine.isInitialized()) {
+                engine.end();
+            }
+        }
+
+        // 4. Reload config from flash (re-applies engine settings via callback)
+        configServer.loadConfig();
+
+        // 5. Re-initialize engine FX with (re)loaded config
+        initEngineFx();
+
+        // 6. Re-scan slaves so PC gets fresh state
         if (usbHostReady.load(std::memory_order_acquire)) {
             scanAndInitSlaves();
         }
+
+        SFX_LOG_INFO("INIT complete — all subsystems re-initialized");
     });
 
     server.onShutdown([]() {
-        // PC session ended — clean up any active upload
+        // PC session ended — stop audio, cancel uploads, clean up
         storageServer.cancelActiveUpload();
-        SFX_LOG_INFO("SHUTDOWN — debug session ended");
+
+        // Stop all audio playback
+        Mixer& mixer = Mixer::instance();
+        if (mixer.isInitialized() && mixer.isAnyPlaying()) {
+            mixer.stopAsync(-1, AudioStopMode::Immediate);
+        }
+
+        // Stop engine FX
+        EngineFX& engine = EngineFX::instance();
+        if (engine.isActive()) {
+            engine.forceStop();
+        }
+
+        SFX_LOG_INFO("SHUTDOWN — session ended, audio stopped");
     });
 
     // ---- STATUS callback: module-specific status bytes ----
@@ -480,146 +765,13 @@ void setup() {
         return 6;
     });
 
-    // ---- Initialize Flash (LittleFS) ----
-    {
-        FlashModule& flash = FlashModule::instance();
-        if (flash.begin()) {
-            FlashStorageInfo info;
-            flash.getStorageInfo(info);
-            SFX_LOG_INFO("Flash ready: %lu/%lu bytes used",
-                         (unsigned long)info.usedBytes, (unsigned long)info.totalBytes);
-        } else {
-            SFX_LOG_ERROR("Flash init failed");
-        }
-    }
-
-    // ---- Initialize SD Card (SD_MMC 1-bit SDIO) ----
-    {
-        SdCardModule& sd = SdCardModule::instance();
-        SdCardModule::Config sdCfg { .clk = PIN_SD_MMC_CLK, .cmd = PIN_SD_MMC_CMD, .d0 = PIN_SD_MMC_D0 };
-        if (sd.begin(sdCfg)) {
-            StorageInfo info;
-            sd.getStorageInfo(info);
-
-            static const char* typeNames[] = {"NONE", "MMC", "SD", "SDHC", "UNKNOWN"};
-            uint8_t ct = (uint8_t)info.cardType;
-            const char* typeName = ct <= 4 ? typeNames[ct] : "?";
-
-            SFX_LOG_INFO("SD card ready: %s %lu MB (total=%lu free=%lu used=%lu, SDIO 1-bit)",
-                         typeName,
-                         (unsigned long)info.cardSize_MB,
-                         (unsigned long)info.totalSpace_MB,
-                         (unsigned long)info.freeSpace_MB,
-                         (unsigned long)info.usedSpace_MB);
-        } else {
-            SFX_LOG_WARN("SD card not available (no card inserted?)");
-        }
-    }
-
-    // ---- Register module protocol handlers ----
-    storageServer.begin(&Serial);
-    usbServer.begin(&Serial);
-    audioServer.begin(&Serial);
-    slaveServer.begin(&Serial);
-
-    // Handler chain: CoreCommandServer (0xF0-0xFF)
-    //              → SlaveServer          (0x80-0x83 mgmt + 0x96-0x98 routing)
-    //              → HubFxUsbServer       (0xA7-0xA8 USB diag)
-    //              → AudioServer          (0x84-0x8B audio)
-    //              → StorageServer        (0x90-0xA6 config + SD/flash + files)
-    server.addModuleHandler(&slaveServer);
-    server.addModuleHandler(&usbServer);
-    server.addModuleHandler(&audioServer);
-    server.addModuleHandler(&storageServer);
-
-    // Start dual-core storage writer task (Core 1 handles SD writes)
-    storageServer.policy().startWriterTask();
-
-    // ---- USB Host initialization ----
-    // ESP32-S3 HW USB-OTG on fixed GPIO19 (D-) / GPIO20 (D+).
-    // Event-driven: daemon + CDC-ACM tasks run in FreeRTOS background.
-    {
-        UsbHost& usb = UsbHost::instance();
-
-        // Register mount/unmount callbacks BEFORE init() so we catch
-        // any devices that enumerate during startup.
-        usb.onMount(onUsbMount);
-        usb.onUnmount(onUsbUnmount);
-
-        if (usb.begin()) {
-            if (usb.init()) {
-                usbHostReady.store(true, std::memory_order_release);
-                SFX_LOG_INFO("USB Host ready (%s)", usb.backendName());
-            } else {
-                SFX_LOG_ERROR("USB Host init() failed");
-            }
-        } else {
-            SFX_LOG_ERROR("USB Host begin() failed");
-        }
-    }
-
-    // ---- Slave Pre-Registration ----
-    // Pre-register slave types in the registry. Clients will be bound when
-    // devices are discovered via USB. The registry just tracks relationships.
-    slaveRegistry.registerSlave(SlaveType::GunFX, &gunfxClient, -1);
-    slaveRegistry.registerSlave(SlaveType::LightFX, &lightfxClient, -1);
-    slaveRegistry.registerSlave(SlaveType::GearControl, &gearcontrolClient, -1);
-    SFX_LOG_DEBUG("Slave registry: %d slots pre-registered", slaveRegistry.count());
-
-    // Relay slave log messages into HubFX's own diagnostic log buffer
-    gunfxClient.onLogMessage([](uint8_t level, uint32_t ts, const char* msg) {
-        char buf[160];
-        snprintf(buf, sizeof(buf), "[GunFX] %s", msg);
-        DiagLog::instance().ingest(level, buf);
-    });
-    lightfxClient.onLogMessage([](uint8_t level, uint32_t ts, const char* msg) {
-        char buf[160];
-        snprintf(buf, sizeof(buf), "[LightFX] %s", msg);
-        DiagLog::instance().ingest(level, buf);
-    });
-    gearcontrolClient.onLogMessage([](uint8_t level, uint32_t ts, const char* msg) {
-        char buf[160];
-        snprintf(buf, sizeof(buf), "[GearCtrl] %s", msg);
-        DiagLog::instance().ingest(level, buf);
-    });
-
-    // TODO: Config reader
-    // TODO: Engine server + engine FX
-
-    // ---- Audio Mixer Initialization (Phase 1 — Core 0) ----
-    // Phase 1: channels, ring buffer, codec, mutex.
-    // Phase 2 (beginI2S) runs on Core 1 after audioInitialized flag is set.
-    {
-        Mixer& mixer = Mixer::instance();
-
-        // Configure TAS5825M codec singleton via I2C
-        // Supply voltage: TAS5825M_12V for 3S LiPo (~11.1V)
-        //                 TAS5825M_15V for 4S LiPo (~14.8V)
-        //                 TAS5825M_20V / TAS5825M_24V for bench PSU
-        TAS5825Codec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
-                                       AUDIO_SAMPLE_RATE, TAS5825M_12V);
-
-        // Phase 1 init: channels, ring buffer, pin storage
-        if (mixer.begin(PIN_I2S_DOUT, PIN_I2S_BCLK, PIN_I2S_LRCLK)) {
-            audioInitialized.store(true, std::memory_order_release);
-            SFX_LOG_INFO("Audio mixer Phase 1 ready — Core 1 will start I2S");
-        } else {
-            SFX_LOG_ERROR("Audio mixer init failed — audio disabled");
-        }
-    }
-
-    // Launch Core 1 task for audio consumer (highest priority)
-    xTaskCreatePinnedToCore(
-        core1Task,          // Task function
-        "AudioConsumer",    // Task name
-        8192,               // Stack size (bytes)
-        nullptr,            // Parameters
-        configMAX_PRIORITIES - 1,  // Highest priority for I2S output
-        &core1TaskHandle,   // Task handle
-        1                   // Pin to Core 1
-    );
-    // Note: Producer task is launched FROM core1Task after I2S init,
-    // ensuring both tasks run on Core 1 and I2S is ready.
+    initStorage();
+    initProtocolHandlers();
+    initConfig();
+    initUsbHost();
+    initSlaves();
+    initEngineFx();
+    initAudio();
 
     // Hub is the master — mark as operational immediately
     server.indicators().setConnected(true);
@@ -726,7 +878,8 @@ void loop() {
         }
     }
 
-    // TODO: Engine FX state machine
+    // Engine FX state machine tick
+    EngineFX::instance().process();
 
     // During active upload or streaming, skip vTaskDelay() to maximize
     // throughput. In stream mode, processStreamData() needs to be called

@@ -343,13 +343,14 @@ Per channel × 8:
   [filenameLen:u8][filename:str]
 ```
 
-### Config Management (0x90-0x92)
+### Config Management (0x90-0x92, 0xAC)
 
 | Type | Value | Payload | Response |
 |------|-------|---------|----------|
-| `CONFIG_RELOAD` | 0x90 | (none) | ACK/NACK |
-| `CONFIG_GET` | 0x91 | (none) | CONFIG_GET_RESP |
-| `CONFIG_GET_RESP` | 0x92 | `[loaded:u8][size:u16LE][reserved:u8]` | — |
+| `CONFIG_RELOAD` | 0x90 | `[]` or `[pathLen:u8][path:str]` | ACK/NACK |
+| `CONFIG_STATUS` | 0x91 | (none) | CONFIG_STATUS_RESP |
+| `CONFIG_STATUS_RESP` | 0x92 | `[loaded:u8][size:u16LE][validOk:u8]` | — |
+| `CONFIG_SAVE` | 0xAC | `[]` or `[pathLen:u8][path:str]` | ACK/NACK |
 
 ### SD Card Management (0x93-0x95)
 

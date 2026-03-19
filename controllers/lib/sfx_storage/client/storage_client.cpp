@@ -16,7 +16,7 @@ using namespace CoreProtocol;
 void HubFxStorageClient::onModulePacket(uint8_t type, uint8_t tag,
                                          const uint8_t* payload, size_t len) {
     switch (type) {
-        case HubFxPacket::CONFIG_GET_RESP: {
+        case HubFxPacket::CONFIG_STATUS_RESP: {
             _lastConfigInfo = {};
             if (len >= 4) {
                 _lastConfigInfo.loaded   = payload[0] != 0;
@@ -92,8 +92,8 @@ CommandResult HubFxStorageClient::configReload() {
     return sendCommand(HubFxPacket::CONFIG_RELOAD, nullptr, 0);
 }
 
-CommandResult HubFxStorageClient::configGet() {
-    return sendCommand(HubFxPacket::CONFIG_GET, nullptr, 0);
+CommandResult HubFxStorageClient::configStatus() {
+    return sendCommand(HubFxPacket::CONFIG_STATUS, nullptr, 0);
 }
 
 // ============================================================================

@@ -30,7 +30,7 @@ public:
     // ========================================================================
 
     CommandResult configReload();
-    CommandResult configGet();
+    CommandResult configStatus();
 
     // ========================================================================
     // SD Card Commands

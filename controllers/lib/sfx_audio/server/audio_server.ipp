@@ -321,8 +321,9 @@ void AudioServerT<TMixer>::handleStatusReq() {
         buf[pos++] = m.isLooping(i) ? 1 : 0;
         CoreProtocol::putU16LE(&buf[pos], (uint16_t)m.getLoopCount(i)); pos += 2;
 
-        uint32_t remaining = (uint32_t)max(m.remainingMs(i), 0);
-        CoreProtocol::putU32LE(&buf[pos], remaining); pos += 4;
+        float remSec = m.remainingSec(i);
+        uint32_t remaining_ms = (remSec >= 0.0f) ? (uint32_t)(remSec * 1000.0f) : 0;
+        CoreProtocol::putU32LE(&buf[pos], remaining_ms); pos += 4;
 
         buf[pos++] = (uint8_t)m.queueLength(i);
         buf[pos++] = (uint8_t)m.getOutput(i);

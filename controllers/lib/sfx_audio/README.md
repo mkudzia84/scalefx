@@ -71,6 +71,32 @@ Core 1 — Producer Task (priority MAX-2)  Core 1 — Consumer Task (priority MA
 - **Ring buffer** (`AudioRingBuffer`): Lock-free single-producer single-consumer queue using `std::atomic` indices with release/acquire ordering.
 - **Command queue**: Protocol handlers on Core 0 use `playAsync()`/`stopAsync()` etc. to enqueue commands. The producer task drains the queue at the start of each `produce()` call.
 
+### Key Mixer API
+
+```cpp
+// Async playback control (thread-safe, enqueues to command queue)
+void playAsync(int channel, const char* path, float volume = 1.0f, bool loop = false);
+void stopAsync(int channel);
+void stopAllAsync();
+
+// Playback state queries (thread-safe, atomic reads)
+bool isPlaying(int channel) const;       // True when WAV data is actively being decoded
+float remainingSec(int channel) const;   // Seconds remaining (-1.0 if not playing)
+
+// Volume
+void setVolume(int channel, float volume);
+void setMasterVolume(float volume);
+```
+
+**`remainingSec()` returns `float` seconds** (e.g., 90.6 = 90 seconds 600 milliseconds).
+The calculation is `(float)framesLeft / (float)sampleRate_Hz` — simple division with no
+overflow risk. The audio status wire protocol converts back to u32 milliseconds for
+backward compatibility.
+
+> **History:** Prior to v0.21.2, this was `int remainingMs()`. The uint32 calculation
+> `framesLeft * 1000` overflowed for files longer than ~89 seconds at 48 kHz
+> (`4,372,800 * 1000 > UINT32_MAX`), producing garbage values.
+
 ### Two-Phase Initialization
 
 ```cpp

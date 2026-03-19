@@ -434,9 +434,10 @@ class HubFxPacket:
     ENGINE_STATUS_RESP = 0x8F  # [state:u8][toggleEngaged:u8][active:u8]
 
     # Config management
-    CONFIG_RELOAD     = 0x90  # [] → ACK/NACK
-    CONFIG_GET        = 0x91  # [] → CONFIG_GET_RESP
-    CONFIG_GET_RESP   = 0x92  # [loaded:u8][size:u16LE][reserved:u8]
+    CONFIG_RELOAD      = 0x90  # [] or [pathLen:u8][path:str] → ACK/NACK
+    CONFIG_STATUS      = 0x91  # [] → CONFIG_STATUS_RESP
+    CONFIG_STATUS_RESP = 0x92  # [loaded:u8][size:u16LE][validOk:u8]
+    CONFIG_SAVE       = 0xAC  # [] or [pathLen:u8][path:str] → ACK/NACK
 
     # SD card management
     SD_INIT           = 0x93  # [speed_mhz:u8] → ACK/NACK (remounts card)

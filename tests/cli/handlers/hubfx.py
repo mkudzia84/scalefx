@@ -217,12 +217,16 @@ class HubFxCommandHandler(CommandHandlerBase):
             # Config Management
             # =================================================================
             'config.reload': (self.cmd_config_reload, CommandInfo(
-                'config.reload', 'config.reload',
-                'Reload config from SD card',
+                'config.reload', 'config.reload [path]',
+                'Reload config from flash (default: /config.yaml)',
                 requires_init=True, controller=ControllerType.HUBFX, group='Config')),
-            'config.get': (self.cmd_config_get, CommandInfo(
-                'config.get', 'config.get',
-                'Get config info (loaded, size)',
+            'config.status': (self.cmd_config_status, CommandInfo(
+                'config.status', 'config.status',
+                'Show config status (loaded, size, validation)',
+                requires_init=True, controller=ControllerType.HUBFX, group='Config')),
+            'config.save': (self.cmd_config_save, CommandInfo(
+                'config.save', 'config.save [path]',
+                'Save current config to flash (default: /config.yaml)',
                 requires_init=True, controller=ControllerType.HUBFX, group='Config')),
 
             # =================================================================
@@ -1043,19 +1047,31 @@ class HubFxCommandHandler(CommandHandlerBase):
     # =========================================================================
 
     def cmd_config_reload(self, args: List[str]):
-        """Reload configuration from SD card."""
+        """Reload configuration from flash."""
         if not self._require_init():
             return
-        self.print_info("Reloading config from /config.yaml...")
-        packet = HubFxCommands.config_reload()
+        path = args[0] if args else None
+        display_path = path or '/config.yaml'
+        self.print_info(f"Reloading config from {display_path}...")
+        packet = HubFxCommands.config_reload(path)
         self._send_ack(packet, "Config reloaded", timeout=5.0)
 
-    def cmd_config_get(self, args: List[str]):
-        """Get configuration info."""
+    def cmd_config_save(self, args: List[str]):
+        """Save current config to flash."""
+        if not self._require_init():
+            return
+        path = args[0] if args else None
+        display_path = path or '/config.yaml'
+        self.print_info(f"Saving config to {display_path}...")
+        packet = HubFxCommands.config_save(path)
+        self._send_ack(packet, "Config saved", timeout=5.0)
+
+    def cmd_config_status(self, args: List[str]):
+        """Show configuration status."""
         if not self._require_init():
             return
 
-        packet = HubFxCommands.config_get()
+        packet = HubFxCommands.config_status()
         response = self.conn.send_and_wait(packet)
 
         if response is None:
@@ -1066,25 +1082,28 @@ class HubFxCommandHandler(CommandHandlerBase):
             self.print_error(f"NACK: {HubFxError.name(code)} (0x{code:02X})")
             return
 
-        if response.packet_type == HubFxPacket.CONFIG_GET_RESP:
-            self._parse_config_get(response.payload)
+        if response.packet_type == HubFxPacket.CONFIG_STATUS_RESP:
+            self._parse_config_status(response.payload)
         else:
             self.print_error(f"Unexpected response: 0x{response.packet_type:02X}")
 
-    def _parse_config_get(self, payload: bytes):
-        """Parse and display CONFIG_GET_RESP payload."""
+    def _parse_config_status(self, payload: bytes):
+        """Parse and display CONFIG_STATUS_RESP payload."""
         if len(payload) < 4:
             self.print_error("Config response too short")
             return
 
         loaded = payload[0]
         size = read_u16_le(payload, 1)
-        # payload[3] is reserved
+        valid_ok = payload[3] if len(payload) >= 4 else 0
 
         print(f"\n  {Fore.CYAN}Config Status{Style.RESET_ALL}")
         status = f"{Fore.GREEN}loaded{Style.RESET_ALL}" if loaded else f"{Fore.RED}not loaded{Style.RESET_ALL}"
-        print(f"    Status: {status}")
-        print(f"    Size:   {size} bytes")
+        print(f"    Status:     {status}")
+        print(f"    Size:       {size} bytes")
+        if loaded:
+            valid = f"{Fore.GREEN}valid{Style.RESET_ALL}" if valid_ok else f"{Fore.YELLOW}invalid{Style.RESET_ALL}"
+            print(f"    Validation: {valid}")
         print()
 
     # =========================================================================

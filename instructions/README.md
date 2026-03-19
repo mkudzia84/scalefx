@@ -51,16 +51,16 @@ Packet_Ranges:
   GunFX: "0x01-0x2F"
   LightFX: "0x40-0x5F"
   GearControl: "0x60-0x7F"
-  HubFX: "0x80-0xA9"
+  HubFX: "0x80-0xAC"
   Streaming: "0xA4-0xA6"
-  Available: "0xAA-0xEF"
+  Available: "0xAD-0xEF"
   Core: "0xF0-0xFF"
 
 Controllers:
   gunfx: { path: "controllers/gunfx/pico/", range: "0x01-0x2F" }
   lightfx: { path: "controllers/lightfx/pico/", range: "0x40-0x5F" }
   gearcontrol: { path: "controllers/gearcontrol/pico/", range: "0x60-0x7F" }
-  hubfx: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xA9", platform: "ESP32-S3" }
+  hubfx: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xAC", platform: "ESP32-S3" }
   noop: { path: "controllers/noop/pico/", range: "CORE_ONLY" }
 ```
 
@@ -109,6 +109,22 @@ Audio_Library:
     - name: "mock_i2s_sink.h/.cpp"
       purpose: "Mock I2S output for testing (captures statistics)"
       modify_when: "Adding test instrumentation"
+
+Config_Library:
+  root: "controllers/lib/sfx_config/"
+  files:
+    - name: "config/yaml_parser.h/.ipp"
+      purpose: "Lightweight YAML subset parser (maps, sequences, scalars) with templatized node pool"
+      modify_when: "Adding YAML parsing features or fixing parser edge cases"
+    - name: "config/config_store.h/.ipp"
+      purpose: "Templatized config manager — schema-driven loading, validation, defaults"
+      modify_when: "Changing config load/save lifecycle or adding config infrastructure"
+    - name: "server/config_server.h/.ipp"
+      purpose: "BusServer handler for CONFIG_RELOAD / CONFIG_STATUS protocol commands"
+      modify_when: "Adding new config-related protocol commands"
+    - name: "client/config_client.h/.cpp"
+      purpose: "BusClient for sending CONFIG_RELOAD / CONFIG_STATUS commands"
+      modify_when: "Adding new config client methods"
 
 Serial_Library:
   root: "controllers/lib/sfx_serial/serial/"

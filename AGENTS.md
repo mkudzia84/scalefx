@@ -59,13 +59,14 @@ pytest tests/{gunfx|lightfx|gearcontrol|noop}/ -v
 
 ```
 controllers/
-├── lib/                 # Shared PlatformIO libraries (7 independent modules)
+├── lib/                 # Shared PlatformIO libraries (8 independent modules)
 │   ├── sfx_platform/    # Cross-platform abstraction (mutexes, delays, GPIO, diag_log)
 │   ├── sfx_serial/      # COBS protocol, command routing, bus server/client, per-board handlers
 │   ├── sfx_server/      # SfxServer common controller boilerplate
 │   ├── sfx_peripherals/ # Hardware drivers (LED, servo, PWM input, I2C, INA226)
 │   ├── sfx_audio/       # 8-channel WAV mixer, I2S output, codec drivers, ring buffer
 │   ├── sfx_storage/     # SD card (SdFat/ESP SD), LittleFS flash singletons
+│   ├── sfx_config/      # YAML config parser, schema-driven config store, protocol server/client
 │   └── sfx_usb/         # USB Host abstraction (PicoUsbHost, EspUsbHost)
 ├── gunfx/pico/          # Gun effects (RP2040 server)
 ├── lightfx/pico/        # Lighting effects (RP2040 server)

@@ -497,7 +497,7 @@ if (!sd.isInitialized()) { sendNack(ERROR); return; }  // Check state, not exist
 | `_consumeLoops` | `std::atomic<uint32_t>` | AudioMixer | Core 1 writes | relaxed/acquire |
 | `_consumeFrames` | `std::atomic<uint32_t>` | AudioMixer | Core 1 writes | relaxed/acquire |
 | `_channelPlaying[]` | `std::atomic<bool>` | AudioMixer | Core 0 writes | relaxed (same-core) |
-| `_channelRemainingMs[]` | `std::atomic<int>` | AudioMixer | Core 0 writes | relaxed (same-core) |
+| `_channelRemainingSec[]` | `std::atomic<float>` | AudioMixer | Core 0 writes | relaxed (same-core) |
 | `_minLevel` | `std::atomic<uint8_t>` | DiagLog | Core 0 writes | relaxed/relaxed |
 | `_waitingTag` | `std::atomic<uint8_t>` | ResultQueue | same-core (atomic for policy) | relaxed |
 | `_waitResolved` | `std::atomic<bool>` | ResultQueue | same-core (atomic for policy) | release/acquire |
@@ -597,7 +597,7 @@ See `controllers/lib/sfx_platform/platform/sfx_platform.h` for the full abstract
 2. **No bug fixes** in `controllers/hubfx/pico/` — unless explicitly requested by the user for hardware compatibility
 3. **Reference only** — when implementing features in the ESP32-S3 variant, consult the Pico implementation for protocol patterns and domain logic, then adapt to ESP-IDF/FreeRTOS
 4. **Shared libraries are shared** — changes to `controllers/lib/` that support HubFX ESP32-S3 ARE allowed and expected (with platform guards via `sfx_platform.h`)
-5. **Protocol compatibility** — the ESP32-S3 variant uses the same HubFX packet types (0x80-0xA9) and wire format as the Pico variant. Protocol definitions in `hubfx/hubfx.h` are shared.
+5. **Protocol compatibility** — the ESP32-S3 variant uses the same HubFX packet types (0x80-0xAC) and wire format as the Pico variant. Protocol definitions in `hubfx/hubfx.h` are shared.
 6. **When asked to "work on HubFX"** — always target `controllers/hubfx/esp32s3/` unless the user explicitly says "HubFX Pico"
 
 ### 18. Compile-Time Dispatch — Policy-Based Templates (PREFERRED)
@@ -778,6 +778,7 @@ Reusable hardware drivers and protocol library split by domain:
 - **sfx_peripherals/** - Hardware drivers (LED, servo, PWM input, I2C, INA226 power monitor)
 - **sfx_audio/** - 8-channel WAV mixer, I2S output, codec drivers (TAS5825M, SimpleI2S), mock I2S sink
 - **sfx_storage/** - SD card (SdFat/ESP SD), LittleFS flash singletons, shared storage types
+- **sfx_config/** - YAML config parser, templatized config store, CONFIG_RELOAD/GET protocol server/client
 - **sfx_usb/** - USB Host abstraction (PicoUsbHost, EspUsbHost), device registry
 
 ### Serial Protocol Library (`controllers/lib/sfx_serial/serial/`)
@@ -863,9 +864,9 @@ Query commands are excluded from slave registry since SLAVE_ROUTE only forwards 
 | 0x30-0x3F | Reserved | - | Future expansion |
 | 0x40-0x5F | LightFX | Used | LED, servo, power |
 | 0x60-0x7F | GearControl | Used | Gear, servo, yaw |
-| 0x80-0xA9 | HubFX | Used | Slaves, audio, engine, config, SD, flash, files, USB diag, tree |
+| 0x80-0xAC | HubFX | Used | Slaves, audio, engine, config (0x90-0x92, 0xAC), SD, flash, files, USB diag, tree |
 | 0xA4-0xA6 | Streaming | Used | STREAM_BEGIN/DATA/END (`core/stream.h`) |
-| 0xAA-0xEF | Available | Free | New controllers |
+| 0xAD-0xEF | Available | Free | New controllers |
 | 0xF0-0xFF | Core | Reserved | INIT, ACK, NACK, REBOOT, LOG_MESSAGE (0xFD), etc. |
 
 ## Platform-Specific Notes

@@ -12,6 +12,7 @@ Shared libraries for ScaleFX microcontroller firmware.
 | [sfx_server](sfx_server/) | 1.0.0 | Server controller boilerplate (SfxServer) | sfx_platform, sfx_serial, sfx_peripherals |
 | [sfx_audio](sfx_audio/) | 2.0.0 | 8-channel WAV mixer, I2S, codec drivers | sfx_platform |
 | [sfx_storage](sfx_storage/) | 1.0.0 | SD card (SdFat), LittleFS flash | sfx_platform |
+| [sfx_config](sfx_config/) | 1.0.0 | YAML config parser, schema-driven config store | sfx_platform, sfx_serial |
 | [sfx_usb](sfx_usb/) | 2.0.0 | USB Host abstraction (Pico/ESP32) | sfx_platform |
 
 **Supported platforms:** RP2040, RP2350, ESP32-S3
@@ -23,6 +24,7 @@ Shared libraries for ScaleFX microcontroller firmware.
 | sfx_serial | [Serial Protocol Library](sfx_serial/serial/README.md) |
 | sfx_server | [Server Controller Boilerplate](sfx_server/README.md) |
 | sfx_storage | [SD Card & Flash Storage](sfx_storage/README.md) |
+| sfx_config | [Configuration Management](sfx_config/README.md) |
 | sfx_usb | [USB Host Abstraction](sfx_usb/README.md) |
 
 ## Dependency Graph
@@ -33,6 +35,7 @@ sfx_platform          ← Foundation (zero external deps)
   ├── sfx_peripherals ← Hardware drivers
   ├── sfx_audio       ← Audio engine (SFX_HAS_AUDIO=1)
   ├── sfx_storage     ← Storage drivers (SFX_HAS_STORAGE=1)
+  ├── sfx_config      ← Config management (sfx_platform + sfx_serial)
   └── sfx_usb         ← USB Host (client-only)
 
 sfx_server            ← Server boilerplate
@@ -55,6 +58,10 @@ No circular dependencies. Each library depends only on sfx_platform (foundation)
 | `server/sfx_server.h` | sfx_server | SfxServer lifecycle + indicator LEDs |
 | `audio/audio_mixer.h` | sfx_audio | 8-channel WAV mixer |
 | `storage/sd_card.h` | sfx_storage | SD card singleton |
+| `config/yaml_parser.h` | sfx_config | Lightweight YAML subset parser |
+| `config/config_store.h` | sfx_config | Templatized schema-driven config manager |
+| `server/config_server.h` | sfx_config | BusServer handler for CONFIG commands |
+| `client/config_client.h` | sfx_config | BusClient for config commands |
 | `usb/usb_host.h` | sfx_usb | Abstract USB Host interface |
 | `led/led_control.h` | sfx_peripherals | GPIO LED control |
 | `servo/srv_control.h` | sfx_peripherals | Servo motion profiling |

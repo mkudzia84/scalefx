@@ -19,6 +19,18 @@
 
 using namespace CoreProtocol;
 
+/**
+ * @brief Poll a BusClient until isServerReady() or timeout.
+ */
+static bool awaitInitReady(BusClient& client, uint32_t timeout_ms = 3000) {
+    unsigned long start = millis();
+    while (!client.isServerReady() && (millis() - start < timeout_ms)) {
+        client.process();
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return client.isServerReady();
+}
+
 // ============================================================================
 // tryProcess Override — Handle routing subcmds and management commands
 // ============================================================================
@@ -169,13 +181,7 @@ void SlaveServer::handleSlaveInit(const uint8_t* payload, size_t len) {
     }
 
     // Wait for INIT_READY (up to 3s)
-    unsigned long start = millis();
-    while (!slave->client->isServerReady() && (millis() - start < 3000)) {
-        slave->client->process();
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-
-    if (slave->client->isServerReady()) {
+    if (awaitInitReady(*slave->client)) {
         registry().setReady(type, true);
         SLAVE_LOG("SLAVE_INIT OK: %s → %s", slaveTypeName(type), slave->client->serverName());
         sendAck();
