@@ -921,7 +921,7 @@ class HubFxCommandHandler(CommandHandlerBase):
             codec_name = payload[11:11 + codec_name_len].decode('ascii', errors='replace')
 
         # Codec type names
-        codec_types = {0: "Simple I2S (no control)", 1: "TAS5825M"}
+        codec_types = {0: "Simple I2S (no control)", 1: "TAS5825M", 2: "PCM5102A"}
         codec_type_str = codec_types.get(codec_type, f"Unknown ({codec_type})")
 
         # Supply voltage names (TAS5825M enum)

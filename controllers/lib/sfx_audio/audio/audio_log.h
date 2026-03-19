@@ -32,6 +32,10 @@
 #define TAS5825_LOG(fmt, ...) \
     do { DiagLog::instance().info("[TAS5825] " fmt, ##__VA_ARGS__); } while(0)
 
+// --- PCM5102A Codec ---
+#define PCM5102_LOG(fmt, ...) \
+    do { DiagLog::instance().info("[PCM5102] " fmt, ##__VA_ARGS__); } while(0)
+
 // --- Mock I2S ---
 #define MOCK_LOG(fmt, ...) \
     do { DiagLog::instance().info("[MockI2S] " fmt, ##__VA_ARGS__); } while(0)
