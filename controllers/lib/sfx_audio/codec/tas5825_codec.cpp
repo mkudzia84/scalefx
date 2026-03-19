@@ -46,7 +46,19 @@ bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
 #endif
     i2c->setClock(100000);  // 100kHz I2C
 
-    TAS5825_LOG("Initializing codec...");
+    TAS5825_LOG("Initializing codec (SDA=%d, SCL=%d, addr=0x%02X)...", sdaPin, sclPin, TAS5825M_I2C_ADDR);
+
+    // Probe I2C bus — abort early if device doesn't ACK
+    i2c->beginTransmission(TAS5825M_I2C_ADDR);
+    uint8_t probeResult = i2c->endTransmission();
+    if (probeResult != 0) {
+        TAS5825_LOG("I2C probe FAILED (error %d) — device not found at 0x%02X. "
+                    "Check wiring: SDA=GPIO%d, SCL=GPIO%d, pull-ups, PVDD power.",
+                    probeResult, TAS5825M_I2C_ADDR, sdaPin, sclPin);
+        initialized = false;
+        return false;
+    }
+    TAS5825_LOG("I2C probe OK — device ACK at 0x%02X", TAS5825M_I2C_ADDR);
 
     // Initial reset sequence
     selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
@@ -229,6 +241,35 @@ void TAS5825Codec::dumpRegisters()
     TAS5825_LOG("---------------------------");
 }
 
+// ============================================================================
+// Status Query Methods (for CODEC_STATUS protocol)
+// ============================================================================
+
+uint8_t TAS5825Codec::getDeviceControlRegister()
+{
+    if (!initialized || !i2c) return 0xFF;
+    selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
+    uint8_t value = 0;
+    if (!readRegister(TAS5825M_REG_DEVICE_CTRL, &value)) return 0xFF;
+    return value;
+}
+
+uint8_t TAS5825Codec::getFaultRegister()
+{
+    if (!initialized || !i2c) return 0xFF;
+    selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
+    uint8_t value = 0;
+    if (!readRegister(TAS5825M_REG_FAULT_CLEAR, &value)) return 0xFF;
+    return value;
+}
+
+bool TAS5825Codec::testI2CConnection()
+{
+    if (!i2c) return false;
+    i2c->beginTransmission(TAS5825M_I2C_ADDR);
+    return (i2c->endTransmission() == 0);
+}
+
 bool TAS5825Codec::writeRegister(uint8_t reg, uint8_t value)
 {
     if (!i2c) return false;
@@ -278,13 +319,18 @@ bool TAS5825Codec::selectBookPage(uint8_t book, uint8_t page)
 bool TAS5825Codec::configureAnalogGain()
 {
     uint8_t gainValue = getAnalogGainValue();
+    bool ok = true;
 
-    selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
-    writeRegister(0x46, 0x11);  // Analog control register
-    writeRegister(0x02, 0x00);  // Mode control
-    writeRegister(TAS5825M_REG_AGAIN_L, 0x01);  // Analog gain left enable
-    writeRegister(TAS5825M_REG_AGAIN_R, gainValue);  // Analog gain right
+    ok &= selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
+    ok &= writeRegister(0x46, 0x11);  // Analog control register
+    ok &= writeRegister(0x02, 0x00);  // Mode control
+    ok &= writeRegister(TAS5825M_REG_AGAIN_L, 0x01);  // Analog gain left enable
+    ok &= writeRegister(TAS5825M_REG_AGAIN_R, gainValue);  // Analog gain right
 
+    if (!ok) {
+        TAS5825_LOG("Analog gain configuration failed");
+        return false;
+    }
     TAS5825_LOG("Analog gain configured: 0x%02X", gainValue);
     return true;
 }
@@ -307,9 +353,14 @@ bool TAS5825Codec::initDSPCoefficients()
     // The coefficients are specific to the audio tuning and can be thousands of writes
     
     TAS5825_LOG("Initializing DSP coefficients (basic)...");
+    bool ok = true;
 
     // Basic DSP initialization sequence
-    selectBookPage(0x8C, 0x0B);
+    ok &= selectBookPage(0x8C, 0x0B);
+    if (!ok) {
+        TAS5825_LOG("DSP page select failed");
+        return false;
+    }
     
     // Write basic identity matrix coefficients (pass-through)
     // These allow audio to pass through without DSP processing
@@ -319,7 +370,10 @@ bool TAS5825Codec::initDSPCoefficients()
     };
 
     for (size_t i = 0; i < sizeof(identity_coeffs); i++) {
-        writeRegister(0x28 + i, identity_coeffs[i]);
+        if (!writeRegister(0x28 + i, identity_coeffs[i])) {
+            TAS5825_LOG("DSP coefficient write failed at offset %d", (int)i);
+            return false;
+        }
     }
 
     // Additional pages for DSP configuration

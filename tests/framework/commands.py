@@ -1281,6 +1281,18 @@ class HubFxCommands(CommandBuilder):
         """
         return build_packet(HubFxPacket.AUDIO_STATUS_REQ)
 
+    @staticmethod
+    def codec_status() -> bytes:
+        """
+        Request codec hardware status.
+
+        Response is CODEC_STATUS_RESP with format:
+          [codecType:u8][initialized:u8][i2cOk:u8][sdaPin:u8][sclPin:u8]
+          [supplyVoltage:u8][muted:u8][digitalVol:u8][deviceCtrl:u8][faultStatus:u8]
+          [codecNameLen:u8][codecName:str]
+        """
+        return build_packet(HubFxPacket.CODEC_STATUS_REQ)
+
     # =========================================================================
     # Engine FX Control
     # =========================================================================

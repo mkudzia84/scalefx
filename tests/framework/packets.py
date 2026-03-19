@@ -480,6 +480,12 @@ class HubFxPacket:
     USB_DEVICES_RESP   = 0xA8  # [initialized:u8][taskRunning:u8][backendLen:u8][backend:str]
                                #   [deviceCount:u8] per-device: [addr:u8][vid:u16LE][pid:u16LE][state:u8][slaveType:u8]
 
+    # Codec Status (0xAA-0xAB)
+    CODEC_STATUS_REQ   = 0xAA  # [] → CODEC_STATUS_RESP
+    CODEC_STATUS_RESP  = 0xAB  # [codecType:u8][initialized:u8][i2cOk:u8][sdaPin:u8][sclPin:u8]
+                               #   [supplyVoltage:u8][muted:u8][digitalVol:u8][deviceCtrl:u8][faultStatus:u8]
+                               #   [codecNameLen:u8][codecName:str]
+
 
 class HubFxError:
     """HubFX-specific error codes (0x80-0x8F)."""

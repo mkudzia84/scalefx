@@ -41,8 +41,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.16.0"
-#define BUILD_NUMBER 81
+#define FIRMWARE_VERSION "0.18.0"
+#define BUILD_NUMBER 87
 
 #include <Arduino.h>
 #include <atomic>
@@ -77,13 +77,13 @@
 
 // Audio mixer and codec (8-channel WAV mixer with I2S output)
 #include <audio/esp_i2s_output.h>
-#include <codec/simple_i2s_codec.h>
+#include <codec/tas5825_codec.h>
 #include <audio/audio_mixer.h>
 #include <audio/audio_log.h>
 #include <server/audio_server.h>
 
 // AudioMixer type alias for this platform
-using Mixer = AudioMixer<EspI2SOutput, SimpleI2SCodec>;
+using Mixer = AudioMixer<EspI2SOutput, TAS5825Codec>;
 
 // Audio protocol server type alias
 using AudioServer = AudioServerT<Mixer>;
@@ -109,9 +109,9 @@ using AudioServer = AudioServerT<Mixer>;
 #define PIN_SD_MMC_CLK  39   // SD_MMC clock
 #define PIN_SD_MMC_D0   40   // SD_MMC data 0
 
-// I2C (for codec control, power monitoring, etc.)
-// #define PIN_I2C_SDA     ?
-// #define PIN_I2C_SCL     ?
+// I2C (for TAS5825M codec control, power monitoring, etc.)
+#define PIN_I2C_SDA     8    // I2C data  (to TAS5825M SDA)
+#define PIN_I2C_SCL     9    // I2C clock (to TAS5825M SCL)
 
 // ============================================================================
 // Core 1 Task — Audio Consumer + USB Host
@@ -576,9 +576,12 @@ void setup() {
     {
         Mixer& mixer = Mixer::instance();
 
-        // Configure codec singleton (model name for log identification)
-        SimpleI2SCodec::instance().setModelName("Freenove");
-        SimpleI2SCodec::instance().begin(AUDIO_SAMPLE_RATE);
+        // Configure TAS5825M codec singleton via I2C
+        // Supply voltage: TAS5825M_12V for 3S LiPo (~11.1V)
+        //                 TAS5825M_15V for 4S LiPo (~14.8V)
+        //                 TAS5825M_20V / TAS5825M_24V for bench PSU
+        TAS5825Codec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
+                                       AUDIO_SAMPLE_RATE, TAS5825M_12V);
 
         // Phase 1 init: channels, ring buffer, pin storage
         if (mixer.begin(PIN_I2S_DOUT, PIN_I2S_BCLK, PIN_I2S_LRCLK)) {

@@ -50,7 +50,7 @@ All cross-core variables use `std::atomic<T>` with explicit memory ordering (sam
 - [x] Core protocol (INIT, SHUTDOWN, REBOOT, STATUS, KEEPALIVE, I2C_SCAN)
 - [x] STATUS callback (flags, slave mask placeholder, loop1Count)
 - [x] Periodic diagnostic logging (uptime, heap, core 1 stats)
-- [ ] Pin definitions — finalize I2S, SD, I2C pins for target board
+- [x] Pin definitions — I2S (GPIO 41/42/14), I2C (GPIO 8/9), SD (GPIO 38/39/40)
 - [ ] Verify shared lib builds (split libraries compile for ESP32-S3)
 
 ### Phase 1 — Local Module Files (copy + adapt from Pico)
@@ -80,7 +80,7 @@ The shared `AudioMixer` already has ESP32-S3 conditionals (`SFX_PLATFORM_ESP32` 
 | Status | Item | Details |
 |--------|------|---------|
 | [ ] | **I2S driver** | Pico uses PIO-I2S (`I2S.h`). ESP32-S3 uses hardware I2S via `driver/i2s_std.h`. AudioMixer's `beginI2S()` / `consume()` need ESP32-S3 I2S init + `i2s_channel_write()`. This is the biggest single migration item. |
-| [ ] | **Codec init** | Pico uses `SimpleI2SCodec` (PCM5101A) or `TAS5825Codec`. Same codec classes work on ESP32 (I2C is standard Wire). Verify `Wire.begin(SDA, SCL)` pin assignment. |
+| [x] | **Codec init** | TAS5825Codec singleton — `begin(Wire, 8, 9, 48000, TAS5825M_12V)`. Supply voltage configurable. |
 | [ ] | **Audio mixer begin** | `mixer.begin(data, bclk, lrclk, codec)` — shared code, but verify `SdCardModule` singleton works with ESP32 SD lib. |
 | [ ] | **Audio producer** | `mixer.produce(2048)` in `loop()` — shared code, should work as-is. |
 | [ ] | **Audio consumer** | `mixer.consume()` in Core 1 task — shared code, but I2S write path needs ESP32 native driver. |
@@ -116,7 +116,7 @@ This is the most significant platform difference. Pico uses PIO-USB (software US
 
 | Status | Item | Details |
 |--------|------|---------|
-| [ ] | **Codec selection** | `#define USE_WAVESHARE_PICOAUDIO` → define appropriate codec for ESP32-S3 DAC board. |
+| [ ] | **Codec selection** | ~~`#define USE_WAVESHARE_PICOAUDIO`~~ Done — using `TAS5825Codec` singleton via `AudioMixer<EspI2SOutput, TAS5825Codec>`. |
 | [ ] | **SD card init** | `initSdCard()` with fallback speed pattern. |
 | [ ] | **Config loading** | `configReader.begin()` + `configReader.load("/config.yaml")` with defaults fallback. |
 | [ ] | **Audio init** | `initAudio()` — codec begin + mixer begin. |
@@ -183,7 +183,7 @@ These components from `controllers/lib/` already have ESP32-S3 support via `sfx_
 | USB-UART bridge | CH340 or CP2102N (UART0) |
 | USB-OTG | Native ESP32-S3 USB peripheral |
 
-- **DAC**: TBD (PCM5102A, MAX98357A, or TAS5825M via I2S)
+- **DAC**: TAS5825M (stereo Class-D amplifier with I2C control via I2S)
 - **Storage**: MicroSD card (SPI interface)
 - **USB Host**: Native USB-OTG (ESP32-S3 has built-in USB host support)
 
@@ -330,7 +330,61 @@ If `esp_get_free_heap_size()` returns ~300–370 KB instead of ~8 MB:
 
 ## Pin Assignments
 
-> **TODO**: Pin assignments pending hardware selection and board design.
+| Pin | GPIO | Function | Connected To |
+|-----|------|----------|-------------|
+| I2S DOUT | 41 | I2S serial data | TAS5825M SDIN |
+| I2S BCLK | 42 | I2S bit clock | TAS5825M SCK |
+| I2S LRCLK | 14 | I2S word select | TAS5825M FSYNC |
+| I2C SDA | 8 | I2C data | TAS5825M SDA |
+| I2C SCL | 9 | I2C clock | TAS5825M SCL |
+| SD CMD | 38 | SD_MMC command | MicroSD CMD |
+| SD CLK | 39 | SD_MMC clock | MicroSD CLK |
+| SD D0 | 40 | SD_MMC data 0 | MicroSD DAT0 |
+| LED (conn) | 48 | Onboard RGB LED | (built-in) |
+| USB D- | 19 | USB Host (fixed) | USB hub/device |
+| USB D+ | 20 | USB Host (fixed) | USB hub/device |
+
+### TAS5825M Codec Wiring
+
+The TAS5825M is a stereo closed-loop Class-D audio amplifier with I2C control.
+It receives audio data over I2S and is configured/controlled via I2C.
+
+```
+  ESP32-S3 DevKitC-1                TAS5825M Breakout
+  ═══════════════════                ═════════════════
+  GPIO 41 (I2S DOUT) ──────────── SDIN   (serial audio data)
+  GPIO 42 (I2S BCLK) ──────────── SCK    (bit clock)
+  GPIO 14 (I2S LRCLK) ─────────── FSYNC  (frame sync / word select)
+  GPIO  8 (I2C SDA)  ──────────── SDA    (I2C data)
+  GPIO  9 (I2C SCL)  ──────────── SCL    (I2C clock)
+  3.3V ────────────────────────── DVDD   (digital supply, 3.3V)
+  3.3V ─────── [4.7kΩ] ─────────── SDA    (I2C pull-up)
+  3.3V ─────── [4.7kΩ] ─────────── SCL    (I2C pull-up)
+  GND ─────────────────────────── GND    (common ground)
+                                   PVDD ← External 12-24V supply
+                                   PDN  ← 3.3V (or GPIO for power control)
+                                   ADDR ← GND (I2C address 0x4C)
+```
+
+**Power supply notes:**
+- **DVDD** (digital): 3.3V from ESP32-S3 DevKitC-1 3V3 pin (max ~500mA available)
+- **PVDD** (amplifier): External supply 4.5V-26.4V. Output power depends on PVDD:
+  - 12V (3S LiPo ~11.1V): ~15W per channel into 8 ohm
+  - 15V (4S LiPo ~14.8V): ~22W per channel into 8 ohm
+  - 24V (bench supply): ~30W per channel into 8 ohm
+- **ADDR pin**: Tied to GND = I2C address 0x4C (default in firmware)
+- **PDN (Power Down)**: Tie to 3.3V for always-on, or connect to a GPIO for power management
+- **I2C pull-ups**: 4.7kΩ to 3.3V on SDA and SCL (some breakout boards include these)
+
+**Supply voltage in firmware:**
+The supply voltage is configured in `hubfx_esp32s3.ino` to set the correct analog gain:
+```cpp
+TAS5825Codec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
+                               AUDIO_SAMPLE_RATE, TAS5825M_12V);
+```
+Change `TAS5825M_12V` to match your PVDD: `TAS5825M_12V`, `TAS5825M_15V`, `TAS5825M_20V`, or `TAS5825M_24V`.
+
+**Wire length:** Keep I2S wires short (< 6 inches / 150mm). At 48kHz/16-bit stereo, BCLK is ~1.5 MHz — manageable, but shorter is better for signal integrity.
 
 ## Building
 
@@ -369,6 +423,7 @@ All protocol communication (COBS/INIT/STATUS/DIAG) goes through UART0.
 
 | Version | Build | Date | Changes |
 |---------|-------|------|----------|
+| 0.17.0 | 82 | 2026-03-18 | **TAS5825M codec integration:** Switched audio codec from SimpleI2SCodec to TAS5825Codec (TI TAS5825M stereo Class-D amplifier). I2C control on GPIO 8 (SDA) / GPIO 9 (SCL). TAS5825Codec converted to singleton pattern for AudioMixer compatibility. Supply voltage configurable (12V/15V/20V/24V). Added full wiring guide in README. |
 | 0.16.0 | 80 | 2026-03-17 | **Platform migration:** Arduino ESP32 v2.x (ESP-IDF 4.4.7) → v3.3.7 (ESP-IDF 5.5.x) via pioarduino. Enables USB Hub support (TUSB2046IBVFR) via IDF 5.x internal hub driver. Rewrote `EspI2SOutput` from legacy `driver/i2s.h` to ESP-IDF 5.x channel-based `driver/i2s_std.h` API. Pinned ESP32Servo ≥3.0.5 for Arduino v3.x LEDC compatibility. |
 | 0.7.3 | 40 | 2026-03-16 | Fixed loopTask stack overflow on ESP32-S3 — `StreamWriter` 2044-byte chunk buffer moved from stack to heap allocation, loopTask stack increased to 16KB (`ARDUINO_LOOP_STACK_SIZE=16384`). Fixed tab-delimited wire format for FILE_LIST/FILE_TREE (spaces in filenames no longer break parsing). CLI parsers updated with tab-first parsing + space fallback for legacy firmware. |
 | 0.6.0 | 31 | 2026-03-14 | Burst upload mode (`--burst` flag) — fire-and-forget chunks without per-chunk ACK for maximum throughput. MD5 verification on all uploads — server computes running MD5 hash and returns 16-byte digest in FILE_UPLOAD_END ACK payload. CLI compares local vs remote MD5 automatically. Optional `mode` byte in FILE_UPLOAD_BEGIN payload (0=sync, 1=burst). Burst mode reports CRC error count in ACK payload. |

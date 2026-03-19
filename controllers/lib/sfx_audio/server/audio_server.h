@@ -25,6 +25,7 @@
  *   AUDIO_QUEUE       (0x88) — Queue sound on channel
  *   AUDIO_QUEUE_CLEAR (0x89) — Clear channel queue
  *   AUDIO_STATUS_REQ  (0x8A) — Request full audio status
+ *   CODEC_STATUS_REQ  (0xAA) — Request codec hardware status (I2C, faults, volume)
  *
  * All playback commands use the mixer's Async methods (thread-safe
  * command queue) since protocol handling runs on Core 0 while I2S
@@ -97,7 +98,7 @@ protected:
                                            size_t len) override;
 
     uint8_t moduleRangeLow()  const override { return HubFxPacket::AUDIO_PLAY; }
-    uint8_t moduleRangeHigh() const override { return HubFxPacket::AUDIO_STATUS_RESP; }
+    uint8_t moduleRangeHigh() const override { return HubFxPacket::CODEC_STATUS_RESP; }
 
     const char* getModuleErrorMessage(uint8_t code) override {
         return HubFxError::getMessage(code);
@@ -115,6 +116,7 @@ private:
     void handleQueue(const uint8_t* payload, size_t len);
     void handleQueueClear(const uint8_t* payload, size_t len);
     void handleStatusReq();
+    void handleCodecStatusReq();
 };
 
 // ============================================================================

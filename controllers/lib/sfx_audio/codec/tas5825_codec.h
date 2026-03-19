@@ -89,13 +89,19 @@ enum TAS5825M_SupplyVoltage {
  */
 class TAS5825Codec {
 public:
-    /**
-     * @brief Construct a new TAS5825 Codec object
-     */
-    TAS5825Codec();
+    static TAS5825Codec& instance() {
+        static TAS5825Codec inst;
+        return inst;
+    }
+
+    // Delete copy/move (singleton)
+    TAS5825Codec(const TAS5825Codec&) = delete;
+    TAS5825Codec& operator=(const TAS5825Codec&) = delete;
+    TAS5825Codec(TAS5825Codec&&) = delete;
+    TAS5825Codec& operator=(TAS5825Codec&&) = delete;
 
     /**
-     * @brief Initialize the TAS5825M codec
+     * @brief Initialize the TAS5825M codec with I2C
      * @param wire I2C interface (Wire or Wire1)
      * @param sda I2C SDA pin
      * @param scl I2C SCL pin
@@ -130,6 +136,17 @@ public:
      * @brief Dump all important registers via serial
      */
     void dumpRegisters();
+
+    // --- Status Queries (for CODEC_STATUS protocol) ---
+    uint8_t getCodecType() const { return 1; }  // 1 = TAS5825M
+    bool    getMuted() const { return muted; }
+    uint8_t getVolumeRegister() const { return currentVolume; }
+    TAS5825M_SupplyVoltage getSupplyVoltage() const { return supplyVoltage; }
+    int     getSdaPin() const { return sdaPin; }
+    int     getSclPin() const { return sclPin; }
+    uint8_t getDeviceControlRegister();
+    uint8_t getFaultRegister();
+    bool    testI2CConnection();
     
 #if AUDIO_DEBUG
     // Debug methods
@@ -142,6 +159,8 @@ public:
 #endif // AUDIO_DEBUG
 
 private:
+    TAS5825Codec();  // Private constructor (singleton)
+
     TwoWire* i2c;
     int sdaPin;
     int sclPin;

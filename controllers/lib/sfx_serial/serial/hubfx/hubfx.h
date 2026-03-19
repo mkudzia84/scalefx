@@ -82,6 +82,12 @@ namespace HubFxPacket {
     constexpr uint8_t USB_DEVICES_RESP   = 0xA8;  // [initialized:u8][taskRunning:u8][backendLen:u8][backend:str]
                                                    //   [deviceCount:u8] per-device: [addr:u8][vid:u16LE][pid:u16LE][state:u8][slaveType:u8]
 
+    // --- Codec Status (0xAA-0xAB) ---
+    constexpr uint8_t CODEC_STATUS_REQ   = 0xAA;  // [] → CODEC_STATUS_RESP
+    constexpr uint8_t CODEC_STATUS_RESP  = 0xAB;  // [codecType:u8][initialized:u8][i2cOk:u8][sdaPin:u8][sclPin:u8]
+                                                   //   [supplyVoltage:u8][muted:u8][digitalVol:u8][deviceCtrl:u8][faultStatus:u8]
+                                                   //   [codecNameLen:u8][codecName:str]
+
     // --- File Tree (0xA9) ---
     constexpr uint8_t FILE_TREE          = 0xA9;  // [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END
                                                    //   Streamed text: "<depth> <d|f> <name> <size>\n" per entry (recursive)

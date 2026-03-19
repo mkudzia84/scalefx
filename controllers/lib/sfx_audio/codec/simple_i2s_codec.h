@@ -50,6 +50,17 @@ public:
     void setMute(bool mute);
     bool isInitialized() const { return initialized; }
     const char* getModelName() const { return modelName; }
+
+    // Status queries (stub for generic codec interface)
+    uint8_t getCodecType() const { return 0; }  // 0 = simple I2S (no control)
+    bool    getMuted() const { return currentlyMuted; }
+    uint8_t getVolumeRegister() const { return 0; }
+    uint8_t getSupplyVoltage() const { return 0; }
+    int     getSdaPin() const { return -1; }
+    int     getSclPin() const { return -1; }
+    uint8_t getDeviceControlRegister() { return 0; }
+    uint8_t getFaultRegister() { return 0; }
+    bool    testI2CConnection() { return false; }
     
 private:
     SimpleI2SCodec() = default;

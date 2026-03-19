@@ -40,6 +40,9 @@ CommandHandleResult AudioServerT<TMixer>::handleModulePacket(
         case HubFxPacket::AUDIO_STATUS_REQ:
             handleStatusReq();
             return CommandHandleResult::Handled;
+        case HubFxPacket::CODEC_STATUS_REQ:
+            handleCodecStatusReq();
+            return CommandHandleResult::Handled;
         default:
             return CommandHandleResult::NotMyCommand;
     }
@@ -344,4 +347,44 @@ void AudioServerT<TMixer>::handleStatusReq() {
     }
 
     sendRawPacket(HubFxPacket::AUDIO_STATUS_RESP, currentTag(), buf, pos);
+}
+
+// ============================================================================
+// CODEC_STATUS_REQ (0xAA) → CODEC_STATUS_RESP (0xAB)
+// Wire: [codecType:u8][initialized:u8][i2cOk:u8][sdaPin:u8][sclPin:u8]
+//       [supplyVoltage:u8][muted:u8][digitalVol:u8][deviceCtrl:u8][faultStatus:u8]
+//       [codecNameLen:u8][codecName:str]
+// ============================================================================
+
+template <typename TMixer>
+void AudioServerT<TMixer>::handleCodecStatusReq() {
+    auto& codec = mixer().getCodec();
+    uint8_t buf[64];
+    size_t pos = 0;
+
+    buf[pos++] = codec.getCodecType();         // 0=simple, 1=TAS5825M
+    buf[pos++] = codec.isInitialized() ? 1 : 0;
+    buf[pos++] = codec.testI2CConnection() ? 1 : 0;
+    buf[pos++] = (uint8_t)(codec.getSdaPin() & 0xFF);
+    buf[pos++] = (uint8_t)(codec.getSclPin() & 0xFF);
+
+    // Supply voltage enum — only meaningful for TAS5825M
+    // For simple codec: always 0
+    buf[pos++] = (uint8_t)codec.getSupplyVoltage();
+    buf[pos++] = codec.getMuted() ? 1 : 0;
+    buf[pos++] = codec.getVolumeRegister();
+    buf[pos++] = codec.getDeviceControlRegister();
+    buf[pos++] = codec.getFaultRegister();
+
+    // Codec model name (length-prefixed)
+    const char* name = codec.getModelName();
+    uint8_t nameLen = name ? (uint8_t)strlen(name) : 0;
+    if (nameLen > 48) nameLen = 48;
+    buf[pos++] = nameLen;
+    if (nameLen > 0) {
+        memcpy(&buf[pos], name, nameLen);
+        pos += nameLen;
+    }
+
+    sendRawPacket(HubFxPacket::CODEC_STATUS_RESP, currentTag(), buf, pos);
 }

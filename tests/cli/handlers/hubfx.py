@@ -192,6 +192,10 @@ class HubFxCommandHandler(CommandHandlerBase):
                 'audio.status', 'audio.status',
                 'Show audio mixer status',
                 requires_init=True, controller=ControllerType.HUBFX, group='Audio')),
+            'audio.codec': (self.cmd_audio_codec, CommandInfo(
+                'audio.codec', 'audio.codec',
+                'Show codec hardware status (I2C, faults, volume)',
+                requires_init=True, controller=ControllerType.HUBFX, group='Audio')),
 
             # =================================================================
             # Engine FX
@@ -871,6 +875,104 @@ class HubFxCommandHandler(CommandHandlerBase):
             if wav_str:
                 print(f"          wav:  {wav_str}")
 
+        print()
+
+    def cmd_audio_codec(self, args: List[str]):
+        """Show codec hardware status (I2C, faults, volume registers)."""
+        if not self._require_init():
+            return
+
+        packet = HubFxCommands.codec_status()
+        response = self.conn.send_and_wait(packet)
+
+        if response is None:
+            self.print_error("No response (timeout)")
+            return
+        if response.is_nack:
+            code = response.error_code
+            self.print_error(f"NACK: {HubFxError.name(code)} (0x{code:02X})")
+            return
+
+        if response.packet_type == HubFxPacket.CODEC_STATUS_RESP:
+            self._parse_codec_status(response.payload)
+        else:
+            self.print_error(f"Unexpected response: 0x{response.packet_type:02X}")
+
+    def _parse_codec_status(self, payload: bytes):
+        """Parse and display CODEC_STATUS_RESP payload."""
+        if len(payload) < 11:
+            self.print_error("Codec status response too short")
+            return
+
+        codec_type    = payload[0]
+        initialized   = payload[1]
+        i2c_ok        = payload[2]
+        sda_pin       = payload[3]
+        scl_pin       = payload[4]
+        supply_volt   = payload[5]
+        muted         = payload[6]
+        digital_vol   = payload[7]
+        device_ctrl   = payload[8]
+        fault_status  = payload[9]
+        codec_name_len = payload[10]
+
+        codec_name = ""
+        if codec_name_len > 0 and len(payload) >= 11 + codec_name_len:
+            codec_name = payload[11:11 + codec_name_len].decode('ascii', errors='replace')
+
+        # Codec type names
+        codec_types = {0: "Simple I2S (no control)", 1: "TAS5825M"}
+        codec_type_str = codec_types.get(codec_type, f"Unknown ({codec_type})")
+
+        # Supply voltage names (TAS5825M enum)
+        supply_names = {0: "12V", 1: "15V", 2: "20V", 3: "24V"}
+        supply_str = supply_names.get(supply_volt, f"Unknown ({supply_volt})")
+
+        # Device control register decode (TAS5825M reg 0x03)
+        ctrl_modes = {0x00: "Deep Sleep", 0x01: "Sleep", 0x02: "HiZ", 0x03: "Play"}
+        ctrl_mode = device_ctrl & 0x03
+        ctrl_str = ctrl_modes.get(ctrl_mode, f"Unknown (0x{device_ctrl:02X})")
+
+        # Digital volume to dB conversion: dB = (register - 0x30) * 0.5
+        # Register 0x00 = +24dB, 0x30 = 0dB, 0xCF = -103.5dB, 0xFF = mute
+        if digital_vol == 0xFF:
+            vol_db_str = "MUTE"
+        else:
+            vol_db = (digital_vol - 0x30) * 0.5
+            vol_db_str = f"{vol_db:+.1f} dB"
+
+        # Fault status decode (TAS5825M reg 0x78)
+        fault_bits = []
+        if fault_status & 0x01: fault_bits.append("OT warning")
+        if fault_status & 0x02: fault_bits.append("OT error")
+        if fault_status & 0x04: fault_bits.append("OC")
+        if fault_status & 0x08: fault_bits.append("Clock fault")
+        if fault_status == 0xFF:
+            fault_str = f"{Fore.YELLOW}read error{Style.RESET_ALL}"
+        elif fault_status == 0:
+            fault_str = f"{Fore.GREEN}none{Style.RESET_ALL}"
+        else:
+            fault_str = f"{Fore.RED}{', '.join(fault_bits)} (0x{fault_status:02X}){Style.RESET_ALL}"
+
+        # Colors
+        init_color = Fore.GREEN if initialized else Fore.RED
+        i2c_color = Fore.GREEN if i2c_ok else Fore.RED
+        mute_color = Fore.YELLOW if muted else Fore.GREEN
+
+        print(f"\n  {Fore.CYAN}═══ Codec Status ═══{Style.RESET_ALL}")
+        print(f"    Model:          {codec_name or codec_type_str}")
+        print(f"    Type:           {codec_type_str}")
+        print(f"    Initialized:    {init_color}{'Yes' if initialized else 'No'}{Style.RESET_ALL}")
+        print(f"    I2C Connected:  {i2c_color}{'Yes' if i2c_ok else 'No'}{Style.RESET_ALL}")
+        if sda_pin != 0xFF:
+            print(f"    I2C Pins:       SDA=GPIO{sda_pin}, SCL=GPIO{scl_pin}")
+
+        if codec_type == 1:  # TAS5825M-specific fields
+            print(f"    Supply:         {supply_str}")
+            print(f"    Muted:          {mute_color}{'Yes' if muted else 'No'}{Style.RESET_ALL}")
+            print(f"    Digital Volume: 0x{digital_vol:02X} ({vol_db_str})")
+            print(f"    Device Ctrl:    0x{device_ctrl:02X} ({ctrl_str})")
+            print(f"    Fault Status:   {fault_str}")
         print()
 
     # =========================================================================
