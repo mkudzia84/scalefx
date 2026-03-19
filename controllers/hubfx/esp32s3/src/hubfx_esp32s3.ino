@@ -5,9 +5,10 @@
  * (GunFX, LightFX, GearControl) via USB Host, audio mixing, and effects.
  *
  * DUAL-CORE ARCHITECTURE (ESP32-S3, dual Xtensa LX7 @ 240 MHz):
- *   Core 0: Main loop — serial protocol, slave management, SD card reads,
- *           WAV decoding, audio mixing (producer)
- *   Core 1: Audio I2S output (consumer), USB Host polling
+ *   Core 0: Main loop — serial protocol, slave management, storage operations
+ *   Core 1: Audio consumer task (I2S DMA output, highest priority)
+ *           Audio producer task (WAV decode, SD reads, mixing, lower priority)
+ *           USB Host polling
  *
  * COMMUNICATION:
  *   Upstream:  UART0 via USB-UART bridge (1Mbps) — COBS protocol for
@@ -41,8 +42,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.18.1"
-#define BUILD_NUMBER 96
+#define FIRMWARE_VERSION "0.19.0"
+#define BUILD_NUMBER 99
 
 #include <Arduino.h>
 #include <atomic>
@@ -114,10 +115,10 @@ using AudioServer = AudioServerT<Mixer>;
 #define PIN_I2C_SCL     9    // I2C clock (to TAS5825M SCL)
 
 // ============================================================================
-// Core 1 Task — Audio Consumer + USB Host
+// Core 1 Task — Audio Consumer (highest priority on Core 1)
 // ============================================================================
 
-// FreeRTOS task handle for Core 1
+// FreeRTOS task handle for Core 1 consumer
 static TaskHandle_t core1TaskHandle = nullptr;
 
 // Cross-core state flags
@@ -129,16 +130,21 @@ std::atomic<bool> usbHostReady{false};       // Core 0 writes, Core 0 reads (bus
 std::atomic<uint32_t> loop1Count{0};         // Core 1 writes, Core 0 reads
 
 /**
- * Core 1 task function — audio I2S consumer loop.
+ * Core 1 consumer task — audio I2S output loop.
  *
- * On ESP32-S3, Core 1 is dedicated to low-latency audio output.
- * Uses FreeRTOS xTaskCreatePinnedToCore() instead of Pico's setup1()/loop1().
+ * DUAL-TASK AUDIO ARCHITECTURE (both pinned to Core 1):
+ *   Consumer (this task, priority MAX-1): ring buffer → I2S DMA.
+ *     Blocks in i2s_channel_write() when DMA is full, releasing CPU.
+ *   Producer (AudioMixer task, priority MAX-2): WAV decode + SD reads
+ *     + float mixing → ring buffer. Runs when consumer is blocked.
  *
- * TODO: Migrate audio consumer from HubFX Pico loop1()
+ * Core 0 is freed entirely for protocol handling, slave management,
+ * and storage operations. Commands reach the producer via the async
+ * command queue (playAsync, stopAsync, etc.).
  */
 static void core1Task(void* param) {
     core1Ready.store(true, std::memory_order_release);
-    SFX_LOG_INFO("Core 1 task started, waiting for audio init...");
+    SFX_LOG_INFO("Core 1 consumer task started, waiting for audio init...");
 
     // Wait for Core 0 to complete Mixer::begin() (Phase 1)
     while (!audioInitialized.load(std::memory_order_acquire)) {
@@ -157,10 +163,20 @@ static void core1Task(void* param) {
         }
     }
 
-    SFX_LOG_INFO("Core 1: I2S running — consumer loop active");
+    SFX_LOG_INFO("Core 1: I2S running — starting producer task, then consumer loop");
+
+    // Launch producer task on same core (lower priority).
+    // Producer fills the SPSC ring buffer from WAV decode + SD reads.
+    // It runs when this consumer task blocks on i2s_channel_write().
+    mixer.startProducerTask(
+        1,                          // Core 1 (same as consumer)
+        configMAX_PRIORITIES - 2,   // Below consumer priority
+        8192                        // Stack size
+    );
 
     // Audio consumer loop — reads from SPSC ring buffer, writes to I2S DMA.
-    // i2s_write() blocks when DMA buffers are full, providing natural pacing.
+    // i2s_channel_write() blocks when DMA buffers are full, providing natural pacing.
+    // When blocked, FreeRTOS yields to the producer task on this core.
     while (true) {
         loop1Count.fetch_add(1, std::memory_order_relaxed);
         mixer.consume();
@@ -592,16 +608,18 @@ void setup() {
         }
     }
 
-    // Launch Core 1 task for audio consumer
+    // Launch Core 1 task for audio consumer (highest priority)
     xTaskCreatePinnedToCore(
         core1Task,          // Task function
-        "AudioCore1",       // Task name
+        "AudioConsumer",    // Task name
         8192,               // Stack size (bytes)
         nullptr,            // Parameters
-        configMAX_PRIORITIES - 1,  // High priority for audio
+        configMAX_PRIORITIES - 1,  // Highest priority for I2S output
         &core1TaskHandle,   // Task handle
         1                   // Pin to Core 1
     );
+    // Note: Producer task is launched FROM core1Task after I2S init,
+    // ensuring both tasks run on Core 1 and I2S is ready.
 
     // Hub is the master — mark as operational immediately
     server.indicators().setConnected(true);
@@ -637,30 +655,25 @@ void loop() {
     storageServer.checkUploadTimeout();
 
     // ---- Audio: stop playback when SD upload starts ----
-    // SD card is shared between audio reads and upload writes.
-    // When an upload begins, stop all audio tracks to avoid
-    // concurrent SD access and file contention.
+    // SD card is shared between audio reads (Core 1 producer) and
+    // upload writes (Core 0). When an upload begins, stop all audio
+    // tracks via the async command queue (cross-core safe).
     {
         static bool wasUploading = false;
         bool uploading = storageServer.isUploadActive();
         if (uploading && !wasUploading) {
             Mixer& mixer = Mixer::instance();
             if (mixer.isAnyPlaying()) {
-                mixer.stopAll();
-                MIXER_LOG("Audio stopped — SD upload starting");
+                mixer.stopAsync(-1, AudioStopMode::Immediate);
+                MIXER_LOG("Audio stop queued — SD upload starting");
             }
         }
         wasUploading = uploading;
     }
 
-    // ---- Audio Producer (Core 0) ----
-    // Decode WAV from SD, mix channels, write to SPSC ring buffer.
-    // Skip during active upload to avoid SD card contention.
-    if (audioInitialized.load(std::memory_order_acquire) &&
-        !storageServer.isUploadActive() &&
-        !storageServer.isStreamReceiving()) {
-        Mixer::instance().produce(1024);
-    }
+    // NOTE: produce() is no longer called from loop().
+    // The producer runs as a dedicated FreeRTOS task on Core 1,
+    // launched by startProducerTask() inside core1Task().
 
     // Periodic diagnostic logging (buffered in DiagLog ring, retrieved via `diag`)
     logDiagnostics();

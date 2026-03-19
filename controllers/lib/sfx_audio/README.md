@@ -13,7 +13,7 @@ sfx_audio/
 │   ├── audio_log.h         # Audio-specific logging macros (MIXER_LOG, TAS5825_LOG, MOCK_LOG)
 │   ├── audio_mixer.h       # AudioMixer<TI2S, TCodec> template declaration
 │   ├── audio_mixer.ipp     # AudioMixer template implementation (included by .h)
-│   ├── audio_ring_buffer.h # Lock-free SPSC ring buffer (StereoFrame, Core 0 → Core 1)
+│   ├── audio_ring_buffer.h # Lock-free SPSC ring buffer (StereoFrame, producer → consumer)
 │   ├── esp_i2s_output.h    # ESP-IDF v5.x I2S standard-mode driver (ESP32-S3)
 │   ├── pico_i2s_output.h   # Arduino-Pico PIO I2S driver (RP2040/RP2350)
 │   └── mock_i2s_sink.h/.cpp # Mock I2S output for testing (statistics, capture)
@@ -52,29 +52,36 @@ Mixer::instance().play(0, "/sounds/engine.wav");  // opens via SdCardModule dire
 
 ### Dual-Core SPSC Pipeline
 
+On ESP32-S3, both tasks run on **Core 1** — the consumer at highest priority, the
+producer at one level below. Core 0 is freed entirely for protocol handling.
+On Pico, `produce()` runs in the main loop (Core 0) and `consume()` on Core 1.
+
 ```
-Core 0 (Producer)                     Core 1 (Consumer)
+Core 1 — Producer Task (priority MAX-2)  Core 1 — Consumer Task (priority MAX-1)
 ┌─────────────────────┐              ┌──────────────────────┐
 │ SD card → WAV decode│              │ Ring buffer → I2S DMA│
 │ 8-ch float mixing   │──────────────▶│ via TI2S::instance() │
-│ → StereoFrame ring  │  lock-free   │                      │
-│                     │  SPSC queue  │                      │
+│ → StereoFrame ring  │  lock-free   │ (blocks on DMA full, │
+│                     │  SPSC queue  │  yields to producer) │
 └─────────────────────┘              └──────────────────────┘
 ```
 
-- **Producer** (`produce()`): Reads WAV data from SD, decodes to float, mixes 8 channels with per-channel volume/pan/routing, converts to `StereoFrame` (int16 stereo), pushes to ring buffer.
-- **Consumer** (`consume()`): Pops frames from ring buffer, writes to I2S hardware via `TI2S::instance().writeSamples()`.
+- **Producer** (`produce()` via `startProducerTask()`): Reads WAV data from SD (mutex-protected for cross-core safety), decodes to float, mixes 8 channels with per-channel volume/pan/routing, converts to `StereoFrame` (int16 stereo), pushes to ring buffer. Yields when ring is full.
+- **Consumer** (`consume()`): Pops frames from ring buffer, writes to I2S hardware via `TI2S::instance().writeSamples()`. Blocks on `i2s_channel_write()` when DMA is full, releasing CPU to the producer.
 - **Ring buffer** (`AudioRingBuffer`): Lock-free single-producer single-consumer queue using `std::atomic` indices with release/acquire ordering.
+- **Command queue**: Protocol handlers on Core 0 use `playAsync()`/`stopAsync()` etc. to enqueue commands. The producer task drains the queue at the start of each `produce()` call.
 
 ### Two-Phase Initialization
 
 ```cpp
-// Core 0:
+// Core 0 (setup):
 Mixer::instance().begin(dataPin, bclkPin, lrclkPin);  // Phase 1: channels, codec, buffers
 
-// Core 1 (after Core 0 signals ready):
-Mixer::instance().beginI2S();   // Phase 2: I2S hardware init
-Mixer::instance().consume();    // Start consuming loop
+// Core 1 consumer task (after Core 0 signals ready):
+Mixer::instance().beginI2S();            // Phase 2: I2S hardware init
+Mixer::instance().startProducerTask();   // Launch producer task (Core 1, lower priority)
+// Consumer loop:
+while (true) { Mixer::instance().consume(); }
 ```
 
 ## Codec Concept (Compile-Time Interface)

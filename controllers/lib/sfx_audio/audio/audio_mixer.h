@@ -5,9 +5,10 @@
  * Supports 8 simultaneous channels with WAV playback, per-channel volume,
  * loop/one-shot modes, L/R/stereo routing, and float mixing pipeline.
  * 
- * DUAL-CORE ARCHITECTURE:
- *   Core 0 (Producer): WAV decode + float mixing → SPSC ring buffer
- *   Core 1 (Consumer): SPSC ring buffer → I2S DMA
+ * DUAL-CORE ARCHITECTURE (ESP32-S3):
+ *   Core 1 — Producer Task: WAV decode + SD reads + float mixing → SPSC ring buffer
+ *   Core 1 — Consumer Task: SPSC ring buffer → I2S DMA (higher priority)
+ *   Core 0: Protocol handling only — uses *Async() API to queue commands
  * 
  * All audio math uses float, leveraging hardware FPU where available
  * (Cortex-M33 on RP2350, Xtensa DSP on ESP32-S3).
@@ -23,8 +24,9 @@
  *   SimpleI2SCodec codec;  // singleton
  *   using Mixer = AudioMixer<EspI2SOutput, SimpleI2SCodec>;
  *   Mixer::instance().begin(i2s_data, i2s_bclk, i2s_lrclk);
- *   // In Core 0 loop: Mixer::instance().produce();
- *   // In Core 1 loop: Mixer::instance().consume();
+ *   // Core 1 consumer task: Mixer::instance().consume();
+ *   // Launch producer on Core 1: Mixer::instance().startProducerTask();
+ *   // Core 0 protocol: use Mixer::instance().playAsync() etc.
  */
 
 #ifndef AUDIO_MIXER_H
@@ -179,14 +181,30 @@ public:
     TI2S& getI2SOutput() { return TI2S::instance(); }
 
     // ---- Dual-Core Processing ----
-    // Producer (call from Core 0): WAV decode + mixing → ring buffer
+    // Producer: WAV decode + SD reads + mixing → ring buffer
+    // On ESP32: runs as dedicated FreeRTOS task on Core 1 via startProducerTask()
+    // On Pico: call produce() from loop (single-core)
     int produce(int maxFrames = 256);
     
-    // Consumer (call from Core 1): ring buffer → I2S DMA
+    // Consumer (Core 1 task): ring buffer → I2S DMA
     void consume();
     
     // Legacy single-call (for backwards compatibility, calls both)
     void process();
+
+#if SFX_PLATFORM_ESP32
+    // ---- Producer Task (ESP32 FreeRTOS) ----
+    // Launches a dedicated producer task pinned to the specified core.
+    // The task runs produce() in a loop, yielding when the ring is full
+    // or no channels are playing. Consumer task should be higher priority.
+    bool startProducerTask(int core = 1,
+                           int priority = configMAX_PRIORITIES - 2,
+                           int stackSize = 8192);
+    void stopProducerTask();
+    bool isProducerTaskRunning() const {
+        return _producerRunning.load(std::memory_order_acquire);
+    }
+#endif
 
     // Stats access
     uint32_t getUnderruns() const { return _underruns.load(std::memory_order_acquire); }
@@ -308,14 +326,18 @@ private:
     };
 
     // ---- Internal Methods ----
-    // Producer side (Core 0)
+    // Producer side (Core 1 task on ESP32, Core 0 on Pico)
     bool refillWavBuffer(WavState& ws);        // Batch SD read into float buffer
     bool getWavSample(WavState& ws, float& outL, float& outR);  // Resampled frame
     bool produceFrame();                        // Mix one frame → ring buffer
     void updatePan(Channel& ch);                // Recalculate panL/panR
     
-    // Consumer side (Core 1)
+    // Consumer side (Core 1 task)
     void consumeAndOutput();                    // Ring buffer → I2S
+
+#if SFX_PLATFORM_ESP32
+    static void producerTaskFunc(void* param);  // FreeRTOS task entry point
+#endif
     
     // WAV parsing
     bool parseWavHeader(WavState& ws);
@@ -350,21 +372,27 @@ private:
     // Dynamically allocated from PSRAM in begin(), freed in shutdown().
     uint8_t* _sdReadBuf = nullptr;
 
-    // Command queue mutex (producer-side access to channel state)
+    // Command queue mutex (cross-core: Core 0 queues, producer task dequeues)
     SfxMutex _cmdMutex;
 
-    // Command queue (async play/stop/setVolume from API calls)
+    // Command queue (async play/stop/setVolume from Core 0 → producer task)
     Command _cmdQueue[AUDIO_CMD_QUEUE_SIZE];
-    std::atomic<int> _cmdQueueHead{0};       // Core 0 writes (mutex), Core 0 reads
-    std::atomic<int> _cmdQueueTail{0};       // Core 0 writes (mutex), Core 0 reads
+    std::atomic<int> _cmdQueueHead{0};       // Core 0 writes (mutex), producer reads
+    std::atomic<int> _cmdQueueTail{0};       // Producer writes (mutex), Core 0 reads
+
+#if SFX_PLATFORM_ESP32
+    // Producer task state
+    TaskHandle_t _producerTaskHandle = nullptr;
+    std::atomic<bool> _producerRunning{false};  // Producer task reads, Core 0 writes
+#endif
 
     // Stats (cross-core diagnostic counters)
-    std::atomic<uint32_t> _underruns{0};     // Core 1 writes, Core 0 reads
-    std::atomic<uint32_t> _produceLoops{0};  // Core 0 writes, Core 0 reads
-    std::atomic<uint32_t> _consumeLoops{0};  // Core 1 writes, Core 0 reads
-    std::atomic<uint32_t> _consumeFrames{0}; // Core 1 writes, Core 0 reads
+    std::atomic<uint32_t> _underruns{0};     // Core 1 consumer writes, Core 0 reads
+    std::atomic<uint32_t> _produceLoops{0};  // Producer task writes, Core 0 reads
+    std::atomic<uint32_t> _consumeLoops{0};  // Core 1 consumer writes, Core 0 reads
+    std::atomic<uint32_t> _consumeFrames{0}; // Core 1 consumer writes, Core 0 reads
 
-    // Status (Core 0 writes in produceFrame, Core 0 reads in isPlaying/remainingMs)
+    // Status (producer task writes, Core 0 reads for status queries)
     std::atomic<bool> _channelPlaying[AUDIO_MAX_CHANNELS]{};
     std::atomic<int> _channelRemainingMs[AUDIO_MAX_CHANNELS]{};
 };

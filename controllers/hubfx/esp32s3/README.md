@@ -10,10 +10,12 @@ Migrating from [HubFX Pico](../pico/) (RP2350). The Pico version is being supers
 
 | Core | Responsibilities |
 |------|------------------|
-| **Core 0** | Main loop — serial protocol, SD card reads, WAV decoding, audio mixing (producer), slave management, effects state machines |
-| **Core 1** | Audio I2S output (consumer), USB Host polling |
+| **Core 0** | Main loop — serial protocol, storage operations, slave management, effects state machines |
+| **Core 1** | Audio consumer task (I2S DMA output, priority MAX-1), Audio producer task (WAV decode + SD reads + mixing, priority MAX-2), USB Host polling |
 
-Core 1 runs as a FreeRTOS task pinned via `xTaskCreatePinnedToCore()` (replaces Pico's `setup1()`/`loop1()` pattern).
+Core 1 runs two FreeRTOS tasks pinned via `xTaskCreatePinnedToCore()`. The consumer blocks on `i2s_channel_write()` when DMA is full, yielding CPU to the lower-priority producer task. This gives the producer ~10ms of uncontested CPU time per DMA batch to decode WAV files and mix audio, while freeing Core 0 entirely for protocol handling.
+
+All playback commands from Core 0 go through the async command queue (`playAsync()`, `stopAsync()`, etc.) — the producer task drains and executes them. SD file I/O in the mixer is mutex-protected for cross-core safety with storage operations.
 
 ### Cross-Core Communication
 
@@ -82,8 +84,8 @@ The shared `AudioMixer` already has ESP32-S3 conditionals (`SFX_PLATFORM_ESP32` 
 | [x] | **I2S driver** | ESP-IDF v5.x standard-mode via `driver/i2s_std.h`. `EspI2SOutput` singleton wraps `i2s_channel_write()` with DMA auto-clear on underrun. Bit depth derived from `AUDIO_BIT_DEPTH` config. |
 | [x] | **Codec init** | TAS5825Codec singleton — `begin(Wire, 8, 9, AUDIO_SAMPLE_RATE, TAS5825M_12V)`. Supply voltage configurable. All codec defaults now use `AUDIO_SAMPLE_RATE`. |
 | [x] | **Audio mixer begin** | `mixer.begin(data, bclk, lrclk)` — Phase 1 on Core 0, Phase 2 (`beginI2S()`) on Core 1. PSRAM buffers: 24000-frame WAV decode per channel, 4096-frame SPSC ring buffer. |
-| [x] | **Audio producer** | `mixer.produce(1024)` in `loop()` — 1024 frames per call (~21 ms). Proactive round-robin WAV refill when buffer < 50%. |
-| [x] | **Audio consumer** | `mixer.consume()` in Core 1 FreeRTOS task — reads ring buffer, batch-writes to I2S via 512-frame internal SRAM buffer. |
+| [x] | **Audio producer** | Dedicated FreeRTOS task on Core 1 (priority MAX-2) via `mixer.startProducerTask()`. Runs `produce(RING_FRAMES)` in a tight loop, yielding 2ms when ring is full or no channels playing. SD file I/O mutex-protected for cross-core safety. |
+| [x] | **Audio consumer** | FreeRTOS task on Core 1 (priority MAX-1) — reads ring buffer, batch-writes to I2S via 512-frame internal SRAM buffer. Blocks on DMA full, yielding CPU to producer task. |
 | [ ] | **MCLK support** | ESP32-S3 has native MCLK output (Pico does not). Some DACs need it. Add optional MCLK pin config. |
 
 ### Phase 3 — USB Host (Slave Management)
@@ -423,6 +425,7 @@ All protocol communication (COBS/INIT/STATUS/DIAG) goes through UART0.
 
 | Version | Build | Date | Changes |
 |---------|-------|------|----------|
+| 0.19.0 | 99 | 2026-03-19 | **Dual-task Core 1 audio architecture:** Moved audio producer from Core 0 `loop()` to a dedicated FreeRTOS task on Core 1 (priority MAX-2, below consumer at MAX-1). Consumer blocks on `i2s_channel_write()` when DMA is full, yielding CPU to producer. Core 0 now handles only protocol + storage + slave management. Added SD card mutex locking in mixer file I/O (`refillWavBuffer`, `parseWavHeader`, `stop`, `produceFrame` file close) for cross-core safety. Changed direct `stopAll()` call to `stopAsync()` for thread-safe upload guard. Verified on hardware — device reports v0.19.0 build 99. |
 | 0.18.1 | 96 | 2026-03-19 | **Audio producer optimization:** Removed DIAG instrumentation from hot paths (per-frame logging in `produceFrame()`, `getWavSample()`, `refillWavBuffer()`, periodic 500ms channel dump). Increased `produce()` budget from 256→1024 frames per main loop iteration. **Audio pipeline consistency cleanup:** All codec `begin()` defaults changed from hardcoded 44100 to `AUDIO_SAMPLE_RATE` (48000). I2S slot config now uses `AUDIO_BIT_DEPTH` instead of hardcoded `I2S_DATA_BIT_WIDTH_16BIT`. TAS5825M constructor default updated. `reinitialize()` sentinel changed from 44100 to 0 for proper default detection. |
 | 0.18.0 | 92 | 2026-03-19 | **PCM5102A codec driver:** New `PCM5102ACodec` singleton for TI PCM5102A DAC (GPIO-only control: XSMT mute, FMT, FLT, DEMP). `CODEC_STATUS` protocol command for runtime codec diagnostics. Audio diagnostic DIAG instrumentation (since removed in 0.18.1). |
 | 0.17.0 | 82 | 2026-03-18 | **TAS5825M codec integration:** Switched audio codec from SimpleI2SCodec to TAS5825Codec (TI TAS5825M stereo Class-D amplifier). I2C control on GPIO 8 (SDA) / GPIO 9 (SCL). TAS5825Codec converted to singleton pattern for AudioMixer compatibility. Supply voltage configurable (12V/15V/20V/24V). Added full wiring guide in README. |

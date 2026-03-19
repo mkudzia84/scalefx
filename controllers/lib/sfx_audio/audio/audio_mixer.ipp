@@ -1,9 +1,10 @@
 /**
  * Audio Mixer - Implementation
  * 
- * SPSC Ring Buffer Architecture:
- *   Core 0 (Producer): WAV decode + float mixing → ring buffer
- *   Core 1 (Consumer): ring buffer → I2S DMA
+ * SPSC Ring Buffer Architecture (ESP32-S3):
+ *   Core 1 — Producer Task: WAV decode + SD reads + float mixing → ring buffer
+ *   Core 1 — Consumer Task: ring buffer → I2S DMA (higher priority)
+ *   Core 0: Protocol handling only — uses *Async() API to queue commands
  * 
  * All audio math uses float, leveraging hardware FPU where available.
  * File I/O uses SdCardModule singleton directly.
@@ -155,15 +156,23 @@ template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::shutdown() {
     if (!_initialized) return;
 
+#if SFX_PLATFORM_ESP32
+    // Stop producer task first (it accesses channels and SD)
+    stopProducerTask();
+#endif
+
     // Stop all playback
     stopAll(AudioStopMode::Immediate);
 
     // Close all open files
+    SdCardModule& sd = SdCardModule::instance();
+    sd.lock();
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         if (_channels[i].wav.file) {
             _channels[i].wav.file.close();
         }
     }
+    sd.unlock();
 
     // Stop I2S — set flag BEFORE calling end() so Core 1's consume()
     // sees the flag and stops writing to i2sOutput during teardown
@@ -241,6 +250,8 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     ws.resampleFrac = 0.0f;
 
     // Open the WAV file via SdCardModule singleton
+    // SD mutex protects all file I/O — required when producer runs on
+    // Core 1 while storage operations continue on Core 0.
     SdCardModule& sd = SdCardModule::instance();
     if (!sd.isInitialized()) {
         MIXER_ERROR("Ch%d: SD card not initialized", channel);
@@ -248,18 +259,20 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     }
     sd.lock();
     uint8_t sdErr = sd.openRead(filename, ws.file);
-    sd.unlock();
     if (sdErr != 0) {
+        sd.unlock();
         MIXER_ERROR("Ch%d: Failed to open: %s (err=%d)", channel, filename, sdErr);
         return false;
     }
 
-    // Parse WAV header
+    // Parse WAV header (still under SD lock — reads from file)
     if (!parseWavHeader(ws)) {
-        MIXER_ERROR("Ch%d: Invalid WAV: %s", channel, filename);
         ws.file.close();
+        sd.unlock();
+        MIXER_ERROR("Ch%d: Invalid WAV: %s", channel, filename);
         return false;
     }
+    sd.unlock();
 
     // Configure resampler
     ws.resampleRatio = (float)ws.sampleRate_Hz / (float)AUDIO_SAMPLE_RATE;
@@ -420,7 +433,11 @@ void AudioMixer<TI2S, TCodec>::stop(int channel, AudioStopMode mode) {
             ws.active = false;
             ws.bufLen = 0;
             ws.bufPos = 0;
-            if (ws.file) ws.file.close();
+            if (ws.file) {
+                SdCardModule::instance().lock();
+                ws.file.close();
+                SdCardModule::instance().unlock();
+            }
             _channelPlaying[channel] = false;
             MIXER_LOG("Ch%d: Stopped", channel);
             break;
@@ -710,7 +727,7 @@ bool AudioMixer<TI2S, TCodec>::parseWavHeader(WavState& ws) {
 }
 
 // ============================================================================
-//  WAV BUFFER REFILL (Producer side — Core 0)
+//  WAV BUFFER REFILL (Producer side — Core 1 task on ESP32, Core 0 on Pico)
 // ============================================================================
 
 template<typename TI2S, typename TCodec>
@@ -743,7 +760,10 @@ bool AudioMixer<TI2S, TCodec>::refillWavBuffer(WavState& ws) {
                 }
                 ws.loopCount--;
             }
+            // SD lock for file seek (cross-core safety with storage ops)
+            SdCardModule::instance().lock();
             ws.file.seek(ws.dataStart);
+            SdCardModule::instance().unlock();
             ws.framesRead = 0;
             framesLeft = (int)ws.totalFrames;
         } else {
@@ -764,7 +784,10 @@ bool AudioMixer<TI2S, TCodec>::refillWavBuffer(WavState& ws) {
         framesToRead = bytesToRead / bytesPerFrame;
     }
 
+    // SD lock for file read (cross-core safety with storage ops)
+    SdCardModule::instance().lock();
     int bytesRead = ws.file.read(_sdReadBuf, bytesToRead);
+    SdCardModule::instance().unlock();
     int framesGot = bytesRead / bytesPerFrame;
     ws.framesRead += framesGot;
 
@@ -833,7 +856,7 @@ bool AudioMixer<TI2S, TCodec>::getWavSample(WavState& ws, float& outL, float& ou
 }
 
 // ============================================================================
-//  FLOAT MIXING PIPELINE — PRODUCER (Core 0)
+//  FLOAT MIXING PIPELINE — PRODUCER (Core 1 task on ESP32, Core 0 on Pico)
 // ============================================================================
 
 template<typename TI2S, typename TCodec>
@@ -862,7 +885,11 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
             ws.active = false;
             _channelPlaying[i] = false;
             _channelRemainingMs[i] = 0;
-            if (ws.file) ws.file.close();
+            if (ws.file) {
+                SdCardModule::instance().lock();
+                ws.file.close();
+                SdCardModule::instance().unlock();
+            }
             checkAndPlayNextQueued(i);
             continue;
         }
@@ -877,7 +904,11 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
                 ch.fading = false;
                 ws.active = false;
                 _channelPlaying[i] = false;
-                if (ws.file) ws.file.close();
+                if (ws.file) {
+                    SdCardModule::instance().lock();
+                    ws.file.close();
+                    SdCardModule::instance().unlock();
+                }
                 checkAndPlayNextQueued(i);
                 continue;
             }
@@ -1218,6 +1249,85 @@ void AudioMixer<TI2S, TCodec>::clearQueueAsync(int channel) {
     cmd.channelId = channel;
     queueCommand(cmd);
 }
+
+// ============================================================================
+//  PRODUCER TASK (ESP32 FreeRTOS — runs on Core 1 alongside consumer)
+// ============================================================================
+
+#if SFX_PLATFORM_ESP32
+
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::producerTaskFunc(void* param) {
+    auto& mixer = AudioMixer::instance();
+    MIXER_LOG("Producer task started on core %d (priority %d)",
+              xPortGetCoreID(), uxTaskPriorityGet(nullptr));
+
+    while (mixer._producerRunning.load(std::memory_order_acquire)) {
+        int produced = mixer.produce(RING_FRAMES);
+
+        if (produced == 0) {
+            // Ring full or no channels playing — yield CPU.
+            // 2ms sleep lets the consumer drain ~96 frames of DMA space
+            // before the producer wakes to refill.  When idle (no audio),
+            // this prevents the task from busy-spinning.
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+        // If produced > 0, loop immediately.  The FreeRTOS scheduler will
+        // preempt us when the higher-priority consumer task unblocks from
+        // i2s_channel_write().
+    }
+
+    MIXER_LOG("Producer task exiting");
+    vTaskDelete(nullptr);
+}
+
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::startProducerTask(int core, int priority, int stackSize) {
+    if (_producerRunning.load(std::memory_order_acquire)) return true;
+    if (!_initialized.load(std::memory_order_acquire)) {
+        MIXER_ERROR("startProducerTask() called before begin()");
+        return false;
+    }
+
+    _producerRunning.store(true, std::memory_order_release);
+
+    BaseType_t result = xTaskCreatePinnedToCore(
+        producerTaskFunc,
+        "AudioProducer",
+        stackSize,
+        nullptr,
+        priority,
+        &_producerTaskHandle,
+        core
+    );
+
+    if (result != pdPASS) {
+        _producerRunning.store(false, std::memory_order_release);
+        MIXER_ERROR("Failed to create producer task (err=%d)", result);
+        return false;
+    }
+
+    MIXER_LOG("Producer task created: core=%d priority=%d stack=%d", core, priority, stackSize);
+    return true;
+}
+
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::stopProducerTask() {
+    if (!_producerRunning.load(std::memory_order_acquire)) return;
+
+    MIXER_LOG("Stopping producer task...");
+    _producerRunning.store(false, std::memory_order_release);
+
+    // Wait for task to finish its current iteration and self-delete
+    if (_producerTaskHandle) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        _producerTaskHandle = nullptr;
+    }
+
+    MIXER_LOG("Producer task stopped");
+}
+
+#endif // SFX_PLATFORM_ESP32
 
 
 #endif // SFX_HAS_AUDIO
