@@ -163,6 +163,17 @@ public:
     CommandResult lastCommandResult() const { return _lastCommandResult; }
     ResultQueue& resultQueue() { return _resultQueue; }
 
+    /**
+     * @brief Raw response capture — last non-ACK/NACK packet received
+     *
+     * Populated in handlePacket() for packets that go to onModulePacket()
+     * (STATUS, module-specific responses). Useful for forwarding opaque
+     * response data through a routing layer (e.g., SlaveServer STATUS routing).
+     */
+    uint8_t lastResponseType() const { return _lastResponseType; }
+    const uint8_t* lastResponsePayload() const { return _lastResponsePayload; }
+    size_t lastResponseLen() const { return _lastResponseLen; }
+
 protected:
     // ========================================================================
     // Virtual Hooks — Override in subclasses
@@ -226,6 +237,12 @@ private:
     BusClientReadyCallback _readyCallback;
     BusClientErrorCallback _errorCallback;
     BusClientLogCallback _logCallback;
+
+    // Raw response capture (for routing layers that forward opaque packets)
+    static constexpr size_t RAW_RESPONSE_MAX = 128;  // STATUS payloads are ~40-60 bytes
+    uint8_t _lastResponseType = 0;
+    uint8_t _lastResponsePayload[RAW_RESPONSE_MAX] = {};
+    size_t _lastResponseLen = 0;
 };
 
 #endif // SERIAL_BUS_CLIENT_H

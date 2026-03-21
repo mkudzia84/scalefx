@@ -127,6 +127,17 @@ public:
     void setVolumeDB(float db);
 
     /**
+     * @brief Change supply voltage configuration at runtime.
+     *
+     * Reconfigures the analog gain register to match the new supply voltage.
+     * Safe to call while playing — briefly enters Hi-Z, writes gain, returns to play.
+     *
+     * @param voltage New supply voltage configuration
+     * @return true if successful
+     */
+    bool setSupplyVoltage(TAS5825M_SupplyVoltage voltage);
+
+    /**
      * @brief Clear fault status
      * @return true if successful
      */
@@ -147,6 +158,34 @@ public:
     uint8_t getDeviceControlRegister();
     uint8_t getFaultRegister();
     bool    testI2CConnection();
+
+    /**
+     * @brief Parse a supply voltage string to the enum value.
+     * @param str  "12v", "15v", "20v", or "24v" (case-insensitive)
+     * @param out  Receives the parsed enum value
+     * @return true if valid, false if unrecognized
+     */
+    static bool parseSupplyVoltage(const char* str, TAS5825M_SupplyVoltage& out) {
+        if (!str) return false;
+        if (strcmp(str, "12v") == 0 || strcmp(str, "12V") == 0) { out = TAS5825M_12V; return true; }
+        if (strcmp(str, "15v") == 0 || strcmp(str, "15V") == 0) { out = TAS5825M_15V; return true; }
+        if (strcmp(str, "20v") == 0 || strcmp(str, "20V") == 0) { out = TAS5825M_20V; return true; }
+        if (strcmp(str, "24v") == 0 || strcmp(str, "24V") == 0) { out = TAS5825M_24V; return true; }
+        return false;
+    }
+
+    /**
+     * @brief Convert supply voltage enum to a display string.
+     */
+    static const char* supplyVoltageStr(TAS5825M_SupplyVoltage v) {
+        switch (v) {
+            case TAS5825M_12V: return "12v";
+            case TAS5825M_15V: return "15v";
+            case TAS5825M_20V: return "20v";
+            case TAS5825M_24V: return "24v";
+            default:           return "??v";
+        }
+    }
     
 #if AUDIO_DEBUG
     // Debug methods

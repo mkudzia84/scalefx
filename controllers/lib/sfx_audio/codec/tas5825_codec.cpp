@@ -105,6 +105,43 @@ bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
     return true;
 }
 
+bool TAS5825Codec::setSupplyVoltage(TAS5825M_SupplyVoltage voltage)
+{
+    if (!initialized) {
+        TAS5825_LOG("setSupplyVoltage: not initialized");
+        return false;
+    }
+    if (voltage == supplyVoltage) return true;  // No change needed
+
+    TAS5825_LOG("Changing supply voltage: %dV → %dV",
+                supplyVoltage == TAS5825M_12V ? 12 :
+                supplyVoltage == TAS5825M_15V ? 15 :
+                supplyVoltage == TAS5825M_20V ? 20 : 24,
+                voltage == TAS5825M_12V ? 12 :
+                voltage == TAS5825M_15V ? 15 :
+                voltage == TAS5825M_20V ? 20 : 24);
+
+    // Briefly enter Hi-Z to safely change analog gain
+    selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
+    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_HIZ);
+    SFX_DELAY_MS(2);
+
+    supplyVoltage = voltage;
+    if (!configureAnalogGain()) {
+        TAS5825_LOG("Failed to reconfigure analog gain");
+        // Try to recover to play mode
+        writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_PLAY);
+        return false;
+    }
+
+    // Return to play mode
+    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_PLAY);
+    writeRegister(TAS5825M_REG_FAULT_CLEAR, 0x80);  // Clear any faults from transition
+
+    TAS5825_LOG("Supply voltage reconfigured OK");
+    return true;
+}
+
 bool TAS5825Codec::begin(uint32_t sample_rate)
 {
     TAS5825_LOG("Error: Must call begin(Wire, sda, scl) with I2C parameters");

@@ -19,18 +19,6 @@
 
 using namespace CoreProtocol;
 
-/**
- * @brief Poll a BusClient until isServerReady() or timeout.
- */
-static bool awaitInitReady(BusClient& client, uint32_t timeout_ms = 3000) {
-    unsigned long start = millis();
-    while (!client.isServerReady() && (millis() - start < timeout_ms)) {
-        client.process();
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    return client.isServerReady();
-}
-
 // ============================================================================
 // tryProcess Override — Handle routing subcmds and management commands
 // ============================================================================
@@ -41,7 +29,13 @@ CommandHandleResult SlaveServer::tryProcess(uint8_t type, const uint8_t* payload
         return routeToSlave(type, payload, len);
     }
 
-    // 2. Fall through to BusServer base for management commands (0x80-0x83)
+    // 2. Check slave info query (0xAE)
+    if (type == HubFxPacket::SLAVE_INFO) {
+        handleSlaveInfo(payload, len);
+        return CommandHandleResult::Handled;
+    }
+
+    // 3. Fall through to BusServer base for management commands (0x80-0x83)
     return BusServer::tryProcess(type, payload, len);
 }
 
@@ -93,6 +87,11 @@ CommandHandleResult SlaveServer::routeToSlave(uint8_t type, const uint8_t* paylo
         return CommandHandleResult::Handled;
     }
 
+    // Core-range subcmds (0xF0+) need special handling
+    if (subcmd >= CorePacket::INIT) {
+        return routeCoreToSlave(subcmd, client, target);
+    }
+
     // Forward the subcmd + payload to the slave as a normal command
     SLAVE_LOG("Route → %s subcmd=0x%02X len=%d", slaveTypeName(target), subcmd, slavePayloadLen);
     CommandResult result = client->sendCommand(subcmd, slavePayload, slavePayloadLen);
@@ -105,6 +104,73 @@ CommandHandleResult SlaveServer::routeToSlave(uint8_t type, const uint8_t* paylo
     }
 
     return CommandHandleResult::Handled;
+}
+
+// ============================================================================
+// Core Command Routing to Slaves
+// ============================================================================
+
+CommandHandleResult SlaveServer::routeCoreToSlave(uint8_t coreCmd, BusClient* client, SlaveType target) {
+    SLAVE_LOG("CoreRoute → %s cmd=0x%02X", slaveTypeName(target), coreCmd);
+
+    switch (coreCmd) {
+        // --- Fire-and-forget commands (slave does NOT ACK) ---
+        case CorePacket::REBOOT:
+            client->sendReboot();
+            registry().setReady(target, false);
+            sendAck();
+            return CommandHandleResult::Handled;
+
+        case CorePacket::BOOTSEL:
+            client->sendBootsel();
+            registry().setReady(target, false);
+            sendAck();
+            return CommandHandleResult::Handled;
+
+        // --- ACK-based commands (slave sends ACK/NACK) ---
+        case CorePacket::SHUTDOWN: {
+            CommandResult result = client->sendCommand(CorePacket::SHUTDOWN, nullptr, 0);
+            if (result.success) {
+                registry().setReady(target, false);
+                sendAck();
+            } else {
+                sendNack(result.errorCode, result.errorMessage);
+            }
+            return CommandHandleResult::Handled;
+        }
+
+        case CorePacket::KEEPALIVE: {
+            CommandResult result = client->sendCommand(CorePacket::KEEPALIVE, nullptr, 0);
+            if (result.success) {
+                sendAck();
+            } else {
+                sendNack(result.errorCode, result.errorMessage);
+            }
+            return CommandHandleResult::Handled;
+        }
+
+        // --- STATUS_REQ: forward raw STATUS response from slave to CLI ---
+        case CorePacket::STATUS_REQ: {
+            CommandResult result = client->sendCommand(CorePacket::STATUS_REQ, nullptr, 0);
+            if (result.success) {
+                // Forward the raw STATUS packet data from the slave
+                if (client->lastResponseType() == CorePacket::STATUS && client->lastResponseLen() > 0) {
+                    sendRawPacket(CorePacket::STATUS, currentTag(),
+                                  client->lastResponsePayload(), client->lastResponseLen());
+                } else {
+                    sendAck();  // Fallback if no STATUS data captured
+                }
+            } else {
+                sendNack(result.errorCode, result.errorMessage);
+            }
+            return CommandHandleResult::Handled;
+        }
+
+        default:
+            SLAVE_LOG("CoreRoute %s: unsupported cmd 0x%02X", slaveTypeName(target), coreCmd);
+            sendNack(SerialError::NOT_SUPPORTED);
+            return CommandHandleResult::Handled;
+    }
 }
 
 // ============================================================================
@@ -181,7 +247,7 @@ void SlaveServer::handleSlaveInit(const uint8_t* payload, size_t len) {
     }
 
     // Wait for INIT_READY (up to 3s)
-    if (awaitInitReady(*slave->client)) {
+    if (awaitSlaveReady(*slave->client)) {
         registry().setReady(type, true);
         SLAVE_LOG("SLAVE_INIT OK: %s → %s", slaveTypeName(type), slave->client->serverName());
         sendAck();
@@ -189,4 +255,83 @@ void SlaveServer::handleSlaveInit(const uint8_t* payload, size_t len) {
         SLAVE_LOG("SLAVE_INIT TIMEOUT: %s", slaveTypeName(type));
         sendNack(HubFxError::SLAVE_INIT_FAILED);
     }
+}
+
+// ============================================================================
+// Slave Info Query — Return cached boardInfo for a slave
+// ============================================================================
+
+void SlaveServer::handleSlaveInfo(const uint8_t* payload, size_t len) {
+    if (len < 1) {
+        sendNack(SerialError::MISSING_PARAMETER);
+        return;
+    }
+
+    SlaveType type = (SlaveType)payload[0];
+    if (type == SlaveType::Unknown || (uint8_t)type >= (uint8_t)SlaveType::COUNT) {
+        sendNack(SerialError::INVALID_PARAM);
+        return;
+    }
+
+    SlaveEntry* slave = registry().find(type);
+    if (!slave) {
+        sendNack(HubFxError::SLAVE_NOT_FOUND);
+        return;
+    }
+
+    // Build SLAVE_INFO_RESP from cached BusClient boardInfo
+    // Format: [slaveType:u8][ready:u8][connected:u8]
+    //         [nameLen:u8][name][verLen:u8][ver][platLen:u8][plat]
+    //         [cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]
+    uint8_t buf[128];
+    size_t pos = 0;
+
+    buf[pos++] = (uint8_t)type;
+    buf[pos++] = slave->ready ? 1 : 0;
+    buf[pos++] = slave->connected ? 1 : 0;
+
+    if (slave->client && slave->client->isServerReady()) {
+        const BusClientBoardInfo& info = slave->client->boardInfo();
+
+        // Name (length-prefixed)
+        uint8_t nameLen = (uint8_t)strlen(info.deviceName);
+        buf[pos++] = nameLen;
+        if (nameLen > 0) {
+            memcpy(&buf[pos], info.deviceName, nameLen);
+            pos += nameLen;
+        }
+
+        // Version (length-prefixed)
+        uint8_t verLen = (uint8_t)strlen(info.firmwareVersion);
+        buf[pos++] = verLen;
+        if (verLen > 0) {
+            memcpy(&buf[pos], info.firmwareVersion, verLen);
+            pos += verLen;
+        }
+
+        // Platform (length-prefixed)
+        uint8_t platLen = (uint8_t)strlen(info.platform);
+        buf[pos++] = platLen;
+        if (platLen > 0) {
+            memcpy(&buf[pos], info.platform, platLen);
+            pos += platLen;
+        }
+
+        // CPU MHz, free RAM, build number (u32 LE)
+        CoreProtocol::putU32LE(&buf[pos], info.cpuFrequencyMHz); pos += 4;
+        CoreProtocol::putU32LE(&buf[pos], info.freeRamBytes);    pos += 4;
+        CoreProtocol::putU32LE(&buf[pos], info.buildNumber);     pos += 4;
+    } else {
+        // No board info available — zero-length strings and zeroed fields
+        buf[pos++] = 0;  // nameLen
+        buf[pos++] = 0;  // verLen
+        buf[pos++] = 0;  // platLen
+        CoreProtocol::putU32LE(&buf[pos], 0); pos += 4;  // cpuMHz
+        CoreProtocol::putU32LE(&buf[pos], 0); pos += 4;  // freeRam
+        CoreProtocol::putU32LE(&buf[pos], 0); pos += 4;  // buildNum
+    }
+
+    SLAVE_LOG("SLAVE_INFO_RESP: %s ready=%d connected=%d %d bytes",
+              slaveTypeName(type), slave->ready, slave->connected, pos);
+    sendRawPacket(HubFxPacket::SLAVE_INFO_RESP, currentTag(), buf, pos);
 }

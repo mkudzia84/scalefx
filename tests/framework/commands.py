@@ -1162,6 +1162,22 @@ class HubFxCommands(CommandBuilder):
         return build_packet(HubFxPacket.SLAVE_STATUS)
 
     @staticmethod
+    def slave_info(slave_type: int) -> bytes:
+        """
+        Request cached board info for a specific slave controller.
+
+        Returns SLAVE_INFO_RESP with format:
+          [slaveType:u8][ready:u8][connected:u8]
+          [nameLen:u8][name:str][verLen:u8][ver:str][platLen:u8][plat:str]
+          [cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]
+
+        Args:
+            slave_type: Slave type (1=GunFX, 2=LightFX, 3=GearControl)
+        """
+        _warn_range("slave_type", slave_type, 1, 3)
+        return build_packet(HubFxPacket.SLAVE_INFO, bytes([slave_type]))
+
+    @staticmethod
     def usb_devices() -> bytes:
         """
         Request USB host device list.
@@ -1174,6 +1190,19 @@ class HubFxCommands(CommandBuilder):
             [addr:u8][vid:u16LE][pid:u16LE][state:u8][slaveType:u8]
         """
         return build_packet(HubFxPacket.USB_DEVICES_REQ)
+
+    @staticmethod
+    def usb_reset_bus() -> bytes:
+        """
+        Power-cycle the USB root port to force re-enumeration.
+
+        This disconnects the hub and all downstream devices momentarily,
+        then re-enumerates everything.  Useful when a device fails to
+        enumerate after hot-plug (ext_port driver port-disable bug).
+
+        Returns ACK on success.
+        """
+        return build_packet(HubFxPacket.USB_RESET_BUS)
 
     # =========================================================================
     # Audio Control

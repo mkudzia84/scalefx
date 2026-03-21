@@ -35,6 +35,7 @@ Architecture:
 import sys
 import os
 import argparse
+import serial
 import threading
 import time
 from queue import Queue, Empty
@@ -204,6 +205,47 @@ class InteractiveCLI(OutputMixin):
         if self._ui:
             self._ui.exit()
     
+    def _cmd_reconnect(self, args: List[str]):
+        """Reconnect to the current serial port.
+        
+        Closes the serial port, reopens it, drains stale data, then
+        re-identifies and re-initializes the controller. This recovers
+        from COBS framing corruption, unresponsive connections, or
+        serial port glitches without restarting the CLI.
+        """
+        if not self.conn:
+            self.print_error("Not connected. Use 'connect' first.")
+            return
+        
+        port = self.conn.port
+        self.print_info(f"Reconnecting to {port}...")
+        
+        # Stop listener (already stopped by _process_command, but be safe)
+        self._stop_listener()
+        
+        # Reconnect at serial level
+        if self.conn.reconnect():
+            self.print_ok(f"Serial port reopened on {port}")
+            # Re-register async callback
+            self.conn.add_callback(self._print_async_message)
+            self.core_handler.set_connection(self.conn)
+            self._sync_connection()
+            # Re-identify and re-init
+            self.core_handler._identify_and_init()
+            self._sync_connection()
+            if self.conn.is_initialized:
+                self.print_ok(f"Reconnected: {self.controller_name} v{self.controller_version}")
+                # Re-fetch HubFX features
+                if self.controller_type == ControllerType.HUBFX:
+                    self._refresh_hubfx_features()
+            else:
+                self.print_error("Reconnected but INIT failed — board may need power cycle")
+        else:
+            self.print_error(f"Failed to reopen {port}")
+            self.conn = None
+            self.controller_type = None
+            self._sync_connection()
+    
     # =========================================================================
     # Async Listener
     # =========================================================================
@@ -239,8 +281,20 @@ class InteractiveCLI(OutputMixin):
                 buf_size = len(self.conn._rx_buffer) if self.conn else 0
                 print(f"  {Fore.MAGENTA}[listener] stopped (conn._rx_buffer={buf_size}B){Style.RESET_ALL}")
     
+    # Connection watchdog — seconds without any valid packet before warning
+    WATCHDOG_TIMEOUT = 20.0
+    # Max listener rx_buffer size — flush if exceeded (COBS corruption recovery)
+    MAX_RX_BUFFER = 16384  # 16KB
+
     def _listener_loop(self):
-        """Background thread: read async packets from serial and send keepalives."""
+        """Background thread: read async packets from serial and send keepalives.
+        
+        Includes connection health monitoring: tracks the last time a valid
+        packet was received. If no valid packet arrives within WATCHDOG_TIMEOUT
+        seconds, prints a warning suggesting 'reconnect'. Also caps the
+        rx_buffer to MAX_RX_BUFFER bytes to recover from COBS framing
+        corruption (e.g., raw ESP-IDF text mixed into the binary stream).
+        """
         debug = self._debug
         # Take any buffered data from the connection to maintain continuity.
         # Without this, partial packets left in conn._rx_buffer after a command
@@ -257,6 +311,13 @@ class InteractiveCLI(OutputMixin):
         last_keepalive = time.monotonic()
         keepalive_packet = build_packet(CorePacket.KEEPALIVE)
         
+        # Connection health tracking
+        last_valid_rx = time.monotonic()
+        watchdog_warned = False
+        serial_error_warned = False    # Show serial error warning only once
+        consecutive_errors = 0
+        SERIAL_ERROR_PAUSE = 50       # After this many errors, pause 1s
+        
         while not self._listener_stop.is_set():
             if not self.conn or not self.conn.is_connected or not self.conn._serial:
                 time.sleep(0.1)
@@ -267,6 +328,12 @@ class InteractiveCLI(OutputMixin):
                 if ser.in_waiting:
                     data = ser.read(ser.in_waiting)
                     rx_buffer.extend(data)
+                    if consecutive_errors > 0:
+                        if serial_error_warned:
+                            print(f"  {Fore.GREEN}✓ Serial connection recovered after "
+                                  f"{consecutive_errors} errors.{Style.RESET_ALL}")
+                        consecutive_errors = 0
+                        serial_error_warned = False
                 else:
                     # Send keepalive if interval elapsed and controller is initialized
                     now = time.monotonic()
@@ -281,11 +348,53 @@ class InteractiveCLI(OutputMixin):
                                 print(f"  {Fore.MAGENTA}[listener] keepalive sent{Style.RESET_ALL}")
                         except Exception:
                             pass  # Best-effort
+
+                    # ── Connection watchdog ──
+                    # If no valid packet for WATCHDOG_TIMEOUT, warn user.
+                    if (self.conn.is_initialized
+                            and not watchdog_warned
+                            and now - last_valid_rx > self.WATCHDOG_TIMEOUT):
+                        print(f"\n  {Fore.YELLOW}⚠ No response from board for "
+                              f"{self.WATCHDOG_TIMEOUT:.0f}s — connection may be lost.{Style.RESET_ALL}")
+                        print(f"  {Fore.YELLOW}  Type 'reconnect' to re-establish, "
+                              f"or 'status' to test.{Style.RESET_ALL}")
+                        watchdog_warned = True
+
                     time.sleep(0.02)
                     continue
-            except Exception:
+            except serial.SerialException as e:
+                consecutive_errors += 1
+                if not serial_error_warned and consecutive_errors >= 10:
+                    err_msg = str(e).split('\n')[0][:80] if str(e) else "unknown"
+                    print(f"\n  {Fore.RED}⚠ Serial port errors ({err_msg}). "
+                          f"Type 'reconnect' to recover.{Style.RESET_ALL}")
+                    serial_error_warned = True
+                if consecutive_errors >= SERIAL_ERROR_PAUSE:
+                    time.sleep(1.0)
+                    consecutive_errors = 0
+                else:
+                    time.sleep(0.1)
+                continue
+            except Exception as e:
+                consecutive_errors += 1
+                if not serial_error_warned and consecutive_errors >= 10:
+                    print(f"\n  {Fore.RED}⚠ Serial errors: {type(e).__name__}. "
+                          f"Type 'reconnect' to recover.{Style.RESET_ALL}")
+                    serial_error_warned = True
                 time.sleep(0.1)
                 continue
+            
+            # ── rx_buffer overflow protection ──
+            # If the buffer grows beyond MAX_RX_BUFFER without a valid 0x00
+            # delimiter, the stream is likely corrupted (e.g., raw ESP-IDF
+            # text mixed into the COBS binary stream). Discard the oldest
+            # data keeping only the tail in case a valid packet straddles
+            # the boundary.
+            if len(rx_buffer) > self.MAX_RX_BUFFER and 0x00 not in rx_buffer:
+                discard = len(rx_buffer) - 4096  # Keep last 4KB
+                rx_buffer = rx_buffer[discard:]
+                if debug:
+                    print(f"  {Fore.RED}[listener] rx_buffer overflow ({discard}B discarded){Style.RESET_ALL}")
             
             # Process complete packets (0x00 delimited)
             while 0x00 in rx_buffer:
@@ -304,6 +413,8 @@ class InteractiveCLI(OutputMixin):
                     continue
                 
                 ptype, tag, payload = parsed
+                last_valid_rx = time.monotonic()
+                watchdog_warned = False  # Reset watchdog on any valid packet
                 
                 # Silently consume all ACKs in the listener — they are either
                 # keepalive responses or stale command ACKs, not user-relevant
@@ -459,6 +570,17 @@ class InteractiveCLI(OutputMixin):
         
         if cmd == 'help' or cmd == '?':
             self._cmd_help(args, available)
+        elif cmd == 'reconnect':
+            # Special-case: reconnect needs direct CLI access (listener, sync).
+            # Stop listener, reconnect, restart listener — same lifecycle as
+            # other commands but with CLI-level reconnection logic.
+            self._stop_listener()
+            self._cmd_reconnect(args)
+            self._sync_connection()
+            if self._ui:
+                self._ui.set_prompt(self.prompt)
+            if self.conn and self.conn.is_connected:
+                self._start_listener()
         elif cmd in available:
             handler, info = available[cmd]
             

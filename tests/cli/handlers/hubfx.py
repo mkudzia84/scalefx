@@ -23,7 +23,7 @@ from typing import List, Dict, Tuple, Callable, Optional
 
 from tests.framework import (
     HubFxCommands, HubFxPacket, HubFxError, HubFxAudio, HubFxStorage, EngineState, SlaveType,
-    CoreError, StreamPacket,
+    CorePacket, CoreError, StreamPacket,
 )
 from tests.framework.packets import known_device_name
 from tests.framework.protocol import read_u16_le, read_u32_le, crc16_ccitt
@@ -159,6 +159,10 @@ class HubFxCommandHandler(CommandHandlerBase):
             'hub.usb': (self.cmd_usb_devices, CommandInfo(
                 'hub.usb', 'hub.usb',
                 'List USB host devices (CDC ports, VID/PID, state)',
+                requires_init=True, controller=ControllerType.HUBFX, group='Hub Management')),
+            'hub.usb.reset': (self.cmd_usb_reset, CommandInfo(
+                'hub.usb.reset', 'hub.usb.reset',
+                'Power-cycle USB root port (re-enumerates hub + all devices)',
                 requires_init=True, controller=ControllerType.HUBFX, group='Hub Management')),
 
             # =================================================================
@@ -307,6 +311,38 @@ class HubFxCommandHandler(CommandHandlerBase):
                     name, f'slave {info.usage}', info.description, group=group)
                 registry[name] = (method, slave_info)
 
+        # Add core board commands for each slave type
+        SLAVE_DEFS = [
+            ('gfx', SlaveType.GUNFX, HubFxCommands.slave_route_gunfx, GFX),
+            ('lfx', SlaveType.LIGHTFX, HubFxCommands.slave_route_lightfx, LFX),
+            ('gc', SlaveType.GEARCONTROL, HubFxCommands.slave_route_gearcontrol, GC),
+        ]
+        for prefix, stype, route_fn, group in SLAVE_DEFS:
+            registry[f'{prefix}.info'] = (
+                lambda args, st=stype: self._slave_core_info(args, st),
+                CommandInfo(f'{prefix}.info', f'slave {prefix}.info',
+                            'Show slave board info (cached)', group=group))
+            registry[f'{prefix}.init'] = (
+                lambda args, st=stype: self._slave_core_init(args, st),
+                CommandInfo(f'{prefix}.init', f'slave {prefix}.init',
+                            'Re-initialize slave controller', group=group))
+            registry[f'{prefix}.status'] = (
+                lambda args, rfn=route_fn, st=stype: self._slave_core_status(args, rfn, st),
+                CommandInfo(f'{prefix}.status', f'slave {prefix}.status',
+                            'Request slave status (forwarded)', group=group))
+            registry[f'{prefix}.shutdown'] = (
+                lambda args, rfn=route_fn: self._slave_core_route(args, rfn, CorePacket.SHUTDOWN, 'Shutdown sent'),
+                CommandInfo(f'{prefix}.shutdown', f'slave {prefix}.shutdown',
+                            'Shutdown slave controller', group=group))
+            registry[f'{prefix}.keepalive'] = (
+                lambda args, rfn=route_fn: self._slave_core_route(args, rfn, CorePacket.KEEPALIVE, 'Keepalive sent'),
+                CommandInfo(f'{prefix}.keepalive', f'slave {prefix}.keepalive',
+                            'Send keepalive to slave', group=group))
+            registry[f'{prefix}.reboot'] = (
+                lambda args, rfn=route_fn: self._slave_core_route(args, rfn, CorePacket.REBOOT, 'Reboot sent (no ACK from slave)'),
+                CommandInfo(f'{prefix}.reboot', f'slave {prefix}.reboot',
+                            'Reboot slave controller', group=group))
+
         return registry
 
     def cmd_slave(self, args: List[str]):
@@ -336,6 +372,137 @@ class HubFxCommandHandler(CommandHandlerBase):
             else:
                 self.print_error(f"Unknown slave command: {subcmd}")
                 self.print_info("  Prefixes: gfx.* (GunFX), lfx.* (LightFX), gc.* (GearControl)")
+
+    # =========================================================================
+    # Slave Core Commands (routed via SLAVE_ROUTE or SLAVE_INFO)
+    # =========================================================================
+
+    def _slave_core_route(self, args: List[str], route_fn: Callable, core_cmd: int, ok_msg: str):
+        """Route a core command to a slave via SLAVE_ROUTE_* subcmd pattern."""
+        if not self._require_init():
+            return
+        packet = route_fn(core_cmd)
+        success, response = self.conn.send_expect_ack(packet)
+        if success:
+            self.print_ok(ok_msg)
+        else:
+            self._print_ack_response(response)
+
+    def _slave_core_status(self, args: List[str], route_fn: Callable, slave_type: int):
+        """Request and display slave status via SLAVE_ROUTE_* STATUS_REQ.
+
+        Hub forwards the raw STATUS packet from the slave, so we parse it
+        the same way as a directly-connected controller's status response.
+        """
+        if not self._require_init():
+            return
+        # Map slave type to controller_type string for module-specific parsing
+        _TYPE_MAP = {
+            SlaveType.GUNFX: 'gunfx',
+            SlaveType.LIGHTFX: 'lightfx',
+            SlaveType.GEARCONTROL: 'gearcontrol',
+        }
+        packet = route_fn(CorePacket.STATUS_REQ)
+        response = self.conn.send_and_wait(packet, timeout=3.0)
+        if response is None:
+            self.print_error("No response (timeout)")
+            return
+        if response.is_nack:
+            self._print_ack_response(response)
+            return
+        if response.packet_type == CorePacket.STATUS:
+            self.print_ok(f"{SlaveType.name(slave_type)} STATUS")
+            parsers.parse_status_payload(response.payload, _TYPE_MAP.get(slave_type))
+        elif response.is_ack:
+            self.print_ok("Status OK (no data — legacy hub firmware?)")
+        else:
+            pname = parsers.packet_type_name(response.packet_type)
+            self.print_info(f"Unexpected response: {pname}")
+            if response.payload:
+                parsers.parse_generic_payload(response.payload)
+
+    def _slave_core_init(self, args: List[str], slave_type: int):
+        """Re-initialize a slave controller via SLAVE_INIT."""
+        if not self._require_init():
+            return
+        packet = HubFxCommands.slave_init(slave_type)
+        success, response = self.conn.send_expect_ack(packet, timeout=5.0)
+        if success:
+            self.print_ok(f"{SlaveType.name(slave_type)} initialized")
+        else:
+            self._print_ack_response(response)
+
+    def _slave_core_info(self, args: List[str], slave_type: int):
+        """Show cached board info for a slave via SLAVE_INFO."""
+        if not self._require_init():
+            return
+        packet = HubFxCommands.slave_info(slave_type)
+        response = self.conn.send_and_wait(packet)
+
+        if response is None:
+            self.print_error("No response (timeout)")
+            return
+
+        if response.is_nack:
+            code = response.error_code
+            name = HubFxError.name(code)
+            self.print_error(f"NACK: {name} (0x{code:02X})")
+            return
+
+        if response.packet_type == HubFxPacket.SLAVE_INFO_RESP:
+            self._parse_slave_info(response.payload)
+        else:
+            self.print_error(f"Unexpected response: 0x{response.packet_type:02X}")
+
+    def _parse_slave_info(self, payload: bytes):
+        """Parse and display SLAVE_INFO_RESP payload."""
+        if len(payload) < 3:
+            self.print_error("Slave info response too short")
+            return
+
+        pos = 0
+        stype = payload[pos]; pos += 1
+        ready = payload[pos]; pos += 1
+        connected = payload[pos]; pos += 1
+
+        type_name = SlaveType.name(stype)
+        status_color = Fore.GREEN if ready else (Fore.YELLOW if connected else Fore.RED)
+        status_text = "ready" if ready else ("connected" if connected else "disconnected")
+
+        # Length-prefixed strings: name, version, platform
+        def read_str():
+            nonlocal pos
+            if pos >= len(payload):
+                return ""
+            slen = payload[pos]; pos += 1
+            if slen == 0 or pos + slen > len(payload):
+                return ""
+            s = payload[pos:pos + slen].decode('utf-8', errors='replace')
+            pos += slen
+            return s
+
+        name = read_str()
+        version = read_str()
+        platform = read_str()
+
+        # u32 LE fields
+        cpu_mhz = read_u32_le(payload, pos) if pos + 4 <= len(payload) else 0; pos += 4
+        free_ram = read_u32_le(payload, pos) if pos + 4 <= len(payload) else 0; pos += 4
+        build_num = read_u32_le(payload, pos) if pos + 4 <= len(payload) else 0; pos += 4
+
+        print(f"\n  {Fore.YELLOW}{type_name} Board Info:{Style.RESET_ALL}")
+        print(f"    Status:    {status_color}{status_text}{Style.RESET_ALL}")
+        if name:
+            print(f"    Name:      {name}")
+        if version:
+            print(f"    Version:   {version} (build {build_num})")
+        if platform:
+            print(f"    Platform:  {platform}")
+        if cpu_mhz:
+            print(f"    CPU:       {cpu_mhz} MHz")
+        if free_ram:
+            print(f"    Free RAM:  {free_ram:,} bytes")
+        print()
 
     # =========================================================================
     # Hub Management Commands
@@ -529,6 +696,24 @@ class HubFxCommandHandler(CommandHandlerBase):
                   f"{state_color}{state_text}{Style.RESET_ALL}{slave_text}{name_text}")
 
         print()
+
+    def cmd_usb_reset(self, args: List[str]):
+        """Power-cycle USB root port to re-enumerate all devices."""
+        if not self._require_init():
+            return
+
+        self.print_info("Power-cycling USB root port...")
+        packet = HubFxCommands.usb_reset_bus()
+        success, response = self.conn.send_expect_ack(packet, timeout=10.0)
+
+        if success:
+            self.print_ok("USB bus reset — devices will re-enumerate")
+        elif response is not None:
+            code = response.error_code
+            name = HubFxError.name(code)
+            self.print_error(f"USB reset failed: {name} (0x{code:02X})")
+        else:
+            self.print_error("No response (timeout)")
 
     # =========================================================================
     # Audio Control Commands

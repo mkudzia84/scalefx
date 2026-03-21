@@ -225,6 +225,25 @@ public:
      */
     uint32_t overwrittenCount() const { return _overwritten.load(std::memory_order_acquire); }
 
+#ifdef ESP32
+    /**
+     * @brief Redirect ESP-IDF ESP_LOGx() output into DiagLog ring buffer
+     *
+     * Installs a custom vprintf function via esp_log_set_vprintf() that
+     * intercepts all ESP_LOGE/W/I/D/V output and feeds it into the ring
+     * buffer as proper COBS-framed LOG_MESSAGE packets. This prevents
+     * raw text from corrupting the binary COBS protocol on UART0.
+     *
+     * Must be called AFTER begin() (needs serial and mutex initialized).
+     * The redirect is permanent — there is no restore method.
+     *
+     * ESP-IDF log format: "X (timestamp) tag: message\n"
+     * where X is E/W/I/D/V. The callback parses X to map to DiagLevel,
+     * strips the trailing newline, and ingests the full line.
+     */
+    void captureEspLog();
+#endif
+
 private:
     DiagLog() = default;
     ~DiagLog() = default;

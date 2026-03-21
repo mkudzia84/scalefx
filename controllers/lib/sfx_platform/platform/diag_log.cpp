@@ -109,4 +109,62 @@ uint16_t DiagLog::sendHistory() {
     return sent;
 }
 
+// ============================================================================
+// ESP-IDF Log Capture — Redirect ESP_LOGx into DiagLog ring buffer
+// ============================================================================
+
+#ifdef ESP32
+#include <esp_log.h>
+
+/**
+ * @brief Custom vprintf callback installed by captureEspLog().
+ *
+ * ESP-IDF formats log output as: "X (timestamp) tag: message\n"
+ * where X = E/W/I/D/V. We parse the first character to determine
+ * the DiagLevel, format the full string, strip trailing newline,
+ * and ingest into the ring buffer.
+ *
+ * Special care:
+ * - This runs on whatever core called ESP_LOGx (could be Core 0 or 1)
+ * - ingest() is mutex-protected, so it's safe cross-core
+ * - Messages before DiagLog::begin() are silently dropped (ingest checks _serial)
+ * - Output is NOT echoed to UART0 — that's the whole point
+ */
+static int diagLogVprintf(const char* fmt, va_list args) {
+    // Format into a local buffer
+    char buf[160];  // ESP-IDF messages are typically <120 chars
+    int len = vsnprintf(buf, sizeof(buf), fmt, args);
+    if (len <= 0) return 0;
+    if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
+
+    // Strip trailing newline(s)
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+        buf[--len] = '\0';
+    }
+    if (len == 0) return 0;
+
+    // Parse log level from first character (ESP-IDF format: "X (ts) tag: msg")
+    uint8_t level = DiagLevel::INFO;
+    switch (buf[0]) {
+        case 'E': level = DiagLevel::ERR;   break;
+        case 'W': level = DiagLevel::WARN;  break;
+        case 'I': level = DiagLevel::INFO;  break;
+        case 'D': level = DiagLevel::DEBUG; break;
+        case 'V': level = DiagLevel::DEBUG; break;  // Verbose → DEBUG
+    }
+
+    // Prefix with [IDF] to distinguish from SFX_LOG_* messages
+    char tagged[172];
+    snprintf(tagged, sizeof(tagged), "[IDF] %s", buf);
+
+    DiagLog::instance().ingest(level, tagged);
+    return len;
+}
+
+void DiagLog::captureEspLog() {
+    esp_log_set_vprintf(diagLogVprintf);
+}
+
+#endif // ESP32
+
 #endif // SFX_ENABLE_DIAG_LOG

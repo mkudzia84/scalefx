@@ -49,7 +49,7 @@ Handler_Pattern:
   base_class: "CommandHandlerBase (from base.py)"
   registration: "Handlers registered in interactive.py constructor"
   command_routing: "Each handler returns dict of {name: (method, CommandInfo)}"
-  controller_filtering: "Commands filtered by ControllerType after INIT_READY"
+  controller_filtering: "Commands filtered by ControllerType after IDENTIFY/INIT_READY"
   packet_wrapper: "Optional callable on CommandHandlerBase that wraps packets before sending"
   send_helper: "_send_ack(packet, ok_msg, timeout=None) — unified send+wrap+error handling"
 
@@ -85,9 +85,15 @@ Command_Categories:
     examples: ["audio.play", "engine.start", "slave gfx.trigger on 100"]
 
 Dynamic_Detection:
-  trigger: "INIT_READY response received"
-  location: "handlers/core.py"
-  method: "Parse device name, set ControllerType"
+  trigger: "IDENTIFY response on connect (or INIT_READY fallback)"
+  location: "handlers/core.py → _identify_and_init()"
+  method: "Send IDENTIFY → parse device name → set ControllerType"
+  flow:
+    - "1. Send IDENTIFY (0xFE) — no state change on device"
+    - "2. Parse board name, detect controller type"
+    - "3. HubFX (autonomous hub): mark initialized, skip INIT"
+    - "4. Slave controllers: send INIT to activate hardware"
+    - "5. Legacy boards (no IDENTIFY): fall back to INIT"
   result: "Controller-specific handler's commands appear in help"
 ```
 

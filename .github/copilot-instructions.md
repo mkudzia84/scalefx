@@ -597,7 +597,7 @@ See `controllers/lib/sfx_platform/platform/sfx_platform.h` for the full abstract
 2. **No bug fixes** in `controllers/hubfx/pico/` — unless explicitly requested by the user for hardware compatibility
 3. **Reference only** — when implementing features in the ESP32-S3 variant, consult the Pico implementation for protocol patterns and domain logic, then adapt to ESP-IDF/FreeRTOS
 4. **Shared libraries are shared** — changes to `controllers/lib/` that support HubFX ESP32-S3 ARE allowed and expected (with platform guards via `sfx_platform.h`)
-5. **Protocol compatibility** — the ESP32-S3 variant uses the same HubFX packet types (0x80-0xAC) and wire format as the Pico variant. Protocol definitions in `hubfx/hubfx.h` are shared.
+5. **Protocol compatibility** — the ESP32-S3 variant uses the same HubFX packet types (0x80-0xAF) and wire format as the Pico variant. Protocol definitions in `hubfx/hubfx.h` are shared.
 6. **When asked to "work on HubFX"** — always target `controllers/hubfx/esp32s3/` unless the user explicitly says "HubFX Pico"
 
 ### 18. Compile-Time Dispatch — Policy-Based Templates (PREFERRED)
@@ -824,6 +824,11 @@ STATUS response = 20-byte core header `[counter:u32][uptime:u32][freeRam:u32][la
 
 INIT_READY payload = length-prefixed binary: `[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]`
 
+IDENTIFY (0xFE) returns the same payload as INIT_READY but without triggering init callbacks or state changes. The CLI uses IDENTIFY on connect to discover the board type:
+- **HubFX** (auto-initializes on boot): IDENTIFY only — no INIT sent
+- **Slave controllers**: IDENTIFY to detect type, then INIT to activate hardware
+- **Fallback**: if IDENTIFY fails, CLI falls back to INIT (for legacy firmware)
+
 See `controllers/lib/sfx_serial/serial/PROTOCOL.md` for full wire format.
 
 ### Python Test Framework (`tests/`)
@@ -864,10 +869,10 @@ Query commands are excluded from slave registry since SLAVE_ROUTE only forwards 
 | 0x30-0x3F | Reserved | - | Future expansion |
 | 0x40-0x5F | LightFX | Used | LED, servo, power |
 | 0x60-0x7F | GearControl | Used | Gear, servo, yaw |
-| 0x80-0xAC | HubFX | Used | Slaves, audio, engine, config (0x90-0x92, 0xAC), SD, flash, files, USB diag, tree |
+| 0x80-0xAF | HubFX | Used | Slaves, audio, engine, config (0x90-0x92, 0xAC), SD, flash, files, USB diag, USB reset, tree, slave info |
 | 0xA4-0xA6 | Streaming | Used | STREAM_BEGIN/DATA/END (`core/stream.h`) |
-| 0xAD-0xEF | Available | Free | New controllers |
-| 0xF0-0xFF | Core | Reserved | INIT, ACK, NACK, REBOOT, LOG_MESSAGE (0xFD), etc. |
+| 0xB0-0xEF | Available | Free | New controllers |
+| 0xF0-0xFF | Core | Reserved | INIT, ACK, NACK, REBOOT, IDENTIFY (0xFE), LOG_MESSAGE (0xFD), DIAG_HISTORY (0xFF) |
 
 ## Platform-Specific Notes
 

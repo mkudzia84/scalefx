@@ -42,11 +42,12 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.21.2"
-#define BUILD_NUMBER 110
+#define FIRMWARE_VERSION "0.24.0"
+#define BUILD_NUMBER 125
 
 #include <Arduino.h>
 #include <atomic>
+#include <esp_system.h>
 
 // Platform abstraction (ESP32-S3 specific macros, mutexes, delays)
 #include <platform/sfx_platform.h>
@@ -74,7 +75,7 @@
 #include <server/storage_server.h>
 #include "protocol/hubfx_usb_server.h"
 #include "protocol/slave_server.h"
-#include "protocol/slave_registry.h"
+#include "protocol/slave_manager.h"
 
 // Slave client classes (one per controller type)
 #include <gunfx/client/gunfx_client.h>
@@ -134,8 +135,6 @@ static TaskHandle_t core1TaskHandle = nullptr;
 // Cross-core state flags
 std::atomic<bool> audioInitialized{false};   // Core 0 writes, Core 1 reads
 std::atomic<bool> core1Ready{false};         // Core 1 writes, Core 0 reads
-std::atomic<bool> usbHostReady{false};       // Core 0 writes, Core 0 reads (bus task context)
-
 // Diagnostic: Core 1 loop iteration counter
 std::atomic<uint32_t> loop1Count{0};         // Core 1 writes, Core 0 reads
 
@@ -220,7 +219,7 @@ static void logDiagnostics() {
     bool c1Ready = core1Ready.load(std::memory_order_acquire);
 
     UsbHost& usb = UsbHost::instance();
-    bool usbOk = usbHostReady.load(std::memory_order_acquire);
+    bool usbOk = SlaveManager::instance().isUsbReady();
 
     SFX_LOG_DEBUG("uptime=%lus heap=%lu core1=%s loop1=%lu usb=%s cdc=%d",
                   uptime_s, heap,
@@ -303,177 +302,10 @@ static int flashWriteFile(const char* path, const char* data, size_t len) {
     return written;
 }
 
-// Slave registry and clients (one per controller type)
-SlaveRegistry& slaveRegistry = SlaveRegistry::instance();
-GunFxClient gunfxClient;
-LightFxClient lightfxClient;
-GearControlClient gearcontrolClient;
-
-// ============================================================================
-// USB Device Discovery
-// ============================================================================
-
-/**
- * @brief Poll a BusClient until isServerReady() or timeout.
- * @param client  BusClient to poll
- * @param timeout_ms  Maximum wait time (default 3000ms)
- * @return true if server is ready within timeout
- */
-static bool awaitInitReady(BusClient& client, uint32_t timeout_ms = 3000) {
-    unsigned long start = millis();
-    while (!client.isServerReady() && (millis() - start < timeout_ms)) {
-        client.process();
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    return client.isServerReady();
-}
-
-/**
- * @brief Attempt to init a slave client on a given USB device index.
- *
- * Sends INIT, waits for INIT_READY, and identifies the controller by
- * matching the device name prefix ("GunFX", "LightFX", "GearControl").
- *
- * @param usbIndex USB CDC device index in UsbHost
- * @return SlaveType detected, or SlaveType::Unknown if failed
- */
-static SlaveType tryInitSlave(int usbIndex) {
-    SFX_LOG_DEBUG("Probing USB index %d...", usbIndex);
-
-    // Create a temporary generic client to probe the device
-    BusClient probe;
-    if (!probe.begin(usbIndex)) {
-        SFX_LOG_ERROR("Failed to begin probe on USB index %d", usbIndex);
-        return SlaveType::Unknown;
-    }
-
-    probe.sendInit();
-
-    if (!awaitInitReady(probe)) {
-        SFX_LOG_WARN("No INIT_READY from USB index %d (timeout 3s)", usbIndex);
-        return SlaveType::Unknown;
-    }
-
-    const char* name = probe.serverName();
-    SFX_LOG_INFO("USB index %d identified as: %s", usbIndex, name);
-
-    // Match by name prefix
-    SlaveType type = SlaveType::Unknown;
-    if (strncmp(name, "GunFX", 5) == 0) {
-        type = SlaveType::GunFX;
-    } else if (strncmp(name, "LightFX", 7) == 0) {
-        type = SlaveType::LightFX;
-    } else if (strncmp(name, "GearControl", 11) == 0) {
-        type = SlaveType::GearControl;
-    }
-
-    if (type == SlaveType::Unknown) {
-        SFX_LOG_WARN("Unknown slave type: %s", name);
-        return SlaveType::Unknown;
-    }
-
-    // Now init the proper typed client
-    BusClient* client = nullptr;
-    switch (type) {
-        case SlaveType::GunFX:
-            if (gunfxClient.begin(usbIndex)) {
-                gunfxClient.sendInit();
-                client = &gunfxClient;
-            }
-            break;
-        case SlaveType::LightFX:
-            if (lightfxClient.begin(usbIndex)) {
-                lightfxClient.sendInit();
-                client = &lightfxClient;
-            }
-            break;
-        case SlaveType::GearControl:
-            if (gearcontrolClient.begin(usbIndex)) {
-                gearcontrolClient.sendInit();
-                client = &gearcontrolClient;
-            }
-            break;
-        default:
-            break;
-    }
-
-    if (!client) {
-        SFX_LOG_ERROR("Failed to initialize %s client", slaveTypeName(type));
-        return SlaveType::Unknown;
-    }
-
-    // Wait for typed client INIT_READY
-    if (client->isServerReady() || awaitInitReady(*client)) {
-        slaveRegistry.registerSlave(type, client, usbIndex);
-        slaveRegistry.setConnected(type, true);
-        slaveRegistry.setReady(type, true);
-        SFX_LOG_INFO("Slave %s ready: %s", slaveTypeName(type), client->serverName());
-        return type;
-    }
-
-    SFX_LOG_ERROR("Typed client INIT_READY timeout for %s", slaveTypeName(type));
-    return SlaveType::Unknown;
-}
-
-/**
- * @brief Scan all USB CDC devices and attempt to identify unregistered ones
- */
-static void scanAndInitSlaves() {
-    UsbHost& usb = UsbHost::instance();
-    int devCount = usb.cdcDeviceCount();
-    SFX_LOG_DEBUG("Scanning %d USB CDC devices for slaves...", devCount);
-
-    for (int i = 0; i < devCount; i++) {
-        const CdcDeviceInfo* info = usb.getCdcDevice(i);
-        if (!info || !info->connected) continue;
-
-        // Check if this device index is already assigned to a slave
-        bool alreadyAssigned = false;
-        for (uint8_t s = 0; s < slaveRegistry.count(); s++) {
-            if (slaveRegistry[s].usbIndex == i && slaveRegistry[s].ready) {
-                alreadyAssigned = true;
-                break;
-            }
-        }
-
-        if (!alreadyAssigned) {
-            tryInitSlave(i);
-        }
-    }
-}
-
-/**
- * @brief USB mount callback — log device, trigger slave scan if appropriate
- */
-static void onUsbMount(uint8_t devAddr, uint16_t vid, uint16_t pid) {
-    const char* name = knownDeviceName(vid, pid);
-    if (name) {
-        SFX_LOG_INFO("USB device mounted: addr=%d VID=%04X PID=%04X — %s",
-                     devAddr, vid, pid, name);
-    } else {
-        SFX_LOG_INFO("USB device mounted: addr=%d VID=%04X PID=%04X (unknown)",
-                     devAddr, vid, pid);
-    }
-}
-
-/**
- * @brief USB unmount callback — mark slave as disconnected
- */
-static void onUsbUnmount(uint8_t devAddr) {
-    SFX_LOG_WARN("USB device unmounted: addr=%d", devAddr);
-
-    UsbHost& usb = UsbHost::instance();
-    for (uint8_t i = 0; i < slaveRegistry.count(); i++) {
-        SlaveEntry& slave = slaveRegistry[i];
-        if (slave.connected) {
-            const CdcDeviceInfo* info = usb.getCdcDevice(slave.usbIndex);
-            if (!info || !info->connected || info->dev_addr == devAddr) {
-                slaveRegistry.setConnected(slave.type, false);
-                SFX_LOG_WARN("Slave %s disconnected (USB addr=%d)", slaveTypeName(slave.type), devAddr);
-            }
-        }
-    }
-}
+// Typed slave clients (file-scope, registered with SlaveManager via addSlave)
+static GunFxClient gunfxClient;
+static LightFxClient lightfxClient;
+static GearControlClient gearcontrolClient;
 
 // ============================================================================
 // Arduino Setup (Core 0)
@@ -524,6 +356,24 @@ static void initConfig() {
 
     // Callback fires after every successful config load/reload
     store.onLoaded([](const HubFxConfig& cfg) {
+        // Apply audio config (codec supply voltage)
+        TAS5825M_SupplyVoltage voltage;
+        if (TAS5825Codec::parseSupplyVoltage(cfg.audio.codecSupplyVoltage, voltage)) {
+            auto& codec = TAS5825Codec::instance();
+            if (codec.isInitialized() && codec.getSupplyVoltage() != voltage) {
+                if (codec.setSupplyVoltage(voltage)) {
+                    SFX_LOG_INFO("[Config] Codec supply voltage \u2192 %s",
+                                 TAS5825Codec::supplyVoltageStr(voltage));
+                } else {
+                    SFX_LOG_ERROR("[Config] Failed to set codec supply voltage");
+                }
+            }
+        } else {
+            SFX_LOG_WARN("[Config] Unknown codec_supply_voltage: '%s' (use 12v/15v/20v/24v)",
+                         cfg.audio.codecSupplyVoltage);
+        }
+
+        // Apply engine config
         SFX_LOG_INFO("[Config] Applied — engine %s (%s)",
                      cfg.engineFx.enabled ? "enabled" : "disabled",
                      cfg.engineFx.type);
@@ -561,56 +411,17 @@ static void initProtocolHandlers() {
     storageServer.policy().startWriterTask();
 }
 
-/** @brief Initialize USB Host and register mount/unmount callbacks. */
-static void initUsbHost() {
-    UsbHost& usb = UsbHost::instance();
-
-    // Register mount/unmount callbacks BEFORE init() so we catch
-    // any devices that enumerate during startup.
-    usb.onMount(onUsbMount);
-    usb.onUnmount(onUsbUnmount);
-
-    if (usb.begin()) {
-        if (usb.init()) {
-            usbHostReady.store(true, std::memory_order_release);
-            SFX_LOG_INFO("USB Host ready (%s)", usb.backendName());
-        } else {
-            SFX_LOG_ERROR("USB Host init() failed");
-        }
-    } else {
-        SFX_LOG_ERROR("USB Host begin() failed");
-    }
+/** @brief Register slave types with SlaveManager and initialize USB Host. */
+static void initSlaveManager() {
+    SlaveManager& mgr = SlaveManager::instance();
+    mgr.addSlave({ SlaveType::GunFX,       "GunFX",       "GunFX",   &gunfxClient });
+    mgr.addSlave({ SlaveType::LightFX,     "LightFX",     "LightFX", &lightfxClient });
+    mgr.addSlave({ SlaveType::GearControl, "GearControl", "GearCtrl", &gearcontrolClient });
+    mgr.begin();
 }
 
-/** @brief Pre-register slave types and set up slave log relays. */
-static void initSlaves() {
-    slaveRegistry.registerSlave(SlaveType::GunFX, &gunfxClient, -1);
-    slaveRegistry.registerSlave(SlaveType::LightFX, &lightfxClient, -1);
-    slaveRegistry.registerSlave(SlaveType::GearControl, &gearcontrolClient, -1);
-    SFX_LOG_DEBUG("Slave registry: %d slots pre-registered", slaveRegistry.count());
-
-    // Relay slave log messages into HubFX's own diagnostic log buffer
-    auto registerLogRelay = [](BusClient& client, const char* prefix) {
-        client.onLogMessage([prefix](uint8_t level, uint32_t, const char* msg) {
-            char buf[160];
-            snprintf(buf, sizeof(buf), "[%s] %s", prefix, msg);
-            DiagLog::instance().ingest(level, buf);
-        });
-    };
-    registerLogRelay(gunfxClient, "GunFX");
-    registerLogRelay(lightfxClient, "LightFX");
-    registerLogRelay(gearcontrolClient, "GearCtrl");
-}
-
-/** @brief Initialize engine FX from loaded config. */
-static void initEngineFx() {
-    auto& store = configServer.store();
-    if (store.isLoaded()) {
-        EngineFX::instance().begin(store.data().engineFx);
-    } else {
-        SFX_LOG_WARN("Config not loaded — engine FX deferred until config reload");
-    }
-}
+// NOTE: Engine FX is initialized by the config onLoaded callback
+// (EngineFX::applyConfig) — no separate initEngineFx() needed.
 
 /**
  * @brief Initialize audio mixer (Phase 1) and launch Core 1 consumer task.
@@ -622,11 +433,15 @@ static void initAudio() {
     Mixer& mixer = Mixer::instance();
 
     // Configure TAS5825M codec singleton via I2C
-    // Supply voltage: TAS5825M_12V for 3S LiPo (~11.1V)
-    //                 TAS5825M_15V for 4S LiPo (~14.8V)
-    //                 TAS5825M_20V / TAS5825M_24V for bench PSU
+    // Initial supply voltage from config (default: 12V for 3S LiPo)
+    // Can be changed at runtime via config.yaml audio.codec_supply_voltage
+    TAS5825M_SupplyVoltage initVoltage = TAS5825M_12V;
+    if (configServer.store().isLoaded()) {
+        TAS5825Codec::parseSupplyVoltage(
+            configServer.store().data().audio.codecSupplyVoltage, initVoltage);
+    }
     TAS5825Codec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
-                                   AUDIO_SAMPLE_RATE, TAS5825M_12V);
+                                   AUDIO_SAMPLE_RATE, initVoltage);
 
     // Phase 1 init: channels, ring buffer, pin storage
     if (mixer.begin(PIN_I2S_DOUT, PIN_I2S_BCLK, PIN_I2S_LRCLK)) {
@@ -658,10 +473,68 @@ void setup() {
     server.begin("HubFX", FIRMWARE_VERSION, BUILD_NUMBER,
                  PIN_LED_CONNECTION, PIN_LED_ERROR);
 
+    // Redirect ESP-IDF ESP_LOGx() output into DiagLog ring buffer.
+    // CRITICAL: Without this, ESP_LOGE/W from USB host, WiFi, or any
+    // ESP-IDF component writes raw text to UART0, corrupting the binary
+    // COBS protocol stream and causing the CLI to hang or misparse packets.
+    // After this call, ALL ESP-IDF logs become proper [IDF]-prefixed
+    // LOG_MESSAGE packets visible via the CLI `diag` command.
+    DiagLog::instance().captureEspLog();
+
+    // Verify redirect is working — this ESP_LOGW goes through the redirect
+    // and should appear as "[IDF] W (xxx) SFX: ..." in `diag` output
+    ESP_LOGW("SFX", "ESP-IDF log redirect active (build %d)", BUILD_NUMBER);
+
+    // Log reset reason — helps diagnose USB hub hot-plug brownout resets
+    {
+        esp_reset_reason_t reason = esp_reset_reason();
+        const char* reasonStr = "UNKNOWN";
+        switch (reason) {
+            case ESP_RST_POWERON:   reasonStr = "POWER_ON";   break;
+            case ESP_RST_EXT:       reasonStr = "EXTERNAL";   break;
+            case ESP_RST_SW:        reasonStr = "SOFTWARE";   break;
+            case ESP_RST_PANIC:     reasonStr = "PANIC";      break;
+            case ESP_RST_INT_WDT:   reasonStr = "INT_WDT";    break;
+            case ESP_RST_TASK_WDT:  reasonStr = "TASK_WDT";   break;
+            case ESP_RST_WDT:       reasonStr = "OTHER_WDT";  break;
+            case ESP_RST_DEEPSLEEP: reasonStr = "DEEPSLEEP";   break;
+            case ESP_RST_BROWNOUT:  reasonStr = "BROWNOUT";    break;
+            case ESP_RST_SDIO:      reasonStr = "SDIO";        break;
+            case ESP_RST_USB:       reasonStr = "USB";         break;
+            default:                reasonStr = "UNKNOWN";     break;
+        }
+        SFX_LOG_INFO("Boot reason: %s (%d)", reasonStr, (int)reason);
+        if (reason == ESP_RST_BROWNOUT) {
+            SFX_LOG_ERROR("*** BROWNOUT RESET — possible USB hub inrush current issue ***");
+        } else if (reason == ESP_RST_PANIC) {
+            SFX_LOG_ERROR("*** PANIC RESET — check backtrace in serial monitor ***");
+        } else if (reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT || reason == ESP_RST_WDT) {
+            SFX_LOG_ERROR("*** WATCHDOG RESET — a task may have hung ***");
+        }
+    }
+
     // HubFX is the master — auto-init, no upstream connection timeout
     server.setConnectionTimeoutEnabled(false);
 
+    // Track boot completion time — first INIT right after boot can skip
+    // heavy re-initialization since everything is already in a clean state.
+    static uint32_t bootComplete_ms = 0;
+    static constexpr uint32_t FRESH_BOOT_WINDOW_MS = 5000;  // 5s grace period
+
     server.onInit([]() {
+        uint32_t now = millis();
+
+        // If this is the first INIT within the fresh-boot window, everything
+        // was just initialized by setup() — skip the expensive re-init.
+        if (bootComplete_ms > 0 && (now - bootComplete_ms) < FRESH_BOOT_WINDOW_MS) {
+            bootComplete_ms = 0;  // Consume the grace — subsequent INITs do full re-init
+            SFX_LOG_INFO("INIT received — fresh boot, skipping re-init");
+
+            // Still scan for slaves (may have enumerated after setup())
+            SlaveManager::instance().scanAndInit();
+            return;
+        }
+
         // PC sent INIT — new session starting.
         // Full re-initialization of all subsystems to ensure clean state.
         SFX_LOG_INFO("INIT received — re-initializing all subsystems");
@@ -697,16 +570,12 @@ void setup() {
             }
         }
 
-        // 4. Reload config from flash (re-applies engine settings via callback)
+        // 4. Reload config from flash.
+        // The onLoaded callback re-applies engine settings via applyConfig().
         configServer.loadConfig();
 
-        // 5. Re-initialize engine FX with (re)loaded config
-        initEngineFx();
-
-        // 6. Re-scan slaves so PC gets fresh state
-        if (usbHostReady.load(std::memory_order_acquire)) {
-            scanAndInitSlaves();
-        }
+        // 5. Re-scan slaves so PC gets fresh state
+        SlaveManager::instance().scanAndInit();
 
         SFX_LOG_INFO("INIT complete — all subsystems re-initialized");
     });
@@ -746,18 +615,12 @@ void setup() {
         if (core1Ready.load(std::memory_order_acquire))      flags |= 0x01;
         if (audioInitialized.load(std::memory_order_acquire)) flags |= 0x02;
         if (FlashModule::instance().isInitialized())         flags |= 0x04;
-        if (usbHostReady.load(std::memory_order_acquire))    flags |= 0x08;
+        if (SlaveManager::instance().isUsbReady())          flags |= 0x08;
         if (SdCardModule::instance().isInitialized())        flags |= 0x10;
         buf[0] = flags;
 
         // Slave presence bitmask: bit0=GunFX, bit1=LightFX, bit2=GearControl
-        uint8_t slaveMask = 0;
-        for (uint8_t i = 0; i < slaveRegistry.count(); i++) {
-            if (slaveRegistry[i].ready) {
-                slaveMask |= (1 << ((uint8_t)slaveRegistry[i].type - 1));
-            }
-        }
-        buf[1] = slaveMask;
+        buf[1] = SlaveManager::instance().slaveMask();
 
         // Core 1 loop counter (diagnostic)
         CoreProtocol::putU32LE(&buf[2], loop1Count.load(std::memory_order_relaxed));
@@ -767,14 +630,13 @@ void setup() {
 
     initStorage();
     initProtocolHandlers();
-    initConfig();
-    initUsbHost();
-    initSlaves();
-    initEngineFx();
+    initConfig();       // onLoaded callback initializes EngineFX
+    initSlaveManager();
     initAudio();
 
     // Hub is the master — mark as operational immediately
     server.indicators().setConnected(true);
+    bootComplete_ms = millis();  // Start fresh-boot grace period
 
     SFX_LOG_INFO("HubFX ESP32-S3 v%s (build %d) — setup complete", FIRMWARE_VERSION, BUILD_NUMBER);
     SFX_LOG_INFO("Platform: %s @ %lu MHz, heap: %lu bytes",
@@ -832,51 +694,8 @@ void loop() {
 
     // ---- Slave client polling ----
     // Process incoming data from all connected/ready slave controllers.
-    // Each process() call drains the CDC RX buffer and handles COBS frames
-    // (ACK/NACK responses, LOG_MESSAGE relay, async notifications).
-    {
-        static uint32_t lastSlavePoll_ms = 0;
-        static constexpr uint32_t SLAVE_POLL_INTERVAL_ms = 100;
-
-        uint32_t now = millis();
-        if (now - lastSlavePoll_ms >= SLAVE_POLL_INTERVAL_ms) {
-            lastSlavePoll_ms = now;
-            for (uint8_t i = 0; i < slaveRegistry.count(); i++) {
-                SlaveEntry& slave = slaveRegistry[i];
-                if (slave.client && slave.connected && slave.ready) {
-                    slave.client->process();
-                }
-            }
-        }
-    }
-
-    // ---- Periodic slave discovery ----
-    // If any slave slot is not yet ready and USB devices exist, attempt to
-    // identify and bind them. Rate-limited to avoid spamming INIT probes.
-    {
-        static uint32_t lastDiscoveryScan_ms = 0;
-        static constexpr uint32_t DISCOVERY_SCAN_INTERVAL_ms = 5000;
-
-        uint32_t now = millis();
-        if (usbHostReady.load(std::memory_order_acquire) &&
-            now - lastDiscoveryScan_ms >= DISCOVERY_SCAN_INTERVAL_ms) {
-            lastDiscoveryScan_ms = now;
-
-            // Check if any slot still needs discovery
-            bool anyUnready = false;
-            for (uint8_t i = 0; i < slaveRegistry.count(); i++) {
-                if (!slaveRegistry[i].ready) {
-                    anyUnready = true;
-                    break;
-                }
-            }
-
-            UsbHost& usb = UsbHost::instance();
-            if (anyUnready && usb.cdcDeviceCount() > 0) {
-                scanAndInitSlaves();
-            }
-        }
-    }
+    // Slave client polling + periodic discovery (rate-limited internally)
+    SlaveManager::instance().process();
 
     // Engine FX state machine tick
     EngineFX::instance().process();

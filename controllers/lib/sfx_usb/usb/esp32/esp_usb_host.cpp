@@ -53,6 +53,17 @@ static const char* TAG = "EspUsbHost";
 #if ESP_USB_HAS_CDC_ACM
 
 /**
+ * FreeRTOS timer callback — fires when no device reconnects within
+ * RECOVERY_TIMEOUT_MS after a disconnect. Triggers a root port power cycle
+ * to recover disabled hub ports (the ESP-IDF ext_port driver disables ports
+ * after a single failed reset attempt with no retry).
+ */
+static void recoveryTimerCb(TimerHandle_t timer) {
+    SFX_LOG_WARN("[UsbHost] Recovery timeout — no reconnect detected, resetting bus");
+    EspUsbHost::instance().resetBus();
+}
+
+/**
  * Required by ESP-IDF USB Host Library — processes low-level HCD events
  * (device connect/disconnect, transfer completions, port events).
  * Must run continuously in its own FreeRTOS task.
@@ -70,15 +81,15 @@ static void usbHostDaemonTask(void* arg) {
         }
 
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
-            SFX_LOG_DEBUG("[UsbHost] All clients deregistered");
+            SFX_LOG_WARN("[UsbHost] All USB Host clients deregistered — driver may have crashed");
         }
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
-            SFX_LOG_DEBUG("[UsbHost] All devices freed");
+            SFX_LOG_INFO("[UsbHost] All USB device objects freed — ready for new connections");
         }
 
-        // Log all event flags for diagnostics
+        // Log non-zero event flags at DEBUG level for instrumentation
         if (event_flags != 0) {
-            SFX_LOG_DEBUG("[UsbHost] HCD event flags: 0x%08lX", (unsigned long)event_flags);
+            SFX_LOG_DEBUG("[UsbHost] Daemon event flags: 0x%08lX", (unsigned long)event_flags);
         }
     }
 }
@@ -119,6 +130,8 @@ static bool cdcDataCb(const uint8_t* data, size_t data_len, void* user_arg) {
 
 static void cdcEventCb(const cdc_acm_host_dev_event_data_t* event, void* user_ctx) {
     int slotIdx = (int)(uintptr_t)user_ctx;
+    SFX_LOG_DEBUG("[UsbHost] CDC event callback: slot=%d type=%d cdc_hdl=%p",
+                  slotIdx, (int)event->type, event->data.cdc_hdl);
     EspUsbHost::instance()._handleCdcEvent(slotIdx, (int)event->type);
 }
 
@@ -157,9 +170,17 @@ void EspUsbHost::end() {
     SFX_LOG_INFO("[UsbHost] Shutting down HW USB-OTG...");
 
 #if ESP_USB_HAS_CDC_ACM
+    // Stop recovery timer
+    if (_recoveryTimer) {
+        xTimerStop((TimerHandle_t)_recoveryTimer, 0);
+        xTimerDelete((TimerHandle_t)_recoveryTimer, 0);
+        _recoveryTimer = nullptr;
+    }
+
     // Close all open CDC devices
     for (int i = 0; i < USB_HOST_MAX_CDC_DEVICES; i++) {
         if (_slots[i].open && _slots[i].cdcHandle) {
+            SFX_LOG_DEBUG("[UsbHost] Closing CDC slot %d in end()", i);
             cdc_acm_host_close((cdc_acm_dev_hdl_t)_slots[i].cdcHandle);
         }
         if (_slots[i].rxStream) {
@@ -218,6 +239,16 @@ bool EspUsbHost::init() {
 #else
 
     SFX_LOG_INFO("[UsbHost] Installing ESP-IDF USB Host Library...");
+
+    // Set USB component log levels to INFO — ERROR/WARN are always enabled
+    // via CORE_DEBUG_LEVEL. All ESP-IDF logs are now captured by DiagLog
+    // (via esp_log_set_vprintf redirect) instead of raw-text UART output,
+    // so they won't corrupt the COBS binary stream.
+    // Temporarily set to ESP_LOG_DEBUG for deep USB stack diagnostics.
+    esp_log_level_set("USB_HOST", ESP_LOG_INFO);
+    esp_log_level_set("USB_HUB", ESP_LOG_INFO);
+    esp_log_level_set("USB_HCDC", ESP_LOG_INFO);
+    esp_log_level_set("CDC_ACM", ESP_LOG_INFO);
 
     // Step 1: Install USB Host Library (low-level HCD driver)
     const usb_host_config_t host_config = {
@@ -298,7 +329,21 @@ bool EspUsbHost::init() {
     }
 
     _state.taskRunning = true;
-    SFX_LOG_INFO("[UsbHost] HW USB-OTG ready (CDC-ACM driver + open task installed)");
+
+    // Step 5: Create recovery timer for auto bus reset after failed re-enumeration
+    _recoveryTimer = (void*)xTimerCreate(
+        "usb_recovery",
+        pdMS_TO_TICKS(RECOVERY_TIMEOUT_MS),
+        pdFALSE,       // One-shot timer
+        nullptr,
+        recoveryTimerCb
+    );
+    if (!_recoveryTimer) {
+        SFX_LOG_WARN("[UsbHost] Failed to create recovery timer — auto-recovery disabled");
+    }
+
+    SFX_LOG_INFO("[UsbHost] HW USB-OTG ready (CDC-ACM driver + open task installed, recovery=%s)",
+                 (_recoveryTimer && _autoRecovery) ? "on" : "off");
     return true;
 #endif // ESP_USB_HAS_CDC_ACM
 }
@@ -310,6 +355,62 @@ void EspUsbHost::process() {
     //
     // This method exists for API compatibility with PicoUsbHost (which
     // polls tuh_task() on each Core 1 loop iteration).
+}
+
+// ============================================================================
+// Bus Recovery
+// ============================================================================
+
+void EspUsbHost::resetBus() {
+    if (!_state.taskRunning) {
+        SFX_LOG_WARN("[UsbHost] Cannot reset bus — USB host not running");
+        return;
+    }
+
+    SFX_LOG_WARN("[UsbHost] Bus reset — power cycling root port...");
+
+    // Cancel any pending recovery timer to prevent cascading resets
+    if (_recoveryTimer) {
+        xTimerStop((TimerHandle_t)_recoveryTimer, 0);
+    }
+
+    _lastResetTimestamp_ms = millis();
+    _state.stats.bus_resets++;
+
+#if ESP_USB_HAS_CDC_ACM
+    // Power off root port — disconnects hub and ALL downstream devices.
+    // The CDC-ACM driver will fire DEVICE_DISCONNECTED for each open device,
+    // calling our _handleCdcEvent which cleans up slots and fires unmount callbacks.
+    // The cooldown guard (_lastResetTimestamp_ms) prevents those disconnects
+    // from starting another recovery timer.
+    esp_err_t err = usb_host_lib_set_root_port_power(false);
+    if (err != ESP_OK) {
+        SFX_LOG_ERROR("[UsbHost] Failed to power off root port: %s", esp_err_to_name(err));
+        return;
+    }
+
+    // Wait for hub and devices to fully disconnect
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Power on root port — hub re-enumerates, then downstream devices
+    err = usb_host_lib_set_root_port_power(true);
+    if (err != ESP_OK) {
+        SFX_LOG_ERROR("[UsbHost] Failed to power on root port: %s", esp_err_to_name(err));
+        return;
+    }
+
+    SFX_LOG_INFO("[UsbHost] Root port re-powered — hub and devices will re-enumerate");
+#endif
+}
+
+void EspUsbHost::setAutoRecovery(bool enabled) {
+    _autoRecovery = enabled;
+    SFX_LOG_INFO("[UsbHost] Auto-recovery %s", enabled ? "enabled" : "disabled");
+
+    // If disabling, cancel any pending recovery timer
+    if (!enabled && _recoveryTimer) {
+        xTimerStop((TimerHandle_t)_recoveryTimer, 0);
+    }
 }
 
 // ============================================================================
@@ -326,6 +427,21 @@ void EspUsbHost::process() {
 void EspUsbHost::_handleNewDevice(void* usbDevHandle) {
     usb_device_handle_t usb_dev = (usb_device_handle_t)usbDevHandle;
     _state.stats.enum_attempts++;
+
+    // Cancel recovery timer — a device enumerated successfully
+    if (_recoveryTimer) {
+        xTimerStop((TimerHandle_t)_recoveryTimer, 0);
+    }
+
+    SFX_LOG_INFO("[UsbHost] >>> New device callback fired (attempt #%lu, current CDC count=%d)",
+                 (unsigned long)_state.stats.enum_attempts, _state.cdcDeviceCount);
+
+    // Log slot availability for debugging re-connection issues
+    int freeSlots = 0;
+    for (int i = 0; i < USB_HOST_MAX_CDC_DEVICES; i++) {
+        if (!_slots[i].open) freeSlots++;
+    }
+    SFX_LOG_DEBUG("[UsbHost] Free CDC slots: %d/%d", freeSlots, USB_HOST_MAX_CDC_DEVICES);
 
     SFX_LOG_INFO("[UsbHost] New device callback fired (attempt #%lu)",
                  (unsigned long)_state.stats.enum_attempts);
@@ -487,15 +603,44 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
             // Remove from shared device tracker
             _state.removeCdcDevice(devAddr);
 
-            // Clean up slot resources
+            // Close the CDC-ACM driver handle. This releases USB interfaces,
+            // cancels pending transfers, removes the pseudo-device from the
+            // driver's internal list, and calls usb_host_device_close().
+            // The CDC-ACM driver uses SLIST_FOREACH_SAFE in the DEV_GONE handler
+            // so calling close from this callback is explicitly safe (see v2.3.0).
+            // Without this, the stale device stays in cdc_devices_list and blocks
+            // re-enumeration when the same device reconnects (e.g. via USB hub).
+            if (slot.cdcHandle) {
+                SFX_LOG_DEBUG("[UsbHost] Closing CDC handle for slot=%d", slotIdx);
+                esp_err_t err = cdc_acm_host_close((cdc_acm_dev_hdl_t)slot.cdcHandle);
+                if (err != ESP_OK) {
+                    SFX_LOG_WARN("[UsbHost] cdc_acm_host_close failed: %s (slot=%d)",
+                                 esp_err_to_name(err), slotIdx);
+                }
+            }
+
+            // Clean up local slot resources (stream buffer is ours, not the driver's)
             if (slot.rxStream) {
                 vStreamBufferDelete((StreamBufferHandle_t)slot.rxStream);
             }
-            // Note: cdc_acm_host_close() is called by the CDC driver on disconnect
             slot = {};
 
             // Fire unmount callback (notifies SlaveServer)
             if (_state.unmountCallback) _state.unmountCallback(devAddr);
+
+            // Start auto-recovery timer — if no new device connects within
+            // RECOVERY_TIMEOUT_MS, power-cycle root port to recover disabled
+            // hub ports. Skip if this disconnect was caused by our own bus reset.
+            if (_autoRecovery && _recoveryTimer) {
+                uint32_t now = millis();
+                if (now - _lastResetTimestamp_ms > RESET_COOLDOWN_MS) {
+                    SFX_LOG_INFO("[UsbHost] Starting recovery timer (%lums) for auto bus reset",
+                                 (unsigned long)RECOVERY_TIMEOUT_MS);
+                    xTimerReset((TimerHandle_t)_recoveryTimer, 0);
+                } else {
+                    SFX_LOG_DEBUG("[UsbHost] Skipping recovery timer — within reset cooldown");
+                }
+            }
             break;
         }
 
@@ -510,6 +655,7 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
             break;
 
         default:
+            SFX_LOG_WARN("[UsbHost] Unknown CDC event type=%d on slot=%d", eventType, slotIdx);
             break;
     }
 }
@@ -628,9 +774,10 @@ void EspUsbHost::printStatus() const {
                  (unsigned long)_state.stats.enum_failures,
                  (unsigned long)_state.stats.enum_desc_failures,
                  (unsigned long)_state.stats.enum_cdc_open_failures);
-    SFX_LOG_INFO("Errors: hcd=%lu port=%lu",
+    SFX_LOG_INFO("Errors: hcd=%lu port=%lu bus_resets=%lu",
                  (unsigned long)_state.stats.hcd_errors,
-                 (unsigned long)_state.stats.port_errors);
+                 (unsigned long)_state.stats.port_errors,
+                 (unsigned long)_state.stats.bus_resets);
     for (int i = 0; i < _state.cdcDeviceCount; i++) {
         const CdcDeviceInfo& dev = _state.cdcDevices[i];
         const char* stateStr = "Unknown";

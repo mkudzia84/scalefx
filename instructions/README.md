@@ -51,16 +51,16 @@ Packet_Ranges:
   GunFX: "0x01-0x2F"
   LightFX: "0x40-0x5F"
   GearControl: "0x60-0x7F"
-  HubFX: "0x80-0xAC"
+  HubFX: "0x80-0xAF"
   Streaming: "0xA4-0xA6"
-  Available: "0xAD-0xEF"
+  Available: "0xB0-0xEF"
   Core: "0xF0-0xFF"
 
 Controllers:
   gunfx: { path: "controllers/gunfx/pico/", range: "0x01-0x2F" }
   lightfx: { path: "controllers/lightfx/pico/", range: "0x40-0x5F" }
   gearcontrol: { path: "controllers/gearcontrol/pico/", range: "0x60-0x7F" }
-  hubfx: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xAC", platform: "ESP32-S3" }
+  hubfx: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xAF", platform: "ESP32-S3" }
   noop: { path: "controllers/noop/pico/", range: "CORE_ONLY" }
 ```
 

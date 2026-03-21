@@ -31,7 +31,7 @@
 
 
 // ============================================================================
-// HubFX Packet Types (0x80-0xA9)
+// HubFX Packet Types (0x80-0xAF)
 // ============================================================================
 
 namespace HubFxPacket {
@@ -78,7 +78,7 @@ namespace HubFxPacket {
     // --- Flash Management (0x99) ---
     constexpr uint8_t FLASH_STATUS_REQ  = 0x99;  // [] → FLASH_STATUS_RESP (same type as response)
 
-    // --- USB Host Diagnostics (0xA7-0xA8) ---
+    // --- USB Host Diagnostics (0xA7-0xA8, 0xAD) ---
     constexpr uint8_t USB_DEVICES_REQ    = 0xA7;  // [] → USB_DEVICES_RESP
     constexpr uint8_t USB_DEVICES_RESP   = 0xA8;  // [initialized:u8][taskRunning:u8][backendLen:u8][backend:str]
                                                    //   [deviceCount:u8] per-device: [addr:u8][vid:u16LE][pid:u16LE][state:u8][slaveType:u8]
@@ -88,6 +88,15 @@ namespace HubFxPacket {
     constexpr uint8_t CODEC_STATUS_RESP  = 0xAB;  // [codecType:u8][initialized:u8][i2cOk:u8][sdaPin:u8][sclPin:u8]
                                                    //   [supplyVoltage:u8][muted:u8][digitalVol:u8][deviceCtrl:u8][faultStatus:u8]
                                                    //   [codecNameLen:u8][codecName:str]
+
+    // --- USB Bus Recovery (0xAD) ---
+    constexpr uint8_t USB_RESET_BUS      = 0xAD;  // [] → ACK (power-cycles root port, re-enumerates)
+
+    // --- Slave Info Query (0xAE-0xAF) ---
+    constexpr uint8_t SLAVE_INFO          = 0xAE;  // [slaveType:u8] → SLAVE_INFO_RESP (cached boardInfo, no slave query)
+    constexpr uint8_t SLAVE_INFO_RESP     = 0xAF;  // [slaveType:u8][ready:u8][connected:u8][nameLen:u8][name:str]
+                                                    //   [verLen:u8][ver:str][platLen:u8][plat:str]
+                                                    //   [cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]
 
     // --- File Tree (0xA9) ---
     constexpr uint8_t FILE_TREE          = 0xA9;  // [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END

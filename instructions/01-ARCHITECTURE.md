@@ -86,14 +86,17 @@ Core_Packets:  # 0xF0-0xFF - All controllers
   KEEPALIVE:   { type: 0xF2, direction: "C→S", payload: "none" }
   INIT_READY:  { type: 0xF3, direction: "S→C", payload: "[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]" }
   STATUS:      { type: 0xF4, direction: "S→C", payload: "[counter:u32LE][uptime:u32LE][freeRam:u32LE][moduleData...]" }
-  STATUS_REQ:  { type: 0xF5, direction: "C→S", payload: "none" }
+  ERROR:       { type: 0xF5, direction: "S→C", payload: "[error_code:u8][message...]" }
   ACK:         { type: 0xF6, direction: "S→C", payload: "none" }
   NACK:        { type: 0xF7, direction: "S→C", payload: "[error_code:u8][reason_text...]" }
   REBOOT:      { type: 0xF8, direction: "C→S", payload: "none" }
   BOOTSEL:     { type: 0xF9, direction: "C→S", payload: "none" }
-  ERROR:       { type: 0xFA, direction: "S→C", payload: "[error_code:u8][message...]" }
+  STATUS_REQ:  { type: 0xFA, direction: "C→S", payload: "none" }
   I2C_SCAN:    { type: 0xFB, direction: "C→S", payload: "none" }
   I2C_SCAN_RESULT: { type: 0xFC, direction: "S→C", payload: "[numExp:u8][N×(addr,found,id)][numExtra:u8][M×addr]" }
+  LOG_MESSAGE: { type: 0xFD, direction: "S→C", payload: "[level:u8][millis:u32LE][message:str]", notes: "async, unsolicited" }
+  IDENTIFY:    { type: 0xFE, direction: "C→S", payload: "none", response: "IDENTIFY (0xFE) with INIT_READY payload format, no state change" }
+  DIAG_HISTORY: { type: 0xFF, direction: "C→S", payload: "none", response: "ACK + buffered LOG_MESSAGE packets" }
 
 GunFX_Packets:  # 0x01-0x2F
   TRIGGER_ON:      { type: 0x01, payload: "[rpm:u16LE]" }
@@ -282,6 +285,49 @@ server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
     return 3;  // bytes written
 });
 ```
+
+---
+
+## Connection Flow (CLI → Controller)
+
+The CLI uses **IDENTIFY before INIT** to discover the board type without triggering side effects. This prevents expensive re-initialization on boards that auto-initialize on boot (HubFX).
+
+### Sequence
+
+```
+CLI                                    Controller
+ │                                       │
+ │  Open serial port (6Mbps)             │
+ │  Drain boot garbage                   │
+ │                                       │
+ │  IDENTIFY (0xFE)                      │
+ │ ─────────────────────────────────────→│
+ │                                       │  (no state changes)
+ │  IDENTIFY response (0xFE)             │
+ │←─────────────────────────────────────│
+ │                                       │
+ │  Parse name → detect controller type  │
+ │                                       │
+ │  [HubFX]  → Done (auto-initialized)  │
+ │  [Slave]  → Send INIT (0xF0)         │
+ │ ─────────────────────────────────────→│
+ │                                       │  (init callbacks fire)
+ │  INIT_READY (0xF3)                    │
+ │←─────────────────────────────────────│
+```
+
+### Key Points
+
+- **IDENTIFY (0xFE)** returns the same payload as INIT_READY (name, version, platform, build) but does NOT trigger init callbacks or state changes
+- **HubFX (autonomous hub)**: auto-initializes on boot (codec, audio, engine, slaves); INIT from CLI would cause full re-initialization — only IDENTIFY is needed
+- **Slave controllers** (GunFX, LightFX, GearControl, NoOp): require INIT to activate hardware; CLI sends IDENTIFY first to detect type, then INIT to start
+- **Legacy fallback**: if IDENTIFY fails (NACK or timeout), CLI falls back to INIT which works on all firmware versions
+
+### Implementation
+
+- **Firmware**: `CoreCommandServer::sendIdentify()` in `bus_server.cpp` — same payload as `sendInitReady()` but with IDENTIFY packet type
+- **CLI**: `_identify_and_init()` in `tests/cli/handlers/core.py` — called on connect and reconnect
+- **Protocol**: Documented in `PROTOCOL.md` § IDENTIFY Command
 
 ---
 

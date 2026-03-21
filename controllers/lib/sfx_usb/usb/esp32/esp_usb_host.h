@@ -108,6 +108,24 @@ public:
     const char* backendName() const { return "HW USB-OTG"; }
 
     // ========================================================================
+    // Bus Recovery
+    // ========================================================================
+
+    /// Power-cycle root port to force re-enumeration of hub and all downstream
+    /// devices. This disconnects everything momentarily then re-enumerates.
+    /// Safe to call from any task context (uses vTaskDelay internally).
+    void resetBus();
+
+    /// Enable/disable automatic bus recovery after disconnect.
+    /// When enabled (default), if a device disconnects and no new device
+    /// connects within RECOVERY_TIMEOUT_MS, the bus is automatically
+    /// power-cycled to recover disabled hub ports.
+    void setAutoRecovery(bool enabled);
+
+    /// Check if auto-recovery is enabled
+    bool autoRecoveryEnabled() const { return _autoRecovery; }
+
+    // ========================================================================
     // Status
     // ========================================================================
 
@@ -151,6 +169,12 @@ private:
     /// TX timeout for blocking writes (ms)
     static constexpr uint32_t CDC_TX_TIMEOUT_MS = 100;
 
+    /// Auto-recovery: time to wait after disconnect before bus reset (ms)
+    static constexpr uint32_t RECOVERY_TIMEOUT_MS = 5000;
+
+    /// Cooldown after a bus reset — ignore disconnects caused by the reset itself (ms)
+    static constexpr uint32_t RESET_COOLDOWN_MS = 10000;
+
     /// Per-CDC-device slot tracking (opaque handles avoid ESP-IDF includes)
     struct CdcSlot {
         void* cdcHandle = nullptr;   // cdc_acm_dev_hdl_t (opaque)
@@ -164,6 +188,11 @@ private:
     void* _openTaskHandle = nullptr;     // TaskHandle_t for deferred CDC open
     bool _driverInstalled = false;
     uint8_t _nextDevAddr = 1;            // Sequential device address counter
+
+    // Bus recovery state
+    void* _recoveryTimer = nullptr;      // TimerHandle_t for auto-recovery
+    uint32_t _lastResetTimestamp_ms = 0; // millis() of last bus reset
+    bool _autoRecovery = true;           // Auto-recovery enabled by default
 
     int _findSlotByHandle(void* cdcHandle) const;
     int _allocateSlot();

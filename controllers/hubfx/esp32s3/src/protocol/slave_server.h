@@ -23,6 +23,7 @@
 #include <serial/hubfx/hubfx.h>
 
 #include "slave_registry.h"
+#include "slave_manager.h"
 
 // ============================================================================
 // SlaveServer — Routing + Slave Management Handler
@@ -47,6 +48,7 @@ public:
     /**
      * @brief Override tryProcess to handle slave management (0x80-0x83),
      *        slave routing subcmd packets (0x96-0x98),
+     *        slave info query (0xAE),
      *        and USB host diagnostics (0xA7-0xA8)
      */
     CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override;
@@ -61,8 +63,10 @@ protected:
 
 private:
     CommandHandleResult routeToSlave(uint8_t type, const uint8_t* payload, size_t len);
+    CommandHandleResult routeCoreToSlave(uint8_t coreCmd, BusClient* client, SlaveType target);
     void handleSlaveList();
     void handleSlaveInit(const uint8_t* payload, size_t len);
+    void handleSlaveInfo(const uint8_t* payload, size_t len);
 
     SlaveRegistry& registry() { return SlaveRegistry::instance(); }
 };

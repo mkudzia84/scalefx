@@ -23,6 +23,10 @@ CommandHandleResult HubFxUsbServer::handleModulePacket(
             handleUsbDevicesReq();
             return CommandHandleResult::Handled;
 
+        case HubFxPacket::USB_RESET_BUS:
+            handleUsbResetBus();
+            return CommandHandleResult::Handled;
+
         default:
             return CommandHandleResult::NotMyCommand;
     }
@@ -78,4 +82,18 @@ void HubFxUsbServer::handleUsbDevicesReq() {
             usb.isInitialized(), usb.isTaskRunning(), backend, count);
 
     sendRawPacket(HubFxPacket::USB_DEVICES_RESP, currentTag(), resp, pos);
+}
+
+
+void HubFxUsbServer::handleUsbResetBus() {
+    UsbHost& usb = UsbHost::instance();
+
+    if (!usb.isInitialized()) {
+        sendNack(SerialError::NOT_INITIALIZED);
+        return;
+    }
+
+    USB_LOG("USB_RESET_BUS: power-cycling root port");
+    usb.resetBus();
+    sendAck();
 }

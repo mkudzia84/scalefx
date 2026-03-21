@@ -109,6 +109,7 @@ struct UsbHostStats {
     uint32_t enum_cdc_open_failures = 0;  // CDC-ACM open failed (not a CDC device)
     uint32_t hcd_errors = 0;              // Low-level HCD/transfer errors
     uint32_t port_errors = 0;             // USB port-level errors
+    uint32_t bus_resets = 0;              // Root port power-cycle resets
 };
 
 // ============================================================================

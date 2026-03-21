@@ -19,6 +19,7 @@
 #ifndef HUBFX_CONFIG_H
 #define HUBFX_CONFIG_H
 
+#include "audio_settings.h"
 #include "engine_config.h"
 
 // ============================================================================
@@ -26,6 +27,7 @@
 // ============================================================================
 
 struct HubFxConfig {
+    AudioConfig  audio;
     EngineConfig engineFx;
 
     // Future sections:
@@ -44,6 +46,7 @@ using namespace sfx;
 
 /// Hub-level schema — composes section schemas via asGroup().
 inline const auto fields = schema<HubFxConfig>(
+    audio_config::fields.asGroup<&HubFxConfig::audio>("audio"),
     engine_config::fields.asGroup<&HubFxConfig::engineFx>("engine_fx")
 
     // Future sections:

@@ -148,6 +148,12 @@ void BusClient::handlePacket(uint8_t type, uint8_t tag, const uint8_t* payload, 
             break;
 
         default:
+            // Capture raw response for routing layers (e.g., STATUS forwarding)
+            _lastResponseType = type;
+            _lastResponseLen = (len <= RAW_RESPONSE_MAX) ? len : RAW_RESPONSE_MAX;
+            if (_lastResponseLen > 0) {
+                memcpy(_lastResponsePayload, payload, _lastResponseLen);
+            }
             // Delegate to module-specific handler
             onModulePacket(type, tag, payload, len);
             break;

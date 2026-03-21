@@ -299,6 +299,40 @@ class ScaleFXConnection:
         """Close serial connection (alias for close())."""
         self.close()
     
+    def reconnect(self) -> bool:
+        """Close and reopen the serial port, preserving settings.
+        
+        Reconnects to the same port/baud without creating a new object.
+        Clears all buffers and pending state. Does NOT re-initialize
+        (caller should send INIT separately if needed).
+        
+        Returns:
+            True if reconnection succeeded
+        """
+        port = self.port
+        baud = self.baud
+        self.close()
+        time.sleep(0.3)
+        try:
+            self._serial = serial.Serial(
+                port=port,
+                baudrate=baud,
+                timeout=0.1,
+                write_timeout=1.0
+            )
+            try:
+                self._serial.set_buffer_size(rx_size=131072, tx_size=131072)
+            except Exception:
+                pass
+            time.sleep(0.3)
+            self._drain_serial()
+            self._rx_buffer.clear()
+            self._pending.clear()
+            return True
+        except serial.SerialException as e:
+            print(f"Reconnection failed: {e}")
+            return False
+    
     def initialize(self) -> bool:
         """
         Send INIT command and wait for INIT_READY.

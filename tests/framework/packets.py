@@ -476,16 +476,25 @@ class HubFxPacket:
     # File tree (0xA9)
     FILE_TREE          = 0xA9  # [pathLen:u8][path:str][target:u8?] → STREAM (recursive listing)
 
-    # USB Host Diagnostics (0xA7-0xA8)
+    # USB Host Diagnostics (0xA7-0xA8, 0xAD)
     USB_DEVICES_REQ    = 0xA7  # [] → USB_DEVICES_RESP
     USB_DEVICES_RESP   = 0xA8  # [initialized:u8][taskRunning:u8][backendLen:u8][backend:str]
                                #   [deviceCount:u8] per-device: [addr:u8][vid:u16LE][pid:u16LE][state:u8][slaveType:u8]
+
+    # USB Bus Recovery (0xAD)
+    USB_RESET_BUS      = 0xAD  # [] → ACK (power-cycles root port, re-enumerates)
 
     # Codec Status (0xAA-0xAB)
     CODEC_STATUS_REQ   = 0xAA  # [] → CODEC_STATUS_RESP
     CODEC_STATUS_RESP  = 0xAB  # [codecType:u8][initialized:u8][i2cOk:u8][sdaPin:u8][sclPin:u8]
                                #   [supplyVoltage:u8][muted:u8][digitalVol:u8][deviceCtrl:u8][faultStatus:u8]
                                #   [codecNameLen:u8][codecName:str]
+
+    # Slave Info Query (0xAE-0xAF) — returns cached boardInfo from BusClient
+    SLAVE_INFO          = 0xAE  # [slaveType:u8] → SLAVE_INFO_RESP
+    SLAVE_INFO_RESP     = 0xAF  # [slaveType:u8][ready:u8][connected:u8][nameLen:u8][name:str]
+                                #   [verLen:u8][ver:str][platLen:u8][plat:str]
+                                #   [cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]
 
 
 class HubFxError:
