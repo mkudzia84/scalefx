@@ -1,16 +1,20 @@
 /*
  * RxInputs — Unified RC receiver input template
  *
- * Wraps any ChannelSource (PpmDecoder or PwmCollection) and provides
- * a uniform API for querying channel values, detecting signal loss,
- * and applying failsafe defaults.
+ * Wraps any ChannelSource and provides a uniform API for querying
+ * channel values, detecting signal loss, and applying failsafe defaults.
+ *
+ * Supported ChannelSource implementations:
+ *   - PpmDecoder          PPM sum on a single pin (ESP32 RMT / Pico ISR)
+ *   - PwmCollection       Individual PWM wires, one per channel
+ *   - SbusInput           Futaba S.Bus (inverted UART, 100000 8E2)
+ *   - JetiExChannelSource Adapter bridging JetiExBus → ChannelSource
  *
  * Usage:
  *
  *   // PPM receiver on a single pin:
  *   RxInputs<PpmDecoder> rx;
  *   rx.source().begin(PIN_PPM_IN, true);
- *   // ... in loop:
  *   rx.update();
  *   uint16_t throttle = rx.channel_us(3);
  *
@@ -18,9 +22,27 @@
  *   RxInputs<PwmCollection> rx;
  *   int pins[] = {4, 5, 6, 7, 8, 9};
  *   rx.source().begin(pins, 6);
- *   // ... in loop:
  *   rx.update();
  *   uint16_t aileron = rx.channel_us(1);
+ *
+ *   // Futaba S.Bus (user configures inverted UART externally):
+ *   //   ESP32: Serial1.begin(100000, SERIAL_8E2, RX, -1, true);
+ *   //   Pico:  Serial1.setRX(RX); Serial1.setInvert(true,false,false);
+ *   //          Serial1.begin(100000, SERIAL_8E2);
+ *   RxInputs<SbusInput> rx;
+ *   rx.source().begin(&Serial1);
+ *   rx.update();
+ *   bool failsafe = rx.source().failsafe();
+ *
+ *   // Jeti EX Bus (channel data via adapter, bus owned externally):
+ *   JetiExBus jeti;
+ *   jeti.begin(&Serial2);
+ *   jeti.setSensorInfo(0xA4CB, 0x0001, "ScaleFX");
+ *   RxInputs<JetiExChannelSource> rx;
+ *   rx.source().attach(&jeti);
+ *   jeti.update();          // protocol + channels + telemetry
+ *   rx.update();            // signal-loss detection + helpers
+ *   float aileron = rx.channelNorm(1);
  *
  * ChannelSource concept (duck-typed — no virtual ABC):
  *   void         update()
