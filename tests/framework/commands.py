@@ -482,6 +482,32 @@ class LightFxCommands(CommandBuilder):
         )
     
     @staticmethod
+    def led_seq_add_fading(channel: int, cycle_ms: int, duration_ms: int,
+                           min_brightness: int = 0, max_brightness: int = 100) -> bytes:
+        """
+        Add FADING event to sequence (sinusoidal breathing/beacon effect).
+        
+        Args:
+            channel: LED channel (1-8)
+            cycle_ms: Duration of one full fade cycle in milliseconds
+            duration_ms: Total event duration in milliseconds (0 = infinite)
+            min_brightness: Minimum brightness (0-100, default 0)
+            max_brightness: Maximum brightness (0-100, default 100)
+            
+        Warnings:
+            Emits UserWarning if brightness values not in [0-100].
+        """
+        _warn_range("channel", channel, LED_CHANNEL_MIN, LED_CHANNEL_MAX)
+        _warn_u16("cycle_ms", cycle_ms)
+        _warn_u16("duration_ms", duration_ms)
+        _warn_range("min_brightness", min_brightness, 0, LED_BRIGHTNESS_MAX)
+        _warn_range("max_brightness", max_brightness, 0, LED_BRIGHTNESS_MAX)
+        return LightFxCommands.led_seq_add(
+            channel, LightFxEventType.FADING,
+            cycle_ms, duration_ms, min_brightness, max_brightness
+        )
+    
+    @staticmethod
     def led_seq_start(channel: int = 0) -> bytes:
         """
         Start LED sequence playback.

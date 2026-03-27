@@ -38,7 +38,7 @@ CommandHandleResult LightFxServer::handleModulePacket(uint8_t type, const uint8_
             uint8_t eventType = payload[1];
             uint16_t param1 = getU16LE(&payload[2]);
             uint16_t param2 = (len >= 6) ? getU16LE(&payload[4]) : 0;
-            uint8_t param3 = (len >= 7) ? payload[6] : 255;
+            uint8_t param3 = (len >= 7) ? payload[6] : 100;
             uint8_t param4 = (len >= 8) ? payload[7] : 50;
             SFX_VALIDATE(LightFxSpec::isValidLedChannel(channel), LightFxError::INVALID_CHANNEL);
             SFX_VALIDATE(LightFxSpec::isValidEventType(eventType), LightFxError::INVALID_EVENT);
@@ -60,29 +60,35 @@ CommandHandleResult LightFxServer::handleModulePacket(uint8_t type, const uint8_
             SFX_DISPATCH(_ledSeqRestartCallback, payload[0]);
         }
 
-        case LightFxPacket::LED_SEQ_STATUS:
-            if (len >= 1 && _ledSeqStatusCallback) {
-                uint8_t channel = payload[0];
+        case LightFxPacket::LED_SEQ_STATUS: {
+            SFX_REQUIRE_LEN(1);
+            uint8_t channel = payload[0];
+            SFX_VALIDATE(LightFxSpec::isValidLedChannel(channel), LightFxError::INVALID_CHANNEL);
+            if (_ledSeqStatusCallback) {
                 LightFxSeqStatus status;
                 status.channel = channel;
                 _ledSeqStatusCallback(channel, status);
                 sendSeqStatus(status);
-            }
-            return CommandHandleResult::Handled;
-
-        case LightFxPacket::LED_SEQ_QUEUE:
-            if (len >= 1 && _ledSeqQueueCallback) {
-                uint8_t channel = payload[0];
-                LightFxSeqQueue queue;
-                queue.channel = channel;
-                _ledSeqQueueCallback(channel, queue);
-                sendSeqQueue(queue);
-            } else if (len < 1) {
-                sendNack(SerialError::MISSING_PARAMETER);
             } else {
                 sendNack(SerialError::NOT_SUPPORTED);
             }
             return CommandHandleResult::Handled;
+        }
+
+        case LightFxPacket::LED_SEQ_QUEUE: {
+            SFX_REQUIRE_LEN(1);
+            uint8_t channel = payload[0];
+            SFX_VALIDATE(LightFxSpec::isValidLedChannel(channel), LightFxError::INVALID_CHANNEL);
+            if (_ledSeqQueueCallback) {
+                LightFxSeqQueue queue;
+                queue.channel = channel;
+                _ledSeqQueueCallback(channel, queue);
+                sendSeqQueue(queue);
+            } else {
+                sendNack(SerialError::NOT_SUPPORTED);
+            }
+            return CommandHandleResult::Handled;
+        }
 
         case LightFxPacket::LED_STATUS:
             if (_ledStatusCallback) {
@@ -92,6 +98,8 @@ CommandHandleResult LightFxServer::handleModulePacket(uint8_t type, const uint8_
                     _ledStatusCallback(i + 1, channels[i]);
                 }
                 sendChannelStatus(channels, 8);
+            } else {
+                sendNack(SerialError::NOT_SUPPORTED);
             }
             return CommandHandleResult::Handled;
 
@@ -200,12 +208,13 @@ CommandHandleResult LightFxServer::handleModulePacket(uint8_t type, const uint8_
 // ============================================================================
 
 int LightFxServer::sendSeqStatus(const LightFxSeqStatus& status) {
-    uint8_t payload[8];
+    uint8_t payload[9];
     payload[0] = status.channel;
     payload[1] = status.playing ? 1 : 0;
     payload[2] = status.eventCount;
     payload[3] = status.currentIndex;
     putU32LE(&payload[4], status.loopCount);
+    payload[8] = status.brightness;
     return sendRawPacket(LightFxPacket::LED_SEQ_STATUS_RESP, _currentTag, payload, sizeof(payload));
 }
 
@@ -224,23 +233,24 @@ int LightFxServer::sendChannelStatus(const LightFxChannelStatus* channels, uint8
 }
 
 int LightFxServer::sendSeqQueue(const LightFxSeqQueue& queue) {
-    // Response format: [channel:u8][count:u8][currentIndex:u8][playing:u8][events...]
+    // Response format: [channel:u8][count:u8][currentIndex:u8][playing:u8][brightness:u8][events...]
     // Each event: [type:u8][duration:u16LE][param1:u8] = 4 bytes
-    // Max 24 events = 96 bytes + 4 header = 100 bytes (needs chunking for large queues)
-    // For now, limit to 15 events per packet (4 + 15*4 = 64 bytes)
+    // Max 24 events = 96 bytes + 5 header = 101 bytes (needs chunking for large queues)
+    // For now, limit to 15 events per packet (5 + 15*4 = 65 bytes)
     constexpr uint8_t MAX_EVENTS_PER_PACKET = 15;
     
     uint8_t eventCount = (queue.count <= MAX_EVENTS_PER_PACKET) ? queue.count : MAX_EVENTS_PER_PACKET;
-    size_t payloadLen = 4 + (eventCount * 4);
+    size_t payloadLen = 5 + (eventCount * 4);
     
-    uint8_t payload[64];
+    uint8_t payload[68];
     payload[0] = queue.channel;
     payload[1] = queue.count;           // Total events (may be more than sent)
     payload[2] = queue.currentIndex;
     payload[3] = queue.playing ? 1 : 0;
+    payload[4] = queue.brightness;
     
     for (uint8_t i = 0; i < eventCount; i++) {
-        size_t offset = 4 + (i * 4);
+        size_t offset = 5 + (i * 4);
         payload[offset + 0] = queue.events[i].type;
         putU16LE(&payload[offset + 1], queue.events[i].duration);
         payload[offset + 3] = queue.events[i].param1;

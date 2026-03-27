@@ -104,8 +104,8 @@ public:
     void stop();
 
     /**
-     * @brief Update sequence and get current PWM output
-     * @return PWM value 0-255, or -1 if stopped/empty
+     * @brief Update sequence and get current brightness
+     * @return Brightness 0-100, or -1 if stopped/empty
      */
     int16_t update();
 

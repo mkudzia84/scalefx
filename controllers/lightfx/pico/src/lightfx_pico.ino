@@ -13,9 +13,10 @@
  *   - CommandRouter: Routes packets to handlers in priority order
  * 
  * Pin Assignments:
- *   LED Channels: GPIO21-28 (8 channels, PWM capable)
- *   Indicator LEDs: GPIO13 (connection), GPIO14 (error)
- *   Servos: GPIO1-3
+ *   LED Channels: GPIO0-7 (8 channels, PWM capable)
+ *   Indicator LEDs: GPIO24 (connection), GPIO25 (error)
+ *   Battery ADC: GPIO29 (÷5.1 divider)
+ *   Servos: GPIO8-10
  */
 
 #include <Arduino.h>
@@ -27,6 +28,7 @@
 #include <led/led_events.h>
 #include <servo/srv_control.h>
 #include <server/sfx_server.h>
+#include <power/battery_monitor.h>
 #include "landing_light.h"
 
 // ============================================================================
@@ -34,26 +36,33 @@
 // ============================================================================
 
 #define FIRMWARE_VERSION "0.7.0"
-#define BUILD_NUMBER 13
+#define BUILD_NUMBER 18
 
 // ============================================================================
 //  PIN CONFIGURATION
 // ============================================================================
 
 // LED Output Channels (active high, PWM capable)
-const uint8_t PIN_LED_CH1 = 28;
-const uint8_t PIN_LED_CH2 = 27;
-const uint8_t PIN_LED_CH3 = 26;
-const uint8_t PIN_LED_CH4 = 25;
-const uint8_t PIN_LED_CH5 = 24;
-const uint8_t PIN_LED_CH6 = 23;
-const uint8_t PIN_LED_CH7 = 22;
-const uint8_t PIN_LED_CH8 = 21;
+const uint8_t PIN_LED_CH1 = 0;
+const uint8_t PIN_LED_CH2 = 1;
+const uint8_t PIN_LED_CH3 = 2;
+const uint8_t PIN_LED_CH4 = 3;
+const uint8_t PIN_LED_CH5 = 4;
+const uint8_t PIN_LED_CH6 = 5;
+const uint8_t PIN_LED_CH7 = 6;
+const uint8_t PIN_LED_CH8 = 7;
 
 // Servos
-const uint8_t PIN_SERVO_1 = 1;
-const uint8_t PIN_SERVO_2 = 2;
-const uint8_t PIN_SERVO_3 = 3;
+const uint8_t PIN_SERVO_1 = 8;
+const uint8_t PIN_SERVO_2 = 9;
+const uint8_t PIN_SERVO_3 = 10;
+
+// Indicator LEDs
+const uint8_t PIN_LED_CONN = 24;
+const uint8_t PIN_LED_ERR  = 25;
+
+// Battery voltage ADC
+const uint8_t PIN_VSENSE = 29;
 
 // Array of LED channel pins
 const uint8_t LED_CHANNEL_PINS[8] = {
@@ -81,6 +90,7 @@ const int SERVO_DEFAULT_DECEL      = 8000;
 // Server (serial, core protocol, indicators, connection management)
 SfxServer server;
 LightFxServer lightfxServer;
+BatteryMonitor batteryMonitor;
 
 // ============================================================================
 //  STATE VARIABLES
@@ -369,6 +379,7 @@ void setupLightFxCallbacks() {
             status.eventCount = seq.count();
             status.currentIndex = seq.currentIndex();
             status.loopCount = seq.loopCount();
+            status.brightness = ledChannels[channel - 1].brightness();
         }
     });
     
@@ -380,6 +391,7 @@ void setupLightFxCallbacks() {
             queue.count = seq.count();
             queue.currentIndex = seq.currentIndex();
             queue.playing = seq.isPlaying();
+            queue.brightness = ledChannels[channel - 1].brightness();
             
             // Populate event details
             for (uint8_t i = 0; i < queue.count && i < 24; i++) {
@@ -545,7 +557,11 @@ void setupLightFxCallbacks() {
 
 void setup() {
     // Initialize server (serial, device name, indicators, core callbacks)
-    server.begin("LightFX", FIRMWARE_VERSION, BUILD_NUMBER);
+    // Battery ADC
+    analogReadResolution(12);
+    batteryMonitor.begin(PIN_VSENSE, 5.1f);
+
+    server.begin("LightFX", FIRMWARE_VERSION, BUILD_NUMBER, PIN_LED_CONN, PIN_LED_ERR);
     server.onInit([]() { performSafeInit(); });
     server.onShutdown([]() { performSafeShutdown(); });
     
@@ -610,7 +626,12 @@ void setup() {
         }
         buf[19] = enabledFlags;
         
-        return 20;
+        // Battery (4 bytes)
+        CoreProtocol::putU16LE(&buf[20], (uint16_t)batteryMonitor.voltage_mV());
+        buf[22] = batteryMonitor.cellCount();
+        buf[23] = batteryMonitor.percentage();
+        
+        return 24;
     });
     
     // Finalize router (core handler + LightFX handler)
@@ -622,6 +643,9 @@ void setup() {
 // ============================================================================
 
 void loop() {
+    // Update battery monitor
+    batteryMonitor.update();
+    
     // Process protocol, connection timeout, indicators
     server.loop();
     

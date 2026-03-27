@@ -444,16 +444,15 @@ def _parse_gearcontrol_status(data: bytes) -> None:
 
 
 def _parse_gunfx_status(data: bytes) -> None:
-    """Parse GunFX module status data (40 bytes).
+    """Parse GunFX module status data (28 bytes).
     
     Wire format:
       [flags:u8][fanSpeed:u8][fanOffMs:u16]
       [servo0:u16][servo1:u16][servo2:u16]
       [rpm:u16][shots:u32][heaterMs:u32]
-      Heater INA226: [busV_mV:u16][current_mA:u16][power_mW:u16]
-      Fan INA226:    [busV_mV:u16][current_mA:u16][power_mW:u16]
-      [batteryV_mV:u16][inaFlags:u8][shuntR_mohm:u16]
-      [ledFlags:u8][cellCount:u8][batteryPct:u8]
+      [heaterError:u8][fanError:u8]
+      [heaterDuty:u8][fanDuty:u8]
+      [batteryV_mV:u16][cellCount:u8][batteryPct:u8]
     """
     if len(data) < 20:
         print(f"  GunFX:     (incomplete: {data.hex()})")
@@ -509,62 +508,37 @@ def _parse_gunfx_status(data: bytes) -> None:
     # ── Servos ──
     print(f"  Servos:    [{servo0}µs, {servo1}µs, {servo2}µs]")
 
-    # ── Extended data (INA226 + battery) ──
-    if len(data) >= 40:
-        # Heater INA226 (bytes 20-25, Motor 0)
-        htr_bus_mV   = read_u16_le(data, 20)
-        htr_cur_mA   = read_u16_le(data, 22)
-        htr_pwr_mW   = read_u16_le(data, 24)
+    # ── Smoke Error Reasons (bytes 20-21) ──
+    if len(data) >= 22:
+        from tests.framework.packets import SmokeErrorReason
+        htr_err = data[20]
+        fan_err = data[21]
+        if htr_err != SmokeErrorReason.NONE or fan_err != SmokeErrorReason.NONE:
+            print(f"  ── Smoke Errors ──────────────")
+            if htr_err != SmokeErrorReason.NONE:
+                print(f"  Heater:    {Fore.RED}{SmokeErrorReason.name(htr_err)}{Style.RESET_ALL}")
+            if fan_err != SmokeErrorReason.NONE:
+                print(f"  Fan:       {Fore.RED}{SmokeErrorReason.name(fan_err)}{Style.RESET_ALL}")
 
-        # Fan INA226 (bytes 26-31, Motor 1)
-        fan_bus_mV   = read_u16_le(data, 26)
-        fan_cur_mA   = read_u16_le(data, 28)
-        fan_pwr_mW   = read_u16_le(data, 30)
+    # ── Overcurrent Throttle State (bytes 22-23) ──
+    if len(data) >= 24:
+        htr_duty = data[22]
+        fan_duty = data[23]
+        if htr_duty < 255 or fan_duty < 255:
+            print(f"  ── Overcurrent Throttle ──────")
+            if htr_duty < 255:
+                pct = round(htr_duty / 255 * 100)
+                print(f"  Heater:    {Fore.YELLOW}throttled to {pct}% (duty {htr_duty}/255){Style.RESET_ALL}")
+            if fan_duty < 255:
+                pct = round(fan_duty / 255 * 100)
+                print(f"  Fan:       {Fore.YELLOW}throttled to {pct}% (duty {fan_duty}/255){Style.RESET_ALL}")
 
-        # Battery (bytes 32-33)
-        battery_mV   = read_u16_le(data, 32)
+    # ── Battery (bytes 24-27) ──
+    if len(data) >= 28:
+        battery_mV  = read_u16_le(data, 24)
+        cell_count  = data[26]
+        battery_pct = data[27]
 
-        # INA flags (byte 34)
-        ina_flags    = data[34]
-        htr_ina_ok   = bool(ina_flags & 0x01)
-        fan_ina_ok   = bool(ina_flags & 0x02)
-
-        # Shunt resistance (bytes 35-36)
-        shunt_mohm   = read_u16_le(data, 35)
-
-        # LED flags (byte 37)
-        led_flags    = data[37]
-
-        # Battery cell info (bytes 38-39)
-        cell_count   = data[38]
-        battery_pct  = data[39]
-
-        # ── Power Monitoring ──
-        print(f"  ── Power Monitoring ───────────")
-
-        # Heater INA226 (Motor 0)
-        if htr_ina_ok:
-            htr_bus_V = htr_bus_mV / 1000.0
-            htr_pwr_W = htr_pwr_mW / 1000.0
-            print(f"  Heater:    {htr_bus_V:.2f}V  {htr_cur_mA}mA  {htr_pwr_W:.2f}W")
-        else:
-            print(f"  Heater:    {Fore.YELLOW}INA226 not detected{Style.RESET_ALL}")
-
-        # Fan INA226 (Motor 1)
-        if fan_ina_ok:
-            fan_bus_V = fan_bus_mV / 1000.0
-            fan_pwr_W = fan_pwr_mW / 1000.0
-            print(f"  Fan:       {fan_bus_V:.2f}V  {fan_cur_mA}mA  {fan_pwr_W:.2f}W")
-        else:
-            print(f"  Fan:       {Fore.YELLOW}INA226 not detected{Style.RESET_ALL}")
-
-        # Shunt resistance
-        if shunt_mohm > 0:
-            shunt_ohm = shunt_mohm / 1000.0
-            max_current = 81.92 / shunt_ohm  # INA226 max shunt voltage = ±81.92mV
-            print(f"  Shunt:     {shunt_mohm}mΩ  max={max_current:.0f}mA")
-
-        # Battery
         battery_V = battery_mV / 1000.0
         if battery_mV > 0:
             batt_parts = [f"{battery_V:.2f}V ({battery_mV}mV)"]
@@ -576,41 +550,6 @@ def _parse_gunfx_status(data: bytes) -> None:
             print(f"  Battery:   {', '.join(batt_parts)}")
         else:
             print(f"  Battery:   {Fore.YELLOW}not detected{Style.RESET_ALL}")
-
-        # Status LEDs
-        led_labels = ['HEATER', 'FAN', 'SPINDN', 'FIRING', 'FLASH']
-        led_parts = []
-        for bit, label in enumerate(led_labels):
-            if led_flags & (1 << bit):
-                led_parts.append(f"{Fore.GREEN}{label}{Style.RESET_ALL}")
-            else:
-                led_parts.append(label.lower())
-        print(f"  LEDs:      [{', '.join(led_parts)}]")
-
-    # ── Smoke Error Reasons (bytes 40-41) ──
-    if len(data) >= 42:
-        from tests.framework.packets import SmokeErrorReason
-        htr_err = data[40]
-        fan_err = data[41]
-        if htr_err != SmokeErrorReason.NONE or fan_err != SmokeErrorReason.NONE:
-            print(f"  ── Smoke Errors ──────────────")
-            if htr_err != SmokeErrorReason.NONE:
-                print(f"  Heater:    {Fore.RED}{SmokeErrorReason.name(htr_err)}{Style.RESET_ALL}")
-            if fan_err != SmokeErrorReason.NONE:
-                print(f"  Fan:       {Fore.RED}{SmokeErrorReason.name(fan_err)}{Style.RESET_ALL}")
-
-    # ── Overcurrent Throttle State (bytes 42-43) ──
-    if len(data) >= 44:
-        htr_duty = data[42]
-        fan_duty = data[43]
-        if htr_duty < 255 or fan_duty < 255:
-            print(f"  ── Overcurrent Throttle ──────")
-            if htr_duty < 255:
-                pct = round(htr_duty / 255 * 100)
-                print(f"  Heater:    {Fore.YELLOW}throttled to {pct}% (duty {htr_duty}/255){Style.RESET_ALL}")
-            if fan_duty < 255:
-                pct = round(fan_duty / 255 * 100)
-                print(f"  Fan:       {Fore.YELLOW}throttled to {pct}% (duty {fan_duty}/255){Style.RESET_ALL}")
 
 
 def _parse_hubfx_status(data: bytes) -> None:
@@ -721,7 +660,7 @@ def extract_hubfx_features(payload: bytes) -> Optional[dict]:
 
 
 def _parse_lightfx_status(data: bytes) -> None:
-    """Parse LightFX module status data (20 bytes).
+    """Parse LightFX module status data (24 bytes).
     
     Wire format:
       [ledBrightness:u8×8][ledSeqFlags:u8]
@@ -729,6 +668,7 @@ def _parse_lightfx_status(data: bytes) -> None:
       [landingLightStates:u8×3]
       [masterBrightness_pct:u8]
       [ledEnabledFlags:u8]
+      [batteryV_mV:u16LE][cellCount:u8][batteryPct:u8]
     """
     if len(data) < 15:
         print(f"  LightFX:   (incomplete: {data.hex()})")
@@ -787,6 +727,14 @@ def _parse_lightfx_status(data: bytes) -> None:
     if ll_states:
         ll_parts = [f"slot{i+1}={s}" for i, s in enumerate(ll_states)]
         print(f"  Lights:    {', '.join(ll_parts)}")
+    
+    # Battery (optional, backward compat — bytes 20-23)
+    if len(data) >= 24:
+        bat_mv = read_u16_le(data, 20)
+        cell_count = data[22]
+        bat_pct = data[23]
+        bat_v = bat_mv / 1000.0
+        print(f"  Battery:   {bat_v:.2f}V ({bat_pct}%, {cell_count}S)")
 
 
 # =============================================================================
@@ -1139,12 +1087,13 @@ def parse_led_seq_status(payload: bytes) -> Optional[dict]:
         'event_count': payload[2],
         'current_index': payload[3],
         'loop_count': int.from_bytes(payload[4:8], 'little'),
+        'brightness': payload[8] if len(payload) >= 9 else 0,
     }
 
 
 def parse_led_seq_queue(payload: bytes) -> Optional[dict]:
     """Parse LED_SEQ_QUEUE_RESP payload."""
-    if len(payload) < 4:
+    if len(payload) < 5:
         return None
     
     result = {
@@ -1152,13 +1101,14 @@ def parse_led_seq_queue(payload: bytes) -> Optional[dict]:
         'count': payload[1],
         'current_index': payload[2],
         'playing': payload[3] != 0,
+        'brightness': payload[4],
         'events': [],
     }
     
     event_names = ['ON', 'OFF', 'FLASH', 'FADE_IN', 'FADE_OUT', 'FADING']
     
     for i in range(result['count']):
-        offset = 4 + (i * 4)
+        offset = 5 + (i * 4)
         if offset + 4 <= len(payload):
             etype = payload[offset]
             duration = int.from_bytes(payload[offset+1:offset+3], 'little')

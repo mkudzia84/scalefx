@@ -4,9 +4,8 @@ Slave microcontroller for gun FX hardware control. Receives commands from the ma
 - Nozzle flash LED (PWM)
 - Smoke heater and fan
 - Turret servos (pitch, yaw, retract)
-- Status LEDs (heater indicator, firing status)
 
-**Version:** 0.4.0  
+**Version:** 0.7.0  
 **Protocol:** Binary COBS with CRC-8  
 **Baud Rate:** 1000000 (1Mbps)
 
@@ -23,35 +22,14 @@ The GunFX board connects to the main ScaleFX Hub board via a custom USB-C cable.
 | 1 | Servo 1 |
 | 2 | Servo 2 |
 | 3 | Servo 3 |
-| 4 | I2C SDA |
-| 5 | I2C SCL |
-| 9 | Nozzle Flash LED (PWM) |
-| 13 | Indicator LED (connection) |
-| 14 | Indicator LED (error) |
-| 15 | Smoke Heater (Motor 0 CW) |
-| 16 | Motor 0 CCW — held LOW |
-| 17 | Smoke Fan Motor PWM (Motor 1 CW) |
-| 18 | Motor 1 CCW — held LOW |
-| 21 | Status LED — heater on (Motor 0) |
-| 23 | Status LED — fan running (Motor 1) |
-| 24 | Status LED — fan spindown (Motor 1) |
-| 25 | Status LED — firing active (Motor 2) |
-| 26 | Status LED — flash pulse (Motor 2) |
+| 13 | Indicator LED — connection (blue) |
+| 14 | Indicator LED — error (yellow) |
+| 16 | Smoke Fan Motor (PWM) |
+| 17 | Smoke Heater (relay) |
+| 25 | Muzzle Flash LED (PWM) |
 | 29 | Battery voltage ADC (÷6 divider) |
 
-### Status LED Indicators
-
-LEDs are mapped to GearControl board motor channels:
-
-| GPIO | Motor Ch | Function |
-|------|----------|----------|
-| 21 | Motor 0 CW | Heater active |
-| 23 | Motor 1 CW | Fan running |
-| 24 | Motor 1 CCW | Fan spinning down |
-| 25 | Motor 2 CW | Firing active |
-| 26 | Motor 2 CCW | Flash pulse |
-
-**Indicator LEDs (PicoServer, GP13/GP14):**
+**Indicator LEDs (SfxServer, GP13/GP14):**
 - GP13: Connection status (blink=waiting, solid=connected, off=lost)
 - GP14: Error (off=normal, fast blink=error)
 
@@ -186,14 +164,24 @@ Exceptions (fire-and-forget, no response expected):
 
 ### STATUS Payload (0xF4)
 
-| Field | Type | Description |
-|-------|------|-------------|
-| flags | u8 | Status bit field (see below) |
-| fan_off_ms | u16le | Remaining fan spindown time |
-| servo1_us | u16le | Servo 1 position |
-| servo2_us | u16le | Servo 2 position |
-| servo3_us | u16le | Servo 3 position |
-| rpm | u16le | Current firing rate |
+| Offset | Field | Type | Description |
+|--------|-------|------|-------------|
+| 0 | flags | u8 | Status bit field (see below) |
+| 1 | fanSpeed | u8 | Current fan PWM speed |
+| 2 | fanOffMs | u16le | Remaining fan spindown time (ms) |
+| 4 | servo0 | u16le | Servo 1 position (µs) |
+| 6 | servo1 | u16le | Servo 2 position (µs) |
+| 8 | servo2 | u16le | Servo 3 position (µs) |
+| 10 | rpm | u16le | Current firing rate (RPM) |
+| 12 | shots | u32le | Total shots fired |
+| 16 | heaterMs | u32le | Cumulative heater-on time (ms) |
+| 20 | heaterError | u8 | Heater SmokeErrorReason code |
+| 21 | fanError | u8 | Fan SmokeErrorReason code |
+| 22 | heaterDuty | u8 | Heater PWM duty cap (255=no throttle) |
+| 23 | fanDuty | u8 | Fan PWM duty cap (255=no throttle) |
+| 24 | batteryV_mV | u16le | Battery voltage (mV) |
+| 26 | cellCount | u8 | Detected cell count (1–6S) |
+| 27 | batteryPct | u8 | Estimated SOC (0–100%) |
 
 **Status Flags:**
 | Bit | Name | Description |
@@ -205,14 +193,14 @@ Exceptions (fire-and-forget, no response expected):
 | 4 | fan_on | Smoke fan running |
 | 5 | fan_spindown | Fan spinning down |
 
-### Smoke Error Reasons (STATUS bytes 40-41)
+### Smoke Error Reasons (STATUS bytes 20-21)
 
 Reported per-channel in STATUS payload:
 
 | Byte | Channel | Description |
 |------|---------|-------------|
-| 40 | Heater | SmokeErrorReason code |
-| 41 | Fan | SmokeErrorReason code |
+| 20 | Heater | SmokeErrorReason code |
+| 21 | Fan | SmokeErrorReason code |
 
 | Code | Name | Description |
 |------|------|-------------|
@@ -222,20 +210,12 @@ Reported per-channel in STATUS payload:
 | 0x03 | HEATER_OVERCURRENT | Heater current exceeded limit |
 | 0x04 | FAN_OVERCURRENT | Fan current exceeded limit |
 
-### Overcurrent Throttle State (STATUS bytes 42-43)
+### Overcurrent Throttle State (STATUS bytes 22-23)
 
 | Byte | Channel | Description |
 |------|---------|-------------|
-| 42 | Heater | PWM duty cap (255=no throttle) |
-| 43 | Fan | PWM duty cap (255=no throttle) |
-
-**Disconnect Detection:**
-- When heater/fan is ON, INA226 current is monitored
-- 500ms startup ignore period after turn-on
-- If current stays below 5mA for >1 second → flagged as disconnected
-- Error auto-clears when current returns (re-plugged)
-- Error auto-clears when the channel is turned off then on again
-- Explicit clear via `SMOKE_RESET` (0x22) command
+| 22 | Heater | PWM duty cap (255=no throttle) |
+| 23 | Fan | PWM duty cap (255=no throttle) |
 
 **Overcurrent Protection:**
 - Default limits: heater 5000mA, fan 3000mA (configurable via `SMOKE_CURRENT_LIMIT`)
@@ -246,6 +226,7 @@ Reported per-channel in STATUS payload:
 - Throttle state resets on: off→on transition, `SMOKE_RESET`, or `SMOKE_CURRENT_LIMIT` command
 - Set limit to 0 to disable overcurrent protection for a channel
 - Error indicator LED (GP14) blinks when any smoke error is active
+- **Note:** Overcurrent protection requires INA226 current monitors to be attached
 
 ---
 

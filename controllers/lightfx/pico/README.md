@@ -19,29 +19,35 @@ Lighting effects controller for scale models - manages 8 LED channels with seque
 
 | Channel | GPIO | Description |
 |---------|------|-------------|
-| CH1     | 28   | LED Channel 1 |
-| CH2     | 27   | LED Channel 2 |
-| CH3     | 26   | LED Channel 3 |
-| CH4     | 25   | LED Channel 4 |
-| CH5     | 24   | LED Channel 5 |
-| CH6     | 23   | LED Channel 6 |
-| CH7     | 22   | LED Channel 7 |
-| CH8     | 21   | LED Channel 8 |
+| CH1     | 0    | LED Channel 1 |
+| CH2     | 1    | LED Channel 2 |
+| CH3     | 2    | LED Channel 3 |
+| CH4     | 3    | LED Channel 4 |
+| CH5     | 4    | LED Channel 5 |
+| CH6     | 5    | LED Channel 6 |
+| CH7     | 6    | LED Channel 7 |
+| CH8     | 7    | LED Channel 8 |
 
 #### Status LEDs
 
 | LED    | GPIO | Function |
 |--------|------|----------|
-| Blue   | 13   | Connection status - slow blink when disconnected |
-| Yellow | 14   | Activity indicator |
+| Blue   | 24   | Connection status - slow blink when disconnected |
+| Yellow | 25   | Error/warning indicator |
+
+#### Battery Sensing
+
+| Pin  | GPIO | Function |
+|------|------|----------|
+| VSYS | 29   | Battery voltage ADC (÷5.1 resistor divider) |
 
 #### Servos
 
 | Servo   | GPIO | Description |
 |---------|------|-------------|
-| Servo 1 | 1    | General purpose servo |
-| Servo 2 | 2    | General purpose servo |
-| Servo 3 | 3    | General purpose servo |
+| Servo 1 | 8    | General purpose servo |
+| Servo 2 | 9    | General purpose servo |
+| Servo 3 | 10   | General purpose servo |
 
 ---
 

@@ -140,7 +140,7 @@ class LightFxCommandHandler(CommandHandlerBase):
         """LightFX LED sequence add event."""
         if len(args) < 2:
             self.print_error("Usage: lfx.led.seq.add <ch> <event> <params...>")
-            self.print_info("Events: on, off, flash, fadein, fadeout")
+            self.print_info("Events: on, off, flash, fadein, fadeout, fading")
             return
         
         try:
@@ -192,9 +192,20 @@ class LightFxCommandHandler(CommandHandlerBase):
                 brightness = int(args[3])
                 packet = LightFxCommands.led_seq_add_fade_out(ch, duration, brightness)
                 msg = f"LED {ch}: FADE OUT over {duration}ms from {brightness}"
+                
+            elif event == 'fading':
+                if len(args) < 4:
+                    self.print_error("Usage: lfx.led.seq.add <ch> fading <cycle_ms> <duration_ms> [min] [max]")
+                    return
+                cycle = int(args[2])
+                duration = int(args[3])
+                min_b = int(args[4]) if len(args) > 4 else 0
+                max_b = int(args[5]) if len(args) > 5 else 100
+                packet = LightFxCommands.led_seq_add_fading(ch, cycle, duration, min_b, max_b)
+                msg = f"LED {ch}: FADING cycle {cycle}ms for {duration}ms ({min_b}-{max_b})"
             else:
                 self.print_error(f"Unknown event: {event}")
-                self.print_info("Available: on, off, flash, fadein, fadeout")
+                self.print_info("Available: on, off, flash, fadein, fadeout, fading")
                 return
             
             self._send_ack(packet, f"Sequence event added: {msg}")
@@ -226,6 +237,7 @@ class LightFxCommandHandler(CommandHandlerBase):
                     print(f"  Event Count:   {status['event_count']}")
                     print(f"  Current Index: {status['current_index']}")
                     print(f"  Loop Count:    {status['loop_count']}")
+                    print(f"  Brightness:    {status['brightness']}%")
                 else:
                     self.print_error("Invalid response payload")
             else:
@@ -253,7 +265,7 @@ class LightFxCommandHandler(CommandHandlerBase):
                 queue = parsers.parse_led_seq_queue(response.payload)
                 if queue:
                     status_str = "PLAYING" if queue['playing'] else "STOPPED"
-                    self.print_info(f"LED {queue['channel']} Sequence Queue ({status_str}, {queue['count']} events, @ index {queue['current_index']}):")
+                    self.print_info(f"LED {queue['channel']} Sequence Queue ({status_str}, {queue['count']} events, @ index {queue['current_index']}, brightness {queue['brightness']}%):")
                     
                     for event in queue['events']:
                         marker = " ← current" if event['index'] == queue['current_index'] else ""

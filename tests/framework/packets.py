@@ -67,8 +67,8 @@ class LightFxPacket:
     LANDING_LIGHT_RETRACT = 0x55
     LANDING_LIGHT_STATUS  = 0x56  # [slot:u8][phase:u8][finished:u8] Async progress
     # Response packet types
-    LED_STATUS_RESP     = 0x5A
-    LED_SEQ_STATUS_RESP = 0x5B
+    LED_SEQ_STATUS_RESP = 0x5A
+    LED_STATUS_RESP     = 0x5B
     LED_SEQ_QUEUE_RESP  = 0x5D
 
 

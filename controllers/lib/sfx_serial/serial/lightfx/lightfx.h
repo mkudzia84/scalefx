@@ -73,9 +73,9 @@ namespace LightFxPacket {
     constexpr uint8_t LANDING_LIGHT_STATUS  = 0x56;  // [slot:u8][phase:u8][finished:u8] async progress
     
     // Response packets (server -> client)
-    constexpr uint8_t LED_SEQ_STATUS_RESP  = 0x5A;  // [ch:u8][playing:u8][events:u8][index:u8][loops:u32]
+    constexpr uint8_t LED_SEQ_STATUS_RESP  = 0x5A;  // [ch:u8][playing:u8][events:u8][index:u8][loops:u32][brightness:u8]
     constexpr uint8_t LED_STATUS_RESP      = 0x5B;  // [ch:u8][brightness:u8][seq_playing:u8][events:u8] x8
-    constexpr uint8_t LED_SEQ_QUEUE_RESP   = 0x5D;  // [ch:u8][count:u8][events: type:u8,duration:u16 x count]
+    constexpr uint8_t LED_SEQ_QUEUE_RESP   = 0x5D;  // [ch:u8][count:u8][index:u8][playing:u8][brightness:u8][events: type:u8,duration:u16,param:u8 x count]
 }
 
 // LED event types for binary protocol
@@ -197,6 +197,7 @@ struct LightFxSeqStatus {
     uint8_t eventCount = 0;
     uint8_t currentIndex = 0;
     uint32_t loopCount = 0;
+    uint8_t brightness = 0;  // Current calculated brightness 0-100
 };
 
 /**
@@ -226,6 +227,7 @@ struct LightFxSeqQueue {
     uint8_t count = 0;
     uint8_t currentIndex = 0;
     bool playing = false;
+    uint8_t brightness = 0;  // Current calculated brightness 0-100
     LightFxEventInfo events[24];  // Max 24 events
 };
 
