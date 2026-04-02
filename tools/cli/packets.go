@@ -453,6 +453,62 @@ func DoorStateName(state byte) string {
 	return fmt.Sprintf("?(%d)", state)
 }
 
+// GearErrorReasonName returns gear error reason name.
+func GearErrorReasonName(reason byte) string {
+	names := map[byte]string{
+		0x00: "none",
+		0x01: "INA226 init failed",
+		0x02: "motor stall",
+		0x03: "motor timeout",
+		0x04: "sequence error",
+		0x05: "motor disconnected",
+		0x06: "calibration timeout",
+		0x07: "no stall detected",
+	}
+	if n, ok := names[reason]; ok {
+		return n
+	}
+	return fmt.Sprintf("unknown(0x%02X)", reason)
+}
+
+// SmokeErrorReasonName returns smoke error reason name.
+func SmokeErrorReasonName(reason byte) string {
+	names := map[byte]string{
+		0x00: "none",
+		0x01: "heater disconnected",
+		0x02: "fan disconnected",
+		0x03: "heater overcurrent",
+		0x04: "fan overcurrent",
+	}
+	if n, ok := names[reason]; ok {
+		return n
+	}
+	return fmt.Sprintf("unknown(0x%02X)", reason)
+}
+
+// GearSeqPhaseName returns gear sequence phase name.
+func GearSeqPhaseName(phase byte) string {
+	names := map[byte]string{
+		0: "idle", 1: "opening doors", 2: "running motor",
+		3: "closing doors", 4: "error", 5: "sync wait",
+	}
+	if n, ok := names[phase]; ok {
+		return n
+	}
+	return fmt.Sprintf("unknown(%d)", phase)
+}
+
+// LandingLightPhaseName returns landing light phase name.
+func LandingLightPhaseName(phase byte) string {
+	names := map[byte]string{
+		0: "retracted", 1: "deploying", 2: "deployed", 3: "retracting",
+	}
+	if n, ok := names[phase]; ok {
+		return n
+	}
+	return fmt.Sprintf("unknown(%d)", phase)
+}
+
 // EngineStateName returns engine state name.
 func EngineStateName(state byte) string {
 	names := map[byte]string{0: "Stopped", 1: "Starting", 2: "Running", 3: "Stopping"}

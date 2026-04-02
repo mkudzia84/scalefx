@@ -196,203 +196,623 @@ func ParseStatusPayload(payload []byte, controllerType string) {
 // ─── Module-Specific Status Parsers ───
 
 func parseGunFXStatus(data []byte) {
-	if len(data) < 28 {
-		fmt.Printf("  GunFX module data (%d bytes, expected 28)\n", len(data))
+	// Wire format (28 bytes):
+	//   [flags:u8][fanSpeed:u8][fanOffMs:u16]
+	//   [servo0:u16][servo1:u16][servo2:u16]
+	//   [rpm:u16][shots:u32][heaterMs:u32]
+	//   [heaterError:u8][fanError:u8]
+	//   [heaterDuty:u8][fanDuty:u8]
+	//   [batteryV_mV:u16][cellCount:u8][batteryPct:u8]
+	if len(data) < 20 {
+		fmt.Printf("  GunFX: (incomplete: %d bytes)\n", len(data))
 		return
 	}
-	firing := data[0] != 0
-	rpm := ReadU16LE(data, 1)
-	fmt.Printf("  ── GunFX Status ──\n")
-	fmt.Printf("  Firing:     %v (RPM: %d)\n", firing, rpm)
 
-	// Servos (3x): [pulse_us:u16][configured:u8]
-	offset := 3
-	for i := 0; i < 3; i++ {
-		if offset+3 > len(data) {
-			break
-		}
-		pulse := ReadU16LE(data, offset)
-		configured := data[offset+2] != 0
-		fmt.Printf("  Servo %d:    %d µs (configured: %v)\n", i+1, pulse, configured)
-		offset += 3
+	flags := data[0]
+	firing := flags&0x01 != 0
+	flashActive := flags&0x02 != 0
+	flashFading := flags&0x04 != 0
+	heaterOn := flags&0x08 != 0
+	fanOn := flags&0x10 != 0
+	fanSpindown := flags&0x20 != 0
+
+	fanSpeed := data[1]
+	fanOffMs := ReadU16LE(data, 2)
+	servo0 := ReadU16LE(data, 4)
+	servo1 := ReadU16LE(data, 6)
+	servo2 := ReadU16LE(data, 8)
+	rpm := ReadU16LE(data, 10)
+	shots := ReadU32LE(data, 12)
+	heaterMs := ReadU32LE(data, 16)
+
+	// Build state flags string
+	var stateParts []string
+	if firing {
+		stateParts = append(stateParts, colorize(colorRed, "FIRING"))
+	}
+	if flashActive {
+		stateParts = append(stateParts, "FLASH")
+	}
+	if flashFading {
+		stateParts = append(stateParts, "FADING")
+	}
+	if heaterOn {
+		stateParts = append(stateParts, colorize(colorYellow, "HEATER"))
+	}
+	if fanOn {
+		stateParts = append(stateParts, "FAN")
+	}
+	if fanSpindown {
+		stateParts = append(stateParts, "SPINDOWN")
+	}
+	stateStr := "IDLE"
+	if len(stateParts) > 0 {
+		stateStr = strings.Join(stateParts, ", ")
 	}
 
-	// Smoke: [heaterOn:u8][fanSpeed:u8][heater_mA:u16][fan_mA:u16][temp_C:i16][errorReason:u8]
-	if offset+8 <= len(data) {
-		heaterOn := data[offset] != 0
-		fanSpeed := data[offset+1]
-		heater_mA := ReadU16LE(data, offset+2)
-		fan_mA := ReadU16LE(data, offset+4)
-		temp_C := ReadI16LE(data, offset+6)
-		offset += 8
-		fmt.Printf("  Smoke:\n")
-		fmt.Printf("    Heater:   %v (%d mA)\n", heaterOn, heater_mA)
-		fmt.Printf("    Fan:      %d%% (%d mA)\n", fanSpeed, fan_mA)
-		fmt.Printf("    Temp:     %d°C\n", temp_C)
-		if offset < len(data) {
-			errReason := data[offset]
-			if errReason != 0 {
-				errNames := map[byte]string{
-					1: "heater disconnected", 2: "fan disconnected",
-					3: "heater overcurrent", 4: "fan overcurrent",
-				}
-				name := errNames[errReason]
-				if name == "" {
-					name = fmt.Sprintf("unknown(0x%02X)", errReason)
-				}
-				fmt.Printf("    Error:    %s%s%s\n", colorRed, name, colorReset)
+	fmt.Printf("  ── GunFX ──────────────────────\n")
+	fmt.Printf("  State:     %s\n", stateStr)
+
+	// Muzzle flash
+	if firing {
+		fmt.Printf("  Fire rate: %d RPM\n", rpm)
+	}
+	fmt.Printf("  Shots:     %d\n", shots)
+
+	// Fan
+	if fanOn || fanSpindown {
+		fanInfo := fmt.Sprintf("speed=%d", fanSpeed)
+		if fanSpindown && fanOffMs > 0 {
+			fanInfo += fmt.Sprintf(", off in %dms", fanOffMs)
+		}
+		fmt.Printf("  Fan:       %s\n", fanInfo)
+	}
+
+	// Heater
+	if heaterMs > 0 {
+		heaterSec := float64(heaterMs) / 1000.0
+		fmt.Printf("  Heater:    %.1fs total\n", heaterSec)
+	}
+
+	// Servos
+	fmt.Printf("  Servos:    [%dµs, %dµs, %dµs]\n", servo0, servo1, servo2)
+
+	// Smoke error reasons (bytes 20-21)
+	if len(data) >= 22 {
+		htrErr := data[20]
+		fanErr := data[21]
+		if htrErr != 0 || fanErr != 0 {
+			fmt.Printf("  ── Smoke Errors ──────────────\n")
+			if htrErr != 0 {
+				fmt.Printf("  Heater:    %s\n", colorize(colorRed, SmokeErrorReasonName(htrErr)))
 			}
+			if fanErr != 0 {
+				fmt.Printf("  Fan:       %s\n", colorize(colorRed, SmokeErrorReasonName(fanErr)))
+			}
+		}
+	}
+
+	// Overcurrent throttle state (bytes 22-23)
+	if len(data) >= 24 {
+		htrDuty := data[22]
+		fanDuty := data[23]
+		if htrDuty < 255 || fanDuty < 255 {
+			fmt.Printf("  ── Overcurrent Throttle ──────\n")
+			if htrDuty < 255 {
+				pct := int(htrDuty) * 100 / 255
+				fmt.Printf("  Heater:    %s\n", colorize(colorYellow, fmt.Sprintf("throttled to %d%% (duty %d/255)", pct, htrDuty)))
+			}
+			if fanDuty < 255 {
+				pct := int(fanDuty) * 100 / 255
+				fmt.Printf("  Fan:       %s\n", colorize(colorYellow, fmt.Sprintf("throttled to %d%% (duty %d/255)", pct, fanDuty)))
+			}
+		}
+	}
+
+	// Battery (bytes 24-27)
+	if len(data) >= 28 {
+		batteryMV := ReadU16LE(data, 24)
+		cellCount := data[26]
+		batteryPct := data[27]
+
+		if batteryMV > 0 {
+			batteryV := float64(batteryMV) / 1000.0
+			battParts := []string{fmt.Sprintf("%.2fV (%dmV)", batteryV, batteryMV)}
+			if cellCount > 0 {
+				battParts = append(battParts, fmt.Sprintf("%dS", cellCount))
+			}
+			if batteryPct > 0 {
+				pctColor := colorGreen
+				if batteryPct <= 10 {
+					pctColor = colorRed
+				} else if batteryPct <= 30 {
+					pctColor = colorYellow
+				}
+				battParts = append(battParts, fmt.Sprintf("%s%d%%%s", pctColor, batteryPct, colorReset))
+			}
+			fmt.Printf("  Battery:   %s\n", strings.Join(battParts, ", "))
+		} else {
+			fmt.Printf("  Battery:   %s\n", colorize(colorYellow, "not detected"))
 		}
 	}
 }
 
 func parseGearControlStatus(data []byte) {
-	fmt.Printf("  ── GearControl Status ──\n")
-	// Per-gear data structure (53 bytes for 3 gears, from README)
-	// This is complex — show key fields
-	if len(data) < 3 {
-		fmt.Printf("  Module data: %d bytes\n", len(data))
+	fmt.Printf("  ── GearControl ────────────────\n")
+	// Wire format: 3 gears × 11 bytes = 33, then 20 bytes global = 53 total
+	if len(data) < 39 {
+		fmt.Printf("  GearControl: (incomplete: %d bytes)\n", len(data))
 		return
 	}
 
-	// Each gear block: state, errorReason, flags, calibState, plus config data
-	// For simplicity, show gear states at offsets known from the protocol
-	gearBlockSize := 17 // approximate per-gear block
-	numGears := 3
-	if len(data) < numGears*gearBlockSize {
-		// Just show raw
-		fmt.Printf("  Module data (%d bytes):", len(data))
-		for _, b := range data {
-			fmt.Printf(" %02X", b)
-		}
-		fmt.Println()
-		return
+	gearNames := []string{"Nose", "Left Main", "Right Main"}
+	stateColors := map[byte]string{
+		0: colorReset, 1: colorGreen, 2: colorCyan,
+		3: colorYellow, 4: colorYellow, 5: colorRed,
+		6: colorMagenta,
 	}
 
-	for i := 0; i < numGears; i++ {
-		offset := i * gearBlockSize
-		if offset+3 > len(data) {
-			break
+	// Pre-parse global data from after the 3 gear blocks
+	// Per-gear error reasons (bytes 39-41)
+	errorReasons := [3]byte{0, 0, 0}
+	if len(data) >= 42 {
+		errorReasons = [3]byte{data[39], data[40], data[41]}
+	}
+
+	// Shunt resistance (bytes 42-43)
+	shuntMohm := uint16(0)
+	if len(data) >= 44 {
+		shuntMohm = ReadU16LE(data, 42)
+	}
+
+	// Packed door modes per gear (bytes 44-46)
+	doorModes := [3]byte{0, 0, 0}
+	postDeployModes := [3]byte{0, 0, 0}
+	if len(data) >= 47 {
+		for i := 0; i < 3; i++ {
+			packed := data[44+i]
+			doorModes[i] = packed & 0x0F
+			postDeployModes[i] = (packed >> 4) & 0x0F
 		}
+	}
+
+	// Config flags per gear (bytes 47-49)
+	configFlags := [3]byte{0, 0, 0}
+	if len(data) >= 50 {
+		configFlags = [3]byte{data[47], data[48], data[49]}
+	}
+
+	// Door state per gear (bytes 50-52)
+	doorStates := [3]byte{0, 0, 0}
+	if len(data) >= 53 {
+		doorStates = [3]byte{data[50], data[51], data[52]}
+	}
+
+	// Global: yaw, led_flags, battery
+	yaw := ReadU16LE(data, 33)
+	ledFlags := data[35]
+	batteryMV := ReadU16LE(data, 36)
+	batteryFlags := data[38]
+
+	// Per-gear display
+	for i := 0; i < 3; i++ {
+		offset := i * 11
 		state := data[offset]
-		errReason := data[offset+1]
-		flags := data[offset+2]
+		currentMA := ReadU16LE(data, offset+1)
+		door0 := ReadU16LE(data, offset+3)
+		door1 := ReadU16LE(data, offset+5)
+		stallMA := ReadU16LE(data, offset+7)
+		shunt10uV := ReadI16LE(data, offset+9)
+		shuntMV := float64(shunt10uV) * 10.0 / 1000.0
 
-		gearNames := []string{"Nose", "Left", "Right"}
-		name := gearNames[i]
 		stateName := GearStateName(state)
-
-		fmt.Printf("  Gear %d (%s): %s", i, name, stateName)
-		if errReason != 0 {
-			fmt.Printf(" [error: 0x%02X]", errReason)
+		sColor := stateColors[state]
+		if sColor == "" {
+			sColor = colorReset
 		}
-		enabled := flags&0x80 != 0
+
+		// Config flags
+		cflags := configFlags[i]
+		enabled := cflags&0x80 != 0
+		hasYaw := cflags&0x01 != 0
+
+		// Build status tags
+		var tags []string
 		if !enabled {
-			fmt.Printf(" (DISABLED)")
+			tags = append(tags, colorize(colorYellow, "DISABLED"))
 		}
-		fmt.Println()
+		if state == 5 && errorReasons[i] != 0 { // ERROR state
+			tags = append(tags, colorize(colorRed, GearErrorReasonName(errorReasons[i])))
+		}
+		tagStr := ""
+		if len(tags) > 0 {
+			tagStr = "  [" + strings.Join(tags, ", ") + "]"
+		}
+
+		// Stall calibration
+		stallStr := fmt.Sprintf("stall=%dmA", stallMA)
+		if stallMA == 0 {
+			stallStr = colorize(colorYellow, "uncalibrated")
+		}
+
+		// Door modes
+		dModeName := strings.ToLower(DoorModeName(doorModes[i]))
+		pdModeName := "skip"
+		if postDeployModes[i] != 0 {
+			pdModeName = strings.ToLower(DoorModeName(postDeployModes[i]))
+		}
+
+		// Line 1: state + tags
+		fmt.Printf("  %10s: %s%s%s%s\n", gearNames[i], sColor, stateName, colorReset, tagStr)
+
+		// Line 2: current readings + calibration
+		fmt.Printf("             motor=%dmA  shunt=%.1fmV  %s\n", currentMA, shuntMV, stallStr)
+
+		// Line 3: doors + config
+		dState := doorStates[i]
+		dStateName := DoorStateName(dState)
+		dStateColors := map[byte]string{
+			0: colorYellow, 1: colorCyan, 2: colorGreen, 3: colorYellow, 4: colorYellow,
+		}
+		dStateColor := dStateColors[dState]
+		if dStateColor == "" {
+			dStateColor = colorReset
+		}
+
+		yawStr := ""
+		if hasYaw {
+			yawStr = "  yaw"
+		}
+
+		if doorModes[i] != 0 {
+			fmt.Printf("             doors=[%dµs, %dµs]  %s%s%s  pre=%s  post=%s%s\n",
+				door0, door1, dStateColor, dStateName, colorReset, dModeName, pdModeName, yawStr)
+		} else {
+			fmt.Printf("             doors=none%s\n", yawStr)
+		}
 	}
 
-	// Yaw + battery at end
-	yawOffset := numGears * gearBlockSize
-	if yawOffset+2 <= len(data) {
-		yaw_us := ReadU16LE(data, yawOffset)
-		fmt.Printf("  Yaw:        %d µs\n", yaw_us)
+	// ── Global ──
+	fmt.Printf("  ── Global ─────────────────────\n")
+	fmt.Printf("  Yaw:       %dµs\n", yaw)
+
+	// Shunt resistance config
+	if shuntMohm > 0 {
+		shuntOhm := float64(shuntMohm) / 1000.0
+		maxCurrent := 81.92 / shuntOhm // INA226 max shunt voltage
+		fmt.Printf("  Shunt:     %dmΩ (%.3fΩ)  max=%.0fmA\n", shuntMohm, shuntOhm, maxCurrent)
 	}
+
+	// Battery voltage and config
+	batteryEnabled := batteryFlags&0x04 != 0
+	autoDeploy := batteryFlags&0x01 != 0
+	lowVoltage := batteryFlags&0x02 != 0
+
+	if !batteryEnabled {
+		fmt.Printf("  Battery:   %s\n", colorize(colorYellow, "disabled"))
+	} else {
+		batteryV := float64(batteryMV) / 1000.0
+		parts := []string{fmt.Sprintf("%.1fV (%dmV)", batteryV, batteryMV)}
+		if autoDeploy {
+			parts = append(parts, colorize(colorCyan, "auto-deploy"))
+		}
+		if lowVoltage {
+			parts = append(parts, colorize(colorRed, "LOW VOLTAGE"))
+		}
+		fmt.Printf("  Battery:   %s\n", strings.Join(parts, ", "))
+	}
+
+	// Status LEDs
+	var ledParts []string
+	for gi := 0; gi < 3; gi++ {
+		depBit := gi * 2
+		retBit := gi*2 + 1
+		depOn := ledFlags&(1<<depBit) != 0
+		retOn := ledFlags&(1<<retBit) != 0
+		abbr := string(gearNames[gi][0]) // N, L, R
+		if depOn && retOn {
+			ledParts = append(ledParts, colorize(colorYellow, abbr+":both"))
+		} else if depOn {
+			ledParts = append(ledParts, colorize(colorGreen, abbr+":dep"))
+		} else if retOn {
+			ledParts = append(ledParts, colorize(colorCyan, abbr+":ret"))
+		} else {
+			ledParts = append(ledParts, abbr+":off")
+		}
+	}
+	// Indicator LEDs (bits 6-7)
+	if ledFlags&(1<<6) != 0 {
+		ledParts = append(ledParts, colorize(colorGreen, "CONN"))
+	} else {
+		ledParts = append(ledParts, "conn")
+	}
+	if ledFlags&(1<<7) != 0 {
+		ledParts = append(ledParts, colorize(colorRed, "ERR"))
+	} else {
+		ledParts = append(ledParts, "err")
+	}
+	fmt.Printf("  LEDs:      [%s]\n", strings.Join(ledParts, ", "))
 }
 
 func parseLightFXStatus(data []byte) {
-	fmt.Printf("  ── LightFX Status ──\n")
-	if len(data) < 1 {
+	// Wire format (24 bytes):
+	//   [ledBrightness:u8×8][ledSeqFlags:u8]
+	//   [servo0:u16][servo1:u16][servo2:u16]
+	//   [landingLightStates:u8×3]
+	//   [masterBrightness_pct:u8]
+	//   [ledEnabledFlags:u8]
+	//   [batteryV_mV:u16LE][cellCount:u8][batteryPct:u8]
+	if len(data) < 15 {
+		fmt.Printf("  LightFX: (incomplete: %d bytes)\n", len(data))
 		return
 	}
-	// LED channels: each has brightness + sequence running flag
-	fmt.Printf("  Module data (%d bytes):", len(data))
-	for _, b := range data {
-		fmt.Printf(" %02X", b)
+
+	// LED channels
+	ledBrightness := make([]byte, 8)
+	copy(ledBrightness, data[:8])
+	seqFlags := data[8]
+
+	// Servos
+	servo0 := ReadU16LE(data, 9)
+	servo1 := ReadU16LE(data, 11)
+	servo2 := ReadU16LE(data, 13)
+
+	// Landing light states (optional)
+	llPhaseNames := map[byte]string{0: "RET", 1: "DEPLOYING", 2: "DEP", 3: "RETRACTING"}
+	var llStates []string
+	if len(data) >= 18 {
+		for i := 0; i < 3; i++ {
+			phase := data[15+i]
+			name := llPhaseNames[phase]
+			if name == "" {
+				name = fmt.Sprintf("?(%d)", phase)
+			}
+			llStates = append(llStates, name)
+		}
 	}
-	fmt.Println()
+
+	// Master brightness (optional)
+	masterBrightness := byte(100)
+	if len(data) >= 19 {
+		masterBrightness = data[18]
+	}
+
+	// Enabled flags (optional)
+	enabledFlags := byte(0xFF)
+	if len(data) >= 20 {
+		enabledFlags = data[19]
+	}
+
+	fmt.Printf("  ── LightFX ────────────────────\n")
+
+	// LED status (compact format with enabled/disabled indicators)
+	var ledParts []string
+	for i := 0; i < 8; i++ {
+		ch := i + 1
+		bri := ledBrightness[i]
+		seq := seqFlags&(1<<i) != 0
+		enabled := enabledFlags&(1<<i) != 0
+		if !enabled {
+			ledParts = append(ledParts, fmt.Sprintf("ch%d=%d[DIS]", ch, bri))
+		} else if bri > 0 || seq {
+			seqMark := ""
+			if seq {
+				seqMark = "▶"
+			}
+			ledParts = append(ledParts, fmt.Sprintf("ch%d=%d%s", ch, bri, seqMark))
+		}
+	}
+	if len(ledParts) > 0 {
+		fmt.Printf("  LEDs:      %s\n", strings.Join(ledParts, ", "))
+	} else {
+		fmt.Printf("  LEDs:      all off\n")
+	}
+
+	// Master brightness (only show if not 100%)
+	if masterBrightness < 100 {
+		fmt.Printf("  Master:    %d%%\n", masterBrightness)
+	}
+
+	// Servos
+	fmt.Printf("  Servos:    [%dµs, %dµs, %dµs]\n", servo0, servo1, servo2)
+
+	// Landing lights
+	if len(llStates) > 0 {
+		var llParts []string
+		for i, s := range llStates {
+			llParts = append(llParts, fmt.Sprintf("slot%d=%s", i+1, s))
+		}
+		fmt.Printf("  Lights:    %s\n", strings.Join(llParts, ", "))
+	}
+
+	// Battery (optional, bytes 20-23)
+	if len(data) >= 24 {
+		batMV := ReadU16LE(data, 20)
+		cellCount := data[22]
+		batPct := data[23]
+		batV := float64(batMV) / 1000.0
+		fmt.Printf("  Battery:   %.2fV (%d%%, %dS)\n", batV, batPct, cellCount)
+	}
 }
 
 func parseHubFXStatus(data []byte) {
-	fmt.Printf("  ── HubFX Status ──\n")
-	if len(data) < 4 {
-		fmt.Printf("  Module data (%d bytes)\n", len(data))
+	// Wire format: [flags:u8][slaveMask:u8][loop1Count:u32LE] = 6 bytes
+	// Flags bits: 0=core1Ready, 1=audioInit, 2=flashReady, 3=usbHostReady, 4=sdCardReady
+	if len(data) < 2 {
+		fmt.Printf("  Hub data: %d bytes\n", len(data))
 		return
 	}
-	// HubFX status: [flags:u16LE][slaveMask:u8][audioMask:u8]...
-	flags := ReadU16LE(data, 0)
-	fmt.Printf("  Flags:      0x%04X\n", flags)
-	if len(data) >= 3 {
-		slaveMask := data[2]
-		fmt.Printf("  Slaves:     0x%02X", slaveMask)
-		if slaveMask&0x01 != 0 {
-			fmt.Print(" GunFX")
-		}
-		if slaveMask&0x02 != 0 {
-			fmt.Print(" LightFX")
-		}
-		if slaveMask&0x04 != 0 {
-			fmt.Print(" GearControl")
-		}
-		fmt.Println()
+
+	flags := data[0]
+	slaveMask := data[1]
+	loop1Count := uint32(0)
+	if len(data) >= 6 {
+		loop1Count = ReadU32LE(data, 2)
 	}
-	if len(data) > 4 {
-		fmt.Printf("  Extended (%d bytes):", len(data)-4)
-		for _, b := range data[4:] {
-			fmt.Printf(" %02X", b)
+
+	core1Ready := flags&0x01 != 0
+	audioInit := flags&0x02 != 0
+	flashReady := flags&0x04 != 0
+	usbReady := flags&0x08 != 0
+	sdReady := flags&0x10 != 0
+
+	fmt.Printf("\n  %s━━━ HubFX Status ━━━%s\n", colorCyan, colorReset)
+
+	// Core 1
+	c1Color := colorRed
+	c1Text := "NOT READY"
+	if core1Ready {
+		c1Color = colorGreen
+		c1Text = "Ready"
+	}
+	fmt.Printf("  Core 1:    %s%s%s\n", c1Color, c1Text, colorReset)
+	if len(data) >= 6 {
+		fmt.Printf("             %d iterations\n", loop1Count)
+	}
+
+	// Audio
+	audioColor := colorYellow
+	audioText := "Not initialized"
+	if audioInit {
+		audioColor = colorGreen
+		audioText = "Initialized"
+	}
+	fmt.Printf("  Audio:     %s%s%s\n", audioColor, audioText, colorReset)
+
+	// Flash
+	flashColor := colorYellow
+	flashText := "Not available"
+	if flashReady {
+		flashColor = colorGreen
+		flashText = "Ready"
+	}
+	fmt.Printf("  Flash:     %s%s%s\n", flashColor, flashText, colorReset)
+
+	// SD Card
+	sdColor := colorYellow
+	sdText := "Not available"
+	if sdReady {
+		sdColor = colorGreen
+		sdText = "Ready"
+	}
+	fmt.Printf("  SD Card:   %s%s%s\n", sdColor, sdText, colorReset)
+
+	// USB Host
+	usbColor := colorYellow
+	usbText := "Not active"
+	if usbReady {
+		usbColor = colorGreen
+		usbText = "Active"
+	}
+	fmt.Printf("  USB Host:  %s%s%s\n", usbColor, usbText, colorReset)
+
+	// Slaves
+	slaveNames := map[int]string{0: "GunFX", 1: "LightFX", 2: "GearControl"}
+	hasSlaves := false
+	for bit := range slaveNames {
+		if slaveMask&(1<<bit) != 0 {
+			hasSlaves = true
+			break
 		}
-		fmt.Println()
+	}
+	if hasSlaves {
+		fmt.Printf("  Slaves:\n")
+		for bit := 0; bit <= 2; bit++ {
+			name := slaveNames[bit]
+			isReady := slaveMask&(1<<bit) != 0
+			color := colorRed
+			status := "not connected"
+			if isReady {
+				color = colorGreen
+				status = "connected"
+			}
+			fmt.Printf("    %s: %s%s%s\n", name, color, status, colorReset)
+		}
+	} else {
+		fmt.Printf("  Slaves:    %s\n", colorize(colorYellow, "None connected"))
 	}
 }
 
 // ParseI2CScanResult parses I2C_SCAN_RESULT payload.
+// Wire format: [numExpected:u8][N×(addr:u8, found:u8, identified:u8)][numExtra:u8][M×addr:u8]
 func ParseI2CScanResult(payload []byte) {
-	if len(payload) < 1 {
-		fmt.Println("  (empty scan result)")
+	if len(payload) < 2 {
+		fmt.Println("  I2C scan: (incomplete)")
 		return
 	}
 
-	// Format: [expectedCount:u8][expected: addr,status pairs...][extraCount:u8][extra addrs...]
 	offset := 0
 	expectedCount := int(payload[offset])
 	offset++
 
-	if expectedCount > 0 {
-		fmt.Printf("  Expected devices (%d):\n", expectedCount)
-		for i := 0; i < expectedCount && offset+1 < len(payload); i++ {
-			addr := payload[offset]
-			status := payload[offset+1]
-			offset += 2
-			statusStr := "MISSING"
-			if status == 1 {
-				statusStr = colorize(colorGreen, "OK")
-			}
-			fmt.Printf("    0x%02X: %s\n", addr, statusStr)
+	fmt.Printf("  ── I2C Bus Scan ───────────────\n")
+	fmt.Printf("  Expected devices: %d\n", expectedCount)
+
+	for i := 0; i < expectedCount; i++ {
+		if offset+2 >= len(payload) {
+			break
 		}
+		addr := payload[offset]
+		found := payload[offset+1] != 0
+		identified := payload[offset+2] != 0
+		offset += 3
+
+		var statusStr string
+		if found && identified {
+			statusStr = colorize(colorGreen, "OK") + " (found + verified)"
+		} else if found {
+			statusStr = colorize(colorYellow, "FOUND") + " (ACK but not verified)"
+		} else {
+			statusStr = colorize(colorRed, "MISSING") + " (no ACK)"
+		}
+		fmt.Printf("  0x%02X: %s\n", addr, statusStr)
 	}
 
+	// Extra devices
 	if offset < len(payload) {
 		extraCount := int(payload[offset])
 		offset++
 		if extraCount > 0 {
-			fmt.Printf("  Extra devices (%d):\n", extraCount)
-			for i := 0; i < extraCount && offset < len(payload); i++ {
-				fmt.Printf("    0x%02X\n", payload[offset])
+			var addrs []string
+			for j := 0; j < extraCount && offset < len(payload); j++ {
+				addrs = append(addrs, fmt.Sprintf("0x%02X", payload[offset]))
 				offset++
 			}
+			fmt.Printf("  Other devices: %s\n", strings.Join(addrs, ", "))
+		} else {
+			fmt.Printf("  Other devices: none\n")
 		}
 	}
+
+	fmt.Printf("  ────────────────────────────────\n")
 }
 
 // ParseGearCalibStatus parses GEAR_CALIB_STATUS async payload.
+// Wire format (10 bytes): [gear_id:u8][phase:u8][current_mA:u16][peak_mA:u16][stall_mA:u16][finished:u8][errorReason:u8]
 func ParseGearCalibStatus(payload []byte) {
-	if len(payload) < 4 {
+	if len(payload) < 9 {
+		if len(payload) > 0 {
+			fmt.Printf("  CalibStatus: (incomplete: %d bytes)\n", len(payload))
+		}
 		return
 	}
 	gearID := payload[0]
 	phase := payload[1]
-	// progress data follows
+	currentMA := ReadU16LE(payload, 2)
+	peakMA := ReadU16LE(payload, 4)
+	stallMA := ReadU16LE(payload, 6)
+	finished := payload[8] != 0
+	errorReason := byte(0)
+	if len(payload) >= 10 {
+		errorReason = payload[9]
+	}
+
+	gearNames := map[byte]string{0: "Nose", 1: "Left Main", 2: "Right Main"}
+	gearName := gearNames[gearID]
+	if gearName == "" {
+		gearName = fmt.Sprintf("Gear %d", gearID)
+	}
+
 	phaseNames := map[byte]string{
 		0: "IDLE", 1: "CLEAR_RUN", 2: "CLEAR_SETTLE", 3: "DEPLOY_RUN",
 		4: "MID_SETTLE", 5: "RETRACT_RUN", 6: "COMPLETE", 7: "ERROR",
@@ -402,65 +822,162 @@ func ParseGearCalibStatus(payload []byte) {
 	if phaseName == "" {
 		phaseName = fmt.Sprintf("?(%d)", phase)
 	}
-	fmt.Printf("  Calibration gear %d: %s\n", gearID, phaseName)
 
-	if phase == 6 && len(payload) >= 8 { // COMPLETE
-		stall_mA := ReadU16LE(payload, 2)
-		deployTime := ReadU16LE(payload, 4)
-		retractTime := ReadU16LE(payload, 6)
-		fmt.Printf("    Stall current: %d mA\n", stall_mA)
-		fmt.Printf("    Deploy time:   %d ms\n", deployTime)
-		fmt.Printf("    Retract time:  %d ms\n", retractTime)
+	// Color based on phase
+	phaseColor := colorReset
+	switch phase {
+	case 6: // COMPLETE
+		phaseColor = colorGreen
+	case 7: // ERROR
+		phaseColor = colorRed
+	case 8: // CANCELLED
+		phaseColor = colorYellow
+	case 1, 3, 5: // Motor running phases
+		phaseColor = colorCyan
 	}
+
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%s%s%s", phaseColor, phaseName, colorReset))
+	parts = append(parts, fmt.Sprintf("current=%dmA", currentMA))
+	if peakMA > 0 {
+		parts = append(parts, fmt.Sprintf("peak=%dmA", peakMA))
+	}
+	if stallMA > 0 {
+		parts = append(parts, fmt.Sprintf("stall=%dmA", stallMA))
+	}
+	if finished {
+		parts = append(parts, colorize(colorWhite, "[FINISHED]"))
+	}
+	if phase == 7 && errorReason > 0 {
+		parts = append(parts, colorize(colorRed, "reason="+GearErrorReasonName(errorReason)))
+	}
+
+	fmt.Printf("  %s◆%s %s calib: %s\n", colorMagenta, colorReset, gearName, strings.Join(parts, ", "))
 }
 
 // ParseGearSeqStatus parses GEAR_SEQ_STATUS async payload.
+// Wire format (8 bytes): [gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]
 func ParseGearSeqStatus(payload []byte) {
-	if len(payload) < 4 {
+	if len(payload) < 8 {
+		if len(payload) > 0 {
+			fmt.Printf("  SeqStatus: (incomplete: %d bytes)\n", len(payload))
+		}
 		return
 	}
 	gearID := payload[0]
 	phase := payload[1]
 	deploying := payload[2] != 0
 	finished := payload[3] != 0
+	elapsedMs := ReadU32LE(payload, 4)
 
-	phaseNames := map[byte]string{
-		0: "idle", 1: "opening doors", 2: "running motor",
-		3: "closing doors", 4: "error", 5: "sync wait",
-	}
-	phaseName := phaseNames[phase]
-	if phaseName == "" {
-		phaseName = fmt.Sprintf("?(%d)", phase)
+	gearNames := map[byte]string{0: "Nose", 1: "Left Main", 2: "Right Main"}
+	gearName := gearNames[gearID]
+	if gearName == "" {
+		gearName = fmt.Sprintf("Gear %d", gearID)
 	}
 
-	action := "retracting"
+	phaseName := GearSeqPhaseName(phase)
+	action := "retract"
 	if deploying {
-		action = "deploying"
+		action = "deploy"
 	}
 
-	if finished {
-		fmt.Printf("  Gear %d: %s complete\n", gearID, action)
-	} else {
-		fmt.Printf("  Gear %d: %s — %s\n", gearID, action, phaseName)
+	// Color based on state
+	phaseColor := colorYellow
+	switch {
+	case finished && phase != 4: // COMPLETE (not error)
+		phaseColor = colorGreen
+	case phase == 4: // SEQ_ERROR
+		phaseColor = colorRed
+	case phase == 2: // RUNNING_MOTOR
+		phaseColor = colorCyan
+	case phase == 5: // SYNC_WAIT
+		phaseColor = colorMagenta
 	}
+
+	elapsedSec := float64(elapsedMs) / 1000.0
+
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%s%s%s", phaseColor, phaseName, colorReset))
+	parts = append(parts, action)
+	parts = append(parts, fmt.Sprintf("%.1fs", elapsedSec))
+	if finished {
+		parts = append(parts, colorize(colorWhite, fmt.Sprintf("[FINISHED in %.1fs]", elapsedSec)))
+	}
+
+	fmt.Printf("  %s▸%s %s seq: %s\n", colorMagenta, colorReset, gearName, strings.Join(parts, ", "))
 }
 
 // ParseGearDoorStatus parses GEAR_DOOR_STATUS async payload.
+// Wire format (6 bytes): [gear_id:u8][state:u8][door0_pos_us:u16LE][door1_pos_us:u16LE]
 func ParseGearDoorStatus(payload []byte) {
-	if len(payload) < 5 {
+	if len(payload) < 2 {
+		if len(payload) > 0 {
+			fmt.Printf("  DoorStatus: (incomplete: %d bytes)\n", len(payload))
+		}
 		return
 	}
 	gearID := payload[0]
 	state := payload[1]
-	door0_us := ReadU16LE(payload, 2)
-	if len(payload) >= 6 {
-		door1_us := ReadU16LE(payload, 4)
-		fmt.Printf("  Gear %d doors: %s (d0=%dµs, d1=%dµs)\n",
-			gearID, DoorStateName(state), door0_us, door1_us)
-	} else {
-		fmt.Printf("  Gear %d doors: %s (d0=%dµs)\n",
-			gearID, DoorStateName(state), door0_us)
+
+	gearNames := map[byte]string{0: "Nose", 1: "Left Main", 2: "Right Main"}
+	gearName := gearNames[gearID]
+	if gearName == "" {
+		gearName = fmt.Sprintf("Gear %d", gearID)
 	}
+
+	stateName := DoorStateName(state)
+	stateColors := map[byte]string{
+		0: colorYellow, 1: colorCyan, 2: colorGreen, 3: colorYellow, 4: colorYellow,
+	}
+	stateColor := stateColors[state]
+	if stateColor == "" {
+		stateColor = colorReset
+	}
+
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%s%s%s", stateColor, stateName, colorReset))
+	if len(payload) >= 4 {
+		parts = append(parts, fmt.Sprintf("d0=%dµs", ReadU16LE(payload, 2)))
+	}
+	if len(payload) >= 6 {
+		parts = append(parts, fmt.Sprintf("d1=%dµs", ReadU16LE(payload, 4)))
+	}
+
+	fmt.Printf("  %s◇%s %s doors: %s\n", colorMagenta, colorReset, gearName, strings.Join(parts, ", "))
+}
+
+// ParseLandingLightStatus parses LANDING_LIGHT_STATUS async payload.
+// Wire format (3 bytes): [slot:u8][phase:u8][finished:u8]
+func ParseLandingLightStatus(payload []byte) {
+	if len(payload) < 3 {
+		if len(payload) > 0 {
+			fmt.Printf("  LandingLightStatus: (incomplete: %d bytes)\n", len(payload))
+		}
+		return
+	}
+	slot := payload[0]
+	phase := payload[1]
+	finished := payload[2] != 0
+
+	phaseName := LandingLightPhaseName(phase)
+
+	// Color based on state
+	phaseColor := colorCyan
+	switch phase {
+	case 2: // DEPLOYED
+		phaseColor = colorGreen
+	case 0: // RETRACTED
+		phaseColor = colorYellow
+	}
+
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%s%s%s", phaseColor, phaseName, colorReset))
+	if finished {
+		parts = append(parts, colorize(colorWhite, "[FINISHED]"))
+	}
+
+	fmt.Printf("  %s▸%s Landing light %d: %s\n", colorBlue, colorReset, slot, strings.Join(parts, ", "))
 }
 
 // ─── LightFX Response Parsers ───

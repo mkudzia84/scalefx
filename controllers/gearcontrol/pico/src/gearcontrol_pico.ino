@@ -58,7 +58,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.10.0"
-#define BUILD_NUMBER 56
+#define BUILD_NUMBER 57
 
 // ============================================================================
 //  PIN CONFIGURATION

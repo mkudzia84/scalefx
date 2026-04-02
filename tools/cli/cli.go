@@ -262,6 +262,8 @@ func (c *CLI) handleAsyncPacket(resp *Response) {
 		ParseGearSeqStatus(resp.Payload)
 	case GcGEAR_DOOR_STATUS:
 		ParseGearDoorStatus(resp.Payload)
+	case LfxLANDING_LIGHT_STATUS:
+		ParseLandingLightStatus(resp.Payload)
 	case CoreACK:
 		if c.verbose {
 			PrintInfo("  [async ACK tag=%d]", resp.Tag)
