@@ -80,6 +80,7 @@ class LightFxEventType:
     FADE_IN   = 0x03
     FADE_OUT  = 0x04
     FADING    = 0x05
+    BEACON    = 0x06
 
 
 class CoreError:
@@ -591,9 +592,10 @@ def known_device_name(vid: int, pid: int) -> str | None:
 
 class HubFxAudio:
     """HubFX audio wire format constants (matches C++ HubFxAudio namespace)."""
-    OUTPUT_STEREO = 0
-    OUTPUT_LEFT   = 1
-    OUTPUT_RIGHT  = 2
+    # Output channel bitmask (matches AudioChannel:: constants)
+    OUTPUT_CH1 = 0x01  # Channel 1 only
+    OUTPUT_CH2 = 0x02  # Channel 2 only
+    OUTPUT_ALL = OUTPUT_CH1 | OUTPUT_CH2  # All channels (default)
 
     LOOP_NONE     = 0  # Play once
     LOOP_FINITE   = 1  # Loop N times

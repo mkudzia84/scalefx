@@ -26,7 +26,7 @@ public:
     // ========================================================================
 
     CommandResult play(uint8_t channel, const char* path, uint8_t volumePct = 100,
-                       uint8_t output = HubFxAudio::OUTPUT_STEREO,
+                       uint8_t outputChannels = HubFxAudio::OUTPUT_ALL,
                        uint8_t loopMode = HubFxAudio::LOOP_NONE,
                        uint16_t loopCount = 0);
     CommandResult stop(uint8_t channel = HubFxAudio::CH_ALL);

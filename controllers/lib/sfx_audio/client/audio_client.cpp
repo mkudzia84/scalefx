@@ -114,7 +114,7 @@ void HubFxAudioClient::onModulePacket(uint8_t type, uint8_t tag,
 // ============================================================================
 
 CommandResult HubFxAudioClient::play(uint8_t channel, const char* path,
-                                      uint8_t volumePct, uint8_t output,
+                                      uint8_t volumePct, uint8_t outputChannels,
                                       uint8_t loopMode, uint16_t loopCount) {
     size_t pathLen = strlen(path);
     if (pathLen > 127) pathLen = 127;
@@ -122,7 +122,7 @@ CommandResult HubFxAudioClient::play(uint8_t channel, const char* path,
     uint8_t payload[7 + 127];
     payload[0] = channel;
     payload[1] = volumePct;
-    payload[2] = output;
+    payload[2] = outputChannels;
     payload[3] = loopMode;
     putU16LE(&payload[4], loopCount);
     payload[6] = (uint8_t)pathLen;

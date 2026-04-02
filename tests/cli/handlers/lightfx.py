@@ -140,7 +140,7 @@ class LightFxCommandHandler(CommandHandlerBase):
         """LightFX LED sequence add event."""
         if len(args) < 2:
             self.print_error("Usage: lfx.led.seq.add <ch> <event> <params...>")
-            self.print_info("Events: on, off, flash, fadein, fadeout, fading")
+            self.print_info("Events: on, off, flash, fadein, fadeout, fading, beacon")
             return
         
         try:
@@ -203,9 +203,19 @@ class LightFxCommandHandler(CommandHandlerBase):
                 max_b = int(args[5]) if len(args) > 5 else 100
                 packet = LightFxCommands.led_seq_add_fading(ch, cycle, duration, min_b, max_b)
                 msg = f"LED {ch}: FADING cycle {cycle}ms for {duration}ms ({min_b}-{max_b})"
+            elif event == 'beacon':
+                if len(args) < 4:
+                    self.print_error("Usage: lfx.led.seq.add <ch> beacon <cycle_ms> <duration_ms> [flash_pct] [max]")
+                    return
+                cycle = int(args[2])
+                duration = int(args[3])
+                flash_pct = int(args[4]) if len(args) > 4 else 15
+                max_b = int(args[5]) if len(args) > 5 else 100
+                packet = LightFxCommands.led_seq_add_beacon(ch, cycle, duration, flash_pct, max_b)
+                msg = f"LED {ch}: BEACON cycle {cycle}ms for {duration}ms, flash {flash_pct}% peak {max_b}"
             else:
                 self.print_error(f"Unknown event: {event}")
-                self.print_info("Available: on, off, flash, fadein, fadeout, fading")
+                self.print_info("Available: on, off, flash, fadein, fadeout, fading, beacon")
                 return
             
             self._send_ack(packet, f"Sequence event added: {msg}")

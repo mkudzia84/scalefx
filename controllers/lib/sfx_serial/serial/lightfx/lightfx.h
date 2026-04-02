@@ -86,7 +86,8 @@ namespace LightFxEventType {
     constexpr uint8_t FADE_IN   = 0x03;  // [duration:u16][brightness:u8]
     constexpr uint8_t FADE_OUT  = 0x04;  // [duration:u16][brightness:u8]
     constexpr uint8_t FADING    = 0x05;  // [cycle:u16][duration:u16][min:u8][max:u8]
-    constexpr uint8_t MAX_TYPE  = 0x05;  // Maximum valid event type
+    constexpr uint8_t BEACON    = 0x06;  // [cycle:u16][duration:u16][flashPct:u8][max:u8]
+    constexpr uint8_t MAX_TYPE  = 0x06;  // Maximum valid event type
 }
 
 // Landing light sequence phase constants (wire format)

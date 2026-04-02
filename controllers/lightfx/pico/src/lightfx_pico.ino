@@ -213,6 +213,7 @@ uint8_t eventNameToType(const char* name) {
     if (strcmp(name, "LedFadeIn") == 0) return LightFxEventType::FADE_IN;
     if (strcmp(name, "LedFadeOut") == 0) return LightFxEventType::FADE_OUT;
     if (strcmp(name, "LedFading") == 0) return LightFxEventType::FADING;
+    if (strcmp(name, "LedBeacon") == 0) return LightFxEventType::BEACON;
     return 0xFF;  // Unknown
 }
 
@@ -304,6 +305,10 @@ void setupLightFxCallbacks() {
             case LightFxEventType::FADING:
                 // param1=cycle, param2=duration, param3=min, param4=max
                 event = new LedFading(param1, param2, param3, param4 > 0 ? param4 : 100);
+                break;
+            case LightFxEventType::BEACON:
+                // param1=cycle, param2=duration, param3=flashPercent, param4=maxBrightness
+                event = new LedBeacon(param1, param2, param3 > 0 ? param3 : 15, 0, param4 > 0 ? param4 : 100);
                 break;
             default:
                 return LightFxError::INVALID_EVENT;

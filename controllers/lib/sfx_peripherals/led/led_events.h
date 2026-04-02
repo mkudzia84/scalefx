@@ -9,7 +9,8 @@
  *   - LedFlashing: On/Off at specified frequency
  *   - LedFadeIn: Fade from off to on
  *   - LedFadeOut: Fade from on to off
- *   - LedFading: Sinusoidal beacon/breathing effect
+ *   - LedFading: Sinusoidal breathing/pulsing effect
+ *   - LedBeacon: Rotating beacon (brief flash, extended off)
  * 
  * Usage:
  *   LedControl led;
@@ -374,6 +375,93 @@ private:
     uint32_t _startTime = 0;
     uint32_t _cycleDurationMs;
     uint32_t _durationMs;
+    uint8_t _minBrightness;
+    uint8_t _maxBrightness;
+    bool _complete = false;
+};
+
+// ============================================================================
+// LedBeacon Event - Rotating beacon with brief flash and extended off
+// ============================================================================
+
+/**
+ * @brief Rotating beacon effect — brief peaked flash with extended dark period
+ * 
+ * Simulates a rotating beacon light (e.g., aircraft anti-collision).
+ * A short cosine-shaped pulse occupies a fraction of the cycle, the rest
+ * is held at minimum brightness.
+ * 
+ *   ▄▄                    ▄▄                      Beacon (flashPercent=15)
+ *  ▟  ▜                  ▟  ▜
+ * ▐    ▌                ▐    ▌
+ * ─────────────────────────────────  time →
+ *   flash │   off period   │ flash
+ * 
+ * Compare with LedFading (equal ramp/fall, no extended off):
+ *   ▄▄▄▄   ▄▄▄▄   ▄▄▄▄     Fading (sinusoidal, 50% on)
+ *  ▟    ▜ ▟    ▜ ▟    ▜
+ * ─────────────────────────  time →
+ */
+class LedBeacon : public ILedEvent {
+public:
+    /**
+     * @brief Create a rotating beacon event
+     * @param cycleDurationMs Duration of one full rotation in milliseconds (e.g., 2000)
+     * @param durationMs Total event duration in milliseconds (0 = infinite)
+     * @param flashPercent Percentage of cycle occupied by flash pulse (1-50, default 15)
+     * @param minBrightness Brightness during off period (0-100, default 0)
+     * @param maxBrightness Peak brightness during flash (0-100, default 100)
+     */
+    explicit LedBeacon(uint32_t cycleDurationMs, uint32_t durationMs = 0,
+                       uint8_t flashPercent = 15,
+                       uint8_t minBrightness = 0, uint8_t maxBrightness = 100)
+        : _cycleDurationMs(cycleDurationMs), _durationMs(durationMs),
+          _flashPercent(flashPercent < 1 ? 1 : (flashPercent > 50 ? 50 : flashPercent)),
+          _minBrightness(minBrightness), _maxBrightness(maxBrightness) {}
+    
+    void start(uint32_t now) override { 
+        _startTime = now; 
+        _complete = false;
+    }
+    
+    int16_t update(uint32_t now) override {
+        // Check duration
+        if (_durationMs > 0 && (now - _startTime) >= _durationMs) {
+            _complete = true;
+            return -1;
+        }
+        
+        uint32_t elapsed = now - _startTime;
+        uint32_t cyclePos = elapsed % _cycleDurationMs;
+        
+        // Flash window duration
+        uint32_t flashWindow = (_cycleDurationMs * _flashPercent) / 100;
+        
+        if (cyclePos >= flashWindow) {
+            // Off period — extended dark
+            return _minBrightness;
+        }
+        
+        // Inside flash window: cosine pulse  (1 - cos(θ)) / 2, θ: 0 → 2π
+        float phase = (float)cyclePos / flashWindow * 2.0f * PI;
+        float normalized = (1.0f - cosf(phase)) / 2.0f;
+        
+        uint8_t range = _maxBrightness - _minBrightness;
+        return _minBrightness + (uint8_t)(normalized * range);
+    }
+    
+    bool isComplete() const override { return _complete; }
+    uint32_t duration() const override { return _durationMs; }
+    const char* name() const override { return "LedBeacon"; }
+    
+    void setCycleDuration(uint32_t durationMs) { _cycleDurationMs = durationMs; }
+    uint32_t cycleDuration() const { return _cycleDurationMs; }
+
+private:
+    uint32_t _startTime = 0;
+    uint32_t _cycleDurationMs;
+    uint32_t _durationMs;
+    uint8_t _flashPercent;
     uint8_t _minBrightness;
     uint8_t _maxBrightness;
     bool _complete = false;

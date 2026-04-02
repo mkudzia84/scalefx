@@ -76,9 +76,7 @@ void AudioServerT<TMixer>::handlePlay(const uint8_t* payload, size_t len) {
 
     AudioPlaybackOptions opts;
     opts.volume = volPct / 100.0f;
-    opts.output = (output == HubFxAudio::OUTPUT_LEFT)  ? AudioOutput::Left
-                : (output == HubFxAudio::OUTPUT_RIGHT) ? AudioOutput::Right
-                : AudioOutput::Stereo;
+    opts.outputChannels = output;  // Wire format matches AudioChannel bitmask directly
     switch (loopMode) {
         case HubFxAudio::LOOP_INFINITE:
             opts.loop = true; opts.loopCount = LOOP_INFINITE; break;
@@ -186,7 +184,7 @@ void AudioServerT<TMixer>::handleQueue(const uint8_t* payload, size_t len) {
 
     AudioPlaybackOptions opts;
     opts.volume = volPct / 100.0f;
-    opts.output = AudioOutput::Stereo;
+    opts.outputChannels = AudioChannel::ALL;  // Queue always uses all channels
     if (loopCnt > 0) {
         opts.loop = true;
         opts.loopCount = (int)loopCnt;
@@ -326,7 +324,7 @@ void AudioServerT<TMixer>::handleStatusReq() {
         CoreProtocol::putU32LE(&buf[pos], remaining_ms); pos += 4;
 
         buf[pos++] = (uint8_t)m.queueLength(i);
-        buf[pos++] = (uint8_t)m.getOutput(i);
+        buf[pos++] = m.getOutputChannels(i);
 
         // WAV format info
         CoreProtocol::putU16LE(&buf[pos], (uint16_t)m.getSampleRate(i)); pos += 2;

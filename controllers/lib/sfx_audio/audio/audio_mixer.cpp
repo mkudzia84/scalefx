@@ -295,7 +295,7 @@ bool AudioMixer::play(int channel, const char* filename, const AudioPlaybackOpti
     }
     
     ch.volume = constrain(options.volume, 0.0f, 1.0f);
-    ch.output = options.output;
+    ch.outputChannels = options.outputChannels;
     ch.fading = false;
     ch.fadeVolume = 1.0f;
     ch.mute = false;
@@ -373,9 +373,9 @@ int AudioMixer::getInitialLoopCount(int channel) const {
     return _channels[channel].wav.loopCountInit;
 }
 
-AudioOutput AudioMixer::getOutput(int channel) const {
-    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return AudioOutput::Stereo;
-    return _channels[channel].output;
+uint8_t AudioMixer::getOutputChannels(int channel) const {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return AudioChannel::ALL;
+    return _channels[channel].outputChannels;
 }
 
 uint32_t AudioMixer::getSampleRate(int channel) const {
@@ -596,9 +596,9 @@ void AudioMixer::setMasterVolume(float vol) {
     _masterVolume = constrain(vol, 0.0f, 1.0f);
 }
 
-void AudioMixer::setOutput(int channel, AudioOutput output) {
+void AudioMixer::setOutputChannels(int channel, uint8_t channelMask) {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
-    _channels[channel].output = output;
+    _channels[channel].outputChannels = channelMask;
 }
 
 float AudioMixer::volume(int channel) const {
@@ -835,22 +835,15 @@ bool AudioMixer::produceFrame() {
         trackL *= effectiveVolume;
         trackR *= effectiveVolume;
 
-        // Apply output routing
-        switch (ch.output) {
-            case AudioOutput::Left:
-                trackR = 0.0f;
-                break;
-            case AudioOutput::Right:
-                trackL = 0.0f;
-                break;
-            case AudioOutput::Stereo:
-            default:
-                // Apply constant-power pan
-                float pL = trackL * ch.panL;
-                float pR = trackR * ch.panR;
-                trackL = pL;
-                trackR = pR;
-                break;
+        // Apply output routing (bitmask: CH1=0x01, CH2=0x02)
+        if (ch.outputChannels == AudioChannel::ALL) {
+            // Both channels: apply constant-power pan
+            trackL *= ch.panL;
+            trackR *= ch.panR;
+        } else {
+            // Selective: zero disabled channels
+            if (!(ch.outputChannels & AudioChannel::CH1)) trackL = 0.0f;
+            if (!(ch.outputChannels & AudioChannel::CH2)) trackR = 0.0f;
         }
 
         // Accumulate into stereo mix
@@ -1025,7 +1018,7 @@ void AudioMixer::executeCommand(const Command& cmd) {
             setMasterVolume(cmd.volume);
             break;
         case CommandType::SetOutput:
-            setOutput(cmd.channelId, cmd.output);
+            setOutputChannels(cmd.channelId, cmd.outputChannels);
             break;
         case CommandType::StopLooping:
             if (cmd.channelId < 0) stopLoopingAll();

@@ -52,6 +52,7 @@ bool EngineFX::begin(const EngineConfig& cfg) {
     _startingOffset_ms = cfg.sounds.transitions.startingOffset_ms;
     _stoppingOffset_ms = cfg.sounds.transitions.stoppingOffset_ms;
     _threshold_us      = cfg.toggle.threshold_us;
+    _outputChannels    = cfg.outputChannels;
     _crossfade_sec      = EngineFXConst::CROSSFADE_SEC;
 
     // Reset all runtime state
@@ -75,8 +76,9 @@ bool EngineFX::begin(const EngineConfig& cfg) {
 
     _initialized = true;
 
-    SFX_LOG_INFO("[EngineFX] Initialized — threshold=%u us, ch=%d/%d",
-                 _threshold_us, _channelA, _channelB);
+    SFX_LOG_INFO("[EngineFX] Initialized \u2014 threshold=%u us, ch=%d/%d, output=%s",
+                 _threshold_us, _channelA, _channelB,
+                 outputChannelsString(_outputChannels));
     SFX_LOG_INFO("[EngineFX] Sounds: start=%s run=%s stop=%s",
                  _startingPath, _runningPath, _stoppingPath);
 
@@ -285,7 +287,7 @@ AudioPlaybackOptions EngineFX::makeOpts(bool loop, int offset_ms) const {
     opts.loop          = loop;
     opts.loopCount     = loop ? LOOP_INFINITE : 0;
     opts.volume        = 1.0f;
-    opts.output        = AudioOutput::Stereo;
+    opts.outputChannels = _outputChannels;
     opts.startOffsetMs = offset_ms;
     return opts;
 }

@@ -42,8 +42,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.24.0"
-#define BUILD_NUMBER 125
+#define FIRMWARE_VERSION "0.26.0"
+#define BUILD_NUMBER 127
 
 #include <Arduino.h>
 #include <atomic>
@@ -374,10 +374,15 @@ static void initConfig() {
         }
 
         // Apply engine config
-        SFX_LOG_INFO("[Config] Applied — engine %s (%s)",
+        SFX_LOG_INFO("[Config] Applied — engine %s (%s), output=%s",
                      cfg.engineFx.enabled ? "enabled" : "disabled",
-                     cfg.engineFx.type);
+                     cfg.engineFx.type,
+                     outputChannelsString(cfg.engineFx.outputChannels));
         EngineFX::instance().applyConfig(cfg.engineFx);
+
+        // Log gun_fx config (audio routing applied when GunFX is implemented)
+        SFX_LOG_INFO("[Config] Applied — gun_fx output=%s",
+                     outputChannelsString(cfg.gunFx.outputChannels));
     });
 
     // Initial load from flash

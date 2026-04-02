@@ -508,6 +508,32 @@ class LightFxCommands(CommandBuilder):
         )
     
     @staticmethod
+    def led_seq_add_beacon(channel: int, cycle_ms: int, duration_ms: int,
+                           flash_percent: int = 15, max_brightness: int = 100) -> bytes:
+        """
+        Add BEACON event to sequence (rotating beacon with brief flash).
+        
+        Args:
+            channel: LED channel (1-8)
+            cycle_ms: Duration of one full rotation in milliseconds
+            duration_ms: Total event duration in milliseconds (0 = infinite)
+            flash_percent: Percentage of cycle occupied by flash (1-50, default 15)
+            max_brightness: Peak brightness (0-100, default 100)
+            
+        Warnings:
+            Emits UserWarning if values out of range.
+        """
+        _warn_range("channel", channel, LED_CHANNEL_MIN, LED_CHANNEL_MAX)
+        _warn_u16("cycle_ms", cycle_ms)
+        _warn_u16("duration_ms", duration_ms)
+        _warn_range("flash_percent", flash_percent, 1, 50)
+        _warn_range("max_brightness", max_brightness, 0, LED_BRIGHTNESS_MAX)
+        return LightFxCommands.led_seq_add(
+            channel, LightFxEventType.BEACON,
+            cycle_ms, duration_ms, flash_percent, max_brightness
+        )
+    
+    @staticmethod
     def led_seq_start(channel: int = 0) -> bytes:
         """
         Start LED sequence playback.
@@ -1236,7 +1262,7 @@ class HubFxCommands(CommandBuilder):
 
     @staticmethod
     def audio_play(channel: int, path: str, volume: int = 100,
-                   output: int = HubFxAudio.OUTPUT_STEREO,
+                   output: int = HubFxAudio.OUTPUT_ALL,
                    loop_mode: int = HubFxAudio.LOOP_NONE,
                    loop_count: int = 0) -> bytes:
         """
@@ -1246,7 +1272,7 @@ class HubFxCommands(CommandBuilder):
             channel: Audio channel (0-7)
             path: File path on SD card (e.g., "/sounds/fire.wav")
             volume: Volume percentage (0-100)
-            output: Output routing (STEREO=0, LEFT=1, RIGHT=2)
+            output: Output channel bitmask (CH1=0x01, CH2=0x02, ALL=0x03)
             loop_mode: LOOP_NONE=0, LOOP_FINITE=1, LOOP_INFINITE=2
             loop_count: Number of loops (for LOOP_FINITE)
         """

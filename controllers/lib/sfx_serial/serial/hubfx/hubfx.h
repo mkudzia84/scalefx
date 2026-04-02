@@ -176,9 +176,10 @@ namespace HubFxError {
 // ============================================================================
 
 namespace HubFxAudio {
-    constexpr uint8_t OUTPUT_STEREO = 0;
-    constexpr uint8_t OUTPUT_LEFT   = 1;
-    constexpr uint8_t OUTPUT_RIGHT  = 2;
+    // Output channel bitmask (matches AudioChannel:: constants)
+    constexpr uint8_t OUTPUT_CH1 = 0x01;  // Channel 1 only
+    constexpr uint8_t OUTPUT_CH2 = 0x02;  // Channel 2 only
+    constexpr uint8_t OUTPUT_ALL = OUTPUT_CH1 | OUTPUT_CH2;  // All channels (default)
 
     constexpr uint8_t LOOP_NONE     = 0;  // Play once
     constexpr uint8_t LOOP_FINITE   = 1;  // Loop N times
@@ -226,7 +227,7 @@ struct HubFxAudioChannelInfo {
     uint16_t loopCount   = 0;
     uint32_t remaining_ms = 0;
     uint8_t queueLen     = 0;
-    uint8_t output       = 0;      // HubFxAudio::OUTPUT_*
+    uint8_t output       = 0;      // HubFxAudio::OUTPUT_CH* bitmask
     uint16_t wavRate_Hz  = 0;
     uint8_t wavChannels  = 0;
     uint8_t wavBits      = 0;

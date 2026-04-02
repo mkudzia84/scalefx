@@ -9,9 +9,9 @@
  * hub schema composes them into the full document layout.
  *
  * YAML structure (top-level keys):
- *   engine_fx:   → EngineConfig   (engine_config.h)
+ *   engine_fx:   → EngineConfig      (engine_config.h)
+ *   gun_fx:      → GunFxHubConfig    (gunfx_hub_config.h)
  *   # Future sections:
- *   # gun_fx:    → GunFxConfig
  *   # light_fx:  → LightFxConfig
  *   # gear_ctrl: → GearControlConfig
  */
@@ -21,17 +21,18 @@
 
 #include "audio_settings.h"
 #include "engine_config.h"
+#include "gunfx_hub_config.h"
 
 // ============================================================================
 // Data Struct
 // ============================================================================
 
 struct HubFxConfig {
-    AudioConfig  audio;
-    EngineConfig engineFx;
+    AudioConfig      audio;
+    EngineConfig     engineFx;
+    GunFxHubConfig   gunFx;
 
     // Future sections:
-    // GunFxConfig       gunFx;
     // LightFxConfig     lightFx;
     // GearControlConfig gearCtrl;
 };
@@ -47,10 +48,10 @@ using namespace sfx;
 /// Hub-level schema — composes section schemas via asGroup().
 inline const auto fields = schema<HubFxConfig>(
     audio_config::fields.asGroup<&HubFxConfig::audio>("audio"),
-    engine_config::fields.asGroup<&HubFxConfig::engineFx>("engine_fx")
+    engine_config::fields.asGroup<&HubFxConfig::engineFx>("engine_fx"),
+    gunfx_hub_config::fields.asGroup<&HubFxConfig::gunFx>("gun_fx")
 
     // Future sections:
-    // gun_config::fields.asGroup<&HubFxConfig::gunFx>("gun_fx"),
     // light_config::fields.asGroup<&HubFxConfig::lightFx>("light_fx"),
     // gear_config::fields.asGroup<&HubFxConfig::gearCtrl>("gear_ctrl")
 );

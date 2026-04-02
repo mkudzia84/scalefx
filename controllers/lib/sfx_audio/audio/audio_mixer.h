@@ -72,11 +72,13 @@ constexpr int AUDIO_CMD_QUEUE_SIZE = 16;
 //  TYPES
 // ============================================================================
 
-enum class AudioOutput : uint8_t {
-    Stereo = 0,
-    Left   = 1,
-    Right  = 2
-};
+// Output channel bitmask — each bit enables one physical output channel.
+// Extensible: future boards may define CH3=0x04, CH4=0x08, etc.
+namespace AudioChannel {
+    constexpr uint8_t CH1 = 0x01;          // Output channel 1
+    constexpr uint8_t CH2 = 0x02;          // Output channel 2
+    constexpr uint8_t ALL = CH1 | CH2;     // All channels (default)
+}
 
 enum class AudioStopMode : uint8_t {
     Immediate = 0,
@@ -99,7 +101,7 @@ struct AudioPlaybackOptions {
     bool loop              = false;       // Legacy: simple loop on/off
     int loopCount          = LOOP_INFINITE;  // Number of loops: -1=infinite, 0=no loop, N=N loops
     float volume           = 1.0f;
-    AudioOutput output     = AudioOutput::Stereo;
+    uint8_t outputChannels = AudioChannel::ALL;
     int startOffsetMs      = 0;
 };
 
@@ -167,7 +169,7 @@ public:
     // ---- Volume & Routing ----
     void setVolume(int channel, float volume);
     void setMasterVolume(float volume);
-    void setOutput(int channel, AudioOutput output);
+    void setOutputChannels(int channel, uint8_t channelMask);
     float volume(int channel) const;
     float masterVolume() const { return _masterVolume; }
 
@@ -238,7 +240,7 @@ public:
     bool isLooping(int channel) const;
     int getLoopCount(int channel) const;       // Current remaining loops
     int getInitialLoopCount(int channel) const; // Initial loop count
-    AudioOutput getOutput(int channel) const;
+    uint8_t getOutputChannels(int channel) const;
     uint32_t getSampleRate(int channel) const;
     uint16_t getNumChannels(int channel) const;
     uint16_t getBitsPerSample(int channel) const;
@@ -284,7 +286,7 @@ private:
         float pan             = 0.0f;          // -1.0 (left) to +1.0 (right)
         float panL            = 0.707f;        // pre-computed left gain
         float panR            = 0.707f;        // pre-computed right gain
-        AudioOutput output    = AudioOutput::Stereo;
+        uint8_t outputChannels = AudioChannel::ALL;
         char filename[CHANNEL_FILENAME_MAX] = {};
         bool mute             = false;
         
@@ -322,7 +324,7 @@ private:
         AudioStopMode stopMode = AudioStopMode::Immediate;
         QueueLoopBehavior loopBehavior = QueueLoopBehavior::StopImmediate;
         float volume          = 1.0f;
-        AudioOutput output    = AudioOutput::Stereo;
+        uint8_t outputChannels = AudioChannel::ALL;
     };
 
     // ---- Internal Methods ----

@@ -8,6 +8,7 @@
  *   engine_fx:
  *     enabled: true
  *     type: turbine
+ *     output_channels: all           # all | ch1 | ch2 | ch1+ch2
  *     engine_toggle:
  *       input_channel: 1
  *       threshold_us: 1500
@@ -25,14 +26,16 @@
 
 #include <cstdint>
 #include <config/yaml_schema.h>
+#include "audio_output_convert.h"
 
 // ============================================================================
 // Data Struct
 // ============================================================================
 
 struct EngineConfig {
-    bool    enabled = true;
-    char    type[16] = "turbine";          // turbine | radial | diesel
+    bool        enabled = true;
+    char        type[16] = "turbine";              // turbine | radial | diesel
+    OutputChannelMask outputChannels;               // all | ch1 | ch2 | ch1+ch2
 
     /// engine_toggle sub-section
     struct Toggle {
@@ -68,8 +71,9 @@ using Tr = S::Transitions;
 /// Field-level schema for the engine_fx YAML section.
 /// Provides auto-generated populate() and validate().
 inline const auto fields = schema<EngineConfig>(
-    prop<&EngineConfig::enabled>("enabled", true),
-    prop<&EngineConfig::type>   ("type",    "turbine"),
+    prop<&EngineConfig::enabled>        ("enabled",         true),
+    prop<&EngineConfig::type>           ("type",            "turbine"),
+    prop<&EngineConfig::outputChannels> ("output_channels", OutputChannelMask{AudioChannel::ALL}),
 
     group<&EngineConfig::toggle>("engine_toggle",
         prop<&T::inputChannel>("input_channel", uint8_t(1)).range(1, 10),

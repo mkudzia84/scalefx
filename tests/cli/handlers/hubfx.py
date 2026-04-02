@@ -169,7 +169,7 @@ class HubFxCommandHandler(CommandHandlerBase):
             # Audio Control
             # =================================================================
             'audio.play': (self.cmd_audio_play, CommandInfo(
-                'audio.play', 'audio.play <ch> <path> [vol] [left|right] [loop [N|inf]]',
+                'audio.play', 'audio.play <ch> <path> [vol] [ch1|ch2] [loop [N|inf]]',
                 'Play audio file on channel',
                 requires_init=True, controller=ControllerType.HUBFX, group='Audio')),
             'audio.stop': (self.cmd_audio_stop, CommandInfo(
@@ -724,14 +724,14 @@ class HubFxCommandHandler(CommandHandlerBase):
         if not self._require_init():
             return
         if len(args) < 2:
-            self.print_error("Usage: hub.audio.play <ch> <path> [vol] [left|right] [loop [N|inf]]")
+            self.print_error("Usage: hub.audio.play <ch> <path> [vol] [ch1|ch2] [loop [N|inf]]")
             return
 
         try:
             channel = int(args[0])
             path = args[1]
             volume = 100
-            output = HubFxAudio.OUTPUT_STEREO
+            output = HubFxAudio.OUTPUT_ALL
             loop_mode = HubFxAudio.LOOP_NONE
             loop_count = 0
 
@@ -739,10 +739,10 @@ class HubFxCommandHandler(CommandHandlerBase):
             i = 2
             while i < len(args):
                 arg = args[i].lower()
-                if arg in ('left', 'right', 'stereo'):
-                    output = {'left': HubFxAudio.OUTPUT_LEFT,
-                              'right': HubFxAudio.OUTPUT_RIGHT,
-                              'stereo': HubFxAudio.OUTPUT_STEREO}[arg]
+                if arg in ('ch1', 'ch2', 'all'):
+                    output = {'ch1': HubFxAudio.OUTPUT_CH1,
+                              'ch2': HubFxAudio.OUTPUT_CH2,
+                              'all': HubFxAudio.OUTPUT_ALL}[arg]
                 elif arg == 'loop':
                     if i + 1 < len(args):
                         i += 1
@@ -764,9 +764,9 @@ class HubFxCommandHandler(CommandHandlerBase):
 
             packet = HubFxCommands.audio_play(channel, path, volume, output,
                                               loop_mode, loop_count)
-            output_name = {HubFxAudio.OUTPUT_LEFT: ' [L]',
-                           HubFxAudio.OUTPUT_RIGHT: ' [R]',
-                           HubFxAudio.OUTPUT_STEREO: ''}[output]
+            output_name = {HubFxAudio.OUTPUT_CH1: ' [CH1]',
+                           HubFxAudio.OUTPUT_CH2: ' [CH2]',
+                           HubFxAudio.OUTPUT_ALL: ''}[output]
             loop_str = ''
             if loop_mode == HubFxAudio.LOOP_INFINITE:
                 loop_str = ' (loop inf)'
@@ -914,9 +914,9 @@ class HubFxCommandHandler(CommandHandlerBase):
             return
 
         output_names = {
-            HubFxAudio.OUTPUT_STEREO: 'stereo',
-            HubFxAudio.OUTPUT_LEFT: 'left',
-            HubFxAudio.OUTPUT_RIGHT: 'right',
+            HubFxAudio.OUTPUT_ALL: 'all',
+            HubFxAudio.OUTPUT_CH1: 'ch1',
+            HubFxAudio.OUTPUT_CH2: 'ch2',
         }
 
         pos = 0

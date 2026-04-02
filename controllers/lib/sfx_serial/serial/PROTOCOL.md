@@ -322,7 +322,7 @@ Commands specific to HubFX controllers. Defined in `hubfx/hubfx.h` (not auto-inc
 
 | Type | Value | Payload | Response |
 |------|-------|---------|----------|
-| `AUDIO_PLAY` | 0x84 | `[ch:u8][vol:u8][output:u8][loopMode:u8][loopCount:u16LE][pathLen:u8][path:str]` | ACK/NACK |
+| `AUDIO_PLAY` | 0x84 | `[ch:u8][vol:u8][outputChannels:u8][loopMode:u8][loopCount:u16LE][pathLen:u8][path:str]` | ACK/NACK |
 | `AUDIO_STOP` | 0x85 | `[ch:u8]` (0xFF=all) | ACK/NACK |
 | `AUDIO_VOLUME` | 0x86 | `[ch:u8][vol:u8]` (ch 0xFF=master) | ACK/NACK |
 | `AUDIO_FADE` | 0x87 | `[ch:u8]` | ACK/NACK |
@@ -337,7 +337,7 @@ Commands specific to HubFX controllers. Defined in `hubfx/hubfx.h` (not auto-inc
 [masterVol:u8][ringSize:u32LE][ringAvail:u32LE][underruns:u32LE]
 [consumeLoops:u32LE][consumeFrames:u32LE]
 Per channel × 8:
-  [playing:u8][volume:u8][looping:u8][remaining_ms:u32LE][output:u8]
+  [playing:u8][volume:u8][looping:u8][remaining_ms:u32LE][outputChannels:u8]
   [loopCount:u16LE][totalSamples:u32LE]
   [wavSampleRate:u32LE][wavChannels:u8][wavBitsPerSample:u8]
   [filenameLen:u8][filename:str]

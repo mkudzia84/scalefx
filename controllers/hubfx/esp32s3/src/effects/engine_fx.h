@@ -198,6 +198,7 @@ private:
     bool     _enabled = false;
     int      _channelA = HubFxChannel::ENGINE_A;
     int      _channelB = HubFxChannel::ENGINE_B;
+    uint8_t  _outputChannels = AudioChannel::ALL;
     char     _startingPath[64] = {};
     char     _runningPath[64]  = {};
     char     _stoppingPath[64] = {};

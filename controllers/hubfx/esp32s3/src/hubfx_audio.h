@@ -20,6 +20,7 @@
 #ifndef HUBFX_AUDIO_H
 #define HUBFX_AUDIO_H
 
+#include <cstring>
 #include <audio/esp_i2s_output.h>
 #include <codec/tas5825_codec.h>
 #include <audio/audio_mixer.h>
@@ -41,6 +42,26 @@ namespace HubFxChannel {
     constexpr int ENGINE_B  = 2;   // Engine crossfade (secondary)
     constexpr int GUN       = 3;   // Gun fire / reload sounds
     constexpr int COUNT     = 8;   // Total mixer channels (AudioMixer MAX_CHANNELS)
+}
+
+// ============================================================================
+// Output Channel Helpers
+// ============================================================================
+
+/**
+ * @brief Convert a channel bitmask to human-readable string.
+ *
+ * Examples: "CH1", "CH2", "CH1+CH2", "none", "CH1+CH2+CH3" (future).
+ *
+ * @param channels  Bitmask of AudioChannel::CH1, CH2, etc.
+ * @return Static string describing the active channels.
+ */
+inline const char* outputChannelsString(uint8_t channels) {
+    if (channels == AudioChannel::ALL)  return "CH1+CH2";
+    if (channels == AudioChannel::CH1)  return "CH1";
+    if (channels == AudioChannel::CH2)  return "CH2";
+    if (channels == 0)                  return "none";
+    return "custom";  // Future: multi-channel bitmask beyond CH1+CH2
 }
 
 #endif // HUBFX_AUDIO_H

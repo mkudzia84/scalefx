@@ -1105,7 +1105,7 @@ def parse_led_seq_queue(payload: bytes) -> Optional[dict]:
         'events': [],
     }
     
-    event_names = ['ON', 'OFF', 'FLASH', 'FADE_IN', 'FADE_OUT', 'FADING']
+    event_names = ['ON', 'OFF', 'FLASH', 'FADE_IN', 'FADE_OUT', 'FADING', 'BEACON']
     
     for i in range(result['count']):
         offset = 5 + (i * 4)
