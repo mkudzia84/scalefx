@@ -28,33 +28,54 @@ TAS5825Codec::TAS5825Codec()
 bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
                           TAS5825M_SupplyVoltage supply_voltage)
 {
+    // Only initialize the I2C bus on first call or if bus params changed.
+    // Re-calling Wire.begin() on ESP32 tears down and reinstalls the I2C
+    // driver (i2c_del_master_bus + i2c_new_master_bus), which can leave
+    // the bus in a transient state and cause subsequent probes to timeout.
+    bool needWireInit = (i2c != &wire || sdaPin != sda || sclPin != scl);
+
     i2c = &wire;
     sdaPin = sda;
     sclPin = scl;
     sampleRate = sample_rate;
     supplyVoltage = supply_voltage;
 
-    // Initialize I2C
+    if (needWireInit) {
+        // Initialize I2C bus (first call, or bus params changed)
 #if SFX_PLATFORM_PICO
-    // Arduino-Pico: must set SDA/SCL pins before begin()
-    i2c->setSDA(sdaPin);
-    i2c->setSCL(sclPin);
-    i2c->begin();
+        // Arduino-Pico: must set SDA/SCL pins before begin()
+        i2c->setSDA(sdaPin);
+        i2c->setSCL(sclPin);
+        i2c->begin();
 #elif SFX_PLATFORM_ESP32
-    // Arduino-ESP32: pass SDA/SCL to begin()
-    i2c->begin(sdaPin, sclPin);
+        // Arduino-ESP32: pass SDA/SCL to begin()
+        i2c->begin(sdaPin, sclPin);
 #endif
+    }
     i2c->setClock(100000);  // 100kHz I2C
 
     TAS5825_LOG("Initializing codec (SDA=%d, SCL=%d, addr=0x%02X)...", sdaPin, sclPin, TAS5825M_I2C_ADDR);
 
-    // Probe I2C bus — abort early if device doesn't ACK
-    i2c->beginTransmission(TAS5825M_I2C_ADDR);
-    uint8_t probeResult = i2c->endTransmission();
+    // Probe I2C bus with retry — the bus may be transiently unavailable
+    // after boot (e.g., slave holding SDA low from interrupted transaction,
+    // or I2C peripheral not fully stabilized).
+    static constexpr int PROBE_RETRIES = 3;
+    static constexpr int PROBE_DELAY_MS = 500;
+    uint8_t probeResult = 0;
+    for (int attempt = 0; attempt < PROBE_RETRIES; attempt++) {
+        i2c->beginTransmission(TAS5825M_I2C_ADDR);
+        probeResult = i2c->endTransmission();
+        if (probeResult == 0) break;
+        if (attempt < PROBE_RETRIES - 1) {
+            TAS5825_LOG("I2C probe attempt %d/%d failed (error %d), retrying in %dms...",
+                        attempt + 1, PROBE_RETRIES, probeResult, PROBE_DELAY_MS);
+            SFX_DELAY_MS(PROBE_DELAY_MS);
+        }
+    }
     if (probeResult != 0) {
-        TAS5825_LOG("I2C probe FAILED (error %d) — device not found at 0x%02X. "
+        TAS5825_LOG("I2C probe FAILED after %d attempts (error %d) — device not found at 0x%02X. "
                     "Check wiring: SDA=GPIO%d, SCL=GPIO%d, pull-ups, PVDD power.",
-                    probeResult, TAS5825M_I2C_ADDR, sdaPin, sclPin);
+                    PROBE_RETRIES, probeResult, TAS5825M_I2C_ADDR, sdaPin, sclPin);
         initialized = false;
         return false;
     }

@@ -305,7 +305,7 @@ public class SshService : IDisposable
             {
                 Output = result,
                 Error = cmd.Error,
-                ExitCode = cmd.ExitStatus
+                ExitCode = cmd.ExitStatus ?? -1
             };
         }, cancellationToken);
     }

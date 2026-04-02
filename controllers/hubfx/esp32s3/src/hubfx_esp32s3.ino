@@ -42,8 +42,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.26.0"
-#define BUILD_NUMBER 127
+#define FIRMWARE_VERSION "0.26.1"
+#define BUILD_NUMBER 130
 
 #include <Arduino.h>
 #include <atomic>
@@ -445,8 +445,15 @@ static void initAudio() {
         TAS5825Codec::parseSupplyVoltage(
             configServer.store().data().audio.codecSupplyVoltage, initVoltage);
     }
-    TAS5825Codec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
-                                   AUDIO_SAMPLE_RATE, initVoltage);
+    bool codecOk = TAS5825Codec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
+                                                  AUDIO_SAMPLE_RATE, initVoltage);
+    if (codecOk) {
+        SFX_LOG_INFO("TAS5825M codec initialized (supply=%s)",
+                     TAS5825Codec::supplyVoltageStr(initVoltage));
+    } else {
+        SFX_LOG_WARN("TAS5825M codec init failed — will retry periodically "
+                     "(check battery/PVDD power)");
+    }
 
     // Phase 1 init: channels, ring buffer, pin storage
     if (mixer.begin(PIN_I2S_DOUT, PIN_I2S_BCLK, PIN_I2S_LRCLK)) {
@@ -564,6 +571,13 @@ void setup() {
                 codec.reset();
                 codec.clearFaults();
                 SFX_LOG_INFO("Audio codec reset");
+            } else {
+                // Codec never initialized (e.g., no battery at boot) — try now
+                if (codec.begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
+                                AUDIO_SAMPLE_RATE, codec.getSupplyVoltage())) {
+                    codec.clearFaults();
+                    SFX_LOG_INFO("Audio codec initialized on INIT");
+                }
             }
         }
 
@@ -633,6 +647,12 @@ void setup() {
         return 6;
     });
 
+    // Initialize I2C bus early — gives maximum stabilization time before
+    // TAS5825M codec probe. On ESP32, Wire.begin() installs the I2C master
+    // driver and performs bus recovery (SCL toggling) if SDA is stuck low.
+    Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+    Wire.setClock(100000);  // 100kHz I2C
+
     initStorage();
     initProtocolHandlers();
     initConfig();       // onLoaded callback initializes EngineFX
@@ -653,6 +673,33 @@ void setup() {
     } else {
         SFX_LOG_WARN("PSRAM: not available");
     }
+}
+
+// ============================================================================
+// Periodic Codec Health Check
+// ============================================================================
+// If the TAS5825M codec failed to initialize at boot (e.g., battery not
+// connected → PVDD not powered → I2C probe fails), periodically retry.
+// Once initialized, stop retrying.
+
+static void checkCodecHealth() {
+    static uint32_t lastCheck_ms = 0;
+    static constexpr uint32_t CHECK_INTERVAL_MS = 5000;  // every 5s
+
+    TAS5825Codec& codec = TAS5825Codec::instance();
+    if (codec.isInitialized()) return;  // Already working — nothing to do
+
+    uint32_t now = millis();
+    if (now - lastCheck_ms < CHECK_INTERVAL_MS) return;
+    lastCheck_ms = now;
+
+    SFX_LOG_INFO("Retrying TAS5825M codec init...");
+    if (codec.begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL, AUDIO_SAMPLE_RATE,
+                    codec.getSupplyVoltage())) {
+        codec.clearFaults();
+        SFX_LOG_INFO("TAS5825M codec initialized on retry — audio amp online");
+    }
+    // On failure, begin() already logs I2C probe error — no extra log needed
 }
 
 // ============================================================================
@@ -696,6 +743,9 @@ void loop() {
 
     // Periodic diagnostic logging (buffered in DiagLog ring, retrieved via `diag`)
     logDiagnostics();
+
+    // Retry TAS5825M codec init if it failed at boot (e.g., no battery power)
+    checkCodecHealth();
 
     // ---- Slave client polling ----
     // Process incoming data from all connected/ready slave controllers.

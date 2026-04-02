@@ -1,0 +1,13 @@
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\bin\Release\net8.0\ScaleFX.Serial.deps.json
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\bin\Release\net8.0\ScaleFX.Serial.dll
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\bin\Release\net8.0\ScaleFX.Serial.pdb
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\obj\Release\net8.0\ScaleFXSerial.csproj.AssemblyReference.cache
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\obj\Release\net8.0\ScaleFXSerial.GeneratedMSBuildEditorConfig.editorconfig
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\obj\Release\net8.0\ScaleFXSerial.AssemblyInfoInputs.cache
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\obj\Release\net8.0\ScaleFXSerial.AssemblyInfo.cs
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\obj\Release\net8.0\ScaleFXSerial.csproj.CoreCompileInputs.cache
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\obj\Release\net8.0\ScaleFXSerial.sourcelink.json
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\obj\Release\net8.0\ScaleFX.Serial.dll
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\obj\Release\net8.0\refint\ScaleFX.Serial.dll
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\obj\Release\net8.0\ScaleFX.Serial.pdb
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXSerial\obj\Release\net8.0\ref\ScaleFX.Serial.dll

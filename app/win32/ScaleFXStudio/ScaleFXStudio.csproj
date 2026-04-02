@@ -22,6 +22,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\ScaleFXSerial\ScaleFXSerial.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="..\..\..\media\logo.jpg" Link="Resources\logo.jpg" />
   </ItemGroup>
 
