@@ -5,18 +5,19 @@
  * and SdCardModule singletons. File list and download use StreamWriter
  * for chunked transfer.
  *
- * Platform-specific behavior (buffer allocation, async writes, stream
- * data routing) is resolved at compile time via policy composition:
+ * Platform-specific behavior (buffer allocation, async writes) is resolved
+ * at compile time via policy composition:
  * TPolicy provides platform-specific implementations, accessed through
  * the _policy member (no virtual dispatch, no CRTP self-casting).
  *
  * Buffer sizing rationale (6 Mbps serial):
  *   - Raw byte rate: 750 KB/s, effective ~580 KB/s with UART/COBS overhead
- *   - Each chunk: 2044 data + 4 header = 2048 payload, ~2060 bytes on wire
- *   - Max ~280 chunks/sec at full wire speed
- *   - UART RX buffer: 128 KB â€” holds ~64 chunks (~220ms of data at line rate)
+ *   - Stream mode bypasses COBS for data plane - near wire-rate throughput
+ *   - Each COBS chunk (sync): 2044 data + 4 header = 2048 payload, ~2060 bytes on wire
+ *   - UART RX buffer: 128 KB - holds ~220ms of data at line rate
+ *   - Stream segments: 512 KB; ring buffer (2 MB) absorbs ~4 segments of SD stalls
  *
- * Included from storage_server.h â€” do not include directly.
+ * Included from storage_server.h -- do not include directly.
  */
 
 #ifndef STORAGE_SERVER_IPP
@@ -130,7 +131,7 @@ void StorageServerT<TPolicy>::handleFlashStatus() {
 
 
 // ============================================================================
-// File List (0x9A) â€” Streamed Response
+// File List (0x9A) -- Streamed Response
 // ============================================================================
 
 template <typename TPolicy>
@@ -177,7 +178,7 @@ void StorageServerT<TPolicy>::handleFileList(const uint8_t* payload, size_t len)
 
 
 // ============================================================================
-// File Tree (0xA9) â€” Recursive Directory Listing (Streamed)
+// File Tree (0xA9) -- Recursive Directory Listing (Streamed)
 // ============================================================================
 
 template <typename TPolicy>
@@ -361,7 +362,7 @@ void StorageServerT<TPolicy>::handleFileInfo(const uint8_t* payload, size_t len)
 
 
 // ============================================================================
-// File Download (0x9F) â€” Streamed Response
+// File Download (0x9F) -- Streamed Response
 // ============================================================================
 
 template <typename TPolicy>
@@ -470,7 +471,8 @@ void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t l
         _uploadTarget = static_cast<HubFxStorage::StorageTarget>(rawTarget);
         if (len > afterPath + 1) {
             uint8_t rawMode = payload[afterPath + 1];
-            if (rawMode == 2 || rawMode > HubFxStorage::UPLOAD_STREAM) {
+            if (rawMode != HubFxStorage::UPLOAD_SYNC &&
+                rawMode != HubFxStorage::UPLOAD_STREAM) {
                 sendNack(SerialError::INVALID_PARAM, "Invalid upload mode");
                 return;
             }
@@ -521,66 +523,84 @@ void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t l
     }
 
     // Allocate upload write buffers (platform-specific: PSRAM on ESP32, heap on Pico)
-    if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
-        if (!_policy.allocateStreamBuffers()) {
-            _shared.uploadFile.close();
-            unlockStorage(_uploadTarget);
-            sendNack(HubFxError::FILE_IO_ERROR, "Stream buffer alloc failed");
-            return;
-        }
-    } else {
-        if (!_policy.allocateUploadBuffers()) {
-            _shared.uploadFile.close();
-            unlockStorage(_uploadTarget);
-            sendNack(HubFxError::FILE_IO_ERROR, "Buffer alloc failed");
-            return;
-        }
+    if (!_policy.allocateUploadBuffers()) {
+        _shared.uploadFile.close();
+        unlockStorage(_uploadTarget);
+        sendNack(HubFxError::FILE_IO_ERROR, "Buffer alloc failed");
+        return;
     }
 
     _uploadActive       = true;
     _uploadExpectedSize = fileSize;
     _uploadBytesWritten = 0;
     _uploadExpectedSeq  = 0;
-    _uploadCrcErrors    = 0;
     _shared.uploadWriteBufLen  = 0;
     _uploadLastActivity_ms = millis();
     _uploadMd5.begin();
 
-    if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
-        // Enter raw stream receive mode â€” main loop will bypass COBS and
-        // route Serial data to processStreamData() instead of server.loop()
-        _streamBytesRemaining = fileSize;
-        _shared.streamBytesWrittenToSD = 0;
-        _shared.streamStagingLen = 0;
-        _shared.streamWriteError = false;
-
-        // Platform hook: start stream writer task (ESP32) or no-op (Pico)
-        if (!_policy.onStreamStart()) {
-            _shared.uploadFile.close();
-            unlockStorage(_uploadTarget);
-            _policy.freeStreamBuffers();
-            _uploadActive = false;
-            sendNack(HubFxError::FILE_IO_ERROR, "Stream writer task failed");
-            return;
-        }
-
-        _shared.streamReceiving = true;  // Must be set LAST â€” gates main loop branching
-    }
+    // Stream mode state
+    _streamActive          = false;
+    _streamSegmentIndex    = 0;
+    _streamSegBytesRemaining = 0;
+    _streamSegmentSize     = 0;
+    _streamSegmentCount    = 0;
 
     // Platform hook: reset writer error flags, etc.
-    _policy.onUploadActivated(_uploadMode == HubFxStorage::UPLOAD_STREAM);
+    _policy.onUploadActivated();
 
-    const char* modeStr = "sync";
-    if (_uploadMode == HubFxStorage::UPLOAD_BURST) modeStr = "burst";
-    else if (_uploadMode == HubFxStorage::UPLOAD_STREAM) modeStr = "STREAM";
+    const char* modeStr = (_uploadMode == HubFxStorage::UPLOAD_STREAM) ? "stream" : "sync";
 
     STORAGE_LOG("UPLOAD_BEGIN %s:%s size=%lu mode=%s buf=%uKB",
                 targetName(_uploadTarget), _uploadPath,
                 (unsigned long)fileSize, modeStr,
-                (unsigned)(_uploadMode == HubFxStorage::UPLOAD_STREAM
-                    ? (_policy.streamBufferCapacityForLog() / 1024)
-                    : (_shared.uploadBufCapacity / 1024)));
-    sendAck();
+                (unsigned)(_shared.uploadBufCapacity / 1024));
+
+
+    if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
+        // Pre-allocate file on SD for contiguous cluster allocation
+        if (_uploadTarget == HubFxStorage::TARGET_SD && fileSize > 0) {
+            _shared.uploadFile.seek(fileSize - 1);
+            uint8_t zero = 0;
+            _shared.uploadFile.write(&zero, 1);
+            _shared.uploadFile.seek(0);
+        }
+
+        // Compute segment parameters
+        _streamSegmentSize = STREAM_SEGMENT_SIZE;
+        uint16_t segCount = (uint16_t)((fileSize + _streamSegmentSize - 1) / _streamSegmentSize);
+        _streamSegBytesRemaining = (fileSize < _streamSegmentSize) ? fileSize : _streamSegmentSize;
+        _streamSegmentIndex = 0;
+        _streamSegmentCount = segCount;
+        _streamActive = true;
+
+        // Initialize stream diagnostics
+        _streamStartTime_ms    = millis();
+        _streamSegStartTime_ms = millis();
+        _streamEndTime_ms      = 0;
+        _streamLastLogTime_ms  = millis();
+        _streamLastLogBytes    = 0;
+        _streamLastCallTime_ms = millis();
+        _streamMaxGap_ms       = 0;
+        _streamIterCount       = 0;
+
+        STORAGE_LOG("STREAM active: %u segments of %uKB, uart_rx=%dB",
+                    segCount, (unsigned)(_streamSegmentSize / 1024),
+                    _serial->available());
+
+        // Notify firmware to suspend competing resources (e.g., audio tasks)
+        if (_onStreamStart) {
+            _onStreamStart();
+            _streamSuspended = true;
+        }
+
+        // ACK payload: [segment_size:u32LE][segment_count:u16LE]
+        uint8_t ackPayload[6];
+        CoreProtocol::putU32LE(&ackPayload[0], _streamSegmentSize);
+        CoreProtocol::putU16LE(&ackPayload[4], segCount);
+        sendRawPacket(CorePacket::ACK, _currentTag, ackPayload, 6);
+    } else {
+        sendAck();
+    }
 }
 
 
@@ -603,7 +623,7 @@ void StorageServerT<TPolicy>::handleUploadData(const uint8_t* payload, size_t le
 
     // Check if background writer reported an error on previous buffer
     if (!_policy.checkAsyncWriterHealth()) {
-        STORAGE_LOG("UPLOAD_DATA: async writer error â€” aborting upload");
+        STORAGE_LOG("UPLOAD_DATA: async writer error -- aborting upload");
         cleanupUpload(true);
         sendNack(HubFxError::FILE_IO_ERROR);
         return;
@@ -613,18 +633,11 @@ void StorageServerT<TPolicy>::handleUploadData(const uint8_t* payload, size_t le
     uint16_t rxCrc16  = CoreProtocol::getU16LE(&payload[2]);
     const uint8_t* data = &payload[4];
     size_t dataLen    = len - 4;
-    // Burst mode skips per-chunk ACK / resync on mismatch
-    bool isBurst = (_uploadMode == HubFxStorage::UPLOAD_BURST);
 
-    // Verify sequence number
+    // Verify sequence number (sync mode only — stream mode has no seq)
     if (seqNum != _uploadExpectedSeq) {
         STORAGE_LOG("UPLOAD_DATA seq mismatch: got %u expected %u",
                     seqNum, _uploadExpectedSeq);
-        if (isBurst) {
-            _uploadCrcErrors++;
-            _uploadExpectedSeq = seqNum + 1;
-            return;
-        }
         sendNack(SerialError::INVALID_PARAM, "Sequence mismatch");
         return;
     }
@@ -634,12 +647,8 @@ void StorageServerT<TPolicy>::handleUploadData(const uint8_t* payload, size_t le
     if (calcCrc != rxCrc16) {
         STORAGE_LOG("UPLOAD_DATA CRC error seg %u: rx=0x%04X calc=0x%04X",
                     seqNum, rxCrc16, calcCrc);
-        if (isBurst) {
-            _uploadCrcErrors++;
-        } else {
-            sendNack(SerialError::CRC_ERROR);
-            return;
-        }
+        sendNack(SerialError::CRC_ERROR);
+        return;
     }
 
     // Update activity timestamp (for inactivity timeout)
@@ -680,9 +689,8 @@ void StorageServerT<TPolicy>::handleUploadData(const uint8_t* payload, size_t le
         }
     }
 
-    if (!isBurst) {
-        sendAck();
-    }
+    // Sync mode: ACK each chunk
+    sendAck();
 }
 
 
@@ -697,6 +705,17 @@ void StorageServerT<TPolicy>::handleUploadEnd() {
         return;
     }
 
+    uint32_t tEndReceived = millis();
+
+    // Log gap between stream completion and UPLOAD_END reception
+    if (_uploadMode == HubFxStorage::UPLOAD_STREAM && _streamEndTime_ms > 0) {
+        uint32_t gapSinceStreamEnd = tEndReceived - _streamEndTime_ms;
+        STORAGE_LOG("UPLOAD_END received %lums after stream end (rx=%lu/%lu)",
+                    (unsigned long)gapSinceStreamEnd,
+                    (unsigned long)_uploadBytesWritten,
+                    (unsigned long)_uploadExpectedSize);
+    }
+
     // Verify total bytes received
     if (_uploadBytesWritten != _uploadExpectedSize) {
         STORAGE_LOG("UPLOAD_END size mismatch: written=%lu expected=%lu",
@@ -707,80 +726,74 @@ void StorageServerT<TPolicy>::handleUploadEnd() {
         return;
     }
 
-    if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
-        // Check for write errors that occurred during streaming
-        if (_shared.streamWriteError) {
-            cleanupUpload(true);
-            sendNack(HubFxError::FILE_IO_ERROR, "Stream write error");
-            return;
-        }
-
-        // Platform hook: wait for writer drain (ESP32) or flush remaining staging (Pico)
-        const char* errMsg = nullptr;
-        if (!_policy.onStreamEnd(errMsg)) {
-            cleanupUpload(true);
-            sendNack(HubFxError::FILE_IO_ERROR, errMsg ? errMsg : "Stream end error");
-            return;
-        }
-    } else {
-        // Chunked mode: platform hook for async writer completion
-        const char* errMsg = nullptr;
-        if (!_policy.onChunkedEnd(errMsg)) {
-            cleanupUpload(true);
-            sendNack(HubFxError::FILE_IO_ERROR, errMsg ? errMsg : "Async write failed");
-            return;
-        }
+    // Platform hook for async writer completion (drain ring buffer to SD)
+    uint32_t t0 = millis();
+    const char* errMsg = nullptr;
+    if (!_policy.onChunkedEnd(errMsg)) {
+        STORAGE_LOG("UPLOAD_END drain failed after %lums: %s",
+                    (unsigned long)(millis() - t0),
+                    errMsg ? errMsg : "unknown");
+        cleanupUpload(true);
+        sendNack(HubFxError::FILE_IO_ERROR, errMsg ? errMsg : "Async write failed");
+        return;
     }
+    uint32_t t1 = millis();
 
-    // Flush remaining write buffer to file (blocking â€” final partial block)
-    // Stream mode has no write buffer (uses ring buffer, already drained above)
-    if (_uploadMode != HubFxStorage::UPLOAD_STREAM && _shared.uploadWriteBufLen > 0) {
+    // Flush remaining write buffer to file (blocking — final partial block)
+    if (_shared.uploadWriteBufLen > 0) {
         if (!_shared.flushUploadBuffer()) {
             cleanupUpload(true);
             sendNack(HubFxError::FILE_IO_ERROR, "Final flush failed");
             return;
         }
     }
+    uint32_t t2 = millis();
 
     // Force data to storage media before closing
     _shared.uploadFile.flush();
-
-    // Close file and release lock
     _shared.uploadFile.close();
     unlockStorage(_uploadTarget);
+    uint32_t t3 = millis();
 
     // Compute final MD5 digest
     _uploadMd5.calculate();
     uint8_t md5Bytes[16];
     _uploadMd5.getBytes(md5Bytes);
+    uint32_t t4 = millis();
 
-    bool isBurst = (_uploadMode == HubFxStorage::UPLOAD_BURST);
-    bool isStream = (_uploadMode == HubFxStorage::UPLOAD_STREAM);
+    const char* modeStr = (_uploadMode == HubFxStorage::UPLOAD_STREAM) ? "stream" : "sync";
 
-    STORAGE_LOG("UPLOAD_END %s:%s %lu bytes OK (md5=%s%s%s)", targetName(_uploadTarget),
-                _uploadPath, (unsigned long)_uploadBytesWritten,
-                _uploadMd5.toString().c_str(),
-                isBurst && _uploadCrcErrors > 0 ? " CRC_ERRORS" : "",
-                isStream ? " STREAM" : "");
+    auto ws = _policy.writerStats();
+    uint32_t avgLat = (ws.writeCount > 0)
+        ? (ws.totalStallTime_ms / ws.writeCount) : 0;
+    STORAGE_LOG("UPLOAD_END %s:%s %lu bytes OK (md5=%s mode=%s) "
+                "drain=%lums flush=%lums close=%lums md5=%lums total=%lums",
+                targetName(_uploadTarget), _uploadPath,
+                (unsigned long)_uploadBytesWritten,
+                _uploadMd5.toString().c_str(), modeStr,
+                (unsigned long)(t1 - t0), (unsigned long)(t2 - t1),
+                (unsigned long)(t3 - t2), (unsigned long)(t4 - t3),
+                (unsigned long)(t4 - tEndReceived));
+    STORAGE_LOG("SD writer stats: %luKB in %lu writes, "
+                "avg_lat=%lums max_lat=%lums total_io=%lums",
+                (unsigned long)(ws.bytesWritten / 1024),
+                (unsigned long)ws.writeCount,
+                (unsigned long)avgLat,
+                (unsigned long)ws.maxWriteLatency_ms,
+                (unsigned long)ws.totalStallTime_ms);
 
     _uploadActive = false;
+    _streamActive = false;
+    _policy.freeUploadBuffers();
 
-    // Free the appropriate buffers for the upload mode
-    if (isStream) {
-        _policy.freeStreamBuffers();
-    } else {
-        _policy.freeUploadBuffers();
+    // Resume resources suspended during stream upload
+    if (_streamSuspended && _onStreamEnd) {
+        _onStreamEnd();
+        _streamSuspended = false;
     }
 
-    // ACK payload: [md5:16B] or [md5:16B][crcErrors:u16LE] (burst)
-    if (isBurst && _uploadCrcErrors > 0) {
-        uint8_t ackPayload[18];
-        memcpy(ackPayload, md5Bytes, 16);
-        CoreProtocol::putU16LE(&ackPayload[16], _uploadCrcErrors);
-        sendRawPacket(CorePacket::ACK, _currentTag, ackPayload, 18);
-    } else {
-        sendRawPacket(CorePacket::ACK, _currentTag, md5Bytes, 16);
-    }
+    // ACK payload: [md5:16B]
+    sendRawPacket(CorePacket::ACK, _currentTag, md5Bytes, 16);
 }
 
 
@@ -809,20 +822,179 @@ void StorageServerT<TPolicy>::handleUploadCancel() {
 // Upload Helpers
 // ============================================================================
 
+// --- Stream Upload Helpers ---
+
+template <typename TPolicy>
+void StorageServerT<TPolicy>::processStream() {
+    if (!_streamActive || !_uploadActive) return;
+
+    // Track loop gap — detect slow main loop iterations
+    uint32_t now = millis();
+    uint32_t gap = now - _streamLastCallTime_ms;
+    _streamLastCallTime_ms = now;
+    if (gap > _streamMaxGap_ms) _streamMaxGap_ms = gap;
+
+    // Warn on excessive gap (UART RX buffer could overflow)
+    if (gap > 50) {
+        STORAGE_LOG("Stream loop gap: %lums (max=%lu) uart=%d",
+                    (unsigned long)gap, (unsigned long)_streamMaxGap_ms,
+                    _serial->available());
+    }
+
+    _streamIterCount++;
+
+    // Check writer task health before committing more data
+    if (!_policy.checkAsyncWriterHealth()) {
+        STORAGE_LOG("Stream: async writer error - aborting "
+                    "(seg=%u/%u rx=%lu/%lu)",
+                    _streamSegmentIndex, _streamSegmentCount,
+                    (unsigned long)_uploadBytesWritten,
+                    (unsigned long)_uploadExpectedSize);
+        _streamActive = false;
+        // Drain incoming raw bytes so COBS parser doesn't see garbage
+        while (_serial->available()) _serial->read();
+        cleanupUpload(true);
+        return;
+    }
+
+    int avail = _serial->available();
+    if (avail <= 0) return;
+
+    _uploadLastActivity_ms = now;
+
+    // Read into fill buffer (reused as stream read buffer)
+    size_t toRead = (size_t)avail;
+    if (toRead > _streamSegBytesRemaining)
+        toRead = _streamSegBytesRemaining;
+    if (toRead > _shared.uploadBufCapacity)
+        toRead = _shared.uploadBufCapacity;
+
+    size_t got = _serial->readBytes(_shared.uploadWriteBuf, toRead);
+    if (got == 0) return;
+
+    // Feed running MD5 hash (fast, stays on Core 0)
+    _uploadMd5.add(_shared.uploadWriteBuf, got);
+    _uploadBytesWritten    += got;
+    _streamSegBytesRemaining -= got;
+
+    // Write to ring buffer via policy (same path as onUploadBufferFull)
+    _shared.uploadWriteBufLen = got;
+    if (!_policy.onUploadBufferFull()) {
+        STORAGE_LOG("Stream: ring buffer write failed - aborting "
+                    "(seg=%u/%u rx=%lu/%lu ring=%u%%)",
+                    _streamSegmentIndex, _streamSegmentCount,
+                    (unsigned long)_uploadBytesWritten,
+                    (unsigned long)_uploadExpectedSize,
+                    _policy.bufferFillPercent());
+        _streamActive = false;
+        while (_serial->available()) _serial->read();
+        cleanupUpload(true);
+        return;
+    }
+
+    // Periodic progress logging (every ~2 seconds)
+    if (now - _streamLastLogTime_ms >= 2000) {
+        uint32_t bytesInPeriod = _uploadBytesWritten - _streamLastLogBytes;
+        uint32_t elapsed_ms = now - _streamLastLogTime_ms;
+        uint32_t kbps = (elapsed_ms > 0) ? (bytesInPeriod / elapsed_ms) : 0;
+        auto ws = _policy.writerStats();
+        uint32_t sdKBps = (elapsed_ms > 0 && ws.writeCount > 0)
+            ? (ws.bytesWritten / (now - _streamStartTime_ms)) : 0;
+        uint32_t avgLat = (ws.writeCount > 0)
+            ? (ws.totalStallTime_ms / ws.writeCount) : 0;
+        STORAGE_LOG("Stream seg=%u/%u rx=%lu/%lu (%u%%) "
+                    "rate=%luKB/s ring=%u%% uart=%d maxgap=%lums iter=%lu "
+                    "sd_written=%luKB sd_rate=%luKB/s sd_writes=%lu "
+                    "sd_avglat=%lums sd_maxlat=%lums",
+                    _streamSegmentIndex, _streamSegmentCount,
+                    (unsigned long)_uploadBytesWritten,
+                    (unsigned long)_uploadExpectedSize,
+                    (unsigned)(_uploadBytesWritten * 100 / _uploadExpectedSize),
+                    (unsigned long)kbps,
+                    _policy.bufferFillPercent(),
+                    _serial->available(),
+                    (unsigned long)_streamMaxGap_ms,
+                    (unsigned long)_streamIterCount,
+                    (unsigned long)(ws.bytesWritten / 1024),
+                    (unsigned long)sdKBps,
+                    (unsigned long)ws.writeCount,
+                    (unsigned long)avgLat,
+                    (unsigned long)ws.maxWriteLatency_ms);
+        _streamLastLogTime_ms = now;
+        _streamLastLogBytes = _uploadBytesWritten;
+    }
+
+    // Segment complete?
+    if (_streamSegBytesRemaining == 0) {
+        uint32_t segElapsed_ms = now - _streamSegStartTime_ms;
+        uint32_t segKBps = (segElapsed_ms > 0)
+            ? (_streamSegmentSize / segElapsed_ms) : 0;
+        STORAGE_LOG("Segment %u/%u done: %lums %luKB/s "
+                    "ring=%u%% maxgap=%lums iter=%lu",
+                    _streamSegmentIndex, _streamSegmentCount,
+                    (unsigned long)segElapsed_ms, (unsigned long)segKBps,
+                    _policy.bufferFillPercent(),
+                    (unsigned long)_streamMaxGap_ms,
+                    (unsigned long)_streamIterCount);
+
+        sendStreamSegmentAck();
+        _streamSegmentIndex++;
+
+        // Reset per-segment diagnostics
+        _streamSegStartTime_ms = millis();
+        _streamMaxGap_ms = 0;
+        _streamIterCount = 0;
+
+        if (_uploadBytesWritten >= _uploadExpectedSize) {
+            // All data received - exit stream mode, wait for UPLOAD_END (COBS)
+            _streamActive = false;
+            _streamEndTime_ms = millis();
+            uint32_t totalElapsed_ms = _streamEndTime_ms - _streamStartTime_ms;
+            uint32_t totalKBps = (totalElapsed_ms > 0)
+                ? (_uploadBytesWritten / totalElapsed_ms) : 0;
+            STORAGE_LOG("Stream complete: %lu bytes in %u segments, "
+                        "%lums (%luKB/s) — waiting for UPLOAD_END",
+                        (unsigned long)_uploadBytesWritten,
+                        _streamSegmentIndex,
+                        (unsigned long)totalElapsed_ms,
+                        (unsigned long)totalKBps);
+        } else {
+            // More segments - compute next segment size
+            uint32_t remaining = _uploadExpectedSize - _uploadBytesWritten;
+            _streamSegBytesRemaining = (remaining < _streamSegmentSize)
+                                    ? remaining : _streamSegmentSize;
+        }
+    }
+}
+
+template <typename TPolicy>
+void StorageServerT<TPolicy>::sendStreamSegmentAck() {
+    // Wire: [segment_idx:u16LE][bytes_received:u32LE][ring_fill_pct:u8]
+    uint8_t payload[7];
+    CoreProtocol::putU16LE(&payload[0], _streamSegmentIndex);
+    CoreProtocol::putU32LE(&payload[2], _uploadBytesWritten);
+    payload[6] = _policy.bufferFillPercent();
+    sendRawPacket(HubFxPacket::FILE_UPLOAD_PROGRESS, CoreProtocol::TAG_ASYNC,
+                  payload, sizeof(payload));
+}
+
+// --- Upload Cleanup ---
+
 template <typename TPolicy>
 void StorageServerT<TPolicy>::cleanupUpload(bool deletePartial) {
     if (!_uploadActive) return;
 
-    if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
-        _shared.streamReceiving = false;
-        _policy.onStreamCleanup();
-        _policy.freeStreamBuffers();
-    } else {
-        _policy.onChunkedCleanup();
-        // Discard any buffered data (don't flush on cleanup/cancel)
-        _shared.uploadWriteBufLen = 0;
-        _policy.freeUploadBuffers();
+    _streamActive = false;
+
+    // Drain any raw bytes remaining in the UART buffer (stream mode leftovers)
+    if (_serial) {
+        while (_serial->available()) _serial->read();
     }
+
+    _policy.onChunkedCleanup();
+    // Discard any buffered data (don't flush on cleanup/cancel)
+    _shared.uploadWriteBufLen = 0;
+    _policy.freeUploadBuffers();
 
     _shared.uploadFile.close();
 
@@ -839,6 +1011,12 @@ void StorageServerT<TPolicy>::cleanupUpload(bool deletePartial) {
 
     unlockStorage(_uploadTarget);
     _uploadActive = false;
+
+    // Resume resources suspended during stream upload
+    if (_streamSuspended && _onStreamEnd) {
+        _onStreamEnd();
+        _streamSuspended = false;
+    }
 }
 
 template <typename TPolicy>
@@ -849,65 +1027,6 @@ void StorageServerT<TPolicy>::cancelActiveUpload() {
     }
 }
 
-// ============================================================================
-// Raw Stream Data Processing (UPLOAD_STREAM mode, Core 0)
-// ============================================================================
-
-template <typename TPolicy>
-void StorageServerT<TPolicy>::processStreamData(Stream& serial) {
-    uint8_t tmp[2048];
-
-    while (_streamBytesRemaining > 0) {
-        int avail = serial.available();
-        if (avail <= 0) break;  // No data available â€” return, will be called again
-
-        // Read exactly what we need (no more), clamped to temp buffer size
-        size_t toRead = (size_t)avail;
-        if (toRead > _streamBytesRemaining) toRead = _streamBytesRemaining;
-        if (toRead > sizeof(tmp)) toRead = sizeof(tmp);
-
-        size_t got = serial.readBytes(tmp, toRead);
-        if (got == 0) break;  // Shouldn't happen, but be safe
-
-        // Feed running MD5 hash
-        _uploadMd5.add(tmp, got);
-
-        // Platform-specific: ring buffer (ESP32) or staging + inline flush (Pico)
-        _policy.onStreamDataReceived(tmp, got);
-
-        _streamBytesRemaining -= got;
-        _uploadBytesWritten += got;
-        _uploadLastActivity_ms = millis();
-    }
-
-    // Check if all expected bytes have been received
-    if (_streamBytesRemaining == 0 && _shared.streamReceiving) {
-        _shared.streamReceiving = false;
-        _policy.onStreamReceiveComplete();
-    } else if (_streamBytesRemaining > 0 && _shared.streamReceiving) {
-        // Check for stream data stall â€” if no serial data arrives for
-        // STREAM_DATA_TIMEOUT_MS, some bytes were likely lost (UART HW FIFO
-        // overflow, USB-UART bridge issue, etc.).  Exit stream mode NOW so
-        // subsequent COBS packets from the client (UPLOAD_END, UPLOAD_CANCEL)
-        // are parsed as protocol â€” not consumed as raw file data.
-        uint32_t elapsed = millis() - _uploadLastActivity_ms;
-        if (elapsed >= STREAM_DATA_TIMEOUT_MS) {
-            STORAGE_LOG("Stream data stall: %lu bytes still expected "
-                        "(received %lu/%lu, gap %lus) â€” aborting upload",
-                        (unsigned long)_streamBytesRemaining,
-                        (unsigned long)_uploadBytesWritten,
-                        (unsigned long)_uploadExpectedSize,
-                        (unsigned long)(elapsed / 1000));
-            _shared.streamReceiving = false;
-            // Let the writer task drain whatever data is in the ring buffer,
-            // then clean up immediately (delete partial file, stop writer,
-            // free buffers).  This is faster than waiting for the 30s general
-            // upload timeout, and leaves the server ready for the next command.
-            _policy.onStreamReceiveComplete();
-            cleanupUpload(true);
-        }
-    }
-}
 
 
 // ============================================================================
@@ -919,13 +1038,19 @@ void StorageServerT<TPolicy>::checkUploadTimeout() {
     if (!_uploadActive) return;
 
     uint32_t elapsed = millis() - _uploadLastActivity_ms;
-    if (elapsed >= UPLOAD_TIMEOUT_MS) {
-        STORAGE_LOG("Upload inactivity timeout (%lus) â€” cancelling %s:%s "
-                    "(received %lu/%lu bytes)",
-                    (unsigned long)(elapsed / 1000),
+    uint32_t timeout = _streamActive ? STREAM_INACTIVITY_MS : UPLOAD_TIMEOUT_MS;
+    if (elapsed >= timeout) {
+        STORAGE_LOG("Upload inactivity timeout (%lums, limit=%lums) "
+                    "cancelling %s:%s (rx=%lu/%lu bytes, stream=%s "
+                    "seg=%u/%u ring=%u%%)",
+                    (unsigned long)elapsed,
+                    (unsigned long)timeout,
                     targetName(_uploadTarget), _uploadPath,
                     (unsigned long)_uploadBytesWritten,
-                    (unsigned long)_uploadExpectedSize);
+                    (unsigned long)_uploadExpectedSize,
+                    _streamActive ? "yes" : "no",
+                    _streamSegmentIndex, _streamSegmentCount,
+                    _policy.bufferFillPercent());
         cleanupUpload(true);
     }
 }
@@ -952,14 +1077,14 @@ uint8_t StorageServerT<TPolicy>::mapStorageError(uint8_t err) {
 
 
 // ============================================================================
-// SD Card Init (0x93) â€” Remount SD card
+// SD Card Init (0x93) -- Remount SD card
 // ============================================================================
 
 template <typename TPolicy>
 void StorageServerT<TPolicy>::handleSdInit(const uint8_t* payload, size_t len) {
     SdCardModule& sd = SdCardModule::instance();
 
-    // SD_INIT payload: [speed_mhz:u8] â€” ignored for SDIO mode
+    // SD_INIT payload: [speed_mhz:u8] -- ignored for SDIO mode
     uint8_t speed = (len >= 1) ? payload[0] : 0;
 
     STORAGE_LOG("SD_INIT: remounting (speed=%u)", speed);

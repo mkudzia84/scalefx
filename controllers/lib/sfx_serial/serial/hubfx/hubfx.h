@@ -113,10 +113,15 @@ namespace HubFxPacket {
     constexpr uint8_t FILE_INFO_RESP     = 0x9E;  // [exists:u8][isDir:u8][size:u32LE]
     constexpr uint8_t FILE_DOWNLOAD      = 0x9F;  // [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END
     constexpr uint8_t FILE_UPLOAD_BEGIN  = 0xA0;  // [size:u32LE][pathLen:u8][path:str][target:u8?][mode:u8?] → ACK
-                                                   //   mode: 0=sync, 1=burst (no per-chunk ACK), 3=stream (raw bytes)
-    constexpr uint8_t FILE_UPLOAD_DATA   = 0xA1;  // [seqNum:u16LE][crc16:u16LE][data:N] → ACK/NACK(sync) or silent (burst)
-    constexpr uint8_t FILE_UPLOAD_END    = 0xA2;  // [] → ACK[md5:16B] / ACK[md5:16B][crcErrors:u16LE] (burst) / NACK
+                                                   //   mode: 0=sync (COBS per-chunk ACK), 3=stream (raw binary, segment ACKs)
+                                                   //   Stream ACK payload: [segment_size:u32LE][segment_count:u16LE]
+    constexpr uint8_t FILE_UPLOAD_DATA   = 0xA1;  // [seqNum:u16LE][crc16:u16LE][data:N] → ACK/NACK (sync mode only)
+    constexpr uint8_t FILE_UPLOAD_END    = 0xA2;  // [] → ACK[md5:16B] / NACK
     constexpr uint8_t FILE_UPLOAD_CANCEL = 0xA3;  // [] → ACK
+
+    // --- Upload Progress (0xB0) — server-sent segment ACK during STREAM upload ---
+    constexpr uint8_t FILE_UPLOAD_PROGRESS = 0xB0;  // Server → Client (async, TAG_ASYNC)
+                                                    //   [segment_idx:u16LE][bytes_received:u32LE][ring_fill_pct:u8]
 }
 
 
@@ -207,9 +212,7 @@ namespace HubFxStorage {
     /// Upload transfer mode
     enum UploadMode : uint8_t {
         UPLOAD_SYNC     = 0,  // ACK per chunk, CRC retry (default)
-        UPLOAD_BURST    = 1,  // No per-chunk ACK, MD5 verification at end
-        // Mode 2 (windowed) removed — use UPLOAD_STREAM instead
-        UPLOAD_STREAM   = 3   // Raw byte streaming: bypasses COBS, ring buffer + dual-core
+        UPLOAD_STREAM   = 3   // Raw binary stream: bypass COBS for data, segment-based ACKs
     };
 }
 

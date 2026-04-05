@@ -46,7 +46,7 @@ func (c *CLI) cmdLfxLed(args []string) {
 		return
 	}
 	ch, bright := atoi(args[0]), atoi(args[1])
-	c.sendACK(CmdLfxLedSet(byte(ch), byte(bright)), fmt.Sprintf("LED %d → %d%%", ch, bright))
+	c.ack(NewLightFxApi(c.conn).LedSet(byte(ch), byte(bright)), fmt.Sprintf("LED %d → %d%%", ch, bright))
 }
 
 func (c *CLI) cmdLfxLedOff(args []string) {
@@ -58,23 +58,14 @@ func (c *CLI) cmdLfxLedOff(args []string) {
 	if ch == 0 {
 		target = "All LEDs"
 	}
-	c.sendACK(CmdLfxLedOff(byte(ch)), fmt.Sprintf("%s OFF", target))
+	c.ack(NewLightFxApi(c.conn).LedOff(byte(ch)), fmt.Sprintf("%s OFF", target))
 }
 
 func (c *CLI) cmdLfxLedStatus(_ []string) {
 	if !c.requireConn() {
 		return
 	}
-	resp, err := c.conn.SendAndWait(CmdLfxLedStatus())
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == LfxLED_STATUS_RESP {
-		ParseLedStatus(resp.Payload)
-	} else {
-		PrintACKResult(resp, "LED status requested")
-	}
+	c.query(NewLightFxApi(c.conn).LedStatus(), ParseLedStatus)
 }
 
 // ─── Sequence Control ───
@@ -84,7 +75,7 @@ func (c *CLI) cmdLfxSeqClear(args []string) {
 		return
 	}
 	ch := atoi(args[0])
-	c.sendACK(CmdLfxLedSeqClear(byte(ch)), fmt.Sprintf("Sequence %d cleared", ch))
+	c.ack(NewLightFxApi(c.conn).SeqClear(byte(ch)), fmt.Sprintf("Sequence %d cleared", ch))
 }
 
 func (c *CLI) cmdLfxSeqAdd(args []string) {
@@ -96,6 +87,7 @@ func (c *CLI) cmdLfxSeqAdd(args []string) {
 	ch := atoi(args[0])
 	event := strings.ToLower(args[1])
 	rest := args[2:]
+	api := NewLightFxApi(c.conn)
 
 	switch event {
 	case "on":
@@ -104,7 +96,7 @@ func (c *CLI) cmdLfxSeqAdd(args []string) {
 			return
 		}
 		dur, bright := uint16(atoi(rest[0])), byte(atoi(rest[1]))
-		c.sendACK(CmdLfxLedSeqAdd(byte(ch), LfxEvtON, dur, 0, bright, 0),
+		c.ack(api.SeqAdd(byte(ch), LfxEvtON, dur, 0, bright, 0),
 			fmt.Sprintf("Seq %d: ON %dms at %d%%", ch, dur, bright))
 
 	case "off":
@@ -113,7 +105,7 @@ func (c *CLI) cmdLfxSeqAdd(args []string) {
 			return
 		}
 		dur := uint16(atoi(rest[0]))
-		c.sendACK(CmdLfxLedSeqAdd(byte(ch), LfxEvtOFF, dur, 0, 0, 0),
+		c.ack(api.SeqAdd(byte(ch), LfxEvtOFF, dur, 0, 0, 0),
 			fmt.Sprintf("Seq %d: OFF %dms", ch, dur))
 
 	case "flash":
@@ -126,7 +118,7 @@ func (c *CLI) cmdLfxSeqAdd(args []string) {
 		if len(rest) > 3 {
 			duty = byte(atoi(rest[3]))
 		}
-		c.sendACK(CmdLfxLedSeqAdd(byte(ch), LfxEvtFLASH, interval, dur, bright, duty),
+		c.ack(api.SeqAdd(byte(ch), LfxEvtFLASH, interval, dur, bright, duty),
 			fmt.Sprintf("Seq %d: FLASH %dms for %dms, %d%% duty", ch, interval, dur, duty))
 
 	case "fadein":
@@ -135,7 +127,7 @@ func (c *CLI) cmdLfxSeqAdd(args []string) {
 			return
 		}
 		dur, bright := uint16(atoi(rest[0])), byte(atoi(rest[1]))
-		c.sendACK(CmdLfxLedSeqAdd(byte(ch), LfxEvtFADE_IN, dur, 0, bright, 0),
+		c.ack(api.SeqAdd(byte(ch), LfxEvtFADE_IN, dur, 0, bright, 0),
 			fmt.Sprintf("Seq %d: FADE IN %dms to %d%%", ch, dur, bright))
 
 	case "fadeout":
@@ -144,7 +136,7 @@ func (c *CLI) cmdLfxSeqAdd(args []string) {
 			return
 		}
 		dur, bright := uint16(atoi(rest[0])), byte(atoi(rest[1]))
-		c.sendACK(CmdLfxLedSeqAdd(byte(ch), LfxEvtFADE_OUT, dur, 0, bright, 0),
+		c.ack(api.SeqAdd(byte(ch), LfxEvtFADE_OUT, dur, 0, bright, 0),
 			fmt.Sprintf("Seq %d: FADE OUT %dms from %d%%", ch, dur, bright))
 
 	case "fading":
@@ -160,7 +152,7 @@ func (c *CLI) cmdLfxSeqAdd(args []string) {
 		if len(rest) > 3 {
 			maxB = byte(atoi(rest[3]))
 		}
-		c.sendACK(CmdLfxLedSeqAdd(byte(ch), LfxEvtFADING, cycle, dur, minB, maxB),
+		c.ack(api.SeqAdd(byte(ch), LfxEvtFADING, cycle, dur, minB, maxB),
 			fmt.Sprintf("Seq %d: FADING cycle %dms for %dms (%d-%d%%)", ch, cycle, dur, minB, maxB))
 
 	case "beacon":
@@ -176,7 +168,7 @@ func (c *CLI) cmdLfxSeqAdd(args []string) {
 		if len(rest) > 3 {
 			maxB = byte(atoi(rest[3]))
 		}
-		c.sendACK(CmdLfxLedSeqAdd(byte(ch), LfxEvtBEACON, cycle, dur, flashPct, maxB),
+		c.ack(api.SeqAdd(byte(ch), LfxEvtBEACON, cycle, dur, flashPct, maxB),
 			fmt.Sprintf("Seq %d: BEACON cycle %dms for %dms, flash %d%% peak %d%%", ch, cycle, dur, flashPct, maxB))
 
 	default:
@@ -206,7 +198,7 @@ func (c *CLI) cmdLfxSeqStart(args []string) {
 	if len(args) > 1 {
 		loops = atoi(args[1])
 	}
-	c.sendACK(CmdLfxLedSeqStart(byte(ch), uint16(loops)), fmt.Sprintf("Sequence %d started", ch))
+	c.ack(NewLightFxApi(c.conn).SeqStart(byte(ch), uint16(loops)), fmt.Sprintf("Sequence %d started", ch))
 }
 
 func (c *CLI) cmdLfxSeqStop(args []string) {
@@ -214,7 +206,7 @@ func (c *CLI) cmdLfxSeqStop(args []string) {
 		return
 	}
 	ch := atoi(args[0])
-	c.sendACK(CmdLfxLedSeqStop(byte(ch)), fmt.Sprintf("Sequence %d stopped", ch))
+	c.ack(NewLightFxApi(c.conn).SeqStop(byte(ch)), fmt.Sprintf("Sequence %d stopped", ch))
 }
 
 func (c *CLI) cmdLfxSeqRestart(args []string) {
@@ -222,7 +214,7 @@ func (c *CLI) cmdLfxSeqRestart(args []string) {
 		return
 	}
 	ch := atoi(args[0])
-	c.sendACK(CmdLfxLedSeqRestart(byte(ch)), fmt.Sprintf("Sequence %d restarted", ch))
+	c.ack(NewLightFxApi(c.conn).SeqRestart(byte(ch)), fmt.Sprintf("Sequence %d restarted", ch))
 }
 
 func (c *CLI) cmdLfxSeqStatus(args []string) {
@@ -230,16 +222,7 @@ func (c *CLI) cmdLfxSeqStatus(args []string) {
 		return
 	}
 	ch := atoi(args[0])
-	resp, err := c.conn.SendAndWait(CmdLfxLedSeqStatus(byte(ch)))
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == LfxLED_SEQ_STATUS_RESP {
-		ParseLedSeqStatus(resp.Payload)
-	} else {
-		PrintACKResult(resp, "Sequence status requested")
-	}
+	c.query(NewLightFxApi(c.conn).SeqStatus(byte(ch)), ParseLedSeqStatus)
 }
 
 func (c *CLI) cmdLfxSeqQueue(args []string) {
@@ -247,16 +230,7 @@ func (c *CLI) cmdLfxSeqQueue(args []string) {
 		return
 	}
 	ch := atoi(args[0])
-	resp, err := c.conn.SendAndWait(CmdLfxLedSeqQueue(byte(ch)))
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == LfxLED_SEQ_QUEUE_RESP {
-		ParseLedSeqQueue(resp.Payload)
-	} else {
-		PrintACKResult(resp, "Sequence queue requested")
-	}
+	c.query(NewLightFxApi(c.conn).SeqQueue(byte(ch)), ParseLedSeqQueue)
 }
 
 // ─── Master Brightness ───
@@ -266,17 +240,17 @@ func (c *CLI) cmdLfxMasterBright(args []string) {
 		return
 	}
 	val := atoi(args[0])
-	c.sendACK(CmdLfxMasterBrightness(byte(val)), fmt.Sprintf("Master brightness → %d%%", val))
+	c.ack(NewLightFxApi(c.conn).MasterBrightness(byte(val)), fmt.Sprintf("Master brightness → %d%%", val))
 }
 
 // ─── Servo Commands ───
 
 func (c *CLI) cmdLfxServo(args []string) {
-	c.servoSet(args, "servo set <id> <pulse_us>", CmdLfxServoSet)
+	c.servoSet(args, "servo set <id> <pulse_us>", NewLightFxApi(c.conn).ServoSet)
 }
 
 func (c *CLI) cmdLfxServoConfig(args []string) {
-	c.servoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec]", CmdLfxServoSettings)
+	c.servoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec]", NewLightFxApi(c.conn).ServoConfig)
 }
 
 // ─── Landing Light Commands ───
@@ -294,7 +268,7 @@ func (c *CLI) cmdLfxLandingBind(args []string) {
 	if len(args) > 5 {
 		bright = byte(atoi(args[5]))
 	}
-	c.sendACK(CmdLfxLandingLightBind(slot, servoID, ledCh, deploy, retract, bright),
+	c.ack(NewLightFxApi(c.conn).LandingBind(slot, servoID, ledCh, deploy, retract, bright),
 		fmt.Sprintf("Landing light %d: servo %d + LED %d, deploy %dµs, retract %dµs, bright %d%%",
 			slot, servoID, ledCh, deploy, retract, bright))
 }
@@ -308,7 +282,7 @@ func (c *CLI) cmdLfxLandingUnbind(args []string) {
 	if slot == 0 {
 		target = "all slots"
 	}
-	c.sendACK(CmdLfxLandingLightUnbind(slot), fmt.Sprintf("Landing light %s unbound", target))
+	c.ack(NewLightFxApi(c.conn).LandingUnbind(slot), fmt.Sprintf("Landing light %s unbound", target))
 }
 
 func (c *CLI) cmdLfxLandingDeploy(args []string) {
@@ -320,7 +294,7 @@ func (c *CLI) cmdLfxLandingDeploy(args []string) {
 	if slot == 0 {
 		target = "all"
 	}
-	c.sendACK(CmdLfxLandingLightDeploy(slot), fmt.Sprintf("Landing light %s deploying", target))
+	c.ack(NewLightFxApi(c.conn).LandingDeploy(slot), fmt.Sprintf("Landing light %s deploying", target))
 }
 
 func (c *CLI) cmdLfxLandingRetract(args []string) {
@@ -332,7 +306,7 @@ func (c *CLI) cmdLfxLandingRetract(args []string) {
 	if slot == 0 {
 		target = "all"
 	}
-	c.sendACK(CmdLfxLandingLightRetract(slot), fmt.Sprintf("Landing light %s retracting", target))
+	c.ack(NewLightFxApi(c.conn).LandingRetract(slot), fmt.Sprintf("Landing light %s retracting", target))
 }
 
 // ─── Channel Management ───
@@ -346,7 +320,7 @@ func (c *CLI) cmdLfxReset(args []string) {
 	if ch == 0 {
 		target = "All LEDs"
 	}
-	c.sendACK(CmdLfxLedReset(ch), fmt.Sprintf("%s reset", target))
+	c.ack(NewLightFxApi(c.conn).Reset(ch), fmt.Sprintf("%s reset", target))
 }
 
 func (c *CLI) cmdLfxEnable(args []string) {
@@ -358,7 +332,7 @@ func (c *CLI) cmdLfxEnable(args []string) {
 	if ch == 0 {
 		target = "All LEDs"
 	}
-	c.sendACK(CmdLfxLedEnable(ch, true), fmt.Sprintf("%s enabled", target))
+	c.ack(NewLightFxApi(c.conn).Enable(ch, true), fmt.Sprintf("%s enabled", target))
 }
 
 func (c *CLI) cmdLfxDisable(args []string) {
@@ -370,5 +344,5 @@ func (c *CLI) cmdLfxDisable(args []string) {
 	if ch == 0 {
 		target = "All LEDs"
 	}
-	c.sendACK(CmdLfxLedEnable(ch, false), fmt.Sprintf("%s disabled", target))
+	c.ack(NewLightFxApi(c.conn).Enable(ch, false), fmt.Sprintf("%s disabled", target))
 }

@@ -432,6 +432,33 @@ func CmdHubFileDownload(path string, target byte) []byte {
 	return BuildPacket(HubFILE_DOWNLOAD, payload, 0)
 }
 
+func CmdHubFileUploadBegin(path string, size uint32, target byte, mode byte) []byte {
+	payload := make([]byte, 4+1+len(path)+1+1)
+	copy(payload[0:4], U32LE(size))
+	payload[4] = byte(len(path))
+	copy(payload[5:5+len(path)], []byte(path))
+	payload[5+len(path)] = target
+	payload[6+len(path)] = mode
+	return BuildPacket(HubFILE_UPLOAD_BEGIN, payload, 0)
+}
+
+func CmdHubFileUploadData(seq uint16, data []byte) []byte {
+	crc := CRC16CCITT(data)
+	payload := make([]byte, 4+len(data))
+	copy(payload[0:2], U16LE(seq))
+	copy(payload[2:4], U16LE(crc))
+	copy(payload[4:], data)
+	return BuildPacket(HubFILE_UPLOAD_DATA, payload, 0)
+}
+
+func CmdHubFileUploadEnd() []byte {
+	return BuildPacket(HubFILE_UPLOAD_END, nil, 0)
+}
+
+func CmdHubFileUploadCancel() []byte {
+	return BuildPacket(HubFILE_UPLOAD_CANCEL, nil, 0)
+}
+
 func CmdHubSlaveInfo(slaveType byte) []byte {
 	return BuildPacket(HubSLAVE_INFO, []byte{slaveType}, 0)
 }

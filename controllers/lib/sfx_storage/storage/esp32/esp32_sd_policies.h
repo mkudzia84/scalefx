@@ -196,7 +196,7 @@ struct EspSdioSdPolicy : public EspSdFileOps {
         }
 
         bool ok = SD_MMC.begin("/sdcard", OneBit, cfg.formatIfFailed,
-                                SDMMC_FREQ_DEFAULT, cfg.maxOpenFiles);
+                                SDMMC_FREQ_HIGHSPEED, cfg.maxOpenFiles);
         if (ok) _fs = &SD_MMC;
         return ok;
     }

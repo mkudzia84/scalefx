@@ -42,11 +42,12 @@ func (c *CLI) cmdGcDeploy(args []string) {
 	if !requireArgs(args, 1, "deploy <gear_id> | all") {
 		return
 	}
+	api := NewGearControlApi(c.conn)
 	if strings.ToLower(args[0]) == "all" {
-		c.sendACK(CmdGcAll(1), "Deploy ALL gears")
+		c.ack(api.AllDeploy(), "Deploy ALL gears")
 	} else {
 		id := atoi(args[0])
-		c.sendACK(CmdGcDeploy(byte(id)), fmt.Sprintf("Deploy gear %d (%s)", id, gearNames[id]))
+		c.ack(api.Deploy(byte(id)), fmt.Sprintf("Deploy gear %d (%s)", id, gearNames[id]))
 	}
 }
 
@@ -54,11 +55,12 @@ func (c *CLI) cmdGcRetract(args []string) {
 	if !requireArgs(args, 1, "retract <gear_id> | all") {
 		return
 	}
+	api := NewGearControlApi(c.conn)
 	if strings.ToLower(args[0]) == "all" {
-		c.sendACK(CmdGcAll(0), "Retract ALL gears")
+		c.ack(api.AllRetract(), "Retract ALL gears")
 	} else {
 		id := atoi(args[0])
-		c.sendACK(CmdGcRetract(byte(id)), fmt.Sprintf("Retract gear %d (%s)", id, gearNames[id]))
+		c.ack(api.Retract(byte(id)), fmt.Sprintf("Retract gear %d (%s)", id, gearNames[id]))
 	}
 }
 
@@ -66,21 +68,22 @@ func (c *CLI) cmdGcStop(args []string) {
 	if !requireArgs(args, 1, "stop <gear_id> | all") {
 		return
 	}
+	api := NewGearControlApi(c.conn)
 	if strings.ToLower(args[0]) == "all" {
-		c.sendACK(CmdGcAll(2), "STOP ALL motors")
+		c.ack(api.AllStop(), "STOP ALL motors")
 	} else {
 		id := atoi(args[0])
-		c.sendACK(CmdGcStop(byte(id)), fmt.Sprintf("STOP motor %d", id))
+		c.ack(api.Stop(byte(id)), fmt.Sprintf("STOP motor %d", id))
 	}
 }
 
 // Servo commands delegate to shared helpers (Strategy pattern)
 func (c *CLI) cmdGcServo(args []string) {
-	c.servoSet(args, "servo set <id> <pulse_us>", CmdGcServoSet)
+	c.servoSet(args, "servo set <id> <pulse_us>", NewGearControlApi(c.conn).ServoSet)
 }
 
 func (c *CLI) cmdGcServoConfig(args []string) {
-	c.servoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec]", CmdGcServoSettings)
+	c.servoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec]", NewGearControlApi(c.conn).ServoConfig)
 }
 
 func (c *CLI) cmdGcGearConfig(args []string) {
@@ -104,7 +107,7 @@ func (c *CLI) cmdGcGearConfig(args []string) {
 	if len(args) > 3 {
 		timeout = atoi(args[3])
 	}
-	c.sendACK(CmdGcGearConfig(byte(id), byte(flags), uint16(stall), uint16(timeout)),
+	c.ack(NewGearControlApi(c.conn).GearConfig(byte(id), byte(flags), uint16(stall), uint16(timeout)),
 		fmt.Sprintf("Gear %d: flags=0x%02X, stall=%dmA, timeout=%dms", id, flags, stall, timeout))
 }
 
@@ -114,7 +117,7 @@ func (c *CLI) cmdGcDoorConfig(args []string) {
 	}
 	id := atoi(args[0])
 	o0, c0, o1, c1 := atoi(args[1]), atoi(args[2]), atoi(args[3]), atoi(args[4])
-	c.sendACK(CmdGcDoorConfig(byte(id), uint16(o0), uint16(c0), uint16(o1), uint16(c1)),
+	c.ack(NewGearControlApi(c.conn).DoorConfig(byte(id), uint16(o0), uint16(c0), uint16(o1), uint16(c1)),
 		fmt.Sprintf("Gear %d doors: A=%d-%dµs, B=%d-%dµs", id, c0, o0, c1, o1))
 }
 
@@ -132,7 +135,7 @@ func (c *CLI) cmdGcDoorMode(args []string) {
 	if len(args) > 3 {
 		delay_ms = uint16(atoi(args[3]))
 	}
-	c.sendACK(CmdGcDoorMode(byte(id), mode, postDeploy, delay_ms),
+	c.ack(NewGearControlApi(c.conn).DoorMode(byte(id), mode, postDeploy, delay_ms),
 		fmt.Sprintf("Gear %d: pre=%s post=%s", id, DoorModeName(mode), DoorModeName(postDeploy)))
 }
 
@@ -152,7 +155,7 @@ func (c *CLI) cmdGcYawConfig(args []string) {
 		return
 	}
 	id, neutral, min, max := atoi(args[0]), atoi(args[1]), atoi(args[2]), atoi(args[3])
-	c.sendACK(CmdGcYawConfig(byte(id), uint16(neutral), uint16(min), uint16(max)),
+	c.ack(NewGearControlApi(c.conn).YawConfig(byte(id), uint16(neutral), uint16(min), uint16(max)),
 		fmt.Sprintf("Yaw gear %d: neutral=%dµs, range=%d-%dµs", id, neutral, min, max))
 }
 
@@ -161,7 +164,7 @@ func (c *CLI) cmdGcYaw(args []string) {
 		return
 	}
 	pos := atoi(args[0])
-	c.sendACK(CmdGcYawInput(uint16(pos)), fmt.Sprintf("Yaw → %dµs", pos))
+	c.ack(NewGearControlApi(c.conn).YawInput(uint16(pos)), fmt.Sprintf("Yaw → %dµs", pos))
 }
 
 func (c *CLI) cmdGcCalibrate(args []string) {
@@ -172,8 +175,9 @@ func (c *CLI) cmdGcCalibrate(args []string) {
 	if len(args) > 1 {
 		timeout = byte(atoi(args[1]))
 	}
+	api := NewGearControlApi(c.conn)
 	c.forEachGear(args[0], func(id byte) {
-		c.sendACK(CmdGcCalibrate(id, timeout),
+		c.ack(api.Calibrate(id, timeout),
 			fmt.Sprintf("Calibrating gear %d (%s)", id, gearNames[int(id)]))
 	})
 }
@@ -182,8 +186,9 @@ func (c *CLI) cmdGcCalibCancel(args []string) {
 	if !requireArgs(args, 1, "calibrate.cancel <gear_id> | all") {
 		return
 	}
+	api := NewGearControlApi(c.conn)
 	c.forEachGear(args[0], func(id byte) {
-		c.sendACK(CmdGcCalibCancel(id),
+		c.ack(api.CalibrateCancel(id),
 			fmt.Sprintf("Cancelled gear %d (%s)", id, gearNames[int(id)]))
 	})
 }
@@ -192,8 +197,9 @@ func (c *CLI) cmdGcReset(args []string) {
 	if !requireArgs(args, 1, "reset <gear_id> | all") {
 		return
 	}
+	api := NewGearControlApi(c.conn)
 	c.forEachGear(args[0], func(id byte) {
-		c.sendACK(CmdGcReset(id), fmt.Sprintf("Reset gear %d (%s)", id, gearNames[int(id)]))
+		c.ack(api.Reset(id), fmt.Sprintf("Reset gear %d (%s)", id, gearNames[int(id)]))
 	})
 }
 
@@ -201,8 +207,9 @@ func (c *CLI) cmdGcEnable(args []string) {
 	if !requireArgs(args, 1, "enable <gear_id> | all") {
 		return
 	}
+	api := NewGearControlApi(c.conn)
 	c.forEachGear(args[0], func(id byte) {
-		c.sendACK(CmdGcEnable(id, true), fmt.Sprintf("Enabled gear %d (%s)", id, gearNames[int(id)]))
+		c.ack(api.Enable(id, true), fmt.Sprintf("Enabled gear %d (%s)", id, gearNames[int(id)]))
 	})
 }
 
@@ -210,8 +217,9 @@ func (c *CLI) cmdGcDisable(args []string) {
 	if !requireArgs(args, 1, "disable <gear_id> | all") {
 		return
 	}
+	api := NewGearControlApi(c.conn)
 	c.forEachGear(args[0], func(id byte) {
-		c.sendACK(CmdGcEnable(id, false), fmt.Sprintf("Disabled gear %d (%s)", id, gearNames[int(id)]))
+		c.ack(api.Enable(id, false), fmt.Sprintf("Disabled gear %d (%s)", id, gearNames[int(id)]))
 	})
 }
 
@@ -228,7 +236,7 @@ func (c *CLI) cmdGcBattery(args []string) {
 			state += " + auto-deploy"
 		}
 	}
-	c.sendACK(CmdGcBatteryConfig(enabled, autoDeploy), fmt.Sprintf("Battery monitoring: %s", state))
+	c.ack(NewGearControlApi(c.conn).BatteryConfig(enabled, autoDeploy), fmt.Sprintf("Battery monitoring: %s", state))
 }
 
 // forEachGear applies fn to a single gear ID or all 3 gears.

@@ -10,11 +10,11 @@ Usage:
     python scripts/build_and_flash.py <controller> [options]
     
 Controllers:
-    noop, gunfx, lightfx, gearcontrol, hubfx
+    noop, noop-esp, gunfx, lightfx, gearcontrol, hubfx
 
     Pico controllers (noop, gunfx, lightfx, gearcontrol) use UF2 drag-drop
     flashing via BOOTSEL mode.
-    ESP32-S3 controllers (hubfx) use esptool upload via UART.
+    ESP32-S3 controllers (hubfx, noop-esp) use esptool upload via UART.
 
 Options:
     --port PORT     Serial port (default: auto-detect)
@@ -71,7 +71,7 @@ except ImportError:
 # Constants
 # =============================================================================
 
-CONTROLLERS = ['noop', 'gunfx', 'lightfx', 'gearcontrol', 'hubfx']
+CONTROLLERS = ['noop', 'noop-esp', 'gunfx', 'lightfx', 'gearcontrol', 'hubfx']
 BAUD_RATE = 6000000  # For verification only
 FRAME_DELIMITER = 0x00
 
@@ -144,6 +144,7 @@ def get_workspace_root() -> Path:
 # Controller name → (subdirectory, PlatformIO env name, firmware extension)
 _CONTROLLER_MAP = {
     'noop':           ('noop/pico',           'pico',    'uf2'),
+    'noop-esp':       ('noop/esp32s3',        'esp32s3', 'bin'),
     'gunfx':          ('gunfx/pico',          'pico',    'uf2'),
     'lightfx':        ('lightfx/pico',        'pico',    'uf2'),
     'gearcontrol':    ('gearcontrol/pico',     'pico',    'uf2'),

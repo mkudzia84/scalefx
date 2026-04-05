@@ -160,7 +160,7 @@ public sealed class ScaleFxConnection : IDisposable
             {
                 var parsed = Packet.Parse(data);
                 if (parsed != null)
-                    Console.WriteLine($"  → TX: {PacketTypes.GetName(parsed.PacketType)} tag={parsed.Tag} [{parsed.Payload.Length} bytes]");
+                    System.Console.WriteLine($"  → TX: {PacketTypes.GetName(parsed.PacketType)} tag={parsed.Tag} [{parsed.Payload.Length} bytes]");
             }
 
             _port.Write(data, 0, data.Length);
@@ -219,6 +219,30 @@ public sealed class ScaleFxConnection : IDisposable
     /// </summary>
     public Task<Response> SendExpectAckAsync(byte[] data, CancellationToken ct = default)
         => SendAndWaitAsync(data, ct);
+
+    /// <summary>
+    /// Sends raw bytes to the serial port without tag injection or verbose logging.
+    /// Used for stream-mode uploads that bypass COBS framing.
+    /// </summary>
+    public void SendRaw(byte[] data, int offset, int count)
+    {
+        if (_port?.IsOpen != true)
+            throw new InvalidOperationException("Not connected");
+
+        lock (_writeLock)
+        {
+            _port.Write(data, offset, count);
+        }
+    }
+
+    /// <summary>
+    /// Flushes the serial port output buffer.
+    /// </summary>
+    public void Flush()
+    {
+        if (_port?.IsOpen != true) return;
+        try { _port.BaseStream.Flush(); } catch { /* ignore */ }
+    }
 
     /// <summary>
     /// Discards pending serial data.
@@ -307,7 +331,7 @@ public sealed class ScaleFxConnection : IDisposable
                         };
 
                         if (Verbose)
-                            Console.WriteLine($"  ← RX: {PacketTypes.GetName(resp.PacketType)} tag={resp.Tag} [{resp.Payload.Length} bytes]");
+                            System.Console.WriteLine($"  ← RX: {PacketTypes.GetName(resp.PacketType)} tag={resp.Tag} [{resp.Payload.Length} bytes]");
 
                         DispatchResponse(resp);
                     }

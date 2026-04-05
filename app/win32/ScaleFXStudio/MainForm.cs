@@ -1,3 +1,4 @@
+using ScaleFX.Serial;
 using ScaleFXStudio.Models;
 using ScaleFXStudio.Services;
 
@@ -17,11 +18,12 @@ namespace ScaleFXStudio;
 /// </summary>
 public partial class MainForm : Form
 {
-    public MainForm()
+    public MainForm(BoardInfo? board = null)
     {
         _configService = new ConfigService();
         _validationService = new ValidationService();
         _config = _configService.CreateDefault();
+        _boardInfo = board;
         
         // Initialize validation tooltip
         _validationToolTip = new ToolTip
@@ -36,9 +38,17 @@ public partial class MainForm : Form
         SetupUI();
         LoadConfigToUI();
         UpdateTitle();
+        UpdateBoardStatus();
+        
+        // Start background scanning for board connect/disconnect
+        _boardDetector.BoardDetected += OnBoardDetected;
+        _boardDetector.BoardDisconnected += OnBoardDisconnected;
+        _boardDetector.SlaveListUpdated += OnSlaveListUpdated;
+        _boardDetector.StartScanning();
         
         // Run initial validation after form is shown
         Shown += (s, e) => RunValidation();
+        FormClosing += OnMainFormClosing;
     }
 
     private void InitializeComponent()
@@ -71,10 +81,13 @@ public partial class MainForm : Form
         var editMenu = new ToolStripMenuItem("&Edit");
         editMenu.DropDownItems.Add("&Reset to Defaults", null, OnResetDefaults);
 
+        var toolsMenu = new ToolStripMenuItem("&Tools");
+        toolsMenu.DropDownItems.Add("&Console", null, OnOpenConsole);
+
         var helpMenu = new ToolStripMenuItem("&Help");
         helpMenu.DropDownItems.Add("&About", null, OnAbout);
 
-        _menuStrip.Items.AddRange(new[] { fileMenu, editMenu, helpMenu });
+        _menuStrip.Items.AddRange(new ToolStripItem[] { fileMenu, editMenu, toolsMenu, helpMenu });
 
         // Logo Banner
         _logoBanner = new PictureBox
@@ -162,7 +175,14 @@ public partial class MainForm : Form
             Spring = true,
             TextAlign = ContentAlignment.MiddleLeft
         };
+        _boardStatusLabel = new ToolStripStatusLabel
+        {
+            Text = "No board",
+            Alignment = ToolStripItemAlignment.Right,
+            ForeColor = Color.Gray
+        };
         _statusStrip.Items.Add(_statusLabel);
+        _statusStrip.Items.Add(_boardStatusLabel);
 
         // Layout (added in reverse order due to docking)
         Controls.Add(_mainTabControl);
@@ -172,5 +192,81 @@ public partial class MainForm : Form
         Controls.Add(_menuStrip);
 
         MainMenuStrip = _menuStrip;
+    }
+
+    // ─── Console ───
+
+    private ConsoleForm? _consoleForm;
+
+    private void OnOpenConsole(object? sender, EventArgs e)
+    {
+        if (_consoleForm == null || _consoleForm.IsDisposed)
+        {
+            _consoleForm = new ConsoleForm(_boardInfo);
+            _consoleForm.Show();
+        }
+        else
+        {
+            _consoleForm.Activate();
+        }
+    }
+
+    // ─── Board Connection ───
+
+    private void UpdateBoardStatus()
+    {
+        if (InvokeRequired) { BeginInvoke(UpdateBoardStatus); return; }
+
+        if (_boardInfo?.Connection?.IsConnected == true)
+        {
+            var display = _boardInfo.DisplayName;
+            var port = _boardInfo.PortName;
+            var slaveSummary = "";
+            if (_boardInfo.BoardType == BoardType.HubFX && _boardInfo.Slaves.Count > 0)
+            {
+                var connected = _boardInfo.Slaves.Where(s => s.IsConnected).Select(s => s.TypeName).ToList();
+                if (connected.Count > 0)
+                    slaveSummary = $" + {string.Join(", ", connected)}";
+            }
+            _boardStatusLabel.Text = $"{display} on {port}{slaveSummary}";
+            _boardStatusLabel.ForeColor = Color.FromArgb(0, 122, 204);
+        }
+        else
+        {
+            _boardStatusLabel.Text = "No board connected";
+            _boardStatusLabel.ForeColor = Color.Gray;
+        }
+    }
+
+    private void OnBoardDetected(BoardInfo board)
+    {
+        // If we don't have a board yet, auto-adopt the first one detected
+        if (_boardInfo == null)
+        {
+            _boardInfo = board;
+            UpdateBoardStatus();
+        }
+    }
+
+    private void OnBoardDisconnected(BoardInfo board)
+    {
+        if (_boardInfo?.PortName == board.PortName)
+        {
+            _boardInfo = null;
+            UpdateBoardStatus();
+        }
+    }
+
+    private void OnSlaveListUpdated(BoardInfo board)
+    {
+        if (_boardInfo?.PortName == board.PortName)
+            UpdateBoardStatus();
+    }
+
+    private void OnMainFormClosing(object? sender, FormClosingEventArgs e)
+    {
+        _boardDetector.StopScanning();
+        _boardDetector.Dispose();
+        _boardInfo?.Connection?.Close();
     }
 }

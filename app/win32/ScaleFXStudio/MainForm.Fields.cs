@@ -1,3 +1,4 @@
+using ScaleFX.Serial;
 using ScaleFXStudio.Models;
 using ScaleFXStudio.Services;
 
@@ -17,6 +18,11 @@ public partial class MainForm
     private bool _isDirty;
     private bool _isLoading;
     private ValidationResult? _lastValidationResult;
+
+    // Board connection
+    private BoardInfo? _boardInfo;
+    private readonly BoardDetector _boardDetector = new();
+    private ToolStripStatusLabel _boardStatusLabel = null!;
 
     // Shell controls
     private MenuStrip _menuStrip = null!;

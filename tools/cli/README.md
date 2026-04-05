@@ -39,6 +39,7 @@ tools/cli/
 ├── parsers.go           # Response payload parsers (status, I2C, init_ready, etc.)
 ├── output.go            # ANSI colored output, help rendering
 ├── helpers.go           # Shared utilities (arg parsing, guards, servo patterns)
+├── format_storage.go    # Storage-related output formatting
 ├── handler_core.go      # Core commands (connect, init, status, reboot, etc.)
 ├── handler_gunfx.go     # GunFX commands (trigger, servo, smoke)
 ├── handler_lightfx.go   # LightFX commands (LED, sequences, servo, landing lights)
@@ -64,13 +65,13 @@ Implements the full ScaleFX binary COBS protocol:
 
 ### Sync Points
 
-These Go files must stay in sync with their C++ and Python counterparts:
+These Go files must stay in sync with their C++, Python, and C# counterparts:
 
-| Go File | C++ Source | Python Source |
-|---------|-----------|---------------|
-| `packets.go` | `sfx_serial/serial/core/core.h`, `*/xxxfx.h` | `tests/framework/packets.py` |
-| `commands.go` | Client methods in `*/xxxfx.h` | `tests/framework/commands.py` |
-| `parsers.go` | Server response payloads in `*/xxxfx.h` | `tests/cli/parsers.py` |
+| Go File | C++ Source | Python Source | C# Source |
+|---------|-----------|---------------|------------|
+| `packets.go` | `sfx_serial/serial/core/core.h`, `*/xxxfx.h` | `tests/framework/packets.py` | `ScaleFXSerial/PacketTypes.cs`, `ErrorCodes.cs` |
+| `commands.go` | Client methods in `*/xxxfx.h` | `tests/framework/commands.py` | `ScaleFXSerial/Commands/*.cs` |
+| `parsers.go` | Server response payloads in `*/xxxfx.h` | `tests/cli/parsers.py` | (Studio app layer) |
 
 ## Command Reference
 

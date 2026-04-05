@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("ScaleFX binary COBS serial protocol library for .NET")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e1def0ee265372ffb4071d5afb113cd35685a0a3")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+deb5d076142f06691f92583cb30a963754f61cca")]
 [assembly: System.Reflection.AssemblyProductAttribute("ScaleFX.Serial")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ScaleFX.Serial")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

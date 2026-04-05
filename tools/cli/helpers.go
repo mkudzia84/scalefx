@@ -55,22 +55,43 @@ func (c *CLI) requireConn() bool {
 	return true
 }
 
+// ─── API Presentation Helpers ───
+// These map ApiResult values to CLI output (PrintACKResult, PrintError, etc.).
+
+// ack prints the result of an ACK-based API call.
+func (c *CLI) ack(r ApiResult, msg string) {
+	if r.Response != nil {
+		PrintACKResult(r.Response, msg)
+	} else {
+		PrintError("%s", r.Error)
+	}
+}
+
+// query prints the result of a query-based API call using the given parser.
+func (c *CLI) query(r ApiResult, parser func([]byte)) {
+	if r.OK && r.Response != nil {
+		parser(r.Response.Payload)
+	} else if r.Error != "" {
+		PrintError("%s", r.Error)
+	}
+}
+
 // ─── Shared Command Patterns (Strategy Pattern) ───
 // These factor out identical handler logic that appears in multiple controllers.
-// The build function is the "strategy" — different per controller, same skeleton.
+// The action function is the "strategy" — different per controller, same skeleton.
 
 // servoSet handles "xxx.servo set <id> <pulse_us>" for any controller.
-func (c *CLI) servoSet(args []string, usage string, build func(byte, uint16) []byte) {
+func (c *CLI) servoSet(args []string, usage string, action func(byte, uint16) ApiResult) {
 	if len(args) < 3 || strings.ToLower(args[0]) != "set" {
 		PrintError("Usage: %s", usage)
 		return
 	}
 	id, pulse := atoi(args[1]), atoi(args[2])
-	c.sendACK(build(byte(id), uint16(pulse)), fmt.Sprintf("Servo %d → %dµs", id, pulse))
+	c.ack(action(byte(id), uint16(pulse)), fmt.Sprintf("Servo %d → %dµs", id, pulse))
 }
 
 // servoConfig handles "xxx.servo.config <id> <min> <max> [spd] [acc] [dec]" for any controller.
-func (c *CLI) servoConfig(args []string, usage string, build func(byte, uint16, uint16, uint16, uint16, uint16) []byte) {
+func (c *CLI) servoConfig(args []string, usage string, action func(byte, uint16, uint16, uint16, uint16, uint16) ApiResult) {
 	if !requireArgs(args, 3, usage) {
 		return
 	}
@@ -85,6 +106,6 @@ func (c *CLI) servoConfig(args []string, usage string, build func(byte, uint16, 
 	if len(args) > 5 {
 		decel = atoi(args[5])
 	}
-	c.sendACK(build(byte(id), uint16(min), uint16(max), uint16(speed), uint16(accel), uint16(decel)),
+	c.ack(action(byte(id), uint16(min), uint16(max), uint16(speed), uint16(accel), uint16(decel)),
 		fmt.Sprintf("Servo %d: %d-%dµs, speed=%d", id, min, max, speed))
 }

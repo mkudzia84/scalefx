@@ -16,6 +16,12 @@ Change_Type_Matrix:
     commands.py: REQUIRED
     test_*.py: REQUIRED          # ALWAYS add tests for new commands
     cli/handlers/xxxfx.py: REQUIRED
+    packets.go: REQUIRED         # Mirror packet constant + PacketTypeName()
+    commands.go: REQUIRED        # Add command builder function
+    handler_xxxfx.go: REQUIRED   # Add CLI command + register
+    parsers.go: IF_RESPONSE_DATA # Add response parser
+    PacketTypes.cs: REQUIRED     # Mirror packet constant
+    XxxFxCommands.cs: REQUIRED   # Add command builder method
     README.md: REQUIRED
     
   Modify_Command_Payload:
@@ -26,6 +32,10 @@ Change_Type_Matrix:
     commands.py: REQUIRED
     test_*.py: REQUIRED          # ALWAYS update tests for payload changes
     cli/handlers/xxxfx.py: REQUIRED
+    commands.go: REQUIRED        # Update command builder
+    parsers.go: IF_RESPONSE      # Update response parser
+    handler_xxxfx.go: REQUIRED   # Update CLI handler
+    XxxFxCommands.cs: REQUIRED   # Update command builder
     README.md: REQUIRED
     FIRMWARE_VERSION: REQUIRED   # MAJOR if field type/size changed, MINOR if appended
     
@@ -34,6 +44,8 @@ Change_Type_Matrix:
     xxxfx/xxxfx.h: IF_MODULE_ERROR
     xxxfx_pico.ino: MAYBE
     packets.py: REQUIRED
+    packets.go: REQUIRED         # Add error constant + name map entry
+    ErrorCodes.cs: REQUIRED      # Add error constant
     commands.py: NO
     test_*.py: RECOMMENDED       # Test error conditions
     cli/handlers/xxxfx.py: NO
@@ -58,13 +70,20 @@ Change_Type_Matrix:
     test_*.py: REQUIRED          # Create tests/newfx/ directory
     cli/handlers/newfx.py: CREATE_NEW
     cli/interactive.py: REQUIRED  # Register new handler
+    packets.go: REQUIRED          # Add packet/error constants
+    commands.go: REQUIRED         # Add command builders
+    handler_newfx.go: CREATE_NEW  # Add CLI handler + register
+    parsers.go: REQUIRED          # Add response parsers
+    PacketTypes.cs: REQUIRED      # Add packet constants
+    ErrorCodes.cs: REQUIRED       # Add error constants
+    Commands/NewFxCommands.cs: CREATE_NEW
     build_and_flash.py: REQUIRED  # Add to CONTROLLERS list
     README.md: CREATE_NEW
 ```
 
 > **CRITICAL:** Tests are not optional. ALWAYS update tests when protocol is changed or new features are added.
 
-> **CRITICAL:** ALWAYS update the CLI handler (`tests/cli/handlers/xxxfx.py`) when new commands are added. The CLI is the primary tool for manual testing and debugging.
+> **CRITICAL:** ALWAYS update ALL THREE CLIs (Python handler, Go CLI, C# library) when new commands or packet types are added. See Rule 19 in `copilot-instructions.md`.
 
 ---
 
@@ -133,7 +152,40 @@ Step_4_CLI:
         3. Add import for new command builder if needed
         4. IF query command: add to EXCLUDE set in hubfx.py _build_slave_registry()
 
-Step_5_Documentation:
+Step_5_Go_CLI:
+  location: "tools/cli/"
+  actions:
+    - file: "packets.go"
+      action: |
+        1. Add packet type constant
+        2. Add to PacketTypeName() switch
+        3. Add error constants and error name map entries (if any)
+
+    - file: "commands.go"
+      action: "Add command builder function"
+
+    - file: "handler_xxxfx.go"
+      action: |
+        1. Add command function to handler
+        2. Add CommandInfo to command list
+        3. Use appropriate send pattern (SendExpectACK for instant, custom for query)
+
+    - file: "parsers.go"
+      action: "Add response parser if command returns data"
+
+Step_6_CSharp_Library:
+  location: "app/win32/ScaleFXSerial/"
+  actions:
+    - file: "PacketTypes.cs"
+      action: "Add packet type constant"
+
+    - file: "ErrorCodes.cs"
+      action: "Add error constants (if any)"
+
+    - file: "Commands/XxxFxCommands.cs"
+      action: "Add command builder method"
+
+Step_7_Documentation:
   location: "controllers/xxxfx/pico/"
   actions:
     - file: "README.md"
@@ -158,7 +210,7 @@ Backward_Compatibility:
   if_breaking_change:
     - "Increment MAJOR version"
     - "Document migration path"
-    - "Update all parsers (C++ and Python) simultaneously"
+    - "Update all parsers (C++, Python, Go, and C#) simultaneously"
     - "Consider deprecation period"
   
   breaking_change_examples:
@@ -191,6 +243,22 @@ Files_To_Update:
       - "Update CLI handler method"
       - "Update usage string"
   
+  - file: "tools/cli/commands.go"
+    changes:
+      - "Update command builder function"
+
+  - file: "tools/cli/handler_xxxfx.go"
+    changes:
+      - "Update CLI command handler"
+
+  - file: "tools/cli/parsers.go"
+    changes:
+      - "Update response parser (if applicable)"
+
+  - file: "ScaleFXSerial/Commands/XxxFxCommands.cs"
+    changes:
+      - "Update command builder method"
+
   - file: "README.md"
     changes:
       - "Update payload format in table"
@@ -213,6 +281,16 @@ Python_Framework:
     action: |
       1. Add constant to XxxError class
       2. Add case to name() static method
+
+Go_CLI:
+  - file: "packets.go"
+    action: |
+      1. Add error constant
+      2. Add to error name map
+
+CSharp_Library:
+  - file: "ErrorCodes.cs"
+    action: "Add error constant"
 
 Documentation:
   - file: "README.md"
@@ -256,6 +334,19 @@ Summary_Checklist:
     - "[ ] Register handler in tests/cli/interactive.py"
     - "[ ] Add controller detection in handlers/core.py"
   
+  Go_CLI:
+    - "[ ] Add NewFxPacket/NewFxError constants to packets.go"
+    - "[ ] Add PacketTypeName() entries and error name map"
+    - "[ ] Add command builders to commands.go"
+    - "[ ] Create handler_newfx.go with CLI commands"
+    - "[ ] Add response parsers to parsers.go"
+    - "[ ] Register commands in cli.go command list"
+
+  CSharp_Library:
+    - "[ ] Add packet type constants to PacketTypes.cs"
+    - "[ ] Add error constants to ErrorCodes.cs"
+    - "[ ] Create Commands/NewFxCommands.cs with command builders"
+
   Scripts:
     - "[ ] Add controller to CONTROLLERS list in scripts/build_and_flash.py"
     - "[ ] Update docstring controller list in build_and_flash.py"
@@ -336,6 +427,41 @@ Python_Framework:
     "cli/handlers/hubfx.py": "HubFX hub commands + composed slave routing"
     "cli/handlers/storage.py": "Reusable file operations (SD/Flash)"
     "conftest.py": "pytest fixtures"
+
+Go_CLI:
+  path: "tools/cli/"
+  files:
+    "main.go": "Entry point, flag parsing"
+    "cli.go": "Interactive loop, command dispatch, async packet handler"
+    "connection.go": "Serial connection, tag-correlated send/receive, stream waiters"
+    "protocol.go": "COBS encode/decode, CRC-8/CRC-16, packet build/parse"
+    "packets.go": "Packet type constants, error codes (mirrors C++ headers)"
+    "commands.go": "Command builders (mirrors tests/framework/commands.py)"
+    "parsers.go": "Response payload parsers (status, I2C, init_ready, gear, audio, etc.)"
+    "output.go": "ANSI colored output, help rendering"
+    "helpers.go": "Shared utilities (arg parsing, guards, servo patterns)"
+    "format_storage.go": "Storage-related output formatting"
+    "handler_core.go": "Core commands (connect, init, status, reboot, etc.)"
+    "handler_gunfx.go": "GunFX commands (trigger, servo, smoke)"
+    "handler_lightfx.go": "LightFX commands (LED, sequences, servo, landing lights)"
+    "handler_gearcontrol.go": "GearControl commands (gear, servo, yaw, calibration)"
+    "handler_hubfx.go": "HubFX commands (slaves, audio, engine, storage, USB)"
+
+CSharp_Library:
+  path: "app/win32/ScaleFXSerial/"
+  files:
+    "PacketTypes.cs": "Packet type constants (mirrors C++ headers)"
+    "ErrorCodes.cs": "Error code constants with name lookup"
+    "ScaleFxConnection.cs": "Serial connection with COBS framing"
+    "Protocol/Packet.cs": "Packet structure and parsing"
+    "Protocol/Cobs.cs": "COBS encode/decode"
+    "Protocol/Crc.cs": "CRC-8 implementation"
+    "Protocol/Endian.cs": "Little-endian helpers"
+    "Commands/CoreCommands.cs": "Core protocol commands"
+    "Commands/GunFxCommands.cs": "GunFX command builders"
+    "Commands/LightFxCommands.cs": "LightFX command builders"
+    "Commands/GearControlCommands.cs": "GearControl command builders"
+    "Commands/HubFxCommands.cs": "HubFX command builders"
 ```
 
 ---
@@ -368,6 +494,12 @@ python -m py_compile tests/cli/handlers/hubfx.py
 python -m py_compile tests/cli/handlers/lightfx.py
 python -m py_compile tests/cli/handlers/gearcontrol.py
 
+# Go CLI
+cd tools/cli && go build .
+
+# C# library
+dotnet build app/win32/ScaleFXSerial/
+
 # Run tests (requires hardware)
 pytest tests/gunfx/ -v
 pytest tests/lightfx/ -v
@@ -390,11 +522,13 @@ Error: "INIT returns NACK INVALID_COMMAND"
     - "Both coreServer and xxxfxServer must be added to the router"
 
 Error: "Unknown command type"
-  Cause: "Packet constant mismatch between C++ and Python"
+  Cause: "Packet constant mismatch between C++, Python, Go, or C#"
   Fix:
     - "Verify core/core.h / xxxfx/xxxfx.h constant value"
     - "Verify packets.py constant value"
-    - "Ensure they are identical"
+    - "Verify packets.go constant value"
+    - "Verify PacketTypes.cs constant value"
+    - "Ensure they are all identical"
 
 Error: "NACK with MISSING_PARAMETER"
   Cause: "Payload too short"

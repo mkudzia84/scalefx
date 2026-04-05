@@ -265,31 +265,20 @@ func (c *CLI) handleAsyncPacket(resp *Response) {
 	case LfxLANDING_LIGHT_STATUS:
 		ParseLandingLightStatus(resp.Payload)
 	case CoreACK:
-		if c.verbose {
-			PrintInfo("  [async ACK tag=%d]", resp.Tag)
-		}
+		// Silently ignore async ACKs (e.g., keepalive responses)
 	case CoreNACK:
 		errCode := byte(0)
 		if len(resp.Payload) > 0 {
 			errCode = resp.Payload[0]
 		}
-		PrintWarning("  [async NACK tag=%d error=%s]", resp.Tag, ErrorName(errCode))
+		PrintWarning("NACK (async): %s (0x%02X)", ErrorName(errCode), errCode)
 	default:
+		name := PacketTypeName(resp.PacketType)
 		if c.verbose {
-			fmt.Printf("  [async 0x%02X tag=%d len=%d]\n", resp.PacketType, resp.Tag, len(resp.Payload))
+			fmt.Printf("  %s[%s tag=%d %d bytes]%s\n",
+				colorGray, name, resp.Tag, len(resp.Payload), colorReset)
 		}
 	}
-}
-
-// ─── Helper: Send and expect ACK ───
-
-func (c *CLI) sendACK(pkt []byte, successMsg string) {
-	resp, err := c.conn.SendExpectACK(pkt)
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	PrintACKResult(resp, successMsg)
 }
 
 // ─── Help System ───

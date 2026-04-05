@@ -29,6 +29,10 @@ Task: "Update CLI"
 Task: "Work on HubFX audio engine (AudioTools library)"
   → Read: 08-AUDIOTOOLS.md
 
+Task: "Work on file upload protocol (stream, windowed, flow control)"
+  → Read: 10-UPLOAD-PROTOCOL-REFACTOR.md
+  → Reference: controllers/hubfx/esp32s3/README.md § Stream Upload Architecture
+
 Task: "Work on HubFX"
   → Target: controllers/hubfx/esp32s3/ (HubFX Pico is OBSOLETE)
   → Reference: controllers/hubfx/pico/ (frozen, consult for patterns only)
@@ -234,6 +238,84 @@ Scripts:
       purpose: "Centralized build/flash for all Pico controllers"
       usage: "python scripts/build_and_flash.py <controller>"
 ```
+```yaml
+Go_CLI:
+  root: "tools/cli/"
+  files:
+    - name: "main.go"
+      purpose: "Entry point, flag parsing"
+    - name: "cli.go"
+      purpose: "Interactive loop, command dispatch, async packet handler"
+    - name: "connection.go"
+      purpose: "Serial connection, tag-correlated send/receive, stream waiters"
+    - name: "protocol.go"
+      purpose: "COBS encode/decode, CRC-8/CRC-16, packet build/parse"
+    - name: "packets.go"
+      purpose: "Packet type constants, error codes (mirrors C++ headers)"
+      modify_when: "Adding packet types or error codes"
+    - name: "commands.go"
+      purpose: "Command builders (mirrors tests/framework/commands.py)"
+      modify_when: "Adding commands"
+    - name: "parsers.go"
+      purpose: "Response payload parsers (status, I2C, init_ready, gear, audio, etc.)"
+      modify_when: "Adding response packet types"
+    - name: "output.go"
+      purpose: "ANSI colored output, help rendering"
+    - name: "helpers.go"
+      purpose: "Shared utilities (arg parsing, guards, servo patterns)"
+    - name: "format_storage.go"
+      purpose: "Storage-related output formatting"
+    - name: "handler_core.go"
+      purpose: "Core commands (connect, init, status, reboot, etc.)"
+      modify_when: "Modifying core commands"
+    - name: "handler_gunfx.go"
+      purpose: "GunFX commands (trigger, servo, smoke)"
+      modify_when: "Adding GunFX CLI commands"
+    - name: "handler_lightfx.go"
+      purpose: "LightFX commands (LED, sequences, servo, landing lights)"
+      modify_when: "Adding LightFX CLI commands"
+    - name: "handler_gearcontrol.go"
+      purpose: "GearControl commands (gear, servo, yaw, calibration)"
+      modify_when: "Adding GearControl CLI commands"
+    - name: "handler_hubfx.go"
+      purpose: "HubFX commands (slaves, audio, engine, storage, USB)"
+      modify_when: "Adding HubFX CLI commands"
+
+CSharp_Library:
+  root: "app/win32/ScaleFXSerial/"
+  files:
+    - name: "PacketTypes.cs"
+      purpose: "Packet type constants (mirrors C++ headers)"
+      modify_when: "Adding packet types"
+    - name: "ErrorCodes.cs"
+      purpose: "Error code constants with name lookup"
+      modify_when: "Adding error codes"
+    - name: "ScaleFxConnection.cs"
+      purpose: "Serial connection with COBS framing"
+      modify_when: "Rarely"
+    - name: "Protocol/Packet.cs"
+      purpose: "Packet structure and parsing"
+    - name: "Protocol/Cobs.cs"
+      purpose: "COBS encode/decode"
+    - name: "Protocol/Crc.cs"
+      purpose: "CRC-8 implementation"
+    - name: "Protocol/Endian.cs"
+      purpose: "Little-endian helpers"
+    - name: "Commands/CoreCommands.cs"
+      purpose: "Core protocol commands"
+    - name: "Commands/GunFxCommands.cs"
+      purpose: "GunFX command builders"
+      modify_when: "Adding GunFX commands"
+    - name: "Commands/LightFxCommands.cs"
+      purpose: "LightFX command builders"
+      modify_when: "Adding LightFX commands"
+    - name: "Commands/GearControlCommands.cs"
+      purpose: "GearControl command builders"
+      modify_when: "Adding GearControl commands"
+    - name: "Commands/HubFxCommands.cs"
+      purpose: "HubFX command builders"
+      modify_when: "Adding HubFX commands"
+```
 
 ---
 
@@ -291,7 +373,18 @@ Q9: Is CLI updated?
 │        - Add CommandInfo to get_commands()
 └─ YES → Continue
 
-Q10: Is documentation updated?
+Q10: Is Go CLI updated?
+├─ NO → Add to tools/cli/packets.go, commands.go, handler_xxxfx.go
+│        - Add packet constant + PacketTypeName()
+│        - Add command builder
+│        - Add CLI command + register
+└─ YES → Continue
+
+Q11: Is C# library updated?
+├─ NO → Add to PacketTypes.cs + Commands/XxxFxCommands.cs
+└─ YES → Continue
+
+Q12: Is documentation updated?
 ├─ NO → Update controllers/xxxfx/pico/README.md
 └─ YES → DONE
 ```
@@ -308,18 +401,24 @@ Sync_Groups:
     primary: "lib/sfx_serial/serial/core/core.h"
     mirrors:
       - "tests/framework/packets.py"
-    rule: "Same values, same names (snake_case in Python)"
+      - "tools/cli/packets.go"
+      - "app/win32/ScaleFXSerial/PacketTypes.cs"
+    rule: "Same values, same names (snake_case in Python, PascalCase in C#)"
 
   - name: "Error Codes (Generic)"
     primary: "lib/sfx_serial/serial/core/core.h (SerialError namespace)"
     mirrors:
       - "tests/framework/packets.py (CoreError class)"
+      - "tools/cli/packets.go (error constants + name map)"
+      - "app/win32/ScaleFXSerial/ErrorCodes.cs"
     rule: "Same values, same names"
 
   - name: "Error Codes (Module)"
     primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h (XxxError namespace)"
     mirrors:
       - "tests/framework/packets.py (XxxError class)"
+      - "tools/cli/packets.go (error constants + name map)"
+      - "app/win32/ScaleFXSerial/ErrorCodes.cs"
     rule: "Same values, same names"
 
   - name: "Command Interface"
@@ -327,7 +426,10 @@ Sync_Groups:
     mirrors:
       - "tests/framework/commands.py"
       - "tests/cli/handlers/xxxfx.py"
-    rule: "Python must expose same commands"
+      - "tools/cli/commands.go"
+      - "tools/cli/handler_xxxfx.go"
+      - "app/win32/ScaleFXSerial/Commands/XxxFxCommands.cs"
+    rule: "All platforms must expose same commands"
 ```
 
 > **All development rules, patterns, and checklists are in `.github/copilot-instructions.md`** (auto-loaded by VS Code Copilot).
@@ -347,3 +449,5 @@ Sync_Groups:
 | [06-TEST-SUITE.md](06-TEST-SUITE.md) | Run tests, write tests, test patterns |
 | [07-CLI-UPDATES.md](07-CLI-UPDATES.md) | Update interactive CLI, async output architecture |
 | [08-AUDIOTOOLS.md](08-AUDIOTOOLS.md) | AudioTools library reference (3rd-party, HubFX audio engine) |
+| [09-CONSOLE-OUTPUT.md](09-CONSOLE-OUTPUT.md) | Console output schema for all CLIs (Python, Go, C#) |
+| [10-UPLOAD-PROTOCOL-REFACTOR.md](10-UPLOAD-PROTOCOL-REFACTOR.md) | Upload protocol modes (stream, windowed), flow control, ring buffer architecture |

@@ -172,6 +172,8 @@ public static class PacketTypes
         public const byte CODEC_STATUS_RESP   = 0xAB;
         public const byte SLAVE_INFO          = 0xAE;
         public const byte SLAVE_INFO_RESP     = 0xAF;
+        /// <summary>Stream segment ACK: [segment_idx:u16LE][bytes_received:u32LE][ring_fill_pct:u8]</summary>
+        public const byte FILE_UPLOAD_PROGRESS = 0xB0;
     }
 
     // ─── Stream Protocol ───
@@ -208,6 +210,10 @@ public static class PacketTypes
     {
         public const byte TARGET_SD    = 0;
         public const byte TARGET_FLASH = 1;
+
+        // Upload modes
+        public const byte MODE_SYNC    = 0; // Per-chunk ACK with CRC retry
+        public const byte MODE_STREAM  = 3; // Raw binary streaming with segment-based ACKs
     }
 
     // ─── Slave Types ───

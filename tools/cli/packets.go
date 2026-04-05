@@ -39,6 +39,7 @@ const (
 	ErrMISSING_PARAM   = 0x04
 	ErrBUSY            = 0x05
 	ErrNOT_SUPPORTED   = 0x06
+	ErrPERMISSION_DENIED = 0x07
 	ErrINVALID_PARAM   = 0x10
 	ErrPARAM_RANGE     = 0x11
 	ErrINVALID_ID      = 0x12
@@ -47,7 +48,9 @@ const (
 	ErrINTERNAL        = 0xF0
 	ErrTIMEOUT         = 0xF1
 	ErrCOMM_ERROR      = 0xF2
+	ErrBUFFER_OVERFLOW = 0xF3
 	ErrCRC_ERROR       = 0xF4
+	ErrFRAMING_ERROR   = 0xF5
 )
 
 // ─── GunFX Packet Types (0x01-0x2F) ───
@@ -222,6 +225,7 @@ const (
 	HubCODEC_STATUS_RESP   = 0xAB
 	HubSLAVE_INFO          = 0xAE
 	HubSLAVE_INFO_RESP     = 0xAF
+	HubFILE_UPLOAD_PROGRESS = 0xB0 // Stream segment ACK: [segment_idx:u16LE][bytes_received:u32LE][ring_fill_pct:u8]
 )
 
 // Stream protocol
@@ -306,7 +310,8 @@ func ErrorName(code byte) string {
 		0x03: "INVALID_COMMAND", 0x04: "MISSING_PARAM", 0x05: "BUSY",
 		0x06: "NOT_SUPPORTED", 0x10: "INVALID_PARAM", 0x11: "PARAM_RANGE",
 		0x12: "INVALID_ID", 0x13: "INVALID_VALUE", 0x14: "PARAM_TOO_LONG",
-		0xF0: "INTERNAL", 0xF1: "TIMEOUT", 0xF2: "COMM_ERROR", 0xF4: "CRC_ERROR",
+		0xF0: "INTERNAL", 0xF1: "TIMEOUT", 0xF2: "COMM_ERROR",
+		0xF3: "BUFFER_OVERFLOW", 0xF4: "CRC_ERROR", 0xF5: "FRAMING_ERROR",
 		// GunFX
 		0x20: "SERVO_INVALID_ID", 0x21: "SERVO_PULSE_RANGE",
 		0x22: "SERVO_MIN_MAX", 0x23: "SERVO_NOT_CONFIGURED",
@@ -410,6 +415,7 @@ func PacketTypeName(ptype byte) string {
 		HubCODEC_STATUS_REQ: "HUB.CODEC_STATUS_REQ",
 		HubCODEC_STATUS_RESP: "HUB.CODEC_STATUS_RESP",
 		HubSLAVE_INFO: "HUB.SLAVE_INFO", HubSLAVE_INFO_RESP: "HUB.SLAVE_INFO_RESP",
+		HubFILE_UPLOAD_PROGRESS: "HUB.FILE_UPLOAD_PROGRESS",
 		// Streaming
 		StreamBEGIN: "STREAM_BEGIN", StreamDATA: "STREAM_DATA", StreamEND: "STREAM_END",
 	}

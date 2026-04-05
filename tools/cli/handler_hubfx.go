@@ -6,6 +6,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -41,6 +43,10 @@ func (c *CLI) hubfxCommands() *cmdGroup {
 			"file.mkdir":    {c.cmdHubFileMkdir, "file.mkdir <sd|flash> <path>", "Create directory", true},
 			"file.info":     {c.cmdHubFileInfo, "file.info <sd|flash> <path>", "File info", true},
 			"file.tree":     {c.cmdHubFileTree, "file.tree <sd|flash> [path]", "Tree view", true},
+			"file.cat":      {c.cmdHubFileCat, "file.cat <sd|flash> <path>", "Display file contents", true},
+			"file.download": {c.cmdHubFileDownload, "file.download <sd|flash> <remote> <local>", "Download file", true},
+			"file.upload":   {c.cmdHubFileUpload, "file.upload <sd|flash> <local> <remote> [--stream]", "Upload file", true},
+			"file.cancel":   {c.cmdHubFileCancel, "file.cancel", "Cancel active upload", true},
 			"usb.devices":   {c.cmdHubUsbDevices, "usb.devices", "List USB devices", true},
 			"usb.reset":     {c.cmdHubUsbReset, "usb.reset", "Reset USB bus", true},
 		},
@@ -65,21 +71,7 @@ func parseSlaveType(s string) (byte, bool) {
 // ─── Slave Commands ───
 
 func (c *CLI) cmdHubSlaves(_ []string) {
-	if !c.requireConn() {
-		return
-	}
-	resp, err := c.conn.SendAndWait(CmdHubSlaveList())
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == HubSLAVE_LIST_RESP {
-		ParseSlaveList(resp.Payload)
-	} else if resp.IsNACK() {
-		PrintError("NACK: %s", resp.ErrorMessage())
-	} else {
-		PrintACKResult(resp, "Slave list requested")
-	}
+	c.query(NewHubFxApi(c.conn).SlaveList(), ParseSlaveList)
 }
 
 func (c *CLI) cmdHubSlaveInit(args []string) {
@@ -92,7 +84,7 @@ func (c *CLI) cmdHubSlaveInit(args []string) {
 		PrintInfo("Valid types: gunfx (1), lightfx (2), gearcontrol (3)")
 		return
 	}
-	c.sendACK(CmdHubSlaveInit(slaveType), fmt.Sprintf("%s slave initialized", SlaveTypeName(slaveType)))
+	c.ack(NewHubFxApi(c.conn).SlaveInit(slaveType), fmt.Sprintf("%s slave initialized", SlaveTypeName(slaveType)))
 }
 
 func (c *CLI) cmdHubSlaveInfo(args []string) {
@@ -104,18 +96,7 @@ func (c *CLI) cmdHubSlaveInfo(args []string) {
 		PrintError("Unknown slave type: %s", args[0])
 		return
 	}
-	resp, err := c.conn.SendAndWait(CmdHubSlaveInfo(slaveType))
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == HubSLAVE_INFO_RESP {
-		ParseSlaveInfo(resp.Payload)
-	} else if resp.IsNACK() {
-		PrintError("NACK: %s", resp.ErrorMessage())
-	} else {
-		PrintACKResult(resp, "Slave info requested")
-	}
+	c.query(NewHubFxApi(c.conn).SlaveInfo(slaveType), ParseSlaveInfo)
 }
 
 // ─── Audio Commands ───
@@ -174,7 +155,7 @@ func (c *CLI) cmdHubAudioPlay(args []string) {
 	} else if loopMode == AudioLoopFinite {
 		loopStr = fmt.Sprintf(" (loop x%d)", loopCount)
 	}
-	c.sendACK(CmdHubAudioPlay(ch, vol, output, loopMode, loopCount, path),
+	c.ack(NewHubFxApi(c.conn).AudioPlay(ch, vol, output, loopMode, loopCount, path),
 		fmt.Sprintf("Play ch%d: %s vol=%d%%%s%s", ch, path, vol, outputName, loopStr))
 }
 
@@ -191,7 +172,7 @@ func (c *CLI) cmdHubAudioStop(args []string) {
 	if ch != AudioChAll {
 		target = fmt.Sprintf("ch%d", ch)
 	}
-	c.sendACK(CmdHubAudioStop(ch), fmt.Sprintf("Audio stop %s", target))
+	c.ack(NewHubFxApi(c.conn).AudioStop(ch), fmt.Sprintf("Audio stop %s", target))
 }
 
 func (c *CLI) cmdHubAudioVol(args []string) {
@@ -209,14 +190,14 @@ func (c *CLI) cmdHubAudioVol(args []string) {
 	if ch != AudioChAll {
 		target = fmt.Sprintf("ch%d", ch)
 	}
-	c.sendACK(CmdHubAudioVolume(ch, vol), fmt.Sprintf("Volume %s → %d%%", target, vol))
+	c.ack(NewHubFxApi(c.conn).AudioVolume(ch, vol), fmt.Sprintf("Volume %s → %d%%", target, vol))
 }
 
 func (c *CLI) cmdHubAudioFade(args []string) {
 	if !requireArgs(args, 1, "audio.fade <ch>") {
 		return
 	}
-	c.sendACK(CmdHubAudioFade(byte(atoi(args[0]))), fmt.Sprintf("Fade out ch%s", args[0]))
+	c.ack(NewHubFxApi(c.conn).AudioFade(byte(atoi(args[0]))), fmt.Sprintf("Fade out ch%s", args[0]))
 }
 
 func (c *CLI) cmdHubAudioQueue(args []string) {
@@ -242,7 +223,7 @@ func (c *CLI) cmdHubAudioQueue(args []string) {
 
 	// Queue uses FINISH_LOOP behavior (0)
 	loopBehavior := byte(AudioQueueFinishLoop)
-	c.sendACK(CmdHubAudioQueue(ch, vol, loopCount, loopBehavior, path),
+	c.ack(NewHubFxApi(c.conn).AudioQueue(ch, vol, loopCount, loopBehavior, path),
 		fmt.Sprintf("Queue ch%d: %s vol=%d%%", ch, path, vol))
 }
 
@@ -259,66 +240,24 @@ func (c *CLI) cmdHubAudioClear(args []string) {
 	if ch != AudioChAll {
 		target = fmt.Sprintf("ch%d", ch)
 	}
-	c.sendACK(CmdHubAudioQueueClear(ch), fmt.Sprintf("Queue cleared %s", target))
+	c.ack(NewHubFxApi(c.conn).AudioQueueClear(ch), fmt.Sprintf("Queue cleared %s", target))
 }
 
 func (c *CLI) cmdHubAudioStatus(_ []string) {
-	if !c.requireConn() {
-		return
-	}
-	resp, err := c.conn.SendAndWait(CmdHubAudioStatusReq())
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == HubAUDIO_STATUS_RESP {
-		ParseAudioStatus(resp.Payload)
-	} else if resp.IsNACK() {
-		PrintError("NACK: %s", resp.ErrorMessage())
-	} else {
-		PrintACKResult(resp, "Audio status requested")
-	}
+	c.query(NewHubFxApi(c.conn).AudioStatus(), ParseAudioStatus)
 }
 
 func (c *CLI) cmdHubCodecStatus(_ []string) {
-	if !c.requireConn() {
-		return
-	}
-	resp, err := c.conn.SendAndWait(CmdHubCodecStatusReq())
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == HubCODEC_STATUS_RESP {
-		ParseCodecStatus(resp.Payload)
-	} else if resp.IsNACK() {
-		PrintError("NACK: %s", resp.ErrorMessage())
-	} else {
-		PrintACKResult(resp, "Codec status requested")
-	}
+	c.query(NewHubFxApi(c.conn).CodecStatus(), ParseCodecStatus)
 }
 
 // ─── Engine Commands ───
 
-func (c *CLI) cmdHubEngineStart(_ []string) { c.sendACK(CmdHubEngineStart(), "Engine start") }
-func (c *CLI) cmdHubEngineStop(_ []string)  { c.sendACK(CmdHubEngineStop(), "Engine stop") }
+func (c *CLI) cmdHubEngineStart(_ []string) { c.ack(NewHubFxApi(c.conn).EngineStart(), "Engine start") }
+func (c *CLI) cmdHubEngineStop(_ []string)  { c.ack(NewHubFxApi(c.conn).EngineStop(), "Engine stop") }
 
 func (c *CLI) cmdHubEngineStatus(_ []string) {
-	if !c.requireConn() {
-		return
-	}
-	resp, err := c.conn.SendAndWait(CmdHubEngineStatusReq())
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == HubENGINE_STATUS_RESP {
-		ParseEngineStatus(resp.Payload)
-	} else if resp.IsNACK() {
-		PrintError("NACK: %s", resp.ErrorMessage())
-	} else {
-		PrintACKResult(resp, "Engine status requested")
-	}
+	c.query(NewHubFxApi(c.conn).EngineStatus(), ParseEngineStatus)
 }
 
 // ─── Config Commands ───
@@ -328,25 +267,11 @@ func (c *CLI) cmdHubConfigReload(args []string) {
 	if len(args) > 0 {
 		path = args[0]
 	}
-	c.sendACK(CmdHubConfigReload(path), "Config reload")
+	c.ack(NewHubFxApi(c.conn).ConfigReload(path), "Config reload")
 }
 
 func (c *CLI) cmdHubConfigStatus(_ []string) {
-	if !c.requireConn() {
-		return
-	}
-	resp, err := c.conn.SendAndWait(CmdHubConfigStatus())
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == HubCONFIG_STATUS_RESP {
-		ParseConfigStatus(resp.Payload)
-	} else if resp.IsNACK() {
-		PrintError("NACK: %s", resp.ErrorMessage())
-	} else {
-		PrintACKResult(resp, "Config status requested")
-	}
+	c.query(NewHubFxApi(c.conn).ConfigStatus(), ParseConfigStatus)
 }
 
 func (c *CLI) cmdHubConfigSave(args []string) {
@@ -354,69 +279,26 @@ func (c *CLI) cmdHubConfigSave(args []string) {
 	if len(args) > 0 {
 		path = args[0]
 	}
-	c.sendACK(CmdHubConfigSave(path), "Config save")
+	c.ack(NewHubFxApi(c.conn).ConfigSave(path), "Config save")
 }
 
 // ─── Storage Commands ───
 
-func (c *CLI) cmdHubSdInit(_ []string) { c.sendACK(CmdHubSDInit(0), "SD card remounted") }
+func (c *CLI) cmdHubSdInit(_ []string) { c.ack(NewHubFxApi(c.conn).SdInit(), "SD card remounted") }
 
 func (c *CLI) cmdHubSdStatus(_ []string) {
-	if !c.requireConn() {
-		return
-	}
-	resp, err := c.conn.SendAndWait(CmdHubSDStatusReq())
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == HubSD_STATUS_RESP {
-		ParseSdStatus(resp.Payload)
-	} else if resp.IsNACK() {
-		PrintError("NACK: %s", resp.ErrorMessage())
-	} else {
-		PrintACKResult(resp, "SD status requested")
-	}
+	c.query(NewHubFxApi(c.conn).SdStatus(), ParseSdStatus)
 }
 
 func (c *CLI) cmdHubFlashStatus(_ []string) {
-	if !c.requireConn() {
-		return
-	}
-	resp, err := c.conn.SendAndWait(CmdHubFlashStatusReq())
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	// Flash status comes back as FLASH_STATUS_REQ (repurposed as both request and response)
-	if resp.PacketType == HubFLASH_STATUS_REQ {
-		ParseFlashStatus(resp.Payload)
-	} else if resp.IsNACK() {
-		PrintError("NACK: %s", resp.ErrorMessage())
-	} else {
-		PrintACKResult(resp, "Flash status requested")
-	}
+	c.query(NewHubFxApi(c.conn).FlashStatus(), ParseFlashStatus)
 }
 
 func (c *CLI) cmdHubUsbDevices(_ []string) {
-	if !c.requireConn() {
-		return
-	}
-	resp, err := c.conn.SendAndWait(CmdHubUSBDevicesReq())
-	if err != nil {
-		PrintError("%v", err)
-		return
-	}
-	if resp.PacketType == HubUSB_DEVICES_RESP {
-		ParseUsbDevices(resp.Payload)
-	} else if resp.IsNACK() {
-		PrintError("NACK: %s", resp.ErrorMessage())
-	} else {
-		PrintACKResult(resp, "USB devices requested")
-	}
+	c.query(NewHubFxApi(c.conn).UsbDevices(), ParseUsbDevices)
 }
 
-func (c *CLI) cmdHubUsbReset(_ []string) { c.sendACK(CmdHubUSBResetBus(), "USB bus reset") }
+func (c *CLI) cmdHubUsbReset(_ []string) { c.ack(NewHubFxApi(c.conn).UsbReset(), "USB bus reset") }
 
 // ─── File Operations (storage target pattern) ───
 
@@ -428,12 +310,11 @@ func (c *CLI) cmdHubFileList(args []string) {
 	if target == 255 {
 		return
 	}
-	result, err := c.conn.SendAndReceiveStream(CmdHubFileList(path, target), 10*time.Second)
+	text, err := NewFileApi(c.conn).List(target, path)
 	if err != nil {
 		PrintError("%v", err)
 		return
 	}
-	text := string(result.Data)
 	formatListing(text, fmt.Sprintf("%s:%s", storageTargetName(target), path))
 }
 
@@ -443,7 +324,7 @@ func (c *CLI) cmdHubFileDelete(args []string) {
 		PrintError("Usage: file.delete <sd|flash> <path>")
 		return
 	}
-	c.sendACK(CmdHubFileDelete(path, target), fmt.Sprintf("Delete %s:%s", storageTargetName(target), path))
+	c.ack(NewFileApi(c.conn).Delete(target, path), fmt.Sprintf("Delete %s:%s", storageTargetName(target), path))
 }
 
 func (c *CLI) cmdHubFileMkdir(args []string) {
@@ -452,7 +333,7 @@ func (c *CLI) cmdHubFileMkdir(args []string) {
 		PrintError("Usage: file.mkdir <sd|flash> <path>")
 		return
 	}
-	c.sendACK(CmdHubFileMkdir(path, target), fmt.Sprintf("Mkdir %s:%s", storageTargetName(target), path))
+	c.ack(NewFileApi(c.conn).Mkdir(target, path), fmt.Sprintf("Mkdir %s:%s", storageTargetName(target), path))
 }
 
 func (c *CLI) cmdHubFileInfo(args []string) {
@@ -464,19 +345,15 @@ func (c *CLI) cmdHubFileInfo(args []string) {
 		PrintError("Usage: file.info <sd|flash> <path>")
 		return
 	}
-	resp, err := c.conn.SendAndWait(CmdHubFileInfo(path, target))
-	if err != nil {
-		PrintError("%v", err)
+	r := NewFileApi(c.conn).Info(target, path)
+	if !r.OK {
+		PrintError("%s", r.Error)
 		return
 	}
-	if resp.IsNACK() {
-		PrintError("NACK: %s", resp.ErrorMessage())
-		return
-	}
-	if resp.PacketType == HubFILE_INFO_RESP && len(resp.Payload) >= 6 {
-		exists := resp.Payload[0]
-		isDir := resp.Payload[1]
-		size := ReadU32LE(resp.Payload, 2)
+	if len(r.Response.Payload) >= 6 {
+		exists := r.Response.Payload[0]
+		isDir := r.Response.Payload[1]
+		size := ReadU32LE(r.Response.Payload, 2)
 		display := fmt.Sprintf("%s:%s", storageTargetName(target), path)
 		fmt.Printf("\n  %s%s%s\n", colorCyan, display, colorReset)
 		if exists != 0 {
@@ -493,7 +370,7 @@ func (c *CLI) cmdHubFileInfo(args []string) {
 		}
 		fmt.Println()
 	} else {
-		PrintError("Unexpected response: 0x%02X", resp.PacketType)
+		PrintError("Response too short")
 	}
 }
 
@@ -505,13 +382,143 @@ func (c *CLI) cmdHubFileTree(args []string) {
 	if target == 255 {
 		return
 	}
-	result, err := c.conn.SendAndReceiveStream(CmdHubFileTree(path, target), 30*time.Second)
+	text, err := NewFileApi(c.conn).Tree(target, path)
 	if err != nil {
 		PrintError("%v", err)
 		return
 	}
-	text := string(result.Data)
 	renderTree(text, fmt.Sprintf("%s:%s", storageTargetName(target), path))
+}
+
+func (c *CLI) cmdHubFileCat(args []string) {
+	if !c.requireConn() {
+		return
+	}
+	target, path := parseStorageArgs(args, "")
+	if target == 255 || path == "" {
+		PrintError("Usage: file.cat <sd|flash> <path>")
+		return
+	}
+	PrintInfo("Reading %s:%s ...", storageTargetName(target), path)
+	text, err := NewFileApi(c.conn).Cat(target, path)
+	if err != nil {
+		PrintError("%v", err)
+		return
+	}
+	fmt.Println()
+	fmt.Print(text)
+	fmt.Printf("\n    (%d bytes)\n", len(text))
+}
+
+func (c *CLI) cmdHubFileDownload(args []string) {
+	if !c.requireConn() {
+		return
+	}
+	if len(args) < 3 {
+		PrintError("Usage: file.download <sd|flash> <remote> <local>")
+		return
+	}
+	target := byte(255)
+	switch strings.ToLower(args[0]) {
+	case "sd":
+		target = StorageTargetSD
+	case "flash":
+		target = StorageTargetFlash
+	default:
+		PrintError("Storage target must be 'sd' or 'flash'")
+		return
+	}
+	remotePath := args[1]
+	localPath := args[2]
+
+	PrintInfo("Downloading %s:%s ...", storageTargetName(target), remotePath)
+	result, err := NewFileApi(c.conn).Download(target, remotePath, 60*time.Second)
+	if err != nil {
+		PrintError("%v", err)
+		return
+	}
+
+	if dir := filepath.Dir(localPath); dir != "" && dir != "." {
+		os.MkdirAll(dir, 0755)
+	}
+	if err := os.WriteFile(localPath, result.Data, 0644); err != nil {
+		PrintError("Failed to write local file: %v", err)
+		return
+	}
+	PrintOK("Downloaded %d bytes → %s", len(result.Data), localPath)
+}
+
+func (c *CLI) cmdHubFileUpload(args []string) {
+	if !c.requireConn() {
+		return
+	}
+	if len(args) < 3 {
+		PrintError("Usage: file.upload <sd|flash> <local> <remote> [--stream]")
+		return
+	}
+	target := byte(255)
+	switch strings.ToLower(args[0]) {
+	case "sd":
+		target = StorageTargetSD
+	case "flash":
+		target = StorageTargetFlash
+	default:
+		PrintError("Storage target must be 'sd' or 'flash'")
+		return
+	}
+	localPath := args[1]
+	remotePath := args[2]
+
+	// Parse upload mode from flags
+	mode := UploadSync
+	for _, a := range args[3:] {
+		switch strings.ToLower(a) {
+		case "--stream":
+			mode = UploadStream
+		}
+	}
+
+	fileData, err := os.ReadFile(localPath)
+	if err != nil {
+		PrintError("Cannot read local file: %v", err)
+		return
+	}
+
+	fileSize := len(fileData)
+	modeName := "sync"
+	switch mode {
+	case UploadStream:
+		modeName = "stream"
+	}
+	PrintInfo("Uploading %s (%d bytes) → %s:%s [%s]", localPath, fileSize,
+		storageTargetName(target), remotePath, modeName)
+
+	uploadStart := time.Now()
+	result := NewFileApi(c.conn).Upload(target, remotePath, fileData, mode,
+		func(sent, total int) {
+			fmt.Printf("\r%s  ", FormatProgressBar(sent, total, uploadStart, 30))
+		})
+	fmt.Println()
+
+	if !result.OK {
+		PrintError("Upload failed: %s", result.Error)
+		return
+	}
+
+	PrintOK("Uploaded %d bytes in %.1fs (%.1f KB/s)", result.BytesTransferred,
+		result.Elapsed.Seconds(), result.SpeedKBs)
+
+	if result.LocalMD5 != "" {
+		if result.MD5Match {
+			PrintOK("MD5 verified: %s", result.RemoteMD5)
+		} else {
+			PrintError("MD5 MISMATCH! local=%s remote=%s", result.LocalMD5, result.RemoteMD5)
+		}
+	}
+}
+
+func (c *CLI) cmdHubFileCancel(_ []string) {
+	c.ack(NewFileApi(c.conn).CancelUpload(), "Upload cancelled")
 }
 
 // ─── Storage Helpers ───

@@ -150,14 +150,9 @@ func (c *CLI) cmdInit(_ []string) {
 		return
 	}
 
-	resp, err := c.conn.SendAndWait(CmdInit())
-	if err != nil {
-		PrintError("INIT failed: %v", err)
-		return
-	}
-
-	if resp.IsInitReady() {
-		info := ParseInitReady(resp.Payload)
+	r := NewCoreApi(c.conn).Init()
+	if r.OK && r.Response != nil && r.Response.IsInitReady() {
+		info := ParseInitReady(r.Response.Payload)
 		if info != nil {
 			c.info = info
 			c.controllerType = info.ControllerType
@@ -168,33 +163,34 @@ func (c *CLI) cmdInit(_ []string) {
 			c.initialized = true
 			PrintOK("INIT_READY (parse error)")
 		}
-	} else if resp.IsNACK() {
-		PrintError("INIT NACK: %s", resp.ErrorMessage())
+	} else if r.Response != nil && r.Response.IsNACK() {
+		PrintError("INIT NACK: %s", r.Response.ErrorMessage())
+	} else if r.Error != "" {
+		PrintError("INIT failed: %s", r.Error)
 	} else {
-		PrintWarning("Unexpected response: 0x%02X", resp.PacketType)
+		PrintWarning("Unexpected response: 0x%02X", r.Response.PacketType)
 	}
 }
 
 func (c *CLI) doIdentify() {
-	resp, err := c.conn.SendAndWait(CmdIdentify())
-	if err != nil {
+	r := NewCoreApi(c.conn).Identify()
+	if r.Error != "" {
 		if c.verbose {
-			PrintWarning("IDENTIFY failed (%v), trying INIT", err)
+			PrintWarning("IDENTIFY failed (%s), trying INIT", r.Error)
 		}
-		// Fallback to INIT
 		c.cmdInit(nil)
 		return
 	}
 
-	if resp.IsIdentify() || resp.IsInitReady() {
-		info := ParseInitReady(resp.Payload)
+	if r.OK && r.Response != nil && (r.Response.IsIdentify() || r.Response.IsInitReady()) {
+		info := ParseInitReady(r.Response.Payload)
 		if info != nil {
 			c.info = info
 			c.controllerType = info.ControllerType
 			PrintOK("Identified: %s v%s (build %d) [%s]",
 				info.Name, info.Version, info.Build, info.ControllerType)
 		}
-	} else if resp.IsNACK() {
+	} else if r.Response != nil && r.Response.IsNACK() {
 		if c.verbose {
 			PrintWarning("IDENTIFY not supported, trying INIT")
 		}
@@ -207,29 +203,26 @@ func (c *CLI) cmdIdentify(_ []string) {
 		return
 	}
 
-	resp, err := c.conn.SendAndWait(CmdIdentify())
-	if err != nil {
-		PrintError("IDENTIFY failed: %v", err)
-		return
-	}
-
-	if resp.IsIdentify() || resp.IsInitReady() {
-		info := ParseInitReady(resp.Payload)
+	r := NewCoreApi(c.conn).Identify()
+	if r.OK && r.Response != nil && (r.Response.IsIdentify() || r.Response.IsInitReady()) {
+		info := ParseInitReady(r.Response.Payload)
 		if info != nil {
 			c.info = info
 			c.controllerType = info.ControllerType
 			PrintOK("IDENTIFY response")
 			PrintInitReadyInfo(info)
 		}
-	} else if resp.IsNACK() {
-		PrintError("IDENTIFY NACK: %s", resp.ErrorMessage())
+	} else if r.Response != nil && r.Response.IsNACK() {
+		PrintError("IDENTIFY NACK: %s", r.Response.ErrorMessage())
+	} else if r.Error != "" {
+		PrintError("IDENTIFY failed: %s", r.Error)
 	} else {
-		PrintWarning("Unexpected response: 0x%02X", resp.PacketType)
+		PrintWarning("Unexpected response: 0x%02X", r.Response.PacketType)
 	}
 }
 
 func (c *CLI) cmdShutdown(_ []string) {
-	c.sendACK(CmdShutdown(), "Shutdown OK")
+	c.ack(NewCoreApi(c.conn).Shutdown(), "Shutdown OK")
 	c.initialized = false
 }
 
@@ -237,31 +230,25 @@ func (c *CLI) cmdStatus(_ []string) {
 	if !c.requireConn() {
 		return
 	}
-
-	resp, err := c.conn.SendAndWait(CmdStatusReq())
-	if err != nil {
-		PrintError("STATUS failed: %v", err)
-		return
-	}
-
-	if resp.PacketType == CoreSTATUS {
+	r := NewCoreApi(c.conn).Status()
+	if r.OK && r.Response != nil && r.Response.PacketType == CoreSTATUS {
 		PrintOK("STATUS")
-		ParseStatusPayload(resp.Payload, c.controllerType)
-	} else if resp.IsNACK() {
-		PrintError("STATUS NACK: %s", resp.ErrorMessage())
-	} else {
-		PrintWarning("Unexpected: 0x%02X", resp.PacketType)
+		ParseStatusPayload(r.Response.Payload, c.controllerType)
+	} else if r.Error != "" {
+		PrintError("STATUS failed: %s", r.Error)
 	}
 }
 
 func (c *CLI) cmdReboot(_ []string) {
-	_ = c.conn.Send(CmdReboot())
+	api := NewCoreApi(c.conn)
+	_ = api.Reboot()
 	PrintOK("Reboot sent")
 	c.initialized = false
 }
 
 func (c *CLI) cmdBootsel(_ []string) {
-	_ = c.conn.Send(CmdBootsel())
+	api := NewCoreApi(c.conn)
+	_ = api.Bootsel()
 	PrintOK("BOOTSEL/DFU sent — device will disconnect")
 	c.initialized = false
 }
@@ -270,20 +257,16 @@ func (c *CLI) cmdI2CScan(_ []string) {
 	if !c.requireConn() {
 		return
 	}
-
-	resp, err := c.conn.SendAndWait(CmdI2CScan())
-	if err != nil {
-		PrintError("I2C scan failed: %v", err)
-		return
-	}
-
-	if resp.PacketType == CoreI2C_SCAN_RES {
-		PrintOK("I2C Scan")
-		ParseI2CScanResult(resp.Payload)
-	} else if resp.IsACK() {
-		PrintOK("I2C scan ACK (no result packet)")
-	} else if resp.IsNACK() {
-		PrintError("I2C scan NACK: %s", resp.ErrorMessage())
+	r := NewCoreApi(c.conn).I2CScan()
+	if r.OK && r.Response != nil {
+		if r.Response.PacketType == CoreI2C_SCAN_RES {
+			PrintOK("I2C Scan")
+			ParseI2CScanResult(r.Response.Payload)
+		} else if r.Response.IsACK() {
+			PrintOK("I2C scan ACK (no result packet)")
+		}
+	} else if r.Error != "" {
+		PrintError("I2C scan: %s", r.Error)
 	}
 }
 
@@ -294,11 +277,11 @@ func (c *CLI) cmdDiagHistory(args []string) {
 			count = byte(n)
 		}
 	}
-	c.sendACK(CmdDiagHistory(count), fmt.Sprintf("Requested %d log entries", count))
+	c.ack(NewCoreApi(c.conn).DiagHistory(count), fmt.Sprintf("Requested %d log entries", count))
 }
 
 func (c *CLI) cmdKeepalive(_ []string) {
-	c.sendACK(CmdKeepalive(), "Keepalive OK")
+	c.ack(NewCoreApi(c.conn).Keepalive(), "Keepalive OK")
 }
 
 func (c *CLI) cmdVerbose(args []string) {

@@ -2,8 +2,8 @@
  * Storage Server — Policy-Based Template for SD Card & Flash File Operations
  *
  * StorageServerT<TPolicy> provides all protocol handling for HubFX storage
- * operations.  Platform-specific behavior (buffer allocation, async writes,
- * stream data routing) is resolved at compile time via a POLICY object
+ * operations.  Platform-specific behavior (buffer allocation, async writes)
+ * is resolved at compile time via a POLICY object
  * composed into the server template:
  *
  *   Esp32StoragePolicy  — PSRAM double-buffered, dual-core FreeRTOS writer tasks
@@ -54,6 +54,7 @@
 #include <MD5Builder.h>
 #include <platform/sfx_platform.h>
 #include <platform/diag_log.h>
+#include <functional>
 
 
 // ============================================================================
@@ -73,15 +74,6 @@ struct StorageSharedState {
 
     // File handle for active upload
     LFSFile  uploadFile;
-
-    // Staging buffer for SD writes — allocated per-upload
-    uint8_t* streamStaging        = nullptr;
-    size_t   streamStagingLen     = 0;
-    uint32_t streamBytesWrittenToSD = 0;
-
-    // Stream state flags
-    bool     streamReceiving  = false;
-    bool     streamWriteError = false;
 
     /// Flush buffered upload data to file (blocking on current core).
     /// Used by both the .ipp (handleUploadEnd final flush) and policies
@@ -113,25 +105,18 @@ struct StorageSharedState {
  *   // Buffer lifecycle:
  *   bool allocateUploadBuffers();
  *   void freeUploadBuffers();
- *   bool allocateStreamBuffers();
- *   void freeStreamBuffers();
  *
  *   // Upload data handling:
  *   bool onUploadBufferFull();
  *   bool checkAsyncWriterHealth();
  *
  *   // Upload lifecycle:
- *   void onUploadActivated(bool isStream);
- *   bool onStreamStart();
- *   bool onStreamEnd(const char*& errMsg);
+ *   void onUploadActivated();
  *   bool onChunkedEnd(const char*& errMsg);
- *   void onStreamCleanup();
  *   void onChunkedCleanup();
  *
- *   // Stream data processing:
- *   void onStreamDataReceived(const uint8_t* data, size_t len);
- *   void onStreamReceiveComplete();
- *   size_t streamBufferCapacityForLog() const;
+ *   // Buffer diagnostics:
+ *   uint8_t bufferFillPercent() const;   // 0-100, ring buffer fill level
  */
 template <typename TPolicy>
 class StorageServerT : public BusServer {
@@ -155,28 +140,50 @@ public:
     /// True while a file upload is in progress (any mode).
     bool isUploadActive() const { return _uploadActive; }
 
-    /**
-     * @brief True when the server is in raw stream receive mode.
-     *
-     * When true, the main loop MUST call processStreamData() instead of
-     * server.loop() so that raw bytes go to the platform-specific buffer.
-     */
-    bool isStreamReceiving() const { return _shared.streamReceiving; }
+    /// True while a raw binary stream upload is active.
+    /// When true, the main loop should call processStream() instead of
+    /// server.loop() — COBS parsing is bypassed, serial data is read raw.
+    bool isStreamActive() const { return _streamActive; }
 
     /**
-     * @brief Process raw stream data from serial (UPLOAD_STREAM mode)
+     * @brief Process raw binary stream data during a stream upload.
      *
-     * Reads available bytes from the Serial stream, feeds them to the
-     * running MD5 hash, and delegates to the policy's
-     * onStreamDataReceived() for storage writes.
+     * Reads available bytes from Serial into the ring buffer via the
+     * fill buffer, tracks segment boundaries, and sends SEGMENT_ACKs
+     * (FILE_UPLOAD_PROGRESS) when each segment is fully received.
      *
-     * @param serial  Reference to the Serial stream (UART0)
+     * After the final segment, exits stream mode so the next loop()
+     * iteration can process the COBS-framed UPLOAD_END from the client.
+     *
+     * MUST only be called when isStreamActive() returns true.
      */
-    void processStreamData(Stream& serial);
+    void processStream();
 
     /// Access the platform policy (e.g. for ESP32-specific startWriterTask())
     TPolicy& policy() { return _policy; }
     const TPolicy& policy() const { return _policy; }
+
+    // -----------------------------------------------------------------
+    // Stream lifecycle callbacks (for resource management)
+    // -----------------------------------------------------------------
+
+    /**
+     * @brief Register callback invoked when stream upload starts.
+     *
+     * Called after stream mode is activated but before the ACK is sent.
+     * Use to suspend competing resources (e.g., audio tasks on Core 1)
+     * to maximize SD write throughput.
+     */
+    void onStreamStart(std::function<void()> cb) { _onStreamStart = std::move(cb); }
+
+    /**
+     * @brief Register callback invoked when stream upload ends.
+     *
+     * Called after the writer task is stopped and upload state is cleaned up.
+     * Use to resume resources suspended in onStreamStart.
+     * Guaranteed to be called exactly once per onStreamStart invocation.
+     */
+    void onStreamEnd(std::function<void()> cb) { _onStreamEnd = std::move(cb); }
 
 protected:
     // --- BusServer overrides ---
@@ -241,18 +248,41 @@ private:
     uint32_t _uploadExpectedSize = 0;
     uint32_t _uploadBytesWritten = 0;
     uint16_t _uploadExpectedSeq  = 0;
-    uint16_t _uploadCrcErrors    = 0;
     MD5Builder _uploadMd5;
+
+    // --- Stream upload state ---
+    bool     _streamActive          = false;    // True while raw binary streaming
+    uint32_t _streamSegmentSize     = 0;        // Bytes per segment (set in handleUploadBegin)
+    uint16_t _streamSegmentIndex    = 0;        // Current segment number (0-based)
+    uint32_t _streamSegBytesRemaining = 0;      // Bytes left in current segment
+    uint16_t _streamSegmentCount    = 0;        // Total segment count (for logging)
+
+    // --- Stream diagnostics ---
+    uint32_t _streamStartTime_ms    = 0;        // Stream mode activation time
+    uint32_t _streamSegStartTime_ms = 0;        // Current segment start time
+    uint32_t _streamEndTime_ms      = 0;        // Stream mode deactivation time
+    uint32_t _streamLastLogTime_ms  = 0;        // Last periodic progress log
+    uint32_t _streamLastLogBytes    = 0;        // Bytes at last periodic log
+    uint32_t _streamLastCallTime_ms = 0;        // Last processStream() call time
+    uint32_t _streamMaxGap_ms       = 0;        // Worst-case gap between calls
+    uint32_t _streamIterCount       = 0;        // processStream() call count per segment
+
+    static constexpr uint32_t STREAM_SEGMENT_SIZE    = 524288;  // 512 KB per segment
+    static constexpr uint32_t STREAM_INACTIVITY_MS   = 5000;    // 5s timeout per segment
+
+    /// Send segment ACK (FILE_UPLOAD_PROGRESS) after each stream segment.
+    void sendStreamSegmentAck();
+
+    // --- Stream lifecycle callbacks ---
+    std::function<void()> _onStreamStart;
+    std::function<void()> _onStreamEnd;
+    bool _streamSuspended = false;  // Guard: ensures exactly one onStreamEnd per onStreamStart
 
     static constexpr uint32_t UPLOAD_TIMEOUT_MS = 30000;
     uint32_t _uploadLastActivity_ms = 0;
 
-    static constexpr uint32_t STREAM_DATA_TIMEOUT_MS = 5000;
-
     static constexpr uint32_t MAX_UPLOAD_SIZE_FLASH = 2  * 1024 * 1024;
     static constexpr uint32_t MAX_UPLOAD_SIZE_SD    = 256 * 1024 * 1024;
-
-    uint32_t _streamBytesRemaining = 0;
 };
 
 // ============================================================================

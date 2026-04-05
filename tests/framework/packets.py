@@ -92,6 +92,7 @@ class CoreError:
     MISSING_PARAM   = 0x04
     BUSY            = 0x05
     NOT_SUPPORTED   = 0x06
+    PERMISSION_DENIED = 0x07
     INVALID_PARAM   = 0x10
     PARAM_RANGE     = 0x11
     INVALID_ID      = 0x12
@@ -100,7 +101,9 @@ class CoreError:
     INTERNAL        = 0xF0
     TIMEOUT         = 0xF1
     COMM_ERROR      = 0xF2
+    BUFFER_OVERFLOW = 0xF3
     CRC_ERROR       = 0xF4
+    FRAMING_ERROR   = 0xF5
     
     @staticmethod
     def name(code: int) -> str:
@@ -113,6 +116,7 @@ class CoreError:
             0x04: "MISSING_PARAM",
             0x05: "BUSY",
             0x06: "NOT_SUPPORTED",
+            0x07: "PERMISSION_DENIED",
             0x10: "INVALID_PARAM",
             0x11: "PARAM_RANGE",
             0x12: "INVALID_ID",
@@ -121,7 +125,9 @@ class CoreError:
             0xF0: "INTERNAL",
             0xF1: "TIMEOUT",
             0xF2: "COMM_ERROR",
+            0xF3: "BUFFER_OVERFLOW",
             0xF4: "CRC_ERROR",
+            0xF5: "FRAMING_ERROR",
         }
         return names.get(code, f"UNKNOWN(0x{code:02X})")
 
@@ -465,10 +471,15 @@ class HubFxPacket:
     FILE_INFO          = 0x9D  # [pathLen:u8][path:str][target:u8?] → FILE_INFO_RESP
     FILE_INFO_RESP     = 0x9E  # [exists:u8][isDir:u8][size:u32LE]
     FILE_DOWNLOAD      = 0x9F  # [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END
-    FILE_UPLOAD_BEGIN  = 0xA0  # [size:u32LE][pathLen:u8][path:str][target:u8?] → ACK
-    FILE_UPLOAD_DATA   = 0xA1  # [seqNum:u16LE][crc16:u16LE][data:N] → ACK/NACK(CRC_ERROR)
-    FILE_UPLOAD_END    = 0xA2  # [] → ACK/NACK
+    FILE_UPLOAD_BEGIN  = 0xA0  # [size:u32LE][pathLen:u8][path:str][target:u8?][mode:u8?] → ACK
+                               #   mode: 0=sync (COBS per-chunk ACK), 3=stream (raw binary, segment ACKs)
+                               #   Stream ACK payload: [segment_size:u32LE][segment_count:u16LE]
+    FILE_UPLOAD_DATA   = 0xA1  # [seqNum:u16LE][crc16:u16LE][data:N] → ACK/NACK(CRC_ERROR) (sync only)
+    FILE_UPLOAD_END    = 0xA2  # [] → ACK[md5:16B] / NACK
     FILE_UPLOAD_CANCEL = 0xA3  # [] → ACK
+
+    # Upload progress (stream mode segment ACK, server → client, async)
+    FILE_UPLOAD_PROGRESS = 0xB0  # [segment_idx:u16LE][bytes_received:u32LE][ring_fill_pct:u8]
 
     # Streaming packet types (STREAM_BEGIN/DATA/END) are defined in
     # StreamPacket class — they are protocol infrastructure reusable
@@ -617,15 +628,12 @@ class HubFxStorage:
 
     class UploadMode(IntEnum):
         SYNC     = 0  # ACK per chunk, CRC retry (default)
-        BURST    = 1  # No per-chunk ACK, MD5 verification at end
-        # Mode 2 (windowed) removed — use STREAM instead
-        STREAM   = 3  # Raw byte streaming: bypasses COBS, ring buffer + dual-core
+        STREAM   = 3  # Raw binary stream: bypass COBS for data, segment-based ACKs
 
     # Backward-compatible aliases
     TARGET_SD    = Target.SD
     TARGET_FLASH = Target.FLASH
-    UPLOAD_SYNC  = UploadMode.SYNC
-    UPLOAD_BURST = UploadMode.BURST
+    UPLOAD_SYNC   = UploadMode.SYNC
     UPLOAD_STREAM = UploadMode.STREAM
 
 

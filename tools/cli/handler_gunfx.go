@@ -32,19 +32,20 @@ func (c *CLI) cmdGfxTrigger(args []string) {
 	if !requireArgs(args, 1, "trigger on <rpm> | off [delay_ms]") {
 		return
 	}
+	api := NewGunFxApi(c.conn)
 	switch strings.ToLower(args[0]) {
 	case "on":
 		if !requireArgs(args, 2, "trigger on <rpm>") {
 			return
 		}
 		rpm := atoi(args[1])
-		c.sendACK(CmdGfxTriggerOn(uint16(rpm)), fmt.Sprintf("Trigger ON at %d RPM", rpm))
+		c.ack(api.TriggerOn(uint16(rpm)), fmt.Sprintf("Trigger ON at %d RPM", rpm))
 	case "off":
 		delay := 3000
 		if len(args) > 1 {
 			delay = atoi(args[1])
 		}
-		c.sendACK(CmdGfxTriggerOff(uint16(delay)), fmt.Sprintf("Trigger OFF (spin-down: %dms)", delay))
+		c.ack(api.TriggerOff(uint16(delay)), fmt.Sprintf("Trigger OFF (spin-down: %dms)", delay))
 	default:
 		PrintError("Use 'on' or 'off'")
 	}
@@ -52,11 +53,11 @@ func (c *CLI) cmdGfxTrigger(args []string) {
 
 // Servo commands delegate to shared helpers (Strategy pattern)
 func (c *CLI) cmdGfxServo(args []string) {
-	c.servoSet(args, "servo set <id> <pulse_us>", CmdGfxServoSet)
+	c.servoSet(args, "servo set <id> <pulse_us>", NewGunFxApi(c.conn).ServoSet)
 }
 
 func (c *CLI) cmdGfxServoConfig(args []string) {
-	c.servoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec]", CmdGfxServoSettings)
+	c.servoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec]", NewGunFxApi(c.conn).ServoConfig)
 }
 
 func (c *CLI) cmdGfxServoRecoil(args []string) {
@@ -64,7 +65,7 @@ func (c *CLI) cmdGfxServoRecoil(args []string) {
 		return
 	}
 	id, jerk, variance := atoi(args[0]), atoi(args[1]), atoi(args[2])
-	c.sendACK(CmdGfxServoRecoil(byte(id), uint16(jerk), uint16(variance)),
+	c.ack(NewGunFxApi(c.conn).ServoRecoil(byte(id), uint16(jerk), uint16(variance)),
 		fmt.Sprintf("Servo %d recoil: jerk=%dµs, variance=±%dµs", id, jerk, variance))
 }
 
@@ -77,7 +78,7 @@ func (c *CLI) cmdGfxSmoke(args []string) {
 		return
 	}
 	on := parseBool(args[1])
-	c.sendACK(CmdGfxSmokeHeat(on), fmt.Sprintf("Smoke heater %s", onOff(on)))
+	c.ack(NewGunFxApi(c.conn).SmokeHeat(on), fmt.Sprintf("Smoke heater %s", onOff(on)))
 }
 
 func (c *CLI) cmdGfxSmokeConfig(args []string) {
@@ -118,12 +119,12 @@ func (c *CLI) cmdGfxSmokeConfig(args []string) {
 	if pulsing {
 		mode = "pulsing"
 	}
-	c.sendACK(CmdGfxSmokeSettings(pulsing, speed, high, low, pulse_ms, spindown_ms),
+	c.ack(NewGunFxApi(c.conn).SmokeConfig(pulsing, speed, high, low, pulse_ms, spindown_ms),
 		fmt.Sprintf("Smoke: %s, speed=%d, h/l=%d/%d, spindown=%dms", mode, speed, high, low, spindown_ms))
 }
 
 func (c *CLI) cmdGfxSmokeReset(_ []string) {
-	c.sendACK(CmdGfxSmokeReset(), "Smoke errors cleared")
+	c.ack(NewGunFxApi(c.conn).SmokeReset(), "Smoke errors cleared")
 }
 
 func (c *CLI) cmdGfxSmokeLimit(args []string) {
@@ -149,5 +150,5 @@ func (c *CLI) cmdGfxSmokeLimit(args []string) {
 	if limit == 0 {
 		msg = fmt.Sprintf("%s overcurrent protection disabled", name)
 	}
-	c.sendACK(CmdGfxSmokeCurrentLimit(ch, uint16(limit)), msg)
+	c.ack(NewGunFxApi(c.conn).SmokeLimit(ch, uint16(limit)), msg)
 }

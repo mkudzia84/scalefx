@@ -1,3 +1,5 @@
+using ScaleFX.Serial;
+
 namespace ScaleFXStudio;
 
 static class Program
@@ -10,15 +12,28 @@ static class Program
     {
         // Attach console window for debug output
         AllocConsole();
-        Console.WriteLine("ScaleFX Studio - Debug Console");
-        Console.WriteLine("===============================");
-        Console.WriteLine();
+        System.Console.WriteLine("ScaleFX Studio - Debug Console");
+        System.Console.WriteLine("===============================");
+        System.Console.WriteLine();
         
         try
         {
             ApplicationConfiguration.Initialize();
             
-            var mainForm = new MainForm();
+            // ─── Board Detection at Startup ───
+            BoardInfo? detectedBoard = null;
+            using (var waitDialog = new BoardWaitDialog())
+            {
+                if (waitDialog.ShowDialog() == DialogResult.OK)
+                    detectedBoard = waitDialog.SelectedBoard;
+            }
+
+            if (detectedBoard != null)
+                System.Console.WriteLine($"Connected: {detectedBoard}");
+            else
+                System.Console.WriteLine("No board selected — launching without connection");
+
+            var mainForm = new MainForm(detectedBoard);
             
             // If a file path was passed as argument, open it
             if (args.Length > 0 && File.Exists(args[0]))

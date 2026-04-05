@@ -353,33 +353,36 @@ class ScaleFXConnection:
     def _parse_init_ready(self, payload: bytes):
         """
         Parse INIT_READY payload and store device info.
-        
-        Wire format:
-            [nameLen:u8][name][verLen:u8][ver][platLen:u8][plat]
-            [cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]
+        Delegates to the shared parser in cli/parsers.py.
         """
         try:
-            offset = 0
-            
-            name_len = payload[offset]; offset += 1
-            self.device_name = payload[offset:offset+name_len].decode('utf-8', errors='replace')
-            offset += name_len
-            
-            ver_len = payload[offset]; offset += 1
-            self.device_version = payload[offset:offset+ver_len].decode('utf-8', errors='replace')
-            offset += ver_len
-            
-            plat_len = payload[offset]; offset += 1
-            self.device_platform = payload[offset:offset+plat_len].decode('utf-8', errors='replace')
-            offset += plat_len
-            
-            self.device_cpu_mhz = int.from_bytes(payload[offset:offset+4], 'little')
-            offset += 4
-            self.device_free_ram = int.from_bytes(payload[offset:offset+4], 'little')
-            offset += 4
-            self.device_build = int.from_bytes(payload[offset:offset+4], 'little')
-        except (IndexError, KeyError):
-            pass  # Best-effort parsing
+            from ..cli.parsers import parse_init_ready
+            info = parse_init_ready(payload)
+            if info:
+                self.device_name = info.name
+                self.device_version = info.version
+                self.device_platform = info.platform
+                self.device_cpu_mhz = info.cpu_mhz
+                self.device_free_ram = info.free_ram
+                self.device_build = info.build
+        except (ImportError, Exception):
+            # Fallback: best-effort inline parsing if parsers module unavailable
+            try:
+                offset = 0
+                name_len = payload[offset]; offset += 1
+                self.device_name = payload[offset:offset+name_len].decode('utf-8', errors='replace')
+                offset += name_len
+                ver_len = payload[offset]; offset += 1
+                self.device_version = payload[offset:offset+ver_len].decode('utf-8', errors='replace')
+                offset += ver_len
+                plat_len = payload[offset]; offset += 1
+                self.device_platform = payload[offset:offset+plat_len].decode('utf-8', errors='replace')
+                offset += plat_len
+                self.device_cpu_mhz = int.from_bytes(payload[offset:offset+4], 'little'); offset += 4
+                self.device_free_ram = int.from_bytes(payload[offset:offset+4], 'little'); offset += 4
+                self.device_build = int.from_bytes(payload[offset:offset+4], 'little')
+            except (IndexError, KeyError):
+                pass
     
     def _drain_serial(self):
         """Drain any pending data from the OS serial buffer.

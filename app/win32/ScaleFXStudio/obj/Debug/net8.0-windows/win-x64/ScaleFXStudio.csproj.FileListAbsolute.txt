@@ -475,3 +475,9 @@ E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXStudio\obj\Debug\net8.0-windo
 E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXStudio\obj\Debug\net8.0-windows\win-x64\ScaleFXStudio.pdb
 E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXStudio\obj\Debug\net8.0-windows\win-x64\ScaleFXStudio.genruntimeconfig.cache
 E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXStudio\obj\Debug\net8.0-windows\win-x64\ref\ScaleFXStudio.dll
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXStudio\bin\Debug\net8.0-windows\win-x64\BouncyCastle.Cryptography.dll
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXStudio\bin\Debug\net8.0-windows\win-x64\Renci.SshNet.dll
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXStudio\bin\Debug\net8.0-windows\win-x64\System.IO.Ports.dll
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXStudio\bin\Debug\net8.0-windows\win-x64\System.Management.dll
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXStudio\bin\Debug\net8.0-windows\win-x64\ScaleFX.Serial.dll
+E:\data\OneDrive\CAD\CODE\scalefx\app\win32\ScaleFXStudio\bin\Debug\net8.0-windows\win-x64\ScaleFX.Serial.pdb

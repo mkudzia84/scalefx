@@ -42,8 +42,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.26.1"
-#define BUILD_NUMBER 130
+#define FIRMWARE_VERSION "0.27.1"
+#define BUILD_NUMBER 144
 
 #include <Arduino.h>
 #include <atomic>
@@ -195,6 +195,61 @@ static void core1Task(void* param) {
 }
 
 // ============================================================================
+// Boot & Codec Helpers
+// ============================================================================
+
+/**
+ * @brief Log the ESP32 reset reason (called once from setup).
+ */
+static void logResetReason() {
+    struct ReasonEntry { esp_reset_reason_t code; const char* name; };
+    static constexpr ReasonEntry reasons[] = {
+        { ESP_RST_POWERON,   "POWER_ON"   },
+        { ESP_RST_EXT,       "EXTERNAL"   },
+        { ESP_RST_SW,        "SOFTWARE"   },
+        { ESP_RST_PANIC,     "PANIC"      },
+        { ESP_RST_INT_WDT,   "INT_WDT"    },
+        { ESP_RST_TASK_WDT,  "TASK_WDT"   },
+        { ESP_RST_WDT,       "OTHER_WDT"  },
+        { ESP_RST_DEEPSLEEP, "DEEPSLEEP"  },
+        { ESP_RST_BROWNOUT,  "BROWNOUT"   },
+        { ESP_RST_SDIO,      "SDIO"       },
+        { ESP_RST_USB,       "USB"        },
+    };
+
+    esp_reset_reason_t reason = esp_reset_reason();
+    const char* name = "UNKNOWN";
+    for (const auto& r : reasons) {
+        if (r.code == reason) { name = r.name; break; }
+    }
+
+    SFX_LOG_INFO("Boot reason: %s (%d)", name, (int)reason);
+    if (reason == ESP_RST_BROWNOUT)
+        SFX_LOG_ERROR("*** BROWNOUT RESET — possible USB hub inrush current issue ***");
+    else if (reason == ESP_RST_PANIC)
+        SFX_LOG_ERROR("*** PANIC RESET — check backtrace in serial monitor ***");
+    else if (reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT || reason == ESP_RST_WDT)
+        SFX_LOG_ERROR("*** WATCHDOG RESET — a task may have hung ***");
+}
+
+/**
+ * @brief Try to initialize TAS5825M codec with given supply voltage.
+ *
+ * Consolidates the repeated begin(Wire, SDA, SCL, rate, voltage) + clearFaults()
+ * pattern used in initAudio(), onInit(), and checkCodecHealth().
+ *
+ * @return true if codec initialized successfully.
+ */
+static bool tryInitCodec(TAS5825M_SupplyVoltage voltage) {
+    TAS5825Codec& codec = TAS5825Codec::instance();
+    if (codec.begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL, AUDIO_SAMPLE_RATE, voltage)) {
+        codec.clearFaults();
+        return true;
+    }
+    return false;
+}
+
+// ============================================================================
 // Periodic Diagnostic Logging
 // ============================================================================
 
@@ -337,7 +392,7 @@ static void initStorage() {
         uint8_t ct = (uint8_t)info.cardType;
         const char* typeName = ct <= 4 ? typeNames[ct] : "?";
 
-        SFX_LOG_INFO("SD card ready: %s %lu MB (total=%lu free=%lu used=%lu, SDIO 1-bit)",
+        SFX_LOG_INFO("SD card ready: %s %lu MB (total=%lu free=%lu used=%lu, SDIO 1-bit HS)",
                      typeName,
                      (unsigned long)info.cardSize_MB,
                      (unsigned long)info.totalSpace_MB,
@@ -412,8 +467,16 @@ static void initProtocolHandlers() {
     server.addModuleHandler(&engineServer);
     server.addModuleHandler(&storageServer);
 
-    // Start dual-core storage writer task (Core 1 handles SD writes)
-    storageServer.policy().startWriterTask();
+    // Suspend audio during stream uploads to free Core 1 for SD writes.
+    // AudioMixer::suspendAudio/resumeAudio abstracts the consumer + producer
+    // task lifecycle — no direct FreeRTOS calls needed here.
+    storageServer.onStreamStart([]() {
+        Mixer::instance().suspendAudio();
+    });
+
+    storageServer.onStreamEnd([]() {
+        Mixer::instance().resumeAudio();
+    });
 }
 
 /** @brief Register slave types with SlaveManager and initialize USB Host. */
@@ -445,9 +508,7 @@ static void initAudio() {
         TAS5825Codec::parseSupplyVoltage(
             configServer.store().data().audio.codecSupplyVoltage, initVoltage);
     }
-    bool codecOk = TAS5825Codec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
-                                                  AUDIO_SAMPLE_RATE, initVoltage);
-    if (codecOk) {
+    if (tryInitCodec(initVoltage)) {
         SFX_LOG_INFO("TAS5825M codec initialized (supply=%s)",
                      TAS5825Codec::supplyVoltageStr(initVoltage));
     } else {
@@ -475,6 +536,10 @@ static void initAudio() {
     );
     // Note: Producer task is launched FROM core1Task after I2S init,
     // ensuring both tasks run on Core 1 and I2S is ready.
+
+    // Store consumer task handle in mixer for suspend/resume coordination
+    // (used by suspendAudio/resumeAudio during stream uploads)
+    mixer.setConsumerTaskHandle(core1TaskHandle);
 }
 
 // ---- Main setup ----
@@ -497,33 +562,7 @@ void setup() {
     // and should appear as "[IDF] W (xxx) SFX: ..." in `diag` output
     ESP_LOGW("SFX", "ESP-IDF log redirect active (build %d)", BUILD_NUMBER);
 
-    // Log reset reason — helps diagnose USB hub hot-plug brownout resets
-    {
-        esp_reset_reason_t reason = esp_reset_reason();
-        const char* reasonStr = "UNKNOWN";
-        switch (reason) {
-            case ESP_RST_POWERON:   reasonStr = "POWER_ON";   break;
-            case ESP_RST_EXT:       reasonStr = "EXTERNAL";   break;
-            case ESP_RST_SW:        reasonStr = "SOFTWARE";   break;
-            case ESP_RST_PANIC:     reasonStr = "PANIC";      break;
-            case ESP_RST_INT_WDT:   reasonStr = "INT_WDT";    break;
-            case ESP_RST_TASK_WDT:  reasonStr = "TASK_WDT";   break;
-            case ESP_RST_WDT:       reasonStr = "OTHER_WDT";  break;
-            case ESP_RST_DEEPSLEEP: reasonStr = "DEEPSLEEP";   break;
-            case ESP_RST_BROWNOUT:  reasonStr = "BROWNOUT";    break;
-            case ESP_RST_SDIO:      reasonStr = "SDIO";        break;
-            case ESP_RST_USB:       reasonStr = "USB";         break;
-            default:                reasonStr = "UNKNOWN";     break;
-        }
-        SFX_LOG_INFO("Boot reason: %s (%d)", reasonStr, (int)reason);
-        if (reason == ESP_RST_BROWNOUT) {
-            SFX_LOG_ERROR("*** BROWNOUT RESET — possible USB hub inrush current issue ***");
-        } else if (reason == ESP_RST_PANIC) {
-            SFX_LOG_ERROR("*** PANIC RESET — check backtrace in serial monitor ***");
-        } else if (reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT || reason == ESP_RST_WDT) {
-            SFX_LOG_ERROR("*** WATCHDOG RESET — a task may have hung ***");
-        }
-    }
+    logResetReason();
 
     // HubFX is the master — auto-init, no upstream connection timeout
     server.setConnectionTimeoutEnabled(false);
@@ -565,19 +604,14 @@ void setup() {
                 mixer.resetUnderruns();
             }
 
-            // Reset TAS5825M codec (full I2C re-init sequence)
+            // Reset or initialize TAS5825M codec
             TAS5825Codec& codec = TAS5825Codec::instance();
             if (codec.isInitialized()) {
                 codec.reset();
                 codec.clearFaults();
                 SFX_LOG_INFO("Audio codec reset");
-            } else {
-                // Codec never initialized (e.g., no battery at boot) — try now
-                if (codec.begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
-                                AUDIO_SAMPLE_RATE, codec.getSupplyVoltage())) {
-                    codec.clearFaults();
-                    SFX_LOG_INFO("Audio codec initialized on INIT");
-                }
+            } else if (tryInitCodec(codec.getSupplyVoltage())) {
+                SFX_LOG_INFO("Audio codec initialized on INIT");
             }
         }
 
@@ -694,24 +728,21 @@ static void checkCodecHealth() {
     lastCheck_ms = now;
 
     SFX_LOG_INFO("Retrying TAS5825M codec init...");
-    if (codec.begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL, AUDIO_SAMPLE_RATE,
-                    codec.getSupplyVoltage())) {
-        codec.clearFaults();
+    if (tryInitCodec(codec.getSupplyVoltage())) {
         SFX_LOG_INFO("TAS5825M codec initialized on retry — audio amp online");
     }
-    // On failure, begin() already logs I2C probe error — no extra log needed
 }
 
 // ============================================================================
-// Arduino Main Loop (Core 0)
+// Arduino Main Loop (Core 1 — default ARDUINO_RUNNING_CORE)
 // ============================================================================
 
 void loop() {
-    // UPLOAD_STREAM mode: bypass COBS/CommandRouter, route Serial data
-    // directly to StorageServer's ring buffer for maximum throughput.
-    // Normal COBS processing resumes after all file_size bytes are received.
-    if (storageServer.isStreamReceiving()) {
-        storageServer.processStreamData(Serial);
+    // Stream upload mode: bypass normal COBS processing entirely.
+    // processStream() reads raw bytes directly from Serial into the
+    // ring buffer.  No other commands are processed while streaming.
+    if (storageServer.isStreamActive()) {
+        storageServer.processStream();
     } else {
         // Normal serial protocol processing (UART0 — COBS packets from CLI/PC)
         server.loop();
@@ -737,10 +768,6 @@ void loop() {
         wasUploading = uploading;
     }
 
-    // NOTE: produce() is no longer called from loop().
-    // The producer runs as a dedicated FreeRTOS task on Core 1,
-    // launched by startProducerTask() inside core1Task().
-
     // Periodic diagnostic logging (buffered in DiagLog ring, retrieved via `diag`)
     logDiagnostics();
 
@@ -755,10 +782,8 @@ void loop() {
     // Engine FX state machine tick
     EngineFX::instance().process();
 
-    // During active upload or streaming, skip vTaskDelay() to maximize
-    // throughput. In stream mode, processStreamData() needs to be called
-    // as fast as possible to drain the UART RX buffer into the ring buffer.
-    if (!storageServer.isUploadActive() && !storageServer.isStreamReceiving()) {
+    // During active upload, skip vTaskDelay() to maximize throughput.
+    if (!storageServer.isUploadActive()) {
         vTaskDelay(pdMS_TO_TICKS(1));  // Yield to FreeRTOS scheduler
     }
 }

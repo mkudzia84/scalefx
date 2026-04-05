@@ -264,6 +264,22 @@ AI_Agent_Troubleshooting:
       'Unknown command'. Send 'quit' first, then run the shell command.
     best_practice: "Use separate terminals for CLI sessions and build commands"
 
+  "Always use VS Code tasks for building":
+    rule: |
+      The workspace defines predefined tasks in .vscode/tasks.json for all
+      build, flash, and syntax-check operations. AI agents MUST use these
+      via create_and_run_task instead of raw run_in_terminal commands.
+      See Rule 20 in copilot-instructions.md.
+    available_tasks:
+      - "Build Firmware" (prompts for controller)
+      - "Build and Flash Firmware" (prompts for controller)
+      - "Flash Firmware (no build)"
+      - "Build All Controllers"
+      - "Build ScaleFX Studio"
+      - "Build Go CLI"
+      - "Python Syntax Check"
+    important: "tasks.json must be valid JSON (no comments) for create_and_run_task to work"
+
   "python -c with multiline code fails in PowerShell":
     cause: "PowerShell treats newlines in -c argument as ScriptBlock, not Python code"
     fix: |

@@ -72,6 +72,7 @@ type Connection struct {
 	waiterMu      sync.Mutex
 	tagWaiters    map[byte]chan *Response
 	streamWaiters map[byte]chan *Response // multi-response streams
+	asyncFilters  map[byte]chan *Response // type-based async packet intercept
 
 	asyncCB AsyncCallback
 
@@ -92,6 +93,7 @@ func NewConnection(portName string, baud int, verbose bool) *Connection {
 		nextTag:       1,
 		tagWaiters:    make(map[byte]chan *Response),
 		streamWaiters: make(map[byte]chan *Response),
+		asyncFilters:  make(map[byte]chan *Response),
 	}
 }
 
@@ -155,6 +157,22 @@ func (c *Connection) SetCallback(cb AsyncCallback) {
 	c.asyncCB = cb
 }
 
+// RegisterAsyncFilter registers a channel that intercepts async packets
+// of a specific type before they reach the general asyncCB callback.
+// Returns the channel. Caller must call UnregisterAsyncFilter when done.
+func (c *Connection) RegisterAsyncFilter(ptype byte, ch chan *Response) {
+	c.waiterMu.Lock()
+	c.asyncFilters[ptype] = ch
+	c.waiterMu.Unlock()
+}
+
+// UnregisterAsyncFilter removes a type-based async packet filter.
+func (c *Connection) UnregisterAsyncFilter(ptype byte) {
+	c.waiterMu.Lock()
+	delete(c.asyncFilters, ptype)
+	c.waiterMu.Unlock()
+}
+
 // NextTag returns the next correlation tag (1-255).
 func (c *Connection) NextTag() byte {
 	tag := c.nextTag
@@ -184,6 +202,32 @@ func (c *Connection) Send(data []byte) error {
 
 	_, err := c.port.Write(data)
 	return err
+}
+
+// SendRaw writes raw bytes to the serial port without COBS framing or verbose logging.
+func (c *Connection) SendRaw(data []byte) error {
+	if c.port == nil {
+		return fmt.Errorf("not connected")
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_, err := c.port.Write(data)
+	return err
+}
+
+// FlushOutput waits until all data in the serial port output buffer has been
+// transmitted on the wire.  This is critical for stream uploads: the OS may
+// buffer megabytes of raw data and return from Write() instantly, but the
+// wire transfer (USB CDC) takes much longer.  Without this, subsequent COBS
+// packets (like UPLOAD_END) get queued behind the raw data and the response
+// timeout fires before the device can process them.
+func (c *Connection) FlushOutput() {
+	if c.port == nil {
+		return
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.port.Drain() // blocks until all TX data is on the wire
 }
 
 // SendAndWait sends a packet with auto-assigned tag and waits for the matching response.
@@ -222,8 +266,56 @@ func (c *Connection) SendAndWait(data []byte) (*Response, error) {
 }
 
 // SendExpectACK sends a packet and expects ACK/NACK response.
+// Uses a stream waiter to handle firmware that sends async status updates
+// (e.g., GEAR_SEQ_STATUS) with the same correlation tag before the ACK.
+// Any non-ACK/NACK responses are forwarded to the async callback.
 func (c *Connection) SendExpectACK(data []byte) (*Response, error) {
-	return c.SendAndWait(data)
+	return c.SendExpectACKTimeout(data, c.timeout)
+}
+
+// SendExpectACKTimeout sends a packet and expects ACK/NACK with a custom timeout.
+// Use this for operations that may take longer than the default timeout
+// (e.g., UPLOAD_END after a stream transfer where the server finalises on SD).
+func (c *Connection) SendExpectACKTimeout(data []byte, timeout time.Duration) (*Response, error) {
+	if c.port == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	tag := c.NextTag()
+	tagged := c.injectTag(data, tag)
+
+	// Use stream waiter (multi-response) so same-tag async packets
+	// don't consume the single-shot slot before the ACK arrives.
+	ch := make(chan *Response, 32)
+	c.waiterMu.Lock()
+	c.streamWaiters[tag] = ch
+	c.waiterMu.Unlock()
+
+	defer func() {
+		c.waiterMu.Lock()
+		delete(c.streamWaiters, tag)
+		c.waiterMu.Unlock()
+	}()
+
+	if err := c.Send(tagged); err != nil {
+		return nil, err
+	}
+
+	deadline := time.After(timeout)
+	for {
+		select {
+		case resp := <-ch:
+			if resp.IsACK() || resp.IsNACK() {
+				return resp, nil
+			}
+			// Forward non-ACK/NACK (e.g., GEAR_SEQ_STATUS) to async handler
+			if c.asyncCB != nil {
+				c.asyncCB(resp)
+			}
+		case <-deadline:
+			return nil, fmt.Errorf("timeout waiting for response")
+		}
+	}
 }
 
 // StreamResult holds the reassembled data from a streamed response.
@@ -429,7 +521,16 @@ func (c *Connection) dispatchResponse(resp *Response) {
 		c.waiterMu.Unlock()
 	}
 
-	// Async or unmatched — deliver to callback
+	// Async or unmatched — check type-based filters first
+	c.waiterMu.Lock()
+	fch, fok := c.asyncFilters[resp.PacketType]
+	c.waiterMu.Unlock()
+	if fok {
+		fch <- resp
+		return
+	}
+
+	// Otherwise deliver to general async callback
 	if c.asyncCB != nil {
 		c.asyncCB(resp)
 	}

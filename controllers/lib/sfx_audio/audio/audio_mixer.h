@@ -206,6 +206,35 @@ public:
     bool isProducerTaskRunning() const {
         return _producerRunning.load(std::memory_order_acquire);
     }
+
+    /**
+     * @brief Store the consumer task handle for suspend/resume coordination.
+     *
+     * Call once after creating the Core 1 audio consumer task.
+     * Required before calling suspendAudio() / resumeAudio().
+     */
+    void setConsumerTaskHandle(TaskHandle_t handle) {
+        _consumerTaskHandle = handle;
+    }
+
+    /**
+     * @brief Suspend all audio processing (consumer + producer).
+     *
+     * Stops all playback, stops the producer task, and suspends the
+     * consumer task. Use when Core 1 needs to be freed for competing
+     * work (e.g., SD card uploads). Call resumeAudio() to restart.
+     *
+     * Requires setConsumerTaskHandle() to have been called first.
+     */
+    void suspendAudio();
+
+    /**
+     * @brief Resume audio processing after suspendAudio().
+     *
+     * Resumes the consumer task and restarts the producer task with
+     * the same configuration used in the original startProducerTask() call.
+     */
+    void resumeAudio();
 #endif
 
     // Stats access
@@ -386,6 +415,14 @@ private:
     // Producer task state
     TaskHandle_t _producerTaskHandle = nullptr;
     std::atomic<bool> _producerRunning{false};  // Producer task reads, Core 0 writes
+
+    // Consumer task handle (set by setConsumerTaskHandle, used by suspend/resume)
+    TaskHandle_t _consumerTaskHandle = nullptr;
+
+    // Producer task config (stored by startProducerTask for resumeAudio)
+    int _producerCore = 1;
+    int _producerPriority = configMAX_PRIORITIES - 2;
+    int _producerStackSize = 8192;
 #endif
 
     // Stats (cross-core diagnostic counters)

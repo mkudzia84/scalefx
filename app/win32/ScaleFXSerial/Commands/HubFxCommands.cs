@@ -146,6 +146,50 @@ public static class HubFxCommands
     public static byte[] FileDownload(string path, byte target)
         => FileCommand(PacketTypes.HubFx.FILE_DOWNLOAD, path, target);
 
+    // ─── Upload Commands ───
+
+    /// <summary>
+    /// Begin a file upload. After ACK, send FileUploadData chunks, then FileUploadEnd.
+    /// Payload: [size:u32LE][pathLen:u8][path:str][target:u8][mode:u8]
+    /// </summary>
+    /// <param name="path">Destination file path on device.</param>
+    /// <param name="size">Total file size in bytes.</param>
+    /// <param name="target">Storage target (0=SD, 1=Flash).</param>
+    /// <param name="mode">Upload mode (0=sync, 3=stream).</param>
+    public static byte[] FileUploadBegin(string path, uint size, byte target, byte mode = 0)
+    {
+        var pathBytes = Encoding.UTF8.GetBytes(path);
+        var payload = new byte[4 + 1 + pathBytes.Length + 1 + 1];
+        Endian.U32LE(size).CopyTo(payload, 0);
+        payload[4] = (byte)pathBytes.Length;
+        pathBytes.CopyTo(payload, 5);
+        payload[5 + pathBytes.Length] = target;
+        payload[6 + pathBytes.Length] = mode;
+        return Packet.Build(PacketTypes.HubFx.FILE_UPLOAD_BEGIN, payload);
+    }
+
+    /// <summary>
+    /// Send an upload data chunk with CRC-16 integrity.
+    /// Payload: [seqNum:u16LE][crc16:u16LE][data]
+    /// </summary>
+    public static byte[] FileUploadData(ushort seq, byte[] data)
+    {
+        var crc = Crc.Crc16(data);
+        var payload = new byte[4 + data.Length];
+        Endian.U16LE(seq).CopyTo(payload, 0);
+        Endian.U16LE(crc).CopyTo(payload, 2);
+        data.CopyTo(payload, 4);
+        return Packet.Build(PacketTypes.HubFx.FILE_UPLOAD_DATA, payload);
+    }
+
+    /// <summary>End a file upload. Server verifies total size and responds with MD5.</summary>
+    public static byte[] FileUploadEnd()
+        => Packet.Build(PacketTypes.HubFx.FILE_UPLOAD_END);
+
+    /// <summary>Cancel an in-progress upload. Server deletes partial file.</summary>
+    public static byte[] FileUploadCancel()
+        => Packet.Build(PacketTypes.HubFx.FILE_UPLOAD_CANCEL);
+
     // ─── USB Commands ───
 
     public static byte[] UsbDevicesReq()

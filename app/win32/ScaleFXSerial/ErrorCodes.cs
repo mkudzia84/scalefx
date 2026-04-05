@@ -15,6 +15,7 @@ public static class ErrorCodes
     public const byte MISSING_PARAM   = 0x04;
     public const byte BUSY            = 0x05;
     public const byte NOT_SUPPORTED   = 0x06;
+    public const byte PERMISSION_DENIED = 0x07;
     public const byte INVALID_PARAM   = 0x10;
     public const byte PARAM_RANGE     = 0x11;
     public const byte INVALID_ID      = 0x12;
@@ -23,7 +24,9 @@ public static class ErrorCodes
     public const byte INTERNAL        = 0xF0;
     public const byte TIMEOUT         = 0xF1;
     public const byte COMM_ERROR      = 0xF2;
+    public const byte BUFFER_OVERFLOW = 0xF3;
     public const byte CRC_ERROR       = 0xF4;
+    public const byte FRAMING_ERROR   = 0xF5;
 
     // ─── GunFX (0x20-0x4F) ───
 
@@ -108,6 +111,7 @@ public static class ErrorCodes
         MISSING_PARAM   => "MISSING_PARAMETER",
         BUSY            => "BUSY",
         NOT_SUPPORTED   => "NOT_SUPPORTED",
+        PERMISSION_DENIED => "PERMISSION_DENIED",
         INVALID_PARAM   => "INVALID_PARAMETER",
         PARAM_RANGE     => "PARAMETER_OUT_OF_RANGE",
         INVALID_ID      => "INVALID_ID",
@@ -116,23 +120,31 @@ public static class ErrorCodes
         INTERNAL        => "INTERNAL_ERROR",
         TIMEOUT         => "TIMEOUT",
         COMM_ERROR      => "COMMUNICATION_ERROR",
+        BUFFER_OVERFLOW => "BUFFER_OVERFLOW",
         CRC_ERROR       => "CRC_ERROR",
+        FRAMING_ERROR   => "FRAMING_ERROR",
 
         // GunFX
         GunFx.SERVO_INVALID_ID     => "GFX_SERVO_INVALID_ID",
         GunFx.SERVO_PULSE_RANGE    => "GFX_SERVO_PULSE_RANGE",
-        GunFx.INVALID_RPM          => "GFX_INVALID_RPM",
-        GunFx.ALREADY_FIRING       => "GFX_ALREADY_FIRING",
-        GunFx.NOT_FIRING           => "GFX_NOT_FIRING",
+        GunFx.SERVO_MIN_MAX        => "GFX_SERVO_MIN_MAX",
+        GunFx.SERVO_NOT_CONFIGURED => "GFX_SERVO_NOT_CONFIGURED",
+        GunFx.INVALID_FAN_SPEED    => "GFX_INVALID_FAN_SPEED",
         GunFx.HEATER_DISCONNECTED  => "GFX_HEATER_DISCONNECTED",
         GunFx.FAN_DISCONNECTED     => "GFX_FAN_DISCONNECTED",
         GunFx.HEATER_OVERCURRENT   => "GFX_HEATER_OVERCURRENT",
         GunFx.FAN_OVERCURRENT      => "GFX_FAN_OVERCURRENT",
+        GunFx.INVALID_RPM          => "GFX_INVALID_RPM",
+        GunFx.ALREADY_FIRING       => "GFX_ALREADY_FIRING",
+        GunFx.NOT_FIRING           => "GFX_NOT_FIRING",
 
         // LightFX
         LightFx.INVALID_CHANNEL    => "LFX_INVALID_CHANNEL",
         LightFx.SEQ_FULL           => "LFX_SEQUENCE_FULL",
         LightFx.INVALID_EVENT      => "LFX_INVALID_EVENT",
+        LightFx.INVALID_PARAM      => "LFX_INVALID_PARAM",
+        LightFx.INVALID_SERVO      => "LFX_INVALID_SERVO",
+        LightFx.INVALID_SLOT       => "LFX_INVALID_SLOT",
         LightFx.CHANNEL_DISABLED   => "LFX_CHANNEL_DISABLED",
 
         // GearControl
@@ -141,17 +153,31 @@ public static class ErrorCodes
         GearControl.GEAR_BUSY          => "GC_GEAR_BUSY",
         GearControl.MOTOR_STALL        => "GC_MOTOR_STALL",
         GearControl.MOTOR_TIMEOUT      => "GC_MOTOR_TIMEOUT",
+        GearControl.SERVO_OUT_OF_RANGE => "GC_SERVO_OUT_OF_RANGE",
+        GearControl.INA226_ERROR       => "GC_INA226_ERROR",
+        GearControl.YAW_NOT_AVAILABLE  => "GC_YAW_NOT_AVAILABLE",
+        GearControl.INVALID_ACTION     => "GC_INVALID_ACTION",
+        GearControl.NO_CURRENT_MONITOR => "GC_NO_CURRENT_MONITOR",
+        GearControl.NOT_CALIBRATING    => "GC_NOT_CALIBRATING",
         GearControl.GEAR_DISABLED      => "GC_GEAR_DISABLED",
 
         // HubFX
-        HubFx.SLAVE_NOT_FOUND     => "HUB_SLAVE_NOT_FOUND",
-        HubFx.SLAVE_NOT_CONNECTED => "HUB_SLAVE_NOT_CONNECTED",
-        HubFx.AUDIO_ERROR         => "HUB_AUDIO_ERROR",
-        HubFx.SD_NOT_INITIALIZED  => "HUB_SD_NOT_INITIALIZED",
-        HubFx.FILE_NOT_FOUND      => "HUB_FILE_NOT_FOUND",
-        HubFx.FILE_IO_ERROR       => "HUB_FILE_IO_ERROR",
-        HubFx.CONFIG_ERROR        => "HUB_CONFIG_ERROR",
-        HubFx.INVALID_CHANNEL     => "HUB_INVALID_CHANNEL",
+        HubFx.SLAVE_NOT_FOUND      => "HUB_SLAVE_NOT_FOUND",
+        HubFx.SLAVE_NOT_CONNECTED  => "HUB_SLAVE_NOT_CONNECTED",
+        HubFx.SLAVE_INIT_FAILED    => "HUB_SLAVE_INIT_FAILED",
+        HubFx.NO_SLAVES            => "HUB_NO_SLAVES",
+        HubFx.SLAVE_COMM_ERROR     => "HUB_SLAVE_COMM_ERROR",
+        HubFx.AUDIO_ERROR          => "HUB_AUDIO_ERROR",
+        HubFx.SD_NOT_INITIALIZED   => "HUB_SD_NOT_INITIALIZED",
+        HubFx.ENGINE_NOT_AVAILABLE => "HUB_ENGINE_NOT_AVAILABLE",
+        HubFx.CONFIG_ERROR         => "HUB_CONFIG_ERROR",
+        HubFx.INVALID_CHANNEL      => "HUB_INVALID_CHANNEL",
+        HubFx.FILE_NOT_FOUND       => "HUB_FILE_NOT_FOUND",
+        HubFx.FILE_ALREADY_EXISTS  => "HUB_FILE_ALREADY_EXISTS",
+        HubFx.FILE_IO_ERROR        => "HUB_FILE_IO_ERROR",
+        HubFx.FILE_TOO_LARGE       => "HUB_FILE_TOO_LARGE",
+        HubFx.UPLOAD_IN_PROGRESS   => "HUB_UPLOAD_IN_PROGRESS",
+        HubFx.NO_UPLOAD_ACTIVE     => "HUB_NO_UPLOAD_ACTIVE",
 
         _ => $"ERROR_0x{code:X2}"
     };

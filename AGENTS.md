@@ -11,6 +11,8 @@ ScaleFX is a modular scale model effects system for RC helicopters:
 - **ESP32-S3 Controller**: HubFX ESP32-S3 (master hub, active development)
 - **HubFX Pico** (RP2350): OBSOLETE — frozen reference implementation, do not modify
 - **Windows Studio** (.NET 8/C#): Visual configuration editor
+- **Go CLI** (`tools/cli/`): Compiled interactive CLI (single binary, zero runtime deps)
+- **C# Serial Library** (`app/win32/ScaleFXSerial/`): .NET 8 protocol layer for Windows Studio
 - **Python test framework** with interactive CLI
 
 ## Critical Constants
@@ -31,6 +33,7 @@ ScaleFX is a modular scale model effects system for RC helicopters:
 | Run/write tests | `instructions/06-TEST-SUITE.md` |
 | Update interactive CLI | `instructions/07-CLI-UPDATES.md` |
 | AudioTools library reference (HubFX audio) | `instructions/08-AUDIOTOOLS.md` |
+| Console output schema (all CLIs) | `instructions/09-CONSOLE-OUTPUT.md` |
 
 ## Quick Commands
 
@@ -48,8 +51,17 @@ python scripts/build_and_flash.py hubfx  # ESP32-S3 (uses esptool)
 # Python syntax check
 python -m py_compile tests/framework/packets.py
 
-# Interactive CLI
+# Build Go CLI
+cd tools/cli && go build -o scalefx-cli.exe .
+
+# Build C# library
+dotnet build app/win32/ScaleFXSerial/
+
+# Interactive CLI (Python)
 python -m tests.cli.interactive --port COM5
+
+# Interactive CLI (Go)
+tools/cli/scalefx-cli.exe -p COM5
 
 # Run tests (requires hardware)
 pytest tests/{gunfx|lightfx|gearcontrol|noop}/ -v
@@ -65,7 +77,7 @@ controllers/
 │   ├── sfx_server/      # SfxServer common controller boilerplate
 │   ├── sfx_peripherals/ # Hardware drivers (LED, servo, PWM input, I2C, INA226)
 │   ├── sfx_audio/       # 8-channel WAV mixer, I2S output, codec drivers, ring buffer
-│   ├── sfx_storage/     # SD card (SdFat/ESP SD), LittleFS flash singletons
+│   ├── sfx_storage/     # SD card (SdFat/ESP SD), LittleFS flash, StorageServerT policy template
 │   ├── sfx_config/      # YAML config parser, schema-driven config store, protocol server/client
 │   └── sfx_usb/         # USB Host abstraction (PicoUsbHost, EspUsbHost)
 ├── gunfx/pico/          # Gun effects (RP2040 server)
@@ -82,16 +94,18 @@ tests/
 └── {gunfx,lightfx,gearcontrol,noop}/  # pytest test suites
 
 scripts/build_and_flash.py   # Centralized build/flash
+tools/cli/                   # Go CLI (compiled, single binary)
+app/win32/ScaleFXSerial/     # C# serial protocol library (.NET 8)
 app/win32/ScaleFXStudio/     # Windows config editor (.NET 8)
 ```
 
-## Mandatory File Sync (C++ ↔ Python)
+## Mandatory File Sync (C++ ↔ Python ↔ Go ↔ C#)
 
-| C++ File | Python File |
-|----------|-------------|
-| `core/core.h` | `packets.py` |
-| `core/stream.h` | `packets.py` (StreamPacket) |
-| `gunfx/gunfx.h` | `packets.py`, `commands.py`, `cli/handlers/gunfx.py` |
-| `lightfx/lightfx.h` | `packets.py`, `commands.py`, `cli/handlers/lightfx.py` |
-| `gearcontrol/gearcontrol.h` | `packets.py`, `commands.py`, `cli/handlers/gearcontrol.py` |
-| `hubfx/hubfx.h` | `packets.py`, `commands.py`, `cli/handlers/hubfx.py` |
+| C++ File | Python File | Go CLI File | C# File |
+|----------|-------------|-------------|----------|
+| `core/core.h` | `packets.py` | `packets.go` | `PacketTypes.cs`, `ErrorCodes.cs` |
+| `core/stream.h` | `packets.py` (StreamPacket) | `packets.go` | `PacketTypes.cs` |
+| `gunfx/gunfx.h` | `packets.py`, `commands.py`, `cli/handlers/gunfx.py` | `packets.go`, `commands.go`, `handler_gunfx.go` | `PacketTypes.cs`, `Commands/GunFxCommands.cs` |
+| `lightfx/lightfx.h` | `packets.py`, `commands.py`, `cli/handlers/lightfx.py` | `packets.go`, `commands.go`, `handler_lightfx.go` | `PacketTypes.cs`, `Commands/LightFxCommands.cs` |
+| `gearcontrol/gearcontrol.h` | `packets.py`, `commands.py`, `cli/handlers/gearcontrol.py` | `packets.go`, `commands.go`, `handler_gearcontrol.go` | `PacketTypes.cs`, `Commands/GearControlCommands.cs` |
+| `hubfx/hubfx.h` | `packets.py`, `commands.py`, `cli/handlers/hubfx.py` | `packets.go`, `commands.go`, `handler_hubfx.go` | `PacketTypes.cs`, `Commands/HubFxCommands.cs` |

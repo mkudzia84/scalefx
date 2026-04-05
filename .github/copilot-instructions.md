@@ -64,15 +64,15 @@ Documentation updates should be included in the same commit/session as code chan
 
 When modifying serial protocol, these files MUST stay in sync:
 
-| C++ Source | Python Mirror | Content |
-|------------|---------------|---------|
-| `controllers/lib/sfx_serial/serial/core/core.h` | `tests/framework/packets.py` | Packet type constants, generic error codes |
-| `controllers/lib/sfx_serial/serial/gunfx/gunfx.h` | `tests/framework/packets.py`, `commands.py` | GunFX packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/lightfx/lightfx.h` | `tests/framework/packets.py`, `commands.py` | LightFX packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/gearcontrol/gearcontrol.h` | `tests/framework/packets.py`, `commands.py` | GearControl packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/hubfx/hubfx.h` | `tests/framework/packets.py`, `commands.py` | HubFX packet types, error codes, commands |
+| C++ Source | Python Mirror | Go CLI Mirror | C# Mirror | Content |
+|------------|---------------|---------------|-----------|---------|
+| `controllers/lib/sfx_serial/serial/core/core.h` | `tests/framework/packets.py` | `tools/cli/packets.go` | `ScaleFXSerial/PacketTypes.cs`, `ErrorCodes.cs` | Packet type constants, generic error codes |
+| `controllers/lib/sfx_serial/serial/gunfx/gunfx.h` | `tests/framework/packets.py`, `commands.py` | `tools/cli/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/GunFxCommands.cs` | GunFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/lightfx/lightfx.h` | `tests/framework/packets.py`, `commands.py` | `tools/cli/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/LightFxCommands.cs` | LightFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/gearcontrol/gearcontrol.h` | `tests/framework/packets.py`, `commands.py` | `tools/cli/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/GearControlCommands.cs` | GearControl packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/hubfx/hubfx.h` | `tests/framework/packets.py`, `commands.py` | `tools/cli/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/HubFxCommands.cs` | HubFX packet types, error codes, commands |
 
-**Verification:** Run `python -m py_compile tests/framework/packets.py` after C++ changes.
+**Verification:** Run `python -m py_compile tests/framework/packets.py` and `cd tools/cli && go build .` after C++ changes.
 
 ### 2. Command Addition Checklist
 
@@ -84,10 +84,18 @@ When adding a new command to an existing controller, update ALL these files:
 6. `tests/xxxfx/test_<feature>.py` - **REQUIRED:** Add tests for new functionality
 7. `tests/cli/handlers/xxxfx.py` - Add command to handler class
 8. `controllers/xxxfx/pico/README.md` - Document payload format
+9. `tools/cli/packets.go` - Mirror constant, add to `PacketTypeName()` and error name map
+10. `tools/cli/commands.go` - Add command builder function
+11. `tools/cli/handler_xxxfx.go` - Add CLI command and register in command list
+12. `tools/cli/parsers.go` - Add response parser if command returns data
+13. `app/win32/ScaleFXSerial/PacketTypes.cs` - Mirror packet type constant
+14. `app/win32/ScaleFXSerial/Commands/XxxFxCommands.cs` - Add command builder method
 
 **ALWAYS update tests when protocol is changed or new features are added.** Tests are not optional.
 
-**ALWAYS update the CLI when new commands are added.** The CLI is the primary debugging tool.
+**ALWAYS update ALL CLIs when new commands are added.** Both the Python CLI and Go CLI are primary debugging tools.
+
+**ALWAYS update the C# library when protocol constants change.** The ScaleFXSerial library is the protocol layer for the Windows Studio app.
 
 See `/instructions/03-PROTOCOL-EXTENSION.md` and `/instructions/04-CHANGE-PROPAGATION.md` for details.
 
@@ -501,6 +509,14 @@ if (!sd.isInitialized()) { sendNack(ERROR); return; }  // Check state, not exist
 | `_minLevel` | `std::atomic<uint8_t>` | DiagLog | Core 0 writes | relaxed/relaxed |
 | `_waitingTag` | `std::atomic<uint8_t>` | ResultQueue | same-core (atomic for policy) | relaxed |
 | `_waitResolved` | `std::atomic<bool>` | ResultQueue | same-core (atomic for policy) | release/acquire |
+| `_writerActive` | `std::atomic<bool>` | Esp32StoragePolicy | Core 1 writes | release/acquire |
+| `_writerError` | `std::atomic<bool>` | Esp32StoragePolicy | Core 1 writes | release/acquire |
+| `_writerDone` | `std::atomic<bool>` | Esp32StoragePolicy | Core 1 writes | release/acquire |
+| `_drainRequested` | `std::atomic<bool>` | Esp32StoragePolicy | Core 0 writes | release/acquire |
+| `_writerBytesWritten` | `std::atomic<uint32_t>` | Esp32StoragePolicy | Core 1 writes | relaxed/acquire |
+| `_writerWriteCount` | `std::atomic<uint32_t>` | Esp32StoragePolicy | Core 1 writes | relaxed/acquire |
+| `_writerMaxLatency_ms` | `std::atomic<uint32_t>` | Esp32StoragePolicy | Core 1 writes | relaxed/acquire |
+| `_writerTotalStall_ms` | `std::atomic<uint32_t>` | Esp32StoragePolicy | Core 1 writes | relaxed/acquire |
 
 **Anti-pattern (caused the Core 1 hang bug):**
 ```cpp
@@ -682,7 +698,7 @@ using FooServer = FooServerT<PicoFooPolicy>;
 
 | Template | Policies | Location |
 |----------|----------|----------|
-| `StorageServerT<TPolicy>` | `Esp32StoragePolicy`, `PicoStoragePolicy` | `lib/sfx_storage/storage/` |
+| `StorageServerT<TPolicy>` | `Esp32StoragePolicy`, `PicoStoragePolicy` | `lib/sfx_storage/server/` |
 | `SdCardModuleT<TPolicy>` | `PicoSpiSdPolicy`, `EspSpiSdPolicy`, `EspSdio1BitPolicy`, `EspSdio4BitPolicy` | `lib/sfx_storage/storage/` |
 
 **Current pure arch implementations:**
@@ -742,6 +758,76 @@ private:
 | Template | Parameter | Default | Location |
 |----------|-----------|---------|----------|
 | `UsbRegistryT<MaxSlaves>` | Max slave count | `4` | `lib/sfx_usb/usb/usb_registry.h` |
+
+### 19. Cross-Platform Protocol Sync (MANDATORY)
+
+**When protocol is changed or a new controller/board is added, ALWAYS reflect those changes in ALL client implementations:** the Go CLI (`tools/cli/`), the C# serial library (`app/win32/ScaleFXSerial/`), and the Python test framework (`tests/`). These are parallel implementations of the same protocol — they MUST stay in sync.
+
+**Affected platforms:**
+
+| Platform | Location | Key Files |
+|----------|----------|----------|
+| **Python CLI** | `tests/` | `framework/packets.py`, `framework/commands.py`, `cli/handlers/*.py`, `cli/parsers.py` |
+| **Go CLI** | `tools/cli/` | `packets.go`, `commands.go`, `parsers.go`, `handler_*.go` |
+| **C# Library** | `app/win32/ScaleFXSerial/` | `PacketTypes.cs`, `ErrorCodes.cs`, `Commands/*.cs` |
+
+**Rules:**
+1. **New packet type constant** → add to `packets.py` (Python), `packets.go` (Go), `PacketTypes.cs` (C#)
+2. **New error code** → add to `packets.py`, `packets.go` (+ `PacketTypeName()`/error name map), `ErrorCodes.cs`
+3. **New command** → add builder to `commands.py`, `commands.go`, `Commands/XxxFxCommands.cs`; add CLI handler to `cli/handlers/xxxfx.py` and `handler_xxxfx.go`
+4. **New response parser** → add to `cli/parsers.py` and `parsers.go`; C# parsing is in the Studio app layer
+5. **New controller type** → create handler files in all three platforms; register in CLI startup/dispatch
+6. **Payload format change** → update all parsers and command builders across all three platforms
+
+**Verification:**
+```bash
+# Python
+python -m py_compile tests/framework/packets.py
+python -m py_compile tests/framework/commands.py
+
+# Go CLI
+cd tools/cli && go build .
+
+# C# Library
+dotnet build app/win32/ScaleFXSerial/
+```
+
+### 20. Use VS Code Tasks for Building and Flashing (MANDATORY)
+
+**The workspace defines predefined VS Code tasks in `.vscode/tasks.json` for all build, flash, and verification operations.** AI agents MUST use these tasks via `create_and_run_task` instead of running raw terminal commands with `run_in_terminal`.
+
+**Why:** Tasks use the correct working directory, environment, and parameterization (e.g., controller picker). Running raw `platformio` commands in `run_in_terminal` is fragile — wrong cwd, wrong terminal reuse, wrong shell quoting.
+
+**Available tasks:**
+
+| Task Label | Purpose |
+|------------|--------|
+| `Build Firmware` | Build any controller (prompts for controller) |
+| `Build and Flash Firmware` | Build + flash + verify (prompts for controller) |
+| `Flash Firmware (no build)` | Flash only, skip build |
+| `Build All Controllers` | Build all firmware targets |
+| `Build ScaleFX Studio` | Build the .NET 8 Windows app |
+| `Build Go CLI` | Build the Go CLI binary |
+| `Interactive CLI (Go)` | Launch Go CLI session |
+| `Interactive CLI (Python)` | Launch Python CLI session |
+| `Python Syntax Check` | Compile-check all Python files |
+| `Python Syntax Check (framework only)` | Compile-check framework only |
+
+**Rules:**
+1. **Always use `create_and_run_task`** for build/flash/syntax-check operations — never `run_in_terminal` with raw `platformio` or `dotnet build` commands
+2. **Reference existing tasks by label** — do NOT create ad-hoc tasks with hardcoded controller names (e.g., "Build HubFX"). Use the parameterized tasks ("Build Firmware", "Build and Flash Firmware") which prompt for controller selection. Ad-hoc tasks pollute `tasks.json`.
+3. **No comments in tasks.json** — the file MUST be valid JSON (not JSONC). The `create_and_run_task` tool cannot parse JSON with comments.
+4. **Task labels are stable** — reference them by exact label string
+5. **Controller selection** — tasks using `${input:controller}` will prompt the user; for non-interactive use, create a task with the controller hardcoded in the command
+
+**Anti-pattern:**
+```bash
+# BAD: Raw terminal command — fragile, wrong cwd, bypasses task config
+run_in_terminal: python -m platformio run -e esp32s3 -d controllers/hubfx/esp32s3
+
+# GOOD: Use the predefined task
+create_and_run_task: "Build Firmware"  # prompts for controller
+```
 
 ## Key Architecture Patterns
 
@@ -861,6 +947,51 @@ Query commands are excluded from slave registry since SLAVE_ROUTE only forwards 
 
 **Dependencies:** `pyserial`, `colorama`, `prompt_toolkit>=3.0.0` (see `tests/requirements.txt`)
 
+### Go CLI (`tools/cli/`)
+```
+tools/cli/
+├── main.go              - Entry point, flag parsing
+├── cli.go               - Interactive loop, command dispatch, async packet handler
+├── connection.go        - Serial connection, tag-correlated send/receive, stream waiters
+├── protocol.go          - COBS encode/decode, CRC-8/CRC-16, packet build/parse
+├── packets.go           - Packet type constants, error codes (MUST mirror C++ headers)
+├── commands.go          - Command builders (MUST mirror tests/framework/commands.py)
+├── parsers.go           - Response payload parsers (MUST mirror tests/cli/parsers.py)
+├── output.go            - ANSI colored output, help rendering
+├── helpers.go           - Shared utilities (arg parsing, guards, servo patterns)
+├── format_storage.go    - Storage-related output formatting
+├── handler_core.go      - Core commands (connect, init, status, reboot, etc.)
+├── handler_gunfx.go     - GunFX commands (trigger, servo, smoke)
+├── handler_lightfx.go   - LightFX commands (LED, sequences, servo, landing lights)
+├── handler_gearcontrol.go - GearControl commands (gear, servo, yaw, calibration)
+└── handler_hubfx.go     - HubFX commands (slaves, audio, engine, storage, USB)
+```
+
+**Build:** `cd tools/cli && go build -o scalefx-cli.exe .` (single static binary, zero runtime deps)
+
+### C# Serial Library (`app/win32/ScaleFXSerial/`)
+Protocol layer for the Windows Studio app. Mirrors C++ packet types, error codes, and command builders.
+
+```
+ScaleFXSerial/
+├── PacketTypes.cs             - Packet type constants (MUST mirror C++ headers)
+├── ErrorCodes.cs              - Error code constants with name lookup
+├── ScaleFxConnection.cs       - Serial connection with COBS framing
+├── Protocol/
+│   ├── Packet.cs              - Packet structure and parsing
+│   ├── Cobs.cs                - COBS encode/decode
+│   ├── Crc.cs                 - CRC-8 implementation
+│   └── Endian.cs              - Little-endian helpers
+└── Commands/
+    ├── CoreCommands.cs        - Core protocol commands
+    ├── GunFxCommands.cs       - GunFX command builders
+    ├── LightFxCommands.cs     - LightFX command builders
+    ├── GearControlCommands.cs - GearControl command builders
+    └── HubFxCommands.cs       - HubFX command builders
+```
+
+**Build:** `dotnet build app/win32/ScaleFXSerial/`
+
 ## Packet Type Allocation
 
 | Range | Module | Status | Notes |
@@ -897,4 +1028,5 @@ See the detailed workflow guides in `/instructions/`:
 - **Writing tests:** `06-TEST-SUITE.md`
 - **Updating CLI:** `07-CLI-UPDATES.md`
 - **AudioTools library:** `08-AUDIOTOOLS.md`
+- **Console output schema:** `09-CONSOLE-OUTPUT.md`
 - **System architecture:** `01-ARCHITECTURE.md`

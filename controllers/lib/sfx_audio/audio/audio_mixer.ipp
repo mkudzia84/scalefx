@@ -1282,6 +1282,11 @@ bool AudioMixer<TI2S, TCodec>::startProducerTask(int core, int priority, int sta
         return false;
     }
 
+    // Store config for resumeAudio()
+    _producerCore = core;
+    _producerPriority = priority;
+    _producerStackSize = stackSize;
+
     _producerRunning.store(true, std::memory_order_release);
 
     BaseType_t result = xTaskCreatePinnedToCore(
@@ -1318,6 +1323,39 @@ void AudioMixer<TI2S, TCodec>::stopProducerTask() {
     }
 
     MIXER_LOG("Producer task stopped");
+}
+
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::suspendAudio() {
+    MIXER_LOG("Suspending audio (consumer + producer)...");
+
+    // 1. Stop all playback immediately
+    stopAll(AudioStopMode::Immediate);
+
+    // 2. Stop producer task (WAV decode + mixing on Core 1)
+    stopProducerTask();
+
+    // 3. Suspend consumer task (I2S output on Core 1)
+    if (_consumerTaskHandle) {
+        vTaskSuspend(_consumerTaskHandle);
+    }
+
+    MIXER_LOG("Audio suspended — Core 1 freed");
+}
+
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::resumeAudio() {
+    MIXER_LOG("Resuming audio (consumer + producer)...");
+
+    // 1. Resume consumer task first (higher priority)
+    if (_consumerTaskHandle) {
+        vTaskResume(_consumerTaskHandle);
+    }
+
+    // 2. Restart producer task with stored configuration
+    startProducerTask(_producerCore, _producerPriority, _producerStackSize);
+
+    MIXER_LOG("Audio resumed — consumer + producer restarted");
 }
 
 #endif // SFX_PLATFORM_ESP32

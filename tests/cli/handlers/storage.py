@@ -7,9 +7,8 @@ Used by HubFX handler to expose sd.* and flash.* command groups.
 
 Upload supports two modes:
 - **sync** (default): ACK per chunk with CRC retry.  Reliable but slower.
-- **burst** (--burst): Raw byte streaming.  Bypasses COBS framing for
-  maximum throughput.  Server runs dual-core ring buffer pipeline.
-  MD5 verification at end.
+- **stream** (--stream): Raw binary streaming with segment-based ACKs.
+  Bypasses COBS framing for data plane.  Maximum throughput.
 """
 
 import os
@@ -106,8 +105,8 @@ class StorageHandler(CommandHandlerBase):
                 'Download file or directory',
                 requires_init=True, controller=ct, group=g)),
             f'{p}.upload': (self.cmd_upload, CommandInfo(
-                f'{p}.upload', f'{p}.upload <local_path> <remote_path> [--burst]',
-                'Upload file or directory (--burst for raw stream mode)',
+                f'{p}.upload', f'{p}.upload <local_path> <remote_path> [--stream]',
+                'Upload file or directory (--stream for raw binary streaming)',
                 requires_init=True, controller=ct, group=g)),
             f'{p}.cancel': (self.cmd_cancel, CommandInfo(
                 f'{p}.cancel', f'{p}.cancel',
@@ -174,13 +173,12 @@ class StorageHandler(CommandHandlerBase):
     def cmd_upload(self, args: List[str]):
         if not self._require_init():
             return
-        burst = '--burst' in args
-        if burst:
-            args = [a for a in args if a != '--burst']
+        stream = '--stream' in args
+        args = [a for a in args if a != '--stream']
         if len(args) < 2:
-            self.print_error(f"Usage: {self._prefix}.upload <local_path> <remote_path> [--burst]")
+            self.print_error(f"Usage: {self._prefix}.upload <local_path> <remote_path> [--stream]")
             return
-        self._do_upload_dispatch(args[0], args[1], burst=burst)
+        self._do_upload_dispatch(args[0], args[1], stream=stream)
 
     def cmd_cancel(self, args: List[str]):
         if not self._require_init():
@@ -312,31 +310,31 @@ class StorageHandler(CommandHandlerBase):
             self._do_download(remote_path, local_path)
 
     def _do_upload_dispatch(self, local_path: str, remote_path: str,
-                            burst: bool = False):
+                            stream: bool = False):
         """Route to recursive or single upload based on local type."""
         if os.path.isdir(local_path):
-            self._do_upload_recursive(local_path, remote_path, burst=burst)
+            self._do_upload_recursive(local_path, remote_path, stream=stream)
         else:
-            self._do_upload(local_path, remote_path, burst=burst)
+            self._do_upload(local_path, remote_path, stream=stream)
 
     # --------------------------------------------------------------------- #
-    #  Single-file upload (sync + stream burst)
+    #  Single-file upload (sync + stream)
     # --------------------------------------------------------------------- #
 
     def _do_upload(self, local_path: str, remote_path: str,
-                   burst: bool = False) -> bool:
+                   stream: bool = False) -> bool:
         """
         Upload one file.
 
         Modes:
         - **sync** (default): ACK per chunk, CRC retry.
-        - **burst** (--burst): Raw byte stream (mode=3).  Bypasses COBS
-          framing for maximum throughput (~490 KB/s).  Server runs
-          dual-core ring buffer pipeline.  MD5 verification at end.
+        - **stream** (--stream): Raw binary streaming with segment-based ACKs.
+          Bypasses COBS framing for the data plane.  Server reads raw bytes
+          from UART and sends a COBS-framed FILE_UPLOAD_PROGRESS after each
+          512 KB segment.  Maximum throughput.
 
         Returns True on success.
         """
-        STREAM_BLOCK_SIZE = 65536  # 64 KB raw serial write blocks
 
         # Read local file
         try:
@@ -347,16 +345,13 @@ class StorageHandler(CommandHandlerBase):
             return False
 
         file_size = len(file_data)
-        mode_str = "stream" if burst else "sync"
+        mode_str = "stream" if stream else "sync"
         self.print_info(
             f"Uploading {local_path} ({file_size} bytes) → "
             f"{self._target_name}:{remote_path} [{mode_str}]")
 
         # Begin upload
-        if burst:
-            upload_mode = HubFxStorage.UPLOAD_STREAM
-        else:
-            upload_mode = HubFxStorage.UPLOAD_SYNC
+        upload_mode = HubFxStorage.UPLOAD_STREAM if stream else HubFxStorage.UPLOAD_SYNC
 
         packet = HubFxCommands.file_upload_begin(
             remote_path, file_size,
@@ -372,62 +367,25 @@ class StorageHandler(CommandHandlerBase):
 
         start_time = time.time()
 
+        # Parse stream params from ACK payload (stream mode)
+        segment_size = 524288  # default 512 KB
+        segment_count = 0
+        if stream and response and response.payload and len(response.payload) >= 6:
+            segment_size = int.from_bytes(response.payload[:4], 'little')
+            segment_count = int.from_bytes(response.payload[4:6], 'little')
+            self.print_info(
+                f"Stream: {segment_count} segments × "
+                f"{segment_size // 1024} KB")
+
         try:
-            if burst:
-                # ---- Stream mode: raw bytes, no COBS framing ----
+            if stream:
+                # ---- Stream mode: raw binary, segment-based ACKs ----
+                ok = self._do_upload_stream(
+                    file_data, file_size, segment_size,
+                    segment_count, start_time)
+                if not ok:
+                    return False
                 local_md5 = hashlib.md5(file_data)
-                serial_port = self.conn._serial
-                offset = 0
-
-                while offset < file_size:
-                    if self.cancel_requested:
-                        print()
-                        self.print_warning("Upload interrupted — cancelling...")
-                        # Flush + wait so server exits stream mode
-                        try:
-                            serial_port.flush()
-                        except Exception:
-                            pass
-                        time.sleep(0.5)
-                        cancel_pkt = HubFxCommands.file_upload_cancel()
-                        self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
-                        self.conn.drain()
-                        return False
-
-                    end = min(offset + STREAM_BLOCK_SIZE, file_size)
-                    chunk = file_data[offset:end]
-                    try:
-                        serial_port.write(chunk)
-                    except Exception as e:
-                        print()
-                        self.print_error(f"Serial write error at offset {offset}: {e}")
-                        cancel_pkt = HubFxCommands.file_upload_cancel()
-                        self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
-                        self.conn.drain()
-                        return False
-
-                    offset = end
-                    bar = format_progress_bar(offset, file_size,
-                                              start_time=start_time)
-                    print(f"\r{bar}  ", end='', flush=True)
-
-                # Flush OS TX buffer and wait for wire + server processing.
-                # If any bytes were lost during streaming (UART HW FIFO
-                # overflow), the server's stream inactivity timeout
-                # (STREAM_DATA_TIMEOUT_MS = 5s) will exit stream mode.
-                # The UPLOAD_END timeout (45s) is intentionally longer
-                # so the UPLOAD_END is always processed as a COBS packet.
-                try:
-                    serial_port.flush()
-                except Exception:
-                    pass
-                time.sleep(1.0)
-
-                # Drain any LOG_MESSAGE packets that accumulated in the
-                # OS serial RX buffer during raw streaming.  These are
-                # valid COBS packets, but we must clear them before
-                # sending UPLOAD_END to keep the RX state clean.
-                self.conn.drain()
 
             else:
                 # ---- Sync mode: COBS-framed, ACK per chunk with retry ----
@@ -488,12 +446,6 @@ class StorageHandler(CommandHandlerBase):
         except KeyboardInterrupt:
             print()
             self.print_warning("Upload interrupted — cancelling...")
-            if burst:
-                try:
-                    self.conn._serial.flush()
-                except Exception:
-                    pass
-                time.sleep(0.5)
             cancel_pkt = HubFxCommands.file_upload_cancel()
             self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
             self.conn.drain()
@@ -502,12 +454,25 @@ class StorageHandler(CommandHandlerBase):
         print()  # Newline after progress bar
 
         # End upload — response includes MD5 hash.
-        # Timeout is generous: even for large files, the server's onStreamEnd()
-        # takes <1s (writer drains residual ring buffer data).  If stream data
-        # was lost, the server's 5s stall timeout fires and cleans up, so the
-        # UPLOAD_END will get NACK (NO_UPLOAD_ACTIVE) rather than hang.
+        # Proportional timeout: accounts for remaining OS TX buffer drainage
+        # plus firmware processing (writer drain, file close, MD5 compute).
+        wire_estimate = file_size / (300 * 1024)
+        end_timeout = max(15.0, wire_estimate + 10.0)
         packet = HubFxCommands.file_upload_end()
-        success, response = self.conn.send_expect_ack(packet, timeout=10.0)
+        t_end_send = time.time()
+        self.print_info(
+            f"[dbg] sending UPLOAD_END "
+            f"t+{t_end_send - start_time:.1f}s "
+            f"timeout={end_timeout:.1f}s")
+        success, response = self.conn.send_expect_ack(packet, timeout=end_timeout)
+        t_end_recv = time.time()
+
+        # --- Diagnostic dump on any failure ---
+        if not success:
+            self.print_warning(
+                f"[dbg] UPLOAD_END failed: "
+                f"response={'NACK 0x' + format(response.error_code, '02X') if response and response.is_nack else 'timeout' if response is None else 'type=0x' + format(response.packet_type, '02X')} "
+                f"waited={t_end_recv - t_end_send:.1f}s")
 
         elapsed = time.time() - start_time
         if success:
@@ -527,14 +492,6 @@ class StorageHandler(CommandHandlerBase):
                     self.print_error(
                         f"MD5 MISMATCH! local={local_md5_hex} "
                         f"remote={remote_md5}")
-                # CRC error count (stream mode, bytes 16-17)
-                if len(response.payload) >= 18:
-                    crc_errors = int.from_bytes(
-                        response.payload[16:18], 'little')
-                    if crc_errors > 0:
-                        self.print_warning(
-                            f"Server reported {crc_errors} CRC errors "
-                            f"during transfer")
             return True
         else:
             if response:
@@ -554,6 +511,147 @@ class StorageHandler(CommandHandlerBase):
             self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
             self.conn.drain()
             return False
+
+    # --------------------------------------------------------------------- #
+    #  Stream upload (raw binary, segment-based ACKs)
+    # --------------------------------------------------------------------- #
+
+    def _do_upload_stream(self, file_data: bytes, file_size: int,
+                          segment_size: int, segment_count: int,
+                          start_time: float) -> bool:
+        """
+        Send raw binary data in segments with server flow control.
+
+        After UPLOAD_BEGIN ACK, sends raw bytes (no COBS framing) directly
+        to the serial port.  The server reads Serial.readBytes() in its
+        processStream() loop and sends a COBS-framed FILE_UPLOAD_PROGRESS
+        after each segment boundary.
+
+        Returns True on success (caller sends UPLOAD_END).
+        Returns False on failure (caller should cancel).
+        """
+        SEGMENT_TIMEOUT = 15.0   # seconds to wait for segment ACK
+        WRITE_CHUNK = 32768      # 32 KB per serial write call
+
+        offset = 0
+        seg_idx = 0
+
+        while offset < file_size:
+            if self.cancel_requested:
+                print()
+                self.print_warning("Upload interrupted — cancelling...")
+                cancel_pkt = HubFxCommands.file_upload_cancel()
+                self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
+                self.conn.drain()
+                return False
+
+            # Determine this segment's size
+            remaining = file_size - offset
+            this_seg = min(segment_size, remaining)
+
+            # Send raw binary in write-sized chunks
+            seg_sent = 0
+            while seg_sent < this_seg:
+                chunk_len = min(WRITE_CHUNK, this_seg - seg_sent)
+                chunk = file_data[offset:offset + chunk_len]
+                try:
+                    self.conn._serial.write(chunk)
+                except Exception as e:
+                    print()
+                    self.print_error(f"Serial write failed: {e}")
+                    cancel_pkt = HubFxCommands.file_upload_cancel()
+                    self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
+                    self.conn.drain()
+                    return False
+
+                offset += chunk_len
+                seg_sent += chunk_len
+
+                # Update progress bar
+                bar = format_progress_bar(offset, file_size,
+                                          start_time=start_time)
+                print(f"\r{bar}  ", end='', flush=True)
+
+            # Flush serial TX buffer before waiting for ACK
+            try:
+                self.conn._serial.flush()
+            except Exception:
+                pass
+
+            # Wait for segment ACK from server
+            progress = self._wait_for_upload_progress(SEGMENT_TIMEOUT)
+            if progress is None:
+                print()
+                self.print_error(
+                    f"Timeout waiting for segment ACK "
+                    f"(segment {seg_idx})")
+                cancel_pkt = HubFxCommands.file_upload_cancel()
+                self.conn.send_expect_ack(cancel_pkt, timeout=5.0)
+                self.conn.drain()
+                return False
+
+            # Parse segment ACK payload:
+            # [segment_idx:u16LE][bytes_received:u32LE][ring_fill_pct:u8]
+            p = progress.payload
+            ring_fill = 0
+            if len(p) >= 7:
+                ack_seg_idx = int.from_bytes(p[0:2], 'little')
+                bytes_received = int.from_bytes(p[2:6], 'little')
+                ring_fill = p[6]
+
+                # Display diagnostics
+                bar = format_progress_bar(offset, file_size,
+                                          start_time=start_time)
+                diag = (f"  [seg={ack_seg_idx}/{segment_count} "
+                        f"rx={bytes_received:,}B "
+                        f"ring={ring_fill}%]")
+                print(f"\r{bar}{diag}  ", end='', flush=True)
+
+            # Flow control: throttle based on ring buffer fill level
+            if ring_fill > 50:
+                import time as _time
+                delay_s = (ring_fill - 50) * 0.06  # ~60ms per pct above 50%
+                _time.sleep(delay_s)
+
+            seg_idx += 1
+
+        return True
+
+    def _wait_for_upload_progress(self, timeout: float):
+        """
+        Wait for a FILE_UPLOAD_PROGRESS packet from the server.
+
+        Reads packets until we get the right type or timeout.
+        Dispatches async/log packets to callbacks, stashes
+        other tag-correlated responses.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            response = self.conn.receive(timeout=remaining)
+            if response is None:
+                break
+            if response.packet_type == HubFxPacket.FILE_UPLOAD_PROGRESS:
+                return response
+            # NACK during stream = server error
+            if response.is_nack:
+                code = response.error_code
+                self.print_error(
+                    f"Server error during stream: {HubFxError.name(code)}")
+                return None
+            # Dispatch async packets (log messages, etc.)
+            if response.tag == 0:
+                for cb in self.conn._callbacks:
+                    try:
+                        cb(response)
+                    except Exception:
+                        pass
+            else:
+                # Stash for later
+                self.conn._pending[response.tag] = response
+        return None
 
     # --------------------------------------------------------------------- #
     #  Single-file download
@@ -596,7 +694,7 @@ class StorageHandler(CommandHandlerBase):
     # --------------------------------------------------------------------- #
 
     def _do_upload_recursive(self, local_dir: str, remote_dir: str,
-                             burst: bool = False):
+                             stream: bool = False):
         """Recursively upload a local directory."""
         if not os.path.isdir(local_dir):
             self.print_error(f"Not a directory: {local_dir}")
@@ -641,7 +739,8 @@ class StorageHandler(CommandHandlerBase):
                 break
 
             print(f"  [{i}/{total_files}] {remote_file} ({file_size:,} bytes)")
-            ok = self._do_upload(local_file, remote_file, burst=burst)
+            ok = self._do_upload(local_file, remote_file,
+                                  stream=stream)
             if ok:
                 uploaded += 1
                 uploaded_bytes += file_size
@@ -799,7 +898,19 @@ class StorageHandler(CommandHandlerBase):
         while True:
             response = self.conn._wait_for_tag(tag, timeout=timeout)
             if response is None:
-                self.print_error("Stream timeout")
+                # Diagnostic: dump serial state to understand why no response
+                rx_waiting = 0
+                rx_buf_len = len(self.conn._rx_buffer) if hasattr(self.conn, '_rx_buffer') else -1
+                pending_tags = list(self.conn._pending.keys()) if hasattr(self.conn, '_pending') else []
+                try:
+                    rx_waiting = self.conn._serial.in_waiting
+                except Exception:
+                    pass
+                self.print_error(
+                    f"Stream timeout (waited {timeout:.0f}s, "
+                    f"rx_waiting={rx_waiting}, "
+                    f"rx_buf={rx_buf_len}, "
+                    f"pending_tags={pending_tags})")
                 return None
             if response.is_nack:
                 code = response.error_code

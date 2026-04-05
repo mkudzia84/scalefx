@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ─── ANSI Color Codes ───
@@ -188,6 +189,46 @@ func PrintConnectionStatus(controllerType string, initialized bool, info *InitRe
 		fmt.Printf("  %s%s%s v%s (build %d) — %s\n",
 			color, label, colorReset, info.Version, info.Build, status)
 	}
+}
+
+// ─── Progress Bar ───
+
+// FormatProgressBar builds a progress bar string for inline display.
+// Matches the Python CLI format: [████░░░░] 50% 1234/5678 123.4 KB/s ETA 5s
+func FormatProgressBar(current, total int, startTime time.Time, width int) string {
+	if total <= 0 {
+		return ""
+	}
+	pct := current * 100 / total
+	if pct > 100 {
+		pct = 100
+	}
+	filled := current * width / total
+	if filled > width {
+		filled = width
+	}
+
+	// Build bar: filled blocks + empty blocks
+	bar := strings.Repeat("\u2588", filled) + strings.Repeat("\u2591", width-filled)
+
+	// Size string
+	sizeStr := fmt.Sprintf("%d/%d", current, total)
+
+	// Speed and ETA
+	speedStr := "-- KB/s"
+	etaStr := ""
+	elapsed := time.Since(startTime).Seconds()
+	if elapsed > 0 && current > 0 {
+		speed := float64(current) / elapsed
+		speedStr = fmt.Sprintf("%.1f KB/s", speed/1024)
+		remaining := total - current
+		if speed > 0 {
+			eta := float64(remaining) / speed
+			etaStr = fmt.Sprintf("ETA %.0fs", eta)
+		}
+	}
+
+	return fmt.Sprintf("    [%s] %3d%% %s %s %s", bar, pct, sizeStr, speedStr, etaStr)
 }
 
 // ─── Utilities ───
