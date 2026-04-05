@@ -406,7 +406,7 @@ public static class ResponseFormatters
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // HubFX Module Status (6 bytes)
+    // HubFX Module Status (6-19 bytes)
     // ═══════════════════════════════════════════════════════════════════
 
     public static void FormatHubFxModuleStatus(ReadOnlySpan<byte> data, IConsoleOutput o)
@@ -441,6 +441,41 @@ public static class ResponseFormatters
         }
         else
             o.WriteData("Slaves", "None connected");
+
+        // I2C device status (v2 extended, 13 bytes at offset 6)
+        // i2cDeviceMask bits: 0=PCAL6416A@0x20, 1-6=INA226@0x40-0x45, 7=TAS5825M@0x4C
+        if (data.Length >= 19)
+        {
+            byte i2cMask = data[6];
+            int detected = 0;
+            for (int b = 0; b < 8; b++)
+                if ((i2cMask & (1 << b)) != 0) detected++;
+
+            o.WriteInfo($"── I2C Devices ({detected}/8) ──────────");
+
+            // PCAL6416A
+            bool pcalOK = (i2cMask & 0x01) != 0;
+            o.WriteData("PCAL6416A", $"{(pcalOK ? "OK" : "not found")}  (0x20 GPIO expander)");
+
+            // INA226 monitors with voltage readings
+            for (int i = 0; i < 6; i++)
+            {
+                bool present = (i2cMask & (1 << (i + 1))) != 0;
+                ushort voltage_mV = Endian.ReadU16LE(data, 7 + i * 2);
+                int addr = 0x40 + i;
+                if (present)
+                {
+                    double voltage_V = voltage_mV / 1000.0;
+                    o.WriteData($"INA226[{i}]", $"{voltage_V:F3}V ({voltage_mV} mV)  (0x{addr:X2})");
+                }
+                else
+                    o.WriteData($"INA226[{i}]", $"not found  (0x{addr:X2})");
+            }
+
+            // TAS5825M (reserved bit 7)
+            if ((i2cMask & 0x80) != 0)
+                o.WriteData("TAS5825M", "OK  (0x4C audio codec)");
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════

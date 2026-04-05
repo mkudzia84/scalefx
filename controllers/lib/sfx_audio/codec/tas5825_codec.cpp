@@ -81,11 +81,35 @@ bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
     }
     TAS5825_LOG("I2C probe OK — device ACK at 0x%02X", TAS5825M_I2C_ADDR);
 
-    // Initial reset sequence
+    // Phase 1: Reset → Deep Sleep (PLL off, no I2S clocks needed)
+    // The codec's I2C interface is always accessible when PDN is HIGH,
+    // regardless of power state. Deep Sleep disables the PLL so the
+    // codec doesn't fault from missing clocks during early init.
     selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
-    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_HIZ);  // Enter HIZ mode
-    writeRegister(0x01, 0x11);  // Reset
+    writeRegister(0x01, 0x11);  // Software reset
     SFX_DELAY_MS(5);
+    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_DEEP_SLEEP);
+    SFX_DELAY_MS(5);
+
+    initialized = true;  // I2C path works — codec is reachable and in Deep Sleep
+    TAS5825_LOG("Phase 1 done: codec in Deep Sleep (%.1fkHz, %dV supply). "
+                "Call activate() after I2S clocks are running.",
+                  sampleRate / 1000.0f,
+                  supplyVoltage == TAS5825M_12V ? 12 :
+                  supplyVoltage == TAS5825M_15V ? 15 :
+                  supplyVoltage == TAS5825M_20V ? 20 : 24);
+
+    return true;
+}
+
+bool TAS5825Codec::activate()
+{
+    if (!initialized || !i2c) {
+        TAS5825_LOG("activate() failed — begin() not called or I2C not available");
+        return false;
+    }
+
+    TAS5825_LOG("Phase 2: configuring codec (I2S clocks should be running)...");
 
     // Configure analog gain based on supply voltage
     if (!configureAnalogGain()) {
@@ -93,12 +117,12 @@ bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
         return false;
     }
 
-    // Start device
+    // Set clock source registers (auto-detect)
     selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
-    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_HIZ);
-    SFX_DELAY_MS(5);
+    writeRegister(TAS5825M_REG_CLK_SRC, 0x00);   // Auto clock source
+    writeRegister(TAS5825M_REG_FS_RATE, 0x00);    // Auto FS rate detect
 
-    // Initialize DSP coefficients
+    // Initialize DSP coefficients (still in Deep Sleep — register writes work)
     if (!initDSPCoefficients()) {
         TAS5825_LOG("Failed to initialize DSP coefficients");
         return false;
@@ -109,21 +133,51 @@ bool TAS5825Codec::begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate,
     writeRegister(TAS5825M_REG_SDOUT_SEL, 0x00);  // SDOUT is the DSP output
     writeRegister(TAS5825M_REG_CLK_CFG, 0x02);    // Clock configuration
     writeRegister(TAS5825M_REG_DSP_MISC, 0x09);   // DSP miscellaneous
-    writeRegister(TAS5825M_REG_DIGITAL_VOL, TAS5825M_VOL_0DB);  // 0dB volume
-    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_PLAY);  // Play mode
+    writeRegister(TAS5825M_REG_DIGITAL_VOL, currentVolume);
 
-    // Clear faults
-    selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
+    // Transition: Deep Sleep → HIZ (PLL locks to BCLK)
+    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_HIZ);
+    SFX_DELAY_MS(5);
+
+    // Check if PLL locked (FS_MON should be non-zero)
+    uint8_t fsMon = 0;
+    readRegister(TAS5825M_REG_FS_MON, &fsMon);
+    TAS5825_LOG("After HIZ: FS_MON=0x%02X", fsMon);
+
+    // Transition: HIZ → PLAY
+    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_PLAY);
+    SFX_DELAY_MS(5);
+
+    // Verify PLAY state
+    uint8_t powerState = 0;
+    readRegister(0x68, &powerState);  // POWER_STATE register
+    readRegister(TAS5825M_REG_FS_MON, &fsMon);
+    TAS5825_LOG("After PLAY: POWER_STATE=0x%02X, FS_MON=0x%02X", powerState, fsMon);
+
+    if (fsMon == 0x00) {
+        // Fallback: try Deep Sleep → PLAY directly
+        TAS5825_LOG("PLL not locked via HIZ path — trying Deep Sleep → PLAY...");
+        writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_DEEP_SLEEP);
+        SFX_DELAY_MS(5);
+        writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_PLAY);
+        SFX_DELAY_MS(5);
+        readRegister(0x68, &powerState);
+        readRegister(TAS5825M_REG_FS_MON, &fsMon);
+        TAS5825_LOG("Fallback: POWER_STATE=0x%02X, FS_MON=0x%02X", powerState, fsMon);
+    }
+
+    // Clear any faults from state transitions
     writeRegister(TAS5825M_REG_FAULT_CLEAR, 0x80);
 
-    initialized = true;
-    TAS5825_LOG("Initialized successfully (%.1fkHz, %dV supply)",
-                  sampleRate / 1000.0f,
-                  supplyVoltage == TAS5825M_12V ? 12 :
-                  supplyVoltage == TAS5825M_15V ? 15 :
-                  supplyVoltage == TAS5825M_20V ? 20 : 24);
+    bool inPlay = (powerState == 0x03);
+    if (inPlay) {
+        TAS5825_LOG("Codec activated — PLAY state, FS_MON=0x%02X", fsMon);
+    } else {
+        TAS5825_LOG("WARNING: Codec did not reach PLAY (POWER_STATE=0x%02X, FS_MON=0x%02X). "
+                    "Check I2S clocks on BCLK/LRCLK pins.", powerState, fsMon);
+    }
 
-    return true;
+    return inPlay;
 }
 
 bool TAS5825Codec::setSupplyVoltage(TAS5825M_SupplyVoltage voltage)
@@ -142,20 +196,24 @@ bool TAS5825Codec::setSupplyVoltage(TAS5825M_SupplyVoltage voltage)
                 voltage == TAS5825M_15V ? 15 :
                 voltage == TAS5825M_20V ? 20 : 24);
 
-    // Briefly enter Hi-Z to safely change analog gain
+    // Briefly enter Deep Sleep to safely change analog gain
     selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
-    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_HIZ);
+    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_DEEP_SLEEP);
     SFX_DELAY_MS(2);
 
     supplyVoltage = voltage;
     if (!configureAnalogGain()) {
         TAS5825_LOG("Failed to reconfigure analog gain");
         // Try to recover to play mode
+        writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_HIZ);
+        SFX_DELAY_MS(5);
         writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_PLAY);
         return false;
     }
 
-    // Return to play mode
+    // Return to play mode: Deep Sleep → HIZ (PLL lock) → PLAY
+    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_HIZ);
+    SFX_DELAY_MS(5);
     writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_PLAY);
     writeRegister(TAS5825M_REG_FAULT_CLEAR, 0x80);  // Clear any faults from transition
 
@@ -175,13 +233,15 @@ void TAS5825Codec::reset()
 
     TAS5825_LOG("Resetting codec...");
     selectBookPage(TAS5825M_BOOK_00, TAS5825M_PAGE_00);
-    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_HIZ);
+    writeRegister(TAS5825M_REG_DEVICE_CTRL, TAS5825M_CTRL_DEEP_SLEEP);
     writeRegister(0x01, 0x11);  // Reset
     SFX_DELAY_MS(50);
 
-    // Re-initialize
+    // Re-initialize Phase 1 (Deep Sleep) then Phase 2 (activate with clocks)
     initialized = false;
-    begin(*i2c, sdaPin, sclPin, sampleRate, supplyVoltage);
+    if (begin(*i2c, sdaPin, sclPin, sampleRate, supplyVoltage)) {
+        activate();  // I2S should still be running from before reset
+    }
 }
 
 void TAS5825Codec::setVolume(float volume)
@@ -563,7 +623,9 @@ void TAS5825Codec::reinitialize(uint32_t sample_rate) {
     }
     
     // Full reinitialization with stored I2C pins
-    begin(*i2c, sdaPin, sclPin, sample_rate, supplyVoltage);
+    if (begin(*i2c, sdaPin, sclPin, sample_rate, supplyVoltage)) {
+        activate();  // I2S should still be running
+    }
     
     TAS5825_LOG("Reinitialization complete");
 }

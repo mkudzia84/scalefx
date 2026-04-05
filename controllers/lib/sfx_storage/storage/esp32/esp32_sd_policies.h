@@ -183,7 +183,7 @@ struct EspSdioSdPolicy : public EspSdFileOps {
         int8_t d3  = -1;          ///< 4-bit only
         bool formatIfFailed = true;   ///< Format card if mount fails
         uint8_t maxOpenFiles = 5;     ///< Maximum simultaneous open files
-        uint8_t speed_mhz = 0;       ///< Ignored for SDIO (API compat with SPI)
+        uint8_t speed_mhz = 0;       ///< SDIO freq in MHz (0 = 20 MHz default)
     };
 
     static constexpr SdBusMode BUS_MODE = OneBit ? SdBusMode::SDIO_1BIT
@@ -195,8 +195,11 @@ struct EspSdioSdPolicy : public EspSdFileOps {
             SD_MMC.setPins(cfg.clk, cfg.cmd, cfg.d0, cfg.d1, cfg.d2, cfg.d3);
         }
 
+        // SDMMC_FREQ_DEFAULT = 20 MHz, SDMMC_FREQ_HIGHSPEED = 40 MHz
+        int freq = (cfg.speed_mhz > 0) ? cfg.speed_mhz * 1000
+                                        : SDMMC_FREQ_DEFAULT;
         bool ok = SD_MMC.begin("/sdcard", OneBit, cfg.formatIfFailed,
-                                SDMMC_FREQ_HIGHSPEED, cfg.maxOpenFiles);
+                                freq, cfg.maxOpenFiles);
         if (ok) _fs = &SD_MMC;
         return ok;
     }

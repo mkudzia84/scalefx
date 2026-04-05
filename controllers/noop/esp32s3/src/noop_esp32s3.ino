@@ -23,13 +23,14 @@
  * 
  * GPIO Pin Mapping:
  *   GP1-3:   Servos 0-2
- *   GP4-5:   I2C SDA/SCL
- *   GP6-9:   Servos 3-6
+ *   GP6-7:   Servos 3-4
+ *   GP8:     I2C SDA
+ *   GP9:     I2C SCL
  *   GP48:    Onboard RGB LED (connection indicator)
  *
  * Servo Mapping:
  *   0: GP1   1: GP2   2: GP3   3: GP6
- *   4: GP7   5: GP8   6: GP9
+ *   4: GP7
  *
  * Architecture:
  *   - SfxServer: Common server boilerplate (serial, indicators, core protocol)
@@ -46,18 +47,18 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.1.0"
-#define BUILD_NUMBER 1
+#define BUILD_NUMBER 3
 
 // ============================================================================
 //  PIN CONFIGURATION
 // ============================================================================
 
-const uint8_t NUM_SERVOS = 7;
-const uint8_t SERVO_PINS[NUM_SERVOS] = { 1, 2, 3, 6, 7, 8, 9 };
+const uint8_t NUM_SERVOS = 5;
+const uint8_t SERVO_PINS[NUM_SERVOS] = { 1, 2, 3, 6, 7 };
 
 // I2C pins
-const uint8_t PIN_SDA = 4;
-const uint8_t PIN_SCL = 5;
+const uint8_t PIN_SDA = 8;
+const uint8_t PIN_SCL = 9;
 
 // Indicator LEDs
 #define PIN_LED_CONNECTION  48   // Onboard RGB LED (connection status)
@@ -210,7 +211,7 @@ void setup() {
     servoHandler.begin(&Serial, server.deviceName());
 
     // STATUS: Report servo positions
-    // Wire format (14 bytes): [servo0_us:u16LE] ... [servo6_us:u16LE]
+    // Wire format (10 bytes): [servo0_us:u16LE] ... [servo4_us:u16LE]
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
         if (maxLen < NUM_SERVOS * 2) return 0;
         for (uint8_t i = 0; i < NUM_SERVOS; i++) {

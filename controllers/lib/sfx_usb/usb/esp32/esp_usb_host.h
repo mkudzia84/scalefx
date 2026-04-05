@@ -194,6 +194,10 @@ private:
     uint32_t _lastResetTimestamp_ms = 0; // millis() of last bus reset
     bool _autoRecovery = true;           // Auto-recovery enabled by default
 
+    /// Common CDC session open logic — shared by _processOpenRequest and reopenCdcDevice.
+    /// Returns assigned devAddr on success, 0 on failure.
+    uint8_t _openCdcSession(uint16_t vid, uint16_t pid, uint32_t timeout_ms);
+
     int _findSlotByHandle(void* cdcHandle) const;
     int _allocateSlot();
 };

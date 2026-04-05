@@ -5,7 +5,7 @@
  */
 
 #include "led_event_seq.h"
-#include "led_control.h"
+#include "led_control.h"  // ILedOutput interface
 
 // ============================================================================
 // Constructor / Destructor

@@ -69,6 +69,15 @@ public:
      * @brief Get event name for debugging
      */
     virtual const char* name() const = 0;
+
+    /**
+     * @brief Get numeric event type ID (matches LightFxEventType protocol constants)
+     *
+     * Defined independently of lightfx.h to avoid coupling the animation
+     * library to the serial protocol layer.  Values: ON=0, OFF=1, FLASH=2,
+     * FADE_IN=3, FADE_OUT=4, FADING=5, BEACON=6.
+     */
+    virtual uint8_t typeId() const = 0;
 };
 
 // ============================================================================
@@ -116,6 +125,7 @@ public:
     bool isComplete() const override { return _complete; }
     uint32_t duration() const override { return _durationMs; }
     const char* name() const override { return "LedOn"; }
+    uint8_t typeId() const override { return 0; }  // ON
 
 private:
     uint32_t _startTime = 0;
@@ -161,6 +171,7 @@ public:
     bool isComplete() const override { return _complete; }
     uint32_t duration() const override { return _durationMs; }
     const char* name() const override { return "LedOff"; }
+    uint8_t typeId() const override { return 1; }  // OFF
 
 private:
     uint32_t _startTime = 0;
@@ -210,6 +221,7 @@ public:
     bool isComplete() const override { return _complete; }
     uint32_t duration() const override { return _durationMs; }
     const char* name() const override { return "LedFlashing"; }
+    uint8_t typeId() const override { return 2; }  // FLASH
     
     void setInterval(uint16_t intervalMs) { _intervalMs = intervalMs; }
     uint16_t interval() const { return _intervalMs; }
@@ -261,6 +273,7 @@ public:
     bool isComplete() const override { return _complete; }
     uint32_t duration() const override { return _durationMs; }
     const char* name() const override { return "LedFadeIn"; }
+    uint8_t typeId() const override { return 3; }  // FADE_IN
 
 private:
     uint32_t _startTime = 0;
@@ -307,6 +320,7 @@ public:
     bool isComplete() const override { return _complete; }
     uint32_t duration() const override { return _durationMs; }
     const char* name() const override { return "LedFadeOut"; }
+    uint8_t typeId() const override { return 4; }  // FADE_OUT
 
 private:
     uint32_t _startTime = 0;
@@ -367,6 +381,7 @@ public:
     bool isComplete() const override { return _complete; }
     uint32_t duration() const override { return _durationMs; }
     const char* name() const override { return "LedFading"; }
+    uint8_t typeId() const override { return 5; }  // FADING
     
     void setCycleDuration(uint32_t durationMs) { _cycleDurationMs = durationMs; }
     uint32_t cycleDuration() const { return _cycleDurationMs; }
@@ -453,6 +468,7 @@ public:
     bool isComplete() const override { return _complete; }
     uint32_t duration() const override { return _durationMs; }
     const char* name() const override { return "LedBeacon"; }
+    uint8_t typeId() const override { return 6; }  // BEACON
     
     void setCycleDuration(uint32_t durationMs) { _cycleDurationMs = durationMs; }
     uint32_t cycleDuration() const { return _cycleDurationMs; }

@@ -90,18 +90,18 @@ void SfxServer::begin(const char* prefix, const char* version,
     });
 #endif
     // ESP32: no BOOTSEL callback — CoreCommandServer sends NACK NOT_SUPPORTED
+
+    // Initialize command router with core handler — MUST happen in begin()
+    // so core commands (INIT, IDENTIFY, STATUS, etc.) work even if no module
+    // handlers are registered (e.g., during feature-flagged board bring-up).
+    _router.begin(&Serial, [this](uint8_t code, uint8_t /* type */) {
+        _core.sendNack(code);
+    });
+    _router.addHandler(&_core);  // Priority 1: core/system commands
+    _routerInitialized = true;
 }
 
 void SfxServer::addModuleHandler(ICommandHandler* handler) {
-    // Lazy-init: first call sets up the router and adds core handler
-    if (!_routerInitialized) {
-        _router.begin(&Serial, [this](uint8_t code, uint8_t /* type */) {
-            _core.sendNack(code);
-        });
-        _router.addHandler(&_core);  // Priority 1: core/system commands
-        _routerInitialized = true;
-    }
-
     // Add module handler (supports multiple calls for multi-domain servers)
     if (handler) {
         _router.addHandler(handler);

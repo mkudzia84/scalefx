@@ -38,7 +38,7 @@ Uses `SfxServer` component for common server boilerplate (serial init, device na
 
 Binary status response (0xF4) payload:
 - Core header (20 bytes): `[counter:u32LE][uptime:u32LE][freeRam:u32LE][lastActivity_ms:u32LE][keepaliveCount:u32LE]`
-- Module data (14 bytes): `[servo0_us:u16LE] ... [servo6_us:u16LE]`
+- Module data (10 bytes): `[servo0_us:u16LE] ... [servo4_us:u16LE]`
 
 ## Hardware
 
@@ -56,12 +56,10 @@ Binary status response (0xF4) payload:
 | GP1 | Servo 0 |
 | GP2 | Servo 1 |
 | GP3 | Servo 2 |
-| GP4 | I2C SDA |
-| GP5 | I2C SCL |
 | GP6 | Servo 3 |
 | GP7 | Servo 4 |
-| GP8 | Servo 5 |
-| GP9 | Servo 6 |
+| GP8 | I2C SDA |
+| GP9 | I2C SCL |
 | GP48 | Connection LED |
 
 ## Building

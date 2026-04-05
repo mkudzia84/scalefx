@@ -152,20 +152,17 @@ public:
     /**
      * @brief Add a module-specific command handler to the router
      *
-     * On first call, initializes the CommandRouter and registers the
-     * CoreCommandServer at priority 1. Each subsequent call adds another
-     * module handler in the order called. Supports multiple handlers for
+     * Adds a module handler after the CoreCommandServer (registered
+     * automatically by begin()). Supports multiple handlers for
      * multi-domain controllers (e.g., HubFX with audio, engine, storage).
      *
      * Handler chain (example with 3 module handlers):
-     *   1. CoreCommandServer (auto-registered)
+     *   1. CoreCommandServer (auto-registered by begin())
      *   2. First addModuleHandler() call
      *   3. Second addModuleHandler() call
      *   4. Third addModuleHandler() call
      *
-     * Must be called after all callbacks are registered.
-     *
-     * @param handler  Module-specific ICommandHandler (nullptr for core-only init)
+     * @param handler  Module-specific ICommandHandler (non-null)
      */
     void addModuleHandler(ICommandHandler* handler);
 

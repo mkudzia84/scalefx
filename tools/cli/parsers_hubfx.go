@@ -8,8 +8,10 @@ import (
 )
 
 func parseHubFXStatus(data []byte) {
-	// Wire format: [flags:u8][slaveMask:u8][loop1Count:u32LE] = 6 bytes
+	// Wire format v1: [flags:u8][slaveMask:u8][loop1Count:u32LE] = 6 bytes
+	// Wire format v2: + [i2cDeviceMask:u8][ina226_mV[0..5]:u16LE x 6] = 19 bytes
 	// Flags bits: 0=core1Ready, 1=audioInit, 2=flashReady, 3=usbHostReady, 4=sdCardReady
+	// I2C mask bits: 0=PCAL6416A@0x20, 1-6=INA226@0x40-0x45, 7=TAS5825M@0x4C
 	if len(data) < 2 {
 		fmt.Printf("  Hub data: %d bytes\n", len(data))
 		return
@@ -102,6 +104,53 @@ func parseHubFXStatus(data []byte) {
 		}
 	} else {
 		fmt.Printf("  Slaves:    %s\n", colorize(colorYellow, "None connected"))
+	}
+
+	// I2C device status (v2 extended, 13 bytes at offset 6)
+	if len(data) >= 19 {
+		i2cMask := data[6]
+		detected := 0
+		for b := 0; b < 8; b++ {
+			if i2cMask&(1<<b) != 0 {
+				detected++
+			}
+		}
+		fmt.Printf("\n  %s━━━ I2C Devices (%d/8) ━━━%s\n", colorCyan, detected, colorReset)
+
+		// PCAL6416A
+		pcalOK := i2cMask&0x01 != 0
+		pcalColor := colorRed
+		pcalText := "not found"
+		if pcalOK {
+			pcalColor = colorGreen
+			pcalText = "OK"
+		}
+		fmt.Printf("  PCAL6416A: %s%s%s  (0x20 GPIO expander)\n", pcalColor, pcalText, colorReset)
+
+		// INA226 monitors with voltage readings
+		for i := 0; i < 6; i++ {
+			present := i2cMask&(1<<(i+1)) != 0
+			voltage_mV := ReadU16LE(data, 7+i*2)
+			addr := 0x40 + i
+			if present {
+				voltage_V := float64(voltage_mV) / 1000.0
+				fmt.Printf("  INA226[%d]: %s%.3fV (%d mV)%s  (0x%02X)\n",
+					i, colorGreen, voltage_V, voltage_mV, colorReset, addr)
+			} else {
+				fmt.Printf("  INA226[%d]: %snot found%s  (0x%02X)\n",
+					i, colorRed, colorReset, addr)
+			}
+		}
+
+		// TAS5825M (reserved bit 7)
+		if i2cMask&0x80 != 0 {
+			fmt.Printf("  TAS5825M:  %sOK%s  (0x4C audio codec)\n", colorGreen, colorReset)
+		}
+	} else if len(data) >= 7 {
+		i2cMask := data[6]
+		if i2cMask != 0 {
+			fmt.Printf("\n  I2C mask:  0x%02X\n", i2cMask)
+		}
 	}
 }
 

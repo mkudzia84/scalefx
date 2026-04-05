@@ -1,15 +1,31 @@
 """HubFX response parsers — status display and feature extraction."""
 
 from typing import Optional
-from tests.framework.protocol import read_u32_le
+from tests.framework.protocol import read_u16_le, read_u32_le
 from ..base import Fore, Style
+
+# I2C device mask bit definitions (byte 6 of module status)
+_I2C_DEVICE_NAMES = {
+    0: ("PCAL6416A", "0x20", "GPIO expander"),
+    1: ("INA226[0]", "0x40", "Power monitor"),
+    2: ("INA226[1]", "0x41", "Power monitor"),
+    3: ("INA226[2]", "0x42", "Power monitor"),
+    4: ("INA226[3]", "0x43", "Power monitor"),
+    5: ("INA226[4]", "0x44", "Power monitor"),
+    6: ("INA226[5]", "0x45", "Power monitor"),
+    7: ("TAS5825M",  "0x4C", "Audio codec"),
+}
 
 
 def _parse_hubfx_status(data: bytes) -> None:
-    """Parse HubFX ESP32-S3 module status data (6 bytes).
+    """Parse HubFX ESP32-S3 module status data (6-19 bytes).
 
-    Wire format:
+    Wire format (v1 — 6 bytes):
       [flags:u8][slaveMask:u8][loop1Count:u32LE]
+
+    Wire format (v2 — 19 bytes, backward compatible):
+      [flags:u8][slaveMask:u8][loop1Count:u32LE]
+      [i2cDeviceMask:u8][ina226_mV[0..5]:u16LE x 6]
 
     Flags byte:
       bit 0: core1Ready
@@ -17,6 +33,11 @@ def _parse_hubfx_status(data: bytes) -> None:
       bit 2: flashReady
       bit 3: usbHostReady
       bit 4: sdCardReady
+
+    I2C device mask byte:
+      bit 0: PCAL6416A @ 0x20
+      bit 1-6: INA226 @ 0x40-0x45
+      bit 7: TAS5825M @ 0x4C (reserved)
     """
     if len(data) < 2:
         print(f"  Hub data:  {data.hex()} ({len(data)} bytes)")
@@ -74,6 +95,42 @@ def _parse_hubfx_status(data: bytes) -> None:
             print(f"    {name}: {color}{status}{Style.RESET_ALL}")
     else:
         print(f"  Slaves:    {Fore.YELLOW}None connected{Style.RESET_ALL}")
+
+    # I2C device status (v2 extended, 13 bytes at offset 6)
+    if len(data) >= 19:
+        i2c_mask = data[6]
+        detected = sum(1 for b in range(8) if i2c_mask & (1 << b))
+        print(f"\n  {Fore.CYAN}━━━ I2C Devices ({detected}/8) ━━━{Style.RESET_ALL}")
+
+        # PCAL6416A
+        pcal_ok = bool(i2c_mask & 0x01)
+        pcal_color = Fore.GREEN if pcal_ok else Fore.RED
+        pcal_text = "OK" if pcal_ok else "not found"
+        print(f"  PCAL6416A: {pcal_color}{pcal_text}{Style.RESET_ALL}  (0x20 GPIO expander)")
+
+        # INA226 monitors with voltage readings
+        for i in range(6):
+            present = bool(i2c_mask & (1 << (i + 1)))
+            voltage_mV = read_u16_le(data, 7 + i * 2)
+            addr = 0x40 + i
+            if present:
+                voltage_V = voltage_mV / 1000.0
+                color = Fore.GREEN
+                text = f"{voltage_V:.3f}V ({voltage_mV} mV)"
+            else:
+                color = Fore.RED
+                text = "not found"
+            print(f"  INA226[{i}]: {color}{text}{Style.RESET_ALL}  (0x{addr:02X})")
+
+        # TAS5825M (reserved bit 7)
+        tas_ok = bool(i2c_mask & 0x80)
+        if tas_ok:
+            print(f"  TAS5825M:  {Fore.GREEN}OK{Style.RESET_ALL}  (0x4C audio codec)")
+    elif len(data) >= 7:
+        # Partial I2C data (just mask, no voltages)
+        i2c_mask = data[6]
+        if i2c_mask:
+            print(f"\n  I2C mask:  0x{i2c_mask:02X}")
 
 
 def extract_hubfx_features(payload: bytes) -> Optional[dict]:

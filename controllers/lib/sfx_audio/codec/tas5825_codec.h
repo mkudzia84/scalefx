@@ -50,9 +50,15 @@
 #define TAS5825M_PAGE_00    0x00
 
 // Device Control Register Values
-#define TAS5825M_CTRL_HIZ         0x02  // High-Z mode (standby)
+#define TAS5825M_CTRL_DEEP_SLEEP  0x00  // Deep Sleep (PLL off, no clocks needed)
+#define TAS5825M_CTRL_HIZ         0x02  // High-Z mode (PLL active, needs I2S clocks)
 #define TAS5825M_CTRL_PLAY        0x03  // Play mode
 #define TAS5825M_CTRL_MUTE        0x11  // Mute
+
+// Clock registers (TAS5825M datasheet §7.5.2)
+#define TAS5825M_REG_CLK_SRC      0x33  // Clock source (0x00 = auto)
+#define TAS5825M_REG_FS_RATE      0x34  // FS rate detect (0x00 = auto)
+#define TAS5825M_REG_FS_MON       0x37  // Sample rate monitor (read-only)
 
 // Digital Volume Values (0x4C register)
 #define TAS5825M_VOL_MUTE    0x00  // Mute (-100dB)
@@ -101,16 +107,32 @@ public:
     TAS5825Codec& operator=(TAS5825Codec&&) = delete;
 
     /**
-     * @brief Initialize the TAS5825M codec with I2C
+     * @brief Phase 1: Initialize I2C, probe codec, reset, enter Deep Sleep.
+     *
+     * Puts the codec in Deep Sleep (PLL off) — safe to call before I2S
+     * clocks are running. Does NOT enter PLAY mode.
+     * Call activate() after I2S clocks are running to transition to PLAY.
+     *
      * @param wire I2C interface (Wire or Wire1)
      * @param sda I2C SDA pin
      * @param scl I2C SCL pin
      * @param sample_rate Sample rate in Hz (default: AUDIO_SAMPLE_RATE)
      * @param supply_voltage Supply voltage configuration (default: 20V)
-     * @return true if initialization successful
+     * @return true if I2C probe and reset successful
      */
     bool begin(TwoWire& wire, int sda, int scl, uint32_t sample_rate = AUDIO_SAMPLE_RATE,
                TAS5825M_SupplyVoltage supply_voltage = TAS5825M_20V);
+
+    /**
+     * @brief Phase 2: Configure registers and transition to PLAY mode.
+     *
+     * MUST be called AFTER I2S BCLK/LRCLK are running on the GPIO pins.
+     * Configures analog gain, clock registers, DSP coefficients, then
+     * transitions Deep Sleep → HIZ (PLL locks to BCK) → PLAY.
+     *
+     * @return true if codec entered PLAY state successfully
+     */
+    bool activate();
 
     // Codec interface implementation
     bool begin(uint32_t sample_rate = AUDIO_SAMPLE_RATE);

@@ -414,9 +414,9 @@ If `esp_get_free_heap_size()` returns ~300–370 KB instead of ~8 MB:
 
 | Pin | GPIO | Function | Connected To |
 |-----|------|----------|-------------|
-| I2S DOUT | 41 | I2S serial data | TAS5825M SDIN |
-| I2S BCLK | 42 | I2S bit clock | TAS5825M SCK |
-| I2S LRCLK | 14 | I2S word select | TAS5825M FSYNC |
+| I2S DOUT | 1 | I2S serial data | TAS5825M SDIN |
+| I2S BCLK | 4 | I2S bit clock | TAS5825M SCK |
+| I2S LRCLK | 3 | I2S word select | TAS5825M FSYNC |
 | I2C SDA | 8 | I2C data | TAS5825M SDA |
 | I2C SCL | 9 | I2C clock | TAS5825M SCL |
 | SD CMD | 38 | SD_MMC command | MicroSD CMD |
@@ -434,9 +434,9 @@ It receives audio data over I2S and is configured/controlled via I2C.
 ```
   ESP32-S3 DevKitC-1                TAS5825M Breakout
   ═══════════════════                ═════════════════
-  GPIO 41 (I2S DOUT) ──────────── SDIN   (serial audio data)
-  GPIO 42 (I2S BCLK) ──────────── SCK    (bit clock)
-  GPIO 14 (I2S LRCLK) ─────────── FSYNC  (frame sync / word select)
+  GPIO  1 (I2S DOUT) ──────────── SDIN   (serial audio data)
+  GPIO  4 (I2S BCLK) ──────────── SCK    (bit clock)
+  GPIO  3 (I2S LRCLK) ─────────── FSYNC  (frame sync / word select)
   GPIO  8 (I2C SDA)  ──────────── SDA    (I2C data)
   GPIO  9 (I2C SCL)  ──────────── SCL    (I2C clock)
   3.3V ────────────────────────── DVDD   (digital supply, 3.3V)
@@ -459,10 +459,16 @@ It receives audio data over I2S and is configured/controlled via I2C.
 - **I2C pull-ups**: 4.7kΩ to 3.3V on SDA and SCL (some breakout boards include these)
 
 **Supply voltage in firmware:**
-The supply voltage is configured in `hubfx_esp32s3.ino` to set the correct analog gain:
+The supply voltage is configured in `hubfx_esp32s3.ino` to set the correct analog gain.
+The codec uses a two-phase init: `begin()` probes I2C and enters Deep Sleep (safe before
+I2S clocks), then `activate()` configures registers and transitions to PLAY after I2S starts:
 ```cpp
+// Phase 1: before I2S clocks
 TAS5825Codec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
                                AUDIO_SAMPLE_RATE, TAS5825M_12V);
+// ... start I2S ...
+// Phase 2: after I2S BCLK/LRCLK running
+TAS5825Codec::instance().activate();
 ```
 Change `TAS5825M_12V` to match your PVDD: `TAS5825M_12V`, `TAS5825M_15V`, `TAS5825M_20V`, or `TAS5825M_24V`.
 

@@ -482,17 +482,23 @@ void EspUsbHost::_handleNewDevice(void* usbDevHandle) {
 }
 
 /**
- * Called from the dedicated open task (NOT USB context).
- * Performs the actual cdc_acm_host_open() which is safe here.
+ * Common CDC session open logic.
+ *
+ * Allocates a tracking slot, creates an RX stream buffer, calls
+ * cdc_acm_host_open() on the data interface (interface 1), configures
+ * line coding, and registers the device in the shared state tracker.
+ *
+ * @param vid         USB Vendor ID
+ * @param pid         USB Product ID
+ * @param timeout_ms  Connection timeout for cdc_acm_host_open()
+ * @return Assigned device address on success, 0 on failure
  */
-void EspUsbHost::_processOpenRequest(uint16_t vid, uint16_t pid) {
-    SFX_LOG_INFO("[UsbHost] Processing CDC open: VID=%04X PID=%04X", vid, pid);
-
+uint8_t EspUsbHost::_openCdcSession(uint16_t vid, uint16_t pid, uint32_t timeout_ms) {
     // Pre-allocate a tracking slot (used as user_arg in CDC callbacks)
     int slotIdx = _allocateSlot();
     if (slotIdx < 0) {
         SFX_LOG_WARN("[UsbHost] No free CDC slot (max=%d)", USB_HOST_MAX_CDC_DEVICES);
-        return;
+        return 0;
     }
 
     // Create RX stream buffer for this device
@@ -500,13 +506,13 @@ void EspUsbHost::_processOpenRequest(uint16_t vid, uint16_t pid) {
     if (!rxStream) {
         SFX_LOG_ERROR("[UsbHost] Failed to create RX stream buffer for slot %d", slotIdx);
         _slots[slotIdx] = {};
-        return;
+        return 0;
     }
     _slots[slotIdx].rxStream = (void*)rxStream;
 
     // Configure CDC device: data callback, event callback, buffer sizes
     const cdc_acm_host_device_config_t dev_config = {
-        .connection_timeout_ms = 5000,
+        .connection_timeout_ms = timeout_ms,
         .out_buffer_size = 512,
         .in_buffer_size = 512,
         .event_cb = cdcEventCb,
@@ -514,20 +520,36 @@ void EspUsbHost::_processOpenRequest(uint16_t vid, uint16_t pid) {
         .user_arg = (void*)(uintptr_t)slotIdx,  // Slot index for callback identification
     };
 
-    // Attempt to open the device as CDC-ACM (safe — we're in the open task, not USB context)
+    // Open the Data Interface (interface 1) directly instead of the Communication
+    // Interface (interface 0).  Standard CDC-ACM open on interface 0 claims the
+    // notification interrupt-IN endpoint in addition to the two bulk endpoints,
+    // consuming 4 HCD channels per device (EP0 + notif IN + bulk IN + bulk OUT).
+    // The ESP32-S3 DWC2 OTG only has 8 hardware channels total.  Through a hub
+    // (2 channels: EP0 + hub status INT), two standard CDC devices would need
+    // 2 + 2×4 = 10 channels — exceeding the hardware limit.
+    //
+    // By opening interface 1 (Data class, not CDC Communication class), the
+    // CDC-ACM driver falls through to the "find 2 bulk endpoints" path and
+    // opens only bulk IN + bulk OUT — 3 channels per device (EP0 + bulk×2).
+    // Total for hub + 2 devices: 2 + 2×3 = 8 channels — fits exactly.
+    //
+    // Trade-off: CDC class requests (SET_LINE_CODING, SET_CONTROL_LINE_STATE)
+    // return ESP_ERR_NOT_SUPPORTED since CDC functional descriptors are absent
+    // on the data interface.  This is harmless — Pico CDC is USB-native (no
+    // physical UART), so baud rate and modem control lines are meaningless.
     cdc_acm_dev_hdl_t cdc_handle = nullptr;
-    esp_err_t err = cdc_acm_host_open(vid, pid, 0, &dev_config, &cdc_handle);
+    esp_err_t err = cdc_acm_host_open(vid, pid, 1, &dev_config, &cdc_handle);
     if (err != ESP_OK) {
-        _state.stats.enum_cdc_open_failures++;
-        SFX_LOG_WARN("[UsbHost] CDC-ACM open failed (VID=%04X PID=%04X iface=0): %s (cdc_open_failures=%lu)",
-                     vid, pid, esp_err_to_name(err),
-                     (unsigned long)_state.stats.enum_cdc_open_failures);
+        SFX_LOG_WARN("[UsbHost] CDC open failed VID=%04X PID=%04X iface=1: %s",
+                     vid, pid, esp_err_to_name(err));
         vStreamBufferDelete(rxStream);
         _slots[slotIdx] = {};
-        return;
+        return 0;
     }
 
     // Configure line coding: 1Mbps 8N1 (ScaleFX binary protocol)
+    // Note: returns ESP_ERR_NOT_SUPPORTED when opened via data interface (no
+    // CDC functional descriptors).  Non-fatal — Pico CDC ignores baud rate.
     cdc_acm_line_coding_t line_coding = {
         .dwDTERate   = 1000000,   // 1 Mbps baud rate
         .bCharFormat = 0,         // 1 stop bit
@@ -536,11 +558,10 @@ void EspUsbHost::_processOpenRequest(uint16_t vid, uint16_t pid) {
     };
     err = cdc_acm_host_line_coding_set(cdc_handle, &line_coding);
     if (err != ESP_OK) {
-        SFX_LOG_WARN("[UsbHost] Failed to set line coding: %s", esp_err_to_name(err));
-        // Non-fatal — some devices may not support SET_LINE_CODING
+        SFX_LOG_DEBUG("[UsbHost] line_coding_set: %s (expected for data-interface open)", esp_err_to_name(err));
     }
 
-    // Set DTR + RTS control lines (required by some CDC devices)
+    // Set DTR + RTS control lines — also expected to return NOT_SUPPORTED
     cdc_acm_host_set_control_line_state(cdc_handle, true, true);
 
     // Assign a sequential device address (matches TinyUSB behavior on Pico)
@@ -558,11 +579,29 @@ void EspUsbHost::_processOpenRequest(uint16_t vid, uint16_t pid) {
     }
 
     const char* devName = knownDeviceName(vid, pid);
-    SFX_LOG_INFO("[UsbHost] CDC device opened: slot=%d addr=%d VID=%04X PID=%04X%s%s",
+    SFX_LOG_INFO("[UsbHost] CDC session opened: slot=%d addr=%d VID=%04X PID=%04X%s%s",
                  slotIdx, devAddr, vid, pid,
                  devName ? " — " : "", devName ? devName : "");
 
-    // Fire mount callback (notifies SlaveServer for registration)
+    return devAddr;
+}
+
+/**
+ * Called from the dedicated open task (NOT USB context).
+ * Performs the actual cdc_acm_host_open() which is safe here.
+ */
+void EspUsbHost::_processOpenRequest(uint16_t vid, uint16_t pid) {
+    SFX_LOG_INFO("[UsbHost] Processing CDC open: VID=%04X PID=%04X", vid, pid);
+
+    uint8_t devAddr = _openCdcSession(vid, pid, 5000);
+    if (devAddr == 0) {
+        _state.stats.enum_cdc_open_failures++;
+        SFX_LOG_WARN("[UsbHost] CDC-ACM open failed VID=%04X PID=%04X (cdc_open_failures=%lu)",
+                     vid, pid, (unsigned long)_state.stats.enum_cdc_open_failures);
+        return;
+    }
+
+    // Fire mount callback (notifies SlaveServer for IDENTIFY + registration)
     if (_state.mountCallback) _state.mountCallback(devAddr, vid, pid);
 }
 
@@ -666,6 +705,7 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
 void EspUsbHost::_handleNewDevice(void*) {}
 void EspUsbHost::_handleCdcData(int, const uint8_t*, size_t) {}
 void EspUsbHost::_handleCdcEvent(int, int) {}
+uint8_t EspUsbHost::_openCdcSession(uint16_t, uint16_t, uint32_t) { return 0; }
 
 #endif // ESP_USB_HAS_CDC_ACM
 

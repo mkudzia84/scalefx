@@ -29,8 +29,8 @@
 // Maximum number of events in a sequence
 #define LED_EVENT_SEQ_MAX 24
 
-// Forward declaration
-class LedControl;
+// Forward declaration — ILedOutput is defined in led_control.h
+class ILedOutput;
 
 // ============================================================================
 // LedEventSeq Class
@@ -139,18 +139,19 @@ public:
     // ========================================================================
 
     /**
-     * @brief Attach to a LedControl for automatic PWM output
-     * @param led Pointer to LedControl instance
+     * @brief Attach to an ILedOutput for automatic PWM output.
+     * Accepts any LedControlT<TDriver> (they all implement ILedOutput).
+     * @param led Pointer to ILedOutput instance
      */
-    void attachLed(LedControl* led) { _led = led; }
+    void attachLed(ILedOutput* led) { _led = led; }
 
     /**
-     * @brief Detach from LedControl
+     * @brief Detach from the LED output
      */
     void detachLed() { _led = nullptr; }
 
     /**
-     * @brief Check if attached to a LedControl
+     * @brief Check if attached to an LED output
      */
     bool hasLed() const { return _led != nullptr; }
 
@@ -162,7 +163,7 @@ private:
     uint8_t _currentIndex = 0;
     bool _playing = false;
     uint32_t _loopCount = 0;
-    LedControl* _led = nullptr;
+    ILedOutput* _led = nullptr;
 };
 
 #endif // LED_EVENT_SEQ_H
