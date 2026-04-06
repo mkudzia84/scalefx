@@ -61,8 +61,9 @@
 #define EXPANDER_LED_DRV_H
 
 #include <Arduino.h>
-// Default expander — change this include (and the aliases at bottom) to swap HW
+#include "../gpio/gpio_expander.h"
 #include "../gpio/pcal6416a.h"
+#include "../gpio/aw9523b.h"
 
 // ============================================================================
 // BAM Configuration
@@ -359,5 +360,12 @@ using ExpanderBam = ExpanderBamT<PCAL6416A>;
 
 /// Per-pin LED driver for PCAL6416A (current board)
 using ExpanderLedDriver = ExpanderLedDriverT<PCAL6416A>;
+
+/// BAM engine for AW9523B (for GPIO-mode pins needing software BAM — rare,
+/// since AW9523B has hardware PWM; prefer HwPwmLedDriverT<AW9523B> instead)
+using AW9523BBam = ExpanderBamT<AW9523B>;
+
+/// Per-pin software BAM driver for AW9523B (prefer HwPwmLedDriverT<AW9523B>)
+using AW9523BBamDriver = ExpanderLedDriverT<AW9523B>;
 
 #endif // EXPANDER_LED_DRV_H

@@ -33,6 +33,7 @@
 #define PCAL6416A_H
 
 #include "../power/i2c_device.h"
+#include "gpio_expander.h"
 
 // ============================================================================
 // PCAL6416A I2C Address Configuration
@@ -101,6 +102,8 @@ public:
     static constexpr uint8_t NUM_PORTS = 2;
     /// Total number of GPIO pins
     static constexpr uint8_t NUM_PINS = 16;
+    /// This expander does NOT have hardware PWM (use software BAM)
+    static constexpr bool HAS_HW_PWM = false;
 
     PCAL6416A() = default;
 

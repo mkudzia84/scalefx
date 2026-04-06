@@ -14,6 +14,7 @@
  * Driver backends (see gpio_led_drv.h, expander_led_drv.h):
  *   - GpioLedDriver:     Native GPIO (analogWrite/digitalWrite)
  *   - ExpanderLedDriver: PCAL6416A I2C expander with software BAM
+ *   - HwPwmLedDriver:    AW9523B / NativeGpio hardware PWM (hw_pwm_led_drv.h)
  *   - (future) PCA9685:  Hardware PWM I2C expander
  * 
  * Template pattern:

@@ -7,7 +7,7 @@
  * Concrete drivers:
  *   - GpioLedDriver:     Native GPIO (analogWrite / digitalWrite)
  *   - ExpanderLedDriver: PCAL6416A GPIO expander with software BAM
- *   - (future) PwmExpanderLedDriver: PCA9685 hardware PWM expander
+ *   - HwPwmLedDriver:    AW9523B / NativeGpio hardware PWM (hw_pwm_led_drv.h)
  *
  * LedControlT<TDriver> is templatized on the driver policy. Consumers use
  * the `LedControl` alias which resolves to the correct driver per platform
