@@ -140,7 +140,7 @@ public:
 
     /**
      * @brief Attach to an ILedOutput for automatic PWM output.
-     * Accepts any LedControlT<TDriver> (they all implement ILedOutput).
+     * Accepts any LedControlT<TGpio> (they all implement ILedOutput).
      * @param led Pointer to ILedOutput instance
      */
     void attachLed(ILedOutput* led) { _led = led; }

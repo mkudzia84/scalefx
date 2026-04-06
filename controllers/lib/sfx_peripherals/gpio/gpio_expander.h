@@ -46,12 +46,10 @@
  *   - AW9523B:    16-pin Awinic I2C expander, GPIO + hardware LED PWM (aw9523b.h)
  *   - NativeGpio: MCU GPIO wrapper, HW PWM via analogWrite (native_gpio.h)
  *
- * Template consumers:
- *   - ExpanderBamT<TExpander>       — Software BAM engine (any GPIO expander)
- *   - ExpanderLedDriverT<TExpander> — Per-pin BAM driver (software PWM)
- *   - HwPwmLedDriverT<TExpander>    — Per-pin hardware PWM driver (AW9523B)
- *   - LedControlT<TDriver>          — LED controller (any driver policy)
- *   - LedManager<N, TDriver>        — Multi-channel LED manager
+ * Template consumers (all template on the GPIO provider directly):
+ *   - ExpanderBamT<TExpander> — Software BAM engine + GPIO provider (bam_led_drv.h)
+ *   - LedControlT<TGpio>     — Single LED controller (led_control.h)
+ *   - LedManager<N, TGpio>   — Multi-channel LED manager (led_manager.h)
  */
 
 #ifndef GPIO_EXPANDER_H

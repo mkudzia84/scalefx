@@ -3,8 +3,8 @@
  *
  * Wraps the MCU's own GPIO and analogWrite into the same pin-level
  * interface that I2C GPIO expanders expose.  This lets templates like
- * HwPwmLedDriverT<T> and LedControlT<T> work identically with native
- * pins or I2C expanders — just change the template argument.
+ * LedControlT<T> work identically with native pins or I2C expanders —
+ * just change the template argument.
  *
  * Satisfies the GpioExpander pin-level concept (gpio_expander.h):
  *   - HAS_HW_PWM = true  (via analogWrite / ledc on ESP32)
@@ -16,26 +16,22 @@
  * ports.  This means ExpanderBamT<NativeGpio> won't compile — which is
  * intentional: native GPIO has real PWM and doesn't need software BAM.
  *
+ * Provides a thread-safe singleton via instance() for convenient use
+ * with LedControlT<NativeGpio> and LedManager<N, NativeGpio>.
+ *
  * Platform support:
  *   - RP2040 / RP2350 (Arduino-Pico): analogWrite on every pin
  *   - ESP32-S3 (Arduino-ESP32):       LEDC-backed analogWrite
  *
- * Usage:
- *   NativeGpio gpio;
- *   gpio.begin();
- *
+ * Usage (singleton — preferred):
+ *   NativeGpio& gpio = NativeGpio::instance();
  *   gpio.setPinDirection(13, false);     // Output
  *   gpio.writePin(13, true);            // HIGH
- *
  *   gpio.setLedBrightness(13, 128);     // 50% PWM via analogWrite
  *
- * With HwPwmLedDriverT:
- *   NativeGpio gpio;
- *   gpio.begin();
- *
- *   HwPwmLedDriverT<NativeGpio> drv;
- *   drv.begin(&gpio, 13);
- *   drv.writePwm(200);                  // → analogWrite(13, 200)
+ * With LedControlT (pin convenience uses singleton automatically):
+ *   LedControl led;                      // = LedControlT<NativeGpio>
+ *   led.begin(13, false, true);          // → begin(&NativeGpio::instance(), 13, ...)
  */
 
 #ifndef NATIVE_GPIO_H
@@ -64,9 +60,19 @@
  * Unlike I2C expanders, this class has no I2C bus, no address, and no
  * port-level bulk I/O. It's essentially zero-overhead — each method is
  * a direct call to the Arduino GPIO API.
+ *
+ * Use NativeGpio::instance() for the shared singleton. LedControlT<NativeGpio>
+ * and LedManager<N, NativeGpio> use the singleton automatically for their
+ * convenience begin(pin, ...) overloads.
  */
 class NativeGpio {
 public:
+    /// Thread-safe singleton (C++11 static local)
+    static NativeGpio& instance() {
+        static NativeGpio inst;
+        return inst;
+    }
+
     /// Informational pin count (not a hard limit — GPIO validity depends on board)
     static constexpr uint8_t NUM_PINS = NATIVE_GPIO_MAX_PINS;
 
@@ -80,18 +86,15 @@ public:
     // ========================================================================
 
     /**
-     * @brief Mark the GPIO provider as available
-     * @return Always true (native GPIO is always present)
+     * @brief No-op — native GPIO is always present.
+     * @return Always true
      */
-    bool begin() {
-        _available = true;
-        return true;
-    }
+    bool begin() { return true; }
 
     /**
-     * @brief Check if the provider is initialized
+     * @brief Native GPIO is always available — no probing needed.
      */
-    bool isAvailable() const { return _available; }
+    bool isAvailable() const { return true; }
 
     // ========================================================================
     // Pin-Level I/O
@@ -161,9 +164,6 @@ public:
         analogWrite(pin, brightness);
         return true;
     }
-
-private:
-    bool _available = false;
 };
 
 #endif // NATIVE_GPIO_H

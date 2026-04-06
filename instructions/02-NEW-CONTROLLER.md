@@ -531,7 +531,12 @@ After_Completion:
 | Component | Header | Purpose |
 |-----------|--------|---------|
 | SfxServer | `sfx_server.h` | Server boilerplate (REQUIRED) |
-| LedControl | `led_control.h` | GPIO LED on/off, toggle, PWM brightness |
+| LedControlT\<TGpio\> | `led_control.h` | Single-channel LED (on/off, PWM, events). `LedControl` = NativeGpio alias |
+| LedManager\<N, TGpio\> | `led_manager.h` | Multi-channel LED manager with sequences. Default TGpio = NativeGpio |
+| ExpanderBamT\<T\> | `bam_led_drv.h` | Software BAM for GPIO-only I2C expanders. IS a GPIO provider |
+| NativeGpio | `native_gpio.h` | MCU GPIO wrapper (singleton). HW PWM via analogWrite |
+| AW9523B | `aw9523b.h` | I2C GPIO expander with 256-step HW LED PWM |
+| PCAL6416A | `pcal6416a.h` | I2C GPIO expander (GPIO only, use with ExpanderBamT for PWM) |
 | LedEventSeq | `led_event_seq.h` | Looping LED animation sequences |
 | ILedEvent | `led_events.h` | Built-in animations (LedOn, LedOff, LedFlashing, etc.) |
 | ServoControl | `srv_control.h` | Servo with trapezoidal motion profiling |

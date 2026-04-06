@@ -11,8 +11,8 @@
 // Destructor
 // ============================================================================
 
-template <typename TDriver>
-LedControlT<TDriver>::~LedControlT() {
+template <typename TGpio>
+LedControlT<TGpio>::~LedControlT() {
     end();
 }
 
@@ -20,12 +20,38 @@ LedControlT<TDriver>::~LedControlT() {
 // Initialization
 // ============================================================================
 
-template <typename TDriver>
-bool LedControlT<TDriver>::begin(int pin, bool activeLow, bool usePwm) {
+template <typename TGpio>
+bool LedControlT<TGpio>::begin(TGpio* gpio, uint8_t pin, bool activeLow, bool usePwm) {
     // End any previous configuration
     end();
 
-    if (!_driver.begin(pin)) return false;
+    if (!gpio || !gpio->isAvailable()) return false;
+
+    _gpio = gpio;
+    _pin = pin;
+    _activeLow = activeLow;
+    _usePwm = usePwm;
+    _state = false;
+    _brightness = 0;
+    _attached = true;
+
+    // Configure pin: output + LED mode (no-op for NativeGpio/BAM)
+    _gpio->setPinDirection(pin, false);   // Output
+    _gpio->setLedMode(pin, true);         // Enable HW PWM where applicable
+
+    // Start in off state
+    if (_usePwm) {
+        writePwm(0);
+    } else {
+        writePin(false);
+    }
+
+    return true;
+}
+
+template <typename TGpio>
+bool LedControlT<TGpio>::configure(bool activeLow, bool usePwm) {
+    if (!_attached) return false;
 
     _activeLow = activeLow;
     _usePwm = usePwm;
@@ -42,31 +68,14 @@ bool LedControlT<TDriver>::begin(int pin, bool activeLow, bool usePwm) {
     return true;
 }
 
-template <typename TDriver>
-bool LedControlT<TDriver>::configure(bool activeLow, bool usePwm) {
-    if (!_driver.isAttached()) return false;
-
-    _activeLow = activeLow;
-    _usePwm = usePwm;
-    _state = false;
-    _brightness = 0;
-
-    // Start in off state
-    if (_usePwm) {
-        writePwm(0);
-    } else {
-        writePin(false);
-    }
-
-    return true;
-}
-
-template <typename TDriver>
-void LedControlT<TDriver>::end() {
-    if (_driver.isAttached()) {
+template <typename TGpio>
+void LedControlT<TGpio>::end() {
+    if (_attached && _gpio) {
         off();
-        _driver.end();
     }
+    _gpio = nullptr;
+    _pin = 0;
+    _attached = false;
     _state = false;
     _brightness = 0;
 }
@@ -75,9 +84,9 @@ void LedControlT<TDriver>::end() {
 // Basic Control
 // ============================================================================
 
-template <typename TDriver>
-void LedControlT<TDriver>::on() {
-    if (!_driver.isAttached()) return;
+template <typename TGpio>
+void LedControlT<TGpio>::on() {
+    if (!_attached) return;
     _state = true;
     _brightness = 100;
     if (_usePwm) {
@@ -87,9 +96,9 @@ void LedControlT<TDriver>::on() {
     }
 }
 
-template <typename TDriver>
-void LedControlT<TDriver>::off() {
-    if (!_driver.isAttached()) return;
+template <typename TGpio>
+void LedControlT<TGpio>::off() {
+    if (!_attached) return;
     _state = false;
     _brightness = 0;
     if (_usePwm) {
@@ -99,9 +108,9 @@ void LedControlT<TDriver>::off() {
     }
 }
 
-template <typename TDriver>
-void LedControlT<TDriver>::toggle() {
-    if (!_driver.isAttached()) return;
+template <typename TGpio>
+void LedControlT<TGpio>::toggle() {
+    if (!_attached) return;
     _state = !_state;
     _brightness = _state ? 100 : 0;
     if (_usePwm) {
@@ -111,9 +120,9 @@ void LedControlT<TDriver>::toggle() {
     }
 }
 
-template <typename TDriver>
-void LedControlT<TDriver>::set(bool state) {
-    if (!_driver.isAttached()) return;
+template <typename TGpio>
+void LedControlT<TGpio>::set(bool state) {
+    if (!_attached) return;
     _state = state;
     _brightness = state ? 100 : 0;
     if (_usePwm) {
@@ -123,9 +132,9 @@ void LedControlT<TDriver>::set(bool state) {
     }
 }
 
-template <typename TDriver>
-void LedControlT<TDriver>::setBrightness(uint8_t brightness) {
-    if (!_driver.isAttached()) return;
+template <typename TGpio>
+void LedControlT<TGpio>::setBrightness(uint8_t brightness) {
+    if (!_attached) return;
     if (brightness > 100) brightness = 100;
     _brightness = brightness;
     _state = (brightness > 0);
@@ -136,13 +145,13 @@ void LedControlT<TDriver>::setBrightness(uint8_t brightness) {
     }
 }
 
-template <typename TDriver>
-void LedControlT<TDriver>::setMasterBrightness_pct(uint8_t pct) {
+template <typename TGpio>
+void LedControlT<TGpio>::setMasterBrightness_pct(uint8_t pct) {
     _masterBrightness_pct = (pct > 100) ? 100 : pct;
     // Re-apply current brightness with new master scaling
-    if (_driver.isAttached() && _usePwm) {
+    if (_attached && _usePwm) {
         writePwm(_brightness);
-    } else if (_driver.isAttached() && !_usePwm) {
+    } else if (_attached && !_usePwm) {
         writePin(_state && _masterBrightness_pct > 0);
     }
 }
@@ -151,24 +160,21 @@ void LedControlT<TDriver>::setMasterBrightness_pct(uint8_t pct) {
 // Private Methods
 // ============================================================================
 
-template <typename TDriver>
-void LedControlT<TDriver>::writePin(bool state) {
-    if (_activeLow) {
-        _driver.writeDigital(!state);
-    } else {
-        _driver.writeDigital(state);
-    }
+template <typename TGpio>
+void LedControlT<TGpio>::writePin(bool state) {
+    if (_activeLow) state = !state;
+    _gpio->writePin(_pin, state);
 }
 
-template <typename TDriver>
-void LedControlT<TDriver>::writePwm(uint8_t value) {
+template <typename TGpio>
+void LedControlT<TGpio>::writePwm(uint8_t value) {
     // value is 0-100 brightness, scale by master brightness and convert to 0-255 PWM
     uint8_t pwm = (uint8_t)((uint32_t)value * _masterBrightness_pct * 255 / 10000);
 
     if (_activeLow) {
-        _driver.writePwm(255 - pwm);
+        _gpio->setLedBrightness(_pin, 255 - pwm);
     } else {
-        _driver.writePwm(pwm);
+        _gpio->setLedBrightness(_pin, pwm);
     }
 }
 

@@ -18,7 +18,7 @@
  *   LED_SEQ_QUEUE_RESP (0x5D)  — sequence queue detail response
  *
  * Usage (standalone):
- *   LedManager<6, ExpanderLedDriver> mgr;
+ *   LedManager<6, ExpanderBamT<PCAL6416A>> mgr;
  *   LedProtocolServer ledServer;
  *   ledServer.setLedManager(&mgr);
  *   ledServer.begin(&Serial);

@@ -27,7 +27,7 @@
  * and adds servo + landing light command handling.
  *
  * Usage:
- *   LedManager<8, GpioLedDriver> ledManager;
+ *   LedManager<8> ledManager;
  *   LightFxServer lightfxServer;
  *   lightfxServer.setLedManager(&ledManager);
  *   lightfxServer.begin(&Serial);

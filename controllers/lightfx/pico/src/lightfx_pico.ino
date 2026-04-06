@@ -97,7 +97,7 @@ BatteryMonitor batteryMonitor;
 // Connection state managed by IndicatorLedManager (indicators)
 
 // LED channel manager (8 GPIO channels, PWM-capable)
-LedManager<8, GpioLedDriver> ledManager;
+LedManager<8> ledManager;
 
 // Servos with motion profiling
 ServoControl servos[3];

@@ -11,16 +11,16 @@
 // Operations
 // ============================================================================
 
-template <uint8_t N, typename D>
-uint8_t LedManager<N, D>::ledSet(uint8_t ch, uint8_t brightness) {
+template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::ledSet(uint8_t ch, uint8_t brightness) {
     if (!_enabled[ch - 1]) return LightFxError::CHANNEL_DISABLED;
     _sequences[ch - 1].stop();
     _channels[ch - 1].setBrightness(brightness);
     return LightFxError::OK;
 }
 
-template <uint8_t N, typename D>
-uint8_t LedManager<N, D>::ledOff(uint8_t ch) {
+template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::ledOff(uint8_t ch) {
     if (ch == 0) {
         for (uint8_t i = 0; i < N; i++) {
             if (!_enabled[i]) continue;
@@ -35,8 +35,8 @@ uint8_t LedManager<N, D>::ledOff(uint8_t ch) {
     return LightFxError::OK;
 }
 
-template <uint8_t N, typename D>
-uint8_t LedManager<N, D>::seqClear(uint8_t ch) {
+template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::seqClear(uint8_t ch) {
     if (ch == 0) {
         for (uint8_t i = 0; i < N; i++) {
             if (!_enabled[i]) continue;
@@ -51,8 +51,8 @@ uint8_t LedManager<N, D>::seqClear(uint8_t ch) {
     return LightFxError::OK;
 }
 
-template <uint8_t N, typename D>
-uint8_t LedManager<N, D>::seqAdd(uint8_t ch, uint8_t eventType,
+template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::seqAdd(uint8_t ch, uint8_t eventType,
                                   uint16_t p1, uint16_t p2,
                                   uint8_t p3, uint8_t p4) {
     if (ch < 1 || ch > N) return LightFxError::INVALID_CHANNEL;
@@ -105,8 +105,8 @@ uint8_t LedManager<N, D>::seqAdd(uint8_t ch, uint8_t eventType,
     return LightFxError::OK;
 }
 
-template <uint8_t N, typename D>
-uint8_t LedManager<N, D>::seqStart(uint8_t ch) {
+template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::seqStart(uint8_t ch) {
     if (ch == 0) {
         for (uint8_t i = 0; i < N; i++) {
             if (!_enabled[i]) continue;
@@ -119,8 +119,8 @@ uint8_t LedManager<N, D>::seqStart(uint8_t ch) {
     return LightFxError::OK;
 }
 
-template <uint8_t N, typename D>
-uint8_t LedManager<N, D>::seqStop(uint8_t ch) {
+template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::seqStop(uint8_t ch) {
     if (ch == 0) {
         for (uint8_t i = 0; i < N; i++) {
             if (!_enabled[i]) continue;
@@ -133,8 +133,8 @@ uint8_t LedManager<N, D>::seqStop(uint8_t ch) {
     return LightFxError::OK;
 }
 
-template <uint8_t N, typename D>
-uint8_t LedManager<N, D>::seqRestart(uint8_t ch) {
+template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::seqRestart(uint8_t ch) {
     if (ch == 0) {
         for (uint8_t i = 0; i < N; i++) {
             if (!_enabled[i]) continue;
@@ -147,8 +147,8 @@ uint8_t LedManager<N, D>::seqRestart(uint8_t ch) {
     return LightFxError::OK;
 }
 
-template <uint8_t N, typename D>
-uint8_t LedManager<N, D>::setMasterBrightness(uint8_t pct) {
+template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::setMasterBrightness(uint8_t pct) {
     _masterBrightness_pct = pct;
     for (uint8_t i = 0; i < N; i++) {
         _channels[i].setMasterBrightness_pct(pct);
@@ -156,8 +156,8 @@ uint8_t LedManager<N, D>::setMasterBrightness(uint8_t pct) {
     return LightFxError::OK;
 }
 
-template <uint8_t N, typename D>
-uint8_t LedManager<N, D>::resetChannel(uint8_t ch) {
+template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::resetChannel(uint8_t ch) {
     auto doReset = [this](uint8_t idx) {
         _sequences[idx].stop();
         _sequences[idx].clear();
@@ -177,8 +177,8 @@ uint8_t LedManager<N, D>::resetChannel(uint8_t ch) {
     return LightFxError::OK;
 }
 
-template <uint8_t N, typename D>
-uint8_t LedManager<N, D>::enableChannel(uint8_t ch, bool enabled) {
+template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::enableChannel(uint8_t ch, bool enabled) {
     if (ch == 0) {
         for (uint8_t i = 0; i < N; i++) {
             if (!enabled) {
@@ -201,8 +201,8 @@ uint8_t LedManager<N, D>::enableChannel(uint8_t ch, bool enabled) {
 // Queries
 // ============================================================================
 
-template <uint8_t N, typename D>
-void LedManager<N, D>::getSeqStatus(uint8_t ch, LightFxSeqStatus& status) {
+template <uint8_t N, typename G>
+void LedManager<N, G>::getSeqStatus(uint8_t ch, LightFxSeqStatus& status) {
     if (ch < 1 || ch > N) return;
     LedEventSeq& seq = _sequences[ch - 1];
     status.channel = ch;
@@ -213,8 +213,8 @@ void LedManager<N, D>::getSeqStatus(uint8_t ch, LightFxSeqStatus& status) {
     status.brightness = _channels[ch - 1].brightness();
 }
 
-template <uint8_t N, typename D>
-void LedManager<N, D>::getSeqQueue(uint8_t ch, LightFxSeqQueue& queue) {
+template <uint8_t N, typename G>
+void LedManager<N, G>::getSeqQueue(uint8_t ch, LightFxSeqQueue& queue) {
     if (ch < 1 || ch > N) return;
     LedEventSeq& seq = _sequences[ch - 1];
     queue.channel = ch;
@@ -233,8 +233,8 @@ void LedManager<N, D>::getSeqQueue(uint8_t ch, LightFxSeqQueue& queue) {
     }
 }
 
-template <uint8_t N, typename D>
-void LedManager<N, D>::getChannelStatus(uint8_t ch, LightFxChannelStatus& status) {
+template <uint8_t N, typename G>
+void LedManager<N, G>::getChannelStatus(uint8_t ch, LightFxChannelStatus& status) {
     if (ch < 1 || ch > N) return;
     status.channel = ch;
     status.brightness = _channels[ch - 1].brightness();
