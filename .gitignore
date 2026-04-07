@@ -65,9 +65,9 @@ gun_fx_demo
 *.x86_64
 *.hex
 
-# Core dumps
-core
-core.*
+# Core dumps (files only — do NOT use bare 'core' which ignores core/ directories)
+/core
+/core.*
 
 # Logs
 *.log

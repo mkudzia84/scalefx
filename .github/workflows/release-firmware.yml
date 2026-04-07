@@ -114,8 +114,7 @@ jobs:
 
       - name: Build firmware
         run: |
-          cd "controllers/${{ steps.config.outputs.subdir }}"
-          python -m platformio run -e ${{ steps.config.outputs.env }}
+          python -m platformio run -e ${{ steps.config.outputs.env }} -d "controllers/${{ steps.config.outputs.subdir }}"
 
       - name: Package firmware
         run: |
