@@ -153,24 +153,24 @@ Step_4_CLI:
         4. IF query command: add to EXCLUDE set in hubfx.py _build_slave_registry()
 
 Step_5_Go_CLI:
-  location: "tools/cli/"
+  location: "app/go/"
   actions:
-    - file: "packets.go"
+    - file: "protocol/packets.go"
       action: |
         1. Add packet type constant
         2. Add to PacketTypeName() switch
         3. Add error constants and error name map entries (if any)
 
-    - file: "commands.go"
+    - file: "protocol/commands.go"
       action: "Add command builder function"
 
-    - file: "handler_xxxfx.go"
+    - file: "cli/handler_xxxfx.go"
       action: |
         1. Add command function to handler
         2. Add CommandInfo to command list
         3. Use appropriate send pattern (SendExpectACK for instant, custom for query)
 
-    - file: "parsers.go"
+    - file: "cli/parsers.go"
       action: "Add response parser if command returns data"
 
 Step_6_CSharp_Library:
@@ -243,15 +243,15 @@ Files_To_Update:
       - "Update CLI handler method"
       - "Update usage string"
   
-  - file: "tools/cli/commands.go"
+  - file: "app/go/protocol/commands.go"
     changes:
       - "Update command builder function"
 
-  - file: "tools/cli/handler_xxxfx.go"
+  - file: "app/go/cli/handler_xxxfx.go"
     changes:
       - "Update CLI command handler"
 
-  - file: "tools/cli/parsers.go"
+  - file: "app/go/cli/parsers.go"
     changes:
       - "Update response parser (if applicable)"
 
@@ -429,23 +429,36 @@ Python_Framework:
     "conftest.py": "pytest fixtures"
 
 Go_CLI:
-  path: "tools/cli/"
+  path: "app/go/"
   files:
-    "main.go": "Entry point, flag parsing"
-    "cli.go": "Interactive loop, command dispatch, async packet handler"
-    "connection.go": "Serial connection, tag-correlated send/receive, stream waiters"
-    "protocol.go": "COBS encode/decode, CRC-8/CRC-16, packet build/parse"
-    "packets.go": "Packet type constants, error codes (mirrors C++ headers)"
-    "commands.go": "Command builders (mirrors tests/framework/commands.py)"
-    "parsers.go": "Response payload parsers (status, I2C, init_ready, gear, audio, etc.)"
-    "output.go": "ANSI colored output, help rendering"
-    "helpers.go": "Shared utilities (arg parsing, guards, servo patterns)"
-    "format_storage.go": "Storage-related output formatting"
-    "handler_core.go": "Core commands (connect, init, status, reboot, etc.)"
-    "handler_gunfx.go": "GunFX commands (trigger, servo, smoke)"
-    "handler_lightfx.go": "LightFX commands (LED, sequences, servo, landing lights)"
-    "handler_gearcontrol.go": "GearControl commands (gear, servo, yaw, calibration)"
-    "handler_hubfx.go": "HubFX commands (slaves, audio, engine, storage, USB)"
+    "protocol/wire.go": "CRC-8/CRC-16, COBS encode/decode, packet build/parse"
+    "protocol/packets.go": "Packet type constants, error codes (mirrors C++ headers)"
+    "protocol/commands.go": "Command builders (mirrors tests/framework/commands.py)"
+    "protocol/connection.go": "Serial connection, tag-correlated send/receive, stream waiters"
+    "api/result.go": "ApiResult types"
+    "api/client.go": "apiClient base (wraps protocol.Connection)"
+    "api/core.go": "CoreApi (init, status, reboot, identify)"
+    "api/gunfx.go": "GunFxApi (trigger, servo, smoke)"
+    "api/lightfx.go": "LightFxApi (LED, sequences, servo, landing lights)"
+    "api/gearcontrol.go": "GearControlApi (gear, servo, yaw, calibration)"
+    "api/hubfx.go": "HubFxApi (slaves, audio, engine, storage, USB)"
+    "api/files.go": "FileApi (SD/flash file operations)"
+    "cli/main.go": "Entry point, flag parsing"
+    "cli/cli.go": "Interactive loop, command dispatch, async packet handler"
+    "cli/output.go": "ANSI colored output, help rendering"
+    "cli/helpers.go": "Shared utilities (arg parsing, guards, servo patterns)"
+    "cli/format_storage.go": "Storage-related output formatting"
+    "cli/parsers.go": "Response payload parsers (shared base)"
+    "cli/parsers_core.go": "Core response parsers"
+    "cli/parsers_gunfx.go": "GunFX response parsers"
+    "cli/parsers_lightfx.go": "LightFX response parsers"
+    "cli/parsers_gearcontrol.go": "GearControl response parsers"
+    "cli/parsers_hubfx.go": "HubFX response parsers"
+    "cli/handler_core.go": "Core commands (connect, init, status, reboot, etc.)"
+    "cli/handler_gunfx.go": "GunFX commands (trigger, servo, smoke)"
+    "cli/handler_lightfx.go": "LightFX commands (LED, sequences, servo, landing lights)"
+    "cli/handler_gearcontrol.go": "GearControl commands (gear, servo, yaw, calibration)"
+    "cli/handler_hubfx.go": "HubFX commands (slaves, audio, engine, storage, USB)"
 
 CSharp_Library:
   path: "app/win32/ScaleFXSerial/"
@@ -495,7 +508,7 @@ python -m py_compile tests/cli/handlers/lightfx.py
 python -m py_compile tests/cli/handlers/gearcontrol.py
 
 # Go CLI
-cd tools/cli && go build .
+cd app/go && go build ./cli/
 
 # C# library
 dotnet build app/win32/ScaleFXSerial/

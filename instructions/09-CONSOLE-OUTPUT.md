@@ -12,7 +12,7 @@ Three CLI platforms share the same binary protocol and MUST produce harmonized o
 | Platform | Location | Output Medium |
 |----------|----------|---------------|
 | **Python CLI** (reference) | `tests/cli/` | `print()` + colorama |
-| **Go CLI** | `tools/cli/` | ANSI escape codes |
+| **Go CLI** | `app/go/cli/` | ANSI escape codes |
 | **C# Console** | `app/win32/ScaleFXSerial/Console/` | `IConsoleOutput` interface |
 
 ### Output Method Mapping

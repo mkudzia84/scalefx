@@ -1,0 +1,166 @@
+/* ─── ScaleFX Studio — Adaptive Theme (Dark / Light) ─── */
+
+/* Dark theme (default) */
+:root,
+[data-theme="dark"] {
+    --bg-base: #1e1e1e;
+    --bg-surface: #252526;
+    --bg-raised: #2d2d2d;
+    --bg-input: #3c3c3c;
+    --border: #3e3e3e;
+    --border-focus: #007acc;
+    --text: #cccccc;
+    --text-dim: #888888;
+    --text-bright: #e0e0e0;
+    --accent: #0078d4;
+    --accent-hover: #1a8ae8;
+    --success: #4ec994;
+    --error: #f44747;
+    --warning: #cca700;
+    --info: #75beff;
+    --font-ui: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: "Cascadia Code", "Consolas", "Courier New", monospace;
+    --shadow: rgba(0, 0, 0, 0.4);
+    --scrollbar-thumb: #555;
+    --scrollbar-thumb-hover: #666;
+}
+
+/* Light theme */
+[data-theme="light"] {
+    --bg-base: #f3f3f3;
+    --bg-surface: #ffffff;
+    --bg-raised: #e8e8e8;
+    --bg-input: #ffffff;
+    --border: #d1d1d1;
+    --border-focus: #005fb8;
+    --text: #1e1e1e;
+    --text-dim: #6e6e6e;
+    --text-bright: #000000;
+    --accent: #005fb8;
+    --accent-hover: #0070d0;
+    --success: #1b8a3c;
+    --error: #c42b1c;
+    --warning: #9d5d00;
+    --info: #005fb8;
+    --shadow: rgba(0, 0, 0, 0.12);
+    --scrollbar-thumb: #c1c1c1;
+    --scrollbar-thumb-hover: #a0a0a0;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    height: 100%;
+    background: var(--bg-base);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    overflow: hidden;
+    user-select: none;
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+/* ─── Console color classes (from Go C() output) ─── */
+
+.c-red { color: var(--error); }
+.c-green { color: var(--success); }
+.c-yellow { color: var(--warning); }
+.c-blue { color: #569cd6; }
+.c-magenta { color: #c586c0; }
+.c-cyan { color: #4fc1ff; }
+.c-white { color: var(--text-bright); }
+.c-gray { color: var(--text-dim); }
+.c-bold { font-weight: 600; }
+.c-dim { opacity: 0.6; }
+
+[data-theme="light"] .c-blue { color: #0451a5; }
+[data-theme="light"] .c-magenta { color: #a626a4; }
+[data-theme="light"] .c-cyan { color: #0184bc; }
+
+/* ─── Scrollbar ─── */
+
+::-webkit-scrollbar {
+    width: 10px;
+}
+::-webkit-scrollbar-track {
+    background: var(--bg-surface);
+}
+::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+}
+
+/* ─── Buttons ─── */
+
+button {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg-raised);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.1s, border-color 0.1s;
+}
+button:hover {
+    background: var(--bg-input);
+    border-color: #555;
+}
+button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+button.primary:hover {
+    background: var(--accent-hover);
+}
+button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* ─── Dialog / Modal Overlay ─── */
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+.modal {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px 24px;
+    min-width: 360px;
+    max-width: 480px;
+    box-shadow: 0 8px 32px var(--shadow);
+}
+.modal h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-bright);
+    margin-bottom: 16px;
+}
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+}

@@ -5,7 +5,7 @@ namespace ScaleFX.Serial.Console;
 
 /// <summary>
 /// Formats binary response payloads into human-readable text.
-/// Harmonized with Python CLI (tests/cli/parsers/) and Go CLI (tools/cli/parsers_*.go).
+/// Harmonized with Python CLI (tests/cli/parsers/) and Go CLI (app/go/cli/parsers_*.go).
 /// See instructions/09-CONSOLE-OUTPUT.md for the canonical output schema.
 /// </summary>
 public static class ResponseFormatters

@@ -11,7 +11,7 @@ ScaleFX is a modular scale model effects system for RC helicopters:
 - **ESP32-S3 Controller**: HubFX ESP32-S3 (master hub, active development)
 - **HubFX Pico** (RP2350): OBSOLETE — frozen reference implementation, do not modify
 - **Windows Studio** (.NET 8/C#): Visual configuration editor
-- **Go CLI** (`tools/cli/`): Compiled interactive CLI (single binary, zero runtime deps)
+- **Go CLI** (`app/go/`): Compiled interactive CLI — 3-package architecture: `protocol/` (wire format, packets, commands, connection), `api/` (typed client SDK), `cli/` (interactive terminal UI)
 - **C# Serial Library** (`app/win32/ScaleFXSerial/`): .NET 8 protocol layer for Windows Studio
 - **Python test framework** with interactive CLI
 
@@ -52,7 +52,7 @@ python scripts/build_and_flash.py hubfx  # ESP32-S3 (uses esptool)
 python -m py_compile tests/framework/packets.py
 
 # Build Go CLI
-cd tools/cli && go build -o scalefx-cli.exe .
+cd app/go && go build -o scalefx-cli.exe ./cli/
 
 # Build C# library
 dotnet build app/win32/ScaleFXSerial/
@@ -61,7 +61,7 @@ dotnet build app/win32/ScaleFXSerial/
 python -m tests.cli.interactive --port COM5
 
 # Interactive CLI (Go)
-tools/cli/scalefx-cli.exe -p COM5
+app/go/scalefx-cli.exe -p COM5
 
 # Run tests (requires hardware)
 pytest tests/{gunfx|lightfx|gearcontrol|noop}/ -v
@@ -94,7 +94,7 @@ tests/
 └── {gunfx,lightfx,gearcontrol,noop}/  # pytest test suites
 
 scripts/build_and_flash.py   # Centralized build/flash
-tools/cli/                   # Go CLI (compiled, single binary)
+app/go/                      # Go CLI (3 packages: protocol, api, cli)
 app/win32/ScaleFXSerial/     # C# serial protocol library (.NET 8)
 app/win32/ScaleFXStudio/     # Windows config editor (.NET 8)
 ```

@@ -240,46 +240,75 @@ Scripts:
 ```
 ```yaml
 Go_CLI:
-  root: "tools/cli/"
-  files:
-    - name: "main.go"
-      purpose: "Entry point, flag parsing"
-    - name: "cli.go"
-      purpose: "Interactive loop, command dispatch, async packet handler"
-    - name: "connection.go"
-      purpose: "Serial connection, tag-correlated send/receive, stream waiters"
-    - name: "protocol.go"
-      purpose: "COBS encode/decode, CRC-8/CRC-16, packet build/parse"
-    - name: "packets.go"
-      purpose: "Packet type constants, error codes (mirrors C++ headers)"
-      modify_when: "Adding packet types or error codes"
-    - name: "commands.go"
-      purpose: "Command builders (mirrors tests/framework/commands.py)"
-      modify_when: "Adding commands"
-    - name: "parsers.go"
-      purpose: "Response payload parsers (status, I2C, init_ready, gear, audio, etc.)"
-      modify_when: "Adding response packet types"
-    - name: "output.go"
-      purpose: "ANSI colored output, help rendering"
-    - name: "helpers.go"
-      purpose: "Shared utilities (arg parsing, guards, servo patterns)"
-    - name: "format_storage.go"
-      purpose: "Storage-related output formatting"
-    - name: "handler_core.go"
-      purpose: "Core commands (connect, init, status, reboot, etc.)"
-      modify_when: "Modifying core commands"
-    - name: "handler_gunfx.go"
-      purpose: "GunFX commands (trigger, servo, smoke)"
-      modify_when: "Adding GunFX CLI commands"
-    - name: "handler_lightfx.go"
-      purpose: "LightFX commands (LED, sequences, servo, landing lights)"
-      modify_when: "Adding LightFX CLI commands"
-    - name: "handler_gearcontrol.go"
-      purpose: "GearControl commands (gear, servo, yaw, calibration)"
-      modify_when: "Adding GearControl CLI commands"
-    - name: "handler_hubfx.go"
-      purpose: "HubFX commands (slaves, audio, engine, storage, USB)"
-      modify_when: "Adding HubFX CLI commands"
+  root: "app/go/"
+  packages:
+    protocol:
+      - name: "wire.go"
+        purpose: "CRC-8/CRC-16, COBS encode/decode, packet build/parse"
+      - name: "packets.go"
+        purpose: "Packet type constants, error codes (mirrors C++ headers)"
+        modify_when: "Adding packet types or error codes"
+      - name: "commands.go"
+        purpose: "Command builders (mirrors tests/framework/commands.py)"
+        modify_when: "Adding commands"
+      - name: "connection.go"
+        purpose: "Serial connection, tag-correlated send/receive, stream waiters"
+    api:
+      - name: "result.go"
+        purpose: "ApiResult types"
+      - name: "client.go"
+        purpose: "apiClient base (wraps protocol.Connection)"
+      - name: "core.go"
+        purpose: "CoreApi (init, status, reboot, identify)"
+      - name: "gunfx.go"
+        purpose: "GunFxApi (trigger, servo, smoke)"
+      - name: "lightfx.go"
+        purpose: "LightFxApi (LED, sequences, servo, landing lights)"
+      - name: "gearcontrol.go"
+        purpose: "GearControlApi (gear, servo, yaw, calibration)"
+      - name: "hubfx.go"
+        purpose: "HubFxApi (slaves, audio, engine, storage, USB)"
+      - name: "files.go"
+        purpose: "FileApi (SD/flash file operations)"
+    cli:
+      - name: "main.go"
+        purpose: "Entry point, flag parsing"
+      - name: "cli.go"
+        purpose: "Interactive loop, command dispatch, async packet handler"
+      - name: "output.go"
+        purpose: "ANSI colored output, help rendering"
+      - name: "helpers.go"
+        purpose: "Shared utilities (arg parsing, guards, servo patterns)"
+      - name: "format_storage.go"
+        purpose: "Storage-related output formatting"
+      - name: "parsers.go"
+        purpose: "Response payload parsers (shared base)"
+        modify_when: "Adding response packet types"
+      - name: "parsers_core.go"
+        purpose: "Core response parsers"
+      - name: "parsers_gunfx.go"
+        purpose: "GunFX response parsers"
+      - name: "parsers_lightfx.go"
+        purpose: "LightFX response parsers"
+      - name: "parsers_gearcontrol.go"
+        purpose: "GearControl response parsers"
+      - name: "parsers_hubfx.go"
+        purpose: "HubFX response parsers"
+      - name: "handler_core.go"
+        purpose: "Core commands (connect, init, status, reboot, etc.)"
+        modify_when: "Modifying core commands"
+      - name: "handler_gunfx.go"
+        purpose: "GunFX commands (trigger, servo, smoke)"
+        modify_when: "Adding GunFX CLI commands"
+      - name: "handler_lightfx.go"
+        purpose: "LightFX commands (LED, sequences, servo, landing lights)"
+        modify_when: "Adding LightFX CLI commands"
+      - name: "handler_gearcontrol.go"
+        purpose: "GearControl commands (gear, servo, yaw, calibration)"
+        modify_when: "Adding GearControl CLI commands"
+      - name: "handler_hubfx.go"
+        purpose: "HubFX commands (slaves, audio, engine, storage, USB)"
+        modify_when: "Adding HubFX CLI commands"
 
 CSharp_Library:
   root: "app/win32/ScaleFXSerial/"
@@ -374,7 +403,7 @@ Q9: Is CLI updated?
 └─ YES → Continue
 
 Q10: Is Go CLI updated?
-├─ NO → Add to tools/cli/packets.go, commands.go, handler_xxxfx.go
+├─ NO → Add to app/go/protocol/packets.go, protocol/commands.go, cli/handler_xxxfx.go
 │        - Add packet constant + PacketTypeName()
 │        - Add command builder
 │        - Add CLI command + register
@@ -401,7 +430,7 @@ Sync_Groups:
     primary: "lib/sfx_serial/serial/core/core.h"
     mirrors:
       - "tests/framework/packets.py"
-      - "tools/cli/packets.go"
+      - "app/go/protocol/packets.go"
       - "app/win32/ScaleFXSerial/PacketTypes.cs"
     rule: "Same values, same names (snake_case in Python, PascalCase in C#)"
 
@@ -409,7 +438,7 @@ Sync_Groups:
     primary: "lib/sfx_serial/serial/core/core.h (SerialError namespace)"
     mirrors:
       - "tests/framework/packets.py (CoreError class)"
-      - "tools/cli/packets.go (error constants + name map)"
+      - "app/go/protocol/packets.go (error constants + name map)"
       - "app/win32/ScaleFXSerial/ErrorCodes.cs"
     rule: "Same values, same names"
 
@@ -417,7 +446,7 @@ Sync_Groups:
     primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h (XxxError namespace)"
     mirrors:
       - "tests/framework/packets.py (XxxError class)"
-      - "tools/cli/packets.go (error constants + name map)"
+      - "app/go/protocol/packets.go (error constants + name map)"
       - "app/win32/ScaleFXSerial/ErrorCodes.cs"
     rule: "Same values, same names"
 
@@ -426,8 +455,8 @@ Sync_Groups:
     mirrors:
       - "tests/framework/commands.py"
       - "tests/cli/handlers/xxxfx.py"
-      - "tools/cli/commands.go"
-      - "tools/cli/handler_xxxfx.go"
+      - "app/go/protocol/commands.go"
+      - "app/go/cli/handler_xxxfx.go"
       - "app/win32/ScaleFXSerial/Commands/XxxFxCommands.cs"
     rule: "All platforms must expose same commands"
 ```
