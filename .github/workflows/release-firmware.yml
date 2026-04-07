@@ -87,17 +87,25 @@ jobs:
       - name: Verify source version matches
         run: |
           CTRL_DIR="controllers/${{ steps.config.outputs.subdir }}"
-          # Find the .ino file
-          INO=$(find "$CTRL_DIR/src" \( -name "*.ino" -o -name "*.cpp" \) | head -1)
+          # Find the main firmware source (.ino preferred, then .cpp)
+          INO=$(find "$CTRL_DIR/src" -name "*.ino" | head -1)
+          if [ -z "$INO" ]; then
+            INO=$(find "$CTRL_DIR/src" -name "*.cpp" | head -1)
+          fi
           if [ -z "$INO" ]; then
             echo "::error::Cannot find firmware source in $CTRL_DIR/src"
             exit 1
           fi
-          SOURCE_VER=$(grep '#define FIRMWARE_VERSION' "$INO" | sed 's/.*"\(.*\)".*/\1/')
+          # Search for FIRMWARE_VERSION in the found file, or grep across all source files
+          SOURCE_VER=$(grep '#define FIRMWARE_VERSION' "$INO" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
           if [ -z "$SOURCE_VER" ]; then
-            echo "::error::Could not extract FIRMWARE_VERSION from $INO"
+            SOURCE_VER=$(grep -r '#define FIRMWARE_VERSION' "$CTRL_DIR/src" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          if [ -z "$SOURCE_VER" ]; then
+            echo "::error::Could not extract FIRMWARE_VERSION from $CTRL_DIR/src"
             exit 1
           fi
+          echo "Found FIRMWARE_VERSION=$SOURCE_VER in $INO"
           if [ "$SOURCE_VER" != "${{ inputs.version }}" ]; then
             echo "::error::Source FIRMWARE_VERSION ($SOURCE_VER) does not match requested version (${{ inputs.version }})"
             exit 1
@@ -138,8 +146,7 @@ jobs:
         id: buildnum
         run: |
           CTRL_DIR="controllers/${{ steps.config.outputs.subdir }}"
-          INO=$(find "$CTRL_DIR/src" \( -name "*.ino" -o -name "*.cpp" \) | head -1)
-          BUILD_NUM=$(grep '#define BUILD_NUMBER' "$INO" | sed 's/[^0-9]*\([0-9]*\).*/\1/')
+          BUILD_NUM=$(grep -r '#define BUILD_NUMBER' "$CTRL_DIR/src" | head -1 | sed 's/[^0-9]*\([0-9]*\).*/\1/')
           echo "build=${BUILD_NUM:-0}" >> $GITHUB_OUTPUT
 
       - name: Create Release
