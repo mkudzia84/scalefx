@@ -60,6 +60,7 @@ func (e *Engine) GetGroups() []*CmdGroup {
 	if e.groups == nil {
 		e.groups = []*CmdGroup{
 			e.coreCommands(),
+			e.firmwareCommands(),
 			e.gunfxCommands(),
 			e.gearcontrolCommands(),
 			e.lightfxCommands(),

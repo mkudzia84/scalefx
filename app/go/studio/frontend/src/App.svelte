@@ -1,12 +1,12 @@
 <!-- ScaleFX Studio — Root Layout -->
-<!-- Routes between startup (connect dialog) and main (tabbed layout). -->
+<!-- Main layout always visible. Connect dialog is a popup overlay. -->
 <script lang="ts">
     import { onMount } from 'svelte'
     import ConnectDialog from './lib/dialogs/ConnectDialog.svelte'
     import AboutDialog from './lib/dialogs/AboutDialog.svelte'
     import MainLayout from './lib/layout/MainLayout.svelte'
     import {
-        appPhase, showConnectDialog, showAboutDialog, showConsole,
+        boardState, connectPopupOpen, showAboutDialog, showConsole,
         connectionInfo, activeTab
     } from './lib/stores'
     import { theme } from './lib/theme'
@@ -16,7 +16,7 @@
     onMount(async () => {
         // Menu events from native Wails menus
         EventsOn('menu:connect', () => {
-            $showConnectDialog = true
+            $connectPopupOpen = true
         })
         EventsOn('menu:about', () => {
             $showAboutDialog = true
@@ -30,10 +30,13 @@
             const wasConnected = $connectionInfo.connected
             $connectionInfo = info
 
-            if (!info.connected && wasConnected) {
-                // Board disconnected — return to startup
-                $appPhase = 'startup'
-                $showConnectDialog = true
+            if (info.connected) {
+                $boardState = 'connected'
+                $connectPopupOpen = false
+            } else if (wasConnected && $boardState !== 'flashing') {
+                // Unexpected disconnect (not flashing) — show connect popup
+                $boardState = 'disconnected'
+                $connectPopupOpen = true
                 $activeTab = 0
             }
         })
@@ -43,8 +46,8 @@
             const info = await GetConnectionInfo()
             $connectionInfo = info
             if (info.connected) {
-                $appPhase = 'main'
-                $showConnectDialog = false
+                $boardState = 'connected'
+                $connectPopupOpen = false
             }
         } catch (_) {
             // app still starting
@@ -57,22 +60,17 @@
     }
 </script>
 
-{#if $appPhase === 'startup'}
-    <ConnectDialog />
-{:else}
-    <div class="app-layout">
-        <MainLayout />
-    </div>
-{/if}
+<div class="app-layout">
+    <MainLayout />
+</div>
 
 <!-- Overlays (render above everything) -->
-{#if $showAboutDialog}
-    <AboutDialog />
+{#if $connectPopupOpen}
+    <ConnectDialog />
 {/if}
 
-{#if $showConnectDialog && $appPhase === 'main'}
-    <!-- Reconnect dialog over the main layout -->
-    <ConnectDialog />
+{#if $showAboutDialog}
+    <AboutDialog />
 {/if}
 
 <style>

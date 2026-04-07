@@ -1,24 +1,149 @@
 <!-- ScaleFX Studio — Firmware Tab -->
-<!-- Displays firmware and hardware info for the connected board. -->
+<!-- Displays connected board info, available GitHub releases, and flash controls. -->
 <script lang="ts">
-    import { connectionInfo, slaveInfo } from '../stores'
+    import { connectionInfo, slaveInfo, firmwareTargets, firmwareRunning, firmwareLogs, boardState, connectPopupOpen, availableReleases } from '../stores'
+    import type { FirmwareTarget, FirmwareProgress, ReleaseInfo } from '../stores'
+    import { GetFirmwareTargets, GetReleases, FlashFromRelease } from '../../../wailsjs/go/main/App'
+    import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
+    import { onMount, onDestroy, tick } from 'svelte'
+
+    // Flash controls
+    let selectedController = ''
+    let selectedRelease = ''
+    let flashPort = ''
+    let skipVerify = false
+    let logEl: HTMLElement
+
+    // Release fetching
+    let fetchingReleases = false
+    let fetchError = ''
+
+    // Releases filtered to selected controller
+    $: controllerReleases = $availableReleases.filter(r => r.controller === selectedController)
+
+    // Auto-select first release when controller changes
+    $: if (selectedController && controllerReleases.length > 0) {
+        selectedRelease = controllerReleases[0].tag
+    } else {
+        selectedRelease = ''
+    }
+
+    // Get the currently selected release object
+    $: currentRelease = $availableReleases.find(r => r.tag === selectedRelease)
+
+    // Connected board's firmware version (for comparison)
+    $: connectedVersion = $connectionInfo.firmwareVersion || ''
+    $: connectedController = $connectionInfo.controllerType || ''
+
+    // Version comparison: is the selected release newer than running firmware?
+    $: versionStatus = getVersionStatus(currentRelease, connectedController, connectedVersion)
+
+    // Group releases by controller for the summary table
+    $: releasesByController = groupByController($availableReleases)
+
+    onMount(async () => {
+        // Load firmware targets for the controller list
+        const targets = await GetFirmwareTargets()
+        firmwareTargets.set(targets)
+
+        // Auto-select connected controller
+        if ($connectionInfo.controllerType) {
+            selectedController = $connectionInfo.controllerType
+        }
+
+        // Fetch releases
+        fetchAllReleases()
+
+        EventsOn('firmware:progress', (evt: FirmwareProgress) => {
+            firmwareLogs.update(logs => [...logs, evt])
+            if (evt.done) {
+                firmwareRunning.set(false)
+                boardState.set('disconnected')
+            }
+            tick().then(() => {
+                if (logEl) logEl.scrollTop = logEl.scrollHeight
+            })
+        })
+    })
+
+    onDestroy(() => {
+        EventsOff('firmware:progress')
+    })
+
+    async function fetchAllReleases() {
+        fetchingReleases = true
+        fetchError = ''
+        try {
+            const releases = await GetReleases('')
+            availableReleases.set(releases || [])
+        } catch (e: any) {
+            fetchError = e?.message || 'Failed to fetch releases'
+            availableReleases.set([])
+        } finally {
+            fetchingReleases = false
+        }
+    }
+
+    function getVersionStatus(release: ReleaseInfo | undefined, ctrlType: string, currentVer: string): 'newer' | 'same' | 'older' | 'unknown' {
+        if (!release || !currentVer || ctrlType !== release.controller) return 'unknown'
+        const cmp = compareVersions(release.version, currentVer)
+        if (cmp > 0) return 'newer'
+        if (cmp === 0) return 'same'
+        return 'older'
+    }
+
+    function compareVersions(a: string, b: string): number {
+        const ap = a.split('.').map(Number)
+        const bp = b.split('.').map(Number)
+        const len = Math.max(ap.length, bp.length)
+        for (let i = 0; i < len; i++) {
+            const ai = ap[i] || 0
+            const bi = bp[i] || 0
+            if (ai !== bi) return ai - bi
+        }
+        return 0
+    }
+
+    function groupByController(releases: ReleaseInfo[]): Map<string, ReleaseInfo> {
+        const map = new Map<string, ReleaseInfo>()
+        for (const r of releases) {
+            if (!map.has(r.controller)) {
+                map.set(r.controller, r) // first = newest (sorted by backend)
+            }
+        }
+        return map
+    }
+
+    async function startFlash() {
+        if (!selectedRelease || $firmwareRunning) return
+        boardState.set('flashing')
+        connectPopupOpen.set(false)
+        firmwareRunning.set(true)
+        firmwareLogs.set([])
+        await FlashFromRelease(selectedController, selectedRelease, flashPort, skipVerify)
+    }
 </script>
 
 <div class="firmware-tab">
-    <h2>Firmware Information</h2>
+    <h2>Firmware</h2>
 
+    <!-- Connected board info -->
     <section class="info-section">
         <h3>Connected Board</h3>
-        <table class="info-table">
-            <tr><td class="label">Name</td><td>{$connectionInfo.controllerName || '—'}</td></tr>
-            <tr><td class="label">Type</td><td>{$connectionInfo.controllerType || '—'}</td></tr>
-            <tr><td class="label">Firmware</td><td>{$connectionInfo.firmwareVersion || '—'}</td></tr>
-            <tr><td class="label">Build</td><td>{$connectionInfo.build || '—'}</td></tr>
-            <tr><td class="label">Platform</td><td>{$connectionInfo.platform || '—'}</td></tr>
-            <tr><td class="label">CPU</td><td>{$connectionInfo.cpuMHz ? `${$connectionInfo.cpuMHz} MHz` : '—'}</td></tr>
-            <tr><td class="label">Free RAM</td><td>{$connectionInfo.freeRAM ? formatBytes($connectionInfo.freeRAM) : '—'}</td></tr>
-            <tr><td class="label">Port</td><td class="mono">{$connectionInfo.port || '—'}</td></tr>
-        </table>
+        {#if $connectionInfo.connected}
+            <table class="info-table">
+                <tr><td class="label">Name</td><td>{$connectionInfo.controllerName || '—'}</td></tr>
+                <tr><td class="label">Type</td><td>{$connectionInfo.controllerType || '—'}</td></tr>
+                <tr><td class="label">Firmware</td><td>{$connectionInfo.firmwareVersion || '—'}</td></tr>
+                <tr><td class="label">Build</td><td>{$connectionInfo.build || '—'}</td></tr>
+                <tr><td class="label">Platform</td><td>{$connectionInfo.platform || '—'}</td></tr>
+                <tr><td class="label">CPU</td><td>{$connectionInfo.cpuMHz ? `${$connectionInfo.cpuMHz} MHz` : '—'}</td></tr>
+                <tr><td class="label">Free RAM</td><td>{$connectionInfo.freeRAM ? formatBytes($connectionInfo.freeRAM) : '—'}</td></tr>
+                <tr><td class="label">Port</td><td class="mono">{$connectionInfo.port || '—'}</td></tr>
+            </table>
+        {:else}
+            <p class="no-data">No board connected</p>
+        {/if}
     </section>
 
     {#if $connectionInfo.controllerType === 'hubfx' && $slaveInfo.length > 0}
@@ -52,6 +177,135 @@
             </table>
         </section>
     {/if}
+
+    <!-- Available Releases -->
+    <section class="info-section">
+        <div class="section-header">
+            <h3>Available Releases</h3>
+            <button class="btn-refresh" on:click={fetchAllReleases} disabled={fetchingReleases}>
+                {fetchingReleases ? 'Checking...' : 'Refresh'}
+            </button>
+        </div>
+
+        {#if fetchError}
+            <p class="fetch-error">{fetchError}</p>
+        {:else if fetchingReleases && $availableReleases.length === 0}
+            <p class="no-data">Fetching releases from GitHub...</p>
+        {:else if $availableReleases.length === 0}
+            <p class="no-data">No releases found</p>
+        {:else}
+            <table class="info-table releases-table">
+                <thead>
+                    <tr>
+                        <th>Controller</th>
+                        <th>Latest</th>
+                        <th>Running</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {#each [...releasesByController.entries()] as [ctrl, latest]}
+                        {@const running = connectedController === ctrl ? connectedVersion : ''}
+                        {@const status = running ? (compareVersions(latest.version, running) > 0 ? 'update' : compareVersions(latest.version, running) === 0 ? 'current' : 'older') : ''}
+                        <tr class:highlight={ctrl === connectedController}>
+                            <td>{ctrl}</td>
+                            <td>v{latest.version}{latest.prerelease ? ' (pre)' : ''}</td>
+                            <td>{running ? `v${running}` : '—'}</td>
+                            <td>
+                                {#if status === 'update'}
+                                    <span class="badge badge-update">Update available</span>
+                                {:else if status === 'current'}
+                                    <span class="badge badge-current">Up to date</span>
+                                {:else if status === 'older'}
+                                    <span class="badge badge-older">Newer on device</span>
+                                {:else}
+                                    <span class="text-dim">—</span>
+                                {/if}
+                            </td>
+                        </tr>
+                    {/each}
+                </tbody>
+            </table>
+        {/if}
+    </section>
+
+    <!-- Flash from Release -->
+    <section class="info-section">
+        <h3>Flash Firmware</h3>
+
+        <div class="flash-controls">
+            <div class="control-row">
+                <label for="ctrl-select">Controller</label>
+                <select id="ctrl-select" bind:value={selectedController} disabled={$firmwareRunning}>
+                    <option value="">— Select controller —</option>
+                    {#each $firmwareTargets as t}
+                        <option value={t.name}>{t.name} ({t.platform})</option>
+                    {/each}
+                </select>
+            </div>
+
+            <div class="control-row">
+                <label for="release-select">Release</label>
+                <select id="release-select" bind:value={selectedRelease} disabled={$firmwareRunning || controllerReleases.length === 0}>
+                    {#if controllerReleases.length === 0}
+                        <option value="">— No releases —</option>
+                    {:else}
+                        {#each controllerReleases as r}
+                            <option value={r.tag}>v{r.version}{r.prerelease ? ' (pre-release)' : ''} — {formatDate(r.published)}</option>
+                        {/each}
+                    {/if}
+                </select>
+            </div>
+
+            {#if currentRelease}
+                <div class="release-detail">
+                    <span class="detail-label">Asset:</span>
+                    <span class="mono">{currentRelease.assetName}</span>
+                    <span class="detail-sep">|</span>
+                    <span>{formatBytes(currentRelease.assetSize)}</span>
+                    {#if versionStatus === 'newer'}
+                        <span class="detail-sep">|</span>
+                        <span class="badge badge-update">Update</span>
+                    {:else if versionStatus === 'same'}
+                        <span class="detail-sep">|</span>
+                        <span class="badge badge-current">Same version</span>
+                    {:else if versionStatus === 'older'}
+                        <span class="detail-sep">|</span>
+                        <span class="badge badge-older">Downgrade</span>
+                    {/if}
+                </div>
+            {/if}
+
+            <div class="control-row">
+                <label for="flash-port">Port</label>
+                <input id="flash-port" type="text" bind:value={flashPort} placeholder="auto-detect" disabled={$firmwareRunning} />
+            </div>
+
+            <div class="option-row">
+                <label><input type="checkbox" bind:checked={skipVerify} disabled={$firmwareRunning} /> Skip verify</label>
+            </div>
+
+            <div class="action-row">
+                <button class="btn-flash" on:click={startFlash} disabled={!selectedRelease || $firmwareRunning}>
+                    {$firmwareRunning ? 'Flashing...' : 'Flash'}
+                </button>
+            </div>
+        </div>
+
+        <!-- Log output -->
+        {#if $firmwareLogs.length > 0}
+            <div class="flash-log" bind:this={logEl}>
+                {#each $firmwareLogs as log}
+                    <div class="log-line {log.type}">
+                        {#if log.type === 'step'}
+                            <span class="step-badge">[{log.step}/{log.total}]</span>
+                        {/if}
+                        {log.message}
+                    </div>
+                {/each}
+            </div>
+        {/if}
+    </section>
 </div>
 
 <script context="module" lang="ts">
@@ -60,12 +314,21 @@
         if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
         return `${bytes} B`
     }
+
+    function formatDate(iso: string): string {
+        try {
+            const d = new Date(iso)
+            return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+        } catch {
+            return iso
+        }
+    }
 </script>
 
 <style>
     .firmware-tab {
         padding: 24px;
-        max-width: 640px;
+        max-width: 760px;
     }
 
     h2 {
@@ -86,6 +349,49 @@
         text-transform: uppercase;
         letter-spacing: 0.5px;
         margin-bottom: 10px;
+    }
+
+    .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+    }
+
+    .section-header h3 {
+        margin-bottom: 0;
+    }
+
+    .btn-refresh {
+        padding: 4px 12px;
+        font-size: 11px;
+        color: var(--text-dim);
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        cursor: pointer;
+        transition: all 0.15s;
+    }
+
+    .btn-refresh:hover:not(:disabled) {
+        color: var(--text);
+        border-color: var(--text-dim);
+    }
+
+    .btn-refresh:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .no-data {
+        font-size: 13px;
+        color: var(--text-dim);
+        font-style: italic;
+    }
+
+    .fetch-error {
+        font-size: 13px;
+        color: var(--error);
     }
 
     .info-table {
@@ -130,5 +436,188 @@
 
     .status.disconnected {
         color: var(--text-dim);
+    }
+
+    /* ─── Releases Table ─── */
+
+    .releases-table tr.highlight {
+        background: rgba(255, 255, 255, 0.03);
+    }
+
+    .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .badge-update {
+        background: rgba(59, 130, 246, 0.15);
+        color: #60a5fa;
+    }
+
+    .badge-current {
+        background: rgba(34, 197, 94, 0.15);
+        color: #4ade80;
+    }
+
+    .badge-older {
+        background: rgba(251, 191, 36, 0.15);
+        color: #fbbf24;
+    }
+
+    .text-dim {
+        color: var(--text-dim);
+    }
+
+    /* ─── Flash Controls ─── */
+
+    .flash-controls {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .control-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .control-row label {
+        width: 72px;
+        font-size: 13px;
+        color: var(--text-dim);
+        flex-shrink: 0;
+    }
+
+    .control-row select,
+    .control-row input[type="text"] {
+        flex: 1;
+        padding: 6px 10px;
+        font-size: 13px;
+        font-family: var(--font-mono);
+        background: var(--bg-secondary);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        outline: none;
+    }
+
+    .control-row select:focus,
+    .control-row input[type="text"]:focus {
+        border-color: var(--accent);
+    }
+
+    .release-detail {
+        font-size: 12px;
+        color: var(--text-dim);
+        padding-left: 82px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .detail-label {
+        color: var(--text-dim);
+        opacity: 0.7;
+    }
+
+    .detail-sep {
+        opacity: 0.3;
+    }
+
+    .option-row {
+        display: flex;
+        gap: 16px;
+        padding-left: 82px;
+    }
+
+    .option-row label {
+        font-size: 12px;
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        user-select: none;
+    }
+
+    .option-row input[type="checkbox"] {
+        accent-color: var(--accent);
+    }
+
+    .action-row {
+        padding-left: 82px;
+        padding-top: 4px;
+    }
+
+    .btn-flash {
+        padding: 8px 24px;
+        font-size: 13px;
+        font-weight: 600;
+        background: var(--accent);
+        color: var(--bg);
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: opacity 0.15s;
+    }
+
+    .btn-flash:hover:not(:disabled) {
+        opacity: 0.85;
+    }
+
+    .btn-flash:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+    }
+
+    /* ─── Flash Log ─── */
+
+    .flash-log {
+        margin-top: 12px;
+        max-height: 300px;
+        overflow-y: auto;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 8px 12px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    .log-line {
+        white-space: pre-wrap;
+        word-break: break-all;
+    }
+
+    .log-line.ok {
+        color: var(--success);
+    }
+
+    .log-line.error {
+        color: var(--error);
+    }
+
+    .log-line.warning {
+        color: var(--warning);
+    }
+
+    .log-line.step {
+        color: var(--accent);
+        font-weight: 600;
+    }
+
+    .log-line.info {
+        color: var(--text);
+    }
+
+    .step-badge {
+        opacity: 0.6;
+        margin-right: 6px;
     }
 </style>

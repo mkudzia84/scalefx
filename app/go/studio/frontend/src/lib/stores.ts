@@ -61,12 +61,16 @@ export function pushConsoleMessage(type: ConsoleMessage['type'], content: string
     })
 }
 
+// ─── Board state machine ───
+
+/** Board connection state: disconnected → connected → flashing → disconnected */
+export type BoardState = 'disconnected' | 'connected' | 'flashing'
+export const boardState = writable<BoardState>('disconnected')
+
 // ─── UI state ───
 
-/** App phase: 'startup' shows connect dialog, 'main' shows the main layout */
-export const appPhase = writable<'startup' | 'main'>('startup')
-
-export const showConnectDialog = writable(true) // shown on startup
+/** Whether the connect popup overlay is visible */
+export const connectPopupOpen = writable(true) // shown on startup
 export const showAboutDialog = writable(false)
 export const showConsole = writable(false)
 
@@ -79,3 +83,35 @@ export const availablePorts = writable<PortInfo[]>([])
 /** Slave controller info (HubFX only) */
 export const slaveInfo = writable<SlaveInfo[]>([])
 
+// ─── Firmware flashing state ───
+
+export interface FirmwareTarget {
+    name: string
+    platform: string
+    subDir: string
+}
+
+export interface FirmwareProgress {
+    step: number
+    total: number
+    message: string
+    type: 'info' | 'ok' | 'warning' | 'error' | 'step'
+    done: boolean
+    error?: string
+}
+
+export interface ReleaseInfo {
+    controller: string
+    version: string
+    tag: string
+    name: string
+    prerelease: boolean
+    published: string
+    assetName: string
+    assetSize: number
+}
+
+export const firmwareTargets = writable<FirmwareTarget[]>([])
+export const firmwareRunning = writable(false)
+export const firmwareLogs = writable<FirmwareProgress[]>([])
+export const availableReleases = writable<ReleaseInfo[]>([])

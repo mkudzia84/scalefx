@@ -30,6 +30,22 @@ export namespace main {
 	        this.freeRAM = source["freeRAM"];
 	    }
 	}
+	export class FirmwareTarget {
+	    name: string;
+	    platform: string;
+	    subDir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FirmwareTarget(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.platform = source["platform"];
+	        this.subDir = source["subDir"];
+	    }
+	}
 	export class PortInfo {
 	    name: string;
 	    description: string;
@@ -42,6 +58,32 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.description = source["description"];
+	    }
+	}
+	export class ReleaseInfo {
+	    controller: string;
+	    version: string;
+	    tag: string;
+	    name: string;
+	    prerelease: boolean;
+	    published: string;
+	    assetName: string;
+	    assetSize: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ReleaseInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.controller = source["controller"];
+	        this.version = source["version"];
+	        this.tag = source["tag"];
+	        this.name = source["name"];
+	        this.prerelease = source["prerelease"];
+	        this.published = source["published"];
+	        this.assetName = source["assetName"];
+	        this.assetSize = source["assetSize"];
 	    }
 	}
 	export class SlaveInfo {

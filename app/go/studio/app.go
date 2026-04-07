@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"scalefx/engine"
+	"scalefx/firmware"
 	"scalefx/protocol"
 	"scalefx/protocol/core"
 	"sort"
@@ -223,4 +224,263 @@ func (a *App) getConnectionInfo() ConnectionInfo {
 		info.FreeRAM = a.eng.Info.FreeRAM
 	}
 	return info
+}
+
+// ─── Firmware Operations (GUI bindings) ───
+
+// FirmwareTarget describes a controller target for the GUI dropdown.
+type FirmwareTarget struct {
+	Name     string `json:"name"`
+	Platform string `json:"platform"`
+	SubDir   string `json:"subDir"`
+}
+
+// FirmwareProgress is emitted as "firmware:progress" events.
+type FirmwareProgress struct {
+	Step    int    `json:"step"`
+	Total   int    `json:"total"`
+	Message string `json:"message"`
+	Type    string `json:"type"` // "info", "ok", "warning", "error", "step"
+	Done    bool   `json:"done"`
+	Error   string `json:"error,omitempty"`
+}
+
+// GetFirmwareTargets returns all available controller targets.
+func (a *App) GetFirmwareTargets() []FirmwareTarget {
+	var targets []FirmwareTarget
+	for _, name := range firmware.ControllerNames() {
+		ctrl := firmware.Controllers[name]
+		platform := "Pico (UF2)"
+		if ctrl.IsESP32() {
+			platform = "ESP32-S3 (UART)"
+		}
+		targets = append(targets, FirmwareTarget{
+			Name:     name,
+			Platform: platform,
+			SubDir:   ctrl.SubDir,
+		})
+	}
+	return targets
+}
+
+// GetFirmwareVersion reads the current version from source for a controller.
+func (a *App) GetFirmwareVersion(controllerName string) map[string]interface{} {
+	ctrl, ok := firmware.Controllers[controllerName]
+	if !ok {
+		return map[string]interface{}{"error": "unknown controller"}
+	}
+	opts := &firmware.Options{Controller: controllerName}
+	version, buildNum, err := firmware.ExtractVersion(opts, ctrl)
+	if err != nil {
+		return map[string]interface{}{"error": err.Error()}
+	}
+	return map[string]interface{}{
+		"version": version,
+		"build":   buildNum,
+	}
+}
+
+// BuildAndFlash runs the full build → flash → verify pipeline in the background.
+// Progress emitted as "firmware:progress" Wails events.
+func (a *App) BuildAndFlash(controllerName string, port string, noBuild bool, noClean bool, skipVerify bool) {
+	go a.runFirmwareOp(controllerName, port, noBuild, noClean, skipVerify)
+}
+
+func (a *App) runFirmwareOp(controllerName string, port string, noBuild bool, noClean bool, skipVerify bool) {
+	// Disconnect if we're connected (flash needs the port)
+	a.mu.Lock()
+	if a.eng.Conn != nil {
+		connPort := a.eng.Conn.PortName()
+		if port == "" || strings.EqualFold(connPort, port) {
+			a.emitFwProgress("warning", "Disconnecting from "+connPort+"...")
+			a.eng.Dispatch("disconnect")
+			wailsRT.EventsEmit(a.ctx, "connection:changed", a.getConnectionInfo())
+		}
+	}
+	a.mu.Unlock()
+
+	opts := &firmware.Options{
+		Controller: controllerName,
+		Port:       port,
+		NoBuild:    noBuild,
+		NoClean:    noClean,
+		SkipVerify: skipVerify,
+		Timeout:    15,
+		OnEvent: func(evt firmware.Event) {
+			typ := "info"
+			switch evt.Type {
+			case firmware.EventOK:
+				typ = "ok"
+			case firmware.EventWarning:
+				typ = "warning"
+			case firmware.EventError:
+				typ = "error"
+			case firmware.EventStep:
+				typ = "step"
+			}
+			wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+				Step:    evt.Step,
+				Total:   evt.Total,
+				Message: evt.Message,
+				Type:    typ,
+			})
+		},
+	}
+
+	err := firmware.Run(opts)
+
+	if err != nil {
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: err.Error(),
+			Type:    "error",
+			Done:    true,
+			Error:   err.Error(),
+		})
+	} else {
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: "Flash complete!",
+			Type:    "ok",
+			Done:    true,
+		})
+	}
+}
+
+func (a *App) emitFwProgress(typ string, msg string) {
+	wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+		Message: msg,
+		Type:    typ,
+	})
+}
+
+// ─── Remote Firmware Releases (GUI bindings) ───
+
+// ReleaseInfo is the frontend-friendly release representation.
+type ReleaseInfo struct {
+	Controller string `json:"controller"`
+	Version    string `json:"version"`
+	Tag        string `json:"tag"`
+	Name       string `json:"name"`
+	Prerelease bool   `json:"prerelease"`
+	Published  string `json:"published"`
+	AssetName  string `json:"assetName"`
+	AssetSize  int64  `json:"assetSize"`
+}
+
+// GetReleases fetches available firmware releases from GitHub.
+// Pass controller="" to get all, or a specific name like "gunfx".
+func (a *App) GetReleases(controller string) []ReleaseInfo {
+	releases, err := firmware.FetchReleases(controller, nil)
+	if err != nil {
+		a.emitFwProgress("error", "Failed to fetch releases: "+err.Error())
+		return []ReleaseInfo{}
+	}
+
+	var result []ReleaseInfo
+	for _, r := range releases {
+		result = append(result, ReleaseInfo{
+			Controller: r.Controller,
+			Version:    r.Version,
+			Tag:        r.Tag,
+			Name:       r.Name,
+			Prerelease: r.Prerelease,
+			Published:  r.Published,
+			AssetName:  r.AssetName,
+			AssetSize:  r.AssetSize,
+		})
+	}
+	return result
+}
+
+// FlashFromRelease downloads a release from GitHub and flashes it to the board.
+// Progress emitted as "firmware:progress" Wails events.
+func (a *App) FlashFromRelease(controller string, tag string, port string, skipVerify bool) {
+	go a.runReleaseFlash(controller, tag, port, skipVerify)
+}
+
+func (a *App) runReleaseFlash(controller string, tag string, port string, skipVerify bool) {
+	// Find the release
+	releases, err := firmware.FetchReleases(controller, nil)
+	if err != nil {
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: "Failed to fetch releases: " + err.Error(),
+			Type:    "error",
+			Done:    true,
+			Error:   err.Error(),
+		})
+		return
+	}
+
+	var rel *firmware.Release
+	for i, r := range releases {
+		if r.Tag == tag {
+			rel = &releases[i]
+			break
+		}
+	}
+	if rel == nil {
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: "Release not found: " + tag,
+			Type:    "error",
+			Done:    true,
+			Error:   "release not found",
+		})
+		return
+	}
+
+	// Disconnect if needed
+	a.mu.Lock()
+	if a.eng.Conn != nil {
+		connPort := a.eng.Conn.PortName()
+		if port == "" || strings.EqualFold(connPort, port) {
+			a.emitFwProgress("warning", "Disconnecting from "+connPort+"...")
+			a.eng.Dispatch("disconnect")
+			wailsRT.EventsEmit(a.ctx, "connection:changed", a.getConnectionInfo())
+		}
+	}
+	a.mu.Unlock()
+
+	opts := &firmware.Options{
+		Controller: controller,
+		Port:       port,
+		SkipVerify: skipVerify,
+		Timeout:    15,
+		OnEvent: func(evt firmware.Event) {
+			typ := "info"
+			switch evt.Type {
+			case firmware.EventOK:
+				typ = "ok"
+			case firmware.EventWarning:
+				typ = "warning"
+			case firmware.EventError:
+				typ = "error"
+			case firmware.EventStep:
+				typ = "step"
+			case firmware.EventProgress:
+				typ = "info"
+			}
+			wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+				Step:    evt.Step,
+				Total:   evt.Total,
+				Message: evt.Message,
+				Type:    typ,
+			})
+		},
+	}
+
+	err = firmware.FlashRelease(*rel, opts)
+
+	if err != nil {
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: err.Error(),
+			Type:    "error",
+			Done:    true,
+			Error:   err.Error(),
+		})
+	} else {
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: "Flash complete!",
+			Type:    "ok",
+			Done:    true,
+		})
+	}
 }

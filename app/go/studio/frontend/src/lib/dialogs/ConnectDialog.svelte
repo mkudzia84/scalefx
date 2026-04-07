@@ -1,10 +1,10 @@
 <!-- ScaleFX Studio — Connect Dialog -->
-<!-- Full-screen modal for selecting a serial port. Shown on startup and on disconnect. -->
+<!-- Popup overlay for selecting a serial port. Shown on startup and on disconnect. -->
 <!-- Auto-refreshes when COM ports change (via ports:changed event from Go backend). -->
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte'
     import {
-        showConnectDialog, connectionInfo, appPhase,
+        connectPopupOpen, connectionInfo, boardState,
         pushConsoleMessage, availablePorts
     } from '../stores'
     import type { PortInfo } from '../stores'
@@ -59,8 +59,8 @@
             const info = await Connect(selectedPort)
             $connectionInfo = info
             if (info.connected) {
-                $showConnectDialog = false
-                $appPhase = 'main'
+                $connectPopupOpen = false
+                $boardState = 'connected'
             } else {
                 errorMsg = 'Connection failed — device did not respond'
             }
@@ -73,13 +73,19 @@
 
     function handleKeydown(e: KeyboardEvent) {
         if (e.key === 'Enter' && selectedPort && !connecting) doConnect()
+        if (e.key === 'Escape') dismiss()
+    }
+
+    function dismiss() {
+        $connectPopupOpen = false
     }
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
 
-<div class="connect-fullscreen">
+<div class="connect-overlay" on:click|self={dismiss}>
     <div class="connect-card">
+        <button class="close-btn" on:click={dismiss} title="Close">✕</button>
         <div class="connect-header">
             <img class="connect-logo" src={logoUrl} alt="ScaleFX" />
             <p class="connect-subtitle">Select a board to connect</p>
@@ -131,19 +137,44 @@
 </div>
 
 <style>
-    .connect-fullscreen {
+    .connect-overlay {
         position: fixed;
         inset: 0;
         display: flex;
         align-items: center;
         justify-content: center;
-        background: var(--bg-base);
+        background: rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(4px);
         z-index: 200;
     }
 
     .connect-card {
+        position: relative;
         width: 400px;
         max-width: 90vw;
+        background: var(--bg-base);
+        border-radius: 10px;
+        padding: 28px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    }
+
+    .close-btn {
+        position: absolute;
+        top: 10px;
+        right: 12px;
+        background: none;
+        border: none;
+        color: var(--text-dim);
+        font-size: 16px;
+        cursor: pointer;
+        padding: 4px 6px;
+        border-radius: 4px;
+        line-height: 1;
+    }
+
+    .close-btn:hover {
+        color: var(--text-bright);
+        background: var(--bg-raised);
     }
 
     .connect-header {
