@@ -109,12 +109,15 @@ CommandResult LedProtocolClient::ledSeqClear(uint8_t channel) {
     return sendCommand(LightFxPacket::LED_SEQ_CLEAR, payload, sizeof(payload));
 }
 
-CommandResult LedProtocolClient::ledSeqAddOn(uint8_t channel, uint16_t durationMs, uint8_t brightness) {
-    uint8_t payload[5];
+CommandResult LedProtocolClient::ledSeqAddOn(uint8_t channel, uint16_t durationMs,
+                                              uint8_t brightness, uint8_t pwmDuty) {
+    uint8_t payload[8];
     payload[0] = channel;
     payload[1] = LightFxEventType::ON;
-    putU16LE(&payload[2], durationMs);
-    payload[4] = brightness;
+    putU16LE(&payload[2], durationMs);          // p1 = duration
+    putU16LE(&payload[4], (uint16_t)pwmDuty);   // p2 = pwmDuty (0=no power save, 1-100=duty%)
+    payload[6] = brightness;                     // p3 = brightness
+    payload[7] = 0;                              // p4 = reserved
     return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
 }
 
@@ -141,21 +144,23 @@ CommandResult LedProtocolClient::ledSeqAddFlash(uint8_t channel, uint16_t interv
 
 CommandResult LedProtocolClient::ledSeqAddFadeIn(uint8_t channel, uint16_t durationMs,
                                                   uint8_t brightness) {
-    uint8_t payload[5];
+    uint8_t payload[7];
     payload[0] = channel;
     payload[1] = LightFxEventType::FADE_IN;
-    putU16LE(&payload[2], durationMs);
-    payload[4] = brightness;
+    putU16LE(&payload[2], durationMs);          // p1 = duration
+    putU16LE(&payload[4], 0);                   // p2 = unused
+    payload[6] = brightness;                     // p3 = brightness
     return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
 }
 
 CommandResult LedProtocolClient::ledSeqAddFadeOut(uint8_t channel, uint16_t durationMs,
                                                    uint8_t brightness) {
-    uint8_t payload[5];
+    uint8_t payload[7];
     payload[0] = channel;
     payload[1] = LightFxEventType::FADE_OUT;
-    putU16LE(&payload[2], durationMs);
-    payload[4] = brightness;
+    putU16LE(&payload[2], durationMs);          // p1 = duration
+    putU16LE(&payload[4], 0);                   // p2 = unused
+    payload[6] = brightness;                     // p3 = brightness
     return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
 }
 
@@ -166,10 +171,26 @@ CommandResult LedProtocolClient::ledSeqAddFading(uint8_t channel, uint16_t cycle
     uint8_t payload[8];
     payload[0] = channel;
     payload[1] = LightFxEventType::FADING;
-    putU16LE(&payload[2], cycleMs);
-    putU16LE(&payload[4], durationMs);
-    payload[6] = minBrightness;
-    payload[7] = maxBrightness;
+    putU16LE(&payload[2], cycleMs);             // p1 = cycle
+    putU16LE(&payload[4], durationMs);          // p2 = duration
+    payload[6] = minBrightness;                  // p3 = min
+    payload[7] = maxBrightness;                  // p4 = max
+    return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
+}
+
+CommandResult LedProtocolClient::ledSeqAddBeacon(uint8_t channel, uint16_t cycleMs,
+                                                  uint16_t durationMs,
+                                                  uint8_t flashPercent,
+                                                  uint8_t maxBrightness,
+                                                  uint8_t minBrightness) {
+    uint8_t payload[9];
+    payload[0] = channel;
+    payload[1] = LightFxEventType::BEACON;
+    putU16LE(&payload[2], cycleMs);             // p1 = cycle
+    putU16LE(&payload[4], durationMs);          // p2 = duration
+    payload[6] = flashPercent;                   // p3 = flash percent
+    payload[7] = maxBrightness;                  // p4 = max brightness
+    payload[8] = minBrightness;                  // p5 = min brightness
     return sendCommand(LightFxPacket::LED_SEQ_ADD, payload, sizeof(payload));
 }
 

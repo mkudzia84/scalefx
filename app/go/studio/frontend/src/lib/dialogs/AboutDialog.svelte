@@ -1,6 +1,7 @@
 <!-- ScaleFX Studio — About Dialog -->
 <script lang="ts">
     import { showAboutDialog } from '../stores'
+    import logoUrl from '../../assets/images/logo.jpg'
 
     function close() {
         $showAboutDialog = false
@@ -15,6 +16,7 @@
 
 <div class="modal-backdrop" on:click|self={close}>
     <div class="modal about-modal">
+        <img class="about-logo" src={logoUrl} alt="ScaleFX" />
         <div class="about-header">
             <h2>ScaleFX Studio</h2>
             <span class="about-version">v1.0.0</span>
@@ -46,6 +48,16 @@
 <style>
     .about-modal {
         text-align: left;
+    }
+
+    .about-logo {
+        width: 100%;
+        max-height: 140px;
+        object-fit: cover;
+        object-position: center;
+        border-radius: 4px;
+        margin-bottom: 14px;
+        box-shadow: var(--logo-shadow);
     }
 
     .about-header {

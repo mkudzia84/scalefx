@@ -58,9 +58,10 @@ CommandHandleResult LedProtocolServer::handleModulePacket(uint8_t type, const ui
             uint16_t param2   = (len >= 6) ? getU16LE(&payload[4]) : 0;
             uint8_t  param3   = (len >= 7) ? payload[6] : 100;
             uint8_t  param4   = (len >= 8) ? payload[7] : 50;
+            uint8_t  param5   = (len >= 9) ? payload[8] : 0;   // optional 5th param (e.g., BEACON minBrightness)
             SFX_VALIDATE(_ledManager->isValidChannel(channel), LightFxError::INVALID_CHANNEL);
             SFX_VALIDATE(LightFxSpec::isValidEventType(eventType), LightFxError::INVALID_EVENT);
-            uint8_t err = _ledManager->seqAdd(channel, eventType, param1, param2, param3, param4);
+            uint8_t err = _ledManager->seqAdd(channel, eventType, param1, param2, param3, param4, param5);
             if (err == 0) sendAck(); else sendNack(err);
             return CommandHandleResult::Handled;
         }

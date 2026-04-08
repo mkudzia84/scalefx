@@ -16,8 +16,8 @@ func (a *LightFxApi) LedSet(ch, brightness byte) ApiResult { return a.sendACK(li
 func (a *LightFxApi) LedOff(ch byte) ApiResult             { return a.sendACK(lightfx.CmdLedOff(ch)) }
 func (a *LightFxApi) LedStatus() ApiResult                 { return a.sendQuery(lightfx.CmdLedStatus(), lightfx.LedStatusResp) }
 
-func (a *LightFxApi) SeqAdd(ch, eventType byte, p1, p2 uint16, p3, p4 byte) ApiResult {
-	return a.sendACK(lightfx.CmdLedSeqAdd(ch, eventType, p1, p2, p3, p4))
+func (a *LightFxApi) SeqAdd(ch, eventType byte, p1, p2 uint16, p3, p4 byte, extra ...byte) ApiResult {
+	return a.sendACK(lightfx.CmdLedSeqAdd(ch, eventType, p1, p2, p3, p4, extra...))
 }
 
 func (a *LightFxApi) SeqClear(ch byte) ApiResult              { return a.sendACK(lightfx.CmdLedSeqClear(ch)) }

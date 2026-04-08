@@ -17,15 +17,17 @@ public static class LightFxCommands
         => Packet.Build(PacketTypes.LightFx.LED_SEQ_CLEAR, [ch]);
 
     public static byte[] LedSeqAdd(byte ch, byte eventType, ushort param1, ushort param2,
-        byte param3 = 0, byte param4 = 0)
+        byte param3 = 0, byte param4 = 0, params byte[] extra)
     {
-        var payload = new byte[8];
+        var payload = new byte[8 + extra.Length];
         payload[0] = ch;
         payload[1] = eventType;
         Endian.U16LE(param1).CopyTo(payload, 2);
         Endian.U16LE(param2).CopyTo(payload, 4);
         payload[6] = param3;
         payload[7] = param4;
+        for (int i = 0; i < extra.Length; i++)
+            payload[8 + i] = extra[i];
         return Packet.Build(PacketTypes.LightFx.LED_SEQ_ADD, payload);
     }
 

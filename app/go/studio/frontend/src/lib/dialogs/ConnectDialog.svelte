@@ -184,10 +184,13 @@
 
     .connect-logo {
         width: 100%;
-        height: auto;
+        max-height: 160px;
+        object-fit: cover;
+        object-position: center;
         margin: 0 auto 16px;
         display: block;
         border-radius: 6px;
+        box-shadow: var(--logo-shadow);
     }
 
     .connect-header h1 {

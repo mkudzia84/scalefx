@@ -89,12 +89,17 @@ public:
  * 
  * When powerSaving is enabled, the LED pulses at high frequency (1kHz+)
  * which appears constant to human eyes but reduces power consumption.
+ *
+ * @note duration=0 makes this event run indefinitely.  Because the event
+ *       never completes, the sequence will NOT advance to the next event
+ *       and will NOT loop.  Use this as a "terminal" event to hold a
+ *       steady state after a timed pattern (e.g., FADE_IN → ON∞).
  */
 class LedOn : public ILedEvent {
 public:
     /**
      * @brief Create an LED on event
-     * @param durationMs Duration in milliseconds (0 = infinite)
+     * @param durationMs Duration in milliseconds (0 = infinite, prevents looping)
      * @param brightness LED brightness 0-100 (default 100 = full)
      * @param powerSaving If true, use PWM even at full brightness for power saving
      * @param pwmDuty Power saving duty 0-100 when power saving (default 78%)
@@ -144,12 +149,16 @@ private:
  * @brief LED constantly off for a specified duration
  * 
  * Useful for creating patterns with explicit off periods.
+ *
+ * @note duration=0 makes this event run indefinitely.  The sequence will
+ *       NOT advance past this event and will NOT loop.  Use as a terminal
+ *       "stay off" event when looping is not desired.
  */
 class LedOff : public ILedEvent {
 public:
     /**
      * @brief Create an LED off event
-     * @param durationMs Duration in milliseconds (0 = infinite)
+     * @param durationMs Duration in milliseconds (0 = infinite, prevents looping)
      */
     explicit LedOff(uint32_t durationMs = 0)
         : _durationMs(durationMs) {}

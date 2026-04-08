@@ -1,10 +1,8 @@
 <!-- ScaleFX Studio — Console Panel -->
 <!-- Right-side slide-out console panel embedded in the main layout. -->
 <script lang="ts">
-    import { onMount, afterUpdate, onDestroy } from 'svelte'
-    import { consoleMessages, pushConsoleMessage, connectionInfo, showConsole } from '../stores'
-    import type { ConsoleMessage } from '../stores'
-    import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
+    import { afterUpdate } from 'svelte'
+    import { consoleMessages, connectionInfo, showConsole } from '../stores'
     import { SendCommand } from '../../../wailsjs/go/main/App'
 
     let inputValue = ''
@@ -17,18 +15,8 @@
     let historyIndex = -1
     let savedInput = ''
 
-    onMount(() => {
-        EventsOn('console:output', (msg: { type: string; content: string }) => {
-            pushConsoleMessage(msg.type as ConsoleMessage['type'], msg.content)
-        })
-        inputEl?.focus()
-    })
-
-    onDestroy(() => {
-        EventsOff('console:output')
-    })
-
     afterUpdate(() => {
+        // Auto-scroll to bottom when new messages arrive
         if (shouldAutoScroll && outputEl) {
             outputEl.scrollTop = outputEl.scrollHeight
         }

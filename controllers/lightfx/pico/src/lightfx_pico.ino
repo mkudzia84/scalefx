@@ -33,8 +33,8 @@
 //  FIRMWARE INFO
 // ============================================================================
 
-#define FIRMWARE_VERSION "0.7.0"
-#define BUILD_NUMBER 19
+#define FIRMWARE_VERSION "0.8.0"
+#define BUILD_NUMBER 21
 
 // ============================================================================
 //  PIN CONFIGURATION

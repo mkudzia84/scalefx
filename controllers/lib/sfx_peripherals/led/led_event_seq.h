@@ -41,6 +41,11 @@ class ILedOutput;
  * 
  * Events are played in order, and when the last event completes,
  * the sequence loops back to the first event.
+ *
+ * @note If an event has duration=0 (infinite), it never completes.
+ *       The sequence will stall on that event and never advance or
+ *       loop.  Use an infinite ON/OFF as the last event to hold a
+ *       terminal state (e.g., FADE_IN → ON∞ fades in then stays on).
  */
 class LedEventSeq {
 public:

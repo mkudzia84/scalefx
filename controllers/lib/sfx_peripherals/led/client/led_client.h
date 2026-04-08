@@ -42,14 +42,18 @@ public:
     // ========================================================================
 
     CommandResult ledSeqClear(uint8_t channel);
-    CommandResult ledSeqAddOn(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
+    CommandResult ledSeqAddOn(uint8_t channel, uint16_t durationMs, uint8_t brightness = 100,
+                               uint8_t pwmDuty = 0);
     CommandResult ledSeqAddOff(uint8_t channel, uint16_t durationMs);
     CommandResult ledSeqAddFlash(uint8_t channel, uint16_t intervalMs, uint16_t durationMs,
-                                 uint8_t brightness = 255, uint8_t dutyPercent = 50);
-    CommandResult ledSeqAddFadeIn(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
-    CommandResult ledSeqAddFadeOut(uint8_t channel, uint16_t durationMs, uint8_t brightness = 255);
+                                 uint8_t brightness = 100, uint8_t dutyPercent = 50);
+    CommandResult ledSeqAddFadeIn(uint8_t channel, uint16_t durationMs, uint8_t brightness = 100);
+    CommandResult ledSeqAddFadeOut(uint8_t channel, uint16_t durationMs, uint8_t brightness = 100);
     CommandResult ledSeqAddFading(uint8_t channel, uint16_t cycleMs, uint16_t durationMs = 0,
-                                  uint8_t minBrightness = 0, uint8_t maxBrightness = 255);
+                                  uint8_t minBrightness = 0, uint8_t maxBrightness = 100);
+    CommandResult ledSeqAddBeacon(uint8_t channel, uint16_t cycleMs, uint16_t durationMs = 0,
+                                  uint8_t flashPercent = 15, uint8_t maxBrightness = 100,
+                                  uint8_t minBrightness = 0);
     CommandResult ledSeqStart(uint8_t channel);
     CommandResult ledSeqStop(uint8_t channel);
     CommandResult ledSeqRestart(uint8_t channel);

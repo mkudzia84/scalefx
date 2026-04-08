@@ -25,8 +25,8 @@ public class LightFxApi : ApiClient
     // ─── Sequences ───
 
     public Task<ApiResult> SeqAddAsync(byte ch, byte eventType, ushort p1 = 0, ushort p2 = 0,
-        byte p3 = 0, byte p4 = 0, CancellationToken ct = default) =>
-        SendAckAsync(LightFxCommands.LedSeqAdd(ch, eventType, p1, p2, p3, p4), ct);
+        byte p3 = 0, byte p4 = 0, CancellationToken ct = default, params byte[] extra) =>
+        SendAckAsync(LightFxCommands.LedSeqAdd(ch, eventType, p1, p2, p3, p4, extra), ct);
 
     public Task<ApiResult> SeqClearAsync(byte ch, CancellationToken ct = default) =>
         SendAckAsync(LightFxCommands.LedSeqClear(ch), ct);

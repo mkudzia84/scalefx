@@ -124,7 +124,7 @@
 
     <!-- Connected board info -->
     <section class="info-section">
-        <h3>Connected Board</h3>
+        <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg> Connected Board</h3>
         {#if $connectionInfo.connected}
             <table class="info-table">
                 <tr><td class="label">Name</td><td>{$connectionInfo.controllerName || '—'}</td></tr>
@@ -143,7 +143,7 @@
 
     {#if $connectionInfo.controllerType === 'hubfx' && $slaveInfo.length > 0}
         <section class="info-section">
-            <h3>Slave Controllers</h3>
+            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg> Slave Controllers</h3>
             <table class="info-table">
                 <thead>
                     <tr>
@@ -176,7 +176,7 @@
     <!-- Available Releases -->
     <section class="info-section">
         <div class="section-header">
-            <h3>Available Releases</h3>
+            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg> Available Releases</h3>
             <button class="btn-refresh" on:click={fetchAllReleases} disabled={fetchingReleases}>
                 {fetchingReleases ? 'Checking...' : 'Refresh'}
             </button>
@@ -226,7 +226,7 @@
 
     <!-- Flash from Release -->
     <section class="info-section">
-        <h3>Flash Firmware</h3>
+        <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Flash Firmware</h3>
 
         <div class="flash-controls">
             <div class="control-row">
@@ -354,6 +354,14 @@
         text-transform: uppercase;
         letter-spacing: 0.5px;
         margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    h3 svg {
+        opacity: 0.7;
+        flex-shrink: 0;
     }
 
     .section-header {
@@ -446,7 +454,7 @@
     /* ─── Releases Table ─── */
 
     .releases-table tr.highlight {
-        background: rgba(255, 255, 255, 0.03);
+        background: var(--highlight-row);
     }
 
     .badge {
@@ -459,18 +467,18 @@
     }
 
     .badge-update {
-        background: rgba(59, 130, 246, 0.15);
-        color: #60a5fa;
+        background: var(--badge-update-bg);
+        color: var(--badge-update-fg);
     }
 
     .badge-current {
-        background: rgba(34, 197, 94, 0.15);
-        color: #4ade80;
+        background: var(--badge-current-bg);
+        color: var(--badge-current-fg);
     }
 
     .badge-older {
-        background: rgba(251, 191, 36, 0.15);
-        color: #fbbf24;
+        background: var(--badge-older-bg);
+        color: var(--badge-older-fg);
     }
 
     .text-dim {

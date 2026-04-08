@@ -7,6 +7,7 @@
     --bg-surface: #252526;
     --bg-raised: #2d2d2d;
     --bg-input: #3c3c3c;
+    --bg-secondary: #2a2a2a;
     --border: #3e3e3e;
     --border-focus: #007acc;
     --text: #cccccc;
@@ -23,6 +24,15 @@
     --shadow: rgba(0, 0, 0, 0.4);
     --scrollbar-thumb: #555;
     --scrollbar-thumb-hover: #666;
+    --logo-shadow: none;
+    --badge-update-bg: rgba(59, 130, 246, 0.15);
+    --badge-update-fg: #60a5fa;
+    --badge-current-bg: rgba(34, 197, 94, 0.15);
+    --badge-current-fg: #4ade80;
+    --badge-older-bg: rgba(251, 191, 36, 0.15);
+    --badge-older-fg: #fbbf24;
+    --highlight-row: rgba(255, 255, 255, 0.03);
+    --ok: #4ec9b0;
 }
 
 /* Light theme */
@@ -31,6 +41,7 @@
     --bg-surface: #ffffff;
     --bg-raised: #e8e8e8;
     --bg-input: #ffffff;
+    --bg-secondary: #f0f0f0;
     --border: #d1d1d1;
     --border-focus: #005fb8;
     --text: #1e1e1e;
@@ -45,6 +56,47 @@
     --shadow: rgba(0, 0, 0, 0.12);
     --scrollbar-thumb: #c1c1c1;
     --scrollbar-thumb-hover: #a0a0a0;
+    --logo-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    --badge-update-bg: rgba(0, 95, 184, 0.1);
+    --badge-update-fg: #005fb8;
+    --badge-current-bg: rgba(27, 138, 60, 0.1);
+    --badge-current-fg: #1b8a3c;
+    --badge-older-bg: rgba(157, 93, 0, 0.1);
+    --badge-older-fg: #9d5d00;
+    --highlight-row: rgba(0, 0, 0, 0.03);
+    --ok: #0e7a5e;
+}
+
+/* Gray theme */
+[data-theme="gray"] {
+    --bg-base: #2b2b2b;
+    --bg-surface: #333333;
+    --bg-raised: #3a3a3a;
+    --bg-input: #444444;
+    --bg-secondary: #363636;
+    --border: #4a4a4a;
+    --border-focus: #5a9fd4;
+    --text: #c0c0c0;
+    --text-dim: #808080;
+    --text-bright: #d8d8d8;
+    --accent: #5a9fd4;
+    --accent-hover: #6db3e8;
+    --success: #5cb88a;
+    --error: #e05555;
+    --warning: #c4a300;
+    --info: #6aaee0;
+    --shadow: rgba(0, 0, 0, 0.35);
+    --scrollbar-thumb: #5a5a5a;
+    --scrollbar-thumb-hover: #6a6a6a;
+    --logo-shadow: none;
+    --badge-update-bg: rgba(90, 159, 212, 0.15);
+    --badge-update-fg: #6aaee0;
+    --badge-current-bg: rgba(92, 184, 138, 0.15);
+    --badge-current-fg: #5cb88a;
+    --badge-older-bg: rgba(196, 163, 0, 0.15);
+    --badge-older-fg: #c4a300;
+    --highlight-row: rgba(255, 255, 255, 0.03);
+    --ok: #4ec9b0;
 }
 
 * {
@@ -86,6 +138,10 @@ html, body {
 [data-theme="light"] .c-magenta { color: #a626a4; }
 [data-theme="light"] .c-cyan { color: #0184bc; }
 
+[data-theme="gray"] .c-blue { color: #6aaee0; }
+[data-theme="gray"] .c-magenta { color: #d4a0d0; }
+[data-theme="gray"] .c-cyan { color: #5abcd8; }
+
 /* ─── Scrollbar ─── */
 
 ::-webkit-scrollbar {
@@ -117,7 +173,7 @@ button {
 }
 button:hover {
     background: var(--bg-input);
-    border-color: #555;
+    border-color: var(--text-dim);
 }
 button.primary {
     background: var(--accent);

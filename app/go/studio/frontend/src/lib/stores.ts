@@ -32,6 +32,7 @@ export interface SlaveInfo {
     name: string
     connected: boolean
     ready: boolean
+    enabled: boolean
 }
 
 // ─── Connection state ───
@@ -72,6 +73,7 @@ export const boardState = writable<BoardState>('disconnected')
 /** Whether the connect popup overlay is visible */
 export const connectPopupOpen = writable(true) // shown on startup
 export const showAboutDialog = writable(false)
+export const showViewSettings = writable(false)
 export const showConsole = writable(false)
 
 /** Currently active tab index */

@@ -79,14 +79,17 @@ namespace LightFxPacket {
 }
 
 // LED event types for binary protocol
+// NOTE: For ON and OFF, duration=0 means infinite — the event never completes,
+//       which prevents the sequence from advancing or looping.  Use as a
+//       terminal event to hold a steady state (e.g., FADE_IN → ON∞).
 namespace LightFxEventType {
-    constexpr uint8_t ON        = 0x00;  // [duration:u16][brightness:u8]
-    constexpr uint8_t OFF       = 0x01;  // [duration:u16]
+    constexpr uint8_t ON        = 0x00;  // [duration:u16][pwmDuty:u16][brightness:u8]  (duration 0=infinite/no-loop, pwmDuty 0=off, 1-100=power save)
+    constexpr uint8_t OFF       = 0x01;  // [duration:u16]  (duration 0=infinite/no-loop)
     constexpr uint8_t FLASH     = 0x02;  // [interval:u16][duration:u16][brightness:u8][duty:u8]
-    constexpr uint8_t FADE_IN   = 0x03;  // [duration:u16][brightness:u8]
-    constexpr uint8_t FADE_OUT  = 0x04;  // [duration:u16][brightness:u8]
+    constexpr uint8_t FADE_IN   = 0x03;  // [duration:u16][unused:u16][brightness:u8]
+    constexpr uint8_t FADE_OUT  = 0x04;  // [duration:u16][unused:u16][brightness:u8]
     constexpr uint8_t FADING    = 0x05;  // [cycle:u16][duration:u16][min:u8][max:u8]
-    constexpr uint8_t BEACON    = 0x06;  // [cycle:u16][duration:u16][flashPct:u8][max:u8]
+    constexpr uint8_t BEACON    = 0x06;  // [cycle:u16][duration:u16][flashPct:u8][max:u8][min:u8]
     constexpr uint8_t MAX_TYPE  = 0x06;  // Maximum valid event type
 }
 

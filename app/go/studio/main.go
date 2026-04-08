@@ -65,6 +65,10 @@ func createMenu(app *App) *menu.Menu {
 	viewMenu.AddText("Console", keys.CmdOrCtrl("`"), func(_ *menu.CallbackData) {
 		wailsRT.EventsEmit(app.ctx, "menu:console")
 	})
+	viewMenu.AddSeparator()
+	viewMenu.AddText("Settings...", keys.CmdOrCtrl(","), func(_ *menu.CallbackData) {
+		wailsRT.EventsEmit(app.ctx, "menu:viewsettings")
+	})
 
 	helpMenu := m.AddSubmenu("Help")
 	helpMenu.AddText("About ScaleFX Studio", nil, func(_ *menu.CallbackData) {

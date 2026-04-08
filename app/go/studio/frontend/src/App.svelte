@@ -4,17 +4,26 @@
     import { onMount } from 'svelte'
     import ConnectDialog from './lib/dialogs/ConnectDialog.svelte'
     import AboutDialog from './lib/dialogs/AboutDialog.svelte'
+    import ViewSettingsDialog from './lib/dialogs/ViewSettingsDialog.svelte'
     import FlashProgressDialog from './lib/dialogs/FlashProgressDialog.svelte'
     import MainLayout from './lib/layout/MainLayout.svelte'
     import {
         boardState, connectPopupOpen, showAboutDialog, showConsole,
-        connectionInfo, activeTab, showFlashProgress
+        showViewSettings,
+        connectionInfo, activeTab, showFlashProgress,
+        pushConsoleMessage
     } from './lib/stores'
-    import { theme } from './lib/theme'
+    import type { ConsoleMessage } from './lib/stores'
+    import { theme, fontSize } from './lib/theme'
     import { EventsOn } from '../wailsjs/runtime/runtime'
     import { GetConnectionInfo } from '../wailsjs/go/main/App'
 
     onMount(async () => {
+        // Console output events from backend (always active, even when panel hidden)
+        EventsOn('console:output', (msg: { type: string; content: string }) => {
+            pushConsoleMessage(msg.type as ConsoleMessage['type'], msg.content)
+        })
+
         // Menu events from native Wails menus
         EventsOn('menu:connect', () => {
             $connectPopupOpen = true
@@ -24,6 +33,9 @@
         })
         EventsOn('menu:console', () => {
             $showConsole = !$showConsole
+        })
+        EventsOn('menu:viewsettings', () => {
+            $showViewSettings = true
         })
 
         // Connection state changes from backend
@@ -56,9 +68,10 @@
     })
 
     // Apply theme class to document root
-    $: {
-        document.documentElement.setAttribute('data-theme', $theme)
-    }
+    $: document.documentElement.setAttribute('data-theme', $theme)
+
+    // Apply font size to document root
+    $: document.documentElement.style.fontSize = `${$fontSize}px`
 </script>
 
 <div class="app-layout">
@@ -76,6 +89,10 @@
 
 {#if $showFlashProgress}
     <FlashProgressDialog />
+{/if}
+
+{#if $showViewSettings}
+    <ViewSettingsDialog />
 {/if}
 
 <style>

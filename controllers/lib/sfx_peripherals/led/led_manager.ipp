@@ -54,7 +54,8 @@ uint8_t LedManager<N, G>::seqClear(uint8_t ch) {
 template <uint8_t N, typename G>
 uint8_t LedManager<N, G>::seqAdd(uint8_t ch, uint8_t eventType,
                                   uint16_t p1, uint16_t p2,
-                                  uint8_t p3, uint8_t p4) {
+                                  uint8_t p3, uint8_t p4,
+                                  uint8_t p5) {
     if (ch < 1 || ch > N) return LightFxError::INVALID_CHANNEL;
     if (!_enabled[ch - 1]) return LightFxError::CHANNEL_DISABLED;
 
@@ -64,10 +65,13 @@ uint8_t LedManager<N, G>::seqAdd(uint8_t ch, uint8_t eventType,
     ILedEvent* event = nullptr;
 
     switch (eventType) {
-        case LightFxEventType::ON:
-            // p1=duration, p3=brightness
-            event = new LedOn(p1, p3 > 0 ? p3 : 100);
+        case LightFxEventType::ON: {
+            // p1=duration, p2=pwmDuty (0=no power save, 1-100=duty%), p3=brightness
+            uint8_t duty = (uint8_t)(p2 & 0xFF);
+            bool powerSave = duty > 0 && duty <= 100;
+            event = new LedOn(p1, p3 > 0 ? p3 : 100, powerSave, powerSave ? duty : 78);
             break;
+        }
         case LightFxEventType::OFF:
             // p1=duration
             event = new LedOff(p1);
@@ -89,8 +93,8 @@ uint8_t LedManager<N, G>::seqAdd(uint8_t ch, uint8_t eventType,
             event = new LedFading(p1, p2, p3, p4 > 0 ? p4 : 100);
             break;
         case LightFxEventType::BEACON:
-            // p1=cycle, p2=duration, p3=flashPercent, p4=maxBrightness
-            event = new LedBeacon(p1, p2, p3 > 0 ? p3 : 15, 0, p4 > 0 ? p4 : 100);
+            // p1=cycle, p2=duration, p3=flashPercent, p4=maxBrightness, p5=minBrightness
+            event = new LedBeacon(p1, p2, p3 > 0 ? p3 : 15, p5, p4 > 0 ? p4 : 100);
             break;
         default:
             return LightFxError::INVALID_EVENT;

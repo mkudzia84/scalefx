@@ -107,11 +107,15 @@ func (h *Handler) cmdSeqAdd(args []string) {
 	switch event {
 	case "on":
 		if len(rest) < 2 {
-			h.E.Out.Error("Usage: seq.add <ch> on <duration_ms> <brightness>")
+			h.E.Out.Error("Usage: seq.add <ch> on <duration_ms> <brightness> [pwm_duty]")
 			return
 		}
 		dur, bright := uint16(engine.Atoi(rest[0])), byte(engine.Atoi(rest[1]))
-		h.E.Ack(lfx.SeqAdd(byte(ch), lfxp.EvtOn, dur, 0, bright, 0),
+		pwmDuty := uint16(0) // 0 = no power save, 1-100 = duty percent
+		if len(rest) > 2 {
+			pwmDuty = uint16(engine.Atoi(rest[2]))
+		}
+		h.E.Ack(lfx.SeqAdd(byte(ch), lfxp.EvtOn, dur, pwmDuty, bright, 0),
 			fmt.Sprintf("Seq %d: ON %dms at %d%%", ch, dur, bright))
 
 	case "off":
@@ -172,19 +176,22 @@ func (h *Handler) cmdSeqAdd(args []string) {
 
 	case "beacon":
 		if len(rest) < 2 {
-			h.E.Out.Error("Usage: seq.add <ch> beacon <cycle_ms> <duration_ms> [flash_pct] [max]")
+			h.E.Out.Error("Usage: seq.add <ch> beacon <cycle_ms> <duration_ms> [flash_pct] [max] [min]")
 			return
 		}
 		cycle, dur := uint16(engine.Atoi(rest[0])), uint16(engine.Atoi(rest[1]))
-		flashPct, maxB := byte(15), byte(100)
+		flashPct, maxB, minB := byte(15), byte(100), byte(0)
 		if len(rest) > 2 {
 			flashPct = byte(engine.Atoi(rest[2]))
 		}
 		if len(rest) > 3 {
 			maxB = byte(engine.Atoi(rest[3]))
 		}
-		h.E.Ack(lfx.SeqAdd(byte(ch), lfxp.EvtBeacon, cycle, dur, flashPct, maxB),
-			fmt.Sprintf("Seq %d: BEACON cycle %dms for %dms, flash %d%% peak %d%%", ch, cycle, dur, flashPct, maxB))
+		if len(rest) > 4 {
+			minB = byte(engine.Atoi(rest[4]))
+		}
+		h.E.Ack(lfx.SeqAdd(byte(ch), lfxp.EvtBeacon, cycle, dur, flashPct, maxB, minB),
+			fmt.Sprintf("Seq %d: BEACON cycle %dms for %dms, flash %d%% %d-%d%%", ch, cycle, dur, flashPct, minB, maxB))
 
 	default:
 		h.E.Out.Error("Unknown event: %s", event)
@@ -195,13 +202,14 @@ func (h *Handler) cmdSeqAdd(args []string) {
 func (h *Handler) printSeqAddUsage() {
 	h.E.Out.Info("Usage: seq.add <ch> <event> <params...>")
 	h.E.Out.Info("Events:")
-	h.E.Out.Printf("  on      <duration_ms> <brightness>\n")
+	h.E.Out.Printf("  on      <duration_ms> <brightness> [pwm_duty]\n")
 	h.E.Out.Printf("  off     <duration_ms>\n")
 	h.E.Out.Printf("  flash   <interval_ms> <duration_ms> <brightness> [duty]\n")
 	h.E.Out.Printf("  fadein  <duration_ms> <brightness>\n")
 	h.E.Out.Printf("  fadeout <duration_ms> <brightness>\n")
 	h.E.Out.Printf("  fading  <cycle_ms> <duration_ms> [min] [max]\n")
-	h.E.Out.Printf("  beacon  <cycle_ms> <duration_ms> [flash_pct] [max]\n")
+	h.E.Out.Printf("  beacon  <cycle_ms> <duration_ms> [flash_pct] [max] [min]\n")
+	h.E.Out.Printf("\nNote: duration=0 means infinite. For ON/OFF this prevents looping.\n")
 }
 
 func (h *Handler) cmdSeqStart(args []string) {

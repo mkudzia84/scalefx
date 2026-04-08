@@ -127,12 +127,15 @@ Each LED channel has its own sequence that can hold up to 24 events.
 
 | Type | Name | Parameters | Description |
 |------|------|------------|-------------|
-| 0x00 | ON | duration:u16le, brightness:u8 | Constant on |
+| 0x00 | ON | duration:u16le, pwmDuty:u16le, brightness:u8 | Constant on (pwmDuty 0=off, 1-100=power save) |
 | 0x01 | OFF | duration:u16le | Constant off |
 | 0x02 | FLASH | interval:u16le, duration:u16le, brightness:u8, duty:u8 | On/off flashing |
-| 0x03 | FADE_IN | duration:u16le, brightness:u8 | Fade from off to on |
-| 0x04 | FADE_OUT | duration:u16le, brightness:u8 | Fade from on to off |
+| 0x03 | FADE_IN | duration:u16le, unused:u16le, brightness:u8 | Fade from off to on |
+| 0x04 | FADE_OUT | duration:u16le, unused:u16le, brightness:u8 | Fade from on to off |
 | 0x05 | FADING | cycle:u16le, duration:u16le, min:u8, max:u8 | Sinusoidal breathing |
+| 0x06 | BEACON | cycle:u16le, duration:u16le, flashPct:u8, max:u8, min:u8 | Rotating beacon flash |
+
+**Duration = 0 (infinite):** For ON, OFF, FLASH, FADING, and BEACON, setting `duration` to 0 means the event runs indefinitely. **For ON and OFF this prevents the sequence from advancing to the next event and from looping.** Use an infinite ON or OFF as the last event in a sequence when you want a steady terminal state (e.g., `FADE_IN 1000ms → ON ∞` fades in and stays on permanently).
 
 ### Servo Control
 

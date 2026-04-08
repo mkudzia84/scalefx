@@ -86,11 +86,12 @@ func CmdLedSeqClear(ch byte) []byte {
 	return protocol.BuildPacket(LedSeqClear, []byte{ch}, 0)
 }
 
-func CmdLedSeqAdd(ch, eventType byte, param1, param2 uint16, param3, param4 byte) []byte {
+func CmdLedSeqAdd(ch, eventType byte, param1, param2 uint16, param3, param4 byte, extra ...byte) []byte {
 	payload := []byte{ch, eventType}
 	payload = append(payload, protocol.U16LE(param1)...)
 	payload = append(payload, protocol.U16LE(param2)...)
 	payload = append(payload, param3, param4)
+	payload = append(payload, extra...)
 	return protocol.BuildPacket(LedSeqAdd, payload, 0)
 }
 

@@ -96,7 +96,8 @@ public:
     /// Add event to a channel's sequence
     virtual uint8_t seqAdd(uint8_t ch, uint8_t eventType,
                            uint16_t p1, uint16_t p2,
-                           uint8_t p3, uint8_t p4) = 0;
+                           uint8_t p3, uint8_t p4,
+                           uint8_t p5 = 0) = 0;
 
     /// Start sequence playback — 0 = all
     virtual uint8_t seqStart(uint8_t ch) = 0;
@@ -275,7 +276,8 @@ public:
     uint8_t seqClear(uint8_t ch) override;
     uint8_t seqAdd(uint8_t ch, uint8_t eventType,
                    uint16_t p1, uint16_t p2,
-                   uint8_t p3, uint8_t p4) override;
+                   uint8_t p3, uint8_t p4,
+                   uint8_t p5 = 0) override;
     uint8_t seqStart(uint8_t ch) override;
     uint8_t seqStop(uint8_t ch) override;
     uint8_t seqRestart(uint8_t ch) override;
