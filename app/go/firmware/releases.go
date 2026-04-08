@@ -436,9 +436,11 @@ func flashPicoFromFile(opts *Options, ctrl Controller, fwPath string) error {
 		opts.info("Detected Pico port: %s", port)
 	}
 
+	// The board may reboot instantly on the 1200-baud open, causing the
+	// serial library to report an error. That's OK — check for the drive.
 	opts.info("Entering BOOTSEL mode via %s...", port)
 	if err := enterBootsel(port); err != nil {
-		return fmt.Errorf("BOOTSEL entry failed: %w", err)
+		opts.warn("BOOTSEL serial trigger: %v (checking for drive anyway)", err)
 	}
 
 	opts.info("Waiting for BOOTSEL drive...")
@@ -460,30 +462,7 @@ func flashPicoFromFile(opts *Options, ctrl Controller, fwPath string) error {
 }
 
 // flashESP32FromFile flashes a specific firmware file to an ESP32-S3 via esptool.
+// Delegates to FlashESP32FromBinary which prefers standalone esptool.
 func flashESP32FromFile(opts *Options, ctrl Controller, fwPath string) error {
-	port := opts.Port
-	var err error
-	if port == "" {
-		port, err = DetectESP32Port()
-		if err != nil {
-			opts.warn("No ESP32 port detected, esptool will attempt auto-detect")
-		} else {
-			opts.info("Detected ESP32 port: %s", port)
-		}
-	}
-
-	// Use esptool directly since we have a standalone .bin
-	opts.info("Uploading via esptool to ESP32...")
-
-	// For ESP32-S3, the firmware.bin is written at offset 0x10000
-	args := []string{
-		"-m", "esptool",
-		"--chip", "esp32s3",
-	}
-	if port != "" {
-		args = append(args, "--port", port)
-	}
-	args = append(args, "write_flash", "0x10000", fwPath)
-
-	return runEsptool(opts, args)
+	return FlashESP32FromBinary(opts, opts.Port, fwPath)
 }

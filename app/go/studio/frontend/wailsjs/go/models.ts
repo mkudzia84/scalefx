@@ -65,6 +65,7 @@ export namespace main {
 	    version: string;
 	    tag: string;
 	    name: string;
+	    body: string;
 	    prerelease: boolean;
 	    published: string;
 	    assetName: string;
@@ -80,6 +81,7 @@ export namespace main {
 	        this.version = source["version"];
 	        this.tag = source["tag"];
 	        this.name = source["name"];
+	        this.body = source["body"];
 	        this.prerelease = source["prerelease"];
 	        this.published = source["published"];
 	        this.assetName = source["assetName"];
@@ -102,6 +104,22 @@ export namespace main {
 	        this.name = source["name"];
 	        this.connected = source["connected"];
 	        this.ready = source["ready"];
+	    }
+	}
+	export class ToolsStatus {
+	    esptoolInstalled: boolean;
+	    esptoolPath: string;
+	    esptoolSource: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ToolsStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.esptoolInstalled = source["esptoolInstalled"];
+	        this.esptoolPath = source["esptoolPath"];
+	        this.esptoolSource = source["esptoolSource"];
 	    }
 	}
 

@@ -8,6 +8,8 @@ export function Connect(arg1:string):Promise<main.ConnectionInfo>;
 
 export function Disconnect():Promise<main.ConnectionInfo>;
 
+export function DownloadEsptool():Promise<void>;
+
 export function FlashFromRelease(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
 
 export function GetConnectionInfo():Promise<main.ConnectionInfo>;
@@ -19,6 +21,8 @@ export function GetFirmwareVersion(arg1:string):Promise<Record<string, any>>;
 export function GetReleases(arg1:string):Promise<Array<main.ReleaseInfo>>;
 
 export function GetSlaveInfo():Promise<Array<main.SlaveInfo>>;
+
+export function GetToolsStatus():Promise<main.ToolsStatus>;
 
 export function ListPorts():Promise<Array<main.PortInfo>>;
 

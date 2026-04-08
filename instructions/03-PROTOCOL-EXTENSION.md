@@ -11,14 +11,17 @@ Files_To_Modify:
   Always:
     - "lib/sfx_serial/serial/xxxfx/xxxfx.h"            # Packet type, error codes, handler logic
     - "controllers/xxxfx/pico/src/*.ino"     # Callback implementation
-    - "tests/framework/packets.py"           # Python constant
-    - "tests/framework/commands.py"          # Python builder
-    - "tests/cli/handlers/xxxfx.py"          # CLI command
+    - "app/go/protocol/xxxfx/types.go"       # Go packet/error constants
+    - "app/go/protocol/xxxfx/commands.go"    # Go command builder
+    - "app/go/engine/handlers/handler_xxxfx.go" # Go CLI command
+    - "app/win32/ScaleFXSerial/PacketTypes.cs"  # C# packet constant
+    - "app/win32/ScaleFXSerial/Commands/XxxFxCommands.cs" # C# command builder
     - "controllers/xxxfx/pico/README.md"     # Documentation
   
   If_New_Error_Codes:
     - "lib/sfx_serial/serial/xxxfx/xxxfx.h"             # C++ error constant (in module's error namespace)
-    - "tests/framework/packets.py"           # Python error constant
+    - "app/go/protocol/xxxfx/types.go"       # Go error constant
+    - "app/win32/ScaleFXSerial/ErrorCodes.cs" # C# error constant
 ```
 
 ---
@@ -151,168 +154,68 @@ gunfxServer.onAmmoSet(handleAmmoSet);
 
 ---
 
-### Step 5: Add Python Packet Constant
+### Step 5: Add Go CLI Support
 
-**File:** `tests/framework/packets.py`
+**File:** `app/go/protocol/gunfx/types.go`
 
-**FIND:**
-```python
-class GunFxPacket:
-    """GunFX packet types (0x01-0x2F)"""
-    TRIGGER_ON = 0x01
-    # ...existing...
+**ADD packet constant:**
+```go
+AmmoSet = 0x25
 ```
+
+**ADD error constant (if defined):**
+```go
+ErrAmmoInvalid = 0x15
+```
+
+Also update `PacketTypeName()` switch and error name maps.
+
+**File:** `app/go/protocol/gunfx/commands.go`
+
+**ADD command builder:**
+```go
+func AmmoSet(count uint16) []byte {
+    payload := make([]byte, 2)
+    binary.LittleEndian.PutUint16(payload, count)
+    return payload
+}
+```
+
+**File:** `app/go/engine/handlers/handler_gunfx.go`
+
+Add CLI command handler and register in command list.
+
+---
+
+### Step 6: Add C# Library Support
+
+**File:** `app/win32/ScaleFXSerial/PacketTypes.cs`
 
 **ADD:**
-```python
-    AMMO_SET = 0x25
+```csharp
+public const byte AmmoSet = 0x25;
 ```
 
-**ALSO ADD error if defined:**
-```python
-class GunFxError:
-    # ...existing...
-    AMMO_INVALID = 0x15
+**File:** `app/win32/ScaleFXSerial/ErrorCodes.cs` (if new errors):
+```csharp
+public const byte GunFxAmmoInvalid = 0x15;
 ```
 
----
-
-### Step 6: Add Python Command Builder
-
-**File:** `tests/framework/commands.py`
-
-**FIND:**
-```python
-class GunFxCommands:
-    # ...existing methods...
-```
+**File:** `app/win32/ScaleFXSerial/Commands/GunFxCommands.cs`
 
 **ADD:**
-```python
-    @staticmethod
-    def ammo_set(count: int) -> bytes:
-        """Build AMMO_SET packet.
-        
-        Args:
-            count: Ammunition count (0-9999)
-        """
-        payload = struct.pack('<H', count)  # little-endian uint16
-        return build_packet(GunFxPacket.AMMO_SET, payload)
+```csharp
+public static byte[] AmmoSet(ushort count)
+{
+    var payload = new byte[2];
+    Endian.PutU16LE(payload, 0, count);
+    return CoreCommands.BuildPacket(GunFxPacketTypes.AmmoSet, payload);
+}
 ```
 
 ---
 
-### Step 7: Add Test
-
-**File:** `tests/gunfx/test_ammo.py` (NEW FILE)
-
-```python
-"""GunFX ammo command tests."""
-import pytest
-from tests.framework import (
-    ScaleFXConnection, CommandBuilder, GunFxCommands,
-    GunFxPacket, GunFxError, CoreError
-)
-from tests.framework.protocol import build_packet
-
-
-class TestAmmoSet:
-    """Tests for AMMO_SET command."""
-    
-    def test_valid_count(self, connection):
-        """Test setting valid ammo count."""
-        connection.send_and_wait(CommandBuilder.init())
-        
-        packet = GunFxCommands.ammo_set(500)
-        success, response = connection.send_expect_ack(packet)
-        
-        assert success, f"Expected ACK, got: {response}"
-    
-    def test_zero_count(self, connection):
-        """Test setting ammo to zero."""
-        connection.send_and_wait(CommandBuilder.init())
-        
-        packet = GunFxCommands.ammo_set(0)
-        success, response = connection.send_expect_ack(packet)
-        
-        assert success
-    
-    def test_max_count(self, connection):
-        """Test setting maximum ammo count."""
-        connection.send_and_wait(CommandBuilder.init())
-        
-        packet = GunFxCommands.ammo_set(9999)
-        success, response = connection.send_expect_ack(packet)
-        
-        assert success
-    
-    def test_invalid_count(self, connection):
-        """Test setting ammo count over limit."""
-        connection.send_and_wait(CommandBuilder.init())
-        
-        packet = GunFxCommands.ammo_set(10000)
-        success, response = connection.send_expect_ack(packet)
-        
-        assert not success
-        assert response.error_code == GunFxError.AMMO_INVALID
-    
-    def test_missing_payload(self, connection):
-        """Test AMMO_SET with empty payload."""
-        connection.send_and_wait(CommandBuilder.init())
-        
-        packet = build_packet(GunFxPacket.AMMO_SET, b'')
-        success, response = connection.send_expect_ack(packet)
-        
-        assert not success
-        assert response.error_code == CoreError.MISSING_PARAMETER
-```
-
----
-
-### Step 8: Add CLI Command
-
-**File:** `tests/cli/handlers/gunfx.py`
-
-**ACTION 8.1 - Add to get_commands() dict:**
-```python
-'gunfx.ammo': (self.cmd_gunfx_ammo, CommandInfo(
-    'gunfx.ammo', 'gunfx.ammo set <count>',
-    'Set ammunition count (0-9999)',
-    requires_init=True)),
-```
-
-**ACTION 8.2 - Add handler method:**
-```python
-def cmd_gunfx_ammo(self, args: List[str]):
-    """GunFX ammunition control."""
-    if not args or args[0].lower() != 'set':
-        self.print_error("Usage: gunfx.ammo set <count>")
-        return
-    
-    if len(args) < 2:
-        self.print_error("Usage: gunfx.ammo set <count>")
-        return
-    
-    try:
-        count = int(args[1])
-        if count < 0 or count > 9999:
-            self.print_error("Count must be 0-9999")
-            return
-        
-        packet = GunFxCommands.ammo_set(count)
-        success, response = self.conn.send_expect_ack(packet)
-        
-        if success:
-            self.print_success(f"Ammo set to {count}")
-        else:
-            self.print_response(response)
-    except ValueError:
-        self.print_error("Invalid count value")
-```
-
----
-
-### Step 9: Update Documentation
+### Step 7: Update Documentation
 
 **File:** `controllers/gunfx/pico/README.md`
 
@@ -332,20 +235,16 @@ def cmd_gunfx_ammo(self, args: List[str]):
 
 ```bash
 # 1. Build firmware
-python -m platformio run -e pico -d controllers/gunfx/pico
+app/go/scalefx-flash.exe build gunfx --no-clean
 
-# 2. Check Python syntax
-python -m py_compile tests/framework/packets.py
-python -m py_compile tests/framework/commands.py
-python -m py_compile tests/cli/handlers/gunfx.py
+# 2. Build Go CLI
+cd app/go && go build ./cli/
 
-# 3. Flash and test
-python scripts/build_and_flash.py gunfx
-pytest tests/gunfx/test_ammo.py -v
+# 3. Build C# library
+dotnet build app/win32/ScaleFXSerial/
 
 # 4. CLI smoke test
-python -m tests.cli.interactive
-# > connect
+app/go/scalefx-cli.exe -p COM5
 # > init
 # > help          (verify gunfx.ammo appears)
 # > gunfx.ammo set 100
@@ -358,19 +257,19 @@ python -m tests.cli.interactive
 ```yaml
 No_Payload:
   cpp: "// No payload parsing needed"
-  python: "return build_packet(TYPE, b'')"
+  go: "payload := []byte{}"
 
 Single_Uint8:
   cpp: "uint8_t val = payload[0];"
-  python: "payload = struct.pack('<B', val)"
+  go: "payload := []byte{val}"
 
 Single_Uint16:
   cpp: "uint16_t val = payload[0] | (payload[1] << 8);"
-  python: "payload = struct.pack('<H', val)"
+  go: "binary.LittleEndian.PutUint16(payload, val)"
 
 Single_Uint32:
   cpp: "uint32_t val = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);"
-  python: "payload = struct.pack('<I', val)"
+  go: "binary.LittleEndian.PutUint32(payload, val)"
 
 Mixed_Types:
   example: "[channel:u8][brightness:u8][duration:u16]"
@@ -378,14 +277,18 @@ Mixed_Types:
     uint8_t channel = payload[0];
     uint8_t brightness = payload[1];
     uint16_t duration = payload[2] | (payload[3] << 8);
-  python: "payload = struct.pack('<BBH', channel, brightness, duration)"
+  go: |
+    payload := make([]byte, 4)
+    payload[0] = channel
+    payload[1] = brightness
+    binary.LittleEndian.PutUint16(payload[2:], duration)
 
 String:
   cpp: |
     char name[len + 1];
     memcpy(name, payload, len);
     name[len] = '\0';
-  python: "payload = name.encode('utf-8')"
+  go: "payload := []byte(name)"
 ```
 
 ---
@@ -412,13 +315,15 @@ Before_Marking_Complete:
     - [ ] "IF query: onModulePacket() resolves tag (implicit ACK)"
     - [ ] "IF long-running: completion signal documented"
 
-  Python_and_CLI:
-    - [ ] Python packet constant added
-    - [ ] Python error constants added (if any)
-    - [ ] Python command builder added
-    - [ ] Test file created
-    - [ ] CLI command added to handlers/xxxfx.py
-    - [ ] CLI handler method added
+  Go_CLI_and_CSharp:
+    - [ ] Go packet constant added
+    - [ ] Go error constants added (if any)
+    - [ ] Go command builder added
+    - [ ] Go CLI command added to handler_xxxfx.go
+    - [ ] Go CLI handler method added
+    - [ ] C# packet constant added to PacketTypes.cs
+    - [ ] C# error constants added to ErrorCodes.cs (if any)
+    - [ ] C# command builder added to Commands/XxxFxCommands.cs
   
   Documentation:
     - [ ] README.md updated with protocol entry

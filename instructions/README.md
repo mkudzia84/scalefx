@@ -17,9 +17,6 @@ Task: "Fix bug in protocol handler"
   → Read: 01-ARCHITECTURE.md (understand pattern)
   → Checklist: 04-CHANGE-PROPAGATION.md#modifying-an-existing-command
 
-Task: "Run/write tests"
-  → Read: 06-TEST-SUITE.md
-
 Task: "Build and deploy firmware"
   → Read: 05-BUILD-AND-FLASH.md
 
@@ -178,49 +175,6 @@ Serial_Library:
       purpose: "HubFxAudioServer/Client, HubFxStorageServer/Client, HubFxPacket, HubFxError (NOT auto-included by serial.h)"
       modify_when: "Adding HubFX audio, storage, or file commands"
 
-Python_Framework:
-  root: "tests/"
-  files:
-    - name: "framework/packets.py"
-      purpose: "Packet constants (must mirror core/core.h)"
-      modify_when: "Adding packet types or error codes"
-    - name: "framework/commands.py"
-      purpose: "Command builder functions"
-      modify_when: "Adding commands"
-    - name: "framework/connection.py"
-      purpose: "ScaleFXConnection class"
-      modify_when: "Rarely"
-    - name: "cli/base.py"
-      purpose: "CommandHandlerBase (_send_ack, _wrap_packet, _print_ack_response), CommandInfo, OutputMixin, ControllerType"
-      modify_when: "Adding controller types, output helpers, or packet send infrastructure"
-    - name: "cli/output.py"
-      purpose: "TerminalUI split-screen terminal (prompt_toolkit Application)"
-      modify_when: "Changing terminal UI layout or stdout capture behavior"
-    - name: "cli/parsers.py"
-      purpose: "Response packet parsing utilities"
-      modify_when: "Adding response packet types"
-    - name: "cli/interactive.py"
-      purpose: "Main CLI class (composes handlers + TerminalUI)"
-      modify_when: "Adding controllers or core features"
-    - name: "cli/handlers/core.py"
-      purpose: "Core/protocol commands (connect, init, status)"
-      modify_when: "Modifying core commands"
-    - name: "cli/handlers/gunfx.py"
-      purpose: "GunFX commands (trigger, servo, smoke) — uses _send_ack for hub routing compatibility"
-      modify_when: "Adding GunFX CLI commands"
-    - name: "cli/handlers/lightfx.py"
-      purpose: "LightFX commands (led, servo, power, sequences) — uses _send_ack for hub routing compatibility"
-      modify_when: "Adding LightFX CLI commands"
-    - name: "cli/handlers/gearcontrol.py"
-      purpose: "GearControl commands (gear, servo, yaw, calibration) — uses _send_ack for hub routing compatibility"
-      modify_when: "Adding GearControl CLI commands"
-    - name: "cli/handlers/hubfx.py"
-      purpose: "HubFX hub commands + composed slave routing (auto-discovers slave commands from direct handlers)"
-      modify_when: "Adding HubFX commands, slave routing exclusions, or new slave controller types"
-    - name: "cli/handlers/storage.py"
-      purpose: "Reusable file operations (SD/Flash) parameterized by storage target"
-      modify_when: "Adding storage CLI commands"
-
 Controllers:
   pattern: "controllers/{name}/pico/"
   files:
@@ -230,13 +184,6 @@ Controllers:
       purpose: "Build configuration"
     - name: "README.md"
       purpose: "Protocol documentation"
-
-Scripts:
-  root: "scripts/"
-  files:
-    - name: "build_and_flash.py"
-      purpose: "Centralized build/flash for all Pico controllers"
-      usage: "python scripts/build_and_flash.py <controller>"
 ```
 ```yaml
 Go_CLI:
@@ -249,7 +196,7 @@ Go_CLI:
         purpose: "Packet type constants, error codes (mirrors C++ headers)"
         modify_when: "Adding packet types or error codes"
       - name: "commands.go"
-        purpose: "Command builders (mirrors tests/framework/commands.py)"
+        purpose: "Command builders (mirrors C++ command definitions)"
         modify_when: "Adding commands"
       - name: "connection.go"
         purpose: "Serial connection, tag-correlated send/receive, stream waiters"
@@ -366,7 +313,7 @@ Q2: What response category? (See 03-PROTOCOL-EXTENSION.md § Response Category D
 
 Q3: Are new error codes needed?
 ├─ YES → Add to xxxfx/xxxfx.h in module error namespace (e.g., GunFxError)
-│        Add to tests/framework/packets.py
+│        Add to app/go/protocol/packets.go and app/win32/ScaleFXSerial/ErrorCodes.cs
 └─ NO → Continue
 
 Q4: Is callback type defined in xxxfx/xxxfx.h?
@@ -387,33 +334,18 @@ Q6: Is command implemented in firmware?
 │        Register callback in setup()
 └─ YES → Continue
 
-Q7: Is Python command builder defined?
-├─ NO → Add to tests/framework/commands.py
-│        Add packet constant to tests/framework/packets.py
-└─ YES → Continue
-
-Q8: Is test written?
-├─ NO → Add test file in tests/xxxfx/
-└─ YES → Continue
-
-Q9: Is CLI updated?
-├─ NO → Add to tests/cli/handlers/xxxfx.py
-│        - Add command method to handler class
-│        - Add CommandInfo to get_commands()
-└─ YES → Continue
-
-Q10: Is Go CLI updated?
+Q7: Is Go CLI updated?
 ├─ NO → Add to app/go/protocol/packets.go, protocol/commands.go, cli/handler_xxxfx.go
 │        - Add packet constant + PacketTypeName()
 │        - Add command builder
 │        - Add CLI command + register
 └─ YES → Continue
 
-Q11: Is C# library updated?
+Q8: Is C# library updated?
 ├─ NO → Add to PacketTypes.cs + Commands/XxxFxCommands.cs
 └─ YES → Continue
 
-Q12: Is documentation updated?
+Q9: Is documentation updated?
 ├─ NO → Update controllers/xxxfx/pico/README.md
 └─ YES → DONE
 ```
@@ -429,15 +361,13 @@ Sync_Groups:
   - name: "Packet Constants"
     primary: "lib/sfx_serial/serial/core/core.h"
     mirrors:
-      - "tests/framework/packets.py"
       - "app/go/protocol/packets.go"
       - "app/win32/ScaleFXSerial/PacketTypes.cs"
-    rule: "Same values, same names (snake_case in Python, PascalCase in C#)"
+    rule: "Same values, same names (PascalCase in C#)"
 
   - name: "Error Codes (Generic)"
     primary: "lib/sfx_serial/serial/core/core.h (SerialError namespace)"
     mirrors:
-      - "tests/framework/packets.py (CoreError class)"
       - "app/go/protocol/packets.go (error constants + name map)"
       - "app/win32/ScaleFXSerial/ErrorCodes.cs"
     rule: "Same values, same names"
@@ -445,7 +375,6 @@ Sync_Groups:
   - name: "Error Codes (Module)"
     primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h (XxxError namespace)"
     mirrors:
-      - "tests/framework/packets.py (XxxError class)"
       - "app/go/protocol/packets.go (error constants + name map)"
       - "app/win32/ScaleFXSerial/ErrorCodes.cs"
     rule: "Same values, same names"
@@ -453,8 +382,6 @@ Sync_Groups:
   - name: "Command Interface"
     primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h"
     mirrors:
-      - "tests/framework/commands.py"
-      - "tests/cli/handlers/xxxfx.py"
       - "app/go/protocol/commands.go"
       - "app/go/cli/handler_xxxfx.go"
       - "app/win32/ScaleFXSerial/Commands/XxxFxCommands.cs"
@@ -475,8 +402,7 @@ Sync_Groups:
 | [03-PROTOCOL-EXTENSION.md](03-PROTOCOL-EXTENSION.md) | Add commands to existing controller (worked example) |
 | [04-CHANGE-PROPAGATION.md](04-CHANGE-PROPAGATION.md) | File sync checklists, change type matrix, verification |
 | [05-BUILD-AND-FLASH.md](05-BUILD-AND-FLASH.md) | Build firmware, flash to device, troubleshooting |
-| [06-TEST-SUITE.md](06-TEST-SUITE.md) | Run tests, write tests, test patterns |
-| [07-CLI-UPDATES.md](07-CLI-UPDATES.md) | Update interactive CLI, async output architecture |
+| [07-CLI-UPDATES.md](07-CLI-UPDATES.md) | Update Go interactive CLI |
 | [08-AUDIOTOOLS.md](08-AUDIOTOOLS.md) | AudioTools library reference (3rd-party, HubFX audio engine) |
-| [09-CONSOLE-OUTPUT.md](09-CONSOLE-OUTPUT.md) | Console output schema for all CLIs (Python, Go, C#) |
+| [09-CONSOLE-OUTPUT.md](09-CONSOLE-OUTPUT.md) | Console output schema for Go CLI and C# Studio |
 | [10-UPLOAD-PROTOCOL-REFACTOR.md](10-UPLOAD-PROTOCOL-REFACTOR.md) | Upload protocol modes (stream, windowed), flow control, ring buffer architecture |

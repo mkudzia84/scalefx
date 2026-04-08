@@ -1,3 +1,0 @@
-"""
-ScaleFX Tests Package
-"""

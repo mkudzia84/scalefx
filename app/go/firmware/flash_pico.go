@@ -39,9 +39,11 @@ func FlashPico(opts *Options, ctrl Controller) error {
 	}
 
 	// Step 1: Enter BOOTSEL via 1200-baud DTR toggle
+	// The board may reboot instantly on the 1200-baud open, causing the
+	// serial library to report an error. That's OK — check for the drive.
 	opts.info("Entering BOOTSEL mode via %s...", port)
 	if err := enterBootsel(port); err != nil {
-		return fmt.Errorf("BOOTSEL entry failed: %w", err)
+		opts.warn("BOOTSEL serial trigger: %v (checking for drive anyway)", err)
 	}
 
 	// Step 2: Wait for BOOTSEL drive
@@ -71,6 +73,10 @@ func FlashPico(opts *Options, ctrl Controller) error {
 
 // enterBootsel opens the serial port at 1200 baud, toggles DTR, and closes.
 // This triggers the Pico's built-in USB bootloader.
+//
+// The Pico may reboot so fast that the serial library reports an error even
+// though BOOTSEL was successfully triggered. Callers should treat errors as
+// non-fatal and check for the BOOTSEL drive regardless.
 func enterBootsel(port string) error {
 	mode := &serial.Mode{
 		BaudRate: 1200,
@@ -81,6 +87,9 @@ func enterBootsel(port string) error {
 
 	p, err := serial.Open(port, mode)
 	if err != nil {
+		// The board may have already rebooted into BOOTSEL from the
+		// connection attempt alone — return the error so callers can
+		// decide whether to proceed.
 		return fmt.Errorf("cannot open %s at 1200 baud: %w", port, err)
 	}
 

@@ -4,10 +4,11 @@
     import { onMount } from 'svelte'
     import ConnectDialog from './lib/dialogs/ConnectDialog.svelte'
     import AboutDialog from './lib/dialogs/AboutDialog.svelte'
+    import FlashProgressDialog from './lib/dialogs/FlashProgressDialog.svelte'
     import MainLayout from './lib/layout/MainLayout.svelte'
     import {
         boardState, connectPopupOpen, showAboutDialog, showConsole,
-        connectionInfo, activeTab
+        connectionInfo, activeTab, showFlashProgress
     } from './lib/stores'
     import { theme } from './lib/theme'
     import { EventsOn } from '../wailsjs/runtime/runtime'
@@ -71,6 +72,10 @@
 
 {#if $showAboutDialog}
     <AboutDialog />
+{/if}
+
+{#if $showFlashProgress}
+    <FlashProgressDialog />
 {/if}
 
 <style>

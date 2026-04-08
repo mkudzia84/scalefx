@@ -3,14 +3,18 @@ package firmware
 import (
 	"bufio"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
 
 // ─── ESP32 Flash Pipeline ───
-// Uses PlatformIO's built-in esptool integration for uploading.
+// Prefers standalone esptool binary (Python-free).
+// Falls back to python -m esptool / python -m platformio as needed.
 
-// FlashESP32 uploads firmware to an ESP32-S3 via PlatformIO upload target.
+// FlashESP32 uploads firmware to an ESP32-S3 via esptool or PlatformIO.
+// When standalone esptool is available, uses it directly (no Python needed).
+// Falls back to PlatformIO upload target if esptool binary is not found.
 func FlashESP32(opts *Options, ctrl Controller) error {
 	ctrlPath, err := opts.ControllerPath(ctrl)
 	if err != nil {
@@ -21,32 +25,130 @@ func FlashESP32(opts *Options, ctrl Controller) error {
 	if port == "" {
 		port, err = DetectESP32Port()
 		if err != nil {
-			// No auto-detected port — PlatformIO will try to find one itself
-			opts.warn("No ESP32 port detected, PlatformIO will attempt auto-detect")
+			opts.warn("No ESP32 port detected, will attempt auto-detect")
 		} else {
 			opts.info("Detected ESP32 port: %s", port)
 		}
 	}
 
-	// Build PlatformIO upload command
+	// Find the built firmware binary
+	fwPath, err := opts.FirmwarePath(ctrl)
+	if err != nil {
+		return fmt.Errorf("cannot locate firmware binary: %w", err)
+	}
+
+	// Try standalone esptool first (Python-free)
+	if info := ResolveEsptool(opts); info != nil {
+		opts.info("Using standalone esptool (%s)", info.Source)
+		return flashWithEsptool(opts, info, port, fwPath)
+	}
+
+	// Fall back to PlatformIO upload (requires Python)
+	opts.info("Standalone esptool not found, falling back to PlatformIO upload...")
+	return flashWithPlatformIO(opts, ctrl, ctrlPath, port)
+}
+
+// FlashESP32FromBinary flashes a standalone .bin file using esptool.
+// This is the Python-free path used by release-flash and GUI.
+func FlashESP32FromBinary(opts *Options, port, fwPath string) error {
+	info := ResolveEsptoolOrPython(opts)
+	if info == nil {
+		return fmt.Errorf("esptool not found — run 'scalefx-flash tools download' or install esptool")
+	}
+
+	if port == "" {
+		var err error
+		port, err = DetectESP32Port()
+		if err != nil {
+			opts.warn("No ESP32 port detected, esptool will attempt auto-detect")
+		} else {
+			opts.info("Detected ESP32 port: %s", port)
+		}
+	}
+
+	if info.Source == "python" {
+		return flashWithPythonEsptool(opts, port, fwPath)
+	}
+
+	return flashWithEsptool(opts, info, port, fwPath)
+}
+
+// ─── Standalone esptool (no Python) ───
+
+func flashWithEsptool(opts *Options, info *EsptoolInfo, port, fwPath string) error {
+	args := []string{
+		"--chip", "esp32s3",
+	}
+	if port != "" {
+		args = append(args, "--port", port)
+	}
+	args = append(args, "write_flash", "0x10000", fwPath)
+
+	opts.info("Uploading via standalone esptool to ESP32...")
+	return runTool(opts, info.Path, args)
+}
+
+// ─── Python esptool fallback ───
+
+func flashWithPythonEsptool(opts *Options, port, fwPath string) error {
+	args := []string{
+		"-m", "esptool",
+		"--chip", "esp32s3",
+	}
+	if port != "" {
+		args = append(args, "--port", port)
+	}
+	args = append(args, "write_flash", "0x10000", fwPath)
+
+	opts.info("Uploading via python -m esptool (legacy fallback)...")
+	return runPythonCmd(opts, args, "")
+}
+
+// ─── PlatformIO fallback (build+flash only) ───
+
+func flashWithPlatformIO(opts *Options, ctrl Controller, ctrlPath, port string) error {
 	args := []string{"-m", "platformio", "run", "-e", ctrl.PIOEnv, "-t", "upload", "-d", ctrlPath}
 	if port != "" {
 		args = append(args, "--upload-port", port)
 	}
 
-	opts.info("Uploading to ESP32 (%s)...", ctrl.PIOEnv)
-
+	opts.info("Uploading via PlatformIO (%s)...", ctrl.PIOEnv)
 	return runPythonCmd(opts, args, ctrlPath)
 }
 
-// runEsptool runs esptool.py via python -m esptool with the given arguments.
-func runEsptool(opts *Options, args []string) error {
-	return runPythonCmd(opts, args, "")
+// ─── Command runners ───
+
+// runTool runs a standalone executable and streams output.
+func runTool(opts *Options, binary string, args []string) error {
+	cmd := exec.Command(binary, args...)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("cannot pipe stdout: %w", err)
+	}
+	cmd.Stderr = cmd.Stdout
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("cannot start %s: %w", binary, err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		opts.info("%s", scanner.Text())
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("%s failed: %w", binary, err)
+	}
+
+	opts.ok("ESP32 upload complete")
+	return nil
 }
 
 // runPythonCmd runs a python command and streams output to opts.
 func runPythonCmd(opts *Options, args []string, dir string) error {
 	cmd := exec.Command("python", args...)
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 	if dir != "" {
 		cmd.Dir = dir
 	}

@@ -98,6 +98,7 @@ export interface FirmwareProgress {
     type: 'info' | 'ok' | 'warning' | 'error' | 'step'
     done: boolean
     error?: string
+    reconnecting?: boolean
 }
 
 export interface ReleaseInfo {
@@ -105,6 +106,7 @@ export interface ReleaseInfo {
     version: string
     tag: string
     name: string
+    body: string          // release notes (markdown)
     prerelease: boolean
     published: string
     assetName: string
@@ -115,3 +117,9 @@ export const firmwareTargets = writable<FirmwareTarget[]>([])
 export const firmwareRunning = writable(false)
 export const firmwareLogs = writable<FirmwareProgress[]>([])
 export const availableReleases = writable<ReleaseInfo[]>([])
+
+/** Whether the flash progress dialog is visible */
+export const showFlashProgress = writable(false)
+
+/** Summary shown after flash completes */
+export const flashResult = writable<{ success: boolean; message: string } | null>(null)

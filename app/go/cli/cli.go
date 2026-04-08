@@ -12,6 +12,8 @@ import (
 	"os/signal"
 	"runtime"
 	"scalefx/engine"
+	"scalefx/engine/handlers"
+	"scalefx/engine/handlers/firmware"
 	"strconv"
 	"strings"
 )
@@ -24,6 +26,8 @@ type App struct {
 // NewApp creates a new CLI application.
 func NewApp(port string, verbose bool) *App {
 	eng := engine.NewEngine(engine.TerminalOutput{}, port, verbose)
+	handlers.RegisterDefaults(eng)
+	firmware.Register(eng)
 
 	// Wire callbacks for terminal interaction
 	eng.PromptSelectPort = promptSelectPort

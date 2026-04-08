@@ -1,31 +1,30 @@
 # Console Output Schema
 
-> **Reference document for all CLI platforms (Python, Go, C#).** Python is the canonical reference.
+> **Reference document for all CLI platforms (Go, C#).** Go is the canonical reference.
 > All platforms MUST produce equivalent output for the same wire data.
 
 ---
 
 ## Overview
 
-Three CLI platforms share the same binary protocol and MUST produce harmonized output:
+Two CLI platforms share the same binary protocol and MUST produce harmonized output:
 
 | Platform | Location | Output Medium |
 |----------|----------|---------------|
-| **Python CLI** (reference) | `tests/cli/` | `print()` + colorama |
-| **Go CLI** | `app/go/cli/` | ANSI escape codes |
+| **Go CLI** (reference) | `app/go/cli/` | ANSI escape codes |
 | **C# Console** | `app/win32/ScaleFXSerial/Console/` | `IConsoleOutput` interface |
 
 ### Output Method Mapping
 
-| Semantic | Python | Go | C# (`IConsoleOutput`) |
-|----------|--------|----|-----------------------|
-| Labeled value | `print(f"  Label: value")` | `fmt.Printf("  Label: value\n")` | `WriteData("Label", "value")` |
-| Section header | `print("  ── Title ──────")` | `fmt.Printf("  ── Title ──────\n")` | `WriteInfo("── Title ──────")` |
-| Success | `print_success(msg)` | green text | `WriteSuccess(msg)` |
-| Error | `print_error(msg)` | red text | `WriteError(msg)` |
-| Warning | `print_warning(msg)` | yellow text | `WriteWarning(msg)` |
-| Info | `print_info(msg)` | cyan text | `WriteInfo(msg)` |
-| Raw line | `print(f"  text")` | `fmt.Printf("  text\n")` | `WriteLine("  text")` |
+| Semantic | Go | C# (`IConsoleOutput`) |
+|----------|----|------------------------|
+| Labeled value | `fmt.Printf("  Label: value\n")` | `WriteData("Label", "value")` |
+| Section header | `fmt.Printf("  ── Title ──────\n")` | `WriteInfo("── Title ──────")` |
+| Success | green text | `WriteSuccess(msg)` |
+| Error | red text | `WriteError(msg)` |
+| Warning | yellow text | `WriteWarning(msg)` |
+| Info | cyan text | `WriteInfo(msg)` |
+| Raw line | `fmt.Printf("  text\n")` | `WriteLine("  text")` |
 
 ---
 
@@ -435,19 +434,19 @@ Same wire format as INIT_READY. Output identical to INIT_READY.
 
 ## Command Naming Conventions
 
-Commands MUST use consistent naming across all three CLI platforms:
+Commands MUST use consistent naming across both CLI platforms:
 
-| Python | Go | C# | Notes |
-|--------|----|----|-------|
-| `gc.yaw` | `yaw <position_us>` | `yaw <position_us>` | NOT `yaw.input` |
-| `gc.calibrate.cancel` | `calibrate.cancel` | `calibrate.cancel` | NOT `calib.cancel` |
-| `gc.battery` | `battery <enable> <auto>` | `battery <enable> <auto>` | NOT `battery.config` |
+| Go | C# | Notes |
+|----|----|---------|
+| `yaw <position_us>` | `yaw <position_us>` | NOT `yaw.input` |
+| `calibrate.cancel` | `calibrate.cancel` | NOT `calib.cancel` |
+| `battery <enable> <auto>` | `battery <enable> <auto>` | NOT `battery.config` |
 
 ---
 
 ## Async Packet Handling
 
-All three platforms handle these async packet types:
+Both platforms handle these async packet types:
 
 | Packet Type | Description | All Platforms |
 |-------------|-------------|---------------|

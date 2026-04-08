@@ -1,100 +1,97 @@
-# CLI Update Guide
+﻿# CLI Update Guide
 
-> **ACTION DOCUMENT:** How to add commands and controllers to the interactive CLI.
+> **ACTION DOCUMENT:** How to add commands and controllers to the Go interactive CLI.
 
 ---
 
 ## CLI Architecture
 
-The CLI uses a modular handler architecture with **composition-based slave routing**. Each controller has its own handler file. The HubFX handler reuses direct handler code for slave commands by composing handler instances with a packet wrapper.
+The CLI uses a modular handler architecture. Each controller has its own handler package under `engine/handlers/`. The engine owns the connection, API client, command dispatch, and listener lifecycle. Both the CLI and GUI console embed the `Engine` struct to share behavior.
 
-### Async Output Handling
-
-The CLI uses a split-screen terminal UI (`output.py`) built with `prompt_toolkit`:
-- **Output area** (top): Scrolling pane showing all command results, log messages, and status updates
-- **Input area** (bottom): Fixed single-line prompt that is never overwritten by async output
-- **Separator**: Horizontal line between output and input areas
-- All `print()` calls from any thread are captured via `sys.stdout` replacement and displayed in the output area
-- The output pane auto-scrolls to show the latest content
-- Command history is available via up/down arrow keys
-- Commands run in a background thread so the UI stays responsive
-
-**Key dependency:** `prompt_toolkit>=3.0.0` (in `tests/requirements.txt`)
-
-### Composition Pattern for Slave Routing
-
-The HubFX handler composes instances of direct handlers (GunFX, LightFX, GearControl) with `_packet_wrapper` set to `HubFxCommands.slave_route`. This transparently wraps direct command packets in SLAVE_ROUTE envelopes for hub routing, eliminating code duplication.
+### Engine Architecture
 
 ```
-Direct use:     GunFxCommandHandler._send_ack(packet)  →  conn.send_expect_ack(packet)
-Hub slave use:  GunFxCommandHandler._send_ack(packet)  →  conn.send_expect_ack(slave_route(packet))
+engine/
+├── engine.go          - Core Engine struct (connection, API, dispatch, listener)
+├── types.go           - CmdEntry, CmdGroup, InitReadyInfo, ControllerColors
+├── output.go          - Output interface + ANSI terminal implementation
+├── helpers.go         - Shared utilities (Atoi, ParseBool, ServoSet, ServoConfig, RequireArgs)
+├── parsers.go         - Common response parsers (shared across handlers)
+├── parsers_core.go    - Core response parsers (INIT_READY, STATUS header, I2C, LOG)
+└── handlers/
+    ├── handlers.go       - RegisterDefaults() — registers all built-in groups
+    ├── core/handler.go   - Core commands (connect, init, status, reboot, etc.)
+    ├── gunfx/handler.go  - GunFX commands (trigger, servo, smoke)
+    ├── lightfx/
+    │   ├── handler.go    - LightFX commands (LED, sequences, servo, landing lights)
+    │   └── parsers.go    - LightFX response parsers
+    ├── gearcontrol/
+    │   ├── handler.go    - GearControl commands (gear, servo, yaw, calibration)
+    │   └── parsers.go    - GearControl response parsers
+    ├── hubfx/
+    │   ├── handler.go    - HubFX commands (slaves, audio, engine, storage, USB)
+    │   ├── parsers.go    - HubFX response parsers
+    │   └── format.go     - HubFX output formatting
+    └── firmware/handler.go - Firmware commands (releases, flash)
 ```
 
-The `_build_slave_registry()` auto-discovers commands from composed handlers' `get_commands()`, prefixing usage strings with `slave `. Query commands that require custom response packets (not ACK-based) are excluded since SLAVE_ROUTE only forwards ACK/NACK.
+### Key Types
+
+```go
+// CmdEntry defines a single CLI command.
+type CmdEntry struct {
+    Handler     func(args []string)
+    Usage       string
+    Description string
+    RequireInit bool
+}
+
+// CmdGroup defines a group of related commands (one per controller type).
+type CmdGroup struct {
+    Name       string
+    Controller string // empty = universal
+    Color      Color
+    Commands   map[string]CmdEntry
+}
+```
+
+### Dynamic Detection
+
+Controller type is detected via IDENTIFY on connect:
 
 ```yaml
-File_Structure:
-  "tests/cli/output.py": "TerminalUI - split-screen terminal with prompt_toolkit Application"
-  "tests/cli/base.py": "CommandInfo, OutputMixin, ControllerType, CommandHandlerBase (with _send_ack, _wrap_packet)"
-  "tests/cli/parsers.py": "Response packet parsing utilities"
-  "tests/cli/interactive.py": "Main CLI class (~350 lines, composes handlers + TerminalUI)"
-  "tests/cli/handlers/core.py": "Core/protocol commands (connect, init, status, reboot)"
-  "tests/cli/handlers/gunfx.py": "GunFX commands (trigger, servo, smoke)"
-  "tests/cli/handlers/lightfx.py": "LightFX commands (led, servo, power, LED sequences)"
-  "tests/cli/handlers/gearcontrol.py": "GearControl commands (gear, servo, yaw, calibration)"
-  "tests/cli/handlers/hubfx.py": "HubFX hub commands + composed slave routing"
-  "tests/cli/handlers/storage.py": "Reusable file operations (SD/Flash) parameterized by target"
+trigger: "IDENTIFY response on connect (or INIT_READY fallback)"
+location: "engine/handlers/core/handler.go"
+flow:
+  - "1. Send IDENTIFY (0xFE) — no state change on device"
+  - "2. Parse board name, detect controller type"
+  - "3. HubFX (autonomous hub): mark initialized, skip INIT"
+  - "4. Slave controllers: send INIT to activate hardware"
+  - "5. Legacy boards (no IDENTIFY): fall back to INIT"
+result: "Controller-specific handler commands appear in help"
+```
 
-Handler_Pattern:
-  base_class: "CommandHandlerBase (from base.py)"
-  registration: "Handlers registered in interactive.py constructor"
-  command_routing: "Each handler returns dict of {name: (method, CommandInfo)}"
-  controller_filtering: "Commands filtered by ControllerType after IDENTIFY/INIT_READY"
-  packet_wrapper: "Optional callable on CommandHandlerBase that wraps packets before sending"
-  send_helper: "_send_ack(packet, ok_msg, timeout=None) — unified send+wrap+error handling"
+### Registration Pattern
 
-Command_Categories:
-  core_commands:
-    handler: "handlers/core.py"
-    availability: "Always available"
-    examples: ["help", "connect", "disconnect", "ports", "exit"]
-  
-  protocol_commands:
-    handler: "handlers/core.py"
-    availability: "When connected"
-    examples: ["init", "shutdown", "status", "keepalive", "reboot", "bootsel"]
-  
-  gunfx_commands:
-    handler: "handlers/gunfx.py"
-    availability: "When connected AND controller detected as GunFX (direct) or HubFX (via slave)"
-    examples: ["gfx.trigger", "gfx.servo", "gfx.smoke"]
+All handlers register themselves via a `Register(eng *engine.Engine)` function:
 
-  lightfx_commands:
-    handler: "handlers/lightfx.py"
-    availability: "When connected AND controller detected as LightFX (direct) or HubFX (via slave)"
-    examples: ["lfx.led", "lfx.servo", "lfx.brightness"]
+```go
+// In handlers/handlers.go — called by both CLI and GUI:
+func RegisterDefaults(eng *engine.Engine) {
+    core.Register(eng)
+    gunfx.Register(eng)
+    gearcontrol.Register(eng)
+    lightfx.Register(eng)
+    hubfx.Register(eng)
+}
 
-  gearcontrol_commands:
-    handler: "handlers/gearcontrol.py"
-    availability: "When connected AND controller detected as GearControl (direct) or HubFX (via slave)"
-    examples: ["gc.deploy", "gc.retract", "gc.calibrate"]
-  
-  hubfx_commands:
-    handler: "handlers/hubfx.py"
-    availability: "When connected AND controller detected as HubFX"
-    examples: ["audio.play", "engine.start", "slave gfx.trigger on 100"]
-
-Dynamic_Detection:
-  trigger: "IDENTIFY response on connect (or INIT_READY fallback)"
-  location: "handlers/core.py → _identify_and_init()"
-  method: "Send IDENTIFY → parse device name → set ControllerType"
-  flow:
-    - "1. Send IDENTIFY (0xFE) — no state change on device"
-    - "2. Parse board name, detect controller type"
-    - "3. HubFX (autonomous hub): mark initialized, skip INIT"
-    - "4. Slave controllers: send INIT to activate hardware"
-    - "5. Legacy boards (no IDENTIFY): fall back to INIT"
-  result: "Controller-specific handler's commands appear in help"
+// Each handler's Register():
+func Register(eng *engine.Engine) {
+    h := &Handler{E: eng}
+    eng.RegisterStatusParser(pcore.CtrlGunFX, h.parseGunFXStatus)
+    eng.RegisterAsyncHandler(gfxp.PktSomeAsync, h.handleSomeAsync)
+    eng.AddGroup(h.commands())
+}
 ```
 
 ---
@@ -102,322 +99,401 @@ Dynamic_Detection:
 ## File Locations
 
 ```yaml
-Main:
-  "tests/cli/interactive.py": "Main CLI class, handler composition"
-  "tests/cli/base.py": "Base classes, CommandInfo, OutputMixin, ControllerType, _send_ack, _wrap_packet"
-  "tests/cli/parsers.py": "Response packet parsing"
+Engine:
+  "engine/engine.go": "Core Engine struct (connection, API, dispatch, listener lifecycle)"
+  "engine/types.go": "CmdEntry, CmdGroup, InitReadyInfo, controller type constants"
+  "engine/output.go": "Output interface, ANSI color helpers"
+  "engine/helpers.go": "Shared utilities (Atoi, ParseBool, OnOff, ServoSet, ServoConfig)"
+  "engine/parsers.go": "Common response parsers"
+  "engine/parsers_core.go": "Core response parsers (INIT_READY, STATUS header)"
 
 Handlers:
-  "tests/cli/handlers/core.py": "Core and protocol commands"
-  "tests/cli/handlers/gunfx.py": "GunFX controller commands (8 commands)"
-  "tests/cli/handlers/lightfx.py": "LightFX controller commands (16 commands)"
-  "tests/cli/handlers/gearcontrol.py": "GearControl controller commands (16 commands)"
-  "tests/cli/handlers/hubfx.py": "HubFX hub commands + slave routing via composition"
-  "tests/cli/handlers/storage.py": "Reusable file operations (SD/Flash)"
+  "engine/handlers/handlers.go": "RegisterDefaults() — registers all built-in groups"
+  "engine/handlers/core/handler.go": "Core and protocol commands (15 commands)"
+  "engine/handlers/gunfx/handler.go": "GunFX controller commands + status parser"
+  "engine/handlers/lightfx/handler.go": "LightFX controller commands"
+  "engine/handlers/lightfx/parsers.go": "LightFX response parsers"
+  "engine/handlers/gearcontrol/handler.go": "GearControl controller commands"
+  "engine/handlers/gearcontrol/parsers.go": "GearControl response parsers"
+  "engine/handlers/hubfx/handler.go": "HubFX hub commands (audio, engine, storage, USB)"
+  "engine/handlers/hubfx/parsers.go": "HubFX response parsers"
+  "engine/handlers/hubfx/format.go": "HubFX output formatting helpers"
+  "engine/handlers/firmware/handler.go": "Firmware release commands"
+
+Protocol:
+  "protocol/core/types.go": "Packet type constants, error codes"
+  "protocol/gunfx/types.go": "GunFX packet constants"
+  "protocol/lightfx/types.go": "LightFX packet constants"
+  "protocol/gearcontrol/types.go": "GearControl packet constants"
+  "protocol/hubfx/types.go": "HubFX packet constants"
+
+API:
+  "api/client.go": "API client that wraps protocol.Connection"
+  "api/gunfx.go": "GunFxApi (typed command methods)"
+  "api/lightfx.go": "LightFxApi (typed command methods)"
+  "api/gearcontrol.go": "GearControlApi (typed command methods)"
+  "api/hubfx.go": "HubFxApi (typed command methods)"
 ```
 
 ---
 
 ## Adding Command to Existing Controller
 
-### Step 1: Add Handler Method to Handler Class
+### Step 1: Add API Method
 
-**FILE:** `tests/cli/handlers/gunfx.py` (or `lightfx.py`, `gearcontrol.py`)
+**FILE:** `api/gunfx.go` (or `lightfx.go`, `gearcontrol.go`, `hubfx.go`)
 
-```python
-def cmd_newcmd(self, args: List[str]):
-    """GunFX new command handler."""
-    if len(args) < 1:
-        self.print_error("Usage: gfx.newcmd <param1> [param2]")
-        return
-    
-    try:
-        param1 = int(args[0])
-        param2 = int(args[1]) if len(args) > 1 else 0
-        
-        if param1 < 0 or param1 > 100:
-            self.print_error("param1 must be 0-100")
-            return
-        
-        # _send_ack handles: packet wrapping, send, ACK/NACK response printing
-        self._send_ack(
-            GunFxCommands.new_command(param1, param2),
-            f"Command executed: param1={param1}")
-            
-    except ValueError:
-        self.print_error("Invalid parameter value")
+```go
+// NewCommand sends the new command with the given parameters.
+func (g *GunFxApi) NewCommand(param1 uint8, param2 uint16) api.ApiResult {
+    return g.send(gfxp.PktNewCommand, gunfx.NewCommand(param1, param2))
+}
 ```
 
-**NOTE:** Using `_send_ack()` instead of manual `send_expect_ack()` + response handling ensures
-the command works transparently both as a direct handler AND when composed for hub slave routing.
-For query commands that need custom response parsing, use `conn.send_expect_ack()` directly.
+### Step 2: Add Protocol Command Builder
+
+**FILE:** `protocol/gunfx/commands.go`
+
+```go
+// NewCommand builds the NEW_COMMAND payload.
+func NewCommand(param1 uint8, param2 uint16) []byte {
+    buf := make([]byte, 3)
+    buf[0] = param1
+    binary.LittleEndian.PutUint16(buf[1:], param2)
+    return buf
+}
 ```
 
-### Step 2: Register in get_commands()
+### Step 3: Add Packet Type Constant
 
-**FIND:** `get_commands()` method in the handler class
+**FILE:** `protocol/gunfx/types.go`
 
-**ADD:**
+```go
+const PktNewCommand protocol.PacketType = 0x0F  // [param1:u8][param2:u16LE]
+```
 
-```python
-def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
-    return {
-        # ...existing commands...
-        
-        'gfx.newcmd': (self.cmd_newcmd, CommandInfo(
-            'gfx.newcmd',                      # name
-            'gfx.newcmd <param1> [param2]',    # usage
-            'Description of what command does', # description
-            requires_init=True)),              # needs init?
+### Step 4: Add Handler Command
+
+**FILE:** `engine/handlers/gunfx/handler.go`
+
+Add to the `commands()` map:
+
+```go
+func (h *Handler) commands() *engine.CmdGroup {
+    return &engine.CmdGroup{
+        Name:       "GunFX",
+        Controller: pcore.CtrlGunFX,
+        Color:      engine.ColorRed,
+        Commands: map[string]engine.CmdEntry{
+            // ...existing commands...
+            "newcmd": {h.cmdNewCmd, "newcmd <param1> [param2]", "Execute new command", true},
+        },
     }
+}
 ```
 
-### Step 3: Add Import (if needed)
+Add the handler method:
 
-```python
-from tests.framework.commands import GunFxCommands
-from tests.framework.packets import GunFxPacket, GunFxError
+```go
+func (h *Handler) cmdNewCmd(args []string) {
+    if !h.E.RequireArgs(args, 1, "newcmd <param1> [param2]") {
+        return
+    }
+    param1 := engine.Atoi(args[0])
+    param2 := 0
+    if len(args) > 1 {
+        param2 = engine.Atoi(args[1])
+    }
+    if param1 < 0 || param1 > 100 {
+        h.E.Out.Error("param1 must be 0-100")
+        return
+    }
+    h.E.Ack(h.E.API.GunFx.NewCommand(byte(param1), uint16(param2)),
+        fmt.Sprintf("New command: param1=%d, param2=%d", param1, param2))
+}
+```
+
+### Step 5: Add Response Parser (if query command)
+
+**FILE:** `engine/handlers/gunfx/handler.go` (or create `parsers.go` if not present)
+
+```go
+func (h *Handler) parseNewCmdResponse(payload []byte) {
+    if len(payload) < 4 {
+        h.E.Out.Error("Short response")
+        return
+    }
+    value := binary.LittleEndian.Uint16(payload[0:2])
+    h.E.Out.Data("Value", "%d", value)
+}
 ```
 
 ---
 
 ## Adding New Controller Type
 
-### Step 1: Create Handler File
+### Step 1: Create Protocol Package
 
-**CREATE:** `tests/cli/handlers/newfx.py`
+**CREATE:** `protocol/newfx/types.go`
 
-```python
-"""NewFX CLI command handler."""
-from typing import Dict, List, Tuple, Callable
-from tests.cli.base import CommandHandlerBase, CommandInfo
-from tests.framework.commands import NewFxCommands
-from tests.framework.packets import NewFxPacket
+```go
+package newfx
 
+import "scalefx/protocol"
 
-class NewFxCommandHandler(CommandHandlerBase):
-    """Handler for NewFX controller commands."""
-    
-    def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
-        return {
-            'newfx.cmd1': (self.cmd_newfx_cmd1, CommandInfo(
-                'newfx.cmd1', 'newfx.cmd1 <param>',
-                'Execute command 1',
-                requires_init=True)),
-            
-            'newfx.cmd2': (self.cmd_newfx_cmd2, CommandInfo(
-                'newfx.cmd2', 'newfx.cmd2 <id>',
-                'Execute command 2',
-                requires_init=True)),
-        }
-    
-    def cmd_newfx_cmd1(self, args: List[str]):
-        """NewFX command 1."""
-        if len(args) < 1:
-            self.print_error("Usage: newfx.cmd1 <param>")
-            return
-        try:
-            param = int(args[0])
-            packet = NewFxCommands.command_1(param)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_success(f"Command 1 executed: {param}")
-            else:
-                self.print_response(response)
-        except ValueError:
-            self.print_error("Invalid parameter")
-    
-    def cmd_newfx_cmd2(self, args: List[str]):
-        """NewFX command 2."""
-        if len(args) < 1:
-            self.print_error("Usage: newfx.cmd2 <id>")
-            return
-        try:
-            id_val = int(args[0])
-            packet = NewFxCommands.command_2(id_val)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_success(f"Command 2: id={id_val}")
-            else:
-                self.print_response(response)
-        except ValueError:
-            self.print_error("Invalid id")
+// Packet type constants (must match C++ NewFxPacket namespace).
+const (
+    PktCommand1 protocol.PacketType = 0xB0
+    PktCommand2 protocol.PacketType = 0xB1
+)
 ```
 
-### Step 2: Add ControllerType
+**CREATE:** `protocol/newfx/commands.go`
 
-**FILE:** `tests/cli/base.py`
+```go
+package newfx
 
-```python
-class ControllerType:
-    GUNFX = 'gunfx'
-    LIGHTFX = 'lightfx'
-    NOOP = 'noop'
-    NEWFX = 'newfx'    # ADD THIS
+import "encoding/binary"
+
+func Command1(param uint8) []byte {
+    return []byte{param}
+}
+
+func Command2(id uint8, value uint16) []byte {
+    buf := make([]byte, 3)
+    buf[0] = id
+    binary.LittleEndian.PutUint16(buf[1:], value)
+    return buf
+}
 ```
 
-### Step 3: Register Handler in interactive.py
+### Step 2: Add Controller Type Constant
 
-**FILE:** `tests/cli/interactive.py`
+**FILE:** `protocol/core/types.go`
 
-```python
-from tests.cli.handlers.newfx import NewFxCommandHandler
-
-# In constructor:
-self.newfx_handler = NewFxCommandHandler(self.conn)
-
-# In get_available_commands():
-if self.controller_type == ControllerType.NEWFX:
-    commands.update(self.newfx_handler.get_commands())
+```go
+const CtrlNewFX = "newfx"
 ```
 
-### Step 4: Add Controller Detection
+### Step 3: Create API Client
 
-**FILE:** `tests/cli/handlers/core.py`
+**CREATE:** `api/newfx.go`
 
-```python
-# In _parse_init_ready() or controller detection logic:
-name_lower = device_name.lower()
-if 'newfx' in name_lower:
-    self.controller_type = ControllerType.NEWFX
-    self.print_info("Detected NewFX - newfx.* commands available")
+```go
+package api
+
+import (
+    "scalefx/protocol/newfx"
+)
+
+type NewFxApi struct{ apiClient }
+
+func (n *NewFxApi) Command1(param uint8) ApiResult {
+    return n.send(newfx.PktCommand1, newfx.Command1(param))
+}
+
+func (n *NewFxApi) Command2(id uint8, value uint16) ApiResult {
+    return n.send(newfx.PktCommand2, newfx.Command2(id, value))
+}
+```
+
+Add to `api/client.go`:
+
+```go
+type Client struct {
+    // ...existing fields...
+    NewFx *NewFxApi
+}
+```
+
+### Step 4: Create Handler Package
+
+**CREATE:** `engine/handlers/newfx/handler.go`
+
+```go
+package newfx
+
+import (
+    "fmt"
+    "scalefx/engine"
+    pcore "scalefx/protocol/core"
+)
+
+type Handler struct {
+    E *engine.Engine
+}
+
+func Register(eng *engine.Engine) {
+    h := &Handler{E: eng}
+    eng.RegisterStatusParser(pcore.CtrlNewFX, h.parseNewFXStatus)
+    eng.AddGroup(h.commands())
+}
+
+func (h *Handler) commands() *engine.CmdGroup {
+    return &engine.CmdGroup{
+        Name:       "NewFX",
+        Controller: pcore.CtrlNewFX,
+        Color:      engine.ColorYellow,
+        Commands: map[string]engine.CmdEntry{
+            "newcmd1": {h.cmdCommand1, "newcmd1 <param>", "Execute command 1", true},
+            "newcmd2": {h.cmdCommand2, "newcmd2 <id> <value>", "Execute command 2", true},
+        },
+    }
+}
+
+func (h *Handler) cmdCommand1(args []string) {
+    if !h.E.RequireArgs(args, 1, "newcmd1 <param>") {
+        return
+    }
+    param := engine.Atoi(args[0])
+    h.E.Ack(h.E.API.NewFx.Command1(byte(param)),
+        fmt.Sprintf("Command 1: param=%d", param))
+}
+
+func (h *Handler) cmdCommand2(args []string) {
+    if !h.E.RequireArgs(args, 2, "newcmd2 <id> <value>") {
+        return
+    }
+    id, value := engine.Atoi(args[0]), engine.Atoi(args[1])
+    h.E.Ack(h.E.API.NewFx.Command2(byte(id), uint16(value)),
+        fmt.Sprintf("Command 2: id=%d, value=%d", id, value))
+}
+
+func (h *Handler) parseNewFXStatus(data []byte) {
+    h.E.Out.Header("NewFX")
+    // ...parse fields from data...
+}
+```
+
+### Step 5: Register Handler
+
+**FILE:** `engine/handlers/handlers.go`
+
+```go
+import "scalefx/engine/handlers/newfx"
+
+func RegisterDefaults(eng *engine.Engine) {
+    core.Register(eng)
+    gunfx.Register(eng)
+    gearcontrol.Register(eng)
+    lightfx.Register(eng)
+    hubfx.Register(eng)
+    newfx.Register(eng)  // ADD
+}
+```
+
+### Step 6: Add Controller Detection
+
+**FILE:** `engine/handlers/core/handler.go`
+
+In the controller detection logic, add:
+
+```go
+case "newfx":
+    eng.ControllerType = pcore.CtrlNewFX
+```
+
+### Step 7: Update Controller Maps
+
+**FILE:** `engine/types.go`
+
+```go
+var ControllerColors = map[string]Color{
+    // ...existing...
+    core.CtrlNewFX: ColorYellow,
+}
+
+var ControllerLabels = map[string]string{
+    // ...existing...
+    core.CtrlNewFX: "NewFX",
+}
 ```
 
 ---
 
-## CommandInfo Structure
+## Handler Method Patterns
 
-```python
-# Defined in tests/cli/base.py
-@dataclass
-class CommandInfo:
-    name: str           # Command name (e.g., 'gunfx.trigger')
-    usage: str          # Usage string for help
-    description: str    # One-line description
-    requires_init: bool = False  # Must INIT before using
-```
+### ACK-based Command (most common)
 
-## CommandHandlerBase
-
-```python
-# Defined in tests/cli/base.py
-class CommandHandlerBase(OutputMixin):
-    def __init__(self):
-        self.conn = None                  # Set via set_connection()
-        self.controller_type = None       # Set via set_controller_type()
-        self._cancel_event = None         # Set via set_cancel_event()
-        self._packet_wrapper = None       # Set for hub slave routing
-    
-    def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
-        """Return dict of command_name -> (handler_method, CommandInfo)."""
-        raise NotImplementedError
-
-    # --- Packet send helpers ---
-    
-    def _wrap_packet(self, packet: bytes) -> bytes:
-        """Apply _packet_wrapper if set, else return packet unchanged."""
-    
-    def _send_ack(self, packet: bytes, ok_msg: str, timeout: float = None) -> bool:
-        """Send packet (with wrapping), print ACK ok_msg or NACK error. Returns success."""
-    
-    def _print_ack_response(self, response):
-        """Print NACK error code/message from a failed command response."""
-```
-
-### Packet Wrapper (Slave Routing)
-
-The `_packet_wrapper` attribute enables transparent hub routing. When set on a handler instance,
-all `_send_ack()` calls wrap the outgoing packet before sending:
-
-```python
-# In HubFx handler init:
-self._gunfx = GunFxCommandHandler()
-self._gunfx._packet_wrapper = HubFxCommands.slave_route  # Wraps in SLAVE_ROUTE_GUNFX
-
-# Now calling self._gunfx.cmd_trigger(["on", "100"]) sends:
-#   SLAVE_ROUTE_GUNFX envelope containing TRIGGER_ON packet
-# instead of raw TRIGGER_ON packet
-```
-
-**Rules:**
-1. ACK-based commands work transparently with `_send_ack()` + wrapper
-2. Query commands that need custom response parsing CANNOT be routed — exclude them from slave registry
-3. Commands that use `conn.send_expect_ack()` directly are NOT wrapped — only `_send_ack()` applies the wrapper
-
----
-
-## Handler Method Pattern
-
-```python
-def cmd_feature(self, args: List[str]):
-    """Controller feature description."""
-    
-    # 1. Validate argument count
-    if len(args) < REQUIRED_ARGS:
-        self.print_error("Usage: prefix.feature <arg1> <arg2>")
+```go
+func (h *Handler) cmdFeature(args []string) {
+    if !h.E.RequireArgs(args, 1, "feature <value>") {
         return
-    
-    # 2. Handle subcommands (if any)
-    if args and args[0].lower() in ('set', 'get', 'on', 'off'):
-        subcmd = args[0].lower()
-        args = args[1:]
-    
-    # 3. Parse and validate arguments
-    try:
-        value = int(args[0])
-        if value < MIN or value > MAX:
-            self.print_error(f"Value must be {MIN}-{MAX}")
-            return
-    except ValueError:
-        self.print_error("Invalid numeric value")
+    }
+    value := engine.Atoi(args[0])
+    if value < 0 || value > 255 {
+        h.E.Out.Error("Value must be 0-255")
         return
-    except IndexError:
-        self.print_error("Missing required argument")
-        return
-    
-    # 4. Send and handle response (unified pattern)
-    self._send_ack(
-        XxxCommands.feature(value),
-        f"Feature set to {value}")
+    }
+    h.E.Ack(h.E.API.XxxFx.Feature(byte(value)),
+        fmt.Sprintf("Feature set to %d", value))
+}
 ```
 
-**For query commands** that need custom response parsing (not ACK-based):
+### Subcommand Pattern
 
-```python
-def cmd_query(self, args: List[str]):
-    """Query command that returns data (not just ACK)."""
-    packet = XxxCommands.query_something()
-    success, response = self.conn.send_expect_ack(packet)
-    if success:
-        # Parse response payload
-        data = parse_query_response(response)
-        self.print_info(f"Result: {data}")
-    else:
-        self._print_ack_response(response)
+```go
+func (h *Handler) cmdSmoke(args []string) {
+    if !h.E.RequireArgs(args, 2, "smoke heat on|off") {
+        return
+    }
+    if strings.ToLower(args[0]) != "heat" {
+        h.E.Out.Error("Usage: smoke heat on|off")
+        return
+    }
+    on := engine.ParseBool(args[1])
+    h.E.Ack(h.E.API.GunFx.SmokeHeat(on),
+        fmt.Sprintf("Smoke heater %s", engine.OnOff(on)))
+}
 ```
 
-**NOTE:** Query commands that use `conn.send_expect_ack()` directly are NOT wrapped by
-`_packet_wrapper`, so they cannot be routed through slave. Exclude them from slave registries.
+### Query Command (returns data)
+
+```go
+func (h *Handler) cmdQuery(args []string) {
+    res := h.E.API.XxxFx.QuerySomething()
+    if !res.OK() {
+        h.E.Out.Error("Query failed: %s", res.Error)
+        return
+    }
+    data := res.Payload
+    if len(data) < 4 {
+        h.E.Out.Error("Short response")
+        return
+    }
+    value := binary.LittleEndian.Uint16(data[0:2])
+    h.E.Out.Data("Value", "%d", value)
+}
+```
 
 ---
 
 ## Output Methods
 
-```python
-# Success message (green)
-self.print_success("Operation completed")
+```go
+// Success message (green)
+h.E.Out.OK("Operation completed")
 
-# Error message (red)
-self.print_error("Something went wrong")
+// Error message (red)
+h.E.Out.Error("Something went wrong: %v", err)
 
-# Info message (cyan)
-self.print_info("Informational message")
+// Info message (cyan)
+h.E.Out.Info("Informational message")
 
-# Warning message (yellow)
-self.print_warning("Warning message")
+// Warning message (yellow)
+h.E.Out.Warn("Warning message")
 
-# Raw response display
-self.print_response(response)
+// Labeled data value
+h.E.Out.Data("Label", "value %d", n)
+
+// Section header
+h.E.Out.Header("Section Title")
+
+// Raw formatted output
+h.E.Out.Printf("  Custom output: %d\n", value)
+
+// ACK helper (sends command, prints OK or NACK error)
+h.E.Ack(apiResult, "Success message")
 ```
 
 ---
@@ -425,25 +501,17 @@ self.print_response(response)
 ## Verification
 
 ```bash
-# Syntax check (all handler files)
-python -m py_compile tests/cli/output.py
-python -m py_compile tests/cli/base.py
-python -m py_compile tests/cli/interactive.py
-python -m py_compile tests/cli/handlers/core.py
-python -m py_compile tests/cli/handlers/gunfx.py
-python -m py_compile tests/cli/handlers/lightfx.py
-python -m py_compile tests/cli/handlers/gearcontrol.py
-python -m py_compile tests/cli/handlers/hubfx.py
-python -m py_compile tests/cli/handlers/storage.py
+# Build check
+cd app/go && go build ./cli/
 
 # Run CLI
-python -m tests.cli.interactive
+app/go/scalefx-cli.exe -p COM5
 
 # Test commands (direct)
 > connect
 > init
 > help                    # Verify new commands appear
-> gfx.trigger on 100     # Test GunFX command (when connected to GunFX)
+> trigger on 100          # Test GunFX command (when connected to GunFX)
 
 # Test commands (hub slave routing)
 > connect                 # Connect to HubFX
@@ -458,27 +526,26 @@ python -m tests.cli.interactive
 
 ```yaml
 Adding_Command:
-  - "[ ] Handler method added to handlers/xxxfx.py using _send_ack()"
-  - "[ ] CommandInfo added to get_commands() dict"
-  - "[ ] Argument validation in handler"
-  - "[ ] Error handling with try/except"
-  - "[ ] Imports added if needed"
-  - "[ ] python -m py_compile passes on handler file"
+  - "[ ] Packet type constant added to protocol/xxxfx/types.go"
+  - "[ ] Command builder added to protocol/xxxfx/commands.go"
+  - "[ ] API method added to api/xxxfx.go"
+  - "[ ] CmdEntry added to handler commands() map"
+  - "[ ] Handler method implemented with RequireArgs + validation"
+  - "[ ] Response parser added (if query command)"
+  - "[ ] Async handler registered (if async response)"
+  - "[ ] go build ./cli/ passes"
   - "[ ] Command appears in 'help'"
   - "[ ] Command executes correctly"
-  - "[ ] IF ACK-based: automatically available via hub slave routing"
-  - "[ ] IF query: added to EXCLUDE set in hubfx.py _build_slave_registry()"
 
 Adding_Controller:
-  - "[ ] Handler file created: tests/cli/handlers/newfx.py"
-  - "[ ] CommandHandlerBase subclass with get_commands()"
-  - "[ ] All ACK commands use _send_ack() for hub routing compatibility"
-  - "[ ] ControllerType constant added to base.py"
-  - "[ ] Handler registered in interactive.py"
-  - "[ ] Controller detection added to handlers/core.py"
-  - "[ ] Handler methods implemented"
-  - "[ ] Imports added"
-  - "[ ] python -m py_compile passes on all files"
+  - "[ ] Protocol package created: protocol/newfx/"
+  - "[ ] Controller type constant added to protocol/core/types.go"
+  - "[ ] API client created: api/newfx.go"
+  - "[ ] Handler package created: engine/handlers/newfx/"
+  - "[ ] Handler registered in engine/handlers/handlers.go"
+  - "[ ] Controller detection added to handlers/core/handler.go"
+  - "[ ] Controller maps updated in engine/types.go"
+  - "[ ] Status parser registered"
+  - "[ ] go build ./cli/ passes"
   - "[ ] Commands appear after init with controller"
-  - "[ ] IF HubFX slave: compose handler in hubfx.py __init__ with _packet_wrapper"
 ```

@@ -9,8 +9,6 @@ import (
 	"scalefx/api"
 	"scalefx/protocol"
 	"scalefx/protocol/core"
-	"scalefx/protocol/gearcontrol"
-	"scalefx/protocol/lightfx"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -41,6 +39,10 @@ type Engine struct {
 	// Callbacks for external consumers (GUI)
 	OnDisconnect   func()
 	PromptSelectPort func(ports []string) string // returns selected port or "" to cancel
+
+	// Registries for modular handler dispatch
+	statusParsers map[string]func([]byte) // key: controller type (e.g., core.CtrlGunFX)
+	asyncHandlers map[protocol.PacketType]func([]byte) // key: packet type
 }
 
 // NewEngine creates a new engine with the given output backend.
@@ -55,19 +57,38 @@ func NewEngine(out Output, port string, verbose bool) *Engine {
 
 // ─── Command Registration ───
 
-// GetGroups returns all command groups, building them once.
+// GetGroups returns all command groups. Groups are populated
+// by calling RegisterDefaults / AddGroup before first Dispatch.
 func (e *Engine) GetGroups() []*CmdGroup {
 	if e.groups == nil {
-		e.groups = []*CmdGroup{
-			e.coreCommands(),
-			e.firmwareCommands(),
-			e.gunfxCommands(),
-			e.gearcontrolCommands(),
-			e.lightfxCommands(),
-			e.hubfxCommands(),
-		}
+		e.groups = []*CmdGroup{}
 	}
 	return e.groups
+}
+
+// AddGroup registers an additional command group (e.g. CLI-only commands).
+// Must be called before the first Dispatch() or GetGroups() call.
+func (e *Engine) AddGroup(g *CmdGroup) {
+	e.groups = append(e.GetGroups(), g)
+	e.flatCmds = nil // invalidate cache
+}
+
+// RegisterStatusParser registers a module-specific STATUS data parser.
+// Called from handler Register() functions to extend ParseStatusPayload dispatch.
+func (e *Engine) RegisterStatusParser(controllerType string, parser func([]byte)) {
+	if e.statusParsers == nil {
+		e.statusParsers = make(map[string]func([]byte))
+	}
+	e.statusParsers[controllerType] = parser
+}
+
+// RegisterAsyncHandler registers a handler for unsolicited packet types.
+// Called from handler Register() functions to extend HandleAsyncPacket dispatch.
+func (e *Engine) RegisterAsyncHandler(packetType protocol.PacketType, handler func([]byte)) {
+	if e.asyncHandlers == nil {
+		e.asyncHandlers = make(map[protocol.PacketType]func([]byte))
+	}
+	e.asyncHandlers[packetType] = handler
 }
 
 // FlatCommands returns all commands across all groups, keyed by command name.
@@ -178,14 +199,6 @@ func (e *Engine) HandleAsyncPacket(resp *protocol.Response) {
 	switch resp.PacketType {
 	case core.LogMessage:
 		e.ParseLogMessage(resp.Payload)
-	case gearcontrol.GearCalibStatus:
-		e.ParseGearCalibStatus(resp.Payload)
-	case gearcontrol.GearSeqStatus:
-		e.ParseGearSeqStatus(resp.Payload)
-	case gearcontrol.GearDoorStatus:
-		e.ParseGearDoorStatus(resp.Payload)
-	case lightfx.LandingLightStatus:
-		e.ParseLandingLightStatus(resp.Payload)
 	case core.Ack:
 		// Silently ignore async ACKs (e.g., keepalive responses)
 	case core.Nack:
@@ -195,10 +208,15 @@ func (e *Engine) HandleAsyncPacket(resp *protocol.Response) {
 		}
 		e.Out.Warning("NACK (async): %s (0x%02X)", protocol.ErrorName(protocol.ErrorCode(errCode)), errCode)
 	default:
-		name := protocol.PacketTypeName(resp.PacketType)
-		if e.Verbose {
-			e.Out.Printf("  %s[%s tag=%d %d bytes]%s\n",
-				e.Out.C(ColorGray, ""), name, resp.Tag, len(resp.Payload), e.Out.C(ColorReset, ""))
+		// Delegate to registered module-specific async handlers
+		if handler, ok := e.asyncHandlers[resp.PacketType]; ok {
+			handler(resp.Payload)
+		} else {
+			name := protocol.PacketTypeName(resp.PacketType)
+			if e.Verbose {
+				e.Out.Printf("  %s[%s tag=%d %d bytes]%s\n",
+					e.Out.C(ColorGray, ""), name, resp.Tag, len(resp.Payload), e.Out.C(ColorReset, ""))
+			}
 		}
 	}
 }

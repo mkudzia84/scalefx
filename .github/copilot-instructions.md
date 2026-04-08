@@ -19,31 +19,28 @@ ScaleFX is a modular scale model effects system with three platform targets:
 ## Quick Command Reference
 
 ```bash
-# Build Pico firmware (PlatformIO)
-cd controllers/{gunfx|lightfx|gearcontrol}/pico
-python -m platformio run -e pico
+# Build firmware (via Flash CLI)
+app/go/scalefx-flash.exe build hubfx --no-clean
+app/go/scalefx-flash.exe build gunfx --no-clean
 
-# Build ESP32-S3 firmware (PlatformIO)
-cd controllers/hubfx/esp32s3
-python -m platformio run -e esp32s3
+# Build and flash with verification
+app/go/scalefx-flash.exe flash hubfx --no-clean
+app/go/scalefx-flash.exe flash gunfx --no-clean
 
-# Build and flash with verification (centralized script)
-python scripts/build_and_flash.py gunfx
-python scripts/build_and_flash.py lightfx --port COM10
-python scripts/build_and_flash.py noop --no-build
-python scripts/build_and_flash.py gunfx --no-clean      # incremental build
-python scripts/build_and_flash.py lightfx --skip-verify  # skip post-flash check
-python scripts/build_and_flash.py hubfx                  # ESP32-S3 (uses esptool)
+# Build Go CLI
+cd app/go && go build -o scalefx-cli.exe ./cli/
 
-# Build Windows Studio (.NET 8)
-cd app/win32/ScaleFXStudio
-dotnet build -c Release
+# Build Flash CLI
+cd app/go && go build -o scalefx-flash.exe ./flash/
 
-# Run Python tests (requires hardware)
-pytest tests/gunfx/ -v
+# Build Windows Studio (Wails v2 + Svelte)
+cd app/go/studio && wails build
 
-# Interactive CLI
-python -m tests.cli.interactive --port COM5
+# Build C# Serial Library
+dotnet build app/win32/ScaleFXSerial/
+
+# Interactive CLI (Go)
+app/go/scalefx-cli.exe -p COM5
 ```
 
 ## Critical Development Rules
@@ -64,36 +61,30 @@ Documentation updates should be included in the same commit/session as code chan
 
 When modifying serial protocol, these files MUST stay in sync:
 
-| C++ Source | Python Mirror | Go CLI Mirror | C# Mirror | Content |
-|------------|---------------|---------------|-----------|---------|
-| `controllers/lib/sfx_serial/serial/core/core.h` | `tests/framework/packets.py` | `app/go/protocol/packets.go` | `ScaleFXSerial/PacketTypes.cs`, `ErrorCodes.cs` | Packet type constants, generic error codes |
-| `controllers/lib/sfx_serial/serial/gunfx/gunfx.h` | `tests/framework/packets.py`, `commands.py` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/GunFxCommands.cs` | GunFX packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/lightfx/lightfx.h` | `tests/framework/packets.py`, `commands.py` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/LightFxCommands.cs` | LightFX packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/gearcontrol/gearcontrol.h` | `tests/framework/packets.py`, `commands.py` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/GearControlCommands.cs` | GearControl packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/hubfx/hubfx.h` | `tests/framework/packets.py`, `commands.py` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/HubFxCommands.cs` | HubFX packet types, error codes, commands |
+| C++ Source | Go CLI Mirror | C# Mirror | Content |
+|------------|---------------|-----------|---------|
+| `controllers/lib/sfx_serial/serial/core/core.h` | `app/go/protocol/packets.go` | `ScaleFXSerial/PacketTypes.cs`, `ErrorCodes.cs` | Packet type constants, generic error codes |
+| `controllers/lib/sfx_serial/serial/gunfx/gunfx.h` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/GunFxCommands.cs` | GunFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/lightfx/lightfx.h` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/LightFxCommands.cs` | LightFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/gearcontrol/gearcontrol.h` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/GearControlCommands.cs` | GearControl packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/hubfx/hubfx.h` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/HubFxCommands.cs` | HubFX packet types, error codes, commands |
 
-**Verification:** Run `python -m py_compile tests/framework/packets.py` and `cd app/go && go build ./cli/` after C++ changes.
+**Verification:** Run `cd app/go && go build ./cli/` and `dotnet build app/win32/ScaleFXSerial/` after C++ changes.
 
 ### 2. Command Addition Checklist
 
 When adding a new command to an existing controller, update ALL these files:
 1. `xxxfx/xxxfx.h` - Add packet type constant, callback typedef, `onNewCmd()` method, handler case in `handleModulePacket()` using `SFX_*` macros, error codes if needed
 2. `xxxfx_pico.ino` - Implement callback, register in `setup()`
-4. `tests/framework/packets.py` - Mirror constant in `XxxPacket` class
-5. `tests/framework/commands.py` - Add static builder method in `XxxCommands`
-6. `tests/xxxfx/test_<feature>.py` - **REQUIRED:** Add tests for new functionality
-7. `tests/cli/handlers/xxxfx.py` - Add command to handler class
-8. `controllers/xxxfx/pico/README.md` - Document payload format
-9. `app/go/protocol/packets.go` - Mirror constant, add to `PacketTypeName()` and error name map
-10. `app/go/protocol/commands.go` - Add command builder function
-11. `app/go/cli/handler_xxxfx.go` - Add CLI command and register in command list
-12. `app/go/cli/parsers.go` - Add response parser if command returns data
-13. `app/win32/ScaleFXSerial/PacketTypes.cs` - Mirror packet type constant
-14. `app/win32/ScaleFXSerial/Commands/XxxFxCommands.cs` - Add command builder method
+3. `controllers/xxxfx/pico/README.md` - Document payload format
+4. `app/go/protocol/packets.go` - Mirror constant, add to `PacketTypeName()` and error name map
+5. `app/go/protocol/commands.go` - Add command builder function
+6. `app/go/cli/handler_xxxfx.go` - Add CLI command and register in command list
+7. `app/go/cli/parsers.go` - Add response parser if command returns data
+8. `app/win32/ScaleFXSerial/PacketTypes.cs` - Mirror packet type constant
+9. `app/win32/ScaleFXSerial/Commands/XxxFxCommands.cs` - Add command builder method
 
-**ALWAYS update tests when protocol is changed or new features are added.** Tests are not optional.
-
-**ALWAYS update ALL CLIs when new commands are added.** Both the Python CLI and Go CLI are primary debugging tools.
+**ALWAYS update the Go CLI when new commands are added.** The Go CLI is the primary debugging tool.
 
 **ALWAYS update the C# library when protocol constants change.** The ScaleFXSerial library is the protocol layer for the Windows Studio app.
 
@@ -139,9 +130,9 @@ See `01-ARCHITECTURE.md` § Client Response Handling Design for full details.
 uint16_t value = payload[0] | (payload[1] << 8);  // Little-endian
 ```
 
-**Python payload building:**
-```python
-payload = struct.pack('<H', value)  # '<' = little-endian
+**Go payload building:**
+```go
+binary.LittleEndian.PutUint16(buf, value)  // Little-endian
 ```
 
 ### 5. Physical Units in Code (MANDATORY)
@@ -280,23 +271,23 @@ server.loop();  // Calls indicators.update() automatically
 
 #### Error Code Ranges
 
-Each module's error codes MUST be in its assigned range and defined in both C++ and Python:
+Each module's error codes MUST be in its assigned range and defined in C++, Go, and C#:
 
-| Range | Module | C++ Namespace | Python Class |
-|-------|--------|---------------|-------------|
-| `0x00-0x0F` | Generic | `SerialError` | `CoreError` |
-| `0x10-0x1F` | Parameter | `SerialError` | `CoreError` |
-| `0x20-0x4F` | GunFX | `GunFxError` | `GunFxError` |
-| `0x50-0x5F` | LightFX | `LightFxError` | `LightFxError` |
-| `0x60-0x6F` | GearControl | `GearControlError` | `GearControlError` |
-| `0x70-0x8F` | Reserved | — | — |
-| `0xF0-0xFF` | System | `SerialError` | `CoreError` |
+| Range | Module | C++ Namespace | Go Constants | C# Class |
+|-------|--------|---------------|--------------|----------|
+| `0x00-0x0F` | Generic | `SerialError` | `Err*` | `ErrorCodes.Core*` |
+| `0x10-0x1F` | Parameter | `SerialError` | `Err*` | `ErrorCodes.Core*` |
+| `0x20-0x4F` | GunFX | `GunFxError` | `ErrGunFx*` | `ErrorCodes.GunFx*` |
+| `0x50-0x5F` | LightFX | `LightFxError` | `ErrLightFx*` | `ErrorCodes.LightFx*` |
+| `0x60-0x6F` | GearControl | `GearControlError` | `ErrGearControl*` | `ErrorCodes.GearControl*` |
+| `0x70-0x8F` | Reserved | — | — | — |
+| `0xF0-0xFF` | System | `SerialError` | `Err*` | `ErrorCodes.Core*` |
 
 **Error code rules:**
-1. Every C++ error constant MUST have a matching Python constant with the same value
+1. Every C++ error constant MUST have matching Go and C# constants with the same value
 2. Never define error codes outside the module's assigned range
 3. Remove unused/dead error codes — they cause sync confusion
-4. Each error namespace MUST have a `getMessage()` (C++) / `name()` (Python) function
+4. Each error namespace MUST have a `getMessage()` (C++) / `PacketTypeName()` (Go) / name lookup (C#) function
 5. Use generic `SerialError` codes (e.g., `INVALID_ID`, `MISSING_PARAMETER`) where appropriate instead of duplicating concepts per module
 
 ### 9. Firmware Versioning (MANDATORY)
@@ -761,30 +752,25 @@ private:
 
 ### 19. Cross-Platform Protocol Sync (MANDATORY)
 
-**When protocol is changed or a new controller/board is added, ALWAYS reflect those changes in ALL client implementations:** the Go CLI (`app/go/`), the C# serial library (`app/win32/ScaleFXSerial/`), and the Python test framework (`tests/`). These are parallel implementations of the same protocol — they MUST stay in sync.
+**When protocol is changed or a new controller/board is added, ALWAYS reflect those changes in both client implementations:** the Go CLI (`app/go/`) and the C# serial library (`app/win32/ScaleFXSerial/`). These are parallel implementations of the same protocol — they MUST stay in sync.
 
 **Affected platforms:**
 
 | Platform | Location | Key Files |
 |----------|----------|----------|
-| **Python CLI** | `tests/` | `framework/packets.py`, `framework/commands.py`, `cli/handlers/*.py`, `cli/parsers.py` |
-| **Go CLI** | `app/go/` | `protocol/packets.go`, `protocol/commands.go`, `cli/parsers.go`, `cli/handler_*.go` |
+| **Go CLI** | `app/go/` | `protocol/packets.go`, `protocol/commands.go`, `cli/parsers*.go`, `cli/handler_*.go` |
 | **C# Library** | `app/win32/ScaleFXSerial/` | `PacketTypes.cs`, `ErrorCodes.cs`, `Commands/*.cs` |
 
 **Rules:**
-1. **New packet type constant** → add to `packets.py` (Python), `packets.go` (Go), `PacketTypes.cs` (C#)
-2. **New error code** → add to `packets.py`, `packets.go` (+ `PacketTypeName()`/error name map), `ErrorCodes.cs`
-3. **New command** → add builder to `commands.py`, `commands.go`, `Commands/XxxFxCommands.cs`; add CLI handler to `cli/handlers/xxxfx.py` and `handler_xxxfx.go`
-4. **New response parser** → add to `cli/parsers.py` and `parsers.go`; C# parsing is in the Studio app layer
-5. **New controller type** → create handler files in all three platforms; register in CLI startup/dispatch
-6. **Payload format change** → update all parsers and command builders across all three platforms
+1. **New packet type constant** → add to `packets.go` (Go), `PacketTypes.cs` (C#)
+2. **New error code** → add to `packets.go` (+ `PacketTypeName()`/error name map), `ErrorCodes.cs`
+3. **New command** → add builder to `commands.go`, `Commands/XxxFxCommands.cs`; add CLI handler to `handler_xxxfx.go`
+4. **New response parser** → add to `parsers*.go`; C# parsing is in the Studio app layer
+5. **New controller type** → create handler files in both platforms; register in CLI startup/dispatch
+6. **Payload format change** → update all parsers and command builders across both platforms
 
 **Verification:**
 ```bash
-# Python
-python -m py_compile tests/framework/packets.py
-python -m py_compile tests/framework/commands.py
-
 # Go CLI
 cd app/go && go build ./cli/
 
@@ -800,18 +786,23 @@ dotnet build app/win32/ScaleFXSerial/
 
 **Available tasks:**
 
-| Task Label | Purpose |
-|------------|--------|
-| `Build Firmware` | Build any controller (prompts for controller) |
-| `Build and Flash Firmware` | Build + flash + verify (prompts for controller) |
-| `Flash Firmware (no build)` | Flash only, skip build |
-| `Build All Controllers` | Build all firmware targets |
-| `Build ScaleFX Studio` | Build the .NET 8 Windows app |
-| `Build Go CLI` | Build the Go CLI binary |
-| `Interactive CLI (Go)` | Launch Go CLI session |
-| `Interactive CLI (Python)` | Launch Python CLI session |
-| `Python Syntax Check` | Compile-check all Python files |
-| `Python Syntax Check (framework only)` | Compile-check framework only |
+| Task Label | Purpose | Group |
+|------------|--------|-------|
+| `Build Firmware` | Build any controller (prompts for controller) | build (default) |
+| `Build and Flash Firmware` | Build + flash + verify (prompts for controller) | build |
+| `Flash Firmware (no build)` | Flash only, skip build | build |
+| `Build All Controllers` | Build all 6 firmware targets sequentially | build |
+| `Build Go CLI` | Build the Go CLI binary (`app/go/cli/`) | build |
+| `Build Flash CLI` | Build the Flash CLI binary (`app/go/flash/`) | build |
+| `Build C# Serial Library` | Build the ScaleFXSerial protocol library | build |
+| `Build ScaleFX Studio (GUI)` | Build the Wails v2 Studio app | build |
+| `Build ScaleFX Studio (C#)` | Build the .NET 8 C# Studio app | build |
+| `Run ScaleFX Studio (GUI)` | Launch Wails dev server | test |
+| `Run ScaleFX Studio (C#)` | Launch C# Studio | test |
+| `Interactive CLI (Go)` | Launch Go CLI session (prompts for COM port) | test |
+| `Flash CLI (Interactive)` | Launch Flash CLI session | test |
+| `Publish Firmware Release` | Dispatch GitHub Actions release workflow | build |
+| `List Firmware Releases` | List recent GitHub releases | test |
 
 **Rules:**
 1. **Always use `create_and_run_task`** for build/flash/syntax-check operations — never `run_in_terminal` with raw `platformio` or `dotnet build` commands
@@ -823,11 +814,67 @@ dotnet build app/win32/ScaleFXSerial/
 **Anti-pattern:**
 ```bash
 # BAD: Raw terminal command — fragile, wrong cwd, bypasses task config
-run_in_terminal: python -m platformio run -e esp32s3 -d controllers/hubfx/esp32s3
+run_in_terminal: app/go/scalefx-flash.exe build hubfx
 
 # GOOD: Use the predefined task
 create_and_run_task: "Build Firmware"  # prompts for controller
 ```
+
+### 21. Release Notes (MANDATORY)
+
+**Every firmware release MUST include meaningful release notes.** The GitHub Actions release workflow requires a `release_notes` input. The agent MUST generate release notes when publishing a release.
+
+#### Agent Release Notes Generation
+
+When the user asks to publish/release firmware, the agent MUST:
+1. **Determine the previous release version** for that controller (check the controller's README.md version history or the `FIRMWARE_VERSION` define history)
+2. **Collect all changes since the last release** by reviewing:
+   - Git log for the controller directory (`controllers/{name}/`)
+   - Git log for shared libraries (`controllers/lib/`) that affect the controller
+   - Changes to protocol headers (`serial/{module}/{module}.h`)
+3. **Categorize changes** using these sections:
+   - **New Features** — new commands, new hardware support, new configuration options
+   - **Bug Fixes** — corrected behavior, crash fixes, edge case handling
+   - **Protocol Changes** — new packet types, payload format changes, new error codes
+   - **Breaking Changes** — anything that requires client updates (mark with ⚠️)
+   - **Internal** — refactors, code cleanup, documentation (omit if nothing user-facing)
+4. **Format as markdown** suitable for the GitHub release body
+5. **Include version impact reasoning** — explain why this is MAJOR/MINOR/PATCH
+
+#### Release Notes Format
+
+```markdown
+### New Features
+- Added `SERVO_SPEED` command for configurable servo movement speed
+- Support for INA226 power monitoring on channels 0-3
+
+### Bug Fixes
+- Fixed gear deploy timeout not resetting after manual override
+- Fixed LED sequence loop count off-by-one
+
+### Protocol Changes
+- New packet type: `SERVO_SPEED` (0x0F) — 3-byte payload [channel:u8][speed:u16LE]
+- New error code: `ERR_SERVO_MOVING` (0x28)
+
+### Breaking Changes
+- ⚠️ STATUS payload extended from 8 to 12 bytes (added servo position fields)
+```
+
+#### Where Release Notes Appear
+
+| Consumer | How | Source |
+|----------|-----|--------|
+| **GitHub Releases** | Embedded in release body | Workflow `release_notes` input |
+| **Go CLI** | `fw.notes <controller> [version]` | `Release.Body` from GitHub API |
+| **Go CLI** | `fw.releases` shows one-line summary | First content line of Body |
+| **ScaleFX Studio** | Collapsible panel in Firmware tab | `ReleaseInfo.body` via `GetReleases()` |
+
+**Rules:**
+1. **Never publish a release with empty notes** — the workflow input is required
+2. **Be specific** — "fixed bug" is not acceptable; "fixed gear deploy timeout not resetting after ERR_STALL" is
+3. **Reference packet types by name and hex value** for protocol changes
+4. **Mark breaking changes prominently** with ⚠️ and explain the migration path
+5. **Keep notes concise** — 5-15 bullet points typical for a minor release
 
 ## Key Architecture Patterns
 
@@ -917,36 +964,6 @@ IDENTIFY (0xFE) returns the same payload as INIT_READY but without triggering in
 
 See `controllers/lib/sfx_serial/serial/PROTOCOL.md` for full wire format.
 
-### Python Test Framework (`tests/`)
-```
-framework/
-  ├── connection.py    - ScaleFXConnection class
-  ├── protocol.py      - COBS encode/decode, CRC-8, packet helpers
-  ├── packets.py       - Constants (MUST mirror C++ headers)
-  └── commands.py      - High-level command builders (e.g., GunFxCommands.trigger_on())
-cli/
-  ├── base.py          - CommandHandlerBase (_send_ack, _wrap_packet), CommandInfo, OutputMixin
-  ├── output.py        - TerminalUI split-screen terminal (prompt_toolkit Application)
-  ├── parsers.py       - Response packet parsing utilities
-  ├── interactive.py   - Main CLI class (prompt_toolkit split-screen, async-safe output)
-  └── handlers/
-      ├── core.py      - Core/protocol commands (connect, init, status)
-      ├── gunfx.py     - GunFX commands (trigger, servo, smoke)
-      ├── lightfx.py   - LightFX commands (led, servo, power, sequences)
-      ├── gearcontrol.py - GearControl commands (gear, servo, yaw, calibration)
-      ├── hubfx.py     - HubFX hub commands + composed slave routing
-      └── storage.py   - Reusable file operations (SD/Flash)
-{controller}/
-  └── test_*.py        - pytest test files (requires hardware)
-```
-
-**CLI Composition Pattern:** HubFX handler composes instances of GunFX, LightFX, and GearControl
-handlers with `_packet_wrapper = HubFxCommands.slave_route` for transparent hub routing. All
-ACK-based commands in direct handlers use `_send_ack()` which applies the wrapper when set.
-Query commands are excluded from slave registry since SLAVE_ROUTE only forwards ACK/NACK.
-
-**Dependencies:** `pyserial`, `colorama`, `prompt_toolkit>=3.0.0` (see `tests/requirements.txt`)
-
 ### Go CLI (`app/go/`)
 
 Three-package architecture: `protocol/` (wire format, packets, commands, connection), `api/` (typed client SDK), `cli/` (interactive terminal UI).
@@ -1028,7 +1045,7 @@ ScaleFXSerial/
 ## Platform-Specific Notes
 
 ### Pico Controllers (C++17, Arduino)
-- Build with PlatformIO: `python -m platformio run`
+- Build with PlatformIO via Flash CLI: `app/go/scalefx-flash.exe build gunfx`
 - Framework: Arduino-Pico (Earle Philhower core)
 - Key libraries: Servo, Wire (I2C), SD (FatFS), USB Host (PIO-USB for HubFX)
 - BOOTSEL mode: Send `BOOTSEL` command via serial for firmware updates
@@ -1045,7 +1062,6 @@ See the detailed workflow guides in `/instructions/`:
 - **Adding a command:** `03-PROTOCOL-EXTENSION.md` + `04-CHANGE-PROPAGATION.md`
 - **Creating a controller:** `02-NEW-CONTROLLER.md`
 - **Building/flashing:** `05-BUILD-AND-FLASH.md`
-- **Writing tests:** `06-TEST-SUITE.md`
 - **Updating CLI:** `07-CLI-UPDATES.md`
 - **AudioTools library:** `08-AUDIOTOOLS.md`
 - **Console output schema:** `09-CONSOLE-OUTPUT.md`

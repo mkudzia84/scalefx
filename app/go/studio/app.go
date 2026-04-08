@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"scalefx/engine"
+	"scalefx/engine/handlers"
 	"scalefx/firmware"
 	"scalefx/protocol"
 	"scalefx/protocol/core"
@@ -56,6 +57,7 @@ type App struct {
 func NewApp() *App {
 	out := &GUIOutput{}
 	eng := engine.NewEngine(out, "", false)
+	handlers.RegisterDefaults(eng)
 	eng.PromptSelectPort = func(ports []string) string { return "" }
 
 	return &App{eng: eng, out: out}
@@ -237,12 +239,13 @@ type FirmwareTarget struct {
 
 // FirmwareProgress is emitted as "firmware:progress" events.
 type FirmwareProgress struct {
-	Step    int    `json:"step"`
-	Total   int    `json:"total"`
-	Message string `json:"message"`
-	Type    string `json:"type"` // "info", "ok", "warning", "error", "step"
-	Done    bool   `json:"done"`
-	Error   string `json:"error,omitempty"`
+	Step         int    `json:"step"`
+	Total        int    `json:"total"`
+	Message      string `json:"message"`
+	Type         string `json:"type"` // "info", "ok", "warning", "error", "step"
+	Done         bool   `json:"done"`
+	Error        string `json:"error,omitempty"`
+	Reconnecting bool   `json:"reconnecting,omitempty"` // true while waiting for port & reconnecting
 }
 
 // GetFirmwareTargets returns all available controller targets.
@@ -288,13 +291,15 @@ func (a *App) BuildAndFlash(controllerName string, port string, noBuild bool, no
 
 func (a *App) runFirmwareOp(controllerName string, port string, noBuild bool, noClean bool, skipVerify bool) {
 	// Disconnect if we're connected (flash needs the port)
+	savedPort := ""
 	a.mu.Lock()
 	if a.eng.Conn != nil {
 		connPort := a.eng.Conn.PortName()
 		if port == "" || strings.EqualFold(connPort, port) {
+			savedPort = connPort
 			a.emitFwProgress("warning", "Disconnecting from "+connPort+"...")
 			a.eng.Dispatch("disconnect")
-			wailsRT.EventsEmit(a.ctx, "connection:changed", a.getConnectionInfo())
+			// OnDisconnect callback emits connection:changed automatically
 		}
 	}
 	a.mu.Unlock()
@@ -337,11 +342,7 @@ func (a *App) runFirmwareOp(controllerName string, port string, noBuild bool, no
 			Error:   err.Error(),
 		})
 	} else {
-		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
-			Message: "Flash complete!",
-			Type:    "ok",
-			Done:    true,
-		})
+		a.reconnectAfterFlash(savedPort)
 	}
 }
 
@@ -352,6 +353,86 @@ func (a *App) emitFwProgress(typ string, msg string) {
 	})
 }
 
+// reconnectAfterFlash waits for the serial port to reappear after a flash
+// operation, reconnects, and emits the final done event.
+func (a *App) reconnectAfterFlash(savedPort string) {
+	if savedPort == "" {
+		// No prior connection — just report success
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: "Flash complete!",
+			Type:    "ok",
+			Done:    true,
+		})
+		return
+	}
+
+	// Tell the frontend we're in the reconnect phase
+	wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+		Message:      "Flash complete — waiting for " + savedPort + " to reappear...",
+		Type:         "info",
+		Reconnecting: true,
+	})
+
+	// Wait up to 10 seconds for the port to come back
+	deadline := time.Now().Add(10 * time.Second)
+	found := false
+	for time.Now().Before(deadline) {
+		time.Sleep(500 * time.Millisecond)
+		for _, p := range protocol.ListPorts() {
+			if strings.EqualFold(p, savedPort) {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+
+	if !found {
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: "Flash complete! Port " + savedPort + " did not reappear — reconnect manually",
+			Type:    "warning",
+			Done:    true,
+		})
+		return
+	}
+
+	// Small extra delay for device to stabilize after USB re-enumeration
+	time.Sleep(500 * time.Millisecond)
+
+	wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+		Message:      "Reconnecting to " + savedPort + "...",
+		Type:         "info",
+		Reconnecting: true,
+	})
+
+	a.mu.Lock()
+	a.eng.Dispatch("connect " + savedPort)
+	// Auto-init slave controllers
+	if a.eng.Conn != nil && !a.eng.Initialized && a.eng.ControllerType != "" {
+		a.eng.Dispatch("init")
+	}
+	info := a.getConnectionInfo()
+	a.mu.Unlock()
+
+	wailsRT.EventsEmit(a.ctx, "connection:changed", info)
+
+	if info.Connected {
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: "Flash complete — reconnected to " + info.ControllerName + " " + info.FirmwareVer,
+			Type:    "ok",
+			Done:    true,
+		})
+	} else {
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: "Flash complete! Reconnect to " + savedPort + " failed — try manually",
+			Type:    "warning",
+			Done:    true,
+		})
+	}
+}
+
 // ─── Remote Firmware Releases (GUI bindings) ───
 
 // ReleaseInfo is the frontend-friendly release representation.
@@ -360,6 +441,7 @@ type ReleaseInfo struct {
 	Version    string `json:"version"`
 	Tag        string `json:"tag"`
 	Name       string `json:"name"`
+	Body       string `json:"body"` // release notes (markdown)
 	Prerelease bool   `json:"prerelease"`
 	Published  string `json:"published"`
 	AssetName  string `json:"assetName"`
@@ -382,6 +464,7 @@ func (a *App) GetReleases(controller string) []ReleaseInfo {
 			Version:    r.Version,
 			Tag:        r.Tag,
 			Name:       r.Name,
+			Body:       r.Body,
 			Prerelease: r.Prerelease,
 			Published:  r.Published,
 			AssetName:  r.AssetName,
@@ -397,7 +480,71 @@ func (a *App) FlashFromRelease(controller string, tag string, port string, skipV
 	go a.runReleaseFlash(controller, tag, port, skipVerify)
 }
 
+// ─── External Tools (GUI bindings) ───
+
+// ToolsStatus describes the state of external tools (esptool, etc.).
+type ToolsStatus struct {
+	EsptoolInstalled bool   `json:"esptoolInstalled"`
+	EsptoolPath      string `json:"esptoolPath"`
+	EsptoolSource    string `json:"esptoolSource"` // "workspace", "colocated", "path", "python", or ""
+}
+
+// GetToolsStatus checks whether external tools (esptool) are available.
+func (a *App) GetToolsStatus() ToolsStatus {
+	opts := &firmware.Options{}
+	info := firmware.ResolveEsptoolOrPython(opts)
+	if info == nil {
+		return ToolsStatus{}
+	}
+	return ToolsStatus{
+		EsptoolInstalled: true,
+		EsptoolPath:      info.Path,
+		EsptoolSource:    info.Source,
+	}
+}
+
+// DownloadEsptool downloads the standalone esptool binary (no Python needed).
+// Progress emitted as "firmware:progress" events.
+func (a *App) DownloadEsptool() {
+	go func() {
+		opts := &firmware.Options{
+			OnEvent: func(evt firmware.Event) {
+				typ := "info"
+				switch evt.Type {
+				case firmware.EventOK:
+					typ = "ok"
+				case firmware.EventError:
+					typ = "error"
+				}
+				wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+					Message: evt.Message,
+					Type:    typ,
+				})
+			},
+		}
+
+		path, err := firmware.DownloadEsptool(opts)
+		if err != nil {
+			wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+				Message: "esptool download failed: " + err.Error(),
+				Type:    "error",
+				Done:    true,
+				Error:   err.Error(),
+			})
+			return
+		}
+
+		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
+			Message: "esptool installed: " + path,
+			Type:    "ok",
+			Done:    true,
+		})
+	}()
+}
+
 func (a *App) runReleaseFlash(controller string, tag string, port string, skipVerify bool) {
+	savedPort := ""
+
 	// Find the release
 	releases, err := firmware.FetchReleases(controller, nil)
 	if err != nil {
@@ -432,9 +579,10 @@ func (a *App) runReleaseFlash(controller string, tag string, port string, skipVe
 	if a.eng.Conn != nil {
 		connPort := a.eng.Conn.PortName()
 		if port == "" || strings.EqualFold(connPort, port) {
+			savedPort = connPort
 			a.emitFwProgress("warning", "Disconnecting from "+connPort+"...")
 			a.eng.Dispatch("disconnect")
-			wailsRT.EventsEmit(a.ctx, "connection:changed", a.getConnectionInfo())
+			// OnDisconnect callback emits connection:changed automatically
 		}
 	}
 	a.mu.Unlock()
@@ -477,10 +625,6 @@ func (a *App) runReleaseFlash(controller string, tag string, port string, skipVe
 			Error:   err.Error(),
 		})
 	} else {
-		wailsRT.EventsEmit(a.ctx, "firmware:progress", FirmwareProgress{
-			Message: "Flash complete!",
-			Type:    "ok",
-			Done:    true,
-		})
+		a.reconnectAfterFlash(savedPort)
 	}
 }

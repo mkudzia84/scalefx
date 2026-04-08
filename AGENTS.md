@@ -13,7 +13,7 @@ ScaleFX is a modular scale model effects system for RC helicopters:
 - **Windows Studio** (.NET 8/C#): Visual configuration editor
 - **Go CLI** (`app/go/`): Compiled interactive CLI — 3-package architecture: `protocol/` (wire format, packets, commands, connection), `api/` (typed client SDK), `cli/` (interactive terminal UI)
 - **C# Serial Library** (`app/win32/ScaleFXSerial/`): .NET 8 protocol layer for Windows Studio
-- **Python test framework** with interactive CLI
+- **Flash CLI** (`app/go/flash/`): Standalone build/flash/upload tool for all controllers
 
 ## Critical Constants
 
@@ -30,7 +30,6 @@ ScaleFX is a modular scale model effects system for RC helicopters:
 | Add commands to existing controller | `instructions/03-PROTOCOL-EXTENSION.md` |
 | File sync checklist after changes | `instructions/04-CHANGE-PROPAGATION.md` |
 | Build and deploy firmware | `instructions/05-BUILD-AND-FLASH.md` |
-| Run/write tests | `instructions/06-TEST-SUITE.md` |
 | Update interactive CLI | `instructions/07-CLI-UPDATES.md` |
 | AudioTools library reference (HubFX audio) | `instructions/08-AUDIOTOOLS.md` |
 | Console output schema (all CLIs) | `instructions/09-CONSOLE-OUTPUT.md` |
@@ -38,33 +37,25 @@ ScaleFX is a modular scale model effects system for RC helicopters:
 ## Quick Commands
 
 ```bash
-# Build Pico firmware
-python -m platformio run -e pico -d controllers/{gunfx|lightfx|gearcontrol|noop}/pico
+# Build firmware (via Flash CLI)
+app/go/scalefx-flash.exe build hubfx --no-clean
+app/go/scalefx-flash.exe build gunfx --no-clean
 
-# Build ESP32-S3 firmware (HubFX)
-python -m platformio run -e esp32s3 -d controllers/hubfx/esp32s3
-
-# Build and flash
-python scripts/build_and_flash.py {gunfx|lightfx|gearcontrol|noop}
-python scripts/build_and_flash.py hubfx  # ESP32-S3 (uses esptool)
-
-# Python syntax check
-python -m py_compile tests/framework/packets.py
+# Build and flash with verification
+app/go/scalefx-flash.exe flash hubfx --no-clean
+app/go/scalefx-flash.exe flash gunfx --no-clean
 
 # Build Go CLI
 cd app/go && go build -o scalefx-cli.exe ./cli/
 
+# Build Flash CLI
+cd app/go && go build -o scalefx-flash.exe ./flash/
+
 # Build C# library
 dotnet build app/win32/ScaleFXSerial/
 
-# Interactive CLI (Python)
-python -m tests.cli.interactive --port COM5
-
 # Interactive CLI (Go)
 app/go/scalefx-cli.exe -p COM5
-
-# Run tests (requires hardware)
-pytest tests/{gunfx|lightfx|gearcontrol|noop}/ -v
 ```
 
 ## File Structure
@@ -83,29 +74,21 @@ controllers/
 ├── gunfx/pico/          # Gun effects (RP2040 server)
 ├── lightfx/pico/        # Lighting effects (RP2040 server)
 ├── gearcontrol/pico/    # Landing gear (RP2040 server)
-├── hubfx/pico/          # Master hub (RP2350 client, dual-core) — OBSOLETE, reference only
 ├── hubfx/esp32s3/       # Master hub (ESP32-S3, active development target)
-
 └── noop/pico/           # Protocol test stub
 
-tests/
-├── framework/           # packets.py, commands.py, connection.py, protocol.py
-├── cli/handlers/        # CLI command handlers (composition-based slave routing via hubfx.py)
-└── {gunfx,lightfx,gearcontrol,noop}/  # pytest test suites
-
-scripts/build_and_flash.py   # Centralized build/flash
-app/go/                      # Go CLI (3 packages: protocol, api, cli)
+app/go/                      # Go CLI (3 packages: protocol, api, cli) + Flash CLI + Studio
 app/win32/ScaleFXSerial/     # C# serial protocol library (.NET 8)
 app/win32/ScaleFXStudio/     # Windows config editor (.NET 8)
 ```
 
-## Mandatory File Sync (C++ ↔ Python ↔ Go ↔ C#)
+## Mandatory File Sync (C++ ↔ Go ↔ C#)
 
-| C++ File | Python File | Go CLI File | C# File |
-|----------|-------------|-------------|----------|
-| `core/core.h` | `packets.py` | `packets.go` | `PacketTypes.cs`, `ErrorCodes.cs` |
-| `core/stream.h` | `packets.py` (StreamPacket) | `packets.go` | `PacketTypes.cs` |
-| `gunfx/gunfx.h` | `packets.py`, `commands.py`, `cli/handlers/gunfx.py` | `packets.go`, `commands.go`, `handler_gunfx.go` | `PacketTypes.cs`, `Commands/GunFxCommands.cs` |
-| `lightfx/lightfx.h` | `packets.py`, `commands.py`, `cli/handlers/lightfx.py` | `packets.go`, `commands.go`, `handler_lightfx.go` | `PacketTypes.cs`, `Commands/LightFxCommands.cs` |
-| `gearcontrol/gearcontrol.h` | `packets.py`, `commands.py`, `cli/handlers/gearcontrol.py` | `packets.go`, `commands.go`, `handler_gearcontrol.go` | `PacketTypes.cs`, `Commands/GearControlCommands.cs` |
-| `hubfx/hubfx.h` | `packets.py`, `commands.py`, `cli/handlers/hubfx.py` | `packets.go`, `commands.go`, `handler_hubfx.go` | `PacketTypes.cs`, `Commands/HubFxCommands.cs` |
+| C++ File | Go CLI File | C# File |
+|----------|-------------|----------|
+| `core/core.h` | `packets.go` | `PacketTypes.cs`, `ErrorCodes.cs` |
+| `core/stream.h` | `packets.go` | `PacketTypes.cs` |
+| `gunfx/gunfx.h` | `packets.go`, `commands.go`, `handler_gunfx.go` | `PacketTypes.cs`, `Commands/GunFxCommands.cs` |
+| `lightfx/lightfx.h` | `packets.go`, `commands.go`, `handler_lightfx.go` | `PacketTypes.cs`, `Commands/LightFxCommands.cs` |
+| `gearcontrol/gearcontrol.h` | `packets.go`, `commands.go`, `handler_gearcontrol.go` | `PacketTypes.cs`, `Commands/GearControlCommands.cs` |
+| `hubfx/hubfx.h` | `packets.go`, `commands.go`, `handler_hubfx.go` | `PacketTypes.cs`, `Commands/HubFxCommands.cs` |

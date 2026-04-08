@@ -14,6 +14,10 @@ export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
 
+export function DownloadEsptool() {
+  return window['go']['main']['App']['DownloadEsptool']();
+}
+
 export function FlashFromRelease(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['FlashFromRelease'](arg1, arg2, arg3, arg4);
 }
@@ -36,6 +40,10 @@ export function GetReleases(arg1) {
 
 export function GetSlaveInfo() {
   return window['go']['main']['App']['GetSlaveInfo']();
+}
+
+export function GetToolsStatus() {
+  return window['go']['main']['App']['GetToolsStatus']();
 }
 
 export function ListPorts() {

@@ -326,7 +326,7 @@ CLI                                    Controller
 ### Implementation
 
 - **Firmware**: `CoreCommandServer::sendIdentify()` in `bus_server.cpp` — same payload as `sendInitReady()` but with IDENTIFY packet type
-- **CLI**: `_identify_and_init()` in `tests/cli/handlers/core.py` — called on connect and reconnect
+- **Go CLI**: `identifyAndInit()` in `app/go/engine/handlers/` — called on connect and reconnect
 - **Protocol**: Documented in `PROTOCOL.md` § IDENTIFY Command
 
 ---
@@ -760,49 +760,6 @@ Error_Ranges:
       - { code: 0xF3, name: "BUFFER_OVERFLOW" }
       - { code: 0xF4, name: "CRC_ERROR" }
       - { code: 0xF5, name: "FRAMING_ERROR" }
-```
-
----
-
-## Python Framework Architecture
-
-```yaml
-Framework_Classes:
-  ScaleFXConnection:
-    file: "tests/framework/connection.py"
-    purpose: "Manages serial connection and packet I/O"
-    methods:
-      - "connect(port, init=True) → bool"
-      - "send(packet) → None"
-      - "send_and_wait(packet, timeout) → Response"
-      - "send_expect_ack(packet) → (success, Response)"
-      - "close() → None"
-
-  CoreProtocol:
-    file: "tests/framework/protocol.py"
-    purpose: "Packet encoding/decoding"
-    methods:
-      - "build_packet(type, payload) → bytes"
-      - "parse_packet(data) → ParsedPacket"
-      - "cobs_encode(data) → bytes"
-      - "cobs_decode(data) → bytes"
-      - "crc8(data) → int"
-
-  CommandBuilder:
-    file: "tests/framework/commands.py"
-    purpose: "Build core command packets (init, shutdown, status_req, etc.)"
-
-  GunFxCommands:
-    file: "tests/framework/commands.py"
-    purpose: "Build GunFX-specific packets"
-
-  LightFxCommands:
-    file: "tests/framework/commands.py"
-    purpose: "Build LightFX-specific packets"
-
-  GearControlCommands:
-    file: "tests/framework/commands.py"
-    purpose: "Build GearControl-specific packets"
 ```
 
 ---

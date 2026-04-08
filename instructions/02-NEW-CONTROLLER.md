@@ -9,7 +9,8 @@
 ```yaml
 Required:
   - PlatformIO CLI installed
-  - Python 3.8+ with pyserial
+  - Go toolchain (for CLI)
+  - .NET 8 SDK (for C# library)
   - Unused packet type range (see below)
 
 Choose_Packet_Range:
@@ -377,114 +378,99 @@ void loop() {
 
 ---
 
-## Step 6: Add Python Packet Constants
+## Step 6: Add Go CLI Support
 
-**File:** `tests/framework/packets.py`
+### 6.1: Add Packet Constants
 
-```python
-class NewFxPacket:
-    """NewFX packet types (0x80-0x9F)"""
-    COMMAND_1 = 0x80
-    COMMAND_2 = 0x81
+**File:** `app/go/protocol/newfx/types.go`
 
+```go
+package newfx
 
-class NewFxError:
-    """NewFX error codes"""
-    OK = 0x00
-    INVALID_PARAM_1 = 0x70
-    INVALID_PARAM_2 = 0x71
+// NewFX packet types (0x80-0x9F)
+const (
+    Command1 = 0x80
+    Command2 = 0x81
+)
 
-    @staticmethod
-    def name(code: int) -> str:
-        names = {
-            0x70: "INVALID_PARAM_1",
-            0x71: "INVALID_PARAM_2",
-        }
-        return names.get(code, CoreError.name(code))
+// NewFX error codes
+const (
+    ErrInvalidParam1 = 0x70
+    ErrInvalidParam2 = 0x71
+)
+```
+
+Also add to `PacketTypeName()` switch and error name maps in the appropriate files.
+
+### 6.2: Add Command Builders
+
+**File:** `app/go/protocol/newfx/commands.go`
+
+```go
+func Command1(param1 uint16, param2 uint8) []byte {
+    payload := make([]byte, 3)
+    binary.LittleEndian.PutUint16(payload[0:], param1)
+    payload[2] = param2
+    return payload
+}
+```
+
+### 6.3: Add CLI Handler
+
+**File:** `app/go/engine/handlers/handler_newfx.go`
+
+Create handler functions and register commands in the command list.
+
+### 6.4: Add Response Parsers
+
+**File:** `app/go/engine/parsers_newfx.go`
+
+Add response parsers for any query commands.
+
+---
+
+## Step 7: Add C# Library Support
+
+### 7.1: Add Packet Constants
+
+**File:** `app/win32/ScaleFXSerial/PacketTypes.cs`
+
+```csharp
+public static class NewFxPacket
+{
+    public const byte Command1 = 0x80;
+    public const byte Command2 = 0x81;
+}
+```
+
+### 7.2: Add Error Codes
+
+**File:** `app/win32/ScaleFXSerial/ErrorCodes.cs`
+
+```csharp
+public const byte NewFxInvalidParam1 = 0x70;
+public const byte NewFxInvalidParam2 = 0x71;
+```
+
+### 7.3: Add Command Builders
+
+**File:** `app/win32/ScaleFXSerial/Commands/NewFxCommands.cs`
+
+```csharp
+public static byte[] Command1(ushort param1, byte param2)
+{
+    var payload = new byte[3];
+    Endian.PutU16LE(payload, 0, param1);
+    payload[2] = param2;
+    return CoreCommands.BuildPacket(NewFxPacket.Command1, payload);
+}
 ```
 
 ---
 
-## Step 7: Add Python Command Builders
-
-**File:** `tests/framework/commands.py`
-
-```python
-class NewFxCommands:
-    """Build NewFX command packets."""
-
-    @staticmethod
-    def command_1(param1: int, param2: int) -> bytes:
-        payload = struct.pack('<HB', param1, param2)
-        return build_packet(NewFxPacket.COMMAND_1, payload)
-
-    @staticmethod
-    def command_2(id: int) -> bytes:
-        payload = struct.pack('<B', id)
-        return build_packet(NewFxPacket.COMMAND_2, payload)
-```
-
----
-
-## Step 8: Add to CLI
-
-### 8.1: Create Handler File (`tests/cli/handlers/newfx.py`)
-
-```python
-"""NewFX CLI command handler."""
-from typing import Dict, List, Tuple, Callable
-from tests.cli.base import CommandHandlerBase, CommandInfo
-from tests.framework.commands import NewFxCommands
-
-
-class NewFxCommandHandler(CommandHandlerBase):
-    def get_commands(self) -> Dict[str, Tuple[Callable, CommandInfo]]:
-        return {
-            'newfx.cmd1': (self.cmd_newfx_cmd1, CommandInfo(
-                'newfx.cmd1', 'newfx.cmd1 <param1> <param2>',
-                'Execute command 1', requires_init=True)),
-        }
-
-    def cmd_newfx_cmd1(self, args: List[str]):
-        if len(args) < 2:
-            self.print_error("Usage: newfx.cmd1 <param1> <param2>")
-            return
-        try:
-            p1, p2 = int(args[0]), int(args[1])
-            packet = NewFxCommands.command_1(p1, p2)
-            success, response = self.conn.send_expect_ack(packet)
-            if success:
-                self.print_success(f"Command 1: p1={p1}, p2={p2}")
-            else:
-                self.print_response(response)
-        except ValueError:
-            self.print_error("Invalid parameters")
-```
-
-### 8.2: Add ControllerType (`tests/cli/base.py`)
-
-### 8.3: Register Handler (`tests/cli/interactive.py`)
-
-### 8.4: Add Controller Detection (`tests/cli/handlers/core.py`)
-
----
-
-## Step 9: Create Tests
-
-**File:** `tests/newfx/__init__.py` (empty)
-**File:** `tests/newfx/test_system.py` (see 06-TEST-SUITE.md)
-
----
-
-## Step 10: Create README
+## Step 8: Create README
 
 **File:** `controllers/newfx/pico/README.md`
-
----
-
-## Step 11: Register in build_and_flash.py
-
-Add the new controller to the controllers dictionary in `scripts/build_and_flash.py`.
 
 ---
 
@@ -495,12 +481,8 @@ After_Completion:
   Build:
     - [ ] "pio run" succeeds in controllers/newfx/pico/
     - [ ] All other controllers still build (gunfx, lightfx, gearcontrol, noop)
-
-  Python:
-    - [ ] "python -m py_compile tests/framework/packets.py"
-    - [ ] "python -m py_compile tests/framework/commands.py"
-    - [ ] "python -m py_compile tests/cli/interactive.py"
-    - [ ] "python -m py_compile tests/cli/handlers/newfx.py"
+    - [ ] "cd app/go && go build ./cli/" succeeds
+    - [ ] "dotnet build app/win32/ScaleFXSerial/" succeeds
 
   Runtime:
     - [ ] CLI shows newfx.* commands after connecting

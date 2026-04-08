@@ -77,5 +77,8 @@ logs/
 *.yaml.bak
 *.conf.bak
 
+# External tools (downloaded, not checked in)
+tools/esptool/
+
 # System files
 Thumbs.db

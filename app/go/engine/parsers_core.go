@@ -123,23 +123,14 @@ func (e *Engine) ParseStatusPayload(payload []byte) {
 	}
 
 	if len(moduleData) > 0 {
-		switch e.ControllerType {
-		case core.CtrlGunFX:
-			e.parseGunFXStatus(moduleData)
-		case core.CtrlGearControl:
-			e.parseGearControlStatus(moduleData)
-		case core.CtrlLightFX:
-			e.parseLightFXStatus(moduleData)
-		case core.CtrlHubFX:
-			e.parseHubFXStatus(moduleData)
-		default:
-			if len(moduleData) > 0 {
-				e.Out.Printf("  Module data (%d bytes):", len(moduleData))
-				for _, b := range moduleData {
-					e.Out.Printf(" %02X", b)
-				}
-				e.Out.Println()
+		if parser, ok := e.statusParsers[e.ControllerType]; ok {
+			parser(moduleData)
+		} else {
+			e.Out.Printf("  Module data (%d bytes):", len(moduleData))
+			for _, b := range moduleData {
+				e.Out.Printf(" %02X", b)
 			}
+			e.Out.Println()
 		}
 	}
 }

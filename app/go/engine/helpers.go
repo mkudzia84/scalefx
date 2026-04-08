@@ -37,8 +37,8 @@ func OnOff(b bool) string {
 
 // ─── Guard Helpers ───
 
-// requireArgs validates minimum arg count, printing usage on failure.
-func (e *Engine) requireArgs(args []string, min int, usage string) bool {
+// RequireArgs validates minimum arg count, printing usage on failure.
+func (e *Engine) RequireArgs(args []string, min int, usage string) bool {
 	if len(args) < min {
 		e.Out.Error("Usage: %s", usage)
 		return false
@@ -46,8 +46,8 @@ func (e *Engine) requireArgs(args []string, min int, usage string) bool {
 	return true
 }
 
-// requireConn checks for an active serial connection.
-func (e *Engine) requireConn() bool {
+// RequireConn checks for an active serial connection.
+func (e *Engine) RequireConn() bool {
 	if e.Conn == nil {
 		e.Out.Error("Not connected")
 		return false
@@ -57,8 +57,8 @@ func (e *Engine) requireConn() bool {
 
 // ─── API Presentation Helpers ───
 
-// ack prints the result of an ACK-based API call.
-func (e *Engine) ack(r api.ApiResult, msg string) {
+// Ack prints the result of an ACK-based API call.
+func (e *Engine) Ack(r api.ApiResult, msg string) {
 	if r.Response != nil {
 		e.PrintACKResult(r.Response, msg)
 	} else {
@@ -66,8 +66,8 @@ func (e *Engine) ack(r api.ApiResult, msg string) {
 	}
 }
 
-// query prints the result of a query-based API call using the given parser.
-func (e *Engine) query(r api.ApiResult, parser func([]byte)) {
+// Query prints the result of a query-based API call using the given parser.
+func (e *Engine) Query(r api.ApiResult, parser func([]byte)) {
 	if r.OK && r.Response != nil {
 		parser(r.Response.Payload)
 	} else if r.Error != "" {
@@ -77,19 +77,19 @@ func (e *Engine) query(r api.ApiResult, parser func([]byte)) {
 
 // ─── Shared Command Patterns (Strategy Pattern) ───
 
-// servoSet handles "xxx.servo set <id> <pulse_us>" for any controller.
-func (e *Engine) servoSet(args []string, usage string, action func(byte, uint16) api.ApiResult) {
+// ServoSet handles "xxx.servo set <id> <pulse_us>" for any controller.
+func (e *Engine) ServoSet(args []string, usage string, action func(byte, uint16) api.ApiResult) {
 	if len(args) < 3 || strings.ToLower(args[0]) != "set" {
 		e.Out.Error("Usage: %s", usage)
 		return
 	}
 	id, pulse := Atoi(args[1]), Atoi(args[2])
-	e.ack(action(byte(id), uint16(pulse)), fmt.Sprintf("Servo %d → %dµs", id, pulse))
+	e.Ack(action(byte(id), uint16(pulse)), fmt.Sprintf("Servo %d → %dµs", id, pulse))
 }
 
-// servoConfig handles "xxx.servo.config <id> <min> <max> [spd] [acc] [dec]" for any controller.
-func (e *Engine) servoConfig(args []string, usage string, action func(byte, uint16, uint16, uint16, uint16, uint16) api.ApiResult) {
-	if !e.requireArgs(args, 3, usage) {
+// ServoConfig handles "xxx.servo.config <id> <min> <max> [spd] [acc] [dec]" for any controller.
+func (e *Engine) ServoConfig(args []string, usage string, action func(byte, uint16, uint16, uint16, uint16, uint16) api.ApiResult) {
+	if !e.RequireArgs(args, 3, usage) {
 		return
 	}
 	id, min, max := Atoi(args[0]), Atoi(args[1]), Atoi(args[2])
@@ -103,6 +103,6 @@ func (e *Engine) servoConfig(args []string, usage string, action func(byte, uint
 	if len(args) > 5 {
 		decel = Atoi(args[5])
 	}
-	e.ack(action(byte(id), uint16(min), uint16(max), uint16(speed), uint16(accel), uint16(decel)),
+	e.Ack(action(byte(id), uint16(min), uint16(max), uint16(speed), uint16(accel), uint16(decel)),
 		fmt.Sprintf("Servo %d: %d-%dµs, speed=%d", id, min, max, speed))
 }

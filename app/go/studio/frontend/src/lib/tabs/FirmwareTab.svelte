@@ -1,18 +1,16 @@
 <!-- ScaleFX Studio — Firmware Tab -->
 <!-- Displays connected board info, available GitHub releases, and flash controls. -->
 <script lang="ts">
-    import { connectionInfo, slaveInfo, firmwareTargets, firmwareRunning, firmwareLogs, boardState, connectPopupOpen, availableReleases } from '../stores'
-    import type { FirmwareTarget, FirmwareProgress, ReleaseInfo } from '../stores'
+    import { connectionInfo, slaveInfo, firmwareTargets, firmwareRunning, firmwareLogs, boardState, connectPopupOpen, availableReleases, showFlashProgress, flashResult } from '../stores'
+    import type { FirmwareTarget, ReleaseInfo } from '../stores'
     import { GetFirmwareTargets, GetReleases, FlashFromRelease } from '../../../wailsjs/go/main/App'
-    import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
-    import { onMount, onDestroy, tick } from 'svelte'
+    import { onMount, tick } from 'svelte'
 
     // Flash controls
     let selectedController = ''
     let selectedRelease = ''
     let flashPort = ''
     let skipVerify = false
-    let logEl: HTMLElement
 
     // Release fetching
     let fetchingReleases = false
@@ -53,21 +51,6 @@
 
         // Fetch releases
         fetchAllReleases()
-
-        EventsOn('firmware:progress', (evt: FirmwareProgress) => {
-            firmwareLogs.update(logs => [...logs, evt])
-            if (evt.done) {
-                firmwareRunning.set(false)
-                boardState.set('disconnected')
-            }
-            tick().then(() => {
-                if (logEl) logEl.scrollTop = logEl.scrollHeight
-            })
-        })
-    })
-
-    onDestroy(() => {
-        EventsOff('firmware:progress')
     })
 
     async function fetchAllReleases() {
@@ -120,7 +103,19 @@
         connectPopupOpen.set(false)
         firmwareRunning.set(true)
         firmwareLogs.set([])
-        await FlashFromRelease(selectedController, selectedRelease, flashPort, skipVerify)
+        flashResult.set(null)
+        showFlashProgress.set(true)
+        // Ensure FlashProgressDialog is mounted and its event listener registered
+        await tick()
+        try {
+            await FlashFromRelease(selectedController, selectedRelease, flashPort, skipVerify)
+        } catch (e: any) {
+            // Binding error — Go goroutine handles its own errors via events,
+            // so this only fires if the Wails call itself fails.
+            firmwareRunning.set(false)
+            flashResult.set({ success: false, message: e?.message || 'Flash failed' })
+            boardState.set('disconnected')
+        }
     }
 </script>
 
@@ -274,6 +269,30 @@
                         <span class="badge badge-older">Downgrade</span>
                     {/if}
                 </div>
+
+                <!-- Release Notes -->
+                {#if currentRelease.body}
+                    <details class="release-notes" open>
+                        <summary>Release Notes</summary>
+                        <div class="release-notes-body">
+                            {#each currentRelease.body.split('\n') as line}
+                                {#if line.startsWith('## ')}
+                                    <p class="rn-heading">{line.replace(/^##\s*/, '')}</p>
+                                {:else if line.startsWith('### ')}
+                                    <p class="rn-subheading">{line.replace(/^###\s*/, '')}</p>
+                                {:else if line.startsWith('- ') || line.startsWith('* ')}
+                                    <p class="rn-bullet">{line}</p>
+                                {:else if line.startsWith('|')}
+                                    <p class="rn-table">{line}</p>
+                                {:else if line.trim() === ''}
+                                    <br/>
+                                {:else}
+                                    <p class="rn-text">{line}</p>
+                                {/if}
+                            {/each}
+                        </div>
+                    </details>
+                {/if}
             {/if}
 
             <div class="control-row">
@@ -291,20 +310,6 @@
                 </button>
             </div>
         </div>
-
-        <!-- Log output -->
-        {#if $firmwareLogs.length > 0}
-            <div class="flash-log" bind:this={logEl}>
-                {#each $firmwareLogs as log}
-                    <div class="log-line {log.type}">
-                        {#if log.type === 'step'}
-                            <span class="step-badge">[{log.step}/{log.total}]</span>
-                        {/if}
-                        {log.message}
-                    </div>
-                {/each}
-            </div>
-        {/if}
     </section>
 </div>
 
@@ -529,6 +534,78 @@
         opacity: 0.3;
     }
 
+    /* ─── Release Notes ─── */
+
+    .release-notes {
+        margin-top: 8px;
+        margin-left: 82px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg-secondary);
+    }
+
+    .release-notes summary {
+        padding: 6px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-dim);
+        cursor: pointer;
+        user-select: none;
+    }
+
+    .release-notes summary:hover {
+        color: var(--text);
+    }
+
+    .release-notes[open] summary {
+        border-bottom: 1px solid var(--border);
+    }
+
+    .release-notes-body {
+        padding: 8px 12px;
+        font-size: 12px;
+        line-height: 1.6;
+        max-height: 240px;
+        overflow-y: auto;
+        color: var(--text);
+    }
+
+    .rn-heading {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-bright);
+        margin: 4px 0 2px;
+    }
+
+    .rn-subheading {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--accent);
+        margin: 4px 0 2px;
+    }
+
+    .rn-bullet {
+        padding-left: 8px;
+        margin: 1px 0;
+    }
+
+    .rn-table {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--text-dim);
+        margin: 0;
+    }
+
+    .rn-text {
+        margin: 2px 0;
+    }
+
+    .release-notes-body br {
+        display: block;
+        content: "";
+        margin: 2px 0;
+    }
+
     .option-row {
         display: flex;
         gap: 16px;
@@ -573,51 +650,5 @@
     .btn-flash:disabled {
         opacity: 0.4;
         cursor: not-allowed;
-    }
-
-    /* ─── Flash Log ─── */
-
-    .flash-log {
-        margin-top: 12px;
-        max-height: 300px;
-        overflow-y: auto;
-        background: var(--bg-secondary);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        padding: 8px 12px;
-        font-family: var(--font-mono);
-        font-size: 12px;
-        line-height: 1.5;
-    }
-
-    .log-line {
-        white-space: pre-wrap;
-        word-break: break-all;
-    }
-
-    .log-line.ok {
-        color: var(--success);
-    }
-
-    .log-line.error {
-        color: var(--error);
-    }
-
-    .log-line.warning {
-        color: var(--warning);
-    }
-
-    .log-line.step {
-        color: var(--accent);
-        font-weight: 600;
-    }
-
-    .log-line.info {
-        color: var(--text);
-    }
-
-    .step-badge {
-        opacity: 0.6;
-        margin-right: 6px;
     }
 </style>

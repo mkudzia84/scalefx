@@ -19,7 +19,7 @@ After implementing WINDOWED mode, STREAM mode was also made reliable through a s
 
 4. **Audio suspend during uploads (build 142):** `onStreamStart()`/`onStreamEnd()` lifecycle callbacks suspend both audio tasks on Core 1 (consumer + producer) during stream uploads. Fixes priority starvation where audio tasks prevented the writer from running at equal priority.
 
-5. **SD throughput + client flow control (build 143):** Changed SDMMC bus clock from 20 MHz → 40 MHz (`SDMMC_FREQ_HIGHSPEED`). Both Go and Python CLIs throttle sending when `ring_fill_pct > 50%` (formula: `delay_ms = (pct - 50) * 60`).
+5. **SD throughput + client flow control (build 143):** Changed SDMMC bus clock from 20 MHz → 40 MHz (`SDMMC_FREQ_HIGHSPEED`). The Go CLI throttles sending when `ring_fill_pct > 50%` (formula: `delay_ms = (pct - 50) * 60`).
 
 ### Current Stream Mode Architecture
 
@@ -241,8 +241,6 @@ uint16_t computeNextWindowSize() const;
 | Platform | Files | Changes |
 |----------|-------|---------|
 | **C++** | `hubfx/hubfx.h` | Constants (Phase 1) |
-| **Python** | `packets.py`, `commands.py` | Add `FILE_UPLOAD_PROGRESS`, `UPLOAD_WINDOW`; add `file_upload_begin()` mode=2 support |
-| **Python CLI** | `cli/handlers/storage.py`, `cli/parsers.py` | New `--window` flag (or make it default); parse UPLOAD_PROGRESS response with diagnostics display |
 | **Go** | `packets.go`, `commands.go` | Add constants |
 | **Go CLI** | `api_files.go` | New `uploadWindowed()` method; parse UPLOAD_PROGRESS; progress callback with diagnostics |
 | **C#** | `PacketTypes.cs`, `Commands/HubFxCommands.cs` | Add constants and command builder |

@@ -7,25 +7,15 @@
 ## Quick Commands
 
 ```yaml
-# Centralized build and flash (recommended)
-Build_And_Flash: "python scripts/build_and_flash.py gunfx"
-Flash_Specific_Port: "python scripts/build_and_flash.py lightfx --port COM10"
-Skip_Build: "python scripts/build_and_flash.py noop --no-build"
-Incremental_Build: "python scripts/build_and_flash.py gunfx --no-clean"
-Skip_Verify: "python scripts/build_and_flash.py lightfx --skip-verify"
+# Flash CLI (recommended)
+Flash_CLI_Build: "scalefx-flash build gunfx --no-clean"
+Flash_CLI_Flash: "scalefx-flash flash gunfx --port COM3"
+Flash_CLI_Release: "scalefx-flash release-flash gunfx --port COM3"
+Flash_CLI_Tools: "scalefx-flash tools status"
+Flash_CLI_Download: "scalefx-flash tools download"
 
-# PlatformIO direct commands
-GunFX:
-  build: "python -m platformio run -e pico -d controllers/gunfx/pico"
-  clean: "python -m platformio run -t clean -d controllers/gunfx/pico"
-
-LightFX:
-  build: "python -m platformio run -e pico -d controllers/lightfx/pico"
-  clean: "python -m platformio run -t clean -d controllers/lightfx/pico"
-
-NoOp:
-  build: "python -m platformio run -e pico -d controllers/noop/pico"
-  clean: "python -m platformio run -t clean -d controllers/noop/pico"
+# Build all controllers
+Build_All: "scalefx-flash build gunfx --no-clean && scalefx-flash build lightfx --no-clean && ..."
 ```
 
 ---
@@ -35,41 +25,42 @@ NoOp:
 ```yaml
 Required_Tools:
   PlatformIO:
-    install: "pip install platformio"
+    install: "Follow https://docs.platformio.org/en/latest/core/installation.html"
     verify: "pio --version"
-  
-  Python_Packages:
-    install: "pip install pyserial"
-    verify: "python -c 'import serial'"
+    note: "Required for building firmware (all platforms)"
+
+  esptool_Standalone:
+    install: "scalefx-flash tools download"
+    verify: "scalefx-flash tools status"
+    note: "Required for ESP32 flashing (auto-downloaded on first use)"
 ```
 
 ---
 
 ## Build Process
 
-### Using Centralized Script (Recommended)
+### Using Flash CLI (Recommended)
 
 ```bash
 # Build and flash a controller
-python scripts/build_and_flash.py gunfx
-python scripts/build_and_flash.py lightfx --port COM10
-python scripts/build_and_flash.py noop --no-build
+scalefx-flash flash gunfx
+scalefx-flash flash lightfx --port COM10
+scalefx-flash flash noop --no-clean
 ```
 
 **Options:**
 ```yaml
-controller: "gunfx | lightfx | noop (required)"
+controller: "gunfx | lightfx | gearcontrol | hubfx | noop (required)"
 --port PORT: "Specify serial port (default: auto-detect)"
 --no-build: "Skip build step (use existing firmware)"
 --no-clean: "Skip clean step (incremental build)"
 --skip-verify: "Skip post-flash verification"
---timeout SEC: "BOOTSEL wait timeout (default: 15s)"
 ```
 
 ### Using PlatformIO Directly
 
 ```bash
-python -m platformio run -e pico -d controllers/gunfx/pico
+pio run -e pico -d controllers/gunfx/pico
 ```
 
 **Output:** `controllers/gunfx/pico/.pio/build/pico/firmware.uf2`
@@ -77,27 +68,27 @@ python -m platformio run -e pico -d controllers/gunfx/pico
 ### Clean Build
 
 ```bash
-python -m platformio run -t clean -d controllers/gunfx/pico
-python -m platformio run -e pico -d controllers/gunfx/pico
+pio run -t clean -d controllers/gunfx/pico
+pio run -e pico -d controllers/gunfx/pico
 ```
 
 ---
 
 ## Flash Methods
 
-### Method 1: build_and_flash.py (Recommended)
+### Method 1: Flash CLI (Recommended)
 
-The centralized script at `scripts/build_and_flash.py` handles the complete build-and-flash workflow using the binary COBS protocol.
+The Flash CLI (`scalefx-flash`) handles the complete build-and-flash workflow using the binary COBS protocol.
 
 ```bash
 # Build and flash GunFX
-python scripts/build_and_flash.py gunfx
+scalefx-flash flash gunfx
 
 # Flash on specific port
-python scripts/build_and_flash.py gunfx --port COM10
+scalefx-flash flash gunfx --port COM10
 
 # Flash without rebuilding
-python scripts/build_and_flash.py lightfx --no-build
+scalefx-flash flash lightfx --no-build
 ```
 
 **Process:**
@@ -113,8 +104,6 @@ python scripts/build_and_flash.py lightfx --no-build
 9. Wait for device reboot
 10. Verify device responds with correct INIT_READY (unless --skip-verify)
 ```
-
-> **Note:** The script uses binary COBS protocol packets from the test framework (`build_packet(CorePacket.INIT)`, `build_packet(CorePacket.BOOTSEL)`). There is no text-mode INIT.
 
 ### Method 2: Manual BOOTSEL
 
@@ -133,18 +122,12 @@ Steps:
 
 ```bash
 # Only works when device is already in BOOTSEL mode
-python -m platformio run -t upload -d controllers/gunfx/pico
+pio run -t upload -d controllers/gunfx/pico
 ```
 
 ---
 
-## build_and_flash.py Reference
-
-### Script Location
-
-```
-scripts/build_and_flash.py    # Single centralized script for all controllers
-```
+## Flash CLI Reference
 
 ### Supported Controllers
 
@@ -152,8 +135,9 @@ scripts/build_and_flash.py    # Single centralized script for all controllers
 gunfx: "controllers/gunfx/pico/"
 lightfx: "controllers/lightfx/pico/"
 gearcontrol: "controllers/gearcontrol/pico/"
-hubfx: "controllers/hubfx/esp32s3/"         # ESP32-S3, uses esptool for upload
+hubfx: "controllers/hubfx/esp32s3/"         # ESP32-S3, uses standalone esptool
 noop: "controllers/noop/pico/"
+noop-esp: "controllers/noop/esp32s3/"        # ESP32-S3 NoOp variant
 ```
 
 ### Expected Output
@@ -193,12 +177,119 @@ noop: "controllers/noop/pico/"
 ## Script Location
 
 ```yaml
-Centralized_Script:
-  location: "scripts/build_and_flash.py"
-  usage: "python scripts/build_and_flash.py <controller> [options]"
-  protocol: "Binary COBS (uses test framework's build_packet())"
-  note: "Single script handles all Pico controllers"
+Centralized_Tool:
+  location: "app/go/scalefx-flash.exe"
+  usage: "scalefx-flash build|flash|upload <controller> [options]"
+  protocol: "Binary COBS"
+  note: "Single tool handles all controllers (Pico + ESP32-S3)"
 ```
+
+---
+
+## ESP32-S3 Flash: Standalone esptool
+
+The ESP32-S3 flash pipeline uses a standalone esptool binary.
+This is the preferred path for the GUI (ScaleFX Studio) and release-flash workflows.
+
+### How It Works
+
+```
+Flash request (GUI or CLI)
+    │
+    ├─ ResolveEsptool()  →  standalone binary found?
+    │   ├─ YES → flashWithEsptool()
+    │   └─ NO  → error: "run 'tools download'"
+    └─ done
+```
+
+### Search Order
+
+The esptool resolver checks these locations in order:
+
+| Priority | Location | Use Case |
+|----------|----------|----------|
+| 1 | `<workspace>/tools/esptool/esptool.exe` | Development (gitignored) |
+| 2 | Next to the Go executable | Distribution (bundled) |
+| 3 | System `PATH` | System-wide install |
+
+### Installation
+
+```bash
+# Via flash CLI (recommended — auto-downloads from GitHub)
+scalefx-flash tools download
+
+# Check status
+scalefx-flash tools status
+
+# Manual: download from GitHub releases
+# https://github.com/espressif/esptool/releases
+# Extract esptool.exe to tools/esptool/ or next to the CLI binary
+```
+
+### esptool Version
+
+The auto-downloader fetches **esptool v5.2.0** from GitHub Releases.
+Asset pattern: `esptool-v5.2.0-{platform}.{zip|tar.gz}`
+
+| Platform | Asset Name | Size |
+|----------|-----------|------|
+| Windows (amd64) | `esptool-v5.2.0-windows-amd64.zip` | ~58 MB |
+| macOS (amd64) | `esptool-v5.2.0-macos-amd64.tar.gz` | ~29 MB |
+| macOS (arm64) | `esptool-v5.2.0-macos-arm64.tar.gz` | ~27 MB |
+| Linux (amd64) | `esptool-v5.2.0-linux-amd64.tar.gz` | ~17 MB |
+
+The standalone binary is ~12 MB (Windows). It is **gitignored** (`tools/esptool/` in `.gitignore`)
+because it's too large for the repository. Users obtain it via `tools download` or manual download.
+
+### Distribution Strategy
+
+For end-user distribution (ScaleFX Studio installer or standalone flash tool):
+
+```yaml
+Option_A_Bundle:
+  description: "Ship esptool.exe alongside the application binary"
+  layout:
+    - "scalefx-flash.exe"
+    - "esptool.exe"          # Resolver finds it as "colocated"
+  pros: "Zero-setup, works offline"
+  cons: "Adds ~12 MB to distribution"
+
+Option_B_Auto_Download:
+  description: "Download on first use via 'tools download'"
+  layout:
+    - "scalefx-flash.exe"
+  pros: "Smallest distribution, always latest"
+  cons: "Requires internet on first ESP32 flash"
+
+Option_C_System_Path:
+  description: "User installs esptool globally"
+  command: "Download standalone from https://github.com/espressif/esptool/releases"
+  pros: "Shared across tools"
+  cons: "Manual setup required"
+```
+
+**Recommended:** Option A (bundle) for installers, Option B (auto-download) for development.
+
+### Studio GUI Integration
+
+The Studio exposes two Wails bindings for esptool management:
+
+| Binding | Returns | Purpose |
+|---------|---------|---------|
+| `GetToolsStatus()` | `ToolsStatus` | Check if esptool is available (path, source) |
+| `DownloadEsptool()` | — (events) | Download standalone esptool, progress via `firmware:progress` |
+
+The `BuildAndFlash()` and `FlashFromRelease()` bindings automatically use standalone esptool
+when available — no GUI changes needed.
+
+### Key Source Files
+
+| File | Purpose |
+|------|---------|
+| `app/go/firmware/esptool.go` | Resolver + auto-download (search, extract, platform detection) |
+| `app/go/firmware/flash_esp32.go` | ESP32 flash pipeline (standalone esptool) |
+| `app/go/flash/commands.go` | `tools status` / `tools download` CLI commands |
+| `app/go/studio/app.go` | `GetToolsStatus()` / `DownloadEsptool()` GUI bindings |
 
 ---
 
@@ -241,16 +332,15 @@ Post_Flash_Errors:
     fix: "Flash known-good firmware using manual BOOTSEL"
 
   "Verification timeout (flash succeeded but script reports failure)":
-    cause: "Device rebooted but COM port reappeared slower than the script timeout"
-    fix: |
-      This is a non-critical error — the UF2 was copied successfully.
-      Run 'python scripts/build_and_flash.py <controller> --no-build' to re-verify.
+    cause: "Device rebooted but COM port reappeared slower than the timeout"
+    fix: |      This is a non-critical error — the UF2 was copied successfully.
+      Run 'scalefx-flash flash <controller> --no-build' to re-verify.
       Or connect via CLI and run 'init' to confirm the build number.
-    note: "The script auto-increments BUILD_NUMBER on each build. If a verification
+    note: "BUILD_NUMBER is auto-incremented on each build. If a verification
       timeout occurs, the firmware IS flashed — just the post-check failed."
 
   "BUILD_NUMBER auto-incremented after failed flash attempt":
-    cause: "build_and_flash.py increments BUILD_NUMBER before flashing"
+    cause: "Flash CLI increments BUILD_NUMBER before flashing"
     impact: "Non-critical — the next successful flash will carry the incremented number"
     note: "Track build numbers by checking the device's INIT_READY response, not the
       source code define alone"
@@ -271,21 +361,16 @@ AI_Agent_Troubleshooting:
       via create_and_run_task instead of raw run_in_terminal commands.
       See Rule 20 in copilot-instructions.md.
     available_tasks:
-      - "Build Firmware" (prompts for controller)
-      - "Build and Flash Firmware" (prompts for controller)
+      - "Build Firmware (prompts for controller)"
+      - "Build and Flash Firmware (prompts for controller)"
       - "Flash Firmware (no build)"
       - "Build All Controllers"
-      - "Build ScaleFX Studio"
       - "Build Go CLI"
-      - "Python Syntax Check"
+      - "Build Flash CLI"
+      - "Build C# Serial Library"
+      - "Build ScaleFX Studio (GUI)"
+      - "Build ScaleFX Studio (C#)"
     important: "tasks.json must be valid JSON (no comments) for create_and_run_task to work"
-
-  "python -c with multiline code fails in PowerShell":
-    cause: "PowerShell treats newlines in -c argument as ScriptBlock, not Python code"
-    fix: |
-      Create a temporary .py file instead, or use single-line python -c commands.
-      For complex verification, use the interactive CLI or write a test script.
-    best_practice: "For multi-line Python in PowerShell, write a .py file"
 ```
 
 ---
@@ -294,10 +379,9 @@ AI_Agent_Troubleshooting:
 
 ```bash
 # Quick verification via CLI
-python -m tests.cli.interactive
+app/go/scalefx-cli.exe -p COM5
 
 # Commands to verify:
-> connect
 > init
 > status
 ```

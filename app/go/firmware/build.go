@@ -15,23 +15,55 @@ import (
 
 // ─── Build Number Management ───
 
-// versionFileRelPath returns the relative path to the version header for a controller.
-func versionFileRelPath(ctrl Controller) string {
-	return filepath.Join("controllers", ctrl.SubDir, "src", "version.h")
+// findVersionSource locates the source file containing BUILD_NUMBER.
+// Searches: version.h (src/, include/) then *.ino files in src/.
+// Returns the absolute path to the file containing the define.
+func findVersionSource(root string, ctrl Controller) (string, error) {
+	ctrlDir := filepath.Join(root, "controllers", ctrl.SubDir)
+	candidates := []string{
+		filepath.Join(ctrlDir, "src", "version.h"),
+		filepath.Join(ctrlDir, "include", "version.h"),
+	}
+
+	// Add .ino files from src/
+	srcDir := filepath.Join(ctrlDir, "src")
+	entries, _ := os.ReadDir(srcDir)
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".ino") {
+			candidates = append(candidates, filepath.Join(srcDir, e.Name()))
+		}
+	}
+
+	reBuild := regexp.MustCompile(`(?m)^#define\s+BUILD_NUMBER\s+\d+`)
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if reBuild.Match(data) {
+			return path, nil
+		}
+	}
+
+	return "", fmt.Errorf("no source file with BUILD_NUMBER found for %s (searched %s)", ctrl.Name, ctrlDir)
 }
 
-// IncrementBuildNumber reads version.h, bumps BUILD_NUMBER by 1, writes it back.
-// Returns the new build number.
+// IncrementBuildNumber finds the source containing BUILD_NUMBER, bumps it by 1,
+// and writes it back. Returns the new build number.
 func IncrementBuildNumber(opts *Options, ctrl Controller) (int, error) {
 	root, err := opts.resolveWorkspace()
 	if err != nil {
 		return 0, err
 	}
-	versionFile := filepath.Join(root, versionFileRelPath(ctrl))
+
+	versionFile, err := findVersionSource(root, ctrl)
+	if err != nil {
+		return 0, err
+	}
 
 	data, err := os.ReadFile(versionFile)
 	if err != nil {
-		return 0, fmt.Errorf("cannot read version.h: %w", err)
+		return 0, fmt.Errorf("cannot read %s: %w", filepath.Base(versionFile), err)
 	}
 
 	re := regexp.MustCompile(`(?m)^(\s*#define\s+BUILD_NUMBER\s+)(\d+)(.*)$`)
@@ -48,24 +80,28 @@ func IncrementBuildNumber(opts *Options, ctrl Controller) (int, error) {
 	newContent := re.ReplaceAllString(content, fmt.Sprintf("${1}%d${3}", newNum))
 
 	if err := os.WriteFile(versionFile, []byte(newContent), 0644); err != nil {
-		return 0, fmt.Errorf("cannot write version.h: %w", err)
+		return 0, fmt.Errorf("cannot write %s: %w", filepath.Base(versionFile), err)
 	}
 
-	opts.info("Build number: %d → %d", oldNum, newNum)
+	opts.info("Build number: %d → %d (%s)", oldNum, newNum, filepath.Base(versionFile))
 	return newNum, nil
 }
 
-// ExtractVersion reads FIRMWARE_VERSION and BUILD_NUMBER from version.h.
+// ExtractVersion reads FIRMWARE_VERSION and BUILD_NUMBER from version.h or .ino source.
 func ExtractVersion(opts *Options, ctrl Controller) (version string, buildNum int, err error) {
 	root, err := opts.resolveWorkspace()
 	if err != nil {
 		return "", 0, err
 	}
-	versionFile := filepath.Join(root, versionFileRelPath(ctrl))
+
+	versionFile, err := findVersionSource(root, ctrl)
+	if err != nil {
+		return "", 0, err
+	}
 
 	data, err := os.ReadFile(versionFile)
 	if err != nil {
-		return "", 0, fmt.Errorf("cannot read version.h: %w", err)
+		return "", 0, fmt.Errorf("cannot read %s: %w", filepath.Base(versionFile), err)
 	}
 
 	content := string(data)
@@ -118,6 +154,7 @@ func Build(opts *Options, ctrl Controller) (*BuildInfo, error) {
 		cleanArgs := []string{"-m", "platformio", "run", "-e", ctrl.PIOEnv, "-t", "clean", "-d", ctrlPath}
 		cleanCmd := exec.Command("python", cleanArgs...)
 		cleanCmd.Dir = ctrlPath
+		cleanCmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 		if out, err := cleanCmd.CombinedOutput(); err != nil {
 			opts.warn("Clean failed (continuing): %s", strings.TrimSpace(string(out)))
 		}
@@ -128,6 +165,7 @@ func Build(opts *Options, ctrl Controller) (*BuildInfo, error) {
 
 	cmd := exec.Command("python", args...)
 	cmd.Dir = ctrlPath
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 
 	// Stream build output line by line
 	stdout, err := cmd.StdoutPipe()
