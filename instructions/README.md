@@ -256,41 +256,6 @@ Go_CLI:
       - name: "handler_hubfx.go"
         purpose: "HubFX commands (slaves, audio, engine, storage, USB)"
         modify_when: "Adding HubFX CLI commands"
-
-CSharp_Library:
-  root: "app/win32/ScaleFXSerial/"
-  files:
-    - name: "PacketTypes.cs"
-      purpose: "Packet type constants (mirrors C++ headers)"
-      modify_when: "Adding packet types"
-    - name: "ErrorCodes.cs"
-      purpose: "Error code constants with name lookup"
-      modify_when: "Adding error codes"
-    - name: "ScaleFxConnection.cs"
-      purpose: "Serial connection with COBS framing"
-      modify_when: "Rarely"
-    - name: "Protocol/Packet.cs"
-      purpose: "Packet structure and parsing"
-    - name: "Protocol/Cobs.cs"
-      purpose: "COBS encode/decode"
-    - name: "Protocol/Crc.cs"
-      purpose: "CRC-8 implementation"
-    - name: "Protocol/Endian.cs"
-      purpose: "Little-endian helpers"
-    - name: "Commands/CoreCommands.cs"
-      purpose: "Core protocol commands"
-    - name: "Commands/GunFxCommands.cs"
-      purpose: "GunFX command builders"
-      modify_when: "Adding GunFX commands"
-    - name: "Commands/LightFxCommands.cs"
-      purpose: "LightFX command builders"
-      modify_when: "Adding LightFX commands"
-    - name: "Commands/GearControlCommands.cs"
-      purpose: "GearControl command builders"
-      modify_when: "Adding GearControl commands"
-    - name: "Commands/HubFxCommands.cs"
-      purpose: "HubFX command builders"
-      modify_when: "Adding HubFX commands"
 ```
 
 ---
@@ -313,7 +278,7 @@ Q2: What response category? (See 03-PROTOCOL-EXTENSION.md § Response Category D
 
 Q3: Are new error codes needed?
 ├─ YES → Add to xxxfx/xxxfx.h in module error namespace (e.g., GunFxError)
-│        Add to app/go/protocol/packets.go and app/win32/ScaleFXSerial/ErrorCodes.cs
+│        Add to app/go/protocol/packets.go
 └─ NO → Continue
 
 Q4: Is callback type defined in xxxfx/xxxfx.h?
@@ -341,11 +306,7 @@ Q7: Is Go CLI updated?
 │        - Add CLI command + register
 └─ YES → Continue
 
-Q8: Is C# library updated?
-├─ NO → Add to PacketTypes.cs + Commands/XxxFxCommands.cs
-└─ YES → Continue
-
-Q9: Is documentation updated?
+Q8: Is documentation updated?
 ├─ NO → Update controllers/xxxfx/pico/README.md
 └─ YES → DONE
 ```
@@ -362,21 +323,18 @@ Sync_Groups:
     primary: "lib/sfx_serial/serial/core/core.h"
     mirrors:
       - "app/go/protocol/packets.go"
-      - "app/win32/ScaleFXSerial/PacketTypes.cs"
-    rule: "Same values, same names (PascalCase in C#)"
+    rule: "Same values, same names"
 
   - name: "Error Codes (Generic)"
     primary: "lib/sfx_serial/serial/core/core.h (SerialError namespace)"
     mirrors:
       - "app/go/protocol/packets.go (error constants + name map)"
-      - "app/win32/ScaleFXSerial/ErrorCodes.cs"
     rule: "Same values, same names"
 
   - name: "Error Codes (Module)"
     primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h (XxxError namespace)"
     mirrors:
       - "app/go/protocol/packets.go (error constants + name map)"
-      - "app/win32/ScaleFXSerial/ErrorCodes.cs"
     rule: "Same values, same names"
 
   - name: "Command Interface"
@@ -384,8 +342,7 @@ Sync_Groups:
     mirrors:
       - "app/go/protocol/commands.go"
       - "app/go/cli/handler_xxxfx.go"
-      - "app/win32/ScaleFXSerial/Commands/XxxFxCommands.cs"
-    rule: "All platforms must expose same commands"
+    rule: "All commands must be exposed in Go CLI"
 ```
 
 > **All development rules, patterns, and checklists are in `.github/copilot-instructions.md`** (auto-loaded by VS Code Copilot).
@@ -404,5 +361,5 @@ Sync_Groups:
 | [05-BUILD-AND-FLASH.md](05-BUILD-AND-FLASH.md) | Build firmware, flash to device, troubleshooting |
 | [07-CLI-UPDATES.md](07-CLI-UPDATES.md) | Update Go interactive CLI |
 | [08-AUDIOTOOLS.md](08-AUDIOTOOLS.md) | AudioTools library reference (3rd-party, HubFX audio engine) |
-| [09-CONSOLE-OUTPUT.md](09-CONSOLE-OUTPUT.md) | Console output schema for Go CLI and C# Studio |
+| [09-CONSOLE-OUTPUT.md](09-CONSOLE-OUTPUT.md) | Console output schema for Go CLI |
 | [10-UPLOAD-PROTOCOL-REFACTOR.md](10-UPLOAD-PROTOCOL-REFACTOR.md) | Upload protocol modes (stream, windowed), flow control, ring buffer architecture |

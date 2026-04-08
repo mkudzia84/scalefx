@@ -1,30 +1,29 @@
 # Console Output Schema
 
-> **Reference document for all CLI platforms (Go, C#).** Go is the canonical reference.
+> **Reference document for Go CLI output format.** Go is the canonical reference.
 > All platforms MUST produce equivalent output for the same wire data.
 
 ---
 
 ## Overview
 
-Two CLI platforms share the same binary protocol and MUST produce harmonized output:
+The Go CLI uses the binary protocol and produces formatted console output:
 
 | Platform | Location | Output Medium |
 |----------|----------|---------------|
 | **Go CLI** (reference) | `app/go/cli/` | ANSI escape codes |
-| **C# Console** | `app/win32/ScaleFXSerial/Console/` | `IConsoleOutput` interface |
 
 ### Output Method Mapping
 
-| Semantic | Go | C# (`IConsoleOutput`) |
-|----------|----|------------------------|
-| Labeled value | `fmt.Printf("  Label: value\n")` | `WriteData("Label", "value")` |
-| Section header | `fmt.Printf("  ── Title ──────\n")` | `WriteInfo("── Title ──────")` |
-| Success | green text | `WriteSuccess(msg)` |
-| Error | red text | `WriteError(msg)` |
-| Warning | yellow text | `WriteWarning(msg)` |
-| Info | cyan text | `WriteInfo(msg)` |
-| Raw line | `fmt.Printf("  text\n")` | `WriteLine("  text")` |
+| Semantic | Go |
+|----------|----|
+| Labeled value | `fmt.Printf("  Label: value\n")` |
+| Section header | `fmt.Printf("  ── Title ──────\n")` |
+| Success | green text |
+| Error | red text |
+| Warning | yellow text |
+| Info | cyan text |
+| Raw line | `fmt.Printf("  text\n")` |
 
 ---
 
@@ -434,22 +433,22 @@ Same wire format as INIT_READY. Output identical to INIT_READY.
 
 ## Command Naming Conventions
 
-Commands MUST use consistent naming across both CLI platforms:
+Commands MUST use consistent naming:
 
-| Go | C# | Notes |
-|----|----|---------|
-| `yaw <position_us>` | `yaw <position_us>` | NOT `yaw.input` |
-| `calibrate.cancel` | `calibrate.cancel` | NOT `calib.cancel` |
-| `battery <enable> <auto>` | `battery <enable> <auto>` | NOT `battery.config` |
+| Command | Notes |
+|---------|---------|
+| `yaw <position_us>` | NOT `yaw.input` |
+| `calibrate.cancel` | NOT `calib.cancel` |
+| `battery <enable> <auto>` | NOT `battery.config` |
 
 ---
 
 ## Async Packet Handling
 
-Both platforms handle these async packet types:
+The CLI handles these async packet types:
 
-| Packet Type | Description | All Platforms |
-|-------------|-------------|---------------|
+| Packet Type | Description | Format |
+|-------------|-------------|--------|
 | `LOG_MESSAGE` (0xFD) | Diagnostic log | Rich format |
 | `GEAR_SEQ_STATUS` (0x70) | Gear sequence progress | Rich format |
 | `GEAR_DOOR_STATUS` (0x72) | Door position update | Rich format |

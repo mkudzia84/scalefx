@@ -4,10 +4,9 @@
 
 ## System Architecture
 
-ScaleFX is a modular scale model effects system with three platform targets:
+ScaleFX is a modular scale model effects system with two platform targets:
 - **Pico Controllers** (RP2040): Real-time device control (GunFX, LightFX, GearControl)
 - **ESP32-S3 Controller**: HubFX ESP32-S3 (master hub, active development)
-- **Windows Studio** (.NET 8/C#): Visual configuration editor
 
 > **HubFX Pico (RP2350) is OBSOLETE.** The Pico variant (`controllers/hubfx/pico/`) is frozen as a reference implementation. All new HubFX development (features, bug fixes, protocol additions) MUST target `controllers/hubfx/esp32s3/`. See Rule 17.
 
@@ -36,9 +35,6 @@ cd app/go && go build -o scalefx-flash.exe ./flash/
 # Build Windows Studio (Wails v2 + Svelte)
 cd app/go/studio && wails build
 
-# Build C# Serial Library
-dotnet build app/win32/ScaleFXSerial/
-
 # Interactive CLI (Go)
 app/go/scalefx-cli.exe -p COM5
 ```
@@ -61,15 +57,15 @@ Documentation updates should be included in the same commit/session as code chan
 
 When modifying serial protocol, these files MUST stay in sync:
 
-| C++ Source | Go CLI Mirror | C# Mirror | Content |
-|------------|---------------|-----------|---------|
-| `controllers/lib/sfx_serial/serial/core/core.h` | `app/go/protocol/packets.go` | `ScaleFXSerial/PacketTypes.cs`, `ErrorCodes.cs` | Packet type constants, generic error codes |
-| `controllers/lib/sfx_serial/serial/gunfx/gunfx.h` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/GunFxCommands.cs` | GunFX packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/lightfx/lightfx.h` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/LightFxCommands.cs` | LightFX packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/gearcontrol/gearcontrol.h` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/GearControlCommands.cs` | GearControl packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/hubfx/hubfx.h` | `app/go/protocol/packets.go`, `commands.go` | `ScaleFXSerial/PacketTypes.cs`, `Commands/HubFxCommands.cs` | HubFX packet types, error codes, commands |
+| C++ Source | Go CLI Mirror | Content |
+|------------|---------------|---------|
+| `controllers/lib/sfx_serial/serial/core/core.h` | `app/go/protocol/packets.go` | Packet type constants, generic error codes |
+| `controllers/lib/sfx_serial/serial/gunfx/gunfx.h` | `app/go/protocol/packets.go`, `commands.go` | GunFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/lightfx/lightfx.h` | `app/go/protocol/packets.go`, `commands.go` | LightFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/gearcontrol/gearcontrol.h` | `app/go/protocol/packets.go`, `commands.go` | GearControl packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/hubfx/hubfx.h` | `app/go/protocol/packets.go`, `commands.go` | HubFX packet types, error codes, commands |
 
-**Verification:** Run `cd app/go && go build ./cli/` and `dotnet build app/win32/ScaleFXSerial/` after C++ changes.
+**Verification:** Run `cd app/go && go build ./cli/` after C++ changes.
 
 ### 2. Command Addition Checklist
 
@@ -81,12 +77,8 @@ When adding a new command to an existing controller, update ALL these files:
 5. `app/go/protocol/commands.go` - Add command builder function
 6. `app/go/cli/handler_xxxfx.go` - Add CLI command and register in command list
 7. `app/go/cli/parsers.go` - Add response parser if command returns data
-8. `app/win32/ScaleFXSerial/PacketTypes.cs` - Mirror packet type constant
-9. `app/win32/ScaleFXSerial/Commands/XxxFxCommands.cs` - Add command builder method
 
 **ALWAYS update the Go CLI when new commands are added.** The Go CLI is the primary debugging tool.
-
-**ALWAYS update the C# library when protocol constants change.** The ScaleFXSerial library is the protocol layer for the Windows Studio app.
 
 See `/instructions/03-PROTOCOL-EXTENSION.md` and `/instructions/04-CHANGE-PROPAGATION.md` for details.
 
@@ -271,23 +263,23 @@ server.loop();  // Calls indicators.update() automatically
 
 #### Error Code Ranges
 
-Each module's error codes MUST be in its assigned range and defined in C++, Go, and C#:
+Each module's error codes MUST be in its assigned range and defined in both C++ and Go:
 
-| Range | Module | C++ Namespace | Go Constants | C# Class |
-|-------|--------|---------------|--------------|----------|
-| `0x00-0x0F` | Generic | `SerialError` | `Err*` | `ErrorCodes.Core*` |
-| `0x10-0x1F` | Parameter | `SerialError` | `Err*` | `ErrorCodes.Core*` |
-| `0x20-0x4F` | GunFX | `GunFxError` | `ErrGunFx*` | `ErrorCodes.GunFx*` |
-| `0x50-0x5F` | LightFX | `LightFxError` | `ErrLightFx*` | `ErrorCodes.LightFx*` |
-| `0x60-0x6F` | GearControl | `GearControlError` | `ErrGearControl*` | `ErrorCodes.GearControl*` |
-| `0x70-0x8F` | Reserved | — | — | — |
-| `0xF0-0xFF` | System | `SerialError` | `Err*` | `ErrorCodes.Core*` |
+| Range | Module | C++ Namespace | Go Constants |
+|-------|--------|---------------|-------------|
+| `0x00-0x0F` | Generic | `SerialError` | `Err*` |
+| `0x10-0x1F` | Parameter | `SerialError` | `Err*` |
+| `0x20-0x4F` | GunFX | `GunFxError` | `ErrGunFx*` |
+| `0x50-0x5F` | LightFX | `LightFxError` | `ErrLightFx*` |
+| `0x60-0x6F` | GearControl | `GearControlError` | `ErrGearControl*` |
+| `0x70-0x8F` | Reserved | — | — |
+| `0xF0-0xFF` | System | `SerialError` | `Err*` |
 
 **Error code rules:**
-1. Every C++ error constant MUST have matching Go and C# constants with the same value
+1. Every C++ error constant MUST have a matching Go constant with the same value
 2. Never define error codes outside the module's assigned range
 3. Remove unused/dead error codes — they cause sync confusion
-4. Each error namespace MUST have a `getMessage()` (C++) / `PacketTypeName()` (Go) / name lookup (C#) function
+4. Each error namespace MUST have a `getMessage()` (C++) / `PacketTypeName()` (Go) function
 5. Use generic `SerialError` codes (e.g., `INVALID_ID`, `MISSING_PARAMETER`) where appropriate instead of duplicating concepts per module
 
 ### 9. Firmware Versioning (MANDATORY)
@@ -752,30 +744,28 @@ private:
 
 ### 19. Cross-Platform Protocol Sync (MANDATORY)
 
-**When protocol is changed or a new controller/board is added, ALWAYS reflect those changes in both client implementations:** the Go CLI (`app/go/`) and the C# serial library (`app/win32/ScaleFXSerial/`). These are parallel implementations of the same protocol — they MUST stay in sync.
+**When protocol is changed or a new controller/board is added, ALWAYS reflect those changes in the Go CLI** (`app/go/`). The Go CLI is the single client implementation of the protocol — it MUST stay in sync with C++ headers.
 
-**Affected platforms:**
+**Key files:**
 
-| Platform | Location | Key Files |
-|----------|----------|----------|
-| **Go CLI** | `app/go/` | `protocol/packets.go`, `protocol/commands.go`, `cli/parsers*.go`, `cli/handler_*.go` |
-| **C# Library** | `app/win32/ScaleFXSerial/` | `PacketTypes.cs`, `ErrorCodes.cs`, `Commands/*.cs` |
+| File | Purpose |
+|------|---------|
+| `protocol/packets.go` | Packet type constants, error codes (mirrors C++ headers) |
+| `protocol/commands.go` | Command builders (mirrors C++ command definitions) |
+| `cli/parsers*.go` | Response payload parsers |
+| `cli/handler_*.go` | CLI command handlers |
 
 **Rules:**
-1. **New packet type constant** → add to `packets.go` (Go), `PacketTypes.cs` (C#)
-2. **New error code** → add to `packets.go` (+ `PacketTypeName()`/error name map), `ErrorCodes.cs`
-3. **New command** → add builder to `commands.go`, `Commands/XxxFxCommands.cs`; add CLI handler to `handler_xxxfx.go`
-4. **New response parser** → add to `parsers*.go`; C# parsing is in the Studio app layer
-5. **New controller type** → create handler files in both platforms; register in CLI startup/dispatch
-6. **Payload format change** → update all parsers and command builders across both platforms
+1. **New packet type constant** → add to `packets.go` + `PacketTypeName()`
+2. **New error code** → add to `packets.go` (constant + error name map)
+3. **New command** → add builder to `commands.go`; add CLI handler to `handler_xxxfx.go`
+4. **New response parser** → add to `parsers*.go`
+5. **New controller type** → create handler file; register in CLI startup/dispatch
+6. **Payload format change** → update all parsers and command builders
 
 **Verification:**
 ```bash
-# Go CLI
 cd app/go && go build ./cli/
-
-# C# Library
-dotnet build app/win32/ScaleFXSerial/
 ```
 
 ### 20. Use VS Code Tasks for Building and Flashing (MANDATORY)
@@ -794,18 +784,15 @@ dotnet build app/win32/ScaleFXSerial/
 | `Build All Controllers` | Build all 6 firmware targets sequentially | build |
 | `Build Go CLI` | Build the Go CLI binary (`app/go/cli/`) | build |
 | `Build Flash CLI` | Build the Flash CLI binary (`app/go/flash/`) | build |
-| `Build C# Serial Library` | Build the ScaleFXSerial protocol library | build |
 | `Build ScaleFX Studio (GUI)` | Build the Wails v2 Studio app | build |
-| `Build ScaleFX Studio (C#)` | Build the .NET 8 C# Studio app | build |
 | `Run ScaleFX Studio (GUI)` | Launch Wails dev server | test |
-| `Run ScaleFX Studio (C#)` | Launch C# Studio | test |
 | `Interactive CLI (Go)` | Launch Go CLI session (prompts for COM port) | test |
 | `Flash CLI (Interactive)` | Launch Flash CLI session | test |
 | `Publish Firmware Release` | Dispatch GitHub Actions release workflow | build |
 | `List Firmware Releases` | List recent GitHub releases | test |
 
 **Rules:**
-1. **Always use `create_and_run_task`** for build/flash/syntax-check operations — never `run_in_terminal` with raw `platformio` or `dotnet build` commands
+1. **Always use `create_and_run_task`** for build/flash/syntax-check operations — never `run_in_terminal` with raw `platformio` commands
 2. **Reference existing tasks by label** — do NOT create ad-hoc tasks with hardcoded controller names (e.g., "Build HubFX"). Use the parameterized tasks ("Build Firmware", "Build and Flash Firmware") which prompt for controller selection. Ad-hoc tasks pollute `tasks.json`.
 3. **No comments in tasks.json** — the file MUST be valid JSON (not JSONC). The `create_and_run_task` tool cannot parse JSON with comments.
 4. **Task labels are stable** — reference them by exact label string
@@ -1006,29 +993,6 @@ app/go/
 
 **Build:** `cd app/go && go build -o scalefx-cli.exe ./cli/` (single static binary, zero runtime deps)
 
-### C# Serial Library (`app/win32/ScaleFXSerial/`)
-Protocol layer for the Windows Studio app. Mirrors C++ packet types, error codes, and command builders.
-
-```
-ScaleFXSerial/
-├── PacketTypes.cs             - Packet type constants (MUST mirror C++ headers)
-├── ErrorCodes.cs              - Error code constants with name lookup
-├── ScaleFxConnection.cs       - Serial connection with COBS framing
-├── Protocol/
-│   ├── Packet.cs              - Packet structure and parsing
-│   ├── Cobs.cs                - COBS encode/decode
-│   ├── Crc.cs                 - CRC-8 implementation
-│   └── Endian.cs              - Little-endian helpers
-└── Commands/
-    ├── CoreCommands.cs        - Core protocol commands
-    ├── GunFxCommands.cs       - GunFX command builders
-    ├── LightFxCommands.cs     - LightFX command builders
-    ├── GearControlCommands.cs - GearControl command builders
-    └── HubFxCommands.cs       - HubFX command builders
-```
-
-**Build:** `dotnet build app/win32/ScaleFXSerial/`
-
 ## Packet Type Allocation
 
 | Range | Module | Status | Notes |
@@ -1049,12 +1013,6 @@ ScaleFXSerial/
 - Framework: Arduino-Pico (Earle Philhower core)
 - Key libraries: Servo, Wire (I2C), SD (FatFS), USB Host (PIO-USB for HubFX)
 - BOOTSEL mode: Send `BOOTSEL` command via serial for firmware updates
-
-### Windows Studio (C# 12, .NET 8)
-- Build: `dotnet build -c Release` in `app/win32/ScaleFXStudio/`
-- Framework: Windows Forms
-- Purpose: Visual configuration editor
-- Partial classes: MainForm split across multiple files (Fields, EngineFxTab, GunFxTab, etc.)
 
 ## Common Workflows
 

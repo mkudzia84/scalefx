@@ -10,9 +10,7 @@ ScaleFX is a modular scale model effects system for RC helicopters:
 - **Pico Controllers** (RP2040): GunFX (weapons), LightFX (lighting), GearControl (landing gear)
 - **ESP32-S3 Controller**: HubFX ESP32-S3 (master hub, active development)
 - **HubFX Pico** (RP2350): OBSOLETE — frozen reference implementation, do not modify
-- **Windows Studio** (.NET 8/C#): Visual configuration editor
 - **Go CLI** (`app/go/`): Compiled interactive CLI — 3-package architecture: `protocol/` (wire format, packets, commands, connection), `api/` (typed client SDK), `cli/` (interactive terminal UI)
-- **C# Serial Library** (`app/win32/ScaleFXSerial/`): .NET 8 protocol layer for Windows Studio
 - **Flash CLI** (`app/go/flash/`): Standalone build/flash/upload tool for all controllers
 
 ## Critical Constants
@@ -51,9 +49,6 @@ cd app/go && go build -o scalefx-cli.exe ./cli/
 # Build Flash CLI
 cd app/go && go build -o scalefx-flash.exe ./flash/
 
-# Build C# library
-dotnet build app/win32/ScaleFXSerial/
-
 # Interactive CLI (Go)
 app/go/scalefx-cli.exe -p COM5
 ```
@@ -78,17 +73,15 @@ controllers/
 └── noop/pico/           # Protocol test stub
 
 app/go/                      # Go CLI (3 packages: protocol, api, cli) + Flash CLI + Studio
-app/win32/ScaleFXSerial/     # C# serial protocol library (.NET 8)
-app/win32/ScaleFXStudio/     # Windows config editor (.NET 8)
 ```
 
-## Mandatory File Sync (C++ ↔ Go ↔ C#)
+## Mandatory File Sync (C++ ↔ Go)
 
-| C++ File | Go CLI File | C# File |
-|----------|-------------|----------|
-| `core/core.h` | `packets.go` | `PacketTypes.cs`, `ErrorCodes.cs` |
-| `core/stream.h` | `packets.go` | `PacketTypes.cs` |
-| `gunfx/gunfx.h` | `packets.go`, `commands.go`, `handler_gunfx.go` | `PacketTypes.cs`, `Commands/GunFxCommands.cs` |
-| `lightfx/lightfx.h` | `packets.go`, `commands.go`, `handler_lightfx.go` | `PacketTypes.cs`, `Commands/LightFxCommands.cs` |
-| `gearcontrol/gearcontrol.h` | `packets.go`, `commands.go`, `handler_gearcontrol.go` | `PacketTypes.cs`, `Commands/GearControlCommands.cs` |
-| `hubfx/hubfx.h` | `packets.go`, `commands.go`, `handler_hubfx.go` | `PacketTypes.cs`, `Commands/HubFxCommands.cs` |
+| C++ File | Go CLI File |
+|----------|-------------|
+| `core/core.h` | `packets.go` |
+| `core/stream.h` | `packets.go` |
+| `gunfx/gunfx.h` | `packets.go`, `commands.go`, `handler_gunfx.go` |
+| `lightfx/lightfx.h` | `packets.go`, `commands.go`, `handler_lightfx.go` |
+| `gearcontrol/gearcontrol.h` | `packets.go`, `commands.go`, `handler_gearcontrol.go` |
+| `hubfx/hubfx.h` | `packets.go`, `commands.go`, `handler_hubfx.go` |

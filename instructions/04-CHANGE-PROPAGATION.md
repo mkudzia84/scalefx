@@ -16,8 +16,6 @@ Change_Type_Matrix:
     commands.go: REQUIRED        # Add command builder function
     handler_xxxfx.go: REQUIRED   # Add CLI command + register
     parsers.go: IF_RESPONSE_DATA # Add response parser
-    PacketTypes.cs: REQUIRED     # Mirror packet constant
-    XxxFxCommands.cs: REQUIRED   # Add command builder method
     README.md: REQUIRED
     
   Modify_Command_Payload:
@@ -27,7 +25,6 @@ Change_Type_Matrix:
     commands.go: REQUIRED        # Update command builder
     parsers.go: IF_RESPONSE      # Update response parser
     handler_xxxfx.go: REQUIRED   # Update CLI handler
-    XxxFxCommands.cs: REQUIRED   # Update command builder
     README.md: REQUIRED
     FIRMWARE_VERSION: REQUIRED   # MAJOR if field type/size changed, MINOR if appended
     
@@ -36,7 +33,6 @@ Change_Type_Matrix:
     xxxfx/xxxfx.h: IF_MODULE_ERROR
     xxxfx_pico.ino: MAYBE
     packets.go: REQUIRED         # Add error constant + name map entry
-    ErrorCodes.cs: REQUIRED      # Add error constant
     README.md: REQUIRED
     
   Bug_Fix_In_Handler:
@@ -53,13 +49,10 @@ Change_Type_Matrix:
     commands.go: REQUIRED         # Add command builders
     handler_newfx.go: CREATE_NEW  # Add CLI handler + register
     parsers.go: REQUIRED          # Add response parsers
-    PacketTypes.cs: REQUIRED      # Add packet constants
-    ErrorCodes.cs: REQUIRED       # Add error constants
-    Commands/NewFxCommands.cs: CREATE_NEW
     README.md: CREATE_NEW
 ```
 
-> **CRITICAL:** ALWAYS update BOTH the Go CLI and the C# library when new commands or packet types are added. See Rule 19 in `copilot-instructions.md`.
+> **CRITICAL:** ALWAYS update the Go CLI when new commands or packet types are added. See Rule 19 in `copilot-instructions.md`.
 
 ---
 
@@ -119,19 +112,7 @@ Step_3_Go_CLI:
     - file: "cli/parsers.go"
       action: "Add response parser if command returns data"
 
-Step_6_CSharp_Library:
-  location: "app/win32/ScaleFXSerial/"
-  actions:
-    - file: "PacketTypes.cs"
-      action: "Add packet type constant"
-
-    - file: "ErrorCodes.cs"
-      action: "Add error constants (if any)"
-
-    - file: "Commands/XxxFxCommands.cs"
-      action: "Add command builder method"
-
-Step_7_Documentation:
+Step_4_Documentation:
   location: "controllers/xxxfx/pico/"
   actions:
     - file: "README.md"
@@ -156,7 +137,7 @@ Backward_Compatibility:
   if_breaking_change:
     - "Increment MAJOR version"
     - "Document migration path"
-    - "Update all parsers (C++, Go, and C#) simultaneously"
+    - "Update all parsers (C++ and Go) simultaneously"
     - "Consider deprecation period"
   
   breaking_change_examples:
@@ -187,10 +168,6 @@ Files_To_Update:
     changes:
       - "Update response parser (if applicable)"
 
-  - file: "ScaleFXSerial/Commands/XxxFxCommands.cs"
-    changes:
-      - "Update command builder method"
-
   - file: "README.md"
     changes:
       - "Update payload format in table"
@@ -213,10 +190,6 @@ Go_CLI:
     action: |
       1. Add error constant
       2. Add to error name map
-
-CSharp_Library:
-  - file: "ErrorCodes.cs"
-    action: "Add error constant"
 
 Documentation:
   - file: "README.md"
@@ -252,11 +225,6 @@ Summary_Checklist:
     - "[ ] Create handler_newfx.go with CLI commands"
     - "[ ] Add response parsers to parsers.go"
     - "[ ] Register commands in cli.go command list"
-
-  CSharp_Library:
-    - "[ ] Add packet type constants to PacketTypes.cs"
-    - "[ ] Add error constants to ErrorCodes.cs"
-    - "[ ] Create Commands/NewFxCommands.cs with command builders"
   
   Documentation:
     - "[ ] Create README.md with full protocol docs"
@@ -341,22 +309,6 @@ Go_CLI:
     "cli/handler_lightfx.go": "LightFX commands (LED, sequences, servo, landing lights)"
     "cli/handler_gearcontrol.go": "GearControl commands (gear, servo, yaw, calibration)"
     "cli/handler_hubfx.go": "HubFX commands (slaves, audio, engine, storage, USB)"
-
-CSharp_Library:
-  path: "app/win32/ScaleFXSerial/"
-  files:
-    "PacketTypes.cs": "Packet type constants (mirrors C++ headers)"
-    "ErrorCodes.cs": "Error code constants with name lookup"
-    "ScaleFxConnection.cs": "Serial connection with COBS framing"
-    "Protocol/Packet.cs": "Packet structure and parsing"
-    "Protocol/Cobs.cs": "COBS encode/decode"
-    "Protocol/Crc.cs": "CRC-8 implementation"
-    "Protocol/Endian.cs": "Little-endian helpers"
-    "Commands/CoreCommands.cs": "Core protocol commands"
-    "Commands/GunFxCommands.cs": "GunFX command builders"
-    "Commands/LightFxCommands.cs": "LightFX command builders"
-    "Commands/GearControlCommands.cs": "GearControl command builders"
-    "Commands/HubFxCommands.cs": "HubFX command builders"
 ```
 
 ---
@@ -376,9 +328,6 @@ app/go/scalefx-flash.exe build hubfx --no-clean
 # Go CLI
 cd app/go && go build ./cli/
 
-# C# library
-dotnet build app/win32/ScaleFXSerial/
-
 # CLI smoke test
 app/go/scalefx-cli.exe -p COM5
 ```
@@ -395,11 +344,10 @@ Error: "INIT returns NACK INVALID_COMMAND"
     - "Both coreServer and xxxfxServer must be added to the router"
 
 Error: "Unknown command type"
-  Cause: "Packet constant mismatch between C++, Go, or C#"
+  Cause: "Packet constant mismatch between C++ and Go"
   Fix:
     - "Verify core/core.h / xxxfx/xxxfx.h constant value"
     - "Verify packets.go constant value"
-    - "Verify PacketTypes.cs constant value"
     - "Ensure they are all identical"
 
 Error: "NACK with MISSING_PARAMETER"

@@ -10,7 +10,6 @@
 Required:
   - PlatformIO CLI installed
   - Go toolchain (for CLI)
-  - .NET 8 SDK (for C# library)
   - Unused packet type range (see below)
 
 Choose_Packet_Range:
@@ -429,46 +428,7 @@ Add response parsers for any query commands.
 
 ---
 
-## Step 7: Add C# Library Support
-
-### 7.1: Add Packet Constants
-
-**File:** `app/win32/ScaleFXSerial/PacketTypes.cs`
-
-```csharp
-public static class NewFxPacket
-{
-    public const byte Command1 = 0x80;
-    public const byte Command2 = 0x81;
-}
-```
-
-### 7.2: Add Error Codes
-
-**File:** `app/win32/ScaleFXSerial/ErrorCodes.cs`
-
-```csharp
-public const byte NewFxInvalidParam1 = 0x70;
-public const byte NewFxInvalidParam2 = 0x71;
-```
-
-### 7.3: Add Command Builders
-
-**File:** `app/win32/ScaleFXSerial/Commands/NewFxCommands.cs`
-
-```csharp
-public static byte[] Command1(ushort param1, byte param2)
-{
-    var payload = new byte[3];
-    Endian.PutU16LE(payload, 0, param1);
-    payload[2] = param2;
-    return CoreCommands.BuildPacket(NewFxPacket.Command1, payload);
-}
-```
-
----
-
-## Step 8: Create README
+## Step 7: Create README
 
 **File:** `controllers/newfx/pico/README.md`
 
@@ -482,7 +442,6 @@ After_Completion:
     - [ ] "pio run" succeeds in controllers/newfx/pico/
     - [ ] All other controllers still build (gunfx, lightfx, gearcontrol, noop)
     - [ ] "cd app/go && go build ./cli/" succeeds
-    - [ ] "dotnet build app/win32/ScaleFXSerial/" succeeds
 
   Runtime:
     - [ ] CLI shows newfx.* commands after connecting

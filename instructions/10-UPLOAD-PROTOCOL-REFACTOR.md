@@ -243,7 +243,6 @@ uint16_t computeNextWindowSize() const;
 | **C++** | `hubfx/hubfx.h` | Constants (Phase 1) |
 | **Go** | `packets.go`, `commands.go` | Add constants |
 | **Go CLI** | `api_files.go` | New `uploadWindowed()` method; parse UPLOAD_PROGRESS; progress callback with diagnostics |
-| **C#** | `PacketTypes.cs`, `Commands/HubFxCommands.cs` | Add constants and command builder |
 
 ### Phase 3: Deprecate STREAM Mode
 

@@ -367,9 +367,7 @@ AI_Agent_Troubleshooting:
       - "Build All Controllers"
       - "Build Go CLI"
       - "Build Flash CLI"
-      - "Build C# Serial Library"
       - "Build ScaleFX Studio (GUI)"
-      - "Build ScaleFX Studio (C#)"
     important: "tasks.json must be valid JSON (no comments) for create_and_run_task to work"
 ```
 

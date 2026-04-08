@@ -14,14 +14,11 @@ Files_To_Modify:
     - "app/go/protocol/xxxfx/types.go"       # Go packet/error constants
     - "app/go/protocol/xxxfx/commands.go"    # Go command builder
     - "app/go/engine/handlers/handler_xxxfx.go" # Go CLI command
-    - "app/win32/ScaleFXSerial/PacketTypes.cs"  # C# packet constant
-    - "app/win32/ScaleFXSerial/Commands/XxxFxCommands.cs" # C# command builder
     - "controllers/xxxfx/pico/README.md"     # Documentation
   
   If_New_Error_Codes:
     - "lib/sfx_serial/serial/xxxfx/xxxfx.h"             # C++ error constant (in module's error namespace)
     - "app/go/protocol/xxxfx/types.go"       # Go error constant
-    - "app/win32/ScaleFXSerial/ErrorCodes.cs" # C# error constant
 ```
 
 ---
@@ -187,34 +184,6 @@ Add CLI command handler and register in command list.
 
 ---
 
-### Step 6: Add C# Library Support
-
-**File:** `app/win32/ScaleFXSerial/PacketTypes.cs`
-
-**ADD:**
-```csharp
-public const byte AmmoSet = 0x25;
-```
-
-**File:** `app/win32/ScaleFXSerial/ErrorCodes.cs` (if new errors):
-```csharp
-public const byte GunFxAmmoInvalid = 0x15;
-```
-
-**File:** `app/win32/ScaleFXSerial/Commands/GunFxCommands.cs`
-
-**ADD:**
-```csharp
-public static byte[] AmmoSet(ushort count)
-{
-    var payload = new byte[2];
-    Endian.PutU16LE(payload, 0, count);
-    return CoreCommands.BuildPacket(GunFxPacketTypes.AmmoSet, payload);
-}
-```
-
----
-
 ### Step 7: Update Documentation
 
 **File:** `controllers/gunfx/pico/README.md`
@@ -240,10 +209,7 @@ app/go/scalefx-flash.exe build gunfx --no-clean
 # 2. Build Go CLI
 cd app/go && go build ./cli/
 
-# 3. Build C# library
-dotnet build app/win32/ScaleFXSerial/
-
-# 4. CLI smoke test
+# 3. CLI smoke test
 app/go/scalefx-cli.exe -p COM5
 # > init
 # > help          (verify gunfx.ammo appears)
@@ -315,15 +281,12 @@ Before_Marking_Complete:
     - [ ] "IF query: onModulePacket() resolves tag (implicit ACK)"
     - [ ] "IF long-running: completion signal documented"
 
-  Go_CLI_and_CSharp:
+  Go_CLI:
     - [ ] Go packet constant added
     - [ ] Go error constants added (if any)
     - [ ] Go command builder added
     - [ ] Go CLI command added to handler_xxxfx.go
     - [ ] Go CLI handler method added
-    - [ ] C# packet constant added to PacketTypes.cs
-    - [ ] C# error constants added to ErrorCodes.cs (if any)
-    - [ ] C# command builder added to Commands/XxxFxCommands.cs
   
   Documentation:
     - [ ] README.md updated with protocol entry
