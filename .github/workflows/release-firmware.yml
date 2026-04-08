@@ -28,6 +28,10 @@ on:
         required: false
         type: boolean
         default: false
+      release_notes:
+        description: 'Release notes (markdown). Describe what changed — new features, bug fixes, breaking changes.'
+        required: true
+        type: string
 
 env:
   TAG: "${{ inputs.controller }}-v${{ inputs.version }}"
@@ -160,6 +164,10 @@ jobs:
             **Platform:** ${{ steps.config.outputs.platform }}
             **Build:** ${{ steps.buildnum.outputs.build }}
             **Firmware:** `firmware.${{ steps.config.outputs.ext }}`
+
+            ### Release Notes
+
+            ${{ inputs.release_notes }}
 
             ### Asset
             | File | SHA-256 |
