@@ -149,7 +149,7 @@ jobs:
         id: buildnum
         run: |
           CTRL_DIR="controllers/${{ steps.config.outputs.subdir }}"
-          BUILD_NUM=$(grep -r '#define BUILD_NUMBER' "$CTRL_DIR/src" | head -1 | sed 's/[^0-9]*\([0-9]*\).*/\1/')
+          BUILD_NUM=$(grep -rh '#define BUILD_NUMBER' "$CTRL_DIR/src" | head -1 | sed 's/.*BUILD_NUMBER[[:space:]]*\([0-9]*\).*/\1/')
           echo "build=${BUILD_NUM:-0}" >> $GITHUB_OUTPUT
 
       - name: Create Release
