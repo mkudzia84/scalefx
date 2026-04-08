@@ -43,7 +43,7 @@
  */
 
 #define FIRMWARE_VERSION "0.31.0"
-#define BUILD_NUMBER 166
+#define BUILD_NUMBER 170
 
 // ============================================================================
 // FEATURE FLAGS — Board bring-up: uncomment to enable features one by one
