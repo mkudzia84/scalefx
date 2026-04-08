@@ -660,172 +660,22 @@
 </div>
 
 <style>
-    /* ─── Root layout ─── */
-    .tab-root {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-        background: var(--bg-base);
-    }
+    /* GearControlTab-specific — shared styles in style.css */
 
-    /* ─── Title bar ─── */
-    .tab-title-bar {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 10px 16px;
-        background: var(--bg-surface);
-        border-bottom: 1px solid var(--border);
-        flex-shrink: 0;
-    }
-
-    .tab-title-bar h2 {
-        font-size: 16px;
-        font-weight: 600;
-        color: var(--text-bright);
-    }
-
-    .mode-toggle {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-left: auto;
-    }
-
-    .toggle-label {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--text);
-        cursor: pointer;
-        text-transform: uppercase;
-        letter-spacing: 0.3px;
-    }
-
-    .toggle-label input { accent-color: var(--accent); }
-
-    .mode-hint {
-        font-size: 10px;
-        color: var(--warning, #d7ba7d);
-        font-style: italic;
-    }
-
-    .mode-hint.connected {
-        color: var(--ok, #4ec9b0);
-        font-style: normal;
-    }
-
-    .status-btn {
-        font-size: 12px;
-        padding: 4px 12px;
-    }
-
-    /* ─── Scrollable area ─── */
-    .tab-scroll {
-        flex: 1;
-        overflow-y: auto;
-        padding: 14px 16px;
-        min-height: 0;
-    }
-
-    /* ─── Disabled overlay ─── */
-    .content-wrap { position: relative; }
-
-    .content-wrap.controls-disabled {
-        opacity: 0.4;
-        pointer-events: none;
-    }
-
-    .disabled-overlay {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 2;
-        background: color-mix(in srgb, var(--bg-base) 60%, transparent);
-        border-radius: 6px;
-        pointer-events: none;
-    }
-
-    .disabled-overlay span {
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--text-dim);
-        text-transform: uppercase;
-        letter-spacing: 0.4px;
-        padding: 8px 16px;
-        background: var(--bg-raised);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-    }
-
-    /* ─── Two-Column Layout ─── */
-    .two-col {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-    }
-
-    .col {
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
-        min-width: 0;
-    }
-
-    /* ─── Card ─── */
-    .card {
-        background: var(--bg-surface);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 14px 16px;
-        transition: border-color 0.2s;
-    }
-
+    /* ─── Card Variants ─── */
+    .card { transition: border-color 0.2s; }
     .card-warn  { border-color: color-mix(in srgb, var(--warning, #d7ba7d) 60%, transparent); }
     .card-error { border-color: color-mix(in srgb, var(--error) 60%, transparent) !important; }
     .card-active { border-color: color-mix(in srgb, var(--ok, #4ec9b0) 50%, transparent); }
 
-    .card-disabled {
-        opacity: 0.55;
-    }
-
-    .card-disabled .gear-enable {
-        opacity: calc(1 / 0.55);
-    }
-
+    .card-disabled { opacity: 0.55; }
+    .card-disabled .gear-enable { opacity: calc(1 / 0.55); }
     .card-disabled .gear-enable button {
         background: color-mix(in srgb, var(--accent) 25%, var(--bg-raised));
         border-color: var(--accent);
         color: var(--accent);
         font-weight: 700;
         box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
-    }
-
-    .card-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 12px;
-    }
-
-    .card-header h3 {
-        font-size: 14px;
-        font-weight: 600;
-        color: var(--text-bright);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-
-    .card-header h3 svg {
-        opacity: 0.7;
-        flex-shrink: 0;
     }
 
     .gear-header-left {
@@ -847,16 +697,9 @@
     .header-tag.error { color: var(--error); background: color-mix(in srgb, var(--error) 12%, transparent); }
     .header-tag.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
-    .header-actions {
-        display: flex;
-        gap: 6px;
-    }
+    .gear-enable { flex-shrink: 0; }
 
-    .gear-enable {
-        flex-shrink: 0;
-    }
-
-    /* ─── Aggregate buttons ─── */
+    /* ─── Aggregate Buttons ─── */
     .agg-buttons {
         display: flex;
         align-items: center;
@@ -865,19 +708,12 @@
         margin-bottom: 10px;
     }
 
-    .action-btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        padding: 6px 16px;
-        font-size: 12px;
-    }
-
+    .action-btn { font-size: 12px; }
     .icon { font-size: 11px; }
     .icon.down { color: var(--ok, #4ec9b0); }
     .icon.up { color: var(--accent); }
 
-    /* ─── Gear status strip (mini overview) ─── */
+    /* ─── Gear Status Strip ─── */
     .gear-status-strip {
         display: flex;
         gap: 8px;
@@ -942,7 +778,7 @@
         background: color-mix(in srgb, var(--error) 15%, transparent);
     }
 
-    /* ─── Status dot (per-gear cards) ─── */
+    /* ─── Status Dot ─── */
     .status-dot {
         width: 8px;
         height: 8px;
@@ -963,7 +799,7 @@
         50% { opacity: 0.3; }
     }
 
-    /* ─── Per-gear action row ─── */
+    /* ─── Per-Gear Actions ─── */
     .gear-actions-row {
         display: flex;
         gap: 6px;
@@ -992,7 +828,7 @@
         border-color: var(--accent);
     }
 
-    /* ─── Calibration card ─── */
+    /* ─── Calibration ─── */
     .calib-settings {
         padding: 10px 12px;
         background: color-mix(in srgb, var(--bg-input) 50%, var(--bg-surface));
@@ -1091,7 +927,6 @@
         border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
     }
 
-    /* Spin animation */
     .spin {
         display: inline-block;
         animation: spin 1.5s linear infinite;
@@ -1102,10 +937,8 @@
         100% { transform: rotate(360deg); }
     }
 
-    /* ─── Battery display ─── */
-    .batt-display {
-        margin-bottom: 10px;
-    }
+    /* ─── Battery ─── */
+    .batt-display { margin-bottom: 10px; }
 
     .batt-bar-track {
         height: 6px;
@@ -1122,9 +955,7 @@
         transition: width 0.3s;
     }
 
-    .batt-bar-fill.low {
-        background: var(--error);
-    }
+    .batt-bar-fill.low { background: var(--error); }
 
     .batt-info {
         display: flex;
@@ -1160,61 +991,8 @@
         animation: pulse 0.8s ease-in-out infinite;
     }
 
-    /* ─── Forms ─── */
-    .form-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-        margin-bottom: 8px;
-    }
-
-    .form-grid {
-        display: grid;
-        gap: 8px;
-    }
-
-    .form-grid.cols-2 { grid-template-columns: 1fr 1fr; }
-    .form-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
-
-    .form-field {
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-    }
-
-    .field-label {
-        font-size: 12px;
-        color: var(--text-dim);
-        text-transform: uppercase;
-        letter-spacing: 0.3px;
-    }
-
-    .field-input {
-        background: var(--bg-input);
-        border: 1px solid var(--border);
-        border-radius: 3px;
-        color: var(--text);
-        font-family: var(--font-mono);
-        font-size: 13px;
-        padding: 4px 8px;
-        width: 100%;
-    }
-
-    .field-input:focus {
-        border-color: var(--border-focus);
-        outline: none;
-    }
-
-    .field-input.narrow { width: 80px; }
-
-    select.field-input { cursor: pointer; }
-
-    .field-hint {
-        font-size: 11px;
-        color: var(--text-dim);
-        font-style: italic;
-    }
+    /* ─── Form Overrides ─── */
+    .form-grid { grid-template-columns: 1fr 1fr; }
 
     .unit {
         font-size: 11px;
@@ -1244,42 +1022,14 @@
         letter-spacing: 0.3px;
     }
 
-    /* ─── Slider ─── */
-    .slider-row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-
-    .slider { accent-color: var(--accent); }
-    .slider.wide { flex: 1; }
-
-    .slider-val {
-        font-family: var(--font-mono);
-        font-size: 12px;
-        color: var(--text-dim);
-        min-width: 64px;
-        text-align: right;
-    }
-
     /* ─── Toggle ─── */
-    .toggle {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        cursor: pointer;
-        font-size: 12px;
-    }
-
-    .toggle input[type="checkbox"] { accent-color: var(--accent); }
-
     .toggle-text {
         font-family: var(--font-mono);
         font-size: 12px;
         color: var(--text);
     }
 
-    /* ─── Buttons ─── */
+    /* ─── Button Overrides ─── */
     button {
         background: var(--bg-raised);
         border: 1px solid var(--border);
@@ -1299,24 +1049,11 @@
         cursor: not-allowed;
     }
 
-    .small {
-        font-size: 11px;
-        padding: 3px 10px;
-    }
-
     .primary {
         background: color-mix(in srgb, var(--accent) 15%, var(--bg-raised));
         border-color: var(--accent);
         color: var(--accent);
     }
 
-    .danger {
-        color: var(--error);
-        border-color: color-mix(in srgb, var(--error) 40%, transparent);
-    }
-
-    .danger:hover:not(:disabled) {
-        background: color-mix(in srgb, var(--error) 15%, var(--bg-raised));
-        border-color: var(--error);
-    }
+    .status-btn { padding: 4px 12px; }
 </style>

@@ -2,174 +2,12 @@
 <!-- Reusable LED channel/sequence editor. Used by both HubFX (6 ch) and LightFX (8 ch). -->
 <script lang="ts">
     import { SendCommand } from '../../../wailsjs/go/main/App'
+    import { eventTypes, presets, presetGroups, type EventTypeDef, type ParamDef, type LightPreset } from '../light-data'
 
     export let channelCount: number = 8
     export let sectionLabel: string = 'Lights'
     export let channelStartIndex: number = 1
     export let masterBrightness: number = 100
-
-    // ─── Event Type Definitions ───
-    interface EventTypeDef {
-        name: string
-        value: string
-        params: ParamDef[]
-    }
-
-    interface ParamDef {
-        label: string
-        key: string
-        min: number
-        max: number
-        step: number
-        defaultVal: number
-        unit?: string
-    }
-
-    const eventTypes: EventTypeDef[] = [
-        {
-            name: 'ON', value: 'on',
-            params: [
-                { label: 'Duration', key: 'duration', min: 10, max: 60000, step: 10, defaultVal: 1000, unit: 'ms' },
-                { label: 'Brightness', key: 'brightness', min: 0, max: 100, step: 1, defaultVal: 100, unit: '%' },
-            ]
-        },
-        {
-            name: 'OFF', value: 'off',
-            params: [
-                { label: 'Duration', key: 'duration', min: 10, max: 60000, step: 10, defaultVal: 1000, unit: 'ms' },
-            ]
-        },
-        {
-            name: 'FLASH', value: 'flash',
-            params: [
-                { label: 'Interval', key: 'interval', min: 10, max: 10000, step: 10, defaultVal: 100, unit: 'ms' },
-                { label: 'Duration', key: 'duration', min: 10, max: 60000, step: 10, defaultVal: 2000, unit: 'ms' },
-                { label: 'Brightness', key: 'brightness', min: 0, max: 100, step: 1, defaultVal: 100, unit: '%' },
-                { label: 'Duty', key: 'duty', min: 1, max: 100, step: 1, defaultVal: 50, unit: '%' },
-            ]
-        },
-        {
-            name: 'FADE IN', value: 'fadein',
-            params: [
-                { label: 'Duration', key: 'duration', min: 10, max: 60000, step: 10, defaultVal: 1000, unit: 'ms' },
-                { label: 'Brightness', key: 'brightness', min: 0, max: 100, step: 1, defaultVal: 100, unit: '%' },
-            ]
-        },
-        {
-            name: 'FADE OUT', value: 'fadeout',
-            params: [
-                { label: 'Duration', key: 'duration', min: 10, max: 60000, step: 10, defaultVal: 1000, unit: 'ms' },
-                { label: 'Brightness', key: 'brightness', min: 0, max: 100, step: 1, defaultVal: 100, unit: '%' },
-            ]
-        },
-        {
-            name: 'FADING', value: 'fading',
-            params: [
-                { label: 'Cycle', key: 'cycle', min: 10, max: 10000, step: 10, defaultVal: 2000, unit: 'ms' },
-                { label: 'Duration', key: 'duration', min: 10, max: 60000, step: 100, defaultVal: 10000, unit: 'ms' },
-                { label: 'Min', key: 'min', min: 0, max: 100, step: 1, defaultVal: 0, unit: '%' },
-                { label: 'Max', key: 'max', min: 0, max: 100, step: 1, defaultVal: 100, unit: '%' },
-            ]
-        },
-        {
-            name: 'BEACON', value: 'beacon',
-            params: [
-                { label: 'Cycle', key: 'cycle', min: 100, max: 10000, step: 50, defaultVal: 1000, unit: 'ms' },
-                { label: 'Duration', key: 'duration', min: 100, max: 60000, step: 100, defaultVal: 10000, unit: 'ms' },
-                { label: 'Flash %', key: 'flashPct', min: 1, max: 50, step: 1, defaultVal: 15, unit: '%' },
-                { label: 'Peak', key: 'max', min: 0, max: 100, step: 1, defaultVal: 100, unit: '%' },
-            ]
-        },
-    ]
-
-    // ─── Light Presets ───
-    // Timing reference: LedFlashing full cycle = interval × 2, on-time = cycle × duty / 100
-    // FAA 14 CFR §25.1401: anti-collision 40-100 flashes/min (600-1500ms cycle)
-    interface LightPreset {
-        name: string
-        group: string
-        events: { type: string; params: Record<string, number> }[]
-    }
-
-    const presetGroups = ['', 'Aircraft', 'Vehicle', 'Naval', 'Effects'] as const
-
-    const presets: LightPreset[] = [
-        { name: 'Custom', group: '', events: [] },
-
-        // ── Aircraft ──
-        { name: 'Nav Position', group: 'Aircraft', events: [
-            { type: 'on', params: { duration: 0, brightness: 100 } },
-        ]},
-        { name: 'Nav Dimmed', group: 'Aircraft', events: [
-            { type: 'on', params: { duration: 0, brightness: 40 } },
-        ]},
-        { name: 'Nav Flashing', group: 'Aircraft', events: [
-            { type: 'flash', params: { interval: 500, duration: 0, brightness: 100, duty: 50 } },
-        ]},
-        { name: 'Anti-Col Beacon', group: 'Aircraft', events: [
-            { type: 'beacon', params: { cycle: 1300, duration: 0, flashPct: 12, max: 100 } },
-        ]},
-        { name: 'Beacon Rotating', group: 'Aircraft', events: [
-            { type: 'beacon', params: { cycle: 1300, duration: 0, flashPct: 30, max: 100 } },
-        ]},
-        { name: 'Strobe Single', group: 'Aircraft', events: [
-            { type: 'flash', params: { interval: 650, duration: 0, brightness: 100, duty: 4 } },
-        ]},
-        { name: 'Strobe Double', group: 'Aircraft', events: [
-            { type: 'on', params: { duration: 50, brightness: 100 } },
-            { type: 'off', params: { duration: 100 } },
-            { type: 'on', params: { duration: 50, brightness: 100 } },
-            { type: 'off', params: { duration: 1100 } },
-        ]},
-        { name: 'Landing Light', group: 'Aircraft', events: [
-            { type: 'fadein', params: { duration: 400, brightness: 100 } },
-            { type: 'on', params: { duration: 0, brightness: 100 } },
-        ]},
-        { name: 'Taxi / Hover', group: 'Aircraft', events: [
-            { type: 'on', params: { duration: 0, brightness: 80 } },
-        ]},
-        // ── Sequenced (assign each to separate channel for phased flash) ──
-        { name: 'Seq: Beacon (1/3)', group: 'Aircraft', events: [
-            { type: 'beacon', params: { cycle: 1500, duration: 0, flashPct: 15, max: 100 } },
-        ]},
-        { name: 'Seq: Strobe (2/3)', group: 'Aircraft', events: [
-            { type: 'off', params: { duration: 500 } },
-            { type: 'on', params: { duration: 50, brightness: 100 } },
-            { type: 'off', params: { duration: 950 } },
-        ]},
-        { name: 'Seq: Nav (3/3)', group: 'Aircraft', events: [
-            { type: 'off', params: { duration: 1000 } },
-            { type: 'on', params: { duration: 80, brightness: 100 } },
-            { type: 'off', params: { duration: 420 } },
-        ]},
-
-        // ── Vehicle ──
-        { name: 'Headlight Lo', group: 'Vehicle', events: [
-            { type: 'on', params: { duration: 0, brightness: 70 } },
-        ]},
-        { name: 'Turn Signal', group: 'Vehicle', events: [
-            { type: 'flash', params: { interval: 350, duration: 0, brightness: 100, duty: 50 } },
-        ]},
-        { name: 'Brake Light', group: 'Vehicle', events: [
-            { type: 'on', params: { duration: 0, brightness: 100 } },
-        ]},
-
-        // ── Naval ──
-        { name: 'Masthead', group: 'Naval', events: [
-            { type: 'on', params: { duration: 0, brightness: 100 } },
-        ]},
-        { name: 'Sidelight', group: 'Naval', events: [
-            { type: 'on', params: { duration: 0, brightness: 80 } },
-        ]},
-
-        // ── Effects ──
-        { name: 'Rotating Light', group: 'Effects', events: [
-            { type: 'beacon', params: { cycle: 2000, duration: 0, flashPct: 25, max: 100 } },
-        ]},
-        { name: 'Breathing', group: 'Effects', events: [
-            { type: 'fading', params: { cycle: 3000, duration: 0, min: 5, max: 80 } },
-        ]},
-    ]
 
     // ─── Channel State ───
     interface SeqEvent {
@@ -452,6 +290,8 @@
 </section>
 
 <style>
+    /* LightSetup-specific — shared styles in style.css */
+
     .light-setup {
         background: var(--bg-surface);
         border: 1px solid var(--border);
@@ -553,12 +393,9 @@
         padding-right: 8px;
     }
 
-    .ch-quick {
-        display: flex;
-        gap: 3px;
-    }
+    .ch-quick { display: flex; gap: 3px; }
 
-    /* ─── Channel Detail (expanded) ─── */
+    /* ─── Channel Detail ─── */
     .channel-detail {
         padding: 8px 10px 10px 42px;
         background: var(--bg-surface);
@@ -574,7 +411,7 @@
 
     .spacer { flex: 1; }
 
-    /* ─── Event list ─── */
+    /* ─── Event List ─── */
     .event-list {
         border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
         border-radius: 3px;
@@ -651,11 +488,7 @@
         cursor: pointer;
     }
 
-    .param-field {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-    }
+    .param-field { display: flex; flex-direction: column; gap: 2px; }
 
     .param-label {
         font-size: 9px;
@@ -686,11 +519,7 @@
         bottom: 4px;
     }
 
-    .add-event-actions {
-        display: flex;
-        gap: 6px;
-        margin-top: 8px;
-    }
+    .add-event-actions { display: flex; gap: 6px; margin-top: 8px; }
 
     .add-btn {
         margin-top: 4px;
@@ -702,50 +531,20 @@
 
     .add-btn:hover { color: var(--accent); border-color: var(--accent); }
 
-    /* ─── Shared styles ─── */
-    .field-label {
-        font-size: 11px;
-        color: var(--text-dim);
-        text-transform: uppercase;
-        letter-spacing: 0.3px;
-    }
+    /* ─── Overrides ─── */
+    .field-label { font-size: 11px; }
 
-    .slider { accent-color: var(--accent); }
-
-    .slider-val, .slider-val-sm {
+    .slider-val-sm {
         font-family: var(--font-mono);
-        font-size: 12px;
-        color: var(--text-dim);
-        min-width: 36px;
-        text-align: right;
-    }
-
-    .slider-val-sm { font-size: 11px; min-width: 30px; }
-
-    .small {
         font-size: 11px;
-        padding: 3px 10px;
-    }
-
-    .tiny {
-        font-size: 9px;
-        padding: 1px 6px;
-        line-height: 1.2;
+        color: var(--text-dim);
+        min-width: 30px;
+        text-align: right;
     }
 
     .primary {
         background: color-mix(in srgb, var(--accent) 15%, var(--bg-raised));
         border-color: var(--accent);
         color: var(--accent);
-    }
-
-    .danger {
-        color: var(--error);
-        border-color: color-mix(in srgb, var(--error) 40%, transparent);
-    }
-
-    .danger:hover {
-        background: color-mix(in srgb, var(--error) 15%, var(--bg-raised));
-        border-color: var(--error);
     }
 </style>

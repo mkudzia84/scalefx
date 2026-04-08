@@ -409,37 +409,12 @@
 </div>
 
 <style>
-    .tab-content {
-        padding: 20px 24px;
-        overflow-y: auto;
-        height: 100%;
-    }
+    /* HubFxTab-specific overrides — shared styles in style.css */
 
-    /* ─── Header ─── */
-    .board-header {
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        margin-bottom: 20px;
-        padding-bottom: 14px;
-        border-bottom: 1px solid var(--border);
-    }
+    .col { gap: 16px; }
+    .two-col { margin-bottom: 16px; }
 
-    .board-icon { font-size: 30px; }
-
-    .board-info h2 {
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--text-bright);
-        margin-bottom: 1px;
-    }
-
-    .board-type {
-        font-size: 11px;
-        color: var(--text-dim);
-        font-family: var(--font-mono);
-    }
-
+    /* ─── Slave Toggles ─── */
     .slave-toggles {
         display: flex;
         gap: 12px;
@@ -466,24 +441,7 @@
         font-weight: 500;
     }
 
-    .status-btn { font-size: 12px; }
-
-    /* ─── Two-Column Layout ─── */
-    .two-col {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-        margin-bottom: 16px;
-    }
-
-    .col {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        min-width: 0;
-    }
-
-    /* ─── Bottom sections ─── */
+    /* ─── Bottom Sections ─── */
     .sections {
         display: flex;
         flex-direction: column;
@@ -497,42 +455,6 @@
     }
 
     .bottom-card { min-width: 0; }
-
-    /* ─── Card ─── */
-    .card {
-        background: var(--bg-surface);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 14px 16px;
-    }
-
-    .card-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 12px;
-    }
-
-    .card-header h3 {
-        font-size: 14px;
-        font-weight: 600;
-        color: var(--text-bright);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-
-    .card-header h3 svg {
-        opacity: 0.7;
-        flex-shrink: 0;
-    }
-
-    .header-actions {
-        display: flex;
-        gap: 6px;
-    }
 
     /* ─── Channel Bars ─── */
     .channel-bars {
@@ -616,68 +538,14 @@
         border-color: var(--accent);
     }
 
-    /* ─── State Badge ─── */
-    .state-badge {
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.8px;
-        text-transform: uppercase;
-        padding: 2px 8px;
-        border-radius: 3px;
-        background: var(--bg-raised);
-        color: var(--text-dim);
-        border: 1px solid var(--border);
-    }
-
     .state-badge.active {
         background: color-mix(in srgb, var(--success) 15%, var(--bg-raised));
         color: var(--success);
         border-color: color-mix(in srgb, var(--success) 40%, transparent);
     }
 
-    /* ─── Controls ─── */
-    .control-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-    }
-
-    /* ─── Subsections ─── */
-    .subsection {
-        margin-top: 12px;
-        padding-top: 10px;
-        border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
-    }
-
-    .subsection h4 {
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--text);
-        margin-bottom: 8px;
-        text-transform: uppercase;
-        letter-spacing: 0.3px;
-    }
-
-    /* ─── Form Grid ─── */
     .form-grid {
-        display: grid;
         grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-        gap: 8px;
-    }
-
-    .form-grid.cols-2 { grid-template-columns: 1fr 1fr; }
-
-    .form-field {
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-    }
-
-    .field-hint {
-        font-size: 11px;
-        color: var(--text-dim);
-        font-style: italic;
     }
 
     /* ─── Sound Files ─── */
@@ -712,37 +580,7 @@
         gap: 8px;
     }
 
-    /* ─── Fields ─── */
-    .field-label {
-        font-size: 12px;
-        color: var(--text-dim);
-        text-transform: uppercase;
-        letter-spacing: 0.3px;
-    }
-
-    .field-input {
-        background: var(--bg-input);
-        border: 1px solid var(--border);
-        border-radius: 3px;
-        color: var(--text);
-        font-family: var(--font-mono);
-        font-size: 13px;
-        padding: 4px 8px;
-    }
-
-    .field-input:focus {
-        border-color: var(--border-focus);
-        outline: none;
-    }
-
     .field-input.narrow { width: 60px; }
-
-    .field-input.wide {
-        flex: 1;
-        min-width: 120px;
-    }
-
-    select.field-input { cursor: pointer; }
 
     /* ─── Audio ─── */
     .audio-play-row {
@@ -759,11 +597,7 @@
         gap: 10px;
     }
 
-    .slider {
-        flex: 1;
-        max-width: 200px;
-        accent-color: var(--accent);
-    }
+    .slider { max-width: 200px; }
 
     .volume-val {
         font-family: var(--font-mono);
@@ -785,30 +619,5 @@
         font-weight: 600;
         color: var(--text);
         margin-bottom: 8px;
-    }
-
-    /* ─── Buttons ─── */
-    .small {
-        font-size: 11px;
-        padding: 3px 10px;
-    }
-
-    .action-btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        padding: 6px 16px;
-    }
-
-    .btn-icon { font-size: 11px; }
-
-    .danger {
-        color: var(--error);
-        border-color: color-mix(in srgb, var(--error) 40%, transparent);
-    }
-
-    .danger:hover {
-        background: color-mix(in srgb, var(--error) 15%, var(--bg-raised));
-        border-color: var(--error);
     }
 </style>

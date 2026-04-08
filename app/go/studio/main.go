@@ -20,8 +20,8 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title:     "ScaleFX Studio",
-		Width:     1200,
-		Height:    800,
+		Width:     1400,
+		Height:    900,
 		MinWidth:  800,
 		MinHeight: 500,
 		AssetServer: &assetserver.Options{
