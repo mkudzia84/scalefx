@@ -18,7 +18,7 @@ The yaw steering servo remains in the main controller module but uses `ServoCont
 
 **Hardware:** Raspberry Pi Pico (RP2040)  
 **Protocol:** Binary COBS with CRC-8 (1Mbps baud)  
-**Firmware:** v0.10.0 (Build 45)
+**Firmware:** v0.10.1 (Build 58)
 
 ## Architecture
 
@@ -576,6 +576,7 @@ Enables or disables a gear channel. Disabled channels reject all deploy, retract
 
 | Build | Version | Changes |
 |-------|---------|---------|
+| 58 | 0.10.1 | Shared library restructure (namespaced includes), SfxServer migration, diagnostic logging (SFX_LOG_*), platform-native API (busy_wait_ms), TinyUSB config, GearControlServer extracted to shared protocol header |
 | 45 | 0.10.0 | Door state in STATUS (DoorState enum), GEAR_DOOR_STATUS (0x72) async door state transition events |
 | 44 | 0.10.0 | Calibration no longer closes doors (fixes stuck CALIBRATING state), doors stay open after calibration |
 | 42 | 0.10.0 | Default 60s calibration timeout, errorReason in GEAR_CALIB_STATUS, NO_STALL_DETECTED error reason |
