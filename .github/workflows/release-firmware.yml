@@ -152,28 +152,42 @@ jobs:
           BUILD_NUM=$(grep -rh '#define BUILD_NUMBER' "$CTRL_DIR/src" | head -1 | sed 's/.*BUILD_NUMBER[[:space:]]*\([0-9]*\).*/\1/')
           echo "build=${BUILD_NUM:-0}" >> $GITHUB_OUTPUT
 
+      - name: Write release body
+        env:
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+          CONTROLLER: ${{ inputs.controller }}
+          VERSION: ${{ inputs.version }}
+          PLATFORM: ${{ steps.config.outputs.platform }}
+          BUILD: ${{ steps.buildnum.outputs.build }}
+          EXT: ${{ steps.config.outputs.ext }}
+        run: |
+          cat > release-body.md << BODYEOF
+          ## ${CONTROLLER} firmware v${VERSION}
+
+          **Platform:** ${PLATFORM}
+          **Build:** ${BUILD}
+          **Firmware:** \`firmware.${EXT}\`
+
+          ### Release Notes
+
+          ${RELEASE_NOTES}
+
+          ### Asset
+          | File | SHA-256 |
+          |------|---------|
+          | \`${ASSET_NAME}\` | \`${ASSET_SHA256}\` |
+
+          ### Flash via ScaleFX Studio
+          Open the **Firmware** tab, select the release, and click **Flash**.
+          BODYEOF
+          # Trim leading whitespace from heredoc indentation
+          sed -i 's/^          //' release-body.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
           name: "${{ inputs.controller }} v${{ inputs.version }}"
           prerelease: ${{ inputs.prerelease }}
-          body: |
-            ## ${{ inputs.controller }} firmware v${{ inputs.version }}
-
-            **Platform:** ${{ steps.config.outputs.platform }}
-            **Build:** ${{ steps.buildnum.outputs.build }}
-            **Firmware:** `firmware.${{ steps.config.outputs.ext }}`
-
-            ### Release Notes
-
-            ${{ inputs.release_notes }}
-
-            ### Asset
-            | File | SHA-256 |
-            |------|---------|
-            | `${{ env.ASSET_NAME }}` | `${{ env.ASSET_SHA256 }}` |
-
-            ### Flash via ScaleFX Studio
-            Open the **Firmware** tab → select the release → click **Flash**.
+          body_path: release-body.md
           files: ${{ env.ASSET_PATH }}
