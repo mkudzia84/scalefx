@@ -22,9 +22,8 @@
  *   GEAR_STOP    (0x62)  - [gear_id:u8] Emergency stop motor
  *   GEAR_ALL     (0x63)  - [action:u8] Deploy(1)/Retract(0)/Stop(2) all gears
  *   SERVO_SET    (0x64)  - [id:u8][pulseUs:u16] Set servo position
- *   SRV_SETTINGS (0x65)  - [id:u8][min:u16][max:u16][speed:u16][accel:u16][decel:u16]
+ *   SRV_SETTINGS (0x65)  - [id:u8][min:u16][max:u16][speed:u16][accel:u16][decel:u16][rev:u8(opt)]
  *   GEAR_CONFIG  (0x66)  - [gear_id:u8][flags:u8][stall_mA:u16][timeout_ms:u16]
- *   DOOR_CONFIG  (0x67)  - [gear_id:u8][open0:u16][close0:u16][open1:u16][close1:u16]
  *   YAW_CONFIG   (0x68)  - [gear_id:u8][neutral:u16][min:u16][max:u16]
  *   YAW_INPUT    (0x69)  - [position_us:u16] Raw yaw steering signal
  *   GEAR_CALIBRATE (0x6A) - [gear_id:u8][timeout_s:u8(opt)] Start stall current calibration (default 60s timeout)
@@ -63,7 +62,6 @@ namespace GearControlPacket {
 
     // Configuration
     constexpr uint8_t GEAR_CONFIG    = 0x66;  // [gear_id:u8][flags:u8][stall_current_mA:u16][timeout_ms:u16]
-    constexpr uint8_t DOOR_CONFIG    = 0x67;  // [gear_id:u8][open0_us:u16][close0_us:u16][open1_us:u16][close1_us:u16]
 
     // Yaw control
     constexpr uint8_t YAW_CONFIG     = 0x68;  // [gear_id:u8][neutral_us:u16][min_us:u16][max_us:u16]
@@ -367,17 +365,6 @@ struct GearControlGearConfig {
 };
 
 /**
- * @brief Door servo configuration for one gear
- */
-struct GearControlDoorConfig {
-    uint8_t gearId = 0;
-    uint16_t open0_us = 2000;    // Door servo 0 open position
-    uint16_t close0_us = 1000;   // Door servo 0 closed position
-    uint16_t open1_us = 2000;    // Door servo 1 open position
-    uint16_t close1_us = 1000;   // Door servo 1 closed position
-};
-
-/**
  * @brief Door mode configuration for one gear
  *
  * Two modes control the full deploy/retract cycle:
@@ -418,6 +405,7 @@ struct GearControlServoConfig {
     uint16_t maxSpeedUsPerSec = 4000;      // Maximum speed                     // µs/s
     uint16_t maxAccelUsPerSec2 = 8000;     // Acceleration                      // µs/s²
     uint16_t maxDecelUsPerSec2 = 8000;     // Deceleration                      // µs/s²
+    bool reversed = false;                 // Direction: false=open@max, true=open@min (optional byte 12)
 };
 
 /**
@@ -456,7 +444,6 @@ using GearControlGearAllCallback = std::function<uint8_t(uint8_t action)>;
 using GearControlServoSetCallback = std::function<uint8_t(uint8_t servoId, uint16_t pulse_us)>;
 using GearControlServoSettingsCallback = std::function<uint8_t(const GearControlServoConfig& config)>;
 using GearControlGearConfigCallback = std::function<uint8_t(const GearControlGearConfig& config)>;
-using GearControlDoorConfigCallback = std::function<uint8_t(const GearControlDoorConfig& config)>;
 using GearControlYawConfigCallback = std::function<uint8_t(const GearControlYawConfig& config)>;
 using GearControlYawInputCallback = std::function<uint8_t(uint16_t position_us)>;
 using GearControlGearCalibrateCallback = std::function<uint8_t(uint8_t gearId, uint8_t timeout_s)>;

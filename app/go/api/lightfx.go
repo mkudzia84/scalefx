@@ -32,12 +32,12 @@ func (a *LightFxApi) ServoSet(id byte, pulse_us uint16) ApiResult {
 	return a.sendACK(lightfx.CmdServoSet(id, pulse_us))
 }
 
-func (a *LightFxApi) ServoConfig(id byte, min, max, speed, accel, decel uint16) ApiResult {
-	return a.sendACK(lightfx.CmdServoSettings(id, min, max, speed, accel, decel))
+func (a *LightFxApi) ServoConfig(id byte, min, max, speed, accel, decel uint16, reversed bool) ApiResult {
+	return a.sendACK(lightfx.CmdServoSettings(id, min, max, speed, accel, decel, reversed))
 }
 
-func (a *LightFxApi) LandingBind(slot, servo, led byte, deploy, retract uint16, bright byte) ApiResult {
-	return a.sendACK(lightfx.CmdLandingLightBind(slot, servo, led, deploy, retract, bright))
+func (a *LightFxApi) LandingBind(slot, servo, led, bright byte) ApiResult {
+	return a.sendACK(lightfx.CmdLandingLightBind(slot, servo, led, bright))
 }
 
 func (a *LightFxApi) LandingUnbind(slot byte) ApiResult  { return a.sendACK(lightfx.CmdLandingLightUnbind(slot)) }

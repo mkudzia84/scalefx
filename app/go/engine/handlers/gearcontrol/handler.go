@@ -36,9 +36,8 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"retract":          {h.cmdRetract, "retract <id> | all", "Retract landing gear", true},
 			"stop":             {h.cmdStop, "stop <id> | all", "Emergency stop motor", true},
 			"servo":            {h.cmdServo, "servo set <id> <pulse_us>", "Set servo position", true},
-			"servo.config":     {h.cmdServoConfig, "servo.config <id> <min> <max> [spd] [acc] [dec]", "Configure servo", true},
+			"servo.config":     {h.cmdServoConfig, "servo.config <id> <min> <max> [spd] [acc] [dec] [rev]", "Configure servo", true},
 			"gear.config":      {h.cmdGearConfig, "gear.config <id> <flags> [stall_mA] [timeout_ms]", "Configure gear", true},
-			"door.config":      {h.cmdDoorConfig, "door.config <id> <o0> <c0> <o1> <c1>", "Configure door servos", true},
 			"door.mode":        {h.cmdDoorMode, "door.mode <id> <pre> [post] [delay_ms]", "Set door activation mode", true},
 			"yaw.config":       {h.cmdYawConfig, "yaw.config <id> <neutral> <min> <max>", "Configure yaw servo", true},
 			"yaw":              {h.cmdYaw, "yaw <pulse_us>", "Set yaw position", true},
@@ -98,7 +97,7 @@ func (h *Handler) cmdServo(args []string) {
 }
 
 func (h *Handler) cmdServoConfig(args []string) {
-	h.E.ServoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec]", h.E.API.GearControl.ServoConfig)
+	h.E.ServoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec] [rev]", h.E.API.GearControl.ServoConfig)
 }
 
 func (h *Handler) cmdGearConfig(args []string) {
@@ -124,16 +123,6 @@ func (h *Handler) cmdGearConfig(args []string) {
 	}
 	h.E.Ack(h.E.API.GearControl.GearConfig(byte(id), byte(flags), uint16(stall), uint16(timeout)),
 		fmt.Sprintf("Gear %d: flags=0x%02X, stall=%dmA, timeout=%dms", id, flags, stall, timeout))
-}
-
-func (h *Handler) cmdDoorConfig(args []string) {
-	if !h.E.RequireArgs(args, 5, "door.config <id> <open0_us> <close0_us> <open1_us> <close1_us>") {
-		return
-	}
-	id := engine.Atoi(args[0])
-	o0, c0, o1, c1 := engine.Atoi(args[1]), engine.Atoi(args[2]), engine.Atoi(args[3]), engine.Atoi(args[4])
-	h.E.Ack(h.E.API.GearControl.DoorConfig(byte(id), uint16(o0), uint16(c0), uint16(o1), uint16(c1)),
-		fmt.Sprintf("Gear %d doors: A=%d-%dµs, B=%d-%dµs", id, c0, o0, c1, o1))
 }
 
 func (h *Handler) cmdDoorMode(args []string) {

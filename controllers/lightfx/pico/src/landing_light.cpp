@@ -34,17 +34,14 @@ void LandingLight::_emitProgress(bool finished) {
 // ============================================================================
 
 void LandingLight::configure(ServoControl* servo, LedControl* led,
-                             uint16_t deployUs, uint16_t retractUs,
                              uint8_t brightness) {
     _servo = servo;
     _led = led;
-    _deployUs = deployUs;
-    _retractUs = retractUs;
     _brightness = brightness;
 
-    // Start in retracted state
+    // Start in retracted state (close position)
     _led->off();
-    _servo->setTarget(_retractUs);
+    _servo->setTarget(_servo->closePosition());
     _state = LandingLightState::RETRACTED;
 }
 
@@ -65,7 +62,7 @@ void LandingLight::deploy() {
     if (_state == LandingLightState::DEPLOYED ||
         _state == LandingLightState::DEPLOYING) return;
 
-    _servo->setTarget(_deployUs);
+    _servo->setTarget(_servo->openPosition());
     _state = LandingLightState::DEPLOYING;
     _emitProgress();  // Deploying phase started
 }
@@ -77,7 +74,7 @@ void LandingLight::retract() {
 
     // Light off BEFORE retraction starts
     _led->off();
-    _servo->setTarget(_retractUs);
+    _servo->setTarget(_servo->closePosition());
     _state = LandingLightState::RETRACTING;
     _emitProgress();  // Retracting phase started
 }

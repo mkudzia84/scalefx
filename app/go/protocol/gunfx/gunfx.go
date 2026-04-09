@@ -56,13 +56,16 @@ func CmdServoSet(id byte, pulse_us uint16) []byte {
 	return protocol.BuildPacket(ServoSet, payload, 0)
 }
 
-func CmdServoSettings(id byte, minPulse, maxPulse, speed, accel, decel uint16) []byte {
+func CmdServoSettings(id byte, minPulse, maxPulse, speed, accel, decel uint16, reversed bool) []byte {
 	payload := []byte{id}
 	payload = append(payload, protocol.U16LE(minPulse)...)
 	payload = append(payload, protocol.U16LE(maxPulse)...)
 	payload = append(payload, protocol.U16LE(speed)...)
 	payload = append(payload, protocol.U16LE(accel)...)
 	payload = append(payload, protocol.U16LE(decel)...)
+	if reversed {
+		payload = append(payload, 1)
+	}
 	return protocol.BuildPacket(ServoSettings, payload, 0)
 }
 

@@ -42,8 +42,8 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"seq.queue":       {h.cmdSeqQueue, "seq.queue <ch>", "List sequence event queue", true},
 			"brightness":      {h.cmdMasterBright, "brightness <0-100>", "Set master LED brightness", true},
 			"servo":           {h.cmdServo, "servo set <id> <pulse_us>", "Set servo position", true},
-			"servo.config":    {h.cmdServoConfig, "servo.config <id> <min> <max> [spd] [acc] [dec]", "Configure servo", true},
-			"landing.bind":    {h.cmdLandingBind, "landing.bind <slot> <servo> <led> <deploy_us> <retract_us> [bright]", "Bind landing light", true},
+			"servo.config":    {h.cmdServoConfig, "servo.config <id> <min> <max> [spd] [acc] [dec] [rev]", "Configure servo", true},
+			"landing.bind":    {h.cmdLandingBind, "landing.bind <slot> <servo> <led> [bright]", "Bind landing light", true},
 			"landing.unbind":  {h.cmdLandingUnbind, "landing.unbind [slot]", "Unbind landing light (0=all)", true},
 			"landing.deploy":  {h.cmdLandingDeploy, "landing.deploy [slot]", "Deploy landing light (0=all)", true},
 			"landing.retract": {h.cmdLandingRetract, "landing.retract [slot]", "Retract landing light (0=all)", true},
@@ -273,27 +273,25 @@ func (h *Handler) cmdServo(args []string) {
 }
 
 func (h *Handler) cmdServoConfig(args []string) {
-	h.E.ServoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec]", h.E.API.LightFx.ServoConfig)
+	h.E.ServoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec] [rev]", h.E.API.LightFx.ServoConfig)
 }
 
 // ─── Landing Light Commands ───
 
 func (h *Handler) cmdLandingBind(args []string) {
-	if !h.E.RequireArgs(args, 5, "landing.bind <slot> <servo> <led_ch> <deploy_us> <retract_us> [brightness]") {
+	if !h.E.RequireArgs(args, 3, "landing.bind <slot> <servo> <led_ch> [brightness]") {
 		return
 	}
 	slot := byte(engine.Atoi(args[0]))
 	servoID := byte(engine.Atoi(args[1]))
 	ledCh := byte(engine.Atoi(args[2]))
-	deploy := uint16(engine.Atoi(args[3]))
-	retract := uint16(engine.Atoi(args[4]))
 	bright := byte(100)
-	if len(args) > 5 {
-		bright = byte(engine.Atoi(args[5]))
+	if len(args) > 3 {
+		bright = byte(engine.Atoi(args[3]))
 	}
-	h.E.Ack(h.E.API.LightFx.LandingBind(slot, servoID, ledCh, deploy, retract, bright),
-		fmt.Sprintf("Landing light %d: servo %d + LED %d, deploy %dµs, retract %dµs, bright %d%%",
-			slot, servoID, ledCh, deploy, retract, bright))
+	h.E.Ack(h.E.API.LightFx.LandingBind(slot, servoID, ledCh, bright),
+		fmt.Sprintf("Landing light %d: servo %d + LED %d, bright %d%%",
+			slot, servoID, ledCh, bright))
 }
 
 func (h *Handler) cmdLandingUnbind(args []string) {

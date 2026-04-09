@@ -14,9 +14,9 @@
  * 
  * Usage:
  *   LandingLight ll;
- *   ll.configure(&servo, &led, 2000, 1000, 100);  // deploy=2000µs, retract=1000µs
- *   ll.deploy();   // Servo moves to 2000µs, light on when arrived
- *   ll.retract();  // Light off immediately, servo moves to 1000µs
+ *   ll.configure(&servo, &led, 100);  // brightness=100%
+ *   ll.deploy();   // Servo moves to openPosition(), light on when arrived
+ *   ll.retract();  // Light off immediately, servo moves to closePosition()
  *   ll.update();   // Call in loop()
  */
 
@@ -48,8 +48,11 @@ enum class LandingLightState : uint8_t {
  * @brief Coordinates a retract servo with a landing light LED channel
  * 
  * Binds one ServoControl and one LedControl to implement the sequence:
- * - Deploy: servo moves to deploy position, light turns on when target reached
- * - Retract: light turns off immediately, then servo moves to retract position
+ * - Deploy: servo moves to open position, light turns on when target reached
+ * - Retract: light turns off immediately, then servo moves to close position
+ *
+ * Open/close positions are determined by the servo's limits and direction flag
+ * (set via setReversed()). No separate deploy/retract positions needed.
  */
 class LandingLight {
 public:
@@ -62,16 +65,14 @@ public:
     /**
      * @brief Bind a servo and LED channel as a landing light pair
      * 
-     * Sets the servo to the retract position and turns the light off.
+     * Sets the servo to the close (retract) position and turns the light off.
+     * Open/close positions are derived from servo limits + direction flag.
      * 
      * @param servo Pointer to the retract servo
      * @param led Pointer to the landing light LED channel
-     * @param deployUs Servo position when gear is deployed (µs)
-     * @param retractUs Servo position when gear is retracted (µs)
      * @param brightness LED brightness when light is on (0-100, default 100)
      */
     void configure(ServoControl* servo, LedControl* led,
-                   uint16_t deployUs, uint16_t retractUs,
                    uint8_t brightness = 100);
 
     /**
@@ -133,12 +134,6 @@ public:
     /** @brief Get current state */
     LandingLightState state() const { return _state; }
 
-    /** @brief Get deploy servo position (µs) */
-    uint16_t deployUs() const { return _deployUs; }
-
-    /** @brief Get retract servo position (µs) */
-    uint16_t retractUs() const { return _retractUs; }
-
     /** @brief Get configured brightness */
     uint8_t brightness() const { return _brightness; }
 
@@ -170,8 +165,6 @@ public:
 private:
     ServoControl* _servo = nullptr;
     LedControl* _led = nullptr;
-    uint16_t _deployUs = 0;
-    uint16_t _retractUs = 0;
     uint8_t _brightness = 255;
     uint8_t _slot = 0;  // Slot ID for progress reporting (1-3)
     LandingLightState _state = LandingLightState::UNCONFIGURED;

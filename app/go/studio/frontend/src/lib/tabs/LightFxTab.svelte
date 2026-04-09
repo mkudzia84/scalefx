@@ -42,6 +42,7 @@
         events: SeqEvent[]
         brightness: number
         landingSlot: number     // which landing slot to bind (0,1,2)
+        landingDeployed: boolean // whether landing light is deployed in this program
     }
 
     interface Program {
@@ -80,13 +81,13 @@
         return [
             createProgramWithBand('Off', bands[0].min, bands[0].max, true),
             createProgramWithBand('Flight', bands[1].min, bands[1].max),
-            createProgramWithBand('Landing', bands[2].min, bands[2].max),
+            createProgramWithBand('Landing', bands[2].min, bands[2].max, false, true),
         ]
     })()
     let activeProgram = 1
     let nextEventId = 1
 
-    function createProgramWithBand(name: string, min_us: number, max_us: number, allDisabled = false): Program {
+    function createProgramWithBand(name: string, min_us: number, max_us: number, allDisabled = false, landingDeployed = false): Program {
         return {
             name,
             bandMin_us: min_us,
@@ -98,6 +99,7 @@
                 events: [],
                 brightness: 100,
                 landingSlot: 0,
+                landingDeployed,
             })),
             playing: false,
         }
@@ -110,7 +112,16 @@
         const gap = PWM_MAX - lastMax
         const newMin = Math.min(lastMax + 1, PWM_MAX)
         const newMax = Math.min(newMin + Math.max(Math.floor(gap / 2), 50) - 1, PWM_MAX)
-        programs = [...programs, createProgramWithBand(`Program ${programs.length + 1}`, newMin, newMax)]
+        const newProg = createProgramWithBand(`Program ${programs.length + 1}`, newMin, newMax)
+        // Sync channel modes and landing slots from existing programs
+        if (programs.length > 0) {
+            const ref = programs[0]
+            for (let i = 0; i < CHANNEL_COUNT; i++) {
+                newProg.channels[i].mode = ref.channels[i].mode
+                newProg.channels[i].landingSlot = ref.channels[i].landingSlot
+            }
+        }
+        programs = [...programs, newProg]
         activeProgram = programs.length - 1
     }
 
@@ -191,12 +202,34 @@
     }
 
     function playProgram() {
-        prog.channels.forEach((c, i) => { if (c.enabled && c.mode === 'events' && c.events.length > 0) sendChannelSeq(i) })
+        const deploySlots = new Set<number>()
+        const retractSlots = new Set<number>()
+        prog.channels.forEach((c, i) => {
+            if (!c.enabled) return
+            if (c.mode === 'events' && c.events.length > 0) sendChannelSeq(i)
+            if (c.mode === 'landing') {
+                if (c.landingDeployed) deploySlots.add(c.landingSlot)
+                else retractSlots.add(c.landingSlot)
+            }
+        })
+        deploySlots.forEach(s => deployLanding(s))
+        retractSlots.forEach(s => retractLanding(s))
         prog.playing = true; programs = programs
     }
     function stopProgram() {
         prog.channels.forEach((_, i) => { SendCommand(`seq.stop ${ch(i)}`); channelPlaying[i] = false })
         prog.playing = false; channelPlaying = channelPlaying; programs = programs
+    }
+
+    // ─── Cross-program sync (landing designation is global) ───
+    function setChannelMode(chIdx: number, mode: ChannelMode) {
+        for (const p of programs) p.channels[chIdx].mode = mode
+        programs = programs
+    }
+    function syncChannelLandingSlot(chIdx: number) {
+        const slot = prog.channels[chIdx].landingSlot
+        for (const p of programs) p.channels[chIdx].landingSlot = slot
+        programs = programs
     }
 
     function enableChannel(chIdx: number) { SendCommand(`enable ${ch(chIdx)}`); prog.channels[chIdx].enabled = true; programs = programs }
@@ -230,8 +263,6 @@
     interface LandingSlot {
         servo: number      // servo id (1-3)
         ledChannel: number // LED channel (1-8)
-        deploy_us: number
-        retract_us: number
         brightness: number
         bound: boolean
         servoEnabled: boolean
@@ -240,15 +271,15 @@
 
     // Always keep 3 backing slots; display only landingSlotCount
     let landingSlots: LandingSlot[] = [
-        { servo: 2, ledChannel: 1, deploy_us: 2000, retract_us: 1000, brightness: 100, bound: false, servoEnabled: true, enabled: true },
-        { servo: 3, ledChannel: 2, deploy_us: 2000, retract_us: 1000, brightness: 100, bound: false, servoEnabled: true, enabled: true },
-        { servo: 1, ledChannel: 3, deploy_us: 2000, retract_us: 1000, brightness: 100, bound: false, servoEnabled: true, enabled: true },
+        { servo: 2, ledChannel: 1, brightness: 100, bound: false, servoEnabled: true, enabled: true },
+        { servo: 3, ledChannel: 2, brightness: 100, bound: false, servoEnabled: true, enabled: true },
+        { servo: 1, ledChannel: 3, brightness: 100, bound: false, servoEnabled: true, enabled: true },
     ]
     $: visibleSlots = landingSlots.slice(0, landingSlotCount)
 
     function bindLanding(idx: number) {
         const s = landingSlots[idx]
-        SendCommand(`landing.bind ${idx + 1} ${s.servo} ${s.ledChannel} ${s.deploy_us} ${s.retract_us} ${s.brightness}`)
+        SendCommand(`landing.bind ${idx + 1} ${s.servo} ${s.ledChannel} ${s.brightness}`)
         landingSlots[idx].bound = true; landingSlots = landingSlots
     }
     function unbindLanding(idx: number) {
@@ -404,10 +435,10 @@
                                     <!-- Mode selector -->
                                     <div class="ch-mode-chips">
                                         <button class="mode-chip" class:active={channel.mode === 'events'}
-                                                on:click={() => { channel.mode = 'events'; programs = programs }}
+                                                on:click={() => setChannelMode(idx, 'events')}
                                                 disabled={!channel.enabled}>Events</button>
                                         <button class="mode-chip" class:active={channel.mode === 'landing'}
-                                                on:click={() => { channel.mode = 'landing'; programs = programs }}
+                                                on:click={() => setChannelMode(idx, 'landing')}
                                                 disabled={!channel.enabled}>Landing</button>
                                     </div>
 
@@ -501,8 +532,10 @@
                                 <!-- Landing mode binding selector -->
                                 {#if channel.enabled && channel.mode === 'landing'}
                                     <div class="ch-detail landing-detail">
-                                        <span class="field-label">Landing Slot</span>
-                                        <select bind:value={channel.landingSlot} class="field-input" style="width: 80px">
+                                        <span class="field-label">Slot</span>
+                                        <select bind:value={channel.landingSlot} class="field-input"
+                                                on:change={() => syncChannelLandingSlot(idx)}
+                                                style="width: 80px">
                                             {#each Array.from({length: landingSlotCount}, (_, i) => i) as s}
                                                 <option value={s}>Slot {s + 1}</option>
                                             {/each}
@@ -511,6 +544,12 @@
                                             Servo {landingSlots[channel.landingSlot].servo},
                                             LED {landingSlots[channel.landingSlot].ledChannel}
                                         </span>
+                                        <!-- svelte-ignore a11y-label-has-associated-control -->
+                                        <label class="deployed-toggle">
+                                            <input type="checkbox" bind:checked={channel.landingDeployed}
+                                                   on:change={() => { programs = programs }} />
+                                            <span>{channel.landingDeployed ? 'Deployed' : 'Retracted'}</span>
+                                        </label>
                                     </div>
                                 {/if}
                             </div>
@@ -554,7 +593,7 @@
                                     <div class="slot-fields">
                                         <div class="field-col">
                                             <span class="flbl">Servo</span>
-                                            <select bind:value={slot.servo} class="field-input narrow"
+                                            <select bind:value={slot.servo} class="field-input"
                                                     disabled={controlsDisabled}>
                                                 {#each availableServos as s}
                                                     <option value={s.id}>{s.name}</option>
@@ -563,24 +602,12 @@
                                         </div>
                                         <div class="field-col">
                                             <span class="flbl">LED Ch</span>
-                                            <select bind:value={slot.ledChannel} class="field-input narrow"
+                                            <select bind:value={slot.ledChannel} class="field-input"
                                                     disabled={controlsDisabled}>
                                                 {#each Array.from({length: 8}, (_, i) => i + 1) as l}
                                                     <option value={l}>{l}</option>
                                                 {/each}
                                             </select>
-                                        </div>
-                                        <div class="field-col">
-                                            <span class="flbl">Deploy µs</span>
-                                            <input type="number" bind:value={slot.deploy_us}
-                                                   class="field-input" min="500" max="2500" step="10"
-                                                   disabled={controlsDisabled} />
-                                        </div>
-                                        <div class="field-col">
-                                            <span class="flbl">Retract µs</span>
-                                            <input type="number" bind:value={slot.retract_us}
-                                                   class="field-input" min="500" max="2500" step="10"
-                                                   disabled={controlsDisabled} />
                                         </div>
                                         <div class="field-col">
                                             <span class="flbl">Bright %</span>
@@ -599,19 +626,6 @@
                                             <span>Servo Output</span>
                                         </label>
                                     </div>
-
-                                    <!-- Servo output view when enabled -->
-                                    {#if slot.servoEnabled}
-                                        <div class="servo-output-view">
-                                            <div class="servo-bar-track">
-                                                <div class="servo-bar-deploy" style="left: {((slot.deploy_us - 500) / 2000) * 100}%"></div>
-                                                <div class="servo-bar-retract" style="left: {((slot.retract_us - 500) / 2000) * 100}%"></div>
-                                            </div>
-                                            <div class="servo-bar-labels">
-                                                <span>500µs</span><span>1500µs</span><span>2500µs</span>
-                                            </div>
-                                        </div>
-                                    {/if}
 
                                     <div class="slot-actions">
                                         {#if slot.bound}
@@ -901,6 +915,17 @@
         font-family: var(--font-mono);
     }
 
+    .deployed-toggle {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        cursor: pointer;
+        margin-left: auto;
+    }
+    .deployed-toggle input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
+    .deployed-toggle span { color: var(--text-dim); font-family: var(--font-mono); font-weight: 600; }
+
     .detail-row {
         display: flex;
         align-items: center;
@@ -1095,41 +1120,6 @@
     }
 
     .slot-servo-toggle { margin-bottom: 8px; }
-
-    /* ─── Servo Output View ─── */
-    .servo-output-view { margin-bottom: 8px; }
-
-    .servo-bar-track {
-        position: relative;
-        height: 10px;
-        background: var(--bg-input);
-        border-radius: 5px;
-        overflow: visible;
-    }
-
-    .servo-bar-deploy, .servo-bar-retract {
-        position: absolute;
-        top: -2px;
-        width: 4px;
-        height: 14px;
-        border-radius: 2px;
-        transform: translateX(-2px);
-    }
-
-    .servo-bar-deploy { background: var(--ok, #4ec9b0); }
-    .servo-bar-retract { background: var(--accent); }
-
-    .servo-bar-labels {
-        display: flex;
-        justify-content: space-between;
-        margin-top: 2px;
-    }
-
-    .servo-bar-labels span {
-        font-size: 8px;
-        color: var(--text-dim);
-        font-family: var(--font-mono);
-    }
 
     .slot-actions { display: flex; gap: 4px; }
 

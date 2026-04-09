@@ -127,13 +127,16 @@ func CmdServoSet(id byte, pulse_us uint16) []byte {
 	return protocol.BuildPacket(ServoSet, payload, 0)
 }
 
-func CmdServoSettings(id byte, minPulse, maxPulse, speed, accel, decel uint16) []byte {
+func CmdServoSettings(id byte, minPulse, maxPulse, speed, accel, decel uint16, reversed bool) []byte {
 	payload := []byte{id}
 	payload = append(payload, protocol.U16LE(minPulse)...)
 	payload = append(payload, protocol.U16LE(maxPulse)...)
 	payload = append(payload, protocol.U16LE(speed)...)
 	payload = append(payload, protocol.U16LE(accel)...)
 	payload = append(payload, protocol.U16LE(decel)...)
+	if reversed {
+		payload = append(payload, 1)
+	}
 	return protocol.BuildPacket(ServoSettings, payload, 0)
 }
 
@@ -153,11 +156,8 @@ func CmdLedEnable(ch byte, enabled bool) []byte {
 	return protocol.BuildPacket(LedEnable, []byte{ch, e}, 0)
 }
 
-func CmdLandingLightBind(slot, servoID, ledCh byte, deploy_us, retract_us uint16, brightness byte) []byte {
-	payload := []byte{slot, servoID, ledCh}
-	payload = append(payload, protocol.U16LE(deploy_us)...)
-	payload = append(payload, protocol.U16LE(retract_us)...)
-	payload = append(payload, brightness)
+func CmdLandingLightBind(slot, servoID, ledCh, brightness byte) []byte {
+	payload := []byte{slot, servoID, ledCh, brightness}
 	return protocol.BuildPacket(LandingLightBind, payload, 0)
 }
 

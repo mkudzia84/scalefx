@@ -220,14 +220,18 @@ CommandResult GearControlClient::setServoPosition(uint8_t servoId, uint16_t puls
 }
 
 CommandResult GearControlClient::setServoSettings(const GearControlServoConfig& config) {
-    uint8_t payload[11];
+    uint8_t payload[12];
     payload[0] = config.servoId;
     putU16LE(&payload[1], config.minUs);                // min_us
     putU16LE(&payload[3], config.maxUs);                // max_us
     putU16LE(&payload[5], config.maxSpeedUsPerSec);     // speed  // µs/s
     putU16LE(&payload[7], config.maxAccelUsPerSec2);    // accel  // µs/s²
     putU16LE(&payload[9], config.maxDecelUsPerSec2);    // decel  // µs/s²
-    return sendCommand(GearControlPacket::SRV_SETTINGS, payload, sizeof(payload));
+    if (config.reversed) {
+        payload[11] = 1;
+        return sendCommand(GearControlPacket::SRV_SETTINGS, payload, 12);
+    }
+    return sendCommand(GearControlPacket::SRV_SETTINGS, payload, 11);
 }
 
 // ============================================================================
@@ -241,16 +245,6 @@ CommandResult GearControlClient::setGearConfig(const GearControlGearConfig& conf
     putU16LE(&payload[2], config.stallCurrent_mA);
     putU16LE(&payload[4], config.timeout_ms);
     return sendCommand(GearControlPacket::GEAR_CONFIG, payload, sizeof(payload));
-}
-
-CommandResult GearControlClient::setDoorConfig(const GearControlDoorConfig& config) {
-    uint8_t payload[9];
-    payload[0] = config.gearId;
-    putU16LE(&payload[1], config.open0_us);
-    putU16LE(&payload[3], config.close0_us);
-    putU16LE(&payload[5], config.open1_us);
-    putU16LE(&payload[7], config.close1_us);
-    return sendCommand(GearControlPacket::DOOR_CONFIG, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::setYawConfig(const GearControlYawConfig& config) {

@@ -16,10 +16,6 @@ void DoorSequencer::begin(ServoControl* door0, ServoControl* door1) {
     _doors[1] = door1;
 }
 
-void DoorSequencer::setConfig(const GearControlDoorConfig& config) {
-    _config = config;
-}
-
 void DoorSequencer::setMode(uint8_t preDeployMode, uint8_t postDeployMode, uint16_t delay_ms) {
     _preDeployMode = preDeployMode;
     _postDeployMode = postDeployMode;
@@ -48,22 +44,22 @@ void DoorSequencer::startOpen(bool deploying) {
     // Direction context: opening goes door 0→1
     _dir.firstIdx = 0;
     _dir.secondIdx = 1;
-    _dir.secondTarget_us = _config.open1_us;
+    _dir.secondTarget_us = _doors[1]->openPosition();
     _dir.finalDoorState = DoorState::OPEN;
 
     // Command initial doors based on active mode
     switch (_activeMode) {
         case DoorMode::SINGLE:
-            _doors[0]->setTarget(_config.open0_us);
+            _doors[0]->setTarget(_doors[0]->openPosition());
             break;
         case DoorMode::DUAL_SYNC:
-            _doors[0]->setTarget(_config.open0_us);
-            _doors[1]->setTarget(_config.open1_us);
+            _doors[0]->setTarget(_doors[0]->openPosition());
+            _doors[1]->setTarget(_doors[1]->openPosition());
             break;
         case DoorMode::DUAL_DELAY:
         case DoorMode::DUAL_SEQ:
             // Door 0 first; door 1 started later by update()
-            _doors[0]->setTarget(_config.open0_us);
+            _doors[0]->setTarget(_doors[0]->openPosition());
             break;
     }
 }
@@ -86,22 +82,22 @@ void DoorSequencer::startClose(bool deploying) {
     // Direction context: closing goes door 1→0 (reverse)
     _dir.firstIdx = 1;
     _dir.secondIdx = 0;
-    _dir.secondTarget_us = _config.close0_us;
+    _dir.secondTarget_us = _doors[0]->closePosition();
     _dir.finalDoorState = DoorState::CLOSED;
 
     // Command initial doors (reverse order for DELAY/SEQ)
     switch (_activeMode) {
         case DoorMode::SINGLE:
-            _doors[0]->setTarget(_config.close0_us);
+            _doors[0]->setTarget(_doors[0]->closePosition());
             break;
         case DoorMode::DUAL_SYNC:
-            _doors[0]->setTarget(_config.close0_us);
-            _doors[1]->setTarget(_config.close1_us);
+            _doors[0]->setTarget(_doors[0]->closePosition());
+            _doors[1]->setTarget(_doors[1]->closePosition());
             break;
         case DoorMode::DUAL_DELAY:
         case DoorMode::DUAL_SEQ:
             // Reverse order: door 1 first; door 0 started later by update()
-            _doors[1]->setTarget(_config.close1_us);
+            _doors[1]->setTarget(_doors[1]->closePosition());
             break;
     }
 }
@@ -201,9 +197,9 @@ void DoorSequencer::_updateSequence() {
 void DoorSequencer::openImmediate() {
     // Immediate open always uses pre-deploy mode
     if (_preDeployMode == DoorMode::NONE) return;
-    _doors[0]->setTarget(_config.open0_us);
+    _doors[0]->setTarget(_doors[0]->openPosition());
     if (_preDeployMode >= DoorMode::DUAL_SYNC && _doors[1]) {
-        _doors[1]->setTarget(_config.open1_us);
+        _doors[1]->setTarget(_doors[1]->openPosition());
     }
     _doorState = DoorState::OPEN;
 }
@@ -211,9 +207,9 @@ void DoorSequencer::openImmediate() {
 void DoorSequencer::closeImmediate() {
     // Immediate close always uses pre-deploy mode
     if (_preDeployMode == DoorMode::NONE) return;
-    _doors[0]->setTarget(_config.close0_us);
+    _doors[0]->setTarget(_doors[0]->closePosition());
     if (_preDeployMode >= DoorMode::DUAL_SYNC && _doors[1]) {
-        _doors[1]->setTarget(_config.close1_us);
+        _doors[1]->setTarget(_doors[1]->closePosition());
     }
     _doorState = DoorState::CLOSED;
 }

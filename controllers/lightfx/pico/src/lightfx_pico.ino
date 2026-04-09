@@ -37,7 +37,7 @@
 // ============================================================================
 
 #define FIRMWARE_VERSION "0.8.0"
-#define BUILD_NUMBER 21
+#define BUILD_NUMBER 23
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -186,34 +186,33 @@ void setupLightFxCallbacks() {
     });
     
     // SERVO_SETTINGS callback (servo ID validated by LightFxSpec before dispatch)
-    lightfxServer.onServoSettings([](uint8_t id, int minUs, int maxUs, 
-                                     int speed, int accel, int decel) -> uint8_t {
+    lightfxServer.onServoSettings([](const LightFxServoConfig& cfg) -> uint8_t {
         
-        ServoControl& servo = servos[id - 1];
+        ServoControl& servo = servos[cfg.servoId - 1];
         
-        if (minUs >= 0 && maxUs >= 0) {
-            servo.setLimits(minUs, maxUs);
+        if (cfg.minUs >= 0 && cfg.maxUs >= 0) {
+            servo.setLimits(cfg.minUs, cfg.maxUs);
         }
-        if (speed >= 0) {
-            servo.setMaxSpeed(speed);
+        if (cfg.maxSpeedUsPerSec >= 0) {
+            servo.setMaxSpeed(cfg.maxSpeedUsPerSec);
         }
-        if (accel >= 0) {
-            servo.setAcceleration(accel);
+        if (cfg.maxAccelUsPerSec2 >= 0) {
+            servo.setAcceleration(cfg.maxAccelUsPerSec2);
         }
-        if (decel >= 0) {
-            servo.setDeceleration(decel);
+        if (cfg.maxDecelUsPerSec2 >= 0) {
+            servo.setDeceleration(cfg.maxDecelUsPerSec2);
         }
+        servo.setReversed(cfg.reversed);
         return LightFxError::OK;
     });
     
     // LANDING_LIGHT_BIND callback
     lightfxServer.onLandingLightBind([](uint8_t slot, uint8_t servoId, uint8_t ledChannel,
-                                        uint16_t deployUs, uint16_t retractUs,
                                         uint8_t brightness) -> uint8_t {
         landingLights[slot - 1].setSlot(slot);  // Set slot ID for progress reporting
         landingLights[slot - 1].configure(
             &servos[servoId - 1], &ledManager.channel(ledChannel - 1),
-            deployUs, retractUs, brightness);
+            brightness);
         // Register progress callback (emits LANDING_LIGHT_STATUS packets)
         landingLights[slot - 1].onProgress([](const LightFxLandingLightStatus& status) {
             lightfxServer.sendLandingLightStatus(status);

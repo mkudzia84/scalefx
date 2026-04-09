@@ -57,7 +57,6 @@ public:
     void onServoSet(GearControlServoSetCallback cb) { _servoSetCallback = cb; }
     void onServoSettings(GearControlServoSettingsCallback cb) { _servoSettingsCallback = cb; }
     void onGearConfig(GearControlGearConfigCallback cb) { _gearConfigCallback = cb; }
-    void onDoorConfig(GearControlDoorConfigCallback cb) { _doorConfigCallback = cb; }
     void onYawConfig(GearControlYawConfigCallback cb) { _yawConfigCallback = cb; }
     void onYawInput(GearControlYawInputCallback cb) { _yawInputCallback = cb; }
     void onGearCalibrate(GearControlGearCalibrateCallback cb) { _gearCalibrateCallback = cb; }
@@ -84,7 +83,6 @@ private:
     GearControlServoSetCallback _servoSetCallback;
     GearControlServoSettingsCallback _servoSettingsCallback;
     GearControlGearConfigCallback _gearConfigCallback;
-    GearControlDoorConfigCallback _doorConfigCallback;
     GearControlYawConfigCallback _yawConfigCallback;
     GearControlYawInputCallback _yawInputCallback;
     GearControlGearCalibrateCallback _gearCalibrateCallback;

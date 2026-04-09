@@ -57,7 +57,6 @@ public:
     // ========================================================================
 
     CommandResult setGearConfig(const GearControlGearConfig& config);
-    CommandResult setDoorConfig(const GearControlDoorConfig& config);
     CommandResult setYawConfig(const GearControlYawConfig& config);
     CommandResult setYawInput(uint16_t position_us);
     CommandResult setBatteryConfig(bool enabled, bool autoDeployOnLowVoltage = false);

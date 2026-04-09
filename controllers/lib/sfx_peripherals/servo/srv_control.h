@@ -136,6 +136,31 @@ public:
      */
     int maxLimit() const { return _maxUs; }
 
+    // ========================================================================
+    // Direction (metadata only — does not affect output)
+    // ========================================================================
+
+    /**
+     * @brief Set direction flag
+     *
+     * When reversed=false (default): open=maxLimit, close=minLimit
+     * When reversed=true: open=minLimit, close=maxLimit
+     *
+     * This is metadata only — it does not change servo output or clamping.
+     * Higher-level code (DoorSequencer, LandingLight) uses openPosition()
+     * and closePosition() to determine semantic endpoints.
+     */
+    void setReversed(bool reversed) { _reversed = reversed; }
+
+    /** @brief Check if direction is reversed */
+    bool isReversed() const { return _reversed; }
+
+    /** @brief Get the "open" endpoint (max if normal, min if reversed) */
+    int openPosition() const { return _reversed ? _minUs : _maxUs; }
+
+    /** @brief Get the "close" endpoint (min if normal, max if reversed) */
+    int closePosition() const { return _reversed ? _maxUs : _minUs; }
+
     /**
      * @brief Set motion profile parameters
      * @param maxSpeed Maximum speed in us/second
@@ -322,6 +347,7 @@ private:
     // Position limits
     int _minUs = ServoControlConfig::DEFAULT_MIN_US;
     int _maxUs = ServoControlConfig::DEFAULT_MAX_US;
+    bool _reversed = false;  // Direction: false=open@max, true=open@min
 
     // Motion profile
     int _maxSpeed = ServoControlConfig::DEFAULT_MAX_SPEED;

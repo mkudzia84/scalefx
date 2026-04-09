@@ -19,8 +19,8 @@ func (a *GunFxApi) ServoSet(id byte, pulse_us uint16) ApiResult {
 	return a.sendACK(gunfx.CmdServoSet(id, pulse_us))
 }
 
-func (a *GunFxApi) ServoConfig(id byte, min, max, speed, accel, decel uint16) ApiResult {
-	return a.sendACK(gunfx.CmdServoSettings(id, min, max, speed, accel, decel))
+func (a *GunFxApi) ServoConfig(id byte, min, max, speed, accel, decel uint16, reversed bool) ApiResult {
+	return a.sendACK(gunfx.CmdServoSettings(id, min, max, speed, accel, decel, reversed))
 }
 
 func (a *GunFxApi) ServoRecoil(id byte, jerk_us, variance_us uint16) ApiResult {

@@ -31,15 +31,8 @@ void LandingGear::begin(uint8_t gearId, uint8_t motorCwPin, uint8_t motorCcwPin)
     _gearConfig.stallCurrent_mA = LandingGearConfig::DEFAULT_STALL_CURRENT_mA;
     _gearConfig.timeout_ms = LandingGearConfig::DEFAULT_MOTOR_TIMEOUT_ms;
 
-    _doorConfig.gearId = gearId;
-    _doorConfig.open0_us = 2000;
-    _doorConfig.close0_us = 1000;
-    _doorConfig.open1_us = 2000;
-    _doorConfig.close1_us = 1000;
-
     // Initialize door sequencer with pointers to our servo objects
     _doorSeq.begin(&_doorServos[0], &_doorServos[1]);
-    _doorSeq.setConfig(_doorConfig);
 
     // Initialize stall calibrator with motor control and current reading callbacks
     _calibrator.begin(gearId,
@@ -86,12 +79,6 @@ void LandingGear::attachCurrentMonitor(INA226* monitor) {
 void LandingGear::setGearConfig(const GearControlGearConfig& config) {
     _gearConfig = config;
     _gearConfig.gearId = _gearId;  // Enforce our gear ID
-}
-
-void LandingGear::setDoorConfig(const GearControlDoorConfig& config) {
-    _doorConfig = config;
-    _doorConfig.gearId = _gearId;  // Enforce our gear ID
-    _doorSeq.setConfig(_doorConfig);
 }
 
 void LandingGear::configureDoorServo(uint8_t doorIndex, int minUs, int maxUs,

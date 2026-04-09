@@ -34,14 +34,15 @@ public:
 
     CommandResult servoSet(uint8_t id, int16_t pulseUs);
     CommandResult servoSettings(uint8_t id, uint16_t minUs, uint16_t maxUs,
-                       uint16_t speed, uint16_t accel, uint16_t decel);
+                       uint16_t speed, uint16_t accel, uint16_t decel,
+                       bool reversed = false);
 
     // ========================================================================
     // Landing Light Control
     // ========================================================================
 
     CommandResult landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
-                          uint16_t deployUs, uint16_t retractUs, uint8_t brightness = 255);
+                          uint8_t brightness = 255);
     CommandResult landingLightUnbind(uint8_t slot = 0);
     CommandResult landingLightDeploy(uint8_t slot = 0);
     CommandResult landingLightRetract(uint8_t slot = 0);

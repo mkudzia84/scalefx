@@ -40,7 +40,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.7.0"
-#define BUILD_NUMBER 17
+#define BUILD_NUMBER 19
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -219,6 +219,7 @@ void setup() {
         if (cfg.maxSpeedUsPerSec > 0 || cfg.maxAccelUsPerSec2 > 0 || cfg.maxDecelUsPerSec2 > 0) {
             gunServos[idx].setMotionProfile(cfg.maxSpeedUsPerSec, cfg.maxAccelUsPerSec2, cfg.maxDecelUsPerSec2);
         }
+        gunServos[idx].setReversed(cfg.reversed);
         return SerialError::OK;
     });
 

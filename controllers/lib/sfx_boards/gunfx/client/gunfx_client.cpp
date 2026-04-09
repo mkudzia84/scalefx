@@ -86,14 +86,18 @@ CommandResult GunFxClient::setServoPosition(uint8_t servoId, uint16_t pulseUs) {
 }
 
 CommandResult GunFxClient::setServoConfig(const GunFxServoConfig& config) {
-    uint8_t payload[11];
+    uint8_t payload[12];
     payload[0] = config.servoId;
     putU16LE(&payload[1], config.minUs);
     putU16LE(&payload[3], config.maxUs);
     putU16LE(&payload[5], config.maxSpeedUsPerSec);
     putU16LE(&payload[7], config.maxAccelUsPerSec2);
     putU16LE(&payload[9], config.maxDecelUsPerSec2);
-    return sendCommand(GunFxPacket::SRV_SETTINGS, payload, sizeof(payload));
+    if (config.reversed) {
+        payload[11] = 1;
+        return sendCommand(GunFxPacket::SRV_SETTINGS, payload, 12);
+    }
+    return sendCommand(GunFxPacket::SRV_SETTINGS, payload, 11);
 }
 
 CommandResult GunFxClient::setRecoilJerk(uint8_t servoId, uint16_t jerkUs, uint16_t varianceUs) {

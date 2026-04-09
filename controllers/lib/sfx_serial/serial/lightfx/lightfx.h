@@ -21,8 +21,8 @@
  *   LED_SEQ_QUEUE (0x49)   - [ch:u8] -> LED_SEQ_QUEUE_RESP
  *   LED_MASTER_BRIGHTNESS (0x4A) - [pct:u8] (0-100)
  *   SERVO_SET (0x50)       - [id:u8][pulse:i16]
- *   SERVO_SETTINGS (0x51)  - [id:u8][min:u16][max:u16][speed:u16][accel:u16][decel:u16]
- *   LANDING_LIGHT_BIND (0x52)    - [slot:u8][servo:u8][led:u8][deploy:u16][retract:u16][brightness:u8]
+ *   SERVO_SETTINGS (0x51)  - [id:u8][min:u16][max:u16][speed:u16][accel:u16][decel:u16][rev:u8(opt)]
+ *   LANDING_LIGHT_BIND (0x52)    - [slot:u8][servo:u8][led:u8][brightness:u8]
  *   LANDING_LIGHT_UNBIND (0x53)  - [slot:u8] (0=all)
  *   LANDING_LIGHT_DEPLOY (0x54)  - [slot:u8] (0=all)
  *   LANDING_LIGHT_RETRACT (0x55) - [slot:u8] (0=all)
@@ -246,6 +246,22 @@ struct LightFxLandingLightStatus {
     bool finished = false;  // true when operation complete
 };
 
+/**
+ * @brief Servo configuration for motion profiling
+ *
+ * Wire format: [id:u8][min:u16LE][max:u16LE][speed:u16LE][accel:u16LE][decel:u16LE]
+ * Total: 11 bytes
+ */
+struct LightFxServoConfig {
+    uint8_t servoId = 0;
+    uint16_t minUs = 500;                  // Minimum pulse width limit          // µs
+    uint16_t maxUs = 2500;                 // Maximum pulse width limit          // µs
+    uint16_t maxSpeedUsPerSec = 4000;      // Maximum speed                     // µs/s
+    uint16_t maxAccelUsPerSec2 = 8000;     // Acceleration                      // µs/s²
+    uint16_t maxDecelUsPerSec2 = 8000;     // Deceleration                      // µs/s²
+    bool reversed = false;                 // Direction: false=open@max, true=open@min (optional byte 12)
+};
+
 // ============================================================================
 // Callback Types
 // ============================================================================
@@ -270,14 +286,14 @@ using LedSeqStatusCallback = std::function<void(uint8_t channel, LightFxSeqStatu
 using LedSeqQueueCallback = std::function<void(uint8_t channel, LightFxSeqQueue& queue)>;
 using LedChannelStatusCallback = std::function<void(uint8_t channel, LightFxChannelStatus& status)>;
 using ServoSetCallback = std::function<uint8_t(uint8_t id, int pulseUs)>;
-using ServoSettingsCallback = std::function<uint8_t(uint8_t id, int minUs, int maxUs, int speed, int accel, int decel)>;
+using ServoSettingsCallback = std::function<uint8_t(const LightFxServoConfig& config)>;
 using LedMasterBrightnessCallback = std::function<uint8_t(uint8_t pct)>;
 using LedResetCallback = std::function<uint8_t(uint8_t channel)>;
 using LedEnableCallback = std::function<uint8_t(uint8_t channel, uint8_t enabled)>;
 
 // Landing light callbacks
 using LandingLightBindCallback = std::function<uint8_t(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
-                                                       uint16_t deployUs, uint16_t retractUs, uint8_t brightness)>;
+                                                       uint8_t brightness)>;
 using LandingLightSlotCallback = std::function<uint8_t(uint8_t slot)>;
 
 #endif // SERIAL_LIGHTFX_H

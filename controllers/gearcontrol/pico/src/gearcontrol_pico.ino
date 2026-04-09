@@ -61,7 +61,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.10.1"
-#define BUILD_NUMBER 60
+#define BUILD_NUMBER 62
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -473,12 +473,14 @@ void setup() {
             gears[gearIdx].configureDoorServo(doorIdx,
                 cfg.minUs, cfg.maxUs,
                 cfg.maxSpeedUsPerSec, cfg.maxAccelUsPerSec2, cfg.maxDecelUsPerSec2);
+            gears[gearIdx].doorServo(doorIdx).setReversed(cfg.reversed);
         } else if (cfg.servoId == SERVO_ID_YAW) {
             // Yaw servo: apply limits and motion profile
             yawServo.setLimits(cfg.minUs, cfg.maxUs);
             yawServo.setMotionProfile(cfg.maxSpeedUsPerSec,
                                        cfg.maxAccelUsPerSec2,
                                        cfg.maxDecelUsPerSec2);
+            yawServo.setReversed(cfg.reversed);
         } else {
             return GearControlError::INVALID_SERVO_ID;
         }
@@ -488,12 +490,6 @@ void setup() {
     // GEAR_CONFIG: Configure gear behavior
     gearControlServer.onGearConfig([](const GearControlGearConfig& cfg) -> uint8_t {
         gears[cfg.gearId].setGearConfig(cfg);
-        return SerialError::OK;
-    });
-
-    // DOOR_CONFIG: Configure door servo positions
-    gearControlServer.onDoorConfig([](const GearControlDoorConfig& cfg) -> uint8_t {
-        gears[cfg.gearId].setDoorConfig(cfg);
         return SerialError::OK;
     });
 

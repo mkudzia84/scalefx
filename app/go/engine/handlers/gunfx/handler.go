@@ -32,7 +32,7 @@ func (h *Handler) commands() *engine.CmdGroup {
 		Commands: map[string]engine.CmdEntry{
 			"trigger":      {h.cmdTrigger, "trigger on <rpm> | off [delay_ms]", "Control firing", true},
 			"servo":        {h.cmdServo, "servo set <id> <pulse_us>", "Set servo position", true},
-			"servo.config": {h.cmdServoConfig, "servo.config <id> <min> <max> [spd] [acc] [dec]", "Configure servo", true},
+			"servo.config": {h.cmdServoConfig, "servo.config <id> <min> <max> [spd] [acc] [dec] [rev]", "Configure servo", true},
 			"servo.recoil": {h.cmdServoRecoil, "servo.recoil <id> <jerk_us> <variance_us>", "Configure recoil", true},
 			"smoke":        {h.cmdSmoke, "smoke heat on|off", "Control smoke heater", true},
 			"smoke.config": {h.cmdSmokeConfig, "smoke.config [key=value ...]", "Configure smoke fan", true},
@@ -72,7 +72,7 @@ func (h *Handler) cmdServo(args []string) {
 }
 
 func (h *Handler) cmdServoConfig(args []string) {
-	h.E.ServoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec]", h.E.API.GunFx.ServoConfig)
+	h.E.ServoConfig(args, "servo.config <id> <min> <max> [spd] [acc] [dec] [rev]", h.E.API.GunFx.ServoConfig)
 }
 
 func (h *Handler) cmdServoRecoil(args []string) {

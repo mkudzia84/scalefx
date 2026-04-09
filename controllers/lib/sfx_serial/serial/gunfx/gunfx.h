@@ -155,6 +155,7 @@ struct GunFxServoConfig {
     uint16_t maxSpeedUsPerSec = 0;      // 0 = no limit
     uint16_t maxAccelUsPerSec2 = 0;     // 0 = no limit
     uint16_t maxDecelUsPerSec2 = 0;     // 0 = no limit
+    bool reversed = false;              // Direction: false=open@max, true=open@min (optional byte 12)
 };
 
 /**

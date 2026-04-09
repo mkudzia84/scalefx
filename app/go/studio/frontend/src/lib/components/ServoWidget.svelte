@@ -24,6 +24,7 @@
         speed: number
         accel: number
         decel: number
+        reversed: boolean
         status: 'idle' | 'moving' | 'unknown'
     }
 
@@ -38,6 +39,7 @@
                 speed: 4000,
                 accel: 8000,
                 decel: 8000,
+                reversed: false,
                 status: 'unknown',
             })
         }
@@ -63,9 +65,8 @@
     function applyConfig() {
         const s = getState(activeId)
         let cmd = `servo.config ${activeId} ${s.min_us} ${s.max_us}`
-        if (s.speed || s.accel || s.decel) {
-            cmd += ` ${s.speed} ${s.accel} ${s.decel}`
-        }
+        cmd += ` ${s.speed} ${s.accel} ${s.decel}`
+        if (s.reversed) cmd += ' rev'
         SendCommand(cmd)
     }
 
@@ -111,6 +112,7 @@
         s.speed = 4000
         s.accel = 8000
         s.decel = 8000
+        s.reversed = false
         touch()
         applyConfig()
     }
@@ -197,6 +199,22 @@
                                 title="Set current position as min limit">↓ Set Min Here</button>
                         <button class="tiny set-btn" on:click={setMaxHere} {disabled}
                                 title="Set current position as max limit">↑ Set Max Here</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="config-section">
+                <span class="cfg-section-title">Direction</span>
+                <div class="config-grid">
+                    <div class="cfg-field">
+                        <label class="cfg-toggle">
+                            <input type="checkbox" bind:checked={active.reversed}
+                                   on:change={() => touch()} {disabled} />
+                            <span class="cfg-label">Reversed</span>
+                        </label>
+                        <span class="cfg-hint">
+                            {active.reversed ? 'Open = Min, Close = Max' : 'Open = Max, Close = Min'}
+                        </span>
                     </div>
                 </div>
             </div>
@@ -394,6 +412,26 @@
         justify-content: flex-end;
     }
 
+    .cfg-field-row {
+        flex-direction: row;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .toggle-label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+    }
+
+    .toggle-label input[type="checkbox"] {
+        accent-color: var(--accent);
+        width: 14px;
+        height: 14px;
+        cursor: pointer;
+    }
+
     .set-btn {
         font-size: 9px;
         padding: 2px 6px;
@@ -420,5 +458,26 @@
         margin-top: 8px;
         display: flex;
         gap: 6px;
+    }
+
+    .cfg-toggle {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+    }
+
+    .cfg-toggle input[type="checkbox"] {
+        accent-color: var(--accent);
+        width: 14px;
+        height: 14px;
+        cursor: pointer;
+    }
+
+    .cfg-hint {
+        font-size: 11px;
+        color: var(--text-dim);
+        font-style: italic;
+        margin-top: 2px;
     }
 </style>

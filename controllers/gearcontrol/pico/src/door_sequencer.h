@@ -28,7 +28,6 @@
  * Usage:
  *   DoorSequencer seq;
  *   seq.begin(&servo0, &servo1);
- *   seq.setConfig(doorConfig);
  *   seq.setMode(DoorMode::DUAL_SYNC, DoorMode::NONE);
  *
  *   // Deploy: open with doorPreDeploy mode
@@ -100,11 +99,6 @@ public:
     // ========================================================================
     // Configuration
     // ========================================================================
-
-    /**
-     * @brief Set door open/close positions
-     */
-    void setConfig(const GearControlDoorConfig& config);
 
     /**
      * @brief Set door activation modes
@@ -233,7 +227,6 @@ private:
     enum class State : uint8_t { IDLE, OPENING, CLOSING, COMPLETE };
 
     ServoControl* _doors[2] = { nullptr, nullptr };
-    GearControlDoorConfig _config;
     uint8_t _preDeployMode = DoorMode::DUAL_SYNC;   // Pre-deploy: open before deploy, close after retract
     uint8_t _postDeployMode = DoorMode::NONE;        // Post-deploy: close after deploy, open before retract
     uint8_t _activeMode = DoorMode::DUAL_SYNC; // Mode for current operation

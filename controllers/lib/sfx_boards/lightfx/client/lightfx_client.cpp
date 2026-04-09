@@ -52,15 +52,20 @@ CommandResult LightFxClient::servoSet(uint8_t id, int16_t pulseUs) {
 }
 
 CommandResult LightFxClient::servoSettings(uint8_t id, uint16_t minUs, uint16_t maxUs,
-                                  uint16_t speed, uint16_t accel, uint16_t decel) {
-    uint8_t payload[11];
+                                  uint16_t speed, uint16_t accel, uint16_t decel,
+                                  bool reversed) {
+    uint8_t payload[12];
     payload[0] = id;
     putU16LE(&payload[1], minUs);
     putU16LE(&payload[3], maxUs);
     putU16LE(&payload[5], speed);
     putU16LE(&payload[7], accel);
     putU16LE(&payload[9], decel);
-    return sendCommand(LightFxPacket::SERVO_SETTINGS, payload, sizeof(payload));
+    if (reversed) {
+        payload[11] = 1;
+        return sendCommand(LightFxPacket::SERVO_SETTINGS, payload, 12);
+    }
+    return sendCommand(LightFxPacket::SERVO_SETTINGS, payload, 11);
 }
 
 // ============================================================================
@@ -68,14 +73,12 @@ CommandResult LightFxClient::servoSettings(uint8_t id, uint16_t minUs, uint16_t 
 // ============================================================================
 
 CommandResult LightFxClient::landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
-                                     uint16_t deployUs, uint16_t retractUs, uint8_t brightness) {
-    uint8_t payload[8];
+                                     uint8_t brightness) {
+    uint8_t payload[4];
     payload[0] = slot;
     payload[1] = servoId;
     payload[2] = ledChannel;
-    putU16LE(&payload[3], deployUs);
-    putU16LE(&payload[5], retractUs);
-    payload[7] = brightness;
+    payload[3] = brightness;
     return sendCommand(LightFxPacket::LANDING_LIGHT_BIND, payload, sizeof(payload));
 }
 

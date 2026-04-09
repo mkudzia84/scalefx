@@ -67,6 +67,7 @@ CommandHandleResult GearControlServer::handleModulePacket(uint8_t type, const ui
             config.maxSpeedUsPerSec = getU16LE(&payload[5]);   // µs/s
             config.maxAccelUsPerSec2 = getU16LE(&payload[7]);  // µs/s²
             config.maxDecelUsPerSec2 = getU16LE(&payload[9]);  // µs/s²
+            config.reversed = (len >= 12) ? (payload[11] != 0) : false;  // optional byte 12
             SFX_VALIDATE(GearControlSpec::isValidServoId(config.servoId), GearControlError::INVALID_SERVO_ID);
             SFX_VALIDATE(GearControlSpec::isValidServoPulse(config.minUs) &&
                          GearControlSpec::isValidServoPulse(config.maxUs), GearControlError::SERVO_OUT_OF_RANGE);
@@ -83,18 +84,6 @@ CommandHandleResult GearControlServer::handleModulePacket(uint8_t type, const ui
             config.timeout_ms = getU16LE(&payload[4]);
             SFX_VALIDATE(GearControlSpec::isValidGearId(config.gearId), GearControlError::INVALID_GEAR_ID);
             SFX_DISPATCH(_gearConfigCallback, config);
-        }
-
-        case GearControlPacket::DOOR_CONFIG: {
-            SFX_REQUIRE_LEN(9);
-            GearControlDoorConfig config;
-            config.gearId = payload[0];
-            config.open0_us = getU16LE(&payload[1]);
-            config.close0_us = getU16LE(&payload[3]);
-            config.open1_us = getU16LE(&payload[5]);
-            config.close1_us = getU16LE(&payload[7]);
-            SFX_VALIDATE(GearControlSpec::isValidGearId(config.gearId), GearControlError::INVALID_GEAR_ID);
-            SFX_DISPATCH(_doorConfigCallback, config);
         }
 
         case GearControlPacket::YAW_CONFIG: {

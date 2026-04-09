@@ -87,8 +87,8 @@ func (e *Engine) ServoSet(args []string, usage string, action func(byte, uint16)
 	e.Ack(action(byte(id), uint16(pulse)), fmt.Sprintf("Servo %d → %dµs", id, pulse))
 }
 
-// ServoConfig handles "xxx.servo.config <id> <min> <max> [spd] [acc] [dec]" for any controller.
-func (e *Engine) ServoConfig(args []string, usage string, action func(byte, uint16, uint16, uint16, uint16, uint16) api.ApiResult) {
+// ServoConfig handles "xxx.servo.config <id> <min> <max> [spd] [acc] [dec] [rev]" for any controller.
+func (e *Engine) ServoConfig(args []string, usage string, action func(byte, uint16, uint16, uint16, uint16, uint16, bool) api.ApiResult) {
 	if !e.RequireArgs(args, 3, usage) {
 		return
 	}
@@ -103,6 +103,17 @@ func (e *Engine) ServoConfig(args []string, usage string, action func(byte, uint
 	if len(args) > 5 {
 		decel = Atoi(args[5])
 	}
-	e.Ack(action(byte(id), uint16(min), uint16(max), uint16(speed), uint16(accel), uint16(decel)),
-		fmt.Sprintf("Servo %d: %d-%dµs, speed=%d", id, min, max, speed))
+	reversed := false
+	if len(args) > 6 {
+		switch strings.ToLower(args[6]) {
+		case "rev", "reversed", "true", "1":
+			reversed = true
+		}
+	}
+	revStr := ""
+	if reversed {
+		revStr = " [reversed]"
+	}
+	e.Ack(action(byte(id), uint16(min), uint16(max), uint16(speed), uint16(accel), uint16(decel), reversed),
+		fmt.Sprintf("Servo %d: %d-%dµs, speed=%d%s", id, min, max, speed, revStr))
 }

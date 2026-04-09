@@ -24,7 +24,6 @@ const (
 
 	// Configuration
 	GearConfig     protocol.PacketType = 0x66
-	DoorConfig     protocol.PacketType = 0x67
 	YawConfig      protocol.PacketType = 0x68
 	YawInput       protocol.PacketType = 0x69
 
@@ -87,13 +86,16 @@ func CmdServoSet(id byte, pulse_us uint16) []byte {
 	return protocol.BuildPacket(ServoSet, payload, 0)
 }
 
-func CmdServoSettings(id byte, minPulse, maxPulse, speed, accel, decel uint16) []byte {
+func CmdServoSettings(id byte, minPulse, maxPulse, speed, accel, decel uint16, reversed bool) []byte {
 	payload := []byte{id}
 	payload = append(payload, protocol.U16LE(minPulse)...)
 	payload = append(payload, protocol.U16LE(maxPulse)...)
 	payload = append(payload, protocol.U16LE(speed)...)
 	payload = append(payload, protocol.U16LE(accel)...)
 	payload = append(payload, protocol.U16LE(decel)...)
+	if reversed {
+		payload = append(payload, 1)
+	}
 	return protocol.BuildPacket(ServoSettings, payload, 0)
 }
 
@@ -102,15 +104,6 @@ func CmdGearConfig(gearID byte, flags byte, stall_mA uint16, timeout_ms uint16) 
 	payload = append(payload, protocol.U16LE(stall_mA)...)
 	payload = append(payload, protocol.U16LE(timeout_ms)...)
 	return protocol.BuildPacket(GearConfig, payload, 0)
-}
-
-func CmdDoorConfig(gearID byte, open0, close0, open1, close1 uint16) []byte {
-	payload := []byte{gearID}
-	payload = append(payload, protocol.U16LE(open0)...)
-	payload = append(payload, protocol.U16LE(close0)...)
-	payload = append(payload, protocol.U16LE(open1)...)
-	payload = append(payload, protocol.U16LE(close1)...)
-	return protocol.BuildPacket(DoorConfig, payload, 0)
 }
 
 func CmdYawConfig(gearID byte, neutral, min, max uint16) []byte {
@@ -244,7 +237,6 @@ func init() {
 		ServoSet:       "GC.SERVO_SET",
 		ServoSettings:  "GC.SRV_SETTINGS",
 		GearConfig:     "GC.GEAR_CONFIG",
-		DoorConfig:     "GC.DOOR_CONFIG",
 		YawConfig:      "GC.YAW_CONFIG",
 		YawInput:       "GC.YAW_INPUT",
 		GearCalibrate:  "GC.GEAR_CALIBRATE",

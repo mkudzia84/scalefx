@@ -32,33 +32,33 @@ CommandHandleResult LightFxServer::handleModulePacket(uint8_t type, const uint8_
 
         case LightFxPacket::SERVO_SETTINGS: {
             SFX_REQUIRE_LEN(11);
-            uint8_t id = payload[0];
-            int minUs = getU16LE(&payload[1]);
-            int maxUs = getU16LE(&payload[3]);
-            int speed = getU16LE(&payload[5]);
-            int accel = getU16LE(&payload[7]);
-            int decel = getU16LE(&payload[9]);
-            SFX_VALIDATE(LightFxSpec::isValidServoId(id), LightFxError::INVALID_SERVO);
-            SFX_VALIDATE(minUs >= LightFxSpec::SERVO_PULSE_MIN && minUs <= LightFxSpec::SERVO_PULSE_MAX &&
-                         maxUs >= LightFxSpec::SERVO_PULSE_MIN && maxUs <= LightFxSpec::SERVO_PULSE_MAX,
+            LightFxServoConfig config;
+            config.servoId = payload[0];
+            config.minUs = getU16LE(&payload[1]);
+            config.maxUs = getU16LE(&payload[3]);
+            config.maxSpeedUsPerSec = getU16LE(&payload[5]);
+            config.maxAccelUsPerSec2 = getU16LE(&payload[7]);
+            config.maxDecelUsPerSec2 = getU16LE(&payload[9]);
+            config.reversed = (len >= 12) ? (payload[11] != 0) : false;  // optional byte 12
+            SFX_VALIDATE(LightFxSpec::isValidServoId(config.servoId), LightFxError::INVALID_SERVO);
+            SFX_VALIDATE(config.minUs >= LightFxSpec::SERVO_PULSE_MIN && config.minUs <= LightFxSpec::SERVO_PULSE_MAX &&
+                         config.maxUs >= LightFxSpec::SERVO_PULSE_MIN && config.maxUs <= LightFxSpec::SERVO_PULSE_MAX,
                          SerialError::PARAM_OUT_OF_RANGE);
-            SFX_VALIDATE(minUs < maxUs, LightFxError::INVALID_PARAM);
-            SFX_DISPATCH(_servoSettingsCallback, id, minUs, maxUs, speed, accel, decel);
+            SFX_VALIDATE(config.minUs < config.maxUs, LightFxError::INVALID_PARAM);
+            SFX_DISPATCH(_servoSettingsCallback, config);
         }
 
         // Landing light control
         case LightFxPacket::LANDING_LIGHT_BIND: {
-            SFX_REQUIRE_LEN(8);
+            SFX_REQUIRE_LEN(4);
             uint8_t slot = payload[0];
             uint8_t servoId = payload[1];
             uint8_t ledChannel = payload[2];
-            uint16_t deployUs = getU16LE(&payload[3]);
-            uint16_t retractUs = getU16LE(&payload[5]);
-            uint8_t brightness = payload[7];
+            uint8_t brightness = payload[3];
             SFX_VALIDATE(LightFxSpec::isValidLandingLightSlot(slot), LightFxError::INVALID_SLOT);
             SFX_VALIDATE(LightFxSpec::isValidServoId(servoId), LightFxError::INVALID_SERVO);
             SFX_VALIDATE(LightFxSpec::isValidLedChannel(ledChannel), LightFxError::INVALID_CHANNEL);
-            SFX_DISPATCH(_landingLightBindCallback, slot, servoId, ledChannel, deployUs, retractUs, brightness);
+            SFX_DISPATCH(_landingLightBindCallback, slot, servoId, ledChannel, brightness);
         }
 
         case LightFxPacket::LANDING_LIGHT_UNBIND: {

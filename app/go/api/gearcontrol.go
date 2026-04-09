@@ -24,16 +24,12 @@ func (a *GearControlApi) ServoSet(id byte, pulse_us uint16) ApiResult {
 	return a.sendACK(gearcontrol.CmdServoSet(id, pulse_us))
 }
 
-func (a *GearControlApi) ServoConfig(id byte, min, max, speed, accel, decel uint16) ApiResult {
-	return a.sendACK(gearcontrol.CmdServoSettings(id, min, max, speed, accel, decel))
+func (a *GearControlApi) ServoConfig(id byte, min, max, speed, accel, decel uint16, reversed bool) ApiResult {
+	return a.sendACK(gearcontrol.CmdServoSettings(id, min, max, speed, accel, decel, reversed))
 }
 
 func (a *GearControlApi) GearConfig(id, flags byte, stall_mA, timeout_ms uint16) ApiResult {
 	return a.sendACK(gearcontrol.CmdGearConfig(id, flags, stall_mA, timeout_ms))
-}
-
-func (a *GearControlApi) DoorConfig(id byte, o0, c0, o1, c1 uint16) ApiResult {
-	return a.sendACK(gearcontrol.CmdDoorConfig(id, o0, c0, o1, c1))
 }
 
 func (a *GearControlApi) DoorMode(id, pre, post byte, delay_ms uint16) ApiResult {

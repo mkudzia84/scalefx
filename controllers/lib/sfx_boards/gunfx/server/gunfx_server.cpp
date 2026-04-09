@@ -45,6 +45,7 @@ CommandHandleResult GunFxServer::handleModulePacket(uint8_t type, const uint8_t*
             config.maxSpeedUsPerSec = getU16LE(&payload[5]);
             config.maxAccelUsPerSec2 = getU16LE(&payload[7]);
             config.maxDecelUsPerSec2 = getU16LE(&payload[9]);
+            config.reversed = (len >= 12) ? (payload[11] != 0) : false;  // optional byte 12
             SFX_VALIDATE(GunFxSpec::isValidServoId(config.servoId), GunFxError::SERVO_INVALID_ID);
             SFX_VALIDATE(GunFxSpec::isValidServoPulse(config.minUs) &&
                          GunFxSpec::isValidServoPulse(config.maxUs), GunFxError::SERVO_PULSE_RANGE);

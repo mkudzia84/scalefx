@@ -156,12 +156,6 @@ public:
     void setGearConfig(const GearControlGearConfig& config);
 
     /**
-     * @brief Set door servo positions for open/close
-     * @param config Door configuration (open/close positions for both servos)
-     */
-    void setDoorConfig(const GearControlDoorConfig& config);
-
-    /**
      * @brief Configure a door servo's motion profile
      *
      * Matches the GunFX/LightFX SRV_SETTINGS pattern:
@@ -482,9 +476,6 @@ public:
     /** @brief Get the current gear configuration */
     const GearControlGearConfig& gearConfig() const { return _gearConfig; }
 
-    /** @brief Get the current door configuration */
-    const GearControlDoorConfig& doorConfig() const { return _doorConfig; }
-
 private:
     void updateLEDs();
 
@@ -539,7 +530,6 @@ private:
 
     // Configuration
     GearControlGearConfig _gearConfig;
-    GearControlDoorConfig _doorConfig;
 
     // Deploy/retract sequence progress callback
     SeqProgressCallback _seqProgressCb;
