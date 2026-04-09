@@ -16,7 +16,7 @@ Implements only the core system commands via binary COBS protocol:
 
 | Packet Type | Name | Description |
 |-------------|------|-------------|
-| 0xF0 | INIT | Initialize connection, returns INIT_READY |
+| 0xF0 | INIT | Initialize connection, returns INIT_READY (optional payload: mode, flags) |
 | 0xF1 | SHUTDOWN | Safe shutdown |
 | 0xF8 | REBOOT | System reboot |
 | 0xF9 | BOOTSEL | Enter USB bootloader mode |

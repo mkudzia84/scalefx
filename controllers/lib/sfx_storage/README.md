@@ -1,6 +1,6 @@
 # sfx_storage — SD Card & Flash Storage
 
-Thread-safe storage singletons for SD card and onboard LittleFS flash. Both modules share a uniform `FileEntry`-based API so protocol handlers (e.g., `HubFxStorageServer`) can operate on either backend interchangeably.
+Thread-safe storage singletons for SD card and onboard LittleFS flash. Both modules share a uniform `FileEntry`-based API so protocol handlers (e.g., `HubFxStorageServer`) and config systems (e.g., LightFX, GearControl `ConfigStore`) can operate on either backend interchangeably.
 
 **Requires** `SFX_HAS_STORAGE=1` build flag.
 

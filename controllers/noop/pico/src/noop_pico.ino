@@ -185,7 +185,10 @@ NoOpServoHandler servoHandler;
 void setup() {
     // Initialize server (serial, device name, indicators, core callbacks)
     server.begin("NoOp", FIRMWARE_VERSION, BUILD_NUMBER);
-    server.onInit([]() { performSafeInit(); });
+    server.onInit([](uint8_t mode, uint8_t flags) {
+        (void)mode; (void)flags;
+        performSafeInit();
+    });
     server.onShutdown([]() { performSafeShutdown(); });
     
     // Initialize onboard LED

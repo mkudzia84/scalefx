@@ -30,6 +30,7 @@ const char* packetTypeToText(uint8_t type) {
         case CorePacket::BOOTSEL:    return "BOOTSEL";
         case CorePacket::STATUS_REQ: return "STATUS_REQ";
         case CorePacket::IDENTIFY:   return "IDENTIFY";
+        case CorePacket::STATUS_UPDATE: return "STATUS_UPDATE";
         case 0xA4:                   return "STREAM_BEGIN";
         case 0xA5:                   return "STREAM_DATA";
         case 0xA6:                   return "STREAM_END";

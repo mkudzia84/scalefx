@@ -134,11 +134,14 @@ public:
     /**
      * @brief Register controller-specific init callback
      *
-     * Called when INIT command is received. The callback should reset
-     * hardware to a safe initial state. SfxServer automatically handles
-     * indicator LED state (connected=true, watchdog=false) after the callback.
+     * Called when INIT command is received with mode and flags.
+     * The callback should reset hardware to a safe initial state.
+     * SfxServer automatically handles indicator LED state and
+     * keep-alive timeout behavior based on init mode.
+     *
+     * @param cb Callback receiving (mode, flags) from INIT packet
      */
-    void onInit(std::function<void()> cb) { _initCb = cb; }
+    void onInit(std::function<void(uint8_t mode, uint8_t flags)> cb) { _initCb = cb; }
 
     /**
      * @brief Register controller-specific shutdown callback
@@ -177,7 +180,7 @@ public:
      *
      * @param enabled true = timeout active, false = disabled
      */
-    void setConnectionTimeoutEnabled(bool enabled) { _timeoutEnabled = enabled; }
+    void setConnectionTimeoutEnabled(bool enabled) { _timeoutEnabled = enabled; _timeoutEnabledByUser = enabled; }
 
     /**
      * @brief Process common loop tasks
@@ -240,17 +243,18 @@ private:
     IndicatorLedManager _indicators;
     char _deviceName[24];
 
-    std::function<void()> _initCb;
+    std::function<void(uint8_t mode, uint8_t flags)> _initCb;
     std::function<void()> _shutdownCb;
 
     bool _routerInitialized = false;
     bool _timeoutEnabled = true;
+    bool _timeoutEnabledByUser = true;  // Original user setting (before mode override)
 
     static constexpr uint32_t BAUD_RATE = 6000000;
     static constexpr unsigned long CONNECTION_TIMEOUT_ms = 15000;
 
     void buildDeviceName(const char* prefix);
-    void doInit();
+    void doInit(uint8_t mode, uint8_t flags);
     void doShutdown();
     void checkConnectionTimeout();
 

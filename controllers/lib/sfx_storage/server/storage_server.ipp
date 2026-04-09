@@ -150,6 +150,8 @@ void StorageServerT<TPolicy>::handleFileList(const uint8_t* payload, size_t len)
 
     STORAGE_LOG("FILE_LIST %s:%s", targetName(target), path);
 
+    notifyTransferStart();
+
     StreamWriter stream(*this, currentTag());
     stream.begin(0);
 
@@ -174,6 +176,7 @@ void StorageServerT<TPolicy>::handleFileList(const uint8_t* payload, size_t len)
     }
 
     stream.end();
+    notifyTransferEnd();
 }
 
 
@@ -196,6 +199,8 @@ void StorageServerT<TPolicy>::handleFileTree(const uint8_t* payload, size_t len)
     }
 
     STORAGE_LOG("FILE_TREE %s:%s", targetName(target), path);
+
+    notifyTransferStart();
 
     StreamWriter stream(*this, currentTag());
     stream.begin(0);
@@ -223,6 +228,7 @@ void StorageServerT<TPolicy>::handleFileTree(const uint8_t* payload, size_t len)
     }
 
     stream.end();
+    notifyTransferEnd();
 }
 
 
@@ -397,6 +403,8 @@ void StorageServerT<TPolicy>::handleFileDownload(const uint8_t* payload, size_t 
     STORAGE_LOG("FILE_DOWNLOAD %s:%s size=%lu", targetName(target), path,
                 (unsigned long)file.size());
 
+    notifyTransferStart();
+
     StreamWriter stream(*this, currentTag());
     stream.begin(file.size());
 
@@ -411,6 +419,7 @@ void StorageServerT<TPolicy>::handleFileDownload(const uint8_t* payload, size_t 
     unlockStorage(target);
 
     stream.end();
+    notifyTransferEnd();
 }
 
 
@@ -555,6 +564,8 @@ void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t l
                 (unsigned long)fileSize, modeStr,
                 (unsigned)(_shared.uploadBufCapacity / 1024));
 
+    // Suppress STATUS_UPDATE for the duration of the upload
+    notifyTransferStart();
 
     if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
         // Pre-allocate file on SD for contiguous cluster allocation
@@ -792,6 +803,9 @@ void StorageServerT<TPolicy>::handleUploadEnd() {
         _streamSuspended = false;
     }
 
+    // Re-enable STATUS_UPDATE after transfer completes
+    notifyTransferEnd();
+
     // ACK payload: [md5:16B]
     sendRawPacket(CorePacket::ACK, _currentTag, md5Bytes, 16);
 }
@@ -1017,6 +1031,9 @@ void StorageServerT<TPolicy>::cleanupUpload(bool deletePartial) {
         _onStreamEnd();
         _streamSuspended = false;
     }
+
+    // Re-enable STATUS_UPDATE after transfer cleanup
+    notifyTransferEnd();
 }
 
 template <typename TPolicy>
@@ -1059,6 +1076,24 @@ void StorageServerT<TPolicy>::checkUploadTimeout() {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+// --- Transfer lifecycle notification helpers ---
+
+template <typename TPolicy>
+void StorageServerT<TPolicy>::notifyTransferStart() {
+    if (!_transferNotified) {
+        _transferNotified = true;
+        if (_onTransferStart) _onTransferStart();
+    }
+}
+
+template <typename TPolicy>
+void StorageServerT<TPolicy>::notifyTransferEnd() {
+    if (_transferNotified) {
+        _transferNotified = false;
+        if (_onTransferEnd) _onTransferEnd();
+    }
+}
 
 template <typename TPolicy>
 uint8_t StorageServerT<TPolicy>::mapStorageError(uint8_t err) {

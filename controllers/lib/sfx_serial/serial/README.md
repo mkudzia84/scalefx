@@ -127,7 +127,7 @@ Frame:  COBS-encoded packet + 0x00 delimiter
 | 0x60-0x7F | GearControl | `GearControlServer` | `GearControlClient` |
 | 0x80-0xA8 | HubFX | (in ESP32-S3 firmware) | `HubFxAudioClient`, `HubFxStorageClient` |
 | 0xA4-0xA6 | Streaming | `StreamWriter` | — |
-| 0xF0-0xFF | Core | `CoreCommandServer` | `BusClient` (base) |
+| 0xEF-0xFF | Core | `CoreCommandServer` | `BusClient` (base) |
 
 See [PROTOCOL.md](PROTOCOL.md) for full wire format documentation.
 

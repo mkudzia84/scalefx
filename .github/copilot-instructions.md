@@ -406,8 +406,8 @@ private:
 | Class | Location | Resource Type |
 |-------|----------|---------------|
 | `DiagLog` | `lib/sfx_platform/platform/diag_log.h` | Board-wide logging service |
-| `SdCardModule` | `hubfx/pico/src/storage/sd_card.h` | Single SPI SD card |
-| `FlashModule` | `hubfx/pico/src/storage/flash.h` | Single onboard LittleFS flash |
+| `SdCardModule` | `lib/sfx_storage/storage/sd_card.h` | Single SPI SD card |
+| `FlashModule` | `lib/sfx_storage/storage/flash.h` | Single onboard LittleFS flash |
 | `AudioMixer` | `lib/sfx_audio/audio/audio_mixer.h` | Single I2S audio output |
 
 **Rules:**
@@ -1003,8 +1003,8 @@ app/go/
 | 0x60-0x7F | GearControl | Used | Gear, servo, yaw |
 | 0x80-0xAF | HubFX | Used | Slaves, audio, engine, config (0x90-0x92, 0xAC), SD, flash, files, USB diag, USB reset, tree, slave info |
 | 0xA4-0xA6 | Streaming | Used | STREAM_BEGIN/DATA/END (`core/stream.h`) |
-| 0xB0-0xEF | Available | Free | New controllers |
-| 0xF0-0xFF | Core | Reserved | INIT, ACK, NACK, REBOOT, IDENTIFY (0xFE), LOG_MESSAGE (0xFD), DIAG_HISTORY (0xFF) |
+| 0xB0-0xEE | Available | Free | New controllers |
+| 0xEF-0xFF | Core | Reserved | STATUS_UPDATE (0xEF), INIT, ACK, NACK, REBOOT, IDENTIFY (0xFE), LOG_MESSAGE (0xFD), DIAG_HISTORY (0xFF) |
 
 ## Platform-Specific Notes
 

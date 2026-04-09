@@ -210,7 +210,7 @@ const char* packetTypeToText(uint8_t type);
 // ============================================================================
 
 namespace CorePacket {
-    constexpr uint8_t INIT        = 0xF0;  // Initialize connection
+    constexpr uint8_t INIT        = 0xF0;  // Initialize connection: [mode:u8][flags:u8] (optional, default SLAVE/0)
     constexpr uint8_t SHUTDOWN    = 0xF1;  // Graceful shutdown
     constexpr uint8_t KEEPALIVE   = 0xF2;  // Connection heartbeat
     constexpr uint8_t INIT_READY  = 0xF3;  // Slave ready response
@@ -226,6 +226,70 @@ namespace CorePacket {
     constexpr uint8_t LOG_MESSAGE     = 0xFD;  // [level:u8][millis:u32LE][message:str] (async, unsolicited)
     constexpr uint8_t IDENTIFY        = 0xFE;  // Query board info without triggering INIT (response uses same type + INIT_READY payload format)
     constexpr uint8_t DIAG_HISTORY    = 0xFF;  // Request diagnostic log history (sends buffered LOG_MESSAGE packets without draining)
+    constexpr uint8_t STATUS_UPDATE   = 0xEF;  // Async verbose status: [source:u8][type:u8][data:variable]
+}
+
+// ============================================================================
+// INIT Mode & Flags
+// ============================================================================
+
+/**
+ * @brief INIT packet mode byte — determines controller operating mode
+ *
+ * INIT payload format: [mode:u8][flags:u8]
+ * If payload is empty (len==0), defaults to SLAVE mode with no flags
+ * (backward-compatible with existing firmware).
+ */
+namespace InitMode {
+    constexpr uint8_t SLAVE  = 0x00;  ///< Board controlled by HubFX master, keep-alive required
+    constexpr uint8_t CONFIG = 0x01;  ///< Standalone/config mode (CLI or GUI), no keep-alive
+
+    inline const char* getName(uint8_t mode) {
+        switch (mode) {
+            case SLAVE:  return "SLAVE";
+            case CONFIG: return "CONFIG";
+            default:     return "UNKNOWN";
+        }
+    }
+}
+
+/**
+ * @brief INIT flags bitmask (second byte of INIT payload)
+ */
+namespace InitFlags {
+    constexpr uint8_t NONE    = 0x00;
+    constexpr uint8_t VERBOSE = 0x01;  ///< Enable STATUS_UPDATE async packets for in-flight operations
+}
+
+// ============================================================================
+// STATUS_UPDATE Types — Generic Envelope for Verbose Async Updates
+// ============================================================================
+
+/**
+ * @brief Source module identifiers for STATUS_UPDATE packets
+ *
+ * STATUS_UPDATE payload: [source:u8][updateType:u8][data:variable]
+ * Emitted asynchronously when verbose flag is set in INIT.
+ */
+namespace StatusUpdateSource {
+    constexpr uint8_t GUNFX       = 0x01;  ///< GunFX module
+    constexpr uint8_t LIGHTFX     = 0x40;  ///< LightFX module
+    constexpr uint8_t GEARCONTROL = 0x60;  ///< GearControl module
+    constexpr uint8_t HUBFX       = 0x80;  ///< HubFX module
+    constexpr uint8_t CORE        = 0xF0;  ///< Core system
+}
+
+/**
+ * @brief Common update type codes (module-specific codes extend from these)
+ *
+ * Each module can define additional update types starting from 0x10+.
+ * Common types 0x01-0x0F are shared across modules.
+ */
+namespace StatusUpdateType {
+    constexpr uint8_t SERVO_POSITION  = 0x01;  ///< [servoId:u8][position_us:u16LE]
+    constexpr uint8_t VOLTAGE         = 0x02;  ///< [channelId:u8][voltage_mV:u16LE]
+    constexpr uint8_t CURRENT         = 0x03;  ///< [channelId:u8][current_mA:u16LE]
+    constexpr uint8_t TEMPERATURE     = 0x04;  ///< [sensorId:u8][temp_C_x10:i16LE]
 }
 
 // ============================================================================
@@ -320,7 +384,7 @@ struct I2CScanResult {
 using PacketRxCallback = std::function<void(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len)>;
 
 // Core command callbacks
-using CoreInitCallback = std::function<void()>;
+using CoreInitCallback = std::function<void(uint8_t mode, uint8_t flags)>;
 using CoreShutdownCallback = std::function<void()>;
 using CoreRebootCallback = std::function<void()>;
 using CoreBootselCallback = std::function<void()>;

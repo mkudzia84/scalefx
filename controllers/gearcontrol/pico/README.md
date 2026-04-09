@@ -572,6 +572,17 @@ Enables or disables a gear channel. Disabled channels reject all deploy, retract
 - `gc.enable <gear_id> | all`
 - `gc.disable <gear_id> | all`
 
+## Flash Storage
+
+GearControl includes onboard LittleFS flash storage for standalone configuration persistence.
+
+- **Backend:** `FlashModule` singleton from `sfx_storage` library
+- **Config:** `ConfigStore<GearControlConfigSchema>` — placeholder schema, ready for real fields
+- **Config path:** `/config.yaml` (default)
+- **Initialized at boot:** `initFlashAndConfig()` in `setup()` mounts LittleFS and loads config
+
+The flash infrastructure enables CONFIG mode operation — when INIT is sent with `mode=CONFIG`, the board can operate standalone without HubFX, reading settings from flash.
+
 ## Version History
 
 | Build | Version | Changes |

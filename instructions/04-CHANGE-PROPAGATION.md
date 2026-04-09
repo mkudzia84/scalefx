@@ -205,7 +205,7 @@ Documentation:
 ```yaml
 Summary_Checklist:
   Serial_Library:
-    - "[ ] Reserve packet type range (0x80-0xEF available)"
+    - "[ ] Reserve packet type range (0x80-0xEE available)"
     - "[ ] Create newfx/newfx.h (with NewFxServer, NewFxClient, NewFxPacket, NewFxError, NewFxSpec)"
     - "[ ] Update serial.h umbrella include"
   

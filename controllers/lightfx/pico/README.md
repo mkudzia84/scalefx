@@ -68,15 +68,15 @@ CRC-8 polynomial 0x07 computed over type + len + payload.
 | Range | Module | Description |
 |-------|--------|-------------|
 | 0x40-0x5F | LightFX | Controller-specific commands |
-| 0xF0-0xFF | Core | Universal system commands |
+| 0xEF-0xFF | Core | Universal system commands |
 
 ---
 
-## System Commands (0xF0-0xFF)
+## System Commands (0xEF-0xFF)
 
 | Type | Name | Payload | Response | Description |
 |------|------|---------|----------|-------------|
-| 0xF0 | INIT | (none) | INIT_READY | Initialize connection |
+| 0xF0 | INIT | mode:u8, flags:u8 (optional) | INIT_READY | Initialize connection |
 | 0xF1 | SHUTDOWN | (none) | ACK | Safe shutdown, outputs off |
 | 0xF2 | KEEPALIVE | (none) | ACK | Reset watchdog timer |
 | 0xF3 | INIT_READY | (response) | — | Device info response |
@@ -250,6 +250,19 @@ Each LED channel has its own `LedEventSeq` that can play a sequence of events:
 | 0x38 | SERVO_INVALID_ID | Servo ID out of range (1-3) |
 | 0x39 | SERVO_PULSE_RANGE | Pulse width outside 500-2500µs |
 | 0x55 | INVALID_SLOT | Invalid landing light slot (1-3) |
+
+---
+
+## Flash Storage
+
+LightFX includes onboard LittleFS flash storage for standalone configuration persistence.
+
+- **Backend:** `FlashModule` singleton from `sfx_storage` library
+- **Config:** `ConfigStore<LightFxConfigSchema>` — placeholder schema, ready for real fields
+- **Config path:** `/config.yaml` (default)
+- **Initialized at boot:** `initFlashAndConfig()` in `setup()` mounts LittleFS and loads config
+
+The flash infrastructure enables CONFIG mode operation — when INIT is sent with `mode=CONFIG`, the board can operate standalone without HubFX, reading settings from flash.
 
 ---
 

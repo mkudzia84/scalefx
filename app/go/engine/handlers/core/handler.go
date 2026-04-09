@@ -4,12 +4,14 @@ package core
 // Universal commands available regardless of connected controller type.
 
 import (
+	"encoding/binary"
 	"fmt"
 	"scalefx/api"
 	"scalefx/engine"
 	"scalefx/protocol"
 	pcore "scalefx/protocol/core"
 	"strconv"
+	"strings"
 )
 
 // Handler groups all core protocol commands.
@@ -21,6 +23,7 @@ type Handler struct {
 func Register(eng *engine.Engine) {
 	h := &Handler{E: eng}
 	eng.AddGroup(h.commands())
+	eng.RegisterAsyncHandler(pcore.StatusUpdate, h.parseStatusUpdate)
 }
 
 func (h *Handler) commands() *engine.CmdGroup {
@@ -33,7 +36,7 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"disconnect": {h.cmdDisconnect, "disconnect", "Disconnect from port", false},
 			"reconnect":  {h.cmdReconnect, "reconnect", "Disconnect and reconnect to same port", false},
 			"ports":      {h.cmdPorts, "ports", "List available serial ports", false},
-			"init":       {h.cmdInit, "init", "Send INIT to controller", false},
+			"init":       {h.cmdInit, "init [slave|config] [verbose]", "Send INIT to controller (default: slave)", false},
 			"identify":   {h.cmdIdentify, "identify", "Identify controller (no state change)", false},
 			"shutdown":   {h.cmdShutdown, "shutdown", "Send SHUTDOWN to controller", true},
 			"status":     {h.cmdStatus, "status", "Request controller status", true},
@@ -151,19 +154,47 @@ func (h *Handler) cmdPorts(_ []string) {
 	}
 }
 
-func (h *Handler) cmdInit(_ []string) {
+func (h *Handler) cmdInit(args []string) {
 	if !h.E.RequireConn() {
 		return
 	}
 
-	r := h.E.API.Core.Init()
+	mode := pcore.InitModeSlave
+	flags := pcore.InitFlagNone
+	for _, arg := range args {
+		switch strings.ToLower(arg) {
+		case "slave":
+			mode = pcore.InitModeSlave
+		case "config":
+			mode = pcore.InitModeConfig
+		case "verbose":
+			flags |= pcore.InitFlagVerbose
+		default:
+			h.E.Out.Error("Unknown init arg: %s (use slave|config|verbose)", arg)
+			return
+		}
+	}
+
+	var r api.ApiResult
+	if mode != pcore.InitModeSlave || flags != pcore.InitFlagNone {
+		r = h.E.API.Core.InitMode(mode, flags)
+	} else {
+		r = h.E.API.Core.Init()
+	}
+
 	if r.OK && r.Response != nil && r.Response.IsInitReady() {
 		info := engine.ParseInitReady(r.Response.Payload)
 		if info != nil {
 			h.E.Info = info
 			h.E.ControllerType = info.ControllerType
 			h.E.Initialized = true
-			h.E.Out.OK("INIT_READY")
+			h.E.Out.OK("INIT_READY (mode=%s%s)", pcore.InitModeName(mode),
+				func() string {
+					if flags&pcore.InitFlagVerbose != 0 {
+						return " verbose"
+					}
+					return ""
+				}())
 			h.E.PrintInitReadyInfo(info)
 		} else {
 			h.E.Initialized = true
@@ -298,4 +329,112 @@ func (h *Handler) cmdVerbose(args []string) {
 		h.E.Conn.SetVerbose(h.E.Verbose)
 	}
 	h.E.Out.Info("Verbose: %s", engine.OnOff(h.E.Verbose))
+}
+
+// ─── Async Handlers ───
+
+// statusUpdateSourceName returns a human-readable name for a STATUS_UPDATE source byte.
+func statusUpdateSourceName(src byte) string {
+	switch src {
+	case pcore.StatusUpdateSourceGunFX:
+		return "GunFX"
+	case pcore.StatusUpdateSourceLightFX:
+		return "LightFX"
+	case pcore.StatusUpdateSourceGearControl:
+		return "GearControl"
+	case pcore.StatusUpdateSourceHubFX:
+		return "HubFX"
+	case pcore.StatusUpdateSourceCore:
+		return "Core"
+	default:
+		return fmt.Sprintf("0x%02X", src)
+	}
+}
+
+// statusUpdateTypeName returns a human-readable name for a STATUS_UPDATE type byte.
+func statusUpdateTypeName(typ byte) string {
+	switch typ {
+	case pcore.StatusUpdateServoPosition:
+		return "SERVO_POS"
+	case pcore.StatusUpdateVoltage:
+		return "VOLTAGE"
+	case pcore.StatusUpdateCurrent:
+		return "CURRENT"
+	case pcore.StatusUpdateTemperature:
+		return "TEMP"
+	default:
+		return fmt.Sprintf("0x%02X", typ)
+	}
+}
+
+// parseStatusUpdate handles async STATUS_UPDATE packets.
+// Wire format: [source:u8][updateType:u8][data:variable]
+func (h *Handler) parseStatusUpdate(payload []byte) {
+	if len(payload) < 2 {
+		return
+	}
+	source := payload[0]
+	updateType := payload[1]
+	data := payload[2:]
+	srcName := statusUpdateSourceName(source)
+	typName := statusUpdateTypeName(updateType)
+
+	switch updateType {
+	case pcore.StatusUpdateServoPosition:
+		// data: [id:u8][position_us:u16LE] pairs
+		if len(data) >= 3 {
+			parts := []string{}
+			for i := 0; i+2 < len(data); i += 3 {
+				id := data[i]
+				pos := binary.LittleEndian.Uint16(data[i+1:])
+				parts = append(parts, fmt.Sprintf("S%d=%dµs", id, pos))
+			}
+			h.E.Out.Printf("  %s[%s %s: %s]%s\n",
+				h.E.Out.C(engine.ColorGray, ""), srcName, typName,
+				strings.Join(parts, " "), h.E.Out.C(engine.ColorReset, ""))
+		}
+	case pcore.StatusUpdateVoltage:
+		// data: [channel:u8][voltage_mV:u16LE] pairs
+		if len(data) >= 3 {
+			parts := []string{}
+			for i := 0; i+2 < len(data); i += 3 {
+				ch := data[i]
+				mv := binary.LittleEndian.Uint16(data[i+1:])
+				parts = append(parts, fmt.Sprintf("CH%d=%.2fV", ch, float64(mv)/1000.0))
+			}
+			h.E.Out.Printf("  %s[%s %s: %s]%s\n",
+				h.E.Out.C(engine.ColorGray, ""), srcName, typName,
+				strings.Join(parts, " "), h.E.Out.C(engine.ColorReset, ""))
+		}
+	case pcore.StatusUpdateCurrent:
+		// data: [channel:u8][current_mA:u16LE] pairs
+		if len(data) >= 3 {
+			parts := []string{}
+			for i := 0; i+2 < len(data); i += 3 {
+				ch := data[i]
+				ma := binary.LittleEndian.Uint16(data[i+1:])
+				parts = append(parts, fmt.Sprintf("CH%d=%dmA", ch, ma))
+			}
+			h.E.Out.Printf("  %s[%s %s: %s]%s\n",
+				h.E.Out.C(engine.ColorGray, ""), srcName, typName,
+				strings.Join(parts, " "), h.E.Out.C(engine.ColorReset, ""))
+		}
+	case pcore.StatusUpdateTemperature:
+		// data: [sensor:u8][temp_tenths_C:i16LE] pairs
+		if len(data) >= 3 {
+			parts := []string{}
+			for i := 0; i+2 < len(data); i += 3 {
+				sensor := data[i]
+				tenths := int16(binary.LittleEndian.Uint16(data[i+1:]))
+				parts = append(parts, fmt.Sprintf("S%d=%.1f°C", sensor, float64(tenths)/10.0))
+			}
+			h.E.Out.Printf("  %s[%s %s: %s]%s\n",
+				h.E.Out.C(engine.ColorGray, ""), srcName, typName,
+				strings.Join(parts, " "), h.E.Out.C(engine.ColorReset, ""))
+		}
+	default:
+		h.E.Out.Printf("  %s[%s %s: %d bytes]%s\n",
+			h.E.Out.C(engine.ColorGray, ""), srcName, typName, len(data),
+			h.E.Out.C(engine.ColorReset, ""))
+	}
 }

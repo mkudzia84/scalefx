@@ -5,6 +5,10 @@
  * Ported from lib_archive/sfx_common/serial/hubfx/hubfx.cpp.
  */
 
+#include <platform/sfx_platform.h>
+
+#if defined(SFX_HAS_STORAGE_SERVER)
+
 #include "storage_client.h"
 
 using namespace CoreProtocol;
@@ -242,3 +246,5 @@ CommandResult HubFxStorageClient::uploadEnd() {
 CommandResult HubFxStorageClient::uploadCancel() {
     return sendCommand(HubFxPacket::FILE_UPLOAD_CANCEL, nullptr, 0);
 }
+
+#endif  // SFX_HAS_STORAGE_SERVER

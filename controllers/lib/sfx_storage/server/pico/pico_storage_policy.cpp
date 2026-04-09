@@ -3,11 +3,15 @@
  *
  * Simple blocking writes with single heap buffers.
  * See pico_storage_policy.h for the policy interface.
+ *
+ * Only compiled when SFX_HAS_STORAGE_SERVER is defined (HubFX).
+ * Controllers that only use FlashModule for config (LightFX, GearControl)
+ * can include sfx_storage without pulling in StorageServer.
  */
 
 #include <platform/sfx_platform.h>
 
-#if !SFX_PLATFORM_ESP32
+#if !SFX_PLATFORM_ESP32 && defined(SFX_HAS_STORAGE_SERVER)
 
 #include <server/storage_server.h>
 #include <platform/diag_log.h>
@@ -50,4 +54,4 @@ bool PicoStoragePolicy::onUploadBufferFull() {
     return _state->flushUploadBuffer();
 }
 
-#endif  // !SFX_PLATFORM_ESP32
+#endif  // !SFX_PLATFORM_ESP32 && SFX_HAS_STORAGE_SERVER

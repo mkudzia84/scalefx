@@ -54,6 +54,9 @@
 #include <power/i2c_device.h>
 #include <power/battery_monitor.h>
 #include <server/sfx_server.h>
+#include <storage/flash.h>
+#include <config/config_store.h>
+#include "config/gearcontrol_config.h"
 #include "landing_gear.h"
 
 // Firmware version
@@ -114,6 +117,10 @@ const uint8_t SERVO_ID_SPARE = 7;
 // Server (serial, core protocol, indicators, connection management)
 SfxServer server;
 GearControlServer gearControlServer;
+
+// Config store (flash-backed YAML config)
+using GearControlConfigStore = ConfigStore<GearControlConfigSchema>;
+GearControlConfigStore configStore;
 
 // Landing gear modules (one per gear)
 LandingGear gears[3];
@@ -228,7 +235,72 @@ uint8_t buildLedFlags() {
     return flags;
 }
 
+// ============================================================================
+//  FLASH FILE I/O BRIDGES (for ConfigStore)
+// ============================================================================
 
+static int flashReadFile(const char* path, char* buffer, size_t maxLen) {
+    FlashModule& flash = FlashModule::instance();
+    if (!flash.isInitialized()) return -1;
+
+    flash.lock();
+    LFSFile file;
+    uint8_t err = flash.openRead(path, file);
+    if (err != 0) {
+        flash.unlock();
+        return -1;
+    }
+
+    int bytesRead = file.read((uint8_t*)buffer, maxLen);
+    file.close();
+    flash.unlock();
+    return bytesRead;
+}
+
+static int flashWriteFile(const char* path, const char* data, size_t len) {
+    FlashModule& flash = FlashModule::instance();
+    if (!flash.isInitialized()) return -1;
+
+    flash.lock();
+    LFSFile file;
+    uint8_t err = flash.openWrite(path, file, true);
+    if (err != 0) {
+        flash.unlock();
+        return -1;
+    }
+
+    int written = file.write((const uint8_t*)data, len);
+    file.close();
+    flash.unlock();
+    return written;
+}
+
+/** @brief Initialize flash and load config (if present). */
+static void initFlashAndConfig() {
+    FlashModule& flash = FlashModule::instance();
+    if (flash.begin()) {
+        FlashStorageInfo info;
+        flash.getStorageInfo(info);
+        SFX_LOG_INFO("Flash ready: %lu/%lu bytes used",
+                     (unsigned long)info.usedBytes, (unsigned long)info.totalBytes);
+
+        // Wire config store to flash I/O
+        configStore.setFileReader(flashReadFile);
+        configStore.setFileWriter(flashWriteFile);
+
+        // Try loading config (silent if file doesn't exist)
+        auto result = configStore.loadFromFile();
+        if (result.ok) {
+            SFX_LOG_INFO("Config loaded from flash");
+            // TODO: Apply config fields to hardware when schema has real fields
+        } else if (result.parsed) {
+            SFX_LOG_WARN("Config validation failed: %s", result.error);
+        }
+        // If file doesn't exist, defaults are used — that's fine
+    } else {
+        SFX_LOG_WARN("Flash init failed — running with defaults");
+    }
+}
 
 // ============================================================================
 //  SETUP
@@ -237,8 +309,15 @@ uint8_t buildLedFlags() {
 void setup() {
     // Initialize server (serial, device name, indicators, core callbacks)
     server.begin("GearControl", FIRMWARE_VERSION, BUILD_NUMBER);
-    server.onInit([]() { performSafeInit(); });
+    server.onInit([](uint8_t mode, uint8_t flags) {
+        (void)flags;  // GearControl accepts both SLAVE and CONFIG
+        SFX_LOG_INFO("INIT mode=%s", InitMode::getName(mode));
+        performSafeInit();
+    });
     server.onShutdown([]() { performSafeShutdown(); });
+
+    // Initialize flash storage and load config (standalone mode)
+    initFlashAndConfig();
 
     // Initialize I2C for INA226
     Wire.setSDA(PIN_SDA);

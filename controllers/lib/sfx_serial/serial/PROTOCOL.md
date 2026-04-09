@@ -4,7 +4,7 @@
 
 Serial communication protocol for ScaleFX controllers (HubFX, GunFX).
 
-**Version:** 0.4.0  
+**Version:** 0.5.0  
 **Binary Framing:** COBS encoding with 0x00 delimiter  
 **CRC:** CRC-8 polynomial 0x07 over type+tag+len(2)+payload  
 
@@ -54,7 +54,7 @@ Human-readable line-based format:
 COMMAND_NAME key=value key2=value2\n
 ```
 
-## Universal Packet Types (0xF0-0xFF)
+## Universal Packet Types (0xEF-0xFF)
 
 System-level commands common to all ScaleFX devices:
 
@@ -75,10 +75,25 @@ System-level commands common to all ScaleFX devices:
 | `CorePacket::I2C_SCAN_RESULT` | 0xFC | — | Slave→Master | I2C scan results |
 | `CorePacket::LOG_MESSAGE` | 0xFD | — | Slave→Master | Diagnostic log message |
 | `CorePacket::IDENTIFY` | 0xFE | `IDENTIFY` | Master→Slave | Query board info (no state change) |
+| `CorePacket::STATUS_UPDATE` | 0xEF | — | Slave→Master | Async status telemetry (verbose mode) |
 
 ### INIT Command
 
-**Binary packet** (type 0xF0), no payload.
+**Binary packet** (type 0xF0), optional payload `[mode:u8][flags:u8]`.
+
+**Payload (optional, backward-compatible):**
+```
+[mode:u8][flags:u8]
+```
+
+| Field | Type | Values | Default |
+|-------|------|--------|---------|
+| mode | u8 | 0x00=SLAVE, 0x01=CONFIG | 0x00 (SLAVE) |
+| flags | u8 | Bit 0: VERBOSE (enable STATUS_UPDATE) | 0x00 (NONE) |
+
+- **SLAVE mode (0x00):** Keep-alive required (15s timeout). Used when HubFX controls the board.
+- **CONFIG mode (0x01):** No keep-alive timeout. Used for standalone CLI/GUI configuration.
+- **Backward compatible:** If payload is empty (len=0), defaults to SLAVE mode with no flags.
 
 **Behavior:**
 1. Slave resets any existing connection state
@@ -132,6 +147,49 @@ INIT after IDENTIFY to start up.
 ```
 
 **Note:** Version should NOT include "v" prefix (use "0.2.0" not "v0.2.0").
+
+### STATUS_UPDATE
+
+Async telemetry packet emitted by any controller when VERBOSE flag is set during INIT.
+Uses `TAG_ASYNC` (0x00) — unsolicited, no request to correlate.
+
+**Type:** 0xEF  
+**Direction:** Slave → Master  
+**Tag:** Always `TAG_ASYNC` (0x00)
+
+**Payload:**
+```
+[source:u8][updateType:u8][data:variable]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| source | u8 | Module source identifier (matches packet range base) |
+| updateType | u8 | Type of status update |
+| data | variable | Type-specific payload |
+
+**Source identifiers:**
+
+| Source | Value | Module |
+|--------|-------|--------|
+| GUNFX | 0x01 | GunFX |
+| LIGHTFX | 0x40 | LightFX |
+| GEARCONTROL | 0x60 | GearControl |
+| HUBFX | 0x80 | HubFX |
+| CORE | 0xF0 | Core system |
+
+**Update types:**
+
+| Type | Value | Data Format | Description |
+|------|-------|-------------|-------------|
+| SERVO_POSITION | 0x01 | `[id:u8][pos_us:u16LE]...` | Servo position(s) |
+| VOLTAGE | 0x02 | `[ch:u8][mV:u16LE]...` | Voltage reading(s) |
+| CURRENT | 0x03 | `[ch:u8][mA:u16LE]...` | Current reading(s) |
+| TEMPERATURE | 0x04 | `[sensor:u8][tenths_C:u16LE]...` | Temperature reading(s) |
+
+Only emitted when `InitFlags::VERBOSE` (bit 0) is set in the INIT payload.
+Controllers call `sendStatusUpdate(source, updateType, data, dataLen)` which
+checks the verbose flag before sending.
 
 ### SHUTDOWN Command
 
@@ -629,6 +687,15 @@ void loop() {
     coreServer.updateFreeRam(rp2040.getFreeHeap());  // Keep RAM reading current
 }
 ```
+
+## Changes in v0.5.0
+
+- **INIT parametrized**: INIT now accepts optional `[mode:u8][flags:u8]` payload (backward-compatible, defaults to SLAVE/NONE if empty)
+- **InitMode**: SLAVE (0x00) = keep-alive required, CONFIG (0x01) = no keep-alive timeout
+- **InitFlags**: VERBOSE (bit 0) = enable async STATUS_UPDATE emissions
+- **STATUS_UPDATE (0xEF)**: New async packet type for real-time telemetry — `[source:u8][updateType:u8][data:variable]`
+- **Core range expanded**: CoreCommandServer now handles 0xEF-0xFF (was 0xF0-0xFF) to include STATUS_UPDATE
+- **Flash storage on Pico**: LightFX and GearControl now support onboard LittleFS flash for standalone config
 
 ## Changes in v0.4.0
 

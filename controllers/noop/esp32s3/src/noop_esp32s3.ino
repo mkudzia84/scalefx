@@ -174,6 +174,12 @@ void setup() {
     // Redirect ESP-IDF log output into DiagLog (prevents UART corruption)
     DiagLog::instance().captureEspLog();
 
+    server.onInit([](uint8_t mode, uint8_t flags) {
+        (void)mode; (void)flags;
+        performSafeInit();
+    });
+    server.onShutdown([]() { performSafeShutdown(); });
+
     // Log reset reason for diagnostics
     {
         esp_reset_reason_t reason = esp_reset_reason();

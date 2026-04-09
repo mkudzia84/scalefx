@@ -73,7 +73,7 @@ void SfxServer::begin(const char* prefix, const char* version,
                        SFX_CPU_MHZ(), SFX_FREE_HEAP(), buildNumber);
 
     // Standard system callbacks
-    _core.onInit([this]() { doInit(); });
+    _core.onInit([this](uint8_t mode, uint8_t flags) { doInit(mode, flags); });
     _core.onShutdown([this]() { doShutdown(); });
 
     _core.onReboot([this]() {
@@ -147,8 +147,21 @@ void SfxServer::buildDeviceName(const char* prefix) {
     snprintf(_deviceName, sizeof(_deviceName), "%s-%s", prefix, suffix);
 }
 
-void SfxServer::doInit() {
-    if (_initCb) _initCb();
+void SfxServer::doInit(uint8_t mode, uint8_t flags) {
+    // Manage keep-alive timeout based on init mode:
+    // SLAVE mode: keep-alive required (enable timeout)
+    // CONFIG mode: no keep-alive (disable timeout)
+    if (mode == InitMode::SLAVE) {
+        _timeoutEnabled = _timeoutEnabledByUser;  // Restore original setting
+    } else if (mode == InitMode::CONFIG) {
+        _timeoutEnabled = false;  // No keep-alive in config mode
+    }
+
+    SFX_LOG_INFO("INIT: mode=%s flags=0x%02X verbose=%s",
+                 InitMode::getName(mode), flags,
+                 (flags & InitFlags::VERBOSE) ? "on" : "off");
+
+    if (_initCb) _initCb(mode, flags);
     _indicators.setConnected(true);
     _indicators.setWatchdogTriggered(false);
 }
@@ -156,6 +169,8 @@ void SfxServer::doInit() {
 void SfxServer::doShutdown() {
     if (_shutdownCb) _shutdownCb();
     _indicators.setConnected(false);
+    // Restore timeout setting for next connection
+    _timeoutEnabled = _timeoutEnabledByUser;
 }
 
 void SfxServer::checkConnectionTimeout() {

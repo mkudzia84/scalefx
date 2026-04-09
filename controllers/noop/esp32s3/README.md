@@ -19,7 +19,7 @@ Uses `SfxServer` component for common server boilerplate (serial init, device na
 | Packet Type | Name | Description |
 |-------------|------|-------------|
 | 0xFE | IDENTIFY | Board type discovery (no state change) |
-| 0xF0 | INIT | Initialize connection, returns INIT_READY |
+| 0xF0 | INIT | Initialize connection, returns INIT_READY (optional payload: mode, flags) |
 | 0xF1 | SHUTDOWN | Safe shutdown (centers servos) |
 | 0xF8 | REBOOT | System reboot |
 | 0xFA | STATUS_REQ | Request status (core + servo positions) |

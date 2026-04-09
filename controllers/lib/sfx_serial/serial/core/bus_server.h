@@ -248,6 +248,46 @@ public:
     bool isInitialized() const { return _initReceived; }
 
     /**
+     * @brief Get the INIT mode received (SLAVE or CONFIG)
+     */
+    uint8_t initMode() const { return _initMode; }
+
+    /**
+     * @brief Get the INIT flags received
+     */
+    uint8_t initFlags() const { return _initFlags; }
+
+    /**
+     * @brief Check if verbose status updates are enabled
+     */
+    bool isVerbose() const { return (_initFlags & InitFlags::VERBOSE) != 0; }
+
+    /**
+     * @brief Check if the board is in slave mode (keep-alive required)
+     */
+    bool isSlaveMode() const { return _initReceived && _initMode == InitMode::SLAVE; }
+
+    /**
+     * @brief Check if the board is in config mode (no keep-alive)
+     */
+    bool isConfigMode() const { return _initReceived && _initMode == InitMode::CONFIG; }
+
+    /**
+     * @brief Mark a file transfer as active/inactive
+     *
+     * While a transfer is active, sendStatusUpdate() is suppressed to
+     * avoid contention on the serial channel. Call with true when any
+     * file operation begins (upload, download, list, tree) and false
+     * when it completes or is cancelled.
+     */
+    void setTransferActive(bool active) { _transferActive = active; }
+
+    /**
+     * @brief Check if a file transfer is currently active
+     */
+    bool isTransferActive() const { return _transferActive; }
+
+    /**
      * @brief Reset state (on connection loss or new INIT)
      */
     void reset();
@@ -294,13 +334,26 @@ public:
      */
     void sendI2CScanResult(const I2CScanResult& result);
 
+    /**
+     * @brief Send a STATUS_UPDATE async packet (verbose mode)
+     *
+     * Only sends if verbose flag was set in INIT. Uses TAG_ASYNC.
+     *
+     * @param source Module source ID (StatusUpdateSource::*)
+     * @param updateType Update type code (StatusUpdateType::* or module-specific)
+     * @param data Update-specific data
+     * @param dataLen Length of data
+     */
+    void sendStatusUpdate(uint8_t source, uint8_t updateType,
+                          const uint8_t* data = nullptr, size_t dataLen = 0);
+
 protected:
     // ========================================================================
     // BusServer Virtual Hooks
     // ========================================================================
 
     CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
-    uint8_t moduleRangeLow() const override { return 0xF0; }
+    uint8_t moduleRangeLow() const override { return 0xEF; }  // Includes STATUS_UPDATE (0xEF)
     uint8_t moduleRangeHigh() const override { return 0xFF; }
     const char* getModuleErrorMessage(uint8_t code) override {
         return CoreError::getMessage(code);
@@ -314,6 +367,9 @@ private:
 
     CoreBoardInfo _boardInfo;
     bool _initReceived = false;
+    uint8_t _initMode = InitMode::SLAVE;
+    uint8_t _initFlags = InitFlags::NONE;
+    bool _transferActive = false;
     unsigned long _lastActivityMs = 0;
     unsigned long _prevActivityMs = 0;
     uint32_t _commandCounter = 0;

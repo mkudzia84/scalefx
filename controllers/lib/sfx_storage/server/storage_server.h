@@ -164,6 +164,28 @@ public:
     const TPolicy& policy() const { return _policy; }
 
     // -----------------------------------------------------------------
+    // Transfer lifecycle callbacks (for serial exclusivity)
+    // -----------------------------------------------------------------
+
+    /**
+     * @brief Register callback invoked when ANY file transfer starts.
+     *
+     * Fires at the start of uploads (all modes), downloads, list, and tree.
+     * Use to suppress verbose STATUS_UPDATE packets during transfer.
+     * Pairs with onTransferEnd which fires when the transfer completes.
+     */
+    void onTransferStart(std::function<void()> cb) { _onTransferStart = std::move(cb); }
+
+    /**
+     * @brief Register callback invoked when ANY file transfer ends.
+     *
+     * Fires after download completes, upload ends/cancels/times out,
+     * or list/tree streaming finishes. Guaranteed exactly once per
+     * onTransferStart invocation.
+     */
+    void onTransferEnd(std::function<void()> cb) { _onTransferEnd = std::move(cb); }
+
+    // -----------------------------------------------------------------
     // Stream lifecycle callbacks (for resource management)
     // -----------------------------------------------------------------
 
@@ -229,6 +251,12 @@ private:
     /// Clean up upload state (close file, unlock storage, delete partial)
     void cleanupUpload(bool deletePartial);
 
+    /// Notify transfer started (fires callback, guards against double-start)
+    void notifyTransferStart();
+
+    /// Notify transfer ended (fires callback, guards against double-end)
+    void notifyTransferEnd();
+
     // --- Storage helpers ---
     bool checkStorageReady(HubFxStorage::StorageTarget target);
     void lockStorage(HubFxStorage::StorageTarget target);
@@ -273,7 +301,12 @@ private:
     /// Send segment ACK (FILE_UPLOAD_PROGRESS) after each stream segment.
     void sendStreamSegmentAck();
 
-    // --- Stream lifecycle callbacks ---
+    // --- Transfer lifecycle callbacks (serial exclusivity) ---
+    std::function<void()> _onTransferStart;
+    std::function<void()> _onTransferEnd;
+    bool _transferNotified = false;  // Guard: ensures exactly one onTransferEnd per onTransferStart
+
+    // --- Stream lifecycle callbacks (resource management) ---
     std::function<void()> _onStreamStart;
     std::function<void()> _onStreamEnd;
     bool _streamSuspended = false;  // Guard: ensures exactly one onStreamEnd per onStreamStart

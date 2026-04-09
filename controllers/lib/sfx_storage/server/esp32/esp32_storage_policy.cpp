@@ -18,7 +18,7 @@
 
 #include <platform/sfx_platform.h>
 
-#if SFX_PLATFORM_ESP32
+#if SFX_PLATFORM_ESP32 && defined(SFX_HAS_STORAGE_SERVER)
 
 #include <server/storage_server.h>
 #include <platform/diag_log.h>
@@ -500,4 +500,4 @@ void Esp32StoragePolicy::writerTaskFunc(void* param) {
 }
 
 
-#endif  // SFX_PLATFORM_ESP32
+#endif  // SFX_PLATFORM_ESP32 && SFX_HAS_STORAGE_SERVER

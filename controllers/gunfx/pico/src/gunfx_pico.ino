@@ -131,7 +131,11 @@ void performSafeInit() {
 void setup() {
     // Initialize server (serial, device name, indicators, core callbacks)
     server.begin("GunFX", FIRMWARE_VERSION, BUILD_NUMBER);
-    server.onInit([]() { performSafeInit(); });
+    server.onInit([](uint8_t mode, uint8_t flags) {
+        (void)flags;  // GunFX accepts both SLAVE and CONFIG
+        SFX_LOG_INFO("INIT mode=%s", InitMode::getName(mode));
+        performSafeInit();
+    });
     server.onShutdown([]() { performSafeShutdown(); });
 
     // Initialize battery voltage monitor (ADC ÷6 divider)

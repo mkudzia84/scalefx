@@ -13,6 +13,7 @@ func NewCoreApi(conn *protocol.Connection) *CoreApi {
 }
 
 func (a *CoreApi) Init() ApiResult                  { return a.sendQuery(core.CmdInit(), core.InitReady) }
+func (a *CoreApi) InitMode(mode, flags byte) ApiResult { return a.sendQuery(core.CmdInitMode(mode, flags), core.InitReady) }
 func (a *CoreApi) Identify() ApiResult              { return a.sendQuery(core.CmdIdentify(), core.Identify, core.InitReady) }
 func (a *CoreApi) Shutdown() ApiResult              { return a.sendACK(core.CmdShutdown()) }
 func (a *CoreApi) Status() ApiResult                { return a.sendQuery(core.CmdStatusReq(), core.Status) }

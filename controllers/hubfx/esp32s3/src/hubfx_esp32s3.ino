@@ -727,6 +727,16 @@ static void initProtocolHandlers() {
         Mixer::instance().resumeAudio();
     });
 #endif
+
+    // Suppress STATUS_UPDATE during any file transfer (list, tree,
+    // download, upload) to keep the serial channel exclusive.
+    storageServer.onTransferStart([]() {
+        server.core().setTransferActive(true);
+    });
+
+    storageServer.onTransferEnd([]() {
+        server.core().setTransferActive(false);
+    });
 }
 
 /** @brief Register slave types with SlaveManager and initialize USB Host. */
@@ -899,7 +909,9 @@ void setup() {
     static uint32_t bootComplete_ms = 0;
     static constexpr uint32_t FRESH_BOOT_WINDOW_MS = 5000;  // 5s grace period
 
-    server.onInit([]() {
+    server.onInit([](uint8_t mode, uint8_t flags) {
+        (void)flags;
+        SFX_LOG_INFO("INIT mode=%s flags=0x%02X", InitMode::getName(mode), flags);
         uint32_t now = millis();
 
         // If this is the first INIT within the fresh-boot window, everything

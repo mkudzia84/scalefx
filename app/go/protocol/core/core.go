@@ -13,22 +13,23 @@ import (
 // ─── Core Packet Types (0xF0-0xFF) ───
 
 const (
-	Init       protocol.PacketType = 0xF0
-	Shutdown   protocol.PacketType = 0xF1
-	Keepalive  protocol.PacketType = 0xF2
-	InitReady  protocol.PacketType = 0xF3
-	Status     protocol.PacketType = 0xF4
-	Error      protocol.PacketType = 0xF5
-	Ack        protocol.PacketType = 0xF6
-	Nack       protocol.PacketType = 0xF7
-	Reboot     protocol.PacketType = 0xF8
-	Bootsel    protocol.PacketType = 0xF9
-	StatusReq  protocol.PacketType = 0xFA
-	I2cScan    protocol.PacketType = 0xFB
-	I2cScanRes protocol.PacketType = 0xFC
-	LogMessage protocol.PacketType = 0xFD
-	Identify   protocol.PacketType = 0xFE
+	Init        protocol.PacketType = 0xF0
+	Shutdown    protocol.PacketType = 0xF1
+	Keepalive   protocol.PacketType = 0xF2
+	InitReady   protocol.PacketType = 0xF3
+	Status      protocol.PacketType = 0xF4
+	Error       protocol.PacketType = 0xF5
+	Ack         protocol.PacketType = 0xF6
+	Nack        protocol.PacketType = 0xF7
+	Reboot      protocol.PacketType = 0xF8
+	Bootsel     protocol.PacketType = 0xF9
+	StatusReq   protocol.PacketType = 0xFA
+	I2cScan     protocol.PacketType = 0xFB
+	I2cScanRes  protocol.PacketType = 0xFC
+	LogMessage  protocol.PacketType = 0xFD
+	Identify    protocol.PacketType = 0xFE
 	DiagHistory protocol.PacketType = 0xFF
+	StatusUpdate protocol.PacketType = 0xEF
 )
 
 // ─── Generic Error Codes — mirrors SerialError namespace ───
@@ -65,9 +66,55 @@ const (
 	CtrlNoOp        = "noop"
 )
 
+// ─── Init Mode — mirrors InitMode namespace in core.h ───
+
+const (
+	InitModeSlave  byte = 0x00
+	InitModeConfig byte = 0x01
+)
+
+// InitModeName returns a human-readable name for an init mode.
+func InitModeName(mode byte) string {
+	switch mode {
+	case InitModeSlave:
+		return "SLAVE"
+	case InitModeConfig:
+		return "CONFIG"
+	default:
+		return fmt.Sprintf("0x%02X", mode)
+	}
+}
+
+// ─── Init Flags — mirrors InitFlags namespace in core.h ───
+
+const (
+	InitFlagNone    byte = 0x00
+	InitFlagVerbose byte = 0x01
+)
+
+// ─── Status Update — mirrors StatusUpdateSource / StatusUpdateType in core.h ───
+
+const (
+	StatusUpdateSourceGunFX       byte = 0x01
+	StatusUpdateSourceLightFX     byte = 0x40
+	StatusUpdateSourceGearControl byte = 0x60
+	StatusUpdateSourceHubFX       byte = 0x80
+	StatusUpdateSourceCore        byte = 0xF0
+)
+
+const (
+	StatusUpdateServoPosition byte = 0x01
+	StatusUpdateVoltage       byte = 0x02
+	StatusUpdateCurrent       byte = 0x03
+	StatusUpdateTemperature   byte = 0x04
+)
+
 // ─── Commands ───
 
 func CmdInit() []byte      { return protocol.BuildPacket(Init, nil, 0) }
+func CmdInitMode(mode, flags byte) []byte {
+	return protocol.BuildPacket(Init, []byte{mode, flags}, 0)
+}
 func CmdShutdown() []byte  { return protocol.BuildPacket(Shutdown, nil, 0) }
 func CmdKeepalive() []byte { return protocol.BuildPacket(Keepalive, nil, 0) }
 func CmdReboot() []byte    { return protocol.BuildPacket(Reboot, nil, 0) }
@@ -117,22 +164,23 @@ func DetectControllerType(name string) string {
 
 func init() {
 	protocol.RegisterPacketNames(map[protocol.PacketType]string{
-		Init:        "INIT",
-		Shutdown:    "SHUTDOWN",
-		Keepalive:   "KEEPALIVE",
-		InitReady:   "INIT_READY",
-		Status:      "STATUS",
-		Error:       "ERROR",
-		Ack:         "ACK",
-		Nack:        "NACK",
-		Reboot:      "REBOOT",
-		Bootsel:     "BOOTSEL",
-		StatusReq:   "STATUS_REQ",
-		I2cScan:     "I2C_SCAN",
-		I2cScanRes:  "I2C_SCAN_RESULT",
-		LogMessage:  "LOG_MESSAGE",
-		Identify:    "IDENTIFY",
-		DiagHistory: "DIAG_HISTORY",
+		Init:         "INIT",
+		Shutdown:     "SHUTDOWN",
+		Keepalive:    "KEEPALIVE",
+		InitReady:    "INIT_READY",
+		Status:       "STATUS",
+		Error:        "ERROR",
+		Ack:          "ACK",
+		Nack:         "NACK",
+		Reboot:       "REBOOT",
+		Bootsel:      "BOOTSEL",
+		StatusReq:    "STATUS_REQ",
+		I2cScan:      "I2C_SCAN",
+		I2cScanRes:   "I2C_SCAN_RESULT",
+		LogMessage:   "LOG_MESSAGE",
+		Identify:     "IDENTIFY",
+		DiagHistory:  "DIAG_HISTORY",
+		StatusUpdate: "STATUS_UPDATE",
 	})
 
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{

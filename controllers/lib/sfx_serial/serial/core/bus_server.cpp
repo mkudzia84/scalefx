@@ -236,16 +236,24 @@ bool CoreCommandServer::checkTimeout(unsigned long timeoutMs) {
 
 void CoreCommandServer::reset() {
     _initReceived = false;
+    _initMode = InitMode::SLAVE;
+    _initFlags = InitFlags::NONE;
+    _transferActive = false;
 }
 
 void CoreCommandServer::handleInit(const uint8_t* payload, size_t len) {
-    (void)payload;
-    (void)len;
+    // Parse optional mode/flags (backward compatible: len==0 → SLAVE, no flags)
+    uint8_t mode = (len >= 1) ? payload[0] : InitMode::SLAVE;
+    uint8_t flags = (len >= 2) ? payload[1] : InitFlags::NONE;
 
     // If already initialized, this is a reconnection
     if (_initReceived) {
         reset();
     }
+
+    // Store mode and flags
+    _initMode = mode;
+    _initFlags = flags;
 
     // Send INIT_READY response
     sendInitReady();
@@ -253,7 +261,7 @@ void CoreCommandServer::handleInit(const uint8_t* payload, size_t len) {
     _initReceived = true;
 
     if (_initCallback) {
-        _initCallback();
+        _initCallback(mode, flags);
     }
 }
 
@@ -319,4 +327,20 @@ void CoreCommandServer::sendI2CScanResult(const I2CScanResult& result) {
     }
 
     sendRawPacket(CorePacket::I2C_SCAN_RESULT, _currentTag, payload, idx);
+}
+
+void CoreCommandServer::sendStatusUpdate(uint8_t source, uint8_t updateType,
+                                          const uint8_t* data, size_t dataLen) {
+    if (!isVerbose() || !_serial || _transferActive) return;
+
+    uint8_t payload[CoreProtocol::MAX_PAYLOAD_SIZE];
+    payload[0] = source;
+    payload[1] = updateType;
+    size_t len = 2;
+    if (data && dataLen > 0) {
+        size_t copyLen = (dataLen > sizeof(payload) - 2) ? (sizeof(payload) - 2) : dataLen;
+        memcpy(&payload[2], data, copyLen);
+        len += copyLen;
+    }
+    sendRawPacket(CorePacket::STATUS_UPDATE, SfxWire::TAG_ASYNC, payload, len);
 }

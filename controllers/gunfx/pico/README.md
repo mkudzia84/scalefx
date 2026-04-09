@@ -52,7 +52,7 @@ CRC-8 polynomial 0x07 computed over type + len + payload.
 | Range | Module | Description |
 |-------|--------|-------------|
 | 0x01-0x2F | GunFX | Controller-specific commands |
-| 0xF0-0xFF | Core | Universal system commands |
+| 0xEF-0xFF | Core | Universal system commands |
 
 ### ACK/NACK Response Protocol
 
@@ -66,11 +66,11 @@ Exceptions (fire-and-forget, no response expected):
 
 ---
 
-## System Commands (0xF0-0xFF)
+## System Commands (0xEF-0xFF)
 
 | Type | Name | Payload | Response | Description |
 |------|------|---------|----------|-------------|
-| 0xF0 | INIT | (none) | INIT_READY | Initialize connection |
+| 0xF0 | INIT | mode:u8, flags:u8 (optional) | INIT_READY | Initialize connection |
 | 0xF1 | SHUTDOWN | (none) | ACK | Safe shutdown, outputs off |
 | 0xF2 | KEEPALIVE | (none) | ACK | Reset watchdog timer |
 | 0xF3 | INIT_READY | (response) | — | Device info response |

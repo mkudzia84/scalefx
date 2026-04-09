@@ -80,8 +80,9 @@ COBS_Encoding:
 ## Packet Type Registry
 
 ```yaml
-Core_Packets:  # 0xF0-0xFF - All controllers
-  INIT:        { type: 0xF0, direction: "C→S", payload: "none" }
+Core_Packets:  # 0xEF-0xFF - All controllers
+  STATUS_UPDATE: { type: 0xEF, direction: "S→C", payload: "[source:u8][updateType:u8][data:variable]", notes: "async, unsolicited, requires VERBOSE flag" }
+  INIT:        { type: 0xF0, direction: "C→S", payload: "[mode:u8][flags:u8] (optional, backward-compatible)" }
   SHUTDOWN:    { type: 0xF1, direction: "C→S", payload: "none" }
   KEEPALIVE:   { type: 0xF2, direction: "C→S", payload: "none" }
   INIT_READY:  { type: 0xF3, direction: "S→C", payload: "[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]" }
