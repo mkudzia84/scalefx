@@ -2,9 +2,13 @@
 <!-- Two-column layout: Input Setup (left) | Engine FX Setup (right). -->
 <!-- Audio, Storage, Config, USB in bottom sections. -->
 <script lang="ts">
-    import { connectionInfo, slaveInfo } from '../stores'
+    import { connectionInfo, slaveInfo, showSaveConfig } from '../stores'
     import { SendCommand, GetSlaveInfo } from '../../../wailsjs/go/main/App'
     import { onMount, onDestroy } from 'svelte'
+    import SaveConfigDialog from '../dialogs/SaveConfigDialog.svelte'
+    import { LightConfigVerifier, type LightConfig } from '../config/light-verifier'
+    import { generateLightYaml } from '../config/config-yaml-gen'
+    import { EMPTY_RESULT } from '../config/config-verifier'
 
     export let boardLabel: string = 'HubFX'
 
@@ -143,8 +147,34 @@
 
     // ─── Config ───
     function configReload() { SendCommand('config.reload') }
-    function configSave() { SendCommand('config.save') }
     function configStatus() { SendCommand('config.status') }
+
+    // ─── Save Config Dialog ───
+    const lightVerifier = new LightConfigVerifier()
+    let saveDialogOpen = false
+    let saveVerifyResult = EMPTY_RESULT
+    let saveConfigText = ''
+
+    function openSaveDialog() {
+        // Build a LightConfig snapshot from current state for verification
+        // (HubFX embeds light config as part of its larger config)
+        const lightCfg: LightConfig = {
+            programs: [],     // TODO: populate from embedded LightSetup state
+            groups: [],
+            masterBrightness: masterVolume,
+            channelCount: 6,  // HubFX embedded = 6 channels
+            pwmMin: 1000,
+            pwmMax: 2000,
+            hubAvailable: true,  // HubFX always has hub available
+        }
+        saveVerifyResult = lightVerifier.verify(lightCfg)
+        saveConfigText = generateLightYaml(lightCfg, true)  // nested under light_fx:
+        saveDialogOpen = true
+    }
+
+    function configSave() {
+        openSaveDialog()
+    }
 
     // ─── File Browser ───
     function fileTree(target: string) { SendCommand(`file.tree ${target}`) }
@@ -334,7 +364,7 @@
                 <!-- Config actions -->
                 <div class="config-actions">
                     <button class="small" on:click={configReload}>Reload from Device</button>
-                    <button class="primary small" on:click={configSave}>Save to Device</button>
+                    <button class="primary small" on:click={openSaveDialog}>💾 Save Config…</button>
                 </div>
             </section>
         </div>
@@ -407,6 +437,16 @@
         </div>
     </div>
 </div>
+
+<SaveConfigDialog
+    boardType="hubfx"
+    boardLabel="HubFX ESP32-S3"
+    verifyResult={saveVerifyResult}
+    configText={saveConfigText}
+    open={saveDialogOpen}
+    onSave={() => { SendCommand('config.save'); saveDialogOpen = false }}
+    onClose={() => { saveDialogOpen = false }}
+/>
 
 <style>
     /* HubFxTab-specific overrides — shared styles in style.css */

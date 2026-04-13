@@ -125,3 +125,6 @@ export const showFlashProgress = writable(false)
 
 /** Summary shown after flash completes */
 export const flashResult = writable<{ success: boolean; message: string } | null>(null)
+
+/** Whether the save config dialog is visible */
+export const showSaveConfig = writable(false)

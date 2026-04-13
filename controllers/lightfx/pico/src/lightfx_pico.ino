@@ -1,5 +1,5 @@
 /**
- * LightFX Pico Controller v0.7.0
+ * LightFX Pico Controller v0.9.0
  * 
  * Server controller for lighting effects - receives commands from HubFX over USB serial.
  * Controls: 8-channel LED outputs with sequences, 3 servos.
@@ -36,8 +36,8 @@
 //  FIRMWARE INFO
 // ============================================================================
 
-#define FIRMWARE_VERSION "0.8.0"
-#define BUILD_NUMBER 23
+#define FIRMWARE_VERSION "0.9.0"
+#define BUILD_NUMBER 24
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -207,12 +207,27 @@ void setupLightFxCallbacks() {
     });
     
     // LANDING_LIGHT_BIND callback
-    lightfxServer.onLandingLightBind([](uint8_t slot, uint8_t servoId, uint8_t ledChannel,
+    // Wire format: [slot:u8][servoId:u8][channelMask:u8][brightness:u8]
+    //   servoId=0: no servo (LED-only group)
+    //   channelMask: bitmask, bit0=ch1 .. bit7=ch8
+    lightfxServer.onLandingLightBind([](uint8_t slot, uint8_t servoId, uint8_t channelMask,
                                         uint8_t brightness) -> uint8_t {
-        landingLights[slot - 1].setSlot(slot);  // Set slot ID for progress reporting
-        landingLights[slot - 1].configure(
-            &servos[servoId - 1], &ledManager.channel(ledChannel - 1),
-            brightness);
+        // Decode channelMask to LedControl* array
+        LedControl* leds[LandingLight::MAX_LEDS];
+        uint8_t ledCount = 0;
+        for (uint8_t bit = 0; bit < LED_CHANNEL_COUNT; bit++) {
+            if (channelMask & (1 << bit)) {
+                leds[ledCount++] = &ledManager.channel(bit);
+            }
+        }
+        if (ledCount == 0) return LightFxError::INVALID_CHANNEL;
+
+        // Servo pointer (nullptr if servoId == 0)
+        ServoControl* servo = (servoId > 0) ? &servos[servoId - 1] : nullptr;
+
+        landingLights[slot - 1].setSlot(slot);
+        landingLights[slot - 1].configure(servo, leds, ledCount, brightness);
+
         // Register progress callback (emits LANDING_LIGHT_STATUS packets)
         landingLights[slot - 1].onProgress([](const LightFxLandingLightStatus& status) {
             lightfxServer.sendLandingLightStatus(status);

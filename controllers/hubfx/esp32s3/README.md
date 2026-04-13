@@ -422,9 +422,31 @@ If `esp_get_free_heap_size()` returns ~300–370 KB instead of ~8 MB:
 | SD CMD | 38 | SD_MMC command | MicroSD CMD |
 | SD CLK | 39 | SD_MMC clock | MicroSD CLK |
 | SD D0 | 40 | SD_MMC data 0 | MicroSD DAT0 |
+| PPM IN | 5 | RC receiver PPM input | IN_1 header |
 | LED (conn) | 48 | Onboard RGB LED | (built-in) |
 | USB D- | 19 | USB Host (fixed) | USB hub/device |
 | USB D+ | 20 | USB Host (fixed) | USB hub/device |
+
+### RC Receiver Input (PPM)
+
+HubFX reads a composite PPM signal from the RC receiver on **GPIO5** (IN_1 header). This provides up to 12 RC channels on a single wire, used for program switching, throttle input (engine sound), and other real-time control.
+
+**Signal:** Standard composite PPM — each channel encoded as the time between consecutive falling edges (1000–2000µs typical), with a sync gap (>3ms) between frames. 50Hz frame rate typical.
+
+**Y-harness supported:** PPM is unidirectional (receiver drives, devices listen). A passive Y-harness can split the signal to HubFX and another device (e.g., flight controller) — both inputs are high-impedance.
+
+#### RC Receiver Signal Voltage Compatibility
+
+| Manufacturer | Signal Voltage | Direct to ESP32-S3 | Notes |
+|-------------|---------------|--------------------|---------|
+| **Jeti** (REX, RSat, R-series) | 3.3V | Yes — no level shifter needed | Internal 3.3V logic regardless of supply voltage |
+| **Futaba** (S.Bus / PPM) | 3.3V | Yes — no level shifter needed | 3.3V signaling, supply can be 3.8–8.4V |
+| **Spektrum** (DSMX / PPM) | 3.3V | Yes — no level shifter needed | Satellite and standard receivers, 3.3V logic |
+| **FrSky** (X/R/TD series) | 3.3V | Yes — no level shifter needed | May use inverted PPM polarity (set `PPM_INVERT = true`) |
+| **TBS Crossfire / ELRS** | 3.3V | Yes — no level shifter needed | CRSF is serial not PPM; PPM output is 3.3V |
+| **Older FM/72MHz receivers** | 5V | **No** — needs voltage divider or level shifter | Rare in modern setups |
+
+> **All modern RC receivers (post-2010) use 3.3V logic internally** regardless of the servo power rail voltage (4.8–8.4V). The ESP32-S3 GPIO is 3.3V native — direct connection is safe for all current production receivers. When in doubt, verify with a multimeter or oscilloscope before connecting.
 
 ### TAS5825M Codec Wiring
 

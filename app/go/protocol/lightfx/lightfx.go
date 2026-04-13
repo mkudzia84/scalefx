@@ -156,8 +156,11 @@ func CmdLedEnable(ch byte, enabled bool) []byte {
 	return protocol.BuildPacket(LedEnable, []byte{ch, e}, 0)
 }
 
-func CmdLandingLightBind(slot, servoID, ledCh, brightness byte) []byte {
-	payload := []byte{slot, servoID, ledCh, brightness}
+// CmdLandingLightBind binds a landing group to a servo + channel mask.
+// servoID=0 means no servo (LED-only group).
+// channelMask: bitmask, bit0=ch1 .. bit7=ch8.
+func CmdLandingLightBind(slot, servoID, channelMask, brightness byte) []byte {
+	payload := []byte{slot, servoID, channelMask, brightness}
 	return protocol.BuildPacket(LandingLightBind, payload, 0)
 }
 

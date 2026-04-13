@@ -1,11 +1,14 @@
 <!-- ScaleFX Studio — LightFX Tab -->
-<!-- Two-column: Left=Programs & Channels, Right=Landing Lights & Servos -->
+<!-- Two-column: Left=Programs & Channels, Right=Landing Light Groups (servo bindings) -->
 <!-- Top bar: slave mode toggle, input channel bar view, mode-dependent servo routing. -->
 <script lang="ts">
     import { SendCommand } from '../../../wailsjs/go/main/App'
     import { connectionInfo } from '../stores'
-    import ServoWidget from '../components/ServoWidget.svelte'
     import { eventTypes, presets, presetGroups, type EventTypeDef, type ParamDef, type LightPreset } from '../light-data'
+    import SaveConfigDialog from '../dialogs/SaveConfigDialog.svelte'
+    import { LightConfigVerifier, type LightConfig, type GroupPolicy } from '../config/light-verifier'
+    import { generateLightYaml } from '../config/config-yaml-gen'
+    import { EMPTY_RESULT, type VerifyResult } from '../config/config-verifier'
 
     export let boardLabel: string = 'LightFX'
 
@@ -33,16 +36,15 @@
         id: number; type: string; typeName: string; params: Record<string, number>
     }
 
-    type ChannelMode = 'events' | 'landing'
+    type ChannelMode = 'events' | 'group'
 
     interface ChannelState {
         enabled: boolean
         mode: ChannelMode
+        groupIndex: number  // which group (0-based index into groups[])
         preset: string
         events: SeqEvent[]
         brightness: number
-        landingSlot: number     // which landing slot to bind (0,1,2)
-        landingDeployed: boolean // whether landing light is deployed in this program
     }
 
     interface Program {
@@ -50,6 +52,7 @@
         bandMin_us: number      // PWM range low  (1000-2000 µs)
         bandMax_us: number      // PWM range high (1000-2000 µs)
         channels: ChannelState[]
+        groupPolicies: GroupPolicy[]  // one per group
         playing: boolean
     }
 
@@ -79,15 +82,15 @@
     let programs: Program[] = (() => {
         const bands = autoBands(3)
         return [
-            createProgramWithBand('Off', bands[0].min, bands[0].max, true),
-            createProgramWithBand('Flight', bands[1].min, bands[1].max),
-            createProgramWithBand('Landing', bands[2].min, bands[2].max, false, true),
+            createProgramWithBand('Off', bands[0].min, bands[0].max, true, ['off']),
+            createProgramWithBand('Flight', bands[1].min, bands[1].max, false, ['off']),
+            createProgramWithBand('Landing', bands[2].min, bands[2].max, false, ['on']),
         ]
     })()
     let activeProgram = 1
     let nextEventId = 1
 
-    function createProgramWithBand(name: string, min_us: number, max_us: number, allDisabled = false, landingDeployed = false): Program {
+    function createProgramWithBand(name: string, min_us: number, max_us: number, allDisabled = false, groupPolicies: GroupPolicy[] = []): Program {
         return {
             name,
             bandMin_us: min_us,
@@ -95,12 +98,12 @@
             channels: Array.from({ length: CHANNEL_COUNT }, () => ({
                 enabled: !allDisabled,
                 mode: 'events' as ChannelMode,
+                groupIndex: 0,
                 preset: 'Custom',
                 events: [],
                 brightness: 100,
-                landingSlot: 0,
-                landingDeployed,
             })),
+            groupPolicies: [...groupPolicies],
             playing: false,
         }
     }
@@ -112,13 +115,14 @@
         const gap = PWM_MAX - lastMax
         const newMin = Math.min(lastMax + 1, PWM_MAX)
         const newMax = Math.min(newMin + Math.max(Math.floor(gap / 2), 50) - 1, PWM_MAX)
-        const newProg = createProgramWithBand(`Program ${programs.length + 1}`, newMin, newMax)
-        // Sync channel modes and landing slots from existing programs
+        const defaultPolicies = groups.map(() => 'off' as GroupPolicy)
+        const newProg = createProgramWithBand(`Program ${programs.length + 1}`, newMin, newMax, false, defaultPolicies)
+        // Sync channel modes + groupIndex from existing programs
         if (programs.length > 0) {
             const ref = programs[0]
             for (let i = 0; i < CHANNEL_COUNT; i++) {
                 newProg.channels[i].mode = ref.channels[i].mode
-                newProg.channels[i].landingSlot = ref.channels[i].landingSlot
+                newProg.channels[i].groupIndex = ref.channels[i].groupIndex
             }
         }
         programs = [...programs, newProg]
@@ -202,18 +206,17 @@
     }
 
     function playProgram() {
-        const deploySlots = new Set<number>()
-        const retractSlots = new Set<number>()
         prog.channels.forEach((c, i) => {
             if (!c.enabled) return
             if (c.mode === 'events' && c.events.length > 0) sendChannelSeq(i)
-            if (c.mode === 'landing') {
-                if (c.landingDeployed) deploySlots.add(c.landingSlot)
-                else retractSlots.add(c.landingSlot)
-            }
         })
-        deploySlots.forEach(s => deployLanding(s))
-        retractSlots.forEach(s => retractLanding(s))
+        // Per-group landing policies: deploy or retract
+        for (let gi = 0; gi < groups.length; gi++) {
+            const policy = prog.groupPolicies[gi] ?? 'off'
+            if (policy === 'on') deployGroup(gi)
+            else if (policy === 'off') retractGroup(gi)
+            // 'gear' — controlled by HubFX, no explicit action here
+        }
         prog.playing = true; programs = programs
     }
     function stopProgram() {
@@ -221,14 +224,13 @@
         prog.playing = false; channelPlaying = channelPlaying; programs = programs
     }
 
-    // ─── Cross-program sync (landing designation is global) ───
+    // ─── Cross-program sync (channel mode + group designation is global) ───
     function setChannelMode(chIdx: number, mode: ChannelMode) {
         for (const p of programs) p.channels[chIdx].mode = mode
         programs = programs
     }
-    function syncChannelLandingSlot(chIdx: number) {
-        const slot = prog.channels[chIdx].landingSlot
-        for (const p of programs) p.channels[chIdx].landingSlot = slot
+    function setChannelGroup(chIdx: number, groupIdx: number) {
+        for (const p of programs) p.channels[chIdx].groupIndex = groupIdx
         programs = programs
     }
 
@@ -256,39 +258,162 @@
         }
     }
 
-    // ─── Landing Lights (right column) ───
-    // Non-slave: 2 slots (servo 2 & 3), Slave: 3 slots (all servos)
-    $: landingSlotCount = slaveMode ? 3 : 2
-
-    interface LandingSlot {
+    // ─── Landing Groups ───
+    interface ServoBindingState {
         servo: number      // servo id (1-3)
-        ledChannel: number // LED channel (1-8)
-        brightness: number
-        bound: boolean
-        servoEnabled: boolean
-        enabled: boolean
+        // Servo configuration (always visible)
+        servoPulse_us: number
+        servoMin_us: number
+        servoMax_us: number
+        servoSpeed: number
+        servoAccel: number
+        servoDecel: number
+        servoReversed: boolean
     }
 
-    // Always keep 3 backing slots; display only landingSlotCount
-    let landingSlots: LandingSlot[] = [
-        { servo: 2, ledChannel: 1, brightness: 100, bound: false, servoEnabled: true, enabled: true },
-        { servo: 3, ledChannel: 2, brightness: 100, bound: false, servoEnabled: true, enabled: true },
-        { servo: 1, ledChannel: 3, brightness: 100, bound: false, servoEnabled: true, enabled: true },
+    interface LandingGroupState {
+        name: string
+        binding: ServoBindingState | null   // at most one servo binding per group
+    }
+
+    function defaultBinding(servoId: number = 2): ServoBindingState {
+        return {
+            servo: servoId,
+            servoPulse_us: 1500, servoMin_us: 500, servoMax_us: 2500, servoSpeed: 4000, servoAccel: 8000, servoDecel: 8000, servoReversed: false,
+        }
+    }
+
+    let groups: LandingGroupState[] = [
+        { name: 'Group 1', binding: null },
     ]
-    $: visibleSlots = landingSlots.slice(0, landingSlotCount)
 
-    function bindLanding(idx: number) {
-        const s = landingSlots[idx]
-        SendCommand(`landing.bind ${idx + 1} ${s.servo} ${s.ledChannel} ${s.brightness}`)
-        landingSlots[idx].bound = true; landingSlots = landingSlots
+    function addGroup() {
+        groups = [...groups, { name: `Group ${groups.length + 1}`, binding: null }]
+        // Add a policy entry for each existing program
+        for (const p of programs) p.groupPolicies.push('off')
+        programs = programs
     }
-    function unbindLanding(idx: number) {
-        SendCommand(`landing.unbind ${idx + 1}`); landingSlots[idx].bound = false; landingSlots = landingSlots
+    function removeGroup(gi: number) {
+        groups = groups.filter((_, i) => i !== gi)
+        // Remove policy entry and fix channel groupIndex references
+        for (const p of programs) {
+            p.groupPolicies.splice(gi, 1)
+            for (const c of p.channels) {
+                if (c.mode === 'group') {
+                    if (c.groupIndex === gi) { c.mode = 'events' as ChannelMode; c.groupIndex = 0 }
+                    else if (c.groupIndex > gi) c.groupIndex--
+                }
+            }
+        }
+        programs = programs
     }
-    function deployLanding(idx: number) { SendCommand(`landing.deploy ${idx + 1}`) }
-    function retractLanding(idx: number) { SendCommand(`landing.retract ${idx + 1}`) }
-    function deployAllLanding() { SendCommand('landing.deploy') }
-    function retractAllLanding() { SendCommand('landing.retract') }
+    function addBinding(gi: number) {
+        const nextServo = availableServos[0]?.id ?? 1
+        groups[gi].binding = defaultBinding(nextServo)
+        groups = groups
+    }
+    function removeBinding(gi: number) {
+        groups[gi].binding = null
+        groups = groups
+    }
+
+    // ─── Landing group commands ───
+
+    /** Build a channel bitmask for a group (bit0=ch1 .. bit7=ch8). */
+    function groupChannelMask(gi: number): number {
+        let mask = 0
+        const ref = programs.length > 0 ? programs[0] : null
+        if (!ref) return 0
+        for (let ci = 0; ci < ref.channels.length; ci++) {
+            if (ref.channels[ci].mode === 'group' && ref.channels[ci].groupIndex === gi) {
+                mask |= (1 << ci)
+            }
+        }
+        return mask
+    }
+
+    function deployGroup(gi: number) {
+        const mask = groupChannelMask(gi)
+        const b = groups[gi].binding
+        if (mask === 0 && !b) return  // nothing to deploy
+        const slot = gi + 1
+        const servoId = b ? b.servo : 0
+        const channels = groupMemberChannels(gi).join(',') || '1'  // fallback
+        // 1. Apply servo config if binding exists
+        if (b) {
+            let cmd = `servo.config ${b.servo} ${b.servoMin_us} ${b.servoMax_us}`
+            cmd += ` ${b.servoSpeed} ${b.servoAccel} ${b.servoDecel}`
+            if (b.servoReversed) cmd += ' rev'
+            SendCommand(cmd)
+        }
+        // 2. Bind group: slot, servo (0=none), channels, brightness
+        SendCommand(`landing.bind ${slot} ${servoId} ${channels} 100`)
+        // 3. Deploy
+        SendCommand(`landing.deploy ${slot}`)
+    }
+    function retractGroup(gi: number) {
+        const mask = groupChannelMask(gi)
+        if (mask === 0 && !groups[gi].binding) return
+        SendCommand(`landing.retract ${gi + 1}`)
+    }
+    function deployAllGroups() { for (let gi = 0; gi < groups.length; gi++) deployGroup(gi) }
+    function retractAllGroups() { for (let gi = 0; gi < groups.length; gi++) retractGroup(gi) }
+
+    // ─── Servo control (within group binding) ───
+    function setServoPosition(gi: number) {
+        const s = groups[gi].binding!
+        SendCommand(`servo set ${s.servo} ${s.servoPulse_us}`)
+    }
+    function applyServoConfig(gi: number) {
+        const s = groups[gi].binding!
+        let cmd = `servo.config ${s.servo} ${s.servoMin_us} ${s.servoMax_us}`
+        cmd += ` ${s.servoSpeed} ${s.servoAccel} ${s.servoDecel}`
+        if (s.servoReversed) cmd += ' rev'
+        SendCommand(cmd)
+    }
+    function centerServo(gi: number) {
+        const s = groups[gi].binding!
+        s.servoPulse_us = Math.round((s.servoMin_us + s.servoMax_us) / 2)
+        groups = groups; setServoPosition(gi)
+    }
+    function minServoPos(gi: number) {
+        groups[gi].binding!.servoPulse_us = groups[gi].binding!.servoMin_us
+        groups = groups; setServoPosition(gi)
+    }
+    function maxServoPos(gi: number) {
+        groups[gi].binding!.servoPulse_us = groups[gi].binding!.servoMax_us
+        groups = groups; setServoPosition(gi)
+    }
+    function setServoMinHere(gi: number) {
+        groups[gi].binding!.servoMin_us = groups[gi].binding!.servoPulse_us
+        groups = groups; applyServoConfig(gi)
+    }
+    function setServoMaxHere(gi: number) {
+        groups[gi].binding!.servoMax_us = groups[gi].binding!.servoPulse_us
+        groups = groups; applyServoConfig(gi)
+    }
+    function resetServoDefaults(gi: number) {
+        const b = groups[gi].binding!
+        b.servoMin_us = 500; b.servoMax_us = 2500
+        b.servoSpeed = 4000; b.servoAccel = 8000; b.servoDecel = 8000
+        b.servoReversed = false
+        groups = groups; applyServoConfig(gi)
+    }
+
+    // ─── Group member channels (reactive) ───
+    // Returns the list of LED channel numbers (1-based) assigned to a given group
+    function groupMemberChannels(gi: number): number[] {
+        // Channel mode/groupIndex is global across programs, so just read from the first
+        const ref = programs.length > 0 ? programs[0] : null
+        if (!ref) return []
+        const members: number[] = []
+        for (let ci = 0; ci < ref.channels.length; ci++) {
+            if (ref.channels[ci].mode === 'group' && ref.channels[ci].groupIndex === gi) {
+                members.push(ci + 1) // 1-based
+            }
+        }
+        return members
+    }
 
     // ─── Servo definitions ───
     // Non-slave: Servo 1 = input, Servos 2-3 available for landing lights
@@ -301,6 +426,76 @@
     let masterBrightness = 100
     function setMasterBrightness() { SendCommand(`brightness ${masterBrightness}`) }
     function allOff() { SendCommand('led.off 0') }
+
+    // ─── Save Config Dialog + Verification ───
+    const lightVerifier = new LightConfigVerifier()
+    let saveDialogOpen = false
+    let saveVerifyResult: VerifyResult = EMPTY_RESULT
+    let saveConfigText = ''
+
+    // Build a LightConfig snapshot from current UI state
+    function buildLightConfig(): LightConfig {
+        return {
+            programs: programs.map(p => ({
+                name: p.name,
+                bandMin_us: p.bandMin_us,
+                bandMax_us: p.bandMax_us,
+                channels: p.channels.map(c => ({
+                    enabled: c.enabled,
+                    mode: c.mode as 'events' | 'group',
+                    groupIndex: c.groupIndex,
+                    events: c.events.map(e => ({
+                        id: e.id,
+                        type: e.type,
+                        params: { ...e.params },
+                    })),
+                })),
+                groupPolicies: [...p.groupPolicies],
+            })),
+            groups: groups.map((g, gi) => ({
+                name: g.name,
+                memberChannels: groupMemberChannels(gi),
+                servoBindings: g.binding ? [{
+                    servo: g.binding.servo,
+                    servoMin_us: g.binding.servoMin_us,
+                    servoMax_us: g.binding.servoMax_us,
+                    servoSpeed: g.binding.servoSpeed,
+                    servoAccel: g.binding.servoAccel,
+                    servoDecel: g.binding.servoDecel,
+                    servoReversed: g.binding.servoReversed,
+                }] : [],
+            })),
+            masterBrightness,
+            channelCount: CHANNEL_COUNT,
+            pwmMin: PWM_MIN,
+            pwmMax: PWM_MAX,
+            hubAvailable: isHubFX || slaveMode,
+        }
+    }
+
+    // Live verification — re-run whenever programs, groups, or brightness change
+    let liveResult: VerifyResult = EMPTY_RESULT
+    $: {
+        // Any reactive read of programs / groups / masterBrightness triggers re-verify
+        void programs; void groups; void masterBrightness
+        liveResult = lightVerifier.verify(buildLightConfig())
+    }
+
+    // Severity lookup — reactive declaration so Svelte tracks liveResult as a dependency.
+    // When liveResult changes, sev is reassigned (new function ref), causing all template
+    // expressions using sev(...) to re-evaluate (clearing stale highlights).
+    let sev: (path: string) => string | null
+    $: sev = (() => {
+        void liveResult  // reactive dependency
+        return (path: string): string | null => lightVerifier.severityForPath(path)
+    })()
+
+    function openSaveDialog() {
+        const cfg = buildLightConfig()
+        saveVerifyResult = lightVerifier.verify(cfg)
+        saveConfigText = generateLightYaml(cfg)
+        saveDialogOpen = true
+    }
 </script>
 
 <div class="tab-root">
@@ -314,6 +509,16 @@
             <span class="slider-val">{masterBrightness}%</span>
             <button class="small" on:click={setMasterBrightness}>Set</button>
             <button class="small danger" on:click={allOff}>All Off</button>
+            <button class="primary small" on:click={openSaveDialog}>💾 Save Config…</button>
+            {#if !liveResult.valid}
+                <span class="verify-badge error" title="{liveResult.counts.error} error(s), {liveResult.counts.warning} warning(s)">
+                    ⚠ {liveResult.counts.error + liveResult.counts.warning}
+                </span>
+            {:else if liveResult.counts.warning > 0}
+                <span class="verify-badge warning" title="{liveResult.counts.warning} warning(s)">
+                    ⚠ {liveResult.counts.warning}
+                </span>
+            {/if}
         </div>
 
         <div class="mode-toggle">
@@ -391,7 +596,9 @@
                                         disabled={controlsDisabled}>✕ Remove</button>
                             {/if}
                         </div>
-                        <div class="band-row">
+                        <div class="band-row" class:verify-error={sev(`programs[${activeProgram}].band`) === 'error'}
+                             class:verify-warn={sev(`programs[${activeProgram}].band`) === 'warning'}
+                             class:verify-ok={sev(`programs[${activeProgram}].band`) === null}>
                             <span class="field-label band-label"
                                   class:band-overlap={bandOverlap(programs, activeProgram)}
                                   title="PWM input range (µs) — must not overlap other programs">Band µs</span>
@@ -422,7 +629,10 @@
 
                         {#each prog.channels as channel, idx}
                             <div class="channel" class:ch-disabled={!channel.enabled}
-                                 class:ch-landing={channel.mode === 'landing'}>
+                                 class:ch-group={channel.mode === 'group'}
+                                 class:verify-error={sev(`programs[${activeProgram}].channels[${idx}]`) === 'error'}
+                                 class:verify-warn={sev(`programs[${activeProgram}].channels[${idx}]`) === 'warning'}
+                                 class:verify-ok={channel.enabled && sev(`programs[${activeProgram}].channels[${idx}]`) === null}>
                                 <!-- Channel header -->
                                 <div class="ch-header">
                                     <span class="ch-num">{ch(idx)}</span>
@@ -437,9 +647,9 @@
                                         <button class="mode-chip" class:active={channel.mode === 'events'}
                                                 on:click={() => setChannelMode(idx, 'events')}
                                                 disabled={!channel.enabled}>Events</button>
-                                        <button class="mode-chip" class:active={channel.mode === 'landing'}
-                                                on:click={() => setChannelMode(idx, 'landing')}
-                                                disabled={!channel.enabled}>Landing</button>
+                                        <button class="mode-chip" class:active={channel.mode === 'group'}
+                                                on:click={() => setChannelMode(idx, 'group')}
+                                                disabled={!channel.enabled}>Group</button>
                                     </div>
 
                                     {#if channel.mode === 'events'}
@@ -457,7 +667,16 @@
 
                                         <span class="ch-summary">{channel.events.length} evt{channel.events.length !== 1 ? 's' : ''}</span>
                                     {:else}
-                                        <span class="ch-summary landing-hint">→ Landing Slot {channel.landingSlot + 1}</span>
+                                        <select class="ch-group-select" bind:value={channel.groupIndex}
+                                                on:change={() => setChannelGroup(idx, channel.groupIndex)}
+                                                disabled={!channel.enabled || groups.length === 0}>
+                                            {#each groups as g, gi}
+                                                <option value={gi}>{g.name}</option>
+                                            {/each}
+                                        </select>
+                                        {#if groups.length === 0}
+                                            <span class="ch-summary group-hint">No groups defined</span>
+                                        {/if}
                                     {/if}
 
                                     <!-- play/stop per channel -->
@@ -528,133 +747,211 @@
                                         {/if}
                                     </div>
                                 {/if}
-
-                                <!-- Landing mode binding selector -->
-                                {#if channel.enabled && channel.mode === 'landing'}
-                                    <div class="ch-detail landing-detail">
-                                        <span class="field-label">Slot</span>
-                                        <select bind:value={channel.landingSlot} class="field-input"
-                                                on:change={() => syncChannelLandingSlot(idx)}
-                                                style="width: 80px">
-                                            {#each Array.from({length: landingSlotCount}, (_, i) => i) as s}
-                                                <option value={s}>Slot {s + 1}</option>
-                                            {/each}
-                                        </select>
-                                        <span class="landing-slot-info">
-                                            Servo {landingSlots[channel.landingSlot].servo},
-                                            LED {landingSlots[channel.landingSlot].ledChannel}
-                                        </span>
-                                        <!-- svelte-ignore a11y-label-has-associated-control -->
-                                        <label class="deployed-toggle">
-                                            <input type="checkbox" bind:checked={channel.landingDeployed}
-                                                   on:change={() => { programs = programs }} />
-                                            <span>{channel.landingDeployed ? 'Deployed' : 'Retracted'}</span>
-                                        </label>
-                                    </div>
-                                {/if}
                             </div>
                         {/each}
                     </section>
                 </div>
 
-                <!-- ═══════ RIGHT: Landing Lights & Servos ═══════ -->
+                <!-- ═══════ RIGHT: Landing Groups ═══════ -->
                 <div class="col">
-                    <!-- Landing Lights Settings -->
                     <section class="card">
                         <div class="card-header">
-                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg> Landing Lights</h3>
+                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg> Landing Light Groups</h3>
                             <div class="header-actions">
-                                <button class="small primary" disabled={controlsDisabled}
-                                        on:click={deployAllLanding}>Deploy All</button>
-                                <button class="small" disabled={controlsDisabled}
-                                        on:click={retractAllLanding}>Retract All</button>
+                                <button class="small" on:click={addGroup}>+ Group</button>
+                                <button class="small primary" disabled={controlsDisabled || groups.length === 0}
+                                        on:click={() => deployAllGroups()}>Deploy All</button>
+                                <button class="small" disabled={controlsDisabled || groups.length === 0}
+                                        on:click={() => retractAllGroups()}>Retract All</button>
                             </div>
                         </div>
 
-                        <div class="landing-slots">
-                            {#each visibleSlots as slot, idx}
-                                <div class="landing-slot" class:slot-bound={slot.bound}
-                                     class:slot-off={!slot.enabled}>
-                                    <div class="slot-header">
-                                        <span class="slot-label">Slot {idx + 1}</span>
-                                        <!-- svelte-ignore a11y-label-has-associated-control -->
-                                        <label class="slot-enable-toggle" title={slot.enabled ? 'Disable' : 'Enable'}>
-                                            <input type="checkbox" bind:checked={slot.enabled}
-                                                   disabled={controlsDisabled} />
-                                            <span class="slot-enable-text">{slot.enabled ? 'ON' : 'OFF'}</span>
-                                        </label>
-                                        {#if slot.bound}
-                                            <span class="slot-badge bound">BOUND</span>
-                                        {:else}
-                                            <span class="slot-badge unbound">UNBOUND</span>
-                                        {/if}
-                                    </div>
+                        {#if !slaveMode}
+                            <p class="slot-hint">Servo 1 = Input. Servos 2–3 available for bindings.</p>
+                        {/if}
 
-                                    <div class="slot-fields">
-                                        <div class="field-col">
-                                            <span class="flbl">Servo</span>
-                                            <select bind:value={slot.servo} class="field-input"
-                                                    disabled={controlsDisabled}>
-                                                {#each availableServos as s}
-                                                    <option value={s.id}>{s.name}</option>
-                                                {/each}
-                                            </select>
-                                        </div>
-                                        <div class="field-col">
-                                            <span class="flbl">LED Ch</span>
-                                            <select bind:value={slot.ledChannel} class="field-input"
-                                                    disabled={controlsDisabled}>
-                                                {#each Array.from({length: 8}, (_, i) => i + 1) as l}
-                                                    <option value={l}>{l}</option>
-                                                {/each}
-                                            </select>
-                                        </div>
-                                        <div class="field-col">
-                                            <span class="flbl">Bright %</span>
-                                            <input type="number" bind:value={slot.brightness}
-                                                   class="field-input narrow" min="0" max="100"
-                                                   disabled={controlsDisabled} />
-                                        </div>
-                                    </div>
+                        {#if groups.length === 0}
+                            <p class="empty-hint">No landing light groups. Click "+ Group" to create one.</p>
+                        {/if}
 
-                                    <!-- Servo enable toggle -->
-                                    <div class="slot-servo-toggle">
-                                        <!-- svelte-ignore a11y-label-has-associated-control -->
-                                        <label class="toggle-label">
-                                            <input type="checkbox" bind:checked={slot.servoEnabled}
-                                                   disabled={controlsDisabled} />
-                                            <span>Servo Output</span>
-                                        </label>
-                                    </div>
-
-                                    <div class="slot-actions">
-                                        {#if slot.bound}
-                                            <button class="small" on:click={() => deployLanding(idx)}
-                                                    disabled={controlsDisabled}>Deploy</button>
-                                            <button class="small" on:click={() => retractLanding(idx)}
-                                                    disabled={controlsDisabled}>Retract</button>
-                                            <button class="small danger" on:click={() => unbindLanding(idx)}
-                                                    disabled={controlsDisabled}>Unbind</button>
-                                        {:else}
-                                            <button class="small primary" on:click={() => bindLanding(idx)}
-                                                    disabled={controlsDisabled}>Bind</button>
-                                        {/if}
-                                    </div>
+                        {#each groups as group, gi}
+                            <div class="group-card"
+                                 class:verify-error={sev(`groups[${gi}]`) === 'error'}
+                                 class:verify-warn={sev(`groups[${gi}]`) === 'warning'}>
+                                <div class="group-header">
+                                    <input type="text" bind:value={group.name} class="group-name-input"
+                                           placeholder="Group name" disabled={controlsDisabled}
+                                           on:input={() => { groups = groups }} />
+                                    <button class="small danger" on:click={() => removeGroup(gi)}
+                                            disabled={controlsDisabled}>✕</button>
                                 </div>
-                            {/each}
-                        </div>
-                    </section>
 
-                    <!-- Servo widget -->
-                    <section class="card">
-                        <div class="card-header">
-                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg> Servos</h3>
-                            {#if !slaveMode}
-                                <span class="header-hint">Servo 1 = Input (see bar above)</span>
-                            {/if}
-                        </div>
-                        <ServoWidget servos={availableServos} disabled={controlsDisabled}
-                                     label="Servos" showHeader={false} />
+                                <!-- Per-group policy for active program -->
+                                <div class="group-policy-row">
+                                    <span class="group-policy-label">{programs[activeProgram]?.name ?? 'Program'}</span>
+                                    <select class="group-policy-select" bind:value={prog.groupPolicies[gi]}
+                                            on:change={() => { programs = programs }}
+                                            class:verify-warn={sev(`programs[${activeProgram}].groupPolicies[${gi}]`) === 'warning'}>
+                                        <option value="off">Off</option>
+                                        <option value="on">On</option>
+                                        {#if isHubFX || slaveMode}
+                                            <option value="gear">Gear</option>
+                                        {/if}
+                                    </select>
+                                    <button class="small" on:click={() => deployGroup(gi)}
+                                            disabled={controlsDisabled}>Deploy</button>
+                                    <button class="small" on:click={() => retractGroup(gi)}
+                                            disabled={controlsDisabled}>Retract</button>
+                                </div>
+
+                                <!-- Member channels -->
+                                {#if groupMemberChannels(gi).length > 0}
+                                    <div class="group-members">
+                                        <span class="group-members-label">Channels:</span>
+                                        {#each groupMemberChannels(gi) as chNum}
+                                            <span class="group-member-chip">{chNum}</span>
+                                        {/each}
+                                    </div>
+                                {:else}
+                                    <div class="group-members empty">
+                                        <span class="group-members-label">No channels assigned — set channels to "Group" mode on the left</span>
+                                    </div>
+                                {/if}
+
+                                <div class="binding-list">
+                                    {#if group.binding}
+                                        <div class="binding-card"
+                                             class:verify-error={sev(`groups[${gi}].bindings[0]`) === 'error'}
+                                             class:verify-warn={sev(`groups[${gi}].bindings[0]`) === 'warning'}>
+                                            <div class="binding-header">
+                                                <span class="binding-label">Servo Binding</span>
+                                                <button class="tiny danger" style="margin-left: auto"
+                                                        on:click={() => removeBinding(gi)}
+                                                        disabled={controlsDisabled}>✕ Remove</button>
+                                            </div>
+
+                                            <div class="binding-fields">
+                                                <div class="field-col">
+                                                    <span class="flbl">Servo</span>
+                                                    <select bind:value={group.binding.servo} class="field-input servo-select"
+                                                            disabled={controlsDisabled}
+                                                            on:change={() => { groups = groups }}
+                                                            class:verify-error={sev(`groups[${gi}].bindings[0].servo`) === 'error'}
+                                                            class:verify-warn={sev(`groups[${gi}].bindings[0].servo`) === 'warning'}>
+                                                        {#each availableServos as s}
+                                                            <option value={s.id}>{s.name}</option>
+                                                        {/each}
+                                                    </select>
+                                                </div>
+                                            </div>
+
+                                            <!-- ─── Servo Configuration (always visible) ─── -->
+                                            <div class="servo-config-panel">
+                                                <span class="scfg-section-title">Servo {group.binding.servo} Config</span>
+
+                                                <!-- Position slider -->
+                                                <div class="scfg-row">
+                                                    <span class="scfg-label">Position</span>
+                                                    <input type="range" bind:value={group.binding.servoPulse_us}
+                                                           min={group.binding.servoMin_us} max={group.binding.servoMax_us} step="1"
+                                                           class="slider wide" disabled={controlsDisabled} />
+                                                    <input type="number" bind:value={group.binding.servoPulse_us}
+                                                           class="field-input narrow" min="500" max="2500" step="10"
+                                                           disabled={controlsDisabled} />
+                                                    <span class="scfg-unit">µs</span>
+                                                    <button class="small primary" on:click={() => setServoPosition(gi)}
+                                                            disabled={controlsDisabled}>Set</button>
+                                                </div>
+                                                <!-- Quick position buttons -->
+                                                <div class="scfg-quick">
+                                                    <button class="tiny" on:click={() => minServoPos(gi)}
+                                                            disabled={controlsDisabled}>Min</button>
+                                                    <button class="tiny" on:click={() => centerServo(gi)}
+                                                            disabled={controlsDisabled}>Center</button>
+                                                    <button class="tiny" on:click={() => maxServoPos(gi)}
+                                                            disabled={controlsDisabled}>Max</button>
+                                                </div>
+
+                                                <!-- Limits -->
+                                                <div class="scfg-section">
+                                                    <span class="scfg-section-title">Limits</span>
+                                                    <div class="scfg-grid">
+                                                        <div class="scfg-field">
+                                                            <span class="scfg-label">Min µs</span>
+                                                            <input type="number" bind:value={group.binding.servoMin_us}
+                                                                   class="field-input" min="300" max="2700" step="10"
+                                                                   disabled={controlsDisabled} />
+                                                        </div>
+                                                        <div class="scfg-field">
+                                                            <span class="scfg-label">Max µs</span>
+                                                            <input type="number" bind:value={group.binding.servoMax_us}
+                                                                   class="field-input" min="300" max="2700" step="10"
+                                                                   disabled={controlsDisabled} />
+                                                        </div>
+                                                        <div class="scfg-field scfg-actions-inline">
+                                                            <button class="tiny set-btn" on:click={() => setServoMinHere(gi)}
+                                                                    disabled={controlsDisabled}>↓ Set Min Here</button>
+                                                            <button class="tiny set-btn" on:click={() => setServoMaxHere(gi)}
+                                                                    disabled={controlsDisabled}>↑ Set Max Here</button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Direction -->
+                                                <div class="scfg-section">
+                                                    <span class="scfg-section-title">Direction</span>
+                                                    <!-- svelte-ignore a11y-label-has-associated-control -->
+                                                    <label class="toggle-label">
+                                                        <input type="checkbox" bind:checked={group.binding.servoReversed}
+                                                               disabled={controlsDisabled} />
+                                                        <span class="scfg-label">Reversed</span>
+                                                    </label>
+                                                    <span class="scfg-hint">
+                                                        {group.binding.servoReversed ? 'Open = Min, Close = Max' : 'Open = Max, Close = Min'}
+                                                    </span>
+                                                </div>
+
+                                                <!-- Motion Profile -->
+                                                <div class="scfg-section">
+                                                    <span class="scfg-section-title">Motion Profile</span>
+                                                    <div class="scfg-grid">
+                                                        <div class="scfg-field">
+                                                            <span class="scfg-label">Speed <span class="scfg-unit">µs/s</span></span>
+                                                            <input type="number" bind:value={group.binding.servoSpeed}
+                                                                   class="field-input" min="0" max="65535" step="100"
+                                                                   disabled={controlsDisabled} />
+                                                        </div>
+                                                        <div class="scfg-field">
+                                                            <span class="scfg-label">Accel <span class="scfg-unit">µs/s²</span></span>
+                                                            <input type="number" bind:value={group.binding.servoAccel}
+                                                                   class="field-input" min="0" max="65535" step="100"
+                                                                   disabled={controlsDisabled} />
+                                                        </div>
+                                                        <div class="scfg-field">
+                                                            <span class="scfg-label">Decel <span class="scfg-unit">µs/s²</span></span>
+                                                            <input type="number" bind:value={group.binding.servoDecel}
+                                                                   class="field-input" min="0" max="65535" step="100"
+                                                                   disabled={controlsDisabled} />
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Apply / Defaults -->
+                                                <div class="scfg-actions">
+                                                    <button class="small primary" on:click={() => applyServoConfig(gi)}
+                                                            disabled={controlsDisabled}>Apply Config</button>
+                                                    <button class="small" on:click={() => resetServoDefaults(gi)}
+                                                            disabled={controlsDisabled}>Defaults</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    {:else}
+                                        <button class="add-binding-btn" on:click={() => addBinding(gi)}
+                                                disabled={controlsDisabled}>+ Add Servo Binding</button>
+                                    {/if}
+                                </div>
+                            </div>
+                        {/each}
                     </section>
                 </div>
             </div>
@@ -662,8 +959,49 @@
     </div>
 </div>
 
+<SaveConfigDialog
+    boardType="lightfx"
+    boardLabel={boardLabel}
+    verifyResult={saveVerifyResult}
+    configText={saveConfigText}
+    open={saveDialogOpen}
+    onSave={() => { SendCommand('config.save'); saveDialogOpen = false }}
+    onClose={() => { saveDialogOpen = false }}
+/>
+
 <style>
     /* LightFxTab-specific — shared styles in style.css */
+
+    /* ─── Verification badge ─── */
+    .verify-badge {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 1px 7px;
+        border-radius: 8px;
+        line-height: 1.4;
+    }
+    .verify-badge.error {
+        background: color-mix(in srgb, var(--error) 20%, transparent);
+        color: var(--error);
+    }
+    .verify-badge.warning {
+        background: color-mix(in srgb, var(--warning) 20%, transparent);
+        color: var(--warning);
+    }
+
+    /* ─── Verification state highlights ─── */
+    .verify-error {
+        border-color: var(--error) !important;
+        background: color-mix(in srgb, var(--error) 8%, var(--bg-surface)) !important;
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--error) 35%, transparent);
+    }
+    .verify-warn {
+        border-color: var(--warning) !important;
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 35%, transparent);
+    }
+    .verify-ok {
+        border-color: color-mix(in srgb, var(--ok, #4ec9b0) 50%, transparent) !important;
+    }
 
     /* ─── Overrides ─── */
     .tab-root { min-height: 0; }
@@ -677,6 +1015,7 @@
     }
 
     .field-input.narrow { width: 50px; }
+    .field-input.servo-select { width: 90px; }
 
     /* ─── Master Control ─── */
     .master-ctrl {
@@ -747,13 +1086,6 @@
         font-style: italic;
     }
 
-    /* ─── Card ─── */
-    .header-hint {
-        font-size: 10px;
-        color: var(--text-dim);
-        font-style: italic;
-    }
-
     /* ─── Program Bar ─── */
     .program-bar {
         display: flex;
@@ -798,7 +1130,27 @@
 
     .add-tab:hover { color: var(--accent); border-color: var(--accent); }
 
-    .program-actions { display: flex; gap: 6px; }
+    .program-actions { display: flex; gap: 6px; align-items: center; }
+
+    .group-policy-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }
+
+    .group-policy-select {
+        background: var(--bg-input);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        color: var(--text-bright);
+        font-size: 11px;
+        font-family: var(--font-mono);
+        font-weight: 600;
+        padding: 3px 6px;
+        cursor: pointer;
+    }
 
     /* ─── Program Settings ─── */
     .program-settings {
@@ -821,7 +1173,7 @@
     }
 
     .channel.ch-disabled { opacity: 0.5; }
-    .channel.ch-landing { border-color: color-mix(in srgb, var(--ok, #4ec9b0) 40%, transparent); }
+    .channel.ch-group { border-color: color-mix(in srgb, var(--ok, #4ec9b0) 40%, transparent); }
 
     .ch-header {
         display: flex;
@@ -892,7 +1244,7 @@
         padding-right: 4px;
     }
 
-    .landing-hint { color: var(--ok, #4ec9b0); font-weight: 600; }
+    .group-hint { color: var(--ok, #4ec9b0); font-weight: 600; }
     .ch-play { display: flex; gap: 2px; }
 
     /* ─── Channel Detail ─── */
@@ -901,30 +1253,6 @@
         background: var(--bg-surface);
         border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
     }
-
-    .landing-detail {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 10px 6px 28px;
-    }
-
-    .landing-slot-info {
-        font-size: 10px;
-        color: var(--text-dim);
-        font-family: var(--font-mono);
-    }
-
-    .deployed-toggle {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        font-size: 11px;
-        cursor: pointer;
-        margin-left: auto;
-    }
-    .deployed-toggle input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
-    .deployed-toggle span { color: var(--text-dim); font-family: var(--font-mono); font-weight: 600; }
 
     .detail-row {
         display: flex;
@@ -1052,10 +1380,10 @@
 
     .add-btn:hover { color: var(--accent); border-color: var(--accent); }
 
-    /* ─── Landing Lights ─── */
-    .landing-slots { display: flex; flex-direction: column; gap: 10px; }
+    /* ─── Landing Light Group Bindings ─── */
+    .binding-list { display: flex; flex-direction: column; gap: 10px; }
 
-    .landing-slot {
+    .binding-card {
         background: var(--bg-raised);
         border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
         border-radius: 5px;
@@ -1063,46 +1391,21 @@
         transition: border-color 0.2s;
     }
 
-    .landing-slot.slot-bound { border-color: color-mix(in srgb, var(--ok, #4ec9b0) 50%, transparent); }
-    .landing-slot.slot-off { opacity: 0.45; }
-
-    .slot-header {
+    .binding-header {
         display: flex;
         align-items: center;
         gap: 8px;
         margin-bottom: 8px;
     }
 
-    .slot-enable-toggle {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        font-size: 10px;
-        font-weight: 700;
-        cursor: pointer;
-    }
-
-    .slot-enable-toggle input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
-    .slot-enable-text { color: var(--text-dim); font-family: var(--font-mono); }
-
-    .slot-label {
+    .binding-label {
         font-family: var(--font-mono);
         font-size: 12px;
         font-weight: 700;
         color: var(--text-bright);
     }
 
-    .slot-badge {
-        font-size: 9px;
-        font-weight: 700;
-        padding: 1px 6px;
-        border-radius: 3px;
-    }
-
-    .slot-badge.bound { color: var(--ok, #4ec9b0); background: color-mix(in srgb, var(--ok, #4ec9b0) 12%, transparent); }
-    .slot-badge.unbound { color: var(--text-dim); background: color-mix(in srgb, var(--border) 40%, transparent); }
-
-    .slot-fields {
+    .binding-fields {
         display: flex;
         align-items: flex-end;
         gap: 8px;
@@ -1119,9 +1422,203 @@
         letter-spacing: 0.3px;
     }
 
-    .slot-servo-toggle { margin-bottom: 8px; }
+    .slot-hint {
+        font-size: 11px;
+        color: var(--text-dim);
+        margin: 0 0 8px 0;
+        font-style: italic;
+    }
 
-    .slot-actions { display: flex; gap: 4px; }
+    /* ─── Landing Group Cards ─── */
+    .group-card {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px;
+        margin-bottom: 10px;
+        background: var(--bg-surface);
+    }
+
+    .group-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 8px;
+    }
+
+    .group-name-input {
+        font-size: 12px;
+        font-weight: 700;
+        background: var(--bg-input);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        color: var(--text-bright);
+        padding: 3px 8px;
+        width: 120px;
+        font-family: var(--font-mono);
+    }
+    .group-name-input:focus { border-color: var(--border-focus); outline: none; }
+
+    .group-policy-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 6px;
+        padding: 4px 0;
+    }
+
+    .group-members {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+        padding: 4px 0;
+    }
+    .group-members.empty { opacity: 0.6; }
+
+    .group-members-label {
+        font-size: 9px;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        white-space: nowrap;
+    }
+
+    .group-member-chip {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--ok, #4ec9b0);
+        background: color-mix(in srgb, var(--ok, #4ec9b0) 12%, transparent);
+        border-radius: 3px;
+        padding: 1px 6px;
+    }
+
+    .empty-hint {
+        font-size: 11px;
+        color: var(--text-dim);
+        text-align: center;
+        padding: 16px;
+        font-style: italic;
+    }
+
+    .add-binding-btn {
+        width: 100%;
+        text-align: center;
+        border-style: dashed;
+        color: var(--text-dim);
+        font-size: 10px;
+        padding: 5px 8px;
+        margin-top: 6px;
+    }
+    .add-binding-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+    .ch-group-select {
+        background: var(--bg-input);
+        border: 1px solid color-mix(in srgb, var(--ok, #4ec9b0) 40%, transparent);
+        border-radius: 3px;
+        color: var(--ok, #4ec9b0);
+        font-size: 10px;
+        font-family: var(--font-mono);
+        font-weight: 600;
+        padding: 2px 4px;
+        cursor: pointer;
+    }
+
+    /* ─── Servo Config (always visible within binding) ─── */
+    .servo-config-panel {
+        margin-top: 8px;
+        padding: 10px;
+        background: var(--bg-surface);
+        border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+        border-radius: 4px;
+    }
+
+    .scfg-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 6px;
+    }
+
+    .scfg-quick {
+        display: flex;
+        gap: 4px;
+        margin-bottom: 10px;
+    }
+
+    .scfg-section { margin-bottom: 10px; }
+    .scfg-section:last-of-type { margin-bottom: 0; }
+
+    .scfg-section-title {
+        display: block;
+        font-size: 9px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--text-dim);
+        margin-bottom: 6px;
+        padding-bottom: 3px;
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
+    }
+
+    .scfg-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+        gap: 8px;
+    }
+
+    .scfg-field {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .scfg-actions-inline {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        justify-content: flex-end;
+    }
+
+    .scfg-label {
+        font-size: 9px;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        flex-shrink: 0;
+    }
+
+    .scfg-unit {
+        font-weight: 400;
+        font-size: 8px;
+        text-transform: none;
+        letter-spacing: 0;
+        opacity: 0.7;
+    }
+
+    .scfg-hint {
+        font-size: 11px;
+        color: var(--text-dim);
+        font-style: italic;
+        margin-top: 2px;
+    }
+
+    .scfg-actions {
+        margin-top: 8px;
+        display: flex;
+        gap: 6px;
+    }
+
+    .set-btn {
+        font-size: 9px;
+        padding: 2px 6px;
+        color: var(--accent);
+        border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+    }
+
+    .slider { accent-color: var(--accent); }
+    .slider.wide { flex: 1; min-width: 60px; }
 
     /* ─── Band Range Slider ─── */
     .band-row {

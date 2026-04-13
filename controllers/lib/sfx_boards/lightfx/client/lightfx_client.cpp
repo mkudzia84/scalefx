@@ -72,12 +72,12 @@ CommandResult LightFxClient::servoSettings(uint8_t id, uint16_t minUs, uint16_t 
 // LightFxClient - Landing Light Control
 // ============================================================================
 
-CommandResult LightFxClient::landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
+CommandResult LightFxClient::landingLightBind(uint8_t slot, uint8_t servoId, uint8_t channelMask,
                                      uint8_t brightness) {
     uint8_t payload[4];
     payload[0] = slot;
-    payload[1] = servoId;
-    payload[2] = ledChannel;
+    payload[1] = servoId;       // 0=no servo
+    payload[2] = channelMask;   // bitmask: bit0=ch1 .. bit7=ch8
     payload[3] = brightness;
     return sendCommand(LightFxPacket::LANDING_LIGHT_BIND, payload, sizeof(payload));
 }

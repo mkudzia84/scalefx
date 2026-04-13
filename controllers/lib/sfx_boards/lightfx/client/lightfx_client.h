@@ -41,7 +41,7 @@ public:
     // Landing Light Control
     // ========================================================================
 
-    CommandResult landingLightBind(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
+    CommandResult landingLightBind(uint8_t slot, uint8_t servoId, uint8_t channelMask,
                           uint8_t brightness = 255);
     CommandResult landingLightUnbind(uint8_t slot = 0);
     CommandResult landingLightDeploy(uint8_t slot = 0);

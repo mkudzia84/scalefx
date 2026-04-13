@@ -1,14 +1,14 @@
 /**
- * NoOp Sound Effects — ESP32-S3 Sine Wave I2S Test
+ * NoOp Simple — ESP32-S3 Sine Wave I2S Test (Standalone)
  *
- * Standalone firmware that generates a sine wave via the ESP-IDF v5.x
- * I2S standard-mode driver, initializes the TAS5825M codec via I2C,
- * and prints extensive diagnostics to Serial.
+ * Minimal standalone firmware that generates a 440 Hz sine wave via the
+ * ESP-IDF v5.x I2S standard-mode driver, initializes the TAS5825M codec
+ * via I2C, and prints extensive diagnostics to Serial.
  *
  * NO external libraries — only Arduino core + ESP-IDF headers.
  * Works in both Arduino IDE (board: "ESP32S3 Dev Module") and PlatformIO.
  *
- * Hardware: ESP32-S3-DevKitC-1 (WROOM-1 N8R8) + HubFX board
+ * Hardware: ESP32-S3R8 (HubFX board) or ESP32-S3-DevKitC-1
  *
  * I2S Pin Mapping (wired to TAS5825M codec):
  *   GPIO1  — I2S Data Out (DIN on codec)

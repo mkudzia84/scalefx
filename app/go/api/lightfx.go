@@ -36,8 +36,9 @@ func (a *LightFxApi) ServoConfig(id byte, min, max, speed, accel, decel uint16, 
 	return a.sendACK(lightfx.CmdServoSettings(id, min, max, speed, accel, decel, reversed))
 }
 
-func (a *LightFxApi) LandingBind(slot, servo, led, bright byte) ApiResult {
-	return a.sendACK(lightfx.CmdLandingLightBind(slot, servo, led, bright))
+// LandingBind binds a landing group: servoID=0 means no servo, channelMask is bitmask (bit0=ch1..bit7=ch8).
+func (a *LightFxApi) LandingBind(slot, servo, channelMask, bright byte) ApiResult {
+	return a.sendACK(lightfx.CmdLandingLightBind(slot, servo, channelMask, bright))
 }
 
 func (a *LightFxApi) LandingUnbind(slot byte) ApiResult  { return a.sendACK(lightfx.CmdLandingLightUnbind(slot)) }

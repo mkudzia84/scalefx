@@ -22,7 +22,9 @@
  *   LED_MASTER_BRIGHTNESS (0x4A) - [pct:u8] (0-100)
  *   SERVO_SET (0x50)       - [id:u8][pulse:i16]
  *   SERVO_SETTINGS (0x51)  - [id:u8][min:u16][max:u16][speed:u16][accel:u16][decel:u16][rev:u8(opt)]
- *   LANDING_LIGHT_BIND (0x52)    - [slot:u8][servo:u8][led:u8][brightness:u8]
+ *   LANDING_LIGHT_BIND (0x52)    - [slot:u8][servo:u8][channelMask:u8][brightness:u8]
+ *                                  servo=0 means no servo (LED-only group)
+ *                                  channelMask: bitmask, bit0=ch1 .. bit7=ch8
  *   LANDING_LIGHT_UNBIND (0x53)  - [slot:u8] (0=all)
  *   LANDING_LIGHT_DEPLOY (0x54)  - [slot:u8] (0=all)
  *   LANDING_LIGHT_RETRACT (0x55) - [slot:u8] (0=all)
@@ -66,7 +68,7 @@ namespace LightFxPacket {
     constexpr uint8_t SERVO_SETTINGS    = 0x51;  // [id:u8][min:u16][max:u16][speed:u16][accel:u16][decel:u16]
     
     // Landing light control
-    constexpr uint8_t LANDING_LIGHT_BIND    = 0x52;  // [slot:u8][servo_id:u8][led_ch:u8][deployUs:u16][retractUs:u16][brightness:u8]
+    constexpr uint8_t LANDING_LIGHT_BIND    = 0x52;  // [slot:u8][servo_id:u8][channelMask:u8][brightness:u8]  (servo_id=0: no servo, channelMask: bit0=ch1..bit7=ch8)
     constexpr uint8_t LANDING_LIGHT_UNBIND  = 0x53;  // [slot:u8] (0=all)
     constexpr uint8_t LANDING_LIGHT_DEPLOY  = 0x54;  // [slot:u8] (0=all)
     constexpr uint8_t LANDING_LIGHT_RETRACT = 0x55;  // [slot:u8] (0=all)
@@ -156,6 +158,16 @@ namespace LightFxSpec {
     
     inline bool isValidLandingLightSlotOrAll(uint8_t slot) {
         return slot == 0 || isValidLandingLightSlot(slot);
+    }
+    
+    /** @brief Validate channel mask (at least one bit set, only bits 0-7) */
+    inline bool isValidChannelMask(uint8_t mask) {
+        return mask != 0;  // All 8 bits valid (ch1-ch8), just need at least one
+    }
+    
+    /** @brief Validate servo ID for landing light (0=no servo, 1-3=servo) */
+    inline bool isValidLandingServoId(uint8_t id) {
+        return id == 0 || isValidServoId(id);
     }
 }
 
@@ -292,7 +304,7 @@ using LedResetCallback = std::function<uint8_t(uint8_t channel)>;
 using LedEnableCallback = std::function<uint8_t(uint8_t channel, uint8_t enabled)>;
 
 // Landing light callbacks
-using LandingLightBindCallback = std::function<uint8_t(uint8_t slot, uint8_t servoId, uint8_t ledChannel,
+using LandingLightBindCallback = std::function<uint8_t(uint8_t slot, uint8_t servoId, uint8_t channelMask,
                                                        uint8_t brightness)>;
 using LandingLightSlotCallback = std::function<uint8_t(uint8_t slot)>;
 

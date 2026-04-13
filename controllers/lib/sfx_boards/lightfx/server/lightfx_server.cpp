@@ -52,13 +52,13 @@ CommandHandleResult LightFxServer::handleModulePacket(uint8_t type, const uint8_
         case LightFxPacket::LANDING_LIGHT_BIND: {
             SFX_REQUIRE_LEN(4);
             uint8_t slot = payload[0];
-            uint8_t servoId = payload[1];
-            uint8_t ledChannel = payload[2];
+            uint8_t servoId = payload[1];       // 0=no servo, 1-3=servo id
+            uint8_t channelMask = payload[2];   // bitmask: bit0=ch1 .. bit7=ch8
             uint8_t brightness = payload[3];
             SFX_VALIDATE(LightFxSpec::isValidLandingLightSlot(slot), LightFxError::INVALID_SLOT);
-            SFX_VALIDATE(LightFxSpec::isValidServoId(servoId), LightFxError::INVALID_SERVO);
-            SFX_VALIDATE(LightFxSpec::isValidLedChannel(ledChannel), LightFxError::INVALID_CHANNEL);
-            SFX_DISPATCH(_landingLightBindCallback, slot, servoId, ledChannel, brightness);
+            SFX_VALIDATE(LightFxSpec::isValidLandingServoId(servoId), LightFxError::INVALID_SERVO);
+            SFX_VALIDATE(LightFxSpec::isValidChannelMask(channelMask), LightFxError::INVALID_CHANNEL);
+            SFX_DISPATCH(_landingLightBindCallback, slot, servoId, channelMask, brightness);
         }
 
         case LightFxPacket::LANDING_LIGHT_UNBIND: {

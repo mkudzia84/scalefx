@@ -1,22 +1,27 @@
 /*
  * Landing Light Sequencer - Header
  * 
- * Coordinates a retract servo with a landing light LED channel.
- * The light activates when deployment is complete (servo at target)
- * and deactivates before retraction starts.
+ * Coordinates a retract servo with one or more landing light LED channels.
+ * The lights activate when deployment is complete (servo at target)
+ * and deactivate before retraction starts.
  * 
  * State Machine:
  *   UNCONFIGURED → (configure) → RETRACTED
  *   RETRACTED    → (deploy)    → DEPLOYING
- *   DEPLOYING    → (atTarget)  → DEPLOYED  [light ON]
- *   DEPLOYED     → (retract)   → RETRACTING [light OFF immediately]
+ *   DEPLOYING    → (atTarget)  → DEPLOYED  [lights ON]
+ *   DEPLOYED     → (retract)   → RETRACTING [lights OFF immediately]
  *   RETRACTING   → (atTarget)  → RETRACTED
+ * 
+ * Servo-optional:
+ *   If no servo is bound, deploy/retract complete immediately
+ *   (LEDs toggle on/off without waiting for servo motion).
  * 
  * Usage:
  *   LandingLight ll;
- *   ll.configure(&servo, &led, 100);  // brightness=100%
- *   ll.deploy();   // Servo moves to openPosition(), light on when arrived
- *   ll.retract();  // Light off immediately, servo moves to closePosition()
+ *   LedControl* leds[] = { &ledManager.channel(4), &ledManager.channel(5) };
+ *   ll.configure(&servo, leds, 2, 100);  // brightness=100%
+ *   ll.deploy();   // Servo moves to open, lights on when arrived
+ *   ll.retract();  // Lights off immediately, servo closes
  *   ll.update();   // Call in loop()
  */
 
@@ -45,17 +50,19 @@ enum class LandingLightState : uint8_t {
 // ============================================================================
 
 /**
- * @brief Coordinates a retract servo with a landing light LED channel
+ * @brief Coordinates a retract servo with one or more landing light LEDs
  * 
- * Binds one ServoControl and one LedControl to implement the sequence:
- * - Deploy: servo moves to open position, light turns on when target reached
- * - Retract: light turns off immediately, then servo moves to close position
+ * Binds an optional ServoControl and 1-8 LedControl channels.
+ * - Deploy: servo moves to open position (if present), lights on when target reached
+ * - Retract: lights off immediately, servo moves to close (if present)
  *
- * Open/close positions are determined by the servo's limits and direction flag
- * (set via setReversed()). No separate deploy/retract positions needed.
+ * If no servo is bound, deploy/retract complete immediately (LEDs toggle).
+ * Open/close positions are determined by the servo's limits and direction flag.
  */
 class LandingLight {
 public:
+    static constexpr uint8_t MAX_LEDS = 8;
+
     LandingLight() = default;
 
     // ========================================================================
@@ -63,22 +70,23 @@ public:
     // ========================================================================
 
     /**
-     * @brief Bind a servo and LED channel as a landing light pair
+     * @brief Bind LED channels (and optional servo) as a landing light group
      * 
-     * Sets the servo to the close (retract) position and turns the light off.
-     * Open/close positions are derived from servo limits + direction flag.
+     * Sets the servo to close (retract) position (if present) and turns
+     * all LEDs off. Open/close positions are derived from servo limits.
      * 
-     * @param servo Pointer to the retract servo
-     * @param led Pointer to the landing light LED channel
+     * @param servo Pointer to the retract servo (nullptr = no servo)
+     * @param leds Array of LED channel pointers (must not be nullptr)
+     * @param ledCount Number of LED channels (1-MAX_LEDS)
      * @param brightness LED brightness when light is on (0-100, default 100)
      */
-    void configure(ServoControl* servo, LedControl* led,
+    void configure(ServoControl* servo, LedControl** leds, uint8_t ledCount,
                    uint8_t brightness = 100);
 
     /**
-     * @brief Unbind the servo and LED channel
+     * @brief Unbind the servo and LED channels
      * 
-     * Turns the light off and resets to unconfigured state.
+     * Turns all lights off and resets to unconfigured state.
      * Does not move the servo.
      */
     void unconfigure();
@@ -90,17 +98,17 @@ public:
     /**
      * @brief Start deployment sequence
      * 
-     * Moves the servo to the deploy position. The light will turn on
-     * automatically when the servo reaches the target (in update()).
+     * Moves the servo to the deploy position (if present). The lights
+     * will turn on automatically when the servo reaches the target.
+     * If no servo, lights turn on immediately.
      */
     void deploy();
 
     /**
      * @brief Start retraction sequence
      * 
-     * Turns the light off IMMEDIATELY, then moves the servo to
-     * the retract position. This ensures the light is off before
-     * the gear mechanism begins folding.
+     * Turns all lights off IMMEDIATELY, then moves the servo to
+     * the retract position (if present). If no servo, completes immediately.
      */
     void retract();
 
@@ -112,13 +120,14 @@ public:
      * @brief Update state machine (call in loop)
      * 
      * Monitors servo position and triggers light state transitions:
-     * - DEPLOYING + atTarget → light ON, state = DEPLOYED
+     * - DEPLOYING + atTarget → lights ON, state = DEPLOYED
      * - RETRACTING + atTarget → state = RETRACTED
+     * If no servo is bound, transitions happen immediately in deploy()/retract().
      */
     void update();
 
     /**
-     * @brief Emergency shutdown - light off, state to retracted
+     * @brief Emergency shutdown - all lights off, state to retracted
      * 
      * Does not move the servo (servo shutdown handled separately).
      */
@@ -134,8 +143,11 @@ public:
     /** @brief Get current state */
     LandingLightState state() const { return _state; }
 
-    /** @brief Get configured brightness */
-    uint8_t brightness() const { return _brightness; }
+    /** @brief Get number of bound LED channels */
+    uint8_t ledCount() const { return _ledCount; }
+
+    /** @brief Check if a servo is bound */
+    bool hasServo() const { return _servo != nullptr; }
 
     // ========================================================================
     // Progress Callback
@@ -163,12 +175,17 @@ public:
     void setSlot(uint8_t slot) { _slot = slot; }
 
 private:
-    ServoControl* _servo = nullptr;
-    LedControl* _led = nullptr;
+    ServoControl* _servo = nullptr;         // Optional, nullptr = no servo
+    LedControl* _leds[MAX_LEDS] = {};       // LED channels (up to 8)
+    uint8_t _ledCount = 0;                  // Number of bound LEDs
     uint8_t _brightness = 255;
     uint8_t _slot = 0;  // Slot ID for progress reporting (1-3)
     LandingLightState _state = LandingLightState::UNCONFIGURED;
     ProgressCallback _progressCb;
+
+    // LED helpers
+    void _ledsOn();
+    void _ledsOff();
 
     // Emit progress to registered callback
     void _emitProgress(bool finished = false);
