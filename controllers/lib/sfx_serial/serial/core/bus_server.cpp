@@ -236,9 +236,10 @@ bool CoreCommandServer::checkTimeout(unsigned long timeoutMs) {
 
 void CoreCommandServer::reset() {
     _initReceived = false;
-    _initMode = InitMode::SLAVE;
     _initFlags = InitFlags::NONE;
     _transferActive = false;
+    // Note: _boardState is NOT reset here — SfxServer manages state transitions
+    // (e.g., reverting to STANDALONE if config was loaded from flash)
 }
 
 void CoreCommandServer::handleInit(const uint8_t* payload, size_t len) {
@@ -251,8 +252,7 @@ void CoreCommandServer::handleInit(const uint8_t* payload, size_t len) {
         reset();
     }
 
-    // Store mode and flags
-    _initMode = mode;
+    // Store flags (mode is transient — boardState is set by SfxServer::doInit)
     _initFlags = flags;
 
     // Send INIT_READY response
@@ -281,11 +281,12 @@ void CoreCommandServer::sendIdentify() {
 
 void CoreCommandServer::sendStatus() {
     // STATUS payload: [counter:u32LE][uptime:u32LE][freeRam:u32LE]
-    //                 [lastActivity_ms:u32LE][keepaliveCount:u32LE][moduleData:0-N]
+    //                 [lastActivity_ms:u32LE][keepaliveCount:u32LE]
+    //                 [boardState:u8][initFlags:u8][moduleData:0-N]
     uint8_t payload[CoreProtocol::MAX_PAYLOAD_SIZE];
     size_t idx = 0;
 
-    // Core header (20 bytes)
+    // Core header (22 bytes)
     CoreProtocol::putU32LE(&payload[idx], _commandCounter);
     idx += 4;
     CoreProtocol::putU32LE(&payload[idx], millis());
@@ -299,6 +300,8 @@ void CoreCommandServer::sendStatus() {
     idx += 4;
     CoreProtocol::putU32LE(&payload[idx], _keepaliveCounter);
     idx += 4;
+    payload[idx++] = _boardState;
+    payload[idx++] = _initFlags;
 
     // Module-specific data (appended by callback)
     if (_statusDataCallback) {

@@ -196,6 +196,9 @@ using SfxWire::getI16LE;
 using SfxWire::putU32LE;
 using SfxWire::getU32LE;
 
+/// STATUS response core header size in bytes (5×u32 + boardState:u8 + initFlags:u8)
+constexpr size_t STATUS_CORE_HEADER_SIZE = 22;
+
 /**
  * @brief Get text name for packet type (debugging)
  * @param type Packet type
@@ -242,13 +245,51 @@ namespace CorePacket {
  */
 namespace InitMode {
     constexpr uint8_t SLAVE  = 0x00;  ///< Board controlled by HubFX master, keep-alive required
-    constexpr uint8_t CONFIG = 0x01;  ///< Standalone/config mode (CLI or GUI), no keep-alive
+    constexpr uint8_t DIRECT = 0x01;  ///< Direct CLI/GUI control, no keep-alive
+
+    /// @deprecated Use DIRECT — kept for backward compatibility
+    constexpr uint8_t CONFIG = DIRECT;
 
     inline const char* getName(uint8_t mode) {
         switch (mode) {
             case SLAVE:  return "SLAVE";
-            case CONFIG: return "CONFIG";
+            case DIRECT: return "DIRECT";
             default:     return "UNKNOWN";
+        }
+    }
+}
+
+// ============================================================================
+// Board State — Runtime Operational State
+// ============================================================================
+
+/**
+ * @brief Board operational state — reported in STATUS response
+ *
+ * Tracks the full lifecycle of a board including autonomous (standalone)
+ * operation when a config file is loaded from flash, and idle states.
+ * Distinct from InitMode which only describes the INIT command parameter.
+ *
+ * State transitions:
+ *   Power-on → IDLE
+ *   IDLE + config loaded from flash → STANDALONE
+ *   IDLE/STANDALONE + INIT(SLAVE) → SLAVE
+ *   IDLE/STANDALONE + INIT(DIRECT) → DIRECT
+ *   SLAVE/DIRECT + SHUTDOWN/timeout → STANDALONE (if config loaded) or IDLE
+ */
+namespace BoardState {
+    constexpr uint8_t IDLE       = 0x00;  ///< No INIT received, no config loaded — waiting
+    constexpr uint8_t STANDALONE = 0x01;  ///< Config loaded from flash, running autonomously
+    constexpr uint8_t SLAVE      = 0x02;  ///< INIT(SLAVE) received, master controls board
+    constexpr uint8_t DIRECT     = 0x03;  ///< INIT(DIRECT) received, CLI/GUI direct control
+
+    inline const char* getName(uint8_t state) {
+        switch (state) {
+            case IDLE:       return "IDLE";
+            case STANDALONE: return "STANDALONE";
+            case SLAVE:      return "SLAVE";
+            case DIRECT:     return "DIRECT";
+            default:         return "UNKNOWN";
         }
     }
 }
@@ -393,11 +434,11 @@ using CoreKeepaliveCallback = std::function<void()>;
 /**
  * @brief Callback for appending module-specific data to STATUS response
  * 
- * Called by CoreCommandServer::sendStatus() after writing the 12-byte core header.
+ * Called by CoreCommandServer::sendStatus() after writing the 22-byte core header.
  * The callback should write module-specific status bytes into the buffer.
  * 
  * @param buffer Pointer to write position in payload buffer (after core header)
- * @param maxLen Maximum bytes available (typically 52 = 64 - 12)
+ * @param maxLen Maximum bytes available (typically STATUS_CORE_HEADER_SIZE subtracted)
  * @return Number of bytes written to buffer
  */
 using StatusDataCallback = std::function<size_t(uint8_t* buffer, size_t maxLen)>;

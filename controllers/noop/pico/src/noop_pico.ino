@@ -42,7 +42,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.3.0"
-#define BUILD_NUMBER 7
+#define BUILD_NUMBER 10
 
 // ============================================================================
 //  PIN CONFIGURATION (matches GearControl)

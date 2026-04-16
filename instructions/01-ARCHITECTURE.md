@@ -277,8 +277,9 @@ Modules provide board-specific STATUS data via a callback registered on `CoreCom
 ```cpp
 using StatusDataCallback = std::function<size_t(uint8_t* buffer, size_t maxLen)>;
 
-// STATUS response = 20-byte core header + module callback data
-// Core header: [counter:u32LE][uptime:u32LE][freeRam:u32LE][lastActivity_ms:u32LE][keepaliveCount:u32LE]
+// STATUS response = 22-byte core header + module callback data
+// Core header: [counter:u32LE][uptime:u32LE][freeRam:u32LE][lastActivity_ms:u32LE]
+//              [keepaliveCount:u32LE][boardState:u8][initFlags:u8]
 
 server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
     buf[0] = myFlag;

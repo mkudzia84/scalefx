@@ -15,12 +15,12 @@ using namespace CoreProtocol;
 void GearControlClient::onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) {
     switch (type) {
         case CorePacket::STATUS:
-            // Format: [counter:u32][uptime:u32][freeRam:u32][moduleData:32]
+            // Format: 22-byte core header + 32-byte module data
             // Module data per gear (3 × 9 = 27 bytes):
             //   [state:u8][motorCurrent_mA:u16][door0:u16][door1:u16][calibratedStall_mA:u16]
             // Trailing (5 bytes): [yawPos:u16][ledFlags:u8][batteryVoltage_mV:u16]
-            if (len >= 44) {  // 12 core + 32 module
-                const uint8_t* mod = &payload[12];
+            if (len >= CoreProtocol::STATUS_CORE_HEADER_SIZE + 32) {
+                const uint8_t* mod = &payload[CoreProtocol::STATUS_CORE_HEADER_SIZE];
                 for (int i = 0; i < 3; i++) {
                     size_t off = i * 9;
                     _lastStatus.gear[i].state = static_cast<GearState>(mod[off]);
@@ -38,7 +38,7 @@ void GearControlClient::onModulePacket(uint8_t type, uint8_t tag, const uint8_t*
                     _resultQueue.resolve(tag, _lastCommandResult);
                 }
                 if (_statusCallback) _statusCallback(_lastStatus);
-            } else if (len >= 12) {
+            } else if (len >= CoreProtocol::STATUS_CORE_HEADER_SIZE) {
                 if (tag != CoreProtocol::TAG_ASYNC) {
                     _lastCommandResult = CommandResult::Ack();
                     _resultQueue.resolve(tag, _lastCommandResult);

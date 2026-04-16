@@ -61,7 +61,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.10.1"
-#define BUILD_NUMBER 63
+#define BUILD_NUMBER 66
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -292,6 +292,7 @@ static void initFlashAndConfig() {
         auto result = configStore.loadFromFile();
         if (result.ok) {
             SFX_LOG_INFO("Config loaded from flash");
+            server.markConfigLoaded();  // IDLE → STANDALONE
             // TODO: Apply config fields to hardware when schema has real fields
         } else if (result.parsed) {
             SFX_LOG_WARN("Config validation failed: %s", result.error);
@@ -310,7 +311,7 @@ void setup() {
     // Initialize server (serial, device name, indicators, core callbacks)
     server.begin("GearControl", FIRMWARE_VERSION, BUILD_NUMBER);
     server.onInit([](uint8_t mode, uint8_t flags) {
-        (void)flags;  // GearControl accepts both SLAVE and CONFIG
+        (void)flags;  // GearControl accepts both SLAVE and DIRECT
         SFX_LOG_INFO("INIT mode=%s", InitMode::getName(mode));
         performSafeInit();
     });

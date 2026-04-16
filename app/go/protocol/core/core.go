@@ -70,7 +70,10 @@ const (
 
 const (
 	InitModeSlave  byte = 0x00
-	InitModeConfig byte = 0x01
+	InitModeDirect byte = 0x01
+
+	// Deprecated: Use InitModeDirect
+	InitModeConfig = InitModeDirect
 )
 
 // InitModeName returns a human-readable name for an init mode.
@@ -78,10 +81,35 @@ func InitModeName(mode byte) string {
 	switch mode {
 	case InitModeSlave:
 		return "SLAVE"
-	case InitModeConfig:
-		return "CONFIG"
+	case InitModeDirect:
+		return "DIRECT"
 	default:
 		return fmt.Sprintf("0x%02X", mode)
+	}
+}
+
+// ─── Board State — mirrors BoardState namespace in core.h ───
+
+const (
+	BoardStateIdle       byte = 0x00
+	BoardStateStandalone byte = 0x01
+	BoardStateSlave      byte = 0x02
+	BoardStateDirect     byte = 0x03
+)
+
+// BoardStateName returns a human-readable name for a board state.
+func BoardStateName(state byte) string {
+	switch state {
+	case BoardStateIdle:
+		return "IDLE"
+	case BoardStateStandalone:
+		return "STANDALONE"
+	case BoardStateSlave:
+		return "SLAVE"
+	case BoardStateDirect:
+		return "DIRECT"
+	default:
+		return fmt.Sprintf("0x%02X", state)
 	}
 }
 
@@ -91,6 +119,10 @@ const (
 	InitFlagNone    byte = 0x00
 	InitFlagVerbose byte = 0x01
 )
+
+// StatusCoreHeaderSize is the size of the STATUS response core header in bytes.
+// 5×u32 (counter, uptime, freeRam, lastActivity, keepalives) + boardState:u8 + initFlags:u8
+const StatusCoreHeaderSize = 22
 
 // ─── Status Update — mirrors StatusUpdateSource / StatusUpdateType in core.h ───
 

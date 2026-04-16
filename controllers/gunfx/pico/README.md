@@ -71,6 +71,11 @@ Exceptions (fire-and-forget, no response expected):
 | Type | Name | Payload | Response | Description |
 |------|------|---------|----------|-------------|
 | 0xF0 | INIT | mode:u8, flags:u8 (optional) | INIT_READY | Initialize connection |
+
+**INIT Modes:** SLAVE (0x00) = keep-alive required (default), DIRECT (0x01) = no keep-alive timeout  
+**INIT Flags:** bit 0 = VERBOSE (enable async STATUS_UPDATE emissions)  
+GunFX accepts both SLAVE and DIRECT modes with identical behavior.
+
 | 0xF1 | SHUTDOWN | (none) | ACK | Safe shutdown, outputs off |
 | 0xF2 | KEEPALIVE | (none) | ACK | Reset watchdog timer |
 | 0xF3 | INIT_READY | (response) | — | Device info response |
@@ -163,6 +168,12 @@ Exceptions (fire-and-forget, no response expected):
 ## Status Telemetry
 
 ### STATUS Payload (0xF4)
+
+After the 22-byte core header `[counter:u32][uptime:u32][freeRam:u32][lastActivity_ms:u32][keepaliveCount:u32][boardState:u8][initFlags:u8]`:
+
+**Board States:** IDLE(0x00) — no config loaded, STANDALONE(0x01) — config loaded from flash, SLAVE(0x02) — INIT slave mode, DIRECT(0x03) — INIT direct mode
+
+**GunFX Module Data (28 bytes):**
 
 | Offset | Field | Type | Description |
 |--------|-------|------|-------------|

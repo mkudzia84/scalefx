@@ -77,6 +77,11 @@ CRC-8 polynomial 0x07 computed over type + len + payload.
 | Type | Name | Payload | Response | Description |
 |------|------|---------|----------|-------------|
 | 0xF0 | INIT | mode:u8, flags:u8 (optional) | INIT_READY | Initialize connection |
+
+**INIT Modes:** SLAVE (0x00) = keep-alive required (default), DIRECT (0x01) = no keep-alive timeout  
+**INIT Flags:** bit 0 = VERBOSE (enable async STATUS_UPDATE emissions)  
+LightFX accepts both SLAVE and DIRECT modes with identical behavior.
+
 | 0xF1 | SHUTDOWN | (none) | ACK | Safe shutdown, outputs off |
 | 0xF2 | KEEPALIVE | (none) | ACK | Reset watchdog timer |
 | 0xF3 | INIT_READY | (response) | — | Device info response |
@@ -262,7 +267,18 @@ LightFX includes onboard LittleFS flash storage for standalone configuration per
 - **Config path:** `/config.yaml` (default)
 - **Initialized at boot:** `initFlashAndConfig()` in `setup()` mounts LittleFS and loads config
 
-The flash infrastructure enables CONFIG mode operation — when INIT is sent with `mode=CONFIG`, the board can operate standalone without HubFX, reading settings from flash.
+The flash infrastructure enables DIRECT mode operation — when INIT is sent with `mode=DIRECT`, the board can operate standalone without HubFX, reading settings from flash.
+
+### Board State Machine
+
+| State | Value | Description |
+|-------|-------|-------------|
+| IDLE | 0x00 | Power-on default, no config loaded |
+| STANDALONE | 0x01 | Config loaded from flash at boot |
+| SLAVE | 0x02 | INIT received with mode=SLAVE |
+| DIRECT | 0x03 | INIT received with mode=DIRECT |
+
+Transitions: IDLE → STANDALONE (on config load) → SLAVE/DIRECT (on INIT) → IDLE (on SHUTDOWN/timeout)
 
 ---
 

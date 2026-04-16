@@ -240,22 +240,7 @@ public:
     /**
      * @brief Check if INIT has been received (connection established)
      */
-    bool isInitReceived() const { return _initReceived; }
-
-    /**
-     * @brief Backward-compatible alias for isInitReceived()
-     */
     bool isInitialized() const { return _initReceived; }
-
-    /**
-     * @brief Get the INIT mode received (SLAVE or CONFIG)
-     */
-    uint8_t initMode() const { return _initMode; }
-
-    /**
-     * @brief Get the INIT flags received
-     */
-    uint8_t initFlags() const { return _initFlags; }
 
     /**
      * @brief Check if verbose status updates are enabled
@@ -263,14 +248,17 @@ public:
     bool isVerbose() const { return (_initFlags & InitFlags::VERBOSE) != 0; }
 
     /**
-     * @brief Check if the board is in slave mode (keep-alive required)
+     * @brief Get the current board operational state
      */
-    bool isSlaveMode() const { return _initReceived && _initMode == InitMode::SLAVE; }
+    uint8_t boardState() const { return _boardState; }
 
     /**
-     * @brief Check if the board is in config mode (no keep-alive)
+     * @brief Set the board operational state
+     *
+     * Called by SfxServer to manage state transitions (IDLE → STANDALONE,
+     * IDLE/STANDALONE → SLAVE/DIRECT, SLAVE/DIRECT → IDLE/STANDALONE).
      */
-    bool isConfigMode() const { return _initReceived && _initMode == InitMode::CONFIG; }
+    void setBoardState(uint8_t state) { _boardState = state; }
 
     /**
      * @brief Mark a file transfer as active/inactive
@@ -303,8 +291,10 @@ public:
      * @brief Register callback for appending module-specific data to STATUS response
      *
      * The callback receives a buffer pointer and max length, and should write
-     * module-specific status bytes. The bytes are appended after the 12-byte
-     * core header: [counter:u32LE][uptime:u32LE][freeRam:u32LE].
+     * module-specific status bytes. The bytes are appended after the 22-byte
+     * core header: [counter:u32LE][uptime:u32LE][freeRam:u32LE]
+     *              [lastActivity_ms:u32LE][keepaliveCount:u32LE]
+     *              [boardState:u8][initFlags:u8].
      */
     void onStatusData(StatusDataCallback callback) { _statusDataCallback = callback; }
 
@@ -367,8 +357,8 @@ private:
 
     CoreBoardInfo _boardInfo;
     bool _initReceived = false;
-    uint8_t _initMode = InitMode::SLAVE;
     uint8_t _initFlags = InitFlags::NONE;
+    uint8_t _boardState = BoardState::IDLE;
     bool _transferActive = false;
     unsigned long _lastActivityMs = 0;
     unsigned long _prevActivityMs = 0;

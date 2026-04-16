@@ -89,6 +89,8 @@ func (e *Engine) PrintInitReadyInfo(info *InitReadyInfo) {
 }
 
 // ParseStatusPayload parses STATUS response with core header and module data.
+// Core header: 22 bytes (v2) or 20 bytes (legacy).
+// v2: [counter:u32][uptime:u32][freeRam:u32][lastAct:u32][keepalives:u32][boardState:u8][initFlags:u8]
 func (e *Engine) ParseStatusPayload(payload []byte) {
 	if len(payload) < 12 {
 		e.Out.Println("  (payload too short)")
@@ -100,8 +102,35 @@ func (e *Engine) ParseStatusPayload(payload []byte) {
 	freeRAM := protocol.ReadU32LE(payload, 8)
 
 	var moduleData []byte
+	hasV2Header := len(payload) >= 22
 	hasExtended := len(payload) >= 20
-	if hasExtended {
+
+	if hasV2Header {
+		lastActivity := protocol.ReadU32LE(payload, 12)
+		keepalives := protocol.ReadU32LE(payload, 16)
+		boardState := payload[20]
+		initFlags := payload[21]
+		moduleData = payload[22:]
+
+		uptimeSec := uptime_ms / 1000
+		hours := uptimeSec / 3600
+		minutes := (uptimeSec % 3600) / 60
+		seconds := uptimeSec % 60
+
+		e.Out.Printf("  Counter:    %d\n", counter)
+		e.Out.Printf("  Uptime:     %02d:%02d:%02d (%d ms)\n", hours, minutes, seconds, uptime_ms)
+		e.Out.Printf("  Free RAM:   %d bytes (%.1f KB)\n", freeRAM, float64(freeRAM)/1024)
+		e.Out.Printf("  Last Act:   %d ms ago\n", lastActivity)
+		e.Out.Printf("  Keepalives: %d\n", keepalives)
+		e.Out.Printf("  State:      %s\n", core.BoardStateName(boardState))
+		if initFlags != 0 {
+			flags := []string{}
+			if initFlags&core.InitFlagVerbose != 0 {
+				flags = append(flags, "VERBOSE")
+			}
+			e.Out.Printf("  Flags:      %s\n", strings.Join(flags, " "))
+		}
+	} else if hasExtended {
 		lastActivity := protocol.ReadU32LE(payload, 12)
 		keepalives := protocol.ReadU32LE(payload, 16)
 		moduleData = payload[20:]

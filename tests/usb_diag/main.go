@@ -261,8 +261,8 @@ func queryStatus(conn *protocol.Connection) DiagResult {
 	}
 
 	payload := resp.Payload
-	// Core header: 20 bytes [counter:4][uptime:4][freeRam:4][lastActivity:4][keepalives:4]
-	if len(payload) < 20 {
+	// Core header: 22 bytes [counter:4][uptime:4][freeRam:4][lastActivity:4][keepalives:4][boardState:1][initFlags:1]
+	if len(payload) < 22 {
 		d.add("%s STATUS payload too short (%d bytes)", fail("✗"), len(payload))
 		return d
 	}

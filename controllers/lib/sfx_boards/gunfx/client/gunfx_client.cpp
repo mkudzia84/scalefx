@@ -15,12 +15,11 @@ using namespace CoreProtocol;
 void GunFxClient::onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) {
     switch (type) {
         case CorePacket::STATUS:
-            // New format: [counter:u32][uptime:u32][freeRam:u32][moduleData:20]
+            // Format: 22-byte core header + 20-byte module data
             // Module data: [flags:u8][fanSpeed:u8][fanOffMs:u16][servo0-2:u16x3]
             //              [rpm:u16][shots:u32][heaterMs:u32]
-            if (len >= 32) {
-                // Skip core header (12 bytes), parse module data at offset 12
-                const uint8_t* mod = &payload[12];
+            if (len >= CoreProtocol::STATUS_CORE_HEADER_SIZE + 20) {
+                const uint8_t* mod = &payload[CoreProtocol::STATUS_CORE_HEADER_SIZE];
                 uint8_t flags = mod[0];
                 _lastStatus.firing = (flags & 0x01) != 0;
                 _lastStatus.flashActive = (flags & 0x02) != 0;
@@ -41,7 +40,7 @@ void GunFxClient::onModulePacket(uint8_t type, uint8_t tag, const uint8_t* paylo
                 // Core header fields
                 _lastStatus.uptimeMs = getU32LE(&payload[4]);
                 _lastStatus.freeRam = getU32LE(&payload[8]);
-            } else if (len >= 12) {
+            } else if (len >= CoreProtocol::STATUS_CORE_HEADER_SIZE) {
                 // Core-only status (no module data)
                 _lastStatus.uptimeMs = getU32LE(&payload[4]);
                 _lastStatus.freeRam = getU32LE(&payload[8]);

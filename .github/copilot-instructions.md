@@ -984,7 +984,9 @@ server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
 // Free RAM is updated automatically by server.loop()
 ```
 
-STATUS response = 20-byte core header `[counter:u32][uptime:u32][freeRam:u32][lastActivity_ms:u32][keepaliveCount:u32]` + module callback data.
+STATUS response = 22-byte core header `[counter:u32][uptime:u32][freeRam:u32][lastActivity_ms:u32][keepaliveCount:u32][boardState:u8][initFlags:u8]` + module callback data.
+
+Board states: `IDLE(0x00)` — no config loaded, `STANDALONE(0x01)` — config loaded from flash, `SLAVE(0x02)` — INIT slave mode, `DIRECT(0x03)` — INIT direct/config mode.
 
 INIT_READY payload = length-prefixed binary: `[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]`
 

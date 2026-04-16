@@ -36,7 +36,7 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"disconnect": {h.cmdDisconnect, "disconnect", "Disconnect from port", false},
 			"reconnect":  {h.cmdReconnect, "reconnect", "Disconnect and reconnect to same port", false},
 			"ports":      {h.cmdPorts, "ports", "List available serial ports", false},
-			"init":       {h.cmdInit, "init [slave|config] [verbose]", "Send INIT to controller (default: slave)", false},
+			"init":       {h.cmdInit, "init [slave|direct] [verbose]", "Send INIT to controller (default: slave)", false},
 			"identify":   {h.cmdIdentify, "identify", "Identify controller (no state change)", false},
 			"shutdown":   {h.cmdShutdown, "shutdown", "Send SHUTDOWN to controller", true},
 			"status":     {h.cmdStatus, "status", "Request controller status", true},
@@ -165,12 +165,12 @@ func (h *Handler) cmdInit(args []string) {
 		switch strings.ToLower(arg) {
 		case "slave":
 			mode = pcore.InitModeSlave
-		case "config":
-			mode = pcore.InitModeConfig
+		case "direct", "config":
+			mode = pcore.InitModeDirect
 		case "verbose":
 			flags |= pcore.InitFlagVerbose
 		default:
-			h.E.Out.Error("Unknown init arg: %s (use slave|config|verbose)", arg)
+			h.E.Out.Error("Unknown init arg: %s (use slave|direct|verbose)", arg)
 			return
 		}
 	}

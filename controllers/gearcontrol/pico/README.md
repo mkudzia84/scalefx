@@ -167,7 +167,7 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 
 ### STATUS Response (53 bytes module data)
 
-After the 20-byte core header `[counter:u32][uptime:u32][freeRam:u32][lastActivity_ms:u32][keepaliveCount:u32]`:
+After the 22-byte core header `[counter:u32][uptime:u32][freeRam:u32][lastActivity_ms:u32][keepaliveCount:u32][boardState:u8][initFlags:u8]`:
 
 ```
 Per gear (3 × 11 = 33 bytes):
@@ -581,7 +581,18 @@ GearControl includes onboard LittleFS flash storage for standalone configuration
 - **Config path:** `/config.yaml` (default)
 - **Initialized at boot:** `initFlashAndConfig()` in `setup()` mounts LittleFS and loads config
 
-The flash infrastructure enables CONFIG mode operation — when INIT is sent with `mode=CONFIG`, the board can operate standalone without HubFX, reading settings from flash.
+The flash infrastructure enables DIRECT mode operation — when INIT is sent with `mode=DIRECT`, the board can operate standalone without HubFX, reading settings from flash.
+
+### Board State Machine
+
+| State | Value | Description |
+|-------|-------|-------------|
+| IDLE | 0x00 | Power-on default, no config loaded |
+| STANDALONE | 0x01 | Config loaded from flash at boot |
+| SLAVE | 0x02 | INIT received with mode=SLAVE |
+| DIRECT | 0x03 | INIT received with mode=DIRECT |
+
+Transitions: IDLE → STANDALONE (on config load) → SLAVE/DIRECT (on INIT) → IDLE (on SHUTDOWN/timeout)
 
 ## Version History
 

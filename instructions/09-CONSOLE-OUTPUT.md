@@ -43,8 +43,8 @@ The Go CLI uses the binary protocol and produces formatted console output:
 
 ### STATUS
 
-**Wire (20-byte header):** `[counter:u32LE][uptime_ms:u32LE][freeRam:u32LE][lastActivity_ms:u32LE][keepalives:u32LE]`
-+ module-specific data after byte 20.
+**Wire (22-byte header):** `[counter:u32LE][uptime_ms:u32LE][freeRam:u32LE][lastActivity_ms:u32LE][keepalives:u32LE][boardState:u8][initFlags:u8]`
++ module-specific data after byte 22.
 
 **Output (core header):**
 ```
@@ -52,6 +52,7 @@ The Go CLI uses the binary protocol and produces formatted console output:
   Uptime:    {hours}h {minutes}m {seconds}s
   Free RAM:  {bytes} bytes ({KB:.1f} KB)
   Last seen: {formatted_time} ago  (keepalives: {count})
+  State:     {board_state_name}
 ```
 Then dispatches module data based on detected controller type → GunFX / LightFX / GearControl / HubFX status parser.
 If no controller detected, shows raw hex of module bytes.

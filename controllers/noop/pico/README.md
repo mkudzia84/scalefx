@@ -25,10 +25,8 @@ Implements only the core system commands via binary COBS protocol:
 ## Status Response
 
 Binary status response (0xF4) payload:
-- initialized: u8 (1 if INIT completed)
-- commandCount: u32le (number of commands processed)
-- uptimeMs: u32le (milliseconds since boot)
-- freeRam: u32le (free heap memory in bytes)
+- Core header (22 bytes): `[counter:u32LE][uptime:u32LE][freeRam:u32LE][lastActivity_ms:u32LE][keepaliveCount:u32LE][boardState:u8][initFlags:u8]`
+- No module data (core header only)
 
 ## Hardware
 

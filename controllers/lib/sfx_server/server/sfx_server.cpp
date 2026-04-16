@@ -150,16 +150,19 @@ void SfxServer::buildDeviceName(const char* prefix) {
 void SfxServer::doInit(uint8_t mode, uint8_t flags) {
     // Manage keep-alive timeout based on init mode:
     // SLAVE mode: keep-alive required (enable timeout)
-    // CONFIG mode: no keep-alive (disable timeout)
+    // DIRECT mode: no keep-alive (disable timeout)
     if (mode == InitMode::SLAVE) {
         _timeoutEnabled = _timeoutEnabledByUser;  // Restore original setting
-    } else if (mode == InitMode::CONFIG) {
-        _timeoutEnabled = false;  // No keep-alive in config mode
+        _core.setBoardState(BoardState::SLAVE);
+    } else if (mode == InitMode::DIRECT) {
+        _timeoutEnabled = false;  // No keep-alive in direct mode
+        _core.setBoardState(BoardState::DIRECT);
     }
 
-    SFX_LOG_INFO("INIT: mode=%s flags=0x%02X verbose=%s",
+    SFX_LOG_INFO("INIT: mode=%s flags=0x%02X verbose=%s state=%s",
                  InitMode::getName(mode), flags,
-                 (flags & InitFlags::VERBOSE) ? "on" : "off");
+                 (flags & InitFlags::VERBOSE) ? "on" : "off",
+                 BoardState::getName(_core.boardState()));
 
     if (_initCb) _initCb(mode, flags);
     _indicators.setConnected(true);
@@ -171,6 +174,8 @@ void SfxServer::doShutdown() {
     _indicators.setConnected(false);
     // Restore timeout setting for next connection
     _timeoutEnabled = _timeoutEnabledByUser;
+    // Revert to STANDALONE if config was loaded from flash, otherwise IDLE
+    _core.setBoardState(_configLoaded ? BoardState::STANDALONE : BoardState::IDLE);
 }
 
 void SfxServer::checkConnectionTimeout() {

@@ -170,6 +170,27 @@ public:
     void addModuleHandler(ICommandHandler* handler);
 
     /**
+     * @brief Mark that a valid config has been loaded from flash
+     *
+     * Call this after successfully loading configuration from flash storage.
+     * This enables the board to enter STANDALONE state and revert to
+     * STANDALONE (instead of IDLE) after a connection loss or shutdown.
+     *
+     * State transition: IDLE → STANDALONE
+     */
+    void markConfigLoaded() {
+        _configLoaded = true;
+        if (_core.boardState() == BoardState::IDLE) {
+            _core.setBoardState(BoardState::STANDALONE);
+        }
+    }
+
+    /**
+     * @brief Check if a valid config has been loaded from flash
+     */
+    bool isConfigLoaded() const { return _configLoaded; }
+
+    /**
      * @brief Enable/disable automatic connection timeout
      *
      * When disabled, SfxServer will not call doShutdown() on serial
@@ -249,6 +270,7 @@ private:
     bool _routerInitialized = false;
     bool _timeoutEnabled = true;
     bool _timeoutEnabledByUser = true;  // Original user setting (before mode override)
+    bool _configLoaded = false;         // Config loaded from flash (for STANDALONE revert)
 
     static constexpr uint32_t BAUD_RATE = 6000000;
     static constexpr unsigned long CONNECTION_TIMEOUT_ms = 15000;

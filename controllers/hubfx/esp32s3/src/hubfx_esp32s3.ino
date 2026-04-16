@@ -43,7 +43,7 @@
  */
 
 #define FIRMWARE_VERSION "0.32.0"
-#define BUILD_NUMBER 174
+#define BUILD_NUMBER 177
 
 // ============================================================================
 // FEATURE FLAGS — Board bring-up: uncomment to enable features one by one
@@ -910,7 +910,7 @@ void setup() {
     static constexpr uint32_t FRESH_BOOT_WINDOW_MS = 5000;  // 5s grace period
 
     server.onInit([](uint8_t mode, uint8_t flags) {
-        (void)flags;
+        (void)flags;  // HubFX accepts both SLAVE and DIRECT
         SFX_LOG_INFO("INIT mode=%s flags=0x%02X", InitMode::getName(mode), flags);
         uint32_t now = millis();
 
@@ -1002,7 +1002,7 @@ void setup() {
     });
 
     // ---- STATUS callback: module-specific status bytes ----
-    // Appended after the 20-byte core header in STATUS responses.
+    // Appended after the 22-byte core header in STATUS responses.
     // Layout: [flags:u8][slaveMask:u8][loop1Count:u32LE]
     //         [i2cDeviceMask:u8][ina226_mV[0..5]:u16LE x 6] = 6 + 13 = 19 bytes
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
@@ -1081,6 +1081,7 @@ void setup() {
     initProtocolHandlers();
 #ifdef FEATURE_CONFIG
     initConfig();       // onLoaded callback initializes EngineFX
+    server.markConfigLoaded();  // IDLE → STANDALONE
 #endif
 #ifdef FEATURE_USB_HOST
     initSlaveManager();

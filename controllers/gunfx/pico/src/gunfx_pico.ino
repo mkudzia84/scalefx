@@ -40,7 +40,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.7.0"
-#define BUILD_NUMBER 20
+#define BUILD_NUMBER 23
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -132,7 +132,7 @@ void setup() {
     // Initialize server (serial, device name, indicators, core callbacks)
     server.begin("GunFX", FIRMWARE_VERSION, BUILD_NUMBER);
     server.onInit([](uint8_t mode, uint8_t flags) {
-        (void)flags;  // GunFX accepts both SLAVE and CONFIG
+        (void)flags;  // GunFX accepts both SLAVE and DIRECT
         SFX_LOG_INFO("INIT mode=%s", InitMode::getName(mode));
         performSafeInit();
     });

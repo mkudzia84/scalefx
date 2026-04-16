@@ -88,11 +88,11 @@ System-level commands common to all ScaleFX devices:
 
 | Field | Type | Values | Default |
 |-------|------|--------|---------|
-| mode | u8 | 0x00=SLAVE, 0x01=CONFIG | 0x00 (SLAVE) |
+| mode | u8 | 0x00=SLAVE, 0x01=DIRECT | 0x00 (SLAVE) |
 | flags | u8 | Bit 0: VERBOSE (enable STATUS_UPDATE) | 0x00 (NONE) |
 
 - **SLAVE mode (0x00):** Keep-alive required (15s timeout). Used when HubFX controls the board.
-- **CONFIG mode (0x01):** No keep-alive timeout. Used for standalone CLI/GUI configuration.
+- **DIRECT mode (0x01):** No keep-alive timeout. Used for standalone CLI/GUI configuration.
 - **Backward compatible:** If payload is empty (len=0), defaults to SLAVE mode with no flags.
 
 **Behavior:**
@@ -560,10 +560,13 @@ Client                                Server
 
 ### STATUS
 
-**Core Header (20 bytes, always present):**
+**Core Header (22 bytes, always present):**
 ```
 [counter:u32LE][uptime:u32LE][freeRam:u32LE][lastActivity_ms:u32LE][keepaliveCount:u32LE]
+[boardState:u8][initFlags:u8]
 ```
+
+Board states: IDLE(0x00), STANDALONE(0x01), SLAVE(0x02), DIRECT(0x03)
 
 **GunFX Module Data (20 bytes, appended to core header):**
 ```
@@ -589,7 +592,7 @@ Flags:
 - `ledSeqFlags`: Bit N = channel N+1 sequence playing
 - `powerAvail`: 1 if INA226 detected, 0 otherwise
 
-**NoOp:** Core header only (12 bytes, no module data).
+**NoOp:** Core header only (22 bytes, no module data).
 
 ### ERROR
 
@@ -691,7 +694,7 @@ void loop() {
 ## Changes in v0.5.0
 
 - **INIT parametrized**: INIT now accepts optional `[mode:u8][flags:u8]` payload (backward-compatible, defaults to SLAVE/NONE if empty)
-- **InitMode**: SLAVE (0x00) = keep-alive required, CONFIG (0x01) = no keep-alive timeout
+- **InitMode**: SLAVE (0x00) = keep-alive required, DIRECT (0x01) = no keep-alive timeout
 - **InitFlags**: VERBOSE (bit 0) = enable async STATUS_UPDATE emissions
 - **STATUS_UPDATE (0xEF)**: New async packet type for real-time telemetry — `[source:u8][updateType:u8][data:variable]`
 - **Core range expanded**: CoreCommandServer now handles 0xEF-0xFF (was 0xF0-0xFF) to include STATUS_UPDATE
@@ -709,8 +712,8 @@ void loop() {
 - **Binary-only protocol**: Removed text protocol mode; all packets are binary COBS
 - **Binary INIT_READY**: INIT_READY now uses binary length-prefixed payload instead of text
   - Format: `[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]`
-- **Rich STATUS**: STATUS response now contains 20-byte core header + module-specific data
-  - Core header: `[counter:u32LE][uptime:u32LE][freeRam:u32LE][lastActivity_ms:u32LE][keepaliveCount:u32LE]`
+- **Rich STATUS**: STATUS response now contains 22-byte core header + module-specific data
+  - Core header: `[counter:u32LE][uptime:u32LE][freeRam:u32LE][lastActivity_ms:u32LE][keepaliveCount:u32LE][boardState:u8][initFlags:u8]`
   - GunFX appends 20 bytes (flags, fan, servos, RPM, shots, heater)
   - LightFX appends 22 bytes (LEDs, servos, power readings)
   - GearControl appends 26 bytes (gear states, motor current, servos, LEDs, battery)

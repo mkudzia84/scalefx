@@ -37,7 +37,7 @@
 // ============================================================================
 
 #define FIRMWARE_VERSION "0.9.0"
-#define BUILD_NUMBER 25
+#define BUILD_NUMBER 28
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -332,6 +332,7 @@ static void initFlashAndConfig() {
         auto result = configStore.loadFromFile();
         if (result.ok) {
             SFX_LOG_INFO("Config loaded from flash");
+            server.markConfigLoaded();  // IDLE → STANDALONE
             // TODO: Apply config fields to hardware when schema has real fields
         } else if (result.parsed) {
             SFX_LOG_WARN("Config validation failed: %s", result.error);
@@ -354,7 +355,7 @@ void setup() {
 
     server.begin("LightFX", FIRMWARE_VERSION, BUILD_NUMBER, PIN_LED_CONN, PIN_LED_ERR);
     server.onInit([](uint8_t mode, uint8_t flags) {
-        (void)flags;  // LightFX accepts both SLAVE and CONFIG
+        (void)flags;  // LightFX accepts both SLAVE and DIRECT
         SFX_LOG_INFO("INIT mode=%s", InitMode::getName(mode));
         performSafeInit();
     });
