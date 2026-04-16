@@ -83,6 +83,7 @@ public:
     // Packet transmission
     int sendPacket(uint8_t type, const uint8_t* payload = nullptr, size_t len = 0, uint8_t tag = 0);
     int sendInit() { return sendPacket(CorePacket::INIT); }
+    int sendIdentify() { return sendPacket(CorePacket::IDENTIFY); }
     int sendShutdown() { return sendPacket(CorePacket::SHUTDOWN); }
     int sendReboot() { return sendPacket(CorePacket::REBOOT); }
     int sendBootsel() { return sendPacket(CorePacket::BOOTSEL); }

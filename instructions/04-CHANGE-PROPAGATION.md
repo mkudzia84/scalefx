@@ -12,19 +12,19 @@ Change_Type_Matrix:
     core/core.h: IF_NEW_GENERIC_ERROR
     xxxfx/xxxfx.h: REQUIRED
     xxxfx_pico.ino: REQUIRED
-    packets.go: REQUIRED         # Mirror packet constant + PacketTypeName()
-    commands.go: REQUIRED        # Add command builder function
-    handler_xxxfx.go: REQUIRED   # Add CLI command + register
-    parsers.go: IF_RESPONSE_DATA # Add response parser
+    protocol/xxxfx/xxxfx.go: REQUIRED  # Mirror packet constant + register in init()
+    api/xxxfx.go: REQUIRED             # Add typed API method
+    engine/handlers/xxxfx/handler.go: REQUIRED  # Add CLI command + register
+    engine/handlers/xxxfx/parsers.go: IF_RESPONSE_DATA # Add response parser
     README.md: REQUIRED
     
   Modify_Command_Payload:
     core/core.h: NO
     xxxfx/xxxfx.h: REQUIRED
     xxxfx_pico.ino: REQUIRED
-    commands.go: REQUIRED        # Update command builder
-    parsers.go: IF_RESPONSE      # Update response parser
-    handler_xxxfx.go: REQUIRED   # Update CLI handler
+    protocol/xxxfx/xxxfx.go: REQUIRED  # Update command builder
+    engine/handlers/xxxfx/parsers.go: IF_RESPONSE  # Update response parser
+    engine/handlers/xxxfx/handler.go: REQUIRED     # Update CLI handler
     README.md: REQUIRED
     FIRMWARE_VERSION: REQUIRED   # MAJOR if field type/size changed, MINOR if appended
     
@@ -32,7 +32,7 @@ Change_Type_Matrix:
     core/core.h: IF_GENERIC_ERROR
     xxxfx/xxxfx.h: IF_MODULE_ERROR
     xxxfx_pico.ino: MAYBE
-    packets.go: REQUIRED         # Add error constant + name map entry
+    protocol/xxxfx/xxxfx.go: REQUIRED  # Add error constant + register in init()
     README.md: REQUIRED
     
   Bug_Fix_In_Handler:
@@ -45,10 +45,10 @@ Change_Type_Matrix:
     core/core.h: IF_NEW_GENERIC_ERROR
     newfx/newfx.h: CREATE_NEW
     newfx_pico.ino: CREATE_NEW
-    packets.go: REQUIRED          # Add packet/error constants
-    commands.go: REQUIRED         # Add command builders
-    handler_newfx.go: CREATE_NEW  # Add CLI handler + register
-    parsers.go: REQUIRED          # Add response parsers
+    protocol/newfx/newfx.go: CREATE_NEW  # Add packet/error constants
+    api/newfx.go: CREATE_NEW             # Add typed API methods
+    engine/handlers/newfx/handler.go: CREATE_NEW  # Add CLI handler + register
+    engine/handlers/newfx/parsers.go: CREATE_NEW  # Add response parsers
     README.md: CREATE_NEW
 ```
 
@@ -94,22 +94,23 @@ Step_2_Controller_Firmware:
 Step_3_Go_CLI:
   location: "app/go/"
   actions:
-    - file: "protocol/packets.go"
+    - file: "protocol/xxxfx/xxxfx.go"
       action: |
         1. Add packet type constant
-        2. Add to PacketTypeName() switch
-        3. Add error constants and error name map entries (if any)
+        2. Add command builder function
+        3. Add error constants (if any)
+        4. Register names in init()
 
-    - file: "protocol/commands.go"
-      action: "Add command builder function"
+    - file: "api/xxxfx.go"
+      action: "Add typed API method"
 
-    - file: "cli/handler_xxxfx.go"
+    - file: "engine/handlers/xxxfx/handler.go"
       action: |
         1. Add command function to handler
-        2. Add CommandInfo to command list
+        2. Add CmdEntry to command list
         3. Use appropriate send pattern (SendExpectACK for instant, custom for query)
 
-    - file: "cli/parsers.go"
+    - file: "engine/handlers/xxxfx/parsers.go"
       action: "Add response parser if command returns data"
 
 Step_4_Documentation:
@@ -156,15 +157,15 @@ Files_To_Update:
     changes:
       - "Update handler function"
   
-  - file: "app/go/protocol/commands.go"
+  - file: "app/go/protocol/xxxfx/xxxfx.go"
     changes:
       - "Update command builder function"
 
-  - file: "app/go/cli/handler_xxxfx.go"
+  - file: "app/go/engine/handlers/xxxfx/handler.go"
     changes:
       - "Update CLI command handler"
 
-  - file: "app/go/cli/parsers.go"
+  - file: "app/go/engine/handlers/xxxfx/parsers.go"
     changes:
       - "Update response parser (if applicable)"
 
@@ -186,10 +187,10 @@ Serial_Library:
       2. Add case to getMessage() function
 
 Go_CLI:
-  - file: "packets.go"
+  - file: "protocol/xxxfx/xxxfx.go"
     action: |
       1. Add error constant
-      2. Add to error name map
+      2. Register in init() error name map
 
 Documentation:
   - file: "README.md"
@@ -219,12 +220,13 @@ Summary_Checklist:
     - "[ ] Use server.indicators().setErrorCondition() if needed"  
 
   Go_CLI:
-    - "[ ] Add NewFxPacket/NewFxError constants to packets.go"
-    - "[ ] Add PacketTypeName() entries and error name map"
-    - "[ ] Add command builders to commands.go"
-    - "[ ] Create handler_newfx.go with CLI commands"
-    - "[ ] Add response parsers to parsers.go"
-    - "[ ] Register commands in cli.go command list"
+    - "[ ] Add NewFxPacket/NewFxError constants to protocol/newfx/newfx.go"
+    - "[ ] Register names in init()"
+    - "[ ] Add command builders to protocol/newfx/newfx.go"
+    - "[ ] Add typed API methods to api/newfx.go"
+    - "[ ] Create engine/handlers/newfx/handler.go with CLI commands"
+    - "[ ] Add response parsers to engine/handlers/newfx/parsers.go"
+    - "[ ] Register handler in engine/handlers/handlers.go"
   
   Documentation:
     - "[ ] Create README.md with full protocol docs"
@@ -282,9 +284,14 @@ Go_CLI:
   path: "app/go/"
   files:
     "protocol/wire.go": "CRC-8/CRC-16, COBS encode/decode, packet build/parse"
-    "protocol/packets.go": "Packet type constants, error codes (mirrors C++ headers)"
-    "protocol/commands.go": "Command builders (mirrors C++ command definitions)"
+    "protocol/types.go": "PacketType, ErrorCode types, name registry"
+    "protocol/stream.go": "Stream protocol (chunked data, CRC-16)"
     "protocol/connection.go": "Serial connection, tag-correlated send/receive, stream waiters"
+    "protocol/core/core.go": "Core packet types, error codes (mirrors core/core.h)"
+    "protocol/gunfx/gunfx.go": "GunFX packet types, error codes, commands (mirrors gunfx.h)"
+    "protocol/lightfx/lightfx.go": "LightFX packet types, error codes, commands (mirrors lightfx.h)"
+    "protocol/gearcontrol/gearcontrol.go": "GearControl packet types, error codes, commands (mirrors gearcontrol.h)"
+    "protocol/hubfx/hubfx.go": "HubFX packet types, error codes, commands (mirrors hubfx.h)"
     "api/result.go": "ApiResult types"
     "api/client.go": "apiClient base (wraps protocol.Connection)"
     "api/core.go": "CoreApi (init, status, reboot, identify)"
@@ -293,22 +300,25 @@ Go_CLI:
     "api/gearcontrol.go": "GearControlApi (gear, servo, yaw, calibration)"
     "api/hubfx.go": "HubFxApi (slaves, audio, engine, storage, USB)"
     "api/files.go": "FileApi (SD/flash file operations)"
+    "engine/engine.go": "Core Engine struct (connection, API, dispatch, listener)"
+    "engine/types.go": "CmdEntry, CmdGroup, InitReadyInfo, ControllerColors"
+    "engine/output.go": "Output interface + ANSI terminal implementation"
+    "engine/helpers.go": "Shared utilities (Atoi, ParseBool, ServoSet, ServoConfig)"
+    "engine/parsers.go": "Common response parsers"
+    "engine/parsers_core.go": "Core response parsers (INIT_READY, STATUS header)"
+    "engine/handlers/handlers.go": "RegisterDefaults() — registers all built-in groups"
+    "engine/handlers/core/handler.go": "Core commands (connect, init, status, reboot, etc.)"
+    "engine/handlers/gunfx/handler.go": "GunFX commands (trigger, servo, smoke)"
+    "engine/handlers/lightfx/handler.go": "LightFX commands (LED, sequences, servo, landing lights)"
+    "engine/handlers/lightfx/parsers.go": "LightFX response parsers"
+    "engine/handlers/gearcontrol/handler.go": "GearControl commands (gear, servo, yaw, calibration)"
+    "engine/handlers/gearcontrol/parsers.go": "GearControl response parsers"
+    "engine/handlers/hubfx/handler.go": "HubFX commands (slaves, audio, engine, storage, USB)"
+    "engine/handlers/hubfx/parsers.go": "HubFX response parsers"
+    "engine/handlers/hubfx/format.go": "HubFX output formatting"
+    "engine/handlers/firmware/handler.go": "Firmware release commands"
     "cli/main.go": "Entry point, flag parsing"
-    "cli/cli.go": "Interactive loop, command dispatch, async packet handler"
-    "cli/output.go": "ANSI colored output, help rendering"
-    "cli/helpers.go": "Shared utilities (arg parsing, guards, servo patterns)"
-    "cli/format_storage.go": "Storage-related output formatting"
-    "cli/parsers.go": "Response payload parsers (shared base)"
-    "cli/parsers_core.go": "Core response parsers"
-    "cli/parsers_gunfx.go": "GunFX response parsers"
-    "cli/parsers_lightfx.go": "LightFX response parsers"
-    "cli/parsers_gearcontrol.go": "GearControl response parsers"
-    "cli/parsers_hubfx.go": "HubFX response parsers"
-    "cli/handler_core.go": "Core commands (connect, init, status, reboot, etc.)"
-    "cli/handler_gunfx.go": "GunFX commands (trigger, servo, smoke)"
-    "cli/handler_lightfx.go": "LightFX commands (LED, sequences, servo, landing lights)"
-    "cli/handler_gearcontrol.go": "GearControl commands (gear, servo, yaw, calibration)"
-    "cli/handler_hubfx.go": "HubFX commands (slaves, audio, engine, storage, USB)"
+    "cli/cli.go": "Terminal readline loop, delegates to engine"
 ```
 
 ---
@@ -347,7 +357,7 @@ Error: "Unknown command type"
   Cause: "Packet constant mismatch between C++ and Go"
   Fix:
     - "Verify core/core.h / xxxfx/xxxfx.h constant value"
-    - "Verify packets.go constant value"
+    - "Verify protocol/xxxfx/xxxfx.go constant value"
     - "Ensure they are all identical"
 
 Error: "NACK with MISSING_PARAMETER"

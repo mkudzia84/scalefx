@@ -121,11 +121,11 @@ Handlers:
   "engine/handlers/firmware/handler.go": "Firmware release commands"
 
 Protocol:
-  "protocol/core/types.go": "Packet type constants, error codes"
-  "protocol/gunfx/types.go": "GunFX packet constants"
-  "protocol/lightfx/types.go": "LightFX packet constants"
-  "protocol/gearcontrol/types.go": "GearControl packet constants"
-  "protocol/hubfx/types.go": "HubFX packet constants"
+  "protocol/core/core.go": "Core packet type constants, error codes, controller type strings"
+  "protocol/gunfx/gunfx.go": "GunFX packet constants, error codes, command builders"
+  "protocol/lightfx/lightfx.go": "LightFX packet constants, error codes, command builders"
+  "protocol/gearcontrol/gearcontrol.go": "GearControl packet constants, error codes, command builders"
+  "protocol/hubfx/hubfx.go": "HubFX packet constants, error codes, command builders"
 
 API:
   "api/client.go": "API client that wraps protocol.Connection"
@@ -152,7 +152,7 @@ func (g *GunFxApi) NewCommand(param1 uint8, param2 uint16) api.ApiResult {
 
 ### Step 2: Add Protocol Command Builder
 
-**FILE:** `protocol/gunfx/commands.go`
+**FILE:** `protocol/gunfx/gunfx.go`
 
 ```go
 // NewCommand builds the NEW_COMMAND payload.
@@ -166,7 +166,7 @@ func NewCommand(param1 uint8, param2 uint16) []byte {
 
 ### Step 3: Add Packet Type Constant
 
-**FILE:** `protocol/gunfx/types.go`
+**FILE:** `protocol/gunfx/gunfx.go`
 
 ```go
 const PktNewCommand protocol.PacketType = 0x0F  // [param1:u8][param2:u16LE]
@@ -234,7 +234,7 @@ func (h *Handler) parseNewCmdResponse(payload []byte) {
 
 ### Step 1: Create Protocol Package
 
-**CREATE:** `protocol/newfx/types.go`
+**CREATE:** `protocol/newfx/newfx.go`
 
 ```go
 package newfx
@@ -248,7 +248,7 @@ const (
 )
 ```
 
-**CREATE:** `protocol/newfx/commands.go`
+**ADD to:** `protocol/newfx/newfx.go`
 
 ```go
 package newfx
@@ -269,7 +269,7 @@ func Command2(id uint8, value uint16) []byte {
 
 ### Step 2: Add Controller Type Constant
 
-**FILE:** `protocol/core/types.go`
+**FILE:** `protocol/core/core.go`
 
 ```go
 const CtrlNewFX = "newfx"
@@ -526,8 +526,8 @@ app/go/scalefx-cli.exe -p COM5
 
 ```yaml
 Adding_Command:
-  - "[ ] Packet type constant added to protocol/xxxfx/types.go"
-  - "[ ] Command builder added to protocol/xxxfx/commands.go"
+  - "[ ] Packet type constant added to protocol/xxxfx/xxxfx.go"
+  - "[ ] Command builder added to protocol/xxxfx/xxxfx.go"
   - "[ ] API method added to api/xxxfx.go"
   - "[ ] CmdEntry added to handler commands() map"
   - "[ ] Handler method implemented with RequireArgs + validation"
@@ -539,7 +539,7 @@ Adding_Command:
 
 Adding_Controller:
   - "[ ] Protocol package created: protocol/newfx/"
-  - "[ ] Controller type constant added to protocol/core/types.go"
+  - "[ ] Controller type constant added to protocol/core/core.go"
   - "[ ] API client created: api/newfx.go"
   - "[ ] Handler package created: engine/handlers/newfx/"
   - "[ ] Handler registered in engine/handlers/handlers.go"

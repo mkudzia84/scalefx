@@ -381,7 +381,7 @@ void loop() {
 
 ### 6.1: Add Packet Constants
 
-**File:** `app/go/protocol/newfx/types.go`
+**File:** `app/go/protocol/newfx/newfx.go`
 
 ```go
 package newfx
@@ -403,7 +403,7 @@ Also add to `PacketTypeName()` switch and error name maps in the appropriate fil
 
 ### 6.2: Add Command Builders
 
-**File:** `app/go/protocol/newfx/commands.go`
+**File:** `app/go/protocol/newfx/newfx.go`
 
 ```go
 func Command1(param1 uint16, param2 uint8) []byte {
@@ -416,13 +416,13 @@ func Command1(param1 uint16, param2 uint8) []byte {
 
 ### 6.3: Add CLI Handler
 
-**File:** `app/go/engine/handlers/handler_newfx.go`
+**File:** `app/go/engine/handlers/newfx/handler.go`
 
 Create handler functions and register commands in the command list.
 
 ### 6.4: Add Response Parsers
 
-**File:** `app/go/engine/parsers_newfx.go`
+**File:** `app/go/engine/handlers/newfx/parsers.go`
 
 Add response parsers for any query commands.
 

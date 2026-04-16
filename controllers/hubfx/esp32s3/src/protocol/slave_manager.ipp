@@ -89,18 +89,18 @@ void SlaveManagerT<MaxSlaves>::process() {
         now - _lastDiscovery_ms >= DISCOVERY_INTERVAL_ms) {
         _lastDiscovery_ms = now;
 
-        // Check if any slot still needs discovery
-        bool anyUnready = false;
+        // Check if any slot still needs identification
+        bool anyUnidentified = false;
         for (uint8_t i = 0; i < reg.count(); i++) {
-            if (!reg[i].ready) {
-                anyUnready = true;
+            if (!reg[i].connected) {
+                anyUnidentified = true;
                 break;
             }
         }
 
         UsbHost& usb = UsbHost::instance();
-        if (anyUnready && usb.cdcDeviceCount() > 0) {
-            scanAndInit();
+        if (anyUnidentified && usb.cdcDeviceCount() > 0) {
+            scanAndIdentify();
         }
     }
 }
@@ -110,7 +110,7 @@ void SlaveManagerT<MaxSlaves>::process() {
 // ============================================================================
 
 template <size_t MaxSlaves>
-void SlaveManagerT<MaxSlaves>::scanAndInit() {
+void SlaveManagerT<MaxSlaves>::scanAndIdentify() {
     UsbHost& usb = UsbHost::instance();
     int devCount = usb.cdcDeviceCount();
     SLAVE_MGR_LOG("Scanning %d USB CDC devices for slaves...", devCount);
@@ -121,24 +121,24 @@ void SlaveManagerT<MaxSlaves>::scanAndInit() {
         const CdcDeviceInfo* info = usb.getCdcDevice(i);
         if (!info || !info->connected) continue;
 
-        // Check if this device index is already assigned to a ready slave
+        // Check if this device index is already assigned to a connected slave
         bool alreadyAssigned = false;
         for (uint8_t s = 0; s < reg.count(); s++) {
-            if (reg[s].usbIndex == i && reg[s].ready) {
+            if (reg[s].usbIndex == i && reg[s].connected) {
                 alreadyAssigned = true;
                 break;
             }
         }
 
         if (!alreadyAssigned) {
-            tryInitSlave(i);
+            tryIdentifySlave(i);
         }
     }
 }
 
 template <size_t MaxSlaves>
-SlaveType SlaveManagerT<MaxSlaves>::tryInitSlave(int usbIndex) {
-    SLAVE_MGR_LOG("Probing USB index %d...", usbIndex);
+SlaveType SlaveManagerT<MaxSlaves>::tryIdentifySlave(int usbIndex) {
+    SLAVE_MGR_LOG("Probing USB index %d via IDENTIFY...", usbIndex);
 
     // Create a temporary generic client to probe the device
     BusClient probe;
@@ -147,10 +147,11 @@ SlaveType SlaveManagerT<MaxSlaves>::tryInitSlave(int usbIndex) {
         return SlaveType::Unknown;
     }
 
-    probe.sendInit();
+    // Send IDENTIFY (non-destructive — does not trigger init on the slave)
+    probe.sendIdentify();
 
     if (!awaitSlaveReady(probe, INIT_TIMEOUT_ms)) {
-        SFX_LOG_WARN("[SlaveMgr] No INIT_READY from USB index %d (timeout %lums)",
+        SFX_LOG_WARN("[SlaveMgr] No IDENTIFY response from USB index %d (timeout %lums)",
                      usbIndex, (unsigned long)INIT_TIMEOUT_ms);
         return SlaveType::Unknown;
     }
@@ -172,24 +173,28 @@ SlaveType SlaveManagerT<MaxSlaves>::tryInitSlave(int usbIndex) {
         return SlaveType::Unknown;
     }
 
-    // Now init the proper typed client on this USB device
+    // Bind the typed client to this USB device
     if (!client->begin(usbIndex)) {
-        SFX_LOG_ERROR("[SlaveMgr] Failed to initialize %s client", slaveTypeName(type));
+        SFX_LOG_ERROR("[SlaveMgr] Failed to bind %s client to USB index %d",
+                      slaveTypeName(type), usbIndex);
         return SlaveType::Unknown;
     }
-    client->sendInit();
 
-    // Wait for typed client INIT_READY
+    // Send IDENTIFY on the typed client to populate its boardInfo
+    client->sendIdentify();
+
     if (client->isServerReady() || awaitSlaveReady(*client, INIT_TIMEOUT_ms)) {
         auto& reg = registry();
         reg.registerSlave(type, client, usbIndex);
         reg.setConnected(type, true);
-        reg.setReady(type, true);
-        SFX_LOG_INFO("[SlaveMgr] Slave %s ready: %s", slaveTypeName(type), client->serverName());
+        // NOTE: ready=false — INIT has not been sent yet.
+        // Activation requires an explicit SLAVE_INIT command.
+        SFX_LOG_INFO("[SlaveMgr] Slave %s identified: %s (connected, awaiting INIT)",
+                     slaveTypeName(type), client->serverName());
         return type;
     }
 
-    SFX_LOG_ERROR("[SlaveMgr] Typed client INIT_READY timeout for %s", slaveTypeName(type));
+    SFX_LOG_ERROR("[SlaveMgr] Typed client IDENTIFY timeout for %s", slaveTypeName(type));
     return SlaveType::Unknown;
 }
 

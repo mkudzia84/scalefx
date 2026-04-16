@@ -42,8 +42,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.31.0"
-#define BUILD_NUMBER 172
+#define FIRMWARE_VERSION "0.32.0"
+#define BUILD_NUMBER 174
 
 // ============================================================================
 // FEATURE FLAGS — Board bring-up: uncomment to enable features one by one
@@ -920,7 +920,7 @@ void setup() {
             bootComplete_ms = 0;  // Consume the grace — subsequent INITs do full re-init
             SFX_LOG_INFO("INIT received — fresh boot, skipping re-init");
 #ifdef FEATURE_USB_HOST
-            SlaveManager::instance().scanAndInit();
+            SlaveManager::instance().scanAndIdentify();
 #endif
             return;
         }
@@ -970,8 +970,8 @@ void setup() {
 #endif
 
 #ifdef FEATURE_USB_HOST
-        // 5. Re-scan slaves so PC gets fresh state
-        SlaveManager::instance().scanAndInit();
+        // 5. Re-scan slaves so PC gets fresh identification
+        SlaveManager::instance().scanAndIdentify();
 #endif
 
         SFX_LOG_INFO("INIT complete — all subsystems re-initialized");

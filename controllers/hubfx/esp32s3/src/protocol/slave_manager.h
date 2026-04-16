@@ -24,6 +24,9 @@
  *
  *   // In loop():
  *   mgr.process();   // handles polling + periodic discovery
+ *
+ *   // Slaves are identified via IDENTIFY (non-destructive).
+ *   // To activate a slave, send SLAVE_INIT from CLI or auto-logic.
  */
 
 #ifndef SLAVE_MANAGER_H
@@ -62,9 +65,13 @@ struct SlaveDescriptor {
 /**
  * @brief Poll a BusClient until isServerReady() or timeout.
  *
- * Used by both SlaveManager (during discovery) and SlaveServer (for
- * SLAVE_INIT management command). Extracted as a free function to
+ * Used by both SlaveManager (during IDENTIFY discovery) and SlaveServer
+ * (for SLAVE_INIT activation command). Extracted as a free function to
  * avoid duplication.
+ *
+ * Works with both IDENTIFY and INIT responses — both set isServerReady().
+ * Note: BusClient::sendInit() resets _serverReady, so this function
+ * correctly waits for a new INIT_READY after an explicit INIT.
  *
  * @param client     BusClient to poll
  * @param timeout_ms Maximum wait time (default 3000ms)
@@ -147,13 +154,15 @@ public:
     // ========================================================================
 
     /**
-     * @brief Trigger immediate slave scan and identification
+     * @brief Trigger immediate slave scan and identification via IDENTIFY
      *
-     * Scans all USB CDC devices, probes unregistered ones via INIT,
+     * Scans all USB CDC devices, probes unidentified ones via IDENTIFY,
      * identifies by name prefix, and binds the appropriate typed client.
+     * Slaves are marked as connected but NOT ready — activation (INIT)
+     * is a separate step via SLAVE_INIT command.
      * Called from onInit callback and during periodic discovery.
      */
-    void scanAndInit();
+    void scanAndIdentify();
 
     /**
      * @brief Build slave presence bitmask for STATUS response
@@ -191,7 +200,7 @@ private:
     SlaveManagerT() = default;
 
     // Discovery
-    SlaveType tryInitSlave(int usbIndex);
+    SlaveType tryIdentifySlave(int usbIndex);
     SlaveType identifyByName(const char* name) const;
     BusClient* clientForType(SlaveType type) const;
 

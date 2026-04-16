@@ -122,6 +122,12 @@ func (c *Connection) Verbose() bool { return c.verbose }
 // SetVerbose updates the verbose flag.
 func (c *Connection) SetVerbose(v bool) { c.verbose = v }
 
+// SetTimeout updates the default response timeout.
+func (c *Connection) SetTimeout(d time.Duration) { c.timeout = d }
+
+// Timeout returns the current response timeout.
+func (c *Connection) Timeout() time.Duration { return c.timeout }
+
 // Connect opens the serial port and starts the reader goroutine.
 func (c *Connection) Connect() error {
 	mode := &serial.Mode{

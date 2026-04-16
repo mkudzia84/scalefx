@@ -115,9 +115,20 @@ public:
      * @return Bytes written, -1 on error
      *
      * Sends a COBS-framed INIT packet. The server responds with INIT_READY.
+     * Resets _serverReady so awaitSlaveReady() properly waits for the response.
      * Keepalive interval is configured client-side via setKeepaliveInterval().
      */
     int sendInit();
+
+    /**
+     * @brief Send IDENTIFY packet to query board info without triggering init
+     * @return Bytes written, -1 on error
+     *
+     * Non-destructive: returns the same payload as INIT_READY but does NOT
+     * trigger the server's onInit() callback or change its state.
+     * Use for slave discovery (identify type by name prefix).
+     */
+    int sendIdentify();
 
     // ========================================================================
     // Command Execution

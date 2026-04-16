@@ -11,14 +11,13 @@ Files_To_Modify:
   Always:
     - "lib/sfx_serial/serial/xxxfx/xxxfx.h"            # Packet type, error codes, handler logic
     - "controllers/xxxfx/pico/src/*.ino"     # Callback implementation
-    - "app/go/protocol/xxxfx/types.go"       # Go packet/error constants
-    - "app/go/protocol/xxxfx/commands.go"    # Go command builder
-    - "app/go/engine/handlers/handler_xxxfx.go" # Go CLI command
+    - "app/go/protocol/xxxfx/xxxfx.go"       # Go packet/error constants + command builders
+    - "app/go/engine/handlers/xxxfx/handler.go" # Go CLI command
     - "controllers/xxxfx/pico/README.md"     # Documentation
   
   If_New_Error_Codes:
     - "lib/sfx_serial/serial/xxxfx/xxxfx.h"             # C++ error constant (in module's error namespace)
-    - "app/go/protocol/xxxfx/types.go"       # Go error constant
+    - "app/go/protocol/xxxfx/xxxfx.go"       # Go error constant
 ```
 
 ---
@@ -153,7 +152,7 @@ gunfxServer.onAmmoSet(handleAmmoSet);
 
 ### Step 5: Add Go CLI Support
 
-**File:** `app/go/protocol/gunfx/types.go`
+**File:** `app/go/protocol/gunfx/gunfx.go`
 
 **ADD packet constant:**
 ```go
@@ -167,7 +166,7 @@ ErrAmmoInvalid = 0x15
 
 Also update `PacketTypeName()` switch and error name maps.
 
-**File:** `app/go/protocol/gunfx/commands.go`
+**File:** `app/go/protocol/gunfx/gunfx.go`
 
 **ADD command builder:**
 ```go
@@ -178,7 +177,7 @@ func AmmoSet(count uint16) []byte {
 }
 ```
 
-**File:** `app/go/engine/handlers/handler_gunfx.go`
+**File:** `app/go/engine/handlers/gunfx/handler.go`
 
 Add CLI command handler and register in command list.
 
@@ -285,7 +284,7 @@ Before_Marking_Complete:
     - [ ] Go packet constant added
     - [ ] Go error constants added (if any)
     - [ ] Go command builder added
-    - [ ] Go CLI command added to handler_xxxfx.go
+    - [ ] Go CLI command added to engine/handlers/xxxfx/handler.go
     - [ ] Go CLI handler method added
   
   Documentation:

@@ -40,7 +40,12 @@ int BusClient::process() {
 // ============================================================================
 
 int BusClient::sendInit() {
+    _serverReady = false;  // Reset — must wait for new INIT_READY
     return SerialBus::sendInit();  // Sends binary INIT packet via COBS
+}
+
+int BusClient::sendIdentify() {
+    return SerialBus::sendIdentify();  // Non-destructive board info query
 }
 
 // ============================================================================
@@ -85,12 +90,14 @@ void BusClient::setCompatibleVersions(const char** versions, size_t count) {
 void BusClient::handlePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) {
     switch (type) {
         case CorePacket::INIT_READY:
+        case CorePacket::IDENTIFY: {
+            // Both INIT_READY and IDENTIFY carry identical board info payload.
+            // INIT_READY = server activated (init callbacks fired).
+            // IDENTIFY   = non-destructive probe (no state change on server).
             _serverReady = true;
             if (len > 0) {
-                // Decode binary length-prefixed INIT_READY payload
                 CoreBoardInfo coreInfo;
                 if (CorePayload::decodeInitReady(payload, len, coreInfo)) {
-                    // Copy decoded fields into BusClientBoardInfo (extends CoreBoardInfo)
                     static_cast<CoreBoardInfo&>(_boardInfo) = coreInfo;
                     strncpy(_serverName, coreInfo.deviceName, sizeof(_serverName) - 1);
                     _serverName[sizeof(_serverName) - 1] = '\0';
@@ -100,6 +107,7 @@ void BusClient::handlePacket(uint8_t type, uint8_t tag, const uint8_t* payload, 
             onServerReady();
             if (_readyCallback) _readyCallback(_serverName);
             break;
+        }
 
         case CorePacket::ACK:
             _lastCommandResult = CommandResult::Ack();

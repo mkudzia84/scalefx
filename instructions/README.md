@@ -192,14 +192,27 @@ Go_CLI:
     protocol:
       - name: "wire.go"
         purpose: "CRC-8/CRC-16, COBS encode/decode, packet build/parse"
-      - name: "packets.go"
-        purpose: "Packet type constants, error codes (mirrors C++ headers)"
-        modify_when: "Adding packet types or error codes"
-      - name: "commands.go"
-        purpose: "Command builders (mirrors C++ command definitions)"
-        modify_when: "Adding commands"
+      - name: "types.go"
+        purpose: "PacketType, ErrorCode types, name registry"
+      - name: "stream.go"
+        purpose: "Stream protocol (chunked data, CRC-16)"
       - name: "connection.go"
         purpose: "Serial connection, tag-correlated send/receive, stream waiters"
+      - name: "core/core.go"
+        purpose: "Core packet types, error codes (mirrors core/core.h)"
+        modify_when: "Adding core packet types or error codes"
+      - name: "gunfx/gunfx.go"
+        purpose: "GunFX packet types, error codes, commands (mirrors gunfx.h)"
+        modify_when: "Adding GunFX packet types, errors, or commands"
+      - name: "lightfx/lightfx.go"
+        purpose: "LightFX packet types, error codes, commands (mirrors lightfx.h)"
+        modify_when: "Adding LightFX packet types, errors, or commands"
+      - name: "gearcontrol/gearcontrol.go"
+        purpose: "GearControl packet types, error codes, commands (mirrors gearcontrol.h)"
+        modify_when: "Adding GearControl packet types, errors, or commands"
+      - name: "hubfx/hubfx.go"
+        purpose: "HubFX packet types, error codes, commands (mirrors hubfx.h)"
+        modify_when: "Adding HubFX packet types, errors, or commands"
     api:
       - name: "result.go"
         purpose: "ApiResult types"
@@ -217,45 +230,52 @@ Go_CLI:
         purpose: "HubFxApi (slaves, audio, engine, storage, USB)"
       - name: "files.go"
         purpose: "FileApi (SD/flash file operations)"
+    engine:
+      - name: "engine.go"
+        purpose: "Core Engine struct (connection, API, dispatch, listener)"
+      - name: "types.go"
+        purpose: "CmdEntry, CmdGroup, InitReadyInfo, ControllerColors"
+      - name: "output.go"
+        purpose: "Output interface + ANSI terminal implementation"
+      - name: "helpers.go"
+        purpose: "Shared utilities (Atoi, ParseBool, ServoSet, ServoConfig)"
+      - name: "parsers.go"
+        purpose: "Common response parsers"
+      - name: "parsers_core.go"
+        purpose: "Core response parsers (INIT_READY, STATUS header)"
+    engine_handlers:
+      - name: "handlers/handlers.go"
+        purpose: "RegisterDefaults() — registers all built-in groups"
+      - name: "handlers/core/handler.go"
+        purpose: "Core commands (connect, init, status, reboot, etc.)"
+        modify_when: "Modifying core commands"
+      - name: "handlers/gunfx/handler.go"
+        purpose: "GunFX commands (trigger, servo, smoke)"
+        modify_when: "Adding GunFX CLI commands"
+      - name: "handlers/lightfx/handler.go"
+        purpose: "LightFX commands (LED, sequences, servo, landing lights)"
+        modify_when: "Adding LightFX CLI commands"
+      - name: "handlers/lightfx/parsers.go"
+        purpose: "LightFX response parsers"
+      - name: "handlers/gearcontrol/handler.go"
+        purpose: "GearControl commands (gear, servo, yaw, calibration)"
+        modify_when: "Adding GearControl CLI commands"
+      - name: "handlers/gearcontrol/parsers.go"
+        purpose: "GearControl response parsers"
+      - name: "handlers/hubfx/handler.go"
+        purpose: "HubFX commands (slaves, audio, engine, storage, USB)"
+        modify_when: "Adding HubFX CLI commands"
+      - name: "handlers/hubfx/parsers.go"
+        purpose: "HubFX response parsers"
+      - name: "handlers/hubfx/format.go"
+        purpose: "HubFX output formatting"
+      - name: "handlers/firmware/handler.go"
+        purpose: "Firmware release commands"
     cli:
       - name: "main.go"
         purpose: "Entry point, flag parsing"
       - name: "cli.go"
-        purpose: "Interactive loop, command dispatch, async packet handler"
-      - name: "output.go"
-        purpose: "ANSI colored output, help rendering"
-      - name: "helpers.go"
-        purpose: "Shared utilities (arg parsing, guards, servo patterns)"
-      - name: "format_storage.go"
-        purpose: "Storage-related output formatting"
-      - name: "parsers.go"
-        purpose: "Response payload parsers (shared base)"
-        modify_when: "Adding response packet types"
-      - name: "parsers_core.go"
-        purpose: "Core response parsers"
-      - name: "parsers_gunfx.go"
-        purpose: "GunFX response parsers"
-      - name: "parsers_lightfx.go"
-        purpose: "LightFX response parsers"
-      - name: "parsers_gearcontrol.go"
-        purpose: "GearControl response parsers"
-      - name: "parsers_hubfx.go"
-        purpose: "HubFX response parsers"
-      - name: "handler_core.go"
-        purpose: "Core commands (connect, init, status, reboot, etc.)"
-        modify_when: "Modifying core commands"
-      - name: "handler_gunfx.go"
-        purpose: "GunFX commands (trigger, servo, smoke)"
-        modify_when: "Adding GunFX CLI commands"
-      - name: "handler_lightfx.go"
-        purpose: "LightFX commands (LED, sequences, servo, landing lights)"
-        modify_when: "Adding LightFX CLI commands"
-      - name: "handler_gearcontrol.go"
-        purpose: "GearControl commands (gear, servo, yaw, calibration)"
-        modify_when: "Adding GearControl CLI commands"
-      - name: "handler_hubfx.go"
-        purpose: "HubFX commands (slaves, audio, engine, storage, USB)"
-        modify_when: "Adding HubFX CLI commands"
+        purpose: "Terminal readline loop, delegates to engine"
 ```
 
 ---
@@ -278,7 +298,7 @@ Q2: What response category? (See 03-PROTOCOL-EXTENSION.md § Response Category D
 
 Q3: Are new error codes needed?
 ├─ YES → Add to xxxfx/xxxfx.h in module error namespace (e.g., GunFxError)
-│        Add to app/go/protocol/packets.go
+│        Add to app/go/protocol/xxxfx/xxxfx.go
 └─ NO → Continue
 
 Q4: Is callback type defined in xxxfx/xxxfx.h?
@@ -300,9 +320,9 @@ Q6: Is command implemented in firmware?
 └─ YES → Continue
 
 Q7: Is Go CLI updated?
-├─ NO → Add to app/go/protocol/packets.go, protocol/commands.go, cli/handler_xxxfx.go
-│        - Add packet constant + PacketTypeName()
-│        - Add command builder
+├─ NO → Add to app/go/protocol/xxxfx/xxxfx.go, api/xxxfx.go, engine/handlers/xxxfx/handler.go
+│        - Add packet constant + register in init()
+│        - Add typed API method
 │        - Add CLI command + register
 └─ YES → Continue
 
@@ -322,26 +342,26 @@ Sync_Groups:
   - name: "Packet Constants"
     primary: "lib/sfx_serial/serial/core/core.h"
     mirrors:
-      - "app/go/protocol/packets.go"
+      - "app/go/protocol/core/core.go"
     rule: "Same values, same names"
 
   - name: "Error Codes (Generic)"
     primary: "lib/sfx_serial/serial/core/core.h (SerialError namespace)"
     mirrors:
-      - "app/go/protocol/packets.go (error constants + name map)"
+      - "app/go/protocol/core/core.go (error constants + name map)"
     rule: "Same values, same names"
 
   - name: "Error Codes (Module)"
     primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h (XxxError namespace)"
     mirrors:
-      - "app/go/protocol/packets.go (error constants + name map)"
+      - "app/go/protocol/xxxfx/xxxfx.go (error constants + name map)"
     rule: "Same values, same names"
 
   - name: "Command Interface"
     primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h"
     mirrors:
-      - "app/go/protocol/commands.go"
-      - "app/go/cli/handler_xxxfx.go"
+      - "app/go/protocol/xxxfx/xxxfx.go"
+      - "app/go/engine/handlers/xxxfx/handler.go"
     rule: "All commands must be exposed in Go CLI"
 ```
 

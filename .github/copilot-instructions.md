@@ -59,11 +59,11 @@ When modifying serial protocol, these files MUST stay in sync:
 
 | C++ Source | Go CLI Mirror | Content |
 |------------|---------------|---------|
-| `controllers/lib/sfx_serial/serial/core/core.h` | `app/go/protocol/packets.go` | Packet type constants, generic error codes |
-| `controllers/lib/sfx_serial/serial/gunfx/gunfx.h` | `app/go/protocol/packets.go`, `commands.go` | GunFX packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/lightfx/lightfx.h` | `app/go/protocol/packets.go`, `commands.go` | LightFX packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/gearcontrol/gearcontrol.h` | `app/go/protocol/packets.go`, `commands.go` | GearControl packet types, error codes, commands |
-| `controllers/lib/sfx_serial/serial/hubfx/hubfx.h` | `app/go/protocol/packets.go`, `commands.go` | HubFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/core/core.h` | `app/go/protocol/core/core.go` | Packet type constants, generic error codes |
+| `controllers/lib/sfx_serial/serial/gunfx/gunfx.h` | `app/go/protocol/gunfx/gunfx.go` | GunFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/lightfx/lightfx.h` | `app/go/protocol/lightfx/lightfx.go` | LightFX packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/gearcontrol/gearcontrol.h` | `app/go/protocol/gearcontrol/gearcontrol.go` | GearControl packet types, error codes, commands |
+| `controllers/lib/sfx_serial/serial/hubfx/hubfx.h` | `app/go/protocol/hubfx/hubfx.go` | HubFX packet types, error codes, commands |
 
 **Verification:** Run `cd app/go && go build ./cli/` after C++ changes.
 
@@ -73,10 +73,10 @@ When adding a new command to an existing controller, update ALL these files:
 1. `xxxfx/xxxfx.h` - Add packet type constant, callback typedef, `onNewCmd()` method, handler case in `handleModulePacket()` using `SFX_*` macros, error codes if needed
 2. `xxxfx_pico.ino` - Implement callback, register in `setup()`
 3. `controllers/xxxfx/pico/README.md` - Document payload format
-4. `app/go/protocol/packets.go` - Mirror constant, add to `PacketTypeName()` and error name map
-5. `app/go/protocol/commands.go` - Add command builder function
-6. `app/go/cli/handler_xxxfx.go` - Add CLI command and register in command list
-7. `app/go/cli/parsers.go` - Add response parser if command returns data
+4. `app/go/protocol/xxxfx/xxxfx.go` - Mirror packet constant, add command builder, register in `init()`
+5. `app/go/api/xxxfx.go` - Add typed API method
+6. `app/go/engine/handlers/xxxfx/handler.go` - Add CLI command and register in command list
+7. `app/go/engine/handlers/xxxfx/parsers.go` - Add response parser if command returns data
 
 **ALWAYS update the Go CLI when new commands are added.** The Go CLI is the primary debugging tool.
 
@@ -750,17 +750,18 @@ private:
 
 | File | Purpose |
 |------|---------|
-| `protocol/packets.go` | Packet type constants, error codes (mirrors C++ headers) |
-| `protocol/commands.go` | Command builders (mirrors C++ command definitions) |
-| `cli/parsers*.go` | Response payload parsers |
-| `cli/handler_*.go` | CLI command handlers |
+| `protocol/<module>/<module>.go` | Packet type constants, error codes, command builders (mirrors C++ headers) |
+| `api/<module>.go` | Typed API methods (wraps protocol commands) |
+| `engine/handlers/<module>/handler.go` | CLI command handlers |
+| `engine/handlers/<module>/parsers.go` | Response payload parsers |
+| `engine/parsers*.go` | Shared/core response parsers |
 
 **Rules:**
-1. **New packet type constant** → add to `packets.go` + `PacketTypeName()`
-2. **New error code** → add to `packets.go` (constant + error name map)
-3. **New command** → add builder to `commands.go`; add CLI handler to `handler_xxxfx.go`
-4. **New response parser** → add to `parsers*.go`
-5. **New controller type** → create handler file; register in CLI startup/dispatch
+1. **New packet type constant** → add to `protocol/<module>/<module>.go` + register in `init()`
+2. **New error code** → add to `protocol/<module>/<module>.go` + register in `init()`
+3. **New command** → add builder to `protocol/<module>/<module>.go`; add API method to `api/<module>.go`; add CLI handler to `engine/handlers/<module>/handler.go`
+4. **New response parser** → add to `engine/handlers/<module>/parsers.go`
+5. **New controller type** → create handler package under `engine/handlers/`; register in `engine/handlers/handlers.go`
 6. **Payload format change** → update all parsers and command builders
 
 **Verification:**
@@ -807,7 +808,48 @@ run_in_terminal: app/go/scalefx-flash.exe build hubfx
 create_and_run_task: "Build Firmware"  # prompts for controller
 ```
 
-### 21. Release Notes (MANDATORY)
+### 21. Test and Diagnostic Tool Location (MANDATORY)
+
+**All standalone test projects MUST reside in the `/tests/` directory at the repository root.** This includes both PlatformIO firmware tests AND Go-based diagnostic/troubleshooting tools. Tests are NOT part of the production controller tree (`controllers/`) or production CLI tree (`app/go/`).
+
+#### Firmware Tests (PlatformIO)
+
+**Rules:**
+1. **Location:** `tests/<test_name>/` — each test is a self-contained PlatformIO project
+2. **Structure:** Each test directory contains `platformio.ini`, `partitions.csv` (if needed), and `src/<test_name>.ino`
+3. **No sfx libraries:** Test firmware should use `lib_ignore` to exclude all `sfx_*` libraries unless the test specifically validates a library
+4. **Serial output:** Use 115200 baud for human-readable serial monitor output (not 6Mbps binary COBS)
+5. **Never under `controllers/`:** Do not create `test/` subdirectories inside controller firmware folders
+
+**Build:** `python -m platformio run -e <env> -d tests/<test_name>`
+
+#### Go Diagnostic Tools
+
+**Rules:**
+1. **Location:** `tests/<tool_name>/` — each tool is a self-contained Go module
+2. **Structure:** Each tool directory contains `go.mod`, `main.go`, and optionally a `README.md`
+3. **Module dependency:** Use a `replace` directive in `go.mod` to reference the main `scalefx` module:
+   ```
+   replace scalefx => ../../app/go
+   ```
+4. **Self-contained:** Each tool is a standalone `main` package — it builds to its own binary
+5. **Reuse protocol/api packages:** Import `scalefx/protocol`, `scalefx/api`, etc. from the main module — do NOT duplicate wire format or protocol code
+6. **Focused purpose:** Each tool should diagnose one specific area (USB, audio, storage, etc.)
+7. **Clear output:** Use colored terminal output with diagnostic hints for common issues
+8. **No production dependencies:** Production code (`app/go/`, `controllers/`) MUST NOT import from `tests/`
+9. **Build:** `cd tests/<tool_name> && go build .`
+
+**Current tests:**
+
+| Directory | Type | Target | Purpose |
+|-----------|------|--------|---------|
+| `tests/led_blink/` | Firmware | ESP32-S3 | PCAL6416A I2C GPIO expander — blink all 8 LED channels |
+| `tests/noop_simple/` | Firmware | ESP32-S3 | Minimal no-op test |
+| `tests/ppm_test/` | Firmware | ESP32-S3 | PPM signal decoder test |
+| `tests/sfx_test/` | Firmware | ESP32-S3 | SFX library integration test |
+| `tests/usb_diag/` | Go tool | HubFX | USB host & slave detection diagnostics |
+
+### 22. Release Notes (MANDATORY)
 
 **Every firmware release MUST include meaningful release notes.** The GitHub Actions release workflow requires a `release_notes` input. The agent MUST generate release notes when publishing a release.
 
@@ -900,6 +942,8 @@ Reusable hardware drivers and protocol library split by domain:
 - **sfx_storage/** - SD card (SdFat/ESP SD), LittleFS flash singletons, shared storage types
 - **sfx_config/** - YAML config parser, templatized config store, CONFIG_RELOAD/GET protocol server/client
 - **sfx_usb/** - USB Host abstraction (PicoUsbHost, EspUsbHost), device registry
+- **sfx_boards/** - Board-specific client/server protocol implementations (GunFX, LightFX, GearControl)
+- **esp_cdc_acm/** - Vendored ESP-IDF USB Host CDC-ACM class driver (ESP32-S3 only)
 
 ### Serial Protocol Library (`controllers/lib/sfx_serial/serial/`)
 - **serial.h** - Umbrella include (use this)
@@ -946,23 +990,29 @@ INIT_READY payload = length-prefixed binary: `[nameLen:u8][name][verLen:u8][ver]
 
 IDENTIFY (0xFE) returns the same payload as INIT_READY but without triggering init callbacks or state changes. The CLI uses IDENTIFY on connect to discover the board type:
 - **HubFX** (auto-initializes on boot): IDENTIFY only — no INIT sent
-- **Slave controllers**: IDENTIFY to detect type, then INIT to activate hardware
+- **Slave controllers**: HubFX uses IDENTIFY for discovery (marks slaves as "connected"). INIT is sent as a separate activation step via SLAVE_INIT command.
+- **CLI direct connect**: IDENTIFY to detect type, then INIT to activate hardware
 - **Fallback**: if IDENTIFY fails, CLI falls back to INIT (for legacy firmware)
 
 See `controllers/lib/sfx_serial/serial/PROTOCOL.md` for full wire format.
 
 ### Go CLI (`app/go/`)
 
-Three-package architecture: `protocol/` (wire format, packets, commands, connection), `api/` (typed client SDK), `cli/` (interactive terminal UI).
+Five-package architecture: `protocol/` (wire format, per-module subpackages), `api/` (typed client SDK), `engine/` (shared command engine + handlers), `cli/` (thin terminal wrapper), `flash/` (standalone build/flash tool).
 
 ```
 app/go/
 ├── go.mod                 - Module: scalefx
 ├── protocol/
 │   ├── wire.go            - CRC-8/CRC-16, COBS encode/decode, packet build/parse
-│   ├── packets.go         - Packet type constants, error codes (MUST mirror C++ headers)
-│   ├── commands.go        - Command builders (MUST mirror tests/framework/commands.py)
-│   └── connection.go      - Serial connection, tag-correlated send/receive, stream waiters
+│   ├── types.go           - PacketType, ErrorCode types, name registry
+│   ├── stream.go          - Stream protocol (chunked data, CRC-16)
+│   ├── connection.go      - Serial connection, tag-correlated send/receive, stream waiters
+│   ├── core/core.go       - Core packet types, generic error codes (mirrors core/core.h)
+│   ├── gunfx/gunfx.go     - GunFX packet types, error codes, commands (mirrors gunfx.h)
+│   ├── lightfx/lightfx.go - LightFX packet types, error codes, commands (mirrors lightfx.h)
+│   ├── gearcontrol/gearcontrol.go - GearControl packets, errors, commands (mirrors gearcontrol.h)
+│   └── hubfx/hubfx.go     - HubFX packet types, error codes, commands (mirrors hubfx.h)
 ├── api/
 │   ├── result.go          - ApiResult types
 │   ├── client.go          - apiClient base (wraps protocol.Connection)
@@ -972,23 +1022,40 @@ app/go/
 │   ├── gearcontrol.go     - GearControlApi (gear, servo, yaw, calibration)
 │   ├── hubfx.go           - HubFxApi (slaves, audio, engine, storage, USB)
 │   └── files.go           - FileApi (SD/flash file operations)
-└── cli/
-    ├── main.go            - Entry point, flag parsing
-    ├── cli.go             - Interactive loop, command dispatch, async packet handler
-    ├── output.go          - ANSI colored output, help rendering
-    ├── helpers.go         - Shared utilities (arg parsing, guards, servo patterns)
-    ├── format_storage.go  - Storage-related output formatting
-    ├── parsers.go         - Response payload parsers (MUST mirror tests/cli/parsers/)
-    ├── parsers_core.go    - Core response parsers
-    ├── parsers_gunfx.go   - GunFX response parsers
-    ├── parsers_lightfx.go - LightFX response parsers
-    ├── parsers_gearcontrol.go - GearControl response parsers
-    ├── parsers_hubfx.go   - HubFX response parsers
-    ├── handler_core.go    - Core commands (connect, init, status, reboot, etc.)
-    ├── handler_gunfx.go   - GunFX commands (trigger, servo, smoke)
-    ├── handler_lightfx.go - LightFX commands (LED, sequences, servo, landing lights)
-    ├── handler_gearcontrol.go - GearControl commands (gear, servo, yaw, calibration)
-    └── handler_hubfx.go   - HubFX commands (slaves, audio, engine, storage, USB)
+├── engine/                - Shared command engine (used by both CLI and GUI)
+│   ├── engine.go          - Core Engine struct (connection, API, dispatch, listener)
+│   ├── types.go           - CmdEntry, CmdGroup, InitReadyInfo, ControllerColors
+│   ├── output.go          - Output interface + ANSI terminal implementation
+│   ├── helpers.go         - Shared utilities (Atoi, ParseBool, ServoSet, ServoConfig)
+│   ├── parsers.go         - Common response parsers
+│   ├── parsers_core.go    - Core response parsers (INIT_READY, STATUS header)
+│   └── handlers/
+│       ├── handlers.go        - RegisterDefaults() — registers all built-in groups
+│       ├── core/handler.go    - Core commands (connect, init, status, reboot, etc.)
+│       ├── gunfx/handler.go   - GunFX commands (trigger, servo, smoke)
+│       ├── lightfx/
+│       │   ├── handler.go     - LightFX commands (LED, sequences, servo)
+│       │   └── parsers.go     - LightFX response parsers
+│       ├── gearcontrol/
+│       │   ├── handler.go     - GearControl commands (gear, servo, yaw)
+│       │   └── parsers.go     - GearControl response parsers
+│       ├── hubfx/
+│       │   ├── handler.go     - HubFX commands (slaves, audio, engine, storage, USB)
+│       │   ├── parsers.go     - HubFX response parsers
+│       │   └── format.go      - HubFX output formatting
+│       └── firmware/handler.go - Firmware release commands
+├── firmware/              - Build/flash logic (shared by flash CLI)
+│   ├── build.go, detect.go, firmware.go
+│   ├── flash_esp32.go, flash_pico.go
+│   ├── releases.go, verify.go, esptool.go
+├── flash/                 - Flash CLI (standalone binary)
+│   ├── main.go, commands.go, interactive.go, output.go
+├── cli/                   - Thin CLI wrapper
+│   ├── main.go            - Entry point, flag parsing
+│   └── cli.go             - Terminal readline loop, delegates to engine
+└── studio/                - ScaleFX Studio GUI (Wails v2)
+    ├── app.go, console_output.go, main.go
+    └── frontend/          - Svelte frontend
 ```
 
 **Build:** `cd app/go && go build -o scalefx-cli.exe ./cli/` (single static binary, zero runtime deps)
