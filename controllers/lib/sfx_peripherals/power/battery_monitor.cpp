@@ -77,8 +77,30 @@ void BatteryMonitor::begin(uint8_t adcPin, float dividerMultiplier,
 // Configuration
 // ============================================================================
 
+void BatteryMonitor::setChemistry(BatteryChemistry chemistry) {
+    _chemistry = chemistry;
+    _profile = BatteryProfiles::forChemistry(chemistry);
+    // Re-arm auto-detect if cell count wasn't pinned manually — nominal voltage
+    // changed, so the previous detection may no longer be correct.
+    if (!_manualCellCount) {
+        _cellCount = 0;
+        _cellCountLocked = false;
+    }
+    // Reset trigger state so a chemistry change can re-fire alerts under the
+    // new thresholds.
+    _lowTriggered = false;
+    _criticalTriggered = false;
+}
+
 void BatteryMonitor::setCellCount(uint8_t cells) {
-    if (cells >= 1 && cells <= MAX_CELLS) {
+    if (cells == 0) {
+        // Clear manual override → re-arm auto-detect on next valid reading.
+        _manualCellCount = false;
+        _cellCount = 0;
+        _cellCountLocked = false;
+        return;
+    }
+    if (cells <= MAX_CELLS) {
         _cellCount = cells;
         _cellCountLocked = true;
         _manualCellCount = true;

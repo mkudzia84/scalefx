@@ -22,10 +22,11 @@
  * Usage:
  *   BatteryMonitor battery;
  *   battery.begin(29, 6.0f);                 // GP29, ÷6 divider, default LiPo
- *   battery.begin(29, 6.0f, BatteryChemistry::LI_ION);  // Li-Ion chemistry
  *
- *   // Optional: manual cell count override
- *   battery.setCellCount(3);                 // Force 3S (skips auto-detect)
+ *   // Runtime reconfiguration (does NOT re-init the ADC):
+ *   battery.setChemistry(BatteryChemistry::LI_ION);  // Switch chemistry profile
+ *   battery.setCellCount(3);                          // Force 3S (skips auto-detect)
+ *   battery.setCellCount(0);                          // Re-arm auto-detect
  *
  *   // Optional: custom thresholds (per cell)
  *   battery.setLowThreshold_mV(3400);        // Override default low warning
@@ -64,10 +65,15 @@
  * Determines default voltage thresholds per cell:
  *   LiPo:   4.20V full, 3.70V nominal, 3.20V low, 3.00V critical
  *   Li-Ion: 4.20V full, 3.60V nominal, 3.20V low, 2.80V critical
+ *   NiMH:   1.40V full, 1.20V nominal, 1.00V low, 0.90V critical
+ *
+ * Wire-format values (sent over BATTERY_CONFIG protocol) are stable:
+ *   0 = LIPO, 1 = LI_ION, 2 = NIMH.
  */
 enum class BatteryChemistry : uint8_t {
-    LIPO,       ///< Lithium Polymer — 3.0V/cell damage threshold
-    LI_ION,     ///< Lithium Ion — 2.5V/cell damage threshold
+    LIPO   = 0, ///< Lithium Polymer — 3.0V/cell damage threshold
+    LI_ION = 1, ///< Lithium Ion — 2.5V/cell damage threshold
+    NIMH   = 2, ///< Nickel Metal Hydride — 0.9V/cell cutoff
 };
 
 // ============================================================================
@@ -97,9 +103,17 @@ namespace BatteryProfiles {
     /// Li-Ion: 4.2V/cell full, 3.6V nominal, 3.2V low warning, 2.8V critical
     constexpr BatteryProfile LI_ION  = { 4200, 3600, 3200, 2800 };
 
+    /// NiMH: 1.4V/cell full, 1.2V nominal, 1.0V low warning, 0.9V critical
+    constexpr BatteryProfile NIMH    = { 1400, 1200, 1000,  900 };
+
     /// Get profile for a chemistry enum value
     constexpr BatteryProfile forChemistry(BatteryChemistry chem) {
-        return (chem == BatteryChemistry::LI_ION) ? LI_ION : LIPO;
+        switch (chem) {
+            case BatteryChemistry::LI_ION: return LI_ION;
+            case BatteryChemistry::NIMH:   return NIMH;
+            case BatteryChemistry::LIPO:
+            default:                       return LIPO;
+        }
     }
 }
 
@@ -149,12 +163,27 @@ public:
     // ========================================================================
 
     /**
+     * @brief Switch chemistry profile at runtime
+     *
+     * Updates voltage thresholds (low/critical/full) and the nominal voltage
+     * used for cell-count auto-detection. If the cell count was auto-detected
+     * (not manually set) it is unlocked so the next valid reading re-detects
+     * with the new chemistry's nominal voltage.
+     *
+     * @param chemistry  New chemistry profile
+     */
+    void setChemistry(BatteryChemistry chemistry);
+
+    /**
      * @brief Manually set the cell count (overrides auto-detection)
      *
      * Use this when the battery may be deeply discharged and auto-detection
      * would be unreliable, or when the pack configuration is known.
      *
-     * @param cells  Number of cells in series (1–6)
+     * Pass 0 to clear the manual override and re-arm auto-detection on the
+     * next valid reading.
+     *
+     * @param cells  Number of cells in series (1–6), or 0 to re-arm auto-detect
      */
     void setCellCount(uint8_t cells);
 
