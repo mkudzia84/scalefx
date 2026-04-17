@@ -1007,6 +1007,52 @@ When the user asks to publish/release firmware, the agent MUST:
 
 **The agent must do this proactively after finishing significant work** — do not wait for the user to ask. If the user explicitly says "don't commit yet" or "let me review first", honor that.
 
+### 24. Studio Config Validation Framework (MANDATORY for board UIs)
+
+**Every board tab in `app/go/studio/frontend/src/lib/tabs/<Board>Tab.svelte` MUST run its config through a board-specific verifier and visually surface issues in the UI.**
+
+This is the standard pattern for catching invalid wiring (pin role conflicts, disabled-channel references, range violations, missing calibration) **before** the user pushes a bad config to flash.
+
+**Reference implementation:**
+- Generic framework: [app/go/studio/frontend/src/lib/config/config-verifier.ts](app/go/studio/frontend/src/lib/config/config-verifier.ts) — `ConfigVerifier<T>` interface, `ResourceTracker`, `Range` helpers, `buildResult`, `EMPTY_RESULT`.
+- LightFX board verifier: [app/go/studio/frontend/src/lib/config/light-verifier.ts](app/go/studio/frontend/src/lib/config/light-verifier.ts).
+- GearControl board verifier: [app/go/studio/frontend/src/lib/config/gearcontrol-verifier.ts](app/go/studio/frontend/src/lib/config/gearcontrol-verifier.ts).
+
+**Required wiring per board tab:**
+
+1. **Config snapshot interface** — define a board-local interface (e.g. `GearControlConfig`) that mirrors the in-component reactive state. The verifier operates on this snapshot, not on Svelte state directly, so it stays test-friendly and decoupled from the UI framework.
+
+2. **Verifier class** — `class <Board>ConfigVerifier implements ConfigVerifier<<Board>Config>`. Hold a `_pathIndex: Map<string, VerifyIssue[]>` rebuilt every `verify()` call so `hasConflict(path)` and `severityForPath(path)` are O(1) lookups for template re-renders.
+
+3. **Path scheme** — issues carry a stable `path` string (e.g. `pins[3]`, `gears[1].door.0`, `yaw`). Use the same path on the issue and on the template `class:verify-error={sev('pins[3]') === 'error'}` binding.
+
+4. **Reactive verification block** in the tab `<script>`:
+   ```svelte
+   const verifier = new <Board>ConfigVerifier()
+   let liveResult: VerifyResult = EMPTY_RESULT
+   $: {
+       void <each_reactive_dep>  // touch every dependency
+       liveResult = verifier.verify(buildConfig())
+   }
+   let sev: (path: string) => string | null
+   $: sev = (() => { void liveResult; return p => verifier.severityForPath(p) })()
+   ```
+
+5. **Visual highlight** — bind `class:verify-error={sev(path) === 'error'}` and `class:verify-warn={sev(path) === 'warning'}` on every UI element whose path can carry an issue (rows, sections, cards, inputs). The shared CSS rules (in each tab `<style>` block, copied from LightFXTab):
+   ```css
+   .verify-error { border-color: var(--error) !important; background: color-mix(...); box-shadow: ...; }
+   .verify-warn  { border-color: var(--warning) !important; box-shadow: ...; }
+   ```
+
+6. **Save dialog gate** — replace any direct `SendCommand('config.save')` button with one that opens `<SaveConfigDialog verifyResult={...} />`. The dialog blocks save when `verifyResult.counts.error > 0` and shows all warnings/info inline. Title-bar badge (e.g. `{count} ✕` / `{count} ⚠`) gives a persistent tab-level summary.
+
+**Why this matters:**
+- Catches the most common operator mistakes (door bound to disabled channel, yaw min ≥ max, pin role duplicated) at edit time, not after a flash.
+- Single source of truth — board verifiers are pure TypeScript, easy to unit test independently of Svelte.
+- Consistent UX across boards — every tab shows red borders the same way, so users don't have to learn a new error idiom per board.
+
+**When adding a new board tab:** create `<board>-verifier.ts` BEFORE wiring up the save button. Adding it later means going back through every reactive form field to add `class:verify-*` bindings — much easier to do alongside the initial layout.
+
 ## Key Architecture Patterns
 
 ### Client-Server Topology

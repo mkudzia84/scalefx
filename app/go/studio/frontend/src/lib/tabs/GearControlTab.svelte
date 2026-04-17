@@ -6,13 +6,15 @@
     import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
     import { connectionInfo } from '../stores'
     import ServoWidget from '../components/ServoWidget.svelte'
+    import SaveConfigDialog from '../dialogs/SaveConfigDialog.svelte'
+    import { GearControlConfigVerifier, type GearControlConfig } from '../config/gearcontrol-verifier'
+    import { EMPTY_RESULT, type VerifyResult } from '../config/config-verifier'
 
     export let boardLabel: string = 'GearControl'
 
     // ─── Connection state ───
     $: isHubFX = $connectionInfo.controllerType === 'hubfx'
     $: isDirect = $connectionInfo.connected && !isHubFX
-    $: hubFxConnected = isHubFX && $connectionInfo.connected
     $: controlsDisabled = !$connectionInfo.connected || !$connectionInfo.initialized
 
     // ─── Gear definitions ───
@@ -256,6 +258,52 @@
     $: doorPinsPerGear = [0, 1, 2].map(ch => pinConfigs.filter(p => p.role === 'door' && p.channel === ch).length)
     $: gearHasDoors = doorPinsPerGear.map(n => n > 0)
 
+    // Live per-gear door positions (µs), filled by status broadcast.
+    // Used by Pin Mapping rows for "live value" readouts and by per-gear
+    // door subsections to show actual servo position vs. configured target.
+    let liveDoor_us: number[][] = [[0, 0], [0, 0], [0, 0]]
+
+    // Gear ID list for dropdowns — filters out disabled gears so a door /
+    // yaw_output cannot be assigned to a channel that's been turned off.
+    // We always include the currently-selected gearId so the option doesn't
+    // disappear from a control while the user is mid-edit.
+    function enabledGearOptions(currentId: number): { id: number; name: string }[] {
+        return gearNames
+            .map((name, id) => ({ id, name }))
+            .filter(g => gearEnabled[g.id] || g.id === currentId)
+    }
+
+    // For a door-role pin at table index `pinIdx` belonging to channel `ch`,
+    // return 0 (Door A) for the first such pin in pinConfigs, 1 (Door B) for
+    // the second. Lets a Pin Mapping row show which leg's live µs it owns.
+    function doorLegIndex(pinIdx: number, ch: number): 0 | 1 {
+        let n = 0
+        for (let i = 0; i < pinIdx; i++) {
+            if (pinConfigs[i]?.role === 'door' && pinConfigs[i].channel === ch) n++
+        }
+        return n === 0 ? 0 : 1
+    }
+
+    // Compose a single label that proxies the gear input — what the operator
+    // commanded most recently. Fed by aggregated gearActions; "—" when idle.
+    $: aggregateGearActionLabel = (() => {
+        if (gearActions.some(a => a === 'deploying')) return '▼ Deploying'
+        if (gearActions.some(a => a === 'retracting')) return '▲ Retracting'
+        return 'Idle'
+    })()
+
+    // Map a live PWM µs reading to a 0–100% bar position within [openUs, closeUs].
+    // open and close may be inverted (close < open) — we normalize, so the bar
+    // grows as the servo moves *toward* the open endpoint.
+    function servoPct(value: number, openUs: number, closeUs: number): number {
+        if (!value) return 0
+        const lo = Math.min(openUs, closeUs)
+        const hi = Math.max(openUs, closeUs)
+        if (hi <= lo) return 0
+        const pct = ((value - lo) / (hi - lo)) * 100
+        return Math.max(0, Math.min(100, pct))
+    }
+
     // ─── Warning dismiss (persisted) ───
     // "Don't show again" survives reloads via localStorage.
     const WARN_KEY = 'gearcontrol.directWarningDismissed'
@@ -275,12 +323,6 @@
     }
 
     // ─── Live status broadcast listener ───
-    // Gear state names (from firmware GearState enum)
-    const gearStateNames: Record<number, string> = {
-        0: 'UNKNOWN', 1: 'DEPLOYED', 2: 'RETRACTED',
-        3: 'DEPLOYING', 4: 'RETRACTING', 5: 'ERROR', 6: 'CALIBRATING'
-    }
-
     interface GearStatusInfo {
         state: number; current_mA: number; door0_us: number; door1_us: number
         stallThreshold_mA: number; shuntVoltage_10uV: number
@@ -301,6 +343,8 @@
         for (let i = 0; i < 3; i++) {
             const g = data.gears[i]
             liveCurrent_mA[i] = g.current_mA
+            liveDoor_us[i][0] = g.door0_us
+            liveDoor_us[i][1] = g.door1_us
 
             // Update calibrated stall threshold when firmware reports it
             if (g.stallThreshold_mA > 0) {
@@ -341,13 +385,13 @@
 
         // Battery — monitor is always on
         batteryVoltage_mV = data.battery.voltage_mV
-        lowVoltageTriggered = data.battery.lowVoltage
 
         // Yaw
         liveYaw_us = data.yaw_us
 
         // Trigger reactivity
         liveCurrent_mA = liveCurrent_mA
+        liveDoor_us = liveDoor_us
         calibStates = calibStates
         gearActions = gearActions
         gearEnabled = gearEnabled
@@ -371,9 +415,6 @@
         }
         return names[code] || `Error 0x${code.toString(16).padStart(2, '0')}`
     }
-
-    // Battery state from broadcast
-    let lowVoltageTriggered = false
 
     // ─── Calibration status (async, ~50ms cadence) ───
     // Wire format / field list: gearcontrol.CalibStatus in
@@ -443,9 +484,64 @@
 
     // ─── Config ───
     function configReload() { SendCommand('config.reload') }
-    function configSave()   { SendCommand('config.save') }
     function configStatus() { SendCommand('config.status') }
     function refreshStatus() { SendCommand('status') }
+
+    // ─── Verification ─────────────────────────────────────────────────
+    // Mirrors the LightFX pattern (Rule 24): a board-specific verifier
+    // produces a path-indexed map of issues; the template binds verify-error
+    // / verify-warn classes via sev(path) so any field with a problem renders
+    // with a red/yellow border.
+    const gcVerifier = new GearControlConfigVerifier()
+    let saveDialogOpen = false
+    let saveVerifyResult: VerifyResult = EMPTY_RESULT
+    let saveConfigText = ''
+
+    function buildGearControlConfig(): GearControlConfig {
+        return {
+            pins: pinConfigs.map(p => ({
+                role: p.role, channel: p.channel, gear_id: p.gear_id, threshold_us: p.threshold_us,
+            })),
+            gears: gearConfigs.map((gc, gi) => ({
+                enabled: gearEnabled[gi],
+                calibrated: calibStates[gi] === 'calibrated',
+                timeout_ms: gc.timeout_ms,
+                door: { ...doorConfigs[gi] },
+                doorPinCount: doorPinsPerGear[gi],
+            })),
+            yaw: {
+                enabled: yawEnabled,
+                gearId: yawGearId,
+                neutral_us: yawConfig.neutral_us,
+                min_us: yawConfig.min_us,
+                max_us: yawConfig.max_us,
+            },
+            isSlave: isHubFX,
+        }
+    }
+
+    let liveResult: VerifyResult = EMPTY_RESULT
+    $: {
+        // Touch every reactive dep so Svelte re-runs verification on any edit.
+        void pinConfigs; void gearConfigs; void doorConfigs; void gearEnabled
+        void calibStates; void yawConfig; void yawGearId; void isHubFX
+        liveResult = gcVerifier.verify(buildGearControlConfig())
+    }
+
+    let sev: (path: string) => string | null
+    $: sev = (() => {
+        void liveResult
+        return (path: string): string | null => gcVerifier.severityForPath(path)
+    })()
+
+    function openSaveDialog() {
+        saveVerifyResult = gcVerifier.verify(buildGearControlConfig())
+        // GearControl config text is plumbed server-side via config.save —
+        // we don't currently round-trip the YAML through the GUI, so leave
+        // the dialog's text panel empty. The verify panel still gates save.
+        saveConfigText = ''
+        saveDialogOpen = true
+    }
 
     // ─── Servo Widget defs ───
     const gcServos = [
@@ -466,7 +562,12 @@
         <h2>{boardLabel}</h2>
         <div class="title-actions">
             <button class="small" on:click={configReload} disabled={controlsDisabled} title="Reload config from flash">↻ Reload</button>
-            <button class="small" on:click={configSave} disabled={controlsDisabled} title="Save config to flash">💾 Save</button>
+            <button class="small" on:click={openSaveDialog} disabled={controlsDisabled} title="Verify and save config to flash">💾 Save…</button>
+            {#if liveResult.counts.error > 0}
+                <span class="verify-badge error" title="{liveResult.counts.error} error(s) — see Save dialog">{liveResult.counts.error} ✕</span>
+            {:else if liveResult.counts.warning > 0}
+                <span class="verify-badge warning" title="{liveResult.counts.warning} warning(s)">{liveResult.counts.warning} ⚠</span>
+            {/if}
             <button class="small" on:click={configStatus} disabled={controlsDisabled} title="Config load status">Config</button>
             <button class="small" on:click={refreshStatus} disabled={controlsDisabled} title="Refresh board status">Status</button>
         </div>
@@ -488,6 +589,37 @@
                 <!-- ═══════════  LEFT COLUMN  ═══════════ -->
                 <div class="col">
 
+                    <!-- ── Channel Toggles ── -->
+                    <!-- Per-channel enable/disable lives here so it gates everything below it: -->
+                    <!-- the per-gear cards on the right collapse, and door / yaw_output dropdowns -->
+                    <!-- in Pin Mapping exclude disabled gears. Disabling is non-persistent: -->
+                    <!-- it sends `disable <id>` over the wire and trusts the broadcast bit -->
+                    <!-- (configFlags & 0x80) to confirm. -->
+                    <section class="card">
+                        <div class="card-header">
+                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="12" r="2"/></svg> Channel Toggles</h3>
+                            <span class="header-tag {gearEnabled.every(e => e) ? 'ok' : 'warn'}">
+                                {gearEnabled.filter(e => e).length}/{gearCount} active
+                            </span>
+                        </div>
+                        <div class="channel-toggles">
+                            {#each gearNames as name, id}
+                                <button class="channel-toggle"
+                                        class:on={gearEnabled[id]}
+                                        class:off={!gearEnabled[id]}
+                                        disabled={controlsDisabled}
+                                        title={gearEnabled[id] ? `Disable Gear ${id}` : `Enable Gear ${id}`}
+                                        on:click={() => gearEnabled[id] ? gearDisable(id) : gearEnable(id)}>
+                                    <span class="channel-toggle-dot"
+                                          class:dot-on={gearEnabled[id]}
+                                          class:dot-off={!gearEnabled[id]}></span>
+                                    <span class="channel-toggle-name">{id} — {name}</span>
+                                    <span class="channel-toggle-state">{gearEnabled[id] ? 'ON' : 'OFF'}</span>
+                                </button>
+                            {/each}
+                        </div>
+                    </section>
+
                     <!-- ── Pin Mapping ── -->
                     <!-- Mode (Direct vs Slave) is inferred from connection — no manual toggle. -->
                     <section class="card">
@@ -500,7 +632,10 @@
 
                         <div class="pin-map-list">
                             {#each pinConfigs as pin, idx}
-                                <div class="pin-row" class:pin-unused={pin.role === 'unused'}>
+                                <div class="pin-row"
+                                     class:pin-unused={pin.role === 'unused'}
+                                     class:verify-error={sev(`pins[${idx}]`) === 'error'}
+                                     class:verify-warn={sev(`pins[${idx}]`) === 'warning'}>
                                     <div class="pin-id">
                                         <span class="pin-slot">{pinSlots[idx]}</span>
                                         <span class="pin-gpio">{pinGPIOs[idx]}</span>
@@ -518,11 +653,23 @@
                                                 <select bind:value={pin.channel}
                                                         class="field-input pin-param-input"
                                                         disabled={controlsDisabled}>
-                                                    {#each gearNames as gName, gIdx}
-                                                        <option value={gIdx}>{gIdx + 1} — {gName}</option>
+                                                    {#each enabledGearOptions(pin.channel) as opt}
+                                                        <option value={opt.id}>{opt.id + 1} — {opt.name}</option>
                                                     {/each}
                                                 </select>
                                             </div>
+                                            <!-- Live servo position. Door A = idx 0, Door B = idx 1; -->
+                                            <!-- pick whichever leg this pin owns. We approximate by counting -->
+                                            <!-- door pins for this channel before this pin index. -->
+                                            {#if gearEnabled[pin.channel]}
+                                                <span class="pin-live"
+                                                      title="Live servo position"
+                                                      class:pin-live-warn={!gearEnabled[pin.channel]}>
+                                                    {liveDoor_us[pin.channel]?.[doorLegIndex(idx, pin.channel)] || '—'} µs
+                                                </span>
+                                            {:else}
+                                                <span class="pin-live pin-live-warn">channel off</span>
+                                            {/if}
                                         {:else if pin.role === 'gear_input'}
                                             <div class="pin-param">
                                                 <span class="pin-param-label">Threshold</span>
@@ -531,19 +678,24 @@
                                                        disabled={controlsDisabled} />
                                                 <span class="unit">µs</span>
                                             </div>
+                                            <!-- Live: aggregate gear action (deploy/retract/idle) — proxies the input. -->
+                                            <span class="pin-live">{aggregateGearActionLabel}</span>
                                         {:else if pin.role === 'yaw_output'}
                                             <div class="pin-param">
                                                 <span class="pin-param-label">Gear</span>
                                                 <select bind:value={pin.gear_id}
                                                         class="field-input pin-param-input"
                                                         disabled={controlsDisabled}>
-                                                    {#each gearNames as gName, gIdx}
-                                                        <option value={gIdx}>{gIdx + 1} — {gName}</option>
+                                                    {#each enabledGearOptions(pin.gear_id) as opt}
+                                                        <option value={opt.id}>{opt.id + 1} — {opt.name}</option>
                                                     {/each}
                                                 </select>
                                             </div>
+                                            <span class="pin-live">{liveYaw_us || '—'} µs</span>
                                         {:else if pin.role === 'yaw_input'}
                                             <span class="pin-param-hint dim">PWM input (standalone only)</span>
+                                            <!-- Live yaw mirrors input → output, so show the same value. -->
+                                            <span class="pin-live">{liveYaw_us || '—'} µs</span>
                                         {:else}
                                             <span class="pin-param-hint dim">—</span>
                                         {/if}
@@ -686,7 +838,9 @@
 
                     <!-- ── Yaw Steering ── -->
                     {#if yawEnabled}
-                    <section class="card">
+                    <section class="card"
+                             class:verify-error={sev('yaw') === 'error'}
+                             class:verify-warn={sev('yaw') === 'warning'}>
                         <div class="card-header">
                             <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg> Yaw Steering</h3>
                             <span class="header-tag ok">Gear {yawGearId} — {gearNames[yawGearId]}</span>
@@ -824,12 +978,16 @@
                 <div class="col">
 
                     <!-- ── Per-Gear Cards (one per gear) ── -->
+                    <!-- Disabled channels are hidden entirely; toggles live in the -->
+                    <!-- "Channel Toggles" frame in the left column. -->
                     {#each gearNames as name, id}
+                        {#if gearEnabled[id]}
                         <section class="card gear-card-wrap"
                                  class:card-error={calibStates[id] === 'error'}
                                  class:card-warn={calibStates[id] === 'uncalibrated'}
                                  class:card-active={gearActions[id] !== 'idle'}
-                                 class:card-disabled={!gearEnabled[id]}>
+                                 class:verify-error={sev(`gears[${id}]`) === 'error'}
+                                 class:verify-warn={sev(`gears[${id}]`) === 'warning'}>
 
                             <div class="card-header">
                                 <div class="gear-header-left">
@@ -838,8 +996,7 @@
                                           class:dot-retract={gearActions[id] === 'retracting'}
                                           class:dot-idle={gearActions[id] === 'idle' && calibStates[id] === 'calibrated'}
                                           class:dot-error={calibStates[id] === 'error'}
-                                          class:dot-uncal={calibStates[id] === 'uncalibrated' || calibStates[id] === 'calibrating'}
-                                          class:dot-off={!gearEnabled[id]}></span>
+                                          class:dot-uncal={calibStates[id] === 'uncalibrated' || calibStates[id] === 'calibrating'}></span>
                                     <h3>Gear {id} — {name}</h3>
                                     {#if calibStates[id] === 'error'}
                                         <span class="header-tag error">✕ {calibErrors[id] || 'Error'}</span>
@@ -851,33 +1008,22 @@
                                         <span class="header-tag warn">⚠</span>
                                     {/if}
                                 </div>
-
-                                <!-- Enable / Disable -->
-                                <div class="gear-enable">
-                                    {#if gearEnabled[id]}
-                                        <button class="small" disabled={controlsDisabled}
-                                                on:click={() => gearDisable(id)} title="Disable channel">Disable</button>
-                                    {:else}
-                                        <button class="small primary" disabled={controlsDisabled}
-                                                on:click={() => gearEnable(id)} title="Enable channel">Enable</button>
-                                    {/if}
-                                </div>
                             </div>
 
                             <!-- Per-gear action buttons -->
                             <div class="gear-actions-row">
                                 <button class="small primary" title="Deploy"
-                                        disabled={controlsDisabled || calibStates[id] !== 'calibrated' || !gearEnabled[id]}
+                                        disabled={controlsDisabled || calibStates[id] !== 'calibrated'}
                                         on:click={() => gearDeploy(id)}>
                                     ▼ Deploy
                                 </button>
                                 <button class="small" title="Retract"
-                                        disabled={controlsDisabled || calibStates[id] !== 'calibrated' || !gearEnabled[id]}
+                                        disabled={controlsDisabled || calibStates[id] !== 'calibrated'}
                                         on:click={() => gearRetract(id)}>
                                     ▲ Retract
                                 </button>
                                 <button class="small danger" title="Stop"
-                                        disabled={controlsDisabled || !gearEnabled[id]}
+                                        disabled={controlsDisabled}
                                         on:click={() => gearStop(id)}>
                                     ■ Stop
                                 </button>
@@ -952,8 +1098,35 @@
 
                             <!-- Door Positions (shown only when door servos assigned) -->
                             {#if gearHasDoors[id]}
-                            <div class="subsection-inline">
+                            <div class="subsection-inline"
+                                 class:verify-error={sev(`gears[${id}].door.0`) === 'error' || sev(`gears[${id}].door.1`) === 'error'}
+                                 class:verify-warn={sev(`gears[${id}].door.0`) === 'warning' || sev(`gears[${id}].door.1`) === 'warning'}>
                                 <h4>Door Positions <span class="door-count">{doorPinsPerGear[id]} servo{doorPinsPerGear[id] > 1 ? 's' : ''}</span></h4>
+
+                                <!-- Live servo positions (from STATUS broadcast). -->
+                                <!-- Bar fill is the value's position within [min,max] of -->
+                                <!-- the configured open/close range; clamps when outside. -->
+                                <div class="door-live">
+                                    <div class="door-live-row">
+                                        <span class="door-live-label">Door A live</span>
+                                        <div class="door-live-bar-track">
+                                            <div class="door-live-bar-fill"
+                                                 style="width: {servoPct(liveDoor_us[id][0], doorConfigs[id].open0_us, doorConfigs[id].close0_us)}%"></div>
+                                        </div>
+                                        <span class="door-live-value">{liveDoor_us[id][0] || '—'} µs</span>
+                                    </div>
+                                    {#if doorPinsPerGear[id] > 1}
+                                    <div class="door-live-row">
+                                        <span class="door-live-label">Door B live</span>
+                                        <div class="door-live-bar-track">
+                                            <div class="door-live-bar-fill"
+                                                 style="width: {servoPct(liveDoor_us[id][1], doorConfigs[id].open1_us, doorConfigs[id].close1_us)}%"></div>
+                                        </div>
+                                        <span class="door-live-value">{liveDoor_us[id][1] || '—'} µs</span>
+                                    </div>
+                                    {/if}
+                                </div>
+
                                 <div class="form-grid cols-2">
                                     <div class="form-field">
                                         <span class="field-label">Door A Open µs</span>
@@ -1028,6 +1201,7 @@
 
 
                         </section>
+                        {/if}
                     {/each}
 
                     <!-- ── Servo Widget (shared) ── -->
@@ -1039,6 +1213,16 @@
     </div>
 </div>
 
+<SaveConfigDialog
+    boardType="gearcontrol"
+    boardLabel={boardLabel}
+    verifyResult={saveVerifyResult}
+    configText={saveConfigText}
+    open={saveDialogOpen}
+    onSave={() => { SendCommand('config.save'); saveDialogOpen = false }}
+    onClose={() => { saveDialogOpen = false }}
+/>
+
 <style>
     /* GearControlTab-specific — shared styles in style.css */
 
@@ -1048,15 +1232,28 @@
     .card-error { border-color: color-mix(in srgb, var(--error) 60%, transparent) !important; }
     .card-active { border-color: color-mix(in srgb, var(--ok, #4ec9b0) 50%, transparent); }
 
-    .card-disabled { opacity: 0.55; }
-    .card-disabled .gear-enable { opacity: calc(1 / 0.55); }
-    .card-disabled .gear-enable button {
-        background: color-mix(in srgb, var(--accent) 25%, var(--bg-raised));
-        border-color: var(--accent);
-        color: var(--accent);
-        font-weight: 700;
-        box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
+    /* ─── Verification highlights (Rule 24) ─── */
+    /* Mirrors LightFXTab — any UI block bound with class:verify-error / verify-warn
+       picks up the border + glow set here, regardless of card/row/section class. */
+    .verify-error {
+        border-color: var(--error) !important;
+        background: color-mix(in srgb, var(--error) 8%, var(--bg-surface)) !important;
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--error) 35%, transparent);
     }
+    .verify-warn {
+        border-color: var(--warning, #d7ba7d) !important;
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning, #d7ba7d) 35%, transparent);
+    }
+    .verify-badge {
+        font-size: 11px;
+        font-weight: 700;
+        padding: 1px 7px;
+        border-radius: 8px;
+        line-height: 1.4;
+        font-family: var(--font-mono);
+    }
+    .verify-badge.error   { background: color-mix(in srgb, var(--error) 20%, transparent); color: var(--error); }
+    .verify-badge.warning { background: color-mix(in srgb, var(--warning, #d7ba7d) 20%, transparent); color: var(--warning, #d7ba7d); }
 
     .gear-header-left {
         display: flex;
@@ -1077,7 +1274,120 @@
     .header-tag.error { color: var(--error); background: color-mix(in srgb, var(--error) 12%, transparent); }
     .header-tag.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
-    .gear-enable { flex-shrink: 0; }
+    /* ─── Channel Toggles ─── */
+    .channel-toggles {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+    .channel-toggle {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+        border-radius: 4px;
+        background: var(--bg-raised);
+        border: 1px solid var(--border);
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--text);
+    }
+    .channel-toggle.on {
+        border-color: color-mix(in srgb, var(--ok, #4ec9b0) 60%, transparent);
+        background: color-mix(in srgb, var(--ok, #4ec9b0) 6%, var(--bg-raised));
+    }
+    .channel-toggle.off {
+        border-color: color-mix(in srgb, var(--text-dim) 30%, transparent);
+        background: var(--bg-raised);
+        opacity: 0.7;
+    }
+    .channel-toggle:hover:not(:disabled) { border-color: var(--accent); }
+    .channel-toggle-dot {
+        width: 9px; height: 9px; border-radius: 50%;
+        flex-shrink: 0;
+        background: var(--text-dim);
+    }
+    .channel-toggle-dot.dot-on  { background: var(--ok, #4ec9b0); box-shadow: 0 0 6px color-mix(in srgb, var(--ok, #4ec9b0) 50%, transparent); }
+    .channel-toggle-dot.dot-off { background: var(--text-dim); }
+    .channel-toggle-name { flex: 1; font-weight: 600; }
+    .channel-toggle-state {
+        font-size: 10px;
+        font-weight: 700;
+        padding: 1px 8px;
+        border-radius: 3px;
+        background: color-mix(in srgb, var(--border) 40%, transparent);
+        color: var(--text-dim);
+    }
+    .channel-toggle.on .channel-toggle-state {
+        background: color-mix(in srgb, var(--ok, #4ec9b0) 18%, transparent);
+        color: var(--ok, #4ec9b0);
+    }
+
+    /* ─── Pin Mapping live readouts ─── */
+    .pin-live {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text);
+        padding: 1px 8px;
+        border-radius: 3px;
+        background: color-mix(in srgb, var(--accent) 8%, transparent);
+        margin-left: auto;
+        white-space: nowrap;
+    }
+    .pin-live.pin-live-warn {
+        color: var(--warning, #d7ba7d);
+        background: color-mix(in srgb, var(--warning, #d7ba7d) 10%, transparent);
+    }
+
+    /* ─── Live door servo bars ─── */
+    .door-live {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-bottom: 8px;
+        padding: 6px 10px;
+        background: var(--bg-raised);
+        border-radius: 4px;
+        border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+    }
+    .door-live-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .door-live-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--text-dim);
+        font-family: var(--font-mono);
+        min-width: 80px;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+    }
+    .door-live-bar-track {
+        flex: 1;
+        height: 5px;
+        background: var(--bg-input);
+        border-radius: 3px;
+        overflow: hidden;
+    }
+    .door-live-bar-fill {
+        height: 100%;
+        background: var(--accent);
+        border-radius: 3px;
+        transition: width 0.2s;
+    }
+    .door-live-value {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--text);
+        min-width: 64px;
+        text-align: right;
+    }
 
     /* ─── Aggregate Buttons ─── */
     .agg-buttons {

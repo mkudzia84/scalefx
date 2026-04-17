@@ -1,6 +1,6 @@
 # ScaleFX — Claude Code Guide
 
-Authoritative rulebook: [.github/copilot-instructions.md](.github/copilot-instructions.md) (23 rules).
+Authoritative rulebook: [.github/copilot-instructions.md](.github/copilot-instructions.md) (24 rules).
 Detailed workflows: [instructions/](instructions/) — numbered guides (`01-ARCHITECTURE.md`, `03-PROTOCOL-EXTENSION.md`, `04-CHANGE-PROPAGATION.md`, `05-BUILD-AND-FLASH.md`, …).
 
 This file is a compact index for Claude. When a rule below conflicts with copilot-instructions.md, that file wins — update this one to match.
@@ -89,6 +89,7 @@ After any C++ protocol change: `cd app/go && go build ./cli/` — compiling the 
 21. **No backward-compatibility scaffolding in refactors.** When restructuring existing code, delete dead fields / removed flags / "pre-vN" fallbacks outright. Rule 11 (append-only wire-format extension) still applies — that's protocol compat across firmware versions, not code compat across git revisions. Do not invent `XxxFieldPresent` booleans, keep deleted helpers as thin wrappers, or leave `// removed for back-compat` comments. One way to do it: the current way.
 22. **No thin wrappers.** If a method only decodes + fires an observer (or only calls another function), inline it at the call site. `parseXxxStatus` / `handleXxxBroadcast` that wrapped a decode+Fire are banned — use the closure form in `Register()` directly.
 23. **Commit after significant changes, grouped by functionality (Rule 23).** After any significant change (protocol/wire-format, end-to-end feature, multi-controller refactor, version bump, docs tied to code), proactively create commit(s) — one per cohesive idea. Don't bundle unrelated work; don't split a single logical change (firmware + Go mirror + docs = ONE commit per Rule 1). Honor "don't commit yet" if the user says it.
+24. **Studio config validation (Rule 24).** Every board tab in `app/go/studio/frontend/src/lib/tabs/` runs its config through a board-specific verifier (`<board>-verifier.ts` implementing `ConfigVerifier<T>`) and visually surfaces issues (`class:verify-error` / `class:verify-warn` bindings via a `sev(path)` helper). Save buttons open `<SaveConfigDialog verifyResult={...} />` which gates flash on zero errors. Reference: [light-verifier.ts](app/go/studio/frontend/src/lib/config/light-verifier.ts), [gearcontrol-verifier.ts](app/go/studio/frontend/src/lib/config/gearcontrol-verifier.ts).
 
 ## Key architectural touchstones
 
