@@ -119,13 +119,10 @@ CommandHandleResult GearControlServer::handleModulePacket(uint8_t type, const ui
             SFX_DISPATCH(_gearCalibCancelCallback, gearId);
         }
 
-        case GearControlPacket::BATTERY_CONFIG: {
-            SFX_REQUIRE_LEN(3);
-            GearControlBatteryConfig cfg;
-            cfg.autoDeploy = payload[0] != 0;
-            cfg.chemistry  = payload[1];
-            cfg.cellCount  = payload[2];
-            SFX_DISPATCH(_batteryConfigCallback, cfg);
+        case GearControlPacket::BATTERY_AUTO_DEPLOY: {
+            SFX_REQUIRE_LEN(1);
+            bool enabled = payload[0] != 0;
+            SFX_DISPATCH(_batteryAutoDeployCallback, enabled);
         }
 
         case GearControlPacket::DOOR_MODE: {

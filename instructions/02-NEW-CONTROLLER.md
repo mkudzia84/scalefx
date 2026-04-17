@@ -484,5 +484,7 @@ After_Completion:
 | PwmControl | `pwm_control.h` | RC PWM input with averaging and callbacks |
 | INA226 | `ina226.h` | TI INA226 power/current/voltage monitor (I2C) |
 | I2CDevice | `i2c_device.h` | Base class for I2C peripherals |
-| BatteryMonitor | `battery_monitor.h` | ADC battery voltage with low-voltage alerts |
+| AdcDividerBatteryT&lt;MultiplierMilli&gt; | `battery_monitor.h` | ADC battery voltage (templated divider) with low-voltage alerts |
+| Ina226Battery | `ina226_battery.h` | INA226-based battery voltage policy (HubFX) |
+| BatteryServerT&lt;TBattery&gt; | `battery_server.h` | Generic core-range BATTERY_CONFIG (0xEE) handler — board picks the policy |
 | SfxServer::IndicatorLedManager | `server/sfx_server.h` (nested class) | Connection/error LED state machine |

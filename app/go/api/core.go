@@ -26,3 +26,10 @@ func (a *CoreApi) Reboot() error { return a.conn.Send(core.CmdReboot()) }
 
 // Bootsel sends BOOTSEL/DFU command (fire-and-forget).
 func (a *CoreApi) Bootsel() error { return a.conn.Send(core.CmdBootsel()) }
+
+// BatteryConfig adjusts battery sensor settings on any board with battery
+// monitoring (handled by BatteryServerT). chemistry is a wire-format byte
+// (core.ChemistryLiPo / LiIon / NiMH); cellCount == 0 = re-arm auto-detect.
+func (a *CoreApi) BatteryConfig(chemistry, cellCount byte) ApiResult {
+	return a.sendACK(core.CmdBatteryConfig(chemistry, cellCount))
+}

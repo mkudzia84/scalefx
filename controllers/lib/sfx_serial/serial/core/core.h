@@ -230,6 +230,12 @@ namespace CorePacket {
     constexpr uint8_t IDENTIFY        = 0xFE;  // Query board info without triggering INIT (response uses same type + INIT_READY payload format)
     constexpr uint8_t DIAG_HISTORY    = 0xFF;  // Request diagnostic log history (sends buffered LOG_MESSAGE packets without draining)
     constexpr uint8_t STATUS_UPDATE   = 0xEF;  // Async verbose status: [source:u8][type:u8][data:variable]
+
+    // Battery monitoring (handled by BatteryServerT, not CoreCommandServer):
+    //   BATTERY_CONFIG payload: [chemistry:u8][cellCount:u8]
+    //     chemistry: 0=LiPo, 1=Li-Ion, 2=NiMH (matches BatteryChemistry enum)
+    //     cellCount: 0 = re-arm auto-detect, 1..MAX_CELLS = pinned count
+    constexpr uint8_t BATTERY_CONFIG  = 0xEE;
 }
 
 // ============================================================================

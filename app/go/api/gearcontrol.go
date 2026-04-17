@@ -49,8 +49,9 @@ func (a *GearControlApi) Calibrate(id, timeout byte) ApiResult {
 func (a *GearControlApi) CalibrateCancel(id byte) ApiResult      { return a.sendACK(gearcontrol.CmdCalibCancel(id)) }
 func (a *GearControlApi) Reset(id byte) ApiResult                { return a.sendACK(gearcontrol.CmdReset(id)) }
 func (a *GearControlApi) Enable(id byte, enabled bool) ApiResult { return a.sendACK(gearcontrol.CmdEnable(id, enabled)) }
-// BatteryConfig — monitor is always on. chemistry is a wire-format byte
-// (gearcontrol.ChemistryLiPo / LiIon / NiMH); cellCount == 0 triggers auto-detect.
-func (a *GearControlApi) BatteryConfig(autoDeploy bool, chemistry, cellCount byte) ApiResult {
-	return a.sendACK(gearcontrol.CmdBatteryConfig(autoDeploy, chemistry, cellCount))
+// BatteryAutoDeploy toggles GearControl-specific safety: deploy gear when the
+// battery state machine reports low voltage. Sensor configuration (chemistry /
+// cellCount) flows through CoreApi.BatteryConfig.
+func (a *GearControlApi) BatteryAutoDeploy(enabled bool) ApiResult {
+	return a.sendACK(gearcontrol.CmdBatteryAutoDeploy(enabled))
 }

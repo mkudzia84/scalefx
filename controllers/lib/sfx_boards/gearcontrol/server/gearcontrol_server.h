@@ -61,7 +61,7 @@ public:
     void onYawInput(GearControlYawInputCallback cb) { _yawInputCallback = cb; }
     void onGearCalibrate(GearControlGearCalibrateCallback cb) { _gearCalibrateCallback = cb; }
     void onGearCalibCancel(GearControlCalibCancelCallback cb) { _gearCalibCancelCallback = cb; }
-    void onBatteryConfig(GearControlBatteryConfigCallback cb) { _batteryConfigCallback = cb; }
+    void onBatteryAutoDeploy(GearControlBatteryAutoDeployCallback cb) { _batteryAutoDeployCallback = cb; }
     void onDoorMode(GearControlDoorModeCallback cb) { _doorModeCallback = cb; }
     void onGearReset(GearControlGearResetCallback cb) { _gearResetCallback = cb; }
     void onGearEnable(GearControlGearEnableCallback cb) { _gearEnableCallback = cb; }
@@ -87,7 +87,7 @@ private:
     GearControlYawInputCallback _yawInputCallback;
     GearControlGearCalibrateCallback _gearCalibrateCallback;
     GearControlCalibCancelCallback _gearCalibCancelCallback;
-    GearControlBatteryConfigCallback _batteryConfigCallback;
+    GearControlBatteryAutoDeployCallback _batteryAutoDeployCallback;
     GearControlDoorModeCallback _doorModeCallback;
     GearControlGearResetCallback _gearResetCallback;
     GearControlGearEnableCallback _gearEnableCallback;

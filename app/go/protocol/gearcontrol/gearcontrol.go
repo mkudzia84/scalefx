@@ -32,8 +32,10 @@ const (
 	GearCalibStatus protocol.PacketType = 0x6B
 	GearCalibCancel protocol.PacketType = 0x6C
 
-	// Battery
-	BatteryConfig  protocol.PacketType = 0x6D
+	// Battery — GearControl-specific safety toggle.
+	// Sensor configuration (chemistry / cell count) flows through the generic
+	// CorePacket::BATTERY_CONFIG handler in protocol/core.
+	BatteryAutoDeploy protocol.PacketType = 0x6D
 
 	// Door mode
 	DoorMode       protocol.PacketType = 0x6E
@@ -130,18 +132,11 @@ func CmdCalibCancel(gearID byte) []byte {
 	return protocol.BuildPacket(GearCalibCancel, []byte{gearID}, 0)
 }
 
-// Battery chemistry wire-format values (match C++ BatteryChemistry enum).
-const (
-	ChemistryLiPo  byte = 0
-	ChemistryLiIon byte = 1
-	ChemistryNiMH  byte = 2
-)
-
-// CmdBatteryConfig — 3-byte payload: [autoDeploy, chemistry, cellCount].
-// Monitor is always on (no enable byte). cellCount == 0 = auto-detect.
-func CmdBatteryConfig(autoDeploy bool, chemistry byte, cellCount byte) []byte {
-	return protocol.BuildPacket(BatteryConfig,
-		[]byte{boolByte(autoDeploy), chemistry, cellCount}, 0)
+// CmdBatteryAutoDeploy — 1-byte payload: [enabled].
+// GearControl-specific safety: deploy gear automatically on low voltage.
+// Sensor configuration (chemistry / cellCount) goes through core.CmdBatteryConfig.
+func CmdBatteryAutoDeploy(enabled bool) []byte {
+	return protocol.BuildPacket(BatteryAutoDeploy, []byte{boolByte(enabled)}, 0)
 }
 
 func boolByte(b bool) byte {
@@ -149,19 +144,6 @@ func boolByte(b bool) byte {
 		return 1
 	}
 	return 0
-}
-
-// ChemistryFromString maps a canonical config string to the wire-format byte.
-// Unknown values fall back to LiPo.
-func ChemistryFromString(s string) byte {
-	switch s {
-	case "liion":
-		return ChemistryLiIon
-	case "nimh":
-		return ChemistryNiMH
-	default:
-		return ChemistryLiPo
-	}
 }
 
 func CmdDoorMode(gearID, preDeploy, postDeploy byte, delay_ms uint16) []byte {
@@ -264,7 +246,7 @@ func init() {
 		GearCalibrate:  "GC.GEAR_CALIBRATE",
 		GearCalibStatus: "GC.CALIB_STATUS",
 		GearCalibCancel: "GC.CALIB_CANCEL",
-		BatteryConfig:  "GC.BATTERY_CONFIG",
+		BatteryAutoDeploy: "GC.BATTERY_AUTO_DEPLOY",
 		DoorMode:       "GC.DOOR_MODE",
 		GearReset:      "GC.GEAR_RESET",
 		GearSeqStatus:  "GC.GC_SEQ_STATUS",

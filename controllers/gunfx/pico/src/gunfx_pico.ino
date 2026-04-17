@@ -40,7 +40,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.7.0"
-#define BUILD_NUMBER 24
+#define BUILD_NUMBER 25
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -77,8 +77,8 @@ SmokeGenerator smokeGen;
 // Servos with motion profiling
 ServoControl gunServos[3];
 
-// Battery voltage monitor (ADC ÷6 divider)
-BatteryMonitor batteryMonitor;
+// Battery voltage monitor (ADC ÷6 divider, e.g. 50k/10k)
+AdcDividerBatteryT<6000> batteryMonitor;
 
 // ============================================================================
 //  FORWARD DECLARATIONS
@@ -140,7 +140,7 @@ void setup() {
 
     // Initialize battery voltage monitor (ADC ÷6 divider)
     analogReadResolution(12);
-    batteryMonitor.begin(PIN_VSENSE, 6.0f);
+    batteryMonitor.begin(PIN_VSENSE);
 
     // Initialize servos
     const uint8_t servoPins[] = { PIN_GUN_SRV_1, PIN_GUN_SRV_2, PIN_GUN_SRV_3 };

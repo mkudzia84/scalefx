@@ -14,6 +14,10 @@
  *   # Future sections:
  *   # light_fx:  → LightFxConfig
  *   # gear_ctrl: → GearControlConfig
+ *
+ * Battery monitoring is NOT in the YAML — the INA226 rail channel is hardcoded
+ * in hubfx_esp32s3.ino, and chemistry/cell-count are set at runtime via the
+ * core BATTERY_CONFIG (0xEE) packet.
  */
 
 #ifndef HUBFX_CONFIG_H

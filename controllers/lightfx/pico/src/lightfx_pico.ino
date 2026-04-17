@@ -27,6 +27,7 @@
 #include <servo/srv_control.h>
 #include <server/sfx_server.h>
 #include <power/battery_monitor.h>
+#include <power/battery_server.h>
 #include <storage/flash.h>
 #include <storage/storage_config_bridge.h>
 #include <config/config_store.h>
@@ -39,7 +40,7 @@
 // ============================================================================
 
 #define FIRMWARE_VERSION "0.9.0"
-#define BUILD_NUMBER 28
+#define BUILD_NUMBER 30
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -93,7 +94,11 @@ const int SERVO_DEFAULT_DECEL      = 8000;
 // Server (serial, core protocol, indicators, connection management)
 SfxServer server;
 LightFxServer lightfxServer;
-BatteryMonitor batteryMonitor;
+// Battery voltage monitor (ADC with ÷5.1 divider, e.g. 41k/10k)
+// Plus generic core BATTERY_CONFIG (0xEE) handler.
+using BatteryT = AdcDividerBatteryT<5100>;
+BatteryT batteryMonitor;
+BatteryServerT<BatteryT> batteryServer(batteryMonitor);
 
 // Config server (handles CONFIG_RELOAD/STATUS/SAVE protocol + owns ConfigStore)
 using LightFxConfigStore = ConfigStore<LightFxConfigSchema>;
@@ -313,7 +318,7 @@ void setup() {
     // Initialize server (serial, device name, indicators, core callbacks)
     // Battery ADC
     analogReadResolution(12);
-    batteryMonitor.begin(PIN_VSENSE, 5.1f);
+    batteryMonitor.begin(PIN_VSENSE);
 
     server.begin("LightFX", FIRMWARE_VERSION, BUILD_NUMBER, PIN_LED_CONN, PIN_LED_ERR);
     server.onInit([](uint8_t mode, uint8_t flags) {
@@ -386,6 +391,11 @@ void setup() {
     // Register config server (handles CONFIG_RELOAD/STATUS/SAVE)
     configServer.begin(&Serial);
     server.addModuleHandler(&configServer);
+
+    // Generic battery handler (core BATTERY_CONFIG 0xEE) — register before
+    // the module handler so battery commands resolve quickly.
+    batteryServer.begin(&Serial);
+    server.addModuleHandler(&batteryServer);
 
     // Finalize router (core handler + LightFX handler)
     server.addModuleHandler(&lightfxServer);

@@ -42,8 +42,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.32.0"
-#define BUILD_NUMBER 177
+#define FIRMWARE_VERSION "0.33.0"
+#define BUILD_NUMBER 187
 
 // ============================================================================
 // FEATURE FLAGS — Board bring-up: uncomment to enable features one by one
@@ -68,6 +68,8 @@
 
 #include <Wire.h>
 #include <power/ina226.h>
+#include <power/ina226_battery.h>
+#include <power/battery_server.h>
 #include <gpio/pcal6416a.h>
 
 // Config schemas
@@ -522,6 +524,14 @@ static INA226 ina226[INA226_COUNT];
 static const uint8_t ina226Addrs[INA226_COUNT] = { 0x40, 0x41, 0x42, 0x43, 0x44, 0x45 };
 // gpioExpander declared earlier (before FEATURE_AUDIO section)
 
+// Battery monitoring — hardcoded to INA226 channel 0 (0x40), the rail input
+// on the HubFX v1 board. Sensor wiring uses the generic BatteryServerT<TBattery>
+// handler that claims core packet 0xEE BATTERY_CONFIG. Chemistry / cell count
+// default to LiPo / auto; override at runtime via the BATTERY_CONFIG packet.
+static constexpr uint8_t BATTERY_INA226_CHANNEL = 0;
+static Ina226Battery batteryMonitor;
+static BatteryServerT<Ina226Battery> batteryServer(batteryMonitor);
+
 // Module protocol handlers
 StorageServer storageServer;
 #ifdef FEATURE_USB_HOST
@@ -664,6 +674,11 @@ static void initProtocolHandlers() {
 #ifdef FEATURE_ENGINE
     server.addModuleHandler(&engineServer);
 #endif
+    // Generic battery handler (core BATTERY_CONFIG 0xEE) — sensor is bound to
+    // INA226[BATTERY_INA226_CHANNEL] in setup() after initI2CDevices().
+    batteryServer.begin(&Serial);
+    server.addModuleHandler(&batteryServer);
+
     server.addModuleHandler(&storageServer);
 
 #ifdef FEATURE_AUDIO
@@ -1026,6 +1041,12 @@ void setup() {
     server.enableI2CScan(Wire);
     initI2CDevices();
 
+    // Bind battery monitor to the hardcoded INA226 rail channel.
+    batteryMonitor.setSensor(ina226[BATTERY_INA226_CHANNEL]);
+    batteryMonitor.begin();
+    SFX_LOG_INFO("Battery: INA226[%u] @ 0x%02X (LiPo, auto cells)",
+                 BATTERY_INA226_CHANNEL, ina226Addrs[BATTERY_INA226_CHANNEL]);
+
     initStorage();
     initProtocolHandlers();
 #ifdef FEATURE_CONFIG
@@ -1137,6 +1158,9 @@ void loop() {
 #ifdef FEATURE_ENGINE
     EngineFX::instance().process();
 #endif
+
+    // Sample the battery rail (cached INA226 read; main loop owns ina226[]).
+    batteryMonitor.update();
 
     if (!storageServer.isUploadActive()) {
         vTaskDelay(pdMS_TO_TICKS(1));

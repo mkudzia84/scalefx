@@ -59,10 +59,13 @@ public:
     CommandResult setGearConfig(const GearControlGearConfig& config);
     CommandResult setYawConfig(const GearControlYawConfig& config);
     CommandResult setYawInput(uint16_t position_us);
-    /// Battery config — monitor is always on. chemistry: 0=LiPo, 1=Li-Ion, 2=NiMH;
-    /// cellCount: 0 = auto-detect (else 1..6 = fixed).
-    CommandResult setBatteryConfig(bool autoDeployOnLowVoltage,
-                                   uint8_t chemistry = 0, uint8_t cellCount = 0);
+    /// Battery sensor configuration (chemistry / cell count) — flows through the
+    /// generic CorePacket::BATTERY_CONFIG handler. chemistry: 0=LiPo, 1=Li-Ion,
+    /// 2=NiMH. cellCount: 0 = auto-detect (else 1..MAX_CELLS = fixed).
+    CommandResult setBatterySensor(uint8_t chemistry = 0, uint8_t cellCount = 0);
+
+    /// GearControl-specific safety: auto-deploy gear on low voltage.
+    CommandResult setBatteryAutoDeploy(bool enabled);
     CommandResult setDoorMode(const GearControlDoorModeConfig& config);
     CommandResult requestI2CScan();
 

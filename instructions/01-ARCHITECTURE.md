@@ -143,7 +143,7 @@ GearControl_Packets:  # 0x60-0x7F
   GEAR_CALIBRATE:    { type: 0x6A, payload: "[gear_id:u8][timeout_s:u8]" }
   GEAR_CALIB_STATUS: { type: 0x6B, payload: "[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8][errorReason:u8]" }
   GEAR_CALIB_CANCEL: { type: 0x6C, payload: "[gear_id:u8]" }
-  BATTERY_CONFIG:    { type: 0x6D, payload: "[enabled:u8][auto_deploy:u8]" }
+  BATTERY_AUTO_DEPLOY:{ type: 0x6D, payload: "[enabled:u8]" }  # GearControl-only; sensor config is core BATTERY_CONFIG (0xEE)
   DOOR_MODE:         { type: 0x6E, payload: "[gear_id:u8][mode:u8][delay_ms:u16LE]" }
 ```
 
@@ -493,7 +493,7 @@ GearControl:
   - GEAR_CONFIG          # Configuration only
   - DOOR_CONFIG          # Configuration only
   - YAW_CONFIG           # Configuration only
-  - BATTERY_CONFIG       # Configuration only
+  - BATTERY_AUTO_DEPLOY  # GearControl safety toggle (sensor config is core 0xEE)
   - DOOR_MODE            # Configuration only
   - YAW_INPUT            # Direct servo mapping
   - GEAR_STOP            # Emergency stop (immediate motor cutoff)

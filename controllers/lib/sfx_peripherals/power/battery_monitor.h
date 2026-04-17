@@ -1,52 +1,45 @@
 /*
- * Battery Monitor Library - Header
+ * Battery Monitor — ADC + resistor-divider battery voltage sensor
  *
- * ADC-based battery voltage monitor for LiPo and Li-Ion packs.
- * Reads voltage through a resistor divider, auto-detects cell count (1S–6S),
- * and monitors for low/critical voltage to prevent excessive discharge.
- *
- * Features:
- *   - ADC reading with configurable resistor divider ratio
- *   - LiPo and Li-Ion chemistry profiles (configurable thresholds)
- *   - Auto-detect cell count from measured voltage (lockable)
- *   - Low and critical voltage callbacks with hysteresis
- *   - Estimated state-of-charge percentage
- *   - Oversampled ADC reads for noise reduction
+ * A battery sensor for boards that sense voltage via an ADC pin behind a
+ * resistor divider. Conforms to the duck-typed concept consumed by
+ * BatteryServerT<TBattery> (see battery_server.h for the required surface).
+ * Internally delegates cell-detect / hysteresis / alert logic to
+ * BatteryStateMachine so behavior is identical to the INA226-based sensor.
  *
  * Hardware assumptions:
- *   - RP2040 ADC: 12-bit, 3.3V reference
+ *   - RP2040/RP2350 ADC: 12-bit, 3.3V reference
  *   - Resistive voltage divider between battery and ADC pin
  *   - Divider multiplier = (R_top + R_bottom) / R_bottom
  *     Example: 50kΩ/10kΩ divider → multiplier = 6.0
  *
+ * The divider multiplier is a compile-time template parameter expressed in
+ * milli-units (×1000) so we can use a non-type template parameter without
+ * needing C++20 float NTTPs:
+ *
+ *   ÷6.0   →  AdcDividerBatteryT<6000>
+ *   ÷5.1   →  AdcDividerBatteryT<5100>
+ *   ÷11.0  →  AdcDividerBatteryT<11000>
+ *
+ * This lets the compiler inline the divider math; each board picks its own
+ * specialization. Convenience aliases for common ratios are at the bottom of
+ * the header.
+ *
  * Usage:
- *   BatteryMonitor battery;
- *   battery.begin(29, 6.0f);                 // GP29, ÷6 divider, default LiPo
+ *   AdcDividerBatteryT<6000> battery;        // ÷6 divider (e.g. 50k/10k)
+ *   battery.begin(29);                       // GP29, default LiPo
  *
  *   // Runtime reconfiguration (does NOT re-init the ADC):
- *   battery.setChemistry(BatteryChemistry::LI_ION);  // Switch chemistry profile
- *   battery.setCellCount(3);                          // Force 3S (skips auto-detect)
- *   battery.setCellCount(0);                          // Re-arm auto-detect
+ *   battery.setChemistry(BatteryChemistry::LI_ION);
+ *   battery.setCellCount(3);                 // Force 3S
+ *   battery.setCellCount(0);                 // Re-arm auto-detect
  *
- *   // Optional: custom thresholds (per cell)
- *   battery.setLowThreshold_mV(3400);        // Override default low warning
- *   battery.setCriticalThreshold_mV(3200);   // Override default critical cutoff
- *
- *   // Optional: voltage alert callbacks
- *   battery.onLowVoltage([](uint16_t v, uint8_t cells) {
- *       Serial.printf("LOW: %dmV (%dS)\n", v, cells);
- *   });
- *   battery.onCriticalVoltage([](uint16_t v, uint8_t cells) {
- *       Serial.printf("CRITICAL: %dmV (%dS)\n", v, cells);
- *   });
+ *   battery.onLowVoltage([](uint16_t v, uint8_t cells) { ... });
  *
  *   // In loop():
- *   battery.update();                        // Reads ADC at configured interval
- *   uint16_t v = battery.voltage_mV();       // Total pack voltage
- *   uint16_t cv = battery.cellVoltage_mV();  // Per-cell average
- *   uint8_t pct = battery.percentage();      // Estimated SOC (0-100%)
- *   bool low = battery.isLow();              // Below low threshold?
- *   bool crit = battery.isCritical();        // Below critical threshold?
+ *   battery.update();                        // ADC read + state machine
+ *   uint16_t v = battery.voltage_mV();
+ *   bool low = battery.isLow();
  */
 
 #ifndef BATTERY_MONITOR_H
@@ -55,296 +48,135 @@
 #include <Arduino.h>
 #include <functional>
 
-// ============================================================================
-// Battery Chemistry Enum
-// ============================================================================
-
-/**
- * @brief Battery chemistry type
- *
- * Determines default voltage thresholds per cell:
- *   LiPo:   4.20V full, 3.70V nominal, 3.20V low, 3.00V critical
- *   Li-Ion: 4.20V full, 3.60V nominal, 3.20V low, 2.80V critical
- *   NiMH:   1.40V full, 1.20V nominal, 1.00V low, 0.90V critical
- *
- * Wire-format values (sent over BATTERY_CONFIG protocol) are stable:
- *   0 = LIPO, 1 = LI_ION, 2 = NIMH.
- */
-enum class BatteryChemistry : uint8_t {
-    LIPO   = 0, ///< Lithium Polymer — 3.0V/cell damage threshold
-    LI_ION = 1, ///< Lithium Ion — 2.5V/cell damage threshold
-    NIMH   = 2, ///< Nickel Metal Hydride — 0.9V/cell cutoff
-};
+#include "battery_types.h"          // BatteryChemistry / BatteryProfile / BatteryProfiles
+#include "battery_state_machine.h"  // BatteryStateMachine
+#include "platform/sfx_platform.h"  // SFX_VBUS_PIN
 
 // ============================================================================
-// Battery Profile (per-cell voltage thresholds in mV)
+// AdcDividerBatteryT — battery sensor for ADC + resistor-divider hardware
+// Templated on the divider multiplier in milli-units (×1000).
 // ============================================================================
 
-/**
- * @brief Per-cell voltage thresholds for a battery chemistry
- *
- * All values are in millivolts per cell.
- */
-struct BatteryProfile {
-    uint16_t fullCharge_mV;     ///< Full charge voltage (e.g., 4200 mV)
-    uint16_t nominal_mV;        ///< Nominal voltage, used for cell count detection
-    uint16_t low_mV;            ///< Low voltage warning threshold
-    uint16_t critical_mV;       ///< Critical voltage cutoff threshold
-};
-
-// ============================================================================
-// Built-in Chemistry Profiles
-// ============================================================================
-
-namespace BatteryProfiles {
-    /// LiPo: 4.2V/cell full, 3.7V nominal, 3.2V low warning, 3.0V critical
-    constexpr BatteryProfile LIPO    = { 4200, 3700, 3200, 3000 };
-
-    /// Li-Ion: 4.2V/cell full, 3.6V nominal, 3.2V low warning, 2.8V critical
-    constexpr BatteryProfile LI_ION  = { 4200, 3600, 3200, 2800 };
-
-    /// NiMH: 1.4V/cell full, 1.2V nominal, 1.0V low warning, 0.9V critical
-    constexpr BatteryProfile NIMH    = { 1400, 1200, 1000,  900 };
-
-    /// Get profile for a chemistry enum value
-    constexpr BatteryProfile forChemistry(BatteryChemistry chem) {
-        switch (chem) {
-            case BatteryChemistry::LI_ION: return LI_ION;
-            case BatteryChemistry::NIMH:   return NIMH;
-            case BatteryChemistry::LIPO:
-            default:                       return LIPO;
-        }
-    }
-}
-
-// ============================================================================
-// BatteryMonitor Class
-// ============================================================================
-
-/**
- * @brief ADC-based battery voltage monitor with cell detection and low-voltage alerts
- *
- * Reads battery voltage through a resistor divider on an ADC pin, auto-detects
- * the number of series cells, and fires callbacks when voltage drops below
- * configurable thresholds.
- *
- * Cell count auto-detection uses the nominal voltage per cell for the configured
- * chemistry: `cells = round(voltage / nominal)`. For reliable detection, the
- * battery should be above ~3.3V/cell when begin() or the first update() runs.
- * If the battery may be deeply discharged, use setCellCount() to set manually.
- */
-class BatteryMonitor {
+template<uint32_t MultiplierMilli>
+class AdcDividerBatteryT {
 public:
-    BatteryMonitor() = default;
+    using AlertCallback = BatteryStateMachine::AlertCallback;
 
-    /// Callback signature: (total pack voltage in mV, detected cell count)
-    using AlertCallback = std::function<void(uint16_t voltage_mV, uint8_t cellCount)>;
+    /// Divider multiplier (R_top + R_bottom) / R_bottom, encoded ×1000.
+    static constexpr uint32_t MULTIPLIER_MILLI = MultiplierMilli;
+    static constexpr float    DIVIDER_MULTIPLIER = MultiplierMilli / 1000.0f;
 
-    // ========================================================================
-    // Initialization
-    // ========================================================================
+    AdcDividerBatteryT() = default;
 
     /**
-     * @brief Initialize the battery monitor
+     * @brief Initialize ADC pin and perform initial reading.
      *
-     * Configures the ADC pin, sets the divider multiplier, selects the chemistry
-     * profile, and performs an initial voltage reading + cell count detection.
-     *
-     * @param adcPin              GPIO pin connected to divider output (must be ADC-capable)
-     * @param dividerMultiplier   Voltage divider ratio: (R_top + R_bottom) / R_bottom
-     *                            Example: 50kΩ/10kΩ → 6.0
-     * @param chemistry           Battery chemistry (default: LIPO)
+     * @param adcPin     GPIO pin connected to divider output (ADC-capable)
+     * @param chemistry  Initial chemistry profile (default: LIPO)
      */
-    void begin(uint8_t adcPin, float dividerMultiplier,
-               BatteryChemistry chemistry = BatteryChemistry::LIPO);
+    void begin(uint8_t adcPin, BatteryChemistry chemistry = BatteryChemistry::LIPO) {
+        _adcPin = adcPin;
+        _lastRead_ms = 0;
 
-    // ========================================================================
-    // Configuration
-    // ========================================================================
+        _sm = BatteryStateMachine{};
+        _sm.setChemistry(chemistry);
 
-    /**
-     * @brief Switch chemistry profile at runtime
-     *
-     * Updates voltage thresholds (low/critical/full) and the nominal voltage
-     * used for cell-count auto-detection. If the cell count was auto-detected
-     * (not manually set) it is unlocked so the next valid reading re-detects
-     * with the new chemistry's nominal voltage.
-     *
-     * @param chemistry  New chemistry profile
-     */
-    void setChemistry(BatteryChemistry chemistry);
+        pinMode(_adcPin, INPUT);
 
-    /**
-     * @brief Manually set the cell count (overrides auto-detection)
-     *
-     * Use this when the battery may be deeply discharged and auto-detection
-     * would be unreliable, or when the pack configuration is known.
-     *
-     * Pass 0 to clear the manual override and re-arm auto-detection on the
-     * next valid reading.
-     *
-     * @param cells  Number of cells in series (1–6), or 0 to re-arm auto-detect
-     */
-    void setCellCount(uint8_t cells);
+        if (SFX_VBUS_PIN != 0xFF) {
+            pinMode(SFX_VBUS_PIN, INPUT);
+            _usbPowered = digitalRead(SFX_VBUS_PIN) == HIGH;
+        } else {
+            _usbPowered = false;
+        }
 
-    /**
-     * @brief Set the ADC read interval
-     * @param interval_ms  Milliseconds between ADC reads (default: 500)
-     */
-    void setReadInterval_ms(uint16_t interval_ms);
+        _sm.feed(readAdc_mV());
+    }
 
-    /**
-     * @brief Override the low voltage warning threshold (per cell)
-     * @param perCell_mV  Low threshold in millivolts per cell
-     */
-    void setLowThreshold_mV(uint16_t perCell_mV);
+    // ─── Configuration ──────────────────────────────────────────────────────
+    void setChemistry(BatteryChemistry chemistry)        { _sm.setChemistry(chemistry); }
+    void setCellCount(uint8_t cells)                     { _sm.setCellCount(cells); }
+    void setReadInterval_ms(uint16_t interval_ms)        { _readInterval_ms = interval_ms; }
+    void setLowThreshold_mV(uint16_t perCell_mV)         { _sm.setLowThreshold_mV(perCell_mV); }
+    void setCriticalThreshold_mV(uint16_t perCell_mV)    { _sm.setCriticalThreshold_mV(perCell_mV); }
 
-    /**
-     * @brief Override the critical voltage cutoff threshold (per cell)
-     * @param perCell_mV  Critical threshold in millivolts per cell
-     */
-    void setCriticalThreshold_mV(uint16_t perCell_mV);
+    // ─── Alerts ─────────────────────────────────────────────────────────────
+    void onLowVoltage(AlertCallback cb)      { _sm.onLowVoltage(cb); }
+    void onCriticalVoltage(AlertCallback cb) { _sm.onCriticalVoltage(cb); }
 
-    // ========================================================================
-    // Callbacks
-    // ========================================================================
+    // ─── Update ─────────────────────────────────────────────────────────────
+    void update() {
+        uint32_t now = millis();
+        if (now - _lastRead_ms < _readInterval_ms) return;
+        _lastRead_ms = now;
 
-    /**
-     * @brief Register callback for low voltage warning
-     *
-     * Fires once when per-cell voltage drops below the low threshold.
-     * Re-arms when voltage recovers above threshold + hysteresis (50mV/cell).
-     */
-    void onLowVoltage(AlertCallback cb);
+        if (SFX_VBUS_PIN != 0xFF) {
+            _usbPowered = digitalRead(SFX_VBUS_PIN) == HIGH;
+        }
 
-    /**
-     * @brief Register callback for critical voltage alert
-     *
-     * Fires once when per-cell voltage drops below the critical threshold.
-     * Re-arms when voltage recovers above threshold + hysteresis (50mV/cell).
-     */
-    void onCriticalVoltage(AlertCallback cb);
+        _sm.feed(readAdc_mV());
+    }
 
-    // ========================================================================
-    // Update (call in loop)
-    // ========================================================================
+    // ─── Queries (sensor concept — see battery_server.h) ────────────────────
+    uint16_t voltage_mV()      const { return _sm.voltage_mV(); }
+    uint16_t cellVoltage_mV()  const { return _sm.cellVoltage_mV(); }
+    uint8_t  cellCount()       const { return _sm.cellCount(); }
+    BatteryChemistry chemistry() const { return _sm.chemistry(); }
+    const BatteryProfile& profile() const { return _sm.profile(); }
+    bool     isLow()           const { return _sm.isLow(); }
+    bool     isCritical()      const { return _sm.isCritical(); }
+    uint8_t  percentage()      const { return _sm.percentage(); }
 
-    /**
-     * @brief Read ADC and check voltage thresholds
-     *
-     * Call this every loop() iteration. Internally rate-limited by readInterval_ms.
-     */
-    void update();
+    // ─── ADC-divider-specific ───────────────────────────────────────────────
 
-    // ========================================================================
-    // Measurements
-    // ========================================================================
-
-    /**
-     * @brief Get total pack voltage in millivolts
-     */
-    uint16_t voltage_mV() const { return _voltage_mV; }
-
-    /**
-     * @brief Get average per-cell voltage in millivolts
-     *
-     * Returns 0 if cell count is not yet detected.
-     */
-    uint16_t cellVoltage_mV() const;
-
-    /**
-     * @brief Get detected (or manually set) cell count
-     * @return Cell count (1–6), or 0 if not yet detected
-     */
-    uint8_t cellCount() const { return _cellCount; }
-
-    /**
-     * @brief Get the active battery chemistry
-     */
-    BatteryChemistry chemistry() const { return _chemistry; }
-
-    /**
-     * @brief Get the active voltage profile
-     */
-    const BatteryProfile& profile() const { return _profile; }
-
-    // ========================================================================
-    // Voltage Status
-    // ========================================================================
-
-    /**
-     * @brief Check if a real battery is present
-     *
-     * Returns false when:
-     *   - Voltage is below minimum detection threshold (no battery)
-     *   - USB powered and cell count was auto-detected (likely phantom
-     *     reading from Pico's internal VSYS/3 on GP29)
-     *
-     * Returns true when:
-     *   - Cell count was manually set via setCellCount() (user confirmed battery)
-     *   - Not USB powered and valid voltage detected
-     */
-    bool isPresent() const;
-
-    /**
-     * @brief Check if USB VBUS is detected (Pico GP24)
-     */
+    /// True when USB VBUS is detected (Pico GP24); used by isPresent().
     bool isUsbPowered() const { return _usbPowered; }
 
     /**
-     * @brief Check if voltage is below the low warning threshold
-     */
-    bool isLow() const;
-
-    /**
-     * @brief Check if voltage is below the critical cutoff threshold
-     */
-    bool isCritical() const;
-
-    /**
-     * @brief Estimated state-of-charge percentage (0–100%)
+     * @brief Heuristic battery-present check.
      *
-     * Linear interpolation between critical (0%) and full charge (100%).
-     * Note: Real discharge curves are non-linear; this is a rough estimate
-     * suitable for warning displays, not a precision fuel gauge.
+     * Returns false when voltage is below MIN_DETECT_mV, or when USB is
+     * powering the board AND cell count was not pinned manually (likely a
+     * phantom reading from the Pico's internal VSYS/3 on GP29).
      */
-    uint8_t percentage() const;
+    bool isPresent() const {
+        if (_sm.voltage_mV() < BatteryStateMachineConfig::MIN_DETECT_mV) return false;
+        if (_usbPowered && !_sm.isCellCountManual()) return false;
+        return true;
+    }
 
 private:
-    // ADC reading and cell detection
-    uint16_t readAdc_mV();
-    uint8_t  detectCellCount(uint16_t voltage_mV);
+    static constexpr uint16_t ADC_REF_mV     = 3300;
+    static constexpr uint16_t ADC_LEVELS     = 4096;   // 12-bit ADC
+    static constexpr uint8_t  ADC_OVERSAMPLE = 4;      // Samples per read
 
-    // Effective thresholds (custom overrides or profile defaults)
-    uint16_t effectiveLow_mV() const;
-    uint16_t effectiveCritical_mV() const;
+    uint16_t readAdc_mV() {
+        uint32_t sum = 0;
+        for (uint8_t i = 0; i < ADC_OVERSAMPLE; i++) {
+            sum += analogRead(_adcPin);
+        }
+        uint32_t raw = sum / ADC_OVERSAMPLE;
 
-    // ---- Configuration ----
+        // scale = ADC_REF_mV * multiplier; fits uint32 for any sane multiplier.
+        // Final = raw * scale / ADC_LEVELS — max ≈ 4096 * 3300 * 100 / 4096 ≈ 3.3e5 per
+        // unit of multiplier, well within uint64 intermediate.
+        uint64_t scale = (uint64_t)ADC_REF_mV * MULTIPLIER_MILLI;  // mV * ×1000
+        return (uint16_t)((raw * scale) / ((uint64_t)ADC_LEVELS * 1000ULL));
+    }
+
+    BatteryStateMachine _sm;
     uint8_t  _adcPin = 0;
-    float    _dividerMultiplier = 1.0f;
-    BatteryChemistry _chemistry = BatteryChemistry::LIPO;
-    BatteryProfile   _profile = BatteryProfiles::LIPO;
-
-    // ---- State ----
-    uint16_t _voltage_mV = 0;           // Total pack voltage (mV)
-    uint8_t  _cellCount = 0;            // Detected/configured cell count
-    bool     _cellCountLocked = false;   // True after detection or manual set
-    bool     _manualCellCount = false;   // True only when setCellCount() called
-    bool     _usbPowered = false;        // True when USB VBUS detected (GP24)
-
-    // ---- Timing ----
+    bool     _usbPowered = false;
     uint16_t _readInterval_ms = 500;
     uint32_t _lastRead_ms = 0;
-
-    // ---- Custom thresholds (per cell, 0 = use profile default) ----
-    uint16_t _customLow_mV = 0;
-    uint16_t _customCritical_mV = 0;
-
-    // ---- Callbacks ----
-    AlertCallback _onLow = nullptr;
-    AlertCallback _onCritical = nullptr;
-    bool _lowTriggered = false;
-    bool _criticalTriggered = false;
 };
+
+// ============================================================================
+// Convenience aliases for common dividers
+// ============================================================================
+
+using AdcDividerBatteryX5_1 = AdcDividerBatteryT<5100>;   // 41k / 10k
+using AdcDividerBatteryX6_0 = AdcDividerBatteryT<6000>;   // 50k / 10k
+using AdcDividerBatteryX11  = AdcDividerBatteryT<11000>;  // 100k / 10k
 
 #endif // BATTERY_MONITOR_H

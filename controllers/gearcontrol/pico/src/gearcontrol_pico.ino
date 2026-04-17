@@ -53,6 +53,7 @@
 #include <power/ina226.h>
 #include <power/i2c_device.h>
 #include <power/battery_monitor.h>
+#include <power/battery_server.h>
 #include <server/sfx_server.h>
 #include <storage/flash.h>
 #include <storage/storage_config_bridge.h>
@@ -63,7 +64,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.12.0"
-#define BUILD_NUMBER 72
+#define BUILD_NUMBER 80
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -134,8 +135,10 @@ bool ina226Available[3] = { false, false, false };
 // Yaw servo (uses ServoControl for configurability)
 ServoControl yawServo;
 
-// Battery voltage monitor (ADC with ÷6 divider)
-BatteryMonitor batteryMonitor;
+// Battery voltage monitor (ADC with ÷6 divider) + generic battery command handler
+using BatteryT = AdcDividerBatteryT<6000>;  // 50k/10k divider → ×6.0
+BatteryT batteryMonitor;
+BatteryServerT<BatteryT> batteryServer(batteryMonitor);
 
 // Yaw configuration
 GearControlYawConfig yawConfig;
@@ -279,23 +282,6 @@ static uint8_t parseDoorMode(const char* s) {
     return DoorMode::NONE;
 }
 
-/** @brief Parse chemistry string to BatteryChemistry enum. Unknown → LIPO. */
-static BatteryChemistry parseChemistry(const char* s) {
-    if (strcmp(s, "liion") == 0) return BatteryChemistry::LI_ION;
-    if (strcmp(s, "nimh")  == 0) return BatteryChemistry::NIMH;
-    return BatteryChemistry::LIPO;
-}
-
-/** @brief Map BatteryChemistry enum to canonical config/string form. */
-static const char* chemistryName(BatteryChemistry chem) {
-    switch (chem) {
-        case BatteryChemistry::LI_ION: return "liion";
-        case BatteryChemistry::NIMH:   return "nimh";
-        case BatteryChemistry::LIPO:
-        default:                       return "lipo";
-    }
-}
-
 /**
  * @brief Apply loaded config to hardware.
  *
@@ -396,7 +382,7 @@ static void applyConfig(const GearControlConfig& cfg) {
 
     // ---- Battery monitoring ----
     // Monitor is always on; config only sets chemistry, cell count, autoDeploy.
-    BatteryChemistry chem = parseChemistry(cfg.battery.chemistry);
+    BatteryChemistry chem = parseBatteryChemistry(cfg.battery.chemistry);
     batteryMonitor.setChemistry(chem);
     batteryMonitor.setCellCount(cfg.battery.cellCount);  // 0 = auto-detect
     autoDeployOnLowVoltage = cfg.battery.autoDeploy;
@@ -425,7 +411,7 @@ void setup() {
     // layers chemistry / cell overrides via setChemistry() / setCellCount(),
     // both of which require begin() to have set the ADC pin.
     analogReadResolution(12);
-    batteryMonitor.begin(PIN_VSENSE, 6.0f);
+    batteryMonitor.begin(PIN_VSENSE);
 
     // Initialize flash storage and load config (standalone mode)
     initFlashAndConfig();
@@ -490,7 +476,7 @@ void setup() {
     // begin() must always run — applyConfig() then layers chemistry / cell
     // overrides via setChemistry() / setCellCount() without re-init.
     analogReadResolution(12);
-    batteryMonitor.begin(PIN_VSENSE, 6.0f);
+    batteryMonitor.begin(PIN_VSENSE);
 
     // Auto-deploy all gears on low battery voltage (safety feature)
     batteryMonitor.onLowVoltage([](uint16_t voltage_mV, uint8_t cellCount) {
@@ -641,17 +627,12 @@ void setup() {
         return gears[gearId].cancelCalibration();
     });
 
-    // BATTERY_CONFIG: set chemistry, cell count, and auto-deploy behavior.
-    //   Monitor itself is always running. cellCount == 0 means auto-detect.
-    gearControlServer.onBatteryConfig([](const GearControlBatteryConfig& cfg) -> uint8_t {
-        autoDeployOnLowVoltage = cfg.autoDeploy;
-        BatteryChemistry chem = static_cast<BatteryChemistry>(cfg.chemistry);
-        batteryMonitor.setChemistry(chem);
-        batteryMonitor.setCellCount(cfg.cellCount);  // 0 = re-arm auto-detect
-        SFX_LOG_INFO("Battery: chem=%s cells=%s autoDeploy=%u",
-                     chemistryName(chem),
-                     cfg.cellCount == 0 ? "auto" : (cfg.cellCount == 1 ? "1S" : "fixed"),
-                     cfg.autoDeploy);
+    // BATTERY_AUTO_DEPLOY: GearControl-specific safety toggle.
+    // Sensor configuration (chemistry, cell count) flows through the generic
+    // BatteryServerT handler bound to CorePacket::BATTERY_CONFIG (0xEE).
+    gearControlServer.onBatteryAutoDeploy([](bool enabled) -> uint8_t {
+        autoDeployOnLowVoltage = enabled;
+        SFX_LOG_INFO("Battery auto-deploy=%u", enabled);
         return SerialError::OK;
     });
 
@@ -752,7 +733,11 @@ void setup() {
     // Set status broadcast source for verbose mode (STATUS_UPDATE packets)
     server.core().setStatusBroadcastSource(StatusUpdateSource::GEARCONTROL);
 
-    // Finalize command router (core + GearControl + Config handlers)
+    // Generic battery handler (claims CorePacket::BATTERY_CONFIG = 0xEE).
+    batteryServer.begin(&Serial);
+    server.addModuleHandler(&batteryServer);
+
+    // Finalize command router (core + Battery + GearControl + Config handlers)
     server.addModuleHandler(&gearControlServer);
 
     // Register ConfigServer (handles CONFIG_RELOAD/STATUS/SAVE from CLI)

@@ -262,13 +262,14 @@ CommandResult GearControlClient::setYawInput(uint16_t position_us) {
     return sendCommand(GearControlPacket::YAW_INPUT, payload, sizeof(payload));
 }
 
-CommandResult GearControlClient::setBatteryConfig(bool autoDeployOnLowVoltage,
-                                                  uint8_t chemistry, uint8_t cellCount) {
-    uint8_t payload[3];
-    payload[0] = autoDeployOnLowVoltage ? 1 : 0;
-    payload[1] = chemistry;
-    payload[2] = cellCount;  // 0 = auto-detect
-    return sendCommand(GearControlPacket::BATTERY_CONFIG, payload, sizeof(payload));
+CommandResult GearControlClient::setBatterySensor(uint8_t chemistry, uint8_t cellCount) {
+    uint8_t payload[2] = { chemistry, cellCount };  // cellCount: 0 = auto-detect
+    return sendCommand(CorePacket::BATTERY_CONFIG, payload, sizeof(payload));
+}
+
+CommandResult GearControlClient::setBatteryAutoDeploy(bool enabled) {
+    uint8_t payload[1] = { static_cast<uint8_t>(enabled ? 1 : 0) };
+    return sendCommand(GearControlPacket::BATTERY_AUTO_DEPLOY, payload, sizeof(payload));
 }
 
 CommandResult GearControlClient::setDoorMode(const GearControlDoorModeConfig& config) {

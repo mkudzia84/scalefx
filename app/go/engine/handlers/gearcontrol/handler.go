@@ -277,7 +277,7 @@ func (h *Handler) cmdDisable(args []string) {
 // Bare `battery` → LiPo + auto-detect cells. Monitor is always on.
 func (h *Handler) cmdBattery(args []string) {
 	autoDeploy := false
-	chemistry := gcp.ChemistryLiPo
+	chemistry := pcore.ChemistryLiPo
 	cellCount := byte(0) // 0 = auto-detect
 
 	for _, raw := range args {
@@ -286,11 +286,11 @@ func (h *Handler) cmdBattery(args []string) {
 		case a == "autodeploy" || a == "auto-deploy":
 			autoDeploy = true
 		case a == "lipo":
-			chemistry = gcp.ChemistryLiPo
+			chemistry = pcore.ChemistryLiPo
 		case a == "liion" || a == "li-ion":
-			chemistry = gcp.ChemistryLiIon
+			chemistry = pcore.ChemistryLiIon
 		case a == "nimh" || a == "ni-mh":
-			chemistry = gcp.ChemistryNiMH
+			chemistry = pcore.ChemistryNiMH
 		case a == "auto" || a == "autodetect" || a == "cells:auto" || a == "cells=auto":
 			cellCount = 0
 		case strings.HasPrefix(a, "cells:") || strings.HasPrefix(a, "cells="):
@@ -315,14 +315,21 @@ func (h *Handler) cmdBattery(args []string) {
 		autoLabel = " + auto-deploy"
 	}
 	summary := fmt.Sprintf("Battery: %s | cells=%s%s", chemistryLabel(chemistry), cellLabel, autoLabel)
-	h.E.Ack(h.E.API.GearControl.BatteryConfig(autoDeploy, chemistry, cellCount), summary)
+
+	// Sensor config goes through the generic core handler; auto-deploy is
+	// GearControl-specific and lives in the GearControl module range.
+	if r := h.E.API.Core.BatteryConfig(chemistry, cellCount); !r.OK {
+		h.E.Ack(r, summary)
+		return
+	}
+	h.E.Ack(h.E.API.GearControl.BatteryAutoDeploy(autoDeploy), summary)
 }
 
 func chemistryLabel(c byte) string {
 	switch c {
-	case gcp.ChemistryLiIon:
+	case pcore.ChemistryLiIon:
 		return "Li-Ion"
-	case gcp.ChemistryNiMH:
+	case pcore.ChemistryNiMH:
 		return "NiMH"
 	default:
 		return "LiPo"

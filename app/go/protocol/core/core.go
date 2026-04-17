@@ -29,8 +29,36 @@ const (
 	LogMessage  protocol.PacketType = 0xFD
 	Identify    protocol.PacketType = 0xFE
 	DiagHistory protocol.PacketType = 0xFF
-	StatusUpdate protocol.PacketType = 0xEF
+	StatusUpdate  protocol.PacketType = 0xEF
+	BatteryConfig protocol.PacketType = 0xEE
 )
+
+// Battery chemistry wire-format values (match C++ BatteryChemistry enum).
+const (
+	ChemistryLiPo  byte = 0
+	ChemistryLiIon byte = 1
+	ChemistryNiMH  byte = 2
+)
+
+// ChemistryFromString maps a canonical config string to the wire-format byte.
+// Unknown values fall back to LiPo.
+func ChemistryFromString(s string) byte {
+	switch s {
+	case "liion":
+		return ChemistryLiIon
+	case "nimh":
+		return ChemistryNiMH
+	default:
+		return ChemistryLiPo
+	}
+}
+
+// CmdBatteryConfig — 2-byte payload [chemistry, cellCount] sent to the
+// generic BatteryServerT on any board with battery monitoring.
+// cellCount == 0 = re-arm auto-detect (1..MAX_CELLS = pinned).
+func CmdBatteryConfig(chemistry byte, cellCount byte) []byte {
+	return protocol.BuildPacket(BatteryConfig, []byte{chemistry, cellCount}, 0)
+}
 
 // ─── Generic Error Codes — mirrors SerialError namespace ───
 
@@ -213,7 +241,8 @@ func init() {
 		LogMessage:   "LOG_MESSAGE",
 		Identify:     "IDENTIFY",
 		DiagHistory:  "DIAG_HISTORY",
-		StatusUpdate: "STATUS_UPDATE",
+		StatusUpdate:  "STATUS_UPDATE",
+		BatteryConfig: "BATTERY_CONFIG",
 	})
 
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{

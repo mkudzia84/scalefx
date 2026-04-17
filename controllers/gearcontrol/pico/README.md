@@ -41,7 +41,8 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 │  │ REBOOT, BOOTSEL     │  │ SERVO_SET, SRV_SETTINGS    │  │
 │  │ KEEPALIVE, STATUS   │  │ YAW_CONFIG, YAW_INPUT      │  │
 │  └─────────────────────┘  │ GEAR_CONFIG, DOOR_CONFIG   │  │
-│                           │ BATTERY_CONFIG, CALIBRATE  │  │
+│                           │ BATTERY_AUTO_DEPLOY,       │  │
+│                           │ CALIBRATE                  │  │
 │                           └─────────────────────────────┘  │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
@@ -130,7 +131,7 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 | 0x6A | GEAR_CALIBRATE | `[gear_id:u8][timeout_s:u8]` | Start stall current calibration (timeout_s optional, 0=default 60s) |
 | 0x6B | GEAR_CALIB_STATUS | `[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8][errorReason:u8]` | Calibration progress (server→client, echoes request tag) |
 | 0x6C | GEAR_CALIB_CANCEL | `[gear_id:u8]` | Cancel calibration in progress |
-| 0x6D | BATTERY_CONFIG | `[auto_deploy:u8][chemistry:u8][cell_count:u8]` (3B) | Battery profile — monitor is always on. Sets auto-deploy on low voltage, chemistry (`0=LiPo`, `1=Li-Ion`, `2=NiMH`), and cell count (`0=auto-detect`, `1-6=fixed`). |
+| 0x6D | BATTERY_AUTO_DEPLOY | `[enabled:u8]` (1B) | GearControl-specific safety toggle: deploy all gears when the battery state machine reports low voltage. Sensor configuration (chemistry, cell count) is sent via core packet `BATTERY_CONFIG (0xEE)`. |
 | 0x6E | DOOR_MODE | `[gear_id:u8][mode:u8][delay_ms:u16LE]` | Configure door activation mode |
 | 0x6F | GEAR_RESET | `[gear_id:u8]` | Clear error state (ERROR → UNKNOWN) |
 | 0x70 | GEAR_SEQ_STATUS | `[gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]` | Sequence progress with timing (server→client, echoes request tag) |
@@ -320,16 +321,16 @@ effectiveThreshold = calibratedStall + (baseline × dragHeadroom%)
 
 A configurable safety feature that automatically deploys all landing gears when the battery voltage drops below the low warning threshold (3.2V/cell for LiPo).
 
-**Enable auto-deploy:**  Send `BATTERY_CONFIG` with `[auto_deploy=1, chemistry, cell_count]`  
-**Disable auto-deploy:** Send `BATTERY_CONFIG` with `[auto_deploy=0, chemistry, cell_count]`
+**Enable auto-deploy:**  Send `BATTERY_AUTO_DEPLOY` (0x6D) with `[enabled=1]`  
+**Disable auto-deploy:** Send `BATTERY_AUTO_DEPLOY` (0x6D) with `[enabled=0]`
 
 **Defaults:** Battery monitor is always running. Boot defaults: chemistry = LiPo, cell count = auto-detect, auto-deploy = OFF.
 
-**Chemistry & cell-count override:** The 3-byte payload `[auto_deploy, chemistry, cell_count]` switches chemistry (`0=LiPo`, `1=Li-Ion`, `2=NiMH`) and forces a fixed cell count (`1-6`) or re-arms auto-detect (`0`). Low-voltage thresholds adjust automatically per chemistry profile.
+**Sensor configuration is in the core protocol.** Chemistry (`0=LiPo`, `1=Li-Ion`, `2=NiMH`) and cell count (`0=auto-detect`, `1-6=fixed`) are sent via core packet `BATTERY_CONFIG (0xEE)` with payload `[chemistry, cellCount]`. Any board that owns a `BatteryServerT<TBattery>` instance handles this generically — GearControl, LightFX, and HubFX all share the same wire format. Low-voltage thresholds adjust automatically per chemistry profile.
 
 **Behavior:**
 - Only triggers when the controller is initialized (connected)
-- Uses `BatteryMonitor::onLowVoltage()` callback with hysteresis (50mV/cell re-arm)
+- Uses `AdcDividerBatteryT::onLowVoltage()` callback with hysteresis (50mV/cell re-arm)
 - Deploys all 3 gears simultaneously (same as `GEAR_ALL` with action=deploy)
 - Auto-deploy setting is reset to OFF on shutdown/disconnect (requires re-configuration)
 - Current state is reported in STATUS response `batteryConfigFlags` (bit 0 = auto-deploy, bit 1 = triggered)
