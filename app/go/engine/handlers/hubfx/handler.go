@@ -29,7 +29,7 @@ func Register(eng *engine.Engine) {
 }
 
 func (h *Handler) commands() *engine.CmdGroup {
-	return &engine.CmdGroup{
+	g := &engine.CmdGroup{
 		Name:       "HubFX",
 		Controller: pcore.CtrlHubFX,
 		Color:      engine.ColorCyan,
@@ -48,9 +48,6 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"engine.start":  {h.cmdEngineStart, "engine.start", "Start engine effect", true},
 			"engine.stop":   {h.cmdEngineStop, "engine.stop", "Stop engine effect", true},
 			"engine.status": {h.cmdEngineStatus, "engine.status", "Engine status", true},
-			"config.reload": {h.cmdConfigReload, "config.reload [path]", "Reload config from SD", true},
-			"config.status": {h.cmdConfigStatus, "config.status", "Config status", true},
-			"config.save":   {h.cmdConfigSave, "config.save [path]", "Save config to SD", true},
 			"sd.init":       {h.cmdSdInit, "sd.init", "Initialize SD card", true},
 			"sd.status":     {h.cmdSdStatus, "sd.status", "SD card status", true},
 			"flash.status":  {h.cmdFlashStatus, "flash.status", "Flash status", true},
@@ -67,6 +64,10 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"usb.reset":     {h.cmdUsbReset, "usb.reset", "Reset USB bus", true},
 		},
 	}
+	for k, v := range h.E.ConfigCommands() {
+		g.Commands[k] = v
+	}
+	return g
 }
 
 // ─── Slave Type Resolver ───
@@ -284,28 +285,6 @@ func (h *Handler) cmdEngineStop(_ []string) {
 }
 func (h *Handler) cmdEngineStatus(_ []string) {
 	h.E.Query(h.E.API.HubFx.EngineStatus(), h.parseEngineStatus)
-}
-
-// ─── Config Commands ───
-
-func (h *Handler) cmdConfigReload(args []string) {
-	path := ""
-	if len(args) > 0 {
-		path = args[0]
-	}
-	h.E.Ack(h.E.API.HubFx.ConfigReload(path), "Config reload")
-}
-
-func (h *Handler) cmdConfigStatus(_ []string) {
-	h.E.Query(h.E.API.HubFx.ConfigStatus(), h.parseConfigStatus)
-}
-
-func (h *Handler) cmdConfigSave(args []string) {
-	path := ""
-	if len(args) > 0 {
-		path = args[0]
-	}
-	h.E.Ack(h.E.API.HubFx.ConfigSave(path), "Config save")
 }
 
 // ─── Storage Commands ───

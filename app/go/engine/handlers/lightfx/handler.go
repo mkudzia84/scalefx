@@ -25,7 +25,7 @@ func Register(eng *engine.Engine) {
 }
 
 func (h *Handler) commands() *engine.CmdGroup {
-	return &engine.CmdGroup{
+	g := &engine.CmdGroup{
 		Name:       "LightFX",
 		Controller: pcore.CtrlLightFX,
 		Color:      engine.ColorBlue,
@@ -52,6 +52,10 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"disable":         {h.cmdDisable, "disable <ch>", "Disable LED channel (0=all)", true},
 		},
 	}
+	for k, v := range h.E.ConfigCommands() {
+		g.Commands[k] = v
+	}
+	return g
 }
 
 // ─── LED Direct Control ───
@@ -388,3 +392,5 @@ func (h *Handler) cmdDisable(args []string) {
 	}
 	h.E.Ack(h.E.API.LightFx.Enable(ch, false), fmt.Sprintf("%s disabled", target))
 }
+
+

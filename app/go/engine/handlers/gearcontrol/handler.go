@@ -27,7 +27,7 @@ func Register(eng *engine.Engine) {
 }
 
 func (h *Handler) commands() *engine.CmdGroup {
-	return &engine.CmdGroup{
+	g := &engine.CmdGroup{
 		Name:       "GearControl",
 		Controller: pcore.CtrlGearControl,
 		Color:      engine.ColorGreen,
@@ -49,6 +49,10 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"battery":          {h.cmdBattery, "battery on|off [autodeploy]", "Battery monitoring", true},
 		},
 	}
+	for k, v := range h.E.ConfigCommands() {
+		g.Commands[k] = v
+	}
+	return g
 }
 
 // ─── GearControl Command Handlers ───
@@ -253,3 +257,5 @@ func (h *Handler) forEachGear(arg string, fn func(id byte)) {
 		fn(byte(engine.Atoi(arg)))
 	}
 }
+
+

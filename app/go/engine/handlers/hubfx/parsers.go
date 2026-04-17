@@ -434,33 +434,6 @@ func (h *Handler) parseEngineStatus(payload []byte) {
 	h.E.Out.Println("")
 }
 
-// parseConfigStatus parses CONFIG_STATUS_RESP.
-func (h *Handler) parseConfigStatus(payload []byte) {
-	if len(payload) < 4 {
-		h.E.Out.Println("  (config status too short)")
-		return
-	}
-	loaded := payload[0] != 0
-	size := protocol.ReadU16LE(payload, 1)
-	valid := payload[3] != 0
-
-	h.E.Out.Printf("\n  %s\n", h.E.Out.C(engine.ColorCyan, "Config Status"))
-	statusStr := h.E.Out.C(engine.ColorRed, "not loaded")
-	if loaded {
-		statusStr = h.E.Out.C(engine.ColorGreen, "loaded")
-	}
-	h.E.Out.Printf("    Status:     %s\n", statusStr)
-	h.E.Out.Printf("    Size:       %d bytes\n", size)
-	if loaded {
-		validStr := h.E.Out.C(engine.ColorYellow, "invalid")
-		if valid {
-			validStr = h.E.Out.C(engine.ColorGreen, "valid")
-		}
-		h.E.Out.Printf("    Validation: %s\n", validStr)
-	}
-	h.E.Out.Println("")
-}
-
 // parseSdStatus parses SD_STATUS_RESP.
 func (h *Handler) parseSdStatus(payload []byte) {
 	if len(payload) < 1 {
