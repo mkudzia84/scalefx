@@ -130,16 +130,38 @@ func CmdCalibCancel(gearID byte) []byte {
 	return protocol.BuildPacket(GearCalibCancel, []byte{gearID}, 0)
 }
 
-func CmdBatteryConfig(enabled bool, autoDeploy bool) []byte {
-	e := byte(0)
-	if enabled {
-		e = 1
+// Battery chemistry wire-format values (match C++ BatteryChemistry enum).
+const (
+	ChemistryLiPo  byte = 0
+	ChemistryLiIon byte = 1
+	ChemistryNiMH  byte = 2
+)
+
+// CmdBatteryConfig — 3-byte payload: [autoDeploy, chemistry, cellCount].
+// Monitor is always on (no enable byte). cellCount == 0 = auto-detect.
+func CmdBatteryConfig(autoDeploy bool, chemistry byte, cellCount byte) []byte {
+	return protocol.BuildPacket(BatteryConfig,
+		[]byte{boolByte(autoDeploy), chemistry, cellCount}, 0)
+}
+
+func boolByte(b bool) byte {
+	if b {
+		return 1
 	}
-	a := byte(0)
-	if autoDeploy {
-		a = 1
+	return 0
+}
+
+// ChemistryFromString maps a canonical config string to the wire-format byte.
+// Unknown values fall back to LiPo.
+func ChemistryFromString(s string) byte {
+	switch s {
+	case "liion":
+		return ChemistryLiIon
+	case "nimh":
+		return ChemistryNiMH
+	default:
+		return ChemistryLiPo
 	}
-	return protocol.BuildPacket(BatteryConfig, []byte{e, a}, 0)
 }
 
 func CmdDoorMode(gearID, preDeploy, postDeploy byte, delay_ms uint16) []byte {

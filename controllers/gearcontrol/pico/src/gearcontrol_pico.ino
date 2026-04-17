@@ -62,8 +62,8 @@
 #include "landing_gear.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "0.11.0"
-#define BUILD_NUMBER 67
+#define FIRMWARE_VERSION "0.12.0"
+#define BUILD_NUMBER 72
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -141,8 +141,9 @@ BatteryMonitor batteryMonitor;
 GearControlYawConfig yawConfig;
 bool yawConfigured = false;
 
-// Battery auto-deploy configuration
-bool batteryEnabled = false;               // Battery monitoring disabled until host enables via BATTERY_CONFIG
+// Battery — monitor is always on; defaults: LiPo, cell count auto-detected.
+// BATTERY_CONFIG only adjusts chemistry, cell count, and the auto-deploy
+// safety reaction.
 bool autoDeployOnLowVoltage = false;
 bool lowVoltageTriggered = false;  // Set when auto-deploy fires (persists until reset)
 
@@ -181,8 +182,8 @@ void performSafeShutdown() {
     // Return yaw to center
     yawServo.setPositionImmediate(1500);
 
-    // Disable battery monitoring and auto-deploy (requires re-configuration after reconnect)
-    batteryEnabled = false;
+    // Battery monitor itself keeps running — only the auto-deploy reaction is
+    // disarmed on shutdown so it can't fire while the host is gone.
     autoDeployOnLowVoltage = false;
     lowVoltageTriggered = false;
 }
@@ -278,10 +279,21 @@ static uint8_t parseDoorMode(const char* s) {
     return DoorMode::NONE;
 }
 
-/** @brief Parse chemistry string to BatteryChemistry enum */
+/** @brief Parse chemistry string to BatteryChemistry enum. Unknown → LIPO. */
 static BatteryChemistry parseChemistry(const char* s) {
     if (strcmp(s, "liion") == 0) return BatteryChemistry::LI_ION;
-    return BatteryChemistry::LIPO;  // Default to LiPo for unknown values
+    if (strcmp(s, "nimh")  == 0) return BatteryChemistry::NIMH;
+    return BatteryChemistry::LIPO;
+}
+
+/** @brief Map BatteryChemistry enum to canonical config/string form. */
+static const char* chemistryName(BatteryChemistry chem) {
+    switch (chem) {
+        case BatteryChemistry::LI_ION: return "liion";
+        case BatteryChemistry::NIMH:   return "nimh";
+        case BatteryChemistry::LIPO:
+        default:                       return "lipo";
+    }
 }
 
 /**
@@ -383,17 +395,16 @@ static void applyConfig(const GearControlConfig& cfg) {
     }
 
     // ---- Battery monitoring ----
+    // Monitor is always on; config only sets chemistry, cell count, autoDeploy.
     BatteryChemistry chem = parseChemistry(cfg.battery.chemistry);
-    batteryMonitor.begin(PIN_VSENSE, 6.0f, chem);
-    if (cfg.battery.cellCount > 0) {
-        batteryMonitor.setCellCount(cfg.battery.cellCount);
-    }
-    batteryEnabled = cfg.battery.enabled;
+    batteryMonitor.setChemistry(chem);
+    batteryMonitor.setCellCount(cfg.battery.cellCount);  // 0 = auto-detect
     autoDeployOnLowVoltage = cfg.battery.autoDeploy;
 
-    SFX_LOG_INFO("Battery: chem=%s cells=%u enabled=%u autoDeploy=%u",
-                 cfg.battery.chemistry, cfg.battery.cellCount,
-                 cfg.battery.enabled, cfg.battery.autoDeploy);
+    SFX_LOG_INFO("Battery: chem=%s cells=%s autoDeploy=%u",
+                 cfg.battery.chemistry,
+                 cfg.battery.cellCount == 0 ? "auto" : "fixed",
+                 cfg.battery.autoDeploy);
 }
 
 // ============================================================================
@@ -409,6 +420,12 @@ void setup() {
         performSafeInit();
     });
     server.onShutdown([]() { performSafeShutdown(); });
+
+    // Battery monitor must be running before config load — applyConfig()
+    // layers chemistry / cell overrides via setChemistry() / setCellCount(),
+    // both of which require begin() to have set the ADC pin.
+    analogReadResolution(12);
+    batteryMonitor.begin(PIN_VSENSE, 6.0f);
 
     // Initialize flash storage and load config (standalone mode)
     initFlashAndConfig();
@@ -469,17 +486,15 @@ void setup() {
     // Initialize yaw servo (uses ServoControl for configurability)
     yawServo.begin(PIN_YAW_SERVO);
 
-    // Initialize battery voltage monitor (ADC with ÷6 divider on GP29)
-    // If config was loaded, applyConfig() already called begin() with the right chemistry.
-    // Otherwise, initialize with defaults (LiPo, auto-detect cells).
+    // Initialize battery voltage monitor (ADC with ÷6 divider on GP29).
+    // begin() must always run — applyConfig() then layers chemistry / cell
+    // overrides via setChemistry() / setCellCount() without re-init.
     analogReadResolution(12);
-    if (!configServer.store().isLoaded()) {
-        batteryMonitor.begin(PIN_VSENSE, 6.0f);
-    }
+    batteryMonitor.begin(PIN_VSENSE, 6.0f);
 
     // Auto-deploy all gears on low battery voltage (safety feature)
     batteryMonitor.onLowVoltage([](uint16_t voltage_mV, uint8_t cellCount) {
-        if (batteryEnabled && autoDeployOnLowVoltage && server.indicators().isConnected()) {
+        if (autoDeployOnLowVoltage && server.indicators().isConnected()) {
             SFX_LOG_WARN("LOW BATTERY %u mV (%uS) — emergency deploy all gears",
                          voltage_mV, cellCount);
             lowVoltageTriggered = true;
@@ -626,13 +641,17 @@ void setup() {
         return gears[gearId].cancelCalibration();
     });
 
-    // BATTERY_CONFIG: Enable/disable battery monitoring and auto-deploy on low voltage
-    gearControlServer.onBatteryConfig([](bool enabled, bool autoDeploy) -> uint8_t {
-        batteryEnabled = enabled;
-        autoDeployOnLowVoltage = autoDeploy;
-        if (!enabled) {
-            lowVoltageTriggered = false;  // Reset low-voltage state when disabling
-        }
+    // BATTERY_CONFIG: set chemistry, cell count, and auto-deploy behavior.
+    //   Monitor itself is always running. cellCount == 0 means auto-detect.
+    gearControlServer.onBatteryConfig([](const GearControlBatteryConfig& cfg) -> uint8_t {
+        autoDeployOnLowVoltage = cfg.autoDeploy;
+        BatteryChemistry chem = static_cast<BatteryChemistry>(cfg.chemistry);
+        batteryMonitor.setChemistry(chem);
+        batteryMonitor.setCellCount(cfg.cellCount);  // 0 = re-arm auto-detect
+        SFX_LOG_INFO("Battery: chem=%s cells=%s autoDeploy=%u",
+                     chemistryName(chem),
+                     cfg.cellCount == 0 ? "auto" : (cfg.cellCount == 1 ? "1S" : "fixed"),
+                     cfg.autoDeploy);
         return SerialError::OK;
     });
 
@@ -699,11 +718,10 @@ void setup() {
 
         CoreProtocol::putU16LE(&buf[33], (uint16_t)yawServo.position());  // yaw servo  // µs
         buf[35] = buildLedFlags();
-        CoreProtocol::putU16LE(&buf[36], batteryEnabled ? batteryMonitor.voltage_mV() : (uint16_t)0);  // mV
-        // Battery config flags: bit 0 = auto-deploy enabled, bit 1 = low voltage triggered, bit 2 = battery monitoring enabled
+        CoreProtocol::putU16LE(&buf[36], batteryMonitor.voltage_mV());  // mV
+        // Battery config flags: bit 0 = auto-deploy enabled, bit 1 = low voltage triggered
         buf[38] = (autoDeployOnLowVoltage ? 0x01 : 0x00)
-                | (lowVoltageTriggered    ? 0x02 : 0x00)
-                | (batteryEnabled         ? 0x04 : 0x00);
+                | (lowVoltageTriggered    ? 0x02 : 0x00);
 
         // Per-gear error reasons (diagnostic — explains WHY a gear is in ERROR state)
         buf[39] = gearErrorReason[0];
@@ -730,6 +748,9 @@ void setup() {
 
         return 53;
     });
+
+    // Set status broadcast source for verbose mode (STATUS_UPDATE packets)
+    server.core().setStatusBroadcastSource(StatusUpdateSource::GEARCONTROL);
 
     // Finalize command router (core + GearControl + Config handlers)
     server.addModuleHandler(&gearControlServer);
@@ -809,10 +830,8 @@ void loop() {
     server.indicators().setErrorCondition(anyError);
     server.indicators().setWarningCondition(lowVoltageTriggered);
 
-    // Update battery voltage monitor (only when enabled via BATTERY_CONFIG)
-    if (batteryEnabled) {
-        batteryMonitor.update();
-    }
+    // Battery monitor is always running — chemistry/cells configurable via BATTERY_CONFIG
+    batteryMonitor.update();
 
     busy_wait_ms(1);
 }

@@ -50,10 +50,9 @@ func GearControlSchema() *Schema {
 		PropRange("delay_ms", FieldInt, 0, 5000)
 
 	batterySchema := NewSchema("battery").
-		Prop("enabled", FieldBool).
 		Prop("auto_deploy", FieldBool).
-		PropEnum("chemistry", "lipo", "life", "nicd", "nimh").
-		PropRange("cell_count", FieldInt, 0, 6)
+		PropEnum("chemistry", "lipo", "liion", "nimh").
+		PropRange("cell_count", FieldInt, 0, 6) // 0 = auto-detect, 1-6 = fixed cell count
 
 	return NewSchema("GearControl").
 		Seq("retracts", 3, retractItem).

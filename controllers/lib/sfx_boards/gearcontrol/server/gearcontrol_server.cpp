@@ -120,10 +120,12 @@ CommandHandleResult GearControlServer::handleModulePacket(uint8_t type, const ui
         }
 
         case GearControlPacket::BATTERY_CONFIG: {
-            SFX_REQUIRE_LEN(2);
-            bool enabled = payload[0] != 0;
-            bool autoDeploy = payload[1] != 0;
-            SFX_DISPATCH(_batteryConfigCallback, enabled, autoDeploy);
+            SFX_REQUIRE_LEN(3);
+            GearControlBatteryConfig cfg;
+            cfg.autoDeploy = payload[0] != 0;
+            cfg.chemistry  = payload[1];
+            cfg.cellCount  = payload[2];
+            SFX_DISPATCH(_batteryConfigCallback, cfg);
         }
 
         case GearControlPacket::DOOR_MODE: {

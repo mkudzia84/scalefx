@@ -130,7 +130,7 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 | 0x6A | GEAR_CALIBRATE | `[gear_id:u8][timeout_s:u8]` | Start stall current calibration (timeout_s optional, 0=default 60s) |
 | 0x6B | GEAR_CALIB_STATUS | `[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8][errorReason:u8]` | Calibration progress (server→client, echoes request tag) |
 | 0x6C | GEAR_CALIB_CANCEL | `[gear_id:u8]` | Cancel calibration in progress |
-| 0x6D | BATTERY_CONFIG | `[enabled:u8][auto_deploy:u8]` | Enable/disable battery monitoring + auto-deploy |
+| 0x6D | BATTERY_CONFIG | `[auto_deploy:u8][chemistry:u8][cell_count:u8]` (3B) | Battery profile — monitor is always on. Sets auto-deploy on low voltage, chemistry (`0=LiPo`, `1=Li-Ion`, `2=NiMH`), and cell count (`0=auto-detect`, `1-6=fixed`). |
 | 0x6E | DOOR_MODE | `[gear_id:u8][mode:u8][delay_ms:u16LE]` | Configure door activation mode |
 | 0x6F | GEAR_RESET | `[gear_id:u8]` | Clear error state (ERROR → UNKNOWN) |
 | 0x70 | GEAR_SEQ_STATUS | `[gear_id:u8][phase:u8][deploying:u8][finished:u8][elapsed_ms:u32LE]` | Sequence progress with timing (server→client, echoes request tag) |
@@ -181,8 +181,8 @@ Per gear (3 × 11 = 33 bytes):
 Yaw + LEDs + Voltage + Config (6 bytes):
   [yawPos_us:u16LE]           // Yaw servo position in µs
   [ledFlags:u8]               // Bits 0-5 status LEDs, 6-7 indicator LEDs
-  [batteryVoltage_mV:u16LE]   // Battery voltage in millivolts
-  [batteryConfigFlags:u8]     // Bit 0: auto-deploy, Bit 1: low voltage, Bit 2: battery enabled
+  [batteryVoltage_mV:u16LE]   // Battery voltage in millivolts (always reported)
+  [batteryConfigFlags:u8]     // Bit 0: auto-deploy enabled, Bit 1: low voltage triggered
 
 Per-gear error reasons (3 bytes):
   [gear0ErrorReason:u8]       // Why gear 0 is in ERROR state (GearErrorReason)
@@ -213,7 +213,6 @@ Per-gear door state (3 bytes):
 |-----|------|-------------|
 | 0 | AUTO_DEPLOY | Auto-deploy on low voltage is enabled |
 | 1 | LOW_VOLTAGE_TRIGGERED | Low voltage event fired, emergency deploy occurred |
-| 2 | BATTERY_ENABLED | Battery monitoring is active (enabled via BATTERY_CONFIG) |
 
 **GearErrorReason enum:**
 | Value | Name | Description |
@@ -321,15 +320,19 @@ effectiveThreshold = calibratedStall + (baseline × dragHeadroom%)
 
 A configurable safety feature that automatically deploys all landing gears when the battery voltage drops below the low warning threshold (3.2V/cell for LiPo).
 
-**Enable:** Send `BATTERY_CONFIG` with `[0x01]`  
-**Disable:** Send `BATTERY_CONFIG` with `[0x00]`
+**Enable auto-deploy:**  Send `BATTERY_CONFIG` with `[auto_deploy=1, chemistry, cell_count]`  
+**Disable auto-deploy:** Send `BATTERY_CONFIG` with `[auto_deploy=0, chemistry, cell_count]`
+
+**Defaults:** Battery monitor is always running. Boot defaults: chemistry = LiPo, cell count = auto-detect, auto-deploy = OFF.
+
+**Chemistry & cell-count override:** The 3-byte payload `[auto_deploy, chemistry, cell_count]` switches chemistry (`0=LiPo`, `1=Li-Ion`, `2=NiMH`) and forces a fixed cell count (`1-6`) or re-arms auto-detect (`0`). Low-voltage thresholds adjust automatically per chemistry profile.
 
 **Behavior:**
 - Only triggers when the controller is initialized (connected)
 - Uses `BatteryMonitor::onLowVoltage()` callback with hysteresis (50mV/cell re-arm)
 - Deploys all 3 gears simultaneously (same as `GEAR_ALL` with action=deploy)
 - Auto-deploy setting is reset to OFF on shutdown/disconnect (requires re-configuration)
-- Current state is reported in STATUS response `batteryConfigFlags` (bit 0 = enabled, bit 1 = triggered)
+- Current state is reported in STATUS response `batteryConfigFlags` (bit 0 = auto-deploy, bit 1 = triggered)
 
 **Visual indicators when emergency deploy fires:**
 - **Indicator LED 1** (GP14): slow blink 500ms (low voltage warning)

@@ -59,7 +59,10 @@ public:
     CommandResult setGearConfig(const GearControlGearConfig& config);
     CommandResult setYawConfig(const GearControlYawConfig& config);
     CommandResult setYawInput(uint16_t position_us);
-    CommandResult setBatteryConfig(bool enabled, bool autoDeployOnLowVoltage = false);
+    /// Battery config — monitor is always on. chemistry: 0=LiPo, 1=Li-Ion, 2=NiMH;
+    /// cellCount: 0 = auto-detect (else 1..6 = fixed).
+    CommandResult setBatteryConfig(bool autoDeployOnLowVoltage,
+                                   uint8_t chemistry = 0, uint8_t cellCount = 0);
     CommandResult setDoorMode(const GearControlDoorModeConfig& config);
     CommandResult requestI2CScan();
 

@@ -50,10 +50,9 @@
  *       delay_ms: 500
  *
  *   battery:
- *     enabled: false
  *     auto_deploy: false
- *     chemistry: lipo
- *     cell_count: 0
+ *     chemistry: lipo       # lipo|liion|nimh — voltage monitor is always on
+ *     cell_count: 0         # 0 = auto-detect from voltage
  */
 
 #ifndef GEARCONTROL_CONFIG_H
@@ -133,10 +132,9 @@ struct GearControlConfig {
     // ---- Battery monitoring ----
 
     struct Battery {
-        bool     enabled         = false;  // Enable voltage monitoring
         bool     autoDeploy      = false;  // Auto-deploy gear on low battery
-        char     chemistry[8]    = "lipo"; // lipo|life|nicd|nimh
-        uint8_t  cellCount       = 0;      // Number of cells (0 = disabled)
+        char     chemistry[8]    = "lipo"; // lipo|liion|nimh (monitor is always on)
+        uint8_t  cellCount       = 0;      // Number of cells (0 = auto-detect)
     } battery;
 };
 
@@ -187,9 +185,8 @@ inline const auto fields = schema<GearControlConfig>(
         prop<&DM::delay_ms>   ("delay_ms",    uint16_t(500)).range(0, 5000)
     ),
 
-    // ---- Battery monitoring ----
+    // ---- Battery monitoring (always on; chemistry/cells select profile) ----
     group<&GearControlConfig::battery>("battery",
-        prop<&B::enabled>    ("enabled",     false),
         prop<&B::autoDeploy> ("auto_deploy", false),
         prop<&B::chemistry>  ("chemistry",   "lipo"),
         prop<&B::cellCount>  ("cell_count",  uint8_t(0)).range(0, 6)

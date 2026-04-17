@@ -95,9 +95,9 @@ door_modes:
     post_deploy: none
     delay_ms: 0
 
-# --- Battery monitoring ---
+# --- Battery monitoring (always on; chemistry/cells select profile) ---
+# chemistry: lipo | liion | nimh     cell_count: 0 = auto-detect, 1-6 = fixed
 battery:
-  enabled: false
   auto_deploy: false
   chemistry: lipo
   cell_count: 0

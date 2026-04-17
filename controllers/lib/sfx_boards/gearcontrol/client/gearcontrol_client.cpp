@@ -262,10 +262,12 @@ CommandResult GearControlClient::setYawInput(uint16_t position_us) {
     return sendCommand(GearControlPacket::YAW_INPUT, payload, sizeof(payload));
 }
 
-CommandResult GearControlClient::setBatteryConfig(bool enabled, bool autoDeployOnLowVoltage) {
-    uint8_t payload[2];
-    payload[0] = enabled ? 1 : 0;
-    payload[1] = autoDeployOnLowVoltage ? 1 : 0;
+CommandResult GearControlClient::setBatteryConfig(bool autoDeployOnLowVoltage,
+                                                  uint8_t chemistry, uint8_t cellCount) {
+    uint8_t payload[3];
+    payload[0] = autoDeployOnLowVoltage ? 1 : 0;
+    payload[1] = chemistry;
+    payload[2] = cellCount;  // 0 = auto-detect
     return sendCommand(GearControlPacket::BATTERY_CONFIG, payload, sizeof(payload));
 }
 

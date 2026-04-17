@@ -29,7 +29,9 @@
  *   GEAR_CALIBRATE (0x6A) - [gear_id:u8][timeout_s:u8(opt)] Start stall current calibration (default 60s timeout)
  *   GEAR_CALIB_STATUS (0x6B) - [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16][finished:u8][errorReason:u8] Calibration progress (server→client)
  *   GEAR_CALIB_CANCEL (0x6C) - [gear_id:u8] Cancel calibration in progress
- *   BATTERY_CONFIG  (0x6D)  - [enabled:u8][auto_deploy:u8] Configure battery monitoring (enable/disable + auto-deploy)
+ *   BATTERY_CONFIG  (0x6D)  - [auto_deploy:u8][chemistry:u8][cell_count:u8] Battery monitoring config.
+ *                              Monitor is always enabled. chemistry: 0=LiPo, 1=Li-Ion, 2=NiMH.
+ *                              cell_count: 0 = auto-detect (1..6 = fixed).
  *   DOOR_MODE      (0x6E)  - [gear_id:u8][pre_deploy:u8][post_deploy:u8][delay_ms:u16LE] Configure door modes
  *   GEAR_RESET     (0x6F)  - [gear_id:u8] Clear error state (ERROR → UNKNOWN)
  *   GEAR_SEQ_STATUS(0x70)  - Server→client sequence progress (async)
@@ -72,8 +74,8 @@ namespace GearControlPacket {
     constexpr uint8_t GEAR_CALIB_STATUS   = 0x6B;  // [gear_id:u8][phase:u8][current:u16][peak:u16][stall:u16][finished:u8][errorReason:u8] Calibration progress (server→client)
     constexpr uint8_t GEAR_CALIB_CANCEL   = 0x6C;  // [gear_id:u8] Cancel calibration in progress
 
-    // Battery configuration
-    constexpr uint8_t BATTERY_CONFIG      = 0x6D;  // [enabled:u8][auto_deploy:u8] Enable monitoring + auto-deploy
+    // Battery configuration — monitor is always on; sets autoDeploy + chemistry + cellCount
+    constexpr uint8_t BATTERY_CONFIG      = 0x6D;  // [auto_deploy:u8][chemistry:u8][cell_count:u8]
 
     // Door mode configuration
     constexpr uint8_t DOOR_MODE           = 0x6E;  // [gear_id:u8][pre_deploy:u8][post_deploy:u8][delay_ms:u16LE]
@@ -392,6 +394,25 @@ struct GearControlYawConfig {
 };
 
 /**
+ * @brief Battery monitoring configuration payload
+ *
+ * Monitor is always running once the controller boots — there is no enable
+ * flag. This packet only adjusts chemistry, cell count, and the auto-deploy
+ * safety behavior.
+ *
+ * Wire format (3 bytes):
+ *   [auto_deploy:u8][chemistry:u8][cell_count:u8]
+ *
+ * Chemistry values match BatteryChemistry enum: 0=LIPO, 1=LI_ION, 2=NIMH.
+ * cellCount == 0 means auto-detect from measured voltage on the next reading.
+ */
+struct GearControlBatteryConfig {
+    bool autoDeploy = false;
+    uint8_t chemistry = 0;       // 0=LIPO, 1=LI_ION, 2=NIMH
+    uint8_t cellCount = 0;       // 0 = auto-detect
+};
+
+/**
  * @brief Servo settings configuration
  *
  * Matches GunFX/LightFX SRV_SETTINGS pattern.
@@ -449,7 +470,7 @@ using GearControlYawInputCallback = std::function<uint8_t(uint16_t position_us)>
 using GearControlGearCalibrateCallback = std::function<uint8_t(uint8_t gearId, uint8_t timeout_s)>;
 using GearControlCalibCancelCallback = std::function<uint8_t(uint8_t gearId)>;
 using GearControlCalibStatusCallback = std::function<void(const GearControlCalibStatus& status)>;
-using GearControlBatteryConfigCallback = std::function<uint8_t(bool enabled, bool autoDeployOnLowVoltage)>;
+using GearControlBatteryConfigCallback = std::function<uint8_t(const GearControlBatteryConfig& cfg)>;
 using GearControlDoorModeCallback = std::function<uint8_t(const GearControlDoorModeConfig& config)>;
 using GearControlGearResetCallback = std::function<uint8_t(uint8_t gearId)>;
 using GearControlGearEnableCallback = std::function<uint8_t(uint8_t gearId, bool enabled)>;

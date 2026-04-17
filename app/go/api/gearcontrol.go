@@ -49,6 +49,8 @@ func (a *GearControlApi) Calibrate(id, timeout byte) ApiResult {
 func (a *GearControlApi) CalibrateCancel(id byte) ApiResult      { return a.sendACK(gearcontrol.CmdCalibCancel(id)) }
 func (a *GearControlApi) Reset(id byte) ApiResult                { return a.sendACK(gearcontrol.CmdReset(id)) }
 func (a *GearControlApi) Enable(id byte, enabled bool) ApiResult { return a.sendACK(gearcontrol.CmdEnable(id, enabled)) }
-func (a *GearControlApi) BatteryConfig(enabled, autoDeploy bool) ApiResult {
-	return a.sendACK(gearcontrol.CmdBatteryConfig(enabled, autoDeploy))
+// BatteryConfig — monitor is always on. chemistry is a wire-format byte
+// (gearcontrol.ChemistryLiPo / LiIon / NiMH); cellCount == 0 triggers auto-detect.
+func (a *GearControlApi) BatteryConfig(autoDeploy bool, chemistry, cellCount byte) ApiResult {
+	return a.sendACK(gearcontrol.CmdBatteryConfig(autoDeploy, chemistry, cellCount))
 }
