@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 )
 
 // ─── ESP32 Flash Pipeline ───
@@ -107,13 +106,34 @@ func flashWithPythonEsptool(opts *Options, port, fwPath string) error {
 // ─── PlatformIO fallback (build+flash only) ───
 
 func flashWithPlatformIO(opts *Options, ctrl Controller, ctrlPath, port string) error {
-	args := []string{"-m", "platformio", "run", "-e", ctrl.PIOEnv, "-t", "upload", "-d", ctrlPath}
+	pioBin := resolvePIO()
+	args := pioArgs(pioBin, "run", "-e", ctrl.PIOEnv, "-t", "upload", "-d", ctrlPath)
 	if port != "" {
 		args = append(args, "--upload-port", port)
 	}
 
 	opts.info("Uploading via PlatformIO (%s)...", ctrl.PIOEnv)
-	return runPythonCmd(opts, args, ctrlPath)
+	return runCmd(opts, args, ctrlPath)
+}
+
+// ─── PlatformIO / Python resolution ───
+
+// resolvePIO returns "pio" if the PlatformIO CLI is on PATH,
+// otherwise falls back to "python" (for python -m platformio).
+func resolvePIO() string {
+	if _, err := exec.LookPath("pio"); err == nil {
+		return "pio"
+	}
+	return "python"
+}
+
+// pioArgs builds the argument slice for a PlatformIO command.
+// If bin is "pio", args are passed directly; if "python", prepends -m platformio.
+func pioArgs(bin string, args ...string) []string {
+	if bin == "pio" {
+		return append([]string{bin}, args...)
+	}
+	return append([]string{bin, "-m", "platformio"}, args...)
 }
 
 // ─── Command runners ───
@@ -145,9 +165,9 @@ func runTool(opts *Options, binary string, args []string) error {
 	return nil
 }
 
-// runPythonCmd runs a python command and streams output to opts.
-func runPythonCmd(opts *Options, args []string, dir string) error {
-	cmd := exec.Command("python", args...)
+// runCmd runs a command (given as full args slice) and streams output to opts.
+func runCmd(opts *Options, args []string, dir string) error {
+	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 	if dir != "" {
 		cmd.Dir = dir
@@ -166,13 +186,7 @@ func runPythonCmd(opts *Options, args []string, dir string) error {
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, "Writing at") && strings.Contains(line, "%") {
-			opts.info("%s", line)
-		} else if strings.Contains(line, "Leaving...") || strings.Contains(line, "Hard resetting") {
-			opts.info("%s", line)
-		} else {
-			opts.info("%s", line)
-		}
+		opts.info("%s", line)
 	}
 
 	if err := cmd.Wait(); err != nil {
@@ -181,4 +195,9 @@ func runPythonCmd(opts *Options, args []string, dir string) error {
 
 	opts.ok("ESP32 upload complete")
 	return nil
+}
+
+// runPythonCmd runs a python command and streams output to opts.
+func runPythonCmd(opts *Options, args []string, dir string) error {
+	return runCmd(opts, append([]string{"python"}, args...), dir)
 }

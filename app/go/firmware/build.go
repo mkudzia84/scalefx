@@ -147,12 +147,13 @@ func Build(opts *Options, ctrl Controller) (*BuildInfo, error) {
 	}
 
 	// Build PlatformIO command
-	args := []string{"-m", "platformio", "run", "-e", ctrl.PIOEnv}
+	pioBin := resolvePIO()
+	args := pioArgs(pioBin, "run", "-e", ctrl.PIOEnv)
 	if !opts.NoClean {
 		// Clean first (default behavior — matches Python script)
 		opts.info("Running clean build...")
-		cleanArgs := []string{"-m", "platformio", "run", "-e", ctrl.PIOEnv, "-t", "clean", "-d", ctrlPath}
-		cleanCmd := exec.Command("python", cleanArgs...)
+		cleanArgs := pioArgs(pioBin, "run", "-e", ctrl.PIOEnv, "-t", "clean", "-d", ctrlPath)
+		cleanCmd := exec.Command(cleanArgs[0], cleanArgs[1:]...)
 		cleanCmd.Dir = ctrlPath
 		cleanCmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 		if out, err := cleanCmd.CombinedOutput(); err != nil {
@@ -163,7 +164,7 @@ func Build(opts *Options, ctrl Controller) (*BuildInfo, error) {
 	args = append(args, "-d", ctrlPath)
 	opts.info("Building %s (%s)...", ctrl.Name, ctrl.PIOEnv)
 
-	cmd := exec.Command("python", args...)
+	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = ctrlPath
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 
