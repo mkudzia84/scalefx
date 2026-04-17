@@ -17,7 +17,7 @@ export interface ConnectionInfo {
 }
 
 export interface ConsoleMessage {
-    type: 'ok' | 'error' | 'info' | 'warning' | 'output' | 'command'
+    type: 'ok' | 'error' | 'info' | 'warning' | 'output' | 'command' | 'debug'
     content: string
     timestamp: number
 }

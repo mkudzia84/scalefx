@@ -1,7 +1,9 @@
 <!-- ScaleFX Studio — GearControl Tab -->
 <!-- Left: global settings (controls, battery, yaw).  Right: per-channel setup with doors & servos. -->
 <script lang="ts">
+    import { onMount, onDestroy } from 'svelte'
     import { SendCommand } from '../../../wailsjs/go/main/App'
+    import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
     import { connectionInfo } from '../stores'
     import ServoWidget from '../components/ServoWidget.svelte'
 
@@ -26,6 +28,11 @@
     let gearEnabled: boolean[] = [true, true, true]
     let calibErrors: string[] = ['', '', '']
 
+    // Live current readings (updated during calibration via status polling)
+    let liveCurrent_mA: number[] = [0, 0, 0]
+    type CalibPhase = 'none' | 'clear' | 'deploy' | 'settle'
+    let calibPhases: CalibPhase[] = ['none', 'none', 'none']
+
     let calibTimeout_s = 60
 
     $: anyUncalibrated = calibStates.some(s => s !== 'calibrated')
@@ -47,6 +54,8 @@
         SendCommand(`calibrate all ${calibTimeout_s}`)
         calibStates = calibStates.map(() => 'calibrating' as CalibState)
         calibErrors = ['', '', '']
+        liveCurrent_mA = [0, 0, 0]
+        calibPhases = ['clear', 'clear', 'clear']
     }
     function calibCancelAll() {
         SendCommand('calibrate.cancel all')
@@ -56,7 +65,11 @@
         SendCommand(`calibrate ${id} ${calibTimeout_s}`)
         calibStates[id] = 'calibrating'
         calibErrors[id] = ''
+        liveCurrent_mA[id] = 0
+        calibPhases[id] = 'clear'
         calibStates = calibStates
+        liveCurrent_mA = liveCurrent_mA
+        calibPhases = calibPhases
     }
     function calibCancel(id: number) {
         SendCommand(`calibrate.cancel ${id}`)
@@ -76,11 +89,6 @@
         calibErrors = ['', '', '']
     }
 
-    let stallThreshold_mA = 500
-    function saveAllGearConfig() {
-        for (let id = 0; id < gearCount; id++) { applyGearConfig(id) }
-    }
-
     // ─── Per-gear actions ───
     function gearDeploy(id: number)  { SendCommand(`deploy ${id}`); gearActions[id] = 'deploying'; gearActions = gearActions }
     function gearRetract(id: number) { SendCommand(`retract ${id}`); gearActions[id] = 'retracting'; gearActions = gearActions }
@@ -96,14 +104,14 @@
 
     // ─── Gear Config (per gear) ───
     interface GearConfig {
-        stallCurrent_mA: number
+        stallCurrent_mA: number   // Established during calibration (read-only)
         timeout_ms: number
     }
 
     let gearConfigs: GearConfig[] = [
-        { stallCurrent_mA: 500, timeout_ms: 60000 },
-        { stallCurrent_mA: 500, timeout_ms: 60000 },
-        { stallCurrent_mA: 500, timeout_ms: 60000 },
+        { stallCurrent_mA: 0, timeout_ms: 60000 },
+        { stallCurrent_mA: 0, timeout_ms: 60000 },
+        { stallCurrent_mA: 0, timeout_ms: 60000 },
     ]
 
     function applyGearConfig(id: number) {
@@ -153,11 +161,11 @@
     // ─── Yaw Config ───
     interface YawConfig {
         neutral_us: number; min_us: number; max_us: number
+        speed: number; reversed: boolean
     }
 
-    let yawEnabled = false
     let yawGearId = 0
-    let yawConfig: YawConfig = { neutral_us: 1500, min_us: 1000, max_us: 2000 }
+    let yawConfig: YawConfig = { neutral_us: 1500, min_us: 1000, max_us: 2000, speed: 4000, reversed: false }
     let yawPosition_us = 1500
 
     function applyYawConfig() {
@@ -170,19 +178,268 @@
     }
 
     // ─── Battery ───
-    let batteryEnabled = false
+    // Monitor is always on. Defaults match firmware (LiPo, auto-detect cells).
     let batteryAutoDeploy = false
-    let batteryLowThreshold_mV = 10500
+    let batteryChemistry = 'lipo'
+    let batteryCellCount = 0  // 0 = auto-detect
     let batteryVoltage_mV = 0
+    const batteryChemistries = ['lipo', 'liion', 'nimh']
+    const chemistryLabels: Record<string, string> = { lipo: 'LiPo', liion: 'Li-Ion', nimh: 'NiMH' }
+    // Cell voltage bounds (mV) — must match BatteryProfiles in battery_monitor.h
+    const cellVoltageBounds: Record<string, { min: number; max: number }> = {
+        lipo:  { min: 3000, max: 4200 },
+        liion: { min: 2800, max: 4200 },
+        nimh:  { min:  900, max: 1400 },
+    }
+    $: effectiveCellCount = batteryCellCount > 0 ? batteryCellCount : 0
+    $: battMinV = (cellVoltageBounds[batteryChemistry]?.min ?? 3000) * effectiveCellCount
+    $: battMaxV = (cellVoltageBounds[batteryChemistry]?.max ?? 4200) * effectiveCellCount
     $: batteryVolts = (batteryVoltage_mV / 1000).toFixed(2)
-    $: batteryPct = batteryVoltage_mV > 0 ? Math.min(100, Math.max(0, Math.round((batteryVoltage_mV - 9000) / (12600 - 9000) * 100))) : 0
-    $: batteryLow = batteryVoltage_mV > 0 && batteryVoltage_mV < batteryLowThreshold_mV
+    $: batteryPct = (battMaxV > battMinV && batteryVoltage_mV > 0)
+        ? Math.min(100, Math.max(0, Math.round((batteryVoltage_mV - battMinV) / (battMaxV - battMinV) * 100)))
+        : 0
+    $: batteryLow = batteryVoltage_mV > 0 && effectiveCellCount > 0 && batteryPct < 15
 
     function applyBattery() {
-        const flag1 = batteryEnabled ? 'on' : 'off'
-        const flag2 = batteryAutoDeploy ? 'autodeploy' : ''
-        SendCommand(`battery ${flag1} ${flag2}`.trim())
+        const auto = batteryAutoDeploy ? 'autodeploy' : ''
+        const cells = batteryCellCount > 0 ? `cells:${batteryCellCount}` : 'auto'
+        SendCommand(`battery ${auto} ${batteryChemistry} ${cells}`.replace(/\s+/g, ' ').trim())
     }
+
+    // ─── Pin Mapping ───
+    type PinRole = 'door' | 'gear_input' | 'yaw_input' | 'yaw_output' | 'unused'
+    const pinRoleOptions: PinRole[] = ['door', 'gear_input', 'yaw_input', 'yaw_output', 'unused']
+    const pinRoleLabels: Record<PinRole, string> = {
+        door: 'Door Servo', gear_input: 'Gear Input', yaw_input: 'Yaw Input',
+        yaw_output: 'Yaw Output', unused: 'Unused'
+    }
+    const pinSlots = ['pin1', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7']
+    const pinGPIOs = ['GP1', 'GP2', 'GP3', 'GP6', 'GP7', 'GP8', 'GP9']
+
+    interface PinConfig {
+        role: PinRole; channel: number; min_us: number; max_us: number
+        speed: number; reversed: boolean; threshold_us: number
+        gear_id: number; neutral_us: number
+    }
+
+    function mkPin(role: PinRole, overrides: Partial<PinConfig> = {}): PinConfig {
+        return { role, channel: 0, min_us: 500, max_us: 2500, speed: 4000,
+                 reversed: false, threshold_us: 1500, gear_id: 0, neutral_us: 1500, ...overrides }
+    }
+
+    // Direct mode: standalone — gear_input + yaw_input on first two pins
+    const directPinPreset: PinConfig[] = [
+        mkPin('gear_input'),                     // pin1: Gear Input
+        mkPin('yaw_input'),                      // pin2: Yaw Input
+        mkPin('door', { channel: 0 }),           // pin3: Nose Door A
+        mkPin('door', { channel: 0 }),           // pin4: Nose Door B
+        mkPin('door', { channel: 1 }),           // pin5: Left Door
+        mkPin('door', { channel: 2 }),           // pin6: Right Door
+        mkPin('yaw_output'),                     // pin7: Yaw Output
+    ]
+
+    // Slave mode: HubFX sends commands — no inputs needed, all pins for door servos
+    const slavePinPreset: PinConfig[] = [
+        mkPin('door', { channel: 0 }),           // pin1: Nose Door A
+        mkPin('door', { channel: 0 }),           // pin2: Nose Door B
+        mkPin('door', { channel: 1 }),           // pin3: Left Door A
+        mkPin('door', { channel: 1 }),           // pin4: Left Door B
+        mkPin('door', { channel: 2 }),           // pin5: Right Door A
+        mkPin('door', { channel: 2 }),           // pin6: Right Door B
+        mkPin('yaw_output'),                     // pin7: Yaw Output
+    ]
+
+    let pinConfigs: PinConfig[] = directPinPreset.map(p => ({ ...p }))
+
+    $: yawEnabled = pinConfigs.some(p => p.role === 'yaw_output')
+    $: hasGearInput = pinConfigs.some(p => p.role === 'gear_input')
+    $: doorPinsPerGear = [0, 1, 2].map(ch => pinConfigs.filter(p => p.role === 'door' && p.channel === ch).length)
+    $: gearHasDoors = doorPinsPerGear.map(n => n > 0)
+
+    // ─── Warning dismiss (persisted) ───
+    // "Don't show again" survives reloads via localStorage.
+    const WARN_KEY = 'gearcontrol.directWarningDismissed'
+    let warningDismissed = (typeof localStorage !== 'undefined') && localStorage.getItem(WARN_KEY) === '1'
+    function dismissWarning(persist: boolean) {
+        warningDismissed = true
+        if (persist && typeof localStorage !== 'undefined') localStorage.setItem(WARN_KEY, '1')
+    }
+
+    // ─── Auto-pick pin preset by connection ───
+    // Slave preset when connected via HubFX (no inputs needed); Direct preset
+    // for standalone boards. User can still override per-pin in the table.
+    let presetApplied = false
+    $: if (!presetApplied && $connectionInfo.connected) {
+        pinConfigs = (isHubFX ? slavePinPreset : directPinPreset).map(p => ({ ...p }))
+        presetApplied = true
+    }
+
+    // ─── Live status broadcast listener ───
+    // Gear state names (from firmware GearState enum)
+    const gearStateNames: Record<number, string> = {
+        0: 'UNKNOWN', 1: 'DEPLOYED', 2: 'RETRACTED',
+        3: 'DEPLOYING', 4: 'RETRACTING', 5: 'ERROR', 6: 'CALIBRATING'
+    }
+
+    interface GearStatusInfo {
+        state: number; current_mA: number; door0_us: number; door1_us: number
+        stallThreshold_mA: number; shuntVoltage_10uV: number
+        errorReason: number; doorPreMode: number; doorPostMode: number
+        configFlags: number; doorState: number
+    }
+    interface BatteryBroadcastInfo {
+        voltage_mV: number; enabled: boolean; autoDeploy: boolean; lowVoltage: boolean
+    }
+    interface GearControlBroadcast {
+        gears: GearStatusInfo[]; yaw_us: number; battery: BatteryBroadcastInfo
+    }
+
+    // Live values from periodic STATUS_BROADCAST
+    let liveYaw_us = 0
+
+    function handleStatusBroadcast(data: GearControlBroadcast) {
+        for (let i = 0; i < 3; i++) {
+            const g = data.gears[i]
+            liveCurrent_mA[i] = g.current_mA
+
+            // Update calibrated stall threshold when firmware reports it
+            if (g.stallThreshold_mA > 0) {
+                gearConfigs[i].stallCurrent_mA = g.stallThreshold_mA
+            }
+
+            // Map firmware state to calibration/action state
+            const st = g.state
+            if (st === 5) { // ERROR
+                calibStates[i] = 'error'
+                gearActions[i] = 'idle'
+            } else if (st === 6) { // CALIBRATING
+                calibStates[i] = 'calibrating'
+                gearActions[i] = 'idle'
+            } else if (st === 3) { // DEPLOYING
+                gearActions[i] = 'deploying'
+                if (calibStates[i] === 'calibrating') calibStates[i] = 'calibrating'
+                else if (calibStates[i] !== 'error') calibStates[i] = 'calibrated'
+            } else if (st === 4) { // RETRACTING
+                gearActions[i] = 'retracting'
+                if (calibStates[i] !== 'calibrating' && calibStates[i] !== 'error') calibStates[i] = 'calibrated'
+            } else if (st === 1 || st === 2) { // DEPLOYED / RETRACTED
+                gearActions[i] = 'idle'
+                if (calibStates[i] !== 'error') calibStates[i] = 'calibrated'
+            } else { // UNKNOWN
+                gearActions[i] = 'idle'
+                if (calibStates[i] === 'calibrating') calibStates[i] = 'uncalibrated'
+            }
+
+            // Enabled flag from config flags bit 7
+            gearEnabled[i] = (g.configFlags & 0x80) !== 0
+
+            // Error reason string
+            if (g.errorReason !== 0 && st === 5) {
+                calibErrors[i] = gearErrorReasonName(g.errorReason)
+            }
+        }
+
+        // Battery — monitor is always on
+        batteryVoltage_mV = data.battery.voltage_mV
+        lowVoltageTriggered = data.battery.lowVoltage
+
+        // Yaw
+        liveYaw_us = data.yaw_us
+
+        // Trigger reactivity
+        liveCurrent_mA = liveCurrent_mA
+        calibStates = calibStates
+        gearActions = gearActions
+        gearEnabled = gearEnabled
+        calibErrors = calibErrors
+        gearConfigs = gearConfigs
+    }
+
+    // Must match GearErrorReasonName in app/go/protocol/gearcontrol/gearcontrol.go.
+    // See CLAUDE.md Rule 8 (error codes must match across layers) and Rule 1
+    // (Protocol Constant Sync).
+    function gearErrorReasonName(code: number): string {
+        const names: Record<number, string> = {
+            0x00: 'None',
+            0x01: 'INA226 init failed',
+            0x02: 'Motor stall',
+            0x03: 'Motor timeout',
+            0x04: 'Sequence error',
+            0x05: 'Motor disconnected',
+            0x06: 'Calibration timeout',
+            0x07: 'No stall detected',
+        }
+        return names[code] || `Error 0x${code.toString(16).padStart(2, '0')}`
+    }
+
+    // Battery state from broadcast
+    let lowVoltageTriggered = false
+
+    // ─── Calibration status (async, ~50ms cadence) ───
+    // Wire format / field list: gearcontrol.CalibStatus in
+    // app/go/engine/handlers/gearcontrol/types.go. The Go side already maps
+    // errorReason→errorReasonName using the authoritative protocol table, so we
+    // just use evt.errorReasonName (fallback to local map if missing).
+    type GearCalibStatus = {
+        gearId: number
+        phase: number
+        phaseName: string
+        current_mA: number
+        peak_mA: number
+        stall_mA: number
+        finished: boolean
+        errorReason: number
+        errorReasonName: string
+    }
+
+    function handleCalibStatus(evt: GearCalibStatus) {
+        const i = evt.gearId
+        if (i < 0 || i >= gearCount) return
+
+        liveCurrent_mA[i] = evt.current_mA
+
+        // Map firmware phase → UI bucket (see calibPhaseName in Go types.go).
+        // 1 clear-run, 2 clear-settle → 'clear'
+        // 3 deploy-run, 5 retract-run → 'deploy' (motor running either direction)
+        // 4 mid-settle → 'settle'
+        // 9 opening-doors, 10 closing-doors → 'deploy' (show as moving)
+        const phaseMap: Record<number, CalibPhase> = {
+            1: 'clear', 2: 'clear',
+            3: 'deploy', 4: 'settle', 5: 'deploy',
+            9: 'deploy', 10: 'deploy',
+        }
+        if (phaseMap[evt.phase]) calibPhases[i] = phaseMap[evt.phase]
+
+        if (evt.finished) {
+            if (evt.phase === 7) { // ERROR
+                calibStates[i] = 'error'
+                calibErrors[i] = evt.errorReasonName || gearErrorReasonName(evt.errorReason)
+            } else if (evt.phase === 6) { // COMPLETE
+                calibStates[i] = 'calibrated'
+                calibErrors[i] = ''
+            } else if (evt.phase === 8) { // CANCELLED
+                calibStates[i] = 'uncalibrated'
+                calibErrors[i] = ''
+            }
+            calibPhases[i] = 'none'
+        }
+
+        // Trigger reactivity
+        calibStates = calibStates
+        calibErrors = calibErrors
+        calibPhases = calibPhases
+        liveCurrent_mA = liveCurrent_mA
+    }
+
+    onMount(() => {
+        EventsOn('gearcontrol:status', handleStatusBroadcast)
+        EventsOn('gearcontrol:calib', handleCalibStatus)
+    })
+
+    onDestroy(() => {
+        EventsOff('gearcontrol:status')
+        EventsOff('gearcontrol:calib')
+    })
 
     // ─── Config ───
     function configReload() { SendCommand('config.reload') }
@@ -215,10 +472,12 @@
         </div>
     </div>
 
-    {#if isDirect}
+    {#if isDirect && !warningDismissed}
         <div class="direct-warning">
-            ⚠ Direct connection — settings will not persist as slave configuration.
-            When configured as slave, manage settings via HubFX.
+            <span class="direct-warning-text">⚠ Direct connection — settings will not persist as slave configuration.
+            When configured as slave, manage settings via HubFX.</span>
+            <button class="small" on:click={() => dismissWarning(false)}>Accept</button>
+            <button class="small" on:click={() => dismissWarning(true)} title="Hide this warning permanently">Don't show again</button>
         </div>
     {/if}
 
@@ -229,53 +488,75 @@
                 <!-- ═══════════  LEFT COLUMN  ═══════════ -->
                 <div class="col">
 
-                    <!-- ── Aggregate Deploy / Retract ── -->
+                    <!-- ── Pin Mapping ── -->
+                    <!-- Mode (Direct vs Slave) is inferred from connection — no manual toggle. -->
                     <section class="card">
                         <div class="card-header">
-                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> Gear Control</h3>
-                            {#if hasErrors}
-                                <span class="header-tag error">✕ Error</span>
-                            {:else if anyUncalibrated}
-                                <span class="header-tag warn">⚠ Calibration required</span>
-                            {:else}
-                                <span class="header-tag ok">✓ Ready</span>
-                            {/if}
+                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/></svg> Pin Mapping</h3>
+                            <span class="header-tag {isHubFX ? 'active' : 'ok'}">
+                                {isHubFX ? 'Slave (via HubFX)' : 'Direct'}
+                            </span>
                         </div>
 
-                        <div class="agg-buttons">
-                            <button class="action-btn primary" disabled={controlsDisabled || !allCalibrated}
-                                    on:click={gearAllDeploy}>
-                                <span class="icon down">▼</span> Deploy All
-                            </button>
-                            <button class="action-btn" disabled={controlsDisabled || !allCalibrated}
-                                    on:click={gearAllRetract}>
-                                <span class="icon up">▲</span> Retract All
-                            </button>
-                            <button class="action-btn danger" disabled={controlsDisabled}
-                                    on:click={gearAllStop}>
-                                <span class="icon">■</span> Stop All
-                            </button>
-                            <button class="small" disabled={controlsDisabled}
-                                    on:click={gearResetAll} title="Clear all error states">↻ Reset All</button>
-                        </div>
-
-                        <!-- Mini per-gear status strip -->
-                        <div class="gear-status-strip">
-                            {#each gearNames as name, id}
-                                <div class="gear-pip"
-                                     class:pip-ok={calibStates[id] === 'calibrated' && gearActions[id] === 'idle'}
-                                     class:pip-deploying={gearActions[id] === 'deploying'}
-                                     class:pip-retracting={gearActions[id] === 'retracting'}
-                                     class:pip-error={calibStates[id] === 'error'}
-                                     class:pip-uncal={calibStates[id] === 'uncalibrated' || calibStates[id] === 'calibrating'}
-                                     class:pip-disabled={!gearEnabled[id]}>
-                                    <span class="pip-dot"></span>
-                                    <span class="pip-name">{name}</span>
-                                    {#if !gearEnabled[id]}<span class="pip-badge disabled">OFF</span>{/if}
-                                    {#if calibStates[id] === 'error'}<span class="pip-badge err">ERR</span>{/if}
+                        <div class="pin-map-list">
+                            {#each pinConfigs as pin, idx}
+                                <div class="pin-row" class:pin-unused={pin.role === 'unused'}>
+                                    <div class="pin-id">
+                                        <span class="pin-slot">{pinSlots[idx]}</span>
+                                        <span class="pin-gpio">{pinGPIOs[idx]}</span>
+                                    </div>
+                                    <select bind:value={pin.role} class="field-input pin-role-select"
+                                            disabled={controlsDisabled}>
+                                        {#each pinRoleOptions as role}
+                                            <option value={role}>{pinRoleLabels[role]}</option>
+                                        {/each}
+                                    </select>
+                                    <div class="pin-params">
+                                        {#if pin.role === 'door'}
+                                            <div class="pin-param">
+                                                <span class="pin-param-label">Ch</span>
+                                                <select bind:value={pin.channel}
+                                                        class="field-input pin-param-input"
+                                                        disabled={controlsDisabled}>
+                                                    {#each gearNames as gName, gIdx}
+                                                        <option value={gIdx}>{gIdx + 1} — {gName}</option>
+                                                    {/each}
+                                                </select>
+                                            </div>
+                                        {:else if pin.role === 'gear_input'}
+                                            <div class="pin-param">
+                                                <span class="pin-param-label">Threshold</span>
+                                                <input type="number" bind:value={pin.threshold_us}
+                                                       class="field-input pin-param-input" min="800" max="2200" step="50"
+                                                       disabled={controlsDisabled} />
+                                                <span class="unit">µs</span>
+                                            </div>
+                                        {:else if pin.role === 'yaw_output'}
+                                            <div class="pin-param">
+                                                <span class="pin-param-label">Gear</span>
+                                                <select bind:value={pin.gear_id}
+                                                        class="field-input pin-param-input"
+                                                        disabled={controlsDisabled}>
+                                                    {#each gearNames as gName, gIdx}
+                                                        <option value={gIdx}>{gIdx + 1} — {gName}</option>
+                                                    {/each}
+                                                </select>
+                                            </div>
+                                        {:else if pin.role === 'yaw_input'}
+                                            <span class="pin-param-hint dim">PWM input (standalone only)</span>
+                                        {:else}
+                                            <span class="pin-param-hint dim">—</span>
+                                        {/if}
+                                    </div>
                                 </div>
                             {/each}
                         </div>
+
+                        {#if !hasGearInput && !isHubFX}
+                            <div class="pin-map-hint warn">
+                                ⚠ No gear input pin assigned — standalone operation requires a gear input
+                            </div>
+                        {/if}
                     </section>
 
                     <!-- ── Calibration ── -->
@@ -302,19 +583,6 @@
                                         <span class="unit">sec</span>
                                     </div>
                                 </div>
-                                <div class="setting">
-                                    <span class="field-label">Stall Threshold</span>
-                                    <div class="setting-input">
-                                        <input type="number" bind:value={stallThreshold_mA}
-                                               class="field-input narrow" min="50" max="5000" step="50"
-                                               disabled={controlsDisabled} />
-                                        <span class="unit">mA</span>
-                                    </div>
-                                </div>
-                                <button class="small primary save-btn" disabled={controlsDisabled}
-                                        on:click={saveAllGearConfig} title="Save config to all gears">
-                                    💾 Save
-                                </button>
                             </div>
                         </div>
 
@@ -367,6 +635,125 @@
                         {/if}
                     </section>
 
+                    <!-- ── Aggregate Deploy / Retract ── -->
+                    <section class="card">
+                        <div class="card-header">
+                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> Gear Control</h3>
+                            {#if hasErrors}
+                                <span class="header-tag error">✕ Error</span>
+                            {:else if anyUncalibrated}
+                                <span class="header-tag warn">⚠ Calibration required</span>
+                            {:else}
+                                <span class="header-tag ok">✓ Ready</span>
+                            {/if}
+                        </div>
+
+                        <div class="agg-buttons">
+                            <button class="action-btn primary" disabled={controlsDisabled || !allCalibrated}
+                                    on:click={gearAllDeploy}>
+                                <span class="icon down">▼</span> Deploy All
+                            </button>
+                            <button class="action-btn" disabled={controlsDisabled || !allCalibrated}
+                                    on:click={gearAllRetract}>
+                                <span class="icon up">▲</span> Retract All
+                            </button>
+                            <button class="action-btn danger" disabled={controlsDisabled}
+                                    on:click={gearAllStop}>
+                                <span class="icon">■</span> Stop All
+                            </button>
+                            <button class="small" disabled={controlsDisabled}
+                                    on:click={gearResetAll} title="Clear all error states">↻ Reset All</button>
+                        </div>
+
+                        <!-- Mini per-gear status strip -->
+                        <div class="gear-status-strip">
+                            {#each gearNames as name, id}
+                                <div class="gear-pip"
+                                     class:pip-ok={calibStates[id] === 'calibrated' && gearActions[id] === 'idle'}
+                                     class:pip-deploying={gearActions[id] === 'deploying'}
+                                     class:pip-retracting={gearActions[id] === 'retracting'}
+                                     class:pip-error={calibStates[id] === 'error'}
+                                     class:pip-uncal={calibStates[id] === 'uncalibrated' || calibStates[id] === 'calibrating'}
+                                     class:pip-disabled={!gearEnabled[id]}>
+                                    <span class="pip-dot"></span>
+                                    <span class="pip-name">{name}</span>
+                                    {#if !gearEnabled[id]}<span class="pip-badge disabled">OFF</span>{/if}
+                                    {#if calibStates[id] === 'error'}<span class="pip-badge err">ERR</span>{/if}
+                                </div>
+                            {/each}
+                        </div>
+                    </section>
+
+                    <!-- ── Yaw Steering ── -->
+                    {#if yawEnabled}
+                    <section class="card">
+                        <div class="card-header">
+                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg> Yaw Steering</h3>
+                            <span class="header-tag ok">Gear {yawGearId} — {gearNames[yawGearId]}</span>
+                        </div>
+
+                        <div class="form-grid cols-3">
+                            <div class="form-field">
+                                <span class="field-label">Gear ID</span>
+                                <input type="number" bind:value={yawGearId}
+                                       class="field-input" min="0" max="2"
+                                       disabled={controlsDisabled} />
+                            </div>
+                            <div class="form-field">
+                                <span class="field-label">Neutral µs</span>
+                                <input type="number" bind:value={yawConfig.neutral_us}
+                                       class="field-input" min="500" max="2500" step="10"
+                                       disabled={controlsDisabled} />
+                            </div>
+                            <div class="form-field">
+                                <span class="field-label">Min µs</span>
+                                <input type="number" bind:value={yawConfig.min_us}
+                                       class="field-input" min="500" max="2500" step="10"
+                                       disabled={controlsDisabled} />
+                            </div>
+                        </div>
+                        <div class="form-grid cols-3" style="margin-top: 8px;">
+                            <div class="form-field">
+                                <span class="field-label">Max µs</span>
+                                <input type="number" bind:value={yawConfig.max_us}
+                                       class="field-input" min="500" max="2500" step="10"
+                                       disabled={controlsDisabled} />
+                            </div>
+                            <div class="form-field">
+                                <span class="field-label">Speed</span>
+                                <input type="number" bind:value={yawConfig.speed}
+                                       class="field-input" min="100" max="10000" step="100"
+                                       disabled={controlsDisabled} />
+                            </div>
+                            <div class="form-field">
+                                <!-- svelte-ignore a11y-label-has-associated-control -->
+                                <label class="toggle" style="margin-top: 18px">
+                                    <input type="checkbox" bind:checked={yawConfig.reversed}
+                                           disabled={controlsDisabled} />
+                                    <span class="toggle-text">Reversed</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="apply-row">
+                            <button class="small primary" disabled={controlsDisabled}
+                                    on:click={applyYawConfig}>Apply Yaw Config</button>
+                        </div>
+
+                        <div class="subsection-inline">
+                            <h4>Yaw Input</h4>
+                            <div class="slider-row">
+                                <input type="range" bind:value={yawPosition_us} min="1000" max="2000" step="10"
+                                       class="slider wide" disabled={controlsDisabled} />
+                                <span class="slider-val">{yawPosition_us} µs</span>
+                                <button class="small primary" disabled={controlsDisabled}
+                                        on:click={setYaw}>Set</button>
+                                <button class="small" disabled={controlsDisabled}
+                                        on:click={resetYawPosition}>Reset</button>
+                            </div>
+                        </div>
+                    </section>
+                    {/if}
+
                     <!-- ── Battery ── -->
                     <section class="card">
                         <div class="card-header">
@@ -395,12 +782,6 @@
                         <div class="form-row">
                             <!-- svelte-ignore a11y-label-has-associated-control -->
                             <label class="toggle">
-                                <input type="checkbox" bind:checked={batteryEnabled}
-                                       disabled={controlsDisabled} />
-                                <span class="toggle-text">Monitoring</span>
-                            </label>
-                            <!-- svelte-ignore a11y-label-has-associated-control -->
-                            <label class="toggle" style="margin-left: 16px">
                                 <input type="checkbox" bind:checked={batteryAutoDeploy}
                                        disabled={controlsDisabled} />
                                 <span class="toggle-text">Auto-Deploy on Low Voltage</span>
@@ -412,64 +793,31 @@
 
                         <div class="form-row">
                             <div class="setting">
-                                <span class="field-label">Low Threshold</span>
+                                <span class="field-label">Chemistry</span>
+                                <select bind:value={batteryChemistry} class="field-input"
+                                        disabled={controlsDisabled}>
+                                    {#each batteryChemistries as chem}
+                                        <option value={chem}>{chemistryLabels[chem]}</option>
+                                    {/each}
+                                </select>
+                            </div>
+                            <div class="setting" style="margin-left: 16px">
+                                <span class="field-label">Cell Count</span>
                                 <div class="setting-input">
-                                    <input type="number" bind:value={batteryLowThreshold_mV}
-                                           class="field-input narrow" min="8000" max="13000" step="100"
+                                    <input type="number" bind:value={batteryCellCount}
+                                           class="field-input narrow" min="0" max="6" step="1"
+                                           title="0 = auto-detect"
                                            disabled={controlsDisabled} />
-                                    <span class="unit">mV</span>
+                                    <span class="unit">{batteryCellCount === 0 ? 'auto' : 'S'}</span>
                                 </div>
                             </div>
+                            {#if batteryCellCount === 0}
+                                <span class="field-hint" style="margin-left: 16px; align-self: flex-end;">
+                                    Auto-detect on connect
+                                </span>
+                            {/if}
                         </div>
                     </section>
-
-                    <!-- ── Yaw Steering ── -->
-                    {#if yawEnabled}
-                    <section class="card">
-                        <div class="card-header">
-                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg> Yaw Steering</h3>
-                            <span class="header-tag ok">Gear {yawGearId}</span>
-                        </div>
-
-                        <div class="form-grid cols-3">
-                            <div class="form-field">
-                                <span class="field-label">Neutral µs</span>
-                                <input type="number" bind:value={yawConfig.neutral_us}
-                                       class="field-input" min="500" max="2500" step="10"
-                                       disabled={controlsDisabled} />
-                            </div>
-                            <div class="form-field">
-                                <span class="field-label">Min µs</span>
-                                <input type="number" bind:value={yawConfig.min_us}
-                                       class="field-input" min="500" max="2500" step="10"
-                                       disabled={controlsDisabled} />
-                            </div>
-                            <div class="form-field">
-                                <span class="field-label">Max µs</span>
-                                <input type="number" bind:value={yawConfig.max_us}
-                                       class="field-input" min="500" max="2500" step="10"
-                                       disabled={controlsDisabled} />
-                            </div>
-                        </div>
-                        <div class="apply-row">
-                            <button class="small primary" disabled={controlsDisabled}
-                                    on:click={applyYawConfig}>Apply Yaw Config</button>
-                        </div>
-
-                        <div class="subsection-inline">
-                            <h4>Yaw Input</h4>
-                            <div class="slider-row">
-                                <input type="range" bind:value={yawPosition_us} min="1000" max="2000" step="10"
-                                       class="slider wide" disabled={controlsDisabled} />
-                                <span class="slider-val">{yawPosition_us} µs</span>
-                                <button class="small primary" disabled={controlsDisabled}
-                                        on:click={setYaw}>Set</button>
-                                <button class="small" disabled={controlsDisabled}
-                                        on:click={resetYawPosition}>Reset</button>
-                            </div>
-                        </div>
-                    </section>
-                    {/if}
                 </div>
 
                 <!-- ═══════════  RIGHT COLUMN  ═══════════ -->
@@ -537,16 +885,58 @@
                                         on:click={() => gearReset(id)} title="Clear error">↻ Reset</button>
                             </div>
 
-                            <!-- Gear Config -->
+                            <!-- Retract Motor -->
                             <div class="subsection-inline">
-                                <h4>Configuration</h4>
-                                <div class="form-grid cols-2">
-                                    <div class="form-field">
-                                        <span class="field-label">Stall mA</span>
-                                        <input type="number" bind:value={gearConfigs[id].stallCurrent_mA}
-                                               class="field-input" min="50" max="5000" step="50"
-                                               disabled={controlsDisabled} />
+                                <h4>Retract Motor</h4>
+
+                                <!-- Live current + calibrated stall readout -->
+                                <div class="motor-readout">
+                                    <div class="readout-item">
+                                        <span class="readout-label">Current</span>
+                                        <span class="readout-value" class:readout-active={calibStates[id] === 'calibrating'}>
+                                            {liveCurrent_mA[id]} <span class="readout-unit">mA</span>
+                                        </span>
                                     </div>
+                                    <div class="readout-item">
+                                        <span class="readout-label">Stall Threshold</span>
+                                        <span class="readout-value" class:readout-ok={gearConfigs[id].stallCurrent_mA > 0}
+                                              class:readout-dim={gearConfigs[id].stallCurrent_mA === 0}>
+                                            {gearConfigs[id].stallCurrent_mA > 0 ? gearConfigs[id].stallCurrent_mA : '—'}
+                                            {#if gearConfigs[id].stallCurrent_mA > 0}<span class="readout-unit">mA</span>{/if}
+                                        </span>
+                                    </div>
+                                    {#if calibStates[id] === 'calibrating'}
+                                        <div class="readout-item">
+                                            <span class="readout-label">Phase</span>
+                                            <span class="readout-value readout-active">
+                                                {calibPhases[id] === 'clear' ? '⟳ Clearing' : calibPhases[id] === 'deploy' ? '▼ Deploying' : calibPhases[id] === 'settle' ? '◇ Settling' : '—'}
+                                            </span>
+                                        </div>
+                                    {/if}
+                                    {#if calibStates[id] === 'error'}
+                                        <div class="readout-item readout-error">
+                                            <span class="readout-label">Error</span>
+                                            <span class="readout-value">{calibErrors[id] || 'Calibration failed'}</span>
+                                        </div>
+                                    {/if}
+                                </div>
+
+                                <!-- Current bar (visual gauge) -->
+                                {#if calibStates[id] === 'calibrating' || liveCurrent_mA[id] > 0}
+                                <div class="current-bar-track">
+                                    <div class="current-bar-fill"
+                                         class:current-stall={gearConfigs[id].stallCurrent_mA > 0 && liveCurrent_mA[id] >= gearConfigs[id].stallCurrent_mA}
+                                         style="width: {Math.min(100, (liveCurrent_mA[id] / Math.max(gearConfigs[id].stallCurrent_mA || 2000, 500)) * 100)}%">
+                                    </div>
+                                    {#if gearConfigs[id].stallCurrent_mA > 0}
+                                    <div class="current-bar-threshold"
+                                         style="left: {Math.min(100, (gearConfigs[id].stallCurrent_mA / Math.max(gearConfigs[id].stallCurrent_mA || 2000, 500)) * 100)}%">
+                                    </div>
+                                    {/if}
+                                </div>
+                                {/if}
+
+                                <div class="form-grid cols-2" style="margin-top: 8px">
                                     <div class="form-field">
                                         <span class="field-label">Timeout ms</span>
                                         <input type="number" bind:value={gearConfigs[id].timeout_ms}
@@ -560,9 +950,10 @@
                                 </div>
                             </div>
 
-                            <!-- Door Servo Config -->
+                            <!-- Door Positions (shown only when door servos assigned) -->
+                            {#if gearHasDoors[id]}
                             <div class="subsection-inline">
-                                <h4>Door Servos</h4>
+                                <h4>Door Positions <span class="door-count">{doorPinsPerGear[id]} servo{doorPinsPerGear[id] > 1 ? 's' : ''}</span></h4>
                                 <div class="form-grid cols-2">
                                     <div class="form-field">
                                         <span class="field-label">Door A Open µs</span>
@@ -576,6 +967,7 @@
                                                class="field-input" min="500" max="2500" step="10"
                                                disabled={controlsDisabled} />
                                     </div>
+                                    {#if doorPinsPerGear[id] > 1}
                                     <div class="form-field">
                                         <span class="field-label">Door B Open µs</span>
                                         <input type="number" bind:value={doorConfigs[id].open1_us}
@@ -588,10 +980,18 @@
                                                class="field-input" min="500" max="2500" step="10"
                                                disabled={controlsDisabled} />
                                     </div>
+                                    {/if}
                                 </div>
+                                <div class="apply-row">
+                                    <button class="small" disabled={controlsDisabled}
+                                            on:click={() => applyDoorConfig(id)}>Apply Positions</button>
+                                </div>
+                            </div>
 
-                                <!-- Door Mode -->
-                                <div class="form-grid cols-3" style="margin-top: 8px;">
+                            <!-- Door Sequencing -->
+                            <div class="subsection-inline">
+                                <h4>Door Sequencing</h4>
+                                <div class="form-grid cols-3">
                                     <div class="form-field">
                                         <span class="field-label">Pre-Deploy</span>
                                         <select bind:value={doorModes[id].preDeployMode}
@@ -617,14 +1017,16 @@
                                                disabled={controlsDisabled} />
                                     </div>
                                 </div>
-
                                 <div class="apply-row">
-                                    <button class="small" disabled={controlsDisabled}
-                                            on:click={() => applyDoorConfig(id)}>Apply Positions</button>
                                     <button class="small" disabled={controlsDisabled}
                                             on:click={() => applyDoorMode(id)}>Apply Mode</button>
                                 </div>
                             </div>
+                            {:else}
+                            <div class="no-doors-hint">No door servos assigned to this gear in Pin Mapping</div>
+                            {/if}
+
+
                         </section>
                     {/each}
 
@@ -785,27 +1187,6 @@
         flex-wrap: wrap;
     }
 
-    /* ─── Gear Picker Chips ─── */
-    .gear-picker { display: flex; gap: 4px; }
-
-    .chip {
-        font-size: 11px;
-        font-weight: 600;
-        padding: 2px 10px;
-        border-radius: 3px;
-        background: var(--bg-input);
-        border: 1px solid var(--border);
-        color: var(--text-dim);
-        cursor: pointer;
-        transition: all 0.15s;
-    }
-
-    .chip.active {
-        background: color-mix(in srgb, var(--accent) 20%, var(--bg-raised));
-        color: var(--accent);
-        border-color: var(--accent);
-    }
-
     /* ─── Calibration ─── */
     .calib-settings {
         padding: 10px 12px;
@@ -832,8 +1213,6 @@
         align-items: center;
         gap: 6px;
     }
-
-    .save-btn { margin-left: auto; }
 
     .calib-list {
         display: flex;
@@ -969,8 +1348,214 @@
         animation: pulse 0.8s ease-in-out infinite;
     }
 
+    /* ─── Pin Mapping ─── */
+    .pin-map-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .pin-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 8px;
+        border-radius: 4px;
+        background: var(--bg-raised);
+        border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+        transition: opacity 0.2s;
+    }
+
+    .pin-row.pin-unused { opacity: 0.45; }
+
+    .pin-id {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-width: 40px;
+        flex-shrink: 0;
+    }
+
+    .pin-slot {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--text);
+        font-family: var(--font-mono);
+    }
+
+    .pin-gpio {
+        font-size: 9px;
+        color: var(--text-dim);
+        font-family: var(--font-mono);
+    }
+
+    .pin-role-select {
+        width: 120px;
+        flex-shrink: 0;
+    }
+
+    .pin-params {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 1;
+        min-width: 0;
+    }
+
+    .pin-param {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .pin-param-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--text-dim);
+        font-family: var(--font-mono);
+        white-space: nowrap;
+    }
+
+    .pin-param-input {
+        width: 120px !important;
+        min-width: 60px;
+    }
+
+    .pin-param-hint {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--text);
+        font-family: var(--font-mono);
+    }
+
+    .pin-param-hint.dim {
+        color: var(--text-dim);
+    }
+
+    .pin-map-hint {
+        margin-top: 8px;
+        padding: 6px 10px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 600;
+    }
+
+    .pin-map-hint.warn {
+        color: var(--warning, #d7ba7d);
+        background: color-mix(in srgb, var(--warning, #d7ba7d) 8%, var(--bg-surface));
+        border: 1px solid color-mix(in srgb, var(--warning, #d7ba7d) 25%, transparent);
+    }
+
+    /* ─── Door count badge / no-doors hint ─── */
+    .door-count {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--text-dim);
+        margin-left: 4px;
+    }
+
+    .no-doors-hint {
+        padding: 8px 12px;
+        font-size: 11px;
+        color: var(--text-dim);
+        font-style: italic;
+        text-align: center;
+        border: 1px dashed color-mix(in srgb, var(--border) 50%, transparent);
+        border-radius: 4px;
+        margin-top: 4px;
+    }
+
     /* ─── Form Overrides ─── */
     .form-grid { grid-template-columns: 1fr 1fr; }
+
+    /* ─── Motor Readout (live current + stall threshold) ─── */
+    .motor-readout {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        padding: 8px 10px;
+        background: var(--bg-raised);
+        border-radius: 4px;
+        border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+        margin-bottom: 8px;
+    }
+
+    .readout-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .readout-item.readout-error {
+        color: var(--error);
+    }
+
+    .readout-label {
+        font-size: 9px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--text-dim);
+        font-family: var(--font-mono);
+    }
+
+    .readout-value {
+        font-size: 16px;
+        font-weight: 700;
+        font-family: var(--font-mono);
+        color: var(--text);
+    }
+
+    .readout-value.readout-active {
+        color: var(--accent);
+    }
+
+    .readout-value.readout-ok {
+        color: var(--ok, #4ec9b0);
+    }
+
+    .readout-value.readout-dim {
+        color: var(--text-dim);
+        font-size: 14px;
+    }
+
+    .readout-unit {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-dim);
+    }
+
+    /* ─── Current bar gauge ─── */
+    .current-bar-track {
+        position: relative;
+        height: 4px;
+        background: var(--bg-input);
+        border-radius: 2px;
+        overflow: visible;
+        margin-bottom: 4px;
+    }
+
+    .current-bar-fill {
+        height: 100%;
+        background: var(--accent);
+        border-radius: 2px;
+        transition: width 0.3s;
+        min-width: 1px;
+    }
+
+    .current-bar-fill.current-stall {
+        background: var(--error);
+    }
+
+    .current-bar-threshold {
+        position: absolute;
+        top: -2px;
+        width: 2px;
+        height: 8px;
+        background: var(--ok, #4ec9b0);
+        border-radius: 1px;
+        transform: translateX(-1px);
+    }
 
     .unit {
         font-size: 11px;
@@ -1033,8 +1618,6 @@
         color: var(--accent);
     }
 
-    .status-btn { padding: 4px 12px; }
-
     /* ─── Title Actions ─── */
     .title-actions {
         display: flex;
@@ -1053,5 +1636,14 @@
         color: var(--warning, #d7ba7d);
         background: color-mix(in srgb, var(--warning, #d7ba7d) 8%, var(--bg-surface));
         border: 1px solid color-mix(in srgb, var(--warning, #d7ba7d) 30%, transparent);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+    .direct-warning-text {
+        flex: 1;
+    }
+    .direct-warning button {
+        flex-shrink: 0;
     }
 </style>

@@ -81,6 +81,7 @@
             case 'info': return '<span class="c-cyan">ℹ</span>'
             case 'warning': return '<span class="c-yellow">⚠</span>'
             case 'command': return '<span class="c-gray">›</span>'
+            case 'debug': return '<span class="c-gray">⏵</span>'
             default: return ''
         }
     }
@@ -216,5 +217,10 @@
         font-family: var(--font-mono);
         font-size: 13px;
         caret-color: var(--accent);
+    }
+
+    .console-debug {
+        opacity: 0.65;
+        font-style: italic;
     }
 </style>

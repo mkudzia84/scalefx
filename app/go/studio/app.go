@@ -4,6 +4,10 @@ import (
 	"context"
 	"scalefx/engine"
 	"scalefx/engine/handlers"
+	"scalefx/engine/handlers/gearcontrol"
+	"scalefx/engine/handlers/gunfx"
+	"scalefx/engine/handlers/hubfx"
+	"scalefx/engine/handlers/lightfx"
 	"scalefx/firmware"
 	"scalefx/protocol"
 	"scalefx/protocol/core"
@@ -42,11 +46,16 @@ type SlaveInfo struct {
 	Ready     bool   `json:"ready"`
 }
 
+// GearControl event payloads are defined in engine/handlers/gearcontrol/types.go
+// (StatusBroadcast, CalibStatus, SeqStatus, DoorStatus). We emit those directly
+// as Wails events — never re-decode here. See CLAUDE.md Rule 19.
+
 // ─── App struct ───
 
 type App struct {
 	ctx context.Context
 	eng *engine.Engine
+	reg *handlers.Registry
 	out *GUIOutput
 	mu  sync.Mutex
 
@@ -57,10 +66,10 @@ type App struct {
 func NewApp() *App {
 	out := &GUIOutput{}
 	eng := engine.NewEngine(out, "", false)
-	handlers.RegisterDefaults(eng)
+	reg := handlers.RegisterDefaults(eng)
 	eng.PromptSelectPort = func(ports []string) string { return "" }
 
-	return &App{eng: eng, out: out}
+	return &App{eng: eng, reg: reg, out: out}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -69,6 +78,35 @@ func (a *App) startup(ctx context.Context) {
 	a.eng.OnDisconnect = func() {
 		wailsRT.EventsEmit(ctx, "connection:changed", a.getConnectionInfo())
 	}
+
+	// Typed event listeners — installed on handlers from the registry.
+	// Each board package owns its wire→struct decoding; we only forward the
+	// decoded structs to the frontend as Wails events. See CLAUDE.md Rule 19.
+	a.reg.GearControl.OnStatusBroadcast.Add(func(s *gearcontrol.StatusBroadcast) {
+		wailsRT.EventsEmit(a.ctx, "gearcontrol:status", s)
+	})
+	a.reg.GearControl.OnCalibStatus.Add(func(c *gearcontrol.CalibStatus) {
+		wailsRT.EventsEmit(a.ctx, "gearcontrol:calib", c)
+	})
+	a.reg.GearControl.OnSeqStatus.Add(func(s *gearcontrol.SeqStatus) {
+		wailsRT.EventsEmit(a.ctx, "gearcontrol:seq", s)
+	})
+	a.reg.GearControl.OnDoorStatus.Add(func(d *gearcontrol.DoorStatus) {
+		wailsRT.EventsEmit(a.ctx, "gearcontrol:door", d)
+	})
+	a.reg.GunFX.OnStatusBroadcast.Add(func(s *gunfx.StatusBroadcast) {
+		wailsRT.EventsEmit(a.ctx, "gunfx:status", s)
+	})
+	a.reg.LightFX.OnStatusBroadcast.Add(func(s *lightfx.StatusBroadcast) {
+		wailsRT.EventsEmit(a.ctx, "lightfx:status", s)
+	})
+	a.reg.LightFX.OnLandingLightStatus.Add(func(s *lightfx.LandingLightStatus) {
+		wailsRT.EventsEmit(a.ctx, "lightfx:landing", s)
+	})
+	a.reg.HubFX.OnStatusBroadcast.Add(func(s *hubfx.StatusBroadcast) {
+		wailsRT.EventsEmit(a.ctx, "hubfx:status", s)
+	})
+
 	a.startPortWatcher()
 }
 
@@ -136,9 +174,9 @@ func (a *App) Connect(port string) ConnectionInfo {
 
 	a.eng.Dispatch("connect " + port)
 
-	// Auto-init slave controllers (HubFX auto-inits on boot, handled in engine)
+	// Auto-init with verbose flag for live status broadcast
 	if a.eng.Conn != nil && !a.eng.Initialized && a.eng.ControllerType != "" {
-		a.eng.Dispatch("init")
+		a.eng.Dispatch("init direct verbose")
 	}
 
 	info := a.getConnectionInfo()
@@ -628,3 +666,4 @@ func (a *App) runReleaseFlash(controller string, tag string, port string, skipVe
 		a.reconnectAfterFlash(savedPort)
 	}
 }
+

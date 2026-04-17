@@ -57,6 +57,13 @@ func (g *GUIOutput) Printf(format string, args ...any) {
 	}
 }
 
+func (g *GUIOutput) Debug(format string, args ...any) {
+	if !engine.DebugBuild {
+		return
+	}
+	g.emit("debug", escapeHTML(fmt.Sprintf(format, args...)))
+}
+
 func (g *GUIOutput) Println(a ...any) {
 	text := fmt.Sprintln(a...)
 	g.emit("output", text)
