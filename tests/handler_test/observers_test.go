@@ -20,6 +20,7 @@ func (c *captureOutput) OK(format string, args ...any)      {}
 func (c *captureOutput) Error(format string, args ...any)   {}
 func (c *captureOutput) Info(format string, args ...any)    {}
 func (c *captureOutput) Warning(format string, args ...any) {}
+func (c *captureOutput) Debug(format string, args ...any)   {}
 func (c *captureOutput) Printf(format string, args ...any) {
 	fmt.Fprintf(&c.buf, format, args...)
 }
