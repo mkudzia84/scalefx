@@ -6,6 +6,7 @@ package engine
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -36,6 +37,10 @@ type Output interface {
 	Error(format string, args ...any)
 	Info(format string, args ...any)
 	Warning(format string, args ...any)
+
+	// Debug emits engine-level trace output. Bodies are compile-time gated by
+	// DebugBuild — release builds compile to a no-op.
+	Debug(format string, args ...any)
 
 	// Printf-style raw output (for parsers and formatted sections)
 	Printf(format string, args ...any)
@@ -88,6 +93,14 @@ func (t TerminalOutput) Warning(format string, args ...any) {
 
 func (t TerminalOutput) Printf(format string, args ...any) {
 	fmt.Printf(format, args...)
+}
+
+func (t TerminalOutput) Debug(format string, args ...any) {
+	if !DebugBuild {
+		return
+	}
+	msg := fmt.Sprintf(format, args...)
+	fmt.Fprintf(os.Stderr, "%s\n", t.C(ColorGray, "[dbg] "+msg))
 }
 
 func (t TerminalOutput) Println(a ...any) {

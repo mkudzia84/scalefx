@@ -28,7 +28,7 @@ type Engine struct {
 
 	// Command groups (populated on first call to GetGroups)
 	groups   []*CmdGroup
-	flatCmds map[string]flatEntry
+	flatCmds map[string][]flatEntry
 
 	// Listener control
 	listenerRunning atomic.Bool
@@ -37,12 +37,13 @@ type Engine struct {
 	KeepaliveInterval time.Duration
 
 	// Callbacks for external consumers (GUI)
-	OnDisconnect   func()
+	OnDisconnect     func()
 	PromptSelectPort func(ports []string) string // returns selected port or "" to cancel
 
 	// Registries for modular handler dispatch
-	statusParsers map[string]func([]byte) // key: controller type (e.g., core.CtrlGunFX)
-	asyncHandlers map[protocol.PacketType]func([]byte) // key: packet type
+	statusParsers          map[string]func([]byte)                  // key: controller type (e.g., core.CtrlGunFX)
+	statusBroadcastParsers map[string]func([]byte)                  // key: controller type — silent parsers for broadcast
+	asyncHandlers          map[protocol.PacketType]func([]byte)     // key: packet type
 }
 
 // NewEngine creates a new engine with the given output backend.
@@ -82,6 +83,46 @@ func (e *Engine) RegisterStatusParser(controllerType string, parser func([]byte)
 	e.statusParsers[controllerType] = parser
 }
 
+// RegisterStatusBroadcastParser registers a parser for periodic STATUS_BROADCAST
+// packets from a given controller type. Unlike statusParsers (which print to console),
+// broadcast parsers are called silently and should fire OnStatusBroadcast.
+func (e *Engine) RegisterStatusBroadcastParser(controllerType string, parser func([]byte)) {
+	if e.statusBroadcastParsers == nil {
+		e.statusBroadcastParsers = make(map[string]func([]byte))
+	}
+	e.statusBroadcastParsers[controllerType] = parser
+}
+
+// HandleStatusBroadcast routes a STATUS_BROADCAST payload to the appropriate
+// controller's registered broadcast parser. Each board handler registers a
+// silent parser in its Register() that decodes the payload and fires the
+// handler's typed On*Broadcast listener.
+func (e *Engine) HandleStatusBroadcast(source byte, data []byte) {
+	ctrlType := sourceToControllerType(source)
+	if ctrlType == "" {
+		return
+	}
+	if parser, ok := e.statusBroadcastParsers[ctrlType]; ok {
+		parser(data)
+	}
+}
+
+// sourceToControllerType maps StatusUpdateSource bytes to controller type strings.
+func sourceToControllerType(source byte) string {
+	switch source {
+	case core.StatusUpdateSourceGunFX:
+		return core.CtrlGunFX
+	case core.StatusUpdateSourceLightFX:
+		return core.CtrlLightFX
+	case core.StatusUpdateSourceGearControl:
+		return core.CtrlGearControl
+	case core.StatusUpdateSourceHubFX:
+		return core.CtrlHubFX
+	default:
+		return ""
+	}
+}
+
 // RegisterAsyncHandler registers a handler for unsolicited packet types.
 // Called from handler Register() functions to extend HandleAsyncPacket dispatch.
 func (e *Engine) RegisterAsyncHandler(packetType protocol.PacketType, handler func([]byte)) {
@@ -92,21 +133,45 @@ func (e *Engine) RegisterAsyncHandler(packetType protocol.PacketType, handler fu
 }
 
 // FlatCommands returns all commands across all groups, keyed by command name.
-func (e *Engine) FlatCommands() map[string]flatEntry {
+// Multiple entries per name occur when controller groups share a name
+// (e.g. both LightFX and GearControl define "reset"). Use resolveCommand to
+// pick the right entry based on the currently connected controller.
+func (e *Engine) FlatCommands() map[string][]flatEntry {
 	if e.flatCmds != nil {
 		return e.flatCmds
 	}
-	cmds := make(map[string]flatEntry)
+	cmds := make(map[string][]flatEntry)
 	for _, g := range e.GetGroups() {
 		for name, entry := range g.Commands {
-			cmds[name] = flatEntry{entry, g.Controller}
+			cmds[name] = append(cmds[name], flatEntry{entry, g.Controller})
 		}
 	}
 	// Built-in aliases
-	cmds["help"] = flatEntry{CmdEntry{e.CmdHelp, "help [command]", "Show help", false}, ""}
-	cmds["?"] = flatEntry{CmdEntry{e.CmdHelp, "?", "Show help", false}, ""}
+	cmds["help"] = []flatEntry{{CmdEntry{e.CmdHelp, "help [command]", "Show help", false}, ""}}
+	cmds["?"] = []flatEntry{{CmdEntry{e.CmdHelp, "?", "Show help", false}, ""}}
 	e.flatCmds = cmds
 	return cmds
+}
+
+// resolveCommand selects the best entry for a command name based on the
+// currently connected controller:
+//  1. Entry whose controller matches e.ControllerType.
+//  2. Universal entry (controller == "").
+//  3. First entry (deterministic — caller still validates controller match).
+func (e *Engine) resolveCommand(entries []flatEntry) flatEntry {
+	if e.ControllerType != "" {
+		for _, en := range entries {
+			if en.controller == e.ControllerType {
+				return en
+			}
+		}
+	}
+	for _, en := range entries {
+		if en.controller == "" {
+			return en
+		}
+	}
+	return entries[0]
 }
 
 // ─── Command Dispatch ───
@@ -121,7 +186,7 @@ func (e *Engine) Dispatch(line string) {
 	args := parts[1:]
 
 	cmds := e.FlatCommands()
-	entry, ok := cmds[cmd]
+	entries, ok := cmds[cmd]
 	if !ok {
 		// Try prefix match
 		var matches []string
@@ -131,7 +196,7 @@ func (e *Engine) Dispatch(line string) {
 			}
 		}
 		if len(matches) == 1 {
-			entry = cmds[matches[0]]
+			entries = cmds[matches[0]]
 			ok = true
 		} else if len(matches) > 1 {
 			e.Out.Error("Ambiguous command '%s'. Matches: %s", cmd, strings.Join(matches, ", "))
@@ -141,6 +206,7 @@ func (e *Engine) Dispatch(line string) {
 			return
 		}
 	}
+	entry := e.resolveCommand(entries)
 
 	// Check connection
 	if entry.RequireInit || (entry.controller != "" && e.Conn == nil) {
@@ -150,17 +216,20 @@ func (e *Engine) Dispatch(line string) {
 		}
 	}
 
+	// Check controller type mismatch — bail without dispatching, otherwise we
+	// would send a packet meant for one controller to a different one.
+	if entry.controller != "" && e.ControllerType != "" && entry.controller != e.ControllerType {
+		e.Out.Error("Command '%s' is for %s but connected to %s",
+			cmd, ControllerLabels[entry.controller], ControllerLabels[e.ControllerType])
+		return
+	}
+
 	// Check init
 	if entry.RequireInit && !e.Initialized {
 		e.Out.Warning("Controller not initialized. Use 'init' first.")
 	}
 
-	// Check controller type mismatch
-	if entry.controller != "" && e.ControllerType != "" && entry.controller != e.ControllerType {
-		e.Out.Warning("Command '%s' is for %s but connected to %s",
-			cmd, ControllerLabels[entry.controller], ControllerLabels[e.ControllerType])
-	}
-
+	e.Out.Debug("dispatch: cmd=%q controller=%q args=%v", cmd, entry.controller, args)
 	entry.Handler(args)
 }
 
@@ -196,6 +265,10 @@ func (e *Engine) StopListenerLoop() {
 
 // HandleAsyncPacket handles unsolicited packets from the device.
 func (e *Engine) HandleAsyncPacket(resp *protocol.Response) {
+	if DebugBuild {
+		e.Out.Debug("async: type=%s(0x%02X) tag=%d payload_len=%d",
+			protocol.PacketTypeName(resp.PacketType), byte(resp.PacketType), resp.Tag, len(resp.Payload))
+	}
 	switch resp.PacketType {
 	case core.LogMessage:
 		e.ParseLogMessage(resp.Payload)
@@ -259,8 +332,23 @@ func (e *Engine) CmdHelp(args []string) {
 	// Single command help
 	if len(args) > 0 {
 		cmd := strings.ToLower(args[0])
-		if entry, ok := cmds[cmd]; ok {
-			e.Out.Printf("  %s — %s\n", entry.Usage, entry.Description)
+		if entries, ok := cmds[cmd]; ok && len(entries) > 0 {
+			if len(entries) == 1 {
+				e.Out.Printf("  %s — %s\n", entries[0].Usage, entries[0].Description)
+				return
+			}
+			e.Out.Printf("  '%s' has %d variants:\n", cmd, len(entries))
+			for _, en := range entries {
+				label := "Universal"
+				if en.controller != "" {
+					if l, ok := ControllerLabels[en.controller]; ok {
+						label = l
+					}
+				}
+				e.Out.Printf("    %s — %s %s\n",
+					en.Usage, en.Description,
+					e.Out.C(ColorGray, "("+label+")"))
+			}
 			return
 		}
 		e.Out.Error("Unknown command: %s", cmd)
