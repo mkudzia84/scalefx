@@ -28,7 +28,9 @@
 #include <server/sfx_server.h>
 #include <power/battery_monitor.h>
 #include <storage/flash.h>
+#include <storage/storage_config_bridge.h>
 #include <config/config_store.h>
+#include <server/config_server.h>
 #include "config/lightfx_config.h"
 #include "landing_light.h"
 
@@ -93,9 +95,9 @@ SfxServer server;
 LightFxServer lightfxServer;
 BatteryMonitor batteryMonitor;
 
-// Config store (flash-backed YAML config)
+// Config server (handles CONFIG_RELOAD/STATUS/SAVE protocol + owns ConfigStore)
 using LightFxConfigStore = ConfigStore<LightFxConfigSchema>;
-LightFxConfigStore configStore;
+ConfigServerT<LightFxConfigStore> configServer;
 
 // ============================================================================
 //  STATE VARIABLES
@@ -275,46 +277,6 @@ void setupLightFxCallbacks() {
     
 }
 
-// ============================================================================
-//  FLASH FILE I/O BRIDGES (for ConfigStore)
-// ============================================================================
-
-static int flashReadFile(const char* path, char* buffer, size_t maxLen) {
-    FlashModule& flash = FlashModule::instance();
-    if (!flash.isInitialized()) return -1;
-
-    flash.lock();
-    LFSFile file;
-    uint8_t err = flash.openRead(path, file);
-    if (err != 0) {
-        flash.unlock();
-        return -1;
-    }
-
-    int bytesRead = file.read((uint8_t*)buffer, maxLen);
-    file.close();
-    flash.unlock();
-    return bytesRead;
-}
-
-static int flashWriteFile(const char* path, const char* data, size_t len) {
-    FlashModule& flash = FlashModule::instance();
-    if (!flash.isInitialized()) return -1;
-
-    flash.lock();
-    LFSFile file;
-    uint8_t err = flash.openWrite(path, file, true);
-    if (err != 0) {
-        flash.unlock();
-        return -1;
-    }
-
-    int written = file.write((const uint8_t*)data, len);
-    file.close();
-    flash.unlock();
-    return written;
-}
-
 /** @brief Initialize flash and load config (if present). */
 static void initFlashAndConfig() {
     FlashModule& flash = FlashModule::instance();
@@ -325,17 +287,17 @@ static void initFlashAndConfig() {
                      (unsigned long)info.usedBytes, (unsigned long)info.totalBytes);
 
         // Wire config store to flash I/O
-        configStore.setFileReader(flashReadFile);
-        configStore.setFileWriter(flashWriteFile);
+        wireConfigStore<FlashModule>(configServer.store());
+
+        // Callback fires after protocol-triggered config reload
+        configServer.onReloaded([](const LightFxConfig&) {
+            // TODO: Apply config fields to hardware when schema has real fields
+            SFX_LOG_INFO("Config reloaded via protocol");
+        });
 
         // Try loading config (silent if file doesn't exist)
-        auto result = configStore.loadFromFile();
-        if (result.ok) {
-            SFX_LOG_INFO("Config loaded from flash");
+        if (configServer.loadConfig()) {
             server.markConfigLoaded();  // IDLE → STANDALONE
-            // TODO: Apply config fields to hardware when schema has real fields
-        } else if (result.parsed) {
-            SFX_LOG_WARN("Config validation failed: %s", result.error);
         }
         // If file doesn't exist, defaults are used — that's fine
     } else {
@@ -421,6 +383,10 @@ void setup() {
         return 24;
     });
     
+    // Register config server (handles CONFIG_RELOAD/STATUS/SAVE)
+    configServer.begin(&Serial);
+    server.addModuleHandler(&configServer);
+
     // Finalize router (core handler + LightFX handler)
     server.addModuleHandler(&lightfxServer);
 }

@@ -85,6 +85,7 @@
 // Storage (LittleFS flash + SD_MMC SDIO)
 #include <storage/flash.h>
 #include <storage/sd_card.h>
+#include <storage/storage_config_bridge.h>
 #include <server/storage_server.h>
 #ifdef FEATURE_USB_HOST
 #include "protocol/hubfx_usb_server.h"
@@ -537,56 +538,6 @@ HubFxConfigServer configServer;
 EngineServer engineServer;
 #endif
 
-// ============================================================================
-// Flash File I/O Bridges (for ConfigStore)
-// ============================================================================
-
-#ifdef FEATURE_CONFIG
-/**
- * @brief Read a file from onboard flash (LittleFS) into a buffer.
- * @return Bytes read, or -1 on error.
- */
-static int flashReadFile(const char* path, char* buffer, size_t maxLen) {
-    FlashModule& flash = FlashModule::instance();
-    if (!flash.isInitialized()) return -1;
-
-    flash.lock();
-    LFSFile file;
-    uint8_t err = flash.openRead(path, file);
-    if (err != 0) {    // FlashError::OK == 0
-        flash.unlock();
-        return -1;
-    }
-
-    int bytesRead = file.read((uint8_t*)buffer, maxLen);
-    file.close();
-    flash.unlock();
-    return bytesRead;
-}
-
-/**
- * @brief Write a buffer to a file on onboard flash (LittleFS).
- * @return Bytes written, or -1 on error.
- */
-static int flashWriteFile(const char* path, const char* data, size_t len) {
-    FlashModule& flash = FlashModule::instance();
-    if (!flash.isInitialized()) return -1;
-
-    flash.lock();
-    LFSFile file;
-    uint8_t err = flash.openWrite(path, file, true);  // truncate
-    if (err != 0) {
-        flash.unlock();
-        return -1;
-    }
-
-    int written = file.write((const uint8_t*)data, len);
-    file.close();
-    flash.unlock();
-    return written;
-}
-#endif // FEATURE_CONFIG
-
 // Typed slave clients (file-scope, registered with SlaveManager via addSlave)
 #ifdef FEATURE_USB_HOST
 static GunFxClient gunfxClient;
@@ -638,9 +589,7 @@ static void initStorage() {
 /** @brief Configure config store with flash I/O and load initial config. */
 #ifdef FEATURE_CONFIG
 static void initConfig() {
-    auto& store = configServer.store();
-    store.setFileReader(flashReadFile);
-    store.setFileWriter(flashWriteFile);
+    wireConfigStore<FlashModule>(configServer.store());
 
     // Callback fires after every successful config load/reload
     store.onLoaded([](const HubFxConfig& cfg) {
