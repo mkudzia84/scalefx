@@ -975,6 +975,38 @@ When the user asks to publish/release firmware, the agent MUST:
 4. **Mark breaking changes prominently** with ⚠️ and explain the migration path
 5. **Keep notes concise** — 5-15 bullet points typical for a minor release
 
+### 23. Commit After Significant Changes, Grouped by Functionality (MANDATORY)
+
+**After completing any significant change, create commit(s) grouped by functionality** before moving on. Do not let large multi-feature diffs accumulate in the working tree.
+
+**What counts as "significant":**
+- A protocol/wire-format change (new packet, new payload field, new error code)
+- A new feature wired end-to-end (firmware → Go protocol → API → CLI/Studio)
+- A refactor that touches more than one controller or shared lib subsystem
+- A version bump (`FIRMWARE_VERSION`) — always commit alongside the change that motivated it
+- A docs update tied to a code change (Rule 0 — same commit, not a follow-up)
+
+**Group by functionality, not by file or by chronological order:**
+- Each commit should be one cohesive idea — readable on its own, revertible without orphaning related changes
+- Don't bundle unrelated work ("battery refactor + flash CLI fix" → two commits)
+- Don't split one logical change across commits (firmware + Go mirror + docs for the same protocol addition → ONE commit, per Rule 1)
+- If a change spans multiple subsystems but is one feature (e.g. add a command across .h/.ino/.go/.md), keep it as one commit — the protocol-mirror invariant lives in a single revision
+
+**Examples:**
+- ✅ `feat(battery): policy-based BatteryServerT + core 0xEE BATTERY_CONFIG` (firmware + Go protocol + API + CLI handler + docs)
+- ✅ `refactor(hubfx): hardcode INA226 channel, drop battery YAML section` (separate commit — different concern)
+- ❌ `wip: lots of changes` (not specific, not grouped)
+- ❌ `feat: battery refactor` followed by `feat: add Go mirror for battery` (split a single logical change — breaks Rule 1's mirror invariant for the in-between revision)
+
+**Workflow:**
+1. Verify the change builds and (where applicable) the relevant tests pass.
+2. Run `git status` + `git diff` to see what's pending.
+3. Mentally partition the diff into functionality groups.
+4. For each group: stage specific files (not `git add -A` — see git safety in CLAUDE.md), then commit with a descriptive message following repo style (`feat(scope): ...`, `fix(scope): ...`, `refactor(scope): ...`).
+5. Confirm with `git log --oneline -N` that the commits read as a coherent story.
+
+**The agent must do this proactively after finishing significant work** — do not wait for the user to ask. If the user explicitly says "don't commit yet" or "let me review first", honor that.
+
 ## Key Architecture Patterns
 
 ### Client-Server Topology

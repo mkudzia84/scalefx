@@ -1,6 +1,6 @@
 # ScaleFX — Claude Code Guide
 
-Authoritative rulebook: [.github/copilot-instructions.md](.github/copilot-instructions.md) (1095 lines, 22 rules).
+Authoritative rulebook: [.github/copilot-instructions.md](.github/copilot-instructions.md) (23 rules).
 Detailed workflows: [instructions/](instructions/) — numbered guides (`01-ARCHITECTURE.md`, `03-PROTOCOL-EXTENSION.md`, `04-CHANGE-PROPAGATION.md`, `05-BUILD-AND-FLASH.md`, …).
 
 This file is a compact index for Claude. When a rule below conflicts with copilot-instructions.md, that file wins — update this one to match.
@@ -88,6 +88,7 @@ After any C++ protocol change: `cd app/go && go build ./cli/` — compiling the 
     Never re-decode packets in `studio/app.go` or `cli/*`. Studio forwards decoded structs as Wails events from `handlers.RegisterDefaults(eng) → *handlers.Registry`.
 21. **No backward-compatibility scaffolding in refactors.** When restructuring existing code, delete dead fields / removed flags / "pre-vN" fallbacks outright. Rule 11 (append-only wire-format extension) still applies — that's protocol compat across firmware versions, not code compat across git revisions. Do not invent `XxxFieldPresent` booleans, keep deleted helpers as thin wrappers, or leave `// removed for back-compat` comments. One way to do it: the current way.
 22. **No thin wrappers.** If a method only decodes + fires an observer (or only calls another function), inline it at the call site. `parseXxxStatus` / `handleXxxBroadcast` that wrapped a decode+Fire are banned — use the closure form in `Register()` directly.
+23. **Commit after significant changes, grouped by functionality (Rule 23).** After any significant change (protocol/wire-format, end-to-end feature, multi-controller refactor, version bump, docs tied to code), proactively create commit(s) — one per cohesive idea. Don't bundle unrelated work; don't split a single logical change (firmware + Go mirror + docs = ONE commit per Rule 1). Honor "don't commit yet" if the user says it.
 
 ## Key architectural touchstones
 
