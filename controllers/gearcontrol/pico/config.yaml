@@ -1,0 +1,103 @@
+# =============================================================================
+# GearControl Configuration — 3-Gear Standalone Example
+# =============================================================================
+#
+# Pin-to-GPIO mapping (fixed by PCB):
+#   pin1 → GP1    pin5 → GP7
+#   pin2 → GP2    pin6 → GP8
+#   pin3 → GP3    pin7 → GP9
+#   pin4 → GP6
+#
+# This example: 3 retract channels, 4 door servos, 1 gear input,
+#               1 yaw input, 1 yaw output.
+#
+# Slave mode: same file but gear_input/yaw_input pins are ignored by
+#             firmware when board is in slave mode (HubFX sends commands).
+
+# --- Retract motor channels (INA226 stall detection) ---
+retracts:
+  - channel: 0
+    enabled: true
+    stall_current_mA: 500
+    timeout_ms: 60000
+  - channel: 1
+    enabled: true
+    stall_current_mA: 500
+    timeout_ms: 60000
+  - channel: 2
+    enabled: true
+    stall_current_mA: 500
+    timeout_ms: 60000
+
+# --- Pin role assignments ---
+# Roles: door | gear_input | yaw_input | yaw_output | unused
+pins:
+  # Gear 0 (nose): 2 door servos
+  - slot: pin1
+    role: door
+    channel: 0
+    min_us: 500
+    max_us: 2500
+    speed: 4000
+    reversed: false
+  - slot: pin2
+    role: door
+    channel: 0
+    min_us: 500
+    max_us: 2500
+    speed: 4000
+    reversed: false
+
+  # Gear 1 (left main): pin3 = gear input, pin4 = 1 door servo
+  - slot: pin3
+    role: gear_input
+    threshold_us: 1500
+  - slot: pin4
+    role: door
+    channel: 1
+    min_us: 500
+    max_us: 2500
+    speed: 4000
+    reversed: false
+
+  # Gear 2 (right main): pin5 = yaw input, pin6 = 1 door servo
+  - slot: pin5
+    role: yaw_input
+  - slot: pin6
+    role: door
+    channel: 2
+    min_us: 500
+    max_us: 2500
+    speed: 4000
+    reversed: false
+
+  # Yaw servo output
+  - slot: pin7
+    role: yaw_output
+    gear_id: 0
+    neutral_us: 1500
+    min_us: 1000
+    max_us: 2000
+
+# --- Door sequencing per retract channel ---
+# Modes: none | single | dual_sync | dual_delay | dual_seq
+door_modes:
+  - channel: 0
+    pre_deploy: dual_sync
+    post_deploy: none
+    delay_ms: 500
+  - channel: 1
+    pre_deploy: single
+    post_deploy: none
+    delay_ms: 0
+  - channel: 2
+    pre_deploy: single
+    post_deploy: none
+    delay_ms: 0
+
+# --- Battery monitoring ---
+battery:
+  enabled: false
+  auto_deploy: false
+  chemistry: lipo
+  cell_count: 0

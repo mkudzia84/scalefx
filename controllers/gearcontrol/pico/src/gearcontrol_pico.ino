@@ -55,13 +55,15 @@
 #include <power/battery_monitor.h>
 #include <server/sfx_server.h>
 #include <storage/flash.h>
+#include <storage/storage_config_bridge.h>
 #include <config/config_store.h>
+#include <server/config_server.h>
 #include "config/gearcontrol_config.h"
 #include "landing_gear.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "0.10.1"
-#define BUILD_NUMBER 66
+#define FIRMWARE_VERSION "0.11.0"
+#define BUILD_NUMBER 67
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -118,9 +120,9 @@ const uint8_t SERVO_ID_SPARE = 7;
 SfxServer server;
 GearControlServer gearControlServer;
 
-// Config store (flash-backed YAML config)
+// Config server (handles CONFIG_RELOAD/STATUS/SAVE protocol + owns ConfigStore)
 using GearControlConfigStore = ConfigStore<GearControlConfigSchema>;
-GearControlConfigStore configStore;
+ConfigServerT<GearControlConfigStore> configServer;
 
 // Landing gear modules (one per gear)
 LandingGear gears[3];
@@ -162,6 +164,7 @@ const uint8_t INA226_ADDR[3] = {
 void performSafeShutdown();
 void performSafeInit();
 uint8_t buildLedFlags();
+static void applyConfig(const GearControlConfig& cfg);
 
 // ============================================================================
 //  CONNECTION MANAGEMENT
@@ -235,46 +238,6 @@ uint8_t buildLedFlags() {
     return flags;
 }
 
-// ============================================================================
-//  FLASH FILE I/O BRIDGES (for ConfigStore)
-// ============================================================================
-
-static int flashReadFile(const char* path, char* buffer, size_t maxLen) {
-    FlashModule& flash = FlashModule::instance();
-    if (!flash.isInitialized()) return -1;
-
-    flash.lock();
-    LFSFile file;
-    uint8_t err = flash.openRead(path, file);
-    if (err != 0) {
-        flash.unlock();
-        return -1;
-    }
-
-    int bytesRead = file.read((uint8_t*)buffer, maxLen);
-    file.close();
-    flash.unlock();
-    return bytesRead;
-}
-
-static int flashWriteFile(const char* path, const char* data, size_t len) {
-    FlashModule& flash = FlashModule::instance();
-    if (!flash.isInitialized()) return -1;
-
-    flash.lock();
-    LFSFile file;
-    uint8_t err = flash.openWrite(path, file, true);
-    if (err != 0) {
-        flash.unlock();
-        return -1;
-    }
-
-    int written = file.write((const uint8_t*)data, len);
-    file.close();
-    flash.unlock();
-    return written;
-}
-
 /** @brief Initialize flash and load config (if present). */
 static void initFlashAndConfig() {
     FlashModule& flash = FlashModule::instance();
@@ -285,15 +248,14 @@ static void initFlashAndConfig() {
                      (unsigned long)info.usedBytes, (unsigned long)info.totalBytes);
 
         // Wire config store to flash I/O
-        configStore.setFileReader(flashReadFile);
-        configStore.setFileWriter(flashWriteFile);
+        wireConfigStore<FlashModule>(configServer.store());
 
         // Try loading config (silent if file doesn't exist)
-        auto result = configStore.loadFromFile();
+        auto result = configServer.store().loadFromFile();
         if (result.ok) {
             SFX_LOG_INFO("Config loaded from flash");
             server.markConfigLoaded();  // IDLE → STANDALONE
-            // TODO: Apply config fields to hardware when schema has real fields
+            applyConfig(configServer.store().data());
         } else if (result.parsed) {
             SFX_LOG_WARN("Config validation failed: %s", result.error);
         }
@@ -301,6 +263,137 @@ static void initFlashAndConfig() {
     } else {
         SFX_LOG_WARN("Flash init failed — running with defaults");
     }
+}
+
+// ============================================================================
+//  CONFIG → HARDWARE
+// ============================================================================
+
+/** @brief Parse door mode string to DoorMode constant */
+static uint8_t parseDoorMode(const char* s) {
+    if (strcmp(s, "single")     == 0) return DoorMode::SINGLE;
+    if (strcmp(s, "dual_sync")  == 0) return DoorMode::DUAL_SYNC;
+    if (strcmp(s, "dual_delay") == 0) return DoorMode::DUAL_DELAY;
+    if (strcmp(s, "dual_seq")   == 0) return DoorMode::DUAL_SEQ;
+    return DoorMode::NONE;
+}
+
+/** @brief Parse chemistry string to BatteryChemistry enum */
+static BatteryChemistry parseChemistry(const char* s) {
+    if (strcmp(s, "liion") == 0) return BatteryChemistry::LI_ION;
+    return BatteryChemistry::LIPO;  // Default to LiPo for unknown values
+}
+
+/**
+ * @brief Apply loaded config to hardware.
+ *
+ * Called after ConfigStore successfully loads and validates config from flash.
+ * Maps config structs to the hardware APIs:
+ *   - RetractConfig → GearControlGearConfig → LandingGear::setGearConfig()
+ *   - PinConfig (door) → LandingGear::configureDoorServo() + setReversed()
+ *   - PinConfig (yaw_output) → yawServo limits/profile + yawConfig
+ *   - DoorModeConfig → LandingGear::setDoorMode()
+ *   - Battery → BatteryMonitor chemistry/cellCount + global flags
+ */
+static void applyConfig(const GearControlConfig& cfg) {
+    SFX_LOG_INFO("Applying config to hardware");
+
+    // ---- Retract channels: stall current + timeout per gear ----
+    for (uint8_t i = 0; i < cfg.retractCount && i < 3; i++) {
+        const auto& r = cfg.retracts[i];
+        if (r.channel >= 3) continue;
+
+        GearControlGearConfig gc;
+        gc.gearId           = r.channel;
+        gc.stallCurrent_mA  = r.stallCurrent_mA;
+        gc.timeout_ms       = r.timeout_ms;
+        gc.flags            = r.enabled ? 0 : 0x01;  // bit 0 = disabled
+        gears[r.channel].setGearConfig(gc);
+        gears[r.channel].setEnabled(r.enabled);
+
+        SFX_LOG_INFO("Retract[%u]: stall=%umA timeout=%ums enabled=%u",
+                     r.channel, r.stallCurrent_mA, r.timeout_ms, r.enabled);
+    }
+
+    // ---- Per-pin role assignments: door servos + yaw ----
+    for (uint8_t i = 0; i < cfg.pinCount && i < GearControlLimits::MAX_PINS; i++) {
+        const auto& p = cfg.pins[i];
+
+        if (strcmp(p.role, "door") == 0) {
+            // Door servo: map channel (0-2) → gear, determine door index
+            // Each gear has 2 door servo slots; the firmware uses sequential
+            // attachment order (first "door" pin for a channel = door 0, second = door 1).
+            // We determine door index from the hardware servo ID:
+            // servoId = channel * 2 + doorIdx → we need to find which door slot this is.
+            //
+            // Approach: match the pin's slot to the hardware servo table.
+            // pin1→GP1 (gear0/door0), pin2→GP2 (gear0/door1),
+            // pin3→GP3 (gear1/door0), pin4→GP6 (gear1/door1),
+            // pin5→GP7 (gear2/door0), pin6→GP8 (gear2/door1)
+            uint8_t doorIdx = 0xFF;
+            if (p.channel < 3) {
+                // Determine door index from slot name (odd slots = door 0, even = door 1)
+                int slotNum = 0;
+                if (sscanf(p.slot, "pin%d", &slotNum) == 1 && slotNum >= 1 && slotNum <= 6) {
+                    // pin1,pin3,pin5 = door 0; pin2,pin4,pin6 = door 1
+                    doorIdx = (slotNum % 2 == 1) ? 0 : 1;
+                }
+            }
+
+            if (doorIdx <= 1 && p.channel < 3) {
+                gears[p.channel].configureDoorServo(doorIdx,
+                    p.min_us, p.max_us, p.speed, 0, 0);
+                gears[p.channel].doorServo(doorIdx).setReversed(p.reversed);
+                SFX_LOG_INFO("Pin %s → gear%u/door%u: %u-%uus speed=%u rev=%u",
+                             p.slot, p.channel, doorIdx, p.min_us, p.max_us,
+                             p.speed, p.reversed);
+            }
+        } else if (strcmp(p.role, "yaw_output") == 0) {
+            // Yaw servo configuration
+            yawConfig.gearId     = p.gear_id;
+            yawConfig.neutral_us = p.neutral_us;
+            yawConfig.min_us     = p.min_us;
+            yawConfig.max_us     = p.max_us;
+            yawConfigured = true;
+
+            yawServo.setLimits(p.min_us, p.max_us);
+            yawServo.setMotionProfile(p.speed, 0, 0);
+            yawServo.setReversed(p.reversed);
+            yawServo.setTarget(p.neutral_us);
+
+            SFX_LOG_INFO("Yaw → gear%u: %u-%uus neutral=%uus rev=%u",
+                         p.gear_id, p.min_us, p.max_us, p.neutral_us, p.reversed);
+        }
+        // gear_input / yaw_input: PWM inputs only apply in standalone mode with
+        // external RC receiver — not wired here (HubFX sends commands directly).
+        // unused: no-op
+    }
+
+    // ---- Door modes per retract channel ----
+    for (uint8_t i = 0; i < cfg.doorModeCount && i < 3; i++) {
+        const auto& dm = cfg.doorModes[i];
+        if (dm.channel >= 3) continue;
+
+        uint8_t pre  = parseDoorMode(dm.preDeploy);
+        uint8_t post = parseDoorMode(dm.postDeploy);
+        gears[dm.channel].setDoorMode(pre, post, dm.delay_ms);
+
+        SFX_LOG_INFO("DoorMode[%u]: pre=%s(%u) post=%s(%u) delay=%ums",
+                     dm.channel, dm.preDeploy, pre, dm.postDeploy, post, dm.delay_ms);
+    }
+
+    // ---- Battery monitoring ----
+    BatteryChemistry chem = parseChemistry(cfg.battery.chemistry);
+    batteryMonitor.begin(PIN_VSENSE, 6.0f, chem);
+    if (cfg.battery.cellCount > 0) {
+        batteryMonitor.setCellCount(cfg.battery.cellCount);
+    }
+    batteryEnabled = cfg.battery.enabled;
+    autoDeployOnLowVoltage = cfg.battery.autoDeploy;
+
+    SFX_LOG_INFO("Battery: chem=%s cells=%u enabled=%u autoDeploy=%u",
+                 cfg.battery.chemistry, cfg.battery.cellCount,
+                 cfg.battery.enabled, cfg.battery.autoDeploy);
 }
 
 // ============================================================================
@@ -377,8 +470,12 @@ void setup() {
     yawServo.begin(PIN_YAW_SERVO);
 
     // Initialize battery voltage monitor (ADC with ÷6 divider on GP29)
+    // If config was loaded, applyConfig() already called begin() with the right chemistry.
+    // Otherwise, initialize with defaults (LiPo, auto-detect cells).
     analogReadResolution(12);
-    batteryMonitor.begin(PIN_VSENSE, 6.0f);
+    if (!configServer.store().isLoaded()) {
+        batteryMonitor.begin(PIN_VSENSE, 6.0f);
+    }
 
     // Auto-deploy all gears on low battery voltage (safety feature)
     batteryMonitor.onLowVoltage([](uint16_t voltage_mV, uint8_t cellCount) {
@@ -634,8 +731,16 @@ void setup() {
         return 53;
     });
 
-    // Finalize command router (core + GearControl handlers)
+    // Finalize command router (core + GearControl + Config handlers)
     server.addModuleHandler(&gearControlServer);
+
+    // Register ConfigServer (handles CONFIG_RELOAD/STATUS/SAVE from CLI)
+    configServer.begin(&Serial);
+    configServer.onReloaded([](const GearControlConfig& cfg) {
+        SFX_LOG_INFO("Config reloaded — applying to hardware");
+        applyConfig(cfg);
+    });
+    server.addModuleHandler(&configServer);
 }
 
 // ============================================================================
