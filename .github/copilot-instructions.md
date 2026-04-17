@@ -769,6 +769,76 @@ private:
 cd app/go && go build ./cli/
 ```
 
+#### 19a. Decoded Event Types Belong in `engine/handlers/<mod>/` (MANDATORY)
+
+**Async packet decoders live exactly once — in the per-module handler package — and are consumed by BOTH the CLI (console formatting) and Wails Studio (typed Go listeners → frontend events).** Studio must never re-decode a payload locally in `studio/app.go`, and `cli/*` must never re-decode either.
+
+**Structure per module** (`app/go/engine/handlers/<mod>/` — four files, strict roles):
+
+| File | Purpose |
+|------|---------|
+| `types.go` | JSON-tagged decoded structs + pure `Decode*(payload []byte) *T` functions. No I/O, no formatting. Labels (`ErrorReasonName`, `PhaseName`, …) populated from the authoritative `protocol/<mod>` name tables. |
+| `format.go` | `Handler.FormatXxx(*Xxx)` methods that render a decoded struct to the CLI (`h.E.Out`). No decoding. Every formatter is a pure struct→console function. |
+| `handler.go` | `Handler` struct with `engine.Observers[T]` listener fields (never raw `func(*T)`). `Register(eng *Engine) *Handler` wires the status/async packets using **inline closures** — no `parseXxx`/`handleXxx` wrapper methods. |
+| `parsers.go` | **CLI-only query-response renderers** (reply to `seq.status`, `slaves`, `audio.status`, etc.). These are not broadcast/async paths — those go through the observer chain. |
+
+**The Observer listener pattern** — every Handler field that fires per-event is an `engine.Observers[T]`, a multicast slot with `Add(fn)`, `Fire(v)`, `Len()`, and `Dispatch(out, label, payload, decode)`. Studio subscribes with `.Add(...)`; the CLI subscribes by pre-seeding its formatter in `Register()` (for async events) or by rendering inline in the status closure. Broadcast paths are silent when `Len() == 0` — this keeps the 1 Hz STATUS_BROADCAST from flooding the CLI.
+
+**Inline-closure registration** — Register() wires everything directly, no thin methods:
+
+```go
+func Register(eng *engine.Engine) *Handler {
+    h := &Handler{E: eng}
+    // Sync-status path: CLI prints always (triggered by user `status` command).
+    eng.RegisterStatusParser(pcore.CtrlXxx, func(data []byte) {
+        if s := DecodeStatusBroadcast(data); s != nil { h.FormatStatusBroadcast(s) }
+    })
+    // Broadcast path: silent unless Studio has subscribed.
+    eng.RegisterStatusBroadcastParser(pcore.CtrlXxx, func(data []byte) {
+        if h.OnStatusBroadcast.Len() == 0 { return }
+        if s := DecodeStatusBroadcast(data); s != nil { h.OnStatusBroadcast.Fire(s) }
+    })
+    // Async path: CLI formatter pre-seeded as an observer (decoupled, same chain).
+    h.OnCalibStatus.Add(h.FormatCalibStatus)
+    eng.RegisterAsyncHandler(xxxp.CalibStatus, func(p []byte) {
+        h.OnCalibStatus.Dispatch(h.E.Out, "CalibStatus", p, DecodeCalibStatus)
+    })
+    eng.AddGroup(h.commands())
+    return h
+}
+```
+
+**Discovery:** `handlers.RegisterDefaults(eng *engine.Engine) *handlers.Registry` returns a struct exposing each `*Handler`. Studio captures the registry in `NewApp` and adds listeners in `startup()`:
+
+```go
+a.reg.GearControl.OnCalibStatus.Add(func(c *gearcontrol.CalibStatus) {
+    wailsRT.EventsEmit(a.ctx, "gearcontrol:calib", c)
+})
+```
+
+**Rules:**
+1. **New async packet** → struct + `Decode*` in `types.go`; `FormatXxx` method in `format.go`; `engine.Observers[T]` field on `Handler`; inline-closure registration in `Register()`.
+2. **Studio emits Wails events by serializing the decoded struct directly** (`EventsEmit(ctx, "<mod>:<event>", decoded)`). The Svelte TS interface mirrors the struct's JSON tags.
+3. **Never** add a local `type FooUpdate struct {...}` in `studio/app.go` shadowing a handler type; never add `encoding/binary` reads in `studio/app.go`. If you feel the urge, the missing piece belongs in `engine/handlers/<mod>/types.go`.
+4. Authoritative labels (error-reason, phase, state) come from `protocol/<mod>` name tables — mirror them on the frontend by reading `*.Name` fields from the event payload, not by re-mapping codes locally.
+5. **No thin wrappers.** If a method only decodes + fires / only forwards to another function, inline it at the call site. `parseXxxStatus` / `handleXxxBroadcast` wrappers around a single decode+Fire are banned — use the closure form above.
+6. **No backward-compatibility scaffolding during refactors.** When restructuring, delete dead fields, removed flags, and "pre-vN" fallbacks outright. Rule 11 (append-only wire extension via `len()` checks) still applies — that's protocol compat across firmware versions, not code compat across git revisions. Do not invent `XxxFieldPresent` booleans, keep deleted helpers as thin wrappers, or leave `// removed for back-compat` comments.
+
+**Anti-pattern (do not do this):**
+```go
+// BAD — studio/app.go re-decoding a packet the handler already decodes
+func (a *App) handleStatusBroadcast(src string, data []byte) {
+    counter := binary.LittleEndian.Uint32(data[0:4])  // duplicates engine/handlers/<mod>/types.go
+    ...
+}
+
+// BAD — thin wrapper that only calls decode + fire
+func (h *Handler) parseCalibStatus(p []byte) {
+    if c := DecodeCalibStatus(p); c != nil { h.OnCalibStatus.Fire(c) }
+}
+eng.RegisterAsyncHandler(xxxp.CalibStatus, h.parseCalibStatus)  // prefer an inline closure
+```
+
 ### 20. Use VS Code Tasks for Building and Flashing (MANDATORY)
 
 **The workspace defines predefined VS Code tasks in `.vscode/tasks.json` for all build, flash, and verification operations.** AI agents MUST use these tasks via `create_and_run_task` instead of running raw terminal commands with `run_in_terminal`.

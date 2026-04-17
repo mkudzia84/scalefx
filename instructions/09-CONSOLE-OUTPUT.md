@@ -221,7 +221,7 @@ Only shows channels with brightness > 0 or sequence active.
 | 33-34 | yaw_pos_us | u16LE | |
 | 35 | led_flags | u8 | 5 bits: N_dep, L_dep, R_dep, CONN, ERR |
 | 36-37 | battery_mV | u16LE | |
-| 38 | battery_config_flags | u8 | bit0=enabled, bit1=auto_deploy, bit2=low_voltage |
+| 38 | battery_config_flags | u8 | bit0=auto_deploy, bit1=low_voltage |
 | 39-41 | error_reasons | u8×3 | per gear |
 | 42-43 | shuntResistance_mohm | u16LE | |
 | 44-46 | door_modes (packed) | u8×3 | low nibble=pre, high nibble=post |

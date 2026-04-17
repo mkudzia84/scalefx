@@ -22,17 +22,70 @@ Build_All: "scalefx-flash build gunfx --no-clean && scalefx-flash build lightfx 
 
 ## Prerequisites
 
+### All Targets
+
 ```yaml
 Required_Tools:
-  PlatformIO:
-    install: "Follow https://docs.platformio.org/en/latest/core/installation.html"
-    verify: "pio --version"
-    note: "Required for building firmware (all platforms)"
+  Go:
+    install: "winget install GoLang.Go"
+    verify: "go version"
+    min_version: "1.23+"
+    note: "Required for Go CLI, Flash CLI, and ScaleFX Studio"
+    path: "Ensure GOPATH/bin is on PATH (default: ~/go/bin)"
 
+  Python:
+    install: "winget install astral-sh.uv && uv python install 3.12"
+    verify: "python --version"
+    min_version: "3.10+"
+    note: "Required by PlatformIO. uv-managed Python recommended."
+    path: "Add uv python dir to PATH (e.g. ~/.local/bin/uv/python/cpython-3.12-...)"
+
+  PlatformIO:
+    install: "uv tool install platformio"
+    verify: "pio --version"
+    min_version: "6.1+"
+    note: "Required for building firmware (all platforms). 'pio' CLI must be on PATH."
+    alt_install: "pip install platformio"
+```
+
+### Firmware Only
+
+```yaml
   esptool_Standalone:
     install: "scalefx-flash tools download"
     verify: "scalefx-flash tools status"
-    note: "Required for ESP32 flashing (auto-downloaded on first use)"
+    note: "Required for ESP32-S3 flashing (auto-downloaded on first use)"
+```
+
+### ScaleFX Studio (GUI) Only
+
+```yaml
+  Wails_v2:
+    install: "go install github.com/wailsapp/wails/v2/cmd/wails@latest"
+    verify: "wails version"
+    min_version: "v2.9+"
+    note: "Wails CLI for building/running the Studio GUI. Installs to GOPATH/bin."
+
+  Node_js:
+    install: "winget install OpenJS.NodeJS.LTS"
+    verify: "node --version && npm --version"
+    min_version: "Node 18+ / npm 9+"
+    note: "Required for Svelte frontend (npm install, vite dev server, production build)"
+
+  PowerShell_Execution_Policy:
+    check: "Get-ExecutionPolicy -Scope CurrentUser"
+    fix: "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force"
+    note: "npm.ps1 requires RemoteSigned policy. Only needed on fresh Windows installs."
+```
+
+### Windows-Specific Notes
+
+```yaml
+PATH_Refresh:
+  issue: "New terminal sessions may not see newly installed tools (Go, Node, wails)"
+  fix: "Refresh PATH in PowerShell before running commands:"
+  command: '$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")'
+  alt: "Or restart VS Code / open a new terminal"
 ```
 
 ---
