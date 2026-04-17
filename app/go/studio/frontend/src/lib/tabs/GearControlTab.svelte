@@ -1,5 +1,5 @@
 <!-- ScaleFX Studio — GearControl Tab -->
-<!-- Left: aggregate deploy/retract, calibration, battery.  Right: per-gear cards with config. -->
+<!-- Left: global settings (controls, battery, yaw).  Right: per-channel setup with doors & servos. -->
 <script lang="ts">
     import { SendCommand } from '../../../wailsjs/go/main/App'
     import { connectionInfo } from '../stores'
@@ -7,12 +7,11 @@
 
     export let boardLabel: string = 'GearControl'
 
-    // ─── Slave mode ───
-    let slaveMode = false
-
+    // ─── Connection state ───
     $: isHubFX = $connectionInfo.controllerType === 'hubfx'
+    $: isDirect = $connectionInfo.connected && !isHubFX
     $: hubFxConnected = isHubFX && $connectionInfo.connected
-    $: controlsDisabled = slaveMode && !hubFxConnected
+    $: controlsDisabled = !$connectionInfo.connected || !$connectionInfo.initialized
 
     // ─── Gear definitions ───
     const gearCount = 3
@@ -28,7 +27,6 @@
     let calibErrors: string[] = ['', '', '']
 
     let calibTimeout_s = 60
-    let stallThreshold_mA = 500
 
     $: anyUncalibrated = calibStates.some(s => s !== 'calibrated')
     $: allCalibrated = calibStates.every(s => s === 'calibrated')
@@ -54,12 +52,6 @@
         SendCommand('calibrate.cancel all')
         calibStates = calibStates.map(s => s === 'calibrating' ? 'uncalibrated' as CalibState : s)
     }
-    function resetGearState() {
-        SendCommand('reset all')
-        calibStates = calibStates.map(() => 'uncalibrated' as CalibState)
-        gearActions = gearActions.map(() => 'idle' as GearAction)
-        calibErrors = ['', '', '']
-    }
     function calibrate(id: number) {
         SendCommand(`calibrate ${id} ${calibTimeout_s}`)
         calibStates[id] = 'calibrating'
@@ -73,20 +65,20 @@
     }
     function markCalibrated(id: number) {
         calibStates[id] = 'calibrated'
-        calibErrors[id] = ''
         calibStates = calibStates
     }
     function markAllCalibrated() {
         calibStates = calibStates.map(() => 'calibrated' as CalibState)
+    }
+    function resetGearState() {
+        SendCommand('reset all')
+        calibStates = calibStates.map(() => 'uncalibrated' as CalibState)
         calibErrors = ['', '', '']
     }
 
-    // Called when protocol reports calibration error for a specific gear
-    function setCalibError(id: number, msg: string) {
-        calibStates[id] = 'error'
-        calibErrors[id] = msg
-        calibStates = calibStates
-        calibErrors = calibErrors
+    let stallThreshold_mA = 500
+    function saveAllGearConfig() {
+        for (let id = 0; id < gearCount; id++) { applyGearConfig(id) }
     }
 
     // ─── Per-gear actions ───
@@ -100,6 +92,24 @@
         if (calibStates[id] === 'error') { calibStates[id] = 'uncalibrated'; calibStates = calibStates }
         calibErrors[id] = ''
         calibErrors = calibErrors
+    }
+
+    // ─── Gear Config (per gear) ───
+    interface GearConfig {
+        stallCurrent_mA: number
+        timeout_ms: number
+    }
+
+    let gearConfigs: GearConfig[] = [
+        { stallCurrent_mA: 500, timeout_ms: 60000 },
+        { stallCurrent_mA: 500, timeout_ms: 60000 },
+        { stallCurrent_mA: 500, timeout_ms: 60000 },
+    ]
+
+    function applyGearConfig(id: number) {
+        const gc = gearConfigs[id]
+        const flags = 0x00  // hasYaw is now set via yaw config
+        SendCommand(`gear.config ${id} ${flags} ${gc.stallCurrent_mA} ${gc.timeout_ms}`)
     }
 
     // ─── Door Config (per gear) ───
@@ -140,106 +150,81 @@
         SendCommand(`door.mode ${id} ${doorModeValues[dm.preDeployMode]} ${doorModeValues[dm.postDeployMode]} ${dm.delay_ms}`)
     }
 
-    // ─── Gear Config (per gear) ───
-    interface GearConfig {
-        hasYaw: boolean
-        stallCurrent_mA: number
-        timeout_ms: number
-    }
-
-    let gearConfigs: GearConfig[] = [
-        { hasYaw: true,  stallCurrent_mA: 500, timeout_ms: 60000 },
-        { hasYaw: false, stallCurrent_mA: 500, timeout_ms: 60000 },
-        { hasYaw: false, stallCurrent_mA: 500, timeout_ms: 60000 },
-    ]
-
-    function applyGearConfig(id: number) {
-        const gc = gearConfigs[id]
-        const flags = gc.hasYaw ? 0x01 : 0x00
-        SendCommand(`gear.config ${id} ${flags} ${gc.stallCurrent_mA} ${gc.timeout_ms}`)
-    }
-
-    function saveAllGearConfig() {
-        for (let i = 0; i < gearCount; i++) applyGearConfig(i)
-    }
-
-    // ─── Yaw Config (per gear) ───
+    // ─── Yaw Config ───
     interface YawConfig {
         neutral_us: number; min_us: number; max_us: number
     }
 
-    let yawConfigs: YawConfig[] = [
-        { neutral_us: 1500, min_us: 1000, max_us: 2000 },
-        { neutral_us: 1500, min_us: 1000, max_us: 2000 },
-        { neutral_us: 1500, min_us: 1000, max_us: 2000 },
-    ]
-
+    let yawEnabled = false
+    let yawGearId = 0
+    let yawConfig: YawConfig = { neutral_us: 1500, min_us: 1000, max_us: 2000 }
     let yawPosition_us = 1500
-    let selectedGear = 0
 
-    function applyYawConfig(id: number) {
-        const yc = yawConfigs[id]
-        SendCommand(`yaw.config ${id} ${yc.neutral_us} ${yc.min_us} ${yc.max_us}`)
+    function applyYawConfig() {
+        SendCommand(`yaw.config ${yawGearId} ${yawConfig.neutral_us} ${yawConfig.min_us} ${yawConfig.max_us}`)
     }
-
     function setYaw() { SendCommand(`yaw ${yawPosition_us}`) }
-
-    // ─── Servo definitions ───
-    const gcServos = [
-        { id: 0, name: 'Nose Door A' },  { id: 1, name: 'Nose Door B' },
-        { id: 2, name: 'Left Door A' },  { id: 3, name: 'Left Door B' },
-        { id: 4, name: 'Right Door A' }, { id: 5, name: 'Right Door B' },
-        { id: 6, name: 'Yaw' },          { id: 7, name: 'Spare' },
-    ]
+    function resetYawPosition() {
+        yawPosition_us = yawConfig.neutral_us
+        SendCommand(`yaw ${yawConfig.neutral_us}`)
+    }
 
     // ─── Battery ───
     let batteryEnabled = false
     let batteryAutoDeploy = false
-    let batteryVoltage_mV = 0
     let batteryLowThreshold_mV = 10500
-
-    function applyBattery() {
-        const on = batteryEnabled ? 'on' : 'off'
-        const cmd = batteryAutoDeploy ? `battery ${on} autodeploy` : `battery ${on}`
-        SendCommand(cmd)
-    }
-
+    let batteryVoltage_mV = 0
     $: batteryVolts = (batteryVoltage_mV / 1000).toFixed(2)
-    $: batteryPct = Math.min(100, Math.max(0, Math.round((batteryVoltage_mV - 9000) / (12600 - 9000) * 100)))
+    $: batteryPct = batteryVoltage_mV > 0 ? Math.min(100, Math.max(0, Math.round((batteryVoltage_mV - 9000) / (12600 - 9000) * 100))) : 0
     $: batteryLow = batteryVoltage_mV > 0 && batteryVoltage_mV < batteryLowThreshold_mV
 
-    // ─── Status ───
+    function applyBattery() {
+        const flag1 = batteryEnabled ? 'on' : 'off'
+        const flag2 = batteryAutoDeploy ? 'autodeploy' : ''
+        SendCommand(`battery ${flag1} ${flag2}`.trim())
+    }
+
+    // ─── Config ───
+    function configReload() { SendCommand('config.reload') }
+    function configSave()   { SendCommand('config.save') }
+    function configStatus() { SendCommand('config.status') }
     function refreshStatus() { SendCommand('status') }
+
+    // ─── Servo Widget defs ───
+    const gcServos = [
+        { id: 0, name: 'Nose Door A' },
+        { id: 1, name: 'Nose Door B' },
+        { id: 2, name: 'Left Door A' },
+        { id: 3, name: 'Left Door B' },
+        { id: 4, name: 'Right Door A' },
+        { id: 5, name: 'Right Door B' },
+        { id: 6, name: 'Yaw' },
+        { id: 7, name: 'Spare' },
+    ]
 </script>
 
 <div class="tab-root">
     <!-- ═══ Title Bar ═══ -->
     <div class="tab-title-bar">
         <h2>{boardLabel}</h2>
-        <div class="mode-toggle">
-            <!-- svelte-ignore a11y-label-has-associated-control -->
-            <label class="toggle-label">
-                <input type="checkbox" bind:checked={slaveMode} />
-                <span>Slave Mode</span>
-            </label>
-            {#if slaveMode}
-                <span class="mode-hint" class:connected={hubFxConnected}>
-                    {hubFxConnected ? 'HubFX connected — controls active' : 'Waiting for HubFX…'}
-                </span>
-            {/if}
+        <div class="title-actions">
+            <button class="small" on:click={configReload} disabled={controlsDisabled} title="Reload config from flash">↻ Reload</button>
+            <button class="small" on:click={configSave} disabled={controlsDisabled} title="Save config to flash">💾 Save</button>
+            <button class="small" on:click={configStatus} disabled={controlsDisabled} title="Config load status">Config</button>
+            <button class="small" on:click={refreshStatus} disabled={controlsDisabled} title="Refresh board status">Status</button>
         </div>
-        <button class="status-btn" on:click={refreshStatus} title="Refresh board status">Status</button>
     </div>
+
+    {#if isDirect}
+        <div class="direct-warning">
+            ⚠ Direct connection — settings will not persist as slave configuration.
+            When configured as slave, manage settings via HubFX.
+        </div>
+    {/if}
 
     <!-- ═══ Scrollable Content ═══ -->
     <div class="tab-scroll">
-        <div class="content-wrap" class:controls-disabled={controlsDisabled}>
-            {#if controlsDisabled}
-                <div class="disabled-overlay">
-                    <span>Slave mode — connect HubFX to control GearControl</span>
-                </div>
-            {/if}
-
+        <div class="content-wrap">
             <div class="two-col">
                 <!-- ═══════════  LEFT COLUMN  ═══════════ -->
                 <div class="col">
@@ -439,40 +424,36 @@
                     </section>
 
                     <!-- ── Yaw Steering ── -->
+                    {#if yawEnabled}
                     <section class="card">
                         <div class="card-header">
                             <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg> Yaw Steering</h3>
-                            <div class="gear-picker">
-                                {#each gearNames as name, id}
-                                    <button class="chip" class:active={selectedGear === id}
-                                            on:click={() => selectedGear = id}>{id}</button>
-                                {/each}
-                            </div>
+                            <span class="header-tag ok">Gear {yawGearId}</span>
                         </div>
 
                         <div class="form-grid cols-3">
                             <div class="form-field">
                                 <span class="field-label">Neutral µs</span>
-                                <input type="number" bind:value={yawConfigs[selectedGear].neutral_us}
+                                <input type="number" bind:value={yawConfig.neutral_us}
                                        class="field-input" min="500" max="2500" step="10"
                                        disabled={controlsDisabled} />
                             </div>
                             <div class="form-field">
                                 <span class="field-label">Min µs</span>
-                                <input type="number" bind:value={yawConfigs[selectedGear].min_us}
+                                <input type="number" bind:value={yawConfig.min_us}
                                        class="field-input" min="500" max="2500" step="10"
                                        disabled={controlsDisabled} />
                             </div>
                             <div class="form-field">
                                 <span class="field-label">Max µs</span>
-                                <input type="number" bind:value={yawConfigs[selectedGear].max_us}
+                                <input type="number" bind:value={yawConfig.max_us}
                                        class="field-input" min="500" max="2500" step="10"
                                        disabled={controlsDisabled} />
                             </div>
                         </div>
                         <div class="apply-row">
-                            <button class="small" disabled={controlsDisabled}
-                                    on:click={() => applyYawConfig(selectedGear)}>Apply Yaw Config</button>
+                            <button class="small primary" disabled={controlsDisabled}
+                                    on:click={applyYawConfig}>Apply Yaw Config</button>
                         </div>
 
                         <div class="subsection-inline">
@@ -483,9 +464,12 @@
                                 <span class="slider-val">{yawPosition_us} µs</span>
                                 <button class="small primary" disabled={controlsDisabled}
                                         on:click={setYaw}>Set</button>
+                                <button class="small" disabled={controlsDisabled}
+                                        on:click={resetYawPosition}>Reset</button>
                             </div>
                         </div>
                     </section>
+                    {/if}
                 </div>
 
                 <!-- ═══════════  RIGHT COLUMN  ═══════════ -->
@@ -556,13 +540,7 @@
                             <!-- Gear Config -->
                             <div class="subsection-inline">
                                 <h4>Configuration</h4>
-                                <div class="form-grid cols-3">
-                                    <!-- svelte-ignore a11y-label-has-associated-control -->
-                                    <label class="toggle form-field">
-                                        <input type="checkbox" bind:checked={gearConfigs[id].hasYaw}
-                                               disabled={controlsDisabled} />
-                                        <span class="toggle-text">Has Yaw</span>
-                                    </label>
+                                <div class="form-grid cols-2">
                                     <div class="form-field">
                                         <span class="field-label">Stall mA</span>
                                         <input type="number" bind:value={gearConfigs[id].stallCurrent_mA}
@@ -1056,4 +1034,24 @@
     }
 
     .status-btn { padding: 4px 12px; }
+
+    /* ─── Title Actions ─── */
+    .title-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: auto;
+    }
+
+    /* ─── Direct Mode Warning ─── */
+    .direct-warning {
+        padding: 8px 14px;
+        margin: 0 0 2px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--warning, #d7ba7d);
+        background: color-mix(in srgb, var(--warning, #d7ba7d) 8%, var(--bg-surface));
+        border: 1px solid color-mix(in srgb, var(--warning, #d7ba7d) 30%, transparent);
+    }
 </style>
