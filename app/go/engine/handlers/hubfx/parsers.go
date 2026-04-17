@@ -1,6 +1,11 @@
 package hubfx
 
-// ScaleFX Engine - HubFX Response Parsers
+// ScaleFX Engine - HubFX Query-Response Parsers
+// Display helpers invoked from cmdSlaves / cmdAudioStatus / cmdCodecStatus /
+// cmdSdStatus / cmdFlashStatus / cmdUsbDevices / cmdSlaveInfo / cmdEngineStatus
+// — they render typed query responses and stay here because they aren't fired
+// through the observer chain. Broadcast + sync-status paths live in handler.go
+// Register() via DecodeStatusBroadcast + FormatStatusBroadcast.
 
 import (
 	"fmt"
@@ -9,149 +14,6 @@ import (
 	hfxp "scalefx/protocol/hubfx"
 	"strings"
 )
-
-func (h *Handler) parseHubFXStatus(data []byte) {
-	if len(data) < 2 {
-		h.E.Out.Printf("  Hub data: %d bytes\n", len(data))
-		return
-	}
-
-	flags := data[0]
-	slaveMask := data[1]
-	loop1Count := uint32(0)
-	if len(data) >= 6 {
-		loop1Count = protocol.ReadU32LE(data, 2)
-	}
-
-	core1Ready := flags&0x01 != 0
-	audioInit := flags&0x02 != 0
-	flashReady := flags&0x04 != 0
-	usbReady := flags&0x08 != 0
-	sdReady := flags&0x10 != 0
-
-	h.E.Out.Printf("\n  %s\n", h.E.Out.C(engine.ColorCyan, "━━━ HubFX Status ━━━"))
-
-	// Core 1
-	c1Color := engine.ColorRed
-	c1Text := "NOT READY"
-	if core1Ready {
-		c1Color = engine.ColorGreen
-		c1Text = "Ready"
-	}
-	h.E.Out.Printf("  Core 1:    %s\n", h.E.Out.C(c1Color, c1Text))
-	if len(data) >= 6 {
-		h.E.Out.Printf("             %d iterations\n", loop1Count)
-	}
-
-	// Audio
-	audioColor := engine.ColorYellow
-	audioText := "Not initialized"
-	if audioInit {
-		audioColor = engine.ColorGreen
-		audioText = "Initialized"
-	}
-	h.E.Out.Printf("  Audio:     %s\n", h.E.Out.C(audioColor, audioText))
-
-	// Flash
-	flashColor := engine.ColorYellow
-	flashText := "Not available"
-	if flashReady {
-		flashColor = engine.ColorGreen
-		flashText = "Ready"
-	}
-	h.E.Out.Printf("  Flash:     %s\n", h.E.Out.C(flashColor, flashText))
-
-	// SD Card
-	sdColor := engine.ColorYellow
-	sdText := "Not available"
-	if sdReady {
-		sdColor = engine.ColorGreen
-		sdText = "Ready"
-	}
-	h.E.Out.Printf("  SD Card:   %s\n", h.E.Out.C(sdColor, sdText))
-
-	// USB Host
-	usbColor := engine.ColorYellow
-	usbText := "Not active"
-	if usbReady {
-		usbColor = engine.ColorGreen
-		usbText = "Active"
-	}
-	h.E.Out.Printf("  USB Host:  %s\n", h.E.Out.C(usbColor, usbText))
-
-	// Slaves
-	slaveNames := map[int]string{0: "GunFX", 1: "LightFX", 2: "GearControl"}
-	hasSlaves := false
-	for bit := range slaveNames {
-		if slaveMask&(1<<bit) != 0 {
-			hasSlaves = true
-			break
-		}
-	}
-	if hasSlaves {
-		h.E.Out.Printf("  Slaves:\n")
-		for bit := 0; bit <= 2; bit++ {
-			name := slaveNames[bit]
-			isReady := slaveMask&(1<<bit) != 0
-			color := engine.ColorRed
-			status := "not connected"
-			if isReady {
-				color = engine.ColorGreen
-				status = "connected"
-			}
-			h.E.Out.Printf("    %s: %s\n", name, h.E.Out.C(color, status))
-		}
-	} else {
-		h.E.Out.Printf("  Slaves:    %s\n", h.E.Out.C(engine.ColorYellow, "None connected"))
-	}
-
-	// I2C device status (v2 extended, 13 bytes at offset 6)
-	if len(data) >= 19 {
-		i2cMask := data[6]
-		detected := 0
-		for b := 0; b < 8; b++ {
-			if i2cMask&(1<<b) != 0 {
-				detected++
-			}
-		}
-		h.E.Out.Printf("\n  %s\n", h.E.Out.C(engine.ColorCyan, fmt.Sprintf("━━━ I2C Devices (%d/8) ━━━", detected)))
-
-		// PCAL6416A
-		pcalOK := i2cMask&0x01 != 0
-		pcalColor := engine.ColorRed
-		pcalText := "not found"
-		if pcalOK {
-			pcalColor = engine.ColorGreen
-			pcalText = "OK"
-		}
-		h.E.Out.Printf("  PCAL6416A: %s  (0x20 GPIO expander)\n", h.E.Out.C(pcalColor, pcalText))
-
-		// INA226 monitors with voltage readings
-		for i := 0; i < 6; i++ {
-			present := i2cMask&(1<<(i+1)) != 0
-			voltage_mV := protocol.ReadU16LE(data, 7+i*2)
-			addr := 0x40 + i
-			if present {
-				voltage_V := float64(voltage_mV) / 1000.0
-				h.E.Out.Printf("  INA226[%d]: %s  (0x%02X)\n",
-					i, h.E.Out.C(engine.ColorGreen, fmt.Sprintf("%.3fV (%d mV)", voltage_V, voltage_mV)), addr)
-			} else {
-				h.E.Out.Printf("  INA226[%d]: %s  (0x%02X)\n",
-					i, h.E.Out.C(engine.ColorRed, "not found"), addr)
-			}
-		}
-
-		// TAS5825M (reserved bit 7)
-		if i2cMask&0x80 != 0 {
-			h.E.Out.Printf("  TAS5825M:  %s  (0x4C audio codec)\n", h.E.Out.C(engine.ColorGreen, "OK"))
-		}
-	} else if len(data) >= 7 {
-		i2cMask := data[6]
-		if i2cMask != 0 {
-			h.E.Out.Printf("\n  I2C mask:  0x%02X\n", i2cMask)
-		}
-	}
-}
 
 // parseSlaveList parses SLAVE_LIST_RESP.
 func (h *Handler) parseSlaveList(payload []byte) {

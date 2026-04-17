@@ -11,17 +11,45 @@ import (
 	"strings"
 )
 
-// Handler groups all LightFX commands and parsers.
+// Handler groups all LightFX commands, decoders, and parsers.
+//
+// Broadcast observers are silent by default (Studio opts in). The
+// LandingLightStatus observer set is pre-seeded with the CLI formatter so
+// the user sees landing progress as it happens.
 type Handler struct {
 	E *engine.Engine
+
+	OnStatusBroadcast    engine.Observers[StatusBroadcast]
+	OnLandingLightStatus engine.Observers[LandingLightStatus]
 }
 
-// Register adds the LightFX command group, status parser, and async handlers to the engine.
-func Register(eng *engine.Engine) {
+// Register adds the LightFX command group, status parser, and async handlers
+// to the engine. Returns the Handler so external consumers can install
+// listeners via .Add().
+func Register(eng *engine.Engine) *Handler {
 	h := &Handler{E: eng}
-	eng.RegisterStatusParser(pcore.CtrlLightFX, h.parseLightFXStatus)
-	eng.RegisterAsyncHandler(lfxp.LandingLightStatus, h.parseLandingLightStatus)
+	h.OnLandingLightStatus.Add(h.FormatLandingLightStatus)
+
+	eng.RegisterStatusParser(pcore.CtrlLightFX, func(data []byte) {
+		if s := DecodeStatusBroadcast(data); s != nil {
+			h.FormatStatusBroadcast(s)
+		} else {
+			h.E.Out.Printf("  LightFX: (incomplete: %d bytes)\n", len(data))
+		}
+	})
+	eng.RegisterStatusBroadcastParser(pcore.CtrlLightFX, func(data []byte) {
+		if h.OnStatusBroadcast.Len() == 0 {
+			return
+		}
+		if s := DecodeStatusBroadcast(data); s != nil {
+			h.OnStatusBroadcast.Fire(s)
+		}
+	})
+	eng.RegisterAsyncHandler(lfxp.LandingLightStatus, func(p []byte) {
+		h.OnLandingLightStatus.Dispatch(h.E.Out, "LandingLightStatus", p, DecodeLandingLightStatus)
+	})
 	eng.AddGroup(h.commands())
+	return h
 }
 
 func (h *Handler) commands() *engine.CmdGroup {

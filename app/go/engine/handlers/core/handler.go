@@ -15,15 +15,23 @@ import (
 )
 
 // Handler groups all core protocol commands.
+//
+// The core handler currently exposes no typed listeners — STATUS_UPDATE
+// sub-events (SERVO_POS, VOLTAGE, CURRENT, TEMP, STATUS_BROADCAST) either
+// belong to a specific board (broadcast → module handler via HandleStatusBroadcast)
+// or are purely for the CLI console. External consumers (Studio) that need
+// typed core events should add On* fields here and fire them from parseStatusUpdate.
 type Handler struct {
 	E *engine.Engine
 }
 
-// Register adds the core command group to the engine.
-func Register(eng *engine.Engine) {
+// Register adds the core command group to the engine and returns the Handler
+// so external consumers can install listeners.
+func Register(eng *engine.Engine) *Handler {
 	h := &Handler{E: eng}
 	eng.AddGroup(h.commands())
 	eng.RegisterAsyncHandler(pcore.StatusUpdate, h.parseStatusUpdate)
+	return h
 }
 
 func (h *Handler) commands() *engine.CmdGroup {
@@ -362,6 +370,8 @@ func statusUpdateTypeName(typ byte) string {
 		return "CURRENT"
 	case pcore.StatusUpdateTemperature:
 		return "TEMP"
+	case pcore.StatusUpdateStatusBroadcast:
+		return "STATUS_BROADCAST"
 	default:
 		return fmt.Sprintf("0x%02X", typ)
 	}
@@ -432,6 +442,9 @@ func (h *Handler) parseStatusUpdate(payload []byte) {
 				h.E.Out.C(engine.ColorGray, ""), srcName, typName,
 				strings.Join(parts, " "), h.E.Out.C(engine.ColorReset, ""))
 		}
+	case pcore.StatusUpdateStatusBroadcast:
+		// Full module status broadcast — route to engine for structured dispatch
+		h.E.HandleStatusBroadcast(source, data)
 	default:
 		h.E.Out.Printf("  %s[%s %s: %d bytes]%s\n",
 			h.E.Out.C(engine.ColorGray, ""), srcName, typName, len(data),

@@ -11,19 +11,56 @@ import (
 	"strings"
 )
 
-// Handler groups all GearControl commands and parsers.
+// Handler groups all GearControl commands, decoders, and parsers.
+//
+// Each async event has a multicast Observers[T] set. Register() appends the
+// built-in CLI console formatter to the event listener sets that are meant to
+// print (CalibStatus, SeqStatus, DoorStatus). Broadcasts stay silent by
+// default because the synchronous `status` command is the CLI entry point.
+// External consumers (Studio) append their own listeners via .Add().
 type Handler struct {
 	E *engine.Engine
+
+	OnStatusBroadcast engine.Observers[StatusBroadcast] // periodic STATUS_BROADCAST (~1 Hz)
+	OnCalibStatus     engine.Observers[CalibStatus]     // GEAR_CALIB_STATUS (0x6B)
+	OnSeqStatus       engine.Observers[SeqStatus]       // GEAR_SEQ_STATUS (0x6C)
+	OnDoorStatus      engine.Observers[DoorStatus]      // GEAR_DOOR_STATUS (0x6D)
 }
 
-// Register adds the GearControl command group, status parser, and async handlers to the engine.
-func Register(eng *engine.Engine) {
+// Register adds the GearControl command group, status parser, and async
+// handlers. Returns the Handler so external consumers can install listeners.
+func Register(eng *engine.Engine) *Handler {
 	h := &Handler{E: eng}
-	eng.RegisterStatusParser(pcore.CtrlGearControl, h.parseGearControlStatus)
-	eng.RegisterAsyncHandler(gcp.GearCalibStatus, h.parseGearCalibStatus)
-	eng.RegisterAsyncHandler(gcp.GearSeqStatus, h.parseGearSeqStatus)
-	eng.RegisterAsyncHandler(gcp.GearDoorStatus, h.parseGearDoorStatus)
+	h.OnCalibStatus.Add(h.FormatCalibStatus)
+	h.OnSeqStatus.Add(h.FormatSeqStatus)
+	h.OnDoorStatus.Add(h.FormatDoorStatus)
+
+	eng.RegisterStatusParser(pcore.CtrlGearControl, func(data []byte) {
+		if s := DecodeStatusBroadcast(data); s != nil {
+			h.FormatStatusBroadcast(s)
+		} else {
+			h.E.Out.Printf("  GearControl: (incomplete: %d bytes)\n", len(data))
+		}
+	})
+	eng.RegisterStatusBroadcastParser(pcore.CtrlGearControl, func(data []byte) {
+		if h.OnStatusBroadcast.Len() == 0 {
+			return
+		}
+		if s := DecodeStatusBroadcast(data); s != nil {
+			h.OnStatusBroadcast.Fire(s)
+		}
+	})
+	eng.RegisterAsyncHandler(gcp.GearCalibStatus, func(p []byte) {
+		h.OnCalibStatus.Dispatch(h.E.Out, "CalibStatus", p, DecodeCalibStatus)
+	})
+	eng.RegisterAsyncHandler(gcp.GearSeqStatus, func(p []byte) {
+		h.OnSeqStatus.Dispatch(h.E.Out, "SeqStatus", p, DecodeSeqStatus)
+	})
+	eng.RegisterAsyncHandler(gcp.GearDoorStatus, func(p []byte) {
+		h.OnDoorStatus.Dispatch(h.E.Out, "DoorStatus", p, DecodeDoorStatus)
+	})
 	eng.AddGroup(h.commands())
+	return h
 }
 
 func (h *Handler) commands() *engine.CmdGroup {
@@ -46,7 +83,7 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"reset":            {h.cmdReset, "reset <id> | all", "Clear error state", true},
 			"enable":           {h.cmdEnable, "enable <id> | all", "Enable gear channel", true},
 			"disable":          {h.cmdDisable, "disable <id> | all", "Disable gear channel", true},
-			"battery":          {h.cmdBattery, "battery on|off [autodeploy]", "Battery monitoring", true},
+			"battery":          {h.cmdBattery, "battery [autodeploy] [lipo|liion|nimh] [cells:N|auto]", "Battery profile — monitor is always on; no args = LiPo, auto cells", true},
 		},
 	}
 	for k, v := range h.E.ConfigCommands() {
@@ -231,20 +268,65 @@ func (h *Handler) cmdDisable(args []string) {
 	})
 }
 
+// cmdBattery accepts any mix of:
+//
+//	autodeploy                  (enables auto-deploy on low voltage)
+//	lipo | liion | nimh         (chemistry; defaults to LiPo)
+//	cells:N | cells=N | auto    (cell count, 1-6 or auto-detect; defaults to auto)
+//
+// Bare `battery` → LiPo + auto-detect cells. Monitor is always on.
 func (h *Handler) cmdBattery(args []string) {
-	if !h.E.RequireArgs(args, 1, "battery on|off [autodeploy]") {
-		return
-	}
-	enabled := engine.ParseBool(args[0])
-	autoDeploy := len(args) > 1 && strings.ToLower(args[1]) == "autodeploy"
-	state := "DISABLED"
-	if enabled {
-		state = "ENABLED"
-		if autoDeploy {
-			state += " + auto-deploy"
+	autoDeploy := false
+	chemistry := gcp.ChemistryLiPo
+	cellCount := byte(0) // 0 = auto-detect
+
+	for _, raw := range args {
+		a := strings.ToLower(raw)
+		switch {
+		case a == "autodeploy" || a == "auto-deploy":
+			autoDeploy = true
+		case a == "lipo":
+			chemistry = gcp.ChemistryLiPo
+		case a == "liion" || a == "li-ion":
+			chemistry = gcp.ChemistryLiIon
+		case a == "nimh" || a == "ni-mh":
+			chemistry = gcp.ChemistryNiMH
+		case a == "auto" || a == "autodetect" || a == "cells:auto" || a == "cells=auto":
+			cellCount = 0
+		case strings.HasPrefix(a, "cells:") || strings.HasPrefix(a, "cells="):
+			n := engine.Atoi(a[6:])
+			if n < 0 || n > 6 {
+				h.E.Out.Error("cells must be 0..6 (got %d)", n)
+				return
+			}
+			cellCount = byte(n)
+		default:
+			h.E.Out.Error("Unknown battery arg: %s", raw)
+			return
 		}
 	}
-	h.E.Ack(h.E.API.GearControl.BatteryConfig(enabled, autoDeploy), fmt.Sprintf("Battery monitoring: %s", state))
+
+	cellLabel := "auto"
+	if cellCount > 0 {
+		cellLabel = fmt.Sprintf("%dS", cellCount)
+	}
+	autoLabel := ""
+	if autoDeploy {
+		autoLabel = " + auto-deploy"
+	}
+	summary := fmt.Sprintf("Battery: %s | cells=%s%s", chemistryLabel(chemistry), cellLabel, autoLabel)
+	h.E.Ack(h.E.API.GearControl.BatteryConfig(autoDeploy, chemistry, cellCount), summary)
+}
+
+func chemistryLabel(c byte) string {
+	switch c {
+	case gcp.ChemistryLiIon:
+		return "Li-Ion"
+	case gcp.ChemistryNiMH:
+		return "NiMH"
+	default:
+		return "LiPo"
+	}
 }
 
 // forEachGear applies fn to a single gear ID or all 3 gears.

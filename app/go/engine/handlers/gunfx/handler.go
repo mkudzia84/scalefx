@@ -6,22 +6,42 @@ package gunfx
 import (
 	"fmt"
 	"scalefx/engine"
-	"scalefx/protocol"
 	pcore "scalefx/protocol/core"
-	gfxp "scalefx/protocol/gunfx"
 	"strings"
 )
 
-// Handler groups all GunFX commands and parsers.
+// Handler groups all GunFX commands, decoders, and parsers.
+//
+// Broadcast observers are silent by default — the CLI prints via the
+// synchronous `status` command path. Studio subscribes by calling
+// handler.OnStatusBroadcast.Add(fn).
 type Handler struct {
 	E *engine.Engine
+
+	OnStatusBroadcast engine.Observers[StatusBroadcast] // periodic STATUS_BROADCAST
 }
 
 // Register adds the GunFX command group and status parser to the engine.
-func Register(eng *engine.Engine) {
+// Returns the Handler so external consumers can install listeners.
+func Register(eng *engine.Engine) *Handler {
 	h := &Handler{E: eng}
-	eng.RegisterStatusParser(pcore.CtrlGunFX, h.parseGunFXStatus)
+	eng.RegisterStatusParser(pcore.CtrlGunFX, func(data []byte) {
+		if s := DecodeStatusBroadcast(data); s != nil {
+			h.FormatStatusBroadcast(s)
+		} else {
+			h.E.Out.Printf("  GunFX: (incomplete: %d bytes)\n", len(data))
+		}
+	})
+	eng.RegisterStatusBroadcastParser(pcore.CtrlGunFX, func(data []byte) {
+		if h.OnStatusBroadcast.Len() == 0 {
+			return
+		}
+		if s := DecodeStatusBroadcast(data); s != nil {
+			h.OnStatusBroadcast.Fire(s)
+		}
+	})
 	eng.AddGroup(h.commands())
+	return h
 }
 
 func (h *Handler) commands() *engine.CmdGroup {
@@ -168,131 +188,3 @@ func (h *Handler) cmdSmokeLimit(args []string) {
 	h.E.Ack(h.E.API.GunFx.SmokeLimit(ch, uint16(limit)), msg)
 }
 
-// ─── GunFX Status Parser ───
-
-func (h *Handler) parseGunFXStatus(data []byte) {
-	if len(data) < 20 {
-		h.E.Out.Printf("  GunFX: (incomplete: %d bytes)\n", len(data))
-		return
-	}
-
-	flags := data[0]
-	firing := flags&0x01 != 0
-	flashActive := flags&0x02 != 0
-	flashFading := flags&0x04 != 0
-	heaterOn := flags&0x08 != 0
-	fanOn := flags&0x10 != 0
-	fanSpindown := flags&0x20 != 0
-
-	fanSpeed := data[1]
-	fanOffMs := protocol.ReadU16LE(data, 2)
-	servo0 := protocol.ReadU16LE(data, 4)
-	servo1 := protocol.ReadU16LE(data, 6)
-	servo2 := protocol.ReadU16LE(data, 8)
-	rpm := protocol.ReadU16LE(data, 10)
-	shots := protocol.ReadU32LE(data, 12)
-	heaterMs := protocol.ReadU32LE(data, 16)
-
-	var stateParts []string
-	if firing {
-		stateParts = append(stateParts, h.E.Out.C(engine.ColorRed, "FIRING"))
-	}
-	if flashActive {
-		stateParts = append(stateParts, "FLASH")
-	}
-	if flashFading {
-		stateParts = append(stateParts, "FADING")
-	}
-	if heaterOn {
-		stateParts = append(stateParts, h.E.Out.C(engine.ColorYellow, "HEATER"))
-	}
-	if fanOn {
-		stateParts = append(stateParts, "FAN")
-	}
-	if fanSpindown {
-		stateParts = append(stateParts, "SPINDOWN")
-	}
-	stateStr := "IDLE"
-	if len(stateParts) > 0 {
-		stateStr = strings.Join(stateParts, ", ")
-	}
-
-	h.E.Out.Printf("  ── GunFX ──────────────────────\n")
-	h.E.Out.Printf("  State:     %s\n", stateStr)
-
-	if firing {
-		h.E.Out.Printf("  Fire rate: %d RPM\n", rpm)
-	}
-	h.E.Out.Printf("  Shots:     %d\n", shots)
-
-	if fanOn || fanSpindown {
-		fanInfo := fmt.Sprintf("speed=%d", fanSpeed)
-		if fanSpindown && fanOffMs > 0 {
-			fanInfo += fmt.Sprintf(", off in %dms", fanOffMs)
-		}
-		h.E.Out.Printf("  Fan:       %s\n", fanInfo)
-	}
-
-	if heaterMs > 0 {
-		heaterSec := float64(heaterMs) / 1000.0
-		h.E.Out.Printf("  Heater:    %.1fs total\n", heaterSec)
-	}
-
-	h.E.Out.Printf("  Servos:    [%dµs, %dµs, %dµs]\n", servo0, servo1, servo2)
-
-	if len(data) >= 22 {
-		htrErr := data[20]
-		fanErr := data[21]
-		if htrErr != 0 || fanErr != 0 {
-			h.E.Out.Printf("  ── Smoke Errors ──────────────\n")
-			if htrErr != 0 {
-				h.E.Out.Printf("  Heater:    %s\n", h.E.Out.C(engine.ColorRed, gfxp.SmokeErrorReasonName(htrErr)))
-			}
-			if fanErr != 0 {
-				h.E.Out.Printf("  Fan:       %s\n", h.E.Out.C(engine.ColorRed, gfxp.SmokeErrorReasonName(fanErr)))
-			}
-		}
-	}
-
-	if len(data) >= 24 {
-		htrDuty := data[22]
-		fanDuty := data[23]
-		if htrDuty < 255 || fanDuty < 255 {
-			h.E.Out.Printf("  ── Overcurrent Throttle ──────\n")
-			if htrDuty < 255 {
-				pct := int(htrDuty) * 100 / 255
-				h.E.Out.Printf("  Heater:    %s\n", h.E.Out.C(engine.ColorYellow, fmt.Sprintf("throttled to %d%% (duty %d/255)", pct, htrDuty)))
-			}
-			if fanDuty < 255 {
-				pct := int(fanDuty) * 100 / 255
-				h.E.Out.Printf("  Fan:       %s\n", h.E.Out.C(engine.ColorYellow, fmt.Sprintf("throttled to %d%% (duty %d/255)", pct, fanDuty)))
-			}
-		}
-	}
-
-	if len(data) >= 28 {
-		batteryMV := protocol.ReadU16LE(data, 24)
-		cellCount := data[26]
-		batteryPct := data[27]
-
-		if batteryMV > 0 {
-			batteryV := float64(batteryMV) / 1000.0
-			battParts := []string{fmt.Sprintf("%.2fV (%dmV)", batteryV, batteryMV)}
-			if cellCount > 0 {
-				battParts = append(battParts, fmt.Sprintf("%dS", cellCount))
-			}
-			if batteryPct > 0 {
-				pctColor := engine.ColorGreen
-				if batteryPct <= 10 {
-					pctColor = engine.ColorRed
-				} else if batteryPct <= 30 {
-					pctColor = engine.ColorYellow
-				}
-				battParts = append(battParts, h.E.Out.C(pctColor, fmt.Sprintf("%d%%", batteryPct)))
-			}
-			h.E.Out.Printf("  Battery:   %s\n", strings.Join(battParts, ", "))
-		} else {
-			h.E.Out.Printf("  Battery:   %s\n", h.E.Out.C(engine.ColorYellow, "not detected"))
-		}
-	}
-}

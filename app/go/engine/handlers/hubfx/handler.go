@@ -16,16 +16,38 @@ import (
 	"time"
 )
 
-// Handler groups all HubFX commands and parsers.
+// Handler groups all HubFX commands, decoders, and parsers.
+//
+// Broadcast observers are silent by default — the CLI prints via the
+// synchronous `status` command path. Studio subscribes by calling
+// handler.OnStatusBroadcast.Add(fn).
 type Handler struct {
 	E *engine.Engine
+
+	OnStatusBroadcast engine.Observers[StatusBroadcast] // periodic STATUS_BROADCAST
 }
 
 // Register adds the HubFX command group and status parser to the engine.
-func Register(eng *engine.Engine) {
+// Returns the Handler so external consumers can install listeners.
+func Register(eng *engine.Engine) *Handler {
 	h := &Handler{E: eng}
-	eng.RegisterStatusParser(pcore.CtrlHubFX, h.parseHubFXStatus)
+	eng.RegisterStatusParser(pcore.CtrlHubFX, func(data []byte) {
+		if s := DecodeStatusBroadcast(data); s != nil {
+			h.FormatStatusBroadcast(s)
+		} else {
+			h.E.Out.Printf("  HubFX: (incomplete: %d bytes)\n", len(data))
+		}
+	})
+	eng.RegisterStatusBroadcastParser(pcore.CtrlHubFX, func(data []byte) {
+		if h.OnStatusBroadcast.Len() == 0 {
+			return
+		}
+		if s := DecodeStatusBroadcast(data); s != nil {
+			h.OnStatusBroadcast.Fire(s)
+		}
+	})
 	eng.AddGroup(h.commands())
+	return h
 }
 
 func (h *Handler) commands() *engine.CmdGroup {
