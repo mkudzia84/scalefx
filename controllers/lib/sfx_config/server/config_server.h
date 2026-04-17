@@ -55,6 +55,9 @@
 template<typename TConfigStore>
 class ConfigServerT : public BusServer {
 public:
+    using ConfigDataType = typename TConfigStore::Data;
+    using ReloadedCallback = std::function<void(const ConfigDataType&)>;
+
     ConfigServerT() = default;
 
     const char* handlerName() const override { return "ConfigServer"; }
@@ -66,6 +69,13 @@ public:
     /** @brief Get the config store (for initial load, reader setup, etc.) */
     TConfigStore& store() { return _store; }
     const TConfigStore& store() const { return _store; }
+
+    // ========================================================================
+    // Callbacks
+    // ========================================================================
+
+    /** @brief Register callback invoked after successful config reload */
+    void onReloaded(ReloadedCallback cb) { _onReloaded = cb; }
 
     // ========================================================================
     // Convenience: Load config (call during setup)
@@ -129,6 +139,7 @@ protected:
 
 private:
     TConfigStore _store;
+    ReloadedCallback _onReloaded;
 
     void handleReload(const uint8_t* payload, size_t len);
     void handleStatus();

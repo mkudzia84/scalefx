@@ -84,6 +84,9 @@ struct FlashStorageInfo {
 
 class FlashModule {
 public:
+    /// File handle type (matches SdCardModuleT convention for template bridges)
+    using FileHandle = LFSFile;
+
     /// Get the singleton instance
     static FlashModule& instance() {
         static FlashModule inst;

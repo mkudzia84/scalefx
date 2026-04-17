@@ -58,12 +58,14 @@ void ConfigServerT<TConfigStore>::handleReload(const uint8_t* payload, size_t le
     if (result.ok) {
         SFX_LOG_INFO("[Config] Reloaded: %u bytes, valid",
                      _store.fileSize());
+        if (_onReloaded) _onReloaded(_store.data());
         this->sendAck();
     } else if (result.populated && !result.validated) {
         // Loaded but validation failed — report as warning ACK with message
         SFX_LOG_WARN("[Config] Loaded with validation warnings: %s",
                      _store.lastError());
         // Send ACK since data IS loaded, but include validation note
+        if (_onReloaded) _onReloaded(_store.data());
         this->sendAck();
     } else {
         // Parse or populate failed
