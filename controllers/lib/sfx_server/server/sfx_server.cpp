@@ -124,6 +124,9 @@ void SfxServer::loop() {
     // Keep free RAM current for STATUS response
     _core.updateFreeRam(SFX_FREE_HEAP());
 
+    // Periodic status broadcast (verbose mode — emits module status as STATUS_UPDATE)
+    _core.tickStatusBroadcast();
+
     // DiagLog uses a rolling ring buffer — log messages are retrieved
     // on-demand via DIAG_HISTORY command (non-draining read).
 

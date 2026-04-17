@@ -347,3 +347,19 @@ void CoreCommandServer::sendStatusUpdate(uint8_t source, uint8_t updateType,
     }
     sendRawPacket(CorePacket::STATUS_UPDATE, SfxWire::TAG_ASYNC, payload, len);
 }
+
+void CoreCommandServer::tickStatusBroadcast() {
+    if (!isVerbose() || !_initReceived || _transferActive || !_statusDataCallback) return;
+    if (_statusBroadcastInterval_ms == 0) return;
+
+    unsigned long now = millis();
+    if (now - _lastStatusBroadcast_ms < _statusBroadcastInterval_ms) return;
+    _lastStatusBroadcast_ms = now;
+
+    // Call the same status data callback used by STATUS response
+    uint8_t buf[CoreProtocol::MAX_PAYLOAD_SIZE - 2];  // Leave room for source+type envelope
+    size_t len = _statusDataCallback(buf, sizeof(buf));
+    if (len > 0) {
+        sendStatusUpdate(_statusBroadcastSource, StatusUpdateType::STATUS_BROADCAST, buf, len);
+    }
+}

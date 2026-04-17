@@ -337,6 +337,32 @@ public:
     void sendStatusUpdate(uint8_t source, uint8_t updateType,
                           const uint8_t* data = nullptr, size_t dataLen = 0);
 
+    /**
+     * @brief Set periodic status broadcast interval (verbose mode)
+     *
+     * When verbose flag is set and interval > 0, tickStatusBroadcast() will
+     * periodically call the registered onStatusData callback and emit the
+     * module data as a STATUS_UPDATE(STATUS_BROADCAST) packet.
+     *
+     * @param interval_ms Broadcast interval in ms (0 = disabled, default 200)
+     */
+    void setStatusBroadcastInterval(uint32_t interval_ms) { _statusBroadcastInterval_ms = interval_ms; }
+
+    /**
+     * @brief Set the source module ID for status broadcast packets
+     * @param source StatusUpdateSource::* constant (e.g., GEARCONTROL)
+     */
+    void setStatusBroadcastSource(uint8_t source) { _statusBroadcastSource = source; }
+
+    /**
+     * @brief Tick the periodic status broadcast (call from SfxServer::loop())
+     *
+     * Checks if verbose mode is active, interval has elapsed, and no transfer
+     * is in progress. If all conditions met, calls the status data callback
+     * and emits the result as STATUS_UPDATE(STATUS_BROADCAST).
+     */
+    void tickStatusBroadcast();
+
 protected:
     // ========================================================================
     // BusServer Virtual Hooks
@@ -364,6 +390,11 @@ private:
     unsigned long _prevActivityMs = 0;
     uint32_t _commandCounter = 0;
     uint32_t _keepaliveCounter = 0;
+
+    // Periodic status broadcast (verbose mode)
+    uint32_t _statusBroadcastInterval_ms = 200;  // Default 200ms (5 Hz)
+    unsigned long _lastStatusBroadcast_ms = 0;
+    uint8_t _statusBroadcastSource = StatusUpdateSource::CORE;  // Default source
 
     CoreInitCallback _initCallback;
     CoreShutdownCallback _shutdownCallback;

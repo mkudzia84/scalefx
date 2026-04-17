@@ -135,10 +135,11 @@ const (
 )
 
 const (
-	StatusUpdateServoPosition byte = 0x01
-	StatusUpdateVoltage       byte = 0x02
-	StatusUpdateCurrent       byte = 0x03
-	StatusUpdateTemperature   byte = 0x04
+	StatusUpdateServoPosition  byte = 0x01
+	StatusUpdateVoltage        byte = 0x02
+	StatusUpdateCurrent        byte = 0x03
+	StatusUpdateTemperature    byte = 0x04
+	StatusUpdateStatusBroadcast byte = 0x10 // Full module status blob (same format as STATUS module data)
 )
 
 // ─── Commands ───

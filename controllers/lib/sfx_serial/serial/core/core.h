@@ -327,10 +327,11 @@ namespace StatusUpdateSource {
  * Common types 0x01-0x0F are shared across modules.
  */
 namespace StatusUpdateType {
-    constexpr uint8_t SERVO_POSITION  = 0x01;  ///< [servoId:u8][position_us:u16LE]
-    constexpr uint8_t VOLTAGE         = 0x02;  ///< [channelId:u8][voltage_mV:u16LE]
-    constexpr uint8_t CURRENT         = 0x03;  ///< [channelId:u8][current_mA:u16LE]
-    constexpr uint8_t TEMPERATURE     = 0x04;  ///< [sensorId:u8][temp_C_x10:i16LE]
+    constexpr uint8_t SERVO_POSITION    = 0x01;  ///< [servoId:u8][position_us:u16LE]
+    constexpr uint8_t VOLTAGE           = 0x02;  ///< [channelId:u8][voltage_mV:u16LE]
+    constexpr uint8_t CURRENT           = 0x03;  ///< [channelId:u8][current_mA:u16LE]
+    constexpr uint8_t TEMPERATURE       = 0x04;  ///< [sensorId:u8][temp_C_x10:i16LE]
+    constexpr uint8_t STATUS_BROADCAST  = 0x10;  ///< Full module status blob (same format as STATUS module data)
 }
 
 // ============================================================================
