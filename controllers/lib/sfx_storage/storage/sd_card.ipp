@@ -236,7 +236,7 @@ uint8_t SdCardModuleT<TPolicy>::removeFile(const char* path) {
 }
 
 template <typename TPolicy>
-uint8_t SdCardModuleT<TPolicy>::removeDirectory(const char* path) {
+uint8_t SdCardModuleT<TPolicy>::removeDirectory(const char* path, bool recursive) {
     if (!_initialized) return SdError::NOT_INITIALIZED;
 
     lock();
@@ -256,6 +256,12 @@ uint8_t SdCardModuleT<TPolicy>::removeDirectory(const char* path) {
         return ok ? SdError::OK : SdError::IO_ERROR;
     }
 
+    if (!recursive) {
+        bool ok = _policy.removeDir(path);
+        unlock();
+        return ok ? SdError::OK : SdError::IO_ERROR;
+    }
+
     bool ok = removeDirectoryRecursive(path);
     unlock();
     return ok ? SdError::OK : SdError::IO_ERROR;
@@ -264,66 +270,103 @@ uint8_t SdCardModuleT<TPolicy>::removeDirectory(const char* path) {
 template <typename TPolicy>
 bool SdCardModuleT<TPolicy>::removeDirectoryRecursive(const char* path, int depth) {
     // Caller MUST hold lock.
-    // Depth-first: remove all children, then the directory itself.
+    // Two-phase: snapshot child names BEFORE any deletes, then delete from snapshot.
+    // Rationale: on at least one platform the directory iterator is invalidated when
+    // entries are deleted during iteration, causing truncated enumeration and a
+    // subsequent failed rmdir on a still-non-empty directory.
 
-    // Safety: prevent infinite recursion on corrupted circular directory refs
     if (depth >= MAX_TREE_DEPTH) return false;
 
-    FileHandle dir = _policy.openDir(path);
-    if (!TPolicy::isValid(dir) || !TPolicy::isDirectory(dir)) {
-        if (TPolicy::isValid(dir)) TPolicy::closeFile(dir);
-        return false;
+    struct ChildEntry {
+        String name;
+        bool   isDir;
+    };
+    std::vector<ChildEntry> children;
+
+    {
+        FileHandle dir = _policy.openDir(path);
+        if (!TPolicy::isValid(dir) || !TPolicy::isDirectory(dir)) {
+            if (TPolicy::isValid(dir)) TPolicy::closeFile(dir);
+            return false;
+        }
+
+        while (true) {
+            FileHandle f = TPolicy::nextFile(dir);
+            if (!TPolicy::isValid(f)) break;
+
+            char name[64];
+            TPolicy::extractName(f, name, sizeof(name));
+            children.push_back({ String(name), TPolicy::isDirectory(f) });
+            TPolicy::closeFile(f);
+            if (children.size() >= (size_t)MAX_TREE_ENTRIES) break;
+        }
+
+        TPolicy::closeFile(dir);
     }
 
-    while (true) {
-        FileHandle f = TPolicy::nextFile(dir);
-        if (!TPolicy::isValid(f)) break;
+    size_t pathLen = strlen(path);
+    const char* sep = (pathLen > 0 && path[pathLen - 1] == '/') ? "" : "/";
 
-        char name[64];
-        TPolicy::extractName(f, name, sizeof(name));
-        bool isDir = TPolicy::isDirectory(f);
-        TPolicy::closeFile(f);
-
+    for (const auto& c : children) {
         char fullPath[192];
-        size_t pathLen = strlen(path);
-        const char* sep = (pathLen > 0 && path[pathLen - 1] == '/') ? "" : "/";
-        snprintf(fullPath, sizeof(fullPath), "%s%s%s", path, sep, name);
-
-        if (isDir) {
-            if (!removeDirectoryRecursive(fullPath, depth + 1)) {
-                TPolicy::closeFile(dir);
-                return false;
-            }
+        snprintf(fullPath, sizeof(fullPath), "%s%s%s", path, sep, c.name.c_str());
+        if (c.isDir) {
+            if (!removeDirectoryRecursive(fullPath, depth + 1)) return false;
         } else {
-            if (!_policy.removeFile(fullPath)) {
-                TPolicy::closeFile(dir);
-                return false;
-            }
+            if (!_policy.removeFile(fullPath)) return false;
         }
     }
 
-    TPolicy::closeFile(dir);
     return _policy.removeDir(path);
 }
 
 template <typename TPolicy>
-uint8_t SdCardModuleT<TPolicy>::makeDirectory(const char* path) {
+uint8_t SdCardModuleT<TPolicy>::makeDirectory(const char* path, bool createParents) {
     if (!_initialized) return SdError::NOT_INITIALIZED;
 
     lock();
 
-    // Already exists as directory? That's OK.
-    if (_policy.exists(path)) {
-        FileHandle f = _policy.openDir(path);
+    auto checkExistingDir = [this](const char* p) -> int {
+        // 1 = exists as dir, 0 = exists as file, -1 = does not exist
+        if (!_policy.exists(p)) return -1;
+        FileHandle f = _policy.openDir(p);
         bool isDir = TPolicy::isValid(f) && TPolicy::isDirectory(f);
         if (TPolicy::isValid(f)) TPolicy::closeFile(f);
+        return isDir ? 1 : 0;
+    };
+
+    if (!createParents) {
+        int existing = checkExistingDir(path);
+        if (existing == 1) { unlock(); return SdError::OK; }
+        if (existing == 0) { unlock(); return SdError::ALREADY_EXISTS; }
+
+        bool ok = _policy.makeDir(path);
         unlock();
-        return isDir ? SdError::OK : SdError::ALREADY_EXISTS;
+        return ok ? SdError::OK : SdError::IO_ERROR;
     }
 
-    bool ok = _policy.makeDir(path);
+    // PARENTS mode: walk path components, mkdir each. Idempotent.
+    char buf[192];
+    size_t n = strlen(path);
+    if (n == 0 || n >= sizeof(buf)) { unlock(); return SdError::IO_ERROR; }
+    memcpy(buf, path, n + 1);
+
+    for (size_t i = 1; i <= n; i++) {
+        if (buf[i] == '/' || buf[i] == '\0') {
+            char saved = buf[i];
+            buf[i] = '\0';
+            if (i > 1) {
+                int existing = checkExistingDir(buf);
+                if (existing == 0) { unlock(); return SdError::ALREADY_EXISTS; }
+                if (existing == -1) {
+                    if (!_policy.makeDir(buf)) { unlock(); return SdError::IO_ERROR; }
+                }
+            }
+            buf[i] = saved;
+        }
+    }
     unlock();
-    return ok ? SdError::OK : SdError::IO_ERROR;
+    return SdError::OK;
 }
 
 

@@ -7,18 +7,19 @@
 // to drive .verify-error / .verify-warn class bindings.
 //
 // Rules implemented:
-//   • pin-input-dup        — only one gear_input / yaw_input pin allowed
+//   • pin-input-dup        — only one yaw_input pin allowed
 //   • pin-yaw-output-dup   — only one yaw_output pin allowed
 //   • pin-door-disabled    — door pin maps to a disabled gear channel
 //   • pin-yaw-disabled     — yaw_output pin maps to a disabled gear channel
 //   • pin-yaw-orphan       — yaw_input present without yaw_output (or vice versa)
-//   • pin-no-input         — direct mode without a gear_input pin
 //   • gear-uncalibrated    — enabled gear is not calibrated
 //   • gear-no-doors        — enabled gear has no door servo pins assigned
-//   • door-range           — door open µs == close µs
-//   • door-bounds          — door µs outside servo PWM range [500,2500]
-//   • yaw-range            — yaw min ≥ max
+//   • servo-range          — door/yaw min µs ≥ max µs
+//   • servo-bounds         — servo µs outside PWM range [500,2500]
 //   • yaw-neutral-bounds   — yaw neutral outside [min,max]
+//
+// gear_input is a fixed-function pin (GP0) — its enable / threshold live in
+// GearInputConfig and are not validated as pin roles.
 
 import {
     type ConfigVerifier,
@@ -34,7 +35,7 @@ import {
 // Mirrors the in-component state from GearControlTab. The verifier works
 // against this interface so it's decoupled from Svelte.
 
-export type PinRole = 'door' | 'gear_input' | 'yaw_input' | 'yaw_output' | 'unused'
+export type PinRole = 'door' | 'yaw_input' | 'yaw_output' | 'unused'
 
 export interface GearPinConfig {
     role: PinRole
@@ -42,6 +43,13 @@ export interface GearPinConfig {
     channel: number
     gear_id: number
     threshold_us: number
+    /** Servo fields — used for role='door' and 'yaw_output'. */
+    min_us: number
+    max_us: number
+    speed: number
+    reversed: boolean
+    /** Yaw output only. */
+    neutral_us: number
 }
 
 export interface GearConfigState {
@@ -49,8 +57,6 @@ export interface GearConfigState {
     calibrated: boolean
     /** Raw flag — board reports it as configFlags & 0x80 over the wire. */
     timeout_ms: number
-    /** [open0, close0, open1, close1] in µs. */
-    door: { open0_us: number; close0_us: number; open1_us: number; close1_us: number }
     /** Number of door pins assigned to this gear in pinConfigs. */
     doorPinCount: number
 }
@@ -64,10 +70,16 @@ export interface YawConfigState {
     max_us: number
 }
 
+export interface GearInputConfig {
+    enabled: boolean
+    threshold_us: number
+}
+
 export interface GearControlConfig {
     pins: GearPinConfig[]
     gears: GearConfigState[]
     yaw: YawConfigState
+    gearInput: GearInputConfig
     /** Connection mode: true → board talks to HubFX; pin inputs are unused. */
     isSlave: boolean
 }
@@ -88,31 +100,28 @@ export class GearControlConfigVerifier implements ConfigVerifier<GearControlConf
         const issues: VerifyIssue[] = []
 
         // ── 1. Pin-role uniqueness ─────────────────────────────────────────
-        const inputTracker = new ResourceTracker('Gear input pin')
         const yawInputTracker = new ResourceTracker('Yaw input pin')
         const yawOutputTracker = new ResourceTracker('Yaw output pin')
 
         for (let i = 0; i < config.pins.length; i++) {
             const p = config.pins[i]
-            if (p.role === 'gear_input') {
-                inputTracker.claim('gear_input', `pin${i + 1}`, `pins[${i}]`)
-            } else if (p.role === 'yaw_input') {
+            if (p.role === 'yaw_input') {
                 yawInputTracker.claim('yaw_input', `pin${i + 1}`, `pins[${i}]`)
             } else if (p.role === 'yaw_output') {
                 yawOutputTracker.claim('yaw_output', `pin${i + 1}`, `pins[${i}]`)
             }
         }
-        issues.push(...inputTracker.conflicts('pin-input-dup'))
         issues.push(...yawInputTracker.conflicts('pin-input-dup'))
         issues.push(...yawOutputTracker.conflicts('pin-yaw-output-dup'))
 
-        // ── 2. Direct mode requires a gear_input pin ───────────────────────
-        const hasGearInput = config.pins.some(p => p.role === 'gear_input')
-        if (!config.isSlave && !hasGearInput) {
+        // ── 2. Gear input (fixed GP0) — threshold sanity ───────────────────
+        if (config.gearInput.enabled &&
+            (config.gearInput.threshold_us < 800 || config.gearInput.threshold_us > 2200)) {
             issues.push({
-                id: 'pin-no-input',
+                id: 'gear-input-threshold',
                 severity: 'warning',
-                message: 'Direct mode: no gear_input pin assigned — board cannot read deploy/retract command',
+                message: `Gear input threshold (${config.gearInput.threshold_us}µs) outside [800,2200]`,
+                path: 'gearInput',
             })
         }
 
@@ -143,17 +152,24 @@ export class GearControlConfigVerifier implements ConfigVerifier<GearControlConf
                     issues.push({
                         id: 'pin-door-disabled',
                         severity: 'error',
-                        message: `Pin ${i + 1}: door servo bound to disabled gear channel ${ch}`,
+                        message: `SRV${i + 1}: door servo bound to disabled gear channel ${ch}`,
                         path: `pins[${i}]`,
                     })
                 }
             } else if (p.role === 'yaw_output') {
                 const gid = p.gear_id
-                if (gid < 0 || gid >= config.gears.length || !config.gears[gid].enabled) {
+                if (gid !== 0) {
+                    issues.push({
+                        id: 'pin-yaw-not-nose',
+                        severity: 'error',
+                        message: `SRV${i + 1}: yaw_output must bind to nose gear (gear 0), got gear ${gid}`,
+                        path: `pins[${i}]`,
+                    })
+                } else if (!config.gears[0].enabled) {
                     issues.push({
                         id: 'pin-yaw-disabled',
                         severity: 'error',
-                        message: `Pin ${i + 1}: yaw_output bound to disabled gear ${gid}`,
+                        message: `SRV${i + 1}: yaw_output bound to disabled nose gear`,
                         path: `pins[${i}]`,
                     })
                 }
@@ -182,62 +198,33 @@ export class GearControlConfigVerifier implements ConfigVerifier<GearControlConf
                     path: `gears[${gi}]`,
                 })
             }
+        }
 
-            // Door range checks — only the legs that actually have pins.
-            if (g.doorPinCount >= 1) {
-                if (g.door.open0_us === g.door.close0_us) {
-                    issues.push({
-                        id: 'door-range',
-                        severity: 'error',
-                        message: `Gear ${gi} Door A: open µs equals close µs (${g.door.open0_us})`,
-                        path: `gears[${gi}].door.0`,
-                    })
-                }
-                for (const v of [g.door.open0_us, g.door.close0_us]) {
-                    if (v < PWM_MIN_US || v > PWM_MAX_US) {
-                        issues.push({
-                            id: 'door-bounds',
-                            severity: 'error',
-                            message: `Gear ${gi} Door A µs ${v} outside servo range [${PWM_MIN_US},${PWM_MAX_US}]`,
-                            path: `gears[${gi}].door.0`,
-                        })
-                        break
-                    }
-                }
+        // ── 5b. Per-pin servo range/bounds (doors + yaw_output) ─────────────
+        for (let i = 0; i < config.pins.length; i++) {
+            const p = config.pins[i]
+            if (p.role !== 'door' && p.role !== 'yaw_output') continue
+            if (p.min_us >= p.max_us) {
+                issues.push({
+                    id: 'servo-range',
+                    severity: 'error',
+                    message: `SRV${i + 1}: servo min (${p.min_us}µs) ≥ max (${p.max_us}µs)`,
+                    path: `pins[${i}]`,
+                })
             }
-            if (g.doorPinCount >= 2) {
-                if (g.door.open1_us === g.door.close1_us) {
-                    issues.push({
-                        id: 'door-range',
-                        severity: 'error',
-                        message: `Gear ${gi} Door B: open µs equals close µs (${g.door.open1_us})`,
-                        path: `gears[${gi}].door.1`,
-                    })
-                }
-                for (const v of [g.door.open1_us, g.door.close1_us]) {
-                    if (v < PWM_MIN_US || v > PWM_MAX_US) {
-                        issues.push({
-                            id: 'door-bounds',
-                            severity: 'error',
-                            message: `Gear ${gi} Door B µs ${v} outside servo range [${PWM_MIN_US},${PWM_MAX_US}]`,
-                            path: `gears[${gi}].door.1`,
-                        })
-                        break
-                    }
-                }
+            if (p.min_us < PWM_MIN_US || p.max_us > PWM_MAX_US) {
+                issues.push({
+                    id: 'servo-bounds',
+                    severity: 'error',
+                    message: `SRV${i + 1}: servo range [${p.min_us},${p.max_us}] outside [${PWM_MIN_US},${PWM_MAX_US}]`,
+                    path: `pins[${i}]`,
+                })
             }
         }
 
-        // ── 6. Yaw range/neutral ───────────────────────────────────────────
-        if (config.yaw.enabled) {
-            if (config.yaw.min_us >= config.yaw.max_us) {
-                issues.push({
-                    id: 'yaw-range',
-                    severity: 'error',
-                    message: `Yaw min (${config.yaw.min_us}µs) ≥ max (${config.yaw.max_us}µs)`,
-                    path: 'yaw',
-                })
-            } else if (config.yaw.neutral_us < config.yaw.min_us || config.yaw.neutral_us > config.yaw.max_us) {
+        // ── 6. Yaw neutral bounds (min/max checked per-pin above) ──────────
+        if (config.yaw.enabled && config.yaw.min_us < config.yaw.max_us) {
+            if (config.yaw.neutral_us < config.yaw.min_us || config.yaw.neutral_us > config.yaw.max_us) {
                 issues.push({
                     id: 'yaw-neutral-bounds',
                     severity: 'warning',

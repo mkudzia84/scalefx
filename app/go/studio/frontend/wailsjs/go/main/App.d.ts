@@ -8,9 +8,25 @@ export function Connect(arg1:string):Promise<main.ConnectionInfo>;
 
 export function Disconnect():Promise<main.ConnectionInfo>;
 
+export function DownloadConfig():Promise<string>;
+
 export function DownloadEsptool():Promise<void>;
 
 export function FlashFromRelease(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
+
+export function FsDelete(arg1:string,arg2:string):Promise<void>;
+
+export function FsDownloadToDisk(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function FsList(arg1:string,arg2:string):Promise<Array<main.FsEntry>>;
+
+export function FsMkdir(arg1:string,arg2:string):Promise<void>;
+
+export function FsStorageStatus():Promise<main.FsStorageStatus>;
+
+export function FsUploadBatch(arg1:string,arg2:string,arg3:Array<string>,arg4:boolean):Promise<void>;
+
+export function FsUploadFromDisk(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
 
 export function GetConnectionInfo():Promise<main.ConnectionInfo>;
 
@@ -26,4 +42,10 @@ export function GetToolsStatus():Promise<main.ToolsStatus>;
 
 export function ListPorts():Promise<Array<main.PortInfo>>;
 
+export function OpenTextFile(arg1:string):Promise<main.OpenedFile>;
+
+export function SaveTextFile(arg1:string,arg2:string,arg3:string):Promise<string>;
+
 export function SendCommand(arg1:string):Promise<void>;
+
+export function UploadConfig(arg1:string):Promise<void>;

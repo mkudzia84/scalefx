@@ -126,6 +126,19 @@ func (h *Handler) FormatStatusBroadcast(s *StatusBroadcast) {
 		ledParts = append(ledParts, "err")
 	}
 	h.E.Out.Printf("  LEDs:      [%s]\n", strings.Join(ledParts, ", "))
+
+	if s.GearInputEnabled || s.GearInput_us > 0 {
+		state := "—"
+		if s.GearInput_us > 0 {
+			if s.GearInputCommandDeploy {
+				state = h.E.Out.C(engine.ColorGreen, "deploy")
+			} else {
+				state = h.E.Out.C(engine.ColorCyan, "retract")
+			}
+		}
+		h.E.Out.Printf("  GearInput: %dµs (thr=%dµs) → %s\n",
+			s.GearInput_us, s.GearInputThreshold_us, state)
+	}
 }
 
 // FormatCalibStatus is the CLI formatter for GEAR_CALIB_STATUS async events.

@@ -86,9 +86,6 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"battery":          {h.cmdBattery, "battery [autodeploy] [lipo|liion|nimh] [cells:N|auto]", "Battery profile — monitor is always on; no args = LiPo, auto cells", true},
 		},
 	}
-	for k, v := range h.E.ConfigCommands() {
-		g.Commands[k] = v
-	}
 	return g
 }
 

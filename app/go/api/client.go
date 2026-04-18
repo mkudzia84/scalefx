@@ -27,7 +27,7 @@ func NewClient(conn *protocol.Connection) *Client {
 		LightFx:     &LightFxApi{base},
 		GearControl: &GearControlApi{base},
 		HubFx:       &HubFxApi{base},
-		Files:       &FileApi{base},
+		Files:       &FileApi{apiClient: base, peerMaxPayload: PicoMaxPayload},
 		conn:        conn,
 	}
 }

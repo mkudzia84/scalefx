@@ -10,16 +10,62 @@ import (
 	"time"
 )
 
+// Upload chunk-size constants.
+//
+// FILE_UPLOAD_DATA payload layout: [seq:u16LE][crc16:u16LE][data:N] — the
+// 4-byte envelope counts against MAX_PAYLOAD_SIZE. Anything larger than the
+// peer's capacity is silently dropped by the COBS framer (framing error),
+// manifesting as a segment-0 ACK timeout.
+//
+//	Pico  (RP2040/RP2350): MAX_PAYLOAD_SIZE = 512  → 508 bytes of data
+//	ESP32-S3:              MAX_PAYLOAD_SIZE = 2048 → 2044 bytes of data
+//
+// Use UploadChunkSize (safe Pico default) unless the peer capacity is known —
+// Client.SetPeerMaxPayload() upgrades to the ESP32 size once IDENTIFY/INIT
+// reports the controller type.
 const (
-	uploadChunkSize  = 2044  // MAX_PAYLOAD_SIZE(2048) - 4 (seq+crc header)
-	uploadMaxRetries = 3
+	PicoMaxPayload   = 512  // RP2040/RP2350 COBS RX buffer
+	Esp32MaxPayload  = 2048 // ESP32-S3 COBS RX buffer
+	UploadHeaderSize = 4    // seq:u16LE + crc16:u16LE
+	UploadChunkSize  = PicoMaxPayload - UploadHeaderSize
 )
 
+const uploadMaxRetries = 3
+
 // FileApi provides storage file operations (SD card, flash).
-type FileApi struct{ apiClient }
+//
+// peerMaxPayload defaults to PicoMaxPayload (safe for any board). Call
+// SetPeerMaxPayload after detecting the controller type to unlock the ESP32
+// chunk size for sync uploads.
+type FileApi struct {
+	apiClient
+	peerMaxPayload int
+}
 
 func NewFileApi(conn *protocol.Connection) *FileApi {
-	return &FileApi{apiClient{conn}}
+	return &FileApi{apiClient: apiClient{conn}, peerMaxPayload: PicoMaxPayload}
+}
+
+// SetPeerMaxPayload updates the assumed COBS RX capacity of the connected
+// peer, which controls sync-upload chunking. Safe to call at any time;
+// clamps to [PicoMaxPayload, Esp32MaxPayload].
+func (a *FileApi) SetPeerMaxPayload(size int) {
+	if size < PicoMaxPayload {
+		size = PicoMaxPayload
+	}
+	if size > Esp32MaxPayload {
+		size = Esp32MaxPayload
+	}
+	a.peerMaxPayload = size
+}
+
+// uploadChunkSize returns the usable data bytes per FILE_UPLOAD_DATA packet
+// for the current peer capacity.
+func (a *FileApi) uploadChunkSize() int {
+	if a.peerMaxPayload <= 0 {
+		return UploadChunkSize
+	}
+	return a.peerMaxPayload - UploadHeaderSize
 }
 
 // List retrieves a directory listing as text.
@@ -32,14 +78,25 @@ func (a *FileApi) Tree(target byte, path string) (string, error) {
 	return a.sendStream(hubfx.CmdFileTree(path, target), 30*time.Second)
 }
 
-// Delete removes a file or directory.
-func (a *FileApi) Delete(target byte, path string) ApiResult {
-	return a.sendACK(hubfx.CmdFileDelete(path, target))
+// Delete removes a file, an empty directory, or a whole tree.
+// Set recursive=true to delete a non-empty directory (mirrors `rm -rf`).
+func (a *FileApi) Delete(target byte, path string, recursive bool) ApiResult {
+	var flags byte
+	if recursive {
+		flags |= hubfx.DeleteFlagRecursive
+	}
+	return a.sendACK(hubfx.CmdFileDelete(path, target, flags))
 }
 
 // Mkdir creates a directory.
-func (a *FileApi) Mkdir(target byte, path string) ApiResult {
-	return a.sendACK(hubfx.CmdFileMkdir(path, target))
+// Set createParents=true for `mkdir -p` semantics (creates missing ancestors,
+// idempotent when the final directory already exists).
+func (a *FileApi) Mkdir(target byte, path string, createParents bool) ApiResult {
+	var flags byte
+	if createParents {
+		flags |= hubfx.MkdirFlagParents
+	}
+	return a.sendACK(hubfx.CmdFileMkdir(path, target, flags))
 }
 
 // Info queries file/directory metadata.
@@ -100,9 +157,10 @@ func (a *FileApi) uploadSync(target byte, remotePath string, data []byte,
 	offset := 0
 	seq := uint16(0)
 	localHash := md5.New()
+	chunkSize := a.uploadChunkSize()
 
 	for offset < len(data) {
-		end := offset + uploadChunkSize
+		end := offset + chunkSize
 		if end > len(data) {
 			end = len(data)
 		}

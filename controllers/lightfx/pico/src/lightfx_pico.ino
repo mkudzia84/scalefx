@@ -32,6 +32,7 @@
 #include <storage/storage_config_bridge.h>
 #include <config/config_store.h>
 #include <server/config_server.h>
+#include <server/storage_server.h>
 #include "config/lightfx_config.h"
 #include "landing_light.h"
 
@@ -39,8 +40,8 @@
 //  FIRMWARE INFO
 // ============================================================================
 
-#define FIRMWARE_VERSION "0.9.0"
-#define BUILD_NUMBER 30
+#define FIRMWARE_VERSION "0.11.0"
+#define BUILD_NUMBER 33
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -103,6 +104,11 @@ BatteryServerT<BatteryT> batteryServer(batteryMonitor);
 // Config server (handles CONFIG_RELOAD/STATUS/SAVE protocol + owns ConfigStore)
 using LightFxConfigStore = ConfigStore<LightFxConfigSchema>;
 ConfigServerT<LightFxConfigStore> configServer;
+
+// Storage server (handles FILE_LIST/DOWNLOAD/UPLOAD for LittleFS flash — lets
+// Studio read/write /lightfx.yaml directly over the wire). Only TARGET_FLASH
+// is meaningful here — no SD card on LightFX Pico.
+StorageServer storageServer;
 
 // ============================================================================
 //  STATE VARIABLES
@@ -194,9 +200,9 @@ void setupLightFxCallbacks() {
     
     // SERVO_SETTINGS callback (servo ID validated by LightFxSpec before dispatch)
     lightfxServer.onServoSettings([](const LightFxServoConfig& cfg) -> uint8_t {
-        
+
         ServoControl& servo = servos[cfg.servoId - 1];
-        
+
         if (cfg.minUs >= 0 && cfg.maxUs >= 0) {
             servo.setLimits(cfg.minUs, cfg.maxUs);
         }
@@ -399,6 +405,13 @@ void setup() {
 
     // Finalize router (core handler + LightFX handler)
     server.addModuleHandler(&lightfxServer);
+
+    // Register StorageServer (FILE_* protocol for /lightfx.yaml I/O).
+    // FlashModule is already mounted by initFlashAndConfig().
+    storageServer.begin(&Serial);
+    storageServer.onTransferStart([]() { server.core().setTransferActive(true); });
+    storageServer.onTransferEnd  ([]() { server.core().setTransferActive(false); });
+    server.addModuleHandler(&storageServer);
 }
 
 // ============================================================================
@@ -408,9 +421,12 @@ void setup() {
 void loop() {
     // Update battery monitor
     batteryMonitor.update();
-    
+
     // Process protocol, connection timeout, indicators
     server.loop();
+
+    // Clean up stuck file uploads (aborted transfer → delete partial, free buffer)
+    storageServer.checkUploadTimeout();
     
     // Update LED sequences
     ledManager.update();

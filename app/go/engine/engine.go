@@ -107,6 +107,23 @@ func (e *Engine) HandleStatusBroadcast(source byte, data []byte) {
 	}
 }
 
+// SetControllerType records the detected peer controller type and propagates
+// derived settings (e.g. file-upload chunk size tuned to peer COBS capacity).
+// Call whenever IDENTIFY/INIT reveals the controller type, so the API layer
+// can pick correct wire-format parameters before the first dependent call.
+func (e *Engine) SetControllerType(ct string) {
+	e.ControllerType = ct
+	if e.API == nil || e.API.Files == nil {
+		return
+	}
+	switch ct {
+	case core.CtrlHubFX:
+		e.API.Files.SetPeerMaxPayload(api.Esp32MaxPayload)
+	default:
+		e.API.Files.SetPeerMaxPayload(api.PicoMaxPayload)
+	}
+}
+
 // sourceToControllerType maps StatusUpdateSource bytes to controller type strings.
 func sourceToControllerType(source byte) string {
 	switch source {

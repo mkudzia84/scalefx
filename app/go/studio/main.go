@@ -36,6 +36,12 @@ func main() {
 			WindowIsTranslucent:  false,
 			Theme:                windows.SystemDefault,
 		},
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop:     true,
+			DisableWebViewDrop: true,
+			CSSDropProperty:    "--wails-drop-target",
+			CSSDropValue:       "drop",
+		},
 		Bind: []interface{}{
 			app,
 		},
@@ -59,6 +65,11 @@ func createMenu(app *App) *menu.Menu {
 	fileMenu.AddSeparator()
 	fileMenu.AddText("Exit", keys.CmdOrCtrl("q"), func(_ *menu.CallbackData) {
 		wailsRT.Quit(app.ctx)
+	})
+
+	toolsMenu := m.AddSubmenu("Tools")
+	toolsMenu.AddText("File Manager...", keys.CmdOrCtrl("m"), func(_ *menu.CallbackData) {
+		wailsRT.EventsEmit(app.ctx, "menu:filemanager")
 	})
 
 	viewMenu := m.AddSubmenu("View")

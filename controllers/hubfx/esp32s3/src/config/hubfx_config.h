@@ -83,7 +83,7 @@ struct HubFxConfigSchema {
         return hubfx_config::fields.validate(d, err, errLen);
     }
 
-    static const char* defaultPath() { return "/config.yaml"; }
+    static const char* defaultPath() { return "/hubfx.yaml"; }
 };
 
 #endif // HUBFX_CONFIG_H

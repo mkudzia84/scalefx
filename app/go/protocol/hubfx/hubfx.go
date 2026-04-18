@@ -129,6 +129,15 @@ const (
 	StorageTargetFlash byte = 1
 )
 
+// ─── File operation flags (optional trailing byte on FILE_DELETE / FILE_MKDIR) ───
+//
+// Mirrors controllers/lib/sfx_serial/serial/hubfx/hubfx.h:
+//   namespace HubFxStorage::DeleteFlags / MkdirFlags
+const (
+	DeleteFlagRecursive byte = 0x01 // recursive delete of non-empty directories
+	MkdirFlagParents    byte = 0x01 // create missing parents (mkdir -p), idempotent
+)
+
 // ─── Slave Types ───
 
 const (
@@ -241,17 +250,19 @@ func CmdFileList(path string, target byte) []byte {
 	return protocol.BuildPacket(FileList, payload, 0)
 }
 
-func CmdFileDelete(path string, target byte) []byte {
+func CmdFileDelete(path string, target byte, flags byte) []byte {
 	payload := []byte{byte(len(path))}
 	payload = append(payload, []byte(path)...)
 	payload = append(payload, target)
+	payload = append(payload, flags)
 	return protocol.BuildPacket(FileDelete, payload, 0)
 }
 
-func CmdFileMkdir(path string, target byte) []byte {
+func CmdFileMkdir(path string, target byte, flags byte) []byte {
 	payload := []byte{byte(len(path))}
 	payload = append(payload, []byte(path)...)
 	payload = append(payload, target)
+	payload = append(payload, flags)
 	return protocol.BuildPacket(FileMkdir, payload, 0)
 }
 

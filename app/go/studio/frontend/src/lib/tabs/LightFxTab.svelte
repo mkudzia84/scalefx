@@ -2,13 +2,16 @@
 <!-- Two-column: Left=Programs & Channels, Right=Landing Light Groups (servo bindings) -->
 <!-- Top bar: slave mode toggle, input channel bar view, mode-dependent servo routing. -->
 <script lang="ts">
-    import { SendCommand } from '../../../wailsjs/go/main/App'
+    import { SendCommand, UploadConfig } from '../../../wailsjs/go/main/App'
     import { connectionInfo } from '../stores'
     import { eventTypes, presets, presetGroups, type EventTypeDef, type ParamDef, type LightPreset } from '../light-data'
     import SaveConfigDialog from '../dialogs/SaveConfigDialog.svelte'
     import { LightConfigVerifier, type LightConfig, type GroupPolicy } from '../config/light-verifier'
-    import { generateLightYaml } from '../config/config-yaml-gen'
+    import { generateLightYaml, parseLightYaml } from '../config/config-yaml-gen'
     import { EMPTY_RESULT, type VerifyResult } from '../config/config-verifier'
+    import type { BoardConfigDriver } from '../config/board-driver'
+    import { autoLoadOnConnect } from '../config/config-loader'
+    import { onMount } from 'svelte'
 
     export let boardLabel: string = 'LightFX'
 
@@ -430,8 +433,6 @@
     // ─── Save Config Dialog + Verification ───
     const lightVerifier = new LightConfigVerifier()
     let saveDialogOpen = false
-    let saveVerifyResult: VerifyResult = EMPTY_RESULT
-    let saveConfigText = ''
 
     // Build a LightConfig snapshot from current UI state
     function buildLightConfig(): LightConfig {
@@ -473,6 +474,88 @@
         }
     }
 
+    // Push a parsed LightConfig back into the tab's reactive state so the UI
+    // reflects an imported configuration. Programs are rebuilt from scratch;
+    // groups are mapped back to the tab's richer LandingGroupState shape.
+    function applyLightConfig(cfg: LightConfig) {
+        masterBrightness = cfg.masterBrightness
+
+        // Groups: rebuild from parsed shape; keep member-channel mapping implicit
+        // (channels below reference group by index via mode='group').
+        groups = cfg.groups.map(g => {
+            const b = g.servoBindings[0]
+            return {
+                name: g.name,
+                binding: b ? {
+                    servo: b.servo,
+                    servoPulse_us: Math.round((b.servoMin_us + b.servoMax_us) / 2),
+                    servoMin_us: b.servoMin_us,
+                    servoMax_us: b.servoMax_us,
+                    servoSpeed: b.servoSpeed,
+                    servoAccel: b.servoAccel,
+                    servoDecel: b.servoDecel,
+                    servoReversed: b.servoReversed,
+                } : null,
+            }
+        })
+        if (groups.length === 0) groups = [{ name: 'Group 1', binding: null }]
+
+        programs = cfg.programs.map(p => {
+            const channels: ChannelState[] = Array.from({ length: CHANNEL_COUNT }, (_, ci) => {
+                const src = p.channels[ci]
+                return {
+                    enabled: src?.enabled ?? false,
+                    mode: (src?.mode ?? 'events') as ChannelMode,
+                    groupIndex: src?.groupIndex ?? 0,
+                    preset: 'Custom',
+                    events: (src?.events ?? []).map(e => ({
+                        id: nextEventId++,
+                        type: e.type,
+                        typeName: eventTypes.find(et => et.value === e.type)?.name ?? e.type,
+                        params: { ...e.params },
+                    })),
+                    brightness: 100,
+                }
+            })
+            // Backfill members declared via landing_groups.memberChannels — those
+            // channels should come back as mode='group' after import.
+            for (let gi = 0; gi < cfg.groups.length; gi++) {
+                for (const chNum of cfg.groups[gi].memberChannels) {
+                    if (chNum >= 1 && chNum <= CHANNEL_COUNT) {
+                        channels[chNum - 1].mode = 'group'
+                        channels[chNum - 1].groupIndex = gi
+                        channels[chNum - 1].enabled = true
+                    }
+                }
+            }
+            return {
+                name: p.name,
+                bandMin_us: p.bandMin_us,
+                bandMax_us: p.bandMax_us,
+                channels,
+                groupPolicies: [...p.groupPolicies] as GroupPolicy[],
+                playing: false,
+            }
+        })
+        if (programs.length === 0) {
+            programs = [createProgramWithBand('Program 1', PWM_MIN, PWM_MAX, false, groups.map(() => 'off' as GroupPolicy))]
+        }
+        activeProgram = 0
+        console.log(`[LightFX] applyState → programs×${programs.length}, groups×${groups.length}, masterBrightness=${masterBrightness}`)
+    }
+
+    const lightDriver: BoardConfigDriver<LightConfig> = {
+        boardType: 'lightfx',
+        boardLabel,
+        buildState: buildLightConfig,
+        generateYaml: (s) => generateLightYaml(s, false),
+        parseYaml:    (t) => parseLightYaml(t, false, CHANNEL_COUNT, PWM_MIN, PWM_MAX, isHubFX || slaveMode),
+        applyState:   applyLightConfig,
+        verify:       (s) => lightVerifier.verify(s),
+    }
+
+    onMount(() => autoLoadOnConnect(lightDriver, ['lightfx']))
+
     // Live verification — re-run whenever programs, groups, or brightness change
     let liveResult: VerifyResult = EMPTY_RESULT
     $: {
@@ -490,12 +573,7 @@
         return (path: string): string | null => lightVerifier.severityForPath(path)
     })()
 
-    function openSaveDialog() {
-        const cfg = buildLightConfig()
-        saveVerifyResult = lightVerifier.verify(cfg)
-        saveConfigText = generateLightYaml(cfg)
-        saveDialogOpen = true
-    }
+    function openSaveDialog() { saveDialogOpen = true }
 </script>
 
 <div class="tab-root">
@@ -960,12 +1038,9 @@
 </div>
 
 <SaveConfigDialog
-    boardType="lightfx"
-    boardLabel={boardLabel}
-    verifyResult={saveVerifyResult}
-    configText={saveConfigText}
-    open={saveDialogOpen}
-    onSave={() => { SendCommand('config.save'); saveDialogOpen = false }}
+    driver={lightDriver}
+    bind:open={saveDialogOpen}
+    onSave={async (yaml) => { await UploadConfig(yaml) }}
     onClose={() => { saveDialogOpen = false }}
 />
 

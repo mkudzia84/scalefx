@@ -1,9 +1,11 @@
 /*
  * GearControl Configuration — Per-Pin Role Assignment Schema
  *
+ * Fixed-function pins (NOT mappable):
+ *   GP0  → gear_input  (RC PWM in for deploy/retract command, standalone mode)
+ *
  * 7 reconfigurable pins can be assigned roles:
  *   door       — Door servo assigned to a retract channel (0-2)
- *   gear_input — PWM input for gear up/down signal (standalone mode)
  *   yaw_input  — PWM input for yaw steering signal (standalone mode)
  *   yaw_output — Yaw servo output (associated with a retract channel)
  *   unused     — Pin disabled
@@ -15,10 +17,15 @@
  *   pin4 → GP6
  *
  * Dual-mode operation:
- *   Standalone — gear_input required; yaw_input required if yaw_output used
- *   Slave      — input pins ignored (HubFX sends commands); more pins for doors
+ *   Standalone — gear_input PWM on GP0 drives deploy/retract; yaw_input pin
+ *                required if yaw_output used.
+ *   Slave      — input pins ignored (HubFX sends commands); more pins for doors.
  *
  * YAML structure:
+ *   gear_input:
+ *     enabled: true        # arm the GP0 PWM reader (standalone mode)
+ *     threshold_us: 1500   # pulse > threshold → deploy; < threshold → retract
+ *
  *   retracts:
  *     - channel: 0
  *       enabled: true
@@ -33,9 +40,6 @@
  *       max_us: 2500
  *       speed: 4000
  *       reversed: false
- *     - slot: pin3
- *       role: gear_input
- *       threshold_us: 1500
  *     - slot: pin7
  *       role: yaw_output
  *       gear_id: 0
@@ -94,8 +98,8 @@ struct GearControlConfig {
     // Unused fields are ignored by firmware.
 
     struct PinConfig {
-        char     slot[12]        = "";        // gear0_a..yaw — maps to GPIO
-        char     role[12]        = "unused";  // door|gear_input|yaw_input|yaw_output|unused
+        char     slot[12]        = "";        // pin1..pin7 — maps to GPIO
+        char     role[12]        = "unused";  // door|yaw_input|yaw_output|unused
 
         // Door role fields:
         uint8_t  channel         = 0;         // Retract channel (0-2)
@@ -106,8 +110,8 @@ struct GearControlConfig {
         uint16_t speed           = 4000;      // Servo speed                    // µs/sec
         bool     reversed        = false;     // Invert servo direction
 
-        // Input fields (gear_input):
-        uint16_t threshold_us    = 1500;      // PWM threshold: above=deploy    // µs
+        // Input fields (yaw_input):
+        uint16_t threshold_us    = 1500;      // PWM threshold (yaw_input only) // µs
 
         // Yaw output fields:
         uint8_t  gear_id         = 0;         // Associated retract channel (yaw active when deployed)
@@ -116,6 +120,16 @@ struct GearControlConfig {
 
     PinConfig pins[GearControlLimits::MAX_PINS] = {};
     uint8_t   pinCount = 0;
+
+    // ---- Gear input (fixed pin GP0, RC PWM) ----
+    // Standalone mode reads a PWM signal on GP0 and translates pulse width to
+    // a deploy/retract command at threshold crossings. In slave mode (HubFX)
+    // the pin can be left disabled — HubFX sends commands directly.
+
+    struct GearInput {
+        bool     enabled         = true;      // Arm the GP0 PWM reader
+        uint16_t threshold_us    = 1500;      // pulse > threshold → deploy   // µs
+    } gearInput;
 
     // ---- Door sequencing per retract channel ----
 
@@ -150,6 +164,7 @@ using R  = GearControlConfig::RetractConfig;
 using P  = GearControlConfig::PinConfig;
 using DM = GearControlConfig::DoorModeConfig;
 using B  = GearControlConfig::Battery;
+using GI = GearControlConfig::GearInput;
 
 /// Field-level schema — populate() reads YAML, validate() checks ranges.
 inline const auto fields = schema<GearControlConfig>(
@@ -190,6 +205,12 @@ inline const auto fields = schema<GearControlConfig>(
         prop<&B::autoDeploy> ("auto_deploy", false),
         prop<&B::chemistry>  ("chemistry",   "lipo"),
         prop<&B::cellCount>  ("cell_count",  uint8_t(0)).range(0, 6)
+    ),
+
+    // ---- Fixed gear-input pin (GP0, RC PWM) ----
+    group<&GearControlConfig::gearInput>("gear_input",
+        prop<&GI::enabled>     ("enabled",      true),
+        prop<&GI::threshold_us>("threshold_us", uint16_t(1500)).range(800, 2200)
     )
 );
 
@@ -210,7 +231,7 @@ struct GearControlConfigSchema {
         return gearcontrol_config::fields.validate(d, err, errLen);
     }
 
-    static const char* defaultPath() { return "/config.yaml"; }
+    static const char* defaultPath() { return "/gearcontrol.yaml"; }
 };
 
 #endif // GEARCONTROL_CONFIG_H

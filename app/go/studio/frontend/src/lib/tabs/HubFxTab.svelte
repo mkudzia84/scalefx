@@ -3,12 +3,13 @@
 <!-- Audio, Storage, Config, USB in bottom sections. -->
 <script lang="ts">
     import { connectionInfo, slaveInfo, showSaveConfig } from '../stores'
-    import { SendCommand, GetSlaveInfo } from '../../../wailsjs/go/main/App'
+    import { SendCommand, GetSlaveInfo, UploadConfig } from '../../../wailsjs/go/main/App'
     import { onMount, onDestroy } from 'svelte'
     import SaveConfigDialog from '../dialogs/SaveConfigDialog.svelte'
     import { LightConfigVerifier, type LightConfig } from '../config/light-verifier'
-    import { generateLightYaml } from '../config/config-yaml-gen'
-    import { EMPTY_RESULT } from '../config/config-verifier'
+    import { generateHubFxYaml, parseLightYaml } from '../config/config-yaml-gen'
+    import type { BoardConfigDriver } from '../config/board-driver'
+    import { autoLoadOnConnect } from '../config/config-loader'
 
     export let boardLabel: string = 'HubFX'
 
@@ -152,25 +153,35 @@
     // ─── Save Config Dialog ───
     const lightVerifier = new LightConfigVerifier()
     let saveDialogOpen = false
-    let saveVerifyResult = EMPTY_RESULT
-    let saveConfigText = ''
 
-    function openSaveDialog() {
-        // Build a LightConfig snapshot from current state for verification
-        // (HubFX embeds light config as part of its larger config)
-        const lightCfg: LightConfig = {
+    function buildHubFxLightConfig(): LightConfig {
+        return {
             programs: [],     // TODO: populate from embedded LightSetup state
             groups: [],
             masterBrightness: masterVolume,
             channelCount: 6,  // HubFX embedded = 6 channels
             pwmMin: 1000,
             pwmMax: 2000,
-            hubAvailable: true,  // HubFX always has hub available
+            hubAvailable: true,
         }
-        saveVerifyResult = lightVerifier.verify(lightCfg)
-        saveConfigText = generateLightYaml(lightCfg, true)  // nested under light_fx:
-        saveDialogOpen = true
     }
+
+    function applyHubFxConfig(cfg: LightConfig) {
+        masterVolume = cfg.masterBrightness
+        // TODO: populate embedded LightSetup state from cfg.programs / cfg.groups
+    }
+
+    const hubDriver: BoardConfigDriver<LightConfig> = {
+        boardType: 'hubfx',
+        boardLabel: 'HubFX ESP32-S3',
+        buildState: buildHubFxLightConfig,
+        generateYaml: (s) => generateHubFxYaml(s),
+        parseYaml:    (t) => parseLightYaml(t, true, 6, 1000, 2000, true),
+        applyState:   applyHubFxConfig,
+        verify:       (s) => lightVerifier.verify(s),
+    }
+
+    function openSaveDialog() { saveDialogOpen = true }
 
     function configSave() {
         openSaveDialog()
@@ -188,7 +199,11 @@
     function refreshStatus() { SendCommand('status') }
 
     // ─── Lifecycle ───
-    onMount(() => { refreshSlaves() })
+    onMount(() => {
+        refreshSlaves()
+        const unsubAutoLoad = autoLoadOnConnect(hubDriver, ['hubfx'])
+        return () => { unsubAutoLoad() }
+    })
     onDestroy(() => { stopChannelMonitor() })
 </script>
 
@@ -439,12 +454,9 @@
 </div>
 
 <SaveConfigDialog
-    boardType="hubfx"
-    boardLabel="HubFX ESP32-S3"
-    verifyResult={saveVerifyResult}
-    configText={saveConfigText}
-    open={saveDialogOpen}
-    onSave={() => { SendCommand('config.save'); saveDialogOpen = false }}
+    driver={hubDriver}
+    bind:open={saveDialogOpen}
+    onSave={async (yaml) => { await UploadConfig(yaml) }}
     onClose={() => { saveDialogOpen = false }}
 />
 

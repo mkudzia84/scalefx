@@ -59,25 +59,31 @@
 #include <storage/storage_config_bridge.h>
 #include <config/config_store.h>
 #include <server/config_server.h>
+#include <server/storage_server.h>
 #include "config/gearcontrol_config.h"
 #include "landing_gear.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "0.12.0"
-#define BUILD_NUMBER 80
+#define FIRMWARE_VERSION "0.16.0"
+#define BUILD_NUMBER 107
 
 // ============================================================================
 //  PIN CONFIGURATION
 // ============================================================================
 
-// Door servo pins (2 per gear × 3 gears = 6)
+// Fixed-function pin (NOT user-mappable):
+//   GP0 — RC PWM input for deploy/retract command (standalone mode)
+const uint8_t PIN_GEAR_INPUT = 0;
+
+// Door servo pins (2 per gear × 3 gears = 6) — fixed by hardware
+//   pin1→GP1 pin2→GP2 pin3→GP3 pin4→GP6 pin5→GP7 pin6→GP8 pin7→GP9
 const uint8_t PIN_DOOR_SERVO[3][2] = {
     { 1, 2 },    // Gear 0 (nose): GP1, GP2
     { 3, 6 },    // Gear 1 (left main): GP3, GP6
     { 7, 8 },    // Gear 2 (right main): GP7, GP8
 };
 
-// Yaw servo pin
+// Yaw servo pin (fixed slot pin7)
 const uint8_t PIN_YAW_SERVO = 9;
 
 // I2C pins for INA226
@@ -125,6 +131,11 @@ GearControlServer gearControlServer;
 using GearControlConfigStore = ConfigStore<GearControlConfigSchema>;
 ConfigServerT<GearControlConfigStore> configServer;
 
+// Storage server (handles FILE_LIST/DOWNLOAD/UPLOAD for LittleFS flash — lets
+// Studio read/write /gearcontrol.yaml directly over the wire). No SD card on Pico,
+// so only TARGET_FLASH is effectively supported.
+StorageServer storageServer;
+
 // Landing gear modules (one per gear)
 LandingGear gears[3];
 
@@ -152,6 +163,35 @@ bool lowVoltageTriggered = false;  // Set when auto-deploy fires (persists until
 
 // Per-gear error reason tracking (for STATUS diagnostic reporting)
 uint8_t gearErrorReason[3] = { GearErrorReason::NONE, GearErrorReason::NONE, GearErrorReason::NONE };
+
+// ----------------------------------------------------------------------------
+// Fixed gear-input PWM reader (GP0)
+//   ISR captures rising / falling edge timestamps and updates gearInputPulse_us.
+//   loop() consumes the cached pulse and dispatches deploy/retract on threshold
+//   crossings (only when standalone — HubFX-driven mode ignores it).
+// ----------------------------------------------------------------------------
+volatile uint32_t gearInputRiseUs = 0;
+volatile uint16_t gearInputPulse_us = 0;     // 0 == no pulse seen yet
+volatile uint32_t gearInputLastEdgeMs = 0;   // for stale-pulse detection
+
+bool     gearInputCommandLast = false;       // last dispatched state (true=deploy)
+bool     gearInputCommandValid = false;      // true once we've seen a stable pulse
+uint16_t gearInputThreshold_us = 1500;
+bool     gearInputEnabled = true;
+
+void gearInputIsr() {
+    uint32_t now = micros();
+    if (digitalRead(PIN_GEAR_INPUT)) {
+        gearInputRiseUs = now;
+    } else if (gearInputRiseUs != 0) {
+        uint32_t pulse = now - gearInputRiseUs;
+        // Reject obvious noise outside RC PWM range (500..2500µs)
+        if (pulse >= 500 && pulse <= 2500) {
+            gearInputPulse_us = (uint16_t)pulse;
+            gearInputLastEdgeMs = millis();
+        }
+    }
+}
 
 // Expected I2C addresses for the 3 INA226 monitors
 // Binary:  1000000, 1000100, 1000001 → 0x40, 0x44, 0x41
@@ -244,15 +284,18 @@ uint8_t buildLedFlags() {
 
 /** @brief Initialize flash and load config (if present). */
 static void initFlashAndConfig() {
+    // Wire config store to flash I/O unconditionally — the bridge's own
+    // isInitialized() gate handles the case where flash.begin() later fails,
+    // so config.reload/save surfaces a real storage error instead of the
+    // generic "No file reader set".
+    wireConfigStore<FlashModule>(configServer.store());
+
     FlashModule& flash = FlashModule::instance();
     if (flash.begin()) {
         FlashStorageInfo info;
         flash.getStorageInfo(info);
         SFX_LOG_INFO("Flash ready: %lu/%lu bytes used",
                      (unsigned long)info.usedBytes, (unsigned long)info.totalBytes);
-
-        // Wire config store to flash I/O
-        wireConfigStore<FlashModule>(configServer.store());
 
         // Try loading config (silent if file doesn't exist)
         auto result = configServer.store().loadFromFile();
@@ -387,6 +430,13 @@ static void applyConfig(const GearControlConfig& cfg) {
     batteryMonitor.setCellCount(cfg.battery.cellCount);  // 0 = auto-detect
     autoDeployOnLowVoltage = cfg.battery.autoDeploy;
 
+    // ---- Fixed gear-input pin (GP0) ----
+    gearInputEnabled      = cfg.gearInput.enabled;
+    gearInputThreshold_us = cfg.gearInput.threshold_us;
+    gearInputCommandValid = false;  // re-arm on next stable pulse
+    SFX_LOG_INFO("GearInput: enabled=%u threshold=%uus",
+                 gearInputEnabled, gearInputThreshold_us);
+
     SFX_LOG_INFO("Battery: chem=%s cells=%s autoDeploy=%u",
                  cfg.battery.chemistry,
                  cfg.battery.cellCount == 0 ? "auto" : "fixed",
@@ -471,6 +521,10 @@ void setup() {
 
     // Initialize yaw servo (uses ServoControl for configurability)
     yawServo.begin(PIN_YAW_SERVO);
+
+    // Arm the fixed gear-input PWM reader on GP0 (interrupt-based — non-blocking).
+    pinMode(PIN_GEAR_INPUT, INPUT_PULLDOWN);
+    attachInterrupt(digitalPinToInterrupt(PIN_GEAR_INPUT), gearInputIsr, CHANGE);
 
     // Initialize battery voltage monitor (ADC with ÷6 divider on GP29).
     // begin() must always run — applyConfig() then layers chemistry / cell
@@ -662,7 +716,7 @@ void setup() {
     }
 
     // STATUS: Append GearControl module data to core STATUS response
-    // Wire format (53 bytes):
+    // Wire format (107 bytes):
     //   Per gear (3 × 11 = 33 bytes):
     //     [state:u8][motorCurrent_mA:u16LE][door0Pos_us:u16LE][door1Pos_us:u16LE]
     //     [calibratedStall_mA:u16LE][shuntVoltage_10uV:i16LE]
@@ -680,8 +734,17 @@ void setup() {
     //     [gear0ConfigFlags:u8][gear1ConfigFlags:u8][gear2ConfigFlags:u8]
     //   Per-gear door state (3 bytes):
     //     [gear0DoorState:u8][gear1DoorState:u8][gear2DoorState:u8]
+    //   Gear input PWM (5 bytes, appended v0.14.0 — Rule 11):
+    //     [gearInputPulse_us:u16LE][gearInputThreshold_us:u16LE][gearInputFlags:u8]
+    //     gearInputFlags bit 0 = enabled, bit 1 = lastCommandWasDeploy (valid)
+    //   Per-servo configs (7 × 7 = 49 bytes, appended v0.15.0 — Rule 11):
+    //     For servoId 0..5 (door servos, gear = id/2, door = id%2) and 6 (yaw):
+    //       [minUs:u16LE][maxUs:u16LE][speed:u16LE][flags:u8]
+    //       flags bit 0 = reversed
+    //     Lets Studio reconcile its pinConfigs against the live servo state
+    //     instead of needing a bespoke ACK-echo carrier (Rule 19 / user note).
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        if (maxLen < 53) return 0;
+        if (maxLen < 107) return 0;
 
         for (int i = 0; i < 3; i++) {
             size_t off = i * 11;
@@ -727,7 +790,29 @@ void setup() {
         buf[51] = gears[1].doorState();
         buf[52] = gears[2].doorState();
 
-        return 53;
+        // Fixed gear-input PWM (GP0) — appended for v0.14.0 (Rule 11)
+        CoreProtocol::putU16LE(&buf[53], gearInputPulse_us);
+        CoreProtocol::putU16LE(&buf[55], gearInputThreshold_us);
+        buf[57] = (gearInputEnabled ? 0x01 : 0x00)
+                | ((gearInputCommandValid && gearInputCommandLast) ? 0x02 : 0x00);
+
+        // Per-servo live configs — appended v0.15.0 (Rule 11)
+        // IDs 0..5 = door servos (gear = id/2, door = id%2), 6 = yaw
+        for (uint8_t id = 0; id < 7; id++) {
+            size_t off = 58 + id * 7;
+            const ServoControl* srv = nullptr;
+            if (id <= 5) {
+                srv = &gears[id / 2].doorServo(id % 2);
+            } else {
+                srv = &yawServo;
+            }
+            CoreProtocol::putU16LE(&buf[off],     (uint16_t)srv->minLimit());
+            CoreProtocol::putU16LE(&buf[off + 2], (uint16_t)srv->maxLimit());
+            CoreProtocol::putU16LE(&buf[off + 4], (uint16_t)srv->maxSpeed());
+            buf[off + 6] = srv->isReversed() ? 0x01 : 0x00;
+        }
+
+        return 107;
     });
 
     // Set status broadcast source for verbose mode (STATUS_UPDATE packets)
@@ -747,6 +832,13 @@ void setup() {
         applyConfig(cfg);
     });
     server.addModuleHandler(&configServer);
+
+    // Register StorageServer (handles FILE_* protocol for /gearcontrol.yaml I/O).
+    // Must come after FlashModule is mounted in initFlashAndConfig().
+    storageServer.begin(&Serial);
+    storageServer.onTransferStart([]() { server.core().setTransferActive(true); });
+    storageServer.onTransferEnd  ([]() { server.core().setTransferActive(false); });
+    server.addModuleHandler(&storageServer);
 }
 
 // ============================================================================
@@ -756,6 +848,9 @@ void setup() {
 void loop() {
     // Process protocol, connection timeout, indicators
     server.loop();
+
+    // Clean up stuck file uploads (aborted transfer → delete partial, free buffer)
+    storageServer.checkUploadTimeout();
 
     // Update INA226 current monitors (refresh cached readings for stall detection)
     for (int i = 0; i < 3; i++) {
@@ -817,6 +912,30 @@ void loop() {
 
     // Battery monitor is always running — chemistry/cells configurable via BATTERY_CONFIG
     batteryMonitor.update();
+
+    // ----- Fixed gear-input PWM (GP0) → standalone deploy/retract trigger -----
+    // Only acts in standalone mode. When connected to HubFX, the master sends
+    // GEAR_DEPLOY / GEAR_RETRACT directly and we ignore the local PWM.
+    if (gearInputEnabled && !server.indicators().isConnected()) {
+        // Stale pulse (>200 ms since last edge) — drop the cached value
+        uint32_t age = millis() - gearInputLastEdgeMs;
+        if (age > 200) gearInputPulse_us = 0;
+
+        if (gearInputPulse_us != 0) {
+            bool wantDeploy = gearInputPulse_us > gearInputThreshold_us;
+            if (!gearInputCommandValid || wantDeploy != gearInputCommandLast) {
+                gearInputCommandLast  = wantDeploy;
+                gearInputCommandValid = true;
+                SFX_LOG_INFO("GearInput: %uus → %s",
+                             gearInputPulse_us, wantDeploy ? "DEPLOY" : "RETRACT");
+                for (int i = 0; i < 3; i++) gears[i].setSyncMode(true);
+                for (int i = 0; i < 3; i++) {
+                    if (wantDeploy) gears[i].deploy();
+                    else            gears[i].retract();
+                }
+            }
+        }
+    }
 
     busy_wait_ms(1);
 }

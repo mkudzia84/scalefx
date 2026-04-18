@@ -46,6 +46,68 @@ export namespace main {
 	        this.subDir = source["subDir"];
 	    }
 	}
+	export class FsEntry {
+	    name: string;
+	    isDir: boolean;
+	    size: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new FsEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.isDir = source["isDir"];
+	        this.size = source["size"];
+	    }
+	}
+	export class FsStorageStatus {
+	    flashAvailable: boolean;
+	    flashTotal: number;
+	    flashUsed: number;
+	    flashFree: number;
+	    sdAvailable: boolean;
+	    sdCardMB: number;
+	    sdTotalMB: number;
+	    sdUsedMB: number;
+	    sdFreeMB: number;
+	    sdCardType: string;
+	    sdBusMode: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FsStorageStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.flashAvailable = source["flashAvailable"];
+	        this.flashTotal = source["flashTotal"];
+	        this.flashUsed = source["flashUsed"];
+	        this.flashFree = source["flashFree"];
+	        this.sdAvailable = source["sdAvailable"];
+	        this.sdCardMB = source["sdCardMB"];
+	        this.sdTotalMB = source["sdTotalMB"];
+	        this.sdUsedMB = source["sdUsedMB"];
+	        this.sdFreeMB = source["sdFreeMB"];
+	        this.sdCardType = source["sdCardType"];
+	        this.sdBusMode = source["sdBusMode"];
+	    }
+	}
+	export class OpenedFile {
+	    path: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new OpenedFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.content = source["content"];
+	    }
+	}
 	export class PortInfo {
 	    name: string;
 	    description: string;

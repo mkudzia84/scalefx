@@ -39,9 +39,15 @@ Both modules follow the same API pattern:
 - `listTree(path, callback)` — recursive listing with depth
 - `getFileInfo(path, entry)` — single file metadata
 - `getStorageInfo(info)` — capacity/usage
-- `removeFile(path)` / `makeDirectory(path)` — modification
+- `removeFile(path)` — delete a single file
+- `removeDirectory(path, recursive = true)` — delete a directory (recursive deletes non-empty; non-recursive fails on non-empty)
+- `makeDirectory(path, createParents = false)` — create a directory (with `createParents=true`, mkdir `-p` semantics, idempotent)
 - `openRead(path, file)` / `openWrite(path, file, truncate)` — file I/O (caller holds lock)
 - `lock()` / `tryLock()` / `unlock()` — mutex access for file I/O
+
+### Recursive delete — iterator-safe implementation
+
+Both `FlashModule::removeDirectoryRecursive` (RP2040/ESP32 LittleFS) and `SdCardModuleT::removeDirectoryRecursive` follow a **snapshot-then-delete** pattern: the child list is copied into a local `std::vector<ChildEntry>` with the directory iterator open, the iterator is closed, and only then are entries removed. Deleting through a live iterator silently truncated enumeration on at least one backend (RP2040 LittleFS), leaving orphaned children that caused the final `rmdir` to fail with `IO_ERROR`. Per-level entries are bounded by `MAX_TREE_ENTRIES`; nesting by `MAX_TREE_DEPTH`.
 
 ## SdCardModule — SD Card (SPI + SDIO)
 
@@ -196,7 +202,8 @@ The LittleFS Arduino wrapper has slightly different APIs per platform. FlashModu
 | Directory listing | `Dir` iterator (`openDir`/`next`) | `File.openNextFile()` pattern |
 | Storage info | `FSInfo` struct via `LittleFS.info()` | `LittleFS.totalBytes()`/`usedBytes()` |
 | File open/close | `::File` | `::File` (same) |
-| mkdir | Recursive by default | Recursive by default |
+| mkdir | Single-level only in LittleFS — use `makeDirectory(path, createParents=true)` for recursive | Same — use the `createParents` flag |
+| rmdir during iteration | ❌ Invalidates `Dir` iterator silently — snapshot children first | Safer, but snapshot pattern used uniformly |
 
 ### ESP32 LittleFS — Native API Assessment
 

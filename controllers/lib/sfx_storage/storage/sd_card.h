@@ -43,6 +43,7 @@
 #include <Arduino.h>
 #include "platform/sfx_platform.h"
 #include <functional>
+#include <vector>
 
 #include "storage_types.h"
 
@@ -293,18 +294,20 @@ public:
     uint8_t removeFile(const char* path);
 
     /**
-     * @brief Remove a directory and all its contents recursively
+     * @brief Remove a directory
      * @param path Directory path
+     * @param recursive If true, delete all contents; if false, fail on non-empty dir
      * @return SdError code
      */
-    uint8_t removeDirectory(const char* path);
+    uint8_t removeDirectory(const char* path, bool recursive = true);
 
     /**
-     * @brief Create directory (recursive)
+     * @brief Create directory
      * @param path Directory path
+     * @param createParents If true, create missing parents (mkdir -p semantics, idempotent)
      * @return SdError code
      */
-    uint8_t makeDirectory(const char* path);
+    uint8_t makeDirectory(const char* path, bool createParents = false);
 
     // ========================================================================
     // File I/O (caller MUST hold lock via lock()/unlock())
@@ -393,8 +396,14 @@ private:
     using SdCardModule = SdCardModuleT<EspSdio1BitPolicy>;
 #endif
 
-/// File handle type alias for external use (AudioMixer, StorageServer)
+/// File handle type alias for external use (AudioMixer).
+///
+/// Guarded to ESP32 because SdFat (used on Pico) ships its own `class SdFile`
+/// which collides with this alias at template instantiation. Pico controllers
+/// don't use AudioMixer, so the alias is only needed on ESP32.
+#if SFX_PLATFORM_ESP32
 using SdFile = SdCardModule::FileHandle;
+#endif
 
 
 #endif // SFX_HAS_SD

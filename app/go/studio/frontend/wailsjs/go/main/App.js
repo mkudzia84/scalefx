@@ -14,12 +14,44 @@ export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
 
+export function DownloadConfig() {
+  return window['go']['main']['App']['DownloadConfig']();
+}
+
 export function DownloadEsptool() {
   return window['go']['main']['App']['DownloadEsptool']();
 }
 
 export function FlashFromRelease(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['FlashFromRelease'](arg1, arg2, arg3, arg4);
+}
+
+export function FsDelete(arg1, arg2) {
+  return window['go']['main']['App']['FsDelete'](arg1, arg2);
+}
+
+export function FsDownloadToDisk(arg1, arg2, arg3) {
+  return window['go']['main']['App']['FsDownloadToDisk'](arg1, arg2, arg3);
+}
+
+export function FsList(arg1, arg2) {
+  return window['go']['main']['App']['FsList'](arg1, arg2);
+}
+
+export function FsMkdir(arg1, arg2) {
+  return window['go']['main']['App']['FsMkdir'](arg1, arg2);
+}
+
+export function FsStorageStatus() {
+  return window['go']['main']['App']['FsStorageStatus']();
+}
+
+export function FsUploadBatch(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['FsUploadBatch'](arg1, arg2, arg3, arg4);
+}
+
+export function FsUploadFromDisk(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['FsUploadFromDisk'](arg1, arg2, arg3, arg4);
 }
 
 export function GetConnectionInfo() {
@@ -50,6 +82,18 @@ export function ListPorts() {
   return window['go']['main']['App']['ListPorts']();
 }
 
+export function OpenTextFile(arg1) {
+  return window['go']['main']['App']['OpenTextFile'](arg1);
+}
+
+export function SaveTextFile(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveTextFile'](arg1, arg2, arg3);
+}
+
 export function SendCommand(arg1) {
   return window['go']['main']['App']['SendCommand'](arg1);
+}
+
+export function UploadConfig(arg1) {
+  return window['go']['main']['App']['UploadConfig'](arg1);
 }

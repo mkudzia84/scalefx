@@ -11,14 +11,31 @@ import (
 	gcp "scalefx/protocol/gearcontrol"
 )
 
-// StatusBroadcast is the 53-byte GearControl periodic STATUS_BROADCAST payload.
+// StatusBroadcast is the 107-byte GearControl periodic STATUS_BROADCAST payload.
 // Wire format mirrors onStatusData() in gearcontrol_pico.ino.
 type StatusBroadcast struct {
-	Gears   [3]GearStatus `json:"gears"`
-	Yaw_us  uint16        `json:"yaw_us"`
-	LEDs    uint8         `json:"leds"`
-	Battery BatteryStatus `json:"battery"`
-	Shunt_mOhm uint16     `json:"shunt_mOhm"`
+	Gears                [3]GearStatus `json:"gears"`
+	Yaw_us               uint16        `json:"yaw_us"`
+	LEDs                 uint8         `json:"leds"`
+	Battery              BatteryStatus `json:"battery"`
+	Shunt_mOhm           uint16        `json:"shunt_mOhm"`
+	GearInput_us         uint16        `json:"gearInput_us"`
+	GearInputThreshold_us uint16       `json:"gearInputThreshold_us"`
+	GearInputEnabled     bool          `json:"gearInputEnabled"`
+	GearInputCommandDeploy bool        `json:"gearInputCommandDeploy"`
+	// Per-servo live configs (v0.15.0+). Index 0..5 = door servos
+	// (gear = idx/2, door = idx%2); index 6 = yaw. Empty on older firmware.
+	Servos []ServoLiveConfig `json:"servos,omitempty"`
+}
+
+// ServoLiveConfig is the 7-byte per-servo slice appended to STATUS_BROADCAST.
+// Carries the firmware's current config so the GUI can reconcile its pinConfigs
+// against the live truth (replaces the earlier ACK-echo approach).
+type ServoLiveConfig struct {
+	Min_us   uint16 `json:"min_us"`
+	Max_us   uint16 `json:"max_us"`
+	Speed    uint16 `json:"speed"`
+	Reversed bool   `json:"reversed"`
 }
 
 // GearStatus is the per-gear slice of a StatusBroadcast.
@@ -173,6 +190,30 @@ func DecodeStatusBroadcast(data []byte) *StatusBroadcast {
 			st := data[50+i]
 			s.Gears[i].DoorState = st
 			s.Gears[i].DoorStateName = gcp.DoorStateName(st)
+		}
+	}
+
+	// Fixed gear-input PWM (bytes 53-57, append-only since v0.14.0)
+	if len(data) >= 58 {
+		s.GearInput_us = protocol.ReadU16LE(data, 53)
+		s.GearInputThreshold_us = protocol.ReadU16LE(data, 55)
+		flags := data[57]
+		s.GearInputEnabled = flags&0x01 != 0
+		s.GearInputCommandDeploy = flags&0x02 != 0
+	}
+
+	// Per-servo live configs (bytes 58-106, append-only since v0.15.0)
+	// 7 servos × 7 bytes: [min:u16][max:u16][speed:u16][flags:u8]
+	if len(data) >= 107 {
+		s.Servos = make([]ServoLiveConfig, 7)
+		for i := 0; i < 7; i++ {
+			off := 58 + i*7
+			s.Servos[i] = ServoLiveConfig{
+				Min_us:   protocol.ReadU16LE(data, off),
+				Max_us:   protocol.ReadU16LE(data, off+2),
+				Speed:    protocol.ReadU16LE(data, off+4),
+				Reversed: data[off+6]&0x01 != 0,
+			}
 		}
 	}
 

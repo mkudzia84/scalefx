@@ -265,7 +265,8 @@ private:
     uint8_t mapStorageError(uint8_t err);
     uint8_t extractPathAndTarget(const uint8_t* payload, size_t len,
                                   char* path, size_t pathBufSize,
-                                  HubFxStorage::StorageTarget& target);
+                                  HubFxStorage::StorageTarget& target,
+                                  uint8_t* flagsOut = nullptr);
     static bool isValidPath(const char* path);
 
     // --- Upload state (protocol-only, policies never touch these) ---

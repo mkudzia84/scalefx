@@ -107,8 +107,11 @@ namespace HubFxPacket {
     //   0 = SD card (default if omitted, backward-compatible)
     //   1 = Flash (onboard LittleFS)
     constexpr uint8_t FILE_LIST          = 0x9A;  // [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END
-    constexpr uint8_t FILE_DELETE        = 0x9B;  // [pathLen:u8][path:str][target:u8?] → ACK/NACK
-    constexpr uint8_t FILE_MKDIR         = 0x9C;  // [pathLen:u8][path:str][target:u8?] → ACK/NACK
+    constexpr uint8_t FILE_DELETE        = 0x9B;  // [pathLen:u8][path:str][target:u8?][flags:u8?] → ACK/NACK
+                                                   //   flags bit 0 = RECURSIVE (delete non-empty directories).
+                                                   //   Legacy default (flags byte absent) = RECURSIVE for back-compat.
+    constexpr uint8_t FILE_MKDIR         = 0x9C;  // [pathLen:u8][path:str][target:u8?][flags:u8?] → ACK/NACK
+                                                   //   flags bit 0 = PARENTS (mkdir -p; create missing ancestors, idempotent).
     constexpr uint8_t FILE_INFO          = 0x9D;  // [pathLen:u8][path:str][target:u8?] → FILE_INFO_RESP
     constexpr uint8_t FILE_INFO_RESP     = 0x9E;  // [exists:u8][isDir:u8][size:u32LE]
     constexpr uint8_t FILE_DOWNLOAD      = 0x9F;  // [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END
@@ -214,6 +217,18 @@ namespace HubFxStorage {
         UPLOAD_SYNC     = 0,  // ACK per chunk, CRC retry (default)
         UPLOAD_STREAM   = 3   // Raw binary stream: bypass COBS for data, segment-based ACKs
     };
+
+    /// FILE_DELETE flag bits (optional trailing byte)
+    namespace DeleteFlags {
+        constexpr uint8_t NONE      = 0x00;
+        constexpr uint8_t RECURSIVE = 0x01;  // Recursively delete non-empty directories
+    }
+
+    /// FILE_MKDIR flag bits (optional trailing byte)
+    namespace MkdirFlags {
+        constexpr uint8_t NONE    = 0x00;
+        constexpr uint8_t PARENTS = 0x01;  // Create missing parent directories (mkdir -p); idempotent
+    }
 }
 
 

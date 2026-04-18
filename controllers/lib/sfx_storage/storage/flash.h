@@ -173,18 +173,20 @@ public:
     uint8_t removeFile(const char* path);
 
     /**
-     * @brief Remove a directory and all its contents recursively
+     * @brief Remove a directory
      * @param path Directory path
+     * @param recursive If true, delete all contents; if false, fail on non-empty dir
      * @return FlashError code
      */
-    uint8_t removeDirectory(const char* path);
+    uint8_t removeDirectory(const char* path, bool recursive = true);
 
     /**
-     * @brief Create directory (recursive)
+     * @brief Create directory
      * @param path Directory path
+     * @param createParents If true, create missing parents (mkdir -p semantics, idempotent)
      * @return FlashError code
      */
-    uint8_t makeDirectory(const char* path);
+    uint8_t makeDirectory(const char* path, bool createParents = false);
 
     // ========================================================================
     // File I/O (caller MUST hold lock via lock()/unlock())

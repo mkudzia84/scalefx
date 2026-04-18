@@ -157,9 +157,14 @@ struct HubFxConfigSchema {
     static bool validate(const DataType& d, char* e, size_t el) {
         return hubFxFields.validate(d, e, el);
     }
-    static const char* defaultPath() { return "/config.yaml"; }
+    static const char* defaultPath() { return "/hubfx.yaml"; }  // per-board name — Rule 26
 };
 ```
+
+> **Convention (Rule 26):** each controller's schema returns its own filename
+> (`/gearcontrol.yaml`, `/lightfx.yaml`, `/hubfx.yaml`, `/gunfx.yaml`). The generic
+> `/config.yaml` is only a fallback for unidentified boards. Studio's
+> `configPathFor(ControllerType)` mirrors this mapping.
 
 **Schema DSL primitives:**
 
@@ -270,7 +275,7 @@ struct HubFxConfigSchema {
         return true;
     }
 
-    static const char* defaultPath() { return "/config.yaml"; }
+    static const char* defaultPath() { return "/hubfx.yaml"; }
 };
 ```
 
@@ -297,7 +302,7 @@ void setup() {
     // ... SD init ...
 
     configServer.store().setFileReader(readFromSd);
-    configServer.loadConfig();  // Load /config.yaml on boot
+    configServer.loadConfig();  // Loads the schema's defaultPath() — e.g. /hubfx.yaml
 
     // Access parsed config
     auto& cfg = configServer.store().data();
@@ -327,6 +332,39 @@ void setup() {
 | Multi-line scalars | ✗ | `\|`, `>` |
 | Anchors/aliases | ✗ | `&ref`, `*ref` |
 | Tags | ✗ | `!!int`, `!!str` |
+
+### Canonical YAML Style (Rule 27)
+
+All ScaleFX YAML — reference files in `controllers/*/pico/config.yaml`, files
+produced by Studio's `generateGearControlYaml` / `generateLightYaml`, and the
+round-tripped device files — uses **indented block sequences**:
+
+```yaml
+retracts:
+  - channel: 0           # sequence items are 2 spaces under the parent key
+    enabled: true        # continuation lines are 4 spaces under the parent key
+    stall_current_mA: 500
+    timeout_ms: 60000
+  - channel: 1
+    enabled: true
+    stall_current_mA: 500
+    timeout_ms: 60000
+```
+
+The firmware `YamlParser` and the Go engine parser also accept the YAML-spec
+"compact" form (sequence items at the **same** indent as the parent key) for
+backward compatibility with files produced by older Studio builds:
+
+```yaml
+retracts:
+- channel: 0             # legal YAML, still parsed by firmware + Go + TS parsers,
+  enabled: true          # but no generator should emit this form any more.
+```
+
+When authoring new YAML by hand, use the indented form — it matches every
+emitter, every reference file, and every parser without relying on the
+compact-form fallback. The Studio TypeScript generator and the firmware round-
+trip (load → save) both preserve the indented form.
 
 ## Pool Configuration
 

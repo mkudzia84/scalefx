@@ -194,3 +194,4 @@ int GearControlServer::sendDoorStatus(const GearControlDoorStatus& status) {
     // Door status is always async (unsolicited)
     return sendRawPacket(GearControlPacket::GEAR_DOOR_STATUS, CoreProtocol::TAG_ASYNC, payload, sizeof(payload));
 }
+

@@ -18,7 +18,7 @@ The yaw steering servo remains in the main controller module but uses `ServoCont
 
 **Hardware:** Raspberry Pi Pico (RP2040)  
 **Protocol:** Binary COBS with CRC-8 (1Mbps baud)  
-**Firmware:** v0.10.1 (Build 58)
+**Firmware:** v0.15.0 (Build 93)
 
 ## Architecture
 
@@ -166,7 +166,7 @@ Uses `PicoServer` component for common server boilerplate (serial init, device n
 
 > **Note:** Bit 7 (ENABLED) is a runtime flag set in STATUS config flags. It is not part of the persisted GEAR_CONFIG; it reflects the current enabled state set by GEAR_ENABLE.
 
-### STATUS Response (53 bytes module data)
+### STATUS Response (107 bytes module data)
 
 After the 22-byte core header `[counter:u32][uptime:u32][freeRam:u32][lastActivity_ms:u32][keepaliveCount:u32][boardState:u8][initFlags:u8]`:
 
@@ -207,6 +207,18 @@ Per-gear door state (3 bytes):
   [gear0DoorState:u8]         // DoorState enum (see below)
   [gear1DoorState:u8]
   [gear2DoorState:u8]
+
+Gear input PWM (5 bytes, appended v0.14.0 — Rule 11):
+  [gearInputPulse_us:u16LE]     // Fixed GP0 RC PWM pulse width (0 = no pulse)
+  [gearInputThreshold_us:u16LE] // Deploy/retract decision threshold
+  [gearInputFlags:u8]           // Bit 0 enabled, bit 1 lastCommandWasDeploy
+
+Per-servo live configs (7 × 7 = 49 bytes, appended v0.15.0 — Rule 11):
+  IDs 0..5 = door servos (gear = id/2, door = id%2), 6 = yaw
+  [minUs:u16LE][maxUs:u16LE][speed:u16LE][flags:u8]
+  flags bit 0 = reversed
+  Studio reconciles its pinConfigs against this section — no bespoke
+  ACK-echo carrier needed.
 ```
 
 **batteryConfigFlags bits:**
@@ -582,7 +594,7 @@ GearControl includes onboard LittleFS flash storage for standalone configuration
 
 - **Backend:** `FlashModule` singleton from `sfx_storage` library
 - **Config:** `ConfigStore<GearControlConfigSchema>` — placeholder schema, ready for real fields
-- **Config path:** `/config.yaml` (default)
+- **Config path:** `/gearcontrol.yaml` (default, set by `GearControlConfigSchema::defaultPath()`)
 - **Initialized at boot:** `initFlashAndConfig()` in `setup()` mounts LittleFS and loads config
 
 The flash infrastructure enables DIRECT mode operation — when INIT is sent with `mode=DIRECT`, the board can operate standalone without HubFX, reading settings from flash.
@@ -602,6 +614,7 @@ Transitions: IDLE → STANDALONE (on config load) → SLAVE/DIRECT (on INIT) →
 
 | Build | Version | Changes |
 |-------|---------|---------|
+| 93 | 0.15.0 | STATUS payload appends per-servo live configs (7 × 7 = 49 bytes: min_us, max_us, speed, reversed) so Studio can reconcile its pinConfigs against firmware truth — replaces earlier bespoke SRV_SETTINGS ACK-echo carrier. Append-only (Rule 11); older clients ignore the extra bytes. |
 | 58 | 0.10.1 | Shared library restructure (namespaced includes), SfxServer migration, diagnostic logging (SFX_LOG_*), platform-native API (busy_wait_ms), TinyUSB config, GearControlServer extracted to shared protocol header |
 | 45 | 0.10.0 | Door state in STATUS (DoorState enum), GEAR_DOOR_STATUS (0x72) async door state transition events |
 | 44 | 0.10.0 | Calibration no longer closes doors (fixes stuck CALIBRATING state), doors stay open after calibration |

@@ -75,6 +75,7 @@ export const connectPopupOpen = writable(true) // shown on startup
 export const showAboutDialog = writable(false)
 export const showViewSettings = writable(false)
 export const showConsole = writable(false)
+export const showFileManager = writable(false)
 
 /** Currently active tab index */
 export const activeTab = writable(0)

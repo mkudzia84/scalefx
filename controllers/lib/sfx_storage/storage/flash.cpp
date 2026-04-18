@@ -23,6 +23,7 @@
 #if defined(SFX_HAS_STORAGE)
 
 #include "flash.h"
+#include <vector>
 
 
 // ============================================================================
@@ -302,7 +303,7 @@ uint8_t FlashModule::removeFile(const char* path) {
     return ok ? FlashError::OK : FlashError::IO_ERROR;
 }
 
-uint8_t FlashModule::removeDirectory(const char* path) {
+uint8_t FlashModule::removeDirectory(const char* path, bool recursive) {
     if (!_initialized) return FlashError::NOT_INITIALIZED;
 
     lock();
@@ -323,6 +324,13 @@ uint8_t FlashModule::removeDirectory(const char* path) {
         return ok ? FlashError::OK : FlashError::IO_ERROR;
     }
 
+    if (!recursive) {
+        // Strict: only delete if empty. rmdir returns false on non-empty.
+        bool ok = LittleFS.rmdir(path);
+        unlock();
+        return ok ? FlashError::OK : FlashError::IO_ERROR;
+    }
+
     bool ok = removeDirectoryRecursive(path);
     unlock();
     return ok ? FlashError::OK : FlashError::IO_ERROR;
@@ -330,71 +338,117 @@ uint8_t FlashModule::removeDirectory(const char* path) {
 
 bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
     // Caller MUST hold lock.
-    // Depth-first: remove all children, then the directory itself.
+    // Two-phase: snapshot child list BEFORE any deletes, then delete from snapshot.
+    // Rationale: LittleFS Dir/File iterators are invalidated by remove()/rmdir() on
+    // the directory being iterated — observed on RP2040. Deleting during iteration
+    // silently truncated enumeration and left children behind, causing the final
+    // LittleFS.rmdir(path) to fail on a non-empty dir.
 
-    // Safety: prevent infinite recursion on corrupted directory refs
     if (depth >= MAX_TREE_DEPTH) return false;
 
-#if defined(ARDUINO_ARCH_RP2040)
-    Dir dir = LittleFS.openDir(path);
-    while (dir.next()) {
-        char fullPath[192];
-        size_t pathLen = strlen(path);
-        const char* sep = (pathLen > 0 && path[pathLen - 1] == '/') ? "" : "/";
-        snprintf(fullPath, sizeof(fullPath), "%s%s%s", path, sep,
-                 dir.fileName().c_str());
+    struct ChildEntry {
+        String name;
+        bool   isDir;
+    };
+    std::vector<ChildEntry> children;
 
-        if (dir.isDirectory()) {
+#if defined(ARDUINO_ARCH_RP2040)
+    {
+        Dir dir = LittleFS.openDir(path);
+        while (dir.next()) {
+            children.push_back({ dir.fileName(), dir.isDirectory() });
+            if (children.size() >= (size_t)MAX_TREE_ENTRIES) break;
+        }
+    }
+#elif defined(ARDUINO_ARCH_ESP32)
+    {
+        File dir = LittleFS.open(path);
+        if (!dir || !dir.isDirectory()) {
+            if (dir) dir.close();
+            return false;
+        }
+        File f = dir.openNextFile();
+        while (f) {
+            // ESP32 LittleFS: f.name() is bare leaf; f.path() is full path.
+            String leaf = String(f.name());
+            int slash = leaf.lastIndexOf('/');
+            if (slash >= 0) leaf = leaf.substring(slash + 1);
+            children.push_back({ leaf, f.isDirectory() });
+            f.close();
+            if (children.size() >= (size_t)MAX_TREE_ENTRIES) break;
+            f = dir.openNextFile();
+        }
+        dir.close();
+    }
+#endif
+
+    size_t pathLen = strlen(path);
+    const char* sep = (pathLen > 0 && path[pathLen - 1] == '/') ? "" : "/";
+
+    for (const auto& c : children) {
+        char fullPath[192];
+        snprintf(fullPath, sizeof(fullPath), "%s%s%s", path, sep, c.name.c_str());
+        if (c.isDir) {
             if (!removeDirectoryRecursive(fullPath, depth + 1)) return false;
         } else {
             if (!LittleFS.remove(fullPath)) return false;
         }
     }
-#elif defined(ARDUINO_ARCH_ESP32)
-    File dir = LittleFS.open(path);
-    if (!dir || !dir.isDirectory()) {
-        if (dir) dir.close();
-        return false;
-    }
 
-    File f = dir.openNextFile();
-    while (f) {
-        // ESP32 LittleFS: f.path() returns full path
-        String childPath = String(f.path());
-        bool isDir = f.isDirectory();
-        f.close();
-
-        if (isDir) {
-            if (!removeDirectoryRecursive(childPath.c_str(), depth + 1)) return false;
-        } else {
-            if (!LittleFS.remove(childPath.c_str())) return false;
-        }
-
-        f = dir.openNextFile();
-    }
-    dir.close();
-#endif
-
-    return LittleFS.rmdir(path);
+    // Arduino-Pico LittleFS implicitly collapses an empty directory entry when
+    // its last child is removed — a subsequent LittleFS.rmdir() then reports
+    // false (path missing). Treat "already gone" as success for idempotency.
+    if (LittleFS.rmdir(path)) return true;
+    return !LittleFS.exists(path);
 }
 
-uint8_t FlashModule::makeDirectory(const char* path) {
+uint8_t FlashModule::makeDirectory(const char* path, bool createParents) {
     if (!_initialized) return FlashError::NOT_INITIALIZED;
 
     lock();
 
-    // Already exists as directory? That's OK.
-    if (LittleFS.exists(path)) {
-        LFSFile f = LittleFS.open(path, "r");
+    auto checkExistingDir = [](const char* p) -> int {
+        // 1 = exists as dir, 0 = exists as file, -1 = does not exist
+        if (!LittleFS.exists(p)) return -1;
+        LFSFile f = LittleFS.open(p, "r");
         bool isDir = f && f.isDirectory();
         if (f) f.close();
+        return isDir ? 1 : 0;
+    };
+
+    if (!createParents) {
+        int existing = checkExistingDir(path);
+        if (existing == 1) { unlock(); return FlashError::OK; }  // idempotent: dir exists
+        if (existing == 0) { unlock(); return FlashError::ALREADY_EXISTS; }  // exists as file
+
+        bool ok = LittleFS.mkdir(path);
         unlock();
-        return isDir ? FlashError::OK : FlashError::ALREADY_EXISTS;
+        return ok ? FlashError::OK : FlashError::IO_ERROR;
     }
 
-    bool ok = LittleFS.mkdir(path);
+    // PARENTS mode: walk path components, mkdir each in turn. Idempotent.
+    char buf[192];
+    size_t n = strlen(path);
+    if (n == 0 || n >= sizeof(buf)) { unlock(); return FlashError::IO_ERROR; }
+    memcpy(buf, path, n + 1);
+
+    // Iterate each '/' boundary; skip leading '/'
+    for (size_t i = 1; i <= n; i++) {
+        if (buf[i] == '/' || buf[i] == '\0') {
+            char saved = buf[i];
+            buf[i] = '\0';
+            if (i > 1) {  // skip the bare "/" root
+                int existing = checkExistingDir(buf);
+                if (existing == 0) { unlock(); return FlashError::ALREADY_EXISTS; }
+                if (existing == -1) {
+                    if (!LittleFS.mkdir(buf)) { unlock(); return FlashError::IO_ERROR; }
+                }
+            }
+            buf[i] = saved;
+        }
+    }
     unlock();
-    return ok ? FlashError::OK : FlashError::IO_ERROR;
+    return FlashError::OK;
 }
 
 

@@ -264,7 +264,7 @@ LightFX includes onboard LittleFS flash storage for standalone configuration per
 
 - **Backend:** `FlashModule` singleton from `sfx_storage` library
 - **Config:** `ConfigStore<LightFxConfigSchema>` — placeholder schema, ready for real fields
-- **Config path:** `/config.yaml` (default)
+- **Config path:** `/lightfx.yaml` (default, set by `LightFxConfigSchema::defaultPath()`)
 - **Initialized at boot:** `initFlashAndConfig()` in `setup()` mounts LittleFS and loads config
 
 The flash infrastructure enables DIRECT mode operation — when INIT is sent with `mode=DIRECT`, the board can operate standalone without HubFX, reading settings from flash.

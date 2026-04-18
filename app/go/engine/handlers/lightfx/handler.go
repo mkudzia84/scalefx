@@ -80,9 +80,6 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"disable":         {h.cmdDisable, "disable <ch>", "Disable LED channel (0=all)", true},
 		},
 	}
-	for k, v := range h.E.ConfigCommands() {
-		g.Commands[k] = v
-	}
 	return g
 }
 

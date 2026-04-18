@@ -194,7 +194,7 @@ func (h *Handler) cmdInit(args []string) {
 		info := engine.ParseInitReady(r.Response.Payload)
 		if info != nil {
 			h.E.Info = info
-			h.E.ControllerType = info.ControllerType
+			h.E.SetControllerType(info.ControllerType)
 			h.E.Initialized = true
 			h.E.Out.OK("INIT_READY (mode=%s%s)", pcore.InitModeName(mode),
 				func() string {
@@ -231,7 +231,7 @@ func (h *Handler) doIdentify() {
 		info := engine.ParseInitReady(r.Response.Payload)
 		if info != nil {
 			h.E.Info = info
-			h.E.ControllerType = info.ControllerType
+			h.E.SetControllerType(info.ControllerType)
 			h.E.Out.OK("Identified: %s v%s (build %d) [%s]",
 				info.Name, info.Version, info.Build, info.ControllerType)
 		}
@@ -253,7 +253,7 @@ func (h *Handler) cmdIdentify(_ []string) {
 		info := engine.ParseInitReady(r.Response.Payload)
 		if info != nil {
 			h.E.Info = info
-			h.E.ControllerType = info.ControllerType
+			h.E.SetControllerType(info.ControllerType)
 			h.E.Out.OK("IDENTIFY response")
 			h.E.PrintInitReadyInfo(info)
 		}

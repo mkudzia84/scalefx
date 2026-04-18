@@ -42,8 +42,8 @@
  *   [ ] System sounds
  */
 
-#define FIRMWARE_VERSION "0.33.0"
-#define BUILD_NUMBER 187
+#define FIRMWARE_VERSION "0.34.0"
+#define BUILD_NUMBER 189
 
 // ============================================================================
 // FEATURE FLAGS — Board bring-up: uncomment to enable features one by one
@@ -633,7 +633,7 @@ static void initConfig() {
     });
 
     // Initial load from flash
-    configServer.loadConfig();  // Reads /config.yaml from LittleFS
+    configServer.loadConfig();  // Reads /hubfx.yaml from LittleFS
 }
 #endif // FEATURE_CONFIG
 

@@ -523,8 +523,8 @@ Client                                Server
 
 | Command | Value | Payload | Response |
 |---------|-------|---------|----------|
-| `FILE_DELETE` | 0x9B | `[pathLen:u8][path:str][target:u8?]` | ACK / NACK |
-| `FILE_MKDIR` | 0x9C | `[pathLen:u8][path:str][target:u8?]` | ACK / NACK |
+| `FILE_DELETE` | 0x9B | `[pathLen:u8][path:str][target:u8?][flags:u8?]` — flags bit 0 = RECURSIVE (delete non-empty dirs). Legacy default (flags byte absent) = recursive for back-compat. | ACK / NACK |
+| `FILE_MKDIR` | 0x9C | `[pathLen:u8][path:str][target:u8?][flags:u8?]` — flags bit 0 = PARENTS (mkdir `-p`: creates missing ancestors, idempotent when target exists) | ACK / NACK |
 | `FILE_INFO` | 0x9D | `[pathLen:u8][path:str][target:u8?]` | FILE_INFO_RESP |
 | `FILE_INFO_RESP` | 0x9E | `[exists:u8][isDir:u8][size:u32LE]` | — |
 

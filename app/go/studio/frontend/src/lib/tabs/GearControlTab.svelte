@@ -2,13 +2,21 @@
 <!-- Left: global settings (controls, battery, yaw).  Right: per-channel setup with doors & servos. -->
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte'
-    import { SendCommand } from '../../../wailsjs/go/main/App'
+    import { SendCommand, UploadConfig } from '../../../wailsjs/go/main/App'
     import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
     import { connectionInfo } from '../stores'
-    import ServoWidget from '../components/ServoWidget.svelte'
     import SaveConfigDialog from '../dialogs/SaveConfigDialog.svelte'
+    import ServoCalibrationDialog from '../dialogs/ServoCalibrationDialog.svelte'
+    import GearControlBoardDialog from '../dialogs/GearControlBoardDialog.svelte'
     import { GearControlConfigVerifier, type GearControlConfig } from '../config/gearcontrol-verifier'
+    import {
+        generateGearControlYaml, parseGearControlYaml,
+        type GearControlFullConfig,
+    } from '../config/config-yaml-gen'
     import { EMPTY_RESULT, type VerifyResult } from '../config/config-verifier'
+    import type { BoardConfigDriver } from '../config/board-driver'
+    import { createLivePusher, pushBadgeText } from '../live-push'
+    import { autoLoadOnConnect } from '../config/config-loader'
 
     export let boardLabel: string = 'GearControl'
 
@@ -37,9 +45,11 @@
 
     let calibTimeout_s = 60
 
-    $: anyUncalibrated = calibStates.some(s => s !== 'calibrated')
-    $: allCalibrated = calibStates.every(s => s === 'calibrated')
-    $: hasErrors = calibStates.some(s => s === 'error')
+    // Helpers ignore disabled channels — a disabled gear can't be calibrated and
+    // shouldn't trigger "Calibration required" warnings or block aggregate Deploy/Retract.
+    $: anyUncalibrated = calibStates.some((s, i) => gearEnabled[i] && s !== 'calibrated')
+    $: allCalibrated = calibStates.every((s, i) => !gearEnabled[i] || s === 'calibrated')
+    $: hasErrors = calibStates.some((s, i) => gearEnabled[i] && s === 'error')
 
     // ─── Aggregate actions ───
     function gearAllDeploy()  { SendCommand('deploy all'); gearActions = gearActions.map(() => 'deploying' as GearAction) }
@@ -122,26 +132,32 @@
         SendCommand(`gear.config ${id} ${flags} ${gc.stallCurrent_mA} ${gc.timeout_ms}`)
     }
 
-    // ─── Door Config (per gear) ───
-    interface DoorConfig {
-        open0_us: number; close0_us: number
-        open1_us: number; close1_us: number
-    }
-
-    let doorConfigs: DoorConfig[] = [
-        { open0_us: 2000, close0_us: 1000, open1_us: 2000, close1_us: 1000 },
-        { open0_us: 2000, close0_us: 1000, open1_us: 2000, close1_us: 1000 },
-        { open0_us: 2000, close0_us: 1000, open1_us: 2000, close1_us: 1000 },
-    ]
-
-    function applyDoorConfig(id: number) {
-        const dc = doorConfigs[id]
-        SendCommand(`door.config ${id} ${dc.open0_us} ${dc.close0_us} ${dc.open1_us} ${dc.close1_us}`)
-    }
-
     // ─── Door Mode (per gear) ───
     const doorModeNames = ['None', 'Single', 'Dual Sync', 'Dual Delay', 'Dual Seq']
     const doorModeValues = ['none', 'single', 'dual-sync', 'dual-delay', 'dual-seq']
+
+    // Short descriptions for each door mode — surfaced in the per-gear card and as
+    // option/select tooltips. Phase = "pre-deploy" (doors open before gear extends)
+    // vs "post-deploy" (doors close after gear extends/retracts).
+    const doorModeDescPre: string[] = [
+        'No door movement before gear extends.',
+        'Open one door (Door A only) before the gear extends.',
+        'Open both doors simultaneously, then extend the gear.',
+        'Open Door A, wait Delay ms, then open Door B; then extend the gear.',
+        'Open Door A fully, wait until it reaches target, then open Door B; then extend the gear.',
+    ]
+    const doorModeDescPost: string[] = [
+        'Leave doors as-is after the gear has finished moving.',
+        'Close one door (Door A only) after the gear has finished moving.',
+        'Close both doors simultaneously after the gear has finished moving.',
+        'Close Door A, wait Delay ms, then close Door B after the gear has finished moving.',
+        'Close Door A fully, wait until it reaches target, then close Door B after the gear has finished moving.',
+    ]
+    function doorModePreDesc(idx: number): string  { return doorModeDescPre[idx]  ?? '' }
+    function doorModePostDesc(idx: number): string { return doorModeDescPost[idx] ?? '' }
+    function usesDelay(preIdx: number, postIdx: number): boolean {
+        return preIdx === 3 || postIdx === 3
+    }
 
     interface DoorModeConfig {
         preDeployMode: number
@@ -161,22 +177,35 @@
     }
 
     // ─── Yaw Config ───
-    interface YawConfig {
-        neutral_us: number; min_us: number; max_us: number
-        speed: number; reversed: boolean
-    }
-
-    let yawGearId = 0
-    let yawConfig: YawConfig = { neutral_us: 1500, min_us: 1000, max_us: 2000, speed: 4000, reversed: false }
+    // Yaw state lives on the yaw_output pin in pinConfigs (gear_id / neutral_us /
+    // min_us / max_us / speed / reversed). The yaw frame binds directly to that
+    // pin — no duplicated state. SERVO_ID_YAW is the hardware servo id for the
+    // yaw output (matches gcServos[6] and firmware ServoChannel::YAW).
+    const SERVO_ID_YAW = 6
     let yawPosition_us = 1500
 
     function applyYawConfig() {
-        SendCommand(`yaw.config ${yawGearId} ${yawConfig.neutral_us} ${yawConfig.min_us} ${yawConfig.max_us}`)
+        const pin = pinConfigs.find(p => p.role === 'yaw_output')
+        if (!pin) return
+        SendCommand(`yaw.config ${pin.gear_id} ${pin.neutral_us} ${pin.min_us} ${pin.max_us}`)
+        SendCommand(`servo.config ${SERVO_ID_YAW} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`)
     }
     function setYaw() { SendCommand(`yaw ${yawPosition_us}`) }
     function resetYawPosition() {
-        yawPosition_us = yawConfig.neutral_us
-        SendCommand(`yaw ${yawConfig.neutral_us}`)
+        const pin = pinConfigs.find(p => p.role === 'yaw_output')
+        const neutral = pin?.neutral_us ?? 1500
+        yawPosition_us = neutral
+        SendCommand(`yaw ${neutral}`)
+    }
+
+    // Apply door servo settings (min/max/speed/reversed) for a given pin.
+    // servoId = gear channel * 2 + doorIdx (0=Door A, 1=Door B).
+    function applyDoorServoConfig(pinIdx: number) {
+        const pin = pinConfigs[pinIdx]
+        if (!pin || pin.role !== 'door') return
+        const doorIdx = doorLegIndex(pinIdx, pin.channel)
+        const servoId = pin.channel * 2 + doorIdx
+        SendCommand(`servo.config ${servoId} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`)
     }
 
     // ─── Battery ───
@@ -187,13 +216,25 @@
     let batteryVoltage_mV = 0
     const batteryChemistries = ['lipo', 'liion', 'nimh']
     const chemistryLabels: Record<string, string> = { lipo: 'LiPo', liion: 'Li-Ion', nimh: 'NiMH' }
-    // Cell voltage bounds (mV) — must match BatteryProfiles in battery_monitor.h
-    const cellVoltageBounds: Record<string, { min: number; max: number }> = {
-        lipo:  { min: 3000, max: 4200 },
-        liion: { min: 2800, max: 4200 },
-        nimh:  { min:  900, max: 1400 },
+    // Cell voltage bounds (mV) — must match BatteryProfiles in battery_types.h
+    // (fullCharge_mV, nominal_mV, low_mV, critical_mV). We use `min = critical`
+    // for the empty-end of the SOC bar and `max = fullCharge` for the full-end;
+    // `nominal` mirrors the firmware's detectCellCount() divisor.
+    const cellVoltageBounds: Record<string, { min: number; max: number; nominal: number }> = {
+        lipo:  { min: 3000, max: 4200, nominal: 3700 },
+        liion: { min: 2800, max: 4200, nominal: 3600 },
+        nimh:  { min:  900, max: 1400, nominal: 1200 },
     }
-    $: effectiveCellCount = batteryCellCount > 0 ? batteryCellCount : 0
+    // Mirror of battery_state_machine.cpp::detectCellCount() — round(v/nominal),
+    // clamped to [1,6], 0 when voltage is below the MIN_DETECT_mV threshold.
+    const MIN_DETECT_mV = 3000
+    $: inferredCellCount = (() => {
+        if (batteryVoltage_mV < MIN_DETECT_mV) return 0
+        const nominal = cellVoltageBounds[batteryChemistry]?.nominal ?? 3700
+        const cells = Math.round(batteryVoltage_mV / nominal)
+        return Math.min(6, Math.max(1, cells))
+    })()
+    $: effectiveCellCount = batteryCellCount > 0 ? batteryCellCount : inferredCellCount
     $: battMinV = (cellVoltageBounds[batteryChemistry]?.min ?? 3000) * effectiveCellCount
     $: battMaxV = (cellVoltageBounds[batteryChemistry]?.max ?? 4200) * effectiveCellCount
     $: batteryVolts = (batteryVoltage_mV / 1000).toFixed(2)
@@ -209,13 +250,15 @@
     }
 
     // ─── Pin Mapping ───
-    type PinRole = 'door' | 'gear_input' | 'yaw_input' | 'yaw_output' | 'unused'
-    const pinRoleOptions: PinRole[] = ['door', 'gear_input', 'yaw_input', 'yaw_output', 'unused']
+    // gear_input is FIXED on GP0 — it lives in its own section (gearInputConfig
+    // below) and is not selectable as a per-pin role.
+    type PinRole = 'door' | 'yaw_input' | 'yaw_output' | 'unused'
+    const pinRoleOptions: PinRole[] = ['door', 'yaw_input', 'yaw_output', 'unused']
     const pinRoleLabels: Record<PinRole, string> = {
-        door: 'Door Servo', gear_input: 'Gear Input', yaw_input: 'Yaw Input',
+        door: 'Door Servo', yaw_input: 'Yaw Input',
         yaw_output: 'Yaw Output', unused: 'Unused'
     }
-    const pinSlots = ['pin1', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7']
+    const pinSlots = ['SRV1', 'SRV2', 'SRV3', 'SRV4', 'SRV5', 'SRV6', 'SRV7']
     const pinGPIOs = ['GP1', 'GP2', 'GP3', 'GP6', 'GP7', 'GP8', 'GP9']
 
     interface PinConfig {
@@ -229,14 +272,14 @@
                  reversed: false, threshold_us: 1500, gear_id: 0, neutral_us: 1500, ...overrides }
     }
 
-    // Direct mode: standalone — gear_input + yaw_input on first two pins
+    // Direct mode: standalone — yaw_input on pin2 (gear_input is fixed on GP0)
     const directPinPreset: PinConfig[] = [
-        mkPin('gear_input'),                     // pin1: Gear Input
-        mkPin('yaw_input'),                      // pin2: Yaw Input
-        mkPin('door', { channel: 0 }),           // pin3: Nose Door A
-        mkPin('door', { channel: 0 }),           // pin4: Nose Door B
-        mkPin('door', { channel: 1 }),           // pin5: Left Door
-        mkPin('door', { channel: 2 }),           // pin6: Right Door
+        mkPin('yaw_input'),                      // pin1: Yaw Input
+        mkPin('door', { channel: 0 }),           // pin2: Nose Door A
+        mkPin('door', { channel: 0 }),           // pin3: Nose Door B
+        mkPin('door', { channel: 1 }),           // pin4: Left Door
+        mkPin('door', { channel: 2 }),           // pin5: Right Door
+        mkPin('unused'),                         // pin6: Unused
         mkPin('yaw_output'),                     // pin7: Yaw Output
     ]
 
@@ -253,10 +296,20 @@
 
     let pinConfigs: PinConfig[] = directPinPreset.map(p => ({ ...p }))
 
-    $: yawEnabled = pinConfigs.some(p => p.role === 'yaw_output')
-    $: hasGearInput = pinConfigs.some(p => p.role === 'gear_input')
+    // Fixed Gear Input (GP0) — RC PWM in for deploy/retract command.
+    let gearInputEnabled = true
+    let gearInputThreshold_us = 1500
+
+    $: yawPinIdx = pinConfigs.findIndex(p => p.role === 'yaw_output')
+    $: yawEnabled = yawPinIdx >= 0
     $: doorPinsPerGear = [0, 1, 2].map(ch => pinConfigs.filter(p => p.role === 'door' && p.channel === ch).length)
     $: gearHasDoors = doorPinsPerGear.map(n => n > 0)
+
+    // Per-gear door pin indices (in pinConfigs order); indexed 0=Door A, 1=Door B.
+    // Used by the gear card to render the inline servo settings for each door pin.
+    $: doorPinIndicesPerGear = [0, 1, 2].map(ch =>
+        pinConfigs.map((p, i) => (p.role === 'door' && p.channel === ch) ? i : -1).filter(i => i >= 0)
+    )
 
     // Live per-gear door positions (µs), filled by status broadcast.
     // Used by Pin Mapping rows for "live value" readouts and by per-gear
@@ -284,13 +337,15 @@
         return n === 0 ? 0 : 1
     }
 
-    // Compose a single label that proxies the gear input — what the operator
-    // commanded most recently. Fed by aggregated gearActions; "—" when idle.
-    $: aggregateGearActionLabel = (() => {
-        if (gearActions.some(a => a === 'deploying')) return '▼ Deploying'
-        if (gearActions.some(a => a === 'retracting')) return '▲ Retracting'
-        return 'Idle'
-    })()
+    // Map a pin index to its firmware servo ID (matches gearcontrol_pico.ino:
+    // door IDs 0-5 = gear*2 + doorLeg, yaw = 6). Returns null for non-servo roles.
+    function pinServoId(pinIdx: number): number | null {
+        const p = pinConfigs[pinIdx]
+        if (!p) return null
+        if (p.role === 'yaw_output') return 6
+        if (p.role === 'door') return p.channel * 2 + doorLegIndex(pinIdx, p.channel)
+        return null
+    }
 
     // Map a live PWM µs reading to a 0–100% bar position within [openUs, closeUs].
     // open and close may be inverted (close < open) — we normalize, so the bar
@@ -332,12 +387,20 @@
     interface BatteryBroadcastInfo {
         voltage_mV: number; enabled: boolean; autoDeploy: boolean; lowVoltage: boolean
     }
+    interface ServoLiveConfigInfo {
+        min_us: number; max_us: number; speed: number; reversed: boolean
+    }
     interface GearControlBroadcast {
         gears: GearStatusInfo[]; yaw_us: number; battery: BatteryBroadcastInfo
+        servos?: ServoLiveConfigInfo[]
+        gearInput_us?: number; gearInputThreshold_us?: number
+        gearInputEnabled?: boolean; gearInputCommandDeploy?: boolean
     }
 
     // Live values from periodic STATUS_BROADCAST
     let liveYaw_us = 0
+    let liveGearInput_us = 0
+    let liveGearInputCommandDeploy = false
 
     function handleStatusBroadcast(data: GearControlBroadcast) {
         for (let i = 0; i < 3; i++) {
@@ -388,6 +451,36 @@
 
         // Yaw
         liveYaw_us = data.yaw_us
+
+        // Gear input (fixed GP0) — live PWM pulse + decoded command
+        if (data.gearInput_us !== undefined) liveGearInput_us = data.gearInput_us
+        if (data.gearInputCommandDeploy !== undefined) liveGearInputCommandDeploy = data.gearInputCommandDeploy
+
+        // Reconcile pinConfigs against the firmware's live servo configs
+        // (v0.15.0+). Replaces the earlier ACK-echo carrier: the STATUS broadcast
+        // is already the single source of truth, so Save → firmware → next
+        // broadcast self-heals the tab. Skip the pin being calibrated (its
+        // widened limits are temporary — ServoCalibrationDialog restores them).
+        if (data.servos && data.servos.length >= 7) {
+            let dirty = false
+            for (let i = 0; i < pinConfigs.length; i++) {
+                if (calibDialogOpen && i === calibTargetPin) continue
+                // Don't fight a user mid-edit: skip pins whose debounced push
+                // is still pending — the next broadcast after the push lands
+                // will carry the new firmware-side truth.
+                const p = pinConfigs[i]
+                const pushKey = p.role === 'yaw_output' ? 'yaw.cfg' : `servo:pin${i}`
+                if (live.isPending(pushKey)) continue
+                const sid = pinServoId(i)
+                if (sid === null) continue
+                const s = data.servos[sid]
+                if (p.min_us !== s.min_us)   { p.min_us = s.min_us; dirty = true }
+                if (p.max_us !== s.max_us)   { p.max_us = s.max_us; dirty = true }
+                if (p.speed !== s.speed)     { p.speed = s.speed; dirty = true }
+                if (p.reversed !== s.reversed) { p.reversed = s.reversed; dirty = true }
+            }
+            if (dirty) pinConfigs = pinConfigs
+        }
 
         // Trigger reactivity
         liveCurrent_mA = liveCurrent_mA
@@ -475,6 +568,8 @@
     onMount(() => {
         EventsOn('gearcontrol:status', handleStatusBroadcast)
         EventsOn('gearcontrol:calib', handleCalibStatus)
+        const unsubAutoLoad = autoLoadOnConnect(gcDriver, ['gearcontrol'])
+        return () => { unsubAutoLoad() }
     })
 
     onDestroy(() => {
@@ -484,47 +579,239 @@
 
     // ─── Config ───
     function configReload() { SendCommand('config.reload') }
-    function configStatus() { SendCommand('config.status') }
-    function refreshStatus() { SendCommand('status') }
+
+    // ─── Live Push (Rule 24) ─────────────────────────────────────────
+    // Each editable settings group (per-gear, per-door-pin servo, door
+    // sequencing, yaw, battery) has a debounced auto-push: edits validate
+    // locally on change, the resulting command is deduped against the last
+    // value sent, and pushed ~350ms after the user stops editing. Apply
+    // buttons remain as a "force resend" + sync-now affordance.
+    const live = createLivePusher(SendCommand)
+    const pushStatus = live.status
+    const scheduleLivePush = live.schedule
+
+    onDestroy(() => live.destroy())
+
+    // ─── Per-group command builders + schedulers ──────────────────────
+
+    function buildGearCmd(id: number): string | null {
+        const gc = gearConfigs[id]
+        if (gc.timeout_ms < 500 || gc.timeout_ms > 65000) return null
+        return `gear.config ${id} 0 ${gc.stallCurrent_mA} ${gc.timeout_ms}`
+    }
+    function scheduleGearPush(id: number) {
+        scheduleLivePush(`gear:${id}`, () => buildGearCmd(id))
+    }
+
+    function buildDoorModeCmd(id: number): string | null {
+        const dm = doorModes[id]
+        if (dm.delay_ms < 0 || dm.delay_ms > 5000) return null
+        return `door.mode ${id} ${doorModeValues[dm.preDeployMode]} ${doorModeValues[dm.postDeployMode]} ${dm.delay_ms}`
+    }
+    function scheduleDoorModePush(id: number) {
+        scheduleLivePush(`doormode:${id}`, () => buildDoorModeCmd(id))
+    }
+
+    function buildDoorServoCmd(pinIdx: number): string | null {
+        const pin = pinConfigs[pinIdx]
+        if (!pin || pin.role !== 'door') return null
+        if (pin.min_us < 500 || pin.max_us > 2500 || pin.min_us >= pin.max_us) return null
+        if (pin.speed < 100 || pin.speed > 10000) return null
+        const doorIdx = doorLegIndex(pinIdx, pin.channel)
+        const servoId = pin.channel * 2 + doorIdx
+        return `servo.config ${servoId} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`
+    }
+    function scheduleDoorServoPush(pinIdx: number) {
+        scheduleLivePush(`servo:pin${pinIdx}`, () => buildDoorServoCmd(pinIdx))
+    }
+
+    function buildYawCfgCmd(): string | null {
+        const pin = pinConfigs.find(p => p.role === 'yaw_output')
+        if (!pin) return ''
+        if (pin.min_us < 500 || pin.max_us > 2500 || pin.min_us >= pin.max_us) return null
+        if (pin.neutral_us < pin.min_us || pin.neutral_us > pin.max_us) return null
+        return `yaw.config ${pin.gear_id} ${pin.neutral_us} ${pin.min_us} ${pin.max_us}`
+    }
+    function buildYawServoCmd(): string | null {
+        const pin = pinConfigs.find(p => p.role === 'yaw_output')
+        if (!pin) return ''
+        if (pin.min_us < 500 || pin.max_us > 2500 || pin.min_us >= pin.max_us) return null
+        if (pin.speed < 100 || pin.speed > 10000) return null
+        return `servo.config ${SERVO_ID_YAW} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`
+    }
+    function scheduleYawPush() {
+        scheduleLivePush('yaw.cfg', () => buildYawCfgCmd())
+        scheduleLivePush('yaw.servo', () => buildYawServoCmd())
+    }
+
+    function buildBatteryCmd(): string {
+        const auto = batteryAutoDeploy ? 'autodeploy' : ''
+        const cells = batteryCellCount > 0 ? `cells:${batteryCellCount}` : 'auto'
+        return `battery ${auto} ${batteryChemistry} ${cells}`.replace(/\s+/g, ' ').trim()
+    }
+    function scheduleBatteryPush() {
+        scheduleLivePush('battery', () => buildBatteryCmd())
+    }
+
+    const resetPushBaseline = live.resetBaseline
 
     // ─── Verification ─────────────────────────────────────────────────
-    // Mirrors the LightFX pattern (Rule 24): a board-specific verifier
+    // Mirrors the LightFX pattern (Rule 23): a board-specific verifier
     // produces a path-indexed map of issues; the template binds verify-error
     // / verify-warn classes via sev(path) so any field with a problem renders
     // with a red/yellow border.
     const gcVerifier = new GearControlConfigVerifier()
     let saveDialogOpen = false
-    let saveVerifyResult: VerifyResult = EMPTY_RESULT
-    let saveConfigText = ''
+    let boardDialogOpen = false
 
     function buildGearControlConfig(): GearControlConfig {
+        const yawPin = pinConfigs.find(p => p.role === 'yaw_output')
         return {
             pins: pinConfigs.map(p => ({
                 role: p.role, channel: p.channel, gear_id: p.gear_id, threshold_us: p.threshold_us,
+                min_us: p.min_us, max_us: p.max_us, speed: p.speed, reversed: p.reversed,
+                neutral_us: p.neutral_us,
             })),
             gears: gearConfigs.map((gc, gi) => ({
                 enabled: gearEnabled[gi],
                 calibrated: calibStates[gi] === 'calibrated',
                 timeout_ms: gc.timeout_ms,
-                door: { ...doorConfigs[gi] },
                 doorPinCount: doorPinsPerGear[gi],
             })),
             yaw: {
                 enabled: yawEnabled,
-                gearId: yawGearId,
-                neutral_us: yawConfig.neutral_us,
-                min_us: yawConfig.min_us,
-                max_us: yawConfig.max_us,
+                gearId: yawPin?.gear_id ?? 0,
+                neutral_us: yawPin?.neutral_us ?? 1500,
+                min_us: yawPin?.min_us ?? 1000,
+                max_us: yawPin?.max_us ?? 2000,
+            },
+            gearInput: {
+                enabled: gearInputEnabled,
+                threshold_us: gearInputThreshold_us,
             },
             isSlave: isHubFX,
         }
     }
 
+    // Driver-facing snapshot: includes retracts / door_modes / battery for
+    // YAML round-trip (the verifier ignores these, but the generator needs them).
+    function buildGearControlFullConfig(): GearControlFullConfig {
+        return {
+            ...buildGearControlConfig(),
+            retracts: [0, 1, 2].map(ch => ({
+                channel: ch,
+                enabled: gearEnabled[ch],
+                stallCurrent_mA: gearConfigs[ch].stallCurrent_mA,
+                timeout_ms: gearConfigs[ch].timeout_ms,
+            })),
+            doorModes: [0, 1, 2].map(ch => ({
+                channel: ch,
+                preDeploy: doorModeValues[doorModes[ch].preDeployMode],
+                postDeploy: doorModeValues[doorModes[ch].postDeployMode],
+                delay_ms: doorModes[ch].delay_ms,
+            })),
+            battery: {
+                autoDeploy: batteryAutoDeploy,
+                chemistry: batteryChemistry,
+                cellCount: batteryCellCount,
+            },
+        }
+    }
+
+    function applyGearControlConfig(cfg: GearControlFullConfig) {
+        const applied: string[] = []
+
+        // Retracts → gearEnabled + gearConfigs (force new object refs so
+        // `bind:value` picks up the change even when the field ends up equal).
+        if (cfg.retracts && cfg.retracts.length > 0) {
+            for (const r of cfg.retracts) {
+                if (r.channel >= 0 && r.channel < 3) {
+                    gearEnabled[r.channel] = r.enabled
+                    gearConfigs[r.channel] = {
+                        ...gearConfigs[r.channel],
+                        stallCurrent_mA: r.stallCurrent_mA,
+                        timeout_ms: r.timeout_ms,
+                    }
+                }
+            }
+            gearEnabled = [...gearEnabled]
+            gearConfigs = [...gearConfigs]
+            applied.push(`retracts×${cfg.retracts.length}`)
+        }
+
+        // Pins — replace the full list (preset isn't re-applied so manual edits survive)
+        if (cfg.pins.length > 0) {
+            pinConfigs = cfg.pins.map(p => ({
+                role: p.role,
+                channel: p.channel,
+                min_us: p.min_us,
+                max_us: p.max_us,
+                speed: p.speed,
+                reversed: p.reversed,
+                threshold_us: p.threshold_us,
+                // Yaw steering is hard-wired to the nose gear (gear 0).
+                gear_id: p.role === 'yaw_output' ? 0 : p.gear_id,
+                neutral_us: p.neutral_us,
+            }))
+            presetApplied = true  // don't clobber with the slave/direct preset
+            applied.push(`pins×${cfg.pins.length}`)
+        }
+
+        // Door modes — YAML values are strings; reverse-map to index
+        if (cfg.doorModes && cfg.doorModes.length > 0) {
+            for (const dm of cfg.doorModes) {
+                if (dm.channel < 0 || dm.channel >= 3) continue
+                const preIdx  = doorModeValues.indexOf(dm.preDeploy)
+                const postIdx = doorModeValues.indexOf(dm.postDeploy)
+                doorModes[dm.channel] = {
+                    preDeployMode:  preIdx  >= 0 ? preIdx  : doorModes[dm.channel].preDeployMode,
+                    postDeployMode: postIdx >= 0 ? postIdx : doorModes[dm.channel].postDeployMode,
+                    delay_ms: dm.delay_ms,
+                }
+            }
+            doorModes = [...doorModes]
+            applied.push(`doorModes×${cfg.doorModes.length}`)
+        }
+
+        // Battery
+        if (cfg.battery) {
+            batteryAutoDeploy = cfg.battery.autoDeploy
+            if (batteryChemistries.includes(cfg.battery.chemistry)) {
+                batteryChemistry = cfg.battery.chemistry
+            }
+            batteryCellCount = cfg.battery.cellCount
+            applied.push('battery')
+        }
+
+        // Fixed gear input (GP0)
+        if (cfg.gearInput) {
+            gearInputEnabled = cfg.gearInput.enabled
+            gearInputThreshold_us = cfg.gearInput.threshold_us
+            applied.push('gearInput')
+        }
+
+        // Diagnostic — visible in Studio console alongside the config-loader trace
+        console.log('[GearControl] applyState →', applied.length ? applied.join(', ') : '(nothing to apply)')
+    }
+
+    const gcDriver: BoardConfigDriver<GearControlFullConfig> = {
+        boardType: 'gearcontrol',
+        boardLabel,
+        buildState: buildGearControlFullConfig,
+        generateYaml: (s) => generateGearControlYaml(s, false),
+        parseYaml:    (t) => parseGearControlYaml(t, false),
+        applyState:   applyGearControlConfig,
+        verify:       (s) => gcVerifier.verify(s),
+    }
+
     let liveResult: VerifyResult = EMPTY_RESULT
     $: {
         // Touch every reactive dep so Svelte re-runs verification on any edit.
-        void pinConfigs; void gearConfigs; void doorConfigs; void gearEnabled
-        void calibStates; void yawConfig; void yawGearId; void isHubFX
+        // Svelte 4's dep tracking is shallow — variables read only inside
+        // buildGearControlConfig() aren't tracked unless we void them here.
+        void pinConfigs; void gearConfigs; void gearEnabled
+        void calibStates; void isHubFX
+        void gearInputEnabled; void gearInputThreshold_us
         liveResult = gcVerifier.verify(buildGearControlConfig())
     }
 
@@ -534,26 +821,49 @@
         return (path: string): string | null => gcVerifier.severityForPath(path)
     })()
 
-    function openSaveDialog() {
-        saveVerifyResult = gcVerifier.verify(buildGearControlConfig())
-        // GearControl config text is plumbed server-side via config.save —
-        // we don't currently round-trip the YAML through the GUI, so leave
-        // the dialog's text panel empty. The verify panel still gates save.
-        saveConfigText = ''
-        saveDialogOpen = true
+    function openSaveDialog() { saveDialogOpen = true }
+
+    // ─── Interactive servo calibration ────────────────────────────────
+    // One dialog instance, parameterized by which servo invoked it.
+    let calibDialogOpen = false
+    let calibServoId = 0
+    let calibServoName = ''
+    let calibTargetPin = -1            // pin index whose config gets updated on Save; -1 = none
+    let calibInit = { min_us: 500, max_us: 2500, speed: 4000, accel: 0, decel: 0, reversed: false }
+
+    function openDoorServoSetLimits(pinIdx: number, doorIdx: number) {
+        const p = pinConfigs[pinIdx]
+        if (!p || p.role !== 'door') return
+        calibServoId = p.channel * 2 + doorIdx
+        calibServoName = `${gearNames[p.channel]} Door ${doorIdx === 0 ? 'A' : 'B'}`
+        calibInit = { min_us: p.min_us, max_us: p.max_us, speed: p.speed, accel: 0, decel: 0, reversed: p.reversed }
+        calibTargetPin = pinIdx
+        calibDialogOpen = true
     }
 
-    // ─── Servo Widget defs ───
-    const gcServos = [
-        { id: 0, name: 'Nose Door A' },
-        { id: 1, name: 'Nose Door B' },
-        { id: 2, name: 'Left Door A' },
-        { id: 3, name: 'Left Door B' },
-        { id: 4, name: 'Right Door A' },
-        { id: 5, name: 'Right Door B' },
-        { id: 6, name: 'Yaw' },
-        { id: 7, name: 'Spare' },
-    ]
+    function openYawServoSetLimits() {
+        if (yawPinIdx < 0) return
+        const p = pinConfigs[yawPinIdx]
+        calibServoId = SERVO_ID_YAW
+        calibServoName = 'Yaw'
+        calibInit = { min_us: p.min_us, max_us: p.max_us, speed: p.speed, accel: 0, decel: 0, reversed: p.reversed }
+        calibTargetPin = yawPinIdx
+        calibDialogOpen = true
+    }
+
+    function onCalibApply(cfg: { min_us: number; max_us: number; speed: number; reversed: boolean }) {
+        if (calibTargetPin < 0 || calibTargetPin >= pinConfigs.length) return
+        pinConfigs[calibTargetPin].min_us = cfg.min_us
+        pinConfigs[calibTargetPin].max_us = cfg.max_us
+        pinConfigs[calibTargetPin].speed  = cfg.speed
+        pinConfigs[calibTargetPin].reversed = cfg.reversed
+        pinConfigs = pinConfigs
+        // Rebaseline the live-push dedup so the tab's row matches what the dialog sent.
+        const isYaw = calibTargetPin === yawPinIdx
+        if (isYaw) { resetPushBaseline('yaw.cfg'); resetPushBaseline('yaw.servo') }
+        else       { resetPushBaseline(`servo:pin${calibTargetPin}`) }
+    }
+
 </script>
 
 <div class="tab-root">
@@ -563,13 +873,12 @@
         <div class="title-actions">
             <button class="small" on:click={configReload} disabled={controlsDisabled} title="Reload config from flash">↻ Reload</button>
             <button class="small" on:click={openSaveDialog} disabled={controlsDisabled} title="Verify and save config to flash">💾 Save…</button>
+            <button class="small" on:click={() => boardDialogOpen = true} title="Show annotated board diagram with live port assignments">🗺 View Diagram</button>
             {#if liveResult.counts.error > 0}
                 <span class="verify-badge error" title="{liveResult.counts.error} error(s) — see Save dialog">{liveResult.counts.error} ✕</span>
             {:else if liveResult.counts.warning > 0}
                 <span class="verify-badge warning" title="{liveResult.counts.warning} warning(s)">{liveResult.counts.warning} ⚠</span>
             {/if}
-            <button class="small" on:click={configStatus} disabled={controlsDisabled} title="Config load status">Config</button>
-            <button class="small" on:click={refreshStatus} disabled={controlsDisabled} title="Refresh board status">Status</button>
         </div>
     </div>
 
@@ -585,6 +894,121 @@
     <!-- ═══ Scrollable Content ═══ -->
     <div class="tab-scroll">
         <div class="content-wrap">
+
+            <!-- ═══ Gear Input + Aggregate Deploy / Retract (TOP, spans both columns) ═══ -->
+            <!-- Gear input is the FIXED GP0 PWM channel (standalone) or the HubFX-relayed -->
+            <!-- command (slave). Aggregate Deploy / Retract / Stop drive all gears at once. -->
+            <section class="card top-span">
+                <div class="card-header">
+                    <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> Gear Control</h3>
+                    {#if hasErrors}
+                        <span class="header-tag error">✕ Error</span>
+                    {:else if anyUncalibrated}
+                        <span class="header-tag warn">⚠ Calibration required</span>
+                    {:else}
+                        <span class="header-tag ok">✓ Ready</span>
+                    {/if}
+                </div>
+
+                <div class="top-grid">
+                    <!-- Left half: Gear Input live readout + threshold -->
+                    <div class="gear-input-block"
+                         class:verify-error={sev('gearInput') === 'error'}
+                         class:verify-warn={sev('gearInput') === 'warning'}>
+                        <div class="gear-input-header">
+                            <span class="gear-input-label">
+                                Gear Input
+                                <span class="gear-input-pin dim">{isHubFX ? 'via HubFX' : 'GP0 · RC PWM'}</span>
+                            </span>
+                            {#if isHubFX}
+                                <span class="gear-input-state {liveGearInputCommandDeploy ? 'state-deploy' : 'state-retract'}">
+                                    {liveGearInputCommandDeploy ? '▼ DEPLOY' : '▲ RETRACT'}
+                                </span>
+                            {:else if liveGearInput_us > 0}
+                                <span class="gear-input-state {liveGearInput_us > gearInputThreshold_us ? 'state-deploy' : 'state-retract'}">
+                                    {liveGearInput_us > gearInputThreshold_us ? '▼ DEPLOY' : '▲ RETRACT'}
+                                </span>
+                            {:else}
+                                <span class="gear-input-state state-idle">— No signal</span>
+                            {/if}
+                        </div>
+
+                        {#if !isHubFX}
+                            <!-- Live PWM bar over [800, 2200] µs window -->
+                            <div class="gear-input-bar-track">
+                                {#if liveGearInput_us > 0}
+                                    <div class="gear-input-bar-fill"
+                                         class:bar-deploy={liveGearInput_us > gearInputThreshold_us}
+                                         style="width: {Math.max(0, Math.min(100, ((liveGearInput_us - 800) / 1400) * 100))}%"></div>
+                                {/if}
+                                <div class="gear-input-bar-threshold"
+                                     style="left: {Math.max(0, Math.min(100, ((gearInputThreshold_us - 800) / 1400) * 100))}%"
+                                     title="Threshold {gearInputThreshold_us}µs"></div>
+                            </div>
+                            <div class="gear-input-readout">
+                                <span class="gear-input-pulse">{liveGearInput_us > 0 ? `${liveGearInput_us} µs` : '— µs'}</span>
+                                <span class="gear-input-thr-label">threshold</span>
+                                <input type="number" bind:value={gearInputThreshold_us}
+                                       class="field-input narrow" min="800" max="2200" step="50"
+                                       title="PWM threshold (µs): pulse > threshold → deploy. Persisted via Save."
+                                       disabled={controlsDisabled} />
+                                <span class="unit">µs</span>
+                                <!-- svelte-ignore a11y-label-has-associated-control -->
+                                <label class="toggle">
+                                    <input type="checkbox" bind:checked={gearInputEnabled}
+                                           disabled={controlsDisabled}
+                                           title="Arm GP0 PWM reader (standalone mode). Persisted via Save." />
+                                    <span class="toggle-text">Enabled</span>
+                                </label>
+                                <span class="push-hint" title="Gear input has no runtime command — persisted on Save.">⏷ save-only</span>
+                            </div>
+                        {:else}
+                            <div class="gear-input-readout">
+                                <span class="dim">Pin GP0 disarmed — board takes commands from HubFX.</span>
+                            </div>
+                        {/if}
+                    </div>
+
+                    <!-- Right half: Deploy / Retract / Stop (whole undercarriage) -->
+                    <div class="agg-block">
+                        <div class="agg-buttons">
+                            <button class="action-btn primary" disabled={controlsDisabled || !allCalibrated}
+                                    on:click={gearAllDeploy} title="Deploy all enabled gears">
+                                <span class="icon down">▼</span> Deploy All
+                            </button>
+                            <button class="action-btn" disabled={controlsDisabled || !allCalibrated}
+                                    on:click={gearAllRetract} title="Retract all enabled gears">
+                                <span class="icon up">▲</span> Retract All
+                            </button>
+                            <button class="action-btn danger" disabled={controlsDisabled}
+                                    on:click={gearAllStop} title="Stop all motors immediately">
+                                <span class="icon">■</span> Stop All
+                            </button>
+                            <button class="small" disabled={controlsDisabled}
+                                    on:click={gearResetAll} title="Clear all error states">↻ Reset All</button>
+                        </div>
+
+                        <!-- Mini per-gear status strip -->
+                        <div class="gear-status-strip">
+                            {#each gearNames as name, id}
+                                <div class="gear-pip"
+                                     class:pip-ok={calibStates[id] === 'calibrated' && gearActions[id] === 'idle'}
+                                     class:pip-deploying={gearActions[id] === 'deploying'}
+                                     class:pip-retracting={gearActions[id] === 'retracting'}
+                                     class:pip-error={calibStates[id] === 'error'}
+                                     class:pip-uncal={calibStates[id] === 'uncalibrated' || calibStates[id] === 'calibrating'}
+                                     class:pip-disabled={!gearEnabled[id]}>
+                                    <span class="pip-dot"></span>
+                                    <span class="pip-name">{name}</span>
+                                    {#if !gearEnabled[id]}<span class="pip-badge disabled">OFF</span>{/if}
+                                    {#if calibStates[id] === 'error'}<span class="pip-badge err">ERR</span>{/if}
+                                </div>
+                            {/each}
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <div class="two-col">
                 <!-- ═══════════  LEFT COLUMN  ═══════════ -->
                 <div class="col">
@@ -625,9 +1049,16 @@
                     <section class="card">
                         <div class="card-header">
                             <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/></svg> Pin Mapping</h3>
-                            <span class="header-tag {isHubFX ? 'active' : 'ok'}">
-                                {isHubFX ? 'Slave (via HubFX)' : 'Direct'}
-                            </span>
+                            <div class="pin-map-header-right">
+                                <button class="pin-map-board-btn"
+                                        on:click={() => boardDialogOpen = true}
+                                        title="Show board layout with port assignments">
+                                    View Board
+                                </button>
+                                <span class="header-tag {isHubFX ? 'active' : 'ok'}">
+                                    {isHubFX ? 'Slave (via HubFX)' : 'Direct'}
+                                </span>
+                            </div>
                         </div>
 
                         <div class="pin-map-list">
@@ -641,6 +1072,7 @@
                                         <span class="pin-gpio">{pinGPIOs[idx]}</span>
                                     </div>
                                     <select bind:value={pin.role} class="field-input pin-role-select"
+                                            on:change={() => resetPushBaseline(`servo:pin${idx}`)}
                                             disabled={controlsDisabled}>
                                         {#each pinRoleOptions as role}
                                             <option value={role}>{pinRoleLabels[role]}</option>
@@ -670,16 +1102,6 @@
                                             {:else}
                                                 <span class="pin-live pin-live-warn">channel off</span>
                                             {/if}
-                                        {:else if pin.role === 'gear_input'}
-                                            <div class="pin-param">
-                                                <span class="pin-param-label">Threshold</span>
-                                                <input type="number" bind:value={pin.threshold_us}
-                                                       class="field-input pin-param-input" min="800" max="2200" step="50"
-                                                       disabled={controlsDisabled} />
-                                                <span class="unit">µs</span>
-                                            </div>
-                                            <!-- Live: aggregate gear action (deploy/retract/idle) — proxies the input. -->
-                                            <span class="pin-live">{aggregateGearActionLabel}</span>
                                         {:else if pin.role === 'yaw_output'}
                                             <div class="pin-param">
                                                 <span class="pin-param-label">Gear</span>
@@ -704,11 +1126,6 @@
                             {/each}
                         </div>
 
-                        {#if !hasGearInput && !isHubFX}
-                            <div class="pin-map-hint warn">
-                                ⚠ No gear input pin assigned — standalone operation requires a gear input
-                            </div>
-                        {/if}
                     </section>
 
                     <!-- ── Calibration ── -->
@@ -740,6 +1157,7 @@
 
                         <div class="calib-list">
                             {#each gearNames as name, id}
+                                {#if gearEnabled[id]}
                                 <div class="calib-row"
                                      class:row-uncal={calibStates[id] === 'uncalibrated'}
                                      class:row-active={calibStates[id] === 'calibrating'}
@@ -775,6 +1193,7 @@
                                         {/if}
                                     </div>
                                 </div>
+                                {/if}
                             {/each}
                         </div>
 
@@ -787,102 +1206,65 @@
                         {/if}
                     </section>
 
-                    <!-- ── Aggregate Deploy / Retract ── -->
-                    <section class="card">
-                        <div class="card-header">
-                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> Gear Control</h3>
-                            {#if hasErrors}
-                                <span class="header-tag error">✕ Error</span>
-                            {:else if anyUncalibrated}
-                                <span class="header-tag warn">⚠ Calibration required</span>
-                            {:else}
-                                <span class="header-tag ok">✓ Ready</span>
-                            {/if}
-                        </div>
-
-                        <div class="agg-buttons">
-                            <button class="action-btn primary" disabled={controlsDisabled || !allCalibrated}
-                                    on:click={gearAllDeploy}>
-                                <span class="icon down">▼</span> Deploy All
-                            </button>
-                            <button class="action-btn" disabled={controlsDisabled || !allCalibrated}
-                                    on:click={gearAllRetract}>
-                                <span class="icon up">▲</span> Retract All
-                            </button>
-                            <button class="action-btn danger" disabled={controlsDisabled}
-                                    on:click={gearAllStop}>
-                                <span class="icon">■</span> Stop All
-                            </button>
-                            <button class="small" disabled={controlsDisabled}
-                                    on:click={gearResetAll} title="Clear all error states">↻ Reset All</button>
-                        </div>
-
-                        <!-- Mini per-gear status strip -->
-                        <div class="gear-status-strip">
-                            {#each gearNames as name, id}
-                                <div class="gear-pip"
-                                     class:pip-ok={calibStates[id] === 'calibrated' && gearActions[id] === 'idle'}
-                                     class:pip-deploying={gearActions[id] === 'deploying'}
-                                     class:pip-retracting={gearActions[id] === 'retracting'}
-                                     class:pip-error={calibStates[id] === 'error'}
-                                     class:pip-uncal={calibStates[id] === 'uncalibrated' || calibStates[id] === 'calibrating'}
-                                     class:pip-disabled={!gearEnabled[id]}>
-                                    <span class="pip-dot"></span>
-                                    <span class="pip-name">{name}</span>
-                                    {#if !gearEnabled[id]}<span class="pip-badge disabled">OFF</span>{/if}
-                                    {#if calibStates[id] === 'error'}<span class="pip-badge err">ERR</span>{/if}
-                                </div>
-                            {/each}
-                        </div>
-                    </section>
-
-                    <!-- ── Yaw Steering ── -->
+                    <!-- ── Yaw Servo ── -->
+                    <!-- Only rendered when a yaw_output pin is assigned. Binds -->
+                    <!-- directly to the yaw pin's PinConfig (gear_id / neutral_us / -->
+                    <!-- min_us / max_us / speed / reversed) — no duplicated state. -->
                     {#if yawEnabled}
                     <section class="card"
-                             class:verify-error={sev('yaw') === 'error'}
-                             class:verify-warn={sev('yaw') === 'warning'}>
+                             class:verify-error={sev('yaw') === 'error' || sev(`pins[${yawPinIdx}]`) === 'error'}
+                             class:verify-warn={sev('yaw') === 'warning' || sev(`pins[${yawPinIdx}]`) === 'warning'}>
                         <div class="card-header">
-                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg> Yaw Steering</h3>
-                            <span class="header-tag ok">Gear {yawGearId} — {gearNames[yawGearId]}</span>
+                            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg> Yaw Servo</h3>
+                            <span class="header-tag ok">Gear {pinConfigs[yawPinIdx].gear_id} — {gearNames[pinConfigs[yawPinIdx].gear_id]}</span>
                         </div>
 
                         <div class="form-grid cols-3">
                             <div class="form-field">
-                                <span class="field-label">Gear ID</span>
-                                <input type="number" bind:value={yawGearId}
-                                       class="field-input" min="0" max="2"
-                                       disabled={controlsDisabled} />
+                                <span class="field-label">Associated Gear</span>
+                                <input class="field-input" type="text" readonly
+                                       value={`0 — ${gearNames[0]}`}
+                                       title="Yaw steering is hard-wired to the nose gear (gear 0)" />
                             </div>
                             <div class="form-field">
                                 <span class="field-label">Neutral µs</span>
-                                <input type="number" bind:value={yawConfig.neutral_us}
+                                <input type="number" bind:value={pinConfigs[yawPinIdx].neutral_us}
+                                       on:input={scheduleYawPush}
                                        class="field-input" min="500" max="2500" step="10"
+                                       title="Yaw position when gear is retracted. Live-pushed (~350ms)."
                                        disabled={controlsDisabled} />
                             </div>
                             <div class="form-field">
-                                <span class="field-label">Min µs</span>
-                                <input type="number" bind:value={yawConfig.min_us}
-                                       class="field-input" min="500" max="2500" step="10"
+                                <span class="field-label">Speed µs/s</span>
+                                <input type="number" bind:value={pinConfigs[yawPinIdx].speed}
+                                       on:input={scheduleYawPush}
+                                       class="field-input" min="100" max="10000" step="100"
+                                       title="Cruise speed in µs per second. Live-pushed (~350ms)."
                                        disabled={controlsDisabled} />
                             </div>
                         </div>
                         <div class="form-grid cols-3" style="margin-top: 8px;">
                             <div class="form-field">
-                                <span class="field-label">Max µs</span>
-                                <input type="number" bind:value={yawConfig.max_us}
+                                <span class="field-label">Min µs</span>
+                                <input type="number" bind:value={pinConfigs[yawPinIdx].min_us}
+                                       on:input={scheduleYawPush}
                                        class="field-input" min="500" max="2500" step="10"
+                                       title="Lower PWM bound. Live-pushed (~350ms)."
                                        disabled={controlsDisabled} />
                             </div>
                             <div class="form-field">
-                                <span class="field-label">Speed</span>
-                                <input type="number" bind:value={yawConfig.speed}
-                                       class="field-input" min="100" max="10000" step="100"
+                                <span class="field-label">Max µs</span>
+                                <input type="number" bind:value={pinConfigs[yawPinIdx].max_us}
+                                       on:input={scheduleYawPush}
+                                       class="field-input" min="500" max="2500" step="10"
+                                       title="Upper PWM bound. Must be > min. Live-pushed (~350ms)."
                                        disabled={controlsDisabled} />
                             </div>
                             <div class="form-field">
                                 <!-- svelte-ignore a11y-label-has-associated-control -->
                                 <label class="toggle" style="margin-top: 18px">
-                                    <input type="checkbox" bind:checked={yawConfig.reversed}
+                                    <input type="checkbox" bind:checked={pinConfigs[yawPinIdx].reversed}
+                                           on:change={scheduleYawPush}
                                            disabled={controlsDisabled} />
                                     <span class="toggle-text">Reversed</span>
                                 </label>
@@ -890,13 +1272,21 @@
                         </div>
                         <div class="apply-row">
                             <button class="small primary" disabled={controlsDisabled}
+                                    title="Force resend `yaw.config` + `servo.config` now"
                                     on:click={applyYawConfig}>Apply Yaw Config</button>
+                            <button class="small" disabled={controlsDisabled}
+                                    title="Interactive limit setter — jog the servo and capture min/max"
+                                    on:click={openYawServoSetLimits}>🎯 Set Limits…</button>
+                            <span class="push-badge push-{$pushStatus['yaw.cfg'] || ''}" title="Live-push status (~350ms)">{pushBadgeText($pushStatus['yaw.cfg'])}</span>
                         </div>
 
                         <div class="subsection-inline">
                             <h4>Yaw Input</h4>
                             <div class="slider-row">
-                                <input type="range" bind:value={yawPosition_us} min="1000" max="2000" step="10"
+                                <input type="range" bind:value={yawPosition_us}
+                                       min={pinConfigs[yawPinIdx].min_us}
+                                       max={pinConfigs[yawPinIdx].max_us}
+                                       step="10"
                                        class="slider wide" disabled={controlsDisabled} />
                                 <span class="slider-val">{yawPosition_us} µs</span>
                                 <button class="small primary" disabled={controlsDisabled}
@@ -904,6 +1294,7 @@
                                 <button class="small" disabled={controlsDisabled}
                                         on:click={resetYawPosition}>Reset</button>
                             </div>
+                            <div class="field-hint">Live: {liveYaw_us || '—'} µs</div>
                         </div>
                     </section>
                     {/if}
@@ -937,11 +1328,14 @@
                             <!-- svelte-ignore a11y-label-has-associated-control -->
                             <label class="toggle">
                                 <input type="checkbox" bind:checked={batteryAutoDeploy}
+                                       on:change={scheduleBatteryPush}
                                        disabled={controlsDisabled} />
                                 <span class="toggle-text">Auto-Deploy on Low Voltage</span>
                             </label>
-                            <button class="small primary" style="margin-left: auto"
+                            <span class="push-badge push-{$pushStatus['battery'] || ''}" style="margin-left: auto" title="Live-push status (~350ms)">{pushBadgeText($pushStatus['battery'])}</span>
+                            <button class="small primary"
                                     disabled={controlsDisabled}
+                                    title="Force resend `battery` now"
                                     on:click={applyBattery}>Apply</button>
                         </div>
 
@@ -949,6 +1343,7 @@
                             <div class="setting">
                                 <span class="field-label">Chemistry</span>
                                 <select bind:value={batteryChemistry} class="field-input"
+                                        on:change={scheduleBatteryPush}
                                         disabled={controlsDisabled}>
                                     {#each batteryChemistries as chem}
                                         <option value={chem}>{chemistryLabels[chem]}</option>
@@ -959,20 +1354,27 @@
                                 <span class="field-label">Cell Count</span>
                                 <div class="setting-input">
                                     <input type="number" bind:value={batteryCellCount}
+                                           on:input={scheduleBatteryPush}
                                            class="field-input narrow" min="0" max="6" step="1"
-                                           title="0 = auto-detect"
+                                           title="0 = auto-detect. Live-pushed (~350ms)."
                                            disabled={controlsDisabled} />
                                     <span class="unit">{batteryCellCount === 0 ? 'auto' : 'S'}</span>
                                 </div>
                             </div>
                             {#if batteryCellCount === 0}
                                 <span class="field-hint" style="margin-left: 16px; align-self: flex-end;">
-                                    Auto-detect on connect
+                                    {#if inferredCellCount > 0}
+                                        Auto-detect: <strong>{inferredCellCount}S</strong>
+                                        ({(batteryVoltage_mV / inferredCellCount / 1000).toFixed(2)} V/cell)
+                                    {:else}
+                                        Auto-detect on connect
+                                    {/if}
                                 </span>
                             {/if}
                         </div>
                     </section>
-                </div>
+
+                                </div>
 
                 <!-- ═══════════  RIGHT COLUMN  ═══════════ -->
                 <div class="col">
@@ -1086,79 +1488,85 @@
                                     <div class="form-field">
                                         <span class="field-label">Timeout ms</span>
                                         <input type="number" bind:value={gearConfigs[id].timeout_ms}
+                                               on:input={() => scheduleGearPush(id)}
                                                class="field-input" min="500" max="65000" step="500"
+                                               title="Max motor run time in ms. Live-pushed (~350ms)."
                                                disabled={controlsDisabled} />
                                     </div>
                                 </div>
                                 <div class="apply-row">
                                     <button class="small primary" disabled={controlsDisabled}
+                                            title="Force resend `gear.config` now"
                                             on:click={() => applyGearConfig(id)}>Apply Config</button>
+                                    <span class="push-badge push-{$pushStatus[`gear:${id}`] || ''}" title="Live-push status (~350ms)">{pushBadgeText($pushStatus[`gear:${id}`])}</span>
                                 </div>
                             </div>
 
-                            <!-- Door Positions (shown only when door servos assigned) -->
+                            <!-- Door Servos (one block per assigned door pin) -->
                             {#if gearHasDoors[id]}
-                            <div class="subsection-inline"
-                                 class:verify-error={sev(`gears[${id}].door.0`) === 'error' || sev(`gears[${id}].door.1`) === 'error'}
-                                 class:verify-warn={sev(`gears[${id}].door.0`) === 'warning' || sev(`gears[${id}].door.1`) === 'warning'}>
-                                <h4>Door Positions <span class="door-count">{doorPinsPerGear[id]} servo{doorPinsPerGear[id] > 1 ? 's' : ''}</span></h4>
+                            <div class="subsection-inline">
+                                <h4>Door Servos <span class="door-count">{doorPinsPerGear[id]} servo{doorPinsPerGear[id] > 1 ? 's' : ''}</span></h4>
 
-                                <!-- Live servo positions (from STATUS broadcast). -->
-                                <!-- Bar fill is the value's position within [min,max] of -->
-                                <!-- the configured open/close range; clamps when outside. -->
-                                <div class="door-live">
-                                    <div class="door-live-row">
-                                        <span class="door-live-label">Door A live</span>
+                                {#each doorPinIndicesPerGear[id] as pinIdx, doorIdx}
+                                    <div class="door-servo-block"
+                                         class:verify-error={sev(`pins[${pinIdx}]`) === 'error'}
+                                         class:verify-warn={sev(`pins[${pinIdx}]`) === 'warning'}>
+                                        <div class="door-servo-header">
+                                            <span class="door-servo-label">Door {doorIdx === 0 ? 'A' : 'B'}</span>
+                                            <span class="door-servo-pin dim">{pinSlots[pinIdx]} · {pinGPIOs[pinIdx]}</span>
+                                            <span class="door-live-value">{liveDoor_us[id][doorIdx] || '—'} µs</span>
+                                        </div>
+                                        <!-- Live bar: position within the configured [min,max] range. -->
                                         <div class="door-live-bar-track">
                                             <div class="door-live-bar-fill"
-                                                 style="width: {servoPct(liveDoor_us[id][0], doorConfigs[id].open0_us, doorConfigs[id].close0_us)}%"></div>
+                                                 style="width: {servoPct(liveDoor_us[id][doorIdx], pinConfigs[pinIdx].min_us, pinConfigs[pinIdx].max_us)}%"></div>
                                         </div>
-                                        <span class="door-live-value">{liveDoor_us[id][0] || '—'} µs</span>
-                                    </div>
-                                    {#if doorPinsPerGear[id] > 1}
-                                    <div class="door-live-row">
-                                        <span class="door-live-label">Door B live</span>
-                                        <div class="door-live-bar-track">
-                                            <div class="door-live-bar-fill"
-                                                 style="width: {servoPct(liveDoor_us[id][1], doorConfigs[id].open1_us, doorConfigs[id].close1_us)}%"></div>
+                                        <div class="form-grid cols-3" style="margin-top: 6px">
+                                            <div class="form-field">
+                                                <span class="field-label">Min µs</span>
+                                                <input type="number" bind:value={pinConfigs[pinIdx].min_us}
+                                                       on:input={() => scheduleDoorServoPush(pinIdx)}
+                                                       class="field-input" min="500" max="2500" step="10"
+                                                       title="Pulse width at one end-stop. Live-pushed (~350ms)."
+                                                       disabled={controlsDisabled} />
+                                            </div>
+                                            <div class="form-field">
+                                                <span class="field-label">Max µs</span>
+                                                <input type="number" bind:value={pinConfigs[pinIdx].max_us}
+                                                       on:input={() => scheduleDoorServoPush(pinIdx)}
+                                                       class="field-input" min="500" max="2500" step="10"
+                                                       title="Pulse width at the other end-stop. Must be > Min. Live-pushed (~350ms)."
+                                                       disabled={controlsDisabled} />
+                                            </div>
+                                            <div class="form-field">
+                                                <span class="field-label">Speed µs/s</span>
+                                                <input type="number" bind:value={pinConfigs[pinIdx].speed}
+                                                       on:input={() => scheduleDoorServoPush(pinIdx)}
+                                                       class="field-input" min="100" max="10000" step="100"
+                                                       title="Cruise speed in µs per second. Live-pushed (~350ms)."
+                                                       disabled={controlsDisabled} />
+                                            </div>
                                         </div>
-                                        <span class="door-live-value">{liveDoor_us[id][1] || '—'} µs</span>
+                                        <div class="door-servo-footer">
+                                            <!-- svelte-ignore a11y-label-has-associated-control -->
+                                            <label class="toggle">
+                                                <input type="checkbox" bind:checked={pinConfigs[pinIdx].reversed}
+                                                       on:change={() => scheduleDoorServoPush(pinIdx)}
+                                                       disabled={controlsDisabled} />
+                                                <span class="toggle-text">Reversed (open @ min)</span>
+                                            </label>
+                                            <span class="push-badge push-{$pushStatus[`servo:pin${pinIdx}`] || ''}" title="Live-push (~350ms)">{pushBadgeText($pushStatus[`servo:pin${pinIdx}`])}</span>
+                                            <button class="small" style="margin-left: auto"
+                                                    disabled={controlsDisabled}
+                                                    title="Interactive limit setter — jog the servo and capture min/max"
+                                                    on:click={() => openDoorServoSetLimits(pinIdx, doorIdx)}>🎯 Set Limits…</button>
+                                            <button class="small"
+                                                    disabled={controlsDisabled}
+                                                    title="Force resend `servo.config` now"
+                                                    on:click={() => applyDoorServoConfig(pinIdx)}>Apply</button>
+                                        </div>
                                     </div>
-                                    {/if}
-                                </div>
-
-                                <div class="form-grid cols-2">
-                                    <div class="form-field">
-                                        <span class="field-label">Door A Open µs</span>
-                                        <input type="number" bind:value={doorConfigs[id].open0_us}
-                                               class="field-input" min="500" max="2500" step="10"
-                                               disabled={controlsDisabled} />
-                                    </div>
-                                    <div class="form-field">
-                                        <span class="field-label">Door A Close µs</span>
-                                        <input type="number" bind:value={doorConfigs[id].close0_us}
-                                               class="field-input" min="500" max="2500" step="10"
-                                               disabled={controlsDisabled} />
-                                    </div>
-                                    {#if doorPinsPerGear[id] > 1}
-                                    <div class="form-field">
-                                        <span class="field-label">Door B Open µs</span>
-                                        <input type="number" bind:value={doorConfigs[id].open1_us}
-                                               class="field-input" min="500" max="2500" step="10"
-                                               disabled={controlsDisabled} />
-                                    </div>
-                                    <div class="form-field">
-                                        <span class="field-label">Door B Close µs</span>
-                                        <input type="number" bind:value={doorConfigs[id].close1_us}
-                                               class="field-input" min="500" max="2500" step="10"
-                                               disabled={controlsDisabled} />
-                                    </div>
-                                    {/if}
-                                </div>
-                                <div class="apply-row">
-                                    <button class="small" disabled={controlsDisabled}
-                                            on:click={() => applyDoorConfig(id)}>Apply Positions</button>
-                                </div>
+                                {/each}
                             </div>
 
                             <!-- Door Sequencing -->
@@ -1168,31 +1576,62 @@
                                     <div class="form-field">
                                         <span class="field-label">Pre-Deploy</span>
                                         <select bind:value={doorModes[id].preDeployMode}
-                                                class="field-input" disabled={controlsDisabled}>
+                                                on:change={() => scheduleDoorModePush(id)}
+                                                class="field-input" disabled={controlsDisabled}
+                                                title={doorModePreDesc(doorModes[id].preDeployMode)}>
                                             {#each doorModeNames as modeName, idx}
-                                                <option value={idx}>{modeName}</option>
+                                                <option value={idx} title={doorModePreDesc(idx)}>{modeName}</option>
                                             {/each}
                                         </select>
                                     </div>
                                     <div class="form-field">
                                         <span class="field-label">Post-Deploy</span>
                                         <select bind:value={doorModes[id].postDeployMode}
-                                                class="field-input" disabled={controlsDisabled}>
+                                                on:change={() => scheduleDoorModePush(id)}
+                                                class="field-input" disabled={controlsDisabled}
+                                                title={doorModePostDesc(doorModes[id].postDeployMode)}>
                                             {#each doorModeNames as modeName, idx}
-                                                <option value={idx}>{modeName}</option>
+                                                <option value={idx} title={doorModePostDesc(idx)}>{modeName}</option>
                                             {/each}
                                         </select>
                                     </div>
                                     <div class="form-field">
                                         <span class="field-label">Delay ms</span>
                                         <input type="number" bind:value={doorModes[id].delay_ms}
+                                               on:input={() => scheduleDoorModePush(id)}
                                                class="field-input" min="0" max="5000" step="50"
-                                               disabled={controlsDisabled} />
+                                               disabled={controlsDisabled || !usesDelay(doorModes[id].preDeployMode, doorModes[id].postDeployMode)}
+                                               title="Used by Dual Delay only — gap between Door A and Door B (ms). Live-pushed (~350ms)." />
                                     </div>
                                 </div>
+
+                                <!-- Per-gear visible description: explains what the currently-selected -->
+                                <!-- pre/post modes do for THIS gear channel. Replaces hover-only tooltips. -->
+                                <div class="door-mode-desc">
+                                    <div class="door-mode-desc-row">
+                                        <span class="door-mode-desc-tag pre">PRE</span>
+                                        <span class="door-mode-desc-mode">{doorModeNames[doorModes[id].preDeployMode]}</span>
+                                        <span class="door-mode-desc-text">{doorModePreDesc(doorModes[id].preDeployMode)}</span>
+                                    </div>
+                                    <div class="door-mode-desc-row">
+                                        <span class="door-mode-desc-tag post">POST</span>
+                                        <span class="door-mode-desc-mode">{doorModeNames[doorModes[id].postDeployMode]}</span>
+                                        <span class="door-mode-desc-text">{doorModePostDesc(doorModes[id].postDeployMode)}</span>
+                                    </div>
+                                    {#if usesDelay(doorModes[id].preDeployMode, doorModes[id].postDeployMode)}
+                                        <div class="door-mode-desc-row">
+                                            <span class="door-mode-desc-tag delay">DELAY</span>
+                                            <span class="door-mode-desc-mode">{doorModes[id].delay_ms} ms</span>
+                                            <span class="door-mode-desc-text">Gap between Door A and Door B in Dual Delay phases.</span>
+                                        </div>
+                                    {/if}
+                                </div>
+
                                 <div class="apply-row">
                                     <button class="small" disabled={controlsDisabled}
+                                            title="Force resend `door.mode` now"
                                             on:click={() => applyDoorMode(id)}>Apply Mode</button>
+                                    <span class="push-badge push-{$pushStatus[`doormode:${id}`] || ''}" title="Live-push status (~350ms)">{pushBadgeText($pushStatus[`doormode:${id}`])}</span>
                                 </div>
                             </div>
                             {:else}
@@ -1204,9 +1643,6 @@
                         {/if}
                     {/each}
 
-                    <!-- ── Servo Widget (shared) ── -->
-                    <ServoWidget servos={gcServos} disabled={controlsDisabled}
-                                 label="Door & Yaw Servos" />
                 </div>
             </div>
         </div>
@@ -1214,13 +1650,40 @@
 </div>
 
 <SaveConfigDialog
-    boardType="gearcontrol"
-    boardLabel={boardLabel}
-    verifyResult={saveVerifyResult}
-    configText={saveConfigText}
-    open={saveDialogOpen}
-    onSave={() => { SendCommand('config.save'); saveDialogOpen = false }}
+    driver={gcDriver}
+    bind:open={saveDialogOpen}
+    initialResult={liveResult}
+    onSave={async (yaml) => { await UploadConfig(yaml) }}
     onClose={() => { saveDialogOpen = false }}
+/>
+
+<GearControlBoardDialog
+    bind:open={boardDialogOpen}
+    pinConfigs={pinConfigs}
+    {pinSlots}
+    gearNames={gearNames}
+    gearEnabled={gearEnabled}
+    gearInputEnabled={gearInputEnabled}
+    batteryChemistry={batteryChemistry}
+    batteryCellCount={batteryCellCount}
+    batteryVoltage_mV={batteryVoltage_mV}
+    isHubFX={isHubFX}
+    onClose={() => { boardDialogOpen = false }}
+/>
+
+<ServoCalibrationDialog
+    bind:open={calibDialogOpen}
+    servoId={calibServoId}
+    servoName={calibServoName}
+    min_us={calibInit.min_us}
+    max_us={calibInit.max_us}
+    speed={calibInit.speed}
+    accel={calibInit.accel}
+    decel={calibInit.decel}
+    reversed={calibInit.reversed}
+    supportsAccelDecel={false}
+    onApply={onCalibApply}
+    onClose={() => { calibDialogOpen = false }}
 />
 
 <style>
@@ -1232,7 +1695,7 @@
     .card-error { border-color: color-mix(in srgb, var(--error) 60%, transparent) !important; }
     .card-active { border-color: color-mix(in srgb, var(--ok, #4ec9b0) 50%, transparent); }
 
-    /* ─── Verification highlights (Rule 24) ─── */
+    /* ─── Verification highlights (Rule 23) ─── */
     /* Mirrors LightFXTab — any UI block bound with class:verify-error / verify-warn
        picks up the border + glow set here, regardless of card/row/section class. */
     .verify-error {
@@ -1342,30 +1805,37 @@
         background: color-mix(in srgb, var(--warning, #d7ba7d) 10%, transparent);
     }
 
-    /* ─── Live door servo bars ─── */
-    .door-live {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        margin-bottom: 8px;
-        padding: 6px 10px;
+    /* ─── Door Servo blocks (inside each gear card) ─── */
+    .door-servo-block {
+        padding: 8px 10px;
+        margin-top: 8px;
         background: var(--bg-raised);
         border-radius: 4px;
         border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
     }
-    .door-live-row {
+    .door-servo-header {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
+        margin-bottom: 6px;
     }
-    .door-live-label {
-        font-size: 10px;
-        font-weight: 600;
-        color: var(--text-dim);
+    .door-servo-label {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--text);
         font-family: var(--font-mono);
-        min-width: 80px;
         text-transform: uppercase;
-        letter-spacing: 0.4px;
+        letter-spacing: 0.5px;
+    }
+    .door-servo-pin {
+        font-family: var(--font-mono);
+        font-size: 10px;
+    }
+    .door-servo-footer {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 6px;
     }
     .door-live-bar-track {
         flex: 1;
@@ -1387,6 +1857,99 @@
         color: var(--text);
         min-width: 64px;
         text-align: right;
+    }
+
+    /* ─── Top spanning section (Gear Input + Aggregate) ─── */
+    .top-span {
+        margin-bottom: 12px;
+    }
+    .top-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 14px;
+        align-items: start;
+    }
+    @media (max-width: 900px) {
+        .top-grid { grid-template-columns: 1fr; }
+    }
+
+    .gear-input-block, .agg-block {
+        padding: 10px 12px;
+        background: var(--bg-raised);
+        border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+        border-radius: 4px;
+    }
+    .gear-input-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+    }
+    .gear-input-label {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--text);
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+    }
+    .gear-input-pin {
+        font-size: 10px;
+        font-weight: 500;
+    }
+    .gear-input-state {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 3px;
+    }
+    .gear-input-state.state-deploy   { color: var(--ok, #4ec9b0); background: color-mix(in srgb, var(--ok, #4ec9b0) 12%, transparent); }
+    .gear-input-state.state-retract  { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    .gear-input-state.state-idle     { color: var(--text-dim); background: color-mix(in srgb, var(--text-dim) 10%, transparent); }
+
+    .gear-input-bar-track {
+        position: relative;
+        height: 8px;
+        background: var(--bg-input);
+        border-radius: 4px;
+        overflow: hidden;
+        margin-bottom: 6px;
+    }
+    .gear-input-bar-fill {
+        position: absolute;
+        top: 0; left: 0; bottom: 0;
+        background: var(--accent);
+        transition: width 0.2s;
+    }
+    .gear-input-bar-fill.bar-deploy {
+        background: var(--ok, #4ec9b0);
+    }
+    .gear-input-bar-threshold {
+        position: absolute;
+        top: -2px; bottom: -2px;
+        width: 2px;
+        background: var(--warning, #d7ba7d);
+        z-index: 2;
+    }
+    .gear-input-readout {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        font-family: var(--font-mono);
+        font-size: 11px;
+    }
+    .gear-input-pulse {
+        font-weight: 700;
+        color: var(--text);
+        min-width: 70px;
+    }
+    .gear-input-thr-label {
+        color: var(--text-dim);
+        font-size: 10px;
+        margin-left: auto;
     }
 
     /* ─── Aggregate Buttons ─── */
@@ -1664,6 +2227,26 @@
         flex-direction: column;
         gap: 4px;
     }
+    .pin-map-header-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .pin-map-board-btn {
+        font-size: 11px;
+        font-weight: 500;
+        padding: 3px 10px;
+        background: var(--bg-raised);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    .pin-map-board-btn:hover {
+        background: color-mix(in srgb, var(--accent) 15%, var(--bg-raised));
+        border-color: var(--accent);
+        color: var(--text-bright);
+    }
 
     .pin-row {
         display: flex;
@@ -1742,20 +2325,6 @@
         color: var(--text-dim);
     }
 
-    .pin-map-hint {
-        margin-top: 8px;
-        padding: 6px 10px;
-        border-radius: 4px;
-        font-size: 11px;
-        font-weight: 600;
-    }
-
-    .pin-map-hint.warn {
-        color: var(--warning, #d7ba7d);
-        background: color-mix(in srgb, var(--warning, #d7ba7d) 8%, var(--bg-surface));
-        border: 1px solid color-mix(in srgb, var(--warning, #d7ba7d) 25%, transparent);
-    }
-
     /* ─── Door count badge / no-doors hint ─── */
     .door-count {
         font-size: 10px;
@@ -1773,6 +2342,50 @@
         border: 1px dashed color-mix(in srgb, var(--border) 50%, transparent);
         border-radius: 4px;
         margin-top: 4px;
+    }
+
+    /* ─── Door Mode Description (per gear) ─── */
+    .door-mode-desc {
+        margin-top: 8px;
+        padding: 8px 10px;
+        background: color-mix(in srgb, var(--accent) 5%, var(--bg-raised));
+        border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+        border-radius: 4px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .door-mode-desc-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        font-size: 11px;
+        line-height: 1.35;
+    }
+    .door-mode-desc-tag {
+        font-family: var(--font-mono);
+        font-size: 9px;
+        font-weight: 700;
+        padding: 1px 6px;
+        border-radius: 2px;
+        letter-spacing: 0.5px;
+        flex-shrink: 0;
+        min-width: 42px;
+        text-align: center;
+    }
+    .door-mode-desc-tag.pre   { color: var(--ok, #4ec9b0); background: color-mix(in srgb, var(--ok, #4ec9b0) 14%, transparent); }
+    .door-mode-desc-tag.post  { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+    .door-mode-desc-tag.delay { color: var(--warning, #d7ba7d); background: color-mix(in srgb, var(--warning, #d7ba7d) 14%, transparent); }
+    .door-mode-desc-mode {
+        font-family: var(--font-mono);
+        font-weight: 700;
+        color: var(--text);
+        flex-shrink: 0;
+        min-width: 80px;
+    }
+    .door-mode-desc-text {
+        color: var(--text-dim);
+        flex: 1;
     }
 
     /* ─── Form Overrides ─── */
@@ -1878,6 +2491,28 @@
         align-items: center;
         gap: 8px;
         margin-top: 8px;
+    }
+
+    /* ─── Live-push status badge (Rule 24) ─── */
+    .push-badge {
+        font-size: 10px;
+        font-family: var(--font-mono);
+        color: var(--text-dim);
+        padding: 1px 6px;
+        border-radius: 3px;
+        white-space: nowrap;
+        min-height: 14px;
+        display: inline-block;
+    }
+    .push-badge.push-pending { color: var(--accent);  background: color-mix(in srgb, var(--accent)  12%, transparent); }
+    .push-badge.push-sent    { color: var(--ok, #4ec9b0); background: color-mix(in srgb, var(--ok, #4ec9b0) 12%, transparent); }
+    .push-badge.push-invalid { color: var(--warning, #d7ba7d); background: color-mix(in srgb, var(--warning, #d7ba7d) 14%, transparent); }
+    .push-hint {
+        font-size: 10px;
+        font-family: var(--font-mono);
+        color: var(--text-dim);
+        font-style: italic;
+        margin-left: auto;
     }
 
     .subsection-inline {

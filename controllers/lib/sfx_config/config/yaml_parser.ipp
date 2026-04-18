@@ -344,14 +344,19 @@ bool YamlParser<TPool>::parseSequenceItem(YamlNode* parent, const char* content,
     }
 
     // If parent is not a Sequence, we need to find or create one.
-    // This can happen if the parent is a Map and the last entry should be
-    // a Sequence (but was created as Map due to "key:" pattern).
+    // This can happen with block sequences indented at the same level as the
+    // parent key ("retracts:\n- channel: 0"): after the first item's scope is
+    // popped, the context returns to the parent Map — the sequence lives as
+    // its last child.
     if (parent->type != YamlNode::Sequence) {
-        // Find last child of parent — it should be the container for this sequence
         YamlNode* last = parent->firstChild;
         if (last) {
             while (last->nextSibling) last = last->nextSibling;
-            if (last->type == YamlNode::Map && last->firstChild == nullptr) {
+            if (last->type == YamlNode::Sequence) {
+                // Existing sequence: append to it.
+                parent = last;
+            } else if (last->type == YamlNode::Map && last->firstChild == nullptr) {
+                // Empty Map (created by "key:"): reinterpret as Sequence.
                 last->type = YamlNode::Sequence;
                 parent = last;
             } else {

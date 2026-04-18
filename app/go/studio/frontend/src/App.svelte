@@ -6,10 +6,11 @@
     import AboutDialog from './lib/dialogs/AboutDialog.svelte'
     import ViewSettingsDialog from './lib/dialogs/ViewSettingsDialog.svelte'
     import FlashProgressDialog from './lib/dialogs/FlashProgressDialog.svelte'
+    import FileManagerDialog from './lib/dialogs/FileManagerDialog.svelte'
     import MainLayout from './lib/layout/MainLayout.svelte'
     import {
         boardState, connectPopupOpen, showAboutDialog, showConsole,
-        showViewSettings,
+        showViewSettings, showFileManager,
         connectionInfo, activeTab, showFlashProgress,
         pushConsoleMessage
     } from './lib/stores'
@@ -36,6 +37,9 @@
         })
         EventsOn('menu:viewsettings', () => {
             $showViewSettings = true
+        })
+        EventsOn('menu:filemanager', () => {
+            $showFileManager = true
         })
 
         // Connection state changes from backend
@@ -93,6 +97,10 @@
 
 {#if $showViewSettings}
     <ViewSettingsDialog />
+{/if}
+
+{#if $showFileManager}
+    <FileManagerDialog />
 {/if}
 
 <style>

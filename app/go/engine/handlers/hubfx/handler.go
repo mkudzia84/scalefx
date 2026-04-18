@@ -47,11 +47,14 @@ func Register(eng *engine.Engine) *Handler {
 		}
 	})
 	eng.AddGroup(h.commands())
+	eng.AddGroup(h.storageCommands())
 	return h
 }
 
+// commands returns the HubFX-only command group (audio, engine, codec, slaves, USB host).
+// These commands map to packet types handled only by the HubFX master firmware.
 func (h *Handler) commands() *engine.CmdGroup {
-	g := &engine.CmdGroup{
+	return &engine.CmdGroup{
 		Name:       "HubFX",
 		Controller: pcore.CtrlHubFX,
 		Color:      engine.ColorCyan,
@@ -70,20 +73,35 @@ func (h *Handler) commands() *engine.CmdGroup {
 			"engine.start":  {h.cmdEngineStart, "engine.start", "Start engine effect", true},
 			"engine.stop":   {h.cmdEngineStop, "engine.stop", "Stop engine effect", true},
 			"engine.status": {h.cmdEngineStatus, "engine.status", "Engine status", true},
+			"usb.devices":   {h.cmdUsbDevices, "usb.devices", "List USB devices", true},
+			"usb.reset":     {h.cmdUsbReset, "usb.reset", "Reset USB bus", true},
+		},
+	}
+}
+
+// storageCommands returns the universal storage + config command group.
+// Every controller firmware registers StorageServer + ConfigServer, so these
+// commands work on HubFX, LightFX, and GearControl alike (no Controller filter).
+func (h *Handler) storageCommands() *engine.CmdGroup {
+	g := &engine.CmdGroup{
+		Name:  "Storage & Config",
+		Color: engine.ColorYellow,
+		Commands: map[string]engine.CmdEntry{
 			"sd.init":       {h.cmdSdInit, "sd.init", "Initialize SD card", true},
 			"sd.status":     {h.cmdSdStatus, "sd.status", "SD card status", true},
 			"flash.status":  {h.cmdFlashStatus, "flash.status", "Flash status", true},
 			"file.list":     {h.cmdFileList, "file.list <sd|flash> [path]", "List files", true},
-			"file.delete":   {h.cmdFileDelete, "file.delete <sd|flash> <path>", "Delete file", true},
-			"file.mkdir":    {h.cmdFileMkdir, "file.mkdir <sd|flash> <path>", "Create directory", true},
+			"file.delete":   {h.cmdFileDelete, "file.delete [-r] <sd|flash> <path>", "Delete file (or tree with -r)", true},
+			"file.mkdir":    {h.cmdFileMkdir, "file.mkdir [-p] <sd|flash> <path>", "Create directory (mkdir -p with -p)", true},
 			"file.info":     {h.cmdFileInfo, "file.info <sd|flash> <path>", "File info", true},
 			"file.tree":     {h.cmdFileTree, "file.tree <sd|flash> [path]", "Tree view", true},
 			"file.cat":      {h.cmdFileCat, "file.cat <sd|flash> <path>", "Display file contents", true},
 			"file.download": {h.cmdFileDownload, "file.download <sd|flash> <remote> <local>", "Download file", true},
 			"file.upload":   {h.cmdFileUpload, "file.upload <sd|flash> <local> <remote> [--stream]", "Upload file", true},
+			"file.upload-batch": {h.cmdFileUploadBatch,
+				"file.upload-batch <sd|flash> <remote-cwd> <local1> [local2 ...] [--stream]",
+				"Upload files/dirs preserving structure under remote-cwd", true},
 			"file.cancel":   {h.cmdFileCancel, "file.cancel", "Cancel active upload", true},
-			"usb.devices":   {h.cmdUsbDevices, "usb.devices", "List USB devices", true},
-			"usb.reset":     {h.cmdUsbReset, "usb.reset", "Reset USB bus", true},
 		},
 	}
 	for k, v := range h.E.ConfigCommands() {
@@ -346,21 +364,47 @@ func (h *Handler) cmdFileList(args []string) {
 }
 
 func (h *Handler) cmdFileDelete(args []string) {
-	target, path := h.parseStorageArgs(args, "")
+	recursive := false
+	filtered := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "-r" || a == "-R" || a == "--recursive" {
+			recursive = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	target, path := h.parseStorageArgs(filtered, "")
 	if target == 255 || path == "" {
-		h.E.Out.Error("Usage: file.delete <sd|flash> <path>")
+		h.E.Out.Error("Usage: file.delete [-r] <sd|flash> <path>")
 		return
 	}
-	h.E.Ack(h.E.API.Files.Delete(target, path), fmt.Sprintf("Delete %s:%s", StorageTargetName(target), path))
+	label := fmt.Sprintf("Delete %s:%s", StorageTargetName(target), path)
+	if recursive {
+		label += " (recursive)"
+	}
+	h.E.Ack(h.E.API.Files.Delete(target, path, recursive), label)
 }
 
 func (h *Handler) cmdFileMkdir(args []string) {
-	target, path := h.parseStorageArgs(args, "")
+	parents := false
+	filtered := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "-p" || a == "--parents" {
+			parents = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	target, path := h.parseStorageArgs(filtered, "")
 	if target == 255 || path == "" {
-		h.E.Out.Error("Usage: file.mkdir <sd|flash> <path>")
+		h.E.Out.Error("Usage: file.mkdir [-p] <sd|flash> <path>")
 		return
 	}
-	h.E.Ack(h.E.API.Files.Mkdir(target, path), fmt.Sprintf("Mkdir %s:%s", StorageTargetName(target), path))
+	label := fmt.Sprintf("Mkdir %s:%s", StorageTargetName(target), path)
+	if parents {
+		label += " (parents)"
+	}
+	h.E.Ack(h.E.API.Files.Mkdir(target, path, parents), label)
 }
 
 func (h *Handler) cmdFileInfo(args []string) {
@@ -545,6 +589,200 @@ func (h *Handler) cmdFileUpload(args []string) {
 
 func (h *Handler) cmdFileCancel(_ []string) {
 	h.E.Ack(h.E.API.Files.CancelUpload(), "Upload cancelled")
+}
+
+// cmdFileUploadBatch uploads multiple files / directory trees under a remote
+// cwd, preserving directory structure (so dropping "a/b/log.txt" while
+// remote-cwd is /tmp lands the file at /tmp/a/b/log.txt). Mirrors the
+// Studio FsUploadBatch behavior so CLI and GUI upload identically.
+func (h *Handler) cmdFileUploadBatch(args []string) {
+	if !h.E.RequireConn() {
+		return
+	}
+	if len(args) < 3 {
+		h.E.Out.Error("Usage: file.upload-batch <sd|flash> <remote-cwd> <local1> [local2 ...] [--stream]")
+		return
+	}
+	target := byte(255)
+	switch strings.ToLower(args[0]) {
+	case "sd":
+		target = hfxp.StorageTargetSd
+	case "flash":
+		target = hfxp.StorageTargetFlash
+	default:
+		h.E.Out.Error("Storage target must be 'sd' or 'flash'")
+		return
+	}
+	remoteCwd := args[1]
+
+	mode := api.UploadSync
+	modeName := "sync"
+	locals := make([]string, 0, len(args)-2)
+	for _, a := range args[2:] {
+		if strings.EqualFold(a, "--stream") {
+			mode = api.UploadStream
+			modeName = "stream"
+			continue
+		}
+		locals = append(locals, a)
+	}
+	if len(locals) == 0 {
+		h.E.Out.Error("No local paths provided")
+		return
+	}
+
+	type job struct {
+		local, remote string
+		size          int64
+	}
+	var jobs []job
+	dirSeen := map[string]bool{}
+	var dirs []string
+	var total int64
+
+	// addDir records a directory we'll create via mkdir -p (idempotent, and
+	// the firmware handles all ancestors). We dedupe to skip redundant calls.
+	addDir := func(d string) {
+		d = normalizeSlash(d)
+		if d == "" || d == "/" || dirSeen[d] {
+			return
+		}
+		dirSeen[d] = true
+		dirs = append(dirs, d)
+	}
+
+	for _, lp := range locals {
+		info, err := os.Stat(lp)
+		if err != nil {
+			h.E.Out.Error("stat %s: %v", lp, err)
+			return
+		}
+		base := filepath.Base(lp)
+		if info.IsDir() {
+			root := joinSlash(remoteCwd, base)
+			addDir(root)
+			if err := filepath.Walk(lp, func(p string, fi os.FileInfo, werr error) error {
+				if werr != nil {
+					return werr
+				}
+				rel, rerr := filepath.Rel(lp, p)
+				if rerr != nil {
+					return rerr
+				}
+				rel = filepath.ToSlash(rel)
+				if rel == "." {
+					return nil
+				}
+				remote := joinSlash(root, rel)
+				if fi.IsDir() {
+					addDir(remote)
+					return nil
+				}
+				jobs = append(jobs, job{local: p, remote: remote, size: fi.Size()})
+				total += fi.Size()
+				return nil
+			}); err != nil {
+				h.E.Out.Error("walk %s: %v", lp, err)
+				return
+			}
+		} else {
+			jobs = append(jobs, job{local: lp, remote: joinSlash(remoteCwd, base), size: info.Size()})
+			total += info.Size()
+			// Top-level file → ensure its parent (remoteCwd) exists.
+			addDir(remoteCwd)
+		}
+	}
+	if len(jobs) == 0 {
+		h.E.Out.Error("no files found in input paths")
+		return
+	}
+
+	h.E.Out.Info("Batch upload → %s:%s — %d file(s), %s, mode=%s",
+		StorageTargetName(target), remoteCwd, len(jobs), humanBytes(uint64(total)), modeName)
+
+	// Create remote directories via mkdir -p (firmware resolves ancestors;
+	// order no longer matters — the call is idempotent on existing dirs).
+	for _, d := range dirs {
+		res := h.E.API.Files.Mkdir(target, d, true)
+		if !res.OK {
+			h.E.Out.Error("mkdir -p %s failed: %s", d, res.Error)
+			return
+		}
+	}
+
+	batchStart := time.Now()
+	var bytesDone int64
+	var filesOk, filesFail int
+	for i, j := range jobs {
+		data, err := os.ReadFile(j.local)
+		if err != nil {
+			h.E.Out.Error("read %s: %v", j.local, err)
+			filesFail++
+			continue
+		}
+		h.E.Out.Info("[%d/%d] %s → %s (%s)",
+			i+1, len(jobs), j.local, j.remote, humanBytes(uint64(len(data))))
+		fileStart := time.Now()
+		res := h.E.API.Files.Upload(target, j.remote, data, mode, func(sent, totalBytes int) {
+			h.E.Out.Printf("\r%s  ",
+				engine.FormatProgressBar(sent, totalBytes, fileStart, 30))
+		})
+		h.E.Out.Println()
+		if !res.OK {
+			h.E.Out.Error("  upload failed: %s", res.Error)
+			filesFail++
+			continue
+		}
+		filesOk++
+		bytesDone += int64(res.BytesTransferred)
+		md5tag := ""
+		if res.LocalMD5 != "" {
+			if res.MD5Match {
+				md5tag = " ✓ MD5"
+			} else {
+				md5tag = " ⚠ MD5 MISMATCH"
+			}
+		}
+		h.E.Out.OK("  %d bytes in %.1fs (%.1f KB/s)%s",
+			res.BytesTransferred, res.Elapsed.Seconds(), res.SpeedKBs, md5tag)
+	}
+
+	batchElapsed := time.Since(batchStart).Seconds()
+	avgKBs := 0.0
+	if batchElapsed > 0 {
+		avgKBs = float64(bytesDone) / 1024.0 / batchElapsed
+	}
+	h.E.Out.OK("Batch done: %d ok / %d fail · %s in %.1fs (avg %.1f KB/s)",
+		filesOk, filesFail, humanBytes(uint64(bytesDone)), batchElapsed, avgKBs)
+}
+
+func joinSlash(dir, name string) string {
+	name = strings.TrimLeft(filepath.ToSlash(name), "/")
+	if dir == "" || dir == "/" {
+		return "/" + name
+	}
+	return strings.TrimRight(filepath.ToSlash(dir), "/") + "/" + name
+}
+
+func normalizeSlash(p string) string {
+	p = filepath.ToSlash(p)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
+}
+
+func humanBytes(n uint64) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%d B", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1f KB", float64(n)/1024)
+	case n < 1024*1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(n)/1048576)
+	default:
+		return fmt.Sprintf("%.2f GB", float64(n)/1073741824)
+	}
 }
 
 // ─── Storage Helpers ───

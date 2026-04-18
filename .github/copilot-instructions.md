@@ -975,39 +975,7 @@ When the user asks to publish/release firmware, the agent MUST:
 4. **Mark breaking changes prominently** with ⚠️ and explain the migration path
 5. **Keep notes concise** — 5-15 bullet points typical for a minor release
 
-### 23. Commit After Significant Changes, Grouped by Functionality (MANDATORY)
-
-**After completing any significant change, create commit(s) grouped by functionality** before moving on. Do not let large multi-feature diffs accumulate in the working tree.
-
-**What counts as "significant":**
-- A protocol/wire-format change (new packet, new payload field, new error code)
-- A new feature wired end-to-end (firmware → Go protocol → API → CLI/Studio)
-- A refactor that touches more than one controller or shared lib subsystem
-- A version bump (`FIRMWARE_VERSION`) — always commit alongside the change that motivated it
-- A docs update tied to a code change (Rule 0 — same commit, not a follow-up)
-
-**Group by functionality, not by file or by chronological order:**
-- Each commit should be one cohesive idea — readable on its own, revertible without orphaning related changes
-- Don't bundle unrelated work ("battery refactor + flash CLI fix" → two commits)
-- Don't split one logical change across commits (firmware + Go mirror + docs for the same protocol addition → ONE commit, per Rule 1)
-- If a change spans multiple subsystems but is one feature (e.g. add a command across .h/.ino/.go/.md), keep it as one commit — the protocol-mirror invariant lives in a single revision
-
-**Examples:**
-- ✅ `feat(battery): policy-based BatteryServerT + core 0xEE BATTERY_CONFIG` (firmware + Go protocol + API + CLI handler + docs)
-- ✅ `refactor(hubfx): hardcode INA226 channel, drop battery YAML section` (separate commit — different concern)
-- ❌ `wip: lots of changes` (not specific, not grouped)
-- ❌ `feat: battery refactor` followed by `feat: add Go mirror for battery` (split a single logical change — breaks Rule 1's mirror invariant for the in-between revision)
-
-**Workflow:**
-1. Verify the change builds and (where applicable) the relevant tests pass.
-2. Run `git status` + `git diff` to see what's pending.
-3. Mentally partition the diff into functionality groups.
-4. For each group: stage specific files (not `git add -A` — see git safety in CLAUDE.md), then commit with a descriptive message following repo style (`feat(scope): ...`, `fix(scope): ...`, `refactor(scope): ...`).
-5. Confirm with `git log --oneline -N` that the commits read as a coherent story.
-
-**The agent must do this proactively after finishing significant work** — do not wait for the user to ask. If the user explicitly says "don't commit yet" or "let me review first", honor that.
-
-### 24. Studio Config Validation Framework (MANDATORY for board UIs)
+### 23. Studio Config Validation Framework (MANDATORY for board UIs)
 
 **Every board tab in `app/go/studio/frontend/src/lib/tabs/<Board>Tab.svelte` MUST run its config through a board-specific verifier and visually surface issues in the UI.**
 
@@ -1052,6 +1020,147 @@ This is the standard pattern for catching invalid wiring (pin role conflicts, di
 - Consistent UX across boards — every tab shows red borders the same way, so users don't have to learn a new error idiom per board.
 
 **When adding a new board tab:** create `<board>-verifier.ts` BEFORE wiring up the save button. Adding it later means going back through every reactive form field to add `class:verify-*` bindings — much easier to do alongside the initial layout.
+
+### 24. Tooltips, Live Validation & Live Push for Studio Settings (MANDATORY for board UIs)
+
+**Every interactive setting in `app/go/studio/frontend/src/lib/` (tabs, dialogs, shared widgets) MUST have a `title="…"` tooltip describing what the parameter does, its units, and its valid range. Every config field MUST validate locally on change and — when validation passes — debounce-push the new value to the board immediately.**
+
+This guarantees that an operator can hover any control to learn what it does without consulting documentation, and that they get instant visual feedback on bad values rather than waiting for a Save+Flash cycle to discover them.
+
+**Tooltip rules:**
+
+1. **Coverage** — every `<label>`, `<input>`, `<select>`, `<button>`, and labelled toggle in a tab/dialog/shared widget gets a `title=` attribute. Section headers and read-only displays may also benefit when their meaning isn't obvious.
+2. **Content** — start with a short verb-led description, then state units and ranges in parentheses. Examples:
+   - `title="Minimum servo pulse width (300–2700µs)"`
+   - `title="Travel speed limit. 0 = instant motion (no rate limiting). Range: 0–65535 µs/s."`
+   - `title="When enabled, Open and Close commands swap travel direction (Open→min, Close→max)."`
+3. **Match the actual behavior** — when a parameter's semantics change (e.g. units swap, range tightens), update the tooltip in the same commit. Stale tooltips are worse than no tooltips.
+4. **Avoid duplicating the visible label.** If the label says "Min Pulse (µs)", the tooltip should add WHY/WHAT — not repeat the words.
+
+**Live validation + live push rules:**
+
+1. **Local validator** — a pure `configError(state) → string | null` function that checks ranges and cross-field constraints. Keep it next to the field it validates (in the shared widget or tab `<script>`).
+2. **Debounced push** — on every `on:change` (or `on:input` for sliders), schedule a push via `setTimeout` (~350ms). Cancel any pending timer before scheduling a new one. On fire: re-run the validator, build the command from current state, dedupe against `lastPushed`, then call `SendCommand(...)`.
+3. **Status reflection** — surface push state with a small visual indicator next to the field/section: `pending` (debounce timer running), `sent` (pushed successfully), `invalid` (validation failed — push blocked). CSS reference in [ServoWidget.svelte](app/go/studio/frontend/src/lib/components/ServoWidget.svelte) (`.push-status` / `.push-pending` / `.push-sent` / `.push-invalid`).
+4. **Cleanup** — `onDestroy(() => { if (pushTimer) clearTimeout(pushTimer) })`. Reset `lastPushed = ''` and clear pending timer whenever the active channel/target changes (`$: { void activeId; … }`).
+5. **Position vs config separation** — **only configuration** fields (ranges, motion profiles, modes, calibration) live-push. **Live action** fields (current position, jog buttons, test triggers) call `SendCommand` directly without debouncing — they are commands, not config.
+6. **Persistence still requires Save** — live push updates the running board state (RAM). The user must still click Save to persist to LittleFS via `UploadConfig(yaml)`. Make this clear in the tab UI; don't conflate the two.
+
+**Reference implementation:** [ServoWidget.svelte](app/go/studio/frontend/src/lib/components/ServoWidget.svelte) — the per-channel servo card has full tooltip coverage, `configError()` local validator, debounced `scheduleLivePush()`, dedup against `lastPushed`, and a behavior-summary box that updates live as the user edits values.
+
+**Why this matters:**
+- Operators learn the system by hovering, not by reading docs. Tooltips are documentation that ships with the binary.
+- Bad values caught at edit time (red border + push-invalid badge) are 10× cheaper than bad values caught after a flash cycle.
+- Live push closes the loop — the operator can immediately see whether their change had the intended effect on the actual hardware, before committing the config.
+
+**When adding a new field:** add the tooltip and wire it into `scheduleLivePush()` in the same commit as the input itself. Adding tooltips/validation in a "polish pass" later means going back through every reactive form field — much easier to do alongside the initial layout.
+
+### 25. Shared-Module Commands Are Universal, Peer Capacity Is Dynamic (MANDATORY)
+
+**Command groups driven by a shared firmware module (StorageServer, ConfigServer, any future cross-board module) MUST be registered with `Controller: ""` — the universal filter. They MUST NOT be bundled into a board-specific group and MUST NOT be re-added inside each board handler via `for k, v := range h.E.ConfigCommands()`.**
+
+The engine filters `CmdGroup.Controller` in two places: [engine.go:221-225](app/go/engine/engine.go#L221) (dispatch) and [engine.go:365-368](app/go/engine/engine.go#L365) (help rendering). A command parked inside a group with `Controller: pcore.CtrlHubFX` is hidden from `help` and refused from dispatch whenever the connected board is something else — even when the underlying firmware supports the command. This caused `flash.status`, `file.list`, `config.*`, etc. to be invisible on LightFX/GearControl despite every board registering `storageServer` + `configServer`.
+
+**Rules:**
+
+1. **One universal group per shared module.** In [engine/handlers/hubfx/handler.go](app/go/engine/handlers/hubfx/handler.go), `storageCommands()` is the single source of truth for `sd.*`, `flash.status`, `file.*`, and `config.*`. It has no `Controller` field → visible and dispatchable on every board.
+2. **Board handlers MUST NOT merge `ConfigCommands()`** into their own board-filtered group. The universal group already registers them.
+3. **HubFX group stays HubFX-only.** `slaves`, `slave.*`, `audio.*`, `codec.*`, `engine.*`, `usb.*` map to packet types only the ESP32-S3 master firmware implements — keep `Controller: pcore.CtrlHubFX` on that group.
+4. **Peer capacity is a per-connection property, not a hardcoded constant.** `FILE_UPLOAD_DATA` payload must fit the peer's `MAX_PAYLOAD_SIZE` (Pico: 512, ESP32: 2048). [api/files.go](app/go/api/files.go) tracks this via `FileApi.peerMaxPayload` with `SetPeerMaxPayload(size)`. `Engine.SetControllerType(ct)` ([engine.go:110](app/go/engine/engine.go#L110)) is the single setter that propagates the detected peer type into the API layer — call it from every IDENTIFY/INIT site; never assign `e.ControllerType = …` directly (except when clearing to `""` on disconnect, where the API is already nil).
+5. **Chunk-size constants are named and exported.** `PicoMaxPayload`, `Esp32MaxPayload`, `UploadHeaderSize`, `UploadChunkSize` (= `PicoMaxPayload - UploadHeaderSize`, the safe universal default). Do not inline `508` / `2044` magic numbers at call sites.
+
+**Why this matters:**
+
+- Any board that runs `sfx_storage` / `sfx_config` automatically gets the CLI + Studio surface — adding a new Pico board (e.g. a future SoundFX) needs no CLI wiring, just the firmware modules.
+- Hardcoded 508-byte chunks on ESP32 uploads leave ~75% of the COBS RX buffer unused and quadruple the sync-upload time. The dynamic setter upgrades HubFX uploads to 2044-byte chunks while keeping Picos safe.
+- Silent segment-0 timeout (the symptom of an oversized chunk hitting a Pico) is one of the hardest-to-diagnose bugs in the protocol. Centralizing capacity in one setter prevents the next contributor from regressing it.
+
+**When adding a new shared firmware module with CLI commands:** create its own universal group (either inline in an existing handler or as a new `engine/handlers/<module>/` package registered from [handlers.go](app/go/engine/handlers/handlers.go)). Never attach it to a board-specific group "because HubFX uses it too."
+
+### 26. Per-Board Config Filename + Auto-Hydrate Studio Tabs on Connect (MANDATORY)
+
+**Each controller stores its config in a board-specific YAML file on flash, and every Studio board tab with a `BoardConfigDriver<T>` MUST auto-download that file on connect and populate its UI.** The generic name `/config.yaml` is reserved for legacy/unflashed boards only — new firmware, Studio, and CLI all use per-board filenames.
+
+**Canonical filenames (source of truth: firmware schema `defaultPath()`):**
+
+| Controller   | YAML path                    | Schema `defaultPath()`                                                                                     |
+| ------------ | ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| GearControl  | `/gearcontrol.yaml`          | [gearcontrol_config.h](controllers/gearcontrol/pico/src/config/gearcontrol_config.h)                       |
+| LightFX      | `/lightfx.yaml`              | [lightfx_config.h](controllers/lightfx/pico/src/config/lightfx_config.h)                                   |
+| HubFX        | `/hubfx.yaml`                | [hubfx_config.h](controllers/hubfx/esp32s3/src/config/hubfx_config.h)                                      |
+| GunFX        | `/gunfx.yaml` *(reserved)*   | no schema yet — add with the filename baked in                                                             |
+| legacy       | `/config.yaml`               | fallback when `ControllerType == ""` (unidentified board)                                                  |
+
+The firmware never hardcodes the string outside `defaultPath()`. Every `loadConfig()` / `reloadConfig()` / `saveConfig()` call that passes `nullptr` resolves to the schema default, so renaming the schema is the ONE place to change. Never embed `"/config.yaml"` in `.ino` setup code, storage bridges, or new config modules.
+
+**Studio mapping:** [app.go:configPathFor(ct)](app/go/studio/app.go) maps `ControllerType → path`. `DownloadConfig` / `UploadConfig` read this per call — the TS side stays opaque (`DownloadConfig()` takes no path arg).
+
+**Auto-hydrate flow.** Hardcoded TS defaults are fallback behavior for fresh/blank boards, never the steady state — the user expects the Studio to reflect what the board actually has on its flash the moment the connection dialog closes.
+
+This is wired through a single shared helper — tabs do not hand-roll their own subscription, download call, or YAML parse:
+
+```ts
+// app/go/studio/frontend/src/lib/tabs/<Board>Tab.svelte
+import { autoLoadOnConnect } from '../config/config-loader'
+
+const driver: BoardConfigDriver<TState> = { /* existing driver */ }
+
+onMount(() => autoLoadOnConnect(driver, ['<boardType>']))
+```
+
+**Rules:**
+
+1. **Use the helper, not the primitives.** `autoLoadOnConnect(driver, controllerTypes)` lives in [config-loader.ts](app/go/studio/frontend/src/lib/config/config-loader.ts). It subscribes to `connectionInfo`, fires once per `(port × controllerType)` tuple, and calls `driver.parseYaml()` → `driver.applyState()` on success. Do NOT open-code `EventsOn('connection:changed', ...)` + `DownloadConfig()` inside a tab.
+2. **Wire from `onMount`, not script top-level.** The driver `const` is initialized during script execution; registering the subscription from `onMount` guarantees the driver exists when the callback fires. Return the unsubscribe fn from `onMount` so Svelte cleans up on destroy.
+3. **Filter by controller type.** Pass the exact `controllerType` values the tab supports (`['gearcontrol']`, `['lightfx']`, `['hubfx']`). A HubFX-aware tab that also loads under slave connections passes both. `'*'` is allowed only for genuinely universal tabs (currently none).
+4. **`driver.applyState` is the single source of truth for "YAML → UI".** Do not duplicate apply logic in the tab — if a field doesn't round-trip, fix `applyState`, don't branch in the loader. Parse warnings surface as `warning` console messages; hard errors as `error`; successful apply as `ok` (all prefixed `[<boardType>]`).
+5. **Missing `/config.yaml` is not an error.** `DownloadConfig()` returns `""` for NOT_FOUND — the loader treats that as "fresh board, keep hardcoded defaults" and emits an `info` line to the console. Do not alert/modal on this case.
+6. **No progress dialog.** Auto-load is a silent background fetch. The `UploadProgressDialog` is for user-initiated saves/uploads only — a popup on every connect would be noise.
+7. **New board tabs without a `BoardConfigDriver<T>` (e.g. GunFxTab today) are exempt until they gain one.** Adding a driver implicitly opts the tab into Rule 26 — wire `autoLoadOnConnect` in the same PR.
+
+**Why this matters:**
+
+- Without auto-hydrate, the user edits values against stale hardcoded defaults, clicks Save, and silently overwrites their on-device config. The first Save after connect becomes dangerous.
+- The YAML round-trip goes through the same driver the Save dialog uses, so any bug in `parseYaml`/`applyState` surfaces on connect rather than on save — the failure mode is visible, not latent.
+- Centralizing in one helper means tweaking the hydrate semantics (add an explicit `config.reload` first, throttle re-applies, surface an "out of sync" badge, etc.) is a one-file change, not a four-tab change.
+
+Reference implementation: [config-loader.ts](app/go/studio/frontend/src/lib/config/config-loader.ts), consumed by [GearControlTab.svelte](app/go/studio/frontend/src/lib/tabs/GearControlTab.svelte), [LightFxTab.svelte](app/go/studio/frontend/src/lib/tabs/LightFxTab.svelte), [HubFxTab.svelte](app/go/studio/frontend/src/lib/tabs/HubFxTab.svelte).
+
+### 27. Canonical YAML Style: Indented Block Sequences (MANDATORY)
+
+Every ScaleFX YAML emitter — Studio's `generateGearControlYaml` / `generateLightYaml`, the reference `controllers/*/pico/config.yaml` files, and any future CLI/script that authors a config — must emit **indented block sequences**. Sequence items sit 2 spaces under the parent key; continuation lines sit 4 spaces under.
+
+```yaml
+retracts:
+  - channel: 0              # 2 spaces under "retracts:"
+    enabled: true           # 4 spaces under "retracts:"
+    stall_current_mA: 500
+    timeout_ms: 60000
+```
+
+All three parsers (firmware `YamlParser`, Go `parseYAML` in `engine/config_schema.go`, Studio TS `parseYaml`) accept both the indented form AND the YAML-spec "compact" form (sequence items at the same column as the parent key) for backward compatibility with older files:
+
+```yaml
+retracts:
+- channel: 0                # legal YAML, still parses, but DO NOT emit this form.
+  enabled: true
+```
+
+**Rules:**
+
+1. **Emitters always use indented form.** The Studio TS generators take a `base` level and emit `L1 = indent(base+1)` for the `- ` line, `L2 = indent(base+2)` for continuations. Treat any new emitter as a pull-request-blocking regression if it drops back to compact form.
+2. **Parsers accept both forms.** The Studio TS parser (`parseNested` in [yaml-parser.ts](app/go/studio/frontend/src/lib/config/yaml-parser.ts)) promotes a same-indent `- …` line to a sequence nested under the preceding key. The firmware parser explicitly handles "block sequences indented at the same level as the parent key" (see [yaml_parser.ipp:346-370](controllers/lib/sfx_config/config/yaml_parser.ipp#L346)). The Go parser normalises list-item indent with `+2`. Do not weaken any of these — stale device files predate the style switch.
+3. **Hand-written YAML uses indented form.** Reference `config.yaml` files under `controllers/*/pico/` are the canonical examples; copy their layout.
+4. **Round-trip is stable.** After a Save in Studio, the on-device file is indented form. After a CLI upload of a hand-written file, the device stores whatever bytes were uploaded (the firmware caches raw YAML) — so `cat`-ing the repo's reference `config.yaml` into the device preserves the indented form.
+5. **Documentation mirrors this rule.** [controllers/lib/sfx_config/README.md](controllers/lib/sfx_config/README.md) carries the canonical example under "Canonical YAML Style". Update both when the style ever changes.
+
+**Why this matters:**
+
+- Compact form is legal YAML but ambiguous to quick-glance readers — a `- ` at column 0 looks like a top-level list, not a nested sequence. Diffs and code review suffer.
+- Studio's 880-byte on-device file shipped in compact form was silently mis-parsed by the TS parser: three retracts, seven pins, three door modes, and a battery block were all dropped because `parseMapping` broke at the first `- ` line. The UI hydrated from defaults while claiming "applied" — a silent-data-loss class of bug.
+- A single canonical style means the round-trip (firmware ↔ Studio ↔ CLI) is a pure identity transform. Any drift (e.g., Studio emits compact, firmware round-trips compact, CLI parser someday regresses) is a single-file fix instead of a forensic multi-component audit.
+
+Reference: [config-yaml-gen.ts](app/go/studio/frontend/src/lib/config/config-yaml-gen.ts) emitters, [yaml-parser.ts](app/go/studio/frontend/src/lib/config/yaml-parser.ts) `parseNested`, firmware [yaml_parser.ipp](controllers/lib/sfx_config/config/yaml_parser.ipp), Go [config_schema.go](app/go/engine/config_schema.go) `buildTree`.
 
 ## Key Architecture Patterns
 

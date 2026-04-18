@@ -240,8 +240,19 @@ template <typename TPolicy>
 void StorageServerT<TPolicy>::handleFileDelete(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
+    uint8_t flags = 0;
+    bool flagsPresent = false;
 
-    uint8_t pathErr = extractPathAndTarget(payload, len, path, sizeof(path), target);
+    // Detect whether a flags byte was supplied so we can preserve the legacy
+    // "no flags = recursive" default for pre-flags clients.
+    {
+        if (len >= 1) {
+            uint8_t pathLen = payload[0];
+            if (len > (size_t)(2 + pathLen)) flagsPresent = true;
+        }
+    }
+
+    uint8_t pathErr = extractPathAndTarget(payload, len, path, sizeof(path), target, &flags);
     if (pathErr != SerialError::OK) { sendNack(pathErr); return; }
     if (!checkStorageReady(target)) return;
 
@@ -252,7 +263,12 @@ void StorageServerT<TPolicy>::handleFileDelete(const uint8_t* payload, size_t le
         return;
     }
 
-    STORAGE_LOG("FILE_DELETE %s:%s", targetName(target), path);
+    // Legacy default (no flags byte) = recursive, matching pre-v2 server behavior.
+    // Explicit flags byte = client controls recursion via DeleteFlags::RECURSIVE bit.
+    bool recursive = flagsPresent ? ((flags & HubFxStorage::DeleteFlags::RECURSIVE) != 0) : true;
+
+    STORAGE_LOG("FILE_DELETE %s:%s flags=0x%02X recursive=%d",
+                targetName(target), path, flags, recursive ? 1 : 0);
 
     // Check if target is a file or directory
     FileEntry entry;
@@ -269,11 +285,10 @@ void StorageServerT<TPolicy>::handleFileDelete(const uint8_t* payload, size_t le
 
     uint8_t err;
     if (entry.isDirectory) {
-        // Recursive directory removal
         if (target == HubFxStorage::TARGET_FLASH)
-            err = FlashModule::instance().removeDirectory(path);
+            err = FlashModule::instance().removeDirectory(path, recursive);
         else
-            err = SdCardModule::instance().removeDirectory(path);
+            err = SdCardModule::instance().removeDirectory(path, recursive);
     } else {
         if (target == HubFxStorage::TARGET_FLASH)
             err = FlashModule::instance().removeFile(path);
@@ -283,7 +298,7 @@ void StorageServerT<TPolicy>::handleFileDelete(const uint8_t* payload, size_t le
 
     if (err == 0) {
         STORAGE_LOG("deleted %s:%s%s", targetName(target), path,
-                    entry.isDirectory ? " (recursive)" : "");
+                    entry.isDirectory ? (recursive ? " (recursive)" : " (empty)") : "");
         sendAck();
     } else {
         sendNack(mapStorageError(err));
@@ -299,8 +314,9 @@ template <typename TPolicy>
 void StorageServerT<TPolicy>::handleFileMkdir(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
+    uint8_t flags = 0;
 
-    uint8_t pathErr = extractPathAndTarget(payload, len, path, sizeof(path), target);
+    uint8_t pathErr = extractPathAndTarget(payload, len, path, sizeof(path), target, &flags);
     if (pathErr != SerialError::OK) { sendNack(pathErr); return; }
     if (!checkStorageReady(target)) return;
 
@@ -309,14 +325,17 @@ void StorageServerT<TPolicy>::handleFileMkdir(const uint8_t* payload, size_t len
         return;
     }
 
+    bool createParents = (flags & HubFxStorage::MkdirFlags::PARENTS) != 0;
+
     uint8_t err;
     if (target == HubFxStorage::TARGET_FLASH)
-        err = FlashModule::instance().makeDirectory(path);
+        err = FlashModule::instance().makeDirectory(path, createParents);
     else
-        err = SdCardModule::instance().makeDirectory(path);
+        err = SdCardModule::instance().makeDirectory(path, createParents);
 
     if (err == 0) {
-        STORAGE_LOG("mkdir %s:%s", targetName(target), path);
+        STORAGE_LOG("mkdir %s:%s%s", targetName(target), path,
+                    createParents ? " -p" : "");
         sendAck();
     } else {
         sendNack(mapStorageError(err));
@@ -392,7 +411,7 @@ void StorageServerT<TPolicy>::handleFileDownload(const uint8_t* payload, size_t 
     if (target == HubFxStorage::TARGET_FLASH)
         err = FlashModule::instance().openRead(path, file);
     else
-        err = SdCardModule::instance().openRead(path, file);
+        err = _policy.sdOpenRead(path, file);
 
     if (err != 0) {
         unlockStorage(target);
@@ -523,7 +542,7 @@ void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t l
     if (_uploadTarget == HubFxStorage::TARGET_FLASH)
         err = FlashModule::instance().openWrite(_uploadPath, _shared.uploadFile, true);
     else
-        err = SdCardModule::instance().openWrite(_uploadPath, _shared.uploadFile, true);
+        err = _policy.sdOpenWrite(_uploadPath, _shared.uploadFile, true);
 
     if (err != 0) {
         unlockStorage(_uploadTarget);
@@ -1215,9 +1234,14 @@ bool StorageServerT<TPolicy>::checkStorageReady(HubFxStorage::StorageTarget targ
             return false;
         }
     } else {
-        if (!SdCardModule::instance().isInitialized()) {
-            sendNack(HubFxError::SD_NOT_INITIALIZED);
+        if constexpr (!TPolicy::SdSupported) {
+            sendNack(SerialError::NOT_SUPPORTED);
             return false;
+        } else {
+            if (!SdCardModule::instance().isInitialized()) {
+                sendNack(HubFxError::SD_NOT_INITIALIZED);
+                return false;
+            }
         }
     }
     return true;
@@ -1247,7 +1271,10 @@ const char* StorageServerT<TPolicy>::targetName(HubFxStorage::StorageTarget targ
 template <typename TPolicy>
 uint8_t StorageServerT<TPolicy>::extractPathAndTarget(
         const uint8_t* payload, size_t len,
-        char* path, size_t pathBufSize, HubFxStorage::StorageTarget& target) {
+        char* path, size_t pathBufSize, HubFxStorage::StorageTarget& target,
+        uint8_t* flagsOut) {
+
+    if (flagsOut) *flagsOut = 0;
 
     if (len < 1) return SerialError::MISSING_PARAMETER;
 
@@ -1271,6 +1298,11 @@ uint8_t StorageServerT<TPolicy>::extractPathAndTarget(
         target = static_cast<HubFxStorage::StorageTarget>(rawTarget);
     } else {
         target = HubFxStorage::TARGET_SD;  // default
+    }
+
+    // Optional flags byte after the target (append-only extension — Rule 11)
+    if (flagsOut && len > (size_t)(2 + pathLen)) {
+        *flagsOut = payload[2 + pathLen];
     }
 
     return SerialError::OK;

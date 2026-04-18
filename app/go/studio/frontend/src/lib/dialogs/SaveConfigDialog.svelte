@@ -1,62 +1,170 @@
 <!-- ScaleFX Studio — Save Configuration Dialog -->
-<!-- Two-tab modal: Summary (verification report + settings overview) and YAML (generated config). -->
-<!-- Save button only enabled when verification passes (zero errors). -->
+<!-- Single-scroll modal: verification report + editable YAML in one column. -->
+<!-- Driven by a BoardConfigDriver<TState> — the dialog is board-agnostic. -->
 <script lang="ts">
-    import type { VerifyResult, VerifyIssue, Severity } from '../config/config-verifier'
+    import type { VerifyResult, Severity, VerifyIssue } from '../config/config-verifier'
     import { EMPTY_RESULT } from '../config/config-verifier'
+    import type { BoardConfigDriver } from '../config/board-driver'
+    import { OpenTextFile, SaveTextFile } from '../../../wailsjs/go/main/App'
+    import CodeMirrorEditor from '../components/CodeMirrorEditor.svelte'
+    import UploadProgressDialog from './UploadProgressDialog.svelte'
 
-    // ─── Props ───
-
-    /** Board type for display and save behavior */
-    export let boardType: string = 'lightfx'
-    /** Board label for the dialog title */
-    export let boardLabel: string = 'LightFX'
-    /** Verification result from the board-specific verifier */
-    export let verifyResult: VerifyResult = EMPTY_RESULT
-    /** Generated YAML/XML config text */
-    export let configText: string = ''
-    /** Whether the dialog is visible (bind:this from parent) */
+    export let driver: BoardConfigDriver<any> | null = null
     export let open: boolean = false
-    /** Callback when save is confirmed */
-    export let onSave: (() => void) | null = null
-    /** Callback when dialog is closed */
+    /** Optional: tab's already-computed verify result. When provided, the dialog
+     *  shows this verbatim (single source of truth with the tab) until the user
+     *  edits the YAML, at which point the dialog re-verifies locally. */
+    export let initialResult: VerifyResult | null = null
+    export let onSave: ((yaml: string) => Promise<void> | void) | null = null
     export let onClose: (() => void) | null = null
 
-    // ─── State ───
-    let activeDialogTab: 'summary' | 'yaml' = 'summary'
     let saving = false
     let saveError = ''
+    let importError = ''
+    let importInfo = ''
+    let exportInfo = ''
+    let showProgress = false
 
-    $: canSave = verifyResult.valid && !saving
-    $: totalIssues = verifyResult.issues.length
+    let yamlText = ''
+    let verifyResult: VerifyResult = EMPTY_RESULT
+    let parseErrors: string[] = []
+    let parseWarnings: string[] = []
+    let dirty = false
+    let activeTab: 'report' | 'yaml' = 'report'
+
+    $: boardLabel = driver?.boardLabel ?? 'Configuration'
+    $: canSave = verifyResult.valid && !saving && parseErrors.length === 0
     $: hasErrors = verifyResult.counts.error > 0
     $: hasWarnings = verifyResult.counts.warning > 0
+    $: issues = verifyResult.issues as VerifyIssue[]
 
-    // ─── Actions ───
+    let _wasOpen = false
+    $: {
+        if (open && driver && !_wasOpen) { _wasOpen = true; initialize() }
+        else if (!open) { _wasOpen = false }
+    }
+
+    function initialize() {
+        if (!driver) return
+        saveError = importError = importInfo = exportInfo = ''
+        dirty = false
+        try {
+            const state = driver.buildState()
+            yamlText = driver.generateYaml(state)
+            parseErrors = []
+            parseWarnings = []
+            // Prefer the tab's already-computed result (keeps both in lockstep);
+            // fall back to re-verifying here if the parent didn't supply one.
+            verifyResult = initialResult ?? driver.verify(state)
+        } catch (err: any) {
+            yamlText = `# Error generating configuration:\n# ${err?.message || err}`
+            parseErrors = [`Generator threw: ${err?.message || err}`]
+            parseWarnings = []
+            verifyResult = EMPTY_RESULT
+            console.error('[SaveConfigDialog] initialize() failed:', err)
+        }
+    }
+
+    // While the dialog is open and the user hasn't edited YAML, keep the
+    // dialog's verifyResult in sync with the tab's live result — so a
+    // background state change (e.g. reconciled broadcast) reflects immediately.
+    $: if (open && !dirty && initialResult) verifyResult = initialResult
+
+    function onYamlEdit() {
+        if (!driver) return
+        dirty = true
+        importInfo = exportInfo = ''
+        try {
+            const result = driver.parseYaml(yamlText)
+            parseErrors = result.errors
+            parseWarnings = result.warnings
+            if (result.state) verifyResult = driver.verify(result.state)
+        } catch (err: any) {
+            parseErrors = [`Parser threw: ${err?.message || err}`]
+            parseWarnings = []
+        }
+    }
 
     function close() {
         if (saving) return
         open = false
-        saveError = ''
-        activeDialogTab = 'summary'
         onClose?.()
     }
 
     async function doSave() {
+        if (saving || !driver) return
+        if (parseErrors.length > 0 || hasErrors) return
         if (!canSave) return
         saving = true
         saveError = ''
+        showProgress = true
         try {
-            onSave?.()
-            // Brief pause to show success state
-            setTimeout(() => {
-                saving = false
-                close()
-            }, 500)
+            await onSave?.(yamlText)
+            saving = false
+            // Leave the progress dialog open so the user sees the completion
+            // summary (speed + MD5). Close this dialog; user closes the popup.
+            close()
         } catch (err: any) {
-            saveError = err?.message || 'Save failed'
+            // Wails rejects Go errors with a plain string, not an Error object —
+            // fall back through string / message / String(err) so we always
+            // surface whatever the binding gave us.
+            saveError = (typeof err === 'string' && err) || err?.message || String(err) || 'Save failed'
+            console.error('[SaveConfigDialog] save failed:', err)
             saving = false
         }
+    }
+
+    async function doImport() {
+        if (!driver) return
+        importError = importInfo = ''
+        try {
+            const file = await OpenTextFile(`Import ${boardLabel} Configuration`)
+            if (!file || !file.path) return
+            const result = driver.parseYaml(file.content)
+            if (result.errors.length > 0) { importError = `Parse failed:\n${result.errors.join('\n')}`; return }
+            if (!result.state) { importError = 'Parse produced no state'; return }
+            driver.applyState(result.state)
+            const snap = driver.buildState()
+            yamlText = driver.generateYaml(snap)
+            parseErrors = []
+            parseWarnings = result.warnings
+            verifyResult = driver.verify(snap)
+            dirty = false
+            const fname = file.path.split(/[\\/]/).pop() ?? file.path
+            importInfo = `Imported ${fname} — applied to tab`
+        } catch (err: any) {
+            importError = (typeof err === 'string' && err) || err?.message || String(err) || 'Import failed'
+        }
+    }
+
+    async function doExport() {
+        if (!driver) return
+        exportInfo = ''
+        try {
+            const path = await SaveTextFile(yamlText, `${driver.boardType}-config.yaml`,
+                `Export ${boardLabel} Configuration`)
+            if (path) {
+                const fname = path.split(/[\\/]/).pop() ?? path
+                exportInfo = `Exported to ${fname}`
+            }
+        } catch (err: any) {
+            exportInfo = `Export failed: ${err?.message || err}`
+        }
+    }
+
+    async function copyYaml() {
+        await navigator.clipboard.writeText(yamlText)
+        exportInfo = 'Copied to clipboard'
+    }
+
+    function doReset() {
+        if (!driver) return
+        const state = driver.buildState()
+        yamlText = driver.generateYaml(state)
+        parseErrors = []
+        parseWarnings = []
+        verifyResult = driver.verify(state)
+        dirty = false
     }
 
     function handleKeydown(e: KeyboardEvent) {
@@ -64,26 +172,15 @@
         if (e.key === 'Escape' && !saving) close()
     }
 
-    function copyYaml() {
-        navigator.clipboard.writeText(configText)
-    }
-
-    // ─── Severity helpers ───
-
     function sevIcon(sev: Severity): string {
-        switch (sev) {
-            case 'error':   return '✗'
-            case 'warning': return '⚠'
-            case 'info':    return 'ℹ'
-        }
+        if (sev === 'error')   return '\u2717'
+        if (sev === 'warning') return '\u26A0'
+        return '\u2139'
     }
-
     function sevColor(sev: Severity): string {
-        switch (sev) {
-            case 'error':   return 'var(--error)'
-            case 'warning': return 'var(--warning)'
-            case 'info':    return 'var(--info)'
-        }
+        if (sev === 'error')   return 'var(--error)'
+        if (sev === 'warning') return 'var(--warning)'
+        return 'var(--info)'
     }
 </script>
 
@@ -91,165 +188,205 @@
 
 {#if open}
     <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <div class="modal-backdrop save-backdrop" on:click|self={close}>
-        <div class="save-dialog">
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="sc-backdrop" on:click|self={close}>
+        <div class="sc-dialog">
 
-            <!-- Header -->
-            <div class="save-header">
+            <header class="sc-header">
                 <h2>
-                    {#if saving}
-                        <span class="header-spin">⟳</span> Saving…
-                    {:else if hasErrors}
-                        <span style="color: var(--error)">✗</span> Save Configuration — {boardLabel}
-                    {:else}
-                        Save Configuration — {boardLabel}
+                    {#if saving}<span class="sc-spin">⟳</span> Saving…
+                    {:else if hasErrors}<span style="color: var(--error)">✗</span> Save Configuration — {boardLabel}
+                    {:else}Save Configuration — {boardLabel}
                     {/if}
                 </h2>
                 {#if !saving}
-                    <button class="close-btn" on:click={close} title="Close">✕</button>
+                    <button class="sc-close" on:click={close} title="Close">✕</button>
                 {/if}
-            </div>
+            </header>
 
-            <!-- Verification status strip -->
-            <div class="verify-strip" class:strip-ok={verifyResult.valid}
-                 class:strip-error={hasErrors} class:strip-warn={!hasErrors && hasWarnings}>
-                {#if verifyResult.valid && totalIssues === 0}
-                    <span class="strip-icon ok">✓</span>
-                    <span>Configuration is valid — ready to save</span>
+            <div class="sc-strip"
+                 class:sc-strip-ok={verifyResult.valid && parseErrors.length === 0}
+                 class:sc-strip-err={hasErrors || parseErrors.length > 0}
+                 class:sc-strip-warn={!hasErrors && parseErrors.length === 0 && hasWarnings}>
+                {#if parseErrors.length > 0}
+                    <span>✗</span><span>{parseErrors.length} YAML parse error{parseErrors.length !== 1 ? 's' : ''} — fix to save</span>
+                {:else if verifyResult.valid && issues.length === 0}
+                    <span>✓</span><span>Configuration is valid — ready to save</span>
                 {:else if verifyResult.valid}
-                    <span class="strip-icon warn">⚠</span>
-                    <span>Valid with {verifyResult.counts.warning} warning{verifyResult.counts.warning !== 1 ? 's' : ''}</span>
+                    <span>⚠</span><span>Valid with {verifyResult.counts.warning} warning{verifyResult.counts.warning !== 1 ? 's' : ''}</span>
                 {:else}
-                    <span class="strip-icon err">✗</span>
-                    <span>{verifyResult.counts.error} error{verifyResult.counts.error !== 1 ? 's' : ''} — fix before saving</span>
-                {/if}
-                {#if verifyResult.counts.info > 0}
-                    <span class="strip-info-count">{verifyResult.counts.info} note{verifyResult.counts.info !== 1 ? 's' : ''}</span>
+                    <span>✗</span><span>{verifyResult.counts.error} error{verifyResult.counts.error !== 1 ? 's' : ''} — fix before saving</span>
                 {/if}
             </div>
 
-            <!-- Tab bar -->
-            <div class="dialog-tabs">
-                <button class="dtab" class:active={activeDialogTab === 'summary'}
-                        on:click={() => activeDialogTab = 'summary'}>
-                    Summary
-                    {#if totalIssues > 0}
-                        <span class="tab-badge" class:badge-err={hasErrors}
-                              class:badge-warn={!hasErrors && hasWarnings}>{totalIssues}</span>
+            <div class="sc-tabs" role="tablist">
+                <button class="sc-tab" class:sc-tab-active={activeTab === 'report'}
+                        role="tab" aria-selected={activeTab === 'report'}
+                        on:click={() => activeTab = 'report'}>
+                    Verification Report
+                    {#if verifyResult.counts.error > 0 || parseErrors.length > 0}
+                        <span class="sc-tab-badge sc-tab-badge-err">{verifyResult.counts.error + parseErrors.length}</span>
+                    {:else if verifyResult.counts.warning > 0 || parseWarnings.length > 0}
+                        <span class="sc-tab-badge sc-tab-badge-warn">{verifyResult.counts.warning + parseWarnings.length}</span>
+                    {:else if verifyResult.counts.info > 0}
+                        <span class="sc-tab-badge sc-tab-badge-info">{verifyResult.counts.info}</span>
+                    {:else}
+                        <span class="sc-tab-badge sc-tab-badge-ok">✓</span>
                     {/if}
                 </button>
-                <button class="dtab" class:active={activeDialogTab === 'yaml'}
-                        on:click={() => activeDialogTab = 'yaml'}>
-                    Generated YAML
+                <button class="sc-tab" class:sc-tab-active={activeTab === 'yaml'}
+                        role="tab" aria-selected={activeTab === 'yaml'}
+                        on:click={() => activeTab = 'yaml'}>
+                    YAML Configuration{dirty ? ' •' : ''}
                 </button>
             </div>
 
-            <!-- Tab content -->
-            <div class="dialog-body">
-                {#if activeDialogTab === 'summary'}
-                    <!-- ═══ Summary Tab ═══ -->
-                    <div class="summary-tab">
-                        {#if totalIssues === 0}
-                            <div class="empty-state">
-                                <span class="empty-icon">✓</span>
-                                <span>No issues found — configuration is clean.</span>
-                            </div>
-                        {:else}
-                            <div class="issue-list">
-                                {#each verifyResult.issues as issue}
-                                    <div class="issue-row" class:issue-error={issue.severity === 'error'}
-                                         class:issue-warning={issue.severity === 'warning'}
-                                         class:issue-info={issue.severity === 'info'}>
-                                        <span class="issue-icon" style="color: {sevColor(issue.severity)}">
-                                            {sevIcon(issue.severity)}
-                                        </span>
-                                        <div class="issue-content">
-                                            <span class="issue-msg">{issue.message}</span>
-                                            {#if issue.path}
-                                                <span class="issue-path">{issue.path}</span>
-                                            {/if}
-                                        </div>
-                                    </div>
-                                {/each}
-                            </div>
-                        {/if}
+            <div class="sc-body">
 
-                        <!-- Counts summary -->
-                        <div class="counts-row">
+                <!-- ═══ Verification report ═══ -->
+                {#if activeTab === 'report'}
+                <section class="sc-section sc-report-section">
+                    <div class="sc-section-head">
+                        <span class="sc-section-title">Verification Report</span>
+                        <span class="sc-badges">
                             {#if verifyResult.counts.error > 0}
-                                <span class="count-badge err">{verifyResult.counts.error} Error{verifyResult.counts.error !== 1 ? 's' : ''}</span>
+                                <span class="sc-badge sc-badge-err">{verifyResult.counts.error} Error{verifyResult.counts.error !== 1 ? 's' : ''}</span>
                             {/if}
                             {#if verifyResult.counts.warning > 0}
-                                <span class="count-badge warn">{verifyResult.counts.warning} Warning{verifyResult.counts.warning !== 1 ? 's' : ''}</span>
+                                <span class="sc-badge sc-badge-warn">{verifyResult.counts.warning} Warning{verifyResult.counts.warning !== 1 ? 's' : ''}</span>
                             {/if}
                             {#if verifyResult.counts.info > 0}
-                                <span class="count-badge info">{verifyResult.counts.info} Note{verifyResult.counts.info !== 1 ? 's' : ''}</span>
+                                <span class="sc-badge sc-badge-info">{verifyResult.counts.info} Note{verifyResult.counts.info !== 1 ? 's' : ''}</span>
                             {/if}
-                        </div>
+                            {#if issues.length === 0 && parseErrors.length === 0}
+                                <span class="sc-badge sc-badge-ok">Clean</span>
+                            {/if}
+                        </span>
                     </div>
 
-                {:else}
-                    <!-- ═══ YAML Tab ═══ -->
-                    <div class="yaml-tab">
-                        <div class="yaml-toolbar">
-                            <span class="yaml-label">Generated configuration ({boardType})</span>
-                            <button class="small" on:click={copyYaml} title="Copy to clipboard">📋 Copy</button>
-                        </div>
-                        <pre class="yaml-code">{configText || '# (empty configuration)'}</pre>
-                    </div>
+                    {#if parseErrors.length > 0}
+                        <ul class="sc-issues">
+                            {#each parseErrors as err}
+                                <li class="sc-issue sc-issue-err">
+                                    <span class="sc-issue-icon" style="color: var(--error)">✗</span>
+                                    <span class="sc-issue-msg">YAML parse: {err}</span>
+                                </li>
+                            {/each}
+                        </ul>
+                    {/if}
+
+                    {#if parseWarnings.length > 0}
+                        <ul class="sc-issues">
+                            {#each parseWarnings as w}
+                                <li class="sc-issue sc-issue-warn">
+                                    <span class="sc-issue-icon" style="color: var(--warning)">⚠</span>
+                                    <span class="sc-issue-msg">YAML: {w}</span>
+                                </li>
+                            {/each}
+                        </ul>
+                    {/if}
+
+                    {#if issues.length === 0 && parseErrors.length === 0 && parseWarnings.length === 0}
+                        <div class="sc-empty">No issues found — configuration is clean.</div>
+                    {:else if issues.length > 0}
+                        <ul class="sc-issues">
+                            {#each issues as issue}
+                                <li class="sc-issue" class:sc-issue-err={issue.severity === 'error'}
+                                    class:sc-issue-warn={issue.severity === 'warning'}
+                                    class:sc-issue-info={issue.severity === 'info'}>
+                                    <span class="sc-issue-icon" style="color: {sevColor(issue.severity)}">{sevIcon(issue.severity)}</span>
+                                    <span class="sc-issue-msg">
+                                        {issue.message}
+                                        {#if issue.path}<span class="sc-issue-path">[{issue.path}]</span>{/if}
+                                    </span>
+                                </li>
+                            {/each}
+                        </ul>
+                    {/if}
+                </section>
                 {/if}
+
+                <!-- ═══ Generated YAML ═══ -->
+                {#if activeTab === 'yaml'}
+                <section class="sc-section sc-yaml-section">
+                    <div class="sc-section-head">
+                        <span class="sc-section-title">Generated YAML {dirty ? '(edited)' : ''}</span>
+                        <span class="sc-yaml-btns">
+                            <button class="sc-btn-small" on:click={doImport} title="Import YAML from local file">Import…</button>
+                            <button class="sc-btn-small" on:click={doExport} title="Export YAML to local file">Export…</button>
+                            <button class="sc-btn-small" on:click={copyYaml} title="Copy to clipboard">Copy</button>
+                            {#if dirty}
+                                <button class="sc-btn-small" on:click={doReset} title="Discard edits, reload from tab state">Reset</button>
+                            {/if}
+                        </span>
+                    </div>
+
+                    {#if importError}<div class="sc-msg sc-msg-err">{importError}</div>{/if}
+                    {#if importInfo}<div class="sc-msg sc-msg-ok">{importInfo}</div>{/if}
+                    {#if exportInfo}<div class="sc-msg sc-msg-ok">{exportInfo}</div>{/if}
+
+                    <CodeMirrorEditor bind:value={yamlText}
+                                      placeholder="# (empty configuration)"
+                                      on:change={onYamlEdit} />
+                </section>
+                {/if}
+
             </div>
 
-            <!-- Footer -->
-            <div class="save-footer">
-                {#if saveError}
-                    <span class="save-error">✗ {saveError}</span>
-                {/if}
-                <div style="flex: 1"></div>
+            <footer class="sc-footer">
+                {#if saveError}<span class="sc-save-err">✗ {saveError}</span>{/if}
+                <div class="sc-spacer"></div>
                 <button on:click={close} disabled={saving}>Cancel</button>
-                <button class="primary" on:click={doSave} disabled={!canSave}
-                        title={hasErrors ? 'Fix errors before saving' : 'Save configuration to device'}>
-                    {#if saving}
-                        Saving…
-                    {:else}
-                        💾 Save to Device
+                <button class="sc-primary" class:sc-blocked={!canSave && !saving}
+                        on:click={doSave} disabled={saving}
+                        title={parseErrors.length > 0 ? 'Fix YAML parse errors first'
+                             : hasErrors ? `Fix ${verifyResult.counts.error} error(s)`
+                             : 'Save configuration to device'}>
+                    {#if saving}Saving…
+                    {:else if parseErrors.length > 0 || hasErrors}✗ Cannot save
+                    {:else}💾 Save to Device
                     {/if}
                 </button>
-            </div>
+            </footer>
+
         </div>
     </div>
 {/if}
 
+<UploadProgressDialog bind:open={showProgress} title={`Save Configuration — ${boardLabel}`} />
+
 <style>
-    /* ─── Backdrop ─── */
-    .save-backdrop {
+    .sc-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
         z-index: 150;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
-    /* ─── Dialog ─── */
-    .save-dialog {
+    .sc-dialog {
         background: var(--bg-surface);
         border: 1px solid var(--border);
         border-radius: 8px;
         box-shadow: 0 12px 48px var(--shadow);
-        width: 720px;
+        width: 820px;
         max-width: 92vw;
-        max-height: 85vh;
+        height: 80vh;
+        max-height: 80vh;
         display: flex;
         flex-direction: column;
-        overflow: hidden;
+        color: var(--text);
     }
 
-    /* ─── Header ─── */
-    .save-header {
+    .sc-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 16px 20px 10px;
-        flex-shrink: 0;
+        padding: 14px 20px 10px;
     }
-
-    .save-header h2 {
+    .sc-header h2 {
         font-size: 15px;
         font-weight: 600;
         color: var(--text-bright);
@@ -258,8 +395,7 @@
         align-items: center;
         gap: 8px;
     }
-
-    .close-btn {
+    .sc-close {
         background: none;
         border: none;
         color: var(--text-dim);
@@ -268,16 +404,12 @@
         padding: 4px 8px;
         border-radius: 4px;
     }
-    .close-btn:hover { color: var(--text); background: var(--bg-raised); }
+    .sc-close:hover { color: var(--text); background: var(--bg-raised); }
 
-    .header-spin {
-        display: inline-block;
-        animation: spin 1s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg) } }
+    .sc-spin { display: inline-block; animation: sc-spin 1s linear infinite; }
+    @keyframes sc-spin { to { transform: rotate(360deg) } }
 
-    /* ─── Verify Strip ─── */
-    .verify-strip {
+    .sc-strip {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -287,197 +419,200 @@
         border-top: 1px solid var(--border);
         border-bottom: 1px solid var(--border);
     }
-    .strip-ok   { background: color-mix(in srgb, var(--success) 10%, var(--bg-surface)); color: var(--success); }
-    .strip-error { background: color-mix(in srgb, var(--error) 10%, var(--bg-surface)); color: var(--error); }
-    .strip-warn  { background: color-mix(in srgb, var(--warning) 10%, var(--bg-surface)); color: var(--warning); }
+    .sc-strip-ok   { background: color-mix(in srgb, var(--success) 10%, var(--bg-surface)); color: var(--success); }
+    .sc-strip-err  { background: color-mix(in srgb, var(--error)   10%, var(--bg-surface)); color: var(--error); }
+    .sc-strip-warn { background: color-mix(in srgb, var(--warning) 10%, var(--bg-surface)); color: var(--warning); }
 
-    .strip-icon { font-weight: 700; font-size: 14px; }
-    .strip-icon.ok   { color: var(--success); }
-    .strip-icon.err  { color: var(--error); }
-    .strip-icon.warn { color: var(--warning); }
-
-    .strip-info-count {
-        margin-left: auto;
-        font-size: 11px;
-        color: var(--text-dim);
-    }
-
-    /* ─── Dialog Tabs ─── */
-    .dialog-tabs {
+    .sc-tabs {
         display: flex;
-        gap: 0;
+        gap: 2px;
         padding: 0 20px;
         border-bottom: 1px solid var(--border);
-        flex-shrink: 0;
+        background: var(--bg-surface);
     }
-
-    .dtab {
-        padding: 8px 16px;
-        font-size: 12px;
-        font-weight: 500;
+    .sc-tab {
+        background: transparent;
         color: var(--text-dim);
-        background: none;
         border: none;
         border-bottom: 2px solid transparent;
+        padding: 10px 14px;
+        font-size: 12px;
+        font-weight: 500;
         cursor: pointer;
         display: flex;
         align-items: center;
         gap: 6px;
-        transition: color 0.15s, border-color 0.15s;
+        margin-bottom: -1px;
     }
-    .dtab:hover { color: var(--text); }
-    .dtab.active {
-        color: var(--accent);
+    .sc-tab:hover { color: var(--text); }
+    .sc-tab-active {
+        color: var(--text-bright);
         border-bottom-color: var(--accent);
     }
-
-    .tab-badge {
+    .sc-tab-badge {
         font-size: 10px;
-        font-weight: 700;
-        padding: 1px 6px;
-        border-radius: 10px;
-        background: var(--bg-raised);
-        color: var(--text-dim);
+        font-weight: 600;
+        padding: 1px 7px;
+        border-radius: 8px;
+        line-height: 1.3;
+        min-width: 16px;
+        text-align: center;
     }
-    .tab-badge.badge-err { background: color-mix(in srgb, var(--error) 20%, var(--bg-raised)); color: var(--error); }
-    .tab-badge.badge-warn { background: color-mix(in srgb, var(--warning) 20%, var(--bg-raised)); color: var(--warning); }
+    .sc-tab-badge-err  { background: color-mix(in srgb, var(--error)   20%, var(--bg-raised)); color: var(--error); }
+    .sc-tab-badge-warn { background: color-mix(in srgb, var(--warning) 20%, var(--bg-raised)); color: var(--warning); }
+    .sc-tab-badge-info { background: color-mix(in srgb, var(--info)    15%, var(--bg-raised)); color: var(--info); }
+    .sc-tab-badge-ok   { background: color-mix(in srgb, var(--success) 20%, var(--bg-raised)); color: var(--success); }
 
-    /* ─── Dialog Body ─── */
-    .dialog-body {
-        flex: 1;
-        overflow-y: auto;
-        min-height: 200px;
-        max-height: 50vh;
+    .sc-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        padding: 14px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
     }
 
-    /* ─── Summary Tab ─── */
-    .summary-tab {
-        padding: 12px 20px;
+    .sc-section {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-height: 0;
     }
-
-    .empty-state {
+    .sc-yaml-section,
+    .sc-report-section {
+        flex: 1 1 auto;
+        min-height: 180px;
+    }
+    .sc-report-section { overflow: hidden; }
+    .sc-section-head {
         display: flex;
         align-items: center;
-        justify-content: center;
-        gap: 10px;
-        padding: 32px 0;
-        color: var(--success);
-        font-size: 14px;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
     }
-    .empty-icon {
-        font-size: 20px;
-        font-weight: 700;
-    }
-
-    .issue-list {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-    }
-
-    .issue-row {
-        display: flex;
-        align-items: flex-start;
-        gap: 8px;
-        padding: 6px 10px;
-        border-radius: 4px;
-        font-size: 12px;
-    }
-    .issue-error   { background: color-mix(in srgb, var(--error) 8%, transparent); }
-    .issue-warning { background: color-mix(in srgb, var(--warning) 8%, transparent); }
-    .issue-info    { background: color-mix(in srgb, var(--info) 5%, transparent); }
-
-    .issue-icon {
-        font-size: 13px;
-        font-weight: 700;
-        flex-shrink: 0;
-        margin-top: 1px;
-    }
-
-    .issue-content {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-    }
-
-    .issue-msg {
-        color: var(--text);
-        line-height: 1.4;
-    }
-
-    .issue-path {
-        font-family: var(--font-mono);
-        font-size: 10px;
+    .sc-section-title {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
         color: var(--text-dim);
     }
 
-    .counts-row {
-        display: flex;
-        gap: 8px;
-        margin-top: 12px;
-        padding-top: 10px;
-        border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
-    }
-
-    .count-badge {
+    .sc-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+    .sc-badge {
         font-size: 11px;
         font-weight: 600;
         padding: 2px 10px;
         border-radius: 10px;
     }
-    .count-badge.err  { background: color-mix(in srgb, var(--error) 15%, var(--bg-raised)); color: var(--error); }
-    .count-badge.warn { background: color-mix(in srgb, var(--warning) 15%, var(--bg-raised)); color: var(--warning); }
-    .count-badge.info { background: color-mix(in srgb, var(--info) 12%, var(--bg-raised)); color: var(--info); }
+    .sc-badge-err  { background: color-mix(in srgb, var(--error)   15%, var(--bg-raised)); color: var(--error); }
+    .sc-badge-warn { background: color-mix(in srgb, var(--warning) 15%, var(--bg-raised)); color: var(--warning); }
+    .sc-badge-info { background: color-mix(in srgb, var(--info)    12%, var(--bg-raised)); color: var(--info); }
+    .sc-badge-ok   { background: color-mix(in srgb, var(--success) 15%, var(--bg-raised)); color: var(--success); }
 
-    /* ─── YAML Tab ─── */
-    .yaml-tab {
+    .sc-issues {
+        list-style: none;
+        margin: 0;
+        padding: 0;
         display: flex;
         flex-direction: column;
-        height: 100%;
+        gap: 4px;
+        overflow-y: auto;
+        flex: 1 1 auto;
+        min-height: 0;
     }
-
-    .yaml-toolbar {
+    .sc-issue {
         display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 8px 20px;
-        flex-shrink: 0;
-    }
-
-    .yaml-label {
-        font-size: 11px;
-        color: var(--text-dim);
-        font-weight: 500;
-    }
-
-    .yaml-code {
-        margin: 0;
-        padding: 12px 20px;
-        font-family: var(--font-mono);
+        align-items: flex-start;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 4px;
         font-size: 12px;
-        line-height: 1.5;
+        line-height: 1.4;
         color: var(--text);
-        background: var(--bg-base);
-        overflow: auto;
-        flex: 1;
-        white-space: pre;
-        user-select: text;
-        border-top: 1px solid var(--border);
+        background: var(--bg-raised);
+        border: 1px solid var(--border);
+    }
+    .sc-issue-err  { background: color-mix(in srgb, var(--error)   12%, var(--bg-raised)); border-color: color-mix(in srgb, var(--error)   40%, var(--border)); }
+    .sc-issue-warn { background: color-mix(in srgb, var(--warning) 12%, var(--bg-raised)); border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); }
+    .sc-issue-info { background: color-mix(in srgb, var(--info)     8%, var(--bg-raised)); border-color: color-mix(in srgb, var(--info)    30%, var(--border)); }
+
+    .sc-issue-icon { font-size: 13px; font-weight: 700; flex-shrink: 0; margin-top: 1px; min-width: 14px; }
+    .sc-issue-msg { flex: 1 1 auto; }
+    .sc-issue-path {
+        display: inline-block;
+        margin-left: 6px;
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--text-dim);
     }
 
-    /* ─── Footer ─── */
-    .save-footer {
+    .sc-empty {
+        padding: 16px;
+        text-align: center;
+        color: var(--success);
+        font-size: 13px;
+        background: color-mix(in srgb, var(--success) 6%, var(--bg-raised));
+        border: 1px solid color-mix(in srgb, var(--success) 25%, var(--border));
+        border-radius: 4px;
+    }
+
+    .sc-yaml-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+    .sc-btn-small {
+        font-size: 11px;
+        padding: 3px 10px;
+        background: var(--bg-raised);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    .sc-btn-small:hover { background: color-mix(in srgb, var(--accent) 15%, var(--bg-raised)); }
+
+    .sc-msg {
+        padding: 6px 10px;
+        border-radius: 4px;
+        font-size: 11px;
+        line-height: 1.4;
+        font-family: var(--font-mono);
+        white-space: pre-wrap;
+    }
+    .sc-msg-err { background: color-mix(in srgb, var(--error)   12%, transparent); color: var(--error); }
+    .sc-msg-ok  { background: color-mix(in srgb, var(--success) 12%, transparent); color: var(--success); }
+
+    .sc-footer {
         display: flex;
         align-items: center;
         gap: 8px;
         padding: 12px 20px;
         border-top: 1px solid var(--border);
-        flex-shrink: 0;
     }
+    .sc-spacer { flex: 1; }
+    .sc-save-err { font-size: 12px; color: var(--error); font-weight: 500; }
 
-    .save-error {
-        font-size: 12px;
-        color: var(--error);
-        font-weight: 500;
+    .sc-footer button {
+        font-size: 13px;
+        padding: 6px 16px;
+        background: var(--bg-raised);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    .sc-footer button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .sc-footer button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 15%, var(--bg-raised)); }
+
+    .sc-primary {
+        background: var(--accent) !important;
+        color: var(--bg-base) !important;
+        border-color: var(--accent) !important;
+        font-weight: 600 !important;
+    }
+    .sc-blocked {
+        background: color-mix(in srgb, var(--error) 25%, var(--bg-raised)) !important;
+        color: var(--error) !important;
+        border-color: var(--error) !important;
     }
 </style>

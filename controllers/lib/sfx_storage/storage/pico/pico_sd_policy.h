@@ -117,10 +117,10 @@ struct PicoSpiSdPolicy {
     // ========================================================================
 
     /// Direct SdFat access (caller must hold SdCardModule lock)
-    SdFat& rawSD() { return _sd; }
+    SdFat32& rawSD() { return _sd; }
 
 private:
-    SdFat _sd;
+    SdFat32 _sd;   // FAT-only variant — _sd.open() returns File32
 };
 
 

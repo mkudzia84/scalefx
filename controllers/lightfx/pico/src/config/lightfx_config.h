@@ -61,7 +61,7 @@ struct LightFxConfigSchema {
         return lightfx_config::fields.validate(d, err, errLen);
     }
 
-    static const char* defaultPath() { return "/config.yaml"; }
+    static const char* defaultPath() { return "/lightfx.yaml"; }
 };
 
 #endif // LIGHTFX_CONFIG_H

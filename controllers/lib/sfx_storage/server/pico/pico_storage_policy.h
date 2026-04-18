@@ -16,6 +16,10 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <serial/core/core.h>  // SerialError::NOT_SUPPORTED
+
+// LFSFile and StorageSharedState are declared in headers already included
+// by storage_server.h before this file (flash.h + storage_server.h itself).
 
 struct StorageSharedState;  // Forward declaration
 
@@ -23,6 +27,13 @@ class PicoStoragePolicy {
 public:
     // --- Constants ---
     static constexpr size_t UPLOAD_WRITE_BUF_SIZE = 16384;   // 16 KB
+
+    // SD card uploads/downloads are not supported on Pico StorageServer builds.
+    // Reason: SdCardModule's FileHandle is SdFat's File32 on Pico, while the
+    // shared upload-buffer file handle is LittleFS's fs::File. Supporting both
+    // would require a union/variant on _shared.uploadFile. Pico boards only
+    // need flash (config YAML round-trip), so we gate SD out here.
+    static constexpr bool SdSupported = false;
 
     // --- Initialization ---
     void init(StorageSharedState* state) { _state = state; }
@@ -37,6 +48,16 @@ public:
     /// No async writer — always healthy
     bool checkAsyncWriterHealth() { return true; }
 
+    /// SD open helpers — always return NOT_SUPPORTED on Pico. Pico boards
+    /// only expose flash (LittleFS) through StorageServer; SD card upload/
+    /// download paths take a different file-handle type and are disabled.
+    uint8_t sdOpenRead(const char* /*path*/, LFSFile& /*file*/) {
+        return SerialError::NOT_SUPPORTED;
+    }
+    uint8_t sdOpenWrite(const char* /*path*/, LFSFile& /*file*/, bool /*truncate*/) {
+        return SerialError::NOT_SUPPORTED;
+    }
+
     // --- Upload lifecycle (trivial on Pico) ---
     void onUploadActivated() {}
     bool onChunkedEnd(const char*& /*errMsg*/){ return true; }
@@ -49,6 +70,16 @@ public:
             ? (uint8_t)((_state->uploadWriteBufLen * 100) / _state->uploadBufCapacity)
             : 0;
     }
+
+    /// Writer stats — Pico writes are synchronous so nothing interesting to
+    /// report. Returned zeros just make the shared UPLOAD_END log harmless.
+    struct WriterStats {
+        uint32_t bytesWritten = 0;
+        uint32_t writeCount = 0;
+        uint32_t totalStallTime_ms = 0;
+        uint32_t maxWriteLatency_ms = 0;
+    };
+    WriterStats writerStats() const { return {}; }
 
 private:
     StorageSharedState* _state = nullptr;
