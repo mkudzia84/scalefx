@@ -1,0 +1,7 @@
+override: prod
+logging:
+  level: warn
+features:
+  debug_shell: false
+  telemetry: true
+  ota_updates: true

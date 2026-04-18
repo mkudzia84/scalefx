@@ -1,0 +1,13 @@
+{
+  "id": "s001",
+  "ts": "2026-04-18T10:12:05Z",
+  "source": "ina226@0x40",
+  "readings": {
+    "bus_mV": 12042,
+    "shunt_uV": 143,
+    "current_mA": 715,
+    "power_mW": 8610
+  },
+  "flags": ["nominal"],
+  "notes": "idle baseline"
+}

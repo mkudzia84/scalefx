@@ -1,0 +1,15 @@
+profile:
+  name: session-01
+  pilot: testuser
+  vehicle: scalefx-rc
+  created: 2026-04-18
+controls:
+  throttle_curve: linear
+  steering_expo: 0.15
+  dual_rates:
+    throttle: 1.0
+    steering: 0.75
+failsafes:
+  lost_signal_ms: 800
+  battery_cutoff_mV: 10500
+  thermal_cutoff_C: 85

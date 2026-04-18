@@ -1,0 +1,24 @@
+# Application config — test fixture
+app:
+  name: ScaleFX Demo
+  version: 1.2.3
+  build: 4201
+  locale: en-US
+logging:
+  level: info
+  destinations:
+    - stdout
+    - /logs/app.log
+  rotation:
+    max_size_kb: 512
+    keep: 4
+network:
+  hostname: scalefx-demo
+  mdns: true
+  ports:
+    cdc: 6000000
+    uart: 115200
+features:
+  telemetry: true
+  ota_updates: false
+  debug_shell: false

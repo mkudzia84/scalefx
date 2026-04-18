@@ -1,0 +1,8 @@
+override: dev
+logging:
+  level: debug
+features:
+  debug_shell: true
+  telemetry: true
+network:
+  mdns: true

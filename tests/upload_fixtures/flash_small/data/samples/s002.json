@@ -1,0 +1,13 @@
+{
+  "id": "s002",
+  "ts": "2026-04-18T10:12:15Z",
+  "source": "ina226@0x40",
+  "readings": {
+    "bus_mV": 12018,
+    "shunt_uV": 1720,
+    "current_mA": 8600,
+    "power_mW": 103355
+  },
+  "flags": ["burst", "motor-active"],
+  "notes": "retract lifting 2 kg load"
+}
