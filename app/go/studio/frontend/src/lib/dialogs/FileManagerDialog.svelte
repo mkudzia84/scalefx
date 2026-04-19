@@ -34,7 +34,8 @@
     let entries: Entry[] = []
     let loading = false
     let error = ''
-    let burst = true   // stream mode (SD only)
+    // Upload mode is auto-picked per file by the Go backend
+    // (api.PickUploadMode): flash → sync, SD → batch above 64 KB.
 
     // Progress dialog — shared UploadProgressDialog subscribes to fs:progress.
     let progressOpen = false
@@ -74,13 +75,12 @@
     })
 
     async function startBatchUpload(paths: string[]) {
-        const useBurst = burst && target === 'sd'
         progressTitle = paths.length === 1
             ? `Upload to ${cwd}`
             : `Upload ${paths.length} items to ${cwd}`
         progressOpen = true
         try {
-            await FsUploadBatch(target, cwd, paths, useBurst)
+            await FsUploadBatch(target, cwd, paths)
         } catch (e: any) {
             if (!/cancelled/i.test(toMsg(e))) error = toMsg(e)
             progressOpen = false
@@ -267,13 +267,6 @@
                         <span class="t-na">not available</span>
                     {/if}
                 </button>
-
-                {#if target === 'sd' && status.sdAvailable}
-                    <label class="burst-toggle" title="Windowed/stream upload — high throughput for SD. Ignored on flash.">
-                        <input type="checkbox" bind:checked={burst} />
-                        <span>Burst upload</span>
-                    </label>
-                {/if}
             </div>
 
             <!-- ─── Toolbar: breadcrumb + actions ─── -->
@@ -496,16 +489,6 @@
     .t-na    { color: var(--warning); font-style: italic; font-size: 11px; }
     .t-bus   { color: var(--text-dim); font-size: 11px; font-family: var(--font-mono); }
 
-    .burst-toggle {
-        margin-left: auto;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        color: var(--text-dim);
-        cursor: pointer;
-    }
-    .burst-toggle input { accent-color: var(--accent); }
 
     /* ── Toolbar ── */
     .fm-toolbar {

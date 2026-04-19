@@ -204,6 +204,30 @@ public:
                       const char* platform, uint32_t cpuMHz, uint32_t freeRam,
                       uint32_t buildNumber = 0);
 
+    /**
+     * @brief Replace the advertised capability bitmask.
+     *
+     * Capabilities are appended to INIT_READY/IDENTIFY so clients can
+     * discover which optional interfaces (flash, SD, audio, USB host,
+     * engine, config) the board exposes — without speculative status
+     * probes. Call from setup() once each subsystem has begun.
+     *
+     * @see CoreCapability constants in core.h
+     */
+    void setCapabilities(uint32_t caps) { _boardInfo.capabilities = caps; }
+
+    /**
+     * @brief OR additional capability bits into the advertised mask.
+     *
+     * Most setup() flows call this incrementally as each subsystem
+     * (FlashModule, SdCardModule, AudioMixer, ...) reports a successful
+     * begin().
+     */
+    void addCapability(uint32_t bits) { _boardInfo.capabilities |= bits; }
+
+    /// Current capability bitmask.
+    uint32_t capabilities() const { return _boardInfo.capabilities; }
+
     // ========================================================================
     // ICommandHandler Interface
     // ========================================================================

@@ -124,6 +124,27 @@ func (e *Engine) SetControllerType(ct string) {
 	}
 }
 
+// Capabilities returns the bitmask the connected board advertised in
+// IDENTIFY/INIT_READY (core.Cap* bits). 0 means "not yet identified" or
+// "legacy firmware" — UI should fall back to probing in that case.
+func (e *Engine) Capabilities() uint32 {
+	if e.Info == nil {
+		return 0
+	}
+	return e.Info.Capabilities
+}
+
+// HasCapability returns true if the connected board advertised every bit in want.
+// Returns false when the board hasn't been identified yet or when caps==0
+// (legacy firmware).
+func (e *Engine) HasCapability(want uint32) bool {
+	caps := e.Capabilities()
+	if caps == 0 {
+		return false
+	}
+	return caps&want == want
+}
+
 // sourceToControllerType maps StatusUpdateSource bytes to controller type strings.
 func sourceToControllerType(source byte) string {
 	switch source {

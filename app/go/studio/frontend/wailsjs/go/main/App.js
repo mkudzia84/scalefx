@@ -10,6 +10,10 @@ export function Connect(arg1) {
   return window['go']['main']['App']['Connect'](arg1);
 }
 
+export function DeviceCapabilities() {
+  return window['go']['main']['App']['DeviceCapabilities']();
+}
+
 export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
@@ -46,12 +50,12 @@ export function FsStorageStatus() {
   return window['go']['main']['App']['FsStorageStatus']();
 }
 
-export function FsUploadBatch(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['FsUploadBatch'](arg1, arg2, arg3, arg4);
+export function FsUploadBatch(arg1, arg2, arg3) {
+  return window['go']['main']['App']['FsUploadBatch'](arg1, arg2, arg3);
 }
 
-export function FsUploadFromDisk(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['FsUploadFromDisk'](arg1, arg2, arg3, arg4);
+export function FsUploadFromDisk(arg1, arg2, arg3) {
+  return window['go']['main']['App']['FsUploadFromDisk'](arg1, arg2, arg3);
 }
 
 export function GetConnectionInfo() {

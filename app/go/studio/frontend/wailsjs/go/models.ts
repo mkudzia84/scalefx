@@ -11,6 +11,7 @@ export namespace main {
 	    platform: string;
 	    cpuMHz: number;
 	    freeRAM: number;
+	    capabilities: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConnectionInfo(source);
@@ -28,6 +29,7 @@ export namespace main {
 	        this.platform = source["platform"];
 	        this.cpuMHz = source["cpuMHz"];
 	        this.freeRAM = source["freeRAM"];
+	        this.capabilities = source["capabilities"];
 	    }
 	}
 	export class FirmwareTarget {

@@ -46,6 +46,11 @@ type PortInfo struct {
 	DevicePlatform string // e.g. "ESP32-S3", "RP2040"
 	ControllerType string // e.g. "hubfx", "gunfx"
 	Identified     bool   // true if IDENTIFY succeeded
+
+	// Capabilities advertised by the firmware in the IDENTIFY payload —
+	// mirrors core.Cap* bits. 0 means "legacy firmware that pre-dates the
+	// field"; clients should fall back to probing in that case.
+	Capabilities uint32
 }
 
 // DetectPicoPort finds the first Raspberry Pi Pico serial port.
@@ -154,9 +159,9 @@ func ProbeDevice(portName string) *DeviceInfo {
 		return nil
 	}
 
-	// IDENTIFY response comes back as packet type 0xFE (same type echoed back)
-	// or as INIT_READY (0xF3) on some firmware
-	if !resp.IsIdentify() && !resp.IsInitReady() {
+	// IDENTIFY response is always packet type 0xFE — see
+	// CoreCommandServer::sendIdentify() in the shared firmware library.
+	if !resp.IsIdentify() {
 		return nil
 	}
 
@@ -178,6 +183,7 @@ func ListScaleFXPortsWithIdentity() ([]PortInfo, error) {
 			ports[i].DeviceBuild = info.Build
 			ports[i].DevicePlatform = info.Platform
 			ports[i].ControllerType = info.ControllerType
+			ports[i].Capabilities = info.Capabilities
 			ports[i].Identified = true
 		}
 	}

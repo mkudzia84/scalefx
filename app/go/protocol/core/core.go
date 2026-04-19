@@ -152,6 +152,49 @@ const (
 // 5×u32 (counter, uptime, freeRam, lastActivity, keepalives) + boardState:u8 + initFlags:u8
 const StatusCoreHeaderSize = 22
 
+// ─── Capability Bitmask ───
+// Mirrors CoreCapability namespace in
+// [controllers/lib/sfx_serial/serial/core/core.h]. Appended to
+// IDENTIFY/INIT_READY payload (Rule 11 append-only). A 0 bitmask means the
+// firmware pre-dates the field — callers should fall back to probing rather
+// than treating it as "no interfaces present".
+
+const (
+	CapFlash    uint32 = 1 << 0 // LittleFS flash storage commands available
+	CapSd       uint32 = 1 << 1 // SD card storage commands available (slot present)
+	CapAudio    uint32 = 1 << 2 // AudioMixer + audio playback commands available
+	CapUsbHost  uint32 = 1 << 3 // USB host stack + device enumeration available
+	CapEngine   uint32 = 1 << 4 // Sound engine commands available
+	CapConfig   uint32 = 1 << 5 // YAML config store commands available
+	CapSlaveBus uint32 = 1 << 6 // Master can enumerate / route to slaves
+)
+
+// HasCapability returns true if every bit in want is set in caps.
+func HasCapability(caps, want uint32) bool { return caps&want == want }
+
+// CapabilityNames returns short names for the bits set in caps, in order.
+func CapabilityNames(caps uint32) []string {
+	defs := []struct {
+		bit  uint32
+		name string
+	}{
+		{CapFlash, "FLASH"},
+		{CapSd, "SD"},
+		{CapAudio, "AUDIO"},
+		{CapUsbHost, "USB_HOST"},
+		{CapEngine, "ENGINE"},
+		{CapConfig, "CONFIG"},
+		{CapSlaveBus, "SLAVE_BUS"},
+	}
+	out := []string{}
+	for _, d := range defs {
+		if caps&d.bit != 0 {
+			out = append(out, d.name)
+		}
+	}
+	return out
+}
+
 // ─── Status Update — mirrors StatusUpdateSource / StatusUpdateType in core.h ───
 
 const (

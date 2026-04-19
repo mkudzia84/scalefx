@@ -9,8 +9,12 @@ import (
 )
 
 // ─── Post-Flash Verification ───
-// Connects to the device after flash, sends INIT, and parses the INIT_READY
-// response to confirm the firmware version and build number.
+// Connects to the device after flash, sends IDENTIFY (0xFE), and parses the
+// response (same payload shape as INIT_READY) to confirm the firmware version
+// and build number. IDENTIFY is non-destructive — it doesn't fire onInit
+// callbacks or activate hardware, so it works equally well for slaves (which
+// must not be SLAVE-mode-initialized by the flasher) and for HubFX (which
+// auto-inits at boot and treats further INITs as session resets).
 
 // DeviceInfo holds verified device information from INIT_READY response.
 type DeviceInfo struct {
@@ -21,6 +25,11 @@ type DeviceInfo struct {
 	CPUMHz         uint32
 	FreeRAM        uint32
 	ControllerType string
+	// Capabilities is the bitmask the firmware advertises in IDENTIFY/INIT_READY
+	// (CoreCapability::FLASH | SD | AUDIO | USB_HOST | ENGINE | CONFIG | SLAVE_BUS).
+	// Older firmware that pre-dates the field reports 0 — callers should treat
+	// 0 as "unknown, fall back to probing" rather than "nothing supported".
+	Capabilities uint32
 }
 
 // VerifyDevice connects to the freshly-flashed device and verifies the firmware.
@@ -65,8 +74,11 @@ func VerifyDevice(opts *Options, ctrl Controller) error {
 	return fmt.Errorf("verification failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-// tryVerify makes a single verification attempt: connect → INIT → parse INIT_READY.
+// tryVerify makes a single verification attempt: connect → IDENTIFY → parse.
+// Every firmware responds via the shared CoreCommandServer::sendIdentify(),
+// which echoes the IDENTIFY packet type (0xFE). Anything else is a bug.
 func tryVerify(port string, ctrl Controller) (*DeviceInfo, error) {
+	_ = ctrl // reserved for future per-controller verification tweaks
 	conn := protocol.NewConnection(port, protocol.DefaultBaud, false)
 
 	if err := conn.Connect(); err != nil {
@@ -74,27 +86,24 @@ func tryVerify(port string, ctrl Controller) (*DeviceInfo, error) {
 	}
 	defer conn.Close()
 
-	// Send INIT and wait for INIT_READY
-	initPkt := core.CmdInit()
-	resp, err := conn.SendAndWait(initPkt)
+	// Small delay to let the reader goroutine start (mirrors ProbeDevice).
+	time.Sleep(50 * time.Millisecond)
+
+	resp, err := conn.SendAndWait(core.CmdIdentify())
 	if err != nil {
-		return nil, fmt.Errorf("INIT failed: %w", err)
+		return nil, fmt.Errorf("IDENTIFY failed: %w", err)
 	}
-
 	if resp == nil {
-		return nil, fmt.Errorf("no response to INIT")
+		return nil, fmt.Errorf("no response to IDENTIFY")
+	}
+	if !resp.IsIdentify() {
+		return nil, fmt.Errorf("unexpected response: 0x%02X (expected IDENTIFY 0xFE)", resp.PacketType)
 	}
 
-	if !resp.IsInitReady() {
-		return nil, fmt.Errorf("unexpected response: 0x%02X (expected INIT_READY 0xF3)", resp.PacketType)
-	}
-
-	// Parse the INIT_READY payload
 	info := parseInitReady(resp.Payload)
 	if info == nil {
-		return nil, fmt.Errorf("cannot parse INIT_READY payload (%d bytes)", len(resp.Payload))
+		return nil, fmt.Errorf("cannot parse IDENTIFY payload (%d bytes)", len(resp.Payload))
 	}
-
 	return info, nil
 }
 
@@ -146,6 +155,12 @@ func parseInitReady(payload []byte) *DeviceInfo {
 	info.FreeRAM = protocol.ReadU32LE(payload, offset)
 	offset += 4
 	info.Build = protocol.ReadU32LE(payload, offset)
+	offset += 4
+
+	// Capabilities (Rule 11 append-only) — absent on legacy firmware → 0.
+	if offset+4 <= len(payload) {
+		info.Capabilities = protocol.ReadU32LE(payload, offset)
+	}
 
 	info.ControllerType = core.DetectControllerType(info.Name)
 	return info

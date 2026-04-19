@@ -266,7 +266,7 @@ void CoreCommandServer::handleInit(const uint8_t* payload, size_t len) {
 }
 
 void CoreCommandServer::sendInitReady() {
-    uint8_t payload[64];
+    uint8_t payload[128];  // worst case: 3+31+1+15+1+31 strings + 16 bytes trailing fields
     size_t len = CorePayload::encodeInitReady(_boardInfo, payload);
     sendRawPacket(CorePacket::INIT_READY, _currentTag, payload, len);
 }
@@ -274,7 +274,7 @@ void CoreCommandServer::sendInitReady() {
 void CoreCommandServer::sendIdentify() {
     // Same payload as INIT_READY, but uses IDENTIFY packet type.
     // Does NOT set _initReceived or fire _initCallback.
-    uint8_t payload[64];
+    uint8_t payload[128];  // worst case: 3+31+1+15+1+31 strings + 16 bytes trailing fields
     size_t len = CorePayload::encodeInitReady(_boardInfo, payload);
     sendRawPacket(CorePacket::IDENTIFY, _currentTag, payload, len);
 }

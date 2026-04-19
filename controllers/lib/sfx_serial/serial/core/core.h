@@ -386,7 +386,26 @@ struct CoreBoardInfo {
     uint32_t cpuFrequencyMHz = 0;
     uint32_t freeRamBytes = 0;
     uint32_t buildNumber = 0;
+    /// Bitmask of CoreCapability::* flags advertised by this board.
+    /// Allows clients to gate UI / queries on whether an interface
+    /// (flash, SD, audio, USB host, engine, config store) is exposed
+    /// — without per-board if-ladders or speculative status probes.
+    /// Appended to INIT_READY/IDENTIFY payload (Rule 11 append-only):
+    /// older firmware that doesn't emit it is treated as caps==0.
+    uint32_t capabilities = 0;
 };
+
+/// Capability bits advertised in CoreBoardInfo.capabilities.
+/// Mirror in [app/go/protocol/core/core.go] (Rule 1).
+namespace CoreCapability {
+    constexpr uint32_t FLASH    = 1u << 0;  // LittleFS flash storage commands available
+    constexpr uint32_t SD       = 1u << 1;  // SD card storage commands available (slot present)
+    constexpr uint32_t AUDIO    = 1u << 2;  // AudioMixer + audio playback commands available
+    constexpr uint32_t USB_HOST = 1u << 3;  // USB host stack + device enumeration available
+    constexpr uint32_t ENGINE   = 1u << 4;  // Sound engine commands available
+    constexpr uint32_t CONFIG   = 1u << 5;  // YAML config store commands available
+    constexpr uint32_t SLAVE_BUS = 1u << 6; // Master can enumerate / route to slaves
+}
 
 // ============================================================================
 // I2C Scan Data Types

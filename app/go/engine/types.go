@@ -36,6 +36,10 @@ type InitReadyInfo struct {
 	FreeRAM        uint32
 	Build          uint32
 	ControllerType string
+	// Capabilities is the bitmask the firmware advertises in IDENTIFY/INIT_READY
+	// (core.Cap* bits). 0 means "legacy firmware" — UI should fall back to
+	// probing rather than assuming nothing is supported.
+	Capabilities uint32
 }
 
 // ControllerColors maps controller types to logical colors.

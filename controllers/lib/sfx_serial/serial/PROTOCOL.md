@@ -125,6 +125,7 @@ INIT after IDENTIFY to start up.
 [cpuMHz:u32LE]
 [freeRam:u32LE]
 [buildNum:u32LE]
+[capabilities:u32LE]   ← Rule 11 append-only field; 0 on legacy firmware
 ```
 
 **Fields:**
@@ -134,6 +135,27 @@ INIT after IDENTIFY to start up.
 - `cpuMHz` - CPU frequency in MHz (u32LE)
 - `freeRam` - Free RAM in bytes at boot (u32LE)
 - `buildNum` - Build number, incremented with each build (u32LE)
+- `capabilities` - Bitmask of optional interfaces the firmware exposes
+  (u32LE, append-only field — absent on firmware that pre-dates it →
+  decoded as `0`, which clients should treat as "unknown, fall back
+  to probing").
+
+**Capability bits (`CoreCapability`, mirrored in [app/go/protocol/core/core.go](../../../../app/go/protocol/core/core.go) as `core.Cap*`):**
+
+| Bit  | Constant      | Meaning                                              |
+|------|---------------|------------------------------------------------------|
+| 0    | `FLASH`       | LittleFS flash storage commands available            |
+| 1    | `SD`          | SD card storage commands available (slot present)    |
+| 2    | `AUDIO`       | AudioMixer + audio playback commands available       |
+| 3    | `USB_HOST`    | USB host stack + device enumeration available        |
+| 4    | `ENGINE`      | Sound engine commands available                      |
+| 5    | `CONFIG`      | YAML config store commands available                 |
+| 6    | `SLAVE_BUS`   | Master can enumerate / route to slaves               |
+
+`CAP_SD` advertises slot presence, **not** that a card is currently
+mounted — clients still need `SD_STATUS_REQ` to learn whether a card is
+inserted and its remaining capacity. `CAP_FLASH` is set after
+`FlashModule::begin()` succeeds (storage actually mounted).
 
 **Example** (38 bytes for LightFX-521C v0.2.0):
 ```

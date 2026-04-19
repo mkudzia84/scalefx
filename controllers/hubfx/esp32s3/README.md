@@ -11,13 +11,13 @@ Migrating from [HubFX Pico](../pico/) (RP2350). The Pico version is being supers
 | Core | Responsibilities |
 |------|------------------|
 | **Core 0** | Main loop — serial protocol, storage operations, slave management, effects state machines |
-| **Core 1** | Audio consumer task (I2S DMA output, priority MAX-1), Audio producer task (WAV decode + SD reads + mixing, priority MAX-2), Storage writer task (ring→SD drain, priority MAX-2, on-demand during stream uploads), USB Host polling |
+| **Core 1** | Audio consumer task (I2S DMA output, priority MAX-1), Audio producer task (WAV decode + SD reads + mixing, priority MAX-2), USB Host polling, main loop (`loop()` runs here by default) |
 
 Core 1 runs two persistent FreeRTOS tasks pinned via `xTaskCreatePinnedToCore()`. The consumer blocks on `i2s_channel_write()` when DMA is full, yielding CPU to the lower-priority producer task. This gives the producer ~10ms of uncontested CPU time per DMA batch to decode WAV files and mix audio, while freeing Core 0 entirely for protocol handling.
 
 All playback commands from Core 0 go through the async command queue (`playAsync()`, `stopAsync()`, etc.) — the producer task drains and executes them. SD file I/O in the mixer is mutex-protected for cross-core safety with storage operations.
 
-During **stream file uploads**, a third FreeRTOS task (storage writer) is created on Core 1 to drain the PSRAM ring buffer to SD card. To prevent priority starvation, both audio tasks (consumer + producer) are **suspended** for the duration of the upload via `onStreamStart`/`onStreamEnd` lifecycle callbacks. The writer task runs at priority MAX-2 (23) and self-deletes when the upload completes. See [Stream Upload Architecture](#stream-upload-architecture) for details.
+**Uploads are exclusive.** While a file upload is active (sync or batch), the main loop short-circuits — audio, engine FX, USB host polling, codec health, battery sampling, and periodic diagnostics are all skipped so the COBS reader, fill buffer, and SD writer get the full loop budget. Audio playback is stopped and the producer/consumer pair is suspended on `onUploadStart`, and resumed on `onUploadEnd`. There is no background storage writer task: the 64 KB PSRAM fill buffer is drained to SD synchronously from the same loop that reads from UART. See [Upload Exclusivity](#upload-exclusivity) for details.
 
 ### Cross-Core Communication
 
@@ -116,7 +116,7 @@ This is the most significant platform difference. Pico uses PIO-USB (software US
 | [x] | **SD init with fallback** | `SdCardModule::instance().begin()` → `EspSdio1BitPolicy::mount()` with configurable pins. Boot log reports "SDIO 1-bit HS". |
 | [ ] | **LittleFS flash** | Both platforms support LittleFS via Arduino framework. `FlashModule` singleton should work. Verify ESP32 partition table includes a LittleFS partition. |
 | [x] | **ConfigReader** | Replaced by `sfx_config` library — `ConfigStore<HubFxConfigSchema>` with declarative YAML schema DSL. No longer uses `SdFat File32`. |
-| [x] | **File operations** | `StorageServerT<Esp32StoragePolicy>` handles all file protocol commands (list, tree, upload, download, delete, mkdir, info). Stream upload mode with PSRAM ring buffer + Core 1 writer task. Windowed upload mode with server-controlled flow. See [Stream Upload Architecture](#stream-upload-architecture). |
+| [x] | **File operations** | `StorageServerT<Esp32StoragePolicy>` handles all file protocol commands (list, tree, upload, download, delete, mkdir, info). Single-core exclusive pipeline: 64 KB PSRAM fill buffer drained synchronously to SD on the main loop. Windowed (`UPLOAD_SYNC`) and batch (`UPLOAD_STREAM`) modes both supported. See [Upload Exclusivity](#upload-exclusivity). |
 
 ### Phase 5 — Main Firmware Integration
 
@@ -172,18 +172,17 @@ These components from `controllers/lib/` already have ESP32-S3 support via `sfx_
 
 ---
 
-## Stream Upload Architecture
+## Upload Exclusivity
 
-Stream mode (mode=3) sends raw binary data in **512 KB segments** without COBS framing, maximizing throughput for large file uploads. The firmware uses a multi-stage pipeline to decouple USB/UART reception from SD card writes.
+File uploads (sync and batch) are **exclusive**: while `storageServer.isUploadActive()` returns true, the HubFX main loop services only the COBS reader (or `processStream()` in batch mode) and the upload timeout check. Everything else — audio, engine FX, USB host polling, codec health, battery sampling, 5-second diagnostic logging — is skipped until the upload finishes.
+
+The earlier dual-core pipeline (2 MB SPSC ring buffer + dedicated Core 1 writer task + 256 KB staging buffer) was retired. It correlated with end-of-upload drain hangs and its PSRAM footprint (~2.4 MB) was out of proportion with the throughput it delivered. The single-core inline write path used here matches the throughput numbers measured in the `tests/storage_test/` harness.
 
 ### Data Flow Pipeline
 
 ```
-Core 0 (protocol):
-  Serial RX → processStream() → fill buffer (64 KB) → SPSC ring buffer (2 MB, PSRAM)
-                                                              ↓
-Core 1 (writer task):
-  Ring buffer → staging (256 KB, PSRAM) → SD card (SDMMC 1-bit HS, 40 MHz)
+Core 1 (loop):
+  Serial RX → server.loop() / processStream() → fill buffer (64 KB, PSRAM) → SD card
 ```
 
 ### Buffer Architecture
@@ -191,60 +190,46 @@ Core 1 (writer task):
 | Buffer | Size | Memory | Purpose |
 |--------|------|--------|---------|
 | UART RX | 128 KB | Internal SRAM | `Serial.setRxBufferSize(131072)` — absorbs UART burst |
-| Fill buffer | 64 KB | PSRAM | Batch reads from serial into ring buffer |
-| SPSC ring | 2 MB | PSRAM | Lock-free producer-consumer decoupling Core 0 ↔ Core 1 |
-| Staging | 256 KB | PSRAM | Writer task drains ring in 256 KB batches for SD write |
+| Fill buffer | 64 KB | PSRAM (internal RAM fallback) | Batched writes to SD (`onUploadBufferFull()` flushes) |
 
-**Total PSRAM usage:** ~2.4 MB during stream uploads (ring + staging + fill buffer).
+### Lifecycle Hooks
 
-### Writer Task Lifecycle
-
-The storage writer task is **created on-demand** for each stream upload and self-deletes on completion:
-
-1. `handleUploadBegin()` → `startWriterTask()` → `xTaskCreatePinnedToCore(writerTaskFunc, Core 1, prio 23)`
-2. Writer runs in a tight loop: drain ring → write staging → SD card
-3. On upload end/cancel: `_drainRequested = true` → writer flushes remaining data → signals `_writerDone` → self-deletes
-
-Writer stats are exposed as atomics for Core 0 to read: `bytesWritten`, `writeCount`, `maxWriteLatency_ms`, `totalStallTime_ms`.
-
-### Audio Suspend During Uploads
-
-Both audio tasks on Core 1 (consumer at prio MAX-1, producer at prio MAX-2) are **suspended** during stream uploads to prevent priority starvation of the writer task:
+Audio and upload lifecycle are wired together in `setup()`:
 
 ```cpp
-storageServer.onStreamStart([]() {
-    mixer.stopAll(Immediate);
-    mixer.stopProducerTask();
-    vTaskSuspend(core1TaskHandle);   // Suspend audio consumer
+storageServer.onUploadStart([]() {
+    Mixer& mixer = Mixer::instance();
+    if (mixer.isAnyPlaying()) {
+        mixer.stopAsync(-1, AudioStopMode::Immediate);
+    }
+    mixer.suspendAudio();               // pause producer + consumer on Core 1
 });
 
-storageServer.onStreamEnd([]() {
-    vTaskResume(core1TaskHandle);    // Resume audio consumer
-    mixer.startProducerTask(1, configMAX_PRIORITIES - 2, 8192);
+storageServer.onUploadEnd([]() {
+    Mixer::instance().resumeAudio();    // resume both audio tasks
 });
 ```
 
-The `onStreamStart`/`onStreamEnd` callbacks are guarded by `_streamSuspended` to ensure exactly-once semantics (one `onStreamEnd` per `onStreamStart`).
+The `onUploadStart`/`onUploadEnd` callbacks fire for both `UPLOAD_SYNC` and `UPLOAD_STREAM`. They are guarded by `_uploadSuspended` inside `StorageServer` so `onUploadEnd` runs exactly once per `onUploadStart`, even if the upload is cancelled or times out.
 
-### Client-Side Flow Control
+The main loop then short-circuits non-storage work:
 
-Both CLIs parse the `ring_fill_pct` byte from segment ACK payloads and throttle sending when the ring buffer exceeds 50% full:
-
-**Segment ACK payload:** `[seg_idx:u16LE][bytes_received:u32LE][ring_fill_pct:u8]` (7 bytes)
-
-| Ring Fill | Action | Delay |
-|-----------|--------|-------|
-| ≤ 50% | No throttle | 0 ms |
-| 51-75% | Proportional delay | 60-1500 ms |
-| 76-100% | Heavy throttle | 1560-3000 ms |
-
-Formula: `delay_ms = (ring_fill_pct - 50) * 60`
-
-This prevents the ring buffer from filling to 100% even when SD write latency spikes occur.
+```cpp
+void loop() {
+    if (storageServer.isUploadActive()) {
+        if (storageServer.isStreamActive()) storageServer.processStream();
+        else                                 server.loop();
+        storageServer.checkUploadTimeout();
+        return;
+    }
+    server.loop();
+    // audio health, slave polling, engine FX, battery, diagnostics, ...
+}
+```
 
 ### SD Card Performance
 
-The SD card is mounted via SDMMC 1-bit SDIO at `SDMMC_FREQ_HIGHSPEED` (40 MHz bus clock). This doubles throughput compared to the default 20 MHz clock, achieving sustained write speeds of ~300-500 KB/s depending on card quality. Combined with client-side flow control, this ensures the writer task can keep up with incoming data.
+The SD card is mounted via SDMMC 1-bit SDIO at `SDMMC_FREQ_HIGHSPEED` (40 MHz bus clock), which doubles throughput compared to the default 20 MHz clock. Single-core batch uploads sustain ~470 KB/s end-to-end (measured against the `tests/storage_test/` harness at 6 Mbps UART), well above the ~300-400 KB/s the USB-UART bridge can feed.
 
 ---
 
@@ -533,6 +518,7 @@ All protocol communication (COBS/INIT/STATUS/DIAG) goes through UART0.
 
 | Version | Build | Date | Changes |
 |---------|-------|------|----------|
+| 0.34.0 | 190 | 2026-04-19 | **Single-core exclusive uploads.** Retired the dual-core `SpscRingBuffer` + Core 1 writer-task storage pipeline (correlated with end-of-upload drain hangs and 2.4 MB PSRAM for little benefit). `Esp32StoragePolicy` is now a single-core inline-write policy: 64 KB PSRAM fill buffer (falls back to internal RAM), `onUploadBufferFull()` writes synchronously to SD. Both `UPLOAD_SYNC` and `UPLOAD_STREAM` share the same code path. **Upload is exclusive on HubFX** — the main loop short-circuits non-storage work (audio, engine FX, USB host polling, codec health, battery, diagnostics) while `storageServer.isUploadActive()` is true. `StorageServer::onStreamStart/End` renamed to `onUploadStart/End` and now fires for both upload modes; HubFX wires them to `Mixer::stopAsync` + `suspendAudio` / `resumeAudio`. Build-149 `stopWriterTask`, `_streamSuspended`, writer atomics, and `WriterStats` bytes counter all removed from the shared policy. |
 | 0.33.0 | 184 | 2026-04-17 | **Battery monitoring via shared policy.** Wired `Ina226Battery` + `BatteryServerT<Ina226Battery>` (shared lib, policy-based). HubFX now responds to core packet `BATTERY_CONFIG (0xEE)` with payload `[chemistry:u8][cellCount:u8]` — same wire format as GearControl/LightFX. Rail INA226 channel hardcoded (`BATTERY_INA226_CHANNEL = 0` → 0x40); chemistry/cells default to LiPo/auto and are settable at runtime via the protocol packet. `batteryMonitor.update()` added to main loop. |
 | 0.32.0 | 173 | 2026-04-09 | **IDENTIFY-based slave discovery.** Changed SlaveManager from INIT-based to IDENTIFY-based discovery. `scanAndInit()` → `scanAndIdentify()`, `tryInitSlave()` → `tryIdentifySlave()`. Discovery now sends IDENTIFY (0xFE) instead of INIT (0xF0) — non-destructive, does not trigger hardware init callbacks on slaves. Slaves transition to `connected=true, ready=false` after identification. Activation via explicit `SLAVE_INIT` command sends INIT and marks `ready=true`. Added `sendIdentify()` to `SerialBus` and `BusClient`. `BusClient::handlePacket()` now handles both IDENTIFY and INIT_READY responses. `sendInit()` resets `_serverReady` flag to support proper `awaitSlaveReady()` after IDENTIFY→INIT sequence. |
 | 0.31.0 | 170 | 2026-04-08 | **HubFX v1 board bring-up — GPIO expander, LED architecture, audio diagnostics.** Added PCAL6416A I2C GPIO expander driver and abstract `GpioExpander` interface (`gpio_expander.h`, `native_gpio.h`). TAS5825M codec control pins (PDN, MUTE, nFAULT) now managed via PCAL6416A Port 1 instead of direct GPIO — enables full hardware mute/unmute, power-down control, and fault monitoring through I2C. Added AW9523B GPIO expander driver for alternate boards. **LED architecture overhaul:** Extracted LED subsystem from LightFX-specific code into shared `sfx_peripherals/led/` library — BAM (Bit Angle Modulation) LED driver (`bam_led_drv.h`), templatized `LedManager<N>` with `LedControl<TDriver>`, shared `LedServer`/`LedClient` protocol handlers. LightFX server/client reduced to thin wrappers. **TAS5825M 2-phase codec init:** Phase 1 (Core 0) probes I2C and enters Deep Sleep (PLL off, safe without I2S clocks); Phase 2 waits for Core 1 I2S init then configures registers and transitions to PLAY. **Comprehensive audio hardware diagnostics:** `diagnoseAudioHardware()` reads expander pin states + all TAS5825M fault/state registers (power state, automute, channel faults, global faults, over-temp, volume, sample rate monitor). **Periodic codec health check:** Retries TAS5825M init every 5s if boot probe failed (e.g. battery not connected); full diagnostic dump every 30s. **INA226 power monitoring:** 6 INA226 monitors at 0x40-0x45 with bus voltage in STATUS payload. **Enhanced STATUS:** 19-byte module data — `[flags:u8][slaveMask:u8][loop1Count:u32LE][i2cDeviceMask:u8][ina226_mV[0..5]:u16LE×6]`. I2C device presence bitmask tracks PCAL6416A + INA226 availability. |

@@ -6,6 +6,8 @@ export function BuildAndFlash(arg1:string,arg2:string,arg3:boolean,arg4:boolean,
 
 export function Connect(arg1:string):Promise<main.ConnectionInfo>;
 
+export function DeviceCapabilities():Promise<number>;
+
 export function Disconnect():Promise<main.ConnectionInfo>;
 
 export function DownloadConfig():Promise<string>;
@@ -24,9 +26,9 @@ export function FsMkdir(arg1:string,arg2:string):Promise<void>;
 
 export function FsStorageStatus():Promise<main.FsStorageStatus>;
 
-export function FsUploadBatch(arg1:string,arg2:string,arg3:Array<string>,arg4:boolean):Promise<void>;
+export function FsUploadBatch(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
 
-export function FsUploadFromDisk(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
+export function FsUploadFromDisk(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function GetConnectionInfo():Promise<main.ConnectionInfo>;
 

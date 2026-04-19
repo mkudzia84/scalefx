@@ -87,7 +87,11 @@ size_t encodeInitReady(const CoreBoardInfo& info, uint8_t* payload) {
     // Build number (u32 LE)
     CoreProtocol::putU32LE(&payload[idx], info.buildNumber);
     idx += 4;
-    
+
+    // Capabilities bitmask (u32 LE) — Rule 11 append-only field
+    CoreProtocol::putU32LE(&payload[idx], info.capabilities);
+    idx += 4;
+
     return idx;
 }
 
@@ -135,7 +139,11 @@ bool decodeInitReady(const uint8_t* payload, size_t len, CoreBoardInfo& info) {
         info.buildNumber = CoreProtocol::getU32LE(&payload[idx]);
         idx += 4;
     }
-    
+    if (idx + 4 <= len) {
+        info.capabilities = CoreProtocol::getU32LE(&payload[idx]);
+        idx += 4;
+    }
+
     return true;
 }
 

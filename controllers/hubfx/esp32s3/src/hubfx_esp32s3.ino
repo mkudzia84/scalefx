@@ -43,16 +43,7 @@
  */
 
 #define FIRMWARE_VERSION "0.34.0"
-#define BUILD_NUMBER 189
-
-// ============================================================================
-// FEATURE FLAGS — Board bring-up: uncomment to enable features one by one
-// ============================================================================
-// #define FEATURE_CONFIG       // Config store (YAML from flash) — needs flash
-#define FEATURE_AUDIO        // Audio mixer + TAS5825M codec + I2S + Core 1 — needs FEATURE_I2C
-#define FEATURE_USB_HOST     // USB Host + slave management
-// #define FEATURE_ENGINE       // Engine FX — needs FEATURE_AUDIO + FEATURE_CONFIG
-
+#define BUILD_NUMBER 199
 
 #include <Arduino.h>
 #include <atomic>
@@ -73,54 +64,40 @@
 #include <gpio/pcal6416a.h>
 
 // Config schemas
-#ifdef FEATURE_CONFIG
 #include "config/hubfx_config.h"
 #include <config/config_store.h>
 #include <server/config_server.h>
-#endif
 
 // USB Host (CDC-ACM for slave controller communication)
-#ifdef FEATURE_USB_HOST
 #include <usb/sfx_usb_host.h>
-#endif
 
 // Storage (LittleFS flash + SD_MMC SDIO)
 #include <storage/flash.h>
 #include <storage/sd_card.h>
 #include <storage/storage_config_bridge.h>
 #include <server/storage_server.h>
-#ifdef FEATURE_USB_HOST
 #include "protocol/hubfx_usb_server.h"
 #include "protocol/slave_server.h"
 #include "protocol/slave_manager.h"
-#endif
 
 // Slave client classes (one per controller type)
-#ifdef FEATURE_USB_HOST
 #include <gunfx/client/gunfx_client.h>
 #include <lightfx/client/lightfx_client.h>
 #include <gearcontrol/client/gearcontrol_client.h>
-#endif
 
 // Audio mixer and codec (8-channel WAV mixer with I2S output)
-#ifdef FEATURE_AUDIO
 #include <audio/audio_log.h>
 #include <server/audio_server.h>
 #include "hubfx_audio.h"
 using AudioServer = AudioServerT<Mixer>;
-#endif
 
 // Engine FX (sound effects state machine + protocol handler)
-#ifdef FEATURE_ENGINE
 #include "effects/engine_fx.h"
 #include "protocol/engine_server.h"
-#endif
 
 // Config store and server type aliases
-#ifdef FEATURE_CONFIG
 using HubFxConfigStore  = ConfigStore<HubFxConfigSchema>;
 using HubFxConfigServer = ConfigServerT<HubFxConfigStore>;
-#endif
 
 // ============================================================================
 // Pin Definitions (ESP32-S3 DevKitC-1)
@@ -159,7 +136,6 @@ using HubFxConfigServer = ConfigServerT<HubFxConfigStore>;
 // Core 1 Task — Audio Consumer (highest priority on Core 1)
 // ============================================================================
 
-#ifdef FEATURE_AUDIO
 
 // FreeRTOS task handle for Core 1 consumer
 static TaskHandle_t core1TaskHandle = nullptr;
@@ -228,7 +204,6 @@ static void core1Task(void* param) {
     }
 }
 
-#endif // FEATURE_AUDIO
 
 // ============================================================================
 // Boot & Codec Helpers
@@ -268,11 +243,10 @@ static void logResetReason() {
         SFX_LOG_ERROR("*** WATCHDOG RESET — a task may have hung ***");
 }
 
-// GPIO expander — declared early so both FEATURE_AUDIO diagnostics
-// and initI2CDevices() can reference it.
+// GPIO expander — declared early so audio diagnostics and initI2CDevices()
+// can both reference it.
 static PCAL6416A gpioExpander;
 
-#ifdef FEATURE_AUDIO
 /**
  * @brief Phase 1: Probe I2C, reset codec, enter Deep Sleep.
  *
@@ -462,7 +436,6 @@ static void diagnoseAudioHardware() {
                  (unsigned long)mixer.getConsumeFrames());
     SFX_LOG_INFO("=== End Audio Diagnostics ===");
 }
-#endif // FEATURE_AUDIO
 
 // ============================================================================
 // Periodic Diagnostic Logging
@@ -488,7 +461,6 @@ static void logDiagnostics() {
 
     SFX_LOG_DEBUG("uptime=%lus heap=%lu", uptime_s, heap);
 
-#ifdef FEATURE_AUDIO
     SFX_LOG_DEBUG("core1=%s loop1=%lu",
                   core1Ready.load(std::memory_order_acquire) ? "ready" : "NOT_READY",
                   loop1Count.load(std::memory_order_relaxed));
@@ -501,14 +473,11 @@ static void logDiagnostics() {
                       (unsigned long)mixer.getUnderruns(),
                       mixer.isAnyPlaying() ? "yes" : "no");
     }
-#endif
 
-#ifdef FEATURE_USB_HOST
     UsbHost& usb = UsbHost::instance();
     SFX_LOG_DEBUG("usb=%s cdc=%d",
                   SlaveManager::instance().isUsbReady() ? "ready" : "off",
                   usb.cdcDeviceCount());
-#endif
 }
 
 // ============================================================================
@@ -522,7 +491,7 @@ SfxServer server;
 static constexpr uint8_t INA226_COUNT = 6;
 static INA226 ina226[INA226_COUNT];
 static const uint8_t ina226Addrs[INA226_COUNT] = { 0x40, 0x41, 0x42, 0x43, 0x44, 0x45 };
-// gpioExpander declared earlier (before FEATURE_AUDIO section)
+// gpioExpander declared earlier (alongside the audio diagnostics)
 
 // Battery monitoring — hardcoded to INA226 channel 0 (0x40), the rail input
 // on the HubFX v1 board. Sensor wiring uses the generic BatteryServerT<TBattery>
@@ -534,26 +503,16 @@ static BatteryServerT<Ina226Battery> batteryServer(batteryMonitor);
 
 // Module protocol handlers
 StorageServer storageServer;
-#ifdef FEATURE_USB_HOST
 HubFxUsbServer usbServer;
 SlaveServer slaveServer;
-#endif
-#ifdef FEATURE_AUDIO
 AudioServer audioServer;
-#endif
-#ifdef FEATURE_CONFIG
 HubFxConfigServer configServer;
-#endif
-#ifdef FEATURE_ENGINE
 EngineServer engineServer;
-#endif
 
 // Typed slave clients (file-scope, registered with SlaveManager via addSlave)
-#ifdef FEATURE_USB_HOST
 static GunFxClient gunfxClient;
 static LightFxClient lightfxClient;
 static GearControlClient gearcontrolClient;
-#endif
 
 // ============================================================================
 // Arduino Setup (Core 0)
@@ -570,11 +529,15 @@ static void initStorage() {
         flash.getStorageInfo(info);
         SFX_LOG_INFO("Flash ready: %lu/%lu bytes used",
                      (unsigned long)info.usedBytes, (unsigned long)info.totalBytes);
+        server.core().addCapability(CoreCapability::FLASH);
     } else {
         SFX_LOG_ERROR("Flash init failed");
     }
 
-    // SD card (SD_MMC 1-bit SDIO)
+    // SD card (SD_MMC 1-bit SDIO) — capability advertises *slot present*,
+    // not "card mounted right now": clients should still poll SD_STATUS_REQ
+    // to learn whether a card is inserted and its remaining free space.
+    server.core().addCapability(CoreCapability::SD);
     SdCardModule& sd = SdCardModule::instance();
     SdCardModule::Config sdCfg { .clk = PIN_SD_MMC_CLK, .cmd = PIN_SD_MMC_CMD, .d0 = PIN_SD_MMC_D0 };
     if (sd.begin(sdCfg)) {
@@ -597,12 +560,11 @@ static void initStorage() {
 }
 
 /** @brief Configure config store with flash I/O and load initial config. */
-#ifdef FEATURE_CONFIG
 static void initConfig() {
     wireConfigStore<FlashModule>(configServer.store());
 
     // Callback fires after every successful config load/reload
-    store.onLoaded([](const HubFxConfig& cfg) {
+    configServer.store().onLoaded([](const HubFxConfig& cfg) {
         // Apply audio config (codec supply voltage)
         TAS5825M_SupplyVoltage voltage;
         if (TAS5825Codec::parseSupplyVoltage(cfg.audio.codecSupplyVoltage, voltage)) {
@@ -634,25 +596,22 @@ static void initConfig() {
 
     // Initial load from flash
     configServer.loadConfig();  // Reads /hubfx.yaml from LittleFS
+
+    // Engine + Config commands are always advertised by HubFX (the engine
+    // FX runs even when the YAML is missing — applyConfig() falls back to
+    // built-in defaults). Storage caps are set in initStorage() because
+    // they depend on flash.begin() succeeding.
+    server.core().addCapability(CoreCapability::ENGINE | CoreCapability::CONFIG);
 }
-#endif // FEATURE_CONFIG
 
 /** @brief Register module protocol handlers and build the handler chain. */
 static void initProtocolHandlers() {
     storageServer.begin(&Serial);
-#ifdef FEATURE_USB_HOST
     usbServer.begin(&Serial);
     slaveServer.begin(&Serial);
-#endif
-#ifdef FEATURE_AUDIO
     audioServer.begin(&Serial);
-#endif
-#ifdef FEATURE_CONFIG
     configServer.begin(&Serial);
-#endif
-#ifdef FEATURE_ENGINE
     engineServer.begin(&Serial);
-#endif
 
     // Handler chain: CoreCommandServer (0xF0-0xFF)
     //              → ConfigServer         (0x90-0x92, 0xAC config)
@@ -661,19 +620,11 @@ static void initProtocolHandlers() {
     //              → AudioServer          (0x84-0x8B audio)
     //              → EngineServer         (0x8C-0x8F engine FX)
     //              → StorageServer        (0x93-0xA6 SD/flash + files)
-#ifdef FEATURE_CONFIG
     server.addModuleHandler(&configServer);
-#endif
-#ifdef FEATURE_USB_HOST
     server.addModuleHandler(&slaveServer);
     server.addModuleHandler(&usbServer);
-#endif
-#ifdef FEATURE_AUDIO
     server.addModuleHandler(&audioServer);
-#endif
-#ifdef FEATURE_ENGINE
     server.addModuleHandler(&engineServer);
-#endif
     // Generic battery handler (core BATTERY_CONFIG 0xEE) — sensor is bound to
     // INA226[BATTERY_INA226_CHANNEL] in setup() after initI2CDevices().
     batteryServer.begin(&Serial);
@@ -681,16 +632,22 @@ static void initProtocolHandlers() {
 
     server.addModuleHandler(&storageServer);
 
-#ifdef FEATURE_AUDIO
-    // Suspend audio during stream uploads to free Core 1 for SD writes.
-    storageServer.onStreamStart([]() {
-        Mixer::instance().suspendAudio();
+    // Upload is exclusive: stop any active playback, then suspend the
+    // audio pipeline for the duration of the upload (sync or batch). The
+    // main loop also short-circuits all non-storage work while
+    // isUploadActive() is true.
+    storageServer.onUploadStart([]() {
+        Mixer& mixer = Mixer::instance();
+        if (mixer.isAnyPlaying()) {
+            mixer.stopAsync(-1, AudioStopMode::Immediate);
+            MIXER_LOG("Audio stop queued — SD upload starting");
+        }
+        mixer.suspendAudio();
     });
 
-    storageServer.onStreamEnd([]() {
+    storageServer.onUploadEnd([]() {
         Mixer::instance().resumeAudio();
     });
-#endif
 
     // Suppress STATUS_UPDATE during any file transfer (list, tree,
     // download, upload) to keep the serial channel exclusive.
@@ -704,15 +661,16 @@ static void initProtocolHandlers() {
 }
 
 /** @brief Register slave types with SlaveManager and initialize USB Host. */
-#ifdef FEATURE_USB_HOST
 static void initSlaveManager() {
     SlaveManager& mgr = SlaveManager::instance();
     mgr.addSlave({ SlaveType::GunFX,       "GunFX",       "GunFX",   &gunfxClient });
     mgr.addSlave({ SlaveType::LightFX,     "LightFX",     "LightFX", &lightfxClient });
     mgr.addSlave({ SlaveType::GearControl, "GearControl", "GearCtrl", &gearcontrolClient });
     mgr.begin();
+    // SLAVE_BUS = master can enumerate / route to slaves over USB host.
+    // USB_HOST = USB host stack for CDC enumeration is up.
+    server.core().addCapability(CoreCapability::SLAVE_BUS | CoreCapability::USB_HOST);
 }
-#endif // FEATURE_USB_HOST
 
 // NOTE: Engine FX is initialized by the config onLoaded callback
 // (EngineFX::applyConfig) — no separate initEngineFx() needed.
@@ -763,7 +721,6 @@ static void initI2CDevices() {
     }
 }
 
-#ifdef FEATURE_AUDIO
 /**
  * @brief Initialize audio mixer (Phase 1) and launch Core 1 consumer task.
  *
@@ -776,12 +733,10 @@ static void initAudio() {
     // ---- Phase 1: Codec I2C probe + reset → Deep Sleep ----
     // The codec goes into Deep Sleep (PLL off) — safe before I2S clocks.
     TAS5825M_SupplyVoltage initVoltage = TAS5825M_12V;
-#ifdef FEATURE_CONFIG
     if (configServer.store().isLoaded()) {
         TAS5825Codec::parseSupplyVoltage(
             configServer.store().data().audio.codecSupplyVoltage, initVoltage);
     }
-#endif
     if (tryInitCodec(initVoltage)) {
         SFX_LOG_INFO("TAS5825M codec probed OK, in Deep Sleep (supply=%s)",
                      TAS5825Codec::supplyVoltageStr(initVoltage));
@@ -797,6 +752,7 @@ static void initAudio() {
     if (mixer.begin(PIN_I2S_DOUT, PIN_I2S_BCLK, PIN_I2S_LRCLK)) {
         audioInitialized.store(true, std::memory_order_release);
         SFX_LOG_INFO("Audio mixer Phase 1 ready — Core 1 will start I2S");
+        server.core().addCapability(CoreCapability::AUDIO);
     } else {
         SFX_LOG_ERROR("Audio mixer init failed — audio disabled");
     }
@@ -841,7 +797,6 @@ static void initAudio() {
         }
     }
 }
-#endif // FEATURE_AUDIO
 
 // ---- Main setup ----
 
@@ -883,9 +838,7 @@ void setup() {
         if (bootComplete_ms > 0 && (now - bootComplete_ms) < FRESH_BOOT_WINDOW_MS) {
             bootComplete_ms = 0;  // Consume the grace — subsequent INITs do full re-init
             SFX_LOG_INFO("INIT received — fresh boot, skipping re-init");
-#ifdef FEATURE_USB_HOST
             SlaveManager::instance().scanAndIdentify();
-#endif
             return;
         }
 
@@ -896,7 +849,6 @@ void setup() {
         // 1. Cancel any upload left over from a previous session.
         storageServer.cancelActiveUpload();
 
-#ifdef FEATURE_AUDIO
         // 2. Stop all audio and reset codec to clean power-on state.
         {
             Mixer& mixer = Mixer::instance();
@@ -916,9 +868,7 @@ void setup() {
                 SFX_LOG_INFO("Audio codec initialized on INIT");
             }
         }
-#endif
 
-#ifdef FEATURE_ENGINE
         // 3. Reset engine FX state machine (stops sounds, clears state)
         {
             EngineFX& engine = EngineFX::instance();
@@ -926,17 +876,12 @@ void setup() {
                 engine.end();
             }
         }
-#endif
 
-#ifdef FEATURE_CONFIG
         // 4. Reload config from flash.
         configServer.loadConfig();
-#endif
 
-#ifdef FEATURE_USB_HOST
         // 5. Re-scan slaves so PC gets fresh identification
         SlaveManager::instance().scanAndIdentify();
-#endif
 
         SFX_LOG_INFO("INIT complete — all subsystems re-initialized");
     });
@@ -944,23 +889,19 @@ void setup() {
     server.onShutdown([]() {
         storageServer.cancelActiveUpload();
 
-#ifdef FEATURE_AUDIO
         {
             Mixer& mixer = Mixer::instance();
             if (mixer.isInitialized() && mixer.isAnyPlaying()) {
                 mixer.stopAsync(-1, AudioStopMode::Immediate);
             }
         }
-#endif
 
-#ifdef FEATURE_ENGINE
         {
             EngineFX& engine = EngineFX::instance();
             if (engine.isActive()) {
                 engine.forceStop();
             }
         }
-#endif
 
         SFX_LOG_INFO("SHUTDOWN — session ended");
     });
@@ -979,30 +920,18 @@ void setup() {
         //   bit 3: USB host ready
         //   bit 4: SD card ready
         uint8_t flags = 0;
-#ifdef FEATURE_AUDIO
         if (core1Ready.load(std::memory_order_acquire))      flags |= 0x01;
         if (audioInitialized.load(std::memory_order_acquire)) flags |= 0x02;
-#endif
         if (FlashModule::instance().isInitialized())         flags |= 0x04;
-#ifdef FEATURE_USB_HOST
         if (SlaveManager::instance().isUsbReady())          flags |= 0x08;
-#endif
         if (SdCardModule::instance().isInitialized())        flags |= 0x10;
         buf[0] = flags;
 
         // Slave presence bitmask: bit0=GunFX, bit1=LightFX, bit2=GearControl
-#ifdef FEATURE_USB_HOST
         buf[1] = SlaveManager::instance().slaveMask();
-#else
-        buf[1] = 0;
-#endif
 
         // Core 1 loop counter (diagnostic)
-#ifdef FEATURE_AUDIO
         CoreProtocol::putU32LE(&buf[2], loop1Count.load(std::memory_order_relaxed));
-#else
-        CoreProtocol::putU32LE(&buf[2], 0);
-#endif
 
         // I2C device presence bitmask (byte 6):
         //   bit 0: PCAL6416A @ 0x20
@@ -1049,16 +978,10 @@ void setup() {
 
     initStorage();
     initProtocolHandlers();
-#ifdef FEATURE_CONFIG
     initConfig();       // onLoaded callback initializes EngineFX
     server.markConfigLoaded();  // IDLE → STANDALONE
-#endif
-#ifdef FEATURE_USB_HOST
     initSlaveManager();
-#endif
-#ifdef FEATURE_AUDIO
     initAudio();
-#endif
 
     // Hub is the master — mark as operational immediately
     server.indicators().setConnected(true);
@@ -1083,7 +1006,6 @@ void setup() {
 // connected → PVDD not powered → I2C probe fails), periodically retry.
 // Once initialized, stop retrying.
 
-#ifdef FEATURE_AUDIO
 static void checkCodecHealth() {
     static uint32_t lastCheck_ms = 0;
     static constexpr uint32_t CHECK_INTERVAL_MS = 5000;  // every 5s
@@ -1113,56 +1035,40 @@ static void checkCodecHealth() {
         diagnoseAudioHardware();
     }
 }
-#endif // FEATURE_AUDIO
 
 // ============================================================================
 // Arduino Main Loop (Core 1 — default ARDUINO_RUNNING_CORE)
 // ============================================================================
 
 void loop() {
-    // Stream upload mode: bypass normal COBS processing entirely.
-    if (storageServer.isStreamActive()) {
-        storageServer.processStream();
-    } else {
-        server.loop();
+    // Upload is exclusive: when a file upload is in progress, service only
+    // the storage server and upload-timeout check. Audio/engine/USB-host/
+    // diagnostics/battery are skipped so the COBS reader, fill buffer, and
+    // SD writer get the full Core 1 budget. Audio playback + task were
+    // already stopped via onUploadStart.
+    if (storageServer.isUploadActive()) {
+        if (storageServer.isStreamActive()) {
+            storageServer.processStream();
+        } else {
+            server.loop();
+        }
+        storageServer.checkUploadTimeout();
+        return;
     }
+
+    server.loop();
     storageServer.checkUploadTimeout();
 
-#ifdef FEATURE_AUDIO
-    // Stop audio playback when SD upload starts (shared SD bus)
-    {
-        static bool wasUploading = false;
-        bool uploading = storageServer.isUploadActive();
-        if (uploading && !wasUploading) {
-            Mixer& mixer = Mixer::instance();
-            if (mixer.isAnyPlaying()) {
-                mixer.stopAsync(-1, AudioStopMode::Immediate);
-                MIXER_LOG("Audio stop queued — SD upload starting");
-            }
-        }
-        wasUploading = uploading;
-    }
-#endif
-
-    // Periodic diagnostic logging
     logDiagnostics();
 
-#ifdef FEATURE_AUDIO
     checkCodecHealth();
-#endif
 
-#ifdef FEATURE_USB_HOST
     SlaveManager::instance().process();
-#endif
 
-#ifdef FEATURE_ENGINE
     EngineFX::instance().process();
-#endif
 
     // Sample the battery rail (cached INA226 read; main loop owns ina226[]).
     batteryMonitor.update();
 
-    if (!storageServer.isUploadActive()) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
+    vTaskDelay(pdMS_TO_TICKS(1));
 }

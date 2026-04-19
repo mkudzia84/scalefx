@@ -41,7 +41,7 @@
 // ============================================================================
 
 #define FIRMWARE_VERSION "0.11.0"
-#define BUILD_NUMBER 33
+#define BUILD_NUMBER 34
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -412,6 +412,11 @@ void setup() {
     storageServer.onTransferStart([]() { server.core().setTransferActive(true); });
     storageServer.onTransferEnd  ([]() { server.core().setTransferActive(false); });
     server.addModuleHandler(&storageServer);
+
+    // Advertise interfaces — Pico LightFX has flash + config but no SD slot,
+    // no audio/USB host/engine. Used by clients (CLI, Studio file manager)
+    // to gate UI without speculative status probes.
+    server.core().addCapability(CoreCapability::FLASH | CoreCapability::CONFIG);
 }
 
 // ============================================================================

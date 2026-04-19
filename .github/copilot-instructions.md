@@ -1245,7 +1245,9 @@ STATUS response = 22-byte core header `[counter:u32][uptime:u32][freeRam:u32][la
 
 Board states: `IDLE(0x00)` — no config loaded, `STANDALONE(0x01)` — config loaded from flash, `SLAVE(0x02)` — INIT slave mode, `DIRECT(0x03)` — INIT direct/config mode.
 
-INIT_READY payload = length-prefixed binary: `[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]`
+INIT_READY payload = length-prefixed binary: `[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat][cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE][capabilities:u32LE]`
+
+The trailing `capabilities` u32 is a Rule 11 append-only bitmask (`CoreCapability::FLASH | SD | AUDIO | USB_HOST | ENGINE | CONFIG | SLAVE_BUS`) the firmware uses to advertise which optional interfaces it exposes. Clients (CLI, Studio, file manager) gate UI and probes on these bits — e.g. Studio's `FsStorageStatus` skips the SD query when `CAP_SD` is not set, and the file manager hides the SD tab. A 0 bitmask means "legacy firmware that pre-dates the field" → fall back to probing rather than treating as "nothing supported". Wired in each `setup()` after the relevant module's `begin()` succeeds via `server.core().addCapability(...)`. Mirror is `core.Cap*` in [app/go/protocol/core/core.go](../app/go/protocol/core/core.go).
 
 IDENTIFY (0xFE) returns the same payload as INIT_READY but without triggering init callbacks or state changes. The CLI uses IDENTIFY on connect to discover the board type:
 - **HubFX** (auto-initializes on boot): IDENTIFY only — no INIT sent

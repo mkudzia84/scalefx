@@ -75,6 +75,12 @@ func ParseInitReady(payload []byte) *InitReadyInfo {
 	info.FreeRAM = protocol.ReadU32LE(payload, offset)
 	offset += 4
 	info.Build = protocol.ReadU32LE(payload, offset)
+	offset += 4
+
+	// Capabilities (Rule 11 append-only) — absent on legacy firmware → 0.
+	if offset+4 <= len(payload) {
+		info.Capabilities = protocol.ReadU32LE(payload, offset)
+	}
 
 	info.ControllerType = core.DetectControllerType(info.Name)
 	return info
@@ -86,6 +92,9 @@ func (e *Engine) PrintInitReadyInfo(info *InitReadyInfo) {
 	e.Out.Printf("  Version:  %s (build %d)\n", info.Version, info.Build)
 	e.Out.Printf("  Platform: %s @ %d MHz\n", info.Platform, info.CPUMHz)
 	e.Out.Printf("  Free RAM: %d bytes (%.1f KB)\n", info.FreeRAM, float64(info.FreeRAM)/1024)
+	if info.Capabilities != 0 {
+		e.Out.Printf("  Capabilities: %s\n", strings.Join(core.CapabilityNames(info.Capabilities), " "))
+	}
 }
 
 // ParseStatusPayload parses STATUS response with core header and module data.

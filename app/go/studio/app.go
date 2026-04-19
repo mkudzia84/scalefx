@@ -42,6 +42,10 @@ type ConnectionInfo struct {
 	Platform       string `json:"platform"`
 	CPUMHz         uint32 `json:"cpuMHz"`
 	FreeRAM        uint32 `json:"freeRAM"`
+	// Capabilities is the bitmask the firmware advertised in IDENTIFY/INIT_READY
+	// (mirrors core.Cap* — flash, sd, audio, usb_host, engine, config, slave_bus).
+	// 0 means "legacy firmware" — UI should fall back to probing.
+	Capabilities uint32 `json:"capabilities"`
 }
 
 type SlaveInfo struct {
@@ -313,6 +317,7 @@ func (a *App) getConnectionInfo() ConnectionInfo {
 		info.Platform = a.eng.Info.Platform
 		info.CPUMHz = a.eng.Info.CPUMHz
 		info.FreeRAM = a.eng.Info.FreeRAM
+		info.Capabilities = a.eng.Info.Capabilities
 	}
 	return info
 }
@@ -507,6 +512,12 @@ func targetByte(target string) (byte, error) {
 
 // FsStorageStatus queries both flash and SD status. Always returns a status
 // struct — unavailable targets simply have Available=false.
+//
+// Capability gating: when the firmware advertises CapFlash/CapSd in IDENTIFY
+// (Rule 11 append-only field), we skip queries for missing interfaces — both
+// to avoid round-trips and to give the frontend an authoritative "this board
+// has no SD slot" signal. Legacy firmware (caps==0) falls through to the
+// probe-everything behaviour for back-compat.
 func (a *App) FsStorageStatus() (FsStorageStatus, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -518,59 +529,80 @@ func (a *App) FsStorageStatus() (FsStorageStatus, error) {
 		return out, fmt.Errorf("not connected")
 	}
 
-	// Flash (present on every controller that registers StorageServer —
-	// GearControl/LightFX/GunFX all do, so a "not available" here means the
-	// device NACK'd the probe or returned a zero-initialised response).
-	if res := a.eng.API.HubFx.FlashStatus(); res.OK && res.Response != nil {
-		p := res.Response.Payload
-		switch {
-		case len(p) >= 13 && p[0] != 0:
-			out.FlashAvailable = true
-			out.FlashTotal = protocol.ReadU32LE(p, 1)
-			out.FlashUsed = protocol.ReadU32LE(p, 5)
-			out.FlashFree = protocol.ReadU32LE(p, 9)
-			a.echoOutput(fmt.Sprintf("flash: total=%d used=%d free=%d",
-				out.FlashTotal, out.FlashUsed, out.FlashFree))
-		case len(p) >= 1 && p[0] == 0:
-			a.echoOutput(fmt.Sprintf("flash: not initialised on device (payload len=%d)", len(p)))
-		default:
-			a.echoOutput(fmt.Sprintf("flash: unexpected response (len=%d)", len(p)))
+	caps := a.eng.Capabilities()
+	probeFlash := caps == 0 || caps&core.CapFlash != 0
+	probeSd := caps == 0 || caps&core.CapSd != 0
+
+	if probeFlash {
+		// Flash (present on every controller that registers StorageServer).
+		if res := a.eng.API.HubFx.FlashStatus(); res.OK && res.Response != nil {
+			p := res.Response.Payload
+			switch {
+			case len(p) >= 13 && p[0] != 0:
+				out.FlashAvailable = true
+				out.FlashTotal = protocol.ReadU32LE(p, 1)
+				out.FlashUsed = protocol.ReadU32LE(p, 5)
+				out.FlashFree = protocol.ReadU32LE(p, 9)
+				a.echoOutput(fmt.Sprintf("flash: total=%d used=%d free=%d",
+					out.FlashTotal, out.FlashUsed, out.FlashFree))
+			case len(p) >= 1 && p[0] == 0:
+				a.echoOutput(fmt.Sprintf("flash: not initialised on device (payload len=%d)", len(p)))
+			default:
+				a.echoOutput(fmt.Sprintf("flash: unexpected response (len=%d)", len(p)))
+			}
+		} else {
+			msg := "no response"
+			if res.Error != "" {
+				msg = res.Error
+			}
+			a.echoError("flash.status failed: %s", msg)
 		}
 	} else {
-		msg := "no response"
-		if res.Error != "" {
-			msg = res.Error
-		}
-		a.echoError("flash.status failed: %s", msg)
+		a.echoOutput("flash: not advertised by board")
 	}
 
 	a.echoCommand("sd.status")
-	// SD (may be NACK'd with NOT_SUPPORTED on Pico — treat as unavailable)
-	if res := a.eng.API.HubFx.SdStatus(); res.OK && res.Response != nil {
-		p := res.Response.Payload
-		if len(p) >= 1 && p[0] != 0 {
-			out.SdAvailable = true
-			if len(p) >= 14 {
-				out.SdCardMB = protocol.ReadU32LE(p, 1)
-				out.SdTotalMB = protocol.ReadU32LE(p, 5)
-				out.SdFreeMB = protocol.ReadU32LE(p, 9)
+	if probeSd {
+		// SD (NACK'd with NOT_SUPPORTED on boards with no slot — treat as unavailable)
+		if res := a.eng.API.HubFx.SdStatus(); res.OK && res.Response != nil {
+			p := res.Response.Payload
+			if len(p) >= 1 && p[0] != 0 {
+				out.SdAvailable = true
+				if len(p) >= 14 {
+					out.SdCardMB = protocol.ReadU32LE(p, 1)
+					out.SdTotalMB = protocol.ReadU32LE(p, 5)
+					out.SdFreeMB = protocol.ReadU32LE(p, 9)
+				}
+				if len(p) >= 20 {
+					cardTypes := map[byte]string{0: "NONE", 1: "MMC", 2: "SD", 3: "SDHC", 4: "UNKNOWN"}
+					busModes := map[byte]string{0: "SPI", 1: "SDIO 1-bit", 2: "SDIO 4-bit"}
+					out.SdCardType = cardTypes[p[14]]
+					out.SdBusMode = busModes[p[15]]
+					out.SdUsedMB = protocol.ReadU32LE(p, 16)
+				}
+				a.echoOutput(fmt.Sprintf("sd: card=%s bus=%s total=%dMB used=%dMB free=%dMB",
+					out.SdCardType, out.SdBusMode, out.SdTotalMB, out.SdUsedMB, out.SdFreeMB))
+			} else {
+				a.echoOutput("sd: not available")
 			}
-			if len(p) >= 20 {
-				cardTypes := map[byte]string{0: "NONE", 1: "MMC", 2: "SD", 3: "SDHC", 4: "UNKNOWN"}
-				busModes := map[byte]string{0: "SPI", 1: "SDIO 1-bit", 2: "SDIO 4-bit"}
-				out.SdCardType = cardTypes[p[14]]
-				out.SdBusMode = busModes[p[15]]
-				out.SdUsedMB = protocol.ReadU32LE(p, 16)
-			}
-			a.echoOutput(fmt.Sprintf("sd: card=%s bus=%s total=%dMB used=%dMB free=%dMB",
-				out.SdCardType, out.SdBusMode, out.SdTotalMB, out.SdUsedMB, out.SdFreeMB))
 		} else {
-			a.echoOutput("sd: not available")
+			a.echoOutput("sd: not supported")
 		}
 	} else {
-		a.echoOutput("sd: not supported")
+		a.echoOutput("sd: not advertised by board")
 	}
 	return out, nil
+}
+
+// DeviceCapabilities returns the bitmask of CoreCapability flags the
+// connected board advertised in IDENTIFY/INIT_READY. Returns 0 when no
+// device is connected, identification hasn't completed yet, or the firmware
+// pre-dates the capabilities field — frontends should treat 0 as "unknown,
+// fall back to probing" rather than "nothing supported".
+func (a *App) DeviceCapabilities() uint32 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.eng.Capabilities()
 }
 
 // FsList returns a directory listing. Parses the server's
@@ -721,10 +753,10 @@ func (a *App) FsDownloadToDisk(target, remotePath, localPath string) error {
 }
 
 // FsUploadFromDisk reads localPath and uploads it to remotePath on the target.
-// burst=true uses the stream/windowed mode (SD only); burst=false uses
-// per-chunk ACK sync mode (required for flash).
+// Mode is auto-picked via api.PickUploadMode: flash always sync, SD switches
+// to batch (UploadStream) above api.LargeFileBatchThreshold.
 // If localPath is empty, opens an Open dialog.
-func (a *App) FsUploadFromDisk(target, remotePath, localPath string, burst bool) error {
+func (a *App) FsUploadFromDisk(target, remotePath, localPath string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -754,12 +786,8 @@ func (a *App) FsUploadFromDisk(target, remotePath, localPath string, burst bool)
 		return err
 	}
 
-	mode := api.UploadSync
-	modeName := "sync"
-	if burst && target == "sd" {
-		mode = api.UploadStream
-		modeName = "stream"
-	}
+	mode := api.PickUploadMode(tb, len(data))
+	modeName := uploadModeName(mode)
 
 	a.echoCommand(fmt.Sprintf("file.upload %s %s (%s, %d bytes from %s)",
 		target, remotePath, modeName, len(data), localPath))
@@ -793,14 +821,27 @@ func (a *App) FsUploadFromDisk(target, remotePath, localPath string, burst bool)
 	return nil
 }
 
+// uploadModeName returns the short label used in echoes / logs.
+func uploadModeName(m api.UploadMode) string {
+	switch m {
+	case api.UploadStream:
+		return "batch"
+	case api.UploadSync:
+		return "sync"
+	default:
+		return fmt.Sprintf("mode=%d", m)
+	}
+}
+
 // FsUploadBatch uploads a list of files or directory trees to target under
 // remoteCwd. Each entry in localPaths is a disk path; files land at
 // remoteCwd/<basename>, directories are walked recursively preserving tree
 // structure (e.g. dropping "a/b/log.txt" while cwd=/tmp uploads to
 // /tmp/a/b/log.txt). Progress events on "fs:progress" are enriched with
 // batchIndex/batchTotal (file count) and batchBytesSent/batchBytesTotal.
-// burst=true selects stream mode for SD; flash always uses sync mode.
-func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string, burst bool) error {
+// Mode is auto-picked per file via api.PickUploadMode: flash always sync,
+// SD switches to batch above api.LargeFileBatchThreshold.
+func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -822,13 +863,6 @@ func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string, burst
 		local  string
 		remote string
 		size   int64
-	}
-
-	mode := api.UploadSync
-	modeName := "sync"
-	if burst && target == "sd" {
-		mode = api.UploadStream
-		modeName = "stream"
 	}
 
 	// Walk every input path, collect files + directories (preserving tree).
@@ -897,8 +931,8 @@ func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string, burst
 		return fmt.Errorf("no files to upload")
 	}
 
-	a.echoCommand(fmt.Sprintf("file.upload-batch %s %s (%d files, %s, mode=%s)",
-		target, remoteCwd, len(jobs), humanBytes(uint64(totalBytes)), modeName))
+	a.echoCommand(fmt.Sprintf("file.upload-batch %s %s (%d files, %s, mode=auto)",
+		target, remoteCwd, len(jobs), humanBytes(uint64(totalBytes))))
 	// mkdir -p per directory — firmware resolves ancestors, and the call is
 	// idempotent when the directory already exists.
 	for _, d := range dirs {
@@ -918,8 +952,9 @@ func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string, burst
 			a.emitBatchError(fmt.Sprintf("read %s: %v", j.local, err))
 			return err
 		}
-		a.echoOutput(fmt.Sprintf("[%d/%d] %s → %s (%s)",
-			idx+1, len(jobs), j.local, j.remote, humanBytes(uint64(len(data)))))
+		mode := api.PickUploadMode(tb, len(data))
+		a.echoOutput(fmt.Sprintf("[%d/%d] %s → %s (%s, %s)",
+			idx+1, len(jobs), j.local, j.remote, humanBytes(uint64(len(data))), uploadModeName(mode)))
 		a.emitBatchProgress("uploading", j.remote, 0, len(data),
 			idx+1, len(jobs), bytesDoneBefore, totalBytes, 0, nil)
 
