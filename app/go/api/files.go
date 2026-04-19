@@ -292,8 +292,11 @@ func (a *FileApi) uploadStream(target byte, remotePath string, data []byte,
 		}
 	}
 
-	// End upload
-	resp, err = a.conn.SendExpectACK(hubfx.CmdFileUploadEnd())
+	// End upload — allow up to 60s for server to drain ring buffer (dual-core
+	// policies can have 2+ MB in flight at the moment the last data packet is
+	// sent; draining that to SD takes several seconds on top of the close +
+	// MD5 finalize).
+	resp, err = a.conn.SendExpectACKTimeout(hubfx.CmdFileUploadEnd(), 60*time.Second)
 	elapsed := time.Since(start)
 	speed := float64(fileSize) / elapsed.Seconds() / 1024
 

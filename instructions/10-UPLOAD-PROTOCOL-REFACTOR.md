@@ -1,9 +1,9 @@
 # Upload Protocol Refactor — Windowed Flow Control
 
-> **Status:** WINDOWED mode IMPLEMENTED (v0.27.0 build 135). STREAM mode FIXED and WORKING (builds 136-143).  
-> **Original Problem:** STREAM mode (mode=3) failed reliably for files >1MB  
-> **Windowed Solution:** New WINDOWED mode (mode=2) with server-controlled flow, per-window diagnostics, and hard recovery timeouts  
-> **Stream Fix:** PSRAM ring buffer pipeline + on-demand writer task + audio suspend + SDMMC_FREQ_HIGHSPEED + client-side flow control
+> **Status:** WINDOWED mode is the shipping default (v0.27.0 build 135+). Batch mode (formerly STREAM, mode=3) also ships, now on a **single-core inline-write** pipeline (HubFX v0.34.x).
+> **Original problem:** STREAM mode (mode=3) failed reliably for files >1 MB.
+> **Windowed solution:** New WINDOWED mode (mode=2) with server-controlled flow, per-window diagnostics, and hard recovery timeouts.
+> **Batch mode today:** 64 KB PSRAM fill buffer drained synchronously to SD from the main loop. Uploads are **exclusive** — audio/engine/USB/diagnostics all skip while `isUploadActive()` is true. The dual-core `SpscRingBuffer` + writer-task pipeline below (builds 136-143) was retired after it correlated with end-of-upload drain hangs; that section is preserved as history.
 
 ## Stream Mode Recovery (builds 136-143)
 

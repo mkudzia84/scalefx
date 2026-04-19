@@ -42,3 +42,25 @@ const (
 	UploadSync   UploadMode = 0 // Per-chunk ACK with CRC retry
 	UploadStream UploadMode = 3 // Raw binary streaming with segment-based ACKs
 )
+
+// LargeFileBatchThreshold is the size at which SD uploads switch from
+// UploadSync to UploadStream in auto-mode. At ~44 KB/s sync vs ~465 KB/s
+// batch on SD, anything above this finishes meaningfully faster in batch.
+// Flash never uses batch — onboard LittleFS write speed is the bottleneck
+// and batch's segment-ack pacing has no headroom there.
+const LargeFileBatchThreshold = 64 * 1024
+
+// PickUploadMode returns the best transfer mode for (target, size).
+// Flash always uses UploadSync (batch is unreliable on LittleFS partitions).
+// SD uses UploadStream above LargeFileBatchThreshold, UploadSync otherwise.
+// `target` is the storage target byte (hubfx.StorageTargetFlash / Sd).
+func PickUploadMode(target byte, size int) UploadMode {
+	const flash byte = 1 // hubfx.StorageTargetFlash — avoid import cycle
+	if target == flash {
+		return UploadSync
+	}
+	if size >= LargeFileBatchThreshold {
+		return UploadStream
+	}
+	return UploadSync
+}

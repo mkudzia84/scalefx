@@ -1,0 +1,15 @@
+# Storage Test — ESP32-S3 N8R8 Partition Table
+# Same layout as HubFX (3.9 MB LittleFS gives room for multi-MB flash uploads).
+#
+#   0x009000 - 0x00DFFF  NVS (20KB)
+#   0x00E000 - 0x00FFFF  OTA data (8KB)
+#   0x010000 - 0x3FFFFF  App (3.9MB)
+#   0x400000 - 0x7EFFFF  LittleFS (3.9MB)
+#   0x7F0000 - 0x7FFFFF  Core dump (64KB)
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x3F0000,
+littlefs,   data, spiffs,   0x400000, 0x3F0000,
+coredump,   data, coredump, 0x7F0000, 0x10000,

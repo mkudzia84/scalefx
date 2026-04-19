@@ -15,7 +15,7 @@
  *   - Stream mode bypasses COBS for data plane - near wire-rate throughput
  *   - Each COBS chunk (sync): 2044 data + 4 header = 2048 payload, ~2060 bytes on wire
  *   - UART RX buffer: 128 KB - holds ~220ms of data at line rate
- *   - Stream segments: 512 KB; ring buffer (2 MB) absorbs ~4 segments of SD stalls
+ *   - Stream segments: 512 KB SD / 128 KB flash; 64 KB fill buffer on ESP32
  *
  * Included from storage_server.h -- do not include directly.
  */
@@ -573,7 +573,7 @@ void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t l
     _streamSegmentSize     = 0;
     _streamSegmentCount    = 0;
 
-    // Platform hook: reset writer error flags, etc.
+    // Platform hook: reset per-upload counters, etc.
     _policy.onUploadActivated();
 
     const char* modeStr = (_uploadMode == HubFxStorage::UPLOAD_STREAM) ? "stream" : "sync";
@@ -586,6 +586,14 @@ void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t l
     // Suppress STATUS_UPDATE for the duration of the upload
     notifyTransferStart();
 
+    // Fire upload-start hook so the firmware can make this upload exclusive
+    // (suspend audio tasks, engine, USB host poll, etc.). Fires for BOTH
+    // sync and batch/stream modes — upload is always exclusive on HubFX.
+    if (_onUploadStart) {
+        _onUploadStart();
+        _uploadSuspended = true;
+    }
+
     if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
         // Pre-allocate file on SD for contiguous cluster allocation
         if (_uploadTarget == HubFxStorage::TARGET_SD && fileSize > 0) {
@@ -595,8 +603,12 @@ void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t l
             _shared.uploadFile.seek(0);
         }
 
-        // Compute segment parameters
-        _streamSegmentSize = STREAM_SEGMENT_SIZE;
+        // Compute segment parameters. LittleFS (flash) writes are ~5-10x
+        // slower than SD_MMC — shrink the segment so the client's ACK deadline
+        // isn't exceeded during a single flash-erase-and-program cycle.
+        _streamSegmentSize = (_uploadTarget == HubFxStorage::TARGET_FLASH)
+                             ? STREAM_SEGMENT_SIZE_FLASH
+                             : STREAM_SEGMENT_SIZE;
         uint16_t segCount = (uint16_t)((fileSize + _streamSegmentSize - 1) / _streamSegmentSize);
         _streamSegBytesRemaining = (fileSize < _streamSegmentSize) ? fileSize : _streamSegmentSize;
         _streamSegmentIndex = 0;
@@ -616,12 +628,6 @@ void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t l
         STORAGE_LOG("STREAM active: %u segments of %uKB, uart_rx=%dB",
                     segCount, (unsigned)(_streamSegmentSize / 1024),
                     _serial->available());
-
-        // Notify firmware to suspend competing resources (e.g., audio tasks)
-        if (_onStreamStart) {
-            _onStreamStart();
-            _streamSuspended = true;
-        }
 
         // ACK payload: [segment_size:u32LE][segment_count:u16LE]
         uint8_t ackPayload[6];
@@ -651,9 +657,10 @@ void StorageServerT<TPolicy>::handleUploadData(const uint8_t* payload, size_t le
         return;
     }
 
-    // Check if background writer reported an error on previous buffer
+    // Policy health check — a no-op for single-core policies, reserved
+    // for a future async writer to signal a deferred error.
     if (!_policy.checkAsyncWriterHealth()) {
-        STORAGE_LOG("UPLOAD_DATA: async writer error -- aborting upload");
+        STORAGE_LOG("UPLOAD_DATA: policy signalled error -- aborting upload");
         cleanupUpload(true);
         sendNack(HubFxError::FILE_IO_ERROR);
         return;
@@ -756,7 +763,8 @@ void StorageServerT<TPolicy>::handleUploadEnd() {
         return;
     }
 
-    // Platform hook for async writer completion (drain ring buffer to SD)
+    // Platform hook for end-of-upload finalization (async writer drain on
+    // policies that have one; no-op for the inline single-core path).
     uint32_t t0 = millis();
     const char* errMsg = nullptr;
     if (!_policy.onChunkedEnd(errMsg)) {
@@ -797,14 +805,14 @@ void StorageServerT<TPolicy>::handleUploadEnd() {
     uint32_t avgLat = (ws.writeCount > 0)
         ? (ws.totalStallTime_ms / ws.writeCount) : 0;
     STORAGE_LOG("UPLOAD_END %s:%s %lu bytes OK (md5=%s mode=%s) "
-                "drain=%lums flush=%lums close=%lums md5=%lums total=%lums",
+                "finalize=%lums flush=%lums close=%lums md5=%lums total=%lums",
                 targetName(_uploadTarget), _uploadPath,
                 (unsigned long)_uploadBytesWritten,
                 _uploadMd5.toString().c_str(), modeStr,
                 (unsigned long)(t1 - t0), (unsigned long)(t2 - t1),
                 (unsigned long)(t3 - t2), (unsigned long)(t4 - t3),
                 (unsigned long)(t4 - tEndReceived));
-    STORAGE_LOG("SD writer stats: %luKB in %lu writes, "
+    STORAGE_LOG("SD write stats: %luKB in %lu writes, "
                 "avg_lat=%lums max_lat=%lums total_io=%lums",
                 (unsigned long)(ws.bytesWritten / 1024),
                 (unsigned long)ws.writeCount,
@@ -816,10 +824,10 @@ void StorageServerT<TPolicy>::handleUploadEnd() {
     _streamActive = false;
     _policy.freeUploadBuffers();
 
-    // Resume resources suspended during stream upload
-    if (_streamSuspended && _onStreamEnd) {
-        _onStreamEnd();
-        _streamSuspended = false;
+    // Resume resources suspended for the duration of the upload
+    if (_uploadSuspended) {
+        if (_onUploadEnd) _onUploadEnd();
+        _uploadSuspended = false;
     }
 
     // Re-enable STATUS_UPDATE after transfer completes
@@ -876,9 +884,9 @@ void StorageServerT<TPolicy>::processStream() {
 
     _streamIterCount++;
 
-    // Check writer task health before committing more data
+    // Policy health check (reserved for a future async writer — no-op today)
     if (!_policy.checkAsyncWriterHealth()) {
-        STORAGE_LOG("Stream: async writer error - aborting "
+        STORAGE_LOG("Stream: policy signalled error - aborting "
                     "(seg=%u/%u rx=%lu/%lu)",
                     _streamSegmentIndex, _streamSegmentCount,
                     (unsigned long)_uploadBytesWritten,
@@ -895,26 +903,33 @@ void StorageServerT<TPolicy>::processStream() {
 
     _uploadLastActivity_ms = now;
 
-    // Read into fill buffer (reused as stream read buffer)
+    // Accumulate into the fill buffer. Policies see consistent buffer-full
+    // writes (typically 64 KB) instead of many small writes driven by UART
+    // arrival bursts — critical when the policy writes directly to flash
+    // or SD (small LittleFS writes are 10-20x slower than batched ones).
+    size_t space = _shared.uploadBufCapacity - _shared.uploadWriteBufLen;
     size_t toRead = (size_t)avail;
-    if (toRead > _streamSegBytesRemaining)
-        toRead = _streamSegBytesRemaining;
-    if (toRead > _shared.uploadBufCapacity)
-        toRead = _shared.uploadBufCapacity;
+    if (toRead > _streamSegBytesRemaining) toRead = _streamSegBytesRemaining;
+    if (toRead > space)                    toRead = space;
 
-    size_t got = _serial->readBytes(_shared.uploadWriteBuf, toRead);
+    size_t got = _serial->readBytes(
+        &_shared.uploadWriteBuf[_shared.uploadWriteBufLen], toRead);
     if (got == 0) return;
 
     // Feed running MD5 hash (fast, stays on Core 0)
-    _uploadMd5.add(_shared.uploadWriteBuf, got);
-    _uploadBytesWritten    += got;
+    _uploadMd5.add(&_shared.uploadWriteBuf[_shared.uploadWriteBufLen], got);
+    _uploadBytesWritten      += got;
     _streamSegBytesRemaining -= got;
+    _shared.uploadWriteBufLen += got;
 
-    // Write to ring buffer via policy (same path as onUploadBufferFull)
-    _shared.uploadWriteBufLen = got;
-    if (!_policy.onUploadBufferFull()) {
-        STORAGE_LOG("Stream: ring buffer write failed - aborting "
-                    "(seg=%u/%u rx=%lu/%lu ring=%u%%)",
+    // Flush when buffer full, or when the segment boundary has been reached
+    // (policies need the in-flight bytes on disk before we ACK).
+    bool needFlush = (_shared.uploadWriteBufLen >= _shared.uploadBufCapacity)
+                  || (_streamSegBytesRemaining == 0 && _shared.uploadWriteBufLen > 0);
+
+    if (needFlush && !_policy.onUploadBufferFull()) {
+        STORAGE_LOG("Stream: buffer flush failed - aborting "
+                    "(seg=%u/%u rx=%lu/%lu fill=%u%%)",
                     _streamSegmentIndex, _streamSegmentCount,
                     (unsigned long)_uploadBytesWritten,
                     (unsigned long)_uploadExpectedSize,
@@ -936,7 +951,7 @@ void StorageServerT<TPolicy>::processStream() {
         uint32_t avgLat = (ws.writeCount > 0)
             ? (ws.totalStallTime_ms / ws.writeCount) : 0;
         STORAGE_LOG("Stream seg=%u/%u rx=%lu/%lu (%u%%) "
-                    "rate=%luKB/s ring=%u%% uart=%d maxgap=%lums iter=%lu "
+                    "rate=%luKB/s fill=%u%% uart=%d maxgap=%lums iter=%lu "
                     "sd_written=%luKB sd_rate=%luKB/s sd_writes=%lu "
                     "sd_avglat=%lums sd_maxlat=%lums",
                     _streamSegmentIndex, _streamSegmentCount,
@@ -963,7 +978,7 @@ void StorageServerT<TPolicy>::processStream() {
         uint32_t segKBps = (segElapsed_ms > 0)
             ? (_streamSegmentSize / segElapsed_ms) : 0;
         STORAGE_LOG("Segment %u/%u done: %lums %luKB/s "
-                    "ring=%u%% maxgap=%lums iter=%lu",
+                    "fill=%u%% maxgap=%lums iter=%lu",
                     _streamSegmentIndex, _streamSegmentCount,
                     (unsigned long)segElapsed_ms, (unsigned long)segKBps,
                     _policy.bufferFillPercent(),
@@ -1002,7 +1017,7 @@ void StorageServerT<TPolicy>::processStream() {
 
 template <typename TPolicy>
 void StorageServerT<TPolicy>::sendStreamSegmentAck() {
-    // Wire: [segment_idx:u16LE][bytes_received:u32LE][ring_fill_pct:u8]
+    // Wire: [segment_idx:u16LE][bytes_received:u32LE][fill_pct:u8]
     uint8_t payload[7];
     CoreProtocol::putU16LE(&payload[0], _streamSegmentIndex);
     CoreProtocol::putU32LE(&payload[2], _uploadBytesWritten);
@@ -1045,10 +1060,10 @@ void StorageServerT<TPolicy>::cleanupUpload(bool deletePartial) {
     unlockStorage(_uploadTarget);
     _uploadActive = false;
 
-    // Resume resources suspended during stream upload
-    if (_streamSuspended && _onStreamEnd) {
-        _onStreamEnd();
-        _streamSuspended = false;
+    // Resume resources suspended for the duration of the upload
+    if (_uploadSuspended) {
+        if (_onUploadEnd) _onUploadEnd();
+        _uploadSuspended = false;
     }
 
     // Re-enable STATUS_UPDATE after transfer cleanup
@@ -1078,7 +1093,7 @@ void StorageServerT<TPolicy>::checkUploadTimeout() {
     if (elapsed >= timeout) {
         STORAGE_LOG("Upload inactivity timeout (%lums, limit=%lums) "
                     "cancelling %s:%s (rx=%lu/%lu bytes, stream=%s "
-                    "seg=%u/%u ring=%u%%)",
+                    "seg=%u/%u fill=%u%%)",
                     (unsigned long)elapsed,
                     (unsigned long)timeout,
                     targetName(_uploadTarget), _uploadPath,
