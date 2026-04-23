@@ -31,6 +31,10 @@ const (
 	LedReset           protocol.PacketType = 0x4B
 	LedEnable          protocol.PacketType = 0x4C
 
+	// Light program runtime control (resolved against /lightfx.yaml programs)
+	LightProgramSelect protocol.PacketType = 0x4D
+	LightProgramReset  protocol.PacketType = 0x4E
+
 	// Servo control
 	ServoSet           protocol.PacketType = 0x50
 	ServoSettings      protocol.PacketType = 0x51
@@ -41,6 +45,9 @@ const (
 	LandingLightDeploy  protocol.PacketType = 0x54
 	LandingLightRetract protocol.PacketType = 0x55
 	LandingLightStatus  protocol.PacketType = 0x56
+
+	// LightFX-specific battery safety: soft-disable LED channels on low voltage.
+	BatteryAutoCutoff   protocol.PacketType = 0x5E
 
 	// Response packets
 	LedSeqStatusResp   protocol.PacketType = 0x5A
@@ -70,6 +77,7 @@ const (
 	ErrInvalidServo    protocol.ErrorCode = 0x54
 	ErrInvalidSlot     protocol.ErrorCode = 0x55
 	ErrChannelDisabled protocol.ErrorCode = 0x56
+	ErrInvalidProgram  protocol.ErrorCode = 0x57
 )
 
 // ─── Commands ───
@@ -176,6 +184,26 @@ func CmdLandingLightRetract(slot byte) []byte {
 	return protocol.BuildPacket(LandingLightRetract, []byte{slot}, 0)
 }
 
+// CmdBatteryAutoCutoff toggles the low-voltage LED soft-disable safety reaction.
+func CmdBatteryAutoCutoff(enabled bool) []byte {
+	e := byte(0)
+	if enabled {
+		e = 1
+	}
+	return protocol.BuildPacket(BatteryAutoCutoff, []byte{e}, 0)
+}
+
+// CmdLightProgramSelect activates a program by 0-based index. Slave rejects
+// with ErrInvalidProgram if no config is loaded or index is past programCount.
+func CmdLightProgramSelect(index byte) []byte {
+	return protocol.BuildPacket(LightProgramSelect, []byte{index}, 0)
+}
+
+// CmdLightProgramReset stops sequences, retracts all groups, leaves no active program.
+func CmdLightProgramReset() []byte {
+	return protocol.BuildPacket(LightProgramReset, nil, 0)
+}
+
 // ─── Name Lookups ───
 
 // LandingLightPhaseName returns landing light phase name.
@@ -206,6 +234,8 @@ func init() {
 		LedMasterBrightness: "LFX.LED_MASTER_BRIGHTNESS",
 		LedReset:            "LFX.LED_RESET",
 		LedEnable:           "LFX.LED_ENABLE",
+		LightProgramSelect:  "LFX.LIGHT_PROGRAM_SELECT",
+		LightProgramReset:   "LFX.LIGHT_PROGRAM_RESET",
 		ServoSet:            "LFX.SERVO_SET",
 		ServoSettings:       "LFX.SERVO_SETTINGS",
 		LandingLightBind:    "LFX.LANDING_LIGHT_BIND",
@@ -213,6 +243,7 @@ func init() {
 		LandingLightDeploy:  "LFX.LANDING_LIGHT_DEPLOY",
 		LandingLightRetract: "LFX.LANDING_LIGHT_RETRACT",
 		LandingLightStatus:  "LFX.LANDING_LIGHT_STATUS",
+		BatteryAutoCutoff:   "LFX.BATTERY_AUTO_CUTOFF",
 		LedSeqStatusResp:    "LFX.LED_SEQ_STATUS_RESP",
 		LedStatusResp:       "LFX.LED_STATUS_RESP",
 		LedSeqQueueResp:     "LFX.LED_SEQ_QUEUE_RESP",
@@ -226,5 +257,6 @@ func init() {
 		ErrInvalidServo:    "INVALID_SERVO",
 		ErrInvalidSlot:     "INVALID_SLOT",
 		ErrChannelDisabled: "CHANNEL_DISABLED",
+		ErrInvalidProgram:  "INVALID_PROGRAM",
 	})
 }

@@ -21,6 +21,10 @@
     /** Show accel/decel rows. Set false for boards that don't expose them (GearControl door/yaw use 0/0). */
     export let supportsAccelDecel: boolean = false
 
+    /** Board command prefix (Rule 30) — `light`, `gear`, `gun`, etc. Empty = bare. */
+    export let prefix: string = ''
+    const pfx = (c: string) => prefix ? `${prefix}:${c}` : c
+
     interface CalibResult {
         min_us: number; max_us: number; speed: number
         accel: number; decel: number; reversed: boolean
@@ -68,7 +72,7 @@
 
     function pushWidenedNow() {
         if (_speed < 0 || _speed > 65535) { cfgStatus = 'invalid'; return }
-        const cmd = `servo.config ${servoId} ${PWM_MIN} ${PWM_MAX} ${_speed} ${_accel} ${_decel}${_rev ? ' rev' : ''}`
+        const cmd = pfx(`servo.config ${servoId} ${PWM_MIN} ${PWM_MAX} ${_speed} ${_accel} ${_decel}${_rev ? ' rev' : ''}`)
         SendCommand(cmd)
         lastCfgPushed = cmd
         cfgStatus = 'sent'
@@ -83,11 +87,11 @@
         const t = Date.now()
         if (t - lastJog >= JOG_THROTTLE_MS) {
             lastJog = t
-            SendCommand(`servo set ${servoId} ${Math.round(us)}`)
+            SendCommand(pfx(`servo set ${servoId} ${Math.round(us)}`))
             if (jogTimer) { clearTimeout(jogTimer); jogTimer = null }
         } else {
             if (jogTimer) clearTimeout(jogTimer)
-            jogTimer = setTimeout(() => { lastJog = Date.now(); SendCommand(`servo set ${servoId} ${Math.round(us)}`); jogTimer = null }, JOG_THROTTLE_MS)
+            jogTimer = setTimeout(() => { lastJog = Date.now(); SendCommand(pfx(`servo set ${servoId} ${Math.round(us)}`)); jogTimer = null }, JOG_THROTTLE_MS)
         }
     }
 
@@ -120,12 +124,12 @@
     function cfgCommandWidened(): string {
         let cmd = `servo.config ${servoId} ${PWM_MIN} ${PWM_MAX} ${_speed} ${_accel} ${_decel}`
         if (_rev) cmd += ' rev'
-        return cmd
+        return pfx(cmd)
     }
     function cfgCommandFinal(): string {
         let cmd = `servo.config ${servoId} ${_min} ${_max} ${_speed} ${_accel} ${_decel}`
         if (_rev) cmd += ' rev'
-        return cmd
+        return pfx(cmd)
     }
 
     function pushConfig() {
@@ -164,7 +168,7 @@
     function doCancel() {
         // Restore the original config on the board so live edits don't leak out.
         if (cfgTimer) { clearTimeout(cfgTimer); cfgTimer = null }
-        SendCommand(`servo.config ${servoId} ${_origMin} ${_origMax} ${_origSpeed} ${_origAccel} ${_origDecel}${_origRev ? ' rev' : ''}`)
+        SendCommand(pfx(`servo.config ${servoId} ${_origMin} ${_origMax} ${_origSpeed} ${_origAccel} ${_origDecel}${_origRev ? ' rev' : ''}`))
         close()
     }
 

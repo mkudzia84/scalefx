@@ -94,6 +94,23 @@ CommandHandleResult LightFxServer::handleModulePacket(uint8_t type, const uint8_
             SFX_DISPATCH(_landingLightRetractCallback, slot);
         }
 
+        case LightFxPacket::BATTERY_AUTO_CUTOFF: {
+            SFX_REQUIRE_LEN(1);
+            bool enabled = payload[0] != 0;
+            SFX_DISPATCH(_batteryAutoCutoffCallback, enabled);
+        }
+
+        case LightFxPacket::LIGHT_PROGRAM_SELECT: {
+            SFX_REQUIRE_LEN(1);
+            uint8_t programIndex = payload[0];
+            SFX_DISPATCH(_lightProgramSelectCallback, programIndex);
+        }
+
+        case LightFxPacket::LIGHT_PROGRAM_RESET: {
+            // No payload — best-effort callback dispatches handled below
+            SFX_DISPATCH(_lightProgramResetCallback);
+        }
+
         default:
             return CommandHandleResult::NotMyCommand;
     }

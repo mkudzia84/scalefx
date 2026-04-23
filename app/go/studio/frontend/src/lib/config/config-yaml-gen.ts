@@ -65,14 +65,37 @@ export function generateLightYaml(config: LightConfig, nested: boolean = false):
     lines.push(`${L0}master_brightness: ${config.masterBrightness}`)
     lines.push('')
 
-    const activeGroups = config.groups.filter(g => g.memberChannels.length > 0 || g.servoBindings.length > 0)
+    if (config.battery) {
+        lines.push(`${L0}battery:`)
+        lines.push(`${L1}auto_cutoff: ${config.battery.autoCutoff}`)
+        lines.push(`${L1}chemistry: ${config.battery.chemistry}`)
+        lines.push(`${L1}cell_count: ${config.battery.cellCount}`)
+        lines.push('')
+    }
+
+    const activeGroups = config.groups.filter(g =>
+        g.memberChannels.length > 0 ||
+        (g.hubfxMemberChannels?.length ?? 0) > 0 ||
+        g.servoBindings.length > 0
+    )
     if (activeGroups.length > 0) {
         lines.push(`${L0}landing_groups:`)
         for (const group of activeGroups) {
             lines.push(`${L1}- name: ${yamlString(group.name)}`)
-            let mask = 0
-            for (const ch of group.memberChannels) mask |= (1 << (ch - 1))
-            lines.push(`${L2}channel_mask: 0x${mask.toString(16).toUpperCase().padStart(2, '0')}`)
+            // Split channel mask: lightfx-side (8 chans, the slave) vs
+            // hubfx-side (6 chans, the master's local LEDs). Each board
+            // loads the same /lightfx.yaml and applies only its own bits.
+            let lfxMask = 0
+            for (const ch of group.memberChannels) lfxMask |= (1 << (ch - 1))
+            let hfxMask = 0
+            for (const ch of group.hubfxMemberChannels ?? []) hfxMask |= (1 << (ch - 1))
+            lines.push(`${L2}lightfx_channels: 0x${lfxMask.toString(16).toUpperCase().padStart(2, '0')}`)
+            lines.push(`${L2}hubfx_channels: 0x${hfxMask.toString(16).toUpperCase().padStart(2, '0')}`)
+            // servo_board defaults to lightfx — only emit when set to hubfx
+            // (keeps round-trip diffs minimal on legacy lightfx-only configs).
+            if (group.servoBoard === 'hubfx') {
+                lines.push(`${L2}servo_board: hubfx`)
+            }
             if (group.servoBindings.length > 0) {
                 const b = group.servoBindings[0]
                 lines.push(`${L2}servo_id: ${b.servo}`)
@@ -120,6 +143,12 @@ export function generateLightYaml(config: LightConfig, nested: boolean = false):
                 lines.push(`${L2}channels:`)
                 for (const ch of activeChannels) {
                     lines.push(`${L3}- channel: ${ch.index + 1}`)
+
+                    // board defaults to lightfx — only emit when set to hubfx
+                    // so legacy lightfx-only configs round-trip unchanged.
+                    if (ch.board === 'hubfx') {
+                        lines.push(`${L4}board: hubfx`)
+                    }
 
                     if (ch.mode === 'group') {
                         lines.push(`${L4}group: ${ch.groupIndex}`)
@@ -216,13 +245,27 @@ export function parseLightYaml(
 
     const masterBrightness = asNum(root['master_brightness'], 100)
 
+    const battObj = asObj(root['battery'])
+    const battery = {
+        autoCutoff: asBool(battObj['auto_cutoff'], true),
+        chemistry:  asStr(battObj['chemistry'], 'lipo'),
+        cellCount:  asNum(battObj['cell_count'], 0),
+    }
+
     // Groups ← landing_groups
+    // Supports both the new split keys (lightfx_channels + hubfx_channels)
+    // and the legacy single channel_mask, which is treated as lightfx-side.
     const groups: LightGroup[] = []
     const lgArr = asArr(root['landing_groups'])
     for (const item of lgArr) {
         const g = asObj(item)
         const name = asStr(g['name'], `Group ${groups.length + 1}`)
-        const mask = asNum(g['channel_mask'], 0)
+        const lfxMask = g['lightfx_channels'] !== undefined
+            ? asNum(g['lightfx_channels'], 0)
+            : asNum(g['channel_mask'], 0)   // legacy
+        const hfxMask = asNum(g['hubfx_channels'], 0)
+        const servoBoardStr = asStr(g['servo_board'], 'lightfx').toLowerCase()
+        const servoBoard: 'lightfx' | 'hubfx' = servoBoardStr === 'hubfx' ? 'hubfx' : 'lightfx'
         const servoId = asNum(g['servo_id'], 0)
         const bindings: LightServoBinding[] = servoId > 0 ? [{
             servo: servoId,
@@ -235,7 +278,11 @@ export function parseLightYaml(
         }] : []
         groups.push({
             name,
-            memberChannels: maskToChannels(mask, channelCount),
+            // Lightfx side uses the lightfx channel-count for bit→channel
+            // expansion (8); hubfx side is always 6.
+            memberChannels:      maskToChannels(lfxMask, 8),
+            hubfxMemberChannels: maskToChannels(hfxMask, 6),
+            servoBoard,
             servoBindings: bindings,
         })
     }
@@ -273,6 +320,7 @@ export function parseLightYaml(
             mode: 'events' as const,
             groupIndex: 0,
             events: [],
+            board: 'lightfx' as const,
         }))
 
         for (const chItem of asArr(p['channels'])) {
@@ -281,6 +329,8 @@ export function parseLightYaml(
             if (channel < 1 || channel > channelCount) continue
             const state = channels[channel - 1]
             state.enabled = true
+            const boardStr = asStr(c['board'], 'lightfx').toLowerCase()
+            state.board = boardStr === 'hubfx' ? 'hubfx' : 'lightfx'
             if (c['group'] !== undefined) {
                 state.mode = 'group'
                 state.groupIndex = asNum(c['group'], 0)
@@ -313,7 +363,7 @@ export function parseLightYaml(
     }
 
     const state: LightConfig = {
-        programs, groups, masterBrightness, channelCount,
+        programs, groups, masterBrightness, battery, channelCount,
         pwmMin, pwmMax, hubAvailable,
     }
 
@@ -511,10 +561,31 @@ export function parseGearControlYaml(yaml: string, nested: boolean = false): Par
     return { state, errors, warnings }
 }
 
-// ─── HubFX combined YAML (light_fx + gear_control nested) ───
+// ─── HubFX-only settings YAML ───
+//
+// /hubfx.yaml carries hub-only settings (codec, future input mappings); the
+// hub's master copy of the light program lives in /lightfx.yaml on the hub
+// (HubLightFxConfigSchema, fanned to the LightFX slave on attach). Per
+// Rule 26 / hubfx_config.h, light_fx never appears in /hubfx.yaml.
+export interface HubFxSettings {
+    codecSupplyVoltage: '12v' | '15v' | '20v' | '24v'
+}
 
-export function generateHubFxYaml(light: LightConfig): string {
-    // HubFX currently only surfaces the embedded LightFX section in the dialog;
-    // gear_control embedding will be added once HubFxTab tracks that state.
-    return generateLightYaml(light, true)
+export function generateHubFxSettingsYaml(s: HubFxSettings): string {
+    return [
+        `codec_supply_voltage: ${s.codecSupplyVoltage}`,
+        '',
+    ].join('\n')
+}
+
+export function parseHubFxSettingsYaml(yaml: string): ParseResult<HubFxSettings> {
+    const { value, errors: parseErrs } = parseYaml(yaml)
+    const errors = parseErrs.map(e => `line ${e.line}: ${e.message}`)
+    const root = asObj(value)
+    const raw = asStr(root['codec_supply_voltage'], '12v').toLowerCase()
+    const allowed: HubFxSettings['codecSupplyVoltage'][] = ['12v', '15v', '20v', '24v']
+    const codecSupplyVoltage = (allowed as string[]).includes(raw)
+        ? (raw as HubFxSettings['codecSupplyVoltage'])
+        : '12v'
+    return { state: { codecSupplyVoltage }, errors, warnings: [] }
 }

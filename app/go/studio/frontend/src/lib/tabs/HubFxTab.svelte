@@ -6,10 +6,13 @@
     import { SendCommand, GetSlaveInfo, UploadConfig } from '../../../wailsjs/go/main/App'
     import { onMount, onDestroy } from 'svelte'
     import SaveConfigDialog from '../dialogs/SaveConfigDialog.svelte'
-    import { LightConfigVerifier, type LightConfig } from '../config/light-verifier'
-    import { generateHubFxYaml, parseLightYaml } from '../config/config-yaml-gen'
+    import {
+        generateHubFxSettingsYaml, parseHubFxSettingsYaml,
+        type HubFxSettings,
+    } from '../config/config-yaml-gen'
+    import { EMPTY_RESULT } from '../config/config-verifier'
     import type { BoardConfigDriver } from '../config/board-driver'
-    import { autoLoadOnConnect } from '../config/config-loader'
+    import { autoLoadOnConnect, loadConfigFromDevice } from '../config/config-loader'
 
     export let boardLabel: string = 'HubFX'
 
@@ -97,26 +100,26 @@
     let engineOutputChannels = 'all'
 
     function engineStart() {
-        SendCommand('engine.start')
+        SendCommand('hub:engine.start')
         engineRunning = true
     }
 
     function engineStop() {
-        SendCommand('engine.stop')
+        SendCommand('hub:engine.stop')
         engineRunning = false
     }
 
     function engineStatus() {
-        SendCommand('engine.status')
+        SendCommand('hub:engine.status')
     }
 
     function testSound(path: string, channel: number = 3) {
         if (!path) return
-        SendCommand(`audio.play ${channel} ${path} 80`)
+        SendCommand(`hub:audio.play ${channel} ${path} 80`)
     }
 
     function stopTestSound(channel: number = 3) {
-        SendCommand(`audio.stop ${channel}`)
+        SendCommand(`hub:audio.stop ${channel}`)
     }
 
     // ─── Audio Mixer ───
@@ -127,19 +130,19 @@
 
     function audioPlay() {
         if (!audioPath) return
-        SendCommand(`audio.play ${audioChannel} ${audioPath} ${audioVolume}`)
+        SendCommand(`hub:audio.play ${audioChannel} ${audioPath} ${audioVolume}`)
     }
 
     function audioStop(ch: number | 'all' = 'all') {
-        SendCommand(`audio.stop ${ch}`)
+        SendCommand(`hub:audio.stop ${ch}`)
     }
 
     function audioSetVolume(ch: number | 'master', vol: number) {
-        SendCommand(`audio.volume ${ch} ${vol}`)
+        SendCommand(`hub:audio.volume ${ch} ${vol}`)
     }
 
-    function audioStatus() { SendCommand('audio.status') }
-    function codecStatus() { SendCommand('codec.status') }
+    function audioStatus() { SendCommand('hub:audio.status') }
+    function codecStatus() { SendCommand('hub:codec.status') }
 
     // ─── Storage ───
     function sdInit() { SendCommand('sd.init') }
@@ -151,34 +154,28 @@
     function configStatus() { SendCommand('config.status') }
 
     // ─── Save Config Dialog ───
-    const lightVerifier = new LightConfigVerifier()
+    // /hubfx.yaml carries hub-only settings (codec, future input mappings).
+    // The hub's master copy of the light program lives in /lightfx.yaml on
+    // the hub and is fanned to the LightFX slave on attach (Rule 26).
     let saveDialogOpen = false
+    let codecSupplyVoltage: HubFxSettings['codecSupplyVoltage'] = '12v'
 
-    function buildHubFxLightConfig(): LightConfig {
-        return {
-            programs: [],     // TODO: populate from embedded LightSetup state
-            groups: [],
-            masterBrightness: masterVolume,
-            channelCount: 6,  // HubFX embedded = 6 channels
-            pwmMin: 1000,
-            pwmMax: 2000,
-            hubAvailable: true,
-        }
+    function buildHubFxSettings(): HubFxSettings {
+        return { codecSupplyVoltage }
     }
 
-    function applyHubFxConfig(cfg: LightConfig) {
-        masterVolume = cfg.masterBrightness
-        // TODO: populate embedded LightSetup state from cfg.programs / cfg.groups
+    function applyHubFxSettings(s: HubFxSettings) {
+        codecSupplyVoltage = s.codecSupplyVoltage
     }
 
-    const hubDriver: BoardConfigDriver<LightConfig> = {
+    const hubDriver: BoardConfigDriver<HubFxSettings> = {
         boardType: 'hubfx',
         boardLabel: 'HubFX ESP32-S3',
-        buildState: buildHubFxLightConfig,
-        generateYaml: (s) => generateHubFxYaml(s),
-        parseYaml:    (t) => parseLightYaml(t, true, 6, 1000, 2000, true),
-        applyState:   applyHubFxConfig,
-        verify:       (s) => lightVerifier.verify(s),
+        buildState: buildHubFxSettings,
+        generateYaml: (s) => generateHubFxSettingsYaml(s),
+        parseYaml:    (t) => parseHubFxSettingsYaml(t),
+        applyState:   applyHubFxSettings,
+        verify:       () => EMPTY_RESULT,
     }
 
     function openSaveDialog() { saveDialogOpen = true }
@@ -192,8 +189,8 @@
     function fileList(target: string, path: string = '/') { SendCommand(`file.list ${target} ${path}`) }
 
     // ─── USB ───
-    function usbDevices() { SendCommand('usb.devices') }
-    function usbReset() { SendCommand('usb.reset') }
+    function usbDevices() { SendCommand('hub:usb.devices') }
+    function usbReset() { SendCommand('hub:usb.reset') }
 
     // ─── Status ───
     function refreshStatus() { SendCommand('status') }
@@ -456,7 +453,11 @@
 <SaveConfigDialog
     driver={hubDriver}
     bind:open={saveDialogOpen}
-    onSave={async (yaml) => { await UploadConfig(yaml) }}
+    onSave={async (yaml) => {
+        await UploadConfig(yaml)
+        // Round-trip: re-download + re-apply so the tab reflects on-device state.
+        await loadConfigFromDevice(hubDriver)
+    }}
     onClose={() => { saveDialogOpen = false }}
 />
 

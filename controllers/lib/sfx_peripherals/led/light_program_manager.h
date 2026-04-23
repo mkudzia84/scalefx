@@ -131,8 +131,11 @@ public:
      *
      * @param leds      LED manager for sequence operations (must outlive this object)
      * @param callbacks Hardware callbacks for servo/landing light operations
+     * @param board     Which board this instance drives — "lightfx" (default) or
+     *                  "hubfx". Filters per-channel program defs and per-group
+     *                  channel masks to the matching board only.
      */
-    void begin(ILedManager* leds, const Callbacks& callbacks);
+    void begin(ILedManager* leds, const Callbacks& callbacks, const char* board = "lightfx");
 
     /**
      * @brief Load configuration and apply hardware settings.
@@ -159,6 +162,15 @@ public:
      * @param index  Program index (0-based, must be < programCount())
      */
     void selectProgram(uint8_t index);
+
+    /**
+     * @brief Reset to "no program active".
+     *
+     * Stops all sequences, turns off all LEDs, retracts all landing groups
+     * touched by this board, and clears the active program. After this the
+     * next selectProgram() will start from a clean state.
+     */
+    void resetProgram();
 
     /**
      * @brief Update input-driven program selection.
@@ -198,9 +210,21 @@ private:
     LightProgramConfig  _config;
     int8_t              _activeProgram = -1;
     bool                _configLoaded  = false;
+    bool                _isLightFx     = true;   // false → driving the hubfx local channels
     uint32_t            _lastSwitchTime_ms = 0;
 
     // ---- Internal helpers ----
+
+    /// Channel mask for this instance's board side of a landing group.
+    uint8_t boardChannelMask(const LightProgramConfig::LandingGroup& g) const {
+        return _isLightFx ? g.lightfxChannelMask : g.hubfxChannelMask;
+    }
+
+    /// Whether a per-channel program def belongs to this instance's board.
+    bool channelOwnedByBoard(const LightProgramConfig::ChannelDef& c) const {
+        return _isLightFx ? LightProgramBoard::isLightFx(c.board)
+                          : LightProgramBoard::isHubFx(c.board);
+    }
 
     /// Apply servo configuration from loaded config
     void applyServoConfig();

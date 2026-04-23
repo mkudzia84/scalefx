@@ -16,6 +16,10 @@
     /** Show section header. */
     export let showHeader: boolean = true
 
+    /** Board command prefix (Rule 30) — `light`, `gear`, `gun`, etc. Empty = bare. */
+    export let prefix: string = ''
+    const pfx = (c: string) => prefix ? `${prefix}:${c}` : c
+
     // ─── Per-servo state tracked locally ───
     interface ServoState {
         pulse_us: number
@@ -80,7 +84,7 @@
     function configCommandFor(id: number, s: ServoState): string {
         let cmd = `servo.config ${id} ${s.min_us} ${s.max_us} ${s.speed} ${s.accel} ${s.decel}`
         if (s.reversed) cmd += ' rev'
-        return cmd
+        return pfx(cmd)
     }
 
     function scheduleLivePush() {
@@ -105,7 +109,7 @@
     // ─── Commands ───
     function setPosition() {
         const s = getState(activeId)
-        SendCommand(`servo set ${activeId} ${s.pulse_us}`)
+        SendCommand(pfx(`servo set ${activeId} ${s.pulse_us}`))
     }
 
     function applyConfig() {

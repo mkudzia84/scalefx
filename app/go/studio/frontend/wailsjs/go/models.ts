@@ -48,6 +48,22 @@ export namespace main {
 	        this.subDir = source["subDir"];
 	    }
 	}
+	export class FirmwareVersionInfo {
+	    version?: string;
+	    build?: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FirmwareVersionInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.build = source["build"];
+	        this.error = source["error"];
+	    }
+	}
 	export class FsEntry {
 	    name: string;
 	    isDir: boolean;

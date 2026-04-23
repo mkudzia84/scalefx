@@ -61,10 +61,24 @@ public:
     void onLandingLightDeploy(LandingLightSlotCallback cb) { _landingLightDeployCallback = cb; }
     void onLandingLightRetract(LandingLightSlotCallback cb) { _landingLightRetractCallback = cb; }
 
+    // ========================================================================
+    // Battery Safety Callback
+    // ========================================================================
+
+    void onBatteryAutoCutoff(LightFxBatteryAutoCutoffCallback cb) { _batteryAutoCutoffCallback = cb; }
+
+    // ========================================================================
+    // Light Program Runtime Callbacks
+    // ========================================================================
+
+    void onLightProgramSelect(LightProgramSelectCallback cb) { _lightProgramSelectCallback = cb; }
+    void onLightProgramReset (LightProgramResetCallback  cb) { _lightProgramResetCallback  = cb; }
+
 protected:
     CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
 
-    // Extend range to include servos (0x50-0x51) and landing lights (0x52-0x56)
+    // Extend range to include servos (0x50-0x51), landing lights (0x52-0x56),
+    // and battery auto-cutoff (0x5E).
     uint8_t moduleRangeHigh() const override { return 0x5F; }
 
 private:
@@ -74,6 +88,9 @@ private:
     LandingLightSlotCallback _landingLightUnbindCallback;
     LandingLightSlotCallback _landingLightDeployCallback;
     LandingLightSlotCallback _landingLightRetractCallback;
+    LightFxBatteryAutoCutoffCallback _batteryAutoCutoffCallback;
+    LightProgramSelectCallback _lightProgramSelectCallback;
+    LightProgramResetCallback  _lightProgramResetCallback;
     uint8_t _landingLightTag[3] = {};  // Per-slot tag for deploy/retract progress
 };
 

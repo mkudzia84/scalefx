@@ -52,7 +52,18 @@ func (h *Handler) FormatStatusBroadcast(s *StatusBroadcast) {
 
 	if s.BatteryPresent {
 		batV := float64(s.Battery_mV) / 1000.0
-		h.E.Out.Printf("  Battery:   %.2fV (%d%%, %dS)\n", batV, s.BatteryPct, s.CellCount)
+		extras := []string{}
+		if s.BatteryAutoCutoff {
+			extras = append(extras, "cutoff:on")
+		}
+		if s.BatteryLowTriggered {
+			extras = append(extras, h.E.Out.C(engine.ColorYellow, "LOW-TRIGGERED"))
+		}
+		suffix := ""
+		if len(extras) > 0 {
+			suffix = ", " + strings.Join(extras, ", ")
+		}
+		h.E.Out.Printf("  Battery:   %.2fV (%d%%, %dS%s)\n", batV, s.BatteryPct, s.CellCount, suffix)
 	}
 }
 

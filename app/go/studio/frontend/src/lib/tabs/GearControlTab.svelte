@@ -16,7 +16,7 @@
     import { EMPTY_RESULT, type VerifyResult } from '../config/config-verifier'
     import type { BoardConfigDriver } from '../config/board-driver'
     import { createLivePusher, pushBadgeText } from '../live-push'
-    import { autoLoadOnConnect } from '../config/config-loader'
+    import { autoLoadOnConnect, loadConfigFromDevice } from '../config/config-loader'
 
     export let boardLabel: string = 'GearControl'
 
@@ -52,29 +52,29 @@
     $: hasErrors = calibStates.some((s, i) => gearEnabled[i] && s === 'error')
 
     // ─── Aggregate actions ───
-    function gearAllDeploy()  { SendCommand('deploy all'); gearActions = gearActions.map(() => 'deploying' as GearAction) }
-    function gearAllRetract() { SendCommand('retract all'); gearActions = gearActions.map(() => 'retracting' as GearAction) }
-    function gearAllStop()    { SendCommand('stop all'); gearActions = gearActions.map(() => 'idle' as GearAction) }
+    function gearAllDeploy()  { SendCommand('gear:deploy all'); gearActions = gearActions.map(() => 'deploying' as GearAction) }
+    function gearAllRetract() { SendCommand('gear:retract all'); gearActions = gearActions.map(() => 'retracting' as GearAction) }
+    function gearAllStop()    { SendCommand('gear:stop all'); gearActions = gearActions.map(() => 'idle' as GearAction) }
     function gearResetAll()   {
-        SendCommand('reset all')
+        SendCommand('gear:reset all')
         calibStates = calibStates.map(s => s === 'error' ? 'uncalibrated' as CalibState : s)
         calibErrors = ['', '', '']
     }
 
     // ─── Calibration ───
     function calibrateAll() {
-        SendCommand(`calibrate all ${calibTimeout_s}`)
+        SendCommand(`gear:calibrate all ${calibTimeout_s}`)
         calibStates = calibStates.map(() => 'calibrating' as CalibState)
         calibErrors = ['', '', '']
         liveCurrent_mA = [0, 0, 0]
         calibPhases = ['clear', 'clear', 'clear']
     }
     function calibCancelAll() {
-        SendCommand('calibrate.cancel all')
+        SendCommand('gear:calibrate.cancel all')
         calibStates = calibStates.map(s => s === 'calibrating' ? 'uncalibrated' as CalibState : s)
     }
     function calibrate(id: number) {
-        SendCommand(`calibrate ${id} ${calibTimeout_s}`)
+        SendCommand(`gear:calibrate ${id} ${calibTimeout_s}`)
         calibStates[id] = 'calibrating'
         calibErrors[id] = ''
         liveCurrent_mA[id] = 0
@@ -84,7 +84,7 @@
         calibPhases = calibPhases
     }
     function calibCancel(id: number) {
-        SendCommand(`calibrate.cancel ${id}`)
+        SendCommand(`gear:calibrate.cancel ${id}`)
         calibStates[id] = 'uncalibrated'
         calibStates = calibStates
     }
@@ -96,19 +96,19 @@
         calibStates = calibStates.map(() => 'calibrated' as CalibState)
     }
     function resetGearState() {
-        SendCommand('reset all')
+        SendCommand('gear:reset all')
         calibStates = calibStates.map(() => 'uncalibrated' as CalibState)
         calibErrors = ['', '', '']
     }
 
     // ─── Per-gear actions ───
-    function gearDeploy(id: number)  { SendCommand(`deploy ${id}`); gearActions[id] = 'deploying'; gearActions = gearActions }
-    function gearRetract(id: number) { SendCommand(`retract ${id}`); gearActions[id] = 'retracting'; gearActions = gearActions }
-    function gearStop(id: number)    { SendCommand(`stop ${id}`); gearActions[id] = 'idle'; gearActions = gearActions }
-    function gearEnable(id: number)  { SendCommand(`enable ${id}`); gearEnabled[id] = true; gearEnabled = gearEnabled }
-    function gearDisable(id: number) { SendCommand(`disable ${id}`); gearEnabled[id] = false; gearEnabled = gearEnabled }
+    function gearDeploy(id: number)  { SendCommand(`gear:deploy ${id}`); gearActions[id] = 'deploying'; gearActions = gearActions }
+    function gearRetract(id: number) { SendCommand(`gear:retract ${id}`); gearActions[id] = 'retracting'; gearActions = gearActions }
+    function gearStop(id: number)    { SendCommand(`gear:stop ${id}`); gearActions[id] = 'idle'; gearActions = gearActions }
+    function gearEnable(id: number)  { SendCommand(`gear:enable ${id}`); gearEnabled[id] = true; gearEnabled = gearEnabled }
+    function gearDisable(id: number) { SendCommand(`gear:disable ${id}`); gearEnabled[id] = false; gearEnabled = gearEnabled }
     function gearReset(id: number) {
-        SendCommand(`reset ${id}`)
+        SendCommand(`gear:reset ${id}`)
         if (calibStates[id] === 'error') { calibStates[id] = 'uncalibrated'; calibStates = calibStates }
         calibErrors[id] = ''
         calibErrors = calibErrors
@@ -129,7 +129,7 @@
     function applyGearConfig(id: number) {
         const gc = gearConfigs[id]
         const flags = 0x00  // hasYaw is now set via yaw config
-        SendCommand(`gear.config ${id} ${flags} ${gc.stallCurrent_mA} ${gc.timeout_ms}`)
+        SendCommand(`gear:gear.config ${id} ${flags} ${gc.stallCurrent_mA} ${gc.timeout_ms}`)
     }
 
     // ─── Door Mode (per gear) ───
@@ -173,7 +173,7 @@
 
     function applyDoorMode(id: number) {
         const dm = doorModes[id]
-        SendCommand(`door.mode ${id} ${doorModeValues[dm.preDeployMode]} ${doorModeValues[dm.postDeployMode]} ${dm.delay_ms}`)
+        SendCommand(`gear:door.mode ${id} ${doorModeValues[dm.preDeployMode]} ${doorModeValues[dm.postDeployMode]} ${dm.delay_ms}`)
     }
 
     // ─── Yaw Config ───
@@ -187,15 +187,15 @@
     function applyYawConfig() {
         const pin = pinConfigs.find(p => p.role === 'yaw_output')
         if (!pin) return
-        SendCommand(`yaw.config ${pin.gear_id} ${pin.neutral_us} ${pin.min_us} ${pin.max_us}`)
-        SendCommand(`servo.config ${SERVO_ID_YAW} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`)
+        SendCommand(`gear:yaw.config ${pin.gear_id} ${pin.neutral_us} ${pin.min_us} ${pin.max_us}`)
+        SendCommand(`gear:servo.config ${SERVO_ID_YAW} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`)
     }
-    function setYaw() { SendCommand(`yaw ${yawPosition_us}`) }
+    function setYaw() { SendCommand(`gear:yaw ${yawPosition_us}`) }
     function resetYawPosition() {
         const pin = pinConfigs.find(p => p.role === 'yaw_output')
         const neutral = pin?.neutral_us ?? 1500
         yawPosition_us = neutral
-        SendCommand(`yaw ${neutral}`)
+        SendCommand(`gear:yaw ${neutral}`)
     }
 
     // Apply door servo settings (min/max/speed/reversed) for a given pin.
@@ -205,7 +205,7 @@
         if (!pin || pin.role !== 'door') return
         const doorIdx = doorLegIndex(pinIdx, pin.channel)
         const servoId = pin.channel * 2 + doorIdx
-        SendCommand(`servo.config ${servoId} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`)
+        SendCommand(`gear:servo.config ${servoId} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`)
     }
 
     // ─── Battery ───
@@ -246,7 +246,7 @@
     function applyBattery() {
         const auto = batteryAutoDeploy ? 'autodeploy' : ''
         const cells = batteryCellCount > 0 ? `cells:${batteryCellCount}` : 'auto'
-        SendCommand(`battery ${auto} ${batteryChemistry} ${cells}`.replace(/\s+/g, ' ').trim())
+        SendCommand(`gear:battery ${auto} ${batteryChemistry} ${cells}`.replace(/\s+/g, ' ').trim())
     }
 
     // ─── Pin Mapping ───
@@ -1653,7 +1653,11 @@
     driver={gcDriver}
     bind:open={saveDialogOpen}
     initialResult={liveResult}
-    onSave={async (yaml) => { await UploadConfig(yaml) }}
+    onSave={async (yaml) => {
+        await UploadConfig(yaml)
+        // Round-trip: re-download + re-apply so the tab reflects on-device state.
+        await loadConfigFromDevice(gcDriver)
+    }}
     onClose={() => { saveDialogOpen = false }}
 />
 
@@ -1673,6 +1677,7 @@
 
 <ServoCalibrationDialog
     bind:open={calibDialogOpen}
+    prefix="gear"
     servoId={calibServoId}
     servoName={calibServoName}
     min_us={calibInit.min_us}

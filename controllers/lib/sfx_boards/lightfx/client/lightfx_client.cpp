@@ -96,3 +96,16 @@ CommandResult LightFxClient::landingLightRetract(uint8_t slot) {
     uint8_t payload[1] = { slot };
     return sendCommand(LightFxPacket::LANDING_LIGHT_RETRACT, payload, sizeof(payload));
 }
+
+// ============================================================================
+// LightFxClient - Light Program Runtime Control
+// ============================================================================
+
+CommandResult LightFxClient::lightProgramSelect(uint8_t programIndex) {
+    uint8_t payload[1] = { programIndex };
+    return sendCommand(LightFxPacket::LIGHT_PROGRAM_SELECT, payload, sizeof(payload));
+}
+
+CommandResult LightFxClient::lightProgramReset() {
+    return sendCommand(LightFxPacket::LIGHT_PROGRAM_RESET, nullptr, 0);
+}

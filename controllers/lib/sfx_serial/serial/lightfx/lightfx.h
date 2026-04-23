@@ -28,6 +28,8 @@
  *   LANDING_LIGHT_UNBIND (0x53)  - [slot:u8] (0=all)
  *   LANDING_LIGHT_DEPLOY (0x54)  - [slot:u8] (0=all)
  *   LANDING_LIGHT_RETRACT (0x55) - [slot:u8] (0=all)
+ *   LIGHT_PROGRAM_SELECT (0x4D)  - [index:u8]   Activate program by 0-based index
+ *   LIGHT_PROGRAM_RESET  (0x4E)  - (no payload) Stop sequences, retract groups, no active program
  */
 
 #ifndef SERIAL_LIGHTFX_H
@@ -62,7 +64,14 @@ namespace LightFxPacket {
     // LED reset and enable/disable
     constexpr uint8_t LED_RESET             = 0x4B;  // [ch:u8] (0=all) Reset channel to defaults, re-enable
     constexpr uint8_t LED_ENABLE            = 0x4C;  // [ch:u8][enabled:u8] Enable/disable LED channel
-    
+
+    // Light program runtime control (resolved via LightProgramManager loaded
+    // from /lightfx.yaml). HubFX uses these to drive both its local channels
+    // and the LightFX slave from the same program index, so on/off/select stay
+    // in lock-step across both boards.
+    constexpr uint8_t LIGHT_PROGRAM_SELECT  = 0x4D;  // [index:u8]  Activate program by 0-based index
+    constexpr uint8_t LIGHT_PROGRAM_RESET   = 0x4E;  // (no payload) Stop sequences, retract all groups, no active program
+
     // Servo control
     constexpr uint8_t SERVO_SET         = 0x50;  // [id:u8][pulse:i16]
     constexpr uint8_t SERVO_SETTINGS    = 0x51;  // [id:u8][min:u16][max:u16][speed:u16][accel:u16][decel:u16]
@@ -73,7 +82,12 @@ namespace LightFxPacket {
     constexpr uint8_t LANDING_LIGHT_DEPLOY  = 0x54;  // [slot:u8] (0=all)
     constexpr uint8_t LANDING_LIGHT_RETRACT = 0x55;  // [slot:u8] (0=all)
     constexpr uint8_t LANDING_LIGHT_STATUS  = 0x56;  // [slot:u8][phase:u8][finished:u8] async progress
-    
+
+    // LightFX-specific battery safety: soft-disable LED channels on low voltage.
+    // Sensor configuration (chemistry, cell count) is handled by the generic
+    // BatteryServerT through CorePacket::BATTERY_CONFIG (0xEE).
+    constexpr uint8_t BATTERY_AUTO_CUTOFF   = 0x5E;  // [enabled:u8]
+
     // Response packets (server -> client)
     constexpr uint8_t LED_SEQ_STATUS_RESP  = 0x5A;  // [ch:u8][playing:u8][events:u8][index:u8][loops:u32][brightness:u8]
     constexpr uint8_t LED_STATUS_RESP      = 0x5B;  // [ch:u8][brightness:u8][seq_playing:u8][events:u8] x8
@@ -184,7 +198,8 @@ namespace LightFxError {
     constexpr uint8_t INVALID_SERVO     = 0x54;
     constexpr uint8_t INVALID_SLOT      = 0x55;
     constexpr uint8_t CHANNEL_DISABLED  = 0x56;
-    
+    constexpr uint8_t INVALID_PROGRAM   = 0x57;  // LIGHT_PROGRAM_SELECT index out of range / no config
+
     inline const char* getMessage(uint8_t code) {
         switch (code) {
             case OK:              return "OK";
@@ -195,6 +210,7 @@ namespace LightFxError {
             case INVALID_SERVO:   return "Invalid servo ID";
             case INVALID_SLOT:    return "Invalid landing light slot";
             case CHANNEL_DISABLED: return "LED channel disabled";
+            case INVALID_PROGRAM: return "Invalid light program index";
             default:              return SerialError::getMessage(code);
         }
     }
@@ -307,5 +323,12 @@ using LedEnableCallback = std::function<uint8_t(uint8_t channel, uint8_t enabled
 using LandingLightBindCallback = std::function<uint8_t(uint8_t slot, uint8_t servoId, uint8_t channelMask,
                                                        uint8_t brightness)>;
 using LandingLightSlotCallback = std::function<uint8_t(uint8_t slot)>;
+
+// Battery safety callback (LightFX-specific auto-cutoff toggle)
+using LightFxBatteryAutoCutoffCallback = std::function<uint8_t(bool enabled)>;
+
+// Light program runtime callbacks
+using LightProgramSelectCallback = std::function<uint8_t(uint8_t programIndex)>;
+using LightProgramResetCallback  = std::function<uint8_t()>;
 
 #endif // SERIAL_LIGHTFX_H

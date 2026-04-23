@@ -47,6 +47,14 @@ export interface LightChannelState {
     mode: 'events' | 'group'
     groupIndex: number  // which group this channel belongs to (when mode is 'group')
     events: LightSeqEvent[]
+    /**
+     * Which board this channel-def targets. 'lightfx' (default) drives the
+     * 8-channel LightFX slave; 'hubfx' drives the 6 local LED channels on the
+     * HubFX master. The same /lightfx.yaml is loaded by both boards — each
+     * filters out channel-defs that don't belong to it (Rule 26 single
+     * canonical light-program file).
+     */
+    board: 'lightfx' | 'hubfx'
 }
 
 export interface LightProgram {
@@ -72,8 +80,23 @@ export interface LightServoBinding {
 /** A named landing group with its own servo bindings. */
 export interface LightGroup {
     name: string
-    memberChannels: number[]        // 1-based LED channel numbers assigned to this group
+    /** 1-based LightFX channel numbers (1–8) wired to this group's LEDs. */
+    memberChannels: number[]
+    /** 1-based HubFX-local channel numbers (1–6) wired to this group's LEDs. */
+    hubfxMemberChannels: number[]
+    /** Which board's servo drives this group's deploy/retract motion. */
+    servoBoard: 'lightfx' | 'hubfx'
     servoBindings: LightServoBinding[]
+}
+
+/** Battery monitor / soft-cutoff configuration. */
+export interface LightBattery {
+    /** Disable all LED channels when pack drops below the chemistry low threshold. */
+    autoCutoff: boolean
+    /** Battery chemistry — must be one of 'lipo' | 'liion' | 'nimh'. */
+    chemistry: string
+    /** Series cell count (1–6). 0 = auto-detect from voltage on connect. */
+    cellCount: number
 }
 
 /** The full config snapshot that the verifier operates on. */
@@ -82,6 +105,8 @@ export interface LightConfig {
     /** Landing groups, each with its own servo bindings. */
     groups: LightGroup[]
     masterBrightness: number
+    /** Battery monitor + soft-cutoff config. */
+    battery: LightBattery
     /** Total LED channels on this board (8 for LightFX, 6 for HubFX embedded). */
     channelCount: number
     /** PWM range boundaries [globalMin, globalMax] — typically [1000, 2000]. */
@@ -90,6 +115,8 @@ export interface LightConfig {
     /** Whether HubFX or slave mode is active (enables "gear" group policy). */
     hubAvailable: boolean
 }
+
+const SUPPORTED_CHEMISTRIES = ['lipo', 'liion', 'nimh']
 
 // ─── Implementation ───
 
@@ -226,6 +253,36 @@ export class LightConfigVerifier implements ConfigVerifier<LightConfig> {
                 message: `Master brightness out of range: ${config.masterBrightness} (must be 0–100)`,
                 path: 'masterBrightness',
             })
+        }
+
+        // ── 8. Battery config ──
+        const bat = config.battery
+        if (bat) {
+            const chem = (bat.chemistry || '').toLowerCase()
+            if (!SUPPORTED_CHEMISTRIES.includes(chem)) {
+                issues.push({
+                    id: 'battery-chemistry',
+                    severity: 'error',
+                    message: `Battery chemistry "${bat.chemistry}" is not supported (use lipo, liion, or nimh)`,
+                    path: 'battery.chemistry',
+                })
+            }
+            if (!Number.isInteger(bat.cellCount) || bat.cellCount < 0 || bat.cellCount > 6) {
+                issues.push({
+                    id: 'battery-cells',
+                    severity: 'error',
+                    message: `Battery cell count must be 0 (auto) or 1–6, got ${bat.cellCount}`,
+                    path: 'battery.cellCount',
+                })
+            }
+            if (bat.autoCutoff && bat.cellCount === 0) {
+                issues.push({
+                    id: 'battery-cutoff-auto',
+                    severity: 'info',
+                    message: 'Auto-cutoff is armed but cell count is auto-detect — cutoff threshold will track the detected pack size on connect',
+                    path: 'battery.autoCutoff',
+                })
+            }
         }
 
         // Build and cache result

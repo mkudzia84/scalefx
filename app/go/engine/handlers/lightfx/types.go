@@ -11,21 +11,23 @@ import (
 	lfxp "scalefx/protocol/lightfx"
 )
 
-// StatusBroadcast is the LightFX periodic STATUS_BROADCAST payload (15-24 bytes).
+// StatusBroadcast is the LightFX periodic STATUS_BROADCAST payload (15-25 bytes).
 // Wire format mirrors onStatusData() in lightfx_pico.ino.
 type StatusBroadcast struct {
-	LedBrightness   [8]uint8            `json:"ledBrightness"`
-	SeqPlaying      [8]bool             `json:"seqPlaying"`
-	Enabled         [8]bool             `json:"enabled"`
-	Servo0_us       uint16              `json:"servo0_us"`
-	Servo1_us       uint16              `json:"servo1_us"`
-	Servo2_us       uint16              `json:"servo2_us"`
-	LandingSlots    [3]LandingSlotState `json:"landingSlots"`
-	MasterBrightness uint8              `json:"masterBrightness"`
-	Battery_mV      uint16              `json:"battery_mV"`
-	CellCount       uint8               `json:"cellCount"`
-	BatteryPct      uint8               `json:"batteryPct"`
-	BatteryPresent  bool                `json:"batteryPresent"`
+	LedBrightness       [8]uint8            `json:"ledBrightness"`
+	SeqPlaying          [8]bool             `json:"seqPlaying"`
+	Enabled             [8]bool             `json:"enabled"`
+	Servo0_us           uint16              `json:"servo0_us"`
+	Servo1_us           uint16              `json:"servo1_us"`
+	Servo2_us           uint16              `json:"servo2_us"`
+	LandingSlots        [3]LandingSlotState `json:"landingSlots"`
+	MasterBrightness    uint8               `json:"masterBrightness"`
+	Battery_mV          uint16              `json:"battery_mV"`
+	CellCount           uint8               `json:"cellCount"`
+	BatteryPct          uint8               `json:"batteryPct"`
+	BatteryPresent      bool                `json:"batteryPresent"`
+	BatteryAutoCutoff   bool                `json:"batteryAutoCutoff"`
+	BatteryLowTriggered bool                `json:"batteryLowTriggered"`
 }
 
 // LandingSlotState is the per-slot landing light state in StatusBroadcast.
@@ -78,6 +80,11 @@ func DecodeStatusBroadcast(data []byte) *StatusBroadcast {
 		s.CellCount = data[22]
 		s.BatteryPct = data[23]
 		s.BatteryPresent = s.Battery_mV > 0
+	}
+	if len(data) >= 25 {
+		flags := data[24]
+		s.BatteryAutoCutoff = flags&0x01 != 0
+		s.BatteryLowTriggered = flags&0x02 != 0
 	}
 	return s
 }

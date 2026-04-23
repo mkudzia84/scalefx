@@ -11,6 +11,19 @@ import (
 	"strings"
 )
 
+// chemistryLabel returns a human-readable label for a battery chemistry byte.
+func chemistryLabel(chem byte) string {
+	switch chem {
+	case pcore.ChemistryLiPo:
+		return "LiPo"
+	case pcore.ChemistryLiIon:
+		return "Li-Ion"
+	case pcore.ChemistryNiMH:
+		return "NiMH"
+	}
+	return fmt.Sprintf("chem(0x%02X)", chem)
+}
+
 // Handler groups all LightFX commands, decoders, and parsers.
 //
 // Broadcast observers are silent by default (Studio opts in). The
@@ -56,28 +69,33 @@ func (h *Handler) commands() *engine.CmdGroup {
 	g := &engine.CmdGroup{
 		Name:       "LightFX",
 		Controller: pcore.CtrlLightFX,
+		Prefix:     "light",
 		Color:      engine.ColorBlue,
-		Commands: map[string]engine.CmdEntry{
-			"led":             {h.cmdLed, "led <ch> <brightness>", "Set LED brightness (0-100%)", true},
-			"led.off":         {h.cmdLedOff, "led.off [ch]", "Turn off LED (0=all)", true},
-			"led.status":      {h.cmdLedStatus, "led.status", "Show all LED channel statuses", true},
-			"seq.add":         {h.cmdSeqAdd, "seq.add <ch> <event> <params...>", "Add sequence event", true},
-			"seq.clear":       {h.cmdSeqClear, "seq.clear <ch>", "Clear sequence", true},
-			"seq.start":       {h.cmdSeqStart, "seq.start <ch> [loops]", "Start sequence", true},
-			"seq.stop":        {h.cmdSeqStop, "seq.stop <ch>", "Stop sequence", true},
-			"seq.restart":     {h.cmdSeqRestart, "seq.restart <ch>", "Restart sequence from beginning", true},
-			"seq.status":      {h.cmdSeqStatus, "seq.status <ch>", "Show sequence status", true},
-			"seq.queue":       {h.cmdSeqQueue, "seq.queue <ch>", "List sequence event queue", true},
-			"brightness":      {h.cmdMasterBright, "brightness <0-100>", "Set master LED brightness", true},
-			"servo":           {h.cmdServo, "servo set <id> <pulse_us>", "Set servo position", true},
-			"servo.config":    {h.cmdServoConfig, "servo.config <id> <min> <max> [spd] [acc] [dec] [rev]", "Configure servo", true},
-			"landing.bind":    {h.cmdLandingBind, "landing.bind <slot> <servo> <channels> [bright]", "Bind landing group (servo=0 for none, channels: 5 or 5,6,7)", true},
-			"landing.unbind":  {h.cmdLandingUnbind, "landing.unbind [slot]", "Unbind landing light (0=all)", true},
-			"landing.deploy":  {h.cmdLandingDeploy, "landing.deploy [slot]", "Deploy landing light (0=all)", true},
-			"landing.retract": {h.cmdLandingRetract, "landing.retract [slot]", "Retract landing light (0=all)", true},
-			"reset":           {h.cmdReset, "reset [ch]", "Reset LED channel (0=all)", true},
-			"enable":          {h.cmdEnable, "enable <ch>", "Enable LED channel (0=all)", true},
-			"disable":         {h.cmdDisable, "disable <ch>", "Disable LED channel (0=all)", true},
+		Commands: []engine.CmdEntry{
+			{"led", h.cmdLed, "led <ch> <brightness>", "Set LED brightness (0-100%)", true},
+			{"led.off", h.cmdLedOff, "led.off [ch]", "Turn off LED (0=all)", true},
+			{"led.status", h.cmdLedStatus, "led.status", "Show all LED channel statuses", true},
+			{"seq.add", h.cmdSeqAdd, "seq.add <ch> <event> <params...>", "Add sequence event", true},
+			{"seq.clear", h.cmdSeqClear, "seq.clear <ch>", "Clear sequence", true},
+			{"seq.start", h.cmdSeqStart, "seq.start <ch> [loops]", "Start sequence", true},
+			{"seq.stop", h.cmdSeqStop, "seq.stop <ch>", "Stop sequence", true},
+			{"seq.restart", h.cmdSeqRestart, "seq.restart <ch>", "Restart sequence from beginning", true},
+			{"seq.status", h.cmdSeqStatus, "seq.status <ch>", "Show sequence status", true},
+			{"seq.queue", h.cmdSeqQueue, "seq.queue <ch>", "List sequence event queue", true},
+			{"brightness", h.cmdMasterBright, "brightness <0-100>", "Set master LED brightness", true},
+			{"servo", h.cmdServo, "servo set <id> <pulse_us>", "Set servo position", true},
+			{"servo.config", h.cmdServoConfig, "servo.config <id> <min> <max> [spd] [acc] [dec] [rev]", "Configure servo", true},
+			{"landing.bind", h.cmdLandingBind, "landing.bind <slot> <servo> <channels> [bright]", "Bind landing group (servo=0 for none, channels: 5 or 5,6,7)", true},
+			{"landing.unbind", h.cmdLandingUnbind, "landing.unbind [slot]", "Unbind landing light (0=all)", true},
+			{"landing.deploy", h.cmdLandingDeploy, "landing.deploy [slot]", "Deploy landing light (0=all)", true},
+			{"landing.retract", h.cmdLandingRetract, "landing.retract [slot]", "Retract landing light (0=all)", true},
+			{"reset", h.cmdReset, "reset [ch]", "Reset LED channel (0=all)", true},
+			{"enable", h.cmdEnable, "enable <ch>", "Enable LED channel (0=all)", true},
+			{"disable", h.cmdDisable, "disable <ch>", "Disable LED channel (0=all)", true},
+			{"battery", h.cmdBattery, "battery [lipo|liion|nimh] [cells:N|auto]", "Battery profile (chemistry / cell count)", true},
+			{"battery.cutoff", h.cmdBatteryCutoff, "battery.cutoff <on|off>", "Toggle low-voltage LED soft-cutoff", true},
+			{"program", h.cmdProgramSelect, "program <index>", "Activate light program by 0-based index", true},
+			{"program.reset", h.cmdProgramReset, "program.reset", "Stop sequences, retract all groups, no active program", true},
 		},
 	}
 	return g
@@ -416,6 +434,82 @@ func (h *Handler) cmdDisable(args []string) {
 		target = "All LEDs"
 	}
 	h.E.Ack(h.E.API.LightFx.Enable(ch, false), fmt.Sprintf("%s disabled", target))
+}
+
+// ─── Battery ───
+
+// cmdBattery accepts any mix of:
+//
+//	lipo | liion | nimh         (chemistry; defaults to LiPo)
+//	cells:N | cells=N | auto    (cell count, 1-6 or auto-detect; defaults to auto)
+//
+// Bare `battery` → LiPo + auto-detect cells. Monitor is always on.
+func (h *Handler) cmdBattery(args []string) {
+	chemistry := pcore.ChemistryLiPo
+	cellCount := byte(0) // 0 = auto-detect
+
+	for _, raw := range args {
+		a := strings.ToLower(raw)
+		switch {
+		case a == "lipo":
+			chemistry = pcore.ChemistryLiPo
+		case a == "liion" || a == "li-ion":
+			chemistry = pcore.ChemistryLiIon
+		case a == "nimh" || a == "ni-mh":
+			chemistry = pcore.ChemistryNiMH
+		case a == "auto" || a == "autodetect" || a == "cells:auto" || a == "cells=auto":
+			cellCount = 0
+		case strings.HasPrefix(a, "cells:") || strings.HasPrefix(a, "cells="):
+			n := engine.Atoi(a[6:])
+			if n < 0 || n > 6 {
+				h.E.Out.Error("cells must be 0..6 (got %d)", n)
+				return
+			}
+			cellCount = byte(n)
+		default:
+			h.E.Out.Error("Unknown battery arg: %s", raw)
+			return
+		}
+	}
+
+	cellLabel := "auto"
+	if cellCount > 0 {
+		cellLabel = fmt.Sprintf("%dS", cellCount)
+	}
+	summary := fmt.Sprintf("Battery: %s | cells=%s", chemistryLabel(chemistry), cellLabel)
+	h.E.Ack(h.E.API.Core.BatteryConfig(chemistry, cellCount), summary)
+}
+
+// ─── Light Program Runtime ───
+
+func (h *Handler) cmdProgramSelect(args []string) {
+	if !h.E.RequireArgs(args, 1, "program <index>") {
+		return
+	}
+	idx := engine.Atoi(args[0])
+	if idx < 0 || idx > 255 {
+		h.E.Out.Error("program index must be 0..255 (got %d)", idx)
+		return
+	}
+	h.E.Ack(h.E.API.LightFx.LightProgramSelect(byte(idx)),
+		fmt.Sprintf("LightProgram → %d", idx))
+}
+
+func (h *Handler) cmdProgramReset(_ []string) {
+	h.E.Ack(h.E.API.LightFx.LightProgramReset(), "LightProgram reset")
+}
+
+func (h *Handler) cmdBatteryCutoff(args []string) {
+	if !h.E.RequireArgs(args, 1, "battery.cutoff <on|off>") {
+		return
+	}
+	v := strings.ToLower(args[0])
+	enabled := v == "on" || v == "true" || v == "1" || v == "enable"
+	state := "OFF"
+	if enabled {
+		state = "ON"
+	}
+	h.E.Ack(h.E.API.LightFx.BatteryAutoCutoff(enabled), fmt.Sprintf("Battery auto-cutoff → %s", state))
 }
 
 

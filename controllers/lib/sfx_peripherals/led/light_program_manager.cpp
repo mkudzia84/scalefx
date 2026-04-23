@@ -13,9 +13,10 @@
 // Lifecycle
 // ============================================================================
 
-void LightProgramManager::begin(ILedManager* leds, const Callbacks& callbacks) {
+void LightProgramManager::begin(ILedManager* leds, const Callbacks& callbacks, const char* board) {
     _leds = leds;
     _callbacks = callbacks;
+    _isLightFx = LightProgramBoard::isLightFx(board);
     _activeProgram = -1;
     _configLoaded = false;
     _lastSwitchTime_ms = 0;
@@ -63,6 +64,25 @@ void LightProgramManager::selectProgram(uint8_t index) {
     _activeProgram = static_cast<int8_t>(index);
 }
 
+void LightProgramManager::resetProgram() {
+    if (!_leds) return;
+
+    _leds->seqStop(0);
+    _leds->ledOff(0);
+
+    // Retract every group that has at least one channel on this board's side.
+    // Mirrors selectProgram()'s board-filtering so a reset on one board
+    // doesn't disturb landing groups owned exclusively by the other board.
+    if (_callbacks.onLandingRetract) {
+        for (uint8_t i = 0; i < _config.landingGroupCount; i++) {
+            if (boardChannelMask(_config.landingGroups[i]) == 0) continue;
+            _callbacks.onLandingRetract(static_cast<uint8_t>(i + 1));
+        }
+    }
+
+    _activeProgram = -1;
+}
+
 void LightProgramManager::update(uint16_t rxInput_us) {
     if (!_configLoaded || _config.input.bandCount == 0) return;
 
@@ -106,7 +126,10 @@ void LightProgramManager::applyLandingBindings() {
 
     for (uint8_t i = 0; i < _config.landingGroupCount; i++) {
         const auto& lg = _config.landingGroups[i];
-        if (lg.channelMask == 0) continue;  // Skip unconfigured groups
+        // Only bind groups that touch this board's channel side.
+        // A group with only hubfx channels is invisible to a lightfx slave,
+        // and vice versa.
+        if (boardChannelMask(lg) == 0) continue;
         _callbacks.onLandingBind(i, lg);
     }
 }
@@ -119,6 +142,10 @@ void LightProgramManager::loadProgramEvents(
 
         // Skip unconfigured channels and group-controlled channels
         if (chDef.channel == 0 || chDef.groupIndex != 0xFF) continue;
+
+        // Skip channels owned by the other board — a hubfx-side def is
+        // invisible to a lightfx slave's LED manager and vice versa.
+        if (!channelOwnedByBoard(chDef)) continue;
 
         loadChannelEvents(chDef.channel, chDef);
     }
@@ -201,7 +228,8 @@ void LightProgramManager::loadChannelEvents(
 void LightProgramManager::applyGroupPolicies(const LightProgramConfig::Program& program) {
     for (uint8_t i = 0; i < _config.landingGroupCount; i++) {
         const auto& lg = _config.landingGroups[i];
-        if (lg.channelMask == 0) continue;  // Skip unconfigured groups
+        // Only act on groups that have at least one channel on this board
+        if (boardChannelMask(lg) == 0) continue;
 
         uint8_t slot = i + 1;  // Slots are 1-based
         uint8_t policy = (i < program.groupPolicyCount)

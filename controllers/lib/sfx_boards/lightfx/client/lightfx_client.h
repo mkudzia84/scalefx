@@ -48,6 +48,18 @@ public:
     CommandResult landingLightRetract(uint8_t slot = 0);
 
     // ========================================================================
+    // Light Program Runtime Control
+    // ========================================================================
+
+    /// Activate a program by 0-based index. The program (and all servo /
+    /// landing-group bindings it touches) must already be loaded on the slave
+    /// from /lightfx.yaml.
+    CommandResult lightProgramSelect(uint8_t programIndex);
+
+    /// Stop all sequences, retract all landing groups, leave no active program.
+    CommandResult lightProgramReset();
+
+    // ========================================================================
     // Callbacks (LightFX-specific)
     // ========================================================================
 

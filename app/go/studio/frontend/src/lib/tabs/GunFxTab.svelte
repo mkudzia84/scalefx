@@ -18,12 +18,12 @@
     let triggerActive = false
 
     function triggerOn() {
-        SendCommand(`trigger on ${triggerRpm}`)
+        SendCommand(`gun:trigger on ${triggerRpm}`)
         triggerActive = true
     }
 
     function triggerOff() {
-        SendCommand('trigger off')
+        SendCommand('gun:trigger off')
         triggerActive = false
     }
 
@@ -90,7 +90,7 @@
 
     function testRofSound(file: string) {
         if (!file) return
-        SendCommand(`audio.play 4 ${file} 80`)
+        SendCommand(`hub:audio.play 4 ${file} 80`)
     }
 
     // ─── Servos ───
@@ -105,11 +105,11 @@
     let recoilVariance = 0
 
     function servoSet() {
-        SendCommand(`servo set ${servoId} ${servoPulse_us}`)
+        SendCommand(`gun:servo set ${servoId} ${servoPulse_us}`)
     }
 
     function servoConfig() {
-        let cmd = `servo.config ${servoId} ${servoMin_us} ${servoMax_us}`
+        let cmd = `gun:servo.config ${servoId} ${servoMin_us} ${servoMax_us}`
         if (servoSpeed || servoAccel || servoDecel) {
             cmd += ` ${servoSpeed} ${servoAccel} ${servoDecel}`
         }
@@ -117,7 +117,7 @@
     }
 
     function servoRecoil() {
-        SendCommand(`servo.recoil ${servoId} ${recoilJerk} ${recoilVariance}`)
+        SendCommand(`gun:servo.recoil ${servoId} ${recoilJerk} ${recoilVariance}`)
     }
 
     // ─── Smoke Generator ───
@@ -132,31 +132,31 @@
     let smokeFanLimit_mA = 0
 
     function smokeHeatOn() {
-        SendCommand('smoke heat on')
+        SendCommand('gun:smoke heat on')
         smokeHeaterOn = true
     }
 
     function smokeHeatOff() {
-        SendCommand('smoke heat off')
+        SendCommand('gun:smoke heat off')
         smokeHeaterOn = false
     }
 
     function smokeApplyConfig() {
-        SendCommand(`smoke.config pulsing=${smokePulsing ? 1 : 0}`)
-        SendCommand(`smoke.config speed=${smokeSpeed}`)
-        SendCommand(`smoke.config high=${smokeHigh}`)
-        SendCommand(`smoke.config low=${smokeLow}`)
-        SendCommand(`smoke.config pulse_ms=${smokePulse_ms}`)
-        SendCommand(`smoke.config spindown_ms=${smokeSpindown_ms}`)
+        SendCommand(`gun:smoke.config pulsing=${smokePulsing ? 1 : 0}`)
+        SendCommand(`gun:smoke.config speed=${smokeSpeed}`)
+        SendCommand(`gun:smoke.config high=${smokeHigh}`)
+        SendCommand(`gun:smoke.config low=${smokeLow}`)
+        SendCommand(`gun:smoke.config pulse_ms=${smokePulse_ms}`)
+        SendCommand(`gun:smoke.config spindown_ms=${smokeSpindown_ms}`)
     }
 
     function smokeSetLimits() {
-        if (smokeHeaterLimit_mA > 0) SendCommand(`smoke.limit heater ${smokeHeaterLimit_mA}`)
-        if (smokeFanLimit_mA > 0) SendCommand(`smoke.limit fan ${smokeFanLimit_mA}`)
+        if (smokeHeaterLimit_mA > 0) SendCommand(`gun:smoke.limit heater ${smokeHeaterLimit_mA}`)
+        if (smokeFanLimit_mA > 0) SendCommand(`gun:smoke.limit fan ${smokeFanLimit_mA}`)
     }
 
     function smokeReset() {
-        SendCommand('smoke.reset')
+        SendCommand('gun:smoke.reset')
         smokeHeaterOn = false
     }
 

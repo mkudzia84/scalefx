@@ -99,51 +99,51 @@
 
     function sendSequence(chIdx: number) {
         const c = ch(chIdx)
-        SendCommand(`seq.clear ${c}`)
+        SendCommand(`light:seq.clear ${c}`)
         for (const evt of channels[chIdx].events) {
             const p = evt.params
             switch (evt.type) {
                 case 'on':
-                    SendCommand(`seq.add ${c} on ${p.duration} ${p.brightness} ${p.pwmDuty ?? 0}`); break
+                    SendCommand(`light:seq.add ${c} on ${p.duration} ${p.brightness} ${p.pwmDuty ?? 0}`); break
                 case 'off':
-                    SendCommand(`seq.add ${c} off ${p.duration}`); break
+                    SendCommand(`light:seq.add ${c} off ${p.duration}`); break
                 case 'flash':
-                    SendCommand(`seq.add ${c} flash ${p.interval} ${p.duration} ${p.brightness} ${p.duty ?? 50}`); break
+                    SendCommand(`light:seq.add ${c} flash ${p.interval} ${p.duration} ${p.brightness} ${p.duty ?? 50}`); break
                 case 'fadein':
-                    SendCommand(`seq.add ${c} fadein ${p.duration} ${p.brightness}`); break
+                    SendCommand(`light:seq.add ${c} fadein ${p.duration} ${p.brightness}`); break
                 case 'fadeout':
-                    SendCommand(`seq.add ${c} fadeout ${p.duration} ${p.brightness}`); break
+                    SendCommand(`light:seq.add ${c} fadeout ${p.duration} ${p.brightness}`); break
                 case 'fading':
-                    SendCommand(`seq.add ${c} fading ${p.cycle} ${p.duration} ${p.min ?? 0} ${p.max ?? 100}`); break
+                    SendCommand(`light:seq.add ${c} fading ${p.cycle} ${p.duration} ${p.min ?? 0} ${p.max ?? 100}`); break
                 case 'beacon':
-                    SendCommand(`seq.add ${c} beacon ${p.cycle} ${p.duration} ${p.flashPct ?? 15} ${p.max ?? 100} ${p.min ?? 0}`); break
+                    SendCommand(`light:seq.add ${c} beacon ${p.cycle} ${p.duration} ${p.flashPct ?? 15} ${p.max ?? 100} ${p.min ?? 0}`); break
             }
         }
-        SendCommand(`seq.start ${c}`)
+        SendCommand(`light:seq.start ${c}`)
     }
 
-    function stopSequence(chIdx: number) { SendCommand(`seq.stop ${ch(chIdx)}`) }
+    function stopSequence(chIdx: number) { SendCommand(`light:seq.stop ${ch(chIdx)}`) }
     function clearSequence(chIdx: number) {
-        SendCommand(`seq.clear ${ch(chIdx)}`)
+        SendCommand(`light:seq.clear ${ch(chIdx)}`)
         channels[chIdx].events = []
         channels = channels
     }
 
     function setDirectBrightness(chIdx: number) {
-        SendCommand(`led ${ch(chIdx)} ${channels[chIdx].brightness}`)
+        SendCommand(`light:led ${ch(chIdx)} ${channels[chIdx].brightness}`)
     }
 
     function enableChannel(chIdx: number) {
-        SendCommand(`enable ${ch(chIdx)}`)
+        SendCommand(`light:enable ${ch(chIdx)}`)
         channels[chIdx].enabled = true; channels = channels
     }
     function disableChannel(chIdx: number) {
-        SendCommand(`disable ${ch(chIdx)}`)
+        SendCommand(`light:disable ${ch(chIdx)}`)
         channels[chIdx].enabled = false; channels = channels
     }
 
-    function setMasterBrightness() { SendCommand(`brightness ${masterBrightness}`) }
-    function allOff() { SendCommand('led.off 0') }
+    function setMasterBrightness() { SendCommand(`light:brightness ${masterBrightness}`) }
+    function allOff() { SendCommand('light:led.off 0') }
 
     function toggleExpand(chIdx: number) {
         channels[chIdx].expanded = !channels[chIdx].expanded

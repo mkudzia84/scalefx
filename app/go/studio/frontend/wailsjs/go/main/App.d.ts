@@ -34,7 +34,7 @@ export function GetConnectionInfo():Promise<main.ConnectionInfo>;
 
 export function GetFirmwareTargets():Promise<Array<main.FirmwareTarget>>;
 
-export function GetFirmwareVersion(arg1:string):Promise<Record<string, any>>;
+export function GetFirmwareVersion(arg1:string):Promise<main.FirmwareVersionInfo>;
 
 export function GetReleases(arg1:string):Promise<Array<main.ReleaseInfo>>;
 
