@@ -66,10 +66,6 @@ func TestInitModeConstants(t *testing.T) {
 	if core.InitModeDirect != 0x01 {
 		t.Errorf("InitModeDirect = 0x%02X, want 0x01", core.InitModeDirect)
 	}
-	// Backward-compatible alias
-	if core.InitModeConfig != core.InitModeDirect {
-		t.Errorf("InitModeConfig (%d) should equal InitModeDirect (%d)", core.InitModeConfig, core.InitModeDirect)
-	}
 }
 
 func TestInitModeNames(t *testing.T) {

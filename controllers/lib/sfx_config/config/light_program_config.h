@@ -2,20 +2,24 @@
  * Light Program Configuration — Shared Data Struct + Declarative Schema
  *
  * Defines channel programs, servo setup, landing light bindings, and
- * input-driven program selection.  Common between LightFX (standalone)
- * and HubFX (master hub controlling remote LightFX boards).
+ * input-driven program selection. ONE canonical document — /lightfx.yaml —
+ * lives on every board that participates in the light program (standalone
+ * LightFX Pico and HubFX). The same struct is loaded on each side; each
+ * side filters out the fields it cannot drive:
  *
- * On LightFX: schema populates directly from the document root.
- * On HubFX:   schema is embedded via asGroup() under "light_fx:".
+ *   - LightFX (slave): consumes only board="lightfx" channels and
+ *     `lightfx_channel_mask` for landing groups. Ignores hubfx fields.
+ *   - HubFX (master): consumes board="hubfx" channels and
+ *     `hubfx_channel_mask` locally, AND pushes the lightfx-side fields
+ *     to the attached slave via pushLightFxConfigToSlave().
  *
- * YAML structure:
+ * /hubfx.yaml does NOT contain light_program (Rule 26: per-domain split).
  *
- *   # LightFX standalone — top-level keys
- *   # HubFX             — nested under "light_fx:"
+ * YAML structure (top-level keys in /lightfx.yaml):
  *
  *   master_brightness: 100          # 0-100%
  *
- *   servos:                         # Servo hardware configuration
+ *   servos:                         # Servo hardware configuration (LightFX-side; 1-3)
  *     - id: 1
  *       min_us: 500
  *       max_us: 2500
@@ -25,10 +29,12 @@
  *       decel: 8000                 # µs/sec²
  *       reversed: false
  *
- *   landing_groups:                 # Landing light groups (servo + LED channels)
+ *   landing_groups:                 # Cross-board: servo from one board, channels from either
  *     - name: "Main Gear"
- *       servo_id: 1
- *       channels: [5, 6]           # LED channels controlled by this group
+ *       servo_board: lightfx        # "lightfx" | "hubfx"
+ *       servo_id: 1                 # Board-relative (1-3 lightfx, 1..N hubfx)
+ *       lightfx_channels: 0x60      # Bit 0 → ch1 … bit 7 → ch8 (8 LightFX channels)
+ *       hubfx_channels:   0x05      # Bit 0 → ch1 … bit 5 → ch6 (6 HubFX channels)
  *       brightness: 100
  *
  *   input:                          # RX input for program selection
@@ -45,34 +51,41 @@
  *     - name: "NAV"
  *       group_policies: [off]       # Group 0 retracted for this program
  *       channels:
- *         - channel: 1
+ *         - board: lightfx          # Optional, default "lightfx"
+ *           channel: 1              # Board-relative (1..8 lightfx, 1..6 hubfx)
  *           events:
  *             - type: beacon
  *               cycle_ms: 1000
  *               flash_pct: 10
  *               max_brightness: 100
  *               min_brightness: 5
- *         - channel: 2
+ *         - board: hubfx
+ *           channel: 2
  *           events:
  *             - type: flash
  *               cycle_ms: 500
  *               brightness: 80
  *               duty: 50
- *         - channel: 5
+ *         - board: lightfx
+ *           channel: 5
  *           group: 0                # Controlled by landing group 0
- *         - channel: 6
+ *         - board: lightfx
+ *           channel: 6
  *           group: 0
  *
  *     - name: "LANDING"
  *       group_policies: [on]        # Group 0 deployed
  *       channels:
- *         - channel: 1
+ *         - board: lightfx
+ *           channel: 1
  *           events:
  *             - type: on
  *               brightness: 100
- *         - channel: 5
+ *         - board: lightfx
+ *           channel: 5
  *           group: 0
- *         - channel: 6
+ *         - board: lightfx
+ *           channel: 6
  *           group: 0
  *
  * Event type → seqAdd parameter mapping:
@@ -98,13 +111,38 @@
 // Capacity Limits
 // ============================================================================
 
+// NOTE: NOT named MAX_SERVOS — Arduino-Pico's Servo.h `#define MAX_SERVOS 8`
+// macro-substitutes any matching identifier, even one inside a namespace, when
+// this header is included after Servo.h (every controller .ino does so via
+// servo/srv_control.h). The collision turned a constexpr into a numeric
+// literal, then the array index broke unparseably. Keep the SERVOS_MAX style
+// for any other Arduino-defined macros you might collide with later.
 namespace LightProgramLimits {
-    constexpr int MAX_SERVOS               = 3;
+    constexpr int SERVOS_MAX               = 3;
     constexpr int MAX_LANDING_GROUPS       = 3;
     constexpr int MAX_INPUT_BANDS          = 8;
     constexpr int MAX_PROGRAMS             = 4;
-    constexpr int MAX_CHANNELS_PER_PROGRAM = 8;
+    // Cross-board program: a program can name up to 8 lightfx + 6 hubfx
+    // channel-defs total. Standalone slave only consumes the 8 lightfx slots.
+    constexpr int MAX_CHANNELS_PER_PROGRAM = 14;
     constexpr int MAX_EVENTS_PER_CHANNEL   = 8;
+}
+
+// Board enum constants — used for `servo_board` in landing groups and
+// `board` on per-channel program defs. Strings live in YAML; firmware
+// reads them via boardIsLightFx() / boardIsHubFx().
+namespace LightProgramBoard {
+    inline constexpr char LIGHTFX[] = "lightfx";
+    inline constexpr char HUBFX[]   = "hubfx";
+
+    inline bool isLightFx(const char* s) {
+        // Default (empty / null) = lightfx, so older configs without the
+        // field continue to apply on the slave (Rule 11 — append-only).
+        return s == nullptr || s[0] == '\0' || s[0] == 'l' || s[0] == 'L';
+    }
+    inline bool isHubFx(const char* s) {
+        return s != nullptr && (s[0] == 'h' || s[0] == 'H');
+    }
 }
 
 // ============================================================================
@@ -128,16 +166,18 @@ struct LightProgramConfig {
         bool     reversed   = false;  // Invert open/close direction
     };
 
-    ServoSetup servos[LightProgramLimits::MAX_SERVOS] = {};
+    ServoSetup servos[LightProgramLimits::SERVOS_MAX] = {};
     uint8_t    servoCount = 0;
 
     // ---- Landing light groups ----
 
     struct LandingGroup {
-        char    name[16]      = {};     // Display name
-        uint8_t servoId       = 0;     // Bound servo ID (1-3, 0 = no servo)
-        uint8_t channelMask   = 0;     // LED channel bitmask (bit 0 → ch1 … bit 7 → ch8)
-        uint8_t brightness    = 100;   // Light brightness when deployed (0-100)
+        char    name[16]           = {};        // Display name
+        char    servoBoard[8]      = "lightfx"; // "lightfx" | "hubfx" — which board owns the servo
+        uint8_t servoId            = 0;         // Board-relative servo ID (1-3 lightfx, 1..N hubfx, 0 = no servo)
+        uint8_t lightfxChannelMask = 0;         // Bit 0 → lightfx ch1 … bit 7 → ch8 (8 channels)
+        uint8_t hubfxChannelMask   = 0;         // Bit 0 → hubfx ch1 … bit 5 → ch6 (6 channels; bits 6-7 unused)
+        uint8_t brightness         = 100;       // Light brightness when deployed (0-100)
     };
 
     LandingGroup landingGroups[LightProgramLimits::MAX_LANDING_GROUPS] = {};
@@ -175,7 +215,8 @@ struct LightProgramConfig {
     // ---- Per-channel program definition ----
 
     struct ChannelDef {
-        uint8_t  channel    = 0;            // LED channel (1-8, 0 = unused)
+        char     board[8]   = "lightfx";    // "lightfx" | "hubfx" — which board's LED channel
+        uint8_t  channel    = 0;            // Board-relative LED channel (1..8 lightfx, 1..6 hubfx; 0 = unused)
         uint8_t  groupIndex = 0xFF;         // Landing group index (0xFF = events mode)
         EventDef events[LightProgramLimits::MAX_EVENTS_PER_CHANNEL] = {};
         uint8_t  eventCount = 0;
@@ -239,10 +280,12 @@ inline const auto fields = schema<LightProgramConfig>(
     // ---- Landing light groups ----
     seq<&LightProgramConfig::landingGroups, &LightProgramConfig::landingGroupCount>(
         "landing_groups",
-        prop<&Lg::name>       ("name",         ""),
-        prop<&Lg::servoId>    ("servo_id",     uint8_t(0))  .range(0, 3),
-        prop<&Lg::channelMask>("channel_mask", uint8_t(0)),
-        prop<&Lg::brightness> ("brightness",   uint8_t(100)).range(0, 100)
+        prop<&Lg::name>              ("name",             ""),
+        prop<&Lg::servoBoard>        ("servo_board",      "lightfx"),
+        prop<&Lg::servoId>           ("servo_id",         uint8_t(0))  .range(0, 8),
+        prop<&Lg::lightfxChannelMask>("lightfx_channels", uint8_t(0)),
+        prop<&Lg::hubfxChannelMask>  ("hubfx_channels",   uint8_t(0)),
+        prop<&Lg::brightness>        ("brightness",       uint8_t(100)).range(0, 100)
     ),
 
     // ---- Input for program selection ----
@@ -265,6 +308,7 @@ inline const auto fields = schema<LightProgramConfig>(
         // in firmware config-loading code after schema populate().
 
         seq<&Pg::channels, &Pg::channelCount>("channels",
+            prop<&Ch::board>     ("board",       "lightfx"),
             prop<&Ch::channel>   ("channel",     uint8_t(0)).range(0, 8),
             prop<&Ch::groupIndex>("group",       uint8_t(0xFF)),
 

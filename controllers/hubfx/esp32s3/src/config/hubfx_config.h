@@ -1,89 +1,79 @@
 /*
- * HubFX Configuration — Top-Level Config Schema
+ * HubFX Configuration — Per-Domain YAML Files (Rule 26)
  *
- * Encapsulates all section configs (engine, gun, light, gear, etc.)
- * into a single HubFxConfig struct with a composable declarative schema.
+ * The hub stores configuration in FOUR independent files on its flash, one
+ * per domain. The SD card is reserved for audio samples — it never holds
+ * config. Each file is owned by its own ConfigStore<TSchema>; a
+ * MultiConfigServer routes CONFIG_RELOAD/SAVE/STATUS by path so the host
+ * (Studio / CLI) can target one file at a time.
  *
- * Section schemas are embedded via asGroup() — each section maintains
- * its own data struct and field definitions independently, while the
- * hub schema composes them into the full document layout.
+ *   /hubfx.yaml      — HubFxSettings       (hub-only: codec, input mappings, …)
+ *   /enginefx.yaml   — EngineConfig        (engine FX state machine)
+ *   /gunfx.yaml      — GunFxHubConfig      (hub-side gun audio routing)
+ *   /lightfx.yaml    — LightProgramConfig  (master copy fanned to LightFX slaves)
  *
- * YAML structure (top-level keys):
- *   engine_fx:   → EngineConfig      (engine_config.h)
- *   gun_fx:      → GunFxHubConfig    (gunfx_hub_config.h)
- *   # Future sections:
- *   # light_fx:  → LightFxConfig
- *   # gear_ctrl: → GearControlConfig
+ * The three slave-board files mirror the same shapes the slave firmware
+ * loads from /enginefx.yaml, /gunfx.yaml, /lightfx.yaml on its own flash —
+ * Studio writes the same YAML to either side. Battery monitoring is NOT
+ * in YAML on the hub: the INA226 rail channel is hardcoded and chemistry
+ * / cell count come from the runtime BATTERY_CONFIG (0xEE) packet.
  *
- * Battery monitoring is NOT in the YAML — the INA226 rail channel is hardcoded
- * in hubfx_esp32s3.ino, and chemistry/cell-count are set at runtime via the
- * core BATTERY_CONFIG (0xEE) packet.
+ * Why per-file split?
+ *   - Each domain reloads independently — `config.reload /lightfx.yaml`
+ *     does not re-parse engine + gun + audio.
+ *   - Studio edits one tab at a time, so the wire payload stays small.
+ *   - Slave-board configs are interchangeable hub<->slave (same schema +
+ *     same default path), simplifying push-down / pull-up flows.
+ *
+ * NOT a `HubFxConfig` composite struct anymore — there is no master
+ * document. See instructions/12-LIGHTFX-MODERNIZATION.md.
  */
 
 #ifndef HUBFX_CONFIG_H
 #define HUBFX_CONFIG_H
 
-#include "audio_settings.h"
+#include "hubfx_settings.h"
 #include "engine_config.h"
 #include "gunfx_hub_config.h"
+#include "lightfx_hub_config.h"
+
+#include <config/config_store.h>
 
 // ============================================================================
-// Data Struct
+// YAML Parser Pool — shared across all per-domain stores
 // ============================================================================
-
-struct HubFxConfig {
-    AudioConfig      audio;
-    EngineConfig     engineFx;
-    GunFxHubConfig   gunFx;
-
-    // Future sections:
-    // LightFxConfig     lightFx;
-    // GearControlConfig gearCtrl;
+//
+// Each ConfigStore<TSchema, TPool> instantiates a YamlParser<TPool> on the
+// stack during loadFromString(); the parser heap-allocates its node + string
+// pools, then frees them when loadFromString returns. So this preset only
+// affects the brief peak during config.reload / boot.
+//
+// /lightfx.yaml is the largest file (programs × channels × events, landing
+// groups, servo bindings) — it dominates the sizing. The other three files
+// are small enough that they could use DefaultYamlPool, but sharing keeps
+// the .ino single-line per-store and gives every file the same headroom.
+//
+// Sizing (2048 nodes / 64 KB strings / depth 16):
+//   - Nodes:   2048 × ~24 B  = ~48 KB
+//   - Strings:                  64 KB
+//   - Peak:                   ~112 KB transient during parse
+//
+// ESP32-S3 has 512 KB SRAM + 8 MB PSRAM; YAML parser allocations land in
+// internal SRAM via `new[]` (PSRAM allocator is opt-in). 112 KB peak is
+// well inside the available internal-heap budget.
+struct HubFxYamlPool {
+    static constexpr size_t MAX_NODES        = 2048;
+    static constexpr size_t STRING_POOL_SIZE = 65536;
+    static constexpr size_t MAX_DEPTH        = 16;
 };
 
 // ============================================================================
-// Declarative Schema
+// ConfigStore Type Aliases — one per YAML file
 // ============================================================================
 
-namespace hubfx_config {
-
-using namespace sfx;
-
-/// Hub-level schema — composes section schemas via asGroup().
-inline const auto fields = schema<HubFxConfig>(
-    audio_config::fields.asGroup<&HubFxConfig::audio>("audio"),
-    engine_config::fields.asGroup<&HubFxConfig::engineFx>("engine_fx"),
-    gunfx_hub_config::fields.asGroup<&HubFxConfig::gunFx>("gun_fx")
-
-    // Future sections:
-    // light_config::fields.asGroup<&HubFxConfig::lightFx>("light_fx"),
-    // gear_config::fields.asGroup<&HubFxConfig::gearCtrl>("gear_ctrl")
-);
-
-} // namespace hubfx_config
-
-// ============================================================================
-// ConfigStore Schema Adapter
-// ============================================================================
-
-/**
- * @brief Schema adapter for ConfigStore<HubFxConfigSchema>.
- *
- * Populates the full HubFxConfig from the document root.
- * Each section schema navigates to its own YAML key automatically.
- */
-struct HubFxConfigSchema {
-    using DataType = HubFxConfig;
-
-    static bool populate(DataType& d, const YamlParser<>& p) {
-        return hubfx_config::fields.populate(d, p.root());
-    }
-
-    static bool validate(const DataType& d, char* err, size_t errLen) {
-        return hubfx_config::fields.validate(d, err, errLen);
-    }
-
-    static const char* defaultPath() { return "/hubfx.yaml"; }
-};
+using HubFxSettingsStore = ConfigStore<HubFxSettingsSchema,    HubFxYamlPool>;
+using EngineConfigStore  = ConfigStore<EngineConfigSchema,     HubFxYamlPool>;
+using GunFxConfigStore   = ConfigStore<GunFxHubConfigSchema,   HubFxYamlPool>;
+using LightFxConfigStore = ConfigStore<HubLightFxConfigSchema, HubFxYamlPool>;
 
 #endif // HUBFX_CONFIG_H

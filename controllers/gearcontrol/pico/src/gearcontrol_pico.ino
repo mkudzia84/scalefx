@@ -64,8 +64,8 @@
 #include "landing_gear.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "0.16.0"
-#define BUILD_NUMBER 109
+#define FIRMWARE_VERSION "0.16.1"
+#define BUILD_NUMBER 112
 
 // ============================================================================
 //  PIN CONFIGURATION
@@ -127,8 +127,11 @@ const uint8_t SERVO_ID_SPARE = 7;
 SfxServer server;
 GearControlServer gearControlServer;
 
-// Config server (handles CONFIG_RELOAD/STATUS/SAVE protocol + owns ConfigStore)
-using GearControlConfigStore = ConfigStore<GearControlConfigSchema>;
+// Config server (handles CONFIG_RELOAD/STATUS/SAVE protocol + owns ConfigStore).
+// GearControlYamlPool sizes the parser for Studio-emitted configs (retracts ×
+// pins × door_modes × battery × gear_input). Pool memory is heap-allocated
+// only during parse and freed when ConfigStore::loadFromString returns.
+using GearControlConfigStore = ConfigStore<GearControlConfigSchema, GearControlYamlPool>;
 ConfigServerT<GearControlConfigStore> configServer;
 
 // Storage server (handles FILE_LIST/DOWNLOAD/UPLOAD for LittleFS flash — lets

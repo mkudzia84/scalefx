@@ -1,24 +1,22 @@
 /*
- * Engine FX Configuration — Data Struct + Declarative Schema
+ * Engine FX Configuration — Data Struct + Schema for /enginefx.yaml
  *
- * Maps the engine_fx section of config.yaml to a C++ struct.
- * Uses sfx::schema DSL for automatic populate() / validate().
+ * Per Rule 26, engine FX lives in its own top-level file on the hub flash.
  *
- * YAML structure:
- *   engine_fx:
- *     enabled: true
- *     type: turbine
- *     output_channels: all           # all | ch1 | ch2 | ch1+ch2
- *     engine_toggle:
- *       input_channel: 1
- *       threshold_us: 1500
- *     sounds:
- *       starting: "/sounds/ka50/engine_start.wav"
- *       running:  "/sounds/ka50/engine_loop.wav"
- *       stopping: "/sounds/ka50/engine_stop.wav"
- *       transitions:
- *         starting_offset_ms: 60000
- *         stopping_offset_ms: 25000
+ * YAML structure (at root of /enginefx.yaml):
+ *   enabled: true
+ *   type: turbine
+ *   output_channels: all           # all | ch1 | ch2 | ch1+ch2
+ *   engine_toggle:
+ *     input_channel: 1
+ *     threshold_us: 1500
+ *   sounds:
+ *     starting: "/sounds/ka50/engine_start.wav"
+ *     running:  "/sounds/ka50/engine_loop.wav"
+ *     stopping: "/sounds/ka50/engine_stop.wav"
+ *     transitions:
+ *       starting_offset_ms: 60000
+ *       stopping_offset_ms: 25000
  */
 
 #ifndef ENGINE_CONFIG_H
@@ -93,5 +91,24 @@ inline const auto fields = schema<EngineConfig>(
 );
 
 } // namespace engine_config
+
+// ============================================================================
+// ConfigStore Schema Adapter — owns /enginefx.yaml
+// ============================================================================
+
+struct EngineConfigSchema {
+    using DataType = EngineConfig;
+
+    template<typename TPool>
+    static bool populate(DataType& d, const YamlParser<TPool>& p) {
+        return engine_config::fields.populate(d, p.root());
+    }
+
+    static bool validate(const DataType& d, char* err, size_t errLen) {
+        return engine_config::fields.validate(d, err, errLen);
+    }
+
+    static const char* defaultPath() { return "/enginefx.yaml"; }
+};
 
 #endif // ENGINE_CONFIG_H

@@ -56,6 +56,10 @@
 #define GPIO_EXPANDER_H
 
 #include <stdint.h>
+#include <concepts>
+#include <type_traits>
+
+class TwoWire;
 
 // ============================================================================
 // Common Types
@@ -81,36 +85,56 @@ enum class ExpanderPull : uint8_t {
 };
 
 // ============================================================================
-// Compile-time Concept Check (C++17 SFINAE helper)
+// Compile-time Contract — C++20 Concepts
 // ============================================================================
+//
+// `GpioExpander` is the minimum surface every expander driver must satisfy.
+// Optional features (hardware PWM, LED brightness) live in their own
+// concepts so consumers can branch with `if constexpr (HwPwmExpander<T>)`
+// instead of value-trait booleans. The legacy `expander_has_*_v` aliases
+// remain for older consumers and now resolve via the concepts.
 
-namespace expander_detail {
+/// Minimum I2C/native GPIO expander contract (port + pin I/O).
+template <typename T>
+concept GpioExpander = requires(T t, TwoWire& wire,
+                                uint8_t address, uint8_t port,
+                                uint8_t pin, uint8_t mask, bool high) {
+    { T::NUM_PORTS }                       -> std::convertible_to<uint8_t>;
+    { T::NUM_PINS  }                       -> std::convertible_to<uint8_t>;
+    { t.begin(wire, address) }             -> std::convertible_to<bool>;
+    { t.isAvailable() }                    -> std::convertible_to<bool>;
+    { t.reset() }                          -> std::same_as<void>;
+    { t.setPortDirection(port, mask) }     -> std::convertible_to<bool>;
+    { t.writePort(port, mask) }            -> std::convertible_to<bool>;
+    { t.readPort(port) }                   -> std::convertible_to<uint8_t>;
+    { t.writePin(pin, high) }              -> std::convertible_to<bool>;
+    { t.readPin(pin) }                     -> std::convertible_to<bool>;
+};
 
-/// Check if T has HAS_HW_PWM = true (false by default)
-template <typename T, typename = void>
-struct has_hw_pwm : std::false_type {};
+/// True for expanders that advertise `HAS_HW_PWM = true`.
+template <typename T>
+concept HwPwmExpander = requires {
+    { T::HAS_HW_PWM } -> std::convertible_to<bool>;
+    requires T::HAS_HW_PWM == true;
+};
+
+/// True for expanders exposing `setLedMode` + `setLedBrightness`.
+template <typename T>
+concept LedBrightnessExpander = requires(T t, uint8_t pin, bool ledMode, uint8_t val) {
+    { t.setLedMode(pin, ledMode) }      -> std::convertible_to<bool>;
+    { t.setLedBrightness(pin, val) }    -> std::convertible_to<bool>;
+};
+
+// ----------------------------------------------------------------------------
+// Legacy boolean aliases — kept so existing `if constexpr (expander_has_*_v)`
+// call sites (bam_led_drv.h, led_control.h, led_manager.h) compile unchanged.
+// New code should prefer `HwPwmExpander<T>` / `LedBrightnessExpander<T>`.
+// ----------------------------------------------------------------------------
 
 template <typename T>
-struct has_hw_pwm<T, std::enable_if_t<T::HAS_HW_PWM>> : std::true_type {};
-
-/// Check if T has setLedMode and setLedBrightness
-template <typename T, typename = void>
-struct has_led_methods : std::false_type {};
+constexpr bool expander_has_hw_pwm_v = HwPwmExpander<T>;
 
 template <typename T>
-struct has_led_methods<T, std::void_t<
-    decltype(std::declval<T>().setLedMode(uint8_t{}, bool{})),
-    decltype(std::declval<T>().setLedBrightness(uint8_t{}, uint8_t{}))
->> : std::true_type {};
-
-} // namespace expander_detail
-
-/// True if TExpander supports hardware PWM (has HAS_HW_PWM = true)
-template <typename T>
-constexpr bool expander_has_hw_pwm_v = expander_detail::has_hw_pwm<T>::value;
-
-/// True if TExpander has setLedMode/setLedBrightness methods
-template <typename T>
-constexpr bool expander_has_led_methods_v = expander_detail::has_led_methods<T>::value;
+constexpr bool expander_has_led_methods_v = LedBrightnessExpander<T>;
 
 #endif // GPIO_EXPANDER_H

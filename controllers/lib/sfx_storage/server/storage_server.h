@@ -61,6 +61,7 @@
 #include <MD5Builder.h>
 #include <platform/sfx_platform.h>
 #include <platform/diag_log.h>
+#include <concepts>
 #include <functional>
 
 
@@ -102,31 +103,39 @@ struct StorageSharedState {
 };
 
 
-/**
- * @brief Policy-based storage server template.
- *
- * TPolicy must provide the following methods (called via _policy member):
- *
- *   void init(StorageSharedState* state);
- *
- *   // Buffer lifecycle:
- *   bool allocateUploadBuffers();
- *   void freeUploadBuffers();
- *
- *   // Upload data handling:
- *   bool onUploadBufferFull();
- *   bool checkAsyncWriterHealth();
- *
- *   // Upload lifecycle:
- *   void onUploadActivated();
- *   bool onChunkedEnd(const char*& errMsg);
- *   void onChunkedCleanup();
- *
- *   // Buffer diagnostics:
- *   uint8_t bufferFillPercent() const;   // 0-100, fill-buffer level (for segment ACK)
- */
+// ============================================================================
+// Concept: StoragePolicy
+// ============================================================================
+//
+// Documents the contract every storage backend (Esp32StoragePolicy,
+// PicoStoragePolicy, future variants) must satisfy. Adding a new platform
+// policy that omits a method now fails at the StorageServerT
+// instantiation site with the missing method named, instead of as a link
+// error in the controller's .ino.
+template <typename T>
+concept StoragePolicy = requires(T t, StorageSharedState* state, const char*& err) {
+    { t.init(state) }                       -> std::same_as<void>;
+    { t.allocateUploadBuffers() }           -> std::convertible_to<bool>;
+    { t.freeUploadBuffers() }               -> std::same_as<void>;
+    { t.onUploadBufferFull() }              -> std::convertible_to<bool>;
+    { t.checkAsyncWriterHealth() }          -> std::convertible_to<bool>;
+    { t.onUploadActivated() }               -> std::same_as<void>;
+    { t.onChunkedEnd(err) }                 -> std::convertible_to<bool>;
+    { t.onChunkedCleanup() }                -> std::same_as<void>;
+    { t.bufferFillPercent() }               -> std::convertible_to<uint8_t>;
+};
+
 template <typename TPolicy>
 class StorageServerT : public BusServer {
+    // Concept enforced via static_assert rather than a class-level requires
+    // clause — otherwise every out-of-class definition in storage_server.ipp
+    // would need to repeat the constraint. The static_assert still fires at
+    // instantiation time with the offending policy named in the error.
+    static_assert(StoragePolicy<TPolicy>,
+                  "TPolicy must satisfy StoragePolicy — expose init/allocate/"
+                  "free/onUploadBufferFull/checkAsyncWriterHealth/"
+                  "onUploadActivated/onChunkedEnd/onChunkedCleanup/"
+                  "bufferFillPercent per the concept.");
 public:
     StorageServerT() { _policy.init(&_shared); }
 

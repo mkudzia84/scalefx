@@ -683,6 +683,14 @@ using FooServer = FooServerT<PicoFooPolicy>;
 |----------|----------|----------|
 | `StorageServerT<TPolicy>` | `Esp32StoragePolicy`, `PicoStoragePolicy` | `lib/sfx_storage/server/` |
 | `SdCardModuleT<TPolicy>` | `PicoSpiSdPolicy`, `EspSpiSdPolicy`, `EspSdio1BitPolicy`, `EspSdio4BitPolicy` | `lib/sfx_storage/storage/` |
+| `BatteryServerT<TBattery>` | `AdcDividerBatteryT<...>`, `Ina226Battery` | `lib/sfx_peripherals/power/` |
+| `ConfigStore<TSchema, TPool>` | per-board schemas (`LightFxConfigSchema`, ...) | `lib/sfx_config/config/` |
+
+**Concepts replace doc-comment contracts (C++20).** The codebase compiles with `-std=gnu++20` on every board. Every policy / schema parameter listed above has a matching `concept` (`StoragePolicy`, `BatteryPolicy`, `ConfigSchema`, `GpioExpander`, `HwPwmExpander`, `LedBrightnessExpander`) attached to its template via a `requires`-clause. Adding a new policy that misses or mistypes a method now fails at the `using` alias / construction site with the missing method named, instead of as a link-time error from inside a controller's `.ino` file. **When you add a new policy-based template, define its concept in the same header** (right above the template) and gate the template with `requires`.
+
+**One slave per type — no router/orchestrator:**
+
+HubFX accepts **at most one slave per `SlaveType`** (one GunFX, one LightFX, one GearControl). That makes the prior applier/router/orchestrator/policy stack (~990 LOC across `sfx_boards/applier/` + `sfx_boards/lightfx/applier/`) overengineered. For hub-side config push, write a **plain function** per (board, host) pair — e.g. `bool pushLightFxConfigToSlave(const LightProgramConfig&, LightFxClient&)` in `controllers/hubfx/esp32s3/src/protocol/hub_lightfx_apply.cpp` — that walks the config and calls typed-client methods directly. Register it from `<board>Config.onLoaded(...)` and from `UsbRegistry::onReady(SlaveType::<Board>, ...)`. On the standalone slave side, the same config struct applies via a plain `applyLightProgramConfigLocal(cfg)` function that drives local peripherals (no applier class). Deleted in HubFX 0.38.0 / LightFX 0.13.0 — do not reintroduce.
 
 **Current pure arch implementations:**
 
@@ -1161,6 +1169,124 @@ retracts:
 - A single canonical style means the round-trip (firmware ↔ Studio ↔ CLI) is a pure identity transform. Any drift (e.g., Studio emits compact, firmware round-trips compact, CLI parser someday regresses) is a single-file fix instead of a forensic multi-component audit.
 
 Reference: [config-yaml-gen.ts](app/go/studio/frontend/src/lib/config/config-yaml-gen.ts) emitters, [yaml-parser.ts](app/go/studio/frontend/src/lib/config/yaml-parser.ts) `parseNested`, firmware [yaml_parser.ipp](controllers/lib/sfx_config/config/yaml_parser.ipp), Go [config_schema.go](app/go/engine/config_schema.go) `buildTree`.
+
+### 28. Shared Servo Calibration Dialog (MANDATORY for board UIs)
+
+**Per-board servo configuration in Studio MUST be done through the shared [ServoCalibrationDialog](app/go/studio/frontend/src/lib/dialogs/ServoCalibrationDialog.svelte). Board tabs MUST NOT inline a custom servo config panel (sliders for min/max/speed/accel/decel/reversed) inside a binding row.**
+
+The dialog is the single canonical surface for servo calibration: it provides a live position slider with throttled jog (~30 ms), debounced config push (~350 ms) for min/max/speed/accel/decel/reversed, a Save commit (`servo.config`) and a Cancel restore. Embedding this UI in every tab fragments the operator experience and duplicates state-management code (debouncing, restore-on-cancel, throttling).
+
+**Rules:**
+
+1. **Tab → Calibrate button → dialog.** Each binding row in a board tab shows a compact summary (range / speed / REV tag) plus a `⚙ Calibrate Servo…` button. Clicking it opens `ServoCalibrationDialog` with the current binding values prefilled.
+2. **One dialog instance per tab.** State held in the tab: `calibDialogOpen`, `calibServoId`, `calibServoName`, `calibInit { min_us, max_us, speed, accel, decel, reversed }`, plus a tab-specific target (e.g. `calibTargetGroup` for landing-light groups, `calibTargetPin` for door servos). Mount the dialog once at the bottom of the template; rebind props on each open.
+3. **`onApply` writes back to the binding.** The dialog's `onApply(cfg)` callback is the only path that mutates the underlying binding state — no custom Apply buttons inside the tab. The dialog's own debounced live push handles the wire push; `onApply` just persists the values into the binding so they survive a Save.
+4. **`supportsAccelDecel` per board.** Set `true` for boards whose servo controller honors accel/decel (LightFX 3-servo board, GearControl door+yaw servos). The dialog hides those fields when `false`.
+5. **Old inline panels are deleted, not gated.** When migrating a tab to the shared dialog, remove the inline panel HTML and all its helpers (`setServoPosition`, `applyServoConfig`, `centerServo`, etc.) outright. No "// kept for back-compat" stubs (Rule 21).
+
+**Reference implementations:**
+- [GearControlTab.svelte](app/go/studio/frontend/src/lib/tabs/GearControlTab.svelte) — door + yaw servos open the dialog with `openDoorServoSetLimits` / `openYawServoSetLimits`.
+- [LightFxTab.svelte](app/go/studio/frontend/src/lib/tabs/LightFxTab.svelte) — landing-light group bindings use `openServoCalibration(gi)`.
+
+**Why this matters:**
+- Servo calibration is hard. The shared dialog encodes the right defaults (300–2700 µs guard, 0 = instant, debounce window, restore-on-cancel) — every tab that re-implements them gets at least one wrong.
+- A consistent calibration UX means an operator who learned door servos on GearControl can calibrate landing lights on LightFX with zero re-learning.
+- Centralised state machines for live-jog throttling + config debounce reduce the cross-board surface area for bugs (e.g. dropped final pushes, double-applying after Save).
+
+### 29. Battery Card Layout (MANDATORY for board UIs with battery monitoring)
+
+**Every board tab that surfaces battery state MUST use the canonical battery card layout (bar + voltage display, then a toggle row, then a chemistry+cell-count row), placed in the LEFT column of the tab.** GearControl is the reference; LightFX matches it.
+
+**Required structure:**
+
+```svelte
+<section class="card">
+  <div class="card-header"><h3>… Battery</h3></div>
+
+  <div class="batt-display">
+    <div class="batt-bar-track">
+      <div class="batt-bar-fill" class:low={batteryLow} style="width: {batteryPct}%"></div>
+    </div>
+    <div class="batt-info">
+      <span class="batt-voltage" class:low={batteryLow}>{batteryVolts} V</span>
+      <span class="batt-pct" class:low={batteryLow}>{batteryPct}%</span>
+      {#if batteryLow}<span class="batt-warn">⚠ LOW</span>{/if}
+      {#if batteryLowTriggered}<span class="batt-warn">CUTOFF FIRED</span>{/if}
+    </div>
+  </div>
+
+  <div class="form-row">
+    <label class="toggle">…Auto-Cutoff/Auto-Deploy toggle…</label>
+    <span class="push-badge push-{$pushStatus['battery.cutoff']||''}">…</span>
+    <button on:click={applyBattery}>Apply</button>
+  </div>
+
+  <div class="form-row">
+    <select bind:value={batteryChemistry} on:change={scheduleBatteryPush}>…</select>
+    <input type="number" bind:value={batteryCellCount} on:input={scheduleBatteryPush} />
+    <span class="push-badge push-{$pushStatus['battery']||''}">…</span>
+    {#if batteryCellCount === 0}…auto-detect hint…{/if}
+  </div>
+</section>
+```
+
+**Rules:**
+
+1. **Left column placement.** The battery card lives in the LEFT column of the two-column tab layout, after the primary configuration cards (e.g. after Channels in LightFX, after Channel Toggles in GearControl). Never park it in the right column or in a separate tab.
+2. **Bar + voltage + pct + warnings live in `.batt-display`.** Use `batteryLow` (computed from per-cell threshold) for `.low` colouring; `batteryLowTriggered` (broadcast bit) for the CUTOFF FIRED badge.
+3. **Two `form-row` blocks below the display.** Top row: the auto-cutoff/auto-deploy toggle + push-badge + Apply button. Bottom row: chemistry select + cell-count input + push-badge + auto-detect hint.
+4. **Two separate live-push keys.** `battery` for chemistry+cells, `battery.cutoff` for the cutoff toggle. They have independent firmware commands, so independent debounce buckets.
+5. **Apply button forces a resend** of both `battery` and `battery.cutoff` (skip dedup). Tooltip: "Force resend `battery` + `battery.cutoff` now".
+6. **Cell-count = 0 means auto-detect.** Show the inferred cell count and per-cell voltage as a hint when in auto mode.
+7. **Reuse the GearControl CSS classes verbatim** (`batt-display`, `batt-bar-track`, `batt-bar-fill`, `batt-info`, `batt-voltage`, `batt-pct`, `batt-warn`). Do not invent board-local class names.
+
+**Why this matters:**
+- Battery is safety-critical UX. An inconsistent layout across boards (e.g. battery on the right in one tab, hidden in a sub-section in another) means operators miss a low-voltage warning at the worst time.
+- The bar+voltage+pct triple is the at-a-glance read; everything else (chemistry, cells, cutoff) is configuration. Mixing them in a single row dilutes the at-a-glance.
+- Reusing CSS classes means a global tweak (e.g. WCAG contrast bump on `.batt-warn`) ships to every board with a single edit.
+
+**Reference:** [GearControlTab.svelte](app/go/studio/frontend/src/lib/tabs/GearControlTab.svelte) lines 1302–1375, [LightFxTab.svelte](app/go/studio/frontend/src/lib/tabs/LightFxTab.svelte).
+
+### 30. Mandatory Board-Prefix on CLI Commands (CLI + Studio Console)
+
+**Every board command group sets `CmdGroup.Prefix`; the CLI dispatcher rejects bare board names with a "did you mean" hint.** Universal groups (Core, Firmware, Storage/Config) leave `Prefix` empty.
+
+| Group       | `Controller`      | `Prefix`  | Canonical invocation        |
+|-------------|-------------------|-----------|------------------------------|
+| LightFX     | `CtrlLightFX`     | `light`   | `light:servo 1 1500`        |
+| GearControl | `CtrlGearControl` | `gear`    | `gear:reset all`            |
+| GunFX       | `CtrlGunFX`       | `gun`     | `gun:trigger on 600`        |
+| HubFX       | `CtrlHubFX`       | `hub`     | `hub:slaves`                 |
+| Core / Firmware / Storage / Config | `""` | `""`       | `connect`, `init`, `file.list`, `config.save` |
+
+```go
+g := &engine.CmdGroup{
+    Name:       "LightFX",
+    Controller: pcore.CtrlLightFX,
+    Prefix:     "light",  // ← mandatory for board groups
+    Color:      engine.ColorBlue,
+    Commands:   map[string]engine.CmdEntry{
+        "servo": {h.cmdServo, "servo set <id> <pulse_us>", "Set servo position", true},
+        // … no per-entry prefix; FlatCommands stamps it on automatically
+    },
+}
+```
+
+Wire format is unchanged — the prefix is a CLI surface convention only. It exists because once a hub fans out to multiple slave types, bare names like `servo`, `reset`, `enable`, `battery`, `battery.cutoff` overlap across LightFX / GearControl / GunFX and the engine has no signal to pick one without an explicit target.
+
+The dispatcher surfaces the prefixed candidates whenever a bare board name is typed:
+
+```
+scalefx> servo 1 1500
+✗ Command 'servo' requires a board prefix. Did you mean: gear:servo, gun:servo, light:servo
+```
+
+**Why this matters:**
+- A direct-connection script that runs `servo 1 1500` works on *one* board today, breaks silently on a hub tomorrow when a second slave appears with the same command name. Forcing the prefix everywhere makes scripts portable across direct + hub topologies.
+- Help output shows the canonical form so muscle memory is built correctly from the first session.
+- Studio's Console panel echoes the same prefixed form (it just passes typed input through `SendCommand` → `Engine.Dispatch`).
+
+**Implementation:** `CmdGroup.Prefix` field ([engine/types.go](app/go/engine/types.go)); `FlatCommands` keys entries as `<prefix>:<name>` and stamps the prefix into `CmdEntry.Usage`; `Dispatch` and `CmdHelp` fall through to `suggestPrefixed(name)` when a bare board command is typed. Studio typed APIs (`LightFxApi.*`, `GearControlApi.*`, `GunFxApi.*`, `HubFxApi.*`) are unaffected — only text dispatch carries the prefix. See [13-PASSTHROUGH-ROUTING.md §4.4](../instructions/13-PASSTHROUGH-ROUTING.md).
 
 ## Key Architecture Patterns
 

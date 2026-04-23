@@ -50,10 +50,41 @@ type CmdEntry struct {
 type CmdGroup struct {
     Name       string
     Controller string // empty = universal
+    Prefix     string // empty = bare names; non-empty = "<prefix>:<cmd>"
     Color      Color
     Commands   map[string]CmdEntry
 }
 ```
+
+### Command-name prefixing (Rule 30)
+
+Every board group MUST set `Prefix`:
+
+| Group       | `Controller`    | `Prefix` | Example invocation |
+|-------------|-----------------|----------|--------------------|
+| LightFX     | `CtrlLightFX`   | `light`  | `light:servo 1 1500` |
+| GearControl | `CtrlGearControl` | `gear` | `gear:reset all` |
+| GunFX       | `CtrlGunFX`     | `gun`    | `gun:trigger on 600` |
+| HubFX       | `CtrlHubFX`     | `hub`    | `hub:slaves` |
+| Core / Firmware / Storage / Config | `""` | `""` (universal) | `connect`, `init`, `file.list`, `config.save` |
+
+The CLI dispatcher rejects bare board names (`servo`, `reset`, `enable`, …) on
+both direct AND hub connections, surfacing the prefixed candidates as a hint:
+
+```
+scalefx> servo 1 1500
+✗ Command 'servo' requires a board prefix. Did you mean: gear:servo, gun:servo, light:servo
+```
+
+Help output (`help`, `help <cmd>`) and group listings render the prefix
+inline so muscle memory points at the canonical form. Studio's Console
+panel echoes the same canonical form whenever a command is typed or
+mirrored from a GUI action.
+
+The prefix is purely a CLI surface convention — wire format is unchanged
+(packets still carry their bare type byte). On a hub, a prefixed slave
+command (e.g. `light:servo`) flows through the same auto-routing pipeline
+described in [13-PASSTHROUGH-ROUTING.md](13-PASSTHROUGH-ROUTING.md).
 
 ### Dynamic Detection
 
@@ -513,11 +544,11 @@ app/go/scalefx-cli.exe -p COM5
 > help                    # Verify new commands appear
 > trigger on 100          # Test GunFX command (when connected to GunFX)
 
-# Test commands (hub slave routing)
+# Test commands (hub slave routing — type-range auto-routing)
 > connect                 # Connect to HubFX
 > init
-> slave gfx.trigger on 100   # Routes via SLAVE_ROUTE envelope
-> slave gc.deploy all         # Routes to GearControl via hub
+> trigger on 100              # GunFX command, auto-routed by packet-type range
+> deploy all                  # GearControl command, auto-routed by packet-type range
 ```
 
 ---

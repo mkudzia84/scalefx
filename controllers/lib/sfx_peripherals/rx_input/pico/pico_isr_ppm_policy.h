@@ -10,12 +10,13 @@
 #ifndef SFX_PICO_ISR_PPM_POLICY_H
 #define SFX_PICO_ISR_PPM_POLICY_H
 
+#include <platform/sfx_platform.h>
+
 #if SFX_PLATFORM_PICO
 
 #include <Arduino.h>
 #include <atomic>
 #include "../rx_common.h"
-#include "platform/sfx_platform.h"
 
 class PicoIsrPpmPolicy {
 public:

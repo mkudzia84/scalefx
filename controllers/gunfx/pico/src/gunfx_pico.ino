@@ -40,7 +40,7 @@
 
 // Firmware version
 #define FIRMWARE_VERSION "0.7.0"
-#define BUILD_NUMBER 26
+#define BUILD_NUMBER 27
 
 // ============================================================================
 //  PIN CONFIGURATION

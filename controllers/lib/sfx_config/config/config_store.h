@@ -52,9 +52,33 @@
 #define CONFIG_STORE_H
 
 #include <Arduino.h>
+#include <concepts>
 #include <cstring>
 #include <functional>
+#include <type_traits>
 #include "yaml_parser.h"
+
+// ============================================================================
+// Concept: ConfigSchema<TSchema, TPool>
+// ============================================================================
+//
+// Documents the schema contract previously enforced only by comments. A
+// schema instantiation must expose a nested DataType, plus three statics:
+// populate(), validate(), defaultPath(). When ConfigStore<TSchema, TPool>
+// is instantiated the requires-clause picks up missing or mistyped methods
+// at the point of use rather than as link errors deep inside a controller's
+// .ino file.
+
+template <typename TSchema, typename TPool>
+concept ConfigSchema = requires(typename TSchema::DataType& d,
+                                const typename TSchema::DataType& cd,
+                                const YamlParser<TPool>& parser,
+                                char* err, size_t errLen) {
+    typename TSchema::DataType;
+    { TSchema::populate(d, parser) }     -> std::convertible_to<bool>;
+    { TSchema::validate(cd, err, errLen) } -> std::convertible_to<bool>;
+    { TSchema::defaultPath() }            -> std::convertible_to<const char*>;
+};
 
 // ============================================================================
 // Config Load Result
@@ -85,6 +109,13 @@ struct ConfigResult {
  */
 template<typename TSchema, typename TPool = DefaultYamlPool>
 class ConfigStore {
+    // Concept enforced via static_assert rather than a class-level requires
+    // clause — the latter forces every out-of-class member definition in
+    // config_store.ipp to repeat the constraint. The static_assert still
+    // fires at template-instantiation time with a clear message.
+    static_assert(ConfigSchema<TSchema, TPool>,
+                  "TSchema must satisfy ConfigSchema — expose DataType + "
+                  "populate()/validate()/defaultPath() per the concept.");
 public:
     using Data = typename TSchema::DataType;
 

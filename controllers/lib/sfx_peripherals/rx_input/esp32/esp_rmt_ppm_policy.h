@@ -13,12 +13,13 @@
 #ifndef SFX_ESP_RMT_PPM_POLICY_H
 #define SFX_ESP_RMT_PPM_POLICY_H
 
+#include <platform/sfx_platform.h>
+
 #if SFX_PLATFORM_ESP32
 
 #include <Arduino.h>
 #include <driver/rmt_rx.h>
 #include "../rx_common.h"
-#include "platform/sfx_platform.h"
 
 class EspRmtPpmPolicy {
 public:

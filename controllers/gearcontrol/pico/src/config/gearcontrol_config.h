@@ -66,6 +66,31 @@
 #include <config/yaml_schema.h>
 
 // ============================================================================
+// YAML Parser Pool — board-local preset (transient allocation)
+// ============================================================================
+//
+// Studio's `/gearcontrol.yaml` carries retracts × pins × door_modes × battery
+// × gear_input — every key and sequence item needs a YamlNode while scanning,
+// even though the firmware schema only consumes a subset. The default
+// 128-node pool exhausts on real-world configs (the on-disk reference config
+// alone is ~100 lines / 2.5 KB), breaking `config.reload`.
+//
+// Memory is fully **transient**: ConfigStore::loadFromString creates a
+// YamlParser<TPool> on the stack, parse() heap-allocates the node + string
+// pools via `new[]`, and the parser destructor (~YamlParser → reset →
+// delete[]) frees them as soon as loadFromString returns. So the sizes below
+// only affect the brief peak during config.reload / boot — never persistent
+// heap.
+//
+// Sizing matches LightFx (1024 nodes / 32 KB / depth 16) — same SoC, same
+// budget, same Studio-emitted complexity scale.
+struct GearControlYamlPool {
+    static constexpr size_t MAX_NODES        = 1024;
+    static constexpr size_t STRING_POOL_SIZE = 32768;
+    static constexpr size_t MAX_DEPTH        = 16;
+};
+
+// ============================================================================
 // Capacity Limits
 // ============================================================================
 
@@ -223,7 +248,12 @@ inline const auto fields = schema<GearControlConfig>(
 struct GearControlConfigSchema {
     using DataType = GearControlConfig;
 
-    static bool populate(DataType& d, const YamlParser<>& p) {
+    // Templated on the parser's pool type so ConfigStore can instantiate us
+    // with GearControlYamlPool (or any future preset) without a signature
+    // mismatch. Inner fields.populate() only touches YamlNode, which is
+    // pool-independent, so no other code needs to change.
+    template<typename TPool>
+    static bool populate(DataType& d, const YamlParser<TPool>& p) {
         return gearcontrol_config::fields.populate(d, p.root());
     }
 

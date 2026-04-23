@@ -9,8 +9,9 @@
 3. **YamlNode** — Tree node with `as<T>()`, `child()`, `childAs<T>()` member access
 4. **YamlSchema** — Declarative schema DSL (`sfx::prop`, `sfx::group`, `sfx::seq`)
 5. **ConfigStore** — Templatized config manager with schema-driven loading and validation
-6. **ConfigServerT** — BusServer handler for CONFIG_RELOAD / CONFIG_STATUS protocol commands
-7. **ConfigClient** — BusClient for sending config commands
+6. **ConfigServerT** — BusServer handler for single-store CONFIG_RELOAD / CONFIG_STATUS protocol commands (slaves)
+7. **MultiConfigServer** — Path-routed BusServer handler for hubs that own multiple per-domain YAML files
+8. **ConfigClient** — BusClient for sending config commands
 
 The config format is **defined per board** via a Schema type — the library itself is generic.
 
@@ -279,7 +280,7 @@ struct HubFxConfigSchema {
 };
 ```
 
-### 3. Wire It Up in Firmware
+### 3. Wire It Up in Firmware (single-store / slave pattern)
 
 ```cpp
 #include <config/config_store.h>
@@ -314,6 +315,60 @@ void setup() {
     server.addModuleHandler(&configServer);
 }
 ```
+
+### 3b. Multi-Store Wiring (hub pattern, Rule 26)
+
+Hubs split configuration across one YAML file per domain — Studio writes the
+slave-board configs (`enginefx.yaml`, `gunfx.yaml`, `lightfx.yaml`) to hub
+flash alongside the hub's own `hubfx.yaml`. Each file is owned by its own
+`ConfigStore<TSchema>` with its own `defaultPath()` and its own typed
+`onLoaded()` callback. `MultiConfigServer` routes the wire packets to the
+right store by matching the path payload.
+
+```cpp
+#include <server/multi_config_server.h>
+#include <storage/storage_config_bridge.h>
+
+static HubFxSettingsStore hubConfig;       // /hubfx.yaml   (codec, input mappings, …)
+static EngineConfigStore  engineConfig;    // /enginefx.yaml
+static GunFxConfigStore   gunConfig;       // /gunfx.yaml
+static LightFxConfigStore lightConfig;     // /lightfx.yaml
+
+static ConfigStoreFacadeT<HubFxSettingsStore> hubFacade    (hubConfig);
+static ConfigStoreFacadeT<EngineConfigStore>  engineFacade (engineConfig);
+static ConfigStoreFacadeT<GunFxConfigStore>   gunFacade    (gunConfig);
+static ConfigStoreFacadeT<LightFxConfigStore> lightFacade  (lightConfig);
+
+MultiConfigServer configServer;
+
+void setup() {
+    wireConfigStore<FlashModule>(hubConfig);
+    wireConfigStore<FlashModule>(engineConfig);
+    wireConfigStore<FlashModule>(gunConfig);
+    wireConfigStore<FlashModule>(lightConfig);
+
+    hubConfig.onLoaded   ([](const HubFxSettings& c)     { /* apply */ });
+    engineConfig.onLoaded([](const EngineConfig& c)      { /* apply */ });
+    gunConfig.onLoaded   ([](const GunFxHubConfig& c)    { /* apply */ });
+    lightConfig.onLoaded ([](const LightProgramConfig& c){ /* apply */ });
+
+    configServer.addStore(hubFacade);
+    configServer.addStore(engineFacade);
+    configServer.addStore(gunFacade);
+    configServer.addStore(lightFacade);
+    configServer.loadAll();         // initial load of every YAML
+    server.addModuleHandler(&configServer);
+}
+```
+
+Wire-protocol semantics:
+
+- `CONFIG_RELOAD` with path → reload that store; without path → reload ALL.
+- `CONFIG_SAVE` always requires an explicit path (multi-store save is
+  ambiguous without one).
+- `CONFIG_STATUS` reports aggregate state: `loaded` is set iff every
+  registered store is loaded; `fileSize` is the sum across all stores;
+  `validOk` is the AND of every store's current `validate()`.
 
 ## YAML Subset Supported
 

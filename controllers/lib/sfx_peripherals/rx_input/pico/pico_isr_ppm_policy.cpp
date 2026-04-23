@@ -7,6 +7,11 @@
  * copied to the frame buffer and a flag is set for readFrame().
  */
 
+// Pull in platform detection (defines SFX_PLATFORM_PICO) before the guard.
+// Without this, the macro is undefined → 0 → the whole body is skipped and
+// every linkage symbol declared in the .h becomes undefined at link time.
+#include <platform/sfx_platform.h>
+
 #if SFX_PLATFORM_PICO
 
 #include "pico_isr_ppm_policy.h"
@@ -56,7 +61,7 @@ bool PicoIsrPpmPolicy::begin(int pin, bool risingEdge)
 
     pinMode(_pin, INPUT);
 
-    int mode = risingEdge ? RISING : FALLING;
+    PinStatus mode = risingEdge ? RISING : FALLING;
     SFX_ATTACH_INTERRUPT_PARAM(_pin, isrHandler, mode, this);
 
     _initialized = true;

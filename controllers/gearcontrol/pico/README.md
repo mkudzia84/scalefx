@@ -614,6 +614,7 @@ Transitions: IDLE → STANDALONE (on config load) → SLAVE/DIRECT (on INIT) →
 
 | Build | Version | Changes |
 |-------|---------|---------|
+| 110 | 0.16.1 | **YAML parser pool bump (PATCH).** Studio's `/gearcontrol.yaml` (retracts × pins × door_modes × battery × gear_input) was exhausting the default 128-node parser pool, breaking `config.reload`. Added board-local `GearControlYamlPool` (1024 nodes / 32 KB strings / depth 16). Templated `GearControlConfigSchema::populate` on `TPool` so `ConfigStore<GearControlConfigSchema, GearControlYamlPool>` can instantiate it. **Memory is fully transient** — `ConfigStore::loadFromString` creates the parser on the stack; `parse()` heap-allocates the pools via `new[]` and the destructor frees them as soon as the call returns. Persistent RAM unchanged; ~56 KB peak only during parse. |
 | 93 | 0.15.0 | STATUS payload appends per-servo live configs (7 × 7 = 49 bytes: min_us, max_us, speed, reversed) so Studio can reconcile its pinConfigs against firmware truth — replaces earlier bespoke SRV_SETTINGS ACK-echo carrier. Append-only (Rule 11); older clients ignore the extra bytes. |
 | 58 | 0.10.1 | Shared library restructure (namespaced includes), SfxServer migration, diagnostic logging (SFX_LOG_*), platform-native API (busy_wait_ms), TinyUSB config, GearControlServer extracted to shared protocol header |
 | 45 | 0.10.0 | Door state in STATUS (DoorState enum), GEAR_DOOR_STATUS (0x72) async door state transition events |

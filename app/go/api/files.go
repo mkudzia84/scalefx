@@ -42,10 +42,6 @@ type FileApi struct {
 	peerMaxPayload int
 }
 
-func NewFileApi(conn *protocol.Connection) *FileApi {
-	return &FileApi{apiClient: apiClient{conn}, peerMaxPayload: PicoMaxPayload}
-}
-
 // SetPeerMaxPayload updates the assumed COBS RX capacity of the connected
 // peer, which controls sync-upload chunking. Safe to call at any time;
 // clamps to [PicoMaxPayload, Esp32MaxPayload].

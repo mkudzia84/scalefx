@@ -9,6 +9,11 @@
  * and extracts channel pulse widths.
  */
 
+// Pull in platform detection (defines SFX_PLATFORM_ESP32) before the guard.
+// Without this, the macro is undefined → 0 → the whole body is skipped and
+// every linkage symbol declared in the .h becomes undefined at link time.
+#include <platform/sfx_platform.h>
+
 #if SFX_PLATFORM_ESP32
 
 #include "esp_rmt_ppm_policy.h"

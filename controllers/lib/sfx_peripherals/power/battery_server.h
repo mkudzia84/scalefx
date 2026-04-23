@@ -51,10 +51,33 @@
 #ifndef BATTERY_SERVER_H
 #define BATTERY_SERVER_H
 
+#include <concepts>
 #include <serial/core/bus_server.h>
 #include "battery_types.h"
 
+// ============================================================================
+// Concept: BatteryPolicy
+// ============================================================================
+//
+// Documents the duck-typed surface BatteryServerT requires. Backends
+// implementing this concept can plug straight in (current implementations:
+// AdcDividerBatteryT<MultiplierMilli>, Ina226Battery). Adding a new backend
+// (e.g. a fuel-gauge IC) that omits a method now fails at template
+// instantiation with the missing method clearly named, instead of as a
+// link-time error from inside the .ino file.
+template <typename T>
+concept BatteryPolicy = requires(T t, BatteryChemistry chem, uint8_t cells) {
+    { t.update() }                  -> std::same_as<void>;
+    { t.voltage_mV() }              -> std::convertible_to<uint16_t>;
+    { t.cellCount() }               -> std::convertible_to<uint8_t>;
+    { t.isLow() }                   -> std::convertible_to<bool>;
+    { t.isCritical() }              -> std::convertible_to<bool>;
+    { t.setChemistry(chem) }        -> std::same_as<void>;
+    { t.setCellCount(cells) }       -> std::same_as<void>;
+};
+
 template<typename TBattery>
+    requires BatteryPolicy<TBattery>
 class BatteryServerT : public BusServer {
 public:
     explicit BatteryServerT(TBattery& battery) : _battery(&battery) {}

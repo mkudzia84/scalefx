@@ -38,12 +38,15 @@
  *   [x] Audio server (protocol handler)
  *   [x] Engine server (protocol handler)
  *   [x] Engine FX
+ *   [x] RC input dispatcher (PWM/PPM → engine on/off + light program select)
  *   [ ] Gun FX
  *   [ ] System sounds
+ *   [ ] Local LED runtime (AW9523B)
+ *   [ ] SBUS / Jeti EX Bus input readers (Phase 0 stubs in place)
  */
 
-#define FIRMWARE_VERSION "0.34.0"
-#define BUILD_NUMBER 199
+#define FIRMWARE_VERSION "1.0.0"
+#define BUILD_NUMBER 229
 
 #include <Arduino.h>
 #include <atomic>
@@ -63,10 +66,9 @@
 #include <power/battery_server.h>
 #include <gpio/pcal6416a.h>
 
-// Config schemas
+// Config schemas — per-domain YAML files (Rule 26)
 #include "config/hubfx_config.h"
-#include <config/config_store.h>
-#include <server/config_server.h>
+#include <server/multi_config_server.h>
 
 // USB Host (CDC-ACM for slave controller communication)
 #include <usb/sfx_usb_host.h>
@@ -85,6 +87,11 @@
 #include <lightfx/client/lightfx_client.h>
 #include <gearcontrol/client/gearcontrol_client.h>
 
+// Hub-side LightFX config push: walk LightProgramConfig and drive
+// LightFxClient over USB CDC. There is exactly one LightFX slave, so this
+// is a plain function — no router/orchestrator/applier indirection.
+#include "protocol/hub_lightfx_apply.h"
+
 // Audio mixer and codec (8-channel WAV mixer with I2S output)
 #include <audio/audio_log.h>
 #include <server/audio_server.h>
@@ -95,9 +102,8 @@ using AudioServer = AudioServerT<Mixer>;
 #include "effects/engine_fx.h"
 #include "protocol/engine_server.h"
 
-// Config store and server type aliases
-using HubFxConfigStore  = ConfigStore<HubFxConfigSchema>;
-using HubFxConfigServer = ConfigServerT<HubFxConfigStore>;
+// RC input dispatcher (PWM/PPM → engine on/off + light program select)
+#include "inputs/input_dispatcher.h"
 
 // ============================================================================
 // Pin Definitions (ESP32-S3 DevKitC-1)
@@ -506,13 +512,41 @@ StorageServer storageServer;
 HubFxUsbServer usbServer;
 SlaveServer slaveServer;
 AudioServer audioServer;
-HubFxConfigServer configServer;
 EngineServer engineServer;
+
+// ---- Per-domain config stores + multi-store wire dispatch ----
+//
+// Each YAML file on hub flash gets its own ConfigStore. MultiConfigServer
+// routes CONFIG_RELOAD/SAVE/STATUS by path, so the host (Studio / CLI) can
+// push or pull one file at a time without round-tripping the others. Each
+// store registers its own typed onLoaded callback in initConfig().
+//
+// Path layout (Rule 26):
+//   hubConfig      → /hubfx.yaml      (hub-only: codec supply voltage, input mappings, …)
+//   engineConfig   → /enginefx.yaml   (engine FX state machine)
+//   gunConfig      → /gunfx.yaml      (hub-side gun audio routing)
+//   lightConfig    → /lightfx.yaml    (master copy fanned to LightFX slaves)
+static HubFxSettingsStore hubConfig;
+static EngineConfigStore  engineConfig;
+static GunFxConfigStore   gunConfig;
+static LightFxConfigStore lightConfig;
+
+static ConfigStoreFacadeT<HubFxSettingsStore> hubFacade    (hubConfig);
+static ConfigStoreFacadeT<EngineConfigStore>  engineFacade (engineConfig);
+static ConfigStoreFacadeT<GunFxConfigStore>   gunFacade    (gunConfig);
+static ConfigStoreFacadeT<LightFxConfigStore> lightFacade  (lightConfig);
+
+MultiConfigServer configServer;
 
 // Typed slave clients (file-scope, registered with SlaveManager via addSlave)
 static GunFxClient gunfxClient;
 static LightFxClient lightfxClient;
 static GearControlClient gearcontrolClient;
+
+// RC input router — engine on/off + light program selector. Picks reader
+// (PWM/PPM/SBUS/Jeti) at boot from /hubfx.yaml inputs.mode. Re-init runs on
+// config reload via the hubConfig.onLoaded callback below.
+static InputDispatcher inputDispatcher;
 
 // ============================================================================
 // Arduino Setup (Core 0)
@@ -559,15 +593,46 @@ static void initStorage() {
     }
 }
 
-/** @brief Configure config store with flash I/O and load initial config. */
-static void initConfig() {
-    wireConfigStore<FlashModule>(configServer.store());
+// ============================================================================
+// Per-slave typed accessors — null when the slave is not yet ready
+// ============================================================================
+//
+// `UsbRegistry::getClient(type)` returns the BusClient* for a connected and
+// ready slave (else nullptr). These thin inlines static_cast back to the
+// concrete client so the call site reads as `if (auto* c = slaveLightFx())
+// c->ledProgramPlay(...)`. There is exactly one of each SlaveType, so no
+// indexing or fanout is needed.
 
-    // Callback fires after every successful config load/reload
-    configServer.store().onLoaded([](const HubFxConfig& cfg) {
-        // Apply audio config (codec supply voltage)
+static inline LightFxClient* slaveLightFx() {
+    return static_cast<LightFxClient*>(
+        UsbRegistry::instance().getClient(SlaveType::LightFX));
+}
+static inline GunFxClient* slaveGunFx() {
+    return static_cast<GunFxClient*>(
+        UsbRegistry::instance().getClient(SlaveType::GunFX));
+}
+static inline GearControlClient* slaveGearControl() {
+    return static_cast<GearControlClient*>(
+        UsbRegistry::instance().getClient(SlaveType::GearControl));
+}
+
+/** @brief Wire flash I/O + per-domain onLoaded handlers, then load every YAML. */
+static void initConfig() {
+    // ---- Wire every store to LittleFS ----
+    wireConfigStore<FlashModule>(hubConfig);
+    wireConfigStore<FlashModule>(engineConfig);
+    wireConfigStore<FlashModule>(gunConfig);
+    wireConfigStore<FlashModule>(lightConfig);
+
+    // ---- Per-store onLoaded — typed Data&, no composite branching ----
+    //
+    // Each store fires its own callback after a successful load/reload, so a
+    // `config.reload /lightfx.yaml` from the host re-applies just the light
+    // bindings — engine/audio/gun stay untouched.
+
+    hubConfig.onLoaded([](const HubFxSettings& cfg) {
         TAS5825M_SupplyVoltage voltage;
-        if (TAS5825Codec::parseSupplyVoltage(cfg.audio.codecSupplyVoltage, voltage)) {
+        if (TAS5825Codec::parseSupplyVoltage(cfg.codecSupplyVoltage, voltage)) {
             auto& codec = TAS5825Codec::instance();
             if (codec.isInitialized() && codec.getSupplyVoltage() != voltage) {
                 if (codec.setSupplyVoltage(voltage)) {
@@ -579,28 +644,46 @@ static void initConfig() {
             }
         } else {
             SFX_LOG_WARN("[Config] Unknown codec_supply_voltage: '%s' (use 12v/15v/20v/24v)",
-                         cfg.audio.codecSupplyVoltage);
+                         cfg.codecSupplyVoltage);
         }
 
-        // Apply engine config
-        SFX_LOG_INFO("[Config] Applied — engine %s (%s), output=%s",
-                     cfg.engineFx.enabled ? "enabled" : "disabled",
-                     cfg.engineFx.type,
-                     outputChannelsString(cfg.engineFx.outputChannels));
-        EngineFX::instance().applyConfig(cfg.engineFx);
-
-        // Log gun_fx config (audio routing applied when GunFX is implemented)
-        SFX_LOG_INFO("[Config] Applied — gun_fx output=%s",
-                     outputChannelsString(cfg.gunFx.outputChannels));
+        // Re-apply RC input dispatcher (mode, channel mappings, ppm pin).
+        // Feature callbacks were wired once at boot in initSlaveManager().
+        inputDispatcher.begin(cfg.inputs);
     });
 
-    // Initial load from flash
-    configServer.loadConfig();  // Reads /hubfx.yaml from LittleFS
+    engineConfig.onLoaded([](const EngineConfig& cfg) {
+        SFX_LOG_INFO("[Config] Applied engine_fx %s (%s), output=%s",
+                     cfg.enabled ? "enabled" : "disabled",
+                     cfg.type,
+                     outputChannelsString(cfg.outputChannels));
+        EngineFX::instance().applyConfig(cfg);
+    });
 
-    // Engine + Config commands are always advertised by HubFX (the engine
-    // FX runs even when the YAML is missing — applyConfig() falls back to
-    // built-in defaults). Storage caps are set in initStorage() because
-    // they depend on flash.begin() succeeding.
+    gunConfig.onLoaded([](const GunFxHubConfig& cfg) {
+        // Audio routing wires up when GunFX-on-hub lands; for now log only.
+        SFX_LOG_INFO("[Config] Applied gun_fx output=%s",
+                     outputChannelsString(cfg.outputChannels));
+    });
+
+    lightConfig.onLoaded([](const LightProgramConfig& cfg) {
+        // Push to the LightFX slave if one is currently online. If none is,
+        // the UsbRegistry onReady callback below replays the cached config
+        // when the slave attaches.
+        if (auto* c = slaveLightFx()) pushLightFxConfigToSlave(cfg, *c);
+    });
+
+    // ---- Register stores with the wire dispatcher and do the first load ----
+    configServer.addStore(hubFacade);
+    configServer.addStore(engineFacade);
+    configServer.addStore(gunFacade);
+    configServer.addStore(lightFacade);
+    configServer.loadAll();
+
+    // Engine + Config commands are always advertised by HubFX (engine FX
+    // falls back to built-in defaults when /enginefx.yaml is missing).
+    // Storage caps are set in initStorage() because they depend on
+    // flash.begin() succeeding.
     server.core().addCapability(CoreCapability::ENGINE | CoreCapability::CONFIG);
 }
 
@@ -663,17 +746,76 @@ static void initProtocolHandlers() {
 /** @brief Register slave types with SlaveManager and initialize USB Host. */
 static void initSlaveManager() {
     SlaveManager& mgr = SlaveManager::instance();
-    mgr.addSlave({ SlaveType::GunFX,       "GunFX",       "GunFX",   &gunfxClient });
-    mgr.addSlave({ SlaveType::LightFX,     "LightFX",     "LightFX", &lightfxClient });
-    mgr.addSlave({ SlaveType::GearControl, "GearControl", "GearCtrl", &gearcontrolClient });
+
+    // autoInit=true: the manager sends INIT(SLAVE) right after IDENTIFY
+    // succeeds, so a freshly-plugged slave reaches the ready state without
+    // waiting for an explicit SLAVE_INIT command from the upstream host.
+    mgr.addSlave({ SlaveType::GunFX,       "GunFX",       "GunFX",   &gunfxClient,       /*autoInit=*/true });
+    mgr.addSlave({ SlaveType::LightFX,     "LightFX",     "LightFX", &lightfxClient,     /*autoInit=*/true });
+    mgr.addSlave({ SlaveType::GearControl, "GearControl", "GearCtrl", &gearcontrolClient, /*autoInit=*/true });
+
+    // ---- Per-slave-type lifecycle ----
+    //
+    // UsbRegistry auto-logs every ready/disconnect transition (one line each,
+    // INFO level). Per-board callbacks below add the side effects: today only
+    // LightFX has hub-side YAML to push when the slave attaches. GunFX and
+    // GearControl have nothing to do beyond the auto-log — when they grow
+    // hub-side config or input-driven triggering, slot a callback in the same
+    // shape (one onReady, optional onDisconnect to release any held state).
+    auto& reg = mgr.registry();
+
+    reg.onReady(SlaveType::LightFX, [](SlaveType, BusClient* c) {
+        if (lightConfig.isLoaded()) {
+            pushLightFxConfigToSlave(lightConfig.data(),
+                                     *static_cast<LightFxClient*>(c));
+        }
+    });
+
     mgr.begin();
     // SLAVE_BUS = master can enumerate / route to slaves over USB host.
     // USB_HOST = USB host stack for CDC enumeration is up.
     server.core().addCapability(CoreCapability::SLAVE_BUS | CoreCapability::USB_HOST);
+
+    // Wire per-slot async pumps so slave-range async packets (e.g.
+    // LANDING_LIGHT_STATUS, GEAR_DOOR_STATUS) are re-emitted upstream
+    // verbatim with TAG_ASYNC — the packet-type byte alone identifies the
+    // source board to the upstream client. Slaves' core STATUS broadcasts
+    // are not forwarded; the hub aggregates board-level state separately.
+    // See instructions/13-PASSTHROUGH-ROUTING.md.
+    slaveServer.wireAsyncPumps();
 }
 
 // NOTE: Engine FX is initialized by the config onLoaded callback
 // (EngineFX::applyConfig) — no separate initEngineFx() needed.
+
+/**
+ * @brief Wire input dispatcher feature callbacks. Reader is started later by
+ *        hubConfig.onLoaded() once /hubfx.yaml is parsed.
+ *
+ * Call BEFORE initConfig() so the very first onLoaded() sees a dispatcher
+ * with feature callbacks already in place.
+ */
+static void initInputDispatcher() {
+    inputDispatcher.onEngineToggle([](uint16_t value_us, bool engaged) {
+        // Pass the raw pulse so EngineFX can apply its own threshold +
+        // hysteresis (engineConfig is the single source of truth for that).
+        // The dispatcher's threshold only drives the edge logging here.
+        EngineFX::instance().setToggleValue(value_us);
+        SFX_LOG_INFO("[Inputs] engine_on_off %s (%u us)",
+                     engaged ? "ENGAGED" : "DISENGAGED", value_us);
+    });
+
+    inputDispatcher.onLightProgram([](uint8_t programIndex) {
+        // Push to the LightFX slave (when present) — the slave validates the
+        // index against its loaded /lightfx.yaml and replies INVALID_PROGRAM
+        // if out of range. The Hub-local LED runtime (Phase 1) will hook
+        // into the same callback once it lands.
+        if (auto* c = slaveLightFx()) {
+            c->lightProgramSelect(programIndex);
+        }
+        SFX_LOG_INFO("[Inputs] light_program_select → %u", programIndex);
+    });
+}
 
 /** @brief Initialize I2C peripherals: INA226 power monitors and PCAL6416A GPIO expander. */
 static void initI2CDevices() {
@@ -733,9 +875,8 @@ static void initAudio() {
     // ---- Phase 1: Codec I2C probe + reset → Deep Sleep ----
     // The codec goes into Deep Sleep (PLL off) — safe before I2S clocks.
     TAS5825M_SupplyVoltage initVoltage = TAS5825M_12V;
-    if (configServer.store().isLoaded()) {
-        TAS5825Codec::parseSupplyVoltage(
-            configServer.store().data().audio.codecSupplyVoltage, initVoltage);
+    if (hubConfig.isLoaded()) {
+        TAS5825Codec::parseSupplyVoltage(hubConfig.data().codecSupplyVoltage, initVoltage);
     }
     if (tryInitCodec(initVoltage)) {
         SFX_LOG_INFO("TAS5825M codec probed OK, in Deep Sleep (supply=%s)",
@@ -877,8 +1018,8 @@ void setup() {
             }
         }
 
-        // 4. Reload config from flash.
-        configServer.loadConfig();
+        // 4. Reload every per-domain YAML from flash.
+        configServer.loadAll();
 
         // 5. Re-scan slaves so PC gets fresh identification
         SlaveManager::instance().scanAndIdentify();
@@ -905,6 +1046,12 @@ void setup() {
 
         SFX_LOG_INFO("SHUTDOWN — session ended");
     });
+
+    // ---- STATUS_BROADCAST source ----
+    // Tag the periodic broadcast with HUBFX so the Go engine routes it to the
+    // hubfx handler's RegisterStatusBroadcastParser (otherwise the default CORE
+    // source is dropped by sourceToControllerType in app/go/engine/engine.go).
+    server.core().setStatusBroadcastSource(StatusUpdateSource::HUBFX);
 
     // ---- STATUS callback: module-specific status bytes ----
     // Appended after the 22-byte core header in STATUS responses.
@@ -978,7 +1125,8 @@ void setup() {
 
     initStorage();
     initProtocolHandlers();
-    initConfig();       // onLoaded callback initializes EngineFX
+    initInputDispatcher();  // Wire input feature callbacks before initConfig() fires onLoaded
+    initConfig();       // onLoaded callback initializes EngineFX + starts InputDispatcher reader
     server.markConfigLoaded();  // IDLE → STANDALONE
     initSlaveManager();
     initAudio();
@@ -1064,6 +1212,9 @@ void loop() {
     checkCodecHealth();
 
     SlaveManager::instance().process();
+
+    // Pump RC input reader → fires engine_on_off / light_program_select on edge
+    inputDispatcher.process();
 
     EngineFX::instance().process();
 

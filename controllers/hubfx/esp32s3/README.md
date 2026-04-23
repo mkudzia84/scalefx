@@ -104,7 +104,7 @@ This is the most significant platform difference. Pico uses PIO-USB (software US
 | [x] | **USB Host init in firmware** | `UsbHost::instance().begin()` + `init()` called from `setup()`. STATUS flag bit 3 reports USB host ready state. **Verified on hardware** — Build 15 shows bit 3 = TRUE in STATUS response. |
 | [x] | **USB bus recovery** | `resetBus()` power-cycles root port via `usb_host_lib_set_root_port_power()`. Auto-recovery timer (5s after disconnect, 10s cooldown). CLI: `hub.usb.reset`, packet: `USB_RESET_BUS (0xAD)`. |
 | [ ] | **SerialBus adaptation** | `SerialBus` in `lib/sfx_serial/serial/client/bus.h` depends on `UsbHost` class. Need to verify ESP32 `cdcRead/cdcWrite` works with COBS framing. |
-| [x] | **Slave discovery** | `tryIdentifySlave()`, `scanAndIdentify()` — IDENTIFY-based discovery (non-destructive). Slaves marked connected after IDENTIFY. Activation (INIT) is a separate step via SLAVE_INIT command. |
+| [x] | **Slave discovery** | `tryIdentifySlave()`, `scanAndIdentify()` — IDENTIFY-based discovery (non-destructive). When `SlaveDescriptor.autoInit=true` (current default for all three slaves) the manager immediately follows IDENTIFY with INIT(SLAVE) and marks the entry ready, firing the registry's `onReady` callback. Explicit `SLAVE_INIT` from the host still works as a re-init path. |
 | [ ] | **Slave clients** | `GunFxClient`, `LightFxClient`, `GearControlClient` — shared code extending `BusClient` → depends on `SerialBus` → depends on `UsbHost`. |
 | [ ] | **Keepalive / polling** | Slave poll interval (100ms), discovery scan (5s) — logic is portable. |
 
@@ -115,7 +115,7 @@ This is the most significant platform difference. Pico uses PIO-USB (software US
 | [x] | **SD card library** | ESP32 Arduino `SD_MMC.h` via `EspSdio1BitPolicy` template in `sfx_storage`. SDMMC 1-bit SDIO at `SDMMC_FREQ_HIGHSPEED` (40 MHz). `SdCardModule` singleton API preserved — `AudioMixer` and `StorageServer` use it transparently. |
 | [x] | **SD init with fallback** | `SdCardModule::instance().begin()` → `EspSdio1BitPolicy::mount()` with configurable pins. Boot log reports "SDIO 1-bit HS". |
 | [ ] | **LittleFS flash** | Both platforms support LittleFS via Arduino framework. `FlashModule` singleton should work. Verify ESP32 partition table includes a LittleFS partition. |
-| [x] | **ConfigReader** | Replaced by `sfx_config` library — `ConfigStore<HubFxConfigSchema>` with declarative YAML schema DSL. No longer uses `SdFat File32`. |
+| [x] | **ConfigReader** | Replaced by `sfx_config` library — per-domain `ConfigStore<TSchema>` instances (audio/engine/gun/light) with declarative YAML schema DSL. Each domain owns its own YAML file on flash. |
 | [x] | **File operations** | `StorageServerT<Esp32StoragePolicy>` handles all file protocol commands (list, tree, upload, download, delete, mkdir, info). Single-core exclusive pipeline: 64 KB PSRAM fill buffer drained synchronously to SD on the main loop. Windowed (`UPLOAD_SYNC`) and batch (`UPLOAD_STREAM`) modes both supported. See [Upload Exclusivity](#upload-exclusivity). |
 
 ### Phase 5 — Main Firmware Integration
@@ -124,7 +124,7 @@ This is the most significant platform difference. Pico uses PIO-USB (software US
 |--------|------|---------|
 | [ ] | **Codec selection** | ~~`#define USE_WAVESHARE_PICOAUDIO`~~ Done — using `TAS5825Codec` singleton via `AudioMixer<EspI2SOutput, TAS5825Codec>`. |
 | [ ] | **SD card init** | `initSdCard()` with fallback speed pattern. |
-| [x] | **Config loading** | `ConfigServerT<HubFxConfigStore>` handles CONFIG_RELOAD (0x90), CONFIG_STATUS (0x91), CONFIG_SAVE (0xAC). Loads from LittleFS flash via `FlashModule`, fires `onLoaded()` callback. Schema-validated YAML with defaults. |
+| [x] | **Config loading** | `MultiConfigServer` (path-routed) handles CONFIG_RELOAD (0x90), CONFIG_STATUS (0x91), CONFIG_SAVE (0xAC) across four per-domain stores: `/hubfx.yaml` (codec voltage), `/enginefx.yaml`, `/gunfx.yaml`, `/lightfx.yaml`. Each store loads from LittleFS via `FlashModule` and fires its own typed `onLoaded()`. SD card is reserved for audio samples. |
 | [ ] | **Audio init** | `initAudio()` — codec begin + mixer begin. |
 | [ ] | **USB Host init** | `usbHost.begin()` + mount/unmount callbacks. |
 | [ ] | **Slave pre-registration** | `slaveRegistry.registerSlave()` for GunFX, LightFX, GearControl. |
@@ -230,6 +230,74 @@ void loop() {
 ### SD Card Performance
 
 The SD card is mounted via SDMMC 1-bit SDIO at `SDMMC_FREQ_HIGHSPEED` (40 MHz bus clock), which doubles throughput compared to the default 20 MHz clock. Single-core batch uploads sustain ~470 KB/s end-to-end (measured against the `tests/storage_test/` harness at 6 Mbps UART), well above the ~300-400 KB/s the USB-UART bridge can feed.
+
+---
+
+## RC Inputs (v0.40.0)
+
+The hub exposes **seven RC-input pins** on the front edge of the carrier board. Each pin has a 1-based alias (`I1`..`I7`) that maps directly to the GPIO number used by the firmware. The active reader and per-feature mappings are defined in `/hubfx.yaml` under the `inputs:` block — no recompile needed to flip modes.
+
+| Alias | GPIO | Notes |
+|-------|------|-------|
+| I1    | 5    | Default `ppm_pin` when `mode: ppm` |
+| I2    | 6    | |
+| I3    | 7    | |
+| I4    | 10   | |
+| I5    | 11   | |
+| I6    | 12   | |
+| I7    | 13   | |
+
+### Reader Modes
+
+| `mode`  | Reader                                                | Channels | Notes |
+|---------|-------------------------------------------------------|----------|-------|
+| `none`  | (disabled)                                            | —        | Dispatcher idle. |
+| `gpio`  | `RxInputs<PwmCollection>` over `I1..I7`               | 1..7     | Each I-pin is its own PWM channel. YAML `channel` 1..7 = I-pin index. |
+| `ppm`   | `RxInputs<PpmDecoder>` on `inputs.ppm_pin` (1..7)     | 1..16    | ESP32 RMT hardware capture (zero-CPU). YAML `channel` 1..16 = PPM slot. |
+| `sbus`  | (stub)                                                | —        | `begin()` returns false; logs a warning. Reserved for Phase 0+ work. |
+| `jeti`  | (stub)                                                | —        | `begin()` returns false; logs a warning. Reserved for Phase 0+ work. |
+
+### Feature Dispatch
+
+Two features are wired in v0.40.0 (more land in subsequent phases):
+
+- **`engine_on_off`** — On every channel update, the dispatcher calls `EngineFX::setToggleValue(value_us)` so the engine's own threshold + hysteresis stays the source of truth. The dispatcher also emits a one-line INFO log on each rising / falling edge against its own `threshold_us`.
+- **`light_program_select`** — The PWM range (≈800–2200 µs, see `RxConfig`) is divided into `program_count` equal slots. On a slot change the dispatcher calls `LightFxClient::lightProgramSelect(idx)` against the connected LightFX slave; the slave NACKs `INVALID_PROGRAM` if the index is past its loaded `/lightfx.yaml` program count.
+
+A `channel` of `0` disables the feature.
+
+### Example `/hubfx.yaml`
+
+```yaml
+codec_supply_voltage: "12v"
+inputs:
+  mode: ppm
+  ppm_pin: 1
+  engine_on_off:
+    channel: 5            # PPM slot 5
+    threshold_us: 1500
+  light_program_select:
+    channel: 6            # PPM slot 6 (e.g. 3-position switch)
+    program_count: 4
+```
+
+Or the per-pin equivalent:
+
+```yaml
+codec_supply_voltage: "12v"
+inputs:
+  mode: gpio
+  engine_on_off:
+    channel: 1            # I1 = GPIO 5
+    threshold_us: 1500
+  light_program_select:
+    channel: 2            # I2 = GPIO 6
+    program_count: 4
+```
+
+### Reload Behaviour
+
+`config.reload /hubfx.yaml` re-fires `hubConfig.onLoaded`, which calls `inputDispatcher.begin(cfg.inputs)` — the active reader is torn down (interrupts detached, RMT channel released) and the new mode + mappings take effect immediately. Feature callbacks are wired once at boot in `initInputDispatcher()` and survive reload.
 
 ---
 
@@ -518,6 +586,14 @@ All protocol communication (COBS/INIT/STATUS/DIAG) goes through UART0.
 
 | Version | Build | Date | Changes |
 |---------|-------|------|----------|
+| 1.0.0 | 228 | 2026-04-22 | **⚠️ BREAKING: Transparent type-range slave routing.** Replaced both legacy slave-routing schemes — `SLAVE_ROUTE_GUNFX/LIGHTFX/GEARCONTROL` (0x96–0x98 subcmd) and `ROUTE_DOWN/UP/UP_ASYNC` (0xB3–0xB5 slot-keyed envelope) — with **packet-type-range auto-routing**. The hub now forwards any inbound packet whose type lies in a slave range (GunFX 0x01–0x2F, LightFX 0x40–0x5F, GearControl 0x60–0x7F) verbatim to the matching attached slave; the slave's typed RESP / ACK / NACK is forwarded back upstream verbatim with the original correlation tag. Async slave packets in slave ranges are forwarded verbatim with `TAG_ASYNC` — slaves' core `STATUS` broadcasts are intentionally NOT forwarded (the hub's own broadcast covers board state). **Removed protocol constants:** `SLAVE_ROUTE_GUNFX/LIGHTFX/GEARCONTROL` (0x96–0x98), `ROUTE_DOWN/UP/UP_ASYNC` (0xB3–0xB5), `HubFxError::INVALID_SLOT/SLOT_EMPTY` (0x90–0x91). **Retained:** `SLAVE_ENUM_REQ/RESP` (0xB1–0xB2) so clients can discover which slave types are attached. **Client impact:** the Go SDK's `apiClient` now sends slave packets directly with no `routeSlot` field; per-slave APIs (`LightFxApi.LedSet(...)`, etc.) build identical wire bytes whether the connection is direct or hub-routed. Engine tracks attached slaves via `SLAVE_ENUM_REQ` after INIT to gate which command groups Dispatch accepts on a HubFX connection. Studio's per-slave tabs become active for any slave the hub reports as attached and use the same API code paths as direct connections. See [instructions/13-PASSTHROUGH-ROUTING.md](../../../instructions/13-PASSTHROUGH-ROUTING.md). **MAJOR bump because the wire-level routing format changed (no envelope vs. slot envelope) and constants were removed — any client built against pre-1.0.0 firmware that emitted `ROUTE_DOWN` / `SLAVE_ROUTE_*` will fail.** |
+| 0.40.2 | 226 | 2026-04-22 | **STATUS_BROADCAST source byte = HUBFX (PATCH, fixes Studio slave-tab live updates).** The HubFX firmware was emitting periodic `STATUS_UPDATE / STATUS_BROADCAST` packets with the default source byte `CORE` (0xF0) because `setStatusBroadcastSource()` was never called in `setup()` (LightFX/GearControl both set it explicitly to their own source). Go-side `engine.HandleStatusBroadcast()` routes parsers by `sourceToControllerType(source)` — `CORE` returns `""` and the packet is silently dropped, so `OnStatusBroadcast.Fire(...)` never ran. Result: Studio's slave tabs + Firmware-tab "Slave Controllers" table stayed perma-offline even though the wire actually carried the correct slaveMask byte (visible to the synchronous `slaves` query, which uses a different code path). **Fix:** add `server.core().setStatusBroadcastSource(StatusUpdateSource::HUBFX)` before `onStatusData(...)` in `setup()`. Combined with the parallel Studio fix that always dispatches `init direct verbose` on connect (HubFX auto-init had been suppressing the verbose flag), slave online/offline state now flips within ~1 s of the broadcast cadence. |
+| 0.40.1 | 224 | 2026-04-22 | **USB Host: assert DTR+RTS via EP0 class request (PATCH, fixes slave registration).** Slaves attached via USB hub were enumerating and opening their CDC bulk endpoints successfully, but `SlaveManager` timed out every 5s with "No IDENTIFY response" — root cause: the deliberate interface=1 (Data class) open in [esp_usb_host.cpp:_openCdcSession](controllers/lib/sfx_usb/usb/esp32/esp_usb_host.cpp) (chosen to fit `hub + 2 devices = 8 HCD channels` on the ESP32-S3 DWC2 OTG) leaves the CDC-ACM driver's `intf_func` vtable unpopulated, so `cdc_acm_host_set_control_line_state()` and `cdc_acm_host_line_coding_set()` silently return `ESP_ERR_NOT_SUPPORTED`. Without DTR the Pico slave's TinyUSB stack reports `tud_cdc_connected() == false`, `Serial` never becomes truthy, and `BusServer` never transmits its IDENTIFY reply. **Fix:** drive both class requests directly through the shared EP0 control pipe via `cdc_acm_host_send_custom_request()` — `SET_LINE_CODING` (0x20, 1 Mbps 8N1) and `SET_CONTROL_LINE_STATE` (0x22, DTR+RTS) targeting the Communication interface index (0). EP0 is always live regardless of which data interface was claimed, so DTR is asserted ~2 ms after enumeration. Verified on hardware: `LightFX-9537` now reaches `ready` within the 5 s discovery window (`[SlaveMgr] Auto-INIT OK: LightFX → LightFX-9537 (ready)`). Channel budget preserved — still 3 HCD channels per device. |
+| 0.39.0 | 213 | 2026-04-21 | **Cross-board light-program schema (MINOR, additive).** `LightProgramConfig::LandingGroup` splits the single `channelMask` byte into `lightfxChannelMask` (bits 0–7, the LightFX slave's 8 channels) + `hubfxChannelMask` (bits 0–5, the hub's 6 local LED channels), and gains `servoBoard[8]` ("lightfx" \| "hubfx", default "lightfx"). `LightProgramConfig::ChannelDef` gains `board[8]` (default "lightfx"). Same `/lightfx.yaml` is loaded by both LightFX standalone and the hub's master copy — each side filters out the channel-mask bits and channel-defs that don't belong to it. `pushLightFxConfigToSlave()` masks groups down to lightfx-only fields before sending `LANDING_LIGHT_BIND` (wire format unchanged: 8-bit channelMask, byte order `[slot, servoId, channelMask, brightness]`); a group that names only hubfx channels (or has only a hubfx-side servo) is invisible to the slave. `LightProgramManager` now takes a `board` parameter on `begin()` and applies only the channel-defs / mask side that match. `MAX_CHANNELS_PER_PROGRAM` raised 8 → 14 (8 lightfx + 6 hubfx). New `LightProgramBoard::isLightFx()`/`isHubFx()` helpers handle null/empty as "lightfx" so legacy configs keep applying to the slave under Rule 11. **`/hubfx.yaml` no longer carries `light_fx`** — the hub's master copy of the light program lives in `/lightfx.yaml` (HubLightFxConfigSchema, fanned to the slave on attach); HubFxTab in Studio writes only the hub-only `codec_supply_voltage` to `/hubfx.yaml`. No wire-format changes; YAML-only break for hub configs that previously embedded `light_fx`. |
+| 0.38.0 | 212 | 2026-04-21 | **Delete applier/router/orchestrator; plain push function (MINOR).** One slave per `SlaveType` was always the invariant — the `BoardOrchestrator` + `HubApplierRouter` + `RemoteLightFxApplier` + `LightProgramPolicy` stack (~530 LOC in `sfx_boards/applier/` + `sfx_boards/lightfx/applier/`) was overengineered for 0..N slaves. Replaced with a single plain function `pushLightFxConfigToSlave(const LightProgramConfig&, LightFxClient&)` in `src/protocol/hub_lightfx_apply.cpp` that walks the config and calls typed client methods directly. LightFX standalone pico dropped `LocalLightApplier` + `SingleApplierRouter` + `BoardOrchestrator` for a plain `applyLightProgramConfigLocal(cfg)` function. `UsbRegistry::fireReady`/`fireDisconnect` now auto-log connect/disconnect, so GunFX/GearControl no longer need stub log-only callbacks. Added typed slave accessor inlines `slaveLightFx()` / `slaveGunFx()` / `slaveGearControl()`. Renamed `AudioConfig` → `HubFxSettings` and `audio_settings.h` → `hubfx_settings.h` — `/hubfx.yaml` is now explicitly the hub-only settings file (codec, future input mappings), not audio-specific. Rule 18 "runtime-strategy carve-out" retired. Net: -990 LOC for adding one new board push hook. |
+| 0.37.0 | 210 | 2026-04-21 | **Unified slave lifecycle — auto-INIT + registry callbacks (MINOR).** `SlaveDescriptor` gains `autoInit` flag (default false). When set, `SlaveManager::tryIdentifySlave()` follows a successful IDENTIFY with `INIT(SLAVE)` and `awaitSlaveReady()`, then calls `registry().setReady(type, true)` — no longer waits for an explicit upstream `SLAVE_INIT` command. All three HubFX slave descriptors (`GunFX`, `LightFX`, `GearControl`) now opt in. `UsbRegistryT` gains per-`SlaveType` lifecycle callbacks: `onReady(type, fn)` fires once on each `false→true` `ready` transition, `onDisconnect(type, fn)` on the reverse (covers `setReady(false)` from `SLAVE_INIT`/`REBOOT`/`SHUTDOWN` and ready-clearing `setConnected(false)` from USB unmount). LightFX hub-internal apply pipeline migrated off the main-loop `reconcileLightFxRemote()` poll: attach/detach + initial `applyLightFxConfig(/lightfx.yaml)` push now run from `onReady` / `onDisconnect` lambdas registered in `initSlaveManager()`. Result: a freshly-plugged LightFX slave goes IDENTIFY → INIT(SLAVE) → ready → applier-attached → config pushed without any host involvement, and the main loop drops one polling helper. GunFX / GearControl get log-only ready/disconnect callbacks until their config-push pipelines land. |
+| 0.36.0 | 208 | 2026-04-21 | **Per-domain config files (BREAKING wire path payloads, MINOR struct).** Hub config split from a single composite `/hubfx.yaml` (audio + engine + gun + light_fx group) into four independent files on flash: `/hubfx.yaml` (codec supply voltage), `/enginefx.yaml`, `/gunfx.yaml`, `/lightfx.yaml`. SD card is reserved for audio samples — never holds config. Each file owns its own `ConfigStore<TSchema, HubFxYamlPool>` with its own `defaultPath()` and its own typed `onLoaded()` callback. New `MultiConfigServer` (path-routed, type-erased via `IConfigStoreFacade` + `ConfigStoreFacadeT<TStore>`) replaces `ConfigServerT<HubFxConfigStore>` and dispatches CONFIG_RELOAD/SAVE/STATUS to the matching store by path. CONFIG_RELOAD with no path now reloads ALL stores; CONFIG_SAVE always requires an explicit path. CONFIG_STATUS reports aggregate state (loaded = ALL, totalSize sum, validOk AND). Composite `HubFxConfig` struct + `HubFxConfigSchema` deleted; LightFX hub-internal apply (`applyLightFxConfig`) now triggered from `lightConfig.onLoaded`, not a composite branch. |
+| 0.34.1 | 200 | 2026-04-19 | **YAML parser pool bump (PATCH).** Default 128-node parser pool exhausted on Studio-emitted `/hubfx.yaml` once multiple section schemas (audio + engine + gun, with light/gear stubbed) were composed. Added board-local `HubFxYamlPool` (2048 nodes / 64 KB strings / depth 16) and templated `HubFxConfigSchema::populate` on `TPool`. **Memory is fully transient** — `ConfigStore::loadFromString` creates the parser on the stack; `parse()` heap-allocates the pools via `new[]` and the destructor frees them as soon as the call returns. Persistent SRAM unchanged; ~112 KB peak only during parse, comfortably inside the ESP32-S3's internal-heap budget. |
 | 0.34.0 | 190 | 2026-04-19 | **Single-core exclusive uploads.** Retired the dual-core `SpscRingBuffer` + Core 1 writer-task storage pipeline (correlated with end-of-upload drain hangs and 2.4 MB PSRAM for little benefit). `Esp32StoragePolicy` is now a single-core inline-write policy: 64 KB PSRAM fill buffer (falls back to internal RAM), `onUploadBufferFull()` writes synchronously to SD. Both `UPLOAD_SYNC` and `UPLOAD_STREAM` share the same code path. **Upload is exclusive on HubFX** — the main loop short-circuits non-storage work (audio, engine FX, USB host polling, codec health, battery, diagnostics) while `storageServer.isUploadActive()` is true. `StorageServer::onStreamStart/End` renamed to `onUploadStart/End` and now fires for both upload modes; HubFX wires them to `Mixer::stopAsync` + `suspendAudio` / `resumeAudio`. Build-149 `stopWriterTask`, `_streamSuspended`, writer atomics, and `WriterStats` bytes counter all removed from the shared policy. |
 | 0.33.0 | 184 | 2026-04-17 | **Battery monitoring via shared policy.** Wired `Ina226Battery` + `BatteryServerT<Ina226Battery>` (shared lib, policy-based). HubFX now responds to core packet `BATTERY_CONFIG (0xEE)` with payload `[chemistry:u8][cellCount:u8]` — same wire format as GearControl/LightFX. Rail INA226 channel hardcoded (`BATTERY_INA226_CHANNEL = 0` → 0x40); chemistry/cells default to LiPo/auto and are settable at runtime via the protocol packet. `batteryMonitor.update()` added to main loop. |
 | 0.32.0 | 173 | 2026-04-09 | **IDENTIFY-based slave discovery.** Changed SlaveManager from INIT-based to IDENTIFY-based discovery. `scanAndInit()` → `scanAndIdentify()`, `tryInitSlave()` → `tryIdentifySlave()`. Discovery now sends IDENTIFY (0xFE) instead of INIT (0xF0) — non-destructive, does not trigger hardware init callbacks on slaves. Slaves transition to `connected=true, ready=false` after identification. Activation via explicit `SLAVE_INIT` command sends INIT and marks `ready=true`. Added `sendIdentify()` to `SerialBus` and `BusClient`. `BusClient::handlePacket()` now handles both IDENTIFY and INIT_READY responses. `sendInit()` resets `_serverReady` flag to support proper `awaitSlaveReady()` after IDENTIFY→INIT sequence. |
