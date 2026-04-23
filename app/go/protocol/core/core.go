@@ -99,9 +99,6 @@ const (
 const (
 	InitModeSlave  byte = 0x00
 	InitModeDirect byte = 0x01
-
-	// Deprecated: Use InitModeDirect
-	InitModeConfig = InitModeDirect
 )
 
 // InitModeName returns a human-readable name for an init mode.

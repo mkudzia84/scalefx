@@ -1,16 +1,11 @@
 package api
 
 import (
-	"scalefx/protocol"
 	"scalefx/protocol/gearcontrol"
 )
 
 // GearControlApi provides GearControl landing gear operations.
 type GearControlApi struct{ apiClient }
-
-func NewGearControlApi(conn *protocol.Connection) *GearControlApi {
-	return &GearControlApi{apiClient{conn}}
-}
 
 func (a *GearControlApi) Deploy(id byte) ApiResult  { return a.sendACK(gearcontrol.CmdDeploy(id)) }
 func (a *GearControlApi) Retract(id byte) ApiResult { return a.sendACK(gearcontrol.CmdRetract(id)) }

@@ -1,18 +1,23 @@
 /*
- * Slave Server — Command Handler for Slave Routing and Management
+ * Slave Server — Auto-routing + Slave Management Handler
  *
  * Handles HubFX slave-related packets:
  *   - Slave management (0x80-0x83): list, init, status
- *   - Slave routing via subcmd pattern (0x96-0x98):
- *       SLAVE_ROUTE_GUNFX       [subcmd:u8][payload...] → GunFX
- *       SLAVE_ROUTE_LIGHTFX     [subcmd:u8][payload...] → LightFX
- *       SLAVE_ROUTE_GEARCONTROL [subcmd:u8][payload...] → GearControl
+ *   - Slave info query (0xAE)
+ *   - Slave registry enumeration (0xB1)
  *
- * The subcmd byte is the original slave packet type. The hub extracts it
- * and forwards [subcmd + payload] to the appropriate BusClient.
+ * Inbound slave-range packets are auto-routed by packet-type range to the
+ * matching attached slave — no envelope wrapping needed:
  *
- * This design frees packet types 0x01-0x7F for other uses, collapsing all
- * slave routing into just 3 HubFX packet types.
+ *     GunFX        0x01-0x2F
+ *     LightFX      0x40-0x5F
+ *     GearControl  0x60-0x7F
+ *
+ * The slave's response (typed RESP, ACK, or NACK) is forwarded back upstream
+ * verbatim with the original correlation tag. Async slave packets in slave
+ * ranges are forwarded verbatim with TAG_ASYNC.
+ *
+ * See instructions/13-PASSTHROUGH-ROUTING.md.
  */
 
 #ifndef SLAVE_SERVER_H
@@ -26,19 +31,9 @@
 #include "slave_manager.h"
 
 // ============================================================================
-// SlaveServer — Routing + Slave Management Handler
+// SlaveServer — Auto-routing + Slave Management Handler
 // ============================================================================
 
-/**
- * @brief Server-side handler for slave routing and management
- *
- * Handles two non-contiguous sub-ranges via tryProcess() override:
- *   - Slave management: 0x80-0x83 (moduleRangeLow/High)
- *   - Slave routing:    0x96-0x98 (SLAVE_ROUTE_* subcmd packets)
- *
- * For SLAVE_ROUTE_* packets, the first payload byte is the subcmd (the
- * original slave packet type), followed by the original payload.
- */
 class SlaveServer : public BusServer {
 public:
     SlaveServer() = default;
@@ -46,12 +41,20 @@ public:
     const char* handlerName() const override { return "SlaveServer"; }
 
     /**
-     * @brief Override tryProcess to handle slave management (0x80-0x83),
-     *        slave routing subcmd packets (0x96-0x98),
-     *        slave info query (0xAE),
-     *        and USB host diagnostics (0xA7-0xA8)
+     * @brief Override tryProcess to auto-route slave-range packets and
+     *        handle slave management (0x80-0x83), slave info query (0xAE),
+     *        and slave registry enumeration (0xB1).
      */
     CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override;
+
+    /**
+     * @brief Wire per-slot async pumps so unsolicited slave packets in slave
+     *        ranges get re-emitted upstream verbatim with TAG_ASYNC.
+     *
+     * Call once after every slave is registered (typically end of setup()).
+     * Idempotent — re-calling rebinds the callbacks to the latest slot indices.
+     */
+    void wireAsyncPumps();
 
 protected:
     CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
@@ -62,9 +65,14 @@ protected:
     }
 
 private:
-    CommandHandleResult routeToSlave(uint8_t type, const uint8_t* payload, size_t len);
-    CommandHandleResult routeCoreToSlave(uint8_t coreCmd, BusClient* client, SlaveType target);
+    /**
+     * @brief Forward a slave-range packet to the matching attached slave and
+     *        relay the response (typed RESP / ACK / NACK) back upstream.
+     */
+    CommandHandleResult forwardToSlave(uint8_t type, const uint8_t* payload, size_t len);
+
     void handleSlaveList();
+    void handleSlaveEnum();
     void handleSlaveInit(const uint8_t* payload, size_t len);
     void handleSlaveInfo(const uint8_t* payload, size_t len);
 

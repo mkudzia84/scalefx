@@ -547,22 +547,61 @@ uint8_t EspUsbHost::_openCdcSession(uint16_t vid, uint16_t pid, uint32_t timeout
         return 0;
     }
 
-    // Configure line coding: 1Mbps 8N1 (ScaleFX binary protocol)
-    // Note: returns ESP_ERR_NOT_SUPPORTED when opened via data interface (no
-    // CDC functional descriptors).  Non-fatal — Pico CDC ignores baud rate.
-    cdc_acm_line_coding_t line_coding = {
-        .dwDTERate   = 1000000,   // 1 Mbps baud rate
-        .bCharFormat = 0,         // 1 stop bit
-        .bParityType = 0,         // No parity
-        .bDataBits   = 8,
+    // Drive CDC class requests directly via the shared EP0 control pipe.  When
+    // the device is opened on interface 1 (data class) the CDC-ACM driver never
+    // populates its `intf_func` vtable — the pointers registered by the ACM-
+    // compliant path are only wired when the Communication interface is parsed.
+    // Calling cdc_acm_host_set_control_line_state() / _line_coding_set() on
+    // such a handle dereferences a NULL function pointer or returns
+    // ESP_ERR_NOT_SUPPORTED.  cdc_acm_host_send_custom_request() uses the EP0
+    // ctrl_transfer directly and works regardless of which interface was opened.
+    //
+    // Without DTR, the Pico slave's TinyUSB stack treats the CDC link as
+    // disconnected (tud_cdc_connected() returns false), so `Serial` never
+    // becomes truthy and BusServer never transmits its IDENTIFY response —
+    // SlaveManager then times out every 5s with "No IDENTIFY response".
+
+    constexpr uint8_t CDC_REQTYPE_HOST_TO_DEVICE_CLASS_INTERFACE = 0x21;
+    constexpr uint8_t CDC_REQ_SET_LINE_CODING         = 0x20;
+    constexpr uint8_t CDC_REQ_SET_CONTROL_LINE_STATE  = 0x22;
+    constexpr uint16_t CDC_CTRL_LINE_DTR_RTS          = 0x0003;  // bit0=DTR | bit1=RTS
+    // Standard CDC-ACM devices place the Communication interface at index 0
+    // and the Data interface at index 1 (Pico TinyUSB, STM32 virtual COM, …).
+    constexpr uint16_t CDC_COMM_INTERFACE_INDEX       = 0x0000;
+
+    // SET_LINE_CODING — 7-byte payload, little-endian
+    uint8_t lineCodingBuf[7] = {
+        0x40, 0x42, 0x0F, 0x00,  // dwDTERate = 1,000,000
+        0x00,                     // bCharFormat = 1 stop bit
+        0x00,                     // bParityType = none
+        0x08,                     // bDataBits = 8
     };
-    err = cdc_acm_host_line_coding_set(cdc_handle, &line_coding);
+    err = cdc_acm_host_send_custom_request(
+        cdc_handle,
+        CDC_REQTYPE_HOST_TO_DEVICE_CLASS_INTERFACE,
+        CDC_REQ_SET_LINE_CODING,
+        0,
+        CDC_COMM_INTERFACE_INDEX,
+        sizeof(lineCodingBuf),
+        lineCodingBuf);
     if (err != ESP_OK) {
-        SFX_LOG_DEBUG("[UsbHost] line_coding_set: %s (expected for data-interface open)", esp_err_to_name(err));
+        SFX_LOG_DEBUG("[UsbHost] SET_LINE_CODING: %s (Pico CDC ignores baud)", esp_err_to_name(err));
     }
 
-    // Set DTR + RTS control lines — also expected to return NOT_SUPPORTED
-    cdc_acm_host_set_control_line_state(cdc_handle, true, true);
+    // SET_CONTROL_LINE_STATE — assert DTR+RTS so tud_cdc_connected() becomes true
+    err = cdc_acm_host_send_custom_request(
+        cdc_handle,
+        CDC_REQTYPE_HOST_TO_DEVICE_CLASS_INTERFACE,
+        CDC_REQ_SET_CONTROL_LINE_STATE,
+        CDC_CTRL_LINE_DTR_RTS,
+        CDC_COMM_INTERFACE_INDEX,
+        0,
+        nullptr);
+    if (err != ESP_OK) {
+        SFX_LOG_WARN("[UsbHost] SET_CONTROL_LINE_STATE(DTR+RTS) failed: %s", esp_err_to_name(err));
+    } else {
+        SFX_LOG_DEBUG("[UsbHost] DTR+RTS asserted via EP0 class request (iface=%u)", CDC_COMM_INTERFACE_INDEX);
+    }
 
     // Assign a sequential device address (matches TinyUSB behavior on Pico)
     uint8_t devAddr = _nextDevAddr++;

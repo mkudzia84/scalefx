@@ -2,12 +2,19 @@
  * Slave Server Implementation (ESP32-S3)
  *
  * Handles:
- *   1. Slave routing via subcmd pattern (0x96-0x98) — extracts subcmd byte
- *      from payload and forwards to appropriate BusClient
+ *   1. Auto-routing of slave-range packets by packet-type range:
+ *        GunFX        0x01-0x2F
+ *        LightFX      0x40-0x5F
+ *        GearControl  0x60-0x7F
+ *      Forwards verbatim to the matching attached slave; relays the typed
+ *      RESP / ACK / NACK back upstream with the original correlation tag.
  *   2. Slave management commands (0x80-0x83) — list, init, status
+ *   3. Slave info query (0xAE) and registry enumeration (0xB1)
+ *   4. Per-slot async pumps that forward unsolicited slave packets verbatim
+ *      with TAG_ASYNC (slave-range packets only — slaves' core STATUS
+ *      broadcasts are aggregated by the hub and not re-emitted).
  *
- * Ported from HubFX Pico reference (controllers/archive/hubfx-pico/).
- * Uses FreeRTOS vTaskDelay() instead of Pico busy_wait_ms().
+ * See instructions/13-PASSTHROUGH-ROUTING.md.
  */
 
 #include "slave_server.h"
@@ -20,22 +27,28 @@
 using namespace CoreProtocol;
 
 // ============================================================================
-// tryProcess Override — Handle routing subcmds and management commands
+// tryProcess Override — Auto-route slave-range, handle management commands
 // ============================================================================
 
 CommandHandleResult SlaveServer::tryProcess(uint8_t type, const uint8_t* payload, size_t len) {
-    // 1. Check if this is a SLAVE_ROUTE_* packet (0x96-0x98) → route via subcmd
-    if (type >= HubFxPacket::SLAVE_ROUTE_GUNFX && type <= HubFxPacket::SLAVE_ROUTE_GEARCONTROL) {
-        return routeToSlave(type, payload, len);
+    // 1. Auto-route slave-range packets by type to the matching attached slave.
+    if (slaveTypeForPacketType(type) != SlaveType::Unknown) {
+        return forwardToSlave(type, payload, len);
     }
 
-    // 2. Check slave info query (0xAE)
+    // 2. Slave info query (0xAE)
     if (type == HubFxPacket::SLAVE_INFO) {
         handleSlaveInfo(payload, len);
         return CommandHandleResult::Handled;
     }
 
-    // 3. Fall through to BusServer base for management commands (0x80-0x83)
+    // 3. Slave registry enumeration (0xB1)
+    if (type == HubFxPacket::SLAVE_ENUM_REQ) {
+        handleSlaveEnum();
+        return CommandHandleResult::Handled;
+    }
+
+    // 4. Fall through to BusServer base for management commands (0x80-0x83)
     return BusServer::tryProcess(type, payload, len);
 }
 
@@ -63,114 +76,45 @@ CommandHandleResult SlaveServer::handleModulePacket(uint8_t type, const uint8_t*
 }
 
 // ============================================================================
-// Slave Command Routing (subcmd pattern)
+// Auto-routing — forward slave-range packet to the matching attached slave
 // ============================================================================
 
-CommandHandleResult SlaveServer::routeToSlave(uint8_t type, const uint8_t* payload, size_t len) {
-    // Extract subcmd from first payload byte
-    if (len < 1) {
-        sendNack(SerialError::MISSING_PARAMETER);
-        return CommandHandleResult::Handled;
-    }
-
-    uint8_t subcmd = payload[0];
-    const uint8_t* slavePayload = (len > 1) ? &payload[1] : nullptr;
-    size_t slavePayloadLen = (len > 1) ? len - 1 : 0;
-
-    // Determine target slave from the SLAVE_ROUTE_* packet type
-    SlaveType target = slaveTypeForRoutePacket(type);
+CommandHandleResult SlaveServer::forwardToSlave(uint8_t type, const uint8_t* payload, size_t len) {
+    SlaveType target = slaveTypeForPacketType(type);
     BusClient* client = registry().getClient(target);
 
     if (!client) {
-        SLAVE_LOG("Route %s: not connected", slaveTypeName(target));
+        SLAVE_LOG("Auto-route 0x%02X (%s): not connected", type, slaveTypeName(target));
         sendNack(HubFxError::SLAVE_NOT_CONNECTED);
         return CommandHandleResult::Handled;
     }
 
-    // Core-range subcmds (0xF0+) need special handling
-    if (subcmd >= CorePacket::INIT) {
-        return routeCoreToSlave(subcmd, client, target);
-    }
+    SLAVE_LOG("Auto-route 0x%02X → %s len=%u", type, slaveTypeName(target), (unsigned)len);
 
-    // Forward the subcmd + payload to the slave as a normal command
-    SLAVE_LOG("Route → %s subcmd=0x%02X len=%d", slaveTypeName(target), subcmd, slavePayloadLen);
-    CommandResult result = client->sendCommand(subcmd, slavePayload, slavePayloadLen);
+    // Forward verbatim; sendCommand blocks until ACK / NACK / typed RESP.
+    CommandResult result = client->sendCommand(type, payload, len);
+
     if (result.success) {
-        sendAck();
+        // If the slave returned a typed RESP, BusClient buffered it as the last
+        // non-base response. Forward that packet upstream verbatim with the
+        // original correlation tag. Otherwise reply with a plain ACK.
+        uint8_t respType = client->lastResponseType();
+        size_t  respLen  = client->lastResponseLen();
+        if (respType != 0 && respType != type) {
+            sendRawPacket(respType, currentTag(), client->lastResponsePayload(), respLen);
+        } else if (respType != 0 && respLen > 0) {
+            // Same-type echo (rare) — still forward.
+            sendRawPacket(respType, currentTag(), client->lastResponsePayload(), respLen);
+        } else {
+            sendAck();
+        }
     } else {
-        SLAVE_LOG("Route %s failed: 0x%02X %s", slaveTypeName(target), result.errorCode,
-                  result.errorMessage ? result.errorMessage : "");
+        SLAVE_LOG("Auto-route 0x%02X (%s) failed: 0x%02X %s", type, slaveTypeName(target),
+                  result.errorCode, result.errorMessage ? result.errorMessage : "");
         sendNack(result.errorCode, result.errorMessage);
     }
 
     return CommandHandleResult::Handled;
-}
-
-// ============================================================================
-// Core Command Routing to Slaves
-// ============================================================================
-
-CommandHandleResult SlaveServer::routeCoreToSlave(uint8_t coreCmd, BusClient* client, SlaveType target) {
-    SLAVE_LOG("CoreRoute → %s cmd=0x%02X", slaveTypeName(target), coreCmd);
-
-    switch (coreCmd) {
-        // --- Fire-and-forget commands (slave does NOT ACK) ---
-        case CorePacket::REBOOT:
-            client->sendReboot();
-            registry().setReady(target, false);
-            sendAck();
-            return CommandHandleResult::Handled;
-
-        case CorePacket::BOOTSEL:
-            client->sendBootsel();
-            registry().setReady(target, false);
-            sendAck();
-            return CommandHandleResult::Handled;
-
-        // --- ACK-based commands (slave sends ACK/NACK) ---
-        case CorePacket::SHUTDOWN: {
-            CommandResult result = client->sendCommand(CorePacket::SHUTDOWN, nullptr, 0);
-            if (result.success) {
-                registry().setReady(target, false);
-                sendAck();
-            } else {
-                sendNack(result.errorCode, result.errorMessage);
-            }
-            return CommandHandleResult::Handled;
-        }
-
-        case CorePacket::KEEPALIVE: {
-            CommandResult result = client->sendCommand(CorePacket::KEEPALIVE, nullptr, 0);
-            if (result.success) {
-                sendAck();
-            } else {
-                sendNack(result.errorCode, result.errorMessage);
-            }
-            return CommandHandleResult::Handled;
-        }
-
-        // --- STATUS_REQ: forward raw STATUS response from slave to CLI ---
-        case CorePacket::STATUS_REQ: {
-            CommandResult result = client->sendCommand(CorePacket::STATUS_REQ, nullptr, 0);
-            if (result.success) {
-                // Forward the raw STATUS packet data from the slave
-                if (client->lastResponseType() == CorePacket::STATUS && client->lastResponseLen() > 0) {
-                    sendRawPacket(CorePacket::STATUS, currentTag(),
-                                  client->lastResponsePayload(), client->lastResponseLen());
-                } else {
-                    sendAck();  // Fallback if no STATUS data captured
-                }
-            } else {
-                sendNack(result.errorCode, result.errorMessage);
-            }
-            return CommandHandleResult::Handled;
-        }
-
-        default:
-            SLAVE_LOG("CoreRoute %s: unsupported cmd 0x%02X", slaveTypeName(target), coreCmd);
-            sendNack(SerialError::NOT_SUPPORTED);
-            return CommandHandleResult::Handled;
-    }
 }
 
 // ============================================================================
@@ -334,4 +278,61 @@ void SlaveServer::handleSlaveInfo(const uint8_t* payload, size_t len) {
     SLAVE_LOG("SLAVE_INFO_RESP: %s ready=%d connected=%d %d bytes",
               slaveTypeName(type), slave->ready, slave->connected, pos);
     sendRawPacket(HubFxPacket::SLAVE_INFO_RESP, currentTag(), buf, pos);
+}
+
+// ============================================================================
+// Slave Registry Enumeration (0xB1)
+// ============================================================================
+
+void SlaveServer::handleSlaveEnum() {
+    // Wire format: [count:u8] then per slot:
+    //   [slot:u8][type:u8][connected:u8][ready:u8][nameLen:u8][name:str]
+    uint8_t buf[256];
+    size_t pos = 0;
+    uint8_t count = registry().count();
+    buf[pos++] = count;
+
+    for (uint8_t slot = 0; slot < count; ++slot) {
+        const SlaveEntry& e = registry()[slot];
+        const char* name = "";
+        if (e.client && e.client->isServerReady()) name = e.client->serverName();
+        uint8_t nameLen = (uint8_t)strlen(name);
+
+        if (pos + 5 + nameLen > sizeof(buf)) break;  // safety
+
+        buf[pos++] = slot;
+        buf[pos++] = (uint8_t)e.type;
+        buf[pos++] = e.connected ? 1 : 0;
+        buf[pos++] = e.ready ? 1 : 0;
+        buf[pos++] = nameLen;
+        if (nameLen) { memcpy(&buf[pos], name, nameLen); pos += nameLen; }
+    }
+
+    SLAVE_LOG("SLAVE_ENUM_RESP: %u slots, %u bytes", count, (unsigned)pos);
+    sendRawPacket(HubFxPacket::SLAVE_ENUM_RESP, currentTag(), buf, pos);
+}
+
+// ============================================================================
+// Async Pumps — verbatim forward of slave-range async packets upstream
+// ============================================================================
+
+void SlaveServer::wireAsyncPumps() {
+    // For every registered slave, install an async-packet listener that
+    // re-emits unsolicited slave-range packets upstream verbatim with
+    // TAG_ASYNC. Slave-internal CorePacket broadcasts (STATUS at 1 Hz, etc.)
+    // are intentionally NOT forwarded — the hub aggregates board-level state
+    // through SLAVE_INFO / SLAVE_LIST_RESP. Idempotent: rebinding overwrites
+    // the previous closure.
+    uint8_t count = registry().count();
+    for (uint8_t slot = 0; slot < count; ++slot) {
+        SlaveEntry& e = registry()[slot];
+        if (!e.client) continue;
+        e.client->onAsyncPacket([this](uint8_t type,
+                                       const uint8_t* payload, size_t len) {
+            // Only forward slave-range packets; their type alone identifies
+            // the source board to the upstream client.
+            if (slaveTypeForPacketType(type) == SlaveType::Unknown) return;
+            sendRawPacket(type, CoreProtocol::TAG_ASYNC, payload, len);
+        });
+    }
 }

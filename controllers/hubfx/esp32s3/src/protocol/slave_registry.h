@@ -1,9 +1,9 @@
 /*
  * Slave Registry — HubFX-specific wrapper around shared UsbRegistry
  *
- * Provides SlaveRegistry as an alias for UsbRegistry and adds
- * HubFX-specific routing (slaveTypeForRoutePacket) that depends on
- * HubFxPacket constants.
+ * Provides SlaveRegistry as an alias for UsbRegistry and adds HubFX-specific
+ * routing helpers (slaveTypeForPacketType) that depend on the per-board
+ * packet ranges defined in serial/<board>/<board>.h.
  */
 
 #ifndef SLAVE_REGISTRY_H
@@ -17,23 +17,26 @@
 using SlaveRegistry = UsbRegistry;
 
 // ============================================================================
-// HubFX-specific: Map SLAVE_ROUTE_* packet types to SlaveType
+// HubFX-specific: Map a slave-range packet type to its target SlaveType
 // ============================================================================
 
 /**
- * @brief Map a SLAVE_ROUTE_* packet type to a SlaveType
- * @return SlaveType::Unknown if not a routing packet
+ * @brief Resolve a packet type byte to the SlaveType that owns that range.
  *
- * This function depends on HubFxPacket constants and therefore cannot
- * live in the shared library.
+ * Type ranges (from .github/copilot-instructions.md):
+ *   GunFX        0x01-0x2F
+ *   LightFX      0x40-0x5F
+ *   GearControl  0x60-0x7F
+ *
+ * Returns SlaveType::Unknown for any packet outside these ranges (HubFX,
+ * Stream, Core, or unallocated). The hub uses this to auto-route inbound
+ * slave-range packets without any envelope wrapping.
  */
-inline SlaveType slaveTypeForRoutePacket(uint8_t hubPacketType) {
-    switch (hubPacketType) {
-        case HubFxPacket::SLAVE_ROUTE_GUNFX:       return SlaveType::GunFX;
-        case HubFxPacket::SLAVE_ROUTE_LIGHTFX:     return SlaveType::LightFX;
-        case HubFxPacket::SLAVE_ROUTE_GEARCONTROL: return SlaveType::GearControl;
-        default:                                    return SlaveType::Unknown;
-    }
+inline SlaveType slaveTypeForPacketType(uint8_t type) {
+    if (type >= 0x01 && type <= 0x2F) return SlaveType::GunFX;
+    if (type >= 0x40 && type <= 0x5F) return SlaveType::LightFX;
+    if (type >= 0x60 && type <= 0x7F) return SlaveType::GearControl;
+    return SlaveType::Unknown;
 }
 
 #endif // SLAVE_REGISTRY_H

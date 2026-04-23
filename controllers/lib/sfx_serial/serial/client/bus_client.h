@@ -69,6 +69,12 @@ using BusClientReadyCallback = std::function<void(const char* deviceName)>;
 using BusClientErrorCallback = std::function<void(uint8_t errorCode, const char* message)>;
 using BusClientLogCallback = std::function<void(uint8_t level, uint32_t timestamp_ms, const char* message)>;
 
+/// Fires for any unsolicited inbound packet (tag == TAG_ASYNC). Solicited
+/// responses to sendCommand() are matched by tag inside the result queue and
+/// do NOT fire this — used by HubFX auto-routing to forward slave-range async
+/// packets (LANDING_LIGHT_STATUS, GEAR_DOOR_STATUS, ...) upstream verbatim.
+using BusClientAsyncCallback = std::function<void(uint8_t type, const uint8_t* payload, size_t len)>;
+
 // ============================================================================
 // BusClient Class
 // ============================================================================
@@ -162,6 +168,7 @@ public:
     void onReady(BusClientReadyCallback cb) { _readyCallback = cb; }
     void onError(BusClientErrorCallback cb) { _errorCallback = cb; }
     void onLogMessage(BusClientLogCallback cb) { _logCallback = cb; }
+    void onAsyncPacket(BusClientAsyncCallback cb) { _asyncCallback = cb; }
 
     // ========================================================================
     // State
@@ -248,6 +255,7 @@ private:
     BusClientReadyCallback _readyCallback;
     BusClientErrorCallback _errorCallback;
     BusClientLogCallback _logCallback;
+    BusClientAsyncCallback _asyncCallback;
 
     // Raw response capture (for routing layers that forward opaque packets)
     static constexpr size_t RAW_RESPONSE_MAX = 128;  // STATUS payloads are ~40-60 bytes

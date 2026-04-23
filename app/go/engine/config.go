@@ -96,12 +96,12 @@ func (e *Engine) ParseConfigStatus(payload []byte) {
 	e.Out.Println("")
 }
 
-// ConfigCommands returns the standard config CmdEntry map for embedding in a handler's command group.
-func (e *Engine) ConfigCommands() map[string]CmdEntry {
-	return map[string]CmdEntry{
-		"config.reload":   {e.ConfigReload, "config.reload [path]", "Reload config from storage", true},
-		"config.status":   {e.ConfigStatus, "config.status", "Config load status", true},
-		"config.save":     {e.ConfigSave, "config.save [path]", "Save config to storage", true},
-		"config.validate": {e.ConfigValidate, "config.validate <file>", "Validate local config file", true},
+// ConfigCommands returns the standard config CmdEntry slice for embedding in a handler's command group.
+func (e *Engine) ConfigCommands() []CmdEntry {
+	return []CmdEntry{
+		{"config.reload", e.ConfigReload, "config.reload [path]", "Reload config from storage", true},
+		{"config.status", e.ConfigStatus, "config.status", "Config load status", true},
+		{"config.save", e.ConfigSave, "config.save [path]", "Save config to storage", true},
+		{"config.validate", e.ConfigValidate, "config.validate <file>", "Validate local config file", true},
 	}
 }

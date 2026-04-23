@@ -164,6 +164,14 @@ void BusClient::handlePacket(uint8_t type, uint8_t tag, const uint8_t* payload, 
             }
             // Delegate to module-specific handler
             onModulePacket(type, tag, payload, len);
+            // Fire async hook for unsolicited packets so routing layers can
+            // forward slave-initiated packets upstream (HubFX re-emits
+            // verbatim with TAG_ASYNC). Solicited responses are correlated
+            // by tag in the result queue and would not reach here with
+            // TAG_ASYNC.
+            if (_asyncCallback && tag == CoreProtocol::TAG_ASYNC) {
+                _asyncCallback(type, payload, len);
+            }
             break;
     }
 }

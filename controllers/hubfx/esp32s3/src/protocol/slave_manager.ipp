@@ -183,19 +183,41 @@ SlaveType SlaveManagerT<MaxSlaves>::tryIdentifySlave(int usbIndex) {
     // Send IDENTIFY on the typed client to populate its boardInfo
     client->sendIdentify();
 
-    if (client->isServerReady() || awaitSlaveReady(*client, INIT_TIMEOUT_ms)) {
-        auto& reg = registry();
-        reg.registerSlave(type, client, usbIndex);
-        reg.setConnected(type, true);
-        // NOTE: ready=false — INIT has not been sent yet.
-        // Activation requires an explicit SLAVE_INIT command.
-        SFX_LOG_INFO("[SlaveMgr] Slave %s identified: %s (connected, awaiting INIT)",
-                     slaveTypeName(type), client->serverName());
+    if (!client->isServerReady() && !awaitSlaveReady(*client, INIT_TIMEOUT_ms)) {
+        SFX_LOG_ERROR("[SlaveMgr] Typed client IDENTIFY timeout for %s", slaveTypeName(type));
+        return SlaveType::Unknown;
+    }
+
+    auto& reg = registry();
+    reg.registerSlave(type, client, usbIndex);
+    reg.setConnected(type, true);
+
+    // Optional auto-INIT in SLAVE mode. When the descriptor opts in, the
+    // manager sends INIT immediately so the slave activates and the
+    // registry onReady callback fires (config-push, etc.) without waiting
+    // for an explicit SLAVE_INIT command from the upstream host.
+    const SlaveDescriptor* desc = findDescriptor(type);
+    if (desc && desc->autoInit) {
+        SFX_LOG_INFO("[SlaveMgr] Auto-INIT %s in SLAVE mode...", slaveTypeName(type));
+        if (client->sendInit() < 0) {
+            SFX_LOG_ERROR("[SlaveMgr] Auto-INIT send failed for %s", slaveTypeName(type));
+            return type;  // entry stays connected; explicit SLAVE_INIT can retry
+        }
+        if (awaitSlaveReady(*client, INIT_TIMEOUT_ms)) {
+            reg.setReady(type, true);   // fires onReady callback
+            SFX_LOG_INFO("[SlaveMgr] Auto-INIT OK: %s → %s (ready)",
+                         slaveTypeName(type), client->serverName());
+        } else {
+            SFX_LOG_WARN("[SlaveMgr] Auto-INIT timeout for %s — entry stays connected; "
+                         "host may retry via SLAVE_INIT or unplug/replug",
+                         slaveTypeName(type));
+        }
         return type;
     }
 
-    SFX_LOG_ERROR("[SlaveMgr] Typed client IDENTIFY timeout for %s", slaveTypeName(type));
-    return SlaveType::Unknown;
+    SFX_LOG_INFO("[SlaveMgr] Slave %s identified: %s (connected, awaiting INIT)",
+                 slaveTypeName(type), client->serverName());
+    return type;
 }
 
 template <size_t MaxSlaves>

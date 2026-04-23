@@ -33,17 +33,17 @@ func (h *Handler) commands() *engine.CmdGroup {
 		Name:       "Firmware",
 		Controller: "",
 		Color:      engine.ColorMagenta,
-		Commands: map[string]engine.CmdEntry{
-			"fw.build":         {h.cmdBuild, "fw.build <controller> [--no-clean]", "Build firmware", false},
-			"fw.flash":         {h.cmdFlash, "fw.flash <controller> [--port PORT] [--skip-verify] [--no-clean]", "Build and flash firmware", false},
-			"fw.upload":        {h.cmdUpload, "fw.upload <controller> [--port PORT] [--skip-verify]", "Flash firmware without rebuilding", false},
-			"fw.verify":        {h.cmdVerify, "fw.verify <controller> [--port PORT]", "Verify device firmware", false},
-			"fw.version":       {h.cmdVersion, "fw.version <controller>", "Show firmware version from source", false},
-			"fw.controllers":   {h.cmdControllers, "fw.controllers", "List known controller targets", false},
-			"fw.ports":         {h.cmdPorts, "fw.ports", "List detected ScaleFX serial ports", false},
-			"fw.releases":      {h.cmdReleases, "fw.releases [controller]", "List available GitHub releases", false},
-			"fw.notes":         {h.cmdNotes, "fw.notes <controller> [version]", "Show release notes for a version", false},
-			"fw.release-flash": {h.cmdReleaseFlash, "fw.release-flash <controller> [version] [--port PORT] [--skip-verify]", "Download and flash from GitHub release", false},
+		Commands: []engine.CmdEntry{
+			{"fw.build", h.cmdBuild, "fw.build <controller> [--no-clean]", "Build firmware", false},
+			{"fw.flash", h.cmdFlash, "fw.flash <controller> [--port PORT] [--skip-verify] [--no-clean]", "Build and flash firmware", false},
+			{"fw.upload", h.cmdUpload, "fw.upload <controller> [--port PORT] [--skip-verify]", "Flash firmware without rebuilding", false},
+			{"fw.verify", h.cmdVerify, "fw.verify <controller> [--port PORT]", "Verify device firmware", false},
+			{"fw.version", h.cmdVersion, "fw.version <controller>", "Show firmware version from source", false},
+			{"fw.controllers", h.cmdControllers, "fw.controllers", "List known controller targets", false},
+			{"fw.ports", h.cmdPorts, "fw.ports", "List detected ScaleFX serial ports", false},
+			{"fw.releases", h.cmdReleases, "fw.releases [controller]", "List available GitHub releases", false},
+			{"fw.notes", h.cmdNotes, "fw.notes <controller> [version]", "Show release notes for a version", false},
+			{"fw.release-flash", h.cmdReleaseFlash, "fw.release-flash <controller> [version] [--port PORT] [--skip-verify]", "Download and flash from GitHub release", false},
 		},
 	}
 }

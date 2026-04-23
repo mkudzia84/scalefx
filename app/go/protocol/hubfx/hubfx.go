@@ -45,11 +45,6 @@ const (
 	SdStatusReq       protocol.PacketType = 0x94
 	SdStatusResp      protocol.PacketType = 0x95
 
-	// Slave routing
-	SlaveRouteGunfx       protocol.PacketType = 0x96
-	SlaveRouteLightfx     protocol.PacketType = 0x97
-	SlaveRouteGearcontrol protocol.PacketType = 0x98
-
 	// Flash
 	FlashStatusReq    protocol.PacketType = 0x99
 
@@ -81,6 +76,13 @@ const (
 
 	// Upload progress
 	FileUploadProgress protocol.PacketType = 0xB0
+
+	// Slave registry enumeration (used by clients to learn which slave
+	// controller types are currently attached to the hub). The hub itself
+	// auto-routes inbound slave-range packets by their type to the matching
+	// attached slave, so no per-call envelope is needed.
+	SlaveEnumReq  protocol.PacketType = 0xB1
+	SlaveEnumResp protocol.PacketType = 0xB2
 )
 
 // ─── Error Codes (0x80-0x8F) ───
@@ -326,15 +328,59 @@ func CmdCodecStatusReq() []byte {
 	return protocol.BuildPacket(CodecStatusReq, nil, 0)
 }
 
-// CmdSlaveRoute wraps an inner packet for routing through the hub to a slave.
-func CmdSlaveRoute(routeType protocol.PacketType, innerPacket []byte) []byte {
-	ptype, _, payload, ok := protocol.ParsePacket(innerPacket)
-	if !ok {
-		return innerPacket
+// ─── Slave Registry Enumeration ───
+
+// CmdSlaveEnumReq builds a SLAVE_ENUM_REQ packet (no payload). The hub
+// responds with SLAVE_ENUM_RESP listing every registered slot. Clients use
+// this to learn which slave types are attached and ready, then issue slave-
+// range packets directly — the hub auto-routes them by type.
+func CmdSlaveEnumReq() []byte {
+	return protocol.BuildPacket(SlaveEnumReq, nil, 0)
+}
+
+// SlaveEnumEntry is one row of the SLAVE_ENUM_RESP table (one per slot).
+type SlaveEnumEntry struct {
+	Slot      byte
+	Type      byte // hubfx.SlaveType* constant
+	Connected bool
+	Ready     bool
+	Name      string
+}
+
+// ParseSlaveEnumResp decodes the SLAVE_ENUM_RESP payload into a flat list of
+// slot entries (registry order). Empty slots are emitted by firmware with
+// type=Unknown(0) and Name="".
+//
+//	[count:u8] then per slot: [slot:u8][type:u8][connected:u8][ready:u8][nameLen:u8][name:str]
+func ParseSlaveEnumResp(payload []byte) ([]SlaveEnumEntry, bool) {
+	if len(payload) < 1 {
+		return nil, false
 	}
-	routePayload := []byte{byte(ptype)}
-	routePayload = append(routePayload, payload...)
-	return protocol.BuildPacket(routeType, routePayload, 0)
+	count := int(payload[0])
+	out := make([]SlaveEnumEntry, 0, count)
+	pos := 1
+	for i := 0; i < count; i++ {
+		if pos+5 > len(payload) {
+			return out, false
+		}
+		e := SlaveEnumEntry{
+			Slot:      payload[pos],
+			Type:      payload[pos+1],
+			Connected: payload[pos+2] != 0,
+			Ready:     payload[pos+3] != 0,
+		}
+		nameLen := int(payload[pos+4])
+		pos += 5
+		if pos+nameLen > len(payload) {
+			return out, false
+		}
+		if nameLen > 0 {
+			e.Name = string(payload[pos : pos+nameLen])
+		}
+		pos += nameLen
+		out = append(out, e)
+	}
+	return out, true
 }
 
 // ─── Name Lookups ───
@@ -384,9 +430,6 @@ func init() {
 		SdInit:               "HUB.SD_INIT",
 		SdStatusReq:          "HUB.SD_STATUS_REQ",
 		SdStatusResp:         "HUB.SD_STATUS_RESP",
-		SlaveRouteGunfx:      "HUB.SLAVE_ROUTE_GUNFX",
-		SlaveRouteLightfx:    "HUB.SLAVE_ROUTE_LIGHTFX",
-		SlaveRouteGearcontrol: "HUB.SLAVE_ROUTE_GEARCONTROL",
 		FlashStatusReq:       "HUB.FLASH_STATUS_REQ",
 		FileList:             "HUB.FILE_LIST",
 		FileDelete:           "HUB.FILE_DELETE",
@@ -407,6 +450,8 @@ func init() {
 		SlaveInfo:            "HUB.SLAVE_INFO",
 		SlaveInfoResp:        "HUB.SLAVE_INFO_RESP",
 		FileUploadProgress:   "HUB.FILE_UPLOAD_PROGRESS",
+		SlaveEnumReq:         "HUB.SLAVE_ENUM_REQ",
+		SlaveEnumResp:        "HUB.SLAVE_ENUM_RESP",
 	})
 
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{

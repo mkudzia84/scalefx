@@ -18,15 +18,18 @@
  *
  *   // In setup():
  *   SlaveManager& mgr = SlaveManager::instance();
- *   mgr.addSlave({ SlaveType::GunFX,   "GunFX",   "GunFX",  &gunfxClient });
- *   mgr.addSlave({ SlaveType::LightFX, "LightFX", "LightFX", &lightfxClient });
+ *   mgr.addSlave({ SlaveType::GunFX,   "GunFX",   "GunFX",  &gunfxClient,   true });
+ *   mgr.addSlave({ SlaveType::LightFX, "LightFX", "LightFX", &lightfxClient, true });
  *   mgr.begin();
  *
  *   // In loop():
  *   mgr.process();   // handles polling + periodic discovery
  *
- *   // Slaves are identified via IDENTIFY (non-destructive).
- *   // To activate a slave, send SLAVE_INIT from CLI or auto-logic.
+ *   // Slaves are identified via IDENTIFY (non-destructive). When the
+ *   // descriptor has autoInit=true the manager immediately follows up with
+ *   // INIT(mode=SLAVE) and marks the entry ready on success — the registry's
+ *   // onReady callback then fires for downstream config-push hooks. Set
+ *   // autoInit=false to defer activation to an explicit SLAVE_INIT command.
  */
 
 #ifndef SLAVE_MANAGER_H
@@ -56,6 +59,7 @@ struct SlaveDescriptor {
     const char* namePrefix;     ///< INIT_READY name prefix for identification (e.g., "GunFX")
     const char* logPrefix;      ///< Short label for DiagLog relay (e.g., "GearCtrl")
     BusClient*  client;         ///< Typed client instance (externally owned, NOT nullptr)
+    bool        autoInit = false;  ///< Auto-send INIT(SLAVE) after IDENTIFY succeeds
 };
 
 // ============================================================================
@@ -158,8 +162,10 @@ public:
      *
      * Scans all USB CDC devices, probes unidentified ones via IDENTIFY,
      * identifies by name prefix, and binds the appropriate typed client.
-     * Slaves are marked as connected but NOT ready — activation (INIT)
-     * is a separate step via SLAVE_INIT command.
+     * Marks the entry connected; if the descriptor has autoInit=true the
+     * manager also sends INIT(SLAVE) and marks the entry ready on success
+     * (the UsbRegistry onReady callback then fires). Otherwise activation
+     * is deferred to an explicit SLAVE_INIT command.
      * Called from onInit callback and during periodic discovery.
      */
     void scanAndIdentify();

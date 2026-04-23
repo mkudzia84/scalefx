@@ -8,6 +8,13 @@ import (
 // Client is the top-level API facade. It aggregates every controller-specific
 // API into a single entry point so callers create one Client on connect and
 // access sub-APIs via fields (Facade pattern).
+//
+// Slave-typed sub-APIs (LightFx/GunFx/GearControl) are transparent over
+// HubFX: the hub auto-routes incoming packets by type range (GunFX 0x01-0x2F,
+// LightFX 0x40-0x5F, GearControl 0x60-0x7F) to the matching attached slave
+// and forwards the slave's typed RESP / ACK / NACK back upstream with the
+// same correlation tag. Callers therefore make the same API call regardless
+// of whether the local peer is the slave directly or a HubFX hub.
 type Client struct {
 	Core        *CoreApi
 	GunFx       *GunFxApi
@@ -20,7 +27,7 @@ type Client struct {
 
 // NewClient creates all sub-APIs from a single Connection.
 func NewClient(conn *protocol.Connection) *Client {
-	base := apiClient{conn}
+	base := apiClient{conn: conn}
 	return &Client{
 		Core:        &CoreApi{base},
 		GunFx:       &GunFxApi{base},

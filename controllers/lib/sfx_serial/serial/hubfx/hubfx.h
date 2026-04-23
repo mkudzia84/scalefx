@@ -70,11 +70,6 @@ namespace HubFxPacket {
     constexpr uint8_t SD_STATUS_RESP    = 0x95;  // [initialized:u8][cardSize_MB:u32LE][totalSpace_MB:u32LE][freeSpace_MB:u32LE][fatType:u8]
                                                  //   extended (v0.5+): [cardType:u8][busMode:u8][usedSpace_MB:u32LE]
 
-    // --- Slave Routing (0x96-0x98) — subcmd pattern ---
-    constexpr uint8_t SLAVE_ROUTE_GUNFX       = 0x96;  // [subcmd:u8][...] → route to GunFX
-    constexpr uint8_t SLAVE_ROUTE_LIGHTFX     = 0x97;  // [subcmd:u8][...] → route to LightFX
-    constexpr uint8_t SLAVE_ROUTE_GEARCONTROL = 0x98;  // [subcmd:u8][...] → route to GearControl
-
     // --- Flash Management (0x99) ---
     constexpr uint8_t FLASH_STATUS_REQ  = 0x99;  // [] → FLASH_STATUS_RESP (same type as response)
 
@@ -125,6 +120,21 @@ namespace HubFxPacket {
     // --- Upload Progress (0xB0) — server-sent segment ACK during STREAM upload ---
     constexpr uint8_t FILE_UPLOAD_PROGRESS = 0xB0;  // Server → Client (async, TAG_ASYNC)
                                                     //   [segment_idx:u16LE][bytes_received:u32LE][ring_fill_pct:u8]
+
+    // --- Slave Registry Enumeration (0xB1-0xB2) ---
+    // Clients query SLAVE_ENUM_REQ to learn which slave controller types are
+    // currently attached to the hub. Slave-range packets (GunFX 0x01-0x2F,
+    // LightFX 0x40-0x5F, GearControl 0x60-0x7F) sent to the hub are auto-
+    // routed to the matching attached slave by packet-type range — no
+    // envelope wrapping is needed. Responses (ACK/NACK or typed RESP) are
+    // forwarded back upstream verbatim with the original correlation tag.
+    // Async slave packets (STATUS broadcasts in slave ranges) are forwarded
+    // verbatim with TAG_ASYNC. See instructions/13-PASSTHROUGH-ROUTING.md.
+    constexpr uint8_t SLAVE_ENUM_REQ      = 0xB1;  // [] → SLAVE_ENUM_RESP
+    constexpr uint8_t SLAVE_ENUM_RESP     = 0xB2;  // [count:u8] then per slot:
+                                                    //   [slot:u8][type:u8][connected:u8][ready:u8]
+                                                    //   [nameLen:u8][name:str]
+                                                    // Empty slots emit type=Unknown, nameLen=0.
 }
 
 

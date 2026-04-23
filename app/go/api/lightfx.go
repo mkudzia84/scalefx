@@ -1,16 +1,11 @@
 package api
 
 import (
-	"scalefx/protocol"
 	"scalefx/protocol/lightfx"
 )
 
 // LightFxApi provides LightFX lighting effects operations.
 type LightFxApi struct{ apiClient }
-
-func NewLightFxApi(conn *protocol.Connection) *LightFxApi {
-	return &LightFxApi{apiClient{conn}}
-}
 
 func (a *LightFxApi) LedSet(ch, brightness byte) ApiResult { return a.sendACK(lightfx.CmdLedSet(ch, brightness)) }
 func (a *LightFxApi) LedOff(ch byte) ApiResult             { return a.sendACK(lightfx.CmdLedOff(ch)) }
@@ -46,3 +41,21 @@ func (a *LightFxApi) LandingDeploy(slot byte) ApiResult  { return a.sendACK(ligh
 func (a *LightFxApi) LandingRetract(slot byte) ApiResult { return a.sendACK(lightfx.CmdLandingLightRetract(slot)) }
 func (a *LightFxApi) Reset(ch byte) ApiResult            { return a.sendACK(lightfx.CmdLedReset(ch)) }
 func (a *LightFxApi) Enable(ch byte, enabled bool) ApiResult { return a.sendACK(lightfx.CmdLedEnable(ch, enabled)) }
+
+// BatteryAutoCutoff toggles the LightFX low-voltage soft-cutoff (disable all
+// LED channels when the pack drops below the chemistry's per-cell threshold).
+func (a *LightFxApi) BatteryAutoCutoff(enabled bool) ApiResult {
+	return a.sendACK(lightfx.CmdBatteryAutoCutoff(enabled))
+}
+
+// LightProgramSelect activates a program by 0-based index from the slave's
+// loaded /lightfx.yaml. NACKs with ErrInvalidProgram if the slave has no
+// config loaded or the index is past programCount.
+func (a *LightFxApi) LightProgramSelect(index byte) ApiResult {
+	return a.sendACK(lightfx.CmdLightProgramSelect(index))
+}
+
+// LightProgramReset stops sequences, retracts all groups, leaves no active program.
+func (a *LightFxApi) LightProgramReset() ApiResult {
+	return a.sendACK(lightfx.CmdLightProgramReset())
+}

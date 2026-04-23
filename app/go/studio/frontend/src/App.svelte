@@ -12,12 +12,12 @@
         boardState, connectPopupOpen, showAboutDialog, showConsole,
         showViewSettings, showFileManager,
         connectionInfo, activeTab, showFlashProgress,
-        pushConsoleMessage
+        pushConsoleMessage, slaveInfo,
     } from './lib/stores'
-    import type { ConsoleMessage } from './lib/stores'
+    import type { ConsoleMessage, SlaveInfo } from './lib/stores'
     import { theme, fontSize } from './lib/theme'
     import { EventsOn } from '../wailsjs/runtime/runtime'
-    import { GetConnectionInfo } from '../wailsjs/go/main/App'
+    import { GetConnectionInfo, GetSlaveInfo } from '../wailsjs/go/main/App'
 
     onMount(async () => {
         // Console output events from backend (always active, even when panel hidden)
@@ -43,19 +43,48 @@
         })
 
         // Connection state changes from backend
-        EventsOn('connection:changed', (info: any) => {
+        EventsOn('connection:changed', async (info: any) => {
             const wasConnected = $connectionInfo.connected
             $connectionInfo = info
 
             if (info.connected) {
                 $boardState = 'connected'
                 $connectPopupOpen = false
+                // Seed the slave list on connect so HubFX tabs appear
+                // immediately (greyed out) before the first STATUS_BROADCAST.
+                if (info.controllerType === 'hubfx') {
+                    try {
+                        const list = await GetSlaveInfo()
+                        $slaveInfo = (list || []).map((s: any) => ({
+                            ...s, enabled: s.enabled ?? true,
+                        }))
+                    } catch { /* ignore */ }
+                } else {
+                    $slaveInfo = []
+                }
             } else if (wasConnected && $boardState !== 'flashing') {
                 // Unexpected disconnect (not flashing) — show connect popup
                 $boardState = 'disconnected'
                 $connectPopupOpen = true
                 $activeTab = 0
+                $slaveInfo = []
             }
+        })
+
+        // Slave online/offline state — driven by HubFX STATUS_BROADCAST
+        // (every ~1s from the hub). The tab bar reads $slaveInfo reactively,
+        // so tabs fade/unfade as slaves connect or disconnect. The backend
+        // doesn't track the per-slave `enabled` UI toggle, so merge it from
+        // the previous store snapshot instead of resetting to true.
+        EventsOn('slaves:changed', (list: SlaveInfo[]) => {
+            slaveInfo.update(prev => {
+                const enabledBy: Record<string, boolean> = {}
+                for (const s of prev) enabledBy[s.type] = s.enabled ?? true
+                return (list || []).map((s: any) => ({
+                    ...s,
+                    enabled: enabledBy[s.type] ?? s.enabled ?? true,
+                }))
+            })
         })
 
         // Load initial connection state
@@ -65,6 +94,14 @@
             if (info.connected) {
                 $boardState = 'connected'
                 $connectPopupOpen = false
+                if (info.controllerType === 'hubfx') {
+                    try {
+                        const list = await GetSlaveInfo()
+                        $slaveInfo = (list || []).map((s: any) => ({
+                            ...s, enabled: s.enabled ?? true,
+                        }))
+                    } catch { /* ignore */ }
+                }
             }
         } catch (_) {
             // app still starting

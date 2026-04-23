@@ -1,16 +1,11 @@
 package api
 
 import (
-	"scalefx/protocol"
 	"scalefx/protocol/core"
 )
 
 // CoreApi provides core protocol operations (init, status, reboot, etc.).
 type CoreApi struct{ apiClient }
-
-func NewCoreApi(conn *protocol.Connection) *CoreApi {
-	return &CoreApi{apiClient{conn}}
-}
 
 func (a *CoreApi) Init() ApiResult                  { return a.sendQuery(core.CmdInit(), core.InitReady) }
 func (a *CoreApi) InitMode(mode, flags byte) ApiResult { return a.sendQuery(core.CmdInitMode(mode, flags), core.InitReady) }

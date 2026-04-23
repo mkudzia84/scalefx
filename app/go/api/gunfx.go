@@ -1,16 +1,11 @@
 package api
 
 import (
-	"scalefx/protocol"
 	"scalefx/protocol/gunfx"
 )
 
 // GunFxApi provides GunFX weapon effects operations.
 type GunFxApi struct{ apiClient }
-
-func NewGunFxApi(conn *protocol.Connection) *GunFxApi {
-	return &GunFxApi{apiClient{conn}}
-}
 
 func (a *GunFxApi) TriggerOn(rpm uint16) ApiResult      { return a.sendACK(gunfx.CmdTriggerOn(rpm)) }
 func (a *GunFxApi) TriggerOff(delay_ms uint16) ApiResult { return a.sendACK(gunfx.CmdTriggerOff(delay_ms)) }

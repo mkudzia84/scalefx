@@ -15,12 +15,22 @@
  * Template parameter MaxSlaves controls the maximum number of tracked
  * slave devices. Default is 4 (matches current ScaleFX topology).
  *
+ * Lifecycle callbacks (per slave type):
+ *   - onReady(type, fn)      fires once per false→true transition of `ready`
+ *   - onDisconnect(type, fn) fires once per true→false transition of `ready`
+ *                            (covers explicit setReady(false), SHUTDOWN/REBOOT
+ *                             via SlaveServer, and USB unmount via setConnected)
+ *
+ * The callbacks let consumers wire "load config + push it down on attach"
+ * without polling — main loop no longer needs per-board reconcile() helpers.
+ *
  * Usage:
  *   #include <usb/usb_registry.h>
  *   UsbRegistry& reg = UsbRegistry::instance();
  *   reg.registerSlave(SlaveType::GunFX, &gunfxClient, 0);
+ *   reg.onReady(SlaveType::LightFX, [](SlaveType, BusClient* c) { ... });
  *   reg.setConnected(SlaveType::GunFX, true);
- *   reg.setReady(SlaveType::GunFX, true);
+ *   reg.setReady(SlaveType::GunFX, true);   // fires onReady callback
  *   BusClient* client = reg.getClient(SlaveType::GunFX);
  */
 
@@ -29,9 +39,10 @@
 
 #include <Arduino.h>
 #include <stdint.h>
+#include <functional>
 
-// Forward declaration — avoid pulling in full bus_client.h
-class BusClient;
+#include <platform/diag_log.h>
+#include <serial/client/bus_client.h>  // BusClient::serverName() for auto-log
 
 // ============================================================================
 // Slave Type Enumeration
@@ -144,22 +155,58 @@ public:
     /**
      * @brief Mark a slave as connected or disconnected (USB CDC state)
      *
-     * When disconnected, ready is also cleared (must re-handshake).
+     * When disconnected, ready is also cleared (must re-handshake) and the
+     * onDisconnect callback for this type fires if the slave was previously
+     * ready.
      */
     void setConnected(SlaveType type, bool connected) {
         SlaveEntry* e = find(type);
-        if (e) {
-            e->connected = connected;
-            if (!connected) e->ready = false;
+        if (!e) return;
+        e->connected = connected;
+        if (!connected && e->ready) {
+            e->ready = false;
+            fireDisconnect(type);
         }
     }
 
     /**
      * @brief Mark a slave as ready (INIT handshake completed)
+     *
+     * Fires the per-type onReady callback on false→true transitions, and the
+     * per-type onDisconnect callback on true→false transitions. No-op when
+     * the value already matches — callbacks are edge-triggered, not level.
      */
     void setReady(SlaveType type, bool ready) {
         SlaveEntry* e = find(type);
-        if (e) e->ready = ready;
+        if (!e) return;
+        if (e->ready == ready) return;
+        e->ready = ready;
+        if (ready) fireReady(type, e->client);
+        else       fireDisconnect(type);
+    }
+
+    // ========================================================================
+    // Lifecycle Callbacks (per slave type)
+    // ========================================================================
+    //
+    // One callback slot per SlaveType. Re-registering overwrites the previous
+    // callback for that type. Callbacks fire from setReady() / setConnected()
+    // on the same core that mutates the registry — the consumer does not need
+    // its own synchronization for the transition itself.
+
+    using ReadyCallback      = std::function<void(SlaveType, BusClient*)>;
+    using DisconnectCallback = std::function<void(SlaveType)>;
+
+    /** @brief Register an on-ready callback for a specific slave type. */
+    void onReady(SlaveType type, ReadyCallback cb) {
+        uint8_t i = (uint8_t)type;
+        if (i < (uint8_t)SlaveType::COUNT) _readyCb[i] = std::move(cb);
+    }
+
+    /** @brief Register an on-disconnect callback for a specific slave type. */
+    void onDisconnect(SlaveType type, DisconnectCallback cb) {
+        uint8_t i = (uint8_t)type;
+        if (i < (uint8_t)SlaveType::COUNT) _disconnectCb[i] = std::move(cb);
     }
 
     // ========================================================================
@@ -232,8 +279,27 @@ public:
 private:
     UsbRegistryT() = default;
 
+    void fireReady(SlaveType type, BusClient* client) {
+        // Auto-log every transition so per-board callbacks don't have to
+        // duplicate the line for the simple "log + nothing else" case.
+        SFX_LOG_INFO("[%s] slave ready: %s",
+                     slaveTypeName(type),
+                     (client && client->serverName()) ? client->serverName() : "?");
+        uint8_t i = (uint8_t)type;
+        if (i < (uint8_t)SlaveType::COUNT && _readyCb[i]) _readyCb[i](type, client);
+    }
+
+    void fireDisconnect(SlaveType type) {
+        SFX_LOG_INFO("[%s] slave disconnected", slaveTypeName(type));
+        uint8_t i = (uint8_t)type;
+        if (i < (uint8_t)SlaveType::COUNT && _disconnectCb[i]) _disconnectCb[i](type);
+    }
+
     SlaveEntry _slaves[MaxSlaves];
     uint8_t _count = 0;
+
+    ReadyCallback      _readyCb     [(size_t)SlaveType::COUNT];
+    DisconnectCallback _disconnectCb[(size_t)SlaveType::COUNT];
 };
 
 /// Default registry with 4 slave slots (matches ScaleFX topology)

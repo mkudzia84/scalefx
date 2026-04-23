@@ -229,12 +229,14 @@ struct SlaveEntry {
 | Method | Purpose |
 |--------|---------|
 | `registerSlave(type, client, idx)` | Register a slave type with its BusClient and USB index |
-| `setConnected(type, bool)` | Mark USB connection state (disconnect clears ready) |
-| `setReady(type, bool)` | Mark INIT handshake state |
+| `setConnected(type, bool)` | Mark USB connection state (disconnect clears ready, fires `onDisconnect` if ready was set) |
+| `setReady(type, bool)` | Mark INIT handshake state (fires `onReady` / `onDisconnect` on transitions) |
+| `onReady(type, fn)` | Register per-type ready callback `fn(SlaveType, BusClient*)` (edge-triggered) |
+| `onDisconnect(type, fn)` | Register per-type disconnect callback `fn(SlaveType)` (edge-triggered) |
 | `getClient(type)` | Get BusClient* if registered AND ready (else nullptr) |
 | `find(type)` | Find SlaveEntry by type |
 | `findByUsbIndex(idx)` | Find SlaveEntry by USB device index |
-| `resetAll()` | Clear all connection/ready state (keep registrations) |
+| `resetAll()` | Clear all connection/ready state (keep registrations; does NOT fire callbacks) |
 | `count()` / `operator[]` | Iterate over entries |
 
 ### Ownership Model
@@ -248,10 +250,27 @@ registerSlave() → [type, client, usbIndex set]
     ↓
 setConnected(true) → USB device physically attached
     ↓
-setReady(true) → INIT handshake completed, getClient() returns non-null
-    ↓
-setConnected(false) → USB disconnect (ready auto-cleared)
+setReady(true) → INIT handshake completed → fires onReady(type, client)
+    ↓                                       getClient() returns non-null
+setConnected(false) → USB disconnect → ready auto-cleared → fires onDisconnect(type)
 ```
+
+### Lifecycle Callbacks
+
+`onReady` / `onDisconnect` are **edge-triggered** (fire only on actual `ready` transitions) and **per-type** (one callback slot per `SlaveType`; re-registering overwrites). They run on the same core that mutates the registry — typically Core 0 inside `SlaveManager::process()` or the `SLAVE_INIT` / `REBOOT` / `SHUTDOWN` packet handlers.
+
+The registry **auto-logs** every transition at INFO level (`[<SlaveType>] slave ready: <serverName>` / `[<SlaveType>] slave disconnected`), so consumers only register a callback when they have actual side effects to run — no need for trivial log-only handlers.
+
+Use these to drive "push hub config when slave attaches" pipelines without polling the registry from the main loop. Canonical pattern in HubFX `initSlaveManager()`:
+
+```cpp
+reg.onReady(SlaveType::LightFX, [](SlaveType, BusClient* c) {
+    if (lightConfig.isLoaded())
+        pushLightFxConfigToSlave(lightConfig.data(), *static_cast<LightFxClient*>(c));
+});
+```
+
+There is exactly one slave per `SlaveType` (the registry is keyed per type), so callbacks operate on a single client — no fanout, no slot index. When a board grows hub-side YAML to push, add one `onReady` callback in the same shape.
 
 ## Dependencies
 

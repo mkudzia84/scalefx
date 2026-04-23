@@ -9,6 +9,7 @@ import (
 	"scalefx/api"
 	"scalefx/protocol"
 	"scalefx/protocol/core"
+	phubfx "scalefx/protocol/hubfx"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -27,8 +28,7 @@ type Engine struct {
 	Info           *InitReadyInfo
 
 	// Command groups (populated on first call to GetGroups)
-	groups   []*CmdGroup
-	flatCmds map[string][]flatEntry
+	groups []*CmdGroup
 
 	// Listener control
 	listenerRunning atomic.Bool
@@ -44,6 +44,12 @@ type Engine struct {
 	statusParsers          map[string]func([]byte)                  // key: controller type (e.g., core.CtrlGunFX)
 	statusBroadcastParsers map[string]func([]byte)                  // key: controller type — silent parsers for broadcast
 	asyncHandlers          map[protocol.PacketType]func([]byte)     // key: packet type
+
+	// Slave attachment map (HubFX only) — populated by RefreshSlaveAttachment
+	// from SLAVE_ENUM. Keyed by core.Ctrl* string. Hub firmware auto-routes
+	// inbound packets by their type-range; this map only gates which slave
+	// command groups Dispatch will accept.
+	attachedSlaves map[string]bool
 }
 
 // NewEngine creates a new engine with the given output backend.
@@ -71,7 +77,6 @@ func (e *Engine) GetGroups() []*CmdGroup {
 // Must be called before the first Dispatch() or GetGroups() call.
 func (e *Engine) AddGroup(g *CmdGroup) {
 	e.groups = append(e.GetGroups(), g)
-	e.flatCmds = nil // invalidate cache
 }
 
 // RegisterStatusParser registers a module-specific STATUS data parser.
@@ -124,6 +129,74 @@ func (e *Engine) SetControllerType(ct string) {
 	}
 }
 
+// RefreshSlaveAttachment probes the hub's slave registry (SLAVE_ENUM_REQ) and
+// records which slave controller types are currently attached and ready. The
+// hub auto-routes inbound packets by their type-range to the matching slave,
+// so the engine only needs to know "is slave X reachable?" — no slot index.
+//
+// Safe to call repeatedly. No-op when the local peer is not a HubFX hub
+// (direct connections always target the connected peer).
+func (e *Engine) RefreshSlaveAttachment() {
+	e.attachedSlaves = nil
+	if e.API == nil || e.ControllerType != core.CtrlHubFX {
+		return
+	}
+	r := e.API.HubFx.SlaveEnum()
+	if !r.OK || r.Response == nil {
+		if r.Error != "" {
+			e.Out.Debug("slave-attach: SLAVE_ENUM failed: %s", r.Error)
+		}
+		return
+	}
+	entries, ok := phubfx.ParseSlaveEnumResp(r.Response.Payload)
+	if !ok {
+		e.Out.Debug("slave-attach: malformed SLAVE_ENUM_RESP")
+		return
+	}
+	m := make(map[string]bool, 3)
+	for _, ent := range entries {
+		if !ent.Connected {
+			continue
+		}
+		switch ent.Type {
+		case phubfx.SlaveTypeLightFx:
+			m[core.CtrlLightFX] = true
+			e.Out.Debug("slave-attach: LightFX (slot %d)", ent.Slot)
+		case phubfx.SlaveTypeGunFx:
+			m[core.CtrlGunFX] = true
+			e.Out.Debug("slave-attach: GunFX (slot %d)", ent.Slot)
+		case phubfx.SlaveTypeGearControl:
+			m[core.CtrlGearControl] = true
+			e.Out.Debug("slave-attach: GearControl (slot %d)", ent.Slot)
+		}
+	}
+	e.attachedSlaves = m
+}
+
+// CanRouteVia returns true when the local peer is a HubFX hub AND the named
+// slave controller is currently attached. Used by Dispatch to permit slave-
+// typed commands when the slave is reachable through the hub (the firmware
+// auto-routes by packet-type range).
+func (e *Engine) CanRouteVia(slaveCtrl string) bool {
+	if e.ControllerType != core.CtrlHubFX || e.attachedSlaves == nil {
+		return false
+	}
+	return e.attachedSlaves[slaveCtrl]
+}
+
+// canTargetController returns true when a command/group tagged with `ctrl`
+// is reachable from the current connection. Universal commands (ctrl=="")
+// and the no-peer state (ControllerType=="") are always allowed; board
+// commands are allowed when directly connected, or when connected to a hub
+// with the matching slave attached. Single source of truth for visibility +
+// dispatch + hidden-count filtering.
+func (e *Engine) canTargetController(ctrl string) bool {
+	if ctrl == "" || e.ControllerType == "" || ctrl == e.ControllerType {
+		return true
+	}
+	return e.CanRouteVia(ctrl)
+}
+
 // Capabilities returns the bitmask the connected board advertised in
 // IDENTIFY/INIT_READY (core.Cap* bits). 0 means "not yet identified" or
 // "legacy firmware" — UI should fall back to probing in that case.
@@ -170,32 +243,38 @@ func (e *Engine) RegisterAsyncHandler(packetType protocol.PacketType, handler fu
 	e.asyncHandlers[packetType] = handler
 }
 
-// FlatCommands returns all commands across all groups, keyed by command name.
-// Multiple entries per name occur when controller groups share a name
-// (e.g. both LightFX and GearControl define "reset"). Use resolveCommand to
-// pick the right entry based on the currently connected controller.
+// FlatCommands returns all commands across all groups, keyed by their
+// invocation form. Board groups (LightFX, GearControl, GunFX, HubFX) are
+// keyed as `<prefix>:<name>` (e.g. `light:servo`); universal groups (Core,
+// Firmware, Storage/Config) are keyed bare. The slice-valued return type is
+// kept so universal aliases can co-exist (e.g. `help` / `?`). Recomputed on
+// every call — group registration is one-shot at startup, so the rebuild cost
+// is dwarfed by I/O on every dispatched command.
 func (e *Engine) FlatCommands() map[string][]flatEntry {
-	if e.flatCmds != nil {
-		return e.flatCmds
-	}
 	cmds := make(map[string][]flatEntry)
 	for _, g := range e.GetGroups() {
-		for name, entry := range g.Commands {
-			cmds[name] = append(cmds[name], flatEntry{entry, g.Controller})
+		for _, entry := range g.Commands {
+			key := entry.Name
+			if g.Prefix != "" {
+				key = g.Prefix + ":" + entry.Name
+				// Stamp the canonical invocation form into Usage so
+				// `help light:servo` and any error message prints
+				// `light:servo …` instead of the bare form.
+				entry.Usage = g.Prefix + ":" + entry.Usage
+			}
+			cmds[key] = append(cmds[key], flatEntry{entry, g.Controller})
 		}
 	}
 	// Built-in aliases
-	cmds["help"] = []flatEntry{{CmdEntry{e.CmdHelp, "help [command]", "Show help", false}, ""}}
-	cmds["?"] = []flatEntry{{CmdEntry{e.CmdHelp, "?", "Show help", false}, ""}}
-	e.flatCmds = cmds
+	cmds["help"] = []flatEntry{{CmdEntry{"help", e.CmdHelp, "help [command]", "Show help", false}, ""}}
+	cmds["?"] = []flatEntry{{CmdEntry{"?", e.CmdHelp, "?", "Show help", false}, ""}}
 	return cmds
 }
 
-// resolveCommand selects the best entry for a command name based on the
-// currently connected controller:
-//  1. Entry whose controller matches e.ControllerType.
-//  2. Universal entry (controller == "").
-//  3. First entry (deterministic — caller still validates controller match).
+// resolveCommand selects the best entry for a command name. With prefixed
+// keys (`light:servo`), each key resolves to a single entry — the slice form
+// is only ever multi-valued for universal-group collisions (e.g. `help` /
+// `?`), in which case the first-registered entry wins.
 func (e *Engine) resolveCommand(entries []flatEntry) flatEntry {
 	if e.ControllerType != "" {
 		for _, en := range entries {
@@ -212,6 +291,22 @@ func (e *Engine) resolveCommand(entries []flatEntry) flatEntry {
 	return entries[0]
 }
 
+// suggestPrefixed returns prefixed keys whose suffix matches `name`. Used by
+// Dispatch when a user types a bare board command (e.g. `servo`) so we can
+// surface "did you mean light:servo, gear:servo, gun:servo".
+func (e *Engine) suggestPrefixed(name string) []string {
+	suffix := ":" + name
+	cmds := e.FlatCommands()
+	var matches []string
+	for k := range cmds {
+		if strings.HasSuffix(k, suffix) {
+			matches = append(matches, k)
+		}
+	}
+	sortStrings(matches)
+	return matches
+}
+
 // ─── Command Dispatch ───
 
 // Dispatch parses a command line and dispatches to the appropriate handler.
@@ -226,7 +321,17 @@ func (e *Engine) Dispatch(line string) {
 	cmds := e.FlatCommands()
 	entries, ok := cmds[cmd]
 	if !ok {
-		// Try prefix match
+		// Bare name typed for a board command? (e.g. `servo` instead of
+		// `light:servo`). Surface the prefixed candidates so the user
+		// learns the canonical form.
+		if !strings.Contains(cmd, ":") {
+			if suggestions := e.suggestPrefixed(cmd); len(suggestions) > 0 {
+				e.Out.Error("Command '%s' requires a board prefix. Did you mean: %s",
+					cmd, strings.Join(suggestions, ", "))
+				return
+			}
+		}
+		// Fall back to prefix completion (e.g. `light:se` → `light:seq.start`).
 		var matches []string
 		for k := range cmds {
 			if strings.HasPrefix(k, cmd) {
@@ -254,9 +359,10 @@ func (e *Engine) Dispatch(line string) {
 		}
 	}
 
-	// Check controller type mismatch — bail without dispatching, otherwise we
-	// would send a packet meant for one controller to a different one.
-	if entry.controller != "" && e.ControllerType != "" && entry.controller != e.ControllerType {
+	// Slave-typed commands are allowed when connected to a HubFX hub that has
+	// the matching slave attached: the hub auto-routes by packet-type range,
+	// so the API just sends slave packets as if it were a direct connection.
+	if !e.canTargetController(entry.controller) {
 		e.Out.Error("Command '%s' is for %s but connected to %s",
 			cmd, ControllerLabels[entry.controller], ControllerLabels[e.ControllerType])
 		return
@@ -389,6 +495,14 @@ func (e *Engine) CmdHelp(args []string) {
 			}
 			return
 		}
+		// Bare board name? Suggest the prefixed forms instead of giving up.
+		if !strings.Contains(cmd, ":") {
+			if suggestions := e.suggestPrefixed(cmd); len(suggestions) > 0 {
+				e.Out.Error("Unknown command: %s — did you mean: %s",
+					cmd, strings.Join(suggestions, ", "))
+				return
+			}
+		}
 		e.Out.Error("Unknown command: %s", cmd)
 		return
 	}
@@ -398,9 +512,10 @@ func (e *Engine) CmdHelp(args []string) {
 		e.PrintConnectionStatus()
 	}
 
-	// Group help — filter by connected controller
+	// Group help — slave groups are visible when connected to a HubFX hub
+	// that has the matching slave attached.
 	for _, g := range e.GetGroups() {
-		if g.Controller != "" && e.ControllerType != "" && e.ControllerType != g.Controller {
+		if !e.canTargetController(g.Controller) {
 			continue
 		}
 		e.PrintGroupHelp(g)
@@ -415,7 +530,7 @@ func (e *Engine) CmdHelp(args []string) {
 	if e.ControllerType != "" {
 		hiddenCount := 0
 		for _, g := range e.GetGroups() {
-			if g.Controller != "" && g.Controller != e.ControllerType {
+			if !e.canTargetController(g.Controller) {
 				hiddenCount += len(g.Commands)
 			}
 		}
@@ -470,12 +585,14 @@ func (e *Engine) PrintGroupHelp(group *CmdGroup) {
 		return
 	}
 
-	// Collect and sort command names
-	commands := make([]string, 0, len(group.Commands))
-	for name := range group.Commands {
-		commands = append(commands, name)
+	// Sort entries by Name for stable display regardless of registration order.
+	entries := make([]CmdEntry, len(group.Commands))
+	copy(entries, group.Commands)
+	for i := 1; i < len(entries); i++ {
+		for j := i; j > 0 && entries[j].Name < entries[j-1].Name; j-- {
+			entries[j], entries[j-1] = entries[j-1], entries[j]
+		}
 	}
-	sortStrings(commands)
 
 	// Colored group header
 	header := fmt.Sprintf("── %s ", group.Name)
@@ -486,23 +603,31 @@ func (e *Engine) PrintGroupHelp(group *CmdGroup) {
 	header += strings.Repeat("─", padLen)
 	e.Out.Printf("\n%s\n", e.Out.C(group.Color, header))
 
-	// Max usage width
+	// Max usage width (account for spliced prefix so the column aligns).
+	prefixLen := 0
+	if group.Prefix != "" {
+		prefixLen = len(group.Prefix) + 1 // ':' separator
+	}
 	maxWidth := 0
-	for _, name := range commands {
-		entry := group.Commands[name]
-		if len(entry.Usage) > maxWidth {
-			maxWidth = len(entry.Usage)
+	for _, entry := range entries {
+		w := len(entry.Usage) + prefixLen
+		if w > maxWidth {
+			maxWidth = w
 		}
 	}
-	if maxWidth > 40 {
-		maxWidth = 40
+	if maxWidth > 46 {
+		maxWidth = 46
 	}
 
-	// Print each command
-	for _, name := range commands {
-		entry := group.Commands[name]
+	// Print each command — splice the group prefix in so the help view
+	// shows the same form the user must type (`light:servo …`).
+	for _, entry := range entries {
+		usage := entry.Usage
+		if group.Prefix != "" {
+			usage = group.Prefix + ":" + usage
+		}
 		e.Out.Printf("  %s  %s\n",
-			e.Out.C(group.Color, fmt.Sprintf("%-*s", maxWidth, entry.Usage)),
+			e.Out.C(group.Color, fmt.Sprintf("%-*s", maxWidth, usage)),
 			e.Out.C(ColorGray, entry.Description))
 	}
 }

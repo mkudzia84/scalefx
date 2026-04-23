@@ -1,22 +1,23 @@
 package api
 
 import (
-	"scalefx/protocol"
 	"scalefx/protocol/hubfx"
 )
 
 // HubFxApi provides HubFX master hub operations.
 type HubFxApi struct{ apiClient }
 
-func NewHubFxApi(conn *protocol.Connection) *HubFxApi {
-	return &HubFxApi{apiClient{conn}}
-}
-
 // ─── Slave Commands ───
 
 func (a *HubFxApi) SlaveList() ApiResult              { return a.sendQuery(hubfx.CmdSlaveList(), hubfx.SlaveListResp) }
 func (a *HubFxApi) SlaveInit(slaveType byte) ApiResult { return a.sendACK(hubfx.CmdSlaveInit(slaveType)) }
 func (a *HubFxApi) SlaveInfo(slaveType byte) ApiResult { return a.sendQuery(hubfx.CmdSlaveInfo(slaveType), hubfx.SlaveInfoResp) }
+
+// SlaveEnum returns the slot-keyed registry table from the hub. Studio/CLI
+// use this once on connect to populate per-slave routing slots.
+func (a *HubFxApi) SlaveEnum() ApiResult {
+	return a.sendQuery(hubfx.CmdSlaveEnumReq(), hubfx.SlaveEnumResp)
+}
 
 // ─── Audio Commands ───
 

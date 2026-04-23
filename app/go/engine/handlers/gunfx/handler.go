@@ -48,16 +48,17 @@ func (h *Handler) commands() *engine.CmdGroup {
 	return &engine.CmdGroup{
 		Name:       "GunFX",
 		Controller: pcore.CtrlGunFX,
+		Prefix:     "gun",
 		Color:      engine.ColorRed,
-		Commands: map[string]engine.CmdEntry{
-			"trigger":      {h.cmdTrigger, "trigger on <rpm> | off [delay_ms]", "Control firing", true},
-			"servo":        {h.cmdServo, "servo set <id> <pulse_us>", "Set servo position", true},
-			"servo.config": {h.cmdServoConfig, "servo.config <id> <min> <max> [spd] [acc] [dec] [rev]", "Configure servo", true},
-			"servo.recoil": {h.cmdServoRecoil, "servo.recoil <id> <jerk_us> <variance_us>", "Configure recoil", true},
-			"smoke":        {h.cmdSmoke, "smoke heat on|off", "Control smoke heater", true},
-			"smoke.config": {h.cmdSmokeConfig, "smoke.config [key=value ...]", "Configure smoke fan", true},
-			"smoke.reset":  {h.cmdSmokeReset, "smoke.reset", "Clear smoke errors", true},
-			"smoke.limit":  {h.cmdSmokeLimit, "smoke.limit heater|fan <mA>", "Set overcurrent limit", true},
+		Commands: []engine.CmdEntry{
+			{"trigger", h.cmdTrigger, "trigger on <rpm> | off [delay_ms]", "Control firing", true},
+			{"servo", h.cmdServo, "servo set <id> <pulse_us>", "Set servo position", true},
+			{"servo.config", h.cmdServoConfig, "servo.config <id> <min> <max> [spd] [acc] [dec] [rev]", "Configure servo", true},
+			{"servo.recoil", h.cmdServoRecoil, "servo.recoil <id> <jerk_us> <variance_us>", "Configure recoil", true},
+			{"smoke", h.cmdSmoke, "smoke heat on|off", "Control smoke heater", true},
+			{"smoke.config", h.cmdSmokeConfig, "smoke.config [key=value ...]", "Configure smoke fan", true},
+			{"smoke.reset", h.cmdSmokeReset, "smoke.reset", "Clear smoke errors", true},
+			{"smoke.limit", h.cmdSmokeLimit, "smoke.limit heater|fan <mA>", "Set overcurrent limit", true},
 		},
 	}
 }

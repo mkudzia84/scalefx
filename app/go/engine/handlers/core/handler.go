@@ -39,21 +39,21 @@ func (h *Handler) commands() *engine.CmdGroup {
 		Name:       "Core",
 		Controller: "",
 		Color:      engine.ColorWhite,
-		Commands: map[string]engine.CmdEntry{
-			"connect":    {h.cmdConnect, "connect [port] [baud]", "Connect to serial port", false},
-			"disconnect": {h.cmdDisconnect, "disconnect", "Disconnect from port", false},
-			"reconnect":  {h.cmdReconnect, "reconnect", "Disconnect and reconnect to same port", false},
-			"ports":      {h.cmdPorts, "ports", "List available serial ports", false},
-			"init":       {h.cmdInit, "init [slave|direct] [verbose]", "Send INIT to controller (default: slave)", false},
-			"identify":   {h.cmdIdentify, "identify", "Identify controller (no state change)", false},
-			"shutdown":   {h.cmdShutdown, "shutdown", "Send SHUTDOWN to controller", true},
-			"status":     {h.cmdStatus, "status", "Request controller status", true},
-			"reboot":     {h.cmdReboot, "reboot", "Reboot controller", false},
-			"bootsel":    {h.cmdBootsel, "bootsel", "Enter BOOTSEL/DFU mode", false},
-			"i2c.scan":   {h.cmdI2CScan, "i2c.scan", "Scan I2C bus for devices", true},
-			"diag":       {h.cmdDiagHistory, "diag [count]", "Request diagnostic log history", true},
-			"keepalive":  {h.cmdKeepalive, "keepalive", "Send keepalive ping", true},
-			"verbose":    {h.cmdVerbose, "verbose [on|off]", "Toggle verbose mode", false},
+		Commands: []engine.CmdEntry{
+			{"connect", h.cmdConnect, "connect [port] [baud]", "Connect to serial port", false},
+			{"disconnect", h.cmdDisconnect, "disconnect", "Disconnect from port", false},
+			{"reconnect", h.cmdReconnect, "reconnect", "Disconnect and reconnect to same port", false},
+			{"ports", h.cmdPorts, "ports", "List available serial ports", false},
+			{"init", h.cmdInit, "init [slave|direct] [verbose]", "Send INIT to controller (default: slave)", false},
+			{"identify", h.cmdIdentify, "identify", "Identify controller (no state change)", false},
+			{"shutdown", h.cmdShutdown, "shutdown", "Send SHUTDOWN to controller", true},
+			{"status", h.cmdStatus, "status", "Request controller status", true},
+			{"reboot", h.cmdReboot, "reboot", "Reboot controller", false},
+			{"bootsel", h.cmdBootsel, "bootsel", "Enter BOOTSEL/DFU mode", false},
+			{"i2c.scan", h.cmdI2CScan, "i2c.scan", "Scan I2C bus for devices", true},
+			{"diag", h.cmdDiagHistory, "diag [count]", "Request diagnostic log history", true},
+			{"keepalive", h.cmdKeepalive, "keepalive", "Send keepalive ping", true},
+			{"verbose", h.cmdVerbose, "verbose [on|off]", "Toggle verbose mode", false},
 		},
 	}
 }
@@ -67,7 +67,7 @@ func (h *Handler) cmdConnect(args []string) {
 		port = args[0]
 	}
 	if len(args) > 1 {
-		if b, err := strconv.Atoi(args[1]); err == nil && b > 0 {
+		if b := engine.Atoi(args[1]); b > 0 {
 			baud = b
 		}
 	}
@@ -115,6 +115,10 @@ func (h *Handler) cmdConnect(args []string) {
 
 	if h.E.ControllerType == pcore.CtrlHubFX {
 		h.E.Initialized = true
+		// Probe the hub's slave registry so Dispatch knows which slave
+		// command groups to allow. The hub auto-routes inbound packets
+		// by their type-range, so no per-call wrapping is needed.
+		h.E.RefreshSlaveAttachment()
 	}
 
 	h.E.StartListenerLoop()
@@ -196,6 +200,9 @@ func (h *Handler) cmdInit(args []string) {
 			h.E.Info = info
 			h.E.SetControllerType(info.ControllerType)
 			h.E.Initialized = true
+			if info.ControllerType == pcore.CtrlHubFX {
+				h.E.RefreshSlaveAttachment()
+			}
 			h.E.Out.OK("INIT_READY (mode=%s%s)", pcore.InitModeName(mode),
 				func() string {
 					if flags&pcore.InitFlagVerbose != 0 {

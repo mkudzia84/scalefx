@@ -5,8 +5,11 @@ package engine
 
 import "scalefx/protocol/core"
 
-// CmdEntry defines a single CLI command.
+// CmdEntry defines a single CLI command. Name is the bare invocation form
+// (e.g. `servo`, `seq.start`) — the prefix-less key that FlatCommands /
+// PrintGroupHelp use; Usage is the full help-line argspec (`servo <ch> <pos>`).
 type CmdEntry struct {
+	Name        string
 	Handler     func(args []string)
 	Usage       string
 	Description string
@@ -14,11 +17,24 @@ type CmdEntry struct {
 }
 
 // CmdGroup defines a group of related commands (one per controller type).
+//
+// Prefix forces every command in the group to be invoked as `<prefix>:<name>`
+// (e.g. `light:servo`, `gear:reset`, `gun:trigger`, `hub:slaves`). This makes
+// board-targeting unambiguous on hub connections where multiple slave types
+// expose overlapping names (`servo`, `reset`, `enable`, `battery`, …) and is
+// the canonical form everywhere — direct connections too, so muscle memory
+// transfers when the same script later runs through a hub. Universal groups
+// (Core, Firmware, Storage/Config) leave Prefix empty.
+//
+// Commands is an ordered slice so help output preserves the registration order
+// when groups want it; PrintGroupHelp sorts by Name for stable display either
+// way.
 type CmdGroup struct {
 	Name       string
 	Controller string // empty = universal
+	Prefix     string // empty = bare names; non-empty = "<prefix>:<cmd>"
 	Color      Color
-	Commands   map[string]CmdEntry
+	Commands   []CmdEntry
 }
 
 // flatEntry is used internally for dispatch — a CmdEntry plus its controller filter.
