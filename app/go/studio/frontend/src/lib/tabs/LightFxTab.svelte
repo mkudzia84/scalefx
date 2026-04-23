@@ -47,7 +47,7 @@
     //   input — its measured pulse width is the live program selector.
     // Slave: HubFX sends input channel 1-24. The selected channel index is a
     //   tab-local UI hint — the firmware doesn't echo the assignment back.
-    let liveInput_us = 0              // raw PWM µs from broadcast (servo2 = SRV3 / GP10 in direct mode)
+    let liveInput_us = 0              // raw PWM µs from broadcast (servo0 = SRV1 / GP8 in standalone mode)
     let inputChannel = 0              // slave: selected input CH index (0-based)
 
     const slaveInputChannels = Array.from({ length: 24 }, (_, i) => `CH ${i + 1}`)
@@ -559,8 +559,12 @@
         if (!live.isPending('battery.cutoff')) {
             batteryAutoCutoff = data.batteryAutoCutoff
         }
-        // Servo 2 (SRV3 / GP10) doubles as the RC PWM input on direct LightFX boards.
-        if (data.servo2_us !== undefined) liveInput_us = data.servo2_us
+        // SRV1 (GP8) doubles as the RC PWM "light input" pin in STANDALONE
+        // mode — the firmware reports the captured pulse in the servo0 slot.
+        // In SLAVE / DIRECT mode the same slot carries the commanded servo0
+        // output, so liveInput_us only drives band auto-select when the
+        // firmware is actually running stand-alone.
+        if (data.servo0_us !== undefined) liveInput_us = data.servo0_us
         // Live servo positions for the inline binding bars (Servo 1..3).
         if (data.servo0_us !== undefined) liveServo_us[0] = data.servo0_us
         if (data.servo1_us !== undefined) liveServo_us[1] = data.servo1_us
@@ -836,7 +840,7 @@
                             <span class="lfx-input-label">
                                 Input
                                 <span class="lfx-input-pin dim">
-                                    {#if slaveMode}via HubFX · {slaveInputChannels[inputChannel]}{:else}Servo 3 · GP10 · RC PWM{/if}
+                                    {#if slaveMode}via HubFX · {slaveInputChannels[inputChannel]}{:else}SRV1 · GP8 · RC PWM (standalone){/if}
                                 </span>
                             </span>
                         </div>

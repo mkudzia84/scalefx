@@ -40,6 +40,21 @@ func (h *Handler) FormatStatusBroadcast(s *StatusBroadcast) {
 
 	h.E.Out.Printf("  Servos:    [%dµs, %dµs, %dµs]\n", s.Servo0_us, s.Servo1_us, s.Servo2_us)
 
+	// Verbose servo config — min/max/target and motion profile per servo. Only
+	// present when firmware is 0.17.0+ (Rule 11 tail). Catches "servo won't go
+	// below N µs" problems by showing the active min/max pair.
+	if s.HasServoConfig {
+		for i := 0; i < 3; i++ {
+			c := s.ServoConfig[i]
+			rev := ""
+			if c.Reversed {
+				rev = " rev"
+			}
+			h.E.Out.Printf("    srv%d:    min=%dµs max=%dµs target=%dµs | speed=%d accel=%d decel=%d%s\n",
+				i+1, c.Min_us, c.Max_us, c.Target_us, c.Speed, c.Accel, c.Decel, rev)
+		}
+	}
+
 	var llParts []string
 	for i := 0; i < 3; i++ {
 		name := s.LandingSlots[i].PhaseName

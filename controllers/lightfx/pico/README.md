@@ -39,15 +39,15 @@ Lighting effects controller for scale models - manages 8 LED channels with seque
 
 | Pin  | GPIO | Function |
 |------|------|----------|
-| VSYS | 29   | Battery voltage ADC (÷5.1 resistor divider) |
+| VSYS | 29   | Battery voltage ADC (÷6.1 resistor divider, 51k/10k) |
 
 #### Servos
 
 | Servo   | GPIO | Description |
 |---------|------|-------------|
-| Servo 1 | 8    | General purpose servo |
+| Servo 1 | 8    | General purpose servo — doubles as the RC PWM **"light input"** pin in STANDALONE mode. The firmware reads its pulse width and matches against input bands to auto-switch the active program. In SLAVE / DIRECT mode, GP8 reverts to a normal servo output. |
 | Servo 2 | 9    | General purpose servo |
-| Servo 3 | 10   | General purpose servo — doubles as the RC PWM **"light input"** pin in standalone / direct mode (firmware reads the pulse width to select the active program) |
+| Servo 3 | 10   | General purpose servo |
 
 ---
 

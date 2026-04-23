@@ -13,11 +13,20 @@ import (
 )
 
 // ─── Pico Flash Pipeline ───
-// 1. Enter BOOTSEL mode via 1200-baud DTR toggle
-// 2. Wait for BOOTSEL USB mass storage drive to appear
-// 3. Copy UF2 firmware file to the drive
+// 1. If a BOOTSEL drive is already mounted (fresh/unflashed board held in
+//    BOOTSEL by hand, or a prior flash left it there) — skip straight to copy.
+// 2. Otherwise enter BOOTSEL via 1200-baud DTR toggle on the serial port.
+// 3. Wait for the BOOTSEL USB mass storage drive to appear.
+// 4. Copy the UF2 firmware file to the drive.
 
 // FlashPico executes the full Pico flash sequence: BOOTSEL entry → drive wait → UF2 copy.
+//
+// Handles three scenarios:
+//   - Running board with firmware: DTR toggle triggers BOOTSEL, drive appears.
+//   - Fresh board (initial flash): user holds BOOTSEL while plugging in USB; no
+//     serial port is present but the drive is already mounted — skip the DTR
+//     step entirely.
+//   - Board already stuck in BOOTSEL: same as fresh — drive mounted, no port.
 func FlashPico(opts *Options, ctrl Controller) error {
 	fwPath, err := opts.FirmwarePath(ctrl)
 	if err != nil {
@@ -28,12 +37,22 @@ func FlashPico(opts *Options, ctrl Controller) error {
 		return fmt.Errorf("firmware file not found: %s", fwPath)
 	}
 
-	// Use provided port or auto-detect
+	// Initial-flash fast path: if a BOOTSEL drive is already visible, there
+	// is no running firmware to toggle — skip the serial dance entirely.
+	if drive := findBootselDrive(); drive != "" {
+		opts.info("BOOTSEL drive already mounted: %s (initial/manual flash)", drive)
+		return copyAndReboot(opts, fwPath, drive)
+	}
+
+	// Running-board path: use provided port or auto-detect to trigger BOOTSEL.
 	port := opts.Port
 	if port == "" {
 		port, err = DetectPicoPort()
 		if err != nil {
-			return fmt.Errorf("cannot find Pico serial port: %w", err)
+			return fmt.Errorf(
+				"no BOOTSEL drive mounted and cannot find Pico serial port: %w\n"+
+					"For a fresh or unflashed board, hold the BOOTSEL button while "+
+					"plugging in USB, then re-run this command.", err)
 		}
 		opts.info("Detected Pico port: %s", port)
 	}
@@ -50,22 +69,27 @@ func FlashPico(opts *Options, ctrl Controller) error {
 	opts.info("Waiting for BOOTSEL drive...")
 	drive, err := waitForBootselDrive(opts.Timeout)
 	if err != nil {
-		return fmt.Errorf("BOOTSEL drive not found: %w", err)
+		return fmt.Errorf(
+			"BOOTSEL drive not found: %w\n"+
+				"If this is a fresh/unflashed board, hold the BOOTSEL button "+
+				"while plugging in USB, then re-run this command.", err)
 	}
 	opts.info("Found BOOTSEL drive: %s", drive)
 
-	// Step 3: Copy firmware
+	return copyAndReboot(opts, fwPath, drive)
+}
+
+// copyAndReboot copies the UF2 to the mounted BOOTSEL drive and waits for the
+// board to remount as a serial device.
+func copyAndReboot(opts *Options, fwPath, drive string) error {
 	opts.info("Copying firmware to %s...", drive)
 	if err := copyFirmware(fwPath, drive); err != nil {
 		return fmt.Errorf("firmware copy failed: %w", err)
 	}
-
 	opts.ok("UF2 copied to %s", drive)
 
-	// Wait for device to reboot
 	opts.info("Waiting for device to reboot...")
 	time.Sleep(3 * time.Second)
-
 	return nil
 }
 

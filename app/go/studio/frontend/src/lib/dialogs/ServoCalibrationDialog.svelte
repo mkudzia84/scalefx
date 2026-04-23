@@ -32,9 +32,21 @@
     export let onApply: ((cfg: CalibResult) => void) | null = null
     export let onClose: (() => void) | null = null
 
-    // ─── Internal editable state (mirrors props, gets mutated in the dialog) ───
-    let _min = min_us
-    let _max = max_us
+    // Absolute PWM bounds the board will accept. While the dialog is open we
+    // push THESE as the active limits so `servo set` isn't clamped to the
+    // user's (possibly narrow) target range — otherwise the user couldn't jog
+    // past their existing min/max to probe the real physical end-stops.
+    const PWM_MIN = 500
+    const PWM_MAX = 2500
+
+    // ─── Internal editable state (mutated in the dialog) ───
+    // Min/Max start at the absolute PWM span every time the dialog opens —
+    // calibration is a fresh discovery of physical end-stops, not an edit of
+    // the previous bounds. The user must actively narrow them (Capture / type)
+    // before Save commits anything tighter than 500–2500. The pre-open values
+    // are kept in _orig* so Cancel can restore them.
+    let _min = PWM_MIN
+    let _max = PWM_MAX
     let _speed = speed
     let _accel = accel
     let _decel = decel
@@ -45,21 +57,20 @@
     let _origMin = min_us, _origMax = max_us, _origSpeed = speed
     let _origAccel = accel, _origDecel = decel, _origRev = reversed
 
-    // Absolute PWM bounds the board will accept. While the dialog is open we
-    // push THESE as the active limits so `servo set` isn't clamped to the
-    // user's (possibly narrow) target range — otherwise the user couldn't jog
-    // past their existing min/max to probe the real physical end-stops.
-    const PWM_MIN = 500
-    const PWM_MAX = 2500
-
     $: if (open) initOnOpen()
 
     function initOnOpen() {
-        _min = min_us; _max = max_us; _speed = speed
-        _accel = accel; _decel = decel; _rev = reversed
+        // Reset editable bounds to the widest span — the user must actively
+        // narrow them via Capture / type if they want a smaller travel.
+        _min = PWM_MIN; _max = PWM_MAX
+        _speed = speed; _accel = accel; _decel = decel; _rev = reversed
         _origMin = min_us; _origMax = max_us; _origSpeed = speed
         _origAccel = accel; _origDecel = decel; _origRev = reversed
-        position_us = Math.round((min_us + max_us) / 2)
+        // Start jogging from whatever centre the pre-open range suggested;
+        // if that's out of range (shouldn't be, since PWM_MIN/MAX contain it)
+        // clamp it.
+        const preMid = Math.round((min_us + max_us) / 2)
+        position_us = Math.max(PWM_MIN, Math.min(PWM_MAX, preMid))
         lastJog = 0
         lastCfgPushed = ''
         cfgStatus = ''
@@ -95,7 +106,20 @@
         }
     }
 
-    function onPositionInput() { jogNow(position_us) }
+    // Auto-expand travel bounds to follow the jog slider: the dialog is the
+    // calibration surface, so jogging past an existing bound should grow the
+    // bound to match. This way Save preserves whatever range the user
+    // actually exercised. Shrinking still requires the explicit "Capture"
+    // buttons or typing into the Min/Max fields.
+    function autoExpandBounds(us: number) {
+        const u = Math.round(us)
+        let changed = false
+        if (u < _min) { _min = u; changed = true }
+        if (u > _max) { _max = u; changed = true }
+        if (changed) pushConfig()
+    }
+
+    function onPositionInput() { autoExpandBounds(position_us); jogNow(position_us) }
     function jogToMin() { position_us = _min; jogNow(_min) }
     function jogToMax() { position_us = _max; jogNow(_max) }
     function jogToCenter() { const c = Math.round((_min + _max) / 2); position_us = c; jogNow(c) }
@@ -282,7 +306,7 @@
             </div>
 
             <div class="calib-footer">
-                <div class="hint">Drag the position slider to jog the servo. Use <kbd>Capture</kbd> buttons to set Min/Max from the current position.</div>
+                <div class="hint">Min/Max start at <strong>500–2500µs</strong> (full travel). Jog the servo, then use <kbd>Capture Min</kbd> / <kbd>Capture Max</kbd> (or type values) to narrow the range before Save. Cancel restores the previous config.</div>
                 <button on:click={doCancel}>Cancel</button>
                 <button class="primary" on:click={doSave} disabled={cfgErrMsg !== null}
                         title="Apply config and close (Ctrl+Enter)">💾 Save</button>

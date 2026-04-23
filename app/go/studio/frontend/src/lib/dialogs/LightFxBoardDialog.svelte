@@ -38,8 +38,8 @@
     Pin map (mirrors lightfx_pico.ino):
       CH1=GP0  CH2=GP1  CH3=GP2  CH4=GP3
       CH5=GP4  CH6=GP5  CH7=GP6  CH8=GP7
-      Servo1=GP8   Servo2=GP9
-      Servo3=GP10 (also RC PWM "light input" on direct LightFX)
+      Servo1=GP8 (also RC PWM "light input" in STANDALONE mode — program auto-select)
+      Servo2=GP9   Servo3=GP10
       LED1=power rail   LED2=GP24/25 (CONN/ERR via firmware)
       BAT=VSYS / GP29 sense
 -->
@@ -52,9 +52,9 @@
     export let open: boolean = false
     export let onClose: (() => void) | null = null
 
-    // Servo 3 runtime pulse width (µs). In direct mode this doubles as the RC
-    // PWM "light input" pulse the firmware reads to pick the active program;
-    // SRV1/SRV2 stay regular servo outputs in either mode.
+    // Servo 1 runtime pulse width (µs). In STANDALONE mode this doubles as the
+    // RC PWM "light input" pulse the firmware reads to pick the active
+    // program; SRV2/SRV3 stay regular servo outputs in every mode.
     export let slaveMode: boolean = false
     export let liveInput_us: number = 0
 
@@ -183,13 +183,13 @@
             const v = batteryVoltage_mV > 0 ? `${(batteryVoltage_mV / 1000).toFixed(2)} V` : 'no reading'
             return `Battery feed (− / +) · GP29 / VSYS sense · ${chem} · ${cells} · ${v}`
         }
-        if (h.id === 'srv1')      return `Servo 1 (GP8) — available for landing-light bindings`
-        if (h.id === 'srv2')      return `Servo 2 (GP9) — available for landing-light bindings`
-        if (h.id === 'srv3') {
-            if (slaveMode)        return `Servo 3 (GP10) — available for landing-light bindings`
+        if (h.id === 'srv1') {
+            if (slaveMode)        return `Servo 1 (GP8) — available for landing-light bindings`
             const us = liveInput_us > 0 ? `${liveInput_us} µs` : '— µs'
-            return `Servo 3 (GP10) — RC PWM "light input" in standalone mode · ${us}`
+            return `Servo 1 (GP8) — RC PWM "light input" in STANDALONE mode · ${us}`
         }
+        if (h.id === 'srv2')      return `Servo 2 (GP9) — available for landing-light bindings`
+        if (h.id === 'srv3')      return `Servo 3 (GP10) — available for landing-light bindings`
         if (h.id === 'usb')       return `USB-C (J1) — data + power`
         if (h.id === 'led_pwr')   return `LED1 — power-rail indicator`
         if (h.id === 'led_stat')  return `LED2 — firmware status (CONN/ERR via GP24/GP25)`
