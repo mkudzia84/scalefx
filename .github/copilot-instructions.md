@@ -917,15 +917,37 @@ create_and_run_task: "Build Firmware"  # prompts for controller
 8. **No production dependencies:** Production code (`app/go/`, `controllers/`) MUST NOT import from `tests/`
 9. **Build:** `cd tests/<tool_name> && go build .`
 
-**Current tests:**
+**Test layout:**
 
-| Directory | Type | Target | Purpose |
-|-----------|------|--------|---------|
-| `tests/led_blink/` | Firmware | ESP32-S3 | PCAL6416A I2C GPIO expander — blink all 8 LED channels |
-| `tests/noop_simple/` | Firmware | ESP32-S3 | Minimal no-op test |
-| `tests/ppm_test/` | Firmware | ESP32-S3 | PPM signal decoder test |
-| `tests/sfx_test/` | Firmware | ESP32-S3 | SFX library integration test |
-| `tests/usb_diag/` | Go tool | HubFX | USB host & slave detection diagnostics |
+```
+tests/
+├── hw/                  Firmware test fixtures — flash to a real board
+│   ├── gearcontrol_hwtest/   GearControl bring-up sweep (servos, motors, gear input)
+│   ├── gunfx_hwtest/         GunFX bring-up sweep (servos, smoke, RC trigger, INA226)
+│   ├── led_blink/            LED-channel blink (PCAL6416A I2C expander, ESP32-S3)
+│   ├── noop_simple/          Minimal no-op firmware (ESP32-S3)
+│   ├── ppm_test/             PPM signal decoder test
+│   ├── sfx_test_p/           TAS5825P sine-wave bring-up (original HubFX silicon)
+│   ├── sfx_test_m/           TAS5825M sine-wave bring-up (current HubFX silicon)
+│   └── storage_test/         Storage upload throughput / hang harness
+├── host/                Go programs that run on the dev machine
+│   ├── handler_test/         Unit tests for engine handlers
+│   ├── protocol_test/        Unit tests for COBS / CRC / framing
+│   ├── upload_test/          Integration test driving real HW upload
+│   ├── storage_test_client/  Driver for tests/hw/storage_test
+│   └── usb_diag/             USB host & slave detection diagnostics
+├── fixtures/            Test data
+│   └── upload_fixtures/      Generated SD images + small flash payloads
+└── virtual_board/       Go simulator + in-process unit tests
+                         (LightFX, GearControl, GunFX, HubFX over TCP)
+```
+
+| Group | What it is | When to use |
+|-------|-----------|-------------|
+| `tests/hw/` | PlatformIO firmware projects | Bench bring-up of a freshly populated PCB; reproducing analog/timing issues that need real silicon |
+| `tests/host/` | Go programs | Unit tests, protocol fuzzing, USB diagnostics, driving HW tests from the desktop |
+| `tests/virtual_board/` | Go simulator | UI development without flashing; deterministic event/timing tests; CLI/Studio smoke-tests via `tcp://...` |
+| `tests/fixtures/` | Test data | Inputs for upload/storage tests |
 
 ### 22. Release Notes (MANDATORY)
 
