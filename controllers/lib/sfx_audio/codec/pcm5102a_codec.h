@@ -78,7 +78,7 @@ public:
     /** @brief Set the DEMP (de-emphasis) GPIO. LOW = off, HIGH = on (44.1 kHz). */
     void setDempPin(int8_t pin) { _dempPin = pin; }
 
-    // ---- Codec interface (matches TAS5825Codec / SimpleI2SCodec) ----
+    // ---- Codec interface (matches TAS5825MCodec / SimpleI2SCodec) ----
 
     /**
      * @brief Initialize the PCM5102A codec

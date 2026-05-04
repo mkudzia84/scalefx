@@ -30,12 +30,16 @@ type StatusBroadcast struct {
 // current monitors, audio codec). Present only when firmware emits the
 // extended status payload (>=19 bytes).
 type I2CStatus struct {
-	Present      bool         `json:"present"`
-	Mask         uint8        `json:"mask"`
-	DetectedCount uint8       `json:"detectedCount"`
-	PCALPresent  bool         `json:"pcalPresent"`  // PCAL6416A GPIO expander
-	TASPresent   bool         `json:"tasPresent"`   // TAS5825M audio codec
-	INA226       [6]INA226Bus `json:"ina226"`
+	Present       bool         `json:"present"`
+	Mask          uint8        `json:"mask"`
+	DetectedCount uint8        `json:"detectedCount"`
+	// ExpanderPresent is the GPIO/LED expander (HubFX v1.1+ ships AW9523B
+	// at 0x58; older boards used PCAL6416A at 0x20). The status bit
+	// (i2cMask bit 0) just says "expander responded" — the firmware
+	// chooses which chip address to probe.
+	ExpanderPresent bool         `json:"expanderPresent"`
+	TASPresent      bool         `json:"tasPresent"`   // TAS5825M audio codec
+	INA226          [6]INA226Bus `json:"ina226"`
 }
 
 // INA226Bus is a single INA226 current monitor slot.
@@ -72,7 +76,7 @@ func DecodeStatusBroadcast(data []byte) *StatusBroadcast {
 		i2cMask := data[6]
 		s.I2C.Present = true
 		s.I2C.Mask = i2cMask
-		s.I2C.PCALPresent = i2cMask&0x01 != 0
+		s.I2C.ExpanderPresent = i2cMask&0x01 != 0
 		s.I2C.TASPresent = i2cMask&0x80 != 0
 		count := uint8(0)
 		for b := uint8(0); b < 8; b++ {

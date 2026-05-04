@@ -22,7 +22,7 @@
 
 #include <cstring>
 #include <audio/esp_i2s_output.h>
-#include <codec/tas5825_codec.h>
+#include <codec/tas5825_m_codec.h>
 #include <audio/audio_mixer.h>
 
 // ============================================================================
@@ -30,7 +30,9 @@
 // ============================================================================
 
 /// AudioMixer instantiation for ESP32-S3 + TAS5825M codec.
-using Mixer = AudioMixer<EspI2SOutput, TAS5825Codec>;
+/// HubFX silicon is the M-variant (smart-amp / inductor-less Class-D).
+/// For the P-variant (Class-H + Hybrid-Pro) use TAS5825PCodec.
+using Mixer = AudioMixer<EspI2SOutput, TAS5825MCodec>;
 
 // ============================================================================
 // Channel Assignments

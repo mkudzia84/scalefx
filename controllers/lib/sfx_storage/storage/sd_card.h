@@ -392,8 +392,10 @@ private:
     using SdCardModule = SdCardModuleT<PicoSpiSdPolicy>;
 #elif SFX_PLATFORM_ESP32
     #include "esp32/esp32_sd_policies.h"
-    /// ESP32: default to SDIO 1-bit (matches current HubFX hardware config)
-    using SdCardModule = SdCardModuleT<EspSdio1BitPolicy>;
+    /// ESP32: default to SDIO 4-bit (HubFX rev with D1/D2/D3 wired through the
+    /// JTAG-reuse pins MTDI/MTMS/GPIO45). Controllers that want 1-bit can
+    /// still instantiate SdCardModuleT<EspSdio1BitPolicy> directly.
+    using SdCardModule = SdCardModuleT<EspSdio4BitPolicy>;
 #endif
 
 /// File handle type alias for external use (AudioMixer).

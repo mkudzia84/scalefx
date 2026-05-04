@@ -93,6 +93,21 @@ public:
             return false;
         }
 
+        // Step 4: Prime the DMA with silence so BCLK / LRCK actually start
+        // toggling on the GPIOs. ESP32-S3 I²S TX in standard mode does NOT
+        // emit clocks until the first i2s_channel_write() — even though the
+        // channel is "enabled". Without this prime, downstream codecs (like
+        // TAS5825M) sit waiting for a PLL reference that never appears and
+        // report a clock fault. Fill the entire DMA ring (8 × 512 = 4096
+        // frames) so the codec has at least ~85 ms of clean clocks to lock
+        // onto before the consumer task starts servicing the ring.
+        memset(_batchBuf, 0, sizeof(_batchBuf));
+        for (uint8_t i = 0; i < 8; i++) {
+            size_t bytesWritten = 0;
+            i2s_channel_write(_txHandle, _batchBuf, sizeof(_batchBuf),
+                              &bytesWritten, portMAX_DELAY);
+        }
+
         _running = true;
         return true;
     }

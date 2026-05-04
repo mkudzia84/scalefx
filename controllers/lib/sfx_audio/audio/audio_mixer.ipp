@@ -1031,13 +1031,14 @@ void AudioMixer<TI2S, TCodec>::consumeAndOutput() {
         TI2S::instance().writeSamples(frames, count);
         _consumeFrames.fetch_add(count, std::memory_order_relaxed);
     } else {
-        // Ring empty — yield and wait for producer to refill.
-        // auto_clear_after_cb=true in the I2S channel config ensures
-        // DMA buffers are zeroed after transmission, so no manual
-        // silence flush is needed (which would inject audible gaps
-        // if the ring briefly empties during active playback).
+        // Ring empty — write a batch of silence so BCLK / LRCK keep
+        // toggling. Without this the I²S DMA stalls between audio events
+        // and downstream codecs (TAS5825M et al.) drop their PLL lock and
+        // fall back to HIZ. The blocking i2s_channel_write paces this loop
+        // at the audio sample rate, so no extra delay is needed.
+        static StereoFrame silenceFrames[256] = {};
+        TI2S::instance().writeSamples(silenceFrames, 256);
         _underruns.fetch_add(1, std::memory_order_relaxed);
-        SFX_DELAY_MS(1);
     }
 }
 

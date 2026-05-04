@@ -19,7 +19,9 @@ sfx_audio/
 │   └── mock_i2s_sink.h/.cpp # Mock I2S output for testing (statistics, capture)
 └── codec/
     ├── simple_i2s_codec.h/.cpp  # No-op codec for DACs with no I2C control
-    ├── tas5825_codec.h/.cpp     # TI TAS5825M digital amplifier driver (I2C)
+    ├── tas5825_regs.h           # Shared register / mode / Supply definitions
+    ├── tas5825_m_codec.h/.cpp   # TI TAS5825M (smart-amp / inductor-less Class-D)
+    ├── tas5825_p_codec.h/.cpp   # TI TAS5825P (Class-H + Hybrid-Pro)
     └── pcm5102a_codec.h         # TI PCM5102A stereo DAC (GPIO-only, no I2C)
 ```
 
@@ -162,7 +164,8 @@ These are only called when `AUDIO_DEBUG` is enabled and are not required for pro
 | Class | Header | Description |
 |-------|--------|-------------|
 | `SimpleI2SCodec` | `codec/simple_i2s_codec.h` | No-op codec for DACs without I2C control. `begin()`/`setVolume()`/`setMute()` are stubs. |
-| `TAS5825Codec` | `codec/tas5825_codec.h` | TI TAS5825M digital amplifier. Full I2C register control, volume via register 0x4C, hardware mute/unmute, diagnostic registers. Singleton. |
+| `TAS5825MCodec` | `codec/tas5825_m_codec.h` | TI TAS5825M (smart-amp / inductor-less Class-D). Strict init flow with CDET-clear + FS_MON gate. Exposes smart-amp / IV-sense / speaker-protection API. Singleton. |
+| `TAS5825PCodec` | `codec/tas5825_p_codec.h` | TI TAS5825P (Class-H + Hybrid-Pro). Permissive init flow. Exposes Hybrid-Pro / boost-converter API for designs with an external DC-DC. Singleton. |
 | `PCM5102ACodec` | `codec/pcm5102a_codec.h` | TI PCM5102A stereo DAC. GPIO-only control (XSMT mute, FMT, FLT, DEMP). No I2C — auto-detects sample rate from I2S clocks. Singleton. |
 
 ## I2S Output Concept (Compile-Time Interface)

@@ -85,7 +85,7 @@ The shared `AudioMixer` already has ESP32-S3 conditionals (`SFX_PLATFORM_ESP32` 
 | Status | Item | Details |
 |--------|------|---------|
 | [x] | **I2S driver** | ESP-IDF v5.x standard-mode via `driver/i2s_std.h`. `EspI2SOutput` singleton wraps `i2s_channel_write()` with DMA auto-clear on underrun. Bit depth derived from `AUDIO_BIT_DEPTH` config. |
-| [x] | **Codec init** | TAS5825Codec singleton — `begin(Wire, 8, 9, AUDIO_SAMPLE_RATE, TAS5825M_12V)`. Supply voltage configurable. All codec defaults now use `AUDIO_SAMPLE_RATE`. |
+| [x] | **Codec init** | TAS5825MCodec singleton — `begin(Wire, 8, 9, AUDIO_SAMPLE_RATE, sfx_audio::tas5825::Supply::V12)`. Supply voltage configurable. All codec defaults now use `AUDIO_SAMPLE_RATE`. |
 | [x] | **Audio mixer begin** | `mixer.begin(data, bclk, lrclk)` — Phase 1 on Core 0, Phase 2 (`beginI2S()`) on Core 1. PSRAM buffers: 24000-frame WAV decode per channel, 4096-frame SPSC ring buffer. |
 | [x] | **Audio producer** | Dedicated FreeRTOS task on Core 1 (priority MAX-2) via `mixer.startProducerTask()`. Runs `produce(RING_FRAMES)` in a tight loop, yielding 2ms when ring is full or no channels playing. SD file I/O mutex-protected for cross-core safety. |
 | [x] | **Audio consumer** | FreeRTOS task on Core 1 (priority MAX-1) — reads ring buffer, batch-writes to I2S via 512-frame internal SRAM buffer. Blocks on DMA full, yielding CPU to producer task. |
@@ -112,8 +112,8 @@ This is the most significant platform difference. Pico uses PIO-USB (software US
 
 | Status | Item | Details |
 |--------|------|---------|
-| [x] | **SD card library** | ESP32 Arduino `SD_MMC.h` via `EspSdio1BitPolicy` template in `sfx_storage`. SDMMC 1-bit SDIO at `SDMMC_FREQ_HIGHSPEED` (40 MHz). `SdCardModule` singleton API preserved — `AudioMixer` and `StorageServer` use it transparently. |
-| [x] | **SD init with fallback** | `SdCardModule::instance().begin()` → `EspSdio1BitPolicy::mount()` with configurable pins. Boot log reports "SDIO 1-bit HS". |
+| [x] | **SD card library** | ESP32 Arduino `SD_MMC.h` via `EspSdio4BitPolicy` template in `sfx_storage`. SDMMC 4-bit SDIO at `SDMMC_FREQ_HIGHSPEED` (40 MHz). `SdCardModule` singleton API preserved — `AudioMixer` and `StorageServer` use it transparently. |
+| [x] | **SD init with fallback** | `SdCardModule::instance().begin()` → `EspSdio4BitPolicy::mount()` with configurable pins. Boot log reports "SDIO 4-bit HS". |
 | [ ] | **LittleFS flash** | Both platforms support LittleFS via Arduino framework. `FlashModule` singleton should work. Verify ESP32 partition table includes a LittleFS partition. |
 | [x] | **ConfigReader** | Replaced by `sfx_config` library — per-domain `ConfigStore<TSchema>` instances (audio/engine/gun/light) with declarative YAML schema DSL. Each domain owns its own YAML file on flash. |
 | [x] | **File operations** | `StorageServerT<Esp32StoragePolicy>` handles all file protocol commands (list, tree, upload, download, delete, mkdir, info). Single-core exclusive pipeline: 64 KB PSRAM fill buffer drained synchronously to SD on the main loop. Windowed (`UPLOAD_SYNC`) and batch (`UPLOAD_STREAM`) modes both supported. See [Upload Exclusivity](#upload-exclusivity). |
@@ -122,7 +122,7 @@ This is the most significant platform difference. Pico uses PIO-USB (software US
 
 | Status | Item | Details |
 |--------|------|---------|
-| [ ] | **Codec selection** | ~~`#define USE_WAVESHARE_PICOAUDIO`~~ Done — using `TAS5825Codec` singleton via `AudioMixer<EspI2SOutput, TAS5825Codec>`. |
+| [ ] | **Codec selection** | ~~`#define USE_WAVESHARE_PICOAUDIO`~~ Done — using `TAS5825MCodec` singleton via `AudioMixer<EspI2SOutput, TAS5825MCodec>`. Switch to `TAS5825PCodec` for boards populated with the P-variant silicon. |
 | [ ] | **SD card init** | `initSdCard()` with fallback speed pattern. |
 | [x] | **Config loading** | `MultiConfigServer` (path-routed) handles CONFIG_RELOAD (0x90), CONFIG_STATUS (0x91), CONFIG_SAVE (0xAC) across four per-domain stores: `/hubfx.yaml` (codec voltage), `/enginefx.yaml`, `/gunfx.yaml`, `/lightfx.yaml`. Each store loads from LittleFS via `FlashModule` and fires its own typed `onLoaded()`. SD card is reserved for audio samples. |
 | [ ] | **Audio init** | `initAudio()` — codec begin + mixer begin. |
@@ -229,7 +229,7 @@ void loop() {
 
 ### SD Card Performance
 
-The SD card is mounted via SDMMC 1-bit SDIO at `SDMMC_FREQ_HIGHSPEED` (40 MHz bus clock), which doubles throughput compared to the default 20 MHz clock. Single-core batch uploads sustain ~470 KB/s end-to-end (measured against the `tests/storage_test/` harness at 6 Mbps UART), well above the ~300-400 KB/s the USB-UART bridge can feed.
+The SD card is mounted via SDMMC 4-bit SDIO at `SDMMC_FREQ_HIGHSPEED` (40 MHz bus clock). Combined with the wider 4-bit data bus, this lifts theoretical card-side throughput to ~20 MB/s; real-world single-core batch uploads remain bottlenecked at ~470 KB/s by the 6 Mbps USB-UART bridge feeding the host. The 4-bit pinout reuses the JTAG-group pins (MTDO/MTDI/MTMS) for D0-D2 plus GPIO45 for D3 — JTAG is unavailable at runtime, but USB-CDC logging is sufficient.
 
 ---
 
@@ -474,7 +474,10 @@ If `esp_get_free_heap_size()` returns ~300–370 KB instead of ~8 MB:
 | I2C SCL | 9 | I2C clock | TAS5825M SCL |
 | SD CMD | 38 | SD_MMC command | MicroSD CMD |
 | SD CLK | 39 | SD_MMC clock | MicroSD CLK |
-| SD D0 | 40 | SD_MMC data 0 | MicroSD DAT0 |
+| SD D0 | 40 | SD_MMC data 0 (MTDO) | MicroSD DAT0 |
+| SD D1 | 41 | SD_MMC data 1 (MTDI) | MicroSD DAT1 |
+| SD D2 | 42 | SD_MMC data 2 (MTMS) | MicroSD DAT2 |
+| SD D3 | 45 | SD_MMC data 3 | MicroSD DAT3 |
 | PPM IN | 5 | RC receiver PPM input | IN_1 header |
 | LED (conn) | 48 | Onboard RGB LED | (built-in) |
 | USB D- | 19 | USB Host (fixed) | USB hub/device |
@@ -538,14 +541,15 @@ The supply voltage is configured in `hubfx_esp32s3.ino` to set the correct analo
 The codec uses a two-phase init: `begin()` probes I2C and enters Deep Sleep (safe before
 I2S clocks), then `activate()` configures registers and transitions to PLAY after I2S starts:
 ```cpp
+using sfx_audio::tas5825::Supply;
 // Phase 1: before I2S clocks
-TAS5825Codec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
-                               AUDIO_SAMPLE_RATE, TAS5825M_12V);
+TAS5825MCodec::instance().begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL,
+                                AUDIO_SAMPLE_RATE, Supply::V12);
 // ... start I2S ...
 // Phase 2: after I2S BCLK/LRCLK running
-TAS5825Codec::instance().activate();
+TAS5825MCodec::instance().activate();
 ```
-Change `TAS5825M_12V` to match your PVDD: `TAS5825M_12V`, `TAS5825M_15V`, `TAS5825M_20V`, or `TAS5825M_24V`.
+Change `Supply::V12` to match your PVDD: `Supply::V12`, `Supply::V15`, `Supply::V20`, or `Supply::V24`.
 
 **Wire length:** Keep I2S wires short (< 6 inches / 150mm). At 48kHz/16-bit stereo, BCLK is ~1.5 MHz — manageable, but shorter is better for signal integrity.
 

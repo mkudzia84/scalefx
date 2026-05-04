@@ -71,11 +71,12 @@ func (h *Handler) FormatStatusBroadcast(s *StatusBroadcast) {
 		h.E.Out.Printf("\n  %s\n", h.E.Out.C(engine.ColorCyan,
 			fmt.Sprintf("━━━ I2C Devices (%d/8) ━━━", s.I2C.DetectedCount)))
 
-		pcalColor, pcalText := engine.ColorRed, "not found"
-		if s.I2C.PCALPresent {
-			pcalColor, pcalText = engine.ColorGreen, "OK"
+		expColor, expText := engine.ColorRed, "not found"
+		if s.I2C.ExpanderPresent {
+			expColor, expText = engine.ColorGreen, "OK"
 		}
-		h.E.Out.Printf("  PCAL6416A: %s  (0x20 GPIO expander)\n", h.E.Out.C(pcalColor, pcalText))
+		h.E.Out.Printf("  AW9523B:   %s  (0x58 GPIO expander + 6× LED PWM)\n",
+			h.E.Out.C(expColor, expText))
 
 		for i, bus := range s.I2C.INA226 {
 			addr := 0x40 + i

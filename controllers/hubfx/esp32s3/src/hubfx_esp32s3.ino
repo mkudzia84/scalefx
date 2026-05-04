@@ -31,7 +31,7 @@
  *   [x] USB Host (mount/unmount logging, device listing)
  *   [x] Flash storage (LittleFS, file list/info/delete/mkdir/download/upload)
  *   [x] USB device listing (USB_DEVICES_REQ/RESP)
- *   [x] SD card storage (SD_MMC 1-bit SDIO, file ops, upload/download)
+ *   [x] SD card storage (SD_MMC 4-bit SDIO, file ops, upload/download)
  *   [x] Audio mixer (I2S output via ESP-IDF driver, 8-ch WAV, dual-core)
  *   [x] Config reader (YAML from flash, reload/save/get protocol)
  *   [x] Slave management (INIT handshake, SlaveType identification, routing)
@@ -41,12 +41,13 @@
  *   [x] RC input dispatcher (PWM/PPM → engine on/off + light program select)
  *   [ ] Gun FX
  *   [ ] System sounds
- *   [ ] Local LED runtime (AW9523B)
+ *   [~] Local LED runtime (AW9523B) — 6 channels wired in LED-mode at boot,
+ *       runtime brightness API not yet surfaced
  *   [ ] SBUS / Jeti EX Bus input readers (Phase 0 stubs in place)
  */
 
-#define FIRMWARE_VERSION "1.0.0"
-#define BUILD_NUMBER 229
+#define FIRMWARE_VERSION "1.1.2"
+#define BUILD_NUMBER 242
 
 #include <Arduino.h>
 #include <atomic>
@@ -64,7 +65,7 @@
 #include <power/ina226.h>
 #include <power/ina226_battery.h>
 #include <power/battery_server.h>
-#include <gpio/pcal6416a.h>
+#include <gpio/aw9523b.h>
 
 // Config schemas — per-domain YAML files (Rule 26)
 #include "config/hubfx_config.h"
@@ -121,22 +122,33 @@ using AudioServer = AudioServerT<Mixer>;
 #define PIN_I2S_LRCLK   3    // I2S word clock / frame sync (TAS_FS)
 // Note: GPIO2 = TAS_DO (data from codec to ESP32) — not used (output only)
 
-// SD Card (SD_MMC SDIO — currently 1-bit, D1/D2 wired for future 4-bit)
+// SD Card (SD_MMC SDIO — 4-bit bus). D0-D2 reuse the JTAG-group strap pins
+// MTDO/MTDI/MTMS; D3 is GPIO45. JTAG is unavailable at runtime but that's
+// fine — USB-CDC / firmware logging don't need it. The SD driver toggles
+// these to normal GPIO mode during mount.
 #define PIN_SD_MMC_CMD  38   // SD_MMC command
 #define PIN_SD_MMC_CLK  39   // SD_MMC clock
-#define PIN_SD_MMC_D0   40   // SD_MMC data 0
-#define PIN_SD_MMC_D1   41   // SD_MMC data 1 (4-bit only)
-#define PIN_SD_MMC_D2   42   // SD_MMC data 2 (4-bit only)
+#define PIN_SD_MMC_D0   40   // SD_MMC data 0 (MTDO)
+#define PIN_SD_MMC_D1   41   // SD_MMC data 1 (MTDI)
+#define PIN_SD_MMC_D2   42   // SD_MMC data 2 (MTMS)
+#define PIN_SD_MMC_D3   45   // SD_MMC data 3 (GPIO45)
 
 // I2C (for TAS5825M codec control, power monitoring, etc.)
 #define PIN_I2C_SDA     8    // I2C data  (to TAS5825M SDA)
 #define PIN_I2C_SCL     9    // I2C clock (to TAS5825M SCL)
 
-// TAS5825M control pins on PCAL6416A expander (Port 1)
-// Pin numbers are 0-15: 0-7 = Port 0, 8-15 = Port 1
-#define EXP_TAS_FAULT   8    // P1_0 — TAS5825M nFAULT (active-low, input)
-#define EXP_TAS_MUTE    9    // P1_1 — TAS5825M MUTE (active-low, output: HIGH=unmuted)
-#define EXP_TAS_PDN    10    // P1_2 — TAS5825M PDN/!RST (active-low, output: HIGH=run)
+// AW9523B expander pin map. Local LED channels 1-6 sit on P0_0..P0_5 and run
+// in constant-current LED mode (256-step PWM, ~430 Hz). The TAS5825M control
+// signals (PDN, MUTE, nFAULT) are wired entirely in hardware on the current
+// PCB rev — no expander pin or ESP32 GPIO drives them — so codec health is
+// only observable through TAS5825M's I²C fault/state registers.
+#define EXP_LED_CH1     0    // P0_0 — local LED channel 1
+#define EXP_LED_CH2     1    // P0_1 — local LED channel 2
+#define EXP_LED_CH3     2    // P0_2 — local LED channel 3
+#define EXP_LED_CH4     3    // P0_3 — local LED channel 4
+#define EXP_LED_CH5     4    // P0_4 — local LED channel 5
+#define EXP_LED_CH6     5    // P0_5 — local LED channel 6
+#define LOCAL_LED_COUNT 6
 
 // ============================================================================
 // Core 1 Task — Audio Consumer (highest priority on Core 1)
@@ -251,7 +263,7 @@ static void logResetReason() {
 
 // GPIO expander — declared early so audio diagnostics and initI2CDevices()
 // can both reference it.
-static PCAL6416A gpioExpander;
+static AW9523B gpioExpander;
 
 /**
  * @brief Phase 1: Probe I2C, reset codec, enter Deep Sleep.
@@ -261,8 +273,8 @@ static PCAL6416A gpioExpander;
  *
  * @return true if codec I2C probe and reset succeeded.
  */
-static bool tryInitCodec(TAS5825M_SupplyVoltage voltage) {
-    TAS5825Codec& codec = TAS5825Codec::instance();
+static bool tryInitCodec(sfx_audio::tas5825::Supply voltage) {
+    auto& codec = TAS5825MCodec::instance();
     return codec.begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL, AUDIO_SAMPLE_RATE, voltage);
 }
 
@@ -275,7 +287,7 @@ static bool tryInitCodec(TAS5825M_SupplyVoltage voltage) {
  * @return true if codec entered PLAY state.
  */
 static bool activateCodec() {
-    TAS5825Codec& codec = TAS5825Codec::instance();
+    auto& codec = TAS5825MCodec::instance();
     if (!codec.isInitialized()) return false;
     return codec.activate();
 }
@@ -294,44 +306,16 @@ static constexpr uint8_t TAS_REG_FS_MON         = 0x37;  // Sample rate monitor
 /**
  * @brief Comprehensive audio hardware diagnostics.
  *
- * Reads GPIO expander pins (PDN, MUTE, FAULT) and TAS5825M internal
- * fault/state registers. Logs everything via DiagLog for CLI retrieval.
- * Call from initAudio() and periodic diagnostics.
+ * TAS5825M PDN/MUTE/nFAULT are wired entirely in hardware on the current PCB
+ * — no GPIO or expander pin drives them — so this routine only reads the
+ * codec's I²C fault/state registers. The AW9523B is dedicated to the local
+ * LED channels (see initI2CDevices).
  */
 static void diagnoseAudioHardware() {
     SFX_LOG_INFO("=== Audio Hardware Diagnostics ===");
 
-    // ---- GPIO Expander: TAS control pins ----
-    if (gpioExpander.isAvailable()) {
-        bool pdnState   = gpioExpander.readPin(EXP_TAS_PDN);
-        bool muteState  = gpioExpander.readPin(EXP_TAS_MUTE);
-        bool faultState = gpioExpander.readPin(EXP_TAS_FAULT);
-        uint8_t port1Dir = gpioExpander.getPortDirection(1);
-        uint8_t port1Out = gpioExpander.readPort(1);
-
-        SFX_LOG_INFO("Expander P1: dir=0x%02X out=0x%02X", port1Dir, port1Out);
-        SFX_LOG_INFO("  TAS_PDN  (P1_2): %s  [%s]",
-                     pdnState ? "HIGH (run)" : "LOW (SHUTDOWN!)",
-                     (port1Dir & 0x04) ? "input" : "output");
-        SFX_LOG_INFO("  TAS_MUTE (P1_1): %s  [%s]",
-                     muteState ? "HIGH (unmuted)" : "LOW (MUTED!)",
-                     (port1Dir & 0x02) ? "input" : "output");
-        SFX_LOG_INFO("  TAS_FAULT(P1_0): %s  [%s]",
-                     faultState ? "HIGH (no fault)" : "LOW (FAULT!)",
-                     (port1Dir & 0x01) ? "input" : "output");
-
-        if (!pdnState)
-            SFX_LOG_ERROR("*** TAS5825M in POWER-DOWN — PDN pin is LOW ***");
-        if (!muteState)
-            SFX_LOG_WARN("*** TAS5825M hardware MUTE active ***");
-        if (!faultState)
-            SFX_LOG_ERROR("*** TAS5825M FAULT asserted ***");
-    } else {
-        SFX_LOG_WARN("GPIO expander not available — cannot read TAS pins");
-    }
-
     // ---- TAS5825M I2C registers ----
-    TAS5825Codec& codec = TAS5825Codec::instance();
+    auto& codec = TAS5825MCodec::instance();
     if (codec.isInitialized()) {
         uint8_t devCtrl     = codec.getDeviceControlRegister();
         uint8_t faultReg    = codec.getFaultRegister();
@@ -343,18 +327,18 @@ static void diagnoseAudioHardware() {
         uint8_t fsMon = 0;
 
         // These reads go through Wire directly (codec doesn't expose all regs)
-        Wire.beginTransmission(TAS5825M_I2C_ADDR);
+        Wire.beginTransmission(sfx_audio::tas5825::I2C_ADDR);
         Wire.write(0x00); Wire.write(0x00);  // Select Book 0, Page 0
         Wire.endTransmission();
-        Wire.beginTransmission(TAS5825M_I2C_ADDR);
+        Wire.beginTransmission(sfx_audio::tas5825::I2C_ADDR);
         Wire.write(0x7F); Wire.write(0x00);
         Wire.endTransmission();
 
         auto readReg = [](uint8_t reg, uint8_t& val) -> bool {
-            Wire.beginTransmission(TAS5825M_I2C_ADDR);
+            Wire.beginTransmission(sfx_audio::tas5825::I2C_ADDR);
             Wire.write(reg);
             if (Wire.endTransmission(false) != 0) return false;
-            if (Wire.requestFrom(TAS5825M_I2C_ADDR, (uint8_t)1) != 1) return false;
+            if (Wire.requestFrom(sfx_audio::tas5825::I2C_ADDR, (uint8_t)1) != 1) return false;
             val = Wire.read();
             return true;
         };
@@ -568,12 +552,19 @@ static void initStorage() {
         SFX_LOG_ERROR("Flash init failed");
     }
 
-    // SD card (SD_MMC 1-bit SDIO) — capability advertises *slot present*,
+    // SD card (SD_MMC 4-bit SDIO) — capability advertises *slot present*,
     // not "card mounted right now": clients should still poll SD_STATUS_REQ
     // to learn whether a card is inserted and its remaining free space.
     server.core().addCapability(CoreCapability::SD);
     SdCardModule& sd = SdCardModule::instance();
-    SdCardModule::Config sdCfg { .clk = PIN_SD_MMC_CLK, .cmd = PIN_SD_MMC_CMD, .d0 = PIN_SD_MMC_D0 };
+    SdCardModule::Config sdCfg {
+        .clk = PIN_SD_MMC_CLK,
+        .cmd = PIN_SD_MMC_CMD,
+        .d0  = PIN_SD_MMC_D0,
+        .d1  = PIN_SD_MMC_D1,
+        .d2  = PIN_SD_MMC_D2,
+        .d3  = PIN_SD_MMC_D3,
+    };
     if (sd.begin(sdCfg)) {
         StorageInfo info;
         sd.getStorageInfo(info);
@@ -631,13 +622,13 @@ static void initConfig() {
     // bindings — engine/audio/gun stay untouched.
 
     hubConfig.onLoaded([](const HubFxSettings& cfg) {
-        TAS5825M_SupplyVoltage voltage;
-        if (TAS5825Codec::parseSupplyVoltage(cfg.codecSupplyVoltage, voltage)) {
-            auto& codec = TAS5825Codec::instance();
+        sfx_audio::tas5825::Supply voltage;
+        if (sfx_audio::tas5825::parseSupply(cfg.codecSupplyVoltage, voltage)) {
+            auto& codec = TAS5825MCodec::instance();
             if (codec.isInitialized() && codec.getSupplyVoltage() != voltage) {
                 if (codec.setSupplyVoltage(voltage)) {
                     SFX_LOG_INFO("[Config] Codec supply voltage \u2192 %s",
-                                 TAS5825Codec::supplyVoltageStr(voltage));
+                                 sfx_audio::tas5825::supplyStr(voltage));
                 } else {
                     SFX_LOG_ERROR("[Config] Failed to set codec supply voltage");
                 }
@@ -817,7 +808,7 @@ static void initInputDispatcher() {
     });
 }
 
-/** @brief Initialize I2C peripherals: INA226 power monitors and PCAL6416A GPIO expander. */
+/** @brief Initialize I2C peripherals: INA226 power monitors and AW9523B GPIO expander. */
 static void initI2CDevices() {
     // INA226 power monitors at 0x40-0x45
     // Default calibration: 100mΩ shunt, 3.2A max (adjust per board design)
@@ -834,32 +825,26 @@ static void initI2CDevices() {
     }
     SFX_LOG_INFO("INA226: %d/%d monitors initialized", inaCount, INA226_COUNT);
 
-    // PCAL6416AHF GPIO expander at 0x20
-    if (gpioExpander.begin(Wire, PCAL6416AAddress::DEFAULT_ADDR)) {
-        SFX_LOG_INFO("PCAL6416A @ 0x%02X: OK (16-bit GPIO expander)",
+    // AW9523B GPIO expander at 0x58 — drives 6 local LED channels on
+    // P0_0..P0_5 in constant-current LED mode (256-step PWM, ~430 Hz).
+    if (gpioExpander.begin(Wire, AW9523BAddress::DEFAULT_ADDR)) {
+        SFX_LOG_INFO("AW9523B @ 0x%02X: OK (16-bit GPIO expander + 256-step LED PWM)",
                      gpioExpander.address());
 
-        // Configure TAS5825M control pins on Port 1:
-        //   P1_0 (FAULT) = input with pull-up (active-low fault output from TAS)
-        //   P1_1 (MUTE)  = output, drive HIGH (unmuted)
-        //   P1_2 (PDN)   = output, drive HIGH (power-on / run)
-        gpioExpander.setPinDirection(EXP_TAS_FAULT, true);   // input
-        gpioExpander.setPullEnable(1, 0x01);                 // enable pull on P1_0
-        gpioExpander.setPullSelect(1, 0x01);                 // pull-up on P1_0
-
-        gpioExpander.setPinDirection(EXP_TAS_PDN, false);    // output
-        gpioExpander.writePin(EXP_TAS_PDN, true);            // PDN = HIGH → run
-        SFX_LOG_INFO("  TAS_PDN  (P1_2) → HIGH (power-on)");
-
-        gpioExpander.setPinDirection(EXP_TAS_MUTE, false);   // output
-        gpioExpander.writePin(EXP_TAS_MUTE, true);           // MUTE = HIGH → unmuted
-        SFX_LOG_INFO("  TAS_MUTE (P1_1) → HIGH (unmuted)");
-
-        SFX_LOG_INFO("  TAS_FAULT(P1_0) = %s",
-                     gpioExpander.readPin(EXP_TAS_FAULT) ? "HIGH (ok)" : "LOW (FAULT!)");
+        // Switch P0_0..P0_5 to LED mode and start every channel at zero
+        // brightness so nothing comes on at boot. setLedMode() flips the
+        // LED_MODE_P0 register bit; setLedBrightness() writes the per-pin
+        // DIM register. No other expander pin is wired on the current board,
+        // so the rest keep their power-on defaults (GPIO-mode tristate).
+        for (uint8_t ch = 0; ch < LOCAL_LED_COUNT; ch++) {
+            gpioExpander.setLedMode(ch, true);
+            gpioExpander.setLedBrightness(ch, 0);
+        }
+        SFX_LOG_INFO("  Local LEDs ch1..ch%u → LED mode, brightness 0",
+                     LOCAL_LED_COUNT);
     } else {
-        SFX_LOG_WARN("PCAL6416A @ 0x%02X: not found",
-                     PCAL6416AAddress::DEFAULT_ADDR);
+        SFX_LOG_WARN("AW9523B @ 0x%02X: not found",
+                     AW9523BAddress::DEFAULT_ADDR);
     }
 }
 
@@ -874,13 +859,13 @@ static void initAudio() {
 
     // ---- Phase 1: Codec I2C probe + reset → Deep Sleep ----
     // The codec goes into Deep Sleep (PLL off) — safe before I2S clocks.
-    TAS5825M_SupplyVoltage initVoltage = TAS5825M_12V;
+    sfx_audio::tas5825::Supply initVoltage = sfx_audio::tas5825::Supply::V12;
     if (hubConfig.isLoaded()) {
-        TAS5825Codec::parseSupplyVoltage(hubConfig.data().codecSupplyVoltage, initVoltage);
+        sfx_audio::tas5825::parseSupply(hubConfig.data().codecSupplyVoltage, initVoltage);
     }
     if (tryInitCodec(initVoltage)) {
         SFX_LOG_INFO("TAS5825M codec probed OK, in Deep Sleep (supply=%s)",
-                     TAS5825Codec::supplyVoltageStr(initVoltage));
+                     sfx_audio::tas5825::supplyStr(initVoltage));
     } else {
         SFX_LOG_WARN("TAS5825M codec probe failed — will retry periodically "
                      "(check battery/PVDD power)");
@@ -917,7 +902,7 @@ static void initAudio() {
     // The codec is in Deep Sleep with PLL off. Once Core 1 starts I2S
     // (BCLK/LRCLK running on GPIO pins), we configure registers and
     // transition Deep Sleep → HIZ (PLL lock) → PLAY.
-    if (TAS5825Codec::instance().isInitialized()) {
+    if (TAS5825MCodec::instance().isInitialized()) {
         // Wait up to 2s for Core 1 to finish beginI2S()
         uint32_t waitStart = millis();
         while (!i2sReady.load(std::memory_order_acquire)) {
@@ -999,7 +984,7 @@ void setup() {
                 mixer.resetUnderruns();
             }
 
-            TAS5825Codec& codec = TAS5825Codec::instance();
+            auto& codec = TAS5825MCodec::instance();
             if (codec.isInitialized()) {
                 codec.reset();
                 codec.clearFaults();
@@ -1081,7 +1066,7 @@ void setup() {
         CoreProtocol::putU32LE(&buf[2], loop1Count.load(std::memory_order_relaxed));
 
         // I2C device presence bitmask (byte 6):
-        //   bit 0: PCAL6416A @ 0x20
+        //   bit 0: AW9523B @ 0x58
         //   bit 1: INA226 @ 0x40
         //   bit 2: INA226 @ 0x41
         //   bit 3: INA226 @ 0x42
@@ -1163,7 +1148,7 @@ static void checkCodecHealth() {
     uint32_t now = millis();
 
     // If codec not initialized, retry periodically
-    TAS5825Codec& codec = TAS5825Codec::instance();
+    auto& codec = TAS5825MCodec::instance();
     if (!codec.isInitialized()) {
         if (now - lastCheck_ms < CHECK_INTERVAL_MS) return;
         lastCheck_ms = now;
