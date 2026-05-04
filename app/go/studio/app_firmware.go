@@ -97,6 +97,9 @@ func (a *App) GetFirmwareVersion(controllerName string) FirmwareVersionInfo {
 // BuildAndFlash runs the full build → flash → verify pipeline in the background.
 // Progress emitted as "firmware:progress" Wails events.
 func (a *App) BuildAndFlash(controllerName string, port string, noBuild bool, noClean bool, skipVerify bool) {
+	a.diag.With(LvlInfo, "FW", "BuildAndFlash requested",
+		map[string]any{"controller": controllerName, "port": port,
+			"noBuild": noBuild, "noClean": noClean, "skipVerify": skipVerify})
 	go a.runFirmwareOp(controllerName, port, noBuild, noClean, skipVerify)
 }
 
@@ -270,6 +273,8 @@ func (a *App) GetReleases(controller string) []ReleaseInfo {
 // FlashFromRelease downloads a release from GitHub and flashes it to the board.
 // Progress emitted as "firmware:progress" Wails events.
 func (a *App) FlashFromRelease(controller string, tag string, port string, skipVerify bool) {
+	a.diag.With(LvlInfo, "FW", "FlashFromRelease requested",
+		map[string]any{"controller": controller, "tag": tag, "port": port, "skipVerify": skipVerify})
 	go a.runReleaseFlash(controller, tag, port, skipVerify)
 }
 

@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"scalefx/engine"
 	"scalefx/engine/handlers"
@@ -20,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	wailsRT "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -63,14 +65,18 @@ type SlaveInfo struct {
 // ─── App struct ───
 
 type App struct {
-	ctx context.Context
-	eng *engine.Engine
-	reg *handlers.Registry
-	out *GUIOutput
-	mu  sync.Mutex
+	ctx  context.Context
+	eng  *engine.Engine
+	reg  *handlers.Registry
+	out  *GUIOutput
+	diag *Diag
+	mu   sync.Mutex
 
 	// Port watcher
 	stopPortWatcher chan struct{}
+
+	// Heartbeat goroutine
+	stopHeartbeat chan<- struct{}
 
 	// Latest slave state from HubFX STATUS_BROADCAST (nil when not connected
 	// to a hub or before the first broadcast arrives). GetSlaveInfo() reads
@@ -84,12 +90,19 @@ func NewApp() *App {
 	reg := handlers.RegisterDefaults(eng)
 	eng.PromptSelectPort = func(ports []string) string { return "" }
 
-	return &App{eng: eng, reg: reg, out: out}
+	return &App{eng: eng, reg: reg, out: out, diag: NewDiag()}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.out.ctx = ctx
+	a.diag.SetCtx(ctx)
+	a.diag.Info("APP", "Studio starting up — go=%s os=%s build=studio",
+		runtimeGoVersion(), runtimeOS())
+	a.diag.Info("APP", "process pid=%d, working dir=%s", processPID(), workingDir())
+	if p := a.diag.LogPath(); p != "" {
+		a.diag.Info("APP", "diagnostic log: %s", p)
+	}
 
 	// Typed event listeners — installed on handlers from the registry.
 	// Each board package owns its wire→struct decoding; we only forward the
@@ -126,6 +139,7 @@ func (a *App) startup(ctx context.Context) {
 		wailsRT.EventsEmit(a.ctx, "slaves:changed", slaves)
 	})
 	a.eng.OnDisconnect = func() {
+		a.diag.Warn("CONN", "Engine fired OnDisconnect — port lost or remote shutdown")
 		a.mu.Lock()
 		a.slaveStatus = nil
 		a.mu.Unlock()
@@ -134,9 +148,30 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	a.startPortWatcher()
+
+	// Heartbeat: 1 line every 10 s while running. Captures connection state,
+	// goroutine count, heap. If this stops appearing in the terminal, the
+	// app is wedged.
+	a.stopHeartbeat = a.diag.StartHeartbeat(10*time.Second, func() map[string]any {
+		a.mu.Lock()
+		ctype := a.eng.ControllerType
+		hasConn := a.eng.Conn != nil
+		hasSlave := a.slaveStatus != nil
+		a.mu.Unlock()
+		return map[string]any{
+			"connected":   hasConn,
+			"controller":  ctype,
+			"initialized": a.eng.Initialized,
+			"hub_status":  hasSlave,
+		}
+	})
 }
 
 func (a *App) shutdown(_ context.Context) {
+	a.diag.Info("APP", "shutdown requested")
+	if a.stopHeartbeat != nil {
+		close(a.stopHeartbeat)
+	}
 	a.stopPortWatcherLoop()
 	a.eng.Cleanup()
 }
@@ -161,6 +196,7 @@ func (a *App) startPortWatcher() {
 			sort.Strings(names)
 			key := strings.Join(names, ",")
 			if key != lastPorts {
+				added, removed := diffPortLists(lastPorts, key)
 				lastPorts = key
 				// Rebuild in sorted order with descriptions
 				byName := make(map[string]string, len(detailed))
@@ -171,10 +207,82 @@ func (a *App) startPortWatcher() {
 				for i, n := range names {
 					items[i] = PortInfo{Name: n, Description: byName[n]}
 				}
+				a.diag.With(LvlInfo, "PORTS", "port list changed",
+					map[string]any{"added": added, "removed": removed, "total": len(items)})
 				wailsRT.EventsEmit(a.ctx, "ports:changed", items)
 			}
 		}
 	}()
+}
+
+// installAsyncDiag attaches the protocol Connection's async callback so
+// every unsolicited packet (STATUS_BROADCAST, LOG_MESSAGE, IDENTIFY-on-
+// reboot, …) leaves a one-line breadcrumb in the diag log. The engine's
+// handlers still process the packet — we just observe.
+//
+// At debug-level only — STATUS at 1 Hz × N panels would otherwise drown
+// the GUI console. Filter out the periodic STATUS_BROADCAST stream
+// after the first tick so the line shows up once and then quiets down.
+func (a *App) installAsyncDiag() {
+	if a.eng.Conn == nil {
+		return
+	}
+	prevCB := a.eng.Conn.GetCallback()
+	statusSeen := atomic.Bool{}
+	a.eng.Conn.SetCallback(func(r *protocol.Response) {
+		if r != nil {
+			ptype := byte(r.PacketType)
+			tag := r.Tag
+			plen := len(r.Payload)
+			pname := protocol.PacketTypeName(r.PacketType)
+			// Periodic STATUS broadcast: log first arrival, then suppress.
+			isStatus := ptype == 0xF4 || ptype == 0xEF
+			if isStatus {
+				if statusSeen.CompareAndSwap(false, true) {
+					a.diag.With(LvlInfo, "RX", "first STATUS broadcast received",
+						map[string]any{"type": pname, "len": plen})
+				}
+			} else {
+				a.diag.With(LvlDebug, "RX", "async packet",
+					map[string]any{"type": pname, "tag": tag, "len": plen})
+			}
+		}
+		if prevCB != nil {
+			prevCB(r)
+		}
+	})
+	a.diag.Debug("CONN", "async packet observer installed")
+}
+
+// diffPortLists returns the elements added / removed between two
+// comma-joined port lists. Used purely for log breadcrumbs.
+func diffPortLists(prev, next string) (added, removed []string) {
+	p := stringSetCSV(prev)
+	n := stringSetCSV(next)
+	for v := range n {
+		if !p[v] {
+			added = append(added, v)
+		}
+	}
+	for v := range p {
+		if !n[v] {
+			removed = append(removed, v)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
+}
+
+func stringSetCSV(s string) map[string]bool {
+	out := map[string]bool{}
+	if s == "" {
+		return out
+	}
+	for _, v := range strings.Split(s, ",") {
+		out[v] = true
+	}
+	return out
 }
 
 func (a *App) stopPortWatcherLoop() {
@@ -186,18 +294,23 @@ func (a *App) stopPortWatcherLoop() {
 // ─── Exposed Methods ───
 
 func (a *App) ListPorts() []PortInfo {
+	defer a.diag.Around("ListPorts", nil)()
 	ports := protocol.ListPortsDetailed()
 	result := make([]PortInfo, len(ports))
 	for i, p := range ports {
 		result[i] = PortInfo{Name: p.Name, Description: p.Description}
 	}
+	a.diag.With(LvlDebug, "PORTS", "ListPorts result",
+		map[string]any{"count": len(result)})
 	return result
 }
 
 func (a *App) Connect(port string) ConnectionInfo {
+	defer a.diag.Around("Connect", map[string]any{"port": port})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	a.diag.Info("CONN", "Connecting to %s", port)
 	a.eng.Dispatch("connect " + port)
 
 	// Send INIT with verbose flag so the device starts streaming STATUS_BROADCAST.
@@ -208,17 +321,32 @@ func (a *App) Connect(port string) ConnectionInfo {
 	// re-applies flags), so we drop the !Initialized guard.
 	if a.eng.Conn != nil && a.eng.ControllerType != "" {
 		a.eng.Dispatch("init direct verbose")
+		a.installAsyncDiag() // start logging unsolicited packets
+	} else if a.eng.Conn == nil {
+		a.diag.Warn("CONN", "Connect to %s did not establish a session", port)
 	}
 
 	info := a.getConnectionInfo()
+	a.diag.With(LvlInfo, "CONN", "connection state",
+		map[string]any{
+			"connected":   info.Connected,
+			"initialized": info.Initialized,
+			"controller":  info.ControllerType,
+			"name":        info.ControllerName,
+			"version":     info.FirmwareVer,
+			"build":       info.Build,
+			"caps":        info.Capabilities,
+		})
 	wailsRT.EventsEmit(a.ctx, "connection:changed", info)
 	return info
 }
 
 func (a *App) Disconnect() ConnectionInfo {
+	defer a.diag.Around("Disconnect", nil)()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	a.diag.Info("CONN", "Disconnect requested")
 	a.eng.Dispatch("disconnect")
 
 	info := a.getConnectionInfo()
@@ -232,9 +360,17 @@ func (a *App) SendCommand(cmd string) {
 		return
 	}
 	if trimmed == "quit" || trimmed == "exit" || trimmed == "q" {
+		a.diag.Info("CMD", "user typed `%s` — quitting", trimmed)
 		wailsRT.Quit(a.ctx)
 		return
 	}
+	// Built-in /diag commands — never reach the engine. Lets the user
+	// flip debug logging on/off and dump the recent ring buffer
+	// without an external CLI.
+	if a.handleDiagSlash(trimmed) {
+		return
+	}
+	defer a.diag.Around("SendCommand", map[string]any{"cmd": trimmed})()
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -245,9 +381,111 @@ func (a *App) SendCommand(cmd string) {
 		Content: escapeHTML(trimmed),
 	})
 
+	before := a.getConnectionInfo()
 	a.eng.Dispatch(trimmed)
+	after := a.getConnectionInfo()
 
-	wailsRT.EventsEmit(a.ctx, "connection:changed", a.getConnectionInfo())
+	// Only re-emit `connection:changed` when state ACTUALLY changed —
+	// otherwise every slider drag / LED toggle in a panel wakes up
+	// every component subscribed to connection state and floods the
+	// diag log with no-op `connection:changed` events.
+	if before != after {
+		wailsRT.EventsEmit(a.ctx, "connection:changed", after)
+	}
+}
+
+// handleDiagSlash recognises `/diag …` slash commands and returns true
+// if the input was consumed (the caller skips engine dispatch). The
+// commands surface through the regular console:output channel so they
+// look like any other command.
+//
+//   /diag debug on | off | toggle   — flip verbose logging
+//   /diag dump                       — emit the recent event ring as JSON
+//   /diag clear                      — reset the ring (after a repro)
+//   /diag                            — short summary
+func (a *App) handleDiagSlash(cmd string) bool {
+	if !strings.HasPrefix(cmd, "/diag") {
+		return false
+	}
+	parts := strings.Fields(cmd)
+	switch {
+	case len(parts) == 1:
+		a.diag.Info("DIAG", "debug=%s, ring size=%d, run /diag dump to copy events",
+			onOff(a.diag.DebugEnabled()), len(a.diag.Snapshot()))
+	case len(parts) >= 2 && parts[1] == "debug":
+		on := !a.diag.DebugEnabled()
+		if len(parts) >= 3 {
+			switch strings.ToLower(parts[2]) {
+			case "on", "1", "true", "yes":
+				on = true
+			case "off", "0", "false", "no":
+				on = false
+			case "toggle":
+				// already flipped above
+			}
+		}
+		a.diag.SetDebug(on)
+	case len(parts) >= 2 && parts[1] == "dump":
+		evs := a.diag.Snapshot()
+		blob, _ := json.MarshalIndent(evs, "", "  ")
+		// Send the JSON as a plain output line so it can be selected
+		// and copied. Stdout already has it (see diag.log).
+		wailsRT.EventsEmit(a.ctx, "console:output", ConsoleMessage{
+			Type:    "output",
+			Content: fmt.Sprintf(`<pre class="diag-dump">%s</pre>`, escapeHTML(string(blob))),
+		})
+		a.diag.Info("DIAG", "snapshot dumped (%d events)", len(evs))
+	case len(parts) >= 2 && parts[1] == "clear":
+		a.diag.mu.Lock()
+		a.diag.ring = a.diag.ring[:0]
+		a.diag.mu.Unlock()
+		a.diag.Info("DIAG", "ring buffer cleared")
+	default:
+		a.diag.Warn("DIAG", "unknown subcommand: %s", cmd)
+	}
+	return true
+}
+
+// DiagLogPath returns the on-disk path the diagnostic log is being
+// written to (empty if the file could not be opened). Bound for the
+// frontend so the user can show "Open log…" in a menu, and also useful
+// when the agent needs to know where to `cat` from outside the app.
+func (a *App) DiagLogPath() string {
+	return a.diag.LogPath()
+}
+
+// LogFrontend is the JS-side bridge into the diag system. The
+// frontend's window.onerror / unhandledrejection / wrapped console.error
+// hooks call this so JS exceptions and warnings show up in the same
+// stream as Go-side events. `level` is debug | info | warn | error;
+// `tag` is FE.<area> by convention (FE.RENDER, FE.WAILS, FE.UNCAUGHT).
+func (a *App) LogFrontend(level, tag, msg string, fields map[string]any) {
+	if level == "" {
+		level = LvlInfo
+	}
+	if tag == "" {
+		tag = "FE"
+	}
+	a.diag.With(level, tag, msg, fields)
+}
+
+// DiagSnapshot returns the recent event ring buffer for the frontend's
+// "Copy diagnostics" button or for an automated script.
+func (a *App) DiagSnapshot() []DiagEvent {
+	defer a.diag.Around("DiagSnapshot", nil)()
+	return a.diag.Snapshot()
+}
+
+// SetDiagDebug toggles verbose diagnostic logging at runtime. Returns
+// the new state so the frontend can render the toggle without a separate
+// query.
+func (a *App) SetDiagDebug(on bool) bool {
+	return a.diag.SetDebug(on)
+}
+
+// DiagDebugEnabled returns the current debug-logging state.
+func (a *App) DiagDebugEnabled() bool {
+	return a.diag.DebugEnabled()
 }
 
 func (a *App) GetConnectionInfo() ConnectionInfo {
@@ -337,10 +575,18 @@ func (a *App) buildSlaveInfoLocked() []SlaveInfo {
 // ─── Internal ───
 
 func (a *App) getConnectionInfo() ConnectionInfo {
+	port := a.eng.Port
+	if a.eng.Conn != nil {
+		// Live connection wins — `eng.Port` is just whatever was passed
+		// on the cmdline at startup and stays empty for GUI-initiated
+		// connects (Studio passes the port via Dispatch("connect ...")
+		// rather than wiring eng.Port).
+		port = a.eng.Conn.PortName()
+	}
 	info := ConnectionInfo{
 		Connected:   a.eng.Conn != nil,
 		Initialized: a.eng.Initialized,
-		Port:        a.eng.Port,
+		Port:        port,
 	}
 	if a.eng.ControllerType != "" {
 		info.ControllerType = a.eng.ControllerType

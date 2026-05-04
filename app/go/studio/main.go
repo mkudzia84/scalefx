@@ -2,6 +2,10 @@ package main
 
 import (
 	"embed"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
@@ -15,9 +19,27 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-func main() {
-	app := NewApp()
+// startupTrace writes a one-line marker into the same log file the diag
+// system uses, BEFORE Wails takes over. Lets us tell whether wails.Run
+// even reached the OnStartup callback when troubleshooting GUI launch
+// failures (Studio is `-H windowsgui` so stdout / stderr go nowhere).
+func startupTrace(stage string) {
+	path := filepath.Join(os.TempDir(), "scalefx-studio.log")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "[%s] TRACE main:%s pid=%d\n",
+		time.Now().Format("15:04:05.000"), stage, os.Getpid())
+}
 
+func main() {
+	startupTrace("enter")
+	app := NewApp()
+	startupTrace("after-NewApp")
+
+	startupTrace("before-wails.Run")
 	err := wails.Run(&options.App{
 		Title:     "ScaleFX Studio",
 		Width:     1400,
@@ -47,7 +69,9 @@ func main() {
 		},
 	})
 
+	startupTrace("after-wails.Run")
 	if err != nil {
+		startupTrace("ERROR " + err.Error())
 		println("Error:", err.Error())
 	}
 }

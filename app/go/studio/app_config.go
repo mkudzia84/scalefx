@@ -46,10 +46,12 @@ func (a *App) configPathFor(ct string) string {
 // the file does not exist (fresh board) so the caller can treat that case as
 // "start from defaults" rather than propagating an error.
 func (a *App) DownloadConfig() (string, error) {
+	defer a.diag.Around("DownloadConfig", nil)()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	path := a.configPathFor(a.eng.ControllerType)
+	a.diag.Info("CFG", "loading %s from device", path)
 	a.echoCommand(fmt.Sprintf("config.load (%s)", path))
 	if a.eng.Conn == nil {
 		a.echoError("not connected")
@@ -62,9 +64,12 @@ func (a *App) DownloadConfig() (string, error) {
 			a.echoOutput(fmt.Sprintf("%s not found — using defaults", path))
 			return "", nil
 		}
+		a.diag.Warn("CFG", "config load failed: %s", msg)
 		a.echoError("config load failed: %s", msg)
 		return "", err
 	}
+	a.diag.With(LvlInfo, "CFG", "config loaded",
+		map[string]any{"path": path, "bytes": len(result.Data)})
 	a.echoOK("Loaded %s (%d bytes)", path, len(result.Data))
 	return string(result.Data), nil
 }
@@ -74,11 +79,13 @@ func (a *App) DownloadConfig() (string, error) {
 // without a reboot. Emits "fs:progress" events so the Studio can show the
 // shared UploadProgressDialog.
 func (a *App) UploadConfig(yaml string) error {
+	defer a.diag.Around("UploadConfig", map[string]any{"bytes": len(yaml)})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	data := []byte(yaml)
 	path := a.configPathFor(a.eng.ControllerType)
+	a.diag.Info("CFG", "saving %d bytes → %s", len(data), path)
 	a.echoCommand(fmt.Sprintf("config.save (%d bytes → %s)", len(data), path))
 	if a.eng.Conn == nil {
 		a.echoError("not connected")
@@ -95,6 +102,7 @@ func (a *App) UploadConfig(yaml string) error {
 		})
 	if !res.OK {
 		wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{"phase": "error", "error": res.Error})
+		a.diag.Warn("CFG", "config upload failed: %s", res.Error)
 		a.echoError("upload failed: %s", res.Error)
 		return fmt.Errorf("upload failed: %s", res.Error)
 	}
@@ -102,6 +110,7 @@ func (a *App) UploadConfig(yaml string) error {
 	reload := a.eng.API.HubFx.ConfigReload("")
 	if !reload.OK {
 		wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{"phase": "error", "error": reload.Error})
+		a.diag.Warn("CFG", "uploaded but config.reload failed: %s", reload.Error)
 		a.echoError("uploaded but reload failed: %s", reload.Error)
 		return fmt.Errorf("uploaded but reload failed: %s", reload.Error)
 	}
@@ -113,6 +122,8 @@ func (a *App) UploadConfig(yaml string) error {
 		"md5Match": res.MD5Match,
 		"speedKBs": res.SpeedKBs,
 	})
+	a.diag.With(LvlInfo, "CFG", "config saved + reloaded",
+		map[string]any{"path": path, "bytes": res.BytesTransferred, "kbps": res.SpeedKBs, "md5": res.MD5Match})
 	a.echoOK("Saved %s (%d bytes, %.1f KB/s) — reloaded",
 		path, res.BytesTransferred, res.SpeedKBs)
 	return nil

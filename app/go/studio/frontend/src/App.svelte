@@ -18,8 +18,14 @@
     import { theme, fontSize } from './lib/theme'
     import { EventsOn } from '../wailsjs/runtime/runtime'
     import { GetConnectionInfo, GetSlaveInfo } from '../wailsjs/go/main/App'
+    import { installDiagBridge, diag } from './lib/diag'
 
     onMount(async () => {
+        // Hook window.onerror / unhandledrejection / console.error so JS
+        // exceptions show up in the same diagnostic stream as Go events.
+        installDiagBridge()
+        diag.info('FE.APP', 'App.svelte mounted')
+
         // Console output events from backend (always active, even when panel hidden)
         EventsOn('console:output', (msg: { type: string; content: string }) => {
             pushConsoleMessage(msg.type as ConsoleMessage['type'], msg.content)
@@ -46,6 +52,11 @@
         EventsOn('connection:changed', async (info: any) => {
             const wasConnected = $connectionInfo.connected
             $connectionInfo = info
+            diag.info('FE.CONN', 'connection:changed', {
+                connected: info.connected,
+                controller: info.controllerType,
+                port: info.port,
+            })
 
             if (info.connected) {
                 $boardState = 'connected'
@@ -64,6 +75,7 @@
                 }
             } else if (wasConnected && $boardState !== 'flashing') {
                 // Unexpected disconnect (not flashing) — show connect popup
+                diag.warn('FE.CONN', 'unexpected disconnect — showing reconnect dialog')
                 $boardState = 'disconnected'
                 $connectPopupOpen = true
                 $activeTab = 0

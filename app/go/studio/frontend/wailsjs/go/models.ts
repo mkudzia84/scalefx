@@ -32,6 +32,26 @@ export namespace main {
 	        this.capabilities = source["capabilities"];
 	    }
 	}
+	export class DiagEvent {
+	    time: string;
+	    level: string;
+	    tag: string;
+	    message: string;
+	    fields?: Record<string, any>;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagEvent(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.time = source["time"];
+	        this.level = source["level"];
+	        this.tag = source["tag"];
+	        this.message = source["message"];
+	        this.fields = source["fields"];
+	    }
+	}
 	export class FirmwareTarget {
 	    name: string;
 	    platform: string;

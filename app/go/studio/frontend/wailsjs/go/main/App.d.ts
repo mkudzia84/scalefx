@@ -8,6 +8,12 @@ export function Connect(arg1:string):Promise<main.ConnectionInfo>;
 
 export function DeviceCapabilities():Promise<number>;
 
+export function DiagDebugEnabled():Promise<boolean>;
+
+export function DiagLogPath():Promise<string>;
+
+export function DiagSnapshot():Promise<Array<main.DiagEvent>>;
+
 export function Disconnect():Promise<main.ConnectionInfo>;
 
 export function DownloadConfig():Promise<string>;
@@ -44,10 +50,14 @@ export function GetToolsStatus():Promise<main.ToolsStatus>;
 
 export function ListPorts():Promise<Array<main.PortInfo>>;
 
+export function LogFrontend(arg1:string,arg2:string,arg3:string,arg4:Record<string, any>):Promise<void>;
+
 export function OpenTextFile(arg1:string):Promise<main.OpenedFile>;
 
 export function SaveTextFile(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function SendCommand(arg1:string):Promise<void>;
+
+export function SetDiagDebug(arg1:boolean):Promise<boolean>;
 
 export function UploadConfig(arg1:string):Promise<void>;

@@ -13,6 +13,7 @@
     import logoUrl from '../../assets/images/logo.jpg'
 
     let selectedPort = ''
+    let manualPort = ''
     let loading = false
     let connecting = false
     let errorMsg = ''
@@ -51,12 +52,13 @@
         loading = false
     }
 
-    async function doConnect() {
-        if (!selectedPort) return
+    async function doConnect(portOverride?: string) {
+        const port = portOverride ?? selectedPort
+        if (!port) return
         connecting = true
         errorMsg = ''
         try {
-            const info = await Connect(selectedPort)
+            const info = await Connect(port)
             $connectionInfo = info
             if (info.connected) {
                 $connectPopupOpen = false
@@ -71,10 +73,22 @@
         connecting = false
     }
 
+    function doConnectManual() {
+        const trimmed = manualPort.trim()
+        if (!trimmed) return
+        // Free-text path covers virtual boards (`tcp://localhost:9000`) and
+        // any port name not enumerated by the OS (e.g. com0com pairs).
+        doConnect(trimmed)
+    }
+
     function handleKeydown(e: KeyboardEvent) {
         if (e.key === 'Enter' && selectedPort && !connecting) doConnect()
         if (e.key === 'Escape') dismiss()
     }
+
+    // Wrap doConnect for inline button handlers — the click handler signature
+    // is `MouseEventHandler`, not `(portOverride?: string)`.
+    const onClickConnect = () => { void doConnect() }
 
     function dismiss() {
         $connectPopupOpen = false
@@ -109,7 +123,7 @@
                         class="port-item"
                         class:selected={selectedPort === port.name}
                         on:click={() => { selectedPort = port.name; errorMsg = '' }}
-                        on:dblclick={doConnect}
+                        on:dblclick={onClickConnect}
                     >
                         <span class="port-icon">⎔</span>
                         <span class="port-name">{port.name}</span>
@@ -121,6 +135,24 @@
             {/if}
         </div>
 
+        <div class="manual-row">
+            <input
+                type="text"
+                class="manual-input"
+                placeholder="Or type a port (e.g. tcp://localhost:9000, COM12)"
+                bind:value={manualPort}
+                on:keydown={(e) => { if (e.key === 'Enter') doConnectManual() }}
+            />
+            <button
+                class="btn-link"
+                on:click={doConnectManual}
+                disabled={!manualPort.trim() || connecting}
+                title="Connect to virtual board / manual COM port"
+            >
+                Go
+            </button>
+        </div>
+
         {#if errorMsg}
             <div class="connect-error">{errorMsg}</div>
         {/if}
@@ -129,7 +161,7 @@
             <button class="btn-link" on:click={refresh} disabled={loading}>
                 Refresh
             </button>
-            <button class="primary" on:click={doConnect} disabled={!selectedPort || connecting}>
+            <button class="primary" on:click={onClickConnect} disabled={!selectedPort || connecting}>
                 {connecting ? 'Connecting...' : 'Connect'}
             </button>
         </div>
@@ -212,6 +244,28 @@
         border-radius: 6px;
         background: var(--bg-surface);
         margin-bottom: 12px;
+    }
+
+    .manual-row {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+    }
+
+    .manual-input {
+        flex: 1;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        color: var(--text-bright);
+        padding: 6px 10px;
+        font-family: var(--font-mono, monospace);
+        font-size: 12px;
+    }
+
+    .manual-input:focus {
+        outline: none;
+        border-color: var(--accent, #4a9eff);
     }
 
     .port-empty {

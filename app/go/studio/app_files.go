@@ -158,6 +158,7 @@ func (a *App) DeviceCapabilities() uint32 {
 // FsList returns a directory listing. Parses the server's
 // "d|f\tname\tsize\n" text output into structured entries.
 func (a *App) FsList(target, path string) ([]FsEntry, error) {
+	defer a.diag.Around("FsList", map[string]any{"target": target, "path": path})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -201,6 +202,7 @@ func (a *App) FsList(target, path string) ([]FsEntry, error) {
 
 // FsMkdir creates a directory on the selected target.
 func (a *App) FsMkdir(target, path string) error {
+	defer a.diag.Around("FsMkdir", map[string]any{"target": target, "path": path})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -225,6 +227,7 @@ func (a *App) FsMkdir(target, path string) error {
 
 // FsDelete removes a file or directory (recursive by default for directories).
 func (a *App) FsDelete(target, path string) error {
+	defer a.diag.Around("FsDelete", map[string]any{"target": target, "path": path})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -253,6 +256,8 @@ func (a *App) FsDelete(target, path string) error {
 // If localPath is empty, opens a Save dialog.
 // Emits "fs:progress" events during transfer.
 func (a *App) FsDownloadToDisk(target, remotePath, localPath string) error {
+	defer a.diag.Around("FsDownloadToDisk",
+		map[string]any{"target": target, "remote": remotePath, "local": localPath})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -309,6 +314,8 @@ func (a *App) FsDownloadToDisk(target, remotePath, localPath string) error {
 // to batch (UploadStream) above api.LargeFileBatchThreshold.
 // If localPath is empty, opens an Open dialog.
 func (a *App) FsUploadFromDisk(target, remotePath, localPath string) error {
+	defer a.diag.Around("FsUploadFromDisk",
+		map[string]any{"target": target, "remote": remotePath, "local": localPath})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -396,6 +403,8 @@ func uploadModeName(m api.UploadMode) string {
 // Mode is auto-picked per file via api.PickUploadMode: flash always sync,
 // SD switches to batch above api.LargeFileBatchThreshold.
 func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string) error {
+	defer a.diag.Around("FsUploadBatch",
+		map[string]any{"target": target, "cwd": remoteCwd, "files": len(localPaths)})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 

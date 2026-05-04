@@ -14,6 +14,18 @@ export function DeviceCapabilities() {
   return window['go']['main']['App']['DeviceCapabilities']();
 }
 
+export function DiagDebugEnabled() {
+  return window['go']['main']['App']['DiagDebugEnabled']();
+}
+
+export function DiagLogPath() {
+  return window['go']['main']['App']['DiagLogPath']();
+}
+
+export function DiagSnapshot() {
+  return window['go']['main']['App']['DiagSnapshot']();
+}
+
 export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
@@ -86,6 +98,10 @@ export function ListPorts() {
   return window['go']['main']['App']['ListPorts']();
 }
 
+export function LogFrontend(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['LogFrontend'](arg1, arg2, arg3, arg4);
+}
+
 export function OpenTextFile(arg1) {
   return window['go']['main']['App']['OpenTextFile'](arg1);
 }
@@ -96,6 +112,10 @@ export function SaveTextFile(arg1, arg2, arg3) {
 
 export function SendCommand(arg1) {
   return window['go']['main']['App']['SendCommand'](arg1);
+}
+
+export function SetDiagDebug(arg1) {
+  return window['go']['main']['App']['SetDiagDebug'](arg1);
 }
 
 export function UploadConfig(arg1) {

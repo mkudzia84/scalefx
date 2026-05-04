@@ -223,4 +223,35 @@
         opacity: 0.65;
         font-style: italic;
     }
+
+    /* Diagnostic instrumentation styling — tag prefix, structured fields,
+       and the JSON ring-buffer dump rendered by /diag dump. Kept subdued
+       so normal command output stays primary. */
+    :global(.diag-tag) {
+        display: inline-block;
+        padding: 0 4px;
+        margin-right: 4px;
+        background: var(--bg-raised);
+        border-radius: 3px;
+        color: var(--text-dim);
+        font-size: 11px;
+        letter-spacing: 0.04em;
+    }
+    :global(.diag-fields) {
+        color: var(--text-dim);
+        font-size: 11px;
+        margin-left: 6px;
+    }
+    :global(pre.diag-dump) {
+        max-height: 360px;
+        overflow: auto;
+        margin: 4px 0;
+        padding: 6px 8px;
+        background: var(--bg-raised);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font-size: 11px;
+        color: var(--text-dim);
+        white-space: pre-wrap;
+    }
 </style>
