@@ -11,7 +11,10 @@ import (
 	gcp "scalefx/protocol/gearcontrol"
 )
 
-// StatusBroadcast is the 107-byte GearControl periodic STATUS_BROADCAST payload.
+// StatusBroadcast is the GearControl periodic STATUS_BROADCAST payload. Size:
+// 149 bytes since v0.17.0 (extended per-servo block 7→13 to align with
+// LightFX); legacy firmware at 107 bytes is still decoded — the trailing
+// fields of ServoLiveConfig stay zero in that case.
 // Wire format mirrors onStatusData() in gearcontrol_pico.ino.
 type StatusBroadcast struct {
 	Gears                [3]GearStatus `json:"gears"`
@@ -23,19 +26,24 @@ type StatusBroadcast struct {
 	GearInputThreshold_us uint16       `json:"gearInputThreshold_us"`
 	GearInputEnabled     bool          `json:"gearInputEnabled"`
 	GearInputCommandDeploy bool        `json:"gearInputCommandDeploy"`
-	// Per-servo live configs (v0.15.0+). Index 0..5 = door servos
-	// (gear = idx/2, door = idx%2); index 6 = yaw. Empty on older firmware.
+	// Per-servo live configs. Payload array index i maps to user-facing
+	// servoId i+1 (1-based since v0.17.0): 1..6 = door servos
+	// (gear = (id-1)/2, door = (id-1)%2); 7 = yaw. Empty on older firmware.
 	Servos []ServoLiveConfig `json:"servos,omitempty"`
 }
 
-// ServoLiveConfig is the 7-byte per-servo slice appended to STATUS_BROADCAST.
-// Carries the firmware's current config so the GUI can reconcile its pinConfigs
-// against the live truth (replaces the earlier ACK-echo approach).
+// ServoLiveConfig mirrors LightFX's ServoConfig — the 13-byte per-servo slice
+// appended to STATUS_BROADCAST. Carries the firmware's current config so the
+// GUI can reconcile its pinConfigs against the live truth. Target, Accel,
+// Decel were added in v0.17.0; for 0.15.x firmware they decode as zero.
 type ServoLiveConfig struct {
-	Min_us   uint16 `json:"min_us"`
-	Max_us   uint16 `json:"max_us"`
-	Speed    uint16 `json:"speed"`
-	Reversed bool   `json:"reversed"`
+	Min_us    uint16 `json:"min_us"`
+	Max_us    uint16 `json:"max_us"`
+	Target_us uint16 `json:"target_us"`
+	Speed     uint16 `json:"speed"`
+	Accel     uint16 `json:"accel"`
+	Decel     uint16 `json:"decel"`
+	Reversed  bool   `json:"reversed"`
 }
 
 // GearStatus is the per-gear slice of a StatusBroadcast.
@@ -202,9 +210,26 @@ func DecodeStatusBroadcast(data []byte) *StatusBroadcast {
 		s.GearInputCommandDeploy = flags&0x02 != 0
 	}
 
-	// Per-servo live configs (bytes 58-106, append-only since v0.15.0)
-	// 7 servos × 7 bytes: [min:u16][max:u16][speed:u16][flags:u8]
-	if len(data) >= 107 {
+	// Per-servo live configs (bytes 58..148 for v0.17.0+, 58..106 for
+	// v0.15.x..v0.16.x). New wire format is 13 bytes/servo:
+	//   [min:u16][max:u16][target:u16][speed:u16][accel:u16][decel:u16][rev:u8]
+	// Old format was 7 bytes/servo: [min:u16][max:u16][speed:u16][rev:u8].
+	if len(data) >= 149 {
+		s.Servos = make([]ServoLiveConfig, 7)
+		for i := 0; i < 7; i++ {
+			off := 58 + i*13
+			s.Servos[i] = ServoLiveConfig{
+				Min_us:    protocol.ReadU16LE(data, off),
+				Max_us:    protocol.ReadU16LE(data, off+2),
+				Target_us: protocol.ReadU16LE(data, off+4),
+				Speed:     protocol.ReadU16LE(data, off+6),
+				Accel:     protocol.ReadU16LE(data, off+8),
+				Decel:     protocol.ReadU16LE(data, off+10),
+				Reversed:  data[off+12]&0x01 != 0,
+			}
+		}
+	} else if len(data) >= 107 {
+		// Legacy 7-byte block — target/accel/decel stay zero.
 		s.Servos = make([]ServoLiveConfig, 7)
 		for i := 0; i < 7; i++ {
 			off := 58 + i*7

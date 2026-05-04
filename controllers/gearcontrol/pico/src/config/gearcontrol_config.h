@@ -128,6 +128,7 @@ struct GearControlConfig {
 
         // Door role fields:
         uint8_t  channel         = 0;         // Retract channel (0-2)
+        uint8_t  door_index      = 0;         // Door slot within the channel (0=A, 1=B)
 
         // Servo fields (door + yaw_output):
         uint16_t min_us          = 500;       // Servo min pulse width          // µs
@@ -208,6 +209,7 @@ inline const auto fields = schema<GearControlConfig>(
         prop<&P::slot>        ("slot",         ""),
         prop<&P::role>        ("role",         "unused"),
         prop<&P::channel>     ("channel",      uint8_t(0))    .range(0, 2),
+        prop<&P::door_index>  ("door_index",   uint8_t(0))    .range(0, 1),
         prop<&P::min_us>      ("min_us",       uint16_t(500)) .range(300, 2700),
         prop<&P::max_us>      ("max_us",       uint16_t(2500)).range(300, 2700),
         prop<&P::speed>       ("speed",        uint16_t(4000)),

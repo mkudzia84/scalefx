@@ -10,8 +10,11 @@ import (
 	gfxp "scalefx/protocol/gunfx"
 )
 
-// StatusBroadcast is the GunFX periodic STATUS_BROADCAST payload (20-28 bytes).
-// Wire format mirrors onStatusData() in gunfx_pico.ino.
+// StatusBroadcast is the GunFX periodic STATUS_BROADCAST payload (20-67 bytes).
+// Wire format mirrors onStatusData() in gunfx_pico.ino. The ServoConfig block
+// was appended in GunFX 0.8.0 (Rule 11 extension, aligned with LightFX's
+// 0.17.0 tail) — older firmware emits the 28-byte prefix and HasServoConfig
+// stays false.
 type StatusBroadcast struct {
 	// Flags (data[0])
 	Firing      bool `json:"firing"`
@@ -45,6 +48,29 @@ type StatusBroadcast struct {
 	CellCount      uint8  `json:"cellCount"`
 	BatteryPct     uint8  `json:"batteryPct"`
 	BatteryPresent bool   `json:"batteryPresent"`
+
+	// Per-servo config tail (optional, bytes 28-66). Index i maps to
+	// user-facing servoId i+1 (GunFX is 1-based: servos 1..3).
+	HasServoConfig bool           `json:"hasServoConfig"`
+	ServoConfig    [3]ServoConfig `json:"servoConfig"`
+
+	// Trigger input (optional, bytes 67-68, added in GunFX v0.8.1).
+	// GP0 RC PWM pulse width; 0 = no signal / stale.
+	HasTriggerInput  bool   `json:"hasTriggerInput"`
+	TriggerInput_us  uint16 `json:"triggerInput_us"`
+}
+
+// ServoConfig is the 13-byte per-servo configuration appended to the GunFX
+// STATUS payload (mirror of LightFX's ServoConfig so both boards decode the
+// same struct through their respective handlers).
+type ServoConfig struct {
+	Min_us    uint16 `json:"min_us"`
+	Max_us    uint16 `json:"max_us"`
+	Target_us uint16 `json:"target_us"`
+	Speed     uint16 `json:"speed"`
+	Accel     uint16 `json:"accel"`
+	Decel     uint16 `json:"decel"`
+	Reversed  bool   `json:"reversed"`
 }
 
 // DecodeStatusBroadcast parses a GunFX STATUS_BROADCAST payload.
@@ -96,6 +122,31 @@ func DecodeStatusBroadcast(data []byte) *StatusBroadcast {
 		s.CellCount = data[26]
 		s.BatteryPct = data[27]
 		s.BatteryPresent = s.Battery_mV > 0
+	}
+
+	// Per-servo config tail (Rule 11 extension, GunFX 0.8.0+). 13 bytes each
+	// × 3 servos = 39 bytes, so the full payload is 67 bytes.
+	if len(data) >= 67 {
+		s.HasServoConfig = true
+		off := 28
+		for i := 0; i < 3; i++ {
+			s.ServoConfig[i] = ServoConfig{
+				Min_us:    protocol.ReadU16LE(data, off+0),
+				Max_us:    protocol.ReadU16LE(data, off+2),
+				Target_us: protocol.ReadU16LE(data, off+4),
+				Speed:     protocol.ReadU16LE(data, off+6),
+				Accel:     protocol.ReadU16LE(data, off+8),
+				Decel:     protocol.ReadU16LE(data, off+10),
+				Reversed:  data[off+12] != 0,
+			}
+			off += 13
+		}
+	}
+
+	// Trigger input tail (GunFX 0.8.1+, Rule 11). 2 bytes at offset 67.
+	if len(data) >= 69 {
+		s.HasTriggerInput = true
+		s.TriggerInput_us = protocol.ReadU16LE(data, 67)
 	}
 
 	return s

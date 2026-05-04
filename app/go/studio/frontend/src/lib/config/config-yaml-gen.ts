@@ -420,12 +420,15 @@ export function generateGearControlYaml(config: GearControlFullConfig, nested: b
             lines.push(`${L2}role: ${p.role}`)
             if (p.role === 'door') {
                 lines.push(`${L2}channel: ${p.channel}`)
+                lines.push(`${L2}door_index: ${p.door_index ?? 0}`)
                 lines.push(`${L2}min_us: ${p.min_us}`)
                 lines.push(`${L2}max_us: ${p.max_us}`)
                 lines.push(`${L2}speed: ${p.speed}`)
                 if (p.reversed) lines.push(`${L2}reversed: true`)
             } else if (p.role === 'yaw_input') {
-                lines.push(`${L2}threshold_us: ${p.threshold_us}`)
+                // Firmware maps [min_us, max_us] input → [yaw.min, yaw.max] output.
+                lines.push(`${L2}min_us: ${p.min_us}`)
+                lines.push(`${L2}max_us: ${p.max_us}`)
             } else if (p.role === 'yaw_output') {
                 lines.push(`${L2}gear_id: ${p.gear_id}`)
                 lines.push(`${L2}neutral_us: ${p.neutral_us}`)
@@ -498,6 +501,7 @@ export function parseGearControlYaml(yaml: string, nested: boolean = false): Par
         return {
             role,
             channel: asNum(p['channel'], 0),
+            door_index: asNum(p['door_index'], 0),
             gear_id: asNum(p['gear_id'], 0),
             threshold_us: asNum(p['threshold_us'], 1500),
             min_us: asNum(p['min_us'], 500),

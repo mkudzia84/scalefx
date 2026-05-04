@@ -180,8 +180,9 @@
     // Yaw state lives on the yaw_output pin in pinConfigs (gear_id / neutral_us /
     // min_us / max_us / speed / reversed). The yaw frame binds directly to that
     // pin — no duplicated state. SERVO_ID_YAW is the hardware servo id for the
-    // yaw output (matches gcServos[6] and firmware ServoChannel::YAW).
-    const SERVO_ID_YAW = 6
+    // yaw output. Aligned 1-based in firmware v0.17.0 (door servos occupy 1..6,
+    // yaw is id 7) to match LightFX / GunFX conventions.
+    const SERVO_ID_YAW = 7
     let yawPosition_us = 1500
 
     function applyYawConfig() {
@@ -199,12 +200,11 @@
     }
 
     // Apply door servo settings (min/max/speed/reversed) for a given pin.
-    // servoId = gear channel * 2 + doorIdx (0=Door A, 1=Door B).
+    // servoId (1-based) = gear channel * 2 + door_index + 1.
     function applyDoorServoConfig(pinIdx: number) {
         const pin = pinConfigs[pinIdx]
         if (!pin || pin.role !== 'door') return
-        const doorIdx = doorLegIndex(pinIdx, pin.channel)
-        const servoId = pin.channel * 2 + doorIdx
+        const servoId = pin.channel * 2 + pin.door_index + 1
         SendCommand(`gear:servo.config ${servoId} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`)
     }
 
@@ -262,36 +262,39 @@
     const pinGPIOs = ['GP1', 'GP2', 'GP3', 'GP6', 'GP7', 'GP8', 'GP9']
 
     interface PinConfig {
-        role: PinRole; channel: number; min_us: number; max_us: number
+        role: PinRole; channel: number; door_index: 0 | 1
+        min_us: number; max_us: number
         speed: number; reversed: boolean; threshold_us: number
         gear_id: number; neutral_us: number
     }
 
     function mkPin(role: PinRole, overrides: Partial<PinConfig> = {}): PinConfig {
-        return { role, channel: 0, min_us: 500, max_us: 2500, speed: 4000,
+        return { role, channel: 0, door_index: 0 as 0 | 1,
+                 min_us: 500, max_us: 2500, speed: 4000,
                  reversed: false, threshold_us: 1500, gear_id: 0, neutral_us: 1500, ...overrides }
     }
 
-    // Direct mode: standalone — yaw_input on pin2 (gear_input is fixed on GP0)
+    // Direct mode: standalone — yaw_input on pin1, yaw_output on pin7.
+    // Gear input (deploy/retract) is fixed on GP0, not mappable.
     const directPinPreset: PinConfig[] = [
-        mkPin('yaw_input'),                      // pin1: Yaw Input
-        mkPin('door', { channel: 0 }),           // pin2: Nose Door A
-        mkPin('door', { channel: 0 }),           // pin3: Nose Door B
-        mkPin('door', { channel: 1 }),           // pin4: Left Door
-        mkPin('door', { channel: 2 }),           // pin5: Right Door
-        mkPin('unused'),                         // pin6: Unused
-        mkPin('yaw_output'),                     // pin7: Yaw Output
+        mkPin('yaw_input'),                                       // pin1: Yaw Input
+        mkPin('door', { channel: 0, door_index: 0 }),             // pin2: Nose Door A
+        mkPin('door', { channel: 0, door_index: 1 }),             // pin3: Nose Door B
+        mkPin('door', { channel: 1, door_index: 0 }),             // pin4: Left Door A
+        mkPin('door', { channel: 2, door_index: 0 }),             // pin5: Right Door A
+        mkPin('unused'),                                          // pin6: Unused
+        mkPin('yaw_output'),                                      // pin7: Yaw Output
     ]
 
     // Slave mode: HubFX sends commands — no inputs needed, all pins for door servos
     const slavePinPreset: PinConfig[] = [
-        mkPin('door', { channel: 0 }),           // pin1: Nose Door A
-        mkPin('door', { channel: 0 }),           // pin2: Nose Door B
-        mkPin('door', { channel: 1 }),           // pin3: Left Door A
-        mkPin('door', { channel: 1 }),           // pin4: Left Door B
-        mkPin('door', { channel: 2 }),           // pin5: Right Door A
-        mkPin('door', { channel: 2 }),           // pin6: Right Door B
-        mkPin('yaw_output'),                     // pin7: Yaw Output
+        mkPin('door', { channel: 0, door_index: 0 }),             // pin1: Nose Door A
+        mkPin('door', { channel: 0, door_index: 1 }),             // pin2: Nose Door B
+        mkPin('door', { channel: 1, door_index: 0 }),             // pin3: Left Door A
+        mkPin('door', { channel: 1, door_index: 1 }),             // pin4: Left Door B
+        mkPin('door', { channel: 2, door_index: 0 }),             // pin5: Right Door A
+        mkPin('door', { channel: 2, door_index: 1 }),             // pin6: Right Door B
+        mkPin('yaw_output'),                                      // pin7: Yaw Output
     ]
 
     let pinConfigs: PinConfig[] = directPinPreset.map(p => ({ ...p }))
@@ -326,24 +329,14 @@
             .filter(g => gearEnabled[g.id] || g.id === currentId)
     }
 
-    // For a door-role pin at table index `pinIdx` belonging to channel `ch`,
-    // return 0 (Door A) for the first such pin in pinConfigs, 1 (Door B) for
-    // the second. Lets a Pin Mapping row show which leg's live µs it owns.
-    function doorLegIndex(pinIdx: number, ch: number): 0 | 1 {
-        let n = 0
-        for (let i = 0; i < pinIdx; i++) {
-            if (pinConfigs[i]?.role === 'door' && pinConfigs[i].channel === ch) n++
-        }
-        return n === 0 ? 0 : 1
-    }
-
-    // Map a pin index to its firmware servo ID (matches gearcontrol_pico.ino:
-    // door IDs 0-5 = gear*2 + doorLeg, yaw = 6). Returns null for non-servo roles.
+    // Map a pin index to its firmware servo ID (matches gearcontrol_pico.ino
+    // post-v0.17.0: 1-based IDs — doors 1..6 = gear*2 + door_index + 1,
+    // yaw = 7). Returns null for non-servo roles.
     function pinServoId(pinIdx: number): number | null {
         const p = pinConfigs[pinIdx]
         if (!p) return null
-        if (p.role === 'yaw_output') return 6
-        if (p.role === 'door') return p.channel * 2 + doorLegIndex(pinIdx, p.channel)
+        if (p.role === 'yaw_output') return SERVO_ID_YAW
+        if (p.role === 'door') return p.channel * 2 + p.door_index + 1
         return null
     }
 
@@ -597,7 +590,7 @@
     function buildGearCmd(id: number): string | null {
         const gc = gearConfigs[id]
         if (gc.timeout_ms < 500 || gc.timeout_ms > 65000) return null
-        return `gear.config ${id} 0 ${gc.stallCurrent_mA} ${gc.timeout_ms}`
+        return `gear:gear.config ${id} 0 ${gc.stallCurrent_mA} ${gc.timeout_ms}`
     }
     function scheduleGearPush(id: number) {
         scheduleLivePush(`gear:${id}`, () => buildGearCmd(id))
@@ -606,7 +599,7 @@
     function buildDoorModeCmd(id: number): string | null {
         const dm = doorModes[id]
         if (dm.delay_ms < 0 || dm.delay_ms > 5000) return null
-        return `door.mode ${id} ${doorModeValues[dm.preDeployMode]} ${doorModeValues[dm.postDeployMode]} ${dm.delay_ms}`
+        return `gear:door.mode ${id} ${doorModeValues[dm.preDeployMode]} ${doorModeValues[dm.postDeployMode]} ${dm.delay_ms}`
     }
     function scheduleDoorModePush(id: number) {
         scheduleLivePush(`doormode:${id}`, () => buildDoorModeCmd(id))
@@ -617,9 +610,8 @@
         if (!pin || pin.role !== 'door') return null
         if (pin.min_us < 500 || pin.max_us > 2500 || pin.min_us >= pin.max_us) return null
         if (pin.speed < 100 || pin.speed > 10000) return null
-        const doorIdx = doorLegIndex(pinIdx, pin.channel)
-        const servoId = pin.channel * 2 + doorIdx
-        return `servo.config ${servoId} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`
+        const servoId = pin.channel * 2 + pin.door_index + 1   // 1-based firmware ID
+        return `gear:servo.config ${servoId} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`
     }
     function scheduleDoorServoPush(pinIdx: number) {
         scheduleLivePush(`servo:pin${pinIdx}`, () => buildDoorServoCmd(pinIdx))
@@ -630,14 +622,14 @@
         if (!pin) return ''
         if (pin.min_us < 500 || pin.max_us > 2500 || pin.min_us >= pin.max_us) return null
         if (pin.neutral_us < pin.min_us || pin.neutral_us > pin.max_us) return null
-        return `yaw.config ${pin.gear_id} ${pin.neutral_us} ${pin.min_us} ${pin.max_us}`
+        return `gear:yaw.config ${pin.gear_id} ${pin.neutral_us} ${pin.min_us} ${pin.max_us}`
     }
     function buildYawServoCmd(): string | null {
         const pin = pinConfigs.find(p => p.role === 'yaw_output')
         if (!pin) return ''
         if (pin.min_us < 500 || pin.max_us > 2500 || pin.min_us >= pin.max_us) return null
         if (pin.speed < 100 || pin.speed > 10000) return null
-        return `servo.config ${SERVO_ID_YAW} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`
+        return `gear:servo.config ${SERVO_ID_YAW} ${pin.min_us} ${pin.max_us} ${pin.speed} 0 0 ${pin.reversed ? 1 : 0}`
     }
     function scheduleYawPush() {
         scheduleLivePush('yaw.cfg', () => buildYawCfgCmd())
@@ -647,7 +639,7 @@
     function buildBatteryCmd(): string {
         const auto = batteryAutoDeploy ? 'autodeploy' : ''
         const cells = batteryCellCount > 0 ? `cells:${batteryCellCount}` : 'auto'
-        return `battery ${auto} ${batteryChemistry} ${cells}`.replace(/\s+/g, ' ').trim()
+        return `gear:battery ${auto} ${batteryChemistry} ${cells}`.replace(/\s+/g, ' ').trim()
     }
     function scheduleBatteryPush() {
         scheduleLivePush('battery', () => buildBatteryCmd())
@@ -668,7 +660,8 @@
         const yawPin = pinConfigs.find(p => p.role === 'yaw_output')
         return {
             pins: pinConfigs.map(p => ({
-                role: p.role, channel: p.channel, gear_id: p.gear_id, threshold_us: p.threshold_us,
+                role: p.role, channel: p.channel, door_index: p.door_index,
+                gear_id: p.gear_id, threshold_us: p.threshold_us,
                 min_us: p.min_us, max_us: p.max_us, speed: p.speed, reversed: p.reversed,
                 neutral_us: p.neutral_us,
             })),
@@ -744,6 +737,7 @@
             pinConfigs = cfg.pins.map(p => ({
                 role: p.role,
                 channel: p.channel,
+                door_index: (p.door_index === 1 ? 1 : 0) as 0 | 1,
                 min_us: p.min_us,
                 max_us: p.max_us,
                 speed: p.speed,
@@ -831,11 +825,11 @@
     let calibTargetPin = -1            // pin index whose config gets updated on Save; -1 = none
     let calibInit = { min_us: 500, max_us: 2500, speed: 4000, accel: 0, decel: 0, reversed: false }
 
-    function openDoorServoSetLimits(pinIdx: number, doorIdx: number) {
+    function openDoorServoSetLimits(pinIdx: number) {
         const p = pinConfigs[pinIdx]
         if (!p || p.role !== 'door') return
-        calibServoId = p.channel * 2 + doorIdx
-        calibServoName = `${gearNames[p.channel]} Door ${doorIdx === 0 ? 'A' : 'B'}`
+        calibServoId = p.channel * 2 + p.door_index + 1   // 1-based firmware ID
+        calibServoName = `${gearNames[p.channel]} Door ${p.door_index === 0 ? 'A' : 'B'}`
         calibInit = { min_us: p.min_us, max_us: p.max_us, speed: p.speed, accel: 0, decel: 0, reversed: p.reversed }
         calibTargetPin = pinIdx
         calibDialogOpen = true
@@ -1090,14 +1084,20 @@
                                                     {/each}
                                                 </select>
                                             </div>
-                                            <!-- Live servo position. Door A = idx 0, Door B = idx 1; -->
-                                            <!-- pick whichever leg this pin owns. We approximate by counting -->
-                                            <!-- door pins for this channel before this pin index. -->
+                                            <div class="pin-param">
+                                                <span class="pin-param-label">Door</span>
+                                                <select bind:value={pin.door_index}
+                                                        class="field-input pin-param-input"
+                                                        disabled={controlsDisabled}
+                                                        title="Which door slot within the gear: A or B">
+                                                    <option value={0}>A</option>
+                                                    <option value={1}>B</option>
+                                                </select>
+                                            </div>
                                             {#if gearEnabled[pin.channel]}
                                                 <span class="pin-live"
-                                                      title="Live servo position"
-                                                      class:pin-live-warn={!gearEnabled[pin.channel]}>
-                                                    {liveDoor_us[pin.channel]?.[doorLegIndex(idx, pin.channel)] || '—'} µs
+                                                      title="Live servo position">
+                                                    {liveDoor_us[pin.channel]?.[pin.door_index] || '—'} µs
                                                 </span>
                                             {:else}
                                                 <span class="pin-live pin-live-warn">channel off</span>
@@ -1507,19 +1507,20 @@
                             <div class="subsection-inline">
                                 <h4>Door Servos <span class="door-count">{doorPinsPerGear[id]} servo{doorPinsPerGear[id] > 1 ? 's' : ''}</span></h4>
 
-                                {#each doorPinIndicesPerGear[id] as pinIdx, doorIdx}
+                                {#each doorPinIndicesPerGear[id] as pinIdx}
+                                    {@const door = pinConfigs[pinIdx].door_index}
                                     <div class="door-servo-block"
                                          class:verify-error={sev(`pins[${pinIdx}]`) === 'error'}
                                          class:verify-warn={sev(`pins[${pinIdx}]`) === 'warning'}>
                                         <div class="door-servo-header">
-                                            <span class="door-servo-label">Door {doorIdx === 0 ? 'A' : 'B'}</span>
+                                            <span class="door-servo-label">Door {door === 0 ? 'A' : 'B'}</span>
                                             <span class="door-servo-pin dim">{pinSlots[pinIdx]} · {pinGPIOs[pinIdx]}</span>
-                                            <span class="door-live-value">{liveDoor_us[id][doorIdx] || '—'} µs</span>
+                                            <span class="door-live-value">{liveDoor_us[id][door] || '—'} µs</span>
                                         </div>
                                         <!-- Live bar: position within the configured [min,max] range. -->
                                         <div class="door-live-bar-track">
                                             <div class="door-live-bar-fill"
-                                                 style="width: {servoPct(liveDoor_us[id][doorIdx], pinConfigs[pinIdx].min_us, pinConfigs[pinIdx].max_us)}%"></div>
+                                                 style="width: {servoPct(liveDoor_us[id][door], pinConfigs[pinIdx].min_us, pinConfigs[pinIdx].max_us)}%"></div>
                                         </div>
                                         <div class="form-grid cols-3" style="margin-top: 6px">
                                             <div class="form-field">
@@ -1559,7 +1560,7 @@
                                             <button class="small" style="margin-left: auto"
                                                     disabled={controlsDisabled}
                                                     title="Interactive limit setter — jog the servo and capture min/max"
-                                                    on:click={() => openDoorServoSetLimits(pinIdx, doorIdx)}>🎯 Set Limits…</button>
+                                                    on:click={() => openDoorServoSetLimits(pinIdx)}>🎯 Set Limits…</button>
                                             <button class="small"
                                                     disabled={controlsDisabled}
                                                     title="Force resend `servo.config` now"

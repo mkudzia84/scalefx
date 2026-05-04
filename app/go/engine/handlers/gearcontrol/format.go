@@ -139,6 +139,21 @@ func (h *Handler) FormatStatusBroadcast(s *StatusBroadcast) {
 		h.E.Out.Printf("  GearInput: %dµs (thr=%dµs) → %s\n",
 			s.GearInput_us, s.GearInputThreshold_us, state)
 	}
+
+	// Per-servo verbose block (mirrors LightFX format). Array index i → servoId i+1.
+	// Labels: 1-6 = Nose-A/B, LeftMain-A/B, RightMain-A/B; 7 = Yaw.
+	if len(s.Servos) == 7 {
+		labels := [7]string{"Nose-A", "Nose-B", "Left-A", "Left-B", "Right-A", "Right-B", "Yaw"}
+		for i, c := range s.Servos {
+			rev := ""
+			if c.Reversed {
+				rev = " rev"
+			}
+			h.E.Out.Printf("    srv%d %-6s: min=%dµs max=%dµs target=%dµs | speed=%d accel=%d decel=%d%s\n",
+				i+1, labels[i], c.Min_us, c.Max_us, c.Target_us,
+				c.Speed, c.Accel, c.Decel, rev)
+		}
+	}
 }
 
 // FormatCalibStatus is the CLI formatter for GEAR_CALIB_STATUS async events.

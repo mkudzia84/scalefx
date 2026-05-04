@@ -59,6 +59,28 @@ func (h *Handler) FormatStatusBroadcast(s *StatusBroadcast) {
 
 	h.E.Out.Printf("  Servos:    [%dµs, %dµs, %dµs]\n", s.Servo0_us, s.Servo1_us, s.Servo2_us)
 
+	// GP0 RC trigger input (GunFX 0.8.1+). 0µs means no signal / stale pulse.
+	if s.HasTriggerInput {
+		if s.TriggerInput_us > 0 {
+			h.E.Out.Printf("  TrigIn:    %dµs (GP0)\n", s.TriggerInput_us)
+		} else {
+			h.E.Out.Printf("  TrigIn:    — no signal (GP0)\n")
+		}
+	}
+
+	// Verbose per-servo config (GunFX 0.8.0+ Rule 11 tail, matches LightFX).
+	if s.HasServoConfig {
+		for i := 0; i < 3; i++ {
+			c := s.ServoConfig[i]
+			rev := ""
+			if c.Reversed {
+				rev = " rev"
+			}
+			h.E.Out.Printf("    srv%d:    min=%dµs max=%dµs target=%dµs | speed=%d accel=%d decel=%d%s\n",
+				i+1, c.Min_us, c.Max_us, c.Target_us, c.Speed, c.Accel, c.Decel, rev)
+		}
+	}
+
 	if s.HeaterError != 0 || s.FanError != 0 {
 		h.E.Out.Printf("  ── Smoke Errors ──────────────\n")
 		if s.HeaterError != 0 {

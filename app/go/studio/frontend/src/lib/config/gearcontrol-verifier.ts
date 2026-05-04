@@ -41,6 +41,8 @@ export interface GearPinConfig {
     role: PinRole
     /** For role='door': gear channel (0..2). For role='yaw_output': owning gear. */
     channel: number
+    /** For role='door': 0=Door A, 1=Door B within the channel. */
+    door_index: number
     gear_id: number
     threshold_us: number
     /** Servo fields — used for role='door' and 'yaw_output'. */
@@ -143,7 +145,10 @@ export class GearControlConfigVerifier implements ConfigVerifier<GearControlConf
             })
         }
 
-        // ── 4. Pin maps to disabled gear ───────────────────────────────────
+        // ── 4. Pin maps to disabled gear, door index uniqueness ────────────
+        // Each (channel, door_index) pair may bind at most one pin; the
+        // firmware picks the last-applied entry and logs the duplicate.
+        const doorSlotSeen = new Map<string, number>()   // "ch-d" → pin index
         for (let i = 0; i < config.pins.length; i++) {
             const p = config.pins[i]
             if (p.role === 'door') {
@@ -155,6 +160,29 @@ export class GearControlConfigVerifier implements ConfigVerifier<GearControlConf
                         message: `SRV${i + 1}: door servo bound to disabled gear channel ${ch}`,
                         path: `pins[${i}]`,
                     })
+                }
+                const di = p.door_index
+                if (di !== 0 && di !== 1) {
+                    issues.push({
+                        id: 'door-index-range',
+                        severity: 'error',
+                        message: `SRV${i + 1}: door_index must be 0 (A) or 1 (B), got ${di}`,
+                        path: `pins[${i}]`,
+                    })
+                } else {
+                    const key = `${ch}-${di}`
+                    const prev = doorSlotSeen.get(key)
+                    if (prev !== undefined) {
+                        const label = di === 0 ? 'A' : 'B'
+                        issues.push({
+                            id: 'door-slot-dup',
+                            severity: 'error',
+                            message: `SRV${i + 1}: gear ${ch} door ${label} already bound by SRV${prev + 1}`,
+                            path: `pins[${i}]`,
+                        })
+                    } else {
+                        doorSlotSeen.set(key, i)
+                    }
                 }
             } else if (p.role === 'yaw_output') {
                 const gid = p.gear_id

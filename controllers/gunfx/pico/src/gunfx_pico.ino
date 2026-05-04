@@ -18,9 +18,12 @@
  *   - ServoControl (lib): Motion-profiled servo positioning
  *
  * GPIO Pin Mapping:
- *   GP1:     Servo 1
- *   GP2:     Servo 2
- *   GP3:     Servo 3
+ *   GP0:     Trigger input — RC PWM capture (active in non-SLAVE modes).
+ *            Pulse width reported in STATUS; threshold-to-fire mapping is
+ *            left to the host until a standalone trigger policy is added.
+ *   GP1:     Servo 1 (SRV1)
+ *   GP2:     Servo 2 (SRV2)
+ *   GP3:     Servo 3 (SRV3)
  *   GP13:    Indicator LED — connection (SfxServer, blue)
  *   GP14:    Indicator LED — error (SfxServer, yellow)
  *   GP16:    Smoke fan motor (PWM)
@@ -39,20 +42,21 @@
 #include "smoke_generator.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "0.7.0"
-#define BUILD_NUMBER 27
+#define FIRMWARE_VERSION "0.8.1"
+#define BUILD_NUMBER 29
 
 // ============================================================================
 //  PIN CONFIGURATION
 // ============================================================================
 
-const uint8_t PIN_GUN_SRV_1    =  1;   // Gun servo 1
-const uint8_t PIN_GUN_SRV_2    =  2;   // Gun servo 2
-const uint8_t PIN_GUN_SRV_3    =  3;   // Gun servo 3
-const uint8_t PIN_SMOKE_FAN    = 16;   // Smoke fan motor (PWM)
-const uint8_t PIN_SMOKE_HEATER = 17;   // Smoke heater relay
-const uint8_t PIN_NOZZLE_FLASH = 25;   // Muzzle flash LED (PWM)
-const uint8_t PIN_VSENSE       = 29;   // Battery voltage ADC (÷6 divider)
+const uint8_t PIN_TRIGGER_INPUT =  0;   // RC PWM trigger input (capture only)
+const uint8_t PIN_GUN_SRV_1     =  1;   // Gun servo 1 (SRV1)
+const uint8_t PIN_GUN_SRV_2     =  2;   // Gun servo 2 (SRV2)
+const uint8_t PIN_GUN_SRV_3     =  3;   // Gun servo 3 (SRV3)
+const uint8_t PIN_SMOKE_FAN     = 16;   // Smoke fan motor (PWM)
+const uint8_t PIN_SMOKE_HEATER  = 17;   // Smoke heater relay
+const uint8_t PIN_NOZZLE_FLASH  = 25;   // Muzzle flash LED (PWM)
+const uint8_t PIN_VSENSE        = 29;   // Battery voltage ADC (÷6 divider)
 
 // ============================================================================
 //  CONSTANTS
@@ -79,6 +83,38 @@ ServoControl gunServos[3];
 
 // Battery voltage monitor (ADC ÷6 divider, e.g. 50k/10k)
 AdcDividerBatteryT<6000> batteryMonitor;
+
+// ----------------------------------------------------------------------------
+// GP0 RC PWM trigger input — edge ISR captures pulse width. No threshold
+// action is wired yet; the host reads the captured µs from STATUS and can
+// decide whether to fire (mirrors the GearControl gear_input capture pattern
+// without the auto deploy/retract dispatch).
+// ----------------------------------------------------------------------------
+volatile uint32_t triggerInputRiseUs   = 0;
+volatile uint16_t triggerInputPulse_us = 0;   // 0 == no pulse seen yet
+volatile uint32_t triggerInputEdgeMs   = 0;   // for stale-pulse detection
+
+static void triggerInputIsr() {
+    const uint32_t now = micros();
+    if (digitalRead(PIN_TRIGGER_INPUT)) {
+        triggerInputRiseUs = now;
+    } else if (triggerInputRiseUs != 0) {
+        const uint32_t pulse = now - triggerInputRiseUs;
+        if (pulse >= 500 && pulse <= 2500) {
+            triggerInputPulse_us = (uint16_t)pulse;
+            triggerInputEdgeMs   = millis();
+        }
+    }
+}
+
+static uint16_t triggerInputCurrent_us() {
+    noInterrupts();
+    const uint16_t pulse = triggerInputPulse_us;
+    const uint32_t edge  = triggerInputEdgeMs;
+    interrupts();
+    if (millis() - edge > 200) return 0;   // stale → no signal
+    return pulse;
+}
 
 // ============================================================================
 //  FORWARD DECLARATIONS
@@ -141,6 +177,12 @@ void setup() {
     // Initialize battery voltage monitor (ADC ÷6 divider)
     analogReadResolution(12);
     batteryMonitor.begin(PIN_VSENSE);
+
+    // Arm the GP0 RC PWM trigger input. Pulled low at rest so a disconnected
+    // input reads as 0. Edge interrupt runs in ISR context — keep it short.
+    pinMode(PIN_TRIGGER_INPUT, INPUT_PULLDOWN);
+    attachInterrupt(digitalPinToInterrupt(PIN_TRIGGER_INPUT),
+                    triggerInputIsr, CHANGE);
 
     // Initialize servos
     const uint8_t servoPins[] = { PIN_GUN_SRV_1, PIN_GUN_SRV_2, PIN_GUN_SRV_3 };
@@ -263,16 +305,26 @@ void setup() {
         return SerialError::OK;
     });
 
-    // STATUS: Append GunFX module data to core STATUS response
-    // Wire format (28 bytes):
-    //   [flags:u8][fanSpeed:u8][fanOffMs:u16LE]
-    //   [servo0:u16LE][servo1:u16LE][servo2:u16LE]
-    //   [rpm:u16LE][shots:u32LE][heaterMs:u32LE]
-    //   [heaterError:u8][fanError:u8]
-    //   [heaterDuty:u8][fanDuty:u8]
-    //   [batteryV_mV:u16LE][cellCount:u8][batteryPct:u8]
+    // STATUS: Append GunFX module data to core STATUS response.
+    // Wire format (69 bytes — 28 base + 39 servo config tail + 2 trigger input):
+    //   byte 0      [flags:u8]
+    //   byte 1      [fanSpeed:u8]
+    //   byte 2..3   [fanOffMs:u16LE]
+    //   byte 4..9   [servo0:u16LE][servo1:u16LE][servo2:u16LE]
+    //   byte 10..11 [rpm:u16LE]
+    //   byte 12..15 [shots:u32LE]
+    //   byte 16..19 [heaterMs:u32LE]
+    //   byte 20..21 [heaterError:u8][fanError:u8]
+    //   byte 22..23 [heaterDuty:u8][fanDuty:u8]
+    //   byte 24..27 [batteryV_mV:u16LE][cellCount:u8][batteryPct:u8]
+    //   byte 28..66 [servoConfig:13×3]  min:u16 max:u16 target:u16
+    //                                   speed:u16 accel:u16 decel:u16 rev:u8
+    //   byte 67..68 [triggerInput_us:u16LE]  GP0 RC pulse (v0.8.1, Rule 11)
+    // Legacy decoders that stop at byte 28 or 67 see valid earlier prefixes.
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
         if (maxLen < 28) return 0;
+        const bool haveRoomForCfg     = (maxLen >= 67);
+        const bool haveRoomForTrigger = (maxLen >= 69);
 
         uint8_t flags = 0;
         if (muzzleFlash.isFiring())    flags |= 0x01;
@@ -305,6 +357,28 @@ void setup() {
         buf[26] = batteryMonitor.cellCount();
         buf[27] = batteryMonitor.percentage();
 
+        // Per-servo configuration block (Rule 11 extension, 13×3 = 39 bytes).
+        // Emitted when the core has room; legacy hubs / tight buffers drop the
+        // tail and old decoders treat the payload as a 28-byte prefix.
+        if (haveRoomForCfg) {
+            size_t off = 28;
+            for (uint8_t i = 0; i < 3; i++) {
+                const auto& s = gunServos[i];
+                CoreProtocol::putU16LE(&buf[off + 0],  (uint16_t)s.minLimit());
+                CoreProtocol::putU16LE(&buf[off + 2],  (uint16_t)s.maxLimit());
+                CoreProtocol::putU16LE(&buf[off + 4],  (uint16_t)s.target());
+                CoreProtocol::putU16LE(&buf[off + 6],  (uint16_t)s.maxSpeed());
+                CoreProtocol::putU16LE(&buf[off + 8],  (uint16_t)s.acceleration());
+                CoreProtocol::putU16LE(&buf[off + 10], (uint16_t)s.deceleration());
+                buf[off + 12] = s.isReversed() ? 1 : 0;
+                off += 13;
+            }
+            if (haveRoomForTrigger) {
+                CoreProtocol::putU16LE(&buf[67], triggerInputCurrent_us());
+                return 69;
+            }
+            return 67;
+        }
         return 28;
     });
 

@@ -181,10 +181,13 @@ namespace GearControlSpec {
     constexpr uint8_t GEAR_ID_MIN     = 0;
     constexpr uint8_t GEAR_ID_MAX     = 2;
 
-    // Servo limits (standard PWM range)
-    constexpr uint8_t SERVO_COUNT     = 8;
-    constexpr uint8_t SERVO_ID_MIN    = 0;
+    // Servo limits (standard PWM range). Aligned 1-based with LightFX / GunFX
+    // in v0.17.0 (breaking wire change) — id 1..6 are gear doors
+    // (gear = (id-1)/2, door = (id-1)%2), id 7 is yaw.
+    constexpr uint8_t SERVO_COUNT     = 7;
+    constexpr uint8_t SERVO_ID_MIN    = 1;
     constexpr uint8_t SERVO_ID_MAX    = 7;
+    constexpr uint8_t SERVO_ID_YAW    = 7;
     constexpr uint16_t SERVO_PULSE_MIN = 500;    // µs
     constexpr uint16_t SERVO_PULSE_MAX = 2500;   // µs
 
@@ -208,7 +211,7 @@ namespace GearControlSpec {
     }
 
     inline bool isValidServoId(uint8_t id) {
-        return id <= SERVO_ID_MAX;
+        return id >= SERVO_ID_MIN && id <= SERVO_ID_MAX;
     }
 
     inline bool isValidServoPulse(uint16_t pulse) {

@@ -28,11 +28,11 @@
  *   GP21-26: Status LEDs (CW/CCW per motor × 3)
  *   GP29:    Voltage sense (ADC, ÷6 divider)
  *
- * Servo Mapping:
- *   0-1: Gear 0 door servos (nose)       [GP1-2]
- *   2-3: Gear 1 door servos (left main)  [GP3,GP6]
- *   4-5: Gear 2 door servos (right main) [GP7-8]
- *   6:   Yaw servo (steering)            [GP9]
+ * Servo Mapping (1-based, aligned with LightFX/GunFX since v0.17.0):
+ *   1-2: Gear 0 door servos (nose)       [GP1-2]
+ *   3-4: Gear 1 door servos (left main)  [GP3,GP6]
+ *   5-6: Gear 2 door servos (right main) [GP7-8]
+ *   7:   Yaw servo (steering)            [GP9]
  *
  * Status LED Mapping:
  *   0-1: Motor 0 CW/CCW (deploy/retract)  [GP21-22]
@@ -50,6 +50,7 @@
 #include <gearcontrol/server/gearcontrol_server.h>
 #include <led/led_control.h>
 #include <servo/srv_control.h>
+#include <pwm/pwm_control.h>
 #include <power/ina226.h>
 #include <power/i2c_device.h>
 #include <power/battery_monitor.h>
@@ -64,27 +65,28 @@
 #include "landing_gear.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "0.16.1"
-#define BUILD_NUMBER 112
+#define FIRMWARE_VERSION "0.18.0"
+#define BUILD_NUMBER 119
 
 // ============================================================================
 //  PIN CONFIGURATION
 // ============================================================================
 
 // Fixed-function pin (NOT user-mappable):
-//   GP0 — RC PWM input for deploy/retract command (standalone mode)
+//   GP0 — RC PWM input for deploy/retract command, active in non-SLAVE modes.
 const uint8_t PIN_GEAR_INPUT = 0;
 
-// Door servo pins (2 per gear × 3 gears = 6) — fixed by hardware
-//   pin1→GP1 pin2→GP2 pin3→GP3 pin4→GP6 pin5→GP7 pin6→GP8 pin7→GP9
-const uint8_t PIN_DOOR_SERVO[3][2] = {
-    { 1, 2 },    // Gear 0 (nose): GP1, GP2
-    { 3, 6 },    // Gear 1 (left main): GP3, GP6
-    { 7, 8 },    // Gear 2 (right main): GP7, GP8
+// User-mappable pin slots. Each slot can be any role (door output, yaw
+// output, yaw input, unused) via YAML — no compile-time pin→role coupling.
+// The slot name appears in the YAML `pins[].slot` field and on the board
+// silkscreen; SLOT_GPIO maps to the physical RP2040 GPIO.
+constexpr uint8_t BINDABLE_PIN_COUNT = 7;
+const char* const SLOT_NAME[BINDABLE_PIN_COUNT] = {
+    "pin1", "pin2", "pin3", "pin4", "pin5", "pin6", "pin7",
 };
-
-// Yaw servo pin (fixed slot pin7)
-const uint8_t PIN_YAW_SERVO = 9;
+const uint8_t SLOT_GPIO[BINDABLE_PIN_COUNT] = {
+    1, 2, 3, 6, 7, 8, 9,
+};
 
 // I2C pins for INA226
 const uint8_t PIN_SDA = 4;
@@ -115,9 +117,9 @@ const uint8_t PIN_VSENSE = 29;
 const float SHUNT_RESISTANCE_OHMS = 0.005f;    // 5mΩ shunt (max ≈16.4A with INA226)
 const float MAX_CURRENT_A = 10.0f;             // 10A max expected
 
-// Servo ID mapping: IDs 0-5 = door servos, 6 = yaw, 7 = spare
-const uint8_t SERVO_ID_YAW   = 6;
-const uint8_t SERVO_ID_SPARE = 7;
+// Servo ID mapping (1-based, aligned with LightFX/GunFX in v0.17.0):
+// IDs 1-6 = door servos (gear = (id-1)/2, door = (id-1)%2), 7 = yaw.
+const uint8_t SERVO_ID_YAW = GearControlSpec::SERVO_ID_YAW;   // = 7
 
 // ============================================================================
 //  GLOBAL INSTANCES
@@ -146,8 +148,34 @@ LandingGear gears[3];
 INA226 ina226[3];
 bool ina226Available[3] = { false, false, false };
 
-// Yaw servo (uses ServoControl for configurability)
+// Yaw servo (uses ServoControl for configurability). Attached dynamically by
+// applyConfig() when a pin is bound with role=yaw_output; detached otherwise.
 ServoControl yawServo;
+
+// Yaw input capture — only one pin may be YAW_INPUT at a time (validated).
+// Active when a pin is bound to YAW_INPUT; loop() reads its pulse and drives
+// yawServo.setTarget() directly. Ignored in SLAVE mode (HubFX commands win).
+PwmInput yawInput;
+uint16_t yawInput_min_us = 1000;    // Pulse-to-servo mapping endpoints
+uint16_t yawInput_max_us = 2000;
+
+// Runtime pin binding table — driven by YAML at applyConfig() time.
+// One entry per user-mappable slot (SLOT_GPIO[i]). UNUSED is the safe state:
+// no Servo attached, no interrupt armed, GPIO floats as Pico default.
+enum class PinRole : uint8_t {
+    UNUSED      = 0,
+    DOOR_OUTPUT = 1,   // Servo out, bound to (channel, doorIndex)
+    YAW_OUTPUT  = 2,   // Servo out, associated with a gear channel
+    YAW_INPUT   = 3,   // PwmInput in, drives yawServo.setTarget()
+};
+
+struct PinBinding {
+    PinRole  role      = PinRole::UNUSED;
+    uint8_t  channel   = 0;        // DOOR_OUTPUT / YAW_OUTPUT
+    uint8_t  doorIndex = 0;        // DOOR_OUTPUT (0=A, 1=B)
+};
+
+PinBinding bindings[BINDABLE_PIN_COUNT];
 
 // Battery voltage monitor (ADC with ÷6 divider) + generic battery command handler
 using BatteryT = AdcDividerBatteryT<6000>;  // 50k/10k divider → ×6.0
@@ -328,6 +356,95 @@ static uint8_t parseDoorMode(const char* s) {
     return DoorMode::NONE;
 }
 
+// ============================================================================
+// Pin Binding Helpers
+// ============================================================================
+
+/** @brief Look up a bindable slot's array index from its YAML slot name. */
+static int8_t slotIndex(const char* slotName) {
+    if (!slotName) return -1;
+    for (uint8_t i = 0; i < BINDABLE_PIN_COUNT; i++) {
+        if (strcmp(SLOT_NAME[i], slotName) == 0) return (int8_t)i;
+    }
+    return -1;
+}
+
+/** @brief Count how many DOOR_OUTPUT pins are bound to a given gear channel. */
+static uint8_t countDoorsOnChannel(uint8_t channel) {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < BINDABLE_PIN_COUNT; i++) {
+        if (bindings[i].role == PinRole::DOOR_OUTPUT &&
+            bindings[i].channel == channel) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/**
+ * @brief Tear down the current hardware binding on a slot.
+ *
+ * Detaches servo / PwmInput so the GPIO goes back to a neutral state and the
+ * slot can be re-bound to a different role. Called for every slot at the top
+ * of applyConfig() so reconfiguration is fully idempotent.
+ */
+static void releaseBinding(uint8_t slotIdx) {
+    if (slotIdx >= BINDABLE_PIN_COUNT) return;
+    const PinBinding& b = bindings[slotIdx];
+    switch (b.role) {
+        case PinRole::DOOR_OUTPUT:
+            if (b.channel < 3 && b.doorIndex < 2) {
+                gears[b.channel].doorServo(b.doorIndex).end();
+            }
+            break;
+        case PinRole::YAW_OUTPUT:
+            yawServo.end();
+            yawConfigured = false;
+            break;
+        case PinRole::YAW_INPUT:
+            yawInput.end();
+            break;
+        default:
+            break;
+    }
+    bindings[slotIdx] = PinBinding{};  // back to UNUSED
+}
+
+/**
+ * @brief Coerce a gear's door modes to match its actual bound-door count.
+ *
+ * Called after pin bindings are applied: if a channel has fewer than two
+ * door servos wired, any DUAL_* mode is downgraded to SINGLE (1 door) or
+ * NONE (0 doors). Prevents the DoorSequencer from reporting "complete"
+ * instantly because it polled an unattached servo's cached pose.
+ */
+static uint8_t coerceDoorMode(uint8_t mode, uint8_t boundDoors) {
+    if (boundDoors == 0) return DoorMode::NONE;
+    if (boundDoors == 1 && mode >= DoorMode::DUAL_SYNC) return DoorMode::SINGLE;
+    return mode;
+}
+
+/**
+ * @brief Map a captured RC pulse width to the yaw servo's output range.
+ *
+ * Linear interpolation between yawInput_min_us / yawInput_max_us (input
+ * endpoints) and the yaw servo's own [minLimit, maxLimit] bounds. Out-of-
+ * range pulses are clamped. Reversed flag is honoured via the servo itself.
+ */
+static uint16_t mapYawInputPulse(uint16_t pulse_us) {
+    uint16_t inLo = yawInput_min_us;
+    uint16_t inHi = yawInput_max_us;
+    if (inLo >= inHi) return yawServo.target();  // invalid mapping → hold
+    uint16_t outLo = (uint16_t)yawServo.minLimit();
+    uint16_t outHi = (uint16_t)yawServo.maxLimit();
+    if (pulse_us <= inLo) return outLo;
+    if (pulse_us >= inHi) return outHi;
+    uint32_t span = (uint32_t)(outHi - outLo);
+    uint32_t pos  = (uint32_t)(pulse_us - inLo);
+    uint32_t denom = (uint32_t)(inHi - inLo);
+    return outLo + (uint16_t)((pos * span) / denom);
+}
+
 /**
  * @brief Apply loaded config to hardware.
  *
@@ -359,71 +476,150 @@ static void applyConfig(const GearControlConfig& cfg) {
                      r.channel, r.stallCurrent_mA, r.timeout_ms, r.enabled);
     }
 
-    // ---- Per-pin role assignments: door servos + yaw ----
+    // ---- Per-pin role assignments (fully dynamic) ----
+    // Tear down every prior binding first so reload is idempotent — detaches
+    // any Servo / PwmInput currently driving the pin, leaves the GPIO floating.
+    for (uint8_t i = 0; i < BINDABLE_PIN_COUNT; i++) {
+        releaseBinding(i);
+    }
+
+    // Then walk the YAML pin list and re-bind. Validation errors (bad slot,
+    // duplicate (channel, doorIndex), etc.) log and skip the offending entry —
+    // the rest of the config still applies so the board boots into a usable
+    // state even with a partially-broken YAML.
     for (uint8_t i = 0; i < cfg.pinCount && i < GearControlLimits::MAX_PINS; i++) {
         const auto& p = cfg.pins[i];
+        int8_t slot = slotIndex(p.slot);
+        if (slot < 0) {
+            SFX_LOG_WARN("Pin: unknown slot '%s' — skipped", p.slot);
+            continue;
+        }
+        PinBinding& b = bindings[slot];
+        if (b.role != PinRole::UNUSED) {
+            SFX_LOG_WARN("Pin %s: duplicate binding — later entry wins", p.slot);
+            releaseBinding(slot);
+        }
+        const uint8_t gpio = SLOT_GPIO[slot];
 
         if (strcmp(p.role, "door") == 0) {
-            // Door servo: map channel (0-2) → gear, determine door index
-            // Each gear has 2 door servo slots; the firmware uses sequential
-            // attachment order (first "door" pin for a channel = door 0, second = door 1).
-            // We determine door index from the hardware servo ID:
-            // servoId = channel * 2 + doorIdx → we need to find which door slot this is.
-            //
-            // Approach: match the pin's slot to the hardware servo table.
-            // pin1→GP1 (gear0/door0), pin2→GP2 (gear0/door1),
-            // pin3→GP3 (gear1/door0), pin4→GP6 (gear1/door1),
-            // pin5→GP7 (gear2/door0), pin6→GP8 (gear2/door1)
-            uint8_t doorIdx = 0xFF;
-            if (p.channel < 3) {
-                // Determine door index from slot name (odd slots = door 0, even = door 1)
-                int slotNum = 0;
-                if (sscanf(p.slot, "pin%d", &slotNum) == 1 && slotNum >= 1 && slotNum <= 6) {
-                    // pin1,pin3,pin5 = door 0; pin2,pin4,pin6 = door 1
-                    doorIdx = (slotNum % 2 == 1) ? 0 : 1;
+            if (p.channel >= 3 || p.door_index > 1) {
+                SFX_LOG_WARN("Pin %s: invalid door (ch=%u door=%u)",
+                             p.slot, p.channel, p.door_index);
+                continue;
+            }
+            // Enforce (channel, doorIndex) uniqueness across all bindings.
+            bool dup = false;
+            for (uint8_t j = 0; j < BINDABLE_PIN_COUNT; j++) {
+                if (j == slot) continue;
+                const PinBinding& o = bindings[j];
+                if (o.role == PinRole::DOOR_OUTPUT &&
+                    o.channel == p.channel &&
+                    o.doorIndex == p.door_index) {
+                    dup = true;
+                    break;
                 }
             }
-
-            if (doorIdx <= 1 && p.channel < 3) {
-                gears[p.channel].configureDoorServo(doorIdx,
-                    p.min_us, p.max_us, p.speed, 0, 0);
-                gears[p.channel].doorServo(doorIdx).setReversed(p.reversed);
-                SFX_LOG_INFO("Pin %s → gear%u/door%u: %u-%uus speed=%u rev=%u",
-                             p.slot, p.channel, doorIdx, p.min_us, p.max_us,
-                             p.speed, p.reversed);
+            if (dup) {
+                SFX_LOG_WARN("Pin %s: duplicate (ch=%u door=%u) — skipped",
+                             p.slot, p.channel, p.door_index);
+                continue;
             }
+
+            gears[p.channel].attachDoorServo(p.door_index, gpio,
+                                              p.min_us, p.max_us, p.min_us);
+            gears[p.channel].configureDoorServo(p.door_index,
+                                                p.min_us, p.max_us, p.speed, 0, 0);
+            gears[p.channel].doorServo(p.door_index).setReversed(p.reversed);
+
+            b.role = PinRole::DOOR_OUTPUT;
+            b.channel = p.channel;
+            b.doorIndex = p.door_index;
+
+            SFX_LOG_INFO("Pin %s (GP%u) → gear%u/door%u: %u-%uus speed=%u rev=%u",
+                         p.slot, gpio, p.channel, p.door_index,
+                         p.min_us, p.max_us, p.speed, p.reversed);
+
         } else if (strcmp(p.role, "yaw_output") == 0) {
-            // Yaw servo configuration
+            // Only one YAW_OUTPUT allowed.
+            bool dup = false;
+            for (uint8_t j = 0; j < BINDABLE_PIN_COUNT; j++) {
+                if (j != slot && bindings[j].role == PinRole::YAW_OUTPUT) { dup = true; break; }
+            }
+            if (dup) {
+                SFX_LOG_WARN("Pin %s: yaw_output already bound elsewhere — skipped", p.slot);
+                continue;
+            }
+
+            yawServo.begin(gpio, p.min_us, p.max_us, p.neutral_us);
+            yawServo.setMotionProfile(p.speed, 0, 0);
+            yawServo.setReversed(p.reversed);
+            yawServo.setTarget(p.neutral_us);
+
             yawConfig.gearId     = p.gear_id;
             yawConfig.neutral_us = p.neutral_us;
             yawConfig.min_us     = p.min_us;
             yawConfig.max_us     = p.max_us;
             yawConfigured = true;
 
-            yawServo.setLimits(p.min_us, p.max_us);
-            yawServo.setMotionProfile(p.speed, 0, 0);
-            yawServo.setReversed(p.reversed);
-            yawServo.setTarget(p.neutral_us);
+            b.role = PinRole::YAW_OUTPUT;
+            b.channel = p.gear_id;
 
-            SFX_LOG_INFO("Yaw → gear%u: %u-%uus neutral=%uus rev=%u",
-                         p.gear_id, p.min_us, p.max_us, p.neutral_us, p.reversed);
+            SFX_LOG_INFO("Pin %s (GP%u) → yaw gear%u: %u-%uus neutral=%uus rev=%u",
+                         p.slot, gpio, p.gear_id, p.min_us, p.max_us,
+                         p.neutral_us, p.reversed);
+
+        } else if (strcmp(p.role, "yaw_input") == 0) {
+            // Only one YAW_INPUT allowed.
+            bool dup = false;
+            for (uint8_t j = 0; j < BINDABLE_PIN_COUNT; j++) {
+                if (j != slot && bindings[j].role == PinRole::YAW_INPUT) { dup = true; break; }
+            }
+            if (dup) {
+                SFX_LOG_WARN("Pin %s: yaw_input already bound elsewhere — skipped", p.slot);
+                continue;
+            }
+
+            yawInput.begin(PwmInputType::Pwm, gpio);
+            yawInput_min_us = p.min_us;
+            yawInput_max_us = p.max_us;
+            b.role = PinRole::YAW_INPUT;
+
+            SFX_LOG_INFO("Pin %s (GP%u) → yaw_input: map [%u,%u]µs",
+                         p.slot, gpio, p.min_us, p.max_us);
+
+        } else if (strcmp(p.role, "unused") != 0) {
+            SFX_LOG_WARN("Pin %s: unknown role '%s'", p.slot, p.role);
         }
-        // gear_input / yaw_input: PWM inputs only apply in standalone mode with
-        // external RC receiver — not wired here (HubFX sends commands directly).
-        // unused: no-op
     }
 
     // ---- Door modes per retract channel ----
+    // Coerced down to SINGLE / NONE when fewer than 2 doors are bound on the
+    // channel so the sequencer never polls an unattached servo.
     for (uint8_t i = 0; i < cfg.doorModeCount && i < 3; i++) {
         const auto& dm = cfg.doorModes[i];
         if (dm.channel >= 3) continue;
 
-        uint8_t pre  = parseDoorMode(dm.preDeploy);
-        uint8_t post = parseDoorMode(dm.postDeploy);
+        const uint8_t bound = countDoorsOnChannel(dm.channel);
+        const uint8_t pre  = coerceDoorMode(parseDoorMode(dm.preDeploy),  bound);
+        const uint8_t post = coerceDoorMode(parseDoorMode(dm.postDeploy), bound);
         gears[dm.channel].setDoorMode(pre, post, dm.delay_ms);
 
-        SFX_LOG_INFO("DoorMode[%u]: pre=%s(%u) post=%s(%u) delay=%ums",
-                     dm.channel, dm.preDeploy, pre, dm.postDeploy, post, dm.delay_ms);
+        SFX_LOG_INFO("DoorMode[%u]: bound=%u pre=%s(%u) post=%s(%u) delay=%ums",
+                     dm.channel, bound, dm.preDeploy, pre, dm.postDeploy, post, dm.delay_ms);
+    }
+
+    // Channels with no explicit door_modes entry still need coercion if they
+    // have 0 or 1 bound doors — default YAML is dual_sync which would break.
+    for (uint8_t g = 0; g < 3; g++) {
+        const uint8_t bound = countDoorsOnChannel(g);
+        if (bound >= 2) continue;
+        const uint8_t pre  = coerceDoorMode(gears[g].doorPreDeploy(),  bound);
+        const uint8_t post = coerceDoorMode(gears[g].doorPostDeploy(), bound);
+        if (pre != gears[g].doorPreDeploy() || post != gears[g].doorPostDeploy()) {
+            gears[g].setDoorMode(pre, post, gears[g].doorDelay_ms());
+            SFX_LOG_INFO("DoorMode[%u]: auto-coerce pre=%u post=%u (bound=%u)",
+                         g, pre, post, bound);
+        }
     }
 
     // ---- Battery monitoring ----
@@ -486,15 +682,13 @@ void setup() {
                      ina226Available[i] ? "OK" : "NOT FOUND");
     }
 
-    // Initialize landing gear modules
+    // Initialize landing gear modules. Door servos are NOT attached here —
+    // applyConfig() wires them dynamically from YAML pin bindings (each gear
+    // ends up with 0, 1, or 2 attached door servos depending on user config).
     for (int i = 0; i < 3; i++) {
         gears[i].begin(i, PIN_MOTOR[i][0], PIN_MOTOR[i][1]);
 
-        // Attach door servos
-        gears[i].attachDoorServo(0, PIN_DOOR_SERVO[i][0]);
-        gears[i].attachDoorServo(1, PIN_DOOR_SERVO[i][1]);
-
-        // Attach status LEDs
+        // Attach status LEDs (hardwired — always on these pins).
         gears[i].attachStatusLed(0, PIN_STATUS_LED[i][0]);
         gears[i].attachStatusLed(1, PIN_STATUS_LED[i][1]);
 
@@ -522,8 +716,9 @@ void setup() {
         });
     }
 
-    // Initialize yaw servo (uses ServoControl for configurability)
-    yawServo.begin(PIN_YAW_SERVO);
+    // Yaw servo stays detached at boot — applyConfig() attaches it to whatever
+    // slot the user maps to yaw_output (or leaves it detached if no slot is
+    // assigned that role).
 
     // Arm the fixed gear-input PWM reader on GP0 (interrupt-based — non-blocking).
     pinMode(PIN_GEAR_INPUT, INPUT_PULLDOWN);
@@ -604,34 +799,32 @@ void setup() {
         return result;
     });
 
-    // SERVO_SET: Direct servo control
+    // SERVO_SET: Direct servo control. IDs are 1-based (v0.17.0+): 1..6 are
+    // the three gears' door pairs, 7 is yaw.
     gearControlServer.onServoSet([](uint8_t servoId, uint16_t pulse_us) -> uint8_t {
-        if (servoId <= 5) {
-            // Door servo: servoId 0-5 → gear index = servoId / 2, door index = servoId % 2
-            uint8_t gearIdx = servoId / 2;
-            uint8_t doorIdx = servoId % 2;
+        if (servoId >= 1 && servoId <= 6) {
+            uint8_t gearIdx = (servoId - 1) / 2;
+            uint8_t doorIdx = (servoId - 1) % 2;
             gears[gearIdx].setDoorPosition(doorIdx, pulse_us);
         } else if (servoId == SERVO_ID_YAW) {
             yawServo.setTarget(pulse_us);
         } else {
-            // Spare servo (ID 7) - not currently implemented
             return GearControlError::INVALID_SERVO_ID;
         }
         return SerialError::OK;
     });
 
-    // SRV_SETTINGS: Configure servo parameters (GunFX/LightFX pattern)
+    // SRV_SETTINGS: Configure servo parameters (GunFX/LightFX pattern).
+    // Same 1-based mapping as SERVO_SET.
     gearControlServer.onServoSettings([](const GearControlServoConfig& cfg) -> uint8_t {
-        if (cfg.servoId <= 5) {
-            // Door servo: apply limits and motion profile via LandingGear module
-            uint8_t gearIdx = cfg.servoId / 2;
-            uint8_t doorIdx = cfg.servoId % 2;
+        if (cfg.servoId >= 1 && cfg.servoId <= 6) {
+            uint8_t gearIdx = (cfg.servoId - 1) / 2;
+            uint8_t doorIdx = (cfg.servoId - 1) % 2;
             gears[gearIdx].configureDoorServo(doorIdx,
                 cfg.minUs, cfg.maxUs,
                 cfg.maxSpeedUsPerSec, cfg.maxAccelUsPerSec2, cfg.maxDecelUsPerSec2);
             gears[gearIdx].doorServo(doorIdx).setReversed(cfg.reversed);
         } else if (cfg.servoId == SERVO_ID_YAW) {
-            // Yaw servo: apply limits and motion profile
             yawServo.setLimits(cfg.minUs, cfg.maxUs);
             yawServo.setMotionProfile(cfg.maxSpeedUsPerSec,
                                        cfg.maxAccelUsPerSec2,
@@ -747,7 +940,7 @@ void setup() {
     //     Lets Studio reconcile its pinConfigs against the live servo state
     //     instead of needing a bespoke ACK-echo carrier (Rule 19 / user note).
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        if (maxLen < 107) return 0;
+        if (maxLen < 149) return 0;
 
         for (int i = 0; i < 3; i++) {
             size_t off = i * 11;
@@ -799,23 +992,26 @@ void setup() {
         buf[57] = (gearInputEnabled ? 0x01 : 0x00)
                 | ((gearInputCommandValid && gearInputCommandLast) ? 0x02 : 0x00);
 
-        // Per-servo live configs — appended v0.15.0 (Rule 11)
-        // IDs 0..5 = door servos (gear = id/2, door = id%2), 6 = yaw
-        for (uint8_t id = 0; id < 7; id++) {
-            size_t off = 58 + id * 7;
-            const ServoControl* srv = nullptr;
-            if (id <= 5) {
-                srv = &gears[id / 2].doorServo(id % 2);
-            } else {
-                srv = &yawServo;
-            }
-            CoreProtocol::putU16LE(&buf[off],     (uint16_t)srv->minLimit());
-            CoreProtocol::putU16LE(&buf[off + 2], (uint16_t)srv->maxLimit());
-            CoreProtocol::putU16LE(&buf[off + 4], (uint16_t)srv->maxSpeed());
-            buf[off + 6] = srv->isReversed() ? 0x01 : 0x00;
+        // Per-servo live configs — extended to 13 bytes/servo in v0.17.0 to
+        // align with the LightFX STATUS tail (Rule 11). The array index is
+        // still 0..6 in the payload (decoders treat Servos[0] as the first
+        // wired servo); the user-facing servoId is 1..7 via
+        // (id-1)/2 door math + yaw at id 7.
+        // Wire: [min:u16][max:u16][target:u16][speed:u16][accel:u16][decel:u16][rev:u8]
+        for (uint8_t i = 0; i < 7; i++) {
+            size_t off = 58 + i * 13;
+            const ServoControl* srv = (i <= 5) ? &gears[i / 2].doorServo(i % 2)
+                                               : &yawServo;
+            CoreProtocol::putU16LE(&buf[off + 0],  (uint16_t)srv->minLimit());
+            CoreProtocol::putU16LE(&buf[off + 2],  (uint16_t)srv->maxLimit());
+            CoreProtocol::putU16LE(&buf[off + 4],  (uint16_t)srv->target());
+            CoreProtocol::putU16LE(&buf[off + 6],  (uint16_t)srv->maxSpeed());
+            CoreProtocol::putU16LE(&buf[off + 8],  (uint16_t)srv->acceleration());
+            CoreProtocol::putU16LE(&buf[off + 10], (uint16_t)srv->deceleration());
+            buf[off + 12] = srv->isReversed() ? 0x01 : 0x00;
         }
 
-        return 107;
+        return 149;
     });
 
     // Set status broadcast source for verbose mode (STATUS_UPDATE packets)
@@ -902,6 +1098,20 @@ void loop() {
         if (anyWaitingMotor && !anyStillRunning) {
             for (int i = 0; i < 3; i++) {
                 if (gears[i].isWaitingSyncMotorDone()) gears[i].advanceSyncPhase();
+            }
+        }
+    }
+
+    // Yaw input capture. Sampled in any non-SLAVE state so Studio can see the
+    // live pulse while the operator configures the mapping, but the servo
+    // target is only driven from it in STANDALONE — DIRECT-mode users keep
+    // manual control via `gear:servo set 7 <us>`.
+    if (yawInput.isEnabled()) {
+        uint8_t boardState = server.core().boardState();
+        if (boardState != BoardState::SLAVE) {
+            int us = yawInput.update();
+            if (us > 0 && boardState == BoardState::STANDALONE) {
+                yawServo.setTarget(mapYawInputPulse((uint16_t)us));
             }
         }
     }
