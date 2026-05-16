@@ -405,6 +405,7 @@ namespace CoreCapability {
     constexpr uint32_t ENGINE   = 1u << 4;  // Sound engine commands available
     constexpr uint32_t CONFIG   = 1u << 5;  // YAML config store commands available
     constexpr uint32_t SLAVE_BUS = 1u << 6; // Master can enumerate / route to slaves
+    constexpr uint32_t BATTERY  = 1u << 7;  // Battery sensor present (BATTERY_INFO_REQ / BATTERY_ALERT supported, status broadcast carries the battery section)
 }
 
 // ============================================================================

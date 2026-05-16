@@ -164,6 +164,7 @@ const (
 	CapEngine   uint32 = 1 << 4 // Sound engine commands available
 	CapConfig   uint32 = 1 << 5 // YAML config store commands available
 	CapSlaveBus uint32 = 1 << 6 // Master can enumerate / route to slaves
+	CapBattery  uint32 = 1 << 7 // Battery sensor present (BATTERY_INFO_REQ / BATTERY_ALERT supported, status broadcast carries the battery section)
 )
 
 // HasCapability returns true if every bit in want is set in caps.
@@ -182,6 +183,7 @@ func CapabilityNames(caps uint32) []string {
 		{CapEngine, "ENGINE"},
 		{CapConfig, "CONFIG"},
 		{CapSlaveBus, "SLAVE_BUS"},
+		{CapBattery, "BATTERY"},
 	}
 	out := []string{}
 	for _, d := range defs {

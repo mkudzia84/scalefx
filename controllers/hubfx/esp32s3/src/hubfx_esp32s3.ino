@@ -1,53 +1,56 @@
 /*
  * HubFX ESP32-S3 — Autonomous Protocol Router Hub
  *
- * Central hub controller for ScaleFX system. Manages slave controllers
- * (GunFX, LightFX, GearControl) via USB Host, audio mixing, and effects.
+ * Central hub controller for ScaleFX system. Owns audio mixing, engine
+ * effects, hub-local LED runtime, RC inputs, storage, and config.
  *
  * DUAL-CORE ARCHITECTURE (ESP32-S3, dual Xtensa LX7 @ 240 MHz):
- *   Core 0: Main loop — serial protocol, slave management, storage operations
+ *   Core 0: Main loop — serial protocol, storage operations, RC inputs
  *   Core 1: Audio consumer task (I2S DMA output, highest priority)
  *           Audio producer task (WAV decode, SD reads, mixing, lower priority)
  *           USB Host polling
  *
  * COMMUNICATION:
- *   Upstream:  UART0 via USB-UART bridge (1Mbps) — COBS protocol for
+ *   Upstream:  UART0 via USB-UART bridge (1 Mbps) — COBS protocol for
  *              debug/config CLI and DiagLog retrieval
- *   Downstream: USB Host (OTG) — binary COBS to each slave controller
+ *   Downstream: USB Host (OTG) — CDC enumeration is live; the layer that
+ *               *binds* CDC devices to typed clients (the old slave
+ *               manager) was removed 2026-05-16 and will be rebuilt
+ *               against the generic-expander model — see
+ *               instructions/15-GENERIC-EXPANDER-REFACTOR.md and
+ *               instructions/17-SYSTEM-SERVICES.md.
  *
  * Serial architecture (ESP32-S3 DevKitC-1):
  *   The DevKitC-1 has TWO USB connectors:
  *     - USB-UART (CP2102N/CH340): Connected to UART0 → `Serial`
  *       Used for: flashing (esptool), COBS protocol, DiagLog, CLI
- *     - USB-OTG (native USB): Reserved for USB Host mode (slave controllers)
+ *     - USB-OTG (native USB): Reserved for USB Host mode (expanders)
  *       cdc_on_boot=0 prevents the OTG port from acting as a CDC serial
  *
- * This is a skeleton for migration from HubFX Pico (RP2350).
- * Code modules will be migrated individually from controllers/hubfx/pico/.
- *
- * Migration status:
+ * Subsystem status:
  *   [x] DiagLog over UART (SFX_LOG_* macros, DIAG_HISTORY command)
  *   [x] Core protocol (INIT, SHUTDOWN, REBOOT, STATUS, KEEPALIVE, I2C_SCAN)
- *   [x] USB Host (mount/unmount logging, device listing)
+ *   [x] USB Host (mount/unmount logging, device listing — type-agnostic)
  *   [x] Flash storage (LittleFS, file list/info/delete/mkdir/download/upload)
- *   [x] USB device listing (USB_DEVICES_REQ/RESP)
  *   [x] SD card storage (SD_MMC 4-bit SDIO, file ops, upload/download)
  *   [x] Audio mixer (I2S output via ESP-IDF driver, 8-ch WAV, dual-core)
  *   [x] Config reader (YAML from flash, reload/save/get protocol)
- *   [x] Slave management (INIT handshake, SlaveType identification, routing)
  *   [x] Audio server (protocol handler)
  *   [x] Engine server (protocol handler)
  *   [x] Engine FX
  *   [x] RC input dispatcher (PWM/PPM → engine on/off + light program select)
+ *   [x] Local LED runtime — 8-ch PCA9685 (0x70) via the PCA9685 driver
+ *       in controllers/lib/sfx_peripherals/pwm/. PwmOutput-concept
+ *       adapter scales 8-bit input to the chip's 12-bit duty.
+ *   [ ] Generic-expander routing + per-port GUID identity (replaces the
+ *       removed slave-management layer)
  *   [ ] Gun FX
  *   [ ] System sounds
- *   [~] Local LED runtime (AW9523B) — 6 channels wired in LED-mode at boot,
- *       runtime brightness API not yet surfaced
  *   [ ] SBUS / Jeti EX Bus input readers (Phase 0 stubs in place)
  */
 
-#define FIRMWARE_VERSION "1.1.2"
-#define BUILD_NUMBER 242
+#define FIRMWARE_VERSION "1.3.0"
+#define BUILD_NUMBER 246
 
 #include <Arduino.h>
 #include <atomic>
@@ -65,7 +68,7 @@
 #include <power/ina226.h>
 #include <power/ina226_battery.h>
 #include <power/battery_server.h>
-#include <gpio/aw9523b.h>
+#include <pwm/pca9685.h>
 
 // Config schemas — per-domain YAML files (Rule 26)
 #include "config/hubfx_config.h"
@@ -80,18 +83,14 @@
 #include <storage/storage_config_bridge.h>
 #include <server/storage_server.h>
 #include "protocol/hubfx_usb_server.h"
-#include "protocol/slave_server.h"
-#include "protocol/slave_manager.h"
 
-// Slave client classes (one per controller type)
-#include <gunfx/client/gunfx_client.h>
-#include <lightfx/client/lightfx_client.h>
-#include <gearcontrol/client/gearcontrol_client.h>
-
-// Hub-side LightFX config push: walk LightProgramConfig and drive
-// LightFxClient over USB CDC. There is exactly one LightFX slave, so this
-// is a plain function — no router/orchestrator/applier indirection.
-#include "protocol/hub_lightfx_apply.h"
+// Slave-board management (SlaveManager / SlaveServer / per-slave clients /
+// hub_lightfx_apply) was removed 2026-05-16 — it will be rebuilt against
+// the generic expander module (instructions/15-GENERIC-EXPANDER-REFACTOR.md,
+// instructions/17-SYSTEM-SERVICES.md).  Until that lands, HubFX has no
+// understanding of "which board is on which USB port" — USB host still
+// runs (CDC enumeration is needed by the new layer) but nothing on the
+// hub binds devices to typed clients.
 
 // Audio mixer and codec (8-channel WAV mixer with I2S output)
 #include <audio/audio_log.h>
@@ -116,39 +115,50 @@ using AudioServer = AudioServerT<Mixer>;
 #define PIN_LED_CONNECTION  48   // Onboard RGB LED (connection status)
 #define PIN_LED_ERROR       -1   // Disabled (no external error LED)
 
-// I2S Audio Output — TAS5825M codec
-#define PIN_I2S_DOUT    1    // I2S serial data output (TAS_DI — data to codec)
-#define PIN_I2S_BCLK    4    // I2S bit clock (TAS_BCK)
-#define PIN_I2S_LRCLK   3    // I2S word clock / frame sync (TAS_FS)
-// Note: GPIO2 = TAS_DO (data from codec to ESP32) — not used (output only)
+// I2S Audio Output — TAS5825P codec.
+// Pin assignments verified against the EasyEDA netlist for the 8-channel
+// HubFX rev — see PINOUT.md. ESP32-S3 QFN-56 pins 22/23/24 = GPIO16/17/18
+// land on the codec's DIN/BCK/FS pins via the TAS_DI/TAS_BCK/TAS_FS nets.
+// Earlier revs routed I²S to GPIO1/4/3; on this PCB those GPIOs go to the
+// PPM input headers (IN_10, IN_11) and an unconnected pin.
+#define PIN_I2S_DOUT    16   // I²S serial data output → codec DIN  (net TAS_DI,  U26.22)
+#define PIN_I2S_BCLK    17   // I²S bit clock           → codec BCK  (net TAS_BCK, U26.23)
+#define PIN_I2S_LRCLK   18   // I²S word clock          → codec FS   (net TAS_FS,  U26.24)
+// Note: codec → ESP32 data feedback (TAS_DO) is unconnected on this PCB.
 
-// SD Card (SD_MMC SDIO — 4-bit bus). D0-D2 reuse the JTAG-group strap pins
-// MTDO/MTDI/MTMS; D3 is GPIO45. JTAG is unavailable at runtime but that's
-// fine — USB-CDC / firmware logging don't need it. The SD driver toggles
-// these to normal GPIO mode during mount.
-#define PIN_SD_MMC_CMD  38   // SD_MMC command
-#define PIN_SD_MMC_CLK  39   // SD_MMC clock
-#define PIN_SD_MMC_D0   40   // SD_MMC data 0 (MTDO)
-#define PIN_SD_MMC_D1   41   // SD_MMC data 1 (MTDI)
-#define PIN_SD_MMC_D2   42   // SD_MMC data 2 (MTMS)
-#define PIN_SD_MMC_D3   45   // SD_MMC data 3 (GPIO45)
+// SD Card (SD_MMC SDIO — 4-bit bus). On this PCB rev the SD socket connects
+// to GPIO40/41 for CMD/CLK and GPIO42–44/47 for D0–D3 (was GPIO38/39 + D2 on
+// GPIO42 + D3 on GPIO45 in earlier revs — see PINOUT.md "Deltas vs
+// production firmware"). The SD_MMC slot 1 on ESP32-S3 routes through the
+// GPIO matrix so any GPIO is legal.
+#define PIN_SD_MMC_CMD  40   // SD_MMC command (net SD_DCMD,  U26.43)
+#define PIN_SD_MMC_CLK  41   // SD_MMC clock   (net SD_CLK,   U26.44)
+#define PIN_SD_MMC_D0   42   // SD_MMC data 0  (net SD_DATA0, U26.45)
+#define PIN_SD_MMC_D1   43   // SD_MMC data 1  (net SD_DATA1, U26.47)
+#define PIN_SD_MMC_D2   44   // SD_MMC data 2  (net SD_DATA2, U26.48)
+#define PIN_SD_MMC_D3   47   // SD_MMC data 3  (net SD_DATA3, U26.51)
 
-// I2C (for TAS5825M codec control, power monitoring, etc.)
-#define PIN_I2C_SDA     8    // I2C data  (to TAS5825M SDA)
-#define PIN_I2C_SCL     9    // I2C clock (to TAS5825M SCL)
+// I2C (TAS5825P codec, INA226 rail monitors, PCA9685 LED PWM)
+#define PIN_I2C_SDA     8    // I²C data  (net SDA, U26.13)
+#define PIN_I2C_SCL     9    // I²C clock (net SCL, U26.14)
 
-// AW9523B expander pin map. Local LED channels 1-6 sit on P0_0..P0_5 and run
-// in constant-current LED mode (256-step PWM, ~430 Hz). The TAS5825M control
-// signals (PDN, MUTE, nFAULT) are wired entirely in hardware on the current
-// PCB rev — no expander pin or ESP32 GPIO drives them — so codec health is
-// only observable through TAS5825M's I²C fault/state registers.
-#define EXP_LED_CH1     0    // P0_0 — local LED channel 1
-#define EXP_LED_CH2     1    // P0_1 — local LED channel 2
-#define EXP_LED_CH3     2    // P0_2 — local LED channel 3
-#define EXP_LED_CH4     3    // P0_3 — local LED channel 4
-#define EXP_LED_CH5     4    // P0_4 — local LED channel 5
-#define EXP_LED_CH6     5    // P0_5 — local LED channel 6
-#define LOCAL_LED_COUNT 6
+// PCA9685 LED-channel map (HubFX 8-channel rev). The chip exposes 16
+// PWM channels at I²C 0x70; the board's MOSFET gates connect to LED0
+// through LED7. See PINOUT.md "LED channel signal chain" for the full
+// chain: PCA9685 → MOSFET gate → CH+ → LED → CH- → INA226 shunt.
+//
+// TAS5825P PDN/MUTE are NOT routed through the expander on this rev —
+// both are statically pulled HIGH via 10 kΩ resistors. Codec health is
+// observable only through the TAS5825P's own I²C fault registers.
+#define EXP_LED_CH1     0    // PCA9685 LED0
+#define EXP_LED_CH2     1    // PCA9685 LED1
+#define EXP_LED_CH3     2    // PCA9685 LED2
+#define EXP_LED_CH4     3    // PCA9685 LED3
+#define EXP_LED_CH5     4    // PCA9685 LED4
+#define EXP_LED_CH6     5    // PCA9685 LED5
+#define EXP_LED_CH7     6    // PCA9685 LED6
+#define EXP_LED_CH8     7    // PCA9685 LED7
+#define LOCAL_LED_COUNT 8
 
 // ============================================================================
 // Core 1 Task — Audio Consumer (highest priority on Core 1)
@@ -261,9 +271,11 @@ static void logResetReason() {
         SFX_LOG_ERROR("*** WATCHDOG RESET — a task may have hung ***");
 }
 
-// GPIO expander — declared early so audio diagnostics and initI2CDevices()
-// can both reference it.
-static AW9523B gpioExpander;
+// LED PWM driver (PCA9685 @ 0x70) — declared early so audio diagnostics
+// and initI2CDevices() can both reference it. Satisfies the PwmOutput
+// concept (pwm/pwm_output.h) so LedManager<LOCAL_LED_COUNT, PCA9685>
+// can drive it.
+static PCA9685 ledPwm;
 
 /**
  * @brief Phase 1: Probe I2C, reset codec, enter Deep Sleep.
@@ -308,8 +320,8 @@ static constexpr uint8_t TAS_REG_FS_MON         = 0x37;  // Sample rate monitor
  *
  * TAS5825M PDN/MUTE/nFAULT are wired entirely in hardware on the current PCB
  * — no GPIO or expander pin drives them — so this routine only reads the
- * codec's I²C fault/state registers. The AW9523B is dedicated to the local
- * LED channels (see initI2CDevices).
+ * codec's I²C fault/state registers. The PCA9685 (U54 @ 0x70) is
+ * dedicated to driving the 8 local LED MOSFET gates (see initI2CDevices).
  */
 static void diagnoseAudioHardware() {
     SFX_LOG_INFO("=== Audio Hardware Diagnostics ===");
@@ -466,7 +478,7 @@ static void logDiagnostics() {
 
     UsbHost& usb = UsbHost::instance();
     SFX_LOG_DEBUG("usb=%s cdc=%d",
-                  SlaveManager::instance().isUsbReady() ? "ready" : "off",
+                  usb.isInitialized() ? "ready" : "off",
                   usb.cdcDeviceCount());
 }
 
@@ -481,7 +493,7 @@ SfxServer server;
 static constexpr uint8_t INA226_COUNT = 6;
 static INA226 ina226[INA226_COUNT];
 static const uint8_t ina226Addrs[INA226_COUNT] = { 0x40, 0x41, 0x42, 0x43, 0x44, 0x45 };
-// gpioExpander declared earlier (alongside the audio diagnostics)
+// ledPwm declared earlier (alongside the audio diagnostics)
 
 // Battery monitoring — hardcoded to INA226 channel 0 (0x40), the rail input
 // on the HubFX v1 board. Sensor wiring uses the generic BatteryServerT<TBattery>
@@ -494,7 +506,6 @@ static BatteryServerT<Ina226Battery> batteryServer(batteryMonitor);
 // Module protocol handlers
 StorageServer storageServer;
 HubFxUsbServer usbServer;
-SlaveServer slaveServer;
 AudioServer audioServer;
 EngineServer engineServer;
 
@@ -521,11 +532,6 @@ static ConfigStoreFacadeT<GunFxConfigStore>   gunFacade    (gunConfig);
 static ConfigStoreFacadeT<LightFxConfigStore> lightFacade  (lightConfig);
 
 MultiConfigServer configServer;
-
-// Typed slave clients (file-scope, registered with SlaveManager via addSlave)
-static GunFxClient gunfxClient;
-static LightFxClient lightfxClient;
-static GearControlClient gearcontrolClient;
 
 // RC input router — engine on/off + light program selector. Picks reader
 // (PWM/PPM/SBUS/Jeti) at boot from /hubfx.yaml inputs.mode. Re-init runs on
@@ -584,29 +590,6 @@ static void initStorage() {
     }
 }
 
-// ============================================================================
-// Per-slave typed accessors — null when the slave is not yet ready
-// ============================================================================
-//
-// `UsbRegistry::getClient(type)` returns the BusClient* for a connected and
-// ready slave (else nullptr). These thin inlines static_cast back to the
-// concrete client so the call site reads as `if (auto* c = slaveLightFx())
-// c->ledProgramPlay(...)`. There is exactly one of each SlaveType, so no
-// indexing or fanout is needed.
-
-static inline LightFxClient* slaveLightFx() {
-    return static_cast<LightFxClient*>(
-        UsbRegistry::instance().getClient(SlaveType::LightFX));
-}
-static inline GunFxClient* slaveGunFx() {
-    return static_cast<GunFxClient*>(
-        UsbRegistry::instance().getClient(SlaveType::GunFX));
-}
-static inline GearControlClient* slaveGearControl() {
-    return static_cast<GearControlClient*>(
-        UsbRegistry::instance().getClient(SlaveType::GearControl));
-}
-
 /** @brief Wire flash I/O + per-domain onLoaded handlers, then load every YAML. */
 static void initConfig() {
     // ---- Wire every store to LittleFS ----
@@ -639,7 +622,7 @@ static void initConfig() {
         }
 
         // Re-apply RC input dispatcher (mode, channel mappings, ppm pin).
-        // Feature callbacks were wired once at boot in initSlaveManager().
+        // Feature callbacks were wired once at boot in initInputDispatcher().
         inputDispatcher.begin(cfg.inputs);
     });
 
@@ -658,10 +641,11 @@ static void initConfig() {
     });
 
     lightConfig.onLoaded([](const LightProgramConfig& cfg) {
-        // Push to the LightFX slave if one is currently online. If none is,
-        // the UsbRegistry onReady callback below replays the cached config
-        // when the slave attaches.
-        if (auto* c = slaveLightFx()) pushLightFxConfigToSlave(cfg, *c);
+        // Slave-side push was removed with the slave-management deletion
+        // (2026-05-16). When the generic-expander layer lands, the new
+        // role-keyed push (per [17-SYSTEM-SERVICES.md]) replaces this hook.
+        (void)cfg;
+        SFX_LOG_INFO("[Config] /lightfx.yaml loaded (no expander layer yet — config parked)");
     });
 
     // ---- Register stores with the wire dispatcher and do the first load ----
@@ -682,20 +666,21 @@ static void initConfig() {
 static void initProtocolHandlers() {
     storageServer.begin(&Serial);
     usbServer.begin(&Serial);
-    slaveServer.begin(&Serial);
     audioServer.begin(&Serial);
     configServer.begin(&Serial);
     engineServer.begin(&Serial);
 
     // Handler chain: CoreCommandServer (0xF0-0xFF)
     //              → ConfigServer         (0x90-0x92, 0xAC config)
-    //              → SlaveServer          (0x80-0x83 mgmt + 0x96-0x98 routing)
     //              → HubFxUsbServer       (0xA7-0xA8 USB diag)
     //              → AudioServer          (0x84-0x8B audio)
     //              → EngineServer         (0x8C-0x8F engine FX)
     //              → StorageServer        (0x93-0xA6 SD/flash + files)
+    //
+    // SlaveServer (0x80-0x83 mgmt + 0x01-0x7F routing) was removed
+    // 2026-05-16 and will be replaced by the generic-expander wire
+    // layer per instructions/15-GENERIC-EXPANDER-REFACTOR.md.
     server.addModuleHandler(&configServer);
-    server.addModuleHandler(&slaveServer);
     server.addModuleHandler(&usbServer);
     server.addModuleHandler(&audioServer);
     server.addModuleHandler(&engineServer);
@@ -734,46 +719,25 @@ static void initProtocolHandlers() {
     });
 }
 
-/** @brief Register slave types with SlaveManager and initialize USB Host. */
-static void initSlaveManager() {
-    SlaveManager& mgr = SlaveManager::instance();
-
-    // autoInit=true: the manager sends INIT(SLAVE) right after IDENTIFY
-    // succeeds, so a freshly-plugged slave reaches the ready state without
-    // waiting for an explicit SLAVE_INIT command from the upstream host.
-    mgr.addSlave({ SlaveType::GunFX,       "GunFX",       "GunFX",   &gunfxClient,       /*autoInit=*/true });
-    mgr.addSlave({ SlaveType::LightFX,     "LightFX",     "LightFX", &lightfxClient,     /*autoInit=*/true });
-    mgr.addSlave({ SlaveType::GearControl, "GearControl", "GearCtrl", &gearcontrolClient, /*autoInit=*/true });
-
-    // ---- Per-slave-type lifecycle ----
-    //
-    // UsbRegistry auto-logs every ready/disconnect transition (one line each,
-    // INFO level). Per-board callbacks below add the side effects: today only
-    // LightFX has hub-side YAML to push when the slave attaches. GunFX and
-    // GearControl have nothing to do beyond the auto-log — when they grow
-    // hub-side config or input-driven triggering, slot a callback in the same
-    // shape (one onReady, optional onDisconnect to release any held state).
-    auto& reg = mgr.registry();
-
-    reg.onReady(SlaveType::LightFX, [](SlaveType, BusClient* c) {
-        if (lightConfig.isLoaded()) {
-            pushLightFxConfigToSlave(lightConfig.data(),
-                                     *static_cast<LightFxClient*>(c));
-        }
-    });
-
-    mgr.begin();
-    // SLAVE_BUS = master can enumerate / route to slaves over USB host.
-    // USB_HOST = USB host stack for CDC enumeration is up.
-    server.core().addCapability(CoreCapability::SLAVE_BUS | CoreCapability::USB_HOST);
-
-    // Wire per-slot async pumps so slave-range async packets (e.g.
-    // LANDING_LIGHT_STATUS, GEAR_DOOR_STATUS) are re-emitted upstream
-    // verbatim with TAG_ASYNC — the packet-type byte alone identifies the
-    // source board to the upstream client. Slaves' core STATUS broadcasts
-    // are not forwarded; the hub aggregates board-level state separately.
-    // See instructions/13-PASSTHROUGH-ROUTING.md.
-    slaveServer.wireAsyncPumps();
+/**
+ * @brief Bring up the USB host stack (no device classification).
+ *
+ * The old SlaveManager attached typed BusClients to each detected USB
+ * CDC device, ran an IDENTIFY/INIT handshake, and routed slave-range
+ * packets to the matching board. All of that was removed 2026-05-16 —
+ * the new generic-expander layer (instructions/15-GENERIC-EXPANDER-REFACTOR.md
+ * + 17-SYSTEM-SERVICES.md) will rebuild it on top of the same USB host
+ * stack. Until that lands, HubFX just stands up USB host so the OTG
+ * port can enumerate CDC devices; nothing on the hub uses them yet.
+ */
+static void initUsbHost() {
+    UsbHost& usb = UsbHost::instance();
+    if (usb.begin()) {
+        SFX_LOG_INFO("USB host: %s backend up", usb.backendName());
+        server.core().addCapability(CoreCapability::USB_HOST);
+    } else {
+        SFX_LOG_WARN("USB host: begin() failed — OTG port unavailable");
+    }
 }
 
 // NOTE: Engine FX is initialized by the config onLoaded callback
@@ -797,21 +761,19 @@ static void initInputDispatcher() {
     });
 
     inputDispatcher.onLightProgram([](uint8_t programIndex) {
-        // Push to the LightFX slave (when present) — the slave validates the
-        // index against its loaded /lightfx.yaml and replies INVALID_PROGRAM
-        // if out of range. The Hub-local LED runtime (Phase 1) will hook
-        // into the same callback once it lands.
-        if (auto* c = slaveLightFx()) {
-            c->lightProgramSelect(programIndex);
-        }
-        SFX_LOG_INFO("[Inputs] light_program_select → %u", programIndex);
+        // Slave-side push was removed with slave management (2026-05-16).
+        // The generic-expander layer will rebind this callback to whichever
+        // ExpanderType::LightFX role is registered, keyed by board GUID.
+        // The hub-local PCA9685 LED runtime will hook into the same
+        // callback once it lands.
+        SFX_LOG_INFO("[Inputs] light_program_select → %u (no consumer wired yet)", programIndex);
     });
 }
 
-/** @brief Initialize I2C peripherals: INA226 power monitors and AW9523B GPIO expander. */
+/** @brief Initialize I2C peripherals: INA226 rail monitors + PCA9685 LED PWM driver. */
 static void initI2CDevices() {
-    // INA226 power monitors at 0x40-0x45
-    // Default calibration: 100mΩ shunt, 3.2A max (adjust per board design)
+    // INA226 power monitors at 0x40-0x45.
+    // Default calibration: 100 mΩ shunt, 3.2 A max (adjust per board design).
     uint8_t inaCount = 0;
     for (uint8_t i = 0; i < INA226_COUNT; i++) {
         if (ina226[i].begin(Wire, ina226Addrs[i], 0.1f, 3.2f)) {
@@ -825,26 +787,25 @@ static void initI2CDevices() {
     }
     SFX_LOG_INFO("INA226: %d/%d monitors initialized", inaCount, INA226_COUNT);
 
-    // AW9523B GPIO expander at 0x58 — drives 6 local LED channels on
-    // P0_0..P0_5 in constant-current LED mode (256-step PWM, ~430 Hz).
-    if (gpioExpander.begin(Wire, AW9523BAddress::DEFAULT_ADDR)) {
-        SFX_LOG_INFO("AW9523B @ 0x%02X: OK (16-bit GPIO expander + 256-step LED PWM)",
-                     gpioExpander.address());
+    // PCA9685 LED PWM driver at 0x70 — drives the 8 local LED-rail MOSFET
+    // gates (LED0..LED7) at 1526 Hz, 12-bit duty. The PCA9685 begin() does
+    // a general-call SWRST first (recovers a chip that's silent at its
+    // address), then configures PRESCALE + push-pull OUTDRV, then wakes the
+    // chip with AI enabled. See tests/hw/hubfx_pca9685_hwtest/README.md for
+    // the full init flow + recovery procedure.
+    if (ledPwm.begin(Wire, PCA9685Address::HUBFX_ADDR)) {
+        SFX_LOG_INFO("PCA9685 @ 0x%02X: OK (16-ch 12-bit PWM @ %u Hz)",
+                     ledPwm.address(), ledPwm.frequency());
 
-        // Switch P0_0..P0_5 to LED mode and start every channel at zero
-        // brightness so nothing comes on at boot. setLedMode() flips the
-        // LED_MODE_P0 register bit; setLedBrightness() writes the per-pin
-        // DIM register. No other expander pin is wired on the current board,
-        // so the rest keep their power-on defaults (GPIO-mode tristate).
+        // Park all 8 channels at brightness 0 so nothing flashes at boot.
         for (uint8_t ch = 0; ch < LOCAL_LED_COUNT; ch++) {
-            gpioExpander.setLedMode(ch, true);
-            gpioExpander.setLedBrightness(ch, 0);
+            ledPwm.setLedBrightness(ch, 0);
         }
-        SFX_LOG_INFO("  Local LEDs ch1..ch%u → LED mode, brightness 0",
+        SFX_LOG_INFO("  Local LEDs ch1..ch%u → brightness 0",
                      LOCAL_LED_COUNT);
     } else {
-        SFX_LOG_WARN("AW9523B @ 0x%02X: not found",
-                     AW9523BAddress::DEFAULT_ADDR);
+        SFX_LOG_WARN("PCA9685 @ 0x%02X: not found",
+                     PCA9685Address::HUBFX_ADDR);
     }
 }
 
@@ -964,7 +925,6 @@ void setup() {
         if (bootComplete_ms > 0 && (now - bootComplete_ms) < FRESH_BOOT_WINDOW_MS) {
             bootComplete_ms = 0;  // Consume the grace — subsequent INITs do full re-init
             SFX_LOG_INFO("INIT received — fresh boot, skipping re-init");
-            SlaveManager::instance().scanAndIdentify();
             return;
         }
 
@@ -1006,9 +966,6 @@ void setup() {
         // 4. Reload every per-domain YAML from flash.
         configServer.loadAll();
 
-        // 5. Re-scan slaves so PC gets fresh identification
-        SlaveManager::instance().scanAndIdentify();
-
         SFX_LOG_INFO("INIT complete — all subsystems re-initialized");
     });
 
@@ -1040,8 +997,13 @@ void setup() {
 
     // ---- STATUS callback: module-specific status bytes ----
     // Appended after the 22-byte core header in STATUS responses.
-    // Layout: [flags:u8][slaveMask:u8][loop1Count:u32LE]
+    // Layout: [flags:u8][reserved:u8][loop1Count:u32LE]
     //         [i2cDeviceMask:u8][ina226_mV[0..5]:u16LE x 6] = 6 + 13 = 19 bytes
+    //
+    // The byte at buf[1] used to carry the slave presence bitmask (one bit
+    // per SlaveType). Slave management was removed 2026-05-16 — the byte
+    // is reserved as 0 until the generic-expander layer needs it for a
+    // GUID-aware presence summary.
     server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
         if (maxLen < 19) return 0;
 
@@ -1055,27 +1017,27 @@ void setup() {
         if (core1Ready.load(std::memory_order_acquire))      flags |= 0x01;
         if (audioInitialized.load(std::memory_order_acquire)) flags |= 0x02;
         if (FlashModule::instance().isInitialized())         flags |= 0x04;
-        if (SlaveManager::instance().isUsbReady())          flags |= 0x08;
+        if (UsbHost::instance().isInitialized())             flags |= 0x08;
         if (SdCardModule::instance().isInitialized())        flags |= 0x10;
         buf[0] = flags;
 
-        // Slave presence bitmask: bit0=GunFX, bit1=LightFX, bit2=GearControl
-        buf[1] = SlaveManager::instance().slaveMask();
+        // Reserved — was slave-presence bitmask, retained for wire compat.
+        buf[1] = 0;
 
         // Core 1 loop counter (diagnostic)
         CoreProtocol::putU32LE(&buf[2], loop1Count.load(std::memory_order_relaxed));
 
         // I2C device presence bitmask (byte 6):
-        //   bit 0: AW9523B @ 0x58
+        //   bit 0: PCA9685 LED PWM @ 0x70 (was AW9523B @ 0x58 on prev rev)
         //   bit 1: INA226 @ 0x40
         //   bit 2: INA226 @ 0x41
         //   bit 3: INA226 @ 0x42
         //   bit 4: INA226 @ 0x43
         //   bit 5: INA226 @ 0x44
         //   bit 6: INA226 @ 0x45
-        //   bit 7: TAS5825M @ 0x4C (reserved)
+        //   bit 7: TAS5825P @ 0x4C (reserved)
         uint8_t i2cMask = 0;
-        if (gpioExpander.isAvailable()) i2cMask |= 0x01;
+        if (ledPwm.isAvailable()) i2cMask |= 0x01;
         for (uint8_t i = 0; i < INA226_COUNT; i++) {
             if (ina226[i].isAvailable()) i2cMask |= (1 << (i + 1));
         }
@@ -1113,7 +1075,7 @@ void setup() {
     initInputDispatcher();  // Wire input feature callbacks before initConfig() fires onLoaded
     initConfig();       // onLoaded callback initializes EngineFX + starts InputDispatcher reader
     server.markConfigLoaded();  // IDLE → STANDALONE
-    initSlaveManager();
+    initUsbHost();
     initAudio();
 
     // Hub is the master — mark as operational immediately
@@ -1195,8 +1157,6 @@ void loop() {
     logDiagnostics();
 
     checkCodecHealth();
-
-    SlaveManager::instance().process();
 
     // Pump RC input reader → fires engine_on_off / light_program_select on edge
     inputDispatcher.process();

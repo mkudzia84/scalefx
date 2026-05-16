@@ -2,9 +2,11 @@
  * Light FX Hub Configuration — Schema for /lightfx.yaml on the hub
  *
  * The hub stores its master copy of LightProgramConfig in /lightfx.yaml on
- * its own flash, then pushes the loaded config to the USB-attached LightFX
- * slave via pushLightFxConfigToSlave(cfg, client) (hub-internal config-apply
- * — see instructions/12-LIGHTFX-MODERNIZATION.md §4.2).
+ * its own flash. Slave-side push (the old `pushLightFxConfigToSlave`) was
+ * removed 2026-05-16; the new generic-expander layer
+ * (instructions/15-GENERIC-EXPANDER-REFACTOR.md +
+ * instructions/17-SYSTEM-SERVICES.md) will rebuild a role-keyed apply
+ * path. Until then this YAML is loaded and parked.
  *
  * The data type is the shared LightProgramConfig (same struct as the
  * standalone LightFX firmware loads from its own /lightfx.yaml). Fields

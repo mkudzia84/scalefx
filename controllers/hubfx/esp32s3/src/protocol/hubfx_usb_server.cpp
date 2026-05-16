@@ -6,7 +6,10 @@
  *   [deviceCount:u8]
  *   per-device: [addr:u8][vid:u16LE][pid:u16LE][state:u8][slaveType:u8]
  *
- * slaveType is always 0 (Unknown) since slave routing is not migrated.
+ * slaveType byte is reserved as 0 — slave-board management was removed
+ * 2026-05-16 and will be rebuilt against the generic-expander layer
+ * (instructions/15-GENERIC-EXPANDER-REFACTOR.md). When it lands this
+ * byte will carry the ExpanderType instead of SlaveType.
  */
 
 #include "hubfx_usb_server.h"
@@ -73,9 +76,10 @@ void HubFxUsbServer::handleUsbDevicesReq() {
         CoreProtocol::putU16LE(&resp[pos], dev->pid);   pos += 2;
         resp[pos++] = (uint8_t)dev->state;
 
-        // Cross-reference with slave registry to find slave type for this USB index
-        const SlaveEntry* slave = UsbRegistry::instance().findByUsbIndex(i);
-        resp[pos++] = slave ? (uint8_t)slave->type : 0;
+        // Reserved — was the slave/expander type byte. Slave management
+        // was removed 2026-05-16; the new generic-expander layer will
+        // repopulate this with ExpanderType.
+        resp[pos++] = 0;
     }
 
     USB_LOG("USB_DEVICES_RESP: init=%d task=%d backend=%s devices=%d",
