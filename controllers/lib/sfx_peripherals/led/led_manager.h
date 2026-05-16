@@ -3,12 +3,13 @@
  *
  * Manages N LED channels with per-channel event sequences, enable/disable,
  * and master brightness.  Provides the ILedManager abstract interface so
- * that the LED protocol server can work with any channel count or GPIO
- * provider without templates.
+ * that the LED protocol server can work with any channel count or PWM
+ * backend without templates.
  *
  * Template parameters:
  *   MaxChannels  — Number of LED channels (compile-time constant)
- *   TGpio        — GPIO provider type (default: NativeGpio)
+ *   TGpio        — PWM backend type (default: NativeGpio); must satisfy
+ *                  the PwmOutput concept (pwm/pwm_output.h)
  *
  * Protocol conventions (same as LightFX):
  *   - Channel numbers are 1-based in the public API (matches wire protocol)
@@ -23,22 +24,14 @@
  *   ledManager.seqStart(0);                   // start all
  *   ledManager.update();                      // call in loop()
  *
- * Usage (HubFX ESP32-S3 — 6 AW9523B channels):
- *   AW9523B expander;
- *   expander.begin(Wire, 0x58);
- *   LedManager<6, AW9523B> ledManager;
- *   const uint8_t pins[6] = {0,1,2,3,4,5};
- *   ledManager.begin(&expander, pins);
+ * Usage (HubFX ESP32-S3 — 8 PCA9685 channels):
+ *   PCA9685 pwm;
+ *   pwm.begin(Wire, 0x70);
+ *   LedManager<8, PCA9685> ledManager;
+ *   const uint8_t pins[8] = {0,1,2,3,4,5,6,7};
+ *   ledManager.begin(&pwm, pins);
  *   ledManager.ledSet(3, 50);
  *   ledManager.update();
- *
- * Usage (Software BAM on PCAL6416A):
- *   ExpanderBamT<PCAL6416A> bamEngine;
- *   bamEngine.begin(&pcal, 0);
- *   LedManager<6, ExpanderBamT<PCAL6416A>> ledManager;
- *   const uint8_t pins[6] = {0,1,2,3,4,5};
- *   ledManager.begin(&bamEngine, pins);
- *   // Must call bamEngine.update() in loop()!
  *
  * Data structs (LightFxSeqStatus etc.) are in <serial/lightfx/lightfx.h>.
  */
@@ -108,6 +101,20 @@ public:
     /// Restart sequence from beginning — 0 = all
     virtual uint8_t seqRestart(uint8_t ch) = 0;
 
+    /// Configure repeat / one-shot mode for a sequence.  When
+    /// `repeat == false` the sequence stops after its last event and
+    /// `seqIsComplete()` latches true; when `repeat == true` (default
+    /// for back-compat with LightFX-style infinite loops) the
+    /// sequence loops forever and `seqIsComplete()` always returns
+    /// false.  ch == 0 applies to every channel.
+    virtual uint8_t seqSetRepeat(uint8_t ch, bool repeat) = 0;
+
+    /// Returns true if a one-shot sequence on `ch` has reached its
+    /// last event.  Latches until the next seqStart()/seqRestart() so
+    /// callers can poll once and observe the completion edge.  ch
+    /// must be 1-based; ch==0 is invalid for this query.
+    virtual bool    seqIsComplete(uint8_t ch) const = 0;
+
     /// Set master brightness percentage (0-100)
     virtual uint8_t setMasterBrightness(uint8_t pct) = 0;
 
@@ -153,10 +160,11 @@ public:
 // ============================================================================
 
 /**
- * @brief Template LED channel manager with pluggable GPIO provider.
+ * @brief Template LED channel manager with pluggable PWM backend.
  *
  * @tparam MaxChannels  Number of LED channels (compile-time constant)
- * @tparam TGpio        GPIO provider type (e.g., NativeGpio, AW9523B, ExpanderBamT<T>)
+ * @tparam TGpio        PWM backend type (NativeGpio or PCA9685) —
+ *                      must satisfy the PwmOutput concept.
  */
 template <uint8_t MaxChannels, typename TGpio = NativeGpio>
 class LedManager : public ILedManager {
@@ -172,12 +180,12 @@ public:
     // ========================================================================
 
     /**
-     * @brief Initialize channels on a shared GPIO provider.
+     * @brief Initialize channels on a shared PWM backend.
      *
      * Calls channel(i).begin(gpio, pins[i], activeLow, pwm) for each channel
      * and attaches the event sequence to the LED output.
      *
-     * @param gpio     Pointer to initialized GPIO provider (must outlive manager)
+     * @param gpio     Pointer to initialised PWM backend (must outlive manager)
      * @param pins     Array of MaxChannels pin numbers
      * @param activeLow  true if LEDs are active-low
      * @param pwm        true to enable PWM brightness
@@ -281,6 +289,8 @@ public:
     uint8_t seqStart(uint8_t ch) override;
     uint8_t seqStop(uint8_t ch) override;
     uint8_t seqRestart(uint8_t ch) override;
+    uint8_t seqSetRepeat(uint8_t ch, bool repeat) override;
+    bool    seqIsComplete(uint8_t ch) const override;
     uint8_t setMasterBrightness(uint8_t pct) override;
     uint8_t resetChannel(uint8_t ch) override;
     uint8_t enableChannel(uint8_t ch, bool enabled) override;

@@ -1,8 +1,8 @@
 {
     "name": "sfx_peripherals",
-    "version": "1.0.0",
-    "description": "ScaleFX peripheral drivers — GPIO expander abstraction, LED control with pluggable backends, servo output, PWM input, INA226 power monitoring, battery monitor, I2C device base class.",
-    "keywords": ["led", "servo", "pwm", "ina226", "power", "battery", "i2c", "gpio", "expander", "bam", "aw9523b", "pcal6416a"],
+    "version": "1.2.0",
+    "description": "ScaleFX peripheral drivers — PwmOutput concept (single pin-level abstraction) with two backends (NativeGpio, PCA9685), LED control + multi-channel manager templated on PwmOutput, servo output, PWM input, INA226 power monitoring + Sensor concept, battery monitor, I2C device base class, DC motor + StallDetector, multi-channel collection facades (servo / PWM / LED) with C++20 concepts (SensePolicy, PwmLedSink).",
+    "keywords": ["led", "servo", "pwm", "motor", "stall", "sensor", "ina226", "power", "battery", "i2c", "gpio", "pca9685", "collections"],
     "frameworks": "arduino",
     "platforms": ["raspberrypi", "espressif32"],
     "dependencies": [

@@ -109,6 +109,30 @@ public:
     void stop();
 
     /**
+     * @brief Set repeat / one-shot mode for the sequence.
+     *
+     * When `repeat == true` (default) the sequence loops back to event 0
+     * after the last event completes — matches the historical
+     * "looping sequence" behaviour LightFX has always had.
+     *
+     * When `repeat == false` the sequence stops automatically after the
+     * last event finishes; `isPlaying()` becomes false and a follow-up
+     * call to `isComplete()` returns true so the LedManager can fire
+     * the LED_PROGRAM_DONE async packet exactly once.
+     *
+     * Safe to call before or during playback — takes effect on the
+     * next loop boundary.  Per-call default for `start()` /
+     * `seqStart()` paths can be set via this helper.
+     */
+    void setRepeat(bool repeat) { _repeat = repeat; }
+
+    /// True when a one-shot sequence has finished its last event.
+    /// Latches until the next start() call so the caller can poll it
+    /// once and reliably observe the completion edge.  Always false
+    /// when `_repeat == true` (looping sequences never "complete").
+    bool isComplete() const { return _completed; }
+
+    /**
      * @brief Update sequence and get current brightness
      * @return Brightness 0-100, or -1 if stopped/empty
      */
@@ -167,6 +191,8 @@ private:
     uint8_t _count = 0;
     uint8_t _currentIndex = 0;
     bool _playing = false;
+    bool _repeat = true;        ///< true = loop forever, false = stop after last event
+    bool _completed = false;    ///< latches true on natural one-shot completion (cleared by start())
     uint32_t _loopCount = 0;
     ILedOutput* _led = nullptr;
 };

@@ -152,6 +152,23 @@ uint8_t LedManager<N, G>::seqRestart(uint8_t ch) {
 }
 
 template <uint8_t N, typename G>
+uint8_t LedManager<N, G>::seqSetRepeat(uint8_t ch, bool repeat) {
+    if (ch == 0) {
+        for (uint8_t i = 0; i < N; i++) _sequences[i].setRepeat(repeat);
+        return LightFxError::OK;
+    }
+    if (ch > N) return LightFxError::INVALID_CHANNEL;
+    _sequences[ch - 1].setRepeat(repeat);
+    return LightFxError::OK;
+}
+
+template <uint8_t N, typename G>
+bool LedManager<N, G>::seqIsComplete(uint8_t ch) const {
+    if (ch == 0 || ch > N) return false;
+    return _sequences[ch - 1].isComplete();
+}
+
+template <uint8_t N, typename G>
 uint8_t LedManager<N, G>::setMasterBrightness(uint8_t pct) {
     _masterBrightness_pct = pct;
     for (uint8_t i = 0; i < N; i++) {

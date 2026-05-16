@@ -24,6 +24,9 @@ firmware. They deliberately bypass the ScaleFX protocol so a multimeter
 | `led_blink/`           | ESP32-S3 | Drives all 8 LED channels via the PCAL6416A I²C expander |
 | `noop_simple/`         | ESP32-S3 | Minimal no-op image; useful when bisecting framework issues |
 | `ppm_test/`            | ESP32-S3 | PPM signal decoder bench |
+| `hubfx_led_hwtest/`    | ESP32-S3 | HubFX local 6-channel LED bring-up via AW9523B in LED-mode hardware PWM (430 Hz, 8-bit; inverted polarity for pull-up + N-MOSFET topology). Line-based brightness control + `[PASS]`/`[FAIL]` markers for agent grep |
+| `pca9685_hwtest/`      | ESP32-S3 | PCA9685 16-channel 12-bit hardware-PWM bring-up (push-pull voltage drive, configurable 24–1526 Hz). Same line-based UX as `hubfx_led_hwtest/` for A/B comparison; default I²C address 0x40 |
+| `hubfx_pca9685_hwtest/` | ESP32-S3 | HubFX 8-channel LED bring-up via PCA9685 @ 0x70 (current HubFX rev with TAS5825P). Automatic gamma-corrected sine breathing across all 8 LED rails, all channels updated atomically via the `ALL_LED` broadcast registers so the fade stays in sync. See [controllers/hubfx/esp32s3/PINOUT.md](../../controllers/hubfx/esp32s3/PINOUT.md) for the underlying pin/address map |
 | `sfx_test_p/`          | ESP32-S3 | TAS5825**P** sine-wave bring-up (Class-H + Hybrid-Pro silicon — original HubFX board) |
 | `sfx_test_m/`          | ESP32-S3 | TAS5825**M** sine-wave bring-up (smart-amp + FS_MON-gated init — current HubFX board) |
 | `storage_test/`        | ESP32-S3 | Upload throughput + hang-recovery harness for SD/flash |

@@ -62,11 +62,12 @@ void LedEventSeq::startAt(uint8_t index) {
     if (_count == 0 || index >= _count) {
         return;
     }
-    
+
     _currentIndex = index;
     _playing = true;
+    _completed = false;
     _loopCount = 0;
-    
+
     // Start the first event
     if (_events[_currentIndex]) {
         _events[_currentIndex]->start(millis());
@@ -142,13 +143,25 @@ uint32_t LedEventSeq::totalDuration() const {
 
 void LedEventSeq::advanceToNext() {
     _currentIndex++;
-    
-    // Loop back to start if at end
+
     if (_currentIndex >= _count) {
-        _currentIndex = 0;
-        _loopCount++;
+        // End of sequence — loop or terminate based on _repeat.
+        if (_repeat) {
+            _currentIndex = 0;
+            _loopCount++;
+        } else {
+            // One-shot completion — stop playback and latch the
+            // completion flag so the caller (LedManager / LedCollection)
+            // can detect the natural-end edge and emit
+            // LED_PROGRAM_DONE exactly once.  The LED output is left
+            // at its final brightness (the last event's terminal
+            // value) — call stop() explicitly to blank it.
+            _playing   = false;
+            _completed = true;
+            return;
+        }
     }
-    
+
     // Start the next event
     if (_events[_currentIndex]) {
         _events[_currentIndex]->start(millis());

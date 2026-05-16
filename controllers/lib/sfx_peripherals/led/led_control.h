@@ -1,57 +1,46 @@
 /*
- * LED Control Library - Header
+ * LED Control Library — Header
  *
- * Templatized LED control with pluggable GPIO provider backends.
+ * Templatized single-channel LED control with pluggable PWM-output
+ * backends.  One C++ template, two backends today:
  *
- * Features:
- *   - On/Off control
- *   - Active-high or active-low configuration
- *   - PWM brightness control (0-100%)
- *   - Master brightness scaling
- *   - State tracking
- *   - Direct GPIO provider binding (no intermediate driver layer)
+ *   - NativeGpio  — MCU pin + analogWrite                 (gpio/native_gpio.h)
+ *   - PCA9685     — NXP 16-channel 12-bit I²C PWM chip    (pwm/pca9685.h)
  *
- * GPIO providers must satisfy the GpioExpander concept (gpio_expander.h):
+ * Backends must satisfy the PwmOutput concept (pwm/pwm_output.h):
  *   - bool isAvailable() const
  *   - bool setPinDirection(uint8_t pin, bool isInput)
- *   - bool setLedMode(uint8_t pin, bool ledMode)
- *   - bool setLedBrightness(uint8_t pin, uint8_t brightness)  // 0-255
  *   - bool writePin(uint8_t pin, bool high)
+ *   - bool setLedBrightness(uint8_t pin, uint8_t brightness)  // 0-255
  *
- * Supported providers:
- *   - NativeGpio:        MCU GPIO with analogWrite PWM (native_gpio.h)
- *   - AW9523B:           I2C expander with 256-step HW LED PWM (aw9523b.h)
- *   - ExpanderBamT<T>:   Software BAM over GPIO-only expander (bam_led_drv.h)
+ * Features:
+ *   - On / off / toggle
+ *   - Active-high or active-low configuration
+ *   - PWM brightness 0-100% with master-brightness scaling
+ *   - State tracking
+ *   - Direct backend binding (no intermediate driver layer)
  *
  * Template pattern:
- *   LedControlT<TGpio> stores {TGpio* _gpio, uint8_t _pin} and calls the
- *   GPIO provider's methods directly — no intermediate driver layer.
- *   `LedControl` is the default alias for NativeGpio — fully backward
- *   compatible with all existing code.
+ *   LedControlT<TPwm> stores {TPwm* _gpio, uint8_t _pin} and calls the
+ *   backend's methods directly — no virtual dispatch.  `LedControl` is
+ *   the default alias for NativeGpio — fully backward compatible with
+ *   existing call sites that use MCU pins.
  *
- * Usage (GPIO — unchanged from original API):
- *   LedControl led;                       // = LedControlT<NativeGpio>
- *   led.begin(13, false, true);           // GPIO 13, active-high, PWM enabled
+ * Usage (native pin):
+ *   LedControl led;                          // = LedControlT<NativeGpio>
+ *   led.begin(13, false, true);              // GPIO 13, active-high, PWM
  *   led.on();
  *   led.setBrightness(50);
  *
- * Usage (I2C Expander with HW PWM):
- *   AW9523B expander;
- *   expander.begin(Wire, 0x58);
- *   LedControlT<AW9523B> led;
- *   led.begin(&expander, 0, false, true); // P0_0, active-high, PWM
+ * Usage (PCA9685 channel):
+ *   PCA9685 pwm;
+ *   pwm.begin(Wire, 0x70);
+ *   LedControlT<PCA9685> led;
+ *   led.begin(&pwm, 3, false, true);         // channel 3, active-high, PWM
  *   led.setBrightness(75);
  *
- * Usage (Software BAM on GPIO-only expander):
- *   ExpanderBamT<PCAL6416A> bamEngine;
- *   bamEngine.begin(&pcal, 0);
- *   LedControlT<ExpanderBamT<PCAL6416A>> led;
- *   led.begin(&bamEngine, 0, false, true);
- *   led.setBrightness(50);
- *   // Must call bamEngine.update() in loop()!
- *
- * For event-based animations, use LedEventSeq with any LedControlT variant
- * via the ILedOutput interface.
+ * For event-based animations, use LedEventSeq with any LedControlT
+ * variant via the ILedOutput interface.
  */
 
 #ifndef LED_CONTROL_H
@@ -60,6 +49,7 @@
 #include <Arduino.h>
 #include <type_traits>
 #include "../gpio/native_gpio.h"
+#include "../pwm/pwm_output.h"
 
 // ============================================================================
 // ILedOutput — Abstract interface for LED output consumers
@@ -93,15 +83,16 @@ public:
 // ============================================================================
 
 /**
- * @brief LED control with direct GPIO provider binding.
+ * @brief LED control with direct PWM-output backend binding.
  *
- * @tparam TGpio GPIO provider type (e.g., NativeGpio, AW9523B, ExpanderBamT<T>).
- *   Must satisfy the GpioExpander concept: isAvailable(), setPinDirection(),
- *   setLedMode(), setLedBrightness(), writePin().
+ * @tparam TGpio PWM-output backend type (NativeGpio or PCA9685).
+ *   Must satisfy the PwmOutput concept (pwm/pwm_output.h): isAvailable(),
+ *   setPinDirection(), writePin(), setLedBrightness().
  *
- * Each instance stores a pointer to the GPIO provider and a pin number.
- * Multiple LedControlT instances can share the same provider (e.g., 6 LEDs
- * on one AW9523B expander, or 8 channels on one NativeGpio singleton).
+ * Each instance stores a pointer to the backend and a pin/channel
+ * number.  Multiple LedControlT instances can share the same backend
+ * (e.g. 8 LEDs on one PCA9685 chip, or several channels on the
+ * NativeGpio singleton).
  */
 template <typename TGpio>
 class LedControlT : public ILedOutput {

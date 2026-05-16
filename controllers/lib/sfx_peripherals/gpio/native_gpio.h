@@ -2,19 +2,20 @@
  * NativeGpio — Thin GPIO abstraction for native MCU pins
  *
  * Wraps the MCU's own GPIO and analogWrite into the same pin-level
- * interface that I2C GPIO expanders expose.  This lets templates like
- * LedControlT<T> work identically with native pins or I2C expanders —
- * just change the template argument.
+ * interface that I²C PWM chips expose.  This lets templates like
+ * LedControlT<T> and LedManager<N, T> work identically whether the
+ * outputs sit on the MCU directly or on an external PCA9685 — just
+ * change the template argument.
  *
- * Satisfies the GpioExpander pin-level concept (gpio_expander.h):
- *   - HAS_HW_PWM = true  (via analogWrite / ledc on ESP32)
- *   - setPinDirection, writePin, readPin
- *   - setLedMode (no-op), setLedBrightness (analogWrite)
+ * Satisfies the PwmOutput concept (pwm/pwm_output.h):
+ *   - bool isAvailable() const
+ *   - bool setPinDirection(uint8_t pin, bool isInput)
+ *   - bool writePin(uint8_t pin, bool high)
+ *   - bool setLedBrightness(uint8_t pin, uint8_t brightness)  // via analogWrite
  *
- * Does NOT provide port-level bulk I/O (setPortDirection, writePort,
- * readPort) because native GPIO pins are not grouped into I2C-style
- * ports.  This means ExpanderBamT<NativeGpio> won't compile — which is
- * intentional: native GPIO has real PWM and doesn't need software BAM.
+ * Also exposes `readPin(pin)` for callers that need raw GPIO input —
+ * not part of the PwmOutput contract, but available for board-level
+ * code that wants the convenience.
  *
  * Provides a thread-safe singleton via instance() for convenient use
  * with LedControlT<NativeGpio> and LedManager<N, NativeGpio>.
@@ -26,8 +27,8 @@
  * Usage (singleton — preferred):
  *   NativeGpio& gpio = NativeGpio::instance();
  *   gpio.setPinDirection(13, false);     // Output
- *   gpio.writePin(13, true);            // HIGH
- *   gpio.setLedBrightness(13, 128);     // 50% PWM via analogWrite
+ *   gpio.writePin(13, true);             // HIGH
+ *   gpio.setLedBrightness(13, 128);      // 50% PWM
  *
  * With LedControlT (pin convenience uses singleton automatically):
  *   LedControl led;                      // = LedControlT<NativeGpio>
@@ -38,7 +39,7 @@
 #define NATIVE_GPIO_H
 
 #include <Arduino.h>
-#include "gpio_expander.h"
+#include "../pwm/pwm_output.h"
 
 // Platform-conditional max pin count (informational, not enforced)
 #if SFX_PLATFORM_ESP32
@@ -54,12 +55,9 @@
 /**
  * @brief Thin wrapper around native MCU GPIO pins.
  *
- * Provides the same pin-level interface as I2C GPIO expanders (PCAL6416A,
- * AW9523B) so that templates can be parameterized on any GPIO provider.
- *
- * Unlike I2C expanders, this class has no I2C bus, no address, and no
- * port-level bulk I/O. It's essentially zero-overhead — each method is
- * a direct call to the Arduino GPIO API.
+ * Provides the same pin-level surface as an I²C PWM chip so templates
+ * can be parameterised on any PwmOutput provider.  Zero-overhead —
+ * each method is a direct call to the Arduino GPIO API.
  *
  * Use NativeGpio::instance() for the shared singleton. LedControlT<NativeGpio>
  * and LedManager<N, NativeGpio> use the singleton automatically for their
@@ -97,7 +95,7 @@ public:
     bool isAvailable() const { return true; }
 
     // ========================================================================
-    // Pin-Level I/O
+    // Pin-Level I/O — PwmOutput concept surface
     // ========================================================================
 
     /**
@@ -123,46 +121,31 @@ public:
     }
 
     /**
+     * @brief Set PWM duty cycle on a pin via analogWrite.
+     *
+     * On RP2040/RP2350: uses hardware PWM slice (all pins support it).
+     * On ESP32-S3: uses LEDC peripheral (auto-assigned channel).
+     *
+     * @param pin MCU GPIO pin number
+     * @param brightness 0 = off, 255 = full on
+     * @return true
+     */
+    bool setLedBrightness(uint8_t pin, uint8_t brightness) {
+        analogWrite(pin, brightness);
+        return true;
+    }
+
+    // ========================================================================
+    // Extra — GPIO input (not part of the PwmOutput contract)
+    // ========================================================================
+
+    /**
      * @brief Read a digital value from an input pin
      * @param pin MCU GPIO pin number
      * @return true if HIGH, false if LOW
      */
     bool readPin(uint8_t pin) {
         return digitalRead(pin) == HIGH;
-    }
-
-    // ========================================================================
-    // Hardware PWM (via analogWrite)
-    // ========================================================================
-
-    /**
-     * @brief No-op — native GPIO pins are always PWM-capable.
-     *
-     * Provided for interface compatibility with I2C expanders (AW9523B)
-     * where per-pin LED/GPIO mode switching is required.
-     *
-     * @param pin MCU GPIO pin number (unused)
-     * @param ledMode true = PWM mode, false = GPIO mode (ignored)
-     * @return true
-     */
-    bool setLedMode(uint8_t pin, bool ledMode) {
-        (void)pin;
-        (void)ledMode;
-        return true;
-    }
-
-    /**
-     * @brief Set PWM duty cycle on a pin via analogWrite
-     * @param pin MCU GPIO pin number
-     * @param brightness 0 = off, 255 = full on
-     * @return true
-     *
-     * On RP2040/RP2350: uses hardware PWM slice (all pins support it).
-     * On ESP32-S3: uses LEDC peripheral (auto-assigned channel).
-     */
-    bool setLedBrightness(uint8_t pin, uint8_t brightness) {
-        analogWrite(pin, brightness);
-        return true;
     }
 };
 

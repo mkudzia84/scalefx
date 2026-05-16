@@ -35,9 +35,10 @@ bool LedControlT<TGpio>::begin(TGpio* gpio, uint8_t pin, bool activeLow, bool us
     _brightness = 0;
     _attached = true;
 
-    // Configure pin: output + LED mode (no-op for NativeGpio/BAM)
+    // Configure pin as output. Backends with HW PWM (PCA9685, NativeGpio
+    // via analogWrite) accept the brightness writes directly — no
+    // separate "enable PWM mode" step is needed.
     _gpio->setPinDirection(pin, false);   // Output
-    _gpio->setLedMode(pin, true);         // Enable HW PWM where applicable
 
     // Start in off state
     if (_usePwm) {

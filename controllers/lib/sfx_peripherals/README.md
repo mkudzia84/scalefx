@@ -1,6 +1,9 @@
 # sfx_peripherals — Hardware Peripheral Drivers
 
-Reusable hardware drivers for ScaleFX controllers. Covers GPIO abstraction, LED control with pluggable backends, servo output, PWM input, power monitoring, and indicator LEDs.
+Reusable hardware drivers for ScaleFX controllers. Covers the PwmOutput
+abstraction (one concept, two backends), LED control + multi-channel
+manager templated on it, servo output, PWM input, power monitoring, and
+indicator LEDs.
 
 **Platforms:** RP2040, RP2350, ESP32-S3
 
@@ -8,16 +11,17 @@ Reusable hardware drivers for ScaleFX controllers. Covers GPIO abstraction, LED 
 
 ```
 sfx_peripherals/
-├── gpio/                        GPIO abstraction layer
-│   ├── gpio_expander.h          Concept definition + common types + SFINAE traits
-│   ├── native_gpio.h            MCU GPIO wrapper (singleton, HW PWM via analogWrite)
-│   ├── aw9523b.h/.cpp           AW9523B I2C expander (HW LED PWM, 256-step)
-│   └── pcal6416a.h/.cpp         PCAL6416A I2C expander (GPIO only, port-level bulk I/O)
+├── gpio/                        Native MCU GPIO
+│   └── native_gpio.h            MCU pin wrapper (digital + PWM via analogWrite)
+│
+├── pwm/                         PWM-output abstraction + chip drivers
+│   ├── pwm_output.h             PwmOutput concept (single duck-typed surface)
+│   ├── pca9685.h/.cpp           NXP 16-channel 12-bit I²C PWM driver
+│   ├── pwm_control.h/.cpp       RC PWM input capture (averaging + callbacks)
 │
 ├── led/                         LED control & animation
-│   ├── led_control.h/.ipp/.cpp  LedControlT<TGpio> single-channel controller
-│   ├── led_manager.h/.ipp       LedManager<N,TGpio> multi-channel manager
-│   ├── bam_led_drv.h            ExpanderBamT<T> software BAM engine + GPIO provider
+│   ├── led_control.h/.ipp/.cpp  LedControlT<TPwm> single-channel controller
+│   ├── led_manager.h/.ipp       LedManager<N,TPwm> multi-channel manager
 │   ├── led_events.h             Animation events (On, Off, Flash, Fade, Beacon)
 │   ├── led_event_seq.h/.cpp     Looping event sequence player
 │   ├── server/led_server.h/.cpp LedProtocolServer (13 LED serial commands)
@@ -27,64 +31,54 @@ sfx_peripherals/
 │   └── indicator_leds.h         Connection/error LED state machine (used by SfxServer)
 │
 ├── servo/                       Servo output with motion profiling
-├── pwm/                         RC PWM input with averaging and callbacks
-├── power/                       INA226 power monitor, I2CDevice base, battery monitor
+├── motor/                       DC motor topologies + stall detection
+├── power/                       INA226 + I2CDevice base + battery monitor + Sensor concept
+├── collections/                 Multi-channel facades (servo / PWM / LED) for expander boards
 └── library.json
 ```
 
 ---
 
-## GPIO Provider Architecture
+## PwmOutput Architecture
 
-All LED and GPIO-consuming templates are parameterized on a **GPIO provider** — a duck-typed C++ concept rather than a virtual base class. This gives zero-overhead abstraction at LED tick rates.
+The LED runtime and any other pin-level consumer templates on a single
+**PwmOutput** concept — duck-typed, no virtual dispatch, zero overhead
+at LED tick rates.
 
-### The Concept (`gpio/gpio_expander.h`)
+### The Concept (`pwm/pwm_output.h`)
 
-A type `T` satisfies the GPIO provider concept if it provides:
-
-```cpp
-bool isAvailable() const;                               // Device online?
-bool setPinDirection(uint8_t pin, bool isInput);         // Configure pin I/O
-bool setLedMode(uint8_t pin, bool ledMode);              // Enable HW LED mode (no-op if N/A)
-bool setLedBrightness(uint8_t pin, uint8_t brightness);  // 0-255 PWM duty
-bool writePin(uint8_t pin, bool high);                   // Digital write
-static constexpr bool HAS_HW_PWM;                        // true if real PWM, false for BAM
-```
-
-Optional port-level bulk I/O (required by `ExpanderBamT` but not by `LedControlT`):
+A type `T` satisfies `PwmOutput` if it provides:
 
 ```cpp
-bool    setPortDirection(uint8_t port, uint8_t mask);
-uint8_t getPortDirection(uint8_t port);
-bool    writePort(uint8_t port, uint8_t value);
-uint8_t readPort(uint8_t port);
+bool isAvailable() const;                                // probe
+bool setPinDirection(uint8_t pin, bool isInput);          // mark as output
+bool writePin(uint8_t pin, bool high);                    // digital write
+bool setLedBrightness(uint8_t pin, uint8_t brightness);   // 0-255 PWM duty
 ```
 
-SFINAE helpers for compile-time checks:
-
-| Trait | Tests |
-|-------|-------|
-| `expander_has_hw_pwm_v<T>` | `T::HAS_HW_PWM == true` |
-| `expander_has_led_methods_v<T>` | `T::setLedMode()` and `T::setLedBrightness()` exist |
+The "Led" prefix is historical — `setLedBrightness` is just "write
+8-bit PWM duty"; the same call drives LEDs, servos (at 50 Hz), motors,
+or any generic PWM signal. Per-backend `setFrequency()` selects what
+the duty value physically means.
 
 ### Implementations
 
-| Provider | Header | HAS_HW_PWM | PWM Method | Notes |
-|----------|--------|------------|------------|-------|
-| `NativeGpio` | `gpio/native_gpio.h` | `true` | `analogWrite` / LEDC | Singleton via `instance()`. No port-level I/O. |
-| `AW9523B` | `gpio/aw9523b.h` | `true` | 256-step constant-current | I2C 0x58–0x5B. Per-pin GPIO/LED mode. Extends `I2CDevice`. |
-| `PCAL6416A` | `gpio/pcal6416a.h` | `false` | N/A (use BAM) | I2C 0x20–0x27. Port-level bulk I/O. Extends `I2CDevice`. |
-| `ExpanderBamT<T>` | `led/bam_led_drv.h` | `false` | Software BAM (5-bit, 32 levels) | Wraps a port-level expander. IS a GPIO provider itself. |
+| Provider     | Header                | HAS_HW_PWM | Notes                                                        |
+|--------------|-----------------------|------------|--------------------------------------------------------------|
+| `NativeGpio` | `gpio/native_gpio.h`  | `true`     | MCU pin via `analogWrite` / LEDC. Singleton `instance()`. Also exposes `readPin()` for input. |
+| `PCA9685`    | `pwm/pca9685.h`       | `true`     | NXP 16-channel 12-bit I²C PWM, 24-1526 Hz, push-pull / open-drain. Extends `I2CDevice`. |
+
+Both backends additionally expose `static constexpr uint8_t NUM_PINS`
+as a caller-side hint; it's not part of the contract.
 
 ### Template Consumers
 
-All template on the GPIO provider directly — no intermediate driver layer:
+All template on the PwmOutput backend directly — no intermediate driver layer:
 
-| Consumer | Template Parameter | Purpose |
-|----------|-------------------|---------|
-| `LedControlT<TGpio>` | GPIO provider | Single LED channel (on/off, brightness, events) |
-| `LedManager<N, TGpio>` | Channel count + GPIO provider | Multi-channel manager with sequences |
-| `ExpanderBamT<TExpander>` | Port-level expander | BAM engine that itself becomes a GPIO provider |
+| Consumer            | Template Parameter            | Purpose |
+|---------------------|-------------------------------|---------|
+| `LedControlT<TPwm>` | PwmOutput backend             | Single LED channel (on/off, brightness, events) |
+| `LedManager<N,TPwm>`| Channel count + PwmOutput     | Multi-channel manager with event-sequence runtime |
 
 ---
 
@@ -95,29 +89,27 @@ Two-layer architecture — LED controllers bind directly to GPIO providers:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Protocol Layer (optional)                                       │
-│  LedProtocolServer ──→ ILedManager ──→ LedManager<N,TGpio>      │
+│  LedProtocolServer ──→ ILedManager ──→ LedManager<N,TPwm>       │
 │  LedProtocolClient                                               │
 └─────────────────────────────────────────────────────────────────┘
          │
 ┌─────────────────────────────────────────────────────────────────┐
 │  Animation Layer                                                 │
-│  LedEventSeq ──→ ILedOutput ──→ LedControlT<TGpio>              │
+│  LedEventSeq ──→ ILedOutput ──→ LedControlT<TPwm>               │
 │  Events: LedOn, LedOff, LedFlashing, LedFadeIn/Out, LedBeacon   │
 └─────────────────────────────────────────────────────────────────┘
          │
 ┌─────────────────────────────────────────────────────────────────┐
 │  Control Layer                                                   │
-│  LedControlT<TGpio>                                              │
-│    stores: {TGpio* _gpio, uint8_t _pin}                          │
+│  LedControlT<TPwm>                                               │
+│    stores: {TPwm* _gpio, uint8_t _pin}                           │
 │    calls:  _gpio->writePin(), _gpio->setLedBrightness()          │
 └─────────────────────────────────────────────────────────────────┘
          │
 ┌─────────────────────────────────────────────────────────────────┐
-│  GPIO Provider Layer                                             │
-│  NativeGpio          → analogWrite / digitalWrite                │
-│  AW9523B             → I2C HW LED registers                      │
-│  ExpanderBamT<T>     → software BAM → T::writePort()             │
-│    └── PCAL6416A     → I2C port write                            │
+│  PwmOutput Backend Layer                                         │
+│  NativeGpio    → analogWrite / digitalWrite (MCU pins)           │
+│  PCA9685       → I²C burst write (16-ch 12-bit PWM)              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -127,10 +119,10 @@ Two interfaces decouple the template world from non-template consumers:
 
 | Interface | Defined in | Purpose | Implementors |
 |-----------|-----------|---------|-------------|
-| `ILedOutput` | `led_control.h` | Single LED output (brightness, on, off) | `LedControlT<TGpio>` |
-| `ILedManager` | `led_manager.h` | Multi-channel manager (set, toggle, seq, enable) | `LedManager<N, TGpio>` |
+| `ILedOutput` | `led_control.h` | Single LED output (brightness, on, off) | `LedControlT<TPwm>` |
+| `ILedManager` | `led_manager.h` | Multi-channel manager (set, toggle, seq, enable) | `LedManager<N, TPwm>` |
 
-`LedEventSeq` and `LedProtocolServer` use these interfaces, so they work with any GPIO provider without being templatized themselves.
+`LedEventSeq` and `LedProtocolServer` use these interfaces, so they work with any PwmOutput backend without being templatized themselves.
 
 ---
 
@@ -151,40 +143,31 @@ ledManager.ledSet(1, 80);                    // channel 1 → 80% brightness
 ledManager.seqStart(0);                      // start all sequences
 ```
 
-### I2C Expander with HW PWM (AW9523B)
-
-```cpp
-#include <led/led_control.h>
-#include <gpio/aw9523b.h>
-
-AW9523B expander;
-expander.begin(Wire, 0x58);
-
-LedControlT<AW9523B> led;
-led.begin(&expander, 0, false, true);        // P0_0, active-high, PWM
-led.setBrightness(75);                       // 256-step HW PWM
-```
-
-### Software BAM on GPIO-Only Expander (PCAL6416A)
+### PCA9685 (HubFX ESP32-S3)
 
 ```cpp
 #include <led/led_manager.h>
-#include <led/bam_led_drv.h>
+#include <pwm/pca9685.h>
 
-PCAL6416A expander;
-expander.begin(Wire, 0x20);
+PCA9685 pwm;
+pwm.begin(Wire, PCA9685Address::HUBFX_ADDR);   // 0x70, default 1526 Hz
 
-ExpanderBamT<PCAL6416A> bamEngine;
-bamEngine.begin(&expander, 0);               // BAM on port 0, pins 0-5
+LedManager<8, PCA9685> ledManager;
+const uint8_t pins[8] = {0,1,2,3,4,5,6,7};
+ledManager.begin(&pwm, pins);
+ledManager.ledSet(3, 50);                       // channel 3 → 50%
+ledManager.update();                            // call in loop()
+```
 
-LedManager<6, ExpanderBamT<PCAL6416A>> ledManager;
-const uint8_t pins[6] = {0,1,2,3,4,5};
-ledManager.begin(&bamEngine, pins);
-ledManager.ledSet(3, 50);                    // channel 3 → 50%
+### PCA9685 driving servos (any board)
 
-// In loop() — MUST call frequently (~3 kHz ideal):
-bamEngine.update();
-ledManager.update();
+```cpp
+PCA9685 pwm;
+pwm.begin(Wire, 0x40, 50);                     // 50 Hz for hobby servos
+
+// 1 ms pulse  = 205/4096 of 20 ms period  → setChannel(ch, 205)
+// 2 ms pulse  = 410/4096 of 20 ms period  → setChannel(ch, 410)
+pwm.setChannel(0, 307);                         // ≈ centre (1.5 ms pulse)
 ```
 
 ### Animation Sequences
@@ -214,33 +197,21 @@ seq.update();
 
 ### `NativeGpio` (gpio/native_gpio.h)
 
-MCU GPIO wrapper. Singleton via `NativeGpio::instance()`. Uses `analogWrite()` for PWM (Arduino-Pico LEDC on ESP32-S3). Every MCU pin is available; `isAvailable()` always returns `true`.
+MCU GPIO wrapper. Singleton via `NativeGpio::instance()`. Uses `analogWrite()` for PWM (Arduino-Pico hardware PWM on RP2040/RP2350, LEDC on ESP32-S3). Every MCU pin is available; `isAvailable()` always returns `true`. Exposes `readPin()` for input — not part of `PwmOutput` but available on this backend.
 
-Does **not** provide port-level bulk I/O — `ExpanderBamT<NativeGpio>` won't compile (intentionally: native GPIO has real PWM and doesn't need software BAM).
+### `PCA9685` (pwm/pca9685.h)
 
-### `AW9523B` (gpio/aw9523b.h)
+NXP PCA9685 — 16-channel 12-bit I²C PWM driver. Programmable frequency 24-1526 Hz (one frequency per chip; affects all 16 channels). Push-pull or open-drain output. Used on the HubFX 8-channel rev at I²C address `0x70` driving N-MOSFET gates for LED rails. Drop-in for servo / motor / generic-PWM duty with appropriate `setFrequency()`. Extends `I2CDevice`.
 
-Awinic AW9523B — 16-pin I2C GPIO expander with per-pin LED constant-current drivers. Each pin independently operates in GPIO mode or LED mode (256-step HW PWM at ~430 Hz). Extends `I2CDevice`. I2C address range: 0x58–0x5B.
+### `LedControlT<TPwm>` (led/led_control.h)
 
-### `PCAL6416A` (gpio/pcal6416a.h)
-
-NXP PCAL6416AHF — 16-pin I2C GPIO expander. GPIO only (no HW PWM). Provides port-level bulk I/O with configurable drive strength, pull resistors, and interrupt masking. Extends `I2CDevice`. I2C address range: 0x20–0x27.
-
-### `ExpanderBamT<T>` (led/bam_led_drv.h)
-
-Software Binary Angle Modulation for GPIO-only I2C expanders. Wraps one port (8 pins) of a port-level expander. Accepts 0-255 PWM values mapped to 32 levels via a gamma-2.2 perceptual LUT (`BamLut::pwmToBam()`). Produces ~100 Hz flicker-free output with one I2C port-write per BAM tick.
-
-**Dual role:** BAM engine (call `update()` in loop) AND GPIO provider (pass to `LedControlT` / `LedManager`).
-
-### `LedControlT<TGpio>` (led/led_control.h)
-
-Single LED channel. Stores `{TGpio* _gpio, uint8_t _pin}` and calls the provider directly. Supports on/off, PWM brightness (0-100%), master brightness scaling, active-high/low polarity, and event-based animations via `ILedOutput`.
+Single LED channel. Stores `{TPwm* _gpio, uint8_t _pin}` and calls the backend directly. Supports on/off, PWM brightness (0-100%), master brightness scaling, active-high/low polarity, and event-based animations via `ILedOutput`.
 
 Default alias: `using LedControl = LedControlT<NativeGpio>`
 
-### `LedManager<N, TGpio>` (led/led_manager.h)
+### `LedManager<N, TPwm>` (led/led_manager.h)
 
-Multi-channel manager. Holds `N` `LedControlT<TGpio>` instances, `N` `LedEventSeq` sequences, per-channel enable/disable, and master brightness. 1-based channel numbering (0 = all channels). Implements `ILedManager` for protocol server binding.
+Multi-channel manager. Holds `N` `LedControlT<TPwm>` instances, `N` `LedEventSeq` sequences, per-channel enable/disable, and master brightness. 1-based channel numbering (0 = all channels). Implements `ILedManager` for protocol server binding.
 
 Default: `LedManager<N>` = `LedManager<N, NativeGpio>`
 
