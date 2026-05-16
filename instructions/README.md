@@ -30,6 +30,27 @@ Task: "Work on file upload protocol (stream, windowed, flow control)"
   → Read: 10-UPLOAD-PROTOCOL-REFACTOR.md
   → Reference: controllers/hubfx/esp32s3/README.md § Stream Upload Architecture
 
+Task: "Add an on-board (non-USB) expander co-processor — PWM expander, sensor frontend, etc."
+  → Read: 14-ONBOARD-COPROCESSOR.md
+  → Pattern: ESP32-C3 over UART, master-bridged flashing
+  → Cross-reference: 02-NEW-CONTROLLER.md (7-file pattern still applies)
+
+Task: "Migrate an expander board to the generic component-collection protocol"
+  → Read: 15-GENERIC-EXPANDER-REFACTOR.md
+  → Lib skeleton: controllers/lib/sfx_peripherals/collections/ + sfx_expander/ (currently sfx_slave/ pre-rename)
+  → Per-board steps: GunFX → GearControl → LightFX (in that order)
+
+Task: "Design or audit an expander board firmware (post-pivot)"
+  → Read: 16-EXPANDER-BOARD-DESIGN.md
+  → Covers: core protocol surface (INIT / KEEPALIVE / REBOOT / I2C_SCAN / LOG / IDENTIFY)
+  → Covers: expander protocol surface (component collections, async events, status broadcast)
+  → Covers: persistence rules (only /board.yaml + /.system/board.guid — no general file-system on expanders)
+
+Task: "Compose a board's system services (storage / audio / battery / config / USB host / expander bus)"
+  → Read: 17-SYSTEM-SERVICES.md
+  → Covers: CoreCommandServer<...ServicePolicies> composition, deterministic UUIDv5 board GUID,
+            per-port GUIDs, storage backends as variadic policy, IDENTIFY payload extension
+
 Task: "Work on HubFX"
   → Target: controllers/hubfx/esp32s3/ (HubFX Pico is OBSOLETE)
   → Reference: controllers/hubfx/pico/ (frozen, consult for patterns only)
@@ -49,13 +70,19 @@ Protocol:
   endianness: "little-endian"
 
 Packet_Ranges:
-  GunFX: "0x01-0x2F"
-  LightFX: "0x40-0x5F"
-  GearControl: "0x60-0x7F"
-  HubFX: "0x80-0xAF"
-  Streaming: "0xA4-0xA6"
-  Available: "0xB0-0xEE"
-  Core: "0xEF-0xFF"
+  Expander_Identity: "0x01-0x0F" # COMPONENT_LIST, IDENT_*, EXPANDER_STATUS_BROADCAST/RATE
+  Expander_Servo:    "0x10-0x2F" # servo control + async target-reached
+  Expander_PWM:      "0x30-0x4F" # PWM control + mode mutability + sensing query
+  Expander_LED:      "0x50-0x7F" # LED control + event-sequence runtime + async program-done
+  HubFX:             "0x80-0xAF"
+  Streaming:         "0xA4-0xA6"
+  Available:         "0xB0-0xEE"
+  Core:              "0xEF-0xFF"
+# Hard cutover 2026-05-06: per-board ranges (0x01-0x2F GunFX,
+# 0x40-0x5F LightFX, 0x60-0x7F GearControl) RETIRED — boards migrate
+# in one PR each with no compatibility window.  The 0x01-0x7F space
+# is now the single generic-expander range.  See
+# instructions/15-GENERIC-EXPANDER-REFACTOR.md.
 
 Controllers:
   gunfx: { path: "controllers/gunfx/pico/", range: "0x01-0x2F" }
@@ -383,3 +410,7 @@ Sync_Groups:
 | [08-AUDIOTOOLS.md](08-AUDIOTOOLS.md) | AudioTools library reference (3rd-party, HubFX audio engine) |
 | [09-CONSOLE-OUTPUT.md](09-CONSOLE-OUTPUT.md) | Console output schema for Go CLI |
 | [10-UPLOAD-PROTOCOL-REFACTOR.md](10-UPLOAD-PROTOCOL-REFACTOR.md) | Upload protocol modes (stream, windowed), flow control, ring buffer architecture |
+| [14-ONBOARD-COPROCESSOR.md](14-ONBOARD-COPROCESSOR.md) | On-board UART-attached expander (ESP32-C3 PWM expander pattern, master-bridged flashing) |
+| [15-GENERIC-EXPANDER-REFACTOR.md](15-GENERIC-EXPANDER-REFACTOR.md) | Pivot to generic expander protocol — component collections (servo / PWM / LED), per-board migration plan |
+| [16-EXPANDER-BOARD-DESIGN.md](16-EXPANDER-BOARD-DESIGN.md) | Expander-board design contract — anatomy of a firmware, full core + expander protocol surface, persistence rules, migration recipe |
+| [17-SYSTEM-SERVICES.md](17-SYSTEM-SERVICES.md) | `CoreCommandServer<...ServicePolicies>` composition, deterministic board GUID (UUIDv5), per-port GUIDs, storage backends as policy |

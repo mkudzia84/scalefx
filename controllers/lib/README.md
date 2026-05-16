@@ -64,13 +64,11 @@ No circular dependencies. Each library depends only on sfx_platform (foundation)
 | `server/config_server.h` | sfx_config | BusServer handler for CONFIG commands |
 | `client/config_client.h` | sfx_config | BusClient for config commands |
 | `usb/usb_host.h` | sfx_usb | Abstract USB Host interface |
-| `gpio/gpio_expander.h` | sfx_peripherals | GPIO provider concept, common types, SFINAE traits |
-| `gpio/native_gpio.h` | sfx_peripherals | MCU GPIO wrapper (singleton, HW PWM via analogWrite) |
-| `gpio/aw9523b.h` | sfx_peripherals | AW9523B I2C GPIO expander (HW LED PWM, 256-step) |
-| `gpio/pcal6416a.h` | sfx_peripherals | PCAL6416A I2C GPIO expander (port-level bulk I/O) |
-| `led/led_control.h` | sfx_peripherals | LedControlT\<TGpio\> single-channel LED controller |
-| `led/led_manager.h` | sfx_peripherals | LedManager\<N, TGpio\> multi-channel LED manager |
-| `led/bam_led_drv.h` | sfx_peripherals | ExpanderBamT\<T\> software BAM engine + GPIO provider |
+| `pwm/pwm_output.h` | sfx_peripherals | PwmOutput concept — single duck-typed surface for pin-level PWM backends |
+| `gpio/native_gpio.h` | sfx_peripherals | MCU GPIO wrapper (singleton, HW PWM via analogWrite). PwmOutput backend. |
+| `pwm/pca9685.h` | sfx_peripherals | NXP PCA9685 — 16-channel 12-bit I²C PWM driver. PwmOutput backend. |
+| `led/led_control.h` | sfx_peripherals | LedControlT\<TPwm\> single-channel LED controller |
+| `led/led_manager.h` | sfx_peripherals | LedManager\<N, TPwm\> multi-channel LED manager |
 | `led/led_events.h` | sfx_peripherals | LED animation events (On, Off, Flash, Fade, Beacon) |
 | `led/led_event_seq.h` | sfx_peripherals | Looping LED event sequence player |
 | `servo/srv_control.h` | sfx_peripherals | Servo motion profiling |
