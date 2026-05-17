@@ -39,7 +39,7 @@
  */
 
 #define FIRMWARE_VERSION "2.3.0"
-#define BUILD_NUMBER 9
+#define BUILD_NUMBER 12
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -55,6 +55,8 @@
 #include <pwm/pca9685.h>
 #include <power/ina226.h>
 #include <power/ina226_sensor.h>
+
+#include "expanders/expander_service.h"
 
 // ════════════════════════════════════════════════════════════════════════
 //  Board pin / address map (DevKitC-1 + HubFX 8-channel rev)
@@ -124,7 +126,8 @@ namespace Pwm {
 
 // ── Board class ───────────────────────────────────────────────────────
 
-class HubFxBoard : public sfx_core::BoardOf<HubFxBoard> {
+class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
+                                              hubfx::expanders::ExpanderServicePolicy> {
 public:
     // Hardware drivers — declaration order matters (init order).
     PCA9685 pca;
@@ -219,12 +222,40 @@ void setup() {
     // role on attach — the port's own begin() only sanity-checks args.
     board.initHardware();
 
+    // Expander connect / identify / disconnect notifications.  Installed
+    // BEFORE board.begin() so the very first USB mount fires the user
+    // callbacks.  Three edges to watch:
+    //   - onConnect    — USB mount, kind/vid/pid only (no GUID yet)
+    //   - onIdentified — IDENTIFY response decoded; spec.guid + spec.capabilities
+    //                    are now populated and persisted in the GUID-keyed cache
+    //   - onDisconnect — USB unmount; snapshot still carries the spec
+    auto& expanders = board.policy<hubfx::expanders::ExpanderServicePolicy>();
+    expanders.onConnect([](const hubfx::expanders::ExpanderEntry& e) {
+        SFX_LOG_INFO("[Hub] expander attached: %s (addr=%u vid=0x%04X pid=0x%04X)",
+                     hubfx::expanders::ExpanderKind::getName(e.kind),
+                     e.usbAddr, e.vid, e.pid);
+    });
+    expanders.onIdentified([](const hubfx::expanders::ExpanderEntry& e) {
+        // Master-side wiring goes here later: look up cached config by
+        // e.spec.guid, push it to the expander, bind a typed BusClient, etc.
+        SFX_LOG_INFO("[Hub] expander identified: %s guid=%s fw=%s caps=0x%08lx",
+                     hubfx::expanders::ExpanderKind::getName(e.kind),
+                     e.spec.guid, e.spec.firmwareVersion,
+                     (unsigned long)e.spec.capabilities);
+    });
+    expanders.onDisconnect([](const hubfx::expanders::ExpanderEntry& e) {
+        SFX_LOG_INFO("[Hub] expander detached: %s (addr=%u guid=%s)",
+                     hubfx::expanders::ExpanderKind::getName(e.kind),
+                     e.usbAddr,
+                     e.spec.valid ? e.spec.guid : "?");
+    });
+
     board.begin(FIRMWARE_VERSION, BUILD_NUMBER,
                 Gpio::LED_CONNECTION, Gpio::LED_ERROR);
 
     board.setConnectionTimeoutEnabled(false);     // master — no upstream watchdog
 
-    SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out",
+    SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out / USB expanders",
                  FIRMWARE_VERSION, (unsigned)BUILD_NUMBER);
 }
 

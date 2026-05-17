@@ -115,6 +115,16 @@ After any C++ protocol change: `cd app/go && go build ./cli/` — compiling the 
 - **Go engine** is shared between CLI and Wails Studio. Each controller exposes `Register(eng *Engine)` that wires status parser, async parsers, and command group. Called by `engine/handlers/handlers.go:RegisterDefaults()`. Don't duplicate dispatch logic in `studio/app.go`.
 - **Config persistence** uses `ConfigServicePolicy` (multi-store path-routed) + `ConfigStore<TSchema>` — YAML-first per-device schema in LittleFS. Every controller that includes `ConfigServicePolicy` in its `BoardServer<...>` pack gets `config.reload/save/status` automatically.
 
+## Board GUID
+
+Every ScaleFX board exposes a stable hardware-derived **GUID** so masters can tell two boards of the same kind (e.g. two LightFX expanders) apart and persist per-board state across reconnects.
+
+- **Source.** `sfxGetBoardId(out, maxLen)` in [sfx_platform.h](controllers/lib/sfx_platform/platform/sfx_platform.h) produces an **8-char uppercase hex string** (4 bytes). Pico: last 4 bytes of `pico_unique_board_id_t` (8-byte OTP flash unique-id). ESP32: last 4 bytes of the factory MAC (`esp_efuse_mac_get_default`). Both are immutable per silicon and survive reflashing.
+- **Surface on the wire.** `BoardServerBase::buildDeviceName(prefix)` in [board_server.cpp](controllers/lib/sfx_board/server/board_server.cpp) emits `deviceName = "<Prefix>-<last 4 hex chars>"` — e.g. `"GunFx-3C4D"`. That suffix is the **canonical GUID** broadcast in `INIT_READY` / `IDENTIFY` payloads (16 bits / 65 536 values). Sufficient at ScaleFX scale (a hub hosts ≤ 2 expanders today) but not collision-proof at fleet scale — log a GUID collision if it ever fires.
+- **Extracting the GUID.** Strip everything up to and including the last `-` in `deviceName`. The shared `BoardIdentifier` ([board_identifier.h](controllers/lib/sfx_board/server/board_identifier.h)) is a *separate* user-assigned label in `/board.yaml` — human-readable, mutable, not a hardware GUID. Don't confuse the two.
+- **Master-side use.** `ExpanderServicePolicyT<>` on HubFX issues `IDENTIFY` to every freshly-mounted CDC device, decodes the response, extracts the GUID suffix, and stores the spec in a GUID-keyed history slot. This is what lets the master re-apply cached per-board state when a board reconnects on a different USB port.
+- **Adding a stronger GUID later** (16-bit collision concern): append a full-width `[guidLen:u8][guid:N]` field to the `INIT_READY` / `IDENTIFY` payload — Rule 11 append-only, old masters keep working. Producer: `sfxGetBoardId` already returns 8 hex chars; just emit them all instead of slicing to 4.
+
 ## Specific gotchas
 
 - **BOOTSEL is command `0xF9`** (binary packet), not just a button hold. Flash CLI sends it, then waits for the RPI-RP2 USB drive. `BUILD_NUMBER` auto-increments on every build even if flash verification times out — trust the `INIT_READY` buildNum, not the source define.
