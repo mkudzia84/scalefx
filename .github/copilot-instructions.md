@@ -1310,6 +1310,30 @@ scalefx> servo 1 1500
 
 **Implementation:** `CmdGroup.Prefix` field ([engine/types.go](app/go/engine/types.go)); `FlatCommands` keys entries as `<prefix>:<name>` and stamps the prefix into `CmdEntry.Usage`; `Dispatch` and `CmdHelp` fall through to `suggestPrefixed(name)` when a bare board command is typed. Studio typed APIs (`LightFxApi.*`, `GearControlApi.*`, `GunFxApi.*`, `HubFxApi.*`) are unaffected — only text dispatch carries the prefix. See [13-PASSTHROUGH-ROUTING.md §4.4](../instructions/13-PASSTHROUGH-ROUTING.md).
 
+### 31. Port Direction Is Fixed; Input Count ≤ UART Peripherals
+
+Each port a board declares (`kServoPorts` / `kPwmPorts` / `kHBridgePorts` / `kInputPorts`) has a **direction baked in at compile time**. There is **NO runtime swap between input and output** — once a header is declared as a `ServoPort` (output), it stays output for the firmware's lifetime; once declared as an `InputPort`, it stays input. This is enforced by the role registry: each port kind accepts only a fixed subset of role kinds.
+
+Port-kind direction matrix:
+
+| PortKind | Direction | Multi-modal? | Roles that can attach |
+|----------|-----------|--------------|------------------------|
+| `Servo`   | output | no  | `ServoActuatorRole` |
+| `Pwm`     | output | no  | `LedAnimator`, `DcMotorRole`, `HeaterRole` |
+| `HBridge` | output | no  | `BiDcMotorRole` |
+| `Input`   | input  | **yes** — pulse capture OR UART RX | `RcPwmInputRole`, `PpmInputRole`, `SbusInputRole`, `JetiExInputRole`, `CrsfInputRole`, future |
+
+The **`Input` kind is the only multi-modal port** — at role-attach time the underlying driver configures the GPIO for either edge-IRQ pulse capture (PPM / RC-PWM) or UART RX (SBUS, Jeti EX, CRSF, future serial protocols). Because every `InputPort` may need a UART peripheral simultaneously, the **count of `InputPort`s a board declares MUST NOT exceed the number of free UART peripherals on the platform** so role attachment never starves on UART:
+
+| Platform | UARTs total | Reserved for console | Max `InputPort` count |
+|----------|-------------|----------------------|------------------------|
+| ESP32-S3 | 3 (UART0, UART1, UART2) | UART0 → CH343 USB-UART bridge | **2** |
+| RP2040/RP2350 | 2 (UART0, UART1) | UART0 → console | **1** (extra UARTs via PIO are not counted toward the budget) |
+
+HubFX currently declares **1 `InputPort` on IN_1 (GPIO5)** — well within the ESP32-S3 budget. IN_2..IN_12 are `ServoPort` outputs and cannot be repurposed as inputs at runtime; if a future board variant needs more inputs, declare them as additional `InputPort`s up to the UART limit and reduce the output count accordingly.
+
+This rule supersedes the older "`ServoPort` can be input or output" model — the legacy `ServoPort` input-mode methods (`readMicroseconds`, `supportsInput`) were retired with the InputPort split.
+
 ## Key Architecture Patterns
 
 ### Client-Server Topology
