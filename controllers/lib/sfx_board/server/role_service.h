@@ -4,11 +4,13 @@
  * Handles the 0x40..0x7F generic-expander slice:
  *   - 0x40..0x47  attach / detach / enumeration
  *   - 0x48..0x4F  servo actuator role commands
- *   - 0x50..0x57  RC PWM input role commands
+ *   - 0x50..0x57  RC PWM input role commands (single-channel pulse on InputPort)
  *   - 0x58..0x5F  LED animator role commands
  *   - 0x60..0x67  DC motor role commands
  *   - 0x68..0x6F  Bi-directional DC motor role commands
  *   - 0x70..0x77  Heater role commands
+ *   - 0x78..0x7B  SBUS input role commands
+ *   - 0x7C..0x7F  Jeti EX input role commands
  *
  * The policy holds a `PortRegistryBase*` bound by `BoardOf<TBoard>`
  * before `begin()`.  Per-port role storage lives inside the registry's
@@ -81,6 +83,14 @@ private:
     void handleRcInGetValueReq    (const uint8_t* p, size_t len);
     void handleRcInSetBroadcastHz (const uint8_t* p, size_t len);
 
+    // ── SBUS input ────────────────────────────────────────────────────
+    void handleSbusGetFrameReq    (const uint8_t* p, size_t len);
+    void handleSbusSetBroadcastHz (const uint8_t* p, size_t len);
+
+    // ── Jeti EX input ─────────────────────────────────────────────────
+    void handleJetiExGetFrameReq    (const uint8_t* p, size_t len);
+    void handleJetiExSetBroadcastHz (const uint8_t* p, size_t len);
+
     // ── LED animator ──────────────────────────────────────────────────
     void handleLedQueueLoad     (const uint8_t* p, size_t len);
     void handleLedStart         (const uint8_t* p, size_t len);
@@ -105,18 +115,24 @@ private:
 
     // ── Role emplacement helpers (build role from binding + config bytes) ──
     bool attachServoActuator (ServoBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
-    bool attachRcPwmInput    (ServoBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
+    bool attachRcPwmInput    (InputBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
+    bool attachSbusInput     (InputBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
+    bool attachJetiExInput   (InputBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
     bool attachLedAnimator   (PwmBinding&    b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
     bool attachDcMotor       (PwmBinding&    b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
     bool attachHeater        (PwmBinding&    b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
     bool attachBiDcMotor     (HBridgeBinding& b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
 
     // ── Async event emitters ─────────────────────────────────────────
-    void emitLedQueueDone        (uint8_t portIdx);
-    void emitServoTargetReached  (uint8_t portIdx, uint16_t pos_us);
-    void emitMotorStallEvent     (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
-    void emitBiMotorStallEvent   (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
-    void emitRcInValueBroadcast  (uint8_t portIdx, uint16_t us, bool valid);
+    void emitRoleAttached         (uint8_t portKind, uint8_t portIdx, uint8_t roleKind);
+    void emitRoleDetached         (uint8_t portKind, uint8_t portIdx);
+    void emitLedQueueDone         (uint8_t portIdx);
+    void emitServoTargetReached   (uint8_t portIdx, uint16_t pos_us);
+    void emitMotorStallEvent      (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
+    void emitBiMotorStallEvent    (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
+    void emitRcInValueBroadcast   (uint8_t portIdx, uint16_t us, bool valid);
+    void emitSbusFrameBroadcast   (uint8_t portIdx, const SbusInputRole& role);
+    void emitJetiExFrameBroadcast (uint8_t portIdx, const JetiExInputRole& role);
 
     BoardServerBase*  _ctx = nullptr;
     PortRegistryBase* _reg = nullptr;

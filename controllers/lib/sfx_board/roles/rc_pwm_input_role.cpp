@@ -4,7 +4,19 @@
 
 #include "rc_pwm_input_role.h"
 
+#include <serial/ports.h>   // InputPortFlags::PULSE
+
 namespace sfx_core {
+
+bool RcPwmInputRole::bind(sfx_peripherals::InputPort* port) {
+    if (!port) return false;
+    if ((port->capabilities() & InputPortFlags::PULSE) == 0) return false;
+    if (!port->configurePulseCapture()) return false;
+    _port = port;
+    _latest_us = 0;
+    _valid = false;
+    return true;
+}
 
 bool RcPwmInputRole::read(uint16_t* outUs) const {
     if (!_valid) return false;
@@ -22,7 +34,7 @@ void RcPwmInputRole::tick() {
     if (!_port) return;
 
     uint16_t sample = 0;
-    if (_port->readMicroseconds(&sample)) {
+    if (_port->readPulseUs(&sample)) {
         _latest_us = sample;
         _valid     = true;
     }

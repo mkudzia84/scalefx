@@ -19,9 +19,10 @@
  *
  * Wire layout for PORT_LIST_RESP (single packet, append-only Rule 11):
  *
- *   [numServo:u8]     × [idx:u8][capFlags:u8]
+ *   [numServo:u8]     × [idx:u8][capFlags:u8]      ← ServoPortFlags (legacy; servos are always EMITS now)
  *   [numPwm:u8]       × [idx:u8][senseFlags:u8]
  *   [numHBridge:u8]   × [idx:u8][senseFlags:u8]
+ *   [numInput:u8]     × [idx:u8][capFlags:u8]      ← InputPortFlags (PULSE / SBUS / JETI_EX / UART_RAW)
  */
 
 #ifndef SFX_PORTS_PROTOCOL_H
@@ -35,10 +36,14 @@
 
 namespace PortKind {
     constexpr uint8_t Unknown  = 0x00;  ///< Reserved / "no port" sentinel.
-    constexpr uint8_t Servo    = 0x01;
-    constexpr uint8_t Pwm      = 0x02;
-    constexpr uint8_t HBridge  = 0x03;
-    // 0x04..0xFE reserved for future kinds (e.g., SerialInput for SBUS/Jeti).
+    constexpr uint8_t Servo    = 0x01;  ///< pulse output (always output).
+    constexpr uint8_t Pwm      = 0x02;  ///< PWM output.
+    constexpr uint8_t HBridge  = 0x03;  ///< bidirectional PWM output.
+    constexpr uint8_t Input    = 0x04;  ///< multi-modal input (pulse capture OR UART RX
+                                        ///  for SBUS / Jeti EX / future serial protocols).
+                                        ///  Direction is fixed at declaration; mode is
+                                        ///  selected by the attached role.
+    // 0x05..0xFE reserved.
     constexpr uint8_t Reserved = 0xFF;
 
     inline const char* getName(uint8_t kind) {
@@ -46,6 +51,7 @@ namespace PortKind {
             case Servo:   return "servo";
             case Pwm:     return "pwm";
             case HBridge: return "hbridge";
+            case Input:   return "input";
             default:      return "unknown";
         }
     }
@@ -55,12 +61,31 @@ namespace PortKind {
 // Per-port capability / sense bitmasks
 // ============================================================================
 
+/// Current operating mode of an `InputPort`, surfaced via INPUT_MODE_RESP
+/// for diagnostics.  The mode is selected by the attached role
+/// (RcPwmInputRole → PULSE, SbusInputRole → SBUS, JetiExInputRole → JETI_EX).
+namespace InputMode {
+    constexpr uint8_t IDLE     = 0x00;  ///< no role attached
+    constexpr uint8_t PULSE    = 0x01;
+    constexpr uint8_t SBUS     = 0x02;
+    constexpr uint8_t JETI_EX  = 0x03;
+    constexpr uint8_t UART_RAW = 0x04;
+}
+
 namespace ServoPortFlags {
-    /// `EMITS` / `SAMPLES` rather than OUTPUT / INPUT because the Arduino
-    /// core `#define`s both names as pinMode constants — they would
-    /// clobber namespaced constexpr declarations.
-    constexpr uint8_t EMITS    = 1u << 0;   ///< can emit servo-pulse output
-    constexpr uint8_t SAMPLES  = 1u << 1;   ///< can sample pulse width (RC PWM capture)
+    /// Servo ports are output-only post the InputPort split (Rule 31).
+    /// The capability byte exists for wire-format symmetry — bit 0 is
+    /// always set, signalling "outputs servo pulse".
+    constexpr uint8_t EMITS = 1u << 0;
+}
+
+namespace InputPortFlags {
+    /// Capability bits an InputPort advertises in PORT_LIST_RESP so the
+    /// hub can choose a compatible role for it.
+    constexpr uint8_t PULSE    = 1u << 0;   ///< edge-IRQ pulse capture (RC PWM / PPM)
+    constexpr uint8_t SBUS     = 1u << 1;   ///< UART 100000 8E2 inverted (Futaba SBUS)
+    constexpr uint8_t JETI_EX  = 1u << 2;   ///< UART 125/250 kbaud 8N1 half-duplex
+    constexpr uint8_t UART_RAW = 1u << 3;   ///< user-specified UART parameters (CRSF / future)
 }
 
 namespace PortSenseFlags {
@@ -89,12 +114,18 @@ namespace PortPacket {
     constexpr uint8_t PWM_PORT_READ_SENSE  = 0x22;  ///< [idx:u8] → PWM_PORT_SENSE_RESP
     constexpr uint8_t PWM_PORT_SENSE_RESP  = 0x23;  ///< [idx:u8][v_mV:i16LE][i_mA:i16LE][t_cx10:i16LE]
 
-    // ── H-bridge port raw commands (0x30..0x3F) ───────────────────────
+    // ── H-bridge port raw commands (0x30..0x37) ───────────────────────
     constexpr uint8_t HBRIDGE_SET_SIGNED   = 0x30;  ///< [idx:u8][signed_duty:i16LE] → ACK
     constexpr uint8_t HBRIDGE_BRAKE        = 0x31;  ///< [idx:u8] → ACK  (short brake both pins)
     constexpr uint8_t HBRIDGE_COAST        = 0x32;  ///< [idx:u8] → ACK  (open both pins)
     constexpr uint8_t HBRIDGE_READ_SENSE   = 0x33;  ///< [idx:u8] → HBRIDGE_SENSE_RESP
     constexpr uint8_t HBRIDGE_SENSE_RESP   = 0x34;  ///< [idx:u8][v_mV:i16LE][i_mA:i16LE][t_cx10:i16LE]
+
+    // ── Input port raw commands (0x38..0x3F) ──────────────────────────
+    constexpr uint8_t INPUT_READ_PULSE     = 0x38;  ///< [idx:u8] → INPUT_PULSE_RESP (pulse-capture mode only)
+    constexpr uint8_t INPUT_PULSE_RESP     = 0x39;  ///< [idx:u8][us:u16LE][valid:u8]
+    constexpr uint8_t INPUT_GET_MODE       = 0x3A;  ///< [idx:u8] → INPUT_MODE_RESP
+    constexpr uint8_t INPUT_MODE_RESP      = 0x3B;  ///< [idx:u8][mode:u8]  (see InputMode below)
 }
 
 // ============================================================================

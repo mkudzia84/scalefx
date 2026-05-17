@@ -1,14 +1,14 @@
 /*
- * RcPwmInputRole — pulse-width capture on a `ServoPort` in input mode.
+ * RcPwmInputRole — single-channel pulse-width capture on an `InputPort`.
  *
- * Stub for the single-channel input-capture role.  Each tick polls the
- * port via `readMicroseconds()`; if a fresh sample is available, the
- * latest pulse width is cached for synchronous reads and (optionally)
- * broadcast at a configurable rate.
+ * Attaches to an `InputPort` and switches it to PULSE mode (edge-IRQ
+ * timing capture).  Each tick polls the port; if a fresh sample is
+ * available, the latest pulse width is cached for synchronous reads
+ * and, optionally, broadcast at a configurable rate.
  *
- * SBUS / Jeti EX / PPM (multi-channel framed protocols) are NOT this
- * role — they need their own `SerialInputPort` driver type when
- * implemented.  See `instructions/15-GENERIC-EXPANDER-REFACTOR.md`.
+ * SBUS / Jeti EX (framed multi-channel protocols) live in their own
+ * roles — `SbusInputRole` / `JetiExInputRole` — since they need a
+ * decoder that consumes a UART byte stream.
  */
 
 #ifndef SFX_RC_PWM_INPUT_ROLE_H
@@ -18,7 +18,7 @@
 #include <cstdint>
 #include <functional>
 
-#include <ports/servo_port.h>
+#include <ports/input_port.h>
 
 namespace sfx_core {
 
@@ -28,13 +28,12 @@ public:
     using BroadcastCallback = std::function<void(uint16_t us, bool valid)>;
 
     RcPwmInputRole() = default;
-    explicit RcPwmInputRole(sfx_peripherals::ServoPort* port) : _port(port) {}
+    explicit RcPwmInputRole(sfx_peripherals::InputPort* port) { bind(port); }
 
-    bool bind(sfx_peripherals::ServoPort* port) {
-        if (!port || !port->supportsInput()) return false;
-        _port = port;
-        return true;
-    }
+    /// Switches the port into PULSE mode.  Returns false if the port
+    /// doesn't advertise pulse-capture capability or the mode switch
+    /// failed (peripheral busy etc.).
+    bool bind(sfx_peripherals::InputPort* port);
 
     /// Read the most recent valid sample.  Returns false if the port
     /// hasn't produced a sample yet (`outUs` left unmodified).
@@ -53,7 +52,7 @@ public:
     void tick();
 
 private:
-    sfx_peripherals::ServoPort* _port = nullptr;
+    sfx_peripherals::InputPort* _port = nullptr;
 
     uint16_t _latest_us           = 0;
     bool     _valid               = false;

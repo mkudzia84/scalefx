@@ -5,7 +5,8 @@
  *   - 0x10..0x17  enumeration (`PORT_LIST_REQ` → `PORT_LIST_RESP`)
  *   - 0x18..0x1F  servo port raw access
  *   - 0x20..0x2F  PWM port raw access
- *   - 0x30..0x3F  H-bridge port raw access
+ *   - 0x30..0x37  H-bridge port raw access
+ *   - 0x38..0x3F  Input port raw access (PULSE / mode query)
  *
  * Holds a `PortRegistryBase*` bound by `BoardOf<TBoard>` before
  * `begin()` fires.  Raw access is **rejected with `PORT_HAS_ROLE`** if
@@ -75,6 +76,10 @@ private:
     void handleHBridgeBrake    (const uint8_t* p, size_t len);
     void handleHBridgeCoast    (const uint8_t* p, size_t len);
     void handleHBridgeReadSense(const uint8_t* p, size_t len);
+
+    // Input raw access
+    void handleInputReadPulse(const uint8_t* p, size_t len);
+    void handleInputGetMode  (const uint8_t* p, size_t len);
 
     BoardServerBase*  _ctx = nullptr;
     PortRegistryBase* _reg = nullptr;

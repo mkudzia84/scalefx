@@ -9,20 +9,6 @@
 
 namespace sfx_core {
 
-namespace {
-
-// Map a role command opcode to the port-kind the command targets.
-// (Servo: 0x48..0x57; Pwm: 0x58..0x67 + 0x70..0x77; HBridge: 0x68..0x6F)
-constexpr uint8_t portKindForRoleCmd(uint8_t op) {
-    if (op >= 0x48 && op <= 0x57) return PortKind::Servo;
-    if (op >= 0x58 && op <= 0x67) return PortKind::Pwm;
-    if (op >= 0x68 && op <= 0x6F) return PortKind::HBridge;
-    if (op >= 0x70 && op <= 0x77) return PortKind::Pwm;
-    return PortKind::Unknown;
-}
-
-}  // namespace
-
 // ── Top-level dispatch ──────────────────────────────────────────────
 
 CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, size_t len) {
@@ -63,6 +49,14 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
         case RolePacket::HEATER_SET_TARGET:     handleHeaterSetTarget(p, len);      break;
         case RolePacket::HEATER_GET_STATUS_REQ: handleHeaterGetStatus(p, len);      break;
 
+        // SBUS input
+        case RolePacket::SBUS_GET_FRAME_REQ:    handleSbusGetFrameReq(p, len);      break;
+        case RolePacket::SBUS_SET_BROADCAST_HZ: handleSbusSetBroadcastHz(p, len);   break;
+
+        // Jeti EX input
+        case RolePacket::JETIEX_GET_FRAME_REQ:    handleJetiExGetFrameReq(p, len);     break;
+        case RolePacket::JETIEX_SET_BROADCAST_HZ: handleJetiExSetBroadcastHz(p, len);  break;
+
         default:                                return CommandHandleResult::NotMyCommand;
     }
     return CommandHandleResult::Handled;
@@ -100,6 +94,15 @@ void RoleServicePolicy::update() {
             }
         }, b->role);
     }
+    for (uint8_t i = 0; i < _reg->numInputPorts(); i++) {
+        auto* b = _reg->inputAt(i);
+        if (!b) continue;
+        std::visit([](auto& r) {
+            if constexpr (!std::is_same_v<std::decay_t<decltype(r)>, std::monostate>) {
+                r.tick();
+            }
+        }, b->role);
+    }
 }
 
 // ── ROLE_ATTACH / ROLE_DETACH / ROLE_LIST ───────────────────────────
@@ -120,7 +123,6 @@ void RoleServicePolicy::handleAttach(const uint8_t* p, size_t len) {
             if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
             switch (roleKind) {
                 case RoleKind::ServoActuator: ok = attachServoActuator(*b, portIdx, cfg, cfgLen); break;
-                case RoleKind::RcPwmInput:    ok = attachRcPwmInput   (*b, portIdx, cfg, cfgLen); break;
                 default: _ctx->sendNack(RoleError::ROLE_KIND_NOT_SUPPORTED); return;
             }
             break;
@@ -145,11 +147,26 @@ void RoleServicePolicy::handleAttach(const uint8_t* p, size_t len) {
             }
             break;
         }
+        case PortKind::Input: {
+            auto* b = _reg->inputAt(portIdx);
+            if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+            switch (roleKind) {
+                case RoleKind::RcPwmInput:  ok = attachRcPwmInput (*b, portIdx, cfg, cfgLen); break;
+                case RoleKind::SbusInput:   ok = attachSbusInput  (*b, portIdx, cfg, cfgLen); break;
+                case RoleKind::JetiExInput: ok = attachJetiExInput(*b, portIdx, cfg, cfgLen); break;
+                default: _ctx->sendNack(RoleError::ROLE_KIND_NOT_SUPPORTED); return;
+            }
+            break;
+        }
         default: _ctx->sendNack(PortError::PORT_NOT_FOUND); return;
     }
 
-    if (ok) _ctx->sendAck();
-    else    _ctx->sendNack(RoleError::ROLE_CONFIG_INVALID);
+    if (ok) {
+        _ctx->sendAck();
+        emitRoleAttached(portKind, portIdx, roleKind);
+    } else {
+        _ctx->sendNack(RoleError::ROLE_CONFIG_INVALID);
+    }
 }
 
 void RoleServicePolicy::handleDetach(const uint8_t* p, size_t len) {
@@ -179,14 +196,23 @@ void RoleServicePolicy::handleDetach(const uint8_t* p, size_t len) {
             b->role.emplace<std::monostate>();
             break;
         }
+        case PortKind::Input: {
+            auto* b = _reg->inputAt(portIdx);
+            if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+            // Release the peripheral the previous role had claimed.
+            if (b->port) b->port->disable();
+            b->role.emplace<std::monostate>();
+            break;
+        }
         default: _ctx->sendNack(PortError::PORT_NOT_FOUND); return;
     }
     _ctx->sendAck();
+    emitRoleDetached(portKind, portIdx);
 }
 
 void RoleServicePolicy::handleList() {
     // [count:u8] × [portKind, portIdx, roleKind, flags]
-    uint8_t buf[1 + 16*4];
+    uint8_t buf[1 + 32*4];
     size_t  off = 1;
     uint8_t count = 0;
 
@@ -204,7 +230,6 @@ void RoleServicePolicy::handleList() {
         if (!b || !b->hasRole()) continue;
         uint8_t rk = RoleKind::None;
         if (std::holds_alternative<ServoActuatorRole>(b->role)) rk = RoleKind::ServoActuator;
-        else if (std::holds_alternative<RcPwmInputRole>(b->role)) rk = RoleKind::RcPwmInput;
         appendIfAttached(PortKind::Servo, i, rk);
     }
     for (uint8_t i = 0; i < _reg->numPwmPorts(); i++) {
@@ -223,6 +248,15 @@ void RoleServicePolicy::handleList() {
         if (std::holds_alternative<BiDcMotorRole>(b->role)) rk = RoleKind::BiDcMotor;
         appendIfAttached(PortKind::HBridge, i, rk);
     }
+    for (uint8_t i = 0; i < _reg->numInputPorts(); i++) {
+        auto* b = _reg->inputAt(i);
+        if (!b || !b->hasRole()) continue;
+        uint8_t rk = RoleKind::None;
+        if      (std::holds_alternative<RcPwmInputRole>(b->role))  rk = RoleKind::RcPwmInput;
+        else if (std::holds_alternative<SbusInputRole>(b->role))   rk = RoleKind::SbusInput;
+        else if (std::holds_alternative<JetiExInputRole>(b->role)) rk = RoleKind::JetiExInput;
+        appendIfAttached(PortKind::Input, i, rk);
+    }
 
     buf[0] = count;
     _ctx->sendRawPacket(RolePacket::ROLE_LIST_RESP, _ctx->currentTag(), buf, off);
@@ -230,7 +264,7 @@ void RoleServicePolicy::handleList() {
 
 // ── Role-emplacement helpers ────────────────────────────────────────
 
-bool RoleServicePolicy::attachServoActuator(ServoBinding& b, uint8_t /*portIdx*/,
+bool RoleServicePolicy::attachServoActuator(ServoBinding& b, uint8_t portIdx,
                                             const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<ServoActuatorRole>(b.port);
     // Optional config: [minUs:u16LE][maxUs:u16LE][maxVel_us_per_s:u16LE][reversed:u8]
@@ -241,35 +275,76 @@ bool RoleServicePolicy::attachServoActuator(ServoBinding& b, uint8_t /*portIdx*/
     }
     if (cfgLen >= 6) role.setMaxVelocity_us_per_s(SfxWire::getU16LE(&cfg[4]));
     if (cfgLen >= 7) role.setReversed(cfg[6] != 0);
-    const uint8_t portIdx = (uint8_t)(&b - _reg->servoAt(0));
     role.onTargetReached([this, portIdx](uint16_t pos) { emitServoTargetReached(portIdx, pos); });
     return true;
 }
 
-bool RoleServicePolicy::attachRcPwmInput(ServoBinding& b, uint8_t /*portIdx*/,
+bool RoleServicePolicy::attachRcPwmInput(InputBinding& b, uint8_t portIdx,
                                          const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<RcPwmInputRole>();
     if (!role.bind(b.port)) { b.role.emplace<std::monostate>(); return false; }
     // Optional config: [broadcastHz:u8]
     if (cfgLen >= 1) role.setBroadcastHz(cfg[0]);
-    const uint8_t portIdx = (uint8_t)(&b - _reg->servoAt(0));
     role.onBroadcast([this, portIdx](uint16_t us, bool valid) {
         emitRcInValueBroadcast(portIdx, us, valid);
     });
     return true;
 }
 
-bool RoleServicePolicy::attachLedAnimator(PwmBinding& b, uint8_t /*portIdx*/,
+bool RoleServicePolicy::attachSbusInput(InputBinding& b, uint8_t portIdx,
+                                        const uint8_t* cfg, size_t cfgLen) {
+    auto& role = b.role.emplace<SbusInputRole>();
+    if (!role.bind(b.port)) { b.role.emplace<std::monostate>(); return false; }
+    // Optional config: [broadcastHz:u8]
+    if (cfgLen >= 1) role.setBroadcastHz(cfg[0]);
+    role.onBroadcast([this, portIdx](uint8_t /*ch*/, bool /*valid*/,
+                                     bool /*failsafe*/, bool /*frameLost*/) {
+        // The broadcast packet rebuilds the full channel payload —
+        // walk the role each tick via the registry.
+        auto* binding = _reg->inputAt(portIdx);
+        if (!binding) return;
+        if (auto* r = std::get_if<SbusInputRole>(&binding->role)) {
+            emitSbusFrameBroadcast(portIdx, *r);
+        }
+    });
+    return true;
+}
+
+bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
+                                          const uint8_t* cfg, size_t cfgLen) {
+    auto& role = b.role.emplace<JetiExInputRole>();
+    // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8]
+    //   baud encoded as kbaud (125 / 250); 0 = use default 125 000.
+    uint32_t baud = 125000;
+    if (cfgLen >= 3) {
+        const uint16_t kbaud = ((uint16_t)cfg[1] << 8) | cfg[2];
+        if (kbaud == 250) baud = 250000;
+        else if (kbaud == 125 || kbaud == 0) baud = 125000;
+        else baud = (uint32_t)kbaud * 1000;
+    }
+    if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
+    if (cfgLen >= 1) role.setBroadcastHz(cfg[0]);
+    role.onBroadcast([this, portIdx](uint8_t /*ch*/, bool /*valid*/,
+                                     uint32_t /*rxFrames*/, uint32_t /*rxErrors*/) {
+        auto* binding = _reg->inputAt(portIdx);
+        if (!binding) return;
+        if (auto* r = std::get_if<JetiExInputRole>(&binding->role)) {
+            emitJetiExFrameBroadcast(portIdx, *r);
+        }
+    });
+    return true;
+}
+
+bool RoleServicePolicy::attachLedAnimator(PwmBinding& b, uint8_t portIdx,
                                           const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<LedAnimator>(b.port);
     // Optional config: [masterBrightness:u8]
     if (cfgLen >= 1) role.setMasterBrightness(cfg[0]);
-    const uint8_t portIdx = (uint8_t)(&b - _reg->pwmAt(0));
     role.onQueueDone([this, portIdx]() { emitLedQueueDone(portIdx); });
     return true;
 }
 
-bool RoleServicePolicy::attachDcMotor(PwmBinding& b, uint8_t /*portIdx*/,
+bool RoleServicePolicy::attachDcMotor(PwmBinding& b, uint8_t portIdx,
                                       const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<DcMotorRole>(b.port, b.iSense, b.vSense);
     // Optional config: [stallThreshold_mA:u16LE][stallWindow_ms:u16LE]
@@ -278,7 +353,6 @@ bool RoleServicePolicy::attachDcMotor(PwmBinding& b, uint8_t /*portIdx*/,
         const uint16_t wn = SfxWire::getU16LE(&cfg[2]);
         role.setStallGuard(th, wn);
     }
-    const uint8_t portIdx = (uint8_t)(&b - _reg->pwmAt(0));
     role.onStall([this, portIdx](uint16_t peak, uint16_t dur) {
         emitMotorStallEvent(portIdx, peak, dur);
     });
@@ -297,7 +371,7 @@ bool RoleServicePolicy::attachHeater(PwmBinding& b, uint8_t /*portIdx*/,
     return true;
 }
 
-bool RoleServicePolicy::attachBiDcMotor(HBridgeBinding& b, uint8_t /*portIdx*/,
+bool RoleServicePolicy::attachBiDcMotor(HBridgeBinding& b, uint8_t portIdx,
                                         const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<BiDcMotorRole>(b.port, b.iSense, b.vSense);
     if (cfgLen >= 4) {
@@ -305,7 +379,6 @@ bool RoleServicePolicy::attachBiDcMotor(HBridgeBinding& b, uint8_t /*portIdx*/,
         const uint16_t wn = SfxWire::getU16LE(&cfg[2]);
         role.setStallGuard(th, wn);
     }
-    const uint8_t portIdx = (uint8_t)(&b - _reg->hbridgeAt(0));
     role.onStall([this, portIdx](uint16_t peak, uint16_t dur) {
         emitBiMotorStallEvent(portIdx, peak, dur);
     });
@@ -350,7 +423,7 @@ void RoleServicePolicy::handleServoGetStatusReq(const uint8_t* p, size_t len) {
 void RoleServicePolicy::handleRcInGetValueReq(const uint8_t* p, size_t len) {
     if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
     const uint8_t idx = p[0];
-    auto* b = _reg->servoAt(idx);
+    auto* b = _reg->inputAt(idx);
     if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
     auto* r = std::get_if<RcPwmInputRole>(&b->role);
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
@@ -365,9 +438,88 @@ void RoleServicePolicy::handleRcInSetBroadcastHz(const uint8_t* p, size_t len) {
     if (len < 2) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
     const uint8_t idx = p[0];
     const uint8_t hz  = p[1];
-    auto* b = _reg->servoAt(idx);
+    auto* b = _reg->inputAt(idx);
     if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
     auto* r = std::get_if<RcPwmInputRole>(&b->role);
+    if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
+    r->setBroadcastHz(hz);
+    _ctx->sendAck();
+}
+
+// ── SBUS input role commands ────────────────────────────────────────
+
+void RoleServicePolicy::handleSbusGetFrameReq(const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t idx = p[0];
+    auto* b = _reg->inputAt(idx);
+    if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+    auto* r = std::get_if<SbusInputRole>(&b->role);
+    if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
+
+    const uint8_t count = r->channelCount();
+    uint8_t flags = 0;
+    if (r->valid())     flags |= 0x01;
+    if (r->failsafe())  flags |= 0x02;
+    if (r->frameLost()) flags |= 0x04;
+    if (r->ch17())      flags |= 0x08;
+    if (r->ch18())      flags |= 0x10;
+
+    uint8_t out[3 + 16*2];
+    out[0] = idx;
+    out[1] = count;
+    out[2] = flags;
+    size_t off = 3;
+    for (uint8_t i = 0; i < count && off + 2 <= sizeof out; i++) {
+        SfxWire::putU16LE(&out[off], r->channel_us((uint8_t)(i + 1)));
+        off += 2;
+    }
+    _ctx->sendRawPacket(RolePacket::SBUS_FRAME_RESP, _ctx->currentTag(), out, off);
+}
+
+void RoleServicePolicy::handleSbusSetBroadcastHz(const uint8_t* p, size_t len) {
+    if (len < 2) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t idx = p[0];
+    const uint8_t hz  = p[1];
+    auto* b = _reg->inputAt(idx);
+    if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+    auto* r = std::get_if<SbusInputRole>(&b->role);
+    if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
+    r->setBroadcastHz(hz);
+    _ctx->sendAck();
+}
+
+// ── Jeti EX input role commands ─────────────────────────────────────
+
+void RoleServicePolicy::handleJetiExGetFrameReq(const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t idx = p[0];
+    auto* b = _reg->inputAt(idx);
+    if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+    auto* r = std::get_if<JetiExInputRole>(&b->role);
+    if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
+
+    const uint8_t count = r->channelCount();
+    uint8_t out[1 + 1 + 1 + 4 + 4 + 16*2];
+    size_t off = 0;
+    out[off++] = idx;
+    out[off++] = count;
+    out[off++] = r->valid() ? 1 : 0;
+    SfxWire::putU32LE(&out[off], r->rxFrameCount()); off += 4;
+    SfxWire::putU32LE(&out[off], r->rxErrorCount()); off += 4;
+    for (uint8_t i = 0; i < count && off + 2 <= sizeof out; i++) {
+        SfxWire::putU16LE(&out[off], r->channel_us((uint8_t)(i + 1)));
+        off += 2;
+    }
+    _ctx->sendRawPacket(RolePacket::JETIEX_FRAME_RESP, _ctx->currentTag(), out, off);
+}
+
+void RoleServicePolicy::handleJetiExSetBroadcastHz(const uint8_t* p, size_t len) {
+    if (len < 2) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t idx = p[0];
+    const uint8_t hz  = p[1];
+    auto* b = _reg->inputAt(idx);
+    if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+    auto* r = std::get_if<JetiExInputRole>(&b->role);
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
     r->setBroadcastHz(hz);
     _ctx->sendAck();
@@ -578,6 +730,16 @@ void RoleServicePolicy::handleHeaterGetStatus(const uint8_t* p, size_t len) {
 
 // ── Async event emitters ────────────────────────────────────────────
 
+void RoleServicePolicy::emitRoleAttached(uint8_t portKind, uint8_t portIdx, uint8_t roleKind) {
+    uint8_t buf[3] = { portKind, portIdx, roleKind };
+    _ctx->sendRawPacket(RolePacket::ROLE_ATTACHED, SfxWire::TAG_ASYNC, buf, sizeof buf);
+}
+
+void RoleServicePolicy::emitRoleDetached(uint8_t portKind, uint8_t portIdx) {
+    uint8_t buf[2] = { portKind, portIdx };
+    _ctx->sendRawPacket(RolePacket::ROLE_DETACHED, SfxWire::TAG_ASYNC, buf, sizeof buf);
+}
+
 void RoleServicePolicy::emitLedQueueDone(uint8_t portIdx) {
     uint8_t buf[1] = { portIdx };
     _ctx->sendRawPacket(RolePacket::LED_QUEUE_DONE, SfxWire::TAG_ASYNC, buf, sizeof buf);
@@ -612,6 +774,41 @@ void RoleServicePolicy::emitRcInValueBroadcast(uint8_t portIdx, uint16_t us, boo
     SfxWire::putU16LE(&buf[1], us);
     buf[3] = valid ? 1 : 0;
     _ctx->sendRawPacket(RolePacket::RCIN_VALUE_BROADCAST, SfxWire::TAG_ASYNC, buf, sizeof buf);
+}
+
+void RoleServicePolicy::emitSbusFrameBroadcast(uint8_t portIdx, const SbusInputRole& role) {
+    const uint8_t count = role.channelCount();
+    uint8_t flags = 0;
+    if (role.valid())     flags |= 0x01;
+    if (role.failsafe())  flags |= 0x02;
+    if (role.frameLost()) flags |= 0x04;
+    if (role.ch17())      flags |= 0x08;
+    if (role.ch18())      flags |= 0x10;
+
+    uint8_t buf[3 + 16*2];
+    buf[0] = portIdx;
+    buf[1] = count;
+    buf[2] = flags;
+    size_t off = 3;
+    for (uint8_t i = 0; i < count && off + 2 <= sizeof buf; i++) {
+        SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
+        off += 2;
+    }
+    _ctx->sendRawPacket(RolePacket::SBUS_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
+}
+
+void RoleServicePolicy::emitJetiExFrameBroadcast(uint8_t portIdx, const JetiExInputRole& role) {
+    const uint8_t count = role.channelCount();
+    uint8_t buf[3 + 16*2];
+    buf[0] = portIdx;
+    buf[1] = count;
+    buf[2] = role.valid() ? 1 : 0;
+    size_t off = 3;
+    for (uint8_t i = 0; i < count && off + 2 <= sizeof buf; i++) {
+        SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
+        off += 2;
+    }
+    _ctx->sendRawPacket(RolePacket::JETIEX_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
 }
 
 }  // namespace sfx_core

@@ -6,6 +6,8 @@
 
 #include <cstring>
 
+#include <ports/input_port.h>   // InputPort::Mode
+
 namespace sfx_core {
 
 CommandHandleResult PortServicePolicy::handle(uint8_t type, const uint8_t* payload, size_t len) {
@@ -29,6 +31,9 @@ CommandHandleResult PortServicePolicy::handle(uint8_t type, const uint8_t* paylo
         case PortPacket::HBRIDGE_COAST:        handleHBridgeCoast(payload, len);      break;
         case PortPacket::HBRIDGE_READ_SENSE:   handleHBridgeReadSense(payload, len);  break;
 
+        case PortPacket::INPUT_READ_PULSE:     handleInputReadPulse(payload, len);    break;
+        case PortPacket::INPUT_GET_MODE:       handleInputGetMode(payload, len);      break;
+
         default:                               return CommandHandleResult::NotMyCommand;
     }
     return CommandHandleResult::Handled;
@@ -37,10 +42,11 @@ CommandHandleResult PortServicePolicy::handle(uint8_t type, const uint8_t* paylo
 // ── Enumeration ──────────────────────────────────────────────────────
 
 void PortServicePolicy::handlePortListReq() {
-    // Wire layout: [numServo:u8] × [idx:u8][capFlags:u8]
-    //              [numPwm:u8]   × [idx:u8][senseFlags:u8]
+    // Wire layout: [numServo:u8]   × [idx:u8][capFlags:u8]
+    //              [numPwm:u8]     × [idx:u8][senseFlags:u8]
     //              [numHBridge:u8] × [idx:u8][senseFlags:u8]
-    uint8_t buf[1 + 16*2 + 1 + 16*2 + 1 + 16*2];
+    //              [numInput:u8]   × [idx:u8][capFlags:u8]
+    uint8_t buf[1 + 16*2 + 1 + 16*2 + 1 + 16*2 + 1 + 16*2];
     size_t  off = 0;
 
     const uint8_t ns = _reg->numServoPorts();
@@ -49,9 +55,7 @@ void PortServicePolicy::handlePortListReq() {
         const ServoBinding* b = _reg->servoAt(i);
         if (!b || !b->occupied()) break;
         buf[off++] = i;
-        uint8_t flags = ServoPortFlags::EMITS;
-        if (b->port->supportsInput()) flags |= ServoPortFlags::SAMPLES;
-        buf[off++] = flags;
+        buf[off++] = ServoPortFlags::EMITS;    ///< servo ports are output-only post-split
     }
 
     const uint8_t np = _reg->numPwmPorts();
@@ -80,6 +84,15 @@ void PortServicePolicy::handlePortListReq() {
         buf[off++] = flags;
     }
 
+    const uint8_t ni = _reg->numInputPorts();
+    buf[off++] = ni;
+    for (uint8_t i = 0; i < ni; i++) {
+        const InputBinding* b = _reg->inputAt(i);
+        if (!b || !b->occupied()) break;
+        buf[off++] = i;
+        buf[off++] = b->port->capabilities();   ///< InputPortFlags::*
+    }
+
     _ctx->sendRawPacket(PortPacket::PORT_LIST_RESP, _ctx->currentTag(), buf, off);
 }
 
@@ -101,19 +114,12 @@ void PortServicePolicy::handleServoReadUs(const uint8_t* p, size_t len) {
     const uint8_t idx = p[0];
     ServoBinding* b = _reg->servoAt(idx);
     if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
-    uint16_t us = 0;
-    bool valid  = false;
-    if (b->port->supportsInput()) {
-        valid = b->port->readMicroseconds(&us);
-    } else {
-        // Output mode — report last commanded.
-        us    = b->port->microseconds();
-        valid = true;
-    }
+    // Servo ports are output-only (Rule 31) — return last commanded pulse.
+    const uint16_t us = b->port->microseconds();
     uint8_t out[4];
     out[0] = idx;
     SfxWire::putU16LE(&out[1], us);
-    out[3] = valid ? 1 : 0;
+    out[3] = 1;
     _ctx->sendRawPacket(PortPacket::SERVO_PORT_READ_RESP, _ctx->currentTag(), out, sizeof out);
 }
 
@@ -200,6 +206,36 @@ void PortServicePolicy::handleHBridgeReadSense(const uint8_t* p, size_t len) {
     SfxWire::putI16LE(&out[3], b->iSense ? b->iSense->current_mA()      : 0);
     SfxWire::putI16LE(&out[5], b->tSense ? b->tSense->temperature_cx10() : 0);
     _ctx->sendRawPacket(PortPacket::HBRIDGE_SENSE_RESP, _ctx->currentTag(), out, sizeof out);
+}
+
+// ── Input raw ────────────────────────────────────────────────────────
+
+void PortServicePolicy::handleInputReadPulse(const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t idx = p[0];
+    InputBinding* b = _reg->inputAt(idx);
+    if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+
+    uint16_t us = 0;
+    const bool valid = b->port->readPulseUs(&us);
+
+    uint8_t out[4];
+    out[0] = idx;
+    SfxWire::putU16LE(&out[1], us);
+    out[3] = valid ? 1 : 0;
+    _ctx->sendRawPacket(PortPacket::INPUT_PULSE_RESP, _ctx->currentTag(), out, sizeof out);
+}
+
+void PortServicePolicy::handleInputGetMode(const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t idx = p[0];
+    InputBinding* b = _reg->inputAt(idx);
+    if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+
+    uint8_t out[2];
+    out[0] = idx;
+    out[1] = static_cast<uint8_t>(b->port->currentMode());   ///< matches InputMode::* by definition
+    _ctx->sendRawPacket(PortPacket::INPUT_MODE_RESP, _ctx->currentTag(), out, sizeof out);
 }
 
 }  // namespace sfx_core

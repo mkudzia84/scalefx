@@ -31,6 +31,7 @@
 #include <ports/pwm_port.h>
 #include <ports/servo_port.h>
 #include <ports/hbridge_port.h>
+#include <ports/input_port.h>
 #include <ports/sensors.h>
 
 #include "../roles/led_animator.h"
@@ -39,6 +40,8 @@
 #include "../roles/heater_role.h"
 #include "../roles/servo_actuator_role.h"
 #include "../roles/rc_pwm_input_role.h"
+#include "../roles/sbus_input_role.h"
+#include "../roles/jeti_ex_input_role.h"
 
 namespace sfx_core {
 
@@ -50,9 +53,24 @@ namespace sfx_core {
 struct ServoBinding {
     sfx_peripherals::ServoPort* port = nullptr;
 
+    // Servo ports are output-only (Rule 31) — only the actuator role.
     using Role = std::variant<std::monostate,
-                              ServoActuatorRole,
-                              RcPwmInputRole>;
+                              ServoActuatorRole>;
+    Role role;
+
+    bool occupied() const { return port != nullptr; }
+    bool hasRole()  const { return role.index() != 0; }
+};
+
+struct InputBinding {
+    sfx_peripherals::InputPort* port = nullptr;
+
+    // Input-port role pool — every role here drives the port's mode-
+    // switch at attach time (PULSE / SBUS / JETI_EX / UART_RAW).
+    using Role = std::variant<std::monostate,
+                              RcPwmInputRole,
+                              SbusInputRole,
+                              JetiExInputRole>;
     Role role;
 
     bool occupied() const { return port != nullptr; }
@@ -104,26 +122,30 @@ public:
     virtual uint8_t numServoPorts()    const = 0;
     virtual uint8_t numPwmPorts()      const = 0;
     virtual uint8_t numHBridgePorts()  const = 0;
+    virtual uint8_t numInputPorts()    const = 0;
 
     virtual ServoBinding*    servoAt   (uint8_t idx) = 0;
     virtual PwmBinding*      pwmAt     (uint8_t idx) = 0;
     virtual HBridgeBinding*  hbridgeAt (uint8_t idx) = 0;
+    virtual InputBinding*    inputAt   (uint8_t idx) = 0;
 };
 
 // ============================================================================
 // PortRegistry<NS, NP, NH> — sized storage
 // ============================================================================
 
-template <size_t NServos, size_t NPwms, size_t NHBridges>
+template <size_t NServos, size_t NPwms, size_t NHBridges, size_t NInputs>
 class PortRegistry : public PortRegistryBase {
 public:
     static constexpr size_t kNumServos    = NServos;
     static constexpr size_t kNumPwms      = NPwms;
     static constexpr size_t kNumHBridges  = NHBridges;
+    static constexpr size_t kNumInputs    = NInputs;
 
     uint8_t numServoPorts()    const override { return (uint8_t)NServos; }
     uint8_t numPwmPorts()      const override { return (uint8_t)NPwms; }
     uint8_t numHBridgePorts()  const override { return (uint8_t)NHBridges; }
+    uint8_t numInputPorts()    const override { return (uint8_t)NInputs; }
 
     ServoBinding*    servoAt   (uint8_t idx) override {
         return (idx < NServos)   ? &_servos[idx]   : nullptr;
@@ -134,10 +156,14 @@ public:
     HBridgeBinding*  hbridgeAt (uint8_t idx) override {
         return (idx < NHBridges) ? &_hbridges[idx] : nullptr;
     }
+    InputBinding*    inputAt   (uint8_t idx) override {
+        return (idx < NInputs)   ? &_inputs[idx]   : nullptr;
+    }
 
     std::array<ServoBinding,   NServos>    _servos;
     std::array<PwmBinding,     NPwms>      _pwms;
     std::array<HBridgeBinding, NHBridges>  _hbridges;
+    std::array<InputBinding,   NInputs>    _inputs;
 };
 
 }  // namespace sfx_core

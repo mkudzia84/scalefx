@@ -13,12 +13,13 @@
  * Packet ranges (within the generic-expander 0x40..0x7F slice):
  *   0x40..0x47  attach / detach / enumeration
  *   0x48..0x4F  servo actuator role
- *   0x50..0x57  RC PWM input role (servo port in input mode)
+ *   0x50..0x57  RC PWM input role (single-channel pulse on InputPort)
  *   0x58..0x5F  LED animator role
  *   0x60..0x67  DC motor role            (uni-directional, PwmPort)
  *   0x68..0x6F  Bi-directional DC motor  (HBridgePort)
  *   0x70..0x77  Heater role
- *   0x78..0x7F  reserved for future roles
+ *   0x78..0x7B  SBUS input role          (16-ch + flags on InputPort)
+ *   0x7C..0x7F  Jeti EX input role       (channels + telemetry on InputPort)
  *
  * Wire layout — see per-packet comments.
  */
@@ -35,7 +36,9 @@
 namespace RoleKind {
     constexpr uint8_t None          = 0x00;  ///< no role attached / detached sentinel
     constexpr uint8_t ServoActuator = 0x01;  ///< motion profile on a servo port (output mode)
-    constexpr uint8_t RcPwmInput    = 0x02;  ///< pulse-width capture on a servo port (input mode)
+    constexpr uint8_t RcPwmInput    = 0x02;  ///< single-channel pulse capture on an input port (RC PWM)
+    constexpr uint8_t SbusInput     = 0x03;  ///< Futaba SBUS receiver on an input port (UART)
+    constexpr uint8_t JetiExInput   = 0x04;  ///< Jeti Duplex EX Bus on an input port (UART half-duplex)
     constexpr uint8_t LedAnimator   = 0x10;  ///< event-queue LED animation on a PWM port
     constexpr uint8_t DcMotor       = 0x11;  ///< uni-directional motor with optional stall on a PWM port
     constexpr uint8_t Heater        = 0x12;  ///< bang-bang heater on a PWM port with temp sense
@@ -48,6 +51,8 @@ namespace RoleKind {
             case None:          return "none";
             case ServoActuator: return "servo-actuator";
             case RcPwmInput:    return "rc-pwm-input";
+            case SbusInput:     return "sbus-input";
+            case JetiExInput:   return "jeti-ex-input";
             case LedAnimator:   return "led-animator";
             case DcMotor:       return "dc-motor";
             case Heater:        return "heater";
@@ -71,6 +76,17 @@ namespace RolePacket {
     constexpr uint8_t ROLE_LIST_REQ    = 0x42;  ///< [] → ROLE_LIST_RESP
     constexpr uint8_t ROLE_LIST_RESP   = 0x43;
         ///< [count:u8] × [portKind:u8][portIdx:u8][roleKind:u8][flags:u8]
+    constexpr uint8_t ROLE_ATTACHED    = 0x44;
+        ///< async TAG_ASYNC: [portKind:u8][portIdx:u8][roleKind:u8]
+        ///< Fired by the slave immediately after a successful ROLE_ATTACH,
+        ///< so masters watching for state changes don't have to poll
+        ///< ROLE_LIST_REQ.  The payload mirrors the attach request
+        ///< (config bytes are not echoed — query the role's STATUS for
+        ///< current parameters).
+    constexpr uint8_t ROLE_DETACHED    = 0x45;
+        ///< async TAG_ASYNC: [portKind:u8][portIdx:u8]
+        ///< Fired by the slave immediately after a successful
+        ///< ROLE_DETACH (or after the keepalive watchdog clears state).
 
     // ── Servo actuator role (0x48..0x4F) ──────────────────────────────
     constexpr uint8_t SERVO_SET_TARGET      = 0x48;  ///< [portIdx:u8][target_us:u16LE] → ACK
@@ -113,6 +129,24 @@ namespace RolePacket {
     constexpr uint8_t HEATER_SET_TARGET       = 0x70;  ///< [portIdx:u8][target_cx10:i16LE] → ACK
     constexpr uint8_t HEATER_GET_STATUS_REQ   = 0x71;  ///< [portIdx:u8] → HEATER_STATUS_RESP
     constexpr uint8_t HEATER_STATUS_RESP      = 0x72;  ///< [portIdx:u8][target_cx10:i16LE][actual_cx10:i16LE][duty:u16LE][flags:u8]
+
+    // ── SBUS input role (0x78..0x7B) ──────────────────────────────────
+    constexpr uint8_t SBUS_GET_FRAME_REQ      = 0x78;  ///< [portIdx:u8] → SBUS_FRAME_RESP
+    constexpr uint8_t SBUS_FRAME_RESP         = 0x79;
+        ///< [portIdx:u8][count:u8][flags:u8][channels:u16LE × count]
+        ///< flags: bit0=valid, bit1=failsafe, bit2=frameLost, bit3=ch17, bit4=ch18
+    constexpr uint8_t SBUS_SET_BROADCAST_HZ   = 0x7A;  ///< [portIdx:u8][hz:u8] → ACK (0 = off)
+    constexpr uint8_t SBUS_FRAME_BROADCAST    = 0x7B;
+        ///< async TAG_ASYNC: [portIdx:u8][count:u8][flags:u8][channels:u16LE × count]
+
+    // ── Jeti EX input role (0x7C..0x7F) ───────────────────────────────
+    constexpr uint8_t JETIEX_GET_FRAME_REQ    = 0x7C;  ///< [portIdx:u8] → JETIEX_FRAME_RESP
+    constexpr uint8_t JETIEX_FRAME_RESP       = 0x7D;
+        ///< [portIdx:u8][count:u8][valid:u8][rxFrames:u32LE][rxErrors:u32LE]
+        ///< [channels:u16LE × count]
+    constexpr uint8_t JETIEX_SET_BROADCAST_HZ = 0x7E;  ///< [portIdx:u8][hz:u8] → ACK (0 = off)
+    constexpr uint8_t JETIEX_FRAME_BROADCAST  = 0x7F;
+        ///< async TAG_ASYNC: [portIdx:u8][count:u8][valid:u8][channels:u16LE × count]
 }
 
 // ============================================================================
