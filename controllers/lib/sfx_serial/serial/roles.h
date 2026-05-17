@@ -1,0 +1,143 @@
+/*
+ * Role wire protocol — runtime role attachment + per-role commands.
+ *
+ * A role is a behaviour ("LED animator", "DC motor", "heater", …) that
+ * runs on top of one declared port.  Roles are attached and detached at
+ * runtime by the hub (typically once during configuration), then driven
+ * by per-role command opcodes.
+ *
+ * Each port can host at most one role at a time.  The role pool per
+ * port-kind is fixed by the firmware's compile-time role variant
+ * (declared in `sfx_board/server/port_registry.h`).
+ *
+ * Packet ranges (within the generic-expander 0x40..0x7F slice):
+ *   0x40..0x47  attach / detach / enumeration
+ *   0x48..0x4F  servo actuator role
+ *   0x50..0x57  RC PWM input role (servo port in input mode)
+ *   0x58..0x5F  LED animator role
+ *   0x60..0x67  DC motor role            (uni-directional, PwmPort)
+ *   0x68..0x6F  Bi-directional DC motor  (HBridgePort)
+ *   0x70..0x77  Heater role
+ *   0x78..0x7F  reserved for future roles
+ *
+ * Wire layout — see per-packet comments.
+ */
+
+#ifndef SFX_ROLES_PROTOCOL_H
+#define SFX_ROLES_PROTOCOL_H
+
+#include <cstdint>
+
+// ============================================================================
+// Role kinds — single-byte enum, append-only (Rule 11)
+// ============================================================================
+
+namespace RoleKind {
+    constexpr uint8_t None          = 0x00;  ///< no role attached / detached sentinel
+    constexpr uint8_t ServoActuator = 0x01;  ///< motion profile on a servo port (output mode)
+    constexpr uint8_t RcPwmInput    = 0x02;  ///< pulse-width capture on a servo port (input mode)
+    constexpr uint8_t LedAnimator   = 0x10;  ///< event-queue LED animation on a PWM port
+    constexpr uint8_t DcMotor       = 0x11;  ///< uni-directional motor with optional stall on a PWM port
+    constexpr uint8_t Heater        = 0x12;  ///< bang-bang heater on a PWM port with temp sense
+    constexpr uint8_t BiDcMotor     = 0x20;  ///< bi-directional motor on an H-bridge port
+    // 0x21..0xFE reserved.
+    constexpr uint8_t Reserved      = 0xFF;
+
+    inline const char* getName(uint8_t kind) {
+        switch (kind) {
+            case None:          return "none";
+            case ServoActuator: return "servo-actuator";
+            case RcPwmInput:    return "rc-pwm-input";
+            case LedAnimator:   return "led-animator";
+            case DcMotor:       return "dc-motor";
+            case Heater:        return "heater";
+            case BiDcMotor:     return "bi-dc-motor";
+            default:            return "unknown";
+        }
+    }
+}
+
+// ============================================================================
+// Wire packet types
+// ============================================================================
+
+namespace RolePacket {
+    // ── Attach / detach / enumeration (0x40..0x47) ────────────────────
+    constexpr uint8_t ROLE_ATTACH      = 0x40;
+        ///< [portKind:u8][portIdx:u8][roleKind:u8][configLen:u8][config:configLen bytes]
+        ///< → ACK / NACK.  Re-emplaces the port's role slot.
+    constexpr uint8_t ROLE_DETACH      = 0x41;
+        ///< [portKind:u8][portIdx:u8] → ACK / NACK.  Re-emplaces as None.
+    constexpr uint8_t ROLE_LIST_REQ    = 0x42;  ///< [] → ROLE_LIST_RESP
+    constexpr uint8_t ROLE_LIST_RESP   = 0x43;
+        ///< [count:u8] × [portKind:u8][portIdx:u8][roleKind:u8][flags:u8]
+
+    // ── Servo actuator role (0x48..0x4F) ──────────────────────────────
+    constexpr uint8_t SERVO_SET_TARGET      = 0x48;  ///< [portIdx:u8][target_us:u16LE] → ACK
+    constexpr uint8_t SERVO_GET_STATUS_REQ  = 0x49;  ///< [portIdx:u8] → SERVO_STATUS_RESP
+    constexpr uint8_t SERVO_STATUS_RESP     = 0x4A;  ///< [portIdx:u8][pos_us:u16LE][target_us:u16LE][vel:i16LE][flags:u8]
+    constexpr uint8_t SERVO_TARGET_REACHED  = 0x4B;  ///< async TAG_ASYNC: [portIdx:u8][pos_us:u16LE]
+    constexpr uint8_t SERVO_MOTION_UPDATE   = 0x4C;  ///< async TAG_ASYNC: [portIdx:u8][pos_us:u16LE][target_us:u16LE][vel:i16LE]
+
+    // ── RC PWM input role (0x50..0x57) ────────────────────────────────
+    constexpr uint8_t RCIN_GET_VALUE_REQ    = 0x50;  ///< [portIdx:u8] → RCIN_VALUE_RESP
+    constexpr uint8_t RCIN_VALUE_RESP       = 0x51;  ///< [portIdx:u8][us:u16LE][valid:u8]
+    constexpr uint8_t RCIN_SET_BROADCAST_HZ = 0x52;  ///< [portIdx:u8][hz:u8] → ACK (0 = off)
+    constexpr uint8_t RCIN_VALUE_BROADCAST  = 0x53;  ///< async TAG_ASYNC: [portIdx:u8][us:u16LE][valid:u8]
+
+    // ── LED animator role (0x58..0x5F) ────────────────────────────────
+    constexpr uint8_t LED_QUEUE_LOAD        = 0x58;  ///< [portIdx:u8][count:u8] × event(N bytes) → ACK
+    constexpr uint8_t LED_START             = 0x59;  ///< [portIdx:u8] → ACK
+    constexpr uint8_t LED_STOP              = 0x5A;  ///< [portIdx:u8] → ACK
+    constexpr uint8_t LED_SET_BRIGHTNESS    = 0x5B;  ///< [portIdx:u8][brightness:u8] → ACK (master scale)
+    constexpr uint8_t LED_GET_STATUS_REQ    = 0x5C;  ///< [portIdx:u8] → LED_STATUS_RESP
+    constexpr uint8_t LED_STATUS_RESP       = 0x5D;  ///< [portIdx:u8][brightness:u8][playing:u8][queueDepth:u8]
+    constexpr uint8_t LED_QUEUE_DONE        = 0x5E;  ///< async TAG_ASYNC: [portIdx:u8]
+
+    // ── DC motor role (uni-directional, 0x60..0x67) ───────────────────
+    constexpr uint8_t MOTOR_SET_DUTY        = 0x60;  ///< [portIdx:u8][duty:u16LE] → ACK
+    constexpr uint8_t MOTOR_BRAKE           = 0x61;  ///< [portIdx:u8] → ACK
+    constexpr uint8_t MOTOR_GET_STATUS_REQ  = 0x62;  ///< [portIdx:u8] → MOTOR_STATUS_RESP
+    constexpr uint8_t MOTOR_STATUS_RESP     = 0x63;  ///< [portIdx:u8][duty:u16LE][v_mV:i16LE][i_mA:i16LE][stallFlags:u8]
+    constexpr uint8_t MOTOR_STALL_EVENT     = 0x64;  ///< async TAG_ASYNC: [portIdx:u8][peak_mA:u16LE][duration_ms:u16LE]
+
+    // ── Bi-directional DC motor role (0x68..0x6F) ─────────────────────
+    constexpr uint8_t BIMOTOR_SET_SIGNED      = 0x68;  ///< [portIdx:u8][signed_duty:i16LE] → ACK
+    constexpr uint8_t BIMOTOR_BRAKE           = 0x69;  ///< [portIdx:u8] → ACK
+    constexpr uint8_t BIMOTOR_COAST           = 0x6A;  ///< [portIdx:u8] → ACK
+    constexpr uint8_t BIMOTOR_GET_STATUS_REQ  = 0x6B;  ///< [portIdx:u8] → BIMOTOR_STATUS_RESP
+    constexpr uint8_t BIMOTOR_STATUS_RESP     = 0x6C;  ///< [portIdx:u8][signed_duty:i16LE][v_mV:i16LE][i_mA:i16LE][stallFlags:u8]
+    constexpr uint8_t BIMOTOR_STALL_EVENT     = 0x6D;  ///< async TAG_ASYNC: [portIdx:u8][peak_mA:u16LE][duration_ms:u16LE]
+
+    // ── Heater role (0x70..0x77) ──────────────────────────────────────
+    constexpr uint8_t HEATER_SET_TARGET       = 0x70;  ///< [portIdx:u8][target_cx10:i16LE] → ACK
+    constexpr uint8_t HEATER_GET_STATUS_REQ   = 0x71;  ///< [portIdx:u8] → HEATER_STATUS_RESP
+    constexpr uint8_t HEATER_STATUS_RESP      = 0x72;  ///< [portIdx:u8][target_cx10:i16LE][actual_cx10:i16LE][duty:u16LE][flags:u8]
+}
+
+// ============================================================================
+// Role-layer error codes (range 0x40..0x4F inside the generic SerialError space)
+// ============================================================================
+
+namespace RoleError {
+    constexpr uint8_t ROLE_NOT_ATTACHED        = 0x40;  ///< command for an empty role slot
+    constexpr uint8_t ROLE_KIND_MISMATCH       = 0x41;  ///< command opcode doesn't match attached role kind
+    constexpr uint8_t ROLE_KIND_NOT_SUPPORTED  = 0x42;  ///< role kind can't run on this port kind
+    constexpr uint8_t ROLE_CONFIG_INVALID      = 0x43;  ///< attach config payload rejected
+    constexpr uint8_t ROLE_NO_SENSE_REQUIRED   = 0x44;  ///< role needs a sense channel the port doesn't have
+    constexpr uint8_t ROLE_QUEUE_FULL          = 0x45;  ///< event queue overflow
+
+    inline const char* getMessage(uint8_t code) {
+        switch (code) {
+            case ROLE_NOT_ATTACHED:       return "Role not attached";
+            case ROLE_KIND_MISMATCH:      return "Role kind mismatch";
+            case ROLE_KIND_NOT_SUPPORTED: return "Role kind not supported on this port";
+            case ROLE_CONFIG_INVALID:     return "Role config payload invalid";
+            case ROLE_NO_SENSE_REQUIRED:  return "Role requires a sense channel this port lacks";
+            case ROLE_QUEUE_FULL:         return "Role queue full";
+            default:                      return nullptr;
+        }
+    }
+}
+
+#endif  // SFX_ROLES_PROTOCOL_H

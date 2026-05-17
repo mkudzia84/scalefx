@@ -65,11 +65,10 @@
 // Diagnostic log output (ring-buffered, COBS-encoded log packets)
 #include "diag_log.h"
 
-// Generic-expander wire protocol (component kinds, LED status,
-// ComponentPacket commands).  Replaces the per-board protocol headers
-// (gunfx/lightfx/gearcontrol) that were archived 2026-05-17.
-#include "components/components.h"
-#include "components/component_kind.h"
-#include "components/led_status.h"
+// Generic-expander wire protocol — port layer + role layer.  The legacy
+// component_kind.h / components.h / led_status.h trio is archived under
+// controllers/archive/sfx_serial_legacy/.
+#include "ports.h"
+#include "roles.h"
 
 #endif // SERIAL_H

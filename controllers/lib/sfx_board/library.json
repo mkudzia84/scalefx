@@ -1,8 +1,8 @@
 {
     "name": "sfx_board",
-    "version": "1.0.0",
-    "description": "ScaleFX board-side framework — server composition + one specific component-collection policy. Server side (server/): BoardServer<...Policies> variadic composer, ServiceContext interface, SystemServicePolicy concept, BoardServicePolicy (universal lifecycle/identify/status/I2C-scan), PacketReader<TDispatch> COBS framer, SfxServer<...UserPolicies> wrapper, StreamWriter (chunked CRC-16/CCITT), and ComponentServicePolicy (generic-expander runtime — servos / pwm / LEDs / battery, addressed by ComponentKind, owns the IDLE/SLAVE/DIRECT lifecycle and async-event emitters) plus BoardIdentifier (runtime-assigned, flash-persisted slave identifier). Client side (client/): CoreClient — master-side typed CommandResult API for talking to component-server slaves, observer chain for async events (SERVO_TARGET_REACHED, LED_QUEUE_DONE, BATTERY_ALERT, ...).",
-    "keywords": ["board", "server", "client", "policy", "board-server", "packet-reader", "stream-writer", "component-service", "core-client", "board-identifier", "indicator", "i2c-scan"],
+    "version": "2.0.0",
+    "description": "ScaleFX board-side framework — `BoardOf<TBoard>` CRTP composer with static port descriptors. server/: BoardServer<...Policies> variadic composer, BoardServicePolicy (universal lifecycle/identify/status/I2C-scan), PacketReader/COBS framer, StreamWriter, PortRegistry (servo / PWM / H-bridge ports with optional sensors), PortServicePolicy (raw port access + enumeration), RoleServicePolicy (runtime role attachment + dispatch), BoardOf<TBoard> CRTP base. roles/: LedAnimator, DcMotorRole, BiDcMotorRole, HeaterRole, ServoActuatorRole, RcPwmInputRole — runtime-attachable functionality on top of the port layer.",
+    "keywords": ["board", "server", "policy", "ports", "roles", "led-animator", "dc-motor", "heater", "servo-actuator", "rc-input", "h-bridge"],
     "frameworks": "arduino",
     "platforms": ["raspberrypi", "espressif32"],
     "dependencies": [
