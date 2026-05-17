@@ -1,15 +1,36 @@
 # System Services as Composable Policies — Proposal
 
-**Status:** proposal / RFC.  Nothing implemented yet — review and decide
-before any code changes.  Supersedes the earlier
-`17-STORAGE-VARIADIC-PROPOSAL.md` which was scoped to storage only.
+**Status (2026-05-16):** Wave 1 LANDED — framework headers + first
+policy conversion.  Supersedes the earlier `17-STORAGE-VARIADIC-PROPOSAL.md`
+which was scoped to storage only.
 
 **Goal:** unify the master (HubFX) and the post-pivot expander boards
-behind one templated `CoreCommandServer<...Policies>` that carries
-every protocol-exposed system service as a compile-time policy.  Add a
+behind one templated `BoardServer<...Policies>` that carries every
+protocol-exposed system service as a compile-time policy.  Add a
 deterministic, persistent **board GUID** and **per-port GUIDs** so
 multiple boards of the same type are unambiguous and every port on
 every board is stably addressable for config.
+
+## Migration status
+
+| Wave | What landed | Status |
+|---|---|---|
+| 1   | `SystemServicePolicy` concept + `ServiceContext` + `BoardServer<...Policies>` template in [serial/core/system_service.h](../controllers/lib/sfx_serial/serial/core/system_service.h).  `CoreServer` (was `SlaveServer`) refactored into `ComponentServicePolicy<TServos, TPwms, TLedsDed, TLedsBor, TBattery>` in [sfx_core/core/component_service.h](../controllers/lib/sfx_core/core/component_service.h) — no `BusServer` inheritance, uses `ServiceContext*` for wire helpers. | **landed** |
+| 2   | Five legacy servers converted to policies: `BatteryServicePolicy<TBattery>`, `AudioServicePolicy<TMixer>`, `ConfigServicePolicy`, `UsbHostServicePolicy`, `EngineServicePolicy`.  HubFX firmware instantiates one `BoardServer<UsbHostServicePolicy, AudioServicePolicy<Mixer>, EngineServicePolicy, ConfigServicePolicy, BatteryServicePolicy<Ina226Battery>>` — replaces five individual `addModuleHandler()` calls.  Externally-bound deps (battery sensor, config stores) accessed via `board.policy<P>().bindXxx(...)` / `.addStore(...)` after default construction.  Each policy advertises its capability bit via `kCapabilityBits`; OR'd at compile time by `BoardServer::capabilities()` and added in one shot.  Wire-helper wrappers (`sendAck`/`sendNack`/`sendRawPacket`) inline on each policy class so existing handler code + `SFX_REQUIRE_LEN`/`SFX_VALIDATE`/`SFX_DISPATCH` macros work unchanged. | **landed** |
+| 2b  | `StorageServerT<TPolicy>` → `StorageServicePolicy<TPolicy>` (still single-policy axis; variadic-backend reshape per §5 deferred to a later RFC).  Sixth policy joins HubFX's `BoardServer` pack.  `StreamWriter` constructor relaxed: now takes `sfx_core::ServiceContext&` instead of `BusServer&` — storage was the only consumer; both interfaces have identical `sendRawPacket()` surface so the swap is mechanical.  HubFX's `initProtocolHandlers()` collapsed from 12 lines of `.begin()` + `addModuleHandler()` calls to 3 lines (board.begin + addModuleHandler + addCapability). | **landed** |
+| 4   | `CoreCommandServer` (lifecycle) → `BoardServicePolicy`.  Templatise `SfxServer` to own `BoardServer<BoardServicePolicy, ...UserPolicies>` directly — lifecycle becomes a regular policy in the pack.  Removes the last legacy `BusServer` subclass besides `BoardServer` itself.  Touches every board's setup() since `SfxServer` becomes templated.                                                                                                  | pending    |
+| 5   | Delete `BusServer` + `ICommandHandler` + `CommandRouter`.  `BoardServer` is the only dispatcher — no runtime polymorphism, no router walk.  Static dispatch via the policy tuple is the entire mechanism.                                                                                                                                                                                                                            | pending    |
+
+**Why wave 4 is its own session:** templatising `SfxServer` is a single mechanical edit, but it propagates to every controller's `setup()` (HubFX + GunFX + LightFX + GearControl + NoOp).  The lifecycle policy itself absorbs ~365 lines of `CoreCommandServer.cpp` (INIT / IDENTIFY / STATUS / KEEPALIVE / REBOOT / I2C_SCAN / LOG_MESSAGE / DIAG_HISTORY / BATTERY_CONFIG) plus the indicator-LED state machine and keepalive watchdog that currently live in SfxServer.  Splitting waves 4 + 5 keeps each cleanly verifiable and rollbackable.
+
+**Why wave 5 needs to wait for wave 4:** until `CoreCommandServer` is a policy, something has to be registered with `CommandRouter`.  Once nothing inherits `BusServer` except `BoardServer` itself, the dispatch resolution is fully static — `CommandRouter` and `ICommandHandler` have no purpose and delete.
+
+**On `ICommandHandler` specifically:** today it exists so `CommandRouter` can walk a `std::array<ICommandHandler*, N>` and try each handler in turn.  With everything in one `BoardServer`, dispatch is `std::apply` over the policy tuple — compile-time resolution, no virtual lookup.  Both `ICommandHandler` and `CommandRouter` delete with `BusServer` in wave 5.
+
+The waves are independently mergeable — every wave just converts one
+subsystem and registers it as a policy alongside the legacy
+`addModuleHandler` handlers for the rest.  Wave 4 is the only one with
+real risk because it touches `SfxServer` and every board's setup().
 
 This proposal is downstream of
 [15-GENERIC-EXPANDER-REFACTOR.md](15-GENERIC-EXPANDER-REFACTOR.md) —

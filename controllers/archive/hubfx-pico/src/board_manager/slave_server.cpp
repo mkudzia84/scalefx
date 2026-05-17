@@ -8,7 +8,7 @@
  *   3. USB host diagnostics (0xA7-0xA8) — list connected USB CDC devices
  */
 
-#include "slave_server.h"
+#include "core_server.h"
 #include <usb/usb_host.h>
 
 using namespace CoreProtocol;
@@ -17,7 +17,7 @@ using namespace CoreProtocol;
 // tryProcess Override — Handle routing subcmds and management commands
 // ============================================================================
 
-CommandHandleResult SlaveServer::tryProcess(uint8_t type, const uint8_t* payload, size_t len) {
+CommandHandleResult CoreServer::tryProcess(uint8_t type, const uint8_t* payload, size_t len) {
     // 1. Check if this is a SLAVE_ROUTE_* packet (0x96-0x98) → route via subcmd
     if (type >= HubFxPacket::SLAVE_ROUTE_GUNFX && type <= HubFxPacket::SLAVE_ROUTE_GEARCONTROL) {
         return routeToSlave(type, payload, len);
@@ -37,7 +37,7 @@ CommandHandleResult SlaveServer::tryProcess(uint8_t type, const uint8_t* payload
 // handleModulePacket — Slave Management Commands (0x80-0x83)
 // ============================================================================
 
-CommandHandleResult SlaveServer::handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) {
+CommandHandleResult CoreServer::handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) {
     switch (type) {
         case HubFxPacket::SLAVE_LIST:
             handleSlaveList();
@@ -60,7 +60,7 @@ CommandHandleResult SlaveServer::handleModulePacket(uint8_t type, const uint8_t*
 // Slave Command Routing (subcmd pattern)
 // ============================================================================
 
-CommandHandleResult SlaveServer::routeToSlave(uint8_t type, const uint8_t* payload, size_t len) {
+CommandHandleResult CoreServer::routeToSlave(uint8_t type, const uint8_t* payload, size_t len) {
     // Extract subcmd from first payload byte
     if (len < 1) {
         sendNack(SerialError::MISSING_PARAMETER);
@@ -95,7 +95,7 @@ CommandHandleResult SlaveServer::routeToSlave(uint8_t type, const uint8_t* paylo
 // Slave Management Commands
 // ============================================================================
 
-void SlaveServer::handleSlaveList() {
+void CoreServer::handleSlaveList() {
     if (registry().count() == 0) {
         uint8_t payload[1] = { 0 };
         sendRawPacket(HubFxPacket::SLAVE_LIST_RESP, currentTag(), payload, 1);
@@ -131,7 +131,7 @@ void SlaveServer::handleSlaveList() {
     sendRawPacket(HubFxPacket::SLAVE_LIST_RESP, currentTag(), buf, pos);
 }
 
-void SlaveServer::handleSlaveInit(const uint8_t* payload, size_t len) {
+void CoreServer::handleSlaveInit(const uint8_t* payload, size_t len) {
     if (len < 1) {
         sendNack(SerialError::MISSING_PARAMETER);
         return;
@@ -180,7 +180,7 @@ void SlaveServer::handleSlaveInit(const uint8_t* payload, size_t len) {
 // USB Host Diagnostics
 // ============================================================================
 
-void SlaveServer::handleUsbDevices() {
+void CoreServer::handleUsbDevices() {
     UsbHost& usb = UsbHost::instance();
 
     // Response: [initialized:u8][taskRunning:u8]

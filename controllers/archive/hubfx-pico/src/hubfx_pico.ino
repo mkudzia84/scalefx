@@ -27,7 +27,7 @@
  * MULTI-HANDLER ARCHITECTURE:
  *   Each domain registers its own ICommandHandler with SfxServer:
  *     CoreCommandServer (0xF0-0xFF) â€” system commands (auto-registered)
- *     SlaveServer          (0x80-0x83, 0x96-0x98) — slave mgmt + subcmd routing
+ *     CoreServer          (0x80-0x83, 0x96-0x98) — slave mgmt + subcmd routing
  *     HubFxAudioServer     (0x84-0x8B) — audio playback control
  *     EngineServer         (0x8C-0x8F) — engine FX control
  *     HubFxStorageServer   (0x90-0xA6) — config + SD/flash + file transfer
@@ -125,7 +125,7 @@
 
 // Server infrastructure (upstream protocol handling)
 SfxServer server;
-SlaveServer slaveServer;
+CoreServer slaveServer;
 HubFxAudioServer audioServer;
 EngineServer engineServer;
 HubFxStorageServer storageServer;
@@ -564,7 +564,7 @@ void setup() {
 
     // Register domain-specific handlers with SfxServer's CommandRouter
     // Handler chain: CoreCommandServer (0xF0-0xFF)
-    //              → SlaveServer          (0x80-0x83 mgmt + 0x96-0x98 routing + 0xA7-0xA8 USB)
+    //              → CoreServer          (0x80-0x83 mgmt + 0x96-0x98 routing + 0xA7-0xA8 USB)
     //              → HubFxAudioServer     (0x84-0x8B)
     //              → EngineServer         (0x8C-0x8F)
     //              → HubFxStorageServer   (0x90-0xA6)

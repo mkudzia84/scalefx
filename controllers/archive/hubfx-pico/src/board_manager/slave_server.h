@@ -25,7 +25,7 @@
 #include "slave_registry.h"
 
 // ============================================================================
-// SlaveServer — Routing + Slave Management Handler
+// CoreServer — Routing + Slave Management Handler
 // ============================================================================
 
 /**
@@ -38,11 +38,11 @@
  * For SLAVE_ROUTE_* packets, the first payload byte is the subcmd (the
  * original slave packet type), followed by the original payload.
  */
-class SlaveServer : public BusServer {
+class CoreServer : public BusServer {
 public:
-    SlaveServer() = default;
+    CoreServer() = default;
 
-    const char* handlerName() const override { return "SlaveServer"; }
+    const char* handlerName() const override { return "CoreServer"; }
 
     /**
      * @brief Override tryProcess to handle slave management (0x80-0x83),
