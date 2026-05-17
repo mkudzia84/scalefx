@@ -118,7 +118,7 @@ public:
      * When `repeat == false` the sequence stops automatically after the
      * last event finishes; `isPlaying()` becomes false and a follow-up
      * call to `isComplete()` returns true so the LedManager can fire
-     * the LED_PROGRAM_DONE async packet exactly once.
+     * the LED_QUEUE_DONE async packet exactly once.
      *
      * Safe to call before or during playback — takes effect on the
      * next loop boundary.  Per-call default for `start()` /

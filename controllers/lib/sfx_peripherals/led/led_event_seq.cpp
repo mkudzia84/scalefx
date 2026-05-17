@@ -153,7 +153,7 @@ void LedEventSeq::advanceToNext() {
             // One-shot completion — stop playback and latch the
             // completion flag so the caller (LedManager / LedCollection)
             // can detect the natural-end edge and emit
-            // LED_PROGRAM_DONE exactly once.  The LED output is left
+            // LED_QUEUE_DONE exactly once.  The LED output is left
             // at its final brightness (the last event's terminal
             // value) — call stop() explicitly to blank it.
             _playing   = false;

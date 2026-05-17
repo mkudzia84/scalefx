@@ -22,37 +22,26 @@
  *   void     setChemistry(BatteryChemistry);
  *   void     setCellCount(uint8_t);         // 0 = re-arm auto-detect.
  *
- * Why a separate handler (not part of CoreCommandServer): CoreCommandServer
- * is non-templated by design (one shared instance per binary). Battery
- * monitoring requires a per-board policy choice (ADC divider vs INA226 vs
- * none), so it lives in its own templated handler that the board owns.
+ * Why a separate policy (not part of BoardServicePolicy): battery
+ * monitoring requires a per-board hardware choice (ADC divider vs INA226
+ * vs none), so it lives in its own template policy that the board owns
+ * and parameterises on its battery sensor type.
  *
- * Usage:
- *   AdcDividerBatteryT<6000> battery;                    // ÷6.0 divider
- *   BatteryServerT<decltype(battery)> batteryServer(battery);
+ * Usage (slotted into SfxServer's UserPolicies):
+ *   using HubFxBatteryPolicy = BatteryServicePolicy<Ina226Battery>;
+ *   using HubFxServer = SfxServer<..., HubFxBatteryPolicy, ...>;
  *
- *   void setup() {
- *       battery.begin(29, BatteryChemistry::LIPO);
- *       server.begin("LightFX", FIRMWARE_VERSION, BUILD_NUMBER);
- *       server.addModuleHandler(&batteryServer);   // before module handler
- *       server.addModuleHandler(&lightfxServer);
- *   }
+ *   server.board().policy<HubFxBatteryPolicy>().bindBattery(batteryMonitor);
  *
- *   void loop() {
- *       server.loop();
- *       battery.update();
- *       lightfxServer.update();
- *   }
- *
- * The handler claims a single packet type (0xEE), so it can sit anywhere
- * in the handler chain after CoreCommandServer.
+ * The policy claims a single packet type (BATTERY_CONFIG).
  */
 
 #ifndef BATTERY_SERVER_H
 #define BATTERY_SERVER_H
 
 #include <concepts>
-#include <serial/core/bus_server.h>
+#include <serial/core/system_service.h>   // SystemServicePolicy + ServiceContext
+#include <serial/core/core.h>             // CorePacket, SerialError, CommandHandleResult
 #include "battery_types.h"
 
 // ============================================================================
@@ -76,50 +65,78 @@ concept BatteryPolicy = requires(T t, BatteryChemistry chem, uint8_t cells) {
     { t.setCellCount(cells) }       -> std::same_as<void>;
 };
 
+/**
+ * @brief BatteryServicePolicy — SystemServicePolicy for BATTERY_CONFIG.
+ *
+ * Plugs into `BoardServer<...>` alongside other policies.  Owns the
+ * single `CorePacket::BATTERY_CONFIG` (0xEE) wire ID — chemistry +
+ * cellCount adjustments — and contributes `CoreCapability::BATTERY`
+ * to the board's capability bitmask.
+ */
 template<typename TBattery>
     requires BatteryPolicy<TBattery>
-class BatteryServerT : public BusServer {
+class BatteryServicePolicy {
 public:
-    explicit BatteryServerT(TBattery& battery) : _battery(&battery) {}
-    ~BatteryServerT() override = default;
+    /// Battery presence is advertised in IDENTIFY via this capability bit.
+    static constexpr uint32_t kCapabilityBits = CoreCapability::BATTERY;
 
-    BatteryServerT(const BatteryServerT&) = delete;
-    BatteryServerT& operator=(const BatteryServerT&) = delete;
+    BatteryServicePolicy() = default;
+    explicit BatteryServicePolicy(TBattery& battery) : _battery(&battery) {}
 
-    const char* handlerName() const override { return "BatteryServer"; }
+    BatteryServicePolicy(const BatteryServicePolicy&) = delete;
+    BatteryServicePolicy& operator=(const BatteryServicePolicy&) = delete;
+
+    /// Bind the battery sensor after default construction.  Called from
+    /// board firmware via `board.policy<BatteryServicePolicy<...>>().bindBattery(...)`.
+    void bindBattery(TBattery& battery) { _battery = &battery; }
 
     /// Access the bound battery policy (e.g. for status broadcasts).
     TBattery& battery() { return *_battery; }
     const TBattery& battery() const { return *_battery; }
 
-protected:
-    uint8_t moduleRangeLow()  const override { return CorePacket::BATTERY_CONFIG; }
-    uint8_t moduleRangeHigh() const override { return CorePacket::BATTERY_CONFIG; }
+    // ── SystemServicePolicy surface ───────────────────────────────────
 
-    CommandHandleResult handleModulePacket(uint8_t type,
-                                           const uint8_t* payload,
-                                           size_t len) override {
-        if (type != CorePacket::BATTERY_CONFIG) {
-            return CommandHandleResult::NotMyCommand;
+    bool begin(sfx_core::ServiceContext* ctx) {
+        _ctx = ctx;
+        return _ctx != nullptr && _battery != nullptr;
+    }
+
+    bool ownsType(uint8_t type) const {
+        return type == CorePacket::BATTERY_CONFIG;
+    }
+
+    CommandHandleResult handle(uint8_t /*type*/,
+                               const uint8_t* payload, size_t len) {
+        if (len < 2) {
+            _ctx->sendNack(SerialError::MISSING_PARAMETER);
+            return CommandHandleResult::Handled;
         }
-        SFX_REQUIRE_LEN(2);
-
-        uint8_t chemistry = payload[0];
-        uint8_t cellCount = payload[1];
+        const uint8_t chemistry = payload[0];
+        const uint8_t cellCount = payload[1];
 
         // Chemistry must be a known enum value; cellCount 0 is "re-arm auto".
-        SFX_VALIDATE(chemistry <= static_cast<uint8_t>(BatteryChemistry::NIMH),
-                     SerialError::INVALID_PARAM);
+        if (chemistry > static_cast<uint8_t>(BatteryChemistry::NIMH)) {
+            _ctx->sendNack(SerialError::INVALID_PARAM);
+            return CommandHandleResult::Handled;
+        }
 
         _battery->setChemistry(static_cast<BatteryChemistry>(chemistry));
         _battery->setCellCount(cellCount);
 
-        sendAck();
+        _ctx->sendAck();
         return CommandHandleResult::Handled;
     }
 
+    void update() { /* battery's own update() is called from the board's loop */ }
+
 private:
-    TBattery* _battery;
+    sfx_core::ServiceContext* _ctx     = nullptr;
+    TBattery*                 _battery = nullptr;
 };
+
+/// @deprecated Use `BatteryServicePolicy<TBattery>` and instantiate via
+///             `BoardServer<...>`.  Alias kept for in-flight callers.
+template<typename TBattery>
+using BatteryServerT = BatteryServicePolicy<TBattery>;
 
 #endif // BATTERY_SERVER_H

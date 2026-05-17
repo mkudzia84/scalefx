@@ -34,7 +34,7 @@
 #include <sfx_peripherals/servo/srv_control.h>
 
 #include "component_event.h"
-#include <serial/slave/component_kind.h>
+#include <serial/components/component_kind.h>
 
 namespace sfx_peripherals {
 
@@ -98,7 +98,7 @@ public:
     void detach();
 
     /// Park every servo at its calibrated centre and let the profile
-    /// run there.  Invoked from `SlaveServer::enterSafeState()` on
+    /// run there.  Invoked from `CoreServer::enterSafeState()` on
     /// keepalive timeout / SHUTDOWN.  Safe to call from any state.
     void parkAtNeutral();
 
@@ -142,20 +142,20 @@ public:
 
     // ── Target-reached callback ──────────────────────────────────────
     //
-    // SlaveServer registers a single callback here at attach() time.
+    // CoreServer registers a single callback here at attach() time.
     // Each call to setPosition_us() / setPositionNorm() arms a fresh
     // motion; when the underlying ServoControl converges on the target
     // (velocity ≈ 0 within POSITION_TOLERANCE), the collection invokes
     // this callback exactly once with the final post-clamp position.
     //
-    // The SlaveServer turns that callback into a SERVO_TARGET_REACHED
+    // The CoreServer turns that callback into a SERVO_TARGET_REACHED
     // async packet to the master.
     using TargetReachedCb = std::function<void(uint8_t idx, uint16_t pos_us)>;
     void setTargetReachedCallback(TargetReachedCb cb) { _onTargetReached = std::move(cb); }
 
     /// Periodic mid-motion progress emitter.  Fires for each servo
     /// that's currently profiling (target armed, not yet reached) at
-    /// the configured rate.  SlaveServer turns these into
+    /// the configured rate.  CoreServer turns these into
     /// SERVO_MOTION_UPDATE async packets.  Disabled by default; the
     /// master enables before sequences that benefit from progress
     /// tracking (gear cycle, recoil) and disables after.

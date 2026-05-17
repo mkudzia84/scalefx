@@ -11,7 +11,7 @@
  *
  * What's solid here:
  *   - Mode-transition state machine + LedCollection coupling
- *     (PwmLed mode hand-off via IPwmLedSink + onPwm{Entered,Left}LedMode
+ *     (PwmLed mode hand-off via writeDuty() — wrapped by PwmDutyAdapter
  *      callbacks)
  *   - Reconfigure atomicity (applyRuntimeConfig is the single mutator)
  *   - Bounds + capability-flag validation
@@ -107,7 +107,7 @@ void PwmCollection<N, TSense>::update() {
     // latch, peak tracking, async event emission).
     for (size_t i = 0; i < N; i++) {
         StallGuard& g = _stallGuards[i];
-        if (!(g.flags & SlavePacket::StallFlags::ENABLED)) continue;
+        if (!(g.flags & ComponentPacket::StallFlags::ENABLED)) continue;
         if (g.threshold_mA == 0 || g.latched) continue;
         if (_runtime[i].mode != ComponentKind::PwmMotor) continue;
         if (!_stallDetectors[i].isActive())              continue;
@@ -131,15 +131,15 @@ void PwmCollection<N, TSense>::update() {
                                                                 : cfg.timeout_ms;
         if (_onStall) _onStall((uint8_t)i, g.peak_mA, duration_ms);
         if (_onEvent) _onEvent((uint8_t)i, ComponentEvent::StallDetected, g.peak_mA);
-        if (g.flags & SlavePacket::StallFlags::AUTO_STOP) {
+        if (g.flags & ComponentPacket::StallFlags::AUTO_STOP) {
             // Stop motor — DcMotor brakes if AUTO_STOP+BRAKE_ON_STOP both set.
-            const bool brake = (g.flags & SlavePacket::StallFlags::BRAKE_ON_STOP) != 0;
+            const bool brake = (g.flags & ComponentPacket::StallFlags::BRAKE_ON_STOP) != 0;
             if (_motors[i].isAttached()) _motors[i].setSpeed(0, brake);
             else                          setDuty((uint8_t)i, 0);
             _motorSpeeds[i] = 0;
             if (_onEvent) _onEvent((uint8_t)i, ComponentEvent::MotionEnded, 0);
         }
-        if (g.flags & SlavePacket::StallFlags::LATCH) {
+        if (g.flags & ComponentPacket::StallFlags::LATCH) {
             g.latched = true;
         }
         g.peak_mA = 0;
@@ -219,7 +219,7 @@ bool PwmCollection<N, TSense>::setMotor(uint8_t idx, int16_t speed_signed) {
     // Stall-detector lifecycle.  Start the per-channel detector when
     // the motor transitions from stopped → moving (and the guard is
     // configured + enabled); stop it on transition back to 0.
-    const bool guardArmed = (_stallGuards[idx].flags & SlavePacket::StallFlags::ENABLED)
+    const bool guardArmed = (_stallGuards[idx].flags & ComponentPacket::StallFlags::ENABLED)
                             && _stallGuards[idx].threshold_mA > 0;
     if (clamped != 0 && prev == 0 && guardArmed) {
         _stallDetectors[idx].start();
@@ -357,8 +357,10 @@ bool PwmCollection<N, TSense>::query(uint8_t idx,
 
 template <size_t N, SensePolicy TSense>
 void PwmCollection<N, TSense>::writeDuty(uint8_t idx, uint16_t duty_thousandths) {
-    // IPwmLedSink override.  Bypasses mode gates — LED runtime is the
-    // authoritative caller while the channel is in PwmLed mode.
+    // Called by PwmDutyAdapter on behalf of the LED runtime when a
+    // channel is in PwmLed mode.  Bypasses mode gates — the wire
+    // dispatcher already verified the channel is in PwmLed mode, and
+    // the mode-change cleanup hook stops any active queue on mode flip.
     if (idx >= N || !_attached) return;
     _duties[idx] = duty_thousandths;
     if (!_specs[idx].useExpander) {
@@ -399,7 +401,7 @@ bool PwmCollection<N, TSense>::applyRuntimeConfig(uint8_t idx, const PwmRuntimeC
         // Drop output and stop any program before flipping mode.
         if (_attached && !spec.useExpander) analogWrite(spec.pin, 0);
         _duties[idx] = 0;
-        // (Notification to LedCollection happens via the SlaveServer
+        // (Notification to LedCollection happens via the CoreServer
         // wiring — the slave sets up onPwmLeftLedMode hooks at attach
         // time when both collections are bound.)
     }

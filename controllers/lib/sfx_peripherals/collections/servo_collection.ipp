@@ -4,13 +4,13 @@
  * Thin templatised facade over N `ServoControl` instances:
  *   - configure() stores compile-time hardware specs (no I/O)
  *   - attach() calls ServoControl::begin(...) on each + registers the
- *     "target reached" callback that bridges into SlaveServer
+ *     "target reached" callback that bridges into CoreServer
  *   - detach() releases each ServoControl
  *   - update() advances the trapezoidal profile per channel + fires
  *     the registered TargetReachedCb exactly once per command
  *
- * Each public method does explicit bounds-checking so the BusServer
- * dispatch can return a clean SlaveError::INVALID_INDEX without UB.
+ * Each public method does explicit bounds-checking so the wire-protocol
+ * dispatch can return a clean ComponentError::INVALID_INDEX without UB.
  *
  * Indices are 0-based here (matching the wire format).
  */

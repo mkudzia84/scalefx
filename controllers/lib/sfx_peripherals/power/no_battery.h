@@ -1,17 +1,17 @@
 /*
  * NoBattery — null battery policy for boards without a battery sensor.
  *
- * SlaveServer is templated on a `TBattery` policy that defaults to
+ * CoreServer is templated on a `TBattery` policy that defaults to
  * `NoBattery` so boards that don't have an onboard battery sensor get
  * the right wire-protocol behaviour for free:
  *   - BATTERY_INFO_RESP returns `present = 0`
  *   - BATTERY_RECONFIGURE NACKs with `BATTERY_NOT_PRESENT`
- *   - SLAVE_STATUS_BROADCAST emits a single `0` byte for the battery
+ *   - COMPONENT_STATUS_BROADCAST emits a single `0` byte for the battery
  *     section (and no further per-battery bytes)
  *   - INIT_READY does NOT advertise `CoreCapability::BATTERY`
  *
  * The stub satisfies the `BatteryPolicy` concept (battery_server.h) plus
- * the extended alert / threshold / cell-detect surface the SlaveServer
+ * the extended alert / threshold / cell-detect surface the CoreServer
  * uses to populate BATTERY_INFO_RESP and the unified status section.
  *
  * Boards with a real battery use one of the live policies instead:
@@ -29,7 +29,7 @@ class NoBattery {
 public:
     using AlertCallback = void(*)(uint16_t, uint8_t);   ///< unused — kept for ABI compatibility
 
-    /// Compile-time tag — SlaveServer detects "no battery" via
+    /// Compile-time tag — CoreServer detects "no battery" via
     /// `std::is_same_v<TBattery, NoBattery>` rather than a runtime
     /// `kPresent` check, so this serves as documentation only.
     static constexpr bool kPresent = false;
@@ -43,7 +43,7 @@ public:
     void     setChemistry(BatteryChemistry)              {}
     void     setCellCount(uint8_t)                       {}
 
-    // ── Extended surface used by SlaveServer ────────────────────────
+    // ── Extended surface used by CoreServer ────────────────────────
     uint16_t cellVoltage_mV()   const                    { return 0; }
     uint8_t  percentage()       const                    { return 0; }
     BatteryChemistry chemistry() const                   { return BatteryChemistry::LIPO; }

@@ -47,9 +47,9 @@ enum class ComponentEvent : uint8_t {
     MotionEnded     = 3,    ///< servo at target; motor speed transitioned ≠0 → 0
     StallDetected   = 4,    ///< PWM motor stall guard tripped (fires alongside StallCb)
     StallCleared    = 5,    ///< PWM_CLEAR_STALL acknowledged; channel re-armed
-    ProgramStarted  = 6,    ///< LED program begun running
-    ProgramEnded    = 7,    ///< LED program finished naturally (REPEAT clear)
-    ProgramStopped  = 8,    ///< LED program stopped by master command
+    QueueStarted    = 6,    ///< LED event queue begun running
+    QueueEnded      = 7,    ///< LED event queue finished naturally (REPEAT clear)
+    QueueStopped    = 8,    ///< LED event queue stopped by master command
     ModeChanged     = 9,    ///< PWM channel mode swapped (PwmGeneric ↔ PwmMotor ↔ PwmLed ↔ PwmHeater)
     SafeStateEntered= 10,   ///< collection commanded into safe state (keepalive/SHUTDOWN)
     Error           = 11,   ///< component-specific error (timeout, motor not detected, etc.)
@@ -58,9 +58,8 @@ enum class ComponentEvent : uint8_t {
 /// Standardised callback signature.  Channel `idx` is 0-based,
 /// matching the wire-format addressing.  `data` carries optional
 /// event-specific payload (e.g. motor speed at MotionStarted, peak
-/// current at StallDetected, program ID at ProgramStarted) — packed
-/// into a single uint16_t to keep the signature small.  Events that
-/// don't need a payload pass 0.
+/// current at StallDetected) — packed into a single uint16_t to keep
+/// the signature small.  Events that don't need a payload pass 0.
 using ComponentEventCb = std::function<void(uint8_t idx, ComponentEvent ev, uint16_t data)>;
 
 }  // namespace sfx_peripherals

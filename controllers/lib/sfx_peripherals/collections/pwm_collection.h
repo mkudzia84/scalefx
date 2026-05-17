@@ -7,10 +7,10 @@
  *                 sequence runtime** — this PwmCollection stops driving
  *                 the duty directly; the LED runtime emits brightness
  *                 ticks into the channel via an internal adapter.  See
- *                 instructions/15-GENERIC-SLAVE-REFACTOR.md §
+ *                 instructions/15-GENERIC-EXPANDER-REFACTOR.md §
  *                 "LED runtime ownership".  PWM_SET_DUTY against a
- *                 PwmLed channel returns SlaveError::WRONG_COMPONENT_KIND;
- *                 use LED_SET_BRIGHTNESS / LED_PROGRAM_RUN with the
+ *                 PwmLed channel returns ComponentError::WRONG_COMPONENT_KIND;
+ *                 use LED_SET_BRIGHTNESS / LED_QUEUE_START with the
  *                 PWM-borrowed addressing form (bit 7 of address byte
  *                 set, idx = PWM channel index) instead.
  *   - PwmMotor:   signed speed (-1.0..+1.0); requires either a single pin
@@ -43,8 +43,7 @@
 #include <sfx_peripherals/motor/stall_detector.h>
 
 #include "component_event.h"
-#include <serial/slave/component_kind.h>
-#include "pwm_led_sink.h"
+#include <serial/components/component_kind.h>
 #include "sense_policy.h"
 
 namespace sfx_peripherals {
@@ -98,10 +97,11 @@ struct PwmRuntimeConfig {
 /// Default `NoSensing` is a zero-overhead struct for boards without
 /// any per-channel sensing.  No virtual dispatch.
 ///
-/// PwmCollection itself satisfies the `PwmLedSink` concept (provides
-/// pwmChannelCount / isInLedMode / writeDuty), so a `LedCollection`
-/// templated on the PWM type can adopt PwmLed-mode channels at
-/// compile time without inheritance.
+/// PwmCollection exposes `currentMode(idx)` and `writeDuty(idx, duty)`
+/// so that `PwmDutyAdapter<PwmCollection<...>>` can wrap it as a
+/// `PwmOutput` backend.  That adapter is what `LedRuntime` templates on
+/// to drive PWM-borrowed LED slots; the cross-coupling lives in the
+/// adapter, not in this class.
 template <size_t N, SensePolicy TSense = NoSensing>
 class PwmCollection {
 public:
@@ -124,7 +124,7 @@ public:
     /// Stop all outputs — duty 0, motors stopped, heaters off.  Mode
     /// flags are preserved (a channel in PwmLed mode stays in PwmLed
     /// mode, but its duty drops to 0).  Invoked from
-    /// `SlaveServer::enterSafeState()`.
+    /// `CoreServer::enterSafeState()`.
     void allOff();
 
     // ── Mode + value setters (incremental) ────────────────────────────
@@ -135,10 +135,10 @@ public:
     /// Side effects on transition:
     ///   - any prior duty drops to 0 (motor stops, heater off, generic 0%)
     ///   - leaving PwmLed: any running LED program on the channel is
-    ///     stopped (no LED_PROGRAM_DONE event — switch is master-initiated,
+    ///     stopped (no LED_QUEUE_DONE event — switch is master-initiated,
     ///     not natural completion); LedCollection drops the extension ref
     ///   - entering PwmLed: LedCollection adopts the channel; no program
-    ///     is running on it until a subsequent LED_PROGRAM_RUN
+    ///     is running on it until a subsequent LED_QUEUE_START
     bool setMode      (uint8_t idx, ComponentKind newKind);
     bool setDuty      (uint8_t idx, uint16_t duty_thousandths);   ///< 0..1000
     bool setMotor     (uint8_t idx, int16_t  speed_signed);       ///< -1000..1000
@@ -173,7 +173,7 @@ public:
     /// Configure the stall guard for a PwmMotor channel.  When the
     /// channel's current draw stays above `threshold_mA` for at least
     /// `debounce_ms`, `update()` fires the registered StallCb (which
-    /// SlaveServer turns into a PWM_STALL async packet) and, if
+    /// CoreServer turns into a PWM_STALL async packet) and, if
     /// `StallFlags::AUTO_STOP` is set, drops the motor to 0.  If
     /// `LATCH` is set the channel rejects subsequent setDuty/setMotor
     /// commands until `clearStall(idx)`.
@@ -185,7 +185,7 @@ public:
     bool clearStall(uint8_t idx);
 
     /// Read the current stall-guard mirror for a channel.  Used by the
-    /// SlaveServer's unified status payload — exposes (flags, peak_mA,
+    /// CoreServer's unified status payload — exposes (flags, peak_mA,
     /// latched) so the master can render motor health without polling
     /// PWM_GET_CONFIG.  Returns false on out-of-range idx; out-params
     /// are zeroed in that case.
@@ -234,17 +234,14 @@ public:
                 int32_t&       out_voltage_mV,
                 int32_t&       out_current_mA) const;
 
-    // ── PwmLedSink concept implementation (no inheritance) ───────────
+    // ── PwmDutyAdapter surface ────────────────────────────────────────
     //
-    // PwmCollection satisfies the `PwmLedSink` concept (see
-    // pwm_led_sink.h) by providing these three methods.  Any
-    // LedCollection templated on a PwmCollection type can call them
-    // directly; no v-table, no abstract base.
+    // `PwmDutyAdapter<PwmCollection<N, TSense>>` wraps this class as a
+    // `PwmOutput` backend, calling `writeDuty()` to drive PWM-borrowed
+    // LED slots.  `currentMode()` lets the wire dispatcher gate LED
+    // commands on the channel actually being in `PwmLed` mode.
 
     uint8_t pwmChannelCount() const { return (uint8_t)N; }
-    bool    isInLedMode(uint8_t idx) const {
-        return idx < N && _runtime[idx].mode == ComponentKind::PwmLed;
-    }
     void    writeDuty(uint8_t idx, uint16_t duty_thousandths);
 
     // ── Component enumeration ─────────────────────────────────────────
@@ -266,7 +263,7 @@ private:
     std::array<StallGuard, N>       _stallGuards{};   ///< per-channel protocol policy (flags, latch, peak)
     std::array<StallDetector, N>    _stallDetectors{};///< per-channel detection state machine (delegated)
     std::array<DcMotor, N>          _motors{};        ///< per-channel DC motor driver (active when channel mode is PwmMotor)
-    StallCb                         _onStall;         ///< fires on guard trip (SlaveServer → PWM_STALL packet)
+    StallCb                         _onStall;         ///< fires on guard trip (CoreServer → PWM_STALL packet)
     ComponentEventCb                _onEvent;         ///< board-local state-transition hook (indicator LEDs, etc.)
     TSense                          _sense{};         ///< embedded sense policy (zero-size for NoSensing)
     bool                            _attached = false;
