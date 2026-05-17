@@ -34,7 +34,7 @@
 #define AUDIO_SERVER_H
 
 #include <serial/serial.h>
-#include <serial/hubfx/hubfx.h>
+#include <protocol/audio_protocol.h>
 #include <server/board_server.h>           // SystemServicePolicy + BoardServerBase
 #include "audio/audio_config.h"
 #include "audio/audio_mixer.h"
@@ -104,9 +104,9 @@ public:
     bool ownsType(uint8_t type) const {
         // Range covers the audio block plus the CODEC_STATUS_REQ/RESP
         // pair which lives outside the contiguous 0x84..0x8B run.
-        return (type >= HubFxPacket::AUDIO_PLAY && type <= HubFxPacket::AUDIO_STATUS_RESP)
-            || (type == HubFxPacket::CODEC_STATUS_REQ)
-            || (type == HubFxPacket::CODEC_STATUS_RESP);
+        return (type >= AudioPacket::AUDIO_PLAY && type <= AudioPacket::AUDIO_STATUS_RESP)
+            || (type == AudioPacket::CODEC_STATUS_REQ)
+            || (type == AudioPacket::CODEC_STATUS_RESP);
     }
 
     CommandHandleResult handle(uint8_t type,
@@ -115,7 +115,7 @@ public:
     void update() { /* mixer ticks itself on Core 1 */ }
 
     const char* getErrorMessage(uint8_t code) const {
-        return HubFxError::getMessage(code);
+        return AudioError::getMessage(code);
     }
 
 protected:

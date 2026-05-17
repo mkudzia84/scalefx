@@ -15,7 +15,7 @@ using namespace CoreProtocol;
 void ConfigClient::onModulePacket(uint8_t type, uint8_t tag,
                                    const uint8_t* payload, size_t len) {
     switch (type) {
-        case HubFxPacket::CONFIG_STATUS_RESP: {
+        case ConfigPacket::CONFIG_STATUS_RESP: {
             // Wire: [loaded:u8][fileSize:u16LE][validOk:u8]
             _lastInfo = {};
             if (len >= 4) {
@@ -48,7 +48,7 @@ void ConfigClient::onModulePacket(uint8_t type, uint8_t tag,
 CommandResult ConfigClient::configReload(const char* path) {
     if (!path) {
         // No payload — server uses its default path
-        return sendCommand(HubFxPacket::CONFIG_RELOAD, nullptr, 0);
+        return sendCommand(ConfigPacket::CONFIG_RELOAD, nullptr, 0);
     }
 
     // Send path in payload: [pathLen:u8][path:str]
@@ -59,9 +59,9 @@ CommandResult ConfigClient::configReload(const char* path) {
     payload[0] = (uint8_t)pathLen;
     memcpy(&payload[1], path, pathLen);
 
-    return sendCommand(HubFxPacket::CONFIG_RELOAD, payload, 1 + pathLen);
+    return sendCommand(ConfigPacket::CONFIG_RELOAD, payload, 1 + pathLen);
 }
 
 CommandResult ConfigClient::configStatus() {
-    return sendCommand(HubFxPacket::CONFIG_STATUS, nullptr, 0);
+    return sendCommand(ConfigPacket::CONFIG_STATUS, nullptr, 0);
 }

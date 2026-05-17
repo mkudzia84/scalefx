@@ -16,7 +16,7 @@
 #ifndef STORAGE_CLIENT_H
 #define STORAGE_CLIENT_H
 
-#include <serial/hubfx/hubfx.h>
+#include <protocol/storage_protocol.h>
 #include <serial/client/bus_client.h>
 
 // ============================================================================
@@ -50,20 +50,20 @@ public:
     // ========================================================================
 
     /// Starts streamed listing — handle STREAM_BEGIN/DATA/END via callbacks
-    CommandResult fileList(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
-    CommandResult fileDelete(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
-    CommandResult fileMkdir(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
-    CommandResult fileInfo(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
+    CommandResult fileList(const char* path, StorageWire::StorageTarget target = StorageWire::TARGET_SD);
+    CommandResult fileDelete(const char* path, StorageWire::StorageTarget target = StorageWire::TARGET_SD);
+    CommandResult fileMkdir(const char* path, StorageWire::StorageTarget target = StorageWire::TARGET_SD);
+    CommandResult fileInfo(const char* path, StorageWire::StorageTarget target = StorageWire::TARGET_SD);
 
     /// Starts streamed download — handle STREAM_BEGIN/DATA/END via callbacks
-    CommandResult fileDownload(const char* path, HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
+    CommandResult fileDownload(const char* path, StorageWire::StorageTarget target = StorageWire::TARGET_SD);
 
     // ========================================================================
     // Upload Commands
     // ========================================================================
 
     CommandResult uploadBegin(const char* path, uint32_t size,
-                              HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD);
+                              StorageWire::StorageTarget target = StorageWire::TARGET_SD);
     CommandResult uploadData(uint16_t seqNum, const uint8_t* data, size_t dataLen);
     CommandResult uploadEnd();
     CommandResult uploadCancel();
@@ -88,7 +88,7 @@ public:
 
 protected:
     void onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) override;
-    const char* getModuleErrorMessage(uint8_t code) override { return HubFxError::getMessage(code); }
+    const char* getModuleErrorMessage(uint8_t code) override { return StorageError::getMessage(code); }
 
 private:
     HubFxSdStatus _lastSdStatus;

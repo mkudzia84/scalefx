@@ -19,28 +19,28 @@ template <typename TMixer>
 CommandHandleResult AudioServicePolicy<TMixer>::handle(
         uint8_t type, const uint8_t* payload, size_t len) {
     switch (type) {
-        case HubFxPacket::AUDIO_PLAY:
+        case AudioPacket::AUDIO_PLAY:
             handlePlay(payload, len);
             return CommandHandleResult::Handled;
-        case HubFxPacket::AUDIO_STOP:
+        case AudioPacket::AUDIO_STOP:
             handleStop(payload, len);
             return CommandHandleResult::Handled;
-        case HubFxPacket::AUDIO_VOLUME:
+        case AudioPacket::AUDIO_VOLUME:
             handleVolume(payload, len);
             return CommandHandleResult::Handled;
-        case HubFxPacket::AUDIO_FADE:
+        case AudioPacket::AUDIO_FADE:
             handleFade(payload, len);
             return CommandHandleResult::Handled;
-        case HubFxPacket::AUDIO_QUEUE:
+        case AudioPacket::AUDIO_QUEUE:
             handleQueue(payload, len);
             return CommandHandleResult::Handled;
-        case HubFxPacket::AUDIO_QUEUE_CLEAR:
+        case AudioPacket::AUDIO_QUEUE_CLEAR:
             handleQueueClear(payload, len);
             return CommandHandleResult::Handled;
-        case HubFxPacket::AUDIO_STATUS_REQ:
+        case AudioPacket::AUDIO_STATUS_REQ:
             handleStatusReq();
             return CommandHandleResult::Handled;
-        case HubFxPacket::CODEC_STATUS_REQ:
+        case AudioPacket::CODEC_STATUS_REQ:
             handleCodecStatusReq();
             return CommandHandleResult::Handled;
         default:
@@ -64,7 +64,7 @@ void AudioServicePolicy<TMixer>::handlePlay(const uint8_t* payload, size_t len) 
     uint16_t loopCnt = SfxWire::getU16LE(&payload[4]);
     uint8_t pathLen  = payload[6];
 
-    if (ch >= HubFxAudio::MAX_CHANNELS) { sendNack(HubFxError::INVALID_CHANNEL); return; }
+    if (ch >= AudioWire::MAX_CHANNELS) { sendNack(AudioError::INVALID_CHANNEL); return; }
     if (len < (size_t)(7 + pathLen) || pathLen == 0) {
         sendNack(SerialError::MISSING_PARAMETER); return;
     }
@@ -78,9 +78,9 @@ void AudioServicePolicy<TMixer>::handlePlay(const uint8_t* payload, size_t len) 
     opts.volume = volPct / 100.0f;
     opts.outputChannels = output;  // Wire format matches AudioChannel bitmask directly
     switch (loopMode) {
-        case HubFxAudio::LOOP_INFINITE:
+        case AudioWire::LOOP_INFINITE:
             opts.loop = true; opts.loopCount = LOOP_INFINITE; break;
-        case HubFxAudio::LOOP_FINITE:
+        case AudioWire::LOOP_FINITE:
             opts.loop = true; opts.loopCount = (int)loopCnt; break;
         default:
             opts.loop = false; opts.loopCount = 0; break;
@@ -92,7 +92,7 @@ void AudioServicePolicy<TMixer>::handlePlay(const uint8_t* payload, size_t len) 
         sendAck();
     } else {
         SFX_LOG_ERROR("[AudioSrv] playAsync failed ch%d: %s", ch, path);
-        sendNack(HubFxError::AUDIO_ERROR);
+        sendNack(AudioError::AUDIO_FAILURE);
     }
 }
 
@@ -106,12 +106,12 @@ void AudioServicePolicy<TMixer>::handleStop(const uint8_t* payload, size_t len) 
     if (len < 1) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
     uint8_t ch = payload[0];
-    if (ch == HubFxAudio::CH_ALL) {
+    if (ch == AudioWire::CH_ALL) {
         mixer().stopAsync(-1, AudioStopMode::Immediate);
-    } else if (ch < HubFxAudio::MAX_CHANNELS) {
+    } else if (ch < AudioWire::MAX_CHANNELS) {
         mixer().stopAsync(ch, AudioStopMode::Immediate);
     } else {
-        sendNack(HubFxError::INVALID_CHANNEL);
+        sendNack(AudioError::INVALID_CHANNEL);
         return;
     }
     sendAck();
@@ -130,12 +130,12 @@ void AudioServicePolicy<TMixer>::handleVolume(const uint8_t* payload, size_t len
     uint8_t vol = payload[1];
     float volume = vol / 100.0f;
 
-    if (ch == HubFxAudio::CH_ALL) {
+    if (ch == AudioWire::CH_ALL) {
         mixer().setMasterVolumeAsync(volume);
-    } else if (ch < HubFxAudio::MAX_CHANNELS) {
+    } else if (ch < AudioWire::MAX_CHANNELS) {
         mixer().setVolumeAsync(ch, volume);
     } else {
-        sendNack(HubFxError::INVALID_CHANNEL);
+        sendNack(AudioError::INVALID_CHANNEL);
         return;
     }
     sendAck();
@@ -151,7 +151,7 @@ void AudioServicePolicy<TMixer>::handleFade(const uint8_t* payload, size_t len) 
     if (len < 1) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
     uint8_t ch = payload[0];
-    if (ch >= HubFxAudio::MAX_CHANNELS) { sendNack(HubFxError::INVALID_CHANNEL); return; }
+    if (ch >= AudioWire::MAX_CHANNELS) { sendNack(AudioError::INVALID_CHANNEL); return; }
 
     mixer().stopAsync(ch, AudioStopMode::Fade);
     sendAck();
@@ -172,7 +172,7 @@ void AudioServicePolicy<TMixer>::handleQueue(const uint8_t* payload, size_t len)
     uint8_t behavior = payload[4];
     uint8_t pathLen  = payload[5];
 
-    if (ch >= HubFxAudio::MAX_CHANNELS) { sendNack(HubFxError::INVALID_CHANNEL); return; }
+    if (ch >= AudioWire::MAX_CHANNELS) { sendNack(AudioError::INVALID_CHANNEL); return; }
     if (len < (size_t)(6 + pathLen) || pathLen == 0) {
         sendNack(SerialError::MISSING_PARAMETER); return;
     }
@@ -193,7 +193,7 @@ void AudioServicePolicy<TMixer>::handleQueue(const uint8_t* payload, size_t len)
         opts.loopCount = 0;
     }
 
-    QueueLoopBehavior qBehavior = (behavior == HubFxAudio::QUEUE_STOP_NOW)
+    QueueLoopBehavior qBehavior = (behavior == AudioWire::QUEUE_STOP_NOW)
         ? QueueLoopBehavior::StopImmediate
         : QueueLoopBehavior::FinishLoop;
 
@@ -203,7 +203,7 @@ void AudioServicePolicy<TMixer>::handleQueue(const uint8_t* payload, size_t len)
     if (mixer().queueSoundAsync(ch, path, opts, qBehavior)) {
         sendAck();
     } else {
-        sendNack(HubFxError::AUDIO_ERROR);
+        sendNack(AudioError::AUDIO_FAILURE);
     }
 }
 
@@ -217,12 +217,12 @@ void AudioServicePolicy<TMixer>::handleQueueClear(const uint8_t* payload, size_t
     if (len < 1) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
     uint8_t ch = payload[0];
-    if (ch == HubFxAudio::CH_ALL) {
+    if (ch == AudioWire::CH_ALL) {
         mixer().clearQueueAsync(-1);
-    } else if (ch < HubFxAudio::MAX_CHANNELS) {
+    } else if (ch < AudioWire::MAX_CHANNELS) {
         mixer().clearQueueAsync(ch);
     } else {
-        sendNack(HubFxError::INVALID_CHANNEL);
+        sendNack(AudioError::INVALID_CHANNEL);
         return;
     }
     sendAck();
@@ -345,7 +345,7 @@ void AudioServicePolicy<TMixer>::handleStatusReq() {
         }
     }
 
-    sendRawPacket(HubFxPacket::AUDIO_STATUS_RESP, currentTag(), buf, pos);
+    sendRawPacket(AudioPacket::AUDIO_STATUS_RESP, currentTag(), buf, pos);
 }
 
 // ============================================================================
@@ -385,5 +385,5 @@ void AudioServicePolicy<TMixer>::handleCodecStatusReq() {
         pos += nameLen;
     }
 
-    sendRawPacket(HubFxPacket::CODEC_STATUS_RESP, currentTag(), buf, pos);
+    sendRawPacket(AudioPacket::CODEC_STATUS_RESP, currentTag(), buf, pos);
 }

@@ -12,7 +12,7 @@
 #ifndef CONFIG_CLIENT_H
 #define CONFIG_CLIENT_H
 
-#include <serial/hubfx/hubfx.h>
+#include <protocol/config_protocol.h>
 #include <serial/client/bus_client.h>
 
 // ============================================================================
@@ -65,7 +65,7 @@ protected:
                         const uint8_t* payload, size_t len) override;
 
     const char* getModuleErrorMessage(uint8_t code) override {
-        return HubFxError::getMessage(code);
+        return ConfigError::getMessage(code);
     }
 
 private:

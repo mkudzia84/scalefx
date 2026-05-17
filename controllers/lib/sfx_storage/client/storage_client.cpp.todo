@@ -20,7 +20,7 @@ using namespace CoreProtocol;
 void HubFxStorageClient::onModulePacket(uint8_t type, uint8_t tag,
                                          const uint8_t* payload, size_t len) {
     switch (type) {
-        case HubFxPacket::CONFIG_STATUS_RESP: {
+        case StoragePacket::CONFIG_STATUS_RESP: {
             _lastConfigInfo = {};
             if (len >= 4) {
                 _lastConfigInfo.loaded   = payload[0] != 0;
@@ -33,7 +33,7 @@ void HubFxStorageClient::onModulePacket(uint8_t type, uint8_t tag,
             break;
         }
 
-        case HubFxPacket::SD_STATUS_RESP: {
+        case StoragePacket::SD_STATUS_RESP: {
             _lastSdStatus = {};
             if (len >= 14) {
                 _lastSdStatus.initialized   = payload[0] != 0;
@@ -51,7 +51,7 @@ void HubFxStorageClient::onModulePacket(uint8_t type, uint8_t tag,
             break;
         }
 
-        case HubFxPacket::FLASH_STATUS_REQ: {
+        case StoragePacket::FLASH_STATUS_REQ: {
             // FLASH_STATUS uses same packet type for request and response
             _lastFlashStatus = {};
             if (len >= 13) {
@@ -69,7 +69,7 @@ void HubFxStorageClient::onModulePacket(uint8_t type, uint8_t tag,
             break;
         }
 
-        case HubFxPacket::FILE_INFO_RESP: {
+        case StoragePacket::FILE_INFO_RESP: {
             _lastFileInfo = {};
             if (len >= 6) {
                 _lastFileInfo.exists      = payload[0] != 0;
@@ -93,11 +93,11 @@ void HubFxStorageClient::onModulePacket(uint8_t type, uint8_t tag,
 // ============================================================================
 
 CommandResult HubFxStorageClient::configReload() {
-    return sendCommand(HubFxPacket::CONFIG_RELOAD, nullptr, 0);
+    return sendCommand(StoragePacket::CONFIG_RELOAD, nullptr, 0);
 }
 
 CommandResult HubFxStorageClient::configStatus() {
-    return sendCommand(HubFxPacket::CONFIG_STATUS, nullptr, 0);
+    return sendCommand(StoragePacket::CONFIG_STATUS, nullptr, 0);
 }
 
 // ============================================================================
@@ -106,11 +106,11 @@ CommandResult HubFxStorageClient::configStatus() {
 
 CommandResult HubFxStorageClient::sdInit(uint8_t speed_mhz) {
     uint8_t payload[1] = { speed_mhz };
-    return sendCommand(HubFxPacket::SD_INIT, payload, 1);
+    return sendCommand(StoragePacket::SD_INIT, payload, 1);
 }
 
 CommandResult HubFxStorageClient::sdStatus() {
-    return sendCommand(HubFxPacket::SD_STATUS_REQ, nullptr, 0);
+    return sendCommand(StoragePacket::SD_STATUS_REQ, nullptr, 0);
 }
 
 // ============================================================================
@@ -118,14 +118,14 @@ CommandResult HubFxStorageClient::sdStatus() {
 // ============================================================================
 
 CommandResult HubFxStorageClient::flashStatus() {
-    return sendCommand(HubFxPacket::FLASH_STATUS_REQ, nullptr, 0);
+    return sendCommand(StoragePacket::FLASH_STATUS_REQ, nullptr, 0);
 }
 
 // ============================================================================
 // File Operations
 // ============================================================================
 
-CommandResult HubFxStorageClient::fileList(const char* path, HubFxStorage::StorageTarget target) {
+CommandResult HubFxStorageClient::fileList(const char* path, StorageWire::StorageTarget target) {
     size_t pathLen = strlen(path);
     if (pathLen > 127) pathLen = 127;
 
@@ -134,14 +134,14 @@ CommandResult HubFxStorageClient::fileList(const char* path, HubFxStorage::Stora
     memcpy(&payload[1], path, pathLen);
 
     size_t totalLen = 1 + pathLen;
-    if (target != HubFxStorage::TARGET_SD) {
+    if (target != StorageWire::TARGET_SD) {
         payload[totalLen++] = (uint8_t)target;
     }
 
-    return sendCommand(HubFxPacket::FILE_LIST, payload, totalLen);
+    return sendCommand(StoragePacket::FILE_LIST, payload, totalLen);
 }
 
-CommandResult HubFxStorageClient::fileDelete(const char* path, HubFxStorage::StorageTarget target) {
+CommandResult HubFxStorageClient::fileDelete(const char* path, StorageWire::StorageTarget target) {
     size_t pathLen = strlen(path);
     if (pathLen > 127) pathLen = 127;
 
@@ -150,14 +150,14 @@ CommandResult HubFxStorageClient::fileDelete(const char* path, HubFxStorage::Sto
     memcpy(&payload[1], path, pathLen);
 
     size_t totalLen = 1 + pathLen;
-    if (target != HubFxStorage::TARGET_SD) {
+    if (target != StorageWire::TARGET_SD) {
         payload[totalLen++] = (uint8_t)target;
     }
 
-    return sendCommand(HubFxPacket::FILE_DELETE, payload, totalLen);
+    return sendCommand(StoragePacket::FILE_DELETE, payload, totalLen);
 }
 
-CommandResult HubFxStorageClient::fileMkdir(const char* path, HubFxStorage::StorageTarget target) {
+CommandResult HubFxStorageClient::fileMkdir(const char* path, StorageWire::StorageTarget target) {
     size_t pathLen = strlen(path);
     if (pathLen > 127) pathLen = 127;
 
@@ -166,14 +166,14 @@ CommandResult HubFxStorageClient::fileMkdir(const char* path, HubFxStorage::Stor
     memcpy(&payload[1], path, pathLen);
 
     size_t totalLen = 1 + pathLen;
-    if (target != HubFxStorage::TARGET_SD) {
+    if (target != StorageWire::TARGET_SD) {
         payload[totalLen++] = (uint8_t)target;
     }
 
-    return sendCommand(HubFxPacket::FILE_MKDIR, payload, totalLen);
+    return sendCommand(StoragePacket::FILE_MKDIR, payload, totalLen);
 }
 
-CommandResult HubFxStorageClient::fileInfo(const char* path, HubFxStorage::StorageTarget target) {
+CommandResult HubFxStorageClient::fileInfo(const char* path, StorageWire::StorageTarget target) {
     size_t pathLen = strlen(path);
     if (pathLen > 127) pathLen = 127;
 
@@ -182,14 +182,14 @@ CommandResult HubFxStorageClient::fileInfo(const char* path, HubFxStorage::Stora
     memcpy(&payload[1], path, pathLen);
 
     size_t totalLen = 1 + pathLen;
-    if (target != HubFxStorage::TARGET_SD) {
+    if (target != StorageWire::TARGET_SD) {
         payload[totalLen++] = (uint8_t)target;
     }
 
-    return sendCommand(HubFxPacket::FILE_INFO, payload, totalLen);
+    return sendCommand(StoragePacket::FILE_INFO, payload, totalLen);
 }
 
-CommandResult HubFxStorageClient::fileDownload(const char* path, HubFxStorage::StorageTarget target) {
+CommandResult HubFxStorageClient::fileDownload(const char* path, StorageWire::StorageTarget target) {
     size_t pathLen = strlen(path);
     if (pathLen > 127) pathLen = 127;
 
@@ -198,11 +198,11 @@ CommandResult HubFxStorageClient::fileDownload(const char* path, HubFxStorage::S
     memcpy(&payload[1], path, pathLen);
 
     size_t totalLen = 1 + pathLen;
-    if (target != HubFxStorage::TARGET_SD) {
+    if (target != StorageWire::TARGET_SD) {
         payload[totalLen++] = (uint8_t)target;
     }
 
-    return sendCommand(HubFxPacket::FILE_DOWNLOAD, payload, totalLen);
+    return sendCommand(StoragePacket::FILE_DOWNLOAD, payload, totalLen);
 }
 
 // ============================================================================
@@ -210,7 +210,7 @@ CommandResult HubFxStorageClient::fileDownload(const char* path, HubFxStorage::S
 // ============================================================================
 
 CommandResult HubFxStorageClient::uploadBegin(const char* path, uint32_t size,
-                                               HubFxStorage::StorageTarget target) {
+                                               StorageWire::StorageTarget target) {
     size_t pathLen = strlen(path);
     if (pathLen > 127) pathLen = 127;
 
@@ -220,11 +220,11 @@ CommandResult HubFxStorageClient::uploadBegin(const char* path, uint32_t size,
     memcpy(&payload[5], path, pathLen);
 
     size_t totalLen = 5 + pathLen;
-    if (target != HubFxStorage::TARGET_SD) {
+    if (target != StorageWire::TARGET_SD) {
         payload[totalLen++] = (uint8_t)target;
     }
 
-    return sendCommand(HubFxPacket::FILE_UPLOAD_BEGIN, payload, totalLen);
+    return sendCommand(StoragePacket::FILE_UPLOAD_BEGIN, payload, totalLen);
 }
 
 CommandResult HubFxStorageClient::uploadData(uint16_t seqNum, const uint8_t* data, size_t dataLen) {
@@ -236,15 +236,15 @@ CommandResult HubFxStorageClient::uploadData(uint16_t seqNum, const uint8_t* dat
     size_t copyLen = (dataLen <= 508) ? dataLen : 508;
     memcpy(payload + 4, data, copyLen);
 
-    return sendCommand(HubFxPacket::FILE_UPLOAD_DATA, payload, 4 + copyLen);
+    return sendCommand(StoragePacket::FILE_UPLOAD_DATA, payload, 4 + copyLen);
 }
 
 CommandResult HubFxStorageClient::uploadEnd() {
-    return sendCommand(HubFxPacket::FILE_UPLOAD_END, nullptr, 0);
+    return sendCommand(StoragePacket::FILE_UPLOAD_END, nullptr, 0);
 }
 
 CommandResult HubFxStorageClient::uploadCancel() {
-    return sendCommand(HubFxPacket::FILE_UPLOAD_CANCEL, nullptr, 0);
+    return sendCommand(StoragePacket::FILE_UPLOAD_CANCEL, nullptr, 0);
 }
 
 #endif  // SFX_HAS_STORAGE_SERVER

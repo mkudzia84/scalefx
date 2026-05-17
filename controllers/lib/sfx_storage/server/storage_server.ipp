@@ -38,56 +38,56 @@ CommandHandleResult StorageServicePolicy<TPolicy>::handle(
 
     switch (type) {
         // SD card commands (0x93-0x95)
-        case HubFxPacket::SD_INIT:
+        case StoragePacket::SD_INIT:
             handleSdInit(payload, len);
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::SD_STATUS_REQ:
+        case StoragePacket::SD_STATUS_REQ:
             handleSdStatus();
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::FLASH_STATUS_REQ:
+        case StoragePacket::FLASH_STATUS_REQ:
             handleFlashStatus();
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::FILE_LIST:
+        case StoragePacket::FILE_LIST:
             handleFileList(payload, len);
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::FILE_TREE:
+        case StoragePacket::FILE_TREE:
             handleFileTree(payload, len);
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::FILE_DELETE:
+        case StoragePacket::FILE_DELETE:
             handleFileDelete(payload, len);
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::FILE_MKDIR:
+        case StoragePacket::FILE_MKDIR:
             handleFileMkdir(payload, len);
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::FILE_INFO:
+        case StoragePacket::FILE_INFO:
             handleFileInfo(payload, len);
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::FILE_DOWNLOAD:
+        case StoragePacket::FILE_DOWNLOAD:
             handleFileDownload(payload, len);
             return CommandHandleResult::Handled;
 
         // Upload commands (0xA0-0xA3)
-        case HubFxPacket::FILE_UPLOAD_BEGIN:
+        case StoragePacket::FILE_UPLOAD_BEGIN:
             handleUploadBegin(payload, len);
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::FILE_UPLOAD_DATA:
+        case StoragePacket::FILE_UPLOAD_DATA:
             handleUploadData(payload, len);
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::FILE_UPLOAD_END:
+        case StoragePacket::FILE_UPLOAD_END:
             handleUploadEnd();
             return CommandHandleResult::Handled;
 
-        case HubFxPacket::FILE_UPLOAD_CANCEL:
+        case StoragePacket::FILE_UPLOAD_CANCEL:
             handleUploadCancel();
             return CommandHandleResult::Handled;
 
@@ -110,7 +110,7 @@ void StorageServicePolicy<TPolicy>::handleFlashStatus() {
         // Send response with initialized=false
         uint8_t resp[13] = {0};
         resp[0] = 0;  // not initialized
-        sendRawPacket(HubFxPacket::FLASH_STATUS_REQ, currentTag(), resp, 13);
+        sendRawPacket(StoragePacket::FLASH_STATUS_REQ, currentTag(), resp, 13);
         return;
     }
 
@@ -126,7 +126,7 @@ void StorageServicePolicy<TPolicy>::handleFlashStatus() {
                 info.initialized, info.totalBytes, info.usedBytes, info.freeBytes);
 
     // FLASH_STATUS_REQ doubles as response type (same 0x99)
-    sendRawPacket(HubFxPacket::FLASH_STATUS_REQ, currentTag(), resp, sizeof(resp));
+    sendRawPacket(StoragePacket::FLASH_STATUS_REQ, currentTag(), resp, sizeof(resp));
 }
 
 
@@ -137,14 +137,14 @@ void StorageServicePolicy<TPolicy>::handleFlashStatus() {
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleFileList(const uint8_t* payload, size_t len) {
     char path[128];
-    HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
+    StorageWire::StorageTarget target = StorageWire::TARGET_SD;
 
     uint8_t pathErr = extractPathAndTarget(payload, len, path, sizeof(path), target);
     if (pathErr != SerialError::OK) { sendNack(pathErr); return; }
     if (!checkStorageReady(target)) return;
 
     if (_uploadActive && _uploadTarget == target) {
-        sendNack(HubFxError::UPLOAD_IN_PROGRESS);
+        sendNack(StorageError::UPLOAD_IN_PROGRESS);
         return;
     }
 
@@ -164,7 +164,7 @@ void StorageServicePolicy<TPolicy>::handleFileList(const uint8_t* payload, size_
     };
 
     uint8_t err;
-    if (target == HubFxStorage::TARGET_FLASH)
+    if (target == StorageWire::TARGET_FLASH)
         err = FlashModule::instance().listDirectory(path, listCb);
     else
         err = SdCardModule::instance().listDirectory(path, listCb);
@@ -187,14 +187,14 @@ void StorageServicePolicy<TPolicy>::handleFileList(const uint8_t* payload, size_
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleFileTree(const uint8_t* payload, size_t len) {
     char path[128];
-    HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
+    StorageWire::StorageTarget target = StorageWire::TARGET_SD;
 
     uint8_t pathErr = extractPathAndTarget(payload, len, path, sizeof(path), target);
     if (pathErr != SerialError::OK) { sendNack(pathErr); return; }
     if (!checkStorageReady(target)) return;
 
     if (_uploadActive && _uploadTarget == target) {
-        sendNack(HubFxError::UPLOAD_IN_PROGRESS);
+        sendNack(StorageError::UPLOAD_IN_PROGRESS);
         return;
     }
 
@@ -215,7 +215,7 @@ void StorageServicePolicy<TPolicy>::handleFileTree(const uint8_t* payload, size_
     };
 
     uint8_t err;
-    if (target == HubFxStorage::TARGET_FLASH)
+    if (target == StorageWire::TARGET_FLASH)
         err = FlashModule::instance().listTree(path, treeCb);
     else
         err = SdCardModule::instance().listTree(path, treeCb);
@@ -239,7 +239,7 @@ void StorageServicePolicy<TPolicy>::handleFileTree(const uint8_t* payload, size_
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleFileDelete(const uint8_t* payload, size_t len) {
     char path[128];
-    HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
+    StorageWire::StorageTarget target = StorageWire::TARGET_SD;
     uint8_t flags = 0;
     bool flagsPresent = false;
 
@@ -259,13 +259,13 @@ void StorageServicePolicy<TPolicy>::handleFileDelete(const uint8_t* payload, siz
     // Guard: reject if upload is active on the same target (would deadlock on mutex)
     if (_uploadActive && _uploadTarget == target) {
         STORAGE_LOG("FILE_DELETE rejected: upload active on %s", targetName(target));
-        sendNack(HubFxError::UPLOAD_IN_PROGRESS);
+        sendNack(StorageError::UPLOAD_IN_PROGRESS);
         return;
     }
 
     // Legacy default (no flags byte) = recursive, matching pre-v2 server behavior.
     // Explicit flags byte = client controls recursion via DeleteFlags::RECURSIVE bit.
-    bool recursive = flagsPresent ? ((flags & HubFxStorage::DeleteFlags::RECURSIVE) != 0) : true;
+    bool recursive = flagsPresent ? ((flags & StorageWire::DeleteFlags::RECURSIVE) != 0) : true;
 
     STORAGE_LOG("FILE_DELETE %s:%s flags=0x%02X recursive=%d",
                 targetName(target), path, flags, recursive ? 1 : 0);
@@ -273,7 +273,7 @@ void StorageServicePolicy<TPolicy>::handleFileDelete(const uint8_t* payload, siz
     // Check if target is a file or directory
     FileEntry entry;
     uint8_t infoErr;
-    if (target == HubFxStorage::TARGET_FLASH)
+    if (target == StorageWire::TARGET_FLASH)
         infoErr = FlashModule::instance().getFileInfo(path, entry);
     else
         infoErr = SdCardModule::instance().getFileInfo(path, entry);
@@ -285,12 +285,12 @@ void StorageServicePolicy<TPolicy>::handleFileDelete(const uint8_t* payload, siz
 
     uint8_t err;
     if (entry.isDirectory) {
-        if (target == HubFxStorage::TARGET_FLASH)
+        if (target == StorageWire::TARGET_FLASH)
             err = FlashModule::instance().removeDirectory(path, recursive);
         else
             err = SdCardModule::instance().removeDirectory(path, recursive);
     } else {
-        if (target == HubFxStorage::TARGET_FLASH)
+        if (target == StorageWire::TARGET_FLASH)
             err = FlashModule::instance().removeFile(path);
         else
             err = SdCardModule::instance().removeFile(path);
@@ -313,7 +313,7 @@ void StorageServicePolicy<TPolicy>::handleFileDelete(const uint8_t* payload, siz
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleFileMkdir(const uint8_t* payload, size_t len) {
     char path[128];
-    HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
+    StorageWire::StorageTarget target = StorageWire::TARGET_SD;
     uint8_t flags = 0;
 
     uint8_t pathErr = extractPathAndTarget(payload, len, path, sizeof(path), target, &flags);
@@ -321,14 +321,14 @@ void StorageServicePolicy<TPolicy>::handleFileMkdir(const uint8_t* payload, size
     if (!checkStorageReady(target)) return;
 
     if (_uploadActive && _uploadTarget == target) {
-        sendNack(HubFxError::UPLOAD_IN_PROGRESS);
+        sendNack(StorageError::UPLOAD_IN_PROGRESS);
         return;
     }
 
-    bool createParents = (flags & HubFxStorage::MkdirFlags::PARENTS) != 0;
+    bool createParents = (flags & StorageWire::MkdirFlags::PARENTS) != 0;
 
     uint8_t err;
-    if (target == HubFxStorage::TARGET_FLASH)
+    if (target == StorageWire::TARGET_FLASH)
         err = FlashModule::instance().makeDirectory(path, createParents);
     else
         err = SdCardModule::instance().makeDirectory(path, createParents);
@@ -350,20 +350,20 @@ void StorageServicePolicy<TPolicy>::handleFileMkdir(const uint8_t* payload, size
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleFileInfo(const uint8_t* payload, size_t len) {
     char path[128];
-    HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
+    StorageWire::StorageTarget target = StorageWire::TARGET_SD;
 
     uint8_t pathErr = extractPathAndTarget(payload, len, path, sizeof(path), target);
     if (pathErr != SerialError::OK) { sendNack(pathErr); return; }
     if (!checkStorageReady(target)) return;
 
     if (_uploadActive && _uploadTarget == target) {
-        sendNack(HubFxError::UPLOAD_IN_PROGRESS);
+        sendNack(StorageError::UPLOAD_IN_PROGRESS);
         return;
     }
 
     FileEntry entry;
     uint8_t err;
-    if (target == HubFxStorage::TARGET_FLASH)
+    if (target == StorageWire::TARGET_FLASH)
         err = FlashModule::instance().getFileInfo(path, entry);
     else
         err = SdCardModule::instance().getFileInfo(path, entry);
@@ -382,7 +382,7 @@ void StorageServicePolicy<TPolicy>::handleFileInfo(const uint8_t* payload, size_
         return;
     }
 
-    sendRawPacket(HubFxPacket::FILE_INFO_RESP, currentTag(), resp, sizeof(resp));
+    sendRawPacket(StoragePacket::FILE_INFO_RESP, currentTag(), resp, sizeof(resp));
 }
 
 
@@ -393,14 +393,14 @@ void StorageServicePolicy<TPolicy>::handleFileInfo(const uint8_t* payload, size_
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleFileDownload(const uint8_t* payload, size_t len) {
     char path[128];
-    HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
+    StorageWire::StorageTarget target = StorageWire::TARGET_SD;
 
     uint8_t pathErr = extractPathAndTarget(payload, len, path, sizeof(path), target);
     if (pathErr != SerialError::OK) { sendNack(pathErr); return; }
     if (!checkStorageReady(target)) return;
 
     if (_uploadActive && _uploadTarget == target) {
-        sendNack(HubFxError::UPLOAD_IN_PROGRESS);
+        sendNack(StorageError::UPLOAD_IN_PROGRESS);
         return;
     }
 
@@ -408,7 +408,7 @@ void StorageServicePolicy<TPolicy>::handleFileDownload(const uint8_t* payload, s
 
     LFSFile file;
     uint8_t err;
-    if (target == HubFxStorage::TARGET_FLASH)
+    if (target == StorageWire::TARGET_FLASH)
         err = FlashModule::instance().openRead(path, file);
     else
         err = _policy.sdOpenRead(path, file);
@@ -455,7 +455,7 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
     }
 
     if (_uploadActive) {
-        sendNack(HubFxError::UPLOAD_IN_PROGRESS);
+        sendNack(StorageError::UPLOAD_IN_PROGRESS);
         return;
     }
 
@@ -487,43 +487,43 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
     }
 
     // Optional target byte after path, optional mode byte after target
-    _uploadTarget = HubFxStorage::TARGET_SD;
-    _uploadMode   = HubFxStorage::UPLOAD_SYNC;
+    _uploadTarget = StorageWire::TARGET_SD;
+    _uploadMode   = StorageWire::UPLOAD_SYNC;
     size_t afterPath = 5 + pathLen;
     if (len > afterPath) {
         uint8_t rawTarget = payload[afterPath];
-        if (rawTarget > HubFxStorage::TARGET_FLASH) {
+        if (rawTarget > StorageWire::TARGET_FLASH) {
             sendNack(SerialError::INVALID_PARAM, "Invalid storage target");
             return;
         }
-        _uploadTarget = static_cast<HubFxStorage::StorageTarget>(rawTarget);
+        _uploadTarget = static_cast<StorageWire::StorageTarget>(rawTarget);
         if (len > afterPath + 1) {
             uint8_t rawMode = payload[afterPath + 1];
-            if (rawMode != HubFxStorage::UPLOAD_SYNC &&
-                rawMode != HubFxStorage::UPLOAD_STREAM) {
+            if (rawMode != StorageWire::UPLOAD_SYNC &&
+                rawMode != StorageWire::UPLOAD_STREAM) {
                 sendNack(SerialError::INVALID_PARAM, "Invalid upload mode");
                 return;
             }
-            _uploadMode = static_cast<HubFxStorage::UploadMode>(rawMode);
+            _uploadMode = static_cast<StorageWire::UploadMode>(rawMode);
         }
     }
 
     if (!checkStorageReady(_uploadTarget)) return;
 
     // Check absolute maximum file size per target
-    uint32_t maxSize = (_uploadTarget == HubFxStorage::TARGET_FLASH)
+    uint32_t maxSize = (_uploadTarget == StorageWire::TARGET_FLASH)
                      ? MAX_UPLOAD_SIZE_FLASH : MAX_UPLOAD_SIZE_SD;
     if (fileSize > maxSize) {
-        sendNack(HubFxError::FILE_TOO_LARGE, "Exceeds maximum file size");
+        sendNack(StorageError::FILE_TOO_LARGE, "Exceeds maximum file size");
         return;
     }
 
     // Check available space
-    if (_uploadTarget == HubFxStorage::TARGET_FLASH) {
+    if (_uploadTarget == StorageWire::TARGET_FLASH) {
         FlashStorageInfo info;
         FlashModule::instance().getStorageInfo(info);
         if (fileSize > info.freeBytes) {
-            sendNack(HubFxError::FILE_TOO_LARGE);
+            sendNack(StorageError::FILE_TOO_LARGE);
             return;
         }
     } else {
@@ -531,7 +531,7 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
         SdCardModule::instance().getStorageInfo(info);
         uint64_t freeBytes = (uint64_t)info.freeSpace_MB * 1024ULL * 1024ULL;
         if (fileSize > freeBytes) {
-            sendNack(HubFxError::FILE_TOO_LARGE);
+            sendNack(StorageError::FILE_TOO_LARGE);
             return;
         }
     }
@@ -539,7 +539,7 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
     // Open file for writing (truncate if exists)
     lockStorage(_uploadTarget);
     uint8_t err;
-    if (_uploadTarget == HubFxStorage::TARGET_FLASH)
+    if (_uploadTarget == StorageWire::TARGET_FLASH)
         err = FlashModule::instance().openWrite(_uploadPath, _shared.uploadFile, true);
     else
         err = _policy.sdOpenWrite(_uploadPath, _shared.uploadFile, true);
@@ -554,7 +554,7 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
     if (!_policy.allocateUploadBuffers()) {
         _shared.uploadFile.close();
         unlockStorage(_uploadTarget);
-        sendNack(HubFxError::FILE_IO_ERROR, "Buffer alloc failed");
+        sendNack(StorageError::FILE_IO_ERROR, "Buffer alloc failed");
         return;
     }
 
@@ -576,7 +576,7 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
     // Platform hook: reset per-upload counters, etc.
     _policy.onUploadActivated();
 
-    const char* modeStr = (_uploadMode == HubFxStorage::UPLOAD_STREAM) ? "stream" : "sync";
+    const char* modeStr = (_uploadMode == StorageWire::UPLOAD_STREAM) ? "stream" : "sync";
 
     STORAGE_LOG("UPLOAD_BEGIN %s:%s size=%lu mode=%s buf=%uKB",
                 targetName(_uploadTarget), _uploadPath,
@@ -594,9 +594,9 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
         _uploadSuspended = true;
     }
 
-    if (_uploadMode == HubFxStorage::UPLOAD_STREAM) {
+    if (_uploadMode == StorageWire::UPLOAD_STREAM) {
         // Pre-allocate file on SD for contiguous cluster allocation
-        if (_uploadTarget == HubFxStorage::TARGET_SD && fileSize > 0) {
+        if (_uploadTarget == StorageWire::TARGET_SD && fileSize > 0) {
             _shared.uploadFile.seek(fileSize - 1);
             uint8_t zero = 0;
             _shared.uploadFile.write(&zero, 1);
@@ -606,7 +606,7 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
         // Compute segment parameters. LittleFS (flash) writes are ~5-10x
         // slower than SD_MMC — shrink the segment so the client's ACK deadline
         // isn't exceeded during a single flash-erase-and-program cycle.
-        _streamSegmentSize = (_uploadTarget == HubFxStorage::TARGET_FLASH)
+        _streamSegmentSize = (_uploadTarget == StorageWire::TARGET_FLASH)
                              ? STREAM_SEGMENT_SIZE_FLASH
                              : STREAM_SEGMENT_SIZE;
         uint16_t segCount = (uint16_t)((fileSize + _streamSegmentSize - 1) / _streamSegmentSize);
@@ -648,7 +648,7 @@ template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleUploadData(const uint8_t* payload, size_t len) {
     // Wire: [seqNum:u16LE][crc16:u16LE][data:N]
     if (!_uploadActive) {
-        sendNack(HubFxError::NO_UPLOAD_ACTIVE);
+        sendNack(StorageError::NO_UPLOAD_ACTIVE);
         return;
     }
 
@@ -662,7 +662,7 @@ void StorageServicePolicy<TPolicy>::handleUploadData(const uint8_t* payload, siz
     if (!_policy.checkAsyncWriterHealth()) {
         STORAGE_LOG("UPLOAD_DATA: policy signalled error -- aborting upload");
         cleanupUpload(true);
-        sendNack(HubFxError::FILE_IO_ERROR);
+        sendNack(StorageError::FILE_IO_ERROR);
         return;
     }
 
@@ -697,7 +697,7 @@ void StorageServicePolicy<TPolicy>::handleUploadData(const uint8_t* payload, siz
                     (unsigned long)_uploadBytesWritten, (unsigned)dataLen,
                     (unsigned long)_uploadExpectedSize);
         cleanupUpload(true);
-        sendNack(HubFxError::FILE_TOO_LARGE);
+        sendNack(StorageError::FILE_TOO_LARGE);
         return;
     }
 
@@ -720,7 +720,7 @@ void StorageServicePolicy<TPolicy>::handleUploadData(const uint8_t* payload, siz
         if (_shared.uploadWriteBufLen >= _shared.uploadBufCapacity) {
             if (!_policy.onUploadBufferFull()) {
                 cleanupUpload(true);
-                sendNack(HubFxError::FILE_IO_ERROR);
+                sendNack(StorageError::FILE_IO_ERROR);
                 return;
             }
         }
@@ -738,14 +738,14 @@ void StorageServicePolicy<TPolicy>::handleUploadData(const uint8_t* payload, siz
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleUploadEnd() {
     if (!_uploadActive) {
-        sendNack(HubFxError::NO_UPLOAD_ACTIVE);
+        sendNack(StorageError::NO_UPLOAD_ACTIVE);
         return;
     }
 
     uint32_t tEndReceived = millis();
 
     // Log gap between stream completion and UPLOAD_END reception
-    if (_uploadMode == HubFxStorage::UPLOAD_STREAM && _streamEndTime_ms > 0) {
+    if (_uploadMode == StorageWire::UPLOAD_STREAM && _streamEndTime_ms > 0) {
         uint32_t gapSinceStreamEnd = tEndReceived - _streamEndTime_ms;
         STORAGE_LOG("UPLOAD_END received %lums after stream end (rx=%lu/%lu)",
                     (unsigned long)gapSinceStreamEnd,
@@ -759,7 +759,7 @@ void StorageServicePolicy<TPolicy>::handleUploadEnd() {
                     (unsigned long)_uploadBytesWritten,
                     (unsigned long)_uploadExpectedSize);
         cleanupUpload(true);
-        sendNack(HubFxError::FILE_IO_ERROR, "Size mismatch");
+        sendNack(StorageError::FILE_IO_ERROR, "Size mismatch");
         return;
     }
 
@@ -772,7 +772,7 @@ void StorageServicePolicy<TPolicy>::handleUploadEnd() {
                     (unsigned long)(millis() - t0),
                     errMsg ? errMsg : "unknown");
         cleanupUpload(true);
-        sendNack(HubFxError::FILE_IO_ERROR, errMsg ? errMsg : "Async write failed");
+        sendNack(StorageError::FILE_IO_ERROR, errMsg ? errMsg : "Async write failed");
         return;
     }
     uint32_t t1 = millis();
@@ -781,7 +781,7 @@ void StorageServicePolicy<TPolicy>::handleUploadEnd() {
     if (_shared.uploadWriteBufLen > 0) {
         if (!_shared.flushUploadBuffer()) {
             cleanupUpload(true);
-            sendNack(HubFxError::FILE_IO_ERROR, "Final flush failed");
+            sendNack(StorageError::FILE_IO_ERROR, "Final flush failed");
             return;
         }
     }
@@ -799,7 +799,7 @@ void StorageServicePolicy<TPolicy>::handleUploadEnd() {
     _uploadMd5.getBytes(md5Bytes);
     uint32_t t4 = millis();
 
-    const char* modeStr = (_uploadMode == HubFxStorage::UPLOAD_STREAM) ? "stream" : "sync";
+    const char* modeStr = (_uploadMode == StorageWire::UPLOAD_STREAM) ? "stream" : "sync";
 
     auto ws = _policy.writerStats();
     uint32_t avgLat = (ws.writeCount > 0)
@@ -845,7 +845,7 @@ void StorageServicePolicy<TPolicy>::handleUploadEnd() {
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleUploadCancel() {
     if (!_uploadActive) {
-        sendNack(HubFxError::NO_UPLOAD_ACTIVE);
+        sendNack(StorageError::NO_UPLOAD_ACTIVE);
         return;
     }
 
@@ -1022,7 +1022,7 @@ void StorageServicePolicy<TPolicy>::sendStreamSegmentAck() {
     SfxWire::putU16LE(&payload[0], _streamSegmentIndex);
     SfxWire::putU32LE(&payload[2], _uploadBytesWritten);
     payload[6] = _policy.bufferFillPercent();
-    sendRawPacket(HubFxPacket::FILE_UPLOAD_PROGRESS, SfxWire::TAG_ASYNC,
+    sendRawPacket(StoragePacket::FILE_UPLOAD_PROGRESS, SfxWire::TAG_ASYNC,
                   payload, sizeof(payload));
 }
 
@@ -1049,7 +1049,7 @@ void StorageServicePolicy<TPolicy>::cleanupUpload(bool deletePartial) {
     if (deletePartial) {
         // We already hold the storage lock from handleUploadBegin(),
         // so use policy-level remove directly instead of removeFile() which re-locks.
-        if (_uploadTarget == HubFxStorage::TARGET_FLASH) {
+        if (_uploadTarget == StorageWire::TARGET_FLASH) {
             FlashModule::instance().getFS().remove(_uploadPath);
         } else {
             SdCardModule::instance().policy().removeFile(_uploadPath);
@@ -1135,10 +1135,10 @@ uint8_t StorageServicePolicy<TPolicy>::mapStorageError(uint8_t err) {
     switch (err) {
         case FlashError::OK:              return SerialError::OK;
         case FlashError::NOT_INITIALIZED: return SerialError::NOT_INITIALIZED;
-        case FlashError::NOT_FOUND:       return HubFxError::FILE_NOT_FOUND;
-        case FlashError::IO_ERROR:        return HubFxError::FILE_IO_ERROR;
-        case FlashError::IS_DIRECTORY:    return HubFxError::FILE_IO_ERROR;
-        case FlashError::ALREADY_EXISTS:  return HubFxError::FILE_ALREADY_EXISTS;
+        case FlashError::NOT_FOUND:       return StorageError::FILE_NOT_FOUND;
+        case FlashError::IO_ERROR:        return StorageError::FILE_IO_ERROR;
+        case FlashError::IS_DIRECTORY:    return StorageError::FILE_IO_ERROR;
+        case FlashError::ALREADY_EXISTS:  return StorageError::FILE_ALREADY_EXISTS;
         case FlashError::LIMIT_EXCEEDED:  return SerialError::UNKNOWN;
         default:                          return SerialError::UNKNOWN;
     }
@@ -1180,7 +1180,7 @@ void StorageServicePolicy<TPolicy>::handleSdInit(const uint8_t* payload, size_t 
         sendAck();
     } else {
         STORAGE_LOG("SD_INIT failed");
-        sendNack(HubFxError::SD_NOT_INITIALIZED, "SD init failed");
+        sendNack(StorageError::SD_NOT_INITIALIZED, "SD init failed");
     }
 }
 
@@ -1202,7 +1202,7 @@ void StorageServicePolicy<TPolicy>::handleSdStatus() {
 
     if (!sd.isInitialized()) {
         resp[0] = 0;
-        sendRawPacket(HubFxPacket::SD_STATUS_RESP, currentTag(), resp, sizeof(resp));
+        sendRawPacket(StoragePacket::SD_STATUS_RESP, currentTag(), resp, sizeof(resp));
         return;
     }
 
@@ -1233,7 +1233,7 @@ void StorageServicePolicy<TPolicy>::handleSdStatus() {
                 (unsigned long)info.freeSpace_MB,
                 (unsigned long)info.usedSpace_MB);
 
-    sendRawPacket(HubFxPacket::SD_STATUS_RESP, currentTag(), resp, sizeof(resp));
+    sendRawPacket(StoragePacket::SD_STATUS_RESP, currentTag(), resp, sizeof(resp));
 }
 
 
@@ -1242,8 +1242,8 @@ void StorageServicePolicy<TPolicy>::handleSdStatus() {
 // ============================================================================
 
 template <typename TPolicy>
-bool StorageServicePolicy<TPolicy>::checkStorageReady(HubFxStorage::StorageTarget target) {
-    if (target == HubFxStorage::TARGET_FLASH) {
+bool StorageServicePolicy<TPolicy>::checkStorageReady(StorageWire::StorageTarget target) {
+    if (target == StorageWire::TARGET_FLASH) {
         if (!FlashModule::instance().isInitialized()) {
             sendNack(SerialError::NOT_INITIALIZED);
             return false;
@@ -1254,7 +1254,7 @@ bool StorageServicePolicy<TPolicy>::checkStorageReady(HubFxStorage::StorageTarge
             return false;
         } else {
             if (!SdCardModule::instance().isInitialized()) {
-                sendNack(HubFxError::SD_NOT_INITIALIZED);
+                sendNack(StorageError::SD_NOT_INITIALIZED);
                 return false;
             }
         }
@@ -1263,30 +1263,30 @@ bool StorageServicePolicy<TPolicy>::checkStorageReady(HubFxStorage::StorageTarge
 }
 
 template <typename TPolicy>
-void StorageServicePolicy<TPolicy>::lockStorage(HubFxStorage::StorageTarget target) {
-    if (target == HubFxStorage::TARGET_FLASH)
+void StorageServicePolicy<TPolicy>::lockStorage(StorageWire::StorageTarget target) {
+    if (target == StorageWire::TARGET_FLASH)
         FlashModule::instance().lock();
     else
         SdCardModule::instance().lock();
 }
 
 template <typename TPolicy>
-void StorageServicePolicy<TPolicy>::unlockStorage(HubFxStorage::StorageTarget target) {
-    if (target == HubFxStorage::TARGET_FLASH)
+void StorageServicePolicy<TPolicy>::unlockStorage(StorageWire::StorageTarget target) {
+    if (target == StorageWire::TARGET_FLASH)
         FlashModule::instance().unlock();
     else
         SdCardModule::instance().unlock();
 }
 
 template <typename TPolicy>
-const char* StorageServicePolicy<TPolicy>::targetName(HubFxStorage::StorageTarget target) {
-    return (target == HubFxStorage::TARGET_FLASH) ? "flash" : "sd";
+const char* StorageServicePolicy<TPolicy>::targetName(StorageWire::StorageTarget target) {
+    return (target == StorageWire::TARGET_FLASH) ? "flash" : "sd";
 }
 
 template <typename TPolicy>
 uint8_t StorageServicePolicy<TPolicy>::extractPathAndTarget(
         const uint8_t* payload, size_t len,
-        char* path, size_t pathBufSize, HubFxStorage::StorageTarget& target,
+        char* path, size_t pathBufSize, StorageWire::StorageTarget& target,
         uint8_t* flagsOut) {
 
     if (flagsOut) *flagsOut = 0;
@@ -1309,10 +1309,10 @@ uint8_t StorageServicePolicy<TPolicy>::extractPathAndTarget(
     // Optional target byte after the path
     if (len > (size_t)(1 + pathLen)) {
         uint8_t rawTarget = payload[1 + pathLen];
-        if (rawTarget > HubFxStorage::TARGET_FLASH) return SerialError::INVALID_PARAM;
-        target = static_cast<HubFxStorage::StorageTarget>(rawTarget);
+        if (rawTarget > StorageWire::TARGET_FLASH) return SerialError::INVALID_PARAM;
+        target = static_cast<StorageWire::StorageTarget>(rawTarget);
     } else {
-        target = HubFxStorage::TARGET_SD;  // default
+        target = StorageWire::TARGET_SD;  // default
     }
 
     // Optional flags byte after the target (append-only extension — Rule 11)

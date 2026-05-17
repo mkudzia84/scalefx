@@ -38,7 +38,7 @@
 #include <cstring>
 
 #include <serial/serial.h>
-#include <serial/hubfx/hubfx.h>
+#include <protocol/config_protocol.h>
 #include <server/board_server.h>          // SystemServicePolicy + BoardServerBase
 #include <serial/diag_log.h>
 
@@ -143,15 +143,15 @@ public:
     }
 
     bool ownsType(uint8_t type) const {
-        return (type >= HubFxPacket::CONFIG_RELOAD && type <= HubFxPacket::CONFIG_STATUS_RESP)
-            || (type == HubFxPacket::CONFIG_SAVE);
+        return (type >= ConfigPacket::CONFIG_RELOAD && type <= ConfigPacket::CONFIG_STATUS_RESP)
+            || (type == ConfigPacket::CONFIG_SAVE);
     }
 
     CommandHandleResult handle(uint8_t type, const uint8_t* payload, size_t len) {
         switch (type) {
-            case HubFxPacket::CONFIG_RELOAD: handleReload(payload, len); return CommandHandleResult::Handled;
-            case HubFxPacket::CONFIG_STATUS: handleStatus();             return CommandHandleResult::Handled;
-            case HubFxPacket::CONFIG_SAVE:   handleSave(payload, len);   return CommandHandleResult::Handled;
+            case ConfigPacket::CONFIG_RELOAD: handleReload(payload, len); return CommandHandleResult::Handled;
+            case ConfigPacket::CONFIG_STATUS: handleStatus();             return CommandHandleResult::Handled;
+            case ConfigPacket::CONFIG_SAVE:   handleSave(payload, len);   return CommandHandleResult::Handled;
             default: return CommandHandleResult::NotMyCommand;
         }
     }
@@ -159,7 +159,7 @@ public:
     void update() {}
 
     const char* getErrorMessage(uint8_t code) const {
-        return HubFxError::getMessage(code);
+        return ConfigError::getMessage(code);
     }
 
 protected:
@@ -207,7 +207,7 @@ private:
             IConfigStoreFacade* s = find(pathBuf);
             if (!s) {
                 SFX_LOG_WARN("[Config] Reload: unknown path '%s'", pathBuf);
-                this->sendNack(HubFxError::CONFIG_ERROR, "unknown config path");
+                this->sendNack(ConfigError::CONFIG_FAILURE, "unknown config path");
                 return;
             }
             auto r = s->loadFromFile(nullptr);  // facade always uses its own defaultPath
@@ -216,7 +216,7 @@ private:
                 this->sendAck();
             } else {
                 SFX_LOG_WARN("[Config] Reload failed (%s): %s", pathBuf, s->lastError());
-                this->sendNack(HubFxError::CONFIG_ERROR, s->lastError());
+                this->sendNack(ConfigError::CONFIG_FAILURE, s->lastError());
             }
             return;
         }
@@ -227,7 +227,7 @@ private:
             auto r = _stores[i]->loadFromFile(nullptr);
             if (!r.ok && !(r.populated && !r.validated)) {
                 SFX_LOG_WARN("[Config] Reload-all failed at %s: %s", p, _stores[i]->lastError());
-                this->sendNack(HubFxError::CONFIG_ERROR, _stores[i]->lastError());
+                this->sendNack(ConfigError::CONFIG_FAILURE, _stores[i]->lastError());
                 return;
             }
             SFX_LOG_INFO("[Config] Reloaded: %s (%u bytes)", p, _stores[i]->fileSize());
@@ -238,17 +238,17 @@ private:
     void handleSave(const uint8_t* payload, size_t len) {
         char pathBuf[128] = {};
         if (!extractPath(payload, len, pathBuf, sizeof(pathBuf))) {
-            this->sendNack(HubFxError::CONFIG_ERROR, "save requires explicit path");
+            this->sendNack(ConfigError::CONFIG_FAILURE, "save requires explicit path");
             return;
         }
         IConfigStoreFacade* s = find(pathBuf);
         if (!s) {
             SFX_LOG_WARN("[Config] Save: unknown path '%s'", pathBuf);
-            this->sendNack(HubFxError::CONFIG_ERROR, "unknown config path");
+            this->sendNack(ConfigError::CONFIG_FAILURE, "unknown config path");
             return;
         }
         if (!s->hasRawYaml()) {
-            this->sendNack(HubFxError::CONFIG_ERROR, "no config loaded to save");
+            this->sendNack(ConfigError::CONFIG_FAILURE, "no config loaded to save");
             return;
         }
         auto r = s->saveToFile(nullptr);  // facade always uses its own defaultPath
@@ -257,7 +257,7 @@ private:
             this->sendAck();
         } else {
             SFX_LOG_WARN("[Config] Save failed (%s): %s", pathBuf, s->lastError());
-            this->sendNack(HubFxError::CONFIG_ERROR, s->lastError());
+            this->sendNack(ConfigError::CONFIG_FAILURE, s->lastError());
         }
     }
 
@@ -286,7 +286,7 @@ private:
         buf[0] = allLoaded ? 1 : 0;
         SfxWire::putU16LE(&buf[1], (uint16_t)total);
         buf[3] = allValid ? 1 : 0;
-        this->sendRawPacket(HubFxPacket::CONFIG_STATUS_RESP, this->currentTag(), buf, sizeof(buf));
+        this->sendRawPacket(ConfigPacket::CONFIG_STATUS_RESP, this->currentTag(), buf, sizeof(buf));
     }
 };
 

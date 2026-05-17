@@ -16,7 +16,7 @@ using namespace CoreProtocol;
 void HubFxAudioClient::onModulePacket(uint8_t type, uint8_t tag,
                                        const uint8_t* payload, size_t len) {
     switch (type) {
-        case HubFxPacket::AUDIO_STATUS_RESP: {
+        case AudioPacket::AUDIO_STATUS_RESP: {
             if (len < 7) break;  // minimum header
 
             size_t pos = 0;
@@ -128,17 +128,17 @@ CommandResult HubFxAudioClient::play(uint8_t channel, const char* path,
     payload[6] = (uint8_t)pathLen;
     memcpy(&payload[7], path, pathLen);
 
-    return sendCommand(HubFxPacket::AUDIO_PLAY, payload, 7 + pathLen);
+    return sendCommand(AudioPacket::AUDIO_PLAY, payload, 7 + pathLen);
 }
 
 CommandResult HubFxAudioClient::stop(uint8_t channel) {
     uint8_t payload[1] = { channel };
-    return sendCommand(HubFxPacket::AUDIO_STOP, payload, 1);
+    return sendCommand(AudioPacket::AUDIO_STOP, payload, 1);
 }
 
 CommandResult HubFxAudioClient::fade(uint8_t channel) {
     uint8_t payload[1] = { channel };
-    return sendCommand(HubFxPacket::AUDIO_FADE, payload, 1);
+    return sendCommand(AudioPacket::AUDIO_FADE, payload, 1);
 }
 
 // ============================================================================
@@ -147,12 +147,12 @@ CommandResult HubFxAudioClient::fade(uint8_t channel) {
 
 CommandResult HubFxAudioClient::setVolume(uint8_t channel, uint8_t volumePct) {
     uint8_t payload[2] = { channel, volumePct };
-    return sendCommand(HubFxPacket::AUDIO_VOLUME, payload, 2);
+    return sendCommand(AudioPacket::AUDIO_VOLUME, payload, 2);
 }
 
 CommandResult HubFxAudioClient::setMasterVolume(uint8_t volumePct) {
-    uint8_t payload[2] = { HubFxAudio::CH_ALL, volumePct };
-    return sendCommand(HubFxPacket::AUDIO_VOLUME, payload, 2);
+    uint8_t payload[2] = { AudioWire::CH_ALL, volumePct };
+    return sendCommand(AudioPacket::AUDIO_VOLUME, payload, 2);
 }
 
 // ============================================================================
@@ -173,12 +173,12 @@ CommandResult HubFxAudioClient::queueSound(uint8_t channel, const char* path,
     payload[5] = (uint8_t)pathLen;
     memcpy(&payload[6], path, pathLen);
 
-    return sendCommand(HubFxPacket::AUDIO_QUEUE, payload, 6 + pathLen);
+    return sendCommand(AudioPacket::AUDIO_QUEUE, payload, 6 + pathLen);
 }
 
 CommandResult HubFxAudioClient::queueClear(uint8_t channel) {
     uint8_t payload[1] = { channel };
-    return sendCommand(HubFxPacket::AUDIO_QUEUE_CLEAR, payload, 1);
+    return sendCommand(AudioPacket::AUDIO_QUEUE_CLEAR, payload, 1);
 }
 
 // ============================================================================
@@ -186,5 +186,5 @@ CommandResult HubFxAudioClient::queueClear(uint8_t channel) {
 // ============================================================================
 
 CommandResult HubFxAudioClient::requestStatus() {
-    return sendCommand(HubFxPacket::AUDIO_STATUS_REQ, nullptr, 0);
+    return sendCommand(AudioPacket::AUDIO_STATUS_REQ, nullptr, 0);
 }

@@ -54,7 +54,7 @@
 #define STORAGE_SERVER_H
 
 #include <serial/serial.h>
-#include <serial/hubfx/hubfx.h>
+#include <protocol/storage_protocol.h>
 #include <server/stream.h>
 #include <server/board_server.h>           // SystemServicePolicy + BoardServerBase
 #include <storage/flash.h>
@@ -249,7 +249,7 @@ public:
     void update() {}
 
     const char* getErrorMessage(uint8_t code) const {
-        return HubFxError::getMessage(code);
+        return StorageError::getMessage(code);
     }
 
 protected:
@@ -304,21 +304,21 @@ private:
     void notifyTransferEnd();
 
     // --- Storage helpers ---
-    bool checkStorageReady(HubFxStorage::StorageTarget target);
-    void lockStorage(HubFxStorage::StorageTarget target);
-    void unlockStorage(HubFxStorage::StorageTarget target);
-    static const char* targetName(HubFxStorage::StorageTarget target);
+    bool checkStorageReady(StorageWire::StorageTarget target);
+    void lockStorage(StorageWire::StorageTarget target);
+    void unlockStorage(StorageWire::StorageTarget target);
+    static const char* targetName(StorageWire::StorageTarget target);
     uint8_t mapStorageError(uint8_t err);
     uint8_t extractPathAndTarget(const uint8_t* payload, size_t len,
                                   char* path, size_t pathBufSize,
-                                  HubFxStorage::StorageTarget& target,
+                                  StorageWire::StorageTarget& target,
                                   uint8_t* flagsOut = nullptr);
     static bool isValidPath(const char* path);
 
     // --- Upload state (protocol-only, policies never touch these) ---
     bool     _uploadActive       = false;
-    HubFxStorage::StorageTarget _uploadTarget = HubFxStorage::TARGET_SD;
-    HubFxStorage::UploadMode    _uploadMode   = HubFxStorage::UPLOAD_SYNC;
+    StorageWire::StorageTarget _uploadTarget = StorageWire::TARGET_SD;
+    StorageWire::UploadMode    _uploadMode   = StorageWire::UPLOAD_SYNC;
     char     _uploadPath[128]    = {};
     uint32_t _uploadExpectedSize = 0;
     uint32_t _uploadBytesWritten = 0;

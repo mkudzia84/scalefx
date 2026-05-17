@@ -12,7 +12,7 @@
 #ifndef AUDIO_CLIENT_H
 #define AUDIO_CLIENT_H
 
-#include <serial/hubfx/hubfx.h>
+#include <protocol/audio_protocol.h>
 #include <serial/client/bus_client.h>
 
 // ============================================================================
@@ -26,10 +26,10 @@ public:
     // ========================================================================
 
     CommandResult play(uint8_t channel, const char* path, uint8_t volumePct = 100,
-                       uint8_t outputChannels = HubFxAudio::OUTPUT_ALL,
-                       uint8_t loopMode = HubFxAudio::LOOP_NONE,
+                       uint8_t outputChannels = AudioWire::OUTPUT_ALL,
+                       uint8_t loopMode = AudioWire::LOOP_NONE,
                        uint16_t loopCount = 0);
-    CommandResult stop(uint8_t channel = HubFxAudio::CH_ALL);
+    CommandResult stop(uint8_t channel = AudioWire::CH_ALL);
     CommandResult fade(uint8_t channel);
 
     // ========================================================================
@@ -45,8 +45,8 @@ public:
 
     CommandResult queueSound(uint8_t channel, const char* path, uint8_t volumePct = 100,
                              uint16_t loopCount = 0,
-                             uint8_t behavior = HubFxAudio::QUEUE_FINISH_LOOP);
-    CommandResult queueClear(uint8_t channel = HubFxAudio::CH_ALL);
+                             uint8_t behavior = AudioWire::QUEUE_FINISH_LOOP);
+    CommandResult queueClear(uint8_t channel = AudioWire::CH_ALL);
 
     // ========================================================================
     // Status
@@ -68,7 +68,7 @@ public:
 
 protected:
     void onModulePacket(uint8_t type, uint8_t tag, const uint8_t* payload, size_t len) override;
-    const char* getModuleErrorMessage(uint8_t code) override { return HubFxError::getMessage(code); }
+    const char* getModuleErrorMessage(uint8_t code) override { return AudioError::getMessage(code); }
 
 private:
     HubFxAudioStatus _lastStatus;
