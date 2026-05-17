@@ -1,5 +1,5 @@
 /*
- * SlaveClient — typed master-side client for the generic slave protocol.
+ * CoreClient — typed master-side client for the generic slave protocol.
  *
  * Lives master-side (HubFX firmware + tests).  Wraps `BusClient` with:
  *
@@ -15,44 +15,45 @@
  * `on*Cb` registration here:
  *
  *   ┌──────────────────────────────┬─────────────────────────────┐
- *   │ Slave wire packet            │ SlaveClient observer        │
+ *   │ Slave wire packet            │ CoreClient observer        │
  *   ├──────────────────────────────┼─────────────────────────────┤
  *   │ SERVO_TARGET_REACHED  (0x14) │ onServoTargetReached(...)   │
  *   │ SERVO_MOTION_UPDATE   (0x18) │ onServoMotionUpdate(...)    │
  *   │ PWM_STALL             (0x3C) │ onPwmStall(...)             │
- *   │ LED_PROGRAM_DONE      (0x56) │ onLedProgramDone(...)       │
+ *   │ LED_QUEUE_DONE        (0x56) │ onLedQueueDone(...)         │
  *   │ BATTERY_ALERT         (0x0C) │ onBatteryAlert(...)         │
- *   │ SLAVE_STATUS_BROADCAST(0x06) │ onStatusBroadcast(...)      │
+ *   │ COMPONENT_STATUS_BROADCAST(0x06) │ onStatusBroadcast(...)      │
  *   └──────────────────────────────┴─────────────────────────────┘
  *
  * Calibration progress is NOT a slave event — calibration state lives
  * master-side (per the architectural pivot).  The master orchestrator
  * that drives a calibration sequence emits its own progress events
- * upstream to Studio / CLI; SlaveClient just sees the underlying
+ * upstream to Studio / CLI; CoreClient just sees the underlying
  * primitives (PWM_SET_MOTOR + PWM_STALL).
  *
  * History:
  *   - Originally landed at controllers/lib/sfx_serial/serial/client/.
- *   - Moved to controllers/lib/sfx_slave/client/ 2026-05-06 to mirror
+ *   - Moved to controllers/lib/sfx_core/client/ 2026-05-06 to mirror
  *     the symmetric server/client layout used by sfx_storage,
  *     sfx_config, and sfx_peripherals/led — sfx_serial keeps the
  *     core protocol primitives (BusClient, CommandResult, packet
  *     headers) and per-module clients live under their own libraries.
  */
 
-#ifndef SFX_SLAVE_CLIENT_H
-#define SFX_SLAVE_CLIENT_H
+#ifndef SFX_CORE_CLIENT_H
+#define SFX_CORE_CLIENT_H
 
 #include <cstdint>
 #include <functional>
 #include <vector>
 
 #include <serial/client/bus_client.h>
-#include <serial/slave/slave.h>
-#include <serial/slave/component_kind.h>
+#include <serial/components/components.h>
+#include <serial/components/led_status.h>
+#include <serial/components/component_kind.h>
 #include <power/battery_types.h>           // BatteryChemistry mirror
 
-namespace sfx_slave {
+namespace sfx_core {
 
 // ── Response payload structs ─────────────────────────────────────────
 
@@ -86,10 +87,10 @@ struct PwmConfig {
 };
 
 struct LedStatus {
-    uint8_t addr;        // raw address byte (bit 7 = PWM-borrowed)
+    uint8_t addr;          // raw address byte (bit 7 = PWM-borrowed)
     uint8_t brightness;
-    uint8_t progId;
-    uint8_t progState;
+    uint8_t queueState;    // 0 = idle, 1 = playing, 2 = paused
+    uint8_t currentEvent;  // 0-based event index within the loaded queue
 };
 
 struct ServoCalibration {
@@ -108,15 +109,10 @@ struct PwmRuntimeConfig {
     uint16_t                       maxDuty;
 };
 
-/// Wire-format LED event (8 bytes — matches LED_PROGRAM_LOAD payload format).
-struct LedEvent {
-    uint8_t  type;     // LedEventType::*
-    uint16_t p1;
-    uint16_t p2;
-    uint8_t  p3;
-    uint8_t  p4;
-    uint8_t  p5;
-};
+/// LedEvent (wire-format, 8 bytes) is defined in serial/slave/led_status.h
+/// so both client and slave side share one definition.  Pulled into this
+/// namespace for ergonomic call sites.
+using LedEvent = ComponentPacket::LedEvent;
 
 /// Decoded BATTERY_INFO_RESP.  `present == false` on boards without a
 /// battery sensor (TBattery == NoBattery, or sensor below MIN_DETECT_mV).
@@ -128,19 +124,19 @@ struct BatteryInfo {
     uint16_t         voltage_mV       = 0;
     uint16_t         cellVoltage_mV   = 0;
     uint8_t          percentage       = 0;
-    uint8_t          flags            = 0;        ///< SlavePacket::BatteryFlags::*
+    uint8_t          flags            = 0;        ///< ComponentPacket::BatteryFlags::*
     uint16_t         profileLow_mV    = 0;        ///< per-cell low threshold
     uint16_t         profileCritical_mV = 0;      ///< per-cell critical threshold
 };
 
 /// Decoded BATTERY_ALERT async packet.
 struct BatteryAlert {
-    uint8_t  level;        ///< SlavePacket::BatteryAlertLevel::OK / LOW / CRITICAL
+    uint8_t  level;        ///< ComponentPacket::BatteryAlertLevel::OK / LOW / CRITICAL
     uint16_t voltage_mV;   ///< pack voltage at the transition
     uint8_t  cellCount;
 };
 
-/// Per-PWM stall mirror (carried in SLAVE_STATUS_BROADCAST).  Decoded
+/// Per-PWM stall mirror (carried in COMPONENT_STATUS_BROADCAST).  Decoded
 /// here so master orchestrators can read motor health without a
 /// PWM_GET_CONFIG round-trip.
 struct PwmStallStatus {
@@ -148,7 +144,7 @@ struct PwmStallStatus {
     uint16_t peak_mA;
 };
 
-/// Decoded SLAVE_STATUS_BROADCAST / response.  Sub-vectors are empty
+/// Decoded COMPONENT_STATUS_BROADCAST / response.  Sub-vectors are empty
 /// when the slave's `kindsBitmask` filter excludes the section.
 struct SlaveStatus {
     uint8_t                       boardState;       // BoardState::*
@@ -167,16 +163,16 @@ struct SlaveStatus {
 using ServoTargetReachedCb = std::function<void(uint8_t idx, uint16_t pos_us)>;
 using ServoMotionUpdateCb  = std::function<void(uint8_t idx, uint16_t pos, uint16_t target, int16_t vel)>;
 using PwmStallCb           = std::function<void(uint8_t idx, uint16_t peak_mA, uint16_t duration_ms)>;
-using LedProgramDoneCb     = std::function<void(uint8_t addr, uint8_t progId)>;
+using LedQueueDoneCb       = std::function<void(uint8_t addr)>;
 using BatteryAlertCb       = std::function<void(const BatteryAlert&)>;
 using StatusBroadcastCb    = std::function<void(const SlaveStatus&)>;
 
-// ── SlaveClient ──────────────────────────────────────────────────────
+// ── CoreClient ──────────────────────────────────────────────────────
 
-class SlaveClient : public BusClient {
+class CoreClient : public BusClient {
 public:
-    SlaveClient() = default;
-    ~SlaveClient() override = default;
+    CoreClient() = default;
+    ~CoreClient() override = default;
 
     // ── Identity / enumeration ───────────────────────────────────────
 
@@ -189,7 +185,7 @@ public:
 
     /// Synchronous status query — same payload shape as the
     /// broadcast.  `kindsMask` filters which sections appear
-    /// (`SlavePacket::StatusKinds::*`).
+    /// (`ComponentPacket::StatusKinds::*`).
     CommandResult requestStatus(SlaveStatus& out, uint8_t kindsMask = 0);
 
     /// Configure periodic broadcast.  hz=0 disables; otherwise 1..10 Hz.
@@ -238,7 +234,7 @@ public:
     CommandResult pwmGetConfig     (uint8_t idx, PwmConfig& out);
 
     /// Stall guard — for `PwmMotor`-mode channels with current sensing.
-    /// `flags` is `SlavePacket::StallFlags::*` (must include ENABLED to
+    /// `flags` is `ComponentPacket::StallFlags::*` (must include ENABLED to
     /// activate the watchdog; AUTO_STOP / BRAKE_ON_STOP / LATCH for
     /// behaviour on trip).
     CommandResult pwmSetStallGuard (uint8_t idx, uint16_t threshold_mA,
@@ -249,14 +245,16 @@ public:
     //
     // Address byte uses bit 7 to address PWM-borrowed channels (bit
     // 7 = 1) vs dedicated LedDigital channels (bit 7 = 0).  Helpers
-    // in `SlavePacket::LedAddr` build / decode them.
+    // in `ComponentPacket::LedAddr` build / decode them.
 
     CommandResult ledSetBrightness     (uint8_t addr, uint8_t brightness);
-    CommandResult ledLoadProgram       (uint8_t addr, uint8_t progId,
+    /// Replace the channel's event queue.  `flags` = `LedQueueFlags::*`
+    /// (currently just REPEAT — auto-restart on completion).
+    CommandResult ledLoadQueue         (uint8_t addr, uint8_t flags,
                                         const LedEvent* events, size_t count);
-    CommandResult ledRunProgram        (uint8_t addr, uint8_t progId, uint8_t flags);
-    CommandResult ledStopProgram       (uint8_t addr);
-    CommandResult ledRestartProgram    (uint8_t addr);
+    CommandResult ledStartQueue        (uint8_t addr);
+    CommandResult ledStopQueue         (uint8_t addr);
+    CommandResult ledRestartQueue      (uint8_t addr);
     CommandResult ledResetChannel      (uint8_t addr);   // 0xFF = broadcast
     CommandResult ledEnableChannel     (uint8_t addr, bool enabled);
     CommandResult ledSetMasterBrightness(uint8_t pct);
@@ -270,7 +268,7 @@ public:
     void onServoTargetReached (ServoTargetReachedCb cb) { _onTargetReached  .push_back(std::move(cb)); }
     void onServoMotionUpdate  (ServoMotionUpdateCb  cb) { _onMotionUpdate   .push_back(std::move(cb)); }
     void onPwmStall           (PwmStallCb           cb) { _onPwmStall       .push_back(std::move(cb)); }
-    void onLedProgramDone     (LedProgramDoneCb     cb) { _onLedProgramDone .push_back(std::move(cb)); }
+    void onLedQueueDone       (LedQueueDoneCb       cb) { _onLedQueueDone   .push_back(std::move(cb)); }
     void onBatteryAlert       (BatteryAlertCb       cb) { _onBatteryAlert   .push_back(std::move(cb)); }
     void onStatusBroadcast    (StatusBroadcastCb    cb) { _onStatusBroadcast.push_back(std::move(cb)); }
 
@@ -285,7 +283,7 @@ private:
     void decodeServoMotionUpdate (const uint8_t*, size_t);
     void decodeServoTargetReached(const uint8_t*, size_t);
     void decodePwmStall          (const uint8_t*, size_t);
-    void decodeLedProgramDone    (const uint8_t*, size_t);
+    void decodeLedQueueDone    (const uint8_t*, size_t);
     void decodeBatteryAlert      (const uint8_t*, size_t);
     void decodeStatusBroadcast   (const uint8_t*, size_t);
 
@@ -297,11 +295,11 @@ private:
     std::vector<ServoTargetReachedCb> _onTargetReached;
     std::vector<ServoMotionUpdateCb>  _onMotionUpdate;
     std::vector<PwmStallCb>           _onPwmStall;
-    std::vector<LedProgramDoneCb>     _onLedProgramDone;
+    std::vector<LedQueueDoneCb>     _onLedQueueDone;
     std::vector<BatteryAlertCb>       _onBatteryAlert;
     std::vector<StatusBroadcastCb>    _onStatusBroadcast;
 };
 
-}  // namespace sfx_slave
+}  // namespace sfx_core
 
-#endif  // SFX_SLAVE_CLIENT_H
+#endif  // SFX_CORE_CLIENT_H

@@ -186,7 +186,7 @@ public:
      *
      * Populated in handlePacket() for packets that go to onModulePacket()
      * (STATUS, module-specific responses). Useful for forwarding opaque
-     * response data through a routing layer (e.g., SlaveServer STATUS routing).
+     * response data through a routing layer (e.g., CoreServer STATUS routing).
      */
     uint8_t lastResponseType() const { return _lastResponseType; }
     const uint8_t* lastResponsePayload() const { return _lastResponsePayload; }

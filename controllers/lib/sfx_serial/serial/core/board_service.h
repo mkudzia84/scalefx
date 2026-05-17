@@ -1,0 +1,174 @@
+/*
+ * BoardServicePolicy — lifecycle + identify + status protocol policy.
+ *
+ * Absorbs the wire-protocol responsibilities of the legacy
+ * `CoreCommandServer`: INIT / SHUTDOWN / REBOOT / BOOTSEL / KEEPALIVE /
+ * STATUS / STATUS_REQ / IDENTIFY / I2C_SCAN / DIAG_HISTORY /
+ * STATUS_UPDATE / BATTERY_CONFIG (legacy 0xEE — chemistry + cell count).
+ *
+ * Satisfies `sfx_core::SystemServicePolicy` so it sits in a
+ * `BoardServer<...>` policy pack alongside the rest of the board's
+ * services.  Holds the board info (name / version / platform / cpuMHz
+ * / freeRam / buildNumber / capabilities), the keepalive timer, the
+ * status-broadcast machinery, and the per-event callbacks.
+ *
+ * Range owned: `0xEE..0xFF` (CorePacket lifecycle range + the legacy
+ * BATTERY_CONFIG byte at 0xEE that pre-dates the component-side
+ * BatteryServicePolicy).
+ *
+ * Wave-4 deliverable: this class replaces `CoreCommandServer` entirely
+ * once `SfxServer` is templatised.  Wave 5 then deletes `BusServer` /
+ * `ICommandHandler` / `CommandRouter` since `BoardServer` is the only
+ * dispatcher and routing is fully compile-time-resolved through the
+ * policy tuple.
+ */
+
+#ifndef SFX_BOARD_SERVICE_H
+#define SFX_BOARD_SERVICE_H
+
+#include <cstdint>
+#include <cstddef>
+
+#include "core.h"             // CorePacket / CoreError / CoreBoardInfo / I2CScanResult / callbacks
+#include "system_service.h"   // SystemServicePolicy concept + ServiceContext
+
+class Stream;
+
+namespace sfx_core {
+
+class BoardServicePolicy {
+public:
+    /// BoardServicePolicy contributes no capability bit of its own — the
+    /// capability bitmask advertised in IDENTIFY is the OR of every
+    /// OTHER policy's `kCapabilityBits`, which `BoardServer` aggregates
+    /// at compile time and seeds via `setCapabilities()` below.
+    static constexpr uint32_t kCapabilityBits = 0u;
+
+    BoardServicePolicy() = default;
+
+    // ── SystemServicePolicy surface ───────────────────────────────────
+
+    bool begin(sfx_core::ServiceContext* ctx) {
+        _ctx = ctx;
+        _initReceived = false;
+        _lastActivityMs = 0;
+        _prevActivityMs = 0;
+        return _ctx != nullptr;
+    }
+
+    bool ownsType(uint8_t type) const {
+        // 0xEE BATTERY_CONFIG (legacy) + 0xEF..0xFF lifecycle range.
+        return type >= 0xEE && type <= 0xFF;
+    }
+
+    CommandHandleResult handle(uint8_t type, const uint8_t* payload, size_t len);
+
+    /// Ticked by `BoardServer::update()` — drives the verbose-mode
+    /// status broadcast at the configured interval.
+    void update() { tickStatusBroadcast(); }
+
+    const char* getErrorMessage(uint8_t code) const {
+        return CoreError::getMessage(code);
+    }
+
+    // ── Board info & capabilities ─────────────────────────────────────
+
+    void setBoardInfo(const char* deviceName, const char* firmwareVersion,
+                      const char* platform, uint32_t cpuMHz, uint32_t freeRam,
+                      uint32_t buildNumber = 0);
+
+    void     setCapabilities(uint32_t caps) { _boardInfo.capabilities = caps; }
+    void     addCapability  (uint32_t bits) { _boardInfo.capabilities |= bits; }
+    uint32_t capabilities() const           { return _boardInfo.capabilities; }
+
+    void updateFreeRam(uint32_t freeRam) { _boardInfo.freeRamBytes = freeRam; }
+
+    // ── Activity / keepalive ─────────────────────────────────────────
+
+    void          updateActivity() { _lastActivityMs = millis(); }
+    bool          checkTimeout(unsigned long timeoutMs);
+    unsigned long lastActivityMs() const { return _lastActivityMs; }
+    bool          isInitialized()  const { return _initReceived; }
+    bool          isVerbose()      const { return (_initFlags & InitFlags::VERBOSE) != 0; }
+
+    // ── Board state ──────────────────────────────────────────────────
+
+    uint8_t boardState() const           { return _boardState; }
+    void    setBoardState(uint8_t state) { _boardState = state; }
+
+    void setTransferActive(bool active)  { _transferActive = active; }
+    bool isTransferActive() const        { return _transferActive; }
+
+    void reset();
+
+    // ── Callbacks ────────────────────────────────────────────────────
+
+    void onInit     (CoreInitCallback      cb) { _initCallback      = cb; }
+    void onShutdown (CoreShutdownCallback  cb) { _shutdownCallback  = cb; }
+    void onReboot   (CoreRebootCallback    cb) { _rebootCallback    = cb; }
+    void onBootsel  (CoreBootselCallback   cb) { _bootselCallback   = cb; }
+    void onKeepalive(CoreKeepaliveCallback cb) { _keepaliveCallback = cb; }
+    void onStatusData(StatusDataCallback   cb) { _statusDataCallback = cb; }
+    void onI2CScan  (I2CScanCallback       cb) { _i2cScanCallback   = cb; }
+
+    // ── Statistics ───────────────────────────────────────────────────
+
+    uint32_t commandCounter()   const { return _commandCounter; }
+    uint32_t keepaliveCounter() const { return _keepaliveCounter; }
+
+    // ── Wire emitters ────────────────────────────────────────────────
+
+    void sendI2CScanResult(const I2CScanResult& result);
+
+    /// Verbose-mode async telemetry envelope (TAG_ASYNC).
+    void sendStatusUpdate(uint8_t source, uint8_t updateType,
+                          const uint8_t* data = nullptr, size_t dataLen = 0);
+
+    void setStatusBroadcastInterval(uint32_t interval_ms) { _statusBroadcastInterval_ms = interval_ms; }
+    void setStatusBroadcastSource(uint8_t source)         { _statusBroadcastSource      = source; }
+    void tickStatusBroadcast();
+
+protected:
+    // Wire-helper wrappers (so handler bodies + SFX_REQUIRE_LEN macros
+    // call `sendAck()` / `sendNack()` / `sendRawPacket()` unchanged).
+    int     sendAck()                                                  { return _ctx->sendAck(); }
+    int     sendNack(uint8_t errorCode, const char* reason = nullptr)  { return _ctx->sendNack(errorCode, reason); }
+    int     sendRawPacket(uint8_t t, uint8_t tag, const uint8_t* p = nullptr, size_t l = 0)
+                                                                       { return _ctx->sendRawPacket(t, tag, p, l); }
+    uint8_t currentTag() const                                         { return _ctx->currentTag(); }
+    Stream* serial() const                                             { return _ctx ? _ctx->serial() : nullptr; }
+
+private:
+    void sendInitReady();
+    void sendIdentify();
+    void handleInit(const uint8_t* payload, size_t len);
+    void sendStatus();
+
+    sfx_core::ServiceContext* _ctx = nullptr;
+
+    CoreBoardInfo _boardInfo;
+    bool          _initReceived   = false;
+    uint8_t       _initFlags      = InitFlags::NONE;
+    uint8_t       _boardState     = BoardState::IDLE;
+    bool          _transferActive = false;
+    unsigned long _lastActivityMs = 0;
+    unsigned long _prevActivityMs = 0;
+    uint32_t      _commandCounter   = 0;
+    uint32_t      _keepaliveCounter = 0;
+
+    uint32_t      _statusBroadcastInterval_ms = 200;
+    unsigned long _lastStatusBroadcast_ms     = 0;
+    uint8_t       _statusBroadcastSource      = StatusUpdateSource::CORE;
+
+    CoreInitCallback      _initCallback;
+    CoreShutdownCallback  _shutdownCallback;
+    CoreRebootCallback    _rebootCallback;
+    CoreBootselCallback   _bootselCallback;
+    CoreKeepaliveCallback _keepaliveCallback;
+    StatusDataCallback    _statusDataCallback;
+    I2CScanCallback       _i2cScanCallback;
+};
+
+}  // namespace sfx_core
+
+#endif  // SFX_BOARD_SERVICE_H

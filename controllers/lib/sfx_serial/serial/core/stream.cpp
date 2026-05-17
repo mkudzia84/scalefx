@@ -6,7 +6,7 @@
  */
 
 #include "stream.h"
-#include "bus_server.h"
+#include "system_service.h"   // sfx_core::ServiceContext (sink interface)
 
 using namespace CoreProtocol;
 
@@ -35,9 +35,9 @@ uint16_t StreamProtocol::crc16_update(uint16_t crc, const uint8_t* data, size_t 
 // StreamWriter
 // ============================================================================
 
-StreamWriter::StreamWriter(BusServer& server, uint8_t tag,
+StreamWriter::StreamWriter(sfx_core::ServiceContext& sink, uint8_t tag,
                            uint8_t beginType, uint8_t dataType, uint8_t endType)
-    : _server(server)
+    : _server(sink)
     , _tag(tag)
     , _beginType(beginType)
     , _dataType(dataType)

@@ -1,5 +1,5 @@
 /*
- * SlaveClient — implementation of the typed master-side client.
+ * CoreClient — implementation of the typed master-side client.
  *
  * Pattern: each method builds the wire payload, calls into BusClient
  * via `sendCommand` (instant ACK/NACK) or `sendQuery` (typed response
@@ -14,7 +14,7 @@
 
 #include <cstring>
 
-namespace sfx_slave {
+namespace sfx_core {
 
 namespace {
 
@@ -49,28 +49,28 @@ inline uint32_t getU32LE(const uint8_t* p) {
 
 // ── Module-packet routing (async + query response handling) ──────────
 
-bool SlaveClient::onModulePacket(uint8_t type, const uint8_t* payload, size_t len) {
+bool CoreClient::onModulePacket(uint8_t type, const uint8_t* payload, size_t len) {
     // Async events first — slave fires these unsolicited with TAG_ASYNC.
     switch (type) {
-        case SlavePacket::SERVO_TARGET_REACHED:   decodeServoTargetReached(payload, len); return true;
-        case SlavePacket::SERVO_MOTION_UPDATE:    decodeServoMotionUpdate (payload, len); return true;
-        case SlavePacket::PWM_STALL:              decodePwmStall          (payload, len); return true;
-        case SlavePacket::LED_PROGRAM_DONE:       decodeLedProgramDone    (payload, len); return true;
-        case SlavePacket::BATTERY_ALERT:          decodeBatteryAlert      (payload, len); return true;
-        case SlavePacket::SLAVE_STATUS_BROADCAST: decodeStatusBroadcast   (payload, len); return true;
+        case ComponentPacket::SERVO_TARGET_REACHED:   decodeServoTargetReached(payload, len); return true;
+        case ComponentPacket::SERVO_MOTION_UPDATE:    decodeServoMotionUpdate (payload, len); return true;
+        case ComponentPacket::PWM_STALL:              decodePwmStall          (payload, len); return true;
+        case ComponentPacket::LED_QUEUE_DONE:       decodeLedQueueDone    (payload, len); return true;
+        case ComponentPacket::BATTERY_ALERT:          decodeBatteryAlert      (payload, len); return true;
+        case ComponentPacket::COMPONENT_STATUS_BROADCAST: decodeStatusBroadcast   (payload, len); return true;
     }
     // Query responses fall through to BusClient's tag-correlation path.
     return BusClient::onModulePacket(type, payload, len);
 }
 
-void SlaveClient::decodeServoTargetReached(const uint8_t* p, size_t len) {
+void CoreClient::decodeServoTargetReached(const uint8_t* p, size_t len) {
     if (len < 3) return;
     const uint8_t  idx = p[0];
     const uint16_t pos = getU16LE(p + 1);
     for (auto& cb : _onTargetReached) cb(idx, pos);
 }
 
-void SlaveClient::decodeServoMotionUpdate(const uint8_t* p, size_t len) {
+void CoreClient::decodeServoMotionUpdate(const uint8_t* p, size_t len) {
     if (len < 7) return;
     const uint8_t  idx    = p[0];
     const uint16_t pos    = getU16LE(p + 1);
@@ -79,7 +79,7 @@ void SlaveClient::decodeServoMotionUpdate(const uint8_t* p, size_t len) {
     for (auto& cb : _onMotionUpdate) cb(idx, pos, target, vel);
 }
 
-void SlaveClient::decodePwmStall(const uint8_t* p, size_t len) {
+void CoreClient::decodePwmStall(const uint8_t* p, size_t len) {
     if (len < 5) return;
     const uint8_t  idx     = p[0];
     const uint16_t peak_mA = getU16LE(p + 1);
@@ -87,12 +87,12 @@ void SlaveClient::decodePwmStall(const uint8_t* p, size_t len) {
     for (auto& cb : _onPwmStall) cb(idx, peak_mA, dur_ms);
 }
 
-void SlaveClient::decodeLedProgramDone(const uint8_t* p, size_t len) {
-    if (len < 2) return;
-    for (auto& cb : _onLedProgramDone) cb(p[0], p[1]);
+void CoreClient::decodeLedQueueDone(const uint8_t* p, size_t len) {
+    if (len < 1) return;
+    for (auto& cb : _onLedQueueDone) cb(p[0]);
 }
 
-void SlaveClient::decodeBatteryAlert(const uint8_t* p, size_t len) {
+void CoreClient::decodeBatteryAlert(const uint8_t* p, size_t len) {
     if (len < 4) return;
     BatteryAlert a{};
     a.level      = p[0];
@@ -101,7 +101,7 @@ void SlaveClient::decodeBatteryAlert(const uint8_t* p, size_t len) {
     for (auto& cb : _onBatteryAlert) cb(a);
 }
 
-void SlaveClient::decodeBatteryInfoPayload(const uint8_t* p, size_t len, BatteryInfo& out) {
+void CoreClient::decodeBatteryInfoPayload(const uint8_t* p, size_t len, BatteryInfo& out) {
     out = BatteryInfo{};
     if (len < 1) return;
     out.present = (p[0] != 0);
@@ -116,7 +116,7 @@ void SlaveClient::decodeBatteryInfoPayload(const uint8_t* p, size_t len, Battery
     out.profileCritical_mV = getU16LE(p + 11);
 }
 
-void SlaveClient::decodeBatterySection(const uint8_t* p, size_t len,
+void CoreClient::decodeBatterySection(const uint8_t* p, size_t len,
                                        size_t& off, BatteryInfo& out) {
     out = BatteryInfo{};
     if (off >= len) return;
@@ -132,7 +132,7 @@ void SlaveClient::decodeBatterySection(const uint8_t* p, size_t len,
     off += 8;
 }
 
-void SlaveClient::decodeStatusBroadcast(const uint8_t* p, size_t len) {
+void CoreClient::decodeStatusBroadcast(const uint8_t* p, size_t len) {
     if (len < 10) return;
     SlaveStatus st{};
     st.boardState    = p[0];
@@ -189,10 +189,10 @@ void SlaveClient::decodeStatusBroadcast(const uint8_t* p, size_t len) {
         st.leds.reserve(count);
         for (uint8_t i = 0; i < count && off + 4 <= len; i++) {
             LedStatus l{};
-            l.addr       = p[off + 0];
-            l.brightness = p[off + 1];
-            l.progState  = p[off + 2];
-            l.progId     = p[off + 3];
+            l.addr         = p[off + 0];
+            l.brightness   = p[off + 1];
+            l.queueState   = p[off + 2];
+            l.currentEvent = p[off + 3];
             st.leds.push_back(l);
             off += 4;
         }
@@ -206,11 +206,11 @@ void SlaveClient::decodeStatusBroadcast(const uint8_t* p, size_t len) {
 
 // ── Identity / enumeration ───────────────────────────────────────────
 
-CommandResult SlaveClient::requestComponentList(
+CommandResult CoreClient::requestComponentList(
         std::vector<sfx_peripherals::ComponentInfo>& out) {
     SerialPacket resp;
-    auto cr = sendQuery(SlavePacket::COMPONENT_LIST_REQ, nullptr, 0,
-                        SlavePacket::COMPONENT_LIST_RESP, resp);
+    auto cr = sendQuery(ComponentPacket::COMPONENT_LIST_REQ, nullptr, 0,
+                        ComponentPacket::COMPONENT_LIST_RESP, resp);
     if (!cr.ok()) return cr;
     if (resp.len < 1) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
 
@@ -229,11 +229,11 @@ CommandResult SlaveClient::requestComponentList(
     return CommandResult::Ack();
 }
 
-CommandResult SlaveClient::getIdentifier(uint8_t& out_boardType,
+CommandResult CoreClient::getIdentifier(uint8_t& out_boardType,
                                          char* out_name, size_t bufLen) {
     SerialPacket resp;
-    auto cr = sendQuery(SlavePacket::IDENT_GET_REQ, nullptr, 0,
-                        SlavePacket::IDENT_GET_RESP, resp);
+    auto cr = sendQuery(ComponentPacket::IDENT_GET_REQ, nullptr, 0,
+                        ComponentPacket::IDENT_GET_RESP, resp);
     if (!cr.ok()) return cr;
     if (resp.len < 2) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
 
@@ -248,21 +248,21 @@ CommandResult SlaveClient::getIdentifier(uint8_t& out_boardType,
     return CommandResult::Ack();
 }
 
-CommandResult SlaveClient::setIdentifier(const char* name) {
+CommandResult CoreClient::setIdentifier(const char* name) {
     if (!name) return CommandResult::Error(SerialError::INVALID_PAYLOAD);
     const size_t l = strlen(name);
-    if (l > 32) return CommandResult::Error(SlaveError::IDENT_TOO_LONG);
+    if (l > 32) return CommandResult::Error(ComponentError::IDENT_TOO_LONG);
     uint8_t buf[33];
     buf[0] = (uint8_t)l;
     memcpy(buf + 1, name, l);
-    return sendCommand(SlavePacket::IDENT_SET, buf, 1 + l);
+    return sendCommand(ComponentPacket::IDENT_SET, buf, 1 + l);
 }
 
-CommandResult SlaveClient::requestStatus(SlaveStatus& out, uint8_t kindsMask) {
+CommandResult CoreClient::requestStatus(SlaveStatus& out, uint8_t kindsMask) {
     SerialPacket resp;
     uint8_t req[1] = { kindsMask };
-    auto cr = sendQuery(SlavePacket::SLAVE_STATUS_REQ, req, sizeof req,
-                        SlavePacket::SLAVE_STATUS_BROADCAST, resp);
+    auto cr = sendQuery(ComponentPacket::COMPONENT_STATUS_REQ, req, sizeof req,
+                        ComponentPacket::COMPONENT_STATUS_BROADCAST, resp);
     if (!cr.ok()) return cr;
     if (resp.len < 10) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
 
@@ -320,10 +320,10 @@ CommandResult SlaveClient::requestStatus(SlaveStatus& out, uint8_t kindsMask) {
         out.leds.reserve(count);
         for (uint8_t i = 0; i < count && off + 4 <= len; i++) {
             LedStatus ll{};
-            ll.addr       = p[off + 0];
-            ll.brightness = p[off + 1];
-            ll.progState  = p[off + 2];
-            ll.progId     = p[off + 3];
+            ll.addr         = p[off + 0];
+            ll.brightness   = p[off + 1];
+            ll.queueState   = p[off + 2];
+            ll.currentEvent = p[off + 3];
             out.leds.push_back(ll);
             off += 4;
         }
@@ -332,23 +332,23 @@ CommandResult SlaveClient::requestStatus(SlaveStatus& out, uint8_t kindsMask) {
     return CommandResult::Ack();
 }
 
-CommandResult SlaveClient::setStatusRate(uint8_t hz, uint8_t kindsMask) {
+CommandResult CoreClient::setStatusRate(uint8_t hz, uint8_t kindsMask) {
     uint8_t buf[2] = { hz, kindsMask };
-    return sendCommand(SlavePacket::SLAVE_STATUS_RATE, buf, sizeof buf);
+    return sendCommand(ComponentPacket::COMPONENT_STATUS_RATE, buf, sizeof buf);
 }
 
 // ── Battery ──────────────────────────────────────────────────────────
 
-CommandResult SlaveClient::requestBatteryInfo(BatteryInfo& out) {
+CommandResult CoreClient::requestBatteryInfo(BatteryInfo& out) {
     SerialPacket resp;
-    auto cr = sendQuery(SlavePacket::BATTERY_INFO_REQ, nullptr, 0,
-                        SlavePacket::BATTERY_INFO_RESP, resp);
+    auto cr = sendQuery(ComponentPacket::BATTERY_INFO_REQ, nullptr, 0,
+                        ComponentPacket::BATTERY_INFO_RESP, resp);
     if (!cr.ok()) return cr;
     decodeBatteryInfoPayload(resp.payload, resp.len, out);
     return CommandResult::Ack();
 }
 
-CommandResult SlaveClient::batteryReconfigure(BatteryChemistry chemistry,
+CommandResult CoreClient::batteryReconfigure(BatteryChemistry chemistry,
                                               uint8_t          cellCount,
                                               uint16_t         customLow_mV,
                                               uint16_t         customCritical_mV) {
@@ -357,19 +357,19 @@ CommandResult SlaveClient::batteryReconfigure(BatteryChemistry chemistry,
     buf[1] = cellCount;
     putU16LE(buf + 2, customLow_mV);
     putU16LE(buf + 4, customCritical_mV);
-    return sendCommand(SlavePacket::BATTERY_RECONFIGURE, buf, sizeof buf);
+    return sendCommand(ComponentPacket::BATTERY_RECONFIGURE, buf, sizeof buf);
 }
 
 // ── Servo ────────────────────────────────────────────────────────────
 
-CommandResult SlaveClient::servoSet(uint8_t idx, uint16_t pulse_us) {
+CommandResult CoreClient::servoSet(uint8_t idx, uint16_t pulse_us) {
     uint8_t buf[3];
     buf[0] = idx;
     putU16LE(buf + 1, pulse_us);
-    return sendCommand(SlavePacket::SERVO_SET, buf, sizeof buf);
+    return sendCommand(ComponentPacket::SERVO_SET, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::servoConfig(uint8_t idx, const ServoCalibration& cal) {
+CommandResult CoreClient::servoConfig(uint8_t idx, const ServoCalibration& cal) {
     uint8_t buf[13];
     buf[0] = idx;
     putU16LE(buf + 1,  cal.min_us);
@@ -378,37 +378,37 @@ CommandResult SlaveClient::servoConfig(uint8_t idx, const ServoCalibration& cal)
     putU16LE(buf + 7,  cal.maxSpeed);
     putU16LE(buf + 9,  cal.accel);
     putU16LE(buf + 11, cal.decel);
-    return sendCommand(SlavePacket::SERVO_CONFIG, buf, sizeof buf);
+    return sendCommand(ComponentPacket::SERVO_CONFIG, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::servoSetMotion(uint8_t idx, uint16_t maxSpeed,
+CommandResult CoreClient::servoSetMotion(uint8_t idx, uint16_t maxSpeed,
                                           uint16_t accel, uint16_t decel) {
     uint8_t buf[7];
     buf[0] = idx;
     putU16LE(buf + 1, maxSpeed);
     putU16LE(buf + 3, accel);
     putU16LE(buf + 5, decel);
-    return sendCommand(SlavePacket::SERVO_SET_MOTION, buf, sizeof buf);
+    return sendCommand(ComponentPacket::SERVO_SET_MOTION, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::servoApplyJerk(uint8_t idx, int16_t offset_us, uint16_t duration_ms) {
+CommandResult CoreClient::servoApplyJerk(uint8_t idx, int16_t offset_us, uint16_t duration_ms) {
     uint8_t buf[5];
     buf[0] = idx;
     putU16LE(buf + 1, (uint16_t)offset_us);
     putU16LE(buf + 3, duration_ms);
-    return sendCommand(SlavePacket::SERVO_APPLY_JERK, buf, sizeof buf);
+    return sendCommand(ComponentPacket::SERVO_APPLY_JERK, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::servoHold(uint8_t idx, bool hold) {
+CommandResult CoreClient::servoHold(uint8_t idx, bool hold) {
     uint8_t buf[2] = { idx, (uint8_t)(hold ? 1 : 0) };
-    return sendCommand(SlavePacket::SERVO_HOLD, buf, sizeof buf);
+    return sendCommand(ComponentPacket::SERVO_HOLD, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::servoQuery(uint8_t idx, ServoStatus& out) {
+CommandResult CoreClient::servoQuery(uint8_t idx, ServoStatus& out) {
     SerialPacket resp;
     uint8_t req[1] = { idx };
-    auto cr = sendQuery(SlavePacket::SERVO_QUERY, req, sizeof req,
-                        SlavePacket::SERVO_QUERY_RESP, resp);
+    auto cr = sendQuery(ComponentPacket::SERVO_QUERY, req, sizeof req,
+                        ComponentPacket::SERVO_QUERY_RESP, resp);
     if (!cr.ok()) return cr;
     if (resp.len < 8) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
     out.idx               = resp.payload[0];
@@ -419,61 +419,61 @@ CommandResult SlaveClient::servoQuery(uint8_t idx, ServoStatus& out) {
     return CommandResult::Ack();
 }
 
-CommandResult SlaveClient::servoMotionUpdates(bool enable, uint8_t rate_hz) {
+CommandResult CoreClient::servoMotionUpdates(bool enable, uint8_t rate_hz) {
     uint8_t buf[2] = { (uint8_t)(enable ? 1 : 0), rate_hz };
-    return sendCommand(SlavePacket::SERVO_MOTION_UPDATES, buf, sizeof buf);
+    return sendCommand(ComponentPacket::SERVO_MOTION_UPDATES, buf, sizeof buf);
 }
 
 // ── PWM ──────────────────────────────────────────────────────────────
 
-CommandResult SlaveClient::pwmSetMode(uint8_t idx, sfx_peripherals::ComponentKind mode) {
+CommandResult CoreClient::pwmSetMode(uint8_t idx, sfx_peripherals::ComponentKind mode) {
     uint8_t buf[2] = { idx, (uint8_t)mode };
-    return sendCommand(SlavePacket::PWM_SET_MODE, buf, sizeof buf);
+    return sendCommand(ComponentPacket::PWM_SET_MODE, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::pwmSetDuty(uint8_t idx, uint16_t duty_thousandths) {
+CommandResult CoreClient::pwmSetDuty(uint8_t idx, uint16_t duty_thousandths) {
     uint8_t buf[3];
     buf[0] = idx;
     putU16LE(buf + 1, duty_thousandths);
-    return sendCommand(SlavePacket::PWM_SET_DUTY, buf, sizeof buf);
+    return sendCommand(ComponentPacket::PWM_SET_DUTY, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::pwmSetMotor(uint8_t idx, int16_t speed_signed) {
+CommandResult CoreClient::pwmSetMotor(uint8_t idx, int16_t speed_signed) {
     uint8_t buf[3];
     buf[0] = idx;
     putU16LE(buf + 1, (uint16_t)speed_signed);
-    return sendCommand(SlavePacket::PWM_SET_MOTOR, buf, sizeof buf);
+    return sendCommand(ComponentPacket::PWM_SET_MOTOR, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::pwmSetHeater(uint8_t idx, uint16_t value) {
+CommandResult CoreClient::pwmSetHeater(uint8_t idx, uint16_t value) {
     uint8_t buf[3];
     buf[0] = idx;
     putU16LE(buf + 1, value);
-    return sendCommand(SlavePacket::PWM_SET_HEATER, buf, sizeof buf);
+    return sendCommand(ComponentPacket::PWM_SET_HEATER, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::pwmSetFrequency(uint8_t idx, uint16_t freq_Hz) {
+CommandResult CoreClient::pwmSetFrequency(uint8_t idx, uint16_t freq_Hz) {
     uint8_t buf[3];
     buf[0] = idx;
     putU16LE(buf + 1, freq_Hz);
-    return sendCommand(SlavePacket::PWM_SET_FREQ, buf, sizeof buf);
+    return sendCommand(ComponentPacket::PWM_SET_FREQ, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::pwmReconfigure(uint8_t idx, const PwmRuntimeConfig& cfg) {
+CommandResult CoreClient::pwmReconfigure(uint8_t idx, const PwmRuntimeConfig& cfg) {
     uint8_t buf[7];
     buf[0] = idx;
     buf[1] = (uint8_t)cfg.mode;
     putU16LE(buf + 2, cfg.freq_Hz);
     buf[4] = cfg.cfgFlags;
     putU16LE(buf + 5, cfg.maxDuty);
-    return sendCommand(SlavePacket::PWM_RECONFIGURE, buf, sizeof buf);
+    return sendCommand(ComponentPacket::PWM_RECONFIGURE, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::pwmQuery(uint8_t idx, PwmStatus& out) {
+CommandResult CoreClient::pwmQuery(uint8_t idx, PwmStatus& out) {
     SerialPacket resp;
     uint8_t req[1] = { idx };
-    auto cr = sendQuery(SlavePacket::PWM_QUERY, req, sizeof req,
-                        SlavePacket::PWM_QUERY_RESP, resp);
+    auto cr = sendQuery(ComponentPacket::PWM_QUERY, req, sizeof req,
+                        ComponentPacket::PWM_QUERY_RESP, resp);
     if (!cr.ok()) return cr;
     if (resp.len < 14) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
     out.idx              = resp.payload[0];
@@ -485,11 +485,11 @@ CommandResult SlaveClient::pwmQuery(uint8_t idx, PwmStatus& out) {
     return CommandResult::Ack();
 }
 
-CommandResult SlaveClient::pwmGetConfig(uint8_t idx, PwmConfig& out) {
+CommandResult CoreClient::pwmGetConfig(uint8_t idx, PwmConfig& out) {
     SerialPacket resp;
     uint8_t req[1] = { idx };
-    auto cr = sendQuery(SlavePacket::PWM_GET_CONFIG, req, sizeof req,
-                        SlavePacket::PWM_GET_CONFIG_RESP, resp);
+    auto cr = sendQuery(ComponentPacket::PWM_GET_CONFIG, req, sizeof req,
+                        ComponentPacket::PWM_GET_CONFIG_RESP, resp);
     if (!cr.ok()) return cr;
     if (resp.len < 10) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
     out.idx             = resp.payload[0];
@@ -504,36 +504,36 @@ CommandResult SlaveClient::pwmGetConfig(uint8_t idx, PwmConfig& out) {
     return CommandResult::Ack();
 }
 
-CommandResult SlaveClient::pwmSetStallGuard(uint8_t idx, uint16_t threshold_mA,
+CommandResult CoreClient::pwmSetStallGuard(uint8_t idx, uint16_t threshold_mA,
                                             uint8_t debounce_ms, uint8_t flags) {
     uint8_t buf[5];
     buf[0] = idx;
     putU16LE(buf + 1, threshold_mA);
     buf[3] = debounce_ms;
     buf[4] = flags;
-    return sendCommand(SlavePacket::PWM_SET_STALL_GUARD, buf, sizeof buf);
+    return sendCommand(ComponentPacket::PWM_SET_STALL_GUARD, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::pwmClearStall(uint8_t idx) {
+CommandResult CoreClient::pwmClearStall(uint8_t idx) {
     uint8_t buf[1] = { idx };
-    return sendCommand(SlavePacket::PWM_CLEAR_STALL, buf, sizeof buf);
+    return sendCommand(ComponentPacket::PWM_CLEAR_STALL, buf, sizeof buf);
 }
 
 // ── LED ──────────────────────────────────────────────────────────────
 
-CommandResult SlaveClient::ledSetBrightness(uint8_t addr, uint8_t brightness) {
+CommandResult CoreClient::ledSetBrightness(uint8_t addr, uint8_t brightness) {
     uint8_t buf[2] = { addr, brightness };
-    return sendCommand(SlavePacket::LED_SET_BRIGHTNESS, buf, sizeof buf);
+    return sendCommand(ComponentPacket::LED_SET_BRIGHTNESS, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::ledLoadProgram(uint8_t addr, uint8_t progId,
+CommandResult CoreClient::ledLoadQueue(uint8_t addr, uint8_t flags,
                                           const LedEvent* events, size_t count) {
-    if (count > 64) return CommandResult::Error(SlaveError::PROGRAM_TOO_LARGE);
+    if (count > 64) return CommandResult::Error(ComponentError::QUEUE_TOO_LARGE);
     // 3-byte header + 8 bytes per event.  Stack-allocate an
     // upper-bound buffer rather than malloc.
     uint8_t buf[3 + 64 * 8];
     buf[0] = addr;
-    buf[1] = progId;
+    buf[1] = flags;
     buf[2] = (uint8_t)count;
     size_t off = 3;
     for (size_t i = 0; i < count; i++) {
@@ -546,52 +546,52 @@ CommandResult SlaveClient::ledLoadProgram(uint8_t addr, uint8_t progId,
         buf[off + 7] = e.p5;
         off += 8;
     }
-    return sendCommand(SlavePacket::LED_PROGRAM_LOAD, buf, off);
+    return sendCommand(ComponentPacket::LED_QUEUE_LOAD, buf, off);
 }
 
-CommandResult SlaveClient::ledRunProgram(uint8_t addr, uint8_t progId, uint8_t flags) {
-    uint8_t buf[3] = { addr, progId, flags };
-    return sendCommand(SlavePacket::LED_PROGRAM_RUN, buf, sizeof buf);
-}
-
-CommandResult SlaveClient::ledStopProgram(uint8_t addr) {
+CommandResult CoreClient::ledStartQueue(uint8_t addr) {
     uint8_t buf[1] = { addr };
-    return sendCommand(SlavePacket::LED_PROGRAM_STOP, buf, sizeof buf);
+    return sendCommand(ComponentPacket::LED_QUEUE_START, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::ledRestartProgram(uint8_t addr) {
+CommandResult CoreClient::ledStopQueue(uint8_t addr) {
     uint8_t buf[1] = { addr };
-    return sendCommand(SlavePacket::LED_PROGRAM_RESTART, buf, sizeof buf);
+    return sendCommand(ComponentPacket::LED_QUEUE_STOP, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::ledResetChannel(uint8_t addr) {
+CommandResult CoreClient::ledRestartQueue(uint8_t addr) {
     uint8_t buf[1] = { addr };
-    return sendCommand(SlavePacket::LED_RESET_CHANNEL, buf, sizeof buf);
+    return sendCommand(ComponentPacket::LED_QUEUE_RESTART, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::ledEnableChannel(uint8_t addr, bool enabled) {
+CommandResult CoreClient::ledResetChannel(uint8_t addr) {
+    uint8_t buf[1] = { addr };
+    return sendCommand(ComponentPacket::LED_RESET_CHANNEL, buf, sizeof buf);
+}
+
+CommandResult CoreClient::ledEnableChannel(uint8_t addr, bool enabled) {
     uint8_t buf[2] = { addr, (uint8_t)(enabled ? 1 : 0) };
-    return sendCommand(SlavePacket::LED_ENABLE_CHANNEL, buf, sizeof buf);
+    return sendCommand(ComponentPacket::LED_ENABLE_CHANNEL, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::ledSetMasterBrightness(uint8_t pct) {
+CommandResult CoreClient::ledSetMasterBrightness(uint8_t pct) {
     if (pct > 100) pct = 100;
     uint8_t buf[1] = { pct };
-    return sendCommand(SlavePacket::LED_SET_MASTER_BRIGHTNESS, buf, sizeof buf);
+    return sendCommand(ComponentPacket::LED_SET_MASTER_BRIGHTNESS, buf, sizeof buf);
 }
 
-CommandResult SlaveClient::ledQuery(uint8_t addr, LedStatus& out) {
+CommandResult CoreClient::ledQuery(uint8_t addr, LedStatus& out) {
     SerialPacket resp;
     uint8_t req[1] = { addr };
-    auto cr = sendQuery(SlavePacket::LED_QUERY, req, sizeof req,
-                        SlavePacket::LED_QUERY_RESP, resp);
+    auto cr = sendQuery(ComponentPacket::LED_QUERY, req, sizeof req,
+                        ComponentPacket::LED_QUERY_RESP, resp);
     if (!cr.ok()) return cr;
     if (resp.len < 4) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
-    out.addr       = resp.payload[0];
-    out.brightness = resp.payload[1];
-    out.progId     = resp.payload[2];
-    out.progState  = resp.payload[3];
+    out.addr         = resp.payload[0];
+    out.brightness   = resp.payload[1];
+    out.queueState   = resp.payload[2];
+    out.currentEvent = resp.payload[3];
     return CommandResult::Ack();
 }
 
-}  // namespace sfx_slave
+}  // namespace sfx_core

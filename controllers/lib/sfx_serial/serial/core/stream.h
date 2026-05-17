@@ -5,8 +5,9 @@
  * Data is broken into segments with sequence numbers and CRC-16 checksums,
  * enabling integrity checking and progress monitoring.
  *
- * This is a reusable library component — any BusServer subclass can use
- * StreamWriter to stream arbitrary data to the client.
+ * This is a reusable library component — any code with a
+ * `sfx_core::ServiceContext&` (typically inside a system-service policy
+ * handler) can use StreamWriter to stream arbitrary data to the client.
  *
  * Streaming wire format (3 packet types, chosen by caller):
  *   STREAM_BEGIN: [totalBytes:u32LE]            (0 = unknown size)
@@ -19,15 +20,15 @@
  * CRC-16 uses CCITT polynomial (0x1021), init 0xFFFF.
  *
  * Usage:
- *   // In a BusServer handler (uses default STREAM_BEGIN/DATA/END types):
- *   StreamWriter stream(*this, currentTag());
+ *   // In a policy handler (uses default STREAM_BEGIN/DATA/END types):
+ *   StreamWriter stream(*_ctx, currentTag());
  *   stream.begin(totalSize);   // announce size (0 = unknown)
  *   stream.write(data, len);   // auto-chunks when buffer fills
  *   stream.printf("line: %s\n", name);
  *   stream.end();              // flush + send END
  *
  *   // Or with custom packet types (e.g., controller-specific range):
- *   StreamWriter stream(*this, currentTag(), MY_BEGIN, MY_DATA, MY_END);
+ *   StreamWriter stream(*_ctx, currentTag(), MY_BEGIN, MY_DATA, MY_END);
  */
 
 #ifndef SERIAL_STREAM_H
@@ -38,9 +39,6 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include "core.h"
-
-// Forward declaration — avoids coupling to full BusServer header
-class BusServer;
 
 // ============================================================================
 // Stream Protocol Constants
@@ -101,8 +99,10 @@ namespace StreamProtocol {
  *   BEGIN (with size) → DATA chunks → END (with verification)
  *
  * Thread safety: NOT thread-safe internally. Caller must ensure
- * exclusive access to the BusServer's serial port during streaming.
+ * exclusive access to the ServiceContext's serial port during streaming.
  */
+namespace sfx_core { class ServiceContext; }
+
 class StreamWriter {
 public:
     /**
@@ -110,25 +110,20 @@ public:
      *
      * Uses StreamProtocol::STREAM_BEGIN/DATA/END (0xA4-0xA6).
      *
-     * @param server BusServer to send packets through
-     * @param tag    Correlation tag for all stream packets
+     * @param sink ServiceContext (or anything exposing sendRawPacket) to
+     *             route packets through
+     * @param tag  Correlation tag for all stream packets
      */
-    StreamWriter(BusServer& server, uint8_t tag)
-        : StreamWriter(server, tag,
+    StreamWriter(sfx_core::ServiceContext& sink, uint8_t tag)
+        : StreamWriter(sink, tag,
                        StreamProtocol::STREAM_BEGIN,
                        StreamProtocol::STREAM_DATA,
                        StreamProtocol::STREAM_END) {}
 
     /**
      * @brief Construct a StreamWriter with custom packet types
-     *
-     * @param server          BusServer to send packets through
-     * @param tag             Correlation tag for all stream packets
-     * @param beginPacketType Packet type for STREAM_BEGIN
-     * @param dataPacketType  Packet type for STREAM_DATA chunks
-     * @param endPacketType   Packet type for STREAM_END
      */
-    StreamWriter(BusServer& server, uint8_t tag,
+    StreamWriter(sfx_core::ServiceContext& sink, uint8_t tag,
                  uint8_t beginPacketType, uint8_t dataPacketType, uint8_t endPacketType);
 
     /// Destructor — frees heap-allocated chunk buffer
@@ -199,7 +194,7 @@ private:
     /// Flush current buffer as a STREAM_DATA packet
     bool flush();
 
-    BusServer& _server;
+    sfx_core::ServiceContext& _server;
     uint8_t _tag;
     uint8_t _beginType;
     uint8_t _dataType;

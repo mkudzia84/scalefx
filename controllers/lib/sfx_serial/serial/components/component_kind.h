@@ -67,8 +67,8 @@ namespace PwmFlags {
 }
 
 namespace LedFlags {
-    constexpr uint8_t HAS_HARDWARE_PWM   = 1u << 0;   ///< AW9523B-style HW PWM (else BAM)
-    constexpr uint8_t SUPPORTS_PROGRAMS  = 1u << 1;   ///< event-sequence runtime active
+    constexpr uint8_t HAS_HARDWARE_PWM   = 1u << 0;   ///< hardware PWM backing (PCA9685 / native PWM); else direct GPIO write
+    constexpr uint8_t SUPPORTS_QUEUE     = 1u << 1;   ///< event-queue runtime active (LED_QUEUE_LOAD/START/STOP)
 }
 
 /**

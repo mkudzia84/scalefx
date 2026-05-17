@@ -22,12 +22,12 @@
  *     0xEF..0xFF   Core
  */
 
-#ifndef SFX_SLAVE_PROTOCOL_H
-#define SFX_SLAVE_PROTOCOL_H
+#ifndef SFX_COMPONENT_PROTOCOL_H
+#define SFX_COMPONENT_PROTOCOL_H
 
 #include <cstdint>
 
-namespace SlavePacket {
+namespace ComponentPacket {
     // ── Identity / enumeration / status broadcast ─────────────────────
     // 0x01..0x0F — fits at the start of the available space.
     //
@@ -42,21 +42,21 @@ namespace SlavePacket {
     constexpr uint8_t IDENT_GET_REQ           = 0x03;  ///< query → IDENT_GET_RESP
     constexpr uint8_t IDENT_GET_RESP          = 0x04;  ///< [boardType:u8][len:u8][utf8 name…]
     constexpr uint8_t IDENT_SET               = 0x05;  ///< [len:u8][utf8 name…] — persisted to YAML, ACK'd
-    constexpr uint8_t SLAVE_STATUS_BROADCAST  = 0x06;  ///< slave → master/PC, async (TAG_ASYNC)
-    constexpr uint8_t SLAVE_STATUS_RATE       = 0x07;  ///< [hz:u8][kindsBitmask:u8] — see below
+    constexpr uint8_t COMPONENT_STATUS_BROADCAST  = 0x06;  ///< slave → master/PC, async (TAG_ASYNC)
+    constexpr uint8_t COMPONENT_STATUS_RATE       = 0x07;  ///< [hz:u8][kindsBitmask:u8] — see below
     /// Synchronous status request — master polls on demand without
     /// waiting for the next broadcast.  Returns the SAME payload as
-    /// `SLAVE_STATUS_BROADCAST` but with the master's current command
+    /// `COMPONENT_STATUS_BROADCAST` but with the master's current command
     /// tag (so it correlates as a normal query response, not async).
     /// `kindsBitmask` follows the same semantics as
-    /// `SLAVE_STATUS_RATE` — filters which sections are included.
-    constexpr uint8_t SLAVE_STATUS_REQ        = 0x08;  ///< [kindsBitmask:u8] → status payload tagged with the request tag
+    /// `COMPONENT_STATUS_RATE` — filters which sections are included.
+    constexpr uint8_t COMPONENT_STATUS_REQ        = 0x08;  ///< [kindsBitmask:u8] → status payload tagged with the request tag
 
     // ── Battery monitoring (optional — see BatteryPolicy in sfx_peripherals/power/)
     //
     // A slave board MAY expose a battery sensor (ADC + resistor divider
     // or INA226 channel).  Boards that do bind a `TBattery` policy at
-    // SlaveServer template instantiation; boards that don't get the
+    // CoreServer template instantiation; boards that don't get the
     // `NoBattery` stub which advertises `present = 0` here.  The
     // master discovers presence + chemistry via BATTERY_INFO_REQ — the
     // `CoreCapability::BATTERY` bit in INIT_READY is the cheap
@@ -71,9 +71,60 @@ namespace SlavePacket {
     /// BatteryStateMachine supplies hysteresis so the master never sees
     /// chatter at the threshold edge.  See BatteryAlertLevel below.
     constexpr uint8_t BATTERY_ALERT           = 0x0C;  ///< [level:u8][voltage_mV:u16LE][cellCount:u8]
-    // 0x0D..0x0F reserved for future identity / lifecycle commands
 
-    /// Kinds bitmask shared by SLAVE_STATUS_RATE and SLAVE_STATUS_REQ.
+    // ── Batched / transactional execution ─────────────────────────────
+    //
+    // Lets the master fire several primitive commands together as a
+    // single transaction (validate-all-first, apply-all-or-none).  Two
+    // modes:
+    //
+    //   • Anonymous, immediate:  `BATCH_EXEC` — sub-commands run in one
+    //     `update()` tick.  Useful when you need atomicity but the
+    //     sequence is single-use (calibration step, one-off composite).
+    //
+    //   • Cached, deferred:      `BATCH_LOAD` stores the sequence in a
+    //     slot addressed by `id`.  `BATCH_TRIGGER id` fires the stored
+    //     batch — pre-upload reusable effects once, fire by id many
+    //     times.  Same pattern as the cached config-store / role-keyed
+    //     push model: master is authority, slave is reactive.
+    //
+    // Sync across multiple expanders: master sends BATCH_TRIGGER to
+    // each expander in turn.  At 6 Mbps USB CDC the skew is ~50 µs per
+    // hop — well below human perception for cross-board effects.
+    //
+    // Cached batches are PERSISTENT — they survive trigger, get replaced
+    // by re-LOAD with the same id, or are explicitly dropped via
+    // BATCH_DISCARD.  `enterSafeState()` (keepalive timeout / SHUTDOWN /
+    // fresh INIT) clears every slot.  Slave-side memory: fixed N slots
+    // × M bytes each (typical 16×128 = 2 KB).  Overflow → BATCH_TOO_LARGE.
+    //
+    // Validation timing:
+    //   • LOAD:    static checks (indices in range, command types known,
+    //              payload lengths match per-command schemas).
+    //   • TRIGGER: dynamic checks (current modes still compatible with
+    //              each sub-command — e.g. PWM_SET_DUTY against a
+    //              channel currently in PwmLed mode → NACK with
+    //              failing sub-command index + error code).
+    //
+    // Sub-command wire format inside the batch payload — same as the
+    // standalone command's payload, prefixed by [type:u8][len:u8]:
+    //     [type:u8][len:u8][payload: len bytes]
+    // Sub-commands do not carry their own tags; they all complete
+    // under the outer BATCH_EXEC / BATCH_TRIGGER tag.  Async events
+    // chained off a sub-command (SERVO_TARGET_REACHED, PWM_STALL,
+    // LED_QUEUE_DONE) fire under TAG_ASYNC as usual.
+    constexpr uint8_t BATCH_EXEC              = 0x0D;  ///< [count:u8][cmd…] — anonymous immediate atomic
+    constexpr uint8_t BATCH_LOAD              = 0x0E;  ///< [id:u8][count:u8][cmd…] — cache by id (overwrites)
+    constexpr uint8_t BATCH_TRIGGER           = 0x0F;  ///< [id:u8] — fire cached batch (NACK if not loaded)
+
+    // Discard:
+    //   BATCH_LOAD id=N count=0      → discard slot N (no-op if empty)
+    //   BATCH_LOAD id=0xFF count=0   → clear all slots
+    // A zero-command batch is meaningless to execute, so its natural
+    // interpretation is "remove this slot".  Saves a packet ID and
+    // keeps the LOAD/TRIGGER pair as the entire cached-batch surface.
+
+    /// Kinds bitmask shared by COMPONENT_STATUS_RATE and COMPONENT_STATUS_REQ.
     /// 0 = include all kinds (default).  Set bits = include only those
     /// kinds; cleared kind sections are emitted with `count = 0`.
     namespace StatusKinds {
@@ -275,10 +326,21 @@ namespace SlavePacket {
         // bits 0x08..0x80 reserved
     }
 
-    // ── LED collection (event-sequencer runtime) ──────────────────────
+    // ── LED collection (per-channel event queue) ──────────────────────
+    //
+    // Master-driven model: every LED program lives master-side as a
+    // sequence of low-level events that the slave plays through.  The
+    // slave keeps a per-channel event QUEUE (no "program ID", no
+    // named/recallable persistence) — it just executes whatever events
+    // the master most recently loaded.  Higher-level concepts (named
+    // effects, role-bound sequences, multi-channel choreography) live
+    // master-side, typically composed into BATCH_LOAD packets that
+    // bundle the LED_QUEUE_LOAD + LED_QUEUE_START primitives for several
+    // channels at once.  See § "Batched / transactional execution"
+    // above and instructions/15-GENERIC-EXPANDER-REFACTOR.md.
     //
     // LED-runtime addressing — one byte spans both dedicated and PWM-
-    // borrowed outputs.  See instructions/15-GENERIC-SLAVE-REFACTOR.md
+    // borrowed outputs.  See instructions/15-GENERIC-EXPANDER-REFACTOR.md
     // § "LED runtime ownership":
     //
     //     bit 7 = 0  →  dedicated LED (LedCollection)  idx 0..(K-1)
@@ -287,70 +349,77 @@ namespace SlavePacket {
     //
     // A single LED-protocol command set targets both — the master
     // doesn't need to know where the physical output sits.
+    //
+    // Sync across channels / boards is done via BATCH_LOAD + BATCH_TRIGGER
+    // (the LED layer itself no longer carries a per-channel "deferred
+    // start" flag — that responsibility moved up into the batch surface).
+    //
     // 0x50..0x7F — 48 IDs (LED block has the most growth headroom)
-    constexpr uint8_t LED_SET_BRIGHTNESS      = 0x50;  ///< [addr:u8][brightness:u8]   (0=off, 255=full)
-    constexpr uint8_t LED_PROGRAM_LOAD        = 0x51;  ///< [addr:u8][progId:u8][eventCount:u8][LedEvent×N]
-    constexpr uint8_t LED_PROGRAM_RUN         = 0x52;  ///< [addr:u8][progId:u8][flags:u8]   (flags = repeat | sync-start)
-    constexpr uint8_t LED_PROGRAM_STOP        = 0x53;  ///< [addr:u8]
+    constexpr uint8_t LED_SET_BRIGHTNESS      = 0x50;  ///< [addr:u8][brightness:u8]   (0=off, 255=full) — instant write, bypasses queue
+    constexpr uint8_t LED_QUEUE_LOAD          = 0x51;  ///< [addr:u8][flags:u8][count:u8][LedEvent×N] — replaces queue contents
+    constexpr uint8_t LED_QUEUE_START         = 0x52;  ///< [addr:u8] — begin playback from event 0
+    constexpr uint8_t LED_QUEUE_STOP          = 0x53;  ///< [addr:u8]
     constexpr uint8_t LED_QUERY               = 0x54;  ///< [addr:u8] → LED_QUERY_RESP
-    constexpr uint8_t LED_QUERY_RESP          = 0x55;  ///< [addr:u8][brightness:u8][progId:u8][progState:u8]
-    /// Async (TAG_ASYNC) — emitted when a non-repeating program
-    /// finishes its last event.  Looped programs (REPEAT bit set in
-    /// LED_PROGRAM_RUN flags) never emit this.
-    constexpr uint8_t LED_PROGRAM_DONE        = 0x56;  ///< [addr:u8][progId:u8]
-    /// Restart the currently-loaded program from event 0 — equivalent
-    /// to LED_PROGRAM_STOP + LED_PROGRAM_RUN with the same flags, but
-    /// avoids the round-trip and the brief darkness between stop+run.
-    constexpr uint8_t LED_PROGRAM_RESTART     = 0x57;  ///< [addr:u8]
+    constexpr uint8_t LED_QUERY_RESP          = 0x55;  ///< [addr:u8][brightness:u8][queueState:u8][currentEvent:u8]
+    /// Async (TAG_ASYNC) — emitted when a non-repeating queue finishes
+    /// its last event.  Repeating queues (LedQueueFlags::REPEAT set at
+    /// LOAD time) never emit this — master ends them with LED_QUEUE_STOP.
+    constexpr uint8_t LED_QUEUE_DONE          = 0x56;  ///< [addr:u8]
+    /// Restart the currently-loaded queue from event 0 — equivalent to
+    /// LED_QUEUE_STOP + LED_QUEUE_START, but avoids the round-trip and
+    /// the brief darkness between stop+start.
+    constexpr uint8_t LED_QUEUE_RESTART       = 0x57;  ///< [addr:u8]
     /// Full channel reset — stop + clear queue + brightness 0 +
     /// re-enable.  Hard-resets the channel to its post-attach state.
     /// Address byte addresses dedicated/PWM-borrowed identically; use
     /// addr=0xFF to broadcast to every channel on the slave.
     constexpr uint8_t LED_RESET_CHANNEL       = 0x58;  ///< [addr:u8]
     /// Enable / disable a channel.  Disabled channels:
-    ///   - ignore LED_SET_BRIGHTNESS / LED_PROGRAM_RUN (return ACK
-    ///     with no effect; status byte reflects disabled flag)
+    ///   - ignore LED_SET_BRIGHTNESS / LED_QUEUE_START (return ACK with
+    ///     no effect; status byte reflects disabled flag)
     ///   - emit no output (forced LOW)
-    /// Use to gate channels off without losing their loaded program.
+    /// Use to gate channels off without losing their loaded queue.
     constexpr uint8_t LED_ENABLE_CHANNEL      = 0x59;  ///< [addr:u8][enable:u8]
     /// Master brightness percentage 0..100 — multiplicative scaler
     /// applied to every channel's emitted brightness.  Affects
     /// dedicated and PWM-borrowed channels uniformly.  Useful for
-    /// dim/bright modes without re-uploading programs.
+    /// dim/bright modes without re-loading queues.
     constexpr uint8_t LED_SET_MASTER_BRIGHTNESS = 0x5A;  ///< [percent:u8]
-    /// Detailed sequence-status query — returns the LedManager's
+    /// Detailed queue-status query — returns the LedManager's
     /// LightFxSeqStatus structure (current event index, total events,
-    /// current event type, event start_ms, repeat count, flags).
-    /// Useful for Studio to render "program: event 3 of 7, fade-in
-    /// in progress, 250ms remaining".
-    constexpr uint8_t LED_SEQ_STATUS_REQ      = 0x5B;  ///< [addr:u8] → LED_SEQ_STATUS_RESP
-    constexpr uint8_t LED_SEQ_STATUS_RESP     = 0x5C;  ///< [addr:u8][LightFxSeqStatus]
+    /// current event type, event start_ms, flags).  Useful for Studio
+    /// to render "queue: event 3 of 7, fade-in in progress, 250 ms
+    /// remaining".
+    constexpr uint8_t LED_QUEUE_STATUS_REQ    = 0x5B;  ///< [addr:u8] → LED_QUEUE_STATUS_RESP
+    constexpr uint8_t LED_QUEUE_STATUS_RESP   = 0x5C;  ///< [addr:u8][LightFxSeqStatus]
     // 0x5D..0x7F reserved for LED growth (48 IDs total in this block)
 
     /// Helpers for assembling/decoding the LED address byte.
     namespace LedAddr {
         constexpr uint8_t PWM_BORROWED_BIT = 0x80;
         constexpr uint8_t INDEX_MASK       = 0x7F;
+        constexpr uint8_t BROADCAST        = 0xFF;
         constexpr uint8_t dedicated   (uint8_t idx) { return idx & INDEX_MASK; }
         constexpr uint8_t pwmBorrowed (uint8_t idx) { return PWM_BORROWED_BIT | (idx & INDEX_MASK); }
         constexpr bool    isPwmBorrowed(uint8_t addr) { return (addr & PWM_BORROWED_BIT) != 0; }
+        constexpr bool    isBroadcast (uint8_t addr) { return addr == BROADCAST; }
         constexpr uint8_t indexOf      (uint8_t addr) { return addr & INDEX_MASK; }
     }
 
-    /// LED_PROGRAM_RUN flag bits.
-    namespace LedProgramFlags {
-        constexpr uint8_t REPEAT       = 0x01;  ///< loop forever; never emits LED_PROGRAM_DONE
-        constexpr uint8_t SYNC_START   = 0x02;  ///< defer start until next RUN — lock-step multi-channel start
-        // bits 0x04..0x80 reserved
+    /// LED_QUEUE_LOAD flag bits.  Apply for the lifetime of the loaded
+    /// queue; replaced when the queue is re-loaded.
+    namespace LedQueueFlags {
+        constexpr uint8_t REPEAT       = 0x01;  ///< auto-restart from event 0 on completion; never emits LED_QUEUE_DONE
+        // bits 0x02..0x80 reserved
     }
 
-    /// Per-event wire format for LED_PROGRAM_LOAD.  An LED program is
-    /// a sequence of these events; the slave's LedEventSeq runtime
-    /// walks them in order, executing each before advancing.  When
-    /// the last event finishes:
-    ///   - if the program was started with `LedProgramFlags::REPEAT`,
-    ///     the runtime restarts at event 0 (loops forever)
-    ///   - if NOT repeating, the runtime emits LED_PROGRAM_DONE and
+    /// Per-event wire format for LED_QUEUE_LOAD.  An LED queue is a
+    /// sequence of these events; the slave's LedEventSeq runtime walks
+    /// them in order, executing each before advancing.  When the last
+    /// event finishes:
+    ///   - if the queue was loaded with `LedQueueFlags::REPEAT`, the
+    ///     runtime restarts at event 0 (loops forever)
+    ///   - if NOT repeating, the runtime emits LED_QUEUE_DONE and
     ///     leaves the channel at the final brightness
     /// A "terminal hold" effect — keep the channel at brightness X
     /// after the program — is achieved by ending with an `ON` event
@@ -406,14 +475,14 @@ namespace SlavePacket {
     // every servo, every PWM channel, every LED, plus board-level
     // counters.  Saves the master from polling N per-component query
     // packets just to refresh its mirror.  Emitted on a schedule
-    // configurable via `SLAVE_STATUS_RATE` (default 1 Hz; up to 10 Hz
+    // configurable via `COMPONENT_STATUS_RATE` (default 1 Hz; up to 10 Hz
     // for fast-motion debugging).  Tag = TAG_ASYNC.
     //
     //   [hdr: boardState:u8, mode:u8, uptime_ms:u32LE, freeRam:u32LE]
     //   [servoCount:u8] × { port_id:u8, pos:u16LE, target:u16LE, vel:i16LE, flags:u8 }
     //   [pwmCount:u8]   × { port_id:u8, mode:u8, duty:u16LE, voltage_mV:i16LE, current_mA:i16LE,
     //                       stallFlags:u8, peak_mA:u16LE }
-    //   [ledCount:u8]   × { port_id:u8, brightness:u8, progState:u8, progId:u8 }
+    //   [ledCount:u8]   × { port_id:u8, brightness:u8, queueState:u8, currentEvent:u8 }
     //   [batteryPresent:u8]  // 0 = no battery on this board → no further bytes
     //     if present:  { chemistry:u8, cellCount:u8, voltage_mV:u16LE,
     //                    cellVoltage_mV:u16LE, percentage:u8, flags:u8 }
@@ -424,9 +493,9 @@ namespace SlavePacket {
     // section is one byte (`0`) on boards without a battery.  Total
     // size is bounded by the COBS payload limit (512 bytes), which
     // comfortably covers the 6+8+8 worst case.
-}   // namespace SlavePacket
+}   // namespace ComponentPacket
 
-namespace SlaveError {
+namespace ComponentError {
     // Generic / addressing
     constexpr uint8_t NONE                    = 0x00;
     constexpr uint8_t INVALID_INDEX           = 0xA0;  ///< component idx out of range for the board's collection
@@ -439,12 +508,17 @@ namespace SlaveError {
     constexpr uint8_t IDENT_INVALID_CHARS     = 0xA6;  ///< only printable ASCII allowed
     // Lifecycle
     constexpr uint8_t NOT_INITIALISED         = 0xA7;  ///< action attempted before INIT(SLAVE)/INIT(DIRECT)
-    // LED programs
-    constexpr uint8_t PROGRAM_TOO_LARGE       = 0xA8;  ///< LED_PROGRAM_LOAD exceeds per-channel slot
-    constexpr uint8_t INVALID_PROGRAM_ID      = 0xA9;
+    // LED queue
+    constexpr uint8_t QUEUE_TOO_LARGE         = 0xA8;  ///< LED_QUEUE_LOAD exceeds per-channel slot capacity
+    // 0xA9 reserved (was INVALID_PROGRAM_ID; queues are not addressed by id)
     // Battery
     constexpr uint8_t BATTERY_NOT_PRESENT     = 0xAA;  ///< BATTERY_INFO_REQ / BATTERY_RECONFIGURE on a board with NoBattery
     constexpr uint8_t BATTERY_INVALID_CHEMISTRY = 0xAB; ///< chemistry byte outside the BatteryChemistry enum
+    // Batch (transactional execution)
+    constexpr uint8_t BATCH_NOT_FOUND         = 0xAC;  ///< BATCH_TRIGGER for an id with no loaded slot
+    constexpr uint8_t BATCH_TOO_LARGE         = 0xAD;  ///< BATCH_LOAD payload exceeds slot capacity
+    constexpr uint8_t BATCH_INVALID_COMMAND   = 0xAE;  ///< sub-command type not known / not batchable
+    constexpr uint8_t BATCH_VALIDATION_FAILED = 0xAF;  ///< sub-command failed at validation (NACK carries failing-cmd index + per-cmd error)
 }
 
-#endif  // SFX_SLAVE_PROTOCOL_H
+#endif  // SFX_COMPONENT_PROTOCOL_H

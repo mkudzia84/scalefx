@@ -1,10 +1,11 @@
 /*
- * Serial Core - Implementation
- * 
+ * Serial Core — Implementation.
+ *
  * packetTypeToText() and INIT_READY payload encoding/decoding.
- * Wire encoding utilities (CRC-8, COBS, packet build/encode/parse) are
- * now in sfx_platform/platform/sfx_wire.cpp (SfxWire namespace).
- * CoreCommandServer is implemented in serial_bus_server.cpp.
+ * Wire encoding utilities (CRC-8, COBS, packet build/encode/parse) live
+ * in sfx_platform/platform/sfx_wire.cpp (SfxWire namespace).
+ * Lifecycle/identify/status handling lives in `core/board_service.cpp`
+ * (BoardServicePolicy).
  */
 
 #include "core.h"

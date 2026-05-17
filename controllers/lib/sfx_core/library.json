@@ -1,0 +1,19 @@
+{
+    "name": "sfx_core",
+    "version": "0.3.0",
+    "description": "ScaleFX generic component-server protocol — CoreServer<TServos, TPwms, TLedsDed, TLedsBor, TBattery> dispatches the 0x01..0x7F ComponentPacket range, owns the IDLE/SLAVE/DIRECT lifecycle, keepalive watchdog → safe-state path, async-event emitters (SERVO_TARGET_REACHED, SERVO_MOTION_UPDATE, LED_QUEUE_DONE, PWM_STALL, BATTERY_ALERT), unified status broadcast, and BoardIdentifier persistence. Used by HubFX (master, for its own local components) and expander boards alike. CoreClient (master-side, sfx_core/client/) is the typed CommandResult API + observer chain consumed by HubFX effect orchestrators.",
+    "keywords": ["core", "server", "client", "components", "scalefx"],
+    "frameworks": "arduino",
+    "platforms": ["raspberrypi", "espressif32"],
+    "dependencies": [
+        {"name": "sfx_platform"},
+        {"name": "sfx_serial"},
+        {"name": "sfx_peripherals"},
+        {"name": "sfx_config"}
+    ],
+    "headers": [
+        "core/core_server.h",
+        "core/board_identifier.h",
+        "client/core_client.h"
+    ]
+}

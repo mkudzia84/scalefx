@@ -34,7 +34,7 @@
 #include <cstring>
 #include <functional>
 
-namespace sfx_slave {
+namespace sfx_core {
 
 class BoardIdentifier {
 public:
@@ -144,6 +144,6 @@ private:
     uint8_t _boardType = 0;        ///< compile-time slave-type byte (0 = Unknown)
 };
 
-}  // namespace sfx_slave
+}  // namespace sfx_core
 
 #endif  // SFX_BOARD_IDENTIFIER_H

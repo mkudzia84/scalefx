@@ -1,13 +1,15 @@
 /*
- * Serial Library - Unified Serial Communication for ScaleFX
+ * Serial Library — Unified Serial Communication for ScaleFX
  *
  * Master include file for the complete ScaleFX serial communication library.
  * Include this file for full functionality, or include specific headers for
  * minimal dependencies.
  *
  * Architecture:
- *   core/core.h               - Protocol, error codes, CommandResult, ICommandHandler, CommandRouter, SFX macros
- *   core/bus_server.h         - BusServer + CoreCommandServer (server-side, extends ICommandHandler)
+ *   core/core.h               - Protocol, error codes, CommandResult, SFX macros
+ *   core/system_service.h     - SystemServicePolicy concept + BoardServer<...>
+ *   core/board_service.h      - BoardServicePolicy (lifecycle/identify/status)
+ *   core/packet_reader.h      - PacketReader<TDispatch> (COBS framer)
  *   core/stream.h             - StreamWriter + StreamProtocol (chunked streaming, CRC-16)
  *   client/bus.h              - SerialBus (client-side, COBS-framed protocol)
  *   client/bus_client.h       - BusClient base class (client-side, extends SerialBus)
@@ -20,8 +22,9 @@
  *   hubfx/hubfx.h             - HubFX audio/storage client/server (NOT auto-included — heavy deps)
  *
  * Client vs Server:
- *   Client (HubFX): Uses UsbHost (sfx_usb) + BusClient for USB Host CDC communication
- *   Server (Pico):  Uses Serial (USB Device) + BusServer + CoreCommandServer + CommandRouter
+ *   Client (HubFX): UsbHost (sfx_usb) + BusClient for USB Host CDC communication
+ *   Server side:    `BoardServer<...Policies>` + `PacketReader` wrapped by
+ *                   `SfxServer<...UserPolicies>` (sfx_server library).
  *
  * Usage:
  *   #include <serial/serial.h>                    // Everything (except hubfx)
@@ -35,7 +38,7 @@
 #ifndef SERIAL_H
 #define SERIAL_H
 
-// Core protocol, error codes, CommandResult, interfaces, command routing
+// Core protocol, error codes, CommandResult, SFX macros
 #include "core/core.h"
 
 // Result queue for tag-correlated command/response matching
@@ -50,10 +53,12 @@
 // Bus client base class (client-side, extends SerialBus with tag queue + INIT)
 #include "client/bus_client.h"
 
-// Bus server base class (server-side, extends ICommandHandler with ACK/NACK)
-#include "core/bus_server.h"
+// Server-side framework: variadic policy composer + COBS frame reader.
+#include "core/system_service.h"
+#include "core/board_service.h"
+#include "core/packet_reader.h"
 
-// Chunked data streaming over COBS (server-side, uses BusServer for output)
+// Chunked data streaming over COBS (server-side, writes via ServiceContext)
 #include "core/stream.h"
 
 // Diagnostic log output (ring-buffered, COBS-encoded log packets)

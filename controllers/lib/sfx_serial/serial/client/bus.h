@@ -7,8 +7,9 @@
  * Components:
  *   SerialBus - COBS-framed binary protocol over USB CDC
  *
- * This file is for CLIENT devices only (HubFX). Server devices (GunFX Pico,
- * LightFX Pico) should use CoreCommandServer from core/bus_server.h instead.
+ * This file is for CLIENT devices only (HubFX). Server devices build on
+ * `BoardServer<...Policies>` + `PacketReader` (see core/system_service.h
+ * + core/packet_reader.h), normally wrapped by `SfxServer<...UserPolicies>`.
  *
  * Protocol Format (before COBS encoding):
  *   [type:u8][tag:u8][len:u16LE][payload:0-N bytes][crc8:u8]
