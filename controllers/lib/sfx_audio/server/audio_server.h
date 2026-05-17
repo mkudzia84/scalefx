@@ -1,21 +1,19 @@
 /*
  * Audio Protocol Server — Template for Audio Command Handling
  *
- * AudioServerT<TMixer> is a BusServer subclass that handles the HubFX
- * audio control protocol (0x84-0x8B). It translates wire-format commands
- * into AudioMixer async API calls, providing thread-safe audio control
- * from the serial protocol layer.
+ * AudioServicePolicy<TMixer> is a system-service policy that handles the
+ * HubFX audio control protocol (0x84-0x8B). It translates wire-format
+ * commands into AudioMixer async API calls, providing thread-safe audio
+ * control from the serial protocol layer.
  *
- * The server is parameterized by the mixer type so it works with any
+ * The policy is parameterized by the mixer type so it works with any
  * AudioMixer<TI2S, TCodec> instantiation without hard-coding the
  * I2S/codec types.
  *
  * Usage:
- *   // In controller firmware:
+ *   // In controller firmware (slotted into SfxServer's UserPolicies):
  *   using Mixer = AudioMixer<EspI2SOutput, SimpleI2SCodec>;
- *   AudioServerT<Mixer> audioServer;
- *   audioServer.begin(&Serial);
- *   server.addModuleHandler(&audioServer);
+ *   using AudioPolicy = AudioServicePolicy<Mixer>;
  *
  * Commands handled:
  *   AUDIO_PLAY        (0x84) — Play WAV file on channel
@@ -37,6 +35,7 @@
 
 #include <serial/serial.h>
 #include <serial/hubfx/hubfx.h>
+#include <serial/core/system_service.h>      // SystemServicePolicy + ServiceContext
 #include "audio/audio_config.h"
 #include "audio/audio_mixer.h"
 #include "audio/audio_ring_buffer.h"
@@ -88,25 +87,51 @@
  * @tparam TMixer  Concrete AudioMixer type (e.g., AudioMixer<EspI2SOutput, SimpleI2SCodec>)
  */
 template <typename TMixer>
-class AudioServerT : public BusServer {
+class AudioServicePolicy {
 public:
-    AudioServerT() = default;
+    /// AudioServicePolicy advertises the AUDIO capability bit.
+    static constexpr uint32_t kCapabilityBits = CoreCapability::AUDIO;
 
-    const char* handlerName() const override { return "AudioServer"; }
+    AudioServicePolicy() = default;
 
-protected:
-    CommandHandleResult handleModulePacket(uint8_t type,
-                                           const uint8_t* payload,
-                                           size_t len) override;
+    // ── SystemServicePolicy surface ───────────────────────────────────
 
-    uint8_t moduleRangeLow()  const override { return HubFxPacket::AUDIO_PLAY; }
-    uint8_t moduleRangeHigh() const override { return HubFxPacket::CODEC_STATUS_RESP; }
+    bool begin(sfx_core::ServiceContext* ctx) {
+        _ctx = ctx;
+        return _ctx != nullptr;
+    }
 
-    const char* getModuleErrorMessage(uint8_t code) override {
+    bool ownsType(uint8_t type) const {
+        // Range covers the audio block plus the CODEC_STATUS_REQ/RESP
+        // pair which lives outside the contiguous 0x84..0x8B run.
+        return (type >= HubFxPacket::AUDIO_PLAY && type <= HubFxPacket::AUDIO_STATUS_RESP)
+            || (type == HubFxPacket::CODEC_STATUS_REQ)
+            || (type == HubFxPacket::CODEC_STATUS_RESP);
+    }
+
+    CommandHandleResult handle(uint8_t type,
+                               const uint8_t* payload, size_t len);
+
+    void update() { /* mixer ticks itself on Core 1 */ }
+
+    const char* getErrorMessage(uint8_t code) const {
         return HubFxError::getMessage(code);
     }
 
+protected:
+    // Inline wire-helper wrappers — let existing handler code + the
+    // SFX_REQUIRE_LEN / SFX_VALIDATE / SFX_DISPATCH macros work without
+    // qualifying every send with `_ctx->`.  Each just forwards to the
+    // ServiceContext supplied at begin() time.
+    int     sendAck()                                                       { return _ctx->sendAck(); }
+    int     sendNack(uint8_t errorCode, const char* reason = nullptr)       { return _ctx->sendNack(errorCode, reason); }
+    int     sendRawPacket(uint8_t type, uint8_t tag, const uint8_t* p = nullptr, size_t len = 0)
+                                                                            { return _ctx->sendRawPacket(type, tag, p, len); }
+    uint8_t currentTag() const                                              { return _ctx->currentTag(); }
+
 private:
+    sfx_core::ServiceContext* _ctx = nullptr;
+
     /// @brief Get mixer singleton
     TMixer& mixer() { return TMixer::instance(); }
 
@@ -120,6 +145,11 @@ private:
     void handleStatusReq();
     void handleCodecStatusReq();
 };
+
+/// @deprecated Alias for in-flight callers — prefer `AudioServicePolicy<TMixer>`
+///             and instantiate via `BoardServer<...>`.
+template <typename TMixer>
+using AudioServerT = AudioServicePolicy<TMixer>;
 
 // ============================================================================
 // Template Implementation

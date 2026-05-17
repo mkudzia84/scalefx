@@ -39,6 +39,7 @@
 
 #include <serial/serial.h>
 #include <serial/hubfx/hubfx.h>
+#include <serial/core/system_service.h>     // SystemServicePolicy + ServiceContext
 #include <platform/diag_log.h>
 
 #include "../config/config_store.h"
@@ -91,16 +92,17 @@ private:
 // MultiConfigServer
 // ============================================================================
 
-class MultiConfigServer : public BusServer {
+class ConfigServicePolicy {
 public:
     static constexpr size_t MAX_STORES = 8;
 
-    MultiConfigServer() = default;
+    /// ConfigServicePolicy advertises the CONFIG capability bit.
+    static constexpr uint32_t kCapabilityBits = CoreCapability::CONFIG;
 
-    const char* handlerName() const override { return "MultiConfigServer"; }
+    ConfigServicePolicy() = default;
 
     /**
-     * @brief Register a store facade. The facade must outlive the server.
+     * @brief Register a store facade. The facade must outlive the policy.
      * @return true if added; false if MAX_STORES reached or path collides.
      */
     bool addStore(IConfigStoreFacade& facade) {
@@ -133,19 +135,19 @@ public:
         }
     }
 
-protected:
-    CommandHandleResult tryProcess(uint8_t type, const uint8_t* payload, size_t len) override {
-        if (!this->isInitialized() || !this->serial()) {
-            return CommandHandleResult::NotMyCommand;
-        }
-        if ((type >= HubFxPacket::CONFIG_RELOAD && type <= HubFxPacket::CONFIG_STATUS_RESP) ||
-            type == HubFxPacket::CONFIG_SAVE) {
-            return handleModulePacket(type, payload, len);
-        }
-        return CommandHandleResult::NotMyCommand;
+    // ── SystemServicePolicy surface ───────────────────────────────────
+
+    bool begin(sfx_core::ServiceContext* ctx) {
+        _ctx = ctx;
+        return _ctx != nullptr;
     }
 
-    CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override {
+    bool ownsType(uint8_t type) const {
+        return (type >= HubFxPacket::CONFIG_RELOAD && type <= HubFxPacket::CONFIG_STATUS_RESP)
+            || (type == HubFxPacket::CONFIG_SAVE);
+    }
+
+    CommandHandleResult handle(uint8_t type, const uint8_t* payload, size_t len) {
         switch (type) {
             case HubFxPacket::CONFIG_RELOAD: handleReload(payload, len); return CommandHandleResult::Handled;
             case HubFxPacket::CONFIG_STATUS: handleStatus();             return CommandHandleResult::Handled;
@@ -154,16 +156,25 @@ protected:
         }
     }
 
-    uint8_t moduleRangeLow()  const override { return HubFxPacket::CONFIG_RELOAD; }
-    uint8_t moduleRangeHigh() const override { return HubFxPacket::CONFIG_SAVE; }
+    void update() {}
 
-    const char* getModuleErrorMessage(uint8_t code) override {
+    const char* getErrorMessage(uint8_t code) const {
         return HubFxError::getMessage(code);
     }
 
+protected:
+    // Wire-helper wrappers (so the existing handler bodies continue to
+    // call `sendAck()` / `sendNack()` / `sendRawPacket()` unchanged).
+    int     sendAck()                                                  { return _ctx->sendAck(); }
+    int     sendNack(uint8_t errorCode, const char* reason = nullptr)  { return _ctx->sendNack(errorCode, reason); }
+    int     sendRawPacket(uint8_t t, uint8_t tag, const uint8_t* p = nullptr, size_t l = 0)
+                                                                       { return _ctx->sendRawPacket(t, tag, p, l); }
+    uint8_t currentTag() const                                         { return _ctx->currentTag(); }
+
 private:
-    IConfigStoreFacade* _stores[MAX_STORES] = {};
-    size_t              _count = 0;
+    sfx_core::ServiceContext* _ctx = nullptr;
+    IConfigStoreFacade*       _stores[MAX_STORES] = {};
+    size_t                    _count = 0;
 
     /// Look up a store by exact defaultPath() match. Returns nullptr if unknown.
     IConfigStoreFacade* find(const char* path) const {
@@ -278,5 +289,9 @@ private:
         this->sendRawPacket(HubFxPacket::CONFIG_STATUS_RESP, this->currentTag(), buf, sizeof(buf));
     }
 };
+
+/// @deprecated Alias for in-flight callers — prefer `ConfigServicePolicy`
+///             instantiated via `BoardServer<...>`.
+using MultiConfigServer = ConfigServicePolicy;
 
 #endif // MULTI_CONFIG_SERVER_H

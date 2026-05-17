@@ -50,7 +50,7 @@
  */
 
 #define FIRMWARE_VERSION "1.3.0"
-#define BUILD_NUMBER 246
+#define BUILD_NUMBER 260
 
 #include <Arduino.h>
 #include <atomic>
@@ -84,7 +84,7 @@
 #include <server/storage_server.h>
 #include "protocol/hubfx_usb_server.h"
 
-// Slave-board management (SlaveManager / SlaveServer / per-slave clients /
+// Slave-board management (SlaveManager / CoreServer / per-slave clients /
 // hub_lightfx_apply) was removed 2026-05-16 — it will be rebuilt against
 // the generic expander module (instructions/15-GENERIC-EXPANDER-REFACTOR.md,
 // instructions/17-SYSTEM-SERVICES.md).  Until that lands, HubFX has no
@@ -486,9 +486,6 @@ static void logDiagnostics() {
 // Global Objects
 // ============================================================================
 
-// Server infrastructure (upstream protocol handling over UART0)
-SfxServer server;
-
 // I2C peripherals
 static constexpr uint8_t INA226_COUNT = 6;
 static INA226 ina226[INA226_COUNT];
@@ -496,18 +493,31 @@ static const uint8_t ina226Addrs[INA226_COUNT] = { 0x40, 0x41, 0x42, 0x43, 0x44,
 // ledPwm declared earlier (alongside the audio diagnostics)
 
 // Battery monitoring — hardcoded to INA226 channel 0 (0x40), the rail input
-// on the HubFX v1 board. Sensor wiring uses the generic BatteryServerT<TBattery>
-// handler that claims core packet 0xEE BATTERY_CONFIG. Chemistry / cell count
-// default to LiPo / auto; override at runtime via the BATTERY_CONFIG packet.
+// on the HubFX v1 board.  Chemistry / cell count default to LiPo / auto;
+// override at runtime via the BATTERY_CONFIG packet (handled by
+// BatteryServicePolicy inside the templated SfxServer below).
 static constexpr uint8_t BATTERY_INA226_CHANNEL = 0;
 static Ina226Battery batteryMonitor;
-static BatteryServerT<Ina226Battery> batteryServer(batteryMonitor);
 
-// Module protocol handlers
-StorageServer storageServer;
-HubFxUsbServer usbServer;
-AudioServer audioServer;
-EngineServer engineServer;
+// ---- Server infrastructure ----
+//
+// SfxServer is now templated on the user-defined policy pack.  Internally
+// it owns a BoardServer<BoardServicePolicy, IndicatorServicePolicy, ...UserPolicies>
+// — the lifecycle + indicator-LED + every protocol-exposed service all
+// compose as compile-time policies.  No more `addModuleHandler` calls.
+using HubFxServer = SfxServer<
+    UsbHostServicePolicy,
+    AudioServicePolicy<Mixer>,
+    EngineServicePolicy,
+    ConfigServicePolicy,
+    BatteryServicePolicy<Ina226Battery>,
+    StorageServer   // = StorageServicePolicy<Esp32StoragePolicy>
+>;
+HubFxServer server;
+
+// Convenience aliases for `server.board().policy<...>()` accessors below.
+using HubFxBatteryPolicy = BatteryServicePolicy<Ina226Battery>;
+using HubFxStoragePolicy = StorageServer;
 
 // ---- Per-domain config stores + multi-store wire dispatch ----
 //
@@ -531,7 +541,8 @@ static ConfigStoreFacadeT<EngineConfigStore>  engineFacade (engineConfig);
 static ConfigStoreFacadeT<GunFxConfigStore>   gunFacade    (gunConfig);
 static ConfigStoreFacadeT<LightFxConfigStore> lightFacade  (lightConfig);
 
-MultiConfigServer configServer;
+// Config store registration lives inside the BoardServer's ConfigServicePolicy
+// — accessed via `server.board().policy<ConfigServicePolicy>()`.  See initConfig().
 
 // RC input router — engine on/off + light program selector. Picks reader
 // (PWM/PPM/SBUS/Jeti) at boot from /hubfx.yaml inputs.mode. Re-init runs on
@@ -648,54 +659,32 @@ static void initConfig() {
         SFX_LOG_INFO("[Config] /lightfx.yaml loaded (no expander layer yet — config parked)");
     });
 
-    // ---- Register stores with the wire dispatcher and do the first load ----
-    configServer.addStore(hubFacade);
-    configServer.addStore(engineFacade);
-    configServer.addStore(gunFacade);
-    configServer.addStore(lightFacade);
-    configServer.loadAll();
-
-    // Engine + Config commands are always advertised by HubFX (engine FX
-    // falls back to built-in defaults when /enginefx.yaml is missing).
-    // Storage caps are set in initStorage() because they depend on
-    // flash.begin() succeeding.
-    server.core().addCapability(CoreCapability::ENGINE | CoreCapability::CONFIG);
+    // ---- Register stores with the BoardServer's ConfigServicePolicy ----
+    auto& cfg = server.board().policy<ConfigServicePolicy>();
+    cfg.addStore(hubFacade);
+    cfg.addStore(engineFacade);
+    cfg.addStore(gunFacade);
+    cfg.addStore(lightFacade);
+    cfg.loadAll();
+    // CoreCapability::ENGINE and ::CONFIG bits flow through
+    // HubFxServer::Board::capabilities() in initProtocolHandlers().
 }
 
 /** @brief Register module protocol handlers and build the handler chain. */
 static void initProtocolHandlers() {
-    storageServer.begin(&Serial);
-    usbServer.begin(&Serial);
-    audioServer.begin(&Serial);
-    configServer.begin(&Serial);
-    engineServer.begin(&Serial);
-
-    // Handler chain: CoreCommandServer (0xF0-0xFF)
-    //              → ConfigServer         (0x90-0x92, 0xAC config)
-    //              → HubFxUsbServer       (0xA7-0xA8 USB diag)
-    //              → AudioServer          (0x84-0x8B audio)
-    //              → EngineServer         (0x8C-0x8F engine FX)
-    //              → StorageServer        (0x93-0xA6 SD/flash + files)
-    //
-    // SlaveServer (0x80-0x83 mgmt + 0x01-0x7F routing) was removed
-    // 2026-05-16 and will be replaced by the generic-expander wire
-    // layer per instructions/15-GENERIC-EXPANDER-REFACTOR.md.
-    server.addModuleHandler(&configServer);
-    server.addModuleHandler(&usbServer);
-    server.addModuleHandler(&audioServer);
-    server.addModuleHandler(&engineServer);
-    // Generic battery handler (core BATTERY_CONFIG 0xEE) — sensor is bound to
-    // INA226[BATTERY_INA226_CHANNEL] in setup() after initI2CDevices().
-    batteryServer.begin(&Serial);
-    server.addModuleHandler(&batteryServer);
-
-    server.addModuleHandler(&storageServer);
+    // Service policies are now composed into SfxServer's internal
+    // BoardServer at construction.  `server.begin()` (called from
+    // setup()) initialises every policy in the pack and seeds the
+    // aggregate capability mask via BoardServicePolicy::setCapabilities().
+    // Nothing to do here for the policy-side wiring — only the storage
+    // upload-callback hooks remain (they need lambdas with `server`-side
+    // side effects, which can only be registered after construction).
 
     // Upload is exclusive: stop any active playback, then suspend the
     // audio pipeline for the duration of the upload (sync or batch). The
     // main loop also short-circuits all non-storage work while
     // isUploadActive() is true.
-    storageServer.onUploadStart([]() {
+    server.board().policy<HubFxStoragePolicy>().onUploadStart([]() {
         Mixer& mixer = Mixer::instance();
         if (mixer.isAnyPlaying()) {
             mixer.stopAsync(-1, AudioStopMode::Immediate);
@@ -704,17 +693,17 @@ static void initProtocolHandlers() {
         mixer.suspendAudio();
     });
 
-    storageServer.onUploadEnd([]() {
+    server.board().policy<HubFxStoragePolicy>().onUploadEnd([]() {
         Mixer::instance().resumeAudio();
     });
 
     // Suppress STATUS_UPDATE during any file transfer (list, tree,
     // download, upload) to keep the serial channel exclusive.
-    storageServer.onTransferStart([]() {
+    server.board().policy<HubFxStoragePolicy>().onTransferStart([]() {
         server.core().setTransferActive(true);
     });
 
-    storageServer.onTransferEnd([]() {
+    server.board().policy<HubFxStoragePolicy>().onTransferEnd([]() {
         server.core().setTransferActive(false);
     });
 }
@@ -889,7 +878,7 @@ static void initAudio() {
 
 void setup() {
     // SfxServer handles serial init (UART0 @ 1Mbps), device naming,
-    // indicator LEDs, CoreCommandServer, and DiagLog initialization
+    // indicator LEDs, BoardServicePolicy lifecycle, and DiagLog init.
     server.begin("HubFX", FIRMWARE_VERSION, BUILD_NUMBER,
                  PIN_LED_CONNECTION, PIN_LED_ERROR);
 
@@ -933,7 +922,7 @@ void setup() {
         SFX_LOG_INFO("INIT received — re-initializing all subsystems");
 
         // 1. Cancel any upload left over from a previous session.
-        storageServer.cancelActiveUpload();
+        server.board().policy<HubFxStoragePolicy>().cancelActiveUpload();
 
         // 2. Stop all audio and reset codec to clean power-on state.
         {
@@ -964,13 +953,13 @@ void setup() {
         }
 
         // 4. Reload every per-domain YAML from flash.
-        configServer.loadAll();
+        server.board().policy<ConfigServicePolicy>().loadAll();
 
         SFX_LOG_INFO("INIT complete — all subsystems re-initialized");
     });
 
     server.onShutdown([]() {
-        storageServer.cancelActiveUpload();
+        server.board().policy<HubFxStoragePolicy>().cancelActiveUpload();
 
         {
             Mixer& mixer = Mixer::instance();
@@ -1064,9 +1053,12 @@ void setup() {
     server.enableI2CScan(Wire);
     initI2CDevices();
 
-    // Bind battery monitor to the hardcoded INA226 rail channel.
+    // Bind battery monitor to the hardcoded INA226 rail channel.  Hand
+    // it to BoardServer's BatteryServicePolicy so BATTERY_CONFIG wire
+    // commands route to this sensor.
     batteryMonitor.setSensor(ina226[BATTERY_INA226_CHANNEL]);
     batteryMonitor.begin();
+    server.board().policy<HubFxBatteryPolicy>().bindBattery(batteryMonitor);
     SFX_LOG_INFO("Battery: INA226[%u] @ 0x%02X (LiPo, auto cells)",
                  BATTERY_INA226_CHANNEL, ina226Addrs[BATTERY_INA226_CHANNEL]);
 
@@ -1141,18 +1133,18 @@ void loop() {
     // diagnostics/battery are skipped so the COBS reader, fill buffer, and
     // SD writer get the full Core 1 budget. Audio playback + task were
     // already stopped via onUploadStart.
-    if (storageServer.isUploadActive()) {
-        if (storageServer.isStreamActive()) {
-            storageServer.processStream();
+    if (server.board().policy<HubFxStoragePolicy>().isUploadActive()) {
+        if (server.board().policy<HubFxStoragePolicy>().isStreamActive()) {
+            server.board().policy<HubFxStoragePolicy>().processStream();
         } else {
             server.loop();
         }
-        storageServer.checkUploadTimeout();
+        server.board().policy<HubFxStoragePolicy>().checkUploadTimeout();
         return;
     }
 
     server.loop();
-    storageServer.checkUploadTimeout();
+    server.board().policy<HubFxStoragePolicy>().checkUploadTimeout();
 
     logDiagnostics();
 

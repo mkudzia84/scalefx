@@ -7,12 +7,12 @@
  *
  * Slave fingerprint: 2 servos + 0 PWM + 8 LedDigital.
  * Master responsibilities:
- *   - resolve YAML programs[] into LedEventSeq → LED_PROGRAM_LOAD
+ *   - resolve YAML programs[] into LedEventSeq → LED_QUEUE_LOAD
  *   - resolve YAML landing_groups[] into per-channel address lists
  *   - watch RC channels + day/night switch → load/run programs
  *   - servo position bindings (gear + nav-light)
  *   - merge dedicated-LED and PWM-borrowed-LED address spaces
- *     transparently for groups (see SlavePacket::LedAddr in slave.h)
+ *     transparently for groups (see ComponentPacket::LedAddr in slave.h)
  *
  * The LedEventSeq runtime stays slave-side; this orchestrator only
  * loads programs once and triggers RUN/STOP commands.
@@ -75,16 +75,16 @@ public:
                RcInputs*         rc,
                HubStatusBuilder* statusOut);
 
-    /// Apply config (re)load — rebuilds resolved groups, pushes
-    /// programs to slave via LED_PROGRAM_LOAD, leaves them stopped.
-    /// Day/night re-switching reloads the program set.
+    /// Apply config (re)load — rebuilds resolved groups, pushes event
+    /// queues to expander via LED_QUEUE_LOAD, leaves them stopped.
+    /// Day/night re-switching reloads the queue set.
     void applyConfig(const LightFxConfig& cfg);
 
     /// Drive the state machine — call from main loop().
     void update();
 
-    // ── Slave-async hooks ────────────────────────────────────────────
-    void onLedProgramDone   (uint8_t addr, uint8_t progId);
+    // ── Expander-async hooks ────────────────────────────────────────
+    void onLedQueueDone     (uint8_t addr);
     void onServoTargetReached(uint8_t idx, uint16_t pos_us);
 
     // ── Manual control surface (CLI / Studio) ────────────────────────
@@ -106,9 +106,9 @@ private:
     std::array<bool, MAX_LANDING_GROUPS> _groupActive{};
 
     bool   matchesFingerprint() const;
-    void   loadProgramsForMode();              ///< pushes day or night progset to slave
-    void   activateGroup  (uint8_t groupIdx);  ///< LED_PROGRAM_RUN for each addr
-    void   deactivateGroup(uint8_t groupIdx);  ///< LED_PROGRAM_STOP for each addr
+    void   loadQueuesForMode();                ///< pushes day or night queue set to expander
+    void   activateGroup  (uint8_t groupIdx);  ///< LED_QUEUE_START for each addr (sync via BATCH_TRIGGER)
+    void   deactivateGroup(uint8_t groupIdx);  ///< LED_QUEUE_STOP for each addr
 };
 
 }  // namespace hubfx::effects::lightfx

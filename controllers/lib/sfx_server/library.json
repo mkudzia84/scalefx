@@ -1,7 +1,7 @@
 {
     "name": "sfx_server",
     "version": "1.0.0",
-    "description": "ScaleFX server controller boilerplate — SfxServer lifecycle, indicator LEDs, CommandRouter setup, I2C scan support.",
+    "description": "ScaleFX server controller boilerplate — SfxServer lifecycle, indicator LEDs, PacketReader/BoardServer wiring, I2C scan support.",
     "keywords": ["server", "controller", "indicator", "leds", "i2c-scan"],
     "frameworks": "arduino",
     "platforms": ["raspberrypi", "espressif32"],

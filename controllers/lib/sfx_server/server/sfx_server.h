@@ -1,298 +1,284 @@
 /**
- * SfxServer — Common ScaleFX Server Controller Boilerplate
+ * SfxServer<...UserPolicies> — templated ScaleFX server boilerplate.
  *
- * Encapsulates the lifecycle boilerplate shared across all ScaleFX
- * server controllers (GunFX, LightFX, GearControl, etc.):
+ * Owns a `BoardServer<BoardServicePolicy, IndicatorServicePolicy, UserPolicies...>`
+ * + a `CommandRouter` configured with that BoardServer as its sole
+ * registered handler.  Setup boilerplate is identical to the legacy
+ * (non-templated) shape; the difference is that every protocol-exposed
+ * subsystem now sits in the policy pack instead of being a separate
+ * `addModuleHandler()` call.
  *
- *   - USB serial initialization (1Mbps baud)
- *   - Unique device name from board ID
- *   - Indicator LEDs (GP13=connection, GP14=error, standard across all boards)
- *   - CoreCommandServer with board info, INIT/SHUTDOWN/REBOOT/BOOTSEL callbacks
- *   - CommandRouter with automatic handler priority (core first, then module)
- *   - Connection timeout / watchdog detection
- *   - Common loop() tasks (router process, activity forwarding, free RAM, indicators)
+ * Usage (HubFX):
  *
- * Cross-platform: supports RP2040, RP2350, and ESP32-S3 via sfx_platform.h.
- *
- * Usage:
- *   SfxServer server;
- *   GunFxServer gunfxServer;
+ *   using HubFxServer = SfxServer<
+ *       UsbHostServicePolicy,
+ *       AudioServicePolicy<Mixer>,
+ *       EngineServicePolicy,
+ *       ConfigServicePolicy,
+ *       BatteryServicePolicy<Ina226Battery>,
+ *       StorageServer
+ *   >;
+ *   HubFxServer server;
  *
  *   void setup() {
- *       server.begin("GunFX", FIRMWARE_VERSION, BUILD_NUMBER);
- *       server.onInit([]()     { resetHardware(); });
- *       server.onShutdown([]() { safeHardware();  });
- *
- *       gunfxServer.begin(&Serial, server.deviceName());
- *       // ... register module callbacks ...
- *       server.core().onStatusData([](uint8_t* buf, size_t max) -> size_t { ... });
- *
- *       server.addModuleHandler(&gunfxServer);
+ *       server.begin("HubFx", FIRMWARE_VERSION, BUILD_NUMBER);
+ *       server.onInit(    [](uint8_t m, uint8_t f) { ... });
+ *       server.onShutdown([](){ ... });
+ *       // Bind externally-dependent policies via board().policy<P>():
+ *       server.board().policy<BatteryServicePolicy<Ina226Battery>>().bindBattery(...);
+ *       // ...
  *   }
  *
  *   void loop() {
- *       server.loop();       // protocol, timeout, indicators
- *       updateHardware();    // module-specific work
- *       SFX_DELAY_MS(1);
+ *       server.loop();
+ *       // ... board-specific work ...
  *   }
+ *
+ * Accessors:
+ *   server.core()        → BoardServicePolicy& (was CoreCommandServer&)
+ *   server.indicators()  → IndicatorServicePolicy&
+ *   server.board()       → BoardServer<...>& — gives policy<P>() access
  */
 
 #ifndef SFX_SERVER_H
 #define SFX_SERVER_H
 
 #include <Arduino.h>
+#include <cstring>
 #include <functional>
-#include "serial/core/core.h"
-#include "serial/core/bus_server.h"
-#include "platform/diag_log.h"
-#include "led/led_control.h"
 
-// Forward declaration
+#include "serial/core/core.h"
+#include "serial/core/system_service.h"   // BoardServer template + ServiceContext
+#include "serial/core/board_service.h"    // BoardServicePolicy
+#include "serial/core/packet_reader.h"    // PacketReader<Board>
+#include "platform/diag_log.h"
+#include "platform/sfx_platform.h"        // SFX_PLATFORM_*, SFX_FREE_HEAP, SFX_REBOOT, sfxGetBoardId
+#include "led/led_control.h"
+#include "indicators/indicator_leds.h"    // IndicatorServicePolicy
+
+// Forward declarations
 class I2CDevice;
 class TwoWire;
 
-class SfxServer {
+// ============================================================================
+// SfxServerBase — non-template state + helpers (deduplicates template bloat)
+// ============================================================================
+
+class SfxServerBase {
 public:
-    // ========================================================================
-    // IndicatorLedManager — nested class (only used by SfxServer)
-    // ========================================================================
+    static constexpr uint32_t BAUD_RATE             = 6000000;
+    static constexpr unsigned long CONNECTION_TIMEOUT_ms = 15000;
+    static constexpr uint8_t MAX_EXPECTED_I2C = 8;
 
-    /**
-     * @brief Manages standardized indicator LEDs for ScaleFX server controllers
-     *
-     * Encapsulates the connection/error LED pattern used identically across
-     * all Pico server controllers (GunFX, LightFX, GearControl).
-     *
-     * LED 0 (Connection, GP13):
-     *   - Blink 500ms: Waiting for INIT (power-on, not yet connected)
-     *   - Solid ON:    Connected and initialized
-     *   - OFF:         Connection lost (watchdog timeout triggered)
-     *
-     * LED 1 (Error/Warning, GP14, three-tier priority):
-     *   - Fast blink 200ms: Error condition (highest priority)
-     *   - Slow blink 500ms: Warning condition (e.g. low voltage)
-     *   - OFF:              Normal operation
-     *
-     * Also tracks the `connected` and `watchdogTriggered` state that was
-     * previously duplicated as bare `bool` variables in every controller.
-     */
-    class IndicatorLedManager {
-    public:
-        IndicatorLedManager() = default;
-        ~IndicatorLedManager() = default;
-
-        /** @brief Initialize indicator LEDs on specified pins (-1 = disabled) */
-        void begin(int connectionPin, int errorPin);
-
-        /** @brief Update indicator LED outputs based on current state (call every loop) */
-        void update();
-
-        // State setters
-        void setConnected(bool connected) { _connected = connected; }
-        void setWatchdogTriggered(bool triggered) { _watchdogTriggered = triggered; }
-        void setErrorCondition(bool error) { _errorCondition = error; }
-        void setWarningCondition(bool warning) { _warningCondition = warning; }
-
-        // State queries
-        bool isConnected() const { return _connected; }
-        bool isWatchdogTriggered() const { return _watchdogTriggered; }
-        const LedControl& connectionLed() const { return _leds[0]; }
-        const LedControl& errorLed() const { return _leds[1]; }
-
-    private:
-        LedControl _leds[2];
-        bool _connected = false;
-        bool _watchdogTriggered = false;
-        bool _errorCondition = false;
-        bool _warningCondition = false;
-
-        static constexpr uint16_t BLINK_WAITING_ms = 500;
-        static constexpr uint16_t BLINK_ERROR_ms   = 200;
-        static constexpr uint16_t BLINK_WARNING_ms = 500;
-    };
-
-    SfxServer() = default;
-    ~SfxServer() = default;
-
-    /**
-     * @brief Initialize common server infrastructure
-     *
-     * Sets up USB serial (1Mbps baud), builds device name from board
-     * unique ID, initializes indicator LEDs, and configures
-     * CoreCommandServer with board info and standard system callbacks
-     * (INIT, SHUTDOWN, REBOOT, BOOTSEL).
-     *
-     * @param prefix   Device name prefix (e.g. "GunFX" → "GunFX-A1B2")
-     * @param version  Firmware version string (e.g. "0.3.0")
-     * @param buildNumber  Build number for INIT_READY response
-     * @param connectionPin  GPIO for connection indicator LED (default 13, -1 = disabled)
-     * @param errorPin       GPIO for error indicator LED (default 14, -1 = disabled)
-     */
-    void begin(const char* prefix, const char* version, uint32_t buildNumber,
-               int connectionPin = 13, int errorPin = 14);
-
-    /**
-     * @brief Register controller-specific init callback
-     *
-     * Called when INIT command is received with mode and flags.
-     * The callback should reset hardware to a safe initial state.
-     * SfxServer automatically handles indicator LED state and
-     * keep-alive timeout behavior based on init mode.
-     *
-     * @param cb Callback receiving (mode, flags) from INIT packet
-     */
-    void onInit(std::function<void(uint8_t mode, uint8_t flags)> cb) { _initCb = cb; }
-
-    /**
-     * @brief Register controller-specific shutdown callback
-     *
-     * Called on SHUTDOWN command, connection timeout, REBOOT, and BOOTSEL.
-     * The callback should put hardware in a safe state. SfxServer automatically
-     * handles indicator LED state (connected=false) after the callback.
-     */
-    void onShutdown(std::function<void()> cb) { _shutdownCb = cb; }
-
-    /**
-     * @brief Add a module-specific command handler to the router
-     *
-     * Adds a module handler after the CoreCommandServer (registered
-     * automatically by begin()). Supports multiple handlers for
-     * multi-domain controllers (e.g., HubFX with audio, engine, storage).
-     *
-     * Handler chain (example with 3 module handlers):
-     *   1. CoreCommandServer (auto-registered by begin())
-     *   2. First addModuleHandler() call
-     *   3. Second addModuleHandler() call
-     *   4. Third addModuleHandler() call
-     *
-     * @param handler  Module-specific ICommandHandler (non-null)
-     */
-    void addModuleHandler(ICommandHandler* handler);
-
-    /**
-     * @brief Mark that a valid config has been loaded from flash
-     *
-     * Call this after successfully loading configuration from flash storage.
-     * This enables the board to enter STANDALONE state and revert to
-     * STANDALONE (instead of IDLE) after a connection loss or shutdown.
-     *
-     * State transition: IDLE → STANDALONE
-     */
-    void markConfigLoaded() {
-        _configLoaded = true;
-        if (_core.boardState() == BoardState::IDLE) {
-            _core.setBoardState(BoardState::STANDALONE);
-        }
-    }
-
-    /**
-     * @brief Check if a valid config has been loaded from flash
-     */
-    bool isConfigLoaded() const { return _configLoaded; }
-
-    /**
-     * @brief Enable/disable automatic connection timeout
-     *
-     * When disabled, SfxServer will not call doShutdown() on serial
-     * inactivity. Use for master controllers (like HubFX) that operate
-     * independently of any upstream serial connection.
-     *
-     * Default: enabled (standard slave controller behavior)
-     *
-     * @param enabled true = timeout active, false = disabled
-     */
-    void setConnectionTimeoutEnabled(bool enabled) { _timeoutEnabled = enabled; _timeoutEnabledByUser = enabled; }
-
-    /**
-     * @brief Process common loop tasks
-     *
-     * Handles: serial packet routing, activity timestamp forwarding,
-     * free RAM update, connection timeout/watchdog, indicator LED update.
-     * Call this once per loop() iteration before module-specific updates.
-     */
-    void loop();
-
-    // ========================================================================
-    // Accessors — for module-specific setup and queries
-    // ========================================================================
-
-    /** @brief Access CommandRouter (e.g. for advanced routing) */
-    CommandRouter& router() { return _router; }
-
-    /** @brief Access CoreCommandServer (e.g. for onStatusData callback) */
-    CoreCommandServer& core() { return _core; }
-
-    /** @brief Access IndicatorLedManager (e.g. for error/warning conditions) */
-    IndicatorLedManager& indicators() { return _indicators; }
-
-    /** @brief Access DiagLog singleton (convenience, same as DiagLog::instance()) */
-    DiagLog& diagLog() { return DiagLog::instance(); }
-
-    /** @brief Get device name (e.g. "GunFX-A1B2") */
+    /// Get the device name (e.g., "HubFx-A1B2").  Populated in begin().
     const char* deviceName() const { return _deviceName; }
 
-    // ========================================================================
-    // I2C Bus Scan Support
-    // ========================================================================
+    /// Enable/disable the connection-inactivity watchdog.  Masters
+    /// (HubFX) disable it; expander boards keep it on.
+    void setConnectionTimeoutEnabled(bool enabled) {
+        _timeoutEnabled       = enabled;
+        _timeoutEnabledByUser = enabled;
+    }
 
-    /**
-     * @brief Enable I2C bus scanning via the I2C_SCAN core command
-     *
-     * Registers an I2C scan callback with CoreCommandServer so that when
-     * an I2C_SCAN packet is received, the bus is probed automatically.
-     * Call addExpectedI2CDevice() before this to register expected devices.
-     *
-     * @param wire TwoWire instance to scan (e.g. Wire, Wire1)
-     */
-    void enableI2CScan(TwoWire& wire);
+    /// Convenience accessor.
+    DiagLog& diagLog() { return DiagLog::instance(); }
 
-    /**
-     * @brief Register an expected I2C device for bus scan reporting
-     *
-     * Expected devices are reported first in I2C_SCAN_RESULT with found/identified
-     * flags. Any other devices on the bus are listed as "extra".
-     *
-     * @param address 7-bit I2C slave address
-     * @param device Optional I2CDevice instance for identity verification
-     *               (isAvailable() is used for the "identified" flag)
-     */
+    // I²C scan support — registered with BoardServicePolicy in begin().
     void addExpectedI2CDevice(uint8_t address, I2CDevice* device = nullptr);
 
-private:
-    CommandRouter _router;
-    CoreCommandServer _core;
-    IndicatorLedManager _indicators;
-    char _deviceName[24];
-
-    std::function<void(uint8_t mode, uint8_t flags)> _initCb;
-    std::function<void()> _shutdownCb;
-
-    bool _routerInitialized = false;
-    bool _timeoutEnabled = true;
-    bool _timeoutEnabledByUser = true;  // Original user setting (before mode override)
-    bool _configLoaded = false;         // Config loaded from flash (for STANDALONE revert)
-
-    static constexpr uint32_t BAUD_RATE = 6000000;
-    static constexpr unsigned long CONNECTION_TIMEOUT_ms = 15000;
-
-    void buildDeviceName(const char* prefix);
-    void doInit(uint8_t mode, uint8_t flags);
-    void doShutdown();
-    void checkConnectionTimeout();
-
-    // I2C scan support
-    static constexpr uint8_t MAX_EXPECTED_I2C = 8;
+protected:
     struct ExpectedI2CDevice {
         uint8_t address = 0;
         I2CDevice* device = nullptr;
     };
-    TwoWire* _i2cWire = nullptr;
-    ExpectedI2CDevice _expectedI2C[MAX_EXPECTED_I2C];
-    uint8_t _numExpectedI2C = 0;
+
+    void buildDeviceName(const char* prefix);
     I2CScanResult performI2CScan();
+
+    char _deviceName[24] = {};
+
+    std::function<void(uint8_t mode, uint8_t flags)> _initCb;
+    std::function<void()>                            _shutdownCb;
+
+    bool _timeoutEnabled        = true;
+    bool _timeoutEnabledByUser  = true;
+    bool _configLoaded          = false;
+
+    TwoWire*           _i2cWire = nullptr;
+    ExpectedI2CDevice  _expectedI2C[MAX_EXPECTED_I2C] = {};
+    uint8_t            _numExpectedI2C = 0;
 };
 
-// Backward compatibility alias (deprecated — use SfxServer directly)
-using PicoServer = SfxServer;
+// ============================================================================
+// SfxServer<...UserPolicies>
+// ============================================================================
+
+template <typename... UserPolicies>
+class SfxServer : public SfxServerBase {
+public:
+    using Board = sfx_core::BoardServer<
+        sfx_core::BoardServicePolicy,
+        IndicatorServicePolicy,
+        UserPolicies...
+    >;
+
+    SfxServer() = default;
+    ~SfxServer() = default;
+
+    SfxServer(const SfxServer&) = delete;
+    SfxServer& operator=(const SfxServer&) = delete;
+
+    // ── Lifecycle ─────────────────────────────────────────────────────
+
+    void begin(const char* prefix, const char* version, uint32_t buildNumber,
+               int connectionPin = 13, int errorPin = 14) {
+        // Serial setup
+#ifdef ESP32
+        Serial.setRxBufferSize(131072);
+#endif
+        Serial.begin(BAUD_RATE);
+        while (!Serial && millis() < 3000) SFX_DELAY_MS(10);
+
+        buildDeviceName(prefix);
+
+        // DiagLog over serial
+        DiagLog::instance().begin(&Serial);
+
+        // Board (composes BoardServicePolicy + IndicatorServicePolicy + UserPolicies)
+        _board.begin(&Serial);
+
+        // Configure indicator LEDs
+        _board.template policy<IndicatorServicePolicy>().configure(connectionPin, errorPin);
+
+        // Seed lifecycle policy
+        auto& core = _board.template policy<sfx_core::BoardServicePolicy>();
+        core.setBoardInfo(_deviceName, version, SFX_PLATFORM_NAME,
+                          SFX_CPU_MHZ(), SFX_FREE_HEAP(), buildNumber);
+        core.setCapabilities(Board::capabilities());
+
+        // Wire lifecycle callbacks
+        core.onInit    ([this](uint8_t mode, uint8_t flags) { doInit(mode, flags); });
+        core.onShutdown([this]()                            { doShutdown();       });
+        core.onReboot  ([this]() {
+            doShutdown();
+            SFX_DELAY_MS(100);
+            SFX_REBOOT();
+        });
+#if SFX_PLATFORM_PICO
+        core.onBootsel([this]() {
+            doShutdown();
+            SFX_DELAY_MS(500);
+            sfxRebootToBootloader();
+        });
+#endif
+
+        // Frame reader — BoardServer is the sole dispatcher.  PacketReader
+        // pumps COBS frames into board.dispatch(type, tag, payload, len),
+        // which walks the policy tuple and NACKs if nothing owns the type.
+        _reader.begin(&Serial, &_board);
+    }
+
+    // ── Lifecycle callbacks (controller-specific hooks) ──────────────
+
+    void onInit(std::function<void(uint8_t mode, uint8_t flags)> cb) { _initCb = cb; }
+    void onShutdown(std::function<void()> cb)                        { _shutdownCb = cb; }
+
+    /// Mark that valid config was loaded — flips IDLE → STANDALONE so
+    /// the slave reverts to STANDALONE (not IDLE) after disconnect.
+    void markConfigLoaded() {
+        _configLoaded = true;
+        auto& core = _board.template policy<sfx_core::BoardServicePolicy>();
+        if (core.boardState() == BoardState::IDLE) {
+            core.setBoardState(BoardState::STANDALONE);
+        }
+    }
+    bool isConfigLoaded() const { return _configLoaded; }
+
+    // ── Main loop ─────────────────────────────────────────────────────
+
+    void loop() {
+        _reader.process();
+
+        auto& core = _board.template policy<sfx_core::BoardServicePolicy>();
+        if (_reader.lastActivityMs() > core.lastActivityMs()) {
+            core.updateActivity();
+        }
+        core.updateFreeRam(SFX_FREE_HEAP());
+
+        // Drive every policy's update() tick (status-broadcast + indicator LEDs + ...)
+        _board.update();
+
+        checkConnectionTimeout();
+    }
+
+    // ── Accessors ────────────────────────────────────────────────────
+
+    Board&                        board()       { return _board; }
+    const Board&                  board() const { return _board; }
+    sfx_core::BoardServicePolicy& core()        { return _board.template policy<sfx_core::BoardServicePolicy>(); }
+    IndicatorServicePolicy&       indicators()  { return _board.template policy<IndicatorServicePolicy>(); }
+
+    // ── I²C scan (registered with BoardServicePolicy) ────────────────
+
+    void enableI2CScan(TwoWire& wire) {
+        _i2cWire = &wire;
+        _board.template policy<sfx_core::BoardServicePolicy>().onI2CScan(
+            [this]() -> I2CScanResult { return performI2CScan(); });
+    }
+
+private:
+    Board                          _board;
+    sfx_core::PacketReader<Board>  _reader;
+
+    void doInit(uint8_t mode, uint8_t flags) {
+        auto& core = _board.template policy<sfx_core::BoardServicePolicy>();
+        auto& ind  = _board.template policy<IndicatorServicePolicy>();
+
+        if (mode == InitMode::SLAVE) {
+            _timeoutEnabled = _timeoutEnabledByUser;
+            core.setBoardState(BoardState::SLAVE);
+        } else if (mode == InitMode::DIRECT) {
+            _timeoutEnabled = false;
+            core.setBoardState(BoardState::DIRECT);
+        }
+
+        SFX_LOG_INFO("INIT: mode=%s flags=0x%02X verbose=%s state=%s",
+                     InitMode::getName(mode), flags,
+                     (flags & InitFlags::VERBOSE) ? "on" : "off",
+                     BoardState::getName(core.boardState()));
+
+        if (_initCb) _initCb(mode, flags);
+        ind.setConnected(true);
+        ind.setWatchdogTriggered(false);
+    }
+
+    void doShutdown() {
+        if (_shutdownCb) _shutdownCb();
+        auto& core = _board.template policy<sfx_core::BoardServicePolicy>();
+        auto& ind  = _board.template policy<IndicatorServicePolicy>();
+        ind.setConnected(false);
+        _timeoutEnabled = _timeoutEnabledByUser;
+        core.setBoardState(_configLoaded ? BoardState::STANDALONE : BoardState::IDLE);
+    }
+
+    void checkConnectionTimeout() {
+        if (!_timeoutEnabled) return;
+        auto& core = _board.template policy<sfx_core::BoardServicePolicy>();
+        auto& ind  = _board.template policy<IndicatorServicePolicy>();
+        if (core.checkTimeout(CONNECTION_TIMEOUT_ms)) {
+            if (!ind.isWatchdogTriggered()) {
+                SFX_LOG_WARN("Connection timeout (%lums inactivity)", CONNECTION_TIMEOUT_ms);
+                doShutdown();
+                ind.setWatchdogTriggered(true);
+            }
+        }
+    }
+};
+
+// Backward-compatibility alias for callers that don't need the policy
+// pack (yet).  No user policies = empty pack — just BoardServicePolicy +
+// IndicatorServicePolicy.
+using SfxServerLegacy = SfxServer<>;
+using PicoServer      = SfxServer<>;
 
 #endif // SFX_SERVER_H

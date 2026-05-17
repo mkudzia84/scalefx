@@ -13,7 +13,7 @@
 // Packet Dispatch
 // ============================================================================
 
-CommandHandleResult EngineServer::handleModulePacket(uint8_t type,
+CommandHandleResult EngineServicePolicy::handle(uint8_t type,
                                                       const uint8_t* payload,
                                                       size_t len) {
     switch (type) {
@@ -38,7 +38,7 @@ CommandHandleResult EngineServer::handleModulePacket(uint8_t type,
 // Shared Guard
 // ============================================================================
 
-bool EngineServer::requireEngine(const char* action) {
+bool EngineServicePolicy::requireEngine(const char* action) {
     if (!engine().isInitialized()) {
         SFX_LOG_WARN("[EngineServer] %s — engine not available", action);
         sendNack(HubFxError::ENGINE_NOT_AVAILABLE, "Engine not initialized");
@@ -51,7 +51,7 @@ bool EngineServer::requireEngine(const char* action) {
 // ENGINE_START (0x8C) — Force-start the engine sound effect
 // ============================================================================
 
-void EngineServer::handleStart() {
+void EngineServicePolicy::handleStart() {
     if (!requireEngine("START")) return;
 
     if (!engine().isEnabled()) {
@@ -69,7 +69,7 @@ void EngineServer::handleStart() {
 // ENGINE_STOP (0x8D) — Force-stop the engine sound effect
 // ============================================================================
 
-void EngineServer::handleStop() {
+void EngineServicePolicy::handleStop() {
     if (!requireEngine("STOP")) return;
 
     SFX_LOG_INFO("[EngineServer] ENGINE_STOP");
@@ -82,7 +82,7 @@ void EngineServer::handleStop() {
 // ============================================================================
 // Response: [state:u8][toggleEngaged:u8][active:u8]
 
-void EngineServer::handleStatusReq() {
+void EngineServicePolicy::handleStatusReq() {
     auto& eng = engine();
     uint8_t resp[3] = {0};
 

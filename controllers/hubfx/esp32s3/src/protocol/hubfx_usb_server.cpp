@@ -18,7 +18,7 @@
 #define USB_LOG(fmt, ...) SFX_LOG_DEBUG("[UsbSrv] " fmt, ##__VA_ARGS__)
 
 
-CommandHandleResult HubFxUsbServer::handleModulePacket(
+CommandHandleResult UsbHostServicePolicy::handle(
         uint8_t type, const uint8_t* payload, size_t len) {
 
     switch (type) {
@@ -36,7 +36,7 @@ CommandHandleResult HubFxUsbServer::handleModulePacket(
 }
 
 
-void HubFxUsbServer::handleUsbDevicesReq() {
+void UsbHostServicePolicy::handleUsbDevicesReq() {
     UsbHost& usb = UsbHost::instance();
 
     // Build response payload
@@ -89,7 +89,7 @@ void HubFxUsbServer::handleUsbDevicesReq() {
 }
 
 
-void HubFxUsbServer::handleUsbResetBus() {
+void UsbHostServicePolicy::handleUsbResetBus() {
     UsbHost& usb = UsbHost::instance();
 
     if (!usb.isInitialized()) {

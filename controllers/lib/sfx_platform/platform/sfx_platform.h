@@ -119,7 +119,7 @@
 
     // No BOOTSEL equivalent on ESP32 — OTA or esptool instead.
     // SfxServer does NOT register a BOOTSEL callback on ESP32;
-    // CoreCommandServer sends NACK NOT_SUPPORTED automatically.
+    // BoardServicePolicy sends NACK NOT_SUPPORTED automatically.
     inline void sfxRebootToBootloader() {
         // Fallback: plain restart (no UF2 bootloader on ESP32)
         esp_restart();

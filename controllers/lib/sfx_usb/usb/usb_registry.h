@@ -19,7 +19,7 @@
  *   - onReady(type, fn)      fires once per false→true transition of `ready`
  *   - onDisconnect(type, fn) fires once per true→false transition of `ready`
  *                            (covers explicit setReady(false), SHUTDOWN/REBOOT
- *                             via SlaveServer, and USB unmount via setConnected)
+ *                             via CoreServer, and USB unmount via setConnected)
  *
  * The callbacks let consumers wire "load config + push it down on attach"
  * without polling — main loop no longer needs per-board reconcile() helpers.

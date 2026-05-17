@@ -558,8 +558,8 @@ uint8_t EspUsbHost::_openCdcSession(uint16_t vid, uint16_t pid, uint32_t timeout
     //
     // Without DTR, the Pico slave's TinyUSB stack treats the CDC link as
     // disconnected (tud_cdc_connected() returns false), so `Serial` never
-    // becomes truthy and BusServer never transmits its IDENTIFY response —
-    // SlaveManager then times out every 5s with "No IDENTIFY response".
+    // becomes truthy and BoardServer never transmits its IDENTIFY
+    // response — SlaveManager then times out every 5s with "No IDENTIFY".
 
     constexpr uint8_t CDC_REQTYPE_HOST_TO_DEVICE_CLASS_INTERFACE = 0x21;
     constexpr uint8_t CDC_REQ_SET_LINE_CODING         = 0x20;
@@ -640,7 +640,7 @@ void EspUsbHost::_processOpenRequest(uint16_t vid, uint16_t pid) {
         return;
     }
 
-    // Fire mount callback (notifies SlaveServer for IDENTIFY + registration)
+    // Fire mount callback (notifies CoreServer for IDENTIFY + registration)
     if (_state.mountCallback) _state.mountCallback(devAddr, vid, pid);
 }
 
@@ -703,7 +703,7 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
             }
             slot = {};
 
-            // Fire unmount callback (notifies SlaveServer)
+            // Fire unmount callback (notifies CoreServer)
             if (_state.unmountCallback) _state.unmountCallback(devAddr);
 
             // Start auto-recovery timer — if no new device connects within

@@ -56,6 +56,7 @@
 #include <serial/serial.h>
 #include <serial/hubfx/hubfx.h>
 #include <serial/core/stream.h>
+#include <serial/core/system_service.h>      // SystemServicePolicy + ServiceContext
 #include <storage/flash.h>
 #include <storage/sd_card.h>
 #include <MD5Builder.h>
@@ -126,7 +127,7 @@ concept StoragePolicy = requires(T t, StorageSharedState* state, const char*& er
 };
 
 template <typename TPolicy>
-class StorageServerT : public BusServer {
+class StorageServicePolicy {
     // Concept enforced via static_assert rather than a class-level requires
     // clause — otherwise every out-of-class definition in storage_server.ipp
     // would need to repeat the constraint. The static_assert still fires at
@@ -137,9 +138,13 @@ class StorageServerT : public BusServer {
                   "onUploadActivated/onChunkedEnd/onChunkedCleanup/"
                   "bufferFillPercent per the concept.");
 public:
-    StorageServerT() { _policy.init(&_shared); }
+    /// FLASH and SD capability bits — the policy advertises both because
+    /// (a) flash backing is always present on supported platforms, and
+    /// (b) SD presence is platform-gated at compile time today; the
+    /// runtime-mount check belongs in the storage descriptors per doc 17 §5.
+    static constexpr uint32_t kCapabilityBits = CoreCapability::FLASH | CoreCapability::SD;
 
-    const char* handlerName() const override { return "StorageServer"; }
+    StorageServicePolicy() { _policy.init(&_shared); }
 
     /// Cancel any active upload (called on SHUTDOWN to clean up state)
     void cancelActiveUpload();
@@ -224,23 +229,47 @@ public:
      */
     void onUploadEnd(std::function<void()> cb) { _onUploadEnd = std::move(cb); }
 
-protected:
-    // --- BusServer overrides ---
-    CommandHandleResult handleModulePacket(uint8_t type,
-                                           const uint8_t* payload,
-                                           size_t len) override;
+    // ── SystemServicePolicy surface ───────────────────────────────────
 
-    uint8_t moduleRangeLow()  const override { return 0x93; }
-    uint8_t moduleRangeHigh() const override { return 0xAA; }
+    bool begin(sfx_core::ServiceContext* ctx) {
+        _ctx = ctx;
+        return _ctx != nullptr;
+    }
 
-    const char* getModuleErrorMessage(uint8_t code) override {
+    bool ownsType(uint8_t type) const {
+        return type >= 0x93 && type <= 0xAA;
+    }
+
+    CommandHandleResult handle(uint8_t type,
+                               const uint8_t* payload, size_t len);
+
+    /// Called from BoardServer::update() — no-op here; cancellation
+    /// timeouts are polled via the board's explicit
+    /// `policy<StorageServicePolicy<...>>().checkUploadTimeout()` call.
+    void update() {}
+
+    const char* getErrorMessage(uint8_t code) const {
         return HubFxError::getMessage(code);
     }
+
+protected:
+    // Wire-helper wrappers (so the existing handler bodies continue to
+    // call `sendAck()` / `sendNack()` / `sendRawPacket()` unchanged).
+    int     sendAck()                                                  { return _ctx->sendAck(); }
+    int     sendNack(uint8_t errorCode, const char* reason = nullptr)  { return _ctx->sendNack(errorCode, reason); }
+    int     sendRawPacket(uint8_t t, uint8_t tag, const uint8_t* p = nullptr, size_t l = 0)
+                                                                       { return _ctx->sendRawPacket(t, tag, p, l); }
+    uint8_t currentTag() const                                         { return _ctx->currentTag(); }
+
+    // Raw serial access for the upload stream path.
+    Stream* serial() const { return _ctx ? _ctx->serial() : nullptr; }
 
     // ================================================================
     // Shared state (accessible to .ipp template methods)
     // ================================================================
     StorageSharedState _shared;
+
+    sfx_core::ServiceContext* _ctx = nullptr;
 
 private:
     // ================================================================
@@ -337,6 +366,11 @@ private:
     static constexpr uint32_t MAX_UPLOAD_SIZE_SD    = 256 * 1024 * 1024;
 };
 
+/// @deprecated In-flight alias — prefer `StorageServicePolicy<TPolicy>`
+///             instantiated via `BoardServer<...>`.
+template <typename TPolicy>
+using StorageServerT = StorageServicePolicy<TPolicy>;
+
 // ============================================================================
 // Template implementation
 // ============================================================================
@@ -347,10 +381,10 @@ private:
 // ============================================================================
 #if SFX_PLATFORM_ESP32
 #include "esp32/esp32_storage_policy.h"
-using StorageServer = StorageServerT<Esp32StoragePolicy>;
+using StorageServer = StorageServicePolicy<Esp32StoragePolicy>;
 #else
 #include "pico/pico_storage_policy.h"
-using StorageServer = StorageServerT<PicoStoragePolicy>;
+using StorageServer = StorageServicePolicy<PicoStoragePolicy>;
 #endif
 
 #endif // STORAGE_SERVER_H

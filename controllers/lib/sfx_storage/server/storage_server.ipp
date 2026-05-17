@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Storage Server — Policy-Based Template Implementation
  *
  * Platform-agnostic protocol handlers for file operations via FlashModule
@@ -33,7 +33,7 @@
 // ============================================================================
 
 template <typename TPolicy>
-CommandHandleResult StorageServerT<TPolicy>::handleModulePacket(
+CommandHandleResult StorageServicePolicy<TPolicy>::handle(
         uint8_t type, const uint8_t* payload, size_t len) {
 
     switch (type) {
@@ -102,7 +102,7 @@ CommandHandleResult StorageServerT<TPolicy>::handleModulePacket(
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleFlashStatus() {
+void StorageServicePolicy<TPolicy>::handleFlashStatus() {
     FlashModule& flash = FlashModule::instance();
 
     FlashStorageInfo info;
@@ -135,7 +135,7 @@ void StorageServerT<TPolicy>::handleFlashStatus() {
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleFileList(const uint8_t* payload, size_t len) {
+void StorageServicePolicy<TPolicy>::handleFileList(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
 
@@ -152,7 +152,7 @@ void StorageServerT<TPolicy>::handleFileList(const uint8_t* payload, size_t len)
 
     notifyTransferStart();
 
-    StreamWriter stream(*this, currentTag());
+    StreamWriter stream(*_ctx, currentTag());
     stream.begin(0);
 
     auto listCb = [&stream](const FileEntry& entry) -> bool {
@@ -185,7 +185,7 @@ void StorageServerT<TPolicy>::handleFileList(const uint8_t* payload, size_t len)
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleFileTree(const uint8_t* payload, size_t len) {
+void StorageServicePolicy<TPolicy>::handleFileTree(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
 
@@ -202,7 +202,7 @@ void StorageServerT<TPolicy>::handleFileTree(const uint8_t* payload, size_t len)
 
     notifyTransferStart();
 
-    StreamWriter stream(*this, currentTag());
+    StreamWriter stream(*_ctx, currentTag());
     stream.begin(0);
 
     auto treeCb = [&stream](const FileEntry& entry, int depth) -> bool {
@@ -237,7 +237,7 @@ void StorageServerT<TPolicy>::handleFileTree(const uint8_t* payload, size_t len)
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleFileDelete(const uint8_t* payload, size_t len) {
+void StorageServicePolicy<TPolicy>::handleFileDelete(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
     uint8_t flags = 0;
@@ -311,7 +311,7 @@ void StorageServerT<TPolicy>::handleFileDelete(const uint8_t* payload, size_t le
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleFileMkdir(const uint8_t* payload, size_t len) {
+void StorageServicePolicy<TPolicy>::handleFileMkdir(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
     uint8_t flags = 0;
@@ -348,7 +348,7 @@ void StorageServerT<TPolicy>::handleFileMkdir(const uint8_t* payload, size_t len
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleFileInfo(const uint8_t* payload, size_t len) {
+void StorageServicePolicy<TPolicy>::handleFileInfo(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
 
@@ -391,7 +391,7 @@ void StorageServerT<TPolicy>::handleFileInfo(const uint8_t* payload, size_t len)
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleFileDownload(const uint8_t* payload, size_t len) {
+void StorageServicePolicy<TPolicy>::handleFileDownload(const uint8_t* payload, size_t len) {
     char path[128];
     HubFxStorage::StorageTarget target = HubFxStorage::TARGET_SD;
 
@@ -424,7 +424,7 @@ void StorageServerT<TPolicy>::handleFileDownload(const uint8_t* payload, size_t 
 
     notifyTransferStart();
 
-    StreamWriter stream(*this, currentTag());
+    StreamWriter stream(*_ctx, currentTag());
     stream.begin(file.size());
 
     uint8_t buf[256];
@@ -447,7 +447,7 @@ void StorageServerT<TPolicy>::handleFileDownload(const uint8_t* payload, size_t 
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t len) {
+void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t len) {
     // Wire: [size:u32LE][pathLen:u8][path:str][target:u8?]
     if (len < 6) {  // 4 (size) + 1 (pathLen) + 1 (min path char)
         sendNack(SerialError::MISSING_PARAMETER);
@@ -627,13 +627,13 @@ void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t l
 
         STORAGE_LOG("STREAM active: %u segments of %uKB, uart_rx=%dB",
                     segCount, (unsigned)(_streamSegmentSize / 1024),
-                    _serial->available());
+                    serial()->available());
 
         // ACK payload: [segment_size:u32LE][segment_count:u16LE]
         uint8_t ackPayload[6];
         CoreProtocol::putU32LE(&ackPayload[0], _streamSegmentSize);
         CoreProtocol::putU16LE(&ackPayload[4], segCount);
-        sendRawPacket(CorePacket::ACK, _currentTag, ackPayload, 6);
+        sendRawPacket(CorePacket::ACK, currentTag(), ackPayload, 6);
     } else {
         sendAck();
     }
@@ -645,7 +645,7 @@ void StorageServerT<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t l
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleUploadData(const uint8_t* payload, size_t len) {
+void StorageServicePolicy<TPolicy>::handleUploadData(const uint8_t* payload, size_t len) {
     // Wire: [seqNum:u16LE][crc16:u16LE][data:N]
     if (!_uploadActive) {
         sendNack(HubFxError::NO_UPLOAD_ACTIVE);
@@ -736,7 +736,7 @@ void StorageServerT<TPolicy>::handleUploadData(const uint8_t* payload, size_t le
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleUploadEnd() {
+void StorageServicePolicy<TPolicy>::handleUploadEnd() {
     if (!_uploadActive) {
         sendNack(HubFxError::NO_UPLOAD_ACTIVE);
         return;
@@ -834,7 +834,7 @@ void StorageServerT<TPolicy>::handleUploadEnd() {
     notifyTransferEnd();
 
     // ACK payload: [md5:16B]
-    sendRawPacket(CorePacket::ACK, _currentTag, md5Bytes, 16);
+    sendRawPacket(CorePacket::ACK, currentTag(), md5Bytes, 16);
 }
 
 
@@ -843,7 +843,7 @@ void StorageServerT<TPolicy>::handleUploadEnd() {
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleUploadCancel() {
+void StorageServicePolicy<TPolicy>::handleUploadCancel() {
     if (!_uploadActive) {
         sendNack(HubFxError::NO_UPLOAD_ACTIVE);
         return;
@@ -866,7 +866,7 @@ void StorageServerT<TPolicy>::handleUploadCancel() {
 // --- Stream Upload Helpers ---
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::processStream() {
+void StorageServicePolicy<TPolicy>::processStream() {
     if (!_streamActive || !_uploadActive) return;
 
     // Track loop gap — detect slow main loop iterations
@@ -879,7 +879,7 @@ void StorageServerT<TPolicy>::processStream() {
     if (gap > 50) {
         STORAGE_LOG("Stream loop gap: %lums (max=%lu) uart=%d",
                     (unsigned long)gap, (unsigned long)_streamMaxGap_ms,
-                    _serial->available());
+                    serial()->available());
     }
 
     _streamIterCount++;
@@ -893,12 +893,12 @@ void StorageServerT<TPolicy>::processStream() {
                     (unsigned long)_uploadExpectedSize);
         _streamActive = false;
         // Drain incoming raw bytes so COBS parser doesn't see garbage
-        while (_serial->available()) _serial->read();
+        while (serial()->available()) serial()->read();
         cleanupUpload(true);
         return;
     }
 
-    int avail = _serial->available();
+    int avail = serial()->available();
     if (avail <= 0) return;
 
     _uploadLastActivity_ms = now;
@@ -912,7 +912,7 @@ void StorageServerT<TPolicy>::processStream() {
     if (toRead > _streamSegBytesRemaining) toRead = _streamSegBytesRemaining;
     if (toRead > space)                    toRead = space;
 
-    size_t got = _serial->readBytes(
+    size_t got = serial()->readBytes(
         &_shared.uploadWriteBuf[_shared.uploadWriteBufLen], toRead);
     if (got == 0) return;
 
@@ -935,7 +935,7 @@ void StorageServerT<TPolicy>::processStream() {
                     (unsigned long)_uploadExpectedSize,
                     _policy.bufferFillPercent());
         _streamActive = false;
-        while (_serial->available()) _serial->read();
+        while (serial()->available()) serial()->read();
         cleanupUpload(true);
         return;
     }
@@ -960,7 +960,7 @@ void StorageServerT<TPolicy>::processStream() {
                     (unsigned)(_uploadBytesWritten * 100 / _uploadExpectedSize),
                     (unsigned long)kbps,
                     _policy.bufferFillPercent(),
-                    _serial->available(),
+                    serial()->available(),
                     (unsigned long)_streamMaxGap_ms,
                     (unsigned long)_streamIterCount,
                     (unsigned long)(ws.bytesWritten / 1024),
@@ -1016,7 +1016,7 @@ void StorageServerT<TPolicy>::processStream() {
 }
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::sendStreamSegmentAck() {
+void StorageServicePolicy<TPolicy>::sendStreamSegmentAck() {
     // Wire: [segment_idx:u16LE][bytes_received:u32LE][fill_pct:u8]
     uint8_t payload[7];
     CoreProtocol::putU16LE(&payload[0], _streamSegmentIndex);
@@ -1029,14 +1029,14 @@ void StorageServerT<TPolicy>::sendStreamSegmentAck() {
 // --- Upload Cleanup ---
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::cleanupUpload(bool deletePartial) {
+void StorageServicePolicy<TPolicy>::cleanupUpload(bool deletePartial) {
     if (!_uploadActive) return;
 
     _streamActive = false;
 
     // Drain any raw bytes remaining in the UART buffer (stream mode leftovers)
-    if (_serial) {
-        while (_serial->available()) _serial->read();
+    if (serial()) {
+        while (serial()->available()) serial()->read();
     }
 
     _policy.onChunkedCleanup();
@@ -1071,7 +1071,7 @@ void StorageServerT<TPolicy>::cleanupUpload(bool deletePartial) {
 }
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::cancelActiveUpload() {
+void StorageServicePolicy<TPolicy>::cancelActiveUpload() {
     if (_uploadActive) {
         STORAGE_LOG("Cancelling active upload on shutdown: %s", _uploadPath);
         cleanupUpload(true);
@@ -1085,7 +1085,7 @@ void StorageServerT<TPolicy>::cancelActiveUpload() {
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::checkUploadTimeout() {
+void StorageServicePolicy<TPolicy>::checkUploadTimeout() {
     if (!_uploadActive) return;
 
     uint32_t elapsed = millis() - _uploadLastActivity_ms;
@@ -1114,7 +1114,7 @@ void StorageServerT<TPolicy>::checkUploadTimeout() {
 // --- Transfer lifecycle notification helpers ---
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::notifyTransferStart() {
+void StorageServicePolicy<TPolicy>::notifyTransferStart() {
     if (!_transferNotified) {
         _transferNotified = true;
         if (_onTransferStart) _onTransferStart();
@@ -1122,7 +1122,7 @@ void StorageServerT<TPolicy>::notifyTransferStart() {
 }
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::notifyTransferEnd() {
+void StorageServicePolicy<TPolicy>::notifyTransferEnd() {
     if (_transferNotified) {
         _transferNotified = false;
         if (_onTransferEnd) _onTransferEnd();
@@ -1130,7 +1130,7 @@ void StorageServerT<TPolicy>::notifyTransferEnd() {
 }
 
 template <typename TPolicy>
-uint8_t StorageServerT<TPolicy>::mapStorageError(uint8_t err) {
+uint8_t StorageServicePolicy<TPolicy>::mapStorageError(uint8_t err) {
     // FlashError and SdError share identical codes (0-6)
     switch (err) {
         case FlashError::OK:              return SerialError::OK;
@@ -1150,7 +1150,7 @@ uint8_t StorageServerT<TPolicy>::mapStorageError(uint8_t err) {
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleSdInit(const uint8_t* payload, size_t len) {
+void StorageServicePolicy<TPolicy>::handleSdInit(const uint8_t* payload, size_t len) {
     SdCardModule& sd = SdCardModule::instance();
 
     // SD_INIT payload: [speed_mhz:u8] -- ignored for SDIO mode
@@ -1190,7 +1190,7 @@ void StorageServerT<TPolicy>::handleSdInit(const uint8_t* payload, size_t len) {
 // ============================================================================
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::handleSdStatus() {
+void StorageServicePolicy<TPolicy>::handleSdStatus() {
     SdCardModule& sd = SdCardModule::instance();
 
     // SD_STATUS_RESP extended:
@@ -1242,7 +1242,7 @@ void StorageServerT<TPolicy>::handleSdStatus() {
 // ============================================================================
 
 template <typename TPolicy>
-bool StorageServerT<TPolicy>::checkStorageReady(HubFxStorage::StorageTarget target) {
+bool StorageServicePolicy<TPolicy>::checkStorageReady(HubFxStorage::StorageTarget target) {
     if (target == HubFxStorage::TARGET_FLASH) {
         if (!FlashModule::instance().isInitialized()) {
             sendNack(SerialError::NOT_INITIALIZED);
@@ -1263,7 +1263,7 @@ bool StorageServerT<TPolicy>::checkStorageReady(HubFxStorage::StorageTarget targ
 }
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::lockStorage(HubFxStorage::StorageTarget target) {
+void StorageServicePolicy<TPolicy>::lockStorage(HubFxStorage::StorageTarget target) {
     if (target == HubFxStorage::TARGET_FLASH)
         FlashModule::instance().lock();
     else
@@ -1271,7 +1271,7 @@ void StorageServerT<TPolicy>::lockStorage(HubFxStorage::StorageTarget target) {
 }
 
 template <typename TPolicy>
-void StorageServerT<TPolicy>::unlockStorage(HubFxStorage::StorageTarget target) {
+void StorageServicePolicy<TPolicy>::unlockStorage(HubFxStorage::StorageTarget target) {
     if (target == HubFxStorage::TARGET_FLASH)
         FlashModule::instance().unlock();
     else
@@ -1279,12 +1279,12 @@ void StorageServerT<TPolicy>::unlockStorage(HubFxStorage::StorageTarget target) 
 }
 
 template <typename TPolicy>
-const char* StorageServerT<TPolicy>::targetName(HubFxStorage::StorageTarget target) {
+const char* StorageServicePolicy<TPolicy>::targetName(HubFxStorage::StorageTarget target) {
     return (target == HubFxStorage::TARGET_FLASH) ? "flash" : "sd";
 }
 
 template <typename TPolicy>
-uint8_t StorageServerT<TPolicy>::extractPathAndTarget(
+uint8_t StorageServicePolicy<TPolicy>::extractPathAndTarget(
         const uint8_t* payload, size_t len,
         char* path, size_t pathBufSize, HubFxStorage::StorageTarget& target,
         uint8_t* flagsOut) {
@@ -1329,7 +1329,7 @@ uint8_t StorageServerT<TPolicy>::extractPathAndTarget(
 // ============================================================================
 
 template <typename TPolicy>
-bool StorageServerT<TPolicy>::isValidPath(const char* path) {
+bool StorageServicePolicy<TPolicy>::isValidPath(const char* path) {
     if (!path || path[0] != '/') return false;
 
     // Reject path traversal: ".." as a path component

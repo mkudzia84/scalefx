@@ -1,7 +1,7 @@
 /*
  * Audio Protocol Server — Template Implementation
  *
- * All AudioServerT<TMixer> method bodies. Included from audio_server.h.
+ * All AudioServicePolicy<TMixer> method bodies. Included from audio_server.h.
  *
  * Wire formats match the HubFX audio protocol defined in
  * sfx_serial/serial/hubfx/hubfx.h (HubFxPacket namespace).
@@ -16,7 +16,7 @@
 // ============================================================================
 
 template <typename TMixer>
-CommandHandleResult AudioServerT<TMixer>::handleModulePacket(
+CommandHandleResult AudioServicePolicy<TMixer>::handle(
         uint8_t type, const uint8_t* payload, size_t len) {
     switch (type) {
         case HubFxPacket::AUDIO_PLAY:
@@ -54,7 +54,7 @@ CommandHandleResult AudioServerT<TMixer>::handleModulePacket(
 // ============================================================================
 
 template <typename TMixer>
-void AudioServerT<TMixer>::handlePlay(const uint8_t* payload, size_t len) {
+void AudioServicePolicy<TMixer>::handlePlay(const uint8_t* payload, size_t len) {
     if (len < 7) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
     uint8_t ch       = payload[0];
@@ -102,7 +102,7 @@ void AudioServerT<TMixer>::handlePlay(const uint8_t* payload, size_t len) {
 // ============================================================================
 
 template <typename TMixer>
-void AudioServerT<TMixer>::handleStop(const uint8_t* payload, size_t len) {
+void AudioServicePolicy<TMixer>::handleStop(const uint8_t* payload, size_t len) {
     if (len < 1) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
     uint8_t ch = payload[0];
@@ -123,7 +123,7 @@ void AudioServerT<TMixer>::handleStop(const uint8_t* payload, size_t len) {
 // ============================================================================
 
 template <typename TMixer>
-void AudioServerT<TMixer>::handleVolume(const uint8_t* payload, size_t len) {
+void AudioServicePolicy<TMixer>::handleVolume(const uint8_t* payload, size_t len) {
     if (len < 2) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
     uint8_t ch  = payload[0];
@@ -147,7 +147,7 @@ void AudioServerT<TMixer>::handleVolume(const uint8_t* payload, size_t len) {
 // ============================================================================
 
 template <typename TMixer>
-void AudioServerT<TMixer>::handleFade(const uint8_t* payload, size_t len) {
+void AudioServicePolicy<TMixer>::handleFade(const uint8_t* payload, size_t len) {
     if (len < 1) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
     uint8_t ch = payload[0];
@@ -163,7 +163,7 @@ void AudioServerT<TMixer>::handleFade(const uint8_t* payload, size_t len) {
 // ============================================================================
 
 template <typename TMixer>
-void AudioServerT<TMixer>::handleQueue(const uint8_t* payload, size_t len) {
+void AudioServicePolicy<TMixer>::handleQueue(const uint8_t* payload, size_t len) {
     if (len < 6) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
     uint8_t ch       = payload[0];
@@ -213,7 +213,7 @@ void AudioServerT<TMixer>::handleQueue(const uint8_t* payload, size_t len) {
 // ============================================================================
 
 template <typename TMixer>
-void AudioServerT<TMixer>::handleQueueClear(const uint8_t* payload, size_t len) {
+void AudioServicePolicy<TMixer>::handleQueueClear(const uint8_t* payload, size_t len) {
     if (len < 1) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
     uint8_t ch = payload[0];
@@ -252,7 +252,7 @@ void AudioServerT<TMixer>::handleQueueClear(const uint8_t* payload, size_t len) 
 // ============================================================================
 
 template <typename TMixer>
-void AudioServerT<TMixer>::handleStatusReq() {
+void AudioServicePolicy<TMixer>::handleStatusReq() {
     auto& m = mixer();
 
     uint8_t buf[512];
@@ -356,7 +356,7 @@ void AudioServerT<TMixer>::handleStatusReq() {
 // ============================================================================
 
 template <typename TMixer>
-void AudioServerT<TMixer>::handleCodecStatusReq() {
+void AudioServicePolicy<TMixer>::handleCodecStatusReq() {
     auto& codec = mixer().getCodec();
     uint8_t buf[64];
     size_t pos = 0;
