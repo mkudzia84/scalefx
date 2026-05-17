@@ -27,7 +27,6 @@
 #include <Arduino.h>
 #include <functional>
 #include "serial/core/core.h"
-#include "serial/core/stream.h"
 
 
 // ============================================================================
@@ -36,11 +35,10 @@
 
 namespace HubFxPacket {
 
-    // --- Slave Management (0x80-0x83) ---
-    constexpr uint8_t SLAVE_LIST        = 0x80;  // [] → SLAVE_LIST_RESP
-    constexpr uint8_t SLAVE_LIST_RESP   = 0x81;  // [count:u8][per-slave: type:u8,connected:u8,ready:u8,nameLen:u8,name:str]
-    constexpr uint8_t SLAVE_INIT        = 0x82;  // [slaveType:u8] → ACK/NACK
-    constexpr uint8_t SLAVE_STATUS      = 0x83;  // [] → ACK (status via core STATUS callback)
+    // 0x80-0x83 (legacy slave-management) RESERVED — see
+    // instructions/15-GENERIC-EXPANDER-REFACTOR.md.  The new generic-
+    // expander wire protocol replaces SLAVE_LIST / SLAVE_INIT / SLAVE_STATUS
+    // with the ComponentPacket namespace in serial/components/components.h.
 
     // --- Audio Control (0x84-0x8B) ---
     constexpr uint8_t AUDIO_PLAY        = 0x84;  // [ch:u8][vol:u8][output:u8][loopMode:u8][loopCount:u16LE][pathLen:u8][path:str]
@@ -87,11 +85,9 @@ namespace HubFxPacket {
     // --- USB Bus Recovery (0xAD) ---
     constexpr uint8_t USB_RESET_BUS      = 0xAD;  // [] → ACK (power-cycles root port, re-enumerates)
 
-    // --- Slave Info Query (0xAE-0xAF) ---
-    constexpr uint8_t SLAVE_INFO          = 0xAE;  // [slaveType:u8] → SLAVE_INFO_RESP (cached boardInfo, no slave query)
-    constexpr uint8_t SLAVE_INFO_RESP     = 0xAF;  // [slaveType:u8][ready:u8][connected:u8][nameLen:u8][name:str]
-                                                    //   [verLen:u8][ver:str][platLen:u8][plat:str]
-                                                    //   [cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]
+    // 0xAE-0xAF (legacy SLAVE_INFO / SLAVE_INFO_RESP) RESERVED — replaced
+    // by the generic-expander enumeration commands in ComponentPacket
+    // (serial/components/components.h).
 
     // --- File Tree (0xA9) ---
     constexpr uint8_t FILE_TREE          = 0xA9;  // [pathLen:u8][path:str][target:u8?] → STREAM_BEGIN + STREAM_DATA + STREAM_END
@@ -121,20 +117,11 @@ namespace HubFxPacket {
     constexpr uint8_t FILE_UPLOAD_PROGRESS = 0xB0;  // Server → Client (async, TAG_ASYNC)
                                                     //   [segment_idx:u16LE][bytes_received:u32LE][ring_fill_pct:u8]
 
-    // --- Slave Registry Enumeration (0xB1-0xB2) ---
-    // Clients query SLAVE_ENUM_REQ to learn which slave controller types are
-    // currently attached to the hub. Slave-range packets (GunFX 0x01-0x2F,
-    // LightFX 0x40-0x5F, GearControl 0x60-0x7F) sent to the hub are auto-
-    // routed to the matching attached slave by packet-type range — no
-    // envelope wrapping is needed. Responses (ACK/NACK or typed RESP) are
-    // forwarded back upstream verbatim with the original correlation tag.
-    // Async slave packets (STATUS broadcasts in slave ranges) are forwarded
-    // verbatim with TAG_ASYNC. See instructions/13-PASSTHROUGH-ROUTING.md.
-    constexpr uint8_t SLAVE_ENUM_REQ      = 0xB1;  // [] → SLAVE_ENUM_RESP
-    constexpr uint8_t SLAVE_ENUM_RESP     = 0xB2;  // [count:u8] then per slot:
-                                                    //   [slot:u8][type:u8][connected:u8][ready:u8]
-                                                    //   [nameLen:u8][name:str]
-                                                    // Empty slots emit type=Unknown, nameLen=0.
+    // 0xB1-0xB2 (legacy SLAVE_ENUM_REQ / SLAVE_ENUM_RESP) RESERVED —
+    // the new generic-expander model exposes attached expanders via
+    // ComponentPacket commands (serial/components/components.h) and is
+    // keyed by (ExpanderType, BoardGuid) rather than legacy SlaveType
+    // slots.  See instructions/15-GENERIC-EXPANDER-REFACTOR.md.
 }
 
 
@@ -145,11 +132,10 @@ namespace HubFxPacket {
 namespace HubFxError {
     using namespace SerialError;
 
-    constexpr uint8_t SLAVE_NOT_FOUND      = 0x80;
-    constexpr uint8_t SLAVE_NOT_CONNECTED  = 0x81;
-    constexpr uint8_t SLAVE_INIT_FAILED    = 0x82;
-    constexpr uint8_t NO_SLAVES            = 0x83;
-    constexpr uint8_t SLAVE_COMM_ERROR     = 0x84;
+    // 0x80-0x84 (legacy SLAVE_NOT_FOUND / NOT_CONNECTED / INIT_FAILED /
+    // NO_SLAVES / COMM_ERROR) RESERVED — replaced by generic-expander
+    // error codes in serial/components/components.h.
+
     constexpr uint8_t AUDIO_ERROR          = 0x85;
     constexpr uint8_t SD_NOT_INITIALIZED   = 0x86;
     constexpr uint8_t ENGINE_NOT_AVAILABLE = 0x87;
@@ -166,11 +152,6 @@ namespace HubFxError {
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {
-            case SLAVE_NOT_FOUND:      return "Slave not found";
-            case SLAVE_NOT_CONNECTED:  return "Slave not connected";
-            case SLAVE_INIT_FAILED:    return "Slave INIT failed";
-            case NO_SLAVES:            return "No slaves registered";
-            case SLAVE_COMM_ERROR:     return "Slave communication error";
             case AUDIO_ERROR:          return "Audio error";
             case SD_NOT_INITIALIZED:   return "SD card not initialized";
             case ENGINE_NOT_AVAILABLE: return "Engine FX not available";
