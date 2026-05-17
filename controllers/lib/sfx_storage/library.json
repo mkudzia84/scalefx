@@ -7,6 +7,7 @@
     "platforms": ["raspberrypi", "espressif32"],
     "dependencies": [
         {"name": "sfx_platform"},
-        {"name": "sfx_serial"}
+        {"name": "sfx_serial"},
+        {"name": "sfx_board"}
     ]
 }

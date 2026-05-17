@@ -1,21 +1,41 @@
 /*
  * BoardServicePolicy — implementation.
  *
- * Mirrors the legacy `CoreCommandServer::*` definitions in
- * `bus_server.cpp` 1:1 but with policy-style send-helper wrappers
- * (`sendAck()` / `sendNack()` / `sendRawPacket()` forward via
- * `_ctx->`) instead of inherited BusServer state.
+ * Wire-helper wrappers (sendAck / sendNack / sendRawPacket / currentTag /
+ * serial) forward to the owning BoardServerBase.  Lifecycle handlers
+ * (INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE, STATUS_REQ, IDENTIFY,
+ * I2C_SCAN, DIAG_HISTORY) decode payloads and emit responses through
+ * those helpers.
  */
 
 #include "board_service.h"
-#include "core.h"
-#include <platform/diag_log.h>     // DiagLog (history send for DIAG_HISTORY)
-#include <platform/sfx_wire.h>     // SfxWire::TAG_ASYNC
+#include "board_server.h"          // BoardServerBase (complete type for the wrappers below)
+#include <serial/core/core.h>      // CorePacket / CorePayload / SerialError
+#include <serial/diag_log.h>       // DiagLog (history send for DIAG_HISTORY)
+#include <serial/wire.h>           // SfxWire::TAG_ASYNC
 
 #include <Arduino.h>     // millis()
 #include <cstring>
 
 namespace sfx_core {
+
+// ── Wire-helper wrappers (defined here so BoardServerBase is complete) ─
+
+int BoardServicePolicy::sendAck() {
+    return _ctx->sendAck();
+}
+
+int BoardServicePolicy::sendNack(uint8_t errorCode, const char* reason) {
+    return _ctx->sendNack(errorCode, reason);
+}
+
+int BoardServicePolicy::sendRawPacket(uint8_t type, uint8_t tag,
+                                      const uint8_t* payload, size_t len) {
+    return _ctx->sendRawPacket(type, tag, payload, len);
+}
+
+uint8_t BoardServicePolicy::currentTag() const { return _ctx->currentTag(); }
+Stream* BoardServicePolicy::serial()     const { return _ctx ? _ctx->serial() : nullptr; }
 
 void BoardServicePolicy::setBoardInfo(const char* deviceName, const char* firmwareVersion,
                                       const char* platform, uint32_t cpuMHz, uint32_t freeRam,
@@ -95,7 +115,7 @@ CommandHandleResult BoardServicePolicy::handle(uint8_t type, const uint8_t* payl
         case CorePacket::DIAG_HISTORY: {
             uint16_t sent = DiagLog::instance().sendHistory();
             uint8_t countPayload[2];
-            CoreProtocol::putU16LE(countPayload, sent);
+            SfxWire::putU16LE(countPayload, sent);
             sendRawPacket(CorePacket::ACK, currentTag(), countPayload, 2);
             return CommandHandleResult::Handled;
         }
@@ -149,14 +169,14 @@ void BoardServicePolicy::sendIdentify() {
 
 void BoardServicePolicy::sendStatus() {
     // 22-byte core header + variable-length module-callback data.
-    uint8_t payload[CoreProtocol::MAX_PAYLOAD_SIZE];
+    uint8_t payload[SfxWire::MAX_PAYLOAD_SIZE];
     size_t idx = 0;
-    CoreProtocol::putU32LE(&payload[idx], _commandCounter);                idx += 4;
-    CoreProtocol::putU32LE(&payload[idx], millis());                        idx += 4;
-    CoreProtocol::putU32LE(&payload[idx], _boardInfo.freeRamBytes);        idx += 4;
+    SfxWire::putU32LE(&payload[idx], _commandCounter);                idx += 4;
+    SfxWire::putU32LE(&payload[idx], millis());                        idx += 4;
+    SfxWire::putU32LE(&payload[idx], _boardInfo.freeRamBytes);        idx += 4;
     uint32_t sinceActivity = (_prevActivityMs > 0) ? (millis() - _prevActivityMs) : 0;
-    CoreProtocol::putU32LE(&payload[idx], sinceActivity);                  idx += 4;
-    CoreProtocol::putU32LE(&payload[idx], _keepaliveCounter);              idx += 4;
+    SfxWire::putU32LE(&payload[idx], sinceActivity);                  idx += 4;
+    SfxWire::putU32LE(&payload[idx], _keepaliveCounter);              idx += 4;
     payload[idx++] = _boardState;
     payload[idx++] = _initFlags;
     if (_statusDataCallback) {
@@ -166,7 +186,7 @@ void BoardServicePolicy::sendStatus() {
 }
 
 void BoardServicePolicy::sendI2CScanResult(const I2CScanResult& result) {
-    uint8_t payload[CoreProtocol::MAX_PAYLOAD_SIZE];
+    uint8_t payload[SfxWire::MAX_PAYLOAD_SIZE];
     size_t idx = 0;
     payload[idx++] = result.numExpected;
     for (uint8_t i = 0; i < result.numExpected && i < I2CScanResult::MAX_EXPECTED; i++) {
@@ -185,7 +205,7 @@ void BoardServicePolicy::sendI2CScanResult(const I2CScanResult& result) {
 void BoardServicePolicy::sendStatusUpdate(uint8_t source, uint8_t updateType,
                                           const uint8_t* data, size_t dataLen) {
     if (!isVerbose() || _transferActive || !serial()) return;
-    uint8_t payload[CoreProtocol::MAX_PAYLOAD_SIZE];
+    uint8_t payload[SfxWire::MAX_PAYLOAD_SIZE];
     payload[0] = source;
     payload[1] = updateType;
     size_t len = 2;
@@ -203,7 +223,7 @@ void BoardServicePolicy::tickStatusBroadcast() {
     unsigned long now = millis();
     if (now - _lastStatusBroadcast_ms < _statusBroadcastInterval_ms) return;
     _lastStatusBroadcast_ms = now;
-    uint8_t buf[CoreProtocol::MAX_PAYLOAD_SIZE - 2];
+    uint8_t buf[SfxWire::MAX_PAYLOAD_SIZE - 2];
     size_t len = _statusDataCallback(buf, sizeof(buf));
     if (len > 0) {
         sendStatusUpdate(_statusBroadcastSource, StatusUpdateType::STATUS_BROADCAST, buf, len);

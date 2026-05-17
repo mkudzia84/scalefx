@@ -137,9 +137,11 @@ namespace ComponentPacket {
     }
 
     /// BATTERY_ALERT level byte — same values latched in BATTERY_INFO_RESP flags.
+    /// `WARN` instead of `LOW` because Arduino.h defines `LOW` as a macro
+    /// (pin level 0x0), which would clobber the constexpr declaration.
     namespace BatteryAlertLevel {
         constexpr uint8_t OK       = 0x00;  ///< re-armed (voltage rose back above hysteresis margin)
-        constexpr uint8_t LOW      = 0x01;
+        constexpr uint8_t WARN     = 0x01;  ///< below low-threshold
         constexpr uint8_t CRITICAL = 0x02;
     }
 

@@ -47,16 +47,16 @@
 #include <functional>
 #include <type_traits>
 
-#include <core.h>                          // CommandHandleResult, SerialError, CorePacket constants
-#include <serial/core/system_service.h>    // SystemServicePolicy concept + ServiceContext
+#include <serial/core/core.h>               // CommandHandleResult, SerialError, CorePacket constants
+#include "board_server.h"                // SystemServicePolicy concept + BoardServerBase (sibling)
 #include <serial/components/components.h>
 #include <serial/components/led_status.h>
 #include <serial/components/component_kind.h>   // ComponentKind / ComponentInfo
 
 #include <power/no_battery.h>              // NoBattery stub (default TBattery)
-#include <platform/diag_log.h>             // DiagLog — LOG_MESSAGE / DIAG_HISTORY ring buffer
+#include <serial/diag_log.h>               // DiagLog — LOG_MESSAGE / DIAG_HISTORY ring buffer
 
-#include "board_identifier.h"              // sibling — sfx_core/core/
+#include "board_identifier.h"              // sibling — sfx_board/server/
 
 namespace sfx_core {
 
@@ -186,7 +186,7 @@ public:
             if (_battery) {
                 _battery->onLowVoltage(
                     [this](uint16_t voltage_mV, uint8_t cellCount) {
-                        emitBatteryAlert(ComponentPacket::BatteryAlertLevel::LOW,
+                        emitBatteryAlert(ComponentPacket::BatteryAlertLevel::WARN,
                                          voltage_mV, cellCount);
                     });
                 _battery->onCriticalVoltage(
@@ -202,7 +202,7 @@ public:
 
     /// Cache the wire-helper context.  Called by BoardServer::begin()
     /// before any packet arrives.  No I/O — pure stash.
-    bool begin(sfx_core::ServiceContext* ctx) {
+    bool begin(sfx_core::BoardServerBase* ctx) {
         _ctx = ctx;
         return ctx != nullptr;
     }
@@ -260,7 +260,7 @@ public:
     }
 
 private:
-    sfx_core::ServiceContext*           _ctx          = nullptr;   ///< back-ref to BoardServer for ACK/NACK/sendRawPacket
+    sfx_core::BoardServerBase*           _ctx          = nullptr;   ///< back-ref to BoardServer for ACK/NACK/sendRawPacket
 
     TServos*                            _servos       = nullptr;
     TPwms*                              _pwms         = nullptr;

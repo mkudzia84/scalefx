@@ -1,7 +1,7 @@
 {
     "name": "sfx_serial",
     "version": "3.0.0",
-    "description": "ScaleFX binary COBS serial protocol — core protocol, command routing, bus server/client, module handlers (GunFX, LightFX, GearControl, HubFX). DiagLog and SfxServer have moved to sfx_platform and sfx_server respectively.",
+    "description": "ScaleFX binary COBS serial protocol — wire primitives (CRC-8, COBS, packet layout, SFX_* macros) in serial/wire.{h,cpp}, diagnostic logging singleton in serial/diag_log.{h,cpp}, client-side framework (SerialBus / BusClient / ResultQueue), generic-expander wire protocol (components/), and HubFX master domain protocol (hubfx/hubfx.h). Server-side framework (BoardServer, BoardServicePolicy, PacketReader, StreamWriter) lives in sfx_server (or sfx_board after Phase 2).",
     "keywords": ["serial", "protocol", "cobs", "crc8", "command", "server", "client"],
     "frameworks": "arduino",
     "platforms": ["raspberrypi", "espressif32"],

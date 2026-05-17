@@ -61,6 +61,20 @@ struct BusClientBoardInfo : public CoreBoardInfo {
     bool versionCompatible = true;
 };
 
+/**
+ * @brief Captured response packet returned by `BusClient::sendQuery()`.
+ *
+ * `payload` aliases an internal buffer owned by the BusClient and is
+ * valid only until the next `process()` call.  Copy out anything that
+ * needs to outlive the immediate response decode.
+ */
+struct SerialPacket {
+    uint8_t        type    = 0;
+    uint8_t        tag     = 0;
+    const uint8_t* payload = nullptr;
+    size_t         len     = 0;
+};
+
 // ============================================================================
 // Callback Types
 // ============================================================================
@@ -152,6 +166,31 @@ public:
      * @return CommandResult (Ack, Nack, Timeout, SendFailed, NotConnected)
      */
     CommandResult sendCommand(uint8_t type, const uint8_t* payload, size_t len);
+
+    /**
+     * @brief Send a tagged query and wait for a typed response (blocking).
+     *
+     * Sends `reqType` with the given payload and tag, then blocks until
+     * EITHER a packet of `respType` arrives with the matching tag (filling
+     * `out` with type/tag/payload/len), OR a NACK arrives with that tag.
+     *
+     * The pointer inside `out.payload` aliases BusClient's internal raw
+     * response buffer and is valid only until the next process() call.
+     *
+     * On success returns `CommandResult::Ack()` and `out` is populated.
+     * On NACK / timeout / send failure, returns the matching CommandResult
+     * and `out` is left zeroed.
+     *
+     * @param reqType  Request packet type
+     * @param payload  Request payload bytes
+     * @param len      Request payload length
+     * @param respType Packet type expected as the typed response
+     * @param out      Filled on success — see lifetime note above
+     */
+    CommandResult sendQuery(uint8_t reqType,
+                            const uint8_t* payload, size_t len,
+                            uint8_t respType,
+                            SerialPacket& out);
 
     // ========================================================================
     // Configuration
@@ -262,6 +301,14 @@ private:
     uint8_t _lastResponseType = 0;
     uint8_t _lastResponsePayload[RAW_RESPONSE_MAX] = {};
     size_t _lastResponseLen = 0;
+
+    // Pending typed query — non-zero `_pendingQueryType` activates the
+    // capture path in handlePacket(): if an incoming packet's type+tag
+    // matches, its payload is copied into _lastResponsePayload, `*_pendingQueryOut`
+    // is filled, and the tag is resolved as Ack.
+    uint8_t        _pendingQueryType = 0;
+    uint8_t        _pendingQueryTag  = 0;
+    SerialPacket*  _pendingQueryOut  = nullptr;
 };
 
 #endif // SERIAL_BUS_CLIENT_H

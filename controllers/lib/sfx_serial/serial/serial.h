@@ -1,38 +1,41 @@
 /*
- * Serial Library — Unified Serial Communication for ScaleFX
+ * Serial Library — wire protocol + client side.
  *
- * Master include file for the complete ScaleFX serial communication library.
- * Include this file for full functionality, or include specific headers for
- * minimal dependencies.
+ * sfx_serial owns the wire primitives (CRC-8, COBS, packet layout),
+ * the client-side framework (SerialBus / BusClient / ResultQueue), and
+ * the generic-expander wire protocol (ComponentPacket).  Domain protocol
+ * headers live with their owning firmware now — HubFX's master wire
+ * format moves into the HubFX controller (the only consumer is the Go
+ * SDK / Studio anyway).
+ *
+ * Server-side framework (BoardServer<...Policies>, BoardServicePolicy,
+ * PacketReader<TDispatch>, StreamWriter) lives in the sfx_board
+ * library — `<server/sfx_server.h>` and friends.  This file deliberately
+ * does NOT pull those in (sfx_board depends on sfx_serial, not the
+ * other way around).
  *
  * Architecture:
  *   core/core.h               - Protocol, error codes, CommandResult, SFX macros
- *   core/system_service.h     - SystemServicePolicy concept + BoardServer<...>
- *   core/board_service.h      - BoardServicePolicy (lifecycle/identify/status)
- *   core/packet_reader.h      - PacketReader<TDispatch> (COBS framer)
- *   core/stream.h             - StreamWriter + StreamProtocol (chunked streaming, CRC-16)
+ *   wire.{h,cpp}              - Stateless wire encoding (CRC-8, COBS, encode/parse)
+ *   diag_log.{h,cpp}          - DiagLog ring buffer + COBS-encoded log packets
  *   client/bus.h              - SerialBus (client-side, COBS-framed protocol)
  *   client/bus_client.h       - BusClient base class (client-side, extends SerialBus)
  *   client/result_queue.h     - ResultQueue (tag-correlated command/response matching)
+ *   components/components.h   - Generic-expander wire protocol (ComponentPacket / kind /
+ *                               led_status — slave-board redesign per
+ *                               instructions/15-GENERIC-EXPANDER-REFACTOR.md)
  *
- * Protocol Implementations:
- *   gunfx/gunfx.h             - GunFX client/server (muzzle flash, servo, smoke)
- *   lightfx/lightfx.h         - LightFX client/server (LED, servo, power)
- *   gearcontrol/gearcontrol.h - GearControl client/server (landing gear, servo, yaw)
- *   hubfx/hubfx.h             - HubFX audio/storage client/server (NOT auto-included — heavy deps)
- *
- * Client vs Server:
- *   Client (HubFX): UsbHost (sfx_usb) + BusClient for USB Host CDC communication
- *   Server side:    `BoardServer<...Policies>` + `PacketReader` wrapped by
- *                   `SfxServer<...UserPolicies>` (sfx_server library).
+ * Archived domain protocols (controllers/archive/sfx_serial_legacy/):
+ *   gunfx/        — GunFX wire (0x01-0x2F)
+ *   lightfx/      — LightFX wire (0x40-0x5F)
+ *   gearcontrol/  — GearControl wire (0x60-0x7F)
+ *   hubfx/        — HubFX master wire (0x80-0xAF) — Go-side mirror is the
+ *                   live source of truth at app/go/protocol/hubfx/
  *
  * Usage:
- *   #include <serial/serial.h>                    // Everything (except hubfx)
- *   #include <serial/gunfx/gunfx.h>               // GunFX only
- *   #include <serial/lightfx/lightfx.h>           // LightFX only
- *   #include <serial/gearcontrol/gearcontrol.h>   // GearControl only
- *   #include <serial/hubfx/hubfx.h>               // HubFX audio/storage (heavy deps)
- *   #include <serial/core/core.h>                 // Just protocol utilities
+ *   #include <serial/serial.h>          // wire + client + components
+ *   #include <serial/core/core.h>       // just protocol utilities
+ *   #include <server/sfx_server.h>      // server-side composer (sfx_board lib)
  */
 
 #ifndef SERIAL_H
@@ -53,27 +56,20 @@
 // Bus client base class (client-side, extends SerialBus with tag queue + INIT)
 #include "client/bus_client.h"
 
-// Server-side framework: variadic policy composer + COBS frame reader.
-#include "core/system_service.h"
-#include "core/board_service.h"
-#include "core/packet_reader.h"
-
-// Chunked data streaming over COBS (server-side, writes via ServiceContext)
-#include "core/stream.h"
+// Server-side framework (BoardServer<...Policies>, BoardServicePolicy,
+// PacketReader, StreamWriter) lives in the sfx_server library — include
+// `<server/sfx_server.h>` (or the individual `<server/...>` headers)
+// from server-side firmware.  sfx_serial intentionally does NOT pull
+// those in (would invert the dep direction).
 
 // Diagnostic log output (ring-buffered, COBS-encoded log packets)
-#include "platform/diag_log.h"
+#include "diag_log.h"
 
-// GunFX binary implementation
-#include "gunfx/gunfx.h"
-
-// LightFX binary implementation
-#include "lightfx/lightfx.h"
-
-// GearControl binary implementation
-#include "gearcontrol/gearcontrol.h"
-
-// HubFX audio/storage: NOT auto-included — heavy SdFat/LittleFS dependencies.
-// Include explicitly with: #include <serial/hubfx/hubfx.h>
+// Generic-expander wire protocol (component kinds, LED status,
+// ComponentPacket commands).  Replaces the per-board protocol headers
+// (gunfx/lightfx/gearcontrol) that were archived 2026-05-17.
+#include "components/components.h"
+#include "components/component_kind.h"
+#include "components/led_status.h"
 
 #endif // SERIAL_H

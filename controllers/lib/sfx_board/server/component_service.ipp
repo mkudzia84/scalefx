@@ -23,7 +23,7 @@
 #include "component_service.h"
 #include <serial/components/components.h>
 #include <serial/components/component_kind.h>
-#include <platform/diag_log.h>             // DiagLog — emits LOG_MESSAGE / DIAG_HISTORY
+#include <serial/diag_log.h>             // DiagLog — emits LOG_MESSAGE / DIAG_HISTORY
 
 #include <collections/servo_collection.ipp>
 #include <collections/pwm_collection.ipp>
@@ -599,7 +599,7 @@ bool ComponentServicePolicy<TServos, TPwms, TLedsDed, TLedsBor, TBattery>::handl
 template <typename TServos, typename TPwms, typename TLedsDed, typename TLedsBor, typename TBattery>
 void ComponentServicePolicy<TServos, TPwms, TLedsDed, TLedsBor, TBattery>::emitServoTargetReached(uint8_t idx, uint16_t pos_us) {
     uint8_t buf[3] = { idx, (uint8_t)pos_us, (uint8_t)(pos_us >> 8) };
-    _ctx->sendRawPacket(ComponentPacket::SERVO_TARGET_REACHED, CoreProtocol::TAG_ASYNC, buf, sizeof buf);
+    _ctx->sendRawPacket(ComponentPacket::SERVO_TARGET_REACHED, SfxWire::TAG_ASYNC, buf, sizeof buf);
 }
 
 template <typename TServos, typename TPwms, typename TLedsDed, typename TLedsBor, typename TBattery>
@@ -610,13 +610,13 @@ void ComponentServicePolicy<TServos, TPwms, TLedsDed, TLedsBor, TBattery>::emitS
     buf[1] = (uint8_t) pos;     buf[2] = (uint8_t)(pos    >> 8);
     buf[3] = (uint8_t) target;  buf[4] = (uint8_t)(target >> 8);
     buf[5] = (uint8_t) vel;     buf[6] = (uint8_t)(vel    >> 8);
-    _ctx->sendRawPacket(ComponentPacket::SERVO_MOTION_UPDATE, CoreProtocol::TAG_ASYNC, buf, sizeof buf);
+    _ctx->sendRawPacket(ComponentPacket::SERVO_MOTION_UPDATE, SfxWire::TAG_ASYNC, buf, sizeof buf);
 }
 
 template <typename TServos, typename TPwms, typename TLedsDed, typename TLedsBor, typename TBattery>
 void ComponentServicePolicy<TServos, TPwms, TLedsDed, TLedsBor, TBattery>::emitLedQueueDone(uint8_t addr) {
     uint8_t buf[1] = { addr };
-    _ctx->sendRawPacket(ComponentPacket::LED_QUEUE_DONE, CoreProtocol::TAG_ASYNC, buf, sizeof buf);
+    _ctx->sendRawPacket(ComponentPacket::LED_QUEUE_DONE, SfxWire::TAG_ASYNC, buf, sizeof buf);
 }
 
 template <typename TServos, typename TPwms, typename TLedsDed, typename TLedsBor, typename TBattery>
@@ -629,7 +629,7 @@ void ComponentServicePolicy<TServos, TPwms, TLedsDed, TLedsBor, TBattery>::emitP
     buf[0] = idx;
     buf[1] = (uint8_t) peak_mA;      buf[2] = (uint8_t)(peak_mA >> 8);
     buf[3] = (uint8_t) duration_ms;  buf[4] = (uint8_t)(duration_ms >> 8);
-    _ctx->sendRawPacket(ComponentPacket::PWM_STALL, CoreProtocol::TAG_ASYNC, buf, sizeof buf);
+    _ctx->sendRawPacket(ComponentPacket::PWM_STALL, SfxWire::TAG_ASYNC, buf, sizeof buf);
 }
 
 // ── Unified status broadcast ────────────────────────────────────────
@@ -768,7 +768,7 @@ void ComponentServicePolicy<TServos, TPwms, TLedsDed, TLedsBor, TBattery>::emitS
     uint8_t buf[768];
     size_t  n = buildStatusPayload(buf, sizeof buf, _statusKindsMask);
     _ctx->sendRawPacket(ComponentPacket::COMPONENT_STATUS_BROADCAST,
-                  CoreProtocol::TAG_ASYNC, buf, n);
+                  SfxWire::TAG_ASYNC, buf, n);
 }
 
 template <typename TServos, typename TPwms, typename TLedsDed, typename TLedsBor, typename TBattery>
@@ -876,11 +876,11 @@ void ComponentServicePolicy<TServos, TPwms, TLedsDed, TLedsBor, TBattery>::emitB
     // don't spam — each level transition is a single edge per crossing.
     const char* levelName =
         (level == ComponentPacket::BatteryAlertLevel::CRITICAL) ? "CRITICAL" :
-        (level == ComponentPacket::BatteryAlertLevel::LOW)      ? "LOW"      : "OK";
+        (level == ComponentPacket::BatteryAlertLevel::WARN)     ? "WARN"     : "OK";
     if (level == ComponentPacket::BatteryAlertLevel::CRITICAL) {
         DiagLog::instance().error("battery: %s — %u mV across %u cell(s)",
                                   levelName, (unsigned)voltage_mV, (unsigned)cellCount);
-    } else if (level == ComponentPacket::BatteryAlertLevel::LOW) {
+    } else if (level == ComponentPacket::BatteryAlertLevel::WARN) {
         DiagLog::instance().warn ("battery: %s — %u mV across %u cell(s)",
                                   levelName, (unsigned)voltage_mV, (unsigned)cellCount);
     } else {
@@ -893,7 +893,7 @@ void ComponentServicePolicy<TServos, TPwms, TLedsDed, TLedsBor, TBattery>::emitB
     buf[1] = (uint8_t) voltage_mV;
     buf[2] = (uint8_t)(voltage_mV >> 8);
     buf[3] = cellCount;
-    _ctx->sendRawPacket(ComponentPacket::BATTERY_ALERT, CoreProtocol::TAG_ASYNC, buf, sizeof buf);
+    _ctx->sendRawPacket(ComponentPacket::BATTERY_ALERT, SfxWire::TAG_ASYNC, buf, sizeof buf);
 }
 
 template <typename TServos, typename TPwms, typename TLedsDed, typename TLedsBor, typename TBattery>

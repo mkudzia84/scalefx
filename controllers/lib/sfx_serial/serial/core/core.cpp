@@ -3,7 +3,7 @@
  *
  * packetTypeToText() and INIT_READY payload encoding/decoding.
  * Wire encoding utilities (CRC-8, COBS, packet build/encode/parse) live
- * in sfx_platform/platform/sfx_wire.cpp (SfxWire namespace).
+ * in sfx_serial/serial/wire.cpp (SfxWire namespace).
  * Lifecycle/identify/status handling lives in `core/board_service.cpp`
  * (BoardServicePolicy).
  */
@@ -12,34 +12,34 @@
 #include <cstring>
 
 // ============================================================================
-// CoreProtocol — Packet Type Name Lookup
+// CorePacket — packet-type debug name lookup
 // ============================================================================
 
-namespace CoreProtocol {
+namespace CorePacket {
 
 const char* packetTypeToText(uint8_t type) {
     switch (type) {
-        case CorePacket::INIT:       return "INIT";
-        case CorePacket::SHUTDOWN:   return "SHUTDOWN";
-        case CorePacket::KEEPALIVE:  return "KEEPALIVE";
-        case CorePacket::INIT_READY: return "INIT_READY";
-        case CorePacket::STATUS:     return "STATUS";
-        case CorePacket::ERROR:      return "ERROR";
-        case CorePacket::ACK:        return "ACK";
-        case CorePacket::NACK:       return "NACK";
-        case CorePacket::REBOOT:     return "REBOOT";
-        case CorePacket::BOOTSEL:    return "BOOTSEL";
-        case CorePacket::STATUS_REQ: return "STATUS_REQ";
-        case CorePacket::IDENTIFY:   return "IDENTIFY";
+        case CorePacket::INIT:          return "INIT";
+        case CorePacket::SHUTDOWN:      return "SHUTDOWN";
+        case CorePacket::KEEPALIVE:     return "KEEPALIVE";
+        case CorePacket::INIT_READY:    return "INIT_READY";
+        case CorePacket::STATUS:        return "STATUS";
+        case CorePacket::ERROR:         return "ERROR";
+        case CorePacket::ACK:           return "ACK";
+        case CorePacket::NACK:          return "NACK";
+        case CorePacket::REBOOT:        return "REBOOT";
+        case CorePacket::BOOTSEL:       return "BOOTSEL";
+        case CorePacket::STATUS_REQ:    return "STATUS_REQ";
+        case CorePacket::IDENTIFY:      return "IDENTIFY";
         case CorePacket::STATUS_UPDATE: return "STATUS_UPDATE";
-        case 0xA4:                   return "STREAM_BEGIN";
-        case 0xA5:                   return "STREAM_DATA";
-        case 0xA6:                   return "STREAM_END";
-        default:                     return "UNKNOWN";
+        case 0xA4:                      return "STREAM_BEGIN";
+        case 0xA5:                      return "STREAM_DATA";
+        case 0xA6:                      return "STREAM_END";
+        default:                        return "UNKNOWN";
     }
 }
 
-} // namespace CoreProtocol
+} // namespace CorePacket
 
 // ============================================================================
 // INIT_READY Payload Encoding/Decoding
@@ -78,19 +78,19 @@ size_t encodeInitReady(const CoreBoardInfo& info, uint8_t* payload) {
     idx += platLen;
     
     // CPU frequency (u32 LE)
-    CoreProtocol::putU32LE(&payload[idx], info.cpuFrequencyMHz);
+    SfxWire::putU32LE(&payload[idx], info.cpuFrequencyMHz);
     idx += 4;
     
     // Free RAM (u32 LE)
-    CoreProtocol::putU32LE(&payload[idx], info.freeRamBytes);
+    SfxWire::putU32LE(&payload[idx], info.freeRamBytes);
     idx += 4;
     
     // Build number (u32 LE)
-    CoreProtocol::putU32LE(&payload[idx], info.buildNumber);
+    SfxWire::putU32LE(&payload[idx], info.buildNumber);
     idx += 4;
 
     // Capabilities bitmask (u32 LE) — Rule 11 append-only field
-    CoreProtocol::putU32LE(&payload[idx], info.capabilities);
+    SfxWire::putU32LE(&payload[idx], info.capabilities);
     idx += 4;
 
     return idx;
@@ -129,19 +129,19 @@ bool decodeInitReady(const uint8_t* payload, size_t len, CoreBoardInfo& info) {
     
     // CPU frequency, RAM, build number (optional for backwards compatibility)
     if (idx + 4 <= len) {
-        info.cpuFrequencyMHz = CoreProtocol::getU32LE(&payload[idx]);
+        info.cpuFrequencyMHz = SfxWire::getU32LE(&payload[idx]);
         idx += 4;
     }
     if (idx + 4 <= len) {
-        info.freeRamBytes = CoreProtocol::getU32LE(&payload[idx]);
+        info.freeRamBytes = SfxWire::getU32LE(&payload[idx]);
         idx += 4;
     }
     if (idx + 4 <= len) {
-        info.buildNumber = CoreProtocol::getU32LE(&payload[idx]);
+        info.buildNumber = SfxWire::getU32LE(&payload[idx]);
         idx += 4;
     }
     if (idx + 4 <= len) {
-        info.capabilities = CoreProtocol::getU32LE(&payload[idx]);
+        info.capabilities = SfxWire::getU32LE(&payload[idx]);
         idx += 4;
     }
 

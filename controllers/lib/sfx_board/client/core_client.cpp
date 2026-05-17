@@ -10,7 +10,7 @@
  * per CLAUDE.md Rule 4.
  */
 
-#include "slave_client.h"
+#include "core_client.h"
 
 #include <cstring>
 
@@ -47,20 +47,23 @@ inline uint32_t getU32LE(const uint8_t* p) {
 
 }  // anonymous namespace
 
-// ── Module-packet routing (async + query response handling) ──────────
+// ── Module-packet routing (async events only) ────────────────────────
+//
+// Solicited query responses (LED_QUERY_RESP, PWM_QUERY_RESP, ...) are
+// captured by BusClient::sendQuery() before this hook fires, so we only
+// need to handle slave-initiated async events here (TAG_ASYNC).
 
-bool CoreClient::onModulePacket(uint8_t type, const uint8_t* payload, size_t len) {
-    // Async events first — slave fires these unsolicited with TAG_ASYNC.
+void CoreClient::onModulePacket(uint8_t type, uint8_t /*tag*/,
+                                const uint8_t* payload, size_t len) {
     switch (type) {
-        case ComponentPacket::SERVO_TARGET_REACHED:   decodeServoTargetReached(payload, len); return true;
-        case ComponentPacket::SERVO_MOTION_UPDATE:    decodeServoMotionUpdate (payload, len); return true;
-        case ComponentPacket::PWM_STALL:              decodePwmStall          (payload, len); return true;
-        case ComponentPacket::LED_QUEUE_DONE:       decodeLedQueueDone    (payload, len); return true;
-        case ComponentPacket::BATTERY_ALERT:          decodeBatteryAlert      (payload, len); return true;
-        case ComponentPacket::COMPONENT_STATUS_BROADCAST: decodeStatusBroadcast   (payload, len); return true;
+        case ComponentPacket::SERVO_TARGET_REACHED:       decodeServoTargetReached(payload, len); break;
+        case ComponentPacket::SERVO_MOTION_UPDATE:        decodeServoMotionUpdate (payload, len); break;
+        case ComponentPacket::PWM_STALL:                  decodePwmStall          (payload, len); break;
+        case ComponentPacket::LED_QUEUE_DONE:             decodeLedQueueDone      (payload, len); break;
+        case ComponentPacket::BATTERY_ALERT:              decodeBatteryAlert      (payload, len); break;
+        case ComponentPacket::COMPONENT_STATUS_BROADCAST: decodeStatusBroadcast   (payload, len); break;
+        default: break;
     }
-    // Query responses fall through to BusClient's tag-correlation path.
-    return BusClient::onModulePacket(type, payload, len);
 }
 
 void CoreClient::decodeServoTargetReached(const uint8_t* p, size_t len) {
@@ -211,12 +214,12 @@ CommandResult CoreClient::requestComponentList(
     SerialPacket resp;
     auto cr = sendQuery(ComponentPacket::COMPONENT_LIST_REQ, nullptr, 0,
                         ComponentPacket::COMPONENT_LIST_RESP, resp);
-    if (!cr.ok()) return cr;
-    if (resp.len < 1) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
+    if (!cr.success) return cr;
+    if (resp.len < 1) return CommandResult::Nack(SerialError::MISSING_PARAMETER);
 
     const uint8_t count = resp.payload[0];
     if (resp.len < (size_t)(1 + count * sizeof(sfx_peripherals::ComponentInfo))) {
-        return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
+        return CommandResult::Nack(SerialError::MISSING_PARAMETER);
     }
     out.clear();
     out.reserve(count);
@@ -234,12 +237,12 @@ CommandResult CoreClient::getIdentifier(uint8_t& out_boardType,
     SerialPacket resp;
     auto cr = sendQuery(ComponentPacket::IDENT_GET_REQ, nullptr, 0,
                         ComponentPacket::IDENT_GET_RESP, resp);
-    if (!cr.ok()) return cr;
-    if (resp.len < 2) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
+    if (!cr.success) return cr;
+    if (resp.len < 2) return CommandResult::Nack(SerialError::MISSING_PARAMETER);
 
     out_boardType  = resp.payload[0];
     const uint8_t l = resp.payload[1];
-    if (resp.len < (size_t)(2 + l)) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
+    if (resp.len < (size_t)(2 + l)) return CommandResult::Nack(SerialError::MISSING_PARAMETER);
     if (out_name && bufLen > 0) {
         const size_t copy = (l + 1u <= bufLen) ? l : (bufLen - 1);
         memcpy(out_name, resp.payload + 2, copy);
@@ -249,9 +252,9 @@ CommandResult CoreClient::getIdentifier(uint8_t& out_boardType,
 }
 
 CommandResult CoreClient::setIdentifier(const char* name) {
-    if (!name) return CommandResult::Error(SerialError::INVALID_PAYLOAD);
+    if (!name) return CommandResult::Nack(SerialError::INVALID_PARAM);
     const size_t l = strlen(name);
-    if (l > 32) return CommandResult::Error(ComponentError::IDENT_TOO_LONG);
+    if (l > 32) return CommandResult::Nack(ComponentError::IDENT_TOO_LONG);
     uint8_t buf[33];
     buf[0] = (uint8_t)l;
     memcpy(buf + 1, name, l);
@@ -263,8 +266,8 @@ CommandResult CoreClient::requestStatus(SlaveStatus& out, uint8_t kindsMask) {
     uint8_t req[1] = { kindsMask };
     auto cr = sendQuery(ComponentPacket::COMPONENT_STATUS_REQ, req, sizeof req,
                         ComponentPacket::COMPONENT_STATUS_BROADCAST, resp);
-    if (!cr.ok()) return cr;
-    if (resp.len < 10) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
+    if (!cr.success) return cr;
+    if (resp.len < 10) return CommandResult::Nack(SerialError::MISSING_PARAMETER);
 
     // Decode directly into `out` — single-pass, no observer fanout
     // duplicate (the broadcast decoder fans out for unsolicited
@@ -343,7 +346,7 @@ CommandResult CoreClient::requestBatteryInfo(BatteryInfo& out) {
     SerialPacket resp;
     auto cr = sendQuery(ComponentPacket::BATTERY_INFO_REQ, nullptr, 0,
                         ComponentPacket::BATTERY_INFO_RESP, resp);
-    if (!cr.ok()) return cr;
+    if (!cr.success) return cr;
     decodeBatteryInfoPayload(resp.payload, resp.len, out);
     return CommandResult::Ack();
 }
@@ -409,8 +412,8 @@ CommandResult CoreClient::servoQuery(uint8_t idx, ServoStatus& out) {
     uint8_t req[1] = { idx };
     auto cr = sendQuery(ComponentPacket::SERVO_QUERY, req, sizeof req,
                         ComponentPacket::SERVO_QUERY_RESP, resp);
-    if (!cr.ok()) return cr;
-    if (resp.len < 8) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
+    if (!cr.success) return cr;
+    if (resp.len < 8) return CommandResult::Nack(SerialError::MISSING_PARAMETER);
     out.idx               = resp.payload[0];
     out.pos_us            = getU16LE(resp.payload + 1);
     out.target_us         = getU16LE(resp.payload + 3);
@@ -474,8 +477,8 @@ CommandResult CoreClient::pwmQuery(uint8_t idx, PwmStatus& out) {
     uint8_t req[1] = { idx };
     auto cr = sendQuery(ComponentPacket::PWM_QUERY, req, sizeof req,
                         ComponentPacket::PWM_QUERY_RESP, resp);
-    if (!cr.ok()) return cr;
-    if (resp.len < 14) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
+    if (!cr.success) return cr;
+    if (resp.len < 14) return CommandResult::Nack(SerialError::MISSING_PARAMETER);
     out.idx              = resp.payload[0];
     out.mode             = (sfx_peripherals::ComponentKind)resp.payload[1];
     out.duty_thousandths = getU16LE(resp.payload + 2);
@@ -490,8 +493,8 @@ CommandResult CoreClient::pwmGetConfig(uint8_t idx, PwmConfig& out) {
     uint8_t req[1] = { idx };
     auto cr = sendQuery(ComponentPacket::PWM_GET_CONFIG, req, sizeof req,
                         ComponentPacket::PWM_GET_CONFIG_RESP, resp);
-    if (!cr.ok()) return cr;
-    if (resp.len < 10) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
+    if (!cr.success) return cr;
+    if (resp.len < 10) return CommandResult::Nack(SerialError::MISSING_PARAMETER);
     out.idx             = resp.payload[0];
     out.mode            = (sfx_peripherals::ComponentKind)resp.payload[1];
     out.freq_Hz         = getU16LE(resp.payload + 2);
@@ -528,7 +531,7 @@ CommandResult CoreClient::ledSetBrightness(uint8_t addr, uint8_t brightness) {
 
 CommandResult CoreClient::ledLoadQueue(uint8_t addr, uint8_t flags,
                                           const LedEvent* events, size_t count) {
-    if (count > 64) return CommandResult::Error(ComponentError::QUEUE_TOO_LARGE);
+    if (count > 64) return CommandResult::Nack(ComponentError::QUEUE_TOO_LARGE);
     // 3-byte header + 8 bytes per event.  Stack-allocate an
     // upper-bound buffer rather than malloc.
     uint8_t buf[3 + 64 * 8];
@@ -585,8 +588,8 @@ CommandResult CoreClient::ledQuery(uint8_t addr, LedStatus& out) {
     uint8_t req[1] = { addr };
     auto cr = sendQuery(ComponentPacket::LED_QUERY, req, sizeof req,
                         ComponentPacket::LED_QUERY_RESP, resp);
-    if (!cr.ok()) return cr;
-    if (resp.len < 4) return CommandResult::Error(SerialError::INVALID_PAYLOAD_LENGTH);
+    if (!cr.success) return cr;
+    if (resp.len < 4) return CommandResult::Nack(SerialError::MISSING_PARAMETER);
     out.addr         = resp.payload[0];
     out.brightness   = resp.payload[1];
     out.queueState   = resp.payload[2];

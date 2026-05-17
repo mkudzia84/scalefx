@@ -2,10 +2,10 @@
  * SfxWire — Binary Wire Encoding Implementation
  *
  * Stateless protocol utilities: CRC-8, COBS, packet build/encode/parse.
- * See sfx_wire.h for documentation.
+ * See wire.h for documentation.
  */
 
-#include "sfx_wire.h"
+#include "wire.h"
 #include <cstring>
 
 namespace SfxWire {

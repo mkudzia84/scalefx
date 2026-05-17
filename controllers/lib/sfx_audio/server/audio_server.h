@@ -35,7 +35,7 @@
 
 #include <serial/serial.h>
 #include <serial/hubfx/hubfx.h>
-#include <serial/core/system_service.h>      // SystemServicePolicy + ServiceContext
+#include <server/board_server.h>           // SystemServicePolicy + BoardServerBase
 #include "audio/audio_config.h"
 #include "audio/audio_mixer.h"
 #include "audio/audio_ring_buffer.h"
@@ -96,7 +96,7 @@ public:
 
     // ── SystemServicePolicy surface ───────────────────────────────────
 
-    bool begin(sfx_core::ServiceContext* ctx) {
+    bool begin(sfx_core::BoardServerBase* ctx) {
         _ctx = ctx;
         return _ctx != nullptr;
     }
@@ -122,7 +122,7 @@ protected:
     // Inline wire-helper wrappers — let existing handler code + the
     // SFX_REQUIRE_LEN / SFX_VALIDATE / SFX_DISPATCH macros work without
     // qualifying every send with `_ctx->`.  Each just forwards to the
-    // ServiceContext supplied at begin() time.
+    // BoardServerBase supplied at begin() time.
     int     sendAck()                                                       { return _ctx->sendAck(); }
     int     sendNack(uint8_t errorCode, const char* reason = nullptr)       { return _ctx->sendNack(errorCode, reason); }
     int     sendRawPacket(uint8_t type, uint8_t tag, const uint8_t* p = nullptr, size_t len = 0)
@@ -130,7 +130,7 @@ protected:
     uint8_t currentTag() const                                              { return _ctx->currentTag(); }
 
 private:
-    sfx_core::ServiceContext* _ctx = nullptr;
+    sfx_core::BoardServerBase* _ctx = nullptr;
 
     /// @brief Get mixer singleton
     TMixer& mixer() { return TMixer::instance(); }
@@ -145,11 +145,6 @@ private:
     void handleStatusReq();
     void handleCodecStatusReq();
 };
-
-/// @deprecated Alias for in-flight callers — prefer `AudioServicePolicy<TMixer>`
-///             and instantiate via `BoardServer<...>`.
-template <typename TMixer>
-using AudioServerT = AudioServicePolicy<TMixer>;
 
 // ============================================================================
 // Template Implementation

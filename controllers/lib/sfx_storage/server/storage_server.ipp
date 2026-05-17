@@ -23,7 +23,7 @@
 #ifndef STORAGE_SERVER_IPP
 #define STORAGE_SERVER_IPP
 
-#include <platform/diag_log.h>
+#include <serial/diag_log.h>
 
 #define STORAGE_LOG(fmt, ...) SFX_LOG_INFO("[Storage] " fmt, ##__VA_ARGS__)
 
@@ -118,9 +118,9 @@ void StorageServicePolicy<TPolicy>::handleFlashStatus() {
 
     uint8_t resp[13];
     resp[0] = info.initialized ? 1 : 0;
-    CoreProtocol::putU32LE(&resp[1], info.totalBytes);
-    CoreProtocol::putU32LE(&resp[5], info.usedBytes);
-    CoreProtocol::putU32LE(&resp[9], info.freeBytes);
+    SfxWire::putU32LE(&resp[1], info.totalBytes);
+    SfxWire::putU32LE(&resp[5], info.usedBytes);
+    SfxWire::putU32LE(&resp[9], info.freeBytes);
 
     STORAGE_LOG("flash status: init=%d total=%lu used=%lu free=%lu",
                 info.initialized, info.totalBytes, info.usedBytes, info.freeBytes);
@@ -372,11 +372,11 @@ void StorageServicePolicy<TPolicy>::handleFileInfo(const uint8_t* payload, size_
     uint8_t resp[6];
     if (err == FlashError::NOT_FOUND) {  // Same value as SdError::NOT_FOUND
         resp[0] = 0; resp[1] = 0;
-        CoreProtocol::putU32LE(&resp[2], 0);
+        SfxWire::putU32LE(&resp[2], 0);
     } else if (err == 0) {
         resp[0] = 1;
         resp[1] = entry.isDirectory ? 1 : 0;
-        CoreProtocol::putU32LE(&resp[2], entry.size);
+        SfxWire::putU32LE(&resp[2], entry.size);
     } else {
         sendNack(mapStorageError(err));
         return;
@@ -459,7 +459,7 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
         return;
     }
 
-    uint32_t fileSize = CoreProtocol::getU32LE(payload);
+    uint32_t fileSize = SfxWire::getU32LE(payload);
     uint8_t pathLen = payload[4];
 
     if (pathLen == 0 || (size_t)(5 + pathLen) > len) {
@@ -631,8 +631,8 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
 
         // ACK payload: [segment_size:u32LE][segment_count:u16LE]
         uint8_t ackPayload[6];
-        CoreProtocol::putU32LE(&ackPayload[0], _streamSegmentSize);
-        CoreProtocol::putU16LE(&ackPayload[4], segCount);
+        SfxWire::putU32LE(&ackPayload[0], _streamSegmentSize);
+        SfxWire::putU16LE(&ackPayload[4], segCount);
         sendRawPacket(CorePacket::ACK, currentTag(), ackPayload, 6);
     } else {
         sendAck();
@@ -666,8 +666,8 @@ void StorageServicePolicy<TPolicy>::handleUploadData(const uint8_t* payload, siz
         return;
     }
 
-    uint16_t seqNum   = CoreProtocol::getU16LE(payload);
-    uint16_t rxCrc16  = CoreProtocol::getU16LE(&payload[2]);
+    uint16_t seqNum   = SfxWire::getU16LE(payload);
+    uint16_t rxCrc16  = SfxWire::getU16LE(&payload[2]);
     const uint8_t* data = &payload[4];
     size_t dataLen    = len - 4;
 
@@ -1019,10 +1019,10 @@ template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::sendStreamSegmentAck() {
     // Wire: [segment_idx:u16LE][bytes_received:u32LE][fill_pct:u8]
     uint8_t payload[7];
-    CoreProtocol::putU16LE(&payload[0], _streamSegmentIndex);
-    CoreProtocol::putU32LE(&payload[2], _uploadBytesWritten);
+    SfxWire::putU16LE(&payload[0], _streamSegmentIndex);
+    SfxWire::putU32LE(&payload[2], _uploadBytesWritten);
     payload[6] = _policy.bufferFillPercent();
-    sendRawPacket(HubFxPacket::FILE_UPLOAD_PROGRESS, CoreProtocol::TAG_ASYNC,
+    sendRawPacket(HubFxPacket::FILE_UPLOAD_PROGRESS, SfxWire::TAG_ASYNC,
                   payload, sizeof(payload));
 }
 
@@ -1210,14 +1210,14 @@ void StorageServicePolicy<TPolicy>::handleSdStatus() {
     sd.getStorageInfo(info);
 
     resp[0] = 1;
-    CoreProtocol::putU32LE(&resp[1], info.cardSize_MB);
-    CoreProtocol::putU32LE(&resp[5], info.totalSpace_MB);
-    CoreProtocol::putU32LE(&resp[9], info.freeSpace_MB);
+    SfxWire::putU32LE(&resp[1], info.cardSize_MB);
+    SfxWire::putU32LE(&resp[5], info.totalSpace_MB);
+    SfxWire::putU32LE(&resp[9], info.freeSpace_MB);
     resp[13] = info.fatType;
     // Extended fields
     resp[14] = (uint8_t)info.cardType;
     resp[15] = (uint8_t)info.busMode;
-    CoreProtocol::putU32LE(&resp[16], info.usedSpace_MB);
+    SfxWire::putU32LE(&resp[16], info.usedSpace_MB);
 
     static const char* typeNames[] = {"NONE", "MMC", "SD", "SDHC", "UNKNOWN"};
     uint8_t ct = (uint8_t)info.cardType;

@@ -16,7 +16,7 @@
 #ifndef AUDIO_LOG_H
 #define AUDIO_LOG_H
 
-#include "platform/diag_log.h"
+#include "serial/diag_log.h"
 
 // --- Audio Mixer (info / warn / error) ---
 #define MIXER_LOG(fmt, ...) \

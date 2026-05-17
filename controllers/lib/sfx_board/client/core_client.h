@@ -131,7 +131,7 @@ struct BatteryInfo {
 
 /// Decoded BATTERY_ALERT async packet.
 struct BatteryAlert {
-    uint8_t  level;        ///< ComponentPacket::BatteryAlertLevel::OK / LOW / CRITICAL
+    uint8_t  level;        ///< ComponentPacket::BatteryAlertLevel::OK / WARN / CRITICAL
     uint16_t voltage_mV;   ///< pack voltage at the transition
     uint8_t  cellCount;
 };
@@ -273,10 +273,12 @@ public:
     void onStatusBroadcast    (StatusBroadcastCb    cb) { _onStatusBroadcast.push_back(std::move(cb)); }
 
 protected:
-    /// BusClient hook — called for each inbound packet.  Routes
-    /// async events to the registered observers and falls back to
-    /// the default tag-correlation path for query responses.
-    bool onModulePacket(uint8_t type, const uint8_t* payload, size_t len) override;
+    /// BusClient hook — called for each inbound non-core packet.  Routes
+    /// async events (TAG_ASYNC) to the registered observers.  Solicited
+    /// query responses are captured by BusClient::sendQuery() before
+    /// reaching here, so this override only needs to decode async events.
+    void onModulePacket(uint8_t type, uint8_t tag,
+                        const uint8_t* payload, size_t len) override;
 
 private:
     // Decoders — translate raw payload bytes into the typed structs.

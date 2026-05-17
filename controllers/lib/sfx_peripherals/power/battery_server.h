@@ -40,7 +40,7 @@
 #define BATTERY_SERVER_H
 
 #include <concepts>
-#include <serial/core/system_service.h>   // SystemServicePolicy + ServiceContext
+#include <server/board_server.h>        // SystemServicePolicy + BoardServerBase
 #include <serial/core/core.h>             // CorePacket, SerialError, CommandHandleResult
 #include "battery_types.h"
 
@@ -96,7 +96,7 @@ public:
 
     // ── SystemServicePolicy surface ───────────────────────────────────
 
-    bool begin(sfx_core::ServiceContext* ctx) {
+    bool begin(sfx_core::BoardServerBase* ctx) {
         _ctx = ctx;
         return _ctx != nullptr && _battery != nullptr;
     }
@@ -130,13 +130,8 @@ public:
     void update() { /* battery's own update() is called from the board's loop */ }
 
 private:
-    sfx_core::ServiceContext* _ctx     = nullptr;
+    sfx_core::BoardServerBase* _ctx     = nullptr;
     TBattery*                 _battery = nullptr;
 };
-
-/// @deprecated Use `BatteryServicePolicy<TBattery>` and instantiate via
-///             `BoardServer<...>`.  Alias kept for in-flight callers.
-template<typename TBattery>
-using BatteryServerT = BatteryServicePolicy<TBattery>;
 
 #endif // BATTERY_SERVER_H

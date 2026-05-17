@@ -89,7 +89,7 @@ void ConfigServerT<TConfigStore>::handleStatus() {
 
     uint8_t buf[4];
     buf[0] = _store.isLoaded() ? 1 : 0;        // loaded
-    CoreProtocol::putU16LE(&buf[1], _store.fileSize());  // fileSize
+    SfxWire::putU16LE(&buf[1], _store.fileSize());  // fileSize
     buf[3] = validOk ? 1 : 0;                   // validOk
 
     this->sendRawPacket(HubFxPacket::CONFIG_STATUS_RESP, this->currentTag(), buf, sizeof(buf));

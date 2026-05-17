@@ -55,13 +55,13 @@
 
 #include <serial/serial.h>
 #include <serial/hubfx/hubfx.h>
-#include <serial/core/stream.h>
-#include <serial/core/system_service.h>      // SystemServicePolicy + ServiceContext
+#include <server/stream.h>
+#include <server/board_server.h>           // SystemServicePolicy + BoardServerBase
 #include <storage/flash.h>
 #include <storage/sd_card.h>
 #include <MD5Builder.h>
 #include <platform/sfx_platform.h>
-#include <platform/diag_log.h>
+#include <serial/diag_log.h>
 #include <concepts>
 #include <functional>
 
@@ -231,7 +231,7 @@ public:
 
     // ── SystemServicePolicy surface ───────────────────────────────────
 
-    bool begin(sfx_core::ServiceContext* ctx) {
+    bool begin(sfx_core::BoardServerBase* ctx) {
         _ctx = ctx;
         return _ctx != nullptr;
     }
@@ -269,7 +269,7 @@ protected:
     // ================================================================
     StorageSharedState _shared;
 
-    sfx_core::ServiceContext* _ctx = nullptr;
+    sfx_core::BoardServerBase* _ctx = nullptr;
 
 private:
     // ================================================================
@@ -366,18 +366,15 @@ private:
     static constexpr uint32_t MAX_UPLOAD_SIZE_SD    = 256 * 1024 * 1024;
 };
 
-/// @deprecated In-flight alias — prefer `StorageServicePolicy<TPolicy>`
-///             instantiated via `BoardServer<...>`.
-template <typename TPolicy>
-using StorageServerT = StorageServicePolicy<TPolicy>;
-
 // ============================================================================
 // Template implementation
 // ============================================================================
 #include "storage_server.ipp"
 
 // ============================================================================
-// Platform-specific policy (auto-selected by build target)
+// Platform-specific policy (auto-selected by build target).
+// `StorageServer` is the concrete type the firmware plugs into
+// `BoardServer<...UserPolicies>`.
 // ============================================================================
 #if SFX_PLATFORM_ESP32
 #include "esp32/esp32_storage_policy.h"

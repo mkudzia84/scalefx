@@ -29,12 +29,13 @@
 #include <cstdint>
 #include <cstddef>
 
-#include "core.h"             // CorePacket / CoreError / CoreBoardInfo / I2CScanResult / callbacks
-#include "system_service.h"   // SystemServicePolicy concept + ServiceContext
+#include <serial/core/core.h>  // CorePacket / CoreError / CoreBoardInfo / I2CScanResult / callbacks
 
 class Stream;
 
 namespace sfx_core {
+
+class BoardServerBase;  // defined in board_server.h
 
 class BoardServicePolicy {
 public:
@@ -48,7 +49,7 @@ public:
 
     // ── SystemServicePolicy surface ───────────────────────────────────
 
-    bool begin(sfx_core::ServiceContext* ctx) {
+    bool begin(BoardServerBase* ctx) {
         _ctx = ctx;
         _initReceived = false;
         _lastActivityMs = 0;
@@ -129,14 +130,15 @@ public:
     void tickStatusBroadcast();
 
 protected:
-    // Wire-helper wrappers (so handler bodies + SFX_REQUIRE_LEN macros
-    // call `sendAck()` / `sendNack()` / `sendRawPacket()` unchanged).
-    int     sendAck()                                                  { return _ctx->sendAck(); }
-    int     sendNack(uint8_t errorCode, const char* reason = nullptr)  { return _ctx->sendNack(errorCode, reason); }
-    int     sendRawPacket(uint8_t t, uint8_t tag, const uint8_t* p = nullptr, size_t l = 0)
-                                                                       { return _ctx->sendRawPacket(t, tag, p, l); }
-    uint8_t currentTag() const                                         { return _ctx->currentTag(); }
-    Stream* serial() const                                             { return _ctx ? _ctx->serial() : nullptr; }
+    // Wire-helper wrappers — defined out-of-line in board_service.cpp
+    // (BoardServerBase is forward-declared here).  Handler bodies +
+    // SFX_REQUIRE_LEN / SFX_DISPATCH macros call these unchanged.
+    int     sendAck();
+    int     sendNack(uint8_t errorCode, const char* reason = nullptr);
+    int     sendRawPacket(uint8_t type, uint8_t tag,
+                          const uint8_t* payload = nullptr, size_t len = 0);
+    uint8_t currentTag() const;
+    Stream* serial() const;
 
 private:
     void sendInitReady();
@@ -144,7 +146,7 @@ private:
     void handleInit(const uint8_t* payload, size_t len);
     void sendStatus();
 
-    sfx_core::ServiceContext* _ctx = nullptr;
+    BoardServerBase* _ctx = nullptr;
 
     CoreBoardInfo _boardInfo;
     bool          _initReceived   = false;

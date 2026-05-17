@@ -8,7 +8,7 @@
 #include "bus_client.h"
 #include "bus.h"
 
-using namespace CoreProtocol;
+using namespace SfxWire;
 
 // ============================================================================
 // Lifecycle
@@ -71,6 +71,42 @@ CommandResult BusClient::sendCommand(uint8_t type, const uint8_t* payload, size_
     }
 
     _lastCommandResult = _resultQueue.waitForTag(tag, [this]() { SerialBus::process(); });
+    return _lastCommandResult;
+}
+
+CommandResult BusClient::sendQuery(uint8_t reqType,
+                                   const uint8_t* payload, size_t len,
+                                   uint8_t respType,
+                                   SerialPacket& out) {
+    out = SerialPacket{};
+    if (!isConnected()) {
+        _lastCommandResult = CommandResult::NotConnected();
+        return _lastCommandResult;
+    }
+
+    uint8_t tag = _resultQueue.nextTag();
+    _pendingQueryType = respType;
+    _pendingQueryTag  = tag;
+    _pendingQueryOut  = &out;
+
+    int sent = sendPacket(reqType, payload, len, tag);
+    if (sent < 0) {
+        _pendingQueryType = 0;
+        _pendingQueryOut  = nullptr;
+        _lastCommandResult = CommandResult::SendFailed();
+        return _lastCommandResult;
+    }
+
+    if (!_blockingMode) {
+        // Non-blocking: caller pumps process() and inspects `out` once
+        // the typed response lands.  Result is best-effort Ack.
+        _lastCommandResult = CommandResult::Ack();
+        return _lastCommandResult;
+    }
+
+    _lastCommandResult = _resultQueue.waitForTag(tag, [this]() { SerialBus::process(); });
+    _pendingQueryType = 0;
+    _pendingQueryOut  = nullptr;
     return _lastCommandResult;
 }
 
@@ -162,6 +198,19 @@ void BusClient::handlePacket(uint8_t type, uint8_t tag, const uint8_t* payload, 
             if (_lastResponseLen > 0) {
                 memcpy(_lastResponsePayload, payload, _lastResponseLen);
             }
+            // Typed-query capture: if a query is pending and this packet
+            // matches type+tag, fill the caller's SerialPacket and resolve
+            // the tag as Ack — caller's blocking waitForTag returns.
+            if (_pendingQueryType != 0 && type == _pendingQueryType && tag == _pendingQueryTag) {
+                _pendingQueryOut->type    = type;
+                _pendingQueryOut->tag     = tag;
+                _pendingQueryOut->payload = _lastResponsePayload;
+                _pendingQueryOut->len     = _lastResponseLen;
+                _resultQueue.resolve(tag, CommandResult::Ack());
+                // Don't double-route to onModulePacket — the response was
+                // explicitly requested.
+                break;
+            }
             // Delegate to module-specific handler
             onModulePacket(type, tag, payload, len);
             // Fire async hook for unsolicited packets so routing layers can
@@ -169,7 +218,7 @@ void BusClient::handlePacket(uint8_t type, uint8_t tag, const uint8_t* payload, 
             // verbatim with TAG_ASYNC). Solicited responses are correlated
             // by tag in the result queue and would not reach here with
             // TAG_ASYNC.
-            if (_asyncCallback && tag == CoreProtocol::TAG_ASYNC) {
+            if (_asyncCallback && tag == SfxWire::TAG_ASYNC) {
                 _asyncCallback(type, payload, len);
             }
             break;

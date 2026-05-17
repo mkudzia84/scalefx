@@ -37,7 +37,7 @@
 
 #include <serial/serial.h>
 #include <serial/hubfx/hubfx.h>
-#include <platform/diag_log.h>
+#include <serial/diag_log.h>
 
 // ============================================================================
 // Config Protocol Server

@@ -41,7 +41,7 @@
 #include <stdint.h>
 #include <functional>
 
-#include <platform/diag_log.h>
+#include <serial/diag_log.h>
 #include <serial/client/bus_client.h>  // BusClient::serverName() for auto-log
 
 // ============================================================================

@@ -6,7 +6,7 @@
  */
 
 #include "bus.h"
-#include "platform/diag_log.h"
+#include "serial/diag_log.h"
 
 #ifndef SCALEFX_SERVER
 
@@ -47,8 +47,8 @@ int SerialBus::sendPacket(uint8_t type, const uint8_t* payload, size_t len, uint
     
     UsbHost& usb = UsbHost::instance();
     
-    uint8_t encoded[CoreProtocol::COBS_BUFFER_SIZE];
-    size_t encLen = CoreProtocol::encodePacket(encoded, type, tag, payload, len);
+    uint8_t encoded[SfxWire::COBS_BUFFER_SIZE];
+    size_t encLen = SfxWire::encodePacket(encoded, type, tag, payload, len);
     if (encLen == 0) {
         SFX_LOG_WARN("[SerialBus] Encode failed for type 0x%02X", type);
         return -1;
@@ -82,7 +82,7 @@ int SerialBus::process() {
     for (int i = 0; i < n; i++) {
         uint8_t byte = readBuf[i];
         
-        if (byte == CoreProtocol::FRAME_DELIMITER) {
+        if (byte == SfxWire::FRAME_DELIMITER) {
             if (_rxIndex > 0) {
                 processFrame(_rxBuffer, _rxIndex);
                 packetsProcessed++;
@@ -107,8 +107,8 @@ void SerialBus::processFrame(const uint8_t* frame, size_t frameLen) {
         return;
     }
     
-    uint8_t decoded[CoreProtocol::MAX_PACKET_SIZE];
-    size_t decLen = CoreProtocol::cobsDecode(frame, frameLen, decoded, sizeof(decoded));
+    uint8_t decoded[SfxWire::MAX_PACKET_SIZE];
+    size_t decLen = SfxWire::cobsDecode(frame, frameLen, decoded, sizeof(decoded));
     if (decLen < 5) {
         _stats.framing_errors++;
         return;
@@ -119,7 +119,7 @@ void SerialBus::processFrame(const uint8_t* frame, size_t frameLen) {
     const uint8_t* payload;
     size_t payloadLen;
     
-    if (!CoreProtocol::parsePacket(decoded, decLen, &type, &tag, &payload, &payloadLen)) {
+    if (!SfxWire::parsePacket(decoded, decLen, &type, &tag, &payload, &payloadLen)) {
         _stats.crc_errors++;
         SFX_LOG_WARN("[SerialBus] Packet parse failed, len=%zu", decLen);
         return;

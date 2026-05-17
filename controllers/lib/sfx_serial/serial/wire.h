@@ -21,8 +21,8 @@
  *
  * Backward Compatibility:
  *   core.h re-exports everything in this header via `using` declarations
- *   in the CoreProtocol namespace. Existing code using CoreProtocol::crc8(),
- *   CoreProtocol::encodePacket(), etc. continues to compile unchanged.
+ *   in the CoreProtocol namespace. Existing code using SfxWire::crc8(),
+ *   SfxWire::encodePacket(), etc. continues to compile unchanged.
  */
 
 #ifndef SFX_WIRE_H

@@ -1,7 +1,7 @@
 /*
  * IndicatorServicePolicy — Connection / error LED state machine.
  *
- * Satisfies the SystemServicePolicy concept (sfx_serial/serial/core/system_service.h)
+ * Satisfies the SystemServicePolicy concept (sfx_board/server/board_server.h)
  * so it can sit in a `BoardServer<...>` policy pack alongside the wire-
  * protocol-handling policies (Audio, Storage, …).  Owns no packet range
  * — `ownsType()` always returns false, `handle()` returns NotMyCommand.
@@ -47,7 +47,7 @@
 #include "led/led_control.h"
 #include <serial/core/core.h>             // CommandHandleResult
 
-namespace sfx_core { class ServiceContext; }
+namespace sfx_core { class BoardServerBase; }
 
 class IndicatorServicePolicy {
 public:
@@ -63,7 +63,7 @@ public:
 
     // ── SystemServicePolicy surface ───────────────────────────────────
 
-    bool begin(sfx_core::ServiceContext* /*ctx*/) {
+    bool begin(sfx_core::BoardServerBase* /*ctx*/) {
         // No wire surface — ctx unused.  Board firmware calls configure()
         // separately so it can supply pin numbers without changing the
         // begin() signature shared by every policy.
@@ -127,9 +127,5 @@ private:
     static constexpr uint16_t BLINK_ERROR_ms   = 200;
     static constexpr uint16_t BLINK_WARNING_ms = 500;
 };
-
-/// @deprecated In-flight alias for callers that haven't migrated to the
-///             policy name.  Same class.
-using IndicatorLedManager = IndicatorServicePolicy;
 
 #endif // INDICATOR_LEDS_H

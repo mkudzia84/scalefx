@@ -17,12 +17,14 @@
  *   CRC: CRC-8 polynomial 0x07 over type+tag+len(2 bytes)+payload
  *   Tag: 0x00 = async/unsolicited, 0x01-0xFF = request correlation ID
  *
- * Packet Type Ranges:
- *   0x01-0x2F  GunFX commands - see serial_gunfx.h
- *   0x40-0x5F  LightFX commands - see serial_lightfx.h
- *   0x60-0x7F  GearControl commands - see serial_gearcontrol.h
- *   0x80-0xA3  HubFX commands - see hubfx_protocol.h
- *   0xA4-0xA6  Streaming protocol - see serial_stream.h
+ * Packet Type Ranges (post legacy-slave-protocol archival 2026-05-17):
+ *   0x01-0x0F  Generic-expander identity / enumeration — see components/components.h
+ *   0x10-0x2F  Generic-expander servo control
+ *   0x30-0x4F  Generic-expander PWM control
+ *   0x50-0x7F  Generic-expander LED control (event-sequence runtime)
+ *   0x80-0xAF  HubFX master commands — see hubfx/hubfx.h
+ *   0xA4-0xA6  Streaming protocol — see core/stream.h
+ *   0xB0-0xED  Available
  *   0xEE-0xFF  Universal system commands (INIT, ACK, NACK, ...) —
  *              handled by BoardServicePolicy in board_service.h
  */
@@ -161,54 +163,16 @@ struct CommandResult {
 };
 
 // ============================================================================
-// Protocol Constants & Buffer Sizes
+// Wire encoding + protocol-level helpers
 // ============================================================================
 //
-// Wire encoding utilities (CRC-8, COBS, endian helpers, packet build/encode/parse)
-// are defined in SfxWire namespace (platform/sfx_wire.h) and re-exported here
-// in CoreProtocol for backward compatibility. All existing code using
-// CoreProtocol::crc8(), CoreProtocol::encodePacket(), etc. continues to work.
-//
+// Wire-level utilities (CRC-8, COBS, endian helpers, packet build/encode/
+// parse, framing constants) live in the SfxWire namespace (serial/wire.h)
+// — callers use `SfxWire::crc8(...)`, `SfxWire::encodePacket(...)`, etc.
+// Protocol-level helpers (debug name lookup, STATUS header size) live in
+// CorePacket alongside the packet type constants.
 
-#include "platform/sfx_wire.h"
-
-namespace CoreProtocol {
-
-// --- Backward-compatible aliases from SfxWire ---
-using SfxWire::HEADER_SIZE;
-using SfxWire::MAX_PAYLOAD_SIZE;
-using SfxWire::MAX_PACKET_SIZE;
-using SfxWire::COBS_BUFFER_SIZE;
-using SfxWire::FRAME_DELIMITER;
-using SfxWire::TAG_ASYNC;
-using SfxWire::PICO_MAX_PAYLOAD;
-using SfxWire::ESP32_MAX_PAYLOAD;
-
-using SfxWire::crc8;
-using SfxWire::cobsEncode;
-using SfxWire::cobsDecode;
-using SfxWire::buildPacket;
-using SfxWire::encodePacket;
-using SfxWire::parsePacket;
-
-using SfxWire::putU16LE;
-using SfxWire::getU16LE;
-using SfxWire::putI16LE;
-using SfxWire::getI16LE;
-using SfxWire::putU32LE;
-using SfxWire::getU32LE;
-
-/// STATUS response core header size in bytes (5×u32 + boardState:u8 + initFlags:u8)
-constexpr size_t STATUS_CORE_HEADER_SIZE = 22;
-
-/**
- * @brief Get text name for packet type (debugging)
- * @param type Packet type
- * @return Human-readable name
- */
-const char* packetTypeToText(uint8_t type);
-
-} // namespace CoreProtocol
+#include "serial/wire.h"
 
 // ============================================================================
 // Core Packet Types (0xF0-0xFF range)
@@ -233,11 +197,17 @@ namespace CorePacket {
     constexpr uint8_t DIAG_HISTORY    = 0xFF;  // Request diagnostic log history (sends buffered LOG_MESSAGE packets without draining)
     constexpr uint8_t STATUS_UPDATE   = 0xEF;  // Async verbose status: [source:u8][type:u8][data:variable]
 
-    // Battery monitoring (handled by BatteryServerT, not CoreCommandServer):
+    // Battery monitoring (handled by BatteryServicePolicy):
     //   BATTERY_CONFIG payload: [chemistry:u8][cellCount:u8]
     //     chemistry: 0=LiPo, 1=Li-Ion, 2=NiMH (matches BatteryChemistry enum)
     //     cellCount: 0 = re-arm auto-detect, 1..MAX_CELLS = pinned count
     constexpr uint8_t BATTERY_CONFIG  = 0xEE;
+
+    /// STATUS response core-header size: 5×u32 + boardState:u8 + initFlags:u8.
+    constexpr size_t STATUS_CORE_HEADER_SIZE = 22;
+
+    /// Human-readable name for a packet type byte (debugging).
+    const char* packetTypeToText(uint8_t type);
 }
 
 // ============================================================================

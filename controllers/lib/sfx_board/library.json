@@ -1,0 +1,14 @@
+{
+    "name": "sfx_board",
+    "version": "1.0.0",
+    "description": "ScaleFX board-side framework — server composition + one specific component-collection policy. Server side (server/): BoardServer<...Policies> variadic composer, ServiceContext interface, SystemServicePolicy concept, BoardServicePolicy (universal lifecycle/identify/status/I2C-scan), PacketReader<TDispatch> COBS framer, SfxServer<...UserPolicies> wrapper, StreamWriter (chunked CRC-16/CCITT), and ComponentServicePolicy (generic-expander runtime — servos / pwm / LEDs / battery, addressed by ComponentKind, owns the IDLE/SLAVE/DIRECT lifecycle and async-event emitters) plus BoardIdentifier (runtime-assigned, flash-persisted slave identifier). Client side (client/): CoreClient — master-side typed CommandResult API for talking to component-server slaves, observer chain for async events (SERVO_TARGET_REACHED, LED_QUEUE_DONE, BATTERY_ALERT, ...).",
+    "keywords": ["board", "server", "client", "policy", "board-server", "packet-reader", "stream-writer", "component-service", "core-client", "board-identifier", "indicator", "i2c-scan"],
+    "frameworks": "arduino",
+    "platforms": ["raspberrypi", "espressif32"],
+    "dependencies": [
+        {"name": "sfx_platform"},
+        {"name": "sfx_serial"},
+        {"name": "sfx_peripherals"},
+        {"name": "sfx_config"}
+    ]
+}

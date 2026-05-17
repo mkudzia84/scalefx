@@ -359,10 +359,10 @@ matches STREAM_BEGIN/DATA/END by tag to associate them with the original request
 ### StreamWriter Usage (C++)
 
 ```cpp
-#include <serial/core/stream.h>
+#include <server/stream.h>
 
-// In a BusServer handler — uses default STREAM_BEGIN/DATA/END types:
-StreamWriter stream(*this, currentTag());
+// In a policy handler — uses default STREAM_BEGIN/DATA/END types:
+StreamWriter stream(*_ctx, currentTag());
 stream.begin(totalSize);                // Send STREAM_BEGIN (0 = unknown)
 stream.write(data, len);               // Auto-chunks at 508 bytes
 stream.printf("%-9lu  %s\n", sz, name); // Printf-style (256 char limit)

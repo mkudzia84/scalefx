@@ -25,7 +25,7 @@
 #ifndef SCALEFX_SERVER
 #if SFX_PLATFORM_ESP32
 
-#include "platform/diag_log.h"
+#include "serial/diag_log.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>

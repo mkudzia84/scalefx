@@ -10,7 +10,7 @@
 // USB Host is client-only (HubFX). Server controllers skip this entirely.
 #ifndef SCALEFX_SERVER
 
-#include "platform/diag_log.h"
+#include "serial/diag_log.h"
 
 // ============================================================================
 // Device Tracking Helpers

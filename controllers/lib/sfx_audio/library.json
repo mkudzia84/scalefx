@@ -8,6 +8,7 @@
     "dependencies": [
         {"name": "sfx_platform"},
         {"name": "sfx_storage"},
-        {"name": "sfx_serial"}
+        {"name": "sfx_serial"},
+        {"name": "sfx_board"}
     ]
 }

@@ -7,7 +7,7 @@
  * sfx_serial/serial/hubfx/hubfx.h (HubFxPacket namespace).
  */
 
-#include <platform/diag_log.h>
+#include <serial/diag_log.h>
 
 #define AUDIO_SRV_LOG(fmt, ...) SFX_LOG_DEBUG("[AudioSrv] " fmt, ##__VA_ARGS__)
 
@@ -61,7 +61,7 @@ void AudioServicePolicy<TMixer>::handlePlay(const uint8_t* payload, size_t len) 
     uint8_t volPct   = payload[1];
     uint8_t output   = payload[2];
     uint8_t loopMode = payload[3];
-    uint16_t loopCnt = CoreProtocol::getU16LE(&payload[4]);
+    uint16_t loopCnt = SfxWire::getU16LE(&payload[4]);
     uint8_t pathLen  = payload[6];
 
     if (ch >= HubFxAudio::MAX_CHANNELS) { sendNack(HubFxError::INVALID_CHANNEL); return; }
@@ -168,7 +168,7 @@ void AudioServicePolicy<TMixer>::handleQueue(const uint8_t* payload, size_t len)
 
     uint8_t ch       = payload[0];
     uint8_t volPct   = payload[1];
-    uint16_t loopCnt = CoreProtocol::getU16LE(&payload[2]);
+    uint16_t loopCnt = SfxWire::getU16LE(&payload[2]);
     uint8_t behavior = payload[4];
     uint8_t pathLen  = payload[5];
 
@@ -271,7 +271,7 @@ void AudioServicePolicy<TMixer>::handleStatusReq() {
     buf[pos++] = flags;
 
     // Audio format
-    CoreProtocol::putU16LE(&buf[pos], AUDIO_SAMPLE_RATE); pos += 2;
+    SfxWire::putU16LE(&buf[pos], AUDIO_SAMPLE_RATE); pos += 2;
     buf[pos++] = AUDIO_BIT_DEPTH;
     buf[pos++] = AUDIO_MAX_CHANNELS;
 
@@ -287,17 +287,17 @@ void AudioServicePolicy<TMixer>::handleStatusReq() {
 
     // Ring buffer stats (v3)
     buf[pos++] = (uint8_t)m.getRingFillPercent();
-    CoreProtocol::putU16LE(&buf[pos],
+    SfxWire::putU16LE(&buf[pos],
         (uint16_t)min(m.getRingAvailableRead(), (uint32_t)65535)); pos += 2;
-    CoreProtocol::putU16LE(&buf[pos],
+    SfxWire::putU16LE(&buf[pos],
         (uint16_t)min(m.getRingAvailableWrite(), (uint32_t)65535)); pos += 2;
-    CoreProtocol::putU32LE(&buf[pos], m.getUnderruns()); pos += 4;
-    CoreProtocol::putU32LE(&buf[pos], m.getConsumeLoops()); pos += 4;
-    CoreProtocol::putU32LE(&buf[pos], m.getConsumeFrames()); pos += 4;
+    SfxWire::putU32LE(&buf[pos], m.getUnderruns()); pos += 4;
+    SfxWire::putU32LE(&buf[pos], m.getConsumeLoops()); pos += 4;
+    SfxWire::putU32LE(&buf[pos], m.getConsumeFrames()); pos += 4;
 
     // Buffer capacities (v4)
-    CoreProtocol::putU16LE(&buf[pos], (uint16_t)WAV_BUF_FRAMES); pos += 2;
-    CoreProtocol::putU16LE(&buf[pos], (uint16_t)RING_FRAMES);   pos += 2;
+    SfxWire::putU16LE(&buf[pos], (uint16_t)WAV_BUF_FRAMES); pos += 2;
+    SfxWire::putU16LE(&buf[pos], (uint16_t)RING_FRAMES);   pos += 2;
 
     // Active channel bitmask — include channels that are playing OR have queued sounds
     uint8_t activeMask = 0;
@@ -317,17 +317,17 @@ void AudioServicePolicy<TMixer>::handleStatusReq() {
         buf[pos++] = (uint8_t)(m.getChannelVolume(i) * 100.0f);
         buf[pos++] = m.isPlaying(i) ? 1 : 0;
         buf[pos++] = m.isLooping(i) ? 1 : 0;
-        CoreProtocol::putU16LE(&buf[pos], (uint16_t)m.getLoopCount(i)); pos += 2;
+        SfxWire::putU16LE(&buf[pos], (uint16_t)m.getLoopCount(i)); pos += 2;
 
         float remSec = m.remainingSec(i);
         uint32_t remaining_ms = (remSec >= 0.0f) ? (uint32_t)(remSec * 1000.0f) : 0;
-        CoreProtocol::putU32LE(&buf[pos], remaining_ms); pos += 4;
+        SfxWire::putU32LE(&buf[pos], remaining_ms); pos += 4;
 
         buf[pos++] = (uint8_t)m.queueLength(i);
         buf[pos++] = m.getOutputChannels(i);
 
         // WAV format info
-        CoreProtocol::putU16LE(&buf[pos], (uint16_t)m.getSampleRate(i)); pos += 2;
+        SfxWire::putU16LE(&buf[pos], (uint16_t)m.getSampleRate(i)); pos += 2;
         buf[pos++] = (uint8_t)m.getNumChannels(i);
         buf[pos++] = (uint8_t)m.getBitsPerSample(i);
 

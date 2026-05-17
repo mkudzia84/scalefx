@@ -39,8 +39,8 @@
 
 #include <serial/serial.h>
 #include <serial/hubfx/hubfx.h>
-#include <serial/core/system_service.h>     // SystemServicePolicy + ServiceContext
-#include <platform/diag_log.h>
+#include <server/board_server.h>          // SystemServicePolicy + BoardServerBase
+#include <serial/diag_log.h>
 
 #include "../config/config_store.h"
 
@@ -137,7 +137,7 @@ public:
 
     // ── SystemServicePolicy surface ───────────────────────────────────
 
-    bool begin(sfx_core::ServiceContext* ctx) {
+    bool begin(sfx_core::BoardServerBase* ctx) {
         _ctx = ctx;
         return _ctx != nullptr;
     }
@@ -172,7 +172,7 @@ protected:
     uint8_t currentTag() const                                         { return _ctx->currentTag(); }
 
 private:
-    sfx_core::ServiceContext* _ctx = nullptr;
+    sfx_core::BoardServerBase* _ctx = nullptr;
     IConfigStoreFacade*       _stores[MAX_STORES] = {};
     size_t                    _count = 0;
 
@@ -284,14 +284,10 @@ private:
 
         uint8_t buf[4];
         buf[0] = allLoaded ? 1 : 0;
-        CoreProtocol::putU16LE(&buf[1], (uint16_t)total);
+        SfxWire::putU16LE(&buf[1], (uint16_t)total);
         buf[3] = allValid ? 1 : 0;
         this->sendRawPacket(HubFxPacket::CONFIG_STATUS_RESP, this->currentTag(), buf, sizeof(buf));
     }
 };
-
-/// @deprecated Alias for in-flight callers — prefer `ConfigServicePolicy`
-///             instantiated via `BoardServer<...>`.
-using MultiConfigServer = ConfigServicePolicy;
 
 #endif // MULTI_CONFIG_SERVER_H

@@ -35,8 +35,9 @@
  *   CRC-8 polynomial 0x07 over type+tag+len+payload
  *
  * Usage:
- *   GunFxClient gunfx;  // Extends SerialBus
- *   gunfx.begin(0);      // Uses UsbHost::instance() internally
+ *   class MyClient : public SerialBus { ... };
+ *   MyClient client;
+ *   client.begin(0);     // Uses UsbHost::instance() internally
  */
 
 #ifndef SERIAL_BUS_H
@@ -53,7 +54,7 @@
 // Serial Bus Constants & Types
 // ============================================================================
 
-constexpr size_t SERIAL_BUS_RX_BUFFER_SIZE = CoreProtocol::COBS_BUFFER_SIZE;
+constexpr size_t SERIAL_BUS_RX_BUFFER_SIZE = SfxWire::COBS_BUFFER_SIZE;
 
 // ============================================================================
 // SerialBus Class - Binary COBS Protocol
@@ -118,7 +119,7 @@ private:
     int _deviceIndex = 0;
 
     // Default peer max = Pico capacity (clients always talk to Pico servers)
-    size_t _peerMaxPayload = CoreProtocol::PICO_MAX_PAYLOAD;
+    size_t _peerMaxPayload = SfxWire::PICO_MAX_PAYLOAD;
 
     uint8_t _rxBuffer[SERIAL_BUS_RX_BUFFER_SIZE];
     size_t _rxIndex = 0;

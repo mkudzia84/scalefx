@@ -6,9 +6,9 @@
  */
 
 #include "stream.h"
-#include "system_service.h"   // sfx_core::ServiceContext (sink interface)
+#include "board_server.h"   // sfx_core::BoardServerBase (sink interface)
 
-using namespace CoreProtocol;
+using namespace SfxWire;
 
 // ============================================================================
 // CRC-16/CCITT
@@ -35,7 +35,7 @@ uint16_t StreamProtocol::crc16_update(uint16_t crc, const uint8_t* data, size_t 
 // StreamWriter
 // ============================================================================
 
-StreamWriter::StreamWriter(sfx_core::ServiceContext& sink, uint8_t tag,
+StreamWriter::StreamWriter(sfx_core::BoardServerBase& sink, uint8_t tag,
                            uint8_t beginType, uint8_t dataType, uint8_t endType)
     : _server(sink)
     , _tag(tag)
@@ -99,7 +99,7 @@ bool StreamWriter::flush() {
     _crcAll = StreamProtocol::crc16_update(_crcAll, _buf, _bufLen);
 
     // Build segment: [seqNum:u16LE][crc16:u16LE][data...]
-    uint8_t pkt[CoreProtocol::MAX_PAYLOAD_SIZE];
+    uint8_t pkt[SfxWire::MAX_PAYLOAD_SIZE];
     putU16LE(&pkt[0], _seqNum);
     uint16_t chunkCrc = StreamProtocol::crc16(_buf, _bufLen);
     putU16LE(&pkt[2], chunkCrc);

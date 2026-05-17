@@ -6,7 +6,7 @@
  * enabling integrity checking and progress monitoring.
  *
  * This is a reusable library component — any code with a
- * `sfx_core::ServiceContext&` (typically inside a system-service policy
+ * `sfx_core::BoardServerBase&` (typically inside a system-service policy
  * handler) can use StreamWriter to stream arbitrary data to the client.
  *
  * Streaming wire format (3 packet types, chosen by caller):
@@ -38,7 +38,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>
-#include "core.h"
+#include <serial/core/core.h>
 
 // ============================================================================
 // Stream Protocol Constants
@@ -57,7 +57,7 @@ namespace StreamProtocol {
     constexpr size_t CHUNK_HEADER_SIZE = 4;
 
     /// Maximum data bytes per STREAM_DATA chunk
-    constexpr size_t MAX_CHUNK_DATA = CoreProtocol::MAX_PAYLOAD_SIZE - CHUNK_HEADER_SIZE;
+    constexpr size_t MAX_CHUNK_DATA = SfxWire::MAX_PAYLOAD_SIZE - CHUNK_HEADER_SIZE;
 
     /**
      * @brief CRC-16/CCITT checksum
@@ -99,9 +99,9 @@ namespace StreamProtocol {
  *   BEGIN (with size) → DATA chunks → END (with verification)
  *
  * Thread safety: NOT thread-safe internally. Caller must ensure
- * exclusive access to the ServiceContext's serial port during streaming.
+ * exclusive access to the BoardServerBase's serial port during streaming.
  */
-namespace sfx_core { class ServiceContext; }
+namespace sfx_core { class BoardServerBase; }
 
 class StreamWriter {
 public:
@@ -110,11 +110,11 @@ public:
      *
      * Uses StreamProtocol::STREAM_BEGIN/DATA/END (0xA4-0xA6).
      *
-     * @param sink ServiceContext (or anything exposing sendRawPacket) to
+     * @param sink BoardServerBase (or anything exposing sendRawPacket) to
      *             route packets through
      * @param tag  Correlation tag for all stream packets
      */
-    StreamWriter(sfx_core::ServiceContext& sink, uint8_t tag)
+    StreamWriter(sfx_core::BoardServerBase& sink, uint8_t tag)
         : StreamWriter(sink, tag,
                        StreamProtocol::STREAM_BEGIN,
                        StreamProtocol::STREAM_DATA,
@@ -123,7 +123,7 @@ public:
     /**
      * @brief Construct a StreamWriter with custom packet types
      */
-    StreamWriter(sfx_core::ServiceContext& sink, uint8_t tag,
+    StreamWriter(sfx_core::BoardServerBase& sink, uint8_t tag,
                  uint8_t beginPacketType, uint8_t dataPacketType, uint8_t endPacketType);
 
     /// Destructor — frees heap-allocated chunk buffer
@@ -194,7 +194,7 @@ private:
     /// Flush current buffer as a STREAM_DATA packet
     bool flush();
 
-    sfx_core::ServiceContext& _server;
+    sfx_core::BoardServerBase& _server;
     uint8_t _tag;
     uint8_t _beginType;
     uint8_t _dataType;

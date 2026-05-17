@@ -1,8 +1,8 @@
 {
     "name": "sfx_platform",
     "version": "2.0.0",
-    "description": "ScaleFX platform foundation — cross-platform abstraction (mutexes, delays, GPIO, servo, timers), stateless wire encoding (CRC-8, COBS, endian helpers), and DiagLog diagnostic logging. Zero external library dependencies. Supports RP2040/RP2350 (Pico SDK) and ESP32-S3 (ESP-IDF/FreeRTOS).",
-    "keywords": ["platform", "abstraction", "pico", "esp32", "mutex", "delay", "gpio", "crc", "cobs", "wire", "diaglog"],
+    "description": "ScaleFX platform foundation — cross-platform abstraction (mutexes, delays, GPIO, servo, timers, free-heap, reboot, board-id) and lock-free SPSC ring buffer. Zero external library dependencies. Supports RP2040/RP2350 (Pico SDK) and ESP32-S3 (ESP-IDF/FreeRTOS).",
+    "keywords": ["platform", "abstraction", "pico", "esp32", "mutex", "delay", "gpio", "spsc", "ring-buffer"],
     "frameworks": "arduino",
     "platforms": ["raspberrypi", "espressif32"]
 }

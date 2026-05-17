@@ -1,0 +1,131 @@
+/*
+ * BoardServerBase — non-template helpers.
+ *
+ * Wire helpers (sendRawPacket / sendNack), COBS frame reader, device-name
+ * builder, and I²C-scan probe.  Template-dependent logic (dispatchPacket,
+ * aggregateErrorMessage, lifecycle wiring) lives in board_server.h.
+ */
+
+#include "board_server.h"
+
+#include <Arduino.h>
+#include <cstdio>
+#include <cstring>
+
+#include <power/i2c_device.h>
+#include <platform/sfx_platform.h>
+
+namespace sfx_core {
+
+// ── Wire helpers ────────────────────────────────────────────────────
+
+int BoardServerBase::sendRawPacket(uint8_t type, uint8_t tag,
+                                   const uint8_t* payload, size_t len) {
+    if (!_serial) return -1;
+    uint8_t buf[SfxWire::COBS_BUFFER_SIZE];
+    size_t  encoded = SfxWire::encodePacket(buf, type, tag, payload, len);
+    if (encoded == 0) return -1;
+    return static_cast<int>(_serial->write(buf, encoded));
+}
+
+int BoardServerBase::sendNack(uint8_t errorCode, const char* reason) {
+    uint8_t payload[64];
+    payload[0] = errorCode;
+
+    const char* msg = (reason && reason[0]) ? reason : aggregateErrorMessage(errorCode);
+    if (!msg) msg = SerialError::getMessage(errorCode);
+
+    size_t msgLen = std::strlen(msg);
+    if (msgLen > sizeof(payload) - 1) msgLen = sizeof(payload) - 1;
+    std::memcpy(&payload[1], msg, msgLen);
+
+    return sendRawPacket(CorePacket::NACK, _currentTag, payload, 1 + msgLen);
+}
+
+// ── COBS frame reader ───────────────────────────────────────────────
+
+int BoardServerBase::readFrames() {
+    if (!_serial) return 0;
+
+    int frames = 0;
+    while (_serial->available()) {
+        uint8_t b = _serial->read();
+        _lastActivityMs = millis();
+
+        if (b == SfxWire::FRAME_DELIMITER) {
+            if (_rxIndex == 0) continue;
+            // Decode + parse + dispatch one frame.
+            uint8_t        decoded[SfxWire::MAX_PACKET_SIZE];
+            size_t         decodedLen = SfxWire::cobsDecode(
+                _rxBuffer, _rxIndex, decoded, sizeof(decoded));
+            _rxIndex = 0;
+            if (decodedLen < 5) continue;   // type + tag + len(2) + crc
+
+            uint8_t        type, tag;
+            const uint8_t* payload;
+            size_t         payloadLen;
+            if (SfxWire::parsePacket(decoded, decodedLen,
+                                     &type, &tag, &payload, &payloadLen)) {
+                dispatchPacket(type, tag, payload, payloadLen);
+                ++frames;
+            }
+        } else if (_rxIndex < RX_BUFFER_SIZE) {
+            _rxBuffer[_rxIndex++] = b;
+        } else {
+            // overflow — drop and resync on the next delimiter
+            _rxIndex = 0;
+        }
+    }
+    return frames;
+}
+
+// ── Device name ─────────────────────────────────────────────────────
+
+void BoardServerBase::buildDeviceName(const char* prefix) {
+    char boardId[16];
+    sfxGetBoardId(boardId, sizeof(boardId));
+    // sfxGetBoardId returns 8 hex chars — use the last 4 as a compact suffix.
+    size_t len = std::strlen(boardId);
+    const char* suffix = (len >= 4) ? &boardId[len - 4] : boardId;
+    std::snprintf(_deviceName, sizeof(_deviceName), "%s-%s", prefix, suffix);
+}
+
+// ── I²C scan registration ────────────────────────────────────────────
+
+void BoardServerBase::addExpectedI2CDevice(uint8_t address, I2CDevice* device) {
+    if (_numExpectedI2C < MAX_EXPECTED_I2C) {
+        _expectedI2C[_numExpectedI2C].address = address;
+        _expectedI2C[_numExpectedI2C].device  = device;
+        _numExpectedI2C++;
+    }
+}
+
+I2CScanResult BoardServerBase::performI2CScan() {
+    I2CScanResult result;
+    if (!_i2cWire) return result;
+
+    result.numExpected = _numExpectedI2C;
+    for (uint8_t i = 0; i < _numExpectedI2C; i++) {
+        result.expected[i].address    = _expectedI2C[i].address;
+        result.expected[i].found      = I2CDevice::probe(*_i2cWire, _expectedI2C[i].address);
+        result.expected[i].identified = _expectedI2C[i].device != nullptr
+                                     && _expectedI2C[i].device->isAvailable();
+    }
+
+    uint8_t allAddrs[32];
+    uint8_t totalFound = I2CDevice::scan(*_i2cWire, 0x08, 0x77, allAddrs, 32);
+
+    result.numExtra = 0;
+    for (uint8_t j = 0; j < totalFound; j++) {
+        bool isExpected = false;
+        for (uint8_t i = 0; i < _numExpectedI2C; i++) {
+            if (allAddrs[j] == _expectedI2C[i].address) { isExpected = true; break; }
+        }
+        if (!isExpected && result.numExtra < I2CScanResult::MAX_EXTRA) {
+            result.extraAddresses[result.numExtra++] = allAddrs[j];
+        }
+    }
+    return result;
+}
+
+}  // namespace sfx_core

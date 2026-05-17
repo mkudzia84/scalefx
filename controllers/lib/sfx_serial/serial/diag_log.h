@@ -59,7 +59,7 @@
 #endif
 
 #include <Arduino.h>
-#include "sfx_wire.h"
+#include "wire.h"
 
 // Default packet type for log messages (CorePacket::LOG_MESSAGE = 0xFD).
 // Defined here as a literal to avoid depending on the full protocol header.
@@ -92,7 +92,7 @@ namespace DiagLevel {
 
 #include <stdarg.h>
 #include <atomic>
-#include "sfx_platform.h"
+#include <platform/sfx_platform.h>
 
 // ============================================================================
 // DiagLog Singleton

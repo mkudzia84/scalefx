@@ -23,7 +23,7 @@
 #if SFX_PLATFORM_ESP32 && defined(SFX_HAS_STORAGE_SERVER)
 
 #include <server/storage_server.h>
-#include <platform/diag_log.h>
+#include <serial/diag_log.h>
 #include <esp_heap_caps.h>
 
 #define STORAGE_LOG(fmt, ...) SFX_LOG_INFO("[Storage] " fmt, ##__VA_ARGS__)

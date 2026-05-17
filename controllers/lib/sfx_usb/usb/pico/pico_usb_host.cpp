@@ -12,7 +12,7 @@
 #ifndef SCALEFX_SERVER
 #if SFX_PLATFORM_PICO
 
-#include "platform/diag_log.h"
+#include "serial/diag_log.h"
 #include "pio_usb.h"
 #include "tusb.h"
 #include "class/cdc/cdc_host.h"
