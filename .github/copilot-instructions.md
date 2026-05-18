@@ -1334,6 +1334,106 @@ HubFX currently declares **1 `InputPort` on IN_1 (GPIO5)** — well within the E
 
 This rule supersedes the older "`ServoPort` can be input or output" model — the legacy `ServoPort` input-mode methods (`readMicroseconds`, `supportsInput`) were retired with the InputPort split.
 
+### 32. Board GUID: 4-Hex Suffix of `deviceName`; Collisions Are Master-Resolved with a Persistent Override
+
+Every ScaleFX board exposes a stable hardware-derived **GUID** so masters can tell two boards of the same kind (e.g. two LightFx expanders) apart and persist per-board state across reconnects.
+
+**Source.** `sfxGetBoardId(out, maxLen)` ([sfx_platform.h](controllers/lib/sfx_platform/platform/sfx_platform.h)) produces an 8-char uppercase hex string (4 bytes). Pico: last 4 bytes of `pico_unique_board_id_t` (8-byte OTP flash unique-id). ESP32: last 4 bytes of the factory MAC (`esp_efuse_mac_get_default`). Both immutable per silicon, survive reflashing.
+
+**Surface on the wire.** `BoardServerBase::buildDeviceName(prefix)` ([board_server.cpp](controllers/lib/sfx_board/server/board_server.cpp)) emits `deviceName = "<Prefix>-<last 4 hex chars>"` — e.g. `"GunFx-3C4D"`. That suffix is the **canonical GUID** broadcast in `INIT_READY` / `IDENTIFY` payloads (16 bits / 65 536 values). Sufficient at ScaleFX scale (a hub hosts ≤ 2 expanders today) but **not collision-proof at fleet scale** — the master MUST detect collisions, not assume them away.
+
+**Collision detection (master side).** HubFX's `ExpanderServicePolicyT<>` tracks every active expander's GUID. If an `IDENTIFY` response carries a GUID already held by another live slot, the master:
+
+1. Sets `entry.spec.collision = true` on BOTH conflicting slots.
+2. Logs `SFX_LOG_ERROR("[Expander] GUID COLLISION ...")` with the conflicting USB addresses.
+3. Emits `EXPANDER_COLLISION` (0x87) async wire packet `[guidLen][guid][addrA][addrB]` so Studio can prompt the user.
+4. Keeps both boards connected (the user needs CDC access to fix the override).
+5. Topology-layer routing (`TopologyServicePolicy`, future) MUST refuse to bind roles to collided slots — the binding is ambiguous until the user resolves which physical board is which.
+
+**Override (board side).** `/board.yaml` gains an optional `board.guid:` field (4 hex chars, case-insensitive). When present, firmware emits `<Prefix>-<override>` instead of `<Prefix>-<hwGuid>` in `INIT_READY` / `IDENTIFY`. Schema:
+
+```yaml
+board:
+  identifier: "left-wing"      # existing, human label (BoardIdentifier)
+  guid:       "1ABC"           # NEW, optional GUID override (Rule 32)
+```
+
+The override path is: user picks a free 4-char value in Studio → Studio sends a `BOARD_SET_GUID` wire command to the offending expander (forwarded through the hub) → expander persists to `/board.yaml` → reboots → re-enumerates with the new GUID → master accepts.
+
+**Validation on set.** Must be 4 hex chars (`[0-9A-F]{4}`), must not match any other currently-known live GUID, must not be reserved (`0000`, `FFFF`).
+
+**Mirror in Go.** `app/go/protocol/expanders/` carries the matching `EXPANDER_COLLISION` decoder + `GUID_COLLISION` error string; Studio surfaces a red badge on each collided board until a fresh `EXPANDER_IDENTIFIED` arrives without the collision flag.
+
+**Don't confuse with `BoardIdentifier`.** `BoardIdentifier` ([board_identifier.h](controllers/lib/sfx_board/server/board_identifier.h)) is a *separate* user-assigned human label in `/board.yaml`. It's mutable, descriptive, never used as a persistence key. The GUID is the persistence key; the identifier is the display name.
+
+**Future: full-width GUID upgrade path.** If 16 bits becomes insufficient, append a `[guidLen:u8][guid:N]` field to the `INIT_READY` / `IDENTIFY` payload (Rule 11 append-only). The producer (`sfxGetBoardId`) already returns 8 hex chars; emit them all instead of slicing to 4. Old masters keep working — they fall back to the deviceName suffix.
+
+### 33. Eliminate Redundant Template Parameters — Infer From Carriers (MANDATORY)
+
+A class / helper / free function MUST NOT take a template parameter that is recoverable from another template parameter it already has. Every "carrier" type (mixer, board, schema, store, policy, …) is responsible for re-exporting its own template arguments as nested typedefs so downstream consumers can recover them via `Carrier::Member` instead of re-stating them at every use site. Same idea for argument-deduction on free function templates: deduce, never duplicate.
+
+**Required patterns:**
+
+1. **Re-export every template parameter as a nested typedef on the carrier.** A class declared `template <typename TI2S, typename TCodec> class AudioMixer` MUST publish
+   ```cpp
+   using I2SOutput = TI2S;
+   using Codec     = TCodec;
+   ```
+   so any helper built on top can be **single-arg** and recover the rest:
+   ```cpp
+   template <typename TMixer>
+   class EspDualCoreAudio {
+       using CodecType = typename TMixer::Codec;
+       using Adapter   = CodecAdapter<CodecType>;
+   };
+   ```
+
+2. **Trait specialization beats a second template arg** when the second arg is *board-local config keyed by a type* (codec pins / supply, schema → pool size, transport → buffer sizing). Use a trait template the board specializes — NOT a second template param:
+   ```cpp
+   // ❌ board spells the codec type twice
+   template <typename TMixer, typename TCodecAdapter>
+   class EspDualCoreAudio { ... };
+   static EspDualCoreAudio<Mixer, HubFxCodec> audio;
+
+   // ✅ trait keyed on the inferred codec — sketch states the type once
+   template <typename TCodec> struct CodecAdapter { /* primary = no-op */ };
+   template <typename TMixer> class EspDualCoreAudio {
+       using Adapter = CodecAdapter<typename TMixer::Codec>;
+   };
+   static EspDualCoreAudio<Mixer> audio;
+   template <> struct CodecAdapter<TAS5825PCodec> { /* board-specific */ };
+   ```
+   The specialization sits next to the board's pin map — exactly where the config it depends on already lives. Primary template = sensible default (no-op / passive); `if constexpr` strips unused paths at compile time.
+
+3. **Platform aliases hide policy types.** Every multi-platform service policy ships its `using XxxService = XxxServicePolicy<PlatformImpl>;` in the library so sketches never spell the policy type out:
+   ```cpp
+   // sfx_storage exports:
+   #if SFX_PLATFORM_ESP32
+   using StorageService = StorageServicePolicy<Esp32StoragePolicy>;
+   #elif SFX_PLATFORM_PICO
+   using StorageService = StorageServicePolicy<PicoStoragePolicy>;
+   #endif
+
+   // sketch writes:
+   using HubFxBoard = BoardOf<HubFxBoard, ..., StorageService, ...>;
+   ```
+   New service policies added to a library MUST ship the platform alias in the same header.
+
+4. **Deduce free-function template args from arguments.** When a function template takes both a type parameter and an argument typed on it, the argument deduction MUST do the work — never re-state:
+   ```cpp
+   // ✅ TStoragePolicy deduced from the reference argument
+   wireUploadExclusivity<Mixer>(board.policy<StorageService>());
+   ```
+
+**Don't:**
+
+- Leave a template parameter that mirrors a typedef the carrier already exposes (e.g., `EspDualCoreAudio<Mixer, TAS5825PCodec>` after `Mixer` already encodes `TAS5825PCodec`).
+- Reach for `std::function` / runtime callbacks to side-step the type system when a trait specialization or a carrier typedef gives equivalent flexibility with **static dispatch** (zero heap, zero indirection, all inlined).
+- Force every board sketch to spell `Policy<PlatformImpl>` when one platform alias in the library covers it.
+- Add a "concept-driven" `findPolicy` mechanism just to remove one type-mention duplication — that's overshoot; the alias pattern is enough.
+
+**Reference refactor:** [esp_dual_core_audio.h](controllers/lib/sfx_audio/audio/esp_dual_core_audio.h) (May 2026) — codec adapter trait keyed on `TMixer::Codec`; sketch writes `EspDualCoreAudio<Mixer>` and specializes `CodecAdapter<TAS5825PCodec>` next to its pin map. Codec is named once, at `using Mixer = AudioMixer<EspI2SOutput, TAS5825PCodec>;`.
+
 ## Key Architecture Patterns
 
 ### Client-Server Topology

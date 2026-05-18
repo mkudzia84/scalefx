@@ -1,10 +1,10 @@
 /*
  * Audio Protocol Server — Template Implementation
  *
- * All AudioServicePolicy<TMixer> method bodies. Included from audio_server.h.
+ * All AudioServicePolicy<TMixer> method bodies. Included from audio_service.h.
  *
- * Wire formats match the HubFX audio protocol defined in
- * sfx_serial/serial/hubfx/hubfx.h (HubFxPacket namespace).
+ * Wire formats match the audio protocol defined in
+ * sfx_serial/serial/audio/audio_protocol.h (AudioPacket namespace).
  */
 
 #include <serial/diag_log.h>

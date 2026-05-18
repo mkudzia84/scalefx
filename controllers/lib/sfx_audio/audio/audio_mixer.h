@@ -20,9 +20,7 @@
  * Audio files are opened directly via SdCardModule::instance().
  * 
  * Usage:
- *   EspI2SOutput i2s;  // singleton — or PicoI2SOutput, MockI2SSink
- *   SimpleI2SCodec codec;  // singleton
- *   using Mixer = AudioMixer<EspI2SOutput, SimpleI2SCodec>;
+ *   using Mixer = AudioMixer<EspI2SOutput, TAS5825PCodec>;
  *   Mixer::instance().begin(i2s_data, i2s_bclk, i2s_lrclk);
  *   // Core 1 consumer task: Mixer::instance().consume();
  *   // Launch producer on Core 1: Mixer::instance().startProducerTask();
@@ -124,6 +122,12 @@ struct QueuedSound {
 template<typename TI2S, typename TCodec>
 class AudioMixer {
 public:
+    /// The I²S output backend / codec types are exposed as nested typedefs
+    /// so helpers parameterized on `TMixer` alone (e.g. `EspDualCoreAudio<>`)
+    /// can recover them without an extra template parameter.
+    using I2SOutput = TI2S;
+    using Codec     = TCodec;
+
     /**
      * Get the singleton instance
      */

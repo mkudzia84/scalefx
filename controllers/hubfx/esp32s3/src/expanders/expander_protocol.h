@@ -17,7 +17,7 @@
  * Wire-format Rule 11 applies — every payload appends optional fields
  * at the end so older masters still parse.
  *
- * Packet slice: 0x80..0x84 of the HubFX 0x80..0xAF range (was occupied
+ * Packet slice: 0x80..0x86 of the HubFX 0x80..0xAF range (was occupied
  * by the legacy SLAVE_LIST / SLAVE_INIT / SLAVE_STATUS packets that the
  * generic-expander refactor retired — see
  * `instructions/15-GENERIC-EXPANDER-REFACTOR.md`).
@@ -75,6 +75,7 @@ namespace ExpanderKind {
 ///     the slot is cleared.
 struct ExpanderSpec {
     bool      valid                  = false;   ///< true once IDENTIFY decoded
+    bool      collision              = false;   ///< true if `guid` clashes with another live slot (Rule 32)
     char      guid[5]                = {0};     ///< 4 hex chars + NUL (suffix of deviceName)
     char      deviceName[32]         = {0};     ///< full `<Prefix>-<guid>`
     char      firmwareVersion[16]    = {0};
@@ -114,7 +115,7 @@ namespace ExpanderPacket {
     constexpr uint8_t EXPANDER_LIST_RESP     = 0x81;
         ///< [count:u8] per-entry:
         ///<   [kind:u8][usbAddr:u8][vid:u16LE][pid:u16LE]
-        ///<   [identified:u8]
+        ///<   [identified:u8][collision:u8]
         ///<   if identified == 1: [guidLen:u8][guid:str][nameLen:u8][name:str]
         ///<                       [verLen:u8][ver:str][capabilities:u32LE]
         ///<                       [buildNum:u32LE]
@@ -132,6 +133,40 @@ namespace ExpanderPacket {
         ///<        [capabilities:u32LE][buildNum:u32LE]
         ///< Fires after `IDENTIFY` response is decoded — carries the
         ///< full spec including the GUID used as persistence key.
+
+    // Unified system identify -------------------------------------------
+    constexpr uint8_t EXPANDER_SYSTEM_INFO_REQ  = 0x85;
+        ///< [] → EXPANDER_SYSTEM_INFO_RESP
+        ///< One-shot: hub identify + every connected expander's identify
+        ///< in a single packet.  Used by Studio on connect to populate
+        ///< the topology view without round-tripping IDENTIFY (0xFE) +
+        ///< EXPANDER_LIST_REQ as two separate queries.
+    constexpr uint8_t EXPANDER_SYSTEM_INFO_RESP = 0x86;
+        ///< Hub block first, then expander list.  Both blocks reuse the
+        ///< same `IDENTIFY` payload encoding for consistency.
+        ///<
+        ///<   [hubGuidLen:u8][hubGuid:str]                  (4 hex chars)
+        ///<   [hubNameLen:u8][hubName:str]                  (deviceName)
+        ///<   [hubVerLen:u8][hubVer:str]
+        ///<   [hubPlatLen:u8][hubPlat:str]
+        ///<   [hubCpuMHz:u32LE][hubFreeRam:u32LE]
+        ///<   [hubBuild:u32LE][hubCaps:u32LE]
+        ///<   [expanderCount:u8]
+        ///<   per-expander: [kind:u8][usbAddr:u8][identified:u8][collision:u8]
+        ///<                 if identified == 1:
+        ///<                   [guidLen:u8][guid:str]
+        ///<                   [nameLen:u8][name:str]
+        ///<                   [verLen:u8][ver:str]
+        ///<                   [capabilities:u32LE][buildNum:u32LE]
+
+    // GUID collision events ---------------------------------------------
+    constexpr uint8_t EXPANDER_COLLISION       = 0x87;
+        ///< async: [guidLen:u8][guid:str][usbAddrA:u8][usbAddrB:u8]
+        ///< Fires once when a freshly-identified expander reports a GUID
+        ///< already held by another live slot.  Both boards stay
+        ///< connected but the second is flagged `spec.valid=true,
+        ///< spec.collision=true` and is excluded from binding-target
+        ///< resolution until the user resolves it (Rule 32).
 }
 
 // ============================================================================
@@ -142,12 +177,14 @@ namespace ExpanderError {
     constexpr uint8_t USB_HOST_DOWN         = 0x80;  ///< USB host stack not initialized
     constexpr uint8_t EXPANDER_TABLE_FULL   = 0x81;  ///< Too many attached devices for the registry
     constexpr uint8_t IDENTIFY_FAILED       = 0x82;  ///< IDENTIFY round-trip timed out / NACKed
+    constexpr uint8_t GUID_COLLISION        = 0x83;  ///< Two boards report the same 4-hex GUID (Rule 32)
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {
             case USB_HOST_DOWN:        return "USB host not initialized";
             case EXPANDER_TABLE_FULL:  return "Expander tracking table full";
             case IDENTIFY_FAILED:      return "Expander IDENTIFY failed";
+            case GUID_COLLISION:       return "Board GUID collision — set board.guid override";
             default:                   return nullptr;
         }
     }

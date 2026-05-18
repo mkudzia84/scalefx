@@ -23,14 +23,6 @@
 #define AUDIO_DEBUG                 0
 #endif
 
-/**
- * Use mock I2S sink instead of real hardware
- * Set via build flag: -DAUDIO_MOCK_I2S=1
- */
-#ifndef AUDIO_MOCK_I2S
-#define AUDIO_MOCK_I2S              0
-#endif
-
 // ============================================================================
 //  I2S AUDIO CONFIGURATION
 // ============================================================================

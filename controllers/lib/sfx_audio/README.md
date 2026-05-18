@@ -10,13 +10,14 @@ sfx_audio/
 ├── README.md               ← this file
 ├── audio/
 │   ├── audio_config.h      # Compile-time constants (sample rate, buffer sizes, pin defaults)
-│   ├── audio_log.h         # Audio-specific logging macros (MIXER_LOG, TAS5825_LOG, MOCK_LOG)
+│   ├── audio_log.h         # Audio-specific logging macros (MIXER_LOG, TAS5825_LOG)
 │   ├── audio_mixer.h       # AudioMixer<TI2S, TCodec> template declaration
 │   ├── audio_mixer.ipp     # AudioMixer template implementation (included by .h)
 │   ├── audio_ring_buffer.h # Lock-free SPSC ring buffer (StereoFrame, producer → consumer)
 │   ├── esp_i2s_output.h    # ESP-IDF v5.x I2S standard-mode driver (ESP32-S3)
 │   ├── pico_i2s_output.h   # Arduino-Pico PIO I2S driver (RP2040/RP2350)
-│   └── mock_i2s_sink.h/.cpp # Mock I2S output for testing (statistics, capture)
+│   ├── esp_dual_core_audio.h  # ESP32-S3 two-phase mixer+codec bring-up helper
+│   └── upload_exclusivity.h   # One-call mixer suspend/resume wiring for uploads (Rule 28)
 └── codec/
     ├── simple_i2s_codec.h/.cpp  # No-op codec for DACs with no I2C control
     ├── tas5825_regs.h           # Shared register / mode / Supply definitions

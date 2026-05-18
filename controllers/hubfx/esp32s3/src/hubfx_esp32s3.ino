@@ -39,7 +39,7 @@
  */
 
 #define FIRMWARE_VERSION "2.3.0"
-#define BUILD_NUMBER 12
+#define BUILD_NUMBER 25
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -56,7 +56,54 @@
 #include <power/ina226.h>
 #include <power/ina226_sensor.h>
 
+// Storage (LittleFS flash + SD_MMC 4-bit SDIO) — both compiled in via
+// SFX_HAS_STORAGE + SFX_HAS_STORAGE_SERVER (see platformio.ini build_flags).
+// `bringUpStorage()` does the hardware probe in one call.
+#include <storage/bring_up.h>
+#include <server/storage_service.h>
+
+// Audio (8-channel WAV mixer + I²S output + TAS5825P codec) — compiled
+// in via SFX_HAS_AUDIO.  `EspDualCoreAudio<Mixer>` owns the two-phase
+// boot dance (Core 0 codec probe + mixer alloc → Core 1 I²S task →
+// Core 0 codec activate to PLAY) so the sketch never sees the atomics
+// or task hooks.  The helper extracts the codec type from
+// `Mixer::Codec` and dispatches probe/activate through a `CodecAdapter`
+// trait the board specializes below — fully template-monomorphized,
+// no `std::function`, no virtual dispatch.  Passive-DAC boards inherit
+// the primary template (no-op) and the probe/activate paths compile out.
+//
+// Codec variant on this PCB is the TAS5825**P** (Class-H + Hybrid-Pro,
+// RHB QFN-32), NOT the M-variant — pin map + init flow cross-referenced
+// with `tests/hw/sfx_test_p/`.  P-flow is permissive (no FS_MON gate
+// between HIZ and PLAY).  PDN / MUTE are hardwired HIGH via 10 kΩ
+// pull-ups on this rev; codec is enabled + unmuted from power-on, mode
+// control is purely via DEVICE_CTRL2 over I²C.
+#include <audio/audio_mixer.h>
+#include <audio/esp_i2s_output.h>
+#include <audio/esp_dual_core_audio.h>
+#include <audio/upload_exclusivity.h>
+#include <codec/tas5825_p_codec.h>
+#include <server/audio_service.h>
+
 #include "expanders/expander_service.h"
+#include "topology/topology_service.h"
+
+// Topology service binds to the HubFX-flavoured expander service (2 USB
+// ports, 4-entry GUID history).  Spelled out at the sketch level so
+// neither library has to depend on the other.
+using HubFxTopologyService =
+    hubfx::topology::TopologyServicePolicyT<hubfx::expanders::ExpanderServicePolicy>;
+
+// `StorageService` is the platform-selected alias from sfx_storage —
+// ESP32-S3 picks `StorageServicePolicy<Esp32StoragePolicy>` (64 KB PSRAM
+// fill buffer, single-core synchronous writes; see Rule 28).
+
+// Audio stack — board-specific composition.  ESP32-S3 + TAS5825P for
+// the HubFX 8-channel rev.  Replace with `PCM5102ACodec` for a board
+// with a passive DAC (paired with the `NoCodec` adapter on
+// `EspDualCoreAudio`).
+using Mixer        = AudioMixer<EspI2SOutput, TAS5825PCodec>;
+using AudioService = AudioServicePolicy<Mixer>;
 
 // ════════════════════════════════════════════════════════════════════════
 //  Board pin / address map (DevKitC-1 + HubFX 8-channel rev)
@@ -88,11 +135,27 @@ namespace Gpio {
     constexpr int IN_10          =  4;
     constexpr int IN_11          =  3;
     constexpr int IN_12          =  2;
+
+    // SD card — 4-bit SDIO via SD_MMC slot 1.  ESP32-S3 GPIO matrix
+    // routes any GPIO; nets match the PCB silkscreen.
+    constexpr int SD_CMD         = 40;   ///< net SD_DCMD,  U26.43
+    constexpr int SD_CLK         = 41;   ///< net SD_CLK,   U26.44
+    constexpr int SD_D0          = 42;   ///< net SD_DATA0, U26.45
+    constexpr int SD_D1          = 43;   ///< net SD_DATA1, U26.47
+    constexpr int SD_D2          = 44;   ///< net SD_DATA2, U26.48
+    constexpr int SD_D3          = 47;   ///< net SD_DATA3, U26.51
+
+    // I²S to TAS5825P codec (Philips standard mode, 48 kHz / 16-bit
+    // stereo).  Pin map cross-referenced with tests/hw/sfx_test_p/:
+    constexpr int I2S_DOUT       = 16;   ///< net TAS_DI,   U26.22 → codec DIN
+    constexpr int I2S_BCLK       = 17;   ///< net TAS_BCK,  U26.23 → codec BCK
+    constexpr int I2S_LRCLK      = 18;   ///< net TAS_FS,   U26.24 → codec FS / LRCLK
 }
 
 /// I²C device addresses on Wire (SDA/SCL above).
 namespace I2cAddr {
     constexpr uint8_t PCA9685    = 0x70;   ///< 8-channel PWM driver
+    constexpr uint8_t TAS5825P   = 0x4C;   ///< Class-H audio codec (ADDR pin → GND)
 
     // Per-channel current/voltage monitors — channel index maps to
     // PWM port index (CH1 = port 0, CH8 = port 7).
@@ -124,10 +187,19 @@ namespace Pwm {
     constexpr uint16_t FREQ_HZ = 1526;
 }
 
+/// Audio codec hardware constants for the HubFX 3S-LiPo rev.
+namespace Codec {
+    /// 3S LiPo (~12 V nominal) — selects AGAIN table at activate-time.
+    constexpr auto SUPPLY_VOLTAGE = sfx_audio::tas5825::Supply::V12;
+}
+
 // ── Board class ───────────────────────────────────────────────────────
 
 class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
-                                              hubfx::expanders::ExpanderServicePolicy> {
+                                              hubfx::expanders::ExpanderServicePolicy,
+                                              HubFxTopologyService,
+                                              StorageService,
+                                              AudioService> {
 public:
     // Hardware drivers — declaration order matters (init order).
     PCA9685 pca;
@@ -216,50 +288,87 @@ public:
 
 HubFxBoard board;
 
+// Codec adapter specialization — encapsulates everything
+// TAS5825P-specific that the generic `EspDualCoreAudio<>` helper would
+// otherwise need to know.  Static methods → fully inlined at the
+// helper's call sites; picked up automatically via `Mixer::Codec`.
+template <>
+struct CodecAdapter<TAS5825PCodec> {
+    static constexpr bool kHasCodec = true;
+    static bool probe() {
+        return TAS5825PCodec::instance().begin(
+            Wire, Gpio::I2C_SDA, Gpio::I2C_SCL,
+            AUDIO_SAMPLE_RATE, Codec::SUPPLY_VOLTAGE);
+    }
+    static bool activate() { return TAS5825PCodec::instance().activate(); }
+};
+
+// Dual-core audio bring-up — `EspDualCoreAudio<>` owns the atomic
+// flags, the Core 1 consumer task, the producer task spawn, and the
+// two-phase orchestration.  Codec is inferred from `Mixer::Codec`.
+static EspDualCoreAudio<Mixer> audio;
+
 void setup() {
-    // I²C peripherals come up before the port registry's per-port
-    // begin() runs.  RC pulse capture / UART mode are armed by the
-    // role on attach — the port's own begin() only sanity-checks args.
+    // ── Hardware ──────────────────────────────────────────────────────
     board.initHardware();
-
-    // Expander connect / identify / disconnect notifications.  Installed
-    // BEFORE board.begin() so the very first USB mount fires the user
-    // callbacks.  Three edges to watch:
-    //   - onConnect    — USB mount, kind/vid/pid only (no GUID yet)
-    //   - onIdentified — IDENTIFY response decoded; spec.guid + spec.capabilities
-    //                    are now populated and persisted in the GUID-keyed cache
-    //   - onDisconnect — USB unmount; snapshot still carries the spec
-    auto& expanders = board.policy<hubfx::expanders::ExpanderServicePolicy>();
-    expanders.onConnect([](const hubfx::expanders::ExpanderEntry& e) {
-        SFX_LOG_INFO("[Hub] expander attached: %s (addr=%u vid=0x%04X pid=0x%04X)",
-                     hubfx::expanders::ExpanderKind::getName(e.kind),
-                     e.usbAddr, e.vid, e.pid);
-    });
-    expanders.onIdentified([](const hubfx::expanders::ExpanderEntry& e) {
-        // Master-side wiring goes here later: look up cached config by
-        // e.spec.guid, push it to the expander, bind a typed BusClient, etc.
-        SFX_LOG_INFO("[Hub] expander identified: %s guid=%s fw=%s caps=0x%08lx",
-                     hubfx::expanders::ExpanderKind::getName(e.kind),
-                     e.spec.guid, e.spec.firmwareVersion,
-                     (unsigned long)e.spec.capabilities);
-    });
-    expanders.onDisconnect([](const hubfx::expanders::ExpanderEntry& e) {
-        SFX_LOG_INFO("[Hub] expander detached: %s (addr=%u guid=%s)",
-                     hubfx::expanders::ExpanderKind::getName(e.kind),
-                     e.usbAddr,
-                     e.spec.valid ? e.spec.guid : "?");
+    bringUpStorage({
+        .clk = Gpio::SD_CLK, .cmd = Gpio::SD_CMD,
+        .d0  = Gpio::SD_D0,  .d1  = Gpio::SD_D1,
+        .d2  = Gpio::SD_D2,  .d3  = Gpio::SD_D3,
     });
 
+    // ── Policy pack lifecycle ────────────────────────────────────────
+    // TopologyService resolves its expander / role / registry deps
+    // through `findPolicy<>()` inside its own begin().
     board.begin(FIRMWARE_VERSION, BUILD_NUMBER,
                 Gpio::LED_CONNECTION, Gpio::LED_ERROR);
+    board.setConnectionTimeoutEnabled(false);  // master — no upstream watchdog
 
-    board.setConnectionTimeoutEnabled(false);     // master — no upstream watchdog
+    // ── Audio ────────────────────────────────────────────────────────
+    // Two-phase bring-up: Core 0 codec probe + mixer alloc, Core 1
+    // I²S task, Core 0 codec activate to PLAY.  Codec-specific bits
+    // are encapsulated in the `HubFxCodec` adapter type above.
+    audio.begin({
+        .i2sDout  = Gpio::I2S_DOUT,
+        .i2sBclk  = Gpio::I2S_BCLK,
+        .i2sLrclk = Gpio::I2S_LRCLK,
+    });
 
-    SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out / USB expanders",
+    // Storage ↔ audio exclusivity (Rule 28): stop + suspend mixer on
+    // upload start, resume on end.  STATUS_UPDATE suppression is
+    // already auto-wired inside StorageServicePolicy.
+    wireUploadExclusivity<Mixer>(board.policy<StorageService>());
+
+    SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out / USB / storage / audio",
                  FIRMWARE_VERSION, (unsigned)BUILD_NUMBER);
 }
 
 void loop() {
+    // Upload is exclusive on HubFX (Rule 28).  While a file upload is
+    // in progress, service ONLY the storage server + its timeout
+    // check — every other subsystem is starved on purpose so the COBS
+    // reader, 64 KB fill buffer, and synchronous SD writer get the
+    // full Core 0 budget.  When raw-stream mode is active, bypass the
+    // COBS framer entirely and let the storage server consume bytes
+    // off Serial directly.
+    auto& storage = board.policy<StorageService>();
+    if (storage.isUploadActive()) {
+        if (storage.isStreamActive()) {
+            storage.processStream();
+        } else {
+            board.process();
+        }
+        storage.checkUploadTimeout();
+        return;
+    }
+
     board.process();
+    storage.checkUploadTimeout();
     board.pollSense();
+
+    // One-tick yield so the FreeRTOS idle task can refresh the watchdog
+    // and any same-core lower-priority tasks (e.g. battery sampling
+    // when it lands) get scheduled.  Audio is unaffected — both
+    // producer and consumer live on Core 1.
+    vTaskDelay(pdMS_TO_TICKS(1));
 }

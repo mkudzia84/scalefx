@@ -1,16 +1,18 @@
 /*
  * storage_protocol.h — wire-format constants for the storage subsystem.
  *
- * Owned by sfx_storage (alongside SD card + LittleFS singletons + the
- * service policy that dispatches the opcodes below).  Was part of the
- * monolithic `serial/hubfx/hubfx.h` umbrella before that header was
- * split per subsystem.
+ * Canonical home for the storage wire packets / error codes / enums.
+ * Lives under `sfx_serial` (alongside `serial/ports.h`, `serial/roles.h`,
+ * `serial/wire.h`) so Go / Python / Studio clients share one include
+ * path with the C++ firmware.  Implementations of the SD / LittleFS /
+ * upload pipeline + the `StorageServicePolicy<TPolicy>` that dispatches
+ * the opcodes below live in `sfx_storage/`.
  *
  * Packet types: 0x93..0x95 (SD), 0x99 (Flash), 0x9A..0xA3 (file ops),
  *               0xA9 (file tree), 0xB0 (upload progress async).
  *
  * Storage commands accept an optional `[target:u8]` byte
- * (`StorageTarget::TARGET_SD` / `TARGET_FLASH`) so a single command set
+ * (`StorageWire::TARGET_SD` / `TARGET_FLASH`) so a single command set
  * spans SD card + onboard flash.
  */
 

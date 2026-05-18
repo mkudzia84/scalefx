@@ -76,6 +76,8 @@ class TwoWire;
 
 namespace sfx_core {
 
+class PortRegistryBase;   // defined in port_registry.h
+
 // ============================================================================
 // BoardServerBase — non-template state + concrete wire helpers
 // ============================================================================
@@ -125,6 +127,62 @@ public:
     bool isConfigLoaded() const { return _configLoaded; }
 
     DiagLog& diagLog() { return DiagLog::instance(); }
+
+    /// Read-only access to the hub's locally-stored board info.  Resolves
+    /// `BoardServicePolicy` through `findPolicy<>()`; nullptr until the
+    /// lookup machinery is installed by `BoardServer<...>::begin()`.
+    /// Used by policies that need to fold the hub's own identify into
+    /// a unified system-info response (e.g. `ExpanderServicePolicy`).
+    const CoreBoardInfo* hubBoardInfo() const {
+        auto* core = findPolicy<BoardServicePolicy>();
+        return core ? &core->boardInfo() : nullptr;
+    }
+
+    /// Access to the per-board port registry, installed by `BoardOf<>`
+    /// before `begin()` walks the policy pack.  Lets non-templated
+    /// policies (e.g. `TopologyServicePolicy`) enumerate local ports
+    /// without the templated subclass at hand.  nullptr on bare
+    /// `BoardServer<>` builds that don't subclass `BoardOf<>`.  Not a
+    /// policy, so it stays a direct member rather than going through
+    /// `findPolicy<>()`.
+    PortRegistryBase* portRegistry() const { return _portRegistry; }
+
+    /// Flip the board-wide "transfer in progress" flag — currently a
+    /// signal to `BoardServicePolicy` that STATUS_UPDATE broadcasts
+    /// should be suppressed so the serial channel is exclusive to the
+    /// file transfer (Rule 28).  Storage policies call this from their
+    /// transfer-start / transfer-end hooks.
+    void setTransferActive(bool active) {
+        if (auto* core = findPolicy<BoardServicePolicy>()) {
+            core->setTransferActive(active);
+        }
+    }
+
+    /// Type-erased policy lookup.  Returns a pointer to the policy of
+    /// type `P` if it exists in the templated `BoardServer<...>` pack,
+    /// nullptr otherwise.  Same instance the user would get from
+    /// `board.policy<P>()` — so a policy can resolve its dependencies
+    /// from inside its own `begin()` without the user manually binding
+    /// them before `board.begin()`.
+    ///
+    /// RTTI is disabled in the firmware build (`-fno-rtti`), so type
+    /// identity uses the address of a per-type static char as a tag —
+    /// each `policyTypeTag<T>()` returns a unique pointer that's
+    /// stable across the whole binary.  The dispatcher (installed by
+    /// `BoardServer<...>::begin()`) walks the policy tuple and
+    /// compares these tags via `std::apply`.  O(N) walk runs only at
+    /// `begin()` time; the runtime hot path never touches it.
+    template <typename T>
+    static const void* policyTypeTag() {
+        static const char unique = 0;
+        return &unique;
+    }
+
+    template <typename P>
+    P* findPolicy() const {
+        if (!_policyLookupFn || !_policyOwner) return nullptr;
+        return static_cast<P*>(_policyLookupFn(_policyOwner, policyTypeTag<P>()));
+    }
 
     // ── I²C scan registration (forwarded to BoardServicePolicy) ──────
 
@@ -187,6 +245,20 @@ protected:
     bool _timeoutEnabled        = true;
     bool _timeoutEnabledByUser  = true;
     bool _configLoaded          = false;
+
+    // Type-erased policy lookup installed at begin() time — see
+    // findPolicy<P>() above.  Dispatcher casts `owner` back to
+    // `BoardServer<...>` and walks the policy tuple comparing each
+    // element's per-type tag against `requestedTag`.  No heap state.
+    // Wired *before* the policy-begin() loop so each policy's begin()
+    // can resolve its siblings via `ctx->findPolicy<Sibling>()`.
+    using PolicyLookupFn = void* (*)(void* owner, const void* requestedTag);
+    PolicyLookupFn _policyLookupFn = nullptr;
+    void*          _policyOwner    = nullptr;
+
+    /// Per-board `PortRegistry`, installed by `BoardOf<>::begin()`
+    /// (the registry isn't a policy, so it can't ride `findPolicy<>()`).
+    PortRegistryBase* _portRegistry = nullptr;
 
     // ── I²C scan registry ───────────────────────────────────────────
     struct ExpectedI2CDevice {
@@ -339,6 +411,13 @@ public:
         buildDeviceName(prefix);
         DiagLog::instance().begin(&Serial);
 
+        // Install the type-erased policy lookup BEFORE walking the pack
+        // so each policy's `begin(ctx)` can resolve siblings through
+        // `ctx->findPolicy<Sibling>()` without depending on user-side
+        // setter wiring.
+        this->_policyOwner    = this;
+        this->_policyLookupFn = &BoardServer::policyLookupDispatcher;
+
         // Init every policy.  Each receives `this` as its BoardServerBase.
         std::apply([this](auto&... p) {
             (p.begin(static_cast<BoardServerBase*>(this)), ...);
@@ -426,6 +505,28 @@ protected:
                      && (msg = errorMessageOrNull(pol, code))) || ...);
         }, _policies);
         return msg;
+    }
+
+    /// Type-erased policy lookup — installed into `BoardServerBase`
+    /// at begin() time so that any policy holding only a
+    /// `BoardServerBase*` can resolve siblings by type:
+    ///
+    ///     auto* port = ctx->findPolicy<PortServicePolicy>();
+    ///
+    /// Walks `_policies` via `std::apply` and returns the first element
+    /// whose `policyTypeTag<>()` matches `requestedTag`.  Strict type
+    /// match — no inheritance traversal.
+    static void* policyLookupDispatcher(void* owner, const void* requestedTag) {
+        auto* self = static_cast<BoardServer*>(owner);
+        void* found = nullptr;
+        std::apply([&](auto&... policy) {
+            (void)(((found == nullptr &&
+                     BoardServerBase::policyTypeTag<std::decay_t<decltype(policy)>>()
+                         == requestedTag)
+                    ? (found = static_cast<void*>(&policy), true)
+                    : false) || ...);
+        }, self->_policies);
+        return found;
     }
 
 private:

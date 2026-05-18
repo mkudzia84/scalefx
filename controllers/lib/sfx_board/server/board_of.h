@@ -131,6 +131,11 @@ public:
         for (uint8_t i = 0; i < kNumHBridges; i++) { if (_ports._hbridges[i].port) _ports._hbridges[i].port->begin(); }
         for (uint8_t i = 0; i < kNumInputs; i++)   { if (_ports._inputs[i].port)   _ports._inputs[i].port->begin(); }
 
+        // ── Expose the registry through BoardServerBase ───────────────
+        // Done before `Base::begin()` so policies walking the pack can
+        // resolve `_ctx->portRegistry()` inside their own `begin()`.
+        this->_portRegistry = &_ports;
+
         // ── Delegate to BoardServer lifecycle wiring ──────────────────
         Base::begin(TBoard::kName, version, buildNumber, connectionPin, errorPin);
     }

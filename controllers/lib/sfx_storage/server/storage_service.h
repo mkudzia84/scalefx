@@ -50,11 +50,11 @@
  * Depends on: sfx_serial, sfx_platform, sfx_storage (flash + sd_card singletons).
  */
 
-#ifndef STORAGE_SERVER_H
-#define STORAGE_SERVER_H
+#ifndef STORAGE_SERVICE_H
+#define STORAGE_SERVICE_H
 
 #include <serial/serial.h>
-#include <protocol/storage_protocol.h>
+#include <serial/storage/storage_protocol.h>
 #include <server/stream.h>
 #include <server/board_server.h>           // SystemServicePolicy + BoardServerBase
 #include <storage/flash.h>
@@ -129,7 +129,7 @@ concept StoragePolicy = requires(T t, StorageSharedState* state, const char*& er
 template <typename TPolicy>
 class StorageServicePolicy {
     // Concept enforced via static_assert rather than a class-level requires
-    // clause — otherwise every out-of-class definition in storage_server.ipp
+    // clause — otherwise every out-of-class definition in storage_service.ipp
     // would need to repeat the constraint. The static_assert still fires at
     // instantiation time with the offending policy named in the error.
     static_assert(StoragePolicy<TPolicy>,
@@ -369,19 +369,19 @@ private:
 // ============================================================================
 // Template implementation
 // ============================================================================
-#include "storage_server.ipp"
+#include "storage_service.ipp"
 
 // ============================================================================
 // Platform-specific policy (auto-selected by build target).
-// `StorageServer` is the concrete type the firmware plugs into
+// `StorageService` is the concrete type the firmware plugs into
 // `BoardServer<...UserPolicies>`.
 // ============================================================================
 #if SFX_PLATFORM_ESP32
 #include "esp32/esp32_storage_policy.h"
-using StorageServer = StorageServicePolicy<Esp32StoragePolicy>;
+using StorageService = StorageServicePolicy<Esp32StoragePolicy>;
 #else
 #include "pico/pico_storage_policy.h"
-using StorageServer = StorageServicePolicy<PicoStoragePolicy>;
+using StorageService = StorageServicePolicy<PicoStoragePolicy>;
 #endif
 
-#endif // STORAGE_SERVER_H
+#endif // STORAGE_SERVICE_H

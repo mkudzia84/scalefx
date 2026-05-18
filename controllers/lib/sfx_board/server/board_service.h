@@ -82,6 +82,13 @@ public:
     void     addCapability  (uint32_t bits) { _boardInfo.capabilities |= bits; }
     uint32_t capabilities() const           { return _boardInfo.capabilities; }
 
+    /// Read-only access to the locally-stored CoreBoardInfo (device
+    /// name, version, platform, capabilities, build).  Lets other
+    /// policies (e.g. ExpanderServicePolicy's SYSTEM_INFO packet) splice
+    /// the hub's own identify block into a unified response without
+    /// having to re-derive every field.
+    const CoreBoardInfo& boardInfo() const { return _boardInfo; }
+
     void updateFreeRam(uint32_t freeRam) { _boardInfo.freeRamBytes = freeRam; }
 
     // ── Activity / keepalive ─────────────────────────────────────────

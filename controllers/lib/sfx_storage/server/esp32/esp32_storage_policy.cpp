@@ -15,14 +15,14 @@
  * the 6 Mbps UART (~470 KB/s SD batch/stream). See the header for
  * HubFX exclusivity contract details.
  *
- * See storage_server.ipp for the platform-agnostic protocol handlers.
+ * See storage_service.ipp for the platform-agnostic protocol handlers.
  */
 
 #include <platform/sfx_platform.h>
 
 #if SFX_PLATFORM_ESP32 && defined(SFX_HAS_STORAGE_SERVER)
 
-#include <server/storage_server.h>
+#include <server/storage_service.h>
 #include <serial/diag_log.h>
 #include <esp_heap_caps.h>
 
@@ -130,7 +130,7 @@ void Esp32StoragePolicy::onUploadActivated() {
 
 bool Esp32StoragePolicy::onChunkedEnd(const char*& /*errMsg*/) {
     // No async writer — per-buffer writes already landed on disk
-    // inside onUploadBufferFull(). storage_server.ipp will flush any
+    // inside onUploadBufferFull(). storage_service.ipp will flush any
     // final partial buffer after this returns.
     return true;
 }

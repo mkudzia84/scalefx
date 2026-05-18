@@ -1,10 +1,12 @@
 /*
  * audio_protocol.h — wire-format constants for the audio subsystem.
  *
- * Owned by sfx_audio (alongside the mixer + codec drivers + the
- * service policy that dispatches the opcodes below).  Was part of the
- * monolithic `serial/hubfx/hubfx.h` umbrella before that header was
- * split per subsystem.
+ * Canonical home for the audio wire packets / error codes / enums.
+ * Lives under `sfx_serial` (alongside `serial/ports.h`, `serial/roles.h`,
+ * `serial/storage/storage_protocol.h`) so Go / Python / Studio clients
+ * share one include path with the C++ firmware.  Implementations of the
+ * mixer + codec drivers + the `AudioServicePolicy<TMixer>` that
+ * dispatches the opcodes below live in `sfx_audio/`.
  *
  * Packet types: 0x84..0x8B (control / status) + 0xAA..0xAB (codec).
  * Error codes:  0x85, 0x89 inside the 0x80..0x8F generic-error band.

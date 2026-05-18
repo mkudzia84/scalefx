@@ -17,11 +17,11 @@
  *   - UART RX buffer: 128 KB - holds ~220ms of data at line rate
  *   - Stream segments: 512 KB SD / 128 KB flash; 64 KB fill buffer on ESP32
  *
- * Included from storage_server.h -- do not include directly.
+ * Included from storage_service.h -- do not include directly.
  */
 
-#ifndef STORAGE_SERVER_IPP
-#define STORAGE_SERVER_IPP
+#ifndef STORAGE_SERVICE_IPP
+#define STORAGE_SERVICE_IPP
 
 #include <serial/diag_log.h>
 
@@ -1117,6 +1117,10 @@ template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::notifyTransferStart() {
     if (!_transferNotified) {
         _transferNotified = true;
+        // Auto-suppress STATUS_UPDATE broadcasts for the duration of
+        // the transfer (Rule 28).  Users that want additional behaviour
+        // on top can still register `onTransferStart(...)`.
+        if (_ctx) _ctx->setTransferActive(true);
         if (_onTransferStart) _onTransferStart();
     }
 }
@@ -1125,6 +1129,7 @@ template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::notifyTransferEnd() {
     if (_transferNotified) {
         _transferNotified = false;
+        if (_ctx) _ctx->setTransferActive(false);
         if (_onTransferEnd) _onTransferEnd();
     }
 }
@@ -1346,4 +1351,4 @@ bool StorageServicePolicy<TPolicy>::isValidPath(const char* path) {
 
 #undef STORAGE_LOG
 
-#endif // STORAGE_SERVER_IPP
+#endif // STORAGE_SERVICE_IPP

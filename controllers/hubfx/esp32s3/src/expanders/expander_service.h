@@ -146,7 +146,8 @@ public:
     bool begin(sfx_core::BoardServerBase* ctx);
 
     bool ownsType(uint8_t type) const {
-        return type == ExpanderPacket::EXPANDER_LIST_REQ;
+        return type == ExpanderPacket::EXPANDER_LIST_REQ
+            || type == ExpanderPacket::EXPANDER_SYSTEM_INFO_REQ;
     }
 
     CommandHandleResult handle(uint8_t type, const uint8_t* payload, size_t len);
@@ -159,16 +160,146 @@ public:
         return ExpanderError::getMessage(code);
     }
 
-private:
-    // Per-slot state ----------------------------------------------------
+public:
+    /// Cached port-roster entry — one per port the expander reports
+    /// in its `PORT_LIST_RESP`.  Mirrored on the master so we don't
+    /// re-query the expander every time Studio asks for the topology.
+    struct PortRosterEntry {
+        uint8_t kind;   ///< PortKind::Servo / Pwm / HBridge / Input
+        uint8_t idx;
+        uint8_t flags;  ///< capability/sense flags (per-kind semantics)
+    };
+
+    /// Cached role attachment — one per port that currently has a role
+    /// emplaced on the expander side.  Refreshed after every successful
+    /// remote ROLE_ATTACH / ROLE_DETACH command we forward.
+    struct RoleRosterEntry {
+        uint8_t portKind;
+        uint8_t portIdx;
+        uint8_t roleKind;
+        uint8_t flags;
+    };
+
+    /// Per-slot rosters.  Port roster has a fixed cap that comfortably
+    /// holds the largest expander (16 PWM + 4 servo + 2 HBridge + 1
+    /// input = 23 entries) with headroom.  Role roster cap is the same
+    /// since each port can host at most one role.
+    static constexpr uint8_t kMaxPortsPerExpander = 32;
+    static constexpr uint8_t kMaxRolesPerExpander = 32;
+
+    /// Outbound queued command — drained at the end of every tick into
+    /// individual CDC packets (Phase 6 will fold these into a single
+    /// `EXPANDER_BATCH` wrapper).  Real-time effect paths push here;
+    /// Studio-driven config paths bypass the queue and forward
+    /// synchronously with timeout.
+    static constexpr uint8_t kMaxQueuedPerSlot   = 16;
+    static constexpr uint8_t kMaxQueuedPayload   = 24;
+    struct QueuedCommand {
+        uint8_t type;
+        uint8_t len;
+        uint8_t payload[kMaxQueuedPayload];
+    };
+
+    /// Handshake state — drives the post-IDENTIFY roster harvest.
+    enum class Handshake : uint8_t {
+        Idle = 0,        ///< slot empty
+        Identifying,     ///< IDENTIFY round-trip in flight
+        FetchingPorts,   ///< PORT_LIST_REQ in flight
+        FetchingRoles,   ///< ROLE_LIST_REQ in flight
+        Ready,           ///< spec + ports + roles all cached
+        Failed,          ///< handshake errored out (logged + flagged)
+    };
+
     /// Live registry slot — pairs an ExpanderEntry with the CDC client
-    /// used to talk to that specific device.  BusClient is non-copyable
-    /// (deletes copy/move), so we keep _live as an array of structs.
+    /// used to talk to that specific device.  The `gen` counter bumps
+    /// on every mount / unmount transition so callers that cache a
+    /// `(slotIdx, gen)` token can detect a reused slot after disconnect
+    /// without scanning the live table again.  (See the slot-token
+    /// pattern in the topology design notes.)
     struct LiveSlot {
         ExpanderEntry entry;
         BusClient     client;
         uint32_t      identifyDeadlineMs = 0;   ///< 0 = no IDENTIFY pending
+        uint16_t      gen                = 0;   ///< slot generation (mount/unmount edge counter)
+
+        // ── Post-IDENTIFY handshake state machine ────────────────────
+        Handshake     handshake          = Handshake::Idle;
+        uint32_t      handshakeDeadlineMs = 0;
+        SerialPacket  pendingResp;              ///< capture target for non-blocking sendQuery
+
+        // ── Cached rosters ───────────────────────────────────────────
+        PortRosterEntry ports[kMaxPortsPerExpander];
+        uint8_t         numPorts = 0;
+        RoleRosterEntry roles[kMaxRolesPerExpander];
+        uint8_t         numRoles = 0;
+
+        // ── Outbound command queue (effect path) ─────────────────────
+        QueuedCommand   queue[kMaxQueuedPerSlot];
+        uint8_t         qHead = 0;
+        uint8_t         qTail = 0;
+        uint32_t        droppedCount = 0;       ///< queue overflows since boot
+
+        bool queueEmpty() const { return qHead == qTail; }
+        bool queueFull()  const { return (uint8_t)((qTail + 1) % kMaxQueuedPerSlot) == qHead; }
     };
+
+    /// Direct access for higher-level routing layers (TopologyService).
+    /// Returns nullptr if `slotIdx >= kMaxExpanders`.
+    LiveSlot*       liveSlot(uint8_t slotIdx)       {
+        return (slotIdx < kMaxExpanders) ? &_live[slotIdx] : nullptr;
+    }
+    const LiveSlot* liveSlot(uint8_t slotIdx) const {
+        return (slotIdx < kMaxExpanders) ? &_live[slotIdx] : nullptr;
+    }
+
+    /// Resolve `guid` → live slot index (0..kMaxExpanders-1) for use
+    /// in slot-tokens.  Returns 0xFF when the GUID isn't currently
+    /// connected.  Returned slot's `gen` is the token's expected gen.
+    uint8_t findLiveIdxByGuid(const char* guid) const {
+        if (!guid || !guid[0]) return 0xFF;
+        for (uint8_t i = 0; i < kMaxExpanders; ++i) {
+            const auto& s = _live[i];
+            if (s.entry.connected && s.entry.spec.valid &&
+                std::strncmp(s.entry.spec.guid, guid, sizeof(s.entry.spec.guid)) == 0) {
+                return i;
+            }
+        }
+        return 0xFF;
+    }
+
+    /// Push an outbound role/port command onto a slot's queue.  The
+    /// flusher in `update()` drains the queue at the end of every tick.
+    /// Returns false (and bumps the slot's drop counter) when the queue
+    /// is full or `slotIdx` is invalid / disconnected.
+    bool queueCommand(uint8_t slotIdx, uint8_t type,
+                      const uint8_t* payload, uint8_t len);
+
+    /// Async-event hook — fires for every TAG_ASYNC packet received
+    /// from any expander.  Used by `TopologyServicePolicy` to re-emit
+    /// role events (SERVO_TARGET_REACHED, RCIN_VALUE_BROADCAST, ...)
+    /// upstream wrapped in a `TOPOLOGY_ROLE_EVENT` packet.
+    using ExpanderAsyncCallback =
+        std::function<void(uint8_t slotIdx, uint8_t type,
+                           const uint8_t* payload, size_t len)>;
+    void onExpanderAsync(ExpanderAsyncCallback cb) { _onExpanderAsync = std::move(cb); }
+
+    /// Resolve `guid` → live slot pointer (currently connected only).
+    /// Returns nullptr when the GUID isn't online right now — callers
+    /// hitting this path should consult `findByGuid()` for the cached
+    /// history entry.
+    LiveSlot* findLiveByGuid(const char* guid) {
+        if (!guid || !guid[0]) return nullptr;
+        for (uint8_t i = 0; i < kMaxExpanders; ++i) {
+            const auto& s = _live[i];
+            if (s.entry.connected && s.entry.spec.valid &&
+                std::strncmp(s.entry.spec.guid, guid, sizeof(s.entry.spec.guid)) == 0) {
+                return &_live[i];
+            }
+        }
+        return nullptr;
+    }
+
+private:
 
     // USB-host callback adapters ----------------------------------------
     void _onUsbMount  (uint8_t devAddr, uint16_t vid, uint16_t pid);
@@ -177,11 +308,22 @@ private:
     // Spec capture from IDENTIFY callback ------------------------------
     void onIdentifyResponse(uint8_t slotIdx);
 
+    // Roster harvest ----------------------------------------------------
+    void kickFetchPorts (uint8_t slotIdx);
+    void kickFetchRoles (uint8_t slotIdx);
+    void onPortListResp (uint8_t slotIdx, const uint8_t* p, size_t len);
+    void onRoleListResp (uint8_t slotIdx, const uint8_t* p, size_t len);
+
+    // Outbound queue flush ---------------------------------------------
+    void flushQueue     (uint8_t slotIdx);
+
     // Wire handlers -----------------------------------------------------
     void handleListReq();
+    void handleSystemInfoReq();
     void emitConnected   (const ExpanderEntry& e);
     void emitIdentified  (const ExpanderEntry& e);
     void emitDisconnected(const ExpanderEntry& e);
+    void emitCollision   (const char* guid, uint8_t addrA, uint8_t addrB);
 
     // Table mutation ----------------------------------------------------
     static uint8_t  classifyByVidPid(uint16_t vid, uint16_t pid);
@@ -207,9 +349,10 @@ private:
     LiveSlot   _live[kMaxExpanders];
     KnownGuid  _known[kMaxKnownGuids];
 
-    ConnectCallback    _onConnect;
-    IdentifiedCallback _onIdentified;
-    DisconnectCallback _onDisconnect;
+    ConnectCallback       _onConnect;
+    IdentifiedCallback    _onIdentified;
+    DisconnectCallback    _onDisconnect;
+    ExpanderAsyncCallback _onExpanderAsync;
 };
 
 // ============================================================================

@@ -11,8 +11,8 @@
  * I2S/codec types.
  *
  * Usage:
- *   // In controller firmware (slotted into SfxServer's UserPolicies):
- *   using Mixer = AudioMixer<EspI2SOutput, SimpleI2SCodec>;
+ *   // In controller firmware (slotted into BoardServer's UserPolicies):
+ *   using Mixer = AudioMixer<EspI2SOutput, TAS5825PCodec>;
  *   using AudioPolicy = AudioServicePolicy<Mixer>;
  *
  * Commands handled:
@@ -30,11 +30,11 @@
  * output runs on Core 1.
  */
 
-#ifndef AUDIO_SERVER_H
-#define AUDIO_SERVER_H
+#ifndef AUDIO_SERVICE_H
+#define AUDIO_SERVICE_H
 
 #include <serial/serial.h>
-#include <protocol/audio_protocol.h>
+#include <serial/audio/audio_protocol.h>
 #include <server/board_server.h>           // SystemServicePolicy + BoardServerBase
 #include "audio/audio_config.h"
 #include "audio/audio_mixer.h"
@@ -84,7 +84,7 @@
  *   // Codec access
  *   auto& getCodec();  // must have getModelName()
  *
- * @tparam TMixer  Concrete AudioMixer type (e.g., AudioMixer<EspI2SOutput, SimpleI2SCodec>)
+ * @tparam TMixer  Concrete AudioMixer type (e.g., AudioMixer<EspI2SOutput, TAS5825PCodec>)
  */
 template <typename TMixer>
 class AudioServicePolicy {
@@ -150,6 +150,6 @@ private:
 // Template Implementation
 // ============================================================================
 
-#include "audio_server.ipp"
+#include "audio_service.ipp"
 
-#endif // AUDIO_SERVER_H
+#endif // AUDIO_SERVICE_H

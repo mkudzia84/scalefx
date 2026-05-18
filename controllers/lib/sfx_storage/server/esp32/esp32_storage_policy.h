@@ -20,15 +20,15 @@
  * matters. Controllers that can't guarantee that contract should not use
  * burst (batch/stream) upload mode.
  *
- * Included automatically from server/storage_server.h — do not include
- * directly. See server/storage_server.h for the full public API.
+ * Included automatically from server/storage_service.h — do not include
+ * directly. See server/storage_service.h for the full public API.
  */
 
 #ifndef ESP32_STORAGE_POLICY_H
 #define ESP32_STORAGE_POLICY_H
 
-#ifndef STORAGE_SERVER_H
-#error "Include <server/storage_server.h> instead of this file directly"
+#ifndef STORAGE_SERVICE_H
+#error "Include <server/storage_service.h> instead of this file directly"
 #endif
 
 #include <cstdint>

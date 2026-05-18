@@ -8,7 +8,7 @@
  * Most hooks are trivial inlines — the Pico has no FreeRTOS tasks,
  * no PSRAM, and no dual-core writer offloading.
  *
- * See storage_server.ipp for the platform-agnostic protocol handlers.
+ * See storage_service.ipp for the platform-agnostic protocol handlers.
  */
 
 #ifndef PICO_STORAGE_POLICY_H
@@ -19,7 +19,7 @@
 #include <serial/core/core.h>  // SerialError::NOT_SUPPORTED
 
 // LFSFile and StorageSharedState are declared in headers already included
-// by storage_server.h before this file (flash.h + storage_server.h itself).
+// by storage_service.h before this file (flash.h + storage_service.h itself).
 
 struct StorageSharedState;  // Forward declaration
 
