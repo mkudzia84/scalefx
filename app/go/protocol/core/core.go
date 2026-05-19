@@ -149,44 +149,91 @@ const (
 // 5×u32 (counter, uptime, freeRam, lastActivity, keepalives) + boardState:u8 + initFlags:u8
 const StatusCoreHeaderSize = 22
 
-// ─── Capability Bitmask ───
-// Mirrors CoreCapability namespace in
-// [controllers/lib/sfx_serial/serial/core/core.h]. Appended to
-// IDENTIFY/INIT_READY payload (Rule 11 append-only). A 0 bitmask means the
-// firmware pre-dates the field — callers should fall back to probing rather
-// than treating it as "no interfaces present".
+// ─── Capability Bitmask — board feature catalog ───
+//
+// Mirrors the `CoreCapability` namespace in
+// [controllers/lib/sfx_serial/serial/core/core.h] verbatim.  Append-only
+// (Rule 11) — never renumber bits; assign new features to reserved
+// positions.  A 0 bitmask means the firmware pre-dates the field —
+// callers should fall back to probing.
+//
+// Domains:
+//   Storage                   bits 0..1   (FLASH, SD)
+//   Audio                     bit 2       (AUDIO)
+//   Comm / bus                bits 3, 6   (USB_HOST, EXPANDER_BUS)
+//   Logic / config            bits 4..5   (ENGINE, CONFIG)
+//   Sensors                   bit 7       (BATTERY)
+//   Generic-expander services bits 8..10  (PORTS, ROLES, TOPOLOGY)
+//   Port-kind presence        bits 16..19 (HAS_*_PORTS)
+//   Reserved                  bits 11..15, 20..31
 
 const (
-	CapFlash    uint32 = 1 << 0 // LittleFS flash storage commands available
-	CapSd       uint32 = 1 << 1 // SD card storage commands available (slot present)
-	CapAudio    uint32 = 1 << 2 // AudioMixer + audio playback commands available
-	CapUsbHost  uint32 = 1 << 3 // USB host stack + device enumeration available
-	CapEngine   uint32 = 1 << 4 // Sound engine commands available
-	CapConfig   uint32 = 1 << 5 // YAML config store commands available
-	CapSlaveBus uint32 = 1 << 6 // Master can enumerate / route to slaves
-	CapBattery  uint32 = 1 << 7 // Battery sensor present (BATTERY_INFO_REQ / BATTERY_ALERT supported, status broadcast carries the battery section)
+	// Storage
+	CapFlash uint32 = 1 << 0 // LittleFS storage commands
+	CapSd    uint32 = 1 << 1 // SD card storage commands
+
+	// Audio
+	CapAudio uint32 = 1 << 2 // AudioMixer + audio playback commands
+
+	// Comm / bus
+	CapUsbHost     uint32 = 1 << 3 // USB host stack + device enumeration
+	CapExpanderBus uint32 = 1 << 6 // Master can enumerate / route to expanders
+	CapSlaveBus    uint32 = CapExpanderBus // legacy alias
+
+	// Logic / config
+	CapEngine uint32 = 1 << 4 // Sound-engine commands
+	CapConfig uint32 = 1 << 5 // YAML config store commands
+
+	// Sensors
+	CapBattery uint32 = 1 << 7 // Battery sensor present
+
+	// Generic-expander services (bits 8..10)
+	CapPorts    uint32 = 1 << 8  // PortServicePolicy raw-port commands (0x10..0x3F)
+	CapRoles    uint32 = 1 << 9  // RoleServicePolicy attach/detach + per-role commands (0x40..0x7F)
+	CapTopology uint32 = 1 << 10 // TopologyServicePolicy GUID-addressed access (master only)
+
+	// Port-kind presence (bits 16..19) — populated by BoardOf<>::begin().
+	CapHasServoPorts   uint32 = 1 << 16
+	CapHasPwmPorts     uint32 = 1 << 17
+	CapHasHBridgePorts uint32 = 1 << 18
+	CapHasInputPorts   uint32 = 1 << 19
 )
 
-// HasCapability returns true if every bit in want is set in caps.
+// HasCapability returns true iff every bit in want is set in caps.
 func HasCapability(caps, want uint32) bool { return caps&want == want }
 
-// CapabilityNames returns short names for the bits set in caps, in order.
+// capDef is one entry in the feature catalog used by CapabilityNames.
+type capDef struct {
+	bit  uint32
+	name string
+}
+
+// capCatalog is the canonical ordered list of feature bits.  Used by
+// `CapabilityNames` and by CLI / Studio for display.  Adding a new bit
+// is a one-line append here (after adding it to the const block above).
+var capCatalog = []capDef{
+	{CapFlash, "FLASH"},
+	{CapSd, "SD"},
+	{CapAudio, "AUDIO"},
+	{CapUsbHost, "USB_HOST"},
+	{CapEngine, "ENGINE"},
+	{CapConfig, "CONFIG"},
+	{CapExpanderBus, "EXPANDER_BUS"},
+	{CapBattery, "BATTERY"},
+	{CapPorts, "PORTS"},
+	{CapRoles, "ROLES"},
+	{CapTopology, "TOPOLOGY"},
+	{CapHasServoPorts, "HAS_SERVO_PORTS"},
+	{CapHasPwmPorts, "HAS_PWM_PORTS"},
+	{CapHasHBridgePorts, "HAS_HBRIDGE_PORTS"},
+	{CapHasInputPorts, "HAS_INPUT_PORTS"},
+}
+
+// CapabilityNames returns symbolic names for the bits set in caps, in
+// catalog order.
 func CapabilityNames(caps uint32) []string {
-	defs := []struct {
-		bit  uint32
-		name string
-	}{
-		{CapFlash, "FLASH"},
-		{CapSd, "SD"},
-		{CapAudio, "AUDIO"},
-		{CapUsbHost, "USB_HOST"},
-		{CapEngine, "ENGINE"},
-		{CapConfig, "CONFIG"},
-		{CapSlaveBus, "SLAVE_BUS"},
-		{CapBattery, "BATTERY"},
-	}
 	out := []string{}
-	for _, d := range defs {
+	for _, d := range capCatalog {
 		if caps&d.bit != 0 {
 			out = append(out, d.name)
 		}

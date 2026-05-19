@@ -1,0 +1,252 @@
+// Package storage mirrors serial/storage/storage_protocol.h — the
+// host-side wire commands for SD card / LittleFS file management.
+package storage
+
+import (
+	"encoding/binary"
+	"fmt"
+
+	"scalefx/protocol"
+)
+
+// ─── Packet types ─────────────────────────────────────────────────────
+
+const (
+	SdInit              protocol.PacketType = 0x93
+	SdStatusReq         protocol.PacketType = 0x94
+	SdStatusResp        protocol.PacketType = 0x95
+	FlashStatusReq      protocol.PacketType = 0x99
+	FileList            protocol.PacketType = 0x9A
+	FileDelete          protocol.PacketType = 0x9B
+	FileMkdir           protocol.PacketType = 0x9C
+	FileInfo            protocol.PacketType = 0x9D
+	FileInfoResp        protocol.PacketType = 0x9E
+	FileDownload        protocol.PacketType = 0x9F
+	FileUploadBegin     protocol.PacketType = 0xA0
+	FileUploadData      protocol.PacketType = 0xA1
+	FileUploadEnd       protocol.PacketType = 0xA2
+	FileUploadCancel    protocol.PacketType = 0xA3
+	FileTree            protocol.PacketType = 0xA9
+	FileUploadProgress  protocol.PacketType = 0xB0
+)
+
+// ─── Wire enums ───────────────────────────────────────────────────────
+
+const (
+	TargetSD    byte = 0
+	TargetFlash byte = 1
+)
+
+const (
+	UploadSync   byte = 0
+	UploadStream byte = 3
+)
+
+const (
+	DeleteFlagNone      byte = 0x00
+	DeleteFlagRecursive byte = 0x01
+)
+
+const (
+	MkdirFlagNone    byte = 0x00
+	MkdirFlagParents byte = 0x01
+)
+
+// TargetName returns "sd" or "flash" for the given target byte.
+func TargetName(t byte) string {
+	switch t {
+	case TargetSD:
+		return "sd"
+	case TargetFlash:
+		return "flash"
+	default:
+		return fmt.Sprintf("0x%02X", t)
+	}
+}
+
+// ─── Error codes ──────────────────────────────────────────────────────
+
+const (
+	ErrSdNotInitialized   protocol.ErrorCode = 0x86
+	ErrFileNotFound       protocol.ErrorCode = 0x8A
+	ErrFileAlreadyExists  protocol.ErrorCode = 0x8B
+	ErrFileIoError        protocol.ErrorCode = 0x8C
+	ErrFileTooLarge       protocol.ErrorCode = 0x8D
+	ErrUploadInProgress   protocol.ErrorCode = 0x8E
+	ErrNoUploadActive     protocol.ErrorCode = 0x8F
+)
+
+// ─── Decoded data types ───────────────────────────────────────────────
+
+// SdStatus is the decoded SD_STATUS_RESP payload.  Older firmware sends
+// only the first five fields; later revisions append cardType/busMode/usedSpace.
+type SdStatus struct {
+	Initialized   bool   `json:"initialized"`
+	CardSizeMB    uint32 `json:"cardSizeMb"`
+	TotalSpaceMB  uint32 `json:"totalSpaceMb"`
+	FreeSpaceMB   uint32 `json:"freeSpaceMb"`
+	UsedSpaceMB   uint32 `json:"usedSpaceMb"`
+	FatType       byte   `json:"fatType"`
+	CardType      byte   `json:"cardType"`
+	BusMode       byte   `json:"busMode"`
+}
+
+// DecodeSdStatus parses SD_STATUS_RESP.  Tolerates the legacy shorter
+// form (5 fields) per Rule 11.
+func DecodeSdStatus(p []byte) (SdStatus, error) {
+	if len(p) < 14 {
+		return SdStatus{}, fmt.Errorf("sd status: expected ≥14 bytes, got %d", len(p))
+	}
+	s := SdStatus{
+		Initialized:  p[0] != 0,
+		CardSizeMB:   binary.LittleEndian.Uint32(p[1:5]),
+		TotalSpaceMB: binary.LittleEndian.Uint32(p[5:9]),
+		FreeSpaceMB:  binary.LittleEndian.Uint32(p[9:13]),
+		FatType:      p[13],
+	}
+	if len(p) >= 14+1+1+4 {
+		s.CardType = p[14]
+		s.BusMode = p[15]
+		s.UsedSpaceMB = binary.LittleEndian.Uint32(p[16:20])
+	} else {
+		// Fall back: derive used = total - free.
+		if s.TotalSpaceMB >= s.FreeSpaceMB {
+			s.UsedSpaceMB = s.TotalSpaceMB - s.FreeSpaceMB
+		}
+	}
+	return s, nil
+}
+
+// FileInfoResult decodes FILE_INFO_RESP.
+type FileInfoResult struct {
+	Exists bool   `json:"exists"`
+	IsDir  bool   `json:"isDir"`
+	Size   uint32 `json:"size"`
+}
+
+// DecodeFileInfo parses FILE_INFO_RESP.
+func DecodeFileInfo(p []byte) (FileInfoResult, error) {
+	if len(p) != 6 {
+		return FileInfoResult{}, fmt.Errorf("file info: expected 6 bytes, got %d", len(p))
+	}
+	return FileInfoResult{
+		Exists: p[0] != 0,
+		IsDir:  p[1] != 0,
+		Size:   binary.LittleEndian.Uint32(p[2:6]),
+	}, nil
+}
+
+// UploadProgress is the decoded FILE_UPLOAD_PROGRESS async payload.
+type UploadProgress struct {
+	SegmentIdx   uint16 `json:"segmentIdx"`
+	BytesReceived uint32 `json:"bytesReceived"`
+	RingFillPct  byte   `json:"ringFillPct"`
+}
+
+// DecodeUploadProgress parses FILE_UPLOAD_PROGRESS.
+func DecodeUploadProgress(p []byte) (UploadProgress, error) {
+	if len(p) != 7 {
+		return UploadProgress{}, fmt.Errorf("upload progress: expected 7 bytes, got %d", len(p))
+	}
+	return UploadProgress{
+		SegmentIdx:    binary.LittleEndian.Uint16(p[0:2]),
+		BytesReceived: binary.LittleEndian.Uint32(p[2:6]),
+		RingFillPct:   p[6],
+	}, nil
+}
+
+// ─── Command builders ────────────────────────────────────────────────
+
+func CmdSdInit(speedMHz byte) []byte {
+	return protocol.BuildPacket(SdInit, []byte{speedMHz}, 0)
+}
+func CmdSdStatusReq() []byte    { return protocol.BuildPacket(SdStatusReq, nil, 0) }
+func CmdFlashStatusReq() []byte { return protocol.BuildPacket(FlashStatusReq, nil, 0) }
+
+// pathPayload builds [pathLen:u8][path:str][target:u8] (always-present target).
+func pathPayload(path string, target byte) []byte {
+	pb := []byte(path)
+	out := make([]byte, 0, 2+len(pb))
+	out = append(out, byte(len(pb)))
+	out = append(out, pb...)
+	out = append(out, target)
+	return out
+}
+
+func CmdFileList(path string, target byte) []byte {
+	return protocol.BuildPacket(FileList, pathPayload(path, target), 0)
+}
+func CmdFileTree(path string, target byte) []byte {
+	return protocol.BuildPacket(FileTree, pathPayload(path, target), 0)
+}
+func CmdFileDelete(path string, target, flags byte) []byte {
+	payload := pathPayload(path, target)
+	payload = append(payload, flags)
+	return protocol.BuildPacket(FileDelete, payload, 0)
+}
+func CmdFileMkdir(path string, target, flags byte) []byte {
+	payload := pathPayload(path, target)
+	payload = append(payload, flags)
+	return protocol.BuildPacket(FileMkdir, payload, 0)
+}
+func CmdFileInfo(path string) []byte {
+	pb := []byte(path)
+	payload := append([]byte{byte(len(pb))}, pb...)
+	return protocol.BuildPacket(FileInfo, payload, 0)
+}
+func CmdFileDownload(path string) []byte {
+	pb := []byte(path)
+	payload := append([]byte{byte(len(pb))}, pb...)
+	return protocol.BuildPacket(FileDownload, payload, 0)
+}
+
+// CmdFileUploadBegin builds [pathLen:u8][path:str][mode:u8][totalSize:u32LE].
+func CmdFileUploadBegin(path string, mode byte, totalSize uint32) []byte {
+	pb := []byte(path)
+	payload := make([]byte, 0, 1+len(pb)+1+4)
+	payload = append(payload, byte(len(pb)))
+	payload = append(payload, pb...)
+	payload = append(payload, mode)
+	payload = append(payload, protocol.U32LE(totalSize)...)
+	return protocol.BuildPacket(FileUploadBegin, payload, 0)
+}
+
+// CmdFileUploadData wraps a chunk of raw bytes in a FILE_UPLOAD_DATA packet.
+func CmdFileUploadData(chunk []byte) []byte {
+	return protocol.BuildPacket(FileUploadData, chunk, 0)
+}
+func CmdFileUploadEnd() []byte    { return protocol.BuildPacket(FileUploadEnd, nil, 0) }
+func CmdFileUploadCancel() []byte { return protocol.BuildPacket(FileUploadCancel, nil, 0) }
+
+// ─── Name registration ───────────────────────────────────────────────
+
+func init() {
+	protocol.RegisterPacketNames(map[protocol.PacketType]string{
+		SdInit:             "SD_INIT",
+		SdStatusReq:        "SD_STATUS_REQ",
+		SdStatusResp:       "SD_STATUS_RESP",
+		FlashStatusReq:     "FLASH_STATUS_REQ",
+		FileList:           "FILE_LIST",
+		FileDelete:         "FILE_DELETE",
+		FileMkdir:          "FILE_MKDIR",
+		FileInfo:           "FILE_INFO",
+		FileInfoResp:       "FILE_INFO_RESP",
+		FileDownload:       "FILE_DOWNLOAD",
+		FileUploadBegin:    "FILE_UPLOAD_BEGIN",
+		FileUploadData:     "FILE_UPLOAD_DATA",
+		FileUploadEnd:      "FILE_UPLOAD_END",
+		FileUploadCancel:   "FILE_UPLOAD_CANCEL",
+		FileTree:           "FILE_TREE",
+		FileUploadProgress: "FILE_UPLOAD_PROGRESS",
+	})
+
+	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{
+		ErrSdNotInitialized:  "SD_NOT_INITIALIZED",
+		ErrFileNotFound:      "FILE_NOT_FOUND",
+		ErrFileAlreadyExists: "FILE_ALREADY_EXISTS",
+		ErrFileIoError:       "FILE_IO_ERROR",
+		ErrFileTooLarge:      "FILE_TOO_LARGE",
+		ErrUploadInProgress:  "UPLOAD_IN_PROGRESS",
+		ErrNoUploadActive:    "NO_UPLOAD_ACTIVE",
+	})
+}

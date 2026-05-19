@@ -1,7 +1,9 @@
+// Package gunfx mirrors
+// controllers/hubfx/esp32s3/src/effects/gunfx/gunfx_protocol.h —
+// the master-side GunFX wire surface.  Each gun unit is muzzle-flash
+// LED + optional recoil servo + optional smoke heater + optional RC
+// trigger input.  Packet slice: 0xCC..0xD2.
 package gunfx
-
-// GunFX Protocol — mirrors serial/gunfx/gunfx.h
-// Trigger, servo, and smoke control commands.
 
 import (
 	"fmt"
@@ -9,146 +11,114 @@ import (
 	"scalefx/protocol"
 )
 
-// ─── Packet Types (0x01-0x2F) ───
+// ─── Packet types ────────────────────────────────────────────────────
 
 const (
-	TriggerOn         protocol.PacketType = 0x01
-	TriggerOff        protocol.PacketType = 0x02
-	ServoSet          protocol.PacketType = 0x10
-	ServoSettings     protocol.PacketType = 0x11
-	ServoRecoil       protocol.PacketType = 0x12
-	SmokeHeat         protocol.PacketType = 0x20
-	SmokeSettings     protocol.PacketType = 0x21
-	SmokeReset        protocol.PacketType = 0x22
-	SmokeCurrentLimit protocol.PacketType = 0x23
+	FireOnce    protocol.PacketType = 0xCC
+	StartFiring protocol.PacketType = 0xCD
+	StopFiring  protocol.PacketType = 0xCE
+	SmokeArm    protocol.PacketType = 0xCF
+	StatusReq   protocol.PacketType = 0xD0
+	StatusResp  protocol.PacketType = 0xD1
+	ShotEvent   protocol.PacketType = 0xD2
 )
 
-// ─── Error Codes (0x20-0x4F) ───
+// ─── Error codes ─────────────────────────────────────────────────────
 
 const (
-	ErrServoInvalidId    protocol.ErrorCode = 0x20
-	ErrServoPulseRange   protocol.ErrorCode = 0x21
-	ErrServoMinMax       protocol.ErrorCode = 0x22
-	ErrServoNotConfigured protocol.ErrorCode = 0x23
-	ErrInvalidFanSpeed   protocol.ErrorCode = 0x30
-	ErrHeaterDisconnected protocol.ErrorCode = 0x31
-	ErrFanDisconnected   protocol.ErrorCode = 0x32
-	ErrHeaterOvercurrent protocol.ErrorCode = 0x33
-	ErrFanOvercurrent    protocol.ErrorCode = 0x34
-	ErrInvalidRpm        protocol.ErrorCode = 0x40
-	ErrAlreadyFiring     protocol.ErrorCode = 0x41
-	ErrNotFiring         protocol.ErrorCode = 0x42
+	ErrUnknownID protocol.ErrorCode = 0xCB
+	ErrTableFull protocol.ErrorCode = 0xCC
 )
 
-// ─── Commands ───
+// ─── Decoded types ───────────────────────────────────────────────────
 
-func CmdTriggerOn(rpm uint16) []byte {
-	return protocol.BuildPacket(TriggerOn, protocol.U16LE(rpm), 0)
+// GunStatus is one entry in GUN_STATUS_RESP.
+type GunStatus struct {
+	ID         byte `json:"id"`
+	Firing     bool `json:"firing"`
+	SmokeArmed bool `json:"smokeArmed"`
 }
 
-func CmdTriggerOff(delay_ms uint16) []byte {
-	return protocol.BuildPacket(TriggerOff, protocol.U16LE(delay_ms), 0)
+// Shot is the decoded GUN_SHOT_EVENT async payload — one packet per
+// fired round.
+type Shot struct {
+	ID byte `json:"id"`
 }
 
-func CmdServoSet(id byte, pulse_us uint16) []byte {
-	payload := []byte{id}
-	payload = append(payload, protocol.U16LE(pulse_us)...)
-	return protocol.BuildPacket(ServoSet, payload, 0)
-}
+// ─── Decoders ────────────────────────────────────────────────────────
 
-func CmdServoSettings(id byte, minPulse, maxPulse, speed, accel, decel uint16, reversed bool) []byte {
-	payload := []byte{id}
-	payload = append(payload, protocol.U16LE(minPulse)...)
-	payload = append(payload, protocol.U16LE(maxPulse)...)
-	payload = append(payload, protocol.U16LE(speed)...)
-	payload = append(payload, protocol.U16LE(accel)...)
-	payload = append(payload, protocol.U16LE(decel)...)
-	if reversed {
-		payload = append(payload, 1)
+// DecodeStatus parses GUN_STATUS_RESP:
+//
+//	[count:u8] per-entry: [id:u8][firing:u8][smokeArmed:u8]
+func DecodeStatus(p []byte) ([]GunStatus, error) {
+	if len(p) < 1 {
+		return nil, fmt.Errorf("gun status: empty")
 	}
-	return protocol.BuildPacket(ServoSettings, payload, 0)
-}
-
-func CmdServoRecoil(id byte, jerk_us, variance_us uint16) []byte {
-	payload := []byte{id}
-	payload = append(payload, protocol.U16LE(jerk_us)...)
-	payload = append(payload, protocol.U16LE(variance_us)...)
-	return protocol.BuildPacket(ServoRecoil, payload, 0)
-}
-
-func CmdSmokeHeat(on bool) []byte {
-	v := byte(0)
-	if on {
-		v = 1
+	count := int(p[0])
+	if 1+3*count > len(p) {
+		return nil, fmt.Errorf("gun status: truncated (need %d)", count)
 	}
-	return protocol.BuildPacket(SmokeHeat, []byte{v}, 0)
-}
-
-func CmdSmokeSettings(pulsing bool, speed, high, low byte, pulse_ms, spindown_ms uint16) []byte {
-	p := byte(0)
-	if pulsing {
-		p = 1
+	out := make([]GunStatus, count)
+	for i := 0; i < count; i++ {
+		off := 1 + 3*i
+		out[i] = GunStatus{
+			ID:         p[off],
+			Firing:     p[off+1] != 0,
+			SmokeArmed: p[off+2] != 0,
+		}
 	}
-	payload := []byte{p, speed, high, low}
-	payload = append(payload, protocol.U16LE(pulse_ms)...)
-	payload = append(payload, protocol.U16LE(spindown_ms)...)
-	return protocol.BuildPacket(SmokeSettings, payload, 0)
+	return out, nil
 }
 
-func CmdSmokeReset() []byte {
-	return protocol.BuildPacket(SmokeReset, nil, 0)
-}
-
-func CmdSmokeCurrentLimit(target byte, limit_mA uint16) []byte {
-	payload := []byte{target}
-	payload = append(payload, protocol.U16LE(limit_mA)...)
-	return protocol.BuildPacket(SmokeCurrentLimit, payload, 0)
-}
-
-// ─── Name Lookups ───
-
-// SmokeErrorReasonName returns smoke error reason name.
-func SmokeErrorReasonName(reason byte) string {
-	names := map[byte]string{
-		0x00: "none",
-		0x01: "heater disconnected",
-		0x02: "fan disconnected",
-		0x03: "heater overcurrent",
-		0x04: "fan overcurrent",
+// DecodeShotEvent parses a GUN_SHOT_EVENT async payload.
+func DecodeShotEvent(p []byte) (Shot, error) {
+	if len(p) < 1 {
+		return Shot{}, fmt.Errorf("gun shot event: empty")
 	}
-	if n, ok := names[reason]; ok {
-		return n
-	}
-	return fmt.Sprintf("unknown(0x%02X)", reason)
+	return Shot{ID: p[0]}, nil
 }
 
-// ─── Name Registration ───
+// ─── Command builders ────────────────────────────────────────────────
+
+// CmdFireOnce builds a GUN_FIRE_ONCE for the given unit id.
+func CmdFireOnce(id byte) []byte {
+	return protocol.BuildPacket(FireOnce, []byte{id}, 0)
+}
+
+// CmdStartFiring builds a GUN_START_FIRING for `id` at `rpm` rounds /
+// minute.  rpm == 0 falls back to the unit's configured default.
+func CmdStartFiring(id byte, rpm uint16) []byte {
+	p := []byte{id, byte(rpm), byte(rpm >> 8)}
+	return protocol.BuildPacket(StartFiring, p, 0)
+}
+
+// CmdStopFiring builds a GUN_STOP_FIRING for the given unit id.
+func CmdStopFiring(id byte) []byte {
+	return protocol.BuildPacket(StopFiring, []byte{id}, 0)
+}
+
+// CmdSmokeArm builds a GUN_SMOKE_ARM (`armed == 0` disables).
+func CmdSmokeArm(id, armed byte) []byte {
+	return protocol.BuildPacket(SmokeArm, []byte{id, armed}, 0)
+}
+
+// CmdStatusReq builds a GUN_STATUS_REQ.
+func CmdStatusReq() []byte { return protocol.BuildPacket(StatusReq, nil, 0) }
+
+// ─── Name registration ───────────────────────────────────────────────
 
 func init() {
 	protocol.RegisterPacketNames(map[protocol.PacketType]string{
-		TriggerOn:         "GFX.TRIGGER_ON",
-		TriggerOff:        "GFX.TRIGGER_OFF",
-		ServoSet:          "GFX.SERVO_SET",
-		ServoSettings:     "GFX.SERVO_SETTINGS",
-		ServoRecoil:       "GFX.SERVO_RECOIL",
-		SmokeHeat:         "GFX.SMOKE_HEAT",
-		SmokeSettings:     "GFX.SMOKE_SETTINGS",
-		SmokeReset:        "GFX.SMOKE_RESET",
-		SmokeCurrentLimit: "GFX.SMOKE_CURRENT_LIMIT",
+		FireOnce:    "GUN_FIRE_ONCE",
+		StartFiring: "GUN_START_FIRING",
+		StopFiring:  "GUN_STOP_FIRING",
+		SmokeArm:    "GUN_SMOKE_ARM",
+		StatusReq:   "GUN_STATUS_REQ",
+		StatusResp:  "GUN_STATUS_RESP",
+		ShotEvent:   "GUN_SHOT_EVENT",
 	})
-
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{
-		ErrServoInvalidId:    "SERVO_INVALID_ID",
-		ErrServoPulseRange:   "SERVO_PULSE_RANGE",
-		ErrServoMinMax:       "SERVO_MIN_MAX",
-		ErrServoNotConfigured: "SERVO_NOT_CONFIGURED",
-		ErrInvalidFanSpeed:   "INVALID_FAN_SPEED",
-		ErrHeaterDisconnected: "HEATER_DISCONNECTED",
-		ErrFanDisconnected:   "FAN_DISCONNECTED",
-		ErrHeaterOvercurrent: "HEATER_OVERCURRENT",
-		ErrFanOvercurrent:    "FAN_OVERCURRENT",
-		ErrInvalidRpm:        "INVALID_RPM",
-		ErrAlreadyFiring:     "ALREADY_FIRING",
-		ErrNotFiring:         "NOT_FIRING",
+		ErrUnknownID: "GUN_UNKNOWN_ID",
+		ErrTableFull: "GUN_TABLE_FULL",
 	})
 }
