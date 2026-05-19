@@ -31,9 +31,9 @@ namespace sfx_core {
 
 class PortServicePolicy {
 public:
-    /// Port enumeration adds no capability bit — it's intrinsic to any
-    /// board firmware built on BoardOf<>.
-    static constexpr uint32_t kCapabilityBits = 0u;
+    /// Advertises `CoreCapability::PORTS` — every BoardOf-built
+    /// firmware speaks the generic-expander port wire surface.
+    static constexpr uint32_t kCapabilityBits = CoreCapability::PORTS;
 
     PortServicePolicy() = default;
 

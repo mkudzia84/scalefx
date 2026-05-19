@@ -32,6 +32,7 @@
 
 #include <Arduino.h>
 #include <atomic>
+#include <concepts>
 #include "platform/sfx_platform.h"
 #include "storage/sd_card.h"
 
@@ -109,6 +110,39 @@ struct QueuedSound {
     AudioPlaybackOptions options  = {};
     QueueLoopBehavior loopBehavior = QueueLoopBehavior::StopImmediate;
     bool valid                    = false;
+};
+
+// ============================================================================
+//  MixerLike concept
+// ============================================================================
+//
+// Compile-time contract every type passed as `TMixer` to consumers
+// (EspDualCoreAudio, AudioServicePolicy, EngineFx, GunFx, Alert)
+// satisfies.  `AudioMixer<TI2S, TCodec>` is the canonical model — the
+// concept is named `MixerLike` to avoid colliding with the class name.
+//
+// Per Rule 17 / 33: the concept lives next to the type it constrains
+// so a maintainer extending the mixer sees the consumer contract in
+// the same file.
+//
+template <typename T>
+concept MixerLike = requires(T& m, int ch, const char* path,
+                             AudioPlaybackOptions opts,
+                             AudioStopMode stopMode) {
+    // Singleton accessor — every mixer-like type exposes one.
+    { T::instance() } -> std::same_as<T&>;
+
+    // Nested typedefs for codec / I²S backend introspection (used by
+    // `EspDualCoreAudio<TMixer>` to recover the codec type via the
+    // CodecAdapter trait — see Rule 33).
+    typename T::Codec;
+    typename T::I2SOutput;
+
+    // Async runtime surface.  Effects (EngineFx, GunFx, Alert) call
+    // these from their wire-handler and update() ticks.
+    { m.playAsync(ch, path, opts) } -> std::convertible_to<bool>;
+    { m.stopAsync(ch, stopMode) };
+    { m.isPlaying(ch) }            -> std::convertible_to<bool>;
 };
 
 // ============================================================================

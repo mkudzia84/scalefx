@@ -89,7 +89,10 @@ size_t encodeInitReady(const CoreBoardInfo& info, uint8_t* payload) {
     SfxWire::putU32LE(&payload[idx], info.buildNumber);
     idx += 4;
 
-    // Capabilities bitmask (u32 LE) — Rule 11 append-only field
+    // Capabilities bitmask (u32 LE) — single source of truth for
+    // every "this board has X" feature flag, including port-kind
+    // presence (see `CoreCapability` for the full catalog).
+    // Rule 11 append-only — never renumber bits.
     SfxWire::putU32LE(&payload[idx], info.capabilities);
     idx += 4;
 

@@ -733,16 +733,19 @@ void RoleServicePolicy::handleHeaterGetStatus(const uint8_t* p, size_t len) {
 void RoleServicePolicy::emitRoleAttached(uint8_t portKind, uint8_t portIdx, uint8_t roleKind) {
     uint8_t buf[3] = { portKind, portIdx, roleKind };
     _ctx->sendRawPacket(RolePacket::ROLE_ATTACHED, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    fireLocalAsync(RolePacket::ROLE_ATTACHED, buf, sizeof buf);
 }
 
 void RoleServicePolicy::emitRoleDetached(uint8_t portKind, uint8_t portIdx) {
     uint8_t buf[2] = { portKind, portIdx };
     _ctx->sendRawPacket(RolePacket::ROLE_DETACHED, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    fireLocalAsync(RolePacket::ROLE_DETACHED, buf, sizeof buf);
 }
 
 void RoleServicePolicy::emitLedQueueDone(uint8_t portIdx) {
     uint8_t buf[1] = { portIdx };
     _ctx->sendRawPacket(RolePacket::LED_QUEUE_DONE, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    fireLocalAsync(RolePacket::LED_QUEUE_DONE, buf, sizeof buf);
 }
 
 void RoleServicePolicy::emitServoTargetReached(uint8_t portIdx, uint16_t pos_us) {
@@ -750,6 +753,7 @@ void RoleServicePolicy::emitServoTargetReached(uint8_t portIdx, uint16_t pos_us)
     buf[0] = portIdx;
     SfxWire::putU16LE(&buf[1], pos_us);
     _ctx->sendRawPacket(RolePacket::SERVO_TARGET_REACHED, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    fireLocalAsync(RolePacket::SERVO_TARGET_REACHED, buf, sizeof buf);
 }
 
 void RoleServicePolicy::emitMotorStallEvent(uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms) {
@@ -758,6 +762,7 @@ void RoleServicePolicy::emitMotorStallEvent(uint8_t portIdx, uint16_t peak_mA, u
     SfxWire::putU16LE(&buf[1], peak_mA);
     SfxWire::putU16LE(&buf[3], duration_ms);
     _ctx->sendRawPacket(RolePacket::MOTOR_STALL_EVENT, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    fireLocalAsync(RolePacket::MOTOR_STALL_EVENT, buf, sizeof buf);
 }
 
 void RoleServicePolicy::emitBiMotorStallEvent(uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms) {
@@ -766,6 +771,7 @@ void RoleServicePolicy::emitBiMotorStallEvent(uint8_t portIdx, uint16_t peak_mA,
     SfxWire::putU16LE(&buf[1], peak_mA);
     SfxWire::putU16LE(&buf[3], duration_ms);
     _ctx->sendRawPacket(RolePacket::BIMOTOR_STALL_EVENT, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    fireLocalAsync(RolePacket::BIMOTOR_STALL_EVENT, buf, sizeof buf);
 }
 
 void RoleServicePolicy::emitRcInValueBroadcast(uint8_t portIdx, uint16_t us, bool valid) {
@@ -774,6 +780,7 @@ void RoleServicePolicy::emitRcInValueBroadcast(uint8_t portIdx, uint16_t us, boo
     SfxWire::putU16LE(&buf[1], us);
     buf[3] = valid ? 1 : 0;
     _ctx->sendRawPacket(RolePacket::RCIN_VALUE_BROADCAST, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    fireLocalAsync(RolePacket::RCIN_VALUE_BROADCAST, buf, sizeof buf);
 }
 
 void RoleServicePolicy::emitSbusFrameBroadcast(uint8_t portIdx, const SbusInputRole& role) {
@@ -785,6 +792,7 @@ void RoleServicePolicy::emitSbusFrameBroadcast(uint8_t portIdx, const SbusInputR
     if (role.ch17())      flags |= 0x08;
     if (role.ch18())      flags |= 0x10;
 
+    // SBUS is protocol-fixed at 16 channels; sized to spec.
     uint8_t buf[3 + 16*2];
     buf[0] = portIdx;
     buf[1] = count;
@@ -795,11 +803,13 @@ void RoleServicePolicy::emitSbusFrameBroadcast(uint8_t portIdx, const SbusInputR
         off += 2;
     }
     _ctx->sendRawPacket(RolePacket::SBUS_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
+    fireLocalAsync(RolePacket::SBUS_FRAME_BROADCAST, buf, off);
 }
 
 void RoleServicePolicy::emitJetiExFrameBroadcast(uint8_t portIdx, const JetiExInputRole& role) {
     const uint8_t count = role.channelCount();
-    uint8_t buf[3 + 16*2];
+    // Jeti EX Bus carries up to 24 proportional channels per frame.
+    uint8_t buf[3 + 24*2];
     buf[0] = portIdx;
     buf[1] = count;
     buf[2] = role.valid() ? 1 : 0;
@@ -809,6 +819,7 @@ void RoleServicePolicy::emitJetiExFrameBroadcast(uint8_t portIdx, const JetiExIn
         off += 2;
     }
     _ctx->sendRawPacket(RolePacket::JETIEX_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
+    fireLocalAsync(RolePacket::JETIEX_FRAME_BROADCAST, buf, off);
 }
 
 }  // namespace sfx_core

@@ -358,26 +358,82 @@ struct CoreBoardInfo {
     uint32_t cpuFrequencyMHz = 0;
     uint32_t freeRamBytes = 0;
     uint32_t buildNumber = 0;
-    /// Bitmask of CoreCapability::* flags advertised by this board.
-    /// Allows clients to gate UI / queries on whether an interface
-    /// (flash, SD, audio, USB host, engine, config store) is exposed
-    /// — without per-board if-ladders or speculative status probes.
-    /// Appended to INIT_READY/IDENTIFY payload (Rule 11 append-only):
-    /// older firmware that doesn't emit it is treated as caps==0.
+    /// Bitmask of `CoreCapability::*` feature bits advertised by this
+    /// board.  Single source of truth for subsystem + service + port-kind
+    /// presence — see the `CoreCapability` block below for the full
+    /// catalog.  Lets clients gate UI / queries without per-board
+    /// if-ladders or speculative status probes.  Appended to
+    /// INIT_READY/IDENTIFY payload (Rule 11 append-only): firmware
+    /// that pre-dates this field is treated as `capabilities == 0`.
     uint32_t capabilities = 0;
 };
 
-/// Capability bits advertised in CoreBoardInfo.capabilities.
-/// Mirror in [app/go/protocol/core/core.go] (Rule 1).
+// ──────────────────────────────────────────────────────────────────────
+// CoreCapability — board feature bitmask
+// ──────────────────────────────────────────────────────────────────────
+//
+// 32-bit feature catalog carried in `CoreBoardInfo.capabilities` and
+// emitted as the tail of every INIT_READY / IDENTIFY payload.  Acts as
+// the SINGLE source of truth for "which subsystems does this board
+// support" — masters use it to gate UI, skip speculative queries, and
+// route commands appropriately.
+//
+// Layout is grouped by domain.  **Bits are append-only (Rule 11)** —
+// never renumber; assign new features to reserved positions in their
+// domain block, or extend with a new block.
+//
+//   Domain                     Bits        Notes
+//   ────────────────────────── ─────────── ──────────────────────────────
+//   Storage                    0..1, 11..15
+//   Comm / bus                 3, 6
+//   Logic / config             4..5
+//   Audio                      2
+//   Sensors                    7
+//   Generic-expander services  8..10       added 2026-05
+//   Port-kind presence         16..19      added 2026-05
+//   Reserved                   20..31
+//
+// Adding a feature: pick the lowest free bit in the matching domain,
+// add a constant below + a mirror in [app/go/protocol/core/core.go],
+// and either OR it into a policy's `kCapabilityBits` (compile-time) or
+// have the board sketch call `core().addCapability(...)` at runtime.
+//
 namespace CoreCapability {
-    constexpr uint32_t FLASH    = 1u << 0;  // LittleFS flash storage commands available
-    constexpr uint32_t SD       = 1u << 1;  // SD card storage commands available (slot present)
-    constexpr uint32_t AUDIO    = 1u << 2;  // AudioMixer + audio playback commands available
-    constexpr uint32_t USB_HOST = 1u << 3;  // USB host stack + device enumeration available
-    constexpr uint32_t ENGINE   = 1u << 4;  // Sound engine commands available
-    constexpr uint32_t CONFIG   = 1u << 5;  // YAML config store commands available
-    constexpr uint32_t SLAVE_BUS = 1u << 6; // Master can enumerate / route to slaves
-    constexpr uint32_t BATTERY  = 1u << 7;  // Battery sensor present (BATTERY_INFO_REQ / BATTERY_ALERT supported, status broadcast carries the battery section)
+    // ── Storage ──────────────────────────────────────────────────────
+    constexpr uint32_t FLASH         = 1u << 0;   // LittleFS storage commands
+    constexpr uint32_t SD            = 1u << 1;   // SD card storage commands
+
+    // ── Audio ────────────────────────────────────────────────────────
+    constexpr uint32_t AUDIO         = 1u << 2;   // AudioMixer + audio playback commands
+
+    // ── Comm / bus ───────────────────────────────────────────────────
+    constexpr uint32_t USB_HOST      = 1u << 3;   // USB host stack + device enumeration
+    constexpr uint32_t EXPANDER_BUS  = 1u << 6;   // Master can enumerate / route to expanders
+    constexpr uint32_t SLAVE_BUS     = EXPANDER_BUS;  // legacy alias — pre-rename code path
+
+    // ── Logic / config ───────────────────────────────────────────────
+    constexpr uint32_t ENGINE        = 1u << 4;   // Sound-engine commands
+    constexpr uint32_t CONFIG        = 1u << 5;   // YAML config store commands
+
+    // ── Sensors ──────────────────────────────────────────────────────
+    constexpr uint32_t BATTERY       = 1u << 7;   // Battery sensor present
+
+    // ── Generic-expander services (bits 8..10) ───────────────────────
+    constexpr uint32_t PORTS         = 1u << 8;   // PortServicePolicy raw-port commands (0x10..0x3F)
+    constexpr uint32_t ROLES         = 1u << 9;   // RoleServicePolicy attach/detach + per-role commands (0x40..0x7F)
+    constexpr uint32_t TOPOLOGY      = 1u << 10;  // TopologyServicePolicy GUID-addressed access (master only)
+
+    // ── Port-kind presence (bits 16..19) ─────────────────────────────
+    // True if the board declares at least one port of that kind.
+    // Populated automatically by `BoardOf<>::begin()` from the static
+    // `kServoPorts` / `kPwmPorts` / `kHBridgePorts` / `kInputPorts`
+    // descriptor tuples.
+    constexpr uint32_t HAS_SERVO_PORTS   = 1u << 16;
+    constexpr uint32_t HAS_PWM_PORTS     = 1u << 17;
+    constexpr uint32_t HAS_HBRIDGE_PORTS = 1u << 18;
+    constexpr uint32_t HAS_INPUT_PORTS   = 1u << 19;
+
+    // bits 20..31 reserved.
 }
 
 // ============================================================================

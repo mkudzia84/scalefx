@@ -25,8 +25,11 @@
 // ════════════════════════════════════════════════════════════════
 
 namespace RxConfig {
-    /// Maximum channels any source can report
-    constexpr uint8_t MAX_CHANNELS = 16;
+    /// Maximum channels any source can report.  Sized for Jeti EX Bus,
+    /// which carries up to 24 proportional channels per frame.  SBUS is
+    /// protocol-fixed at 16 (see `SbusConfig::NUM_CHANNELS`); the 24
+    /// ceiling is the Jeti / PPM cap.
+    constexpr uint8_t MAX_CHANNELS = 24;
 
     /// PPM frame gap threshold (µs) — pulse > this starts a new frame
     constexpr uint16_t PPM_SYNC_US = 3000;
@@ -79,7 +82,7 @@ namespace SbusConfig {
 namespace JetiConfig {
     constexpr uint32_t BAUD_LOW     = 125000;   ///< Standard EX Bus baud
     constexpr uint32_t BAUD_HIGH    = 250000;   ///< High-speed EX Bus baud
-    constexpr uint8_t  NUM_CHANNELS = 16;       ///< Up to 16 proportional (16-bit)
+    constexpr uint8_t  NUM_CHANNELS = 24;       ///< Up to 24 proportional (EX Bus spec)
 
     /// Convert Jeti raw channel value to µs (value is in 1/8 µs units)
     inline uint16_t rawToUs(uint16_t raw) {

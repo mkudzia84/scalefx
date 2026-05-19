@@ -39,7 +39,7 @@
  */
 
 #define FIRMWARE_VERSION "2.3.0"
-#define BUILD_NUMBER 25
+#define BUILD_NUMBER 52
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -87,12 +87,34 @@
 
 #include "expanders/expander_service.h"
 #include "topology/topology_service.h"
+#include "effects/audio_layout.h"
+#include "effects/input/input_dispatcher.h"
+#include "effects/alerts/alert_service.h"
+#include "effects/landing_lights/landing_light_service.h"
+#include "effects/lightfx/lightfx_service.h"
+#include "effects/gearcontrol/gearcontrol_service.h"
+#include "effects/enginefx/enginefx_service.h"
+#include "effects/gunfx/gunfx_service.h"
 
 // Topology service binds to the HubFX-flavoured expander service (2 USB
 // ports, 4-entry GUID history).  Spelled out at the sketch level so
 // neither library has to depend on the other.
 using HubFxTopologyService =
     hubfx::topology::TopologyServicePolicyT<hubfx::expanders::ExpanderServicePolicy>;
+
+// LandingLight + LightFx + GearControl effect services — all
+// parameterised on the concrete topology type so dispatch stays
+// static (Rule 33).
+using InputDispatcherService =
+    hubfx::effects::input::InputDispatcherServicePolicyT<HubFxTopologyService>;
+using LandingLightService =
+    hubfx::effects::landing::LandingLightServicePolicyT<HubFxTopologyService>;
+using LightFxEffectService =
+    hubfx::effects::lightfx::LightFxEffectServicePolicyT<HubFxTopologyService,
+                                                          LandingLightService>;
+using GearControlService =
+    hubfx::effects::gearctrl::GearControlServicePolicyT<HubFxTopologyService,
+                                                         LandingLightService>;
 
 // `StorageService` is the platform-selected alias from sfx_storage —
 // ESP32-S3 picks `StorageServicePolicy<Esp32StoragePolicy>` (64 KB PSRAM
@@ -104,6 +126,18 @@ using HubFxTopologyService =
 // `EspDualCoreAudio`).
 using Mixer        = AudioMixer<EspI2SOutput, TAS5825PCodec>;
 using AudioService = AudioServicePolicy<Mixer>;
+
+// EngineFX requires the mixer type — declared after `Mixer` above.
+using EngineFxService =
+    hubfx::effects::enginefx::EngineFxServicePolicyT<Mixer,
+                                                      HubFxTopologyService,
+                                                      InputDispatcherService>;
+using GunFxService =
+    hubfx::effects::gunfx::GunFxServicePolicyT<Mixer,
+                                                HubFxTopologyService,
+                                                InputDispatcherService>;
+using AlertService =
+    hubfx::effects::alerts::AlertServicePolicyT<Mixer>;
 
 // ════════════════════════════════════════════════════════════════════════
 //  Board pin / address map (DevKitC-1 + HubFX 8-channel rev)
@@ -198,6 +232,13 @@ namespace Codec {
 class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
                                               hubfx::expanders::ExpanderServicePolicy,
                                               HubFxTopologyService,
+                                              InputDispatcherService,
+                                              LandingLightService,
+                                              LightFxEffectService,
+                                              GearControlService,
+                                              EngineFxService,
+                                              GunFxService,
+                                              AlertService,
                                               StorageService,
                                               AudioService> {
 public:
@@ -288,20 +329,11 @@ public:
 
 HubFxBoard board;
 
-// Codec adapter specialization — encapsulates everything
-// TAS5825P-specific that the generic `EspDualCoreAudio<>` helper would
-// otherwise need to know.  Static methods → fully inlined at the
-// helper's call sites; picked up automatically via `Mixer::Codec`.
-template <>
-struct CodecAdapter<TAS5825PCodec> {
-    static constexpr bool kHasCodec = true;
-    static bool probe() {
-        return TAS5825PCodec::instance().begin(
-            Wire, Gpio::I2C_SDA, Gpio::I2C_SCL,
-            AUDIO_SAMPLE_RATE, Codec::SUPPLY_VOLTAGE);
-    }
-    static bool activate() { return TAS5825PCodec::instance().activate(); }
-};
+// CodecAdapter specialization for HubFX's TAS5825P — lives in its own
+// header so all board-specific audio plumbing (channel map + codec
+// wiring) is co-located in `effects/`.  Must come AFTER the `Gpio::`
+// and `Codec::` namespaces above; the header references them directly.
+#include "effects/audio_codec.h"
 
 // Dual-core audio bring-up — `EspDualCoreAudio<>` owns the atomic
 // flags, the Core 1 consumer task, the producer task spawn, and the

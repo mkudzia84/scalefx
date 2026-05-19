@@ -86,7 +86,7 @@
  *
  * @tparam TMixer  Concrete AudioMixer type (e.g., AudioMixer<EspI2SOutput, TAS5825PCodec>)
  */
-template <typename TMixer>
+template <MixerLike TMixer>
 class AudioServicePolicy {
 public:
     /// AudioServicePolicy advertises the AUDIO capability bit.

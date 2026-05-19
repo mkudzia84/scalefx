@@ -15,7 +15,7 @@
 // Packet Dispatch
 // ============================================================================
 
-template <typename TMixer>
+template <MixerLike TMixer>
 CommandHandleResult AudioServicePolicy<TMixer>::handle(
         uint8_t type, const uint8_t* payload, size_t len) {
     switch (type) {
@@ -53,7 +53,7 @@ CommandHandleResult AudioServicePolicy<TMixer>::handle(
 // Wire: [ch:u8][vol:u8][output:u8][loopMode:u8][loopCount:u16LE][pathLen:u8][path:str]
 // ============================================================================
 
-template <typename TMixer>
+template <MixerLike TMixer>
 void AudioServicePolicy<TMixer>::handlePlay(const uint8_t* payload, size_t len) {
     if (len < 7) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
@@ -101,7 +101,7 @@ void AudioServicePolicy<TMixer>::handlePlay(const uint8_t* payload, size_t len) 
 // Wire: [ch:u8] (0xFF = all channels)
 // ============================================================================
 
-template <typename TMixer>
+template <MixerLike TMixer>
 void AudioServicePolicy<TMixer>::handleStop(const uint8_t* payload, size_t len) {
     if (len < 1) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
@@ -122,7 +122,7 @@ void AudioServicePolicy<TMixer>::handleStop(const uint8_t* payload, size_t len) 
 // Wire: [ch:u8][vol:u8]  (ch 0xFF = master volume, 0-7 = channel, vol 0-100)
 // ============================================================================
 
-template <typename TMixer>
+template <MixerLike TMixer>
 void AudioServicePolicy<TMixer>::handleVolume(const uint8_t* payload, size_t len) {
     if (len < 2) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
@@ -146,7 +146,7 @@ void AudioServicePolicy<TMixer>::handleVolume(const uint8_t* payload, size_t len
 // Wire: [ch:u8]
 // ============================================================================
 
-template <typename TMixer>
+template <MixerLike TMixer>
 void AudioServicePolicy<TMixer>::handleFade(const uint8_t* payload, size_t len) {
     if (len < 1) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
@@ -162,7 +162,7 @@ void AudioServicePolicy<TMixer>::handleFade(const uint8_t* payload, size_t len) 
 // Wire: [ch:u8][vol:u8][loopCount:u16LE][behavior:u8][pathLen:u8][path:str]
 // ============================================================================
 
-template <typename TMixer>
+template <MixerLike TMixer>
 void AudioServicePolicy<TMixer>::handleQueue(const uint8_t* payload, size_t len) {
     if (len < 6) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
@@ -212,7 +212,7 @@ void AudioServicePolicy<TMixer>::handleQueue(const uint8_t* payload, size_t len)
 // Wire: [ch:u8] (0xFF = all channels)
 // ============================================================================
 
-template <typename TMixer>
+template <MixerLike TMixer>
 void AudioServicePolicy<TMixer>::handleQueueClear(const uint8_t* payload, size_t len) {
     if (len < 1) { sendNack(SerialError::MISSING_PARAMETER); return; }
 
@@ -251,7 +251,7 @@ void AudioServicePolicy<TMixer>::handleQueueClear(const uint8_t* payload, size_t
 //       [filenameLen:u8][filename:str]
 // ============================================================================
 
-template <typename TMixer>
+template <MixerLike TMixer>
 void AudioServicePolicy<TMixer>::handleStatusReq() {
     auto& m = mixer();
 
@@ -355,7 +355,7 @@ void AudioServicePolicy<TMixer>::handleStatusReq() {
 //       [codecNameLen:u8][codecName:str]
 // ============================================================================
 
-template <typename TMixer>
+template <MixerLike TMixer>
 void AudioServicePolicy<TMixer>::handleCodecStatusReq() {
     auto& codec = mixer().getCodec();
     uint8_t buf[64];

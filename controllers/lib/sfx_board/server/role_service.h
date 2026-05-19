@@ -43,7 +43,9 @@ namespace sfx_core {
 
 class RoleServicePolicy {
 public:
-    static constexpr uint32_t kCapabilityBits = 0u;
+    /// Advertises `CoreCapability::ROLES` — every BoardOf-built
+    /// firmware speaks the generic-expander role wire surface.
+    static constexpr uint32_t kCapabilityBits = CoreCapability::ROLES;
 
     RoleServicePolicy() = default;
 
@@ -67,6 +69,20 @@ public:
 
     const char* getErrorMessage(uint8_t code) const {
         return RoleError::getMessage(code);
+    }
+
+    /// Master-internal hook fired ALONGSIDE the wire packet whenever a
+    /// role emits an async event (SERVO_TARGET_REACHED, LED_QUEUE_DONE,
+    /// ROLE_ATTACHED/DETACHED, stall events, RC/SBUS/Jeti broadcasts).
+    /// Used by `TopologyServicePolicy` so effects can subscribe to
+    /// hub-local role events the same way they subscribe to remote
+    /// ones — without parsing the COBS output buffer.  Single slot —
+    /// only TopologyService should install it.
+    using LocalAsyncCallback = void (*)(void* ctx, uint8_t innerType,
+                                        const uint8_t* payload, size_t len);
+    void setLocalAsyncListener(LocalAsyncCallback fn, void* ctx) {
+        _localAsyncFn  = fn;
+        _localAsyncCtx = ctx;
     }
 
 private:
@@ -134,8 +150,16 @@ private:
     void emitSbusFrameBroadcast   (uint8_t portIdx, const SbusInputRole& role);
     void emitJetiExFrameBroadcast (uint8_t portIdx, const JetiExInputRole& role);
 
-    BoardServerBase*  _ctx = nullptr;
-    PortRegistryBase* _reg = nullptr;
+    /// Forwarded by every `emit*()` helper so master-internal
+    /// listeners can react without parsing the wire stream.
+    void fireLocalAsync(uint8_t innerType, const uint8_t* p, size_t len) {
+        if (_localAsyncFn) _localAsyncFn(_localAsyncCtx, innerType, p, len);
+    }
+
+    BoardServerBase*    _ctx = nullptr;
+    PortRegistryBase*   _reg = nullptr;
+    LocalAsyncCallback  _localAsyncFn  = nullptr;
+    void*               _localAsyncCtx = nullptr;
 };
 
 }  // namespace sfx_core

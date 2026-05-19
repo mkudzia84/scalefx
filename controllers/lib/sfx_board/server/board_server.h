@@ -191,10 +191,28 @@ public:
     // ── Wire helpers (concrete, no virtual dispatch) ─────────────────
 
     int sendAck() {
+        if (_captureNext) {
+            _capturedAck  = true;
+            _captureNext  = false;
+            return 0;
+        }
         return sendRawPacket(CorePacket::ACK, _currentTag, nullptr, 0);
     }
 
     int sendNack(uint8_t errorCode, const char* reason = nullptr);
+
+    // ── Master-internal response capture ─────────────────────────────
+    //
+    // Effects code that wants to invoke a local policy's handler
+    // *without* emitting an ACK/NACK on the wire (because the request
+    // didn't come from a wire packet) brackets the call with
+    // `beginCapture()` / `endCapture()`.  The next sendAck()/sendNack()
+    // is intercepted into local state instead of going to the serial
+    // port.  Single-slot — nesting is unsupported.
+    void    beginCapture() { _captureNext = true;  _capturedAck = false; _capturedErr = 0; }
+    void    endCapture()   { _captureNext = false; _capturedAck = false; _capturedErr = 0; }
+    bool    capturedAck()  const { return _capturedAck; }
+    uint8_t capturedErr()  const { return _capturedErr; }
 
     int sendRawPacket(uint8_t type, uint8_t tag,
                       const uint8_t* payload, size_t len);
@@ -259,6 +277,11 @@ protected:
     /// Per-board `PortRegistry`, installed by `BoardOf<>::begin()`
     /// (the registry isn't a policy, so it can't ride `findPolicy<>()`).
     PortRegistryBase* _portRegistry = nullptr;
+
+    // ── Response-capture state (see beginCapture above) ──────────────
+    bool    _captureNext  = false;
+    bool    _capturedAck  = false;
+    uint8_t _capturedErr  = 0;
 
     // ── I²C scan registry ───────────────────────────────────────────
     struct ExpectedI2CDevice {

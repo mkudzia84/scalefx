@@ -103,6 +103,16 @@ public:
     static constexpr size_t kNumHBridges = ports::descriptorCount_v<HBridgeList>;
     static constexpr size_t kNumInputs   = ports::descriptorCount_v<InputList>;
 
+    /// Compile-time OR of the port-kind presence bits this board
+    /// advertises in its IDENTIFY capabilities mask.  Computed from the
+    /// registry sizes so no runtime work is needed; `BoardOf<>::begin()`
+    /// just OR's this into the policy-aggregated capabilities word.
+    static constexpr uint32_t kPortPresenceBits =
+        (kNumServos   > 0 ? CoreCapability::HAS_SERVO_PORTS   : 0u) |
+        (kNumPwms     > 0 ? CoreCapability::HAS_PWM_PORTS     : 0u) |
+        (kNumHBridges > 0 ? CoreCapability::HAS_HBRIDGE_PORTS : 0u) |
+        (kNumInputs   > 0 ? CoreCapability::HAS_INPUT_PORTS   : 0u);
+
     using Base     = BoardServer<PortServicePolicy, RoleServicePolicy, ExtraPolicies...>;
     using Registry = PortRegistry<kNumServos, kNumPwms, kNumHBridges, kNumInputs>;
 
@@ -138,6 +148,11 @@ public:
 
         // ── Delegate to BoardServer lifecycle wiring ──────────────────
         Base::begin(TBoard::kName, version, buildNumber, connectionPin, errorPin);
+
+        // OR the port-kind presence bits (HAS_SERVO_PORTS, ...) into
+        // the IDENTIFY capabilities word.  Computed at compile time
+        // from the registry sizes — see `kPortPresenceBits` above.
+        this->core().addCapability(kPortPresenceBits);
     }
 
     Registry&       registry()       { return _ports; }

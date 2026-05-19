@@ -43,6 +43,7 @@
 #define HUBFX_EXPANDER_SERVICE_H
 
 #include <Arduino.h>
+#include <concepts>
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
@@ -58,6 +59,31 @@
 #include "expander_protocol.h"
 
 namespace hubfx::expanders {
+
+// ────────────────────────────────────────────────────────────────────
+//  ExpanderService concept
+// ────────────────────────────────────────────────────────────────────
+//
+// Contract every type passed as `TExpander` to `TopologyServicePolicyT`
+// must satisfy.  `ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>`
+// is the canonical model.  Topology calls into the expander service
+// to walk live USB slots, look up a slot by GUID, and re-emit async
+// CDC events into the unified `TOPOLOGY_ROLE_EVENT` stream.
+//
+template <typename T>
+concept ExpanderService = requires(T& e, uint8_t slotIdx, const char* guid) {
+    // Static traits — sizing parameters topology needs at compile time.
+    { T::kMaxExpanders }         -> std::convertible_to<uint8_t>;
+    { T::kMaxRolesPerExpander }  -> std::convertible_to<uint8_t>;
+
+    // Slot access.  Topology iterates live slots for `TOPOLOGY_PORT_LIST`
+    // and `TOPOLOGY_ROLE_LIST` enumeration responses.
+    { e.liveSlot(slotIdx) };
+    { e.findLiveIdxByGuid(guid) } -> std::convertible_to<uint8_t>;
+
+    // Async-event subscription — topology re-emits expander asyncs.
+    typename T::Handshake;
+};
 
 // ============================================================================
 // ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>

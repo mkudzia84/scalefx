@@ -1,0 +1,134 @@
+/*
+ * enginefx_service.h — `EngineFxServicePolicyT<TMixer, TTopology>`.
+ *
+ *   Master-side aircraft-engine state machine.  4 states: Stopped /
+ *   Starting / Running / Stopping.  Drives the local audio mixer
+ *   (TMixer = `AudioMixer<TI2S, TCodec>`) via its async API.  Listens
+ *   for an optional RC PWM toggle through topology role events
+ *   (RCIN_VALUE_BROADCAST) — when enabled, RC channel crossings drive
+ *   start / stop alongside the explicit ENGINE_START / ENGINE_STOP
+ *   protocol commands.
+ *
+ *   v1 ships a sequential play model (no startup-to-running cross-fade —
+ *   that's a follow-up).  Configuration is install-time via `configure()`;
+ *   YAML loading comes later.
+ */
+
+#ifndef HUBFX_ENGINEFX_SERVICE_H
+#define HUBFX_ENGINEFX_SERVICE_H
+
+#include <cstdint>
+#include <cstring>
+
+#include <serial/core/core.h>
+#include <serial/diag_log.h>
+#include <serial/roles.h>
+#include <server/board_server.h>
+
+#include "../effect_id.h"
+#include "../../topology/topology_service.h"   // TopologyService concept
+#include "../input/trigger_input.h"
+#include "../input/input_dispatcher.h"         // InputDispatcher concept
+#include "enginefx_protocol.h"
+#include <audio/audio_mixer.h>                  // AudioMixer concept
+
+namespace hubfx::effects::enginefx {
+
+/// Static configuration installed on `configure()`.
+struct EngineFxConfig {
+    bool     enabled         = false;
+
+    /// Optional RC throttle toggle — leave `rcInput.portKind == 0` to
+    /// disable the auto-start path.  Must have an `RcPwmInput` role.
+    PortRef  rcInput;
+    uint16_t thresholdUs     = 1500;
+
+    /// Audio mixer channel allocation.  Two slots cycle so the
+    /// "shutdown" sound can start before the "running" loop fully
+    /// fades out.
+    uint8_t  channelA        = 0;
+    uint8_t  channelB        = 1;
+    uint8_t  outputMask      = 0x03;          ///< AudioChannel::ALL
+
+    char     startingPath[64] = {};
+    char     runningPath [64] = {};
+    char     stoppingPath[64] = {};
+    uint32_t startingOffsetMs = 0;
+    uint32_t stoppingOffsetMs = 0;
+};
+
+template <MixerLike                                   TMixer,
+          hubfx::topology::TopologyService            TTopology,
+          hubfx::effects::input::InputDispatcher      TInputDispatcher>
+class EngineFxServicePolicyT {
+public:
+    static constexpr uint32_t kCapabilityBits = CoreCapability::ENGINE;
+
+    EngineFxServicePolicyT() = default;
+
+    void configure(const EngineFxConfig& cfg) { _cfg = cfg; }
+
+    // ── SystemServicePolicy surface ──────────────────────────────────
+
+    bool begin(sfx_core::BoardServerBase* ctx);
+
+    bool ownsType(uint8_t type) const {
+        return type == EnginePacket::ENGINE_START
+            || type == EnginePacket::ENGINE_STOP
+            || type == EnginePacket::ENGINE_STATUS_REQ;
+    }
+
+    CommandHandleResult handle(uint8_t type,
+                               const uint8_t* payload, size_t len);
+
+    /// Per-loop tick — advance state machine, watch audio for the
+    /// transition trigger (start sound finished → run loop; stop
+    /// sound finished → stopped).
+    void update();
+
+    const char* getErrorMessage(uint8_t code) const {
+        return EngineError::getMessage(code);
+    }
+
+    // ── Direct API ──────────────────────────────────────────────────
+
+    bool forceStart();
+    bool forceStop();
+    uint8_t state() const { return _state; }
+    bool    toggleEngaged() const { return _toggleEngaged; }
+    bool    active() const { return _state != EngineState::Stopped; }
+
+private:
+    void enterState(uint8_t newState);
+    void emitStateEvent(uint8_t newState);
+
+    bool startAudio(const char* path, uint8_t channel, uint32_t offsetMs);
+    void stopAudio (uint8_t channel);
+
+    /// Callback fired by the TriggerInput on edge changes.  Drives
+    /// forceStart / forceStop based on the boolean value.
+    static void onTriggerChange(void* ctx,
+                                const input::TriggerValue& v);
+
+    sfx_core::BoardServerBase* _ctx        = nullptr;
+    TTopology*                 _topo       = nullptr;
+    TInputDispatcher*          _dispatcher = nullptr;
+
+    EngineFxConfig _cfg{};
+    uint8_t        _state          = EngineState::Stopped;
+    uint8_t        _activeChannel  = 0;          ///< whichever channel currently has audio
+    uint32_t       _stateEnteredMs = 0;
+    uint32_t       _lastSoundCheckMs = 0;
+
+    // Throttle-toggle input plumbing.  When the user configured an
+    // `rcInput` PortRef, the TriggerInput is registered with the
+    // InputDispatcher at begin() time; otherwise it stays idle.
+    input::TriggerInput _throttle{};
+    bool                _toggleEngaged = false;
+};
+
+}  // namespace hubfx::effects::enginefx
+
+#include "enginefx_service.ipp"
+
+#endif  // HUBFX_ENGINEFX_SERVICE_H

@@ -78,7 +78,7 @@ struct CodecAdapter {
     static bool activate() { return true; }
 };
 
-template <typename TMixer>
+template <MixerLike TMixer>
 class EspDualCoreAudio {
 public:
     /// Codec recovered from the mixer's nested typedef — single source

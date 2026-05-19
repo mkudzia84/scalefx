@@ -29,6 +29,12 @@ int BoardServerBase::sendRawPacket(uint8_t type, uint8_t tag,
 }
 
 int BoardServerBase::sendNack(uint8_t errorCode, const char* reason) {
+    if (_captureNext) {
+        _capturedAck = false;
+        _capturedErr = errorCode;
+        _captureNext = false;
+        return 0;
+    }
     uint8_t payload[64];
     payload[0] = errorCode;
 
