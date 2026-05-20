@@ -40,7 +40,7 @@ template <MixerLike                                   TMixer,
           hubfx::effects::input::InputDispatcher      TInputDispatcher>
 class GunFxServicePolicyT {
 public:
-    static constexpr uint32_t kCapabilityBits = CoreCapability::TOPOLOGY;
+    static constexpr uint32_t kCapabilityBits = CoreCapability::GUNFX;
 
     GunFxServicePolicyT() = default;
 

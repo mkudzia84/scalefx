@@ -1195,6 +1195,16 @@ bool AudioMixer<TI2S, TCodec>::playAsync(int channel, const char* filename, cons
     cmd.channelId = channel;
     strncpy(cmd.filename, filename, sizeof(cmd.filename) - 1);
     cmd.options = options;
+    // Mark the channel busy at queue time so AUDIO_STATUS_RESP reflects
+    // the caller's intent immediately — without this there's a ~20 ms
+    // race (file open + WAV-header parse + buffer pre-fill) during which
+    // the producer hasn't reached the `_channelPlaying = true` line in
+    // play() yet.  The producer reverts to `false` on failure paths
+    // (invalid WAV, missing file, mixer not initialized) and stop/fade
+    // already clear it through the normal cleanup paths.
+    if (channel >= 0 && channel < AUDIO_MAX_CHANNELS) {
+        _channelPlaying[channel].store(true, std::memory_order_release);
+    }
     return queueCommand(cmd);
 }
 
@@ -1204,6 +1214,18 @@ void AudioMixer<TI2S, TCodec>::stopAsync(int channel, AudioStopMode mode) {
     cmd.type = (channel < 0) ? CommandType::StopAll : CommandType::Stop;
     cmd.channelId = channel;
     cmd.stopMode = mode;
+    // Mirror the eager-state convention from playAsync: clear the
+    // channel-playing flag at queue time so AUDIO_STATUS_RESP reflects
+    // the caller's intent.  Fade mode still produces audio for a few
+    // hundred ms while the level ramps down — we drop the active flag
+    // immediately so a fresh play() restart works without state lag.
+    if (channel < 0) {
+        for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
+            _channelPlaying[i].store(false, std::memory_order_release);
+        }
+    } else if (channel < AUDIO_MAX_CHANNELS) {
+        _channelPlaying[channel].store(false, std::memory_order_release);
+    }
     queueCommand(cmd);
 }
 

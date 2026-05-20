@@ -134,18 +134,39 @@ public:
 // PortRegistry<NS, NP, NH> — sized storage
 // ============================================================================
 
+// Template parameters set the maximum capacity per port kind.  The
+// actual `numXxxPorts()` returned to wire consumers is the count
+// `BoardOf<>::begin()` filled at bind time — see `_numXxx` runtime
+// counters below.
+//
+// Why dynamic rather than tight-fit static: when `BoardOf<HubFxBoard>`
+// is instantiated to become the base class of `HubFxBoard`, the latter
+// is still incomplete, so the SFINAE detector
+//   `decltype(HubFxBoard::kServoPorts)`
+// fails and the registry would degenerate to a 0-sized array.  Sizing
+// to a generous max + a runtime counter keeps the array statically
+// allocated while leaving the actual count to be set inside `begin()`,
+// which is parsed lazily (HubFxBoard is complete by then).
 template <size_t NServos, size_t NPwms, size_t NHBridges, size_t NInputs>
 class PortRegistry : public PortRegistryBase {
 public:
-    static constexpr size_t kNumServos    = NServos;
-    static constexpr size_t kNumPwms      = NPwms;
-    static constexpr size_t kNumHBridges  = NHBridges;
-    static constexpr size_t kNumInputs    = NInputs;
+    static constexpr size_t kMaxServos    = NServos;
+    static constexpr size_t kMaxPwms      = NPwms;
+    static constexpr size_t kMaxHBridges  = NHBridges;
+    static constexpr size_t kMaxInputs    = NInputs;
 
-    uint8_t numServoPorts()    const override { return (uint8_t)NServos; }
-    uint8_t numPwmPorts()      const override { return (uint8_t)NPwms; }
-    uint8_t numHBridgePorts()  const override { return (uint8_t)NHBridges; }
-    uint8_t numInputPorts()    const override { return (uint8_t)NInputs; }
+    uint8_t numServoPorts()    const override { return _numServos;   }
+    uint8_t numPwmPorts()      const override { return _numPwms;     }
+    uint8_t numHBridgePorts()  const override { return _numHBridges; }
+    uint8_t numInputPorts()    const override { return _numInputs;   }
+
+    /// Set by BoardOf<>::begin() once the descriptor lists have been
+    /// walked.  Caps at the slot-array size; passing a larger value is
+    /// silently clamped so the registry never returns out-of-bounds.
+    void setNumServoPorts   (uint8_t n) { _numServos   = n > NServos   ? NServos   : n; }
+    void setNumPwmPorts     (uint8_t n) { _numPwms     = n > NPwms     ? NPwms     : n; }
+    void setNumHBridgePorts (uint8_t n) { _numHBridges = n > NHBridges ? NHBridges : n; }
+    void setNumInputPorts   (uint8_t n) { _numInputs   = n > NInputs   ? NInputs   : n; }
 
     ServoBinding*    servoAt   (uint8_t idx) override {
         return (idx < NServos)   ? &_servos[idx]   : nullptr;
@@ -164,6 +185,11 @@ public:
     std::array<PwmBinding,     NPwms>      _pwms;
     std::array<HBridgeBinding, NHBridges>  _hbridges;
     std::array<InputBinding,   NInputs>    _inputs;
+
+    uint8_t _numServos   = 0;
+    uint8_t _numPwms     = 0;
+    uint8_t _numHBridges = 0;
+    uint8_t _numInputs   = 0;
 };
 
 }  // namespace sfx_core

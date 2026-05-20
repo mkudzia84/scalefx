@@ -90,31 +90,22 @@ class BoardOf : public BoardServer<PortServicePolicy,
                                    RoleServicePolicy,
                                    ExtraPolicies...> {
 public:
-    using ServoList   = decltype(ServoListOf<TBoard>::value);
-    using PwmList     = decltype(PwmListOf<TBoard>::value);
-    using HBridgeList = decltype(HBridgeListOf<TBoard>::value);
-    using InputList   = decltype(InputListOf<TBoard>::value);
-
-    // Sum of every descriptor's `kCount` — array descriptors contribute
-    // N slots, single-port descriptors contribute 1.  Registry is sized
-    // exactly to the total.
-    static constexpr size_t kNumServos   = ports::descriptorCount_v<ServoList>;
-    static constexpr size_t kNumPwms     = ports::descriptorCount_v<PwmList>;
-    static constexpr size_t kNumHBridges = ports::descriptorCount_v<HBridgeList>;
-    static constexpr size_t kNumInputs   = ports::descriptorCount_v<InputList>;
-
-    /// Compile-time OR of the port-kind presence bits this board
-    /// advertises in its IDENTIFY capabilities mask.  Computed from the
-    /// registry sizes so no runtime work is needed; `BoardOf<>::begin()`
-    /// just OR's this into the policy-aggregated capabilities word.
-    static constexpr uint32_t kPortPresenceBits =
-        (kNumServos   > 0 ? CoreCapability::HAS_SERVO_PORTS   : 0u) |
-        (kNumPwms     > 0 ? CoreCapability::HAS_PWM_PORTS     : 0u) |
-        (kNumHBridges > 0 ? CoreCapability::HAS_HBRIDGE_PORTS : 0u) |
-        (kNumInputs   > 0 ? CoreCapability::HAS_INPUT_PORTS   : 0u);
+    // Registry max capacities — generous fixed bounds so the static
+    // arrays are sized once for every board kind.  Actual occupancy is
+    // tracked at runtime in `_numXxx` counters that `begin()` populates
+    // from `TBoard::kServoPorts` / `kPwmPorts` / `kHBridgePorts` /
+    // `kInputPorts`.  Setting these as constants (not derived from
+    // `TBoard`) sidesteps the CRTP timing trap: at base-class
+    // instantiation `TBoard` is incomplete, so any trait that pulls
+    // `decltype(TBoard::kXxxPorts)` would silently degenerate to empty.
+    static constexpr size_t kMaxServoPorts   = 32;
+    static constexpr size_t kMaxPwmPorts     = 32;
+    static constexpr size_t kMaxHBridgePorts = 16;
+    static constexpr size_t kMaxInputPorts   = 8;
 
     using Base     = BoardServer<PortServicePolicy, RoleServicePolicy, ExtraPolicies...>;
-    using Registry = PortRegistry<kNumServos, kNumPwms, kNumHBridges, kNumInputs>;
+    using Registry = PortRegistry<kMaxServoPorts, kMaxPwmPorts,
+                                   kMaxHBridgePorts, kMaxInputPorts>;
 
     BoardOf() {
         // Hand the registry to the policies before begin() runs.
@@ -130,16 +121,40 @@ public:
         auto* self = static_cast<TBoard*>(this);
 
         // ── Fill registry from static descriptor lists ────────────────
-        bindServos  (self, _ports._servos,   ServoListOf  <TBoard>::value);
-        bindPwms    (self, _ports._pwms,     PwmListOf    <TBoard>::value);
-        bindHBridges(self, _ports._hbridges, HBridgeListOf<TBoard>::value);
-        bindInputs  (self, _ports._inputs,   InputListOf  <TBoard>::value);
+        //
+        // `begin()` is parsed when first called, NOT when the base
+        // class template is instantiated, so `TBoard` is complete here
+        // and `requires { TBoard::kXxxPorts; }` resolves correctly
+        // against the user's declarations.  Each branch returns the
+        // count of slots actually filled, which we hand to the
+        // registry so `numXxxPorts()` reflects the real population.
+
+        uint8_t nServos = 0;
+        if constexpr (requires { TBoard::kServoPorts; }) {
+            nServos = bindServos(self, _ports._servos, TBoard::kServoPorts);
+        }
+        uint8_t nPwms = 0;
+        if constexpr (requires { TBoard::kPwmPorts; }) {
+            nPwms = bindPwms(self, _ports._pwms, TBoard::kPwmPorts);
+        }
+        uint8_t nHBridges = 0;
+        if constexpr (requires { TBoard::kHBridgePorts; }) {
+            nHBridges = bindHBridges(self, _ports._hbridges, TBoard::kHBridgePorts);
+        }
+        uint8_t nInputs = 0;
+        if constexpr (requires { TBoard::kInputPorts; }) {
+            nInputs = bindInputs(self, _ports._inputs, TBoard::kInputPorts);
+        }
+        _ports.setNumServoPorts  (nServos);
+        _ports.setNumPwmPorts    (nPwms);
+        _ports.setNumHBridgePorts(nHBridges);
+        _ports.setNumInputPorts  (nInputs);
 
         // ── Hardware init for every port ──────────────────────────────
-        for (uint8_t i = 0; i < kNumServos; i++)   { if (_ports._servos[i].port)   _ports._servos[i].port->begin(); }
-        for (uint8_t i = 0; i < kNumPwms; i++)     { if (_ports._pwms[i].port)     _ports._pwms[i].port->begin(); }
-        for (uint8_t i = 0; i < kNumHBridges; i++) { if (_ports._hbridges[i].port) _ports._hbridges[i].port->begin(); }
-        for (uint8_t i = 0; i < kNumInputs; i++)   { if (_ports._inputs[i].port)   _ports._inputs[i].port->begin(); }
+        for (uint8_t i = 0; i < nServos; i++)   { if (_ports._servos[i].port)   _ports._servos[i].port->begin(); }
+        for (uint8_t i = 0; i < nPwms; i++)     { if (_ports._pwms[i].port)     _ports._pwms[i].port->begin(); }
+        for (uint8_t i = 0; i < nHBridges; i++) { if (_ports._hbridges[i].port) _ports._hbridges[i].port->begin(); }
+        for (uint8_t i = 0; i < nInputs; i++)   { if (_ports._inputs[i].port)   _ports._inputs[i].port->begin(); }
 
         // ── Expose the registry through BoardServerBase ───────────────
         // Done before `Base::begin()` so policies walking the pack can
@@ -150,9 +165,14 @@ public:
         Base::begin(TBoard::kName, version, buildNumber, connectionPin, errorPin);
 
         // OR the port-kind presence bits (HAS_SERVO_PORTS, ...) into
-        // the IDENTIFY capabilities word.  Computed at compile time
-        // from the registry sizes — see `kPortPresenceBits` above.
-        this->core().addCapability(kPortPresenceBits);
+        // the IDENTIFY capabilities word.  Derived from runtime counts
+        // since the registry sizes are now dynamic.
+        uint32_t presence = 0;
+        if (nServos   > 0) presence |= CoreCapability::HAS_SERVO_PORTS;
+        if (nPwms     > 0) presence |= CoreCapability::HAS_PWM_PORTS;
+        if (nHBridges > 0) presence |= CoreCapability::HAS_HBRIDGE_PORTS;
+        if (nInputs   > 0) presence |= CoreCapability::HAS_INPUT_PORTS;
+        this->core().addCapability(presence);
     }
 
     Registry&       registry()       { return _ports; }
@@ -164,59 +184,63 @@ private:
     // the running `slotIdx`.  Works uniformly for single-port and
     // array descriptors.
     template <typename Slots, typename... Ds>
-    void bindServos(TBoard* self, Slots& slots, const std::tuple<Ds...>& list) {
+    uint8_t bindServos(TBoard* self, Slots& slots, const std::tuple<Ds...>& list) {
         size_t slotIdx = 0;
         auto bindOne = [&](auto& d) {
             using D = std::decay_t<decltype(d)>;
-            for (size_t k = 0; k < D::kCount; k++) {
+            for (size_t k = 0; k < D::kCount && slotIdx < slots.size(); k++) {
                 slots[slotIdx].port = d.template extractAt<TBoard>(self, k);
                 d.template fillSensesAt<TBoard>(self, slots[slotIdx], k);
                 slotIdx++;
             }
         };
         std::apply([&](auto&... d) { (bindOne(d), ...); }, list);
+        return (uint8_t)slotIdx;
     }
 
     template <typename Slots, typename... Ds>
-    void bindPwms(TBoard* self, Slots& slots, const std::tuple<Ds...>& list) {
+    uint8_t bindPwms(TBoard* self, Slots& slots, const std::tuple<Ds...>& list) {
         size_t slotIdx = 0;
         auto bindOne = [&](auto& d) {
             using D = std::decay_t<decltype(d)>;
-            for (size_t k = 0; k < D::kCount; k++) {
+            for (size_t k = 0; k < D::kCount && slotIdx < slots.size(); k++) {
                 slots[slotIdx].port = d.template extractAt<TBoard>(self, k);
                 d.template fillSensesAt<TBoard>(self, slots[slotIdx], k);
                 slotIdx++;
             }
         };
         std::apply([&](auto&... d) { (bindOne(d), ...); }, list);
+        return (uint8_t)slotIdx;
     }
 
     template <typename Slots, typename... Ds>
-    void bindHBridges(TBoard* self, Slots& slots, const std::tuple<Ds...>& list) {
+    uint8_t bindHBridges(TBoard* self, Slots& slots, const std::tuple<Ds...>& list) {
         size_t slotIdx = 0;
         auto bindOne = [&](auto& d) {
             using D = std::decay_t<decltype(d)>;
-            for (size_t k = 0; k < D::kCount; k++) {
+            for (size_t k = 0; k < D::kCount && slotIdx < slots.size(); k++) {
                 slots[slotIdx].port = d.template extractAt<TBoard>(self, k);
                 d.template fillSensesAt<TBoard>(self, slots[slotIdx], k);
                 slotIdx++;
             }
         };
         std::apply([&](auto&... d) { (bindOne(d), ...); }, list);
+        return (uint8_t)slotIdx;
     }
 
     template <typename Slots, typename... Ds>
-    void bindInputs(TBoard* self, Slots& slots, const std::tuple<Ds...>& list) {
+    uint8_t bindInputs(TBoard* self, Slots& slots, const std::tuple<Ds...>& list) {
         size_t slotIdx = 0;
         auto bindOne = [&](auto& d) {
             using D = std::decay_t<decltype(d)>;
-            for (size_t k = 0; k < D::kCount; k++) {
+            for (size_t k = 0; k < D::kCount && slotIdx < slots.size(); k++) {
                 slots[slotIdx].port = d.template extractAt<TBoard>(self, k);
                 d.template fillSensesAt<TBoard>(self, slots[slotIdx], k);
                 slotIdx++;
             }
         };
         std::apply([&](auto&... d) { (bindOne(d), ...); }, list);
+        return (uint8_t)slotIdx;
     }
 
     Registry _ports;

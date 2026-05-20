@@ -45,9 +45,8 @@ type ConnectionInfo struct {
 	Platform       string `json:"platform"`
 	CPUMHz         uint32 `json:"cpuMHz"`
 	FreeRAM        uint32 `json:"freeRAM"`
-	// Capabilities is the bitmask the firmware advertised in IDENTIFY/INIT_READY
-	// (mirrors core.Cap* — flash, sd, audio, usb_host, engine, config, slave_bus).
-	// 0 means "legacy firmware" — UI should fall back to probing.
+	// Capabilities is the bitmask the firmware advertised in
+	// IDENTIFY / INIT_READY (mirrors core.Cap*).
 	Capabilities uint32 `json:"capabilities"`
 }
 

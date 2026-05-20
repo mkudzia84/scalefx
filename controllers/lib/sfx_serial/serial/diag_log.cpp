@@ -36,7 +36,13 @@ void DiagLog::logv(uint8_t level, const char* fmt, va_list args) {
     }
     _head.store(nextHead, std::memory_order_release);
 
+    // Live-stream LOG_MESSAGE for hosts that have subscribed.
+    uint8_t wireMin = _wireMinLevel.load(std::memory_order_relaxed);
+    bool emitNow = (wireMin <= level);
+
     sfxMutexUnlock(_mutex);
+
+    if (emitNow) emitLive(_ring[curHead]);
 }
 
 // ============================================================================
@@ -68,7 +74,33 @@ void DiagLog::ingest(uint8_t level, const char* message) {
     }
     _head.store(nextHead, std::memory_order_release);
 
+    uint8_t wireMin = _wireMinLevel.load(std::memory_order_relaxed);
+    bool emitNow = (wireMin <= level);
+
     sfxMutexUnlock(_mutex);
+
+    if (emitNow) emitLive(_ring[curHead]);
+}
+
+// ============================================================================
+// Emit one entry as a TAG_ASYNC LOG_MESSAGE packet (live-stream path)
+// ============================================================================
+
+void DiagLog::emitLive(const LogEntry& entry) {
+    Stream* serial = _serial.load(std::memory_order_acquire);
+    if (!serial) return;
+
+    uint8_t payload[1 + 4 + MAX_MSG_LEN];
+    payload[0] = entry.level;
+    putU32LE(&payload[1], entry.timestamp_ms);
+    memcpy(&payload[5], entry.message, entry.len);
+    size_t payloadLen = 5 + entry.len;
+
+    uint8_t buffer[COBS_BUFFER_SIZE];
+    size_t encodedLen = encodePacket(buffer, _packetType, TAG_ASYNC, payload, payloadLen);
+    if (encodedLen > 0) {
+        serial->write(buffer, encodedLen);
+    }
 }
 
 // ============================================================================

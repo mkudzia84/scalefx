@@ -78,43 +78,60 @@ const (
 
 // ─── Decoded data types ───────────────────────────────────────────────
 
-// SdStatus is the decoded SD_STATUS_RESP payload.  Older firmware sends
-// only the first five fields; later revisions append cardType/busMode/usedSpace.
+// SdStatus is the decoded SD_STATUS_RESP payload (20 bytes, sizes in MB).
+//
+//	[init:u8][cardSize_MB:u32][totalSpace_MB:u32][freeSpace_MB:u32]
+//	[fatType:u8][cardType:u8][busMode:u8][usedSpace_MB:u32]
 type SdStatus struct {
-	Initialized   bool   `json:"initialized"`
-	CardSizeMB    uint32 `json:"cardSizeMb"`
-	TotalSpaceMB  uint32 `json:"totalSpaceMb"`
-	FreeSpaceMB   uint32 `json:"freeSpaceMb"`
-	UsedSpaceMB   uint32 `json:"usedSpaceMb"`
-	FatType       byte   `json:"fatType"`
-	CardType      byte   `json:"cardType"`
-	BusMode       byte   `json:"busMode"`
+	Initialized  bool   `json:"initialized"`
+	CardSizeMB   uint32 `json:"cardSizeMb"`
+	TotalSpaceMB uint32 `json:"totalSpaceMb"`
+	FreeSpaceMB  uint32 `json:"freeSpaceMb"`
+	UsedSpaceMB  uint32 `json:"usedSpaceMb"`
+	FatType      byte   `json:"fatType"`
+	CardType     byte   `json:"cardType"`
+	BusMode      byte   `json:"busMode"`
 }
 
-// DecodeSdStatus parses SD_STATUS_RESP.  Tolerates the legacy shorter
-// form (5 fields) per Rule 11.
+// DecodeSdStatus parses SD_STATUS_RESP.
 func DecodeSdStatus(p []byte) (SdStatus, error) {
-	if len(p) < 14 {
-		return SdStatus{}, fmt.Errorf("sd status: expected ≥14 bytes, got %d", len(p))
+	if len(p) < 20 {
+		return SdStatus{}, fmt.Errorf("sd status: expected 20 bytes, got %d", len(p))
 	}
-	s := SdStatus{
+	return SdStatus{
 		Initialized:  p[0] != 0,
 		CardSizeMB:   binary.LittleEndian.Uint32(p[1:5]),
 		TotalSpaceMB: binary.LittleEndian.Uint32(p[5:9]),
 		FreeSpaceMB:  binary.LittleEndian.Uint32(p[9:13]),
 		FatType:      p[13],
+		CardType:     p[14],
+		BusMode:      p[15],
+		UsedSpaceMB:  binary.LittleEndian.Uint32(p[16:20]),
+	}, nil
+}
+
+// FlashStatus is the decoded FLASH_STATUS payload (13 bytes, sizes in bytes).
+// The firmware reuses FLASH_STATUS_REQ (0x99) as the response type.
+//
+//	[init:u8][totalBytes:u32][usedBytes:u32][freeBytes:u32]
+type FlashStatus struct {
+	Initialized bool   `json:"initialized"`
+	TotalBytes  uint32 `json:"totalBytes"`
+	UsedBytes   uint32 `json:"usedBytes"`
+	FreeBytes   uint32 `json:"freeBytes"`
+}
+
+// DecodeFlashStatus parses the 13-byte FLASH_STATUS reply.
+func DecodeFlashStatus(p []byte) (FlashStatus, error) {
+	if len(p) < 13 {
+		return FlashStatus{}, fmt.Errorf("flash status: expected 13 bytes, got %d", len(p))
 	}
-	if len(p) >= 14+1+1+4 {
-		s.CardType = p[14]
-		s.BusMode = p[15]
-		s.UsedSpaceMB = binary.LittleEndian.Uint32(p[16:20])
-	} else {
-		// Fall back: derive used = total - free.
-		if s.TotalSpaceMB >= s.FreeSpaceMB {
-			s.UsedSpaceMB = s.TotalSpaceMB - s.FreeSpaceMB
-		}
-	}
-	return s, nil
+	return FlashStatus{
+		Initialized: p[0] != 0,
+		TotalBytes:  binary.LittleEndian.Uint32(p[1:5]),
+		UsedBytes:   binary.LittleEndian.Uint32(p[5:9]),
+		FreeBytes:   binary.LittleEndian.Uint32(p[9:13]),
+	}, nil
 }
 
 // FileInfoResult decodes FILE_INFO_RESP.
@@ -200,20 +217,40 @@ func CmdFileDownload(path string) []byte {
 	return protocol.BuildPacket(FileDownload, payload, 0)
 }
 
-// CmdFileUploadBegin builds [pathLen:u8][path:str][mode:u8][totalSize:u32LE].
-func CmdFileUploadBegin(path string, mode byte, totalSize uint32) []byte {
+// CmdFileUploadBegin builds the wire payload the firmware expects:
+//
+//	[totalSize:u32LE][pathLen:u8][path:str][target:u8][mode:u8]
+//
+// `target` is TargetSD / TargetFlash; `mode` is UploadSync (one
+// FILE_UPLOAD_DATA per chunk + per-chunk ACK) or UploadStream (raw
+// binary segments with per-segment progress ACK — much higher
+// throughput on the ESP32 side).
+func CmdFileUploadBegin(path string, totalSize uint32, target, mode byte) []byte {
 	pb := []byte(path)
-	payload := make([]byte, 0, 1+len(pb)+1+4)
-	payload = append(payload, byte(len(pb)))
-	payload = append(payload, pb...)
-	payload = append(payload, mode)
-	payload = append(payload, protocol.U32LE(totalSize)...)
+	payload := make([]byte, 4+1+len(pb)+1+1)
+	copy(payload[0:4], protocol.U32LE(totalSize))
+	payload[4] = byte(len(pb))
+	copy(payload[5:5+len(pb)], pb)
+	payload[5+len(pb)] = target
+	payload[6+len(pb)] = mode
 	return protocol.BuildPacket(FileUploadBegin, payload, 0)
 }
 
-// CmdFileUploadData wraps a chunk of raw bytes in a FILE_UPLOAD_DATA packet.
-func CmdFileUploadData(chunk []byte) []byte {
-	return protocol.BuildPacket(FileUploadData, chunk, 0)
+// CmdFileUploadData wraps a sync-mode chunk in a FILE_UPLOAD_DATA
+// packet.  The wire payload is `[seqNum:u16LE][crc16:u16LE][data:N]` —
+// the firmware verifies both the sequence and the CRC-16/CCITT before
+// committing the bytes to the open file.  Stream-mode uploads skip
+// this packet entirely; they send raw segment bytes through
+// `Connection.SendRaw`.
+func CmdFileUploadData(seq uint16, chunk []byte) []byte {
+	crc := protocol.CRC16CCITT(chunk)
+	payload := make([]byte, 4+len(chunk))
+	payload[0] = byte(seq)
+	payload[1] = byte(seq >> 8)
+	payload[2] = byte(crc)
+	payload[3] = byte(crc >> 8)
+	copy(payload[4:], chunk)
+	return protocol.BuildPacket(FileUploadData, payload, 0)
 }
 func CmdFileUploadEnd() []byte    { return protocol.BuildPacket(FileUploadEnd, nil, 0) }
 func CmdFileUploadCancel() []byte { return protocol.BuildPacket(FileUploadCancel, nil, 0) }

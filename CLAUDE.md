@@ -134,6 +134,7 @@ Every ScaleFX board exposes a stable hardware-derived **GUID** so masters can te
 - **`LANDING_LIGHT_BIND` (0x52) byte 2 is `channelMask`, not a single channel ID** — breaking change v0.8→v0.9. Bit N → LED channel N+1, up to 8 channels per group, servo optional. See [instructions/11-LANDING-LIGHT-GROUPS.md](instructions/11-LANDING-LIGHT-GROUPS.md).
 - **AudioTools `InputMixer<float>` is broken** (accumulator bug); `SineWaveGenerator` has an amplitude bug. Workaround: keep the full pipeline in `int16_t`. See [instructions/08-AUDIOTOOLS.md](instructions/08-AUDIOTOOLS.md).
 - **Console output size formatting** (CLI + parsers, see [instructions/09-CONSOLE-OUTPUT.md](instructions/09-CONSOLE-OUTPUT.md)): `<1 KB → B`, `<1 MB → KB`, `<1 GB → MB`, else `GB`. Match this exactly when writing new parsers.
+- **`INA226::begin()` is strict on identity (not lenient).** Reads MFG/DIE IDs before any write and returns `false` on non-canonical chips (`!= 0x5449 / 0x2260`) without touching the chip's registers. Counterfeits at INA addresses have been observed to corrupt OTHER chips on the shared I²C bus when written to — HubFX rev hit this with a clone @ 0x40 wedging the PCA9685 @ 0x70. Boot diag still surfaces `bootMfgId()` / `bootDieId()` for the clone via `isCanonical()`. Full investigation + bisection trail in [instructions/18-HUBFX-INA-CLONE-WEDGE.md](instructions/18-HUBFX-INA-CLONE-WEDGE.md).
 
 ## Things to avoid
 

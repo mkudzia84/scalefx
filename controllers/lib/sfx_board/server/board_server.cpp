@@ -98,12 +98,17 @@ void BoardServerBase::buildDeviceName(const char* prefix) {
 
 // ── I²C scan registration ────────────────────────────────────────────
 
-void BoardServerBase::addExpectedI2CDevice(uint8_t address, I2CDevice* device) {
-    if (_numExpectedI2C < MAX_EXPECTED_I2C) {
-        _expectedI2C[_numExpectedI2C].address = address;
-        _expectedI2C[_numExpectedI2C].device  = device;
-        _numExpectedI2C++;
+bool BoardServerBase::addExpectedI2CDevice(uint8_t address, I2CDevice* device) {
+    if (_numExpectedI2C >= MAX_EXPECTED_I2C) {
+        SFX_LOG_WARN("[I2C] addExpectedI2CDevice(0x%02X): table full "
+                     "(cap=%u). Bump SFX_MAX_EXPECTED_I2C in platformio.ini.",
+                     address, (unsigned)MAX_EXPECTED_I2C);
+        return false;
     }
+    _expectedI2C[_numExpectedI2C].address = address;
+    _expectedI2C[_numExpectedI2C].device  = device;
+    _numExpectedI2C++;
+    return true;
 }
 
 I2CScanResult BoardServerBase::performI2CScan() {

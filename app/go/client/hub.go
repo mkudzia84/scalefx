@@ -101,12 +101,21 @@ func (i Identity) HasAnyPorts() bool {
 		core.CapHasHBridgePorts | core.CapHasInputPorts)
 }
 
-// Identify sends IDENTIFY and decodes the INIT_READY-shaped response.
-// Safe before INIT — does not activate hardware.
+// Identify sends IDENTIFY and decodes the response.  Safe before INIT —
+// does not activate hardware.  The firmware may reply with either
+// IDENTIFY (echo, master query path) or INIT_READY (post-init); both
+// carry the same payload shape.
 func (h *Hub) Identify() (Identity, error) {
-	resp, err := h.c.sendForResp(core.CmdIdentify(), core.InitReady)
+	resp, err := h.c.conn.SendAndWait(core.CmdIdentify())
 	if err != nil {
 		return Identity{}, err
+	}
+	if resp.IsNACK() {
+		return Identity{}, errFromNack(resp)
+	}
+	if resp.PacketType != core.Identify && resp.PacketType != core.InitReady {
+		return Identity{}, fmt.Errorf("expected IDENTIFY or INIT_READY, got %s",
+			resp.PacketType)
 	}
 	return decodeIdentity(resp.Payload)
 }
@@ -175,6 +184,69 @@ func (h *Hub) Status() (Status, error) {
 		return Status{}, err
 	}
 	return decodeStatus(resp.Payload)
+}
+
+// DiagEntry is one decoded LOG_MESSAGE captured during a DIAG_HISTORY
+// snapshot.
+type DiagEntry struct {
+	Level     byte   `json:"level"`     // 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+	LevelName string `json:"levelName"`
+	Millis    uint32 `json:"millis"`
+	Message   string `json:"message"`
+}
+
+// DiagHistory asks the board to replay its ring buffer of buffered log
+// entries (DIAG_HISTORY → flush as TAG_ASYNC LOG_MESSAGE packets, then
+// ACK with [count:u16LE]).  Returns the collected entries in
+// oldest-first order.
+//
+// `max` caps how many entries the caller wants — pass 0 for "everything
+// in the buffer".
+func (h *Hub) DiagHistory(max byte) ([]DiagEntry, error) {
+	// Drain channel so we can tap LOG_MESSAGE without racing the
+	// connection's standard async callback.
+	ch := make(chan *protocol.Response, 256)
+	h.c.conn.RegisterAsyncFilter(core.LogMessage, ch)
+	defer h.c.conn.UnregisterAsyncFilter(core.LogMessage)
+
+	resp, err := h.c.conn.SendExpectACK(core.CmdDiagHistory(max))
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsNACK() {
+		return nil, errFromNack(resp)
+	}
+
+	// The firmware flushes every ring entry as TAG_ASYNC LOG_MESSAGE
+	// packets BEFORE the ACK, so by the time we get here they're all
+	// queued.  Tiny grace period in case the reader goroutine is still
+	// dispatching the last few.
+	time.Sleep(20 * time.Millisecond)
+
+	var entries []DiagEntry
+	for {
+		select {
+		case r := <-ch:
+			if e := decodeDiagEntry(r.Payload); e != nil {
+				entries = append(entries, *e)
+			}
+		default:
+			return entries, nil
+		}
+	}
+}
+
+func decodeDiagEntry(p []byte) *DiagEntry {
+	if len(p) < 5 {
+		return nil
+	}
+	level := p[0]
+	return &DiagEntry{
+		Level:     level,
+		LevelName: core.DiagLevelName(level),
+		Millis:    binary.LittleEndian.Uint32(p[1:5]),
+		Message:   string(p[5:]),
+	}
 }
 
 // I2CDevice is one entry in an I2C_SCAN_RESULT.

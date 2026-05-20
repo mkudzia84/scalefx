@@ -33,7 +33,7 @@ template <hubfx::topology::TopologyService               TTopology,
           hubfx::effects::landing::LandingLightService   TLandingService>
 class LightFxEffectServicePolicyT {
 public:
-    static constexpr uint32_t kCapabilityBits = 0u;
+    static constexpr uint32_t kCapabilityBits = CoreCapability::LIGHTFX;
 
     LightFxEffectServicePolicyT() = default;
 

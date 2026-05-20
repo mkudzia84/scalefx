@@ -142,6 +142,22 @@ public:
     uint8_t minLevel() const { return _minLevel.load(std::memory_order_relaxed); }
 
     /**
+     * @brief Set minimum level for live LOG_MESSAGE emission on the wire
+     *
+     * Below this level (defaults to 0xFF == disabled) entries land only
+     * in the ring buffer and are visible via the DIAG_HISTORY command.
+     * Set to DiagLevel::INFO (or DEBUG) to stream every log line as a
+     * TAG_ASYNC LOG_MESSAGE packet so the host's `subscribe` command can
+     * follow the device live.
+     */
+    void setWireMinLevel(uint8_t level) { _wireMinLevel.store(level, std::memory_order_relaxed); }
+
+    /**
+     * @brief Get current wire-emission minimum level
+     */
+    uint8_t wireMinLevel() const { return _wireMinLevel.load(std::memory_order_relaxed); }
+
+    /**
      * @brief Check if DiagLog is initialized (serial stream set)
      * 
      * Safe to call from any core. Use this from Core 1's setup1() to
@@ -275,6 +291,9 @@ private:
     std::atomic<Stream*> _serial{nullptr};            // Core 0 writes, both cores read
     uint8_t _packetType = SFX_LOG_PACKET_TYPE;
     std::atomic<uint8_t> _minLevel{DiagLevel::INFO};  // Core 0 writes (setMinLevel), both cores read (logv)
+    // 0xFF = no live emission (default); set via `setWireMinLevel()` to
+    // stream LOG_MESSAGE async packets for any entry at or above the level.
+    std::atomic<uint8_t> _wireMinLevel{0xFF};
     SfxMutex _mutex;
     std::atomic<bool> _mutexInitialized{false};       // Core 0 writes, both cores read
 
@@ -282,6 +301,14 @@ private:
      * @brief Format and enqueue a log message (mutex-protected)
      */
     void logv(uint8_t level, const char* fmt, va_list args);
+
+    /**
+     * @brief Emit one buffered entry as a TAG_ASYNC LOG_MESSAGE packet.
+     *
+     * Called from `logv()` and `ingest()` when the entry's level meets
+     * the `_wireMinLevel` gate.  Same wire encoding as `sendHistory()`.
+     */
+    void emitLive(const LogEntry& entry);
 };
 
 #else // SFX_ENABLE_DIAG_LOG == 0
@@ -300,6 +327,8 @@ public:
     void begin(Stream*, uint8_t = SFX_LOG_PACKET_TYPE) {}
     void setMinLevel(uint8_t) {}
     uint8_t minLevel() const { return 0; }
+    void setWireMinLevel(uint8_t) {}
+    uint8_t wireMinLevel() const { return 0xFF; }
 
     void debug(const char*, ...) {}
     void info(const char*, ...) {}

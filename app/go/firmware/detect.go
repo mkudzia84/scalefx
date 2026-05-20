@@ -48,8 +48,7 @@ type PortInfo struct {
 	Identified     bool   // true if IDENTIFY succeeded
 
 	// Capabilities advertised by the firmware in the IDENTIFY payload —
-	// mirrors core.Cap* bits. 0 means "legacy firmware that pre-dates the
-	// field"; clients should fall back to probing in that case.
+	// see protocol/core for the bit catalog.
 	Capabilities uint32
 }
 

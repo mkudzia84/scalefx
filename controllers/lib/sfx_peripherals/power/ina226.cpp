@@ -14,20 +14,55 @@
 bool INA226::begin(TwoWire& wire, uint8_t address, float shuntResistance_ohms, float maxCurrent_A) {
     _shuntResistance_ohms = shuntResistance_ohms;
 
-    // Base class: store wire/address, probe bus, call identify()
-    if (!I2CDevice::begin(wire, address)) {
+    // Bind the bus/address.  We do NOT route through `I2CDevice::begin()`
+    // because we need to expose `bootMfgId`/`bootDieId`/`isCanonical`
+    // even on chips we ultimately refuse to drive — diagnostics on
+    // counterfeits is the whole point of carrying those fields.
+    _wire       = &wire;
+    _address    = address;
+    _errorCount = 0;
+    _lastError  = I2CError::OK;
+    _available  = false;
+
+    if (!probe(wire, address)) {
+        _lastError = I2CError::NACK_ADDRESS;
+        return false;   // hard fail — nothing on the bus at this address
+    }
+
+    // Snapshot identity BEFORE any write.  Bare reads of 0xFE/0xFF are
+    // empirically safe on every chip we've seen at INA226 addresses
+    // (genuine INA226s + various clones).  The destructive writes that
+    // follow are NOT safe on non-INA226 silicon: HubFX 8-channel rev
+    // ships with a clone at 0x40 (mfg=0x0001 die=0x0020) that, on
+    // receipt of a CONFIG write, wedges the PCA9685 at 0x70 on the
+    // same bus.  Full bisection trail + mechanism hypothesis in
+    // instructions/18-HUBFX-INA-CLONE-WEDGE.md.  Cure: do not drive
+    // chips that fail the canonical INA226 ID check.
+    _bootMfgId = readRegister16(INA226Reg::MFG_ID);
+    _bootDieId = readRegister16(INA226Reg::DIE_ID);
+    _idMatches = (_bootMfgId == MANUFACTURER_ID) && (_bootDieId == DIE_ID);
+
+    if (!_idMatches) {
+        // Counterfeit / pin-compatible clone.  Caller can surface
+        // `bootMfgId` / `bootDieId` / `isCanonical()` for the boot
+        // log; we just refuse to issue the destructive writes that
+        // would corrupt other chips on the shared bus.  `_available`
+        // stays false so `update()` short-circuits.
         return false;
     }
 
-    // INA226-specific initialization
+    _available = true;
+
+    // INA226-canonical initialization — safe because the chip
+    // reported the genuine TI fingerprint.
     reset();
     SFX_DELAY_MS(1);
     setCalibration(shuntResistance_ohms, maxCurrent_A);
-    configure(INA226Averaging::AVG_16, 
+    configure(INA226Averaging::AVG_16,
               INA226ConvTime::CT_1100US,
               INA226ConvTime::CT_1100US,
               INA226Mode::SHUNT_BUS_CONTINUOUS);
-    
+
     return true;
 }
 

@@ -1,0 +1,340 @@
+package main
+
+import (
+	"encoding/hex"
+	"fmt"
+	"strings"
+
+	"scalefx/client"
+	"scalefx/protocol/core"
+	expp "scalefx/protocol/expanders"
+	"scalefx/protocol/ports"
+	"scalefx/protocol/roles"
+)
+
+func init() {
+	register(&command{Name: "expanders", Usage: "expanders", Help: "list connected expanders", Category: catTopology, RequiresConn: true, RequiresCap: core.CapTopology | core.CapExpanderBus, Run: cmdExpanders})
+	register(&command{Name: "system-info", Usage: "system-info", Help: "hub + all expanders in one round-trip", Category: catTopology, RequiresConn: true, RequiresCap: core.CapTopology | core.CapExpanderBus, Run: cmdSystemInfo})
+	register(&command{Name: "topo-ports", Usage: "topo-ports [guid]", Help: "list ports for board (default: all)", Category: catTopology, RequiresConn: true, RequiresCap: core.CapTopology | core.CapExpanderBus, Run: cmdTopoPorts})
+	register(&command{Name: "topo-roles", Usage: "topo-roles [guid]", Help: "list roles for board (default: all)", Category: catTopology, RequiresConn: true, RequiresCap: core.CapTopology | core.CapExpanderBus, Run: cmdTopoRoles})
+	register(&command{Name: "role-attach", Usage: "role-attach <guid> <portKind> <portIdx> <roleKind> [hex-cfg]", Help: "bind a role to (portKind, portIdx) on a board", Category: catTopology, RequiresConn: true, RequiresCap: core.CapTopology | core.CapExpanderBus, Run: cmdRoleAttach})
+	register(&command{Name: "role-detach", Usage: "role-detach <guid> <portKind> <portIdx>", Help: "detach the role on (portKind, portIdx)", Category: catTopology, RequiresConn: true, RequiresCap: core.CapTopology | core.CapExpanderBus, Run: cmdRoleDetach})
+}
+
+// ─── Expanders ───────────────────────────────────────────────────────
+
+func cmdExpanders(a *app, _ []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	list, err := a.c.Expanders.List()
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		Note("(no expanders)")
+		return nil
+	}
+	Hdr("expanders")
+	for _, e := range list {
+		flag := ""
+		if e.Collision {
+			flag = "  " + cRed("[COLLISION]")
+		}
+		if e.Identified {
+			fmt.Printf("  %s  addr=%d  %s %s%s\n",
+				cBold(cCyan(e.KindName)), e.USBAddr,
+				e.DeviceName,
+				cDim("v"+e.FirmwareVersion),
+				flag)
+		} else {
+			fmt.Printf("  %s  addr=%d  %s%s\n",
+				cBold(cCyan(e.KindName)), e.USBAddr,
+				cDim(fmt.Sprintf("VID=%04X PID=%04X (identifying…)", e.VID, e.PID)),
+				flag)
+		}
+	}
+	return nil
+}
+
+func cmdSystemInfo(a *app, _ []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	si, err := a.c.Expanders.SystemInfo()
+	if err != nil {
+		return err
+	}
+	Hdr("hub")
+	fmt.Printf("  %s  %s  %s\n",
+		cBold(si.Hub.DeviceName),
+		cDim("v"+si.Hub.FirmwareVersion),
+		cDim(fmt.Sprintf("(%s, %d MHz, %s free, build %d)",
+			si.Hub.Platform, si.Hub.CPUFreqMHz,
+			humanBytes(uint64(si.Hub.FreeRAMBytes)),
+			si.Hub.BuildNumber)))
+	if len(si.Expanders) == 0 {
+		Note("(no expanders)")
+		return nil
+	}
+	Hdr("expanders")
+	for _, e := range si.Expanders {
+		_ = expp.KindName(e.Kind) // names already populated
+		flag := ""
+		if e.Collision {
+			flag = "  " + cRed("[COLLISION]")
+		}
+		if e.Identified {
+			fmt.Printf("  %s  %s %s%s\n",
+				cBold(cCyan(e.KindName)),
+				e.DeviceName,
+				cDim("v"+e.FirmwareVersion),
+				flag)
+		} else {
+			fmt.Printf("  %s  %s%s\n",
+				cBold(cCyan(e.KindName)),
+				cDim(fmt.Sprintf("addr=%d (identifying…)", e.USBAddr)),
+				flag)
+		}
+	}
+	return nil
+}
+
+// ─── Topology ────────────────────────────────────────────────────────
+
+func cmdTopoPorts(a *app, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	guid := ""
+	if len(args) >= 1 {
+		guid = args[0]
+	}
+	boards, err := a.c.Topology.PortList(guid)
+	if err != nil {
+		return err
+	}
+	for i, b := range boards {
+		if i > 0 {
+			fmt.Println()
+		}
+		printBoardPorts(b)
+	}
+	return nil
+}
+
+// printBoardPorts renders one board's port roster grouped by kind,
+// with each port on its own row + decoded flag text.
+func printBoardPorts(b client.BoardPorts) {
+	label := b.DeviceName
+	if label == "" {
+		label = b.GUID
+	}
+	total := len(b.Ports.Servos) + len(b.Ports.Pwms) +
+		len(b.Ports.HBridges) + len(b.Ports.Inputs)
+	Hdr(fmt.Sprintf("%s %s  (%d ports)",
+		cBold(label),
+		cDim("["+b.GUID+"]"),
+		total))
+
+	if len(b.Ports.Servos) > 0 {
+		fmt.Printf("  %s  %s\n",
+			cDim(padRight("servo", 8)),
+			cDim(fmt.Sprintf("(%d, output)", len(b.Ports.Servos))))
+		for _, d := range b.Ports.Servos {
+			fmt.Printf("    %s  %s\n",
+				cBold(fmt.Sprintf("[%2d]", d.Index)),
+				cDim(servoFlagText(d.Flags)))
+		}
+	}
+	if len(b.Ports.Pwms) > 0 {
+		fmt.Printf("  %s  %s\n",
+			cDim(padRight("pwm", 8)),
+			cDim(fmt.Sprintf("(%d)", len(b.Ports.Pwms))))
+		for _, d := range b.Ports.Pwms {
+			fmt.Printf("    %s  %s\n",
+				cBold(fmt.Sprintf("[%2d]", d.Index)),
+				cDim(senseFlagText(d.Flags)))
+		}
+	}
+	if len(b.Ports.HBridges) > 0 {
+		fmt.Printf("  %s  %s\n",
+			cDim(padRight("hbridge", 8)),
+			cDim(fmt.Sprintf("(%d)", len(b.Ports.HBridges))))
+		for _, d := range b.Ports.HBridges {
+			fmt.Printf("    %s  %s\n",
+				cBold(fmt.Sprintf("[%2d]", d.Index)),
+				cDim(senseFlagText(d.Flags)))
+		}
+	}
+	if len(b.Ports.Inputs) > 0 {
+		fmt.Printf("  %s  %s\n",
+			cDim(padRight("input", 8)),
+			cDim(fmt.Sprintf("(%d)", len(b.Ports.Inputs))))
+		for _, d := range b.Ports.Inputs {
+			fmt.Printf("    %s  %s\n",
+				cBold(fmt.Sprintf("[%2d]", d.Index)),
+				cGreen(inputFlagText(d.Flags)))
+		}
+	}
+}
+
+func servoFlagText(f byte) string {
+	if f&ports.ServoFlagEmits != 0 {
+		return "output (pulse)"
+	}
+	return fmt.Sprintf("flags=0x%02X", f)
+}
+
+func senseFlagText(f byte) string {
+	parts := ports.SenseFlagsNames(f)
+	if len(parts) == 0 {
+		return "no sense"
+	}
+	pretty := []string{}
+	for _, p := range parts {
+		switch p {
+		case "V":
+			pretty = append(pretty, "voltage")
+		case "I":
+			pretty = append(pretty, "current")
+		case "T":
+			pretty = append(pretty, "temp")
+		}
+	}
+	return strings.Join(pretty, " + ") + " sense"
+}
+
+func inputFlagText(f byte) string {
+	if f == 0 {
+		return "(no capabilities)"
+	}
+	return strings.Join(ports.InputFlagsNames(f), " | ")
+}
+
+func cmdTopoRoles(a *app, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	guid := ""
+	if len(args) >= 1 {
+		guid = args[0]
+	}
+	boards, err := a.c.Topology.RoleList(guid)
+	if err != nil {
+		return err
+	}
+	for i, b := range boards {
+		if i > 0 {
+			fmt.Println()
+		}
+		Hdr(fmt.Sprintf("%s  (%d %s)",
+			cMagenta(b.GUID),
+			len(b.Roles),
+			plural2(len(b.Roles), "role")))
+		if len(b.Roles) == 0 {
+			Note("  no roles attached")
+			continue
+		}
+		for _, r := range b.Roles {
+			fmt.Printf("  %s%s  %s  %s%s\n",
+				cCyan(ports.KindName(r.PortKind)),
+				cBold(fmt.Sprintf("[%d]", r.PortIdx)),
+				cDim("→"),
+				cBold(roles.KindName(r.RoleKind)),
+				roleFlagText(r.Flags))
+		}
+	}
+	return nil
+}
+
+func roleFlagText(f byte) string {
+	if f == 0 {
+		return ""
+	}
+	return "  " + cDim(fmt.Sprintf("flags=0x%02X", f))
+}
+
+func plural2(n int, singular string) string {
+	if n == 1 {
+		return singular
+	}
+	return singular + "s"
+}
+
+func cmdRoleAttach(a *app, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) < 4 {
+		return fmt.Errorf("usage: role-attach <guid> <portKind> <portIdx> <roleKind> [hex-cfg]")
+	}
+	pk, err := parsePortKind(args[1])
+	if err != nil {
+		return err
+	}
+	pi, err := parseU8(args[2])
+	if err != nil {
+		return err
+	}
+	rk, ok := roles.KindFromName(args[3])
+	if !ok {
+		v, e := parseU8(args[3])
+		if e != nil {
+			return fmt.Errorf("unknown role kind: %s", args[3])
+		}
+		rk = v
+	}
+	var cfg []byte
+	if len(args) >= 5 {
+		c, e := hex.DecodeString(strings.TrimPrefix(args[4], "0x"))
+		if e != nil {
+			return fmt.Errorf("hex-cfg parse: %w", e)
+		}
+		cfg = c
+	}
+	if err := a.c.Topology.AttachRole(args[0], pk, pi, rk, cfg); err != nil {
+		return err
+	}
+	Ok("role attached: %s %s[%d] → %s",
+		cMagenta(args[0]), cCyan(ports.KindName(pk)), pi, cBold(roles.KindName(rk)))
+	return nil
+}
+
+func cmdRoleDetach(a *app, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) != 3 {
+		return fmt.Errorf("usage: role-detach <guid> <portKind> <portIdx>")
+	}
+	pk, err := parsePortKind(args[1])
+	if err != nil {
+		return err
+	}
+	pi, err := parseU8(args[2])
+	if err != nil {
+		return err
+	}
+	if err := a.c.Topology.DetachRole(args[0], pk, pi); err != nil {
+		return err
+	}
+	Ok("role detached: %s %s[%d]",
+		cMagenta(args[0]), cCyan(ports.KindName(pk)), pi)
+	return nil
+}
+
+// printPortRow renders a single port-kind row.
+func printPortRow(label string, descs []ports.PortDescriptor) {
+	if len(descs) == 0 {
+		return
+	}
+	fmt.Printf("  %s %s", cDim(padRight(label, 8)), cDim(":"))
+	for _, d := range descs {
+		fmt.Printf(" %s%s%s",
+			cBold(fmt.Sprintf("[%d", d.Index)),
+			cDim(fmt.Sprintf(":0x%02X", d.Flags)),
+			cBold("]"))
+	}
+	fmt.Println()
+}

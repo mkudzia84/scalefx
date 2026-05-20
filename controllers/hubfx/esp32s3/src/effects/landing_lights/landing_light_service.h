@@ -63,10 +63,7 @@ concept LandingLightService = requires(T& s, uint8_t id, uint8_t state,
 template <hubfx::topology::TopologyService TTopology>
 class LandingLightServicePolicyT {
 public:
-    static constexpr uint32_t kCapabilityBits = CoreCapability::TOPOLOGY;
-        // No dedicated capability bit yet — relies on the same TOPOLOGY
-        // service.  Adding a `LANDING_LIGHTS` bit is one line in
-        // `CoreCapability` if/when external clients want to gate on it.
+    static constexpr uint32_t kCapabilityBits = CoreCapability::LANDING_LIGHTS;
 
     LandingLightServicePolicyT() = default;
 

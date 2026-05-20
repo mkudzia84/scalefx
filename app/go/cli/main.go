@@ -28,10 +28,14 @@ var (
 	flagBaud    = flag.Int("b", 0, "Baud rate override (0 = default 6 Mbps)")
 	flagVerbose = flag.Bool("v", false, "Verbose wire logging")
 	flagCmd     = flag.String("c", "", "Run a single command then exit")
+	flagNoColor = flag.Bool("no-color", false, "Disable ANSI color output")
 )
 
 func main() {
 	flag.Parse()
+	if *flagNoColor {
+		useColor = false
+	}
 
 	app := newApp()
 	defer app.shutdown()
@@ -80,7 +84,7 @@ func main() {
 			return
 		}
 		if err := app.dispatch(line); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			Err("%v", err)
 		}
 	}
 }
@@ -88,11 +92,22 @@ func main() {
 // ─── App ────────────────────────────────────────────────────────────
 
 type app struct {
-	c       *client.Client
-	verbose bool
+	c         *client.Client
+	verbose   bool
+	boardKind string          // populated from IDENTIFY at connect time; "" before
+	boardName string          // e.g. "HubFx-6D60"
+	boardCaps uint32          // CoreCapability bitmask from IDENTIFY
+	target    byte            // active storage backend (TargetSD / TargetFlash)
+	cwd       map[byte]string // per-target current working directory
 }
 
-func newApp() *app { return &app{verbose: *flagVerbose} }
+func newApp() *app {
+	return &app{
+		verbose: *flagVerbose,
+		target:  0, // 0 == TargetSD; explicit so tests don't trip on order
+		cwd:     map[byte]string{0: "/", 1: "/"},
+	}
+}
 
 func (a *app) shutdown() {
 	if a.c != nil {
@@ -103,20 +118,26 @@ func (a *app) shutdown() {
 
 func (a *app) prompt() string {
 	if a.c == nil {
-		return "scalefx> "
+		return cDim("scalefx") + cBold(cMagenta("» "))
 	}
-	return fmt.Sprintf("scalefx (%s)> ", a.c.PortName())
+	label := a.c.PortName()
+	if a.boardKind != "" {
+		label = a.boardKind + cDim(":") + a.c.PortName()
+	}
+	return cCyan(label) + cBold(cMagenta(" » "))
 }
 
 func (a *app) banner() {
-	fmt.Println("ScaleFX CLI — generic-expander build")
-	fmt.Println("type `help` for commands, `quit` to exit")
+	fmt.Println(cBold(cMagenta("ScaleFX CLI")) + cDim(" — generic-expander build"))
+	fmt.Println(cDim("type `help` for commands, `quit` to exit"))
 }
 
 func (a *app) connect(portName string) error {
 	if a.c != nil {
 		a.c.Close()
 		a.c = nil
+		a.boardKind = ""
+		a.boardName = ""
 	}
 	opts := client.Options{
 		Baud:    *flagBaud,
@@ -127,19 +148,21 @@ func (a *app) connect(portName string) error {
 		return err
 	}
 	a.c = c
-	fmt.Printf("connected: %s\n", portName)
+	Ok("connected: %s", cBold(portName))
 
-	// Auto-detect: pull IDENTIFY and surface what kind of board this is
-	// + what subsystems it ships with.  The topology snapshot fields
-	// (numServos, audioChannels, ...) come from the Rule 11 tail added
-	// in firmware build ≥ 26 — older firmware leaves them zero, in
-	// which case we just fall back to the capability bits.
+	// Auto-detect: pull IDENTIFY and surface what kind of board this
+	// is + what subsystems it ships with.
 	if id, err := c.Hub.Identify(); err == nil {
 		if strings.Contains(strings.ToLower(id.Platform), "esp32") {
 			c.Storage.SetPeerMaxPayload(client.Esp32MaxPayload)
 		} else {
 			c.Storage.SetPeerMaxPayload(client.PicoMaxPayload)
 		}
+		if k := id.Kind(); k != client.BoardUnknown {
+			a.boardKind = string(k)
+		}
+		a.boardName = id.DeviceName
+		a.boardCaps = id.Capabilities
 		printIdentityBanner(id)
 	}
 	return nil
@@ -153,19 +176,24 @@ func printIdentityBanner(id client.Identity) {
 	if k := id.Kind(); k != client.BoardUnknown {
 		kind = string(k)
 	}
-	fmt.Printf("  board    : %s — %s v%s build %d (%s)\n",
-		kind, id.DeviceName, id.FirmwareVersion, id.BuildNumber, id.Platform)
+	KVf("board", "%s %s %s build %s (%s)",
+		cBold(cCyan(kind)),
+		cMagenta("—"),
+		cBold(id.DeviceName)+cDim(" v")+id.FirmwareVersion,
+		cDim(fmt.Sprintf("%d", id.BuildNumber)),
+		cDim(id.Platform))
 
-	if caps := id.CapabilityNames(); len(caps) > 0 {
-		fmt.Printf("  features : %s\n", strings.Join(caps, " · "))
-	} else {
-		fmt.Println("  features : (firmware pre-dates IDENTIFY capabilities field)")
+	caps := id.CapabilityNames()
+	coloured := make([]string, len(caps))
+	for i, n := range caps {
+		coloured[i] = cGreen(n)
 	}
+	KVList("features", coloured)
 }
 
 func (a *app) requireClient() error {
 	if a.c == nil {
-		return fmt.Errorf("not connected — `connect <port>` first")
+		return fmt.Errorf("not connected — %s first", cCyan("`connect <port>`"))
 	}
 	return nil
 }

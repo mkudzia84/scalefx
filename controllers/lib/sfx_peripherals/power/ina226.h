@@ -378,6 +378,24 @@ public:
      */
     uint16_t dieId();
 
+    /**
+     * @brief True iff the chip reported the canonical TI INA226
+     *        manufacturer + die IDs at `begin()` time.
+     *
+     * `begin()` itself is lenient — it accepts any chip that ACKs at
+     * the configured address and configures it as if it were an
+     * INA226 (counterfeits and pin-compatible clones generally
+     * implement the same calibration / measurement register layout
+     * and produce usable readings, just at non-spec accuracy).  This
+     * flag lets callers surface the distinction in diagnostics
+     * without rejecting the chip outright.
+     */
+    bool isCanonical() const { return _idMatches; }
+
+    /// The mfg/die IDs read during begin() — handy for boot diag.
+    uint16_t bootMfgId() const { return _bootMfgId; }
+    uint16_t bootDieId() const { return _bootDieId; }
+
     // address(), isAvailable(), errorCount(), lastError() inherited from I2CDevice
 
     /**
@@ -421,6 +439,15 @@ private:
     float _shuntVoltage_uV = 0.0f;  // microvolts
     float _current_mA = 0.0f;       // milliamps
     float _power_mW = 0.0f;         // milliwatts
+
+    // Identity readback captured during begin().  `_idMatches` is the
+    // outcome of comparing the readbacks against MANUFACTURER_ID /
+    // DIE_ID — a counterfeit / pin-compatible clone reads as ACKed +
+    // configured but flips this to false so callers can surface a
+    // warning at boot.
+    uint16_t _bootMfgId = 0;
+    uint16_t _bootDieId = 0;
+    bool     _idMatches = false;
 };
 
 #endif // INA226_H

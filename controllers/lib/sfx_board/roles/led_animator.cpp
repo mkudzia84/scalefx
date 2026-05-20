@@ -1,10 +1,15 @@
 /*
- * LedAnimator implementation.
+ * LedAnimator implementation — single source of truth for LED event
+ * behaviour. Wire format mirrors the LightFx master-side `LightEvent`
+ * 10-byte record; see led_animator.h for the field-by-field layout.
  */
 
 #include "led_animator.h"
 
 #include <cstring>
+#include <math.h>
+
+#include <serial/diag_log.h>
 
 namespace sfx_core {
 
@@ -14,101 +19,185 @@ bool LedAnimator::loadQueue(const Event* events, size_t count) {
     if (count > 0) std::memcpy(_queue, events, count * sizeof(Event));
     _count  = (uint8_t)count;
     _cursor = 0;
+    SFX_LOG_DEBUG("[LedAnimator] loadQueue: %u events", (unsigned)count);
     return true;
 }
 
 void LedAnimator::start() {
     if (_count == 0 || !_port) return;
-    _cursor        = 0;
-    _eventStart_ms = millis();
-    _playing       = true;
-    // Initial state — derive from first event.
-    const Event& e0 = _queue[0];
-    if (e0.kind == EV_ON) {
-        _currentBright = e0.brightness;
-        writeOutput(_currentBright);
-    } else if (e0.kind == EV_OFF) {
-        _currentBright = 0;
-        writeOutput(0);
-    } else if (e0.kind == EV_FADE) {
-        _fadeFromBright = _currentBright;
-        _fadeToBright   = e0.brightness;
+    _cursor           = 0;
+    _eventStart_ms    = millis();
+    _playing          = true;
+    _currentBrightPct = 0;
+    const Event& e0   = _queue[0];
+
+    // Prime per-event state.
+    switch (e0.kind) {
+        case EV_FADE_IN:
+            _fadeFromPct = 0;
+            _fadeToPct   = e0.brightnessPct;
+            break;
+        case EV_FADE_OUT:
+            _fadeFromPct = e0.brightnessPct;
+            _fadeToPct   = 0;
+            break;
+        default:
+            break;
     }
+    SFX_LOG_DEBUG("[LedAnimator] start: kind=%u dur=%u cycle=%u bright=%u",
+                  (unsigned)e0.kind, (unsigned)e0.durationMs,
+                  (unsigned)e0.cycleMs, (unsigned)e0.brightnessPct);
+    tick();   // emit an initial sample so the port goes live immediately
 }
 
 void LedAnimator::stop() {
-    _playing = false;
-    _currentBright = 0;
-    if (_port) writeOutput(0);
+    _playing          = false;
+    _currentBrightPct = 0;
+    if (_port) writeOutputPct(0);
 }
 
 void LedAnimator::tick() {
     if (!_playing || _count == 0 || !_port) return;
 
-    const Event&    ev  = _queue[_cursor];
-    const uint32_t  now = millis();
-    const uint32_t  dt  = now - _eventStart_ms;
-    bool advance = false;
+    const Event&   ev  = _queue[_cursor];
+    const uint32_t now = millis();
+    const uint32_t dt  = now - _eventStart_ms;
+    bool advanceQueue  = false;
 
     switch (ev.kind) {
-        case EV_ON:
-            _currentBright = ev.brightness;
-            writeOutput(_currentBright);
-            advance = true;       // instantaneous, advance immediately
+        case EV_ON: {
+            _currentBrightPct = ev.brightnessPct;
+            writeOutputPct(_currentBrightPct);
+            // durationMs == 0 ⇒ terminal: hold this brightness forever
+            // (don't advance). Otherwise advance after dur_ms.
+            if (ev.durationMs != 0 && dt >= ev.durationMs) advanceQueue = true;
             break;
-        case EV_OFF:
-            _currentBright = 0;
-            writeOutput(0);
-            advance = true;
+        }
+        case EV_OFF: {
+            _currentBrightPct = 0;
+            writeOutputPct(0);
+            if (ev.durationMs != 0 && dt >= ev.durationMs) advanceQueue = true;
             break;
-        case EV_FADE:
-            if (dt >= ev.duration_ms || ev.duration_ms == 0) {
-                _currentBright = _fadeToBright;
-                writeOutput(_currentBright);
-                advance = true;
+        }
+        case EV_FADE_IN: {
+            if (ev.durationMs == 0 || dt >= ev.durationMs) {
+                _currentBrightPct = _fadeToPct;
+                writeOutputPct(_currentBrightPct);
+                advanceQueue = (ev.durationMs != 0);   // hold final if terminal
             } else {
-                const int32_t delta = (int32_t)_fadeToBright - (int32_t)_fadeFromBright;
-                const int32_t step  = (delta * (int32_t)dt) / (int32_t)ev.duration_ms;
-                _currentBright = (uint8_t)((int32_t)_fadeFromBright + step);
-                writeOutput(_currentBright);
+                const int32_t delta = (int32_t)_fadeToPct - (int32_t)_fadeFromPct;
+                const int32_t step  = (delta * (int32_t)dt) / (int32_t)ev.durationMs;
+                _currentBrightPct   = (uint8_t)((int32_t)_fadeFromPct + step);
+                writeOutputPct(_currentBrightPct);
             }
             break;
-        case EV_HOLD:
-            if (dt >= ev.duration_ms) advance = true;
+        }
+        case EV_FADE_OUT: {
+            if (ev.durationMs == 0 || dt >= ev.durationMs) {
+                _currentBrightPct = _fadeToPct;
+                writeOutputPct(_currentBrightPct);
+                advanceQueue = (ev.durationMs != 0);
+            } else {
+                const int32_t delta = (int32_t)_fadeToPct - (int32_t)_fadeFromPct;
+                const int32_t step  = (delta * (int32_t)dt) / (int32_t)ev.durationMs;
+                _currentBrightPct   = (uint8_t)((int32_t)_fadeFromPct + step);
+                writeOutputPct(_currentBrightPct);
+            }
             break;
-        case EV_REPEAT:
-            _cursor        = 0;
-            _eventStart_ms = now;
-            return;
+        }
+        case EV_FLASH: {
+            // Square wave: HIGH at brightnessPct for flashPct% of cycle_ms,
+            // LOW (0) for the remainder. Repeats until durationMs elapses
+            // (0 = forever).
+            if (ev.cycleMs == 0) {
+                // Degenerate cycle — treat as steady on.
+                _currentBrightPct = ev.brightnessPct;
+            } else {
+                const uint32_t phase    = dt % ev.cycleMs;
+                const uint32_t highSpan = ((uint32_t)ev.cycleMs *
+                                            (uint32_t)ev.flashPct) / 100u;
+                _currentBrightPct = (phase < highSpan) ? ev.brightnessPct : 0;
+            }
+            writeOutputPct(_currentBrightPct);
+            if (ev.durationMs != 0 && dt >= ev.durationMs) advanceQueue = true;
+            break;
+        }
+        case EV_FADING: {
+            // Sinusoidal between minPct and maxPct, period cycleMs.
+            if (ev.cycleMs == 0) {
+                _currentBrightPct = ev.maxPct;
+            } else {
+                // sin(phase) → 0..1 via (1 - cos(2π·t/T)) / 2
+                const float    t    = (float)(dt % ev.cycleMs) / (float)ev.cycleMs;
+                const float    norm = 0.5f * (1.0f - cosf(6.2831853f * t));
+                const int32_t  span = (int32_t)ev.maxPct - (int32_t)ev.minPct;
+                _currentBrightPct   =
+                    (uint8_t)((int32_t)ev.minPct + (int32_t)(norm * (float)span + 0.5f));
+            }
+            writeOutputPct(_currentBrightPct);
+            if (ev.durationMs != 0 && dt >= ev.durationMs) advanceQueue = true;
+            break;
+        }
+        case EV_BEACON: {
+            // At maxPct for flashPct% of cycleMs, else minPct.
+            if (ev.cycleMs == 0) {
+                _currentBrightPct = ev.maxPct;
+            } else {
+                const uint32_t phase    = dt % ev.cycleMs;
+                const uint32_t highSpan = ((uint32_t)ev.cycleMs *
+                                            (uint32_t)ev.flashPct) / 100u;
+                _currentBrightPct = (phase < highSpan) ? ev.maxPct : ev.minPct;
+            }
+            writeOutputPct(_currentBrightPct);
+            if (ev.durationMs != 0 && dt >= ev.durationMs) advanceQueue = true;
+            break;
+        }
         default:
-            advance = true;       // unknown opcode — skip
+            // Unknown opcode — skip to keep the queue moving.
+            advanceQueue = true;
             break;
     }
 
-    if (advance) {
-        _cursor++;
-        if (_cursor >= _count) {
-            _playing = false;
-            _currentBright = 0;
-            writeOutput(0);
-            if (_onDone) _onDone();
-            return;
-        }
-        _eventStart_ms = now;
-        // Prime fade start brightness on the new event.
-        const Event& next = _queue[_cursor];
-        if (next.kind == EV_FADE) {
-            _fadeFromBright = _currentBright;
-            _fadeToBright   = next.brightness;
-        }
-    }
+    if (advanceQueue) advance();
 }
 
-void LedAnimator::writeOutput(uint8_t brightness255) {
+void LedAnimator::advance() {
+    _cursor++;
+    if (_cursor >= _count) {
+        _playing          = false;
+        _currentBrightPct = 0;
+        writeOutputPct(0);
+        SFX_LOG_DEBUG("[LedAnimator] queue done (%u events played)", (unsigned)_count);
+        if (_onDone) _onDone();
+        return;
+    }
+    _eventStart_ms = millis();
+    const Event& next = _queue[_cursor];
+    // Prime per-event state.
+    switch (next.kind) {
+        case EV_FADE_IN:
+            _fadeFromPct = _currentBrightPct;
+            _fadeToPct   = next.brightnessPct;
+            break;
+        case EV_FADE_OUT:
+            _fadeFromPct = _currentBrightPct;
+            _fadeToPct   = 0;
+            break;
+        default:
+            break;
+    }
+    SFX_LOG_DEBUG("[LedAnimator] advance to event %u: kind=%u dur=%u",
+                  (unsigned)_cursor, (unsigned)next.kind, (unsigned)next.durationMs);
+}
+
+void LedAnimator::writeOutputPct(uint8_t brightnessPct) {
     if (!_port) return;
-    // Scale 0..255 → 0..port.maxDuty() through master brightness.
-    const uint32_t scaled = (uint32_t)brightness255 * _masterBrightness / 255u;
-    const uint32_t duty   = scaled * _port->maxDuty() / 255u;
+    if (brightnessPct > 100) brightnessPct = 100;
+    // bright_pct × master_pct ⇒ scaled_pct (0..100)
+    // scaled_pct ⇒ duty: pct * maxDuty / 100
+    const uint32_t scaledPct = ((uint32_t)brightnessPct *
+                                 (uint32_t)_masterBrightnessPct) / 100u;
+    const uint32_t duty      = (scaledPct * (uint32_t)_port->maxDuty()) / 100u;
     _port->setDuty((uint16_t)duty);
 }
 

@@ -62,9 +62,12 @@ struct AlertServiceConfig {
 template <MixerLike TMixer>
 class AlertServicePolicyT {
 public:
-    /// No new capability bit — `CoreCapability::AUDIO` already
-    /// advertises that the hub can emit sound; alerts ride on top.
-    static constexpr uint32_t kCapabilityBits = 0u;
+    /// Advertises `CoreCapability::ALERTS`.  Lets the host filter the
+    /// `alert*` verbs in `help` when this policy isn't loaded — alerts
+    /// also implicitly require `AUDIO`, but the dedicated bit keeps the
+    /// host from showing the alert verbs on an audio-only firmware
+    /// (e.g., a bare-mixer test build).
+    static constexpr uint32_t kCapabilityBits = CoreCapability::ALERTS;
 
     AlertServicePolicyT() = default;
 

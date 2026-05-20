@@ -141,6 +141,15 @@ void LightControllerT<TTopology, TLandingService>::applyChannel(
                      (unsigned)ch.addr.portIdx);
         return;
     }
+    // DEBUG: log the first event's wire bytes — handy when something
+    // upstream re-serializes / changes the layout silently.
+    SFX_LOG_DEBUG("[lightfx] LED_QUEUE_LOAD %s:%u  qlen=%u  ev0={kind=%u dur=%u cycle=%u bright=%u}",
+                  ch.addr.guid[0] ? ch.addr.guid : "hub",
+                  (unsigned)ch.addr.portIdx, (unsigned)qlen,
+                  ch.numEvents ? (unsigned)ch.events[0].kind : 0u,
+                  ch.numEvents ? (unsigned)ch.events[0].durationMs : 0u,
+                  ch.numEvents ? (unsigned)ch.events[0].cycleMs : 0u,
+                  ch.numEvents ? (unsigned)ch.events[0].brightnessPct : 0u);
     if (!_topo->sendRoleCommand(ch.addr,
                                 RolePacket::LED_QUEUE_LOAD,
                                 queue, qlen)) {

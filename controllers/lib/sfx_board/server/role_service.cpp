@@ -338,8 +338,9 @@ bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
 bool RoleServicePolicy::attachLedAnimator(PwmBinding& b, uint8_t portIdx,
                                           const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<LedAnimator>(b.port);
-    // Optional config: [masterBrightness:u8]
-    if (cfgLen >= 1) role.setMasterBrightness(cfg[0]);
+    // Optional config: [masterBrightnessPct:u8]  — 0..100, matches the
+    // LED_SET_BRIGHTNESS packet semantics.
+    if (cfgLen >= 1) role.setMasterBrightnessPct(cfg[0]);
     role.onQueueDone([this, portIdx]() { emitLedQueueDone(portIdx); });
     return true;
 }
@@ -537,34 +538,45 @@ void RoleServicePolicy::handleLedQueueLoad(const uint8_t* p, size_t len) {
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
     if (count > LedAnimator::MAX_EVENTS) { _ctx->sendNack(RoleError::ROLE_QUEUE_FULL); return; }
 
-    // Each event: [kind:u8] then payload depending on kind.
+    // Fixed-size wire records — keep aligned with `LedAnimator::WIRE_EVENT_SIZE`
+    // AND the master-side `hubfx::effects::lightfx::kEventWireSize`.
+    //   [kind:u8]
+    //   [durationMs:u16LE]
+    //   [cycleMs:u16LE]
+    //   [brightnessPct:u8]
+    //   [minPct:u8]
+    //   [maxPct:u8]
+    //   [flashPct:u8]
+    //   [flags:u8]
+    const size_t needed = 2 + (size_t)count * LedAnimator::WIRE_EVENT_SIZE;
+    if (len < needed) {
+        SFX_LOG_DEBUG("[LedAnimator] LED_QUEUE_LOAD short payload: have %u, need %u",
+                      (unsigned)len, (unsigned)needed);
+        _ctx->sendNack(SerialError::MISSING_PARAMETER);
+        return;
+    }
+
     LedAnimator::Event ev[LedAnimator::MAX_EVENTS];
     size_t off = 2;
     for (uint8_t i = 0; i < count; i++) {
-        if (off >= len) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-        ev[i].kind = p[off++];
-        switch (ev[i].kind) {
-            case LedAnimator::EV_ON:
-                if (off + 1 > len) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-                ev[i].brightness = p[off++];
-                break;
-            case LedAnimator::EV_OFF:
-                break;
-            case LedAnimator::EV_FADE:
-                if (off + 3 > len) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-                ev[i].brightness  = p[off++];
-                ev[i].duration_ms = SfxWire::getU16LE(&p[off]); off += 2;
-                break;
-            case LedAnimator::EV_HOLD:
-                if (off + 2 > len) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-                ev[i].duration_ms = SfxWire::getU16LE(&p[off]); off += 2;
-                break;
-            case LedAnimator::EV_REPEAT:
-                break;
-            default:
-                _ctx->sendNack(SerialError::INVALID_PARAM); return;
+        ev[i].kind          = p[off + 0];
+        ev[i].durationMs    = SfxWire::getU16LE(&p[off + 1]);
+        ev[i].cycleMs       = SfxWire::getU16LE(&p[off + 3]);
+        ev[i].brightnessPct = p[off + 5];
+        ev[i].minPct        = p[off + 6];
+        ev[i].maxPct        = p[off + 7];
+        ev[i].flashPct      = p[off + 8];
+        ev[i].flags         = p[off + 9];
+        off += LedAnimator::WIRE_EVENT_SIZE;
+        if (ev[i].kind > LedAnimator::EV_BEACON) {
+            SFX_LOG_DEBUG("[LedAnimator] LED_QUEUE_LOAD: unknown kind %u",
+                          (unsigned)ev[i].kind);
+            _ctx->sendNack(SerialError::INVALID_PARAM);
+            return;
         }
     }
+    SFX_LOG_DEBUG("[LedAnimator] LED_QUEUE_LOAD: port=%u count=%u",
+                  (unsigned)idx, (unsigned)count);
     if (!r->loadQueue(ev, count)) { _ctx->sendNack(RoleError::ROLE_QUEUE_FULL); return; }
     _ctx->sendAck();
 }
@@ -595,7 +607,11 @@ void RoleServicePolicy::handleLedSetBrightness(const uint8_t* p, size_t len) {
     if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
     auto* r = std::get_if<LedAnimator>(&b->role);
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
-    r->setMasterBrightness(p[1]);
+    // Wire value is brightness percent (0..100), matching the master-
+    // side LightFx encoding.  Driver clamps internally.
+    r->setMasterBrightnessPct(p[1]);
+    SFX_LOG_DEBUG("[LedAnimator] LED_SET_BRIGHTNESS: port=%u pct=%u",
+                  (unsigned)p[0], (unsigned)p[1]);
     _ctx->sendAck();
 }
 
@@ -608,7 +624,7 @@ void RoleServicePolicy::handleLedGetStatusReq(const uint8_t* p, size_t len) {
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
     uint8_t out[4];
     out[0] = idx;
-    out[1] = r->masterBrightness();
+    out[1] = r->masterBrightnessPct();
     out[2] = r->isPlaying() ? 1 : 0;
     out[3] = r->queueDepth();
     _ctx->sendRawPacket(RolePacket::LED_STATUS_RESP, _ctx->currentTag(), out, sizeof out);

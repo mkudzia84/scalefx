@@ -81,17 +81,17 @@ pin breaks it: pin 20 (VDD33), pins 28–29 (VDDA/VDD_SPI), pin 46
 | 38 | GPIO35 | *(unconnected)* | Available |
 | 39 | GPIO36 | *(unconnected)* | Available |
 | 40 | GPIO37 | *(unconnected)* | Available |
-| 41 | GPIO38 | *(unconnected)* | Available — was SD_CMD on prev rev |
-| 42 | GPIO39 | *(unconnected)* | Available — was SD_CLK on prev rev |
-| **43** | **GPIO40** | **SD_DCMD** | **SD_MMC command** (was D0 on prev rev) |
-| **44** | **GPIO41** | **SD_CLK** | **SD_MMC clock** (was D1 on prev rev) |
-| **45** | **GPIO42** | **SD_DATA0** | **SD_MMC D0** (was D2 on prev rev) |
+| **41** | **GPIO38** | **SD_DCMD** | **SD_MMC command** |
+| **42** | **GPIO39** | **SD_CLK** | **SD_MMC clock** |
+| **43** | **GPIO40** | **SD_DATA0** | **SD_MMC D0** |
+| **44** | **GPIO41** | **SD_DATA1** | **SD_MMC D1** |
+| **45** | **GPIO42** | **SD_DATA2** | **SD_MMC D2** |
 | 46 | — | VDD33 | Digital supply |
-| **47** | **GPIO43** | **SD_DATA1** | **SD_MMC D1** |
-| **48** | **GPIO44** | **SD_DATA2** | **SD_MMC D2** |
-| 49 | GPIO45 | U0_TX | UART0 TX → CH343 (U29) |
-| 50 | GPIO46 | U0_RX | UART0 RX ← CH343 (U29) |
-| **51** | **GPIO47** | **SD_DATA3** | **SD_MMC D3** (was GPIO45 on prev rev) |
+| 47 | GPIO43 | U0_TX | UART0 TX → CH343 (U29) |
+| 48 | GPIO44 | U0_RX | UART0 RX ← CH343 (U29) |
+| **49** | **GPIO45** | **SD_DATA3** | **SD_MMC D3** |
+| 50 | GPIO46 | *(unconnected)* | Available |
+| 51 | GPIO47 | *(unconnected)* | Available |
 | 52 | GPIO48 | GREEN_LED | Status / heartbeat LED |
 | 53 | — | XTAL2 | 40 MHz crystal |
 | 54 | — | XTAL1 | 40 MHz crystal |
@@ -108,7 +108,7 @@ The runtime scan should find exactly these ten devices:
 
 | Addr | Device | Function |
 |-----:|--------|----------|
-| 0x40 | INA226 ch 1 (U43) | Channel-1 LED-rail current / voltage |
+| 0x40 | INA226 ch 1 (U43) ⚠️ | Channel-1 LED-rail current / voltage — **counterfeit on shipped boards** (see below) |
 | 0x41 | INA226 ch 2 (U44) | Channel-2 rail |
 | 0x42 | INA226 ch 3 (U45) | Channel-3 rail |
 | 0x43 | INA226 ch 4 (U46) | Channel-4 rail |
@@ -122,6 +122,15 @@ The runtime scan should find exactly these ten devices:
 Battery monitoring uses INA226 channel 0 (0x40) — the rail-input
 shunt. The other seven monitor per-channel LED current. The
 firmware-level `BATTERY_INA226_CHANNEL` constant must stay 0.
+
+> **⚠️ U43 (INA226 @ 0x40) is a counterfeit on every shipped 8-channel
+> rev board checked so far.** Reports `mfg=0x0001 die=0x0020` instead of
+> the canonical TI `0x5449 / 0x2260`. Writing to it corrupts the PCA9685
+> @ 0x70 on the shared bus, so `INA226::begin()` refuses to drive it
+> and channel-1 V/I sense reads zero. Replace U43 with a genuine TI
+> INA226 to restore the channel. Full investigation in
+> [instructions/18-HUBFX-INA-CLONE-WEDGE.md](../../../instructions/18-HUBFX-INA-CLONE-WEDGE.md).
+> Tracked in [instructions/99-HW-TODO.md](../../../instructions/99-HW-TODO.md).
 
 ## LED channel signal chain
 
@@ -200,12 +209,12 @@ matches IN_1..IN_7. Adding IN_8..IN_12 support is a future change.
 ## SD card (SDIO 4-bit)
 
 ```
-PIN_SD_MMC_CMD  = GPIO40   (was GPIO38)
-PIN_SD_MMC_CLK  = GPIO41   (was GPIO39)
-PIN_SD_MMC_D0   = GPIO42   (was GPIO40)
-PIN_SD_MMC_D1   = GPIO43   (was GPIO41)
-PIN_SD_MMC_D2   = GPIO44   (was GPIO42)
-PIN_SD_MMC_D3   = GPIO47   (was GPIO45)
+PIN_SD_MMC_CMD  = GPIO38
+PIN_SD_MMC_CLK  = GPIO39
+PIN_SD_MMC_D0   = GPIO40
+PIN_SD_MMC_D1   = GPIO41
+PIN_SD_MMC_D2   = GPIO42
+PIN_SD_MMC_D3   = GPIO45
 ```
 
 The ESP32-S3 SDMMC slot 1 is routable through the GPIO matrix on this
@@ -215,8 +224,8 @@ chip, so any GPIO set works — the PCB drove the change.
 
 | Function | GPIO | Notes |
 |---|---|---|
-| UART0 TX (console) | GPIO45 | → CH343 USB-UART bridge (U29) → USB-C |
-| UART0 RX (console) | GPIO46 | ← CH343 |
+| UART0 TX (console) | GPIO43 | → CH343 USB-UART bridge (U29) → USB-C |
+| UART0 RX (console) | GPIO44 | ← CH343 |
 | USB-OTG D- | GPIO19 | Hub controller (U41) downstream port |
 | USB-OTG D+ | GPIO20 | Hub controller (U41) downstream port |
 | Status LED  | GPIO48 | Heartbeat / connection state (active-high) |

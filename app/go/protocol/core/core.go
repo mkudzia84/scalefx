@@ -154,8 +154,8 @@ const StatusCoreHeaderSize = 22
 // Mirrors the `CoreCapability` namespace in
 // [controllers/lib/sfx_serial/serial/core/core.h] verbatim.  Append-only
 // (Rule 11) — never renumber bits; assign new features to reserved
-// positions.  A 0 bitmask means the firmware pre-dates the field —
-// callers should fall back to probing.
+// positions.  0 simply means "no capabilities advertised" (e.g. a no-op
+// firmware with no user policies).
 //
 // Domains:
 //   Storage                   bits 0..1   (FLASH, SD)
@@ -164,8 +164,9 @@ const StatusCoreHeaderSize = 22
 //   Logic / config            bits 4..5   (ENGINE, CONFIG)
 //   Sensors                   bit 7       (BATTERY)
 //   Generic-expander services bits 8..10  (PORTS, ROLES, TOPOLOGY)
+//   Effect policies           bits 11..15 (ALERTS, LIGHTFX, LANDING, GEARCTRL, GUNFX)
 //   Port-kind presence        bits 16..19 (HAS_*_PORTS)
-//   Reserved                  bits 11..15, 20..31
+//   Reserved                  bits 20..31
 
 const (
 	// Storage
@@ -191,6 +192,15 @@ const (
 	CapPorts    uint32 = 1 << 8  // PortServicePolicy raw-port commands (0x10..0x3F)
 	CapRoles    uint32 = 1 << 9  // RoleServicePolicy attach/detach + per-role commands (0x40..0x7F)
 	CapTopology uint32 = 1 << 10 // TopologyServicePolicy GUID-addressed access (master only)
+
+	// Effect policies (bits 11..15) — one bit per master-side effect
+	// service, set by each policy's `kCapabilityBits`.  Lets the host
+	// hide a verb when its backing policy isn't actually loaded.
+	CapAlerts         uint32 = 1 << 11
+	CapLightFx        uint32 = 1 << 12
+	CapLandingLights  uint32 = 1 << 13
+	CapGearCtrl       uint32 = 1 << 14
+	CapGunFx          uint32 = 1 << 15
 
 	// Port-kind presence (bits 16..19) — populated by BoardOf<>::begin().
 	CapHasServoPorts   uint32 = 1 << 16
@@ -223,6 +233,11 @@ var capCatalog = []capDef{
 	{CapPorts, "PORTS"},
 	{CapRoles, "ROLES"},
 	{CapTopology, "TOPOLOGY"},
+	{CapAlerts, "ALERTS"},
+	{CapLightFx, "LIGHTFX"},
+	{CapLandingLights, "LANDING_LIGHTS"},
+	{CapGearCtrl, "GEARCTRL"},
+	{CapGunFx, "GUNFX"},
 	{CapHasServoPorts, "HAS_SERVO_PORTS"},
 	{CapHasPwmPorts, "HAS_PWM_PORTS"},
 	{CapHasHBridgePorts, "HAS_HBRIDGE_PORTS"},

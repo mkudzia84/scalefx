@@ -93,6 +93,96 @@ static const char* expectedRoleFor(uint8_t addr) {
     return nullptr;
 }
 
+// Read a 16-bit register (MSB-first byte order).  Returns the read
+// value and writes ok=true on success; ok=false on any I²C error.
+static uint16_t readReg16(uint8_t addr, uint8_t reg, bool& ok) {
+    ok = false;
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) return 0xFFFF;
+    if (Wire.requestFrom((int)addr, 2) != 2) return 0xFFFF;
+    if (Wire.available() < 2) return 0xFFFF;
+    const uint8_t hi = (uint8_t)Wire.read();
+    const uint8_t lo = (uint8_t)Wire.read();
+    ok = true;
+    return (uint16_t)((uint16_t)hi << 8) | lo;
+}
+
+static uint8_t readReg8(uint8_t addr, uint8_t reg, bool& ok) {
+    ok = false;
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) return 0xFF;
+    if (Wire.requestFrom((int)addr, 1) != 1) return 0xFF;
+    if (Wire.available() < 1) return 0xFF;
+    ok = true;
+    return (uint8_t)Wire.read();
+}
+
+// Reference IDs for the chips we expect on this PCB.
+static constexpr uint16_t INA_MFG_TI     = 0x5449;  // "TI"
+static constexpr uint16_t INA_DIE_INA226 = 0x2260;
+
+// True if `addr` is one of the HubFX INA226 channel slots.
+static bool isInaSlot(uint8_t addr) {
+    return (addr >= 0x40 && addr <= 0x45) || addr == 0x4A || addr == 0x4F;
+}
+
+// Per-address fingerprint.  Reads chip-appropriate registers ONLY —
+// never reads 0xFE/0xFF on a chip that doesn't have a valid register
+// at those offsets, because writing 0xFE/0xFF as a register pointer
+// to PCA9685 (or TAS5825P) latches the chip's address comparator
+// into an undefined state that survives until a general-call SWRST.
+// An earlier revision of this test hit the PCA9685 with 0xFE/0xFF
+// reads and left it NACK-only on subsequent boots — don't repeat.
+//
+// Per-address verdicts:
+//   0x40..0x45, 0x4A, 0x4F  → expect TI / INA226 (mfg 0x5449, die 0x2260)
+//   0x4C                    → TAS5825P codec (ACK only — no probe)
+//   0x70                    → PCA9685 — MODE1 (0x00), safe register
+static void inspectAddr(uint8_t addr, const char* role) {
+    Serial.printf("  0x%02X  %-22s", addr, role ? role : "(unexpected)");
+
+    if (isInaSlot(addr)) {
+        bool mfgOk, dieOk;
+        const uint16_t mfg = readReg16(addr, 0xFE, mfgOk);
+        const uint16_t die = readReg16(addr, 0xFF, dieOk);
+        Serial.printf("  reg[0xFE]=");
+        if (mfgOk) Serial.printf("0x%04X", mfg); else Serial.print("read-fail");
+        Serial.printf("  reg[0xFF]=");
+        if (dieOk) Serial.printf("0x%04X", die); else Serial.print("read-fail");
+        const bool match = mfgOk && dieOk && mfg == INA_MFG_TI && die == INA_DIE_INA226;
+        Serial.print(match ? "   ✓ INA226 (TI)"
+                           : "   ✗ NOT canonical INA226");
+        Serial.println();
+        return;
+    }
+
+    if (addr == 0x70) {
+        // PCA9685 — read MODE1 (0x00).  POR = 0x11 (SLEEP|ALLCALL);
+        // after our driver init = 0x21 (AI|ALLCALL).
+        bool ok;
+        const uint8_t mode1 = readReg8(addr, 0x00, ok);
+        Serial.printf("  MODE1=0x%02X (POR 0x11, driver-init 0x21)\n",
+                      ok ? mode1 : 0xFF);
+        return;
+    }
+
+    // Unknown / not fingerprinted (TAS5825P, etc.) — leave alone.
+    Serial.println("  (no fingerprint — ACK only)");
+}
+
+// General-call SWRST — write 0x06 to address 0x00.  Recovers a
+// PCA9685 whose address comparator has latched out of normal state
+// (also resets any other chip on the bus that honours general-call,
+// which on this PCB is just the PCA).
+static void busSwrst() {
+    Wire.beginTransmission((uint8_t)0x00);
+    Wire.write((uint8_t)0x06);
+    Wire.endTransmission();
+    delay(2);
+}
+
 // ============================================================================
 //  SETUP
 // ============================================================================
@@ -122,6 +212,12 @@ void setup() {
     // `setClock()` race that can leave the ESP-IDF I²C-NG driver in
     // INVALID_STATE.
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, I2C_CLOCK_HZ);
+
+    // Bus recovery — broadcast SWRST so any chip left in a stuck
+    // state (notably the PCA9685 after a buggy register read) gets a
+    // chance to come back before the first scan.
+    Serial.println("[I2C] Bus recovery — broadcast SWRST (gen-call 0x00 / 0x06)");
+    busSwrst();
 
     Serial.println("[I2C] Driver ready. First scan in 2 s.");
     Serial.println();
@@ -184,6 +280,17 @@ void loop() {
     }
     if (missingCount == 0) {
         Serial.println("  ✓ All expected devices ACKed.");
+    }
+
+    // Per-device fingerprint — reads 0xFE/0xFF (INA226 mfg/die slot)
+    // on every responder.  For INA addresses we render an explicit
+    // PASS/FAIL against the canonical TI/INA226 values; for the codec
+    // and PCA we just dump what's at those register addresses for
+    // completeness.  Bare Wire — no driver in the loop.
+    Serial.println("  per-device fingerprint (raw, no driver):");
+    for (size_t i = 0; i < EXPECTED_COUNT; i++) {
+        if (!foundExpected[i]) continue;
+        inspectAddr(EXPECTED[i].addr, EXPECTED[i].role);
     }
     Serial.println();
 }

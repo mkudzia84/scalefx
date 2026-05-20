@@ -237,7 +237,13 @@ public:
     }
 
     bool ownsType(uint8_t type) const {
-        return type >= 0x93 && type <= 0xAA;
+        // Storage packet range: 0x93..0xA3 (SD + flash + file ops + upload)
+        // and 0xA9 (FILE_TREE) and 0xB0 (FILE_UPLOAD_PROGRESS async).
+        // 0xAA/0xAB belong to the audio codec — must NOT be claimed here
+        // or the dispatcher short-circuits before AudioService sees it.
+        return (type >= 0x93 && type <= 0xA3)
+            || type == 0xA9
+            || type == 0xB0;
     }
 
     CommandHandleResult handle(uint8_t type,

@@ -421,7 +421,18 @@ namespace CoreCapability {
     // ── Generic-expander services (bits 8..10) ───────────────────────
     constexpr uint32_t PORTS         = 1u << 8;   // PortServicePolicy raw-port commands (0x10..0x3F)
     constexpr uint32_t ROLES         = 1u << 9;   // RoleServicePolicy attach/detach + per-role commands (0x40..0x7F)
-    constexpr uint32_t TOPOLOGY      = 1u << 10;  // TopologyServicePolicy GUID-addressed access (master only)
+    constexpr uint32_t TOPOLOGY      = 1u << 10;  // TopologyServicePolicyT GUID-addressed access (master only)
+
+    // ── Master-side effect policies (bits 11..15) ────────────────────
+    // One bit per effect service so the host's `help` filter can hide
+    // verbs whose backing policy isn't loaded.  All ride on TOPOLOGY +
+    // (for the audio ones) AUDIO; the dedicated bit lets the host tell
+    // "topology is up" from "this specific effect handler is loaded".
+    constexpr uint32_t ALERTS         = 1u << 11; // AlertServicePolicyT
+    constexpr uint32_t LIGHTFX        = 1u << 12; // LightFxEffectServicePolicyT
+    constexpr uint32_t LANDING_LIGHTS = 1u << 13; // LandingLightServicePolicyT
+    constexpr uint32_t GEARCTRL       = 1u << 14; // GearControlServicePolicyT
+    constexpr uint32_t GUNFX          = 1u << 15; // GunFxServicePolicyT
 
     // ── Port-kind presence (bits 16..19) ─────────────────────────────
     // True if the board declares at least one port of that kind.
@@ -464,8 +475,15 @@ struct I2CScanEntry {
  *     [address:u8]
  */
 struct I2CScanResult {
-    static constexpr uint8_t MAX_EXPECTED = 8;
-    static constexpr uint8_t MAX_EXTRA = 16;
+    /// Wire-format capacity for explicitly-registered chips ("expected"
+    /// devices — each gets a found/identified flag in the scan result).
+    /// HubFX alone needs 10 today (TAS5825P + PCA9685 + 8 INA226), and
+    /// the per-firmware cap (`BoardServerBase::MAX_EXPECTED_I2C`, see
+    /// `sfx_board/server/board_server.h`) sits at 32 by default — keep
+    /// this side at or above that so the table never gets truncated
+    /// at wire-encode time.
+    static constexpr uint8_t MAX_EXPECTED = 32;
+    static constexpr uint8_t MAX_EXTRA    = 16;
 
     I2CScanEntry expected[MAX_EXPECTED];
     uint8_t numExpected = 0;

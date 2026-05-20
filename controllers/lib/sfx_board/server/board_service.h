@@ -69,7 +69,12 @@ public:
     void update() { tickStatusBroadcast(); }
 
     const char* getErrorMessage(uint8_t code) const {
-        return CoreError::getMessage(code);
+        // Stick to the canonical SerialError namespace.  The legacy
+        // CoreError namespace shadowed several SerialError values with
+        // different meanings (0x02=NOT_CONNECTED vs NOT_INITIALIZED,
+        // 0x03=NOT_INITIALIZED vs INVALID_COMMAND), which made dispatch
+        // fallback NACKs render misleading messages.
+        return SerialError::getMessage(code);
     }
 
     // ── Board info & capabilities ─────────────────────────────────────

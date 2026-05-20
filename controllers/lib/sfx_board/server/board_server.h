@@ -99,8 +99,32 @@ class BoardServerBase {
 public:
     static constexpr uint32_t      BAUD_RATE              = 6000000;
     static constexpr unsigned long CONNECTION_TIMEOUT_ms  = 15000;
-    static constexpr uint8_t       MAX_EXPECTED_I2C       = 8;
     static constexpr size_t        RX_BUFFER_SIZE         = SfxWire::COBS_BUFFER_SIZE;
+
+    // ── Expected-I²C-device table capacity ───────────────────────────
+    //
+    // The board sketch calls `addExpectedI2CDevice(addr [, driver])`
+    // for every chip it wants to surface in `I2C_SCAN_RESULT` with a
+    // found/identified flag (anything that doesn't get registered here
+    // still shows up under `extraAddresses` if it ACKs the bus, but
+    // without the friendly status).
+    //
+    // Default is 32 — comfortable headroom for the busiest current
+    // firmware (HubFX: TAS5825P + PCA9685 + 8 INA226 = 10 devices, with
+    // room for a battery sensor + EEPROM + future expansion).  Override
+    // per-firmware via `-DSFX_MAX_EXPECTED_I2C=N` in platformio.ini if
+    // a board genuinely needs more.
+    //
+    // Wire-format note: `I2CScanResult::MAX_EXPECTED` (in serial/core/core.h)
+    // must be at least this large — bump them together if increasing
+    // beyond 32.
+#ifndef SFX_MAX_EXPECTED_I2C
+#define SFX_MAX_EXPECTED_I2C 32
+#endif
+    static constexpr uint8_t MAX_EXPECTED_I2C = SFX_MAX_EXPECTED_I2C;
+    static_assert(MAX_EXPECTED_I2C <= I2CScanResult::MAX_EXPECTED,
+                  "SFX_MAX_EXPECTED_I2C exceeds the wire-format cap "
+                  "(I2CScanResult::MAX_EXPECTED in serial/core/core.h)");
 
     BoardServerBase() = default;
     virtual ~BoardServerBase() = default;
@@ -186,7 +210,11 @@ public:
 
     // ── I²C scan registration (forwarded to BoardServicePolicy) ──────
 
-    void addExpectedI2CDevice(uint8_t address, I2CDevice* device = nullptr);
+    /// Register a chip the board sketch wants surfaced in the scan
+    /// result with a found/identified flag.  Returns false (and logs a
+    /// WARN) when the expected-devices table is full — bump
+    /// `SFX_MAX_EXPECTED_I2C` in platformio.ini if you hit that.
+    bool addExpectedI2CDevice(uint8_t address, I2CDevice* device = nullptr);
 
     // ── Wire helpers (concrete, no virtual dispatch) ─────────────────
 

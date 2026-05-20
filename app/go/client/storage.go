@@ -86,15 +86,19 @@ func (s *Storage) SdStatus() (SdStatus, error) {
 	return storage.DecodeSdStatus(resp.Payload)
 }
 
-// FlashStatus requests the LittleFS status.  Firmware replies with the
-// SD_STATUS_RESP-shaped layout (just describing the flash backend), so
-// the same decoder applies.
-func (s *Storage) FlashStatus() (SdStatus, error) {
-	resp, err := s.c.sendForResp(storage.CmdFlashStatusReq(), storage.SdStatusResp)
+// FlashStatus is the decoded LittleFS status — re-exported so CLI
+// callers don't pull the protocol package.
+type FlashStatus = storage.FlashStatus
+
+// FlashStatus requests the LittleFS status.  Firmware reuses
+// FLASH_STATUS_REQ (0x99) as the response type with a separate
+// byte-denominated payload shape.
+func (s *Storage) FlashStatus() (FlashStatus, error) {
+	resp, err := s.c.sendForResp(storage.CmdFlashStatusReq(), storage.FlashStatusReq)
 	if err != nil {
-		return SdStatus{}, err
+		return FlashStatus{}, err
 	}
-	return storage.DecodeSdStatus(resp.Payload)
+	return storage.DecodeFlashStatus(resp.Payload)
 }
 
 // ─── File ops ────────────────────────────────────────────────────────
@@ -171,25 +175,39 @@ func (s *Storage) FileDownloadTo(path string, dst io.Writer, timeout time.Durati
 
 // ─── Upload ──────────────────────────────────────────────────────────
 
+// UploadMode picks the wire protocol used for the body of the upload.
+// Sync is the simple per-chunk-ACK loop (works everywhere, modest
+// throughput).  Stream is the high-throughput ESP32 path: raw binary
+// segments + per-segment FILE_UPLOAD_PROGRESS ACKs with flow control
+// based on the firmware's ring-buffer fill.
+type UploadMode = byte
+
 // UploadOptions configures FileUpload.
 type UploadOptions struct {
-	Path       string  // destination on the hub (forward slashes)
-	Target     byte    // TargetSD or TargetFlash
-	ChunkSize  int     // 0 → derived from peerMaxPayload
+	Path       string // destination on the hub (forward slashes)
+	Target     byte   // TargetSD or TargetFlash
+	Mode       UploadMode
+	ChunkSize  int    // 0 → derived from peerMaxPayload (Sync only)
 	OnProgress func(bytesSent, total int64)
 }
 
-// UploadResult bundles upload statistics.
+// UploadResult bundles upload statistics.  RemoteMD5 / LocalMD5 are
+// populated when the firmware echoes its computed digest in the
+// FILE_UPLOAD_END ACK payload (16 bytes).  MD5Match is the verdict.
 type UploadResult struct {
 	BytesSent int64
-	MD5       [16]byte
 	Elapsed   time.Duration
+	SpeedKBs  float64 // KB/s over the entire transfer
+	LocalMD5  [16]byte
+	RemoteMD5 [16]byte
+	MD5Match  bool
+	Mode      UploadMode
 }
 
-// FileUpload reads `local` and uploads it to `opt.Path` on the hub.
-// Uses the sync mode — one FILE_UPLOAD_DATA per chunk, ACK awaited
-// before the next chunk goes out.  Stream / windowed modes are out
-// of v1.
+// FileUpload reads `local` and uploads it to `opt.Path`.  Mode picks
+// the wire path; Target picks the backend (SD / Flash).  On failure
+// the routine sends FILE_UPLOAD_CANCEL so the device cleans up its
+// pre-allocated file before returning.
 func (s *Storage) FileUpload(local string, opt UploadOptions) (UploadResult, error) {
 	if opt.Path == "" {
 		return UploadResult{}, fmt.Errorf("upload: destination path is empty")
@@ -208,56 +226,192 @@ func (s *Storage) FileUpload(local string, opt UploadOptions) (UploadResult, err
 		return UploadResult{}, fmt.Errorf("upload: file too large (%d bytes)", size)
 	}
 
-	// Normalise destination slashes.
 	opt.Path = strings.ReplaceAll(opt.Path, "\\", "/")
 	if !strings.HasPrefix(opt.Path, "/") {
 		opt.Path = "/" + opt.Path
 	}
 
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return UploadResult{}, fmt.Errorf("read %s: %w", local, err)
+	}
+
+	switch opt.Mode {
+	case UploadStream:
+		return s.uploadStream(data, opt)
+	default:
+		return s.uploadSync(data, opt)
+	}
+}
+
+// ─── Sync upload ─────────────────────────────────────────────────────
+
+func (s *Storage) uploadSync(data []byte, opt UploadOptions) (UploadResult, error) {
 	chunkSize := opt.ChunkSize
 	if chunkSize <= 0 {
 		chunkSize = s.uploadChunkSize()
 	}
+	total := int64(len(data))
 
-	if err := s.c.sendExpectACK(
-		storage.CmdFileUploadBegin(opt.Path, UploadSync, uint32(size))); err != nil {
-		return UploadResult{}, fmt.Errorf("upload begin: %w", err)
+	resp, err := s.c.conn.SendExpectACK(
+		storage.CmdFileUploadBegin(opt.Path, uint32(total), opt.Target, UploadSync))
+	if err != nil {
+		return UploadResult{Mode: UploadSync}, fmt.Errorf("upload begin: %w", err)
 	}
+	if resp.IsNACK() {
+		return UploadResult{Mode: UploadSync}, errFromNack(resp)
+	}
+
+	// Sync-mode chunk header is 4 bytes ([seq:u16][crc16:u16]).  The
+	// peer's max payload window already accounted for that in
+	// uploadChunkSize(); we just need enough headroom not to overrun.
+	const syncHeader = 4
+	if chunkSize <= syncHeader {
+		return UploadResult{Mode: UploadSync}, fmt.Errorf("upload: chunk size too small")
+	}
+	chunkSize -= syncHeader
 
 	start := time.Now()
 	hash := md5.New()
-	buf := make([]byte, chunkSize)
+	hash.Write(data)
 	var sent int64
-	for {
-		n, rerr := f.Read(buf)
-		if n > 0 {
-			chunk := buf[:n]
-			if err := s.c.sendExpectACK(storage.CmdFileUploadData(chunk)); err != nil {
-				_ = s.c.conn.Send(storage.CmdFileUploadCancel())
-				return UploadResult{BytesSent: sent}, fmt.Errorf("upload chunk @%d: %w", sent, err)
-			}
-			hash.Write(chunk)
-			sent += int64(n)
-			if opt.OnProgress != nil {
-				opt.OnProgress(sent, size)
-			}
+	seq := uint16(0)
+	for off := 0; off < len(data); off += chunkSize {
+		end := off + chunkSize
+		if end > len(data) {
+			end = len(data)
 		}
-		if rerr == io.EOF {
-			break
-		}
-		if rerr != nil {
+		chunk := data[off:end]
+		if err := s.c.sendExpectACK(storage.CmdFileUploadData(seq, chunk)); err != nil {
 			_ = s.c.conn.Send(storage.CmdFileUploadCancel())
-			return UploadResult{BytesSent: sent}, rerr
+			return UploadResult{BytesSent: sent, Mode: UploadSync},
+				fmt.Errorf("upload chunk @%d (seq=%d): %w", off, seq, err)
+		}
+		sent += int64(len(chunk))
+		seq++
+		if opt.OnProgress != nil {
+			opt.OnProgress(sent, total)
 		}
 	}
 	s.c.conn.FlushOutput()
-	if err := s.c.sendExpectACK(storage.CmdFileUploadEnd()); err != nil {
-		return UploadResult{BytesSent: sent}, fmt.Errorf("upload end: %w", err)
+
+	resp, err = s.c.conn.SendExpectACKTimeout(storage.CmdFileUploadEnd(), 60*time.Second)
+	if err != nil {
+		return UploadResult{BytesSent: sent, Mode: UploadSync}, fmt.Errorf("upload end: %w", err)
+	}
+	if resp.IsNACK() {
+		_ = s.c.conn.Send(storage.CmdFileUploadCancel())
+		return UploadResult{BytesSent: sent, Mode: UploadSync}, errFromNack(resp)
+	}
+	return s.finalizeUpload(resp, sent, time.Since(start), hash.Sum(nil), UploadSync)
+}
+
+// ─── Stream upload ───────────────────────────────────────────────────
+
+// uploadStream is the high-throughput path used by the ESP32 HubFX
+// firmware.  The protocol is:
+//
+//  1. FILE_UPLOAD_BEGIN with mode=UploadStream — firmware ACK carries
+//     [segment_size:u32LE][segment_count:u16LE].
+//  2. For each segment: blast raw bytes (no COBS framing) in 32 KB
+//     write-sized chunks, wait for FILE_UPLOAD_PROGRESS TAG_ASYNC with
+//     [seg_idx:u16][bytes:u32][fill_pct:u8].  Throttle if fill > 50 %.
+//  3. FILE_UPLOAD_END — ACK carries the 16-byte remote MD5.
+func (s *Storage) uploadStream(data []byte, opt UploadOptions) (UploadResult, error) {
+	total := int64(len(data))
+
+	resp, err := s.c.conn.SendExpectACK(
+		storage.CmdFileUploadBegin(opt.Path, uint32(total), opt.Target, UploadStream))
+	if err != nil {
+		return UploadResult{Mode: UploadStream}, fmt.Errorf("upload begin: %w", err)
+	}
+	if resp.IsNACK() {
+		return UploadResult{Mode: UploadStream}, errFromNack(resp)
+	}
+	segSize := uint32(524288)
+	if len(resp.Payload) >= 6 {
+		segSize = protocol.ReadU32LE(resp.Payload, 0)
 	}
 
-	var sum [16]byte
-	copy(sum[:], hash.Sum(nil))
-	return UploadResult{BytesSent: sent, MD5: sum, Elapsed: time.Since(start)}, nil
+	progressCh := make(chan *protocol.Response, 16)
+	s.c.conn.RegisterAsyncFilter(storage.FileUploadProgress, progressCh)
+	defer s.c.conn.UnregisterAsyncFilter(storage.FileUploadProgress)
+
+	start := time.Now()
+	hash := md5.New()
+	hash.Write(data)
+	const writeChunk = 32768
+
+	var sent int64
+	for sent < total {
+		thisSeg := int64(segSize)
+		if rem := total - sent; thisSeg > rem {
+			thisSeg = rem
+		}
+		segStart := sent
+		segEnd := segStart + thisSeg
+		for segStart < segEnd {
+			step := segEnd - segStart
+			if step > writeChunk {
+				step = writeChunk
+			}
+			if err := s.c.conn.SendRaw(data[segStart : segStart+step]); err != nil {
+				_ = s.c.conn.Send(storage.CmdFileUploadCancel())
+				return UploadResult{BytesSent: sent, Mode: UploadStream},
+					fmt.Errorf("stream write @%d: %w", segStart, err)
+			}
+			segStart += step
+			sent = segStart
+			if opt.OnProgress != nil {
+				opt.OnProgress(sent, total)
+			}
+		}
+		s.c.conn.FlushOutput()
+
+		select {
+		case ack := <-progressCh:
+			if len(ack.Payload) >= 7 {
+				fill := int(ack.Payload[6])
+				if fill > 50 {
+					time.Sleep(time.Duration(fill-50) * 60 * time.Millisecond / 1)
+				}
+			}
+		case <-time.After(15 * time.Second):
+			_ = s.c.conn.Send(storage.CmdFileUploadCancel())
+			return UploadResult{BytesSent: sent, Mode: UploadStream},
+				fmt.Errorf("stream timeout waiting for segment ACK")
+		}
+	}
+
+	resp, err = s.c.conn.SendExpectACKTimeout(storage.CmdFileUploadEnd(), 60*time.Second)
+	if err != nil {
+		return UploadResult{BytesSent: sent, Mode: UploadStream}, fmt.Errorf("upload end: %w", err)
+	}
+	if resp.IsNACK() {
+		_ = s.c.conn.Send(storage.CmdFileUploadCancel())
+		return UploadResult{BytesSent: sent, Mode: UploadStream}, errFromNack(resp)
+	}
+	return s.finalizeUpload(resp, sent, time.Since(start), hash.Sum(nil), UploadStream)
+}
+
+// finalizeUpload pulls the optional 16-byte remote MD5 out of the
+// FILE_UPLOAD_END ACK payload and computes the verdict.
+func (s *Storage) finalizeUpload(
+	resp *protocol.Response, sent int64,
+	elapsed time.Duration, localSum []byte, mode UploadMode,
+) (UploadResult, error) {
+	r := UploadResult{
+		BytesSent: sent,
+		Elapsed:   elapsed,
+		SpeedKBs:  float64(sent) / elapsed.Seconds() / 1024.0,
+		Mode:      mode,
+	}
+	copy(r.LocalMD5[:], localSum)
+	if len(resp.Payload) >= 16 {
+		copy(r.RemoteMD5[:], resp.Payload[:16])
+		r.MD5Match = r.LocalMD5 == r.RemoteMD5
+	}
+	return r, nil
 }
 
 // CancelUpload sends FILE_UPLOAD_CANCEL — useful when an out-of-band

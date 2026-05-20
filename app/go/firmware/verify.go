@@ -25,10 +25,8 @@ type DeviceInfo struct {
 	CPUMHz         uint32
 	FreeRAM        uint32
 	ControllerType string
-	// Capabilities is the bitmask the firmware advertises in IDENTIFY/INIT_READY
-	// (CoreCapability::FLASH | SD | AUDIO | USB_HOST | ENGINE | CONFIG | SLAVE_BUS).
-	// Older firmware that pre-dates the field reports 0 — callers should treat
-	// 0 as "unknown, fall back to probing" rather than "nothing supported".
+	// Capabilities is the bitmask the firmware advertises in
+	// IDENTIFY / INIT_READY — see protocol/core for the catalog.
 	Capabilities uint32
 }
 
@@ -157,10 +155,10 @@ func parseInitReady(payload []byte) *DeviceInfo {
 	info.Build = protocol.ReadU32LE(payload, offset)
 	offset += 4
 
-	// Capabilities (Rule 11 append-only) — absent on legacy firmware → 0.
-	if offset+4 <= len(payload) {
-		info.Capabilities = protocol.ReadU32LE(payload, offset)
+	if offset+4 > len(payload) {
+		return nil
 	}
+	info.Capabilities = protocol.ReadU32LE(payload, offset)
 
 	info.ControllerType = core.DetectControllerType(info.Name)
 	return info

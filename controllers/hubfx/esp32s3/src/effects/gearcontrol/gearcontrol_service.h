@@ -38,7 +38,7 @@ inline constexpr uint8_t kMaxGears = 6;
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 class GearControlServicePolicyT {
 public:
-    static constexpr uint32_t kCapabilityBits = CoreCapability::TOPOLOGY;
+    static constexpr uint32_t kCapabilityBits = CoreCapability::GEARCTRL;
 
     GearControlServicePolicyT() = default;
 

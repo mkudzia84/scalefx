@@ -1,128 +1,88 @@
-/**
- * @file hubfx_pca9685_hwtest.ino
- * @brief PCA9685 bring-up + simple ON/OFF cycle on all 8 LED rails.
- *
- * Boots with a full chip verification pass (SWRST → POR-register
- * compare → MODE2 toggle → SLEEP entry → PRESCALE write → AI enable →
- * single-channel burst write → ALL_LED broadcast write → wake/sleep
- * round-trip), then runs a simple ON/OFF visual cycle indefinitely:
- *
- *   - 10 s with all 8 LED rails OFF
- *   -  5 s with all 8 LED rails at full brightness (duty = 4095/4095)
- *   - repeat
- *
- * Each phase transition writes the ALL_LED broadcast registers in a
- * single I²C transaction, so all eight rails change state atomically.
- * The chip is probed every 2 s as a liveness canary — if it stops
- * ACKing mid-cycle (the wedge mode that prompted the earlier
- * investigation), the fixture broadcasts a general-call SWRST, re-sets
- * PRESCALE, and re-wakes the chip to restart the cycle.
- *
- * Hardware (see ../../../controllers/hubfx/esp32s3/PINOUT.md):
- *   I²C:  SDA=GPIO8, SCL=GPIO9, 100 kHz, expected devices at
- *         0x40–0x45, 0x4A, 0x4C, 0x4F, 0x70.
- *
- * Build: `pio run -t upload` from this directory.
- *
- * NO external libraries — pure Arduino + Wire.
- */
-
+# 1 "C:\\Users\\marti\\AppData\\Local\\Temp\\tmptffijsjj"
+#include <Arduino.h>
+# 1 "C:/data/code/scalefx/tests/hw/hubfx_pca9685_hwtest/src/hubfx_pca9685_hwtest.ino"
+# 30 "C:/data/code/scalefx/tests/hw/hubfx_pca9685_hwtest/src/hubfx_pca9685_hwtest.ino"
 #include <Arduino.h>
 #include <Wire.h>
 
-// ============================================================================
-//  CONFIG
-// ============================================================================
 
-static constexpr int      PIN_I2C_SDA  = 8;
-static constexpr int      PIN_I2C_SCL  = 9;
+
+
+
+static constexpr int PIN_I2C_SDA = 8;
+static constexpr int PIN_I2C_SCL = 9;
 static constexpr uint32_t I2C_CLOCK_HZ = 100000;
 
 static constexpr int PIN_HEARTBEAT_LED = 48;
 
 static constexpr uint8_t PCA9685_ADDR_EXPECTED = 0x70;
 
-// PCA9685 software-reset sequence (datasheet §7.1.4):
-//   Write byte 0x06 to 7-bit address 0x00 (I²C general call). All chips
-//   on the bus that have general-call ACK enabled will reset. That's
-//   PCA9685's default state at power-on, so this works even when the
-//   chip is no longer ACK'ing its assigned address.
+
+
+
+
+
 static constexpr uint8_t I2C_GENERAL_CALL_ADDR = 0x00;
-static constexpr uint8_t PCA9685_SWRST_BYTE    = 0x06;
+static constexpr uint8_t PCA9685_SWRST_BYTE = 0x06;
 
 static constexpr uint32_t TICK_INTERVAL_MS = 2000;
 
-// PCA9685 register map (only what the verification phase touches).
-static constexpr uint8_t REG_MODE1         = 0x00;
-static constexpr uint8_t REG_MODE2         = 0x01;
-static constexpr uint8_t REG_LED0_ON_L     = 0x06;  // 4 bytes per channel
-static constexpr uint8_t REG_ALL_LED_ON_L  = 0xFA;
-static constexpr uint8_t REG_PRESCALE      = 0xFE;
 
-// MODE1 bits
+static constexpr uint8_t REG_MODE1 = 0x00;
+static constexpr uint8_t REG_MODE2 = 0x01;
+static constexpr uint8_t REG_LED0_ON_L = 0x06;
+static constexpr uint8_t REG_ALL_LED_ON_L = 0xFA;
+static constexpr uint8_t REG_PRESCALE = 0xFE;
+
+
 static constexpr uint8_t MODE1_RESTART = 0x80;
-static constexpr uint8_t MODE1_AI      = 0x20;
-static constexpr uint8_t MODE1_SLEEP   = 0x10;
+static constexpr uint8_t MODE1_AI = 0x20;
+static constexpr uint8_t MODE1_SLEEP = 0x10;
 static constexpr uint8_t MODE1_ALLCALL = 0x01;
 
-// MODE2 bits
-static constexpr uint8_t MODE2_INVRT   = 0x10;
-static constexpr uint8_t MODE2_OUTDRV  = 0x04;
 
-// LEDn_*_H bit 4 = FULL_ON / FULL_OFF override
+static constexpr uint8_t MODE2_INVRT = 0x10;
+static constexpr uint8_t MODE2_OUTDRV = 0x04;
+
+
 static constexpr uint8_t LED_FULL = 0x10;
 
-// Datasheet POR defaults (§7.3.1.1 / §7.3.2 / §7.3.5).
-static constexpr uint8_t POR_MODE1    = 0x11;   // SLEEP=1, ALLCALL=1
-static constexpr uint8_t POR_MODE2    = 0x04;   // OUTDRV=1 (push-pull)
-static constexpr uint8_t POR_PRESCALE = 0x1E;   // ~200 Hz
 
-// Operating PWM frequency for the LED rails. The chip supports
-// 24..1526 Hz (prescale 255..3). We run at the upper limit to push any
-// residual switching artefact above the human flicker-fusion threshold
-// — at 1526 Hz the cycle is 655 µs, so even a single-tick pulse is
-// well below perception.
-//
-// Datasheet §7.3.5 prescale formula: round(25 MHz / (4096 × f_Hz)) − 1.
-// 25e6 / (4096 × 1500) = 4.07 → prescale = 3 → actual = 1526 Hz.
+static constexpr uint8_t POR_MODE1 = 0x11;
+static constexpr uint8_t POR_MODE2 = 0x04;
+static constexpr uint8_t POR_PRESCALE = 0x1E;
+# 88 "C:/data/code/scalefx/tests/hw/hubfx_pca9685_hwtest/src/hubfx_pca9685_hwtest.ino"
 static constexpr uint16_t PWM_FREQUENCY_HZ = 1526;
-static constexpr uint8_t  PRESCALE_VALUE   = 0x03;  // 1526 Hz actual
+static constexpr uint8_t PRESCALE_VALUE = 0x03;
 
-// 12-bit duty range.
+
 static constexpr uint16_t DUTY_MAX = 4095;
 
-// On/off cycle parameters. The fixture parks every LED rail dark for
-// OFF_DURATION_MS, then drives all 8 channels at full duty for
-// ON_DURATION_MS, and repeats. Used for visual go/no-go on the LED
-// chain — you can confirm every channel turns on simultaneously and
-// off simultaneously without watching breathing curves.
-static constexpr uint32_t OFF_DURATION_MS = 10000;   // 10 s dark
-static constexpr uint32_t ON_DURATION_MS  =  5000;   //  5 s at full brightness
-static constexpr uint16_t ON_DUTY         = DUTY_MAX;
-static constexpr uint16_t OFF_DUTY        = 0;       // writeAllChannels clamps to 1
 
-// Status print cadence — one line each transition + a periodic ping
-// during the long OFF window so the user knows the canary is alive.
+
+
+
+
+static constexpr uint32_t OFF_DURATION_MS = 10000;
+static constexpr uint32_t ON_DURATION_MS = 5000;
+static constexpr uint16_t ON_DUTY = DUTY_MAX;
+static constexpr uint16_t OFF_DUTY = 0;
+
+
+
 static constexpr uint32_t PING_INTERVAL_MS = 2000;
-
-// ON/OFF cycle state. The enum is declared up here (before any function
-// signature references it) so the Arduino IDE's auto-prototype generator
-// — which injects forward declarations just before the first function
-// definition — sees `Phase` as a known type.  The cycle helper functions
-// themselves live further down, AFTER `EXPECTED_COUNT`, so they are not
-// the first-function-position (which would push prototype injection up
-// above `EXPECTED_COUNT`'s definition and break the `scanBus` prototype).
+# 115 "C:/data/code/scalefx/tests/hw/hubfx_pca9685_hwtest/src/hubfx_pca9685_hwtest.ino"
 enum class Phase : uint8_t { OFF, ON };
 
-static bool     cycleActive  = false;        // chip woken, cycle running
-static Phase    cyclePhase   = Phase::OFF;
+static bool cycleActive = false;
+static Phase cyclePhase = Phase::OFF;
 static uint32_t phaseStartMs = 0;
-static uint32_t cycleNacks   = 0;
-static uint32_t cycleCount   = 0;
+static uint32_t cycleNacks = 0;
+static uint32_t cycleCount = 0;
 
-// Expected device set.
+
 struct ExpectedDevice {
-    uint8_t     addr;
+    uint8_t addr;
     const char* role;
 };
 static constexpr ExpectedDevice EXPECTED[] = {
@@ -138,19 +98,35 @@ static constexpr ExpectedDevice EXPECTED[] = {
     { 0x70, "PCA9685 LED PWM" },
 };
 static constexpr size_t EXPECTED_COUNT = sizeof(EXPECTED) / sizeof(EXPECTED[0]);
-
-// ============================================================================
-//  HELPERS
-// ============================================================================
-
+static bool i2cProbe(uint8_t addr);
+static uint32_t phaseDuration(Phase p);
+static uint16_t phaseDuty(Phase p);
+static void busHealthCheck();
+static void busRecovery();
+static int scanBus(bool foundExpected[EXPECTED_COUNT], const char* label);
+static bool writeAllChannels(uint16_t duty);
+static bool sendSWRST();
+static bool readReg(uint8_t reg, uint8_t& out);
+static bool writeRegVerify(const char* step, const char* name,
+                           uint8_t reg, uint8_t value);
+static bool readRegExpect(const char* step, const char* name,
+                          uint8_t reg, uint8_t expected);
+static bool writeLED4Verify(const char* step, uint8_t firstReg,
+                            uint8_t a, uint8_t b, uint8_t c, uint8_t d);
+static bool verifyAllChannelsDuty(const char* step, uint16_t expectedDuty);
+static void runVerification();
+void setup();
+static void enterPhase(Phase p, uint32_t now);
+void loop();
+#line 146 "C:/data/code/scalefx/tests/hw/hubfx_pca9685_hwtest/src/hubfx_pca9685_hwtest.ino"
 static bool i2cProbe(uint8_t addr) {
     Wire.beginTransmission(addr);
     return Wire.endTransmission() == 0;
 }
 
-// ON/OFF cycle helpers — defined here (not at the top with the state
-// vars) so the Arduino auto-prototype injection point stays AFTER
-// `EXPECTED_COUNT`, which the `scanBus` prototype references.
+
+
+
 static const char* phaseName(Phase p) {
     return (p == Phase::OFF) ? "OFF" : "ON ";
 }
@@ -167,16 +143,7 @@ static const char* expectedRoleFor(uint8_t addr) {
     }
     return nullptr;
 }
-
-// ============================================================================
-//  PRE-WIRE BUS HEALTH + RECOVERY
-//  Done with the pins as plain GPIO, BEFORE Wire.begin().
-// ============================================================================
-
-// Read SDA and SCL idle state via the external pull-ups. INPUT_PULLUP
-// enables the internal pull-up too (parallel to the external — that's
-// fine), so we get a clean HIGH unless something is actively pulling
-// the line LOW.
+# 180 "C:/data/code/scalefx/tests/hw/hubfx_pca9685_hwtest/src/hubfx_pca9685_hwtest.ino"
 static void busHealthCheck() {
     pinMode(PIN_I2C_SDA, INPUT_PULLUP);
     pinMode(PIN_I2C_SCL, INPUT_PULLUP);
@@ -188,10 +155,10 @@ static void busHealthCheck() {
                   scl ? "HIGH ✓" : "LOW  ✗");
 }
 
-// Adapted from the user's recovery routine — SDA is sampled each clock,
-// loop exits as soon as the slave releases the line. SCL is driven
-// push-pull (we dominate the bus during recovery, which is the correct
-// behaviour while clocking out a stuck slave).
+
+
+
+
 static void busRecovery() {
     pinMode(PIN_I2C_SDA, INPUT_PULLUP);
     pinMode(PIN_I2C_SCL, OUTPUT);
@@ -206,11 +173,11 @@ static void busRecovery() {
         delayMicroseconds(5);
         clocksSent++;
         if (digitalRead(PIN_I2C_SDA) == HIGH) {
-            break;  // slave released SDA — bus is now clean
+            break;
         }
     }
 
-    // Standard STOP condition: SDA L→H while SCL HIGH.
+
     pinMode(PIN_I2C_SDA, OUTPUT);
     digitalWrite(PIN_I2C_SDA, LOW);
     delayMicroseconds(5);
@@ -224,14 +191,7 @@ static void busRecovery() {
 
     Serial.printf("  Bus recovery: sent %d SCL clock(s) + STOP\n", clocksSent);
 }
-
-// ============================================================================
-//  SCAN + SWRST
-// ============================================================================
-
-// Scan 0x08..0x7F, print each ACK with annotation, return how many of
-// the expected devices were present and write `foundExpected[]` for the
-// caller. Returns the total count of devices on the bus.
+# 235 "C:/data/code/scalefx/tests/hw/hubfx_pca9685_hwtest/src/hubfx_pca9685_hwtest.ino"
 static int scanBus(bool foundExpected[EXPECTED_COUNT], const char* label) {
     Serial.printf("  --- %s ---\n", label);
     int totalFound = 0;
@@ -252,24 +212,13 @@ static int scanBus(bool foundExpected[EXPECTED_COUNT], const char* label) {
     }
     return totalFound;
 }
-
-// Atomically write a 12-bit duty value to all 16 channels using the
-// ALL_LED broadcast registers — one I²C transaction, all rails phase-
-// locked. Returns true on ACK.
-//
-// Always PWM mode (ON=0, OFF=duty). Never sets the FULL_ON / FULL_OFF
-// flag bits, because switching INTO and OUT OF those modes (which
-// happens for a single frame at the peak and trough of the breathing
-// curve) produces a brief visible glitch on this PCA9685 silicon.
-// Practical range: duty=1 → 0.024 % duty (sub-visual), duty=4095 →
-// 99.976 % (visually full on). Caller can still pass 0; we clamp up
-// to 1 so the ON==OFF undefined-behavior case is avoided.
+# 267 "C:/data/code/scalefx/tests/hw/hubfx_pca9685_hwtest/src/hubfx_pca9685_hwtest.ino"
 static bool writeAllChannels(uint16_t duty) {
-    if (duty < 1)         duty = 1;
-    if (duty > DUTY_MAX)  duty = DUTY_MAX;
+    if (duty < 1) duty = 1;
+    if (duty > DUTY_MAX) duty = DUTY_MAX;
 
-    const uint8_t on_l  = 0x00;
-    const uint8_t on_h  = 0x00;
+    const uint8_t on_l = 0x00;
+    const uint8_t on_h = 0x00;
     const uint8_t off_l = (uint8_t)(duty & 0xFF);
     const uint8_t off_h = (uint8_t)((duty >> 8) & 0x0F);
 
@@ -279,12 +228,12 @@ static bool writeAllChannels(uint16_t duty) {
     return (Wire.endTransmission() == 0);
 }
 
-// PCA9685 software-reset broadcast. Issues exactly one I²C transaction:
-//   START + 0x00 + 0x06 + STOP
-// Any PCA9685 on the bus that still has its general-call ACK bit
-// enabled (which is the power-on default) will perform a full reset of
-// its internal state machine — including the address comparator. Costs
-// one transaction; harmless if the chip is healthy or absent.
+
+
+
+
+
+
 static bool sendSWRST() {
     Wire.beginTransmission(I2C_GENERAL_CALL_ADDR);
     Wire.write(PCA9685_SWRST_BYTE);
@@ -294,14 +243,7 @@ static bool sendSWRST() {
                   (err == 0) ? "ACK" : "NACK", err);
     return (err == 0);
 }
-
-// ============================================================================
-//  BOOT-TIME CHIP VERIFICATION
-//  Runs once after the first scan confirms the chip is on the bus.
-//  Keeps the chip in SLEEP throughout — no LEDs flicker during the test.
-// ============================================================================
-
-// Read one register from PCA9685 at PCA9685_ADDR_EXPECTED.
+# 305 "C:/data/code/scalefx/tests/hw/hubfx_pca9685_hwtest/src/hubfx_pca9685_hwtest.ino"
 static bool readReg(uint8_t reg, uint8_t& out) {
     Wire.beginTransmission(PCA9685_ADDR_EXPECTED);
     Wire.write(reg);
@@ -311,7 +253,7 @@ static bool readReg(uint8_t reg, uint8_t& out) {
     return true;
 }
 
-// Write one register and read it back. Logs the comparison.
+
 static bool writeRegVerify(const char* step, const char* name,
                            uint8_t reg, uint8_t value) {
     Wire.beginTransmission(PCA9685_ADDR_EXPECTED);
@@ -334,7 +276,7 @@ static bool writeRegVerify(const char* step, const char* name,
     return match;
 }
 
-// Read + log a single register, comparing against an expected value.
+
 static bool readRegExpect(const char* step, const char* name,
                           uint8_t reg, uint8_t expected) {
     uint8_t got = 0;
@@ -348,8 +290,8 @@ static bool readRegExpect(const char* step, const char* name,
     return match;
 }
 
-// 4-byte burst write to LEDn_ON_L (auto-increment enabled via MODE1.AI).
-// Reads back all 4 bytes and compares.
+
+
 static bool writeLED4Verify(const char* step, uint8_t firstReg,
                             uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
     Wire.beginTransmission(PCA9685_ADDR_EXPECTED);
@@ -373,7 +315,7 @@ static bool writeLED4Verify(const char* step, uint8_t firstReg,
     return match;
 }
 
-// Read LED0..LED7 OFF_L/OFF_H pairs, compare to expected 12-bit duty.
+
 static bool verifyAllChannelsDuty(const char* step, uint16_t expectedDuty) {
     bool allMatch = true;
     for (uint8_t ch = 0; ch < 8; ch++) {
@@ -393,8 +335,8 @@ static bool verifyAllChannelsDuty(const char* step, uint16_t expectedDuty) {
     return allMatch;
 }
 
-// Run the full verification sequence. Logs every step. Doesn't halt on
-// failure — we want the canary loop to start regardless.
+
+
 static void runVerification() {
     Serial.println();
     Serial.println("──────────  BOOT-TIME CHIP VERIFICATION  ──────────");
@@ -402,14 +344,14 @@ static void runVerification() {
     int passes = 0, fails = 0;
     auto tally = [&](bool ok) { if (ok) passes++; else fails++; };
 
-    // Step 1: inherited register state.
+
     Serial.println("[VERIFY] 1/10  inherited state (before SWRST):");
     uint8_t m1 = 0xFF, m2 = 0xFF, pre = 0xFF;
-    tally(readReg(REG_MODE1, m1));    Serial.printf("[VERIFY]      MODE1     = 0x%02X\n", m1);
-    tally(readReg(REG_MODE2, m2));    Serial.printf("[VERIFY]      MODE2     = 0x%02X\n", m2);
+    tally(readReg(REG_MODE1, m1)); Serial.printf("[VERIFY]      MODE1     = 0x%02X\n", m1);
+    tally(readReg(REG_MODE2, m2)); Serial.printf("[VERIFY]      MODE2     = 0x%02X\n", m2);
     tally(readReg(REG_PRESCALE, pre));Serial.printf("[VERIFY]      PRESCALE  = 0x%02X\n", pre);
 
-    // Step 2: SWRST broadcast.
+
     Serial.println("[VERIFY] 2/10  SWRST broadcast");
     Wire.beginTransmission(I2C_GENERAL_CALL_ADDR);
     Wire.write(PCA9685_SWRST_BYTE);
@@ -418,37 +360,37 @@ static void runVerification() {
     tally(swrstAck);
     delay(2);
 
-    // Step 3: re-read, compare to POR defaults.
+
     Serial.println("[VERIFY] 3/10  POR defaults after SWRST:");
-    tally(readRegExpect("3/10", "MODE1",    REG_MODE1,    POR_MODE1));
-    tally(readRegExpect("3/10", "MODE2",    REG_MODE2,    POR_MODE2));
+    tally(readRegExpect("3/10", "MODE1", REG_MODE1, POR_MODE1));
+    tally(readRegExpect("3/10", "MODE2", REG_MODE2, POR_MODE2));
     tally(readRegExpect("3/10", "PRESCALE", REG_PRESCALE, POR_PRESCALE));
 
-    // Step 4: toggle a benign MODE2 bit (INVRT) and back. Doesn't wake the
-    // chip; INVRT only matters when outputs are active.
+
+
     Serial.println("[VERIFY] 4/10  MODE2 write/readback (INVRT toggle)");
-    tally(writeRegVerify("4/10", "MODE2",   REG_MODE2, POR_MODE2 | MODE2_INVRT));
-    tally(writeRegVerify("4/10", "MODE2",   REG_MODE2, POR_MODE2));
+    tally(writeRegVerify("4/10", "MODE2", REG_MODE2, POR_MODE2 | MODE2_INVRT));
+    tally(writeRegVerify("4/10", "MODE2", REG_MODE2, POR_MODE2));
 
-    // Step 5: explicit SLEEP entry (chip is already SLEEP from POR, but
-    // we exercise the write path).
+
+
     Serial.println("[VERIFY] 5/10  MODE1 SLEEP entry");
-    tally(writeRegVerify("5/10", "MODE1",   REG_MODE1, MODE1_SLEEP | MODE1_ALLCALL));
+    tally(writeRegVerify("5/10", "MODE1", REG_MODE1, MODE1_SLEEP | MODE1_ALLCALL));
 
-    // Step 6: PRESCALE write — only valid while SLEEP=1, which we just
-    // confirmed. Writing the operating value (1000 Hz target) rather
-    // than POR — this also tests the chip accepts a non-default
-    // prescale, which is the path the continuous animation uses.
+
+
+
+
     Serial.printf("[VERIFY] 6/10  PRESCALE write (%u Hz target, value 0x%02X)\n",
                   PWM_FREQUENCY_HZ, PRESCALE_VALUE);
     tally(writeRegVerify("6/10", "PRESCALE", REG_PRESCALE, PRESCALE_VALUE));
 
-    // Step 7: enable AI (auto-increment) for the burst writes in steps 8/10.
-    // Still SLEEP=1 so outputs stay off.
-    Serial.println("[VERIFY] 7/10  MODE1 enable AI (still in SLEEP)");
-    tally(writeRegVerify("7/10", "MODE1",   REG_MODE1, MODE1_AI | MODE1_SLEEP | MODE1_ALLCALL));
 
-    // Step 8: single LED0 burst write — sentinel duty 0x4D2 (1234/4095 ≈ 30%).
+
+    Serial.println("[VERIFY] 7/10  MODE1 enable AI (still in SLEEP)");
+    tally(writeRegVerify("7/10", "MODE1", REG_MODE1, MODE1_AI | MODE1_SLEEP | MODE1_ALLCALL));
+
+
     Serial.println("[VERIFY] 8/10  LED0 burst write, sentinel duty 0x4D2");
     const uint16_t sentinel1 = 0x4D2;
     tally(writeLED4Verify("8/10", REG_LED0_ON_L,
@@ -456,45 +398,45 @@ static void runVerification() {
                           (uint8_t)(sentinel1 & 0xFF),
                           (uint8_t)((sentinel1 >> 8) & 0x0F)));
 
-    // Step 9: ALL_LED broadcast — different sentinel 0x800 (2048/4095 = 50%).
-    // Read back from every LED0..LED7 OFF pair, all 8 must match.
+
+
     Serial.println("[VERIFY] 9/10  ALL_LED broadcast, sentinel duty 0x800");
     const uint16_t sentinel2 = 0x800;
     Wire.beginTransmission(PCA9685_ADDR_EXPECTED);
     Wire.write(REG_ALL_LED_ON_L);
-    Wire.write(0x00);                                       // ON_L
-    Wire.write(0x00);                                       // ON_H
-    Wire.write((uint8_t)(sentinel2 & 0xFF));                // OFF_L
-    Wire.write((uint8_t)((sentinel2 >> 8) & 0x0F));         // OFF_H
+    Wire.write(0x00);
+    Wire.write(0x00);
+    Wire.write((uint8_t)(sentinel2 & 0xFF));
+    Wire.write((uint8_t)((sentinel2 >> 8) & 0x0F));
     const bool bcastOk = (Wire.endTransmission() == 0);
     Serial.printf("[VERIFY] 9/10      broadcast write %s\n", bcastOk ? "ACK ✓" : "NACK ✗");
     tally(bcastOk);
     tally(verifyAllChannelsDuty("9/10", sentinel2));
 
-    // Park ALL_LED → 0 (not FULL_OFF) before waking, so the chip transitions
-    // into PLAY mode with all outputs at duty 0 — equivalent to OFF but
-    // smoother on the wake transient (FULL_OFF + wake can cause a brief
-    // glitch on some PCA9685 silicon revisions). FULL_OFF parking happens
-    // at the very end, after the breathe.
+
+
+
+
+
     Wire.beginTransmission(PCA9685_ADDR_EXPECTED);
     Wire.write(REG_ALL_LED_ON_L);
     Wire.write(0x00); Wire.write(0x00);
     Wire.write(0x00); Wire.write(0x00);
     Wire.endTransmission();
 
-    // Step 10: wake-and-sleep round-trip — verifies the chip can enter
-    // PLAY mode from SLEEP cleanly. No animation here; the continuous
-    // breathing in loop() is the visual demo. Keeping verification
-    // fast means a smaller dark gap between boot and the animation
-    // starting.
+
+
+
+
+
     Serial.println("[VERIFY] 10/10 wake/sleep round-trip (visual demo runs in loop())");
-    const uint8_t wakeMode1  = MODE1_AI | MODE1_ALLCALL;                // 0x21
-    const uint8_t sleepMode1 = MODE1_AI | MODE1_SLEEP | MODE1_ALLCALL;  // 0x31
-    tally(writeRegVerify("10/10", "MODE1 wake",  REG_MODE1, wakeMode1));
-    delayMicroseconds(500);  // §7.3.1.1
+    const uint8_t wakeMode1 = MODE1_AI | MODE1_ALLCALL;
+    const uint8_t sleepMode1 = MODE1_AI | MODE1_SLEEP | MODE1_ALLCALL;
+    tally(writeRegVerify("10/10", "MODE1 wake", REG_MODE1, wakeMode1));
+    delayMicroseconds(500);
     tally(writeRegVerify("10/10", "MODE1 sleep", REG_MODE1, sleepMode1));
 
-    // Final state.
+
     Serial.println("──────────  VERIFICATION SUMMARY  ──────────");
     Serial.printf("  Passed: %d   Failed: %d   Chip left in SLEEP, all outputs OFF.\n",
                   passes, fails);
@@ -502,9 +444,9 @@ static void runVerification() {
     Serial.println();
 }
 
-// ============================================================================
-//  SETUP
-// ============================================================================
+
+
+
 
 void setup() {
     Serial.begin(115200);
@@ -527,10 +469,10 @@ void setup() {
     pinMode(PIN_HEARTBEAT_LED, OUTPUT);
     digitalWrite(PIN_HEARTBEAT_LED, HIGH);
 
-    // One-shot boot-time chip verification. We do the bus health +
-    // recovery + Wire.begin here too so the verification has a clean
-    // environment; the canary loop will tear this down and re-init
-    // each tick.
+
+
+
+
     busHealthCheck();
     busRecovery();
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, I2C_CLOCK_HZ);
@@ -544,21 +486,9 @@ void setup() {
         Serial.println();
     }
 }
-
-// ============================================================================
-//  LOOP — 10 s all-off, 5 s all-on at full brightness, repeat.
-//  Wakes the chip on first entry, drives the ALL_LED broadcast at each
-//  phase transition (so the chip itself only sees 2 I²C writes per cycle
-//  + an occasional health probe). NACKs trigger a SWRST recovery.
-//
-//  (Phase enum + helpers live near the top of the file because the
-//   Arduino IDE auto-prototype generator chokes on user types referenced
-//   from later function signatures.)
-// ============================================================================
-
-// Apply the duty for `p` and log the transition.
+# 560 "C:/data/code/scalefx/tests/hw/hubfx_pca9685_hwtest/src/hubfx_pca9685_hwtest.ino"
 static void enterPhase(Phase p, uint32_t now) {
-    cyclePhase   = p;
+    cyclePhase = p;
     phaseStartMs = now;
     const uint16_t duty = phaseDuty(p);
     if (!writeAllChannels(duty)) cycleNacks++;
@@ -569,18 +499,18 @@ static void enterPhase(Phase p, uint32_t now) {
 
 void loop() {
     static uint32_t lastHeartbeat_ms = 0;
-    static uint32_t lastPing_ms      = 0;
-    static bool     waitWarned       = false;
+    static uint32_t lastPing_ms = 0;
+    static bool waitWarned = false;
 
     const uint32_t now = millis();
 
-    // 1 Hz heartbeat LED (independent of chip state).
+
     if (now - lastHeartbeat_ms >= 500) {
         lastHeartbeat_ms = now;
         digitalWrite(PIN_HEARTBEAT_LED, !digitalRead(PIN_HEARTBEAT_LED));
     }
 
-    // Lazy wake on first tick. runVerification() left the chip in SLEEP.
+
     if (!cycleActive) {
         if (!i2cProbe(PCA9685_ADDR_EXPECTED)) {
             if (!waitWarned) {
@@ -595,13 +525,13 @@ void loop() {
             return;
         }
 
-        // Wake: clear SLEEP, keep AI on, then nudge RESTART.
-        const uint8_t wakeMode1 = MODE1_AI | MODE1_ALLCALL;   // 0x21
+
+        const uint8_t wakeMode1 = MODE1_AI | MODE1_ALLCALL;
         Wire.beginTransmission(PCA9685_ADDR_EXPECTED);
         Wire.write(REG_MODE1);
         Wire.write(wakeMode1);
         Wire.endTransmission();
-        delayMicroseconds(500);   // §7.3.1.1 oscillator stabilisation
+        delayMicroseconds(500);
         Wire.beginTransmission(PCA9685_ADDR_EXPECTED);
         Wire.write(REG_MODE1);
         Wire.write(wakeMode1 | MODE1_RESTART);
@@ -620,12 +550,12 @@ void loop() {
         Serial.println();
 
         cycleActive = true;
-        cycleCount  = 1;
+        cycleCount = 1;
         enterPhase(Phase::OFF, now);
         lastPing_ms = now;
     }
 
-    // Phase transition?
+
     if (now - phaseStartMs >= phaseDuration(cyclePhase)) {
         if (cyclePhase == Phase::OFF) {
             enterPhase(Phase::ON, now);
@@ -635,12 +565,12 @@ void loop() {
         }
     }
 
-    // Liveness ping during the long OFF window — also acts as a
-    // canary for chip wedges. NACK ⇒ recover via SWRST.
+
+
     if (now - lastPing_ms >= PING_INTERVAL_MS) {
         lastPing_ms = now;
         const uint32_t elapsed = now - phaseStartMs;
-        const uint32_t remain  = phaseDuration(cyclePhase) -
+        const uint32_t remain = phaseDuration(cyclePhase) -
                                  (elapsed <= phaseDuration(cyclePhase) ? elapsed : phaseDuration(cyclePhase));
         Serial.printf("[Cycle %lu] %s phase: %.1fs in, %.1fs left   NACKs=%lu\n",
                       (unsigned long)cycleCount, phaseName(cyclePhase),
@@ -652,13 +582,13 @@ void loop() {
             Serial.println("[WARN] PCA9685 stopped ACKing — running SWRST recovery.");
             sendSWRST();
             delay(2);
-            // Re-set PWM frequency (PRESCALE needs SLEEP=1, which is
-            // exactly the post-SWRST state).
+
+
             Wire.beginTransmission(PCA9685_ADDR_EXPECTED);
             Wire.write(REG_PRESCALE);
             Wire.write(PRESCALE_VALUE);
             Wire.endTransmission();
-            cycleActive = false;   // force lazy-wake + restart cycle next tick
+            cycleActive = false;
         }
     }
 }

@@ -58,14 +58,10 @@ func targetByte(target string) (byte, error) {
 
 // ─── Storage Status / Capabilities ───
 
-// FsStorageStatus queries both flash and SD status. Always returns a status
-// struct — unavailable targets simply have Available=false.
-//
-// Capability gating: when the firmware advertises CapFlash/CapSd in IDENTIFY
-// (Rule 11 append-only field), we skip queries for missing interfaces — both
-// to avoid round-trips and to give the frontend an authoritative "this board
-// has no SD slot" signal. Legacy firmware (caps==0) falls through to the
-// probe-everything behaviour for back-compat.
+// FsStorageStatus queries both flash and SD status.  Returns a status
+// struct — backends the board doesn't advertise in IDENTIFY simply have
+// Available=false (no round-trip wasted, frontend gets an authoritative
+// "this board has no SD slot" signal).
 func (a *App) FsStorageStatus() (FsStorageStatus, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -78,8 +74,8 @@ func (a *App) FsStorageStatus() (FsStorageStatus, error) {
 	}
 
 	caps := a.eng.Capabilities()
-	probeFlash := caps == 0 || caps&core.CapFlash != 0
-	probeSd := caps == 0 || caps&core.CapSd != 0
+	probeFlash := caps&core.CapFlash != 0
+	probeSd := caps&core.CapSd != 0
 
 	if probeFlash {
 		// Flash (present on every controller that registers StorageServer).
@@ -143,10 +139,9 @@ func (a *App) FsStorageStatus() (FsStorageStatus, error) {
 }
 
 // DeviceCapabilities returns the bitmask of CoreCapability flags the
-// connected board advertised in IDENTIFY/INIT_READY. Returns 0 when no
-// device is connected, identification hasn't completed yet, or the firmware
-// pre-dates the capabilities field — frontends should treat 0 as "unknown,
-// fall back to probing" rather than "nothing supported".
+// connected board advertised in IDENTIFY / INIT_READY.  Returns 0 when
+// no device is connected, identification hasn't completed yet, or the
+// board genuinely advertises no capabilities.
 func (a *App) DeviceCapabilities() uint32 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
