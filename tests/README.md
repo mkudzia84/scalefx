@@ -6,7 +6,6 @@ Four parallel test trees, each with a single purpose:
 tests/
 ├── hw/             Firmware test fixtures — flashed to a real board
 ├── host/           Go programs that run on the dev machine
-├── virtual_board/  Go simulator that fakes any of the four boards over TCP
 └── fixtures/       Test data (upload payloads, SD images)
 ```
 
@@ -55,20 +54,10 @@ inside any directory.
 The default "Run Go Unit Tests" VS Code task runs in
 `tests/host/handler_test/`.
 
-## virtual_board/ — Go simulator
-
-A long-running emulator that fakes any of the four boards (LightFX,
-GearControl, GunFX, HubFX) over a TCP socket. Used to:
-
-1. Drive ScaleFX Studio's UI without flashing a controller
-2. Reproduce wire-format bugs against a deterministic device model
-3. Run the merged event-timing + light-program-runtime tests
-   (`go test ./boards/lightfx/`)
-
-See [`virtual_board/README.md`](virtual_board/README.md) for the full
-list of supported commands per board, the discovery protocol that
-makes virtual boards appear in Studio's Connect dialog and
-`scalefx-cli ports`, and the in-process testing recipe.
+> The `virtual_board/` TCP simulator (and its `tcp://` transport, the
+> `virtualdiscovery` package, and the Studio/CLI manual-port option that
+> connected to it) was removed 2026-05-22 — Studio and the CLI now speak
+> only to real serial hardware.
 
 ## fixtures/ — test data
 
@@ -85,7 +74,6 @@ them on demand.
 |------|---------------|
 | Firmware that runs on a real board | `tests/hw/<name>/` (PlatformIO project) |
 | Go test or tool for the desktop | `tests/host/<name>/` (own go.mod, `replace scalefx => ../../../app/go`) |
-| Test that drives the protocol without real HW | `tests/virtual_board/boards/<kind>/<kind>_test.go` |
 | Static test data | `tests/fixtures/<name>/` |
 
 **Rule 21:** tests live here, not under `controllers/*/test/` or

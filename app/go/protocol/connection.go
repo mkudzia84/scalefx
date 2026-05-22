@@ -13,8 +13,6 @@ import (
 
 	"go.bug.st/serial"
 	"go.bug.st/serial/enumerator"
-
-	"scalefx/virtualdiscovery"
 )
 
 const (
@@ -131,26 +129,14 @@ func (c *Connection) SetTimeout(d time.Duration) { c.timeout = d }
 func (c *Connection) Timeout() time.Duration { return c.timeout }
 
 // Connect opens the serial port and starts the reader goroutine.
-//
-// A `tcp://host:port` port name short-circuits to the TCP-as-serial
-// adapter (tcp_transport.go) so the virtual-board harness in
-// tests/virtual_board can stand in for a real device.
 func (c *Connection) Connect() error {
-	var (
-		port serial.Port
-		err  error
-	)
-	if IsTCPPort(c.portName) {
-		port, err = openTCPPort(c.portName)
-	} else {
-		mode := &serial.Mode{
-			BaudRate: c.baud,
-			DataBits: 8,
-			Parity:   serial.NoParity,
-			StopBits: serial.OneStopBit,
-		}
-		port, err = serial.Open(c.portName, mode)
+	mode := &serial.Mode{
+		BaudRate: c.baud,
+		DataBits: 8,
+		Parity:   serial.NoParity,
+		StopBits: serial.OneStopBit,
 	}
+	port, err := serial.Open(c.portName, mode)
 	if err != nil {
 		return fmt.Errorf("failed to open %s: %w", c.portName, err)
 	}
@@ -161,11 +147,8 @@ func (c *Connection) Connect() error {
 	c.tagWaiters = make(map[byte]chan *Response)
 	c.streamWaiters = make(map[byte]chan *Response)
 
-	// Wait for device to settle, drain boot output. TCP transports skip
-	// the 500 ms warm-up — there is no boot stream to flush.
-	if !IsTCPPort(c.portName) {
-		time.Sleep(500 * time.Millisecond)
-	}
+	// Wait for device to settle, drain boot output.
+	time.Sleep(500 * time.Millisecond)
 	c.drain()
 
 	// Start the reader goroutine
@@ -686,16 +669,11 @@ func (c *Connection) injectTag(data []byte, tag byte) []byte {
 	return BuildPacket(ptype, payload, tag)
 }
 
-// ListPorts returns available serial port names plus any active virtual
-// boards advertised through virtualdiscovery (each appears as a
-// `tcp://host:port` entry).
+// ListPorts returns available serial port names.
 func ListPorts() []string {
 	ports, err := serial.GetPortsList()
 	if err != nil {
 		ports = nil
-	}
-	for _, e := range virtualdiscovery.List() {
-		ports = append(ports, e.Address)
 	}
 	return ports
 }
@@ -707,10 +685,7 @@ type PortDetail struct {
 }
 
 // ListPortsDetailed returns available serial ports with USB product
-// descriptions, plus any active virtual boards advertised through
-// virtualdiscovery. Virtual entries use their TCP URL as the name and
-// show "Virtual <kind>: <device-name>" as the description so the
-// Studio Connect dialog can tell them apart from real hardware.
+// descriptions.
 func ListPortsDetailed() []PortDetail {
 	var result []PortDetail
 	if detailed, err := enumerator.GetDetailedPortsList(); err == nil {
@@ -719,19 +694,12 @@ func ListPortsDetailed() []PortDetail {
 			result = append(result, PortDetail{Name: p.Name, Description: p.Product})
 		}
 	} else {
-		// Fallback to basic list (without virtual entries — ListPorts
-		// would re-add them and we'd double-count).
+		// Fallback to basic list.
 		names, _ := serial.GetPortsList()
 		result = make([]PortDetail, 0, len(names))
 		for _, n := range names {
 			result = append(result, PortDetail{Name: n})
 		}
-	}
-	for _, e := range virtualdiscovery.List() {
-		result = append(result, PortDetail{
-			Name:        e.Address,
-			Description: fmt.Sprintf("Virtual %s: %s", e.BoardKind, e.Name),
-		})
 	}
 	return result
 }
