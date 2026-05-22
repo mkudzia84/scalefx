@@ -380,6 +380,7 @@ func (a *App) openLocked(port string) error {
 	}
 	a.installAsyncDiag()
 	a.installInputStream()
+	a.installEngineStream()
 	return nil
 }
 
