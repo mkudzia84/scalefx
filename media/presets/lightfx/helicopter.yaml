@@ -1,0 +1,42 @@
+# /lightfx.yaml — Helicopter LightFx config.
+#
+# Upload to LittleFS as /lightfx.yaml.  Carries the LightFx-specific
+# settings: master brightness + the explicit list of program files the
+# operator can switch between + an optional RC-driven program selector.
+#
+# `enabled:` is the file-local flag; /hubfx.yaml's `features.lightfx:`
+# is the master kill-switch and overrides this value at boot.
+#
+# `programs:` is a list of FULL LittleFS paths.  Each is opened verbatim
+# at apply time; the program's `name` field comes from the basename
+# minus `.yaml`.  Switch programs at runtime: `light:program <name>`
+# (manual) or via the RC `program_selector` below (rotary switch).
+
+schema_version: 1
+enabled: true
+
+master_brightness_pct: 60               # dimmed for low-light flying
+
+programs:
+  - /lightfx/programs/helicopter_off.yaml         # default — anti-collision OFF
+  - /lightfx/programs/helicopter_nav.yaml         # nav only (taxi / display)
+  - /lightfx/programs/helicopter_flight.yaml      # full FAA flight lighting
+  - /lightfx/programs/helicopter_landing.yaml     # flight + landing light deploy
+
+# RC-driven program selection — a rotary / multi-position switch on the
+# transmitter is mapped to PWM µs ranges, each range activates a named
+# program.  `input` references a channel declared in /hubfx.yaml's
+# `inputs:` block.  `hysteresis_us` keeps the selector pinned to the
+# active range until the stick moves at least that far past the
+# boundary — prevents flicker at range edges.
+#
+# Ranges should be ordered low → high and not overlap.  µs values
+# outside every range leave the active program unchanged.
+program_selector:
+  input:         program_select
+  hysteresis_us: 50
+  ranges:
+    - { from_us:  900, to_us: 1200, program: helicopter_off }
+    - { from_us: 1200, to_us: 1500, program: helicopter_nav }
+    - { from_us: 1500, to_us: 1800, program: helicopter_flight }
+    - { from_us: 1800, to_us: 2100, program: helicopter_landing }

@@ -40,6 +40,9 @@ app/go/
   flash/                      scalefx-flash.exe entry
   studio/                     Wails v2 GUI (Svelte frontend/)
   firmware/                   build + flash logic
+media/                        asset library — WAVs (sounds/) + YAML preset templates (presets/).
+                              Mirror of the firmware's expected on-device layout; see media/README.md
+                              for the catalog and deployment notes.
 tests/                        standalone test projects (firmware + Go tools)
 ```
 

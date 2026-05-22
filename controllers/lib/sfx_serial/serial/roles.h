@@ -124,6 +124,16 @@ namespace RolePacket {
     constexpr uint8_t BIMOTOR_GET_STATUS_REQ  = 0x6B;  ///< [portIdx:u8] → BIMOTOR_STATUS_RESP
     constexpr uint8_t BIMOTOR_STATUS_RESP     = 0x6C;  ///< [portIdx:u8][signed_duty:i16LE][v_mV:i16LE][i_mA:i16LE][stallFlags:u8]
     constexpr uint8_t BIMOTOR_STALL_EVENT     = 0x6D;  ///< async TAG_ASYNC: [portIdx:u8][peak_mA:u16LE][duration_ms:u16LE]
+    /// Autonomous "drive until endstop" seek.  The role drives `signed_duty`
+    /// until it detects a stall (= endstop reached) or `timeout_ms` elapses,
+    /// then BRAKES locally — the stop decision never crosses the wire.
+    /// `timeout_ms == 0` ⇒ no timeout (seek until stall or abort).  Aborted
+    /// by any BIMOTOR_BRAKE / COAST / SET_SIGNED while seeking.
+    constexpr uint8_t BIMOTOR_SEEK_ENDSTOP    = 0x6E;  ///< [portIdx:u8][signed_duty:i16LE][timeout_ms:u16LE] → ACK
+    /// async TAG_ASYNC result of a SEEK_ENDSTOP: outcome 0=reached(stall),
+    /// 1=timeout, 2=aborted.  travel_ms = time spent seeking; peak_mA = peak
+    /// current during the confirming stall window (0 on timeout/abort).
+    constexpr uint8_t BIMOTOR_ENDSTOP_RESULT  = 0x6F;  ///< async TAG_ASYNC: [portIdx:u8][outcome:u8][travel_ms:u16LE][peak_mA:u16LE]
 
     // ── Heater role (0x70..0x77) ──────────────────────────────────────
     constexpr uint8_t HEATER_SET_TARGET       = 0x70;  ///< [portIdx:u8][target_cx10:i16LE] → ACK
@@ -147,6 +157,22 @@ namespace RolePacket {
     constexpr uint8_t JETIEX_SET_BROADCAST_HZ = 0x7E;  ///< [portIdx:u8][hz:u8] → ACK (0 = off)
     constexpr uint8_t JETIEX_FRAME_BROADCAST  = 0x7F;
         ///< async TAG_ASYNC: [portIdx:u8][count:u8][valid:u8][channels:u16LE × count]
+}
+
+/// Outcome byte in BIMOTOR_ENDSTOP_RESULT.
+namespace BiMotorSeekOutcome {
+    constexpr uint8_t Reached = 0;   ///< stall hit = endstop reached
+    constexpr uint8_t Timeout = 1;   ///< timeout elapsed before any stall
+    constexpr uint8_t Aborted = 2;   ///< cancelled by BRAKE / COAST / SET_SIGNED
+
+    inline const char* getName(uint8_t o) {
+        switch (o) {
+            case Reached: return "reached";
+            case Timeout: return "timeout";
+            case Aborted: return "aborted";
+            default:      return "?";
+        }
+    }
 }
 
 // ============================================================================

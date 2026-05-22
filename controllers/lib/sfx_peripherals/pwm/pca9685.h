@@ -33,12 +33,17 @@
  *      Then 500 µs settle (§7.3.1.1) and MODE1 ← AI | ALLCALL | RESTART.
  *   6. ALL_LED ← all off.
  *
- * Always uses plain PWM mode (ON=0, OFF=duty). Never sets the FULL_ON or
- * FULL_OFF flag bits (bit 4 of LEDn_*_H) because switching INTO and OUT
- * OF those modes glitches visibly on some silicon. Duty values are
- * clamped internally to [1, 4095] — 1 tick HIGH per 4096-tick cycle at
- * 1526 Hz is ~160 ns, well below visual perception, but avoids the
- * ON==OFF undefined-behaviour case at duty=0.
+ * Duty=0 uses the chip's FULL_OFF flag (LEDn_OFF_H[4] = 1) for hard-
+ * zero output; duty in [1, 4095] uses plain PWM mode (ON=0, OFF=duty)
+ * with no flag bits set.  Earlier revs of this driver clamped duty<1
+ * up to OFF=1 to avoid the "ON==OFF undefined behaviour" trap, but
+ * the resulting ~0.024 % duty leak was visible as a dim glow on the
+ * HubFX rail LEDs through their MOSFET pre-drivers.  FULL_OFF takes
+ * precedence over the LEDn_OFF count (UM10851 §7.3.3 Note 2) so the
+ * output is hard-zero with no per-cycle pulse.  FULL_ON is never set —
+ * duty=4095 produces 99.976 % duty which is visually identical to
+ * full-on, and avoids the documented FULL_ON ↔ PWM transition glitch
+ * on some silicon revs.
  *
  * Hardware notes:
  *   - 7-bit I²C address range: 0x40..0x7F (6 strap pins A0..A5).

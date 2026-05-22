@@ -1,0 +1,43 @@
+# /enginefx.yaml — KA-50 Kamov turbine template.
+#
+# Upload to LittleFS as /enginefx.yaml.  Pairs with the WAVs at
+# media/sounds/KA50/.  /hubfx.yaml's `enginefx.enabled:` flag is the
+# master kill-switch; the `enabled:` here is the engine-config-local
+# default that gets overridden by /hubfx.yaml when both files are
+# loaded.  Mixer channels are board-fixed at HubFxLayout::EngineA /
+# EngineB — not exposed here.
+#
+# Reference airframe: KA-50 "Black Shark" — twin Klimov TV3-117VMA
+# turboshafts, ~60 s startup spool, ~25 s shutdown wind-down.
+
+schema_version: 1
+enabled: true
+
+type: turbine                          # turbine | radial | diesel (informational)
+output: both                           # left | right | both (stereo routing)
+
+# Throttle input.  Reference a NAMED channel declared in /hubfx.yaml's
+# `inputs:` block — the lookup gives us source port + channel id.
+# The trigger interpretation (threshold + hysteresis + failsafe)
+# lives HERE because it's effect-specific: "engine on/off" is one
+# effect's view of the channel; another effect could treat the same
+# channel as a proportional knob.
+toggle:
+  input:         engine_toggle
+  threshold_us:  1500             # >= threshold ⇒ engine on
+  hysteresis_us: 50
+  failsafe:      force_low        # hold | force_low | force_high (RC loss)
+
+# Sound files on LittleFS.
+sounds:
+  starting: "/sounds/KA50/engine_start.wav"
+  running:  "/sounds/KA50/engine_loop.wav"
+  stopping: "/sounds/KA50/engine_stop.wav"
+
+  # KA-50 turbines spool up over ~60 s, spool down over ~25 s.  Used by
+  # the cross-fade scheduler to start the running loop before the
+  # startup sample finishes and to start the stop sample before the
+  # loop fades out.
+  transitions:
+    starting_offset_ms: 60000
+    stopping_offset_ms: 25000

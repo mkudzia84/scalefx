@@ -1,1158 +1,268 @@
-/**
- * GearControl Pico Controller v0.6.0
+/*
+ * GearControl Pico — generic-expander board (RP2040).
  *
- * Server controller for landing gear effects - receives commands from HubFX over USB serial.
- * Controls: 3 landing gear units (via LandingGear module), yaw steering servo,
- *           2 indicator LEDs (bi-color), battery voltage sense (ADC).
+ *   A THIN port + role expander.  All gear / door sequencing, stall
+ *   detection, and timeout logic live on the HubFX master's
+ *   `GearControlServicePolicy` — this board only exposes its physical
+ *   ports and lets the hub attach roles + drive them over USB CDC.
+ *   (Architecture: instructions/15-GENERIC-EXPANDER-REFACTOR.md +
+ *   17-SYSTEM-SERVICES.md.  Replaces ~4 000 lines of on-board
+ *   sequencer code that was retired with this rebuild.)
  *
- * Hardware: Raspberry Pi Pico (RP2040) + earlephilhower/arduino-pico core
- * Protocol: Binary COBS with CRC-8
+ *   Ports exposed (cross-referenced against instructions/schematics/
+ *   gearcontrol.tel — see PINOUT below):
+ *     - 7 × Servo    (door + yaw headers)        → ServoActuator role
+ *     - 3 × HBridge  (gear motors, fwd/rev)       → BiDcMotor role,
+ *                     each with an INA226 current sensor for stall
+ *                     detection (MOTOR_STALL_EVENT → hub gear FSM)
  *
- * Architecture (Chain of Responsibility):
- *   - SfxServer: Common server boilerplate (serial, indicators, core protocol)
- *   - GearControlServer: Handles GEAR, SERVO, YAW commands
- *   - CommandRouter: Routes packets to handlers in priority order
+ *   The 6 small per-motor status LEDs are NOT exposed as ports.  They
+ *   are plain GPIO indicators driven LOCALLY (`GearStatusLeds`) from the
+ *   H-bridge drive state — the hub does not command them:
+ *     forward (signed duty > 0) → CW LED blinks
+ *     reverse (signed duty < 0) → CCW LED blinks
+ *     idle (duty == 0)          → last-direction LED solid (position hint)
+ *     over-current fault        → both LEDs blink fast
  *
- * Landing Gear Module (per gear):
- *   - 2× ServoControl for door servos (motion profiled)
- *   - 2× LedControl for status LEDs (CW/CCW)
- *   - Motor H-bridge (CW/CCW GPIO pair)
- *   - INA226 current monitoring (stall detection)
+ *   NO input port — the legacy RC PWM deploy/retract input on GP0 is
+ *   retired; the hub commands gear state over the wire.
  *
- * GPIO Pin Mapping:
- *   GP1-3:   Servos 1-3 (door servos)
- *   GP4-5:   I2C SDA/SCL (INA226 monitors)
- *   GP6-9:   Servos 4-7 (door/yaw)
- *   GP13-14: Indicator LEDs (bi-color RED/GREEN)
- *   GP15-20: Motor CW/CCW pairs (3 motors × 2)
- *   GP21-26: Status LEDs (CW/CCW per motor × 3)
- *   GP29:    Voltage sense (ADC, ÷6 divider)
+ *   The 2 board indicator LEDs (blue = connection, yellow = error) are
+ *   driven by the auto-prepended IndicatorServicePolicy via board.begin().
  *
- * Servo Mapping (1-based, aligned with LightFX/GunFX since v0.17.0):
- *   1-2: Gear 0 door servos (nose)       [GP1-2]
- *   3-4: Gear 1 door servos (left main)  [GP3,GP6]
- *   5-6: Gear 2 door servos (right main) [GP7-8]
- *   7:   Yaw servo (steering)            [GP9]
+ *   Roles are NOT attached here — `RoleServicePolicy` (auto via
+ *   BoardOf<>) accepts ROLE_ATTACH from the hub and emplaces the
+ *   ServoActuator / BiDcMotor variants at runtime.
  *
- * Status LED Mapping:
- *   0-1: Motor 0 CW/CCW (deploy/retract)  [GP21-22]
- *   2-3: Motor 1 CW/CCW (deploy/retract)  [GP23-24]
- *   4-5: Motor 2 CW/CCW (deploy/retract)  [GP25-26]
- *
- * Indicator LED Mapping:
- *   0: Connection status (blink=waiting, solid=connected, off=lost)  [GP13]
- *   1: Error status (off=normal, blink=error/abnormal)               [GP14]
+ *   PINOUT (RP2040 GPIO — authoritative; netlist confirms topology):
+ *     GP1,2,3,6,7,8,9 : servo headers (SERVO1-7)
+ *     GP4 / GP5       : I²C SDA / SCL (3× INA226)
+ *     GP13 / GP14     : indicator LEDs (BLUE_LED / YELLOW_LED)
+ *     GP15/16,17/18,19/20 : motor H-bridge fwd/rev (MOTOR1-3 / MOTORREV1-3)
+ *     GP21..26        : per-motor status LEDs (STATUS1-6, CW/CCW pairs)
+ *     GP29            : battery voltage sense (ADC) — reserved, not yet
+ *                       exposed (no ADC battery sensor wired this pass)
  */
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <serial/serial.h>
-#include <gearcontrol/server/gearcontrol_server.h>
-#include <led/led_control.h>
-#include <servo/srv_control.h>
-#include <pwm/pwm_control.h>
+#include <variant>
+
+#include <platform/sfx_platform.h>
+#include <serial/diag_log.h>
+#include <server/board_of.h>
+
+#include <ports/servo_port.h>
+#include <ports/pwm_port.h>
+#include <ports/hbridge_port.h>
 #include <power/ina226.h>
-#include <power/i2c_device.h>
-#include <power/battery_monitor.h>
-#include <power/battery_server.h>
-#include <server/sfx_server.h>
-#include <storage/flash.h>
-#include <storage/storage_config_bridge.h>
-#include <config/config_store.h>
-#include <server/config_server.h>
-#include <server/storage_server.h>
-#include "config/gearcontrol_config.h"
-#include "landing_gear.h"
+#include <power/ina226_sensor.h>
 
-// Firmware version
-#define FIRMWARE_VERSION "0.18.0"
-#define BUILD_NUMBER 119
+#define FIRMWARE_VERSION "1.0.0"
+#define BUILD_NUMBER     6
 
-// ============================================================================
-//  PIN CONFIGURATION
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════
+//  Board pin / address map (cross-ref: instructions/schematics/gearcontrol.tel)
+// ════════════════════════════════════════════════════════════════════════
 
-// Fixed-function pin (NOT user-mappable):
-//   GP0 — RC PWM input for deploy/retract command, active in non-SLAVE modes.
-const uint8_t PIN_GEAR_INPUT = 0;
+namespace Gpio {
+    // I²C bus — 3× INA226 motor-current monitors.
+    constexpr int I2C_SDA        =  4;
+    constexpr int I2C_SCL        =  5;
 
-// User-mappable pin slots. Each slot can be any role (door output, yaw
-// output, yaw input, unused) via YAML — no compile-time pin→role coupling.
-// The slot name appears in the YAML `pins[].slot` field and on the board
-// silkscreen; SLOT_GPIO maps to the physical RP2040 GPIO.
-constexpr uint8_t BINDABLE_PIN_COUNT = 7;
-const char* const SLOT_NAME[BINDABLE_PIN_COUNT] = {
-    "pin1", "pin2", "pin3", "pin4", "pin5", "pin6", "pin7",
-};
-const uint8_t SLOT_GPIO[BINDABLE_PIN_COUNT] = {
-    1, 2, 3, 6, 7, 8, 9,
-};
+    // Indicator LEDs (IndicatorServicePolicy).
+    constexpr int LED_CONNECTION = 13;   // BLUE_LED
+    constexpr int LED_ERROR      = 14;   // YELLOW_LED
 
-// I2C pins for INA226
-const uint8_t PIN_SDA = 4;
-const uint8_t PIN_SCL = 5;
+    // Per-motor status LEDs (STATUS1-6) — small GPIO indicators, driven
+    // locally by GearStatusLeds.  CW = forward/deploy, CCW = reverse/retract.
+    constexpr uint8_t STATUS_CW [3] = { 21, 23, 25 };   // STATUS1/3/5
+    constexpr uint8_t STATUS_CCW[3] = { 22, 24, 26 };   // STATUS2/4/6
+}
 
-// Motor H-bridge pins (CW/CCW per motor)
-const uint8_t PIN_MOTOR[3][2] = {
-    { 15, 16 },  // Motor 0: CW=GP15, CCW=GP16
-    { 17, 18 },  // Motor 1: CW=GP17, CCW=GP18
-    { 19, 20 },  // Motor 2: CW=GP19, CCW=GP20
-};
+namespace I2cAddr {
+    // Strap-selected INA226 addresses, one per motor (from legacy map):
+    //   motor 0 (nose)       GND/GND → 0x40
+    //   motor 1 (left main)  VS/GND  → 0x44
+    //   motor 2 (right main) GND/VS  → 0x41
+    constexpr uint8_t INA226[3] = { 0x40, 0x44, 0x41 };
+}
 
-// Status LED pins (2 per motor × 3 = 6)
-const uint8_t PIN_STATUS_LED[3][2] = {
-    { 21, 22 },  // Motor 0: CW=GP21, CCW=GP22
-    { 23, 24 },  // Motor 1: CW=GP23, CCW=GP24
-    { 25, 26 },  // Motor 2: CW=GP25, CCW=GP26
-};
+namespace Sense {
+    constexpr float SHUNT_OHMS = 0.005f;   // 5 mΩ shunt (≈16 A INA226 ceiling)
+    constexpr float MAX_AMPS   = 10.0f;    // 10 A expected peak
 
-// Voltage sense (ADC with ÷6 divider, 12-bit)
-const uint8_t PIN_VSENSE = 29;
+    // Hard over-current limit for the LOCAL status-LED fault blink.  Set
+    // well above the normal endpoint stall current (which is the gear's
+    // expected mechanical signal, NOT a fault) so only a genuine short /
+    // jam lights the fault pattern.
+    constexpr int16_t FAULT_mA = 9000;
+}
 
-// ============================================================================
-//  CONSTANTS
-// ============================================================================
+// ── Status-LED driver — hardwired direction indicators ────────────────
+//
+// Drives the 6 small per-motor status LEDs purely from the LOCAL H-bridge
+// drive state — no hub involvement.  Each motor has a CW (forward/deploy)
+// and CCW (reverse/retract) LED:
+//   forward (duty > 0)  → CW LED blinks @250 ms
+//   reverse (duty < 0)  → CCW LED blinks @250 ms
+//   idle (duty == 0)    → last-direction LED solid (position hint)
+//   over-current fault  → both LEDs blink fast @100 ms
+class GearStatusLeds {
+public:
+    void begin(const uint8_t cw[3], const uint8_t ccw[3]) {
+        for (uint8_t m = 0; m < 3; ++m) {
+            _cw[m]  = cw[m];
+            _ccw[m] = ccw[m];
+            pinMode(_cw[m],  OUTPUT);
+            pinMode(_ccw[m], OUTPUT);
+            digitalWrite(_cw[m],  LOW);
+            digitalWrite(_ccw[m], LOW);
+            _lastDir[m] = 0;
+        }
+    }
 
-// INA226 shunt resistance (depends on hardware)
-const float SHUNT_RESISTANCE_OHMS = 0.005f;    // 5mΩ shunt (max ≈16.4A with INA226)
-const float MAX_CURRENT_A = 10.0f;             // 10A max expected
+    /// Tick once per loop with each motor's commanded signed duty, the
+    /// measured current (mA) for the over-current fault check, and a
+    /// per-motor error flag (e.g. a latched endstop-seek timeout from the
+    /// BiDcMotor role) that also blinks the pair fast.
+    void update(const int16_t signedDuty[3], const int16_t current_mA[3],
+                const bool error[3]) {
+        const uint32_t now       = millis();
+        const bool     blinkSlow = ((now / 250) & 1) != 0;   // 250 ms half-period
+        const bool     blinkFast = ((now / 100) & 1) != 0;   // 100 ms (fault)
+        for (uint8_t m = 0; m < 3; ++m) {
+            bool cw = false, ccw = false;
+            const bool overcurrent = signedDuty[m] != 0 &&
+                               (current_mA[m] > Sense::FAULT_mA ||
+                                current_mA[m] < -Sense::FAULT_mA);
+            const bool fault = overcurrent || error[m];
+            if (fault) {
+                cw = ccw = blinkFast;
+            } else if (signedDuty[m] > 0) {
+                cw = blinkSlow;  _lastDir[m] = +1;
+            } else if (signedDuty[m] < 0) {
+                ccw = blinkSlow; _lastDir[m] = -1;
+            } else {
+                cw  = (_lastDir[m] > 0);   // idle → hold last direction solid
+                ccw = (_lastDir[m] < 0);
+            }
+            digitalWrite(_cw[m],  cw  ? HIGH : LOW);
+            digitalWrite(_ccw[m], ccw ? HIGH : LOW);
+        }
+    }
 
-// Servo ID mapping (1-based, aligned with LightFX/GunFX in v0.17.0):
-// IDs 1-6 = door servos (gear = (id-1)/2, door = (id-1)%2), 7 = yaw.
-const uint8_t SERVO_ID_YAW = GearControlSpec::SERVO_ID_YAW;   // = 7
-
-// ============================================================================
-//  GLOBAL INSTANCES
-// ============================================================================
-
-// Server (serial, core protocol, indicators, connection management)
-SfxServer server;
-GearControlServer gearControlServer;
-
-// Config server (handles CONFIG_RELOAD/STATUS/SAVE protocol + owns ConfigStore).
-// GearControlYamlPool sizes the parser for Studio-emitted configs (retracts ×
-// pins × door_modes × battery × gear_input). Pool memory is heap-allocated
-// only during parse and freed when ConfigStore::loadFromString returns.
-using GearControlConfigStore = ConfigStore<GearControlConfigSchema, GearControlYamlPool>;
-ConfigServerT<GearControlConfigStore> configServer;
-
-// Storage server (handles FILE_LIST/DOWNLOAD/UPLOAD for LittleFS flash — lets
-// Studio read/write /gearcontrol.yaml directly over the wire). No SD card on Pico,
-// so only TARGET_FLASH is effectively supported.
-StorageServer storageServer;
-
-// Landing gear modules (one per gear)
-LandingGear gears[3];
-
-// INA226 current monitors (one per motor)
-INA226 ina226[3];
-bool ina226Available[3] = { false, false, false };
-
-// Yaw servo (uses ServoControl for configurability). Attached dynamically by
-// applyConfig() when a pin is bound with role=yaw_output; detached otherwise.
-ServoControl yawServo;
-
-// Yaw input capture — only one pin may be YAW_INPUT at a time (validated).
-// Active when a pin is bound to YAW_INPUT; loop() reads its pulse and drives
-// yawServo.setTarget() directly. Ignored in SLAVE mode (HubFX commands win).
-PwmInput yawInput;
-uint16_t yawInput_min_us = 1000;    // Pulse-to-servo mapping endpoints
-uint16_t yawInput_max_us = 2000;
-
-// Runtime pin binding table — driven by YAML at applyConfig() time.
-// One entry per user-mappable slot (SLOT_GPIO[i]). UNUSED is the safe state:
-// no Servo attached, no interrupt armed, GPIO floats as Pico default.
-enum class PinRole : uint8_t {
-    UNUSED      = 0,
-    DOOR_OUTPUT = 1,   // Servo out, bound to (channel, doorIndex)
-    YAW_OUTPUT  = 2,   // Servo out, associated with a gear channel
-    YAW_INPUT   = 3,   // PwmInput in, drives yawServo.setTarget()
+private:
+    uint8_t _cw[3]      = {0, 0, 0};
+    uint8_t _ccw[3]     = {0, 0, 0};
+    int8_t  _lastDir[3] = {0, 0, 0};
 };
 
-struct PinBinding {
-    PinRole  role      = PinRole::UNUSED;
-    uint8_t  channel   = 0;        // DOOR_OUTPUT / YAW_OUTPUT
-    uint8_t  doorIndex = 0;        // DOOR_OUTPUT (0=A, 1=B)
+// ── Board class ──────────────────────────────────────────────────────
+//
+// BoardOf<> auto-prepends BoardServicePolicy + IndicatorServicePolicy +
+// PortServicePolicy + RoleServicePolicy.  A thin expander needs no
+// user policies — the hub drives everything through the role surface.
+
+class GearControlBoard : public sfx_core::BoardOf<GearControlBoard> {
+public:
+    // ── Servo OUTPUT ports — door + yaw headers (SERVO1-7) ───────────
+    sfx_peripherals::MicroservoPort servoOut[7] = {
+        {1}, {2}, {3}, {6}, {7}, {8}, {9},
+    };
+
+    // ── Motor H-bridges — 6 native PWM pins → 3 dual-PWM bridges ─────
+    // Declaration order matters: the half-bridge PwmPorts must exist
+    // before the DualPwmHBridgePort instances reference them.
+    // NativePwmPort's ctor is `explicit`, so direct-list-init each elem.
+    sfx_peripherals::NativePwmPort motorPwm[6] = {
+        sfx_peripherals::NativePwmPort{15}, sfx_peripherals::NativePwmPort{16},
+        sfx_peripherals::NativePwmPort{17}, sfx_peripherals::NativePwmPort{18},
+        sfx_peripherals::NativePwmPort{19}, sfx_peripherals::NativePwmPort{20},
+    };
+    sfx_peripherals::DualPwmHBridgePort motor[3] = {
+        {motorPwm[0], motorPwm[1]},   // motor 0: fwd=GP15 rev=GP16
+        {motorPwm[2], motorPwm[3]},   // motor 1: fwd=GP17 rev=GP18
+        {motorPwm[4], motorPwm[5]},   // motor 2: fwd=GP19 rev=GP20
+    };
+
+    // ── Per-motor current monitors (stall detection) ─────────────────
+    INA226 ina[3];
+    sfx_peripherals::Ina226CurrentSensor iSense[3] = {
+        {ina[0]}, {ina[1]}, {ina[2]},
+    };
+
+    /// I²C + INA226 bring-up — runs BEFORE board.begin() so the H-bridge
+    /// current sensors are live when the registry walks port begin().
+    void initHardware() {
+        Wire.setSDA(Gpio::I2C_SDA);
+        Wire.setSCL(Gpio::I2C_SCL);
+        Wire.begin();
+        Wire.setClock(400000);
+        for (uint8_t k = 0; k < 3; ++k) {
+            ina[k].begin(Wire, I2cAddr::INA226[k], Sense::SHUNT_OHMS, Sense::MAX_AMPS);
+        }
+    }
+
+    /// Per-loop maintenance — refresh INA226 cached readings so the
+    /// BiDcMotor role's stall detector sees fresh current.
+    void pollSense() {
+        for (uint8_t k = 0; k < 3; ++k) ina[k].update();
+    }
+
+    // ── Port declarations (compile-time, consumed by BoardOf<>) ──────
+
+    static constexpr auto kServoPorts = sfx_core::ports::list(
+        sfx_core::ports::servo_array<&GearControlBoard::servoOut, 7>());
+
+    static constexpr auto kHBridgePorts = sfx_core::ports::list(
+        sfx_core::ports::hbridge_array<&GearControlBoard::motor, 3>()
+            .with_iSense_array<&GearControlBoard::iSense>());
+
+    static constexpr const char* kName = "GearCtrl";
 };
 
-PinBinding bindings[BINDABLE_PIN_COUNT];
-
-// Battery voltage monitor (ADC with ÷6 divider) + generic battery command handler
-using BatteryT = AdcDividerBatteryT<6000>;  // 50k/10k divider → ×6.0
-BatteryT batteryMonitor;
-BatteryServerT<BatteryT> batteryServer(batteryMonitor);
-
-// Yaw configuration
-GearControlYawConfig yawConfig;
-bool yawConfigured = false;
-
-// Battery — monitor is always on; defaults: LiPo, cell count auto-detected.
-// BATTERY_CONFIG only adjusts chemistry, cell count, and the auto-deploy
-// safety reaction.
-bool autoDeployOnLowVoltage = false;
-bool lowVoltageTriggered = false;  // Set when auto-deploy fires (persists until reset)
-
-// Per-gear error reason tracking (for STATUS diagnostic reporting)
-uint8_t gearErrorReason[3] = { GearErrorReason::NONE, GearErrorReason::NONE, GearErrorReason::NONE };
-
-// ----------------------------------------------------------------------------
-// Fixed gear-input PWM reader (GP0)
-//   ISR captures rising / falling edge timestamps and updates gearInputPulse_us.
-//   loop() consumes the cached pulse and dispatches deploy/retract on threshold
-//   crossings (only when standalone — HubFX-driven mode ignores it).
-// ----------------------------------------------------------------------------
-volatile uint32_t gearInputRiseUs = 0;
-volatile uint16_t gearInputPulse_us = 0;     // 0 == no pulse seen yet
-volatile uint32_t gearInputLastEdgeMs = 0;   // for stale-pulse detection
-
-bool     gearInputCommandLast = false;       // last dispatched state (true=deploy)
-bool     gearInputCommandValid = false;      // true once we've seen a stable pulse
-uint16_t gearInputThreshold_us = 1500;
-bool     gearInputEnabled = true;
-
-void gearInputIsr() {
-    uint32_t now = micros();
-    if (digitalRead(PIN_GEAR_INPUT)) {
-        gearInputRiseUs = now;
-    } else if (gearInputRiseUs != 0) {
-        uint32_t pulse = now - gearInputRiseUs;
-        // Reject obvious noise outside RC PWM range (500..2500µs)
-        if (pulse >= 500 && pulse <= 2500) {
-            gearInputPulse_us = (uint16_t)pulse;
-            gearInputLastEdgeMs = millis();
-        }
-    }
-}
-
-// Expected I2C addresses for the 3 INA226 monitors
-// Binary:  1000000, 1000100, 1000001 → 0x40, 0x44, 0x41
-const uint8_t INA226_ADDR[3] = {
-    INA226Address::GND_GND,   // 0x40 - Motor 0 (nose)
-    INA226Address::VS_GND,    // 0x44 - Motor 1 (left main)
-    INA226Address::GND_VS,    // 0x41 - Motor 2 (right main)
-};
-
-// ============================================================================
-//  FORWARD DECLARATIONS
-// ============================================================================
-
-void performSafeShutdown();
-void performSafeInit();
-uint8_t buildLedFlags();
-static void applyConfig(const GearControlConfig& cfg);
-
-// ============================================================================
-//  CONNECTION MANAGEMENT
-// ============================================================================
-
-void performSafeShutdown() {
-    SFX_LOG_INFO("Shutdown — motors off, servos center, LEDs off");
-
-    // Shutdown all gear modules (stops motors, returns servos to center, LEDs off)
-    for (int i = 0; i < 3; i++) {
-        gears[i].shutdown();
-    }
-
-    // Return yaw to center
-    yawServo.setPositionImmediate(1500);
-
-    // Battery monitor itself keeps running — only the auto-deploy reaction is
-    // disarmed on shutdown so it can't fire while the host is gone.
-    autoDeployOnLowVoltage = false;
-    lowVoltageTriggered = false;
-}
-
-void performSafeInit() {
-    SFX_LOG_INFO("Init — reset gears, check monitors");
-
-    // Reset all gear modules
-    for (int i = 0; i < 3; i++) {
-        gears[i].reset();
-        // Re-flag monitor fault if INA226 was unavailable at boot
-        if (!ina226Available[i]) {
-            gears[i].flagMonitorFault();
-            gearErrorReason[i] = GearErrorReason::MONITOR_FAULT;
-            SFX_LOG_WARN("Gear %d: INA226 monitor fault (0x%02X)", i, INA226_ADDR[i]);
-        } else {
-            gearErrorReason[i] = GearErrorReason::NONE;
-        }
-    }
-
-    lowVoltageTriggered = false;
-}
-
-// ============================================================================
-//  STATUS BUILDING
-// ============================================================================
-
-/**
- * @brief Build LED flags byte from current LED states
- */
-uint8_t buildLedFlags() {
-    uint8_t flags = 0;
-    // Bits 0-5: per-gear status LEDs (2 per gear)
-    // Derived from gear state since LEDs are managed by LandingGear module
-    for (int i = 0; i < 3; i++) {
-        uint8_t deployBit = i * 2;
-        uint8_t retractBit = i * 2 + 1;
-        GearState state = gears[i].state();
-
-        if (state == GearState::DEPLOYED || state == GearState::DEPLOYING) {
-            flags |= (1 << deployBit);
-        }
-        if (state == GearState::RETRACTED || state == GearState::RETRACTING) {
-            flags |= (1 << retractBit);
-        }
-        if (state == GearState::ERROR || state == GearState::CALIBRATING) {
-            flags |= (1 << deployBit) | (1 << retractBit);
-        }
-    }
-    // Bits 6-7: indicator LEDs (connection/error)
-    if (server.indicators().connectionLed().isOn()) flags |= (1 << 6);
-    if (server.indicators().errorLed().isOn()) flags |= (1 << 7);
-    return flags;
-}
-
-/** @brief Initialize flash and load config (if present). */
-static void initFlashAndConfig() {
-    // Wire config store to flash I/O unconditionally — the bridge's own
-    // isInitialized() gate handles the case where flash.begin() later fails,
-    // so config.reload/save surfaces a real storage error instead of the
-    // generic "No file reader set".
-    wireConfigStore<FlashModule>(configServer.store());
-
-    FlashModule& flash = FlashModule::instance();
-    if (flash.begin()) {
-        FlashStorageInfo info;
-        flash.getStorageInfo(info);
-        SFX_LOG_INFO("Flash ready: %lu/%lu bytes used",
-                     (unsigned long)info.usedBytes, (unsigned long)info.totalBytes);
-
-        // Try loading config (silent if file doesn't exist)
-        auto result = configServer.store().loadFromFile();
-        if (result.ok) {
-            SFX_LOG_INFO("Config loaded from flash");
-            server.markConfigLoaded();  // IDLE → STANDALONE
-            applyConfig(configServer.store().data());
-        } else if (result.parsed) {
-            SFX_LOG_WARN("Config validation failed: %s", result.error);
-        }
-        // If file doesn't exist, defaults are used — that's fine
-    } else {
-        SFX_LOG_WARN("Flash init failed — running with defaults");
-    }
-}
-
-// ============================================================================
-//  CONFIG → HARDWARE
-// ============================================================================
-
-/** @brief Parse door mode string to DoorMode constant */
-static uint8_t parseDoorMode(const char* s) {
-    if (strcmp(s, "single")     == 0) return DoorMode::SINGLE;
-    if (strcmp(s, "dual_sync")  == 0) return DoorMode::DUAL_SYNC;
-    if (strcmp(s, "dual_delay") == 0) return DoorMode::DUAL_DELAY;
-    if (strcmp(s, "dual_seq")   == 0) return DoorMode::DUAL_SEQ;
-    return DoorMode::NONE;
-}
-
-// ============================================================================
-// Pin Binding Helpers
-// ============================================================================
-
-/** @brief Look up a bindable slot's array index from its YAML slot name. */
-static int8_t slotIndex(const char* slotName) {
-    if (!slotName) return -1;
-    for (uint8_t i = 0; i < BINDABLE_PIN_COUNT; i++) {
-        if (strcmp(SLOT_NAME[i], slotName) == 0) return (int8_t)i;
-    }
-    return -1;
-}
-
-/** @brief Count how many DOOR_OUTPUT pins are bound to a given gear channel. */
-static uint8_t countDoorsOnChannel(uint8_t channel) {
-    uint8_t n = 0;
-    for (uint8_t i = 0; i < BINDABLE_PIN_COUNT; i++) {
-        if (bindings[i].role == PinRole::DOOR_OUTPUT &&
-            bindings[i].channel == channel) {
-            n++;
-        }
-    }
-    return n;
-}
-
-/**
- * @brief Tear down the current hardware binding on a slot.
- *
- * Detaches servo / PwmInput so the GPIO goes back to a neutral state and the
- * slot can be re-bound to a different role. Called for every slot at the top
- * of applyConfig() so reconfiguration is fully idempotent.
- */
-static void releaseBinding(uint8_t slotIdx) {
-    if (slotIdx >= BINDABLE_PIN_COUNT) return;
-    const PinBinding& b = bindings[slotIdx];
-    switch (b.role) {
-        case PinRole::DOOR_OUTPUT:
-            if (b.channel < 3 && b.doorIndex < 2) {
-                gears[b.channel].doorServo(b.doorIndex).end();
-            }
-            break;
-        case PinRole::YAW_OUTPUT:
-            yawServo.end();
-            yawConfigured = false;
-            break;
-        case PinRole::YAW_INPUT:
-            yawInput.end();
-            break;
-        default:
-            break;
-    }
-    bindings[slotIdx] = PinBinding{};  // back to UNUSED
-}
-
-/**
- * @brief Coerce a gear's door modes to match its actual bound-door count.
- *
- * Called after pin bindings are applied: if a channel has fewer than two
- * door servos wired, any DUAL_* mode is downgraded to SINGLE (1 door) or
- * NONE (0 doors). Prevents the DoorSequencer from reporting "complete"
- * instantly because it polled an unattached servo's cached pose.
- */
-static uint8_t coerceDoorMode(uint8_t mode, uint8_t boundDoors) {
-    if (boundDoors == 0) return DoorMode::NONE;
-    if (boundDoors == 1 && mode >= DoorMode::DUAL_SYNC) return DoorMode::SINGLE;
-    return mode;
-}
-
-/**
- * @brief Map a captured RC pulse width to the yaw servo's output range.
- *
- * Linear interpolation between yawInput_min_us / yawInput_max_us (input
- * endpoints) and the yaw servo's own [minLimit, maxLimit] bounds. Out-of-
- * range pulses are clamped. Reversed flag is honoured via the servo itself.
- */
-static uint16_t mapYawInputPulse(uint16_t pulse_us) {
-    uint16_t inLo = yawInput_min_us;
-    uint16_t inHi = yawInput_max_us;
-    if (inLo >= inHi) return yawServo.target();  // invalid mapping → hold
-    uint16_t outLo = (uint16_t)yawServo.minLimit();
-    uint16_t outHi = (uint16_t)yawServo.maxLimit();
-    if (pulse_us <= inLo) return outLo;
-    if (pulse_us >= inHi) return outHi;
-    uint32_t span = (uint32_t)(outHi - outLo);
-    uint32_t pos  = (uint32_t)(pulse_us - inLo);
-    uint32_t denom = (uint32_t)(inHi - inLo);
-    return outLo + (uint16_t)((pos * span) / denom);
-}
-
-/**
- * @brief Apply loaded config to hardware.
- *
- * Called after ConfigStore successfully loads and validates config from flash.
- * Maps config structs to the hardware APIs:
- *   - RetractConfig → GearControlGearConfig → LandingGear::setGearConfig()
- *   - PinConfig (door) → LandingGear::configureDoorServo() + setReversed()
- *   - PinConfig (yaw_output) → yawServo limits/profile + yawConfig
- *   - DoorModeConfig → LandingGear::setDoorMode()
- *   - Battery → BatteryMonitor chemistry/cellCount + global flags
- */
-static void applyConfig(const GearControlConfig& cfg) {
-    SFX_LOG_INFO("Applying config to hardware");
-
-    // ---- Retract channels: stall current + timeout per gear ----
-    for (uint8_t i = 0; i < cfg.retractCount && i < 3; i++) {
-        const auto& r = cfg.retracts[i];
-        if (r.channel >= 3) continue;
-
-        GearControlGearConfig gc;
-        gc.gearId           = r.channel;
-        gc.stallCurrent_mA  = r.stallCurrent_mA;
-        gc.timeout_ms       = r.timeout_ms;
-        gc.flags            = r.enabled ? 0 : 0x01;  // bit 0 = disabled
-        gears[r.channel].setGearConfig(gc);
-        gears[r.channel].setEnabled(r.enabled);
-
-        SFX_LOG_INFO("Retract[%u]: stall=%umA timeout=%ums enabled=%u",
-                     r.channel, r.stallCurrent_mA, r.timeout_ms, r.enabled);
-    }
-
-    // ---- Per-pin role assignments (fully dynamic) ----
-    // Tear down every prior binding first so reload is idempotent — detaches
-    // any Servo / PwmInput currently driving the pin, leaves the GPIO floating.
-    for (uint8_t i = 0; i < BINDABLE_PIN_COUNT; i++) {
-        releaseBinding(i);
-    }
-
-    // Then walk the YAML pin list and re-bind. Validation errors (bad slot,
-    // duplicate (channel, doorIndex), etc.) log and skip the offending entry —
-    // the rest of the config still applies so the board boots into a usable
-    // state even with a partially-broken YAML.
-    for (uint8_t i = 0; i < cfg.pinCount && i < GearControlLimits::MAX_PINS; i++) {
-        const auto& p = cfg.pins[i];
-        int8_t slot = slotIndex(p.slot);
-        if (slot < 0) {
-            SFX_LOG_WARN("Pin: unknown slot '%s' — skipped", p.slot);
-            continue;
-        }
-        PinBinding& b = bindings[slot];
-        if (b.role != PinRole::UNUSED) {
-            SFX_LOG_WARN("Pin %s: duplicate binding — later entry wins", p.slot);
-            releaseBinding(slot);
-        }
-        const uint8_t gpio = SLOT_GPIO[slot];
-
-        if (strcmp(p.role, "door") == 0) {
-            if (p.channel >= 3 || p.door_index > 1) {
-                SFX_LOG_WARN("Pin %s: invalid door (ch=%u door=%u)",
-                             p.slot, p.channel, p.door_index);
-                continue;
-            }
-            // Enforce (channel, doorIndex) uniqueness across all bindings.
-            bool dup = false;
-            for (uint8_t j = 0; j < BINDABLE_PIN_COUNT; j++) {
-                if (j == slot) continue;
-                const PinBinding& o = bindings[j];
-                if (o.role == PinRole::DOOR_OUTPUT &&
-                    o.channel == p.channel &&
-                    o.doorIndex == p.door_index) {
-                    dup = true;
-                    break;
-                }
-            }
-            if (dup) {
-                SFX_LOG_WARN("Pin %s: duplicate (ch=%u door=%u) — skipped",
-                             p.slot, p.channel, p.door_index);
-                continue;
-            }
-
-            gears[p.channel].attachDoorServo(p.door_index, gpio,
-                                              p.min_us, p.max_us, p.min_us);
-            gears[p.channel].configureDoorServo(p.door_index,
-                                                p.min_us, p.max_us, p.speed, 0, 0);
-            gears[p.channel].doorServo(p.door_index).setReversed(p.reversed);
-
-            b.role = PinRole::DOOR_OUTPUT;
-            b.channel = p.channel;
-            b.doorIndex = p.door_index;
-
-            SFX_LOG_INFO("Pin %s (GP%u) → gear%u/door%u: %u-%uus speed=%u rev=%u",
-                         p.slot, gpio, p.channel, p.door_index,
-                         p.min_us, p.max_us, p.speed, p.reversed);
-
-        } else if (strcmp(p.role, "yaw_output") == 0) {
-            // Only one YAW_OUTPUT allowed.
-            bool dup = false;
-            for (uint8_t j = 0; j < BINDABLE_PIN_COUNT; j++) {
-                if (j != slot && bindings[j].role == PinRole::YAW_OUTPUT) { dup = true; break; }
-            }
-            if (dup) {
-                SFX_LOG_WARN("Pin %s: yaw_output already bound elsewhere — skipped", p.slot);
-                continue;
-            }
-
-            yawServo.begin(gpio, p.min_us, p.max_us, p.neutral_us);
-            yawServo.setMotionProfile(p.speed, 0, 0);
-            yawServo.setReversed(p.reversed);
-            yawServo.setTarget(p.neutral_us);
-
-            yawConfig.gearId     = p.gear_id;
-            yawConfig.neutral_us = p.neutral_us;
-            yawConfig.min_us     = p.min_us;
-            yawConfig.max_us     = p.max_us;
-            yawConfigured = true;
-
-            b.role = PinRole::YAW_OUTPUT;
-            b.channel = p.gear_id;
-
-            SFX_LOG_INFO("Pin %s (GP%u) → yaw gear%u: %u-%uus neutral=%uus rev=%u",
-                         p.slot, gpio, p.gear_id, p.min_us, p.max_us,
-                         p.neutral_us, p.reversed);
-
-        } else if (strcmp(p.role, "yaw_input") == 0) {
-            // Only one YAW_INPUT allowed.
-            bool dup = false;
-            for (uint8_t j = 0; j < BINDABLE_PIN_COUNT; j++) {
-                if (j != slot && bindings[j].role == PinRole::YAW_INPUT) { dup = true; break; }
-            }
-            if (dup) {
-                SFX_LOG_WARN("Pin %s: yaw_input already bound elsewhere — skipped", p.slot);
-                continue;
-            }
-
-            yawInput.begin(PwmInputType::Pwm, gpio);
-            yawInput_min_us = p.min_us;
-            yawInput_max_us = p.max_us;
-            b.role = PinRole::YAW_INPUT;
-
-            SFX_LOG_INFO("Pin %s (GP%u) → yaw_input: map [%u,%u]µs",
-                         p.slot, gpio, p.min_us, p.max_us);
-
-        } else if (strcmp(p.role, "unused") != 0) {
-            SFX_LOG_WARN("Pin %s: unknown role '%s'", p.slot, p.role);
-        }
-    }
-
-    // ---- Door modes per retract channel ----
-    // Coerced down to SINGLE / NONE when fewer than 2 doors are bound on the
-    // channel so the sequencer never polls an unattached servo.
-    for (uint8_t i = 0; i < cfg.doorModeCount && i < 3; i++) {
-        const auto& dm = cfg.doorModes[i];
-        if (dm.channel >= 3) continue;
-
-        const uint8_t bound = countDoorsOnChannel(dm.channel);
-        const uint8_t pre  = coerceDoorMode(parseDoorMode(dm.preDeploy),  bound);
-        const uint8_t post = coerceDoorMode(parseDoorMode(dm.postDeploy), bound);
-        gears[dm.channel].setDoorMode(pre, post, dm.delay_ms);
-
-        SFX_LOG_INFO("DoorMode[%u]: bound=%u pre=%s(%u) post=%s(%u) delay=%ums",
-                     dm.channel, bound, dm.preDeploy, pre, dm.postDeploy, post, dm.delay_ms);
-    }
-
-    // Channels with no explicit door_modes entry still need coercion if they
-    // have 0 or 1 bound doors — default YAML is dual_sync which would break.
-    for (uint8_t g = 0; g < 3; g++) {
-        const uint8_t bound = countDoorsOnChannel(g);
-        if (bound >= 2) continue;
-        const uint8_t pre  = coerceDoorMode(gears[g].doorPreDeploy(),  bound);
-        const uint8_t post = coerceDoorMode(gears[g].doorPostDeploy(), bound);
-        if (pre != gears[g].doorPreDeploy() || post != gears[g].doorPostDeploy()) {
-            gears[g].setDoorMode(pre, post, gears[g].doorDelay_ms());
-            SFX_LOG_INFO("DoorMode[%u]: auto-coerce pre=%u post=%u (bound=%u)",
-                         g, pre, post, bound);
-        }
-    }
-
-    // ---- Battery monitoring ----
-    // Monitor is always on; config only sets chemistry, cell count, autoDeploy.
-    BatteryChemistry chem = parseBatteryChemistry(cfg.battery.chemistry);
-    batteryMonitor.setChemistry(chem);
-    batteryMonitor.setCellCount(cfg.battery.cellCount);  // 0 = auto-detect
-    autoDeployOnLowVoltage = cfg.battery.autoDeploy;
-
-    // ---- Fixed gear-input pin (GP0) ----
-    gearInputEnabled      = cfg.gearInput.enabled;
-    gearInputThreshold_us = cfg.gearInput.threshold_us;
-    gearInputCommandValid = false;  // re-arm on next stable pulse
-    SFX_LOG_INFO("GearInput: enabled=%u threshold=%uus",
-                 gearInputEnabled, gearInputThreshold_us);
-
-    SFX_LOG_INFO("Battery: chem=%s cells=%s autoDeploy=%u",
-                 cfg.battery.chemistry,
-                 cfg.battery.cellCount == 0 ? "auto" : "fixed",
-                 cfg.battery.autoDeploy);
-}
-
-// ============================================================================
-//  SETUP
-// ============================================================================
+GearControlBoard board;
+GearStatusLeds   statusLeds;   // local H-bridge → status-LED driver
 
 void setup() {
-    // Initialize server (serial, device name, indicators, core callbacks)
-    server.begin("GearControl", FIRMWARE_VERSION, BUILD_NUMBER);
-    server.onInit([](uint8_t mode, uint8_t flags) {
-        (void)flags;  // GearControl accepts both SLAVE and DIRECT
-        SFX_LOG_INFO("INIT mode=%s", InitMode::getName(mode));
-        performSafeInit();
-    });
-    server.onShutdown([]() { performSafeShutdown(); });
+    // I²C + INA226 bring-up before the registry begins each port.
+    board.initHardware();
 
-    // Battery monitor must be running before config load — applyConfig()
-    // layers chemistry / cell overrides via setChemistry() / setCellCount(),
-    // both of which require begin() to have set the ADC pin.
-    analogReadResolution(12);
-    batteryMonitor.begin(PIN_VSENSE);
+    // Policy pack lifecycle — Serial / DiagLog / indicator pins / port
+    // registry binding / every policy's begin() / IDENTIFY capabilities.
+    board.begin(FIRMWARE_VERSION, BUILD_NUMBER,
+                Gpio::LED_CONNECTION, Gpio::LED_ERROR);
 
-    // Initialize flash storage and load config (standalone mode)
-    initFlashAndConfig();
+    // Local status-LED driver — direction indicators per H-bridge.
+    statusLeds.begin(Gpio::STATUS_CW, Gpio::STATUS_CCW);
 
-    // Initialize I2C for INA226
-    Wire.setSDA(PIN_SDA);
-    Wire.setSCL(PIN_SCL);
-    Wire.begin();
-    Wire.setClock(400000);  // 400kHz fast mode
-
-    // Initialize INA226 monitors
-    for (int i = 0; i < 3; i++) {
-        INA226Config cfg;
-        cfg.address = INA226_ADDR[i];
-        cfg.shuntResistance_ohms = SHUNT_RESISTANCE_OHMS;
-        cfg.maxCurrent_A = MAX_CURRENT_A;
-        ina226Available[i] = ina226[i].begin(Wire, cfg);
-        SFX_LOG_INFO("INA226[%d] (0x%02X): %s", i, INA226_ADDR[i],
-                     ina226Available[i] ? "OK" : "NOT FOUND");
-    }
-
-    // Initialize landing gear modules. Door servos are NOT attached here —
-    // applyConfig() wires them dynamically from YAML pin bindings (each gear
-    // ends up with 0, 1, or 2 attached door servos depending on user config).
-    for (int i = 0; i < 3; i++) {
-        gears[i].begin(i, PIN_MOTOR[i][0], PIN_MOTOR[i][1]);
-
-        // Attach status LEDs (hardwired — always on these pins).
-        gears[i].attachStatusLed(0, PIN_STATUS_LED[i][0]);
-        gears[i].attachStatusLed(1, PIN_STATUS_LED[i][1]);
-
-        // Attach current monitor (always — INA226 is soldered on board)
-        gears[i].attachCurrentMonitor(&ina226[i]);
-        if (!ina226Available[i]) {
-            // INA226 failed I2C init — board fault
-            gears[i].flagMonitorFault();
-            gearErrorReason[i] = GearErrorReason::MONITOR_FAULT;
-        }
-
-        // Register calibration progress callback (emits GEAR_CALIB_STATUS packets)
-        gears[i].onCalibrationProgress([](const GearControlCalibStatus& status) {
-            gearControlServer.sendCalibStatus(status);
-        });
-
-        // Register sequence progress callback (emits GEAR_SEQ_STATUS packets)
-        gears[i].onSequenceProgress([](const GearControlSeqStatus& status) {
-            gearControlServer.sendGearSeqStatus(status);
-        });
-
-        // Register door status callback (emits GEAR_DOOR_STATUS packets)
-        gears[i].onDoorStatus([](const GearControlDoorStatus& status) {
-            gearControlServer.sendDoorStatus(status);
-        });
-    }
-
-    // Yaw servo stays detached at boot — applyConfig() attaches it to whatever
-    // slot the user maps to yaw_output (or leaves it detached if no slot is
-    // assigned that role).
-
-    // Arm the fixed gear-input PWM reader on GP0 (interrupt-based — non-blocking).
-    pinMode(PIN_GEAR_INPUT, INPUT_PULLDOWN);
-    attachInterrupt(digitalPinToInterrupt(PIN_GEAR_INPUT), gearInputIsr, CHANGE);
-
-    // Initialize battery voltage monitor (ADC with ÷6 divider on GP29).
-    // begin() must always run — applyConfig() then layers chemistry / cell
-    // overrides via setChemistry() / setCellCount() without re-init.
-    analogReadResolution(12);
-    batteryMonitor.begin(PIN_VSENSE);
-
-    // Auto-deploy all gears on low battery voltage (safety feature)
-    batteryMonitor.onLowVoltage([](uint16_t voltage_mV, uint8_t cellCount) {
-        if (autoDeployOnLowVoltage && server.indicators().isConnected()) {
-            SFX_LOG_WARN("LOW BATTERY %u mV (%uS) — emergency deploy all gears",
-                         voltage_mV, cellCount);
-            lowVoltageTriggered = true;
-            for (int i = 0; i < 3; i++) {
-                gears[i].markEmergencyDeploy();
-                gears[i].deploy();
-            }
-        }
-    });
-
-    // ========================================================================
-    // Initialize GearControlServer (GearControl-specific commands)
-    // ========================================================================
-    gearControlServer.begin(&Serial);
-
-    // GEAR_DEPLOY: Deploy landing gear (individual, no sync)
-    gearControlServer.onGearDeploy([](uint8_t gearId) -> uint8_t {
-        gears[gearId].setSyncMode(false);
-        return gears[gearId].deploy();
-    });
-
-    // GEAR_RETRACT: Retract landing gear (individual, no sync)
-    gearControlServer.onGearRetract([](uint8_t gearId) -> uint8_t {
-        gears[gearId].setSyncMode(false);
-        // If yaw is configured for this gear, center yaw before retract
-        if (yawConfigured && yawConfig.gearId == gearId) {
-            yawServo.setTarget(yawConfig.neutral_us);
-        }
-        return gears[gearId].retract();
-    });
-
-    // GEAR_STOP: Emergency stop
-    gearControlServer.onGearStop([](uint8_t gearId) -> uint8_t {
-        if (gearId >= 3) return GearControlError::INVALID_GEAR_ID;
-        gears[gearId].stop();
-        return SerialError::OK;
-    });
-
-    // GEAR_ALL: Deploy/retract/stop all gears (synchronized)
-    gearControlServer.onGearAll([](uint8_t action) -> uint8_t {
-        // Enable sync mode for deploy/retract so gears wait at phase barriers
-        if (action == GearControlSpec::ACTION_DEPLOY || action == GearControlSpec::ACTION_RETRACT) {
-            for (int i = 0; i < 3; i++) gears[i].setSyncMode(true);
-        }
-
-        uint8_t result = SerialError::OK;
-        for (int i = 0; i < 3; i++) {
-            uint8_t r;
-            if (action == GearControlSpec::ACTION_DEPLOY) {
-                r = gears[i].deploy();
-            } else if (action == GearControlSpec::ACTION_RETRACT) {
-                if (yawConfigured && yawConfig.gearId == (uint8_t)i) {
-                    yawServo.setTarget(yawConfig.neutral_us);
-                }
-                r = gears[i].retract();
-            } else {
-                gears[i].stop();
-                r = SerialError::OK;
-            }
-            if (r != SerialError::OK && result == SerialError::OK) {
-                result = r;  // Return first error
-            }
-        }
-        return result;
-    });
-
-    // SERVO_SET: Direct servo control. IDs are 1-based (v0.17.0+): 1..6 are
-    // the three gears' door pairs, 7 is yaw.
-    gearControlServer.onServoSet([](uint8_t servoId, uint16_t pulse_us) -> uint8_t {
-        if (servoId >= 1 && servoId <= 6) {
-            uint8_t gearIdx = (servoId - 1) / 2;
-            uint8_t doorIdx = (servoId - 1) % 2;
-            gears[gearIdx].setDoorPosition(doorIdx, pulse_us);
-        } else if (servoId == SERVO_ID_YAW) {
-            yawServo.setTarget(pulse_us);
-        } else {
-            return GearControlError::INVALID_SERVO_ID;
-        }
-        return SerialError::OK;
-    });
-
-    // SRV_SETTINGS: Configure servo parameters (GunFX/LightFX pattern).
-    // Same 1-based mapping as SERVO_SET.
-    gearControlServer.onServoSettings([](const GearControlServoConfig& cfg) -> uint8_t {
-        if (cfg.servoId >= 1 && cfg.servoId <= 6) {
-            uint8_t gearIdx = (cfg.servoId - 1) / 2;
-            uint8_t doorIdx = (cfg.servoId - 1) % 2;
-            gears[gearIdx].configureDoorServo(doorIdx,
-                cfg.minUs, cfg.maxUs,
-                cfg.maxSpeedUsPerSec, cfg.maxAccelUsPerSec2, cfg.maxDecelUsPerSec2);
-            gears[gearIdx].doorServo(doorIdx).setReversed(cfg.reversed);
-        } else if (cfg.servoId == SERVO_ID_YAW) {
-            yawServo.setLimits(cfg.minUs, cfg.maxUs);
-            yawServo.setMotionProfile(cfg.maxSpeedUsPerSec,
-                                       cfg.maxAccelUsPerSec2,
-                                       cfg.maxDecelUsPerSec2);
-            yawServo.setReversed(cfg.reversed);
-        } else {
-            return GearControlError::INVALID_SERVO_ID;
-        }
-        return SerialError::OK;
-    });
-
-    // GEAR_CONFIG: Configure gear behavior
-    gearControlServer.onGearConfig([](const GearControlGearConfig& cfg) -> uint8_t {
-        gears[cfg.gearId].setGearConfig(cfg);
-        return SerialError::OK;
-    });
-
-    // YAW_CONFIG: Configure yaw servo
-    gearControlServer.onYawConfig([](const GearControlYawConfig& cfg) -> uint8_t {
-        yawConfig = cfg;
-        yawConfigured = true;
-        // Set to neutral initially
-        yawServo.setTarget(cfg.neutral_us);
-        return SerialError::OK;
-    });
-
-    // YAW_INPUT: Set yaw position (only effective when associated gear is deployed)
-    gearControlServer.onYawInput([](uint16_t position_us) -> uint8_t {
-        if (!yawConfigured) return GearControlError::YAW_NOT_AVAILABLE;
-
-        // Only apply yaw when associated gear is deployed
-        if (!gears[yawConfig.gearId].isDeployed()) {
-            return SerialError::OK;  // Silently ignore (not an error)
-        }
-
-        // Clamp to configured range
-        uint16_t clamped = constrain(position_us, yawConfig.min_us, yawConfig.max_us);
-        yawServo.setTarget(clamped);
-        return SerialError::OK;
-    });
-
-    // GEAR_CALIBRATE: Start stall current calibration (optional timeout in seconds)
-    gearControlServer.onGearCalibrate([](uint8_t gearId, uint8_t timeout_s) -> uint8_t {
-        uint32_t timeout_ms = (uint32_t)timeout_s * 1000;
-        return gears[gearId].calibrate(timeout_ms);
-    });
-
-    // GEAR_CALIB_CANCEL: Cancel calibration in progress
-    gearControlServer.onGearCalibCancel([](uint8_t gearId) -> uint8_t {
-        return gears[gearId].cancelCalibration();
-    });
-
-    // BATTERY_AUTO_DEPLOY: GearControl-specific safety toggle.
-    // Sensor configuration (chemistry, cell count) flows through the generic
-    // BatteryServerT handler bound to CorePacket::BATTERY_CONFIG (0xEE).
-    gearControlServer.onBatteryAutoDeploy([](bool enabled) -> uint8_t {
-        autoDeployOnLowVoltage = enabled;
-        SFX_LOG_INFO("Battery auto-deploy=%u", enabled);
-        return SerialError::OK;
-    });
-
-    // DOOR_MODE: Configure door activation modes per gear
-    gearControlServer.onDoorMode([](const GearControlDoorModeConfig& cfg) -> uint8_t {
-        gears[cfg.gearId].setDoorMode(cfg.preDeployMode, cfg.postDeployMode, cfg.delay_ms);
-        return SerialError::OK;
-    });
-
-    // GEAR_RESET: Clear error state (ERROR → UNKNOWN)
-    gearControlServer.onGearReset([](uint8_t gearId) -> uint8_t {
-        gears[gearId].clearError();
-        gearErrorReason[gearId] = GearErrorReason::NONE;
-        return SerialError::OK;
-    });
-
-    // GEAR_ENABLE: Enable/disable gear channel
-    gearControlServer.onGearEnable([](uint8_t gearId, bool enabled) -> uint8_t {
-        gears[gearId].setEnabled(enabled);
-        return SerialError::OK;
-    });
-
-    // I2C bus scan — handled by SfxServer (shared infrastructure)
-    server.enableI2CScan(Wire);
-    for (int i = 0; i < 3; i++) {
-        server.addExpectedI2CDevice(INA226_ADDR[i], &ina226[i]);
-    }
-
-    // STATUS: Append GearControl module data to core STATUS response
-    // Wire format (107 bytes):
-    //   Per gear (3 × 11 = 33 bytes):
-    //     [state:u8][motorCurrent_mA:u16LE][door0Pos_us:u16LE][door1Pos_us:u16LE]
-    //     [calibratedStall_mA:u16LE][shuntVoltage_10uV:i16LE]
-    //   Yaw + LEDs + Voltage (6 bytes):
-    //     [yawPos_us:u16LE][ledFlags:u8][batteryVoltage_mV:u16LE][batteryConfigFlags:u8]
-    //   Per-gear error reasons (3 bytes):
-    //     [gear0ErrorReason:u8][gear1ErrorReason:u8][gear2ErrorReason:u8]
-    //   Shunt config (2 bytes):
-    //     [shuntResistance_mohm:u16LE]
-    //   Per-gear packed door modes (3 bytes):
-    //     [gear0DoorModes:u8][gear1DoorModes:u8][gear2DoorModes:u8]
-    //     Each byte: low nibble = doorPreDeploy mode
-    //                high nibble = doorPostDeploy mode
-    //   Per-gear config flags (3 bytes):
-    //     [gear0ConfigFlags:u8][gear1ConfigFlags:u8][gear2ConfigFlags:u8]
-    //   Per-gear door state (3 bytes):
-    //     [gear0DoorState:u8][gear1DoorState:u8][gear2DoorState:u8]
-    //   Gear input PWM (5 bytes, appended v0.14.0 — Rule 11):
-    //     [gearInputPulse_us:u16LE][gearInputThreshold_us:u16LE][gearInputFlags:u8]
-    //     gearInputFlags bit 0 = enabled, bit 1 = lastCommandWasDeploy (valid)
-    //   Per-servo configs (7 × 7 = 49 bytes, appended v0.15.0 — Rule 11):
-    //     For servoId 0..5 (door servos, gear = id/2, door = id%2) and 6 (yaw):
-    //       [minUs:u16LE][maxUs:u16LE][speed:u16LE][flags:u8]
-    //       flags bit 0 = reversed
-    //     Lets Studio reconcile its pinConfigs against the live servo state
-    //     instead of needing a bespoke ACK-echo carrier (Rule 19 / user note).
-    server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        if (maxLen < 149) return 0;
-
-        for (int i = 0; i < 3; i++) {
-            size_t off = i * 11;
-            buf[off] = static_cast<uint8_t>(gears[i].state());
-            CoreProtocol::putU16LE(&buf[off + 1], gears[i].readMotorCurrent_mA());  // mA
-            CoreProtocol::putU16LE(&buf[off + 3], gears[i].doorPosition_us(0));  // door0  // µs
-            CoreProtocol::putU16LE(&buf[off + 5], gears[i].doorPosition_us(1));  // door1  // µs
-            CoreProtocol::putU16LE(&buf[off + 7], gears[i].calibratedStall_mA()); // mA
-            // Shunt voltage in 10µV units for diagnostic (INA226 shuntVoltage_uV / 10)
-            int16_t shuntV = ina226Available[i]
-                ? (int16_t)(ina226[i].shuntVoltage_uV() / 10.0f)
-                : 0;
-            CoreProtocol::putU16LE(&buf[off + 9], (uint16_t)shuntV);  // 10µV
-        }
-
-        CoreProtocol::putU16LE(&buf[33], (uint16_t)yawServo.position());  // yaw servo  // µs
-        buf[35] = buildLedFlags();
-        CoreProtocol::putU16LE(&buf[36], batteryMonitor.voltage_mV());  // mV
-        // Battery config flags: bit 0 = auto-deploy enabled, bit 1 = low voltage triggered
-        buf[38] = (autoDeployOnLowVoltage ? 0x01 : 0x00)
-                | (lowVoltageTriggered    ? 0x02 : 0x00);
-
-        // Per-gear error reasons (diagnostic — explains WHY a gear is in ERROR state)
-        buf[39] = gearErrorReason[0];
-        buf[40] = gearErrorReason[1];
-        buf[41] = gearErrorReason[2];
-
-        // Configured shunt resistance in milliohms (e.g., 100 = 100mΩ = 0.1Ω)
-        CoreProtocol::putU16LE(&buf[42], (uint16_t)(SHUNT_RESISTANCE_OHMS * 1000.0f));  // mΩ
-
-        // Per-gear packed door modes: low nibble = doorPreDeploy, high nibble = doorPostDeploy
-        buf[44] = (gears[0].doorPreDeploy() & 0x0F) | ((gears[0].doorPostDeploy() & 0x0F) << 4);
-        buf[45] = (gears[1].doorPreDeploy() & 0x0F) | ((gears[1].doorPostDeploy() & 0x0F) << 4);
-        buf[46] = (gears[2].doorPreDeploy() & 0x0F) | ((gears[2].doorPostDeploy() & 0x0F) << 4);
-
-        // Per-gear config flags (GearConfigFlags bitmask + runtime ENABLED bit 7)
-        buf[47] = gears[0].gearConfig().flags | (gears[0].isEnabled() ? GearConfigFlags::ENABLED : 0);
-        buf[48] = gears[1].gearConfig().flags | (gears[1].isEnabled() ? GearConfigFlags::ENABLED : 0);
-        buf[49] = gears[2].gearConfig().flags | (gears[2].isEnabled() ? GearConfigFlags::ENABLED : 0);
-
-        // Per-gear door state (DoorState values from door sequencer)
-        buf[50] = gears[0].doorState();
-        buf[51] = gears[1].doorState();
-        buf[52] = gears[2].doorState();
-
-        // Fixed gear-input PWM (GP0) — appended for v0.14.0 (Rule 11)
-        CoreProtocol::putU16LE(&buf[53], gearInputPulse_us);
-        CoreProtocol::putU16LE(&buf[55], gearInputThreshold_us);
-        buf[57] = (gearInputEnabled ? 0x01 : 0x00)
-                | ((gearInputCommandValid && gearInputCommandLast) ? 0x02 : 0x00);
-
-        // Per-servo live configs — extended to 13 bytes/servo in v0.17.0 to
-        // align with the LightFX STATUS tail (Rule 11). The array index is
-        // still 0..6 in the payload (decoders treat Servos[0] as the first
-        // wired servo); the user-facing servoId is 1..7 via
-        // (id-1)/2 door math + yaw at id 7.
-        // Wire: [min:u16][max:u16][target:u16][speed:u16][accel:u16][decel:u16][rev:u8]
-        for (uint8_t i = 0; i < 7; i++) {
-            size_t off = 58 + i * 13;
-            const ServoControl* srv = (i <= 5) ? &gears[i / 2].doorServo(i % 2)
-                                               : &yawServo;
-            CoreProtocol::putU16LE(&buf[off + 0],  (uint16_t)srv->minLimit());
-            CoreProtocol::putU16LE(&buf[off + 2],  (uint16_t)srv->maxLimit());
-            CoreProtocol::putU16LE(&buf[off + 4],  (uint16_t)srv->target());
-            CoreProtocol::putU16LE(&buf[off + 6],  (uint16_t)srv->maxSpeed());
-            CoreProtocol::putU16LE(&buf[off + 8],  (uint16_t)srv->acceleration());
-            CoreProtocol::putU16LE(&buf[off + 10], (uint16_t)srv->deceleration());
-            buf[off + 12] = srv->isReversed() ? 0x01 : 0x00;
-        }
-
-        return 149;
-    });
-
-    // Set status broadcast source for verbose mode (STATUS_UPDATE packets)
-    server.core().setStatusBroadcastSource(StatusUpdateSource::GEARCONTROL);
-
-    // Generic battery handler (claims CorePacket::BATTERY_CONFIG = 0xEE).
-    batteryServer.begin(&Serial);
-    server.addModuleHandler(&batteryServer);
-
-    // Finalize command router (core + Battery + GearControl + Config handlers)
-    server.addModuleHandler(&gearControlServer);
-
-    // Register ConfigServer (handles CONFIG_RELOAD/STATUS/SAVE from CLI)
-    configServer.begin(&Serial);
-    configServer.onReloaded([](const GearControlConfig& cfg) {
-        SFX_LOG_INFO("Config reloaded — applying to hardware");
-        applyConfig(cfg);
-    });
-    server.addModuleHandler(&configServer);
-
-    // Register StorageServer (handles FILE_* protocol for /gearcontrol.yaml I/O).
-    // Must come after FlashModule is mounted in initFlashAndConfig().
-    storageServer.begin(&Serial);
-    storageServer.onTransferStart([]() { server.core().setTransferActive(true); });
-    storageServer.onTransferEnd  ([]() { server.core().setTransferActive(false); });
-    server.addModuleHandler(&storageServer);
-
-    // Advertise interfaces — Pico GearControl has flash + config but no SD,
-    // no audio, no USB host, no engine. Used by clients to gate UI.
-    server.core().addCapability(CoreCapability::FLASH | CoreCapability::CONFIG);
+    SFX_LOG_INFO("GearCtrl expander v%s build %u — 7 servo / 3 hbridge + local status LEDs",
+                 FIRMWARE_VERSION, (unsigned)BUILD_NUMBER);
 }
 
-// ============================================================================
-//  LOOP
-// ============================================================================
-
 void loop() {
-    // Process protocol, connection timeout, indicators
-    server.loop();
+    board.process();
+    board.pollSense();
 
-    // Clean up stuck file uploads (aborted transfer → delete partial, free buffer)
-    storageServer.checkUploadTimeout();
-
-    // Update INA226 current monitors (refresh cached readings for stall detection)
-    for (int i = 0; i < 3; i++) {
-        if (ina226Available[i]) ina226[i].update();
-    }
-
-    // Update all landing gear modules (sequencing, door servos, status LEDs)
-    for (int i = 0; i < 3; i++) {
-        gears[i].update();
-
-        // Propagate calibration error reason (e.g., motor disconnected)
-        if (gears[i].state() == GearState::ERROR && gears[i].lastCalibErrorReason() != 0) {
-            if (gearErrorReason[i] != gears[i].lastCalibErrorReason()) {
-                gearErrorReason[i] = gears[i].lastCalibErrorReason();
-                SFX_LOG_ERROR("Gear %d ERROR: reason=0x%02X", i, gearErrorReason[i]);
-            }
+    // Drive the per-motor status LEDs purely from local H-bridge state.
+    // The error flag is the BiDcMotor role's latched endstop-seek timeout
+    // (read from the registry) — the seek + its timeout run locally on
+    // this board, so the error indication is local too.
+    int16_t duty[3], cur[3];
+    bool    err[3];
+    for (uint8_t m = 0; m < 3; ++m) {
+        duty[m] = board.motor[m].signedDuty();
+        cur[m]  = board.iSense[m].current_mA();
+        err[m]  = false;
+        auto* binding = board.registry().hbridgeAt(m);
+        if (binding) {
+            auto* role = std::get_if<sfx_core::BiDcMotorRole>(&binding->role);
+            err[m] = role &&
+                     role->seekState() == sfx_core::BiDcMotorRole::SeekState::TimedOut;
         }
     }
-
-    // Sync coordinator: advance gears past sync barriers when all are ready
-    {
-        // Barrier 1: doors-open → motor start
-        bool anyWaitingDoors = false;
-        bool anyStillOpening = false;
-        for (int i = 0; i < 3; i++) {
-            if (gears[i].isWaitingSyncDoorsOpen()) anyWaitingDoors = true;
-            if (gears[i].isSyncOpeningDoors()) anyStillOpening = true;
-        }
-        if (anyWaitingDoors && !anyStillOpening) {
-            for (int i = 0; i < 3; i++) {
-                if (gears[i].isWaitingSyncDoorsOpen()) gears[i].advanceSyncPhase();
-            }
-        }
-
-        // Barrier 2: motor-done → door close
-        bool anyWaitingMotor = false;
-        bool anyStillRunning = false;
-        for (int i = 0; i < 3; i++) {
-            if (gears[i].isWaitingSyncMotorDone()) anyWaitingMotor = true;
-            if (gears[i].isSyncRunningMotor()) anyStillRunning = true;
-        }
-        if (anyWaitingMotor && !anyStillRunning) {
-            for (int i = 0; i < 3; i++) {
-                if (gears[i].isWaitingSyncMotorDone()) gears[i].advanceSyncPhase();
-            }
-        }
-    }
-
-    // Yaw input capture. Sampled in any non-SLAVE state so Studio can see the
-    // live pulse while the operator configures the mapping, but the servo
-    // target is only driven from it in STANDALONE — DIRECT-mode users keep
-    // manual control via `gear:servo set 7 <us>`.
-    if (yawInput.isEnabled()) {
-        uint8_t boardState = server.core().boardState();
-        if (boardState != BoardState::SLAVE) {
-            int us = yawInput.update();
-            if (us > 0 && boardState == BoardState::STANDALONE) {
-                yawServo.setTarget(mapYawInputPulse((uint16_t)us));
-            }
-        }
-    }
-
-    // Update yaw servo motion profiling
-    yawServo.update();
-
-    // Update indicator LED conditions (error/warning)
-    bool anyError = false;
-    for (int i = 0; i < 3; i++) {
-        if (gears[i].isError()) { anyError = true; break; }
-    }
-    server.indicators().setErrorCondition(anyError);
-    server.indicators().setWarningCondition(lowVoltageTriggered);
-
-    // Battery monitor is always running — chemistry/cells configurable via BATTERY_CONFIG
-    batteryMonitor.update();
-
-    // ----- Fixed gear-input PWM (GP0) → standalone deploy/retract trigger -----
-    // Only acts in standalone mode. When connected to HubFX, the master sends
-    // GEAR_DEPLOY / GEAR_RETRACT directly and we ignore the local PWM.
-    if (gearInputEnabled && !server.indicators().isConnected()) {
-        // Stale pulse (>200 ms since last edge) — drop the cached value
-        uint32_t age = millis() - gearInputLastEdgeMs;
-        if (age > 200) gearInputPulse_us = 0;
-
-        if (gearInputPulse_us != 0) {
-            bool wantDeploy = gearInputPulse_us > gearInputThreshold_us;
-            if (!gearInputCommandValid || wantDeploy != gearInputCommandLast) {
-                gearInputCommandLast  = wantDeploy;
-                gearInputCommandValid = true;
-                SFX_LOG_INFO("GearInput: %uus → %s",
-                             gearInputPulse_us, wantDeploy ? "DEPLOY" : "RETRACT");
-                for (int i = 0; i < 3; i++) gears[i].setSyncMode(true);
-                for (int i = 0; i < 3; i++) {
-                    if (wantDeploy) gears[i].deploy();
-                    else            gears[i].retract();
-                }
-            }
-        }
-    }
+    statusLeds.update(duty, cur, err);
 
     busy_wait_ms(1);
 }

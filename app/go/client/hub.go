@@ -28,7 +28,14 @@ type Identity struct {
 	CPUFreqMHz      uint32 `json:"cpuFreqMHz"`
 	FreeRAMBytes    uint32 `json:"freeRamBytes"`
 	BuildNumber     uint32 `json:"buildNumber"`
-	Capabilities    uint32 `json:"capabilities"`
+	// Compiled-in feature bitmask — what the firmware can do AT ALL.
+	Capabilities uint32 `json:"capabilities"`
+	// Runtime-enabled subset of `Capabilities` — what the firmware is
+	// configured to do RIGHT NOW.  Hosts use this to gate command
+	// visibility separately from "is the feature even compiled in".
+	// Pre-v2.4 firmware doesn't emit this field; we default it to
+	// `Capabilities` so older boards keep working unchanged.
+	EnabledCapabilities uint32 `json:"enabledCapabilities"`
 }
 
 // BoardKind is the canonical board-family label derived from the
@@ -59,8 +66,10 @@ func (i Identity) Kind() BoardKind {
 	return BoardUnknown
 }
 
-// Has reports whether every bit in `want` is set in `Capabilities`.
-// Use the `core.Cap*` constants:
+// Has reports whether every bit in `want` is set in the
+// COMPILED-IN `Capabilities` mask.  Use this for "could this firmware
+// ever do X" — for "is X live right now" use `IsEnabled`.  Use the
+// `core.Cap*` constants:
 //
 //	id.Has(core.CapAudio)                    // audio mixer present
 //	id.Has(core.CapTopology)                 // GUID-addressed master
@@ -70,12 +79,34 @@ func (i Identity) Has(want uint32) bool {
 	return core.HasCapability(i.Capabilities, want)
 }
 
-// HasAny reports whether ANY bit in `want` is set.
+// HasAny reports whether ANY bit in `want` is set in `Capabilities`.
 func (i Identity) HasAny(want uint32) bool { return i.Capabilities&want != 0 }
 
-// CapabilityNames returns symbolic names of every feature bit set.
+// IsEnabled reports whether every bit in `want` is set in
+// `EnabledCapabilities` — i.e. the feature is BOTH compiled in AND
+// runtime-enabled by the current config.  This is the predicate the
+// CLI verb-filter and Studio UI should use to decide whether a
+// command is callable right now.  For "is this firmware capable in
+// principle" use `Has`.
+func (i Identity) IsEnabled(want uint32) bool {
+	return core.HasCapability(i.EnabledCapabilities, want)
+}
+
+// CapabilityNames returns symbolic names of every COMPILED-IN feature.
 func (i Identity) CapabilityNames() []string {
 	return core.CapabilityNames(i.Capabilities)
+}
+
+// EnabledCapabilityNames returns symbolic names of every RUNTIME-ENABLED
+// feature (subset of `CapabilityNames`).
+func (i Identity) EnabledCapabilityNames() []string {
+	return core.CapabilityNames(i.EnabledCapabilities)
+}
+
+// DisabledCapabilityNames returns symbolic names of features that are
+// compiled in but NOT runtime-enabled — i.e. config-disabled.
+func (i Identity) DisabledCapabilityNames() []string {
+	return core.CapabilityNames(i.Capabilities & ^i.EnabledCapabilities)
 }
 
 // ─── Convenience predicates ──────────────────────────────────────────
@@ -293,7 +324,13 @@ func (h *Hub) BatteryConfig(chemistry, cellCount byte) error {
 // decodeIdentity unpacks the length-prefixed INIT_READY/IDENTIFY block.
 //
 //	[nameLen:u8][name][verLen:u8][ver][platLen:u8][plat]
-//	[cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE][caps:u32LE]
+//	[cpuMHz:u32LE][freeRam:u32LE][buildNum:u32LE]
+//	[caps:u32LE][enabledCaps:u32LE]
+//
+// `enabledCaps` is append-only (Rule 11) — pre-v2.4 firmware doesn't
+// emit it, in which case we default it to `caps` so the
+// "is feature live" predicate behaves like "is feature compiled in"
+// on older boards.
 func decodeIdentity(p []byte) (Identity, error) {
 	var id Identity
 	n, off, err := readLenStr(p, 0, "name")
@@ -324,6 +361,13 @@ func decodeIdentity(p []byte) (Identity, error) {
 	off += 12
 	if off+4 <= len(p) {
 		id.Capabilities = binary.LittleEndian.Uint32(p[off : off+4])
+		off += 4
+	}
+	// Pre-v2.4 fallback: treat "compiled" as "enabled" when the field
+	// is absent.  Newer firmware overrides this with the explicit value.
+	id.EnabledCapabilities = id.Capabilities
+	if off+4 <= len(p) {
+		id.EnabledCapabilities = binary.LittleEndian.Uint32(p[off : off+4])
 	}
 	return id, nil
 }

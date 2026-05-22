@@ -1,0 +1,59 @@
+# helicopter_landing — Approach/landing configuration.
+#
+# Flight lights (beacon + strobe + nav) PLUS the landing light deployed
+# and on.  Standard practice: landing light comes on below ~500 ft AGL
+# on approach, stays on through touchdown, off on roll-out / hover-taxi.
+#
+# When this program activates, the `landing_bindings:` block also flips
+# landing-light ID 0 (nose searchlight) to ON — the LandingLightService
+# handles the servo deployment + LED on sequence.
+
+schema_version: 1
+
+channels:
+  - port: { kind: pwm, idx: 0 }                # red rotating beacon
+    brightness_pct: 100
+    events:
+      - kind: beacon
+        cycle_ms: 800
+        min_pct:    0
+        max_pct:  100
+        flash_pct: 100
+  - port: { kind: pwm, idx: 1 }                # white anti-collision strobe
+    brightness_pct: 100
+    events:
+      - kind: flash
+        cycle_ms: 1500
+        brightness_pct: 100
+  - port: { kind: pwm, idx: 2 }                # red nav (port)
+    brightness_pct: 100
+    events:
+      - kind: on
+        brightness_pct: 100
+  - port: { kind: pwm, idx: 3 }                # green nav (starboard)
+    brightness_pct: 100
+    events:
+      - kind: on
+        brightness_pct: 100
+  - port: { kind: pwm, idx: 4 }                # white nav (tail)
+    brightness_pct: 100
+    events:
+      - kind: on
+        brightness_pct: 100
+  - port: { kind: pwm, idx: 5 }                # landing light — on, full
+    brightness_pct: 100
+    events:
+      - kind: on
+        brightness_pct: 100
+  - port: { kind: pwm, idx: 6 }                # cabin light — off
+    events:
+      - kind: off
+        duration_ms: 0
+  - port: { kind: pwm, idx: 7 }                # spare — off
+    events:
+      - kind: off
+        duration_ms: 0
+
+# Servo-deployed landing light goes hot (servo to deploy, LEDs on).
+landing_bindings:
+  - { id: 0, state: on }

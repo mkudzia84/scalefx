@@ -60,7 +60,11 @@ func cmdHelp(a *app, args []string) error {
 	}
 
 	connected := a.c != nil
-	groups := availableCommands(connected, a.boardCaps)
+	// Active section uses the runtime-enabled mask (compiled-in AND
+	// turned on by config).  Disabled section uses the compiled-but-off
+	// delta so the user can see what they could turn on.
+	groups := availableCommands(connected, a.boardEnabledCaps)
+	disabled := disabledCommands(connected, a.boardCaps, a.boardEnabledCaps)
 
 	if !connected {
 		Note("not connected — `connect <port>` first.  Commands shown are session-only;")
@@ -80,24 +84,42 @@ func cmdHelp(a *app, args []string) error {
 		fmt.Println()
 	}
 
-	// Hint about hidden commands when not connected or when the board
-	// doesn't advertise everything.
-	hidden := 0
+	// Disabled section — compiled in but config-disabled.  Show them
+	// so the user knows the verb exists and what to flip in the YAML.
+	disabledCount := 0
+	for _, list := range disabled {
+		disabledCount += len(list)
+	}
+	if disabledCount > 0 {
+		Hdr("Currently disabled (compiled in; turn on in config to use)")
+		for _, cat := range categoryOrder {
+			for _, c := range disabled[cat] {
+				fmt.Printf("  %s  %s  %s\n",
+					cDim(padRight(c.Name, 18)),
+					cDim(c.Help),
+					cDim("[disabled]"))
+			}
+		}
+		fmt.Println()
+	}
+
+	// Hint about not-compiled-in verbs.
+	notCompiled := 0
 	for _, c := range commands {
 		if c.RequiresConn && !connected {
-			hidden++
+			notCompiled++
 			continue
 		}
 		if connected && c.RequiresCap != 0 && (a.boardCaps&c.RequiresCap) == 0 {
-			hidden++
+			notCompiled++
 		}
 	}
-	if hidden > 0 {
+	if notCompiled > 0 {
 		if connected {
-			Note("%d more verb%s hidden — board doesn't advertise the matching capability.",
-				hidden, plural(hidden))
+			Note("%d more verb%s hidden — board firmware doesn't include the matching capability.",
+				notCompiled, plural(notCompiled))
 		} else {
-			Note("%d more verb%s available after `connect`.", hidden, plural(hidden))
+			Note("%d more verb%s available after `connect`.", notCompiled, plural(notCompiled))
 		}
 	}
 	return nil

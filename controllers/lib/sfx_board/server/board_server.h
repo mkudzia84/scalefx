@@ -406,6 +406,45 @@ public:
     static constexpr uint32_t capabilities() { return kCapabilityMask; }
     static constexpr size_t   policyCount()  { return 2 + sizeof...(UserPolicies); }
 
+    // ── Runtime-enabled capability walker ─────────────────────────────
+    //
+    // A policy optionally exposes `bool enabled() const`.  When present,
+    // its `kCapabilityBits` only contribute to the runtime-enabled mask
+    // when `enabled()` returns true.  Policies without the accessor are
+    // treated as "always enabled" (e.g. PortService, RoleService — they
+    // can't be disabled at runtime).  The HubFxConfigServicePolicy
+    // re-runs `recomputeEnabledCapabilities()` after every
+    // `applyConfig()` so the master's advertised enabled set tracks the
+    // YAML in real time.
+
+    template <typename T>
+    static constexpr bool kHasEnabledAccessor =
+        requires(const T& t) { { t.enabled() } -> std::convertible_to<bool>; };
+
+    template <typename T>
+    static uint32_t policyEnabledBits(const T& p) {
+        if constexpr (kHasEnabledAccessor<T>) {
+            return p.enabled() ? T::kCapabilityBits : 0u;
+        } else {
+            return T::kCapabilityBits;
+        }
+    }
+
+    uint32_t computeEnabledCapabilities() const {
+        uint32_t mask = 0;
+        std::apply([&](const auto&... p) {
+            ((mask |= policyEnabledBits(p)), ...);
+        }, _policies);
+        return mask;
+    }
+
+    /// Walk every policy, recompute the enabled-capability mask, write
+    /// it back into `BoardServicePolicy._boardInfo.enabledCapabilities`.
+    /// Cheap; safe to call after any config apply.
+    void recomputeEnabledCapabilities() {
+        core().setEnabledCapabilities(computeEnabledCapabilities());
+    }
+
     BoardServer() = default;
 
     // ── Accessors ────────────────────────────────────────────────────
@@ -482,6 +521,10 @@ public:
         c.setBoardInfo(_deviceName, version, SFX_PLATFORM_NAME,
                        SFX_CPU_MHZ(), SFX_FREE_HEAP(), buildNumber);
         c.setCapabilities(kCapabilityMask);
+        // Initial runtime-enabled mask — walks every policy's `enabled()`
+        // accessor.  Re-run by `HubFxConfigServicePolicy::applyConfig()`
+        // after each config flip.
+        recomputeEnabledCapabilities();
 
         // Wire BoardServicePolicy lifecycle hooks → our overrides.
         c.onInit    ([this](uint8_t mode, uint8_t flags) { doInit(mode, flags); });

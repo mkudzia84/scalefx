@@ -11,10 +11,14 @@
  *   - optional sensor pointers (PWM / H-bridge only)
  *   - a typed `std::variant` slot holding the currently-attached role
  *
- * Role-slot types are narrow per port kind:
- *   Servo:    monostate | ServoActuatorRole | RcPwmInputRole
- *   Pwm:      monostate | LedAnimator       | DcMotorRole | HeaterRole
- *   HBridge:  monostate | BiDcMotorRole
+ * Role-slot types are narrow per port kind.  A kind is multi-role only
+ * when the SAME hardware genuinely supports DISTINCT behaviours; a kind
+ * with a single behavioural shape is fixed to one role (the role still
+ * exists as the smart/configurable/stateful layer over the dumb port):
+ *   Servo:    monostate | ServoActuatorRole                         (fixed — positioning)
+ *   Input:    monostate | RcPwmInputRole | SbusInputRole | JetiExInputRole  (multi-modal)
+ *   Pwm:      monostate | LedAnimator    | DcMotorRole   | HeaterRole       (multi-role)
+ *   HBridge:  monostate | BiDcMotorRole                             (fixed — signed bidir drive)
  *
  * A non-template `PortRegistryBase` exposes the runtime API the service
  * policies talk to; the templated subclass holds the actual storage.

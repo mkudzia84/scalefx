@@ -31,7 +31,38 @@ const (
 	DiagHistory protocol.PacketType = 0xFF
 	StatusUpdate  protocol.PacketType = 0xEF
 	BatteryConfig protocol.PacketType = 0xEE
+
+	// Config-store wire surface — owned by sfx_config / ConfigServicePolicy.
+	// Mirrors `controllers/lib/sfx_config/protocol/config_protocol.h`.
+	ConfigReload     protocol.PacketType = 0x90 //  [] or [pathLen:u8][path] → ACK
+	ConfigStatus     protocol.PacketType = 0x91 //  []                       → ConfigStatusResp
+	ConfigStatusResp protocol.PacketType = 0x92 //  [loaded:u8][size:u16LE][validOk:u8]
+	ConfigSave       protocol.PacketType = 0xAC //  [] or [pathLen:u8][path] → ACK
 )
+
+// CmdConfigReload — re-read every registered config store (or a single
+// path when one is supplied).  Server fan-out walks each ConfigStore's
+// `onLoaded` callback so effect services re-configure in one shot.
+func CmdConfigReload() []byte { return protocol.BuildPacket(ConfigReload, nil, 0) }
+
+// CmdConfigReloadPath — reload only the matching store.
+func CmdConfigReloadPath(path string) []byte {
+	buf := make([]byte, 1+len(path))
+	buf[0] = byte(len(path))
+	copy(buf[1:], path)
+	return protocol.BuildPacket(ConfigReload, buf, 0)
+}
+
+// CmdConfigStatus — request aggregate config status (all stores).
+func CmdConfigStatus() []byte { return protocol.BuildPacket(ConfigStatus, nil, 0) }
+
+// CmdConfigSavePath — save in-memory state for the named store back to flash.
+func CmdConfigSavePath(path string) []byte {
+	buf := make([]byte, 1+len(path))
+	buf[0] = byte(len(path))
+	copy(buf[1:], path)
+	return protocol.BuildPacket(ConfigSave, buf, 0)
+}
 
 // Battery chemistry wire-format values (match C++ BatteryChemistry enum).
 const (

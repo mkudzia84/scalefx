@@ -52,12 +52,8 @@ void GearControlServicePolicyT<TTopology, TLandingService>::claimPorts() {
         if (!_topo->claim(d.motor, EffectId::GearCtrl, RoleKind::BiDcMotor)) {
             SFX_LOG_WARN("[gear-svc] gear %u: motor claim failed", d.id);
         }
-        for (uint8_t j = 0; j < d.numLeds; ++j) {
-            if (!_topo->claim(d.leds[j], EffectId::GearCtrl,
-                              RoleKind::LedAnimator)) {
-                SFX_LOG_WARN("[gear-svc] gear %u: led claim failed", d.id);
-            }
-        }
+        // Status LEDs are NOT claimed/driven here — the GearControl
+        // expander lights them locally from its H-bridge state.
     }
 }
 
@@ -89,6 +85,9 @@ CommandHandleResult GearControlServicePolicyT<TTopology, TLandingService>::handl
         case GearPacket::GEAR_ALL:        handleAll(payload, len);       return CommandHandleResult::Handled;
         case GearPacket::GEAR_STATUS_REQ: handleStatusReq();             return CommandHandleResult::Handled;
         case GearPacket::GEAR_LIST_REQ:   handleListReq();               return CommandHandleResult::Handled;
+        case GearPacket::GEAR_RESET:      handleReset(payload, len);     return CommandHandleResult::Handled;
+        case GearPacket::GEAR_CALIBRATE:  handleCalibrate(payload, len); return CommandHandleResult::Handled;
+        case GearPacket::GEAR_CALIB_CANCEL: handleCalibCancel(payload, len); return CommandHandleResult::Handled;
         default:                          return CommandHandleResult::NotMyCommand;
     }
 }
@@ -118,6 +117,40 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleRetract(
         return;
     }
     g->retract();
+    _ctx->sendAck();
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::handleReset(
+        const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    Gear* g = findById(p[0]);
+    if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
+    g->clearError();          // no-op if not in ERROR
+    _ctx->sendAck();
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::handleCalibrate(
+        const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    Gear* g = findById(p[0]);
+    if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
+    if (g->phase() == GearPhase::Error) {
+        _ctx->sendNack(GearError::IN_ERROR_STATE);
+        return;
+    }
+    g->calibrate();
+    _ctx->sendAck();
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::handleCalibCancel(
+        const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    Gear* g = findById(p[0]);
+    if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
+    g->calibrateCancel();     // no-op if not calibrating
     _ctx->sendAck();
 }
 
@@ -189,11 +222,15 @@ template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::L
 void GearControlServicePolicyT<TTopology, TLandingService>::onRoleEvent(
         const char* guid, uint8_t innerType,
         const uint8_t* p, size_t len) {
-    if (innerType != RolePacket::MOTOR_STALL_EVENT &&
-        innerType != RolePacket::BIMOTOR_STALL_EVENT) return;
-    if (len < 1) return;
+    // Gear motion uses the BiDcMotor endstop seek, so the relevant async
+    // is BIMOTOR_ENDSTOP_RESULT ([portIdx][outcome][travel:u16][peak:u16]).
+    // (Plain BIMOTOR_STALL_EVENT only fires for non-seek drive, which the
+    // gear never uses — ignored here.)
+    if (innerType != RolePacket::BIMOTOR_ENDSTOP_RESULT) return;
+    if (len < 2) return;
     const uint8_t portIdx = p[0];
-    const bool guidEmpty  = !guid || guid[0] == 0;
+    const uint8_t outcome = p[1];
+    const bool    guidEmpty = !guid || guid[0] == 0;
 
     for (uint8_t i = 0; i < _numDefs; ++i) {
         const PortRef& m = _defs[i].motor;
@@ -202,7 +239,7 @@ void GearControlServicePolicyT<TTopology, TLandingService>::onRoleEvent(
             (m.guid[0] == 0 && guidEmpty) ||
             (m.guid[0] != 0 && guid && std::strcmp(m.guid, guid) == 0);
         if (sameGuid) {
-            _gears[i].onMotorStall();
+            _gears[i].onEndstopResult(outcome);
         }
     }
 }

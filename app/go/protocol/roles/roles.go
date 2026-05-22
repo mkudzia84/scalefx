@@ -122,9 +122,11 @@ const (
 	BiMotorSetSigned    protocol.PacketType = 0x68
 	BiMotorBrake        protocol.PacketType = 0x69
 	BiMotorCoast        protocol.PacketType = 0x6A
-	BiMotorGetStatusReq protocol.PacketType = 0x6B
-	BiMotorStatusResp   protocol.PacketType = 0x6C
-	BiMotorStallEvent   protocol.PacketType = 0x6D
+	BiMotorGetStatusReq  protocol.PacketType = 0x6B
+	BiMotorStatusResp    protocol.PacketType = 0x6C
+	BiMotorStallEvent    protocol.PacketType = 0x6D
+	BiMotorSeekEndstop   protocol.PacketType = 0x6E
+	BiMotorEndstopResult protocol.PacketType = 0x6F
 
 	// Heater (0x70..0x77)
 	HeaterSetTarget    protocol.PacketType = 0x70
@@ -399,6 +401,8 @@ func init() {
 		BiMotorGetStatusReq:  "BIMOTOR_GET_STATUS_REQ",
 		BiMotorStatusResp:    "BIMOTOR_STATUS_RESP",
 		BiMotorStallEvent:    "BIMOTOR_STALL_EVENT",
+		BiMotorSeekEndstop:   "BIMOTOR_SEEK_ENDSTOP",
+		BiMotorEndstopResult: "BIMOTOR_ENDSTOP_RESULT",
 		HeaterSetTarget:      "HEATER_SET_TARGET",
 		HeaterGetStatusReq:   "HEATER_GET_STATUS_REQ",
 		HeaterStatusResp:     "HEATER_STATUS_RESP",

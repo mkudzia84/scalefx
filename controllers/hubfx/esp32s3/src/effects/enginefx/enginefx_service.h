@@ -39,9 +39,15 @@ struct EngineFxConfig {
     bool     enabled         = false;
 
     /// Optional RC throttle toggle — leave `rcInput.portKind == 0` to
-    /// disable the auto-start path.  Must have an `RcPwmInput` role.
+    /// disable the auto-start path.  Must have an `RcPwmInput`,
+    /// `SbusInput`, or `JetiExInput` role.  `inputChannel` is the
+    /// 0-based channel id within the source protocol (PWM = 0;
+    /// SBUS 0..17; Jeti 0..23).
     PortRef  rcInput;
+    uint8_t  inputChannel    = 0;
     uint16_t thresholdUs     = 1500;
+    uint16_t hysteresisUs    = 100;
+    uint8_t  failsafe        = 1;     ///< FailsafeBehaviour::ForceLow
 
     /// Audio mixer channel allocation.  Two slots cycle so the
     /// "shutdown" sound can start before the "running" loop fully
@@ -66,7 +72,26 @@ public:
 
     EngineFxServicePolicyT() = default;
 
-    void configure(const EngineFxConfig& cfg) { _cfg = cfg; }
+    void configure(const EngineFxConfig& cfg) {
+        _cfg = cfg;
+        // begin() runs once at boot with the struct-default _cfg
+        // (rcInput unset).  YAML config arrives later via this call;
+        // re-bind the throttle TriggerInput so the new rcInput +
+        // channel + threshold take effect.  No-op when begin() hasn't
+        // run yet (`_dispatcher == nullptr`).
+        rebindThrottle();
+    }
+
+    /// Runtime kill-switch — `/hubfx.yaml`'s `enginefx.enabled:` flag
+    /// flips this independently of the full `configure()` call so the
+    /// master enable matrix lives in one file (Rule 26 — central enable
+    /// surface).  Symmetric with LandingLight / Gear / LightFx / GunFx.
+    void setEnabled(bool v) { _cfg.enabled = v; }
+
+    /// Runtime-enable accessor — picked up by
+    /// `BoardServer::computeEnabledCapabilities()`.  Driven by
+    /// `_cfg.enabled`.
+    bool enabled() const { return _cfg.enabled; }
 
     // ── SystemServicePolicy surface ──────────────────────────────────
 
@@ -101,6 +126,12 @@ public:
 private:
     void enterState(uint8_t newState);
     void emitStateEvent(uint8_t newState);
+
+    /// Wire / rewire the throttle TriggerInput against the current
+    /// `_cfg` + `_dispatcher`.  Called from `begin()` (initial bind)
+    /// and from `configure()` (when YAML lands after boot).  Safe to
+    /// call before `begin()` — early-outs on `_dispatcher == nullptr`.
+    void rebindThrottle();
 
     bool startAudio(const char* path, uint8_t channel, uint32_t offsetMs);
     void stopAudio (uint8_t channel);

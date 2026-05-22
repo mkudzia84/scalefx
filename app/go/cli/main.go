@@ -21,6 +21,7 @@ import (
 	"syscall"
 
 	"scalefx/client"
+	"scalefx/protocol/core"
 )
 
 var (
@@ -92,13 +93,14 @@ func main() {
 // ─── App ────────────────────────────────────────────────────────────
 
 type app struct {
-	c         *client.Client
-	verbose   bool
-	boardKind string          // populated from IDENTIFY at connect time; "" before
-	boardName string          // e.g. "HubFx-6D60"
-	boardCaps uint32          // CoreCapability bitmask from IDENTIFY
-	target    byte            // active storage backend (TargetSD / TargetFlash)
-	cwd       map[byte]string // per-target current working directory
+	c                *client.Client
+	verbose          bool
+	boardKind        string          // populated from IDENTIFY at connect time; "" before
+	boardName        string          // e.g. "HubFx-6D60"
+	boardCaps        uint32          // compiled-in CoreCapability bitmask
+	boardEnabledCaps uint32          // runtime-enabled subset of boardCaps
+	target           byte            // active storage backend (TargetSD / TargetFlash)
+	cwd              map[byte]string // per-target current working directory
 }
 
 func newApp() *app {
@@ -163,6 +165,7 @@ func (a *app) connect(portName string) error {
 		}
 		a.boardName = id.DeviceName
 		a.boardCaps = id.Capabilities
+		a.boardEnabledCaps = id.EnabledCapabilities
 		printIdentityBanner(id)
 	}
 	return nil
@@ -217,5 +220,28 @@ func (a *app) dispatch(line string) error {
 	if !ok {
 		return fmt.Errorf("unknown command: %s (try `help`)", name)
 	}
+	// If the verb gates on a capability the board is missing OR has
+	// disabled at runtime, return a precise error rather than
+	// letting it run and produce a downstream NACK / silence.
+	if cmd.RequiresConn && a.c != nil && cmd.RequiresCap != 0 {
+		if a.boardCaps&cmd.RequiresCap == 0 {
+			return fmt.Errorf("%s requires capability %s — not compiled into this firmware",
+				name, capLabel(cmd.RequiresCap))
+		}
+		if a.boardEnabledCaps&cmd.RequiresCap == 0 {
+			return fmt.Errorf("%s is currently disabled in config — feature compiled in but turned off (capability %s)",
+				name, capLabel(cmd.RequiresCap))
+		}
+	}
 	return cmd.Run(a, args)
+}
+
+// capLabel formats a capability bitmask as a symbolic name (for the
+// common single-bit case) or hex (for multi-bit requirements).
+func capLabel(bits uint32) string {
+	names := core.CapabilityNames(bits)
+	if len(names) == 1 {
+		return names[0]
+	}
+	return fmt.Sprintf("0x%08X", bits)
 }

@@ -366,6 +366,17 @@ struct CoreBoardInfo {
     /// INIT_READY/IDENTIFY payload (Rule 11 append-only): firmware
     /// that pre-dates this field is treated as `capabilities == 0`.
     uint32_t capabilities = 0;
+
+    /// Subset of `capabilities` that are currently RUNTIME-ENABLED.
+    /// Compiled-in but config-disabled features (e.g. `engine.enabled =
+    /// false` in the YAML) get masked off here.  Hosts use this to gate
+    /// command visibility separately from "is the feature even built in".
+    /// Rule 11 append-only: pre-existing clients ignore this field and
+    /// fall back to assuming `enabled == capabilities`.  When this field
+    /// is absent from the wire payload, decoders default it to
+    /// `capabilities` (same fallback — preserves "compiled = enabled"
+    /// semantics on older firmware).
+    uint32_t enabledCapabilities = 0;
 };
 
 // ──────────────────────────────────────────────────────────────────────

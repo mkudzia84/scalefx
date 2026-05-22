@@ -1,0 +1,144 @@
+/*
+ * landing_config.h — `/landing.yaml` schema.
+ *
+ * Landing-light deployment table.  One landing light per entry; each
+ * couples a single servo (deploys / stows the searchlight) with one
+ * or more PWM LEDs (the bulbs).  Loaded into a `LandingLightDef[]`
+ * passed to `LandingLightServicePolicy::configure()` at apply time.
+ *
+ * YAML shape:
+ *
+ *   schema_version: 1
+ *   lights:
+ *     - id: 0
+ *       name: "nose"
+ *       owner: lightfx                  # lightfx | gunfx | gearcontrol | landing-light
+ *       servo:
+ *         port: { kind: servo, idx: 0 }
+ *         open_us:  1900
+ *         close_us: 1100
+ *       leds:
+ *         - { port: { kind: pwm, idx: 5 }, brightness_pct: 100 }
+ *
+ * Direct YamlNode traversal (the declarative DSL doesn't compose
+ * nested sequences — lights[].leds[] is a sequence inside a sequence).
+ */
+
+#ifndef HUBFX_LANDING_CONFIG_H
+#define HUBFX_LANDING_CONFIG_H
+
+#include <cstdint>
+#include <cstring>
+
+#include <config/yaml_parser.h>
+#include <serial/diag_log.h>
+#include <serial/ports.h>
+
+#include "../effects/effect_id.h"
+#include "../effects/landing_lights/landing_light.h"
+#include "../effects/landing_lights/landing_light_service.h"   // kMaxLandingLights
+#include "port_ref_yaml.h"                                     // portRefFromNode
+
+struct LandingYamlPool {
+    static constexpr size_t MAX_NODES        = 256;
+    static constexpr size_t STRING_POOL_SIZE = 3072;
+    static constexpr size_t MAX_DEPTH        = 12;
+};
+
+/// Parsed form of `/landing.yaml`.  A plain wrapper around the
+/// firmware-side `LandingLightDef[]` so the apply path can hand the
+/// array straight to `LandingLightServicePolicy::configure()`.
+struct LandingConfig {
+    static constexpr uint8_t kSchemaVersion = 1;
+
+    hubfx::effects::landing::LandingLightDef
+        lights[hubfx::effects::landing::kMaxLandingLights] = {};
+    uint8_t numLights = 0;
+};
+
+/// Map a snake-case effect-family name to the EffectId enum.  Unknown
+/// names log a WARN and default to `LightFx` (the most common owner).
+inline hubfx::effects::EffectId effectIdFromName(const char* name) {
+    using hubfx::effects::EffectId;
+    if (!name || !name[0])                                return EffectId::LightFx;
+    if (std::strcmp(name, "none")         == 0)           return EffectId::None;
+    if (std::strcmp(name, "lightfx")      == 0)           return EffectId::LightFx;
+    if (std::strcmp(name, "gunfx")        == 0)           return EffectId::GunFx;
+    if (std::strcmp(name, "gearcontrol")  == 0)           return EffectId::GearCtrl;
+    if (std::strcmp(name, "landing-light") == 0)          return EffectId::LandingLight;
+    if (std::strcmp(name, "landing_light") == 0)          return EffectId::LandingLight;
+    SFX_LOG_WARN("[landing-config] unknown owner '%s' — defaulting to lightfx", name);
+    return EffectId::LightFx;
+}
+
+// ─── ConfigStore adapter ────────────────────────────────────────────
+
+struct LandingConfigSchema {
+    using DataType = LandingConfig;
+
+    template <typename TPool>
+    static bool populate(DataType& d, const YamlParser<TPool>& p) {
+        using namespace hubfx::effects::landing;
+        using hubfx::config::portRefFromNode;
+        d.numLights = 0;
+        const auto* root = p.root();
+        const auto* lightsNode = root ? root->child("lights") : nullptr;
+        if (!lightsNode || lightsNode->type != YamlNode::Sequence) {
+            // Empty / missing — leave the table empty.  Caller's
+            // configure() call gets 0 defs and the service stays inert.
+            return true;
+        }
+        const int n = lightsNode->childCount();
+        for (int i = 0; i < n && d.numLights < kMaxLandingLights; ++i) {
+            const auto* ll = lightsNode->childAt(i);
+            if (!ll) continue;
+            LandingLightDef& def = d.lights[d.numLights];
+            def.id            = (uint8_t)ll->template childAs<int32_t>("id", 0);
+            const char* nm    = ll->template childAs<const char*>("name", "");
+            std::memset(def.name, 0, sizeof(def.name));
+            if (nm && nm[0]) std::strncpy(def.name, nm, sizeof(def.name) - 1);
+            def.owner = effectIdFromName(ll->template childAs<const char*>("owner", "lightfx"));
+
+            // servo: { port: {kind, idx}, open_us, close_us }
+            const auto* servoNode = ll->child("servo");
+            if (servoNode) {
+                def.servo   = portRefFromNode(servoNode->child("port"));
+                def.openUs  = (uint16_t)servoNode->template childAs<int32_t>("open_us",  1900);
+                def.closeUs = (uint16_t)servoNode->template childAs<int32_t>("close_us", 1100);
+            }
+
+            // leds: [ {port, brightness_pct}, ... ]
+            def.numLeds = 0;
+            const auto* ledsNode = ll->child("leds");
+            if (ledsNode && ledsNode->type == YamlNode::Sequence) {
+                const int m = ledsNode->childCount();
+                for (int j = 0; j < m && def.numLeds < kMaxLedsPerLanding; ++j) {
+                    const auto* led = ledsNode->childAt(j);
+                    if (!led) continue;
+                    def.leds[def.numLeds] = portRefFromNode(led->child("port"));
+                    // brightness_pct on the FIRST led wins (single per-LL knob).
+                    if (def.numLeds == 0) {
+                        def.brightnessPct =
+                            (uint8_t)led->template childAs<int32_t>("brightness_pct", 100);
+                    }
+                    def.numLeds++;
+                }
+            }
+            if (def.numLeds == 0) {
+                SFX_LOG_WARN("[landing-config] lights[%u] (id=%u) has no LEDs — skipping",
+                             (unsigned)i, (unsigned)def.id);
+                continue;
+            }
+            d.numLights++;
+        }
+        return true;
+    }
+
+    static bool validate(const DataType& /*d*/, char* /*err*/, size_t /*errLen*/) {
+        return true;
+    }
+
+    static const char* defaultPath() { return "/landing.yaml"; }
+};
+
+#endif  // HUBFX_LANDING_CONFIG_H

@@ -172,7 +172,27 @@ bool PCA9685::writeBurst4(uint8_t firstReg,
 }
 
 bool PCA9685::writeChannelRaw(uint8_t firstReg, uint16_t duty12) {
-    if (duty12 < 1)        duty12 = 1;
+    // duty == 0 is special-cased with the chip's FULL_OFF flag
+    // (LEDn_OFF_H bit 4 = 1) rather than the old "clamp to OFF = 1"
+    // workaround.  Clamping to 1 puts the chip in plain-PWM mode with
+    // a single tick HIGH per 4096-tick cycle — ~0.024% duty, which is
+    // theoretically sub-visual but in practice leaks enough current
+    // through a MOSFET pre-driver on high-current rail LEDs to glow
+    // visibly when the master expects OFF.  FULL_OFF takes precedence
+    // over the LEDn_OFF count (§7.3.3 Note 2), so the output is hard-
+    // zero with no per-cycle pulse.
+    //
+    // Trade-off: the OFF → PWM transition (and PWM → OFF) clears /
+    // sets bit 4 of LEDn_OFF_H, which the datasheet warns can glitch
+    // visibly on some silicon revs.  We don't observe it on the HubFX
+    // rev (driver `begin()` already exercises this path via the
+    // ALL_LED FULL_OFF broadcast → per-channel PWM writes immediately
+    // afterwards, no glitch seen).  If a future board does show
+    // transition artefacts, drop back to the old clamp-to-1 path by
+    // setting `OFF=1` for duty=0 and accept the steady-state leak.
+    if (duty12 == 0) {
+        return writeBurst4(firstReg, 0x00, 0x00, 0x00, PCA9685Reg::LED_FULL);
+    }
     if (duty12 > DUTY_MAX) duty12 = DUTY_MAX;
 
     const uint8_t off_l = (uint8_t)(duty12 & 0xFF);

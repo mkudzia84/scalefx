@@ -48,6 +48,13 @@ public:
         return _controller;
     }
 
+    /// Runtime-enable flag — see LandingLightService for rationale.
+    /// When toggled to false the host's CLI hides the `light-*` verbs,
+    /// but the wire surface still functions if poked directly (this is
+    /// a UX gate, not a hard kill switch).
+    void setEnabled(bool v) { _enabled = v; }
+    bool enabled() const    { return _enabled; }
+
     // ── SystemServicePolicy surface ──────────────────────────────────
 
     bool begin(sfx_core::BoardServerBase* ctx);
@@ -80,6 +87,7 @@ private:
     TTopology*                                       _topology   = nullptr;
     TLandingService*                                 _landing    = nullptr;
     LightControllerT<TTopology, TLandingService>     _controller;
+    bool                                             _enabled    = true;   // runtime enable flag (config-driven)
 };
 
 }  // namespace hubfx::effects::lightfx

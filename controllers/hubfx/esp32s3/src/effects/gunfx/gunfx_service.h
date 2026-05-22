@@ -51,6 +51,10 @@ public:
         }
     }
 
+    /// Runtime-enable flag — see LandingLightService for rationale.
+    void setEnabled(bool v) { _enabled = v; }
+    bool enabled() const    { return _enabled; }
+
     // ── SystemServicePolicy surface ──────────────────────────────────
 
     bool begin(sfx_core::BoardServerBase* ctx);
@@ -116,6 +120,7 @@ private:
     input::TriggerInput _triggers[kMaxGuns] = {};
     TriggerCtx         _trigCtx [kMaxGuns] = {};
     uint8_t            _numDefs            = 0;
+    bool               _enabled            = false;   // runtime enable flag (config-driven)
 };
 
 }  // namespace hubfx::effects::gunfx

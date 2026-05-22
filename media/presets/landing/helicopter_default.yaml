@@ -1,0 +1,26 @@
+# /landing.yaml — Landing-light deployment template.
+#
+# NOTE — landing-light defs do NOT have a live YAML loader yet
+# (LandingLightServicePolicy::configure() is still install-time C++).
+# This file documents the intended Phase-3 shape so the catalog ships
+# alongside the LightFx programs that already reference these IDs via
+# `landing_bindings:`.
+#
+# Each landing light couples ONE servo (deploys the searchlight) with
+# one or more PWM LEDs (the bulb).  When the LightFx program activates
+# `landing_bindings: [{id: 0, state: on}]`, the service drives the
+# servo to `open_us`, waits for SERVO_TARGET_REACHED, then lights the
+# LEDs at `brightness_pct`.
+
+schema_version: 1
+
+lights:
+  - id: 0
+    name: "nose"                       # nose-mounted searchlight
+    owner: lightfx                     # which effect family flips state
+    servo:
+      port: { kind: servo, idx: 0 }    # HubFX IN_2 (servo out 0)
+      open_us:  1900                   # deployed position
+      close_us: 1100                   # stowed position
+    leds:
+      - { port: { kind: pwm, idx: 5 }, brightness_pct: 100 }

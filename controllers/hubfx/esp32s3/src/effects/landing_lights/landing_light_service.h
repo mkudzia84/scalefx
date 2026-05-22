@@ -77,6 +77,15 @@ public:
         }
     }
 
+    /// Runtime-enable flag — picked up by `BoardServer::
+    /// computeEnabledCapabilities()` so the host can distinguish
+    /// "compiled in" from "active right now".  Set by
+    /// `HubFxConfigServicePolicy::applyConfig()` from
+    /// `cfg.landing.enabled`.  Defaults to true so a board with no
+    /// config file boots in the same state it always did.
+    void setEnabled(bool v) { _enabled = v; }
+    bool enabled() const    { return _enabled; }
+
     // ── SystemServicePolicy surface ──────────────────────────────────
 
     bool begin(sfx_core::BoardServerBase* ctx);
@@ -149,6 +158,7 @@ private:
     LandingLightDef _defs[kMaxLandingLights] = {};
     LandingLight    _instances[kMaxLandingLights] = {};
     uint8_t         _numDefs   = 0;
+    bool            _enabled   = true;     // runtime enable flag (config-driven)
 };
 
 }  // namespace hubfx::effects::landing

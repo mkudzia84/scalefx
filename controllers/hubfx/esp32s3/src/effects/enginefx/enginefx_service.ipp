@@ -24,29 +24,41 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::begin(
     _topo       = ctx->template findPolicy<TTopology>();
     _dispatcher = ctx->template findPolicy<TInputDispatcher>();
 
-    const bool haveRc = _cfg.enabled
-                     && _cfg.rcInput.portKind != 0
-                     && _dispatcher != nullptr;
-    if (haveRc) {
-        // Configure the TriggerInput as a Boolean with the legacy
-        // 100 µs hysteresis band around `thresholdUs`.  On change,
-        // `onTriggerChange` flips engine state.
-        input::TriggerMapping m;
-        m.kind         = input::TriggerKind::Boolean;
-        m.thresholdUs  = _cfg.thresholdUs;
-        m.hysteresisUs = 100;
-        m.failsafe     = input::FailsafeBehaviour::ForceLow;
-        _throttle.configure(m, &EngineFxServicePolicyT::onTriggerChange, this);
-        _dispatcher->subscribe(&_throttle, _cfg.rcInput, /*channel=*/0);
-        SFX_LOG_INFO("[engine] RC toggle bound: %s:%u thresh=%u",
-                     _cfg.rcInput.guid[0] ? _cfg.rcInput.guid : "hub",
-                     (unsigned)_cfg.rcInput.portIdx,
-                     (unsigned)_cfg.thresholdUs);
-    }
+    // Initial bind against `_cfg` — which is struct-default at boot
+    // unless the user called configure() before begin().  The boot
+    // config chain in the sketch calls configure() AFTER board.begin()
+    // so the throttle re-binds via `rebindThrottle()` when /enginefx.yaml
+    // lands.
+    rebindThrottle();
     SFX_LOG_INFO("[engine] effect %s (channels A=%u B=%u)",
                  _cfg.enabled ? "ENABLED" : "disabled",
                  (unsigned)_cfg.channelA, (unsigned)_cfg.channelB);
     return true;
+}
+
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+void EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::rebindThrottle() {
+    if (!_dispatcher) return;
+    _dispatcher->unsubscribe(&_throttle);
+
+    const bool haveRc = _cfg.enabled && _cfg.rcInput.portKind != 0;
+    if (!haveRc) return;
+
+    // Boolean trigger on the resolved input channel.  Threshold +
+    // hysteresis + failsafe come from `/enginefx.yaml`'s `toggle:` block.
+    input::TriggerMapping m;
+    m.kind         = input::TriggerKind::Boolean;
+    m.thresholdUs  = _cfg.thresholdUs;
+    m.hysteresisUs = _cfg.hysteresisUs;
+    m.failsafe     = (input::FailsafeBehaviour)_cfg.failsafe;
+    _throttle.configure(m, &EngineFxServicePolicyT::onTriggerChange, this);
+    _dispatcher->subscribe(&_throttle, _cfg.rcInput, _cfg.inputChannel);
+    SFX_LOG_INFO("[engine] RC toggle bound: %s:%u ch=%u thresh=%uus hyst=%uus",
+                 _cfg.rcInput.guid[0] ? _cfg.rcInput.guid : "hub",
+                 (unsigned)_cfg.rcInput.portIdx,
+                 (unsigned)_cfg.inputChannel,
+                 (unsigned)_cfg.thresholdUs,
+                 (unsigned)_cfg.hysteresisUs);
 }
 
 // ─── Tick ───────────────────────────────────────────────────────────

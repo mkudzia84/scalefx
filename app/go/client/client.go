@@ -47,6 +47,7 @@ type Client struct {
 	Engine        *Engine
 	Gun           *Gun
 	Alerts        *Alerts
+	Config        *Config
 	Events        *Events
 }
 
@@ -85,6 +86,7 @@ func OpenWith(portName string, opts Options) (*Client, error) {
 	c.Engine = &Engine{c: c}
 	c.Gun = &Gun{c: c}
 	c.Alerts = &Alerts{c: c}
+	c.Config = &Config{c: c}
 	c.Events = newEvents(c)
 	return c, nil
 }

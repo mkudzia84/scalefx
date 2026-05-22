@@ -49,6 +49,10 @@ public:
         }
     }
 
+    /// Runtime-enable flag — see LandingLightService for rationale.
+    void setEnabled(bool v) { _enabled = v; }
+    bool enabled() const    { return _enabled; }
+
     // ── SystemServicePolicy surface ──────────────────────────────────
 
     bool begin(sfx_core::BoardServerBase* ctx);
@@ -59,7 +63,10 @@ public:
             || type == GearPacket::GEAR_STOP
             || type == GearPacket::GEAR_ALL
             || type == GearPacket::GEAR_STATUS_REQ
-            || type == GearPacket::GEAR_LIST_REQ;
+            || type == GearPacket::GEAR_LIST_REQ
+            || type == GearPacket::GEAR_RESET
+            || type == GearPacket::GEAR_CALIBRATE
+            || type == GearPacket::GEAR_CALIB_CANCEL;
     }
 
     CommandHandleResult handle(uint8_t type,
@@ -80,12 +87,15 @@ public:
 private:
     void claimPorts();
 
-    void handleDeploy   (const uint8_t* p, size_t len);
-    void handleRetract  (const uint8_t* p, size_t len);
-    void handleStop     (const uint8_t* p, size_t len);
-    void handleAll      (const uint8_t* p, size_t len);
-    void handleStatusReq();
-    void handleListReq  ();
+    void handleDeploy     (const uint8_t* p, size_t len);
+    void handleRetract    (const uint8_t* p, size_t len);
+    void handleStop       (const uint8_t* p, size_t len);
+    void handleAll        (const uint8_t* p, size_t len);
+    void handleStatusReq  ();
+    void handleListReq    ();
+    void handleReset      (const uint8_t* p, size_t len);
+    void handleCalibrate  (const uint8_t* p, size_t len);
+    void handleCalibCancel(const uint8_t* p, size_t len);
 
     void onRoleEvent(const char* guid, uint8_t innerType,
                      const uint8_t* p, size_t len);
@@ -113,6 +123,7 @@ private:
     GearDef _defs[kMaxGears]      = {};
     Gear    _gears[kMaxGears]     = {};
     uint8_t _numDefs              = 0;
+    bool    _enabled              = true;     // runtime enable flag (config-driven)
 };
 
 }  // namespace hubfx::effects::gearctrl

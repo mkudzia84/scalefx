@@ -40,15 +40,28 @@ func (g *Gear) Status() ([]GearStatusEntry, error) {
 }
 
 // Deploy lowers gear `id`.  Returns GEAR_IN_ERROR_STATE if the unit
-// needs a Stop() call to clear an error before it accepts motion.
+// is in an error state — call Reset() to clear it first.
 func (g *Gear) Deploy(id byte) error  { return g.c.sendExpectACK(gear.CmdDeploy(id)) }
 
 // Retract raises gear `id`.
 func (g *Gear) Retract(id byte) error { return g.c.sendExpectACK(gear.CmdRetract(id)) }
 
-// Stop halts gear `id` mid-motion.  Also doubles as an error-state
-// reset (firmware clears the unit's error flag on receipt).
+// Stop halts gear `id` mid-motion (motor brake → Retracted/Deployed).
+// Does NOT clear an error — use Reset() for that.
 func (g *Gear) Stop(id byte) error    { return g.c.sendExpectACK(gear.CmdStop(id)) }
 
 // All applies a single action to every configured gear (stop/deploy/retract).
 func (g *Gear) All(action byte) error { return g.c.sendExpectACK(gear.CmdAll(action)) }
+
+// Reset clears gear `id`'s error state (ERROR → Retracted) so it
+// accepts deploy/retract again.  No-op if not in error.
+func (g *Gear) Reset(id byte) error { return g.c.sendExpectACK(gear.CmdReset(id)) }
+
+// Calibrate runs gear `id`'s stall-endpoint sweep (retract stop →
+// deploy stop → home).  Each leg is confirmed by a motor stall; a leg
+// that never stalls within the travel timeout faults the gear
+// (GEAR_NO_STALL_DETECTED).  Status LEDs blink during calibration.
+func (g *Gear) Calibrate(id byte) error { return g.c.sendExpectACK(gear.CmdCalibrate(id)) }
+
+// CalibrateCancel aborts an in-progress calibration → Retracted.
+func (g *Gear) CalibrateCancel(id byte) error { return g.c.sendExpectACK(gear.CmdCalibCancel(id)) }

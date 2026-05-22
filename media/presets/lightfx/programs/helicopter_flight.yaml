@@ -1,0 +1,60 @@
+# helicopter_flight — Full FAA-compliant flight lighting.
+#
+# FAA Part 91.209(b): "no person may operate an aircraft equipped with
+# an anti-collision light system, unless it has lighted anti-collision
+# lights" — i.e. anti-collision lights MUST be on whenever rotors are
+# turning, day or night.  Position lights stay steady; anti-collision
+# is a beacon (red, rotating) + strobe (white).
+#
+# Beacon: red rotating beacon ~75 flashes/min → 800 ms cycle, full-on
+# pulse with a brief dark phase (`beacon` event kind in the LightEvent
+# vocabulary — flash_pct controls peak, min_pct the dark floor).
+#
+# Strobe: white anti-collision flash ~40 fpm → 1500 ms cycle (`flash`
+# kind — alternates brightness_pct ↔ 0).  Run independently of beacon
+# so a casual observer sees two distinct anti-collision patterns.
+
+schema_version: 1
+
+channels:
+  - port: { kind: pwm, idx: 0 }                # red rotating beacon
+    brightness_pct: 100
+    events:
+      - kind: beacon
+        cycle_ms: 800
+        min_pct:    0
+        max_pct:  100
+        flash_pct: 100
+  - port: { kind: pwm, idx: 1 }                # white anti-collision strobe
+    brightness_pct: 100
+    events:
+      - kind: flash
+        cycle_ms: 1500
+        brightness_pct: 100
+  - port: { kind: pwm, idx: 2 }                # red nav (port)
+    brightness_pct: 100
+    events:
+      - kind: on
+        brightness_pct: 100
+  - port: { kind: pwm, idx: 3 }                # green nav (starboard)
+    brightness_pct: 100
+    events:
+      - kind: on
+        brightness_pct: 100
+  - port: { kind: pwm, idx: 4 }                # white nav (tail)
+    brightness_pct: 100
+    events:
+      - kind: on
+        brightness_pct: 100
+  - port: { kind: pwm, idx: 5 }                # landing light — off in cruise
+    events:
+      - kind: off
+        duration_ms: 0
+  - port: { kind: pwm, idx: 6 }                # cabin light — off
+    events:
+      - kind: off
+        duration_ms: 0
+  - port: { kind: pwm, idx: 7 }                # spare — off
+    events:
+      - kind: off
+        duration_ms: 0

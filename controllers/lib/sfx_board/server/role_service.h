@@ -120,10 +120,11 @@ private:
     void handleMotorGetStatusReq(const uint8_t* p, size_t len);
 
     // ── Bi-directional motor ──────────────────────────────────────────
-    void handleBiMotorSetSigned (const uint8_t* p, size_t len);
-    void handleBiMotorBrake     (const uint8_t* p, size_t len);
-    void handleBiMotorCoast     (const uint8_t* p, size_t len);
-    void handleBiMotorGetStatus (const uint8_t* p, size_t len);
+    void handleBiMotorSetSigned   (const uint8_t* p, size_t len);
+    void handleBiMotorBrake       (const uint8_t* p, size_t len);
+    void handleBiMotorCoast       (const uint8_t* p, size_t len);
+    void handleBiMotorGetStatus   (const uint8_t* p, size_t len);
+    void handleBiMotorSeekEndstop (const uint8_t* p, size_t len);
 
     // ── Heater ────────────────────────────────────────────────────────
     void handleHeaterSetTarget  (const uint8_t* p, size_t len);
@@ -146,6 +147,8 @@ private:
     void emitServoTargetReached   (uint8_t portIdx, uint16_t pos_us);
     void emitMotorStallEvent      (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
     void emitBiMotorStallEvent    (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
+    void emitBiMotorEndstopResult (uint8_t portIdx, uint8_t outcome,
+                                   uint16_t travel_ms, uint16_t peak_mA);
     void emitRcInValueBroadcast   (uint8_t portIdx, uint16_t us, bool valid);
     void emitSbusFrameBroadcast   (uint8_t portIdx, const SbusInputRole& role);
     void emitJetiExFrameBroadcast (uint8_t portIdx, const JetiExInputRole& role);

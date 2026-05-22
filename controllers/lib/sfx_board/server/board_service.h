@@ -87,6 +87,17 @@ public:
     void     addCapability  (uint32_t bits) { _boardInfo.capabilities |= bits; }
     uint32_t capabilities() const           { return _boardInfo.capabilities; }
 
+    /// Runtime-enabled subset of `capabilities`.  Seeded by
+    /// `BoardServer::recomputeEnabledCapabilities()` which walks every
+    /// user policy and checks the optional `bool enabled() const`
+    /// accessor (defaults to "always enabled" when the policy doesn't
+    /// expose one).  The HubFxConfigServicePolicy re-runs this after
+    /// every `applyConfig()` so the host's view of which features are
+    /// live tracks the YAML.
+    void     setEnabledCapabilities(uint32_t caps) { _boardInfo.enabledCapabilities = caps; }
+    void     addEnabledCapability  (uint32_t bits) { _boardInfo.enabledCapabilities |= bits; }
+    uint32_t enabledCapabilities() const           { return _boardInfo.enabledCapabilities; }
+
     /// Read-only access to the locally-stored CoreBoardInfo (device
     /// name, version, platform, capabilities, build).  Lets other
     /// policies (e.g. ExpanderServicePolicy's SYSTEM_INFO packet) splice

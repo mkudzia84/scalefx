@@ -28,13 +28,14 @@ const (
 	catEngine    category = "Engine"         // engine-*
 	catGun       category = "Gun"            // gun-*
 	catAlert     category = "Alerts"         // alert*
+	catConfig    category = "Config"         // config-reload, config-status, config-save
 	catEvents    category = "Events"         // subscribe
 )
 
 var categoryOrder = []category{
 	catSession, catCore, catStorage, catAudio, catTopology,
 	catLightFx, catLanding, catGear, catEngine, catGun, catAlert,
-	catEvents,
+	catConfig, catEvents,
 }
 
 // command is one registered CLI verb.
@@ -92,16 +93,50 @@ func lookup(name string) (*command, bool) {
 // availableCommands returns the commands the user can currently invoke,
 // grouped by category.  When `connected` is false, only commands with
 // RequiresConn==false (Session) survive.  When connected, commands are
-// further filtered by `RequiresCap` against the board's advertised
-// capability bitmask — pass 0 for boards that don't advertise caps
-// (legacy / pre-IDENTIFY firmwares) and every command passes.
-func availableCommands(connected bool, caps uint32) map[category][]*command {
+// gated by `RequiresCap` against `enabledCaps` — the runtime-enabled
+// subset of the firmware's compiled-in capability mask.  Pass 0 for
+// both `compiledCaps` and `enabledCaps` for pre-IDENTIFY firmware
+// (legacy boards); every command then passes the filter.
+//
+// Commands whose backing feature is COMPILED-IN BUT RUNTIME-DISABLED
+// don't appear in this map — they're surfaced separately by
+// `disabledCommands` so the CLI can show "currently disabled" verbs
+// in a dim/separate section.
+func availableCommands(connected bool, enabledCaps uint32) map[category][]*command {
 	out := map[category][]*command{}
 	for _, c := range commands {
 		if c.RequiresConn && !connected {
 			continue
 		}
-		if connected && c.RequiresCap != 0 && (caps&c.RequiresCap) == 0 {
+		if connected && c.RequiresCap != 0 && (enabledCaps&c.RequiresCap) == 0 {
+			continue
+		}
+		out[c.Category] = append(out[c.Category], c)
+	}
+	for _, slice := range out {
+		sort.Slice(slice, func(i, j int) bool { return slice[i].Name < slice[j].Name })
+	}
+	return out
+}
+
+// disabledCommands returns commands whose `RequiresCap` is set in
+// `compiledCaps` (firmware was built with the feature) but NOT in
+// `enabledCaps` (config has it turned off) — so the user knows the
+// command would work if they re-enabled the feature.
+func disabledCommands(connected bool, compiledCaps, enabledCaps uint32) map[category][]*command {
+	out := map[category][]*command{}
+	if !connected {
+		return out
+	}
+	disabledMask := compiledCaps & ^enabledCaps
+	if disabledMask == 0 {
+		return out
+	}
+	for _, c := range commands {
+		if !c.RequiresConn || c.RequiresCap == 0 {
+			continue
+		}
+		if (disabledMask & c.RequiresCap) == 0 {
 			continue
 		}
 		out[c.Category] = append(out[c.Category], c)

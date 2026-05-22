@@ -96,6 +96,14 @@ size_t encodeInitReady(const CoreBoardInfo& info, uint8_t* payload) {
     SfxWire::putU32LE(&payload[idx], info.capabilities);
     idx += 4;
 
+    // Runtime-enabled subset of `capabilities`.  Hosts use this to gate
+    // command visibility separately from "is the feature compiled in".
+    // Rule 11 append-only — old decoders that stop reading after the
+    // `capabilities` field default `enabledCapabilities` to
+    // `capabilities` (preserving "compiled = enabled" semantics).
+    SfxWire::putU32LE(&payload[idx], info.enabledCapabilities);
+    idx += 4;
+
     return idx;
 }
 
@@ -145,6 +153,15 @@ bool decodeInitReady(const uint8_t* payload, size_t len, CoreBoardInfo& info) {
     }
     if (idx + 4 <= len) {
         info.capabilities = SfxWire::getU32LE(&payload[idx]);
+        idx += 4;
+    }
+    // `enabledCapabilities` defaults to `capabilities` for pre-existing
+    // firmware that doesn't emit the field (Rule 11 fallback).  Newer
+    // firmware emits it explicitly so the host can tell the two layers
+    // apart.
+    info.enabledCapabilities = info.capabilities;
+    if (idx + 4 <= len) {
+        info.enabledCapabilities = SfxWire::getU32LE(&payload[idx]);
         idx += 4;
     }
 

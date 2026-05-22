@@ -44,6 +44,7 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
         case RolePacket::BIMOTOR_BRAKE:         handleBiMotorBrake(p, len);         break;
         case RolePacket::BIMOTOR_COAST:         handleBiMotorCoast(p, len);         break;
         case RolePacket::BIMOTOR_GET_STATUS_REQ:handleBiMotorGetStatus(p, len);     break;
+        case RolePacket::BIMOTOR_SEEK_ENDSTOP:  handleBiMotorSeekEndstop(p, len);   break;
 
         // Heater
         case RolePacket::HEATER_SET_TARGET:     handleHeaterSetTarget(p, len);      break;
@@ -383,6 +384,9 @@ bool RoleServicePolicy::attachBiDcMotor(HBridgeBinding& b, uint8_t portIdx,
     role.onStall([this, portIdx](uint16_t peak, uint16_t dur) {
         emitBiMotorStallEvent(portIdx, peak, dur);
     });
+    role.onEndstopResult([this, portIdx](uint8_t outcome, uint16_t travel, uint16_t peak) {
+        emitBiMotorEndstopResult(portIdx, outcome, travel, peak);
+    });
     return true;
 }
 
@@ -716,6 +720,18 @@ void RoleServicePolicy::handleBiMotorGetStatus(const uint8_t* p, size_t len) {
     _ctx->sendRawPacket(RolePacket::BIMOTOR_STATUS_RESP, _ctx->currentTag(), out, sizeof out);
 }
 
+void RoleServicePolicy::handleBiMotorSeekEndstop(const uint8_t* p, size_t len) {
+    if (len < 5) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    auto* b = _reg->hbridgeAt(p[0]);
+    if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+    auto* r = std::get_if<BiDcMotorRole>(&b->role);
+    if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
+    const int16_t  duty    = (int16_t)SfxWire::getI16LE(&p[1]);
+    const uint16_t timeout = SfxWire::getU16LE(&p[3]);   // 0 = no timeout
+    r->seekEndstop(duty, timeout);
+    _ctx->sendAck();
+}
+
 // ── Heater role commands ────────────────────────────────────────────
 
 void RoleServicePolicy::handleHeaterSetTarget(const uint8_t* p, size_t len) {
@@ -788,6 +804,17 @@ void RoleServicePolicy::emitBiMotorStallEvent(uint8_t portIdx, uint16_t peak_mA,
     SfxWire::putU16LE(&buf[3], duration_ms);
     _ctx->sendRawPacket(RolePacket::BIMOTOR_STALL_EVENT, SfxWire::TAG_ASYNC, buf, sizeof buf);
     fireLocalAsync(RolePacket::BIMOTOR_STALL_EVENT, buf, sizeof buf);
+}
+
+void RoleServicePolicy::emitBiMotorEndstopResult(uint8_t portIdx, uint8_t outcome,
+                                                 uint16_t travel_ms, uint16_t peak_mA) {
+    uint8_t buf[6];
+    buf[0] = portIdx;
+    buf[1] = outcome;
+    SfxWire::putU16LE(&buf[2], travel_ms);
+    SfxWire::putU16LE(&buf[4], peak_mA);
+    _ctx->sendRawPacket(RolePacket::BIMOTOR_ENDSTOP_RESULT, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    fireLocalAsync(RolePacket::BIMOTOR_ENDSTOP_RESULT, buf, sizeof buf);
 }
 
 void RoleServicePolicy::emitRcInValueBroadcast(uint8_t portIdx, uint16_t us, bool valid) {

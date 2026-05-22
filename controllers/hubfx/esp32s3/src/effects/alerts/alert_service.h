@@ -39,15 +39,20 @@
 
 #include "../audio_layout.h"
 #include "alert_protocol.h"
+#include "alert_sound.h"
 
 namespace hubfx::effects::alerts {
 
-/// Path-and-routing per severity.  Empty `path` → severity is a no-op
-/// (firmware ships with no embedded WAVs; SD config provides them).
+/// Path-and-routing per severity.  Two ways to address a sound:
+///   - `sound != AlertSound::None`  → resolved at play() time via
+///     `alertSoundPath()` (preferred — `/alerts.yaml` says `sound: init`).
+///   - `sound == AlertSound::None`  → fall back to the explicit `path`
+///     string (only place ad-hoc paths still work — e.g. for `playCustom`).
 struct AlertSeverityCfg {
-    char    path[64]   = {};
-    uint8_t outputMask = 0x03;       ///< AudioWire::OUTPUT_ALL
-    uint8_t volume     = 100;        ///< 0..100
+    AlertSound sound      = AlertSound::None;
+    char       path[64]   = {};
+    uint8_t    outputMask = 0x03;    ///< AudioWire::OUTPUT_ALL
+    uint8_t    volume     = 100;     ///< 0..100
 };
 
 struct AlertServiceConfig {
@@ -72,6 +77,18 @@ public:
     AlertServicePolicyT() = default;
 
     void configure(const AlertServiceConfig& cfg) { _cfg = cfg; }
+
+    /// Runtime kill-switch — `/hubfx.yaml`'s `alerts.enabled:` flips
+    /// this independently of the full `configure()` so the master
+    /// enable matrix in /hubfx.yaml has the final word over the local
+    /// `enabled:` in /alerts.yaml.  Symmetric with the other services.
+    void setEnabled(bool v) { _cfg.enabled = v; }
+
+    /// Runtime-enable accessor — picked up by
+    /// `BoardServer::computeEnabledCapabilities()` so the host can
+    /// distinguish "alert service compiled in" from "alert service
+    /// active right now".  Driven by `_cfg.enabled`.
+    bool enabled() const { return _cfg.enabled; }
 
     // ── SystemServicePolicy surface ──────────────────────────────────
 
@@ -104,6 +121,18 @@ public:
     /// voice messages / mission audio.  Same return semantics.
     bool playCustom(const char* path, uint8_t outputMask = 0,
                     uint8_t volume = 0);
+
+    /// Direct enum-based playback — resolves `s` via
+    /// `alertSoundPath()` and plays that WAV.  Used by the sketch /
+    /// other services for explicit named cues (`alerts.playSound(
+    /// AlertSound::Init)` at boot, etc.) that aren't tied to a
+    /// configured severity slot.  Volume defaults to 100%.
+    bool playSound(AlertSound s, uint8_t outputMask = 0, uint8_t volume = 0) {
+        if (s == AlertSound::None) return false;
+        const char* path = alertSoundPath(s);
+        if (!path || !path[0]) return false;
+        return playCustom(path, outputMask, volume);
+    }
 
     /// Stop whatever's playing on the alert channel.
     void stop();

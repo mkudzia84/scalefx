@@ -1,36 +1,62 @@
 /*
- * HubFX ESP32-S3 — incremental bring-up sketch.
+ * HubFX ESP32-S3 — master controller firmware.
  *
- *   Started as a NO-OP scaffold (BoardServer<> alone) to validate the
- *   wire surface boots clean.  Policies are now being added back one
- *   at a time, so this sketch can be flashed at any commit and the
- *   user can confirm boot + IDENTIFY before another layer goes in.
+ *   Every effect / service the master runs is a `*ServicePolicy` in
+ *   the `BoardOf<>` template-parameter pack below.  Boot order is
+ *   left-to-right; capability bits are OR'd into the IDENTIFY payload
+ *   automatically.  See instructions/17-SYSTEM-SERVICES.md for the
+ *   service-policy authoring rules.
  *
- *   Stack so far:
+ *   Stack:
  *     - BoardServicePolicy        (auto, lifecycle + INIT_READY + STATUS)
  *     - IndicatorServicePolicy    (auto, status LEDs)
  *     - PortServicePolicy         (BoardOf<>, hub-local port enumeration)
  *     - RoleServicePolicy         (BoardOf<>, hub-local role dispatch)
- *     - StorageService            (LittleFS + SD_MMC 4-bit SDIO)
- *     - AudioService              (8-channel mixer + TAS5825P, dual-core)
- *     - AlertService              (system-alert chimes on channel 0)
  *     - ExpanderService           (USB host + IDENTIFY of remote boards)
  *     - TopologyService           (GUID-addressed port/role surface)
- *     - InputDispatcherService    (RC/SBUS/Jeti channel-event fanout)
- *     - LandingLightService       (servo+LED-group landing lights, empty defs)
- *     - LightFxEffectService      (LED program runtime, one default "AllOn" program)
+ *     - InputDispatcherService    (RC / SBUS / Jeti channel-event fanout)
+ *     - LandingLightService       (servo + LED-group landing lights)
+ *     - LightFxEffectService      (LED program runtime; programs loaded
+ *                                  from /lightfx/programs/<name>.yaml)
+ *     - GearControlService        (gear retract / extend state machines)
+ *     - EngineFxService           (engine sound on mixer + throttle binding)
+ *     - GunFxService              (gun trigger / smoke / recoil)
+ *     - StorageService            (LittleFS + SD_MMC 4-bit SDIO)
+ *     - AudioService              (8-channel mixer + TAS5825P, dual-core)
+ *     - AlertService              (system-alert chimes on HubFxLayout::Alert)
+ *     - ConfigServicePolicy       (six config stores side-by-side;
+ *                                  CONFIG_RELOAD / CONFIG_SAVE wire surface)
  *
  *   Ports declared on the HubFX PCB:
  *     - 8 × PWM    (PCA9685 channels with per-rail INA226 V/I sense)
  *     - 1 × Input  (IN_1, multi-modal PULSE / SBUS / JETI_EX)
  *     - 11 × Servo (IN_2..IN_12, output actuator headers)
  *
- *   The full sketch (every effect on top of this base) is parked next
- *   to this file as `hubfx_esp32s3.ino.full`.
+ *   Configuration sources (LittleFS) — /hubfx.yaml is the board master,
+ *   every effect's details live in its own canonical sub-file:
+ *
+ *     /hubfx.yaml                  BOARD CONFIG:
+ *                                    audio.codec_supply (PVDD rail)
+ *                                    features.* (master enable matrix)
+ *                                    ports[]   (port → role attachment)
+ *                                    inputs[]  (named RC channels —
+ *                                               effects reference by name)
+ *     ├── /alerts.yaml             severity → AlertSound + volume
+ *     ├── /enginefx.yaml           engine wiring + sound pack
+ *     ├── /landing.yaml            landing-light defs (servo + LED group)
+ *     ├── /gearcontrol.yaml        gear defs (motor + LEDs by GUID PortRef)
+ *     └── /lightfx.yaml            master brightness + program path list
+ *           └── /lightfx/programs/<n>.yaml   one file per LED program,
+ *                                            referenced by FULL PATH
+ *                                            from /lightfx.yaml.
+ *
+ *   Missing files fall back to schema defaults so a bare board still
+ *   boots functional.  See instructions/19-HUBFX-CONFIG-SCHEMA.md and
+ *   media/README.md for the on-disk preset library.
  */
 
 #define FIRMWARE_VERSION "2.3.0-noop"
-#define BUILD_NUMBER     100
+#define BUILD_NUMBER     142
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -64,11 +90,42 @@
 #include <server/audio_service.h>
 
 #include "effects/alerts/alert_service.h"
+#include "effects/enginefx/enginefx_service.h"
+#include "effects/gearcontrol/gearcontrol_service.h"
+#include "effects/gunfx/gunfx_service.h"
 #include "effects/input/input_dispatcher.h"
 #include "effects/landing_lights/landing_light_service.h"
 #include "effects/lightfx/lightfx_service.h"
 #include "expanders/expander_service.h"
 #include "topology/topology_service.h"
+
+// Config — five parsed YAML stores fed into `ConfigServicePolicy`:
+//   /hubfx.yaml     — BOARD CONFIG: audio.codec_supply + features matrix
+//                     + ports[] role attachment
+//   /alerts.yaml    — severity → AlertSound + volume
+//   /enginefx.yaml  — engine wiring + sound pack
+//   /landing.yaml   — landing-light defs (servo + LED group)
+//   /lightfx.yaml   — master brightness + program-file path list,
+//                     each loading /lightfx/programs/<n>.yaml in turn.
+// Each store has its own onLoaded callback that fans the parsed data
+// into the matching service.  Every effect references ports via
+// {kind, idx} PortRefs (parsed by the shared port_ref_yaml.h helper)
+// and assumes /hubfx.yaml's ports[] block already attached the role.
+// See instructions/19-HUBFX-CONFIG-SCHEMA.md.
+#include <config/config_store.h>
+#include <server/multi_config_server.h>     // ConfigServicePolicy
+#include <storage/storage_config_bridge.h>  // wireConfigStore<FlashModule>
+#include <storage/flash.h>
+#include "config/hubfx_config.h"
+#include "config/alerts_config.h"
+#include "config/enginefx_config.h"
+#include "config/landing_config.h"
+#include "config/gearcontrol_config.h"
+#include "config/lightfx_config.h"
+#include "config/lightfx_program_selector.h"
+#include "config/apply_hubfx_config.h"
+#include "config/config_store_slot.h"
+#include "config/telemetry_emitter.h"
 
 // ════════════════════════════════════════════════════════════════════════
 //  Board pin / address map (HubFX 8-channel rev — see PINOUT.md)
@@ -115,20 +172,16 @@ namespace Gpio {
 }
 
 namespace I2cAddr {
-    constexpr uint8_t PCA9685    = 0x70;   // 8-channel PWM driver
-    constexpr uint8_t TAS5825P   = 0x4C;   // Class-H audio codec (ADDR → GND)
-
-    // Per-channel current/voltage monitors — channel index maps to PWM
-    // port index (CH1 = port 0, CH8 = port 7).
-    constexpr uint8_t INA226_CH1 = 0x40;
-    constexpr uint8_t INA226_CH2 = 0x41;
-    constexpr uint8_t INA226_CH3 = 0x42;
-    constexpr uint8_t INA226_CH4 = 0x43;
-    constexpr uint8_t INA226_CH5 = 0x44;
-    constexpr uint8_t INA226_CH6 = 0x45;
-    constexpr uint8_t INA226_CH7 = 0x4A;
-    constexpr uint8_t INA226_CH8 = 0x4F;
+    constexpr uint8_t PCA9685  = 0x70;   // 8-channel PWM driver
+    constexpr uint8_t TAS5825P = 0x4C;   // Class-H audio codec (ADDR → GND)
 }
+
+// Per-channel current/voltage monitor addresses — index maps directly to
+// PWM port index (CH1 = port 0, CH8 = port 7).  The 0x4A / 0x4F outliers
+// on ch7 / ch8 dodge the codec at 0x4C on the shared I²C bus.
+constexpr uint8_t kInaAddrs[8] = {
+    0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4A, 0x4F,
+};
 
 namespace Uart {
     constexpr uint8_t IN_1 = 1;            // UART1 claimed by InputPort on IN_1
@@ -146,13 +199,36 @@ namespace Pwm {
 }
 
 namespace Codec {
-    /// 3S LiPo (~12 V nominal) — selects the AGAIN table at activate.
-    constexpr auto SUPPLY_VOLTAGE = sfx_audio::tas5825::Supply::V12;
+    /// TAS5825P PVDD-rail selector — picks the AGAIN table at codec
+    /// activate.  Default 12 V (3S LiPo).  Driven by `/hubfx.yaml`'s
+    /// `audio.codec_supply` field at boot via `applyHubFxConfigCallback`
+    /// — declared mutable (not constexpr) so the YAML can override it
+    /// before `audio.begin()` fires.  CONFIG_RELOAD updates the value
+    /// but the codec only re-reads it on reboot.
+    inline sfx_audio::tas5825::Supply SUPPLY_VOLTAGE =
+        sfx_audio::tas5825::Supply::V12;
 }
 
 // CodecAdapter specialization for HubFX's TAS5825P.  MUST come after
 // the `Gpio::` / `Codec::` namespaces — the header references them.
 #include "effects/audio_codec.h"
+
+// Board hardware probe — PCA9685 + INA226 boot diag + recovery, lifted
+// out of the sketch into a dedicated helper.  Configured by the
+// constexpr `kHubFxProbeCfg` below; instantiated as a member on
+// HubFxBoard.
+#include "hubfx_hw_probe.h"
+
+static constexpr hubfx_hw::HubFxHardwareProbe::PinConfig kHubFxProbeCfg = {
+    .sda          = Gpio::I2C_SDA,
+    .scl          = Gpio::I2C_SCL,
+    .i2cFreq      = 400000,
+    .pcaAddr      = I2cAddr::PCA9685,
+    .pwmFreqHz    = Pwm::FREQ_HZ,
+    .inaShuntOhms = Sense::INA226_SHUNT_OHMS,
+    .inaMaxAmps   = Sense::INA226_MAX_AMPS,
+    .inaAddrs     = kInaAddrs,
+};
 
 // ── Policy aliases ───────────────────────────────────────────────────
 
@@ -191,6 +267,28 @@ using LightFxEffectService =
     hubfx::effects::lightfx::LightFxEffectServicePolicyT<HubFxTopologyService,
                                                           LandingLightService>;
 
+// GearControl service — owns the per-gear (motor + door servos) state
+// machines.  Talks to LandingLightService so a gear's program-bound
+// landing-light pair follows retract/extend transitions automatically.
+using GearControlService =
+    hubfx::effects::gearctrl::GearControlServicePolicyT<HubFxTopologyService,
+                                                         LandingLightService>;
+
+// EngineFx service — engine startup / running / shutdown sound + idle
+// jitter on a mixer channel, throttle-toggle bound to an RC channel
+// via the input dispatcher.
+using EngineFxService =
+    hubfx::effects::enginefx::EngineFxServicePolicyT<Mixer,
+                                                      HubFxTopologyService,
+                                                      InputDispatcherService>;
+
+// GunFx service — per-gun trigger fire + smoke generator + recoil
+// servo on a mixer channel; input-dispatcher bindings for triggers.
+using GunFxService =
+    hubfx::effects::gunfx::GunFxServicePolicyT<Mixer,
+                                                HubFxTopologyService,
+                                                InputDispatcherService>;
+
 // ── Board class ──────────────────────────────────────────────────────
 //
 // BoardOf<> auto-prepends BoardServicePolicy + IndicatorServicePolicy +
@@ -202,9 +300,13 @@ class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
                                              InputDispatcherService,
                                              LandingLightService,
                                              LightFxEffectService,
+                                             GearControlService,
+                                             EngineFxService,
+                                             GunFxService,
                                              StorageService,
                                              AudioService,
-                                             AlertService> {
+                                             AlertService,
+                                             ConfigServicePolicy> {
 public:
     // ── Hardware drivers — declaration order matters (init order) ────
     PCA9685 pca;
@@ -236,268 +338,19 @@ public:
         {Gpio::IN_11}, {Gpio::IN_12},
     };
 
-    // ── Hardware-init result snapshot ────────────────────────────────
+    // ── Hardware probe ───────────────────────────────────────────────
     //
-    // Captured during `initHardware()` (which runs BEFORE Serial / DiagLog
-    // are up) so we can replay the readings to the diag stream from
-    // `logHardwareStatus()` after `board.begin()` lights everything up.
-    struct InaProbe {
-        uint8_t  addr        = 0;
-        uint8_t  wireAck     = 0xFF;   // Wire.endTransmission() status, 0 = ACK
-        bool     begun       = false; // driver bring-up succeeded (chip reachable + configured)
-        bool     idMatches   = false; // mfg/die match canonical TI INA226 IDs
-        uint16_t mfgId       = 0;
-        uint16_t dieId       = 0;
-    };
-    struct HwInitState {
-        bool     pcaPreAck         = false;
-        bool     pcaBegun          = false;
-        uint8_t  pcaMode1          = 0xFF;
-        uint8_t  pcaMode2          = 0xFF;
-        uint8_t  pcaPrescale       = 0xFF;
-        // Per-channel ACK after each pre-fire setChannel(k, 0) in
-        // initHardware() — runs the exact write Pca9685PwmPort::begin()
-        // does, with a bus probe between each, so a future regression
-        // can pinpoint the channel/write that wedges the chip.
-        bool     pcaAfterCh[8]     = {false};
-        // Post-board.begin() probe.  `pcaPostInitAck` is rewritten by
-        // the recovery path when it fires; `pcaPostInitAckRaw` is the
-        // single original probe value (never overwritten), so logging
-        // can show whether the recovery actually had to do anything.
-        bool     pcaPostInitAckRaw = false;
-        bool     pcaPostInitAck    = false;
-        uint8_t  pcaPostInitMode1  = 0xFF;
-        InaProbe ina[8];
-    };
-    HwInitState hwInit{};
+    // PCA9685 + INA226 bring-up + boot diag + post-board.begin()
+    // recovery all live in `hubfx_hw_probe.h`.  The probe captures a
+    // silent snapshot during `init()` (before Serial / DiagLog are up)
+    // and replays it via `logStatus()` once the wire stream is alive.
+    hubfx_hw::HubFxHardwareProbe probe{pca, ina, pwm, kHubFxProbeCfg};
 
-    /// Silent hardware probe — runs BEFORE `board.begin()` so the
-    /// Pca9685PwmPort instances can `setDuty(0)` against a live chip.
-    /// All visible output is deferred to `logHardwareStatus()` so the
-    /// readings can land in the DiagLog ring instead of being dropped
-    /// pre-Serial.
-    ///
-    /// Wire clock 400 kHz — the earlier "missing INA ch7/ch8" turned
-    /// out to be an `MAX_EXPECTED_I2C` overflow (cap was 8, we register
-    /// 10 chips), not a bus-speed problem.  Now that the cap is 32 and
-    /// the buffer fix has landed, the bus runs reliably at 400 kHz on
-    /// this PCB rev.  Drop to 100 kHz here if a future board variant
-    /// adds new long traces and the longer-distance chips start NACK-ing.
-    void initHardware() {
-        Wire.begin(Gpio::I2C_SDA, Gpio::I2C_SCL);
-        Wire.setClock(400000);
-
-        // General-call SWRST before any per-chip probe — recovers a
-        // PCA9685 whose address comparator latched out of normal state
-        // (most commonly from a previous boot's debug code writing
-        // 0xFF as a register pointer, which is undefined on the PCA).
-        // The PCA honours gen-call by default; INA226s and the codec
-        // ignore the broadcast.  See `PCA9685::broadcastReset()`.
-        PCA9685::broadcastReset(Wire);
-        delay(2);
-
-        // PCA9685 pre-ACK probe + driver begin + post-init register snapshot.
-        hwInit.pcaPreAck = pcaBusProbe(I2cAddr::PCA9685);
-        hwInit.pcaBegun  = pca.begin(Wire, I2cAddr::PCA9685, Pwm::FREQ_HZ);
-        if (hwInit.pcaBegun) {
-            hwInit.pcaMode1    = pcaRead(I2cAddr::PCA9685, 0x00);
-            hwInit.pcaMode2    = pcaRead(I2cAddr::PCA9685, 0x01);
-            hwInit.pcaPrescale = pcaRead(I2cAddr::PCA9685, 0xFE);
-
-            // Pre-fire the same writes BoardOf::begin() will later
-            // issue per PWM port (one setChannel(ch, 0) per channel),
-            // probing the bus between each.  If the address-comparator
-            // wedge regresses we want a per-channel breadcrumb showing
-            // exactly when it happened.  Pca9685PwmPort::begin() is
-            // idempotent against this so re-firing in board.begin()
-            // is harmless.
-            for (uint8_t k = 0; k < 8; k++) {
-                pca.setChannel(k, 0);
-                hwInit.pcaAfterCh[k] = pcaBusProbe(I2cAddr::PCA9685);
-            }
-        }
-
-        // Per-INA probe + driver begin + mfg/die ID read.  The driver
-        // now bails on non-canonical IDs (returns false, _available
-        // stays false) so calling `bootMfgId()`/`bootDieId()` is safe
-        // either way — they reflect the readback done before the
-        // canonical-ID gate.  See ina226.cpp for the rationale; the
-        // gate exists because clones at INA addresses have been seen
-        // to wedge OTHER chips on the bus when written to (HubFX rev
-        // hit this with a clone @ 0x40 corrupting the PCA9685 @ 0x70).
-        constexpr uint8_t kInaAddrs[8] = {
-            I2cAddr::INA226_CH1, I2cAddr::INA226_CH2,
-            I2cAddr::INA226_CH3, I2cAddr::INA226_CH4,
-            I2cAddr::INA226_CH5, I2cAddr::INA226_CH6,
-            I2cAddr::INA226_CH7, I2cAddr::INA226_CH8,
-        };
-        for (uint8_t k = 0; k < 8; k++) {
-            hwInit.ina[k].addr = kInaAddrs[k];
-            Wire.beginTransmission(kInaAddrs[k]);
-            hwInit.ina[k].wireAck = Wire.endTransmission();
-            if (hwInit.ina[k].wireAck != 0) continue;
-
-            hwInit.ina[k].begun =
-                ina[k].begin(Wire, kInaAddrs[k],
-                             Sense::INA226_SHUNT_OHMS, Sense::INA226_MAX_AMPS);
-            // Even when begin() returns false (non-canonical chip,
-            // not driven), the driver still captured the boot IDs
-            // before bailing — surface them for the boot log.
-            hwInit.ina[k].mfgId     = ina[k].bootMfgId();
-            hwInit.ina[k].dieId     = ina[k].bootDieId();
-            hwInit.ina[k].idMatches = ina[k].isCanonical();
-        }
-    }
-
-    /// Replay the captured hardware-init snapshot to DiagLog.  Called
-    /// from `setup()` right after `board.begin()` so the entries land
-    /// in the ring (live-streamed too once `setWireMinLevel(INFO)` is
-    /// applied — see setup()).  Re-probes the PCA9685 in-place because
-    /// `board.begin()` walks every declared port's `port->begin()`
-    /// which writes to the chip — useful for catching a regression
-    /// where one of those writes wedges the address comparator.
-    void logHardwareStatus() {
-        SFX_LOG_INFO("[I2C] Wire up: SDA=GP%d SCL=GP%d @ 400 kHz",
-                     Gpio::I2C_SDA, Gpio::I2C_SCL);
-
-        // Re-probe the PCA — board.begin() has run by the time we get
-        // here, so the port-policy port->begin() calls have all fired
-        // against it.  If the chip went silent in the meantime (a
-        // known ESP32 + PCA9685 quirk — see public references in
-        // commit notes), reset it via gen-call SWRST and re-run
-        // `pca.begin()` to restore frequency / AI / ALLCALL.  After
-        // that, walk the PWM ports once more to push each channel's
-        // last duty back to the chip.
-        hwInit.pcaPostInitAck    = pcaBusProbe(I2cAddr::PCA9685);
-        hwInit.pcaPostInitAckRaw = hwInit.pcaPostInitAck;   // freeze the pre-recovery state
-        hwInit.pcaPostInitMode1  = pcaRead(I2cAddr::PCA9685, 0x00);
-        if (!hwInit.pcaPostInitAck) {
-            SFX_LOG_WARN("[PCA] post-init probe failed — chip wedged during "
-                         "board.begin() port-init.  Running recovery: SWRST "
-                         "→ re-init → re-push duties.");
-            PCA9685::broadcastReset(Wire);
-            delay(2);
-            const bool reinitOk = pca.begin(Wire, I2cAddr::PCA9685, Pwm::FREQ_HZ);
-            if (reinitOk) {
-                for (uint8_t k = 0; k < 8; k++) {
-                    pwm[k].setDuty(pwm[k].duty());   // restore last commanded
-                }
-            }
-            hwInit.pcaPostInitAck   = pcaBusProbe(I2cAddr::PCA9685);
-            hwInit.pcaPostInitMode1 = pcaRead(I2cAddr::PCA9685, 0x00);
-            if (hwInit.pcaPostInitAck) {
-                SFX_LOG_WARN("[PCA] recovery OK — chip back at 0x%02X "
-                             "MODE1=0x%02X (reinit %s)",
-                             I2cAddr::PCA9685, hwInit.pcaPostInitMode1,
-                             reinitOk ? "succeeded" : "FAILED");
-            } else {
-                SFX_LOG_ERROR("[PCA] recovery FAILED — chip still silent "
-                              "after SWRST + re-init.  PWM unavailable.");
-            }
-        }
-
-        if (!hwInit.pcaPreAck) {
-            SFX_LOG_ERROR("[PCA] PCA9685 @ 0x%02X: NO ACK on pre-begin probe",
-                          I2cAddr::PCA9685);
-        }
-        if (!hwInit.pcaBegun) {
-            SFX_LOG_ERROR("[PCA] PCA9685 @ 0x%02X: begin() failed", I2cAddr::PCA9685);
-        } else {
-            // Post-begin MODE1 should be 0x21 (AI|ALLCALL — RESTART
-            // self-clears per §7.3.1.1).  Anything else means a driver
-            // regression or the chip is wedged before this read.
-            SFX_LOG_INFO("[PCA] PCA9685 @ 0x%02X: %u Hz  MODE1=0x%02X MODE2=0x%02X PRESCALE=0x%02X",
-                         I2cAddr::PCA9685, Pwm::FREQ_HZ,
-                         hwInit.pcaMode1, hwInit.pcaMode2, hwInit.pcaPrescale);
-
-            // Per-channel pre-fire trail.  Collapse to a single line
-            // listing any channels where the post-write probe failed.
-            // If the line says "ch0..ch7 OK" the address comparator
-            // survived all 8 writes — the wedge regression hasn't fired.
-            uint8_t wedgedAt = 0xFF;
-            for (uint8_t k = 0; k < 8; k++) {
-                if (!hwInit.pcaAfterCh[k]) { wedgedAt = k; break; }
-            }
-            if (wedgedAt == 0xFF) {
-                SFX_LOG_INFO("[PCA] PCA9685 @ 0x%02X: 8/8 per-channel writes ACKed "
-                             "(no address-comparator wedge)", I2cAddr::PCA9685);
-            } else {
-                SFX_LOG_ERROR("[PCA] PCA9685 @ 0x%02X: address comparator WEDGED "
-                              "after pre-fire setChannel(%u, 0) — earlier %u "
-                              "channel writes ACKed.  Investigate driver MODE1 "
-                              "/ ALLCALLADR state.",
-                              I2cAddr::PCA9685, (unsigned)wedgedAt,
-                              (unsigned)wedgedAt);
-            }
-
-        }
-        if (hwInit.pcaPostInitAck) {
-            SFX_LOG_INFO("[PCA] PCA9685 @ 0x%02X: post-board.begin() OK  MODE1=0x%02X",
-                         I2cAddr::PCA9685, hwInit.pcaPostInitMode1);
-        } else {
-            SFX_LOG_ERROR("[PCA] PCA9685 @ 0x%02X: WENT SILENT after board.begin() — "
-                          "a PortServicePolicy port->begin() write may have wedged the chip.",
-                          I2cAddr::PCA9685);
-        }
-
-        uint8_t inaOk      = 0;
-        uint8_t inaClones  = 0;
-        for (uint8_t k = 0; k < 8; k++) {
-            const auto& p = hwInit.ina[k];
-            if (p.wireAck != 0) {
-                SFX_LOG_WARN("[INA] ch%u @ 0x%02X: NO ACK (Wire status=%u)",
-                             (unsigned)(k + 1), p.addr, (unsigned)p.wireAck);
-                continue;
-            }
-            if (!p.begun) {
-                // Driver bailed.  Almost always because the chip is a
-                // non-canonical clone — surface its boot IDs so the
-                // field engineer can match the chip and replace it.
-                inaClones++;
-                SFX_LOG_WARN("[INA] ch%u @ 0x%02X: NOT DRIVEN — non-canonical IDs "
-                             "mfg=0x%04X die=0x%04X (expected 0x5449/0x2260, "
-                             "TI INA226).  Clone detected — refusing to drive "
-                             "to protect other chips on the shared I²C bus.",
-                             (unsigned)(k + 1), p.addr, p.mfgId, p.dieId);
-                continue;
-            }
-            // begun=true ⇒ canonical TI INA226 (the driver only
-            // configures chips that pass the ID check; clones are
-            // surfaced in the `!p.begun` branch above).
-            SFX_LOG_INFO("[INA] ch%u @ 0x%02X: OK  mfg=0x%04X die=0x%04X (TI INA226)",
-                         (unsigned)(k + 1), p.addr, p.mfgId, p.dieId);
-            inaOk++;
-        }
-        if (inaClones > 0) {
-            SFX_LOG_WARN("[INA] %u/8 monitors up (%u clone%s skipped — replace "
-                         "to restore full V/I sense)",
-                         inaOk, inaClones, inaClones == 1 ? "" : "s");
-        } else {
-            SFX_LOG_INFO("[INA] %u/8 monitors up (all genuine TI INA226)", inaOk);
-        }
-    }
-
-    /// Low-level Wire helpers for diagnostic-only register reads.  Bare
-    /// transactions so we don't go through the driver's class hierarchy
-    /// when validating its post-init state.
-    static bool pcaBusProbe(uint8_t addr) {
-        Wire.beginTransmission(addr);
-        return Wire.endTransmission() == 0;
-    }
-    static uint8_t pcaRead(uint8_t addr, uint8_t reg) {
-        Wire.beginTransmission(addr);
-        Wire.write(reg);
-        if (Wire.endTransmission(false) != 0) return 0xFF;
-        Wire.requestFrom((int)addr, 1);
-        return Wire.available() ? (uint8_t)Wire.read() : 0xFF;
-    }
-
-    /// Per-loop maintenance — refresh INA226 cached readings.  The
-    /// input port is driven by edge-IRQ (pulse mode) or the UART RX
-    /// FIFO (SBUS / Jeti EX) — no tick needed here.
-    void pollSense() {
-        for (uint8_t k = 0; k < 8; k++) ina[k].update();
-    }
+    // Thin forwarders to the probe — kept for the existing setup()
+    // / loop() call sites.  See hubfx_hw_probe.h for implementations.
+    void initHardware()      { probe.init(); }
+    void logHardwareStatus() { probe.logStatus(); }
+    void pollSense()         { probe.pollSense(); }
 
 
     // ── Port declarations (compile-time, consumed by BoardOf<>) ──────
@@ -523,28 +376,92 @@ HubFxBoard board;
 // Codec type is inferred from `Mixer::Codec`.
 static EspDualCoreAudio<Mixer> audio;
 
-// Default LightFx program list installed before `board.begin()` so the
-// LED runtime has something to dispatch.  One entry: "AllOn" drives
-// every hub-local PWM channel (0..7) at full brightness, constant on.
-// Switch to it from the CLI with `light:program-select 0` (the user-
-// facing wire surface — LIGHTFX_PROGRAM_SELECT).
-static hubfx::effects::lightfx::Program kLightFxPrograms[1] = {};
+// LightFx program catalog lives as per-file YAMLs under
+// `/lightfx/programs/<name>.yaml`.  `applyHubFxConfig` walks the
+// `lightfx.programs:` list from `/hubfx.yaml`, loads each file, and
+// passes the resulting `Program[]` to LightFxEffectService.configure.
+// A board with no program files boots LightFx empty — `light-programs`
+// returns an empty list and no program activates by default.
 
-static void buildDefaultLightFxPrograms() {
-    using namespace hubfx::effects::lightfx;
-    using hubfx::effects::PortRef;
-    Program& p = kLightFxPrograms[0];
-    std::strncpy(p.name, "AllOn", sizeof(p.name) - 1);
-    p.numChannels = 8;
-    for (uint8_t ch = 0; ch < 8; ++ch) {
-        LedChannelSpec& spec = p.channels[ch];
-        spec.addr                    = PortRef::local(PortKind::Pwm, ch);
-        spec.perChannelBrightnessPct = 100;
-        spec.events[0]               = LightEvent::on(/*brightnessPct=*/100,
-                                                      /*durationMs=*/0);  // 0 = terminal / hold
-        spec.numEvents               = 1;
+// ── Config stores ───────────────────────────────────────────────────
+//
+// Five stores side-by-side on LittleFS, all wired into the same
+// ConfigServicePolicy via `ConfigStoreSlot`.  CONFIG_RELOAD is
+// path-routed — a single `config-reload` re-applies whichever file's
+// path matches.
+//
+//   /hubfx.yaml     → applyHubFxConfig    — features enable matrix +
+//                                            audio.codec_supply +
+//                                            ports[] role attach +
+//                                            inputs[] name map
+//   /alerts.yaml    → applyAlertsConfig   — severity → AlertSound map
+//   /enginefx.yaml  → applyEngineFxConfig — engine wiring + sounds
+//   /landing.yaml   → applyLandingConfig  — landing-light defs
+//   /lightfx.yaml   → applyLightFxConfig  — brightness + program paths +
+//                                            program_selector ranges
+static hubfx::config::ConfigStoreSlot<HubFxConfigSchema,    HubFxYamlPool>    kHubFx;
+static hubfx::config::ConfigStoreSlot<AlertsConfigSchema,   AlertsYamlPool>   kAlerts;
+static hubfx::config::ConfigStoreSlot<EngineFxConfigSchema, EngineFxYamlPool> kEngineFx;
+static hubfx::config::ConfigStoreSlot<LandingConfigSchema,  LandingYamlPool>  kLanding;
+static hubfx::config::ConfigStoreSlot<GearControlConfigSchema, GearControlYamlPool> kGearCtrl;
+static hubfx::config::ConfigStoreSlot<LightFxConfigSchema,  LightFxYamlPool>  kLightFx;
+
+static void applyHubFxConfigCallback(const HubFxConfig& cfg) {
+    // Codec PVDD voltage — board-specific, written before audio bring-up.
+    // /hubfx.yaml carries this because the codec is a board-level chip,
+    // not an effect's concern.  `audio.begin()` later in setup() reads
+    // `Codec::SUPPLY_VOLTAGE` via the CodecAdapter::probe() trait in
+    // audio_codec.h.  CONFIG_RELOAD updates the variable but the codec
+    // only re-reads on reboot — log a hint when the value changes.
+    {
+        sfx_audio::tas5825::Supply s;
+        if (sfx_audio::tas5825::parseSupply(cfg.audio.codecSupply, s)) {
+            if (s != Codec::SUPPLY_VOLTAGE) {
+                SFX_LOG_INFO("[codec] supply %s → %s  (reboot to apply)",
+                             sfx_audio::tas5825::supplyStr(Codec::SUPPLY_VOLTAGE),
+                             sfx_audio::tas5825::supplyStr(s));
+            }
+            Codec::SUPPLY_VOLTAGE = s;
+        } else if (cfg.audio.codecSupply[0]) {
+            SFX_LOG_WARN("[codec] unknown audio.codec_supply='%s' — keeping %s",
+                         cfg.audio.codecSupply,
+                         sfx_audio::tas5825::supplyStr(Codec::SUPPLY_VOLTAGE));
+        }
     }
-    p.numLandings = 0;
+
+    hubfx::config::applyHubFxConfig<HubFxBoard,
+                                     AlertService,
+                                     EngineFxService,
+                                     LightFxEffectService,
+                                     LandingLightService,
+                                     GearControlService,
+                                     GunFxService>(board, cfg);
+}
+
+static void applyAlertsConfigCallback(const AlertsConfig& cfg) {
+    hubfx::config::applyAlertsConfig<HubFxBoard, AlertService>(board, cfg);
+}
+
+static void applyEngineFxConfigCallback(const EngineFxYamlConfig& cfg) {
+    // Resolve `toggle.input` against /hubfx.yaml's named inputs[] —
+    // kHubFx already loaded by the time this fires.
+    hubfx::config::applyEngineFxConfig<HubFxBoard, EngineFxService>(
+        board, cfg, kHubFx.data());
+}
+
+static void applyLandingConfigCallback(const LandingConfig& cfg) {
+    hubfx::config::applyLandingConfig<HubFxBoard, LandingLightService>(board, cfg);
+}
+
+static void applyGearControlConfigCallback(const GearControlConfig& cfg) {
+    hubfx::config::applyGearControlConfig<HubFxBoard, GearControlService>(board, cfg);
+}
+
+static void applyLightFxConfigCallback(const LightFxYamlConfig& cfg) {
+    hubfx::config::applyLightFxConfig<HubFxBoard, LightFxEffectService>(
+        board, cfg,
+        // Program-file reader for `/lightfx/programs/<n>.yaml`.
+        &storageReadFile<FlashModule>);
 }
 
 void setup() {
@@ -561,11 +478,19 @@ void setup() {
         .d2  = Gpio::SD_D2,  .d3  = Gpio::SD_D3,
     });
 
-    // LightFx programs — MUST be installed BEFORE `board.begin()` so
-    // the LightController is configured before any LIGHTFX_* command
-    // can land.
-    buildDefaultLightFxPrograms();
-    board.policy<LightFxEffectService>().configure(kLightFxPrograms, 1);
+    // ── Config — wire each ConfigStoreSlot against the policy.
+    // Each `wire()` call: registers the store + facade with the policy,
+    // binds the storage bridge, and hooks the apply callback to fire
+    // on every successful load (initial + every CONFIG_RELOAD).
+    {
+        auto& cfgPolicy = board.policy<ConfigServicePolicy>();
+        kHubFx   .wire(cfgPolicy, applyHubFxConfigCallback);
+        kAlerts  .wire(cfgPolicy, applyAlertsConfigCallback);
+        kEngineFx.wire(cfgPolicy, applyEngineFxConfigCallback);
+        kLanding .wire(cfgPolicy, applyLandingConfigCallback);
+        kGearCtrl.wire(cfgPolicy, applyGearControlConfigCallback);
+        kLightFx .wire(cfgPolicy, applyLightFxConfigCallback);
+    }
 
     // Policy pack lifecycle — Serial, DiagLog, indicator pins, port
     // registry binding, every policy's begin().  Master role, no
@@ -575,40 +500,59 @@ void setup() {
                 Gpio::LED_CONNECTION, Gpio::LED_ERROR);
     board.setConnectionTimeoutEnabled(false);
 
-    // Attach `LedAnimator` to every hub-local PWM port so the LightFx
-    // programs can drive them.  `LightFxEffectService::begin()` already
-    // recorded the claim, but the underlying port has no role-variant
-    // populated until ROLE_ATTACH lands — without this loop the role
-    // service NACKs LED_QUEUE_LOAD with ROLE_KIND_MISMATCH and the
-    // LEDs stay dark.  In production this is normally driven from
-    // YAML config or Studio's role-attach UI; we do it inline here
-    // until config-load lands.
+    // ── Boot config chain — load each store from its canonical path;
+    // on miss, apply schema defaults so a bare board boots functional.
+    // Order matters: /hubfx.yaml first (audio + features + ports +
+    // inputs name map) → effect sub-files (engine / landing / lightfx
+    // consume the name map) → re-apply /hubfx.yaml so its master
+    // `features:` matrix overrides each sub-file's local `enabled:`.
+    kHubFx   .loadOrFallback();
+    kAlerts  .loadOrFallback();
+    kEngineFx.loadOrFallback();
+    kLanding .loadOrFallback();
+    kGearCtrl.loadOrFallback();
+    kLightFx .loadOrFallback();
+    applyHubFxConfigCallback(kHubFx.data());     // re-apply master enables
+
+    // Port → role attachment is driven by `/hubfx.yaml`'s `ports:` block.
+    // Empty table (no file / no block) falls back to the legacy default
+    // of LedAnimator on every PWM port.  See applyPortRoles.
+    hubfx::config::applyPortRoles<HubFxBoard, HubFxTopologyService>(
+        board, kHubFx.data());
+
+    // LightFx program selector — when /lightfx.yaml's `program_selector:`
+    // block is populated, wire a Raw-µs TriggerInput against the named
+    // input channel.  Hub config supplies the source port + channel id;
+    // lightfx config carries the range table.  Selector stays dormant
+    // (subscribe is skipped) if either side is empty / unresolved.
+    static hubfx::config::LightFxProgramSelector kLightFxSelector;
     {
-        using hubfx::effects::PortRef;
-        auto& topo = board.policy<HubFxTopologyService>();
-        uint8_t attached = 0;
-        for (uint8_t ch = 0; ch < 8; ++ch) {
-            if (topo.attachRole(PortRef::local(PortKind::Pwm, ch),
-                                RoleKind::LedAnimator)) {
-                ++attached;
+        const auto& lf  = kLightFx.data();
+        const auto& hub = kHubFx.data();
+        if (lf.programSelector.enabled) {
+            const auto* binding =
+                ::findInputByName(hub, lf.programSelector.input);
+            if (binding) {
+                kLightFxSelector.install(
+                    &board.policy<InputDispatcherService>(),
+                    &board.policy<LightFxEffectService>().controller(),
+                    lf, binding->port,
+                    binding->channelId > 0 ? (uint8_t)(binding->channelId - 1) : 0);
+            } else {
+                SFX_LOG_WARN("[lightfx-selector] input '%s' not in /hubfx.yaml "
+                             "inputs[] — selector dormant",
+                             lf.programSelector.input);
             }
         }
-        SFX_LOG_INFO("[LightFx] attached LedAnimator to %u/8 hub PWM ports",
-                     (unsigned)attached);
     }
 
-    // Stream every INFO+ log line live as TAG_ASYNC LOG_MESSAGE packets
-    // so the host's `subscribe` command sees the device tail in real
-    // time.  Entries continue to be buffered in the ring so DIAG_HISTORY
-    // still works for historical / late-attach inspection.  Bump to
-    // `DiagLevel::DEBUG` (here and via `setMinLevel`) when investigating
-    // the LightFx → LedAnimator wire path — there are DEBUG traces at
-    // every encode/decode/tick boundary.
+    // Mirror every INFO+ entry to the wire as TAG_ASYNC LOG_MESSAGE so
+    // `subscribe` sees the device tail live.  Bump to DEBUG when chasing
+    // LightFx ↔ LedAnimator path issues.
     DiagLog::instance().setWireMinLevel(DiagLevel::INFO);
 
     // Replay the silent initHardware() snapshot now that DiagLog has a
-    // serial sink (the probes happened before board.begin() so we
-    // captured them into hwInit{} and emit here).
+    // serial sink.
     board.logHardwareStatus();
 
     // I²C bus introspection — register the scan callback and mark every
@@ -616,14 +560,9 @@ void setup() {
     board.enableI2CScan(Wire);
     board.addExpectedI2CDevice(I2cAddr::TAS5825P);
     board.addExpectedI2CDevice(I2cAddr::PCA9685);
-    board.addExpectedI2CDevice(I2cAddr::INA226_CH1);
-    board.addExpectedI2CDevice(I2cAddr::INA226_CH2);
-    board.addExpectedI2CDevice(I2cAddr::INA226_CH3);
-    board.addExpectedI2CDevice(I2cAddr::INA226_CH4);
-    board.addExpectedI2CDevice(I2cAddr::INA226_CH5);
-    board.addExpectedI2CDevice(I2cAddr::INA226_CH6);
-    board.addExpectedI2CDevice(I2cAddr::INA226_CH7);
-    board.addExpectedI2CDevice(I2cAddr::INA226_CH8);
+    for (uint8_t k = 0; k < 8; ++k) {
+        board.addExpectedI2CDevice(kInaAddrs[k]);
+    }
 
     // Audio bring-up: Phase 1 (Core 0 codec probe + mixer alloc) →
     // Phase 1B Core 1 task launch (I²S init + producer spawn + consumer
@@ -639,27 +578,10 @@ void setup() {
     // the audio task and you hear glitches mid-transfer.
     wireUploadExclusivity<Mixer>(board.policy<StorageService>());
 
-    // Alert chimes — re-use the per-board init/error WAVs already on
-    // the SD card as the four severity slots.  This is install-time
-    // configuration; a YAML-driven path will land with ConfigService.
-    {
-        hubfx::effects::alerts::AlertServiceConfig cfg;
-        cfg.enabled = true;
-        cfg.channel = hubfx::effects::audio::HubFxLayout::Alert;
-        strncpy(cfg.info.path,
-                "/sounds/sys/hubfx_initialized.wav", sizeof(cfg.info.path) - 1);
-        strncpy(cfg.warning.path,
-                "/sounds/sys/lightfx_detected.wav", sizeof(cfg.warning.path) - 1);
-        strncpy(cfg.error.path,
-                "/sounds/sys/lightfx_fw_error.wav", sizeof(cfg.error.path) - 1);
-        strncpy(cfg.critical.path,
-                "/sounds/sys/gunfx_fw_error.wav", sizeof(cfg.critical.path) - 1);
-        cfg.info.volume     = 70;
-        cfg.warning.volume  = 80;
-        cfg.error.volume    = 90;
-        cfg.critical.volume = 100;
-        board.policy<AlertService>().configure(cfg);
-    }
+    // Alert chimes — configuration is driven by `/alerts.yaml`
+    // (severity → AlertSound + volume).  Initial config landed via
+    // `applyAlertsConfig` above; CONFIG_RELOAD re-applies.  The mixer
+    // channel is board-fixed at `HubFxLayout::Alert`.
 
     // ExpanderService log hooks — echo connect / identified / disconnect
     // events to the diag log as they happen during USB enumeration.
@@ -690,9 +612,10 @@ void setup() {
     SFX_LOG_INFO("[LandingLight] up — %u/%u lights configured",
                  (unsigned)board.policy<LandingLightService>().count(),
                  (unsigned)hubfx::effects::landing::kMaxLandingLights);
-    SFX_LOG_INFO("[LightFx] up — 1 program configured (\"AllOn\", 8 PWM channels)");
+    SFX_LOG_INFO("[LightFx] up — %u program(s) loaded from /lightfx/programs/",
+                 (unsigned)board.policy<LightFxEffectService>().controller().numPrograms());
 
-    SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out + storage + audio + alerts + USB host + topology + input-dispatcher + landing + lightfx",
+    SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out + storage + audio + alerts + USB host + topology + input + landing + lightfx + gear + engine + gun",
                  FIRMWARE_VERSION, (unsigned)BUILD_NUMBER);
 }
 
@@ -716,5 +639,16 @@ void loop() {
     board.process();
     storage.checkUploadTimeout();
     board.pollSense();
+
+    // Live-state telemetry — when /hubfx.yaml's `telemetry.inputs:` or
+    // `telemetry.outputs:` is on, emit one aggregated snapshot line per
+    // `interval_ms`.  No-op when both flags are off.
+    static uint32_t telemetryLastMs = 0;
+    hubfx::config::tickTelemetry(
+        board,
+        board.policy<InputDispatcherService>(),
+        kHubFx.data(),
+        telemetryLastMs);
+
     vTaskDelay(pdMS_TO_TICKS(1));
 }

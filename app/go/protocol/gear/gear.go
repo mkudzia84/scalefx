@@ -13,15 +13,18 @@ import (
 // ─── Packet types ────────────────────────────────────────────────────
 
 const (
-	Deploy     protocol.PacketType = 0xBE
-	Retract    protocol.PacketType = 0xBF
-	Stop       protocol.PacketType = 0xC0
-	All        protocol.PacketType = 0xC1
-	StatusReq  protocol.PacketType = 0xC2
-	StatusResp protocol.PacketType = 0xC3
-	PhaseEvent protocol.PacketType = 0xC4
-	ListReq    protocol.PacketType = 0xC5
-	ListResp   protocol.PacketType = 0xC6
+	Deploy      protocol.PacketType = 0xBE
+	Retract     protocol.PacketType = 0xBF
+	Stop        protocol.PacketType = 0xC0
+	All         protocol.PacketType = 0xC1
+	StatusReq   protocol.PacketType = 0xC2
+	StatusResp  protocol.PacketType = 0xC3
+	PhaseEvent  protocol.PacketType = 0xC4
+	ListReq     protocol.PacketType = 0xC5
+	ListResp    protocol.PacketType = 0xC6
+	Reset       protocol.PacketType = 0xC7
+	Calibrate   protocol.PacketType = 0xC8
+	CalibCancel protocol.PacketType = 0xC9
 )
 
 // ─── GEAR_ALL action codes ───────────────────────────────────────────
@@ -54,6 +57,7 @@ const (
 	PhaseDeployed     byte = 3
 	PhaseRetracting   byte = 4
 	PhaseError        byte = 5
+	PhaseCalibrating  byte = 6
 )
 
 func PhaseName(p byte) string {
@@ -70,19 +74,39 @@ func PhaseName(p byte) string {
 		return "retracting"
 	case PhaseError:
 		return "ERROR"
+	case PhaseCalibrating:
+		return "calibrating"
 	default:
 		return fmt.Sprintf("0x%02X?", p)
+	}
+}
+
+// PhaseSummary collapses the phase into the host's high-level status
+// view: idle (settled), moving, calibrating, or error.
+func PhaseSummary(p byte) string {
+	switch p {
+	case PhaseRetracted, PhaseDeployed:
+		return "idle"
+	case PhaseDeploying, PhaseRetracting:
+		return "moving"
+	case PhaseCalibrating:
+		return "calibrating"
+	case PhaseError:
+		return "error"
+	default:
+		return "unknown"
 	}
 }
 
 // ─── Error codes ─────────────────────────────────────────────────────
 
 const (
-	ErrUnknownID       protocol.ErrorCode = 0xC1
-	ErrTableFull       protocol.ErrorCode = 0xC2
+	ErrUnknownID        protocol.ErrorCode = 0xC1
+	ErrTableFull        protocol.ErrorCode = 0xC2
 	ErrMotorUnavailable protocol.ErrorCode = 0xC3
-	ErrInErrorState    protocol.ErrorCode = 0xC4
-	ErrTimeout         protocol.ErrorCode = 0xC5
+	ErrInErrorState     protocol.ErrorCode = 0xC4
+	ErrTimeout          protocol.ErrorCode = 0xC5
+	ErrNoStallDetected  protocol.ErrorCode = 0xC6
 )
 
 // ─── Decoded types ───────────────────────────────────────────────────
@@ -162,26 +186,32 @@ func DecodePhaseEvent(p []byte) (PhaseChange, error) {
 
 // ─── Command builders ────────────────────────────────────────────────
 
-func CmdDeploy(id byte) []byte    { return protocol.BuildPacket(Deploy, []byte{id}, 0) }
-func CmdRetract(id byte) []byte   { return protocol.BuildPacket(Retract, []byte{id}, 0) }
-func CmdStop(id byte) []byte      { return protocol.BuildPacket(Stop, []byte{id}, 0) }
-func CmdAll(action byte) []byte   { return protocol.BuildPacket(All, []byte{action}, 0) }
-func CmdStatusReq() []byte        { return protocol.BuildPacket(StatusReq, nil, 0) }
-func CmdListReq() []byte          { return protocol.BuildPacket(ListReq, nil, 0) }
+func CmdDeploy(id byte) []byte      { return protocol.BuildPacket(Deploy, []byte{id}, 0) }
+func CmdRetract(id byte) []byte     { return protocol.BuildPacket(Retract, []byte{id}, 0) }
+func CmdStop(id byte) []byte        { return protocol.BuildPacket(Stop, []byte{id}, 0) }
+func CmdAll(action byte) []byte     { return protocol.BuildPacket(All, []byte{action}, 0) }
+func CmdStatusReq() []byte          { return protocol.BuildPacket(StatusReq, nil, 0) }
+func CmdListReq() []byte            { return protocol.BuildPacket(ListReq, nil, 0) }
+func CmdReset(id byte) []byte       { return protocol.BuildPacket(Reset, []byte{id}, 0) }
+func CmdCalibrate(id byte) []byte   { return protocol.BuildPacket(Calibrate, []byte{id}, 0) }
+func CmdCalibCancel(id byte) []byte { return protocol.BuildPacket(CalibCancel, []byte{id}, 0) }
 
 // ─── Name registration ───────────────────────────────────────────────
 
 func init() {
 	protocol.RegisterPacketNames(map[protocol.PacketType]string{
-		Deploy:     "GEAR_DEPLOY",
-		Retract:    "GEAR_RETRACT",
-		Stop:       "GEAR_STOP",
-		All:        "GEAR_ALL",
-		StatusReq:  "GEAR_STATUS_REQ",
-		StatusResp: "GEAR_STATUS_RESP",
-		PhaseEvent: "GEAR_PHASE_EVENT",
-		ListReq:    "GEAR_LIST_REQ",
-		ListResp:   "GEAR_LIST_RESP",
+		Deploy:      "GEAR_DEPLOY",
+		Retract:     "GEAR_RETRACT",
+		Stop:        "GEAR_STOP",
+		All:         "GEAR_ALL",
+		StatusReq:   "GEAR_STATUS_REQ",
+		StatusResp:  "GEAR_STATUS_RESP",
+		PhaseEvent:  "GEAR_PHASE_EVENT",
+		ListReq:     "GEAR_LIST_REQ",
+		ListResp:    "GEAR_LIST_RESP",
+		Reset:       "GEAR_RESET",
+		Calibrate:   "GEAR_CALIBRATE",
+		CalibCancel: "GEAR_CALIB_CANCEL",
 	})
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{
 		ErrUnknownID:        "GEAR_UNKNOWN_ID",
@@ -189,5 +219,6 @@ func init() {
 		ErrMotorUnavailable: "GEAR_MOTOR_UNAVAILABLE",
 		ErrInErrorState:     "GEAR_IN_ERROR_STATE",
 		ErrTimeout:          "GEAR_TIMEOUT",
+		ErrNoStallDetected:  "GEAR_NO_STALL_DETECTED",
 	})
 }

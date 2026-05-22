@@ -105,6 +105,20 @@ public:
     /// Inspection.
     uint8_t numBindings() const { return _numBindings; }
 
+    /// Iterate every subscribed binding.  Used by the telemetry emitter
+    /// to walk live RC channel values without exposing the binding
+    /// table.  Callback signature: `fn(TriggerInput*, const PortRef&,
+    /// uint8_t channel)`.  Pure inspection — must not mutate the
+    /// dispatcher's state.
+    template <typename Fn>
+    void forEachBinding(Fn&& fn) const {
+        for (uint8_t i = 0; i < kMaxBindings; ++i) {
+            if (_bindings[i].occupied && _bindings[i].input) {
+                fn(_bindings[i].input, _bindings[i].source, _bindings[i].channel);
+            }
+        }
+    }
+
 private:
     void onRoleEvent(const char* guid, uint8_t innerType,
                      const uint8_t* p, size_t len);

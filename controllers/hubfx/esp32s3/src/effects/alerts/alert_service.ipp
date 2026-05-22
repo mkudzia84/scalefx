@@ -74,15 +74,25 @@ template <MixerLike TMixer>
 bool AlertServicePolicyT<TMixer>::beep(uint8_t severity, uint8_t outputMask) {
     if (!_cfg.enabled) return false;
     const AlertSeverityCfg* slot = slotFor(severity);
-    if (!slot || !slot->path[0]) {
+    if (!slot) {
+        SFX_LOG_DEBUG("[alert] severity %s: no slot",
+                      AlertSeverity::getName(severity));
+        return false;
+    }
+    // Resolve the path: enum lookup first (preferred — set via YAML's
+    // `sound: <name>` field), explicit override second.
+    const char* path = (slot->sound != AlertSound::None)
+                       ? alertSoundPath(slot->sound)
+                       : slot->path;
+    if (!path || !path[0]) {
         SFX_LOG_DEBUG("[alert] severity %s: no sound configured",
                       AlertSeverity::getName(severity));
         return false;
     }
     const uint8_t mask = outputMask ? outputMask : slot->outputMask;
-    if (!playCustom(slot->path, mask, slot->volume)) return false;
+    if (!playCustom(path, mask, slot->volume)) return false;
     _lastSeverity = severity;
-    SFX_LOG_INFO("[alert] %s → %s", AlertSeverity::getName(severity), slot->path);
+    SFX_LOG_INFO("[alert] %s → %s", AlertSeverity::getName(severity), path);
     return true;
 }
 

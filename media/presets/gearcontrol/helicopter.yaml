@@ -1,0 +1,48 @@
+# /gearcontrol.yaml — Gear definitions for the hub's GearControlService.
+#
+# Upload to the HUB's LittleFS as /gearcontrol.yaml.  Each gear is one
+# H-bridge motor (BiDcMotor role) addressed by PortRef.  `guid` is the
+# GearControl expander board's 4-hex deviceName suffix — e.g. a board
+# that enumerates as "GearCtrl-AB12" has guid "AB12".  Replace the
+# placeholder below with your board's actual GUID (read it from
+# `hub:slaves` / the IDENTIFY response).
+#
+# Status LEDs are NOT configured here — the GearControl expander lights
+# its own small per-motor direction LEDs locally from the H-bridge state
+# (CW = forward/deploy, CCW = reverse/retract; both blink on a hard
+# over-current fault).
+#
+# `/hubfx.yaml`'s `features.gears:` flag is the master kill-switch.
+#
+# Motor idx maps to the expander's H-bridge ports:
+#   hbridge idx 0/1/2 → motors on GP15/16, 17/18, 19/20
+#
+# deploy_duty / retract_duty are SIGNED H-bridge duties; the sign sets
+# polarity (down vs up).  timeout_ms is the full-travel watchdog — the
+# motor runs until the INA226 reports a stall (mechanical endpoint) or
+# this elapses (→ ERROR).
+
+schema_version: 1
+enabled: true
+
+gears:
+  - id: 0
+    name: nose
+    motor: { guid: "AB12", kind: hbridge, idx: 0 }
+    deploy_duty:   20000
+    retract_duty: -20000
+    timeout_ms:    4000
+
+  - id: 1
+    name: left_main
+    motor: { guid: "AB12", kind: hbridge, idx: 1 }
+    deploy_duty:   20000
+    retract_duty: -20000
+    timeout_ms:    4000
+
+  - id: 2
+    name: right_main
+    motor: { guid: "AB12", kind: hbridge, idx: 2 }
+    deploy_duty:   20000
+    retract_duty: -20000
+    timeout_ms:    4000

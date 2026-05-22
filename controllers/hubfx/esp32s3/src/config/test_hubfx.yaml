@@ -1,0 +1,27 @@
+# Test config — flips engine/alerts/gun to enabled, leaves the rest
+# at their defaults.  Used to verify Stage 2 wiring end-to-end.
+schema_version: 1
+
+lightfx:
+  enabled: true
+  master_brightness_pct: 75
+
+alerts:
+  enabled: true
+  channel: 0
+  info:     { path: /sounds/sys/hubfx_initialized.wav, volume_pct: 70 }
+  warning:  { path: /sounds/sys/lightfx_detected.wav,  volume_pct: 80 }
+  error:    { path: /sounds/sys/lightfx_fw_error.wav,  volume_pct: 90 }
+  critical: { path: /sounds/sys/gunfx_fw_error.wav,    volume_pct: 100 }
+
+enginefx:
+  enabled: true
+
+landing_lights:
+  enabled: true
+
+gears:
+  enabled: false
+
+gunfx:
+  enabled: true

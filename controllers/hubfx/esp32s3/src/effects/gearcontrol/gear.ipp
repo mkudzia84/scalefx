@@ -10,8 +10,6 @@
 #include <serial/wire.h>
 #include <serial/diag_log.h>
 
-#include "../lightfx/light_event.h"
-
 namespace hubfx::effects::gearctrl {
 
 inline void Gear::deploy() {
@@ -23,16 +21,18 @@ inline void Gear::deploy() {
         case GearPhase::Deployed:
             return;  // idempotent
         case GearPhase::Error:
-            SFX_LOG_WARN("[gear] deploy %u rejected — gear in ERROR (issue STOP first)", _def.id);
+            SFX_LOG_WARN("[gear] deploy %u rejected — gear in ERROR (GEAR_RESET first)", _def.id);
+            return;
+        case GearPhase::Calibrating:
+            SFX_LOG_WARN("[gear] deploy %u rejected — calibration in progress", _def.id);
             return;
         default:
             break;
     }
     if (_begin && _sendCtx) _begin(_sendCtx);
+    commandSeek(_def.deployDuty);              // expander seeks endstop + auto-brakes
     enterPhase(GearPhase::Deploying);
-    commandMotor(_def.deployDuty);
-    commandLedsOn();
-    _movingDeadlineMs = millis() + _def.timeoutMs;
+    armBackstop(millis());
     if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
@@ -45,16 +45,18 @@ inline void Gear::retract() {
         case GearPhase::Retracted:
             return;
         case GearPhase::Error:
-            SFX_LOG_WARN("[gear] retract %u rejected — gear in ERROR", _def.id);
+            SFX_LOG_WARN("[gear] retract %u rejected — gear in ERROR (GEAR_RESET first)", _def.id);
+            return;
+        case GearPhase::Calibrating:
+            SFX_LOG_WARN("[gear] retract %u rejected — calibration in progress", _def.id);
             return;
         default:
             break;
     }
     if (_begin && _sendCtx) _begin(_sendCtx);
+    commandSeek(_def.retractDuty);
     enterPhase(GearPhase::Retracting);
-    commandMotor(_def.retractDuty);
-    commandLedsOn();
-    _movingDeadlineMs = millis() + _def.timeoutMs;
+    armBackstop(millis());
     if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
@@ -62,47 +64,128 @@ inline void Gear::stop() {
     if (_state == GearPhase::Unconfigured) return;
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandMotorBrake();
-    commandLedsOff();
-    // STOP from Error returns the gear to Retracted (a known-safe
-    // baseline) so the operator can retry without needing a separate
-    // reset packet.
+    _calibStep = CalibStep::None;
+    // STOP from any moving / calibrating state returns the gear to a
+    // known-safe baseline (Retracted), or holds Deployed.  ERROR is
+    // NOT cleared by STOP — use GEAR_RESET (clearError) for that.
     enterPhase((_state == GearPhase::Deployed) ? GearPhase::Deployed
                                                : GearPhase::Retracted);
     _movingDeadlineMs = 0;
     if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
-inline void Gear::update(uint32_t nowMs) {
-    if (_state != GearPhase::Deploying && _state != GearPhase::Retracting) return;
-    if (_movingDeadlineMs == 0) return;
-    if ((int32_t)(nowMs - _movingDeadlineMs) < 0) return;
-
-    SFX_LOG_WARN("[gear] %u: motor timeout @%u ms — ERROR", _def.id, _def.timeoutMs);
+inline void Gear::clearError() {
+    if (_state != GearPhase::Error) return;
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandMotorBrake();
-    commandLedsOff();
+    _calibStep = CalibStep::None;
+    enterPhase(GearPhase::Retracted);
+    _movingDeadlineMs = 0;
+    if (_commit && _sendCtx) _commit(_sendCtx);
+    SFX_LOG_INFO("[gear] %u: error cleared → retracted", _def.id);
+}
+
+inline void Gear::calibrate() {
+    if (_state == GearPhase::Unconfigured) {
+        SFX_LOG_WARN("[gear] calibrate %u — not configured", _def.id);
+        return;
+    }
+    // First leg: seek the retract hard stop.
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    _calibStep = CalibStep::RetractHome;
+    commandSeek(_def.retractDuty);
+    enterPhase(GearPhase::Calibrating);
+    armBackstop(millis());
+    if (_commit && _sendCtx) _commit(_sendCtx);
+    SFX_LOG_INFO("[gear] %u: calibration started (retract→deploy→home)", _def.id);
+}
+
+inline void Gear::calibrateCancel() {
+    if (_state != GearPhase::Calibrating) return;
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    commandMotorBrake();
+    _calibStep = CalibStep::None;
+    enterPhase(GearPhase::Retracted);
+    _movingDeadlineMs = 0;
+    if (_commit && _sendCtx) _commit(_sendCtx);
+    SFX_LOG_INFO("[gear] %u: calibration cancelled", _def.id);
+}
+
+inline void Gear::update(uint32_t nowMs) {
+    // Backstop only.  The expander's seek timeout is authoritative and
+    // arrives as an ENDSTOP_RESULT(timeout); this fires solely if the
+    // expander goes silent (no result by the seek timeout + margin).
+    const bool moving = (_state == GearPhase::Deploying ||
+                         _state == GearPhase::Retracting ||
+                         _state == GearPhase::Calibrating);
+    if (!moving) return;
+    if (_movingDeadlineMs == 0) return;                  // no-timeout seek
+    if ((int32_t)(nowMs - _movingDeadlineMs) < 0) return;
+
+    SFX_LOG_WARN("[gear] %u: expander silent past seek timeout — ERROR", _def.id);
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    commandMotorBrake();
+    _calibStep = CalibStep::None;
     enterPhase(GearPhase::Error);
     _movingDeadlineMs = 0;
     if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
-inline void Gear::onMotorStall() {
-    if (_state == GearPhase::Deploying) {
+inline void Gear::onEndstopResult(uint8_t outcome) {
+    // Aborted results follow our own brake() (stop/clearError/cancel) —
+    // the phase is already set; nothing to do.
+    if (outcome == BiMotorSeekOutcome::Aborted) return;
+
+    const bool timedOut = (outcome == BiMotorSeekOutcome::Timeout);
+
+    // ── Calibration sweep ─────────────────────────────────────────────
+    if (_state == GearPhase::Calibrating) {
         if (_begin && _sendCtx) _begin(_sendCtx);
-        commandMotorBrake();
-        commandLedsOff();
-        enterPhase(GearPhase::Deployed);
-        _movingDeadlineMs = 0;
+        if (timedOut) {
+            SFX_LOG_WARN("[gear] %u: calib leg %u found no endstop — ERROR",
+                         _def.id, (unsigned)_calibStep);
+            _calibStep = CalibStep::None;
+            _movingDeadlineMs = 0;
+            enterPhase(GearPhase::Error);
+        } else switch (_calibStep) {        // outcome == Reached
+            case CalibStep::RetractHome:
+                _calibStep = CalibStep::DeployEnd;
+                commandSeek(_def.deployDuty);
+                armBackstop(millis());
+                SFX_LOG_DEBUG("[gear] %u calib: retract stop OK → deploy sweep", _def.id);
+                break;
+            case CalibStep::DeployEnd:
+                _calibStep = CalibStep::RetractFinal;
+                commandSeek(_def.retractDuty);
+                armBackstop(millis());
+                SFX_LOG_DEBUG("[gear] %u calib: deploy stop OK → home", _def.id);
+                break;
+            case CalibStep::RetractFinal:
+            default:
+                _calibStep = CalibStep::None;
+                _movingDeadlineMs = 0;
+                enterPhase(GearPhase::Retracted);
+                SFX_LOG_INFO("[gear] %u: calibration complete", _def.id);
+                break;
+        }
         if (_commit && _sendCtx) _commit(_sendCtx);
-    } else if (_state == GearPhase::Retracting) {
+        return;
+    }
+
+    // ── Normal travel ─────────────────────────────────────────────────
+    if (_state == GearPhase::Deploying || _state == GearPhase::Retracting) {
+        const uint8_t target = timedOut ? GearPhase::Error
+                             : (_state == GearPhase::Deploying ? GearPhase::Deployed
+                                                               : GearPhase::Retracted);
+        if (timedOut)
+            SFX_LOG_WARN("[gear] %u: seek timed out — ERROR", _def.id);
         if (_begin && _sendCtx) _begin(_sendCtx);
-        commandMotorBrake();
-        commandLedsOff();
-        enterPhase(GearPhase::Retracted);
+        // Expander already braked locally on reach/timeout — no brake here.
+        enterPhase(target);
         _movingDeadlineMs = 0;
         if (_commit && _sendCtx) _commit(_sendCtx);
     }
-    // else: stray stall while idle / in error — ignore.
+    // else: stray result while idle / error — ignore.
 }
 
 inline void Gear::enterPhase(uint8_t newPhase) {
@@ -111,13 +194,20 @@ inline void Gear::enterPhase(uint8_t newPhase) {
     if (_phase) _phase(_phaseCtx, _def.id, newPhase);
 }
 
-inline void Gear::commandMotor(int16_t signedDuty) {
+inline void Gear::commandSeek(int16_t signedDuty) {
     if (!_send) return;
-    uint8_t payload[3];
+    uint8_t payload[5];
     payload[0] = _def.motor.portIdx;
     SfxWire::putU16LE(&payload[1], static_cast<uint16_t>(signedDuty));
+    SfxWire::putU16LE(&payload[3], (uint16_t)_def.timeoutMs);   // 0 = no timeout
     _send(_sendCtx, _def.motor,
-          RolePacket::BIMOTOR_SET_SIGNED, payload, sizeof(payload));
+          RolePacket::BIMOTOR_SEEK_ENDSTOP, payload, sizeof(payload));
+}
+
+inline void Gear::armBackstop(uint32_t nowMs) {
+    // Hub-side silent-expander guard: a bit beyond the seek's own
+    // timeout.  0 timeout ⇒ no backstop (seek runs until stall/abort).
+    _movingDeadlineMs = (_def.timeoutMs != 0) ? (nowMs + _def.timeoutMs + 1000u) : 0;
 }
 
 inline void Gear::commandMotorBrake() {
@@ -125,39 +215,6 @@ inline void Gear::commandMotorBrake() {
     const uint8_t payload[1] = { _def.motor.portIdx };
     _send(_sendCtx, _def.motor,
           RolePacket::BIMOTOR_BRAKE, payload, sizeof(payload));
-}
-
-inline void Gear::commandLedsOn() {
-    if (!_send) return;
-    using hubfx::effects::lightfx::LightEvent;
-    using hubfx::effects::lightfx::serializeQueueLoad;
-
-    LightEvent ev = LightEvent::on(/*brightness=*/100, /*durationMs=*/0);
-    for (uint8_t i = 0; i < _def.numLeds; ++i) {
-        const PortRef& led = _def.leds[i];
-        uint8_t queue[2 + 10];
-        size_t qlen = serializeQueueLoad(led.portIdx, &ev, 1,
-                                         queue, sizeof(queue));
-        if (qlen == 0) continue;
-        _send(_sendCtx, led, RolePacket::LED_QUEUE_LOAD, queue, qlen);
-        const uint8_t bright[2] = { led.portIdx, 100 };
-        _send(_sendCtx, led, RolePacket::LED_SET_BRIGHTNESS,
-              bright, sizeof(bright));
-        const uint8_t start[1] = { led.portIdx };
-        _send(_sendCtx, led, RolePacket::LED_START, start, sizeof(start));
-    }
-}
-
-inline void Gear::commandLedsOff() {
-    if (!_send) return;
-    for (uint8_t i = 0; i < _def.numLeds; ++i) {
-        const PortRef& led = _def.leds[i];
-        const uint8_t stop[1]   = { led.portIdx };
-        const uint8_t bright[2] = { led.portIdx, 0 };
-        _send(_sendCtx, led, RolePacket::LED_STOP, stop, sizeof(stop));
-        _send(_sendCtx, led, RolePacket::LED_SET_BRIGHTNESS,
-              bright, sizeof(bright));
-    }
 }
 
 }  // namespace hubfx::effects::gearctrl

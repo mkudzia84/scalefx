@@ -79,10 +79,17 @@ public:
         : _a(&pwmA), _b(&pwmB) {}
 
     bool begin() override {
-        // PwmPorts are independently begin()'d by the registry; we
-        // still drive both to zero here to leave the bridge coasting.
+        // Begin both half-bridges.  Idempotent for ports that are ALSO
+        // registered separately (e.g. PCA9685 channels declared in
+        // kPwmPorts) — begin() just re-zeros them.  Essential for
+        // native-GPIO PWM pins that are NOT separately registered (the
+        // common motor-driver case): without this their pinMode /
+        // analogWriteResolution never runs.
+        bool ok = true;
+        if (_a) ok = _a->begin() && ok;
+        if (_b) ok = _b->begin() && ok;
         coast();
-        return true;
+        return ok;
     }
 
     void setSigned(int16_t signedDuty) override {
