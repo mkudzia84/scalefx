@@ -936,17 +936,19 @@ tests/
 │   ├── upload_test/          Integration test driving real HW upload
 │   ├── storage_test_client/  Driver for tests/hw/storage_test
 │   └── usb_diag/             USB host & slave detection diagnostics
-├── fixtures/            Test data
-│   └── upload_fixtures/      Generated SD images + small flash payloads
-└── virtual_board/       Go simulator + in-process unit tests
-                         (LightFX, GearControl, GunFX, HubFX over TCP)
+└── fixtures/            Test data
+    └── upload_fixtures/      Generated SD images + small flash payloads
 ```
+
+(The `virtual_board/` TCP simulator + its `tcp://` transport, the
+`virtualdiscovery` package, and the Studio/CLI manual-port connect option
+were removed 2026-05-22 — Studio and the CLI talk to real serial hardware
+only.)
 
 | Group | What it is | When to use |
 |-------|-----------|-------------|
 | `tests/hw/` | PlatformIO firmware projects | Bench bring-up of a freshly populated PCB; reproducing analog/timing issues that need real silicon |
 | `tests/host/` | Go programs | Unit tests, protocol fuzzing, USB diagnostics, driving HW tests from the desktop |
-| `tests/virtual_board/` | Go simulator | UI development without flashing; deterministic event/timing tests; CLI/Studio smoke-tests via `tcp://...` |
 | `tests/fixtures/` | Test data | Inputs for upload/storage tests |
 
 ### 22. Release Notes (MANDATORY)
@@ -1445,6 +1447,22 @@ A class / helper / free function MUST NOT take a template parameter that is reco
 - Add a "concept-driven" `findPolicy` mechanism just to remove one type-mention duplication — that's overshoot; the alias pattern is enough.
 
 **Reference refactor:** [esp_dual_core_audio.h](controllers/lib/sfx_audio/audio/esp_dual_core_audio.h) (May 2026) — codec adapter trait keyed on `TMixer::Codec`; sketch writes `EspDualCoreAudio<Mixer>` and specializes `CodecAdapter<TAS5825PCodec>` next to its pin map. Codec is named once, at `using Mixer = AudioMixer<EspI2SOutput, TAS5825PCodec>;`.
+
+### 34. Studio Design System — Reuse the Shared Component Classes (MANDATORY for Studio UI)
+
+ScaleFX Studio has ONE design language defined in [style.css](app/go/studio/frontend/src/style.css). Every tab/panel/dialog composes those shared classes — it does NOT invent bespoke button / input / card styling in its own `<style>` block. New per-component CSS is for *layout* (grid/flex placement) only, never for re-skinning controls. This keeps control heights, paddings, and colours uniform (the regression that motivated this rule: hand-rolled `.btn`/`select` styles with mismatched padding produced ragged, different-height controls across the IO tab).
+
+**The vocabulary (use these, don't redefine):**
+
+- **Buttons:** the bare `button` element (already styled); `button.primary` for the confirming action; `.small` / `.tiny` size modifiers; `.action-btn` (icon+label), `.danger`. Never set `padding`/`background`/`border` on a button in a component — pick a modifier.
+- **Inputs & selects:** `.field-input` (+ `.narrow` / `.wide`). All text inputs, number inputs, and `<select>`s carry it so they share one height. A row of mixed buttons + selects gets `height: 28px; box-sizing: border-box` on the group so they line up exactly.
+- **Cards:** `.card` + `.card-header` (with `<h3>` uppercase title, optional inline `svg`) + `.header-actions`.
+- **Forms:** `.form-row` (label + controls inline), `.form-field` / `.form-grid.cols-2|3` (stacked), `.field-label`, `.field-hint`.
+- **State:** `.state-badge`, `.empty-state`, `.banner` (err/note).
+- **Layout:** `.tab-content` (padding + scroll), two-column tabs split with a `1px var(--border)` divider; each column `overflow:auto`.
+- **Colours:** always the CSS vars (`--bg-surface`, `--bg-raised`, `--bg-input`, `--border`, `--text`/`--text-dim`/`--text-bright`, `--accent`, `--success`, `--error`, `--warning`). Never hard-code hex.
+
+**Conventions baked into the IO/device-model tabs (follow them):** human-readable labels in every dropdown (role kinds via `devicemodel.RoleLabel`, never raw kebab wire names); a port that can host exactly one role (servo) shows a fixed tag + a name field, not a 1-option dropdown; role pickers list only the kinds a port may host (`Port.AllowedRoles`); live value bars sit *under* the channel they belong to and render an explicit **NO SIGNAL** state (striped track) when the frame is missing/invalid, never a bare dash. Reference: [InputPanel.svelte](app/go/studio/frontend/src/lib/tabs/InputPanel.svelte), [PortRoleTab.svelte](app/go/studio/frontend/src/lib/tabs/PortRoleTab.svelte).
 
 ## Key Architecture Patterns
 

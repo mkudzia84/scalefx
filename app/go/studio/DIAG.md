@@ -79,7 +79,7 @@ show up in stdout/log/GUI together with the Go-side breadcrumbs.
 - Panics in any Wails method: full stack trace under `PANIC`, then the panic re-raised
 - Connect/Disconnect/Reconnect lifecycle with port + controller name + caps + build #
 - All async packets received from the device (first STATUS at INFO, every other one at DEBUG)
-- Port-watcher list deltas: `added=[…] removed=[…] total=N` whenever the OS-enumerated + virtual-board list changes
+- Port-watcher list deltas: `added=[…] removed=[…] total=N` whenever the OS-enumerated serial port list changes
 - 10 s heartbeat: connection state, goroutine count, heap size
 
 ### Frontend (JS/Svelte)
