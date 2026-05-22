@@ -7,24 +7,35 @@
     import ViewSettingsDialog from './lib/dialogs/ViewSettingsDialog.svelte'
     import FlashProgressDialog from './lib/dialogs/FlashProgressDialog.svelte'
     import FileManagerDialog from './lib/dialogs/FileManagerDialog.svelte'
+    import PcbOverlayDialog from './lib/dialogs/PcbOverlayDialog.svelte'
     import MainLayout from './lib/layout/MainLayout.svelte'
     import {
         boardState, connectPopupOpen, showAboutDialog, showConsole,
-        showViewSettings, showFileManager,
+        showViewSettings, showFileManager, showPcbOverlay,
         connectionInfo, activeTab, showFlashProgress,
-        pushConsoleMessage, slaveInfo,
+        pushConsoleMessage,
     } from './lib/stores'
-    import type { ConsoleMessage, SlaveInfo } from './lib/stores'
+    import type { ConsoleMessage } from './lib/stores'
     import { theme, fontSize } from './lib/theme'
     import { EventsOn } from '../wailsjs/runtime/runtime'
-    import { GetConnectionInfo, GetSlaveInfo } from '../wailsjs/go/main/App'
+    import { GetConnectionInfo } from '../wailsjs/go/main/App'
     import { installDiagBridge, diag } from './lib/diag'
+    import {
+        installDeviceModelBridge, installInputValuesBridge, loadCatalogs,
+        refresh as refreshDeviceModel, reset as resetDeviceModel,
+    } from './lib/devicemodel'
 
     onMount(async () => {
         // Hook window.onerror / unhandledrejection / console.error so JS
         // exceptions show up in the same diagnostic stream as Go events.
         installDiagBridge()
         diag.info('FE.APP', 'App.svelte mounted')
+
+        // Device-model events + catalogs (domains/roles/presets are
+        // available pre-connect so the tab strip renders immediately).
+        installDeviceModelBridge()
+        installInputValuesBridge()
+        try { await loadCatalogs() } catch { /* app still starting */ }
 
         // Console output events from backend (always active, even when panel hidden)
         EventsOn('console:output', (msg: { type: string; content: string }) => {
@@ -61,17 +72,11 @@
             if (info.connected) {
                 $boardState = 'connected'
                 $connectPopupOpen = false
-                // Seed the slave list on connect so HubFX tabs appear
-                // immediately (greyed out) before the first STATUS_BROADCAST.
-                if (info.controllerType === 'hubfx') {
-                    try {
-                        const list = await GetSlaveInfo()
-                        $slaveInfo = (list || []).map((s: any) => ({
-                            ...s, enabled: s.enabled ?? true,
-                        }))
-                    } catch { /* ignore */ }
-                } else {
-                    $slaveInfo = []
+                // Pull the topology (ports + roles) so the setup +
+                // functional tabs populate.  Capability-gated domain tabs
+                // appear once the model reports the hub's capabilities.
+                try { await refreshDeviceModel() } catch (e) {
+                    diag.warn('FE.DM', 'device-model refresh failed', { err: String(e) })
                 }
             } else if (wasConnected && $boardState !== 'flashing') {
                 // Unexpected disconnect (not flashing) — show connect popup
@@ -79,24 +84,8 @@
                 $boardState = 'disconnected'
                 $connectPopupOpen = true
                 $activeTab = 0
-                $slaveInfo = []
+                resetDeviceModel()
             }
-        })
-
-        // Slave online/offline state — driven by HubFX STATUS_BROADCAST
-        // (every ~1s from the hub). The tab bar reads $slaveInfo reactively,
-        // so tabs fade/unfade as slaves connect or disconnect. The backend
-        // doesn't track the per-slave `enabled` UI toggle, so merge it from
-        // the previous store snapshot instead of resetting to true.
-        EventsOn('slaves:changed', (list: SlaveInfo[]) => {
-            slaveInfo.update(prev => {
-                const enabledBy: Record<string, boolean> = {}
-                for (const s of prev) enabledBy[s.type] = s.enabled ?? true
-                return (list || []).map((s: any) => ({
-                    ...s,
-                    enabled: enabledBy[s.type] ?? s.enabled ?? true,
-                }))
-            })
         })
 
         // Load initial connection state
@@ -106,14 +95,7 @@
             if (info.connected) {
                 $boardState = 'connected'
                 $connectPopupOpen = false
-                if (info.controllerType === 'hubfx') {
-                    try {
-                        const list = await GetSlaveInfo()
-                        $slaveInfo = (list || []).map((s: any) => ({
-                            ...s, enabled: s.enabled ?? true,
-                        }))
-                    } catch { /* ignore */ }
-                }
+                try { await refreshDeviceModel() } catch { /* ignore */ }
             }
         } catch (_) {
             // app still starting
@@ -150,6 +132,10 @@
 
 {#if $showFileManager}
     <FileManagerDialog />
+{/if}
+
+{#if $showPcbOverlay}
+    <PcbOverlayDialog />
 {/if}
 
 <style>

@@ -1,26 +1,21 @@
 <!-- ScaleFX Studio — Main Layout -->
 <!-- The main application view shown after connecting. Tab bar + content area + console panel + status bar. -->
 <script lang="ts">
-    import { onMount } from 'svelte'
     import TabBar from './TabBar.svelte'
     import StatusBar from './StatusBar.svelte'
     import ConsolePanel from '../dialogs/ConsoleDialog.svelte'
-    import BoardTab from '../tabs/BoardTab.svelte'
     import FirmwareTab from '../tabs/FirmwareTab.svelte'
-    import HubFxTab from '../tabs/HubFxTab.svelte'
-    import GunFxTab from '../tabs/GunFxTab.svelte'
-    import GearControlTab from '../tabs/GearControlTab.svelte'
-    import LightFxTab from '../tabs/LightFxTab.svelte'
-    import { connectionInfo, activeTab, slaveInfo, showConsole } from '../stores'
+    import IoTab from '../tabs/IoTab.svelte'
+    import DomainTab from '../tabs/DomainTab.svelte'
+    import { showConsole, activeTab } from '../stores'
+    import { studioTabs } from '../devicemodel'
 
-    // Derive tab count to clamp activeTab
-    $: isHubFX = $connectionInfo.controllerType === 'hubfx'
-    $: slaveCount = isHubFX ? $slaveInfo.length : 0
-    $: tabCount = (isHubFX ? 1 + slaveCount : 1) + 1 // +1 for firmware
-    $: if ($activeTab >= tabCount) $activeTab = 0
-
-    // Determine which tab type to show
-    $: isFirmwareTab = $activeTab === tabCount - 1
+    // The tab strip is derived from the device model (see devicemodel.ts):
+    // two fixed setup tabs (Ports & Roles, Inputs), one tab per
+    // capability-available functional domain, then Firmware.  This pane
+    // renders whichever tab `activeTab` points at.
+    $: tabs = $studioTabs
+    $: current = tabs[Math.min($activeTab, tabs.length - 1)] ?? tabs[0]
 
     // --- Resizable console pane ---
     let consoleWidthPct = 40          // percentage of main-body width
@@ -57,42 +52,17 @@
 
     <div class="main-body" bind:this={mainBodyEl} class:resizing={dragging}>
         <div class="main-content">
-            <!-- Keep-alive: all tabs always mounted, only active one visible -->
-            <div class="tab-pane" class:hidden={!isFirmwareTab}>
-                <FirmwareTab />
+            <div class="tab-pane">
+                {#if current?.kind === 'io'}
+                    <IoTab />
+                {:else if current?.kind === 'domain' && current.domain}
+                    {#key current.key}
+                        <DomainTab domain={current.domain} />
+                    {/key}
+                {:else}
+                    <FirmwareTab />
+                {/if}
             </div>
-
-            {#if isHubFX}
-                <div class="tab-pane" class:hidden={isFirmwareTab || $activeTab !== 0}>
-                    <HubFxTab boardLabel={$connectionInfo.controllerName || 'HubFX'} />
-                </div>
-
-                {#each $slaveInfo as slave, i (i)}
-                    <div class="tab-pane" class:hidden={isFirmwareTab || $activeTab !== i + 1}>
-                        {#if slave.type === 'gunfx'}
-                            <GunFxTab boardLabel={slave.name} />
-                        {:else if slave.type === 'gearcontrol'}
-                            <GearControlTab boardLabel={slave.name} />
-                        {:else if slave.type === 'lightfx'}
-                            <LightFxTab boardLabel={slave.name} />
-                        {:else}
-                            <BoardTab boardType={slave.type} boardLabel={slave.name} />
-                        {/if}
-                    </div>
-                {/each}
-            {:else}
-                <div class="tab-pane" class:hidden={isFirmwareTab}>
-                    {#if $connectionInfo.controllerType === 'gunfx'}
-                        <GunFxTab boardLabel={$connectionInfo.controllerName || 'GunFX'} />
-                    {:else if $connectionInfo.controllerType === 'gearcontrol'}
-                        <GearControlTab boardLabel={$connectionInfo.controllerName || 'GearControl'} />
-                    {:else if $connectionInfo.controllerType === 'lightfx'}
-                        <LightFxTab boardLabel={$connectionInfo.controllerName || 'LightFX'} />
-                    {:else}
-                        <BoardTab boardType={$connectionInfo.controllerType} boardLabel={$connectionInfo.controllerName || 'Board'} />
-                    {/if}
-                </div>
-            {/if}
         </div>
 
         {#if $showConsole}
@@ -154,10 +124,6 @@
         flex-direction: column;
         flex: 1;
         min-height: 0;
-    }
-
-    .tab-pane.hidden {
-        display: none;
     }
 
     .console-pane {

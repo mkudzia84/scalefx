@@ -27,14 +27,6 @@ export interface PortInfo {
     description: string
 }
 
-export interface SlaveInfo {
-    type: string
-    name: string
-    connected: boolean
-    ready: boolean
-    enabled: boolean
-}
-
 // ─── Connection state ───
 
 export const connectionInfo = writable<ConnectionInfo>({
@@ -76,15 +68,14 @@ export const showAboutDialog = writable(false)
 export const showViewSettings = writable(false)
 export const showConsole = writable(false)
 export const showFileManager = writable(false)
+/** PCB schematic overlay dialog (port/role mapping on the board photo) */
+export const showPcbOverlay = writable(false)
 
 /** Currently active tab index */
 export const activeTab = writable(0)
 
 /** Available COM ports (updated by port watcher) */
 export const availablePorts = writable<PortInfo[]>([])
-
-/** Slave controller info (HubFX only) */
-export const slaveInfo = writable<SlaveInfo[]>([])
 
 // ─── Firmware flashing state ───
 

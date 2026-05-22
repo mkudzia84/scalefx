@@ -1,0 +1,67 @@
+// ScaleFX Studio — PCB overlay layout.
+//
+// Maps a board's ports to (x%, y%) positions on its top-side PCB photo so
+// the schematic dialog can drop interactive markers on the real board.
+// Coordinates are percentages of the image and come from measurement, not
+// eyeballing: tools/analyze_hubfx.go detects the connector silkscreen /
+// housings (white + magenta colour masks → flood-fill bounding boxes) and
+// prints centroids; re-run it if a render is regenerated.
+
+import hubfxTop from '../assets/pcb/hubfx_top.png'
+import { PortKind } from './devicemodel'
+
+export interface PortMarker {
+    kind: number
+    index: number
+    label: string   // silkscreen label (CH1, SRV1, IN1)
+    x: number       // % of image width
+    y: number       // % of image height
+}
+// Informational (non-port) markers — labelled board features that have no
+// assignable role, e.g. the speaker outputs.  Rendered read-only.
+export interface InfoMarker {
+    label: string
+    x: number
+    y: number
+    title: string
+}
+export interface BoardPcb {
+    image: string
+    markers: PortMarker[]
+    info: InfoMarker[]
+}
+
+// ─── HubFX (769×969 top view) — measured centroids ────────────────────
+// Left edge   : CH1..CH8  → PCA9685 LED/PWM channels (pwm 0..7), x≈7.7%.
+// Right edge  : IN_12 (top) … IN_1 (bottom) header column, x≈94%.
+//               IN_2..IN_12 are servo ports 0..10 (SRV1..SRV11); IN_1 is
+//               the single input port.  So top→bottom = SRV11..SRV1, IN1.
+const hubMarkers: PortMarker[] = []
+{
+    const chY = [11.1, 17.2, 23.3, 29.4, 35.5, 41.7, 47.8, 53.9] // CH1..CH8
+    chY.forEach((y, i) => hubMarkers.push({ kind: PortKind.Pwm, index: i, label: `CH${i + 1}`, x: 7.7, y }))
+
+    // Right column, top→bottom (12 rows).  The headers sit on a denser
+    // grid than the silkscreen labels the detector caught — ~3% apart, not
+    // ~6% — so the column is anchored at the top row and compacted.
+    const rightY = [9.2, 12.25, 15.3, 18.35, 21.4, 24.45, 27.5, 30.55, 33.6, 36.65, 39.7, 42.75]
+    for (let i = 0; i < 11; i++) {
+        const servoIdx = 10 - i               // top row = SRV11 (IN_12) … = servo[10]
+        hubMarkers.push({ kind: PortKind.Servo, index: servoIdx, label: `SRV${servoIdx + 1}`, x: 94, y: rightY[i] })
+    }
+    hubMarkers.push({ kind: PortKind.Input, index: 0, label: 'IN1', x: 94, y: rightY[11] })
+}
+
+// Audio (speaker) outputs — top edge, L + R; informational only.
+const hubInfo: InfoMarker[] = [
+    { label: 'SPK L', x: 74.4, y: 3.4, title: 'Speaker output — left (TAS5825P)' },
+    { label: 'SPK R', x: 84.7, y: 3.4, title: 'Speaker output — right (TAS5825P)' },
+]
+
+export const boardPcb: Record<string, BoardPcb> = {
+    hubfx: { image: hubfxTop, markers: hubMarkers, info: hubInfo },
+}
+
+export function pcbFor(boardKind: string): BoardPcb | undefined {
+    return boardPcb[boardKind]
+}

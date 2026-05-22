@@ -13,7 +13,6 @@
     import logoUrl from '../../assets/images/logo.jpg'
 
     let selectedPort = ''
-    let manualPort = ''
     let loading = false
     let connecting = false
     let errorMsg = ''
@@ -73,14 +72,6 @@
         connecting = false
     }
 
-    function doConnectManual() {
-        const trimmed = manualPort.trim()
-        if (!trimmed) return
-        // Free-text path covers virtual boards (`tcp://localhost:9000`) and
-        // any port name not enumerated by the OS (e.g. com0com pairs).
-        doConnect(trimmed)
-    }
-
     function handleKeydown(e: KeyboardEvent) {
         if (e.key === 'Enter' && selectedPort && !connecting) doConnect()
         if (e.key === 'Escape') dismiss()
@@ -133,24 +124,6 @@
                     </button>
                 {/each}
             {/if}
-        </div>
-
-        <div class="manual-row">
-            <input
-                type="text"
-                class="manual-input"
-                placeholder="Or type a port (e.g. tcp://localhost:9000, COM12)"
-                bind:value={manualPort}
-                on:keydown={(e) => { if (e.key === 'Enter') doConnectManual() }}
-            />
-            <button
-                class="btn-link"
-                on:click={doConnectManual}
-                disabled={!manualPort.trim() || connecting}
-                title="Connect to virtual board / manual COM port"
-            >
-                Go
-            </button>
         </div>
 
         {#if errorMsg}
@@ -244,28 +217,6 @@
         border-radius: 6px;
         background: var(--bg-surface);
         margin-bottom: 12px;
-    }
-
-    .manual-row {
-        display: flex;
-        gap: 8px;
-        margin-bottom: 12px;
-    }
-
-    .manual-input {
-        flex: 1;
-        background: var(--bg-surface);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        color: var(--text-bright);
-        padding: 6px 10px;
-        font-family: var(--font-mono, monospace);
-        font-size: 12px;
-    }
-
-    .manual-input:focus {
-        outline: none;
-        border-color: var(--accent, #4a9eff);
     }
 
     .port-empty {

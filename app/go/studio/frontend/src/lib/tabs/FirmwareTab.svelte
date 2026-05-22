@@ -1,10 +1,65 @@
 <!-- ScaleFX Studio — Firmware Tab -->
 <!-- Displays connected board info, available GitHub releases, and flash controls. -->
 <script lang="ts">
-    import { connectionInfo, slaveInfo, firmwareTargets, firmwareRunning, firmwareLogs, boardState, connectPopupOpen, availableReleases, showFlashProgress, flashResult } from '../stores'
+    import { connectionInfo, firmwareTargets, firmwareRunning, firmwareLogs, boardState, connectPopupOpen, availableReleases, showFlashProgress, flashResult } from '../stores'
     import type { FirmwareTarget, ReleaseInfo } from '../stores'
-    import { GetFirmwareTargets, GetReleases, FlashFromRelease } from '../../../wailsjs/go/main/App'
+    import { GetFirmwareTargets, GetReleases, FlashFromRelease, DeviceSystemInfo } from '../../../wailsjs/go/main/App'
     import { onMount, tick } from 'svelte'
+
+    // ── Board capability + topology view (DeviceSystemInfo) ──────────
+    // One-shot fetched after connect: decoded capability flags plus — on a
+    // hub — the full port roster + every connected expander (incl. battery).
+    let deviceInfo: any = null
+    let deviceInfoErr = ''
+    let lastInfoKey = ''
+
+    async function loadDeviceInfo() {
+        if (!$connectionInfo.connected) { deviceInfo = null; deviceInfoErr = ''; return }
+        try {
+            deviceInfo = await DeviceSystemInfo()
+            deviceInfoErr = ''
+        } catch (e: any) {
+            deviceInfoErr = e?.message || String(e)
+            deviceInfo = null
+        }
+    }
+
+    // Refetch once per connect / disconnect / port change.
+    $: {
+        const k = $connectionInfo.connected ? $connectionInfo.port : ''
+        if (k !== lastInfoKey) { lastInfoKey = k; loadDeviceInfo() }
+    }
+
+    // Find the cached battery reading for a board GUID (expanders only).
+    function batteryFor(guid: string): any {
+        const exps = deviceInfo?.system?.expanders
+        if (!exps || !guid) return null
+        for (const e of exps) {
+            if (e.guid === guid && e.battery && e.battery.valid) return e.battery
+        }
+        return null
+    }
+
+    function fmtBattery(b: any): string {
+        if (!b?.present) return 'no battery'
+        let s = `${(b.voltage_mV / 1000).toFixed(2)} V`
+        if (b.cellCount > 0) s += ` · ${b.cellCount}S`
+        s += ` · ${b.pct}%`
+        if (b.flags & 0x02) s += ' · CUTOFF'
+        else if (b.flags & 0x01) s += ' · LOW'
+        return s
+    }
+
+    // Compact per-kind port counts for a board's PortList.
+    function portRows(p: any): string[] {
+        if (!p) return []
+        const rows: string[] = []
+        if (p.Servos?.length) rows.push(`servo ×${p.Servos.length}`)
+        if (p.Pwms?.length) rows.push(`pwm ×${p.Pwms.length}`)
+        if (p.HBridges?.length) rows.push(`hbridge ×${p.HBridges.length}`)
+        if (p.Inputs?.length) rows.push(`input ×${p.Inputs.length}`)
+        return rows
+    }
 
     // Flash controls
     let selectedController = ''
@@ -141,36 +196,53 @@
         {/if}
     </section>
 
-    {#if $connectionInfo.controllerType === 'hubfx' && $slaveInfo.length > 0}
+    <!-- Board Capabilities (from IDENTIFY) -->
+    {#if $connectionInfo.connected}
         <section class="info-section">
-            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg> Slave Controllers</h3>
-            <table class="info-table">
-                <thead>
-                    <tr>
-                        <th>Type</th>
-                        <th>Name</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {#each $slaveInfo as slave}
-                        <tr>
-                            <td>{slave.type}</td>
-                            <td class="mono">{slave.name || '—'}</td>
-                            <td>
-                                {#if slave.ready}
-                                    <span class="status ready">● Ready</span>
-                                {:else if slave.connected}
-                                    <span class="status connected">● Connected</span>
-                                {:else}
-                                    <span class="status disconnected">○ Not Connected</span>
-                                {/if}
-                            </td>
-                        </tr>
+            <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> Capabilities</h3>
+            {#if deviceInfoErr}
+                <p class="fetch-error">{deviceInfoErr}</p>
+            {:else if deviceInfo?.capabilityNames?.length}
+                <div class="cap-chips">
+                    {#each deviceInfo.capabilityNames as cap}
+                        <span class="cap-chip">{cap}</span>
                     {/each}
-                </tbody>
-            </table>
+                </div>
+            {:else}
+                <p class="no-data">No capabilities advertised</p>
+            {/if}
         </section>
+
+        <!-- System Topology — hub + expanders + per-board port roster -->
+        {#if deviceInfo?.hasTopology}
+            <section class="info-section">
+                <div class="section-header">
+                    <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><line x1="12" y1="3" x2="12" y2="9"/><line x1="12" y1="15" x2="12" y2="21"/><line x1="3" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="21" y2="12"/></svg> System Topology</h3>
+                    <button class="btn-refresh" on:click={loadDeviceInfo}>Refresh</button>
+                </div>
+                {#if deviceInfo.ports?.length}
+                    {#each deviceInfo.ports as board}
+                        {@const bat = batteryFor(board.guid)}
+                        <div class="board-block">
+                            <div class="board-head">
+                                <span class="board-name">{board.deviceName || board.guid || 'hub'}</span>
+                                <span class="mono text-dim">[{board.guid || 'hub'}]</span>
+                                {#if bat}<span class="batt-pill" class:warn={bat.flags & 0x03}>{fmtBattery(bat)}</span>{/if}
+                            </div>
+                            <div class="port-rows">
+                                {#each portRows(board.ports) as row}
+                                    <span class="port-pill">{row}</span>
+                                {:else}
+                                    <span class="text-dim">no ports</span>
+                                {/each}
+                            </div>
+                        </div>
+                    {/each}
+                {:else}
+                    <p class="no-data">No ports reported</p>
+                {/if}
+            </section>
+        {/if}
     {/if}
 
     <!-- Available Releases -->
@@ -435,22 +507,6 @@
         font-family: var(--font-mono);
     }
 
-    .status {
-        font-size: 12px;
-    }
-
-    .status.ready {
-        color: var(--success);
-    }
-
-    .status.connected {
-        color: var(--warning);
-    }
-
-    .status.disconnected {
-        color: var(--text-dim);
-    }
-
     /* ─── Releases Table ─── */
 
     .releases-table tr.highlight {
@@ -482,6 +538,70 @@
     }
 
     .text-dim {
+        color: var(--text-dim);
+    }
+
+    /* ─── Capabilities + Topology ─── */
+
+    .cap-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .cap-chip {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        padding: 3px 9px;
+        border-radius: 12px;
+        background: var(--badge-current-bg, var(--bg-secondary));
+        color: var(--badge-current-fg, var(--text));
+        border: 1px solid var(--border);
+        white-space: nowrap;
+    }
+
+    .board-block {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+    }
+
+    .board-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+    }
+
+    .board-name {
+        font-weight: 600;
+        color: var(--text-bright);
+    }
+
+    .batt-pill {
+        margin-left: auto;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--success);
+    }
+
+    .batt-pill.warn {
+        color: var(--error);
+    }
+
+    .port-rows {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .port-pill {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 3px;
+        background: var(--bg-secondary);
         color: var(--text-dim);
     }
 
