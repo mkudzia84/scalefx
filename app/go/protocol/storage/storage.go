@@ -217,6 +217,19 @@ func CmdFileDownload(path string) []byte {
 	return protocol.BuildPacket(FileDownload, payload, 0)
 }
 
+// CmdFileDownloadAt is the target-aware variant.  The firmware's
+// extractPathAndTarget treats the trailing byte as the requested backend
+// (TargetSD / TargetFlash); CmdFileDownload omits it and the firmware
+// defaults to SD, which is wrong for config files that live on flash.
+func CmdFileDownloadAt(path string, target byte) []byte {
+	pb := []byte(path)
+	payload := make([]byte, 0, 2+len(pb))
+	payload = append(payload, byte(len(pb)))
+	payload = append(payload, pb...)
+	payload = append(payload, target)
+	return protocol.BuildPacket(FileDownload, payload, 0)
+}
+
 // CmdFileUploadBegin builds the wire payload the firmware expects:
 //
 //	[totalSize:u32LE][pathLen:u8][path:str][target:u8][mode:u8]

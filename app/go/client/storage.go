@@ -143,6 +143,24 @@ type DownloadResult struct {
 	Elapsed time.Duration
 }
 
+// FileDownloadFrom streams a file body to memory from a specific storage
+// target (TargetSD / TargetFlash).  Use this for config files — the
+// firmware's FILE_DOWNLOAD payload defaults to SD when no target byte is
+// sent, which is wrong for /hubfx.yaml, /enginefx.yaml, etc.
+func (s *Storage) FileDownloadFrom(path string, target byte, timeout time.Duration) (DownloadResult, error) {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	start := time.Now()
+	stream, err := s.c.conn.SendAndReceiveStream(storage.CmdFileDownloadAt(path, target), timeout)
+	if err != nil {
+		return DownloadResult{}, err
+	}
+	r := DownloadResult{Data: stream.Data, Elapsed: time.Since(start)}
+	r.MD5 = md5.Sum(stream.Data)
+	return r, nil
+}
+
 // FileDownload streams a file body to memory.  For large files use
 // FileDownloadTo to stream into a writer.
 func (s *Storage) FileDownload(path string, timeout time.Duration) (DownloadResult, error) {
