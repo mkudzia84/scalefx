@@ -13,6 +13,7 @@ import {
     ClaimPort, UnclaimPort, CandidatePorts,
     AttachRole, DetachRole, ApplyPreset, SetPortName,
     SetInputProtocol, SetInputChannelCount, SetChannelFunction, ApplyDefaults,
+    LoadHubConfig, SaveHubConfig,
 } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 
@@ -140,14 +141,28 @@ export const deviceModel = writable<DeviceModelSnapshotT>(empty)
 // (Ports & Roles, Inputs), then one tab per capability-available domain,
 // then Firmware.  TabBar and MainLayout both read this so they never drift.
 
-export type TabKind = 'io' | 'domain' | 'firmware'
+export type TabKind = 'io' | 'effects' | 'domain' | 'firmware'
 export interface StudioTab { key: string; label: string; kind: TabKind; domain?: Domain }
 
+// Domains that the Effects tab supersedes — they don't get their own
+// generic DomainTab; the Effects tab provides their config + runtime
+// control + claiming surface.
+const SUPERSEDED_BY_EFFECTS = new Set(['engine', 'gun'])
+
 export const studioTabs = derived(deviceModel, ($dm): StudioTab[] => {
+    // Order: Input & Ports → Effects (when available) → other domain tabs
+    // → Firmware. Effects sits second so the engine/gun config surface is
+    // one click away.
     const tabs: StudioTab[] = [
         { key: 'io', label: 'Input & Ports', kind: 'io' },
     ]
-    for (const d of $dm.domains ?? []) {
+    const domains = $dm.domains ?? []
+    const showEffects = domains.some(d => SUPERSEDED_BY_EFFECTS.has(d.id))
+    if (showEffects) {
+        tabs.push({ key: 'effects', label: 'Effects', kind: 'effects' })
+    }
+    for (const d of domains) {
+        if (SUPERSEDED_BY_EFFECTS.has(d.id)) continue
         tabs.push({ key: 'dom:' + d.id, label: d.label, kind: 'domain', domain: d })
     }
     tabs.push({ key: 'firmware', label: 'Firmware', kind: 'firmware' })
@@ -177,6 +192,20 @@ export function installDeviceModelBridge() {
 export async function refresh(): Promise<void> {
     const snap = await RefreshDeviceModel()
     deviceModel.set(normalize(snap))
+}
+
+/** hydrateFromHubYaml pulls /hubfx.yaml off the device and merges its
+ *  inputs[]/ports[]/expanders[] into the studio overlay (channel
+ *  functions, port names).  Called on connect; missing file is a no-op. */
+export async function hydrateFromHubYaml(): Promise<void> {
+    await LoadHubConfig()
+}
+
+/** applyHubConfig writes /hubfx.yaml from the current overlay (channel
+ *  functions + port names + role attachments) and tells the firmware to
+ *  reload — changes take effect immediately on the hub. */
+export async function applyHubConfig(): Promise<void> {
+    await SaveHubConfig()
 }
 
 /** loadCatalogs pulls the cached snapshot (domain/role/preset catalogs are

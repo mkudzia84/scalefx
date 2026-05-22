@@ -17,6 +17,8 @@
         io: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
         // Firmware — chip
         firmware: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/>',
+        // Effects — fan / turbine (engine) + crosshair vibe combined
+        effects: '<circle cx="12" cy="12" r="2.2"/><path d="M12 10c0-4 1-7 2-7s1 4-1 6M14 12c4 0 7 1 7 2s-4 1-6-1M12 14c0 4-1 7-2 7s-1-4 1-6M10 12c-4 0-7-1-7-2s4-1 6 1"/>',
         // Landing lights — lightbulb beam
         'landing-lights': '<path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/>',
         // Lighting — sun

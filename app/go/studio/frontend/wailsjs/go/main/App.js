@@ -70,6 +70,18 @@ export function DownloadEsptool() {
   return window['go']['main']['App']['DownloadEsptool']();
 }
 
+export function EngineStart() {
+  return window['go']['main']['App']['EngineStart']();
+}
+
+export function EngineStatus() {
+  return window['go']['main']['App']['EngineStatus']();
+}
+
+export function EngineStop() {
+  return window['go']['main']['App']['EngineStop']();
+}
+
 export function FlashFromRelease(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['FlashFromRelease'](arg1, arg2, arg3, arg4);
 }
@@ -106,6 +118,10 @@ export function GetConnectionInfo() {
   return window['go']['main']['App']['GetConnectionInfo']();
 }
 
+export function GetEngineConfig() {
+  return window['go']['main']['App']['GetEngineConfig']();
+}
+
 export function GetFirmwareTargets() {
   return window['go']['main']['App']['GetFirmwareTargets']();
 }
@@ -126,6 +142,10 @@ export function ListPorts() {
   return window['go']['main']['App']['ListPorts']();
 }
 
+export function LoadHubConfig() {
+  return window['go']['main']['App']['LoadHubConfig']();
+}
+
 export function LogFrontend(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['LogFrontend'](arg1, arg2, arg3, arg4);
 }
@@ -136,6 +156,10 @@ export function OpenTextFile(arg1) {
 
 export function RefreshDeviceModel() {
   return window['go']['main']['App']['RefreshDeviceModel']();
+}
+
+export function SaveHubConfig() {
+  return window['go']['main']['App']['SaveHubConfig']();
 }
 
 export function SaveTextFile(arg1, arg2, arg3) {
@@ -152,6 +176,10 @@ export function SetChannelFunction(arg1, arg2, arg3, arg4, arg5) {
 
 export function SetDiagDebug(arg1) {
   return window['go']['main']['App']['SetDiagDebug'](arg1);
+}
+
+export function SetEngineConfig(arg1) {
+  return window['go']['main']['App']['SetEngineConfig'](arg1);
 }
 
 export function SetInputChannelCount(arg1, arg2, arg3, arg4) {

@@ -37,6 +37,12 @@ export function DownloadConfig():Promise<string>;
 
 export function DownloadEsptool():Promise<void>;
 
+export function EngineStart():Promise<void>;
+
+export function EngineStatus():Promise<main.EngineStatusDTO>;
+
+export function EngineStop():Promise<void>;
+
 export function FlashFromRelease(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
 
 export function FsDelete(arg1:string,arg2:string):Promise<void>;
@@ -55,6 +61,8 @@ export function FsUploadFromDisk(arg1:string,arg2:string,arg3:string):Promise<vo
 
 export function GetConnectionInfo():Promise<main.ConnectionInfo>;
 
+export function GetEngineConfig():Promise<main.EngineConfig>;
+
 export function GetFirmwareTargets():Promise<Array<main.FirmwareTarget>>;
 
 export function GetFirmwareVersion(arg1:string):Promise<main.FirmwareVersionInfo>;
@@ -65,11 +73,15 @@ export function GetToolsStatus():Promise<main.ToolsStatus>;
 
 export function ListPorts():Promise<Array<main.PortInfo>>;
 
+export function LoadHubConfig():Promise<void>;
+
 export function LogFrontend(arg1:string,arg2:string,arg3:string,arg4:Record<string, any>):Promise<void>;
 
 export function OpenTextFile(arg1:string):Promise<main.OpenedFile>;
 
 export function RefreshDeviceModel():Promise<main.DeviceModelSnapshot>;
+
+export function SaveHubConfig():Promise<void>;
 
 export function SaveTextFile(arg1:string,arg2:string,arg3:string):Promise<string>;
 
@@ -78,6 +90,8 @@ export function SendCommand(arg1:string):Promise<void>;
 export function SetChannelFunction(arg1:string,arg2:number,arg3:number,arg4:number,arg5:string):Promise<main.DeviceModelSnapshot>;
 
 export function SetDiagDebug(arg1:boolean):Promise<boolean>;
+
+export function SetEngineConfig(arg1:main.EngineConfig):Promise<void>;
 
 export function SetInputChannelCount(arg1:string,arg2:number,arg3:number,arg4:number):Promise<main.DeviceModelSnapshot>;
 

@@ -23,7 +23,9 @@
     import {
         installDeviceModelBridge, installInputValuesBridge, loadCatalogs,
         refresh as refreshDeviceModel, reset as resetDeviceModel,
+        hydrateFromHubYaml,
     } from './lib/devicemodel'
+    import { installEngineStateBridge, loadEngineConfig } from './lib/effects'
 
     onMount(async () => {
         // Hook window.onerror / unhandledrejection / console.error so JS
@@ -35,6 +37,7 @@
         // available pre-connect so the tab strip renders immediately).
         installDeviceModelBridge()
         installInputValuesBridge()
+        installEngineStateBridge()
         try { await loadCatalogs() } catch { /* app still starting */ }
 
         // Console output events from backend (always active, even when panel hidden)
@@ -78,6 +81,16 @@
                 try { await refreshDeviceModel() } catch (e) {
                     diag.warn('FE.DM', 'device-model refresh failed', { err: String(e) })
                 }
+                // Hydrate operator state from on-device YAML so the GUI
+                // mirrors what's actually running on the hub: /hubfx.yaml
+                // (input channel names + port names) and /enginefx.yaml
+                // (Engine panel form).
+                try { await hydrateFromHubYaml() } catch (e) {
+                    diag.warn('FE.CFG', 'hub config load failed', { err: String(e) })
+                }
+                try { await loadEngineConfig() } catch (e) {
+                    diag.warn('FE.CFG', 'engine config load failed', { err: String(e) })
+                }
             } else if (wasConnected && $boardState !== 'flashing') {
                 // Unexpected disconnect (not flashing) — show connect popup
                 diag.warn('FE.CONN', 'unexpected disconnect — showing reconnect dialog')
@@ -96,6 +109,8 @@
                 $boardState = 'connected'
                 $connectPopupOpen = false
                 try { await refreshDeviceModel() } catch { /* ignore */ }
+                try { await hydrateFromHubYaml() } catch { /* ignore */ }
+                try { await loadEngineConfig() } catch { /* ignore */ }
             }
         } catch (_) {
             // app still starting

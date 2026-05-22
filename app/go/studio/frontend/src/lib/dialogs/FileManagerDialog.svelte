@@ -4,6 +4,7 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte'
     import { showFileManager } from '../stores'
+    import { fileManagerMode, resolveFilePick } from '../filepicker'
     import {
         FsStorageStatus, FsList, FsMkdir, FsDelete,
         FsDownloadToDisk, FsUploadBatch,
@@ -133,7 +134,13 @@
     }
 
     async function enter(e: Entry) {
-        if (!e.isDir) { selected = e; return }
+        if (!e.isDir) {
+            selected = e
+            // Pick mode: double-clicking a file selects it directly — no
+            // need to highlight + Select.
+            if ($fileManagerMode === 'pick') resolveFilePick(joinPath(cwd, e.name))
+            return
+        }
         cwd = joinPath(cwd, e.name)
         await refresh()
     }
@@ -189,7 +196,17 @@
         }
     }
 
-    function close() { $showFileManager = false }
+    function close() {
+        // In pick mode, treat a close as a cancel — resolves the caller's
+        // promise with null and flips the dialog back to browse mode.
+        if ($fileManagerMode === 'pick') resolveFilePick(null)
+        else $showFileManager = false
+    }
+
+    function pickSelected() {
+        if (!selected || selected.isDir) return
+        resolveFilePick(joinPath(cwd, selected.name))
+    }
 
     function handleKeydown(e: KeyboardEvent) {
         if (!$showFileManager) return
@@ -374,7 +391,14 @@
                         · {fmtBytes(bytesUsed)}
                     {/if}
                 </div>
-                <button on:click={close}>Close</button>
+                {#if $fileManagerMode === 'pick'}
+                    <button on:click={close}>Cancel</button>
+                    <button class="primary" on:click={pickSelected}
+                            disabled={!selected || selected.isDir}
+                            title="Use this file">Select</button>
+                {:else}
+                    <button on:click={close}>Close</button>
+                {/if}
             </footer>
 
             <!-- ─── Mkdir prompt ─── -->

@@ -27,6 +27,23 @@
         return order.map(g => ({ group: g, items: by.get(g)! }))
     }
 
+    // Function ids from the catalog (built-ins).  Anything else came from
+    // /hubfx.yaml's inputs[] (operator-authored binding name) and gets a
+    // "Custom" optgroup so the value is visible in the dropdown.
+    $: knownFns = new Set($deviceModel.channelFunctions.map(f => f.id))
+    function customsForInputs(cfgs: InputPortConfig[], known: Set<string>): string[] {
+        const seen = new Set<string>()
+        for (const cfg of cfgs) {
+            for (const ch of cfg.channels) {
+                if (ch.function && ch.function !== 'unassigned' && !known.has(ch.function)) {
+                    seen.add(ch.function)
+                }
+            }
+        }
+        return [...seen].sort()
+    }
+    $: customFns = customsForInputs(inputs, knownFns)
+
     function selValue(e: Event): string { return (e.target as HTMLSelectElement).value }
     function numValue(e: Event): number { return Number((e.target as HTMLInputElement).value) }
 
@@ -101,6 +118,13 @@
                                         {/each}
                                     </optgroup>
                                 {/each}
+                                {#if customFns.length > 0}
+                                    <optgroup label="Custom (from /hubfx.yaml)">
+                                        {#each customFns as fn}
+                                            <option value={fn}>{fn}</option>
+                                        {/each}
+                                    </optgroup>
+                                {/if}
                             </select>
                         </div>
                         <div class="bar" class:nosignal={!signal}>

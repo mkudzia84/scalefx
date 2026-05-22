@@ -719,6 +719,137 @@ export namespace main {
 	        this.fields = source["fields"];
 	    }
 	}
+	export class EngineTransitions {
+	    startingOffsetMs: number;
+	    stoppingOffsetMs: number;
+	    startFadeInMs: number;
+	    stopFadeOutMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EngineTransitions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startingOffsetMs = source["startingOffsetMs"];
+	        this.stoppingOffsetMs = source["stoppingOffsetMs"];
+	        this.startFadeInMs = source["startFadeInMs"];
+	        this.stopFadeOutMs = source["stopFadeOutMs"];
+	    }
+	}
+	export class EngineSounds {
+	    starting: string;
+	    running: string;
+	    stopping: string;
+	    transitions: EngineTransitions;
+	
+	    static createFrom(source: any = {}) {
+	        return new EngineSounds(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.starting = source["starting"];
+	        this.running = source["running"];
+	        this.stopping = source["stopping"];
+	        this.transitions = this.convertValues(source["transitions"], EngineTransitions);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class EngineToggle {
+	    input: string;
+	    thresholdUs: number;
+	    hysteresisUs: number;
+	    failsafe: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EngineToggle(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.input = source["input"];
+	        this.thresholdUs = source["thresholdUs"];
+	        this.hysteresisUs = source["hysteresisUs"];
+	        this.failsafe = source["failsafe"];
+	    }
+	}
+	export class EngineConfig {
+	    schemaVersion: number;
+	    enabled: boolean;
+	    type: string;
+	    output: string;
+	    toggle: EngineToggle;
+	    sounds: EngineSounds;
+	
+	    static createFrom(source: any = {}) {
+	        return new EngineConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schemaVersion = source["schemaVersion"];
+	        this.enabled = source["enabled"];
+	        this.type = source["type"];
+	        this.output = source["output"];
+	        this.toggle = this.convertValues(source["toggle"], EngineToggle);
+	        this.sounds = this.convertValues(source["sounds"], EngineSounds);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class EngineStatusDTO {
+	    state: number;
+	    stateName: string;
+	    engaged: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new EngineStatusDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.stateName = source["stateName"];
+	        this.engaged = source["engaged"];
+	    }
+	}
+	
+	
 	export class FirmwareTarget {
 	    name: string;
 	    platform: string;

@@ -6,6 +6,7 @@
     import ConsolePanel from '../dialogs/ConsoleDialog.svelte'
     import FirmwareTab from '../tabs/FirmwareTab.svelte'
     import IoTab from '../tabs/IoTab.svelte'
+    import EffectsTab from '../tabs/EffectsTab.svelte'
     import DomainTab from '../tabs/DomainTab.svelte'
     import { showConsole, activeTab } from '../stores'
     import { studioTabs } from '../devicemodel'
@@ -55,6 +56,8 @@
             <div class="tab-pane">
                 {#if current?.kind === 'io'}
                     <IoTab />
+                {:else if current?.kind === 'effects'}
+                    <EffectsTab />
                 {:else if current?.kind === 'domain' && current.domain}
                     {#key current.key}
                         <DomainTab domain={current.domain} />
