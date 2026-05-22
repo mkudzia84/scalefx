@@ -102,6 +102,8 @@ struct AudioPlaybackOptions {
     float volume           = 1.0f;
     uint8_t outputChannels = AudioChannel::ALL;
     int startOffsetMs      = 0;
+    uint16_t fadeInMs      = 0;           // 0 = start at full volume; >0 = ramp 0→volume over this many ms
+    uint16_t fadeOutMs     = 0;           // 0 = play to the last sample; >0 = ramp volume→0 over the final this-many ms (one-shots only; ignored when looping)
 };
 
 // Queued sound item
@@ -368,6 +370,13 @@ private:
         bool fading           = false;
         float fadeVolume      = 1.0f;
         float fadeStep        = 0.0f;
+
+        // Auto tail fade-out (AudioPlaybackOptions::fadeOutMs).  When the
+        // playback-remaining drops below `fadeOutTriggerFrames` source frames,
+        // the consumer starts a fade-out at `fadeOutStep` (positive).  Cleared
+        // to 0 once armed so it fires exactly once; 0 = disabled.
+        uint32_t fadeOutTriggerFrames = 0;
+        float    fadeOutStep          = 0.0f;
     };
 
     enum class CommandType : uint8_t {

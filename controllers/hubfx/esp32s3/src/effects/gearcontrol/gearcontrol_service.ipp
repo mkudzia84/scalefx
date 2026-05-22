@@ -28,6 +28,19 @@ bool GearControlServicePolicyT<TTopology, TLandingService>::begin(
     // is legal; the gear-bound landing-light fan-out is a no-op when
     // `_landing == nullptr`.
 
+    // Bind gear FSMs + claim motor ports for whatever defs exist now
+    // (none at boot — the YAML config chain calls configure() later,
+    // which re-runs applyDefs() with the real defs).
+    applyDefs();
+    _topo->onRoleEvent(&GearControlServicePolicyT::roleEventTrampoline,
+                       static_cast<void*>(this));
+    SFX_LOG_INFO("[gear-svc] ready (%u gears)", (unsigned)_numDefs);
+    return true;
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::applyDefs() {
+    if (!_topo) return;   // begin() hasn't bound topology yet
     for (uint8_t i = 0; i < _numDefs; ++i) {
         _gears[i].configure(_defs[i],
                             &GearControlServicePolicyT::sendRoleCmdTrampoline,
@@ -38,10 +51,6 @@ bool GearControlServicePolicyT<TTopology, TLandingService>::begin(
                             static_cast<void*>(this));
     }
     claimPorts();
-    _topo->onRoleEvent(&GearControlServicePolicyT::roleEventTrampoline,
-                       static_cast<void*>(this));
-    SFX_LOG_INFO("[gear-svc] ready (%u gears)", (unsigned)_numDefs);
-    return true;
 }
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>

@@ -6,15 +6,15 @@
  * state (sound packs, severity overrides for specific airframes,
  * etc. — see instructions/19-HUBFX-CONFIG-SCHEMA.md).
  *
- * YAML shape:
+ * YAML shape (severities are TOP-LEVEL keys, not nested under a
+ * `severities:` map; each may use the flow form `{ … }`):
  *
  *   schema_version: 1
  *   enabled: true
- *   severities:
- *     info:     { sound: init,             volume_pct: 70 }
- *     warning:  { sound: warning,          volume_pct: 80 }
- *     error:    { sound: error,            volume_pct: 90 }
- *     critical: { sound: critical,         volume_pct: 100 }
+ *   info:     { sound: init,     volume_pct: 70 }
+ *   warning:  { sound: warning,  volume_pct: 80 }
+ *   error:    { sound: error,    volume_pct: 90 }
+ *   critical: { sound: critical, volume_pct: 100 }
  *
  * `sound:` accepts any snake-case name listed in `alert_sound.h`'s
  * AlertSound enum.  Unknown names map to `AlertSound::None` (silent

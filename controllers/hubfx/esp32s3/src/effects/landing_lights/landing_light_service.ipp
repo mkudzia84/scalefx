@@ -24,7 +24,22 @@ bool LandingLightServicePolicyT<TTopology>::begin(sfx_core::BoardServerBase* ctx
         return false;
     }
 
-    // Configure each instance and run port-claim sweep.
+    // Bind instances + claim ports for whatever defs exist now (none at
+    // boot — the YAML config chain calls configure() later, which re-runs
+    // applyDefs() with the real defs).
+    applyDefs();
+
+    // Subscribe to every role async event so we can advance the state
+    // machine on SERVO_TARGET_REACHED.  Single-slot subscription on
+    // the topology side — only one consumer today.
+    _topology->onRoleEvent(&LandingLightServicePolicyT::roleEventTrampoline,
+                           static_cast<void*>(this));
+    return true;
+}
+
+template <hubfx::topology::TopologyService TTopology>
+void LandingLightServicePolicyT<TTopology>::applyDefs() {
+    if (!_topology) return;   // begin() hasn't bound topology yet
     for (uint8_t i = 0; i < _numDefs; ++i) {
         _instances[i].configure(_defs[i],
                                 &LandingLightServicePolicyT::sendRoleCmdTrampoline,
@@ -35,13 +50,6 @@ bool LandingLightServicePolicyT<TTopology>::begin(sfx_core::BoardServerBase* ctx
                                 static_cast<void*>(this));
     }
     claimPorts();
-
-    // Subscribe to every role async event so we can advance the state
-    // machine on SERVO_TARGET_REACHED.  Single-slot subscription on
-    // the topology side — only one consumer today.
-    _topology->onRoleEvent(&LandingLightServicePolicyT::roleEventTrampoline,
-                           static_cast<void*>(this));
-    return true;
 }
 
 template <hubfx::topology::TopologyService TTopology>

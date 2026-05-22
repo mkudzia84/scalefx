@@ -34,6 +34,13 @@ inline constexpr uint8_t kMaxChannelsPerProgram = 16;
 inline constexpr uint8_t kMaxLandingBindingsPerProgram = 8;
 inline constexpr uint8_t kMaxPrograms = 8;
 
+/// Program name buffer (incl. NUL).  Must equal the program-selector's
+/// range copy (`kSelectorProgramMax` in lightfx_config.h) so a selector
+/// range name can match a program name in full — a static_assert in
+/// lightfx_program_selector.h pins them together.  23 usable chars is
+/// enough for descriptive names like "helicopter_landing".
+inline constexpr uint8_t kProgramNameMax = 24;
+
 /// One LED channel inside a program.
 struct LedChannelSpec {
     PortRef    addr;                                ///< (guid, PortKind::Pwm, idx)
@@ -51,7 +58,7 @@ struct LandingLightBinding {
 
 /// One named program.  Mutually exclusive within the LightFX effect.
 struct Program {
-    char                name[16]                                       = {};
+    char                name[kProgramNameMax]                          = {};
     LedChannelSpec      channels[kMaxChannelsPerProgram]                = {};
     uint8_t             numChannels                                    = 0;
     LandingLightBinding landings[kMaxLandingBindingsPerProgram]        = {};

@@ -7,13 +7,19 @@
  * Supported YAML subset:
  *   - Block mappings (key: value, key:\n  nested)
  *   - Block sequences (- item, - key: value for arrays of maps)
+ *   - Flow collections, single-line, arbitrarily nested:
+ *       maps  `{ kind: pwm, idx: 0 }`   sequences `[900, 1200]`
+ *     Accepted as a value (`port: { kind: pwm, idx: 0 }`) or a whole
+ *     sequence item (`- { id: 0, state: on }`).  Emitters still write
+ *     block form (Rule 27); flow is an input convenience for hand-
+ *     authored leaf objects.
  *   - Scalar types: strings (plain, single-quoted, double-quoted),
  *     integers, floats, booleans (true/false/yes/no)
  *   - Comments (# to end of line)
  *   - Indentation-based nesting (any consistent indent width)
  *
  * NOT supported (keeps parser small):
- *   - Flow collections ({}, [])
+ *   - Multi-line flow collections (a `{`/`[` must close on the same line)
  *   - Multi-line scalars (|, >)
  *   - Anchors and aliases (&, *)
  *   - Tags (!!)
@@ -368,6 +374,16 @@ private:
                           const char* value, size_t valueLen);
     bool parseContainerEntry(YamlNode* parent, const char* key, size_t keyLen, int lineIndent);
     bool parseSequenceItem(YamlNode* parent, const char* content, size_t contentLen, int dashIndent);
+
+    /// Parse a single-line flow collection / scalar starting at `*p`
+    /// (which must point at `{`, `[`, or a bare scalar).  Advances `*p`
+    /// past the parsed value.  Returns the freshly-allocated node (key
+    /// unset — the caller assigns it) or nullptr on pool exhaustion /
+    /// malformed input.  Recurses for nested flow collections.
+    YamlNode* parseFlowNode(const char*& p, const char* end);
+    /// True if the first non-blank char of [v, v+len) opens a flow
+    /// collection (`{` or `[`).
+    static bool isFlowStart(const char* v, size_t len);
 
     static int countIndent(const char* line, size_t len);
     static bool isComment(const char* line, size_t len);

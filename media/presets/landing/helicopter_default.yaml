@@ -8,8 +8,8 @@
 #
 # Each landing light couples ONE servo (deploys the searchlight) with
 # one or more PWM LEDs (the bulb).  When the LightFx program activates
-# `landing_bindings: [{id: 0, state: on}]`, the service drives the
-# servo to `open_us`, waits for SERVO_TARGET_REACHED, then lights the
+# its landing_bindings entry for this id (`state: "on"`), the service
+# drives the servo to `open_us`, waits for SERVO_TARGET_REACHED, then lights the
 # LEDs at `brightness_pct`.
 
 schema_version: 1

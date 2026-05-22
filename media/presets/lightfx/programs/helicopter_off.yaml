@@ -23,33 +23,33 @@ schema_version: 1
 channels:
   - port: { kind: pwm, idx: 0 }
     events:
-      - kind: off
+      - kind: "off"
         duration_ms: 0
   - port: { kind: pwm, idx: 1 }
     events:
-      - kind: off
+      - kind: "off"
         duration_ms: 0
   - port: { kind: pwm, idx: 2 }
     events:
-      - kind: off
+      - kind: "off"
         duration_ms: 0
   - port: { kind: pwm, idx: 3 }
     events:
-      - kind: off
+      - kind: "off"
         duration_ms: 0
   - port: { kind: pwm, idx: 4 }
     events:
-      - kind: off
+      - kind: "off"
         duration_ms: 0
   - port: { kind: pwm, idx: 5 }
     events:
-      - kind: off
+      - kind: "off"
         duration_ms: 0
   - port: { kind: pwm, idx: 6 }
     events:
-      - kind: off
+      - kind: "off"
         duration_ms: 0
   - port: { kind: pwm, idx: 7 }
     events:
-      - kind: off
+      - kind: "off"
         duration_ms: 0

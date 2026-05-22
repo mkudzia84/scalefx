@@ -101,6 +101,18 @@ public:
 
     ConfigServicePolicy() = default;
 
+    /// Fired after a CONFIG_RELOAD completes (single-path OR reload-all),
+    /// once every reloaded store's onLoaded callback has run — never on
+    /// load failure.  Lets the host re-assert cross-store invariants that
+    /// depend on apply order: e.g. a master enable matrix in /hubfx.yaml
+    /// that must override each sub-file's local `enabled:` flag regardless
+    /// of which store reloaded last.  Mirrors the boot-time final re-apply.
+    using PostReloadFn = void (*)(void* ctx);
+    void setReloadCompleteHook(PostReloadFn fn, void* ctx) {
+        _postReload    = fn;
+        _postReloadCtx = ctx;
+    }
+
     /**
      * @brief Register a store facade. The facade must outlive the policy.
      * @return true if added; false if MAX_STORES reached or path collides.
@@ -175,6 +187,10 @@ private:
     sfx_core::BoardServerBase* _ctx = nullptr;
     IConfigStoreFacade*       _stores[MAX_STORES] = {};
     size_t                    _count = 0;
+    PostReloadFn              _postReload    = nullptr;
+    void*                     _postReloadCtx = nullptr;
+
+    void firePostReload() { if (_postReload) _postReload(_postReloadCtx); }
 
     /// Look up a store by exact defaultPath() match. Returns nullptr if unknown.
     IConfigStoreFacade* find(const char* path) const {
@@ -213,6 +229,7 @@ private:
             auto r = s->loadFromFile(nullptr);  // facade always uses its own defaultPath
             if (r.ok || (r.populated && !r.validated)) {
                 SFX_LOG_INFO("[Config] Reloaded: %s (%u bytes)", pathBuf, s->fileSize());
+                firePostReload();   // re-assert cross-store invariants (master matrix)
                 this->sendAck();
             } else {
                 SFX_LOG_WARN("[Config] Reload failed (%s): %s", pathBuf, s->lastError());
@@ -232,6 +249,7 @@ private:
             }
             SFX_LOG_INFO("[Config] Reloaded: %s (%u bytes)", p, _stores[i]->fileSize());
         }
+        firePostReload();   // master `features:` matrix overrides per-file `enabled:`
         this->sendAck();
     }
 

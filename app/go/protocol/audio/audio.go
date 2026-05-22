@@ -12,14 +12,18 @@ import (
 // ─── Packet types ─────────────────────────────────────────────────────
 
 const (
-	AudioPlay       protocol.PacketType = 0x84
-	AudioStop       protocol.PacketType = 0x85
-	AudioVolume     protocol.PacketType = 0x86
-	AudioFade       protocol.PacketType = 0x87
-	AudioQueue      protocol.PacketType = 0x88
-	AudioQueueClear protocol.PacketType = 0x89
-	AudioStatusReq  protocol.PacketType = 0x8A
-	AudioStatusResp protocol.PacketType = 0x8B
+	// Control packets relocated 0x84..0x8B → 0xDA..0xE1: the old block
+	// collided with the hub's ExpanderService (0x80..0x87) + TopologyService
+	// (0x88..0x8E), which dispatch earlier and ate AUDIO_STOP/QUEUE/STATUS_REQ.
+	// Codec 0xAA..0xAB never collided. Mirrors audio_protocol.h.
+	AudioPlay       protocol.PacketType = 0xDA
+	AudioStop       protocol.PacketType = 0xDB
+	AudioVolume     protocol.PacketType = 0xDC
+	AudioFade       protocol.PacketType = 0xDD
+	AudioQueue      protocol.PacketType = 0xDE
+	AudioQueueClear protocol.PacketType = 0xDF
+	AudioStatusReq  protocol.PacketType = 0xE0
+	AudioStatusResp protocol.PacketType = 0xE1
 	CodecStatusReq  protocol.PacketType = 0xAA
 	CodecStatusResp protocol.PacketType = 0xAB
 )

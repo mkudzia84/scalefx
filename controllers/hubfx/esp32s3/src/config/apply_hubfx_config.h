@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include <platform/sfx_platform.h>   // sfxPsramMalloc / sfxPsramFree
 #include <serial/diag_log.h>
 
 #include "hubfx_config.h"
@@ -71,13 +72,28 @@ inline uint8_t loadLightFxProgramCatalog(const LightFxYamlConfig& cfg,
         SFX_LOG_WARN("[lightfx-program] no file reader bound — skipping catalog load");
         return 0;
     }
+    // Whole-file read buffer in PSRAM.  The ESP32-S3 has 8 MB PSRAM, so a
+    // 64 KB buffer is free — and it removes the file-size ceiling for good.
+    // The old 2 KB DRAM buffer silently truncated programs ≥ 2 KB mid-file
+    // (helicopter_flight is 2157 B): the tail channels lost their events
+    // and fell back to a single ON event (lights stuck on).  Allocated per
+    // call + freed; the apply path runs only at boot / config-reload.
+    // (Pico has no PSRAM — sfxPsramMalloc falls back to malloc there, but
+    // this catalog loader is HubFX-only.)
+    constexpr size_t kReadBufSize = 64 * 1024;
+    char* yamlBuf = static_cast<char*>(sfxPsramMalloc(kReadBufSize));
+    if (!yamlBuf) {
+        SFX_LOG_WARN("[lightfx-program] read buffer alloc failed (%u B) — catalog skipped",
+                     (unsigned)kReadBufSize);
+        return 0;
+    }
+
     uint8_t loaded = 0;
     char name[32];
-    char yamlBuf[2048];
     for (uint8_t i = 0; i < cfg.numPrograms && loaded < kMaxProgramRefs; ++i) {
         const char* path = cfg.programPaths[i];
         deriveProgramName(path, name, sizeof(name));
-        int n = reader(path, yamlBuf, sizeof(yamlBuf));
+        int n = reader(path, yamlBuf, kReadBufSize);
         if (n <= 0) {
             SFX_LOG_WARN("[lightfx-program] file not found: %s", path);
             continue;
@@ -91,6 +107,7 @@ inline uint8_t loadLightFxProgramCatalog(const LightFxYamlConfig& cfg,
             loaded++;
         }
     }
+    sfxPsramFree(yamlBuf);
     return loaded;
 }
 

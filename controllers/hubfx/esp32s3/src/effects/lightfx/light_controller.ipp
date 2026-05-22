@@ -124,9 +124,13 @@ void LightControllerT<TTopology, TLandingService>::applyChannel(
     // different effect family (logged at claim time) or never claimed
     // because the target was offline.
     if (_topo->ownerOf(ch.addr) != EffectId::LightFx) {
-        SFX_LOG_DEBUG("[lightfx] skip channel %s:%u — not owned",
-                      ch.addr.guid[0] ? ch.addr.guid : "hub",
-                      (unsigned)ch.addr.portIdx);
+        // INSTRUMENTATION: a skipped channel stays at whatever it was last
+        // driven to (often "on" from a prior program / boot) — surfaces as
+        // "stuck on".  Bumped to WARN so it shows at the default log level.
+        SFX_LOG_WARN("[lightfx] skip channel %s:%u — not owned (owner=%s)",
+                     ch.addr.guid[0] ? ch.addr.guid : "hub",
+                     (unsigned)ch.addr.portIdx,
+                     hubfx::effects::effectIdName(_topo->ownerOf(ch.addr)));
         return;
     }
 
@@ -170,9 +174,16 @@ void LightControllerT<TTopology, TLandingService>::applyChannel(
 
     // ── 3. LED_START ──
     const uint8_t start[1] = { ch.addr.portIdx };
-    _topo->sendRoleCommand(ch.addr,
-                           RolePacket::LED_START,
-                           start, sizeof(start));
+    const bool started = _topo->sendRoleCommand(ch.addr,
+                                                RolePacket::LED_START,
+                                                start, sizeof(start));
+
+    // Per-channel apply trace — DEBUG (per-select, would spam INFO).
+    SFX_LOG_DEBUG("[lightfx] ch %s:%u applied — events=%u ev0.kind=%u scaled=%u%% start=%u",
+                  ch.addr.guid[0] ? ch.addr.guid : "hub", (unsigned)ch.addr.portIdx,
+                  (unsigned)ch.numEvents, (unsigned)ch.events[0].kind,
+                  (unsigned)scaledBrightness(ch.perChannelBrightnessPct),
+                  (unsigned)(started ? 1 : 0));
 }
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>

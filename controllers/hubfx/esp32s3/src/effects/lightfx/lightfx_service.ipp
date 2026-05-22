@@ -23,7 +23,9 @@ bool LightFxEffectServicePolicyT<TTopology, TLandingService>::begin(
     }
 
     _controller.bind(_topology, _landing);
-    _controller.claimPorts();
+    // NOTE: do NOT claimPorts() here — programs aren't loaded until the
+    // config chain calls configure() later in setup().  configure()
+    // claims the ports once the program list exists.
     SFX_LOG_INFO("[lightfx-svc] ready (%u programs, master=%u%%)",
                  (unsigned)_controller.numPrograms(),
                  (unsigned)_controller.masterBrightnessPct());
@@ -60,17 +62,17 @@ LightFxEffectServicePolicyT<TTopology, TLandingService>::handle(
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void LightFxEffectServicePolicyT<TTopology, TLandingService>::
         handleProgramListReq() {
-    uint8_t buf[1 + kMaxPrograms * (1 + 1 + 16)];
+    uint8_t buf[1 + kMaxPrograms * (1 + 1 + kProgramNameMax)];
     size_t  off = 1;
     const uint8_t n = _controller.numPrograms();
     buf[0] = n;
     for (uint8_t i = 0; i < n; ++i) {
         const Program* p = _controller.programAt(i);
         if (!p) continue;
-        if (off + 2 + 16 > sizeof(buf)) break;
+        if (off + 2 + kProgramNameMax > sizeof(buf)) break;
         buf[off++] = i;
         uint8_t nlen = (uint8_t)std::strlen(p->name);
-        if (nlen > 15) nlen = 15;
+        if (nlen > kProgramNameMax - 1) nlen = kProgramNameMax - 1;
         buf[off++] = nlen;
         std::memcpy(&buf[off], p->name, nlen);
         off += nlen;

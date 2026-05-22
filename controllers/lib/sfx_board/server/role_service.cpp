@@ -68,6 +68,12 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
 void RoleServicePolicy::update() {
     if (!_reg) return;
 
+    // One shared clock for the whole pass — every LedAnimator samples the
+    // SAME instant, so multi-channel light programs stay phase-locked
+    // regardless of how long the per-channel I²C writes take or how
+    // jittery the main loop is.  (See LedAnimator::tick.)
+    const uint32_t now = millis();
+
     for (uint8_t i = 0; i < _reg->numServoPorts(); i++) {
         auto* b = _reg->servoAt(i);
         if (!b) continue;
@@ -80,8 +86,11 @@ void RoleServicePolicy::update() {
     for (uint8_t i = 0; i < _reg->numPwmPorts(); i++) {
         auto* b = _reg->pwmAt(i);
         if (!b) continue;
-        std::visit([](auto& r) {
-            if constexpr (!std::is_same_v<std::decay_t<decltype(r)>, std::monostate>) {
+        std::visit([now](auto& r) {
+            using R = std::decay_t<decltype(r)>;
+            if constexpr (std::is_same_v<R, LedAnimator>) {
+                r.tick(now);                 // shared-clock LED tick
+            } else if constexpr (!std::is_same_v<R, std::monostate>) {
                 r.tick();
             }
         }, b->role);

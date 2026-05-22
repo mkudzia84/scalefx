@@ -8,14 +8,15 @@
  * (the declarative schema DSL doesn't compose nested sequences cleanly,
  * and a program has channels[].events[]).
  *
- * YAML format:
+ * YAML format (leaf objects may use the flow form `{ … }`; the events
+ * list stays block since each event carries several fields):
  *
  *   schema_version: 1
  *   channels:
  *     - port: { kind: pwm, idx: 0 }       # required
  *       brightness_pct: 100               # optional (default 100)
  *       events:                           # required, ≥1 entry
- *         - kind: on                      # enum name (lower-case)
+ *         - kind: "on"                    # enum name (lower-case)
  *           brightness_pct: 100           # for on / flash / fade_in / fade_out
  *           duration_ms: 0                # for off / fade_* — 0 = terminal
  *           cycle_ms:    0                # for flash / fading / beacon
@@ -23,7 +24,7 @@
  *           max_pct:     100              # for fading / beacon
  *           flash_pct:   50               # for flash / beacon
  *   landing_bindings:                     # optional
- *     - { id: 0, state: on }              # state: on|off
+ *     - { id: 0, state: "on" }            # state: on|off
  */
 
 #ifndef HUBFX_LIGHTFX_PROGRAM_LOADER_H
@@ -134,11 +135,31 @@ bool loadLightFxProgram(const char* yaml, size_t len, const char* programName,
                 spec.numEvents++;
             }
         }
+        // `loop: true` → the events form a phase-locked repeating pattern
+        // (period = Σ duration_ms).  The flag rides on event[0] (the
+        // animator reads it there).  Used for the airliner-style
+        // single/double-flash patterns where channels share a period but
+        // pulse at non-overlapping offsets.
+        if (chNode->template childAs<bool>("loop", false) && spec.numEvents > 0) {
+            spec.events[0].flags |= LightEventFlags::Loop;
+        }
+
         if (spec.numEvents == 0) {
             // Fallback: a single ON event at the channel's brightness.
             spec.events[0] = LightEvent::on(spec.perChannelBrightnessPct, 0);
             spec.numEvents = 1;
         }
+
+        // INSTRUMENTATION: dump the parsed channel so a mis-parsed event
+        // kind (everything defaulting to On, etc.) is visible in the boot
+        // / config-reload diag.  ev0.kind: 0=on 1=off 2=flash 3=fadeIn
+        // 4=fadeOut 5=fading 6=beacon.
+        SFX_LOG_INFO("[lightfx-program] %s ch[%u] port={%u,%u} bright=%u%% events=%u ev0.kind=%u",
+                     programName, (unsigned)i,
+                     (unsigned)spec.addr.portKind, (unsigned)spec.addr.portIdx,
+                     (unsigned)spec.perChannelBrightnessPct,
+                     (unsigned)spec.numEvents,
+                     (unsigned)spec.events[0].kind);
 
         out.numChannels++;
     }

@@ -297,8 +297,113 @@ bool YamlParser<TPool>::parseLine(const char* line, size_t lineLen) {
 }
 
 template<typename TPool>
+bool YamlParser<TPool>::isFlowStart(const char* v, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (v[i] == ' ' || v[i] == '\t') continue;
+        return v[i] == '{' || v[i] == '[';
+    }
+    return false;
+}
+
+template<typename TPool>
+YamlNode* YamlParser<TPool>::parseFlowNode(const char*& p, const char* end) {
+    while (p < end && (*p == ' ' || *p == '\t')) p++;
+    if (p >= end) return nullptr;
+
+    // ── Flow map: { key: value, key: value } ──────────────────────────
+    if (*p == '{') {
+        ++p;                                    // consume '{'
+        YamlNode* map = allocNode(YamlNode::Map);
+        if (!map) return nullptr;
+        while (p < end) {
+            while (p < end && (*p == ' ' || *p == '\t' || *p == ',')) p++;
+            if (p < end && *p == '}') { ++p; break; }
+            if (p >= end) break;
+            // Read key up to an unquoted ':'.
+            const char* keyStart = p;
+            bool sq = false, dq = false;
+            while (p < end) {
+                const char c = *p;
+                if (c == '\'' && !dq) sq = !sq;
+                else if (c == '"' && !sq) dq = !dq;
+                else if (c == ':' && !sq && !dq) break;
+                ++p;
+            }
+            if (p >= end || *p != ':') {
+                snprintf(_error, sizeof(_error), "flow map: missing ':'");
+                return nullptr;
+            }
+            size_t keyLen = (size_t)(p - keyStart);
+            while (keyLen > 0 && (keyStart[keyLen - 1] == ' ' || keyStart[keyLen - 1] == '\t')) keyLen--;
+            size_t kStripLen;
+            const char* kStrip = stripQuotes(keyStart, keyLen, kStripLen);
+            const char* iKey = internString(kStrip, kStripLen);
+            if (!iKey) return nullptr;
+            ++p;                                // consume ':'
+            YamlNode* val = parseFlowNode(p, end);
+            if (!val) return nullptr;
+            val->key = iKey;
+            addChild(map, val);
+        }
+        return map;
+    }
+
+    // ── Flow sequence: [ a, b, c ] ────────────────────────────────────
+    if (*p == '[') {
+        ++p;                                    // consume '['
+        YamlNode* seq = allocNode(YamlNode::Sequence);
+        if (!seq) return nullptr;
+        while (p < end) {
+            while (p < end && (*p == ' ' || *p == '\t' || *p == ',')) p++;
+            if (p < end && *p == ']') { ++p; break; }
+            if (p >= end) break;
+            YamlNode* item = parseFlowNode(p, end);
+            if (!item) return nullptr;
+            addChild(seq, item);
+        }
+        return seq;
+    }
+
+    // ── Scalar: read to the next unquoted ',' '}' ']' ─────────────────
+    const char* s = p;
+    bool sq = false, dq = false;
+    while (p < end) {
+        const char c = *p;
+        if (c == '\'' && !dq) sq = !sq;
+        else if (c == '"' && !sq) dq = !dq;
+        else if (!sq && !dq && (c == ',' || c == '}' || c == ']')) break;
+        ++p;
+    }
+    size_t len = (size_t)(p - s);
+    while (len > 0 && (s[len - 1] == ' ' || s[len - 1] == '\t')) len--;
+    size_t stripLen;
+    const char* strip = stripQuotes(s, len, stripLen);
+    const char* iVal = internString(strip, stripLen);
+    if (!iVal) return nullptr;
+    YamlNode* node = allocNode(YamlNode::Scalar);
+    if (!node) return nullptr;
+    node->scalarValue = iVal;
+    return node;
+}
+
+template<typename TPool>
 bool YamlParser<TPool>::parseScalarEntry(YamlNode* parent, const char* key, size_t keyLen,
                                           const char* value, size_t valueLen) {
+    // Flow collection as a value: `key: { … }` or `key: [ … ]`.
+    if (isFlowStart(value, valueLen)) {
+        const char* p = value;
+        YamlNode* node = parseFlowNode(p, value + valueLen);
+        if (!node) {
+            if (!_error[0]) snprintf(_error, sizeof(_error), "malformed flow collection");
+            return false;
+        }
+        const char* iKey = internString(key, keyLen);
+        if (!iKey) return false;
+        node->key = iKey;
+        addChild(parent, node);
+        return true;
+    }
+
     // Strip quotes from value
     size_t strippedLen;
     const char* stripped = stripQuotes(value, valueLen, strippedLen);
@@ -379,6 +484,20 @@ bool YamlParser<TPool>::parseSequenceItem(YamlNode* parent, const char* content,
         if (!item) return false;
         item->scalarValue = "";
         addChild(parent, item);
+        return true;
+    }
+
+    // Flow collection as a whole sequence item: `- { … }` or `- [ … ]`.
+    // Must run BEFORE the colon scan below, which would otherwise split
+    // the item at the first `:` inside the braces.
+    if (content[0] == '{' || content[0] == '[') {
+        const char* p = content;
+        YamlNode* node = parseFlowNode(p, content + contentLen);
+        if (!node) {
+            if (!_error[0]) snprintf(_error, sizeof(_error), "malformed flow collection");
+            return false;
+        }
+        addChild(parent, node);
         return true;
     }
 

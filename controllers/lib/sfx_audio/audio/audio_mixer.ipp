@@ -303,6 +303,26 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     ch.outputChannels = options.outputChannels;
     ch.fading = false;
     ch.fadeVolume = 1.0f;
+    ch.fadeStep = 0.0f;
+    // Optional fade-in: ramp the channel 0 → full over `fadeInMs`.  Reuses
+    // the fade machinery with a NEGATIVE step (fade-OUT uses a positive
+    // step toward 0); the consumer clamps at 1.0 and clears `fading`.
+    if (options.fadeInMs > 0) {
+        ch.fading     = true;
+        ch.fadeVolume = 0.0f;
+        ch.fadeStep   = -(1.0f / (((float)options.fadeInMs * AUDIO_SAMPLE_RATE) / 1000.0f));
+    }
+    // Optional tail fade-out: arm an auto fade-out over the final `fadeOutMs`
+    // of a one-shot.  Disabled for loops (a looping track has no "end").  The
+    // trigger threshold is in SOURCE frames so it matches the
+    // playback-remaining the consumer computes from `framesRead` + buffer.
+    ch.fadeOutTriggerFrames = 0;
+    ch.fadeOutStep          = 0.0f;
+    if (options.fadeOutMs > 0 && !ws.loop) {
+        ch.fadeOutTriggerFrames =
+            ((uint32_t)options.fadeOutMs * ws.sampleRate_Hz) / 1000;
+        ch.fadeOutStep = 1.0f / (((float)options.fadeOutMs * AUDIO_SAMPLE_RATE) / 1000.0f);
+    }
     ch.mute = false;
     ch.pan = 0.0f;
     updatePan(ch);
@@ -894,12 +914,29 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
             continue;
         }
 
-        // Apply fade if active
+        // Arm the auto tail fade-out once playback-remaining (file frames
+        // not yet read + frames still buffered) drops below the threshold.
+        // Reuses the fade-OUT machinery (positive step → ramps to 0 and stops
+        // the channel).  One-shot: cleared as soon as it fires.
+        if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
+            uint32_t framesLeft = ws.totalFrames - ws.framesRead + (ws.bufLen - ws.bufPos);
+            if (framesLeft <= ch.fadeOutTriggerFrames) {
+                ch.fading               = true;
+                ch.fadeVolume           = 1.0f;
+                ch.fadeStep             = ch.fadeOutStep;
+                ch.fadeOutTriggerFrames = 0;
+            }
+        }
+
+        // Apply fade if active.  fadeStep > 0 = fade-OUT (ramp to 0, then
+        // stop the channel); fadeStep < 0 = fade-IN (ramp to full, then
+        // keep playing).
         float effectiveVolume = ch.volume;
         if (ch.fading) {
             effectiveVolume *= ch.fadeVolume;
             ch.fadeVolume -= ch.fadeStep;
-            if (ch.fadeVolume <= 0.0f) {
+            if (ch.fadeStep > 0.0f && ch.fadeVolume <= 0.0f) {
+                // Fade-out complete → stop the channel.
                 ch.fadeVolume = 0.0f;
                 ch.fading = false;
                 ws.active = false;
@@ -911,6 +948,10 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
                 }
                 checkAndPlayNextQueued(i);
                 continue;
+            } else if (ch.fadeStep < 0.0f && ch.fadeVolume >= 1.0f) {
+                // Fade-in complete → hold at full volume, keep playing.
+                ch.fadeVolume = 1.0f;
+                ch.fading = false;
             }
         }
 

@@ -52,6 +52,21 @@ enum class LightEventKind : uint8_t {
                    ///< else `min_pct`
 };
 
+/// Event `flags` bits (byte 9 of the wire record).
+namespace LightEventFlags {
+    /// The channel's event list is a PHASE-LOCKED LOOPING PATTERN: the
+    /// LedAnimator plays it as a cycle whose period is the sum of all the
+    /// events' `duration_ms`, and derives the active event from absolute
+    /// `now % period`.  This means every channel with the same total
+    /// period stays perfectly phase-aligned (shared clock), and arbitrary
+    /// multi-pulse patterns — single flash, double flash, offset so two
+    /// channels never overlap — are expressed purely as a sequence of
+    /// timed On/Off (and fade) events.  Set on the FIRST event of the
+    /// channel (the animator reads event[0]).  Without it, the queue
+    /// plays once and the terminal event holds (the original behaviour).
+    inline constexpr uint8_t Loop = 0x01;
+}
+
 /// Wire size of one serialized event record.  Asserted at compile time.
 static constexpr size_t kEventWireSize = 10;
 

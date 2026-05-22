@@ -406,9 +406,9 @@ retracts:
     timeout_ms: 60000
 ```
 
-The firmware `YamlParser` and the Go engine parser also accept the YAML-spec
-"compact" form (sequence items at the **same** indent as the parent key) for
-backward compatibility with files produced by older Studio builds:
+The parsers also accept the YAML-spec "compact" form (sequence items at the
+**same** indent as the parent key) for backward compatibility with files
+produced by older Studio builds:
 
 ```yaml
 retracts:
@@ -416,10 +416,28 @@ retracts:
   enabled: true          # but no generator should emit this form any more.
 ```
 
-When authoring new YAML by hand, use the indented form — it matches every
-emitter, every reference file, and every parser without relying on the
-compact-form fallback. The Studio TypeScript generator and the firmware round-
-trip (load → save) both preserve the indented form.
+### Flow collections (hand-authored convenience)
+
+The firmware `YamlParser` (`parseFlowNode`) and the Studio TS parser
+(`parseFlowValue`) both accept **single-line flow collections** — a compact map
+or sequence for small leaf objects. A flow `{`/`[` must close on the same line;
+flow and block nest freely:
+
+```yaml
+ports:
+  - { kind: pwm, idx: 0, role: led_animator, label: "Beacon" }
+channels:
+  - port: { kind: pwm, idx: 0 }   # flow value, block events below
+    events:
+      - kind: "on"
+        brightness_pct: 100
+```
+
+Flow is an **input** convenience only. Emitters (Studio generators, the
+firmware load→save round-trip) always write the indented block form, so a Save
+normalises a hand-authored flow file back to block. When authoring new YAML by
+hand, either form parses; reach for flow when a leaf object is small enough that
+a 3-line block hurts readability.
 
 ## Pool Configuration
 

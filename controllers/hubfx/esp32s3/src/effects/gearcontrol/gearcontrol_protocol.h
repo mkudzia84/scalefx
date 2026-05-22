@@ -15,7 +15,10 @@
  *   the effect forwards setState(ON/OFF) calls to `LandingLightService`
  *   for every landing light whose `owner == EffectId::GearCtrl`.
  *
- *   Packet slice: 0xBE..0xC6 in the HubFX 0x80..0xCF range.
+ *   Packet slice: 0xBE..0xC6 (core verbs) + 0xD7..0xD9 (reset/calibrate/
+ *   calib-cancel — appended after EngineFX 0xC7..0xCB and the GunFX +
+ *   Alert blocks that already packed 0xC7..0xD6; do NOT reuse 0xC7..0xC9,
+ *   they belong to EngineFX).
  */
 
 #ifndef HUBFX_GEARCONTROL_PROTOCOL_H
@@ -46,15 +49,16 @@ namespace GearPacket {
     constexpr uint8_t GEAR_LIST_RESP   = 0xC6;
     /// `[id:u8]` → ACK / NACK.  Clears ERROR → RETRACTED so the gear
     /// accepts deploy/retract again.  No-op (ACK) when not in ERROR.
-    constexpr uint8_t GEAR_RESET       = 0xC7;
+    /// (0xC7..0xC9 are EngineFX — these live at 0xD7..0xD9.)
+    constexpr uint8_t GEAR_RESET       = 0xD7;
     /// `[id:u8]` → ACK / NACK.  Start stall-endpoint calibration: the
     /// gear is driven to its retract + deploy hard stops (confirmed by
     /// MOTOR_STALL_EVENT) to validate both endpoints, then homed.  No
     /// stall within the travel timeout → ERROR (NO_STALL_DETECTED).
-    constexpr uint8_t GEAR_CALIBRATE   = 0xC8;
+    constexpr uint8_t GEAR_CALIBRATE   = 0xD8;
     /// `[id:u8]` → ACK / NACK.  Abort an in-progress calibration; the
     /// motor brakes and the gear returns to RETRACTED.
-    constexpr uint8_t GEAR_CALIB_CANCEL = 0xC9;
+    constexpr uint8_t GEAR_CALIB_CANCEL = 0xD9;
 }
 
 namespace GearAllAction {

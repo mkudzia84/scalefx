@@ -22,9 +22,11 @@ const (
 	PhaseEvent  protocol.PacketType = 0xC4
 	ListReq     protocol.PacketType = 0xC5
 	ListResp    protocol.PacketType = 0xC6
-	Reset       protocol.PacketType = 0xC7
-	Calibrate   protocol.PacketType = 0xC8
-	CalibCancel protocol.PacketType = 0xC9
+	// 0xC7..0xC9 belong to EngineFX (Start/Stop/StatusReq); these live at
+	// 0xD7..0xD9 to avoid the collision.
+	Reset       protocol.PacketType = 0xD7
+	Calibrate   protocol.PacketType = 0xD8
+	CalibCancel protocol.PacketType = 0xD9
 )
 
 // ─── GEAR_ALL action codes ───────────────────────────────────────────

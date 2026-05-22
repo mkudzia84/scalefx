@@ -47,6 +47,7 @@ public:
         for (uint8_t i = 0; i < count && i < kMaxGears; ++i) {
             _defs[_numDefs++] = defs[i];
         }
+        applyDefs();   // (re)bind gear FSMs + claim motor ports if topology is up
     }
 
     /// Runtime-enable flag — see LandingLightService for rationale.
@@ -85,6 +86,11 @@ public:
     uint8_t count() const { return _numDefs; }
 
 private:
+    // (Re)bind every gear FSM to its def + claim its motor port.  No-op
+    // until `_topo` is bound.  Called from BOTH begin() and configure()
+    // so it runs once defs + topology both exist, regardless of order;
+    // idempotent on config reload.
+    void applyDefs();
     void claimPorts();
 
     void handleDeploy     (const uint8_t* p, size_t len);

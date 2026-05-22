@@ -55,8 +55,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.3.0-noop"
-#define BUILD_NUMBER     142
+#define FIRMWARE_VERSION "2.6.0-hubfx"
+#define BUILD_NUMBER     168
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -490,6 +490,14 @@ void setup() {
         kLanding .wire(cfgPolicy, applyLandingConfigCallback);
         kGearCtrl.wire(cfgPolicy, applyGearControlConfigCallback);
         kLightFx .wire(cfgPolicy, applyLightFxConfigCallback);
+
+        // After ANY CONFIG_RELOAD, re-apply /hubfx.yaml's master `features:`
+        // matrix LAST so it overrides each sub-file's local `enabled:` flag —
+        // mirrors the boot-time re-apply below.  Without this, a reload of
+        // (say) /gearcontrol.yaml would re-enable gears via its local
+        // `enabled: true` even when features.gears is false.
+        cfgPolicy.setReloadCompleteHook(
+            [](void*) { applyHubFxConfigCallback(kHubFx.data()); }, nullptr);
     }
 
     // Policy pack lifecycle — Serial, DiagLog, indicator pins, port
@@ -614,6 +622,22 @@ void setup() {
                  (unsigned)hubfx::effects::landing::kMaxLandingLights);
     SFX_LOG_INFO("[LightFx] up — %u program(s) loaded from /lightfx/programs/",
                  (unsigned)board.policy<LightFxEffectService>().controller().numPrograms());
+
+    // "HubFX initialized" spoken boot announcement — audio is live
+    // (audio.begin() above ran through codec PLAY).  Plays the dedicated
+    // /sounds/sys/hubfx_initialized.wav on the Alert mixer channel via the
+    // named-cue API (NOT a severity beep — this is a status announcement,
+    // not an alert).  Best-effort: no-op when features.alerts is false or
+    // the WAV is missing on SD.
+    board.policy<AlertService>().playSound(
+        hubfx::effects::alerts::AlertSound::HubFxInitialized);
+
+    // Confirm the loop/LED-tick core: with -DARDUINO_RUNNING_CORE=0 this
+    // must print 0 (off Core 1's audio tasks).  If it prints 1, the
+    // framework ignored the flag → fall back to a dedicated Core-0 LED
+    // task + I²C mutex.
+    SFX_LOG_INFO("[boot] loopTask running on Core %d (audio is on Core 1)",
+                 (int)xPortGetCoreID());
 
     SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out + storage + audio + alerts + USB host + topology + input + landing + lightfx + gear + engine + gun",
                  FIRMWARE_VERSION, (unsigned)BUILD_NUMBER);

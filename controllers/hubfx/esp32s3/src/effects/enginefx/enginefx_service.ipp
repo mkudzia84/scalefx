@@ -84,7 +84,7 @@ void EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::update() {
             if (now - _stateEnteredMs >= 200 && !playing) {
                 _activeChannel = _cfg.channelB;
                 if (_cfg.runningPath[0] &&
-                    startAudio(_cfg.runningPath, _cfg.channelB, 0)) {
+                    startAudio(_cfg.runningPath, _cfg.channelB, 0, /*loop=*/true)) {
                     enterState(EngineState::Running);
                 } else {
                     SFX_LOG_WARN("[engine] no running path — going Stopped");
@@ -145,7 +145,8 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStart() {
         return false;
     }
     _activeChannel = _cfg.channelA;
-    if (!startAudio(_cfg.startingPath, _cfg.channelA, _cfg.startingOffsetMs)) {
+    if (!startAudio(_cfg.startingPath, _cfg.channelA, _cfg.startingOffsetMs,
+                    /*loop=*/false, /*fadeInMs=*/_cfg.startFadeInMs)) {
         return false;
     }
     enterState(EngineState::Starting);
@@ -159,7 +160,8 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStop() {
     stopAudio(_activeChannel);
     if (_cfg.stoppingPath[0]) {
         _activeChannel = _cfg.channelA;
-        if (startAudio(_cfg.stoppingPath, _cfg.channelA, _cfg.stoppingOffsetMs)) {
+        if (startAudio(_cfg.stoppingPath, _cfg.channelA, _cfg.stoppingOffsetMs,
+                       /*loop=*/false, /*fadeInMs=*/0, /*fadeOutMs=*/_cfg.stopFadeOutMs)) {
             enterState(EngineState::Stopping);
             return true;
         }
@@ -189,15 +191,25 @@ void EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::emitStateEvent
 
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
 bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::startAudio(
-        const char* path, uint8_t channel, uint32_t offsetMs) {
+        const char* path, uint8_t channel, uint32_t offsetMs, bool loop,
+        uint16_t fadeInMs, uint16_t fadeOutMs) {
 #if defined(SFX_HAS_AUDIO)
     AudioPlaybackOptions opts;
     opts.volume         = 1.0f;
     opts.outputChannels = _cfg.outputMask;
     opts.startOffsetMs  = static_cast<int>(offsetMs);
+    opts.fadeInMs       = fadeInMs;
+    opts.fadeOutMs      = fadeOutMs;
+    // The running loop must repeat forever; the start/stop one-shots must
+    // play exactly once.  The mixer disables looping when `loop == false`
+    // OR `loopCount == 0`, so set both fields explicitly per call (the
+    // struct defaults — loop=false, loopCount=INFINITE — resolve to "play
+    // once", which silently broke the running loop).
+    opts.loop      = loop;
+    opts.loopCount = loop ? LOOP_INFINITE : 0;
     return TMixer::instance().playAsync(channel, path, opts);
 #else
-    (void)path; (void)channel; (void)offsetMs;
+    (void)path; (void)channel; (void)offsetMs; (void)loop; (void)fadeInMs; (void)fadeOutMs;
     return false;
 #endif
 }
@@ -220,6 +232,12 @@ void EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::onTriggerChang
     if (!self) return;
     if (v.kind != input::TriggerKind::Boolean) return;
     self->_toggleEngaged = v.b;
+    // Edge-only: the toggle starts/stops the engine on a deliberate flip,
+    // never on the boot/reload baseline.  `v.initial` is the first event
+    // after (re)subscribe — adopt the level for status, but don't act, so
+    // a reflash can't auto-start the engine or play the shutdown sound on
+    // a settling-RC transient.
+    if (v.initial) return;
     if (v.b) self->forceStart();
     else     self->forceStop();
 }

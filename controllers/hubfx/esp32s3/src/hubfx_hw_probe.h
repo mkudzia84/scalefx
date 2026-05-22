@@ -241,9 +241,18 @@ public:
         }
     }
 
-    /// Per-loop maintenance — refresh INA cached readings.  The PWM
-    /// chip is event-driven; nothing to poll there.
+    /// Periodic maintenance — refresh INA cached readings.  THROTTLED to
+    /// `kSenseIntervalMs`: refreshing all 8 INA226 every main-loop pass is
+    /// 8 sequential I²C reads (~10-16 ms) that dominated and jittered the
+    /// loop period — which in turn jittered the LED animation tick.  V/I
+    /// telemetry only needs ~10 Hz freshness, so polling at 100 ms lets the
+    /// loop run fast + steady (LED ticks every ~1 ms) while a one-off
+    /// ~12 ms read every 100 ms is invisible.  The PWM chip is event-driven;
+    /// nothing to poll there.
     void pollSense() {
+        const uint32_t now = millis();
+        if (now - _lastSenseMs < kSenseIntervalMs) return;
+        _lastSenseMs = now;
         for (uint8_t k = 0; k < 8; ++k) _inas[k].update();
     }
 
@@ -264,6 +273,10 @@ private:
     INA226*  _inas;
     sfx_peripherals::Pca9685PwmPort* _pwm;
     PinConfig _cfg;
+
+    // INA refresh throttle — see pollSense().
+    static constexpr uint32_t kSenseIntervalMs = 100;   // 10 Hz V/I refresh
+    uint32_t _lastSenseMs = 0;
     HwInitState _state;
 };
 

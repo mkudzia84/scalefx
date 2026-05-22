@@ -1,59 +1,59 @@
-# helicopter_landing — Approach/landing configuration.
+# helicopter_landing — Approach/landing configuration (Airbus-style).
 #
-# Flight lights (beacon + strobe + nav) PLUS the landing light deployed
-# and on.  Standard practice: landing light comes on below ~500 ft AGL
-# on approach, stays on through touchdown, off on roll-out / hover-taxi.
+# Same phase-locked anti-collision pattern as helicopter_flight (single-
+# flash beacon + nav group at t=0; double-flash strobe at mid-period,
+# non-overlapping; shared 1000 ms period) PLUS the landing light deployed
+# and on.
 #
-# When this program activates, the `landing_bindings:` block also flips
-# landing-light ID 0 (nose searchlight) to ON — the LandingLightService
-# handles the servo deployment + LED on sequence.
+# The landing light (pwm 5 + its deploy servo) is a LandingLightService
+# entity, so it's driven via `landing_bindings:` below — NOT as a raw
+# LightFx channel (LandingLight owns pwm 5).  Activating this program
+# flips landing-light ID 0 ON: servo deploys, then the bulb lights.
 
 schema_version: 1
 
 channels:
-  - port: { kind: pwm, idx: 0 }                # red rotating beacon
-    brightness_pct: 100
+  # ── Single-flash group (red beacon + position nav lights) ──────────
+  - port: { kind: pwm, idx: 0 }                # red rotating beacon — fade pulse
+    loop: true
     events:
-      - kind: beacon
-        cycle_ms: 800
-        min_pct:    0
-        max_pct:  100
-        flash_pct: 100
-  - port: { kind: pwm, idx: 1 }                # white anti-collision strobe
-    brightness_pct: 100
-    events:
-      - kind: flash
-        cycle_ms: 1500
-        brightness_pct: 100
+      - { kind: fade_in,  brightness_pct: 100, duration_ms: 300 }   # ramp 0→100%
+      - { kind: fade_out, brightness_pct: 100, duration_ms: 300 }   # ramp 100→0%
+      - { kind: "off",    duration_ms: 400 }                        # → 1000 ms period
   - port: { kind: pwm, idx: 2 }                # red nav (port)
-    brightness_pct: 100
+    loop: true
     events:
-      - kind: on
-        brightness_pct: 100
+      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
+      - { kind: "off", duration_ms: 920 }
   - port: { kind: pwm, idx: 3 }                # green nav (starboard)
-    brightness_pct: 100
+    loop: true
     events:
-      - kind: on
-        brightness_pct: 100
+      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
+      - { kind: "off", duration_ms: 920 }
   - port: { kind: pwm, idx: 4 }                # white nav (tail)
-    brightness_pct: 100
+    loop: true
     events:
-      - kind: on
-        brightness_pct: 100
-  - port: { kind: pwm, idx: 5 }                # landing light — on, full
-    brightness_pct: 100
+      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
+      - { kind: "off", duration_ms: 920 }
+
+  # ── Double-flash white anti-collision strobe (offset, non-overlapping) ──
+  - port: { kind: pwm, idx: 1 }                # white anti-collision strobe
+    loop: true
     events:
-      - kind: on
-        brightness_pct: 100
+      - { kind: "off", duration_ms: 500 }
+      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }   # flash 1
+      - { kind: "off", duration_ms:  80 }
+      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }   # flash 2
+      - { kind: "off", duration_ms: 300 }      # → 1000 ms period
+
   - port: { kind: pwm, idx: 6 }                # cabin light — off
     events:
-      - kind: off
-        duration_ms: 0
+      - { kind: "off", duration_ms: 0 }
   - port: { kind: pwm, idx: 7 }                # spare — off
     events:
-      - kind: off
-        duration_ms: 0
+      - { kind: "off", duration_ms: 0 }
 
-# Servo-deployed landing light goes hot (servo to deploy, LEDs on).
+# Nose searchlight goes hot — servo deploys, bulb (pwm 5) lights — via
+# the LandingLightService, which owns that port.
 landing_bindings:
-  - { id: 0, state: on }
+  - { id: 0, state: "on" }

@@ -1168,7 +1168,7 @@ retracts:
     timeout_ms: 60000
 ```
 
-All three parsers (firmware `YamlParser`, Go `parseYAML` in `engine/config_schema.go`, Studio TS `parseYaml`) accept both the indented form AND the YAML-spec "compact" form (sequence items at the same column as the parent key) for backward compatibility with older files:
+All parsers (firmware `YamlParser`, Go via `gopkg.in/yaml.v3`, Studio TS `parseYaml`) accept both the indented form AND the YAML-spec "compact" form (sequence items at the same column as the parent key) for backward compatibility with older files:
 
 ```yaml
 retracts:
@@ -1176,10 +1176,22 @@ retracts:
   enabled: true
 ```
 
+They ALSO accept **single-line flow collections** for hand-authored leaf objects — far more readable than a 3-line block for a small map. A flow `{`/`[` must close on the same line; flow and block freely nest:
+
+```yaml
+ports:
+  - { kind: pwm, idx: 0, role: led_animator, label: "Beacon" }   # flow map item
+channels:
+  - port: { kind: pwm, idx: 0 }   # flow map value; block events list below
+    events:
+      - kind: "on"
+        brightness_pct: 100
+```
+
 **Rules:**
 
-1. **Emitters always use indented form.** The Studio TS generators take a `base` level and emit `L1 = indent(base+1)` for the `- ` line, `L2 = indent(base+2)` for continuations. Treat any new emitter as a pull-request-blocking regression if it drops back to compact form.
-2. **Parsers accept both forms.** The Studio TS parser (`parseNested` in [yaml-parser.ts](app/go/studio/frontend/src/lib/config/yaml-parser.ts)) promotes a same-indent `- …` line to a sequence nested under the preceding key. The firmware parser explicitly handles "block sequences indented at the same level as the parent key" (see [yaml_parser.ipp:346-370](controllers/lib/sfx_config/config/yaml_parser.ipp#L346)). The Go parser normalises list-item indent with `+2`. Do not weaken any of these — stale device files predate the style switch.
+1. **Emitters always use indented BLOCK form** (never flow). The Studio TS generators take a `base` level and emit `L1 = indent(base+1)` for the `- ` line, `L2 = indent(base+2)` for continuations. Treat any new emitter as a pull-request-blocking regression if it drops back to compact or flow form. Flow is an INPUT convenience only — a Studio Save round-trips a hand-authored flow file back to block.
+2. **Parsers accept block (indented + compact) AND flow forms.** The Studio TS parser (`parseNested` in [yaml-parser.ts](app/go/studio/frontend/src/lib/config/yaml-parser.ts)) promotes a same-indent `- …` line to a sequence nested under the preceding key; `parseFlowValue` handles `{}`/`[]`. The firmware parser handles same-indent block sequences (see [yaml_parser.ipp](controllers/lib/sfx_config/config/yaml_parser.ipp)) and flow collections via `parseFlowNode`. Go uses `gopkg.in/yaml.v3` (full YAML). Keep the two custom parsers (firmware + TS) in lock-step — if one gains an input form, the other must too, or a hand-authored file parses on one side and silently fails on the other.
 3. **Hand-written YAML uses indented form.** Reference `config.yaml` files under `controllers/*/pico/` are the canonical examples; copy their layout.
 4. **Round-trip is stable.** After a Save in Studio, the on-device file is indented form. After a CLI upload of a hand-written file, the device stores whatever bytes were uploaded (the firmware caches raw YAML) — so `cat`-ing the repo's reference `config.yaml` into the device preserves the indented form.
 5. **Documentation mirrors this rule.** [controllers/lib/sfx_config/README.md](controllers/lib/sfx_config/README.md) carries the canonical example under "Canonical YAML Style". Update both when the style ever changes.
@@ -1190,7 +1202,7 @@ retracts:
 - Studio's 880-byte on-device file shipped in compact form was silently mis-parsed by the TS parser: three retracts, seven pins, three door modes, and a battery block were all dropped because `parseMapping` broke at the first `- ` line. The UI hydrated from defaults while claiming "applied" — a silent-data-loss class of bug.
 - A single canonical style means the round-trip (firmware ↔ Studio ↔ CLI) is a pure identity transform. Any drift (e.g., Studio emits compact, firmware round-trips compact, CLI parser someday regresses) is a single-file fix instead of a forensic multi-component audit.
 
-Reference: [config-yaml-gen.ts](app/go/studio/frontend/src/lib/config/config-yaml-gen.ts) emitters, [yaml-parser.ts](app/go/studio/frontend/src/lib/config/yaml-parser.ts) `parseNested`, firmware [yaml_parser.ipp](controllers/lib/sfx_config/config/yaml_parser.ipp), Go [config_schema.go](app/go/engine/config_schema.go) `buildTree`.
+Reference: [config-yaml-gen.ts](app/go/studio/frontend/src/lib/config/config-yaml-gen.ts) emitters, [yaml-parser.ts](app/go/studio/frontend/src/lib/config/yaml-parser.ts) `parseNested` / `parseFlowValue`, firmware [yaml_parser.ipp](controllers/lib/sfx_config/config/yaml_parser.ipp) `parseFlowNode`. (Go uses `gopkg.in/yaml.v3`; the legacy hand-rolled `engine/config_schema.go` parser is archived.)
 
 ### 28. Shared Servo Calibration Dialog (MANDATORY for board UIs)
 

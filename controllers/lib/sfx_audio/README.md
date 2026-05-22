@@ -79,7 +79,8 @@ Core 1 — Producer Task (priority MAX-2)  Core 1 — Consumer Task (priority MA
 ```cpp
 // Async playback control (thread-safe, enqueues to command queue)
 void playAsync(int channel, const char* path, float volume = 1.0f, bool loop = false);
-void stopAsync(int channel);
+bool playAsync(int channel, const char* path, const AudioPlaybackOptions& opts);
+void stopAsync(int channel, AudioStopMode mode = AudioStopMode::Immediate);
 void stopAllAsync();
 
 // Playback state queries (thread-safe, atomic reads)
@@ -90,6 +91,19 @@ float remainingSec(int channel) const;   // Seconds remaining (-1.0 if not playi
 void setVolume(int channel, float volume);
 void setMasterVolume(float volume);
 ```
+
+**`AudioPlaybackOptions`** is the full-control overload — `volume`, `outputChannels`
+(routing bitmask), `loop` + `loopCount`, `startOffsetMs`, `fadeInMs`, and `fadeOutMs`. A
+non-zero `fadeInMs` ramps the channel 0 → full over that many ms from the first sample
+(soft spool-up); `fadeOutMs` ramps full → 0 over the track's final this-many ms (soft
+tail, **one-shots only — ignored when looping**), auto-armed by the consumer once
+playback-remaining drops below the threshold. `fadeInMs == 0` / `fadeOutMs == 0` mean
+"full volume from the first / to the last sample". An explicit immediate fade-out is
+`stopAsync(channel, AudioStopMode::Fade)` (fixed 50 ms). All three share one per-channel
+fade primitive: `fadeStep < 0` ⇒ fade-in (clamp at 1.0, keep playing), `fadeStep > 0` ⇒
+fade-out (stop + close file at 0). EngineFX uses `fadeInMs` for the start spool-up and
+`fadeOutMs` for the shutdown wind-down (`/enginefx.yaml` →
+`sounds.transitions.start_fade_in_ms` / `stop_fade_out_ms`).
 
 **`remainingSec()` returns `float` seconds** (e.g., 90.6 = 90 seconds 600 milliseconds).
 The calculation is `(float)framesLeft / (float)sampleRate_Hz` — simple division with no

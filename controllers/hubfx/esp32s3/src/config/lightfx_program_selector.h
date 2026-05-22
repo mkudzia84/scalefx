@@ -35,6 +35,12 @@
 
 namespace hubfx::config {
 
+// A selector range's program name (kSelectorProgramMax) must match a
+// loaded program's name (kProgramNameMax) in FULL — keep the two buffers
+// the same width so neither side silently truncates.
+static_assert(kSelectorProgramMax == hubfx::effects::lightfx::kProgramNameMax,
+              "kSelectorProgramMax must equal kProgramNameMax");
+
 class LightFxProgramSelector {
 public:
     LightFxProgramSelector() = default;
@@ -72,7 +78,7 @@ public:
             int8_t idx = -1;
             for (uint8_t pi = 0; pi < numPrograms; ++pi) {
                 const auto* p = controller->programAt(pi);
-                if (p && std::strncmp(p->name, r.program, sizeof(p->name)) == 0) {
+                if (p && std::strcmp(p->name, r.program) == 0) {
                     idx = (int8_t)pi;
                     break;
                 }

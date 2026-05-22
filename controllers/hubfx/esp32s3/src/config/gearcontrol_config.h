@@ -13,7 +13,7 @@
  * `/hubfx.yaml`'s `features.gears:` flag is the master kill-switch
  * (overrides the local `enabled:` here).
  *
- * YAML shape:
+ * YAML shape (the motor PortRef may use the flow form `{ … }`):
  *
  *   schema_version: 1
  *   enabled: true

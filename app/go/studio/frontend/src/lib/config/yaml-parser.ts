@@ -6,12 +6,14 @@
 //   • Block mappings:   key: value (2-space indentation)
 //   • Block sequences:  - item / - key: value lists
 //   • Scalars:          strings (bare or double-quoted), ints, hex (0x..), bools
-//   • Flow sequences:   [a, b, c] (numbers / bare strings)
+//   • Flow collections: { kind: pwm, idx: 0 } and [a, b, c], nestable, as a
+//                       value (`port: { … }`) or a whole item (`- { … }`)
 //   • Comments:         # ... (whole line or trailing)
 //   • Blank lines       ignored
 //
 // Unsupported (and not needed for board configs): anchors, tags, multi-line
-// folded/literal scalars, flow mappings, complex keys.
+// folded/literal scalars (a flow `{`/`[` must close on the same line),
+// complex keys.
 //
 // The parser returns a plain JS value tree where:
 //   mapping  -> { [key]: value }
@@ -231,32 +233,77 @@ function unquote(s: string): string {
 
 function parseScalarOrFlow(s: string, lineNo: number, errors: YamlParseError[]): YamlValue {
     const t = s.trim()
-    if (t.startsWith('[') && t.endsWith(']')) {
-        return parseFlowSeq(t, lineNo, errors)
+    if (t.startsWith('[') || t.startsWith('{')) {
+        const pos = { i: 0 }
+        return parseFlowValue(t, pos, lineNo, errors)
     }
     return parseScalar(t)
 }
 
-function parseFlowSeq(s: string, lineNo: number, errors: YamlParseError[]): YamlValue[] {
-    const inner = s.slice(1, -1).trim()
-    if (inner === '') return []
-    // simple comma split — we only support scalar items
-    const parts: string[] = []
-    let depth = 0, inDq = false, buf = ''
-    for (let i = 0; i < inner.length; i++) {
-        const c = inner[i]
-        if (c === '"') { inDq = !inDq; buf += c; continue }
-        if (!inDq) {
-            if (c === '[' || c === '{') depth++
-            else if (c === ']' || c === '}') depth--
-            else if (c === ',' && depth === 0) {
-                parts.push(buf.trim()); buf = ''; continue
+// Recursive single-line flow parser. `pos.i` is advanced past the value
+// consumed. Handles flow maps `{ k: v, … }`, flow sequences `[ a, b ]`,
+// and bare scalars (read up to the next top-level , } ] ). Mirrors the
+// firmware YamlParser::parseFlowNode so both parsers accept the same form.
+function parseFlowValue(
+    s: string, pos: { i: number }, lineNo: number, errors: YamlParseError[],
+): YamlValue {
+    while (pos.i < s.length && (s[pos.i] === ' ' || s[pos.i] === '\t')) pos.i++
+
+    if (s[pos.i] === '{') {
+        pos.i++ // consume '{'
+        const obj: Record<string, YamlValue> = {}
+        while (pos.i < s.length) {
+            skipFlowSep(s, pos)
+            if (s[pos.i] === '}') { pos.i++; break }
+            if (pos.i >= s.length) break
+            const keyStart = pos.i
+            let inDq = false, inSq = false
+            while (pos.i < s.length) {
+                const c = s[pos.i]
+                if (c === '"' && !inSq) inDq = !inDq
+                else if (c === "'" && !inDq) inSq = !inSq
+                else if (c === ':' && !inDq && !inSq) break
+                pos.i++
             }
+            if (s[pos.i] !== ':') {
+                errors.push({ line: lineNo, message: `flow map: missing ":" near "${s.slice(keyStart)}"` })
+                break
+            }
+            const key = unquote(s.slice(keyStart, pos.i).trim())
+            pos.i++ // consume ':'
+            obj[key] = parseFlowValue(s, pos, lineNo, errors)
         }
-        buf += c
+        return obj
     }
-    if (buf.trim() !== '') parts.push(buf.trim())
-    return parts.map(p => parseScalar(p))
+
+    if (s[pos.i] === '[') {
+        pos.i++ // consume '['
+        const arr: YamlValue[] = []
+        while (pos.i < s.length) {
+            skipFlowSep(s, pos)
+            if (s[pos.i] === ']') { pos.i++; break }
+            if (pos.i >= s.length) break
+            arr.push(parseFlowValue(s, pos, lineNo, errors))
+        }
+        return arr
+    }
+
+    // Bare scalar — read to the next top-level separator.
+    const start = pos.i
+    let inDq = false, inSq = false
+    while (pos.i < s.length) {
+        const c = s[pos.i]
+        if (c === '"' && !inSq) inDq = !inDq
+        else if (c === "'" && !inDq) inSq = !inSq
+        else if (!inDq && !inSq && (c === ',' || c === '}' || c === ']')) break
+        pos.i++
+    }
+    return parseScalar(s.slice(start, pos.i).trim())
+}
+
+function skipFlowSep(s: string, pos: { i: number }): void {
+    while (pos.i < s.length &&
+           (s[pos.i] === ' ' || s[pos.i] === '\t' || s[pos.i] === ',')) pos.i++
 }
 
 function parseScalar(s: string): YamlValue {

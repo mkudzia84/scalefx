@@ -109,8 +109,15 @@ public:
     /// Register the done callback. Fired once per queue completion.
     void onQueueDone(DoneCallback cb) { _onDone = std::move(cb); }
 
-    /// Tick — drive the state machine. Called from `RoleServicePolicy::update()`.
-    void tick();
+    /// Tick — drive the state machine.  `now` is a SHARED millis()
+    /// timestamp captured once per `RoleServicePolicy::update()` pass and
+    /// passed to every channel, so all LedAnimators sample the exact same
+    /// instant — same-period channels stay in perfect phase and nothing
+    /// drifts with the (jittery) main-loop period.  Cyclic events derive
+    /// their phase from absolute `now % cycle_ms` (millis-locked), not
+    /// from time-since-start, so a late tick still renders the correct
+    /// phase and channels never desync.
+    void tick(uint32_t now);
 
 private:
     /// Write a brightness-percent value (0..100) to the port, scaled by
@@ -123,10 +130,21 @@ private:
 
     sfx_peripherals::PwmPort* _port = nullptr;
 
+    /// Loop flag bit in `Event::flags` (event[0]) — phase-locked looping
+    /// pattern.  Mirrors hubfx::effects::lightfx::LightEventFlags::Loop.
+    static constexpr uint8_t FLAG_LOOP = 0x01;
+
     Event    _queue[MAX_EVENTS] {};
     uint8_t  _count            = 0;
     uint8_t  _cursor           = 0;
     bool     _playing          = false;
+
+    // Phase-locked loop mode (set from event[0].flags & FLAG_LOOP at
+    // loadQueue).  When `_loop`, the queue is one repeating cycle of
+    // period `_loopPeriodMs` (= Σ durationMs) and the active segment is
+    // `now % _loopPeriodMs` — so all looping channels stay phase-aligned.
+    bool     _loop             = false;
+    uint32_t _loopPeriodMs     = 0;
 
     // Active-event state machine
     uint32_t _eventStart_ms     = 0;

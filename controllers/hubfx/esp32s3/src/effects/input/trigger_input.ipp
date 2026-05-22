@@ -20,6 +20,7 @@ inline TriggerValue TriggerInput::feed(uint16_t pulseUs, bool valid) {
         v.valid = true;
     }
     v.changed = isChanged(v);
+    v.initial = !_haveLast;     // first feed since configure() — baseline, not an edge
     fireIfChanged(v);
     return v;
 }

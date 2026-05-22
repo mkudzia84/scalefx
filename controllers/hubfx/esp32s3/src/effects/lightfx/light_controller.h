@@ -60,14 +60,23 @@ public:
         for (uint8_t i = 0; i < count && i < kMaxPrograms; ++i) {
             _programs[_numPrograms++] = programs[i];
         }
+        // Claim every referenced port NOW that the program list is
+        // populated.  `begin()` runs during board.begin() — BEFORE the
+        // config chain loads programs — so claiming there would walk an
+        // empty list and own nothing, and `selectProgram` would then skip
+        // every channel as "not owned".  `claim()` is an ownership-
+        // registry op independent of role attachment (applyPortRoles may
+        // run later) and idempotent, so re-running it on every reload is
+        // safe.
+        claimPorts();
     }
 
-    /// Walk every LED channel referenced in any program and claim
-    /// each port for `EffectId::LightFx`.  Called from
-    /// `LightFxEffectService::begin()` so claims happen before any
-    /// program ever activates.  Ports already held by another effect
-    /// (e.g. LandingLight) log a warning and are skipped — programs
-    /// referencing those ports will silently no-op.
+    /// Walk every LED channel referenced in any program and claim each
+    /// port for `EffectId::LightFx`.  Called from `configure()` once the
+    /// program list is populated (NOT begin(), which runs before programs
+    /// load).  Ports already held by another effect (e.g. LandingLight)
+    /// log a warning and are skipped — programs referencing those ports
+    /// will silently no-op.
     void claimPorts() {
         if (!_topo) return;
         for (uint8_t pi = 0; pi < _numPrograms; ++pi) {

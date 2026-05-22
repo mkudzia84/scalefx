@@ -68,6 +68,14 @@ struct TriggerMapping {
 
 /// Decoded value handed back by `TriggerInput::feed()` and to the
 /// registered callback.  `changed == true` is the edge signal.
+///
+/// `initial == true` marks the FIRST callback after a `configure()` —
+/// the value the channel happened to hold at subscribe time (boot,
+/// config-reload), NOT a deliberate transition.  Level consumers (e.g.
+/// the LightFx program selector — adopt the switch position at boot)
+/// ignore it; edge consumers (e.g. the EngineFx start/stop toggle —
+/// must not fire on boot) gate on `!initial`.  Think of it as the
+/// stream's "current value" replay vs. a real change.
 struct TriggerValue {
     TriggerKind kind;
     union {
@@ -79,6 +87,7 @@ struct TriggerValue {
     };
     bool valid   = false;
     bool changed = false;
+    bool initial = false;   ///< first event since configure() (baseline, not an edge)
 };
 
 class TriggerInput {

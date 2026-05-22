@@ -67,14 +67,19 @@ public:
 
     LandingLightServicePolicyT() = default;
 
-    /// Install the static landing-light definitions.  Must be called
-    /// BEFORE `board.begin()` so claims happen as part of the boot
-    /// sequence.  Copies are made — caller's array can go out of scope.
+    /// Install the landing-light definitions.  Call order vs
+    /// `board.begin()` no longer matters: `applyDefs()` binds the per-LL
+    /// instances + claims their ports as soon as BOTH the defs and the
+    /// topology pointer exist (begin() binds topology + calls applyDefs;
+    /// configure() sets defs + calls applyDefs).  In the YAML config-
+    /// chain model this fires from the config callback AFTER begin().
+    /// Copies are made — caller's array can go out of scope.
     void configure(const LandingLightDef* defs, uint8_t count) {
         _numDefs = 0;
         for (uint8_t i = 0; i < count && i < kMaxLandingLights; ++i) {
             _defs[_numDefs++] = defs[i];
         }
+        applyDefs();
     }
 
     /// Runtime-enable flag — picked up by `BoardServer::
@@ -148,8 +153,14 @@ private:
 
     void emitPhaseEvent(uint8_t id, uint8_t phase);
 
+    // (Re)bind every per-LL instance to its def + claim its (servo +
+    // LED) ports.  No-op until `_topology` is bound.  Called from BOTH
+    // begin() and configure() so it runs once defs + topology both exist,
+    // regardless of order; idempotent on config reload.
+    void applyDefs();
+
     // Claim every (servo + LED) port referenced by `_defs` for
-    // `EffectId::LandingLight`.  Called from `begin()`.
+    // `EffectId::LandingLight`.  Called from `applyDefs()`.
     void claimPorts();
 
     sfx_core::BoardServerBase* _ctx        = nullptr;

@@ -58,8 +58,12 @@ public:
     }
 
     bool ownsType(uint8_t type) const {
-        // 0xEE BATTERY_CONFIG (legacy) + 0xEF..0xFF lifecycle range.
-        return type >= 0xEE && type <= 0xFF;
+        // 0xEF..0xFF lifecycle range only.  0xEE (BATTERY_CONFIG) is NOT
+        // claimed here — BoardService never handled it, and the
+        // auto-prepend put this policy first in the pack, so claiming 0xEE
+        // ate BATTERY_CONFIG before BatteryServicePolicy (which owns it)
+        // could see it.  Dropping 0xEE lets battery config dispatch.
+        return type >= 0xEF && type <= 0xFF;
     }
 
     CommandHandleResult handle(uint8_t type, const uint8_t* payload, size_t len);

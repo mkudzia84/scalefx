@@ -36,6 +36,7 @@ enum class AlertSound : uint8_t {
     GunFxFwError      = 7,     ///< /sounds/sys/gunfx_fw_error.wav
     GearMoving        = 8,     ///< /sounds/sys/gear_moving.wav
     BatteryLow        = 9,     ///< /sounds/sys/battery_low.wav
+    HubFxInitialized  = 10,    ///< /sounds/sys/hubfx_initialized.wav — spoken boot announcement
     // ─── Append below this line ─────────────────────────────────────
 };
 
@@ -52,6 +53,7 @@ inline const char* alertSoundName(AlertSound s) {
         case AlertSound::GunFxFwError:    return "gunfx_fw_error";
         case AlertSound::GearMoving:      return "gear_moving";
         case AlertSound::BatteryLow:      return "battery_low";
+        case AlertSound::HubFxInitialized: return "hubfx_initialized";
     }
     return "";
 }
@@ -70,6 +72,7 @@ inline AlertSound alertSoundFromName(const char* name) {
     if (std::strcmp(name, "gunfx_fw_error")   == 0) return AlertSound::GunFxFwError;
     if (std::strcmp(name, "gear_moving")      == 0) return AlertSound::GearMoving;
     if (std::strcmp(name, "battery_low")      == 0) return AlertSound::BatteryLow;
+    if (std::strcmp(name, "hubfx_initialized") == 0) return AlertSound::HubFxInitialized;
     return AlertSound::None;
 }
 

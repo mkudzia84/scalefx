@@ -61,6 +61,17 @@ struct EngineFxConfig {
     char     stoppingPath[64] = {};
     uint32_t startingOffsetMs = 0;
     uint32_t stoppingOffsetMs = 0;
+
+    /// Optional fade-in for the START sound (0 = play at full volume from
+    /// the first sample).  Ramps the starting track 0 → full over this
+    /// many ms — a soft spool-up.  Only the start sound fades in; the
+    /// running loop and shutdown sound play at full volume.
+    uint16_t startFadeInMs    = 0;
+
+    /// Optional fade-out for the STOP sound (0 = play to the last sample).
+    /// Ramps the shutdown track full → 0 over its final this-many ms — a
+    /// soft wind-down tail.  Symmetric with `startFadeInMs`.
+    uint16_t stopFadeOutMs    = 0;
 };
 
 template <MixerLike                                   TMixer,
@@ -133,7 +144,13 @@ private:
     /// call before `begin()` — early-outs on `_dispatcher == nullptr`.
     void rebindThrottle();
 
-    bool startAudio(const char* path, uint8_t channel, uint32_t offsetMs);
+    /// Play `path` on `channel`.  `loop == true` repeats forever (running
+    /// loop); `false` plays once (start / stop one-shots).  `fadeInMs > 0`
+    /// ramps the track 0 → full over that many ms (start spool-up);
+    /// `fadeOutMs > 0` ramps full → 0 over its final ms (stop wind-down,
+    /// one-shots only).
+    bool startAudio(const char* path, uint8_t channel, uint32_t offsetMs,
+                    bool loop, uint16_t fadeInMs = 0, uint16_t fadeOutMs = 0);
     void stopAudio (uint8_t channel);
 
     /// Callback fired by the TriggerInput on edge changes.  Drives

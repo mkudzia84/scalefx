@@ -104,6 +104,8 @@ struct EngineFxYamlConfig {
         struct Transitions {
             uint32_t startingOffsetMs = 0;
             uint32_t stoppingOffsetMs = 0;
+            uint16_t startFadeInMs    = 0;
+            uint16_t stopFadeOutMs    = 0;
         } transitions;
     } sounds;
 };
@@ -136,7 +138,9 @@ inline const auto fields = schema<EngineFxYamlConfig>(
 
         group<&S::transitions>("transitions",
             prop<&Tr::startingOffsetMs>("starting_offset_ms", uint32_t(0)),
-            prop<&Tr::stoppingOffsetMs>("stopping_offset_ms", uint32_t(0))
+            prop<&Tr::stoppingOffsetMs>("stopping_offset_ms", uint32_t(0)),
+            prop<&Tr::startFadeInMs>   ("start_fade_in_ms",   uint16_t(0)).range(0, 10000),
+            prop<&Tr::stopFadeOutMs>   ("stop_fade_out_ms",   uint16_t(0)).range(0, 10000)
         )
     )
 );
@@ -181,6 +185,8 @@ toEngineFxServiceConfig(const EngineFxYamlConfig& y, const HubFxConfig& hub) {
     std::strncpy(cfg.stoppingPath, y.sounds.stopping, sizeof(cfg.stoppingPath) - 1);
     cfg.startingOffsetMs = y.sounds.transitions.startingOffsetMs;
     cfg.stoppingOffsetMs = y.sounds.transitions.stoppingOffsetMs;
+    cfg.startFadeInMs    = y.sounds.transitions.startFadeInMs;
+    cfg.stopFadeOutMs    = y.sounds.transitions.stopFadeOutMs;
 
     // Trigger params live in /enginefx.yaml — copy through.
     cfg.thresholdUs  = y.toggle.thresholdUs;

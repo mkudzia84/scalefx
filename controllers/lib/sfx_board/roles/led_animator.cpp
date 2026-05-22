@@ -19,7 +19,16 @@ bool LedAnimator::loadQueue(const Event* events, size_t count) {
     if (count > 0) std::memcpy(_queue, events, count * sizeof(Event));
     _count  = (uint8_t)count;
     _cursor = 0;
-    SFX_LOG_DEBUG("[LedAnimator] loadQueue: %u events", (unsigned)count);
+
+    // Phase-locked loop pattern? (flag carried on event[0]).  Precompute
+    // the cycle period = Σ duration_ms so tick() can index by now % period.
+    _loop = (count > 0) && (_queue[0].flags & FLAG_LOOP);
+    _loopPeriodMs = 0;
+    if (_loop) {
+        for (uint8_t i = 0; i < _count; ++i) _loopPeriodMs += _queue[i].durationMs;
+    }
+    SFX_LOG_DEBUG("[LedAnimator] loadQueue: %u events%s",
+                  (unsigned)count, _loop ? " (loop)" : "");
     return true;
 }
 
@@ -47,7 +56,7 @@ void LedAnimator::start() {
     SFX_LOG_DEBUG("[LedAnimator] start: kind=%u dur=%u cycle=%u bright=%u",
                   (unsigned)e0.kind, (unsigned)e0.durationMs,
                   (unsigned)e0.cycleMs, (unsigned)e0.brightnessPct);
-    tick();   // emit an initial sample so the port goes live immediately
+    tick(millis());   // emit an initial sample so the port goes live immediately
 }
 
 void LedAnimator::stop() {
@@ -56,11 +65,46 @@ void LedAnimator::stop() {
     if (_port) writeOutputPct(0);
 }
 
-void LedAnimator::tick() {
+void LedAnimator::tick(uint32_t now) {
     if (!_playing || _count == 0 || !_port) return;
 
+    // ── Phase-locked loop mode ────────────────────────────────────────
+    // The whole queue is one repeating cycle; the active segment is
+    // chosen by absolute `now % period`, so every looping channel with
+    // the same period stays in lockstep and never drifts.  Arbitrary
+    // patterns (single flash, double flash, mutually-offset pulses) are
+    // just a sequence of timed On/Off (and fade) events.
+    if (_loop) {
+        if (_loopPeriodMs == 0) { writeOutputPct(0); return; }
+        const uint32_t pos = now % _loopPeriodMs;
+        uint32_t acc = 0;
+        for (uint8_t i = 0; i < _count; ++i) {
+            const Event& e = _queue[i];
+            if (pos < acc + e.durationMs) {
+                const uint32_t local = pos - acc;          // ms into this segment
+                uint8_t b;
+                switch (e.kind) {
+                    case EV_OFF:      b = 0; break;
+                    case EV_FADE_IN:  b = (e.durationMs ? (uint8_t)((uint32_t)e.brightnessPct * local / e.durationMs) : e.brightnessPct); break;
+                    case EV_FADE_OUT: b = (e.durationMs ? (uint8_t)((uint32_t)e.brightnessPct * (e.durationMs - local) / e.durationMs) : 0); break;
+                    case EV_ON:
+                    default:          b = e.brightnessPct; break;   // On (and any non-fade) = solid
+                }
+                _currentBrightPct = b;
+                writeOutputPct(b);
+                return;
+            }
+            acc += e.durationMs;
+        }
+        // pos < period guarantees a hit; fall through only on degenerate data.
+        writeOutputPct(0);
+        return;
+    }
+
     const Event&   ev  = _queue[_cursor];
-    const uint32_t now = millis();
+    // `now` is the shared, once-per-pass clock (see header).  `dt` (time
+    // since this event started) drives the per-event DURATION; cyclic
+    // PHASE uses absolute `now % cycle_ms` so channels stay phase-locked.
     const uint32_t dt  = now - _eventStart_ms;
     bool advanceQueue  = false;
 
@@ -113,7 +157,7 @@ void LedAnimator::tick() {
                 // Degenerate cycle — treat as steady on.
                 _currentBrightPct = ev.brightnessPct;
             } else {
-                const uint32_t phase    = dt % ev.cycleMs;
+                const uint32_t phase    = now % ev.cycleMs;   // shared clock — phase-locked across channels
                 const uint32_t highSpan = ((uint32_t)ev.cycleMs *
                                             (uint32_t)ev.flashPct) / 100u;
                 _currentBrightPct = (phase < highSpan) ? ev.brightnessPct : 0;
@@ -128,7 +172,7 @@ void LedAnimator::tick() {
                 _currentBrightPct = ev.maxPct;
             } else {
                 // sin(phase) → 0..1 via (1 - cos(2π·t/T)) / 2
-                const float    t    = (float)(dt % ev.cycleMs) / (float)ev.cycleMs;
+                const float    t    = (float)(now % ev.cycleMs) / (float)ev.cycleMs;   // shared clock
                 const float    norm = 0.5f * (1.0f - cosf(6.2831853f * t));
                 const int32_t  span = (int32_t)ev.maxPct - (int32_t)ev.minPct;
                 _currentBrightPct   =
@@ -143,7 +187,7 @@ void LedAnimator::tick() {
             if (ev.cycleMs == 0) {
                 _currentBrightPct = ev.maxPct;
             } else {
-                const uint32_t phase    = dt % ev.cycleMs;
+                const uint32_t phase    = now % ev.cycleMs;   // shared clock — phase-locked across channels
                 const uint32_t highSpan = ((uint32_t)ev.cycleMs *
                                             (uint32_t)ev.flashPct) / 100u;
                 _currentBrightPct = (phase < highSpan) ? ev.maxPct : ev.minPct;

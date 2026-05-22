@@ -1,60 +1,62 @@
-# helicopter_flight — Full FAA-compliant flight lighting.
+# helicopter_flight — Full FAA-compliant flight lighting (Airbus-style).
 #
-# FAA Part 91.209(b): "no person may operate an aircraft equipped with
-# an anti-collision light system, unless it has lighted anti-collision
-# lights" — i.e. anti-collision lights MUST be on whenever rotors are
-# turning, day or night.  Position lights stay steady; anti-collision
-# is a beacon (red, rotating) + strobe (white).
+# Anti-collision pattern, all phase-locked to a shared 1000 ms period
+# (LedAnimator drives looping channels off `now % period`, so every
+# channel stays in lockstep):
 #
-# Beacon: red rotating beacon ~75 flashes/min → 800 ms cycle, full-on
-# pulse with a brief dark phase (`beacon` event kind in the LightEvent
-# vocabulary — flash_pct controls peak, min_pct the dark floor).
+#   t=0..80ms    : SINGLE flash — red beacon + the 3 position/nav lights
+#                  pulse together (one short bright flash per second).
+#   t=500..560 + 640..700ms : DOUBLE flash — white anti-collision strobe
+#                  (two quick pulses), offset to mid-period so it NEVER
+#                  overlaps the single-flash group.
 #
-# Strobe: white anti-collision flash ~40 fpm → 1500 ms cycle (`flash`
-# kind — alternates brightness_pct ↔ 0).  Run independently of beacon
-# so a casual observer sees two distinct anti-collision patterns.
+# `loop: true` on a channel makes its events a repeating, phase-locked
+# pattern (period = sum of duration_ms).  Channels that share the period
+# blink in perfect sync; offsets are just leading `off` segments.
 
 schema_version: 1
 
 channels:
-  - port: { kind: pwm, idx: 0 }                # red rotating beacon
-    brightness_pct: 100
+  # ── Single-flash group (red beacon + position nav lights) ──────────
+  - port: { kind: pwm, idx: 0 }                # red rotating beacon — fade pulse
+    loop: true
     events:
-      - kind: beacon
-        cycle_ms: 800
-        min_pct:    0
-        max_pct:  100
-        flash_pct: 100
-  - port: { kind: pwm, idx: 1 }                # white anti-collision strobe
-    brightness_pct: 100
-    events:
-      - kind: flash
-        cycle_ms: 1500
-        brightness_pct: 100
+      - { kind: fade_in,  brightness_pct: 100, duration_ms: 300 }   # ramp 0→100%
+      - { kind: fade_out, brightness_pct: 100, duration_ms: 300 }   # ramp 100→0%
+      - { kind: "off",    duration_ms: 400 }                        # → 1000 ms period
   - port: { kind: pwm, idx: 2 }                # red nav (port)
-    brightness_pct: 100
+    loop: true
     events:
-      - kind: on
-        brightness_pct: 100
+      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
+      - { kind: "off", duration_ms: 920 }
   - port: { kind: pwm, idx: 3 }                # green nav (starboard)
-    brightness_pct: 100
+    loop: true
     events:
-      - kind: on
-        brightness_pct: 100
+      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
+      - { kind: "off", duration_ms: 920 }
   - port: { kind: pwm, idx: 4 }                # white nav (tail)
-    brightness_pct: 100
+    loop: true
     events:
-      - kind: on
-        brightness_pct: 100
+      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
+      - { kind: "off", duration_ms: 920 }
+
+  # ── Double-flash white anti-collision strobe (offset, non-overlapping) ──
+  - port: { kind: pwm, idx: 1 }                # white anti-collision strobe
+    loop: true
+    events:
+      - { kind: "off", duration_ms: 500 }      # wait — single-flash group fires at t=0
+      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }   # flash 1
+      - { kind: "off", duration_ms:  80 }
+      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }   # flash 2
+      - { kind: "off", duration_ms: 300 }      # → 500+60+80+60+300 = 1000 ms period
+
+  # ── Steady / off channels ─────────────────────────────────────────
   - port: { kind: pwm, idx: 5 }                # landing light — off in cruise
     events:
-      - kind: off
-        duration_ms: 0
+      - { kind: "off", duration_ms: 0 }
   - port: { kind: pwm, idx: 6 }                # cabin light — off
     events:
-      - kind: off
-        duration_ms: 0
+      - { kind: "off", duration_ms: 0 }
   - port: { kind: pwm, idx: 7 }                # spare — off
     events:
-      - kind: off
-        duration_ms: 0
+      - { kind: "off", duration_ms: 0 }

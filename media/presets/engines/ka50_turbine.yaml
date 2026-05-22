@@ -41,3 +41,5 @@ sounds:
   transitions:
     starting_offset_ms: 60000
     stopping_offset_ms: 25000
+    start_fade_in_ms:   1500          # soft spool-up: ramp start sound 0→full over 1.5 s
+    stop_fade_out_ms:   2000          # soft wind-down: ramp stop sound full→0 over its final 2 s

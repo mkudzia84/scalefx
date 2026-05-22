@@ -102,8 +102,8 @@ public:
     }
 
     bool ownsType(uint8_t type) const {
-        // Range covers the audio block plus the CODEC_STATUS_REQ/RESP
-        // pair which lives outside the contiguous 0x84..0x8B run.
+        // Range covers the audio control block (0xDA..0xE1) plus the
+        // CODEC_STATUS_REQ/RESP pair (0xAA..0xAB) which lives elsewhere.
         return (type >= AudioPacket::AUDIO_PLAY && type <= AudioPacket::AUDIO_STATUS_RESP)
             || (type == AudioPacket::CODEC_STATUS_REQ)
             || (type == AudioPacket::CODEC_STATUS_RESP);
