@@ -1,14 +1,13 @@
 // Command scalefx-cli — terminal client for the ScaleFX HubFX master and
-// every expander reachable through it.  Speaks the generic-expander wire
-// protocol: hub-local commands (audio / storage / files) plus
-// GUID-addressed topology commands that talk to remote boards through
-// the hub's TopologyServicePolicy.
+// every expander reachable through it.  A thin REPL over the shared
+// `scalefx/console` command package (the same command set ScaleFX Studio
+// drives in its GUI console).
 //
 // Usage:
 //
 //	scalefx-cli                # interactive REPL, prompts for port
 //	scalefx-cli -p COM5        # open COM5 on launch
-//	scalefx-cli -p tcp://localhost:5050   # virtual-board harness
+//	scalefx-cli -c "topo-ports"   # run one command then exit
 package main
 
 import (
@@ -20,12 +19,11 @@ import (
 	"strings"
 	"syscall"
 
-	"scalefx/client"
-	"scalefx/protocol/core"
+	"scalefx/console"
 )
 
 var (
-	flagPort    = flag.String("p", "", "Serial port to open at start (e.g. COM5 or tcp://host:port)")
+	flagPort    = flag.String("p", "", "Serial port to open at start (e.g. COM5)")
 	flagBaud    = flag.Int("b", 0, "Baud rate override (0 = default 6 Mbps)")
 	flagVerbose = flag.Bool("v", false, "Verbose wire logging")
 	flagCmd     = flag.String("c", "", "Run a single command then exit")
@@ -35,15 +33,15 @@ var (
 func main() {
 	flag.Parse()
 	if *flagNoColor {
-		useColor = false
+		console.SetColor(false)
 	}
 
-	app := newApp()
-	defer app.shutdown()
+	app := console.NewApp(*flagBaud, *flagVerbose)
+	defer app.Shutdown()
 
 	// Auto-connect if -p was supplied.
 	if *flagPort != "" {
-		if err := app.connect(*flagPort); err != nil {
+		if err := app.Connect(*flagPort); err != nil {
 			fmt.Fprintf(os.Stderr, "connect: %v\n", err)
 			os.Exit(1)
 		}
@@ -51,7 +49,7 @@ func main() {
 
 	// Single-shot mode (-c "command args").
 	if *flagCmd != "" {
-		if err := app.dispatch(*flagCmd); err != nil {
+		if err := app.Dispatch(*flagCmd); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(2)
 		}
@@ -64,14 +62,14 @@ func main() {
 	go func() {
 		<-sig
 		fmt.Println("\ngoodbye.")
-		app.shutdown()
+		app.Shutdown()
 		os.Exit(0)
 	}()
 
-	app.banner()
+	app.Banner()
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print(app.prompt())
+		fmt.Print(app.Prompt())
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			fmt.Println()
@@ -84,164 +82,8 @@ func main() {
 		if line == "quit" || line == "exit" {
 			return
 		}
-		if err := app.dispatch(line); err != nil {
-			Err("%v", err)
+		if err := app.Dispatch(line); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		}
 	}
-}
-
-// ─── App ────────────────────────────────────────────────────────────
-
-type app struct {
-	c                *client.Client
-	verbose          bool
-	boardKind        string          // populated from IDENTIFY at connect time; "" before
-	boardName        string          // e.g. "HubFx-6D60"
-	boardCaps        uint32          // compiled-in CoreCapability bitmask
-	boardEnabledCaps uint32          // runtime-enabled subset of boardCaps
-	target           byte            // active storage backend (TargetSD / TargetFlash)
-	cwd              map[byte]string // per-target current working directory
-}
-
-func newApp() *app {
-	return &app{
-		verbose: *flagVerbose,
-		target:  0, // 0 == TargetSD; explicit so tests don't trip on order
-		cwd:     map[byte]string{0: "/", 1: "/"},
-	}
-}
-
-func (a *app) shutdown() {
-	if a.c != nil {
-		a.c.Close()
-		a.c = nil
-	}
-}
-
-func (a *app) prompt() string {
-	if a.c == nil {
-		return cDim("scalefx") + cBold(cMagenta("» "))
-	}
-	label := a.c.PortName()
-	if a.boardKind != "" {
-		label = a.boardKind + cDim(":") + a.c.PortName()
-	}
-	return cCyan(label) + cBold(cMagenta(" » "))
-}
-
-func (a *app) banner() {
-	fmt.Println(cBold(cMagenta("ScaleFX CLI")) + cDim(" — generic-expander build"))
-	fmt.Println(cDim("type `help` for commands, `quit` to exit"))
-}
-
-func (a *app) connect(portName string) error {
-	if a.c != nil {
-		a.c.Close()
-		a.c = nil
-		a.boardKind = ""
-		a.boardName = ""
-	}
-	opts := client.Options{
-		Baud:    *flagBaud,
-		Verbose: a.verbose,
-	}
-	c, err := client.OpenWith(portName, opts)
-	if err != nil {
-		return err
-	}
-	a.c = c
-	Ok("connected: %s", cBold(portName))
-
-	// Auto-detect: pull IDENTIFY and surface what kind of board this
-	// is + what subsystems it ships with.
-	if id, err := c.Hub.Identify(); err == nil {
-		if strings.Contains(strings.ToLower(id.Platform), "esp32") {
-			c.Storage.SetPeerMaxPayload(client.Esp32MaxPayload)
-		} else {
-			c.Storage.SetPeerMaxPayload(client.PicoMaxPayload)
-		}
-		if k := id.Kind(); k != client.BoardUnknown {
-			a.boardKind = string(k)
-		}
-		a.boardName = id.DeviceName
-		a.boardCaps = id.Capabilities
-		a.boardEnabledCaps = id.EnabledCapabilities
-		printIdentityBanner(id)
-	}
-	return nil
-}
-
-// printIdentityBanner shows the board type, firmware, and feature
-// catalog in a compact connect-time summary.  The features come from
-// the IDENTIFY capabilities bitmask — see protocol/core for the catalog.
-func printIdentityBanner(id client.Identity) {
-	kind := "unknown"
-	if k := id.Kind(); k != client.BoardUnknown {
-		kind = string(k)
-	}
-	KVf("board", "%s %s %s build %s (%s)",
-		cBold(cCyan(kind)),
-		cMagenta("—"),
-		cBold(id.DeviceName)+cDim(" v")+id.FirmwareVersion,
-		cDim(fmt.Sprintf("%d", id.BuildNumber)),
-		cDim(id.Platform))
-
-	caps := id.CapabilityNames()
-	coloured := make([]string, len(caps))
-	for i, n := range caps {
-		coloured[i] = cGreen(n)
-	}
-	KVList("features", coloured)
-}
-
-func (a *app) requireClient() error {
-	if a.c == nil {
-		return fmt.Errorf("not connected — %s first", cCyan("`connect <port>`"))
-	}
-	return nil
-}
-
-// dispatch parses one input line and runs the matching command.
-func (a *app) dispatch(line string) error {
-	fields := strings.Fields(line)
-	if len(fields) == 0 {
-		return nil
-	}
-	name, args := fields[0], fields[1:]
-	cmd, ok := commands[name]
-	if !ok {
-		// Try alias lookup.
-		if alt, ok2 := aliases[name]; ok2 {
-			name = alt
-			cmd = commands[name]
-			ok = true
-		}
-	}
-	if !ok {
-		return fmt.Errorf("unknown command: %s (try `help`)", name)
-	}
-	// If the verb gates on a capability the board is missing OR has
-	// disabled at runtime, return a precise error rather than
-	// letting it run and produce a downstream NACK / silence.
-	if cmd.RequiresConn && a.c != nil && cmd.RequiresCap != 0 {
-		if a.boardCaps&cmd.RequiresCap == 0 {
-			return fmt.Errorf("%s requires capability %s — not compiled into this firmware",
-				name, capLabel(cmd.RequiresCap))
-		}
-		if a.boardEnabledCaps&cmd.RequiresCap == 0 {
-			return fmt.Errorf("%s is currently disabled in config — feature compiled in but turned off (capability %s)",
-				name, capLabel(cmd.RequiresCap))
-		}
-	}
-	return cmd.Run(a, args)
-}
-
-// capLabel formats a capability bitmask as a symbolic name (for the
-// common single-bit case) or hex (for multi-bit requirements).
-func capLabel(bits uint32) string {
-	names := core.CapabilityNames(bits)
-	if len(names) == 1 {
-		return names[0]
-	}
-	return fmt.Sprintf("0x%08X", bits)
 }

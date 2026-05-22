@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"fmt"
@@ -15,7 +15,7 @@ func init() {
 	register(&command{Name: "diag-clear", Usage: "diag-clear", Help: "drop the local console replay (does not clear the device buffer)", Category: catCore, RequiresConn: true, Run: cmdDiagClear})
 }
 
-func cmdDiag(a *app, args []string) error {
+func cmdDiag(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -44,7 +44,7 @@ func cmdDiag(a *app, args []string) error {
 	}
 	Hdr(fmt.Sprintf("diagnostic log (showing %d of %d entries)", len(entries), total))
 	for _, e := range entries {
-		fmt.Printf("  %s  %s  %s\n",
+		fmt.Fprintf(out, "  %s  %s  %s\n",
 			diagLevelTag(e.Level, e.LevelName),
 			cDim(fmt.Sprintf("@%dms", e.Millis)),
 			e.Message)
@@ -52,7 +52,7 @@ func cmdDiag(a *app, args []string) error {
 	return nil
 }
 
-func cmdDiagClear(a *app, _ []string) error {
+func cmdDiagClear(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}

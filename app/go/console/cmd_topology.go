@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"encoding/hex"
@@ -23,7 +23,7 @@ func init() {
 
 // ─── Expanders ───────────────────────────────────────────────────────
 
-func cmdExpanders(a *app, _ []string) error {
+func cmdExpanders(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -42,13 +42,13 @@ func cmdExpanders(a *app, _ []string) error {
 			flag = "  " + cRed("[COLLISION]")
 		}
 		if e.Identified {
-			fmt.Printf("  %s  addr=%d  %s %s%s\n",
+			fmt.Fprintf(out, "  %s  addr=%d  %s %s%s\n",
 				cBold(cCyan(e.KindName)), e.USBAddr,
 				e.DeviceName,
 				cDim("v"+e.FirmwareVersion),
 				flag)
 		} else {
-			fmt.Printf("  %s  addr=%d  %s%s\n",
+			fmt.Fprintf(out, "  %s  addr=%d  %s%s\n",
 				cBold(cCyan(e.KindName)), e.USBAddr,
 				cDim(fmt.Sprintf("VID=%04X PID=%04X (identifying…)", e.VID, e.PID)),
 				flag)
@@ -57,7 +57,7 @@ func cmdExpanders(a *app, _ []string) error {
 	return nil
 }
 
-func cmdSystemInfo(a *app, _ []string) error {
+func cmdSystemInfo(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -66,7 +66,7 @@ func cmdSystemInfo(a *app, _ []string) error {
 		return err
 	}
 	Hdr("hub")
-	fmt.Printf("  %s  %s  %s\n",
+	fmt.Fprintf(out, "  %s  %s  %s\n",
 		cBold(si.Hub.DeviceName),
 		cDim("v"+si.Hub.FirmwareVersion),
 		cDim(fmt.Sprintf("(%s, %d MHz, %s free, build %d)",
@@ -85,19 +85,19 @@ func cmdSystemInfo(a *app, _ []string) error {
 			flag = "  " + cRed("[COLLISION]")
 		}
 		if e.Identified {
-			fmt.Printf("  %s  %s %s%s\n",
+			fmt.Fprintf(out, "  %s  %s %s%s\n",
 				cBold(cCyan(e.KindName)),
 				e.DeviceName,
 				cDim("v"+e.FirmwareVersion),
 				flag)
 		} else {
-			fmt.Printf("  %s  %s%s\n",
+			fmt.Fprintf(out, "  %s  %s%s\n",
 				cBold(cCyan(e.KindName)),
 				cDim(fmt.Sprintf("addr=%d (identifying…)", e.USBAddr)),
 				flag)
 		}
 		if e.Battery != nil && e.Battery.Valid {
-			fmt.Printf("      %s\n", batteryText(*e.Battery))
+			fmt.Fprintf(out, "      %s\n", batteryText(*e.Battery))
 		}
 	}
 	return nil
@@ -123,7 +123,7 @@ func batteryText(b expp.BatteryInfo) string {
 
 // ─── Topology ────────────────────────────────────────────────────────
 
-func cmdTopoPorts(a *app, args []string) error {
+func cmdTopoPorts(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -149,7 +149,7 @@ func cmdTopoPorts(a *app, args []string) error {
 	}
 	for i, b := range boards {
 		if i > 0 {
-			fmt.Println()
+			fmt.Fprintln(out, )
 		}
 		printBoardPorts(b, roleAt)
 	}
@@ -185,44 +185,44 @@ func printBoardPorts(b client.BoardPorts, roleAt map[string]byte) {
 		total))
 
 	if len(b.Ports.Servos) > 0 {
-		fmt.Printf("  %s  %s\n",
+		fmt.Fprintf(out, "  %s  %s\n",
 			cDim(padRight("servo", 8)),
 			cDim(fmt.Sprintf("(%d, output)", len(b.Ports.Servos))))
 		for _, d := range b.Ports.Servos {
-			fmt.Printf("    %s  %s%s\n",
+			fmt.Fprintf(out, "    %s  %s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
 				cDim(servoFlagText(d.Flags)),
 				attachedRoleText(roleAt, b.GUID, ports.KindServo, d.Index))
 		}
 	}
 	if len(b.Ports.Pwms) > 0 {
-		fmt.Printf("  %s  %s\n",
+		fmt.Fprintf(out, "  %s  %s\n",
 			cDim(padRight("pwm", 8)),
 			cDim(fmt.Sprintf("(%d)", len(b.Ports.Pwms))))
 		for _, d := range b.Ports.Pwms {
-			fmt.Printf("    %s  %s%s\n",
+			fmt.Fprintf(out, "    %s  %s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
 				cDim(senseFlagText(d.Flags)),
 				attachedRoleText(roleAt, b.GUID, ports.KindPwm, d.Index))
 		}
 	}
 	if len(b.Ports.HBridges) > 0 {
-		fmt.Printf("  %s  %s\n",
+		fmt.Fprintf(out, "  %s  %s\n",
 			cDim(padRight("hbridge", 8)),
 			cDim(fmt.Sprintf("(%d)", len(b.Ports.HBridges))))
 		for _, d := range b.Ports.HBridges {
-			fmt.Printf("    %s  %s%s\n",
+			fmt.Fprintf(out, "    %s  %s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
 				cDim(senseFlagText(d.Flags)),
 				attachedRoleText(roleAt, b.GUID, ports.KindHBridge, d.Index))
 		}
 	}
 	if len(b.Ports.Inputs) > 0 {
-		fmt.Printf("  %s  %s\n",
+		fmt.Fprintf(out, "  %s  %s\n",
 			cDim(padRight("input", 8)),
 			cDim(fmt.Sprintf("(%d)", len(b.Ports.Inputs))))
 		for _, d := range b.Ports.Inputs {
-			fmt.Printf("    %s  %s%s\n",
+			fmt.Fprintf(out, "    %s  %s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
 				cGreen(inputFlagText(d.Flags)),
 				attachedRoleText(roleAt, b.GUID, ports.KindInput, d.Index))
@@ -263,7 +263,7 @@ func inputFlagText(f byte) string {
 	return strings.Join(ports.InputFlagsNames(f), " | ")
 }
 
-func cmdTopoRoles(a *app, args []string) error {
+func cmdTopoRoles(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -277,7 +277,7 @@ func cmdTopoRoles(a *app, args []string) error {
 	}
 	for i, b := range boards {
 		if i > 0 {
-			fmt.Println()
+			fmt.Fprintln(out, )
 		}
 		Hdr(fmt.Sprintf("%s  (%d %s)",
 			cMagenta(b.GUID),
@@ -288,7 +288,7 @@ func cmdTopoRoles(a *app, args []string) error {
 			continue
 		}
 		for _, r := range b.Roles {
-			fmt.Printf("  %s%s  %s  %s%s\n",
+			fmt.Fprintf(out, "  %s%s  %s  %s%s\n",
 				cCyan(ports.KindName(r.PortKind)),
 				cBold(fmt.Sprintf("[%d]", r.PortIdx)),
 				cDim("→"),
@@ -313,7 +313,7 @@ func plural2(n int, singular string) string {
 	return singular + "s"
 }
 
-func cmdRoleAttach(a *app, args []string) error {
+func cmdRoleAttach(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -352,7 +352,7 @@ func cmdRoleAttach(a *app, args []string) error {
 	return nil
 }
 
-func cmdRoleDetach(a *app, args []string) error {
+func cmdRoleDetach(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -380,12 +380,12 @@ func printPortRow(label string, descs []ports.PortDescriptor) {
 	if len(descs) == 0 {
 		return
 	}
-	fmt.Printf("  %s %s", cDim(padRight(label, 8)), cDim(":"))
+	fmt.Fprintf(out, "  %s %s", cDim(padRight(label, 8)), cDim(":"))
 	for _, d := range descs {
-		fmt.Printf(" %s%s%s",
+		fmt.Fprintf(out, " %s%s%s",
 			cBold(fmt.Sprintf("[%d", d.Index)),
 			cDim(fmt.Sprintf(":0x%02X", d.Flags)),
 			cBold("]"))
 	}
-	fmt.Println()
+	fmt.Fprintln(out, )
 }

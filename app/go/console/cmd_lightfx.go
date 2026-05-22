@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"fmt"
@@ -16,7 +16,7 @@ func init() {
 	register(&command{Name: "light-brightness", Usage: "light-brightness <0-100>", Help: "set LightFX master brightness percent", Category: catLightFx, RequiresConn: true, RequiresCap: core.CapLightFx, Run: cmdLightBrightness})
 }
 
-func cmdLightPrograms(a *app, _ []string) error {
+func cmdLightPrograms(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -30,14 +30,14 @@ func cmdLightPrograms(a *app, _ []string) error {
 	}
 	Hdr(fmt.Sprintf("LightFX programs (%d)", len(progs)))
 	for _, p := range progs {
-		fmt.Printf("  %s  %s\n",
+		fmt.Fprintf(out, "  %s  %s\n",
 			cBold(cMagenta(fmt.Sprintf("[%2d]", p.Index))),
 			p.Name)
 	}
 	return nil
 }
 
-func cmdLightStatus(a *app, _ []string) error {
+func cmdLightStatus(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func cmdLightStatus(a *app, _ []string) error {
 	return nil
 }
 
-func cmdLightSelect(a *app, args []string) error {
+func cmdLightSelect(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func cmdLightSelect(a *app, args []string) error {
 	return nil
 }
 
-func cmdLightReset(a *app, _ []string) error {
+func cmdLightReset(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func cmdLightReset(a *app, _ []string) error {
 	return nil
 }
 
-func cmdLightBrightness(a *app, args []string) error {
+func cmdLightBrightness(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func cmdLightBrightness(a *app, args []string) error {
 
 // resolveLightProgram lets the user pass either a numeric index or a
 // program name; for the name path, we resolve through ProgramListReq.
-func resolveLightProgram(a *app, s string) (byte, error) {
+func resolveLightProgram(a *App, s string) (byte, error) {
 	if v, err := strconv.ParseUint(strings.TrimPrefix(s, "0x"), 0, 8); err == nil {
 		return byte(v), nil
 	}

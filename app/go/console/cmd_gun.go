@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"fmt"
@@ -16,7 +16,7 @@ func init() {
 	register(&command{Name: "gun-status", Usage: "gun-status", Help: "per-gun firing + smoke state", Category: catGun, RequiresConn: true, RequiresCap: core.CapGunFx, Run: cmdGunStatus})
 }
 
-func cmdGunFire(a *app, args []string) error {
+func cmdGunFire(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -34,7 +34,7 @@ func cmdGunFire(a *app, args []string) error {
 	return nil
 }
 
-func cmdGunStart(a *app, args []string) error {
+func cmdGunStart(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -64,7 +64,7 @@ func cmdGunStart(a *app, args []string) error {
 	return nil
 }
 
-func cmdGunStop(a *app, args []string) error {
+func cmdGunStop(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -82,7 +82,7 @@ func cmdGunStop(a *app, args []string) error {
 	return nil
 }
 
-func cmdGunSmoke(a *app, args []string) error {
+func cmdGunSmoke(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -113,7 +113,7 @@ func cmdGunSmoke(a *app, args []string) error {
 	return nil
 }
 
-func cmdGunStatus(a *app, _ []string) error {
+func cmdGunStatus(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -135,7 +135,7 @@ func cmdGunStatus(a *app, _ []string) error {
 		if g.SmokeArmed {
 			smoke = Phase("armed")
 		}
-		fmt.Printf("  %s  state=%s  smoke=%s\n",
+		fmt.Fprintf(out, "  %s  state=%s  smoke=%s\n",
 			cBold(cMagenta(fmt.Sprintf("[%d]", g.ID))),
 			fire, smoke)
 	}

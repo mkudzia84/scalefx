@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"fmt"
@@ -21,7 +21,7 @@ func init() {
 	register(&command{Name: "gear-calib-cancel", Usage: "gear-calib-cancel <id>", Help: "abort an in-progress calibration", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearCalibCancel})
 }
 
-func cmdGearList(a *app, _ []string) error {
+func cmdGearList(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -35,13 +35,13 @@ func cmdGearList(a *app, _ []string) error {
 	}
 	Hdr(fmt.Sprintf("Gear units (%d)", len(lst)))
 	for _, g := range lst {
-		fmt.Printf("  %s  %s\n",
+		fmt.Fprintf(out, "  %s  %s\n",
 			cBold(cMagenta(fmt.Sprintf("[%2d]", g.ID))), g.Name)
 	}
 	return nil
 }
 
-func cmdGearStatus(a *app, _ []string) error {
+func cmdGearStatus(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -55,7 +55,7 @@ func cmdGearStatus(a *app, _ []string) error {
 	}
 	Hdr("Gear")
 	for _, e := range st {
-		fmt.Printf("  %s  %-12s (%s)\n",
+		fmt.Fprintf(out, "  %s  %-12s (%s)\n",
 			cBold(cMagenta(fmt.Sprintf("[%2d]", e.ID))),
 			Phase(gear.PhaseName(e.Phase)),
 			gear.PhaseSummary(e.Phase))
@@ -63,7 +63,7 @@ func cmdGearStatus(a *app, _ []string) error {
 	return nil
 }
 
-func cmdGearDeploy(a *app, args []string) error {
+func cmdGearDeploy(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func cmdGearDeploy(a *app, args []string) error {
 	return nil
 }
 
-func cmdGearRetract(a *app, args []string) error {
+func cmdGearRetract(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func cmdGearRetract(a *app, args []string) error {
 	return nil
 }
 
-func cmdGearStop(a *app, args []string) error {
+func cmdGearStop(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -117,7 +117,7 @@ func cmdGearStop(a *app, args []string) error {
 	return nil
 }
 
-func cmdGearReset(a *app, args []string) error {
+func cmdGearReset(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -135,7 +135,7 @@ func cmdGearReset(a *app, args []string) error {
 	return nil
 }
 
-func cmdGearCalibrate(a *app, args []string) error {
+func cmdGearCalibrate(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func cmdGearCalibrate(a *app, args []string) error {
 	return nil
 }
 
-func cmdGearCalibCancel(a *app, args []string) error {
+func cmdGearCalibCancel(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -171,7 +171,7 @@ func cmdGearCalibCancel(a *app, args []string) error {
 	return nil
 }
 
-func cmdGearAll(a *app, args []string) error {
+func cmdGearAll(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}

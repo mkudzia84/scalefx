@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"fmt"
@@ -21,7 +21,7 @@ func init() {
 
 // ─── identify / status / capabilities ────────────────────────────────
 
-func cmdIdentify(a *app, _ []string) error {
+func cmdIdentify(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -54,7 +54,7 @@ func boardKindLabel(id client.Identity) string {
 	return string(k)
 }
 
-func cmdStatus(a *app, _ []string) error {
+func cmdStatus(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func cmdStatus(a *app, _ []string) error {
 	return nil
 }
 
-func cmdCapabilities(a *app, _ []string) error {
+func cmdCapabilities(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func cmdCapabilities(a *app, _ []string) error {
 
 // ─── INIT / reboot / bootsel / keepalive ─────────────────────────────
 
-func cmdInit(a *app, args []string) error {
+func cmdInit(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -137,7 +137,7 @@ func initModeName(m byte) string {
 	return fmt.Sprintf("0x%02X", m)
 }
 
-func cmdReboot(a *app, _ []string) error {
+func cmdReboot(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -148,14 +148,14 @@ func cmdReboot(a *app, _ []string) error {
 	return nil
 }
 
-func cmdBootsel(a *app, _ []string) error {
+func cmdBootsel(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
 	return a.c.Hub.Bootsel()
 }
 
-func cmdKeepalive(a *app, _ []string) error {
+func cmdKeepalive(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -168,7 +168,7 @@ func cmdKeepalive(a *app, _ []string) error {
 
 // ─── i2c-scan ────────────────────────────────────────────────────────
 
-func cmdI2CScan(a *app, _ []string) error {
+func cmdI2CScan(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -186,7 +186,7 @@ func cmdI2CScan(a *app, _ []string) error {
 		if d.Found {
 			marker = cGreen("●")
 		}
-		fmt.Printf("  %s 0x%02X  %s\n", marker,
+		fmt.Fprintf(out, "  %s 0x%02X  %s\n", marker,
 			d.Address, cDim(fmt.Sprintf("id=0x%02X", d.ID)))
 	}
 	return nil

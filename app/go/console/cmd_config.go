@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ func init() {
 	aliasFor("reload", "config-reload")
 }
 
-func cmdConfigReload(a *app, args []string) error {
+func cmdConfigReload(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -31,7 +31,7 @@ func cmdConfigReload(a *app, args []string) error {
 	return nil
 }
 
-func cmdConfigStatus(a *app, _ []string) error {
+func cmdConfigStatus(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -54,7 +54,7 @@ func cmdConfigStatus(a *app, _ []string) error {
 	return nil
 }
 
-func cmdConfigSave(a *app, args []string) error {
+func cmdConfigSave(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}

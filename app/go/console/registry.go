@@ -1,4 +1,4 @@
-package main
+package console
 
 // Central command registry.  Each `cmd_*.go` file owns one wire-domain
 // (storage, audio, topology, gear, …) and self-registers its commands
@@ -43,7 +43,7 @@ type command struct {
 	Name         string
 	Usage        string
 	Help         string
-	Run          func(a *app, args []string) error
+	Run          func(a *App, args []string) error
 	Category     category
 	RequiresConn bool
 	// RequiresCap is a bitmask of CoreCapability flags; the command is

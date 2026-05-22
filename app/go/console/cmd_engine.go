@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"scalefx/protocol/core"
@@ -11,7 +11,7 @@ func init() {
 	register(&command{Name: "engine-status", Usage: "engine-status", Help: "current engine state + RC toggle", Category: catEngine, RequiresConn: true, RequiresCap: core.CapEngine, Run: cmdEngineStatus})
 }
 
-func cmdEngineStart(a *app, _ []string) error {
+func cmdEngineStart(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -22,7 +22,7 @@ func cmdEngineStart(a *app, _ []string) error {
 	return nil
 }
 
-func cmdEngineStop(a *app, _ []string) error {
+func cmdEngineStop(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -33,7 +33,7 @@ func cmdEngineStop(a *app, _ []string) error {
 	return nil
 }
 
-func cmdEngineStatus(a *app, _ []string) error {
+func cmdEngineStatus(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}

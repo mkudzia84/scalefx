@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ func init() {
 	register(&command{Name: "alert-status", Usage: "alert-status", Help: "show alert channel state + last severity", Category: catAlert, RequiresConn: true, RequiresCap: core.CapAlerts, Run: cmdAlertStatus})
 }
 
-func cmdAlert(a *app, args []string) error {
+func cmdAlert(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -44,7 +44,7 @@ func cmdAlert(a *app, args []string) error {
 	return nil
 }
 
-func cmdAlertStop(a *app, _ []string) error {
+func cmdAlertStop(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -55,7 +55,7 @@ func cmdAlertStop(a *app, _ []string) error {
 	return nil
 }
 
-func cmdAlertStatus(a *app, _ []string) error {
+func cmdAlertStatus(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}

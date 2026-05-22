@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ func init() {
 	register(&command{Name: "landing-off", Usage: "landing-off <id>", Help: "power off + retract a landing light", Category: catLanding, RequiresConn: true, RequiresCap: core.CapLandingLights, Run: cmdLandingOff})
 }
 
-func cmdLandingList(a *app, _ []string) error {
+func cmdLandingList(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -32,7 +32,7 @@ func cmdLandingList(a *app, _ []string) error {
 		if l.Owner != 0 {
 			owner = cCyan(effectIdName(l.Owner))
 		}
-		fmt.Printf("  %s  %s  phase=%s  owner=%s\n",
+		fmt.Fprintf(out, "  %s  %s  phase=%s  owner=%s\n",
 			cBold(cMagenta(fmt.Sprintf("[%2d]", l.ID))),
 			padRight(l.Name, 20),
 			Phase(landing.PhaseName(l.Phase)),
@@ -41,7 +41,7 @@ func cmdLandingList(a *app, _ []string) error {
 	return nil
 }
 
-func cmdLandingStatus(a *app, _ []string) error {
+func cmdLandingStatus(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -55,17 +55,17 @@ func cmdLandingStatus(a *app, _ []string) error {
 	}
 	Hdr("Landing lights")
 	for _, e := range st {
-		fmt.Printf("  %s  %s\n",
+		fmt.Fprintf(out, "  %s  %s\n",
 			cBold(cMagenta(fmt.Sprintf("[%2d]", e.ID))),
 			Phase(landing.PhaseName(e.Phase)))
 	}
 	return nil
 }
 
-func cmdLandingOn(a *app, args []string) error  { return cmdLandingSet(a, args, landing.StateOn) }
-func cmdLandingOff(a *app, args []string) error { return cmdLandingSet(a, args, landing.StateOff) }
+func cmdLandingOn(a *App, args []string) error  { return cmdLandingSet(a, args, landing.StateOn) }
+func cmdLandingOff(a *App, args []string) error { return cmdLandingSet(a, args, landing.StateOff) }
 
-func cmdLandingSet(a *app, args []string, state byte) error {
+func cmdLandingSet(a *App, args []string, state byte) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}

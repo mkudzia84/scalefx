@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"fmt"
@@ -14,10 +14,10 @@ import (
 func init() {
 	register(&command{Name: "help", Usage: "help [cmd]", Help: "list commands or describe one", Category: catSession, Run: cmdHelp})
 	register(&command{Name: "ports", Usage: "ports", Help: "list attached serial ports", Category: catSession, Run: cmdPorts})
-	register(&command{Name: "connect", Usage: "connect <port>", Help: "open a serial port (or tcp://host:port)", Category: catSession, Run: cmdConnect})
+	register(&command{Name: "connect", Usage: "connect <port>", Help: "open a serial port", Category: catSession, Run: cmdConnect})
 	register(&command{Name: "disconnect", Usage: "disconnect", Help: "close the current port", Category: catSession, RequiresConn: true, Run: cmdDisconnect})
 	register(&command{Name: "verbose", Usage: "verbose <on|off>", Help: "toggle wire-level packet logging", Category: catSession, Run: cmdVerbose})
-	register(&command{Name: "quit", Usage: "quit", Help: "exit the CLI", Category: catSession, Run: func(_ *app, _ []string) error { os.Exit(0); return nil }})
+	register(&command{Name: "quit", Usage: "quit", Help: "exit the CLI", Category: catSession, Run: func(_ *App, _ []string) error { os.Exit(0); return nil }})
 
 	aliasFor("ls", "files")
 	aliasFor("rm", "delete")
@@ -32,7 +32,7 @@ func init() {
 // cmdHelp lists commands grouped by category, hiding ones the current
 // connection state can't honour.  `help <name>` prints one verb's
 // detail.
-func cmdHelp(a *app, args []string) error {
+func cmdHelp(a *App, args []string) error {
 	if len(args) > 0 {
 		c, ok := lookup(args[0])
 		if !ok {
@@ -69,7 +69,7 @@ func cmdHelp(a *app, args []string) error {
 	if !connected {
 		Note("not connected — `connect <port>` first.  Commands shown are session-only;")
 		Note("every other verb appears after a successful connect.")
-		fmt.Println()
+		fmt.Fprintln(out, )
 	}
 
 	for _, cat := range categoryOrder {
@@ -79,9 +79,9 @@ func cmdHelp(a *app, args []string) error {
 		}
 		Hdr(string(cat))
 		for _, c := range list {
-			fmt.Printf("  %s  %s\n", cBold(padRight(c.Name, 18)), cDim(c.Help))
+			fmt.Fprintf(out, "  %s  %s\n", cBold(padRight(c.Name, 18)), cDim(c.Help))
 		}
-		fmt.Println()
+		fmt.Fprintln(out, )
 	}
 
 	// Disabled section — compiled in but config-disabled.  Show them
@@ -94,13 +94,13 @@ func cmdHelp(a *app, args []string) error {
 		Hdr("Currently disabled (compiled in; turn on in config to use)")
 		for _, cat := range categoryOrder {
 			for _, c := range disabled[cat] {
-				fmt.Printf("  %s  %s  %s\n",
+				fmt.Fprintf(out, "  %s  %s  %s\n",
 					cDim(padRight(c.Name, 18)),
 					cDim(c.Help),
 					cDim("[disabled]"))
 			}
 		}
-		fmt.Println()
+		fmt.Fprintln(out, )
 	}
 
 	// Hint about not-compiled-in verbs.
@@ -134,7 +134,7 @@ func plural(n int) string {
 
 // ─── ports ───────────────────────────────────────────────────────────
 
-func cmdPorts(_ *app, _ []string) error {
+func cmdPorts(_ *App, _ []string) error {
 	pl := client.ListSerialPortsDetailed()
 	if len(pl) == 0 {
 		Note("(no serial ports found)")
@@ -142,21 +142,21 @@ func cmdPorts(_ *app, _ []string) error {
 	}
 	Hdr("serial ports")
 	for _, p := range pl {
-		fmt.Printf("  %s  %s\n", cBold(padRight(p.Name, 12)), cDim(p.Description))
+		fmt.Fprintf(out, "  %s  %s\n", cBold(padRight(p.Name, 12)), cDim(p.Description))
 	}
 	return nil
 }
 
 // ─── connect / disconnect ────────────────────────────────────────────
 
-func cmdConnect(a *app, args []string) error {
+func cmdConnect(a *App, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: connect <port>")
 	}
-	return a.connect(args[0])
+	return a.Connect(args[0])
 }
 
-func cmdDisconnect(a *app, args []string) error {
+func cmdDisconnect(a *App, args []string) error {
 	if a.c != nil {
 		a.c.Close()
 		a.c = nil
@@ -170,7 +170,7 @@ func cmdDisconnect(a *app, args []string) error {
 
 // ─── verbose ─────────────────────────────────────────────────────────
 
-func cmdVerbose(a *app, args []string) error {
+func cmdVerbose(a *App, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: verbose <on|off>")
 	}

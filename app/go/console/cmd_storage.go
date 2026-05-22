@@ -1,4 +1,4 @@
-package main
+package console
 
 // Linux-flavoured file-system commands.  The CLI tracks a per-target
 // CWD (current working directory) so `ls`, `cat`, `rm`, etc. work
@@ -81,7 +81,7 @@ type fsArgs struct {
 // set of allowed short flags ('f', 'r', 'p').  Pass an empty path
 // (`needPath=false`) to make the path arg optional (e.g. `ls` with no
 // args defaults to ".").
-func (a *app) parseFsArgs(args []string, accept string, needPath bool) (fsArgs, error) {
+func (a *App) parseFsArgs(args []string, accept string, needPath bool) (fsArgs, error) {
 	out := fsArgs{flags: map[byte]bool{}, target: a.activeTarget()}
 	rest := args
 	for len(rest) > 0 && strings.HasPrefix(rest[0], "-") && rest[0] != "-" {
@@ -110,7 +110,7 @@ func (a *app) parseFsArgs(args []string, accept string, needPath bool) (fsArgs, 
 
 // resolvePath joins `p` against the CWD for `target` if it's relative.
 // Cleans up "." / ".." segments via path.Clean.
-func (a *app) resolvePath(p string, target byte) string {
+func (a *App) resolvePath(p string, target byte) string {
 	if p == "" {
 		return a.cwd[target]
 	}
@@ -129,7 +129,7 @@ func (a *app) resolvePath(p string, target byte) string {
 
 // activeTarget returns the currently-selected backend, defaulting to
 // SD before the user has chosen one.
-func (a *app) activeTarget() byte {
+func (a *App) activeTarget() byte {
 	if a.cwd == nil {
 		a.cwd = map[byte]string{
 			storage.TargetSD:    "/",
@@ -141,13 +141,13 @@ func (a *app) activeTarget() byte {
 
 // ─── pwd / cd / target ───────────────────────────────────────────────
 
-func cmdPwd(a *app, _ []string) error {
+func cmdPwd(a *App, _ []string) error {
 	t := a.activeTarget()
-	fmt.Printf("  %s  %s\n", targetName(t), cBold(a.cwd[t]))
+	fmt.Fprintf(out, "  %s  %s\n", targetName(t), cBold(a.cwd[t]))
 	return nil
 }
 
-func cmdCd(a *app, args []string) error {
+func cmdCd(a *App, args []string) error {
 	t := a.activeTarget()
 	if len(args) == 0 {
 		a.cwd[t] = "/"
@@ -172,7 +172,7 @@ func cmdCd(a *app, args []string) error {
 	return nil
 }
 
-func cmdTarget(a *app, args []string) error {
+func cmdTarget(a *App, args []string) error {
 	_ = a.activeTarget() // ensure CWD map exists
 	if len(args) == 0 {
 		Hdr("storage targets")
@@ -182,7 +182,7 @@ func cmdTarget(a *app, args []string) error {
 			if t == a.target {
 				cur = cGreen("●")
 			}
-			fmt.Printf("  %s  %s  cwd=%s\n", cur, targetName(t), cBold(a.cwd[t]))
+			fmt.Fprintf(out, "  %s  %s  cwd=%s\n", cur, targetName(t), cBold(a.cwd[t]))
 		}
 		_ = mark
 		return nil
@@ -198,7 +198,7 @@ func cmdTarget(a *app, args []string) error {
 
 // ─── ls / tree / stat / cat ──────────────────────────────────────────
 
-func cmdLs(a *app, args []string) error {
+func cmdLs(a *App, args []string) error {
 	fs, err := a.parseFsArgs(args, "f", false)
 	if err != nil {
 		return err
@@ -218,7 +218,7 @@ func cmdLs(a *app, args []string) error {
 	return nil
 }
 
-func cmdTree(a *app, args []string) error {
+func cmdTree(a *App, args []string) error {
 	fs, err := a.parseFsArgs(args, "f", false)
 	if err != nil {
 		return err
@@ -238,7 +238,7 @@ func cmdTree(a *app, args []string) error {
 	return nil
 }
 
-func cmdStat(a *app, args []string) error {
+func cmdStat(a *App, args []string) error {
 	fs, err := a.parseFsArgs(args, "f", true)
 	if err != nil {
 		return err
@@ -261,7 +261,7 @@ func cmdStat(a *app, args []string) error {
 	return nil
 }
 
-func cmdCat(a *app, args []string) error {
+func cmdCat(a *App, args []string) error {
 	fs, err := a.parseFsArgs(args, "f", true)
 	if err != nil {
 		return err
@@ -280,16 +280,16 @@ func cmdCat(a *app, args []string) error {
 		Note("(empty file)")
 		return nil
 	}
-	os.Stdout.Write(res.Data)
+	out.Write(res.Data)
 	if res.Data[len(res.Data)-1] != '\n' {
-		fmt.Println()
+		fmt.Fprintln(out, )
 	}
 	return nil
 }
 
 // ─── rm / mkdir ──────────────────────────────────────────────────────
 
-func cmdRm(a *app, args []string) error {
+func cmdRm(a *App, args []string) error {
 	fs, err := a.parseFsArgs(args, "fr", true)
 	if err != nil {
 		return err
@@ -305,7 +305,7 @@ func cmdRm(a *app, args []string) error {
 	return nil
 }
 
-func cmdMkdir(a *app, args []string) error {
+func cmdMkdir(a *App, args []string) error {
 	fs, err := a.parseFsArgs(args, "fp", true)
 	if err != nil {
 		return err
@@ -323,7 +323,7 @@ func cmdMkdir(a *app, args []string) error {
 
 // ─── df / sd-init ────────────────────────────────────────────────────
 
-func cmdDf(a *app, _ []string) error {
+func cmdDf(a *App, _ []string) error {
 	Hdr("disk usage")
 	if a.boardCaps&core.CapFlash != 0 {
 		if s, err := a.c.Storage.FlashStatus(); err == nil {
@@ -331,7 +331,7 @@ func cmdDf(a *app, _ []string) error {
 			if s.TotalBytes > 0 {
 				pct = uint64(s.UsedBytes) * 100 / uint64(s.TotalBytes)
 			}
-			fmt.Printf("  %s  %s used / %s total  (%d%%)  free=%s\n",
+			fmt.Fprintf(out, "  %s  %s used / %s total  (%d%%)  free=%s\n",
 				targetName(storage.TargetFlash),
 				humanBytes(uint64(s.UsedBytes)),
 				humanBytes(uint64(s.TotalBytes)),
@@ -345,7 +345,7 @@ func cmdDf(a *app, _ []string) error {
 			if s.TotalSpaceMB > 0 {
 				pct = uint64(s.UsedSpaceMB) * 100 / uint64(s.TotalSpaceMB)
 			}
-			fmt.Printf("  %s  %s used / %s total  (%d%%)  free=%s  type=%s/%s\n",
+			fmt.Fprintf(out, "  %s  %s used / %s total  (%d%%)  free=%s  type=%s/%s\n",
 				targetName(storage.TargetSD),
 				humanBytes(uint64(s.UsedSpaceMB)*1024*1024),
 				humanBytes(uint64(s.TotalSpaceMB)*1024*1024),
@@ -354,13 +354,13 @@ func cmdDf(a *app, _ []string) error {
 				cCyan(sdCardTypeName(s.CardType)),
 				cCyan(sdBusModeName(s.BusMode)))
 		} else if a.boardCaps&core.CapSd != 0 {
-			fmt.Printf("  %s  %s\n", targetName(storage.TargetSD), cDim("(not mounted)"))
+			fmt.Fprintf(out, "  %s  %s\n", targetName(storage.TargetSD), cDim("(not mounted)"))
 		}
 	}
 	return nil
 }
 
-func cmdSdInit(a *app, args []string) error {
+func cmdSdInit(a *App, args []string) error {
 	speed := byte(0)
 	if len(args) >= 1 {
 		v, err := parseU8(args[0])
@@ -388,7 +388,7 @@ type uploadArgs struct {
 	target byte
 }
 
-func (a *app) parseUploadArgs(args []string) (uploadArgs, error) {
+func (a *App) parseUploadArgs(args []string) (uploadArgs, error) {
 	out := uploadArgs{target: a.activeTarget(), mode: defaultUploadMode(a)}
 	positional := []string{}
 	for i := 0; i < len(args); i++ {
@@ -431,7 +431,7 @@ func (a *app) parseUploadArgs(args []string) (uploadArgs, error) {
 // defaultUploadMode picks `stream` on ESP32 peers (the high-throughput
 // path the firmware has tuned its 64 KB PSRAM fill buffer for) and
 // `sync` on Pico peers (no PSRAM, would starve the SD writer).
-func defaultUploadMode(a *app) byte {
+func defaultUploadMode(a *App) byte {
 	if a.c == nil {
 		return storage.UploadSync
 	}
@@ -445,7 +445,7 @@ func defaultUploadMode(a *app) byte {
 	return storage.UploadSync
 }
 
-func cmdUpload(a *app, args []string) error {
+func cmdUpload(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -471,10 +471,10 @@ func cmdUpload(a *app, args []string) error {
 		Target: up.target,
 		Mode:   up.mode,
 		OnProgress: func(sent, total int64) {
-			fmt.Printf("\r  %s ", ProgressBar(sent, total, start, 30))
+			fmt.Fprintf(out, "\r  %s ", ProgressBar(sent, total, start, 30))
 		},
 	})
-	fmt.Println()
+	fmt.Fprintln(out, )
 	if err != nil {
 		return err
 	}
@@ -494,7 +494,7 @@ func cmdUpload(a *app, args []string) error {
 	return nil
 }
 
-func cmdDownload(a *app, args []string) error {
+func cmdDownload(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -574,19 +574,19 @@ func humanDurationSec(d time.Duration) string {
 func printFileRow(line string) {
 	parts := strings.SplitN(line, "\t", 3)
 	if len(parts) < 3 {
-		fmt.Println(line)
+		fmt.Fprintln(out, line)
 		return
 	}
 	kind, name, size := parts[0], parts[1], parts[2]
 	switch kind {
 	case "d":
-		fmt.Printf("  %s  %s\n", cCyan("d"), cBold(name)+cDim("/"))
+		fmt.Fprintf(out, "  %s  %s\n", cCyan("d"), cBold(name)+cDim("/"))
 	case "f":
-		fmt.Printf("  %s  %s  %s\n", cDim("f"),
+		fmt.Fprintf(out, "  %s  %s  %s\n", cDim("f"),
 			padRight(name, 32),
 			cDim(size))
 	default:
-		fmt.Println(line)
+		fmt.Fprintln(out, line)
 	}
 }
 
@@ -599,7 +599,7 @@ func printFileRow(line string) {
 func printTreeRow(line string) {
 	parts := strings.SplitN(line, "\t", 4)
 	if len(parts) < 4 {
-		fmt.Println(line)
+		fmt.Fprintln(out, line)
 		return
 	}
 	depth, kind, name, size := parts[0], parts[1], parts[2], parts[3]
@@ -608,13 +608,13 @@ func printTreeRow(line string) {
 	indent := strings.Repeat("  ", d)
 	switch kind {
 	case "d":
-		fmt.Printf("  %s%s  %s\n", indent, cCyan("d"), cBold(name)+cDim("/"))
+		fmt.Fprintf(out, "  %s%s  %s\n", indent, cCyan("d"), cBold(name)+cDim("/"))
 	case "f":
-		fmt.Printf("  %s%s  %s  %s\n", indent, cDim("f"),
+		fmt.Fprintf(out, "  %s%s  %s  %s\n", indent, cDim("f"),
 			padRight(name, 32-d*2),
 			cDim(size))
 	default:
-		fmt.Println(line)
+		fmt.Fprintln(out, line)
 	}
 }
 

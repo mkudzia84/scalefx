@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"encoding/hex"
@@ -20,7 +20,7 @@ func init() {
 	register(&command{Name: "codec-status", Usage: "codec-status", Help: "raw CODEC_STATUS_RESP payload", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdCodecStatus})
 }
 
-func cmdPlay(a *app, args []string) error {
+func cmdPlay(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -58,7 +58,7 @@ func cmdPlay(a *app, args []string) error {
 	return nil
 }
 
-func cmdAudioStop(a *app, args []string) error {
+func cmdAudioStop(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func cmdAudioStop(a *app, args []string) error {
 	return nil
 }
 
-func cmdVolume(a *app, args []string) error {
+func cmdVolume(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -109,7 +109,7 @@ func cmdVolume(a *app, args []string) error {
 	return nil
 }
 
-func cmdFade(a *app, args []string) error {
+func cmdFade(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ func cmdFade(a *app, args []string) error {
 	return nil
 }
 
-func cmdQueue(a *app, args []string) error {
+func cmdQueue(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -156,7 +156,7 @@ func cmdQueue(a *app, args []string) error {
 	return nil
 }
 
-func cmdQueueClear(a *app, args []string) error {
+func cmdQueueClear(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func cmdQueueClear(a *app, args []string) error {
 	return nil
 }
 
-func cmdAudioStatus(a *app, _ []string) error {
+func cmdAudioStatus(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
@@ -225,7 +225,7 @@ func cmdAudioStatus(a *app, _ []string) error {
 		if c.Looping {
 			loopTag = cDim(fmt.Sprintf("  loop=%d", c.LoopCount))
 		}
-		fmt.Printf("  ch%-2d %s  vol=%d%%  out=%s  remain=%s%s  wav=%dHz/%dch/%db  fill=%d%%  %s\n",
+		fmt.Fprintf(out, "  ch%-2d %s  vol=%d%%  out=%s  remain=%s%s  wav=%dHz/%dch/%db  fill=%d%%  %s\n",
 			c.Channel,
 			state,
 			c.VolumePct,
@@ -239,7 +239,7 @@ func cmdAudioStatus(a *app, _ []string) error {
 	return nil
 }
 
-func cmdCodecStatus(a *app, _ []string) error {
+func cmdCodecStatus(a *App, _ []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}

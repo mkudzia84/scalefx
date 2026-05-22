@@ -1,4 +1,4 @@
-package main
+package console
 
 // ANSI palette + small render helpers for the CLI.  Modeled on the
 // archived `engine/output.go` Output interface: a logical color enum
@@ -36,11 +36,26 @@ const (
 // useColor is set at startup; flipped off by NO_COLOR or `--no-color`.
 var useColor = true
 
+// out is the sink every command renders to.  Defaults to stdout (CLI);
+// Studio redirects it to an ANSI→HTML writer feeding the GUI console.
+var out io.Writer = os.Stdout
+
 func init() {
 	if os.Getenv("NO_COLOR") != "" {
 		useColor = false
 	}
 }
+
+// SetOutput redirects all command output to `w` (nil → stdout).
+func SetOutput(w io.Writer) {
+	if w == nil {
+		w = os.Stdout
+	}
+	out = w
+}
+
+// SetColor toggles ANSI color emission for the whole package.
+func SetColor(on bool) { useColor = on }
 
 // wrap applies an ANSI sequence and the reset trailer (or returns the
 // raw text when colors are disabled).
@@ -67,34 +82,34 @@ func cGray(s string) string    { return wrap(ansiGray, s) }
 
 // Ok prints a green "✓" success line.
 func Ok(format string, args ...any) {
-	fmt.Printf("%s %s\n", cGreen("✓"), fmt.Sprintf(format, args...))
+	fmt.Fprintf(out, "%s %s\n", cGreen("✓"), fmt.Sprintf(format, args...))
 }
 
 // Err prints a red "✗" error line to stderr.
 func Err(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "%s %s\n", cRed("✗"), fmt.Sprintf(format, args...))
+	fmt.Fprintf(out, "%s %s\n", cRed("✗"), fmt.Sprintf(format, args...))
 }
 
 // Info prints a cyan "ℹ" info line.
 func Info(format string, args ...any) {
-	fmt.Printf("%s %s\n", cCyan("ℹ"), fmt.Sprintf(format, args...))
+	fmt.Fprintf(out, "%s %s\n", cCyan("ℹ"), fmt.Sprintf(format, args...))
 }
 
 // Warn prints a yellow "⚠" warning line.
 func Warn(format string, args ...any) {
-	fmt.Printf("%s %s\n", cYellow("⚠"), fmt.Sprintf(format, args...))
+	fmt.Fprintf(out, "%s %s\n", cYellow("⚠"), fmt.Sprintf(format, args...))
 }
 
 // Note prints a dim plain line (no icon) — used for soft hints.
 func Note(format string, args ...any) {
-	fmt.Println(cDim(fmt.Sprintf(format, args...)))
+	fmt.Fprintln(out, cDim(fmt.Sprintf(format, args...)))
 }
 
 // ─── Sectional output ────────────────────────────────────────────────
 
 // Hdr prints a bold cyan section header underlined with a dim rule.
 func Hdr(title string) {
-	fmt.Println(cBold(cCyan(title)))
+	fmt.Fprintln(out, cBold(cCyan(title)))
 }
 
 // kvKeyWidth is the column width used by KV to right-pad the key.
@@ -102,7 +117,7 @@ const kvKeyWidth = 14
 
 // KV prints a "  Key : value" row, key dim + right-padded.
 func KV(key, val string) {
-	fmt.Printf("  %s : %s\n", cDim(padRight(key, kvKeyWidth)), val)
+	fmt.Fprintf(out, "  %s : %s\n", cDim(padRight(key, kvKeyWidth)), val)
 }
 
 // KVf is KV with printf-style value formatting.
@@ -121,7 +136,7 @@ func KVList(key string, items []string) {
 	KV(key, items[0])
 	for _, it := range items[1:] {
 		// 2 indent + kvKeyWidth filler + 3 (" : ") = same value column.
-		fmt.Printf("  %s   %s\n", strings.Repeat(" ", kvKeyWidth), it)
+		fmt.Fprintf(out, "  %s   %s\n", strings.Repeat(" ", kvKeyWidth), it)
 	}
 }
 
@@ -176,7 +191,7 @@ func HexU32(v uint32) string {
 //
 // Matches the archived CLI's `engine.FormatProgressBar` look.  The
 // caller is expected to print with a leading "\r" and follow up with
-// `fmt.Println()` once done so the cursor moves to the next line.
+// `fmt.Fprintln(out, )` once done so the cursor moves to the next line.
 func ProgressBar(current, total int64, started time.Time, width int) string {
 	if total <= 0 {
 		return ""
