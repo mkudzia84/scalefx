@@ -104,6 +104,7 @@ public:
 
     using ConnectCallback     = std::function<void(const ExpanderEntry&)>;
     using IdentifiedCallback  = std::function<void(const ExpanderEntry&)>;
+    using ReadyCallback       = std::function<void(const ExpanderEntry&)>;
     using DisconnectCallback  = std::function<void(const ExpanderEntry&)>;
 
     /// A single retained spec entry — what we know about a GUID we've
@@ -129,6 +130,14 @@ public:
     /// This is the right hook to push cached config or bind a typed
     /// BusClient to a specific (kind, guid) pair.
     void onIdentified(IdentifiedCallback cb)  { _onIdentified = std::move(cb); }
+
+    /// Fires once the roster harvest (PORT_LIST → ROLE_LIST) completes and
+    /// the slot reaches `Handshake::Ready` — i.e. the board is now
+    /// accepting forwarded commands (the outbound queue gates on Ready).
+    /// This is the right hook to (re)apply configured role attachments to
+    /// an expander, since `onIdentified` fires BEFORE Ready and any
+    /// command sent then is dropped.
+    void onReady(ReadyCallback cb)            { _onReady = std::move(cb); }
 
     /// Fires on USB unmount.  The entry is a snapshot of the slot
     /// before it was cleared, so callbacks see the full spec (including
@@ -259,6 +268,23 @@ public:
         RoleRosterEntry roles[kMaxRolesPerExpander];
         uint8_t         numRoles = 0;
 
+        // ── Battery telemetry (BATTERY-capable expanders only) ───────
+        // The hub polls each Ready expander's CorePacket::STATUS_REQ on a
+        // slow cadence and decodes the battery section the expander's
+        // onStatusData appended (offset = STATUS_CORE_HEADER_SIZE).
+        struct BatteryInfo {
+            bool     valid      = false;   ///< a STATUS with a battery tail was decoded
+            bool     present    = false;
+            uint16_t voltage_mV = 0;
+            uint8_t  cellCount  = 0;
+            uint8_t  pct        = 0;
+            uint8_t  flags      = 0;        ///< bit0 = low, bit1 = critical
+        } battery;
+        SerialPacket batteryResp;               ///< capture target for the battery STATUS poll
+        bool         batteryQueryInflight = false;
+        uint32_t     batteryPollDueMs     = 0;  ///< next poll time (millis)
+        uint32_t     batteryQueryDeadlineMs = 0;
+
         // ── Outbound command queue (effect path) ─────────────────────
         QueuedCommand   queue[kMaxQueuedPerSlot];
         uint8_t         qHead = 0;
@@ -340,6 +366,14 @@ private:
     void onPortListResp (uint8_t slotIdx, const uint8_t* p, size_t len);
     void onRoleListResp (uint8_t slotIdx, const uint8_t* p, size_t len);
 
+    // Battery telemetry poll (BATTERY-capable Ready slots) --------------
+    // Slow STATUS_REQ cadence; decodes the battery tail the expander's
+    // onStatusData appends after the 22-byte core STATUS header.
+    static constexpr uint32_t kBatteryPollIntervalMs = 3000;
+    static constexpr uint32_t kBatteryPollTimeoutMs  = 500;
+    void tickBatteryPoll   (uint8_t slotIdx);
+    void onBatteryStatus   (uint8_t slotIdx, const uint8_t* p, size_t len);
+
     // Outbound queue flush ---------------------------------------------
     void flushQueue     (uint8_t slotIdx);
 
@@ -377,6 +411,7 @@ private:
 
     ConnectCallback       _onConnect;
     IdentifiedCallback    _onIdentified;
+    ReadyCallback         _onReady;
     DisconnectCallback    _onDisconnect;
     ExpanderAsyncCallback _onExpanderAsync;
 };

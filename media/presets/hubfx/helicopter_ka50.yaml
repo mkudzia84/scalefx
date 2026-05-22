@@ -57,6 +57,30 @@ ports:
   # to sbus_input or jeti_ex_input for multi-channel telemetry inputs.
   - { kind: input, idx: 0, role: sbus_input,     label: "RC receiver (SBUS)" }
 
+# Expander boards.  THE single place a remote board is declared:
+#   alias  — friendly handle every effect file references (`board: gear1`)
+#   guid   — the board's hardware 4-hex deviceName suffix (read it once via
+#            `init` / `expanders` / `system-info`, then paste here)
+#   type   — optional sanity label; a mismatch against the board that
+#            enumerates under `guid` is WARN'd, not fatal
+#   ports  — this board's port → role attachments (same shape as the hub
+#            ports[] above); each is attached over USB when the board
+#            reaches Ready (so order of connect / reconnect doesn't matter)
+#
+# The KA-50 reference airframe is all hub-local (skids, no retract gear),
+# so this block is commented.  A build with a GearControl expander would
+# uncomment it and the gear defs in /gearcontrol.yaml would address the
+# motors as `motor: { board: gear1, kind: hbridge, idx: N }`.
+#
+# expanders:
+#   - alias: gear1
+#     guid:  AB12                 # GearCtrl-AB12
+#     type:  gearcontrol
+#     ports:
+#       - { kind: hbridge, idx: 0, role: bi_dc_motor, label: "Nose retract" }
+#       - { kind: hbridge, idx: 1, role: bi_dc_motor, label: "Left main" }
+#       - { kind: hbridge, idx: 2, role: bi_dc_motor, label: "Right main" }
+
 # Named RC input channels.  Each entry binds a logical name to a
 # (port, channel id) tuple — that's ALL the board cares about.
 # How an effect INTERPRETS the channel (boolean threshold, enum-N

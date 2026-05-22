@@ -96,8 +96,29 @@ func cmdSystemInfo(a *app, _ []string) error {
 				cDim(fmt.Sprintf("addr=%d (identifying…)", e.USBAddr)),
 				flag)
 		}
+		if e.Battery != nil && e.Battery.Valid {
+			fmt.Printf("      %s\n", batteryText(*e.Battery))
+		}
 	}
 	return nil
+}
+
+// batteryText renders a per-expander battery summary line.
+func batteryText(b expp.BatteryInfo) string {
+	if !b.Present {
+		return cDim("battery: not present")
+	}
+	s := fmt.Sprintf("%.2f V", float64(b.VoltageMV)/1000.0)
+	if b.CellCount > 0 {
+		s += fmt.Sprintf("  %dS", b.CellCount)
+	}
+	s += fmt.Sprintf("  %d%%", b.Pct)
+	if b.Critical() {
+		s += "  " + cRed("[CUTOFF]")
+	} else if b.Low() {
+		s += "  " + cRed("[LOW]")
+	}
+	return cDim("battery: ") + s
 }
 
 // ─── Topology ────────────────────────────────────────────────────────
@@ -114,18 +135,44 @@ func cmdTopoPorts(a *app, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Join the attached role per port: a second round-trip (RoleList over
+	// the same scope) keyed by (guid, kind, idx) → roleKind so each port
+	// row shows what's currently bound to it.  Best-effort — if RoleList
+	// fails we still render the bare port roster.
+	roleAt := map[string]byte{}
+	if roleBoards, rerr := a.c.Topology.RoleList(guid); rerr == nil {
+		for _, rb := range roleBoards {
+			for _, r := range rb.Roles {
+				roleAt[roleKey(rb.GUID, r.PortKind, r.PortIdx)] = r.RoleKind
+			}
+		}
+	}
 	for i, b := range boards {
 		if i > 0 {
 			fmt.Println()
 		}
-		printBoardPorts(b)
+		printBoardPorts(b, roleAt)
 	}
 	return nil
 }
 
-// printBoardPorts renders one board's port roster grouped by kind,
-// with each port on its own row + decoded flag text.
-func printBoardPorts(b client.BoardPorts) {
+// roleKey indexes the attached-role map by board GUID + port address.
+func roleKey(guid string, kind, idx byte) string {
+	return fmt.Sprintf("%s/%d/%d", guid, kind, idx)
+}
+
+// attachedRoleText renders the "→ <role>" suffix for a port that has a
+// role bound, or "" when the port is unattached.
+func attachedRoleText(roleAt map[string]byte, guid string, kind, idx byte) string {
+	if rk, ok := roleAt[roleKey(guid, kind, idx)]; ok {
+		return "  " + cDim("→") + " " + cMagenta(roles.KindName(rk))
+	}
+	return ""
+}
+
+// printBoardPorts renders one board's port roster grouped by kind, with
+// each port on its own row + decoded flag text + any attached role.
+func printBoardPorts(b client.BoardPorts, roleAt map[string]byte) {
 	label := b.DeviceName
 	if label == "" {
 		label = b.GUID
@@ -142,9 +189,10 @@ func printBoardPorts(b client.BoardPorts) {
 			cDim(padRight("servo", 8)),
 			cDim(fmt.Sprintf("(%d, output)", len(b.Ports.Servos))))
 		for _, d := range b.Ports.Servos {
-			fmt.Printf("    %s  %s\n",
+			fmt.Printf("    %s  %s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
-				cDim(servoFlagText(d.Flags)))
+				cDim(servoFlagText(d.Flags)),
+				attachedRoleText(roleAt, b.GUID, ports.KindServo, d.Index))
 		}
 	}
 	if len(b.Ports.Pwms) > 0 {
@@ -152,9 +200,10 @@ func printBoardPorts(b client.BoardPorts) {
 			cDim(padRight("pwm", 8)),
 			cDim(fmt.Sprintf("(%d)", len(b.Ports.Pwms))))
 		for _, d := range b.Ports.Pwms {
-			fmt.Printf("    %s  %s\n",
+			fmt.Printf("    %s  %s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
-				cDim(senseFlagText(d.Flags)))
+				cDim(senseFlagText(d.Flags)),
+				attachedRoleText(roleAt, b.GUID, ports.KindPwm, d.Index))
 		}
 	}
 	if len(b.Ports.HBridges) > 0 {
@@ -162,9 +211,10 @@ func printBoardPorts(b client.BoardPorts) {
 			cDim(padRight("hbridge", 8)),
 			cDim(fmt.Sprintf("(%d)", len(b.Ports.HBridges))))
 		for _, d := range b.Ports.HBridges {
-			fmt.Printf("    %s  %s\n",
+			fmt.Printf("    %s  %s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
-				cDim(senseFlagText(d.Flags)))
+				cDim(senseFlagText(d.Flags)),
+				attachedRoleText(roleAt, b.GUID, ports.KindHBridge, d.Index))
 		}
 	}
 	if len(b.Ports.Inputs) > 0 {
@@ -172,9 +222,10 @@ func printBoardPorts(b client.BoardPorts) {
 			cDim(padRight("input", 8)),
 			cDim(fmt.Sprintf("(%d)", len(b.Ports.Inputs))))
 		for _, d := range b.Ports.Inputs {
-			fmt.Printf("    %s  %s\n",
+			fmt.Printf("    %s  %s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
-				cGreen(inputFlagText(d.Flags)))
+				cGreen(inputFlagText(d.Flags)),
+				attachedRoleText(roleAt, b.GUID, ports.KindInput, d.Index))
 		}
 	}
 }

@@ -231,6 +231,9 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::update() {
 
         // ── Drain outbound queue ──────────────────────────────────────
         if (s.handshake == Handshake::Ready) flushQueue(i);
+
+        // ── Battery telemetry poll (BATTERY-capable Ready slots) ──────
+        if (s.handshake == Handshake::Ready) tickBatteryPoll(i);
     }
 }
 
@@ -383,10 +386,10 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::handleSystemInfoReq() 
     // its full system view on connect (instead of IDENTIFY + LIST_REQ).
     // Worst-case sizing:
     //   hub block ≈ 5 + 1+32 + 1+16 + 1+24 + 4×4   ≈ 95 bytes
-    //   per-expander block ≈ 1+1+1+1 + 1+4 + 1+32 + 1+16 + 4 + 4  ≈ 67 bytes
-    //   total ≈ 95 + 1 + kMaxExpanders * 67
+    //   per-expander block ≈ 1+1+1+1 + 1+4 + 1+32 + 1+16 + 4 + 4 + 7  ≈ 74 bytes
+    //   total ≈ 95 + 1 + kMaxExpanders * 74
     constexpr size_t kHubBlockMax        = 1+5 + 1+32 + 1+16 + 1+24 + 4*4;
-    constexpr size_t kPerExpanderMax     = 1+1+1+1 + 1+5 + 1+32 + 1+16 + 4 + 4;
+    constexpr size_t kPerExpanderMax     = 1+1+1+1 + 1+5 + 1+32 + 1+16 + 4 + 4 + 7;
     uint8_t buf[kHubBlockMax + 1 + kMaxExpanders * kPerExpanderMax];
     size_t  off = 0;
 
@@ -456,6 +459,18 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::handleSystemInfoReq() 
 
             SfxWire::putU32LE(&buf[off], e.spec.capabilities); off += 4;
             SfxWire::putU32LE(&buf[off], e.spec.buildNumber);  off += 4;
+
+            // Battery section (Rule 11 append-only) — the latest poll of
+            // this expander's STATUS_REQ.  `valid=0` ⇒ no reading yet (or
+            // board has no BATTERY capability):
+            //   [valid:u8][present:u8][voltage_mV:u16LE][cells:u8][pct:u8][flags:u8]
+            const auto& bat = _live[i].battery;
+            buf[off++] = bat.valid   ? 1 : 0;
+            buf[off++] = bat.present ? 1 : 0;
+            SfxWire::putU16LE(&buf[off], bat.voltage_mV); off += 2;
+            buf[off++] = bat.cellCount;
+            buf[off++] = bat.pct;
+            buf[off++] = bat.flags;
         }
         ++count;
     }
@@ -759,6 +774,74 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::onRoleListResp(
 
     s.handshake          = Handshake::Ready;
     s.handshakeDeadlineMs = 0;
+    s.batteryPollDueMs   = millis();   // first battery poll ASAP after Ready
+
+    // Board is now accepting forwarded commands — let the master (re)apply
+    // any configured role attachments for this GUID.  Fires AFTER the
+    // Ready transition so callbacks may safely call attachRole / forward.
+    if (_onReady) _onReady(s.entry);
+}
+
+// ─── Battery telemetry poll ─────────────────────────────────────────────
+//
+// For each Ready expander that advertised CoreCapability::BATTERY, issue a
+// CorePacket::STATUS_REQ on a slow cadence and decode the battery section
+// the board's onStatusData appended after the 22-byte core header.  Uses a
+// dedicated capture target (`batteryResp`) so it never collides with the
+// roster harvest's `pendingResp` (which is idle once Ready anyway).
+
+template <uint8_t MaxExpanders, uint8_t MaxKnownGuids>
+void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::tickBatteryPoll(
+        uint8_t slotIdx) {
+    if (slotIdx >= kMaxExpanders) return;
+    LiveSlot& s = _live[slotIdx];
+    if (!s.entry.spec.valid) return;
+    if (!(s.entry.spec.capabilities & CoreCapability::BATTERY)) return;
+
+    const uint32_t now = millis();
+
+    // Capture a landed response.
+    if (s.batteryQueryInflight && s.batteryResp.len > 0) {
+        onBatteryStatus(slotIdx, s.batteryResp.payload, s.batteryResp.len);
+        s.batteryResp          = SerialPacket{};
+        s.batteryQueryInflight = false;
+    }
+    // In-flight timeout — give up on this round, retry next interval.
+    if (s.batteryQueryInflight &&
+        (int32_t)(now - s.batteryQueryDeadlineMs) > 0) {
+        s.batteryQueryInflight = false;
+    }
+    // Kick a new poll when due and none in flight.
+    if (!s.batteryQueryInflight && (int32_t)(now - s.batteryPollDueMs) >= 0) {
+        s.batteryResp = SerialPacket{};
+        auto rc = s.client.sendQuery(CorePacket::STATUS_REQ, nullptr, 0,
+                                     CorePacket::STATUS, s.batteryResp);
+        if (rc.success) {
+            s.batteryQueryInflight   = true;
+            s.batteryQueryDeadlineMs = now + kBatteryPollTimeoutMs;
+        }
+        s.batteryPollDueMs = now + kBatteryPollIntervalMs;
+    }
+}
+
+template <uint8_t MaxExpanders, uint8_t MaxKnownGuids>
+void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::onBatteryStatus(
+        uint8_t slotIdx, const uint8_t* p, size_t len) {
+    if (slotIdx >= kMaxExpanders) return;
+    LiveSlot& s = _live[slotIdx];
+
+    // STATUS = 22-byte core header + module-callback tail.  On our expander
+    // boards onStatusData appends ONLY the battery section:
+    //   [present:u8][voltage_mV:u16LE][cellCount:u8][pct:u8][flags:u8]
+    constexpr size_t kHdr = CorePacket::STATUS_CORE_HEADER_SIZE;   // 22
+    if (len < kHdr + 6) return;                                    // no battery tail
+    const uint8_t* b = p + kHdr;
+    s.battery.present    = b[0] != 0;
+    s.battery.voltage_mV = (uint16_t)(b[1] | (b[2] << 8));
+    s.battery.cellCount  = b[3];
+    s.battery.pct        = b[4];
+    s.battery.flags      = b[5];
+    s.battery.valid      = true;
 }
 
 // ─── Outbound queue ─────────────────────────────────────────────────────

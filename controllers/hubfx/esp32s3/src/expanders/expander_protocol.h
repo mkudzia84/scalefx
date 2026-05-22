@@ -158,6 +158,13 @@ namespace ExpanderPacket {
         ///<                   [nameLen:u8][name:str]
         ///<                   [verLen:u8][ver:str]
         ///<                   [capabilities:u32LE][buildNum:u32LE]
+        ///<                   battery (Rule 11 append-only — present from
+        ///<                   hub fw ≥ 2.8.0; the hub polls each
+        ///<                   BATTERY-capable expander's STATUS_REQ):
+        ///<                   [battValid:u8][battPresent:u8][battVoltage_mV:u16LE]
+        ///<                   [battCells:u8][battPct:u8][battFlags:u8]
+        ///<                   (battFlags: bit0 = low, bit1 = critical;
+        ///<                    battValid = 0 ⇒ no reading yet / no battery)
 
     // GUID collision events ---------------------------------------------
     constexpr uint8_t EXPANDER_COLLISION       = 0x87;

@@ -77,7 +77,27 @@ type ExpanderEntry struct {
 	FirmwareVersion string `json:"firmwareVersion,omitempty"`
 	Capabilities    uint32 `json:"capabilities,omitempty"`
 	BuildNumber     uint32 `json:"buildNumber,omitempty"`
+
+	// Battery telemetry — present only in EXPANDER_SYSTEM_INFO_RESP from a
+	// hub new enough to append it (Rule 11), and only for BATTERY-capable
+	// expanders. nil ⇒ the hub didn't report a battery section.
+	Battery *BatteryInfo `json:"battery,omitempty"`
 }
+
+// BatteryInfo mirrors the per-expander battery section the hub polls from
+// each BATTERY-capable expander's STATUS_REQ. Valid=false ⇒ no reading yet.
+type BatteryInfo struct {
+	Valid     bool   `json:"valid"`
+	Present   bool   `json:"present"`
+	VoltageMV uint16 `json:"voltage_mV"`
+	CellCount byte   `json:"cellCount"`
+	Pct       byte   `json:"pct"`
+	Flags     byte   `json:"flags"` // bit0 = low, bit1 = critical
+}
+
+// Low reports the low-voltage flag. Critical reports the cutoff flag.
+func (b BatteryInfo) Low() bool      { return b.Flags&0x01 != 0 }
+func (b BatteryInfo) Critical() bool { return b.Flags&0x02 != 0 }
 
 // HubInfo mirrors the hub block of EXPANDER_SYSTEM_INFO_RESP.
 type HubInfo struct {
@@ -256,6 +276,20 @@ func DecodeSystemInfo(p []byte) (SystemInfo, error) {
 			e.Capabilities = binary.LittleEndian.Uint32(p[off : off+4])
 			e.BuildNumber = binary.LittleEndian.Uint32(p[off+4 : off+8])
 			off += 8
+
+			// Battery section (Rule 11 append-only) — present only from a
+			// hub new enough to emit it; length-guard so older hubs decode.
+			if off+7 <= len(p) {
+				e.Battery = &BatteryInfo{
+					Valid:     p[off] != 0,
+					Present:   p[off+1] != 0,
+					VoltageMV: binary.LittleEndian.Uint16(p[off+2 : off+4]),
+					CellCount: p[off+4],
+					Pct:       p[off+5],
+					Flags:     p[off+6],
+				}
+				off += 7
+			}
 		}
 		si.Expanders = append(si.Expanders, e)
 	}

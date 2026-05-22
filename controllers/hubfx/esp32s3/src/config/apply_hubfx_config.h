@@ -111,12 +111,60 @@ inline uint8_t loadLightFxProgramCatalog(const LightFxYamlConfig& cfg,
     return loaded;
 }
 
-/// Attach each `ports[]` entry's RoleKind to its hub-local PortRef.
-/// If the table is empty (no `/hubfx.yaml` on flash, or `ports:` block
-/// missing), fall back to attaching `LedAnimator` on every hub-local
-/// PWM port + `ServoActuator` on every servo port — the most common
-/// "out of the box" HubFX configuration.  Idempotent — re-attaching
-/// the same role is a no-op on the topology service.
+/// Build the PortRef for a mapping entry — hub-local when `guid[0] == 0`,
+/// otherwise the expander addressed by the stamped GUID.
+inline hubfx::effects::PortRef portRefOf(const PortMapping& m) {
+    return m.guid[0] ? hubfx::effects::PortRef::remote(m.guid, m.kind, m.idx)
+                     : hubfx::effects::PortRef::local(m.kind, m.idx);
+}
+
+/// Attach roles for every `ports[]` entry whose GUID matches `guid`
+/// (pass "" for the hub-local subset).  Returns the count attached.
+/// Idempotent — re-attaching the same role is a no-op on topology, so
+/// this is safe to call repeatedly (boot + each expander connect).
+template <typename TTopology>
+uint8_t attachPortRolesForGuid(TTopology& topo, const HubFxConfig& cfg,
+                               const char* guid) {
+    const bool wantHub = (!guid || !guid[0]);
+    uint8_t attached = 0;
+    for (uint8_t i = 0; i < cfg.numPorts; ++i) {
+        const auto& m = cfg.ports[i];
+        if (m.role == RoleKind::None) continue;
+        const bool isHub = (m.guid[0] == 0);
+        if (wantHub != isHub) continue;
+        if (!wantHub && std::strncmp(m.guid, guid, sizeof(m.guid)) != 0) continue;
+        if (topo.attachRole(portRefOf(m), m.role)) {
+            ++attached;
+            SFX_LOG_INFO("[hubfx-config] %s:{%s, %u} → %s%s%s",
+                         m.guid[0] ? m.guid : "hub",
+                         PortKind::getName(m.kind), (unsigned)m.idx,
+                         RoleKind::getName(m.role),
+                         m.label[0] ? "  // " : "",
+                         m.label[0] ? m.label : "");
+        } else {
+            // Remote board not yet mounted ⇒ deferred (re-applied from the
+            // expander connect callback).  Hub-local failures are real.
+            if (m.guid[0]) {
+                SFX_LOG_INFO("[hubfx-config] %s:{%s, %u} → %s  deferred (board offline)",
+                             m.guid, PortKind::getName(m.kind), (unsigned)m.idx,
+                             RoleKind::getName(m.role));
+            } else {
+                SFX_LOG_WARN("[hubfx-config] hub:{%s, %u} → %s  FAILED",
+                             PortKind::getName(m.kind), (unsigned)m.idx,
+                             RoleKind::getName(m.role));
+            }
+        }
+    }
+    return attached;
+}
+
+/// Attach every `ports[]` entry's RoleKind to its PortRef (hub-local AND
+/// any currently-mounted expander port).  Expander ports whose board is
+/// offline are skipped here and (re)attached from the ExpanderService
+/// connect callback via `attachPortRolesForGuid`.  If the table is empty
+/// (no `/hubfx.yaml`, or `ports:` block missing), fall back to attaching
+/// `LedAnimator` on every hub-local PWM port — the common "out of the
+/// box" HubFX configuration.  Idempotent.
 template <typename TBoard, typename TTopology>
 void applyPortRoles(TBoard& board, const HubFxConfig& cfg) {
     using hubfx::effects::PortRef;
@@ -136,25 +184,15 @@ void applyPortRoles(TBoard& board, const HubFxConfig& cfg) {
         return;
     }
 
-    uint8_t attached = 0;
-    for (uint8_t i = 0; i < cfg.numPorts; ++i) {
-        const auto& m = cfg.ports[i];
-        if (m.role == RoleKind::None) continue;
-        if (topo.attachRole(PortRef::local(m.kind, m.idx), m.role)) {
-            ++attached;
-            SFX_LOG_INFO("[hubfx-config] port {%s, %u} → %s%s%s",
-                         PortKind::getName(m.kind), (unsigned)m.idx,
-                         RoleKind::getName(m.role),
-                         m.label[0] ? "  // " : "",
-                         m.label[0] ? m.label : "");
-        } else {
-            SFX_LOG_WARN("[hubfx-config] port {%s, %u} → %s  FAILED",
-                         PortKind::getName(m.kind), (unsigned)m.idx,
-                         RoleKind::getName(m.role));
-        }
+    // Hub-local first (always succeeds), then each declared expander
+    // (succeeds only for boards already mounted; the rest defer).
+    uint8_t attached = attachPortRolesForGuid(topo, cfg, "");
+    for (uint8_t e = 0; e < cfg.numExpanders; ++e) {
+        attached += attachPortRolesForGuid(topo, cfg, cfg.expanders[e].guid);
     }
-    SFX_LOG_INFO("[hubfx-config] ports: %u/%u attached", (unsigned)attached,
-                 (unsigned)cfg.numPorts);
+    SFX_LOG_INFO("[hubfx-config] ports: %u/%u attached (%u expander board(s) declared)",
+                 (unsigned)attached, (unsigned)cfg.numPorts,
+                 (unsigned)cfg.numExpanders);
 }
 
 /// Apply `/hubfx.yaml` — flip every service's `setEnabled()` to match

@@ -1,11 +1,13 @@
 # /gearcontrol.yaml — Gear definitions for the hub's GearControlService.
 #
 # Upload to the HUB's LittleFS as /gearcontrol.yaml.  Each gear is one
-# H-bridge motor (BiDcMotor role) addressed by PortRef.  `guid` is the
-# GearControl expander board's 4-hex deviceName suffix — e.g. a board
-# that enumerates as "GearCtrl-AB12" has guid "AB12".  Replace the
-# placeholder below with your board's actual GUID (read it from
-# `hub:slaves` / the IDENTIFY response).
+# H-bridge motor (BiDcMotor role) addressed by PortRef.
+#
+# PREFERRED: address the board by ALIAS — `board: gear1` resolves to the
+# expander's GUID via the `expanders:` block in /hubfx.yaml (where the
+# board is declared once).  Swap a physical board = edit one line there,
+# not every effect file.  The raw `guid: "AB12"` form still works as a
+# fallback (e.g. when /hubfx.yaml has no matching alias).
 #
 # Status LEDs are NOT configured here — the GearControl expander lights
 # its own small per-motor direction LEDs locally from the H-bridge state
@@ -28,21 +30,21 @@ enabled: true
 gears:
   - id: 0
     name: nose
-    motor: { guid: "AB12", kind: hbridge, idx: 0 }
+    motor: { board: gear1, kind: hbridge, idx: 0 }
     deploy_duty:   20000
     retract_duty: -20000
     timeout_ms:    4000
 
   - id: 1
     name: left_main
-    motor: { guid: "AB12", kind: hbridge, idx: 1 }
+    motor: { board: gear1, kind: hbridge, idx: 1 }
     deploy_duty:   20000
     retract_duty: -20000
     timeout_ms:    4000
 
   - id: 2
     name: right_main
-    motor: { guid: "AB12", kind: hbridge, idx: 2 }
+    motor: { board: gear1, kind: hbridge, idx: 2 }
     deploy_duty:   20000
     retract_duty: -20000
     timeout_ms:    4000

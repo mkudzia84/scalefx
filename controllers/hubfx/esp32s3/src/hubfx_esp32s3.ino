@@ -38,7 +38,10 @@
  *     /hubfx.yaml                  BOARD CONFIG:
  *                                    audio.codec_supply (PVDD rail)
  *                                    features.* (master enable matrix)
- *                                    ports[]   (port → role attachment)
+ *                                    ports[]     (hub-local port → role)
+ *                                    expanders[] (remote boards: alias →
+ *                                                 guid + nested port→role;
+ *                                                 effects address by alias)
  *                                    inputs[]  (named RC channels —
  *                                               effects reference by name)
  *     ├── /alerts.yaml             severity → AlertSound + volume
@@ -55,8 +58,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.6.0-hubfx"
-#define BUILD_NUMBER     168
+#define FIRMWARE_VERSION "2.8.0-hubfx"
+#define BUILD_NUMBER     173
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -605,6 +608,19 @@ void setup() {
         SFX_LOG_INFO("[Expander] identified %s guid=%s v%s",
                      hubfx::expanders::ExpanderKind::getName(e.kind),
                      e.spec.guid, e.spec.firmwareVersion);
+    });
+    // Once an expander is Ready (accepting forwarded commands), (re)apply
+    // the role attachments /hubfx.yaml declared for its GUID.  Covers both
+    // boards that connect after boot and reconnects on a different USB
+    // port — the config is GUID-addressed, not slot-addressed.
+    exp.onReady([](const hubfx::expanders::ExpanderEntry& e) {
+        auto& topo = board.policy<HubFxTopologyService>();
+        const uint8_t n = hubfx::config::attachPortRolesForGuid(
+            topo, kHubFx.data(), e.spec.guid);
+        if (n) {
+            SFX_LOG_INFO("[hubfx-config] applied %u configured role(s) to %s on connect",
+                         (unsigned)n, e.spec.guid);
+        }
     });
     exp.onDisconnect([](const hubfx::expanders::ExpanderEntry& e) {
         SFX_LOG_INFO("[Expander] unmount %s addr=%u guid=%s",

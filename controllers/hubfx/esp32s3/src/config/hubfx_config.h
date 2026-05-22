@@ -50,28 +50,47 @@
 #include "../effects/input/trigger_input.h"   // TriggerKind, FailsafeBehaviour
 #include "port_ref_yaml.h"
 
-// YAML pool — sized for audio + features + ports[] + inputs[].
+// YAML pool — sized for audio + features + ports[] + inputs[] +
+// expanders[] (each board nests its own ports[] list).
 struct HubFxYamlPool {
-    static constexpr size_t MAX_NODES        = 320;
-    static constexpr size_t STRING_POOL_SIZE = 3072;
+    static constexpr size_t MAX_NODES        = 512;
+    static constexpr size_t STRING_POOL_SIZE = 4608;
     static constexpr size_t MAX_DEPTH        = 8;
 };
 
-constexpr uint8_t kMaxPortMappings  = 24;   ///< 8 PWM + 11 servo + 1 input + headroom for expanders
+constexpr uint8_t kMaxPortMappings  = 48;   ///< 8 PWM + 11 servo + 1 input hub-local + expander ports
 constexpr size_t  kPortLabelMax     = 32;
 constexpr uint8_t kMaxInputBindings = 16;   ///< matches InputDispatcher::kMaxBindings
 constexpr size_t  kInputNameMax     = 24;
+constexpr uint8_t kMaxExpanderDecls = 4;    ///< a hub hosts ≤2 expanders today; headroom for 4
+constexpr size_t  kAliasMax         = 16;   ///< friendly board handle ("gear1", "lights1")
+constexpr size_t  kGuidMax          = 5;    ///< 4 hex chars + NUL (matches PortRef::guid)
 
 // ─── Data struct ────────────────────────────────────────────────────
 
-/// One entry in the board's port → role mapping table.  Hub-local ports
-/// only (no guid field) — expander ports are out of scope until the
-/// expander config file lands.
+/// One entry in the board's port → role mapping table.  `guid[0] == 0`
+/// ⇒ a hub-local port; otherwise the 4-hex GUID of the expander the port
+/// lives on (stamped from the parent `expanders[]` entry at parse time).
 struct PortMapping {
     uint8_t kind = 0;                    ///< PortKind::* (servo|pwm|hbridge|input)
     uint8_t idx  = 0;                    ///< per-kind index on the board
     uint8_t role = 0;                    ///< RoleKind::* — the variant to attach
+    char    guid[kGuidMax] = {};         ///< "" = hub-local; else expander GUID
     char    label[kPortLabelMax] = {};   ///< human-readable description (Studio uses this)
+};
+
+/// One declared expander board.  `alias` is the friendly handle every
+/// effect file references (`port: { board: gear1, … }`); `guid` is the
+/// hardware 4-hex deviceName suffix the alias resolves to.  `type` is an
+/// optional sanity label ("gearcontrol", "lightfx") — a mismatch against
+/// the board that actually enumerates under `guid` is WARN'd, not fatal.
+/// Each board's ports[] are flattened into `HubFxConfig::ports[]` (each
+/// stamped with this `guid`) at parse time, so the apply path iterates a
+/// single uniform table.
+struct ExpanderDecl {
+    char alias[kAliasMax] = {};
+    char guid [kGuidMax]  = {};
+    char type [16]        = {};
 };
 
 /// One logical RC input channel.  Just names a `(port, channel_id)`
@@ -140,6 +159,14 @@ struct HubFxConfig {
     PortMapping ports[kMaxPortMappings] = {};
     uint8_t     numPorts = 0;
 
+    /// Declared expander boards (alias → GUID).  Populated from the
+    /// YAML's `expanders:` sequence; the nested per-board `ports:` are
+    /// flattened into `ports[]` above with each entry's `guid` stamped.
+    /// Effect files resolve `board: <alias>` references against this
+    /// table (via the alias table in port_ref_yaml.h, seeded here).
+    ExpanderDecl expanders[kMaxExpanderDecls] = {};
+    uint8_t      numExpanders = 0;
+
     /// Named RC input channels.  Populated by the YAML's `inputs:`
     /// sequence; effects reference inputs by `name` and the apply path
     /// resolves them to (port, channel, TriggerMapping) here.  An empty
@@ -167,6 +194,16 @@ inline const InputBinding* findInputByName(const HubFxConfig& cfg, const char* n
     if (!name || !name[0]) return nullptr;
     for (uint8_t i = 0; i < cfg.numInputs; ++i) {
         if (std::strcmp(cfg.inputs[i].name, name) == 0) return &cfg.inputs[i];
+    }
+    return nullptr;
+}
+
+/// Resolve a board alias ("gear1") to its 4-hex GUID ("AB12") via
+/// `cfg.expanders[]`.  Returns nullptr on unknown alias.  Case-sensitive.
+inline const char* guidForAlias(const HubFxConfig& cfg, const char* alias) {
+    if (!alias || !alias[0]) return nullptr;
+    for (uint8_t i = 0; i < cfg.numExpanders; ++i) {
+        if (std::strcmp(cfg.expanders[i].alias, alias) == 0) return cfg.expanders[i].guid;
     }
     return nullptr;
 }
@@ -273,12 +310,70 @@ struct HubFxConfigSchema {
                 m.idx  = (uint8_t)item->template childAs<int32_t>("idx", 0);
                 m.role = hubfxRoleKindFromName(
                     item->template childAs<const char*>("role", "none"));
+                m.guid[0] = '\0';                      // top-level ports[] are hub-local
                 const char* lbl = item->template childAs<const char*>("label", "");
                 std::memset(m.label, 0, sizeof(m.label));
                 if (lbl && lbl[0]) std::strncpy(m.label, lbl, sizeof(m.label) - 1);
                 d.numPorts++;
             }
         }
+
+        // `expanders:` is a sequence of board declarations, each with an
+        // alias + guid + a nested `ports:` list.  Record the alias→guid
+        // table, and FLATTEN every nested port into `d.ports[]` stamped
+        // with the board's guid — so `applyPortRoles` walks one uniform
+        // table whether a port is hub-local or remote.
+        d.numExpanders = 0;
+        const auto* expNode = root ? root->child("expanders") : nullptr;
+        if (expNode && expNode->type == YamlNode::Sequence) {
+            const int ne = expNode->childCount();
+            for (int e = 0; e < ne && d.numExpanders < kMaxExpanderDecls; ++e) {
+                const auto* board = expNode->childAt(e);
+                if (!board) continue;
+                const char* alias = board->template childAs<const char*>("alias", "");
+                const char* guid  = board->template childAs<const char*>("guid",  "");
+                if (!guid || !guid[0]) {
+                    SFX_LOG_WARN("[hubfx-config] expanders[%d]: missing `guid` — skipped", e);
+                    continue;
+                }
+                ExpanderDecl& xd = d.expanders[d.numExpanders];
+                std::memset(&xd, 0, sizeof(xd));
+                if (alias && alias[0]) std::strncpy(xd.alias, alias, sizeof(xd.alias) - 1);
+                std::strncpy(xd.guid, guid, sizeof(xd.guid) - 1);
+                const char* type = board->template childAs<const char*>("type", "");
+                if (type && type[0]) std::strncpy(xd.type, type, sizeof(xd.type) - 1);
+                d.numExpanders++;
+
+                const auto* bports = board->child("ports");
+                if (!bports || bports->type != YamlNode::Sequence) continue;
+                const int np = bports->childCount();
+                for (int i = 0; i < np && d.numPorts < kMaxPortMappings; ++i) {
+                    const auto* item = bports->childAt(i);
+                    if (!item) continue;
+                    const uint8_t k = hubfxPortKindFromName(
+                        item->template childAs<const char*>("kind", ""));
+                    if (k == 0) {
+                        SFX_LOG_WARN("[hubfx-config] expander '%s' ports[%d]: bad `kind`",
+                                     xd.guid, i);
+                        continue;
+                    }
+                    PortMapping& m = d.ports[d.numPorts];
+                    m.kind = k;
+                    m.idx  = (uint8_t)item->template childAs<int32_t>("idx", 0);
+                    m.role = hubfxRoleKindFromName(
+                        item->template childAs<const char*>("role", "none"));
+                    std::memset(m.guid, 0, sizeof(m.guid));
+                    std::strncpy(m.guid, xd.guid, sizeof(m.guid) - 1);   // stamp the board GUID
+                    const char* lbl = item->template childAs<const char*>("label", "");
+                    std::memset(m.label, 0, sizeof(m.label));
+                    if (lbl && lbl[0]) std::strncpy(m.label, lbl, sizeof(m.label) - 1);
+                    d.numPorts++;
+                }
+            }
+        }
+        // Seed the cross-file alias resolver so sub-config stores that
+        // load AFTER /hubfx.yaml can resolve `board: <alias>` PortRefs.
+        hubfx::config::setBoardAliases(d.expanders, d.numExpanders);
 
         // `inputs:` is a sequence of maps — same story: direct traversal.
         // Each entry names one logical RC channel (name + id + optional

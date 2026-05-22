@@ -78,14 +78,58 @@ lightfx:
 
 This rules out the entire "filename says X, content says Y" footgun.
 
-## Port reference syntax (unchanged)
+## Port reference syntax
 
 ```yaml
-port: { kind: pwm,     idx: 4 }              # hub-local PCA9685 channel 4
-port: { kind: servo,   idx: 0 }              # hub-local servo header IN_2
-port: { kind: hbridge, idx: 0, guid: GC01 }  # on GearControl expander "...-GC01"
-port: { kind: input,   idx: 0 }              # hub-local IN_1 multi-modal input
+port: { kind: pwm,     idx: 4 }                # hub-local PCA9685 channel 4
+port: { kind: servo,   idx: 0 }                # hub-local servo header IN_2
+port: { kind: input,   idx: 0 }                # hub-local IN_1 multi-modal input
+port: { kind: hbridge, idx: 0, board: gear1 }  # on the expander aliased "gear1"
+port: { kind: hbridge, idx: 0, guid:  GC01 }   # raw GUID fallback ("...-GC01")
 ```
+
+Board addressing on a PortRef:
+
+- **none** (`board`/`guid` both absent) → hub-local.
+- **`board: <alias>`** (preferred) → resolved to the expander's GUID via the
+  `expanders:` block in `/hubfx.yaml` (declared once; see below). An unknown
+  alias logs a WARN and falls back to hub-local.
+- **`guid: <4-hex>`** → raw hardware suffix, bypasses the alias table.
+
+`board:` is resolved by `portRefFromNode` ([port_ref_yaml.h](../controllers/hubfx/esp32s3/src/config/port_ref_yaml.h))
+against a module-level alias table seeded by `/hubfx.yaml`'s populate() — which
+loads first, so every effect sub-file parsed afterward sees the table.
+
+## Expander boards — `expanders:` block in `/hubfx.yaml`
+
+The single place a remote board is declared. Each entry names a board
+(`alias` → hardware `guid`) and lists its port → role attachments; the nested
+ports are flattened into the master port table, each stamped with the board's
+GUID.
+
+```yaml
+expanders:
+  - alias: gear1                    # friendly handle effect files reference
+    guid:  AB12                     # hardware 4-hex deviceName suffix (read via `init` / `expanders`)
+    type:  gearcontrol              # optional sanity label — mismatch is WARN'd, not fatal
+    ports:
+      - { kind: hbridge, idx: 0, role: bi_dc_motor, label: "Nose retract" }
+      - { kind: hbridge, idx: 1, role: bi_dc_motor, label: "Left main" }
+```
+
+**Attach timing (deferred).** Hub-local roles attach at boot. Expander roles
+attach when the board reaches `Handshake::Ready` — fired via
+`ExpanderService::onReady(...)`, since the outbound queue drops commands sent
+before Ready. Because the mapping is **GUID-addressed, not slot-addressed**,
+this also re-applies cleanly when a board reconnects on a different USB port.
+A declared board that is offline logs `deferred (board offline)` and attaches
+the moment it appears.
+
+**CLI.** `topo-ports` lists every board's ports across the system and now
+annotates each with its attached role (`pwm[0] → led-animator`); `topo-roles`
+lists attachments per board; `role-attach` / `role-detach` bind at runtime.
+Aliases live only in `/hubfx.yaml` — they are not on the wire; a GUI joins the
+live `topo-ports` roster (by GUID) against the config file (alias → GUID).
 
 ## `/hubfx.yaml` — system file
 
