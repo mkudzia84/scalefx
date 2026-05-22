@@ -1,0 +1,19 @@
+# Default device profile — LightFX expander.
+# LED animators on the four PWM channels, assigned to the landing-lights
+# domain; one servo for a bay door.
+name: LightFX default
+description: LED animators on PWM 0-3 (landing lights) + bay-door servo.
+
+roles:
+  - { board: lightfx, kind: pwm, index: 0, role: led-animator }
+  - { board: lightfx, kind: pwm, index: 1, role: led-animator }
+  - { board: lightfx, kind: pwm, index: 2, role: led-animator }
+  - { board: lightfx, kind: pwm, index: 3, role: led-animator }
+  - { board: lightfx, kind: servo, index: 0, role: servo-actuator }
+
+claims:
+  - { domain: landing-lights, slot: leds, board: lightfx, kind: pwm, index: 0 }
+  - { domain: landing-lights, slot: leds, board: lightfx, kind: pwm, index: 1 }
+  - { domain: landing-lights, slot: leds, board: lightfx, kind: pwm, index: 2 }
+  - { domain: landing-lights, slot: leds, board: lightfx, kind: pwm, index: 3 }
+  - { domain: landing-lights, slot: servo, board: lightfx, kind: servo, index: 0 }

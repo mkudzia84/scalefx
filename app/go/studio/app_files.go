@@ -2,21 +2,24 @@ package main
 
 // Filesystem operations exposed to the GUI File Manager: list/mkdir/delete,
 // per-file download/upload, batch upload with progress, plus the storage
-// status probe that gates flash/SD UI.
+// status probe that gates flash/SD UI.  Built on client.Storage.
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"scalefx/api"
-	"scalefx/protocol"
-	"scalefx/protocol/core"
-	hfxp "scalefx/protocol/hubfx"
 	"strings"
 	"time"
 
+	"scalefx/client"
+	"scalefx/protocol/core"
+
 	wailsRT "github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+// largeFileBatchThreshold is the SD-upload size above which we switch from
+// the per-chunk sync loop to the high-throughput batch/stream path.
+const largeFileBatchThreshold = 64 * 1024
 
 // ─── Types ───
 
@@ -28,7 +31,6 @@ type FsEntry struct {
 }
 
 // FsStorageStatus reports which targets are online and their capacity.
-// Missing/uninitialized targets have Available=false; frontend hides them.
 type FsStorageStatus struct {
 	FlashAvailable bool   `json:"flashAvailable"`
 	FlashTotal     uint32 `json:"flashTotal"`
@@ -48,58 +50,65 @@ type FsStorageStatus struct {
 func targetByte(target string) (byte, error) {
 	switch target {
 	case "flash":
-		return hfxp.StorageTargetFlash, nil
+		return client.TargetFlash, nil
 	case "sd":
-		return hfxp.StorageTargetSd, nil
+		return client.TargetSD, nil
 	default:
 		return 0, fmt.Errorf("unknown storage target: %s", target)
 	}
 }
 
+// pickUploadMode chooses the wire path: flash always sync; SD switches to
+// the batch/stream path for large files.
+func pickUploadMode(target byte, size int) client.UploadMode {
+	if target == client.TargetSD && size > largeFileBatchThreshold {
+		return client.UploadStream
+	}
+	return client.UploadSync
+}
+
+func uploadModeName(m client.UploadMode) string {
+	switch m {
+	case client.UploadStream:
+		return "batch"
+	case client.UploadSync:
+		return "sync"
+	default:
+		return fmt.Sprintf("mode=%d", m)
+	}
+}
+
 // ─── Storage Status / Capabilities ───
 
-// FsStorageStatus queries both flash and SD status.  Returns a status
-// struct — backends the board doesn't advertise in IDENTIFY simply have
-// Available=false (no round-trip wasted, frontend gets an authoritative
-// "this board has no SD slot" signal).
+// FsStorageStatus queries flash + SD status.  Backends the board doesn't
+// advertise in IDENTIFY are skipped (Available=false, no round-trip wasted).
 func (a *App) FsStorageStatus() (FsStorageStatus, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	out := FsStorageStatus{}
 	a.echoCommand("flash.status")
-	if a.eng.Conn == nil {
+	if a.c == nil {
 		a.echoError("not connected")
 		return out, fmt.Errorf("not connected")
 	}
 
-	caps := a.eng.Capabilities()
+	caps := a.id.Capabilities
 	probeFlash := caps&core.CapFlash != 0
 	probeSd := caps&core.CapSd != 0
 
 	if probeFlash {
-		// Flash (present on every controller that registers StorageServer).
-		if res := a.eng.API.HubFx.FlashStatus(); res.OK && res.Response != nil {
-			p := res.Response.Payload
-			switch {
-			case len(p) >= 13 && p[0] != 0:
-				out.FlashAvailable = true
-				out.FlashTotal = protocol.ReadU32LE(p, 1)
-				out.FlashUsed = protocol.ReadU32LE(p, 5)
-				out.FlashFree = protocol.ReadU32LE(p, 9)
-				a.echoOutput(fmt.Sprintf("flash: total=%d used=%d free=%d",
-					out.FlashTotal, out.FlashUsed, out.FlashFree))
-			case len(p) >= 1 && p[0] == 0:
-				a.echoOutput(fmt.Sprintf("flash: not initialised on device (payload len=%d)", len(p)))
-			default:
-				a.echoOutput(fmt.Sprintf("flash: unexpected response (len=%d)", len(p)))
-			}
+		if fs, err := a.c.Storage.FlashStatus(); err == nil && fs.Initialized {
+			out.FlashAvailable = true
+			out.FlashTotal = fs.TotalBytes
+			out.FlashUsed = fs.UsedBytes
+			out.FlashFree = fs.FreeBytes
+			a.echoOutput(fmt.Sprintf("flash: total=%d used=%d free=%d",
+				out.FlashTotal, out.FlashUsed, out.FlashFree))
+		} else if err != nil {
+			a.echoError("flash.status failed: %v", err)
 		} else {
-			msg := "no response"
-			if res.Error != "" {
-				msg = res.Error
-			}
-			a.echoError("flash.status failed: %s", msg)
+			a.echoOutput("flash: not initialised on device")
 		}
 	} else {
 		a.echoOutput("flash: not advertised by board")
@@ -107,30 +116,20 @@ func (a *App) FsStorageStatus() (FsStorageStatus, error) {
 
 	a.echoCommand("sd.status")
 	if probeSd {
-		// SD (NACK'd with NOT_SUPPORTED on boards with no slot — treat as unavailable)
-		if res := a.eng.API.HubFx.SdStatus(); res.OK && res.Response != nil {
-			p := res.Response.Payload
-			if len(p) >= 1 && p[0] != 0 {
-				out.SdAvailable = true
-				if len(p) >= 14 {
-					out.SdCardMB = protocol.ReadU32LE(p, 1)
-					out.SdTotalMB = protocol.ReadU32LE(p, 5)
-					out.SdFreeMB = protocol.ReadU32LE(p, 9)
-				}
-				if len(p) >= 20 {
-					cardTypes := map[byte]string{0: "NONE", 1: "MMC", 2: "SD", 3: "SDHC", 4: "UNKNOWN"}
-					busModes := map[byte]string{0: "SPI", 1: "SDIO 1-bit", 2: "SDIO 4-bit"}
-					out.SdCardType = cardTypes[p[14]]
-					out.SdBusMode = busModes[p[15]]
-					out.SdUsedMB = protocol.ReadU32LE(p, 16)
-				}
-				a.echoOutput(fmt.Sprintf("sd: card=%s bus=%s total=%dMB used=%dMB free=%dMB",
-					out.SdCardType, out.SdBusMode, out.SdTotalMB, out.SdUsedMB, out.SdFreeMB))
-			} else {
-				a.echoOutput("sd: not available")
-			}
+		if sd, err := a.c.Storage.SdStatus(); err == nil && sd.Initialized {
+			out.SdAvailable = true
+			out.SdCardMB = sd.CardSizeMB
+			out.SdTotalMB = sd.TotalSpaceMB
+			out.SdFreeMB = sd.FreeSpaceMB
+			out.SdUsedMB = sd.UsedSpaceMB
+			cardTypes := map[byte]string{0: "NONE", 1: "MMC", 2: "SD", 3: "SDHC", 4: "UNKNOWN"}
+			busModes := map[byte]string{0: "SPI", 1: "SDIO 1-bit", 2: "SDIO 4-bit"}
+			out.SdCardType = cardTypes[sd.CardType]
+			out.SdBusMode = busModes[sd.BusMode]
+			a.echoOutput(fmt.Sprintf("sd: card=%s bus=%s total=%dMB used=%dMB free=%dMB",
+				out.SdCardType, out.SdBusMode, out.SdTotalMB, out.SdUsedMB, out.SdFreeMB))
 		} else {
-			a.echoOutput("sd: not supported")
+			a.echoOutput("sd: not available")
 		}
 	} else {
 		a.echoOutput("sd: not advertised by board")
@@ -138,27 +137,22 @@ func (a *App) FsStorageStatus() (FsStorageStatus, error) {
 	return out, nil
 }
 
-// DeviceCapabilities returns the bitmask of CoreCapability flags the
-// connected board advertised in IDENTIFY / INIT_READY.  Returns 0 when
-// no device is connected, identification hasn't completed yet, or the
-// board genuinely advertises no capabilities.
+// DeviceCapabilities returns the bitmask the board advertised in IDENTIFY.
 func (a *App) DeviceCapabilities() uint32 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.eng.Capabilities()
+	return a.id.Capabilities
 }
 
 // ─── List / Mkdir / Delete ───
 
-// FsList returns a directory listing. Parses the server's
-// "d|f\tname\tsize\n" text output into structured entries.
 func (a *App) FsList(target, path string) ([]FsEntry, error) {
 	defer a.diag.Around("FsList", map[string]any{"target": target, "path": path})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.echoCommand(fmt.Sprintf("file.list %s %s", target, path))
-	if a.eng.Conn == nil {
+	if a.c == nil {
 		a.echoError("not connected")
 		return nil, fmt.Errorf("not connected")
 	}
@@ -167,7 +161,7 @@ func (a *App) FsList(target, path string) ([]FsEntry, error) {
 		a.echoError("%v", err)
 		return nil, err
 	}
-	text, err := a.eng.API.Files.List(tb, path)
+	text, err := a.c.Storage.FileList(path, tb)
 	if err != nil {
 		a.echoError("%v", err)
 		return nil, err
@@ -186,23 +180,18 @@ func (a *App) FsList(target, path string) ([]FsEntry, error) {
 		}
 		var size uint32
 		fmt.Sscanf(parts[2], "%d", &size)
-		entries = append(entries, FsEntry{
-			Name:  parts[1],
-			IsDir: parts[0] == "d",
-			Size:  size,
-		})
+		entries = append(entries, FsEntry{Name: parts[1], IsDir: parts[0] == "d", Size: size})
 	}
 	return entries, nil
 }
 
-// FsMkdir creates a directory on the selected target.
 func (a *App) FsMkdir(target, path string) error {
 	defer a.diag.Around("FsMkdir", map[string]any{"target": target, "path": path})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.echoCommand(fmt.Sprintf("file.mkdir %s %s", target, path))
-	if a.eng.Conn == nil {
+	if a.c == nil {
 		a.echoError("not connected")
 		return fmt.Errorf("not connected")
 	}
@@ -211,23 +200,21 @@ func (a *App) FsMkdir(target, path string) error {
 		a.echoError("%v", err)
 		return err
 	}
-	res := a.eng.API.Files.Mkdir(tb, path, true) // GUI always uses mkdir -p (idempotent, creates ancestors)
-	if !res.OK {
-		a.echoError("mkdir failed: %s", res.Error)
-		return fmt.Errorf("mkdir failed: %s", res.Error)
+	if err := a.c.Storage.FileMkdir(path, tb, client.MkdirFlagParents); err != nil {
+		a.echoError("mkdir failed: %v", err)
+		return err
 	}
 	a.echoOK("Mkdir %s:%s", target, path)
 	return nil
 }
 
-// FsDelete removes a file or directory (recursive by default for directories).
 func (a *App) FsDelete(target, path string) error {
 	defer a.diag.Around("FsDelete", map[string]any{"target": target, "path": path})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.echoCommand(fmt.Sprintf("file.delete -r %s %s", target, path))
-	if a.eng.Conn == nil {
+	if a.c == nil {
 		a.echoError("not connected")
 		return fmt.Errorf("not connected")
 	}
@@ -236,10 +223,9 @@ func (a *App) FsDelete(target, path string) error {
 		a.echoError("%v", err)
 		return err
 	}
-	res := a.eng.API.Files.Delete(tb, path, true) // GUI delete is always recursive
-	if !res.OK {
-		a.echoError("delete failed: %s", res.Error)
-		return fmt.Errorf("delete failed: %s", res.Error)
+	if err := a.c.Storage.FileDelete(path, tb, client.DeleteFlagRecursive); err != nil {
+		a.echoError("delete failed: %v", err)
+		return err
 	}
 	a.echoOK("Delete %s:%s", target, path)
 	return nil
@@ -247,20 +233,16 @@ func (a *App) FsDelete(target, path string) error {
 
 // ─── Single-file Download / Upload ───
 
-// FsDownloadToDisk pulls a file off the device and writes it to localPath.
-// If localPath is empty, opens a Save dialog.
-// Emits "fs:progress" events during transfer.
 func (a *App) FsDownloadToDisk(target, remotePath, localPath string) error {
 	defer a.diag.Around("FsDownloadToDisk",
 		map[string]any{"target": target, "remote": remotePath, "local": localPath})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.eng.Conn == nil {
+	if a.c == nil {
 		return fmt.Errorf("not connected")
 	}
-	tb, err := targetByte(target)
-	if err != nil {
+	if _, err := targetByte(target); err != nil {
 		return err
 	}
 
@@ -286,7 +268,7 @@ func (a *App) FsDownloadToDisk(target, remotePath, localPath string) error {
 	wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{
 		"phase": "downloading", "path": remotePath, "sent": 0, "total": 0,
 	})
-	result, err := a.eng.API.Files.Download(tb, remotePath, 60*time.Second)
+	result, err := a.c.Storage.FileDownload(remotePath, 60*time.Second)
 	if err != nil {
 		wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{"phase": "error", "error": err.Error()})
 		a.echoError("%v", err)
@@ -304,17 +286,13 @@ func (a *App) FsDownloadToDisk(target, remotePath, localPath string) error {
 	return nil
 }
 
-// FsUploadFromDisk reads localPath and uploads it to remotePath on the target.
-// Mode is auto-picked via api.PickUploadMode: flash always sync, SD switches
-// to batch (UploadStream) above api.LargeFileBatchThreshold.
-// If localPath is empty, opens an Open dialog.
 func (a *App) FsUploadFromDisk(target, remotePath, localPath string) error {
 	defer a.diag.Around("FsUploadFromDisk",
 		map[string]any{"target": target, "remote": remotePath, "local": localPath})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.eng.Conn == nil {
+	if a.c == nil {
 		return fmt.Errorf("not connected")
 	}
 	tb, err := targetByte(target)
@@ -335,75 +313,55 @@ func (a *App) FsUploadFromDisk(target, remotePath, localPath string) error {
 		localPath = chosen
 	}
 
-	data, err := os.ReadFile(localPath)
+	stat, err := os.Stat(localPath)
 	if err != nil {
 		return err
 	}
-
-	mode := api.PickUploadMode(tb, len(data))
-	modeName := uploadModeName(mode)
+	size := int(stat.Size())
+	mode := pickUploadMode(tb, size)
 
 	a.echoCommand(fmt.Sprintf("file.upload %s %s (%s, %d bytes from %s)",
-		target, remotePath, modeName, len(data), localPath))
+		target, remotePath, uploadModeName(mode), size, localPath))
 	wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{
-		"phase": "uploading", "path": remotePath, "sent": 0, "total": len(data),
+		"phase": "uploading", "path": remotePath, "sent": 0, "total": size,
 	})
-	res := a.eng.API.Files.Upload(tb, remotePath, data, mode, func(sent, total int) {
-		wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{
-			"phase": "uploading", "path": remotePath, "sent": sent, "total": total,
-		})
+	res, err := a.c.Storage.FileUpload(localPath, client.UploadOptions{
+		Path:   remotePath,
+		Target: tb,
+		Mode:   mode,
+		OnProgress: func(sent, total int64) {
+			wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{
+				"phase": "uploading", "path": remotePath, "sent": int(sent), "total": int(total),
+			})
+		},
 	})
-	if !res.OK {
-		wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{"phase": "error", "error": res.Error})
-		a.echoError("upload failed: %s", res.Error)
-		return fmt.Errorf("upload failed: %s", res.Error)
+	if err != nil {
+		wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{"phase": "error", "error": err.Error()})
+		a.echoError("upload failed: %v", err)
+		return err
 	}
 	wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{
-		"phase":    "done",
-		"path":     remotePath,
-		"sent":     int(res.BytesTransferred),
-		"total":    int(res.BytesTransferred),
-		"md5Match": res.MD5Match,
-		"speedKBs": res.SpeedKBs,
+		"phase": "done", "path": remotePath,
+		"sent": int(res.BytesSent), "total": int(res.BytesSent),
+		"md5Match": res.MD5Match, "speedKBs": res.SpeedKBs,
 	})
 	md5tag := ""
 	if res.MD5Match {
 		md5tag = " ✓ MD5 match"
 	}
-	a.echoOK("Uploaded %s (%d bytes, %.1f KB/s)%s",
-		remotePath, res.BytesTransferred, res.SpeedKBs, md5tag)
+	a.echoOK("Uploaded %s (%d bytes, %.1f KB/s)%s", remotePath, res.BytesSent, res.SpeedKBs, md5tag)
 	return nil
-}
-
-// uploadModeName returns the short label used in echoes / logs.
-func uploadModeName(m api.UploadMode) string {
-	switch m {
-	case api.UploadStream:
-		return "batch"
-	case api.UploadSync:
-		return "sync"
-	default:
-		return fmt.Sprintf("mode=%d", m)
-	}
 }
 
 // ─── Batch Upload ───
 
-// FsUploadBatch uploads a list of files or directory trees to target under
-// remoteCwd. Each entry in localPaths is a disk path; files land at
-// remoteCwd/<basename>, directories are walked recursively preserving tree
-// structure (e.g. dropping "a/b/log.txt" while cwd=/tmp uploads to
-// /tmp/a/b/log.txt). Progress events on "fs:progress" are enriched with
-// batchIndex/batchTotal (file count) and batchBytesSent/batchBytesTotal.
-// Mode is auto-picked per file via api.PickUploadMode: flash always sync,
-// SD switches to batch above api.LargeFileBatchThreshold.
 func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string) error {
 	defer a.diag.Around("FsUploadBatch",
 		map[string]any{"target": target, "cwd": remoteCwd, "files": len(localPaths)})()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.eng.Conn == nil {
+	if a.c == nil {
 		a.emitBatchError("not connected")
 		return fmt.Errorf("not connected")
 	}
@@ -423,14 +381,11 @@ func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string) error
 		size   int64
 	}
 
-	// Walk every input path, collect files + directories (preserving tree).
 	jobs := make([]job, 0, len(localPaths))
 	dirs := make([]string, 0)
 	dirSeen := map[string]bool{}
 	var totalBytes int64
 
-	// addDir records a directory we'll create via mkdir -p (idempotent;
-	// firmware resolves missing ancestors). Dedupe skips redundant calls.
 	addDir := func(remote string) {
 		remote = normalizeRemote(remote)
 		if remote == "" || remote == "/" || dirSeen[remote] {
@@ -479,7 +434,6 @@ func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string) error
 			remote := joinRemote(remoteCwd, base)
 			jobs = append(jobs, job{local: lp, remote: remote, size: info.Size()})
 			totalBytes += info.Size()
-			// Top-level file lands under remoteCwd — ensure the cwd exists.
 			addDir(remoteCwd)
 		}
 	}
@@ -491,44 +445,41 @@ func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string) error
 
 	a.echoCommand(fmt.Sprintf("file.upload-batch %s %s (%d files, %s, mode=auto)",
 		target, remoteCwd, len(jobs), humanBytes(uint64(totalBytes))))
-	// mkdir -p per directory — firmware resolves ancestors, and the call is
-	// idempotent when the directory already exists.
 	for _, d := range dirs {
-		res := a.eng.API.Files.Mkdir(tb, d, true)
-		if !res.OK {
-			a.echoError("mkdir -p %s failed: %s", d, res.Error)
-			a.emitBatchError(fmt.Sprintf("mkdir %s: %s", d, res.Error))
-			return fmt.Errorf("mkdir %s: %s", d, res.Error)
+		if err := a.c.Storage.FileMkdir(d, tb, client.MkdirFlagParents); err != nil {
+			a.echoError("mkdir -p %s failed: %v", d, err)
+			a.emitBatchError(fmt.Sprintf("mkdir %s: %v", d, err))
+			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
 
-	// Upload loop. Emit progress with per-file + batch counters.
 	var bytesDoneBefore int64 = 0
 	for idx, j := range jobs {
-		data, err := os.ReadFile(j.local)
-		if err != nil {
-			a.emitBatchError(fmt.Sprintf("read %s: %v", j.local, err))
-			return err
-		}
-		mode := api.PickUploadMode(tb, len(data))
+		mode := pickUploadMode(tb, int(j.size))
 		a.echoOutput(fmt.Sprintf("[%d/%d] %s → %s (%s, %s)",
-			idx+1, len(jobs), j.local, j.remote, humanBytes(uint64(len(data))), uploadModeName(mode)))
-		a.emitBatchProgress("uploading", j.remote, 0, len(data),
+			idx+1, len(jobs), j.local, j.remote, humanBytes(uint64(j.size)), uploadModeName(mode)))
+		a.emitBatchProgress("uploading", j.remote, 0, int(j.size),
 			idx+1, len(jobs), bytesDoneBefore, totalBytes, 0, nil)
 
-		res := a.eng.API.Files.Upload(tb, j.remote, data, mode, func(sent, total int) {
-			a.emitBatchProgress("uploading", j.remote, sent, total,
-				idx+1, len(jobs), bytesDoneBefore+int64(sent), totalBytes, 0, nil)
+		captureIdx := idx
+		res, err := a.c.Storage.FileUpload(j.local, client.UploadOptions{
+			Path:   j.remote,
+			Target: tb,
+			Mode:   mode,
+			OnProgress: func(sent, total int64) {
+				a.emitBatchProgress("uploading", j.remote, int(sent), int(total),
+					captureIdx+1, len(jobs), bytesDoneBefore+sent, totalBytes, 0, nil)
+			},
 		})
-		if !res.OK {
-			a.echoError("upload %s failed: %s", j.remote, res.Error)
-			a.emitBatchError(fmt.Sprintf("%s: %s", j.remote, res.Error))
-			return fmt.Errorf("upload %s: %s", j.remote, res.Error)
+		if err != nil {
+			a.echoError("upload %s failed: %v", j.remote, err)
+			a.emitBatchError(fmt.Sprintf("%s: %v", j.remote, err))
+			return fmt.Errorf("upload %s: %w", j.remote, err)
 		}
-		bytesDoneBefore += int64(res.BytesTransferred)
+		bytesDoneBefore += res.BytesSent
 		md5 := res.MD5Match
 		a.emitBatchProgress("uploading", j.remote,
-			int(res.BytesTransferred), int(res.BytesTransferred),
+			int(res.BytesSent), int(res.BytesSent),
 			idx+1, len(jobs), bytesDoneBefore, totalBytes, res.SpeedKBs, &md5)
 		md5tag := ""
 		if res.MD5Match {
@@ -539,12 +490,10 @@ func (a *App) FsUploadBatch(target, remoteCwd string, localPaths []string) error
 
 	a.emitBatchProgress("done", "", int(totalBytes), int(totalBytes),
 		len(jobs), len(jobs), totalBytes, totalBytes, 0, nil)
-	a.echoOK("batch complete: %d file(s), %s",
-		len(jobs), humanBytes(uint64(totalBytes)))
+	a.echoOK("batch complete: %d file(s), %s", len(jobs), humanBytes(uint64(totalBytes)))
 	return nil
 }
 
-// joinRemote appends a slash-separated segment to a remote path.
 func joinRemote(dir, name string) string {
 	name = filepath.ToSlash(name)
 	name = strings.TrimLeft(name, "/")
@@ -598,7 +547,5 @@ func (a *App) emitBatchProgress(phase, path string, sent, total, batchIdx, batch
 }
 
 func (a *App) emitBatchError(msg string) {
-	wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{
-		"phase": "error", "error": msg,
-	})
+	wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{"phase": "error", "error": msg})
 }

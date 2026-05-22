@@ -10,6 +10,7 @@ import (
 	"scalefx/protocol/gear"
 	"scalefx/protocol/gunfx"
 	"scalefx/protocol/landing"
+	"scalefx/protocol/roles"
 	"scalefx/protocol/storage"
 	"scalefx/protocol/topology"
 )
@@ -34,6 +35,7 @@ type Events struct {
 	onGearPhase    []func(gear.PhaseChange)
 	onEngineState  []func(enginefx.StateChange)
 	onGunShot      []func(gunfx.Shot)
+	onInputValue   []func(InputValue)
 	onPacket       []func(*protocol.Response) // catch-all
 }
 
@@ -70,6 +72,7 @@ func (e *Events) OnLandingLightPhase(fn func(landing.PhaseChange))       { e.add
 func (e *Events) OnGearPhase(fn func(gear.PhaseChange))                  { e.add(&e.onGearPhase, fn) }
 func (e *Events) OnEngineState(fn func(enginefx.StateChange))            { e.add(&e.onEngineState, fn) }
 func (e *Events) OnGunShot(fn func(gunfx.Shot))                          { e.add(&e.onGunShot, fn) }
+func (e *Events) OnInputValue(fn func(InputValue))                       { e.add(&e.onInputValue, fn) }
 func (e *Events) OnAny(fn func(*protocol.Response))                      { e.add(&e.onPacket, fn) }
 
 // ─── Dispatch ────────────────────────────────────────────────────────
@@ -118,6 +121,19 @@ func (e *Events) onAsync(resp *protocol.Response) {
 		if ev, err := topology.DecodeRoleEvent(resp.Payload); err == nil {
 			for _, fn := range e.snapshotRole() {
 				fn(ev)
+			}
+			// Expander input frames arrive wrapped — unwrap to OnInputValue.
+			if iv, ok := decodeInputValue(ev.GUID, byte(ev.InnerType), ev.InnerPayload); ok {
+				for _, fn := range e.snapshotInputValue() {
+					fn(iv)
+				}
+			}
+		}
+	case roles.RcinValueBroadcast, roles.SbusFrameBroadcast, roles.JetiExFrameBroadcast:
+		// Hub-local input frames arrive directly (guid "").
+		if iv, ok := decodeInputValue("", byte(resp.PacketType), resp.Payload); ok {
+			for _, fn := range e.snapshotInputValue() {
+				fn(iv)
 			}
 		}
 	case storage.FileUploadProgress:
@@ -195,6 +211,11 @@ func (e *Events) snapshotRole() []func(topology.RoleEvent) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return append([]func(topology.RoleEvent){}, e.onRoleEvent...)
+}
+func (e *Events) snapshotInputValue() []func(InputValue) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return append([]func(InputValue){}, e.onInputValue...)
 }
 func (e *Events) snapshotUpload() []func(storage.UploadProgress) {
 	e.mu.RLock()

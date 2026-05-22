@@ -1,0 +1,22 @@
+# Default device profile — HubFX hub (standalone, before expanders attach).
+# Sensible starting wiring an operator can apply on connect, then tweak.
+name: HubFX default
+description: AETR + gear/lights on the hub's input, hub LED/servo roles attached.
+
+# Input port wiring: PPM on IN_1 with a typical scale-model channel layout.
+input:
+  protocol: ppm
+  channels: 8
+  map:
+    - { channel: 0, function: engine_onoff }
+    - { channel: 1, function: landing_gear }
+    - { channel: 2, function: landing_lights }
+    - { channel: 3, function: light_program }
+    - { channel: 4, function: gun_fire }
+    - { channel: 5, function: gun_fire_mode }
+    - { channel: 6, function: gun_smoke }
+    - { channel: 7, function: master_volume }
+
+# Default role attachments (symbolic — board "" is the hub).
+roles:
+  - { board: "", kind: input, index: 0, role: rc-pwm-input }

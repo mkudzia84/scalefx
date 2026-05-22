@@ -1,28 +1,31 @@
 package main
 
-// Studio backend (Wails v2). The App struct is the single Wails-bound type:
-// each method here becomes a JS-callable binding. Domain-specific bindings
-// live in app_config.go (YAML round-trip), app_files.go (File Manager) and
-// app_firmware.go (build/flash, releases, esptool). This file owns the
-// connection lifecycle, port watcher, command dispatch, and console echoes.
+// Studio backend (Wails v2).  The App struct is the single Wails-bound
+// type: each method here becomes a JS-callable binding.  Domain-specific
+// bindings live in app_config.go (config round-trip), app_files.go (File
+// Manager), app_topology.go (capabilities / system-info) and
+// app_firmware.go (build / flash / releases).  This file owns the
+// connection lifecycle, port watcher, and console echoes.
+//
+// Built on the typed `scalefx/client` API (the same one the CLI uses).
+// The legacy `scalefx/engine` string-command dispatcher + per-board
+// `handlers` observer framework were retired with the generic-expander
+// migration; per-board control returns later, rebuilt on the topology
+// surface rather than the deprecated slave-STATUS handlers.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"scalefx/engine"
-	"scalefx/engine/handlers"
-	"scalefx/engine/handlers/gearcontrol"
-	"scalefx/engine/handlers/gunfx"
-	"scalefx/engine/handlers/hubfx"
-	"scalefx/engine/handlers/lightfx"
-	"scalefx/protocol"
-	"scalefx/protocol/core"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"scalefx/client"
+	"scalefx/console"
+	"scalefx/devicemodel"
+	"scalefx/protocol"
 
 	wailsRT "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -50,52 +53,72 @@ type ConnectionInfo struct {
 	Capabilities uint32 `json:"capabilities"`
 }
 
-type SlaveInfo struct {
-	Type      string `json:"type"`
-	Name      string `json:"name"`
-	Connected bool   `json:"connected"`
-	Ready     bool   `json:"ready"`
+// controllerLabels maps a board kind to a human-readable display name.
+var controllerLabels = map[string]string{
+	"hubfx":       "HubFX",
+	"lightfx":     "LightFX",
+	"gunfx":       "GunFX",
+	"gearcontrol": "GearControl",
+	"noop":        "NoOp",
 }
 
-// GearControl event payloads are defined in engine/handlers/gearcontrol/types.go
-// (StatusBroadcast, CalibStatus, SeqStatus, DoorStatus). We emit those directly
-// as Wails events — never re-decode here. See CLAUDE.md Rule 19.
+func controllerLabel(kind string) string {
+	if l, ok := controllerLabels[kind]; ok {
+		return l
+	}
+	return kind
+}
 
 // ─── App struct ───
 
 type App struct {
 	ctx  context.Context
-	eng  *engine.Engine
-	reg  *handlers.Registry
-	out  *GUIOutput
 	diag *Diag
 	mu   sync.Mutex
 
-	// Port watcher
-	stopPortWatcher chan struct{}
+	// Live client (nil when disconnected) + cached IDENTIFY.
+	c             *client.Client
+	id            client.Identity
+	kind          string // board kind ("hubfx"/"lightfx"/…) or ""
+	initialized   bool
+	connectedPort string // port name we Open()'d — for disconnect detection
+
+	// Shared command session (drives the same command set as the CLI;
+	// output is rendered into the GUI console).  See app_console.go.
+	con *console.App
+
+	// Serial-port enumeration + disconnect detection (see port_watcher.go).
+	ports *PortWatcher
+
+	// Working device model (ports + roles + domain claims).  Guarded by
+	// dmMu; assembled from the topology snapshot.  See app_devicemodel.go.
+	dm   *devicemodel.Model
+	dmMu sync.Mutex
+
+	// Per-input-port configuration (protocol, channel count, channel→
+	// function map).  Guarded by dmMu alongside the model.  See app_input.go.
+	inputs map[devicemodel.PortRef]*devicemodel.InputPortConfig
+
+	// Operator-assigned port names (overlay; survives topology refresh).
+	// Guarded by dmMu.
+	portNames map[devicemodel.PortRef]string
 
 	// Heartbeat goroutine
 	stopHeartbeat chan<- struct{}
-
-	// Latest slave state from HubFX STATUS_BROADCAST (nil when not connected
-	// to a hub or before the first broadcast arrives). GetSlaveInfo() reads
-	// this; the OnStatusBroadcast listener keeps it fresh.
-	slaveStatus *hubfx.StatusBroadcast
 }
 
 func NewApp() *App {
-	out := &GUIOutput{}
-	eng := engine.NewEngine(out, "", false)
-	reg := handlers.RegisterDefaults(eng)
-	eng.PromptSelectPort = func(ports []string) string { return "" }
-
-	return &App{eng: eng, reg: reg, out: out, diag: NewDiag()}
+	return &App{
+		diag:      NewDiag(),
+		inputs:    map[devicemodel.PortRef]*devicemodel.InputPortConfig{},
+		portNames: map[devicemodel.PortRef]string{},
+	}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.out.ctx = ctx
 	a.diag.SetCtx(ctx)
+	a.setupConsole()
 	a.diag.Info("APP", "Studio starting up — go=%s os=%s build=studio",
 		runtimeGoVersion(), runtimeOS())
 	a.diag.Info("APP", "process pid=%d, working dir=%s", processPID(), workingDir())
@@ -103,65 +126,20 @@ func (a *App) startup(ctx context.Context) {
 		a.diag.Info("APP", "diagnostic log: %s", p)
 	}
 
-	// Typed event listeners — installed on handlers from the registry.
-	// Each board package owns its wire→struct decoding; we only forward the
-	// decoded structs to the frontend as Wails events. See CLAUDE.md Rule 19.
-	a.reg.GearControl.OnStatusBroadcast.Add(func(s *gearcontrol.StatusBroadcast) {
-		wailsRT.EventsEmit(a.ctx, "gearcontrol:status", s)
-	})
-	a.reg.GearControl.OnCalibStatus.Add(func(c *gearcontrol.CalibStatus) {
-		wailsRT.EventsEmit(a.ctx, "gearcontrol:calib", c)
-	})
-	a.reg.GearControl.OnSeqStatus.Add(func(s *gearcontrol.SeqStatus) {
-		wailsRT.EventsEmit(a.ctx, "gearcontrol:seq", s)
-	})
-	a.reg.GearControl.OnDoorStatus.Add(func(d *gearcontrol.DoorStatus) {
-		wailsRT.EventsEmit(a.ctx, "gearcontrol:door", d)
-	})
-	a.reg.GunFX.OnStatusBroadcast.Add(func(s *gunfx.StatusBroadcast) {
-		wailsRT.EventsEmit(a.ctx, "gunfx:status", s)
-	})
-	a.reg.LightFX.OnStatusBroadcast.Add(func(s *lightfx.StatusBroadcast) {
-		wailsRT.EventsEmit(a.ctx, "lightfx:status", s)
-	})
-	a.reg.LightFX.OnLandingLightStatus.Add(func(s *lightfx.LandingLightStatus) {
-		wailsRT.EventsEmit(a.ctx, "lightfx:landing", s)
-	})
-	a.reg.HubFX.OnStatusBroadcast.Add(func(s *hubfx.StatusBroadcast) {
-		wailsRT.EventsEmit(a.ctx, "hubfx:status", s)
-		// Cache the slave-ready bits and push a derived SlaveInfo list so the
-		// tab bar can reflect online/offline state without a polling query.
-		a.mu.Lock()
-		a.slaveStatus = s
-		slaves := a.buildSlaveInfoLocked()
-		a.mu.Unlock()
-		wailsRT.EventsEmit(a.ctx, "slaves:changed", slaves)
-	})
-	a.eng.OnDisconnect = func() {
-		a.diag.Warn("CONN", "Engine fired OnDisconnect — port lost or remote shutdown")
-		a.mu.Lock()
-		a.slaveStatus = nil
-		a.mu.Unlock()
-		wailsRT.EventsEmit(ctx, "connection:changed", a.getConnectionInfo())
-		wailsRT.EventsEmit(ctx, "slaves:changed", []SlaveInfo{})
-	}
+	a.ports = NewPortWatcher(time.Second, a.onPortsChanged, a.onPortVanished)
+	a.ports.Start()
 
-	a.startPortWatcher()
-
-	// Heartbeat: 1 line every 10 s while running. Captures connection state,
-	// goroutine count, heap. If this stops appearing in the terminal, the
-	// app is wedged.
+	// Heartbeat: 1 line every 10 s while running.
 	a.stopHeartbeat = a.diag.StartHeartbeat(10*time.Second, func() map[string]any {
 		a.mu.Lock()
-		ctype := a.eng.ControllerType
-		hasConn := a.eng.Conn != nil
-		hasSlave := a.slaveStatus != nil
+		connected := a.c != nil
+		kind := a.kind
+		init := a.initialized
 		a.mu.Unlock()
 		return map[string]any{
-			"connected":   hasConn,
-			"controller":  ctype,
-			"initialized": a.eng.Initialized,
-			"hub_status":  hasSlave,
+			"connected":   connected,
+			"controller":  kind,
+			"initialized": init,
 		}
 	})
 }
@@ -171,123 +149,69 @@ func (a *App) shutdown(_ context.Context) {
 	if a.stopHeartbeat != nil {
 		close(a.stopHeartbeat)
 	}
-	a.stopPortWatcherLoop()
-	a.eng.Cleanup()
+	if a.ports != nil {
+		a.ports.Stop()
+	}
+	a.mu.Lock()
+	a.closeLocked()
+	a.mu.Unlock()
 }
 
-// ─── Port Watcher ───
+// ─── Port Watcher callbacks ───
 
-func (a *App) startPortWatcher() {
-	a.stopPortWatcher = make(chan struct{})
-	go func() {
-		var lastPorts string
-		for {
-			select {
-			case <-a.stopPortWatcher:
-				return
-			case <-time.After(1 * time.Second):
-			}
-			detailed := protocol.ListPortsDetailed()
-			names := make([]string, len(detailed))
-			for i, p := range detailed {
-				names[i] = p.Name
-			}
-			sort.Strings(names)
-			key := strings.Join(names, ",")
-			if key != lastPorts {
-				added, removed := diffPortLists(lastPorts, key)
-				lastPorts = key
-				// Rebuild in sorted order with descriptions
-				byName := make(map[string]string, len(detailed))
-				for _, p := range detailed {
-					byName[p.Name] = p.Description
-				}
-				items := make([]PortInfo, len(names))
-				for i, n := range names {
-					items[i] = PortInfo{Name: n, Description: byName[n]}
-				}
-				a.diag.With(LvlInfo, "PORTS", "port list changed",
-					map[string]any{"added": added, "removed": removed, "total": len(items)})
-				wailsRT.EventsEmit(a.ctx, "ports:changed", items)
-			}
-		}
-	}()
+// onPortsChanged relays a port-list change to the frontend.  Wired into
+// the PortWatcher at startup.
+func (a *App) onPortsChanged(items []PortInfo, added, removed []string) {
+	a.diag.With(LvlInfo, "PORTS", "port list changed",
+		map[string]any{"added": added, "removed": removed, "total": len(items)})
+	wailsRT.EventsEmit(a.ctx, "ports:changed", items)
 }
 
-// installAsyncDiag attaches the protocol Connection's async callback so
-// every unsolicited packet (STATUS_BROADCAST, LOG_MESSAGE, IDENTIFY-on-
-// reboot, …) leaves a one-line breadcrumb in the diag log. The engine's
-// handlers still process the packet — we just observe.
-//
-// At debug-level only — STATUS at 1 Hz × N panels would otherwise drown
-// the GUI console. Filter out the periodic STATUS_BROADCAST stream
-// after the first tick so the line shows up once and then quiets down.
-func (a *App) installAsyncDiag() {
-	if a.eng.Conn == nil {
+// onPortVanished tears down the client when the port we hold disappears.
+// The PortWatcher fires this once per disconnect for the watched port.
+func (a *App) onPortVanished(port string) {
+	a.mu.Lock()
+	if a.c == nil || a.connectedPort != port {
+		a.mu.Unlock()
 		return
 	}
-	prevCB := a.eng.Conn.GetCallback()
-	statusSeen := atomic.Bool{}
-	a.eng.Conn.SetCallback(func(r *protocol.Response) {
-		if r != nil {
-			ptype := byte(r.PacketType)
-			tag := r.Tag
-			plen := len(r.Payload)
-			pname := protocol.PacketTypeName(r.PacketType)
-			// Periodic STATUS broadcast: log first arrival, then suppress.
-			isStatus := ptype == 0xF4 || ptype == 0xEF
-			if isStatus {
-				if statusSeen.CompareAndSwap(false, true) {
-					a.diag.With(LvlInfo, "RX", "first STATUS broadcast received",
-						map[string]any{"type": pname, "len": plen})
-				}
-			} else {
-				a.diag.With(LvlDebug, "RX", "async packet",
-					map[string]any{"type": pname, "tag": tag, "len": plen})
+	a.diag.Warn("CONN", "connected port %s vanished — disconnecting", port)
+	a.closeLocked()
+	info := a.getConnectionInfo()
+	a.mu.Unlock()
+	wailsRT.EventsEmit(a.ctx, "connection:changed", info)
+}
+
+// installAsyncDiag leaves a one-line breadcrumb in the diag log for every
+// unsolicited packet.  STATUS broadcasts are logged once then suppressed.
+// It subscribes through the client's Events facet (the single async
+// owner) rather than hijacking the connection callback — additional
+// consumers (live effect panels, the device-model refresher) attach the
+// same way without clobbering each other.  A fresh client is created on
+// every connect, so its subscriber list starts empty each time.
+func (a *App) installAsyncDiag() {
+	if a.c == nil {
+		return
+	}
+	var statusSeen atomic.Bool
+	a.c.Events.OnAny(func(r *protocol.Response) {
+		if r == nil {
+			return
+		}
+		ptype := byte(r.PacketType)
+		pname := protocol.PacketTypeName(r.PacketType)
+		isStatus := ptype == 0xF4 || ptype == 0xEF || ptype == 0xF3
+		if isStatus {
+			if statusSeen.CompareAndSwap(false, true) {
+				a.diag.With(LvlInfo, "RX", "first STATUS broadcast received",
+					map[string]any{"type": pname, "len": len(r.Payload)})
 			}
+			return
 		}
-		if prevCB != nil {
-			prevCB(r)
-		}
+		a.diag.With(LvlDebug, "RX", "async packet",
+			map[string]any{"type": pname, "tag": r.Tag, "len": len(r.Payload)})
 	})
 	a.diag.Debug("CONN", "async packet observer installed")
-}
-
-// diffPortLists returns the elements added / removed between two
-// comma-joined port lists. Used purely for log breadcrumbs.
-func diffPortLists(prev, next string) (added, removed []string) {
-	p := stringSetCSV(prev)
-	n := stringSetCSV(next)
-	for v := range n {
-		if !p[v] {
-			added = append(added, v)
-		}
-	}
-	for v := range p {
-		if !n[v] {
-			removed = append(removed, v)
-		}
-	}
-	sort.Strings(added)
-	sort.Strings(removed)
-	return added, removed
-}
-
-func stringSetCSV(s string) map[string]bool {
-	out := map[string]bool{}
-	if s == "" {
-		return out
-	}
-	for _, v := range strings.Split(s, ",") {
-		out[v] = true
-	}
-	return out
-}
-
-func (a *App) stopPortWatcherLoop() {
-	if a.stopPortWatcher != nil {
-		close(a.stopPortWatcher)
-	}
 }
 
 // ─── Exposed Methods ───
@@ -299,8 +223,7 @@ func (a *App) ListPorts() []PortInfo {
 	for i, p := range ports {
 		result[i] = PortInfo{Name: p.Name, Description: p.Description}
 	}
-	a.diag.With(LvlDebug, "PORTS", "ListPorts result",
-		map[string]any{"count": len(result)})
+	a.diag.With(LvlDebug, "PORTS", "ListPorts result", map[string]any{"count": len(result)})
 	return result
 }
 
@@ -310,32 +233,20 @@ func (a *App) Connect(port string) ConnectionInfo {
 	defer a.mu.Unlock()
 
 	a.diag.Info("CONN", "Connecting to %s", port)
-	a.eng.Dispatch("connect " + port)
-
-	// Send INIT with verbose flag so the device starts streaming STATUS_BROADCAST.
-	// HubFX auto-inits at boot (cmdConnect already sets Initialized=true after the
-	// IDENTIFY round-trip), but the firmware-side verbose flag is gated solely on
-	// the INIT_FLAGS bitmask — without an INIT it never enables periodic broadcast.
-	// Sending INIT is idempotent on the device (handleInit calls reset() then
-	// re-applies flags), so we drop the !Initialized guard.
-	if a.eng.Conn != nil && a.eng.ControllerType != "" {
-		a.eng.Dispatch("init direct verbose")
-		a.installAsyncDiag() // start logging unsolicited packets
-	} else if a.eng.Conn == nil {
-		a.diag.Warn("CONN", "Connect to %s did not establish a session", port)
+	if err := a.openLocked(port); err != nil {
+		a.diag.Warn("CONN", "Connect to %s failed: %v", port, err)
+		a.echoError("connect %s: %v", port, err)
+		info := a.getConnectionInfo()
+		wailsRT.EventsEmit(a.ctx, "connection:changed", info)
+		return info
 	}
 
 	info := a.getConnectionInfo()
-	a.diag.With(LvlInfo, "CONN", "connection state",
-		map[string]any{
-			"connected":   info.Connected,
-			"initialized": info.Initialized,
-			"controller":  info.ControllerType,
-			"name":        info.ControllerName,
-			"version":     info.FirmwareVer,
-			"build":       info.Build,
-			"caps":        info.Capabilities,
-		})
+	a.diag.With(LvlInfo, "CONN", "connection state", map[string]any{
+		"connected": info.Connected, "controller": info.ControllerType,
+		"name": info.ControllerName, "version": info.FirmwareVer,
+		"build": info.Build, "caps": info.Capabilities,
+	})
 	wailsRT.EventsEmit(a.ctx, "connection:changed", info)
 	return info
 }
@@ -346,13 +257,17 @@ func (a *App) Disconnect() ConnectionInfo {
 	defer a.mu.Unlock()
 
 	a.diag.Info("CONN", "Disconnect requested")
-	a.eng.Dispatch("disconnect")
+	a.closeLocked()
 
 	info := a.getConnectionInfo()
 	wailsRT.EventsEmit(a.ctx, "connection:changed", info)
 	return info
 }
 
+// SendCommand runs one console line through the shared `scalefx/console`
+// command set (the same verbs the CLI exposes), rendering colored output
+// into the GUI console.  `/diag …` slash commands and quit are handled
+// locally; connection verbs are intercepted (Studio owns the connection).
 func (a *App) SendCommand(cmd string) {
 	trimmed := strings.TrimSpace(cmd)
 	if trimmed == "" {
@@ -363,45 +278,13 @@ func (a *App) SendCommand(cmd string) {
 		wailsRT.Quit(a.ctx)
 		return
 	}
-	// Built-in /diag commands — never reach the engine. Lets the user
-	// flip debug logging on/off and dump the recent ring buffer
-	// without an external CLI.
 	if a.handleDiagSlash(trimmed) {
 		return
 	}
-	defer a.diag.Around("SendCommand", map[string]any{"cmd": trimmed})()
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Echo command
-	wailsRT.EventsEmit(a.ctx, "console:output", ConsoleMessage{
-		Type:    "command",
-		Content: escapeHTML(trimmed),
-	})
-
-	before := a.getConnectionInfo()
-	a.eng.Dispatch(trimmed)
-	after := a.getConnectionInfo()
-
-	// Only re-emit `connection:changed` when state ACTUALLY changed —
-	// otherwise every slider drag / LED toggle in a panel wakes up
-	// every component subscribed to connection state and floods the
-	// diag log with no-op `connection:changed` events.
-	if before != after {
-		wailsRT.EventsEmit(a.ctx, "connection:changed", after)
-	}
+	a.dispatchConsole(trimmed)
 }
 
-// handleDiagSlash recognises `/diag …` slash commands and returns true
-// if the input was consumed (the caller skips engine dispatch). The
-// commands surface through the regular console:output channel so they
-// look like any other command.
-//
-//   /diag debug on | off | toggle   — flip verbose logging
-//   /diag dump                       — emit the recent event ring as JSON
-//   /diag clear                      — reset the ring (after a repro)
-//   /diag                            — short summary
+// handleDiagSlash recognises `/diag …` slash commands.
 func (a *App) handleDiagSlash(cmd string) bool {
 	if !strings.HasPrefix(cmd, "/diag") {
 		return false
@@ -419,16 +302,12 @@ func (a *App) handleDiagSlash(cmd string) bool {
 				on = true
 			case "off", "0", "false", "no":
 				on = false
-			case "toggle":
-				// already flipped above
 			}
 		}
 		a.diag.SetDebug(on)
 	case len(parts) >= 2 && parts[1] == "dump":
 		evs := a.diag.Snapshot()
 		blob, _ := json.MarshalIndent(evs, "", "  ")
-		// Send the JSON as a plain output line so it can be selected
-		// and copied. Stdout already has it (see diag.log).
 		wailsRT.EventsEmit(a.ctx, "console:output", ConsoleMessage{
 			Type:    "output",
 			Content: fmt.Sprintf(`<pre class="diag-dump">%s</pre>`, escapeHTML(string(blob))),
@@ -445,19 +324,8 @@ func (a *App) handleDiagSlash(cmd string) bool {
 	return true
 }
 
-// DiagLogPath returns the on-disk path the diagnostic log is being
-// written to (empty if the file could not be opened). Bound for the
-// frontend so the user can show "Open log…" in a menu, and also useful
-// when the agent needs to know where to `cat` from outside the app.
-func (a *App) DiagLogPath() string {
-	return a.diag.LogPath()
-}
+func (a *App) DiagLogPath() string { return a.diag.LogPath() }
 
-// LogFrontend is the JS-side bridge into the diag system. The
-// frontend's window.onerror / unhandledrejection / wrapped console.error
-// hooks call this so JS exceptions and warnings show up in the same
-// stream as Go-side events. `level` is debug | info | warn | error;
-// `tag` is FE.<area> by convention (FE.RENDER, FE.WAILS, FE.UNCAUGHT).
 func (a *App) LogFrontend(level, tag, msg string, fields map[string]any) {
 	if level == "" {
 		level = LvlInfo
@@ -468,24 +336,14 @@ func (a *App) LogFrontend(level, tag, msg string, fields map[string]any) {
 	a.diag.With(level, tag, msg, fields)
 }
 
-// DiagSnapshot returns the recent event ring buffer for the frontend's
-// "Copy diagnostics" button or for an automated script.
 func (a *App) DiagSnapshot() []DiagEvent {
 	defer a.diag.Around("DiagSnapshot", nil)()
 	return a.diag.Snapshot()
 }
 
-// SetDiagDebug toggles verbose diagnostic logging at runtime. Returns
-// the new state so the frontend can render the toggle without a separate
-// query.
-func (a *App) SetDiagDebug(on bool) bool {
-	return a.diag.SetDebug(on)
-}
+func (a *App) SetDiagDebug(on bool) bool { return a.diag.SetDebug(on) }
 
-// DiagDebugEnabled returns the current debug-logging state.
-func (a *App) DiagDebugEnabled() bool {
-	return a.diag.DebugEnabled()
-}
+func (a *App) DiagDebugEnabled() bool { return a.diag.DebugEnabled() }
 
 func (a *App) GetConnectionInfo() ConnectionInfo {
 	a.mu.Lock()
@@ -493,111 +351,69 @@ func (a *App) GetConnectionInfo() ConnectionInfo {
 	return a.getConnectionInfo()
 }
 
-// echoCommand mirrors SendCommand's "command" echo so GUI-initiated actions
-// (File Manager, Save Configuration, etc.) show up in the console the same
-// way typed commands do.
-func (a *App) echoCommand(cmd string) {
-	if a.ctx == nil {
-		return
-	}
-	wailsRT.EventsEmit(a.ctx, "console:output", ConsoleMessage{
-		Type:    "command",
-		Content: escapeHTML(cmd),
-	})
-}
-
-// echoOutput prints a plain line to the console (used for stream replies
-// like `file.list`).
-func (a *App) echoOutput(text string) {
-	if a.ctx == nil || text == "" {
-		return
-	}
-	wailsRT.EventsEmit(a.ctx, "console:output", ConsoleMessage{
-		Type:    "output",
-		Content: escapeHTML(text),
-	})
-}
-
-// echoOK / echoError report the outcome of a GUI-initiated action.
-func (a *App) echoOK(format string, args ...any) {
-	if a.ctx == nil {
-		return
-	}
-	wailsRT.EventsEmit(a.ctx, "console:output", ConsoleMessage{
-		Type:    "ok",
-		Content: escapeHTML(fmt.Sprintf(format, args...)),
-	})
-}
-
-func (a *App) echoError(format string, args ...any) {
-	if a.ctx == nil {
-		return
-	}
-	wailsRT.EventsEmit(a.ctx, "console:output", ConsoleMessage{
-		Type:    "error",
-		Content: escapeHTML(fmt.Sprintf(format, args...)),
-	})
-}
-
-// GetSlaveInfo returns the slave controllers known from the last HubFX
-// STATUS_BROADCAST. Returns an empty slice for non-HubFX connections or when
-// no broadcast has been received yet (slaves render as "offline" until the
-// hub reports them ready).
-func (a *App) GetSlaveInfo() []SlaveInfo {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.buildSlaveInfoLocked()
-}
-
-// buildSlaveInfoLocked derives the slave list from the cached StatusBroadcast.
-// Caller must hold a.mu. The ready bit in SlaveMask is used as both the
-// "connected" and "ready" signal — in practice the connected→ready transition
-// takes ~milliseconds after auto-INIT, so the intermediate state is not worth
-// a separate SLAVE_LIST poll. When the hub has never broadcast (cache nil) we
-// still emit the three known slave slots so the tab bar renders them greyed
-// out rather than hiding the whole slave row.
-func (a *App) buildSlaveInfoLocked() []SlaveInfo {
-	if a.eng.ControllerType != core.CtrlHubFX || a.eng.Conn == nil {
-		return []SlaveInfo{}
-	}
-	s := a.slaveStatus
-	gunReady := s != nil && s.GunFxReady
-	lightReady := s != nil && s.LightFxReady
-	gearReady := s != nil && s.GearCtrlReady
-	return []SlaveInfo{
-		{Type: "gunfx", Name: "GunFX", Connected: gunReady, Ready: gunReady},
-		{Type: "lightfx", Name: "LightFX", Connected: lightReady, Ready: lightReady},
-		{Type: "gearcontrol", Name: "GearControl", Connected: gearReady, Ready: gearReady},
-	}
-}
-
 // ─── Internal ───
 
+// openLocked opens `port`, runs IDENTIFY (read-only — does not activate
+// hardware), and caches the result.  Caller holds a.mu.  Returns the open
+// error; an IDENTIFY failure is logged but leaves the connection open.
+func (a *App) openLocked(port string) error {
+	a.closeLocked()
+	// 5 s timeout: topology queries (PORT_LIST / ROLE_LIST) aggregate the
+	// hub + every expander, with the hub forwarding to a possibly-slow
+	// expander — the 2 s wire default is too tight once an expander is on
+	// the bus.
+	c, id, err := client.Connect(port, client.Options{Timeout: 5 * time.Second})
+	if err != nil && c == nil {
+		return err
+	}
+	a.c = c
+	a.connectedPort = port
+	if a.ports != nil {
+		a.ports.SetWatched(port)
+	}
+	if err != nil {
+		a.diag.Warn("CONN", "IDENTIFY failed on %s: %v", port, err)
+	} else {
+		a.id = id
+		a.kind = string(id.Kind())
+		a.initialized = true
+	}
+	a.installAsyncDiag()
+	a.installInputStream()
+	return nil
+}
+
+// closeLocked tears down the live client and resets cached state.  Caller
+// holds a.mu.  Idempotent.
+func (a *App) closeLocked() {
+	if a.c != nil {
+		a.c.Close()
+		a.c = nil
+	}
+	if a.ports != nil {
+		a.ports.SetWatched("")
+	}
+	a.id = client.Identity{}
+	a.initialized = false
+	a.kind = ""
+	a.connectedPort = ""
+}
+
 func (a *App) getConnectionInfo() ConnectionInfo {
-	port := a.eng.Port
-	if a.eng.Conn != nil {
-		// Live connection wins — `eng.Port` is just whatever was passed
-		// on the cmdline at startup and stays empty for GUI-initiated
-		// connects (Studio passes the port via Dispatch("connect ...")
-		// rather than wiring eng.Port).
-		port = a.eng.Conn.PortName()
+	info := ConnectionInfo{}
+	if a.c == nil {
+		return info
 	}
-	info := ConnectionInfo{
-		Connected:   a.eng.Conn != nil,
-		Initialized: a.eng.Initialized,
-		Port:        port,
-	}
-	if a.eng.ControllerType != "" {
-		info.ControllerType = a.eng.ControllerType
-		info.ControllerName = engine.ControllerLabels[a.eng.ControllerType]
-	}
-	if a.eng.Info != nil {
-		info.FirmwareVer = a.eng.Info.Version
-		info.Build = a.eng.Info.Build
-		info.Platform = a.eng.Info.Platform
-		info.CPUMHz = a.eng.Info.CPUMHz
-		info.FreeRAM = a.eng.Info.FreeRAM
-		info.Capabilities = a.eng.Info.Capabilities
-	}
+	info.Connected = true
+	info.Port = a.c.PortName()
+	info.Initialized = a.initialized
+	info.ControllerType = a.kind
+	info.ControllerName = controllerLabel(a.kind)
+	info.FirmwareVer = a.id.FirmwareVersion
+	info.Build = a.id.BuildNumber
+	info.Platform = a.id.Platform
+	info.CPUMHz = a.id.CPUFreqMHz
+	info.FreeRAM = a.id.FreeRAMBytes
+	info.Capabilities = a.id.Capabilities
 	return info
 }

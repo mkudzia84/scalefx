@@ -107,12 +107,12 @@ func (a *App) runFirmwareOp(controllerName string, port string, noBuild bool, no
 	// Disconnect if we're connected (flash needs the port)
 	savedPort := ""
 	a.mu.Lock()
-	if a.eng.Conn != nil {
-		connPort := a.eng.Conn.PortName()
+	if a.c != nil {
+		connPort := a.c.PortName()
 		if port == "" || strings.EqualFold(connPort, port) {
 			savedPort = connPort
 			a.emitFwProgress("warning", "Disconnecting from "+connPort+"...")
-			a.eng.Dispatch("disconnect")
+			a.closeLocked()
 		}
 	}
 	a.mu.Unlock()
@@ -224,11 +224,8 @@ func (a *App) reconnectAfterFlash(savedPort string) {
 	a.emitFwReconnect("Reconnecting to " + savedPort + "...")
 
 	a.mu.Lock()
-	a.eng.Dispatch("connect " + savedPort)
-	// Mirror Connect(): always send `init direct verbose` so STATUS_BROADCAST
-	// streams (HubFX auto-init suppresses the !Initialized branch).
-	if a.eng.Conn != nil && a.eng.ControllerType != "" {
-		a.eng.Dispatch("init direct verbose")
+	if err := a.openLocked(savedPort); err != nil {
+		a.diag.Warn("FW", "reconnect to %s failed: %v", savedPort, err)
 	}
 	info := a.getConnectionInfo()
 	a.mu.Unlock()
@@ -302,12 +299,12 @@ func (a *App) runReleaseFlash(controller string, tag string, port string, skipVe
 
 	// Disconnect if needed
 	a.mu.Lock()
-	if a.eng.Conn != nil {
-		connPort := a.eng.Conn.PortName()
+	if a.c != nil {
+		connPort := a.c.PortName()
 		if port == "" || strings.EqualFold(connPort, port) {
 			savedPort = connPort
 			a.emitFwProgress("warning", "Disconnecting from "+connPort+"...")
-			a.eng.Dispatch("disconnect")
+			a.closeLocked()
 		}
 	}
 	a.mu.Unlock()

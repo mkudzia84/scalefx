@@ -21,6 +21,7 @@ package client
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"scalefx/protocol"
@@ -41,6 +42,7 @@ type Client struct {
 	Storage       *Storage
 	Expanders     *Expanders
 	Topology      *Topology
+	Input         *Input
 	LightFx       *LightFx
 	LandingLights *LandingLights
 	Gear          *Gear
@@ -53,14 +55,12 @@ type Client struct {
 
 // Options configures a Client at open time.
 type Options struct {
-	Baud      int           // 0 → DefaultBaud
-	Timeout   time.Duration // 0 → 2 s
-	Verbose   bool          // log TX/RX packet types to stdout
+	Baud    int           // 0 → DefaultBaud
+	Timeout time.Duration // 0 → 2 s
+	Verbose bool          // log TX/RX packet types to stdout
 }
 
 // Open opens the given serial port and starts the reader goroutine.
-// A "tcp://host:port" port name short-circuits to the virtual-board
-// TCP transport (same as scalefx-cli accepted in the legacy code).
 func Open(portName string) (*Client, error) {
 	return OpenWith(portName, Options{})
 }
@@ -80,6 +80,7 @@ func OpenWith(portName string, opts Options) (*Client, error) {
 	c.Storage = &Storage{c: c}
 	c.Expanders = &Expanders{c: c}
 	c.Topology = &Topology{c: c}
+	c.Input = &Input{c: c}
 	c.LightFx = &LightFx{c: c}
 	c.LandingLights = &LandingLights{c: c}
 	c.Gear = &Gear{c: c}
@@ -89,6 +90,40 @@ func OpenWith(portName string, opts Options) (*Client, error) {
 	c.Config = &Config{c: c}
 	c.Events = newEvents(c)
 	return c, nil
+}
+
+// Connect opens the port, runs IDENTIFY (read-only — does not activate
+// hardware), applies the platform-derived upload-payload ceiling, and
+// returns the client alongside its decoded identity.  This is the single
+// place the "open → identify → size the peer payload" sequence lives;
+// hosts (CLI, Studio) must not re-implement the platform→payload mapping.
+//
+// An IDENTIFY failure is returned alongside the open client (which is
+// usable for raw commands) so callers can decide whether to keep or drop
+// the connection — older boards that don't answer IDENTIFY still connect.
+func Connect(portName string, opts Options) (*Client, Identity, error) {
+	c, err := OpenWith(portName, opts)
+	if err != nil {
+		return nil, Identity{}, err
+	}
+	id, idErr := c.Hub.Identify()
+	if idErr != nil {
+		return c, Identity{}, idErr
+	}
+	c.applyPeerPayload(id.Platform)
+	return c, id, nil
+}
+
+// applyPeerPayload sizes the storage facet's upload chunking from the
+// board's platform string.  ESP32-class boards accept the larger ceiling;
+// everything else stays at the safe Pico value.  Centralised here so the
+// heuristic has exactly one home.
+func (c *Client) applyPeerPayload(platform string) {
+	if strings.Contains(strings.ToLower(platform), "esp32") {
+		c.Storage.SetPeerMaxPayload(Esp32MaxPayload)
+	} else {
+		c.Storage.SetPeerMaxPayload(PicoMaxPayload)
+	}
 }
 
 // Close releases the serial port and stops the reader goroutine.
@@ -147,8 +182,8 @@ func (c *Client) sendForResp(packet []byte, expect protocol.PacketType) (*protoc
 // ProtocolError carries a NACK from the firmware.  The error message is
 // the symbolic name plus any reason string the firmware appended.
 type ProtocolError struct {
-	Code    protocol.ErrorCode
-	Reason  string // optional inline reason after the error byte
+	Code   protocol.ErrorCode
+	Reason string // optional inline reason after the error byte
 }
 
 func (e *ProtocolError) Error() string {
