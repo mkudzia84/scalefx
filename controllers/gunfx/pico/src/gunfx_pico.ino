@@ -54,7 +54,7 @@
 #include <power/battery_monitor.h>       // AdcDividerBatteryT
 #include <power/battery_server.h>        // BatteryServicePolicy
 
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.1.0"
 #define BUILD_NUMBER     4
 
 // ════════════════════════════════════════════════════════════════════════

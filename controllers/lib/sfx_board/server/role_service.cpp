@@ -372,7 +372,8 @@ bool RoleServicePolicy::attachDcMotor(PwmBinding& b, uint8_t portIdx,
 
 bool RoleServicePolicy::attachHeater(PwmBinding& b, uint8_t /*portIdx*/,
                                      const uint8_t* cfg, size_t cfgLen) {
-    if (!b.tSense) { return false; }
+    // tSense is optional: present → closed-loop bang-bang;
+    // absent → open-loop drive at `driveDuty` whenever the target is set.
     auto& role = b.role.emplace<HeaterRole>();
     if (!role.bind(b.port, b.tSense)) { b.role.emplace<std::monostate>(); return false; }
     // Optional config: [target_cx10:i16LE][hysteresis_cx10:i16LE][driveDuty:u16LE]

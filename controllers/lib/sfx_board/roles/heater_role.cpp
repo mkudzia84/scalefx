@@ -16,10 +16,21 @@ void HeaterRole::setTarget(int16_t target_cx10) {
 }
 
 void HeaterRole::tick() {
-    if (!_port || !_tSense || _target_cx10 == INT16_MIN) return;
+    if (!_port || _target_cx10 == INT16_MIN) return;
 
     // Default drive duty = port's full scale if user didn't set one.
     const uint16_t drive = _driveDutyExplicit ? _driveDuty : _port->maxDuty();
+
+    // Open-loop mode (no temperature sensor): just hold drive duty
+    // whenever a target is set (target == INT16_MIN → already handled
+    // above as off).
+    if (!_tSense) {
+        if (_commandedDuty != drive) {
+            _commandedDuty = drive;
+            _port->setDuty(drive);
+        }
+        return;
+    }
 
     const int16_t actual = _tSense->temperature_cx10();
     if (!_tSense->isAvailable()) {

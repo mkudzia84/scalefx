@@ -1,15 +1,17 @@
 /*
- * HeaterRole — bang-bang heater on a `PwmPort` driven by a
- * `TemperatureSensor`.
+ * HeaterRole — heater on a `PwmPort`, dual-mode.
  *
- * Closed-loop: holds the temperature within `±_hysteresis_cx10` of
- * `_target_cx10`.  Below the lower band → PWM at `_driveDuty`.  Above
- * the upper band → PWM 0.  Inside the band → keep current state
- * (hysteresis).
+ *   Closed-loop (a `TemperatureSensor` is bound): holds the temperature
+ *   within `±_hysteresis_cx10` of `_target_cx10`.  Below the lower band
+ *   → PWM at `_driveDuty`.  Above the upper band → PWM 0.  Inside the
+ *   band → keep current state (hysteresis).  Both target and hysteresis
+ *   are in tenths of degrees Celsius (235 → 23.5 °C).
  *
- * Both target and hysteresis are in tenths of degrees Celsius (235 →
- * 23.5 °C).  The role refuses to attach if no temperature sensor is
- * bound — heater without sense would be a fire hazard.
+ *   Open-loop (no sensor bound): the role behaves as a simple gated
+ *   PWM driver.  `_target_cx10 == INT16_MIN` → off; any other target
+ *   value → drive at `_driveDuty` (defaults to the port's max duty).
+ *   Used by low-power scale-model loads (smoke cartridges, vapor cells)
+ *   that don't need closed-loop control.
  */
 
 #ifndef SFX_HEATER_ROLE_H
@@ -30,10 +32,12 @@ public:
                sfx_peripherals::TemperatureSensor* tSense)
         : _port(port), _tSense(tSense) {}
 
-    /// Returns false if `tSense` is null — heater requires temp sense.
+    /// Binds the port and (optionally) a temperature sensor.  `tSense`
+    /// may be null → open-loop mode (drive duty when target is set, 0
+    /// when target is INT16_MIN).
     bool bind(sfx_peripherals::PwmPort*           port,
               sfx_peripherals::TemperatureSensor* tSense) {
-        if (!tSense) return false;
+        if (!port) return false;
         _port = port; _tSense = tSense;
         return true;
     }
