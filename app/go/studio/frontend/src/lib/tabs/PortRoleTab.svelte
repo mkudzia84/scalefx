@@ -10,6 +10,33 @@
         validationCounts, formatPortRail, RoleKind, type Port, type PortRef,
     } from '../devicemodel'
     import { showPcbOverlay } from '../stores'
+    import PortRoleConfig from '../components/PortRoleConfig.svelte'
+
+    // Per-port "show inline role-config editor" toggle.  Open one at a
+    // time keeps the visual list tractable; a small map keyed by port
+    // ref preserves state across re-renders.
+    const expanded = new Set<string>()
+    let expandedTick = 0
+    function portKey(p: Port): string { return `${p.ref.guid}|${p.ref.kind}|${p.ref.index}` }
+    function isExpanded(p: Port): boolean { return expanded.has(portKey(p)) }
+    function toggleExpand(p: Port): void {
+        const k = portKey(p)
+        if (expanded.has(k)) expanded.delete(k)
+        else expanded.add(k)
+        expandedTick++   // force Svelte reactivity
+    }
+    // Roles that have an inline editor — only show the ⚙ button for these.
+    function hasRoleConfig(p: Port): boolean {
+        if (p.ref.guid !== '') return false  // hub-local only today
+        return p.roleKind === RoleKind.ServoActuator
+            || p.roleKind === RoleKind.DcMotor
+            || p.roleKind === RoleKind.Heater
+    }
+    function portKindForConfig(p: Port): 'servo' | 'pwm' | null {
+        if (p.kindName === 'servo') return 'servo'
+        if (p.kindName === 'pwm') return 'pwm'
+        return null
+    }
 
     let busy = false
     let error = ''
@@ -145,7 +172,29 @@
                                on:change={(e) => onName(p.ref, inputValue(e))} />
 
                         <span class="fanout" title="Functions using this port">{fanout(p)}</span>
+
+                        <!-- Rule 42: inline role-config editor (motion
+                             profile for servo, element scaling for
+                             heater / DC motor).  Only shown when the
+                             role has tunable mechanism. -->
+                        {#if hasRoleConfig(p)}
+                            <button class="small cfg-btn" class:open={(expandedTick, isExpanded(p))}
+                                    on:click={() => toggleExpand(p)}
+                                    title="Tune motion profile / element scaling — live push, no re-attach">
+                                {(expandedTick, isExpanded(p)) ? '× Close' : '⚙ Tune'}
+                            </button>
+                        {/if}
                     </div>
+                    {#if (expandedTick, isExpanded(p)) && hasRoleConfig(p)}
+                        {@const pk = portKindForConfig(p)}
+                        {#if pk}
+                            <PortRoleConfig
+                                portKind={pk}
+                                portIdx={p.ref.index}
+                                roleKind={p.roleKind}
+                                portRailMv={p.voltageMv} />
+                        {/if}
+                    {/if}
                 {/each}
             </div>
         </div>
@@ -175,6 +224,8 @@
     .dir-badge.output { color: var(--text-dim); }
     .caps { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); width: 56px; flex-shrink: 0; }
     .rail-chip { font-family: var(--font-mono); font-size: 10px; color: var(--text); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; flex-shrink: 0; }
+    .cfg-btn { flex-shrink: 0; min-width: 0; padding: 0 8px; font-size: 11px; }
+    .cfg-btn.open { background: color-mix(in srgb, var(--accent) 25%, var(--bg-input)); border-color: var(--accent); }
     .role-select { flex: 0 0 150px; }
     .role-fixed { flex: 0 0 150px; font-size: 12px; color: var(--text-dim); padding: 4px 8px; border: 1px dashed var(--border); border-radius: 3px; text-align: center; }
     .name-input { flex: 1; min-width: 80px; font-family: var(--font-ui); }

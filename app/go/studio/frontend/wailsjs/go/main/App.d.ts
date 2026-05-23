@@ -73,21 +73,55 @@ export function GetReleases(arg1:string):Promise<Array<main.ReleaseInfo>>;
 
 export function GetToolsStatus():Promise<main.ToolsStatus>;
 
+export function GunFire(arg1:number):Promise<void>;
+
+export function GunFxStatus():Promise<Array<main.GunStatusDTO>>;
+
+export function GunManualRelease(arg1:number):Promise<void>;
+
+export function GunManualSet(arg1:number,arg2:main.GunManualStateDTO):Promise<void>;
+
+export function GunSmokeArm(arg1:number,arg2:number):Promise<void>;
+
+export function GunStartFiring(arg1:number,arg2:number):Promise<void>;
+
+export function GunStopFiring(arg1:number):Promise<void>;
+
+export function GunVerboseSubscribe(arg1:number,arg2:number):Promise<void>;
+
+export function HeaterGetElement(arg1:number):Promise<main.HeaterElementDTO>;
+
+export function HeaterSetElement(arg1:number,arg2:main.HeaterElementDTO):Promise<void>;
+
 export function ListPorts():Promise<Array<main.PortInfo>>;
+
+export function LoadGunFxConfig():Promise<main.GunFxConfig>;
 
 export function LoadHubConfig():Promise<void>;
 
 export function LogFrontend(arg1:string,arg2:string,arg3:string,arg4:Record<string, any>):Promise<void>;
 
+export function MotorGetElement(arg1:number):Promise<main.MotorElementDTO>;
+
+export function MotorSetElement(arg1:number,arg2:main.MotorElementDTO):Promise<void>;
+
+export function MotorSetPct(arg1:number,arg2:number):Promise<void>;
+
 export function OpenTextFile(arg1:string):Promise<main.OpenedFile>;
 
 export function RefreshDeviceModel():Promise<main.DeviceModelSnapshot>;
+
+export function SaveGunFxConfig(arg1:main.GunFxConfig):Promise<void>;
 
 export function SaveHubConfig():Promise<void>;
 
 export function SaveTextFile(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function SendCommand(arg1:string):Promise<void>;
+
+export function ServoGetProfile(arg1:number):Promise<main.ServoProfileDTO>;
+
+export function ServoSetProfile(arg1:number,arg2:main.ServoProfileDTO):Promise<void>;
 
 export function SetChannelFunction(arg1:string,arg2:number,arg3:number,arg4:number,arg5:string):Promise<main.DeviceModelSnapshot>;
 

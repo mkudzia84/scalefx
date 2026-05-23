@@ -142,8 +142,52 @@ export function GetToolsStatus() {
   return window['go']['main']['App']['GetToolsStatus']();
 }
 
+export function GunFire(arg1) {
+  return window['go']['main']['App']['GunFire'](arg1);
+}
+
+export function GunFxStatus() {
+  return window['go']['main']['App']['GunFxStatus']();
+}
+
+export function GunManualRelease(arg1) {
+  return window['go']['main']['App']['GunManualRelease'](arg1);
+}
+
+export function GunManualSet(arg1, arg2) {
+  return window['go']['main']['App']['GunManualSet'](arg1, arg2);
+}
+
+export function GunSmokeArm(arg1, arg2) {
+  return window['go']['main']['App']['GunSmokeArm'](arg1, arg2);
+}
+
+export function GunStartFiring(arg1, arg2) {
+  return window['go']['main']['App']['GunStartFiring'](arg1, arg2);
+}
+
+export function GunStopFiring(arg1) {
+  return window['go']['main']['App']['GunStopFiring'](arg1);
+}
+
+export function GunVerboseSubscribe(arg1, arg2) {
+  return window['go']['main']['App']['GunVerboseSubscribe'](arg1, arg2);
+}
+
+export function HeaterGetElement(arg1) {
+  return window['go']['main']['App']['HeaterGetElement'](arg1);
+}
+
+export function HeaterSetElement(arg1, arg2) {
+  return window['go']['main']['App']['HeaterSetElement'](arg1, arg2);
+}
+
 export function ListPorts() {
   return window['go']['main']['App']['ListPorts']();
+}
+
+export function LoadGunFxConfig() {
+  return window['go']['main']['App']['LoadGunFxConfig']();
 }
 
 export function LoadHubConfig() {
@@ -154,12 +198,28 @@ export function LogFrontend(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['LogFrontend'](arg1, arg2, arg3, arg4);
 }
 
+export function MotorGetElement(arg1) {
+  return window['go']['main']['App']['MotorGetElement'](arg1);
+}
+
+export function MotorSetElement(arg1, arg2) {
+  return window['go']['main']['App']['MotorSetElement'](arg1, arg2);
+}
+
+export function MotorSetPct(arg1, arg2) {
+  return window['go']['main']['App']['MotorSetPct'](arg1, arg2);
+}
+
 export function OpenTextFile(arg1) {
   return window['go']['main']['App']['OpenTextFile'](arg1);
 }
 
 export function RefreshDeviceModel() {
   return window['go']['main']['App']['RefreshDeviceModel']();
+}
+
+export function SaveGunFxConfig(arg1) {
+  return window['go']['main']['App']['SaveGunFxConfig'](arg1);
 }
 
 export function SaveHubConfig() {
@@ -172,6 +232,14 @@ export function SaveTextFile(arg1, arg2, arg3) {
 
 export function SendCommand(arg1) {
   return window['go']['main']['App']['SendCommand'](arg1);
+}
+
+export function ServoGetProfile(arg1) {
+  return window['go']['main']['App']['ServoGetProfile'](arg1);
+}
+
+export function ServoSetProfile(arg1, arg2) {
+  return window['go']['main']['App']['ServoSetProfile'](arg1, arg2);
 }
 
 export function SetChannelFunction(arg1, arg2, arg3, arg4, arg5) {

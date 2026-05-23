@@ -157,10 +157,11 @@ export async function checkFiles(paths: string[]): Promise<Record<string, boolea
     return out
 }
 
-// ─── GunFX (placeholder until per-unit config lands) ──────────────────
-
-export interface GunFxDraft { enabled: boolean }
-export const gunFxDraft = writable<GunFxDraft>({ enabled: false })
+// ─── GunFX ─────────────────────────────────────────────────────────────
+// Moved to `lib/gunfx.ts` in Phase 4a of the GunFX rollout
+// (instructions/22).  The placeholder `gunFxDraft` here was a
+// boolean-only stub; the per-gun config + Wails wrappers + verbose-status
+// event plumbing all live in gunfx.ts now.
 
 let stateBridged = false
 export function installEngineStateBridge() {

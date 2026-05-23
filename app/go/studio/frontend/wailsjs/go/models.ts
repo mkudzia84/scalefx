@@ -852,6 +852,64 @@ export namespace main {
 	}
 	
 	
+	export class PortRefDTO {
+	    board: string;
+	    guid: string;
+	    kind: string;
+	    idx: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PortRefDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.board = source["board"];
+	        this.guid = source["guid"];
+	        this.kind = source["kind"];
+	        this.idx = source["idx"];
+	    }
+	}
+	export class FanDTO {
+	    port: PortRefDTO;
+	    elementMv: number;
+	    mode: string;
+	    puffMs: number;
+	    scaling: string;
+	    constantDutyPct: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new FanDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = this.convertValues(source["port"], PortRefDTO);
+	        this.elementMv = source["elementMv"];
+	        this.mode = source["mode"];
+	        this.puffMs = source["puffMs"];
+	        this.scaling = source["scaling"];
+	        this.constantDutyPct = source["constantDutyPct"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class FileCheck {
 	    path: string;
 	    exists: boolean;
@@ -950,6 +1008,438 @@ export namespace main {
 	        this.sdBusMode = source["sdBusMode"];
 	    }
 	}
+	export class ServoMotionProfileDTO {
+	    minUs: number;
+	    maxUs: number;
+	    centerUs: number;
+	    inverted: boolean;
+	    maxSpeedUsPerSec: number;
+	    maxAccelUsPerSec2: number;
+	    maxJerkUsPerSec3: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ServoMotionProfileDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.minUs = source["minUs"];
+	        this.maxUs = source["maxUs"];
+	        this.centerUs = source["centerUs"];
+	        this.inverted = source["inverted"];
+	        this.maxSpeedUsPerSec = source["maxSpeedUsPerSec"];
+	        this.maxAccelUsPerSec2 = source["maxAccelUsPerSec2"];
+	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];
+	    }
+	}
+	export class GunAxisDTO {
+	    enabled: boolean;
+	    servoPort: PortRefDTO;
+	    input: string;
+	    neutralUs: number;
+	    profile: ServoMotionProfileDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new GunAxisDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.servoPort = this.convertValues(source["servoPort"], PortRefDTO);
+	        this.input = source["input"];
+	        this.neutralUs = source["neutralUs"];
+	        this.profile = this.convertValues(source["profile"], ServoMotionProfileDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HeaterDTO {
+	    port: PortRefDTO;
+	    elementMv: number;
+	    mode: string;
+	    targetCx10: number;
+	    hystCx10: number;
+	    scaling: string;
+	    constantDutyPct: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HeaterDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = this.convertValues(source["port"], PortRefDTO);
+	        this.elementMv = source["elementMv"];
+	        this.mode = source["mode"];
+	        this.targetCx10 = source["targetCx10"];
+	        this.hystCx10 = source["hystCx10"];
+	        this.scaling = source["scaling"];
+	        this.constantDutyPct = source["constantDutyPct"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SmokeConfigDTO {
+	    heater: HeaterDTO;
+	    fan: FanDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new SmokeConfigDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.heater = this.convertValues(source["heater"], HeaterDTO);
+	        this.fan = this.convertValues(source["fan"], FanDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class RecoilConfigDTO {
+	    port: PortRefDTO;
+	    profile: ServoMotionProfileDTO;
+	    jerkUs: number;
+	    holdMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RecoilConfigDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = this.convertValues(source["port"], PortRefDTO);
+	        this.profile = this.convertValues(source["profile"], ServoMotionProfileDTO);
+	        this.jerkUs = source["jerkUs"];
+	        this.holdMs = source["holdMs"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MuzzleFlashDTO {
+	    port: PortRefDTO;
+	    durationMs: number;
+	    brightness: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new MuzzleFlashDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = this.convertValues(source["port"], PortRefDTO);
+	        this.durationMs = source["durationMs"];
+	        this.brightness = source["brightness"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class RofItemDTO {
+	    name: string;
+	    bandLoUs: number;
+	    bandHiUs: number;
+	    rpm: number;
+	    soundPath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RofItemDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.bandLoUs = source["bandLoUs"];
+	        this.bandHiUs = source["bandHiUs"];
+	        this.rpm = source["rpm"];
+	        this.soundPath = source["soundPath"];
+	    }
+	}
+	export class RofConfigDTO {
+	    input: string;
+	    items: RofItemDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RofConfigDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.input = source["input"];
+	        this.items = this.convertValues(source["items"], RofItemDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class TriggerConfigDTO {
+	    input: string;
+	    thresholdUs: number;
+	    hysteresisUs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TriggerConfigDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.input = source["input"];
+	        this.thresholdUs = source["thresholdUs"];
+	        this.hysteresisUs = source["hysteresisUs"];
+	    }
+	}
+	export class GunDTO {
+	    id: number;
+	    name: string;
+	    trigger: TriggerConfigDTO;
+	    rof: RofConfigDTO;
+	    muzzleFlash: MuzzleFlashDTO;
+	    recoil: RecoilConfigDTO;
+	    smoke: SmokeConfigDTO;
+	    yaw: GunAxisDTO;
+	    pitch: GunAxisDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new GunDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.trigger = this.convertValues(source["trigger"], TriggerConfigDTO);
+	        this.rof = this.convertValues(source["rof"], RofConfigDTO);
+	        this.muzzleFlash = this.convertValues(source["muzzleFlash"], MuzzleFlashDTO);
+	        this.recoil = this.convertValues(source["recoil"], RecoilConfigDTO);
+	        this.smoke = this.convertValues(source["smoke"], SmokeConfigDTO);
+	        this.yaw = this.convertValues(source["yaw"], GunAxisDTO);
+	        this.pitch = this.convertValues(source["pitch"], GunAxisDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class GunFxConfig {
+	    schemaVersion: number;
+	    enabled: boolean;
+	    guns: GunDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GunFxConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schemaVersion = source["schemaVersion"];
+	        this.enabled = source["enabled"];
+	        this.guns = this.convertValues(source["guns"], GunDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class GunManualStateDTO {
+	    flags: number;
+	    yawUs: number;
+	    pitchUs: number;
+	    rofIndex: number;
+	    fireHold: number;
+	    smokeArm: number;
+	    smokeFanBurst: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new GunManualStateDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.flags = source["flags"];
+	        this.yawUs = source["yawUs"];
+	        this.pitchUs = source["pitchUs"];
+	        this.rofIndex = source["rofIndex"];
+	        this.fireHold = source["fireHold"];
+	        this.smokeArm = source["smokeArm"];
+	        this.smokeFanBurst = source["smokeFanBurst"];
+	    }
+	}
+	export class GunStatusDTO {
+	    id: number;
+	    firing: boolean;
+	    smokeArmed: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new GunStatusDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.firing = source["firing"];
+	        this.smokeArmed = source["smokeArmed"];
+	    }
+	}
+	
+	export class HeaterElementDTO {
+	    elementMv: number;
+	    scaling: number;
+	    drivePct: number;
+	    hystCx10: number;
+	    portRailMv: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HeaterElementDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.elementMv = source["elementMv"];
+	        this.scaling = source["scaling"];
+	        this.drivePct = source["drivePct"];
+	        this.hystCx10 = source["hystCx10"];
+	        this.portRailMv = source["portRailMv"];
+	    }
+	}
+	export class MotorElementDTO {
+	    elementMv: number;
+	    scaling: number;
+	    portRailMv: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new MotorElementDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.elementMv = source["elementMv"];
+	        this.scaling = source["scaling"];
+	        this.portRailMv = source["portRailMv"];
+	    }
+	}
+	
 	export class OpenedFile {
 	    path: string;
 	    content: string;
@@ -978,6 +1468,8 @@ export namespace main {
 	        this.description = source["description"];
 	    }
 	}
+	
+	
 	export class ReleaseInfo {
 	    controller: string;
 	    version: string;
@@ -1004,6 +1496,34 @@ export namespace main {
 	        this.published = source["published"];
 	        this.assetName = source["assetName"];
 	        this.assetSize = source["assetSize"];
+	    }
+	}
+	
+	
+	
+	
+	export class ServoProfileDTO {
+	    minUs: number;
+	    maxUs: number;
+	    maxSpeedUsPerSec: number;
+	    reversed: boolean;
+	    centerUs: number;
+	    maxAccelUsPerSec2: number;
+	    maxJerkUsPerSec3: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ServoProfileDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.minUs = source["minUs"];
+	        this.maxUs = source["maxUs"];
+	        this.maxSpeedUsPerSec = source["maxSpeedUsPerSec"];
+	        this.reversed = source["reversed"];
+	        this.centerUs = source["centerUs"];
+	        this.maxAccelUsPerSec2 = source["maxAccelUsPerSec2"];
+	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];
 	    }
 	}
 	
