@@ -7,7 +7,7 @@
     import {
         deviceModel, refresh, attachRole, detachRole, applyPreset, applyDefaults,
         applyHubConfig, setPortName, portKindName, boardDisplayNames, claimsForPort,
-        RoleKind, type Port, type PortRef,
+        validationCounts, RoleKind, type Port, type PortRef,
     } from '../devicemodel'
     import { showPcbOverlay } from '../stores'
 
@@ -99,7 +99,8 @@
                 <button class="small apply-btn" on:click={onApplyPreset} disabled={busy || !presetSel}>Apply</button>
             {/if}
             <button class="small" on:click={() => ($showPcbOverlay = true)} title="Open the board diagram — assign roles on the PCB photo">▣ Diagram</button>
-            <button class="small primary" on:click={onApply} disabled={busy} title="Write /hubfx.yaml + reload — pushes current channel functions, port names and role attachments to the firmware live">✓ Apply</button>
+            <button class="small primary" on:click={onApply} disabled={busy || $validationCounts.errors > 0}
+                    title={$validationCounts.errors > 0 ? 'Resolve validation errors first (see badge in the tab strip)' : 'Write /hubfx.yaml + reload — pushes current channel functions, port names and role attachments to the firmware live'}>✓ Apply</button>
             <button class="small" on:click={onApplyDefaults} disabled={busy} title="Apply the bundled sensible defaults for the connected boards">★ Defaults</button>
             <button class="small" on:click={doRefresh} disabled={busy}>↻ Refresh</button>
         </div>

@@ -4,7 +4,7 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte'
     import { showFileManager } from '../stores'
-    import { fileManagerMode, resolveFilePick } from '../filepicker'
+    import { fileManagerMode, fileManagerTargets, resolveFilePick } from '../filepicker'
     import {
         FsStorageStatus, FsList, FsMkdir, FsDelete,
         FsDownloadToDisk, FsUploadBatch,
@@ -75,6 +75,23 @@
         OnFileDropOff()
     })
 
+    // The dialog component is mounted once at app start (App.svelte) and
+    // only its markup is toggled via {#if $showFileManager}. So when the
+    // picker is re-opened with a different `targets` restriction, we have
+    // to honour it here — not in onMount.
+    let wasOpen = false
+    $: if ($showFileManager && !wasOpen) {
+        wasOpen = true
+        applyTargetRestriction()
+    } else if (!$showFileManager && wasOpen) {
+        wasOpen = false
+    }
+    async function applyTargetRestriction() {
+        const t = $fileManagerTargets
+        if (t === 'sd' && target !== 'sd') { target = 'sd'; cwd = '/'; await refresh() }
+        else if (t === 'flash' && target !== 'flash') { target = 'flash'; cwd = '/'; await refresh() }
+    }
+
     async function startBatchUpload(paths: string[]) {
         progressTitle = paths.length === 1
             ? `Upload to ${cwd}`
@@ -91,8 +108,16 @@
     async function loadStatus() {
         try {
             status = await FsStorageStatus() as Status
-            if (target === 'flash' && !status.flashAvailable && status.sdAvailable) target = 'sd'
-            if (target === 'sd' && !status.sdAvailable && status.flashAvailable) target = 'flash'
+            // Honour the picker's target restriction: when a caller asks for
+            // 'sd' or 'flash' only, force the dialog onto that backend on
+            // open (the disallowed tab is hidden by `showTab*` below).
+            const t = $fileManagerTargets
+            if (t === 'sd') target = 'sd'
+            else if (t === 'flash') target = 'flash'
+            else {
+                if (target === 'flash' && !status.flashAvailable && status.sdAvailable) target = 'sd'
+                if (target === 'sd' && !status.sdAvailable && status.flashAvailable) target = 'flash'
+            }
         } catch (e: any) {
             error = toMsg(e)
         }
@@ -241,6 +266,9 @@
     $: flashAvailable = status.flashAvailable
     $: sdAvailable = status.sdAvailable
     $: targetAvailable = target === 'flash' ? flashAvailable : sdAvailable
+    // Picker target restriction — hide the tab the caller doesn't want.
+    $: showFlashTab = $fileManagerTargets === 'both' || $fileManagerTargets === 'flash'
+    $: showSdTab    = $fileManagerTargets === 'both' || $fileManagerTargets === 'sd'
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
@@ -259,31 +287,35 @@
 
             <!-- ─── Target tabs + storage info ─── -->
             <div class="fm-targets">
-                <button class="target" class:active={target === 'flash'}
-                        disabled={!status.flashAvailable}
-                        on:click={() => switchTarget('flash')}
-                        title={status.flashAvailable ? 'Onboard LittleFS flash' : 'Not available'}>
-                    <span class="t-icon">⚡</span>
-                    <span class="t-name">Flash</span>
-                    {#if status.flashAvailable}
-                        <span class="t-cap">{fmtBytes(status.flashFree)} free · {fmtBytes(status.flashTotal)} total</span>
-                    {:else}
-                        <span class="t-na">not available</span>
-                    {/if}
-                </button>
-                <button class="target" class:active={target === 'sd'}
-                        disabled={!status.sdAvailable}
-                        on:click={() => switchTarget('sd')}
-                        title={status.sdAvailable ? `${status.sdCardType} via ${status.sdBusMode}` : 'Not available on this board'}>
-                    <span class="t-icon">💾</span>
-                    <span class="t-name">SD</span>
-                    {#if status.sdAvailable}
-                        <span class="t-cap">{status.sdFreeMB} MB free · {status.sdTotalMB} MB total</span>
-                        {#if status.sdBusMode}<span class="t-bus">{status.sdBusMode}</span>{/if}
-                    {:else}
-                        <span class="t-na">not available</span>
-                    {/if}
-                </button>
+                {#if showFlashTab}
+                    <button class="target" class:active={target === 'flash'}
+                            disabled={!status.flashAvailable}
+                            on:click={() => switchTarget('flash')}
+                            title={status.flashAvailable ? 'Onboard LittleFS flash' : 'Not available'}>
+                        <span class="t-icon">⚡</span>
+                        <span class="t-name">Flash</span>
+                        {#if status.flashAvailable}
+                            <span class="t-cap">{fmtBytes(status.flashFree)} free · {fmtBytes(status.flashTotal)} total</span>
+                        {:else}
+                            <span class="t-na">not available</span>
+                        {/if}
+                    </button>
+                {/if}
+                {#if showSdTab}
+                    <button class="target" class:active={target === 'sd'}
+                            disabled={!status.sdAvailable}
+                            on:click={() => switchTarget('sd')}
+                            title={status.sdAvailable ? `${status.sdCardType} via ${status.sdBusMode}` : 'Not available on this board'}>
+                        <span class="t-icon">💾</span>
+                        <span class="t-name">SD</span>
+                        {#if status.sdAvailable}
+                            <span class="t-cap">{status.sdFreeMB} MB free · {status.sdTotalMB} MB total</span>
+                            {#if status.sdBusMode}<span class="t-bus">{status.sdBusMode}</span>{/if}
+                        {:else}
+                            <span class="t-na">not available</span>
+                        {/if}
+                    </button>
+                {/if}
             </div>
 
             <!-- ─── Toolbar: breadcrumb + actions ─── -->

@@ -8,6 +8,7 @@
 import { writable, derived, get } from 'svelte/store'
 import {
     GetEngineConfig, SetEngineConfig, EngineStart, EngineStop, EngineStatus,
+    CheckFiles,
 } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 
@@ -134,6 +135,26 @@ export async function refreshEngineStatus(): Promise<void> {
         const s = await EngineStatus() as EngineStatusT
         if (s) engineStatus.set(s)
     } catch { /* not connected */ }
+}
+
+// ─── File existence (sound-file validation on SD) ─────────────────────
+
+export interface FileCheckT { path: string; exists: boolean; size: number; err?: string }
+
+/** checkFiles probes a list of paths on the device's audio storage and
+ *  returns a map of path → exists.  Used by the Engine panel to mark
+ *  missing sound files red. */
+export async function checkFiles(paths: string[]): Promise<Record<string, boolean>> {
+    const out: Record<string, boolean> = {}
+    const nonEmpty = paths.filter(p => !!p)
+    if (nonEmpty.length === 0) return out
+    try {
+        const results = (await CheckFiles(nonEmpty)) as FileCheckT[]
+        for (const r of results) out[r.path] = !!r.exists
+    } catch {
+        for (const p of nonEmpty) out[p] = false
+    }
+    return out
 }
 
 // ─── GunFX (placeholder until per-unit config lands) ──────────────────
