@@ -58,8 +58,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.11.0-hubfx"
-#define BUILD_NUMBER     179
+#define FIRMWARE_VERSION "2.12.0-hubfx"
+#define BUILD_NUMBER     200
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -123,6 +123,7 @@
 #include "config/hubfx_config.h"
 #include "config/alerts_config.h"
 #include "config/enginefx_config.h"
+#include "config/gunfx_config.h"
 #include "config/landing_config.h"
 #include "config/gearcontrol_config.h"
 #include "config/lightfx_config.h"
@@ -416,6 +417,7 @@ static EspDualCoreAudio<Mixer> audio;
 static hubfx::config::ConfigStoreSlot<HubFxConfigSchema,    HubFxYamlPool>    kHubFx;
 static hubfx::config::ConfigStoreSlot<AlertsConfigSchema,   AlertsYamlPool>   kAlerts;
 static hubfx::config::ConfigStoreSlot<EngineFxConfigSchema, EngineFxYamlPool> kEngineFx;
+static hubfx::config::ConfigStoreSlot<GunFxConfigSchema,    GunFxYamlPool>    kGunFx;
 static hubfx::config::ConfigStoreSlot<LandingConfigSchema,  LandingYamlPool>  kLanding;
 static hubfx::config::ConfigStoreSlot<GearControlConfigSchema, GearControlYamlPool> kGearCtrl;
 static hubfx::config::ConfigStoreSlot<LightFxConfigSchema,  LightFxYamlPool>  kLightFx;
@@ -463,6 +465,20 @@ static void applyEngineFxConfigCallback(const EngineFxYamlConfig& cfg) {
         board, cfg, kHubFx.data());
 }
 
+static void applyGunFxConfigCallback(const GunFxYamlConfig& cfg) {
+    // Phase 2 of GunFX rollout + Rule 43: each gun's trigger.input /
+    // rof.input / yaw.input / pitch.input is a NAME from /hubfx.yaml's
+    // inputs[] block.  kHubFx.data() supplies the resolver table — the
+    // apply translator turns names into resolved PortRef + channel
+    // BEFORE handing the spec list to the service.
+    //
+    // Dispatcher subscriptions still happen in service.begin(), so a
+    // reload updates the resolved table but doesn't re-subscribe —
+    // a reboot rebinds cleanly.  Phase 4 polish: re-subscribe on reload.
+    hubfx::config::applyGunFxConfig<HubFxBoard, GunFxService>(
+        board, cfg, kHubFx.data());
+}
+
 static void applyLandingConfigCallback(const LandingConfig& cfg) {
     hubfx::config::applyLandingConfig<HubFxBoard, LandingLightService>(board, cfg);
 }
@@ -501,6 +517,7 @@ void setup() {
         kHubFx   .wire(cfgPolicy, applyHubFxConfigCallback);
         kAlerts  .wire(cfgPolicy, applyAlertsConfigCallback);
         kEngineFx.wire(cfgPolicy, applyEngineFxConfigCallback);
+        kGunFx   .wire(cfgPolicy, applyGunFxConfigCallback);
         kLanding .wire(cfgPolicy, applyLandingConfigCallback);
         kGearCtrl.wire(cfgPolicy, applyGearControlConfigCallback);
         kLightFx .wire(cfgPolicy, applyLightFxConfigCallback);

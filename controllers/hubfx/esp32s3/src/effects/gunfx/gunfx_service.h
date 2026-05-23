@@ -1,15 +1,20 @@
 /*
- * gunfx_service.h — `GunFxServicePolicyT<TMixer, TTopology>`.
+ * gunfx_service.h — `GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>`.
  *
- *   Master-side gun effect.  Holds a small registry of `GunUnit`s,
- *   each backed by (muzzle-flash LED, optional recoil servo,
- *   optional smoke heater, optional RC trigger input).
+ *   Master-side gun effect (Phase 2 of GunFX rollout, instructions/22).
+ *   Holds up to `kMaxGuns` `GunUnit`s, each consuming a `GunSpec`
+ *   (gunfx_config.h) with muzzle-flash LED + optional recoil servo +
+ *   optional smoke heater + fan + optional yaw/pitch turret + optional
+ *   trigger / ROF-selector / per-axis RC inputs.
  *
- *   Wire surface 0xCC..0xD2: FIRE_ONCE / START / STOP / SMOKE_ARM /
- *   STATUS / SHOT_EVENT.  Listens to topology role events for
- *   RCIN_VALUE_BROADCAST and forwards to the matching unit's
- *   `onTriggerInput()`.  Optional audio plays through the local
- *   mixer (TMixer) on every shot.
+ *   Wire surface:
+ *     0xCC..0xD2  FIRE_ONCE / START / STOP / SMOKE_ARM / STATUS / SHOT
+ *     0xE2..0xE5  MANUAL_SET / MANUAL_RELEASE / VERBOSE_STATUS_REQ /
+ *                 VERBOSE_STATUS (~10 Hz broadcasts when subscribed).
+ *
+ *   Listens to topology role events for the per-gun RC channels and
+ *   forwards them to the matching unit's input callbacks.  Optional
+ *   audio plays through the local mixer (TMixer) on every shot.
  */
 
 #ifndef HUBFX_GUNFX_SERVICE_H
@@ -28,12 +33,17 @@
 #include "../input/trigger_input.h"
 #include "../input/input_dispatcher.h"         // InputDispatcher concept
 #include "gun_unit.h"
+#include "gunfx_config.h"
 #include "gunfx_protocol.h"
 #include <audio/audio_mixer.h>                  // AudioMixer concept
 
 namespace hubfx::effects::gunfx {
 
 inline constexpr uint8_t kMaxGuns = 4;
+// Verbose status broadcast cadence (matches instructions/22 §0.5 Risks
+// item #2 — bench at 5 Hz before committing if the input dispatcher
+// slows). Subscriptions are per-gun; only subscribed guns broadcast.
+inline constexpr uint32_t kVerboseStatusIntervalMs = 100;     // 10 Hz
 
 template <MixerLike                                   TMixer,
           hubfx::topology::TopologyService            TTopology,
@@ -44,11 +54,18 @@ public:
 
     GunFxServicePolicyT() = default;
 
-    void configure(const GunDef* defs, uint8_t count) {
-        _numDefs = 0;
+    void configure(const GunSpec* specs, uint8_t count) {
+        _numSpecs = 0;
         for (uint8_t i = 0; i < count && i < kMaxGuns; ++i) {
-            _defs[_numDefs++] = defs[i];
+            _specs[_numSpecs++] = specs[i];
         }
+        // Re-bind GunUnits + dispatcher subscriptions to the new spec
+        // list so a /gunfx.yaml reload picks up the changes without
+        // requiring a reboot (Phase 2.9.x — stopgap §8 #4).  Safe to
+        // call before begin() — _ctx / _topo / _dispatcher are null on
+        // the first call and the guards inside subscribePerGunInputs
+        // short-circuit cleanly.
+        if (_ctx && _topo) reapplySpecs();
     }
 
     /// Runtime-enable flag — see LandingLightService for rationale.
@@ -64,7 +81,10 @@ public:
             || type == GunPacket::GUN_START_FIRING
             || type == GunPacket::GUN_STOP_FIRING
             || type == GunPacket::GUN_SMOKE_ARM
-            || type == GunPacket::GUN_STATUS_REQ;
+            || type == GunPacket::GUN_STATUS_REQ
+            || type == GunPacket::GUN_MANUAL_SET
+            || type == GunPacket::GUN_MANUAL_RELEASE
+            || type == GunPacket::GUN_VERBOSE_STATUS_REQ;
     }
 
     CommandHandleResult handle(uint8_t type,
@@ -77,16 +97,29 @@ public:
     }
 
     GunUnit* findById(uint8_t id);
-    uint8_t  count() const { return _numDefs; }
+    int8_t   indexById(uint8_t id) const;
+    uint8_t  count() const { return _numSpecs; }
 
 private:
     void claimPorts();
+    void subscribePerGunInputs();
+    /// Re-bind GunUnits + dispatcher subscriptions to `_specs[]`.  Called
+    /// from `configure()` after a reload so a /gunfx.yaml edit takes
+    /// effect without a reboot.  Idempotent — re-running it just
+    /// re-subscribes the same callbacks.
+    void reapplySpecs();
+    void unsubscribePerGunInputs();
 
-    void handleFireOnce   (const uint8_t* p, size_t len);
-    void handleStartFiring(const uint8_t* p, size_t len);
-    void handleStopFiring (const uint8_t* p, size_t len);
-    void handleSmokeArm   (const uint8_t* p, size_t len);
-    void handleStatusReq  ();
+    void handleFireOnce         (const uint8_t* p, size_t len);
+    void handleStartFiring      (const uint8_t* p, size_t len);
+    void handleStopFiring       (const uint8_t* p, size_t len);
+    void handleSmokeArm         (const uint8_t* p, size_t len);
+    void handleStatusReq        ();
+    void handleManualSet        (const uint8_t* p, size_t len);
+    void handleManualRelease    (const uint8_t* p, size_t len);
+    void handleVerboseStatusReq (const uint8_t* p, size_t len);
+
+    void emitVerboseStatus(uint8_t unitIdx, uint32_t nowMs);
 
     // Per-shot fan-out: emit SHOT_EVENT + optionally play firing sound.
     void onShotFired(uint8_t id, const char* soundPath,
@@ -102,25 +135,37 @@ private:
                                       uint8_t audioChannel,
                                       uint8_t outputMask);
 
-    // Per-unit trigger-input callback — routes a TriggerValue
-    // change into the matching GunUnit's onTriggerInput().
-    struct TriggerCtx {
+    // Per-gun input-callback contexts. One slot per (unit, input kind);
+    // dispatcher subscriptions take a TriggerInput* + a void* ctx, so
+    // the trampoline reads the ctx back to (svc, unitIdx, kind).
+    enum class TrigKind : uint8_t { Trigger=0, Rof=1, Yaw=2, Pitch=3, _Count };
+    struct InputCtx {
         GunFxServicePolicyT* svc;
         uint8_t              unitIdx;
+        TrigKind             kind;
     };
-    static void triggerChangeTrampoline(void* ctx,
-                                        const input::TriggerValue& v);
+    static void inputChangeTrampoline(void* ctx,
+                                      const input::TriggerValue& v);
 
     sfx_core::BoardServerBase* _ctx        = nullptr;
     TTopology*                 _topo       = nullptr;
     TInputDispatcher*          _dispatcher = nullptr;
 
-    GunDef             _defs    [kMaxGuns] = {};
-    GunUnit            _units   [kMaxGuns] = {};
-    input::TriggerInput _triggers[kMaxGuns] = {};
-    TriggerCtx         _trigCtx [kMaxGuns] = {};
-    uint8_t            _numDefs            = 0;
-    bool               _enabled            = false;   // runtime enable flag (config-driven)
+    GunSpec             _specs   [kMaxGuns] = {};
+    GunUnit             _units   [kMaxGuns] = {};
+    // 4 trigger inputs per gun (Trigger Boolean + ROF/Yaw/Pitch Raw).
+    input::TriggerInput _triggers[kMaxGuns][(uint8_t)TrigKind::_Count] = {};
+    InputCtx            _inputCtx[kMaxGuns][(uint8_t)TrigKind::_Count] = {};
+
+    uint8_t  _numSpecs = 0;
+    bool     _enabled  = false;
+
+    // Verbose-status subscription map + last-broadcast timestamps.
+    bool     _verbose      [kMaxGuns] = {};
+    uint32_t _lastVerboseMs[kMaxGuns] = {};
+
+    // EffectClock-tracked tick used by GunUnit::update(dtMs).
+    uint32_t _lastUpdateMs = 0;
 };
 
 }  // namespace hubfx::effects::gunfx

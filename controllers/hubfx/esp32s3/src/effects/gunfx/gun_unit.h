@@ -1,22 +1,37 @@
 /*
  * gun_unit.h — single gun state machine for the GunFX effect.
  *
- *   Per-unit: drives one muzzle-flash LED (LedAnimator role), an
- *   optional recoil servo (ServoActuator), and an optional smoke
- *   heater (Heater role).  Single-shot and auto-fire modes are both
- *   supported.  All wire activity flows through topology callbacks
- *   that the owning service installs at `configure()` time — keeping
- *   the state machine independent of transport templates.
+ *   Per-gun, Phase 2 of GunFX rollout (instructions/22): drives one
+ *   muzzle-flash LED + optional recoil servo + optional smoke heater +
+ *   optional smoke fan + optional yaw/pitch turret pair, gated by an
+ *   optional fire trigger + optional rate-of-fire selector channel.
+ *
+ *   The unit holds a `GunSpec` (from gunfx_config.h) and reads it
+ *   through the entire tick — no copies. State that varies per tick
+ *   (firing flag, smoke armed, ROF item, axis positions, manual
+ *   override) lives on the unit; the spec is config only.
+ *
+ *   All wire activity flows through topology callbacks installed at
+ *   `configure()` time — keeps the state machine transport-agnostic.
  *
  *   Each shot does, atomically (one topology batch):
- *     - LED_QUEUE_LOAD with a single short flash event + LED_START
- *     - SERVO_SET_TARGET to the jerk position (if recoil servo present)
- *     - Caller schedules an audio playAsync separately (the unit is
- *       transport-agnostic about audio).
+ *     - LED_QUEUE_LOAD + LED_START on the muzzle-flash port
+ *     - SERVO_SET_TARGET on the recoil servo (jerk position, return
+ *       scheduled `recoilHoldMs` later)
+ *     - One fan pulse if `smoke.fanMode == FN_PUFF_PER_SHOT`
+ *     - ShotEvent callback (audio + wire async)
  *
- *   Recoil "return to center" happens on the next `update()` tick
- *   after `recoilHoldMs` has elapsed since the shot — simple
- *   time-driven, no async callback required.
+ *   Yaw + pitch run as one-line passthroughs: read input channel →
+ *   `SERVO_SET_TARGET` to the axis's servo port.  Motion shaping (clamp /
+ *   speed / accel / jerk) lives on the `ServoActuatorRole` attached to
+ *   the port — set once in `/hubfx.yaml`'s `ports[]` block, never
+ *   integrated here (Rule 42 — actuator mechanism on the role layer).
+ *
+ *   Manual override: when `_manual.active`, RC channel reads are
+ *   ignored and per-axis / per-subsystem targets come from `_manual.*`
+ *   instead. Auto-released after `kManualTimeoutMs` of no
+ *   GUN_MANUAL_SET so a Studio crash never strands the gun in puppet
+ *   mode.
  */
 
 #ifndef HUBFX_GUN_UNIT_H
@@ -25,34 +40,35 @@
 #include <cstdint>
 
 #include "../effect_id.h"
+#include "gunfx_config.h"
 #include "gunfx_protocol.h"
 
 namespace hubfx::effects::gunfx {
 
-struct GunDef {
-    uint8_t  id            = 0;
-    char     name[16]      = {};
+/// Manual override state — the most recent operator-driven target for
+/// each subsystem.  Only fields whose `*Valid` flag is true override
+/// the corresponding RC read; the others fall through to RC.
+struct ManualOverride {
+    bool     active            = false;   ///< true when in manual mode
+    uint32_t lastUpdateMs      = 0;       ///< for auto-release timeout
 
-    PortRef  muzzleFlash;                          ///< LedAnimator port (required)
-    PortRef  recoilServo;                          ///< ServoActuator port (optional; portKind==0 = none)
-    PortRef  smokeHeater;                          ///< Heater port (optional)
-    PortRef  trigger;                              ///< RcPwmInput port (optional auto-fire)
-
-    uint16_t flashDurationMs   = 30;
-    uint8_t  flashBrightness   = 100;
-
-    uint16_t recoilCenterUs    = 1500;
-    uint16_t recoilJerkUs      = 200;
-    uint16_t recoilHoldMs      = 80;
-
-    int16_t  smokeTargetCx10   = 1500;             ///< 150.0 °C, only used while armed
-    uint16_t triggerThresholdUs = 1500;
-    uint16_t defaultIntervalMs = 100;              ///< auto-fire fallback (600 RPM)
-
-    char     fireSoundPath[64] = {};               ///< optional, played via service callback
-    uint8_t  audioChannel      = 0;                ///< set from `HubFxLayout::Gun0` etc.
-    uint8_t  outputMask        = 0x03;             ///< AudioWire::OUTPUT_ALL by default
+    bool     yawValid          = false;
+    uint16_t yawUs             = 1500;
+    bool     pitchValid        = false;
+    uint16_t pitchUs           = 1500;
+    bool     rofIndexValid     = false;
+    uint8_t  rofIndex          = 0xFF;
+    bool     fireHoldValid     = false;
+    bool     fireHold          = false;
+    bool     smokeArmValid     = false;
+    bool     smokeArm          = false;
 };
+
+/// Auto-release timeout: if no GUN_MANUAL_SET arrives within this
+/// window, the unit returns to RC. Picked to be longer than Studio's
+/// natural retry interval but short enough that a crash drops the
+/// puppet promptly (5 s).
+inline constexpr uint32_t kManualTimeoutMs = 5000;
 
 class GunUnit {
 public:
@@ -67,11 +83,11 @@ public:
 
     GunUnit() = default;
 
-    void configure(const GunDef& def,
+    void configure(const GunSpec& spec,
                    SendRoleCmdFn sendFn, void* sendCtx,
                    BatchFn beginFn, BatchFn commitFn,
                    ShotEventFn shotFn = nullptr, void* shotCtx = nullptr) {
-        _def      = def;
+        _spec     = spec;
         _send     = sendFn;
         _sendCtx  = sendCtx;
         _begin    = beginFn;
@@ -80,24 +96,75 @@ public:
         _shotCtx  = shotCtx;
         _firing   = false;
         _smokeArmed = false;
+        _shotsThisSession = 0;
+        _activeRofIndex = pickInitialRofIndex();
+        // NOTE — Phase 2.9: axis motion profiles live on the
+        // ServoActuatorRole attached to each yaw/pitch port (via the
+        // role-attach payload in /hubfx.yaml ports[]).  The gun no
+        // longer integrates motion locally; it just pushes targets at
+        // the intent layer.  Verbose status reads `yawTargetUs` from
+        // the spec/manual state and shows the last commanded target —
+        // current µs needs a role round-trip (deferred until needed).
     }
 
-    const GunDef& def() const { return _def; }
-    uint8_t id() const        { return _def.id; }
-    bool firing() const       { return _firing; }
-    bool smokeArmed() const   { return _smokeArmed; }
+    // ── Public API ────────────────────────────────────────────────────
+
+    const GunSpec& spec() const { return _spec; }
+    uint8_t  id()           const { return _spec.id; }
+    bool     firing()       const { return _firing; }
+    bool     smokeArmed()   const { return _smokeArmed; }
+    /// True when the smoke fan is currently being driven — either in a
+    /// puff pulse (puff modes) or held continuously (FN_CONTINUOUS).
+    /// Read by the verbose-status producer.
+    bool     fanRunning()   const { return _fanContinuous || _fanPuffEndMs != 0; }
+    uint8_t  rofIndex()     const { return _activeRofIndex; }
+    uint16_t triggerUs()    const { return _lastTriggerUs; }
+    uint16_t rofSelectorUs() const { return _lastRofSelectorUs; }
+    // Phase 2.9: motion lives on the ServoActuatorRole.  GunUnit only
+    // tracks the LAST COMMANDED target; the role owns the integrator
+    // and the actual `current` position.  Verbose status surfaces both
+    // as the same value for now — Studio reads the role's status
+    // directly if it wants live current µs (deferred follow-up).
+    uint16_t yawCurrentUs()   const { return _yawTargetUs; }
+    uint16_t yawTargetUs()    const { return _yawTargetUs; }
+    uint16_t pitchCurrentUs() const { return _pitchTargetUs; }
+    uint16_t pitchTargetUs()  const { return _pitchTargetUs; }
+    const ManualOverride& manual() const { return _manual; }
+    uint32_t shotsThisSession() const { return _shotsThisSession; }
 
     void fireOnce();
-    void startFiring(uint16_t rpm);
+    void startFiring(uint16_t rpmOverride);   ///< 0 → use armed RofItem's rpm or default
     void stopFiring();
     void armSmoke(bool armed);
 
-    /// Tick — drives auto-fire scheduling and recoil-return timing.
-    void update(uint32_t nowMs);
+    /// Tick — drives auto-fire scheduling, recoil-return timing, fan
+    /// pulses, heater bang-bang, yaw/pitch motion profile, and the
+    /// manual-override auto-release timeout.
+    void update(uint32_t nowMs, uint32_t dtMs);
 
-    /// Forwarded by the service on RCIN_VALUE_BROADCAST for our
-    /// configured trigger port.
-    void onTriggerInput(uint16_t pulseUs, bool valid);
+    /// Forwarded by the service when the trigger channel crosses its
+    /// configured threshold (TriggerInput::Boolean dispatch).
+    void onTriggerBoolean(bool held);
+    /// Forwarded for the trigger's raw µs — kept for the verbose
+    /// status mirror and the future trigger-bar UI.
+    void onTriggerRawUs(uint16_t pulseUs, bool valid);
+    /// Forwarded for the ROF selector channel (Raw µs).
+    void onRofSelectorUs(uint16_t pulseUs, bool valid);
+    /// Forwarded for yaw / pitch axis input channels (Raw µs).
+    void onYawInputUs(uint16_t pulseUs, bool valid);
+    void onPitchInputUs(uint16_t pulseUs, bool valid);
+
+    // ── Manual override ──────────────────────────────────────────────
+
+    /// Apply a manual-set packet's fields (selected by `flags`) and
+    /// (re-)enter manual mode.  Auto-release timer resets on every call.
+    void applyManualSet(uint8_t flags,
+                        uint16_t yawUs, uint16_t pitchUs,
+                        uint8_t rofIndex, bool fireHold,
+                        bool smokeArm, bool smokeFanBurst,
+                        uint32_t nowMs);
+    /// Exit manual mode immediately; RC takes over on the next tick.
+    void releaseManual();
 
 private:
     void doShot();
@@ -105,15 +172,67 @@ private:
     void commandFlash();
     void commandRecoilJerk();
     void commandHeater(bool on);
+    void commandFanPct(uint8_t pct);
+    void commandServoTargetUs(const PortRef& port, uint16_t us);
 
-    GunDef        _def{};
-    bool          _firing               = false;
-    bool          _smokeArmed           = false;
-    uint32_t      _shotIntervalMs       = 0;
-    uint32_t      _nextShotMs           = 0;
-    uint32_t      _recoilReturnAtMs     = 0;
-    bool          _triggerHeld          = false;
+    /// Find the RofItem whose band contains `pulseUs`. Returns 0xFF
+    /// when no band matches (out-of-band = no item armed).
+    uint8_t findRofIndex(uint16_t pulseUs) const;
+    /// Fallback for first-tick state when no ROF channel is bound — picks
+    /// the first declared item, or 0xFF if there are none.
+    uint8_t pickInitialRofIndex() const;
+    /// Returns the RofItem to use when firing — armed item, or a
+    /// synthetic default when no ROF is configured.
+    const RofItem* activeRof() const;
 
+    void scheduleFanPuff(uint32_t nowMs);
+    void tickFan(uint32_t nowMs);
+    // Phase 2.9: ServoActuatorRole owns the motion profile; the gun
+    // just pushes a target each tick.  `lastCommandedRef` carries the
+    // last value we wrote so we suppress redundant SERVO_SET_TARGET
+    // packets while the input is stable.
+    void tickAxis(const GunAxis& axis,
+                  uint16_t lastRcUs, bool manualValid, uint16_t manualUs,
+                  uint16_t& lastCommandedRef);
+    void tickManualTimeout(uint32_t nowMs);
+
+    GunSpec      _spec{};
+    bool         _firing           = false;
+    bool         _smokeArmed       = false;
+    uint32_t     _shotIntervalMs   = 0;     ///< 0 when not auto-firing
+    uint32_t     _nextShotMs       = 0;
+    uint32_t     _recoilReturnAtMs = 0;
+
+    // ROF arbitration state.
+    uint8_t      _activeRofIndex   = 0xFF;
+    uint16_t     _lastRofSelectorUs = 0;
+    bool         _haveRofSelector  = false;
+
+    // Trigger state (Boolean edge handled by TriggerInput in the service).
+    bool         _triggerHeld      = false;
+    uint16_t     _lastTriggerUs    = 0;
+
+    // Smoke fan state.
+    uint32_t     _fanPuffEndMs     = 0;     ///< 0 = fan idle, else "fan off at this time"
+    bool         _fanContinuous    = false; ///< true while FN_CONTINUOUS + firing
+    bool         _pendingFanBurst  = false; ///< one-shot manual fan burst request
+
+    // Axis state.  Phase 2.9: motion lives on the ServoActuatorRole;
+    // we only track input + last commanded target here.
+    uint16_t     _lastYawInputUs   = 1500;
+    uint16_t     _lastPitchInputUs = 1500;
+    bool         _haveYawInput     = false;
+    bool         _havePitchInput   = false;
+    uint16_t     _yawTargetUs      = 1500;   ///< last value sent to yaw servo
+    uint16_t     _pitchTargetUs    = 1500;   ///< last value sent to pitch servo
+
+    // Manual override.
+    ManualOverride _manual{};
+
+    // Stats.
+    uint32_t     _shotsThisSession = 0;
+
+    // Transport hooks.
     SendRoleCmdFn _send     = nullptr;
     void*         _sendCtx  = nullptr;
     BatchFn       _begin    = nullptr;

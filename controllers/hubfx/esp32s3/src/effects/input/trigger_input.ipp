@@ -10,6 +10,12 @@ namespace hubfx::effects::input {
 // ─── feed() — public entry point ────────────────────────────────────
 
 inline TriggerValue TriggerInput::feed(uint16_t pulseUs, bool valid) {
+    // Shadow the raw µs unconditionally so consumers (Studio verbose
+    // status mirror) can surface the live µs trace even when the
+    // trigger is subscribed as Boolean / EnumN / Prop*.
+    _lastPulseUs    = pulseUs;
+    _lastPulseValid = valid;
+
     TriggerValue v;
     v.kind = _mapping.kind;
 

@@ -30,6 +30,7 @@
 #include "hubfx_config.h"
 #include "alerts_config.h"
 #include "enginefx_config.h"
+#include "gunfx_config.h"
 #include "landing_config.h"
 #include "gearcontrol_config.h"
 #include "lightfx_config.h"
@@ -278,6 +279,58 @@ void applyEngineFxConfig(TBoard& board, const EngineFxYamlConfig& cfg,
                  (unsigned)resolved.thresholdUs,
                  audioOutputMaskName(cfg.outputMask),
                  cfg.sounds.starting);
+}
+
+/// Apply `/gunfx.yaml` — full per-gun spec table → GunFxService
+/// (Phase 2 + Rule 43 named-channel resolver).
+///
+/// Rule 43: each gun's `triggerInput`, `rofSelectorInput`,
+/// `yaw.inputName`, `pitch.inputName` carries a NAME from
+/// /hubfx.yaml's `inputs:` block.  We resolve those names against the
+/// parsed HubFxConfig BEFORE handing the spec list to the service —
+/// the service stores resolved PortRef + channel; it never sees the
+/// name.  Unknown names log a WARN and leave the binding empty (the
+/// service skips the dispatcher subscribe).
+template <typename TBoard, typename TGunFxService>
+void applyGunFxConfig(TBoard& board, const GunFxYamlConfig& cfg,
+                      const HubFxConfig& hub) {
+    // Walk a mutable copy of the spec table so we can write resolved
+    // port + channel fields without touching the parsed YAML.
+    auto resolved = cfg;
+    auto resolveInput = [&hub](const char* name,
+                               hubfx::effects::PortRef& port,
+                               uint8_t& channel,
+                               const char* context, uint8_t gunId) {
+        if (!name || !name[0]) {
+            port = {};
+            channel = 0;
+            return;
+        }
+        const InputBinding* b = findInputByName(hub, name);
+        if (!b) {
+            SFX_LOG_WARN("[gunfx-config] gun[%u].%s='%s' not in /hubfx.yaml "
+                         "inputs[] — binding disabled",
+                         (unsigned)gunId, context, name);
+            port = {};
+            channel = 0;
+            return;
+        }
+        port    = b->port;
+        channel = (b->channelId > 0) ? (uint8_t)(b->channelId - 1) : 0;
+    };
+    for (uint8_t i = 0; i < resolved.numGuns; ++i) {
+        auto& g = resolved.guns[i];
+        resolveInput(g.triggerInput,       g.triggerPort,       g.triggerChannel,       "trigger.input",      g.id);
+        resolveInput(g.rofSelectorInput,   g.rofSelectorPort,   g.rofSelectorChannel,   "rof.input",          g.id);
+        resolveInput(g.yaw.inputName,      g.yaw.inputPort,     g.yaw.inputChannel,     "yaw.input",          g.id);
+        resolveInput(g.pitch.inputName,    g.pitch.inputPort,   g.pitch.inputChannel,   "pitch.input",        g.id);
+    }
+    auto& svc = board.template policy<TGunFxService>();
+    svc.configure(resolved.guns, resolved.numGuns);
+    svc.setEnabled(resolved.enabled);
+    board.recomputeEnabledCapabilities();
+    SFX_LOG_INFO("[gunfx-config] applied — enabled=%s, %u gun(s)",
+                 resolved.enabled ? "on" : "off", (unsigned)resolved.numGuns);
 }
 
 /// Apply `/landing.yaml` — landing-light def table → LandingLightService.

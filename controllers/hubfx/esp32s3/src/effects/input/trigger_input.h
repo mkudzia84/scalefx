@@ -111,6 +111,13 @@ public:
 
     const TriggerMapping& mapping() const { return _mapping; }
     TriggerValue          last()    const { return _last; }
+    /// Latest raw input pulse µs, regardless of `kind`.  Captured on
+    /// every `feed()` so consumers (Studio verbose-status mirror) can
+    /// surface the live µs trace even when the trigger is subscribed
+    /// as Boolean / EnumN / Prop*.  0 when no feed has arrived yet, or
+    /// the latest failsafe-input µs when the source dropped frames.
+    uint16_t              lastPulseUs() const { return _lastPulseUs; }
+    bool                  lastPulseValid() const { return _lastPulseValid; }
 
     /// Feed one raw pulse.  Computes the typed value, applies
     /// hysteresis / deadband / failsafe rules, sets `changed`, and
@@ -134,6 +141,8 @@ private:
     TriggerMapping _mapping{};
     TriggerValue   _last{};
     bool           _haveLast = false;
+    uint16_t       _lastPulseUs = 0;       ///< raw µs from the most recent feed()
+    bool           _lastPulseValid = false;
     OnChangeFn     _cb       = nullptr;
     void*          _ctx      = nullptr;
 };

@@ -1,5 +1,6 @@
 /*
- * gunfx_service.ipp — GunFX service template-method bodies.
+ * gunfx_service.ipp — GunFX service template-method bodies (Phase 2 of
+ *                     GunFX rollout, instructions/22).
  */
 
 #ifndef HUBFX_GUNFX_SERVICE_IPP
@@ -29,67 +30,157 @@ bool GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::begin(
         return false;
     }
 
-    for (uint8_t i = 0; i < _numDefs; ++i) {
-        _units[i].configure(_defs[i],
+    reapplySpecs();
+    _lastUpdateMs = sfx_core::EffectClock::instance().nowMs();
+    SFX_LOG_INFO("[gun-svc] ready (%u guns)", (unsigned)_numSpecs);
+    return true;
+}
+
+// Re-bind GunUnits + dispatcher subscriptions to the current `_specs[]`.
+// Called from begin() (initial bring-up) and from configure() (so a
+// /gunfx.yaml reload picks up new ports without a reboot — Phase 2.9.x
+// stopgap §8 #4).
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::reapplySpecs() {
+    unsubscribePerGunInputs();
+    for (uint8_t i = 0; i < _numSpecs; ++i) {
+        _units[i].configure(_specs[i],
                             &GunFxServicePolicyT::sendRoleCmdTrampoline,
                             static_cast<void*>(_topo),
                             &GunFxServicePolicyT::beginBatchTrampoline,
                             &GunFxServicePolicyT::commitBatchTrampoline,
                             &GunFxServicePolicyT::shotEventTrampoline,
                             static_cast<void*>(this));
+    }
+    subscribePerGunInputs();
+    claimPorts();
+}
 
-        // Per-unit trigger input — register only when the unit's def
-        // names an RC port AND the dispatcher is present.
-        if (_dispatcher && _defs[i].trigger.portKind != 0) {
-            _trigCtx[i] = { this, i };
-            input::TriggerMapping m;
-            m.kind         = input::TriggerKind::Boolean;
-            m.thresholdUs  = _defs[i].triggerThresholdUs;
-            m.hysteresisUs = 50;
-            m.failsafe     = input::FailsafeBehaviour::ForceLow;
-            _triggers[i].configure(m,
-                                   &GunFxServicePolicyT::triggerChangeTrampoline,
-                                   static_cast<void*>(&_trigCtx[i]));
-            _dispatcher->subscribe(&_triggers[i], _defs[i].trigger, /*channel=*/0);
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::unsubscribePerGunInputs() {
+    if (!_dispatcher) return;
+    for (uint8_t i = 0; i < kMaxGuns; ++i) {
+        for (uint8_t k = 0; k < (uint8_t)TrigKind::_Count; ++k) {
+            _dispatcher->unsubscribe(&_triggers[i][k]);
         }
     }
-    claimPorts();
-    SFX_LOG_INFO("[gun-svc] ready (%u guns)", (unsigned)_numDefs);
-    return true;
 }
+
+// ─── Port claiming (all 10 slots, output-exclusive) ─────────────────
 
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
 void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::claimPorts() {
     using namespace sfx_core;
-    for (uint8_t i = 0; i < _numDefs; ++i) {
-        const GunDef& d = _defs[i];
-        if (d.muzzleFlash.portKind != 0) {
-            _topo->claim(d.muzzleFlash, EffectId::GunFx, RoleKind::LedAnimator);
-        }
-        if (d.recoilServo.portKind != 0) {
-            _topo->claim(d.recoilServo, EffectId::GunFx, RoleKind::ServoActuator);
-        }
-        if (d.smokeHeater.portKind != 0) {
-            _topo->claim(d.smokeHeater, EffectId::GunFx, RoleKind::Heater);
-        }
-        // Trigger input is shared — no exclusive claim.
+    for (uint8_t i = 0; i < _numSpecs; ++i) {
+        const GunSpec& s = _specs[i];
+        if (s.muzzleFlashPort.portKind != 0)
+            _topo->claim(s.muzzleFlashPort, EffectId::GunFx, RoleKind::LedAnimator);
+        if (s.recoilServoPort.portKind != 0)
+            _topo->claim(s.recoilServoPort, EffectId::GunFx, RoleKind::ServoActuator);
+        if (s.smoke.heaterPort.portKind != 0)
+            _topo->claim(s.smoke.heaterPort, EffectId::GunFx, RoleKind::Heater);
+        if (s.smoke.fanPort.portKind != 0)
+            _topo->claim(s.smoke.fanPort, EffectId::GunFx, RoleKind::DcMotor);
+        if (s.yaw.enabled && s.yaw.servoPort.portKind != 0)
+            _topo->claim(s.yaw.servoPort, EffectId::GunFx, RoleKind::ServoActuator);
+        if (s.pitch.enabled && s.pitch.servoPort.portKind != 0)
+            _topo->claim(s.pitch.servoPort, EffectId::GunFx, RoleKind::ServoActuator);
+        // Input ports (trigger / ROF selector / yaw input / pitch input)
+        // are shareable — no exclusive claim.
     }
 }
+
+// ─── Input subscriptions (per-gun trigger + ROF + yaw + pitch) ──────
+
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::subscribePerGunInputs() {
+    if (!_dispatcher) return;
+    for (uint8_t i = 0; i < _numSpecs; ++i) {
+        const GunSpec& s = _specs[i];
+
+        // 1. Fire trigger — Boolean (debounced edges).
+        if (s.triggerPort.portKind != 0) {
+            _inputCtx[i][(uint8_t)TrigKind::Trigger] = { this, i, TrigKind::Trigger };
+            input::TriggerMapping m;
+            m.kind         = input::TriggerKind::Boolean;
+            m.thresholdUs  = s.triggerThresholdUs;
+            m.hysteresisUs = s.triggerHysteresisUs;
+            m.failsafe     = input::FailsafeBehaviour::ForceLow;
+            _triggers[i][(uint8_t)TrigKind::Trigger].configure(m,
+                &GunFxServicePolicyT::inputChangeTrampoline,
+                static_cast<void*>(&_inputCtx[i][(uint8_t)TrigKind::Trigger]));
+            _dispatcher->subscribe(&_triggers[i][(uint8_t)TrigKind::Trigger],
+                                   s.triggerPort, s.triggerChannel);
+        }
+
+        // 2. ROF selector — Raw (we need the µs to do band arbitration).
+        if (s.rofSelectorPort.portKind != 0) {
+            _inputCtx[i][(uint8_t)TrigKind::Rof] = { this, i, TrigKind::Rof };
+            input::TriggerMapping m;
+            m.kind     = input::TriggerKind::Raw;
+            m.failsafe = input::FailsafeBehaviour::Hold;
+            _triggers[i][(uint8_t)TrigKind::Rof].configure(m,
+                &GunFxServicePolicyT::inputChangeTrampoline,
+                static_cast<void*>(&_inputCtx[i][(uint8_t)TrigKind::Rof]));
+            _dispatcher->subscribe(&_triggers[i][(uint8_t)TrigKind::Rof],
+                                   s.rofSelectorPort, s.rofSelectorChannel);
+        }
+
+        // 3 + 4. Yaw / pitch input channels — Raw.
+        if (s.yaw.enabled && s.yaw.inputPort.portKind != 0) {
+            _inputCtx[i][(uint8_t)TrigKind::Yaw] = { this, i, TrigKind::Yaw };
+            input::TriggerMapping m;
+            m.kind     = input::TriggerKind::Raw;
+            m.failsafe = input::FailsafeBehaviour::Hold;
+            _triggers[i][(uint8_t)TrigKind::Yaw].configure(m,
+                &GunFxServicePolicyT::inputChangeTrampoline,
+                static_cast<void*>(&_inputCtx[i][(uint8_t)TrigKind::Yaw]));
+            _dispatcher->subscribe(&_triggers[i][(uint8_t)TrigKind::Yaw],
+                                   s.yaw.inputPort, s.yaw.inputChannel);
+        }
+        if (s.pitch.enabled && s.pitch.inputPort.portKind != 0) {
+            _inputCtx[i][(uint8_t)TrigKind::Pitch] = { this, i, TrigKind::Pitch };
+            input::TriggerMapping m;
+            m.kind     = input::TriggerKind::Raw;
+            m.failsafe = input::FailsafeBehaviour::Hold;
+            _triggers[i][(uint8_t)TrigKind::Pitch].configure(m,
+                &GunFxServicePolicyT::inputChangeTrampoline,
+                static_cast<void*>(&_inputCtx[i][(uint8_t)TrigKind::Pitch]));
+            _dispatcher->subscribe(&_triggers[i][(uint8_t)TrigKind::Pitch],
+                                   s.pitch.inputPort, s.pitch.inputChannel);
+        }
+    }
+}
+
+// ─── Tick ───────────────────────────────────────────────────────────
 
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
 void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::update() {
     const uint32_t now = sfx_core::EffectClock::instance().nowMs();
-    for (uint8_t i = 0; i < _numDefs; ++i) {
-        _units[i].update(now);
+    const uint32_t dtMs = (now > _lastUpdateMs) ? (now - _lastUpdateMs) : 0;
+    _lastUpdateMs = now;
+
+    for (uint8_t i = 0; i < _numSpecs; ++i) {
+        _units[i].update(now, dtMs);
+        if (_verbose[i] && (now - _lastVerboseMs[i]) >= kVerboseStatusIntervalMs) {
+            emitVerboseStatus(i, now);
+            _lastVerboseMs[i] = now;
+        }
     }
 }
 
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
 GunUnit* GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::findById(uint8_t id) {
-    for (uint8_t i = 0; i < _numDefs; ++i) {
-        if (_units[i].id() == id) return &_units[i];
+    const int8_t idx = indexById(id);
+    return (idx >= 0) ? &_units[idx] : nullptr;
+}
+
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+int8_t GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::indexById(uint8_t id) const {
+    for (uint8_t i = 0; i < _numSpecs; ++i) {
+        if (_specs[i].id == id) return (int8_t)i;
     }
-    return nullptr;
+    return -1;
 }
 
 // ─── Wire dispatch ──────────────────────────────────────────────────
@@ -98,12 +189,15 @@ template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::e
 CommandHandleResult GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::handle(
         uint8_t type, const uint8_t* payload, size_t len) {
     switch (type) {
-        case GunPacket::GUN_FIRE_ONCE:    handleFireOnce(payload, len);    return CommandHandleResult::Handled;
-        case GunPacket::GUN_START_FIRING: handleStartFiring(payload, len); return CommandHandleResult::Handled;
-        case GunPacket::GUN_STOP_FIRING:  handleStopFiring(payload, len);  return CommandHandleResult::Handled;
-        case GunPacket::GUN_SMOKE_ARM:    handleSmokeArm(payload, len);    return CommandHandleResult::Handled;
-        case GunPacket::GUN_STATUS_REQ:   handleStatusReq();               return CommandHandleResult::Handled;
-        default:                          return CommandHandleResult::NotMyCommand;
+        case GunPacket::GUN_FIRE_ONCE:           handleFireOnce(payload, len);          return CommandHandleResult::Handled;
+        case GunPacket::GUN_START_FIRING:        handleStartFiring(payload, len);       return CommandHandleResult::Handled;
+        case GunPacket::GUN_STOP_FIRING:         handleStopFiring(payload, len);        return CommandHandleResult::Handled;
+        case GunPacket::GUN_SMOKE_ARM:           handleSmokeArm(payload, len);          return CommandHandleResult::Handled;
+        case GunPacket::GUN_STATUS_REQ:          handleStatusReq();                     return CommandHandleResult::Handled;
+        case GunPacket::GUN_MANUAL_SET:          handleManualSet(payload, len);         return CommandHandleResult::Handled;
+        case GunPacket::GUN_MANUAL_RELEASE:      handleManualRelease(payload, len);     return CommandHandleResult::Handled;
+        case GunPacket::GUN_VERBOSE_STATUS_REQ:  handleVerboseStatusReq(payload, len);  return CommandHandleResult::Handled;
+        default:                                 return CommandHandleResult::NotMyCommand;
     }
 }
 
@@ -154,15 +248,108 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::handleSmokeArm(
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
 void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::handleStatusReq() {
     uint8_t buf[1 + kMaxGuns * 3];
-    buf[0] = _numDefs;
+    buf[0] = _numSpecs;
     size_t off = 1;
-    for (uint8_t i = 0; i < _numDefs; ++i) {
+    for (uint8_t i = 0; i < _numSpecs; ++i) {
         buf[off++] = _units[i].id();
         buf[off++] = _units[i].firing()     ? 1 : 0;
         buf[off++] = _units[i].smokeArmed() ? 1 : 0;
     }
     _ctx->sendRawPacket(GunPacket::GUN_STATUS_RESP,
                         _ctx->currentTag(), buf, off);
+}
+
+// ─── Manual override ────────────────────────────────────────────────
+
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::handleManualSet(
+        const uint8_t* p, size_t len) {
+    // Payload: [id][flags][yawUs:u16][pitchUs:u16][rofIdx][fireHold][smokeArm][smokeFanBurst] = 10 B
+    if (len < 10) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    GunUnit* g = findById(p[0]);
+    if (!g) { _ctx->sendNack(GunError::UNKNOWN_ID); return; }
+
+    const uint8_t  flags     = p[1];
+    const uint16_t yawUs     = SfxWire::getU16LE(&p[2]);
+    const uint16_t pitchUs   = SfxWire::getU16LE(&p[4]);
+    const uint8_t  rofIdx    = p[6];
+    const bool     fireHold  = p[7] != 0;
+    const bool     smokeArm  = p[8] != 0;
+    const bool     fanBurst  = p[9] != 0;
+    const uint32_t now       = sfx_core::EffectClock::instance().nowMs();
+    g->applyManualSet(flags, yawUs, pitchUs, rofIdx, fireHold,
+                      smokeArm, fanBurst, now);
+    _ctx->sendAck();
+}
+
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::handleManualRelease(
+        const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    GunUnit* g = findById(p[0]);
+    if (!g) { _ctx->sendNack(GunError::UNKNOWN_ID); return; }
+    g->releaseManual();
+    _ctx->sendAck();
+}
+
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::handleVerboseStatusReq(
+        const uint8_t* p, size_t len) {
+    if (len < 2) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const int8_t idx = indexById(p[0]);
+    if (idx < 0) { _ctx->sendNack(GunError::UNKNOWN_ID); return; }
+    _verbose[idx] = (p[1] != 0);
+    _lastVerboseMs[idx] = 0;     // force a fresh broadcast next tick
+    _ctx->sendAck();
+}
+
+// ─── Verbose status producer ────────────────────────────────────────
+
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::emitVerboseStatus(
+        uint8_t unitIdx, uint32_t /*nowMs*/) {
+    if (!_ctx) return;
+    const GunUnit& u = _units[unitIdx];
+
+    // 26-byte fixed layout — matches DecodeVerboseStatus in
+    // app/go/protocol/gunfx/gunfx.go (see gunfx_protocol.h for the
+    // field map). The trailing 0 byte is reserved padding (keeps the
+    // size at 26 B; future fields land here without a wire bump).
+    uint8_t buf[26] = {};
+    size_t  off = 0;
+    buf[off++] = u.id();
+    buf[off++] = u.manual().active ? GunMode::MANUAL : GunMode::RC;
+    buf[off++] = u.firing()      ? 1 : 0;
+    buf[off++] = u.smokeArmed()  ? 1 : 0;
+    // Smoke fan running — real state read from GunUnit::fanRunning()
+    // (Phase 2.9.x — replaces the (smokeArmed && firing) stopgap).
+    buf[off++] = u.fanRunning() ? 1 : 0;
+    buf[off++] = 0;                                            // heater duty %
+    SfxWire::putI16LE(&buf[off], (int16_t)0x7FFF); off += 2;    // heater temp = no sensor
+    SfxWire::putU16LE(&buf[off], u.yawCurrentUs());   off += 2;
+    SfxWire::putU16LE(&buf[off], u.yawTargetUs());    off += 2;
+    SfxWire::putU16LE(&buf[off], u.pitchCurrentUs()); off += 2;
+    SfxWire::putU16LE(&buf[off], u.pitchTargetUs());  off += 2;
+    buf[off++] = u.rofIndex();
+    SfxWire::putU16LE(&buf[off], u.rofSelectorUs());  off += 2;
+    // Trigger raw µs (Phase 2.9.x): read the shadow value from the
+    // Boolean TriggerInput's `lastPulseUs()` — captured by feed() even
+    // when the typed value is Boolean.  No separate Raw subscription
+    // needed (avoids doubling dispatcher fanout).
+    {
+        const auto& trig = const_cast<input::TriggerInput&>(
+            _triggers[unitIdx][(uint8_t)TrigKind::Trigger]);
+        SfxWire::putU16LE(&buf[off], trig.lastPulseUs()); off += 2;
+    }
+    const uint32_t shots = u.shotsThisSession();
+    buf[off++] = (uint8_t)(shots);
+    buf[off++] = (uint8_t)(shots >> 8);
+    buf[off++] = (uint8_t)(shots >> 16);
+    buf[off++] = (uint8_t)(shots >> 24);
+    // off should be 25 here; buf[25] stays 0 (reserved padding).
+
+    _ctx->sendRawPacket(GunPacket::GUN_VERBOSE_STATUS,
+                        SfxWire::TAG_ASYNC, buf, sizeof(buf));
 }
 
 // ─── Shot fan-out ───────────────────────────────────────────────────
@@ -216,16 +403,40 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::shotEventTrampoli
 }
 
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
-void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::triggerChangeTrampoline(
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::inputChangeTrampoline(
         void* ctx, const input::TriggerValue& v) {
-    auto* tc = static_cast<TriggerCtx*>(ctx);
-    if (!tc || !tc->svc) return;
-    if (v.kind != input::TriggerKind::Boolean) return;
-    GunUnit& u = tc->svc->_units[tc->unitIdx];
-    // The TriggerInput already debounced + applied hysteresis; we
-    // just forward the boolean edge to start / stop firing.
-    if (v.b) u.startFiring(0);    // 0 → use defaultIntervalMs
-    else     u.stopFiring();
+    auto* ic = static_cast<InputCtx*>(ctx);
+    if (!ic || !ic->svc) return;
+    GunUnit& u = ic->svc->_units[ic->unitIdx];
+    switch (ic->kind) {
+        case TrigKind::Trigger:
+            // Boolean: edge-driven start/stop. Raw µs is also useful
+            // for the verbose-status mirror — feed it via a second
+            // subscription path? For now we only have the boolean here;
+            // the raw value comes from the TriggerInput's `last()` value
+            // if needed. Phase 4 polish: subscribe a second Raw input
+            // for the trigger if Studio needs the live µs trace.
+            if (v.kind == input::TriggerKind::Boolean) {
+                u.onTriggerBoolean(v.b);
+            }
+            break;
+        case TrigKind::Rof:
+            if (v.kind == input::TriggerKind::Raw) {
+                u.onRofSelectorUs(v.us, v.valid);
+            }
+            break;
+        case TrigKind::Yaw:
+            if (v.kind == input::TriggerKind::Raw) {
+                u.onYawInputUs(v.us, v.valid);
+            }
+            break;
+        case TrigKind::Pitch:
+            if (v.kind == input::TriggerKind::Raw) {
+                u.onPitchInputUs(v.us, v.valid);
+            }
+            break;
+        default: break;
+    }
 }
 
 }  // namespace hubfx::effects::gunfx
