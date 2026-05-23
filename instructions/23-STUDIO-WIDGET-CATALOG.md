@@ -429,28 +429,79 @@ Full walkthrough:
 
 ## 11. Servo motion profile editor
 
-**Rule 42**: the motion profile (clamp + speed + accel + jerk + REV +
-center) lives on `ServoActuatorRole`, set via the role-attach config
-in `/hubfx.yaml`'s `ports[]` block. It is **NOT** an effect-panel
-control.
+**Rule 42 storage + Rule 44 editing surface:** the profile DATA lives
+in `/hubfx.yaml`'s `ports[]` block (canonical, per-port, because it's
+a property of the physical servo — min/max are mechanical end-stops,
+speed/accel match the servo's spec sheet).  The EDITOR is embedded
+**inline in the feature panel** (GunFx Turret section, future EngineFx
+servo binding, …) so operators tune the servo where they set the
+feature.  The IO tab's `PortRoleConfig.svelte` does **not** show this
+editor — that would create a duplicate authoring surface for the same
+data.
 
-The widget lives on the **IO tab's port-role row** (Phase 4b
-follow-up). Effect panels NEVER expose servo-profile fields — they
-only expose intent (recoil jerk, recoil hold, axis neutral position).
+**Component:** [ServoProfileEditor.svelte](../app/go/studio/frontend/src/lib/components/ServoProfileEditor.svelte)
+— a reusable, sectioned editor (Limits / Direction / Motion Profile)
+with auto-fit grid layout (`repeat(auto-fill, minmax(110px, 1fr))`) so
+fields breathe at any panel width, plus a plain-English behaviour
+summary at the bottom.
 
-When you build the IO tab's port-role row, the live-tune wire commands
-are already there:
+```svelte
+<ServoProfileEditor
+    profile={profileForPort(axis.servoPort)}    <!-- look up from $deviceModel.ports[i].profile -->
+    label="{which} motion profile"
+    on:change={(e) => schedulePushProfile(axis.servoPort, e.detail)} />
+```
+
+```ts
+// Frontend helpers (one per panel):
+function profileForPort(port: PortRefT): ProfileT {
+    // walks $deviceModel.ports for a matching ref, returns the
+    // attached profile or a fresh default
+}
+function schedulePushProfile(port: PortRefT, prof: ProfileT) {
+    // ~350 ms debounce → SetPortProfile(guid, kind, idx, prof)
+    // which updates Studio's overlay + live-pushes via ServoSetProfile
+    // + marks /hubfx.yaml dirty for the next SaveHubConfig
+}
+```
+
+Props:
+- `profile` — `ServoMotionProfileT` ({minUs, maxUs, centerUs, reversed,
+  maxSpeedUsPerSec, maxAccelUsPerSec2, maxJerkUsPerSec3}); pass by value,
+  not `bind:` (parent updates via the `change` event)
+- `disabled` — disables every input + button
+- `pushStatus` — surfaces a chip on the footer; omit to hide
+- `label` — optional section header; omit to skip
+
+The component is pure UI: it validates locally, fires `change` on
+every edit, and exposes a `Defaults` button.  The **parent owns the
+debounce + push timer** and the persisted draft.
+
+**Persistence + apply path:**
+1. Studio's `portProfiles` overlay (keyed by `PortRef`) is populated on connect from `/hubfx.yaml`'s `ports[]` block (`LoadHubConfig`) and surfaced through `$deviceModel.ports[i].profile`.
+2. Edit fires `SetPortProfile(guid, kind, idx, profile)`:
+   - updates the overlay,
+   - live-pushes via `Roles.ServoSetProfile` (best-effort hub-local; the role applies it without losing the in-flight target),
+   - emits `devicemodel:changed` so the editor re-renders with the new value reflected.
+3. `SaveHubConfig` writes the profile back into the `ports[]` entry as a `profile: { … }` block; firmware reload re-parses + re-attaches with the new payload.
+4. On hub boot, the firmware reads `/hubfx.yaml` → `PortMapping.profile` → serialises into the role-attach cfg payload → `RoleServicePolicy::attachServoActuator` applies it during attach.
+
+Wire commands wrapped by Wails:
 
 | Command | Purpose |
 |---|---|
-| `client.Roles.ServoGetProfile(portIdx)` | Read |
+| `client.Roles.ServoGetProfile(portIdx)` | Read (live-tune fetch) |
 | `client.Roles.ServoSetProfile(portIdx, profile)` | Push (atomic; in-flight target preserved) |
 
-Drag a slider → debounce ~350 ms → push → confirm via GET.
-
-Reference rule: **Rule 42**. References:
-[client/roles.go](../app/go/client/roles.go),
-[role_service.cpp::handleServoSetProfile](../controllers/lib/sfx_board/server/role_service.cpp).
+Reference rules: **Rule 42** (storage) + **Rule 44** (editing surface).
+References:
+[ServoProfileEditor.svelte](../app/go/studio/frontend/src/lib/components/ServoProfileEditor.svelte),
+[GunFxPanel.svelte Turret section](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte),
+[app_devicemodel.go `SetPortProfile`](../app/go/studio/app_devicemodel.go),
+[app_hubconfig.go `yamlPortBinding.Profile`](../app/go/studio/app_hubconfig.go),
+[hubfx_config.h `PortMapping.profile` + `parseServoProfile`](../controllers/hubfx/esp32s3/src/config/hubfx_config.h),
+[apply_hubfx_config.h `attachPortRolesForGuid`](../controllers/hubfx/esp32s3/src/config/apply_hubfx_config.h),
+[role_service.cpp `attachServoActuator`](../controllers/lib/sfx_board/server/role_service.cpp).
 
 ---
 

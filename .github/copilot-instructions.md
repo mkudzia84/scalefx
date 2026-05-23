@@ -1802,6 +1802,204 @@ guns:
 
 **When adding a new effect that consumes an RC channel:** define an input name in the effect's YAML schema (single string field), call `findInputByName(hub, name)` in the apply translator, log a WARN + leave port empty on miss. The Studio panel uses `collectChannels` and offers a `<select>` of named options.
 
+### 44. Servo Motion Profile: Per-Servo Storage, Per-Feature UI (storage canonical in /hubfx.yaml; editing surface inline with the feature)
+
+**The rule:** the servo motion profile (`minUs` / `maxUs` / `centerUs` / `reversed` / `maxSpeedUsPerSec` / `maxAccelUsPerSec2` / `maxJerkUsPerSec3`) lives in **`/hubfx.yaml`'s `ports[]` block next to the port + role + label**, because it's a property of the **physical servo** (min/max are mechanical end-stops; speed/accel match the spec sheet of the actuator). The **UI exposes it inline with the feature that drives the servo** (GunFx panel embeds `ServoProfileEditor` next to each axis binding) so the operator never has to context-switch to "tune" a servo — but storage stays canonical so two features can't ship inconsistent profiles for the same port.
+
+The original Rule 42 had it right about storage (the role layer); what it got wrong was making the **edit surface** the IO tab. Rule 44 corrects only the UX: same storage, better editing flow.
+
+**What still lives on the role layer (Rule 42 unchanged):**
+- **Element voltage scaling** (`elementMv`, `scaling`) for heaters + DC motors — hardware fact (the element's rated voltage), not an effect preference. Editing surface remains the IO tab's `PortRoleConfig.svelte` (a heater's element isn't a "feature" property — it's the heater itself).
+- The role-layer **math** (`MotionProfile1D` integrator, `scaleDuty()` helper).
+
+**Storage in `/hubfx.yaml`:**
+
+```yaml
+ports:
+  - kind: servo
+    idx: 0
+    role: servo-actuator
+    label: yaw
+    profile:                          # ← per-servo, canonical
+      min_us: 1100
+      max_us: 1900
+      center_us: 1500
+      max_speed_us_per_sec:  800
+      max_accel_us_per_sec2: 1600
+      max_jerk_us_per_sec3:  0
+```
+
+The firmware reads the profile when it loads `/hubfx.yaml` and passes it through the **role-attach payload** (Rule 11 append-only `[minUs:u16][maxUs:u16][maxSpeed:u16][reversed:u8][centerUs:u16][maxAccel:u16][maxJerk:u16]`); `RoleServicePolicy::attachServoActuator` applies it during attach so the role is ready before any effect sends `SERVO_SET_TARGET`.
+
+**Effect-config YAMLs (`/gunfx.yaml`, `/enginefx.yaml`, …) MUST NOT carry servo profile fields.** They reference the servo by port only; the role already has the profile loaded.
+
+**UI surface:** the GunFx panel reads the profile from `$deviceModel.ports[i].profile` (looked up by the gun's `servoPort` ref), embeds `<ServoProfileEditor profile={port.profile}>` inline, and on `change`:
+1. Pushes via `ServoSetProfile()` debounced ~350 ms (live preview — operator sees movement update before saving).
+2. Calls `SetPortProfile(guid, kind, idx, profile)` to update Studio's overlay and mark `/hubfx.yaml` dirty.
+3. Save: `SaveHubConfig()` writes the profile back into `/hubfx.yaml`'s ports[] entry.
+
+The IO tab's `PortRoleConfig.svelte` does **not** show a servo motion-profile editor (would create a second authoring surface for the same data). Heater / DC motor element scaling editors stay there (Rule 42 — different data, role-side).
+
+**When two features use the same servo:** still impossible (port claim is exclusive). One profile per servo, one feature using it; no conflict.
+
+References: [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) Turret section, [ServoProfileEditor.svelte](../app/go/studio/frontend/src/lib/components/ServoProfileEditor.svelte), [hubfx_config.h `populate()`](../controllers/hubfx/esp32s3/src/config/hubfx_config.h) profile parser, [role_service.cpp `attachServoActuator`](../controllers/lib/sfx_board/server/role_service.cpp).
+
+### 45. Effect-Panel Header Cluster: [Enable-Button] [Apply] [dirty-flag] (no scattered toggles)
+
+Every effect panel (EngineFx, GunFx, future LightFx / GearControl panels)
+puts the **enable/disable affordance**, the **Apply button**, and the
+**dirty flag** in a single contiguous header cluster — operator's eye
+goes one place to (a) flip the effect on/off, (b) commit changes, and
+(c) see whether the firmware reflects the draft.
+
+**Required layout** (left-to-right, inside `.card-header > .header-actions`):
+
+```
+[ ▶ Disabled / ✓ Enabled ]   [✓ Apply]   [dirty-flag pill]   …other actions
+```
+
+**The enable affordance is a BUTTON, not a checkbox**:
+
+- Checkboxes read like "tick this if you want it on"; an effect-enable
+  is a deliberate state change with downstream consequences (Apply
+  pushes it; firmware re-attaches roles; live RC bars start moving).
+- A button reads as an action.  Reuses the design-system `button` class
+  + a `state` modifier (`.btn-state-on` / `.btn-state-off`) — the
+  toggle's current state is the LABEL, not a checkmark on a separate
+  control.
+
+```svelte
+<button class="small state-toggle" class:state-on={cfg.enabled}
+        on:click={() => setEnabled(!cfg.enabled)} disabled={busy}
+        title={cfg.enabled ? 'Disable this effect — Apply to push' : 'Enable this effect — Apply to push'}>
+    {cfg.enabled ? '✓ Enabled' : '▶ Disabled'}
+</button>
+<button class="small primary" on:click={onApply}
+        disabled={busy || !$effectDirty || hasErrors}
+        title={hasErrors ? 'Resolve validation errors first' : 'Save + reload'}>✓ Apply</button>
+<span class="dirty-flag" class:on={$effectDirty} class:err={hasErrors}>
+    {hasErrors ? 'resolve errors' : $effectDirty ? 'unapplied changes' : 'in sync'}
+</span>
+```
+
+**Rationale for putting Apply NEXT TO the enable toggle:**
+
+- The enable-toggle change is a draft mutation — pressing it dirties
+  the panel but doesn't push to firmware.  Without an adjacent Apply,
+  the operator has to hunt for the persist control (across the card,
+  or scroll up to the panel header).
+- Same row as the dirty flag means the operator sees the "you need to
+  Apply" cue right next to the action that satisfies it.
+- Matches the existing EnginePanel `status-row` pattern (Rule 35) where
+  Apply lives next to the operational buttons; this rule extends the
+  pattern UPWARD to the panel-header enable toggle.
+
+**What this replaces:**
+
+- Standalone `<label class="enable-toggle"><input type="checkbox">` rows
+  scattered in panel headers (was the GunFx pattern pre-2026-05-23).
+- Apply buttons hidden inside a Save dialog or pushed to the bottom of
+  the card.
+
+**Reference implementation:** [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) header `.header-actions`.  The shared `.state-toggle` button styling lives in [style.css](../app/go/studio/frontend/src/style.css) so EngineFx and any future effect panels reuse it.
+
+### 46. Modular Config Sources: domain owns the lifecycle; panels are pure views
+
+Studio centralises Apply / dirty-tracking / validation in one global
+toolbar (`ConfigToolbar.svelte` above the tab strip).  Every persistent
+config (`/hubfx.yaml`, `/enginefx.yaml`, `/gunfx.yaml`, future
+`/lightfx.yaml`, `/gearcontrol.yaml`, `/lightfx_programs/*.yaml`, …)
+plugs into that toolbar through a **`DirtySource`** descriptor.
+
+**The rule:** each domain module owns a complete `DirtySource` export.
+Panels register zero, validate zero, apply zero — they are pure views
+on the underlying stores.
+
+**Domain module contract** (e.g. `lib/gunfx.ts`, `lib/effects.ts`,
+`lib/devicemodel.ts`, future `lib/lightfx.ts`):
+
+1. **Stores** — `xxxConfig` (truth-from-device) + `xxxDraft` (working
+   copy) + `xxxDirty` (derived diff).
+2. **Loaders** — `loadXxxConfig()` (Wails download → populate stores),
+   `applyXxxConfig()` (serialise → Wails upload → reload).
+3. **Validation** — `xxxHasErrors: Readable<boolean>` derived from the
+   draft (pure) OR a writable kept fresh by `scheduleXxxValidate()`
+   (async — file-exists checks etc.).
+4. **Source export** — `xxxConfigSource: DirtySource = { id, label,
+   isDirty, hasErrors, apply, refresh }`.
+
+```ts
+// lib/gunfx.ts (pattern)
+import type { DirtySource } from './dirty-registry'
+
+export const gunfxDirty     = derived(...)
+export const gunfxHasErrors = derived(gunfxDraft, ($d) =>
+    $d.guns.some(g => detectBandOverlaps(g.rof.items).length > 0))
+
+export const gunfxConfigSource: DirtySource = {
+    id:        'gunfx',
+    label:     'GunFX',
+    isDirty:   gunfxDirty,
+    hasErrors: gunfxHasErrors,
+    apply:     saveGunFxConfig,
+    refresh:   loadGunFxConfig,
+}
+```
+
+**Registration** lives in `App.svelte`'s `onMount`, NOT in the panel.
+Register order = apply order = dependency order (hubconfig FIRST
+because effect translators resolve named inputs against
+`/hubfx.yaml`).  Adding a new effect = one line in `App.svelte`:
+
+```ts
+registerDirtySource(hubConfigSource)
+registerDirtySource(engineConfigSource)
+registerDirtySource(gunfxConfigSource)
+registerDirtySource(lightfxConfigSource)        // <-- new effect, append here
+registerDirtySource(lightfxProgramsConfigSource)
+registerDirtySource(gearcontrolConfigSource)
+```
+
+**Why panels don't register themselves:**
+
+- Apply order would otherwise depend on which tab the operator opens
+  first — flaky and surprising.
+- Sources stay registered across tab switches; the registry doesn't
+  thrash on every navigation.
+- Panel components are testable in isolation (no side effects in
+  `onMount`).
+- New panels for an existing domain (e.g. a future "advanced GunFx"
+  tab) share the SAME source — no duplicate dirty-state.
+
+**Panel contract** (post Rule 46):
+
+- Subscribe to draft / config / status stores.
+- Wire up mutations (every `on:change` updates the draft via
+  `domainStore.set(...)`).
+- Show local field-level validation cues (red borders, warning tags
+  per row — Rule 35 still applies for the UI).
+- Render the enable-toggle (Rule 45) + operational buttons
+  (Start/Stop/Test).
+- **Do NOT** render an Apply button, dirty-flag, or Refresh button —
+  the global toolbar owns those.
+- **Do NOT** register with the dirty-registry — the domain module
+  exports the source, `App.svelte` registers it.
+
+**`useConfigSource(src)` convenience** is available for ad-hoc /
+experimental panels that need their own non-startup registration — it
+handles the `onMount` + return-cleanup pattern.  Production panels for
+the canonical effects should not use it; pre-registration in
+`App.svelte` is the standard path.
+
+**Cross-config validation** — when an effect references something in
+another file (e.g. GunFx `trigger.input: "gun_trigger"` referring to a
+channel in `/hubfx.yaml` inputs[]), the validation derived store
+should subscribe to BOTH `xxxDraft` AND `$deviceModel.channelFunctions`
+(or equivalent) and flag missing references as errors.  The aggregate
+`anyErrors` in the global toolbar then catches cross-file rot.
+
+Reference: [dirty-registry.ts](../app/go/studio/frontend/src/lib/dirty-registry.ts), [ConfigToolbar.svelte](../app/go/studio/frontend/src/lib/layout/ConfigToolbar.svelte), [App.svelte](../app/go/studio/frontend/src/App.svelte) onMount registration block, [gunfx.ts `gunfxConfigSource`](../app/go/studio/frontend/src/lib/gunfx.ts), [effects.ts `engineConfigSource`](../app/go/studio/frontend/src/lib/effects.ts), [devicemodel.ts `hubConfigSource`](../app/go/studio/frontend/src/lib/devicemodel.ts).
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host
