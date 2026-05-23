@@ -58,8 +58,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.9.0-hubfx"
-#define BUILD_NUMBER     174
+#define FIRMWARE_VERSION "2.10.0-hubfx"
+#define BUILD_NUMBER     175
 
 #include <Arduino.h>
 #include <Wire.h>

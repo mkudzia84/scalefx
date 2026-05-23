@@ -140,16 +140,31 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStart() {
     if (!_cfg.enabled) return false;
     if (_state == EngineState::Starting || _state == EngineState::Running) return true;
     if (_state == EngineState::Stopping) stopAudio(_activeChannel);
-    if (!_cfg.startingPath[0]) {
-        SFX_LOG_WARN("[engine] start: no starting path configured");
+
+    // Starting sound is OPTIONAL: when present we play it on channel A,
+    // then the tick() handler swaps to the running loop on channel B once
+    // it ends.  When absent we go straight to the running loop.
+    if (_cfg.startingPath[0]) {
+        _activeChannel = _cfg.channelA;
+        if (!startAudio(_cfg.startingPath, _cfg.channelA, _cfg.startingOffsetMs,
+                        /*loop=*/false, /*fadeInMs=*/_cfg.startFadeInMs)) {
+            return false;
+        }
+        enterState(EngineState::Starting);
+        return true;
+    }
+
+    // No starting sound → go to Running directly (skip the Starting phase).
+    if (!_cfg.runningPath[0]) {
+        SFX_LOG_WARN("[engine] start: no starting OR running path configured");
         return false;
     }
-    _activeChannel = _cfg.channelA;
-    if (!startAudio(_cfg.startingPath, _cfg.channelA, _cfg.startingOffsetMs,
-                    /*loop=*/false, /*fadeInMs=*/_cfg.startFadeInMs)) {
+    _activeChannel = _cfg.channelB;
+    if (!startAudio(_cfg.runningPath, _cfg.channelB, 0,
+                    /*loop=*/true, /*fadeInMs=*/_cfg.startFadeInMs)) {
         return false;
     }
-    enterState(EngineState::Starting);
+    enterState(EngineState::Running);
     return true;
 }
 
