@@ -1464,6 +1464,87 @@ ScaleFX Studio has ONE design language defined in [style.css](app/go/studio/fron
 
 **Conventions baked into the IO/device-model tabs (follow them):** human-readable labels in every dropdown (role kinds via `devicemodel.RoleLabel`, never raw kebab wire names); a port that can host exactly one role (servo) shows a fixed tag + a name field, not a 1-option dropdown; role pickers list only the kinds a port may host (`Port.AllowedRoles`); live value bars sit *under* the channel they belong to and render an explicit **NO SIGNAL** state (striped track) when the frame is missing/invalid, never a bare dash. Reference: [InputPanel.svelte](app/go/studio/frontend/src/lib/tabs/InputPanel.svelte), [PortRoleTab.svelte](app/go/studio/frontend/src/lib/tabs/PortRoleTab.svelte).
 
+**Row-button order + alignment (MANDATORY).** When a form-row pairs an input with action buttons, place them in a fixed canonical order so columns line up across stacked rows:
+
+1. The **field control** (input/select) takes the flex-1 slot — input on the left, buttons clustered to the right.
+2. **Browse/picker** (`…` for file picker, `⚙ Calibrate…` for sub-dialogs) is the **leftmost** button — closest to the field it modifies (it *augments* the field).
+3. **Clear / destructive** (`Clear` for clearing a path, never `None`; `Remove`, `Reset`) is the **rightmost** button — furthest from the field, last in tab order. Name it after what it does (`Clear`, `Remove`, `Reset`), not what state it produces (`None`, `Empty`).
+4. **Reserve the rightmost slot** with a `visibility: hidden` spacer of the same width on rows that don't expose the destructive action (e.g. required rows). Without this, the browse `…` shifts column position between optional and required rows and the form looks ragged.
+
+Pattern (see [EnginePanel.svelte](app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) sound-rows):
+```svelte
+<input class="field-input wide" … />
+<button class="small btn-slot" on:click={browse}>…</button>      <!-- always present -->
+{#if optional}
+  <button class="small btn-slot" on:click={clear}>Clear</button> <!-- rightmost -->
+{:else}
+  <span class="btn-slot btn-spacer" aria-hidden="true"></span>   <!-- alignment shim -->
+{/if}
+```
+The slot CSS is `width: 64px; box-sizing: border-box; flex-shrink: 0` so every cluster column is identical; the spacer is the same slot with `visibility: hidden`. This rule applies any time a row has 2+ action buttons; a single-button row needs no spacer.
+
+**File picker is parametrized by storage backend (MANDATORY for `pickFile()` callers).** `pickFile({ targets })` accepts `'flash' | 'sd' | 'both'` (default `'both'`). Callers MUST pass the narrowest target the field actually lives on — sound files live on SD → `pickFile({ targets: 'sd' })`; config files live on flash → `pickFile({ targets: 'flash' })`. The picker hides the disallowed tab entirely (not just disables it) and opens directly on the allowed backend, so the operator can't accidentally browse the wrong filesystem. `targets: 'both'` stays available for the standalone File Manager dialog where both backends are valid.
+
+**Full panel walkthrough:** [21-STUDIO-ENGINEFX-PANEL.md](../instructions/21-STUDIO-ENGINEFX-PANEL.md) covers the EngineFX panel end-to-end as the reference implementation of every rule in this section — read it before building a new operational effect tab.
+
+### 35. Validation Gates Apply (MANDATORY for any Studio form that writes to the device)
+
+Every Studio form whose **Apply** (or equivalent commit) button pushes settings to the firmware MUST be gated by validation: the Apply button is `disabled` whenever the form has one or more **error-severity** validation findings. Warnings are non-blocking; errors are. This is what stops an operator from pushing a config that the firmware will then NACK / mis-behave on (and gives the same UX whether the form is the EngineFx panel, the Ports & Roles list, the LightFx program editor, etc.).
+
+**Required pattern:**
+
+1. **Validate continuously** as the operator edits — on input change (debounce ~350 ms is fine), on load, and after any sub-dialog returns (file picker, role attach, …). Don't defer validation until Apply is clicked: the operator must see the error *as they cause it*.
+
+2. **Surface every error twice** — at the **field/row level** (red border + light-red background + inline error line under the offending control with a `⚠ <reason>` prefix) AND at the **group level** (section header turns red with a `missing files` / `invalid wiring` chip). Reference: EngineFx panel sound-row validation in [EnginePanel.svelte](app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte).
+
+3. **Disable Apply** when any error is present:
+   ```svelte
+   <button class="primary" on:click={onApply}
+           disabled={busy || !dirty || hasErrors}
+           title={hasErrors ? 'Resolve validation errors first' : 'Write … + reload — settings take effect immediately'}>
+       Apply
+   </button>
+   ```
+   The dirty/in-sync indicator next to it switches to a red `resolve errors above` (or similar) label so the blocked button isn't a mystery. The PortRoleTab Apply additionally reads `$validationCounts.errors` (the model-side issue count surfaced by the tab-strip badge) so domain-claim errors gate the IO Apply the same way.
+
+4. **Distinguish required vs optional fields** in the validator: empty + required → error; empty + optional → valid (no check). For paths that should exist on the device, batch-probe via the `CheckFiles` binding — empty paths are skipped (a `None` button on optional rows clears the path and re-validates immediately).
+
+5. **Validation is checked on read AND on write.** Reading a config from `/foo.yaml` runs the same validator so a malformed on-device file shows the same error UI the operator would see while editing — they're never surprised by what the device rejected.
+
+6. **Operational actions (Start / Trigger / Test / Preview) are gated the same way.** Anything that *runs* the firmware against its currently-loaded config — `▶ Start`, `Trigger`, `Test fire`, sound `Preview` — MUST be `disabled` whenever the draft is dirty OR has errors, with a tooltip pointing at the cause (`'Apply unsaved changes before starting'` / `'Resolve validation errors first'`). Reason: the operator presses Start expecting their edits to be live, but the firmware only knows what was Applied — pushing Start on a dirty draft tests the *old* config and looks like a bug.
+
+7. **Place Apply next to the operational action it unblocks.** When a panel has both Apply and operational buttons (Start/Stop/Trigger), they live in the SAME row, in the order `[dirty-flag] [Apply] [divider] [▶ Start] [■ Stop]` (a 1×20 px `var(--border)` `.ctrl-sep` separates "commit config" from "operate firmware"). Do not also render a duplicate Apply at the bottom of the form — one Apply per panel. Reference: [EnginePanel.svelte status-row](app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte). Panels that have no operational actions (PortRoleTab, config-only editors) keep Apply in the card header's `.header-actions`.
+
+The point of the rule: a Studio operator should never need to read the wire log to discover that their config is broken. Errors are visible inline, the Apply button refuses to push them, operational buttons refuse to test stale drafts, and the firmware never receives a settings packet that it would NACK.
+
+**Worked example:** [21-STUDIO-ENGINEFX-PANEL.md § 3–5](../instructions/21-STUDIO-ENGINEFX-PANEL.md) — status-row anatomy, sound-row validation lattice (CheckFiles batch-probe, dual-surface errors, optional vs required), `engineDraft`/`engineConfig`/`engineDirty` triad with the `wasDirty` snapshot pattern.
+
+### 36. Channel-Setup Cluster (MANDATORY for any RC-channel-gated form)
+
+Anywhere a Studio panel binds an RC input channel and gates an action on a microsecond threshold (EngineFx ▶ Start gate, GunFx trigger, LightFx mode-switch, …), the channel UI MUST follow this canonical 4-row cluster — channel selector, trigger settings *directly above* the live bar, the bar itself with explicit visual markers, then a single legend line. Don't scatter the threshold halfway down the form: the operator can't dial it correctly without seeing the marker move on the bar in real time.
+
+**Cluster (top-to-bottom, single bordered box `.chan-cluster` so the four rows read as one control):**
+
+1. **Channel selector** — `<select class="field-input wide">` of every bound channel (`fnId → label`), plus a leading `— manual only —` option for the unbound case.
+2. **Trigger settings, inline form-row, directly above the bar:**
+   ```
+   Fires when channel ≥  [1500] µs   ±  [25] µs hysteresis
+   ```
+   Use **verb-led labels** that read like a sentence (`Fires when channel ≥`, `Activates above`, `Holds below`) — never bare `Threshold (µs)` / `Hysteresis (µs)` field labels. The `±` between threshold and hysteresis makes the semantic clear (deadband around the threshold).
+3. **Live bar with visual markers** (`.bar.tall`, 18 px high so markers are readable):
+   - **Threshold marker** — solid 2 px `var(--error)` vertical line at `usToPct(thresholdUs)`, with a soft red glow.
+   - **Hysteresis band** — translucent `var(--warning)` rectangle from `usToPct(threshold − hyst)` to `usToPct(threshold + hyst)`, dashed warning-tinted side borders. Visible **even with no signal** so the operator can dial the trigger before powering the RC link.
+   - **Live fill** — the existing `.bar-fill` gradient from 0 to `usToPct(liveUs)`. Bar shows `NO SIGNAL` (striped track, Rule 34) when the frame is invalid; legend still renders the threshold/hyst values.
+4. **One-line legend** under the bar, color-coded to match the markers:
+   ```
+   <live µs>  ·  <threshold µs> THRESHOLD  ·  ±<hyst µs> HYSTERESIS  ·  1000–2000 µs
+   ```
+   Live = `--success` green (matches the bar fill end-stop); threshold = `--error` red (matches the line); hysteresis = `--warning` amber (matches the band); the `1000–2000 µs` range hint is right-aligned in `--text-dim`.
+
+**Wire it together:** every input pushes through `mark()` so the marker/band positions update live as the operator types — that's the whole point of putting the settings above the bar. Threshold range is the PPM/SBUS norm `800–2200 µs` `step="10"`; hysteresis `0–500 µs` `step="5"`. Use the `usToPct(us)` helper from `devicemodel.ts` (1000µs → 0%, 2000µs → 100%) so all panels use the same bar scale.
+
+Reference: [EnginePanel.svelte](app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) `.chan-cluster`. When wiring a new channel-gated panel, copy the markup + the `.chan-cluster` / `.threshold-mark` / `.hyst-band` / `.bar-legend` style block verbatim — don't re-roll your own bar markers, the colour/position semantics are part of the rule. **Full walkthrough:** [21-STUDIO-ENGINEFX-PANEL.md § 2](../instructions/21-STUDIO-ENGINEFX-PANEL.md) (the bar with overlays — design rationale, z-order, colour semantics, reuse checklist).
+
 ## Key Architecture Patterns
 
 ### Client-Server Topology

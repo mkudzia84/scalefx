@@ -55,6 +55,15 @@ Task: "Work on HubFX"
   → Target: controllers/hubfx/esp32s3/ (HubFX Pico is OBSOLETE)
   → Reference: controllers/hubfx/pico/ (frozen, consult for patterns only)
   → Read: 01-ARCHITECTURE.md
+
+Task: "Build a new Studio effect-tab panel (operational — RC-channel-gated, sounds, Apply+Start)"
+  → Read: 21-STUDIO-ENGINEFX-PANEL.md   ← canonical reference, walks through every pattern
+  → Cribs from: app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte
+  → Rules: 34 (design system), 35 (validation gates Apply + operational), 36 (channel-setup cluster)
+
+Task: "Add a channel-gated trigger (RC channel + threshold + hysteresis cluster, ANY effect)"
+  → Read: 21-STUDIO-ENGINEFX-PANEL.md § 2  — the bar with overlays, copy markup + .chan-cluster/.threshold-mark/.hyst-band/.bar-legend CSS verbatim
+  → Rule: 36
 ```
 
 ---
@@ -414,3 +423,7 @@ Sync_Groups:
 | [15-GENERIC-EXPANDER-REFACTOR.md](15-GENERIC-EXPANDER-REFACTOR.md) | Pivot to generic expander protocol — component collections (servo / PWM / LED), per-board migration plan |
 | [16-EXPANDER-BOARD-DESIGN.md](16-EXPANDER-BOARD-DESIGN.md) | Expander-board design contract — anatomy of a firmware, full core + expander protocol surface, persistence rules, migration recipe |
 | [17-SYSTEM-SERVICES.md](17-SYSTEM-SERVICES.md) | `CoreCommandServer<...ServicePolicies>` composition, deterministic board GUID (UUIDv5), per-port GUIDs, storage backends as policy |
+| [18-HUBFX-INA-CLONE-WEDGE.md](18-HUBFX-INA-CLONE-WEDGE.md) | Investigation: counterfeit INA226 @ 0x40 corrupts PCA9685 @ 0x70 on writes; gate on canonical IDs |
+| [19-HUBFX-CONFIG-SCHEMA.md](19-HUBFX-CONFIG-SCHEMA.md) | `/hubfx.yaml` schema — expander aliases (alias→GUID + ports), effect sub-files reference ports by alias |
+| [20-STUDIO-DEVICE-MODEL.md](20-STUDIO-DEVICE-MODEL.md) | Studio's authoritative device model in Go (`devicemodel/`) — port/role/claim semantics, validation, presets |
+| [21-STUDIO-ENGINEFX-PANEL.md](21-STUDIO-ENGINEFX-PANEL.md) | **Reference design for Studio effect tabs** — panel anatomy, channel-setup cluster (bar with threshold marker + hysteresis band), sound rows, validation lattice, dirty-draft state. Cribbed from for any new operational effect tab. |
