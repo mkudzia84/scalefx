@@ -75,8 +75,8 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::claimPorts() {
         const GunSpec& s = _specs[i];
         if (s.muzzleFlashPort.portKind != 0)
             _topo->claim(s.muzzleFlashPort, EffectId::GunFx, RoleKind::LedAnimator);
-        if (s.recoilServoPort.portKind != 0)
-            _topo->claim(s.recoilServoPort, EffectId::GunFx, RoleKind::ServoActuator);
+        // Recoil no longer owns a port — it kicks the yaw/pitch axis
+        // claimed below (Phase 4 polish, recoil is a turret behaviour).
         if (s.smoke.heaterPort.portKind != 0)
             _topo->claim(s.smoke.heaterPort, EffectId::GunFx, RoleKind::Heater);
         if (s.smoke.fanPort.portKind != 0)

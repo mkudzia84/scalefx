@@ -103,13 +103,17 @@ namespace GunMode {
     constexpr uint8_t MANUAL  = 1;
 }
 
+// GunFX error codes — CLAUDE.md spec allocates 0x30..0x3F.
+// (Old values 0xCB-0xCD squatted in the GunFX packet-type range —
+// no collision today but inconsistent with the error-range spec;
+// relocated as part of the comprehensive error-code cleanup.)
 namespace GunError {
-    constexpr uint8_t UNKNOWN_ID     = 0xCB;
-    constexpr uint8_t GUN_TABLE_FULL = 0xCC;
+    constexpr uint8_t UNKNOWN_ID     = 0x30;
+    constexpr uint8_t GUN_TABLE_FULL = 0x31;
     /// Phase 2 will set the corresponding subsystem up; Phase 1 returns
     /// this code so Studio sees the protocol round-trip work end-to-end
     /// while the firmware behaviour is still a stub.
-    constexpr uint8_t NOT_IMPLEMENTED = 0xCD;
+    constexpr uint8_t NOT_IMPLEMENTED = 0x32;
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {

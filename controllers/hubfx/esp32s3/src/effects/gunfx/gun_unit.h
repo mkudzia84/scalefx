@@ -98,13 +98,9 @@ public:
         _smokeArmed = false;
         _shotsThisSession = 0;
         _activeRofIndex = pickInitialRofIndex();
-        // NOTE — Phase 2.9: axis motion profiles live on the
-        // ServoActuatorRole attached to each yaw/pitch port (via the
-        // role-attach payload in /hubfx.yaml ports[]).  The gun no
-        // longer integrates motion locally; it just pushes targets at
-        // the intent layer.  Verbose status reads `yawTargetUs` from
-        // the spec/manual state and shows the last commanded target —
-        // current µs needs a role round-trip (deferred until needed).
+        // Servo motion profile arrives via the role-attach payload from
+        // /hubfx.yaml's ports[] block — the role is ready before
+        // configure() runs.  The gun just pushes intent targets.
     }
 
     // ── Public API ────────────────────────────────────────────────────
@@ -202,6 +198,12 @@ private:
     uint32_t     _shotIntervalMs   = 0;     ///< 0 when not auto-firing
     uint32_t     _nextShotMs       = 0;
     uint32_t     _recoilReturnAtMs = 0;
+    /// While true, the recoil axis is HELD at the kicked position —
+    /// tickAxis() skips RC updates on that axis until recoil returns.
+    /// Phase 4 polish: recoil is a turret behaviour now, no dedicated
+    /// servo (see GunSpec::recoilEnabled / recoilAxis).
+    bool         _recoilActive     = false;
+    uint16_t     _recoilSavedUs    = 0;     ///< axis target before the jerk
 
     // ROF arbitration state.
     uint8_t      _activeRofIndex   = 0xFF;

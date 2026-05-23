@@ -127,7 +127,9 @@ inline uint8_t gunfxFanModeFromName(const char* s) {
 // Note (Phase 2.9 cleanup): no parseServoMotionProfile here.  The
 // servo motion shape (min/max/center/speed/accel/jerk) lives on
 // ServoActuatorRole, declared in /hubfx.yaml's `ports[]` block at
-// role-attach time — never in /gunfx.yaml (Rule 42).
+// Servo motion profile is stored in /hubfx.yaml's ports[] block per
+// Rule 42 (storage) + Rule 44 (UI is feature-inline); the gun never
+// carries profile fields in /gunfx.yaml.
 
 inline void parseGunAxis(const YamlNode* node, hubfx::effects::gunfx::GunAxis& axis) {
     using hubfx::config::portRefFromNode;
@@ -205,14 +207,15 @@ inline bool parseGunSpec(const YamlNode* gn, hubfx::effects::gunfx::GunSpec& g) 
         g.flashBrightness   = (uint8_t) mn->childAs<int32_t>("brightness",  100);
     }
 
-    // recoil:
+    // recoil: turret behaviour, no dedicated port (Phase 4 polish).
+    // `axis` is "pitch" (default) or "yaw" — short string matches the
+    // operator's mental model better than a 0/1 enum in the YAML.
     if (const auto* rcn = gn->child("recoil")) {
-        g.recoilServoPort = portRefFromNode(rcn->child("port"));
-        g.recoilCenterUs  = (uint16_t)rcn->childAs<int32_t>("center_us", g.recoilCenterUs);
-        g.recoilJerkUs    = (uint16_t)rcn->childAs<int32_t>("jerk_us",   g.recoilJerkUs);
-        g.recoilHoldMs    = (uint16_t)rcn->childAs<int32_t>("hold_ms",   g.recoilHoldMs);
-        // Servo slew shape (speed/accel/jerk) lives on ServoActuatorRole —
-        // declare it in /hubfx.yaml's ports[] role-attach config, not here.
+        g.recoilEnabled = rcn->childAs<bool>("enabled", true);
+        const char* axisName = rcn->childAs<const char*>("axis", "pitch");
+        g.recoilAxis = (axisName && (axisName[0] == 'y' || axisName[0] == 'Y')) ? 1 : 0;
+        g.recoilJerkUs = (uint16_t)rcn->childAs<int32_t>("jerk_us", g.recoilJerkUs);
+        g.recoilHoldMs = (uint16_t)rcn->childAs<int32_t>("hold_ms", g.recoilHoldMs);
     }
 
     // smoke:

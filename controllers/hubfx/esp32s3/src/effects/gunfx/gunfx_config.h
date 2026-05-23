@@ -11,7 +11,7 @@
  *       `ServoActuatorRole` via the role-attach config in
  *       `/hubfx.yaml`'s `ports[]` block.  GunFx only carries each
  *       axis's `neutralUs` (the position it commands when the input
- *       channel isn't bound) and the recoil's `recoilCenterUs` /
+ *       channel isn't bound) and the recoil's `recoilAxis` /
  *       `recoilJerkUs` / `recoilHoldMs` — the recoil shape, not the
  *       servo's intrinsic slew.
  *     - Element voltage scaling for heater / fan PWM lives on
@@ -92,11 +92,10 @@ struct SmokeConfig {
 /// One axis (yaw or pitch) of a turret. Each axis is INDEPENDENTLY
 /// optional — leave `enabled = false` to skip the axis entirely.
 ///
-/// Motion profile (clamp / speed / accel / jerk) for the servo lives
-/// on `ServoActuatorRole`, configured at port-attach time via
-/// `/hubfx.yaml`'s `ports[]` block (Rule 42).  GunAxis carries only
-/// the intent — which named channel drives the axis (Rule 43) and the
-/// fallback µs it commands when the channel isn't bound (`neutralUs`).
+/// Motion profile lives on the `ServoActuatorRole` attached to
+/// `servoPort` (Rule 42); storage is `/hubfx.yaml`'s ports[] block.
+/// Rule 44 only refines the editing surface (feature panel inline,
+/// not the IO tab) — the gun never carries profile fields.
 struct GunAxis {
     bool     enabled       = false;
     PortRef  servoPort;                  ///< ServoActuator port (output)
@@ -140,14 +139,18 @@ struct GunSpec {
     uint16_t  flashDurationMs      = 30;
     uint8_t   flashBrightness      = 100;
 
-    // ── Recoil servo ──────────────────────────────────────────────────
-    // The servo's motion shape (slew limits) lives on ServoActuatorRole.
-    // The fields here describe the RECOIL PULSE shape — what GunFx does
-    // with the servo: kick it forward by `recoilJerkUs` from
-    // `recoilCenterUs`, hold for `recoilHoldMs`, then return to center.
-    PortRef   recoilServoPort;
-    uint16_t  recoilCenterUs       = 1500;          ///< servo "at rest" position
-    uint16_t  recoilJerkUs         = 200;           ///< delta from centerUs on a shot
+    // ── Recoil (TURRET BEHAVIOUR — no dedicated servo) ────────────────
+    // Phase 4 polish (2026-05-23): the dedicated recoil-servo port was
+    // removed.  Recoil is now a BEHAVIOUR layered on top of yaw/pitch
+    // — when a shot fires AND `recoilEnabled`, the gun kicks the
+    // existing turret axes by `recoilJerkUs` from their commanded
+    // position, holds for `recoilHoldMs`, then returns.  `recoilAxis`
+    // picks which axis (0 = pitch, 1 = yaw — pitch is the more natural
+    // recoil axis for a gun barrel).  The servo motion profile (slew
+    // limits) still lives on ServoActuatorRole.
+    bool      recoilEnabled        = true;          ///< apply on each shot when an axis is enabled
+    uint8_t   recoilAxis           = 0;             ///< 0 = pitch, 1 = yaw
+    uint16_t  recoilJerkUs         = 200;           ///< delta from commanded axis us on a shot
     uint16_t  recoilHoldMs         = 80;            ///< time at jerk position before return
 
     // ── Smoke (heater + fan) ──────────────────────────────────────────

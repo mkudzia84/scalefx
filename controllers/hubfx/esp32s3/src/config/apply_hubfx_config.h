@@ -26,6 +26,7 @@
 
 #include <platform/sfx_platform.h>   // sfxPsramMalloc / sfxPsramFree
 #include <serial/diag_log.h>
+#include <serial/core/core.h>        // SfxWire::putU16LE for the servo profile cfg payload
 
 #include "hubfx_config.h"
 #include "alerts_config.h"
@@ -134,7 +135,24 @@ uint8_t attachPortRolesForGuid(TTopology& topo, const HubFxConfig& cfg,
         const bool isHub = (m.guid[0] == 0);
         if (wantHub != isHub) continue;
         if (!wantHub && std::strncmp(m.guid, guid, sizeof(m.guid)) != 0) continue;
-        if (topo.attachRole(portRefOf(m), m.role)) {
+        // Rule 42 storage + Rule 44 editing-surface: when the port has
+        // a servo profile attached (set by Studio's GunFx panel into
+        // /hubfx.yaml), serialise it into the role-attach payload so
+        // `RoleServicePolicy::attachServoActuator` applies it directly.
+        // Layout matches the cfg parser in role_service.cpp.
+        uint8_t cfgBuf[13];
+        uint8_t cfgLen = 0;
+        if (m.profileSet && m.role == RoleKind::ServoActuator) {
+            SfxWire::putU16LE(&cfgBuf[0],  m.profile.minUs);
+            SfxWire::putU16LE(&cfgBuf[2],  m.profile.maxUs);
+            SfxWire::putU16LE(&cfgBuf[4],  m.profile.maxSpeedUsPerSec);
+            cfgBuf[6]                    = m.profile.inverted ? 1 : 0;
+            SfxWire::putU16LE(&cfgBuf[7],  m.profile.centerUs);
+            SfxWire::putU16LE(&cfgBuf[9],  m.profile.maxAccelUsPerSec2);
+            SfxWire::putU16LE(&cfgBuf[11], m.profile.maxJerkUsPerSec3);
+            cfgLen = 13;
+        }
+        if (topo.attachRole(portRefOf(m), m.role, cfgLen ? cfgBuf : nullptr, cfgLen)) {
             ++attached;
             SFX_LOG_INFO("[hubfx-config] %s:{%s, %u} → %s%s%s",
                          m.guid[0] ? m.guid : "hub",

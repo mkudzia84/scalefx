@@ -86,15 +86,23 @@ inline void GunUnit::update(uint32_t nowMs, uint32_t dtMs) {
         }
     }
 
-    // Recoil return.
+    // Recoil return — restore the recoil axis to its pre-jerk target.
+    // tickAxis() will resume RC tracking on the next pass because
+    // _recoilActive is cleared here.
     if (_recoilReturnAtMs && (int32_t)(nowMs - _recoilReturnAtMs) >= 0) {
         _recoilReturnAtMs = 0;
-        if (_spec.recoilServoPort.portKind != 0) {
-            if (_begin && _sendCtx) _begin(_sendCtx);
-            commandServoTargetUs(_spec.recoilServoPort,
-                                 _spec.recoilCenterUs);
-            if (_commit && _sendCtx) _commit(_sendCtx);
+        if (_recoilActive && _spec.recoilEnabled) {
+            const bool isYaw = (_spec.recoilAxis == 1);
+            const GunAxis& axis = isYaw ? _spec.yaw : _spec.pitch;
+            if (axis.enabled && axis.servoPort.portKind != 0) {
+                if (_begin && _sendCtx) _begin(_sendCtx);
+                commandServoTargetUs(axis.servoPort, _recoilSavedUs);
+                if (_commit && _sendCtx) _commit(_sendCtx);
+                uint16_t& curTarget = isYaw ? _yawTargetUs : _pitchTargetUs;
+                curTarget = _recoilSavedUs;
+            }
         }
+        _recoilActive = false;
     }
 
     // Smoke fan housekeeping (puff timeouts, continuous mode start/stop).
@@ -105,13 +113,18 @@ inline void GunUnit::update(uint32_t nowMs, uint32_t dtMs) {
     // The gun just pushes a target each tick — the role's integrator
     // handles the slew.  `dtMs` is unused here now.
     (void)dtMs;
-    if (_spec.yaw.enabled) {
+    // Recoil suppresses RC tracking on the kicked axis only — the other
+    // axis continues to track normally so a yaw-recoil setup still lets
+    // the operator steer pitch during the hold.
+    const bool yawHeld   = _recoilActive && _spec.recoilEnabled && _spec.recoilAxis == 1;
+    const bool pitchHeld = _recoilActive && _spec.recoilEnabled && _spec.recoilAxis == 0;
+    if (_spec.yaw.enabled && !yawHeld) {
         tickAxis(_spec.yaw,
                  _haveYawInput ? _lastYawInputUs : _spec.yaw.neutralUs,
                  _manual.active && _manual.yawValid, _manual.yawUs,
                  _yawTargetUs);
     }
-    if (_spec.pitch.enabled) {
+    if (_spec.pitch.enabled && !pitchHeld) {
         tickAxis(_spec.pitch,
                  _havePitchInput ? _lastPitchInputUs : _spec.pitch.neutralUs,
                  _manual.active && _manual.pitchValid, _manual.pitchUs,
@@ -289,11 +302,25 @@ inline void GunUnit::commandFlash() {
           RolePacket::LED_START, start, sizeof(start));
 }
 
+// Recoil is now a TURRET BEHAVIOUR — there is no dedicated recoil
+// servo.  When fired, we add a jerk to whichever axis (yaw / pitch)
+// the spec nominates as the recoil axis, save the prior commanded µs,
+// and hold there until the return timer fires (see update()).
+// `_recoilActive` then suppresses RC updates on that axis until the
+// hold completes — otherwise the very next tick would overwrite the
+// kicked target with whatever the operator is feeding in.
 inline void GunUnit::commandRecoilJerk() {
     if (!_send) return;
-    if (_spec.recoilServoPort.portKind == 0) return;
-    const uint16_t target = _spec.recoilCenterUs + _spec.recoilJerkUs;
-    commandServoTargetUs(_spec.recoilServoPort, target);
+    if (!_spec.recoilEnabled) return;
+    const bool isYaw = (_spec.recoilAxis == 1);
+    const GunAxis& axis = isYaw ? _spec.yaw : _spec.pitch;
+    if (!axis.enabled || axis.servoPort.portKind == 0) return;
+    uint16_t& curTarget = isYaw ? _yawTargetUs : _pitchTargetUs;
+    _recoilSavedUs = curTarget;
+    _recoilActive  = true;
+    const uint16_t kicked = (uint16_t)(curTarget + _spec.recoilJerkUs);
+    commandServoTargetUs(axis.servoPort, kicked);
+    curTarget = kicked;
 }
 
 inline void GunUnit::commandHeater(bool on) {

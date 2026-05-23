@@ -45,6 +45,7 @@
 #include <serial/diag_log.h>
 #include <serial/ports.h>             // PortKind::*
 #include <serial/roles.h>             // RoleKind::*
+#include <motion/motion_profile.h>    // sfx_core::ServoMotionProfile (Rule 42 storage)
 
 #include "../effects/effect_id.h"     // PortRef
 #include "../effects/input/trigger_input.h"   // TriggerKind, FailsafeBehaviour
@@ -71,12 +72,21 @@ constexpr size_t  kGuidMax          = 5;    ///< 4 hex chars + NUL (matches Port
 /// One entry in the board's port → role mapping table.  `guid[0] == 0`
 /// ⇒ a hub-local port; otherwise the 4-hex GUID of the expander the port
 /// lives on (stamped from the parent `expanders[]` entry at parse time).
+///
+/// Rule 42 + 44: when `role == ServoActuator`, `profile` carries the
+/// servo's motion shape; serialised into the role-attach payload at
+/// apply time so `RoleServicePolicy::attachServoActuator` consumes it
+/// directly.  `profileSet == false` ⇒ omit the optional bytes, role
+/// uses its initFromPort() defaults.
 struct PortMapping {
     uint8_t kind = 0;                    ///< PortKind::* (servo|pwm|hbridge|input)
     uint8_t idx  = 0;                    ///< per-kind index on the board
     uint8_t role = 0;                    ///< RoleKind::* — the variant to attach
     char    guid[kGuidMax] = {};         ///< "" = hub-local; else expander GUID
     char    label[kPortLabelMax] = {};   ///< human-readable description (Studio uses this)
+
+    bool                       profileSet = false;
+    sfx_core::ServoMotionProfile profile{};
 };
 
 /// One declared expander board.  `alias` is the friendly handle every
@@ -219,6 +229,25 @@ inline uint8_t hubfxPortKindFromName(const char* name) {
     return 0;
 }
 
+// Rule 42 storage + Rule 44 editing-surface: read the optional
+// `profile: { … }` block from a ports[] entry into PortMapping.
+// Missing block leaves profileSet=false so applyPortRoles knows to
+// omit the optional cfg payload and let the role start with its
+// initFromPort() defaults.
+template <typename TNode>
+inline void parseServoProfile(const TNode* item, PortMapping& m) {
+    const auto* pn = item ? item->child("profile") : nullptr;
+    if (!pn) { m.profileSet = false; return; }
+    m.profileSet = true;
+    m.profile.minUs             = (uint16_t)pn->template childAs<int32_t>("min_us",                m.profile.minUs);
+    m.profile.maxUs             = (uint16_t)pn->template childAs<int32_t>("max_us",                m.profile.maxUs);
+    m.profile.centerUs          = (uint16_t)pn->template childAs<int32_t>("center_us",             m.profile.centerUs);
+    m.profile.inverted          =           pn->template childAs<bool>   ("reversed",              m.profile.inverted);
+    m.profile.maxSpeedUsPerSec  = (uint16_t)pn->template childAs<int32_t>("max_speed_us_per_sec",  m.profile.maxSpeedUsPerSec);
+    m.profile.maxAccelUsPerSec2 = (uint16_t)pn->template childAs<int32_t>("max_accel_us_per_sec2", m.profile.maxAccelUsPerSec2);
+    m.profile.maxJerkUsPerSec3  = (uint16_t)pn->template childAs<int32_t>("max_jerk_us_per_sec3",  m.profile.maxJerkUsPerSec3);
+}
+
 /// Accept both snake_case (`led_animator`) and kebab-case
 /// (`led-animator`) — kebab is what `RoleKind::getName()` returns; snake
 /// matches the rest of the YAML convention.  Unknown ⇒ `None` + WARN.
@@ -314,6 +343,8 @@ struct HubFxConfigSchema {
                 const char* lbl = item->template childAs<const char*>("label", "");
                 std::memset(m.label, 0, sizeof(m.label));
                 if (lbl && lbl[0]) std::strncpy(m.label, lbl, sizeof(m.label) - 1);
+                // Rule 42 storage — servo motion profile per port.
+                parseServoProfile(item, m);
                 d.numPorts++;
             }
         }
@@ -367,6 +398,7 @@ struct HubFxConfigSchema {
                     const char* lbl = item->template childAs<const char*>("label", "");
                     std::memset(m.label, 0, sizeof(m.label));
                     if (lbl && lbl[0]) std::strncpy(m.label, lbl, sizeof(m.label) - 1);
+                    parseServoProfile(item, m);   // Rule 42 storage
                     d.numPorts++;
                 }
             }
