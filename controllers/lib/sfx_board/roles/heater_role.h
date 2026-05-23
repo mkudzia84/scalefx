@@ -23,6 +23,8 @@
 #include <ports/pwm_port.h>
 #include <ports/sensors.h>
 
+#include "../element/element_scaling.h"
+
 namespace sfx_core {
 
 class HeaterRole {
@@ -50,9 +52,25 @@ public:
     /// Hysteresis half-width in tenths of °C (default 10 = ±1.0 °C).
     void setHysteresis(int16_t hysteresis_cx10) { _hysteresis_cx10 = hysteresis_cx10; }
 
-    /// Drive duty applied while heating (0..port.maxDuty()).  Defaults
-    /// to port.maxDuty() (full-on, full-off bang-bang).
-    void setDriveDuty(uint16_t duty) { _driveDuty = duty; _driveDutyExplicit = true; }
+    /// Drive duty applied while heating, expressed as 0..100 % of the
+    /// element's RATED voltage. Defaults to 100 % (full-on, full-off
+    /// bang-bang at the element's nameplate rating). Combined with the
+    /// element config below to compute the actual port-native duty
+    /// that delivers `_drivePct%` of the element's voltage.
+    /// (Phase 2 of GunFX rollout, instructions/22 — voltage scaling
+    /// moved to the role layer.)
+    void setDrivePct(uint8_t pct)         { _drivePct = pct; }
+
+    /// Element rated voltage + scaling mode (Phase 2). When both are
+    /// set + the port carries `portMv` (Phase 0), the role drives at
+    /// `(elementMv/portMv [² for Quadratic]) * drivePct` of port-max
+    /// duty. `elementMv = 0` or `portMv = 0` → passthrough.
+    void setElement(const ElementConfig& cfg)   { _element = cfg; }
+    void setPortRailMv(uint16_t portMv)         { _portRailMv = portMv; }
+    const ElementConfig& element() const        { return _element; }
+    uint16_t portRailMv() const                 { return _portRailMv; }
+    uint8_t  drivePct() const                   { return _drivePct; }
+    int16_t  hysteresis_cx10() const            { return _hysteresis_cx10; }
 
     int16_t  actual_cx10() const { return _tSense ? _tSense->temperature_cx10() : 0; }
     uint16_t commandedDuty() const { return _commandedDuty; }
@@ -67,9 +85,14 @@ private:
 
     int16_t  _target_cx10        = INT16_MIN;   ///< off
     int16_t  _hysteresis_cx10    = 10;          ///< ±1.0 °C
-    uint16_t _driveDuty          = 0;
-    bool     _driveDutyExplicit  = false;
-    uint16_t _commandedDuty      = 0;
+
+    // Element scaling (Phase 2) — duty is computed from drivePct +
+    // element vs port voltage. Falls back to 100 % at port-max when
+    // either voltage is unknown.
+    uint8_t       _drivePct      = 100;
+    ElementConfig _element       = {};
+    uint16_t      _portRailMv    = 0;
+    uint16_t      _commandedDuty = 0;
 };
 
 }  // namespace sfx_core

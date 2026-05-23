@@ -94,6 +94,17 @@ namespace RolePacket {
     constexpr uint8_t SERVO_STATUS_RESP     = 0x4A;  ///< [portIdx:u8][pos_us:u16LE][target_us:u16LE][vel:i16LE][flags:u8]
     constexpr uint8_t SERVO_TARGET_REACHED  = 0x4B;  ///< async TAG_ASYNC: [portIdx:u8][pos_us:u16LE]
     constexpr uint8_t SERVO_MOTION_UPDATE   = 0x4C;  ///< async TAG_ASYNC: [portIdx:u8][pos_us:u16LE][target_us:u16LE][vel:i16LE]
+    /// Live motion-profile retune (Phase 2.9.x — actuator mechanism on
+    /// the role layer, Rule 42).  Same wire shape as the role-attach
+    /// payload tail — operator sliders push without re-attaching the
+    /// role (which would lose target/position state).
+    constexpr uint8_t SERVO_SET_PROFILE      = 0x4D;
+        ///< [portIdx:u8][minUs:u16LE][maxUs:u16LE][maxSpeed:u16LE][reversed:u8]
+        ///< [centerUs:u16LE][maxAccel:u16LE][maxJerk:u16LE] → ACK
+    constexpr uint8_t SERVO_GET_PROFILE_REQ  = 0x4E;  ///< [portIdx:u8] → SERVO_PROFILE_RESP
+    constexpr uint8_t SERVO_PROFILE_RESP     = 0x4F;
+        ///< [portIdx:u8][minUs:u16LE][maxUs:u16LE][maxSpeed:u16LE][reversed:u8]
+        ///< [centerUs:u16LE][maxAccel:u16LE][maxJerk:u16LE]
 
     // ── RC PWM input role (0x50..0x57) ────────────────────────────────
     constexpr uint8_t RCIN_GET_VALUE_REQ    = 0x50;  ///< [portIdx:u8] → RCIN_VALUE_RESP
@@ -116,6 +127,11 @@ namespace RolePacket {
     constexpr uint8_t MOTOR_GET_STATUS_REQ  = 0x62;  ///< [portIdx:u8] → MOTOR_STATUS_RESP
     constexpr uint8_t MOTOR_STATUS_RESP     = 0x63;  ///< [portIdx:u8][duty:u16LE][v_mV:i16LE][i_mA:i16LE][stallFlags:u8]
     constexpr uint8_t MOTOR_STALL_EVENT     = 0x64;  ///< async TAG_ASYNC: [portIdx:u8][peak_mA:u16LE][duration_ms:u16LE]
+    /// Live element-config retune (Phase 2.9.x — Rule 42).  Voltage
+    /// scaling for sub-rail elements is updatable without re-attach.
+    constexpr uint8_t MOTOR_SET_ELEMENT     = 0x65;  ///< [portIdx:u8][elementMv:u16LE][scaling:u8] → ACK
+    constexpr uint8_t MOTOR_GET_ELEMENT_REQ = 0x66;  ///< [portIdx:u8] → MOTOR_ELEMENT_RESP
+    constexpr uint8_t MOTOR_ELEMENT_RESP    = 0x67;  ///< [portIdx:u8][elementMv:u16LE][scaling:u8][portRailMv:u16LE]
 
     // ── Bi-directional DC motor role (0x68..0x6F) ─────────────────────
     constexpr uint8_t BIMOTOR_SET_SIGNED      = 0x68;  ///< [portIdx:u8][signed_duty:i16LE] → ACK
@@ -139,6 +155,23 @@ namespace RolePacket {
     constexpr uint8_t HEATER_SET_TARGET       = 0x70;  ///< [portIdx:u8][target_cx10:i16LE] → ACK
     constexpr uint8_t HEATER_GET_STATUS_REQ   = 0x71;  ///< [portIdx:u8] → HEATER_STATUS_RESP
     constexpr uint8_t HEATER_STATUS_RESP      = 0x72;  ///< [portIdx:u8][target_cx10:i16LE][actual_cx10:i16LE][duty:u16LE][flags:u8]
+    /// Live element-config retune (Phase 2.9.x — Rule 42).  Same shape
+    /// as MOTOR_SET_ELEMENT — element_mv + scaling + drivePct + hyst.
+    constexpr uint8_t HEATER_SET_ELEMENT      = 0x73;
+        ///< [portIdx:u8][elementMv:u16LE][scaling:u8][drivePct:u8][hyst_cx10:i16LE] → ACK
+    constexpr uint8_t HEATER_GET_ELEMENT_REQ  = 0x74;  ///< [portIdx:u8] → HEATER_ELEMENT_RESP
+    constexpr uint8_t HEATER_ELEMENT_RESP     = 0x75;
+        ///< [portIdx:u8][elementMv:u16LE][scaling:u8][drivePct:u8][hyst_cx10:i16LE][portRailMv:u16LE]
+
+    // ── DC motor intent-layer driver (continuation slot — the DC motor's
+    //    primary range 0x60..0x67 is exhausted, so MOTOR_SET_PCT lives
+    //    in the spare slot at the top of the heater range).
+    //    Rule 42 intent surface: "drive at N % of the element's rated
+    //    voltage".  The role internally applies scaleDuty() to produce
+    //    the actual port-native duty.  MOTOR_SET_DUTY (0x60) stays as
+    //    the raw port-level bypass for advanced callers.
+    constexpr uint8_t MOTOR_SET_PCT           = 0x76;
+        ///< [portIdx:u8][pct:u8 (0..100)] → ACK
 
     // ── SBUS input role (0x78..0x7B) ──────────────────────────────────
     constexpr uint8_t SBUS_GET_FRAME_REQ      = 0x78;  ///< [portIdx:u8] → SBUS_FRAME_RESP

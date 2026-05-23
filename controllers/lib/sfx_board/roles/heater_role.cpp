@@ -18,8 +18,13 @@ void HeaterRole::setTarget(int16_t target_cx10) {
 void HeaterRole::tick() {
     if (!_port || _target_cx10 == INT16_MIN) return;
 
-    // Default drive duty = port's full scale if user didn't set one.
-    const uint16_t drive = _driveDutyExplicit ? _driveDuty : _port->maxDuty();
+    // Drive duty = scaled from drivePct + element + port rail (Phase 2).
+    // Old `setDriveDuty(raw)` API is gone — operators set drivePct (0..100)
+    // at the intent level and let the role + element_scaling helper do
+    // the voltage math. Unknown rail / element falls back to passthrough,
+    // which the helper handles → drive = drivePct * portMaxDuty / 100.
+    const uint16_t drive = scaleDuty(_drivePct, _port->maxDuty(),
+                                     _portRailMv, _element);
 
     // Open-loop mode (no temperature sensor): just hold drive duty
     // whenever a target is set (target == INT16_MIN → already handled

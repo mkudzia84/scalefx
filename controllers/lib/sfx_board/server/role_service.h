@@ -94,6 +94,8 @@ private:
     // ── Servo actuator ────────────────────────────────────────────────
     void handleServoSetTarget    (const uint8_t* p, size_t len);
     void handleServoGetStatusReq (const uint8_t* p, size_t len);
+    void handleServoSetProfile   (const uint8_t* p, size_t len);
+    void handleServoGetProfileReq(const uint8_t* p, size_t len);
 
     // ── RC PWM input ──────────────────────────────────────────────────
     void handleRcInGetValueReq    (const uint8_t* p, size_t len);
@@ -118,6 +120,9 @@ private:
     void handleMotorSetDuty     (const uint8_t* p, size_t len);
     void handleMotorBrake       (const uint8_t* p, size_t len);
     void handleMotorGetStatusReq(const uint8_t* p, size_t len);
+    void handleMotorSetElement  (const uint8_t* p, size_t len);
+    void handleMotorGetElementReq(const uint8_t* p, size_t len);
+    void handleMotorSetPct      (const uint8_t* p, size_t len);
 
     // ── Bi-directional motor ──────────────────────────────────────────
     void handleBiMotorSetSigned   (const uint8_t* p, size_t len);
@@ -127,8 +132,10 @@ private:
     void handleBiMotorSeekEndstop (const uint8_t* p, size_t len);
 
     // ── Heater ────────────────────────────────────────────────────────
-    void handleHeaterSetTarget  (const uint8_t* p, size_t len);
-    void handleHeaterGetStatus  (const uint8_t* p, size_t len);
+    void handleHeaterSetTarget   (const uint8_t* p, size_t len);
+    void handleHeaterGetStatus   (const uint8_t* p, size_t len);
+    void handleHeaterSetElement  (const uint8_t* p, size_t len);
+    void handleHeaterGetElementReq(const uint8_t* p, size_t len);
 
     // ── Role emplacement helpers (build role from binding + config bytes) ──
     bool attachServoActuator (ServoBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);

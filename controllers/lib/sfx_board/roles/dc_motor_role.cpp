@@ -4,6 +4,8 @@
 
 #include "dc_motor_role.h"
 
+#include "../server/effect_clock.h"
+
 namespace sfx_core {
 
 void DcMotorRole::setDuty(uint16_t duty) {
@@ -13,6 +15,11 @@ void DcMotorRole::setDuty(uint16_t duty) {
         _overcurrentStartMs = 0;
         _peakDuringWindow_mA = 0;
     }
+}
+
+void DcMotorRole::setPct(uint8_t pct) {
+    const uint16_t maxDuty = _port ? _port->maxDuty() : 0;
+    setDuty(scaleDuty(pct, maxDuty, _portRailMv, _element));
 }
 
 void DcMotorRole::setStallGuard(uint16_t threshold_mA, uint16_t window_ms) {
@@ -30,7 +37,7 @@ void DcMotorRole::clearStall() {
 void DcMotorRole::tick() {
     if (!_iSense || _stallThreshold_mA == 0 || _stalled) return;
     const int16_t i_mA = _iSense->current_mA();
-    const uint32_t now = millis();
+    const uint32_t now = EffectClock::instance().nowMs();
 
     if (i_mA >= (int16_t)_stallThreshold_mA) {
         if (_overcurrentStartMs == 0) {

@@ -24,6 +24,8 @@
 #include <ports/pwm_port.h>
 #include <ports/sensors.h>
 
+#include "../element/element_scaling.h"
+
 namespace sfx_core {
 
 class DcMotorRole {
@@ -43,14 +45,31 @@ public:
         _port = port; _iSense = iSense; _vSense = vSense;
     }
 
-    /// Set duty in port-native units (0..port.maxDuty()).
+    /// Set duty in port-native units (0..port.maxDuty()). Bypasses
+    /// element scaling — callers wanting "drive this motor at N% of
+    /// its rated voltage" should use `setPct()` instead (Phase 2 of
+    /// GunFX rollout, instructions/22 — voltage scaling lives on the
+    /// role).
     void setDuty(uint16_t duty);
+
+    /// Set duty as 0..100 % of the element's RATED voltage. When
+    /// `_element.elementMv > 0` AND `_portRailMv > 0`, the actual port
+    /// duty is reduced via `scaleDuty()` (linear / quadratic). Other-
+    /// wise it's passthrough — pct mapped directly onto port maxDuty.
+    void setPct(uint8_t pct);
+
     /// Brake — write duty 0.  (True brake would need an H-bridge.)
     void brake() { setDuty(0); clearStall(); }
 
     /// Stall-detection tuning.  Threshold = 0 disables.
     void setStallGuard(uint16_t threshold_mA, uint16_t window_ms);
     void clearStall();
+
+    // ── Element scaling context (Phase 2) ─────────────────────────────
+    void setElement(const ElementConfig& cfg) { _element = cfg; }
+    void setPortRailMv(uint16_t portMv)       { _portRailMv = portMv; }
+    const ElementConfig& element() const      { return _element; }
+    uint16_t portRailMv() const               { return _portRailMv; }
 
     // Status accessors
     uint16_t duty()         const { return _commandedDuty; }
@@ -74,6 +93,10 @@ private:
     uint16_t _stallWindow_ms      = 250;
     uint32_t _overcurrentStartMs  = 0;   ///< 0 = not currently over threshold
     uint16_t _peakDuringWindow_mA = 0;
+
+    // Phase 2 — element-aware duty scaling.
+    ElementConfig _element        = {};
+    uint16_t      _portRailMv     = 0;
 
     StallCallback _onStall;
 };
