@@ -56,10 +56,12 @@ namespace AlertSeverity {
     }
 }
 
+// Alert error codes — CLAUDE.md allocates 0x90..0x9F.
+// Old values 0xD1-0xD3 squatted in the GunFX packet-type range.
 namespace AlertError {
-    constexpr uint8_t ALERT_DISABLED      = 0xD1;
-    constexpr uint8_t UNKNOWN_SEVERITY    = 0xD2;
-    constexpr uint8_t SOUND_NOT_CONFIGURED = 0xD3;
+    constexpr uint8_t ALERT_DISABLED      = 0x90;
+    constexpr uint8_t UNKNOWN_SEVERITY    = 0x91;
+    constexpr uint8_t SOUND_NOT_CONFIGURED = 0x92;
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {

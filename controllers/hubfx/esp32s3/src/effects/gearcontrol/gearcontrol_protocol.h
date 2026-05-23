@@ -93,15 +93,19 @@ namespace GearPhase {
     }
 }
 
-/// GearControl-effect error codes (HubFX 0x80..0x8F slot, distinct
-/// values from the legacy expander to avoid table-key collisions).
+/// GearControl-effect error codes — CLAUDE.md error-range allocation
+/// reserves 0x60..0x6F for GearControl.  Old values 0xC1..0xC6 collided
+/// with EngineError::ENGINE_NOT_AVAILABLE (0xC6) at the wire level
+/// (same byte, two meanings on NACK) — the symptom was an EngineStart
+/// returning "GEAR_NO_STALL_DETECTED" because the Go side's error-name
+/// registry resolved 0xC6 to whichever init() ran last.
 namespace GearError {
-    constexpr uint8_t UNKNOWN_ID       = 0xC1;
-    constexpr uint8_t GEAR_TABLE_FULL  = 0xC2;
-    constexpr uint8_t MOTOR_UNAVAILABLE= 0xC3;
-    constexpr uint8_t IN_ERROR_STATE   = 0xC4;
-    constexpr uint8_t TIMEOUT          = 0xC5;
-    constexpr uint8_t NO_STALL_DETECTED= 0xC6;   ///< calibration: no endpoint stall
+    constexpr uint8_t UNKNOWN_ID       = 0x60;
+    constexpr uint8_t GEAR_TABLE_FULL  = 0x61;
+    constexpr uint8_t MOTOR_UNAVAILABLE= 0x62;
+    constexpr uint8_t IN_ERROR_STATE   = 0x63;
+    constexpr uint8_t TIMEOUT          = 0x64;
+    constexpr uint8_t NO_STALL_DETECTED= 0x65;   ///< calibration: no endpoint stall
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {

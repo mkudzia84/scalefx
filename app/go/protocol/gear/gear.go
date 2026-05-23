@@ -101,14 +101,17 @@ func PhaseSummary(p byte) string {
 }
 
 // ─── Error codes ─────────────────────────────────────────────────────
+// CLAUDE.md allocates GearControl 0x60..0x6F.  Old values 0xC1..0xC6
+// collided with EngineError::ENGINE_NOT_AVAILABLE (0xC6) on the wire
+// — fixed atomically with the firmware in gearcontrol_protocol.h.
 
 const (
-	ErrUnknownID        protocol.ErrorCode = 0xC1
-	ErrTableFull        protocol.ErrorCode = 0xC2
-	ErrMotorUnavailable protocol.ErrorCode = 0xC3
-	ErrInErrorState     protocol.ErrorCode = 0xC4
-	ErrTimeout          protocol.ErrorCode = 0xC5
-	ErrNoStallDetected  protocol.ErrorCode = 0xC6
+	ErrUnknownID        protocol.ErrorCode = 0x60
+	ErrTableFull        protocol.ErrorCode = 0x61
+	ErrMotorUnavailable protocol.ErrorCode = 0x62
+	ErrInErrorState     protocol.ErrorCode = 0x63
+	ErrTimeout          protocol.ErrorCode = 0x64
+	ErrNoStallDetected  protocol.ErrorCode = 0x65
 )
 
 // ─── Decoded types ───────────────────────────────────────────────────

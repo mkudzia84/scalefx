@@ -65,12 +65,12 @@ func SeverityFromName(name string) (byte, bool) {
 // output mask (passed as outputMask=0 in the BEEP payload).
 const OutputDefault byte = 0
 
-// ─── Error codes ─────────────────────────────────────────────────────
+// ─── Error codes (0x90..0x9F per CLAUDE.md) ──────────────────────────
 
 const (
-	ErrAlertDisabled       protocol.ErrorCode = 0xD1
-	ErrUnknownSeverity     protocol.ErrorCode = 0xD2
-	ErrSoundNotConfigured  protocol.ErrorCode = 0xD3
+	ErrAlertDisabled      protocol.ErrorCode = 0x90
+	ErrUnknownSeverity    protocol.ErrorCode = 0x91
+	ErrSoundNotConfigured protocol.ErrorCode = 0x92
 )
 
 // ─── Decoded types ───────────────────────────────────────────────────

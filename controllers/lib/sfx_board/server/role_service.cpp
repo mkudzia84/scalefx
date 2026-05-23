@@ -284,18 +284,19 @@ void RoleServicePolicy::handleList() {
 bool RoleServicePolicy::attachServoActuator(ServoBinding& b, uint8_t portIdx,
                                             const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<ServoActuatorRole>(b.port);
-    // Optional config (Rule 11 append-only):
-    //   [minUs:u16LE][maxUs:u16LE]                                    — calibration limits
-    //   [maxSpeedUsPerSec:u16LE]                                      — slew limit (legacy maxVel)
-    //   [reversed:u8]                                                  — REV flag
-    //   [centerUs:u16LE]                                              — neutral / failsafe
-    //   [maxAccelUsPerSec2:u16LE][maxJerkUsPerSec3:u16LE]             — Phase 2.9 trapezoidal / S-curve
+    // Rule 42 storage + Rule 44 editing-surface: the per-port profile
+    // travels with the role-attach payload from /hubfx.yaml's ports[]
+    // block.  Append-only (Rule 11):
+    //   [minUs:u16LE][maxUs:u16LE]                          — calibration limits
+    //   [maxSpeedUsPerSec:u16LE]                            — slew limit
+    //   [reversed:u8]                                       — REV flag
+    //   [centerUs:u16LE]                                    — neutral / failsafe
+    //   [maxAccelUsPerSec2:u16LE][maxJerkUsPerSec3:u16LE]   — trapezoidal / S-curve
     if (cfgLen >= 4) {
         const uint16_t mn = SfxWire::getU16LE(&cfg[0]);
         const uint16_t mx = SfxWire::getU16LE(&cfg[2]);
         role.setLimits(mn, mx);
     }
-
     ServoMotionProfile prof = role.profile();   // start from current (initFromPort)
     if (cfgLen >= 6) prof.maxSpeedUsPerSec = SfxWire::getU16LE(&cfg[4]);
     if (cfgLen >= 7) role.setReversed(cfg[6] != 0);
@@ -303,7 +304,6 @@ bool RoleServicePolicy::attachServoActuator(ServoBinding& b, uint8_t portIdx,
     if (cfgLen >= 11) prof.maxAccelUsPerSec2 = SfxWire::getU16LE(&cfg[9]);
     if (cfgLen >= 13) prof.maxJerkUsPerSec3  = SfxWire::getU16LE(&cfg[11]);
     role.setProfile(prof);
-
     role.onTargetReached([this, portIdx](uint16_t pos) { emitServoTargetReached(portIdx, pos); });
     return true;
 }

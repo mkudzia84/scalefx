@@ -40,6 +40,14 @@ int BoardServerBase::sendNack(uint8_t errorCode, const char* reason) {
 
     const char* msg = (reason && reason[0]) ? reason : aggregateErrorMessage(errorCode);
     if (!msg) msg = SerialError::getMessage(errorCode);
+    // Final fallback — neither the caller, the effect aggregator, nor
+    // SerialError had a message for this code (SerialError now returns
+    // null for codes outside its allocated ranges instead of
+    // "Domain-specific error").  Ship just the byte; the Go side
+    // resolves the name via its errorNames registry.
+    if (!msg) {
+        return sendRawPacket(CorePacket::NACK, _currentTag, payload, 1);
+    }
 
     size_t msgLen = std::strlen(msg);
     if (msgLen > sizeof(payload) - 1) msgLen = sizeof(payload) - 1;

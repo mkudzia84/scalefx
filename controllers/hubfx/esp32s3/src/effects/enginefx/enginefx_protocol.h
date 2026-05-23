@@ -47,9 +47,14 @@ namespace EngineState {
     }
 }
 
+// EngineFX error codes — CLAUDE.md now allocates 0x70..0x7F for these.
+// Old values (0xC6, 0xC7) collided: 0xC6 also held GearError::NO_STALL_DETECTED,
+// causing EngineStart NACKs to surface as "GEAR_NO_STALL_DETECTED" in the
+// Studio console; 0xC7 was the same byte as ENGINE_START packet type
+// (different namespace on the wire, but confusing for humans + grep).
 namespace EngineError {
-    constexpr uint8_t ENGINE_NOT_AVAILABLE = 0xC6;   ///< effect disabled / mixer absent
-    constexpr uint8_t MISSING_PATH         = 0xC7;
+    constexpr uint8_t ENGINE_NOT_AVAILABLE = 0x70;   ///< effect disabled / mixer absent
+    constexpr uint8_t MISSING_PATH         = 0x71;
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {

@@ -212,17 +212,20 @@ public:
     void ingest(uint8_t level, const char* message);
 
     /**
-     * @brief Send all buffered log messages WITHOUT draining the buffer
+     * @brief Send buffered log messages WITHOUT draining the buffer
      *
      * Unlike flush(), this method does NOT advance _tail. Use this for
      * the DIAG_HISTORY command — allows viewing log history without
-     * consuming the rolling 128-message buffer.
+     * consuming the rolling buffer.
      *
      * Messages are sent oldest-first (chronological order).
      *
+     * @param max Cap on how many messages to send.  0 = unlimited
+     *            (entire ring).  When max > 0 and the ring contains
+     *            more entries, the NEWEST `max` are sent (tail).
      * @return Number of messages sent
      */
-    uint16_t sendHistory();
+    uint16_t sendHistory(uint16_t max = 0);
 
     /**
      * @brief Get number of messages currently buffered
@@ -337,7 +340,7 @@ public:
 
     void ingest(uint8_t, const char*) {}
     bool isInitialized() const { return false; }
-    uint16_t sendHistory() { return 0; }
+    uint16_t sendHistory(uint16_t = 0) { return 0; }
     uint16_t pending() const { return 0; }
     uint32_t overwrittenCount() const { return 0; }
 

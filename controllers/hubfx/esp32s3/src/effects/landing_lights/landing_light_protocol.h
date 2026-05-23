@@ -64,12 +64,15 @@ namespace LandingLightState {
     constexpr uint8_t On  = 1;
 }
 
-/// Landing-light layer error codes, inside the HubFX 0x80..0x8F slot.
+/// Landing-light layer error codes — CLAUDE.md allocates 0x88..0x8F
+/// (sub-block of the infrastructure error range 0x80..0x8F; sits next
+/// to ExpanderError at 0x80..0x87).  Old values 0xB1-0xB4 squatted in
+/// the LandingLight packet-type range.
 namespace LandingLightError {
-    constexpr uint8_t UNKNOWN_ID         = 0xB1;
-    constexpr uint8_t WRONG_OWNER        = 0xB2;  ///< caller's effect ID doesn't own this LL
-    constexpr uint8_t SERVO_UNAVAILABLE  = 0xB3;
-    constexpr uint8_t LL_TABLE_FULL      = 0xB4;
+    constexpr uint8_t UNKNOWN_ID         = 0x88;
+    constexpr uint8_t WRONG_OWNER        = 0x89;  ///< caller's effect ID doesn't own this LL
+    constexpr uint8_t SERVO_UNAVAILABLE  = 0x8A;
+    constexpr uint8_t LL_TABLE_FULL      = 0x8B;
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {

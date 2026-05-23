@@ -76,10 +76,12 @@ namespace AudioWire {
 // Audio-layer error codes (within the 0x80..0x8F band)
 // ============================================================================
 
+// Audio error codes — CLAUDE.md allocates 0xB0..0xBF.  Old values
+// (0x85, 0x89) squatted in expander/topology PACKET-TYPE bytes.
 namespace AudioError {
     using namespace SerialError;
-    constexpr uint8_t AUDIO_FAILURE    = 0x85;  ///< generic audio-engine failure
-    constexpr uint8_t INVALID_CHANNEL  = 0x89;
+    constexpr uint8_t AUDIO_FAILURE    = 0xB0;  ///< generic audio-engine failure
+    constexpr uint8_t INVALID_CHANNEL  = 0xB1;
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {

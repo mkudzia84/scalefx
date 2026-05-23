@@ -26,12 +26,12 @@ const (
 // when no program is currently active.
 const NoActiveProgram byte = 0xFF
 
-// ─── Error codes (0xB6..0xB8) ────────────────────────────────────────
+// ─── Error codes (0x50..0x5F per CLAUDE.md) ──────────────────────────
 
 const (
-	ErrUnknownProgram   protocol.ErrorCode = 0xB6
-	ErrProgramTooLarge  protocol.ErrorCode = 0xB7
-	ErrBrightnessRange  protocol.ErrorCode = 0xB8
+	ErrUnknownProgram  protocol.ErrorCode = 0x50
+	ErrProgramTooLarge protocol.ErrorCode = 0x51
+	ErrBrightnessRange protocol.ErrorCode = 0x52
 )
 
 // ─── Decoded types ───────────────────────────────────────────────────

@@ -104,8 +104,14 @@ namespace SerialError {
             case CRC_ERROR:             return "CRC error";
             case FRAMING_ERROR:         return "Framing error";
             default:
-                if (code >= 0x20 && code <= 0x7F) return "Domain-specific error";
-                return "Unknown error code";
+                // Codes outside SerialError's allocated ranges
+                // (0x00..0x1F + 0xF0..0xFF) are resolved by the
+                // owning effect's `getErrorMessage` via the
+                // BoardServer::aggregateErrorMessage fold.  This
+                // path returns nullptr so callers fall through to
+                // that aggregator instead of shipping the bogus
+                // "Domain-specific error" placeholder.
+                return nullptr;
         }
     }
     

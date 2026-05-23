@@ -107,16 +107,33 @@ void DiagLog::emitLive(const LogEntry& entry) {
 // Send History — Send buffered messages WITHOUT draining (for DIAG_HISTORY)
 // ============================================================================
 
-uint16_t DiagLog::sendHistory() {
+uint16_t DiagLog::sendHistory(uint16_t max) {
     Stream* serial = _serial.load(std::memory_order_acquire);
     if (!serial) return 0;
 
     // Snapshot indices — atomics provide acquire barrier, no mutex needed
     uint16_t readPos = _tail.load(std::memory_order_acquire);
     uint16_t endPos = _head.load(std::memory_order_acquire);
-    uint16_t sent = 0;
 
-    // Iterate from oldest (tail) to newest (head-1) without advancing _tail
+    // Total entries currently held; honour `max` by skipping forward
+    // to the most recent N (tail-style trimming) so the operator sees
+    // newest output instead of stale boot junk on a tiny request.
+    uint16_t available = (endPos >= readPos)
+        ? (endPos - readPos)
+        : (uint16_t)(RING_SIZE - readPos + endPos);
+    if (max > 0 && available > max) {
+        uint16_t skip = available - max;
+        readPos = (uint16_t)((readPos + skip) % RING_SIZE);
+    }
+
+    uint16_t sent = 0;
+    // Iterate from oldest-kept to newest (head-1) without advancing _tail.
+    // USB CDC backpressure: yield every 16 packets so the host has time
+    // to drain.  A full ESP32 ring (512 × ~140 bytes ≈ 71 KB) used to
+    // saturate the CDC buffer and look like a hang to the Go client —
+    // the yield turns that into a steady drip the reader can keep up
+    // with, and the Go side's 15 s ceiling has comfortable margin.
+    constexpr uint16_t kYieldEvery = 16;
     while (readPos != endPos) {
         const LogEntry& entry = _ring[readPos];
 
@@ -136,6 +153,11 @@ uint16_t DiagLog::sendHistory() {
 
         readPos = (readPos + 1) % RING_SIZE;
         sent++;
+        if ((sent % kYieldEvery) == 0) {
+            // 1 ms is enough to wake the USB CDC writer task on both
+            // ESP32-S3 (FreeRTOS) and RP2040 (Pico-SDK polling loop).
+            SFX_DELAY_MS(1);
+        }
     }
 
     return sent;

@@ -89,15 +89,18 @@ namespace StorageWire {
 // Storage-layer error codes (0x86, 0x8A..0x8F)
 // ============================================================================
 
+// Storage error codes — CLAUDE.md allocates 0xA0..0xAF.  Old values
+// (0x86, 0x8A-0x8F) squatted in expander/storage PACKET-TYPE bytes;
+// the rename to 0xA0-0xA6 puts them squarely in error-range territory.
 namespace StorageError {
     using namespace SerialError;
-    constexpr uint8_t SD_NOT_INITIALIZED   = 0x86;
-    constexpr uint8_t FILE_NOT_FOUND       = 0x8A;
-    constexpr uint8_t FILE_ALREADY_EXISTS  = 0x8B;
-    constexpr uint8_t FILE_IO_ERROR        = 0x8C;
-    constexpr uint8_t FILE_TOO_LARGE       = 0x8D;
-    constexpr uint8_t UPLOAD_IN_PROGRESS   = 0x8E;
-    constexpr uint8_t NO_UPLOAD_ACTIVE     = 0x8F;
+    constexpr uint8_t SD_NOT_INITIALIZED   = 0xA0;
+    constexpr uint8_t FILE_NOT_FOUND       = 0xA1;
+    constexpr uint8_t FILE_ALREADY_EXISTS  = 0xA2;
+    constexpr uint8_t FILE_IO_ERROR        = 0xA3;
+    constexpr uint8_t FILE_TOO_LARGE       = 0xA4;
+    constexpr uint8_t UPLOAD_IN_PROGRESS   = 0xA5;
+    constexpr uint8_t NO_UPLOAD_ACTIVE     = 0xA6;
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {

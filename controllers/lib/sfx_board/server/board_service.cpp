@@ -113,7 +113,12 @@ CommandHandleResult BoardServicePolicy::handle(uint8_t type, const uint8_t* payl
             return CommandHandleResult::Handled;
 
         case CorePacket::DIAG_HISTORY: {
-            uint16_t sent = DiagLog::instance().sendHistory();
+            // payload[0] is the optional `max` cap (0 = entire ring).
+            // The Go client trims tail-side after receiving but the
+            // firmware honouring `max` keeps USB CDC traffic + reader
+            // pressure under control — see DiagLog::sendHistory().
+            uint16_t max = (len >= 1) ? payload[0] : 0;
+            uint16_t sent = DiagLog::instance().sendHistory(max);
             uint8_t countPayload[2];
             SfxWire::putU16LE(countPayload, sent);
             sendRawPacket(CorePacket::ACK, currentTag(), countPayload, 2);

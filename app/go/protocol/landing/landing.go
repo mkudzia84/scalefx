@@ -69,13 +69,15 @@ func PhaseName(p byte) string {
 	}
 }
 
-// ─── Error codes ─────────────────────────────────────────────────────
+// ─── Error codes (0x88..0x8F per CLAUDE.md) ──────────────────────────
+// Co-tenants with ExpanderError (0x80..0x87) in the infrastructure
+// error range 0x80..0x8F.
 
 const (
-	ErrUnknownID        protocol.ErrorCode = 0xB1
-	ErrWrongOwner       protocol.ErrorCode = 0xB2
-	ErrServoUnavailable protocol.ErrorCode = 0xB3
-	ErrTableFull        protocol.ErrorCode = 0xB4
+	ErrUnknownID        protocol.ErrorCode = 0x88
+	ErrWrongOwner       protocol.ErrorCode = 0x89
+	ErrServoUnavailable protocol.ErrorCode = 0x8A
+	ErrTableFull        protocol.ErrorCode = 0x8B
 )
 
 // ─── Decoded types ───────────────────────────────────────────────────

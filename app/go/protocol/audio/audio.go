@@ -46,11 +46,11 @@ const (
 	MaxChannels byte = 8
 )
 
-// ─── Error codes ──────────────────────────────────────────────────────
+// ─── Error codes (0xB0..0xBF per CLAUDE.md) ──────────────────────────
 
 const (
-	ErrAudioFailure   protocol.ErrorCode = 0x85
-	ErrInvalidChannel protocol.ErrorCode = 0x89
+	ErrAudioFailure   protocol.ErrorCode = 0xB0
+	ErrInvalidChannel protocol.ErrorCode = 0xB1
 )
 
 // ─── Command builders ────────────────────────────────────────────────

@@ -64,16 +64,16 @@ func TargetName(t byte) string {
 	}
 }
 
-// ─── Error codes ──────────────────────────────────────────────────────
+// ─── Error codes (0xA0..0xAF per CLAUDE.md) ──────────────────────────
 
 const (
-	ErrSdNotInitialized   protocol.ErrorCode = 0x86
-	ErrFileNotFound       protocol.ErrorCode = 0x8A
-	ErrFileAlreadyExists  protocol.ErrorCode = 0x8B
-	ErrFileIoError        protocol.ErrorCode = 0x8C
-	ErrFileTooLarge       protocol.ErrorCode = 0x8D
-	ErrUploadInProgress   protocol.ErrorCode = 0x8E
-	ErrNoUploadActive     protocol.ErrorCode = 0x8F
+	ErrSdNotInitialized  protocol.ErrorCode = 0xA0
+	ErrFileNotFound      protocol.ErrorCode = 0xA1
+	ErrFileAlreadyExists protocol.ErrorCode = 0xA2
+	ErrFileIoError       protocol.ErrorCode = 0xA3
+	ErrFileTooLarge      protocol.ErrorCode = 0xA4
+	ErrUploadInProgress  protocol.ErrorCode = 0xA5
+	ErrNoUploadActive    protocol.ErrorCode = 0xA6
 )
 
 // ─── Decoded data types ───────────────────────────────────────────────

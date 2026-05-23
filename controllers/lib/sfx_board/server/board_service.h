@@ -73,12 +73,19 @@ public:
     void update() { tickStatusBroadcast(); }
 
     const char* getErrorMessage(uint8_t code) const {
-        // Stick to the canonical SerialError namespace.  The legacy
-        // CoreError namespace shadowed several SerialError values with
-        // different meanings (0x02=NOT_CONNECTED vs NOT_INITIALIZED,
-        // 0x03=NOT_INITIALIZED vs INVALID_COMMAND), which made dispatch
-        // fallback NACKs render misleading messages.
-        return SerialError::getMessage(code);
+        // Resolve only codes inside the SerialError-allocated ranges
+        // (CLAUDE.md: 0x00..0x1F generic + 0xF0..0xFF system).  For
+        // codes outside those ranges, return nullptr so the
+        // `aggregateErrorMessage` fold can ask the next policy
+        // (EngineError 0x70, GearError 0x60, etc.).  Returning
+        // SerialError::getMessage unconditionally short-circuited the
+        // aggregator because its default case yielded the bogus
+        // "Domain-specific error" string for 0x20..0x7F — the EngineFx
+        // / GearControl policies never got asked.
+        if (code <= 0x1F || code >= 0xF0) {
+            return SerialError::getMessage(code);
+        }
+        return nullptr;
     }
 
     // ── Board info & capabilities ─────────────────────────────────────

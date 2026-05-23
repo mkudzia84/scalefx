@@ -46,11 +46,13 @@ namespace LightFxPacket {
 /// program is currently active.
 constexpr uint8_t kLightFxNoActiveProgram = 0xFF;
 
-/// LightFX-effect error codes (within the HubFX 0x80..0x8F slot).
+/// LightFX-effect error codes — CLAUDE.md spec allocates 0x50..0x5F.
+/// (Old values 0xB6-0xB8 squatted in the LightFX packet-type range —
+/// no collision today but inconsistent with the error-range spec.)
 namespace LightFxError {
-    constexpr uint8_t UNKNOWN_PROGRAM   = 0xB6;
-    constexpr uint8_t PROGRAM_TOO_LARGE = 0xB7;
-    constexpr uint8_t BRIGHTNESS_RANGE  = 0xB8;
+    constexpr uint8_t UNKNOWN_PROGRAM   = 0x50;
+    constexpr uint8_t PROGRAM_TOO_LARGE = 0x51;
+    constexpr uint8_t BRIGHTNESS_RANGE  = 0x52;
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {

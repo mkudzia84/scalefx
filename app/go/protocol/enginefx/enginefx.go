@@ -46,10 +46,13 @@ func StateName(s byte) string {
 }
 
 // ─── Error codes ─────────────────────────────────────────────────────
+// CLAUDE.md allocates EngineFX 0x70..0x7F (new range, added with this
+// commit).  Old values (0xC6, 0xC7) collided with GearError + were
+// confusable with ENGINE_START packet type byte.
 
 const (
-	ErrEngineNotAvailable protocol.ErrorCode = 0xC6
-	ErrMissingPath        protocol.ErrorCode = 0xC7
+	ErrEngineNotAvailable protocol.ErrorCode = 0x70
+	ErrMissingPath        protocol.ErrorCode = 0x71
 )
 
 // ─── Decoded types ───────────────────────────────────────────────────
