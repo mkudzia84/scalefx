@@ -54,8 +54,17 @@ namespace sfx_core {
 // services.
 // ============================================================================
 
+// `voltage_mV` (Phase 0 of the GunFX rollout — instructions/22): the
+// declared rail voltage this port is wired to (8 V on HubFX CH1..8,
+// 5 V on the servo headers, 3.3 V on input GPIOs, …).  Boards set it
+// via `descriptor.with_voltage_mV<N>()`; 0 = unknown (UI shows no
+// label, no scaling).  Effects that drive sub-rail elements (e.g. a
+// 5 V smoke heater on the 8 V rail) read it to compute the PWM duty
+// that delivers the element's rated voltage.
+
 struct ServoBinding {
     sfx_peripherals::ServoPort* port = nullptr;
+    uint16_t  voltageMv = 0;
 
     // Servo ports are output-only (Rule 31) — only the actuator role.
     using Role = std::variant<std::monostate,
@@ -68,6 +77,7 @@ struct ServoBinding {
 
 struct InputBinding {
     sfx_peripherals::InputPort* port = nullptr;
+    uint16_t  voltageMv = 0;
 
     // Input-port role pool — every role here drives the port's mode-
     // switch at attach time (PULSE / SBUS / JETI_EX / UART_RAW).
@@ -83,6 +93,7 @@ struct InputBinding {
 
 struct PwmBinding {
     sfx_peripherals::PwmPort*           port    = nullptr;
+    uint16_t  voltageMv = 0;
     sfx_peripherals::VoltageSensor*     vSense  = nullptr;
     sfx_peripherals::CurrentSensor*     iSense  = nullptr;
     sfx_peripherals::TemperatureSensor* tSense  = nullptr;
@@ -99,6 +110,7 @@ struct PwmBinding {
 
 struct HBridgeBinding {
     sfx_peripherals::HBridgePort*       port    = nullptr;
+    uint16_t  voltageMv = 0;
     sfx_peripherals::VoltageSensor*     vSense  = nullptr;
     sfx_peripherals::CurrentSensor*     iSense  = nullptr;
     sfx_peripherals::TemperatureSensor* tSense  = nullptr;

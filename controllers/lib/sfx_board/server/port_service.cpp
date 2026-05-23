@@ -42,11 +42,14 @@ CommandHandleResult PortServicePolicy::handle(uint8_t type, const uint8_t* paylo
 // ── Enumeration ──────────────────────────────────────────────────────
 
 void PortServicePolicy::handlePortListReq() {
-    // Wire layout: [numServo:u8]   × [idx:u8][capFlags:u8]
-    //              [numPwm:u8]     × [idx:u8][senseFlags:u8]
-    //              [numHBridge:u8] × [idx:u8][senseFlags:u8]
-    //              [numInput:u8]   × [idx:u8][capFlags:u8]
-    uint8_t buf[1 + 16*2 + 1 + 16*2 + 1 + 16*2 + 1 + 16*2];
+    // Wire layout (Phase 0 of GunFX rollout — voltageMv added at tail of
+    // each entry. Greenfield change, no legacy compat reader, see
+    // instructions/22 §0.7):
+    //   [numServo:u8]   × [idx:u8][capFlags:u8  ][voltageMv:u16LE]
+    //   [numPwm:u8]     × [idx:u8][senseFlags:u8][voltageMv:u16LE]
+    //   [numHBridge:u8] × [idx:u8][senseFlags:u8][voltageMv:u16LE]
+    //   [numInput:u8]   × [idx:u8][capFlags:u8  ][voltageMv:u16LE]
+    uint8_t buf[1 + 16*4 + 1 + 16*4 + 1 + 16*4 + 1 + 16*4];
     size_t  off = 0;
 
     const uint8_t ns = _reg->numServoPorts();
@@ -56,6 +59,7 @@ void PortServicePolicy::handlePortListReq() {
         if (!b || !b->occupied()) break;
         buf[off++] = i;
         buf[off++] = ServoPortFlags::EMITS;    ///< servo ports are output-only post-split
+        SfxWire::putU16LE(&buf[off], b->voltageMv); off += 2;
     }
 
     const uint8_t np = _reg->numPwmPorts();
@@ -69,6 +73,7 @@ void PortServicePolicy::handlePortListReq() {
         if (b->iSense) flags |= PortSenseFlags::CURRENT;
         if (b->tSense) flags |= PortSenseFlags::TEMPERATURE;
         buf[off++] = flags;
+        SfxWire::putU16LE(&buf[off], b->voltageMv); off += 2;
     }
 
     const uint8_t nh = _reg->numHBridgePorts();
@@ -82,6 +87,7 @@ void PortServicePolicy::handlePortListReq() {
         if (b->iSense) flags |= PortSenseFlags::CURRENT;
         if (b->tSense) flags |= PortSenseFlags::TEMPERATURE;
         buf[off++] = flags;
+        SfxWire::putU16LE(&buf[off], b->voltageMv); off += 2;
     }
 
     const uint8_t ni = _reg->numInputPorts();
@@ -91,6 +97,7 @@ void PortServicePolicy::handlePortListReq() {
         if (!b || !b->occupied()) break;
         buf[off++] = i;
         buf[off++] = b->port->capabilities();   ///< InputPortFlags::*
+        SfxWire::putU16LE(&buf[off], b->voltageMv); off += 2;
     }
 
     _ctx->sendRawPacket(PortPacket::PORT_LIST_RESP, _ctx->currentTag(), buf, off);
