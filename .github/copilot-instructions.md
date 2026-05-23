@@ -1585,7 +1585,222 @@ const uint32_t dt  = sfx_core::EffectClock::instance().dtMs();   // delta since 
 
 Phase 0.5 of the GunFX rollout introduced the clock + retrofitted 11 call sites in `effects/`. New effects start from this rule; any future `millis()` call in `effects/**` is a Rule 40 violation. Full rollout context: [22-GUNFX-FEATURE-ROLLOUT.md § Phase 0.5](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
 
-## Key Architecture Patterns
+### 42. Actuator Mechanism Lives on the Role, Not the Effect
+
+Anything that describes **how the physical actuator behaves** — voltage scaling for sub-rail elements, motion-profile shaping for servos, stall guard for motors, calibration limits, REV flag — belongs on the **role layer**, not duplicated inside each effect that happens to drive the actuator. Effects stay at the **intent layer** (`setTarget(us)`, `setPct(pct)`, `armSmoke()`, `puff(200ms)`); roles own the integrators, math, and per-attachment metadata; ports own the rail / hardware-safe bounds.
+
+**Why role, not effect:**
+- Actuator behaviour is a property of the **physical wiring + the operator's calibration** (the operator soldered a 5 V heater to this header AND set yaw range to ±30° on this servo), not of the effect that commands it. Reattaching the same heater / servo to a different effect, or no effect, doesn't change those properties.
+- Roles already know about their port (Phase 0 / Rule 37 gave each port a declared rail voltage; ServoPort knows its hardware bounds). Adding actuator-side mechanism to the role keeps the math co-located with the data it needs.
+- This matches Rule 36's separation of "operator intent" from "actuator implementation" — the same principle, applied below the wire instead of above it.
+
+**Two concrete instances (Phase 2 of GunFX rollout, instructions/22):**
+
+1. **Element voltage scaling** (heaters, DC motors driving sub-rail elements):
+   - [`sfx_board/element/element_scaling.h`](../controllers/lib/sfx_board/element/element_scaling.h) — shared `ElementConfig { elementMv, mode }` + `scaleDuty(pct, portMaxDuty, portMv, elem)`. Modes: `Passthrough` / `Linear` / `Quadratic`.
+   - [`HeaterRole`](../controllers/lib/sfx_board/roles/heater_role.h) + [`DcMotorRole`](../controllers/lib/sfx_board/roles/dc_motor_role.h) gain `setElement(cfg)` + `setPortRailMv(mv)` + intent-level `setDrivePct(pct)` / `setPct(pct)`.
+   - `RoleServicePolicy::attachHeater` / `attachDcMotor` consume `[elementMv:u16LE][scaling:u8]` from the role-attach config; `binding.voltageMv` feeds `setPortRailMv` automatically.
+
+2. **Servo motion profile** (trapezoidal speed/accel/jerk shape):
+   - [`sfx_board/motion/motion_profile.h`](../controllers/lib/sfx_board/motion/motion_profile.h) — single header with the config struct `ServoMotionProfile { minUs, maxUs, centerUs, inverted, maxSpeed, maxAccel, maxJerk }` AND the runtime integrator `MotionProfile1D` (decel-lookahead + optional jerk-bounded S-curve). They live together because they're tightly coupled — config + the runtime that consumes it.
+   - [`ServoActuatorRole`](../controllers/lib/sfx_board/roles/servo_actuator_role.h) owns the integrator (`setProfile(prof)` + `setTarget(us)` + `tick()`). The legacy velocity-only slew is **retired** as of Phase 2.9.
+   - `RoleServicePolicy::attachServoActuator` consumes `[minUs][maxUs][maxSpeed][reversed][centerUs][maxAccel][maxJerk]` (Rule 11 append-only — old `[minUs][maxUs][maxVel][reversed]` payloads still attach with zero accel/jerk = velocity-only behaviour as before).
+
+**Live-tuning wire surface (Phase 2.9.x).** Mechanism is **live-tunable** without re-attaching the role (re-attach would lose target / position state). Three matched packet triples on the existing role-command range:
+
+| Slots | SET / GET pair | Carries |
+|---|---|---|
+| `0x4D`–`0x4F` | `SERVO_SET_PROFILE` / `SERVO_GET_PROFILE_REQ` / `SERVO_PROFILE_RESP` | `[minUs][maxUs][maxSpeed][reversed][centerUs][maxAccel][maxJerk]` — same shape as the role-attach payload tail |
+| `0x65`–`0x67` | `MOTOR_SET_ELEMENT` / `MOTOR_GET_ELEMENT_REQ` / `MOTOR_ELEMENT_RESP` | `[elementMv][scaling]` (SET) + read-only `[portRailMv]` (GET response) |
+| `0x73`–`0x75` | `HEATER_SET_ELEMENT` / `HEATER_GET_ELEMENT_REQ` / `HEATER_ELEMENT_RESP` | `[elementMv][scaling][drivePct][hyst_cx10]` (SET) + read-only `[portRailMv]` (GET response) |
+
+Set commands are atomic — one packet pushes the full mechanism in one round trip; in-flight `target_us` / `target_cx10` is preserved (re-clamped into the new range). GET responses populate the role-attached read-only `portRailMv` so Studio doesn't need a separate `PORT_LIST_RESP` lookup. Go mirrors in [`app/go/protocol/roles/roles.go`](../app/go/protocol/roles/roles.go) — `CmdServoSetProfile` / `CmdServoGetProfile` / `DecodeServoProfile`, `CmdMotorSetElement` / `DecodeMotorElement`, `CmdHeaterSetElement` / `DecodeHeaterElement`. Studio's port-role row (Phase 4) drags sliders → debounce ~350 ms → push the SET packet → fire-and-confirm via the corresponding GET. New element-driven roles SHOULD follow the same triple shape (SET + GET_REQ + RESP, three slot IDs reserved together).
+
+**Where the per-attachment config lives:**
+
+Operators declare actuator mechanism in `/hubfx.yaml`'s `ports[]` block (the role-attach record), **never** inside an effect's YAML. Examples:
+
+```yaml
+ports:
+  - port: { kind: pwm, idx: 1 }
+    role: heater
+    element_mv: 5000          # 5 V heater wired to the 8 V rail
+    scaling:    linear        # role computes duty = 5000/8000 = 62.5 %
+  - port: { kind: servo, idx: 0 }
+    role: servo-actuator
+    profile:
+      min_us: 1100
+      max_us: 1900
+      center_us: 1500
+      max_speed_us_per_sec:  800
+      max_accel_us_per_sec2: 1600
+      max_jerk_us_per_sec3:  0    # 0 = trapezoidal (no S-curve)
+```
+
+Effect configs (`/gunfx.yaml`, `/enginefx.yaml`, …) reference the port + carry **only the intent** (channel binding, target temp, RPM, …) — never actuator mechanism.
+
+**What effects MUST NOT do:**
+- Store actuator-mechanism fields (`elementMv`, `scalingMode`, `maxSpeed`, `maxAccel`, `maxJerk`, `minUs`, `maxUs`, `reversed`) on the effect's config struct. (Earlier drafts of `gunfx::SmokeConfig` had voltage fields; earlier drafts of `gunfx::GunAxis` had motion profile fields — Phase 2 / 2.9 of the GunFX rollout deleted them when this rule was distilled.)
+- Compute raw duty values or run a motion-profile integrator in the effect tick. Call `role.setPct(pct)`, `role.setTarget(us)`, `role.setDuty(raw)` (raw-bypass for advanced cases).
+- Read `binding.voltageMv` or `port->minMicroseconds()` from inside an effect. Hardware bounds are a role-internal detail.
+
+**When adding a new actuator mechanism (e.g. a stepper-motor microstepping profile, a closed-loop PID for a brushed motor):** put the fields next to the port pointer in the role class, add `setConfig(...)`, and call the math helper whenever you write to the hardware. Operators set the mechanism where they set the role (the port-role attachment), not where they set the effect that uses it. Full Phase-2 context: [22-GUNFX-FEATURE-ROLLOUT.md § Phase 2](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
+
+### 38. Multi-Band Channel Overlay (Rule 36 extension for discrete selectors)
+
+When an effect uses a channel as a **discrete N-item selector** (gun ROF, future LightFx program selector, gear-set picker), the channel cluster from Rule 36 gets a multi-band overlay variant — replaces the single threshold-marker with N coloured non-overlapping zones, one per item, on the same live bar.
+
+**Required visual elements:**
+
+1. **One coloured zone per item** — `[bandLoUs, bandHiUs]` rendered as a translucent rectangle from `usToPct(lo)` to `usToPct(hi)`. Colour cycles through a small palette (`#5b9dff`, `#ffa05b`, `#5bd28b`, `#d65bd2` — 4 hues handles the 8-item cap with one wrap). Each zone shows the item's `name` centred horizontally when the zone is wide enough; tooltip carries `name · lo-hi µs · rpm`.
+2. **Live µs marker** — same green vertical line as Rule 36's `.threshold-mark`, glowing 2 px wide. Sits on top of the zones.
+3. **Armed-band glow** — the zone the live value falls into renders an inner accent-coloured outline (`box-shadow: inset 0 0 0 2px var(--accent)`) — "this is the item firing right now".
+4. **NO-SIGNAL state** — striped track (same as Rule 34), legend reads `"NO SIGNAL"` or `"no channel bound"`.
+5. **Overlap validation** — bands MUST NOT overlap. Detect with O(N²) interval check; on conflict, draw a red diagonal-stripe hatch over the whole bar (`box-shadow: inset 0 0 0 2px var(--error)` + `::after` diagonal-hatch pattern) AND mark the conflicting item rows red with an `⚠ ROF bands overlap (items #X, #Y)` row-error. The bar stays interactive (operator can still tweak); but the Apply button gates on the validator-level error per Rule 35.
+
+**Markup pattern** — copy from [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) `.rof-bar`. The CSS classes `.rof-band`, `.rof-mark`, `.rof-nosignal`, `.rof-bar.overlap-error` are the canonical names.
+
+**When the channel isn't bound** — render nothing (no bar at all). The overlay only appears when both a selector channel AND at least one item are configured.
+
+Reference: [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) ROF section.
+
+### 39. Optional-Section Yellow Warnings (non-blocking, distinct from errors)
+
+Effect-panel sections that are **optional** (the operator can leave them empty) but currently UNFINDABLE (no candidate port available, or other "would work if a resource existed" state) MUST surface as **yellow warnings**, NOT red errors. Yellow does NOT gate Apply (Rule 35 errors do); it just flags the issue so the operator can see it without being blocked.
+
+**The trigger heuristic:** a section is in the warning state when:
+- The section is optional (`Min: 0` in the domain slot, or no required-by-design check),
+- AND no port is currently picked for it,
+- AND the candidate list (`Candidates(domain, slot)` / `portsOfKind(...)` ) is empty.
+
+If any of those is false, no warning. If all three, render warning.
+
+**Visual:**
+
+```svelte
+<div class="section-head" class:section-warn={noFreePortOf('pwm', 'output', cfg.port)}>
+    Smoke heater
+    {#if noFreePortOf('pwm', 'output', cfg.port)}
+        <span class="section-warn-tag">no free PWM port</span>
+    {/if}
+</div>
+```
+
+```css
+.section-head.section-warn { color: var(--warning); border-bottom-color: var(--warning); }
+.section-warn-tag           { font-size: 9px; font-weight: 700; color: var(--warning);
+                              padding: 1px 6px; border: 1px solid var(--warning);
+                              border-radius: 3px; letter-spacing: 0.5px; }
+```
+
+**Distinct from Rule 35 red errors:**
+
+| | Rule 35 (red error) | Rule 39 (yellow warning) |
+|---|---|---|
+| Apply button | ❌ disabled | ✅ enabled |
+| Source | required fields empty / missing files / invalid wiring | optional section can't find a candidate port |
+| Resolution | operator MUST fix before applying | operator CAN apply; firmware just runs without the section |
+
+**Configuration-driven, not policy-driven:** Rule 39 doesn't add a section. It just changes the visual styling for what's already an optional / could-be-empty state. Reference: [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) `noFreePortOf` helper + all five `section-warn` invocations (muzzle / recoil / smoke / yaw / pitch).
+
+### 41. Manual Override / Puppet-Mode Panel (per-effect, optional)
+
+Operational effect panels MAY expose a **manual override / puppet-mode** subsection that drives every firmware-side input directly from the GUI — sliders for axis inputs, hold-buttons for triggers, dropdowns for discrete selectors, on/off chips for binary states. Companion to Rule 36's channel cluster: where Rule 36 shows what the RC stream is *doing* to the firmware, Rule 41 lets the operator BECOME the RC stream for testing.
+
+**Required mechanics:**
+
+1. **Subscribe to verbose status on enable.** The override toggle's `on:change` calls `verboseSubscribe(id, on)` → ~10 Hz async broadcasts populate a `verbose` map keyed by effect id. The panel renders live state from that map.
+2. **Send manual commands debounced.** Sliders use ~32 ms debouncing (≈30 Hz) so a fast drag doesn't flood the bus. Buttons / dropdowns fire immediately.
+3. **The wire surface uses bitmask flags.** Each manual-set packet carries a `flags` field indicating which subsystems THIS call is touching — firmware leaves untouched subsystems at their prior manual value (or RC-driven for fields never manually set). See `GUN_MANUAL_SET` (gunfx_protocol.h) for the canonical shape.
+4. **Auto-release safety.** Firmware reverts to RC after ~5 s of no manual-set (`kManualTimeoutMs`). Studio crash → gun returns to RC automatically. Manual `Release` button + tab unmount call `manualRelease(id)` explicitly.
+5. **Gated on `dirty || hasErrors`** (Rule 35). The override toggle is `disabled` whenever the draft is dirty — pushing manual on a stale config tests the OLD firmware behaviour and looks like a bug.
+6. **Two-column layout** — left column drives, right column mirror:
+   - **Left "Drive" column:** sliders (yaw / pitch / axis sliders), button-or-dropdown selectors (ROF item, smoke arm/disarm), big mouse-hold fire button (`mousedown` → fire=1, `mouseup` → fire=0, `mouseleave` → fire=0 safety).
+   - **Right "Live mirror" column:** color-coded rows showing every observable per-subsystem state at ~10 Hz. Green = active, dim = idle, mono font for numerics.
+
+**Fire button visual conventions:**
+
+```svelte
+<button class="fire-btn" class:held={live?.firing}
+        on:mousedown={() => fireHoldDown(id)}
+        on:mouseup={() => fireHoldUp(id)}
+        on:mouseleave={() => live?.firing && fireHoldUp(id)}>
+    ● {live?.firing ? 'FIRING — release to stop' : 'HOLD TO FIRE'}
+</button>
+```
+
+`.fire-btn.held` paints translucent red + glow. The CSS lives in [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) — copy verbatim when adding a puppet panel to another effect.
+
+**Live mirror row pattern:**
+
+```svelte
+<div class="mirror-row">
+    <span class="mlabel">firing</span>
+    <span class="mval" class:m-on={live.firing}>{live.firing ? 'YES' : '—'}</span>
+    <span class="mlabel">smoke</span>
+    <span class="mval" class:m-on={live.smokeArmed}>{live.smokeArmed ? 'ARMED' : '—'}</span>
+</div>
+```
+
+Mirror rows are READ-ONLY and group logically — don't sprinkle them. Three or four rows max per gun is plenty.
+
+**Use cases:** bench-testing without an RC link, debugging RC-channel mapping, demoing a gun without flying. Operators on the field rarely engage puppet mode — it's a workshop tool.
+
+Reference: [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) manual-control subsection + [gunfx.ts](../app/go/studio/frontend/src/lib/gunfx.ts) `ManualFlag` constants + `pushManual` helper.
+
+### 43. Channel Inputs Are Named (resolved from /hubfx.yaml's `inputs:`)
+
+Every effect that consumes an RC channel (engine throttle toggle, gun fire trigger, gun ROF selector, gun yaw / pitch input, future LightFx mode-switch …) MUST reference that channel by **name** from `/hubfx.yaml`'s `inputs:` block — NEVER by raw `port + channel` in the effect's own YAML.
+
+**Why named, not raw:**
+
+- **One source of truth for "where the throttle channel is."** The operator declares each channel once in `/hubfx.yaml` (`name: throttle_toggle`, source port, channel id, optional description) and every effect refers to it by name. Renumbering a channel (e.g. moving from SBUS slot 5 to slot 7) is a one-line edit in `/hubfx.yaml`; no effect file changes.
+- **Decouples physical wiring from effect intent.** GunFx says "fire when `gun_trigger` is high" — it doesn't care that `gun_trigger` happens to be SBUS channel 4 on IN_1 today and might be channel 7 tomorrow. The mapping is a board-level concern, not an effect-level concern.
+- **Self-documenting configs.** A reader of `/gunfx.yaml` sees `trigger: { input: gun_trigger }` and understands intent at a glance; raw `port: { kind: input, idx: 0 }, channel: 4` is opaque.
+- **Studio surfaces a flat list of named channels in every effect's pickers** — the operator never sees "input port 0 channel 4" inside an effect form. (Picking port + channel happens once in the IO tab when the channel is named; effects only see the name.)
+
+**Where the schema lives:**
+
+```yaml
+# /hubfx.yaml — board-level channel naming
+inputs:
+  - name: engine_toggle
+    port: { kind: input, idx: 0 }
+    id: 4            # 1-based channel id in the source protocol (SBUS / Jeti / RC-PWM)
+    description: "stick 1, switch A — toggles the engine"
+  - name: gun_trigger
+    port: { kind: input, idx: 0 }
+    id: 5
+  - name: gun_rof
+    port: { kind: input, idx: 0 }
+    id: 6
+  - name: gun_yaw
+    port: { kind: input, idx: 0 }
+    id: 7
+  - name: gun_pitch
+    port: { kind: input, idx: 0 }
+    id: 8
+
+# /gunfx.yaml — effect references the channels by name
+guns:
+  - id: 0
+    trigger: { input: gun_trigger, threshold_us: 1500, hysteresis_us: 25 }
+    rof:     { input: gun_rof, items: [...] }
+    yaw:     { enabled: true, servo_port: { kind: servo, idx: 1 }, input: gun_yaw,   neutral_us: 1500 }
+    pitch:   { enabled: true, servo_port: { kind: servo, idx: 2 }, input: gun_pitch, neutral_us: 1500 }
+```
+
+**Resolution lives in the apply translator.** Each effect's `applyXxxConfig<>(board, cfg, hubCfg)` walks the spec list and calls `findInputByName(hubCfg, name)` for every `*input` field, populating the resolved `PortRef + channelIdx` on the spec struct BEFORE handing it to the service. Unknown names log a WARN and leave the binding empty (the service skips the dispatcher subscribe). The effect's service NEVER sees the name — only the resolved port + channel. Reference: [enginefx_config.h::toEngineFxServiceConfig](../controllers/hubfx/esp32s3/src/config/enginefx_config.h), [apply_hubfx_config.h::applyGunFxConfig](../controllers/hubfx/esp32s3/src/config/apply_hubfx_config.h).
+
+**Where Studio reads it:** the device-model surfaces both the catalog (`$deviceModel.channelFunctions` — id + label + group) AND the actual assignments (`$deviceModel.inputs[*].channels[*].function`). Every effect panel uses the same `collectChannels` helper to build a flat picker list — see [EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) `chanOpts` + [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) `chanOpts` for the canonical implementation. The picker label format is `CH<N> · <human label>` so the operator sees both the channel number and what it does.
+
+**What effects MUST NOT do:**
+
+- Carry `port`/`portRef`/`channel` for an INPUT channel in their own YAML. Output ports (muzzle flash LED, recoil servo, smoke heater) stay as `PortRef` — those ARE per-effect wiring. Inputs are named.
+- Resolve names inside the service tick (the apply translator already did the work; the service operates on PortRef + channel only).
+- Provide an "advanced: raw port + channel" picker as a fallback. The IO tab is the single place to name a channel.
+
+**When adding a new effect that consumes an RC channel:** define an input name in the effect's YAML schema (single string field), call `findInputByName(hub, name)` in the apply translator, log a WARN + leave port empty on miss. The Studio panel uses `collectChannels` and offers a `<select>` of named options.
 
 ### Client-Server Topology
 ```

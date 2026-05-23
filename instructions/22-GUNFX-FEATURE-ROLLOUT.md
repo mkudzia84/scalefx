@@ -919,3 +919,59 @@ it without firmware bumps.
   [15-GENERIC-EXPANDER-REFACTOR.md](15-GENERIC-EXPANDER-REFACTOR.md)
 - Studio EnginePanel (the panel to clone):
   [app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte)
+
+---
+
+## 7. Phases — Landed Status
+
+### Phase 0 — Landed (2026-05-23)
+- Port voltage abstraction (descriptors + bindings + HubFX tagging + PORT_LIST_RESP wire change).
+- Go `Port.VoltageMv` + devicemodel `VOLTAGE_<N>V` cap token + Studio `formatPortRail()` + GUI surfacing.
+- **Rule 37** documented.
+
+### Phase 0.5 — Landed (2026-05-23)
+- `sfx_core::EffectClock` singleton; 11 `millis()` call sites retrofitted in `effects/`.
+- **Rule 40** documented.
+
+### Phase 1 — Landed (2026-05-23)
+- Wire packets `0xE2..0xE5` (MANUAL_SET, MANUAL_RELEASE, VERBOSE_STATUS_REQ, VERBOSE_STATUS).
+- `gunfx_config.h` with `RofItem` / `SmokeConfig` / `GunAxis` / `GunSpec` / `GunFxConfig`.
+- Shared `sfx_core::ServoMotionProfile` (`sfx_board/motion/servo_motion_profile.h`) — generalised from gun-specific.
+- Go protocol mirror + `client.Gun.ManualSet/ManualRelease/VerboseStatusSubscribe` + `Events.OnGunVerboseStatus`.
+- `DomainGun` expanded to 10 slots; `app_gunfx.go` Wails stubs (firmware NACKs `NOT_IMPLEMENTED`).
+
+### Phase 2 — Landed (2026-05-23)
+- **Element scaling moved to role layer** (per user feedback — generic concerns at the right level of the stack).
+  - `sfx_core::ElementConfig` + `scaleDuty()` in [sfx_board/element/element_scaling.h](../controllers/lib/sfx_board/element/element_scaling.h).
+  - `HeaterRole` + `DcMotorRole` gain `setElement(cfg)` / `setPortRailMv(mv)` / intent-level `setDrivePct` / `setPct`.
+  - `attachHeater` / `attachDcMotor` read element bytes from the role-attach config; `binding.voltageMv` feeds the rail automatically.
+  - **Rule 42** documented (initially for element scaling, generalised in Phase 2.9).
+- `sfx_core::MotionProfile1D` runtime integrator + `ServoMotionProfile` config consolidated in [sfx_board/motion/motion_profile.h](../controllers/lib/sfx_board/motion/motion_profile.h) — trapezoidal speed/accel slew + optional jerk-bounded S-curve, decel lookahead. (Initially split into two files; consolidated in Phase 2.9.x cleanup since config + runtime are tightly coupled.) Initially consumed by gun yaw/pitch in `gun_unit.ipp`; Phase 2.9 promoted it into `ServoActuatorRole` so every servo consumer benefits.
+- `gun_unit.h` + `.ipp` rewritten — consumes `GunSpec`, implements ROF band arbitration, smoke fan modes (off / continuous / puff-per-shot / puff-on-fire-active), yaw/pitch (Phase 2 via local `MotionProfile1D`, Phase 2.9 via role's integrator), manual override with 5 s auto-release (`kManualTimeoutMs`).
+- `gunfx_service.h` + `.ipp` rewritten — claims all 10 slots, subscribes per-gun trigger (Boolean) + ROF + yaw + pitch inputs (Raw µs) via the InputDispatcher, dispatches MANUAL_SET / MANUAL_RELEASE / VERBOSE_STATUS_REQ, emits VERBOSE_STATUS at ~10 Hz per subscribed gun.
+- YAML parser: `config/gunfx_config.h` (`GunFxConfigSchema` / `GunFxYamlConfig` — distinct include guard `HUBFX_GUNFX_CONFIG_YAML_H` to avoid collision with the firmware-side header). `applyGunFxConfig<>()` in `apply_hubfx_config.h`. New `kGunFx` ConfigStoreSlot wired in `hubfx_esp32s3.ino` setup().
+- Firmware: **HubFx-6DA4 v2.11.0-hubfx build 189**, 752 KB flash, 71 % RAM.
+
+### Phase 2.9 — Landed (2026-05-23)  ServoActuatorRole owns motion profile
+- **The double-integrator anti-pattern eliminated.** Pre-2.9 setup had GunFx running its own `MotionProfile1D` inside `gun_unit.ipp::tickAxis()` and then handing the integrated µs to `ServoActuatorRole`, which re-slewed it with its minimal velocity-only ramp. Two integrators in series produced wrong slew behaviour.
+- [`ServoActuatorRole`](../controllers/lib/sfx_board/roles/servo_actuator_role.h) now OWNS the `MotionProfile1D` integrator. Gains `setProfile(ServoMotionProfile)`, retires the legacy `_maxVelocity_us_per_s` ramp (the `setMaxVelocity_us_per_s` setter stays as a back-compat shim writing to `profile.maxSpeedUsPerSec`).
+- `RoleServicePolicy::attachServoActuator` payload extended (Rule 11 append):
+  `[minUs][maxUs][maxSpeed][reversed][centerUs][maxAccel][maxJerk]`. Old shorter payloads still attach with zero accel/jerk → velocity-only behaviour as before.
+- `gun_unit.h/.ipp` drops its local `MotionProfile1D`; yaw/pitch tick becomes a one-line `commandServoTargetUs(port, target)` with stable-input change suppression. The role's integrator now does all shaping. (`GunAxis.profile` field in `GunSpec` is kept for the centerUs fallback but is no longer the canonical source — the role's profile, set via the port-attach YAML, is.)
+- **Rule 42 generalised** to "Actuator mechanism on the role layer" — covers both element scaling AND motion profile under one principle. The condensed CLAUDE.md entry restates the rule.
+- Firmware bumped to **v2.12.0-hubfx build 192**, 752 KB flash, 73 % RAM. Smoke-test passed.
+
+#### Phase 2.9 also resolved one open issue from §8:
+- ~~Issue #4 (`/gunfx.yaml` reload doesn't re-subscribe dispatcher inputs)~~ is unchanged — still a Phase 4 enhancement — but the related concern about the GunFx panel surfacing motion-profile fields is now moot: the profile lives on the port-role row instead. Phase 4 Studio surfaces it there.
+
+### Phase 3 onwards — Pending
+Phase 3 (Go API + Wails bindings refresh — Phase 1's stubs already cover most of it; Phase 3 polish picks up cleanup) and Phase 4 (Studio panel rebuild — Rules 38/39/41 land here) remain open.
+
+---
+
+## 8. Open issues from Phase 2 (deferred to follow-ups)
+
+1. **Fan PWM duty currently uses a stopgap conversion** in `gun_unit.ipp::commandFanPct()` — multiplies pct × 40 to approximate the PCA9685's 4096-count duty range. Should be replaced by a clean `MOTOR_SET_PCT` role wire packet (cleaner intent surface) that the role decodes via its known `portMaxDuty`. Tracked in Phase 4 polish.
+2. **Verbose status `smokeFanRunning` mirror is a stopgap** — `(smokeArmed && firing)` instead of reading actual fan-on state. Add an accessor on `GunUnit` (`fanRunning()`) in Phase 4.
+3. **Trigger raw µs not currently observed** — the trigger is subscribed as Boolean only, so the verbose status's `triggerUs` field stays at 0. Phase 4 polish: dual-subscribe the trigger (Boolean for edge + Raw for mirror) if Studio needs the live µs trace.
+4. **Config reload doesn't re-subscribe dispatcher inputs** — the per-gun subscriptions are set up at `begin()`, so changing ports via `/gunfx.yaml` reload requires a reboot. Phase 4 enhancement.

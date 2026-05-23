@@ -57,9 +57,14 @@ Task: "Work on HubFX"
   → Read: 01-ARCHITECTURE.md
 
 Task: "Build a new Studio effect-tab panel (operational — RC-channel-gated, sounds, Apply+Start)"
-  → Read: 21-STUDIO-ENGINEFX-PANEL.md   ← canonical reference, walks through every pattern
+  → Read FIRST: 23-STUDIO-WIDGET-CATALOG.md   ← handbook of every reusable Studio widget pattern
+  → Walkthrough:    21-STUDIO-ENGINEFX-PANEL.md
   → Cribs from: app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte
-  → Rules: 34 (design system), 35 (validation gates Apply + operational), 36 (channel-setup cluster)
+  → Rules: 34 (design system), 35 (validation gates Apply + operational), 36 (channel-setup cluster), 43 (named channels)
+
+Task: "Add or modify a Studio widget — picker / cluster / row / button cluster / validation"
+  → Read: 23-STUDIO-WIDGET-CATALOG.md           ← find the pattern you need
+  → Follow up: the formal rule + reference panel cited in the catalog entry
 
 Task: "Add a channel-gated trigger (RC channel + threshold + hysteresis cluster, ANY effect)"
   → Read: 21-STUDIO-ENGINEFX-PANEL.md § 2  — the bar with overlays, copy markup + .chan-cluster/.threshold-mark/.hyst-band/.bar-legend CSS verbatim
