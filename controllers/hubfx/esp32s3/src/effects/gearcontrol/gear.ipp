@@ -5,10 +5,11 @@
 #ifndef HUBFX_GEAR_IPP
 #define HUBFX_GEAR_IPP
 
-#include <Arduino.h>          // millis()
+#include <Arduino.h>
 #include <serial/roles.h>
 #include <serial/wire.h>
 #include <serial/diag_log.h>
+#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
 
 namespace hubfx::effects::gearctrl {
 
@@ -32,7 +33,7 @@ inline void Gear::deploy() {
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandSeek(_def.deployDuty);              // expander seeks endstop + auto-brakes
     enterPhase(GearPhase::Deploying);
-    armBackstop(millis());
+    armBackstop(sfx_core::EffectClock::instance().nowMs());
     if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
@@ -56,7 +57,7 @@ inline void Gear::retract() {
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandSeek(_def.retractDuty);
     enterPhase(GearPhase::Retracting);
-    armBackstop(millis());
+    armBackstop(sfx_core::EffectClock::instance().nowMs());
     if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
@@ -95,7 +96,7 @@ inline void Gear::calibrate() {
     _calibStep = CalibStep::RetractHome;
     commandSeek(_def.retractDuty);
     enterPhase(GearPhase::Calibrating);
-    armBackstop(millis());
+    armBackstop(sfx_core::EffectClock::instance().nowMs());
     if (_commit && _sendCtx) _commit(_sendCtx);
     SFX_LOG_INFO("[gear] %u: calibration started (retract→deploy→home)", _def.id);
 }
@@ -151,13 +152,13 @@ inline void Gear::onEndstopResult(uint8_t outcome) {
             case CalibStep::RetractHome:
                 _calibStep = CalibStep::DeployEnd;
                 commandSeek(_def.deployDuty);
-                armBackstop(millis());
+                armBackstop(sfx_core::EffectClock::instance().nowMs());
                 SFX_LOG_DEBUG("[gear] %u calib: retract stop OK → deploy sweep", _def.id);
                 break;
             case CalibStep::DeployEnd:
                 _calibStep = CalibStep::RetractFinal;
                 commandSeek(_def.retractDuty);
-                armBackstop(millis());
+                armBackstop(sfx_core::EffectClock::instance().nowMs());
                 SFX_LOG_DEBUG("[gear] %u calib: deploy stop OK → home", _def.id);
                 break;
             case CalibStep::RetractFinal:

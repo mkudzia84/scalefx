@@ -199,10 +199,14 @@ public:
     /// Cached port-roster entry — one per port the expander reports
     /// in its `PORT_LIST_RESP`.  Mirrored on the master so we don't
     /// re-query the expander every time Studio asks for the topology.
+    /// `voltageMv` was added in Phase 0 of the GunFX rollout
+    /// (instructions/22) — the rail voltage the expander declared for
+    /// this port; 0 = unknown.
     struct PortRosterEntry {
-        uint8_t kind;   ///< PortKind::Servo / Pwm / HBridge / Input
-        uint8_t idx;
-        uint8_t flags;  ///< capability/sense flags (per-kind semantics)
+        uint8_t  kind;       ///< PortKind::Servo / Pwm / HBridge / Input
+        uint8_t  idx;
+        uint8_t  flags;      ///< capability/sense flags (per-kind semantics)
+        uint16_t voltageMv;  ///< rail voltage (mV), 0 = unknown
     };
 
     /// Cached role attachment — one per port that currently has a role

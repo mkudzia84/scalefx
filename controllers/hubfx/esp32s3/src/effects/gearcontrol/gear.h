@@ -132,7 +132,7 @@ private:
     GearDef       _def{};
     uint8_t       _state            = GearPhase::Unconfigured;
     CalibStep     _calibStep        = CalibStep::None;
-    uint32_t      _movingDeadlineMs = 0;       ///< millis() at which timeout fires
+    uint32_t      _movingDeadlineMs = 0;       ///< EffectClock nowMs() at which timeout fires
 
     SendRoleCmdFn _send     = nullptr;
     void*         _sendCtx  = nullptr;

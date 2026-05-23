@@ -707,21 +707,23 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::onPortListResp(
     if (slotIdx >= kMaxExpanders) return;
     LiveSlot& s = _live[slotIdx];
 
-    // Wire layout (see PortServicePolicy::handlePortListReq):
-    //   [numServo:u8] × [idx:u8][flags:u8]
-    //   [numPwm:u8]   × [idx:u8][flags:u8]
-    //   [numHBridge:u8] × [idx:u8][flags:u8]
-    //   [numInput:u8] × [idx:u8][flags:u8]
+    // Wire layout (see PortServicePolicy::handlePortListReq) — 4 bytes
+    // per entry post-Phase-0 of the GunFX rollout (instructions/22):
+    //   [numServo:u8]   × [idx:u8][flags:u8][voltageMv:u16LE]
+    //   [numPwm:u8]     × [idx:u8][flags:u8][voltageMv:u16LE]
+    //   [numHBridge:u8] × [idx:u8][flags:u8][voltageMv:u16LE]
+    //   [numInput:u8]   × [idx:u8][flags:u8][voltageMv:u16LE]
     auto consume = [&](uint8_t kind, size_t& off, uint8_t count) {
-        for (uint8_t k = 0; k < count && off + 2 <= len; ++k) {
+        for (uint8_t k = 0; k < count && off + 4 <= len; ++k) {
             if (s.numPorts >= kMaxPortsPerExpander) {
                 SFX_LOG_WARN("[Expander] port roster overflow addr=%u",
                              s.entry.usbAddr);
                 off = len;   // bail out cleanly
                 return;
             }
-            s.ports[s.numPorts++] = { kind, p[off], p[off + 1] };
-            off += 2;
+            const uint16_t v = SfxWire::getU16LE(&p[off + 2]);
+            s.ports[s.numPorts++] = { kind, p[off], p[off + 1], v };
+            off += 4;
         }
     };
 

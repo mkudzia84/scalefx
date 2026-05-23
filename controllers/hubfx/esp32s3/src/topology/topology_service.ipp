@@ -189,6 +189,10 @@ void TopologyServicePolicyT<TExpander>::appendHubPortBlock(
     buf[off++] = nlen;
     if (nlen) { std::memcpy(&buf[off], name, nlen); off += nlen; }
 
+    // Per-entry layout (4 bytes): [idx:u8][flags:u8][voltageMv:u16LE].
+    // Matches the standalone PORT_LIST_RESP encoder in
+    // sfx_board/server/port_service.cpp (Phase 0 of GunFX rollout,
+    // instructions/22). The Go side decodes both via the same shape.
     auto emitKind = [&](uint8_t (PortRegistryBase::*counter)() const,
                         auto                              fetchAt,
                         auto                              flagsFor) {
@@ -199,13 +203,15 @@ void TopologyServicePolicyT<TExpander>::appendHubPortBlock(
             auto* b = (_reg->*fetchAt)(i);
             if (b && b->occupied()) ++live;
         }
-        if (off + 1 + (size_t)live * 2 > cap) return;
+        if (off + 1 + (size_t)live * 4 > cap) return;
         buf[off++] = live;
         for (uint8_t i = 0; i < n; ++i) {
             auto* b = (_reg->*fetchAt)(i);
             if (!b || !b->occupied()) continue;
             buf[off++] = i;
             buf[off++] = flagsFor(b);
+            SfxWire::putU16LE(&buf[off], b->voltageMv);
+            off += 2;
         }
     };
 
@@ -331,18 +337,23 @@ void TopologyServicePolicyT<TExpander>::appendExpanderPortBlock(
     buf[off++] = nlen;
     std::memcpy(&buf[off], spec.deviceName, nlen); off += nlen;
 
-    // Count per kind, then emit per kind in (Servo, Pwm, HBridge, Input) order.
+    // Count per kind, then emit per kind in (Servo, Pwm, HBridge, Input)
+    // order. Entry layout is 4 bytes (matches the hub-local emitter
+    // in appendHubPortBlock + sfx_board/port_service.cpp): see
+    // instructions/22 §0.7.
     for (uint8_t kind = PortKind::Servo; kind <= PortKind::Input; ++kind) {
         uint8_t cnt = 0;
         for (uint8_t i = 0; i < slot->numPorts; ++i) {
             if (slot->ports[i].kind == kind) ++cnt;
         }
-        if (off + 1 + (size_t)cnt * 2 > cap) return;
+        if (off + 1 + (size_t)cnt * 4 > cap) return;
         buf[off++] = cnt;
         for (uint8_t i = 0; i < slot->numPorts; ++i) {
             if (slot->ports[i].kind != kind) continue;
             buf[off++] = slot->ports[i].idx;
             buf[off++] = slot->ports[i].flags;
+            SfxWire::putU16LE(&buf[off], slot->ports[i].voltageMv);
+            off += 2;
         }
     }
 }

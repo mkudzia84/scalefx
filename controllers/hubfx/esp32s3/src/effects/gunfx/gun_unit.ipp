@@ -5,10 +5,11 @@
 #ifndef HUBFX_GUN_UNIT_IPP
 #define HUBFX_GUN_UNIT_IPP
 
-#include <Arduino.h>            // millis()
+#include <Arduino.h>
 #include <serial/roles.h>
 #include <serial/wire.h>
 #include <serial/diag_log.h>
+#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
 
 #include "../lightfx/light_event.h"
 
@@ -23,7 +24,7 @@ inline void GunUnit::fireOnce() {
 inline void GunUnit::startFiring(uint16_t rpm) {
     _shotIntervalMs = (rpm > 0) ? (60000u / rpm) : _def.defaultIntervalMs;
     if (_shotIntervalMs < 20) _shotIntervalMs = 20;     // cap to 3000 RPM
-    _nextShotMs = millis();      // first shot immediately
+    _nextShotMs = sfx_core::EffectClock::instance().nowMs();      // first shot immediately
     _firing = true;
     SFX_LOG_INFO("[gun] %u: auto-fire @%u ms / shot", _def.id, (unsigned)_shotIntervalMs);
 }
@@ -89,7 +90,7 @@ inline void GunUnit::doShot() {
     commandFlash();
     commandRecoilJerk();
     if (_def.recoilHoldMs > 0) {
-        _recoilReturnAtMs = millis() + _def.recoilHoldMs;
+        _recoilReturnAtMs = sfx_core::EffectClock::instance().nowMs() + _def.recoilHoldMs;
     }
     if (_shot && _shotCtx) {
         _shot(_shotCtx, _def.id,

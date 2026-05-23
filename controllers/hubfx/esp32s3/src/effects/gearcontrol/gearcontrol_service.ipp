@@ -5,8 +5,9 @@
 #ifndef HUBFX_GEARCONTROL_SERVICE_IPP
 #define HUBFX_GEARCONTROL_SERVICE_IPP
 
-#include <Arduino.h>      // millis()
+#include <Arduino.h>
 #include <serial/wire.h>
+#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
 
 namespace hubfx::effects::gearctrl {
 
@@ -68,7 +69,7 @@ void GearControlServicePolicyT<TTopology, TLandingService>::claimPorts() {
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::update() {
-    const uint32_t now = millis();
+    const uint32_t now = sfx_core::EffectClock::instance().nowMs();
     for (uint8_t i = 0; i < _numDefs; ++i) {
         _gears[i].update(now);
     }

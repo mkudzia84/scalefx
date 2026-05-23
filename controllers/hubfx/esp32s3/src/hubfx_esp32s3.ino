@@ -58,8 +58,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.10.0-hubfx"
-#define BUILD_NUMBER     175
+#define FIRMWARE_VERSION "2.11.0-hubfx"
+#define BUILD_NUMBER     179
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -67,6 +67,7 @@
 #include <platform/sfx_platform.h>
 #include <serial/diag_log.h>
 #include <server/board_of.h>
+#include <server/effect_clock.h>
 
 // ── Port hardware drivers ────────────────────────────────────────────
 #include <ports/pwm_port.h>
@@ -357,17 +358,27 @@ public:
 
 
     // ── Port declarations (compile-time, consumed by BoardOf<>) ──────
+    //
+    // Rail voltages (Phase 0 of GunFX rollout, instructions/22):
+    //   CH1..8       — 8 V buck output (drives heaters / fans / LED rings)
+    //   IN_1         — 3.3 V GPIO logic (RC PWM / SBUS / Jeti EX input)
+    //   IN_2..IN_12  — 5 V servo rail (microservo headers)
+    // Effects use these to compute voltage-scaled PWM duty for sub-rail
+    // elements (a 5 V smoke heater on the 8 V rail wants ~63 % duty).
 
     static constexpr auto kPwmPorts = sfx_core::ports::list(
         sfx_core::ports::pwm_array<&HubFxBoard::pwm, 8>()
             .with_vSense_array<&HubFxBoard::vSense>()
-            .with_iSense_array<&HubFxBoard::iSense>());
+            .with_iSense_array<&HubFxBoard::iSense>()
+            .with_voltage_mV<8000>());
 
     static constexpr auto kInputPorts = sfx_core::ports::list(
-        sfx_core::ports::input_array<&HubFxBoard::in, 1>());
+        sfx_core::ports::input_array<&HubFxBoard::in, 1>()
+            .with_voltage_mV<3300>());
 
     static constexpr auto kServoPorts = sfx_core::ports::list(
-        sfx_core::ports::servo_array<&HubFxBoard::servoOut, 11>());
+        sfx_core::ports::servo_array<&HubFxBoard::servoOut, 11>()
+            .with_voltage_mV<5000>());
 
     static constexpr const char* kName = "HubFx";
 };
@@ -660,6 +671,13 @@ void setup() {
 }
 
 void loop() {
+    // Rule 40 (instructions/22 §0.5): latch the effect clock ONCE per
+    // loop pass, BEFORE any effect ticks. Every effect that reads
+    // `EffectClock::instance().nowMs()` this pass sees the same value
+    // — keeps ROF scheduler / fan puff / motion profile / heater bang-
+    // bang / EngineFx state machine in lockstep.
+    sfx_core::EffectClock::instance().latch();
+
     // Upload is exclusive on HubFX (Rule 28).  While a file upload is
     // in progress, drain only the storage server — audio is suspended
     // by `wireUploadExclusivity()` above, so the COBS reader, fill

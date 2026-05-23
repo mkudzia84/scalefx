@@ -5,8 +5,9 @@
 #ifndef HUBFX_ENGINEFX_SERVICE_IPP
 #define HUBFX_ENGINEFX_SERVICE_IPP
 
-#include <Arduino.h>       // millis()
+#include <Arduino.h>
 #include <serial/wire.h>
+#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
 
 #if defined(SFX_HAS_AUDIO)
 #include <audio/audio_mixer.h>
@@ -66,7 +67,7 @@ void EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::rebindThrottle
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
 void EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::update() {
     if (!_cfg.enabled) return;
-    const uint32_t now = millis();
+    const uint32_t now = sfx_core::EffectClock::instance().nowMs();
     if (now - _lastSoundCheckMs < 50) return;     // 20 Hz tick is plenty
     _lastSoundCheckMs = now;
 
@@ -191,7 +192,7 @@ template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::e
 void EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::enterState(uint8_t newState) {
     if (newState == _state) return;
     _state = newState;
-    _stateEnteredMs = millis();
+    _stateEnteredMs = sfx_core::EffectClock::instance().nowMs();
     SFX_LOG_INFO("[engine] → %s", EngineState::getName(newState));
     emitStateEvent(newState);
 }

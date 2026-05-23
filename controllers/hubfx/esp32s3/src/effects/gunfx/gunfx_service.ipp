@@ -5,8 +5,9 @@
 #ifndef HUBFX_GUNFX_SERVICE_IPP
 #define HUBFX_GUNFX_SERVICE_IPP
 
-#include <Arduino.h>      // millis()
+#include <Arduino.h>
 #include <serial/wire.h>
+#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
 
 #if defined(SFX_HAS_AUDIO)
 #include <audio/audio_mixer.h>
@@ -77,7 +78,7 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::claimPorts() {
 
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
 void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::update() {
-    const uint32_t now = millis();
+    const uint32_t now = sfx_core::EffectClock::instance().nowMs();
     for (uint8_t i = 0; i < _numDefs; ++i) {
         _units[i].update(now);
     }
