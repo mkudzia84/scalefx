@@ -850,6 +850,24 @@ export namespace main {
 	}
 	
 	
+	export class FileCheck {
+	    path: string;
+	    exists: boolean;
+	    size: number;
+	    err?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FileCheck(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.exists = source["exists"];
+	        this.size = source["size"];
+	        this.err = source["err"];
+	    }
+	}
 	export class FirmwareTarget {
 	    name: string;
 	    platform: string;

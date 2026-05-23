@@ -13,6 +13,8 @@ export function BuildAndFlash(arg1:string,arg2:string,arg3:boolean,arg4:boolean,
 
 export function CandidatePorts(arg1:string,arg2:string):Promise<Array<devicemodel.Port>>;
 
+export function CheckFiles(arg1:Array<string>):Promise<Array<main.FileCheck>>;
+
 export function ClaimPort(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<main.DeviceModelSnapshot>;
 
 export function Connect(arg1:string):Promise<main.ConnectionInfo>;

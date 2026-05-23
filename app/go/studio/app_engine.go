@@ -172,6 +172,41 @@ func (a *App) EngineStatus() (EngineStatusDTO, error) {
 	}, nil
 }
 
+// ─── File existence check (sound-file validation) ─────────────────────
+
+// FileCheck is the result of a single existence probe.
+type FileCheck struct {
+	Path   string `json:"path"`
+	Exists bool   `json:"exists"`
+	Size   uint32 `json:"size"`
+	Err    string `json:"err,omitempty"`
+}
+
+// CheckFiles probes a batch of paths on SD (where audio assets live) and
+// reports per-path existence.  Empty paths are skipped (valid "none").
+// Used by the EngineFx panel to mark missing sound files red.
+func (a *App) CheckFiles(paths []string) ([]FileCheck, error) {
+	defer a.diag.Around("CheckFiles", map[string]any{"n": len(paths)})()
+	c := a.snapshotClient()
+	if c == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+	out := make([]FileCheck, 0, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		info, err := c.Storage.FileInfo(p)
+		if err != nil {
+			// A NACK (FILE_NOT_FOUND) is the common case — surface as "doesn't exist".
+			out = append(out, FileCheck{Path: p, Exists: false, Err: err.Error()})
+			continue
+		}
+		out = append(out, FileCheck{Path: p, Exists: info.Exists, Size: info.Size})
+	}
+	return out, nil
+}
+
 // installEngineStream forwards engine state-change events to the
 // frontend as `engine:state`.  Called once per connect.
 func (a *App) installEngineStream() {

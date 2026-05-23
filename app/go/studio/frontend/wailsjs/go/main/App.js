@@ -22,6 +22,10 @@ export function CandidatePorts(arg1, arg2) {
   return window['go']['main']['App']['CandidatePorts'](arg1, arg2);
 }
 
+export function CheckFiles(arg1) {
+  return window['go']['main']['App']['CheckFiles'](arg1);
+}
+
 export function ClaimPort(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['ClaimPort'](arg1, arg2, arg3, arg4, arg5);
 }
