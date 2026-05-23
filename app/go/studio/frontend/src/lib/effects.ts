@@ -11,6 +11,7 @@ import {
     CheckFiles,
 } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
+import type { DirtySource } from './dirty-registry'
 
 // ─── EngineFX ─────────────────────────────────────────────────────────
 
@@ -129,6 +130,77 @@ function normaliseEngine(cfg: Partial<EngineConfigT>): EngineConfigT {
 
 export async function engineStart(): Promise<void> { await EngineStart() }
 export async function engineStop(): Promise<void> { await EngineStop() }
+
+// ─── Validation (Rule 46 — domain owns its hasErrors store) ──────────
+//
+// EngineFx's primary errors are sound-path issues: the `running` sound
+// is required (Apply gate), and any non-empty path must exist on SD.
+// File existence is async (one CheckFiles round-trip per path set), so
+// we keep it as a writable that re-evaluates on draft changes — not a
+// pure derived store.  The dirty-registry just subscribes to the
+// writable; the panel doesn't have to know about this.
+
+export const engineHasErrors = writable(false)
+
+let _engineValidateTimer: ReturnType<typeof setTimeout> | null = null
+let _engineValidateGen = 0   // race-guard so a slow CheckFiles can't clobber a newer result
+
+async function runEngineValidate(): Promise<void> {
+    const cfg = get(engineDraft)
+    if (!cfg) { engineHasErrors.set(false); return }
+    const gen = ++_engineValidateGen
+
+    // Required: `running` must have a path.
+    if (!cfg.sounds.running) {
+        if (gen === _engineValidateGen) engineHasErrors.set(true)
+        return
+    }
+
+    // Optional but present: each non-empty path must exist on SD.
+    const probe = [cfg.sounds.starting, cfg.sounds.running, cfg.sounds.stopping].filter(p => !!p)
+    if (probe.length === 0) {
+        if (gen === _engineValidateGen) engineHasErrors.set(false)
+        return
+    }
+    try {
+        const res = (await CheckFiles(probe)) as Array<{ path: string; exists: boolean }>
+        if (gen !== _engineValidateGen) return       // newer validation in flight
+        const missing = res.some(r => r.path && !r.exists)
+        engineHasErrors.set(missing)
+    } catch {
+        // Network / device error — leave the prior value; surfaced
+        // through panel-level error banner separately.
+        if (gen === _engineValidateGen) engineHasErrors.set(false)
+    }
+}
+
+/** Re-validate after a short debounce.  Panels call this on every
+ *  field mutation; the registry's `anyErrors` aggregator picks up the
+ *  result automatically. */
+export function scheduleEngineValidate(): void {
+    if (_engineValidateTimer) clearTimeout(_engineValidateTimer)
+    _engineValidateTimer = setTimeout(() => {
+        _engineValidateTimer = null
+        void runEngineValidate()
+    }, 350)
+}
+
+// Re-validate whenever the draft changes — covers panel mutations
+// (mark()) AND remote-driven reloads (loadEngineConfig).  Lifetime is
+// the module's; no unsubscribe needed.
+engineDraft.subscribe(() => scheduleEngineValidate())
+
+/** Pre-built `DirtySource` for the dirty-registry — register from
+ *  App.svelte startup so the global Apply order is deterministic
+ *  (hubconfig → enginefx → gunfx). */
+export const engineConfigSource: DirtySource = {
+    id:        'enginefx',
+    label:     'EngineFX',
+    isDirty:   engineDirty,
+    hasErrors: engineHasErrors,
+    apply:     applyEngineConfig,
+    refresh:   loadEngineConfig,
+}
 
 export async function refreshEngineStatus(): Promise<void> {
     try {

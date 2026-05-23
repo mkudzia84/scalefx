@@ -1,22 +1,25 @@
 <!-- ScaleFX Studio — port-role inline config editor.
 
-     Rule 42: motion profile (servo) + element scaling (heater/motor)
-     are configured on the role-attach row in /hubfx.yaml's ports[]
-     block, NOT inside the effects that use them.  This component is
-     where the operator authors those values — one expanding panel per
-     port row in the IO tab.
+     Rule 44 (supersedes Rule 42 for servos): servo motion profile is
+     now configured INLINE with the feature (GunFx panel embeds
+     ServoProfileEditor next to each axis binding).  This component is
+     therefore HEATER + DC-MOTOR ONLY — element voltage scaling stays
+     on the role layer because it's a hardware fact (the element's
+     rated mV), not a per-effect preference.
+
+     Servo ports get an empty body (the IO tab still shows port + role
+     + name in PortRoleTab.svelte; the motion-profile editor moved).
 
      Live tuning: every input is debounced ~350 ms and pushed via the
-     role-layer live-tune commands (`ServoSetProfile` /
-     `MotorSetElement` / `HeaterSetElement`).  In-flight target /
-     position state is preserved (the role re-applies the new shape
-     without re-attaching).
+     role-layer live-tune commands (`MotorSetElement` / `HeaterSetElement`).
+     In-flight target / position state is preserved (the role re-applies
+     the new shape without re-attaching).
 
      Limit to hub-local ports for now — cross-board live-tune goes
      through Topology in a future pass.
 
      Props:
-       portKind  — 'servo' | 'pwm'
+       portKind  — 'servo' | 'pwm' (servo just renders the empty hint)
        portIdx   — 0-based port index
        roleKind  — current attached role (drives which editor renders)
        portRailMv — Studio-side rail voltage (display only)
@@ -24,7 +27,6 @@
 <script lang="ts">
     import { onMount } from 'svelte'
     import {
-        ServoGetProfile, ServoSetProfile,
         MotorGetElement, MotorSetElement,
         HeaterGetElement, HeaterSetElement,
     } from '../../../wailsjs/go/main/App'
@@ -35,16 +37,9 @@
     export let roleKind: number
     export let portRailMv: number = 0
 
-    // ── Local draft state for the editor.  Loaded on mount via
-    // GET; on every change the new value is debounced + pushed via SET.
-    type Profile = {
-        minUs: number; maxUs: number; centerUs: number; reversed: boolean
-        maxSpeedUsPerSec: number; maxAccelUsPerSec2: number; maxJerkUsPerSec3: number
-    }
     type MotorEl = { elementMv: number; scaling: number; portRailMv: number }
     type HeaterEl = { elementMv: number; scaling: number; drivePct: number; hystCx10: number; portRailMv: number }
 
-    let profile: Profile = { minUs:1000, maxUs:2000, centerUs:1500, reversed:false, maxSpeedUsPerSec:800, maxAccelUsPerSec2:1600, maxJerkUsPerSec3:0 }
     let motor: MotorEl = { elementMv:0, scaling:1, portRailMv:0 }
     let heater: HeaterEl = { elementMv:0, scaling:1, drivePct:100, hystCx10:50, portRailMv:0 }
 
@@ -57,9 +52,7 @@
 
     onMount(async () => {
         try {
-            if (portKind === 'servo' && kind === RoleKind.ServoActuator) {
-                profile = await ServoGetProfile(portIdx) as Profile
-            } else if (portKind === 'pwm' && kind === RoleKind.DcMotor) {
+            if (portKind === 'pwm' && kind === RoleKind.DcMotor) {
                 motor = await MotorGetElement(portIdx) as MotorEl
             } else if (portKind === 'pwm' && kind === RoleKind.Heater) {
                 heater = await HeaterGetElement(portIdx) as HeaterEl
@@ -70,14 +63,6 @@
         }
     })
 
-    function scheduleSetProfile() {
-        if (pendingTimer) clearTimeout(pendingTimer)
-        pendingTimer = setTimeout(async () => {
-            pendingTimer = null
-            busy = true; error = ''
-            try { await ServoSetProfile(portIdx, profile) } catch (e) { error = String(e) } finally { busy = false }
-        }, 350)
-    }
     function scheduleSetMotor() {
         if (pendingTimer) clearTimeout(pendingTimer)
         pendingTimer = setTimeout(async () => {
@@ -95,9 +80,6 @@
         }, 350)
     }
 
-    function numInput(e: Event): number { return Number((e.target as HTMLInputElement).value) }
-    function boolInput(e: Event): boolean { return (e.target as HTMLInputElement).checked }
-    function selVal(e: Event): string { return (e.target as HTMLSelectElement).value }
 </script>
 
 <div class="role-config">
@@ -106,32 +88,13 @@
     {:else if error}
         <div class="err">⚠ {error}</div>
     {:else if portKind === 'servo' && kind === RoleKind.ServoActuator}
-        <div class="cfg-grid servo-grid">
-            <div class="field"><label>min µs</label>
-                <input type="number" min="500" max="2500" step="10" bind:value={profile.minUs}
-                       on:change={() => { profile = { ...profile, minUs: profile.minUs }; scheduleSetProfile() }} /></div>
-            <div class="field"><label>max µs</label>
-                <input type="number" min="500" max="2500" step="10" bind:value={profile.maxUs}
-                       on:change={scheduleSetProfile} /></div>
-            <div class="field"><label>center µs</label>
-                <input type="number" min="500" max="2500" step="10" bind:value={profile.centerUs}
-                       on:change={scheduleSetProfile} /></div>
-            <div class="field"><label>reversed</label>
-                <input type="checkbox" bind:checked={profile.reversed}
-                       on:change={scheduleSetProfile} /></div>
-            <div class="field"><label>max speed µs/s</label>
-                <input type="number" min="0" max="10000" step="50" bind:value={profile.maxSpeedUsPerSec}
-                       on:change={scheduleSetProfile} /></div>
-            <div class="field"><label>max accel µs/s²</label>
-                <input type="number" min="0" max="50000" step="100" bind:value={profile.maxAccelUsPerSec2}
-                       on:change={scheduleSetProfile} /></div>
-            <div class="field"><label>max jerk µs/s³</label>
-                <input type="number" min="0" max="100000" step="100" bind:value={profile.maxJerkUsPerSec3}
-                       on:change={scheduleSetProfile} />
-                <span class="hint">{profile.maxJerkUsPerSec3 > 0 ? 'S-curve' : 'trapezoidal'}</span>
-            </div>
+        <!-- Rule 44 — servo motion profile moved to the feature panel
+             (GunFx Turret section, EngineFx servo binding, …).  Nothing
+             to configure here. -->
+        <div class="empty">
+            Servo motion profile (min / max / center / speed / accel / jerk)
+            is set on the <b>feature panel</b> that uses this servo — Rule 44.
         </div>
-        <div class="rule-pointer">Rule 42 — motion shape lives on the role, not the effect. Changes push live ({busy ? 'sending…' : 'idle'}).</div>
 
     {:else if portKind === 'pwm' && kind === RoleKind.DcMotor}
         <div class="cfg-grid element-grid">
@@ -187,10 +150,9 @@
     .role-config { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; margin: 4px 0 8px 32px; }
     .loading { font-style: italic; color: var(--text-dim); font-size: 11px; }
     .err { color: var(--error); font-size: 11px; padding: 4px 0; }
-    .empty { font-style: italic; color: var(--text-dim); font-size: 11px; }
+    .empty { font-style: italic; color: var(--text-dim); font-size: 11px; line-height: 1.5; }
 
     .cfg-grid { display: grid; gap: 6px 12px; }
-    .servo-grid { grid-template-columns: repeat(4, 1fr); }
     .element-grid { grid-template-columns: repeat(3, 1fr); }
 
     .field { display: flex; flex-direction: column; gap: 2px; }

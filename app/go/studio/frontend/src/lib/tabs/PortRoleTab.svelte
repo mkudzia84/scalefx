@@ -5,11 +5,10 @@
      .field-input, button) so control heights line up. -->
 <script lang="ts">
     import {
-        deviceModel, refresh, attachRole, detachRole, applyPreset, applyDefaults,
-        applyHubConfig, setPortName, portKindName, boardDisplayNames, claimsForPort,
-        validationCounts, formatPortRail, RoleKind, type Port, type PortRef,
+        deviceModel, attachRole, detachRole,
+        setPortName, portKindName, boardDisplayNames, claimsForPort,
+        formatPortRail, RoleKind, type Port, type PortRef,
     } from '../devicemodel'
-    import { showPcbOverlay } from '../stores'
     import PortRoleConfig from '../components/PortRoleConfig.svelte'
 
     // Per-port "show inline role-config editor" toggle.  Open one at a
@@ -40,8 +39,6 @@
 
     let busy = false
     let error = ''
-    let note = ''
-    let presetSel = ''
 
     // No on-mount refresh — App.svelte refreshes on connect and the store
     // drives this view, so there's no transient "not connected" flash.
@@ -49,11 +46,6 @@
 
     function selValue(e: Event): string { return (e.target as HTMLSelectElement).value }
     function inputValue(e: Event): string { return (e.target as HTMLInputElement).value }
-
-    async function doRefresh() {
-        busy = true; error = ''
-        try { await refresh() } catch (e) { error = String(e) } finally { busy = false }
-    }
 
     async function onRole(p: PortRef, roleKind: number) {
         busy = true; error = ''
@@ -66,31 +58,6 @@
     async function onName(p: PortRef, name: string) {
         busy = true; error = ''
         try { await setPortName(p, name.trim()) } catch (e) { error = String(e) } finally { busy = false }
-    }
-
-    async function onApplyPreset() {
-        if (!presetSel) return
-        busy = true; error = ''; note = ''
-        try {
-            const w = await applyPreset(presetSel)
-            note = w.length ? `Applied "${presetSel}" (${w.length} note(s)): ${w.join('; ')}` : `Applied "${presetSel}".`
-        } catch (e) { error = String(e) } finally { busy = false; presetSel = '' }
-    }
-
-    async function onApplyDefaults() {
-        busy = true; error = ''; note = ''
-        try {
-            const w = await applyDefaults()
-            note = w.length ? `Applied defaults (${w.length} note(s)): ${w.join('; ')}` : 'Applied sensible defaults.'
-        } catch (e) { error = String(e) } finally { busy = false }
-    }
-
-    async function onApply() {
-        busy = true; error = ''; note = ''
-        try {
-            await applyHubConfig()
-            note = 'Applied — /hubfx.yaml written and firmware reloaded.'
-        } catch (e) { error = String(e) } finally { busy = false }
     }
 
     // Output ports only — input ports are configured in the left column
@@ -113,28 +80,9 @@
 </script>
 
 <div class="tab-content">
-    <div class="card-header">
-        <h3>Ports &amp; Roles</h3>
-        <div class="header-actions">
-            {#if $deviceModel.presets.length > 0}
-                <select class="field-input" bind:value={presetSel} disabled={busy} title="Apply a named port/role mapping">
-                    <option value="">Presets…</option>
-                    {#each $deviceModel.presets as p}
-                        <option value={p.name} title={p.description}>{p.name}</option>
-                    {/each}
-                </select>
-                <button class="small apply-btn" on:click={onApplyPreset} disabled={busy || !presetSel}>Apply</button>
-            {/if}
-            <button class="small" on:click={() => ($showPcbOverlay = true)} title="Open the board diagram — assign roles on the PCB photo">▣ Diagram</button>
-            <button class="small primary" on:click={onApply} disabled={busy || $validationCounts.errors > 0}
-                    title={$validationCounts.errors > 0 ? 'Resolve validation errors first (see badge in the tab strip)' : 'Write /hubfx.yaml + reload — pushes current channel functions, port names and role attachments to the firmware live'}>✓ Apply</button>
-            <button class="small" on:click={onApplyDefaults} disabled={busy} title="Apply the bundled sensible defaults for the connected boards">★ Defaults</button>
-            <button class="small" on:click={doRefresh} disabled={busy}>↻ Refresh</button>
-        </div>
-    </div>
-
+    <!-- Header (Diagram + Apply + Defaults + Refresh) lives in the
+         parent IoTab so it spans both columns. -->
     {#if error}<div class="banner err">{error}</div>{/if}
-    {#if note}<div class="banner note">{note}</div>{/if}
     {#if boards.length === 0}<div class="empty-state">No output ports on the connected boards.</div>{/if}
 
     {#each boards as b (b.guid)}
@@ -209,8 +157,6 @@
     .header-actions { align-items: center; }
     .header-actions button { height: 28px; min-width: 108px; box-sizing: border-box; padding: 0 12px; }
     .header-actions .field-input { height: 28px; width: 116px; box-sizing: border-box; padding: 0 6px; }
-    /* The preset Apply button is a verb, keep it compact. */
-    .header-actions button.apply-btn { min-width: 64px; }
 
     .board-card { margin-bottom: 12px; }
     .board-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }

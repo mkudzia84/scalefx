@@ -23,9 +23,13 @@
     import {
         installDeviceModelBridge, installInputValuesBridge, loadCatalogs,
         refresh as refreshDeviceModel, reset as resetDeviceModel,
-        hydrateFromHubYaml,
+        hydrateFromHubYaml, hubConfigSource,
     } from './lib/devicemodel'
-    import { installEngineStateBridge, loadEngineConfig } from './lib/effects'
+    import {
+        installEngineStateBridge, loadEngineConfig, engineConfigSource,
+    } from './lib/effects'
+    import { gunfxConfigSource, loadGunFxConfig } from './lib/gunfx'
+    import { registerDirtySource } from './lib/dirty-registry'
 
     onMount(async () => {
         // Hook window.onerror / unhandledrejection / console.error so JS
@@ -39,6 +43,17 @@
         installInputValuesBridge()
         installEngineStateBridge()
         try { await loadCatalogs() } catch { /* app still starting */ }
+
+        // Rule 46 — register every config source at app startup so the
+        // global Apply order is deterministic (hubconfig → enginefx →
+        // gunfx → future LightFx / GearControl).  Order matters
+        // because effect translators on the firmware resolve named
+        // inputs against /hubfx.yaml — that file MUST commit first.
+        // Adding a new effect = `registerDirtySource(newConfigSource)`
+        // here, after its dependencies; the panel stays a pure view.
+        registerDirtySource(hubConfigSource)
+        registerDirtySource(engineConfigSource)
+        registerDirtySource(gunfxConfigSource)
 
         // Console output events from backend (always active, even when panel hidden)
         EventsOn('console:output', (msg: { type: string; content: string }) => {
@@ -91,6 +106,9 @@
                 try { await loadEngineConfig() } catch (e) {
                     diag.warn('FE.CFG', 'engine config load failed', { err: String(e) })
                 }
+                try { await loadGunFxConfig() } catch (e) {
+                    diag.warn('FE.CFG', 'gunfx config load failed', { err: String(e) })
+                }
             } else if (wasConnected && $boardState !== 'flashing') {
                 // Unexpected disconnect (not flashing) — show connect popup
                 diag.warn('FE.CONN', 'unexpected disconnect — showing reconnect dialog')
@@ -111,6 +129,7 @@
                 try { await refreshDeviceModel() } catch { /* ignore */ }
                 try { await hydrateFromHubYaml() } catch { /* ignore */ }
                 try { await loadEngineConfig() } catch { /* ignore */ }
+                try { await loadGunFxConfig() } catch { /* ignore */ }
             }
         } catch (_) {
             // app still starting

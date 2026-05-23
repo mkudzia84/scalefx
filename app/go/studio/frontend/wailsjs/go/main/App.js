@@ -6,10 +6,6 @@ export function ApplyDefaults() {
   return window['go']['main']['App']['ApplyDefaults']();
 }
 
-export function ApplyPreset(arg1) {
-  return window['go']['main']['App']['ApplyPreset'](arg1);
-}
-
 export function AttachRole(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['AttachRole'](arg1, arg2, arg3, arg4);
 }
@@ -264,6 +260,10 @@ export function SetInputProtocol(arg1, arg2, arg3, arg4) {
 
 export function SetPortName(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetPortName'](arg1, arg2, arg3, arg4);
+}
+
+export function SetPortProfile(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SetPortProfile'](arg1, arg2, arg3, arg4);
 }
 
 export function UnclaimPort(arg1, arg2, arg3, arg4, arg5) {

@@ -11,7 +11,7 @@ import { writable, derived } from 'svelte/store'
 import {
     RefreshDeviceModel, DeviceModelSnapshot,
     ClaimPort, UnclaimPort, CandidatePorts,
-    AttachRole, DetachRole, ApplyPreset, SetPortName,
+    AttachRole, DetachRole, SetPortName,
     SetInputProtocol, SetInputChannelCount, SetChannelFunction, ApplyDefaults,
     LoadHubConfig, SaveHubConfig,
 } from '../../wailsjs/go/main/App'
@@ -94,8 +94,6 @@ export interface Issue {
 
 export interface RoleKindInfo { kind: number; name: string }
 
-export interface Preset { name: string; description: string }
-
 export interface ChannelMap { channel: number; function: string }
 export interface InputPortConfig {
     port: PortRef
@@ -114,14 +112,13 @@ export interface DeviceModelSnapshotT {
     domains: Domain[]
     issues: Issue[]
     roleCatalog: RoleKindInfo[]
-    presets: Preset[]
     inputs: InputPortConfig[]
     channelFunctions: ChannelFunctionDef[]
     inputProtocols: InputProtocolDef[]
 }
 
 const empty: DeviceModelSnapshotT = {
-    ports: [], claims: [], domains: [], issues: [], roleCatalog: [], presets: [],
+    ports: [], claims: [], domains: [], issues: [], roleCatalog: [],
     inputs: [], channelFunctions: [], inputProtocols: [],
 }
 
@@ -136,7 +133,6 @@ function normalize(snap: unknown): DeviceModelSnapshotT {
         domains: s.domains ?? [],
         issues: s.issues ?? [],
         roleCatalog: s.roleCatalog ?? [],
-        presets: s.presets ?? [],
         inputs: s.inputs ?? [],
         channelFunctions: s.channelFunctions ?? [],
         inputProtocols: s.inputProtocols ?? [],
@@ -211,6 +207,7 @@ export async function refresh(): Promise<void> {
  *  functions, port names).  Called on connect; missing file is a no-op. */
 export async function hydrateFromHubYaml(): Promise<void> {
     await LoadHubConfig()
+    rebaselineHubFingerprint()
 }
 
 /** applyHubConfig writes /hubfx.yaml from the current overlay (channel
@@ -218,6 +215,70 @@ export async function hydrateFromHubYaml(): Promise<void> {
  *  reload — changes take effect immediately on the hub. */
 export async function applyHubConfig(): Promise<void> {
     await SaveHubConfig()
+    rebaselineHubFingerprint()
+}
+
+// ─── Rule 46 — modular config source ────────────────────────────────
+//
+// `hubConfigSource` reports `isDirty=true` only when the persisted
+// fields of the device model (channel functions, port names, role
+// attachments, servo profiles) DIFFER from the last save/load
+// snapshot.  Mutations from the IO tab (attachRole, setPortName,
+// setChannelFunction, setPortProfile, …) cycle the device model
+// store, which auto-refreshes the fingerprint comparison.
+//
+// Excluded from the fingerprint: live channel values, port flags,
+// caps — those are transient state, not persisted.
+
+import type { DirtySource } from './dirty-registry'
+
+/** Compute a stable string describing every field SaveHubConfig
+ *  persists into /hubfx.yaml.  Equal strings ⇒ nothing to save. */
+function hubFingerprint(snap: DeviceModelSnapshotT): string {
+    // inputs: { port-ref, channels with non-empty function }
+    const inputs = snap.inputs.map(i => ({
+        g: i.port.guid, k: i.port.kind, x: i.port.index,
+        cs: i.channels
+            .filter(c => c.function && c.function !== 'unassigned')
+            .map(c => `${c.channel}:${c.function}`),
+    }))
+    // ports: { key, label, role, profile (servo only) }
+    const ports = snap.ports.map(p => ({
+        k: `${p.ref.guid}|${p.kindName}|${p.ref.index}`,
+        n: p.name || '',
+        r: p.roleKind,
+        p: p.profile ? `${p.profile.minUs}|${p.profile.maxUs}|${p.profile.centerUs}|${p.profile.reversed}|${p.profile.maxSpeedUsPerSec}|${p.profile.maxAccelUsPerSec2}|${p.profile.maxJerkUsPerSec3}` : '',
+    }))
+    return JSON.stringify({ inputs, ports })
+}
+
+let _hubBaseline = ''   // fingerprint snapshot at last load/save
+
+/** Re-baseline the dirty flag after load or save — call from the
+ *  loaders themselves, not from external code. */
+function rebaselineHubFingerprint(): void {
+    _hubBaseline = hubFingerprint(get(deviceModel))
+    _hubDirty.set(false)
+}
+
+const _hubDirty   = writable(false)
+const _hubErrors  = derived(validationCounts, ($vc) => $vc.errors > 0)
+
+// Watch the device model and flip dirty whenever the fingerprint
+// drifts from the baseline.  Skip the very first emission (the empty
+// initial snapshot) — re-baselined explicitly on first load.
+deviceModel.subscribe(snap => {
+    if (_hubBaseline === '') return
+    _hubDirty.set(hubFingerprint(snap) !== _hubBaseline)
+})
+
+export const hubConfigSource: DirtySource = {
+    id:        'hubconfig',
+    label:     'IO & Ports',
+    isDirty:   _hubDirty,
+    hasErrors: _hubErrors,
+    apply:     applyHubConfig,
+    refresh:   refresh,
 }
 
 /** loadCatalogs pulls the cached snapshot (domain/role/preset catalogs are
@@ -262,16 +323,9 @@ export async function setPortName(p: PortRef, name: string): Promise<void> {
     deviceModel.set(normalize(snap))
 }
 
-export async function applyPreset(name: string): Promise<string[]> {
-    const res = await ApplyPreset(name) as any
-    // Wails returns multi-value (snapshot, warnings) as an array.
-    if (Array.isArray(res)) {
-        deviceModel.set(normalize(res[0]))
-        return (res[1] as string[]) ?? []
-    }
-    deviceModel.set(normalize(res))
-    return []
-}
+// (Removed 2026-05-23) applyPreset → will be reintroduced as a Setup
+// Wizard surface; the underlying devicemodel.Presets() catalog is still
+// in the Go package, just no longer exposed through Wails.
 
 // ─── Input config ─────────────────────────────────────────────────────
 

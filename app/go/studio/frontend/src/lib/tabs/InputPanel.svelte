@@ -80,10 +80,10 @@
 </script>
 
 <div class="tab-content">
-    <div class="card-header">
-        <h3>Input</h3>
-    </div>
-    <p class="field-hint" style="margin-bottom:12px">RC receiver protocol, channels, and what each channel does. Bars show live values from the hub.</p>
+    <!-- Hint paragraph removed (it offset InputPanel content vs
+         PortRoleTab content on the other column, breaking row
+         alignment).  Each input row's controls + tooltips describe
+         the function inline. -->
 
     {#if error}<div class="banner err">{error}</div>{/if}
     {#if inputs.length === 0}<div class="empty-state">No input ports on this system.</div>{/if}

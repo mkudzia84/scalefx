@@ -35,8 +35,8 @@
     function inputValue(e: Event): string { return (e.target as HTMLInputElement).value }
     function numValue(e: Event): number { return Number((e.target as HTMLInputElement).value) }
 
-    async function onEnableToggle(e: Event) {
-        cfg.enabled = (e.target as HTMLInputElement).checked
+    function onEnableToggle(on: boolean) {
+        cfg.enabled = on
         mark()
     }
 
@@ -126,46 +126,54 @@
     }
 
     $: soundsHaveErrors = !!(soundErrors.starting || soundErrors.running || soundErrors.stopping)
+    // Rule 46: panel doesn't register with the dirty-registry — the
+    // domain module (effects.ts) owns `engineConfigSource` and
+    // App.svelte registers it once at startup.
 </script>
 
 <div class="card engine-card" class:disabled={!cfg?.enabled}>
+    <!-- Rule 45 header cluster: [Enable-Button] [Apply] [dirty-flag] ‖ [▶ Start] [■ Stop]
+         Always visible — when the effect is disabled the rest of the
+         panel hides but the enable button stays so the operator can
+         flip it back on without hunting.  Extends Rule 35 by promoting
+         the enable affordance into the same row as Apply/Start. -->
     <div class="card-header">
         <h3>EngineFX</h3>
-        <label class="enable-toggle">
-            <input type="checkbox" checked={cfg?.enabled} on:change={onEnableToggle} disabled={busy} />
-            <span>{cfg?.enabled ? 'Enabled' : 'Disabled'}</span>
-        </label>
     </div>
 
-    {#if cfg?.enabled}
-        {#if error}<div class="banner err">{error}</div>{/if}
+    {#if error}<div class="banner err">{error}</div>{/if}
 
-        <!-- Live status + Apply + manual control.
-             Apply lives next to Start so the gating is one glance away:
-             when the draft is dirty or has errors, Start is disabled and
-             the dirty-flag explains why. Start only runs the firmware's
-             currently-loaded config — Apply has to commit the draft first. -->
-        <div class="status-row">
-            <div class="status">
+    <div class="status-row">
+        <div class="status">
+            {#if cfg?.enabled}
                 <span class="status-label">State</span>
                 <span class="state-pill state-{$engineStatus.stateName}">{$engineStatus.stateName}</span>
                 {#if $engineStatus.engaged}<span class="engaged-pill">RC engaged</span>{/if}
-            </div>
-            <div class="controls">
-                <span class="dirty-flag" class:on={$engineDirty} class:err={soundsHaveErrors}>
-                    {soundsHaveErrors ? 'resolve errors above' : $engineDirty ? 'unapplied changes' : 'in sync'}
-                </span>
-                <button class="small primary" on:click={onApply}
-                        disabled={busy || !$engineDirty || soundsHaveErrors}
-                        title={soundsHaveErrors ? 'Fix validation errors before applying' : 'Write /enginefx.yaml + reload — settings take effect immediately'}>Apply</button>
+            {/if}
+        </div>
+        <div class="controls">
+            <!-- Apply lives in the global ConfigToolbar; this panel
+                 only carries the enable-toggle + operational Start/Stop.
+                 The toolbar gates Apply on errors anywhere; Start/Stop
+                 still gate locally on this effect's dirty/errors so the
+                 operator can't trigger a test against a stale config. -->
+            <button class="small state-toggle" class:state-on={cfg?.enabled}
+                    on:click={() => onEnableToggle(!cfg?.enabled)}
+                    disabled={busy}
+                    title={cfg?.enabled ? 'Disable EngineFX — press Apply (top bar) to push.' : 'Enable EngineFX — press Apply (top bar) to push.'}>
+                {cfg?.enabled ? '✓ Enabled' : '▶ Disabled'}
+            </button>
+            {#if cfg?.enabled}
                 <span class="ctrl-sep" aria-hidden="true"></span>
                 <button class="small" on:click={onStart}
                         disabled={busy || $engineDirty || soundsHaveErrors}
                         title={soundsHaveErrors ? 'Resolve validation errors first' : $engineDirty ? 'Apply unsaved changes before starting' : 'Start the engine'}>▶ Start</button>
                 <button class="small" on:click={onStop} disabled={busy}>■ Stop</button>
-            </div>
+            {/if}
         </div>
+    </div>
 
+    {#if cfg?.enabled}
         <!-- Channel-setup cluster (Rule 36):
              [1] channel selector → [2] threshold + hysteresis settings →
              [3] live bar with explicit threshold line + shaded hysteresis
@@ -308,10 +316,9 @@
 
     .banner.err { background: rgba(255,80,80,0.12); border: 1px solid var(--error); color: var(--error); padding: 7px 10px; border-radius: 4px; margin: 6px 0; font-size: 12px; }
 
-    .status-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 12px; padding: 8px 10px; background: var(--bg-raised); border-radius: 6px; }
-    .status { display: flex; align-items: center; gap: 8px; }
-    .status-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-dim); }
-    .state-pill { font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 2px 10px; border-radius: 3px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); }
+    /* .status-row + .status + .state-pill base styles are shared via
+       style.css.  Keep only the EngineFx-specific state colour classes
+       here (state-running / state-starting / state-stopped). */
     .state-running { background: rgba(30,158,74,0.25); color: #6ddc94; border-color: rgba(30,158,74,0.6); }
     .state-starting, .state-stopping { background: rgba(255,180,0,0.18); color: var(--warning); border-color: rgba(255,180,0,0.5); }
     .state-stopped { color: var(--text-dim); }

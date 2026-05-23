@@ -11,6 +11,7 @@
 // Phase 4 just wires up the UI.
 
 import { writable, derived, get } from 'svelte/store'
+import type { DirtySource } from './dirty-registry'
 import {
     LoadGunFxConfig, SaveGunFxConfig, GunFxStatus,
     GunFire, GunStartFiring, GunStopFiring, GunSmokeArm,
@@ -49,21 +50,26 @@ export interface MuzzleFlashT {
     brightness: number
 }
 
-// Recoil — gun-side params only (servo motion shape lives on the role).
+// Recoil — turret BEHAVIOUR, no dedicated servo (Phase 4 polish 2026-05-23).
+// On each shot the chosen `axis` (pitch or yaw) kicks by `jerkUs` from
+// its commanded position, holds for `holdMs`, then returns.  Servo
+// slew shape lives on the axis's ServoActuatorRole (Rule 42).
 export interface RecoilConfigT {
-    port: PortRefT
-    // profile field still in DTO for back-compat with the Phase 1 stub
-    // but semantically only `centerUs` is read; jerk/hold tune the pulse.
-    profile?: ServoMotionProfileT
+    enabled: boolean
+    axis: 'pitch' | 'yaw'
     jerkUs: number
     holdMs: number
 }
 
+// Rule 44 — mirrors ServoMotionProfileDTO; same field shape as the
+// live-tune ServoProfileDTO in app_roles.go so one ServoProfileEditor
+// binds to both the inline-with-feature profile (persisted in
+// /gunfx.yaml) and the live-tune wire commands.
 export interface ServoMotionProfileT {
     minUs: number
     maxUs: number
     centerUs: number
-    inverted: boolean
+    reversed: boolean
     maxSpeedUsPerSec: number
     maxAccelUsPerSec2: number
     maxJerkUsPerSec3: number
@@ -95,10 +101,10 @@ export interface GunAxisT {
     servoPort: PortRefT
     input: string                  // Rule 43 — named-channel reference
     neutralUs: number
-    // Profile placeholder for Wails compat; motion shape lives on the
-    // role layer per Rule 42 (servo motion profile is configured via
-    // the IO tab's port-role row, NOT here).
-    profile?: ServoMotionProfileT
+    // Servo motion profile lives on the port-role row in /hubfx.yaml
+    // (Rule 42 storage); the GunFx panel reads it via
+    // `$deviceModel.ports[i].profile` and writes via `SetPortProfile`
+    // (Rule 44 editing surface).  Not in /gunfx.yaml.
 }
 
 export interface GunT {
@@ -144,10 +150,6 @@ export interface GunStatusT { id: number; firing: boolean; smokeArmed: boolean }
 // ─── Defaults ─────────────────────────────────────────────────────────
 
 const emptyPort: PortRefT = { board: '', guid: '', kind: '', idx: 0 }
-const defaultProfile = (): ServoMotionProfileT => ({
-    minUs: 1000, maxUs: 2000, centerUs: 1500, inverted: false,
-    maxSpeedUsPerSec: 800, maxAccelUsPerSec2: 1600, maxJerkUsPerSec3: 0,
-})
 
 const defaultAxis = (): GunAxisT => ({
     enabled: false,
@@ -162,7 +164,7 @@ export function defaultGun(id: number): GunT {
         trigger: { input: '', thresholdUs: 1500, hysteresisUs: 25 },
         rof: { input: '', items: [] },
         muzzleFlash: { port: { ...emptyPort, kind: 'pwm' }, durationMs: 30, brightness: 100 },
-        recoil: { port: { ...emptyPort, kind: 'servo' }, profile: defaultProfile(), jerkUs: 200, holdMs: 80 },
+        recoil: { enabled: true, axis: 'pitch', jerkUs: 200, holdMs: 80 },
         smoke: {
             heater: { port: { ...emptyPort, kind: 'pwm' }, elementMv: 0, mode: 'always_on', targetCx10: 1500, hystCx10: 50, scaling: 'linear', constantDutyPct: 100 },
             fan:    { port: { ...emptyPort, kind: 'pwm' }, elementMv: 0, mode: 'off',       puffMs: 200,                            scaling: 'linear', constantDutyPct: 100 },
@@ -186,6 +188,55 @@ export const gunfxDirty = derived(
     [gunfxConfig, gunfxDraft],
     ([cfg, draft]) => JSON.stringify(cfg) !== JSON.stringify(draft),
 )
+
+// ─── Validation ───────────────────────────────────────────────────────
+
+/** Returns the indices of ROF items whose [bandLoUs, bandHiUs] window
+ *  overlaps with at least one sibling item.  Bands must NOT overlap
+ *  (Rule 38) — the operator picks an item by driving the selector
+ *  channel into a band; overlapping bands would arm two items at once.
+ *  Studio surfaces both panel-level red borders AND a global Apply
+ *  block (via `gunfxHasErrors` below). */
+export function detectBandOverlaps(items: RofItemT[]): number[] {
+    const out: number[] = []
+    for (let i = 0; i < items.length; i++) {
+        const a = items[i]
+        for (let j = i + 1; j < items.length; j++) {
+            const b = items[j]
+            const al = a.bandLoUs || 1000, ah = a.bandHiUs || 2000
+            const bl = b.bandLoUs || 1000, bh = b.bandHiUs || 2000
+            if (al <= bh && bl <= ah) {
+                if (!out.includes(i)) out.push(i)
+                if (!out.includes(j)) out.push(j)
+            }
+        }
+    }
+    return out
+}
+
+/** Aggregate validation state — true if ANY gun's ROF bands overlap.
+ *  Feeds the dirty-registry's hasErrors aggregation so the global
+ *  Apply (Rule 35 + 45) is shaded out when the operator hasn't
+ *  resolved the overlap.  Pure derivation off `gunfxDraft` — no
+ *  async, no side effects. */
+export const gunfxHasErrors = derived(gunfxDraft, ($draft) => {
+    if (!$draft) return false
+    return $draft.guns.some(g =>
+        g.rof.items.length > 1 && detectBandOverlaps(g.rof.items).length > 0)
+})
+
+/** Pre-built `DirtySource` for the dirty-registry — register from
+ *  App.svelte startup so the global Apply order is deterministic.
+ *  Rule 46 (modular config sources): each domain module owns its full
+ *  source descriptor; the panel is a pure view. */
+export const gunfxConfigSource: DirtySource = {
+    id:        'gunfx',
+    label:     'GunFX',
+    isDirty:   gunfxDirty,
+    hasErrors: gunfxHasErrors,
+    apply:     saveGunFxConfig,
+    refresh:   loadGunFxConfig,
+}
 
 /** Live verbose-status mirror, keyed by gun id.  Populated by the
  *  `gun:verbose` Wails event subscription installed below. */
@@ -295,7 +346,16 @@ export function removeGun(id: number): void {
 }
 
 export function setEnabled(on: boolean): void {
-    gunfxDraft.update(c => ({ ...c, enabled: on }))
+    gunfxDraft.update(c => {
+        // Auto-seed: enabling GunFx with zero guns drops in a default
+        // gun #0 so the operator has something to configure immediately
+        // — otherwise the panel just shows an "add gun" prompt and the
+        // operator has to click twice to get started.
+        if (on && c.guns.length === 0) {
+            return { ...c, enabled: true, guns: [defaultGun(0)] }
+        }
+        return { ...c, enabled: on }
+    })
 }
 
 export function updateGun(id: number, mutate: (g: GunT) => GunT): void {

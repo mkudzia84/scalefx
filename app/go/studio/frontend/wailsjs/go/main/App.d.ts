@@ -5,8 +5,6 @@ import {devicemodel} from '../models';
 
 export function ApplyDefaults():Promise<main.DeviceModelSnapshot>;
 
-export function ApplyPreset(arg1:string):Promise<main.DeviceModelSnapshot>;
-
 export function AttachRole(arg1:string,arg2:number,arg3:number,arg4:number):Promise<main.DeviceModelSnapshot>;
 
 export function BuildAndFlash(arg1:string,arg2:string,arg3:boolean,arg4:boolean,arg5:boolean):Promise<void>;
@@ -134,6 +132,8 @@ export function SetInputChannelCount(arg1:string,arg2:number,arg3:number,arg4:nu
 export function SetInputProtocol(arg1:string,arg2:number,arg3:number,arg4:string):Promise<main.DeviceModelSnapshot>;
 
 export function SetPortName(arg1:string,arg2:number,arg3:number,arg4:string):Promise<main.DeviceModelSnapshot>;
+
+export function SetPortProfile(arg1:string,arg2:number,arg3:number,arg4:main.ServoMotionProfileDTO):Promise<main.DeviceModelSnapshot>;
 
 export function UnclaimPort(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<main.DeviceModelSnapshot>;
 

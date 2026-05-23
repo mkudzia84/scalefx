@@ -188,6 +188,67 @@ button:disabled {
     cursor: default;
 }
 
+/* ─── Rule 45 state-toggle button ─────────────────────────────────────
+   Effect-panel enable/disable affordance.  The button's label IS the
+   state (`▶ Disabled` vs `✓ Enabled`); `.state-on` adds the accent
+   border + accent text so the on-state is visually distinct without a
+   separate indicator.  Used in panel headers next to Apply. */
+button.state-toggle {
+    min-width: 110px;
+    text-align: center;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+button.state-toggle.state-on {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg-raised));
+}
+button.state-toggle.state-on:hover {
+    background: color-mix(in srgb, var(--accent) 22%, var(--bg-raised));
+}
+
+/* Visual gap between the [enable][apply][dirty-flag] cluster and the
+   rest of `.header-actions` (Add/Refresh/etc.) — kept narrow so it
+   reads as a separator, not a column. */
+.ctrl-sep {
+    display: inline-block;
+    width: 1px;
+    height: 18px;
+    background: var(--border);
+    margin: 0 4px;
+}
+
+/* ─── Rule 45 status-row (shared across effect panels) ────────────────
+   Companion to the state-toggle button: a raised strip that holds the
+   `[State pill] | [Enable] [Apply] [dirty] ‖ [op buttons]` cluster.
+   Used by EnginePanel + GunFxPanel + any future effect panel so the
+   layout is consistent regardless of which effect the operator is on. */
+.status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 8px 0 12px;
+    padding: 8px 10px;
+    background: var(--bg-raised);
+    border-radius: 6px;
+}
+.status-row .status { display: flex; align-items: center; gap: 8px; }
+.status-row .controls { display: flex; align-items: center; gap: 8px; }
+.status-row .status-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-dim);
+}
+/* Generic state-pill (effect-specific colour classes like .state-running
+   live in the owning panel's <style>). */
+.status-row .state-pill {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; padding: 2px 10px; border-radius: 3px;
+    background: var(--bg-input); color: var(--text);
+    border: 1px solid var(--border);
+}
+
 /* ─── Dialog / Modal Overlay ─── */
 
 .modal-backdrop {

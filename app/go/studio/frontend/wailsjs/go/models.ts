@@ -236,6 +236,30 @@ export namespace devicemodel {
 		    return a;
 		}
 	}
+	export class ServoMotionProfile {
+	    minUs: number;
+	    maxUs: number;
+	    centerUs: number;
+	    reversed: boolean;
+	    maxSpeedUsPerSec: number;
+	    maxAccelUsPerSec2: number;
+	    maxJerkUsPerSec3: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ServoMotionProfile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.minUs = source["minUs"];
+	        this.maxUs = source["maxUs"];
+	        this.centerUs = source["centerUs"];
+	        this.reversed = source["reversed"];
+	        this.maxSpeedUsPerSec = source["maxSpeedUsPerSec"];
+	        this.maxAccelUsPerSec2 = source["maxAccelUsPerSec2"];
+	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];
+	    }
+	}
 	export class RoleOption {
 	    kind: number;
 	    label: string;
@@ -263,6 +287,7 @@ export namespace devicemodel {
 	    hardwareName: string;
 	    allowedRoles: RoleOption[];
 	    name: string;
+	    profile?: ServoMotionProfile;
 	
 	    static createFrom(source: any = {}) {
 	        return new Port(source);
@@ -282,6 +307,7 @@ export namespace devicemodel {
 	        this.hardwareName = source["hardwareName"];
 	        this.allowedRoles = this.convertValues(source["allowedRoles"], RoleOption);
 	        this.name = source["name"];
+	        this.profile = this.convertValues(source["profile"], ServoMotionProfile);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -302,126 +328,6 @@ export namespace devicemodel {
 		    return a;
 		}
 	}
-	
-	export class PresetClaim {
-	    domain: string;
-	    slot: string;
-	    port: PresetPortRef;
-	
-	    static createFrom(source: any = {}) {
-	        return new PresetClaim(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.domain = source["domain"];
-	        this.slot = source["slot"];
-	        this.port = this.convertValues(source["port"], PresetPortRef);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class PresetPortRef {
-	    board: string;
-	    kind: number;
-	    index: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new PresetPortRef(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.board = source["board"];
-	        this.kind = source["kind"];
-	        this.index = source["index"];
-	    }
-	}
-	export class RoleAssign {
-	    port: PresetPortRef;
-	    roleKind: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new RoleAssign(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.port = this.convertValues(source["port"], PresetPortRef);
-	        this.roleKind = source["roleKind"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class Preset {
-	    name: string;
-	    description: string;
-	    roles: RoleAssign[];
-	    claims: PresetClaim[];
-	
-	    static createFrom(source: any = {}) {
-	        return new Preset(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.description = source["description"];
-	        this.roles = this.convertValues(source["roles"], RoleAssign);
-	        this.claims = this.convertValues(source["claims"], PresetClaim);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	
 	
 	
 	
@@ -661,7 +567,6 @@ export namespace main {
 	    domains: devicemodel.Domain[];
 	    issues: devicemodel.Issue[];
 	    roleCatalog: RoleKindInfo[];
-	    presets: devicemodel.Preset[];
 	    inputs: devicemodel.InputPortConfig[];
 	    channelFunctions: devicemodel.ChannelFunctionDef[];
 	    inputProtocols: devicemodel.InputProtocolDef[];
@@ -677,7 +582,6 @@ export namespace main {
 	        this.domains = this.convertValues(source["domains"], devicemodel.Domain);
 	        this.issues = this.convertValues(source["issues"], devicemodel.Issue);
 	        this.roleCatalog = this.convertValues(source["roleCatalog"], RoleKindInfo);
-	        this.presets = this.convertValues(source["presets"], devicemodel.Preset);
 	        this.inputs = this.convertValues(source["inputs"], devicemodel.InputPortConfig);
 	        this.channelFunctions = this.convertValues(source["channelFunctions"], devicemodel.ChannelFunctionDef);
 	        this.inputProtocols = this.convertValues(source["inputProtocols"], devicemodel.InputProtocolDef);
@@ -1008,36 +912,11 @@ export namespace main {
 	        this.sdBusMode = source["sdBusMode"];
 	    }
 	}
-	export class ServoMotionProfileDTO {
-	    minUs: number;
-	    maxUs: number;
-	    centerUs: number;
-	    inverted: boolean;
-	    maxSpeedUsPerSec: number;
-	    maxAccelUsPerSec2: number;
-	    maxJerkUsPerSec3: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new ServoMotionProfileDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.minUs = source["minUs"];
-	        this.maxUs = source["maxUs"];
-	        this.centerUs = source["centerUs"];
-	        this.inverted = source["inverted"];
-	        this.maxSpeedUsPerSec = source["maxSpeedUsPerSec"];
-	        this.maxAccelUsPerSec2 = source["maxAccelUsPerSec2"];
-	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];
-	    }
-	}
 	export class GunAxisDTO {
 	    enabled: boolean;
 	    servoPort: PortRefDTO;
 	    input: string;
 	    neutralUs: number;
-	    profile: ServoMotionProfileDTO;
 	
 	    static createFrom(source: any = {}) {
 	        return new GunAxisDTO(source);
@@ -1049,7 +928,6 @@ export namespace main {
 	        this.servoPort = this.convertValues(source["servoPort"], PortRefDTO);
 	        this.input = source["input"];
 	        this.neutralUs = source["neutralUs"];
-	        this.profile = this.convertValues(source["profile"], ServoMotionProfileDTO);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1145,8 +1023,8 @@ export namespace main {
 		}
 	}
 	export class RecoilConfigDTO {
-	    port: PortRefDTO;
-	    profile: ServoMotionProfileDTO;
+	    enabled: boolean;
+	    axis: string;
 	    jerkUs: number;
 	    holdMs: number;
 	
@@ -1156,29 +1034,11 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.port = this.convertValues(source["port"], PortRefDTO);
-	        this.profile = this.convertValues(source["profile"], ServoMotionProfileDTO);
+	        this.enabled = source["enabled"];
+	        this.axis = source["axis"];
 	        this.jerkUs = source["jerkUs"];
 	        this.holdMs = source["holdMs"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class MuzzleFlashDTO {
 	    port: PortRefDTO;
@@ -1501,7 +1361,30 @@ export namespace main {
 	
 	
 	
+	export class ServoMotionProfileDTO {
+	    minUs: number;
+	    maxUs: number;
+	    centerUs: number;
+	    reversed: boolean;
+	    maxSpeedUsPerSec: number;
+	    maxAccelUsPerSec2: number;
+	    maxJerkUsPerSec3: number;
 	
+	    static createFrom(source: any = {}) {
+	        return new ServoMotionProfileDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.minUs = source["minUs"];
+	        this.maxUs = source["maxUs"];
+	        this.centerUs = source["centerUs"];
+	        this.reversed = source["reversed"];
+	        this.maxSpeedUsPerSec = source["maxSpeedUsPerSec"];
+	        this.maxAccelUsPerSec2 = source["maxAccelUsPerSec2"];
+	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];
+	    }
+	}
 	export class ServoProfileDTO {
 	    minUs: number;
 	    maxUs: number;

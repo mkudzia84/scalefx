@@ -3,6 +3,7 @@
 <script lang="ts">
     import TabBar from './TabBar.svelte'
     import StatusBar from './StatusBar.svelte'
+    import ConfigToolbar from './ConfigToolbar.svelte'
     import ConsolePanel from '../dialogs/ConsoleDialog.svelte'
     import FirmwareTab from '../tabs/FirmwareTab.svelte'
     import IoTab from '../tabs/IoTab.svelte'
@@ -50,6 +51,7 @@
 
 <div class="main-layout">
     <TabBar />
+    <ConfigToolbar />
 
     <div class="main-body" bind:this={mainBodyEl} class:resizing={dragging}>
         <div class="main-content">
