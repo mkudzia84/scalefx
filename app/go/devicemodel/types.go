@@ -79,9 +79,15 @@ type Port struct {
 	KindName  string    `json:"kindName"`
 	Direction Direction `json:"direction"`
 	Flags     byte      `json:"flags"`
-	// Caps are human-readable capability tokens derived from Flags:
-	// input modes (PULSE/SBUS/JETI_EX/UART_RAW), sense channels (V/I/T),
-	// or EMITS for a servo port that can also read its pulse back.
+	// VoltageMv is the rail voltage (millivolts) the port is wired to,
+	// declared by the board's port descriptor (Phase 0 of GunFX rollout,
+	// instructions/22). 0 = unknown. Effects use this to compute
+	// voltage-scaled PWM duty for sub-rail elements.
+	VoltageMv uint16 `json:"voltageMv"`
+	// Caps are human-readable capability tokens derived from Flags +
+	// voltage: input modes (PULSE/SBUS/JETI_EX/UART_RAW), sense channels
+	// (V/I/T), EMITS for a servo port that reads its pulse back, and
+	// VOLTAGE_<N>V (e.g. "VOLTAGE_8V") when voltageMv > 0.
 	Caps []string `json:"caps"`
 	// RoleKind is the attached role (roles.KindNone when the port is
 	// free).  RoleName is its canonical name.
@@ -184,19 +190,46 @@ func HardwareLabel(kind, index byte) string {
 // HasRole reports whether a role is attached.
 func (p Port) HasRole() bool { return p.RoleKind != roles.KindNone }
 
-// portCaps derives capability tokens from a port's kind + flags.
-func portCaps(kind, flags byte) []string {
+// portCaps derives capability tokens from a port's kind + flags +
+// declared rail voltage. Voltage appends `VOLTAGE_<N>V` (e.g.
+// "VOLTAGE_8V") to the cap list — informational only, doesn't gate
+// candidate selection.
+func portCaps(kind, flags byte, voltageMv uint16) []string {
+	var out []string
 	switch kind {
 	case ports.KindInput:
-		return ports.InputFlagsNames(flags)
+		out = ports.InputFlagsNames(flags)
 	case ports.KindPwm, ports.KindHBridge:
-		return ports.SenseFlagsNames(flags)
+		out = ports.SenseFlagsNames(flags)
 	case ports.KindServo:
 		if flags&ports.ServoFlagEmits != 0 {
-			return []string{"EMITS"}
+			out = []string{"EMITS"}
 		}
 	}
-	return []string{}
+	if out == nil {
+		out = []string{}
+	}
+	if tok := voltageCapToken(voltageMv); tok != "" {
+		out = append(out, tok)
+	}
+	return out
+}
+
+// voltageCapToken formats a rail voltage as a "VOLTAGE_<N>V" /
+// "VOLTAGE_3V3" cap token (uppercase, dot replaced with V for fractional
+// volts so the token round-trips cleanly into CSS / log filters).
+// Returns "" when voltage is unknown (0).
+func voltageCapToken(mV uint16) string {
+	if mV == 0 {
+		return ""
+	}
+	if mV%1000 == 0 {
+		return fmt.Sprintf("VOLTAGE_%dV", mV/1000)
+	}
+	// Fractional rails: 3.3 V → VOLTAGE_3V3, 1.8 V → VOLTAGE_1V8.
+	whole := mV / 1000
+	tenths := (mV % 1000) / 100
+	return fmt.Sprintf("VOLTAGE_%dV%d", whole, tenths)
 }
 
 // ─── Domains & slots ──────────────────────────────────────────────────

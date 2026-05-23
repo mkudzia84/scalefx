@@ -189,9 +189,10 @@ func printBoardPorts(b client.BoardPorts, roleAt map[string]byte) {
 			cDim(padRight("servo", 8)),
 			cDim(fmt.Sprintf("(%d, output)", len(b.Ports.Servos))))
 		for _, d := range b.Ports.Servos {
-			fmt.Fprintf(out, "    %s  %s%s\n",
+			fmt.Fprintf(out, "    %s  %s%s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
 				cDim(servoFlagText(d.Flags)),
+				voltageText(d.VoltageMv),
 				attachedRoleText(roleAt, b.GUID, ports.KindServo, d.Index))
 		}
 	}
@@ -200,9 +201,10 @@ func printBoardPorts(b client.BoardPorts, roleAt map[string]byte) {
 			cDim(padRight("pwm", 8)),
 			cDim(fmt.Sprintf("(%d)", len(b.Ports.Pwms))))
 		for _, d := range b.Ports.Pwms {
-			fmt.Fprintf(out, "    %s  %s%s\n",
+			fmt.Fprintf(out, "    %s  %s%s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
 				cDim(senseFlagText(d.Flags)),
+				voltageText(d.VoltageMv),
 				attachedRoleText(roleAt, b.GUID, ports.KindPwm, d.Index))
 		}
 	}
@@ -211,9 +213,10 @@ func printBoardPorts(b client.BoardPorts, roleAt map[string]byte) {
 			cDim(padRight("hbridge", 8)),
 			cDim(fmt.Sprintf("(%d)", len(b.Ports.HBridges))))
 		for _, d := range b.Ports.HBridges {
-			fmt.Fprintf(out, "    %s  %s%s\n",
+			fmt.Fprintf(out, "    %s  %s%s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
 				cDim(senseFlagText(d.Flags)),
+				voltageText(d.VoltageMv),
 				attachedRoleText(roleAt, b.GUID, ports.KindHBridge, d.Index))
 		}
 	}
@@ -222,12 +225,25 @@ func printBoardPorts(b client.BoardPorts, roleAt map[string]byte) {
 			cDim(padRight("input", 8)),
 			cDim(fmt.Sprintf("(%d)", len(b.Ports.Inputs))))
 		for _, d := range b.Ports.Inputs {
-			fmt.Fprintf(out, "    %s  %s%s\n",
+			fmt.Fprintf(out, "    %s  %s%s%s\n",
 				cBold(fmt.Sprintf("[%2d]", d.Index)),
 				cGreen(inputFlagText(d.Flags)),
+				voltageText(d.VoltageMv),
 				attachedRoleText(roleAt, b.GUID, ports.KindInput, d.Index))
 		}
 	}
+}
+
+// voltageText renders the rail voltage as a short trailing chip:
+// "  (8 V)" / "  (3.3 V)" / "" when unknown.
+func voltageText(mV uint16) string {
+	if mV == 0 {
+		return ""
+	}
+	if mV%1000 == 0 {
+		return "  " + cDim(fmt.Sprintf("(%d V)", mV/1000))
+	}
+	return "  " + cDim(fmt.Sprintf("(%.1f V)", float64(mV)/1000.0))
 }
 
 func servoFlagText(f byte) string {

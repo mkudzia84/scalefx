@@ -205,7 +205,10 @@ func readLenStr(p []byte, off int, label string) (string, int, error) {
 // port descriptor block starting at p[off], advancing off as it reads.
 // Same shape as PORT_LIST_RESP (ports.h) — duplicated here so this
 // package doesn't depend on a partial-decode method on ports.
+// Each entry is 4 bytes: [idx:u8][flags:u8][voltageMv:u16LE] (Phase 0
+// of GunFX rollout, instructions/22).
 func decodeInlinePortBlock(p []byte, off int) (ports.PortList, int, error) {
+	const entrySize = 4
 	var pl ports.PortList
 	read := func(label string) ([]ports.PortDescriptor, error) {
 		if off >= len(p) {
@@ -213,13 +216,17 @@ func decodeInlinePortBlock(p []byte, off int) (ports.PortList, int, error) {
 		}
 		n := int(p[off])
 		off++
-		if off+2*n > len(p) {
+		if off+entrySize*n > len(p) {
 			return nil, fmt.Errorf("truncated %s entries", label)
 		}
 		entries := make([]ports.PortDescriptor, n)
 		for i := 0; i < n; i++ {
-			entries[i] = ports.PortDescriptor{Index: p[off], Flags: p[off+1]}
-			off += 2
+			entries[i] = ports.PortDescriptor{
+				Index:     p[off],
+				Flags:     p[off+1],
+				VoltageMv: binary.LittleEndian.Uint16(p[off+2 : off+4]),
+			}
+			off += entrySize
 		}
 		return entries, nil
 	}

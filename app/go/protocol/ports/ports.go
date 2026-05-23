@@ -153,14 +153,18 @@ const (
 
 // ─── Decoded data types ───────────────────────────────────────────────
 
-// PortDescriptor is one (idx, flags) entry in PORT_LIST_RESP.
+// PortDescriptor is one entry in PORT_LIST_RESP — index, capability
+// flags, and the rail voltage the port is wired to (Phase 0 of GunFX
+// rollout, instructions/22). VoltageMv == 0 means "unknown" (the board
+// didn't declare a rail).
 type PortDescriptor struct {
-	Index byte
-	Flags byte
+	Index     byte
+	Flags     byte
+	VoltageMv uint16
 }
 
 // PortList holds the decoded PORT_LIST_RESP payload — four arrays, one
-// per port kind, each entry an (index, flags) pair.
+// per port kind, each entry an (index, flags, voltageMv) triple.
 type PortList struct {
 	Servos   []PortDescriptor
 	Pwms     []PortDescriptor
@@ -170,7 +174,10 @@ type PortList struct {
 
 // DecodePortListPayload decodes a PORT_LIST_RESP payload (without the
 // guid/name prefix that TopologyServicePolicy adds — that's the
-// topology layer's responsibility).
+// topology layer's responsibility). Each entry is a fixed 4 bytes:
+// [idx:u8][flags:u8][voltageMv:u16LE].
+const portEntrySize = 4
+
 func DecodePortListPayload(p []byte) (PortList, error) {
 	var out PortList
 	off := 0
@@ -180,13 +187,17 @@ func DecodePortListPayload(p []byte) (PortList, error) {
 		}
 		n := int(p[off])
 		off++
-		if off+2*n > len(p) {
+		if off+portEntrySize*n > len(p) {
 			return nil, fmt.Errorf("truncated %s entries (need %d)", kind, n)
 		}
 		entries := make([]PortDescriptor, n)
 		for i := 0; i < n; i++ {
-			entries[i] = PortDescriptor{Index: p[off], Flags: p[off+1]}
-			off += 2
+			entries[i] = PortDescriptor{
+				Index:     p[off],
+				Flags:     p[off+1],
+				VoltageMv: binary.LittleEndian.Uint16(p[off+2 : off+4]),
+			}
+			off += portEntrySize
 		}
 		return entries, nil
 	}
