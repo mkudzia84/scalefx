@@ -1,11 +1,18 @@
 // Package gunfx mirrors
 // controllers/hubfx/esp32s3/src/effects/gunfx/gunfx_protocol.h —
 // the master-side GunFX wire surface.  Each gun unit is muzzle-flash
-// LED + optional recoil servo + optional smoke heater + optional RC
-// trigger input.  Packet slice: 0xCC..0xD2.
+// LED + optional recoil servo + optional smoke heater + fan + optional
+// yaw/pitch turret + optional fire trigger + optional ROF selector.
+//
+// Packet slices:
+//
+//	0xCC..0xD2  primary  (fire / auto-fire / smoke / status / shot-event)
+//	0xE2..0xE5  manual override + verbose status  (Phase 1 of the
+//	            GunFX rollout — instructions/22)
 package gunfx
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"scalefx/protocol"
@@ -14,20 +21,49 @@ import (
 // ─── Packet types ────────────────────────────────────────────────────
 
 const (
-	FireOnce    protocol.PacketType = 0xCC
-	StartFiring protocol.PacketType = 0xCD
-	StopFiring  protocol.PacketType = 0xCE
-	SmokeArm    protocol.PacketType = 0xCF
-	StatusReq   protocol.PacketType = 0xD0
-	StatusResp  protocol.PacketType = 0xD1
-	ShotEvent   protocol.PacketType = 0xD2
+	FireOnce             protocol.PacketType = 0xCC
+	StartFiring          protocol.PacketType = 0xCD
+	StopFiring           protocol.PacketType = 0xCE
+	SmokeArm             protocol.PacketType = 0xCF
+	StatusReq            protocol.PacketType = 0xD0
+	StatusResp           protocol.PacketType = 0xD1
+	ShotEvent            protocol.PacketType = 0xD2
+	ManualSet            protocol.PacketType = 0xE2
+	ManualRelease        protocol.PacketType = 0xE3
+	VerboseStatusReq     protocol.PacketType = 0xE4
+	VerboseStatusPkt     protocol.PacketType = 0xE5 // decoded struct is `VerboseStatus`
+)
+
+// ─── Manual-override flag bits (GUN_MANUAL_SET.flags) ────────────────
+
+const (
+	ManualFlagYaw      byte = 1 << 0 // 0x01
+	ManualFlagPitch    byte = 1 << 1 // 0x02
+	ManualFlagRof      byte = 1 << 2 // 0x04
+	ManualFlagFire     byte = 1 << 3 // 0x08
+	ManualFlagSmoke    byte = 1 << 4 // 0x10
+	ManualFlagFanBurst byte = 1 << 5 // 0x20
+)
+
+// ─── Mode (GUN_VERBOSE_STATUS.mode) ──────────────────────────────────
+
+const (
+	ModeRc     byte = 0
+	ModeManual byte = 1
+)
+
+// Sentinel values used in the verbose-status payload.
+const (
+	RofIndexNone        byte  = 0xFF
+	HeaterTempNoSensor  int16 = 0x7FFF
 )
 
 // ─── Error codes ─────────────────────────────────────────────────────
 
 const (
-	ErrUnknownID protocol.ErrorCode = 0xCB
-	ErrTableFull protocol.ErrorCode = 0xCC
+	ErrUnknownID      protocol.ErrorCode = 0xCB
+	ErrTableFull      protocol.ErrorCode = 0xCC
+	ErrNotImplemented protocol.ErrorCode = 0xCD // Phase 1 stub
 )
 
 // ─── Decoded types ───────────────────────────────────────────────────
@@ -44,6 +80,46 @@ type GunStatus struct {
 type Shot struct {
 	ID byte `json:"id"`
 }
+
+// ManualState carries the fields that GUN_MANUAL_SET writes to one
+// gun. `Flags` MUST be the OR of `ManualFlag*` bits the caller wants
+// honoured; fields not selected by Flags are ignored by the firmware
+// (they keep their prior manual value, or the RC-driven value if the
+// field has never been manually set).
+type ManualState struct {
+	Flags          byte   `json:"flags"`
+	YawUs          uint16 `json:"yawUs"`
+	PitchUs        uint16 `json:"pitchUs"`
+	RofIndex       byte   `json:"rofIndex"`
+	FireHold       byte   `json:"fireHold"`
+	SmokeArm       byte   `json:"smokeArm"`
+	SmokeFanBurst  byte   `json:"smokeFanBurst"`
+}
+
+// VerboseStatus is the decoded GUN_VERBOSE_STATUS async payload — every
+// field a Studio "simulate" panel needs to mirror what the firmware is
+// doing for one gun.
+type VerboseStatus struct {
+	ID                byte   `json:"id"`
+	Mode              byte   `json:"mode"`              // ModeRc / ModeManual
+	Firing            bool   `json:"firing"`
+	SmokeArmed        bool   `json:"smokeArmed"`
+	SmokeFanRunning   bool   `json:"smokeFanRunning"`
+	HeaterDutyPct     byte   `json:"heaterDutyPct"`
+	HeaterTempCx10    int16  `json:"heaterTempCx10"`    // HeaterTempNoSensor = no sensor
+	YawCurrentUs      uint16 `json:"yawCurrentUs"`
+	YawTargetUs       uint16 `json:"yawTargetUs"`
+	PitchCurrentUs    uint16 `json:"pitchCurrentUs"`
+	PitchTargetUs     uint16 `json:"pitchTargetUs"`
+	RofIndex          byte   `json:"rofIndex"`          // RofIndexNone = no item armed
+	RofSelectorUs     uint16 `json:"rofSelectorUs"`     // last raw value on the ROF channel
+	TriggerUs         uint16 `json:"triggerUs"`         // last raw value on the trigger channel
+	ShotsThisSession  uint32 `json:"shotsThisSession"`
+}
+
+// verboseStatusSize is the fixed wire size of a VerboseStatus payload
+// in v1 (no Rule-11 append-only; greenfield).
+const verboseStatusSize = 26
 
 // ─── Decoders ────────────────────────────────────────────────────────
 
@@ -78,6 +154,34 @@ func DecodeShotEvent(p []byte) (Shot, error) {
 	return Shot{ID: p[0]}, nil
 }
 
+// DecodeVerboseStatus parses a GUN_VERBOSE_STATUS async payload.
+// Fixed 26-byte layout — see gunfx_protocol.h for the field map.
+func DecodeVerboseStatus(p []byte) (VerboseStatus, error) {
+	if len(p) != verboseStatusSize {
+		return VerboseStatus{}, fmt.Errorf(
+			"gun verbose status: expected %d bytes, got %d",
+			verboseStatusSize, len(p))
+	}
+	return VerboseStatus{
+		ID:               p[0],
+		Mode:             p[1],
+		Firing:           p[2] != 0,
+		SmokeArmed:       p[3] != 0,
+		SmokeFanRunning:  p[4] != 0,
+		HeaterDutyPct:    p[5],
+		HeaterTempCx10:   int16(binary.LittleEndian.Uint16(p[6:8])),
+		YawCurrentUs:     binary.LittleEndian.Uint16(p[8:10]),
+		YawTargetUs:      binary.LittleEndian.Uint16(p[10:12]),
+		PitchCurrentUs:   binary.LittleEndian.Uint16(p[12:14]),
+		PitchTargetUs:    binary.LittleEndian.Uint16(p[14:16]),
+		RofIndex:         p[16],
+		RofSelectorUs:    binary.LittleEndian.Uint16(p[17:19]),
+		TriggerUs:        binary.LittleEndian.Uint16(p[19:21]),
+		ShotsThisSession: binary.LittleEndian.Uint32(p[21:25]),
+		// p[25] reserved / padding (keep wire size at 26).
+	}, nil
+}
+
 // ─── Command builders ────────────────────────────────────────────────
 
 // CmdFireOnce builds a GUN_FIRE_ONCE for the given unit id.
@@ -105,20 +209,56 @@ func CmdSmokeArm(id, armed byte) []byte {
 // CmdStatusReq builds a GUN_STATUS_REQ.
 func CmdStatusReq() []byte { return protocol.BuildPacket(StatusReq, nil, 0) }
 
+// CmdManualSet builds a GUN_MANUAL_SET for one gun. The caller picks
+// which subsystems are addressed via `state.Flags` (OR of `ManualFlag*`).
+// Fields not selected by Flags are filled with 0 on the wire — the
+// firmware ignores them.
+func CmdManualSet(id byte, state ManualState) []byte {
+	p := make([]byte, 10)
+	p[0] = id
+	p[1] = state.Flags
+	binary.LittleEndian.PutUint16(p[2:4], state.YawUs)
+	binary.LittleEndian.PutUint16(p[4:6], state.PitchUs)
+	p[6] = state.RofIndex
+	p[7] = state.FireHold
+	p[8] = state.SmokeArm
+	p[9] = state.SmokeFanBurst
+	return protocol.BuildPacket(ManualSet, p, 0)
+}
+
+// CmdManualRelease builds a GUN_MANUAL_RELEASE — drop the gun out of
+// manual mode immediately; RC takes over.
+func CmdManualRelease(id byte) []byte {
+	return protocol.BuildPacket(ManualRelease, []byte{id}, 0)
+}
+
+// CmdVerboseStatusReq builds a GUN_VERBOSE_STATUS_REQ. enable=1
+// subscribes the caller to ~10 Hz GUN_VERBOSE_STATUS broadcasts for
+// the named gun; enable=0 unsubscribes. Subscriptions are released on
+// disconnect.
+func CmdVerboseStatusReq(id, enable byte) []byte {
+	return protocol.BuildPacket(VerboseStatusReq, []byte{id, enable}, 0)
+}
+
 // ─── Name registration ───────────────────────────────────────────────
 
 func init() {
 	protocol.RegisterPacketNames(map[protocol.PacketType]string{
-		FireOnce:    "GUN_FIRE_ONCE",
-		StartFiring: "GUN_START_FIRING",
-		StopFiring:  "GUN_STOP_FIRING",
-		SmokeArm:    "GUN_SMOKE_ARM",
-		StatusReq:   "GUN_STATUS_REQ",
-		StatusResp:  "GUN_STATUS_RESP",
-		ShotEvent:   "GUN_SHOT_EVENT",
+		FireOnce:         "GUN_FIRE_ONCE",
+		StartFiring:      "GUN_START_FIRING",
+		StopFiring:       "GUN_STOP_FIRING",
+		SmokeArm:         "GUN_SMOKE_ARM",
+		StatusReq:        "GUN_STATUS_REQ",
+		StatusResp:       "GUN_STATUS_RESP",
+		ShotEvent:        "GUN_SHOT_EVENT",
+		ManualSet:        "GUN_MANUAL_SET",
+		ManualRelease:    "GUN_MANUAL_RELEASE",
+		VerboseStatusReq: "GUN_VERBOSE_STATUS_REQ",
+		VerboseStatusPkt: "GUN_VERBOSE_STATUS",
 	})
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{
-		ErrUnknownID: "GUN_UNKNOWN_ID",
-		ErrTableFull: "GUN_TABLE_FULL",
+		ErrUnknownID:      "GUN_UNKNOWN_ID",
+		ErrTableFull:      "GUN_TABLE_FULL",
+		ErrNotImplemented: "GUN_NOT_IMPLEMENTED",
 	})
 }

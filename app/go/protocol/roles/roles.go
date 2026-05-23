@@ -95,6 +95,9 @@ const (
 	ServoStatusResp    protocol.PacketType = 0x4A
 	ServoTargetReached protocol.PacketType = 0x4B
 	ServoMotionUpdate  protocol.PacketType = 0x4C
+	ServoSetProfile    protocol.PacketType = 0x4D // Phase 2.9.x: live motion-profile retune
+	ServoGetProfileReq protocol.PacketType = 0x4E
+	ServoProfileResp   protocol.PacketType = 0x4F
 
 	// RC PWM input (0x50..0x57)
 	RcinGetValueReq    protocol.PacketType = 0x50
@@ -112,11 +115,14 @@ const (
 	LedQueueDone      protocol.PacketType = 0x5E
 
 	// DC motor (0x60..0x67)
-	MotorSetDuty      protocol.PacketType = 0x60
-	MotorBrake        protocol.PacketType = 0x61
-	MotorGetStatusReq protocol.PacketType = 0x62
-	MotorStatusResp   protocol.PacketType = 0x63
-	MotorStallEvent   protocol.PacketType = 0x64
+	MotorSetDuty       protocol.PacketType = 0x60
+	MotorBrake         protocol.PacketType = 0x61
+	MotorGetStatusReq  protocol.PacketType = 0x62
+	MotorStatusResp    protocol.PacketType = 0x63
+	MotorStallEvent    protocol.PacketType = 0x64
+	MotorSetElement    protocol.PacketType = 0x65 // Phase 2.9.x: live element-scaling retune
+	MotorGetElementReq protocol.PacketType = 0x66
+	MotorElementResp   protocol.PacketType = 0x67
 
 	// Bi-directional DC motor (0x68..0x6F)
 	BiMotorSetSigned    protocol.PacketType = 0x68
@@ -129,9 +135,18 @@ const (
 	BiMotorEndstopResult protocol.PacketType = 0x6F
 
 	// Heater (0x70..0x77)
-	HeaterSetTarget    protocol.PacketType = 0x70
-	HeaterGetStatusReq protocol.PacketType = 0x71
-	HeaterStatusResp   protocol.PacketType = 0x72
+	HeaterSetTarget     protocol.PacketType = 0x70
+	HeaterGetStatusReq  protocol.PacketType = 0x71
+	HeaterStatusResp    protocol.PacketType = 0x72
+	HeaterSetElement    protocol.PacketType = 0x73 // Phase 2.9.x: live element + drivePct + hyst retune
+	HeaterGetElementReq protocol.PacketType = 0x74
+	HeaterElementResp   protocol.PacketType = 0x75
+
+	// DC motor intent-layer driver (continuation slot — the primary
+	// 0x60..0x67 range is exhausted, so MOTOR_SET_PCT lives in the
+	// spare slot at the top of the heater range).  Rule 42 intent
+	// surface — role applies scaleDuty() internally.
+	MotorSetPct protocol.PacketType = 0x76 // [portIdx:u8][pct:u8] → ACK
 
 	// SBUS input (0x78..0x7B)
 	SbusGetFrameReq    protocol.PacketType = 0x78
@@ -308,6 +323,62 @@ func CmdServoGetStatus(portIdx byte) []byte {
 	return protocol.BuildPacket(ServoGetStatusReq, []byte{portIdx}, 0)
 }
 
+// ServoMotionProfile mirrors the firmware-side `sfx_core::ServoMotionProfile`
+// — the per-port motion shape (clamp + speed + accel + jerk + REV).
+// Live-tunable via SERVO_SET_PROFILE / SERVO_GET_PROFILE_REQ.
+type ServoMotionProfile struct {
+	MinUs             uint16 `json:"minUs"`
+	MaxUs             uint16 `json:"maxUs"`
+	MaxSpeedUsPerSec  uint16 `json:"maxSpeedUsPerSec"`
+	Reversed          bool   `json:"reversed"`
+	CenterUs          uint16 `json:"centerUs"`
+	MaxAccelUsPerSec2 uint16 `json:"maxAccelUsPerSec2"`
+	MaxJerkUsPerSec3  uint16 `json:"maxJerkUsPerSec3"`
+}
+
+const servoProfileBodyBytes = 13 // not counting the leading portIdx byte
+
+func encodeServoProfileBody(p ServoMotionProfile) []byte {
+	b := make([]byte, servoProfileBodyBytes)
+	binary.LittleEndian.PutUint16(b[0:2],  p.MinUs)
+	binary.LittleEndian.PutUint16(b[2:4],  p.MaxUs)
+	binary.LittleEndian.PutUint16(b[4:6],  p.MaxSpeedUsPerSec)
+	if p.Reversed {
+		b[6] = 1
+	}
+	binary.LittleEndian.PutUint16(b[7:9],   p.CenterUs)
+	binary.LittleEndian.PutUint16(b[9:11],  p.MaxAccelUsPerSec2)
+	binary.LittleEndian.PutUint16(b[11:13], p.MaxJerkUsPerSec3)
+	return b
+}
+
+func CmdServoSetProfile(portIdx byte, p ServoMotionProfile) []byte {
+	body := encodeServoProfileBody(p)
+	return protocol.BuildPacket(ServoSetProfile, append([]byte{portIdx}, body...), 0)
+}
+
+func CmdServoGetProfile(portIdx byte) []byte {
+	return protocol.BuildPacket(ServoGetProfileReq, []byte{portIdx}, 0)
+}
+
+// DecodeServoProfile decodes SERVO_PROFILE_RESP: [portIdx][14 B profile body].
+func DecodeServoProfile(payload []byte) (portIdx byte, p ServoMotionProfile, err error) {
+	if len(payload) < 1+servoProfileBodyBytes {
+		err = fmt.Errorf("servo profile: truncated (%d B)", len(payload))
+		return
+	}
+	portIdx = payload[0]
+	b := payload[1:]
+	p.MinUs             = binary.LittleEndian.Uint16(b[0:2])
+	p.MaxUs             = binary.LittleEndian.Uint16(b[2:4])
+	p.MaxSpeedUsPerSec  = binary.LittleEndian.Uint16(b[4:6])
+	p.Reversed          = b[6] != 0
+	p.CenterUs          = binary.LittleEndian.Uint16(b[7:9])
+	p.MaxAccelUsPerSec2 = binary.LittleEndian.Uint16(b[9:11])
+	p.MaxJerkUsPerSec3  = binary.LittleEndian.Uint16(b[11:13])
+	return
+}
+
 func CmdLedStart(portIdx byte) []byte           { return protocol.BuildPacket(LedStart, []byte{portIdx}, 0) }
 func CmdLedStop(portIdx byte) []byte            { return protocol.BuildPacket(LedStop, []byte{portIdx}, 0) }
 func CmdLedSetBrightness(portIdx, b byte) []byte {
@@ -327,6 +398,61 @@ func CmdMotorGetStatus(portIdx byte) []byte {
 	return protocol.BuildPacket(MotorGetStatusReq, []byte{portIdx}, 0)
 }
 
+// ElementScalingMode mirrors `sfx_core::ElementScalingMode` (Phase 2 of
+// the GunFX rollout — Rule 42). Used on both DC-motor and heater
+// elements that need voltage scaling.
+type ElementScalingMode byte
+
+const (
+	ScalingPassthrough ElementScalingMode = 0 // duty = requestedPct (no scaling)
+	ScalingLinear      ElementScalingMode = 1 // duty = (Ve/Vp)  * requestedPct
+	ScalingQuadratic   ElementScalingMode = 2 // duty = (Ve/Vp)² * requestedPct
+)
+
+// MotorElementConfig is what MOTOR_SET_ELEMENT writes and
+// MOTOR_GET_ELEMENT reads back. PortRailMv is read-only (port-side).
+type MotorElementConfig struct {
+	ElementMv  uint16             `json:"elementMv"`
+	Scaling    ElementScalingMode `json:"scaling"`
+	PortRailMv uint16             `json:"portRailMv"` // ignored on SET; populated on GET
+}
+
+func CmdMotorSetElement(portIdx byte, c MotorElementConfig) []byte {
+	body := make([]byte, 3)
+	binary.LittleEndian.PutUint16(body[0:2], c.ElementMv)
+	body[2] = byte(c.Scaling)
+	return protocol.BuildPacket(MotorSetElement, append([]byte{portIdx}, body...), 0)
+}
+
+func CmdMotorGetElement(portIdx byte) []byte {
+	return protocol.BuildPacket(MotorGetElementReq, []byte{portIdx}, 0)
+}
+
+// CmdMotorSetPct — intent-layer DC motor drive (Phase 2.9.x).  Drive
+// at `pct` % of the element's rated voltage; the role applies
+// scaleDuty() internally.  Used by GunFx smoke-fan puffing and any
+// future intent-layer caller.
+func CmdMotorSetPct(portIdx, pct byte) []byte {
+	if pct > 100 {
+		pct = 100
+	}
+	return protocol.BuildPacket(MotorSetPct, []byte{portIdx, pct}, 0)
+}
+
+// DecodeMotorElement decodes MOTOR_ELEMENT_RESP:
+//   [portIdx][elementMv:u16][scaling:u8][portRailMv:u16]
+func DecodeMotorElement(payload []byte) (portIdx byte, c MotorElementConfig, err error) {
+	if len(payload) < 6 {
+		err = fmt.Errorf("motor element: truncated (%d B)", len(payload))
+		return
+	}
+	portIdx = payload[0]
+	c.ElementMv  = binary.LittleEndian.Uint16(payload[1:3])
+	c.Scaling    = ElementScalingMode(payload[3])
+	c.PortRailMv = binary.LittleEndian.Uint16(payload[4:6])
+	return
+}
+
 func CmdBiMotorSetSigned(portIdx byte, signed int16) []byte {
 	return protocol.BuildPacket(BiMotorSetSigned,
 		append([]byte{portIdx}, protocol.U16LE(uint16(signed))...), 0)
@@ -341,6 +467,45 @@ func CmdBiMotorCoast(portIdx byte) []byte {
 func CmdHeaterSetTarget(portIdx byte, targetCx10 int16) []byte {
 	return protocol.BuildPacket(HeaterSetTarget,
 		append([]byte{portIdx}, protocol.U16LE(uint16(targetCx10))...), 0)
+}
+
+// HeaterElementConfig is what HEATER_SET_ELEMENT writes and
+// HEATER_GET_ELEMENT reads back. PortRailMv is read-only.
+type HeaterElementConfig struct {
+	ElementMv  uint16             `json:"elementMv"`
+	Scaling    ElementScalingMode `json:"scaling"`
+	DrivePct   uint8              `json:"drivePct"`
+	HystCx10   int16              `json:"hystCx10"`
+	PortRailMv uint16             `json:"portRailMv"` // ignored on SET; populated on GET
+}
+
+func CmdHeaterSetElement(portIdx byte, c HeaterElementConfig) []byte {
+	body := make([]byte, 6)
+	binary.LittleEndian.PutUint16(body[0:2], c.ElementMv)
+	body[2] = byte(c.Scaling)
+	body[3] = c.DrivePct
+	binary.LittleEndian.PutUint16(body[4:6], uint16(c.HystCx10))
+	return protocol.BuildPacket(HeaterSetElement, append([]byte{portIdx}, body...), 0)
+}
+
+func CmdHeaterGetElement(portIdx byte) []byte {
+	return protocol.BuildPacket(HeaterGetElementReq, []byte{portIdx}, 0)
+}
+
+// DecodeHeaterElement decodes HEATER_ELEMENT_RESP:
+//   [portIdx][elementMv:u16][scaling:u8][drivePct:u8][hyst_cx10:i16][portRailMv:u16]
+func DecodeHeaterElement(payload []byte) (portIdx byte, c HeaterElementConfig, err error) {
+	if len(payload) < 9 {
+		err = fmt.Errorf("heater element: truncated (%d B)", len(payload))
+		return
+	}
+	portIdx = payload[0]
+	c.ElementMv  = binary.LittleEndian.Uint16(payload[1:3])
+	c.Scaling    = ElementScalingMode(payload[3])
+	c.DrivePct   = payload[4]
+	c.HystCx10   = int16(binary.LittleEndian.Uint16(payload[5:7]))
+	c.PortRailMv = binary.LittleEndian.Uint16(payload[7:9])
+	return
 }
 
 func CmdRcinGetValue(portIdx byte) []byte {
@@ -379,6 +544,9 @@ func init() {
 		ServoStatusResp:      "SERVO_STATUS_RESP",
 		ServoTargetReached:   "SERVO_TARGET_REACHED",
 		ServoMotionUpdate:    "SERVO_MOTION_UPDATE",
+		ServoSetProfile:      "SERVO_SET_PROFILE",
+		ServoGetProfileReq:   "SERVO_GET_PROFILE_REQ",
+		ServoProfileResp:     "SERVO_PROFILE_RESP",
 		RcinGetValueReq:      "RCIN_GET_VALUE_REQ",
 		RcinValueResp:        "RCIN_VALUE_RESP",
 		RcinSetBroadcastHz:   "RCIN_SET_BROADCAST_HZ",
@@ -395,6 +563,10 @@ func init() {
 		MotorGetStatusReq:    "MOTOR_GET_STATUS_REQ",
 		MotorStatusResp:      "MOTOR_STATUS_RESP",
 		MotorStallEvent:      "MOTOR_STALL_EVENT",
+		MotorSetElement:      "MOTOR_SET_ELEMENT",
+		MotorGetElementReq:   "MOTOR_GET_ELEMENT_REQ",
+		MotorElementResp:     "MOTOR_ELEMENT_RESP",
+		MotorSetPct:          "MOTOR_SET_PCT",
 		BiMotorSetSigned:     "BIMOTOR_SET_SIGNED",
 		BiMotorBrake:         "BIMOTOR_BRAKE",
 		BiMotorCoast:         "BIMOTOR_COAST",
@@ -406,6 +578,9 @@ func init() {
 		HeaterSetTarget:      "HEATER_SET_TARGET",
 		HeaterGetStatusReq:   "HEATER_GET_STATUS_REQ",
 		HeaterStatusResp:     "HEATER_STATUS_RESP",
+		HeaterSetElement:     "HEATER_SET_ELEMENT",
+		HeaterGetElementReq:  "HEATER_GET_ELEMENT_REQ",
+		HeaterElementResp:    "HEATER_ELEMENT_RESP",
 		SbusGetFrameReq:      "SBUS_GET_FRAME_REQ",
 		SbusFrameResp:        "SBUS_FRAME_RESP",
 		SbusSetBroadcastHz:   "SBUS_SET_BROADCAST_HZ",

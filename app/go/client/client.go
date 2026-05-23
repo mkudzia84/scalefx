@@ -43,6 +43,7 @@ type Client struct {
 	Expanders     *Expanders
 	Topology      *Topology
 	Input         *Input
+	Roles         *Roles
 	LightFx       *LightFx
 	LandingLights *LandingLights
 	Gear          *Gear
@@ -81,6 +82,7 @@ func OpenWith(portName string, opts Options) (*Client, error) {
 	c.Expanders = &Expanders{c: c}
 	c.Topology = &Topology{c: c}
 	c.Input = &Input{c: c}
+	c.Roles = &Roles{c: c}
 	c.LightFx = &LightFx{c: c}
 	c.LandingLights = &LandingLights{c: c}
 	c.Gear = &Gear{c: c}

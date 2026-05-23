@@ -35,6 +35,7 @@ type Events struct {
 	onGearPhase    []func(gear.PhaseChange)
 	onEngineState  []func(enginefx.StateChange)
 	onGunShot      []func(gunfx.Shot)
+	onGunVerbose   []func(gunfx.VerboseStatus)
 	onInputValue   []func(InputValue)
 	onPacket       []func(*protocol.Response) // catch-all
 }
@@ -72,6 +73,7 @@ func (e *Events) OnLandingLightPhase(fn func(landing.PhaseChange))       { e.add
 func (e *Events) OnGearPhase(fn func(gear.PhaseChange))                  { e.add(&e.onGearPhase, fn) }
 func (e *Events) OnEngineState(fn func(enginefx.StateChange))            { e.add(&e.onEngineState, fn) }
 func (e *Events) OnGunShot(fn func(gunfx.Shot))                          { e.add(&e.onGunShot, fn) }
+func (e *Events) OnGunVerboseStatus(fn func(gunfx.VerboseStatus))        { e.add(&e.onGunVerbose, fn) }
 func (e *Events) OnInputValue(fn func(InputValue))                       { e.add(&e.onInputValue, fn) }
 func (e *Events) OnAny(fn func(*protocol.Response))                      { e.add(&e.onPacket, fn) }
 
@@ -166,6 +168,12 @@ func (e *Events) onAsync(resp *protocol.Response) {
 				fn(ev)
 			}
 		}
+	case gunfx.VerboseStatusPkt:
+		if ev, err := gunfx.DecodeVerboseStatus(resp.Payload); err == nil {
+			for _, fn := range e.snapshotGunVerbose() {
+				fn(ev)
+			}
+		}
 	}
 }
 
@@ -242,6 +250,11 @@ func (e *Events) snapshotGunShot() []func(gunfx.Shot) {
 	defer e.mu.RUnlock()
 	return append([]func(gunfx.Shot){}, e.onGunShot...)
 }
+func (e *Events) snapshotGunVerbose() []func(gunfx.VerboseStatus) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return append([]func(gunfx.VerboseStatus){}, e.onGunVerbose...)
+}
 func (e *Events) snapshotAny() []func(*protocol.Response) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -275,6 +288,8 @@ func (e *Events) add(dst any, fn any) {
 		*d = append(*d, fn.(func(enginefx.StateChange)))
 	case *[]func(gunfx.Shot):
 		*d = append(*d, fn.(func(gunfx.Shot)))
+	case *[]func(gunfx.VerboseStatus):
+		*d = append(*d, fn.(func(gunfx.VerboseStatus)))
 	case *[]func(*protocol.Response):
 		*d = append(*d, fn.(func(*protocol.Response)))
 	}

@@ -340,12 +340,27 @@ var domainCatalog = []Domain{
 		},
 	},
 	{
+		// Phase 1 of GunFX rollout (instructions/22) expanded this domain
+		// from {muzzle, trigger} to the full 10-slot shape — fire trigger
+		// + ROF selector + muzzle flash + recoil + smoke heater + smoke
+		// fan + yaw/pitch servo + yaw/pitch input. Every per-gun output
+		// slot caps at kMaxGuns=4 so two guns can claim independent ports
+		// without exhausting the table. Inputs are Shared (the same RC
+		// stream can drive multiple guns / domains simultaneously).
 		ID:    DomainGun,
 		Label: "Gun (GunFX)",
 		Cap:   core.CapGunFx,
 		Slots: []Slot{
-			{Key: "muzzle", Label: "Muzzle flash", RoleKinds: []byte{roles.KindLedAnimator}, Direction: DirOutput, Min: 0, Max: 2, Optional: true},
-			{Key: "trigger", Label: "Fire trigger", RoleKinds: inputRoleKinds, Direction: DirInput, Min: 0, Max: 1, Optional: true, Shared: true},
+			{Key: "trigger",     Label: "Fire trigger",   RoleKinds: inputRoleKinds,                  Direction: DirInput,  Min: 0, Max: 4, Optional: true, Shared: true},
+			{Key: "rofSelector", Label: "ROF selector",   RoleKinds: inputRoleKinds,                  Direction: DirInput,  Min: 0, Max: 4, Optional: true, Shared: true},
+			{Key: "muzzleFlash", Label: "Muzzle flash",   RoleKinds: []byte{roles.KindLedAnimator},   Direction: DirOutput, Min: 0, Max: 4, Optional: true},
+			{Key: "recoilServo", Label: "Recoil servo",   RoleKinds: []byte{roles.KindServoActuator}, Direction: DirOutput, Min: 0, Max: 4, Optional: true},
+			{Key: "smokeHeater", Label: "Smoke heater",   RoleKinds: []byte{roles.KindHeater, roles.KindDcMotor}, Direction: DirOutput, Min: 0, Max: 4, Optional: true},
+			{Key: "smokeFan",    Label: "Smoke fan",      RoleKinds: []byte{roles.KindDcMotor},       Direction: DirOutput, Min: 0, Max: 4, Optional: true},
+			{Key: "yawServo",    Label: "Yaw servo",      RoleKinds: []byte{roles.KindServoActuator}, Direction: DirOutput, Min: 0, Max: 4, Optional: true},
+			{Key: "pitchServo",  Label: "Pitch servo",    RoleKinds: []byte{roles.KindServoActuator}, Direction: DirOutput, Min: 0, Max: 4, Optional: true},
+			{Key: "yawInput",    Label: "Yaw channel",    RoleKinds: inputRoleKinds,                  Direction: DirInput,  Min: 0, Max: 4, Optional: true, Shared: true},
+			{Key: "pitchInput",  Label: "Pitch channel",  RoleKinds: inputRoleKinds,                  Direction: DirInput,  Min: 0, Max: 4, Optional: true, Shared: true},
 		},
 	},
 }
