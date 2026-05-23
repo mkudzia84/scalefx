@@ -103,15 +103,34 @@ type App struct {
 	// Guarded by dmMu.
 	portNames map[devicemodel.PortRef]string
 
+	// Servo motion profile overlay per port — Rule 42 storage, Rule 44
+	// editing surface.  Editing happens in feature panels (GunFx Turret
+	// section); the profile is persisted into /hubfx.yaml's ports[]
+	// block on `SaveHubConfig`, and pushed live via `ServoSetProfile`
+	// debounced ~350 ms.  Guarded by dmMu.
+	portProfiles map[devicemodel.PortRef]ServoMotionProfileDTO
+
+	// `/hubfx.yaml` top-level blocks that Studio doesn't expose in any
+	// UI yet but MUST round-trip through Save (else firmware defaults
+	// kick in and silently disable effects on every Apply — that bit
+	// us with `features.enginefx`/`features.gunfx` 2026-05-23).
+	// Populated on LoadHubConfig, emitted on SaveHubConfig.  Nil when
+	// the file had no such block; Save uses `defaultFeatures()` /
+	// equivalent so a fresh first save doesn't kill anything.
+	hubAudio     *yamlAudio
+	hubFeatures  *yamlFeatures
+	hubTelemetry *yamlTelemetry
+
 	// Heartbeat goroutine
 	stopHeartbeat chan<- struct{}
 }
 
 func NewApp() *App {
 	return &App{
-		diag:      NewDiag(),
-		inputs:    map[devicemodel.PortRef]*devicemodel.InputPortConfig{},
-		portNames: map[devicemodel.PortRef]string{},
+		diag:         NewDiag(),
+		inputs:       map[devicemodel.PortRef]*devicemodel.InputPortConfig{},
+		portNames:    map[devicemodel.PortRef]string{},
+		portProfiles: map[devicemodel.PortRef]ServoMotionProfileDTO{},
 	}
 }
 
@@ -305,6 +324,26 @@ func (a *App) handleDiagSlash(cmd string) bool {
 			}
 		}
 		a.diag.SetDebug(on)
+	case len(parts) >= 2 && parts[1] == "wire":
+		// Toggle per-packet wire trace.  WireLogger is installed at
+		// Connect; this just flips Connection.SetVerbose so the
+		// callback fires (or stops firing) without reconnecting.
+		c := a.snapshotClient()
+		if c == nil {
+			a.diag.Warn("DIAG", "/diag wire — not connected")
+			return true
+		}
+		on := !c.Conn().Verbose()
+		if len(parts) >= 3 {
+			switch strings.ToLower(parts[2]) {
+			case "on", "1", "true", "yes":
+				on = true
+			case "off", "0", "false", "no":
+				on = false
+			}
+		}
+		c.Conn().SetVerbose(on)
+		a.diag.Info("DIAG", "wire trace %s (per-packet TX/RX via WIRE tag in console)", onOff(on))
 	case len(parts) >= 2 && parts[1] == "dump":
 		evs := a.diag.Snapshot()
 		blob, _ := json.MarshalIndent(evs, "", "  ")
@@ -382,7 +421,23 @@ func (a *App) openLocked(port string) error {
 	a.installInputStream()
 	a.installEngineStream()
 	a.installGunFxStream()
+	a.installWireLogger()
 	return nil
+}
+
+// installWireLogger pipes the protocol layer's per-packet TX/RX trace
+// into the studio's diag system at DEBUG level (so it appears in the
+// console when /diag debug on is enabled, alongside the existing
+// command-level logs).  Toggle with /diag wire on.
+func (a *App) installWireLogger() {
+	if a.c == nil {
+		return
+	}
+	a.c.Conn().SetWireLogger(func(dir, name string, tag byte, payloadLen int) {
+		a.diag.With(LvlDebug, "WIRE",
+			fmt.Sprintf("%s %s tag=%d [%d bytes]", dir, name, tag, payloadLen),
+			nil)
+	})
 }
 
 // closeLocked tears down the live client and resets cached state.  Caller

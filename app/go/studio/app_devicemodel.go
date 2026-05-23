@@ -31,7 +31,6 @@ type DeviceModelSnapshot struct {
 	Domains []devicemodel.Domain `json:"domains"`
 	Issues  []devicemodel.Issue  `json:"issues"`
 	Roles   []RoleKindInfo       `json:"roleCatalog"`
-	Presets []devicemodel.Preset `json:"presets"`
 
 	// Input side (left column of the Input & Ports tab).
 	Inputs           []devicemodel.InputPortConfig    `json:"inputs"`
@@ -177,7 +176,6 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 		Issues:           []devicemodel.Issue{},
 		Domains:          devicemodel.AvailableDomains(a.hubCaps()),
 		Roles:            roleCatalog(),
-		Presets:          devicemodel.Presets(),
 		Inputs:           []devicemodel.InputPortConfig{},
 		ChannelFunctions: devicemodel.ChannelFunctions(),
 		InputProtocols:   devicemodel.InputProtocols(),
@@ -192,6 +190,17 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 			copy(snap.Ports, a.dm.Ports)
 			for i := range snap.Ports {
 				snap.Ports[i].Name = a.portNames[snap.Ports[i].Ref]
+				// Rule 42 storage + Rule 44 surface: overlay the
+				// motion profile from the studio's portProfiles map
+				// (loaded from /hubfx.yaml on connect, edited by the
+				// GunFx panel).  Only set for servo ports that have
+				// an authored profile.
+				if snap.Ports[i].KindName == "servo" {
+					if prof, ok := a.portProfiles[snap.Ports[i].Ref]; ok {
+						p := devicemodel.ServoMotionProfile(prof)
+						snap.Ports[i].Profile = &p
+					}
+				}
 			}
 		}
 		if a.dm.Claims != nil {
@@ -219,9 +228,14 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 // snapshot (with fresh validation issues) or an error if the claim is
 // illegal.
 func (a *App) ClaimPort(domain, slot, guid string, kind, index byte) (DeviceModelSnapshot, error) {
+	defer a.diag.Around("ClaimPort",
+		map[string]any{"domain": domain, "slot": slot, "guid": guid, "kind": kind, "idx": index})()
+	a.diag.Info("DM", "ClaimPort %s/%s ← %s/%s%d",
+		domain, slot, guidOrHub(guid), ports.KindName(kind), index)
 	a.dmMu.Lock()
 	if a.dm == nil {
 		a.dmMu.Unlock()
+		a.diag.Error("DM", "ClaimPort: device model not loaded")
 		return DeviceModelSnapshot{}, fmt.Errorf("device model not loaded")
 	}
 	err := a.dm.Claim(devicemodel.Claim{
@@ -231,15 +245,19 @@ func (a *App) ClaimPort(domain, slot, guid string, kind, index byte) (DeviceMode
 	})
 	a.dmMu.Unlock()
 	if err != nil {
+		a.diag.Error("DM", "ClaimPort failed: %v", err)
 		return a.deviceModelSnapshot(), err
 	}
-	a.diag.Info("DM", "claim %s/%s ← %s/%s%d", domain, slot, guidOrHub(guid), ports.KindName(kind), index)
 	a.emitDeviceModelChanged()
 	return a.deviceModelSnapshot(), nil
 }
 
 // UnclaimPort removes a claim.
 func (a *App) UnclaimPort(domain, slot, guid string, kind, index byte) DeviceModelSnapshot {
+	defer a.diag.Around("UnclaimPort",
+		map[string]any{"domain": domain, "slot": slot, "guid": guid, "kind": kind, "idx": index})()
+	a.diag.Info("DM", "UnclaimPort %s/%s ← %s/%s%d",
+		domain, slot, guidOrHub(guid), ports.KindName(kind), index)
 	a.dmMu.Lock()
 	if a.dm != nil {
 		a.dm.Unclaim(devicemodel.Claim{
@@ -255,6 +273,10 @@ func (a *App) UnclaimPort(domain, slot, guid string, kind, index byte) DeviceMod
 
 // SetPortName assigns an operator-friendly name to a port (overlay state).
 func (a *App) SetPortName(guid string, kind, index byte, name string) DeviceModelSnapshot {
+	defer a.diag.Around("SetPortName",
+		map[string]any{"guid": guid, "kind": kind, "idx": index, "name": name})()
+	a.diag.Info("DM", "SetPortName %s/%s%d = %q",
+		guidOrHub(guid), ports.KindName(kind), index, name)
 	ref := devicemodel.PortRef{GUID: guid, Kind: kind, Index: index}
 	a.dmMu.Lock()
 	if name == "" {
@@ -263,6 +285,47 @@ func (a *App) SetPortName(guid string, kind, index byte, name string) DeviceMode
 		a.portNames[ref] = name
 	}
 	a.dmMu.Unlock()
+	a.emitDeviceModelChanged()
+	return a.deviceModelSnapshot()
+}
+
+// SetPortProfile assigns a servo motion profile to a port (Rule 42
+// storage + Rule 44 editing surface).  Feature panels call this from
+// their inline `ServoProfileEditor.on:change` to:
+//  1. update the studio's portProfiles overlay (so the snapshot reflects
+//     the new profile immediately),
+//  2. push live to the role via `ServoSetProfile` (debounced on the
+//     frontend; this method itself is best-effort sync),
+//  3. mark /hubfx.yaml dirty so `SaveHubConfig` persists the value.
+// Empty profile (all zero) DELETES the overlay entry (reverts to
+// role defaults on next attach).
+func (a *App) SetPortProfile(guid string, kind, index byte, profile ServoMotionProfileDTO) DeviceModelSnapshot {
+	defer a.diag.Around("SetPortProfile",
+		map[string]any{"guid": guid, "kind": kind, "idx": index})()
+	a.diag.Info("DM", "SetPortProfile %s/%s%d profile=%+v",
+		guidOrHub(guid), ports.KindName(kind), index, profile)
+	ref := devicemodel.PortRef{GUID: guid, Kind: kind, Index: index}
+	a.dmMu.Lock()
+	if profile == (ServoMotionProfileDTO{}) {
+		delete(a.portProfiles, ref)
+	} else {
+		a.portProfiles[ref] = profile
+	}
+	a.dmMu.Unlock()
+	// Live-push to the role (hub-local only; cross-board live-tune
+	// is deferred — Topology already routes attach payloads, the
+	// effect's apply path will re-stamp the profile on reload).
+	if c := a.snapshotClient(); c != nil && guid == "" {
+		_ = c.Roles.ServoSetProfile(index, client.ServoProfile{
+			MinUs:             profile.MinUs,
+			MaxUs:             profile.MaxUs,
+			MaxSpeedUsPerSec:  profile.MaxSpeedUsPerSec,
+			Reversed:          profile.Reversed,
+			CenterUs:          profile.CenterUs,
+			MaxAccelUsPerSec2: profile.MaxAccelUsPerSec2,
+			MaxJerkUsPerSec3:  profile.MaxJerkUsPerSec3,
+		})
+	}
 	a.emitDeviceModelChanged()
 	return a.deviceModelSnapshot()
 }
@@ -288,11 +351,17 @@ func (a *App) CandidatePorts(domain, slot string) []devicemodel.Port {
 // left empty (role defaults); per-role config comes from the functional
 // tabs / config files.
 func (a *App) AttachRole(guid string, kind, index, roleKind byte) (DeviceModelSnapshot, error) {
+	defer a.diag.Around("AttachRole",
+		map[string]any{"guid": guid, "kind": kind, "idx": index, "role": roles.KindName(roleKind)})()
+	a.diag.Info("DM", "AttachRole %s → %s/%s%d",
+		roles.KindName(roleKind), guidOrHub(guid), ports.KindName(kind), index)
 	c := a.snapshotClient()
 	if c == nil {
+		a.diag.Error("DM", "AttachRole: not connected")
 		return DeviceModelSnapshot{}, fmt.Errorf("not connected")
 	}
 	if err := c.Topology.AttachRole(guid, kind, index, roleKind, nil); err != nil {
+		a.diag.Error("DM", "AttachRole %s failed: %v", roles.KindName(roleKind), err)
 		return a.deviceModelSnapshot(), fmt.Errorf("attach %s: %w", roles.KindName(roleKind), err)
 	}
 	a.dmMu.Lock()
@@ -300,7 +369,6 @@ func (a *App) AttachRole(guid string, kind, index, roleKind byte) (DeviceModelSn
 		a.dm.SetRole(devicemodel.PortRef{GUID: guid, Kind: kind, Index: index}, roleKind)
 	}
 	a.dmMu.Unlock()
-	a.diag.Info("DM", "attach %s → %s/%s%d", roles.KindName(roleKind), guidOrHub(guid), ports.KindName(kind), index)
 	a.emitDeviceModelChanged()
 	return a.deviceModelSnapshot(), nil
 }
@@ -308,11 +376,17 @@ func (a *App) AttachRole(guid string, kind, index, roleKind byte) (DeviceModelSn
 // DetachRole clears a port's role on the wire and in the model, and drops
 // any claims that referenced it.
 func (a *App) DetachRole(guid string, kind, index byte) (DeviceModelSnapshot, error) {
+	defer a.diag.Around("DetachRole",
+		map[string]any{"guid": guid, "kind": kind, "idx": index})()
+	a.diag.Info("DM", "DetachRole %s/%s%d",
+		guidOrHub(guid), ports.KindName(kind), index)
 	c := a.snapshotClient()
 	if c == nil {
+		a.diag.Error("DM", "DetachRole: not connected")
 		return DeviceModelSnapshot{}, fmt.Errorf("not connected")
 	}
 	if err := c.Topology.DetachRole(guid, kind, index); err != nil {
+		a.diag.Error("DM", "DetachRole failed: %v", err)
 		return a.deviceModelSnapshot(), fmt.Errorf("detach: %w", err)
 	}
 	ref := devicemodel.PortRef{GUID: guid, Kind: kind, Index: index}
@@ -326,45 +400,6 @@ func (a *App) DetachRole(guid string, kind, index byte) (DeviceModelSnapshot, er
 	a.dmMu.Unlock()
 	a.emitDeviceModelChanged()
 	return a.deviceModelSnapshot(), nil
-}
-
-// ─── Presets ──────────────────────────────────────────────────────────
-
-// ApplyPreset resolves a named preset against the live topology, pushes
-// its role attachments to the wire, registers its claims, and returns the
-// resulting snapshot plus any per-item warnings (boards/ports the preset
-// referenced that aren't present are skipped, not fatal).
-func (a *App) ApplyPreset(name string) (DeviceModelSnapshot, []string, error) {
-	preset, ok := devicemodel.PresetByName(name)
-	if !ok {
-		return DeviceModelSnapshot{}, nil, fmt.Errorf("unknown preset %q", name)
-	}
-	c := a.snapshotClient()
-	if c == nil {
-		return DeviceModelSnapshot{}, nil, fmt.Errorf("not connected")
-	}
-
-	a.dmMu.Lock()
-	if a.dm == nil {
-		a.dmMu.Unlock()
-		return DeviceModelSnapshot{}, nil, fmt.Errorf("device model not loaded")
-	}
-	assigns, warnings, err := a.dm.ApplyPreset(preset)
-	a.dmMu.Unlock()
-	if err != nil {
-		return a.deviceModelSnapshot(), warnings, err
-	}
-
-	// Push the resolved role attachments to the wire (best-effort; a
-	// failed attach becomes a warning so partial application is visible).
-	for _, as := range assigns {
-		if perr := c.Topology.AttachRole(as.Port.GUID, as.Port.Kind, as.Port.Index, as.RoleKind, nil); perr != nil {
-			warnings = append(warnings, fmt.Sprintf("attach %s on %s: %v", as.RoleName, as.Port, perr))
-		}
-	}
-	a.diag.Info("DM", "applied preset %q (%d roles, %d warnings)", name, len(assigns), len(warnings))
-	a.emitDeviceModelChanged()
-	return a.deviceModelSnapshot(), warnings, nil
 }
 
 // ─── Events ───────────────────────────────────────────────────────────

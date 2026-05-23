@@ -100,11 +100,17 @@ func (a *App) inputCfg(guid string, kind, index byte) *devicemodel.InputPortConf
 // rc-pwm-input role and starts the value stream; SBUS / Jeti are not yet
 // implemented and are rejected.
 func (a *App) SetInputProtocol(guid string, kind, index byte, protocol string) (DeviceModelSnapshot, error) {
+	defer a.diag.Around("SetInputProtocol",
+		map[string]any{"guid": guid, "kind": kind, "idx": index, "protocol": protocol})()
+	a.diag.Info("INPUT", "SetInputProtocol guid=%s kind=%d idx=%d protocol=%s",
+		guid, kind, index, protocol)
 	def, ok := devicemodel.ProtocolByID(devicemodel.InputProtocol(protocol))
 	if !ok {
+		a.diag.Error("INPUT", "SetInputProtocol: unknown protocol %q", protocol)
 		return a.deviceModelSnapshot(), fmt.Errorf("unknown protocol %q", protocol)
 	}
 	if !def.Implemented {
+		a.diag.Warn("INPUT", "SetInputProtocol: %s not implemented yet", def.Label)
 		return a.deviceModelSnapshot(), fmt.Errorf("%s is not implemented yet", def.Label)
 	}
 	a.dmMu.Lock()
@@ -113,6 +119,7 @@ func (a *App) SetInputProtocol(guid string, kind, index byte, protocol string) (
 
 	// Attach the realizing role + start broadcasting.
 	if _, err := a.AttachRole(guid, kind, index, def.RoleKind); err != nil {
+		a.diag.Error("INPUT", "SetInputProtocol: AttachRole failed: %v", err)
 		return a.deviceModelSnapshot(), err
 	}
 	a.startInputBroadcasts()
@@ -122,6 +129,10 @@ func (a *App) SetInputProtocol(guid string, kind, index byte, protocol string) (
 
 // SetInputChannelCount resizes an input port's channel map.
 func (a *App) SetInputChannelCount(guid string, kind, index byte, count int) DeviceModelSnapshot {
+	defer a.diag.Around("SetInputChannelCount",
+		map[string]any{"guid": guid, "kind": kind, "idx": index, "count": count})()
+	a.diag.Info("INPUT", "SetInputChannelCount guid=%s kind=%d idx=%d count=%d",
+		guid, kind, index, count)
 	a.dmMu.Lock()
 	a.inputCfg(guid, kind, index).SetChannelCount(count)
 	a.dmMu.Unlock()
@@ -131,6 +142,10 @@ func (a *App) SetInputChannelCount(guid string, kind, index byte, count int) Dev
 
 // SetChannelFunction assigns a logical function to a channel.
 func (a *App) SetChannelFunction(guid string, kind, index byte, channel int, fn string) DeviceModelSnapshot {
+	defer a.diag.Around("SetChannelFunction",
+		map[string]any{"guid": guid, "kind": kind, "idx": index, "channel": channel, "fn": fn})()
+	a.diag.Info("INPUT", "SetChannelFunction guid=%s kind=%d idx=%d ch=%d fn=%s",
+		guid, kind, index, channel, fn)
 	a.dmMu.Lock()
 	a.inputCfg(guid, kind, index).SetFunction(channel, fn)
 	a.dmMu.Unlock()

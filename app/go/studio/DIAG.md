@@ -32,6 +32,8 @@ Tags (informally — pick whatever's useful when adding new ones):
 | `CONN`    | serial / TCP connection lifecycle |
 | `CMD`     | console commands typed by the user |
 | `RPC`     | enter/exit of a Wails-bound method |
+| `WIRE`    | per-packet TX/RX trace (DEBUG; gated on `/diag wire on`) |
+| `ENGINE`/`GUNFX`/`INPUT`/`DM` | command-level entries from each Wails surface (INFO; visible by default) |
 | `RX`      | unsolicited / async packet observed |
 | `CFG`     | config download / upload / reload |
 | `FW`      | firmware build + flash |
@@ -56,11 +58,18 @@ In the Studio Console (or the CLI when connected through the engine):
 
 ```
 /diag                # short summary (debug state, ring size)
-/diag debug on       # turn on DEBUG-level logging
+/diag debug on       # turn on DEBUG-level logging (RPC enter/exit, WIRE, …)
 /diag debug off      # back to INFO
+/diag wire on        # turn on per-packet wire trace (TX / RX with type + tag + bytes)
+/diag wire off       # turn it off — the connection's verbose flag is cleared
 /diag dump           # dump the recent ring buffer (200 events) as JSON
 /diag clear          # clear the ring after a repro
 ```
+
+The wire trace is intentionally separate from `debug`: a single
+operational command (e.g. `GunFire`) typically generates one or two
+WIRE lines (TX command + RX ACK), but a status poll loop can flood the
+console — toggle this only when reproducing a wire-level bug.
 
 The `dump` form renders the ring as a `<pre>` block so it's easy to
 select and copy into a chat.

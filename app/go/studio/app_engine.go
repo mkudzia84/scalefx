@@ -141,21 +141,37 @@ func (a *App) SetEngineConfig(cfg EngineConfig) error {
 // ─── Runtime control ──────────────────────────────────────────────────
 
 func (a *App) EngineStart() error {
+	defer a.diag.Around("EngineStart", nil)()
+	a.diag.Info("ENGINE", "EngineStart (manual run)")
 	c := a.snapshotClient()
 	if c == nil {
+		a.diag.Error("ENGINE", "EngineStart: not connected")
 		return fmt.Errorf("not connected")
 	}
-	return c.Engine.Start()
+	if err := c.Engine.Start(); err != nil {
+		a.diag.Error("ENGINE", "EngineStart failed: %v", err)
+		return err
+	}
+	return nil
 }
 
 func (a *App) EngineStop() error {
+	defer a.diag.Around("EngineStop", nil)()
+	a.diag.Info("ENGINE", "EngineStop")
 	c := a.snapshotClient()
 	if c == nil {
+		a.diag.Error("ENGINE", "EngineStop: not connected")
 		return fmt.Errorf("not connected")
 	}
-	return c.Engine.Stop()
+	if err := c.Engine.Stop(); err != nil {
+		a.diag.Error("ENGINE", "EngineStop failed: %v", err)
+		return err
+	}
+	return nil
 }
 
+// EngineStatus is polled by the UI on a fast cadence — keep it at
+// DEBUG level so the console isn't drowned in heartbeat lines.
 func (a *App) EngineStatus() (EngineStatusDTO, error) {
 	c := a.snapshotClient()
 	if c == nil {
@@ -163,6 +179,7 @@ func (a *App) EngineStatus() (EngineStatusDTO, error) {
 	}
 	s, err := c.Engine.Status()
 	if err != nil {
+		a.diag.Debug("ENGINE", "EngineStatus failed: %v", err)
 		return EngineStatusDTO{}, err
 	}
 	return EngineStatusDTO{

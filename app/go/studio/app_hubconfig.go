@@ -40,10 +40,24 @@ type yamlInputBinding struct {
 	Description string       `yaml:"description,omitempty"`
 }
 
+// yamlPortBinding mirrors the FLAT shape the firmware parser at
+// `hubfx_config.h::populate` expects: `{kind, idx, role, label}` at
+// each ports[i] entry — NOT the nested `port: { … }` form that the
+// `inputs[]` block uses (Studio used to emit nested here too, which
+// silently dropped every port's kind on the firmware side — the parser
+// then logged "ports[N]: missing or unknown `kind`" for every entry).
+// `Label` matches the firmware key; `Name` is kept on the Go struct
+// only as an alias for inbound parsing of older /hubfx.yaml files
+// written by the previous Studio.
 type yamlPortBinding struct {
-	Port yamlPortRef `yaml:"port"`
-	Role string      `yaml:"role,omitempty"`
-	Name string      `yaml:"name,omitempty"`
+	Kind    string                       `yaml:"kind"`
+	Idx     byte                         `yaml:"idx"`
+	Role    string                       `yaml:"role,omitempty"`
+	Label   string                       `yaml:"label,omitempty"`
+	// Rule 42 storage + Rule 44 editing surface: servo motion profile
+	// stamped per port.  Nil when omitted — the role attaches with its
+	// initFromPort defaults.  Only set for `kind: servo`.
+	Profile *devicemodel.ServoMotionProfile `yaml:"profile,omitempty"`
 }
 
 type yamlExpanderEntry struct {
@@ -52,11 +66,58 @@ type yamlExpanderEntry struct {
 	Ports []yamlPortBinding `yaml:"ports,omitempty"`
 }
 
+// yamlAudio / yamlFeatures / yamlTelemetry mirror the same-named blocks
+// in `hubfx_config.h::populate()` — the firmware reads them at top
+// level.  Studio used to drop them on save (the struct didn't have
+// fields for them) which RESET them to firmware defaults every Apply
+// — bit us hard because `features.enginefx` and `features.gunfx`
+// default to FALSE, so an Apply silently killed both effects.
+// Round-trip them now: read on Load, write back on Save.
+
+type yamlAudio struct {
+	CodecSupply string `yaml:"codec_supply,omitempty"`
+}
+
+type yamlFeatures struct {
+	Alerts        bool `yaml:"alerts"`
+	Enginefx      bool `yaml:"enginefx"`
+	LandingLights bool `yaml:"landing_lights"`
+	Lightfx       bool `yaml:"lightfx"`
+	Gears         bool `yaml:"gears"`
+	Gunfx         bool `yaml:"gunfx"`
+}
+
+type yamlTelemetry struct {
+	Inputs     bool   `yaml:"inputs"`
+	Outputs    bool   `yaml:"outputs"`
+	IntervalMs uint16 `yaml:"interval_ms,omitempty"`
+}
+
 type hubYamlConfig struct {
 	SchemaVersion int                 `yaml:"schema_version,omitempty"`
+	Audio         *yamlAudio          `yaml:"audio,omitempty"`
+	Features      *yamlFeatures       `yaml:"features,omitempty"`
+	Telemetry     *yamlTelemetry      `yaml:"telemetry,omitempty"`
 	Inputs        []yamlInputBinding  `yaml:"inputs,omitempty"`
 	Ports         []yamlPortBinding   `yaml:"ports,omitempty"`
 	Expanders     []yamlExpanderEntry `yaml:"expanders,omitempty"`
+}
+
+// defaultFeatures is what Studio emits when /hubfx.yaml has no
+// `features:` block on load.  All-true so a fresh first save doesn't
+// kill the effects the operator just configured.  The firmware-side
+// FeaturesBlock defaults (enginefx=false, gunfx=false) only apply
+// when the YAML key is genuinely absent — Studio now ALWAYS emits a
+// `features:` block, so the firmware defaults stop being a footgun.
+func defaultFeatures() *yamlFeatures {
+	return &yamlFeatures{
+		Alerts:        true,
+		Enginefx:      true,
+		LandingLights: true,
+		Lightfx:       true,
+		Gears:         true,
+		Gunfx:         true,
+	}
 }
 
 // LoadHubConfig downloads /hubfx.yaml and applies the inputs[]
@@ -84,6 +145,13 @@ func (a *App) LoadHubConfig() error {
 	a.mu.Unlock()
 
 	a.dmMu.Lock()
+	// Capture the top-level non-overlay blocks (audio / features /
+	// telemetry) so Save can round-trip them.  Nil ⇒ the YAML had no
+	// such block; we leave the field nil and Save substitutes the
+	// canonical default (all-true for features).
+	a.hubAudio     = cfg.Audio
+	a.hubFeatures  = cfg.Features
+	a.hubTelemetry = cfg.Telemetry
 	// ── inputs[] → channel.function ────────────────────────────────
 	for _, ib := range cfg.Inputs {
 		if ib.Name == "" || ib.ID <= 0 {
@@ -116,32 +184,39 @@ func (a *App) LoadHubConfig() error {
 		pCfg.SetFunction(ch, ib.Name)
 	}
 
-	// ── ports[] → operator-friendly name overlay (hub-local). ──────
+	// ── ports[] → operator-friendly label overlay + servo motion
+	//    profile overlay (Rule 42 storage / Rule 44 editing surface).
 	for _, pb := range cfg.Ports {
-		if pb.Name == "" {
-			continue
-		}
-		kind, ok := kindFromYamlKindName(pb.Port.Kind)
+		kind, ok := kindFromYamlKindName(pb.Kind)
 		if !ok {
 			continue
 		}
-		a.portNames[devicemodel.PortRef{GUID: hubGUID, Kind: kind, Index: pb.Port.Idx}] = pb.Name
+		ref := devicemodel.PortRef{GUID: hubGUID, Kind: kind, Index: pb.Idx}
+		if pb.Label != "" {
+			a.portNames[ref] = pb.Label
+		}
+		if pb.Profile != nil && pb.Kind == "servo" {
+			a.portProfiles[ref] = ServoMotionProfileDTO(*pb.Profile)
+		}
 	}
 
-	// ── expanders[].ports[] → per-expander port names. ─────────────
+	// ── expanders[].ports[] → per-expander port labels + profiles. ─
 	for _, exp := range cfg.Expanders {
 		if exp.GUID == "" {
 			continue
 		}
 		for _, pb := range exp.Ports {
-			if pb.Name == "" {
-				continue
-			}
-			kind, ok := kindFromYamlKindName(pb.Port.Kind)
+			kind, ok := kindFromYamlKindName(pb.Kind)
 			if !ok {
 				continue
 			}
-			a.portNames[devicemodel.PortRef{GUID: exp.GUID, Kind: kind, Index: pb.Port.Idx}] = pb.Name
+			ref := devicemodel.PortRef{GUID: exp.GUID, Kind: kind, Index: pb.Idx}
+			if pb.Label != "" {
+				a.portNames[ref] = pb.Label
+			}
+			if pb.Profile != nil && pb.Kind == "servo" {
+				a.portProfiles[ref] = ServoMotionProfileDTO(*pb.Profile)
+			}
 		}
 	}
 	a.dmMu.Unlock()
@@ -169,6 +244,25 @@ func (a *App) SaveHubConfig() error {
 	a.mu.Unlock()
 
 	cfg := hubYamlConfig{SchemaVersion: 1}
+	// Round-trip the top-level blocks we don't have a UI for yet.
+	// `features` is critical — if we omit it, the firmware applies
+	// FeaturesBlock defaults (enginefx=false, gunfx=false) and silently
+	// disables those effects on every Apply.  Use the in-memory overlay
+	// from LoadHubConfig if present, else the canonical all-true
+	// defaults so a fresh first save doesn't kill anything.
+	a.dmMu.Lock()
+	if a.hubAudio != nil {
+		cfg.Audio = a.hubAudio
+	}
+	if a.hubFeatures != nil {
+		cfg.Features = a.hubFeatures
+	} else {
+		cfg.Features = defaultFeatures()
+	}
+	if a.hubTelemetry != nil {
+		cfg.Telemetry = a.hubTelemetry
+	}
+	a.dmMu.Unlock()
 
 	a.dmMu.Lock()
 	// inputs[] — emit every channel whose function is set (and not the
@@ -224,13 +318,19 @@ func (a *App) SaveHubConfig() error {
 			if p.RoleKind != roles.KindNone {
 				role = roles.KindName(p.RoleKind)
 			}
-			if name == "" && role == "" {
+			prof, hasProf := a.portProfiles[p.Ref]
+			if name == "" && role == "" && !hasProf {
 				continue
 			}
 			pb := yamlPortBinding{
-				Port: yamlPortRef{Kind: yamlKindName(p.Ref.Kind), Idx: p.Ref.Index},
-				Role: role,
-				Name: name,
+				Kind:  yamlKindName(p.Ref.Kind),
+				Idx:   p.Ref.Index,
+				Role:  role,
+				Label: name,
+			}
+			if hasProf && p.KindName == "servo" {
+				dp := devicemodel.ServoMotionProfile(prof)
+				pb.Profile = &dp
 			}
 			if p.Ref.GUID == hubGUID || p.Ref.GUID == "" {
 				cfg.Ports = append(cfg.Ports, pb)
