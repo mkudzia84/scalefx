@@ -6,6 +6,7 @@
     import {
         deviceModel, liveChannels, setInputProtocol, setInputChannelCount,
         setChannelFunction, liveChannelKey, usToPct, boardDisplayNames,
+        formatPortRail,
         type InputPortConfig, type ChannelFunctionDef, type PortRef,
     } from '../devicemodel'
 
@@ -70,6 +71,12 @@
             x.ref.guid === p.guid && x.ref.kind === p.kind && x.ref.index === p.index)
         return m?.hardwareName || `IN${p.index + 1}`
     }
+    // Rail voltage for the port (from the model). "" when unknown.
+    function rail(p: PortRef): string {
+        const m = $deviceModel.ports.find(x =>
+            x.ref.guid === p.guid && x.ref.kind === p.kind && x.ref.index === p.index)
+        return formatPortRail(m?.voltageMv ?? 0)
+    }
 </script>
 
 <div class="tab-content">
@@ -85,6 +92,9 @@
         <div class="card input-card">
             <div class="board-head">
                 <span class="board-name">{names[cfg.port.guid] ?? hw(cfg.port)} · {hw(cfg.port)}</span>
+                {#if rail(cfg.port)}
+                    <span class="rail-chip" title="Rail voltage declared by the board's port descriptor">{rail(cfg.port)}</span>
+                {/if}
             </div>
 
             <div class="form-row">
@@ -146,8 +156,9 @@
     .banner { padding: 7px 10px; border-radius: 4px; margin-bottom: 10px; font-size: 12px; }
     .banner.err { background: rgba(255,80,80,0.12); border: 1px solid var(--error); color: var(--error); }
     .input-card { margin-bottom: 12px; }
-    .board-head { margin-bottom: 10px; }
+    .board-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .board-name { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+    .rail-chip { font-family: var(--font-mono); font-size: 10px; color: var(--text); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; }
     .channels { display: flex; flex-direction: column; gap: 10px; }
     .ch-block { display: flex; flex-direction: column; gap: 4px; }
     .ch-top { display: flex; align-items: center; gap: 8px; }

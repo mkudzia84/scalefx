@@ -7,7 +7,7 @@
     import {
         deviceModel, refresh, attachRole, detachRole, applyPreset, applyDefaults,
         applyHubConfig, setPortName, portKindName, boardDisplayNames, claimsForPort,
-        validationCounts, RoleKind, type Port, type PortRef,
+        validationCounts, formatPortRail, RoleKind, type Port, type PortRef,
     } from '../devicemodel'
     import { showPcbOverlay } from '../stores'
 
@@ -120,7 +120,10 @@
                     <div class="port-row">
                         <span class="port-id" title="{portKindName[p.ref.kind]} {p.ref.index}">{p.hardwareName}</span>
                         <span class="dir-badge {p.direction}">{p.direction}</span>
-                        <span class="caps">{p.caps.join(' ') || ''}</span>
+                        <span class="caps">{p.caps.filter(c => !c.startsWith('VOLTAGE_')).join(' ') || ''}</span>
+                        {#if p.voltageMv}
+                            <span class="rail-chip" title="Rail voltage declared by the board's port descriptor">{formatPortRail(p.voltageMv)}</span>
+                        {/if}
 
                         {#if isServo(p)}
                             <span class="role-fixed" title="Servo ports can only host a servo actuator">Servo</span>
@@ -171,6 +174,7 @@
     .dir-badge.input { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
     .dir-badge.output { color: var(--text-dim); }
     .caps { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); width: 56px; flex-shrink: 0; }
+    .rail-chip { font-family: var(--font-mono); font-size: 10px; color: var(--text); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; flex-shrink: 0; }
     .role-select { flex: 0 0 150px; }
     .role-fixed { flex: 0 0 150px; font-size: 12px; color: var(--text-dim); padding: 4px 8px; border: 1px dashed var(--border); border-radius: 3px; text-align: center; }
     .name-input { flex: 1; min-width: 80px; font-family: var(--font-ui); }

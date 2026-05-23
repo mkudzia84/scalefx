@@ -49,12 +49,24 @@ export interface Port {
     kindName: string
     direction: 'output' | 'input'
     flags: number
+    /** Rail voltage in millivolts (Phase 0 of GunFX rollout —
+     *  instructions/22). 0 = unknown / unconstrained. Effects use this
+     *  to compute voltage-scaled PWM duty for sub-rail elements. */
+    voltageMv: number
     caps: string[]
     roleKind: number
     roleName: string
     hardwareName: string
     allowedRoles: RoleOption[]
     name: string
+}
+
+/** formatPortRail renders a port's voltageMv as a human label for
+ *  picker option text — "8 V", "3.3 V", or "" when unknown (0). */
+export function formatPortRail(voltageMv: number): string {
+    if (!voltageMv) return ''
+    if (voltageMv % 1000 === 0) return `${voltageMv / 1000} V`
+    return `${(voltageMv / 1000).toFixed(1)} V`
 }
 
 export interface Claim { domain: string; slot: string; port: PortRef }

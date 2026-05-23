@@ -256,6 +256,7 @@ export namespace devicemodel {
 	    kindName: string;
 	    direction: string;
 	    flags: number;
+	    voltageMv: number;
 	    caps: string[];
 	    roleKind: number;
 	    roleName: string;
@@ -274,6 +275,7 @@ export namespace devicemodel {
 	        this.kindName = source["kindName"];
 	        this.direction = source["direction"];
 	        this.flags = source["flags"];
+	        this.voltageMv = source["voltageMv"];
 	        this.caps = source["caps"];
 	        this.roleKind = source["roleKind"];
 	        this.roleName = source["roleName"];
@@ -1029,6 +1031,7 @@ export namespace ports {
 	export class PortDescriptor {
 	    Index: number;
 	    Flags: number;
+	    VoltageMv: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new PortDescriptor(source);
@@ -1038,6 +1041,7 @@ export namespace ports {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Index = source["Index"];
 	        this.Flags = source["Flags"];
+	        this.VoltageMv = source["VoltageMv"];
 	    }
 	}
 	export class PortList {

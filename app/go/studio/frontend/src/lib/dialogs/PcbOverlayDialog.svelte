@@ -7,7 +7,7 @@
 <script lang="ts">
     import { onMount } from 'svelte'
     import { showPcbOverlay, connectionInfo } from '../stores'
-    import { deviceModel, refresh, boardKindOf, claimsForPort, type Port } from '../devicemodel'
+    import { deviceModel, refresh, boardKindOf, claimsForPort, formatPortRail, type Port } from '../devicemodel'
     import { pcbFor, type PortMarker } from '../pcb'
     import PortControls from '../components/PortControls.svelte'
 
@@ -53,9 +53,10 @@
                 {#each pcb.markers as m (mkKey(m))}
                         {@const p = portFor(m)}
                         {@const assigned = !!p && p.roleKind !== 0}
+                        {@const rail = p ? formatPortRail(p.voltageMv) : ''}
                         <button class="marker" class:assigned class:open={selKey === mkKey(m)}
                                 style="left:{m.x}%; top:{m.y}%"
-                                title={p ? `${m.label} — ${p.roleName}` : m.label}
+                                title={p ? `${m.label} · ${p.kindName}${rail ? ` · ${rail} rail` : ''}${p.roleName !== 'none' ? ` — ${p.roleName}` : ''}` : m.label}
                                 on:click|stopPropagation={() => (selKey = selKey === mkKey(m) ? '' : mkKey(m))}>
                             {m.label}
                         </button>
@@ -65,6 +66,7 @@
                                 <div class="pop-head">
                                     <span class="pop-label">{m.label}</span>
                                     <span class="pop-right">
+                                        {#if rail}<span class="pop-rail" title="Rail voltage declared by the board">{rail}</span>{/if}
                                         {#if p}<span class="pop-role">{p.roleName === 'none' ? 'no role' : p.roleName}</span>{/if}
                                         <button class="pop-x" title="Close" on:click={() => (selKey = '')}>✕</button>
                                     </span>
@@ -113,6 +115,7 @@
     .pop-label { font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: var(--text-bright); }
     .pop-right { display: flex; align-items: center; gap: 8px; }
     .pop-role { font-size: 10px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.4px; }
+    .pop-rail { font-size: 10px; font-family: var(--font-mono); color: var(--text-dim); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; }
     .pop-x { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 4px; border-radius: 3px; }
     .pop-x:hover { color: var(--text-bright); background: var(--bg-raised); }
     .pop-fn { font-size: 10px; color: var(--text-dim); margin-bottom: 6px; }
