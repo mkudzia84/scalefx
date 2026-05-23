@@ -233,14 +233,27 @@ type DiagEntry struct {
 //
 // `max` caps how many entries the caller wants — pass 0 for "everything
 // in the buffer".
+//
+// Timeout: the firmware flushes the ENTIRE ring buffer as TAG_ASYNC
+// LOG_MESSAGE packets BEFORE the ACK lands.  On an ESP32-S3 with 512
+// entries × ~140 bytes that's ~71 KB at 6 Mbps — usually <200 ms on
+// wire but USB CDC buffering on slow hosts has been observed to push
+// the round-trip past 2 s (the default).  Using a 15 s ceiling here
+// covers the worst case (full buffer + slow host) while still letting
+// the user notice a genuinely dead device.  Pair this with a non-zero
+// `max` to short-circuit the dump.
+//
+// Filter channel is sized for the worst case (one slot per ring entry).
 func (h *Hub) DiagHistory(max byte) ([]DiagEntry, error) {
+	const diagHistoryTimeout = 15 * time.Second
 	// Drain channel so we can tap LOG_MESSAGE without racing the
-	// connection's standard async callback.
-	ch := make(chan *protocol.Response, 256)
+	// connection's standard async callback.  Buffer >= ESP32 ring size
+	// (512) so a full dump can't block the reader goroutine on backpressure.
+	ch := make(chan *protocol.Response, 600)
 	h.c.conn.RegisterAsyncFilter(core.LogMessage, ch)
 	defer h.c.conn.UnregisterAsyncFilter(core.LogMessage)
 
-	resp, err := h.c.conn.SendExpectACK(core.CmdDiagHistory(max))
+	resp, err := h.c.conn.SendExpectACKTimeout(core.CmdDiagHistory(max), diagHistoryTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -248,11 +261,13 @@ func (h *Hub) DiagHistory(max byte) ([]DiagEntry, error) {
 		return nil, errFromNack(resp)
 	}
 
-	// The firmware flushes every ring entry as TAG_ASYNC LOG_MESSAGE
-	// packets BEFORE the ACK, so by the time we get here they're all
-	// queued.  Tiny grace period in case the reader goroutine is still
-	// dispatching the last few.
-	time.Sleep(20 * time.Millisecond)
+	// The firmware sends every ring entry as TAG_ASYNC LOG_MESSAGE
+	// packets BEFORE the ACK, but the reader goroutine may still be
+	// dispatching the last few when the ACK arrives.  Drain with a
+	// short tail-end window — 250 ms is generous on USB CDC.
+	tailWindow := 250 * time.Millisecond
+	tailDeadline := time.NewTimer(tailWindow)
+	defer tailDeadline.Stop()
 
 	var entries []DiagEntry
 	for {
@@ -261,7 +276,17 @@ func (h *Hub) DiagHistory(max byte) ([]DiagEntry, error) {
 			if e := decodeDiagEntry(r.Payload); e != nil {
 				entries = append(entries, *e)
 			}
-		default:
+			// Reset the tail-window: as long as new entries keep
+			// arriving, we keep draining — the timer only fires
+			// after `tailWindow` of silence on the filter channel.
+			if !tailDeadline.Stop() {
+				select {
+				case <-tailDeadline.C:
+				default:
+				}
+			}
+			tailDeadline.Reset(tailWindow)
+		case <-tailDeadline.C:
 			return entries, nil
 		}
 	}

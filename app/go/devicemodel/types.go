@@ -102,6 +102,27 @@ type Port struct {
 	// Name is the operator-assigned friendly label (overlay state, not on
 	// the wire).  Empty until set.
 	Name string `json:"name"`
+
+	// Profile is the servo motion profile attached to this port — Rule
+	// 42 storage (/hubfx.yaml ports[]), Rule 44 editing surface (feature
+	// panel inline).  Non-nil only when KindName=="servo" and a profile
+	// has been loaded / authored.  Frontend feature panels read this to
+	// populate the inline ServoProfileEditor.
+	Profile *ServoMotionProfile `json:"profile,omitempty"`
+}
+
+// ServoMotionProfile mirrors `sfx_core::ServoMotionProfile` field-for-
+// field; the JSON shape matches both the wire `ServoProfileDTO` (live
+// tune) and the Studio's `ServoMotionProfileDTO` (persisted) so one
+// `ServoProfileEditor` component binds against both.
+type ServoMotionProfile struct {
+	MinUs             uint16 `json:"minUs"             yaml:"min_us"`
+	MaxUs             uint16 `json:"maxUs"             yaml:"max_us"`
+	CenterUs          uint16 `json:"centerUs"          yaml:"center_us"`
+	Reversed          bool   `json:"reversed"          yaml:"reversed"`
+	MaxSpeedUsPerSec  uint16 `json:"maxSpeedUsPerSec"  yaml:"max_speed_us_per_sec"`
+	MaxAccelUsPerSec2 uint16 `json:"maxAccelUsPerSec2" yaml:"max_accel_us_per_sec2"`
+	MaxJerkUsPerSec3  uint16 `json:"maxJerkUsPerSec3"  yaml:"max_jerk_us_per_sec3"`
 }
 
 // RoleOption is a (kind, label) pair for a role the UI may offer.

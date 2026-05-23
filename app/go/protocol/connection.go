@@ -58,6 +58,14 @@ func (r *Response) ErrorMessage() string {
 // AsyncCallback is called for unsolicited async packets (tag=0) or unmatched responses.
 type AsyncCallback func(resp *Response)
 
+// WireLogger is an optional per-packet trace hook.  Set via
+// SetWireLogger; called on every TX (`dir="TX"`) and RX (`dir="RX"`)
+// whenever the connection's verbose flag is on.  Studio plugs in a
+// callback that re-emits the line through its diag system (so the
+// console shows every wire packet when `/diag debug on` is enabled);
+// CLI tools leave it nil and keep the legacy stdout printf path.
+type WireLogger func(dir, name string, tag byte, payloadLen int)
+
 // Connection manages serial communication with a ScaleFX controller.
 // A single reader goroutine reads all packets from the serial port and
 // dispatches them: tagged responses go to registered waiters via channels,
@@ -79,7 +87,8 @@ type Connection struct {
 	streamWaiters map[byte]chan *Response      // multi-response streams
 	asyncFilters  map[PacketType]chan *Response // type-based async packet intercept
 
-	asyncCB AsyncCallback
+	asyncCB    AsyncCallback
+	wireLogger WireLogger // optional per-packet trace; nil = legacy stdout printf path
 
 	// Port-loss detection: set once when a persistent I/O error occurs
 	portDead    atomic.Bool
@@ -121,6 +130,11 @@ func (c *Connection) Verbose() bool { return c.verbose }
 
 // SetVerbose updates the verbose flag.
 func (c *Connection) SetVerbose(v bool) { c.verbose = v }
+
+// SetWireLogger installs a per-packet trace callback (TX + RX).  Pass
+// nil to fall back to the legacy stdout printf trace.  Calls are
+// gated on the verbose flag — flip that on independently.
+func (c *Connection) SetWireLogger(l WireLogger) { c.wireLogger = l }
 
 // SetTimeout updates the default response timeout.
 func (c *Connection) SetTimeout(d time.Duration) { c.timeout = d }
@@ -234,7 +248,11 @@ func (c *Connection) Send(data []byte) error {
 		ptype, tag, payload, ok := ParsePacket(data)
 		if ok {
 			name := PacketTypeName(ptype)
-			fmt.Printf("  → TX: %s tag=%d [%d bytes]\n", name, tag, len(payload))
+			if c.wireLogger != nil {
+				c.wireLogger("TX", name, tag, len(payload))
+			} else {
+				fmt.Printf("  → TX: %s tag=%d [%d bytes]\n", name, tag, len(payload))
+			}
 		}
 	}
 
@@ -577,7 +595,11 @@ func (c *Connection) startReader() {
 						}
 						if c.verbose {
 							name := PacketTypeName(ptype)
-							fmt.Printf("  ← RX: %s tag=%d [%d bytes]\n", name, tag, len(payload))
+							if c.wireLogger != nil {
+								c.wireLogger("RX", name, tag, len(payload))
+							} else {
+								fmt.Printf("  ← RX: %s tag=%d [%d bytes]\n", name, tag, len(payload))
+							}
 						}
 						c.dispatchResponse(resp)
 					}

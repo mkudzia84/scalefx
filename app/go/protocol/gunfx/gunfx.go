@@ -60,10 +60,13 @@ const (
 
 // ─── Error codes ─────────────────────────────────────────────────────
 
+// GunFX errors live at 0x30..0x3F (CLAUDE.md spec).  Old values
+// 0xCB-0xCD squatted in the GunFX packet-type range — moved as part
+// of the 2026-05-23 comprehensive error-code cleanup.
 const (
-	ErrUnknownID      protocol.ErrorCode = 0xCB
-	ErrTableFull      protocol.ErrorCode = 0xCC
-	ErrNotImplemented protocol.ErrorCode = 0xCD // Phase 1 stub
+	ErrUnknownID      protocol.ErrorCode = 0x30
+	ErrTableFull      protocol.ErrorCode = 0x31
+	ErrNotImplemented protocol.ErrorCode = 0x32 // Phase 1 stub
 )
 
 // ─── Decoded types ───────────────────────────────────────────────────
