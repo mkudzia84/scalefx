@@ -1545,6 +1545,46 @@ Anywhere a Studio panel binds an RC input channel and gates an action on a micro
 
 Reference: [EnginePanel.svelte](app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) `.chan-cluster`. When wiring a new channel-gated panel, copy the markup + the `.chan-cluster` / `.threshold-mark` / `.hyst-band` / `.bar-legend` style block verbatim — don't re-roll your own bar markers, the colour/position semantics are part of the rule. **Full walkthrough:** [21-STUDIO-ENGINEFX-PANEL.md § 2](../instructions/21-STUDIO-ENGINEFX-PANEL.md) (the bar with overlays — design rationale, z-order, colour semantics, reuse checklist).
 
+### 37. Port Voltage Metadata (declaration-time rail tagging)
+
+Every output port descriptor (`ports::pwm_array<>`, `ports::servo_array<>`, `ports::hbridge_array<>`, `ports::input_array<>`) MAY carry a `voltageMv` template parameter set at declaration time via `.with_voltage_mV<N>()`. The board author tags the rail each port array is wired to — HubFX CH1..8 = `8000`, HubFX servo headers = `5000`, HubFX input = `3300`, GearControl H-bridges = battery (declare `0` = unknown until measured). The value flows through the binding → `PORT_LIST_RESP` wire (`[idx:u8][flags:u8][voltageMv:u16LE]`, fixed 4 bytes per entry) → Go `ports.PortDescriptor.VoltageMv` → `devicemodel.Port.VoltageMv` → Studio `Port.voltageMv` + `formatPortRail()` helper. `0` = unknown / unconstrained (UI shows no label, no voltage check).
+
+**Why:** effects that drive sub-rail elements (a 5 V smoke heater on the 8 V rail, an LED ring rated for 3 V on the 5 V rail) need to compute a PWM duty that delivers the element's rated voltage — `duty = element_mV / port_mV` linear, or quadratic for power-mode scaling. Without per-port voltage, every effect would have to bake in the platform-specific rail topology.
+
+**Effect-side use:** `binding.voltageMv` is on every `PwmBinding` / `ServoBinding` / `HBridgeBinding` / `InputBinding`. An effect reads it once at role-attach time and stores the computed duty in its config. UI shows the rail in every port picker option (`"HubFX CH3 (8 V) · pwm"`) so the operator can spot voltage mismatches before applying.
+
+**Cap token:** `portCaps()` appends `"VOLTAGE_8V"` / `"VOLTAGE_3V3"` to the `Caps` list when `voltageMv > 0` (uppercase, dot replaced with `V` for fractional volts so the token round-trips into CSS / log filters). Informational only — doesn't gate `Candidates()` filtering.
+
+**Adding voltage to a new board:** in the descriptor list, chain `.with_voltage_mV<N>()` after any `.with_*_array(...)` calls. Defaults to 0 when omitted (safe). Reference: [hubfx_esp32s3.ino kPwmPorts](../controllers/hubfx/esp32s3/src/hubfx_esp32s3.ino) shows the three-array case (CH1..8 = 8000, IN_2..12 servos = 5000, IN_1 input = 3300). Full Phase-0 rollout in [22-GUNFX-FEATURE-ROLLOUT.md § Phase 0](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
+
+### 40. Global Effect Clock — no raw millis() in the effect layer
+
+All effect-layer code (`controllers/hubfx/esp32s3/src/effects/**`, future GunFx ROF scheduler, fan puffing, heater bang-bang, yaw/pitch motion profiles, the existing EngineFx state machine, GearControl backstop arming, landing-light animator …) MUST read time from `sfx_core::EffectClock::instance()` — never raw `millis()` / `micros()`.
+
+**Wiring (mandatory in every controller's `loop()`):**
+```cpp
+void loop() {
+    sfx_core::EffectClock::instance().latch();   // ONCE per pass, BEFORE board.process()
+    board.process();
+    // ...
+}
+```
+
+**Usage (in any effect tick):**
+```cpp
+#include <server/effect_clock.h>
+const uint32_t now = sfx_core::EffectClock::instance().nowMs();
+const uint32_t dt  = sfx_core::EffectClock::instance().dtMs();   // delta since previous latch
+```
+
+**Why:** a single main-loop pass runs EngineFx, GunFx, GearControl, landing-light animator, and potentially a smoke-fan puff scheduler. If each calls `millis()` independently, their notion of "now" drifts by microseconds — a ROF scheduler can fire a second shot before a fan puff has logged the first, motion profiles double-integrate when one reads time before and another after `vTaskDelay`, etc. Latching once at the top of the loop guarantees lockstep behaviour: every effect that ticks within the pass sees the same `nowMs()` and a consistent `dtMs()` for delta-time math (motion-profile `pos += vel * dt`, fade ramps, etc.).
+
+**Scope:** EFFECT LAYER ONLY. Drivers, the bus, the keepalive, the upload state machine, codec init, sense pollers — these all keep using raw `millis()` (their cadence is independent of the effect tick). Adding a clock latch to them adds no value and creates a coupling we don't want.
+
+**Singleton:** `sfx_core::EffectClock` is a function-local-static thread-safe singleton (C++11+); access only via `EffectClock::instance()`. Header: [controllers/lib/sfx_board/server/effect_clock.h](../controllers/lib/sfx_board/server/effect_clock.h). Idempotent within a tick — extra `latch()` calls when `millis()` hasn't advanced are no-ops, so a misordered call doesn't shift the clock mid-tick.
+
+Phase 0.5 of the GunFX rollout introduced the clock + retrofitted 11 call sites in `effects/`. New effects start from this rule; any future `millis()` call in `effects/**` is a Rule 40 violation. Full rollout context: [22-GUNFX-FEATURE-ROLLOUT.md § Phase 0.5](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
+
 ## Key Architecture Patterns
 
 ### Client-Server Topology
