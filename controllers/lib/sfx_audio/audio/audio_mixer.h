@@ -56,9 +56,19 @@
 #if SFX_PLATFORM_ESP32
 constexpr int WAV_BUF_FRAMES       = 24000;     // decoded float frames per track (PSRAM, 0.5 s @ 48 kHz)
 constexpr int WAV_SD_READ_BYTES    = 16384;     // bytes per SD card read batch (PSRAM)
+// Hard cap for `AudioPlaybackOptions::preloadIntoMemory`: 96 000 source
+// frames = 2 s @ 48 kHz stereo = 768 KB allocated from PSRAM per
+// preloaded channel.  At 8 MB PSRAM and at most ~4 hot looping samples
+// (gun A/B + alert + spare) the worst-case is ~3 MB additional — safe
+// margin over the existing 1.5 MB decode-buffer pool.  Files larger
+// than the cap fall back to streaming with a single warn log.
+constexpr uint32_t WAV_MAX_PRELOAD_FRAMES = 96000;
 #else
 constexpr int WAV_BUF_FRAMES       = 1024;      // decoded float frames per track
 constexpr int WAV_SD_READ_BYTES    = 4096;      // bytes per SD card read batch
+// Pico's SRAM heap is far smaller — disable preload entirely (cap=0
+// makes every preloadIntoMemory request fall back to streaming).
+constexpr uint32_t WAV_MAX_PRELOAD_FRAMES = 0;
 #endif
 
 // Max amplitude for final int16 output (headroom for mixing)
@@ -104,6 +114,16 @@ struct AudioPlaybackOptions {
     int startOffsetMs      = 0;
     uint16_t fadeInMs      = 0;           // 0 = start at full volume; >0 = ramp 0→volume over this many ms
     uint16_t fadeOutMs     = 0;           // 0 = play to the last sample; >0 = ramp volume→0 over the final this-many ms (one-shots only; ignored when looping)
+    // Preload-into-memory (2026-05-23): request the entire WAV be decoded
+    // into a dedicated PSRAM buffer at play() time so subsequent loops
+    // don't touch SD.  Caller is asking "this sample is short and will
+    // loop hot — cache it".  Gated by `WAV_MAX_PRELOAD_FRAMES` — files
+    // larger than the cap silently fall back to streaming (with a warn
+    // log so the operator knows why their request was ignored).
+    // Intended for sustained-fire gun shots, alert tones, short engine
+    // burst stingers; NOT for long ambient loops (engine running,
+    // background music) which would blow the cap and stream anyway.
+    bool preloadIntoMemory = false;
 };
 
 // Queued sound item
@@ -347,6 +367,26 @@ private:
         // Linear interpolation resampler
         float      resampleRatio  = 1.0f;      // srcRate / outputRate
         float      resampleFrac   = 0.0f;      // fractional sample position
+
+        // ─── Preload-into-memory (AudioPlaybackOptions::preloadIntoMemory)
+        // When set, the entire WAV is decoded ONCE at play() time into a
+        // dedicated PSRAM buffer (preloadL/R, sized to totalFrames) and
+        // the file handle is closed.  The producer reads from these
+        // buffers with a simple modulo wrap — zero SD I/O during the
+        // sustained loop, which is exactly what gun fire needs so it
+        // doesn't compete with the engine's streaming reads.
+        //   active=true  → use preload path (refill is a no-op, sample
+        //                  pulls from preloadL/R[preloadPos] with
+        //                  wrap-around when looping)
+        //   active=false → existing streaming path (bufL/R + file)
+        // Buffer ownership: allocated in play(), freed in close-channel
+        // paths AND in shutdown().  Pointer cleared after free so the
+        // double-free guard in freePreload() is safe to call twice.
+        float*     preloadL       = nullptr;
+        float*     preloadR       = nullptr;
+        uint32_t   preloadFrames  = 0;         // total cached source frames
+        uint32_t   preloadPos     = 0;         // next source-frame index to sample
+        bool       preloadActive  = false;
     };
 
     struct Channel {
@@ -409,6 +449,16 @@ private:
     bool getWavSample(WavState& ws, float& outL, float& outR);  // Resampled frame
     bool produceFrame();                        // Mix one frame → ring buffer
     void updatePan(Channel& ch);                // Recalculate panL/panR
+
+    // Preload-into-memory (AudioPlaybackOptions::preloadIntoMemory)
+    // tryPreload — read the entire opened file into ws.preloadL/R, close
+    //   the file, set preloadActive=true.  Returns false on alloc failure
+    //   or oversize file (caller falls back to streaming).  Caller has
+    //   already populated ws.totalFrames + format fields via parseWavHeader.
+    // freePreload — release ws.preloadL/R; safe to call when nothing is
+    //   allocated.  Called from stop / play (before re-open) / shutdown.
+    bool tryPreload(WavState& ws, const char* filename);
+    void freePreload(WavState& ws);
     
     // Consumer side (Core 1 task)
     void consumeAndOutput();                    // Ring buffer → I2S
