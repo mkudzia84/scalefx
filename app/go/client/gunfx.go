@@ -16,15 +16,30 @@ type (
 	GunVerboseStatus  = gunfx.VerboseStatus
 )
 
-// FireOnce triggers exactly one shot on gun `id`.
+// FireOnce triggers exactly one shot on gun `id`, using the firmware's
+// currently-armed ROF (the band the selector channel is in).
 func (g *Gun) FireOnce(id byte) error {
 	return g.c.sendExpectACK(gunfx.CmdFireOnce(id))
+}
+
+// FireOnceWithRof forces an explicit ROF index for THIS shot — used
+// by Studio's Fire button + dropdown so a manual test always has a
+// concrete program even when the RC selector stick is between bands
+// (2026-05-24).  rofIndex=0xFF means "use the currently-armed ROF".
+func (g *Gun) FireOnceWithRof(id, rofIndex byte) error {
+	return g.c.sendExpectACK(gunfx.CmdFireOnceWithRof(id, rofIndex))
 }
 
 // StartFiring kicks off auto-fire at `rpm` rounds / minute.  rpm == 0
 // falls back to the unit's configured default cadence.
 func (g *Gun) StartFiring(id byte, rpm uint16) error {
 	return g.c.sendExpectACK(gunfx.CmdStartFiring(id, rpm))
+}
+
+// StartFiringWithRof — same as StartFiring but forces an ROF index
+// for the burst (2026-05-24).  Cleared by StopFiring.
+func (g *Gun) StartFiringWithRof(id byte, rpm uint16, rofIndex byte) error {
+	return g.c.sendExpectACK(gunfx.CmdStartFiringWithRof(id, rpm, rofIndex))
 }
 
 // StopFiring halts auto-fire on gun `id`.

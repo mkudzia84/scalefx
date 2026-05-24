@@ -61,6 +61,11 @@ type RofItemDTO struct {
 	BandHiUs  uint16 `yaml:"band_hi_us"         json:"bandHiUs"`
 	Rpm       uint16 `yaml:"rpm"                json:"rpm"`
 	SoundPath string `yaml:"sound,omitempty"    json:"soundPath"`
+	// Stereo routing for this ROF's shot sound — bit 0 = left,
+	// bit 1 = right.  Omitted = both (0x03).  Same shape as
+	// EngineFx's `output: left|right|both` but per-ROF here
+	// because different gun bursts may want different routing.
+	OutputMask uint8 `yaml:"output_mask,omitempty" json:"outputMask"`
 }
 
 // Rule 43 — channel-input references are NAMES from /hubfx.yaml's
@@ -329,6 +334,9 @@ func (a *App) GunFxStatus() ([]GunStatusDTO, error) {
 	return out, nil
 }
 
+// GunFire fires one shot using the firmware's currently-armed ROF.
+// Kept for backward compatibility — new GUI callers should prefer
+// GunFireWithRof so the operator's dropdown selection is honoured.
 func (a *App) GunFire(id uint8) error {
 	defer a.diag.Around("GunFire", map[string]any{"id": id})()
 	a.diag.Info("GUNFX", "GunFire id=%d (single shot)", id)
@@ -340,6 +348,23 @@ func (a *App) GunFire(id uint8) error {
 	return a.logGunErr("GunFire", map[string]any{"id": id}, c.Gun.FireOnce(id))
 }
 
+// GunFireWithRof forces an explicit ROF index for THIS shot — used
+// by Studio's Fire button + ROF dropdown so manual testing always
+// has a concrete program even when the RC selector stick is between
+// bands (2026-05-24).  rofIndex=0xFF (= 255) means "use the
+// currently-armed ROF" — same as the legacy GunFire path.
+func (a *App) GunFireWithRof(id, rofIndex uint8) error {
+	defer a.diag.Around("GunFireWithRof", map[string]any{"id": id, "rof": rofIndex})()
+	a.diag.Info("GUNFX", "GunFireWithRof id=%d rof=%d (single shot, dropdown)", id, rofIndex)
+	c := a.snapshotClient()
+	if c == nil {
+		a.diag.Error("GUNFX", "GunFireWithRof id=%d: not connected", id)
+		return fmt.Errorf("not connected")
+	}
+	return a.logGunErr("GunFireWithRof", map[string]any{"id": id, "rof": rofIndex},
+		c.Gun.FireOnceWithRof(id, rofIndex))
+}
+
 func (a *App) GunStartFiring(id uint8, rpm uint16) error {
 	defer a.diag.Around("GunStartFiring", map[string]any{"id": id, "rpm": rpm})()
 	a.diag.Info("GUNFX", "GunStartFiring id=%d rpm=%d (auto-fire start)", id, rpm)
@@ -349,6 +374,24 @@ func (a *App) GunStartFiring(id uint8, rpm uint16) error {
 		return fmt.Errorf("not connected")
 	}
 	return a.logGunErr("GunStartFiring", map[string]any{"id": id, "rpm": rpm}, c.Gun.StartFiring(id, rpm))
+}
+
+// GunStartFiringWithRof forces an explicit ROF index for the burst —
+// counterpart to GunFireWithRof for auto-fire (2026-05-24).
+// rofIndex=0xFF means "use the currently-armed ROF".  The forced
+// index is cleared on the next GunStopFiring.
+func (a *App) GunStartFiringWithRof(id uint8, rpm uint16, rofIndex uint8) error {
+	defer a.diag.Around("GunStartFiringWithRof",
+		map[string]any{"id": id, "rpm": rpm, "rof": rofIndex})()
+	a.diag.Info("GUNFX", "GunStartFiringWithRof id=%d rpm=%d rof=%d (auto-fire start, dropdown)", id, rpm, rofIndex)
+	c := a.snapshotClient()
+	if c == nil {
+		a.diag.Error("GUNFX", "GunStartFiringWithRof id=%d: not connected", id)
+		return fmt.Errorf("not connected")
+	}
+	return a.logGunErr("GunStartFiringWithRof",
+		map[string]any{"id": id, "rpm": rpm, "rof": rofIndex},
+		c.Gun.StartFiringWithRof(id, rpm, rofIndex))
 }
 
 func (a *App) GunStopFiring(id uint8) error {

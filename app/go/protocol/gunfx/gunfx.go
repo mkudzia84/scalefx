@@ -67,6 +67,7 @@ const (
 	ErrUnknownID      protocol.ErrorCode = 0x30
 	ErrTableFull      protocol.ErrorCode = 0x31
 	ErrNotImplemented protocol.ErrorCode = 0x32 // Phase 1 stub
+	ErrRofOutOfRange  protocol.ErrorCode = 0x33 // 2026-05-24: explicit rofIndex on FIRE_ONCE/START_FIRING was >= numRofItems
 )
 
 // ─── Decoded types ───────────────────────────────────────────────────
@@ -187,15 +188,36 @@ func DecodeVerboseStatus(p []byte) (VerboseStatus, error) {
 
 // ─── Command builders ────────────────────────────────────────────────
 
-// CmdFireOnce builds a GUN_FIRE_ONCE for the given unit id.
+// CmdFireOnce builds a GUN_FIRE_ONCE for the given unit id, using
+// the currently-armed ROF on the firmware side.
 func CmdFireOnce(id byte) []byte {
 	return protocol.BuildPacket(FireOnce, []byte{id}, 0)
+}
+
+// CmdFireOnceWithRof builds a GUN_FIRE_ONCE that forces a specific
+// ROF index for THIS shot — used by Studio's Fire button + dropdown
+// so manual testing always has a concrete program even when the RC
+// selector stick is between bands (Rule 11 append-only extension,
+// 2026-05-24).  rofIndex=0xFF means "use the currently-armed ROF",
+// which the firmware also defaults to when the 1-byte form arrives.
+func CmdFireOnceWithRof(id, rofIndex byte) []byte {
+	return protocol.BuildPacket(FireOnce, []byte{id, rofIndex}, 0)
 }
 
 // CmdStartFiring builds a GUN_START_FIRING for `id` at `rpm` rounds /
 // minute.  rpm == 0 falls back to the unit's configured default.
 func CmdStartFiring(id byte, rpm uint16) []byte {
 	p := []byte{id, byte(rpm), byte(rpm >> 8)}
+	return protocol.BuildPacket(StartFiring, p, 0)
+}
+
+// CmdStartFiringWithRof — same as CmdStartFiring but forces an ROF
+// index for the burst (Rule 11 append-only extension, 2026-05-24).
+// Used by Studio's Auto-Fire button + dropdown.  rofIndex=0xFF means
+// "use the currently-armed ROF".  The forced index applies for the
+// duration of the burst and is cleared by GUN_STOP_FIRING.
+func CmdStartFiringWithRof(id byte, rpm uint16, rofIndex byte) []byte {
+	p := []byte{id, byte(rpm), byte(rpm >> 8), rofIndex}
 	return protocol.BuildPacket(StartFiring, p, 0)
 }
 
@@ -263,5 +285,6 @@ func init() {
 		ErrUnknownID:      "GUN_UNKNOWN_ID",
 		ErrTableFull:      "GUN_TABLE_FULL",
 		ErrNotImplemented: "GUN_NOT_IMPLEMENTED",
+		ErrRofOutOfRange:  "GUN_ROF_OUT_OF_RANGE",
 	})
 }
