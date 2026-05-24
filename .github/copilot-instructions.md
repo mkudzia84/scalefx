@@ -1543,7 +1543,7 @@ Anywhere a Studio panel binds an RC input channel and gates an action on a micro
 
 **Wire it together:** every input pushes through `mark()` so the marker/band positions update live as the operator types — that's the whole point of putting the settings above the bar. Threshold range is the PPM/SBUS norm `800–2200 µs` `step="10"`; hysteresis `0–500 µs` `step="5"`. Use the `usToPct(us)` helper from `devicemodel.ts` (1000µs → 0%, 2000µs → 100%) so all panels use the same bar scale.
 
-Reference: [EnginePanel.svelte](app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) `.chan-cluster`. When wiring a new channel-gated panel, copy the markup + the `.chan-cluster` / `.threshold-mark` / `.hyst-band` / `.bar-legend` style block verbatim — don't re-roll your own bar markers, the colour/position semantics are part of the rule. **Full walkthrough:** [21-STUDIO-ENGINEFX-PANEL.md § 2](../instructions/21-STUDIO-ENGINEFX-PANEL.md) (the bar with overlays — design rationale, z-order, colour semantics, reuse checklist).
+**Shared component (MANDATORY 2026-05-23):** the markup + styling are factored into [`ChannelToggleCluster.svelte`](../app/go/studio/frontend/src/lib/components/ChannelToggleCluster.svelte). **Every new channel-gated form imports it instead of inlining the rows** — props: `channelLabel`, `emptyOption`, `options=[{id,label}]`, `inputId`, `thresholdUs`, `hysteresisUs`, `liveUs`, `liveValid`, `actionVerb` ("Fires" / "Triggers" / "Switches"), `onChange({inputId, thresholdUs, hysteresisUs})`. Reference call sites: [EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) (engine on/off), [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) per-gun Trigger section. Inlining the 60-line block again is a Rule 36 violation. **Full walkthrough:** [21-STUDIO-ENGINEFX-PANEL.md § 2](../instructions/21-STUDIO-ENGINEFX-PANEL.md) (the bar with overlays — design rationale, z-order, colour semantics, reuse checklist).
 
 ### 37. Port Voltage Metadata (declaration-time rail tagging)
 
@@ -1658,11 +1658,13 @@ When an effect uses a channel as a **discrete N-item selector** (gun ROF, future
 4. **NO-SIGNAL state** — striped track (same as Rule 34), legend reads `"NO SIGNAL"` or `"no channel bound"`.
 5. **Overlap validation** — bands MUST NOT overlap. Detect with O(N²) interval check; on conflict, draw a red diagonal-stripe hatch over the whole bar (`box-shadow: inset 0 0 0 2px var(--error)` + `::after` diagonal-hatch pattern) AND mark the conflicting item rows red with an `⚠ ROF bands overlap (items #X, #Y)` row-error. The bar stays interactive (operator can still tweak); but the Apply button gates on the validator-level error per Rule 35.
 
-**Markup pattern** — copy from [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) `.rof-bar`. The CSS classes `.rof-band`, `.rof-mark`, `.rof-nosignal`, `.rof-bar.overlap-error` are the canonical names.
+**Shared component (MANDATORY 2026-05-23):** factored into [`ChannelBandCluster.svelte`](../app/go/studio/frontend/src/lib/components/ChannelBandCluster.svelte) — props: `channelLabel`, `emptyOption`, `options`, `inputId`, `bands=[{loUs,hiUs,name,meta,color,armed}]`, `overlapIndices`, `liveUs`, `liveValid`, `onInputChange`. The widget **reverse-paints** items so band #1 lands on top of later siblings — this fixes the "first ROF invisible behind a [0,0] catch-all" bug (2026-05-23). It also renders unbounded bands (`lo=0` or `hi=0`) with a diagonal-stripe overlay + `∞` tag so a catch-all item is visible even when a sibling covers it.
 
-**When the channel isn't bound** — render nothing (no bar at all). The overlay only appears when both a selector channel AND at least one item are configured.
+**Render gate:** the widget only paints the bar + legend when `inputId !== ''` AND `bands.length > 0`. When the channel isn't bound, the dropdown still renders but the bar is suppressed (no bar = no marker = no false-positive arming hint).
 
-Reference: [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) ROF section.
+**Companion validation (Rule 35 + per-row commentary):** the panel calling this widget MUST surface per-item errors NEAR each item row (band overlap, inverted `hi <= lo`, RPM out of range, unbounded-with-explicit-siblings) AND aggregate a section-header chip with the error count. Reference: [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) `rofItemIssues()` + `.rof-issues` ul.
+
+**Smart auto-populate when adding items (operator-quality-of-life, 2026-05-23):** the panel's `addItem` mutator MUST seed a NON-overlapping band for the new item (algorithm: find largest gap in `[1000, 2000]`; if no gap ≥ 100 µs, slice the widest existing band in half). Defaulting to `[0, 0]` makes every new item land on top of siblings and look invisible. Reference: [gunfx.ts `suggestNextRofBand`](../app/go/studio/frontend/src/lib/gunfx.ts).
 
 ### 39. Optional-Section Yellow Warnings (non-blocking, distinct from errors)
 
@@ -1999,6 +2001,21 @@ should subscribe to BOTH `xxxDraft` AND `$deviceModel.channelFunctions`
 `anyErrors` in the global toolbar then catches cross-file rot.
 
 Reference: [dirty-registry.ts](../app/go/studio/frontend/src/lib/dirty-registry.ts), [ConfigToolbar.svelte](../app/go/studio/frontend/src/lib/layout/ConfigToolbar.svelte), [App.svelte](../app/go/studio/frontend/src/App.svelte) onMount registration block, [gunfx.ts `gunfxConfigSource`](../app/go/studio/frontend/src/lib/gunfx.ts), [effects.ts `engineConfigSource`](../app/go/studio/frontend/src/lib/effects.ts), [devicemodel.ts `hubConfigSource`](../app/go/studio/frontend/src/lib/devicemodel.ts).
+
+### 47. Shared Sound Row + Speaker-Routing Widget (Rule 34 sub-rule)
+
+Every Studio panel that lets the operator pick a WAV file from SD AND choose its L / R / Stereo routing — engine starting/running/stopping sounds, GunFx per-ROF sound, future LightFx mode sounds — MUST use the shared [`SoundRow.svelte`](../app/go/studio/frontend/src/lib/components/SoundRow.svelte) component instead of inlining the row. The widget owns:
+
+- The `.field-label`-prefixed wide text input (operator can hand-type a path)
+- The browse (`…`) and Clear button slots in the Rule 34 order (browse LEFT, clear RIGHT, hidden `.btn-spacer` for required rows so columns align across rows)
+- The speaker-routing button — labeled with the routing word IN THE BUTTON (`stereo` / `left` / `right`) so the state reads at a glance; cycles Stereo → Left → Right → Stereo on click; STAYS enabled even when the sound path is empty (routing is a property of the slot, not the file — the operator can pre-select where the next browsed file will play)
+- An optional `<slot name="lead">` for panels that need to prefix the row (GunFx injects a `.rof-idx-pill placeholder` so the row column-aligns with the #N badge above)
+
+**Speaker glyph + mask helpers** live in [`speaker_routing.ts`](../app/go/studio/frontend/src/lib/components/speaker_routing.ts) — `MASK_LEFT = 0x01` / `MASK_RIGHT = 0x02` / `MASK_STEREO = 0x03` (matches the firmware `AudioChannel` enum); `cycleOutputMask()`, `speakerLabel()`, `speakerIcon()`, `speakerStateClass()`. Single source of truth so the wire mask + the user-facing label + the colour cue never drift.
+
+**Colour cue** (matches Rule 38 / 36 legend): stereo = `--accent`, left = `--warning`, right = `--success`. Operator with both the sound rows AND a band cluster open can match a band's routing colour to the routing button's colour without re-reading.
+
+Reference: [EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) sound rows (all three bind to the engine-level `cfg.output` via `maskFromOutput`/`outputFromMask` helpers — engine plays one sound at a time so all rows share one mask), [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) per-ROF sound (per-row `outputMask`). Inlining the row markup + speaker SVG again is a Rule 47 violation; extend the component instead.
 
 ### Client-Server Topology
 ```
