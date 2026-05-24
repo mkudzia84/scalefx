@@ -56,11 +56,6 @@ inline void GunUnit::fireOnce(uint8_t rofOverride) {
         usedIdx = 0;
         item    = &_spec.rofItems[0];
     }
-    SFX_LOG_INFO("[gun] %u: fireOnce — send=%d audio=%d muzzle.kind=%u rofOverride=%u rof=%u",
-                 _spec.id, _send != nullptr, _audio != nullptr,
-                 (unsigned)_spec.muzzleFlashPort.portKind,
-                 (unsigned)rofOverride, (unsigned)usedIdx);
-
     if (_begin && _sendCtx) _begin(_sendCtx);
     doShot();
     if (_commit && _sendCtx) _commit(_sendCtx);
@@ -73,11 +68,12 @@ inline void GunUnit::fireOnce(uint8_t rofOverride) {
             : audio::HubFxLayout::GunA;
         if (sound) {
             _audio(_audioCtx, sound, channel, mask, /*loop=*/false);
-        } else {
-            SFX_LOG_WARN("[gun] %u: fireOnce — no sound (item=%p resolvedIdx=%u)",
-                         _spec.id, (const void*)item, (unsigned)usedIdx);
         }
+        // Silent when the resolved item has no soundPath — that's a
+        // valid config (visuals-only shot); the GUI flags missing
+        // sounds in the ROF row itself, no per-fire warning needed.
     }
+    (void)usedIdx;     // resolved index — kept for the comment trail
 }
 
 inline void GunUnit::startFiring(uint16_t rpmOverride, uint8_t rofOverride) {
@@ -121,9 +117,9 @@ inline void GunUnit::startFiring(uint16_t rpmOverride, uint8_t rofOverride) {
         }
     }
 
-    SFX_LOG_INFO("[gun] %u: auto-fire @%u ms / shot (rof=%u, override=%u)",
+    SFX_LOG_INFO("[gun] %u: auto-fire @%u ms / shot (rof=%u)",
                  _spec.id, (unsigned)_shotIntervalMs,
-                 (unsigned)_activeRofIndex, (unsigned)rofOverride);
+                 (unsigned)_activeRofIndex);
 }
 
 inline void GunUnit::stopFiring() {
@@ -384,14 +380,12 @@ inline void GunUnit::doShot() {
 }
 
 inline void GunUnit::commandFlash() {
-    if (!_send) {
-        SFX_LOG_WARN("[gun] %u: commandFlash — _send is null, skipping", _spec.id);
-        return;
-    }
-    if (_spec.muzzleFlashPort.portKind == 0) {
-        SFX_LOG_WARN("[gun] %u: commandFlash — muzzleFlashPort.portKind=0 (no muzzle port configured)", _spec.id);
-        return;
-    }
+    if (!_send) return;
+    if (_spec.muzzleFlashPort.portKind == 0) return;
+    // Both early-returns are normal-config states (gun without a flash
+    // LED, gun unit unbound before begin()).  The GUI flags missing
+    // muzzle ports in the section header — no per-shot warning here
+    // or the diag log floods on every burst.
 
     using hubfx::effects::lightfx::LightEvent;
     using hubfx::effects::lightfx::serializeQueueLoad;

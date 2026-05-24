@@ -403,7 +403,6 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::onAudioCmd(
 #if defined(SFX_HAS_AUDIO)
     if (!soundPath) {
         // Stop the channel — releases the looping sample on stopFiring().
-        SFX_LOG_INFO("[gun-audio] STOP ch=%u", (unsigned)audioChannel);
         TMixer::instance().stopAsync((int)audioChannel,
                                      AudioStopMode::Immediate);
         return;
@@ -425,10 +424,10 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::onAudioCmd(
     // (operator-reported, 2026-05-23).  Mixer falls back to streaming
     // if the file exceeds the cap OR PSRAM headroom is tight.
     opts.preloadIntoMemory = true;
-    const bool queued = TMixer::instance().playAsync(audioChannel, soundPath, opts);
-    SFX_LOG_INFO("[gun-audio] PLAY ch=%u %s loop=%d mask=0x%02x → queued=%d",
-                 (unsigned)audioChannel, soundPath, (int)loop,
-                 (unsigned)outputMask, (int)queued);
+    TMixer::instance().playAsync(audioChannel, soundPath, opts);
+    // The mixer's own MIXER_LOG ("Ch%d: Playing %s …") already covers
+    // the PLAY side; no [gun-audio] mirror needed.  STOP is mirrored
+    // through the mixer's "Ch%d: Stopped" log.
 #else
     (void)soundPath; (void)audioChannel; (void)outputMask; (void)loop;
 #endif
