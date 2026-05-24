@@ -1080,6 +1080,7 @@ export namespace main {
 	    bandHiUs: number;
 	    rpm: number;
 	    soundPath: string;
+	    outputMask: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new RofItemDTO(source);
@@ -1092,6 +1093,7 @@ export namespace main {
 	        this.bandHiUs = source["bandHiUs"];
 	        this.rpm = source["rpm"];
 	        this.soundPath = source["soundPath"];
+	        this.outputMask = source["outputMask"];
 	    }
 	}
 	export class RofConfigDTO {

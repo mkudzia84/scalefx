@@ -19,10 +19,12 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte'
     import {
-        gunfxDraft, gunfxConfig, gunfxDirty, gunfxStatus,
+        gunfxDraft, gunfxConfig, gunfxDirty, gunfxStatus, gunfxVerbose,
         loadGunFxConfig, saveGunFxConfig, refreshGunFxStatus,
         addGun, removeGun, setEnabled, updateGun, addRofItem, removeRofItem,
-        gunFire, gunStartFiring, gunStopFiring, gunSmokeArm,
+        gunStartFiringWithRof,
+        gunStopFiring, gunSmokeArm,
+        gunVerboseSubscribe, installVerboseListener, uninstallVerboseListener,
         detectBandOverlaps,
         type GunT, type GunFxConfigT, type RofItemT, type PortRefT,
     } from '../gunfx'
@@ -31,9 +33,20 @@
     import {
         deviceModel, type Port, formatPortRail,
         liveChannels, liveChannelKey, usToPct,
-        RoleKind, claimsForPort,
+        RoleKind, claimsForPort, markHubDirty,
     } from '../devicemodel'
     import { pickFile } from '../filepicker'
+    import SoundRow from '../components/SoundRow.svelte'
+    import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
+    import ChannelBandCluster from '../components/ChannelBandCluster.svelte'
+
+    // BandItem mirrors the shape declared inside ChannelBandCluster.
+    // Inlined here because Svelte 4 doesn't cleanly export named types
+    // from .svelte files — a structural match is enough.
+    type BandItem = {
+        loUs: number; hiUs: number; name: string;
+        meta?: string; color: string; armed: boolean
+    }
 
     // Rule 43 — named-channel options come from /hubfx.yaml's `inputs:`
     // block (same source EnginePanel reads for `toggle.input`).
@@ -62,6 +75,28 @@
     let busy = false
     let error = ''
 
+    // Per-gun "test ROF" dropdown selection — drives Fire / Auto-Fire
+    // buttons in the status row.  0xFF (255) means "use the firmware's
+    // currently-armed ROF" (the band the RC selector is in).  Any
+    // other value forces the firmware to pull THIS shot from
+    // `cfg.guns[g].rof.items[selectedRofByGun[g.id]]`, bypassing the
+    // selector channel — fixes the operator-reported bug where Fire
+    // does nothing when an RC selector channel is bound but the
+    // stick sits between bands.  Per-gun map so two guns can be
+    // tested with different programs independently.
+    const ROF_ARMED: number = 0xFF
+    let selectedRofByGun: Record<number, number> = {}
+    function pickRofForGun(g: GunT): number {
+        const cur = selectedRofByGun[g.id]
+        if (cur === undefined || cur === null) return ROF_ARMED
+        if (cur === ROF_ARMED) return ROF_ARMED
+        if (cur < 0 || cur >= g.rof.items.length) return ROF_ARMED
+        return cur
+    }
+    function setRofPick(gunId: number, val: number) {
+        selectedRofByGun = { ...selectedRofByGun, [gunId]: val }
+    }
+
     let cfg: GunFxConfigT
     const unsub = gunfxDraft.subscribe(c => { cfg = c })
 
@@ -69,12 +104,62 @@
     // domain module (gunfx.ts) owns `gunfxConfigSource` (incl. its
     // own `gunfxHasErrors` derived store covering ROF band overlaps)
     // and App.svelte registers it once at startup.
+    // Live status — verbose broadcast subscription (Phase 4d).  The
+    // firmware streams GUN_VERBOSE_STATUS at ~10 Hz once subscribed,
+    // landing in the Wails `gun:verbose` event → `gunfxVerbose` store
+    // (id → state).  The old 1 Hz polling path is kept ONLY as the
+    // initial seeder so the firing pill renders before the first
+    // broadcast arrives (~100 ms) — every later update flows through
+    // the broadcast, so the operator sees firing / smoke / fan state
+    // change live without hitting Refresh.
+    let subscribedIds = new Set<number>()
+    function syncVerboseSubscriptions(ids: number[]): void {
+        const wanted = new Set(ids)
+        // Subscribe to any gun the panel now displays
+        for (const id of wanted) {
+            if (!subscribedIds.has(id)) {
+                gunVerboseSubscribe(id, true).catch(() => {})
+                subscribedIds.add(id)
+            }
+        }
+        // Unsubscribe from guns that disappeared (e.g. operator
+        // removed one) — without this the firmware keeps broadcasting
+        // for ghost ids that nothing on the GUI reads.
+        for (const id of [...subscribedIds]) {
+            if (!wanted.has(id)) {
+                gunVerboseSubscribe(id, false).catch(() => {})
+                subscribedIds.delete(id)
+            }
+        }
+    }
+    // Re-sync when the configured gun list changes (add / remove / id renumber).
+    $: if (cfg) syncVerboseSubscriptions(cfg.guns.map(g => g.id))
+
     onMount(() => {
+        installVerboseListener()
         loadGunFxConfig().catch(e => { error = String(e) })
+        // One-shot refresh so the firing pill is populated immediately;
+        // verbose broadcasts take over from there.
         refreshGunFxStatus().catch(() => {})
-        return () => { unsub() }
+        return () => {
+            // Unsubscribe every gun we were tailing so the firmware
+            // stops broadcasting (saves cycles + bus bandwidth when
+            // the operator switches tabs).  Leave the listener alive
+            // — it's a global Wails handler, cheap to keep wired.
+            for (const id of subscribedIds) {
+                gunVerboseSubscribe(id, false).catch(() => {})
+            }
+            subscribedIds.clear()
+            unsub()
+        }
     })
-    onDestroy(unsub)
+    onDestroy(() => {
+        for (const id of subscribedIds) {
+            gunVerboseSubscribe(id, false).catch(() => {})
+        }
+        subscribedIds.clear()
+        unsub()
+    })
 
     function mark(): void { gunfxDraft.set(cfg) }
 
@@ -100,8 +185,15 @@
     }
 
     // ── Live status helpers ──────────────────────────────────────────
-    function statusFor(id: number) {
-        return $gunfxStatus.find(s => s.id === id)
+    // Prefer the verbose broadcast (10 Hz, no polling) when it has
+    // landed for this gun; fall back to the polled snapshot for the
+    // first ~100 ms after panel mount before the verbose stream warms
+    // up.  Returns a uniform shape so consumers don't have to branch.
+    function statusFor(id: number): { firing: boolean; smokeArmed: boolean } | undefined {
+        const v = $gunfxVerbose[id]
+        if (v) return { firing: v.firing, smokeArmed: v.smokeArmed }
+        const s = $gunfxStatus.find(x => x.id === id)
+        return s ? { firing: s.firing, smokeArmed: s.smokeArmed } : undefined
     }
 
     // ── Per-gun mutators (small wrappers so the template stays clean) ──
@@ -134,6 +226,8 @@
     function clearRofSound(id: number, i: number) {
         setRofItem(id, i, 'soundPath', '')
     }
+
+    // Speaker-routing helpers — see the top-level import block.
     function setMuzzleField(id: number, key: keyof GunT['muzzleFlash'], val: any) {
         updateGun(id, g => ({ ...g, muzzleFlash: { ...g.muzzleFlash, [key]: val } }))
     }
@@ -164,8 +258,18 @@
         return `${p.ref.guid}|${p.kindName}|${p.ref.index}`
     }
     function refOptLabel(p: Port): string {
-        const rail = formatPortRail(p.voltageMv)
-        return `${p.boardName ?? 'Hub'} · ${p.hardwareName}${rail ? ` (${rail})` : ''}`
+        // Show the operator-assigned alias (IO tab "name" field) FIRST
+        // when set — that's the label the operator actually thinks in.
+        // Falls back to the silkscreen "hardwareName" (CH3, IN1, …)
+        // when no alias is configured.  Reactive on $deviceModel so
+        // renaming a port on the IO tab propagates through every
+        // picker (muzzle flash, recoil servo, smoke heater, …)
+        // without the operator having to reload the GunFx tab.
+        const rail  = formatPortRail(p.voltageMv)
+        const alias = p.name && p.name.trim()
+        const hw    = p.hardwareName
+        const head  = alias ? `${alias} (${hw})` : hw
+        return `${p.boardName ?? 'Hub'} · ${head}${rail ? ` · ${rail}` : ''}`
     }
     function parsePortOption(key: string, kindName: PortRefT['kind']): PortRefT {
         if (!key) return { board: '', guid: '', kind: kindName, idx: 0 }
@@ -229,6 +333,7 @@
             // role + emits devicemodel:changed (the panel re-renders
             // with the new profile reflected in $deviceModel).
             SetPortProfile(port.guid, PORT_KIND_SERVO, port.idx, prof)
+                .then(() => markHubDirty())   // profile persists into /hubfx.yaml ports[]
                 .catch(e => { error = String(e) })
         }, 350))
     }
@@ -269,6 +374,77 @@
             const armed = liveUs != null && liveUs >= lo && liveUs <= hi
             return { lo, hi, name: it.name || `rof${i + 1}`, rpm: it.rpm, armed, color: bandPalette(i) }
         })
+    }
+    /** Build the BandItem[] for ChannelBandCluster.  Kept as a function
+     *  rather than an inline `{@const}` map because Svelte's mustache
+     *  parser rejects TypeScript type annotations on arrow params. */
+    function buildRofBands(items: RofItemT[], liveUs: number | null, liveValid: boolean): BandItem[] {
+        return items.map((it, i) => ({
+            loUs: it.bandLoUs,
+            hiUs: it.bandHiUs,
+            name: it.name || `rof${i + 1}`,
+            meta: `${it.rpm} rpm`,
+            color: bandPalette(i),
+            armed: liveValid && liveUs != null
+                && (it.bandLoUs === 0 || liveUs >= it.bandLoUs)
+                && (it.bandHiUs === 0 || liveUs <= it.bandHiUs),
+        }))
+    }
+
+    // ── Per-ROF-row validation (Rule 35) ─────────────────────────────
+    // Each row exposes its issues as a short list of short strings;
+    // the panel renders them under the row + flags the row with
+    // class `invalid` so the design-system pink-border kicks in.
+    // Section-level error chips aggregate the per-row state.
+    type RofRowIssue = { sev: 'err' | 'warn'; text: string }
+    function rofItemIssues(items: RofItemT[], idx: number): RofRowIssue[] {
+        const it = items[idx]
+        const out: RofRowIssue[] = []
+        // 1. Overlap with a sibling — hard error.  Detected once at the
+        //    panel level (via detectBandOverlaps) so this row inherits
+        //    the verdict instead of recomputing.
+        if (items.length > 1 && detectBandOverlaps(items).includes(idx)) {
+            out.push({ sev: 'err',
+                text: 'Band overlaps another item — the selector arms two ROFs at once; tighten the range.' })
+        }
+        // 2. Inverted band (hi <= lo) when both are explicit — operator
+        //    typo; renders as a zero-width zone on the bar, never arms.
+        if (it.bandLoUs > 0 && it.bandHiUs > 0 && it.bandHiUs <= it.bandLoUs) {
+            out.push({ sev: 'err',
+                text: `Band high (${it.bandHiUs} µs) must be greater than low (${it.bandLoUs} µs).` })
+        }
+        // 3. Unbounded band [0,0] when other items have explicit bands
+        //    — usually a leftover default from + Add ROF; harmless if
+        //    intentional (catch-all), warning rather than error.
+        const otherIdxWithExplicit = items.some((o, i) => i !== idx
+            && (o.bandLoUs > 0 || o.bandHiUs > 0))
+        if (it.bandLoUs === 0 && it.bandHiUs === 0 && items.length > 1 && otherIdxWithExplicit) {
+            out.push({ sev: 'warn',
+                text: 'Both band limits are 0 — this ROF catches every pulse (only the FIRST such item ever arms; later catch-alls never fire).' })
+        }
+        // 4. RPM out of plausible range — soft warning, fired weapons
+        //    don't realistically run >3000 rpm, and 0 rpm is "single shot
+        //    per trigger event" which is rare-but-valid; fire a warn at
+        //    the extremes so the operator can confirm intent.
+        if (it.rpm < 0 || it.rpm > 3000) {
+            out.push({ sev: 'err',
+                text: `RPM out of range (0–3000); ${it.rpm} would either lock the loop or run at the 50 ms hard cap.` })
+        }
+        // 5. Empty name — cosmetic but the bar overlay falls back to
+        //    "rofN" which is harder to scan than a real label.
+        if (!it.name || !it.name.trim()) {
+            out.push({ sev: 'warn',
+                text: 'Item has no name — the bar overlay will fall back to a generic rofN label.' })
+        }
+        return out
+    }
+    function rofItemHasErrors(items: RofItemT[], idx: number): boolean {
+        return rofItemIssues(items, idx).some(x => x.sev === 'err')
+    }
+    function rofGroupErrorCount(items: RofItemT[]): number {
+        let n = 0
+        for (let i = 0; i < items.length; ++i) if (rofItemHasErrors(items, i)) n++
+        return n
     }
     // ── Optional-section yellow warnings (Phase 4, Rule 39) ───────────
     // When an optional section is engaged (or implicitly required) AND
@@ -411,25 +587,43 @@
                     <div class="header-actions">
                         {#if st}
                             <span class="state-pill" class:firing={st.firing}>{st.firing ? '▶ firing' : 'idle'}</span>
-                            <span class="state-pill" class:smoke={st.smokeArmed}>{st.smokeArmed ? 'smoke armed' : 'smoke off'}</span>
+                            <span class="state-pill" class:smoke={st.smokeArmed}>{st.smokeArmed ? 'smoke on' : 'smoke off'}</span>
                         {/if}
-                        <!-- Rule 35 — operational actions run the firmware's
-                             CURRENTLY-LOADED config; if the draft has
-                             unapplied edits, pressing Fire here would
-                             test the OLD config and look like a bug
-                             (e.g. "I changed the sound but Fire plays
-                             the old one").  Gate on $gunfxDirty.  Stop
-                             stays always-on as an emergency cutoff. -->
-                        <button class="small" on:click={() => gunFire(gun.id)}
-                                disabled={busy || $gunfxDirty}
-                                title={$gunfxDirty ? 'Apply changes before firing — Fire tests the loaded firmware config' : 'Fire one shot now'}>▶ Fire</button>
-                        <button class="small" on:click={() => gunStartFiring(gun.id, 0)}
-                                disabled={busy || $gunfxDirty}
-                                title={$gunfxDirty ? 'Apply changes before auto-fire' : 'Start auto-fire (RPM from ROF selector)'}>▶▶ Auto</button>
-                        <button class="small" on:click={() => gunStopFiring(gun.id)} disabled={busy} title="Stop auto-fire (always enabled — emergency cutoff)">■ Stop</button>
+                        <!-- Single Fire/Stop/Picker cluster (Rule 35
+                             follow-on, 2026-05-24).  "Fire" starts
+                             auto-fire at the picked ROF's RPM —
+                             single-shot was dropped on operator
+                             request (one button beats two).  Stop
+                             sits in the SAME bar so the emergency
+                             cutoff is right next to the action that
+                             produced it; Stop is always enabled (no
+                             dirty / errors gate) — it's the safety
+                             switch.  Picker stays narrow (RC / #N);
+                             full program name + rpm live in option
+                             tooltips so the closed state is tight. -->
+                        <div class="op-cluster">
+                            <button class="oc-btn oc-primary"
+                                    on:click={() => gunStartFiringWithRof(gun.id, 0, pickRofForGun(gun))}
+                                    disabled={busy || $gunfxDirty || gun.rof.items.length === 0}
+                                    title={$gunfxDirty ? 'Apply changes before firing — tests the loaded firmware config' : 'Start auto-fire at the picked ROF (or RC-armed)'}>▶ Fire</button>
+                            <select class="oc-picker"
+                                    value={pickRofForGun(gun)}
+                                    on:change={(e) => setRofPick(gun.id, Number(selValue(e)))}
+                                    disabled={busy || gun.rof.items.length === 0}
+                                    title="Test-fire program — overrides the RC selector channel for the next Fire press.&#10;'RC' uses whichever ROF the selector stick has currently armed.&#10;Currently: {pickRofForGun(gun) === ROF_ARMED ? 'RC-armed' : `#${pickRofForGun(gun) + 1} ${gun.rof.items[pickRofForGun(gun)]?.name || ''} · ${gun.rof.items[pickRofForGun(gun)]?.rpm || 0} rpm`}">
+                                <option value={ROF_ARMED} title="Use whichever ROF the RC selector stick currently arms">RC</option>
+                                {#each gun.rof.items as item, i}
+                                    <option value={i} title="{item.name || `rof${i + 1}`} · {item.rpm} rpm">#{i + 1}</option>
+                                {/each}
+                            </select>
+                            <button class="oc-btn oc-danger"
+                                    on:click={() => gunStopFiring(gun.id)}
+                                    disabled={busy}
+                                    title="Stop auto-fire — always enabled (emergency cutoff, no dirty gate)">■ Stop</button>
+                        </div>
                         <button class="small" on:click={() => gunSmokeArm(gun.id, !st?.smokeArmed)}
                                 disabled={busy || $gunfxDirty}
-                                title={$gunfxDirty ? 'Apply changes before arming smoke' : st?.smokeArmed ? 'Disarm smoke heater' : 'Arm smoke heater'}>{st?.smokeArmed ? 'smoke off' : 'arm smoke'}</button>
+                                title={$gunfxDirty ? 'Apply changes before toggling smoke' : st?.smokeArmed ? 'Turn smoke OFF (also cuts the fan)' : 'Turn smoke ON (heater + fan will run while firing)'}>{st?.smokeArmed ? 'Smoke Off' : 'Smoke On'}</button>
                         <button class="small danger" on:click={() => removeGun(gun.id)} disabled={busy} title="Remove this gun">× Remove</button>
                     </div>
                 </div>
@@ -442,80 +636,94 @@
                            placeholder="e.g. main / port / bow" disabled={busy} />
                 </div>
 
-                <!-- TRIGGER ─ Rule 43: pick from named channels ─────────-->
+                <!-- TRIGGER ─ shared ChannelToggleCluster widget
+                     (Rule 36).  Drives the gun unit's TriggerInput
+                     boolean dispatch — same widget the engine on/off
+                     uses, just bound to gun.trigger.* instead of
+                     cfg.toggle.*.  Rule 43 named-channel sourcing. -->
                 <div class="section-head">Trigger (fire on/off)
                     <span class="hint">named channel from the IO tab's <b>inputs[]</b> block</span>
                 </div>
-                <div class="form-row">
-                    <span class="field-label">Channel</span>
-                    <select class="field-input wide" value={gun.trigger.input}
-                            on:change={(e) => setTriggerField(gun.id, 'input', selValue(e))}
-                            disabled={busy}>
-                        <option value="">— none (manual only) —</option>
-                        {#each chanOpts as o}
-                            <option value={o.fnId}>{o.label}</option>
-                        {/each}
-                    </select>
-                </div>
-                <div class="form-row">
-                    <span class="field-label">Fires when channel ≥</span>
-                    <input class="field-input narrow" type="number" min="800" max="2200" step="10"
-                           value={gun.trigger.thresholdUs}
-                           on:change={(e) => setTriggerField(gun.id, 'thresholdUs', numValue(e))} disabled={busy} />
-                    <span class="unit">µs</span>
-                    <span class="trigger-pm">±</span>
-                    <input class="field-input narrow" type="number" min="0" max="500" step="5"
-                           value={gun.trigger.hysteresisUs}
-                           on:change={(e) => setTriggerField(gun.id, 'hysteresisUs', numValue(e))} disabled={busy} />
-                    <span class="unit">µs hysteresis</span>
-                </div>
+                <ChannelToggleCluster
+                    channelLabel="Channel"
+                    emptyOption="— none (manual only) —"
+                    options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+                    inputId={gun.trigger.input}
+                    thresholdUs={gun.trigger.thresholdUs}
+                    hysteresisUs={gun.trigger.hysteresisUs}
+                    liveUs={liveUsFor(gun.trigger.input)?.us ?? null}
+                    liveValid={liveUsFor(gun.trigger.input)?.valid ?? false}
+                    busy={busy}
+                    actionVerb="Fires"
+                    onChange={(n) => {
+                        setTriggerField(gun.id, 'input', n.inputId)
+                        setTriggerField(gun.id, 'thresholdUs', n.thresholdUs)
+                        setTriggerField(gun.id, 'hysteresisUs', n.hysteresisUs)
+                    }} />
 
-                <!-- ROF ─ Rule 43: pick from named channels ─────────────-->
-                <div class="section-head">Rate of fire
-                    <span class="hint">selector channel + multi-band item table</span>
-                </div>
-                <div class="form-row">
-                    <span class="field-label">Selector channel</span>
-                    <select class="field-input wide" value={gun.rof.input}
-                            on:change={(e) => setRofField(gun.id, 'input', selValue(e))}
-                            disabled={busy}>
-                        <option value="">— none (use item #0 always) —</option>
-                        {#each chanOpts as o}
-                            <option value={o.fnId}>{o.label}</option>
-                        {/each}
-                    </select>
-                </div>
-                <!-- Rule 38: multi-band overlay on a live channel bar.
-                     Renders only when a ROF selector channel is bound
-                     AND at least one ROF item exists. -->
-                {#if gun.rof.input && gun.rof.items.length > 0}
-                    {@const liveSel = liveUsFor(gun.rof.input)}
-                    {@const bands = paintRofBands(gun.rof.items, liveSel?.valid ? liveSel.us : null)}
-                    {@const overlaps = detectBandOverlaps(gun.rof.items)}
-                    <div class="rof-bar" class:nosignal={!liveSel || !liveSel.valid} class:overlap-error={overlaps.length > 0}>
-                        {#each bands as b}
-                            <div class="rof-band" class:armed={b.armed}
-                                 style="left:{usToPct(b.lo)}%; width:{Math.max(0.4, usToPct(b.hi) - usToPct(b.lo))}%; background:color-mix(in srgb, {b.color} 30%, transparent); border-color:color-mix(in srgb, {b.color} 80%, transparent)"
-                                 title="{b.name} · {b.lo}–{b.hi} µs · {b.rpm} rpm">
-                                {b.name}
-                            </div>
-                        {/each}
-                        {#if liveSel && liveSel.valid}
-                            <div class="rof-mark" style="left:{usToPct(liveSel.us)}%"
-                                 title="live: {liveSel.us} µs"></div>
-                        {/if}
-                        {#if !liveSel || !liveSel.valid}
-                            <span class="rof-nosignal">{gun.rof.input ? 'NO SIGNAL' : 'no channel bound'}</span>
-                        {/if}
-                    </div>
-                    {#if overlaps.length > 0}
-                        <div class="row-err">⚠ ROF bands overlap (items #{overlaps.map(i => i + 1).join(', #')}) — operator stick crossing the overlap will jitter between items</div>
+                <!-- ROF ─ Rule 43: pick from named channels ─────────────
+                     Rule 35: red header when ANY blocker exists:
+                       - enabled gun with zero items (unfireable)
+                       - bands overlap between items
+                       - any per-row hard error (inverted band, RPM out
+                         of range, etc.) — counted via rofGroupErrorCount.
+                     Yellow soft-warn header in the catch-all case (one
+                     [0,0] item among siblings — Rule 39 / non-blocking).
+                     Inline calls (no @const) — Svelte 4 only accepts
+                     @const as the immediate child of {#if}/{#each}/<Component>. -->
+                <div class="section-head"
+                     class:section-warn-err={(cfg?.enabled && gun.rof.items.length === 0)
+                                              || (gun.rof.items.length > 1 && detectBandOverlaps(gun.rof.items).length > 0)
+                                              || rofGroupErrorCount(gun.rof.items) > 0}>
+                    Rate of fire
+                    {#if cfg?.enabled && gun.rof.items.length === 0}
+                        <span class="section-warn-err-tag" title="An enabled gun must have at least one ROF item — the gun has nothing to fire otherwise.">
+                            ⚠ no ROF items — gun cannot fire
+                        </span>
+                    {:else if gun.rof.items.length > 1 && detectBandOverlaps(gun.rof.items).length > 0}
+                        <span class="section-warn-err-tag" title="Two or more bands intersect — the selector channel falling in the overlap arms multiple items at once.">
+                            ⚠ bands overlap
+                        </span>
+                    {:else if rofGroupErrorCount(gun.rof.items) > 0}
+                        {@const rofRowErrs = rofGroupErrorCount(gun.rof.items)}
+                        <span class="section-warn-err-tag" title="One or more items have field-level errors (inverted band, RPM out of range, …).">
+                            ⚠ {rofRowErrs} item{rofRowErrs > 1 ? 's' : ''} need{rofRowErrs > 1 ? '' : 's'} attention
+                        </span>
                     {/if}
+                    <span class="hint">selector channel + multi-band item table — operator stick picks the armed item</span>
+                </div>
+                <!-- Shared ChannelBandCluster (Rule 36 + 38).  Owns the
+                     selector dropdown + the multi-band live bar + the
+                     overlap-error overlay + the legend.  Bands are
+                     reverse-painted inside the widget so a [0,0]
+                     unbounded item #1 always shows up at the leading
+                     edge instead of being hidden behind a sibling.
+                     The {@const} chain lives inside this <Component>
+                     wrapper because Svelte 4 only accepts @const as
+                     an immediate child of {#if}/{#each}/<Component>. -->
+                <ChannelBandCluster
+                    channelLabel="Selector channel"
+                    emptyOption="— none (use item #1 always) —"
+                    options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+                    inputId={gun.rof.input}
+                    bands={buildRofBands(gun.rof.items,
+                        liveUsFor(gun.rof.input)?.us ?? null,
+                        liveUsFor(gun.rof.input)?.valid ?? false)}
+                    overlapIndices={detectBandOverlaps(gun.rof.items)}
+                    liveUs={liveUsFor(gun.rof.input)?.us ?? null}
+                    liveValid={liveUsFor(gun.rof.input)?.valid ?? false}
+                    busy={busy}
+                    onInputChange={(v) => setRofField(gun.id, 'input', v)} />
+                {#if detectBandOverlaps(gun.rof.items).length > 0}
+                    {@const _overlaps = detectBandOverlaps(gun.rof.items)}
+                    <div class="row-err">⚠ ROF bands overlap (items #{_overlaps.map(i => i + 1).join(', #')}) — the operator stick crossing the overlap will jitter between items; tighten the bands or re-order so they don't intersect.</div>
                 {/if}
 
                 {#each gun.rof.items as item, i (i)}
-                    {@const isOverlap = gun.rof.items.length > 1 && detectBandOverlaps(gun.rof.items).includes(i)}
-                    <div class="rof-item" class:invalid={isOverlap}
+                    {@const rowIssues = rofItemIssues(gun.rof.items, i)}
+                    {@const rowErr = rowIssues.some(x => x.sev === 'err')}
+                    {@const rowWarn = !rowErr && rowIssues.some(x => x.sev === 'warn')}
+                    <div class="rof-item" class:invalid={rowErr} class:soft-warn={rowWarn}
                          style="--band-color: {bandPalette(i)}">
                         <!-- Row 1 — index, name, band, RPM, remove -->
                         <div class="rof-item-row">
@@ -555,24 +763,36 @@
                                     on:click={() => removeRofItem(gun.id, i)}
                                     disabled={busy} title="Remove this ROF item">× Remove</button>
                         </div>
-                        <!-- Row 2 — sound path with browse / clear (same
-                             pattern as EnginePanel sound rows, Rule 34) -->
-                        <div class="rof-item-row">
-                            <span class="rof-idx-pill placeholder" aria-hidden="true"></span>
-                            <label class="rof-field rof-sound-field">
-                                <span class="rof-label">Sound (SD)</span>
-                                <input class="field-input" type="text"
-                                       placeholder="/sounds/gun/burst.wav  (optional)"
-                                       value={item.soundPath}
-                                       on:input={(e) => setRofItem(gun.id, i, 'soundPath', inputValue(e))}
-                                       disabled={busy} />
-                            </label>
-                            <button class="small btn-slot" on:click={() => browseRofSound(gun.id, i)}
-                                    disabled={busy} title="Browse SD card">…</button>
-                            <button class="small btn-slot" on:click={() => clearRofSound(gun.id, i)}
-                                    disabled={busy || !item.soundPath}
-                                    title="Clear — per-shot sample is optional">Clear</button>
-                        </div>
+                        <!-- Row 2 — shared SoundRow component (matches
+                             EnginePanel's sound-row layout exactly).  The
+                             leading slot carries an empty rof-idx-pill so
+                             this row column-aligns with the #N badge on
+                             Row 1 above. -->
+                        <SoundRow
+                            label="sound"
+                            placeholder="/sounds/gun/burst.wav  (optional)"
+                            value={item.soundPath}
+                            outputMask={item.outputMask || 3}
+                            busy={busy}
+                            onPathChange={(v) => setRofItem(gun.id, i, 'soundPath', v)}
+                            onMaskChange={(m) => setRofItem(gun.id, i, 'outputMask', m)}
+                            onBrowse={() => browseRofSound(gun.id, i)}
+                            onClear={() => clearRofSound(gun.id, i)}>
+                            <span slot="lead" class="rof-idx-pill placeholder" aria-hidden="true"></span>
+                        </SoundRow>
+                        <!-- Per-row issues — verb-led explanations so the
+                             operator knows WHAT to fix without scrolling
+                             back to the section header.  Mixed sev list:
+                             err rows render red, warn rows amber. -->
+                        {#if rowIssues.length > 0}
+                            <ul class="rof-issues">
+                                {#each rowIssues as iss}
+                                    <li class="rof-issue" class:err={iss.sev === 'err'} class:warn={iss.sev === 'warn'}>
+                                        {iss.sev === 'err' ? '⚠' : '⚐'} {iss.text}
+                                    </li>
+                                {/each}
+                            </ul>
+                        {/if}
                     </div>
                 {/each}
                 <div class="form-row">
@@ -847,6 +1067,11 @@
     .header-actions { display: flex; align-items: center; gap: 8px; }
     .header-actions button { height: 28px; box-sizing: border-box; }
 
+    /* .op-cluster + .oc-btn / .oc-picker / .oc-danger live in global
+       style.css so EnginePanel + future operational panels share the
+       same visual treatment.  Local overrides go below if any panel
+       needs a tweak (none today). */
+
     .gun-card { margin-bottom: 14px; }
     .card-header.inner { padding: 4px 0 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px; }
     .card-header.inner h4 { font-size: 13px; font-weight: 600; color: var(--text-bright); }
@@ -862,6 +1087,10 @@
        Apply, but flags the issue to the operator. */
     .section-head.section-warn { color: var(--warning); border-bottom-color: var(--warning); }
     .section-warn-tag { font-size: 9px; font-weight: 700; color: var(--warning); padding: 1px 6px; border: 1px solid var(--warning); border-radius: 3px; letter-spacing: 0.5px; text-transform: uppercase; }
+    /* Rule 35 hard-error variant: red header + red tag, gates global
+       Apply via the source's gunfxHasErrors derived store. */
+    .section-head.section-warn-err { color: var(--error); border-bottom-color: var(--error); }
+    .section-warn-err-tag { font-size: 9px; font-weight: 700; color: var(--error); padding: 1px 6px; border: 1px solid var(--error); border-radius: 3px; letter-spacing: 0.5px; text-transform: uppercase; background: color-mix(in srgb, var(--error) 12%, transparent); }
 
     .field-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-dim); }
     .unit { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
@@ -872,6 +1101,15 @@
        row with its zone on the overlay bar above. */
     .rof-item { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; margin: 6px 0; background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--band-color, var(--accent)); border-radius: 4px; }
     .rof-item.invalid { border-color: var(--error); border-left-color: var(--error); background: rgba(255,80,80,0.05); }
+    .rof-item.soft-warn { border-color: var(--warning); border-left-color: var(--warning); background: rgba(255,180,0,0.04); }
+
+    /* Per-row issue list — each line carries its own colour cue so a
+       mixed-severity row reads clearly (red errors first, amber warns
+       below).  Compact margin keeps the row from getting noisy. */
+    .rof-issues { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+    .rof-issue { font-size: 11px; line-height: 1.35; padding-left: 4px; }
+    .rof-issue.err  { color: var(--error); }
+    .rof-issue.warn { color: var(--warning); }
     .rof-item-row { display: flex; align-items: flex-end; gap: 8px; }
 
     /* Index pill — sits at the left edge with a colour swatch matching
@@ -892,7 +1130,14 @@
     .rof-band-field   { flex: 0 0 160px; }
     .rof-rpm-field    { flex: 0 0 120px; }
     .rof-sound-field  { flex: 1; }
+    .rof-output-field { flex: 0 0 90px; }
+    .rof-output-field select { width: 100%; }
     .rof-field:not(.rof-band-field):not(.rof-rpm-field):not(.rof-sound-field) { flex: 1; min-width: 120px; }
+
+    /* Shared SoundRow owns the row chrome; we only need the lead-slot
+       pill to remain hidden but width-locked so the row column-aligns
+       with the #N badge on Row 1 above. */
+    .rof-idx-pill.placeholder { flex-shrink: 0; }
 
     .rof-band-inputs { display: flex; align-items: center; gap: 4px; }
     .rof-band-inputs .field-input.narrow { width: 70px; min-width: 0; }

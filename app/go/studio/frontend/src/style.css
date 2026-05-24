@@ -614,6 +614,100 @@ select.field-input { cursor: pointer; }
     padding: 3px 10px;
 }
 
+/* ─── Button-cluster slot (Rule 34) ────────────────────────────────
+   Fixed-width button container used in stacked rows so the trailing
+   button column (browse / Clear / speaker-routing) lines up across
+   adjacent rows regardless of which buttons each row exposes.
+   .btn-spacer reserves the slot's footprint when there's no button to
+   show.  Lives in the global stylesheet so reusable components
+   (SoundRow.svelte, future row helpers) inherit the dimensions —
+   keeping the class inside one panel makes Svelte scope it and
+   breaks every other panel's column alignment.  64 px matches the
+   widest natural label ("Clear", "L+R") plus the .small padding. */
+.btn-slot {
+    width: 64px;
+    min-width: 64px;
+    box-sizing: border-box;
+    text-align: center;
+    flex-shrink: 0;
+}
+.btn-spacer {
+    display: inline-block;
+    height: 28px;
+    visibility: hidden;
+}
+
+/* ─── Operational-action cluster (Rule 35 follow-on) ───────────────
+   Connected segment group used for primary effect actions (GunFx
+   Fire / Stop / ROF-picker; EngineFx Start / Stop; …).  Replaces a
+   row of loose buttons + a separate select with a SINGLE visual unit
+   so the operator reads it as one control — and so emergency stops
+   sit next to the action that produces them.
+
+   Markup:
+     <div class="op-cluster">
+        <button class="oc-btn oc-primary">▶ Fire</button>
+        <select  class="oc-picker">…</select>     (optional)
+        <button class="oc-btn oc-danger">■ Stop</button>
+     </div>
+
+   The picker segment carries the standard CSS dropdown chevron (same
+   styling we used to inline in GunFxPanel — moved here so any
+   panel that needs a narrow inline picker in an action row gets the
+   same look). */
+.op-cluster {
+    display: inline-flex; align-items: stretch;
+    height: 28px; box-sizing: border-box;
+    border: 1px solid var(--border); border-radius: 4px;
+    overflow: hidden;
+    background: var(--bg-input);
+}
+.op-cluster .oc-btn,
+.op-cluster .oc-picker {
+    height: 100%; box-sizing: border-box;
+    border: 0; border-radius: 0;
+    background: var(--bg-input); color: var(--text);
+    font-size: 11px; padding: 0 10px; margin: 0;
+    line-height: 1;
+}
+.op-cluster .oc-btn { font-weight: 600; cursor: pointer; }
+.op-cluster .oc-btn:hover:not(:disabled),
+.op-cluster .oc-picker:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg-input));
+}
+.op-cluster .oc-btn:disabled,
+.op-cluster .oc-picker:disabled {
+    opacity: 0.45; cursor: not-allowed;
+}
+/* 1 px divider between segments — visible seam without restating
+   the outer border.  Every segment after the first gets one. */
+.op-cluster > *:not(:first-child) { border-left: 1px solid var(--border); }
+/* Tinted-action variants — Fire/Start = success-green text, Stop =
+   error-red text on hover.  Keeps the chrome neutral so the cluster
+   reads as one control but the operator can spot the destructive
+   side without re-reading. */
+.op-cluster .oc-btn.oc-primary { color: var(--success); }
+.op-cluster .oc-btn.oc-danger  { color: var(--error); }
+.op-cluster .oc-btn.oc-danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--error) 12%, var(--bg-input));
+}
+/* Narrow inline picker — closed state shows ~"RC" / "#1" / similar
+   short labels.  Custom CSS chevron because `appearance: none`
+   strips the native dropdown arrow; the two linear-gradients draw
+   a clean down-arrow that picks up `--text-dim`. */
+.op-cluster .oc-picker {
+    min-width: 56px;
+    padding: 0 18px 0 8px;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+                      linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+    background-position: calc(100% - 11px) 12px, calc(100% - 6px) 12px;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+}
+
 .tiny {
     font-size: 9px;
     padding: 1px 6px;

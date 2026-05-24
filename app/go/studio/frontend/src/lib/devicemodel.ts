@@ -207,7 +207,7 @@ export async function refresh(): Promise<void> {
  *  functions, port names).  Called on connect; missing file is a no-op. */
 export async function hydrateFromHubYaml(): Promise<void> {
     await LoadHubConfig()
-    rebaselineHubFingerprint()
+    clearHubDirty()       // freshly loaded → nothing to apply
 }
 
 /** applyHubConfig writes /hubfx.yaml from the current overlay (channel
@@ -215,62 +215,53 @@ export async function hydrateFromHubYaml(): Promise<void> {
  *  reload — changes take effect immediately on the hub. */
 export async function applyHubConfig(): Promise<void> {
     await SaveHubConfig()
-    rebaselineHubFingerprint()
+    clearHubDirty()       // just saved → in sync with the device
 }
 
 // ─── Rule 46 — modular config source ────────────────────────────────
 //
-// `hubConfigSource` reports `isDirty=true` only when the persisted
-// fields of the device model (channel functions, port names, role
-// attachments, servo profiles) DIFFER from the last save/load
-// snapshot.  Mutations from the IO tab (attachRole, setPortName,
-// setChannelFunction, setPortProfile, …) cycle the device model
-// store, which auto-refreshes the fingerprint comparison.
-//
-// Excluded from the fingerprint: live channel values, port flags,
-// caps — those are transient state, not persisted.
+// `hubConfigSource` exposes the IO/Ports tab dirty state to the global
+// ConfigToolbar.  Signal-based: every mutator that persists into
+// /hubfx.yaml (attachRole / detachRole / setPortName /
+// setInputProtocol / setInputChannelCount / setChannelFunction +
+// SetPortProfile called from the gun panel) raises the flag;
+// applyHubConfig + hydrateFromHubYaml clear it.
 
 import type { DirtySource } from './dirty-registry'
 
-/** Compute a stable string describing every field SaveHubConfig
- *  persists into /hubfx.yaml.  Equal strings ⇒ nothing to save. */
-function hubFingerprint(snap: DeviceModelSnapshotT): string {
-    // inputs: { port-ref, channels with non-empty function }
-    const inputs = snap.inputs.map(i => ({
-        g: i.port.guid, k: i.port.kind, x: i.port.index,
-        cs: i.channels
-            .filter(c => c.function && c.function !== 'unassigned')
-            .map(c => `${c.channel}:${c.function}`),
-    }))
-    // ports: { key, label, role, profile (servo only) }
-    const ports = snap.ports.map(p => ({
-        k: `${p.ref.guid}|${p.kindName}|${p.ref.index}`,
-        n: p.name || '',
-        r: p.roleKind,
-        p: p.profile ? `${p.profile.minUs}|${p.profile.maxUs}|${p.profile.centerUs}|${p.profile.reversed}|${p.profile.maxSpeedUsPerSec}|${p.profile.maxAccelUsPerSec2}|${p.profile.maxJerkUsPerSec3}` : '',
-    }))
-    return JSON.stringify({ inputs, ports })
-}
+// ─── Signal-based dirty flag (2026-05-24) ────────────────────────────
+//
+// Replaces the previous fingerprint-compare approach.  Two broken
+// iterations preceded this one:
+//   (1) imperative `deviceModel.subscribe(snap => compareToBaseline)`
+//       captured a closed-over baseline variable, raced with the
+//       async `devicemodel:changed` event on connect (sometimes
+//       baselined the PRE-hydrate model, sometimes the post-hydrate).
+//   (2) derived store over `[deviceModel, _hubBaseline]` — sound on
+//       paper, broke at runtime because `get` wasn't imported from
+//       `svelte/store`, so rebaseline threw silently → baseline
+//       stayed empty → derived always returned false → dirty NEVER
+//       fired no matter what the operator did.
+//
+// The signal-based model is what the operator's mental model already
+// is: any persisted edit RAISES the flag, save/load LOWERS it.  No
+// snapshot diff, no closed-over state, no race.  Mutators that touch
+// /hubfx.yaml call `markHubDirty()` after the device model is
+// updated; `clearHubDirty()` runs from `applyHubConfig` (after a
+// successful save) and `hydrateFromHubYaml` (after on-device state
+// is mirrored back into the working model).  Mutators that DON'T
+// persist (claim/unclaim — those are studio-overlay state today)
+// don't touch the flag.  This keeps the contract explicit: if you
+// added a new mutator that writes /hubfx.yaml, call markHubDirty.
+const _hubDirty  = writable<boolean>(false)
+const _hubErrors = derived(validationCounts, ($vc) => $vc.errors > 0)
 
-let _hubBaseline = ''   // fingerprint snapshot at last load/save
-
-/** Re-baseline the dirty flag after load or save — call from the
- *  loaders themselves, not from external code. */
-function rebaselineHubFingerprint(): void {
-    _hubBaseline = hubFingerprint(get(deviceModel))
-    _hubDirty.set(false)
-}
-
-const _hubDirty   = writable(false)
-const _hubErrors  = derived(validationCounts, ($vc) => $vc.errors > 0)
-
-// Watch the device model and flip dirty whenever the fingerprint
-// drifts from the baseline.  Skip the very first emission (the empty
-// initial snapshot) — re-baselined explicitly on first load.
-deviceModel.subscribe(snap => {
-    if (_hubBaseline === '') return
-    _hubDirty.set(hubFingerprint(snap) !== _hubBaseline)
-})
+/** Exported so panels that bypass the local mutators (e.g. GunFxPanel
+ *  calling Wails `SetPortProfile` directly to update a servo profile)
+ *  can raise the flag explicitly.  Direct-Wails-call sites without
+ *  this would silently leave the IO config out-of-sync with the GUI. */
+export function markHubDirty():  void { _hubDirty.set(true) }
+function          clearHubDirty(): void { _hubDirty.set(false) }
 
 export const hubConfigSource: DirtySource = {
     id:        'hubconfig',
@@ -311,16 +302,19 @@ export async function candidates(domain: string, slot: string): Promise<Port[]> 
 export async function attachRole(p: PortRef, roleKind: number): Promise<void> {
     const snap = await AttachRole(p.guid, p.kind, p.index, roleKind)
     deviceModel.set(normalize(snap))
+    markHubDirty()    // role attachment persists into /hubfx.yaml ports[]
 }
 
 export async function detachRole(p: PortRef): Promise<void> {
     const snap = await DetachRole(p.guid, p.kind, p.index)
     deviceModel.set(normalize(snap))
+    markHubDirty()    // role detach persists into /hubfx.yaml ports[]
 }
 
 export async function setPortName(p: PortRef, name: string): Promise<void> {
     const snap = await SetPortName(p.guid, p.kind, p.index, name)
     deviceModel.set(normalize(snap))
+    markHubDirty()    // name persists into /hubfx.yaml ports[].label
 }
 
 // (Removed 2026-05-23) applyPreset → will be reintroduced as a Setup
@@ -332,16 +326,19 @@ export async function setPortName(p: PortRef, name: string): Promise<void> {
 export async function setInputProtocol(p: PortRef, protocol: string): Promise<void> {
     const snap = await SetInputProtocol(p.guid, p.kind, p.index, protocol)
     deviceModel.set(normalize(snap))
+    markHubDirty()    // protocol persists into /hubfx.yaml inputs[].protocol
 }
 
 export async function setInputChannelCount(p: PortRef, count: number): Promise<void> {
     const snap = await SetInputChannelCount(p.guid, p.kind, p.index, count)
     deviceModel.set(normalize(snap))
+    markHubDirty()    // channelCount persists into /hubfx.yaml inputs[].channelCount
 }
 
 export async function setChannelFunction(p: PortRef, channel: number, fn: string): Promise<void> {
     const snap = await SetChannelFunction(p.guid, p.kind, p.index, channel, fn)
     deviceModel.set(normalize(snap))
+    markHubDirty()    // channel function persists into /hubfx.yaml inputs[].channels[]
 }
 
 export async function applyDefaults(): Promise<string[]> {

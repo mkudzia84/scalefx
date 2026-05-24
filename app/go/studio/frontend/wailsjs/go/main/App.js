@@ -142,6 +142,10 @@ export function GunFire(arg1) {
   return window['go']['main']['App']['GunFire'](arg1);
 }
 
+export function GunFireWithRof(arg1, arg2) {
+  return window['go']['main']['App']['GunFireWithRof'](arg1, arg2);
+}
+
 export function GunFxStatus() {
   return window['go']['main']['App']['GunFxStatus']();
 }
@@ -160,6 +164,10 @@ export function GunSmokeArm(arg1, arg2) {
 
 export function GunStartFiring(arg1, arg2) {
   return window['go']['main']['App']['GunStartFiring'](arg1, arg2);
+}
+
+export function GunStartFiringWithRof(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GunStartFiringWithRof'](arg1, arg2, arg3);
 }
 
 export function GunStopFiring(arg1) {

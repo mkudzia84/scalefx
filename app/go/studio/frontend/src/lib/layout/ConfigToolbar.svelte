@@ -16,15 +16,18 @@
     import { diag } from '../diag'
 
     let busy = false
+
+    // Success / note messages route to the diag system (console + status
+    // bar already mirror those).  Only Apply ERRORS render inline below
+    // the toolbar — those need immediate operator attention before the
+    // next edit.
     let lastError = ''
-    let lastNote = ''
 
     async function onApply() {
-        busy = true; lastError = ''; lastNote = ''
+        busy = true; lastError = ''
         try {
             await applyAll()
-            lastNote = 'Applied — all dirty configs saved + reloaded.'
-            diag.info('FE.CFG', 'global apply complete')
+            diag.info('FE.CFG', 'global apply complete — all dirty configs saved + reloaded')
         } catch (e) {
             lastError = String(e)
             diag.error('FE.CFG', 'global apply failed', { err: String(e) })
@@ -32,12 +35,13 @@
     }
 
     async function onRefresh() {
-        busy = true; lastError = ''; lastNote = ''
+        busy = true; lastError = ''
         try {
             await refreshAll()
-            lastNote = 'Refreshed.'
+            diag.info('FE.CFG', 'refresh complete — every source re-fetched')
         } catch (e) {
             lastError = String(e)
+            diag.error('FE.CFG', 'refresh failed', { err: String(e) })
         } finally { busy = false }
     }
 </script>
@@ -80,7 +84,6 @@
 </div>
 
 {#if lastError}<div class="toolbar-banner err">{lastError}</div>{/if}
-{#if lastNote && !lastError}<div class="toolbar-banner note">{lastNote}</div>{/if}
 
 <style>
     .config-toolbar {
@@ -111,7 +114,12 @@
         text-transform: lowercase;
         letter-spacing: 0.2px;
     }
-    .status-flag.in-sync { color: var(--text-dim); background: transparent; }
+    .status-flag.in-sync {
+        color: var(--success, #4ec9b0);
+        background: color-mix(in srgb, var(--success, #4ec9b0) 10%, transparent);
+        border-color: color-mix(in srgb, var(--success, #4ec9b0) 50%, var(--border));
+        font-weight: 600;
+    }
     .status-flag.dirty {
         color: var(--accent);
         background: color-mix(in srgb, var(--accent) 12%, transparent);
@@ -134,9 +142,5 @@
         background: rgba(255,80,80,0.12);
         color: var(--error);
         border-bottom-color: var(--error);
-    }
-    .toolbar-banner.note {
-        background: color-mix(in srgb, var(--accent) 12%, transparent);
-        color: var(--text);
     }
 </style>

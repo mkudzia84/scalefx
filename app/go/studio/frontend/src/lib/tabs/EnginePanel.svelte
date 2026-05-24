@@ -14,6 +14,28 @@
     } from '../effects'
     import { deviceModel, liveChannels, liveChannelKey, usToPct } from '../devicemodel'
     import { pickFile } from '../filepicker'
+    import SoundRow from '../components/SoundRow.svelte'
+    import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
+
+    // Engine shares ONE output-mask across all three sounds (start /
+    // running / stop are never audible simultaneously) — the YAML
+    // persists it as the string `output: both|left|right`.  Mapping
+    // helpers keep the SoundRow speaker button + the legacy string
+    // field in lock-step; click on ANY sound row's speaker cycles the
+    // shared mask, all three buttons update together.
+    function maskFromOutput(out: string): number {
+        if (out === 'left')  return 0x01
+        if (out === 'right') return 0x02
+        return 0x03
+    }
+    function outputFromMask(mask: number): string {
+        if (mask === 0x01) return 'left'
+        if (mask === 0x02) return 'right'
+        return 'both'
+    }
+    function setEngineOutputMask(mask: number) {
+        cfg.output = outputFromMask(mask); mark()
+    }
 
     // The form binds to the persistent `engineDraft` store, so switching
     // tabs no longer wipes in-flight edits.  `mark()` after each mutation
@@ -165,76 +187,45 @@
             </button>
             {#if cfg?.enabled}
                 <span class="ctrl-sep" aria-hidden="true"></span>
-                <button class="small" on:click={onStart}
-                        disabled={busy || $engineDirty || soundsHaveErrors}
-                        title={soundsHaveErrors ? 'Resolve validation errors first' : $engineDirty ? 'Apply unsaved changes before starting' : 'Start the engine'}>▶ Start</button>
-                <button class="small" on:click={onStop} disabled={busy}>■ Stop</button>
+                <!-- Start / Stop as a single connected control
+                     (matches GunFx fire-cluster, Rule 35 follow-on
+                     2026-05-24).  Stop is always enabled — emergency
+                     cutoff sits next to the action that produced it
+                     so the operator doesn't have to scan for it. -->
+                <div class="op-cluster">
+                    <button class="oc-btn oc-primary" on:click={onStart}
+                            disabled={busy || $engineDirty || soundsHaveErrors}
+                            title={soundsHaveErrors ? 'Resolve validation errors first' : $engineDirty ? 'Apply unsaved changes before starting' : 'Start the engine'}>▶ Start</button>
+                    <button class="oc-btn oc-danger" on:click={onStop}
+                            disabled={busy}
+                            title="Stop the engine — always enabled (emergency cutoff)">■ Stop</button>
+                </div>
             {/if}
         </div>
     </div>
 
     {#if cfg?.enabled}
-        <!-- Channel-setup cluster (Rule 36):
-             [1] channel selector → [2] threshold + hysteresis settings →
-             [3] live bar with explicit threshold line + shaded hysteresis
-             band → [4] one-line legend.  Settings sit directly above the
-             bar so the operator sees the marker move as they edit. -->
-        <div class="chan-cluster">
-            <div class="form-row">
-                <span class="field-label">Driver channel</span>
-                <select class="field-input wide" value={cfg.toggle.input}
-                        on:change={(e) => { cfg.toggle.input = selValue(e); mark() }} disabled={busy}>
-                    <option value="">— manual only —</option>
-                    {#each chanOpts as o}
-                        <option value={o.fnId}>{o.label}</option>
-                    {/each}
-                </select>
-            </div>
-
-            <div class="form-row trigger-row" title="The engine fires when the channel value rises past threshold; hysteresis is the deadband that prevents jitter from re-triggering.">
-                <span class="field-label">Fires when channel ≥</span>
-                <input class="field-input narrow" type="number" min="800" max="2200" step="10"
-                       value={cfg.toggle.thresholdUs}
-                       on:change={(e) => { cfg.toggle.thresholdUs = numValue(e); mark() }} disabled={busy} />
-                <span class="unit">µs</span>
-                <span class="trigger-pm">±</span>
-                <input class="field-input narrow" type="number" min="0" max="500" step="5"
-                       value={cfg.toggle.hysteresisUs}
-                       on:change={(e) => { cfg.toggle.hysteresisUs = numValue(e); mark() }} disabled={busy} />
-                <span class="unit">µs hysteresis</span>
-            </div>
-
-            <div class="bar tall" class:nosignal={!liveUs || !liveUs.valid}>
-                {#if liveUs && liveUs.valid}
-                    <div class="bar-fill" style="width: {usToPct(liveUs.us)}%"></div>
-                {/if}
-                <!-- Hysteresis band — shaded deadband around the threshold.
-                     Visible even with no signal so the operator can dial
-                     the trigger before powering the RC link. -->
-                <div class="hyst-band"
-                     style="left: {usToPct(cfg.toggle.thresholdUs - cfg.toggle.hysteresisUs)}%;
-                            width: {Math.max(0.4, usToPct(cfg.toggle.thresholdUs + cfg.toggle.hysteresisUs) - usToPct(cfg.toggle.thresholdUs - cfg.toggle.hysteresisUs))}%"
-                     title="hysteresis band — ±{cfg.toggle.hysteresisUs}µs around threshold"></div>
-                <div class="threshold-mark" style="left: {usToPct(cfg.toggle.thresholdUs)}%"
-                     title="threshold {cfg.toggle.thresholdUs}µs"></div>
-                {#if !liveUs || !liveUs.valid}
-                    <span class="bar-nosignal">{cfg.toggle.input ? 'NO SIGNAL' : 'no channel bound — manual only'}</span>
-                {/if}
-            </div>
-
-            <div class="bar-legend">
-                <span class="leg-live">
-                    {#if liveUs && liveUs.valid}{liveUs.us} µs{:else}—{/if}
-                    <span class="leg-label">live</span>
-                </span>
-                <span class="leg-sep">·</span>
-                <span class="leg-mark">{cfg.toggle.thresholdUs} µs <span class="leg-label">threshold</span></span>
-                <span class="leg-sep">·</span>
-                <span class="leg-band">±{cfg.toggle.hysteresisUs} µs <span class="leg-label">hysteresis</span></span>
-                <span class="leg-sep">·</span>
-                <span class="leg-range" title="RC PPM/SBUS range — 1000µs is min stick, 2000µs is max stick">1000–2000 µs</span>
-            </div>
-        </div>
+        <!-- Shared channel-toggle cluster (Rule 36).  Renamed mapping:
+             cfg.toggle.input/thresholdUs/hysteresisUs ↔ widget's
+             inputId/thresholdUs/hysteresisUs.  The widget owns its own
+             card chrome + legend; this panel just feeds + listens. -->
+        <ChannelToggleCluster
+            channelLabel="Driver channel"
+            emptyOption="— manual only —"
+            options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+            inputId={cfg.toggle.input}
+            thresholdUs={cfg.toggle.thresholdUs}
+            hysteresisUs={cfg.toggle.hysteresisUs}
+            liveUs={liveUs?.us ?? null}
+            liveValid={liveUs?.valid ?? false}
+            busy={busy}
+            actionVerb="Fires"
+            onChange={(n) => {
+                cfg.toggle.input = n.inputId
+                cfg.toggle.thresholdUs = n.thresholdUs
+                cfg.toggle.hysteresisUs = n.hysteresisUs
+                mark()
+            }} />
 
         <!-- Engine type + output -->
         <div class="form-row">
@@ -245,39 +236,31 @@
                 {/each}
             </select>
         </div>
-        <div class="form-row">
-            <span class="field-label">Output</span>
-            <select class="field-input wide" value={cfg.output} on:change={(e) => { cfg.output = selValue(e); mark() }} disabled={busy}>
-                {#each OUTPUT_MODES as o}<option value={o.id}>{o.label}</option>{/each}
-            </select>
-        </div>
-
-        <!-- Sounds (turbine) -->
+        <!-- Sounds (turbine).  Speaker-routing button on each row binds
+             to the engine-level `cfg.output` field — engine plays one
+             sound at a time, so a per-row mask would be redundant; the
+             dedicated "Output" dropdown that used to sit above this
+             section was removed (single source of truth — the speaker
+             button IS the dropdown, just visually integrated into the
+             sound row, matching GunFx). -->
         <div class="section-head" class:section-error={soundsHaveErrors}>
             Sounds {#if soundsHaveErrors}<span class="section-err-tag">missing files</span>{/if}
         </div>
         {#each ['starting', 'running', 'stopping'] as f}
             {@const err = soundErrors[f]}
             {@const optional = f !== 'running'}
-            <div class="sound-row" class:invalid={!!err}>
-                <div class="form-row">
-                    <span class="field-label" style="width: 72px">{f === 'running' ? 'looping' : f}{optional ? '' : ' *'}</span>
-                    <input class="field-input wide" type="text" placeholder={optional ? '/sounds/…  (optional)' : '/sounds/…  (required)'}
-                           value={cfg.sounds[f]} on:input={(e) => { cfg.sounds[f] = inputValue(e); mark(); scheduleValidate() }}
-                           disabled={busy} />
-                    <!-- Button cluster: browse (…) always on the LEFT, Clear always
-                         on the RIGHT. Required rows reserve the Clear slot with a
-                         hidden placeholder so the … column aligns across rows. -->
-                    <button class="small btn-slot" on:click={() => browsePath(f)} disabled={busy} title="Browse SD card">…</button>
-                    {#if optional}
-                        <button class="small btn-slot" on:click={() => clearSound(f)} disabled={busy || !cfg.sounds[f]}
-                                title="Clear — this sound is optional">Clear</button>
-                    {:else}
-                        <span class="btn-slot btn-spacer" aria-hidden="true"></span>
-                    {/if}
-                </div>
-                {#if err}<div class="row-err">⚠ {err}</div>{/if}
-            </div>
+            <SoundRow
+                label={f === 'running' ? 'looping' : f}
+                placeholder={optional ? '/sounds/…  (optional)' : '/sounds/…  (required)'}
+                value={cfg.sounds[f]}
+                outputMask={maskFromOutput(cfg.output)}
+                busy={busy}
+                required={!optional}
+                error={err}
+                onPathChange={(v) => { cfg.sounds[f] = v; mark(); scheduleValidate() }}
+                onMaskChange={setEngineOutputMask}
+                onBrowse={() => browsePath(f)}
+                onClear={() => clearSound(f)} />
         {/each}
 
         <!-- Transitions -->
@@ -367,11 +350,10 @@
     .sound-row.invalid { border-color: var(--error); background: rgba(255,80,80,0.06); }
     .row-err { font-size: 11px; color: var(--error); margin: 3px 0 0 80px; font-family: var(--font-mono); }
 
-    /* Button cluster after the input: fixed slot width so [browse][clear]
-       align across rows, with a visibility-hidden spacer on rows that don't
-       expose Clear (Rule 34 — Studio button alignment). */
-    .btn-slot { width: 64px; min-width: 64px; box-sizing: border-box; text-align: center; flex-shrink: 0; }
-    .btn-spacer { display: inline-block; height: 28px; visibility: hidden; }
+    /* .btn-slot + .btn-spacer moved to style.css (2026-05-24) so
+       shared components like SoundRow inherit the width — local
+       Svelte-scoped styling broke alignment when the slot lived only
+       in this file. */
 
     /* Status-row controls: dirty-flag → Apply → divider → Start/Stop. The
        divider is a 1px vertical rule that separates the "commit config"

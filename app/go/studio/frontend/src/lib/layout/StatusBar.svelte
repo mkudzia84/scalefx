@@ -103,7 +103,12 @@
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    .cfg-flag.in-sync { color: var(--text-dim); }
+    .cfg-flag.in-sync {
+        color: var(--success, #4ec9b0);
+        background: color-mix(in srgb, var(--success, #4ec9b0) 10%, transparent);
+        border-color: color-mix(in srgb, var(--success, #4ec9b0) 50%, var(--border));
+        font-weight: 600;
+    }
     .cfg-flag.dirty {
         color: var(--accent);
         background: color-mix(in srgb, var(--accent) 12%, transparent);

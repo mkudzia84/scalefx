@@ -14,7 +14,9 @@ import { writable, derived, get } from 'svelte/store'
 import type { DirtySource } from './dirty-registry'
 import {
     LoadGunFxConfig, SaveGunFxConfig, GunFxStatus,
-    GunFire, GunStartFiring, GunStopFiring, GunSmokeArm,
+    GunFire, GunFireWithRof,
+    GunStartFiring, GunStartFiringWithRof,
+    GunStopFiring, GunSmokeArm,
     GunManualSet, GunManualRelease, GunVerboseSubscribe,
 } from '../../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
@@ -29,6 +31,9 @@ export interface RofItemT {
     bandHiUs: number
     rpm: number
     soundPath: string
+    /** Stereo routing mask: bit 0 = left, bit 1 = right.
+     *  0x03 = both (default), 0x01 = left only, 0x02 = right only. */
+    outputMask: number
 }
 
 // Rule 43 — channel-input references are NAMES from the IO tab's
@@ -162,12 +167,21 @@ export function defaultGun(id: number): GunT {
     return {
         id, name: '',
         trigger: { input: '', thresholdUs: 1500, hysteresisUs: 25 },
-        rof: { input: '', items: [] },
-        muzzleFlash: { port: { ...emptyPort, kind: 'pwm' }, durationMs: 30, brightness: 100 },
+        // Seed one default ROF item so a freshly-added gun is fireable
+        // immediately (operator can rename / re-band / pick a sound).
+        // Empty band ([0, 0]) means "armed regardless of selector
+        // channel" — a sensible default when no selector is bound.
+        rof: { input: '', items: [
+            { name: 'rof1', bandLoUs: 0, bandHiUs: 0, rpm: 600, soundPath: '', outputMask: 0x03 },
+        ] },
+        // Empty ports default to {guid:"", kind:"", idx:0} so the
+        // firmware skips driving them.  The operator picks a port in
+        // the panel; until then NOTHING gets flashed / heated / etc.
+        muzzleFlash: { port: { ...emptyPort }, durationMs: 30, brightness: 100 },
         recoil: { enabled: true, axis: 'pitch', jerkUs: 200, holdMs: 80 },
         smoke: {
-            heater: { port: { ...emptyPort, kind: 'pwm' }, elementMv: 0, mode: 'always_on', targetCx10: 1500, hystCx10: 50, scaling: 'linear', constantDutyPct: 100 },
-            fan:    { port: { ...emptyPort, kind: 'pwm' }, elementMv: 0, mode: 'off',       puffMs: 200,                            scaling: 'linear', constantDutyPct: 100 },
+            heater: { port: { ...emptyPort }, elementMv: 0, mode: 'always_on', targetCx10: 1500, hystCx10: 50, scaling: 'linear', constantDutyPct: 100 },
+            fan:    { port: { ...emptyPort }, elementMv: 0, mode: 'off',       puffMs: 200,                            scaling: 'linear', constantDutyPct: 100 },
         },
         yaw: defaultAxis(),
         pitch: defaultAxis(),
@@ -214,15 +228,24 @@ export function detectBandOverlaps(items: RofItemT[]): number[] {
     return out
 }
 
-/** Aggregate validation state — true if ANY gun's ROF bands overlap.
- *  Feeds the dirty-registry's hasErrors aggregation so the global
- *  Apply (Rule 35 + 45) is shaded out when the operator hasn't
- *  resolved the overlap.  Pure derivation off `gunfxDraft` — no
+/** True for any gun in the draft that has zero ROF items — an
+ *  unfireable gun.  Only relevant when the effect is enabled
+ *  (disabled effect = nothing fires, empty ROF is harmless). */
+export function gunHasNoRof(g: GunT): boolean {
+    return g.rof.items.length === 0
+}
+
+/** Aggregate validation state — true if the effect is enabled AND
+ *  any gun has either (a) zero ROF items (unfireable) or (b) bands
+ *  that overlap with another item in the same gun.  Feeds the
+ *  dirty-registry so global Apply (Rule 35 + 45) is shaded out
+ *  until the operator resolves the issue.  Pure derivation — no
  *  async, no side effects. */
 export const gunfxHasErrors = derived(gunfxDraft, ($draft) => {
-    if (!$draft) return false
+    if (!$draft || !$draft.enabled) return false
     return $draft.guns.some(g =>
-        g.rof.items.length > 1 && detectBandOverlaps(g.rof.items).length > 0)
+        gunHasNoRof(g) ||
+        (g.rof.items.length > 1 && detectBandOverlaps(g.rof.items).length > 0))
 })
 
 /** Pre-built `DirtySource` for the dirty-registry — register from
@@ -273,7 +296,19 @@ export async function refreshGunFxStatus(): Promise<void> {
 // ─── Runtime control wrappers ─────────────────────────────────────────
 
 export async function gunFire(id: number): Promise<void> { return GunFire(id) }
+/** Single shot with explicit ROF index — 0xFF (=255) means "use the
+ *  firmware's currently-armed ROF" (same as `gunFire`).  Used by the
+ *  Studio Fire button when the operator picks a program from the
+ *  dropdown so manual tests always have a concrete program even when
+ *  the RC selector stick is between bands (2026-05-24). */
+export async function gunFireWithRof(id: number, rofIndex: number): Promise<void> {
+    return GunFireWithRof(id, rofIndex)
+}
 export async function gunStartFiring(id: number, rpm: number): Promise<void> { return GunStartFiring(id, rpm) }
+/** Auto-fire burst with explicit ROF index — counterpart to gunFireWithRof. */
+export async function gunStartFiringWithRof(id: number, rpm: number, rofIndex: number): Promise<void> {
+    return GunStartFiringWithRof(id, rpm, rofIndex)
+}
 export async function gunStopFiring(id: number): Promise<void> { return GunStopFiring(id) }
 export async function gunSmokeArm(id: number, armed: boolean): Promise<void> { return GunSmokeArm(id, armed ? 1 : 0) }
 
@@ -347,14 +382,22 @@ export function removeGun(id: number): void {
 
 export function setEnabled(on: boolean): void {
     gunfxDraft.update(c => {
-        // Auto-seed: enabling GunFx with zero guns drops in a default
-        // gun #0 so the operator has something to configure immediately
-        // — otherwise the panel just shows an "add gun" prompt and the
-        // operator has to click twice to get started.
-        if (on && c.guns.length === 0) {
-            return { ...c, enabled: true, guns: [defaultGun(0)] }
-        }
-        return { ...c, enabled: on }
+        if (!on) return { ...c, enabled: false }
+        // Auto-seed on enable:
+        //   • zero guns → drop in a default gun #0
+        //   • any gun with zero ROF items → seed one ROF (a gun
+        //     without a ROF item is unfireable and flagged as an
+        //     error by gunfxHasErrors — the operator shouldn't have
+        //     to manually fix that on the click that enables the
+        //     effect).
+        const guns = c.guns.length === 0
+            ? [defaultGun(0)]
+            : c.guns.map(g => g.rof.items.length === 0
+                ? { ...g, rof: { ...g.rof, items: [
+                    { name: 'rof1', bandLoUs: 0, bandHiUs: 0, rpm: 600, soundPath: '', outputMask: 0x03 },
+                  ] } }
+                : g)
+        return { ...c, enabled: true, guns }
     })
 }
 
@@ -365,14 +408,97 @@ export function updateGun(id: number, mutate: (g: GunT) => GunT): void {
     }))
 }
 
+/** Suggest a [loUs, hiUs] band for the NEXT ROF item that does not
+ *  overlap any existing bands.  Algorithm:
+ *    1. If there are no items, return the full RC range (1000–2000 µs).
+ *    2. Build a sorted list of explicit (non-unbounded) bands; merge
+ *       any unbounded item ([0,0] / [0,n] / [n,0]) into a full-cover
+ *       sentinel so the gap search treats it as "everything".
+ *    3. Scan for the largest empty gap in [1000, 2000] between sorted
+ *       band edges; if its width ≥ 100 µs, hand back that gap.
+ *    4. If no usable gap exists (bar is fully covered or only
+ *       sub-100µs slivers remain), slice the largest existing band in
+ *       half and return its upper half — caller's mutator handles the
+ *       trim of the original.  Falls back to a small slice at the top
+ *       (1800–2000) if everything else is degenerate.
+ *  Operator-visible: a fresh item never collides with a sibling, and
+ *  every new item lands SOMEWHERE on the bar so the overlay shows it
+ *  immediately (the [0,0] default used to make every new item span
+ *  the entire bar and stack invisibly under siblings). */
+export function suggestNextRofBand(items: RofItemT[]): { lo: number; hi: number } {
+    if (items.length === 0) return { lo: 1000, hi: 2000 }
+    // Explicit bands only — unbounded sides effectively cover everything,
+    // so any unbounded item already occupies the full bar and we should
+    // slice it instead of hunting for a gap.
+    const explicit = items
+        .filter(i => i.bandLoUs > 0 && i.bandHiUs > 0 && i.bandHiUs > i.bandLoUs)
+        .map(i => ({ lo: i.bandLoUs, hi: i.bandHiUs }))
+        .sort((a, b) => a.lo - b.lo)
+    const unboundedCount = items.length - explicit.length
+
+    if (unboundedCount === 0 && explicit.length > 0) {
+        // Look for a gap between existing bands or at the edges.
+        let cursor = 1000
+        let bestGap = { lo: 0, hi: 0, width: 0 }
+        for (const b of explicit) {
+            if (b.lo > cursor) {
+                const w = b.lo - cursor
+                if (w > bestGap.width) bestGap = { lo: cursor, hi: b.lo, width: w }
+            }
+            cursor = Math.max(cursor, b.hi)
+        }
+        if (2000 > cursor) {
+            const w = 2000 - cursor
+            if (w > bestGap.width) bestGap = { lo: cursor, hi: 2000, width: w }
+        }
+        if (bestGap.width >= 100) {
+            // Round to 10µs steps for tidy operator-facing numbers.
+            const lo = Math.round(bestGap.lo / 10) * 10
+            const hi = Math.round(bestGap.hi / 10) * 10
+            return { lo, hi }
+        }
+    }
+    // No gap (or only unbounded siblings) — slice the largest band in
+    // half.  Caller's mutator emits both halves so the operator can
+    // immediately see and tune them.
+    const widest = explicit.reduce<{ lo: number; hi: number } | null>(
+        (acc, b) => (acc == null || (b.hi - b.lo) > (acc.hi - acc.lo)) ? b : acc, null)
+    if (widest && (widest.hi - widest.lo) >= 100) {
+        const mid = Math.round((widest.lo + widest.hi) / 2 / 10) * 10
+        return { lo: mid, hi: widest.hi }
+    }
+    // Pathological fallback — drop a 200µs slice at the top of the range.
+    return { lo: 1800, hi: 2000 }
+}
+
 export function addRofItem(gunId: number): void {
-    updateGun(gunId, g => ({
-        ...g,
-        rof: {
-            ...g.rof,
-            items: [...g.rof.items, { name: `rof${g.rof.items.length + 1}`, bandLoUs: 0, bandHiUs: 0, rpm: 600, soundPath: '' }],
-        },
-    }))
+    updateGun(gunId, g => {
+        const { lo, hi } = suggestNextRofBand(g.rof.items)
+        // Trim the widest existing band when we're slicing — the
+        // suggester picked the UPPER half, so the existing widest item
+        // needs its `hi` shrunk to `lo`.  Only fires when the suggester
+        // returned a band that's INSIDE an existing one (cap by overlap
+        // detection below to keep this simple).
+        const items = g.rof.items.map(it => {
+            if (it.bandLoUs > 0 && it.bandHiUs > 0
+                    && it.bandLoUs <= lo && it.bandHiUs >= hi
+                    && it.bandLoUs !== lo) {
+                return { ...it, bandHiUs: lo }
+            }
+            return it
+        })
+        return {
+            ...g,
+            rof: {
+                ...g.rof,
+                items: [...items, {
+                    name: `rof${g.rof.items.length + 1}`,
+                    bandLoUs: lo, bandHiUs: hi,
+                    rpm: 600, soundPath: '', outputMask: 0x03,
+                }],
+            },
+        }
+    })
 }
 
 export function removeRofItem(gunId: number, index: number): void {

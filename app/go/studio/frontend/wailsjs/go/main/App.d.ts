@@ -73,6 +73,8 @@ export function GetToolsStatus():Promise<main.ToolsStatus>;
 
 export function GunFire(arg1:number):Promise<void>;
 
+export function GunFireWithRof(arg1:number,arg2:number):Promise<void>;
+
 export function GunFxStatus():Promise<Array<main.GunStatusDTO>>;
 
 export function GunManualRelease(arg1:number):Promise<void>;
@@ -82,6 +84,8 @@ export function GunManualSet(arg1:number,arg2:main.GunManualStateDTO):Promise<vo
 export function GunSmokeArm(arg1:number,arg2:number):Promise<void>;
 
 export function GunStartFiring(arg1:number,arg2:number):Promise<void>;
+
+export function GunStartFiringWithRof(arg1:number,arg2:number,arg3:number):Promise<void>;
 
 export function GunStopFiring(arg1:number):Promise<void>;
 
