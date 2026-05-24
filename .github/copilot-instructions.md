@@ -2007,15 +2007,58 @@ Reference: [dirty-registry.ts](../app/go/studio/frontend/src/lib/dirty-registry.
 Every Studio panel that lets the operator pick a WAV file from SD AND choose its L / R / Stereo routing — engine starting/running/stopping sounds, GunFx per-ROF sound, future LightFx mode sounds — MUST use the shared [`SoundRow.svelte`](../app/go/studio/frontend/src/lib/components/SoundRow.svelte) component instead of inlining the row. The widget owns:
 
 - The `.field-label`-prefixed wide text input (operator can hand-type a path)
-- The browse (`…`) and Clear button slots in the Rule 34 order (browse LEFT, clear RIGHT, hidden `.btn-spacer` for required rows so columns align across rows)
-- The speaker-routing button — labeled with the routing word IN THE BUTTON (`stereo` / `left` / `right`) so the state reads at a glance; cycles Stereo → Left → Right → Stereo on click; STAYS enabled even when the sound path is empty (routing is a property of the slot, not the file — the operator can pre-select where the next browsed file will play)
+- The browse (`…`) + Clear button slots in the Rule 34 order, with the speaker button as the **rightmost** segment so the routing column always aligns across required rows (Clear → hidden `.btn-spacer`) and optional rows (Clear → real button); `.btn-slot` + `.btn-spacer` are global classes in [`style.css`](../app/go/studio/frontend/src/style.css) so the shared component inherits the dimensions
+- The speaker-routing button — short label IN THE BUTTON (`L` / `R` / `L+R`, via `routeShortLabel()`) plus an inline speaker SVG (`speakerIcon()`) so the state reads at a glance without expanding the slot; cycles Stereo → Left → Right → Stereo on click; STAYS enabled even when the sound path is empty (routing is a property of the slot, not the file — the operator can pre-select where the next browsed file will play)
 - An optional `<slot name="lead">` for panels that need to prefix the row (GunFx injects a `.rof-idx-pill placeholder` so the row column-aligns with the #N badge above)
 
-**Speaker glyph + mask helpers** live in [`speaker_routing.ts`](../app/go/studio/frontend/src/lib/components/speaker_routing.ts) — `MASK_LEFT = 0x01` / `MASK_RIGHT = 0x02` / `MASK_STEREO = 0x03` (matches the firmware `AudioChannel` enum); `cycleOutputMask()`, `speakerLabel()`, `speakerIcon()`, `speakerStateClass()`. Single source of truth so the wire mask + the user-facing label + the colour cue never drift.
+**Speaker glyph + mask helpers** live in [`speaker_routing.ts`](../app/go/studio/frontend/src/lib/components/speaker_routing.ts) — `MASK_LEFT = 0x01` / `MASK_RIGHT = 0x02` / `MASK_STEREO = 0x03` (matches the firmware `AudioChannel` enum); `cycleOutputMask()`, `speakerLabel()` (long form, for tooltips/aria), `routeShortLabel()` (`L`/`R`/`L+R`, on-button), `speakerIcon()`, `speakerStateClass()`. Single source of truth so the wire mask + the user-facing label + the colour cue never drift.
 
 **Colour cue** (matches Rule 38 / 36 legend): stereo = `--accent`, left = `--warning`, right = `--success`. Operator with both the sound rows AND a band cluster open can match a band's routing colour to the routing button's colour without re-reading.
 
 Reference: [EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) sound rows (all three bind to the engine-level `cfg.output` via `maskFromOutput`/`outputFromMask` helpers — engine plays one sound at a time so all rows share one mask), [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) per-ROF sound (per-row `outputMask`). Inlining the row markup + speaker SVG again is a Rule 47 violation; extend the component instead.
+
+### 48. Operational Action Cluster — `.op-cluster` split-button (primary + optional picker + Stop)
+
+Operational effect panels (GunFx Fire/Stop, EngineFx Start/Stop, future LightFx test, GearControl manual jog, …) MUST group the primary action + its optional modifier picker + the Stop / cutoff into a SINGLE visual control via the **global** `.op-cluster` class (defined once in [`style.css`](../app/go/studio/frontend/src/style.css)). Replaces a row of loose buttons + a detached `<select>` with one connected segment group so the emergency cutoff sits right next to the action that produced it — operators don't hunt across rows for the Stop.
+
+```svelte
+<!-- GunFx: Fire (auto-fire) + ROF picker + Stop as one cluster -->
+<div class="op-cluster">
+    <button class="oc-btn oc-primary" on:click={() => gunStartFiringWithRof(id, 0, pickedRof)}
+            disabled={busy || $gunfxDirty || gun.rof.items.length === 0}>▶ Fire</button>
+    <select class="oc-picker" value={pickedRof} on:change={…}>
+        <option value={ROF_ARMED}>RC</option>
+        {#each gun.rof.items as item, i}
+            <option value={i} title="{item.name} · {item.rpm} rpm">#{i + 1}</option>
+        {/each}
+    </select>
+    <button class="oc-btn oc-danger" on:click={() => gunStopFiring(id)} disabled={busy}>■ Stop</button>
+</div>
+
+<!-- EnginePanel: Start + Stop, no picker -->
+<div class="op-cluster">
+    <button class="oc-btn oc-primary" on:click={onStart} disabled={busy || $engineDirty || soundsHaveErrors}>▶ Start</button>
+    <button class="oc-btn oc-danger" on:click={onStop} disabled={busy}>■ Stop</button>
+</div>
+```
+
+**Required classes** (all global, all in `style.css`):
+
+- `.op-cluster` — flex wrapper, 28 px height, shared 1 px outer border, 4 px radius, no internal gap; 1 px divider between segments via `> *:not(:first-child)`
+- `.oc-btn` — segment button (no border, no radius, 11 px font, 600 weight)
+- `.oc-btn.oc-primary` — `--success` text (the start/fire action)
+- `.oc-btn.oc-danger` — `--error` text + red-tinted hover (the stop/cutoff)
+- `.oc-picker` — narrow inline `<select>` (≥ 56 px), monospace, custom CSS chevron drawn with two linear-gradients because `appearance: none` strips the native arrow
+
+**UX invariants** (mandatory):
+
+- **Danger / Stop is ALWAYS the rightmost segment AND always enabled** (no `dirty` / `errors` gate). It's the safety switch — the operator must always be able to stop.
+- **Primary** segment carries the Rule 35 gate (`busy || $dirty || hasErrors`) — running on a stale draft tests the OLD firmware config and looks like a bug.
+- **Picker** (when present) sits BETWEEN primary and danger — it's a modifier on the primary action, visually flanked by the action and the cutoff.
+- **Closed-state picker text stays short** (≤ 5 chars: `RC`, `#1`, `#2`, …). Verbose names + units live in `<option title="…">` tooltips so the cluster doesn't expand horizontally when the operator picks a verbose option.
+- One cluster per panel area: don't split Fire/Stop across two clusters or stack a cluster on top of loose buttons. If the panel needs an unrelated action (Smoke On/Off, Remove), it lives OUTSIDE the cluster.
+
+References: [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) per-gun fire cluster, [EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) status-row. New operational panels copy the markup verbatim — re-rolling a one-off button row is a Rule 48 violation.
 
 ### Client-Server Topology
 ```

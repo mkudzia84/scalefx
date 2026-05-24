@@ -38,19 +38,23 @@ panel can crib it.
 ## Index
 
 1. [Panel anatomy](#1-panel-anatomy) — card / header / status row / sections
-2. [Status row](#2-status-row) — state pill + dirty flag + Apply + operate buttons (Rule 35)
+2. [Status row](#2-status-row) — state pill + Apply + operate cluster (Rule 35, Rule 48)
 3. [Field row](#3-field-row) — label + input + unit + action buttons (Rule 34)
 4. [Button cluster](#4-button-cluster) — browse left, clear right, alignment slots (Rule 34)
 5. [Validation surfacing](#5-validation-surfacing) — error/warn at field + section + Apply (Rule 35)
-6. [Channel-setup cluster](#6-channel-setup-cluster) — channel + threshold + hyst + live bar overlays (Rule 36)
+6. [Channel-toggle cluster](#6-channel-toggle-cluster) — channel + threshold + hyst + live bar overlays (Rule 36 — `ChannelToggleCluster.svelte`)
 7. [Named-channel picker](#7-named-channel-picker) — pick from `/hubfx.yaml inputs[]` by name (Rule 43)
-8. [Cross-board port picker](#8-cross-board-port-picker) — output ports with rail-voltage labels (Rule 34, Rule 37)
+8. [Cross-board port picker](#8-cross-board-port-picker) — output ports with rail-voltage labels + operator-alias name (Rule 34, Rule 37)
 9. [File picker](#9-file-picker) — `pickFile({ targets })` parametrised by backend (Rule 34)
-10. [Dirty-flag indicator + draft store pattern](#10-dirty-flag-indicator) — `engineConfig` / `engineDraft` / `engineDirty`
+10. [Dirty-flag indicator + draft store pattern](#10-dirty-flag-indicator) — `engineConfig` / `engineDraft` / `engineDirty` (per-effect) + signal-based `markHubDirty()` (hub IO)
 11. [Servo motion profile editor](#11-servo-motion-profile-editor) — lives on the port-role row, not the effect (Rule 42)
 12. [Element scaling editor](#12-element-scaling-editor) — heater / DC-motor element voltage + scaling, on the port-role row (Rule 42)
 13. [Verbose-status event subscriber](#13-verbose-status-event-subscriber) — live ~10 Hz mirror (Phase 4 staple for manual-mode panels)
 14. [Add/remove list (ROF items, gun units, …)](#14-addremove-list) — operator-authored arrays in a draft store
+15. [Sound row + speaker-routing button](#15-sound-row--speaker-routing-button) — shared `SoundRow.svelte` for every WAV-path picker (Rule 47)
+16. [Multi-band channel cluster](#16-multi-band-channel-cluster) — `ChannelBandCluster.svelte` for N-of-M selectors (Rule 38)
+17. [Operational action cluster](#17-operational-action-cluster) — `.op-cluster` split-button for primary-action + optional picker + Stop (Rule 48)
+18. [Modular config sources + global Apply](#18-modular-config-sources) — `DirtySource` + `ConfigToolbar` aggregate (Rule 46)
 
 ---
 
@@ -240,26 +244,55 @@ sound-row validation.
 
 ---
 
-## 6. Channel-setup cluster
+## 6. Channel-toggle cluster
 
-The canonical 4-row cluster for any RC-channel-gated action (engine
-throttle, gun trigger, future LightFx mode-switch …):
+The canonical 4-row cluster for any RC-channel-gated boolean action
+(engine throttle, gun trigger, future LightFx mode-switch …).
+Factored into the **shared component**
+[`ChannelToggleCluster.svelte`](../app/go/studio/frontend/src/lib/components/ChannelToggleCluster.svelte) —
+panels import it, never inline the 60-line markup again (Rule 36
+violation if they do).
 
+```svelte
+<script lang="ts">
+    import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
+</script>
+
+<ChannelToggleCluster
+    channelLabel="Driver channel"
+    emptyOption="— manual only —"
+    options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+    inputId={cfg.toggle.input}
+    thresholdUs={cfg.toggle.thresholdUs}
+    hysteresisUs={cfg.toggle.hysteresisUs}
+    liveUs={liveUs?.us ?? null}
+    liveValid={liveUs?.valid ?? false}
+    busy={busy}
+    actionVerb="Fires"
+    onChange={(n) => {
+        cfg.toggle.input         = n.inputId
+        cfg.toggle.thresholdUs   = n.thresholdUs
+        cfg.toggle.hysteresisUs  = n.hysteresisUs
+        mark()
+    }} />
 ```
-[ Channel selector (named, via Rule 43) ]
-[ Threshold + hysteresis (verb-led, units inline) ]
-[ Live bar with threshold marker + hysteresis band ]
-[ Color-coded legend ]
-```
 
-Markup + the `.chan-cluster` / `.threshold-mark` / `.hyst-band` /
-`.bar-legend` CSS lives in
-[EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte).
-**Copy verbatim** — colour semantics (green = live, red = threshold,
-amber = hysteresis) are part of the rule.
+The widget owns the four-row layout (selector → verb-led trigger
+settings → `.bar.tall` with threshold mark + hysteresis band + live
+fill + NO-SIGNAL stripe → colour-coded legend). The caller supplies
+the named-channel option list, the live µs lookup, and the change
+handler that pushes back into its draft.
 
-Reference rule: **Rule 36**. Full walkthrough:
-[21-STUDIO-ENGINEFX-PANEL.md § 2](21-STUDIO-ENGINEFX-PANEL.md).
+**Colour semantics** (the widget paints these; do NOT override):
+- `--success` (green) — live fill + legend `live` label
+- `--error`   (red)   — threshold marker + legend `threshold` label
+- `--warning` (amber) — hysteresis band + legend `hysteresis` label
+- striped track — NO SIGNAL state (live frame invalid)
+
+Reference rule: **Rule 36**. Call sites:
+[EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) (engine on/off),
+[GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) (per-gun trigger).
+Full walkthrough: [21-STUDIO-ENGINEFX-PANEL.md § 2](21-STUDIO-ENGINEFX-PANEL.md).
 
 ---
 
@@ -340,8 +373,15 @@ function portsOfKind(kindName, direction) {
 }
 function refOptValue(p: Port): string { return `${p.ref.guid}|${p.kindName}|${p.ref.index}` }
 function refOptLabel(p: Port): string {
-    const rail = formatPortRail(p.voltageMv)
-    return `${p.boardName ?? 'Hub'} · ${p.hardwareName}${rail ? ` (${rail})` : ''}`
+    // Show the operator-assigned alias FIRST when set — that's the
+    // name the operator thinks in.  Falls back to the silkscreen
+    // hardware label (CH3, IN1, …) when no alias is configured.
+    // Reactive on $deviceModel.ports, so renaming a port on the IO
+    // tab propagates through every picker without a panel reload.
+    const rail  = formatPortRail(p.voltageMv)
+    const alias = p.name && p.name.trim()
+    const head  = alias ? `${alias} (${p.hardwareName})` : p.hardwareName
+    return `${p.boardName ?? 'Hub'} · ${head}${rail ? ` · ${rail}` : ''}`
 }
 function portRefToKey(r: PortRefT): string {
     if (!r || !r.guid || !r.kind) return ''
@@ -612,6 +652,286 @@ CSS — flat row with index chip on the left, destructive button on the
 right (Rule 34 row-button order). Reference:
 [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte)
 ROF-item rows.
+
+---
+
+## 15. Sound row + speaker-routing button
+
+Every panel that pairs a WAV file path with stereo routing — engine
+starting/looping/stopping, GunFx per-ROF sound, future LightFx mode
+sounds — uses the shared component
+[`SoundRow.svelte`](../app/go/studio/frontend/src/lib/components/SoundRow.svelte).
+Owns the label + wide input + browse `…` + Clear (or hidden spacer)
++ the speaker-routing button. **Required by Rule 47** — inlining the
+markup again is a violation.
+
+```svelte
+<script lang="ts">
+    import SoundRow from '../components/SoundRow.svelte'
+</script>
+
+<SoundRow
+    label={f === 'running' ? 'looping' : f}
+    placeholder={optional ? '/sounds/…  (optional)' : '/sounds/…  (required)'}
+    value={cfg.sounds[f]}
+    outputMask={maskFromOutput(cfg.output)}
+    busy={busy}
+    required={!optional}
+    error={err}
+    onPathChange={(v) => { cfg.sounds[f] = v; mark(); scheduleValidate() }}
+    onMaskChange={setOutputMask}
+    onBrowse={() => browsePath(f)}
+    onClear={() => clearSound(f)} />
+```
+
+**With a leading slot** (GunFx uses this to align the row with the
+`#N` badge on the row above):
+
+```svelte
+<SoundRow … >
+    <span slot="lead" class="rof-idx-pill placeholder" aria-hidden="true"></span>
+</SoundRow>
+```
+
+**Speaker-routing helpers** live in
+[`speaker_routing.ts`](../app/go/studio/frontend/src/lib/components/speaker_routing.ts) —
+single source of truth so the wire-format mask + the user-facing
+label + the colour cue never drift:
+
+```ts
+import {
+    MASK_LEFT, MASK_RIGHT, MASK_STEREO,      // 0x01 / 0x02 / 0x03 — match firmware AudioChannel
+    cycleOutputMask,                         // Stereo → Left → Right → Stereo
+    speakerLabel,                            // 'left' / 'right' / 'stereo' (tooltips, aria)
+    routeShortLabel,                         // 'L'    / 'R'    / 'L+R'    (on-button text)
+    speakerIcon,                             // inline SVG glyph (mute-wave variant)
+    speakerStateClass,                       // 'route-left' / 'route-right' / 'route-stereo'
+} from '../components/speaker_routing'
+```
+
+**UX invariants** (enforced by the component, do not override):
+
+- The speaker button STAYS enabled when the sound path is empty —
+  routing is a property of the slot, not the file. The operator can
+  pre-pick where the next browsed file will play.
+- Click cycles Stereo → Left → Right → Stereo. Closed-state shows
+  icon + short label (`L+R` / `L` / `R`).
+- Button order: browse `…` LEFT, Clear MIDDLE, speaker `L+R` RIGHTMOST.
+  Required rows reserve the Clear slot with a hidden `.btn-spacer` so
+  the speaker column always aligns.
+- Colour cue per state (matches the band-cluster legend palette):
+  stereo = `--accent`, left = `--warning`, right = `--success`.
+
+Reference rule: **Rule 47**. Call sites:
+[EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte)
+(three rows bind to one engine-level `cfg.output` via
+`maskFromOutput`/`outputFromMask` — engine plays one sound at a time),
+[GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte)
+(per-ROF `outputMask`).
+
+---
+
+## 16. Multi-band channel cluster
+
+Rule 36 extension for **N-of-M discrete selectors** — gun rate-of-fire,
+future LightFx program selector, alert-bank picker. Shared component
+[`ChannelBandCluster.svelte`](../app/go/studio/frontend/src/lib/components/ChannelBandCluster.svelte).
+
+```svelte
+<script lang="ts">
+    import ChannelBandCluster from '../components/ChannelBandCluster.svelte'
+    type BandItem = { loUs:number; hiUs:number; name:string;
+                      meta?:string; color:string; armed:boolean }
+</script>
+
+<ChannelBandCluster
+    channelLabel="Selector channel"
+    emptyOption="— none (use item #1 always) —"
+    options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+    inputId={gun.rof.input}
+    bands={buildBands(gun.rof.items, liveUs, liveValid)}
+    overlapIndices={detectBandOverlaps(gun.rof.items)}
+    liveUs={liveUs}
+    liveValid={liveValid}
+    busy={busy}
+    onInputChange={(v) => setRofField(gun.id, 'input', v)} />
+```
+
+**What the widget owns** (don't reimplement):
+
+- Selector dropdown (named-channel options, `— none —` first).
+- Live bar with per-item coloured zone, live µs marker, NO-SIGNAL
+  stripe, overlap-error diagonal hatch (when `overlapIndices` is
+  non-empty), legend showing live µs + item count + overlap count.
+- **Source-order paint with `z-index: bands.length - idx`** so item
+  #1 lands ON TOP of later siblings. This is the fix for the
+  "first item invisible behind a `[0,0]` catch-all" bug — Svelte 4
+  reverse-paint with keyed-each kept stale styles on the topmost
+  block. Source order + inline z-index sidesteps reconciliation.
+- **Unbounded bands** (`loUs == 0` or `hiUs == 0`) get a diagonal-
+  stripe overlay + `∞` tag so a catch-all item is visible even when
+  a narrower sibling covers part of the bar.
+
+**Companion validation the panel MUST surface** (Rule 38 + Rule 35):
+
+- Per-item errors NEAR each item row — overlap with sibling,
+  inverted `hi <= lo`, value-out-of-range, unbounded-with-explicit-
+  siblings warning.
+- Section header chip aggregating the error count.
+- Section header turns RED on any item-level error (gates global
+  Apply via the source's `hasErrors`).
+
+**Smart auto-populate on add** (Rule 38, hard requirement): the panel's
+`addItem` mutator MUST seed a non-overlapping band. Algorithm:
+
+1. Find the largest gap in `[1000, 2000]` between sorted existing bands.
+2. If gap ≥ 100 µs, return that gap (rounded to 10 µs).
+3. Otherwise slice the widest existing band in half (caller trims
+   the source to the midpoint).
+4. Pathological fallback: `[1800, 2000]`.
+
+Defaulting to `[0, 0]` makes every new item span the whole bar →
+stacks invisibly under siblings. Reference implementation:
+[`suggestNextRofBand` in gunfx.ts](../app/go/studio/frontend/src/lib/gunfx.ts).
+
+Reference rule: **Rule 38**. Call site:
+[GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte)
+ROF section. New consumers (LightFx programs, alert banks) plug in
+straight away — different `bands[]` payload, same chrome.
+
+---
+
+## 17. Operational action cluster
+
+Connected segment group for primary effect actions (Fire/Stop with
+optional picker, Start/Stop). Replaces a row of loose buttons + a
+separate select with a SINGLE visual unit so emergency stops sit next
+to the action that produced them — no cross-row hunting for the
+cutoff. Defined as **global** CSS classes in
+[`style.css`](../app/go/studio/frontend/src/style.css), so any panel
+can adopt the look without re-rolling.
+
+```svelte
+<!-- GunFx: Fire + ROF picker + Stop as one control -->
+<div class="op-cluster">
+    <button class="oc-btn oc-primary"
+            on:click={() => gunStartFiringWithRof(gun.id, 0, pickRofForGun(gun))}
+            disabled={busy || $gunfxDirty || gun.rof.items.length === 0}
+            title="Start auto-fire at the picked ROF (or RC-armed)">▶ Fire</button>
+    <select class="oc-picker"
+            value={pickRofForGun(gun)}
+            on:change={(e) => setRofPick(gun.id, Number(selValue(e)))}
+            disabled={busy || gun.rof.items.length === 0}
+            title="…">
+        <option value={ROF_ARMED} title="…">RC</option>
+        {#each gun.rof.items as item, i}
+            <option value={i} title="{item.name} · {item.rpm} rpm">#{i + 1}</option>
+        {/each}
+    </select>
+    <button class="oc-btn oc-danger"
+            on:click={() => gunStopFiring(gun.id)}
+            disabled={busy}
+            title="Stop — always enabled (emergency cutoff)">■ Stop</button>
+</div>
+
+<!-- EnginePanel: Start + Stop, no picker -->
+<div class="op-cluster">
+    <button class="oc-btn oc-primary" on:click={onStart}
+            disabled={busy || $engineDirty || soundsHaveErrors}>▶ Start</button>
+    <button class="oc-btn oc-danger" on:click={onStop}
+            disabled={busy}>■ Stop</button>
+</div>
+```
+
+**Required classes** (all global, all in `style.css`):
+
+- `.op-cluster`        — flex wrapper, 28 px height, shared 1 px outer border, 4 px radius, no internal gap
+- `.oc-btn`            — segment-shaped button (no border, no radius, 11 px font)
+- `.oc-btn.oc-primary` — green text (`--success`); the start/fire action
+- `.oc-btn.oc-danger`  — red text (`--error`); the stop action; red-tinted hover
+- `.oc-picker`         — narrow inline `<select>`, mono font, custom CSS chevron via two linear-gradients (because `appearance: none` strips the native arrow)
+
+**UX invariants** (mandatory):
+
+- The **danger / stop** segment is ALWAYS the rightmost element AND is ALWAYS enabled (no `dirty`/`errors` gate). It's the safety switch.
+- The **primary** segment carries the Rule 35 gate (`busy || $dirty || hasErrors`) — running on a stale draft is the bug-disguised-as-a-bug.
+- The **picker** (when present) sits BETWEEN primary and danger — it's a modifier on the primary action, visually flanked by the action and the cutoff.
+- Closed-state picker text stays short (≤ 5 chars). Long names live in `<option title="…">` tooltips so the cluster doesn't expand when the operator picks a verbose option.
+
+Reference rule: **Rule 48**. Call sites:
+[GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte)
+fire cluster,
+[EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte)
+status-row.
+
+---
+
+## 18. Modular config sources + global Apply
+
+Every persistent config source (`/hubfx.yaml`, `/enginefx.yaml`,
+`/gunfx.yaml`, future `/lightfx.yaml`, `/gearcontrol.yaml`) plugs into
+the global [`ConfigToolbar`](../app/go/studio/frontend/src/lib/layout/ConfigToolbar.svelte)
+via a **`DirtySource`** descriptor:
+
+```ts
+import type { DirtySource } from './dirty-registry'
+
+export const xxxConfigSource: DirtySource = {
+    id:        'xxx',                  // stable, used in apply-order hints
+    label:     'XxxFx',                // human label for the dirty pill
+    isDirty:   xxxDirty,               // Readable<boolean>
+    hasErrors: xxxErrors,              // Readable<boolean> (derived from draft validation)
+    apply:     applyXxxConfig,         // () => Promise<void> — must throw on failure
+    refresh:   loadXxxConfig,          // () => Promise<void>
+}
+```
+
+Register ONCE in `App.svelte` `onMount`, in dependency order:
+
+```ts
+registerDirtySource(hubConfigSource)    // FIRST — effect translators resolve named inputs against /hubfx.yaml
+registerDirtySource(engineConfigSource)
+registerDirtySource(gunfxConfigSource)
+```
+
+**Rule 46 split between fingerprint-based and signal-based**:
+
+- **Per-effect drafts** (engine, gunfx) use the **draft-vs-config
+  fingerprint** pattern (§10) — the draft store is the operator's
+  edit surface, the config store is the device truth, dirty is
+  derived from JSON equality.
+- **Hub IO state** (`/hubfx.yaml` — port aliases, role attachments,
+  servo profiles, input protocol + channels) uses the **signal-based**
+  pattern: `_hubDirty` is a plain writable that mutators raise via
+  `markHubDirty()`. The fingerprint approach failed three times here
+  (closed-over baselines racing with async Wails events; missed
+  `get` import making rebaseline a silent no-op) so we use the
+  cheaper, race-free model.
+
+Mutator contract for the hub side:
+
+```ts
+export async function attachRole(p: PortRef, roleKind: number): Promise<void> {
+    const snap = await AttachRole(p.guid, p.kind, p.index, roleKind)
+    deviceModel.set(normalize(snap))
+    markHubDirty()    // role attachment persists into /hubfx.yaml ports[]
+}
+```
+
+If you add a new IO-tab mutator that writes `/hubfx.yaml`, call
+`markHubDirty()` — explicit contract. Mutators that DON'T persist
+(claim/unclaim — studio overlay only) leave the flag alone.
+
+`hydrateFromHubYaml()` and `applyHubConfig()` both call
+`clearHubDirty()` after their respective op so the flag returns to
+false after a clean load/save.
+
+Reference rule: **Rule 46**. References:
+[dirty-registry.ts](../app/go/studio/frontend/src/lib/dirty-registry.ts),
+[ConfigToolbar.svelte](../app/go/studio/frontend/src/lib/layout/ConfigToolbar.svelte),
+[devicemodel.ts (markHubDirty)](../app/go/studio/frontend/src/lib/devicemodel.ts),
+[gunfx.ts (gunfxConfigSource)](../app/go/studio/frontend/src/lib/gunfx.ts),
+[effects.ts (engineConfigSource)](../app/go/studio/frontend/src/lib/effects.ts).
 
 ---
 
