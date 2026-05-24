@@ -50,6 +50,8 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::reapplySpecs() {
                             &GunFxServicePolicyT::beginBatchTrampoline,
                             &GunFxServicePolicyT::commitBatchTrampoline,
                             &GunFxServicePolicyT::shotEventTrampoline,
+                            static_cast<void*>(this),
+                            &GunFxServicePolicyT::audioCmdTrampoline,
                             static_cast<void*>(this));
     }
     subscribePerGunInputs();
@@ -207,7 +209,18 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::handleFireOnce(
     if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
     GunUnit* g = findById(p[0]);
     if (!g) { _ctx->sendNack(GunError::UNKNOWN_ID); return; }
-    g->fireOnce();
+    // Rule 11 append (2026-05-24): optional explicit rofIndex.  When
+    // omitted (1-byte payload), the gun uses its currently-armed ROF;
+    // when 0xFF, same semantic.  Out-of-range NACKs.
+    uint8_t rofIdx = 0xFF;
+    if (len >= 2) {
+        rofIdx = p[1];
+        if (rofIdx != 0xFF && rofIdx >= g->spec().numRofItems) {
+            _ctx->sendNack(GunError::ROF_OUT_OF_RANGE);
+            return;
+        }
+    }
+    g->fireOnce(rofIdx);
     _ctx->sendAck();
 }
 
@@ -221,7 +234,18 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::handleStartFiring
     if (len >= 3) {
         rpm = static_cast<uint16_t>(p[1]) | (static_cast<uint16_t>(p[2]) << 8);
     }
-    g->startFiring(rpm);
+    // Rule 11 append (2026-05-24): optional explicit rofIndex after
+    // the rpm word.  4-byte payload form is the GUI Auto-Fire button
+    // sending `[id][rpm:u16][rofIndex]`.
+    uint8_t rofIdx = 0xFF;
+    if (len >= 4) {
+        rofIdx = p[3];
+        if (rofIdx != 0xFF && rofIdx >= g->spec().numRofItems) {
+            _ctx->sendNack(GunError::ROF_OUT_OF_RANGE);
+            return;
+        }
+    }
+    g->startFiring(rpm, rofIdx);
     _ctx->sendAck();
 }
 
@@ -354,24 +378,59 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::emitVerboseStatus
 
 // ─── Shot fan-out ───────────────────────────────────────────────────
 
+// Visual broadcast only.  Called on EVERY shot (one-shot, auto-fire
+// tick, sustained-fire start) so Studio's verbose-status mirror sees
+// individual shot pulses regardless of how the audio is being driven.
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
-void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::onShotFired(
-        uint8_t id, const char* soundPath,
-        uint8_t audioChannel, uint8_t outputMask) {
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::onShotEvent(
+        uint8_t id) {
     if (!_ctx) return;
     const uint8_t payload[1] = { id };
     _ctx->sendRawPacket(GunPacket::GUN_SHOT_EVENT,
                         SfxWire::TAG_ASYNC, payload, sizeof(payload));
+}
 
+// Audio command — drives the local mixer.  `soundPath == nullptr`
+// stops the channel (used by `stopFiring()` to drop the sustained
+// loop).  `loop=true` plays the WAV indefinitely (sustained fire);
+// `loop=false` is one-shot (single fire, or the first tick of a
+// burst before the loop takes over — though startFiring() now uses
+// the loop=true path directly).
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::onAudioCmd(
+        const char* soundPath, uint8_t audioChannel,
+        uint8_t outputMask, bool loop) {
 #if defined(SFX_HAS_AUDIO)
-    if (soundPath && soundPath[0]) {
-        AudioPlaybackOptions opts;
-        opts.volume         = 1.0f;
-        opts.outputChannels = outputMask;
-        TMixer::instance().playAsync(audioChannel, soundPath, opts);
+    if (!soundPath) {
+        // Stop the channel — releases the looping sample on stopFiring().
+        SFX_LOG_INFO("[gun-audio] STOP ch=%u", (unsigned)audioChannel);
+        TMixer::instance().stopAsync((int)audioChannel,
+                                     AudioStopMode::Immediate);
+        return;
     }
+    if (!soundPath[0]) return;          // empty path = no-op
+    AudioPlaybackOptions opts;
+    opts.volume         = 1.0f;
+    opts.outputChannels = outputMask;
+    if (loop) {
+        opts.loop      = true;
+        opts.loopCount = LOOP_INFINITE;
+    }
+    // Preload-into-memory (2026-05-23): gun shot WAVs are small (typ.
+    // 200 ms – 2 s, well under the 2 s @ 48 kHz preload cap) and they
+    // loop hot during sustained fire.  Asking the mixer to cache the
+    // whole sample in PSRAM means the loop wrap never touches SD —
+    // critical because the engine-running loop is reading SD on the
+    // SAME card and the per-wrap seek was making gun audio stutter
+    // (operator-reported, 2026-05-23).  Mixer falls back to streaming
+    // if the file exceeds the cap OR PSRAM headroom is tight.
+    opts.preloadIntoMemory = true;
+    const bool queued = TMixer::instance().playAsync(audioChannel, soundPath, opts);
+    SFX_LOG_INFO("[gun-audio] PLAY ch=%u %s loop=%d mask=0x%02x → queued=%d",
+                 (unsigned)audioChannel, soundPath, (int)loop,
+                 (unsigned)outputMask, (int)queued);
 #else
-    (void)soundPath; (void)audioChannel; (void)outputMask;
+    (void)soundPath; (void)audioChannel; (void)outputMask; (void)loop;
 #endif
 }
 
@@ -396,10 +455,17 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::commitBatchTrampo
 
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
 void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::shotEventTrampoline(
-        void* ctx, uint8_t id, const char* soundPath,
-        uint8_t audioChannel, uint8_t outputMask) {
+        void* ctx, uint8_t id) {
     auto* self = static_cast<GunFxServicePolicyT*>(ctx);
-    if (self) self->onShotFired(id, soundPath, audioChannel, outputMask);
+    if (self) self->onShotEvent(id);
+}
+
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::audioCmdTrampoline(
+        void* ctx, const char* soundPath, uint8_t audioChannel,
+        uint8_t outputMask, bool loop) {
+    auto* self = static_cast<GunFxServicePolicyT*>(ctx);
+    if (self) self->onAudioCmd(soundPath, audioChannel, outputMask, loop);
 }
 
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>

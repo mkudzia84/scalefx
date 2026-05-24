@@ -22,19 +22,77 @@
 #include <serial/diag_log.h>
 #include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
 
+#include "../audio_layout.h"      // HubFxLayout — named audio-channel slots
 #include "../lightfx/light_event.h"
 
 namespace hubfx::effects::gunfx {
 
 // ─── Public API ─────────────────────────────────────────────────────
 
-inline void GunUnit::fireOnce() {
+inline void GunUnit::fireOnce(uint8_t rofOverride) {
+    // Single-shot path: visuals + ONE-SHOT audio (loop=false).  Used
+    // both by external `GUN_FIRE_ONCE` and by `startFiring()` for the
+    // first audible kick BEFORE the sustained loop takes over.
+    //
+    // ROF resolution priority (2026-05-24):
+    //   1. explicit `rofOverride` (valid index < numRofItems)
+    //   2. currently-armed `_activeRofIndex` (set by the ROF selector
+    //      channel via `onRofSelectorUs`)
+    //   3. first declared item, when items exist and nothing is armed
+    //      (the operator-press path: GUI Fire button when the selector
+    //      stick is between bands).  This is the fix for the regression
+    //      "fire button does nothing when a selector channel is bound" —
+    //      the FIRE_ONCE wire packet should ALWAYS produce a shot, even
+    //      if the operator hasn't dialled the stick into a band yet.
+    const RofItem* item = nullptr;
+    uint8_t        usedIdx = 0xFF;
+    if (rofOverride < _spec.numRofItems) {
+        usedIdx = rofOverride;
+        item    = &_spec.rofItems[rofOverride];
+    } else if (_activeRofIndex < _spec.numRofItems) {
+        usedIdx = _activeRofIndex;
+        item    = &_spec.rofItems[_activeRofIndex];
+    } else if (_spec.numRofItems > 0) {
+        usedIdx = 0;
+        item    = &_spec.rofItems[0];
+    }
+    SFX_LOG_INFO("[gun] %u: fireOnce — send=%d audio=%d muzzle.kind=%u rofOverride=%u rof=%u",
+                 _spec.id, _send != nullptr, _audio != nullptr,
+                 (unsigned)_spec.muzzleFlashPort.portKind,
+                 (unsigned)rofOverride, (unsigned)usedIdx);
+
     if (_begin && _sendCtx) _begin(_sendCtx);
     doShot();
     if (_commit && _sendCtx) _commit(_sendCtx);
+
+    if (_audio && _audioCtx) {
+        const char* sound = (item && item->soundPath[0]) ? item->soundPath : nullptr;
+        const uint8_t mask = (item && item->outputMask) ? item->outputMask : 0x03;
+        const uint8_t channel = (_spec.id & 1)
+            ? audio::HubFxLayout::GunB
+            : audio::HubFxLayout::GunA;
+        if (sound) {
+            _audio(_audioCtx, sound, channel, mask, /*loop=*/false);
+        } else {
+            SFX_LOG_WARN("[gun] %u: fireOnce — no sound (item=%p resolvedIdx=%u)",
+                         _spec.id, (const void*)item, (unsigned)usedIdx);
+        }
+    }
 }
 
-inline void GunUnit::startFiring(uint16_t rpmOverride) {
+inline void GunUnit::startFiring(uint16_t rpmOverride, uint8_t rofOverride) {
+    // ROF resolution mirrors `fireOnce()` — explicit override > armed
+    // selector > first declared item.  When a valid override is given,
+    // _activeRofIndex is FORCED for the duration of the burst so the
+    // auto-fire `update()` gate (`activeRof() != nullptr`) reliably
+    // fires shots.  Without this, GUI Auto-Fire with the RC stick
+    // between bands would set _firing=true but never produce shots.
+    if (rofOverride < _spec.numRofItems) {
+        _activeRofIndex = rofOverride;
+    } else if (_activeRofIndex >= _spec.numRofItems && _spec.numRofItems > 0) {
+        _activeRofIndex = 0;            // fall back to first item
+    }
+
     uint16_t rpm = rpmOverride;
     if (rpm == 0) {
         const RofItem* item = activeRof();
@@ -44,26 +102,66 @@ inline void GunUnit::startFiring(uint16_t rpmOverride) {
     if (_shotIntervalMs < 20) _shotIntervalMs = 20;   // cap to 3000 RPM
     _nextShotMs = sfx_core::EffectClock::instance().nowMs();   // fire first immediately
     _firing = true;
-    SFX_LOG_INFO("[gun] %u: auto-fire @%u ms / shot (rof=%u)",
+
+    // Sustained-fire audio (2026-05-23): instead of re-triggering the
+    // shot WAV every auto-fire tick (which collides with the WAV's own
+    // baked-in cadence and stutters), start the WAV ONCE with loop=true
+    // and let it play continuously until stopFiring() stops the channel.
+    // Auto-fire ticks below (doAutoFireShot) still broadcast GUN_SHOT_EVENT
+    // for the Studio mirror but DO NOT touch audio.
+    if (_audio && _audioCtx) {
+        const RofItem* item = activeRof();
+        const char* sound = (item && item->soundPath[0]) ? item->soundPath : nullptr;
+        const uint8_t mask = (item && item->outputMask) ? item->outputMask : 0x03;
+        const uint8_t channel = (_spec.id & 1)
+            ? audio::HubFxLayout::GunB
+            : audio::HubFxLayout::GunA;
+        if (sound) {
+            _audio(_audioCtx, sound, channel, mask, /*loop=*/true);
+        }
+    }
+
+    SFX_LOG_INFO("[gun] %u: auto-fire @%u ms / shot (rof=%u, override=%u)",
                  _spec.id, (unsigned)_shotIntervalMs,
-                 (unsigned)_activeRofIndex);
+                 (unsigned)_activeRofIndex, (unsigned)rofOverride);
 }
 
 inline void GunUnit::stopFiring() {
     if (!_firing) return;
     _firing = false;
+
+    // Stop the looping shot WAV — passes nullptr as the sound path,
+    // which the service trampoline interprets as `stopAsync(channel)`.
+    if (_audio && _audioCtx) {
+        const uint8_t channel = (_spec.id & 1)
+            ? audio::HubFxLayout::GunB
+            : audio::HubFxLayout::GunA;
+        _audio(_audioCtx, nullptr, channel, 0, false);
+    }
+
     SFX_LOG_INFO("[gun] %u: stop firing", _spec.id);
 }
 
 inline void GunUnit::armSmoke(bool armed) {
     if (armed == _smokeArmed) return;
     _smokeArmed = armed;
-    if (_spec.smoke.heaterPort.portKind == 0) {
-        SFX_LOG_WARN("[gun] %u: smoke arm but no heater configured", _spec.id);
-        return;
-    }
     if (_begin && _sendCtx) _begin(_sendCtx);
-    commandHeater(armed);
+    if (_spec.smoke.heaterPort.portKind != 0) {
+        commandHeater(armed);
+    }
+    // Smoke-OFF MUST cut the fan immediately regardless of mode or
+    // pending puff timers (2026-05-24: "smoke fan only when smoke ON
+    // AND trigger ON").  Without this an in-flight FN_CONTINUOUS run
+    // or a queued puff could keep the fan spinning after the operator
+    // hit Smoke Off.  Also clears the puff-end timer + pending-burst
+    // request so a fresh `armSmoke(true) + trigger` sequence starts
+    // from a clean state.
+    if (!armed && _spec.smoke.fanPort.portKind != 0) {
+        commandFanPct(0);
+        _fanContinuous   = false;
+        _fanPuffEndMs    = 0;
+        _pendingFanBurst = false;
+    }
     if (_commit && _sendCtx) _commit(_sendCtx);
     SFX_LOG_INFO("[gun] %u: smoke %s", _spec.id, armed ? "armed" : "off");
 }
@@ -74,10 +172,17 @@ inline void GunUnit::update(uint32_t nowMs, uint32_t dtMs) {
     tickManualTimeout(nowMs);
 
     // Auto-fire schedule. Gated on `_firing` + an armed ROF item (or
-    // a synthetic default when no ROF channel is bound).
+    // a synthetic default when no ROF channel is bound).  We call
+    // `doAutoFireShot()` — visuals + GUN_SHOT_EVENT broadcast — but NOT
+    // `fireOnce()`, because that would re-trigger the shot WAV on every
+    // tick and collide with the loop started by `startFiring()`.  The
+    // WAV's own RPM cadence carries the audio; this loop only handles
+    // the visual + smoke side.
     if (_firing && activeRof() != nullptr
             && (int32_t)(nowMs - _nextShotMs) >= 0) {
-        fireOnce();
+        if (_begin && _sendCtx) _begin(_sendCtx);
+        doShot();                                   // visuals + SHOT_EVENT
+        if (_commit && _sendCtx) _commit(_sendCtx);
         _nextShotMs = nowMs + _shotIntervalMs;
         ++_shotsThisSession;
         // FN_PUFF_PER_SHOT: pulse the fan once per shot.
@@ -268,21 +373,25 @@ inline void GunUnit::doShot() {
         _recoilReturnAtMs = sfx_core::EffectClock::instance().nowMs()
                           + _spec.recoilHoldMs;
     }
+    // Visual-only broadcast — the audio path lives on a separate
+    // `_audio` callback (started by fireOnce/startFiring, stopped by
+    // stopFiring) so the looping shot WAV during sustained fire isn't
+    // re-triggered on every tick.  Studio's verbose mirror still ticks
+    // its per-shot indicator from this event.
     if (_shot && _shotCtx) {
-        const RofItem* item = activeRof();
-        const char* sound = (item && item->soundPath[0]) ? item->soundPath : nullptr;
-        // Audio channel mask — Phase 2 uses both DAC channels for every
-        // gun shot.  Future per-gun audio routing (left vs right speaker
-        // per gun) is a v3 feature; for now keep behaviour matching
-        // EngineFx (`AudioChannel::ALL`).
-        _shot(_shotCtx, _spec.id, sound,
-              /*audioChannel=*/2, /*outputMask=*/0x03);
+        _shot(_shotCtx, _spec.id);
     }
 }
 
 inline void GunUnit::commandFlash() {
-    if (!_send) return;
-    if (_spec.muzzleFlashPort.portKind == 0) return;
+    if (!_send) {
+        SFX_LOG_WARN("[gun] %u: commandFlash — _send is null, skipping", _spec.id);
+        return;
+    }
+    if (_spec.muzzleFlashPort.portKind == 0) {
+        SFX_LOG_WARN("[gun] %u: commandFlash — muzzleFlashPort.portKind=0 (no muzzle port configured)", _spec.id);
+        return;
+    }
 
     using hubfx::effects::lightfx::LightEvent;
     using hubfx::effects::lightfx::serializeQueueLoad;
@@ -373,6 +482,13 @@ inline void GunUnit::commandServoTargetUs(const PortRef& port, uint16_t us) {
 
 inline void GunUnit::scheduleFanPuff(uint32_t nowMs) {
     if (_spec.smoke.fanPort.portKind == 0) return;
+    // Smoke-fan invariant: ON only when smoke is armed AND the gun is
+    // actively firing (or in the act of firing — single-shot pulses
+    // come through the manual `_pendingFanBurst` path which is
+    // operator-driven and bypasses this gate).  Mode-driven puffs
+    // (FN_PUFF_PER_SHOT, FN_PUFF_ON_FIRE_ACTIVE) all flow through
+    // here, so this single guard covers every automatic path.
+    if (!_smokeArmed || !_firing) return;
     const uint16_t ms = _spec.smoke.fanPuffMs ? _spec.smoke.fanPuffMs : 200;
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandFanPct(100);
@@ -383,10 +499,18 @@ inline void GunUnit::scheduleFanPuff(uint32_t nowMs) {
 inline void GunUnit::tickFan(uint32_t nowMs) {
     if (_spec.smoke.fanPort.portKind == 0) return;
 
-    // Pending manual one-shot burst.
+    // Pending operator-driven manual burst (GUN_MANUAL_SET FAN_BURST flag).
+    // This BYPASSES the smoke-armed + firing gate because puppet mode
+    // is explicitly an operator override — the test panel uses it to
+    // verify the fan independent of the rest of the state machine.
+    // The puff still auto-turns-off via `_fanPuffEndMs` below.
     if (_pendingFanBurst) {
         _pendingFanBurst = false;
-        scheduleFanPuff(nowMs);
+        const uint16_t ms = _spec.smoke.fanPuffMs ? _spec.smoke.fanPuffMs : 200;
+        if (_begin && _sendCtx) _begin(_sendCtx);
+        commandFanPct(100);
+        if (_commit && _sendCtx) _commit(_sendCtx);
+        _fanPuffEndMs = nowMs + ms;
         return;
     }
 
@@ -398,7 +522,11 @@ inline void GunUnit::tickFan(uint32_t nowMs) {
         if (_commit && _sendCtx) _commit(_sendCtx);
     }
 
-    // Continuous mode + fire-active edges.
+    // Continuous mode + fire-active edges (Rule 2026-05-24 invariant:
+    // fan ON only when `_smokeArmed && _firing`).  The triple gate
+    // here is the authoritative check for FN_CONTINUOUS; mode-driven
+    // puffs (FN_PUFF_PER_SHOT, FN_PUFF_ON_FIRE_ACTIVE) flow through
+    // `scheduleFanPuff()` which carries the same gate.
     const bool wantContinuous =
         _smokeArmed && _spec.smoke.fanMode == SmokeConfig::FN_CONTINUOUS && _firing;
     if (wantContinuous != _fanContinuous) {

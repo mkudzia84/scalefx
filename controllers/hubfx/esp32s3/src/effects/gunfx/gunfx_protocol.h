@@ -22,14 +22,37 @@
 namespace hubfx::effects::gunfx {
 
 namespace GunPacket {
-    /// `[id:u8]` → ACK / NACK.  Fires exactly one shot.
+    /// `[id:u8]                  ` → ACK / NACK.  Fires exactly one shot using
+    /// the gun's currently-ARMED ROF (the band the selector channel is in).
+    /// `[id:u8][rofIndex:u8]     ` → ACK (Rule 11 extension 2026-05-24).
+    ///   Forces a specific ROF index for THIS shot — caller uses
+    ///   `0xFF` to mean "use currently armed".  `rofIndex` ≥ numRofItems
+    ///   NACKs `GunError::ROF_OUT_OF_RANGE`.
+    /// Operator-facing motivation: when an RC selector channel is bound
+    /// but the stick is between bands (`activeRof() == nullptr`), the
+    /// 1-byte form has no item to use → no audio / no recoil-axis pick.
+    /// The 2-byte form lets the GUI's Fire button pick from a dropdown
+    /// so manual test always has a concrete program.
     constexpr uint8_t GUN_FIRE_ONCE     = 0xCC;
-    /// `[id:u8][rpm:u16LE]` → ACK.  Begins auto-fire at the given RPM
-    /// (0 falls back to `GunDef::defaultIntervalMs`).
+    /// `[id:u8][rpm:u16LE]              ` → ACK.  Auto-fire at the given RPM
+    /// (0 → use the currently-armed ROF's rpm; falls back to 600 RPM).
+    /// `[id:u8][rpm:u16LE][rofIndex:u8] ` → ACK (Rule 11 extension 2026-05-24).
+    ///   Forces an ROF index for the burst — caller uses `0xFF` to mean
+    ///   "use the selector-channel arming".  Same NACK rules as
+    ///   GUN_FIRE_ONCE.  When set, sustained-fire continues to use the
+    ///   forced index even if the operator wiggles the selector stick;
+    ///   the next `GUN_STOP_FIRING` clears it.
     constexpr uint8_t GUN_START_FIRING  = 0xCD;
-    /// `[id:u8]` → ACK.  Stops auto-fire.
+    /// `[id:u8]` → ACK.  Stops auto-fire.  Also clears any forced ROF
+    /// index from a `GUN_START_FIRING` with the 4-byte form.
     constexpr uint8_t GUN_STOP_FIRING   = 0xCE;
-    /// `[id:u8][armed:u8]` → ACK.  Enable / disable smoke heater.
+    /// `[id:u8][armed:u8]` → ACK.  Master smoke power switch.
+    /// `armed=1` arms the heater (PWM goes high per the role's
+    /// elementMv scaling) AND permits the fan to run when the gun is
+    /// firing.  `armed=0` cuts both — heater PWM=0 and fan PWM=0
+    /// regardless of fan mode (Rule 2026-05-24: smoke fan runs ONLY
+    /// when smoke is on AND trigger is held; previously the fan
+    /// could free-run on FN_CONTINUOUS when only smoke was armed).
     constexpr uint8_t GUN_SMOKE_ARM     = 0xCF;
     /// `[]` → GUN_STATUS_RESP
     constexpr uint8_t GUN_STATUS_REQ    = 0xD0;
@@ -108,19 +131,25 @@ namespace GunMode {
 // no collision today but inconsistent with the error-range spec;
 // relocated as part of the comprehensive error-code cleanup.)
 namespace GunError {
-    constexpr uint8_t UNKNOWN_ID     = 0x30;
-    constexpr uint8_t GUN_TABLE_FULL = 0x31;
+    constexpr uint8_t UNKNOWN_ID         = 0x30;
+    constexpr uint8_t GUN_TABLE_FULL     = 0x31;
     /// Phase 2 will set the corresponding subsystem up; Phase 1 returns
     /// this code so Studio sees the protocol round-trip work end-to-end
     /// while the firmware behaviour is still a stub.
-    constexpr uint8_t NOT_IMPLEMENTED = 0x32;
+    constexpr uint8_t NOT_IMPLEMENTED    = 0x32;
+    /// Operator-supplied rofIndex on FIRE_ONCE / START_FIRING is ≥
+    /// `_spec.numRofItems`.  Returned instead of silently using item 0
+    /// so the GUI surfaces the bad pick (typically: dropdown out-of-date
+    /// after a config reload removed an item).
+    constexpr uint8_t ROF_OUT_OF_RANGE   = 0x33;
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {
-            case UNKNOWN_ID:      return "Unknown gun id";
-            case GUN_TABLE_FULL:  return "Gun registry full";
-            case NOT_IMPLEMENTED: return "Not implemented (Phase 1 stub)";
-            default:              return nullptr;
+            case UNKNOWN_ID:        return "Unknown gun id";
+            case GUN_TABLE_FULL:    return "Gun registry full";
+            case NOT_IMPLEMENTED:   return "Not implemented (Phase 1 stub)";
+            case ROF_OUT_OF_RANGE:  return "ROF index out of range";
+            default:                return nullptr;
         }
     }
 }

@@ -56,6 +56,10 @@ struct RofItem {
     uint16_t bandHiUs    = 0;            ///< 0 = unbounded high
     uint16_t rpm         = 600;          ///< rounds per minute when armed
     char     soundPath[64] = {};         ///< per-shot sample played each round
+    /// Stereo routing — bit 0 = left, bit 1 = right.  0x03 (both) is
+    /// the default; per-ROF so different gun bursts can pan to one
+    /// side (e.g. a wing-mounted Vulcan vs a turret).
+    uint8_t  outputMask  = 0x03;
 };
 
 /// Smoke-cartridge driver: separate heater + fan, each optional.

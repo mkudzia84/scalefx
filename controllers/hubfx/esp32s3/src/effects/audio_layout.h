@@ -41,19 +41,28 @@ struct HubFxLayout {
     static constexpr uint8_t EngineB = 2;
 
     // ── GunFx ──────────────────────────────────────────────────────
-    /// One gun slot for now.  Multi-gun support adds Gun1, Gun2 etc.
-    /// here without touching effect code.
-    static constexpr uint8_t Gun0    = 3;
+    /// A/B pair mirrors the EngineFx pattern — two guns can fire at
+    /// the same time without stealing each other's channel.  GunFx
+    /// routes shots by gun id: even ids → GunA, odd ids → GunB.
+    /// (Was a single `Gun0` originally; bumped to a pair after we
+    /// found the literal-2 collision with EngineB on 2026-05-23.)
+    static constexpr uint8_t GunA    = 3;
+    static constexpr uint8_t GunB    = 4;
+
+    // ── Reserved ───────────────────────────────────────────────────
+    /// Next slot reserved for a follow-up effect that hasn't picked a
+    /// name yet — keeps the gun pair contiguous and prevents a
+    /// new effect from grabbing this position by accident.  Rename
+    /// when allocated; do NOT use as a generic spare.
+    static constexpr uint8_t Reserved = 5;
 
     // ── Spare ──────────────────────────────────────────────────────
-    /// 4..7 reserved for future ambient / music / voice / mission
-    /// audio.  Drop-in: rename one of these as new effects land.
-    static constexpr uint8_t Spare0  = 4;
-    static constexpr uint8_t Spare1  = 5;
-    static constexpr uint8_t Spare2  = 6;
-    static constexpr uint8_t Spare3  = 7;
+    /// 6..7 free for future ambient / music / voice / mission audio.
+    /// Drop-in: rename one of these as new effects land.
+    static constexpr uint8_t Spare0  = 6;
+    static constexpr uint8_t Spare1  = 7;
 
-    static_assert(Spare3 < AUDIO_MAX_CHANNELS,
+    static_assert(Spare1 < AUDIO_MAX_CHANNELS,
                   "audio layout exceeds mixer width — bump AUDIO_MAX_CHANNELS or drop a slot");
 };
 
@@ -65,8 +74,8 @@ namespace detail {
 constexpr bool hubFxLayoutNoDuplicates() {
     constexpr uint8_t slots[] = {
         HubFxLayout::Alert,   HubFxLayout::EngineA, HubFxLayout::EngineB,
-        HubFxLayout::Gun0,    HubFxLayout::Spare0,  HubFxLayout::Spare1,
-        HubFxLayout::Spare2,  HubFxLayout::Spare3,
+        HubFxLayout::GunA,    HubFxLayout::GunB,    HubFxLayout::Reserved,
+        HubFxLayout::Spare0,  HubFxLayout::Spare1,
     };
     constexpr size_t n = sizeof(slots) / sizeof(slots[0]);
     for (size_t i = 0; i < n; ++i) {

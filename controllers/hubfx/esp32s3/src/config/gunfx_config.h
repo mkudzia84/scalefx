@@ -195,6 +195,10 @@ inline bool parseGunSpec(const YamlNode* gn, hubfx::effects::gunfx::GunSpec& g) 
                 const char* sp = it->childAs<const char*>("sound", "");
                 std::memset(r.soundPath, 0, sizeof(r.soundPath));
                 if (sp && sp[0]) std::strncpy(r.soundPath, sp, sizeof(r.soundPath) - 1);
+                // Stereo routing (Rule 11 append-only — defaults to both
+                // when the YAML omits the field).
+                r.outputMask = (uint8_t)it->template childAs<int32_t>("output_mask", 0x03);
+                if (r.outputMask == 0) r.outputMask = 0x03;
                 g.numRofItems++;
             }
         }

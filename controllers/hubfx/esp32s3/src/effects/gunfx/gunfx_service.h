@@ -121,19 +121,27 @@ private:
 
     void emitVerboseStatus(uint8_t unitIdx, uint32_t nowMs);
 
-    // Per-shot fan-out: emit SHOT_EVENT + optionally play firing sound.
-    void onShotFired(uint8_t id, const char* soundPath,
-                     uint8_t audioChannel, uint8_t outputMask);
+    // Per-shot fan-out: visual broadcast (GUN_SHOT_EVENT) ONLY — used
+    // for every tick (one-shot, auto-fire tick, sustained-fire start).
+    void onShotEvent(uint8_t id);
+    // Audio command — `soundPath != nullptr` starts playback (looped
+    // when `loop=true`, one-shot when false); `soundPath == nullptr`
+    // stops the channel.  Called from fireOnce / startFiring /
+    // stopFiring on the gun unit so the same audio surface handles
+    // single shots AND the looping sustained-fire sample.
+    void onAudioCmd(const char* soundPath, uint8_t audioChannel,
+                    uint8_t outputMask, bool loop);
 
     static bool sendRoleCmdTrampoline(void* ctx, const PortRef& addr,
                                       uint8_t innerType,
                                       const uint8_t* p, size_t len);
     static void beginBatchTrampoline (void* ctx);
     static void commitBatchTrampoline(void* ctx);
-    static void shotEventTrampoline  (void* ctx, uint8_t id,
-                                      const char* soundPath,
+    static void shotEventTrampoline  (void* ctx, uint8_t id);
+    static void audioCmdTrampoline   (void* ctx, const char* soundPath,
                                       uint8_t audioChannel,
-                                      uint8_t outputMask);
+                                      uint8_t outputMask,
+                                      bool loop);
 
     // Per-gun input-callback contexts. One slot per (unit, input kind);
     // dispatcher subscriptions take a TriggerInput* + a void* ctx, so

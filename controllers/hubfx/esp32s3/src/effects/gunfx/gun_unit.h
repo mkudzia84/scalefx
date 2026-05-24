@@ -76,17 +76,32 @@ public:
                                    uint8_t innerType,
                                    const uint8_t* payload, size_t len);
     using BatchFn       = void (*)(void* ctx);
-    using ShotEventFn   = void (*)(void* ctx, uint8_t id,
+    /// Per-shot visual broadcast — `GUN_SHOT_EVENT` to Studio + diag.
+    /// Called for EVERY shot (one-shot fire, auto-fire tick, sustained
+    /// start) so the verbose-status mirror sees individual shot
+    /// pulses even when the audio sample is looping.
+    using ShotEventFn   = void (*)(void* ctx, uint8_t id);
+    /// Audio-channel command — `soundPath != nullptr` starts playback
+    /// (one-shot when loop=false, infinite loop when loop=true);
+    /// `soundPath == nullptr` stops the channel.  Channel + output
+    /// mask are picked at the gun unit (id-parity routing onto
+    /// `HubFxLayout::GunA/B`).  Sustained-fire feature 2026-05-23
+    /// uses this to play the shot WAV on a loop while the trigger
+    /// is held — auto-fire ticks no longer re-trigger audio, so the
+    /// 200 / 550 RPM cadence baked into the WAV runs cleanly.
+    using AudioCmdFn    = void (*)(void* ctx,
                                    const char* soundPath,
                                    uint8_t audioChannel,
-                                   uint8_t outputMask);
+                                   uint8_t outputMask,
+                                   bool loop);
 
     GunUnit() = default;
 
     void configure(const GunSpec& spec,
                    SendRoleCmdFn sendFn, void* sendCtx,
                    BatchFn beginFn, BatchFn commitFn,
-                   ShotEventFn shotFn = nullptr, void* shotCtx = nullptr) {
+                   ShotEventFn shotFn  = nullptr, void* shotCtx  = nullptr,
+                   AudioCmdFn  audioFn = nullptr, void* audioCtx = nullptr) {
         _spec     = spec;
         _send     = sendFn;
         _sendCtx  = sendCtx;
@@ -94,6 +109,8 @@ public:
         _commit   = commitFn;
         _shot     = shotFn;
         _shotCtx  = shotCtx;
+        _audio    = audioFn;
+        _audioCtx = audioCtx;
         _firing   = false;
         _smokeArmed = false;
         _shotsThisSession = 0;
@@ -128,8 +145,21 @@ public:
     const ManualOverride& manual() const { return _manual; }
     uint32_t shotsThisSession() const { return _shotsThisSession; }
 
-    void fireOnce();
-    void startFiring(uint16_t rpmOverride);   ///< 0 → use armed RofItem's rpm or default
+    /// Fire ONE shot.  `rofOverride == 0xFF` (the default) means "use
+    /// the gun's currently-armed ROF" — same behaviour as the legacy
+    /// single-arg form.  Any value `< numRofItems` forces THIS shot to
+    /// pull its sound + rpm from the named item; out-of-range values
+    /// fall back to the armed index (the caller / wire handler is
+    /// responsible for NACK'ing bad indices before reaching here).
+    void fireOnce(uint8_t rofOverride = 0xFF);
+    /// Start auto-fire.  `rpmOverride == 0` falls back to the armed
+    /// (or forced) ROF's rpm; `rofOverride == 0xFF` keeps the
+    /// selector-channel arming, any other valid index forces it for
+    /// the duration (cleared on `stopFiring`).  This lets the GUI
+    /// "Auto-Fire" button pick an ROF from a dropdown so the test
+    /// always has a concrete program even when the selector stick
+    /// is between bands.
+    void startFiring(uint16_t rpmOverride, uint8_t rofOverride = 0xFF);
     void stopFiring();
     void armSmoke(bool armed);
 
@@ -241,6 +271,8 @@ private:
     BatchFn       _commit   = nullptr;
     ShotEventFn   _shot     = nullptr;
     void*         _shotCtx  = nullptr;
+    AudioCmdFn    _audio    = nullptr;
+    void*         _audioCtx = nullptr;
 };
 
 }  // namespace hubfx::effects::gunfx

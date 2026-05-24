@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.12.0-hubfx"
-#define BUILD_NUMBER     215
+#define BUILD_NUMBER     236
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -548,6 +548,7 @@ void setup() {
     kHubFx   .loadOrFallback();
     kAlerts  .loadOrFallback();
     kEngineFx.loadOrFallback();
+    kGunFx   .loadOrFallback();   // was missing — on-device /gunfx.yaml never applied at boot, so GUN_FIRE_ONCE(id=0) hit UNKNOWN_ID (2026-05-23)
     kLanding .loadOrFallback();
     kGearCtrl.loadOrFallback();
     kLightFx .loadOrFallback();
