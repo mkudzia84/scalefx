@@ -1,0 +1,46 @@
+# helicopter_landing — Approach/landing configuration (Airbus-style).
+#
+# Same phase-locked anti-collision pattern as helicopter_flight (single-
+# flash beacon + position-light group at t=0; double-flash strobe at
+# mid-period, non-overlapping; shared 1000 ms period) PLUS the landing
+# light deployed and on.
+#
+# Landing light goes through the LandingLightService (servo + bulb on
+# its own service entity), driven via `landing_bindings:` below — NOT
+# as a raw LightFx track.  Activating this program flips landing-light
+# ID 0 ON: servo deploys, then the bulb lights.
+
+schema_version: 2
+
+tracks:
+  - channel: "Red beacon"
+    loop: true
+    events:
+      - { kind: fade_in,  brightness_pct: 100, duration_ms: 300 }
+      - { kind: fade_out, brightness_pct: 100, duration_ms: 300 }
+      - { kind: "off",                          duration_ms: 400 }
+
+  - channel: "Position lights"
+    loop: true
+    events:
+      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
+      - { kind: "off",                       duration_ms: 920 }
+
+  - channel: "White tail"
+    loop: true
+    events:
+      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
+      - { kind: "off",                       duration_ms: 920 }
+
+  - channel: "White strobe"
+    loop: true
+    events:
+      - { kind: "off",                       duration_ms: 500 }
+      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }
+      - { kind: "off",                       duration_ms:  80 }
+      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }
+      - { kind: "off",                       duration_ms: 300 }
+
+# Landing light deploys + lights via the LandingLightService.
+landing_bindings:
+  - { id: 0, state: "on" }

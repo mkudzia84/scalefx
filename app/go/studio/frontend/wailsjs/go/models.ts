@@ -475,6 +475,204 @@ export namespace expanders {
 
 export namespace main {
 	
+	export class ProgramLandingBindingDTO {
+	    id: number;
+	    state: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProgramLandingBindingDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.state = source["state"];
+	    }
+	}
+	export class PortRefDTO {
+	    board: string;
+	    guid: string;
+	    kind: string;
+	    idx: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PortRefDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.board = source["board"];
+	        this.guid = source["guid"];
+	        this.kind = source["kind"];
+	        this.idx = source["idx"];
+	    }
+	}
+	export class ProgramChannelDTO {
+	    name: string;
+	    port: PortRefDTO;
+	    brightnessPct: number;
+	    loop: boolean;
+	    events: ProgramEventDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ProgramChannelDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.port = this.convertValues(source["port"], PortRefDTO);
+	        this.brightnessPct = source["brightnessPct"];
+	        this.loop = source["loop"];
+	        this.events = this.convertValues(source["events"], ProgramEventDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ProgramEventDTO {
+	    kind: string;
+	    durationMs: number;
+	    cycleMs: number;
+	    brightnessPct: number;
+	    minPct: number;
+	    maxPct: number;
+	    flashPct: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProgramEventDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.durationMs = source["durationMs"];
+	        this.cycleMs = source["cycleMs"];
+	        this.brightnessPct = source["brightnessPct"];
+	        this.minPct = source["minPct"];
+	        this.maxPct = source["maxPct"];
+	        this.flashPct = source["flashPct"];
+	    }
+	}
+	export class TrackDTO {
+	    channel: string;
+	    brightnessPct: number;
+	    loop: boolean;
+	    events: ProgramEventDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TrackDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.channel = source["channel"];
+	        this.brightnessPct = source["brightnessPct"];
+	        this.loop = source["loop"];
+	        this.events = this.convertValues(source["events"], ProgramEventDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ProgramDTO {
+	    schemaVersion: number;
+	    tracks: TrackDTO[];
+	    channels: ProgramChannelDTO[];
+	    landingBindings: ProgramLandingBindingDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ProgramDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schemaVersion = source["schemaVersion"];
+	        this.tracks = this.convertValues(source["tracks"], TrackDTO);
+	        this.channels = this.convertValues(source["channels"], ProgramChannelDTO);
+	        this.landingBindings = this.convertValues(source["landingBindings"], ProgramLandingBindingDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ActiveProgramDTO {
+	    name: string;
+	    program: ProgramDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new ActiveProgramDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.program = this.convertValues(source["program"], ProgramDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ConnectionInfo {
 	    connected: boolean;
 	    initialized: boolean;
@@ -756,24 +954,6 @@ export namespace main {
 	}
 	
 	
-	export class PortRefDTO {
-	    board: string;
-	    guid: string;
-	    kind: string;
-	    idx: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new PortRefDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.board = source["board"];
-	        this.guid = source["guid"];
-	        this.kind = source["kind"];
-	        this.idx = source["idx"];
-	    }
-	}
 	export class FanDTO {
 	    port: PortRefDTO;
 	    elementMv: number;
@@ -1285,6 +1465,301 @@ export namespace main {
 	        this.portRailMv = source["portRailMv"];
 	    }
 	}
+	export class LandingActivationSource {
+	    mode: string;
+	    input: string;
+	    thresholdUs: number;
+	    hysteresisUs: number;
+	    program: string;
+	    whenProgram: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LandingActivationSource(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.input = source["input"];
+	        this.thresholdUs = source["thresholdUs"];
+	        this.hysteresisUs = source["hysteresisUs"];
+	        this.program = source["program"];
+	        this.whenProgram = source["whenProgram"];
+	    }
+	}
+	export class LandingLedDTO {
+	    port: PortRefDTO;
+	    brightnessPct: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LandingLedDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = this.convertValues(source["port"], PortRefDTO);
+	        this.brightnessPct = source["brightnessPct"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LandingServoDTO {
+	    port: PortRefDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new LandingServoDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = this.convertValues(source["port"], PortRefDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LandingLightDTO {
+	    id: number;
+	    name: string;
+	    owner: string;
+	    servos: LandingServoDTO[];
+	    openUs: number;
+	    closeUs: number;
+	    leds: LandingLedDTO[];
+	    activation: LandingActivationSource;
+	
+	    static createFrom(source: any = {}) {
+	        return new LandingLightDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.owner = source["owner"];
+	        this.servos = this.convertValues(source["servos"], LandingServoDTO);
+	        this.openUs = source["openUs"];
+	        this.closeUs = source["closeUs"];
+	        this.leds = this.convertValues(source["leds"], LandingLedDTO);
+	        this.activation = this.convertValues(source["activation"], LandingActivationSource);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LandingConfigDTO {
+	    schemaVersion: number;
+	    lights: LandingLightDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LandingConfigDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schemaVersion = source["schemaVersion"];
+	        this.lights = this.convertValues(source["lights"], LandingLightDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
+	export class LandingStatusDTO {
+	    id: number;
+	    phase: number;
+	    phaseName: string;
+	    owner: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LandingStatusDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.phase = source["phase"];
+	        this.phaseName = source["phaseName"];
+	        this.owner = source["owner"];
+	    }
+	}
+	export class LightEventInput {
+	    kind: string;
+	    durationMs: number;
+	    cycleMs: number;
+	    brightnessPct: number;
+	    minPct: number;
+	    maxPct: number;
+	    flashPct: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LightEventInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.durationMs = source["durationMs"];
+	        this.cycleMs = source["cycleMs"];
+	        this.brightnessPct = source["brightnessPct"];
+	        this.minPct = source["minPct"];
+	        this.maxPct = source["maxPct"];
+	        this.flashPct = source["flashPct"];
+	    }
+	}
+	export class ProgramSelectorRangeDTO {
+	    fromUs: number;
+	    toUs: number;
+	    program: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProgramSelectorRangeDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.fromUs = source["fromUs"];
+	        this.toUs = source["toUs"];
+	        this.program = source["program"];
+	    }
+	}
+	export class ProgramSelectorDTO {
+	    enabled: boolean;
+	    input: string;
+	    hysteresisUs: number;
+	    ranges: ProgramSelectorRangeDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ProgramSelectorDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.input = source["input"];
+	        this.hysteresisUs = source["hysteresisUs"];
+	        this.ranges = this.convertValues(source["ranges"], ProgramSelectorRangeDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LightFxConfigDTO {
+	    schemaVersion: number;
+	    enabled: boolean;
+	    masterBrightnessPct: number;
+	    programs: string[];
+	    programSelector: ProgramSelectorDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new LightFxConfigDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schemaVersion = source["schemaVersion"];
+	        this.enabled = source["enabled"];
+	        this.masterBrightnessPct = source["masterBrightnessPct"];
+	        this.programs = source["programs"];
+	        this.programSelector = this.convertValues(source["programSelector"], ProgramSelectorDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class MotorElementDTO {
 	    elementMv: number;
 	    scaling: number;
@@ -1330,6 +1805,64 @@ export namespace main {
 	        this.description = source["description"];
 	    }
 	}
+	
+	export class PresetLibraryEntry {
+	    name: string;
+	    source: string;
+	    category: string;
+	    note: string;
+	    program: ProgramDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new PresetLibraryEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.source = source["source"];
+	        this.category = source["category"];
+	        this.note = source["note"];
+	        this.program = this.convertValues(source["program"], ProgramDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
+	export class ProgramFileInfo {
+	    path: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProgramFileInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	    }
+	}
+	
+	
 	
 	
 	export class ReleaseInfo {
@@ -1428,6 +1961,7 @@ export namespace main {
 	        this.esptoolSource = source["esptoolSource"];
 	    }
 	}
+	
 
 }
 

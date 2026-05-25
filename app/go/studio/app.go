@@ -421,6 +421,7 @@ func (a *App) openLocked(port string) error {
 	a.installInputStream()
 	a.installEngineStream()
 	a.installGunFxStream()
+	a.installLandingStream()
 	a.installWireLogger()
 	return nil
 }

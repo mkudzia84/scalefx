@@ -1,0 +1,18 @@
+# /alerts.yaml — Default severity → sound mapping.
+#
+# Mirrors the `AlertsConfig` schema defaults — drop in as-is or tweak
+# per-severity volumes.  The `sound:` field is a snake-case name from
+# `controllers/hubfx/esp32s3/src/effects/alerts/alert_sound.h`'s
+# AlertSound enum (init | warning | error | critical | lightfx_detected
+# | lightfx_fw_error | gunfx_fw_error | gear_moving | battery_low).
+#
+# The mixer channel is board-fixed at HubFxLayout::Alert (== 0); not
+# configurable here.
+
+schema_version: 1
+enabled: true
+
+info:     { sound: init,     volume_pct: 70 }
+warning:  { sound: warning,  volume_pct: 80 }
+error:    { sound: error,    volume_pct: 90 }
+critical: { sound: critical, volume_pct: 100 }

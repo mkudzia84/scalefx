@@ -28,13 +28,15 @@
         detectBandOverlaps,
         type GunT, type GunFxConfigT, type RofItemT, type PortRefT,
     } from '../gunfx'
-    import ServoProfileEditor from '../components/ServoProfileEditor.svelte'
-    import { SetPortProfile } from '../../../wailsjs/go/main/App'
+    import ServoWidget from '../components/ServoWidget.svelte'
+    // SetPortProfile + markHubDirty now flow through ServoCalibrationDialog;
+    // GunFxPanel only READS the device-model profile to feed ServoWidget.
     import {
         deviceModel, type Port, formatPortRail,
         liveChannels, liveChannelKey, usToPct,
-        RoleKind, claimsForPort, markHubDirty,
+        RoleKind, claimsForPort,
     } from '../devicemodel'
+    import { effectClaims } from '../effect-claims'
     import { pickFile } from '../filepicker'
     import SoundRow from '../components/SoundRow.svelte'
     import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
@@ -292,50 +294,22 @@
     // wrappers — they stay available for a future debug overlay.
 
     // Rule 42 storage + Rule 44 editing surface — servo motion profile
-    // lives in /hubfx.yaml's ports[] block (canonical store).  The
-    // GunFx panel reads it via $deviceModel.ports[i].profile and writes
-    // it via SetPortProfile, which updates Studio's overlay, live-pushes
-    // ServoSetProfile to the role, and marks the hub config dirty so
-    // the next Save persists.  Hub-local + expander ports both supported.
+    // lives in /hubfx.yaml's ports[] block (canonical store).  Reading
+    // is via $deviceModel.ports[i].profile (overlay); writing is via
+    // the ServoCalibrationDialog (popup) which calls SetPortProfile +
+    // markHubDirty internally.  The Phase-1 inline schedulePushProfile
+    // helper was retired when the dialog replaced ServoProfileEditor
+    // (Rule 44 refresh, 2026-05-24).
     type ProfileT = { minUs: number; maxUs: number; centerUs: number; reversed: boolean; maxSpeedUsPerSec: number; maxAccelUsPerSec2: number; maxJerkUsPerSec3: number }
-    const defaultProfile = (): ProfileT => ({
-        minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false,
-        maxSpeedUsPerSec: 800, maxAccelUsPerSec2: 1600, maxJerkUsPerSec3: 0,
-    })
-    // Look up the profile already attached to a port (from /hubfx.yaml
-    // via the device model).  Returns a fresh default when the port has
-    // no profile set yet — first edit on this port creates the entry.
-    function profileForPort(port: PortRefT): ProfileT {
-        if (!port || !port.kind) return defaultProfile()
+    function profileForPort(port: PortRefT): ProfileT | null {
+        if (!port || !port.kind) return null
         const k = `${port.guid}|${port.kind}|${port.idx}`
-        const dm = $deviceModel
-        for (const p of dm.ports) {
+        for (const p of $deviceModel.ports) {
             if (`${p.ref.guid}|${p.kindName}|${p.ref.index}` === k && p.profile) {
                 return { ...p.profile }
             }
         }
-        return defaultProfile()
-    }
-    // PortKind byte for the SetPortProfile Wails call.  Only `servo`
-    // ever reaches this code path (profile is servo-only), so a single
-    // mapping is enough — see app/go/protocol/ports/ports.go for the
-    // canonical enum if other kinds ever need profile data.
-    const PORT_KIND_SERVO = 1
-    const profilePushTimers = new Map<string, ReturnType<typeof setTimeout>>()
-    function schedulePushProfile(port: PortRefT, prof: ProfileT) {
-        if (!port || port.kind !== 'servo') return
-        const key = `${port.guid}|${port.kind}|${port.idx}`
-        const existing = profilePushTimers.get(key)
-        if (existing) clearTimeout(existing)
-        profilePushTimers.set(key, setTimeout(() => {
-            profilePushTimers.delete(key)
-            // SetPortProfile updates the overlay + live-pushes to the
-            // role + emits devicemodel:changed (the panel re-renders
-            // with the new profile reflected in $deviceModel).
-            SetPortProfile(port.guid, PORT_KIND_SERVO, port.idx, prof)
-                .then(() => markHubDirty())   // profile persists into /hubfx.yaml ports[]
-                .catch(e => { error = String(e) })
-        }, 350))
+        return null
     }
 
     // ── Live µs lookup from a named channel (Rule 43 + 36) ─────────────
@@ -508,11 +482,14 @@
             if (k === curKey) return true
             // Exclude ports already in use by another gun in this draft.
             if (otherKeys.has(k)) return false
-            // Exclude ports claimed by some other effect via the domain
-            // system (LandingLight, GearControl, …).  GunFx doesn't
-            // claim through that system today, so an entry here means
-            // it's a non-gun consumer.
-            if (claimsForPort($deviceModel.claims, p.ref).length > 0) return false
+            // Exclude ports claimed by ANY other effect — hard claims
+            // (Domains tab) AND soft claims synthesized from sibling
+            // effect drafts (LightFx programs, Landing servos/LEDs,
+            // OTHER guns in this draft).  $effectClaims is the merged
+            // view; the `otherKeys.has(k)` check above already covers
+            // intra-gun overlap so we just exclude the cross-effect
+            // half here.  See lib/effect-claims.ts.
+            if (claimsForPort($effectClaims, p.ref).filter(c => c.domain !== 'gunfx').length > 0) return false
             return true
         })
     }
@@ -898,22 +875,25 @@
                                 </div>
                             {/if}
 
-                            <!-- Rule 42 storage + Rule 44 editing
-                                 surface: the profile data lives in
-                                 /hubfx.yaml's ports[] block (canonical),
-                                 but the editor renders here next to
-                                 the axis binding.  `profileForPort`
-                                 looks up the current profile from the
-                                 device-model overlay; `on:change` calls
-                                 `SetPortProfile` which updates the
-                                 overlay, live-pushes via
-                                 `ServoSetProfile`, and marks the hub
-                                 config dirty so the next Save persists
-                                 to /hubfx.yaml. -->
-                            <ServoProfileEditor
-                                profile={profileForPort(axis.servoPort)}
-                                label="{which.charAt(0).toUpperCase() + which.slice(1)} motion profile"
-                                on:change={(e) => schedulePushProfile(axis.servoPort, e.detail)} />
+                            <!-- Rule 44: per-servo profile editing,
+                                 popup-style (2026-05-24).  The inline
+                                 ServoProfileEditor was retired — the
+                                 form row stays compact; ServoWidget
+                                 carries a one-click ↔ Reversed toggle
+                                 and a ⚙ Calibrate… button that opens
+                                 the live-jog popup
+                                 (ServoCalibrationDialog).  Save in the
+                                 popup persists via SetPortProfile (live
+                                 push + /hubfx.yaml dirty) — same wire
+                                 path as before. -->
+                            <div class="form-row">
+                                <span class="field-label">Motion profile</span>
+                                <ServoWidget
+                                    port={axis.servoPort}
+                                    portLabel="{which.charAt(0).toUpperCase() + which.slice(1)} servo"
+                                    profile={profileForPort(axis.servoPort)}
+                                    busy={busy} />
+                            </div>
                         {/if}
                     </div>
                 {/each}

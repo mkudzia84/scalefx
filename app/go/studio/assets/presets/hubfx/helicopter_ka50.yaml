@@ -1,0 +1,113 @@
+# /hubfx.yaml — Helicopter (KA-50 reference build).
+#
+# Upload to LittleFS as /hubfx.yaml.  This file describes THE BOARD —
+# audio chip rail, the master enable matrix, and which RoleKind variant
+# each hub-local port hosts.  Effect details live in sibling sub-files:
+#
+#   /hubfx.yaml      ← THIS FILE (board: audio + features + port roles)
+#     ├── /alerts.yaml          severity → AlertSound + volumes
+#     ├── /enginefx.yaml        engine wiring + sounds (KA-50 turbine)
+#     ├── /landing.yaml         landing-light defs (nose searchlight)
+#     └── /lightfx.yaml         master brightness + program paths
+#           └── /lightfx/programs/<n>.yaml   one file per LED program
+#
+# `features.*` is the master kill-switch matrix.  `ports[]` declares
+# what physical role each port carries; effects reference ports via
+# {kind, idx} PortRefs and assume the role variant is already attached
+# (this file did it at boot).
+
+schema_version: 1
+
+audio:
+  codec_supply: 12v             # 3S LiPo PVDD (10–12.6 V).  12v | 15v | 20v | 24v.
+
+features:
+  alerts:         true          # /alerts.yaml
+  enginefx:       true          # /enginefx.yaml (KA-50 turbine)
+  landing_lights: true          # /landing.yaml  (nose searchlight)
+  lightfx:        true          # /lightfx.yaml  (FAA-compliant programs)
+  gears:          false         # KA-50 has skids — no retract gear
+  gunfx:          false         # turn on once 2A42 wiring is in
+
+# Port → role mapping.  Each entry attaches one RoleKind variant to one
+# physical port on the HubFX board.  Valid roles per port kind:
+#   pwm     →  led_animator | dc_motor | heater
+#   servo   →  servo_actuator   (always — listed here for labels only)
+#   hbridge →  bi_dc_motor
+#   input   →  rc_pwm_input | sbus_input | jeti_ex_input
+#
+# The `label` field is purely cosmetic — Studio shows it next to the
+# port in the topology view; firmware ignores it.
+ports:
+  # 8 PWM outputs (PCA9685 with per-rail INA226 V/I sense).
+  - { kind: pwm,   idx: 0, role: led_animator,   label: "Red rotating beacon" }
+  - { kind: pwm,   idx: 1, role: led_animator,   label: "White anti-collision strobe" }
+  - { kind: pwm,   idx: 2, role: led_animator,   label: "Red nav (port)" }
+  - { kind: pwm,   idx: 3, role: led_animator,   label: "Green nav (starboard)" }
+  - { kind: pwm,   idx: 4, role: led_animator,   label: "White nav (tail)" }
+  - { kind: pwm,   idx: 5, role: led_animator,   label: "Landing light bulb" }
+  - { kind: pwm,   idx: 6, role: led_animator,   label: "Cabin light" }
+  - { kind: pwm,   idx: 7, role: led_animator,   label: "Spare" }
+
+  # Servo outputs (IN_2..IN_12 actuator headers).  Servo ports always
+  # attach ServoActuator — listed for labelling.
+  - { kind: servo, idx: 0, role: servo_actuator, label: "Landing light deploy" }
+
+  # Multi-modal input (IN_1).  Role choice picks the protocol — change
+  # to sbus_input or jeti_ex_input for multi-channel telemetry inputs.
+  - { kind: input, idx: 0, role: sbus_input,     label: "RC receiver (SBUS)" }
+
+# Expander boards.  THE single place a remote board is declared:
+#   alias  — friendly handle every effect file references (`board: gear1`)
+#   guid   — the board's hardware 4-hex deviceName suffix (read it once via
+#            `init` / `expanders` / `system-info`, then paste here)
+#   type   — optional sanity label; a mismatch against the board that
+#            enumerates under `guid` is WARN'd, not fatal
+#   ports  — this board's port → role attachments (same shape as the hub
+#            ports[] above); each is attached over USB when the board
+#            reaches Ready (so order of connect / reconnect doesn't matter)
+#
+# The KA-50 reference airframe is all hub-local (skids, no retract gear),
+# so this block is commented.  A build with a GearControl expander would
+# uncomment it and the gear defs in /gearcontrol.yaml would address the
+# motors as `motor: { board: gear1, kind: hbridge, idx: N }`.
+#
+# expanders:
+#   - alias: gear1
+#     guid:  AB12                 # GearCtrl-AB12
+#     type:  gearcontrol
+#     ports:
+#       - { kind: hbridge, idx: 0, role: bi_dc_motor, label: "Nose retract" }
+#       - { kind: hbridge, idx: 1, role: bi_dc_motor, label: "Left main" }
+#       - { kind: hbridge, idx: 2, role: bi_dc_motor, label: "Right main" }
+
+# Named RC input channels.  Each entry binds a logical name to a
+# (port, channel id) tuple — that's ALL the board cares about.
+# How an effect INTERPRETS the channel (boolean threshold, enum-N
+# positions, proportional range, range-to-program map, failsafe
+# behaviour) lives inside the EFFECT'S YAML file, since different
+# effects may treat the same channel differently.
+#
+# `id:` is 1-based (RC convention).  `port:` is optional; defaults to
+# {input, idx: 0}.  `description:` is for Studio UI / docs only.
+inputs:
+  - { id: 3, name: throttle,        description: "Throttle stick" }
+  - { id: 5, name: engine_toggle,   description: "Engine on/off switch" }
+  - { id: 6, name: gear_switch,     description: "Landing-gear 3-position switch" }
+  - { id: 7, name: lights_switch,   description: "Position-lights toggle" }
+  - { id: 8, name: smoke_toggle,    description: "Smoke generator arm" }
+  - { id: 9, name: program_select,  description: "LightFx program selector (4-pos rotary)" }
+
+# Live-state telemetry — when on, the firmware emits one-line aggregated
+# snapshots every `interval_ms` via the DiagLog wire stream.  CLI
+# subscribers see them inline; Studio parses the [T-in] / [T-out]
+# prefix to feed a live dashboard.  Off by default — flip per-channel
+# and `config-reload` to enable on the bench.
+#
+# Example output (interval_ms: 250):
+#   [T-in]  throttle=75% engine_toggle=on gear_switch=pos1 lights_switch=off smoke_toggle=off
+#   [T-out] pwm=[100,0,100,100,100,100,0,0]%
+telemetry:
+  inputs:      false
+  outputs:     false
+  interval_ms: 250

@@ -1,0 +1,24 @@
+# aircraft_taxi — Ground-handling / pre-flight.
+#
+# 14 CFR § 91.209 minimum: position lights only.  No anti-collision yet
+# (props stationary or taxiing slowly).
+#
+# Phase-locked sync isn't needed — position lights are STEADY (no
+# blink).  `loop: false` keeps the events list as a one-shot
+# transition into "on" state; the LED stays on indefinitely.
+#
+# v2 schema — channel names match /hubfx.yaml port labels:
+#   "Position lights"   (red port + green starboard, paralleled)
+#   "White tail"
+
+schema_version: 2
+
+tracks:
+  - channel: "Position lights"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct: 100, duration_ms: 0 }]
+  - channel: "White tail"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct: 100, duration_ms: 0 }]
+
+landing_bindings: []

@@ -8,6 +8,7 @@
     import FirmwareTab from '../tabs/FirmwareTab.svelte'
     import IoTab from '../tabs/IoTab.svelte'
     import EffectsTab from '../tabs/EffectsTab.svelte'
+    import LightingTab from '../tabs/LightingTab.svelte'
     import DomainTab from '../tabs/DomainTab.svelte'
     import { showConsole, activeTab } from '../stores'
     import { studioTabs } from '../devicemodel'
@@ -60,6 +61,8 @@
                     <IoTab />
                 {:else if current?.kind === 'effects'}
                     <EffectsTab />
+                {:else if current?.kind === 'lighting'}
+                    <LightingTab />
                 {:else if current?.kind === 'domain' && current.domain}
                     {#key current.key}
                         <DomainTab domain={current.domain} />

@@ -1,0 +1,38 @@
+# helicopter_off — All exterior LEDs dark.
+#
+# Selected by default (referenced first in /lightfx.yaml's `programs:`
+# list) so a powered-up helicopter sits dark on the ramp.  Anti-
+# collision lights must be ON whenever rotors are turning (FAA
+# 91.209(b)), but a model on the bench / in the box is not in that
+# state — so the safe default is OFF.  Switch to `helicopter_nav` once
+# the airframe is parked + battery on, and to `helicopter_flight` for
+# rotors-turning ops.
+#
+# v2 schema — tracks reference channels by NAME.  Names must match
+# `label:` fields on LedAnimator ports in /hubfx.yaml.  Label your
+# board's LED-driving PWM ports on the IO tab as:
+#   "Red beacon"
+#   "White strobe"
+#   "Position lights"   (red port + green starboard, paralleled)
+#   "White tail"
+#   "Landing light"
+# Any track whose channel isn't labelled gets a WARN + skip at load.
+
+schema_version: 2
+
+tracks:
+  - channel: "Red beacon"
+    events:
+      - { kind: "off", duration_ms: 0 }
+  - channel: "White strobe"
+    events:
+      - { kind: "off", duration_ms: 0 }
+  - channel: "Position lights"
+    events:
+      - { kind: "off", duration_ms: 0 }
+  - channel: "White tail"
+    events:
+      - { kind: "off", duration_ms: 0 }
+  - channel: "Landing light"
+    events:
+      - { kind: "off", duration_ms: 0 }

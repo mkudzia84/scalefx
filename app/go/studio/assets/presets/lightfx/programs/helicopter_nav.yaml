@@ -1,0 +1,26 @@
+# helicopter_nav — Position lights only.
+#
+# FAA Part 91.209(a): position lights required from sunset to sunrise.
+# Use this program for static display / cold-and-dark + battery on, or
+# for daytime parking with nav lights on for visibility.  No
+# anti-collision activity — switch to `helicopter_flight` once rotors
+# are about to spin.
+#
+# v2 schema — uses the standard helicopter channel-name set.  See
+# helicopter_off.yaml for the full channel list to label on the IO tab.
+
+schema_version: 2
+
+tracks:
+  - channel: "Red beacon"
+    events: [{ kind: "off", duration_ms: 0 }]
+  - channel: "White strobe"
+    events: [{ kind: "off", duration_ms: 0 }]
+  - channel: "Position lights"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct: 100 }]
+  - channel: "White tail"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct: 100 }]
+  - channel: "Landing light"
+    events: [{ kind: "off", duration_ms: 0 }]

@@ -17,6 +17,8 @@ export function ClaimPort(arg1:string,arg2:string,arg3:string,arg4:number,arg5:n
 
 export function Connect(arg1:string):Promise<main.ConnectionInfo>;
 
+export function DeletePreset(arg1:string):Promise<void>;
+
 export function DetachRole(arg1:string,arg2:number,arg3:number):Promise<main.DeviceModelSnapshot>;
 
 export function DeviceCapabilities():Promise<number>;
@@ -67,6 +69,14 @@ export function GetFirmwareTargets():Promise<Array<main.FirmwareTarget>>;
 
 export function GetFirmwareVersion(arg1:string):Promise<main.FirmwareVersionInfo>;
 
+export function GetLandingConfig():Promise<main.LandingConfigDTO>;
+
+export function GetLightFxConfig():Promise<main.LightFxConfigDTO>;
+
+export function GetLightFxProgram(arg1:string):Promise<string>;
+
+export function GetLightFxProgramStructured(arg1:string):Promise<main.ProgramDTO>;
+
 export function GetReleases(arg1:string):Promise<Array<main.ReleaseInfo>>;
 
 export function GetToolsStatus():Promise<main.ToolsStatus>;
@@ -95,7 +105,19 @@ export function HeaterGetElement(arg1:number):Promise<main.HeaterElementDTO>;
 
 export function HeaterSetElement(arg1:number,arg2:main.HeaterElementDTO):Promise<void>;
 
+export function LandingActivate(arg1:number):Promise<void>;
+
+export function LandingDeactivate(arg1:number):Promise<void>;
+
+export function LandingStatus():Promise<Array<main.LandingStatusDTO>>;
+
+export function ListAvailablePrograms():Promise<Array<main.ProgramFileInfo>>;
+
+export function ListLightFxOrphans(arg1:Array<string>):Promise<Array<string>>;
+
 export function ListPorts():Promise<Array<main.PortInfo>>;
+
+export function ListPresetLibrary():Promise<Array<main.PresetLibraryEntry>>;
 
 export function LoadGunFxConfig():Promise<main.GunFxConfig>;
 
@@ -111,11 +133,15 @@ export function MotorSetPct(arg1:number,arg2:number):Promise<void>;
 
 export function OpenTextFile(arg1:string):Promise<main.OpenedFile>;
 
+export function PreviewLightChannel(arg1:number,arg2:number,arg3:boolean,arg4:Array<main.LightEventInput>):Promise<void>;
+
 export function RefreshDeviceModel():Promise<main.DeviceModelSnapshot>;
 
 export function SaveGunFxConfig(arg1:main.GunFxConfig):Promise<void>;
 
 export function SaveHubConfig():Promise<void>;
+
+export function SavePresetAs(arg1:string,arg2:main.ProgramDTO):Promise<main.PresetLibraryEntry>;
 
 export function SaveTextFile(arg1:string,arg2:string,arg3:string):Promise<string>;
 
@@ -124,6 +150,8 @@ export function SendCommand(arg1:string):Promise<void>;
 export function ServoGetProfile(arg1:number):Promise<main.ServoProfileDTO>;
 
 export function ServoSetProfile(arg1:number,arg2:main.ServoProfileDTO):Promise<void>;
+
+export function ServoSetTarget(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function SetChannelFunction(arg1:string,arg2:number,arg3:number,arg4:number,arg5:string):Promise<main.DeviceModelSnapshot>;
 
@@ -135,9 +163,21 @@ export function SetInputChannelCount(arg1:string,arg2:number,arg3:number,arg4:nu
 
 export function SetInputProtocol(arg1:string,arg2:number,arg3:number,arg4:string):Promise<main.DeviceModelSnapshot>;
 
+export function SetLandingConfig(arg1:main.LandingConfigDTO):Promise<void>;
+
+export function SetLightFxConfig(arg1:main.LightFxConfigDTO):Promise<void>;
+
+export function SetLightFxProgram(arg1:string,arg2:string):Promise<void>;
+
+export function SetLightFxProgramStructured(arg1:string,arg2:main.ProgramDTO):Promise<void>;
+
 export function SetPortName(arg1:string,arg2:number,arg3:number,arg4:string):Promise<main.DeviceModelSnapshot>;
 
 export function SetPortProfile(arg1:string,arg2:number,arg3:number,arg4:main.ServoMotionProfileDTO):Promise<main.DeviceModelSnapshot>;
+
+export function StopLightChannel(arg1:number):Promise<void>;
+
+export function SyncLightFxToDevice(arg1:main.LightFxConfigDTO,arg2:Array<main.ActiveProgramDTO>):Promise<void>;
 
 export function UnclaimPort(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<main.DeviceModelSnapshot>;
 

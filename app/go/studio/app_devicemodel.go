@@ -312,11 +312,14 @@ func (a *App) SetPortProfile(guid string, kind, index byte, profile ServoMotionP
 		a.portProfiles[ref] = profile
 	}
 	a.dmMu.Unlock()
-	// Live-push to the role (hub-local only; cross-board live-tune
-	// is deferred — Topology already routes attach payloads, the
-	// effect's apply path will re-stamp the profile on reload).
-	if c := a.snapshotClient(); c != nil && guid == "" {
-		_ = c.Roles.ServoSetProfile(index, client.ServoProfile{
+	// Live-push to the role.  Hub-local goes through the direct role
+	// path (cheaper — no extra envelope); cross-board goes through
+	// the TOPOLOGY_ROLE_FORWARD pass-through (Rule 11 extension
+	// 2026-05-24).  Both are best-effort — if the wire push fails,
+	// the overlay still holds the new profile + the next config-
+	// reload / role-attach will re-stamp it.
+	if c := a.snapshotClient(); c != nil {
+		p := client.ServoProfile{
 			MinUs:             profile.MinUs,
 			MaxUs:             profile.MaxUs,
 			MaxSpeedUsPerSec:  profile.MaxSpeedUsPerSec,
@@ -324,10 +327,47 @@ func (a *App) SetPortProfile(guid string, kind, index byte, profile ServoMotionP
 			CenterUs:          profile.CenterUs,
 			MaxAccelUsPerSec2: profile.MaxAccelUsPerSec2,
 			MaxJerkUsPerSec3:  profile.MaxJerkUsPerSec3,
-		})
+		}
+		if guid == "" {
+			_ = c.Roles.ServoSetProfile(index, p)
+		} else {
+			_ = c.Topology.ServoSetProfileOn(guid, index, p)
+		}
 	}
 	a.emitDeviceModelChanged()
 	return a.deviceModelSnapshot()
+}
+
+// ServoSetTarget commands a servo to an absolute µs target on the
+// wire (SERVO_SET_TARGET, role-layer intent — the ServoActuatorRole
+// applies its motion profile to the slew).  Used by the calibration
+// dialog's +/- jog buttons.
+//
+// Cross-board (2026-05-24): when `guid != ""` we route through the
+// new TOPOLOGY_ROLE_FORWARD envelope (0x8F) so the hub forwards to
+// the named expander.  Hub-local stays on the direct
+// `c.Roles.ServoSetTarget` path (cheaper — no extra envelope).
+//
+// Does NOT touch the studio overlay or mark dirty — jogging is a
+// transient command, not a config change.
+func (a *App) ServoSetTarget(guid string, index uint8, targetUs uint16) error {
+	defer a.diag.Around("ServoSetTarget",
+		map[string]any{"guid": guid, "idx": index, "us": targetUs})()
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	var err error
+	if guid == "" {
+		err = c.Roles.ServoSetTarget(index, targetUs)
+	} else {
+		err = c.Topology.ServoSetTargetOn(guid, index, targetUs)
+	}
+	if err != nil {
+		return fmt.Errorf("servo set_target %s/%d → %d µs: %w",
+			guidOrHub(guid), index, targetUs, err)
+	}
+	return nil
 }
 
 // CandidatePorts returns the ports a domain may select for a slot — the

@@ -1,0 +1,33 @@
+# drone_default — Multirotor / quad / hex flight lighting.
+#
+# Standard hobby-drone layout: front arms WHITE (heading reference),
+# rear arms RED (tail), plus an anti-collision strobe in the centre.
+# Phase-locked 1000 ms period so the strobe lines up cleanly between
+# the steady arm lights.
+#
+# v2 schema — label your board's LED-driving PWM ports on the IO tab as:
+#   "Front arms"   (white, front-left + front-right paralleled)
+#   "Rear arms"    (red, rear-left + rear-right paralleled)
+#   "Centre strobe"
+
+schema_version: 2
+
+tracks:
+  - channel: "Front arms"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct: 100, duration_ms: 0 }]
+
+  - channel: "Rear arms"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct: 100, duration_ms: 0 }]
+
+  - channel: "Centre strobe"
+    brightness_pct: 100
+    loop: true
+    events:
+      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }
+      - { kind: "off",                       duration_ms:  80 }
+      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }
+      - { kind: "off",                       duration_ms: 800 }   # → 1000 ms
+
+landing_bindings: []

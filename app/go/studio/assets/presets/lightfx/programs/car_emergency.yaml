@@ -1,0 +1,29 @@
+# car_emergency — Police / fire / ambulance emergency strobe pattern.
+#
+# Alternating wig-wag: left bar pulses while right is off, then swap.
+# 100 ms half-period (= 10 Hz alternation, the typical "panic mode"
+# rate).  Headlights stay on the operator's discretion — add a separate
+# track for them if you want them on too.
+#
+# v2 schema — label your board's PWM ports on the IO tab as:
+#   "Left strobe"
+#   "Right strobe"
+
+schema_version: 2
+
+tracks:
+  - channel: "Left strobe"
+    brightness_pct: 100
+    loop: true
+    events:
+      - { kind: "on",  brightness_pct: 100, duration_ms: 100 }
+      - { kind: "off",                       duration_ms: 100 }    # → 200 ms period
+
+  - channel: "Right strobe"
+    brightness_pct: 100
+    loop: true
+    events:
+      - { kind: "off",                       duration_ms: 100 }    # wait
+      - { kind: "on",  brightness_pct: 100, duration_ms: 100 }
+
+landing_bindings: []

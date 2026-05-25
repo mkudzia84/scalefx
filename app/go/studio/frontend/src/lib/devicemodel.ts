@@ -149,28 +149,39 @@ export const deviceModel = writable<DeviceModelSnapshotT>(empty)
 // (Ports & Roles, Inputs), then one tab per capability-available domain,
 // then Firmware.  TabBar and MainLayout both read this so they never drift.
 
-export type TabKind = 'io' | 'effects' | 'domain' | 'firmware'
+export type TabKind = 'io' | 'effects' | 'lighting' | 'domain' | 'firmware'
 export interface StudioTab { key: string; label: string; kind: TabKind; domain?: Domain }
 
 // Domains that the Effects tab supersedes — they don't get their own
 // generic DomainTab; the Effects tab provides their config + runtime
 // control + claiming surface.
-const SUPERSEDED_BY_EFFECTS = new Set(['engine', 'gun'])
+const SUPERSEDED_BY_EFFECTS  = new Set(['engine', 'gun'])
+// Domains the Lighting tab supersedes (2026-05-24): same pattern,
+// two-column tab with LightFx programs on the left + landing-light
+// groups on the right.  IDs match the firmware-advertised
+// `DomainLighting` (`lighting`) + `DomainLandingLights`
+// (`landing-lights`) catalog entries.
+const SUPERSEDED_BY_LIGHTING = new Set(['lighting', 'landing-lights'])
 
 export const studioTabs = derived(deviceModel, ($dm): StudioTab[] => {
-    // Order: Input & Ports → Effects (when available) → other domain tabs
-    // → Firmware. Effects sits second so the engine/gun config surface is
-    // one click away.
+    // Order: Input & Ports → Effects → Lighting → other domain tabs →
+    // Firmware.  Effects + Lighting both sit near the front so the
+    // operator's most common edit surfaces (engine / gun config,
+    // strobe / landing-light groups) are one click away.
     const tabs: StudioTab[] = [
         { key: 'io', label: 'Input & Ports', kind: 'io' },
     ]
     const domains = $dm.domains ?? []
-    const showEffects = domains.some(d => SUPERSEDED_BY_EFFECTS.has(d.id))
+    const showEffects  = domains.some(d => SUPERSEDED_BY_EFFECTS.has(d.id))
+    const showLighting = domains.some(d => SUPERSEDED_BY_LIGHTING.has(d.id))
     if (showEffects) {
-        tabs.push({ key: 'effects', label: 'Effects', kind: 'effects' })
+        tabs.push({ key: 'effects',  label: 'Effects',  kind: 'effects'  })
+    }
+    if (showLighting) {
+        tabs.push({ key: 'lighting', label: 'Lighting', kind: 'lighting' })
     }
     for (const d of domains) {
-        if (SUPERSEDED_BY_EFFECTS.has(d.id)) continue
+        if (SUPERSEDED_BY_EFFECTS.has(d.id) || SUPERSEDED_BY_LIGHTING.has(d.id)) continue
         tabs.push({ key: 'dom:' + d.id, label: d.label, kind: 'domain', domain: d })
     }
     tabs.push({ key: 'firmware', label: 'Firmware', kind: 'firmware' })

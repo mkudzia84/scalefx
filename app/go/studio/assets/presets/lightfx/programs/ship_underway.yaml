@@ -1,0 +1,33 @@
+# ship_underway — Power-driven vessel underway (COLREG Rule 23).
+#
+# International marine navigation lights for a power-driven vessel
+# under 50 m, making way through the water:
+#   - masthead white (forward, 225° arc)
+#   - sidelights    (red port + green starboard, each 112.5° arc)
+#   - stern white   (aft, 135° arc)
+#
+# All lights STEADY (no anti-collision activity — that's aviation-
+# specific).  COLREG specifies arcs not durations; the firmware just
+# drives the bulbs on continuously while this program is active.
+#
+# v2 schema — label your board's PWM ports on the IO tab as:
+#   "Masthead"
+#   "Sidelights"   (red port + green starboard, paralleled)
+#   "Stern"
+
+schema_version: 2
+
+tracks:
+  - channel: "Masthead"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct: 100, duration_ms: 0 }]
+
+  - channel: "Sidelights"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct: 100, duration_ms: 0 }]
+
+  - channel: "Stern"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct: 100, duration_ms: 0 }]
+
+landing_bindings: []

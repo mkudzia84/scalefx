@@ -1,0 +1,121 @@
+// effect-claims.ts — cross-effect port-claim synthesis.
+//
+// The DeviceModel's `claims` array (mutated by the Domains tab via
+// `ClaimPort` / `UnclaimPort`) is only one source of port-ownership
+// information.  Feature effects (LightFx active programs, GunFx muzzle /
+// smoke / turret, Landing servos + LEDs) ALSO own ports — they just
+// reference them in their YAML configs rather than registering through
+// the domain claim API.
+//
+// This file derives a SECOND claim list from each effect's draft store
+// and exports `effectClaims`: a unified Claim[] that picker callsites
+// use for filtering.  Result: if GunFx 1's muzzle flash uses PWM 5, the
+// LightFx active-program LED picker no longer offers PWM 5.
+//
+// Conventions:
+//   - `domain` = the effect's name (`lightfx`, `gunfx`, `landing`)
+//   - `slot`   = a human-readable description of where in the effect
+//                config the port is referenced (operator sees this in
+//                tooltips when a sibling effect tries to grab the port)
+//
+// Hard claims (from $deviceModel.claims) take precedence in the dedup
+// — if the operator hard-claimed a port AND an effect also references
+// it, the hard claim wins.  Effects don't filter against their own
+// synthesized claims (each picker's `isExempt` callback already keeps
+// the current pick visible).
+
+import { derived, type Readable } from 'svelte/store'
+import { deviceModel, type Claim, type PortRef, PortKind, portRefKey } from './devicemodel'
+import { lightfxDraft } from './lightfx'
+import { gunfxDraft } from './gunfx'
+import { landingDraft } from './landing'
+
+/** A wire-format PortRefT from any effect store — narrow shape that all
+ *  three effects share (we don't depend on the per-effect symbol so we
+ *  can collect ports without a type-import cycle). */
+interface EffectPortRef { guid: string; kind: string; idx: number }
+
+/** Translate the effect-draft string kind ('pwm' / 'servo' / 'hbridge' /
+ *  'input') to the numeric byte the device-model PortRef uses.  Returns
+ *  -1 for empty / unknown so callers can drop the claim — was the source
+ *  of a 2026-05-24 bug where synthesized claims keyed `"|pwm|5"` while
+ *  real device ports keyed `"|2|5"` (PortKind.Pwm = 2), so the filter
+ *  silently never matched and GunFx ports stayed selectable in LightFx. */
+function kindByteFromName(name: string): number {
+    switch (name) {
+        case 'servo':   return PortKind.Servo
+        case 'pwm':     return PortKind.Pwm
+        case 'hbridge': return PortKind.HBridge
+        case 'input':   return PortKind.Input
+        default:        return -1
+    }
+}
+
+/** Push one synthesized claim to `out`, but only if the ref is fully
+ *  populated.  Empty refs ({guid:'', kind:'', idx:0}) are the
+ *  "operator hasn't picked yet" sentinel — skipping them stops a
+ *  blank slot from claiming and accidentally poisoning the picker for
+ *  the first servo on every board.  Unknown kind names also skip. */
+function pushIfBound(out: Claim[], domain: string, slot: string, p: EffectPortRef): void {
+    if (!p || !p.kind) return
+    const kindByte = kindByteFromName(p.kind)
+    if (kindByte < 0) return
+    // Note: guid === '' is legitimate (= hub-local).  Only kind decides
+    // whether the operator has picked.
+    out.push({ domain, slot, port: { guid: p.guid, kind: kindByte, index: p.idx } })
+}
+
+/** effectClaims — unified [hard + soft] claim list used by every port
+ *  picker.  Auto-recomputes whenever any contributing draft store
+ *  changes, so the operator's edits are visible in sibling pickers
+ *  on the next render tick (no manual refresh). */
+export const effectClaims: Readable<Claim[]> = derived(
+    [deviceModel, lightfxDraft, gunfxDraft, landingDraft],
+    ([$dm, $lfx, $gfx, $lnd]) => {
+        const out: Claim[] = [...$dm.claims]
+        const seen = new Set(out.map(c => `${c.domain}|${c.slot}|${portRefKey(c.port)}`))
+        const add = (domain: string, slot: string, p: EffectPortRef) => {
+            if (!p || !p.kind) return
+            const kindByte = kindByteFromName(p.kind)
+            if (kindByte < 0) return
+            // Key on the numeric byte so the dedup matches the
+            // device-model PortRef shape (same fix as pushIfBound).
+            const key = `${domain}|${slot}|${p.guid}|${kindByte}|${p.idx}`
+            if (seen.has(key)) return
+            seen.add(key)
+            pushIfBound(out, domain, slot, p)
+        }
+
+        // ── LightFx active programs ────────────────────────────────
+        // (No claims synthesized — v2 LightFx programs reference
+        // channels by NAME, not port.  The port assignment lives on
+        // /hubfx.yaml's ports[] block, which is already represented in
+        // $deviceModel.claims via the Domains tab and via every
+        // LedAnimator-roled port being a candidate.  Picker filtering
+        // on the LightFx panel uses the port-name set directly — no
+        // synthesized claim path needed.)
+
+        // ── GunFx per-gun outputs (muzzle / smoke heater + fan / turret) ──
+        for (const g of $gfx?.guns ?? []) {
+            const label = g.name && g.name.trim() ? g.name : `gun${g.id}`
+            add('gunfx', `${label} / muzzle`,       g.muzzleFlash.port)
+            add('gunfx', `${label} / smoke heater`, g.smoke.heater.port)
+            add('gunfx', `${label} / smoke fan`,    g.smoke.fan.port)
+            if (g.yaw.enabled)   add('gunfx', `${label} / yaw servo`,   g.yaw.servoPort)
+            if (g.pitch.enabled) add('gunfx', `${label} / pitch servo`, g.pitch.servoPort)
+        }
+
+        // ── Landing per-light servos + LEDs ────────────────────────
+        for (const l of $lnd?.lights ?? []) {
+            const label = l.name && l.name.trim() ? l.name : `landing${l.id}`
+            for (let i = 0; i < (l.servos ?? []).length; i++) {
+                add('landing', `${label} / servo${i + 1}`, l.servos[i].port)
+            }
+            for (let i = 0; i < (l.leds ?? []).length; i++) {
+                add('landing', `${label} / led${i + 1}`, l.leds[i].port)
+            }
+        }
+
+        return out
+    },
+)

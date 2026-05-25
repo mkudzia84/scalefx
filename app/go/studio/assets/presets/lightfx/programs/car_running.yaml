@@ -1,0 +1,22 @@
+# car_running — RC car / truck driving lights.
+#
+# Headlights ON at full, tail lights at low intensity (running brightness).
+# No brake / turn-signal animation by default — add a per-track preset
+# for those from the `↺ Preset…` dropdown when wiring them in.
+#
+# v2 schema — label your board's PWM ports on the IO tab as:
+#   "Headlights"
+#   "Tail lights"
+
+schema_version: 2
+
+tracks:
+  - channel: "Headlights"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct: 100, duration_ms: 0 }]
+
+  - channel: "Tail lights"
+    brightness_pct: 100
+    events: [{ kind: "on", brightness_pct:  35, duration_ms: 0 }]
+
+landing_bindings: []

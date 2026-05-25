@@ -30,6 +30,10 @@ export function Connect(arg1) {
   return window['go']['main']['App']['Connect'](arg1);
 }
 
+export function DeletePreset(arg1) {
+  return window['go']['main']['App']['DeletePreset'](arg1);
+}
+
 export function DetachRole(arg1, arg2, arg3) {
   return window['go']['main']['App']['DetachRole'](arg1, arg2, arg3);
 }
@@ -130,6 +134,22 @@ export function GetFirmwareVersion(arg1) {
   return window['go']['main']['App']['GetFirmwareVersion'](arg1);
 }
 
+export function GetLandingConfig() {
+  return window['go']['main']['App']['GetLandingConfig']();
+}
+
+export function GetLightFxConfig() {
+  return window['go']['main']['App']['GetLightFxConfig']();
+}
+
+export function GetLightFxProgram(arg1) {
+  return window['go']['main']['App']['GetLightFxProgram'](arg1);
+}
+
+export function GetLightFxProgramStructured(arg1) {
+  return window['go']['main']['App']['GetLightFxProgramStructured'](arg1);
+}
+
 export function GetReleases(arg1) {
   return window['go']['main']['App']['GetReleases'](arg1);
 }
@@ -186,8 +206,32 @@ export function HeaterSetElement(arg1, arg2) {
   return window['go']['main']['App']['HeaterSetElement'](arg1, arg2);
 }
 
+export function LandingActivate(arg1) {
+  return window['go']['main']['App']['LandingActivate'](arg1);
+}
+
+export function LandingDeactivate(arg1) {
+  return window['go']['main']['App']['LandingDeactivate'](arg1);
+}
+
+export function LandingStatus() {
+  return window['go']['main']['App']['LandingStatus']();
+}
+
+export function ListAvailablePrograms() {
+  return window['go']['main']['App']['ListAvailablePrograms']();
+}
+
+export function ListLightFxOrphans(arg1) {
+  return window['go']['main']['App']['ListLightFxOrphans'](arg1);
+}
+
 export function ListPorts() {
   return window['go']['main']['App']['ListPorts']();
+}
+
+export function ListPresetLibrary() {
+  return window['go']['main']['App']['ListPresetLibrary']();
 }
 
 export function LoadGunFxConfig() {
@@ -218,6 +262,10 @@ export function OpenTextFile(arg1) {
   return window['go']['main']['App']['OpenTextFile'](arg1);
 }
 
+export function PreviewLightChannel(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['PreviewLightChannel'](arg1, arg2, arg3, arg4);
+}
+
 export function RefreshDeviceModel() {
   return window['go']['main']['App']['RefreshDeviceModel']();
 }
@@ -228,6 +276,10 @@ export function SaveGunFxConfig(arg1) {
 
 export function SaveHubConfig() {
   return window['go']['main']['App']['SaveHubConfig']();
+}
+
+export function SavePresetAs(arg1, arg2) {
+  return window['go']['main']['App']['SavePresetAs'](arg1, arg2);
 }
 
 export function SaveTextFile(arg1, arg2, arg3) {
@@ -244,6 +296,10 @@ export function ServoGetProfile(arg1) {
 
 export function ServoSetProfile(arg1, arg2) {
   return window['go']['main']['App']['ServoSetProfile'](arg1, arg2);
+}
+
+export function ServoSetTarget(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ServoSetTarget'](arg1, arg2, arg3);
 }
 
 export function SetChannelFunction(arg1, arg2, arg3, arg4, arg5) {
@@ -266,12 +322,36 @@ export function SetInputProtocol(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetInputProtocol'](arg1, arg2, arg3, arg4);
 }
 
+export function SetLandingConfig(arg1) {
+  return window['go']['main']['App']['SetLandingConfig'](arg1);
+}
+
+export function SetLightFxConfig(arg1) {
+  return window['go']['main']['App']['SetLightFxConfig'](arg1);
+}
+
+export function SetLightFxProgram(arg1, arg2) {
+  return window['go']['main']['App']['SetLightFxProgram'](arg1, arg2);
+}
+
+export function SetLightFxProgramStructured(arg1, arg2) {
+  return window['go']['main']['App']['SetLightFxProgramStructured'](arg1, arg2);
+}
+
 export function SetPortName(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetPortName'](arg1, arg2, arg3, arg4);
 }
 
 export function SetPortProfile(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetPortProfile'](arg1, arg2, arg3, arg4);
+}
+
+export function StopLightChannel(arg1) {
+  return window['go']['main']['App']['StopLightChannel'](arg1);
+}
+
+export function SyncLightFxToDevice(arg1, arg2) {
+  return window['go']['main']['App']['SyncLightFxToDevice'](arg1, arg2);
 }
 
 export function UnclaimPort(arg1, arg2, arg3, arg4, arg5) {

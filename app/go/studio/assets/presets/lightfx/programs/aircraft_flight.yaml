@@ -1,0 +1,54 @@
+# aircraft_flight — Generic fixed-wing flight lighting.
+#
+# Standard FAA anti-collision + position-light combo for fixed-wing
+# scale models.  Same phase-locked pattern as helicopter_flight (so
+# both flight programs blink in sync if both are loaded simultaneously
+# on the same hub):
+#
+#   - 1000 ms shared period
+#   - t=0..80ms        single-flash for the red beacon + position lights + tail
+#   - t=500..560+640.. double-flash white strobe (offset, never overlaps)
+#
+# v2 schema — channel names match /hubfx.yaml port labels.  Label your
+# board's LED-driving PWM ports on the IO tab as:
+#   "Red beacon"
+#   "White strobe"
+#   "Position lights"   (red port + green starboard, paralleled)
+#   "White tail"
+
+schema_version: 2
+
+tracks:
+  - channel: "Red beacon"
+    brightness_pct: 100
+    loop: true
+    events:
+      - { kind: fade_in,  brightness_pct: 100, duration_ms: 300 }
+      - { kind: fade_out, brightness_pct: 100, duration_ms: 300 }
+      - { kind: "off",                          duration_ms: 400 }
+
+  - channel: "Position lights"
+    brightness_pct: 100
+    loop: true
+    events:
+      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
+      - { kind: "off",                       duration_ms: 920 }
+
+  - channel: "White tail"
+    brightness_pct: 100
+    loop: true
+    events:
+      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
+      - { kind: "off",                       duration_ms: 920 }
+
+  - channel: "White strobe"
+    brightness_pct: 100
+    loop: true
+    events:
+      - { kind: "off",                       duration_ms: 500 }
+      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }
+      - { kind: "off",                       duration_ms:  80 }
+      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }
+      - { kind: "off",                       duration_ms: 300 }
+
+landing_bindings: []

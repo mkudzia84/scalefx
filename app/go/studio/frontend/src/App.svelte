@@ -8,6 +8,7 @@
     import FlashProgressDialog from './lib/dialogs/FlashProgressDialog.svelte'
     import FileManagerDialog from './lib/dialogs/FileManagerDialog.svelte'
     import PcbOverlayDialog from './lib/dialogs/PcbOverlayDialog.svelte'
+    import ServoCalibrationDialog from './lib/dialogs/ServoCalibrationDialog.svelte'
     import MainLayout from './lib/layout/MainLayout.svelte'
     import {
         boardState, connectPopupOpen, showAboutDialog, showConsole,
@@ -29,6 +30,8 @@
         installEngineStateBridge, loadEngineConfig, engineConfigSource,
     } from './lib/effects'
     import { gunfxConfigSource, loadGunFxConfig } from './lib/gunfx'
+    import { lightfxConfigSource, loadLightFxConfig } from './lib/lightfx'
+    import { landingConfigSource, loadLandingConfig } from './lib/landing'
     import { registerDirtySource } from './lib/dirty-registry'
 
     onMount(async () => {
@@ -54,6 +57,8 @@
         registerDirtySource(hubConfigSource)
         registerDirtySource(engineConfigSource)
         registerDirtySource(gunfxConfigSource)
+        registerDirtySource(lightfxConfigSource)
+        registerDirtySource(landingConfigSource)
 
         // Console output events from backend (always active, even when panel hidden)
         EventsOn('console:output', (msg: { type: string; content: string }) => {
@@ -109,6 +114,12 @@
                 try { await loadGunFxConfig() } catch (e) {
                     diag.warn('FE.CFG', 'gunfx config load failed', { err: String(e) })
                 }
+                try { await loadLightFxConfig() } catch (e) {
+                    diag.warn('FE.CFG', 'lightfx config load failed', { err: String(e) })
+                }
+                try { await loadLandingConfig() } catch (e) {
+                    diag.warn('FE.CFG', 'landing config load failed', { err: String(e) })
+                }
             } else if (wasConnected && $boardState !== 'flashing') {
                 // Unexpected disconnect (not flashing) — show connect popup
                 diag.warn('FE.CONN', 'unexpected disconnect — showing reconnect dialog')
@@ -130,6 +141,8 @@
                 try { await hydrateFromHubYaml() } catch { /* ignore */ }
                 try { await loadEngineConfig() } catch { /* ignore */ }
                 try { await loadGunFxConfig() } catch { /* ignore */ }
+                try { await loadLightFxConfig() } catch { /* ignore */ }
+                try { await loadLandingConfig() } catch { /* ignore */ }
             }
         } catch (_) {
             // app still starting
@@ -171,6 +184,17 @@
 {#if $showPcbOverlay}
     <PcbOverlayDialog />
 {/if}
+
+<!-- (ProgramEditorDialog was removed 2026-05-24 — the LightFxPanel now
+     inlines the channel/event editor per active program, see Rule
+     46 refactor + the new preset-library workflow.) -->
+
+<!-- Servo calibration popup (Rule 44 + new popup pattern).
+     Visibility driven by the `openServoCalibration` store; any
+     ServoWidget on the IO / Lighting / GunFx tabs pops it open via
+     `openServoCalibrationFor(...)`.  Replaces the inline
+     ServoProfileEditor so feature rows stay compact. -->
+<ServoCalibrationDialog />
 
 <style>
     .app-layout {

@@ -12,6 +12,7 @@
 
 import { writable, derived, get } from 'svelte/store'
 import type { DirtySource } from './dirty-registry'
+import { suggestNextBand } from './range-suggest'
 import {
     LoadGunFxConfig, SaveGunFxConfig, GunFxStatus,
     GunFire, GunFireWithRof,
@@ -426,74 +427,40 @@ export function updateGun(id: number, mutate: (g: GunT) => GunT): void {
  *  immediately (the [0,0] default used to make every new item span
  *  the entire bar and stack invisibly under siblings). */
 export function suggestNextRofBand(items: RofItemT[]): { lo: number; hi: number } {
-    if (items.length === 0) return { lo: 1000, hi: 2000 }
-    // Explicit bands only — unbounded sides effectively cover everything,
-    // so any unbounded item already occupies the full bar and we should
-    // slice it instead of hunting for a gap.
+    // Thin wrapper around the shared suggester so callers that only
+    // need the band (not the trim-sibling info) stay compact.
+    // `addRofItem` uses the full SuggestResult so it can apply the
+    // guard-aware bisect trim.  Unbounded items (lo=0 OR hi=0) are
+    // dropped from the input — they effectively cover everything and
+    // would always force a bisect; better to ignore them and let the
+    // suggester see only explicit bands.
     const explicit = items
         .filter(i => i.bandLoUs > 0 && i.bandHiUs > 0 && i.bandHiUs > i.bandLoUs)
         .map(i => ({ lo: i.bandLoUs, hi: i.bandHiUs }))
-        .sort((a, b) => a.lo - b.lo)
-    const unboundedCount = items.length - explicit.length
-
-    if (unboundedCount === 0 && explicit.length > 0) {
-        // Look for a gap between existing bands or at the edges.
-        let cursor = 1000
-        let bestGap = { lo: 0, hi: 0, width: 0 }
-        for (const b of explicit) {
-            if (b.lo > cursor) {
-                const w = b.lo - cursor
-                if (w > bestGap.width) bestGap = { lo: cursor, hi: b.lo, width: w }
-            }
-            cursor = Math.max(cursor, b.hi)
-        }
-        if (2000 > cursor) {
-            const w = 2000 - cursor
-            if (w > bestGap.width) bestGap = { lo: cursor, hi: 2000, width: w }
-        }
-        if (bestGap.width >= 100) {
-            // Round to 10µs steps for tidy operator-facing numbers.
-            const lo = Math.round(bestGap.lo / 10) * 10
-            const hi = Math.round(bestGap.hi / 10) * 10
-            return { lo, hi }
-        }
-    }
-    // No gap (or only unbounded siblings) — slice the largest band in
-    // half.  Caller's mutator emits both halves so the operator can
-    // immediately see and tune them.
-    const widest = explicit.reduce<{ lo: number; hi: number } | null>(
-        (acc, b) => (acc == null || (b.hi - b.lo) > (acc.hi - acc.lo)) ? b : acc, null)
-    if (widest && (widest.hi - widest.lo) >= 100) {
-        const mid = Math.round((widest.lo + widest.hi) / 2 / 10) * 10
-        return { lo: mid, hi: widest.hi }
-    }
-    // Pathological fallback — drop a 200µs slice at the top of the range.
-    return { lo: 1800, hi: 2000 }
+    return suggestNextBand(explicit).band
 }
 
 export function addRofItem(gunId: number): void {
     updateGun(gunId, g => {
-        const { lo, hi } = suggestNextRofBand(g.rof.items)
-        // Trim the widest existing band when we're slicing — the
-        // suggester picked the UPPER half, so the existing widest item
-        // needs its `hi` shrunk to `lo`.  Only fires when the suggester
-        // returned a band that's INSIDE an existing one (cap by overlap
-        // detection below to keep this simple).
-        const items = g.rof.items.map(it => {
-            if (it.bandLoUs > 0 && it.bandHiUs > 0
-                    && it.bandLoUs <= lo && it.bandHiUs >= hi
-                    && it.bandLoUs !== lo) {
-                return { ...it, bandHiUs: lo }
-            }
-            return it
-        })
+        // Drop unbounded items (zero-edge wildcards) for the suggest
+        // call, but remember the original index so the trim instruction
+        // maps back to the right ROF entry when bisecting.
+        const indexed = g.rof.items.map((it, idx) => ({ it, idx }))
+            .filter(({ it }) => it.bandLoUs > 0 && it.bandHiUs > 0 && it.bandHiUs > it.bandLoUs)
+        const explicit = indexed.map(({ it }) => ({ lo: it.bandLoUs, hi: it.bandHiUs }))
+        const suggest  = suggestNextBand(explicit)
+        const trimRealIdx = suggest.trimSiblingIdx >= 0 ? indexed[suggest.trimSiblingIdx].idx : -1
+
+        const items = g.rof.items.map((it, i) =>
+            i === trimRealIdx ? { ...it, bandHiUs: suggest.trimSiblingNewHi } : it)
+
         return {
             ...g,
             rof: {
                 ...g.rof,
                 items: [...items, {
                     name: `rof${g.rof.items.length + 1}`,
-                    bandLoUs: lo, bandHiUs: hi,
+                    bandLoUs: suggest.band.lo, bandHiUs: suggest.band.hi,
                     rpm: 600, soundPath: '', outputMask: 0x03,
                 }],
             },
