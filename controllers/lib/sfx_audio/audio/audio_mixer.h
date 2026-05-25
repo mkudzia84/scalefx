@@ -39,6 +39,7 @@
 // Include centralized audio configuration
 #include "audio_config.h"
 #include "audio_ring_buffer.h"
+#include "audio_source.h"
 
 // ============================================================================
 //  CONSTANTS (see audio_config.h for configuration)
@@ -340,57 +341,59 @@ private:
     static constexpr int CHANNEL_FILENAME_MAX = 64;
     static constexpr int QUEUE_SIZE_PER_CHANNEL = 4;  // Max queued sounds per channel
     
-    // WAV state for float buffer + resampler
+    // Per-channel WAV-side state.  After the AudioSource refactor
+    // (Stage 2 backport, 2026-05-27), all file I/O lives in
+    // `IAudioSource` (audio_source.h) — this struct holds only
+    // mixer-side cached metadata, the resampler state, and a
+    // per-channel drain buffer that the source refills via
+    // `readFrames()`.  WavStreamSource reuses `bufL`/`bufR` as its
+    // own SD-decode scratch; WavPreloadSource serves from its own
+    // PSRAM storage and ignores the buffer.
     struct WavState {
-        SdFile file;
-        bool       active         = false;
-        bool       loop           = true;
-        int        loopCount      = -1;        // -1=infinite, 0=no loop, N=N loops
-        int        loopCountInit  = -1;        // Initial loop count for status
+        // Active source — placement-new'd into Channel::sourceStorage
+        // at play() time; destroyed via destroyAudioSource() on
+        // stop/EOF/fade-end.
+        IAudioSource* source = nullptr;
 
-        // WAV format (from header)
+        // Cached WAV format (set once at play() — immutable for the
+        // lifetime of this source instance, read on every status query).
         uint32_t   sampleRate_Hz  = 0;
         uint16_t   numChannels    = 0;
         uint16_t   bitsPerSample  = 0;
-        uint32_t   dataStart      = 0;         // byte offset of PCM data
-        uint32_t   totalFrames    = 0;         // total sample frames
-        uint32_t   framesRead     = 0;         // frames consumed from file
+        uint32_t   totalFrames    = 0;
 
-        // Decoded float buffer for mixing [-1.0, +1.0]
-        // Dynamically allocated from PSRAM (ESP32-S3) or heap (Pico)
-        // in AudioMixer::begin(). nullptr until allocated.
-        float*     bufL         = nullptr;
-        float*     bufR         = nullptr;
-        int        bufLen         = 0;         // valid frames in buffer
-        int        bufPos         = 0;         // next frame to consume
+        // Initial loop count snapshot — source's loopCount() decays
+        // toward 0 as iterations complete, so we keep the request here.
+        int        loopCountInit  = 0;
 
-        // Linear interpolation resampler
-        float      resampleRatio  = 1.0f;      // srcRate / outputRate
-        float      resampleFrac   = 0.0f;      // fractional sample position
+        // Linear-interpolation resampler — output-rate accumulator.
+        float      resampleRatio  = 1.0f;
+        float      resampleFrac   = 0.0f;
 
-        // ─── Preload-into-memory (AudioPlaybackOptions::preloadIntoMemory)
-        // When set, the entire WAV is decoded ONCE at play() time into a
-        // dedicated PSRAM buffer (preloadL/R, sized to totalFrames) and
-        // the file handle is closed.  The producer reads from these
-        // buffers with a simple modulo wrap — zero SD I/O during the
-        // sustained loop, which is exactly what gun fire needs so it
-        // doesn't compete with the engine's streaming reads.
-        //   active=true  → use preload path (refill is a no-op, sample
-        //                  pulls from preloadL/R[preloadPos] with
-        //                  wrap-around when looping)
-        //   active=false → existing streaming path (bufL/R + file)
-        // Buffer ownership: allocated in play(), freed in close-channel
-        // paths AND in shutdown().  Pointer cleared after free so the
-        // double-free guard in freePreload() is safe to call twice.
-        float*     preloadL       = nullptr;
-        float*     preloadR       = nullptr;
-        uint32_t   preloadFrames  = 0;         // total cached source frames
-        uint32_t   preloadPos     = 0;         // next source-frame index to sample
-        bool       preloadActive  = false;
+        // Per-channel float drain buffer.  PSRAM-allocated at
+        // AudioMixer::begin(), capacity = WAV_BUF_FRAMES.  Source
+        // refills via readFrames(); produceFrame() drains with interp.
+        float*     bufL           = nullptr;
+        float*     bufR           = nullptr;
+        int        bufLen         = 0;
+        int        bufPos         = 0;
+
+        // Set true by play() once the source opens; cleared by
+        // stop()/EOF/fade-end.  Producer skips channels where active=false.
+        bool       active         = false;
     };
 
     struct Channel {
         WavState wav;                          // WAV state with float buffers
+
+        // In-place storage for the active IAudioSource.  At play() time
+        // we placement-new a concrete source (WavStreamSource /
+        // WavPreloadSource / future WavPagedSource) into this buffer
+        // and stash the pointer in `wav.source`.  Sized via
+        // `kAudioSourceMaxSize` in audio_source.h — static_asserts
+        // there catch growth that overflows.
+        alignas(kAudioSourceAlign) uint8_t sourceStorage[kAudioSourceMaxSize];
+
         float volume          = 1.0f;
         float pan             = 0.0f;          // -1.0 (left) to +1.0 (right)
         float panL            = 0.707f;        // pre-computed left gain
@@ -445,30 +448,17 @@ private:
 
     // ---- Internal Methods ----
     // Producer side (Core 1 task on ESP32, Core 0 on Pico)
-    bool refillWavBuffer(WavState& ws);        // Batch SD read into float buffer
-    bool getWavSample(WavState& ws, float& outL, float& outR);  // Resampled frame
-    bool produceFrame();                        // Mix one frame → ring buffer
-    void updatePan(Channel& ch);                // Recalculate panL/panR
+    bool refillDrainBuffer(Channel& ch);        // Pull frames from source into ch.wav.bufL/R
+    bool getWavSample(Channel& ch, float& outL, float& outR);   // Resampled frame
+    bool produceFrame();                         // Mix one frame → ring buffer
+    void updatePan(Channel& ch);                 // Recalculate panL/panR
 
-    // Preload-into-memory (AudioPlaybackOptions::preloadIntoMemory)
-    // tryPreload — read the entire opened file into ws.preloadL/R, close
-    //   the file, set preloadActive=true.  Returns false on alloc failure
-    //   or oversize file (caller falls back to streaming).  Caller has
-    //   already populated ws.totalFrames + format fields via parseWavHeader.
-    // freePreload — release ws.preloadL/R; safe to call when nothing is
-    //   allocated.  Called from stop / play (before re-open) / shutdown.
-    bool tryPreload(WavState& ws, const char* filename);
-    void freePreload(WavState& ws);
-    
     // Consumer side (Core 1 task)
-    void consumeAndOutput();                    // Ring buffer → I2S
+    void consumeAndOutput();                     // Ring buffer → I2S
 
 #if SFX_PLATFORM_ESP32
-    static void producerTaskFunc(void* param);  // FreeRTOS task entry point
+    static void producerTaskFunc(void* param);   // FreeRTOS task entry point
 #endif
-    
-    // WAV parsing
-    bool parseWavHeader(WavState& ws);
     
     // Command queue
     bool queueCommand(const Command& cmd);
@@ -512,6 +502,13 @@ private:
     // Producer task state
     TaskHandle_t _producerTaskHandle = nullptr;
     std::atomic<bool> _producerRunning{false};  // Producer task reads, Core 0 writes
+    /// Set true by the producer task right before it suspends itself
+    /// on exit; stopProducerTask() waits for it then vTaskDeletes the
+    /// task from outside.  Self-deletion via vTaskDelete(nullptr)
+    /// defers TCB reap to the idle task, which under upload-induced
+    /// suspend/resume pressure caused producer-recreate to OOM
+    /// (rolled-back build #285).
+    std::atomic<bool> _producerExited{false};
 
     // Consumer task handle (set by setConsumerTaskHandle, used by suspend/resume)
     TaskHandle_t _consumerTaskHandle = nullptr;

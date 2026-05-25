@@ -161,18 +161,9 @@ void AudioMixer<TI2S, TCodec>::shutdown() {
     stopProducerTask();
 #endif
 
-    // Stop all playback
+    // Stop all playback (each stop() tears down the source via
+    // destroyAudioSource, which closes its file or frees preload PSRAM).
     stopAll(AudioStopMode::Immediate);
-
-    // Close all open files
-    SdCardModule& sd = SdCardModule::instance();
-    sd.lock();
-    for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
-        if (_channels[i].wav.file) {
-            _channels[i].wav.file.close();
-        }
-    }
-    sd.unlock();
 
     // Stop I2S — set flag BEFORE calling end() so Core 1's consume()
     // sees the flag and stops writing to i2sOutput during teardown
@@ -186,13 +177,13 @@ void AudioMixer<TI2S, TCodec>::shutdown() {
     _initialized.store(false, std::memory_order_release);
 
     // ---- Free PSRAM audio buffers ----
-    // Free per-channel WAV decode buffers AND any preload caches.
+    // Per-channel scratch buffers (the source instances were destroyed
+    // in stopAll() above, releasing their files / preload PSRAM).
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         sfxPsramFree(_channels[i].wav.bufL);
         sfxPsramFree(_channels[i].wav.bufR);
         _channels[i].wav.bufL = nullptr;
         _channels[i].wav.bufR = nullptr;
-        freePreload(_channels[i].wav);
     }
 
     // Free shared SD read buffer
@@ -225,10 +216,7 @@ void AudioMixer<TI2S, TCodec>::updatePan(Channel& ch) {
 template<typename TI2S, typename TCodec>
 bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const AudioPlaybackOptions& options) {
     // Every early-return path below MUST clear `_channelPlaying[channel]`
-    // because the caller (playAsync) marked it TRUE eagerly.  Leaking
-    // a stale TRUE leaves the channel apparently-playing forever in
-    // status/visibility, but with ws.active=false the producer skips
-    // it and produces no audio.  (Wedge bug fixed 2026-05-23.)
+    // because the caller (playAsync) marked it TRUE eagerly.
     if (!_initialized) {
         MIXER_ERROR("play() called but mixer not initialized");
         if (channel >= 0 && channel < AUDIO_MAX_CHANNELS) {
@@ -238,7 +226,7 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     }
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) {
         MIXER_ERROR("play() invalid channel: %d", channel);
-        return false;   // can't clear out-of-range; playAsync guards too
+        return false;
     }
     if (!filename) {
         MIXER_ERROR("play() null filename on ch%d", channel);
@@ -249,104 +237,92 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     Channel& ch = _channels[channel];
     WavState& ws = ch.wav;
 
-    // Stop current playback on this channel
-    if (ws.active && ws.file) {
-        ws.file.close();
-    }
-    ws.active = false;
-    ws.bufLen = 0;
-    ws.bufPos = 0;
-    ws.framesRead = 0;
-    ws.resampleFrac = 0.0f;
-    // Drop any previous preload — re-trigger of the same sample on the
-    // same channel reuses the slot but reallocates so the new options
-    // (volume, output mask, ...) take effect cleanly.  No-op if nothing
-    // was preloaded.
-    freePreload(ws);
+    // Tear down any source already attached.  Source destructor closes
+    // its file or frees its preload PSRAM uniformly across kinds.
+    destroyAudioSource(ws.source);
+    ws.active        = false;
+    ws.bufLen        = 0;
+    ws.bufPos        = 0;
+    ws.resampleFrac  = 0.0f;
 
-    // Open the WAV file via SdCardModule singleton
-    // SD mutex protects all file I/O — required when producer runs on
-    // Core 1 while storage operations continue on Core 0.
-    //
-    // EVERY failure path here MUST clear `_channelPlaying[channel]`
-    // because `playAsync()` eagerly marked it TRUE at queue time.
-    // Without the clear, a wedged channel reports "playing" forever
-    // while the producer skips it (ws.active=false) — observed in the
-    // GunFx-shot-after-engine-loop wedge on 2026-05-23.
-    SdCardModule& sd = SdCardModule::instance();
-    if (!sd.isInitialized()) {
-        MIXER_ERROR("Ch%d: SD card not initialized", channel);
-        _channelPlaying[channel].store(false, std::memory_order_release);
-        return false;
+    // ── Construct a concrete source ─────────────────────────────────
+    // Preload first: short hot samples (gun, alert) get cached in
+    // PSRAM so loops never touch SD.  openAndPreload() returns false
+    // for oversize files / OOM headroom — caller falls through to
+    // streaming.  Stage 4 will add WavPagedSource as a middle tier.
+    if (options.preloadIntoMemory) {
+        auto* preload = new (ch.sourceStorage) WavPreloadSource();
+        if (preload->openAndPreload(filename, _sdReadBuf,
+                                    WAV_SD_READ_BYTES,
+                                    WAV_MAX_PRELOAD_FRAMES)) {
+            ws.source = preload;
+        } else {
+            preload->~WavPreloadSource();
+            // fall through to streaming
+        }
     }
-    sd.lock();
-    uint8_t sdErr = sd.openRead(filename, ws.file);
-    if (sdErr != 0) {
-        sd.unlock();
-        MIXER_ERROR("Ch%d: Failed to open: %s (err=%d)", channel, filename, sdErr);
-        _channelPlaying[channel].store(false, std::memory_order_release);
-        return false;
+    if (!ws.source) {
+        auto* stream = new (ch.sourceStorage) WavStreamSource();
+        StreamScratch scratch{
+            /*sdReadBuf=*/     _sdReadBuf,
+            /*sdReadBufSize=*/ WAV_SD_READ_BYTES,
+        };
+        if (!stream->open(filename, scratch)) {
+            stream->~WavStreamSource();
+            _channelPlaying[channel].store(false, std::memory_order_release);
+            return false;
+        }
+        ws.source = stream;
     }
 
-    // Parse WAV header (still under SD lock — reads from file)
-    if (!parseWavHeader(ws)) {
-        ws.file.close();
-        sd.unlock();
-        MIXER_ERROR("Ch%d: Invalid WAV: %s", channel, filename);
-        _channelPlaying[channel].store(false, std::memory_order_release);
-        return false;
-    }
-    sd.unlock();
+    // Cache format for fast status reads (immutable for this source).
+    ws.sampleRate_Hz = ws.source->sampleRate_Hz();
+    ws.numChannels   = ws.source->numChannels();
+    ws.bitsPerSample = ws.source->bitsPerSample();
+    ws.totalFrames   = ws.source->totalFrames();
+
     MIXER_LOG("Ch%d: header OK (%uHz/%uch/%ub, %u frames)", channel,
               (unsigned)ws.sampleRate_Hz, (unsigned)ws.numChannels,
               (unsigned)ws.bitsPerSample, (unsigned)ws.totalFrames);
 
     // Configure resampler
     ws.resampleRatio = (float)ws.sampleRate_Hz / (float)AUDIO_SAMPLE_RATE;
-    ws.resampleFrac = 0.0f;
-    ws.bufLen = 0;
-    ws.bufPos = 0;
-    ws.preloadPos = 0;
+    ws.resampleFrac  = 0.0f;
+    ws.bufLen        = 0;
+    ws.bufPos        = 0;
 
-    // Apply playback options
+    // Apply loop options — source owns counter decay; we just cache
+    // the initial value for getInitialLoopCount() status reads.
+    bool srcLoop;
+    int  srcLoopCount;
     if (options.loop && options.loopCount == LOOP_INFINITE) {
-        ws.loop = true;
-        ws.loopCount = LOOP_INFINITE;
-        ws.loopCountInit = LOOP_INFINITE;
+        srcLoop = true;   srcLoopCount = LOOP_INFINITE;
     } else if (options.loopCount > 0) {
-        ws.loop = true;
-        ws.loopCount = options.loopCount;
-        ws.loopCountInit = options.loopCount;
+        srcLoop = true;   srcLoopCount = options.loopCount;
     } else if (options.loopCount == 0 || !options.loop) {
-        ws.loop = false;
-        ws.loopCount = 0;
-        ws.loopCountInit = 0;
+        srcLoop = false;  srcLoopCount = 0;
     } else {
-        ws.loop = true;
-        ws.loopCount = LOOP_INFINITE;
-        ws.loopCountInit = LOOP_INFINITE;
+        srcLoop = true;   srcLoopCount = LOOP_INFINITE;
     }
-    
+    ws.source->setLoop(srcLoop);
+    ws.source->setLoopCount(srcLoopCount);
+    ws.loopCountInit = srcLoopCount;
+
     ch.volume = constrain(options.volume, 0.0f, 1.0f);
     ch.outputChannels = options.outputChannels;
     ch.fading = false;
     ch.fadeVolume = 1.0f;
     ch.fadeStep = 0.0f;
-    // Optional fade-in: ramp the channel 0 → full over `fadeInMs`.  Reuses
-    // the fade machinery with a NEGATIVE step (fade-OUT uses a positive
-    // step toward 0); the consumer clamps at 1.0 and clears `fading`.
+    // Optional fade-in
     if (options.fadeInMs > 0) {
         ch.fading     = true;
         ch.fadeVolume = 0.0f;
         ch.fadeStep   = -(1.0f / (((float)options.fadeInMs * AUDIO_SAMPLE_RATE) / 1000.0f));
     }
-    // Optional tail fade-out: arm an auto fade-out over the final `fadeOutMs`
-    // of a one-shot.  Disabled for loops (a looping track has no "end").  The
-    // trigger threshold is in SOURCE frames so it matches the
-    // playback-remaining the consumer computes from `framesRead` + buffer.
+    // Optional tail fade-out (one-shot only)
     ch.fadeOutTriggerFrames = 0;
     ch.fadeOutStep          = 0.0f;
-    if (options.fadeOutMs > 0 && !ws.loop) {
+    if (options.fadeOutMs > 0 && !srcLoop) {
         ch.fadeOutTriggerFrames =
             ((uint32_t)options.fadeOutMs * ws.sampleRate_Hz) / 1000;
         ch.fadeOutStep = 1.0f / (((float)options.fadeOutMs * AUDIO_SAMPLE_RATE) / 1000.0f);
@@ -355,85 +331,42 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     ch.pan = 0.0f;
     updatePan(ch);
 
-    // Handle start offset
+    // Handle start offset (seek inside the source)
     if (options.startOffsetMs > 0) {
-        uint32_t offsetFrames = (static_cast<uint32_t>(options.startOffsetMs) * ws.sampleRate_Hz) / 1000;
+        uint32_t offsetFrames =
+            (static_cast<uint32_t>(options.startOffsetMs) * ws.sampleRate_Hz) / 1000;
         if (offsetFrames < ws.totalFrames) {
-            uint32_t bytesPerFrame = ws.numChannels * (ws.bitsPerSample / 8);
-            ws.file.seek(ws.dataStart + offsetFrames * bytesPerFrame);
-            ws.framesRead = offsetFrames;
+            ws.source->seekFrame(offsetFrames);
         }
     }
 
-    // Store filename for status display
     strncpy(ch.filename, filename, CHANNEL_FILENAME_MAX - 1);
     ch.filename[CHANNEL_FILENAME_MAX - 1] = '\0';
 
-    // ── Preload path ────────────────────────────────────────────────
-    // Caller asked for the whole file to be cached in PSRAM.  On
-    // success, file handle is closed inside tryPreload(), the streaming
-    // pre-fill loop below becomes a no-op (refillWavBuffer short-circuits
-    // on preloadActive), and we skip straight to ws.active=true.
-    // On failure (alloc / oversize / partial read) the file is left open
-    // so the streaming branch picks up exactly as before.
-    if (options.preloadIntoMemory) {
-        if (tryPreload(ws, filename)) {
-            ws.active = true;
-            _channelPlaying[channel] = true;
-            float duration_s = (float)ws.totalFrames / (float)ws.sampleRate_Hz;
-            MIXER_LOG("Ch%d: Playing %s (preloaded %s, vol=%.2f, %luHz %dbit %s, %.1fs%s)",
-                     channel, filename,
-                     ws.loopCount == LOOP_INFINITE ? "loop" :
-                       (ws.loopCount > 0 ? "x-fixed" : "once"),
-                     ch.volume, (unsigned long)ws.sampleRate_Hz,
-                     ws.bitsPerSample,
-                     ws.numChannels == 2 ? "stereo" : "mono",
-                     (double)duration_s,
-                     ws.resampleRatio != 1.0f ? " [resample]" : "");
-            return true;
-        }
-        // Fallthrough — tryPreload() left the file open; streaming will
-        // pick it up.  startOffset handling for the streaming branch is
-        // below; preload always starts at frame 0 (no in-cache offset
-        // implemented yet — easy follow-up if needed).
-    }
-
-    // Pre-fill WAV buffer — loop until either full OR refill makes no
-    // progress (EOF for non-looping files SHORTER than the buffer).
-    //
-    // BUG fixed 2026-05-23: `refillWavBuffer` returns TRUE at EOF when
-    // `bufLen > 0` (signal to producer: "still data to play"), which
-    // an unconditional `if (!refillWavBuffer(ws)) break;` pre-fill loop
-    // turns into an INFINITE LOOP for any file smaller than
-    // WAV_BUF_FRAMES (~500 ms at 48 kHz).  The 200 ms gun-shot WAV at
-    // ~9 600 frames triggered this — play() hung forever, channel was
-    // left "playing" with bufLen flat-lined, producer skipped it, no
-    // audio came out, and the audio mixer looked wedged.  Exit when
-    // bufLen stops growing.
+    // Pre-fill drain buffer — loop until either full OR refill makes
+    // no progress (EOF for non-looping files SHORTER than buffer).
     while (ws.bufLen < WAV_BUF_FRAMES) {
         int prevLen = ws.bufLen;
-        if (!refillWavBuffer(ws)) break;       // hard EOF/error
-        if (ws.bufLen == prevLen) break;       // no progress — file fully consumed
+        if (!refillDrainBuffer(ch)) break;
+        if (ws.bufLen == prevLen) break;
     }
     MIXER_LOG("Ch%d: Pre-filled WAV buffer %d/%d frames (%.0f ms)",
              channel, ws.bufLen, WAV_BUF_FRAMES,
              (float)ws.bufLen / AUDIO_SAMPLE_RATE * 1000.0f);
-    
+
     ws.active = true;
     _channelPlaying[channel] = true;
 
-    // Format loop info for log
     const char* loopStr;
     char loopBuf[16];
-    if (ws.loopCount == LOOP_INFINITE) {
+    if (srcLoopCount == LOOP_INFINITE) {
         loopStr = "loop";
-    } else if (ws.loopCount > 0) {
-        snprintf(loopBuf, sizeof(loopBuf), "x%d", ws.loopCount);
+    } else if (srcLoopCount > 0) {
+        snprintf(loopBuf, sizeof(loopBuf), "x%d", srcLoopCount);
         loopStr = loopBuf;
     } else {
         loopStr = "once";
     }
-    
     float duration_s = (float)ws.totalFrames / (float)ws.sampleRate_Hz;
     MIXER_LOG("Ch%d: Playing %s (%s, vol=%.2f, %luHz %dbit %s, %.1fs%s)",
              channel, filename, loopStr, ch.volume,
@@ -463,13 +396,15 @@ float AudioMixer<TI2S, TCodec>::getChannelVolume(int channel) const {
 template<typename TI2S, typename TCodec>
 bool AudioMixer<TI2S, TCodec>::isLooping(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return false;
-    return _channels[channel].wav.loop;
+    auto* src = _channels[channel].wav.source;
+    return src ? src->loopCount() != 0 : false;
 }
 
 template<typename TI2S, typename TCodec>
 int AudioMixer<TI2S, TCodec>::getLoopCount(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
-    return _channels[channel].wav.loopCount;
+    auto* src = _channels[channel].wav.source;
+    return src ? src->loopCount() : 0;
 }
 
 template<typename TI2S, typename TCodec>
@@ -519,15 +454,11 @@ void AudioMixer<TI2S, TCodec>::stop(int channel, AudioStopMode mode) {
 
     switch (mode) {
         case AudioStopMode::Immediate:
+            // Source destructor closes file / frees preload PSRAM.
+            destroyAudioSource(ws.source);
             ws.active = false;
             ws.bufLen = 0;
             ws.bufPos = 0;
-            if (ws.file) {
-                SdCardModule::instance().lock();
-                ws.file.close();
-                SdCardModule::instance().unlock();
-            }
-            freePreload(ws);                    // release PSRAM cache if any
             _channelPlaying[channel] = false;
             MIXER_LOG("Ch%d: Stopped", channel);
             break;
@@ -540,7 +471,7 @@ void AudioMixer<TI2S, TCodec>::stop(int channel, AudioStopMode mode) {
             break;
 
         case AudioStopMode::LoopEnd:
-            ws.loop = false;
+            if (ws.source) ws.source->setLoop(false);
             MIXER_LOG("Ch%d: Will stop at loop end", channel);
             break;
     }
@@ -557,15 +488,21 @@ template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::stopLooping(int channel) {
     if (!_initialized) return;
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
-    _channels[channel].wav.loop = false;
-    _channels[channel].wav.loopCount = 0;
+    auto* src = _channels[channel].wav.source;
+    if (src) {
+        src->setLoop(false);
+        src->setLoopCount(0);
+    }
 }
 
 template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::stopLoopingAll() {
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
-        _channels[i].wav.loop = false;
-        _channels[i].wav.loopCount = 0;
+        auto* src = _channels[i].wav.source;
+        if (src) {
+            src->setLoop(false);
+            src->setLoopCount(0);
+        }
     }
 }
 
@@ -589,14 +526,15 @@ bool AudioMixer<TI2S, TCodec>::queueSound(int channel, const char* filename, con
     }
     
     // If current track is looping infinitely, handle via loopBehavior
-    if (ws.loop && ws.loopCount == LOOP_INFINITE) {
+    if (ws.source && ws.source->loopCount() == LOOP_INFINITE) {
         if (loopBehavior == QueueLoopBehavior::StopImmediate) {
-            // Stop current immediately and play new sound
             stop(channel, AudioStopMode::Immediate);
             return play(channel, filename, options);
         } else {
-            // FinishLoop: mark that we want to stop after current loop finishes
-            ws.loopCount = 0;  // Will finish after this iteration
+            // FinishLoop: set loopCount=0 so the source returns 0 at
+            // its current iteration's EOF; produceFrame() tears it
+            // down and the queue plays the next item.
+            ws.source->setLoopCount(0);
             ch.hasQueuedItem = true;
             ch.pendingLoopBehavior = loopBehavior;
         }
@@ -759,225 +697,35 @@ template<typename TI2S, typename TCodec>
 float AudioMixer<TI2S, TCodec>::remainingSec(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return -1.0f;
     if (!_channelPlaying[channel]) return -1.0f;
-    if (_channels[channel].wav.loop) return -1.0f;
+    auto* src = _channels[channel].wav.source;
+    if (src && src->loopCount() != 0) return -1.0f;
     return _channelRemainingSec[channel];
 }
 
-// ============================================================================
-//  WAV PARSING
-// ============================================================================
-
-template<typename TI2S, typename TCodec>
-bool AudioMixer<TI2S, TCodec>::parseWavHeader(WavState& ws) {
-    uint8_t header[44];
-
-    if (ws.file.read(header, 44) != 44) {
-        return false;
-    }
-
-    // Validate RIFF header
-    if (memcmp(header, "RIFF", 4) != 0) return false;
-    if (memcmp(header + 8, "WAVE", 4) != 0) return false;
-    if (memcmp(header + 12, "fmt ", 4) != 0) return false;
-
-    // Check PCM format (audioFormat == 1)
-    uint16_t audioFormat = header[20] | (header[21] << 8);
-    if (audioFormat != 1) return false;
-
-    // Extract audio properties
-    ws.numChannels   = header[22] | (header[23] << 8);
-    ws.sampleRate_Hz = header[24] | (header[25] << 8) | (header[26] << 16) | (header[27] << 24);
-    ws.bitsPerSample = header[34] | (header[35] << 8);
-
-    // Validate supported formats
-    if (ws.numChannels < 1 || ws.numChannels > 2) return false;
-    if (ws.bitsPerSample != 8 && ws.bitsPerSample != 16) return false;
-
-    // Find data chunk (may not be at fixed offset)
-    ws.file.seek(12);
-    while (ws.file.available()) {
-        uint8_t chunkHeader[8];
-        if (ws.file.read(chunkHeader, 8) != 8) return false;
-
-        uint32_t chunkSize = chunkHeader[4] | (chunkHeader[5] << 8) | 
-                            (chunkHeader[6] << 16) | (chunkHeader[7] << 24);
-
-        if (memcmp(chunkHeader, "data", 4) == 0) {
-            ws.dataStart = ws.file.position();
-            uint32_t bytesPerFrame = ws.numChannels * (ws.bitsPerSample / 8);
-            ws.totalFrames = chunkSize / bytesPerFrame;
-            ws.framesRead  = 0;
-            return true;
-        }
-
-        ws.file.seek(ws.file.position() + chunkSize);
-    }
-
-    return false;
-}
+// (parseWavHeader moved to audio_source.cpp as parseWavHeaderLocked —
+// shared between WavStreamSource + WavPreloadSource.)
 
 // ============================================================================
-//  PRELOAD INTO MEMORY (AudioPlaybackOptions::preloadIntoMemory)
+//  DRAIN BUFFER REFILL  +  RESAMPLED SAMPLE GET (Producer side)
 // ============================================================================
 //
-// Eliminates per-loop SD reads for short hot samples (sustained-fire gun
-// shot, alert tone, burst stinger).  Cap is `WAV_MAX_PRELOAD_FRAMES`
-// (96 000 source frames = 2 s @ 48 kHz stereo = 768 KB) — large enough
-// to hold a typical 2A42 burst pattern and small enough that even four
-// hot samples don't blow the PSRAM budget.
+// File I/O lives entirely in IAudioSource now (audio_source.h).  These
+// methods are pure mixer-side scratch operations on `ws.bufL/R`.
 //
-// Caller has ALREADY opened the file + parsed the header; we own the
-// read-loop and the file handle close on success.  On failure (alloc /
-// oversize / partial read) the file is LEFT OPEN — the caller's
-// existing streaming-init path picks it up unchanged.
+// `refillDrainBuffer(ch)` pulls source-rate frames from the channel's
+// IAudioSource into the per-channel float buffer.  Loop wrap, PCM
+// decode, preload-vs-stream dispatch — all of that is inside the
+// source.  This function is purely a "compact + top-up" cursor op.
+//
+// `getWavSample(ch, L, R)` linearly interpolates the next output-rate
+// stereo sample from the drain buffer.  Same algorithm regardless of
+// source kind — the source's readFrames() provides the source-rate
+// data, this function adapts to the I²S sample rate.
 
 template<typename TI2S, typename TCodec>
-void AudioMixer<TI2S, TCodec>::freePreload(WavState& ws) {
-    if (ws.preloadL) { sfxPsramFree(ws.preloadL); ws.preloadL = nullptr; }
-    if (ws.preloadR) { sfxPsramFree(ws.preloadR); ws.preloadR = nullptr; }
-    ws.preloadFrames = 0;
-    ws.preloadPos    = 0;
-    ws.preloadActive = false;
-}
-
-template<typename TI2S, typename TCodec>
-bool AudioMixer<TI2S, TCodec>::tryPreload(WavState& ws, const char* filename) {
-    if (ws.totalFrames == 0) return false;
-    if (ws.totalFrames > WAV_MAX_PRELOAD_FRAMES) {
-        MIXER_WARN("Preload: %s has %u frames > cap %u — falling back to streaming",
-                   filename, (unsigned)ws.totalFrames, (unsigned)WAV_MAX_PRELOAD_FRAMES);
-        return false;
-    }
-
-    // Always start from a clean slate — a prior preload on this channel
-    // (re-trigger of the same sample, or switch between samples) must be
-    // released BEFORE we allocate, or we'd leak the previous buffers.
-    freePreload(ws);
-
-    const uint32_t bytesPerBuf = ws.totalFrames * sizeof(float);
-    const uint32_t needed      = bytesPerBuf * 2;  // L + R buffers
-
-    // Live PSRAM budget check (2026-05-23): the hard cap above bounds a
-    // single preload, but multiple hot samples (gunA + gunB + alert +
-    // engine-stinger) can stack up.  Refuse the alloc if it would leave
-    // PSRAM headroom below `kPreloadSafetyMarginBytes` — the SD read
-    // buffer, ring, decode buffers and ConfigStore PSRAM allocs all
-    // share this pool, and an OOM on those is fatal whereas a streaming
-    // fallback for a sample is just a small SD cost.
-    constexpr size_t kPreloadSafetyMarginBytes = 1 * 1024 * 1024;   // 1 MB
-    const size_t psramFree = sfxPsramFree_bytes();
-    if (psramFree > 0 && (size_t)needed + kPreloadSafetyMarginBytes > psramFree) {
-        MIXER_WARN("Preload: would leave PSRAM under safety margin "
-                   "(need=%u, free=%u, margin=%u) — streaming %s",
-                   (unsigned)needed, (unsigned)psramFree,
-                   (unsigned)kPreloadSafetyMarginBytes, filename);
-        return false;
-    }
-
-    ws.preloadL = static_cast<float*>(sfxPsramMalloc(bytesPerBuf));
-    ws.preloadR = static_cast<float*>(sfxPsramMalloc(bytesPerBuf));
-    if (!ws.preloadL || !ws.preloadR) {
-        MIXER_ERROR("Preload: PSRAM alloc failed (%u B each, free=%u) for %s — streaming",
-                    (unsigned)bytesPerBuf,
-                    (unsigned)sfxPsramFree_bytes(), filename);
-        freePreload(ws);
-        return false;
-    }
-
-    // Read the entire data chunk in WAV_SD_READ_BYTES batches.  The file
-    // is already positioned at dataStart by parseWavHeader.  SD mutex
-    // wraps the WHOLE read so storage ops on the other core don't seek
-    // mid-load (each batch re-locks to give the storage subsystem a
-    // chance between reads).
-    const int     bytesPerFrame = ws.numChannels * (ws.bitsPerSample / 8);
-    SdCardModule& sd            = SdCardModule::instance();
-    uint32_t      framesDecoded = 0;
-
-    while (framesDecoded < ws.totalFrames) {
-        const uint32_t framesLeft  = ws.totalFrames - framesDecoded;
-        const int      batchFrames =
-            (framesLeft * (uint32_t)bytesPerFrame > (uint32_t)WAV_SD_READ_BYTES)
-                ? (WAV_SD_READ_BYTES / bytesPerFrame)
-                : (int)framesLeft;
-        const int batchBytes = batchFrames * bytesPerFrame;
-
-        sd.lock();
-        int bytesRead = ws.file.read(_sdReadBuf, batchBytes);
-        sd.unlock();
-        if (bytesRead != batchBytes) {
-            MIXER_ERROR("Preload: short read on %s (%d/%d B at frame %u) — streaming",
-                        filename, bytesRead, batchBytes, (unsigned)framesDecoded);
-            freePreload(ws);
-            // Rewind the file handle so the streaming fallback in
-            // play() reads from the start of the data chunk instead
-            // of the mid-stream position we left it at (2026-05-24:
-            // missing rewind meant a partial preload failure left
-            // the streaming path reading garbage past the WAV data,
-            // which manifested as silent gun audio).
-            sd.lock();
-            ws.file.seek(ws.dataStart);
-            sd.unlock();
-            ws.framesRead = 0;
-            return false;
-        }
-
-        // Convert raw PCM → float, write straight into the preload bufs.
-        for (int i = 0; i < batchFrames; ++i) {
-            float l, r;
-            if (ws.bitsPerSample == 16) {
-                const int16_t* buf16 = (const int16_t*)_sdReadBuf;
-                if (ws.numChannels == 2) {
-                    l = buf16[i * 2]     * (1.0f / 32768.0f);
-                    r = buf16[i * 2 + 1] * (1.0f / 32768.0f);
-                } else {
-                    l = r = buf16[i] * (1.0f / 32768.0f);
-                }
-            } else {     // 8-bit unsigned
-                if (ws.numChannels == 2) {
-                    l = (_sdReadBuf[i * 2]     - 128) * (1.0f / 128.0f);
-                    r = (_sdReadBuf[i * 2 + 1] - 128) * (1.0f / 128.0f);
-                } else {
-                    l = r = (_sdReadBuf[i] - 128) * (1.0f / 128.0f);
-                }
-            }
-            ws.preloadL[framesDecoded + i] = l;
-            ws.preloadR[framesDecoded + i] = r;
-        }
-        framesDecoded += batchFrames;
-    }
-
-    // File handle no longer needed — close it so the SD subsystem can
-    // reclaim the slot.  bufL/bufR (the streaming decode buffers) stay
-    // allocated; they're per-channel + never touched on the preload path.
-    sd.lock();
-    ws.file.close();
-    sd.unlock();
-
-    ws.preloadFrames = ws.totalFrames;
-    ws.preloadPos    = 0;
-    ws.preloadActive = true;
-    ws.framesRead    = 0;
-    ws.bufLen        = 0;
-    ws.bufPos        = 0;
-
-    MIXER_LOG("Preload: cached %s (%u frames, %u KB, %.1f s @ %u Hz)",
-              filename, (unsigned)ws.totalFrames,
-              (unsigned)(bytesPerBuf * 2 / 1024),
-              (double)ws.totalFrames / (double)ws.sampleRate_Hz,
-              (unsigned)ws.sampleRate_Hz);
-    return true;
-}
-
-// ============================================================================
-//  WAV BUFFER REFILL (Producer side — Core 1 task on ESP32, Core 0 on Pico)
-// ============================================================================
-
-template<typename TI2S, typename TCodec>
-bool AudioMixer<TI2S, TCodec>::refillWavBuffer(WavState& ws) {
-    // Preloaded sample → no SD I/O, no decode buffer, nothing to refill.
-    // Returning `true` keeps the streaming-side callers (pre-fill loop in
-    // play(), proactive top-up in produce()) happy without any work.
-    if (ws.preloadActive) return true;
+bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
+    WavState& ws = ch.wav;
+    if (!ws.source) return false;
 
     // Move remaining frames to front of buffer
     int remaining = ws.bufLen - ws.bufPos;
@@ -991,194 +739,46 @@ bool AudioMixer<TI2S, TCodec>::refillWavBuffer(WavState& ws) {
     int space = WAV_BUF_FRAMES - remaining;
     if (space <= 0) return true;
 
-    int bytesPerFrame = ws.numChannels * (ws.bitsPerSample / 8);
-    int writeCursor   = remaining;
-    bool madeProgress = false;
-
-    // Loop-wrap prefetch (2026-05-23): consume the file tail AND the
-    // start of the next iteration in the SAME fill call when looping.
-    // Old code returned after reading the tail (e.g. 100 frames) and
-    // forced the next call to do the SD seek RIGHT AT the consumer
-    // boundary, where SD contention is most visible.  Now the seek
-    // happens transparently during a normal top-up — the proactive
-    // refill in `produce()` triggers a refill when the buffer drops
-    // below 50 %, giving ~250 ms of runway before the wrap reaches
-    // the consumer.  No separate prefetch buffer needed; the SPSC
-    // ring + WAV decode buffer already handle the hand-off.
-    while (space > 0) {
-        int framesLeft = (int)(ws.totalFrames - ws.framesRead);
-        if (framesLeft <= 0) {
-            if (!ws.loop) {
-                // EOF on a one-shot — leave ws.active alone (the buffer
-                // may still hold frames the consumer will drain) and let
-                // produceFrame()'s getWavSample() path handle teardown.
-                break;
-            }
-            // Looping: bump the loop counter (LOOP_INFINITE skips this),
-            // seek back to dataStart, and continue the SAME fill pass.
-            if (ws.loopCount != LOOP_INFINITE) {
-                if (ws.loopCount <= 0) {
-                    ws.loop = false;
-                    break;
-                }
-                ws.loopCount--;
-            }
-            SdCardModule::instance().lock();
-            ws.file.seek(ws.dataStart);
-            SdCardModule::instance().unlock();
-            ws.framesRead = 0;
-            framesLeft = (int)ws.totalFrames;
-            if (framesLeft <= 0) break;     // pathologically empty file
-        }
-
-        int framesToRead = (space < framesLeft) ? space : framesLeft;
-        int bytesToRead  = framesToRead * bytesPerFrame;
-        if (bytesToRead > WAV_SD_READ_BYTES) {
-            bytesToRead  = WAV_SD_READ_BYTES;
-            framesToRead = bytesToRead / bytesPerFrame;
-        }
-
-        SdCardModule::instance().lock();
-        int bytesRead = ws.file.read(_sdReadBuf, bytesToRead);
-        SdCardModule::instance().unlock();
-        int framesGot = bytesRead / bytesPerFrame;
-        if (framesGot <= 0) break;          // read failure — stop the pass
-        ws.framesRead += framesGot;
-
-        for (int i = 0; i < framesGot; i++) {
-            float l, r;
-            if (ws.bitsPerSample == 16) {
-                const int16_t* buf16 = (const int16_t*)_sdReadBuf;
-                if (ws.numChannels == 2) {
-                    l = buf16[i * 2]     * (1.0f / 32768.0f);
-                    r = buf16[i * 2 + 1] * (1.0f / 32768.0f);
-                } else {
-                    l = r = buf16[i] * (1.0f / 32768.0f);
-                }
-            } else {  // 8-bit unsigned
-                if (ws.numChannels == 2) {
-                    l = (_sdReadBuf[i * 2]     - 128) * (1.0f / 128.0f);
-                    r = (_sdReadBuf[i * 2 + 1] - 128) * (1.0f / 128.0f);
-                } else {
-                    l = r = (_sdReadBuf[i] - 128) * (1.0f / 128.0f);
-                }
-            }
-            ws.bufL[writeCursor + i] = l;
-            ws.bufR[writeCursor + i] = r;
-        }
-        writeCursor  += framesGot;
-        space        -= framesGot;
-        madeProgress  = true;
-        // Cap per-call SD work: one batch already cost a lock + read; if
-        // we filled enough to keep the consumer fed, hand back control
-        // and let the next produce() iteration handle the next batch.
-        if (bytesRead < bytesToRead) {
-            // Short read: probably SD slow-path; defer remaining wrap
-            // work to the next call so we don't starve other channels.
-            break;
-        }
-    }
-
-    ws.bufLen = writeCursor;
-    if (madeProgress) return ws.bufLen > 0;
-    // No progress this call → tell caller "no fresh data" so the
-    // pre-fill loop in play() can break out (avoids spin on EOF).
-    return ws.bufLen > 0 ? true : false;
+    // Pull from source into the tail of the drain buffer.  Source
+    // handles loop wrap internally; we just see a stream of frames
+    // until it returns 0 (exhausted).
+    const uint32_t got = ws.source->readFrames(ws.bufL + ws.bufLen,
+                                               ws.bufR + ws.bufLen,
+                                               (uint32_t)space);
+    ws.bufLen += (int)got;
+    return ws.bufLen > 0;
 }
 
-// ============================================================================
-//  WAV SAMPLE RETRIEVAL WITH RESAMPLING (Producer side)
-// ============================================================================
-
 template<typename TI2S, typename TCodec>
-bool AudioMixer<TI2S, TCodec>::getWavSample(WavState& ws, float& outL, float& outR) {
-    // ── Preloaded sample (AudioPlaybackOptions::preloadIntoMemory) ──
-    // The entire file is already in PSRAM as preloadL/R[preloadFrames].
-    // For looping, we sample with a modulo wrap on every advance — no
-    // SD, no seek, no per-loop hand-off.  For one-shot we return false
-    // at the last frame, same teardown path as the streaming branch.
-    if (ws.preloadActive) {
-        const uint32_t total = ws.preloadFrames;
-        if (total < 2) {
-            outL = outR = 0.0f;
-            return false;
-        }
-        const uint32_t idx  = ws.preloadPos;
-        const float    frac = ws.resampleFrac;
-
-        // Linear interpolation — neighbour wraps to 0 at end-of-buffer
-        // when looping so the sample doesn't pop at the wrap boundary.
-        // (For one-shot, the second branch below clamps the read but
-        // exits at the same frame, so the +1 access on the last frame
-        // never goes through this path.)
-        uint32_t next = idx + 1;
-        if (next >= total) next = ws.loop ? 0u : (total - 1);
-
-        outL = ws.preloadL[idx] + (ws.preloadL[next] - ws.preloadL[idx]) * frac;
-        outR = ws.preloadR[idx] + (ws.preloadR[next] - ws.preloadR[idx]) * frac;
-
-        // Advance — modulo-wrap on the position itself (not just the
-        // interpolation neighbour) so framesRead surfaced via the
-        // remaining-sec status stays accurate.  For one-shot, hitting
-        // the last frame returns true ONCE then false on the next call.
-        ws.resampleFrac += ws.resampleRatio;
-        uint32_t advance = (uint32_t)ws.resampleFrac;
-        ws.resampleFrac -= (float)advance;
-        uint32_t newPos = idx + advance;
-        if (newPos >= total) {
-            if (!ws.loop) {
-                ws.preloadPos = total;        // mark exhausted for teardown
-                return false;                 // signals end-of-playback
-            }
-            if (ws.loopCount != LOOP_INFINITE) {
-                if (ws.loopCount <= 0) {
-                    ws.loop       = false;
-                    ws.preloadPos = total;
-                    return false;
-                }
-                ws.loopCount--;
-            }
-            newPos %= total;                  // wrap inside the buffer
-        }
-        ws.preloadPos = newPos;
-        // Keep framesRead in sync so produceFrame's remainingSec math
-        // (which only matters for one-shot) reads a sensible value.
-        ws.framesRead = newPos;
-        return true;
-    }
-
-    // ── Streaming path (existing behaviour) ──────────────────────────
-    // Ensure at least 2 frames available for linear interpolation
+bool AudioMixer<TI2S, TCodec>::getWavSample(Channel& ch, float& outL, float& outR) {
+    WavState& ws = ch.wav;
+    // Ensure 2 frames are available for linear interpolation; refill
+    // from source if not.  Source-kind dispatch is behind ws.source.
     while (ws.bufPos + 1 >= ws.bufLen) {
-        if (!refillWavBuffer(ws)) {
+        if (!refillDrainBuffer(ch)) {
             outL = outR = 0.0f;
             return false;
         }
-        // Safety: if refill returned true but still not enough data for
-        // interpolation, no more progress is possible (e.g., end of file
-        // with exactly 1 frame remaining). Treat as end of track to avoid
-        // an infinite loop that blocks the entire main loop.
         if (ws.bufPos + 1 >= ws.bufLen) {
             outL = outR = 0.0f;
             return false;
         }
     }
 
-    int   idx  = ws.bufPos;
-    float frac = ws.resampleFrac;
+    const int   idx  = ws.bufPos;
+    const float frac = ws.resampleFrac;
 
-    // Linear interpolation between adjacent source frames
     outL = ws.bufL[idx] + (ws.bufL[idx + 1] - ws.bufL[idx]) * frac;
     outR = ws.bufR[idx] + (ws.bufR[idx + 1] - ws.bufR[idx]) * frac;
 
-    // Advance resampler: step through source at ratio = srcRate / outputRate
+    // Advance resampler
     ws.resampleFrac += ws.resampleRatio;
     int advance = (int)ws.resampleFrac;
     ws.bufPos       += advance;
     ws.resampleFrac -= (float)advance;
-
     return true;
 }
+
 
 // ============================================================================
 //  FLOAT MIXING PIPELINE — PRODUCER (Core 1 task on ESP32, Core 0 on Pico)
@@ -1204,32 +804,25 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
         float trackL = 0.0f;
         float trackR = 0.0f;
 
-        // Get one resampled stereo frame from WAV
-        if (!getWavSample(ws, trackL, trackR)) {
-            // End of playback — close file and clean up
+        // Get one resampled stereo frame from the source's drain buffer.
+        if (!getWavSample(ch, trackL, trackR)) {
+            // End of playback — source destructor closes its file or
+            // frees its preload PSRAM uniformly across kinds.
+            destroyAudioSource(ws.source);
             ws.active = false;
             _channelPlaying[i] = false;
             _channelRemainingSec[i] = 0.0f;
-            if (ws.file) {
-                SdCardModule::instance().lock();
-                ws.file.close();
-                SdCardModule::instance().unlock();
-            }
-            // Release preload PSRAM buffers (no-op when streaming).  We
-            // could keep them around for a future loop, but the option
-            // is per-play() so the next playAsync() will request preload
-            // again if it wants the cache.
-            freePreload(ws);
             checkAndPlayNextQueued(i);
             continue;
         }
 
-        // Arm the auto tail fade-out once playback-remaining (file frames
-        // not yet read + frames still buffered) drops below the threshold.
-        // Reuses the fade-OUT machinery (positive step → ramps to 0 and stops
-        // the channel).  One-shot: cleared as soon as it fires.
+        // Arm the auto tail fade-out once playback-remaining (source
+        // frames not yet read + frames still buffered) drops below the
+        // threshold.
         if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
-            uint32_t framesLeft = ws.totalFrames - ws.framesRead + (ws.bufLen - ws.bufPos);
+            const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            const uint32_t framesLeft =
+                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
             if (framesLeft <= ch.fadeOutTriggerFrames) {
                 ch.fading               = true;
                 ch.fadeVolume           = 1.0f;
@@ -1238,9 +831,7 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
             }
         }
 
-        // Apply fade if active.  fadeStep > 0 = fade-OUT (ramp to 0, then
-        // stop the channel); fadeStep < 0 = fade-IN (ramp to full, then
-        // keep playing).
+        // Apply fade if active.  fadeStep > 0 = fade-OUT, < 0 = fade-IN.
         float effectiveVolume = ch.volume;
         if (ch.fading) {
             effectiveVolume *= ch.fadeVolume;
@@ -1249,14 +840,9 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
                 // Fade-out complete → stop the channel.
                 ch.fadeVolume = 0.0f;
                 ch.fading = false;
+                destroyAudioSource(ws.source);
                 ws.active = false;
                 _channelPlaying[i] = false;
-                if (ws.file) {
-                    SdCardModule::instance().lock();
-                    ws.file.close();
-                    SdCardModule::instance().unlock();
-                }
-                freePreload(ws);                // release PSRAM cache if any
                 checkAndPlayNextQueued(i);
                 continue;
             } else if (ch.fadeStep < 0.0f && ch.fadeVolume >= 1.0f) {
@@ -1287,9 +873,12 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
         mixL += trackL;
         mixR += trackR;
 
-        // Update remaining time status (float seconds — avoids integer overflow for long files)
+        // Update remaining time status (float seconds — avoids integer
+        // overflow for long files).  framesRead lives on the source now.
         if (ws.sampleRate_Hz > 0) {
-            uint32_t framesLeft = ws.totalFrames - ws.framesRead + (ws.bufLen - ws.bufPos);
+            const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            const uint32_t framesLeft =
+                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
             _channelRemainingSec[i] = (float)framesLeft / (float)ws.sampleRate_Hz;
         }
     }
@@ -1333,21 +922,21 @@ int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
         produced++;
     }
 
-    // Proactively top-up ONE channel's WAV decode buffer per call
-    // (round-robin).  This spreads SD I/O across loop iterations and
-    // avoids the expensive memmove + SD read blocking produce().
-    // Only triggers when buffer drops below 50% — at that point there
-    // is still 250 ms of audio remaining, plenty of runway.
+    // Proactively top-up ONE channel's drain buffer per call (round-
+    // robin).  This spreads SD I/O across loop iterations and avoids
+    // expensive refill blocking produce().  Only triggers when the
+    // buffer drops below 50% — at that point there is still ~250 ms
+    // of audio remaining, plenty of runway.
     {
         static int refillIdx = 0;
         for (int attempt = 0; attempt < AUDIO_MAX_CHANNELS; attempt++) {
-            int ch = refillIdx % AUDIO_MAX_CHANNELS;
+            int idx = refillIdx % AUDIO_MAX_CHANNELS;
             refillIdx++;
-            WavState& ws = _channels[ch].wav;
-            if (!ws.active) continue;
-            int available = ws.bufLen - ws.bufPos;
+            Channel& ch = _channels[idx];
+            if (!ch.wav.active) continue;
+            int available = ch.wav.bufLen - ch.wav.bufPos;
             if (available < WAV_BUF_FRAMES / 2) {
-                refillWavBuffer(ws);   // one SD batch (~4096 frames)
+                refillDrainBuffer(ch);   // one source-side batch
             }
             break;  // one channel per call
         }
@@ -1654,7 +1243,13 @@ void AudioMixer<TI2S, TCodec>::producerTaskFunc(void* param) {
     }
 
     MIXER_LOG("Producer task exiting");
-    vTaskDelete(nullptr);
+    // Signal stopProducerTask() then suspend.  stopProducerTask deletes
+    // us from outside so the TCB + stack are reclaimed synchronously —
+    // self-deletion via vTaskDelete(nullptr) defers reap to the idle
+    // task, which under upload-induced suspend/resume pressure caused
+    // producer-recreate to OOM (verified rollback of build #285).
+    mixer._producerExited.store(true, std::memory_order_release);
+    vTaskSuspend(nullptr);
 }
 
 template<typename TI2S, typename TCodec>
@@ -1670,6 +1265,7 @@ bool AudioMixer<TI2S, TCodec>::startProducerTask(int core, int priority, int sta
     _producerPriority = priority;
     _producerStackSize = stackSize;
 
+    _producerExited.store(false, std::memory_order_release);
     _producerRunning.store(true, std::memory_order_release);
 
     BaseType_t result = xTaskCreatePinnedToCore(
@@ -1699,10 +1295,21 @@ void AudioMixer<TI2S, TCodec>::stopProducerTask() {
     MIXER_LOG("Stopping producer task...");
     _producerRunning.store(false, std::memory_order_release);
 
-    // Wait for task to finish its current iteration and self-delete
-    if (_producerTaskHandle) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-        _producerTaskHandle = nullptr;
+    // Wait for the task to fall out of its loop and signal
+    // _producerExited.  After the signal it suspends itself; we then
+    // vTaskDelete it from outside, which frees the TCB + stack
+    // synchronously rather than waiting for the idle task to reap.
+    TaskHandle_t handle = _producerTaskHandle;
+    _producerTaskHandle = nullptr;
+    if (handle) {
+        for (int i = 0; i < 40; ++i) {
+            if (_producerExited.load(std::memory_order_acquire)) break;
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        if (!_producerExited.load(std::memory_order_acquire)) {
+            MIXER_WARN("Producer task did not exit cleanly after 200 ms — forcing delete");
+        }
+        vTaskDelete(handle);
     }
 
     MIXER_LOG("Producer task stopped");
