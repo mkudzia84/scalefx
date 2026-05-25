@@ -2060,6 +2060,61 @@ Operational effect panels (GunFx Fire/Stop, EngineFx Start/Stop, future LightFx 
 
 References: [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) per-gun fire cluster, [EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) status-row. New operational panels copy the markup verbatim — re-rolling a one-off button row is a Rule 48 violation.
 
+### 49. Output-Port Pickers — Role-Filtered + Unclaimed Pool, Empty-Pool Warning (Rule 34 + Rule 39 extension)
+
+Every Studio dropdown that picks an OUTPUT PORT (landing-light LEDs / servos, GunFx muzzle flash / recoil / smoke / yaw / pitch, LightFx program channels, future expander effects) MUST filter the option list by BOTH:
+
+1. **Required role attached** — `roleKind == RoleKind.LedAnimator` for LED channels, `RoleKind.ServoActuator` for servos, `RoleKind.Heater` for smoke heaters, `RoleKind.DcMotor` for fans.  Ports without the role attached are invisible to the picker — the operator authored the role on the IO tab; picking a port without it would silently fail at apply time.
+2. **Unclaimed by any other effect** — a port already grabbed by a sibling group / different effect is hidden.  The currently-selected port on THIS row is exempt (kept in the dropdown so the operator can see what's wired) via an `isExempt(p)` callback.
+
+When the resulting pool is empty AND the field can't function without a pick (LEDs in a landing group, channels in a program, recoil servo when recoil is enabled), the picker MUST surface a **yellow `section-warn` warning** with a `.section-warn-tag` chip on the section header.  Non-blocking (Rule 39 yellow, not Rule 35 red) — the operator can still save the YAML and fix the wiring on the IO tab later.
+
+**Use the shared helper** in [`components/port_pool.ts`](../app/go/studio/frontend/src/lib/components/port_pool.ts) — never reimplement the filter logic in a panel:
+
+```ts
+import { freePortPoolFiltered } from '../components/port_pool'
+import { RoleKind } from '../devicemodel'
+
+$: pool = freePortPoolFiltered(
+    $deviceModel.ports, $deviceModel.claims,
+    'pwm', RoleKind.LedAnimator,
+    (p) => /* exempt this row's current pick */ p.ref.guid === currentRef.guid && …
+)
+$: poolEmpty = freePortPoolFiltered(
+    $deviceModel.ports, $deviceModel.claims,
+    'pwm', RoleKind.LedAnimator, () => false,           // no exemption — true emptiness
+).length === 0
+```
+
+Markup pattern (the `section-warn` + `section-warn-tag` classes are Rule 39 — same chrome):
+
+```svelte
+<div class="section-head" class:section-warn={poolEmpty}>
+    LEDs
+    {#if poolEmpty}
+        <span class="section-warn-tag" title="No free PWM ports with the LedAnimator role attached.  Open the IO tab and attach LedAnimator to a free port.">
+            no free LED ports — attach LedAnimator on the IO tab
+        </span>
+    {/if}
+</div>
+
+<select disabled={pool.length === 0} title={pool.length === 0 ? 'No candidates' : 'Pick a port'}>
+    <option value="">— pick —</option>
+    {#each pool as p}<option value={refOptKey(p)}>{refOptLabel(p)}</option>{/each}
+</select>
+```
+
+**Why the exemption callback matters:** without it, editing a row drops the row's CURRENT pick out of the dropdown (because the port IS claimed — by this row), and the operator sees their selection vanish.  The exemption keeps it visible while the picker is open.
+
+**Two filter variants:**
+
+- `freePortPool(ports, claims, kindName, role, exemptRefs[])` — pass an array of `{guid, kind, idx}` refs to exempt.  Common case: every port already in the SAME GROUP's list (so when a landing-light has 2 servos and the operator picks a 3rd, the 1st two stay visible without being claimable by a sibling).
+- `freePortPoolFiltered(ports, claims, kindName, role, isExempt)` — pass a predicate.  Use for more complex exemption logic (e.g. cross-program references).
+
+**Input ports stay on Rule 43 (named-channel).** This rule is OUTPUT ports only — input ports are shared (multiple effects can subscribe to the same RC channel) and pick by NAME via `/hubfx.yaml`'s `inputs:` block.
+
+References: [LandingPanel.svelte](../app/go/studio/frontend/src/lib/tabs/LandingPanel.svelte) servo + LED pickers, [ProgramEditorDialog.svelte](../app/go/studio/frontend/src/lib/dialogs/ProgramEditorDialog.svelte) per-channel LED picker, [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) muzzle / smoke / yaw / pitch.
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host
