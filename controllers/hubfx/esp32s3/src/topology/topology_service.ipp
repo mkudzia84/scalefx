@@ -27,8 +27,60 @@ CommandHandleResult TopologyServicePolicyT<TExpander>::handle(
         case TopologyPacket::TOPOLOGY_ROLE_DETACH:
             handleRoleDetach(payload, len);
             return CommandHandleResult::Handled;
+        case TopologyPacket::TOPOLOGY_ROLE_FORWARD:
+            handleRoleForward(payload, len);
+            return CommandHandleResult::Handled;
         default:
             return CommandHandleResult::NotMyCommand;
+    }
+}
+
+// ─── TOPOLOGY_ROLE_FORWARD — generic pass-through router ───────────────
+//
+// Envelope:  [guidLen:u8][guid:str][innerType:u8][innerLen:u16LE][inner:N]
+//
+// `sendRoleCommand` already implements the dispatch policy (capture-mode
+// local handle vs. CDC forward to expander) — the wire handler is just
+// the protocol-layer adapter that decodes the envelope, builds a
+// `PortRef{guid, kind=0, idx=0}` (kind/idx are unused by sendRoleCommand
+// for routing — only `guid` matters), and forwards the inner packet.
+template <hubfx::expanders::ExpanderService TExpander>
+void TopologyServicePolicyT<TExpander>::handleRoleForward(
+        const uint8_t* p, size_t len) {
+    char   guid[5] = {};
+    size_t off     = 0;
+    if (!readGuidPrefix(p, len, guid, off)) {
+        _ctx->sendNack(SerialError::MISSING_PARAMETER);
+        return;
+    }
+    if (off + 1 + 2 > len) {
+        _ctx->sendNack(SerialError::MISSING_PARAMETER);
+        return;
+    }
+    const uint8_t  innerType = p[off++];
+    const uint16_t innerLen  =
+        static_cast<uint16_t>(p[off]) | (static_cast<uint16_t>(p[off + 1]) << 8);
+    off += 2;
+    if (off + innerLen > len) {
+        _ctx->sendNack(SerialError::MISSING_PARAMETER);
+        return;
+    }
+    PortRef addr{};
+    std::strncpy(addr.guid, guid, sizeof(addr.guid) - 1);
+    addr.portKind = 0;        // not used by sendRoleCommand for routing
+    addr.portIdx  = 0;
+    const bool ok = sendRoleCommand(addr, innerType,
+                                    innerLen > 0 ? &p[off] : nullptr, innerLen);
+    if (ok) {
+        _ctx->sendAck();
+    } else {
+        // sendRoleCommand already logged the specific failure
+        // (unknown GUID, expander not ready, role NACK, CDC timeout).
+        // The wire-side NACK carries the FORWARD_FAILED bucket
+        // because we don't have visibility into the role-layer error
+        // code from this layer — Studio shows the toast as "Cross-
+        // board forward failed; check the hub diag log for details".
+        _ctx->sendNack(TopologyError::FORWARD_FAILED);
     }
 }
 

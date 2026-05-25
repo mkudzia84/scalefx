@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.12.0-hubfx"
-#define BUILD_NUMBER     237
+#define BUILD_NUMBER     268
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -490,6 +490,11 @@ static void applyGearControlConfigCallback(const GearControlConfig& cfg) {
 static void applyLightFxConfigCallback(const LightFxYamlConfig& cfg) {
     hubfx::config::applyLightFxConfig<HubFxBoard, LightFxEffectService>(
         board, cfg,
+        // /hubfx.yaml store — v2 programs resolve channel names against
+        // its LedAnimator port labels.  Loaded BEFORE LightFx by
+        // construction (the sketch's loadOrFallback() ordering — kHubFx
+        // first, kLightFx after).
+        kHubFx.data(),
         // Program-file reader for `/lightfx/programs/<n>.yaml`.
         &storageReadFile<FlashModule>);
 }

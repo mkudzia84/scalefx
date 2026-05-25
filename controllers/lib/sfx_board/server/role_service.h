@@ -130,6 +130,8 @@ private:
     void handleBiMotorCoast       (const uint8_t* p, size_t len);
     void handleBiMotorGetStatus   (const uint8_t* p, size_t len);
     void handleBiMotorSeekEndstop (const uint8_t* p, size_t len);
+    void handleBiMotorMoveToEnd   (const uint8_t* p, size_t len);   // 0x5F (Strategy A)
+    void handleBiMotorSetGuard    (const uint8_t* p, size_t len);   // 0x77 (live retune)
 
     // ── Heater ────────────────────────────────────────────────────────
     void handleHeaterSetTarget   (const uint8_t* p, size_t len);
@@ -155,7 +157,8 @@ private:
     void emitMotorStallEvent      (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
     void emitBiMotorStallEvent    (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
     void emitBiMotorEndstopResult (uint8_t portIdx, uint8_t outcome,
-                                   uint16_t travel_ms, uint16_t peak_mA);
+                                   uint16_t travel_ms, uint16_t peak_mA,
+                                   uint8_t position);
     void emitRcInValueBroadcast   (uint8_t portIdx, uint16_t us, bool valid);
     void emitSbusFrameBroadcast   (uint8_t portIdx, const SbusInputRole& role);
     void emitJetiExFrameBroadcast (uint8_t portIdx, const JetiExInputRole& role);

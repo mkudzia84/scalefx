@@ -67,7 +67,14 @@ inline void deriveProgramName(const char* path, char* out, size_t outLen) {
 /// successfully.  Missing files are WARN'd and skipped — the rest still
 /// load.  Reads from the supplied file-reader (typically
 /// `storageReadFile<FlashModule>`).
+///
+/// `hub` is the /hubfx.yaml store (required for v2 channel-name
+/// resolution — each program's tracks[] entries resolve channel names
+/// against `hub.ports[]` LedAnimator labels).  Pre-v2 programs ignore
+/// it.  Pass nullptr only when /hubfx.yaml hasn't loaded yet (would
+/// cause every v2 track to skip with a WARN).
 inline uint8_t loadLightFxProgramCatalog(const LightFxYamlConfig& cfg,
+                                          const HubFxConfig* hub,
                                           int (*reader)(const char*, char*, size_t)) {
     using namespace hubfx::effects::lightfx;
     if (!reader) {
@@ -102,6 +109,7 @@ inline uint8_t loadLightFxProgramCatalog(const LightFxYamlConfig& cfg,
         }
         kHubFxLoadedPrograms[loaded] = Program{};
         if (loadLightFxProgram<LightFxProgramYamlPool>(yamlBuf, (size_t)n, name,
+                                                       hub,
                                                        kHubFxLoadedPrograms[loaded])) {
             SFX_LOG_INFO("[lightfx-program] loaded %s from %s (%d bytes, %u channels)",
                          name, path, n,
@@ -250,10 +258,16 @@ void applyHubFxConfig(TBoard& board, const HubFxConfig& cfg) {
 /// paths in `cfg.programPaths[]`, then configure the service.  Master
 /// brightness + local enable land here; /hubfx.yaml's master kill-
 /// switch re-applies after via `applyHubFxConfig`.
+///
+/// `hub` is required for v2 channel-name resolution — programs
+/// reference LED channels by NAME against /hubfx.yaml's LedAnimator
+/// port labels (mirrors Rule 43's pattern for inputs).  The sketch's
+/// callback passes `kHubFx.data()`.
 template <typename TBoard, typename TLightFxService>
 void applyLightFxConfig(TBoard& board, const LightFxYamlConfig& cfg,
+                        const HubFxConfig& hub,
                         int (*programReader)(const char*, char*, size_t)) {
-    const uint8_t loaded = loadLightFxProgramCatalog(cfg, programReader);
+    const uint8_t loaded = loadLightFxProgramCatalog(cfg, &hub, programReader);
     auto& svc = board.template policy<TLightFxService>();
     svc.setEnabled(cfg.enabled);
     svc.controller().setMasterBrightness(cfg.masterBrightnessPct);

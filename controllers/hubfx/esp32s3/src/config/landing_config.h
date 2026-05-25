@@ -99,12 +99,47 @@ struct LandingConfigSchema {
             if (nm && nm[0]) std::strncpy(def.name, nm, sizeof(def.name) - 1);
             def.owner = effectIdFromName(ll->template childAs<const char*>("owner", "lightfx"));
 
-            // servo: { port: {kind, idx}, open_us, close_us }
-            const auto* servoNode = ll->child("servo");
-            if (servoNode) {
-                def.servo   = portRefFromNode(servoNode->child("port"));
-                def.openUs  = (uint16_t)servoNode->template childAs<int32_t>("open_us",  1900);
-                def.closeUs = (uint16_t)servoNode->template childAs<int32_t>("close_us", 1100);
+            // Servo parsing (2026-05-24): two accepted forms —
+            //
+            //   1. NEW (preferred, multi-servo):
+            //        servos:
+            //          - { port: {kind: servo, idx: 0} }
+            //          - { port: {kind: servo, idx: 1} }
+            //        open_us: 1900            # group-wide
+            //        close_us: 1100
+            //
+            //   2. LEGACY (single-servo, back-compat with /landing.yaml
+            //      files written before multi-servo landed):
+            //        servo:
+            //          port: { kind: servo, idx: 0 }
+            //          open_us: 1900
+            //          close_us: 1100
+            //
+            // The legacy form keeps open_us / close_us nested under
+            // `servo:`; the new form lifts them to the landing-light
+            // level so they're not duplicated per servo entry.
+            def.numServos = 0;
+            const auto* servosNode = ll->child("servos");
+            if (servosNode && servosNode->type == YamlNode::Sequence) {
+                // New multi-servo form.
+                const int sN = servosNode->childCount();
+                for (int j = 0; j < sN && def.numServos < kMaxServosPerLanding; ++j) {
+                    const auto* s = servosNode->childAt(j);
+                    if (!s) continue;
+                    def.servos[def.numServos++] = portRefFromNode(s->child("port"));
+                }
+                def.openUs  = (uint16_t)ll->template childAs<int32_t>("open_us",  1900);
+                def.closeUs = (uint16_t)ll->template childAs<int32_t>("close_us", 1100);
+            } else {
+                // Legacy single-servo form — kept indefinitely so
+                // operator-authored /landing.yaml files don't have to
+                // be rewritten when the firmware ships.
+                const auto* servoNode = ll->child("servo");
+                if (servoNode) {
+                    def.servos[def.numServos++] = portRefFromNode(servoNode->child("port"));
+                    def.openUs  = (uint16_t)servoNode->template childAs<int32_t>("open_us",  1900);
+                    def.closeUs = (uint16_t)servoNode->template childAs<int32_t>("close_us", 1100);
+                }
             }
 
             // leds: [ {port, brightness_pct}, ... ]

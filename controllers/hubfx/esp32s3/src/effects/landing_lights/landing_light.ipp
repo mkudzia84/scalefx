@@ -28,13 +28,25 @@ inline void LandingLight::deploy() {
         default:
             break;
     }
-    // Single-command batch (just SERVO_SET_TARGET) — still useful so
-    // that if we're called from inside a larger batch (e.g. program
-    // switch), this one falls into the outer batch.
+    // Reset the arrival bitset BEFORE dispatching so a fast servo
+    // can't report in before we're tracking — once we enter DEPLOYING,
+    // every onServoTargetReached() ORs into a known-zero starting mask.
+    _servoArrived = 0;
+    // Single batch — all `numServos` SERVO_SET_TARGET packets ship
+    // together so the servos start moving in lock-step.
     if (_begin && _sendCtx) _begin(_sendCtx);
     enterPhase(LandingLightPhase::Deploying);
-    commandServo(_def.openUs);
+    commandAllServos(_def.openUs);
     if (_commit && _sendCtx) _commit(_sendCtx);
+    // Edge case: zero servos configured (LEDs-only landing light) —
+    // the arrival mask is already 0, allServosMask() is 0, so we're
+    // immediately "all arrived" and skip straight to LEDs on.
+    if (allServosMask() == 0) {
+        if (_begin && _sendCtx) _begin(_sendCtx);
+        enterPhase(LandingLightPhase::Deployed);
+        commandLedsOn();
+        if (_commit && _sendCtx) _commit(_sendCtx);
+    }
 }
 
 inline void LandingLight::retract() {
@@ -48,22 +60,38 @@ inline void LandingLight::retract() {
         default:
             break;
     }
+    _servoArrived = 0;
     // Per the deploy-then-retract spec: LEDs go off IMMEDIATELY on
-    // retract, then the servo retracts.  All three subbursts go in
-    // one batch so the LEDs don't briefly hang on while the servo
-    // command is in flight.
+    // retract, then all servos retract.  Both fan into one batch so
+    // the LEDs don't briefly hang on while servo commands are in flight.
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandLedsOff();
     enterPhase(LandingLightPhase::Retracting);
-    commandServo(_def.closeUs);
+    commandAllServos(_def.closeUs);
     if (_commit && _sendCtx) _commit(_sendCtx);
+    // LEDs-only edge case mirror — no servos to wait on, go straight
+    // to RETRACTED so the operator's UI doesn't show a stuck phase.
+    if (allServosMask() == 0) {
+        enterPhase(LandingLightPhase::Retracted);
+    }
 }
 
-inline void LandingLight::onServoTargetReached() {
+inline void LandingLight::onServoTargetReached(uint8_t servoIdx) {
+    if (servoIdx >= _def.numServos) return;          // stray event
+    _servoArrived |= static_cast<uint8_t>(1u << servoIdx);
+    const uint8_t mask = allServosMask();
+    if ((_servoArrived & mask) != mask) {
+        // Some servos still in motion — wait for them.  Logged at
+        // DEBUG so a slow servo's lagging arrival shows up in traces
+        // without spamming INFO.
+        SFX_LOG_DEBUG("[ll] %u: servo %u arrived (mask 0x%02x/0x%02x)",
+                      _def.id, (unsigned)servoIdx,
+                      (unsigned)_servoArrived, (unsigned)mask);
+        return;
+    }
+    // All servos in.  Advance the phase + (for deploy) fan the LEDs on.
     switch (_state) {
         case LandingLightPhase::Deploying:
-            // Servo arrived at the open position — bring up the LEDs.
-            //   commandLedsOn fans 3 commands per LED × N — batch them.
             if (_begin && _sendCtx) _begin(_sendCtx);
             enterPhase(LandingLightPhase::Deployed);
             commandLedsOn();
@@ -83,14 +111,17 @@ inline void LandingLight::enterPhase(uint8_t newPhase) {
     if (_phase) _phase(_phaseCtx, _def.id, newPhase);
 }
 
-inline void LandingLight::commandServo(uint16_t targetUs) {
+inline void LandingLight::commandAllServos(uint16_t targetUs) {
     if (!_send) return;
-    uint8_t payload[3];
-    payload[0] = _def.servo.portIdx;
-    SfxWire::putU16LE(&payload[1], targetUs);
-    if (!_send(_sendCtx, _def.servo,
-               RolePacket::SERVO_SET_TARGET, payload, sizeof(payload))) {
-        SFX_LOG_WARN("[ll] %u: servo SET_TARGET failed", _def.id);
+    for (uint8_t i = 0; i < _def.numServos; ++i) {
+        const PortRef& s = _def.servos[i];
+        uint8_t payload[3];
+        payload[0] = s.portIdx;
+        SfxWire::putU16LE(&payload[1], targetUs);
+        if (!_send(_sendCtx, s,
+                   RolePacket::SERVO_SET_TARGET, payload, sizeof(payload))) {
+            SFX_LOG_WARN("[ll] %u: servo[%u] SET_TARGET failed", _def.id, (unsigned)i);
+        }
     }
 }
 

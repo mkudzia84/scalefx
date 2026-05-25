@@ -81,6 +81,25 @@ namespace TopologyPacket {
         ///< (SERVO_TARGET_REACHED, RCIN_VALUE_BROADCAST, LED_QUEUE_DONE, ...).
         ///< Hub-local role asyncs are also wrapped so Studio sees a
         ///< single tagged stream regardless of where the event came from.
+
+    /// `[guidLen:u8][guid:str][innerType:u8][innerLen:u16LE][inner:N]`
+    /// → ACK / NACK (TOPOLOGY_* error code).
+    ///
+    /// Generic role-command pass-through.  Studio (or the CLI) builds
+    /// a normal role packet — `SERVO_SET_TARGET`, `SERVO_SET_PROFILE`,
+    /// `LED_QUEUE_LOAD`, anything in the role layer — wraps it inside
+    /// this envelope with a target GUID, and the hub routes:
+    ///   - `guid` empty → local `RoleServicePolicy::handle(innerType, …)`
+    ///                    in capture mode (returns ACK/NACK directly)
+    ///   - `guid` set  → `ExpanderService::queueCommand(slot, innerType, …)`
+    ///                    with a CDC round-trip; the hub waits for the
+    ///                    expander's ACK and mirrors it back to Studio
+    ///
+    /// Pair with `TOPOLOGY_ROLE_EVENT` (0x8E) for the reverse direction.
+    /// Studio's calibration dialog uses this for cross-board servo
+    /// SET_TARGET + SET_PROFILE without needing a dedicated wire packet
+    /// per role command.  Added 2026-05-24.
+    constexpr uint8_t TOPOLOGY_ROLE_FORWARD    = 0x8F;
 }
 
 // ============================================================================

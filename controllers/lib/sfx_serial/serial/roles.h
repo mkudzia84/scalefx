@@ -112,7 +112,7 @@ namespace RolePacket {
     constexpr uint8_t RCIN_SET_BROADCAST_HZ = 0x52;  ///< [portIdx:u8][hz:u8] → ACK (0 = off)
     constexpr uint8_t RCIN_VALUE_BROADCAST  = 0x53;  ///< async TAG_ASYNC: [portIdx:u8][us:u16LE][valid:u8]
 
-    // ── LED animator role (0x58..0x5F) ────────────────────────────────
+    // ── LED animator role (0x58..0x5E) ────────────────────────────────
     constexpr uint8_t LED_QUEUE_LOAD        = 0x58;  ///< [portIdx:u8][count:u8] × event(N bytes) → ACK
     constexpr uint8_t LED_START             = 0x59;  ///< [portIdx:u8] → ACK
     constexpr uint8_t LED_STOP              = 0x5A;  ///< [portIdx:u8] → ACK
@@ -120,6 +120,20 @@ namespace RolePacket {
     constexpr uint8_t LED_GET_STATUS_REQ    = 0x5C;  ///< [portIdx:u8] → LED_STATUS_RESP
     constexpr uint8_t LED_STATUS_RESP       = 0x5D;  ///< [portIdx:u8][brightness:u8][playing:u8][queueDepth:u8]
     constexpr uint8_t LED_QUEUE_DONE        = 0x5E;  ///< async TAG_ASYNC: [portIdx:u8]
+
+    // ── BiDc motor — Strategy A move-to-end (range continuation) ──────
+    // The BiMotor packet block (0x68..0x6F) is exhausted, so the
+    // position-aware seek packet spills into the spare slot at the top
+    // of the LED animator range — same precedent as MOTOR_SET_PCT (0x76)
+    // spilling into the heater range.  Dispatch is by exact opcode in
+    // RoleServicePolicy, not by range, so there is no actual conflict.
+    constexpr uint8_t BIMOTOR_MOVE_TO_END   = 0x5F;
+        ///< [portIdx:u8][endLabel:u8(1=A,2=B,0=Unknown)][signed_duty:i16LE][timeout_ms:u16LE] → ACK
+        ///< Like BIMOTOR_SEEK_ENDSTOP but records `endLabel` so the role's
+        ///< position state becomes that end on a Reached outcome.  Special
+        ///< case — `signed_duty == 0` silently sets position = endLabel
+        ///< WITHOUT moving (used to restore last-known position from
+        ///< /hubfx.yaml on boot before any real move).
 
     // ── DC motor role (uni-directional, 0x60..0x67) ───────────────────
     constexpr uint8_t MOTOR_SET_DUTY        = 0x60;  ///< [portIdx:u8][duty:u16LE] → ACK
@@ -138,18 +152,32 @@ namespace RolePacket {
     constexpr uint8_t BIMOTOR_BRAKE           = 0x69;  ///< [portIdx:u8] → ACK
     constexpr uint8_t BIMOTOR_COAST           = 0x6A;  ///< [portIdx:u8] → ACK
     constexpr uint8_t BIMOTOR_GET_STATUS_REQ  = 0x6B;  ///< [portIdx:u8] → BIMOTOR_STATUS_RESP
-    constexpr uint8_t BIMOTOR_STATUS_RESP     = 0x6C;  ///< [portIdx:u8][signed_duty:i16LE][v_mV:i16LE][i_mA:i16LE][stallFlags:u8]
+    /// Rule 11 extension 2026-05-24: STATUS_RESP gained two optional trailing
+    /// bytes — `[position:u8][guardMode:u8]` — so callers can read the
+    /// Strategy A position state and confirm which stall mode is active.
+    /// Length 8 = original payload; length 10 = extended.  Older masters
+    /// safely ignore the trailing bytes.
+    constexpr uint8_t BIMOTOR_STATUS_RESP     = 0x6C;
+        ///< [portIdx:u8][signed_duty:i16LE][v_mV:i16LE][i_mA:i16LE][stallFlags:u8]
+        ///<   {Rule 11 ext} [position:u8][guardMode:u8]
     constexpr uint8_t BIMOTOR_STALL_EVENT     = 0x6D;  ///< async TAG_ASYNC: [portIdx:u8][peak_mA:u16LE][duration_ms:u16LE]
     /// Autonomous "drive until endstop" seek.  The role drives `signed_duty`
     /// until it detects a stall (= endstop reached) or `timeout_ms` elapses,
     /// then BRAKES locally — the stop decision never crosses the wire.
     /// `timeout_ms == 0` ⇒ no timeout (seek until stall or abort).  Aborted
     /// by any BIMOTOR_BRAKE / COAST / SET_SIGNED while seeking.
+    /// Position-agnostic — use BIMOTOR_MOVE_TO_END for Strategy A.
     constexpr uint8_t BIMOTOR_SEEK_ENDSTOP    = 0x6E;  ///< [portIdx:u8][signed_duty:i16LE][timeout_ms:u16LE] → ACK
-    /// async TAG_ASYNC result of a SEEK_ENDSTOP: outcome 0=reached(stall),
-    /// 1=timeout, 2=aborted.  travel_ms = time spent seeking; peak_mA = peak
-    /// current during the confirming stall window (0 on timeout/abort).
-    constexpr uint8_t BIMOTOR_ENDSTOP_RESULT  = 0x6F;  ///< async TAG_ASYNC: [portIdx:u8][outcome:u8][travel_ms:u16LE][peak_mA:u16LE]
+    /// async TAG_ASYNC result of a SEEK_ENDSTOP / MOVE_TO_END: outcome
+    /// 0=reached(stall), 1=timeout, 2=aborted.  travel_ms = time spent
+    /// seeking; peak_mA = peak current during the confirming stall window
+    /// (0 on timeout/abort).
+    /// Rule 11 extension 2026-05-24: optional trailing `[position:u8]` so
+    /// the master sees the resulting endstop label without a follow-up
+    /// STATUS query.  Length 6 = original; length 7 = extended.
+    constexpr uint8_t BIMOTOR_ENDSTOP_RESULT  = 0x6F;
+        ///< async TAG_ASYNC: [portIdx:u8][outcome:u8][travel_ms:u16LE][peak_mA:u16LE]
+        ///<   {Rule 11 ext} [position:u8(0=Unknown,1=A,2=B)]
 
     // ── Heater role (0x70..0x77) ──────────────────────────────────────
     constexpr uint8_t HEATER_SET_TARGET       = 0x70;  ///< [portIdx:u8][target_cx10:i16LE] → ACK
@@ -172,6 +200,23 @@ namespace RolePacket {
     //    the raw port-level bypass for advanced callers.
     constexpr uint8_t MOTOR_SET_PCT           = 0x76;
         ///< [portIdx:u8][pct:u8 (0..100)] → ACK
+
+    // ── BiDc motor stall-guard retune (range continuation) ────────────
+    // BiMotor 0x68..0x6F is exhausted; SET_GUARD lives at the heater-
+    // range tail (same precedent as MOTOR_SET_PCT @ 0x76 + BIMOTOR_MOVE_
+    // TO_END @ 0x5F).  Live retune lets a Studio calibration dialog flip
+    // between Fixed / LiveRatio modes and adjust thresholds without
+    // re-attaching the role (which would destroy position + seek state).
+    constexpr uint8_t BIMOTOR_SET_GUARD       = 0x77;
+        ///< [portIdx:u8][mode:u8(0=Fixed,1=LiveRatio)][window_ms:u16LE]
+        ///< [a:u16LE][b:u16LE][c:u16LE][d:u16LE] → ACK
+        ///<   Fixed:     a = threshold_mA; b/c/d ignored
+        ///<   LiveRatio: a = ratio_x100 (e.g. 250 = 2.5×)
+        ///<              b = runSample_ms
+        ///<              c = inrushBlank_ms
+        ///<              d = maxTravel_ms (failsafe; 0 = use per-seek timeout)
+        ///< window_ms is the sustained-over-threshold filter, shared by
+        ///< both modes (0 = leave unchanged).
 
     // ── SBUS input role (0x78..0x7B) ──────────────────────────────────
     constexpr uint8_t SBUS_GET_FRAME_REQ      = 0x78;  ///< [portIdx:u8] → SBUS_FRAME_RESP

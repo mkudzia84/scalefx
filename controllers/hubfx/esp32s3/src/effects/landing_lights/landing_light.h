@@ -1,24 +1,32 @@
 /*
  * landing_light.h — single landing-light state machine.
  *
- *   A landing light couples one servo with one or more LEDs.  Deploy
- *   raises the servo to its open position and, when the servo signals
- *   `SERVO_TARGET_REACHED`, brings the LEDs on; retract is the mirror
- *   sequence (LEDs off immediately, servo to closed position).
+ *   A landing light couples one OR MORE servos with one or more LEDs.
+ *   Deploy raises every servo to its open position; once EVERY servo
+ *   has signalled `SERVO_TARGET_REACHED` (tracked via the per-servo
+ *   `_servoArrived` bitset), the LEDs come on.  Retract is the mirror
+ *   sequence (LEDs off immediately, every servo retracts; arrival
+ *   tracking same as deploy).
+ *
+ *   Multi-servo support (2026-05-24) is the common case for nose +
+ *   wing gear or twin landing doors that swing in unison — operator
+ *   doesn't want the LEDs to come on while half the doors are still
+ *   moving.  Single-servo configurations still work unchanged: a
+ *   1-of-1 bitset masks 0b01 and arrives on the first event.
  *
  *   This class is *single-instance state* — it doesn't know about wire
  *   commands or other landing lights.  The owning `LandingLightService`
- *   feeds it `onServoTargetReached(...)` whenever a topology role
- *   event for "its" servo arrives, and dispatches the resulting LED /
- *   servo commands via the shared `TopologyServicePolicy`.
+ *   feeds it `onServoTargetReached(servoIdx)` whenever a topology role
+ *   event for ANY of "its" servos arrives, and dispatches the
+ *   resulting LED / servo commands via the shared `TopologyServicePolicy`.
  *
- *   State diagram (mirrors the legacy lightfx/pico/landing_light.h):
+ *   State diagram:
  *
  *     UNCONFIGURED ─configure─→ RETRACTED
  *     RETRACTED   ─deploy()──→ DEPLOYING
- *     DEPLOYING   ─servoAtTarget→ DEPLOYED   (then LEDs on)
+ *     DEPLOYING   ─allServosAtTarget→ DEPLOYED   (then LEDs on)
  *     DEPLOYED    ─retract()─→ RETRACTING   (LEDs off immediately)
- *     RETRACTING  ─servoAtTarget→ RETRACTED
+ *     RETRACTING  ─allServosAtTarget→ RETRACTED
  */
 
 #ifndef HUBFX_LANDING_LIGHT_H
@@ -33,7 +41,11 @@ namespace hubfx::effects::landing {
 
 /// Max LEDs grouped under one landing light.  Sized for the typical
 /// "main + nose" wing assembly; rev later if a board ever needs more.
-inline constexpr uint8_t kMaxLedsPerLanding = 8;
+inline constexpr uint8_t kMaxLedsPerLanding   = 8;
+/// Max servos grouped under one landing light.  Sized for the typical
+/// "main + nose gear" setup (1–3 servos); cap at 4 so the
+/// `_servoArrived` bitset fits in a u8 with room to spare.
+inline constexpr uint8_t kMaxServosPerLanding = 4;
 
 /// Static definition of a landing light — populated once at config /
 /// boot time, then never mutated.  The owner field decides which
@@ -41,7 +53,12 @@ inline constexpr uint8_t kMaxLedsPerLanding = 8;
 struct LandingLightDef {
     uint8_t   id            = 0;
     char      name[16]      = {};
-    PortRef   servo;                                ///< must have ServoActuator role
+    /// Multi-servo support (2026-05-24): all servos in this group
+    /// deploy / retract together; the state machine waits for ALL of
+    /// them to reach the target before bringing the LEDs on.  Each
+    /// must have the ServoActuator role attached.
+    PortRef   servos[kMaxServosPerLanding];
+    uint8_t   numServos     = 0;
     PortRef   leds[kMaxLedsPerLanding];             ///< each must have LedAnimator role
     uint8_t   numLeds       = 0;
     uint16_t  openUs        = 1900;
@@ -103,18 +120,31 @@ public:
     }
 
     /// Forwarded by the service when a `SERVO_TARGET_REACHED` event
-    /// arrives for this landing light's servo.  Drives the
-    /// DEPLOYING→DEPLOYED and RETRACTING→RETRACTED edges.
-    void onServoTargetReached();
+    /// arrives for ANY of this landing light's servos.  `servoIdx` is
+    /// the slot within `def.servos[]` so we can mark off arrivals.
+    /// Drives the DEPLOYING→DEPLOYED and RETRACTING→RETRACTED edges
+    /// only AFTER every servo in the group has reported in.
+    void onServoTargetReached(uint8_t servoIdx);
 
 private:
     void enterPhase(uint8_t newPhase);
-    void commandServo(uint16_t targetUs);
+    void commandAllServos(uint16_t targetUs);
     void commandLedsOn();
     void commandLedsOff();
+    /// All-arrived mask = (1 << numServos) - 1.  Computed once per
+    /// deploy/retract to avoid recomputing on every event.
+    uint8_t allServosMask() const {
+        return _def.numServos >= 8 ? 0xFF
+             : static_cast<uint8_t>((1u << _def.numServos) - 1);
+    }
 
     LandingLightDef _def{};
     uint8_t         _state    = LandingLightPhase::Unconfigured;
+    /// Bitset — bit N set when servo N has reported reaching its
+    /// target since the last deploy() / retract().  Cleared by both.
+    /// LEDs come on (deploy) / phase advances (retract) only when
+    /// `_servoArrived == allServosMask()`.
+    uint8_t         _servoArrived = 0;
     SendRoleCmdFn   _send     = nullptr;
     void*           _sendCtx  = nullptr;
     BatchFn         _begin    = nullptr;

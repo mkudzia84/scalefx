@@ -59,12 +59,16 @@ void LandingLightServicePolicyT<TTopology>::claimPorts() {
 
     for (uint8_t i = 0; i < _numDefs; ++i) {
         const LandingLightDef& d = _defs[i];
-        // Claim the servo.
-        if (!_topology->claim(d.servo, EffectId::LandingLight,
-                              RoleKind::ServoActuator)) {
-            SFX_LOG_WARN("[ll-svc] ll=%u: servo claim failed (%s:%u)",
-                         d.id, d.servo.guid[0] ? d.servo.guid : "hub",
-                         (unsigned)d.servo.portIdx);
+        // Claim every servo in the group (multi-servo support 2026-05-24).
+        for (uint8_t j = 0; j < d.numServos; ++j) {
+            const PortRef& s = d.servos[j];
+            if (!_topology->claim(s, EffectId::LandingLight,
+                                  RoleKind::ServoActuator)) {
+                SFX_LOG_WARN("[ll-svc] ll=%u: servo[%u] claim failed (%s:%u)",
+                             d.id, (unsigned)j,
+                             s.guid[0] ? s.guid : "hub",
+                             (unsigned)s.portIdx);
+            }
         }
         // Claim each LED.
         for (uint8_t j = 0; j < d.numLeds; ++j) {
@@ -194,14 +198,25 @@ void LandingLightServicePolicyT<TTopology>::onRoleEvent(
     const uint8_t portIdx = p[0];
     const bool guidEmpty  = !guid || guid[0] == 0;
 
+    // Multi-servo support (2026-05-24): walk every landing light's
+    // `servos[]` block and forward the event with the SLOT INDEX so
+    // the state machine can mark the right servo's arrival in its
+    // bitset.  A single physical servo can only belong to ONE landing
+    // light (the apply translator validates this), so we keep walking
+    // after a match in the unlikely case the operator's config has
+    // multiple bindings — only the right one will fire.
     for (uint8_t i = 0; i < _numDefs; ++i) {
-        const PortRef& s = _defs[i].servo;
-        if (s.portIdx != portIdx) continue;
-        const bool sameGuid =
-            (s.guid[0] == 0 && guidEmpty) ||
-            (s.guid[0] != 0 && guid && std::strcmp(s.guid, guid) == 0);
-        if (sameGuid) {
-            _instances[i].onServoTargetReached();
+        const LandingLightDef& def = _defs[i];
+        for (uint8_t j = 0; j < def.numServos; ++j) {
+            const PortRef& s = def.servos[j];
+            if (s.portIdx != portIdx) continue;
+            const bool sameGuid =
+                (s.guid[0] == 0 && guidEmpty) ||
+                (s.guid[0] != 0 && guid && std::strcmp(s.guid, guid) == 0);
+            if (sameGuid) {
+                _instances[i].onServoTargetReached(j);
+                break;          // next landing light
+            }
         }
     }
 }
