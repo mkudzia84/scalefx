@@ -114,6 +114,15 @@ const (
 	LedStatusResp     protocol.PacketType = 0x5D
 	LedQueueDone      protocol.PacketType = 0x5E
 
+	// BiMotor Strategy A move-to-end (continuation slot — primary 0x68..0x6F
+	// range is exhausted).  Position-aware version of BiMotorSeekEndstop —
+	// records which logical endstop (A/B) the move targets so the role's
+	// `_position` state advances on a Reached outcome.  signed_duty == 0 is
+	// the "restore position without moving" special case used to rehydrate
+	// the role from `/hubfx.yaml`'s persisted `last_position` on boot.
+	// Wire: [portIdx:u8][endLabel:u8][signed_duty:i16LE][timeout_ms:u16LE]
+	BiMotorMoveToEnd protocol.PacketType = 0x5F
+
 	// DC motor (0x60..0x67)
 	MotorSetDuty       protocol.PacketType = 0x60
 	MotorBrake         protocol.PacketType = 0x61
@@ -147,6 +156,16 @@ const (
 	// spare slot at the top of the heater range).  Rule 42 intent
 	// surface — role applies scaleDuty() internally.
 	MotorSetPct protocol.PacketType = 0x76 // [portIdx:u8][pct:u8] → ACK
+
+	// BiMotor live stall-guard retune (continuation slot — primary
+	// 0x68..0x6F is exhausted).  Switches between Fixed and LiveRatio
+	// modes WITHOUT re-attaching the role (which would destroy
+	// position + seek state).  Used by the Studio calibration dialog.
+	// Wire: [portIdx][mode:u8][window_ms:u16][a:u16][b:u16][c:u16][d:u16]
+	//   Fixed:     a = threshold_mA; b/c/d ignored
+	//   LiveRatio: a = ratio_x100, b = runSample_ms, c = inrushBlank_ms,
+	//              d = maxTravel_ms (0 = no failsafe)
+	BiMotorSetGuard protocol.PacketType = 0x77
 
 	// SBUS input (0x78..0x7B)
 	SbusGetFrameReq    protocol.PacketType = 0x78
@@ -338,7 +357,12 @@ type ServoMotionProfile struct {
 
 const servoProfileBodyBytes = 13 // not counting the leading portIdx byte
 
-func encodeServoProfileBody(p ServoMotionProfile) []byte {
+// EncodeServoProfileBody serialises a ServoMotionProfile into the
+// 13-byte little-endian body the firmware reads.  Exported so the
+// topology forward path can wrap it without re-implementing the
+// layout (Studio cross-board calibration uses this via
+// `c.Topology.ServoSetProfileOn`).
+func EncodeServoProfileBody(p ServoMotionProfile) []byte {
 	b := make([]byte, servoProfileBodyBytes)
 	binary.LittleEndian.PutUint16(b[0:2],  p.MinUs)
 	binary.LittleEndian.PutUint16(b[2:4],  p.MaxUs)
@@ -353,7 +377,7 @@ func encodeServoProfileBody(p ServoMotionProfile) []byte {
 }
 
 func CmdServoSetProfile(portIdx byte, p ServoMotionProfile) []byte {
-	body := encodeServoProfileBody(p)
+	body := EncodeServoProfileBody(p)
 	return protocol.BuildPacket(ServoSetProfile, append([]byte{portIdx}, body...), 0)
 }
 
@@ -386,6 +410,86 @@ func CmdLedSetBrightness(portIdx, b byte) []byte {
 }
 func CmdLedGetStatus(portIdx byte) []byte {
 	return protocol.BuildPacket(LedGetStatusReq, []byte{portIdx}, 0)
+}
+
+// ─── LED_QUEUE_LOAD encoder ──────────────────────────────────────────
+//
+// Mirrors controllers/lib/sfx_audio/.../light_event.h LightEvent
+// serialisation field-for-field.  10 bytes per event on the wire,
+// little-endian.  Studio uses this to push a preview pattern to a
+// single LED port for live testing from the ProgramEditorDialog.
+//
+// Wire payload layout:
+//   byte 0   portIdx
+//   byte 1   numEvents
+//   bytes 2.. one event record per:
+//     [kind:u8] [duration_ms:u16LE] [cycle_ms:u16LE]
+//     [brightness:u8] [min_pct:u8] [max_pct:u8] [flash_pct:u8] [flags:u8]
+// The Loop flag (0x01) is set on event[0] for phase-locked patterns
+// (period = sum of all event durations).
+
+// LightEventKind matches the firmware enum byte-for-byte (Rule 11
+// append-only).  Studio enums are strings → mapped via lightEventKind().
+type LightEventKind byte
+
+const (
+	LightEventOn      LightEventKind = 0
+	LightEventOff     LightEventKind = 1
+	LightEventFlash   LightEventKind = 2
+	LightEventFadeIn  LightEventKind = 3
+	LightEventFadeOut LightEventKind = 4
+	LightEventFading  LightEventKind = 5
+	LightEventBeacon  LightEventKind = 6
+)
+
+// LightEventFlagsLoop sets the LedAnimator's phase-locked loop flag
+// on event[0] — the queue plays as a cycle, period = sum of all
+// durations, every channel with the same period stays in lock-step.
+const LightEventFlagsLoop byte = 0x01
+
+// LightEvent is the host-side representation of one wire event
+// record.  Builders + Studio map their domain shapes onto this.
+type LightEvent struct {
+	Kind          LightEventKind
+	DurationMs    uint16
+	CycleMs       uint16
+	BrightnessPct byte
+	MinPct        byte
+	MaxPct        byte
+	FlashPct      byte
+	Flags         byte // OR of LightEventFlagsLoop on event[0]
+}
+
+// CmdLedQueueLoad builds a LED_QUEUE_LOAD packet for the given port
+// + event list.  Caller sets the Loop flag on events[0] when the
+// pattern should repeat (matches the firmware's per-channel `loop`
+// YAML field).  Returns nil + a length error when the encoded size
+// would exceed the 512-byte wire payload cap.
+func CmdLedQueueLoad(portIdx byte, events []LightEvent) []byte {
+	const wireSize = 10
+	if len(events) > 50 {
+		// Defensive: 50 events × 10 B + 2 B header = 502 B (under cap).
+		// The firmware allows up to 16 events per channel today; this
+		// upper bound just keeps the packet payload safely below 512 B
+		// if someone bumps `kMaxEventsPerChannel` later.
+		events = events[:50]
+	}
+	buf := make([]byte, 2+len(events)*wireSize)
+	buf[0] = portIdx
+	buf[1] = byte(len(events))
+	off := 2
+	for _, e := range events {
+		buf[off+0] = byte(e.Kind)
+		binary.LittleEndian.PutUint16(buf[off+1:off+3], e.DurationMs)
+		binary.LittleEndian.PutUint16(buf[off+3:off+5], e.CycleMs)
+		buf[off+5] = e.BrightnessPct
+		buf[off+6] = e.MinPct
+		buf[off+7] = e.MaxPct
+		buf[off+8] = e.FlashPct
+		buf[off+9] = e.Flags
+		off += wireSize
+	}
+	return protocol.BuildPacket(LedQueueLoad, buf, 0)
 }
 
 func CmdMotorSetDuty(portIdx byte, duty uint16) []byte {
@@ -462,6 +566,231 @@ func CmdBiMotorBrake(portIdx byte) []byte {
 }
 func CmdBiMotorCoast(portIdx byte) []byte {
 	return protocol.BuildPacket(BiMotorCoast, []byte{portIdx}, 0)
+}
+
+// ─── BiMotor Strategy A — position + live-ratio stall detection ──────
+//
+// The role-layer wire surface mirrors the C++ contract in
+// `controllers/lib/sfx_board/roles/bi_dc_motor_role.h`:
+//   - Stall detection has two modes (Fixed vs LiveRatio).  LiveRatio
+//     auto-baselines per stroke so a battery sag doesn't drift the trip
+//     threshold — voltage-independent by construction.
+//   - Position is tracked locally on the role (Unknown / A / B).  The
+//     master persists it (Strategy A: persist + probe-on-first-command);
+//     the firmware never touches flash itself.
+
+// BiMotorPosition values match the wire byte for the position field in
+// BIMOTOR_STATUS_RESP (extended) and BIMOTOR_ENDSTOP_RESULT (extended).
+type BiMotorPosition uint8
+
+const (
+	BiMotorPosUnknown BiMotorPosition = 0
+	BiMotorPosA       BiMotorPosition = 1
+	BiMotorPosB       BiMotorPosition = 2
+)
+
+func (p BiMotorPosition) String() string {
+	switch p {
+	case BiMotorPosA:
+		return "A"
+	case BiMotorPosB:
+		return "B"
+	default:
+		return "unknown"
+	}
+}
+
+// BiMotorGuardMode selects the stall-detection strategy.
+type BiMotorGuardMode uint8
+
+const (
+	BiMotorGuardFixed     BiMotorGuardMode = 0 // |I| > threshold_mA sustained
+	BiMotorGuardLiveRatio BiMotorGuardMode = 1 // |I| > baseline × ratio sustained (per-stroke)
+)
+
+func (m BiMotorGuardMode) String() string {
+	switch m {
+	case BiMotorGuardFixed:
+		return "fixed"
+	case BiMotorGuardLiveRatio:
+		return "live-ratio"
+	default:
+		return "?"
+	}
+}
+
+// BiMotorAttachConfig is the full attach-config blob for a BiDcMotor
+// role.  Encoded layout (Rule 11 append-only — older firmwares parse
+// only the first 4 bytes and run in Fixed-only mode):
+//
+//	[0..3]  threshold_mA:u16LE | window_ms:u16LE   (Fixed-mode params)
+//	[4]     guardMode:u8 (Rule 11 ext)
+//	[5..12] a,b,c,d:u16LE — LiveRatio params:
+//	            a = ratio_x100
+//	            b = runSample_ms
+//	            c = inrushBlank_ms
+//	            d = maxTravel_ms
+//	[13]    initialPosition:u8 — Strategy A restore on attach
+type BiMotorAttachConfig struct {
+	// Fixed-mode threshold (used whenever GuardMode == Fixed).  Set to 0
+	// to disable stall detection entirely in Fixed mode.
+	ThresholdMa uint16
+	// Sustained-over-threshold window — shared by both modes.
+	WindowMs uint16
+	// Which detection strategy the role uses for seeks.
+	GuardMode BiMotorGuardMode
+	// LiveRatio: ratio in hundredths (e.g. 250 → 2.5×).  0 → role default.
+	RatioX100 uint16
+	// LiveRatio: baseline-sampling window after inrush blanking.  0 → default.
+	RunSampleMs uint16
+	// LiveRatio: ignore-current startup window.  0 → default.
+	InrushBlankMs uint16
+	// LiveRatio: absolute failsafe — seek errors out by then.  0 → none.
+	MaxTravelMs uint16
+	// Persisted position on attach (Strategy A restore).  Unknown if the
+	// master hasn't homed yet.
+	InitialPosition BiMotorPosition
+}
+
+// EncodeBiMotorAttachConfig serialises the attach blob.  Always emits
+// the full 14-byte form — old firmwares ignore the extra bytes per
+// Rule 11.
+func EncodeBiMotorAttachConfig(c BiMotorAttachConfig) []byte {
+	out := make([]byte, 14)
+	binary.LittleEndian.PutUint16(out[0:2], c.ThresholdMa)
+	binary.LittleEndian.PutUint16(out[2:4], c.WindowMs)
+	out[4] = byte(c.GuardMode)
+	binary.LittleEndian.PutUint16(out[5:7],  c.RatioX100)
+	binary.LittleEndian.PutUint16(out[7:9],  c.RunSampleMs)
+	binary.LittleEndian.PutUint16(out[9:11], c.InrushBlankMs)
+	binary.LittleEndian.PutUint16(out[11:13], c.MaxTravelMs)
+	out[13] = byte(c.InitialPosition)
+	return out
+}
+
+// CmdBiMotorMoveToEnd builds a BIMOTOR_MOVE_TO_END packet (0x5F).
+// `signedDuty == 0` is the position-restore special case — no motion;
+// the role silently sets its position to `end` and fires an immediate
+// "Reached" endstop event.  Use this on boot after reading the
+// persisted last_position from `/hubfx.yaml`.
+func CmdBiMotorMoveToEnd(portIdx byte, end BiMotorPosition, signedDuty int16, timeoutMs uint16) []byte {
+	payload := make([]byte, 6)
+	payload[0] = portIdx
+	payload[1] = byte(end)
+	binary.LittleEndian.PutUint16(payload[2:4], uint16(signedDuty))
+	binary.LittleEndian.PutUint16(payload[4:6], timeoutMs)
+	return protocol.BuildPacket(BiMotorMoveToEnd, payload, 0)
+}
+
+// CmdBiMotorSeekEndstop builds the position-agnostic seek (kept for
+// legacy callers that don't care about Strategy A position labelling).
+func CmdBiMotorSeekEndstop(portIdx byte, signedDuty int16, timeoutMs uint16) []byte {
+	payload := make([]byte, 5)
+	payload[0] = portIdx
+	binary.LittleEndian.PutUint16(payload[1:3], uint16(signedDuty))
+	binary.LittleEndian.PutUint16(payload[3:5], timeoutMs)
+	return protocol.BuildPacket(BiMotorSeekEndstop, payload, 0)
+}
+
+// CmdBiMotorGetStatus requests a BIMOTOR_STATUS_RESP.
+func CmdBiMotorGetStatus(portIdx byte) []byte {
+	return protocol.BuildPacket(BiMotorGetStatusReq, []byte{portIdx}, 0)
+}
+
+// CmdBiMotorSetGuard builds a BIMOTOR_SET_GUARD packet (0x77) — live
+// retune of the stall-detection mode + parameters without re-attach.
+// `windowMs == 0` leaves the existing window unchanged.
+func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, d uint16) []byte {
+	payload := make([]byte, 12)
+	payload[0] = portIdx
+	payload[1] = byte(mode)
+	binary.LittleEndian.PutUint16(payload[2:4],  windowMs)
+	binary.LittleEndian.PutUint16(payload[4:6],  a)
+	binary.LittleEndian.PutUint16(payload[6:8],  b)
+	binary.LittleEndian.PutUint16(payload[8:10], c)
+	binary.LittleEndian.PutUint16(payload[10:12], d)
+	return protocol.BuildPacket(BiMotorSetGuard, payload, 0)
+}
+
+// BiMotorSeekOutcome mirrors the firmware enum (Reached=0, Timeout=1,
+// Aborted=2).  Surfaced via BIMOTOR_ENDSTOP_RESULT.
+type BiMotorSeekOutcome uint8
+
+const (
+	BiMotorOutcomeReached BiMotorSeekOutcome = 0
+	BiMotorOutcomeTimeout BiMotorSeekOutcome = 1
+	BiMotorOutcomeAborted BiMotorSeekOutcome = 2
+)
+
+func (o BiMotorSeekOutcome) String() string {
+	switch o {
+	case BiMotorOutcomeReached:
+		return "reached"
+	case BiMotorOutcomeTimeout:
+		return "timeout"
+	case BiMotorOutcomeAborted:
+		return "aborted"
+	default:
+		return "?"
+	}
+}
+
+// BiMotorEndstopEvent decodes BIMOTOR_ENDSTOP_RESULT.  Position is the
+// Rule 11 trailing byte — older firmwares omit it and we report
+// Unknown so callers can still display the rest of the event.
+type BiMotorEndstopEvent struct {
+	Index    byte
+	Outcome  BiMotorSeekOutcome
+	TravelMs uint16
+	PeakMa   uint16
+	Position BiMotorPosition
+}
+
+func DecodeBiMotorEndstopEvent(p []byte) (BiMotorEndstopEvent, error) {
+	if len(p) < 6 {
+		return BiMotorEndstopEvent{}, fmt.Errorf("bimotor endstop event: expected ≥ 6 bytes, got %d", len(p))
+	}
+	ev := BiMotorEndstopEvent{
+		Index:    p[0],
+		Outcome:  BiMotorSeekOutcome(p[1]),
+		TravelMs: binary.LittleEndian.Uint16(p[2:4]),
+		PeakMa:   binary.LittleEndian.Uint16(p[4:6]),
+		Position: BiMotorPosUnknown,
+	}
+	if len(p) >= 7 {
+		ev.Position = BiMotorPosition(p[6])
+	}
+	return ev, nil
+}
+
+// BiMotorStatus decodes BIMOTOR_STATUS_RESP.  Position + GuardMode are
+// the Rule 11 trailing bytes; older firmwares omit them.
+type BiMotorStatus struct {
+	Index      byte
+	SignedDuty int16
+	VoltageMv  int16
+	CurrentMa  int16
+	Stalled    bool
+	Position   BiMotorPosition  // 0 (Unknown) when peer is pre-Rule-11
+	GuardMode  BiMotorGuardMode // 0 (Fixed) when peer is pre-Rule-11
+}
+
+func DecodeBiMotorStatus(p []byte) (BiMotorStatus, error) {
+	if len(p) < 8 {
+		return BiMotorStatus{}, fmt.Errorf("bimotor status: expected ≥ 8 bytes, got %d", len(p))
+	}
+	st := BiMotorStatus{
+		Index:      p[0],
+		SignedDuty: int16(binary.LittleEndian.Uint16(p[1:3])),
+		VoltageMv:  int16(binary.LittleEndian.Uint16(p[3:5])),
+		CurrentMa:  int16(binary.LittleEndian.Uint16(p[5:7])),
+		Stalled:    p[7] != 0,
+	}
+	if len(p) >= 10 {
+		st.Position  = BiMotorPosition(p[8])
+		st.GuardMode = BiMotorGuardMode(p[9])
+	}
+	return st, nil
 }
 
 func CmdHeaterSetTarget(portIdx byte, targetCx10 int16) []byte {
@@ -575,6 +904,8 @@ func init() {
 		BiMotorStallEvent:    "BIMOTOR_STALL_EVENT",
 		BiMotorSeekEndstop:   "BIMOTOR_SEEK_ENDSTOP",
 		BiMotorEndstopResult: "BIMOTOR_ENDSTOP_RESULT",
+		BiMotorMoveToEnd:     "BIMOTOR_MOVE_TO_END",
+		BiMotorSetGuard:      "BIMOTOR_SET_GUARD",
 		HeaterSetTarget:      "HEATER_SET_TARGET",
 		HeaterGetStatusReq:   "HEATER_GET_STATUS_REQ",
 		HeaterStatusResp:     "HEATER_STATUS_RESP",

@@ -13,7 +13,7 @@ import (
 	"scalefx/protocol/roles"
 )
 
-// ─── Packet types (0x88..0x8E) ────────────────────────────────────────
+// ─── Packet types (0x88..0x8F) ────────────────────────────────────────
 
 const (
 	TopologyPortListReq  protocol.PacketType = 0x88
@@ -23,6 +23,12 @@ const (
 	TopologyRoleAttach   protocol.PacketType = 0x8C
 	TopologyRoleDetach   protocol.PacketType = 0x8D
 	TopologyRoleEvent    protocol.PacketType = 0x8E
+	// TopologyRoleForward (2026-05-24, Rule 11 ext) — generic
+	// role-command pass-through routed by GUID.  Studio's calibration
+	// dialog uses it for cross-board servo SET_TARGET + SET_PROFILE
+	// without needing a dedicated wire packet per role command.
+	// Envelope: [guidLen:u8][guid:str][innerType:u8][innerLen:u16LE][inner:N]
+	TopologyRoleForward  protocol.PacketType = 0x8F
 )
 
 // ─── Error codes (0x90..0x96) ─────────────────────────────────────────
@@ -187,6 +193,24 @@ func CmdRoleDetach(guid string, portKind, portIdx byte) []byte {
 	return protocol.BuildPacket(TopologyRoleDetach, payload, 0)
 }
 
+// CmdRoleForward builds a TOPOLOGY_ROLE_FORWARD envelope around an
+// inner role-layer packet.  Empty `guid` → hub-local (the hub
+// dispatches via RoleServicePolicy::handle() in capture mode).
+// Non-empty `guid` → forward to the matching expander over CDC; the
+// hub mirrors the expander's ACK / NACK back to the original caller.
+//
+// `inner` is the role packet PAYLOAD only (e.g. `[portIdx][targetUs:u16LE]`
+// for SERVO_SET_TARGET); the wire framing + checksum are handled by
+// BuildPacket as usual.  `innerType` is the role-packet opcode byte
+// (e.g. roles.ServoSetTarget = 0x48).
+func CmdRoleForward(guid string, innerType byte, inner []byte) []byte {
+	payload := guidPrefix(guid)
+	payload = append(payload, innerType)
+	payload = append(payload, byte(len(inner)), byte(len(inner)>>8))
+	payload = append(payload, inner...)
+	return protocol.BuildPacket(TopologyRoleForward, payload, 0)
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 func readLenStr(p []byte, off int, label string) (string, int, error) {
@@ -260,6 +284,7 @@ func init() {
 		TopologyRoleAttach:   "TOPOLOGY_ROLE_ATTACH",
 		TopologyRoleDetach:   "TOPOLOGY_ROLE_DETACH",
 		TopologyRoleEvent:    "TOPOLOGY_ROLE_EVENT",
+		TopologyRoleForward:  "TOPOLOGY_ROLE_FORWARD",
 	})
 
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{

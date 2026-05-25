@@ -90,6 +90,47 @@ func (r *Roles) MotorSetPct(portIdx, pct byte) error {
 	return r.c.sendExpectACK(roles.CmdMotorSetPct(portIdx, pct))
 }
 
+// ─── LED animator (queue / start / stop / brightness) ───────────────
+
+// LedEvent re-exports the protocol-level type so client callers (Studio
+// preview, future CLI test commands) don't pull in protocol/roles.
+type (
+	LedEvent     = roles.LightEvent
+	LedEventKind = roles.LightEventKind
+)
+const (
+	LedEventOn      = roles.LightEventOn
+	LedEventOff     = roles.LightEventOff
+	LedEventFlash   = roles.LightEventFlash
+	LedEventFadeIn  = roles.LightEventFadeIn
+	LedEventFadeOut = roles.LightEventFadeOut
+	LedEventFading  = roles.LightEventFading
+	LedEventBeacon  = roles.LightEventBeacon
+	LedEventLoop    = roles.LightEventFlagsLoop
+)
+
+// LedQueueLoad pushes a complete events list to one LED port.  Caller
+// sets the LOOP flag on events[0] for repeating patterns.  Pair with
+// LedStart to play, LedStop to halt.
+func (r *Roles) LedQueueLoad(portIdx byte, events []LedEvent) error {
+	return r.c.sendExpectACK(roles.CmdLedQueueLoad(portIdx, events))
+}
+// LedStart kicks off the queued pattern on one LED port (idempotent —
+// re-starting a running queue restarts the cycle).
+func (r *Roles) LedStart(portIdx byte) error {
+	return r.c.sendExpectACK(roles.CmdLedStart(portIdx))
+}
+// LedStop halts the queue + drives the LED off.
+func (r *Roles) LedStop(portIdx byte) error {
+	return r.c.sendExpectACK(roles.CmdLedStop(portIdx))
+}
+// LedSetBrightness sets a per-port master scale (0..100) on top of
+// each event's brightness — matches the per-channel brightness_pct
+// in the program YAML.
+func (r *Roles) LedSetBrightness(portIdx, pct byte) error {
+	return r.c.sendExpectACK(roles.CmdLedSetBrightness(portIdx, pct))
+}
+
 // ─── Heater element (voltage scaling + drive pct + hysteresis) ──────
 
 // HeaterSetElement updates the heater's element rated voltage, scaling
