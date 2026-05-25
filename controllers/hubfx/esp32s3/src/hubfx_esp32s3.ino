@@ -58,8 +58,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.12.0-hubfx"
-#define BUILD_NUMBER     296
+#define FIRMWARE_VERSION "2.13.0-hubfx"
+#define BUILD_NUMBER     308
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -718,6 +718,25 @@ void loop() {
     board.process();
     storage.checkUploadTimeout();
     board.pollSense();
+
+    // Board-wide undervoltage detector — fires AlertSound::BatteryLow
+    // (configurable via /alerts.yaml's `voltage_alert:` block) when
+    // any healthy INA226-monitored rail dips below threshold for the
+    // configured sustain window.  Skips the clone @ 0x40 (channel 0)
+    // which `INA226::begin()` left undriven.  Cheap when nothing's
+    // wrong — the alert service short-circuits on `enabled=false` or
+    // observed > threshold.
+    {
+        uint16_t minMv = UINT16_MAX;
+        for (int i = 0; i < 8; ++i) {
+            if (!board.ina[i].isCanonical()) continue;
+            const float mv = board.vSense[i].voltage_mV();
+            if (mv > 0 && mv < (float)minMv) minMv = (uint16_t)mv;
+        }
+        if (minMv != UINT16_MAX) {
+            board.policy<AlertService>().tickVoltage((uint32_t)millis(), minMv);
+        }
+    }
 
     // Live-state telemetry — when /hubfx.yaml's `telemetry.inputs:` or
     // `telemetry.outputs:` is on, emit one aggregated snapshot line per

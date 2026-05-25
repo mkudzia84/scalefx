@@ -55,6 +55,20 @@ struct AlertSeverityCfg {
     uint8_t    volume     = 100;     ///< 0..100
 };
 
+/// Board-wide undervoltage detector — translated from
+/// `AlertsConfig::VoltageAlert` at apply time.  Lives on
+/// `AlertServiceConfig` because the service owns the state machine +
+/// audio firing path; the main loop only feeds it the observed min
+/// voltage via `tickVoltage()`.
+struct VoltageAlertCfg {
+    bool       enabled        = false;
+    uint16_t   threshold_mv   = 7000;
+    uint16_t   sustained_ms   = 500;
+    uint16_t   cooldown_ms    = 30000;
+    AlertSound sound          = AlertSound::BatteryLow;
+    uint8_t    volume         = 100;
+};
+
 struct AlertServiceConfig {
     bool             enabled    = false;
     uint8_t          channel    = audio::HubFxLayout::Alert;
@@ -62,6 +76,7 @@ struct AlertServiceConfig {
     AlertSeverityCfg warning;
     AlertSeverityCfg error;
     AlertSeverityCfg critical;
+    VoltageAlertCfg  voltage;
 };
 
 template <MixerLike TMixer>
@@ -142,6 +157,20 @@ public:
 
     uint8_t lastSeverity() const { return _lastSeverity; }
 
+    /// Board-wide undervoltage detector.  Call from the main loop
+    /// after the INA226 poll (typically every ~100 ms) with the
+    /// observed MIN voltage across all monitored rails.  Maintains
+    /// a sustain-window state machine and fires `voltage.sound` on
+    /// threshold cross + sustain; re-fire suppressed by `cooldown_ms`.
+    ///
+    /// Cheap when disabled or above threshold — short-circuits.
+    void tickVoltage(uint32_t nowMs, uint16_t observedMin_mV);
+
+    /// Diagnostics — last observed min voltage + whether the
+    /// undervoltage state machine is currently asserting.
+    uint16_t lastObservedVoltage_mV() const { return _lastObservedMv; }
+    bool     undervoltageActive()     const { return _underVoltageActive; }
+
 private:
     void handleBeep      (const uint8_t* p, size_t len);
     void handleStop      ();
@@ -153,6 +182,12 @@ private:
     sfx_core::BoardServerBase* _ctx          = nullptr;
     AlertServiceConfig         _cfg{};
     uint8_t                    _lastSeverity = 0xFF;
+
+    // ── Undervoltage state machine ──────────────────────────────────
+    uint32_t _belowSinceMs       = 0;       ///< first ms below threshold (0 = not below)
+    uint32_t _lastFiredMs        = 0;       ///< last fire wall-time (for cooldown)
+    bool     _underVoltageActive = false;   ///< asserted between fire and recovery+cooldown
+    uint16_t _lastObservedMv     = 0;       ///< most-recent observed min voltage
 };
 
 }  // namespace hubfx::effects::alerts

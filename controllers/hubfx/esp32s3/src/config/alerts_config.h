@@ -16,6 +16,20 @@
  *   error:    { sound: error,    volume_pct: 90 }
  *   critical: { sound: critical, volume_pct: 100 }
  *
+ *   # Board-wide undervoltage detector — fires `sound` when ANY
+ *   # INA226-monitored rail drops below `threshold_mv` for
+ *   # `sustained_ms` continuously.  Once fired, suppressed for
+ *   # `cooldown_ms` before re-arming (regardless of voltage).  Default
+ *   # `threshold_mv: 7000` is sized for the HubFX 8 V buck rail (alert
+ *   # at ~12 % sag, before the codec PLL starts drifting).
+ *   voltage_alert:
+ *     enabled: true
+ *     threshold_mv: 7000
+ *     sustained_ms: 500
+ *     cooldown_ms:  30000
+ *     sound:        battery_low
+ *     volume_pct:   100
+ *
  * `sound:` accepts any snake-case name listed in `alert_sound.h`'s
  * AlertSound enum.  Unknown names map to `AlertSound::None` (silent
  * no-op rather than a parse failure).
@@ -55,11 +69,26 @@ struct AlertsConfig {
         uint8_t volumePct      = 100;
     };
 
-    bool     enabled  = true;
-    Severity info;
-    Severity warning;
-    Severity error;
-    Severity critical;
+    /// Board-wide undervoltage detector.  Fires `sound` when ANY
+    /// INA226-monitored rail dips below `threshold_mv` for at least
+    /// `sustained_ms` continuously.  After firing, suppressed for
+    /// `cooldown_ms` before it can re-fire (regardless of voltage).
+    /// Defaults are sized for the HubFX 8 V buck rail.
+    struct VoltageAlert {
+        bool     enabled        = true;
+        uint16_t threshold_mv   = 7000;     ///< alert if any rail dips below this
+        uint16_t sustained_ms   = 500;      ///< continuous dip duration to fire
+        uint16_t cooldown_ms    = 30000;    ///< re-fire suppression window (max ~65s)
+        char     soundName[24]  = "battery_low";
+        uint8_t  volumePct      = 100;
+    };
+
+    bool         enabled  = true;
+    Severity     info;
+    Severity     warning;
+    Severity     error;
+    Severity     critical;
+    VoltageAlert voltageAlert;
 };
 
 // ─── Declarative schema ─────────────────────────────────────────────
@@ -68,6 +97,7 @@ namespace alerts_config_schema {
 
 using namespace sfx;
 using S = AlertsConfig::Severity;
+using V = AlertsConfig::VoltageAlert;
 
 inline const auto fields = schema<AlertsConfig>(
     prop<&AlertsConfig::enabled> ("enabled",  true),
@@ -87,6 +117,14 @@ inline const auto fields = schema<AlertsConfig>(
     group<&AlertsConfig::critical>("critical",
         prop<&S::soundName>("sound",      "critical"),
         prop<&S::volumePct>("volume_pct", uint8_t(100)).range(0, 100)
+    ),
+    group<&AlertsConfig::voltageAlert>("voltage_alert",
+        prop<&V::enabled>     ("enabled",      true),
+        prop<&V::threshold_mv>("threshold_mv", uint16_t(7000)).range(0, 32000),
+        prop<&V::sustained_ms>("sustained_ms", uint16_t(500)).range(0, 60000),
+        prop<&V::cooldown_ms> ("cooldown_ms",  uint16_t(30000)).range(0, 65000),
+        prop<&V::soundName>   ("sound",        "battery_low"),
+        prop<&V::volumePct>   ("volume_pct",   uint8_t(100)).range(0, 100)
     )
 );
 
@@ -129,6 +167,20 @@ toAlertServiceConfig(const AlertsConfig& y) {
     fill(cfg.warning,  y.warning);
     fill(cfg.error,    y.error);
     fill(cfg.critical, y.critical);
+
+    // Voltage-alert block: translate `soundName` string → AlertSound
+    // enum exactly like severities; unknown names fall back to
+    // `BatteryLow` (the obvious default; not silent — a typo'd sound
+    // name should still beep so the operator notices).
+    cfg.voltage.enabled       = y.voltageAlert.enabled;
+    cfg.voltage.threshold_mv  = y.voltageAlert.threshold_mv;
+    cfg.voltage.sustained_ms  = y.voltageAlert.sustained_ms;
+    cfg.voltage.cooldown_ms   = y.voltageAlert.cooldown_ms;
+    cfg.voltage.volume        = y.voltageAlert.volumePct;
+    {
+        AlertSound s = alertSoundFromName(y.voltageAlert.soundName);
+        cfg.voltage.sound = (s == AlertSound::None) ? AlertSound::BatteryLow : s;
+    }
     return cfg;
 }
 

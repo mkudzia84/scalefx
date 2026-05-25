@@ -71,3 +71,10 @@ Channel-1 V/I sense reads zero until U43 is replaced with a genuine
 TI INA226. The other 7 channels are unaffected. Full bisection +
 mechanism writeup in
 [instructions/18-HUBFX-INA-CLONE-WEDGE.md](../../../instructions/18-HUBFX-INA-CLONE-WEDGE.md).
+
+## Version history
+
+| Version | Build | Notes |
+|---------|-------|-------|
+| 2.13.0-hubfx | 308 | Board-wide undervoltage detector via AlertService.tickVoltage(); configurable via /alerts.yaml oltage_alert: block |
+| 2.12.0-hubfx | 296 | ESP-IDF native SD + LittleFS storage (NativeFile RAII, POSIX VFS); renamed init boot sound to init |

@@ -146,6 +146,67 @@ const AlertSeverityCfg* AlertServicePolicyT<TMixer>::slotFor(uint8_t severity) c
     }
 }
 
+// ─── Undervoltage detector ──────────────────────────────────────────
+//
+// Three transitions matter:
+//
+//   1. cross threshold downward  → start sustain timer (`_belowSinceMs`)
+//   2. sustain timer expires     → fire alert, enter "active" + cooldown
+//   3. recover above threshold   → clear `_belowSinceMs`; once cooldown
+//                                  has elapsed the next downward cross
+//                                  can fire again
+//
+// Cheap when disabled or above threshold — the very first guard
+// short-circuits.  Sub-µs per call when nothing is happening.
+
+template <MixerLike TMixer>
+void AlertServicePolicyT<TMixer>::tickVoltage(uint32_t nowMs,
+                                              uint16_t observedMin_mV) {
+    _lastObservedMv = observedMin_mV;
+    if (!_cfg.enabled || !_cfg.voltage.enabled) return;
+
+    const auto& v = _cfg.voltage;
+    const bool  below = (observedMin_mV < v.threshold_mv);
+
+    if (!below) {
+        // Recovered — clear sustain counter.  Leave _underVoltageActive
+        // until the cooldown expires so callers (Studio status) see
+        // the "we just had a dip" state for a while.
+        _belowSinceMs = 0;
+        if (_underVoltageActive &&
+            (nowMs - _lastFiredMs) >= v.cooldown_ms) {
+            _underVoltageActive = false;
+            DiagLog::instance().info("[alert] voltage recovered (now %u mV, threshold %u)",
+                                     (unsigned)observedMin_mV,
+                                     (unsigned)v.threshold_mv);
+        }
+        return;
+    }
+
+    // Below threshold.  Start (or continue) the sustain timer.
+    if (_belowSinceMs == 0) {
+        _belowSinceMs = nowMs ? nowMs : 1;     // 0 reserved as "not below"
+        return;
+    }
+    const uint32_t belowFor = nowMs - _belowSinceMs;
+    if (belowFor < v.sustained_ms) return;     // still in the watch window
+
+    // Sustain met — fire if outside cooldown.
+    if (_underVoltageActive && (nowMs - _lastFiredMs) < v.cooldown_ms) {
+        return;                                 // suppressed by cooldown
+    }
+    _lastFiredMs        = nowMs;
+    _underVoltageActive = true;
+
+    DiagLog::instance().warn(
+        "[alert] UNDERVOLTAGE: %u mV < threshold %u mV (sustained %u ms) — firing %s",
+        (unsigned)observedMin_mV, (unsigned)v.threshold_mv,
+        (unsigned)belowFor, alertSoundName(v.sound));
+
+    // Fire via playSound — uses the configured AlertSound enum.
+    playSound(v.sound, /*outputMask=*/0, /*volume=*/v.volume);
+}
+
 }  // namespace hubfx::effects::alerts
 
 #endif  // HUBFX_ALERT_SERVICE_IPP
