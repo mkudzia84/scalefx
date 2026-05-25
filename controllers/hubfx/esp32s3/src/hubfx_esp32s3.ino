@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.12.0-hubfx"
-#define BUILD_NUMBER     268
+#define BUILD_NUMBER     296
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -673,14 +673,12 @@ void setup() {
     SFX_LOG_INFO("[LightFx] up — %u program(s) loaded from /lightfx/programs/",
                  (unsigned)board.policy<LightFxEffectService>().controller().numPrograms());
 
-    // "HubFX initialized" spoken boot announcement — audio is live
-    // (audio.begin() above ran through codec PLAY).  Plays the dedicated
-    // /sounds/sys/hubfx_initialized.wav on the Alert mixer channel via the
-    // named-cue API (NOT a severity beep — this is a status announcement,
-    // not an alert).  Best-effort: no-op when features.alerts is false or
-    // the WAV is missing on SD.
+    // Boot announcement — audio is live (audio.begin() above ran through
+    // codec PLAY).  Plays /sounds/sys/init.wav on the Alert mixer channel
+    // via the named-cue API.  Best-effort: no-op when features.alerts is
+    // false or the WAV is missing on SD.
     board.policy<AlertService>().playSound(
-        hubfx::effects::alerts::AlertSound::HubFxInitialized);
+        hubfx::effects::alerts::AlertSound::Init);
 
     // Confirm the loop/LED-tick core: with -DARDUINO_RUNNING_CORE=0 this
     // must print 0 (off Core 1's audio tasks).  If it prints 1, the

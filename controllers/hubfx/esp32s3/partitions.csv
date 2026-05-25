@@ -5,8 +5,16 @@
 #   0x009000 - 0x00DFFF  NVS (20KB) — WiFi creds, preferences
 #   0x00E000 - 0x00FFFF  OTA data (8KB) — boot selection
 #   0x010000 - 0x3FFFFF  App (3.9MB) — firmware
-#   0x400000 - 0x7EFFFF  LittleFS (3.9MB) — configs, WAV files, assets
+#   0x400000 - 0x7EFFFF  LittleFS (3.9MB) — configs (hubfx/enginefx/gunfx/lightfx/landing/gearcontrol .yaml)
 #   0x7F0000 - 0x7FFFFF  Core dump (64KB) — crash diagnostics
+#
+# Note on `littlefs` partition SubType: ESP-IDF's partition table format does
+# NOT define a `littlefs` subtype — community convention (and what
+# `esp_vfs_littlefs_register` expects) is to use `subtype=spiffs` for any
+# data partition whose filesystem is selected at mount time by the registering
+# code.  The partition label "littlefs" + the SubType "spiffs" together tell
+# `esp_vfs_littlefs_register({.partition_label="littlefs", ...})` to find
+# this partition and mount LittleFS on it.  See sfx_storage/README.md.
 #
 # Name,     Type, SubType,  Offset,   Size,     Flags
 nvs,        data, nvs,      0x9000,   0x5000,
