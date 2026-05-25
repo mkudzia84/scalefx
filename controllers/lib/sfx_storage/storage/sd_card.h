@@ -9,10 +9,9 @@
  * Each policy defines a nested Config type that captures the pin assignments
  * and driver parameters for that bus mode:
  *
- *   PicoSpiSdPolicy::Config   — SPI on Pico (SdFat backend)
- *   EspSpiSdPolicy::Config    — SPI on ESP32 (SD.h backend)
- *   EspSdio1BitPolicy::Config — 1-bit SDIO on ESP32 (SD_MMC backend)
- *   EspSdio4BitPolicy::Config — 4-bit SDIO on ESP32 (SD_MMC backend)
+ *   PicoSpiSdPolicy::Config        — SPI on Pico (SdFat backend)
+ *   EspIdfSdio4BitPolicy::Config   — 4-bit SDIO on ESP32 via ESP-IDF native
+ *                                    (esp_vfs_fat_sdmmc_mount + POSIX I/O)
  *
  * The correct policy is auto-selected at the bottom of this header based on
  * the target platform, and aliased as `SdCardModule` for transparent usage.
@@ -145,7 +144,7 @@ struct StorageInfo {
  *
  *   // Types
  *   struct Config { ... };           // Bus-specific pin/driver configuration
- *   using FileHandle = ...;          // File32 (SdFat) or fs::File (ESP32)
+ *   using FileHandle = ...;          // SdFat::File32 (Pico) / NativeFile (ESP32 IDF)
  *   static constexpr SdBusMode BUS_MODE = ...;
  *
  *   // Lifecycle
@@ -391,11 +390,11 @@ private:
     /// Pico: SPI with SdFat backend
     using SdCardModule = SdCardModuleT<PicoSpiSdPolicy>;
 #elif SFX_PLATFORM_ESP32
-    #include "esp32/esp32_sd_policies.h"
-    /// ESP32: default to SDIO 4-bit (HubFX rev with D1/D2/D3 wired through the
-    /// JTAG-reuse pins MTDI/MTMS/GPIO45). Controllers that want 1-bit can
-    /// still instantiate SdCardModuleT<EspSdio1BitPolicy> directly.
-    using SdCardModule = SdCardModuleT<EspSdio4BitPolicy>;
+    /// ESP32: SDIO 4-bit via ESP-IDF native (`esp_vfs_fat_sdmmc_mount` +
+    /// `<driver/sdmmc_host.h>` + POSIX `fopen`/`fread`/...).  Task- and
+    /// core-safe by construction via VFS-FAT's `FF_FS_REENTRANT` mutex.
+    #include "esp32/esp_idf_sd_policy.h"
+    using SdCardModule = SdCardModuleT<EspIdfSdio4BitPolicy>;
 #endif
 
 /// File handle type alias for external use (AudioMixer).

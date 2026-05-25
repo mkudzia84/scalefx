@@ -406,7 +406,7 @@ void StorageServicePolicy<TPolicy>::handleFileDownload(const uint8_t* payload, s
 
     lockStorage(target);
 
-    LFSFile file;
+    StorageFile file;
     uint8_t err;
     if (target == StorageWire::TARGET_FLASH)
         err = FlashModule::instance().openRead(path, file);
@@ -1050,7 +1050,7 @@ void StorageServicePolicy<TPolicy>::cleanupUpload(bool deletePartial) {
         // We already hold the storage lock from handleUploadBegin(),
         // so use policy-level remove directly instead of removeFile() which re-locks.
         if (_uploadTarget == StorageWire::TARGET_FLASH) {
-            FlashModule::instance().getFS().remove(_uploadPath);
+            FlashModule::instance().removeFileNoLock(_uploadPath);
         } else {
             SdCardModule::instance().policy().removeFile(_uploadPath);
         }

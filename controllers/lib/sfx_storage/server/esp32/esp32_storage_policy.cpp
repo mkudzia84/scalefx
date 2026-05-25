@@ -34,11 +34,11 @@
 // out of the shared ipp)
 // ============================================================================
 
-uint8_t Esp32StoragePolicy::sdOpenRead(const char* path, LFSFile& file) {
+uint8_t Esp32StoragePolicy::sdOpenRead(const char* path, StorageFile& file) {
     return SdCardModule::instance().openRead(path, file);
 }
 
-uint8_t Esp32StoragePolicy::sdOpenWrite(const char* path, LFSFile& file, bool truncate) {
+uint8_t Esp32StoragePolicy::sdOpenWrite(const char* path, StorageFile& file, bool truncate) {
     return SdCardModule::instance().openWrite(path, file, truncate);
 }
 

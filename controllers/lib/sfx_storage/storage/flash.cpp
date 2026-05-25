@@ -2,28 +2,59 @@
  * Flash Module — Implementation
  *
  * Thread-safe LittleFS operations using platform-abstracted mutex
- * for multi-core safety.
- * No Serial output — all results communicated through return values
- * and callbacks. Protocol output handled by StorageServer.
+ * for multi-core safety.  No Serial output — all results communicated
+ * through return values and callbacks. Protocol output is handled by
+ * StorageServer using StreamWriter.
  *
- * LittleFS API differences between platforms:
+ * Two backends, one surface
+ * ─────────────────────────
  *   RP2040/RP2350 (Arduino-Pico):
- *     - Directory listing uses Dir iterator (openDir/next)
- *     - Storage info via FSInfo struct (totalBytes/usedBytes)
- *   ESP32 (Arduino-ESP32):
- *     - Directory listing uses File.openNextFile() pattern
- *     - Storage info via LittleFS.totalBytes()/usedBytes() methods
+ *     - Arduino LittleFS library (`LittleFS.*`, `Dir`, `File`)
+ *     - Per-call locking provided by FlashModule's own `_flashMutex`
  *
- * Common across platforms:
- *   - File type is ::File (aliased LFSFile)
- *   - Open modes are "r"/"w"/"a" strings
- *   - mkdir() creates path recursively by default
+ *   ESP32 (Arduino-ESP32 v3.x):
+ *     - `esp_vfs_littlefs_register` mounts LittleFS via VFS at "/littlefs"
+ *     - All file ops route through POSIX (`fopen`/`fread`/`fwrite`/
+ *       `opendir`/`readdir`/`mkdir`/`unlink`/`stat`) wrapped by NativeFile
+ *     - VFS provides internal task-safety; the FlashModule mutex remains
+ *       for mount/unmount and upload-exclusivity gating
+ *
+ *   The wire-side API (StorageFile, list/info/remove/mkdir/open/lock) is
+ *   identical on both platforms — switch happens behind the StorageFile
+ *   alias in flash.h.
  */
 
 #if defined(SFX_HAS_STORAGE)
 
 #include "flash.h"
 #include <vector>
+
+#if defined(ARDUINO_ARCH_ESP32)
+    #include <esp_littlefs.h>
+    #include <sys/stat.h>
+    #include <dirent.h>
+    #include <cstring>
+    #include <cstdio>
+    #include <unistd.h>
+#endif
+
+
+// ============================================================================
+// Constants (ESP32 only)
+// ============================================================================
+#if defined(ARDUINO_ARCH_ESP32)
+namespace {
+constexpr const char* kFlashBase      = "/littlefs";   ///< VFS mount path
+constexpr const char* kFlashPartition = "littlefs";    ///< partition label (matches partitions.csv)
+
+/// Join "/littlefs" + user path into out (size 192).
+inline void joinFlash(char* out, size_t outSize, const char* path) {
+    if (!path) path = "";
+    const bool needsSlash = (path[0] != '/');
+    snprintf(out, outSize, "%s%s%s", kFlashBase, needsSlash ? "/" : "", path);
+}
+}  // namespace
+#endif
 
 
 // ============================================================================
@@ -44,11 +75,21 @@ FlashModule::FlashModule()
 bool FlashModule::begin() {
     lock();
 #if defined(ARDUINO_ARCH_ESP32)
-    // ESP32 LittleFS.begin(formatOnFail, basePath, maxOpenFiles, partitionLabel)
-    //   - formatOnFail=true: auto-format on first boot (no pre-existing filesystem)
-    //   - partitionLabel="littlefs": select the correct partition when multiple
-    //     spiffs-subtype partitions exist (e.g., "littlefs" + "spiffs" for WAV)
-    bool ok = LittleFS.begin(true, "/littlefs", 10, "littlefs");
+    // esp_vfs_littlefs_register — registers LittleFS as a VFS at
+    // `base_path` against the partition with the given label (must
+    // match partitions.csv: `littlefs, data, spiffs, ...`).
+    //   - format_if_mount_failed=true → first-boot auto-format
+    //   - dont_mount=false           → mount immediately
+    esp_vfs_littlefs_conf_t conf = {};
+    conf.base_path              = kFlashBase;
+    conf.partition_label        = kFlashPartition;
+    conf.format_if_mount_failed = true;
+    conf.dont_mount             = false;
+
+    esp_err_t err = esp_vfs_littlefs_register(&conf);
+    // ESP_OK on first mount; ESP_ERR_INVALID_STATE if already mounted —
+    // treat that as success (idempotent begin).
+    bool ok = (err == ESP_OK) || (err == ESP_ERR_INVALID_STATE);
 #else
     bool ok = LittleFS.begin();
 #endif
@@ -90,23 +131,19 @@ uint8_t FlashModule::listDirectory(const char* path,
         if (!callback(entry)) break;
     }
 #elif defined(ARDUINO_ARCH_ESP32)
-    // Arduino-ESP32: File.openNextFile() pattern
-    File dir = LittleFS.open(path);
+    // ESP-IDF native: POSIX opendir/readdir/stat via NativeFile
+    NativeFile dir = NativeFile::openDir(kFlashBase, path);
     if (dir && dir.isDirectory()) {
         FileEntry entry;
-        File f = dir.openNextFile();
+        NativeFile f = dir.openNextFile();
         while (f) {
             if (++entryCount > MAX_TREE_ENTRIES) {
                 f.close();
                 limitHit = true;
                 break;
             }
-
             const char* name = f.name();
-            // ESP32 File.name() may return full path — extract filename
-            const char* slash = strrchr(name, '/');
-            const char* baseName = slash ? slash + 1 : name;
-            strncpy(entry.name, baseName, sizeof(entry.name) - 1);
+            strncpy(entry.name, name, sizeof(entry.name) - 1);
             entry.name[sizeof(entry.name) - 1] = '\0';
             entry.isDirectory = f.isDirectory();
             entry.size = entry.isDirectory ? 0 : (uint32_t)f.size();
@@ -181,15 +218,15 @@ void FlashModule::listTreeRecursive(const char* path, int depth,
         }
     }
 #elif defined(ARDUINO_ARCH_ESP32)
-    // Arduino-ESP32: File.openNextFile() pattern
-    File dir = LittleFS.open(path);
+    // ESP-IDF native: walk via NativeFile dir iteration
+    NativeFile dir = NativeFile::openDir(kFlashBase, path);
     if (!dir || !dir.isDirectory()) {
         if (dir) dir.close();
         return;
     }
 
     FileEntry entry;
-    File f = dir.openNextFile();
+    NativeFile f = dir.openNextFile();
     while (shouldContinue && f) {
         if (++entryCount > MAX_TREE_ENTRIES) {
             f.close();
@@ -199,9 +236,7 @@ void FlashModule::listTreeRecursive(const char* path, int depth,
         }
 
         const char* name = f.name();
-        const char* slash = strrchr(name, '/');
-        const char* baseName = slash ? slash + 1 : name;
-        strncpy(entry.name, baseName, sizeof(entry.name) - 1);
+        strncpy(entry.name, name, sizeof(entry.name) - 1);
         entry.name[sizeof(entry.name) - 1] = '\0';
         entry.isDirectory = f.isDirectory();
         entry.size = entry.isDirectory ? 0 : (uint32_t)f.size();
@@ -236,21 +271,36 @@ uint8_t FlashModule::getFileInfo(const char* path, FileEntry& entry) {
     if (!_initialized) return FlashError::NOT_INITIALIZED;
 
     lock();
-    LFSFile f = LittleFS.open(path, "r");
-    if (!f) {
+
+#if defined(ARDUINO_ARCH_ESP32)
+    char full[192];
+    joinFlash(full, sizeof(full), path);
+    struct stat st;
+    if (stat(full, &st) != 0) {
         unlock();
         return FlashError::NOT_FOUND;
     }
-
-    // Extract just the filename from the path for the entry
     const char* name = strrchr(path, '/');
     name = name ? name + 1 : path;
     strncpy(entry.name, name, sizeof(entry.name) - 1);
     entry.name[sizeof(entry.name) - 1] = '\0';
-
+    entry.isDirectory = S_ISDIR(st.st_mode);
+    entry.size = entry.isDirectory ? 0 : (uint32_t)st.st_size;
+#else
+    StorageFile f = LittleFS.open(path, "r");
+    if (!f) {
+        unlock();
+        return FlashError::NOT_FOUND;
+    }
+    const char* name = strrchr(path, '/');
+    name = name ? name + 1 : path;
+    strncpy(entry.name, name, sizeof(entry.name) - 1);
+    entry.name[sizeof(entry.name) - 1] = '\0';
     entry.isDirectory = f.isDirectory();
     entry.size = entry.isDirectory ? 0 : (uint32_t)f.size();
     f.close();
+#endif
+
     unlock();
     return FlashError::OK;
 }
@@ -264,20 +314,20 @@ uint8_t FlashModule::getStorageInfo(FlashStorageInfo& info) {
     lock();
 
 #if defined(ARDUINO_ARCH_RP2040)
-    // Arduino-Pico: FSInfo struct
     FSInfo fsinfo;
     LittleFS.info(fsinfo);
-
     info.initialized = true;
     info.totalBytes  = (uint32_t)fsinfo.totalBytes;
     info.usedBytes   = (uint32_t)fsinfo.usedBytes;
     info.freeBytes   = (uint32_t)(fsinfo.totalBytes - fsinfo.usedBytes);
 #elif defined(ARDUINO_ARCH_ESP32)
-    // Arduino-ESP32: direct methods
-    info.initialized = true;
-    info.totalBytes  = (uint32_t)LittleFS.totalBytes();
-    info.usedBytes   = (uint32_t)LittleFS.usedBytes();
-    info.freeBytes   = info.totalBytes - info.usedBytes;
+    size_t total = 0, used = 0;
+    esp_err_t err = esp_littlefs_info(kFlashPartition, &total, &used);
+    info.initialized = (err == ESP_OK);
+    info.totalBytes  = (err == ESP_OK) ? (uint32_t)total : 0;
+    info.usedBytes   = (err == ESP_OK) ? (uint32_t)used  : 0;
+    info.freeBytes   = info.totalBytes > info.usedBytes
+                       ? info.totalBytes - info.usedBytes : 0;
 #endif
 
     unlock();
@@ -293,14 +343,36 @@ uint8_t FlashModule::removeFile(const char* path) {
     if (!_initialized) return FlashError::NOT_INITIALIZED;
 
     lock();
+#if defined(ARDUINO_ARCH_ESP32)
+    char full[192];
+    joinFlash(full, sizeof(full), path);
+    struct stat st;
+    if (stat(full, &st) != 0) {
+        unlock();
+        return FlashError::NOT_FOUND;
+    }
+    bool ok = (unlink(full) == 0);
+#else
     if (!LittleFS.exists(path)) {
         unlock();
         return FlashError::NOT_FOUND;
     }
-
     bool ok = LittleFS.remove(path);
+#endif
     unlock();
     return ok ? FlashError::OK : FlashError::IO_ERROR;
+}
+
+bool FlashModule::removeFileNoLock(const char* path) {
+    // Caller already holds _flashMutex (storage-server upload cancel).
+    if (!_initialized) return false;
+#if defined(ARDUINO_ARCH_ESP32)
+    char full[192];
+    joinFlash(full, sizeof(full), path);
+    return unlink(full) == 0;
+#else
+    return LittleFS.remove(path);
+#endif
 }
 
 uint8_t FlashModule::removeDirectory(const char* path, bool recursive) {
@@ -308,25 +380,47 @@ uint8_t FlashModule::removeDirectory(const char* path, bool recursive) {
 
     lock();
 
-    // Check path exists and is a directory
-    LFSFile f = LittleFS.open(path, "r");
+#if defined(ARDUINO_ARCH_ESP32)
+    char full[192];
+    joinFlash(full, sizeof(full), path);
+    struct stat st;
+    if (stat(full, &st) != 0) {
+        unlock();
+        return FlashError::NOT_FOUND;
+    }
+    bool isDir = S_ISDIR(st.st_mode);
+#else
+    StorageFile f = LittleFS.open(path, "r");
     if (!f) {
         unlock();
         return FlashError::NOT_FOUND;
     }
     bool isDir = f.isDirectory();
     f.close();
+#endif
 
     if (!isDir) {
-        unlock();
-        // Not a directory — use removeFile() instead
+        // Not a directory — fall back to removeFile() semantics.
+#if defined(ARDUINO_ARCH_ESP32)
+        char full2[192];
+        joinFlash(full2, sizeof(full2), path);
+        bool ok = (unlink(full2) == 0);
+#else
         bool ok = LittleFS.remove(path);
+#endif
+        unlock();
         return ok ? FlashError::OK : FlashError::IO_ERROR;
     }
 
     if (!recursive) {
-        // Strict: only delete if empty. rmdir returns false on non-empty.
+        // Strict: only delete if empty.
+#if defined(ARDUINO_ARCH_ESP32)
+        char full2[192];
+        joinFlash(full2, sizeof(full2), path);
+        bool ok = (rmdir(full2) == 0);
+#else
         bool ok = LittleFS.rmdir(path);
+#endif
         unlock();
         return ok ? FlashError::OK : FlashError::IO_ERROR;
     }
@@ -338,11 +432,10 @@ uint8_t FlashModule::removeDirectory(const char* path, bool recursive) {
 
 bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
     // Caller MUST hold lock.
-    // Two-phase: snapshot child list BEFORE any deletes, then delete from snapshot.
-    // Rationale: LittleFS Dir/File iterators are invalidated by remove()/rmdir() on
-    // the directory being iterated — observed on RP2040. Deleting during iteration
-    // silently truncated enumeration and left children behind, causing the final
-    // LittleFS.rmdir(path) to fail on a non-empty dir.
+    // Two-phase: snapshot child list BEFORE any deletes, then delete from
+    // snapshot.  Rationale: LittleFS iterator state is invalidated by
+    // remove()/rmdir() during iteration — observed on RP2040 originally,
+    // applies to esp_littlefs as well.
 
     if (depth >= MAX_TREE_DEPTH) return false;
 
@@ -362,18 +455,14 @@ bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
     }
 #elif defined(ARDUINO_ARCH_ESP32)
     {
-        File dir = LittleFS.open(path);
+        NativeFile dir = NativeFile::openDir(kFlashBase, path);
         if (!dir || !dir.isDirectory()) {
             if (dir) dir.close();
             return false;
         }
-        File f = dir.openNextFile();
+        NativeFile f = dir.openNextFile();
         while (f) {
-            // ESP32 LittleFS: f.name() is bare leaf; f.path() is full path.
-            String leaf = String(f.name());
-            int slash = leaf.lastIndexOf('/');
-            if (slash >= 0) leaf = leaf.substring(slash + 1);
-            children.push_back({ leaf, f.isDirectory() });
+            children.push_back({ String(f.name()), f.isDirectory() });
             f.close();
             if (children.size() >= (size_t)MAX_TREE_ENTRIES) break;
             f = dir.openNextFile();
@@ -391,15 +480,29 @@ bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
         if (c.isDir) {
             if (!removeDirectoryRecursive(fullPath, depth + 1)) return false;
         } else {
+#if defined(ARDUINO_ARCH_ESP32)
+            char vfsFull[192];
+            joinFlash(vfsFull, sizeof(vfsFull), fullPath);
+            if (unlink(vfsFull) != 0) return false;
+#else
             if (!LittleFS.remove(fullPath)) return false;
+#endif
         }
     }
 
-    // Arduino-Pico LittleFS implicitly collapses an empty directory entry when
-    // its last child is removed — a subsequent LittleFS.rmdir() then reports
-    // false (path missing). Treat "already gone" as success for idempotency.
+#if defined(ARDUINO_ARCH_ESP32)
+    char vfsFull[192];
+    joinFlash(vfsFull, sizeof(vfsFull), path);
+    if (rmdir(vfsFull) == 0) return true;
+    // Mirror the Pico-side idempotency: if the dir is already gone
+    // (esp_littlefs collapses empty dirs on the last child remove on
+    // some configs), report success.
+    struct stat st;
+    return stat(vfsFull, &st) != 0;
+#else
     if (LittleFS.rmdir(path)) return true;
     return !LittleFS.exists(path);
+#endif
 }
 
 uint8_t FlashModule::makeDirectory(const char* path, bool createParents) {
@@ -409,39 +512,56 @@ uint8_t FlashModule::makeDirectory(const char* path, bool createParents) {
 
     auto checkExistingDir = [](const char* p) -> int {
         // 1 = exists as dir, 0 = exists as file, -1 = does not exist
+#if defined(ARDUINO_ARCH_ESP32)
+        char full[192];
+        joinFlash(full, sizeof(full), p);
+        struct stat st;
+        if (stat(full, &st) != 0) return -1;
+        return S_ISDIR(st.st_mode) ? 1 : 0;
+#else
         if (!LittleFS.exists(p)) return -1;
-        LFSFile f = LittleFS.open(p, "r");
+        StorageFile f = LittleFS.open(p, "r");
         bool isDir = f && f.isDirectory();
         if (f) f.close();
         return isDir ? 1 : 0;
+#endif
+    };
+
+    auto doMkdir = [](const char* p) -> bool {
+#if defined(ARDUINO_ARCH_ESP32)
+        char full[192];
+        joinFlash(full, sizeof(full), p);
+        return mkdir(full, 0775) == 0;
+#else
+        return LittleFS.mkdir(p);
+#endif
     };
 
     if (!createParents) {
         int existing = checkExistingDir(path);
-        if (existing == 1) { unlock(); return FlashError::OK; }  // idempotent: dir exists
-        if (existing == 0) { unlock(); return FlashError::ALREADY_EXISTS; }  // exists as file
+        if (existing == 1) { unlock(); return FlashError::OK; }
+        if (existing == 0) { unlock(); return FlashError::ALREADY_EXISTS; }
 
-        bool ok = LittleFS.mkdir(path);
+        bool ok = doMkdir(path);
         unlock();
         return ok ? FlashError::OK : FlashError::IO_ERROR;
     }
 
-    // PARENTS mode: walk path components, mkdir each in turn. Idempotent.
+    // PARENTS mode: walk path components, mkdir each. Idempotent.
     char buf[192];
     size_t n = strlen(path);
     if (n == 0 || n >= sizeof(buf)) { unlock(); return FlashError::IO_ERROR; }
     memcpy(buf, path, n + 1);
 
-    // Iterate each '/' boundary; skip leading '/'
     for (size_t i = 1; i <= n; i++) {
         if (buf[i] == '/' || buf[i] == '\0') {
             char saved = buf[i];
             buf[i] = '\0';
-            if (i > 1) {  // skip the bare "/" root
+            if (i > 1) {
                 int existing = checkExistingDir(buf);
                 if (existing == 0) { unlock(); return FlashError::ALREADY_EXISTS; }
                 if (existing == -1) {
-                    if (!LittleFS.mkdir(buf)) { unlock(); return FlashError::IO_ERROR; }
+                    if (!doMkdir(buf)) { unlock(); return FlashError::IO_ERROR; }
                 }
             }
             buf[i] = saved;
@@ -456,28 +576,42 @@ uint8_t FlashModule::makeDirectory(const char* path, bool createParents) {
 // File I/O (caller must hold lock)
 // ============================================================================
 
-uint8_t FlashModule::openRead(const char* path, LFSFile& file) {
+uint8_t FlashModule::openRead(const char* path, StorageFile& file) {
     if (!_initialized) return FlashError::NOT_INITIALIZED;
 
-    file = LittleFS.open(path, "r");
+#if defined(ARDUINO_ARCH_ESP32)
+    file = NativeFile::openReadFile(kFlashBase, path);
     if (!file) return FlashError::NOT_FOUND;
-
     if (file.isDirectory()) {
         file.close();
         return FlashError::IS_DIRECTORY;
     }
     return FlashError::OK;
+#else
+    file = LittleFS.open(path, "r");
+    if (!file) return FlashError::NOT_FOUND;
+    if (file.isDirectory()) {
+        file.close();
+        return FlashError::IS_DIRECTORY;
+    }
+    return FlashError::OK;
+#endif
 }
 
-uint8_t FlashModule::openWrite(const char* path, LFSFile& file, bool truncate) {
+uint8_t FlashModule::openWrite(const char* path, StorageFile& file, bool truncate) {
     if (!_initialized) return FlashError::NOT_INITIALIZED;
 
+#if defined(ARDUINO_ARCH_ESP32)
+    file = NativeFile::openWriteFile(kFlashBase, path, truncate);
+    if (!file) return FlashError::IO_ERROR;
+    return FlashError::OK;
+#else
     // LittleFS: "w" = write+truncate+create, "a" = append+create
     const char* mode = truncate ? "w" : "a";
-
     file = LittleFS.open(path, mode);
     if (!file) return FlashError::IO_ERROR;
     return FlashError::OK;
+#endif
 }
 
-#endif // SFX_HAS_STORAGE
+#endif  // SFX_HAS_STORAGE

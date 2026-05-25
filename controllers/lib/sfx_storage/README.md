@@ -1,40 +1,64 @@
 # sfx_storage — SD Card & Flash Storage
 
-Thread-safe storage singletons for SD card and onboard LittleFS flash. Both modules share a uniform `FileEntry`-based API so protocol handlers (e.g., `HubFxStorageServer`) and config systems (e.g., LightFX, GearControl `ConfigStore`) can operate on either backend interchangeably.
+Thread-safe storage singletons for SD card and onboard flash. Both modules share a uniform `FileEntry`-based API so protocol handlers (e.g., `StorageServicePolicy`) and config systems (e.g., LightFX, GearControl `ConfigStore`) can operate on either backend interchangeably.
 
 **Requires** `SFX_HAS_STORAGE=1` build flag.
 
 ## Files
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `storage_types.h` | 28 | Shared `FileEntry` struct (name, isDirectory, size) |
-| `sd_card.h` | ~300 | `SdCardModule` singleton — SPI (all platforms) + SDIO (ESP32) |
-| `sd_card.cpp` | ~370 | SdCardModule implementation (platform-conditional) |
-| `flash.h` | 229 | `FlashModule` singleton — LittleFS on onboard flash |
-| `flash.cpp` | 308 | FlashModule implementation (platform-conditional) |
+| File | Purpose |
+|------|---------|
+| `storage_types.h` | Shared `FileEntry` struct (name, isDirectory, size) + `MAX_TREE_DEPTH`/`MAX_TREE_ENTRIES` |
+| `sd_card.h` / `sd_card.ipp` | `SdCardModuleT<TPolicy>` template — generic state machine + locking; policy injects backend |
+| `flash.h` / `flash.cpp` | `FlashModule` singleton — LittleFS via `esp_littlefs` (ESP32) or Arduino LittleFS (Pico) |
+| `esp32/native_file.h` / `.cpp` | **(ESP32)** `NativeFile` — POSIX RAII file/dir wrapper used by both SD and flash |
+| `esp32/esp_idf_sd_policy.h` / `.cpp` | **(ESP32)** `EspIdfSdio4BitPolicy` — mounts SD via `esp_vfs_fat_sdmmc_mount` |
+| `pico/pico_sd_policy.h` | **(Pico)** `PicoSpiSdPolicy` — SdFat over SPI |
+| `bring_up.h` | One-liner `bringUpStorage(sdCfg)` for controller `setup()` |
 
 ## Architecture
 
 ```
-    ┌──────────────────────────┐     ┌──────────────────┐
-    │     SdCardModule         │     │  FlashModule      │
-    │     (singleton)          │     │  (singleton)      │
-    │                          │     │                   │
-    │  ┌─────────┬───────────┐ │     │  Backend: LittleFS│
-    │  │SdFat/SPI│ SD/SD_MMC │ │     │  Media: Onboard   │
-    │  │ (Pico)  │  (ESP32)  │ │     │  File type:LFSFile│
-    │  └─────────┴───────────┘ │     └────────┬──────────┘
-    │  File type: SdFile       │              │
-    └───────────┬──────────────┘              │
-                │   Shared API pattern        │
-                │  ┌─────────────────┐        │
-                └──│   FileEntry     │────────┘
-                   │   storage_types │
-                   └─────────────────┘
+                            ┌─────────────────┐
+                            │   StorageFile   │
+                            │ (handle alias)  │
+                            └────────┬────────┘
+                                     │
+        ┌───────── ESP32 ────────────┼───────── Pico ───────────┐
+        │                            │                          │
+        │    using StorageFile       │    using StorageFile     │
+        │      = NativeFile          │      = ::File (Arduino)  │
+        │                            │                          │
+        │  ┌─────────────────┐       │   ┌─────────────────┐    │
+        │  │  SdCardModule   │       │   │  SdCardModule   │    │
+        │  │ EspIdfSdio4Bit  │       │   │  PicoSpiSdPolicy│    │
+        │  │  Policy         │       │   │                 │    │
+        │  │                 │       │   │  SdFat / SPI    │    │
+        │  │  esp_vfs_fat_   │       │   │  → File32       │    │
+        │  │  sdmmc_mount    │       │   │                 │    │
+        │  │  → POSIX over   │       │   │                 │    │
+        │  │   "/sdcard/..." │       │   │                 │    │
+        │  └─────────────────┘       │   └─────────────────┘    │
+        │                            │                          │
+        │  ┌─────────────────┐       │   ┌─────────────────┐    │
+        │  │  FlashModule    │       │   │  FlashModule    │    │
+        │  │                 │       │   │                 │    │
+        │  │  esp_vfs_       │       │   │  Arduino        │    │
+        │  │  littlefs_      │       │   │  LittleFS       │    │
+        │  │  register       │       │   │  (Dir / File)   │    │
+        │  │  → POSIX over   │       │   │                 │    │
+        │  │  "/littlefs/.." │       │   │                 │    │
+        │  └─────────────────┘       │   └─────────────────┘    │
+        │                            │                          │
+        └────────────────────────────┴──────────────────────────┘
+                                     │
+                            ┌────────┴────────┐
+                            │    FileEntry    │
+                            │  storage_types  │
+                            └─────────────────┘
 ```
 
-Both modules follow the same API pattern:
+Both modules expose the same surface:
 - `listDirectory(path, callback)` — iterate entries
 - `listTree(path, callback)` — recursive listing with depth
 - `getFileInfo(path, entry)` — single file metadata
@@ -43,81 +67,171 @@ Both modules follow the same API pattern:
 - `removeDirectory(path, recursive = true)` — delete a directory (recursive deletes non-empty; non-recursive fails on non-empty)
 - `makeDirectory(path, createParents = false)` — create a directory (with `createParents=true`, mkdir `-p` semantics, idempotent)
 - `openRead(path, file)` / `openWrite(path, file, truncate)` — file I/O (caller holds lock)
-- `lock()` / `tryLock()` / `unlock()` — mutex access for file I/O
+- `lock()` / `tryLock()` / `unlock()` — mutex access — see Thread Safety below
 
 ### Recursive delete — iterator-safe implementation
 
-Both `FlashModule::removeDirectoryRecursive` (RP2040/ESP32 LittleFS) and `SdCardModuleT::removeDirectoryRecursive` follow a **snapshot-then-delete** pattern: the child list is copied into a local `std::vector<ChildEntry>` with the directory iterator open, the iterator is closed, and only then are entries removed. Deleting through a live iterator silently truncated enumeration on at least one backend (RP2040 LittleFS), leaving orphaned children that caused the final `rmdir` to fail with `IO_ERROR`. Per-level entries are bounded by `MAX_TREE_ENTRIES`; nesting by `MAX_TREE_DEPTH`.
+Both `FlashModule::removeDirectoryRecursive` and `SdCardModuleT::removeDirectoryRecursive` follow a **snapshot-then-delete** pattern: the child list is copied into a local `std::vector<ChildEntry>` with the directory iterator open, the iterator is closed, and only then are entries removed. Deleting through a live iterator can silently truncate enumeration on some filesystem backends (originally observed with RP2040 LittleFS), leaving orphans that would cause the final `rmdir` to fail with `IO_ERROR`. Per-level entries are bounded by `MAX_TREE_ENTRIES`; nesting by `MAX_TREE_DEPTH`.
 
-## SdCardModule — SD Card (SPI + SDIO)
+## ESP32 — ESP-IDF native backend (since 2026-05-26)
 
-Singleton wrapping platform-specific SD card libraries with automatic backend selection:
+The ESP32 branch uses the **ESP-IDF native VFS path** for both SD and flash. Arduino's `SD_MMC.*` and `LittleFS.*` wrappers were retired after they correlated with cross-task / cross-core wedges on HubFX.
 
-| Platform | Backend | Bus Modes | File Type | Library |
-|----------|---------|-----------|-----------|---------|
-| **Pico** (RP2040/RP2350) | SdFat (Adafruit fork) | SPI only | `File32` | `<SdFat.h>` |
-| **ESP32-S3** | Arduino-ESP32 SD/SD_MMC | **SPI + SDIO** (1-bit/4-bit) | `fs::File` | `<SD.h>` / `<SD_MMC.h>` |
+### SD card — `esp_vfs_fat_sdmmc_mount`
 
-Platform detection is automatic via `SFX_PLATFORM_PICO` / `SFX_PLATFORM_ESP32` macros. A unified `SdFile` typedef aliases the platform-specific file type.
-
-### Bus Mode
+[esp32/esp_idf_sd_policy.cpp](storage/esp32/esp_idf_sd_policy.cpp) mounts the card via:
 
 ```cpp
-enum class SdBusMode : uint8_t {
-    SPI,        // SPI bus (all platforms, ~2-4 MB/s)
-    SDIO_1BIT,  // 1-bit SDIO (ESP32 only)
-    SDIO_4BIT   // 4-bit SDIO (ESP32 only, ~20-25 MB/s)
+sdmmc_host_t       host    = SDMMC_HOST_DEFAULT();   // host.slot = SDMMC_HOST_SLOT_1
+sdmmc_slot_config_t slot   = SDMMC_SLOT_CONFIG_DEFAULT();
+slot.width = 4;
+slot.clk = ...; slot.cmd = ...; slot.d0..d3 = ...;
+slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
+    .format_if_mount_failed = true,
+    .max_files              = 5,
+    .allocation_unit_size   = 0,
 };
+
+sdmmc_card_t* card = nullptr;
+esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot, &mount_cfg, &card);
 ```
 
-### Lifecycle — SPI Mode (all platforms)
+After mount, **all file ops are POSIX** (`fopen`, `fread`, `fwrite`, `fseek`, `opendir`, `readdir`, `stat`, `mkdir`, `unlink`, `rmdir`) against paths under `/sdcard/...`. `NativeFile` wraps `FILE*` / `DIR*` with move-only RAII semantics.
+
+### Flash — `esp_vfs_littlefs_register`
+
+`FlashModule` (ESP32 branch in [storage/flash.cpp](storage/flash.cpp)) calls:
+
+```cpp
+esp_vfs_littlefs_conf_t conf = {
+    .base_path              = "/littlefs",
+    .partition_label        = "littlefs",  // matches partitions.csv
+    .format_if_mount_failed = true,
+    .dont_mount             = false,
+};
+esp_vfs_littlefs_register(&conf);
+```
+
+Same POSIX surface as SD, just rooted at `/littlefs/...`. The partition layout (LittleFS subtype) is unchanged from before the rewrite — no data migration required.
+
+### Why not raw `esp_flash.h` / `esp_partition.h`?
+
+That's the layer **underneath** `esp_vfs_littlefs_register`. Going one level down would mean either reimplementing the VFS adapter ourselves or losing POSIX file ops — neither has a payoff. The native VFS layer is exactly the right abstraction.
+
+### Why not Arduino-ESP32 `LittleFS.*` / `SD_MMC.*`?
+
+They wrap `fs::File`, which is a shared-pointer-style refcount wrapper around `FILE*`. Cross-task / cross-core sharing of `fs::File` instances has surfaced races we couldn't easily eliminate. The IDF native path:
+
+- **No `fs::File`** — `NativeFile` is move-only, deterministic close on dtor.
+- **FATFS `FF_FS_REENTRANT=1` (IDF default)** + `esp_littlefs` internal locking — concurrent `fopen`/`fread`/`fwrite` from Core 0 and Core 1 is safe at the VFS layer.
+- **Mount/unmount is a single host-side call** — no Arduino global-state shuffling.
+
+## Thread Safety
+
+| Operation Type | Lock | Who Holds It |
+|----------------|------|-------------- |
+| `listDirectory`, `listTree` | Auto (internal) | Module acquires/releases |
+| `getFileInfo`, `getStorageInfo` | Auto (internal) | Module acquires/releases |
+| `removeFile`, `removeDirectory`, `makeDirectory` | Auto (internal) | Module acquires/releases |
+| `openRead`, `openWrite` + subsequent I/O | **Manual** | Caller must `lock()`/`unlock()` around the open + read/write + close sequence |
+
+On ESP32, VFS-FAT (`FF_FS_REENTRANT=1`) and `esp_littlefs` provide their **own internal mutex** for per-call atomicity. The `SfxMutex` in each module is therefore a coarser gate, used for:
+
+1. **Mount / unmount / `retryInit()`** — must serialize against any other op.
+2. **Upload exclusivity** (Rule 28) — the mutex doubles as the "an upload is in flight, other subsystems back off" signal for the storage server.
+3. **`openRead`/`openWrite` + file ops** — caller-side contract preserved so all existing call sites (audio mixer, config store, storage server) remain unchanged.
+
+On Pico, the platform `SfxMutex` is the only mechanism — no underlying reentrant FATFS.
+
+## SdCardModule — Policy Contract
+
+`SdCardModuleT<TPolicy>` is a state-machine template; `TPolicy` injects the backend. Current policies:
+
+| Platform | Policy | Bus | File Type | Backend |
+|----------|--------|-----|-----------|---------|
+| **Pico** | `PicoSpiSdPolicy` | SPI | `SdFat::File32` | `<SdFat.h>` |
+| **ESP32** | `EspIdfSdio4BitPolicy` | 4-bit SDIO | `NativeFile` | ESP-IDF VFS-FAT |
+
+A policy must provide:
+
+```cpp
+struct Config { ... };               // pin assignments + flags
+using FileHandle = ...;              // SdFat::File32 or NativeFile
+static constexpr SdBusMode BUS_MODE = ...;
+
+bool mount(const Config& cfg);
+void unmount();
+SdCardType cardType();
+void       fillStorageInfo(StorageInfo& info);
+
+FileHandle openDir       (const char* path);
+FileHandle openReadFile  (const char* path);
+FileHandle openWriteFile (const char* path, bool truncate);
+static FileHandle nextFile(FileHandle& dir);
+
+bool exists    (const char* path);
+bool removeFile(const char* path);
+bool makeDir   (const char* path);
+bool removeDir (const char* path);
+
+static bool     isValid     (const FileHandle& f);
+static bool     isDirectory (FileHandle& f);
+static uint32_t fileSize    (FileHandle& f);
+static void     closeFile   (FileHandle& f);
+static void     extractName (FileHandle& f, char* buf, size_t len);
+```
+
+The legacy `EspSpiSdPolicy` / `EspSdio1BitPolicy` / `EspSdio4BitPolicy` Arduino-based policies were removed in the 2026-05-26 native rewrite. If ESP32 SPI SD is ever needed again, write an `EspIdfSpiSdPolicy` using `sdspi_host_init` + `esp_vfs_fat_sdspi_mount` — same POSIX-over-VFS pattern, not the Arduino shim.
+
+## SdCardModule — Usage
+
+### Lifecycle
 
 ```cpp
 SdCardModule& sd = SdCardModule::instance();
-SdCardModule::Config cfg { .cs_pin = 5, .sck_pin = 2, .mosi_pin = 3, .miso_pin = 4, .speed_mhz = 25 };
+SdCardModule::Config cfg {
+    .clk = 39, .cmd = 38,
+    .d0  = 40, .d1  = 41, .d2 = 42, .d3 = 45,
+};
 sd.begin(cfg);
-```
-
-### Lifecycle — SDIO Mode (ESP32 only)
-
-```cpp
-SdCardModule& sd = SdCardModule::instance();
-
-// 1-bit SDIO with custom pins
-SdCardModule::Config cfg { .clk = 7, .cmd = 9, .d0 = 8 };
-sd.begin(cfg);
-
-// 4-bit SDIO — use SdCardModuleT<EspSdio4BitPolicy>
-// (change the using alias in sd_card.h to select 4-bit mode)
 ```
 
 ### Retry
 
 ```cpp
-sd.config().speed_mhz = 10;  // Change SPI speed before retry (ignored for SDIO)
-sd.retryInit();               // Unmounts, then re-mounts with stored config
+sd.config().speed_mhz = 40;          // SDMMC_FREQ_HIGHSPEED (40 MHz)
+sd.retryInit();                       // unmount + re-mount with stored config
 ```
 
-### Policy Access
+### File I/O (caller holds the lock)
 
 ```cpp
-// Access the underlying filesystem for low-level operations
-auto& policy = sd.policy();
-
-// Pico: policy.rawSD() returns SdFat&
-// ESP32: policy.rawFS() returns fs::FS& (SD or SD_MMC)
+sd.lock();
+StorageFile file;
+if (sd.openRead("/sounds/foo.wav", file) == SdError::OK) {
+    uint8_t buf[256];
+    while (file.available()) {
+        int n = file.read(buf, sizeof(buf));
+        // ...
+    }
+    file.close();
+}
+sd.unlock();
 ```
 
 ### Error Codes (`SdError`)
 
-| Code | Name | Value |
-|------|------|-------|
-| OK | Success | 0 |
-| NOT_INITIALIZED | `begin()` not called or failed | 1 |
-| NOT_FOUND | File/directory doesn't exist | 2 |
-| IO_ERROR | SPI/FAT operation failed | 3 |
-| IS_DIRECTORY | Expected file, got directory | 4 |
-| ALREADY_EXISTS | File exists where directory expected | 5 |
+| Code | Name |
+|------|------|
+| 0 | OK |
+| 1 | NOT_INITIALIZED |
+| 2 | NOT_FOUND |
+| 3 | IO_ERROR |
+| 4 | IS_DIRECTORY |
+| 5 | ALREADY_EXISTS |
+| 6 | LIMIT_EXCEEDED (`MAX_TREE_DEPTH` / `MAX_TREE_ENTRIES`) |
 
 ### StorageInfo
 
@@ -128,158 +242,60 @@ struct StorageInfo {
     uint32_t totalSpace_MB;
     uint32_t usedSpace_MB;
     uint32_t freeSpace_MB;
-    uint8_t fatType;             // FAT16/32 (Pico/SdFat), 0 on ESP32
-    uint32_t clusterSize_bytes;  // Pico/SdFat only, 0 on ESP32
-    SdBusMode busMode;           // Active bus mode
-    SdCardType cardType;         // Card type (SD, SDHC, MMC, etc.)
+    uint8_t  fatType;             // FS_FAT12 / FAT16 / FAT32 / EXFAT (from FATFS)
+    uint32_t clusterSize_bytes;
+    SdBusMode busMode;
+    SdCardType cardType;
 };
 ```
 
-### Backend Detection
-
-Backend is selected automatically at compile time:
-
-| Macro | When True | Backend |
-|-------|-----------|--------|
-| `SFX_SD_BACKEND_SDFAT` | Pico + SdFat available | SdFat over SPI |
-| `SFX_SD_BACKEND_ESP` | ESP32 | Arduino SD.h / SD_MMC.h |
-| `SFX_HAS_SD` | Either backend available | Class compiles |
-
-On Pico, `__has_include(<SdFat.h>)` gracefully degrades if SdFat isn't in the library path.
-On ESP32, `lib_ignore = SdFat` in platformio.ini prevents conflicts with the framework's native `SD.h`.
-
-### Direct Policy Access
-
-```cpp
-// Pico (SdFat backend)
-SdFat& raw = sd.policy().rawSD();   // SdFat object
-
-// ESP32 (SD/SD_MMC backend)
-fs::FS& raw = sd.policy().rawFS();  // Points to SD or SD_MMC depending on policy
-```
-
-## FlashModule — LittleFS Onboard Flash
-
-Singleton wrapping the **LittleFS** filesystem for onboard flash storage.
+## FlashModule — Usage
 
 ### Lifecycle
 
 ```cpp
 FlashModule& flash = FlashModule::instance();
-flash.begin();  // Mounts LittleFS partition
+flash.begin();   // ESP32: esp_vfs_littlefs_register("/littlefs", "littlefs", ...)
+                 // Pico:  LittleFS.begin()
 ```
 
-### Error Codes (`FlashError`)
-
-Same values as `SdError` for consistency:
-
-| Code | Name | Value |
-|------|------|-------|
-| OK | Success | 0 |
-| NOT_INITIALIZED | `begin()` not called or failed | 1 |
-| NOT_FOUND | File/directory doesn't exist | 2 |
-| IO_ERROR | Flash write/read failed | 3 |
-| IS_DIRECTORY | Expected file, got directory | 4 |
-| ALREADY_EXISTS | File exists where directory expected | 5 |
-
-### Storage Info (`FlashStorageInfo`)
+### Storage Info
 
 ```cpp
 struct FlashStorageInfo {
     bool initialized;
-    uint32_t totalBytes;   // Byte-level (flash is typically < 2 MB)
+    uint32_t totalBytes;
     uint32_t usedBytes;
     uint32_t freeBytes;
 };
 ```
 
-### Platform Differences
+### Error Codes — same values as `SdError`.
 
-The LittleFS Arduino wrapper has slightly different APIs per platform. FlashModule handles this with `#ifdef` branches:
+## File Handle Type — `StorageFile`
 
-| Operation | RP2040 (Arduino-Pico) | ESP32 (Arduino-ESP32) |
-|-----------|-----------------------|------------------------|
-| Directory listing | `Dir` iterator (`openDir`/`next`) | `File.openNextFile()` pattern |
-| Storage info | `FSInfo` struct via `LittleFS.info()` | `LittleFS.totalBytes()`/`usedBytes()` |
-| File open/close | `::File` | `::File` (same) |
-| mkdir | Single-level only in LittleFS — use `makeDirectory(path, createParents=true)` for recursive | Same — use the `createParents` flag |
-| rmdir during iteration | ❌ Invalidates `Dir` iterator silently — snapshot children first | Safer, but snapshot pattern used uniformly |
-
-### ESP32 LittleFS — Native API Assessment
-
-**Current:** Uses Arduino `LittleFS` wrapper (`<LittleFS.h>`).
-
-**Underneath:** Arduino-ESP32's LittleFS is a thin VFS shim over ESP-IDF's `esp_littlefs` component. It mounts LittleFS onto the ESP VFS layer, so `LittleFS.open()` ultimately calls `esp_littlefs` → native SPI flash driver.
-
-**Going native (raw `esp_littlefs`)?** Not beneficial:
-- Same underlying `lfs_*` library — no performance difference
-- Would require manual VFS path registration, partition table lookup, and raw `lfs_file_*` calls
-- Loses Arduino `File` compatibility (breaking uniform API with Pico)
-- The `#ifdef` branches in FlashModule already handle the only meaningful API differences
-
-**Verdict:** Current approach is correct. No native API change recommended.
-
-## Thread Safety
-
-Both modules use `SfxMutex` (platform-abstracted: `mutex_t` on Pico, `SemaphoreHandle_t` on ESP32):
-
-| Operation Type | Lock | Who Holds It |
-|----------------|------|-------------- |
-| `listDirectory`, `listTree` | Auto (internal) | Module acquires/releases |
-| `getFileInfo`, `getStorageInfo` | Auto (internal) | Module acquires/releases |
-| `removeFile`, `makeDirectory` | Auto (internal) | Module acquires/releases |
-| `openRead`, `openWrite` + I/O | **Manual** | Caller must `lock()`/`unlock()` |
-
-The split exists because file I/O spans multiple calls (`open` → `read`/`write` → `close`), so the caller must hold the lock for the duration.
-
-## ESP32 SD — SPI vs SDIO
-
-### Throughput Comparison
-
-| Bus Mode | Throughput | Use Case |
-|----------|-----------|----------|
-| SPI | ~2-4 MB/s | Dev boards (GPIO breakout), simple wiring |
-| SDIO 1-bit | ~10-12 MB/s | Fewer pins, moderate throughput |
-| SDIO 4-bit | ~20-25 MB/s | Production boards, audio streaming |
-
-For HubFX audio (8-channel WAV mixing), reading 8 simultaneous 44.1 kHz 16-bit stereo WAV files requires ~1.4 MB/s sustained. SPI's ~2-4 MB/s leaves thin margin. **SDIO 4-bit provides 10x headroom.**
-
-### ESP32-S3 SDIO Wiring
-
-| Signal | GPIO | Note |
-|--------|------|------|
-| CLK | GPIO36 | Recommended |
-| CMD | GPIO35 | Recommended |
-| D0 | GPIO37 | Required (1-bit minimum) |
-| D1 | GPIO38 | 4-bit mode |
-| D2 | GPIO33 | 4-bit mode |
-| D3 | GPIO34 | 4-bit mode (also CS for SPI fallback) |
-
-*(Actual pins depend on PCB design — these are ESP32-S3 DevKit defaults.)*
-
-### Implementation
-
-The SD card module uses conditional compilation (Option B from original analysis):
+The storage server's upload buffer uses a single file-handle type that resolves per platform:
 
 ```cpp
-#if SFX_SD_BACKEND_SDFAT
-    using SdFile = File32;   // Pico: SdFat type
-#elif SFX_SD_BACKEND_ESP
-    using SdFile = fs::File; // ESP32: Arduino FS type (same for SD and SD_MMC)
+#if SFX_PLATFORM_ESP32
+    using StorageFile = NativeFile;     // POSIX RAII over VFS
+#else
+    using StorageFile = ::File;         // Arduino LittleFS File
 #endif
 ```
 
-Internally, `SdCardModule` stores a `fs::FS*` pointer on ESP32 that points to either `SD` (SPI mode) or `SD_MMC` (SDIO mode). All file operations dispatch through this pointer. Only `getStorageInfo()` needs bus-mode-specific dispatch (for card size/capacity queries).
+The audio mixer's SD-specific handle is `SdFile` (= `SdCardModule::FileHandle`), which is `NativeFile` on ESP32. Both names point at the same type on ESP32; they exist to clarify intent at the call site (storage-server vs SD-direct).
 
 ## Dependencies
 
 | Dependency | Platform | Reason |
 |------------|----------|--------|
-| `sfx_platform` | All | `sfx_platform.h` (SfxMutex, platform macros), `diag_log.h` (logging) |
-| `Arduino` | All | `<Arduino.h>` (base types) |
-| `SdFat` | Pico only | SD card backend (SPI). Excluded on ESP32 via `lib_ignore`. |
-| `SD.h` | ESP32 only | SD card SPI mode (Arduino-ESP32 framework, auto-available) |
-| `SD_MMC.h` | ESP32 only | SD card SDIO mode (Arduino-ESP32 framework, auto-available) |
-| `LittleFS` | All | Arduino wrapper over native flash filesystem |
+| `sfx_platform` | All | `sfx_platform.h` (SfxMutex, platform macros) |
+| `sfx_serial` | All | `diag_log.h` (logging) |
+| `Arduino` | All | base types (only) |
+| `SdFat` | Pico only | SD card backend. Excluded on ESP32 via `lib_ignore`. |
+| `<esp_vfs_fat.h>` + `<driver/sdmmc_host.h>` + `<sdmmc_cmd.h>` | ESP32 only | Bundled with Arduino-ESP32 framework — no `lib_deps` change needed |
+| `<esp_littlefs.h>` | ESP32 only | Bundled with Arduino-ESP32 framework (`libjoltwallet__littlefs.a`) |
+| `<LittleFS.h>` | Pico only | Arduino LittleFS wrapper |
 
-**No dependency on:** sfx_serial, sfx_audio, sfx_usb, sfx_peripherals, sfx_server.
+**No dependency on:** sfx_audio, sfx_usb, sfx_peripherals, sfx_server.

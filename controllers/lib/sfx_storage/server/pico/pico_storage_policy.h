@@ -18,7 +18,7 @@
 #include <cstddef>
 #include <serial/core/core.h>  // SerialError::NOT_SUPPORTED
 
-// LFSFile and StorageSharedState are declared in headers already included
+// StorageFile and StorageSharedState are declared in headers already included
 // by storage_service.h before this file (flash.h + storage_service.h itself).
 
 struct StorageSharedState;  // Forward declaration
@@ -51,10 +51,10 @@ public:
     /// SD open helpers — always return NOT_SUPPORTED on Pico. Pico boards
     /// only expose flash (LittleFS) through StorageServer; SD card upload/
     /// download paths take a different file-handle type and are disabled.
-    uint8_t sdOpenRead(const char* /*path*/, LFSFile& /*file*/) {
+    uint8_t sdOpenRead(const char* /*path*/, StorageFile& /*file*/) {
         return SerialError::NOT_SUPPORTED;
     }
-    uint8_t sdOpenWrite(const char* /*path*/, LFSFile& /*file*/, bool /*truncate*/) {
+    uint8_t sdOpenWrite(const char* /*path*/, StorageFile& /*file*/, bool /*truncate*/) {
         return SerialError::NOT_SUPPORTED;
     }
 

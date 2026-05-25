@@ -24,7 +24,7 @@
  *
  *   // File I/O (caller manages lock + file lifetime)
  *   flash.lock();
- *   LFSFile file;
+ *   StorageFile file;
  *   flash.openRead("/config.yaml", file);
  *   int n = file.read(buf, sizeof(buf));
  *   file.close();
@@ -35,14 +35,20 @@
 #define FLASH_H
 
 #include <Arduino.h>
-#include <LittleFS.h>
 #include "platform/sfx_platform.h"
 #include <functional>
 
 #include "storage_types.h"
 
-// Use LittleFS File type to avoid ambiguity with SdFat File
-using LFSFile = ::File;
+// File handle type — ESP32 uses NativeFile (POSIX RAII over VFS); Pico
+// still uses Arduino LittleFS's `::File`.
+#if SFX_PLATFORM_ESP32
+    #include "esp32/native_file.h"
+    using StorageFile = NativeFile;
+#else
+    #include <LittleFS.h>
+    using StorageFile = ::File;
+#endif
 
 
 // ============================================================================
@@ -85,7 +91,7 @@ struct FlashStorageInfo {
 class FlashModule {
 public:
     /// File handle type (matches SdCardModuleT convention for template bridges)
-    using FileHandle = LFSFile;
+    using FileHandle = StorageFile;
 
     /// Get the singleton instance
     static FlashModule& instance() {
@@ -198,10 +204,10 @@ public:
      * Caller MUST lock() before and unlock() after all file operations.
      *
      * @param path File path
-     * @param file Output file handle (LFSFile)
+     * @param file Output file handle (StorageFile)
      * @return FlashError code
      */
-    uint8_t openRead(const char* path, LFSFile& file);
+    uint8_t openRead(const char* path, StorageFile& file);
 
     /**
      * @brief Open file for writing
@@ -209,11 +215,11 @@ public:
      * Caller MUST lock() before and unlock() after all file operations.
      *
      * @param path File path
-     * @param file Output file handle (LFSFile)
+     * @param file Output file handle (StorageFile)
      * @param truncate If true, truncate existing file
      * @return FlashError code
      */
-    uint8_t openWrite(const char* path, LFSFile& file, bool truncate = true);
+    uint8_t openWrite(const char* path, StorageFile& file, bool truncate = true);
 
     // ========================================================================
     // Mutex Access
@@ -223,8 +229,11 @@ public:
     bool tryLock()  { return sfxMutexTryLock(_flashMutex); }
     void unlock()   { sfxMutexUnlock(_flashMutex); }
 
-    /// Direct LittleFS access (caller must hold lock)
-    FS& getFS()     { return LittleFS; }
+    /// Remove a file WITHOUT acquiring the flash lock — for callers that
+    /// already hold it (storage server upload-cancel cleanup).  Mirrors
+    /// `SdCardModule::policy().removeFile()` on the SD side.  Returns
+    /// true on success.
+    bool removeFileNoLock(const char* path);
 
 private:
     FlashModule();

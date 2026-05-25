@@ -82,7 +82,7 @@ struct StorageSharedState {
     size_t   uploadBufCapacity = 0;
 
     // File handle for active upload
-    LFSFile  uploadFile;
+    StorageFile  uploadFile;
 
     /// Flush buffered upload data to file (blocking on the current core).
     /// Used by both the .ipp (handleUploadEnd final partial flush) and

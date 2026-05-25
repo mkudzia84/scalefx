@@ -39,7 +39,7 @@ public:
     Esp32StoragePolicy() = default;
 
     /// SD card uploads/downloads are supported on ESP32 — both LittleFS flash
-    /// and SD_MMC use fs::File, so `_shared.uploadFile` (LFSFile) and
+    /// and SD_MMC use fs::File, so `_shared.uploadFile` (StorageFile) and
     /// SdCardModule::FileHandle are type-compatible.
     static constexpr bool SdSupported = true;
 
@@ -48,8 +48,8 @@ public:
 
     /// SD open helpers routed through the policy so the non-portable
     /// SdCardModule::FileHandle type never appears in the shared ipp.
-    uint8_t sdOpenRead(const char* path, LFSFile& file);
-    uint8_t sdOpenWrite(const char* path, LFSFile& file, bool truncate);
+    uint8_t sdOpenRead(const char* path, StorageFile& file);
+    uint8_t sdOpenWrite(const char* path, StorageFile& file, bool truncate);
 
     // -----------------------------------------------------------------
     // Platform hooks (called by StorageServerT<> via _policy member)
