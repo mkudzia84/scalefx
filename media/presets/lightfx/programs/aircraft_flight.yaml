@@ -1,19 +1,26 @@
-# helicopter_landing — Approach/landing configuration (Airbus-style).
+# aircraft_flight — Generic fixed-wing flight lighting.
 #
-# Same phase-locked anti-collision pattern as helicopter_flight (single-
-# flash beacon + position-light group at t=0; double-flash strobe at
-# mid-period, non-overlapping; shared 1000 ms period) PLUS the landing
-# light deployed and on.
+# Standard FAA anti-collision + position-light combo for fixed-wing
+# scale models.  Same phase-locked pattern as helicopter_flight (so
+# both flight programs blink in sync if both are loaded simultaneously
+# on the same hub):
 #
-# Landing light goes through the LandingLightService (servo + bulb on
-# its own service entity), driven via `landing_bindings:` below — NOT
-# as a raw LightFx track.  Activating this program flips landing-light
-# ID 0 ON: servo deploys, then the bulb lights.
+#   - 1000 ms shared period
+#   - t=0..80ms        single-flash for the red beacon + position lights + tail
+#   - t=500..560+640.. double-flash white strobe (offset, never overlaps)
+#
+# v2 schema — channel names match /hubfx.yaml port labels.  Label your
+# board's LED-driving PWM ports on the IO tab as:
+#   "Red beacon"
+#   "White strobe"
+#   "Position lights"   (red port + green starboard, paralleled)
+#   "White tail"
 
 schema_version: 2
 
 tracks:
   - channel: "Red beacon"
+    brightness_pct: 100
     loop: true
     events:
       - { kind: fade_in,  brightness_pct: 100, duration_ms: 300 }
@@ -21,18 +28,21 @@ tracks:
       - { kind: "off",                          duration_ms: 400 }
 
   - channel: "Position lights"
+    brightness_pct: 100
     loop: true
     events:
       - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
       - { kind: "off",                       duration_ms: 920 }
 
   - channel: "White tail"
+    brightness_pct: 100
     loop: true
     events:
       - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
       - { kind: "off",                       duration_ms: 920 }
 
   - channel: "White strobe"
+    brightness_pct: 100
     loop: true
     events:
       - { kind: "off",                       duration_ms: 500 }
@@ -41,6 +51,4 @@ tracks:
       - { kind: "on",  brightness_pct: 100, duration_ms:  60 }
       - { kind: "off",                       duration_ms: 300 }
 
-# Landing light deploys + lights via the LandingLightService.
-landing_bindings:
-  - { id: 0, state: "on" }
+landing_bindings: []

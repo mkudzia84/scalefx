@@ -1,0 +1,23 @@
+# effect_breathing — Slow sinusoidal "breathing" effect.
+#
+# Decorative / display preset — the assigned channel breathes (3 s
+# period, 20–100 % range).  Useful for cold-and-dark scale display
+# modes where you want subtle motion.
+#
+# Ships with a single track as a starter; add more in Studio (each
+# referencing a different channel) and they'll auto-sync because they
+# share the same event list with `loop: true`.
+#
+# v2 schema — pick whichever LED channel name you want (e.g.
+# "Cabin light", "Underglow", or any operator-labelled LedAnimator port).
+
+schema_version: 2
+
+tracks:
+  - channel: "Breathing"
+    brightness_pct: 100
+    loop: true
+    events:
+      - { kind: fading, min_pct: 20, max_pct: 100, cycle_ms: 3000, duration_ms: 3000 }
+
+landing_bindings: []

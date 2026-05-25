@@ -1,55 +1,38 @@
 # helicopter_off — All exterior LEDs dark.
 #
-# Selected by default (referenced first in /hubfx.yaml's
-# `lightfx.programs:` list) so a powered-up helicopter sits dark on the
-# ramp.  Anti-collision lights must be ON whenever rotors are turning
-# (FAA 91.209(b)), but a model on the bench / in the box is not in that
+# Selected by default (referenced first in /lightfx.yaml's `programs:`
+# list) so a powered-up helicopter sits dark on the ramp.  Anti-
+# collision lights must be ON whenever rotors are turning (FAA
+# 91.209(b)), but a model on the bench / in the box is not in that
 # state — so the safe default is OFF.  Switch to `helicopter_nav` once
 # the airframe is parked + battery on, and to `helicopter_flight` for
 # rotors-turning ops.
 #
-# Channel convention (8 PWM ports on HubFX rev A):
-#   ch0 — red rotating beacon (anti-collision)
-#   ch1 — white strobe (anti-collision)
-#   ch2 — red position/nav light (port / left)
-#   ch3 — green position/nav light (starboard / right)
-#   ch4 — white position/nav light (tail / aft)
-#   ch5 — landing light (search light)
-#   ch6 — cabin / cockpit light
-#   ch7 — spare
+# v2 schema — tracks reference channels by NAME.  Names must match
+# `label:` fields on LedAnimator ports in /hubfx.yaml.  Label your
+# board's LED-driving PWM ports on the IO tab as:
+#   "Red beacon"
+#   "White strobe"
+#   "Position lights"   (red port + green starboard, paralleled)
+#   "White tail"
+#   "Landing light"
+# Any track whose channel isn't labelled gets a WARN + skip at load.
 
-schema_version: 1
+schema_version: 2
 
-channels:
-  - port: { kind: pwm, idx: 0 }
+tracks:
+  - channel: "Red beacon"
     events:
-      - kind: "off"
-        duration_ms: 0
-  - port: { kind: pwm, idx: 1 }
+      - { kind: "off", duration_ms: 0 }
+  - channel: "White strobe"
     events:
-      - kind: "off"
-        duration_ms: 0
-  - port: { kind: pwm, idx: 2 }
+      - { kind: "off", duration_ms: 0 }
+  - channel: "Position lights"
     events:
-      - kind: "off"
-        duration_ms: 0
-  - port: { kind: pwm, idx: 3 }
+      - { kind: "off", duration_ms: 0 }
+  - channel: "White tail"
     events:
-      - kind: "off"
-        duration_ms: 0
-  - port: { kind: pwm, idx: 4 }
+      - { kind: "off", duration_ms: 0 }
+  - channel: "Landing light"
     events:
-      - kind: "off"
-        duration_ms: 0
-  - port: { kind: pwm, idx: 5 }
-    events:
-      - kind: "off"
-        duration_ms: 0
-  - port: { kind: pwm, idx: 6 }
-    events:
-      - kind: "off"
-        duration_ms: 0
-  - port: { kind: pwm, idx: 7 }
-    events:
-      - kind: "off"
-        duration_ms: 0
+      - { kind: "off", duration_ms: 0 }

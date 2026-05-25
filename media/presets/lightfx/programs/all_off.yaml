@@ -1,0 +1,15 @@
+# all_off — Every channel off, all retracts up.
+#
+# Universal "panic / safety / cold-and-dark" preset.  No tracks defined
+# — the v2 firmware leaves every channel implicitly OFF when no track
+# names it, so an empty program is the cleanest way to "go dark".
+#
+# Use this as a baseline before customising — every new program
+# operator adds to the active list starts with no tracks; add tracks
+# for the channels you want to drive, leave the rest implicit-off.
+
+schema_version: 2
+
+tracks: []
+
+landing_bindings: []
