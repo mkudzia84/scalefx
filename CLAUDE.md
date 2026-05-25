@@ -180,11 +180,12 @@ Every ScaleFX board exposes a stable hardware-derived **GUID** so masters can te
 - **AudioTools `InputMixer<float>` is broken** (accumulator bug); `SineWaveGenerator` has an amplitude bug. Workaround: keep the full pipeline in `int16_t`. See [instructions/08-AUDIOTOOLS.md](instructions/08-AUDIOTOOLS.md).
 - **Console output size formatting** (CLI + parsers, see [instructions/09-CONSOLE-OUTPUT.md](instructions/09-CONSOLE-OUTPUT.md)): `<1 KB → B`, `<1 MB → KB`, `<1 GB → MB`, else `GB`. Match this exactly when writing new parsers.
 - **`INA226::begin()` is strict on identity (not lenient).** Reads MFG/DIE IDs before any write and returns `false` on non-canonical chips (`!= 0x5449 / 0x2260`) without touching the chip's registers. Counterfeits at INA addresses have been observed to corrupt OTHER chips on the shared I²C bus when written to — HubFX rev hit this with a clone @ 0x40 wedging the PCA9685 @ 0x70. Boot diag still surfaces `bootMfgId()` / `bootDieId()` for the clone via `isCanonical()`. Full investigation + bisection trail in [instructions/18-HUBFX-INA-CLONE-WEDGE.md](instructions/18-HUBFX-INA-CLONE-WEDGE.md).
+- **ESP32 storage is on ESP-IDF native** (since 2026-05-26). [sfx_storage](controllers/lib/sfx_storage/) bypasses Arduino's `SD_MMC.*` / `LittleFS.*` wrappers — they wrap `fs::File` (shared-ptr semantics) which surfaced cross-task / cross-core wedges on HubFX. The ESP32 path now mounts SD via `esp_vfs_fat_sdmmc_mount("/sdcard", …)` and flash via `esp_vfs_littlefs_register({.base_path="/littlefs", .partition_label="littlefs", …})`. All file ops are POSIX (`fopen`/`fread`/`fwrite`/`opendir`/`readdir`/`stat`) wrapped by `NativeFile` (move-only RAII). Per-call thread safety comes from VFS-FAT's `FF_FS_REENTRANT=1` mutex + `esp_littlefs`'s internal lock. The storage-server file-handle alias was renamed `LFSFile` → `StorageFile` (= `NativeFile` on ESP32, = Arduino `::File` on Pico). Pico side untouched (SdFat + Arduino LittleFS). See [controllers/lib/sfx_storage/README.md](controllers/lib/sfx_storage/README.md).
 
 ## Things to avoid
 
 - Adding commands / features to [controllers/hubfx/pico/](controllers/hubfx/pico/) — frozen.
-- Raw Pico SDK / ESP-IDF calls in [controllers/lib/](controllers/lib/) — use `sfx_platform.h` macros.
+- Raw Pico SDK / ESP-IDF calls in cross-platform code under [controllers/lib/](controllers/lib/) — use `sfx_platform.h` macros. (Exception: platform-gated policy implementations, e.g. [sfx_storage/storage/esp32/](controllers/lib/sfx_storage/storage/esp32/), legitimately call native APIs inside `#if SFX_PLATFORM_ESP32`.)
 - `volatile` for any inter-core variable.
 - Returning `bool` from `*Client` command methods.
 - Global pointer + setter injection for singletons.

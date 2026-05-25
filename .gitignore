@@ -80,5 +80,9 @@ logs/
 # External tools (downloaded, not checked in)
 tools/esptool/
 
+# Generated / workspace-local artifacts
+regenerated-configs/
+.claude/
+
 # System files
 Thumbs.db

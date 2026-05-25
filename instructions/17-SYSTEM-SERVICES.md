@@ -555,7 +555,7 @@ struct FlashStorageBackend {
     static constexpr uint8_t  kDescriptorTag = 0x01;
     static constexpr const char* kName       = "flash";
 
-    using FileHandle = LFSFile;
+    using FileHandle = StorageFile;
     using Module     = FlashModule;
 
     static Module& module()           { return Module::instance(); }
