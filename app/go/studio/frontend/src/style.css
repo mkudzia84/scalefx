@@ -533,6 +533,94 @@ select.field-input { cursor: pointer; }
     font-style: italic;
 }
 
+/* ─── Description / hint typography (Rule 50, Phase 4 polish 2026-05-26)
+ *
+ * Canonical inline-description classes.  Use these — DO NOT define a
+ * local `.hint` / `.help` / `.note` / `.subtitle` in component <style>
+ * blocks (that's how `.hint` ended up 10 px in some panels, 11 px in
+ * others — Rule 34 means ONE font ladder, ONE colour ladder).
+ *
+ *   .hint           Standard inline description.  Use NEXT to a
+ *                   section header, a field row, or an op-cluster to
+ *                   explain what the section / field / control does.
+ *                   11 px italic, `--text-dim`.  Same look + feel as
+ *                   `.field-hint` (kept as an alias below for back-
+ *                   compat with global rows that already use it).
+ *   .hint.compact   10 px variant — for dense rows where vertical
+ *                   real estate is tight (e.g. inside a `.section-head`
+ *                   strip next to the title).
+ *   .hint.warn      Yellow variant — non-blocking warnings (Rule 39).
+ *                   Same italic + size; colour is `--warning`.
+ *   .hint.err       Red variant — blocking errors (Rule 35).  Same
+ *                   shape; colour is `--error`.  Pair this with the
+ *                   field-level red border / `.verify-error` outline.
+ *   .help-text      BLOCK-LEVEL multi-line guidance paragraph.  Use
+ *                   when the description sits ALONE (no inline element
+ *                   next to it) — empty-state copy, in-section
+ *                   explainers.  Same dim grey but NOT italic, regular
+ *                   weight, line-height 1.4, max-width ~70 ch for
+ *                   readability.
+ *   .unit           Unit suffix after numeric inputs (`%`, `µs`, `mV`,
+ *                   `ms`).  10 px MONO `--text-dim`.  Always sits
+ *                   immediately right of the `.field-input.narrow`.
+ *
+ * Quick visual map:
+ *
+ *   <h3>Section</h3>            ← `--text-bright`, weight 700 (heading)
+ *   <span class="hint">…</span> ← 11 px italic `--text-dim` (description)
+ *   <span class="field-label">  ← 12 px UPPERCASE `--text-dim` (form label)
+ *   <input … />                 ← 13 px mono `--text` (data entry)
+ *   <span class="unit">µs</span>← 10 px mono `--text-dim` (unit)
+ *
+ * If a description needs a SEMANTIC variant (warn / err), reach for
+ * the modifier classes above; don't invent a new colour.  All colours
+ * come from the CSS-variable ladder (`--text`, `--text-bright`,
+ * `--text-dim`, `--warning`, `--error`, `--success`) — Rule 34 again. */
+.hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-style: italic;
+    line-height: 1.35;
+}
+
+.hint.compact { font-size: 10px; }
+
+.hint.warn { color: var(--warning); }
+
+.hint.err  { color: var(--error); }
+
+.help-text {
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.4;
+    max-width: 70ch;
+    /* NOT italic — block paragraphs read better upright. */
+}
+
+.unit {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+}
+
+/* Section-head / subsection-head context resets — when `.hint` sits
+ * INSIDE a heading row (`<div class="section-head">Title <span
+ * class="hint">explainer</span></div>`), it would otherwise inherit
+ * the heading's uppercase + bold + letter-spacing.  These resets
+ * restore the description look + drop the size one notch (9 px)
+ * since the heading itself already pads the row vertically.
+ * Panels USED TO redefine these locally — Rule 50 says the global
+ * wins so every section-head reads the same across the app. */
+.section-head .hint,
+.subsection-head .hint {
+    font-size: 9px;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
 /* ─── Controls ─── */
 
 .control-row {
