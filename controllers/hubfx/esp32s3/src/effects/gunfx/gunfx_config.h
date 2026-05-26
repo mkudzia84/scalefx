@@ -64,33 +64,88 @@ struct RofItem {
 
 /// Smoke-cartridge driver: separate heater + fan, each optional.
 ///
-/// Element voltage + scaling for the heater + fan elements live ON
-/// THE ROLE LAYER (HeaterRole / DcMotorRole, configured via
-/// /hubfx.yaml's `ports[]` role-attach config) — NOT here.  The gun
-/// only sees the intent layer ("heat to T °C", "puff for X ms").
+/// The smoke spec carries the ELEMENT RATING (heaterElementMv,
+/// fanElementMv) — the rated voltage of the resistive heating wire and
+/// the rated voltage of the fan motor.  The gun service passes these
+/// down to HeaterRole / DcMotorRole at configure time; the role uses
+/// `scaleDuty()` (element_scaling.h) to translate "100 %" intent into
+/// port-native duty against the port's rail voltage.  Default 6000 mV
+/// matches the common 6 V smoke-cartridge element / 6 V fan motor.
+///
+/// (Rule 42 originally placed element ratings on the role layer alone.
+/// Phase 4 polish 2026-05-26: the smoke element is conceptually tied
+/// to the GUN that drives it, not to the physical port — moving a
+/// smoke harness to a different port shouldn't lose the element spec.
+/// We keep the role-layer setElement() path; the gun service is now
+/// the canonical source of values.)
 struct SmokeConfig {
     // ── Heater (intent-level only — duty scaling lives on the role) ──
+    //
+    // Two modes (Phase 4 polish 2026-05-26):
+    //   HM_CONTINUOUS — drive at element-scaled duty whenever the
+    //     activation gate allows.  `heaterCycleOnMs` / `heaterCycleOffMs`
+    //     are ignored in this mode.
+    //   HM_CYCLE      — duty-cycle the heater on/off at gun-layer
+    //     intervals.  When smoke is armed AND activation is high:
+    //     drive heater for `heaterCycleOnMs`, then off for
+    //     `heaterCycleOffMs`, then repeat.  Use this for power
+    //     conservation OR to limit element temperature on smoke
+    //     cartridges that can't sustain continuous drive.  No
+    //     temperature sensor needed — this is open-loop timing
+    //     managed by the gun, not by the role.
+    //
+    //   Closed-loop bang-bang (thermostatic) used to live here but was
+    //   pulled out 2026-05-26 because HubFX has no temperature sensor
+    //   on the smoke heater.  If a thermistor is wired later, the
+    //   HeaterRole's bang-bang code in heater_role.cpp is still
+    //   intact — re-introduce a `HM_BANG_BANG` value and route the
+    //   target / hyst through HEATER_SET_TARGET / HEATER_SET_ELEMENT.
     PortRef  heaterPort;                 ///< Heater role on a Pwm port (optional)
+    uint16_t heaterElementMv     = 6000; ///< rated element voltage (default 6 V)
 
     enum HeaterMode : uint8_t {
-        HM_ALWAYS_ON   = 0,              ///< role drives at its configured drivePct while armed
-        HM_BANG_BANG   = 1,              ///< toggle on temp; falls back to ALWAYS_ON without sensor
-        HM_CLOSED_LOOP = 2,              ///< delegate to HeaterRole's bang-bang PID
+        HM_CONTINUOUS = 0,               ///< drive at element-scaled duty whenever activated
+        HM_CYCLE      = 1,               ///< duty-cycle: on for cycleOnMs, off for cycleOffMs
     };
-    uint8_t  heaterMode          = HM_ALWAYS_ON;
-    int16_t  heaterTargetCx10    = 1500; ///< 150.0 °C, BANG_BANG / CLOSED_LOOP target
-    int16_t  heaterHystCx10      = 50;   ///< BANG_BANG ±5.0 °C deadband
+    uint8_t  heaterMode          = HM_CONTINUOUS;
+    uint16_t heaterCycleOnMs     = 5000; ///< CYCLE: on-phase duration (default 5 s)
+    uint16_t heaterCycleOffMs    = 3000; ///< CYCLE: off-phase duration (default 3 s)
+
+    // Heater activation channel (Rule 43, NEW 2026-05-26) —
+    // gates the heater behind a NAMED channel from /hubfx.yaml's
+    // inputs[] block.  When the activation channel reads above
+    // `heaterActivationThresholdUs` (with hysteresis), the heater
+    // is allowed to drive; when below, the heater is forced off
+    // regardless of smoke-arm state.  Empty `heaterActivationInput`
+    // means "no gating" — heater is always allowed when smoke is armed.
+    char     heaterActivationInput[kInputNameMax] = {};
+    PortRef  heaterActivationPort;                  ///< resolved at apply time
+    uint8_t  heaterActivationChannel       = 0;     ///< resolved at apply time (0-based)
+    uint16_t heaterActivationThresholdUs   = 1500;
+    uint16_t heaterActivationHysteresisUs  = 25;
 
     // ── Fan (intent-level only — duty scaling lives on the role) ─────
     PortRef  fanPort;                    ///< DcMotor role on a Pwm port (optional)
+    uint16_t fanElementMv        = 6000; ///< rated motor voltage (default 6 V)
     enum FanMode : uint8_t {
-        FN_OFF                 = 0,
-        FN_CONTINUOUS          = 1,      ///< fan runs at role's drivePct while firing
-        FN_PUFF_PER_SHOT       = 2,      ///< one `fanPuffMs` pulse per fired shot
-        FN_PUFF_ON_FIRE_ACTIVE = 3,      ///< one pulse on the rising edge of fire flag
+        FN_CONTINUOUS = 0,               ///< fan runs at 100 % of element-rated voltage while firing
+        FN_PULSE      = 1,               ///< sinusoidal envelope per shot: 50% base → 100% peak → 50% base
     };
-    uint8_t  fanMode             = FN_OFF;
-    uint16_t fanPuffMs           = 200;
+    /// "Fan disabled" is encoded by `fanPort.portKind == 0` (no fan
+    /// port bound) — every fan command in gun_unit early-returns on
+    /// that.  There's no separate `FN_OFF` enum value anymore.
+    uint8_t  fanMode             = FN_PULSE;
+    /// FN_PULSE envelope duration (Phase 4 polish 2026-05-26).  On
+    /// each shot the fan ramps from 50% (idle base) up to 100% (peak)
+    /// then back down to 50% along a sinusoidal curve:
+    ///   pct(t) = 50 + 50 * sin(π * t / fanPulseDurationMs), t∈[0, dur]
+    /// Default 100 ms matches the default ROF firing rate
+    /// (600 RPM = 100 ms / shot) so the sinusoid envelope completes
+    /// once per shot at the default cadence.  Faster ROFs collapse
+    /// adjacent envelopes (each shot resets the sinusoid clock); the
+    /// motor's inertia smooths the resulting waveform.  Operator
+    /// overrides via /gunfx.yaml's `pulse_duration_ms`.
+    uint16_t fanPulseDurationMs  = 100;
 };
 
 /// One axis (yaw or pitch) of a turret. Each axis is INDEPENDENTLY

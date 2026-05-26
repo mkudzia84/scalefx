@@ -6,7 +6,7 @@
  *     - Reads from `GunSpec` (gunfx_config.h) instead of the old GunDef
  *     - Multi-band rate-of-fire: selector channel picks the armed RofItem;
  *       out-of-band suppresses firing
- *     - Smoke fan modes (off / continuous / puff_per_shot / puff_on_fire_active)
+ *     - Smoke fan modes (continuous / puff_per_fire)
  *     - Heater driven via the HeaterRole intent API — no duty math here
  *     - Yaw + pitch axes pushed at the intent layer to ServoActuatorRole
  *       (motion shaping lives on the role — Rule 42)
@@ -17,10 +17,17 @@
 #define HUBFX_GUN_UNIT_IPP
 
 #include <Arduino.h>
+#include <cmath>                   // sinf / M_PI for FN_PULSE sinusoidal envelope
 #include <serial/roles.h>
 #include <serial/wire.h>
 #include <serial/diag_log.h>
 #include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
+
+// Rate-limit the FN_PULSE sinusoidal MOTOR_SET_PCT updates.  At 20 ms
+// (50 Hz) we get ≈5 samples across a 100 ms sinusoid — plenty smooth
+// for fan inertia, and keeps wire chatter manageable when sustained
+// firing reset-restarts the sinusoid every 100 ms.
+static constexpr uint32_t kFanUpdatePeriodMs = 20;
 
 #include "../audio_layout.h"      // HubFxLayout — named audio-channel slots
 #include "../lightfx/light_event.h"
@@ -139,10 +146,34 @@ inline void GunUnit::stopFiring() {
 }
 
 inline void GunUnit::armSmoke(bool armed) {
-    if (armed == _smokeArmed) return;
+    // OFF is ALWAYS idempotent — even if `_smokeArmed` already says
+    // "off", we re-send HEATER_SET_TARGET(INT16_MIN) + cut the fan.
+    // Rationale (2026-05-26): the Studio "Smoke OFF" button is a
+    // safety control; if the firmware state ever drifts from Studio's
+    // view (boot, re-apply, reconnect), an OFF click MUST land on the
+    // wire.  Same-state ON, on the other hand, is cheap to skip
+    // because the heater is already driving.
+    if (armed && armed == _smokeArmed) return;
     _smokeArmed = armed;
     if (_begin && _sendCtx) _begin(_sendCtx);
     if (_spec.smoke.heaterPort.portKind != 0) {
+        // HM_CYCLE arming kicks the cycle clock at the ON-phase so
+        // smoke starts immediately on Smoke-On press; the OFF-phase
+        // is scheduled `cycleOnMs` later.  HM_CONTINUOUS just calls
+        // commandHeater(true) straight through.
+        if (armed && _spec.smoke.heaterMode == SmokeConfig::HM_CYCLE) {
+            _heaterCyclePhase  = true;
+            const uint32_t onMs = _spec.smoke.heaterCycleOnMs ? _spec.smoke.heaterCycleOnMs : 1000;
+            _heaterCycleNextMs = sfx_core::EffectClock::instance().nowMs() + onMs;
+        } else if (!armed) {
+            // Clear the cycle clock so a stale schedule can't drive
+            // the heater after Smoke-Off.
+            _heaterCyclePhase  = false;
+            _heaterCycleNextMs = 0;
+        }
+        // commandHeater() ANDs `armed` with `_heaterActive` (Rule 43
+        // activation gate) — when the activation channel is below
+        // threshold the heater stays off even on armSmoke(true).
         commandHeater(armed);
     }
     // Smoke-OFF MUST cut the fan immediately regardless of mode or
@@ -155,11 +186,25 @@ inline void GunUnit::armSmoke(bool armed) {
     if (!armed && _spec.smoke.fanPort.portKind != 0) {
         commandFanPct(0);
         _fanContinuous   = false;
-        _fanPuffEndMs    = 0;
+        _fanPulseStartMs = 0;
+        _fanBurstEndMs   = 0;
         _pendingFanBurst = false;
+        _fanLastPct      = 0;
     }
     if (_commit && _sendCtx) _commit(_sendCtx);
     SFX_LOG_INFO("[gun] %u: smoke %s", _spec.id, armed ? "armed" : "off");
+}
+
+// Composed driving-state predicate (Phase 4 polish 2026-05-26).  Used
+// by the verbose-status reporter so heaterDutyPct reflects the actual
+// wire-level drive, including HM_CYCLE OFF-phase + Rule 43 activation
+// gate.  Open-loop + HM_CYCLE both honour _heaterActive at the wire
+// boundary in commandHeater(); this helper just mirrors that logic
+// for status reporting without re-sending packets.
+inline bool GunUnit::heaterDriving() const {
+    if (!_smokeArmed || !_heaterActive) return false;
+    if (_spec.smoke.heaterMode == SmokeConfig::HM_CYCLE) return _heaterCyclePhase;
+    return true;     // HM_CONTINUOUS — driving any time smokeArmed + heaterActive
 }
 
 // ─── Per-tick orchestration ─────────────────────────────────────────
@@ -181,10 +226,12 @@ inline void GunUnit::update(uint32_t nowMs, uint32_t dtMs) {
         if (_commit && _sendCtx) _commit(_sendCtx);
         _nextShotMs = nowMs + _shotIntervalMs;
         ++_shotsThisSession;
-        // FN_PUFF_PER_SHOT: pulse the fan once per shot.
-        if (_smokeArmed && _spec.smoke.fanMode == SmokeConfig::FN_PUFF_PER_SHOT) {
-            scheduleFanPuff(nowMs);
-        }
+        // Fan pulse + continuous modes are now driven by `tickFan()`,
+        // which runs every loop iteration — no per-shot puff
+        // scheduling here.  The pulse cycle is independent of bullet
+        // cadence: it runs while `_smokeArmed && _firing && mode ==
+        // FN_PULSE`, flipping fan on/off on `fanPulseOnMs` / `fanPulseOffMs`
+        // intervals.  See `tickFan()` for the scheduler.
     }
 
     // Recoil return — restore the recoil axis to its pre-jerk target.
@@ -204,6 +251,27 @@ inline void GunUnit::update(uint32_t nowMs, uint32_t dtMs) {
             }
         }
         _recoilActive = false;
+    }
+
+    // HM_CYCLE — heater duty-cycle scheduler (Phase 4 polish 2026-05-26).
+    // Gated on `_smokeArmed` so the cycle only runs when smoke is
+    // armed.  The phase clock marches independently of the Rule 43
+    // activation gate: if activation goes low mid-ON-phase, the wire
+    // command is gated off by commandHeater()'s `effective` check, but
+    // the next phase flip still happens on schedule.  Result: cycle
+    // resumes cleanly when activation returns high.
+    if (_smokeArmed
+            && _spec.smoke.heaterMode == SmokeConfig::HM_CYCLE
+            && _spec.smoke.heaterPort.portKind != 0
+            && (int32_t)(nowMs - _heaterCycleNextMs) >= 0) {
+        _heaterCyclePhase = !_heaterCyclePhase;
+        const uint32_t nextPhaseMs = _heaterCyclePhase
+            ? (_spec.smoke.heaterCycleOnMs  ? _spec.smoke.heaterCycleOnMs  : 1000)
+            : (_spec.smoke.heaterCycleOffMs ? _spec.smoke.heaterCycleOffMs : 1000);
+        _heaterCycleNextMs = nowMs + nextPhaseMs;
+        if (_begin && _sendCtx) _begin(_sendCtx);
+        commandHeater(_heaterCyclePhase);
+        if (_commit && _sendCtx) _commit(_sendCtx);
     }
 
     // Smoke fan housekeeping (puff timeouts, continuous mode start/stop).
@@ -285,6 +353,26 @@ inline void GunUnit::onPitchInputUs(uint16_t pulseUs, bool valid) {
     if (!valid) return;
     _lastPitchInputUs = pulseUs;
     _havePitchInput   = true;
+}
+
+inline void GunUnit::onHeaterActivationBoolean(bool active) {
+    if (active == _heaterActive) return;
+    _heaterActive = active;
+    // Only push wire traffic if a heater port + smoke is armed — empty
+    // configs and disarmed smoke don't need a SET_TARGET on every flick.
+    // The heater follows the AND of (_smokeArmed, _heaterActive, and
+    // HM_CYCLE phase): in HM_CYCLE we must respect the current
+    // ON/OFF phase, otherwise an activation rising edge during a
+    // cycle OFF-phase would force the heater on out-of-band.
+    if (_spec.smoke.heaterPort.portKind == 0) return;
+    const bool cycleOk = _spec.smoke.heaterMode != SmokeConfig::HM_CYCLE
+                         || _heaterCyclePhase;
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    commandHeater(_smokeArmed && cycleOk);
+    if (_commit && _sendCtx) _commit(_sendCtx);
+    SFX_LOG_INFO("[gun] %u: heater activation %s (smoke=%s)",
+                 _spec.id, active ? "ON" : "off",
+                 _smokeArmed ? "armed" : "off");
 }
 
 // ─── Manual override ────────────────────────────────────────────────
@@ -369,6 +457,16 @@ inline void GunUnit::doShot() {
         _recoilReturnAtMs = sfx_core::EffectClock::instance().nowMs()
                           + _spec.recoilHoldMs;
     }
+    // FN_PULSE — restart the sinusoidal envelope clock on every shot.
+    // tickFan() reads _fanPulseStartMs to compute the current sample
+    // along the 50% → 100% → 50% curve.  Resetting here means
+    // sustained fire keeps the envelope "alive" with each shot
+    // re-kicking the rise; the motor's inertia smooths the resulting
+    // waveform when shots come faster than the envelope's duration.
+    if (_smokeArmed && _spec.smoke.fanMode == SmokeConfig::FN_PULSE
+            && _spec.smoke.fanPort.portKind != 0) {
+        _fanPulseStartMs = sfx_core::EffectClock::instance().nowMs();
+    }
     // Visual-only broadcast — the audio path lives on a separate
     // `_audio` callback (started by fireOnce/startFiring, stopped by
     // stopFiring) so the looping shot WAV during sustained fire isn't
@@ -430,20 +528,27 @@ inline void GunUnit::commandHeater(bool on) {
     if (!_send) return;
     if (_spec.smoke.heaterPort.portKind == 0) return;
 
-    // Intent-level: set target temperature for the heater role.  Voltage
-    // scaling + bang-bang logic lives in HeaterRole (Phase 2 — element
-    // scaling on the role layer).  Off = INT16_MIN sentinel.
-    int16_t target;
-    if (!on) {
-        target = INT16_MIN;
-    } else if (_spec.smoke.heaterMode == SmokeConfig::HM_ALWAYS_ON) {
-        // ALWAYS_ON: pick a target high enough that the bang-bang gate
-        // is permanently below it. The role's open-loop path (no temp
-        // sensor) treats any non-sentinel target as "drive at drivePct".
-        target = _spec.smoke.heaterTargetCx10 > 0 ? _spec.smoke.heaterTargetCx10 : 1500;
-    } else {
-        target = _spec.smoke.heaterTargetCx10;
-    }
+    // Activation-gate AND (Rule 43 named-channel, Phase 4 polish
+    // 2026-05-26).  When the heater activation channel reads below its
+    // threshold the heater stays off regardless of smoke-arm state.
+    // Empty `heaterActivationInput` ⇒ `_heaterActive` is initialised
+    // to true and never changes ("always allowed").
+    const bool effective = on && _heaterActive;
+
+    // Open-loop on/off.  HubFX has no temperature sensor wired to the
+    // smoke heater, so HEATER_SET_TARGET toggles between INT16_MIN
+    // (off) and an arbitrary non-sentinel value (on) — the role's
+    // open-loop path treats any non-sentinel target as "drive at
+    // drivePct" and applies voltage scaling (Rule 42 / scaleDuty())
+    // against the port rail using the element_mv we pushed via
+    // HEATER_SET_ELEMENT at configure time.  The literal "1" carries
+    // no temperature meaning; it's just != INT16_MIN.
+    //
+    // HM_CYCLE mode toggles `on` between true and false at the gun
+    // layer (see `update()`); each transition lands here and produces
+    // the same INT16_MIN / non-sentinel pair.  The role doesn't need
+    // to know it's being cycled.
+    const int16_t target = effective ? int16_t(1) : INT16_MIN;
     uint8_t payload[3];
     payload[0] = _spec.smoke.heaterPort.portIdx;
     SfxWire::putU16LE(&payload[1], static_cast<uint16_t>(target));
@@ -473,69 +578,136 @@ inline void GunUnit::commandServoTargetUs(const PortRef& port, uint16_t us) {
 }
 
 // ─── Fan scheduling ─────────────────────────────────────────────────
+//
+// Phase 4 polish 2026-05-26: fan modes are {continuous, pulse}.
+//   FN_CONTINUOUS — fan runs at 100% while `_smokeArmed && _firing`.
+//   FN_PULSE      — sinusoidal envelope: 50% base while firing+armed,
+//                   ramps to 100% and back over `fanPulseDurationMs`
+//                   on each shot event (doShot() resets the start
+//                   clock).  When idle (no shots within the last
+//                   envelope duration) → holds 50% base.  When NOT
+//                   firing → fan off.
+//
+//   pct(t) = 50 + 50 * sin(π * t / fanPulseDurationMs), t ∈ [0, dur]
+//   →  t=0           pct = 50  (base / start of envelope)
+//   →  t=dur/2       pct = 100 (peak)
+//   →  t=dur         pct = 50  (back to base; envelope done)
+//
+// Sustained fire that resets the clock faster than the envelope
+// completes (e.g. 600 RPM = 100 ms period with default 100 ms
+// duration) collapses into a perpetually-rising → peak → slightly-
+// falling → reset waveform.  The motor's inertia smooths abrupt
+// resets visually.
+//
+// _fanBurstEndMs handles the manual operator burst (puppet mode)
+// independently of the mode scheduler — bypasses the smoke-armed +
+// firing gate so the operator can verify the fan in isolation.
 
 inline void GunUnit::scheduleFanPuff(uint32_t nowMs) {
+    // Manual one-shot burst (GUN_MANUAL_SET FAN_BURST path).  Drives
+    // the fan at 100% for `fanPulseDurationMs` and auto-cuts via
+    // `_fanBurstEndMs`.  Bypasses the smoke-armed + firing gate.
     if (_spec.smoke.fanPort.portKind == 0) return;
-    // Smoke-fan invariant: ON only when smoke is armed AND the gun is
-    // actively firing (or in the act of firing — single-shot pulses
-    // come through the manual `_pendingFanBurst` path which is
-    // operator-driven and bypasses this gate).  Mode-driven puffs
-    // (FN_PUFF_PER_SHOT, FN_PUFF_ON_FIRE_ACTIVE) all flow through
-    // here, so this single guard covers every automatic path.
-    if (!_smokeArmed || !_firing) return;
-    const uint16_t ms = _spec.smoke.fanPuffMs ? _spec.smoke.fanPuffMs : 200;
+    const uint16_t ms = _spec.smoke.fanPulseDurationMs ? _spec.smoke.fanPulseDurationMs : 100;
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandFanPct(100);
     if (_commit && _sendCtx) _commit(_sendCtx);
-    _fanPuffEndMs = nowMs + ms;
+    _fanLastPct = 100;
+    _fanLastUpdateMs = nowMs;
+    _fanBurstEndMs = nowMs + ms;
+}
+
+// Helper: send commandFanPct only when (a) the value changed
+// (rounded to integer %), or (b) we're past the rate-limit window.
+// Sinusoidal updates land at ~50 Hz; constant base / off skip the
+// wire entirely once the value is set.
+inline void GunUnit::sendFanPctIfChanged(uint8_t pct, uint32_t nowMs) {
+    if (pct == _fanLastPct) return;
+    if (nowMs - _fanLastUpdateMs < kFanUpdatePeriodMs && _fanLastPct != 255) return;
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    commandFanPct(pct);
+    if (_commit && _sendCtx) _commit(_sendCtx);
+    _fanLastPct = pct;
+    _fanLastUpdateMs = nowMs;
 }
 
 inline void GunUnit::tickFan(uint32_t nowMs) {
     if (_spec.smoke.fanPort.portKind == 0) return;
 
-    // Pending operator-driven manual burst (GUN_MANUAL_SET FAN_BURST flag).
-    // This BYPASSES the smoke-armed + firing gate because puppet mode
-    // is explicitly an operator override — the test panel uses it to
-    // verify the fan independent of the rest of the state machine.
-    // The puff still auto-turns-off via `_fanPuffEndMs` below.
+    // (1) Pending operator-driven manual burst (GUN_MANUAL_SET
+    //     FAN_BURST flag).  Bypasses the smoke-armed + firing gate
+    //     so the operator can test the fan in puppet mode.  Burst
+    //     auto-cuts via _fanBurstEndMs below.
     if (_pendingFanBurst) {
         _pendingFanBurst = false;
-        const uint16_t ms = _spec.smoke.fanPuffMs ? _spec.smoke.fanPuffMs : 200;
-        if (_begin && _sendCtx) _begin(_sendCtx);
-        commandFanPct(100);
-        if (_commit && _sendCtx) _commit(_sendCtx);
-        _fanPuffEndMs = nowMs + ms;
+        scheduleFanPuff(nowMs);
         return;
     }
-
-    // Puff timeout — turn fan off after `fanPuffMs`.
-    if (_fanPuffEndMs && (int32_t)(nowMs - _fanPuffEndMs) >= 0) {
-        _fanPuffEndMs = 0;
+    if (_fanBurstEndMs && (int32_t)(nowMs - _fanBurstEndMs) >= 0) {
+        _fanBurstEndMs = 0;
         if (_begin && _sendCtx) _begin(_sendCtx);
         commandFanPct(0);
         if (_commit && _sendCtx) _commit(_sendCtx);
+        _fanLastPct = 0;
+        _fanLastUpdateMs = nowMs;
+    }
+    if (_fanBurstEndMs) return;     // burst still running — skip the mode scheduler
+
+    // (2) Smoke-fan invariant: ON only when `_smokeArmed && _firing`.
+    //     When this AND is false, every mode collapses to "fan off"
+    //     and any in-flight envelope clock is cleared.
+    const bool fanShouldRun = _smokeArmed && _firing;
+
+    // (3) Continuous mode — edge-driven set/clear.
+    if (_spec.smoke.fanMode == SmokeConfig::FN_CONTINUOUS) {
+        if (fanShouldRun != _fanContinuous) {
+            _fanContinuous = fanShouldRun;
+            if (_begin && _sendCtx) _begin(_sendCtx);
+            commandFanPct(fanShouldRun ? 100 : 0);
+            if (_commit && _sendCtx) _commit(_sendCtx);
+            _fanLastPct = fanShouldRun ? 100 : 0;
+            _fanLastUpdateMs = nowMs;
+        }
+        return;
     }
 
-    // Continuous mode + fire-active edges (Rule 2026-05-24 invariant:
-    // fan ON only when `_smokeArmed && _firing`).  The triple gate
-    // here is the authoritative check for FN_CONTINUOUS; mode-driven
-    // puffs (FN_PUFF_PER_SHOT, FN_PUFF_ON_FIRE_ACTIVE) flow through
-    // `scheduleFanPuff()` which carries the same gate.
-    const bool wantContinuous =
-        _smokeArmed && _spec.smoke.fanMode == SmokeConfig::FN_CONTINUOUS && _firing;
-    if (wantContinuous != _fanContinuous) {
-        _fanContinuous = wantContinuous;
-        if (_begin && _sendCtx) _begin(_sendCtx);
-        commandFanPct(wantContinuous ? 100 : 0);
-        if (_commit && _sendCtx) _commit(_sendCtx);
-    }
+    // (4) Pulse mode — sinusoidal envelope at 50% base, peaking to
+    //     100% on each shot.  Off entirely when not firing+armed.
+    if (_spec.smoke.fanMode == SmokeConfig::FN_PULSE) {
+        if (!fanShouldRun) {
+            // Idle: fan off, clear envelope clock.
+            _fanPulseStartMs = 0;
+            if (_fanLastPct != 0) {
+                if (_begin && _sendCtx) _begin(_sendCtx);
+                commandFanPct(0);
+                if (_commit && _sendCtx) _commit(_sendCtx);
+                _fanLastPct = 0;
+                _fanLastUpdateMs = nowMs;
+            }
+            return;
+        }
 
-    // FN_PUFF_ON_FIRE_ACTIVE — one pulse on the rising edge of _firing.
-    // Tracked here via continuous-edge detection; the rising edge is
-    // when _firing becomes true. The actual scheduleFanPuff happens in
-    // startFiring() when fanMode matches.
-    // (Implemented inline above in update() via the same path as
-    // PUFF_PER_SHOT — re-evaluated when needed.)
+        const uint16_t dur = _spec.smoke.fanPulseDurationMs
+                                ? _spec.smoke.fanPulseDurationMs : 100;
+        uint8_t pct;
+        if (_fanPulseStartMs == 0
+                || (int32_t)(nowMs - _fanPulseStartMs) >= (int32_t)dur) {
+            // No envelope in flight (just-fired before doShot kicks
+            // the clock) OR previous envelope completed — sit at the
+            // 50% base level.
+            _fanPulseStartMs = 0;
+            pct = 50;
+        } else {
+            // Sinusoidal envelope: pct = 50 + 50 * sin(π * t / dur).
+            const uint32_t elapsed = nowMs - _fanPulseStartMs;
+            const float t = float(elapsed) / float(dur);     // 0..1
+            const float val = 50.0f + 50.0f * sinf(float(M_PI) * t);
+            const int    clamped = (val < 0.0f) ? 0 : (val > 100.0f) ? 100 : int(val + 0.5f);
+            pct = uint8_t(clamped);
+        }
+        sendFanPctIfChanged(pct, nowMs);
+        return;
+    }
 }
 
 // ─── Axis tick ──────────────────────────────────────────────────────

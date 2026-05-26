@@ -87,8 +87,48 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::claimPorts() {
             _topo->claim(s.yaw.servoPort, EffectId::GunFx, RoleKind::ServoActuator);
         if (s.pitch.enabled && s.pitch.servoPort.portKind != 0)
             _topo->claim(s.pitch.servoPort, EffectId::GunFx, RoleKind::ServoActuator);
-        // Input ports (trigger / ROF selector / yaw input / pitch input)
-        // are shareable — no exclusive claim.
+        // Input ports (trigger / ROF selector / yaw input / pitch input /
+        // heater activation) are shareable — no exclusive claim.
+
+        // Phase 4 polish 2026-05-26: push the gun-spec's element
+        // voltages into the smoke heater / fan roles via Rule 42's
+        // intent surface.  Rationale: the smoke heater + fan elements
+        // are conceptually tied to the GUN that drives them (a 6 V
+        // smoke cartridge + 6 V fan paired with each gun), not to the
+        // physical port — moving the harness to a different port
+        // shouldn't lose the element spec.  We send to the role layer
+        // via HEATER_SET_ELEMENT / MOTOR_SET_ELEMENT so the role's
+        // scaleDuty() honours the rating against the port rail.
+        if (s.smoke.heaterPort.portKind != 0 && s.smoke.heaterElementMv > 0) {
+            // HEATER_SET_ELEMENT payload: [portIdx][elementMv:u16LE][scaling:u8][drivePct:u8][hyst_cx10:i16LE]
+            // The GunFx layer no longer carries `hyst_cx10` (bang-bang
+            // closed-loop dropped 2026-05-26 — see SmokeConfig).  The
+            // role's open-loop drive path ignores hyst, so we send a
+            // defensive 50 (5.0 °C) constant here in case a temp
+            // sensor is bound to the role later and the role's
+            // bang-bang code activates.  If/when the GunFx config
+            // re-exposes a bang-bang mode (target + hyst), wire those
+            // through here.
+            uint8_t payload[7];
+            payload[0] = s.smoke.heaterPort.portIdx;
+            SfxWire::putU16LE(&payload[1], s.smoke.heaterElementMv);
+            payload[3] = 1;                      // ElementScalingMode::Linear (resistive heater default)
+            payload[4] = 100;                    // drivePct — gun runs the heater at 100 % of element rated voltage
+            SfxWire::putI16LE(&payload[5], int16_t(50));
+            _topo->sendRoleCommand(s.smoke.heaterPort,
+                                   RolePacket::HEATER_SET_ELEMENT,
+                                   payload, sizeof(payload));
+        }
+        if (s.smoke.fanPort.portKind != 0 && s.smoke.fanElementMv > 0) {
+            // MOTOR_SET_ELEMENT payload: [portIdx][elementMv:u16LE][scaling:u8]
+            uint8_t payload[4];
+            payload[0] = s.smoke.fanPort.portIdx;
+            SfxWire::putU16LE(&payload[1], s.smoke.fanElementMv);
+            payload[3] = 1;                      // Linear scaling for the DC motor
+            _topo->sendRoleCommand(s.smoke.fanPort,
+                                   RolePacket::MOTOR_SET_ELEMENT,
+                                   payload, sizeof(payload));
+        }
     }
 }
 
@@ -128,7 +168,30 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::subscribePerGunIn
                                    s.rofSelectorPort, s.rofSelectorChannel);
         }
 
-        // 3 + 4. Yaw / pitch input channels — Raw.
+        // 3. Heater activation — Boolean (Rule 43 named-channel,
+        // Phase 4 polish 2026-05-26).  When the activation channel is
+        // unbound (`heaterActivationPort.portKind == 0`) we skip the
+        // subscribe; gun_unit's `_heaterActive` defaults to true so the
+        // heater is permanently allowed in that case (legacy behaviour).
+        if (s.smoke.heaterActivationPort.portKind != 0) {
+            _inputCtx[i][(uint8_t)TrigKind::HeaterAct] = { this, i, TrigKind::HeaterAct };
+            input::TriggerMapping m;
+            m.kind         = input::TriggerKind::Boolean;
+            m.thresholdUs  = s.smoke.heaterActivationThresholdUs;
+            m.hysteresisUs = s.smoke.heaterActivationHysteresisUs;
+            // Failsafe: ForceLow → loss of signal disables the heater.
+            // Far safer than `Hold` here — a fail-on heater could melt
+            // the smoke cartridge if the operator's RC link drops.
+            m.failsafe     = input::FailsafeBehaviour::ForceLow;
+            _triggers[i][(uint8_t)TrigKind::HeaterAct].configure(m,
+                &GunFxServicePolicyT::inputChangeTrampoline,
+                static_cast<void*>(&_inputCtx[i][(uint8_t)TrigKind::HeaterAct]));
+            _dispatcher->subscribe(&_triggers[i][(uint8_t)TrigKind::HeaterAct],
+                                   s.smoke.heaterActivationPort,
+                                   s.smoke.heaterActivationChannel);
+        }
+
+        // 4 + 5. Yaw / pitch input channels — Raw.
         if (s.yaw.enabled && s.yaw.inputPort.portKind != 0) {
             _inputCtx[i][(uint8_t)TrigKind::Yaw] = { this, i, TrigKind::Yaw };
             input::TriggerMapping m;
@@ -337,8 +400,9 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::emitVerboseStatus
 
     // 26-byte fixed layout — matches DecodeVerboseStatus in
     // app/go/protocol/gunfx/gunfx.go (see gunfx_protocol.h for the
-    // field map). The trailing 0 byte is reserved padding (keeps the
-    // size at 26 B; future fields land here without a wire bump).
+    // field map).  Byte [25] was originally reserved padding; Phase 4
+    // polish 2026-05-26 promoted it to `heaterActive` (Rule 43 gate
+    // state).  Old Studio binaries ignored that byte — Rule 11 safe.
     uint8_t buf[26] = {};
     size_t  off = 0;
     buf[off++] = u.id();
@@ -348,7 +412,14 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::emitVerboseStatus
     // Smoke fan running — real state read from GunUnit::fanRunning()
     // (Phase 2.9.x — replaces the (smokeArmed && firing) stopgap).
     buf[off++] = u.fanRunning() ? 1 : 0;
-    buf[off++] = 0;                                            // heater duty %
+    // Heater intent % — 100 when the heater is actually being driven
+    // on the wire, 0 otherwise.  `heaterDriving()` composes smokeArmed
+    // + Rule 43 activation gate + (for HM_CYCLE) the current cycle
+    // phase, so Studio's "heating" pill reflects cycle OFF-phases as
+    // dim/idle instead of mistakenly showing armed-but-not-driving as
+    // hot.  The role layer applies scaleDuty() to translate this
+    // intent into a port-native duty against the port rail.
+    buf[off++] = u.heaterDriving() ? uint8_t(100) : uint8_t(0);
     SfxWire::putI16LE(&buf[off], (int16_t)0x7FFF); off += 2;    // heater temp = no sensor
     SfxWire::putU16LE(&buf[off], u.yawCurrentUs());   off += 2;
     SfxWire::putU16LE(&buf[off], u.yawTargetUs());    off += 2;
@@ -370,7 +441,12 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::emitVerboseStatus
     buf[off++] = (uint8_t)(shots >> 8);
     buf[off++] = (uint8_t)(shots >> 16);
     buf[off++] = (uint8_t)(shots >> 24);
-    // off should be 25 here; buf[25] stays 0 (reserved padding).
+    // [25] heaterActive — the Rule 43 activation gate state.  True
+    // when the activation channel reads above its threshold (or when
+    // no activation channel is bound at all — `_heaterActive` defaults
+    // to true).  Studio uses this to distinguish "smoke armed +
+    // heating" from "smoke armed but gated off by RC".
+    buf[off++] = u.heaterActive() ? 1 : 0;
 
     _ctx->sendRawPacket(GunPacket::GUN_VERBOSE_STATUS,
                         SfxWire::TAG_ASYNC, buf, sizeof(buf));
@@ -498,6 +574,11 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::inputChangeTrampo
         case TrigKind::Pitch:
             if (v.kind == input::TriggerKind::Raw) {
                 u.onPitchInputUs(v.us, v.valid);
+            }
+            break;
+        case TrigKind::HeaterAct:
+            if (v.kind == input::TriggerKind::Boolean) {
+                u.onHeaterActivationBoolean(v.b);
             }
             break;
         default: break;

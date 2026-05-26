@@ -43,13 +43,19 @@
  *         smoke:
  *           heater:
  *             port: { kind: pwm, idx: 1 }
- *             mode: bang_bang     # always_on | bang_bang | closed_loop
- *             target_cx10: 1500
- *             hyst_cx10:   50
+ *             element_mv: 6000    # rated element voltage (default 6 V)
+ *             mode: continuous    # continuous | cycle
+ *             cycle_on_ms:  5000  # cycle: heater on-phase duration
+ *             cycle_off_ms: 3000  # cycle: heater off-phase duration
+ *             activation:         # Rule 43 — optional named-channel gate
+ *               input: smoke_arm
+ *               threshold_us:  1500
+ *               hysteresis_us: 25
  *           fan:
  *             port: { kind: pwm, idx: 2 }
- *             mode: puff_per_shot # off | continuous | puff_per_shot | puff_on_fire_active
- *             puff_ms: 200
+ *             element_mv: 6000    # rated motor voltage (default 6 V)
+ *             mode: pulse         # continuous | pulse (sinusoidal envelope, 50% base → 100% peak per shot)
+ *             pulse_duration_ms: 100  # one sinusoid lasts this long; default 100 ms = 600 RPM period
  *         yaw:
  *           enabled: true
  *           servo_port: { kind: servo, idx: 1 }
@@ -103,23 +109,20 @@ struct GunFxYamlConfig {
 
 inline uint8_t gunfxHeaterModeFromName(const char* s) {
     using namespace hubfx::effects::gunfx;
-    if (!s || !s[0])                          return SmokeConfig::HM_ALWAYS_ON;
-    if (std::strcmp(s, "always_on")   == 0)   return SmokeConfig::HM_ALWAYS_ON;
-    if (std::strcmp(s, "bang_bang")   == 0)   return SmokeConfig::HM_BANG_BANG;
-    if (std::strcmp(s, "closed_loop") == 0)   return SmokeConfig::HM_CLOSED_LOOP;
-    SFX_LOG_WARN("[gunfx-config] heater mode '%s' unknown — defaulting to always_on", s);
-    return SmokeConfig::HM_ALWAYS_ON;
+    if (!s || !s[0])                          return SmokeConfig::HM_CONTINUOUS;
+    if (std::strcmp(s, "continuous")  == 0)   return SmokeConfig::HM_CONTINUOUS;
+    if (std::strcmp(s, "cycle")       == 0)   return SmokeConfig::HM_CYCLE;
+    SFX_LOG_WARN("[gunfx-config] heater mode '%s' unknown — defaulting to continuous", s);
+    return SmokeConfig::HM_CONTINUOUS;
 }
 
 inline uint8_t gunfxFanModeFromName(const char* s) {
     using namespace hubfx::effects::gunfx;
-    if (!s || !s[0])                                   return SmokeConfig::FN_OFF;
-    if (std::strcmp(s, "off")                  == 0)   return SmokeConfig::FN_OFF;
-    if (std::strcmp(s, "continuous")           == 0)   return SmokeConfig::FN_CONTINUOUS;
-    if (std::strcmp(s, "puff_per_shot")        == 0)   return SmokeConfig::FN_PUFF_PER_SHOT;
-    if (std::strcmp(s, "puff_on_fire_active")  == 0)   return SmokeConfig::FN_PUFF_ON_FIRE_ACTIVE;
-    SFX_LOG_WARN("[gunfx-config] fan mode '%s' unknown — defaulting to off", s);
-    return SmokeConfig::FN_OFF;
+    if (!s || !s[0])                                  return SmokeConfig::FN_PULSE;
+    if (std::strcmp(s, "continuous")          == 0)   return SmokeConfig::FN_CONTINUOUS;
+    if (std::strcmp(s, "pulse")               == 0)   return SmokeConfig::FN_PULSE;
+    SFX_LOG_WARN("[gunfx-config] fan mode '%s' unknown — defaulting to pulse", s);
+    return SmokeConfig::FN_PULSE;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -226,16 +229,48 @@ inline bool parseGunSpec(const YamlNode* gn, hubfx::effects::gunfx::GunSpec& g) 
     if (const auto* sn = gn->child("smoke")) {
         if (const auto* hn = sn->child("heater")) {
             g.smoke.heaterPort       = portRefFromNode(hn->child("port"));
-            g.smoke.heaterMode       = gunfxHeaterModeFromName(
-                hn->childAs<const char*>("mode", "always_on"));
-            g.smoke.heaterTargetCx10 = (int16_t)hn->childAs<int32_t>("target_cx10", 1500);
-            g.smoke.heaterHystCx10   = (int16_t)hn->childAs<int32_t>("hyst_cx10",   50);
+            // Element voltage (Phase 4 polish 2026-05-26 — Rule 42):
+            // the gun spec carries the heating-element rated voltage so
+            // the role's scaleDuty() can translate "100 % intent" into
+            // a safe port-native duty against the port rail.
+            g.smoke.heaterElementMv  = (uint16_t)hn->childAs<int32_t>("element_mv", 6000);
+            // Heater mode + cycle timing (Phase 4 polish 2026-05-26).
+            // Mode defaults to continuous; cycle ON/OFF only matter
+            // when mode = cycle.
+            g.smoke.heaterMode        = gunfxHeaterModeFromName(
+                hn->childAs<const char*>("mode", "continuous"));
+            g.smoke.heaterCycleOnMs   = (uint16_t)hn->childAs<int32_t>("cycle_on_ms",  5000);
+            g.smoke.heaterCycleOffMs  = (uint16_t)hn->childAs<int32_t>("cycle_off_ms", 3000);
+            // Heater activation channel (Rule 43, NEW 2026-05-26):
+            // optional NAMED channel that gates the heater behind an RC
+            // input.  Resolution to port+channel happens in
+            // applyGunFxConfig.  Empty/missing block = "no gating".
+            if (const auto* an = hn->child("activation")) {
+                const char* ainp = an->childAs<const char*>("input", "");
+                std::memset(g.smoke.heaterActivationInput, 0,
+                            sizeof(g.smoke.heaterActivationInput));
+                if (ainp && ainp[0]) {
+                    std::strncpy(g.smoke.heaterActivationInput, ainp,
+                                 sizeof(g.smoke.heaterActivationInput) - 1);
+                }
+                g.smoke.heaterActivationThresholdUs  = (uint16_t)an->childAs<int32_t>("threshold_us",  1500);
+                g.smoke.heaterActivationHysteresisUs = (uint16_t)an->childAs<int32_t>("hysteresis_us", 25);
+            }
         }
         if (const auto* fn = sn->child("fan")) {
             g.smoke.fanPort  = portRefFromNode(fn->child("port"));
             g.smoke.fanMode  = gunfxFanModeFromName(
-                fn->childAs<const char*>("mode", "off"));
-            g.smoke.fanPuffMs = (uint16_t)fn->childAs<int32_t>("puff_ms", 200);
+                fn->childAs<const char*>("mode", "pulse"));
+            // FN_PULSE sinusoid envelope length per shot.  Default
+            // 100 ms matches the 600 RPM ROF default firing rate so
+            // the sinusoid completes once per shot at the default
+            // cadence (operator dials in pulse_duration_ms to match
+            // a custom ROF).
+            g.smoke.fanPulseDurationMs = (uint16_t)fn->childAs<int32_t>("pulse_duration_ms", 100);
+            // Element voltage for the fan motor (same intent as heater
+            // above — gun owns the spec because the smoke harness
+            // travels with the gun, not the port).
+            g.smoke.fanElementMv = (uint16_t)fn->childAs<int32_t>("element_mv", 6000);
         }
     }
 

@@ -18,7 +18,7 @@
  *     - LED_QUEUE_LOAD + LED_START on the muzzle-flash port
  *     - SERVO_SET_TARGET on the recoil servo (jerk position, return
  *       scheduled `recoilHoldMs` later)
- *     - One fan pulse if `smoke.fanMode == FN_PUFF_PER_SHOT`
+ *     - One fan pulse if `smoke.fanMode == FN_PUFF_PER_FIRE`
  *     - ShotEvent callback (audio + wire async)
  *
  *   Yaw + pitch run as one-line passthroughs: read input channel →
@@ -126,10 +126,13 @@ public:
     uint8_t  id()           const { return _spec.id; }
     bool     firing()       const { return _firing; }
     bool     smokeArmed()   const { return _smokeArmed; }
-    /// True when the smoke fan is currently being driven — either in a
-    /// puff pulse (puff modes) or held continuously (FN_CONTINUOUS).
-    /// Read by the verbose-status producer.
-    bool     fanRunning()   const { return _fanContinuous || _fanPuffEndMs != 0; }
+    /// True when the smoke fan is currently being driven on the wire
+    /// (continuous mode = `_fanContinuous`; pulse mode = last sent
+    /// pct != 0; manual burst = `_fanBurstEndMs` non-zero).  Read by
+    /// the verbose-status producer for the Studio mirror.
+    bool     fanRunning()   const {
+        return _fanContinuous || _fanBurstEndMs != 0 || (_fanLastPct != 0 && _fanLastPct != 255);
+    }
     uint8_t  rofIndex()     const { return _activeRofIndex; }
     uint16_t triggerUs()    const { return _lastTriggerUs; }
     uint16_t rofSelectorUs() const { return _lastRofSelectorUs; }
@@ -179,6 +182,22 @@ public:
     /// Forwarded for yaw / pitch axis input channels (Raw µs).
     void onYawInputUs(uint16_t pulseUs, bool valid);
     void onPitchInputUs(uint16_t pulseUs, bool valid);
+    /// Forwarded by the service when the heater-activation channel
+    /// crosses its configured threshold (Rule 43 named-channel, Boolean
+    /// dispatch).  When active==false the heater is forced off
+    /// regardless of `_smokeArmed`; on the rising edge we re-issue
+    /// HEATER_SET_TARGET if smoke is still armed.  Unbound (no
+    /// activation channel configured) ⇒ permanently active.
+    void onHeaterActivationBoolean(bool active);
+    bool heaterActive() const { return _heaterActive; }
+
+    /// True when the heater is currently being driven on the wire.
+    /// Composes (a) smoke armed, (b) Rule 43 activation gate high,
+    /// (c) for HM_CYCLE: currently in the ON-phase.  The verbose
+    /// status broadcast reads this for `heaterDutyPct` so the Studio
+    /// mirror reflects cycle phase + activation gate state, not just
+    /// the smoke-armed flag.
+    bool heaterDriving() const;
 
     // ── Manual override ──────────────────────────────────────────────
 
@@ -213,6 +232,11 @@ private:
 
     void scheduleFanPuff(uint32_t nowMs);
     void tickFan(uint32_t nowMs);
+    /// FN_PULSE rate-limited fan PCT update.  Sends MOTOR_SET_PCT only
+    /// when (a) the integer % changed since the last send, AND (b) at
+    /// least `kFanUpdatePeriodMs` (≈20 ms) has elapsed.  Caps the
+    /// sinusoid's wire chatter at ~50 Hz regardless of main-loop rate.
+    void sendFanPctIfChanged(uint8_t pct, uint32_t nowMs);
     // Phase 2.9: ServoActuatorRole owns the motion profile; the gun
     // just pushes a target each tick.  `lastCommandedRef` carries the
     // last value we wrote so we suppress redundant SERVO_SET_TARGET
@@ -245,9 +269,55 @@ private:
     uint16_t     _lastTriggerUs    = 0;
 
     // Smoke fan state.
-    uint32_t     _fanPuffEndMs     = 0;     ///< 0 = fan idle, else "fan off at this time"
-    bool         _fanContinuous    = false; ///< true while FN_CONTINUOUS + firing
+    //   _fanContinuous     = true while FN_CONTINUOUS is actively driving
+    //                        the fan (smoke armed + firing).  Edge-toggles
+    //                        commandFanPct() so the wire stays quiet on
+    //                        stable input.
+    //   _fanPulseStartMs   = nowMs at which the current sinusoidal
+    //                        envelope started (FN_PULSE only).  Each
+    //                        shot resets this to nowMs so the fan
+    //                        ramps fresh on every trigger event.
+    //                        0 = no envelope in flight (idle at 50% base).
+    //   _fanLastPct        = last commandFanPct() value sent (0..100),
+    //                        or 255 if unset.  Used to suppress
+    //                        duplicate wire packets when the sinusoid
+    //                        rounds to the same integer two ticks in
+    //                        a row.
+    //   _fanLastUpdateMs   = nowMs of the last MOTOR_SET_PCT send.
+    //                        Used to rate-limit sinusoidal updates to
+    //                        ~50 Hz (kFanUpdatePeriodMs below).
+    //   _pendingFanBurst   = manual one-shot burst flag (operator-driven
+    //                        via GUN_MANUAL_SET FAN_BURST).
+    //   _fanBurstEndMs     = end-time of the operator's manual burst
+    //                        (0 if no burst in flight).
+    bool         _fanContinuous    = false;
+    uint32_t     _fanPulseStartMs  = 0;
+    uint8_t      _fanLastPct       = 255;
+    uint32_t     _fanLastUpdateMs  = 0;
+    uint32_t     _fanBurstEndMs    = 0;     ///< 0 = no burst pending, else "fan off at this time"
     bool         _pendingFanBurst  = false; ///< one-shot manual fan burst request
+
+    // Heater activation gate (Rule 43 named-channel, Phase 4 polish
+    // 2026-05-26). Defaults to true so guns without a heaterActivationInput
+    // configured drive the heater whenever it is `_smokeArmed`. The
+    // service installs a callback during subscribePerGunInputs when an
+    // activation channel IS bound; the dispatcher then toggles this
+    // flag and we re-issue HEATER_SET_TARGET on each transition.
+    bool         _heaterActive     = true;
+
+    // Heater cycle scheduling (HM_CYCLE mode, Phase 4 polish 2026-05-26).
+    // `_heaterCyclePhase` = true → currently in the ON-phase (heater
+    // commanded on); false → OFF-phase (heater commanded off).
+    // `_heaterCycleNextMs` = nowMs threshold at which the phase flips.
+    // Only consulted when `_smokeArmed && spec.smoke.heaterMode == HM_CYCLE`;
+    // cleared on armSmoke(false).  The cycle clock marches independently
+    // of the Rule 43 activation gate — if activation is low during the
+    // ON-phase, commandHeater() still gates the wire-out to OFF via
+    // `effective = on && _heaterActive`, but the phase timer keeps
+    // ticking so the next ON-phase resumes cleanly when activation
+    // returns high.
+    uint32_t     _heaterCycleNextMs = 0;
+    bool         _heaterCyclePhase  = false;
 
     // Axis state.  Phase 2.9: motion lives on the ServoActuatorRole;
     // we only track input + last commanded target here.

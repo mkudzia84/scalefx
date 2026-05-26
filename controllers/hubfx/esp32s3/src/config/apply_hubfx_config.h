@@ -352,10 +352,15 @@ void applyGunFxConfig(TBoard& board, const GunFxYamlConfig& cfg,
     };
     for (uint8_t i = 0; i < resolved.numGuns; ++i) {
         auto& g = resolved.guns[i];
-        resolveInput(g.triggerInput,       g.triggerPort,       g.triggerChannel,       "trigger.input",      g.id);
-        resolveInput(g.rofSelectorInput,   g.rofSelectorPort,   g.rofSelectorChannel,   "rof.input",          g.id);
-        resolveInput(g.yaw.inputName,      g.yaw.inputPort,     g.yaw.inputChannel,     "yaw.input",          g.id);
-        resolveInput(g.pitch.inputName,    g.pitch.inputPort,   g.pitch.inputChannel,   "pitch.input",        g.id);
+        resolveInput(g.triggerInput,                g.triggerPort,                 g.triggerChannel,                "trigger.input",      g.id);
+        resolveInput(g.rofSelectorInput,            g.rofSelectorPort,             g.rofSelectorChannel,            "rof.input",          g.id);
+        resolveInput(g.yaw.inputName,               g.yaw.inputPort,               g.yaw.inputChannel,              "yaw.input",          g.id);
+        resolveInput(g.pitch.inputName,             g.pitch.inputPort,             g.pitch.inputChannel,            "pitch.input",        g.id);
+        // Phase 4 polish 2026-05-26: heater activation channel
+        // (Rule 43).  When the YAML omits `smoke.heater.activation.input`
+        // the field stays empty and the service skips the dispatcher
+        // subscribe, leaving the heater permanently allowed.
+        resolveInput(g.smoke.heaterActivationInput, g.smoke.heaterActivationPort,  g.smoke.heaterActivationChannel, "smoke.heater.activation.input", g.id);
     }
     auto& svc = board.template policy<TGunFxService>();
     svc.configure(resolved.guns, resolved.numGuns);
