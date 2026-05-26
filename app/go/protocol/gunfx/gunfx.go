@@ -109,6 +109,10 @@ type VerboseStatus struct {
 	Firing            bool   `json:"firing"`
 	SmokeArmed        bool   `json:"smokeArmed"`
 	SmokeFanRunning   bool   `json:"smokeFanRunning"`
+	// HeaterDutyPct: 0 when the gun has the heater off, 100 when the
+	// gun is commanding the heater on.  This is the GUN'S INTENT —
+	// the role layer applies element-vs-rail scaleDuty() to translate
+	// it into the actual port-native duty.
 	HeaterDutyPct     byte   `json:"heaterDutyPct"`
 	HeaterTempCx10    int16  `json:"heaterTempCx10"`    // HeaterTempNoSensor = no sensor
 	YawCurrentUs      uint16 `json:"yawCurrentUs"`
@@ -119,6 +123,13 @@ type VerboseStatus struct {
 	RofSelectorUs     uint16 `json:"rofSelectorUs"`     // last raw value on the ROF channel
 	TriggerUs         uint16 `json:"triggerUs"`         // last raw value on the trigger channel
 	ShotsThisSession  uint32 `json:"shotsThisSession"`
+	// HeaterActive — Rule 43 activation gate state (Phase 4 polish
+	// 2026-05-26).  True when the activation channel reads above its
+	// threshold, OR when no activation channel is bound at all (the
+	// gate defaults to "always allowed").  Studio uses this to render
+	// the "gated off" pill when SmokeArmed is true but HeaterActive
+	// is false (i.e. the operator armed smoke but the RC gate is low).
+	HeaterActive      bool   `json:"heaterActive"`
 }
 
 // verboseStatusSize is the fixed wire size of a VerboseStatus payload
@@ -182,7 +193,7 @@ func DecodeVerboseStatus(p []byte) (VerboseStatus, error) {
 		RofSelectorUs:    binary.LittleEndian.Uint16(p[17:19]),
 		TriggerUs:        binary.LittleEndian.Uint16(p[19:21]),
 		ShotsThisSession: binary.LittleEndian.Uint32(p[21:25]),
-		// p[25] reserved / padding (keep wire size at 26).
+		HeaterActive:     p[25] != 0,
 	}, nil
 }
 

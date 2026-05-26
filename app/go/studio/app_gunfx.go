@@ -101,23 +101,48 @@ type RecoilConfigDTO struct {
 	HoldMs  uint16 `yaml:"hold_ms"          json:"holdMs"`
 }
 
+// HeaterActivationDTO — Rule 43 named-channel that gates the heater.
+// Optional: empty Input ⇒ no gating (heater is always allowed when
+// smoke is armed).  Threshold / hysteresis tuned in µs around the
+// activation stick's midpoint, same shape as the trigger cluster.
+type HeaterActivationDTO struct {
+	Input         string `yaml:"input,omitempty"   json:"input"`
+	ThresholdUs   uint16 `yaml:"threshold_us"      json:"thresholdUs"`
+	HysteresisUs  uint16 `yaml:"hysteresis_us"     json:"hysteresisUs"`
+}
+
 type HeaterDTO struct {
-	Port             PortRefDTO `yaml:"port"               json:"port"`
-	ElementMv        uint16     `yaml:"element_mv"         json:"elementMv"`
-	Mode             string     `yaml:"mode"               json:"mode"` // always_on / bang_bang / closed_loop
-	TargetCx10       int16      `yaml:"target_cx10"        json:"targetCx10"`
-	HystCx10         int16      `yaml:"hyst_cx10"          json:"hystCx10"`
-	Scaling          string     `yaml:"scaling"            json:"scaling"` // linear / quadratic / constant_duty
-	ConstantDutyPct  uint8      `yaml:"constant_duty_pct"  json:"constantDutyPct"`
+	Port        PortRefDTO          `yaml:"port"                  json:"port"`
+	// Element-rated voltage (default 6 V — typical smoke cartridge).
+	// Drives the role's scaleDuty() against the port rail.
+	ElementMv   uint16              `yaml:"element_mv"            json:"elementMv"`
+	// Mode: "continuous" | "cycle".
+	//   continuous — drive at element-scaled duty whenever activated.
+	//   cycle      — duty-cycle the heater on/off at gun-layer
+	//                intervals (CycleOnMs / CycleOffMs).  Use for
+	//                power conservation or to limit cartridge
+	//                temperature without a thermistor.
+	Mode        string              `yaml:"mode"                  json:"mode"`
+	// CYCLE-mode timing.  ms units.  Ignored in continuous mode.
+	CycleOnMs   uint16              `yaml:"cycle_on_ms"           json:"cycleOnMs"`
+	CycleOffMs  uint16              `yaml:"cycle_off_ms"          json:"cycleOffMs"`
+	// Rule 43 activation channel (Phase 4 polish 2026-05-26).
+	Activation  HeaterActivationDTO `yaml:"activation,omitempty"  json:"activation"`
 }
 
 type FanDTO struct {
-	Port            PortRefDTO `yaml:"port"               json:"port"`
-	ElementMv       uint16     `yaml:"element_mv"         json:"elementMv"`
-	Mode            string     `yaml:"mode"               json:"mode"` // off / continuous / puff_per_shot / puff_on_fire_active
-	PuffMs          uint16     `yaml:"puff_ms"            json:"puffMs"`
-	Scaling         string     `yaml:"scaling"            json:"scaling"`
-	ConstantDutyPct uint8      `yaml:"constant_duty_pct"  json:"constantDutyPct"`
+	Port      PortRefDTO `yaml:"port"               json:"port"`
+	ElementMv uint16     `yaml:"element_mv"         json:"elementMv"`
+	// Two-mode set: "continuous" | "pulse".  A fan is disabled by
+	// leaving `port` empty — no separate "off" mode.
+	//   continuous — fan at 100 % whenever smoke is armed and the
+	//                trigger is firing.
+	//   pulse      — sinusoidal envelope per shot: 50 % base rises
+	//                to 100 % peak then back to 50 % over
+	//                `PulseDurationMs`.  Default duration matches
+	//                the default ROF firing rate (100 ms = 600 RPM).
+	Mode             string `yaml:"mode"               json:"mode"`
+	PulseDurationMs  uint16 `yaml:"pulse_duration_ms"  json:"pulseDurationMs"`
 }
 
 type SmokeConfigDTO struct {
@@ -195,6 +220,8 @@ type GunVerboseStatusDTO struct {
 	RofSelectorUs    uint16 `json:"rofSelectorUs"`
 	TriggerUs        uint16 `json:"triggerUs"`
 	ShotsThisSession uint32 `json:"shotsThisSession"`
+	// Rule 43 activation gate state (Phase 4 polish 2026-05-26).
+	HeaterActive     bool   `json:"heaterActive"`
 }
 
 func defaultGunFxConfig() GunFxConfig {
@@ -524,6 +551,7 @@ func (a *App) installGunFxStream() {
 			RofSelectorUs:    ev.RofSelectorUs,
 			TriggerUs:        ev.TriggerUs,
 			ShotsThisSession: ev.ShotsThisSession,
+			HeaterActive:     ev.HeaterActive,
 		})
 	})
 }

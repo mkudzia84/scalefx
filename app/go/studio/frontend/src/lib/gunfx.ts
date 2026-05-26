@@ -81,23 +81,41 @@ export interface ServoMotionProfileT {
     maxJerkUsPerSec3: number
 }
 
+// Rule 43 named-channel that gates the heater (Phase 4 polish
+// 2026-05-26). Empty `input` ⇒ no gating (heater is always allowed when
+// smoke is armed). Threshold/hysteresis are µs around the activation
+// stick — same shape as `TriggerConfigT`.
+export interface HeaterActivationT {
+    input: string
+    thresholdUs: number
+    hysteresisUs: number
+}
+
+export type FanMode    = 'continuous' | 'pulse'
+export type HeaterMode = 'continuous' | 'cycle'
+
+// Heater fields (Phase 4 polish 2026-05-26).  cycle mode toggles the
+// heater on/off at gun-layer intervals (cycleOnMs / cycleOffMs) — used
+// for power conservation or to limit cartridge temperature without a
+// thermistor.
 export interface HeaterT {
     port: PortRefT
-    elementMv: number
-    mode: 'always_on' | 'bang_bang' | 'closed_loop' | string
-    targetCx10: number
-    hystCx10: number
-    scaling: 'passthrough' | 'linear' | 'quadratic' | string
-    constantDutyPct: number
+    elementMv: number                  ///< default 6 V smoke cartridge
+    mode: HeaterMode                   ///< continuous | cycle
+    cycleOnMs: number                  ///< CYCLE: on-phase duration (ms)
+    cycleOffMs: number                 ///< CYCLE: off-phase duration (ms)
+    activation: HeaterActivationT      ///< Rule 43 named-channel gate
 }
 
 export interface FanT {
     port: PortRefT
-    elementMv: number
-    mode: 'off' | 'continuous' | 'puff_per_shot' | 'puff_on_fire_active' | string
-    puffMs: number
-    scaling: 'passthrough' | 'linear' | 'quadratic' | string
-    constantDutyPct: number
+    elementMv: number                  ///< default 6 V smoke-fan motor
+    mode: FanMode
+    /** FN_PULSE sinusoid envelope duration in ms.  One shot = one
+     *  envelope: 50% base → 100% peak (at half-duration) → 50% base.
+     *  Default 100 ms matches the 600 RPM default firing rate so
+     *  the sinusoid completes once per shot at default cadence. */
+    pulseDurationMs: number
 }
 
 export interface SmokeConfigT { heater: HeaterT; fan: FanT }
@@ -149,6 +167,12 @@ export interface GunVerboseStatusT {
     rofSelectorUs: number
     triggerUs: number
     shotsThisSession: number
+    /** Rule 43 activation gate state (Phase 4 polish 2026-05-26).
+     *  true ⇒ activation channel above threshold OR no channel bound.
+     *  false ⇒ channel bound and reading below threshold — heater forced
+     *  off even when smokeArmed.  Studio uses this to render a
+     *  "gated off" pill in the gun-smoke card header. */
+    heaterActive: boolean
 }
 
 export interface GunStatusT { id: number; firing: boolean; smokeArmed: boolean }
@@ -181,8 +205,20 @@ export function defaultGun(id: number): GunT {
         muzzleFlash: { port: { ...emptyPort }, durationMs: 30, brightness: 100 },
         recoil: { enabled: true, axis: 'pitch', jerkUs: 200, holdMs: 80 },
         smoke: {
-            heater: { port: { ...emptyPort }, elementMv: 0, mode: 'always_on', targetCx10: 1500, hystCx10: 50, scaling: 'linear', constantDutyPct: 100 },
-            fan:    { port: { ...emptyPort }, elementMv: 0, mode: 'off',       puffMs: 200,                            scaling: 'linear', constantDutyPct: 100 },
+            heater: {
+                port: { ...emptyPort },
+                elementMv: 6000,                        // typical 6 V smoke cartridge
+                mode: 'continuous',
+                cycleOnMs: 5000,                        // cycle: 5 s on
+                cycleOffMs: 3000,                       // cycle: 3 s off
+                activation: { input: '', thresholdUs: 1500, hysteresisUs: 25 },
+            },
+            fan: {
+                port: { ...emptyPort },
+                elementMv: 6000,                        // typical 6 V fan motor
+                mode: 'pulse',
+                pulseDurationMs: 100,                   // sinusoid period = 600 RPM firing period
+            },
         },
         yaw: defaultAxis(),
         pitch: defaultAxis(),
@@ -276,10 +312,63 @@ export const gunfxStatus = writable<GunStatusT[]>([])
 /** Download /gunfx.yaml, populate `gunfxConfig`, and (if the draft
  *  wasn't already dirty) seed `gunfxDraft` with the loaded values. */
 export async function loadGunFxConfig(): Promise<void> {
-    const n = (await LoadGunFxConfig()) as GunFxConfigT
+    const raw = (await LoadGunFxConfig()) as GunFxConfigT
+    const n = normaliseGunFxConfig(raw)
     const wasDirty = get(gunfxDirty)   // SNAPSHOT FIRST (engine-panel lesson)
     gunfxConfig.set(n)
     if (!wasDirty) gunfxDraft.set(structuredClone(n))
+}
+
+/** Hydrate fields that fresh /gunfx.yaml files (or YAMLs hand-edited
+ *  without the activation block) omit so the UI doesn't read undefined
+ *  / zero where it expects sensible defaults:
+ *    - heater.activation block: missing ⇒ stick-midpoint defaults so
+ *      the threshold slider opens at 1500 µs, not 0.
+ *    - heater.elementMv / fan.elementMv: 0 ⇒ 6000 (typical smoke
+ *      cartridge / fan motor).
+ *    - heater.mode / fan.mode: empty ⇒ canonical default.
+ *  Legacy mode strings are NOT remapped here — back-compat dropped
+ *  2026-05-26.  A pre-cleanup YAML with `always_on` / `closed_loop` /
+ *  `off` / `puff_per_shot` / `puff_on_fire_active` will hit the
+ *  firmware parser's "unknown mode" warn path and default to the
+ *  canonical value; the operator re-saves through Studio to update
+ *  the file on-disk.
+ */
+function normaliseGunFxConfig(c: GunFxConfigT | null): GunFxConfigT {
+    if (!c) return emptyGunFxConfig()
+    const out: GunFxConfigT = structuredClone(c)
+    out.schemaVersion = out.schemaVersion ?? 1
+    out.enabled       = !!out.enabled
+    out.guns          = (out.guns ?? []).map(g => {
+        const h = g.smoke?.heater
+        const f = g.smoke?.fan
+        if (h) {
+            if (!h.activation || typeof h.activation.thresholdUs !== 'number') {
+                h.activation = { input: '', thresholdUs: 1500, hysteresisUs: 25 }
+            } else {
+                if (!h.activation.thresholdUs)  h.activation.thresholdUs  = 1500
+                if (!h.activation.hysteresisUs) h.activation.hysteresisUs = 25
+                if (typeof h.activation.input !== 'string') h.activation.input = ''
+            }
+            if (!h.elementMv)   h.elementMv   = 6000
+            if (!h.mode)        h.mode        = 'continuous'
+            // Remap any legacy 'bang_bang' YAML (briefly shipped 2026-05-26)
+            // to the canonical 'continuous' — without a temp sensor wired
+            // the role degraded bang_bang to continuous anyway.
+            if ((h.mode as any) === 'bang_bang') h.mode = 'continuous'
+            if (!h.cycleOnMs)   h.cycleOnMs   = 5000
+            if (!h.cycleOffMs)  h.cycleOffMs  = 3000
+        }
+        if (f) {
+            if (!f.elementMv) f.elementMv = 6000
+            if (!f.mode)      f.mode      = 'pulse'
+            // Remap legacy 'puff_per_fire' YAMLs to the canonical 'pulse'.
+            if ((f.mode as any) === 'puff_per_fire') f.mode = 'pulse'
+            if (!f.pulseDurationMs) f.pulseDurationMs = 100
+        }
+        return g
+    })
+    return out
 }
 
 /** Save the current draft to /gunfx.yaml + ask the hub to reload it. */

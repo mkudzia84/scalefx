@@ -239,6 +239,23 @@
     function setHeaterField(id: number, key: keyof GunT['smoke']['heater'], val: any) {
         updateGun(id, g => ({ ...g, smoke: { ...g.smoke, heater: { ...g.smoke.heater, [key]: val } } }))
     }
+    // Rule 43 activation block lives one level deeper than the rest of
+    // the heater fields.  Separate mutator keeps the call sites readable
+    // (`setHeaterActivationField(id, 'thresholdUs', 1500)`).
+    function setHeaterActivationField(id: number,
+                                      key: keyof GunT['smoke']['heater']['activation'],
+                                      val: any) {
+        updateGun(id, g => ({
+            ...g,
+            smoke: {
+                ...g.smoke,
+                heater: {
+                    ...g.smoke.heater,
+                    activation: { ...g.smoke.heater.activation, [key]: val },
+                },
+            },
+        }))
+    }
     function setFanField(id: number, key: keyof GunT['smoke']['fan'], val: any) {
         updateGun(id, g => ({ ...g, smoke: { ...g.smoke, fan: { ...g.smoke.fan, [key]: val } } }))
     }
@@ -598,9 +615,11 @@
                                     disabled={busy}
                                     title="Stop auto-fire — always enabled (emergency cutoff, no dirty gate)">■ Stop</button>
                         </div>
-                        <button class="small" on:click={() => gunSmokeArm(gun.id, !st?.smokeArmed)}
-                                disabled={busy || $gunfxDirty}
-                                title={$gunfxDirty ? 'Apply changes before toggling smoke' : st?.smokeArmed ? 'Turn smoke OFF (also cuts the fan)' : 'Turn smoke ON (heater + fan will run while firing)'}>{st?.smokeArmed ? 'Smoke Off' : 'Smoke On'}</button>
+                        <!-- Smoke On/Off button removed 2026-05-26 — it
+                             lives in the per-gun "Smoke generator" sibling
+                             card below as the simulate cluster.  Gun-header
+                             only carries firing controls + the destructive
+                             Remove button now. -->
                         <button class="small danger" on:click={() => removeGun(gun.id)} disabled={busy} title="Remove this gun">× Remove</button>
                     </div>
                 </div>
@@ -934,34 +953,157 @@
                     {/if}
                 </div>
 
-                <!-- SMOKE: HEATER + FAN.  Rule 42 — element_mv + scaling
-                     live on the role; the gun only references a PWM
-                     port that ALREADY HAS the right role attached
-                     (Heater for heater, DcMotor for fan).  The pickers
-                     filter strictly to those role-attached ports so the
-                     operator can't accidentally drive a bare PWM pin as
-                     a heater.  Yellow warning (Rule 39) fires when no
-                     suitable port exists AND the operator hasn't
-                     already picked one.
-                     heaterOthers / fanOthers / heaterMissing / fanMissing
-                     are declared at the {#each} top — Svelte 3 won't
-                     accept {@const} mid-block. -->
-                <div class="section-head" class:section-warn={heaterMissing || fanMissing}>
-                    Smoke
-                    {#if heaterMissing || fanMissing}
-                        <span class="section-warn-tag" title="Open the IO tab and attach the missing role(s) to a free PWM port — then return here to bind them.">
-                            no PWM port with {
-                                heaterMissing && fanMissing ? 'Heater + DcMotor'
-                              : heaterMissing ? 'Heater'
-                              : 'DcMotor'
-                            } role attached
-                        </span>
-                    {/if}
-                    <span class="hint">attach Heater / DcMotor role on the IO tab — element_mv + scaling live there (Rule 42)</span>
+                <!-- Smoke generator moved to its own sibling card below
+                     (Phase 4 polish 2026-05-26).  Rationale: smoke is a
+                     conceptually independent subsystem with its own
+                     simulate path + activation gate — giving it its own
+                     card surface lets the operator scan / configure it
+                     without competing for visual real estate with the
+                     gun's firing controls. -->
+
+                <!-- Yaw / pitch are now inside the Turret control section above. -->
+
+                <!-- Manual / puppet panel removed (Phase 4 polish 2026-05-23):
+                     redundant with the per-gun test row in the card
+                     header (▶ Fire / ▶▶ Auto / ■ Stop / smoke toggle).
+                     If a live verbose-status mirror is ever needed
+                     again it should be its own debug overlay, not part
+                     of the configuration flow. -->
+            </div>
+
+            <!-- ═══ GUN SMOKE · sibling card per gun ═══════════════════════
+                 Lives directly after the gun card so the gun ↔ smoke
+                 pair stays visually grouped (Phase 4 polish 2026-05-26).
+                 Named "Gun smoke" explicitly to differentiate from a
+                 possible future "Engine smoke" subsystem.
+
+                 Header carries:
+                   - title + activation gate channel reading + status pills
+                   - Simulate op-cluster (▶ ON / ■ OFF) — mirrors the
+                     gun-card header pattern (Rule 48).
+                 Body carries:
+                   1. Activation channel cluster (Rule 43 — RC gate)
+                   2. Heater (port + element_mv)
+                   3. Fan    (port + element_mv + mode + puff_ms)
+
+                 No heater mode / target / hysteresis fields — HubFX has
+                 no temp sensor wired to the smoke heater, so the role's
+                 open-loop path (drive at scaleDuty result) fully
+                 describes the behaviour.
+
+                 `verb` reactive declares the live mirror state from the
+                 GUN_VERBOSE_STATUS broadcast: smokeArmed, heaterActive
+                 (Rule 43 gate), smokeFanRunning.  Pills + the activation
+                 µs readout in the header refresh at the verbose-status
+                 cadence (10 Hz). -->
+            {@const verb         = $gunfxVerbose[gun.id]}
+            {@const armed        = verb?.smokeArmed ?? statusFor(gun.id)?.smokeArmed ?? false}
+            {@const heating      = (verb?.heaterDutyPct ?? 0) > 0}
+            {@const gatedOff     = armed && !heating && gun.smoke.heater.activation.input !== ''}
+            {@const fanRunning   = verb?.smokeFanRunning ?? false}
+            {@const actLive      = liveUsFor(gun.smoke.heater.activation.input)}
+            <div class="card smoke-card">
+                <div class="card-header inner">
+                    <h4>Gun smoke · {gun.id}{gun.name ? ` · ${gun.name}` : ''}</h4>
+                    <div class="header-actions">
+                        <!-- Live status pills (Phase 4 polish 2026-05-26).
+                             Render priority — "heating" beats "armed"
+                             alone (the heater drawing wins the visual
+                             over the bare arm state); "gated off" reads
+                             when the operator armed smoke but the
+                             activation channel is below threshold. -->
+                        {#if heating}
+                            <span class="state-pill smoke heating" title="Heater is being driven at element-scaled duty">🔥 heating</span>
+                        {:else if gatedOff}
+                            <span class="state-pill smoke gated"   title="Smoke armed, but the Rule 43 activation channel is below its threshold — heater forced off">⏸ gated off</span>
+                        {:else if armed}
+                            <span class="state-pill smoke"         title="Smoke armed — heater allowed to drive when the activation gate (if any) goes high">smoke armed</span>
+                        {/if}
+                        {#if fanRunning}
+                            <span class="state-pill fan"           title="Fan is currently being driven (continuous or puff in progress)">💨 fan</span>
+                        {/if}
+                        <!-- Activation live µs readout — only when a
+                             channel is bound.  Compact mono format so
+                             the operator sees the gate's instant value
+                             without opening the channel cluster body. -->
+                        {#if gun.smoke.heater.activation.input}
+                            {@const us = actLive?.us ?? null}
+                            {@const ok = actLive?.valid && us !== null && us >= gun.smoke.heater.activation.thresholdUs}
+                            <span class="act-readout" class:above={ok} class:below={!ok}
+                                  title="Activation channel `{gun.smoke.heater.activation.input}` live µs vs threshold {gun.smoke.heater.activation.thresholdUs}µs">
+                                ACT: {us === null ? '—' : `${us}µs`} {ok ? '✓' : '✗'}
+                            </span>
+                        {/if}
+                        <!-- Section-warn chip when role(s) missing on IO tab. -->
+                        {#if heaterMissing || fanMissing}
+                            <span class="section-warn-tag" title="Open the IO tab and attach the missing role(s) to a free PWM port — then return here to bind them.">
+                                no PWM port with {
+                                    heaterMissing && fanMissing ? 'Heater + DcMotor'
+                                  : heaterMissing ? 'Heater'
+                                  : 'DcMotor'
+                                } role attached
+                            </span>
+                        {/if}
+                        <!-- Simulate cluster moved into the header
+                             (mirrors gun-card pattern).  Stop sits to
+                             the right + always enabled (Rule 48 b). -->
+                        <div class="op-cluster">
+                            <button class="oc-btn oc-primary"
+                                    on:click={() => gunSmokeArm(gun.id, true)}
+                                    disabled={busy || $gunfxDirty || gun.smoke.heater.port.guid === ''}
+                                    title={$gunfxDirty
+                                        ? 'Apply changes before testing — runs the loaded firmware config'
+                                        : (gun.smoke.heater.port.guid === ''
+                                            ? 'Pick a heater port below first — there is nothing to drive yet'
+                                            : 'Arm smoke: drives heater at element-scaled duty.  Fan follows when trigger fires.')}>
+                                ▶ Smoke ON
+                            </button>
+                            <button class="oc-btn oc-danger"
+                                    on:click={() => gunSmokeArm(gun.id, false)}
+                                    disabled={busy}
+                                    title="Smoke OFF: cuts heater + fan immediately (safety button, always enabled — firmware re-sends OFF even if state was already off).">
+                                ■ Smoke OFF
+                            </button>
+                        </div>
+                    </div>
                 </div>
-                <div class="smoke-grid">
-                    <div class="smoke-col">
-                        <div class="col-head">Heater</div>
+
+                <!-- 1. Activation channel (Rule 43 — RC gate). Same
+                     shared widget the engine on/off uses (Rule 36).
+                     Empty = "no gating, heater always allowed when
+                     smoke is armed". -->
+                <div class="subsection-head">Activation channel
+                    <span class="hint">RC gate — leave empty for "always allowed when smoke armed"</span>
+                </div>
+                <ChannelToggleCluster
+                    channelLabel="Channel"
+                    emptyOption="— none (always allowed) —"
+                    options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+                    inputId={gun.smoke.heater.activation.input}
+                    thresholdUs={gun.smoke.heater.activation.thresholdUs}
+                    hysteresisUs={gun.smoke.heater.activation.hysteresisUs}
+                    liveUs={liveUsFor(gun.smoke.heater.activation.input)?.us ?? null}
+                    liveValid={liveUsFor(gun.smoke.heater.activation.input)?.valid ?? false}
+                    busy={busy}
+                    actionVerb="Heats"
+                    onChange={(n) => {
+                        setHeaterActivationField(gun.id, 'input', n.inputId)
+                        setHeaterActivationField(gun.id, 'thresholdUs', n.thresholdUs)
+                        setHeaterActivationField(gun.id, 'hysteresisUs', n.hysteresisUs)
+                    }} />
+
+                <!-- 2 + 3. Heater + Fan in side-by-side framed boxes
+                     (Phase 4 polish 2026-05-26).  Each frame is its own
+                     bordered container so the operator can scan one
+                     subsystem without the other's fields competing for
+                     attention.  On narrower windows the grid collapses
+                     to stacked rows (see .smoke-frame-grid below). -->
+                <div class="smoke-frame-grid">
+                    <!-- ── Heater frame ─────────────────────────────── -->
+                    <div class="smoke-frame">
+                        <div class="frame-head">Heater
+                            <span class="hint">on whenever smoke is armed AND activation channel is high</span>
+                        </div>
                         <div class="form-row">
                             <span class="field-label">Port</span>
                             <select class="field-input" style="flex:1" value={portRefToKey(gun.smoke.heater.port)}
@@ -974,25 +1116,70 @@
                                 {/each}
                             </select>
                         </div>
+                        <!-- Element voltage (Rule 42 — gun owns the spec;
+                             firmware ships it to HeaterRole at configure
+                             time so scaleDuty() drives the right duty
+                             against the port rail).  Default 6 V matches
+                             the common smoke-cartridge element. -->
+                        <div class="form-row">
+                            <span class="field-label">Element</span>
+                            <input class="field-input narrow" type="number" min="1000" max="24000" step="100"
+                                   value={gun.smoke.heater.elementMv}
+                                   on:change={(e) => setHeaterField(gun.id, 'elementMv', numValue(e))} disabled={busy}
+                                   title="Rated voltage of the heating element (default 6 V smoke cartridge).  Firmware scales duty against the port rail so a 6 V element on an 8 V rail never sees more than its rated average." />
+                            <span class="unit">mV</span>
+                        </div>
+                        <!-- Heater mode (Phase 4 polish 2026-05-26).
+                             continuous = drive whenever activated.
+                             cycle = power-conservation duty cycle —
+                             gun layer toggles HEATER_SET_TARGET between
+                             on + off on cycleOnMs / cycleOffMs intervals
+                             while smoke is armed.  Replaces bang_bang
+                             which required a temp sensor we don't have. -->
                         <div class="form-row">
                             <span class="field-label">Mode</span>
                             <select class="field-input" style="flex:1" value={gun.smoke.heater.mode}
-                                    on:change={(e) => setHeaterField(gun.id, 'mode', selValue(e))} disabled={busy}>
-                                <option value="always_on">always_on</option>
-                                <option value="bang_bang">bang_bang</option>
-                                <option value="closed_loop">closed_loop</option>
+                                    on:change={(e) => setHeaterField(gun.id, 'mode', selValue(e))} disabled={busy}
+                                    title="continuous = drive the heater at element-scaled duty whenever activated.
+cycle = pulse the heater on for `cycle_on_ms` then off for `cycle_off_ms`, repeating while smoke is armed.  Use for power conservation or to limit cartridge temperature without a thermistor.">
+                                <option value="continuous">continuous</option>
+                                <option value="cycle">cycle</option>
                             </select>
                         </div>
-                        <div class="form-row">
-                            <span class="field-label">Target</span>
-                            <input class="field-input narrow" type="number" value={gun.smoke.heater.targetCx10}
-                                   on:change={(e) => setHeaterField(gun.id, 'targetCx10', numValue(e))} disabled={busy} />
-                            <span class="unit">cx10 ({(gun.smoke.heater.targetCx10/10).toFixed(1)} °C)</span>
-                        </div>
+                        <!-- Cycle on/off ms — only shown in cycle mode.
+                             continuous mode ignores these fields entirely. -->
+                        {#if gun.smoke.heater.mode === 'cycle'}
+                            <div class="form-row">
+                                <span class="field-label">On</span>
+                                <input class="field-input narrow" type="number" min="100" max="60000" step="100"
+                                       value={gun.smoke.heater.cycleOnMs}
+                                       on:change={(e) => setHeaterField(gun.id, 'cycleOnMs', numValue(e))} disabled={busy}
+                                       title="ON-phase duration in ms.  Heater drives at element-scaled duty for this long, then enters the OFF-phase." />
+                                <span class="unit">ms</span>
+                                <span class="hint compact">({(gun.smoke.heater.cycleOnMs/1000).toFixed(1)} s)</span>
+                            </div>
+                            <div class="form-row">
+                                <span class="field-label">Off</span>
+                                <input class="field-input narrow" type="number" min="100" max="60000" step="100"
+                                       value={gun.smoke.heater.cycleOffMs}
+                                       on:change={(e) => setHeaterField(gun.id, 'cycleOffMs', numValue(e))} disabled={busy}
+                                       title="OFF-phase duration in ms.  Heater is cut for this long before the next ON-phase." />
+                                <span class="unit">ms</span>
+                                <span class="hint compact">({(gun.smoke.heater.cycleOffMs/1000).toFixed(1)} s)</span>
+                            </div>
+                            {@const total = gun.smoke.heater.cycleOnMs + gun.smoke.heater.cycleOffMs}
+                            {@const dutyPct = total > 0 ? Math.round(100 * gun.smoke.heater.cycleOnMs / total) : 0}
+                            <div class="form-row">
+                                <span class="hint">average duty: <strong>{dutyPct}%</strong> ({((gun.smoke.heater.cycleOnMs + gun.smoke.heater.cycleOffMs)/1000).toFixed(1)} s period)</span>
+                            </div>
+                        {/if}
                     </div>
 
-                    <div class="smoke-col">
-                        <div class="col-head">Fan</div>
+                    <!-- ── Fan frame ────────────────────────────────── -->
+                    <div class="smoke-frame">
+                        <div class="frame-head">Fan
+                            <span class="hint">on when smoke armed AND trigger active</span>
+                        </div>
                         <div class="form-row">
                             <span class="field-label">Port</span>
                             <select class="field-input" style="flex:1" value={portRefToKey(gun.smoke.fan.port)}
@@ -1006,32 +1193,39 @@
                             </select>
                         </div>
                         <div class="form-row">
-                            <span class="field-label">Mode</span>
-                            <select class="field-input" style="flex:1" value={gun.smoke.fan.mode}
-                                    on:change={(e) => setFanField(gun.id, 'mode', selValue(e))} disabled={busy}>
-                                <option value="off">off</option>
-                                <option value="continuous">continuous</option>
-                                <option value="puff_per_shot">puff_per_shot</option>
-                                <option value="puff_on_fire_active">puff_on_fire_active</option>
-                            </select>
+                            <span class="field-label">Element</span>
+                            <input class="field-input narrow" type="number" min="1000" max="24000" step="100"
+                                   value={gun.smoke.fan.elementMv}
+                                   on:change={(e) => setFanField(gun.id, 'elementMv', numValue(e))} disabled={busy}
+                                   title="Rated voltage of the fan motor (default 6 V smoke fan).  Firmware scales duty against the port rail." />
+                            <span class="unit">mV</span>
                         </div>
                         <div class="form-row">
-                            <span class="field-label">Puff width</span>
-                            <input class="field-input narrow" type="number" min="20" max="2000" value={gun.smoke.fan.puffMs}
-                                   on:change={(e) => setFanField(gun.id, 'puffMs', numValue(e))} disabled={busy} />
-                            <span class="unit">ms</span>
+                            <span class="field-label">Mode</span>
+                            <select class="field-input" style="flex:1" value={gun.smoke.fan.mode}
+                                    on:change={(e) => setFanField(gun.id, 'mode', selValue(e))} disabled={busy}
+                                    title="continuous = fan at 100 % of element-rated voltage while firing and smoke armed.
+pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+armed, ramps up to 100 % then back to 50 % over `pulse_duration_ms` on each shot.">
+                                <option value="continuous">continuous (always on while firing)</option>
+                                <option value="pulse">pulse (sinusoidal — 50% base, peaks per shot)</option>
+                            </select>
                         </div>
+                        {#if gun.smoke.fan.mode === 'pulse'}
+                            <div class="form-row">
+                                <span class="field-label">Duration</span>
+                                <input class="field-input narrow" type="number" min="20" max="2000" step="10"
+                                       value={gun.smoke.fan.pulseDurationMs}
+                                       on:change={(e) => setFanField(gun.id, 'pulseDurationMs', numValue(e))} disabled={busy}
+                                       title="One sinusoid period in ms.  Fan rises from 50 % → 100 % over the first half and falls back to 50 % over the second.  Default 100 ms matches the default 600 RPM firing rate so the envelope completes once per shot." />
+                                <span class="unit">ms</span>
+                                <span class="hint compact">({(gun.smoke.fan.pulseDurationMs/1000).toFixed(2)} s sinusoid)</span>
+                            </div>
+                            <div class="form-row">
+                                <span class="hint">envelope: 50% base → 100% peak (mid-duration) → 50% base; resets on every shot</span>
+                            </div>
+                        {/if}
                     </div>
                 </div>
-
-                <!-- Yaw / pitch are now inside the Turret control section above. -->
-
-                <!-- Manual / puppet panel removed (Phase 4 polish 2026-05-23):
-                     redundant with the per-gun test row in the card
-                     header (▶ Fire / ▶▶ Auto / ■ Stop / smoke toggle).
-                     If a live verbose-status mirror is ever needed
-                     again it should be its own debug overlay, not part
-                     of the configuration flow. -->
             </div>
         {/each}
     {/if}
@@ -1059,9 +1253,27 @@
     .state-pill { font-family: var(--font-mono); font-size: 10px; padding: 2px 8px; border-radius: 3px; background: var(--bg-input); color: var(--text-dim); border: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.4px; }
     .state-pill.firing { background: rgba(255,80,80,0.22); color: #ff8a85; border-color: rgba(255,80,80,0.5); }
     .state-pill.smoke { background: rgba(255,180,0,0.18); color: var(--warning); border-color: rgba(255,180,0,0.5); }
+    /* Gun-smoke header pills (Phase 4 polish 2026-05-26).
+       `.heating` = orange-red, signals "heater is being driven".
+       `.gated`   = muted yellow with dashed border, signals "armed but
+                    Rule 43 activation gate is blocking the heater".
+       `.fan`     = cyan/accent, separate from the heater pills since
+                    the fan can run independently of the heater state
+                    (smoke armed + trigger firing → fan on regardless
+                    of activation channel — only the heater is gated). */
+    .state-pill.smoke.heating { background: rgba(255,120,40,0.25); color: #ffaa55; border-color: rgba(255,120,40,0.6); }
+    .state-pill.smoke.gated   { background: rgba(255,180,0,0.10); color: color-mix(in srgb, var(--warning) 70%, var(--text-dim)); border-style: dashed; }
+    .state-pill.fan           { background: color-mix(in srgb, var(--accent) 18%, var(--bg-input)); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+
+    /* Activation channel live µs readout in the smoke-card header.
+       Tight mono format; colour follows above/below threshold so the
+       operator sees gate state at a glance. */
+    .act-readout { font-family: var(--font-mono); font-size: 10px; padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border); background: var(--bg-input); letter-spacing: 0.3px; }
+    .act-readout.above { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+    .act-readout.below { color: var(--text-dim); }
 
     .section-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-bright); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 8px; }
-    .section-head .hint { font-size: 9px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-dim); font-style: italic; }
+    /* `.section-head .hint` reset lives in global style.css (Rule 50). */
     /* Rule 39 — yellow warning on an optional section that's enabled
        but has no candidate port available.  Non-fatal: doesn't gate
        Apply, but flags the issue to the operator. */
@@ -1072,8 +1284,12 @@
     .section-head.section-warn-err { color: var(--error); border-bottom-color: var(--error); }
     .section-warn-err-tag { font-size: 9px; font-weight: 700; color: var(--error); padding: 1px 6px; border: 1px solid var(--error); border-radius: 3px; letter-spacing: 0.5px; text-transform: uppercase; background: color-mix(in srgb, var(--error) 12%, transparent); }
 
+    /* `.unit`, `.hint` / `.hint.compact/warn/err`, `.help-text` all live
+       in global style.css (Rule 50 typography taxonomy).  Don't
+       redefine here.  `.field-label` keeps the local override below
+       because GunFx + LightFx are dense panels — 10 px fits more rows
+       in view; the global 12 px is for simpler tabs. */
     .field-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-dim); }
-    .unit { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
     .trigger-pm { margin: 0 4px; color: var(--text-dim); font-family: var(--font-mono); font-weight: 700; }
 
     /* ROF item — two-row card per item, with a coloured side-stripe
@@ -1152,9 +1368,60 @@
     .axis-readout { position: absolute; right: 6px; top: 0; line-height: 14px; font-family: var(--font-mono); font-size: 9px; color: var(--text-bright); text-shadow: 0 0 3px rgba(0,0,0,0.7); }
     .axis-nosignal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.5px; color: var(--text-dim); }
 
-    .smoke-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .smoke-col { padding: 6px 10px; background: var(--bg-raised); border-radius: 4px; }
-    .col-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 4px; }
+    /* Smoke generator sibling card (Phase 4 polish 2026-05-26).
+       Lives directly after each gun card via the {#each} block, so it
+       inherits the standard `.card` chrome (border, background, padding).
+       Small visual tweaks below to signal "this is paired with the gun
+       card above" without cloning the gun's emphasis:
+         - margin-top pulled in tight (4 px) so the pair reads as one unit
+         - margin-bottom remains the card default for spacing to the next gun
+         - subtle left-border accent in the warning colour family signals
+           "this depends on the gun card above" without shouting */
+    .smoke-card { margin-top: 4px; margin-bottom: 14px;
+        border-left: 3px solid color-mix(in srgb, var(--accent) 30%, var(--border)); }
+    .smoke-card .subsection-head:first-of-type { margin-top: 4px; }
+
+    /* Heater + Fan framed boxes, side-by-side (Phase 4 polish 2026-05-26).
+       2-col grid collapses to 1-col when the gun-smoke card narrows
+       below 520 px (≈ left+right padding + two frames).  Each frame
+       gets a hairline border + raised background so the operator
+       reads them as two distinct subsystems, not one continuous
+       form. */
+    .smoke-frame-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 10px;
+        margin-top: 6px;
+    }
+    .smoke-frame {
+        background: var(--bg-raised);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 8px 10px;
+    }
+    .smoke-frame .frame-head {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--text-bright);
+        margin: 2px 0 6px;
+        padding-bottom: 4px;
+        border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
+        display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    }
+    /* Heading-context hint reset (mirrors the global rule for
+       .section-head/.subsection-head — Rule 50): undo the bold +
+       uppercase + letter-spacing that .frame-head sets, restore the
+       11 px italic dim description look. */
+    .smoke-frame .frame-head .hint {
+        font-size: 9px;
+        font-weight: 400;
+        text-transform: none;
+        letter-spacing: 0;
+        color: var(--text-dim);
+        font-style: italic;
+    }
 
     .dirty-flag { font-size: 11px; color: var(--text-dim); margin-left: 4px; }
     .dirty-flag.on { color: var(--warning); font-weight: 600; }
