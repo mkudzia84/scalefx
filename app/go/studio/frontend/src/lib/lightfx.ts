@@ -57,10 +57,33 @@ export interface ActiveProgramT {
     program: ProgramT
 }
 
+/// LightFxChannelT — an LED channel OWNED by this LightFx instance.
+///
+/// Lifted up from per-program tracks (2026-05-27): instead of every
+/// program file independently picking a channel name, the LightFx
+/// instance declares its channel set ONCE here.  Each channel binds
+/// a friendly name to a physical output port (self-contained — does
+/// NOT depend on a matching label in /hubfx.yaml).
+///
+/// Programs reference channels by name; ANY program that uses this
+/// LightFx automatically operates against the SAME channel set —
+/// "channels in, programs out".
+///
+/// Port may be undefined immediately after auto-derivation from
+/// pre-existing programs (the program named a channel but the
+/// instance has no port mapping for it yet).  Operator picks the
+/// port in the Channels card; until then the channel is silent.
+export interface LightFxChannelT {
+    name:                  string                          // operator-facing label + program-track ref
+    port:                  PortRefT | null                 // physical output port (null = unassigned)
+    defaultBrightnessPct:  number                          // 0..100; programs inherit unless overridden
+}
+
 export interface LightFxConfigT {
     schemaVersion:       number
     enabled:             boolean
     masterBrightnessPct: number
+    channels:            LightFxChannelT[]                 // NEW (Phase 1, 2026-05-27)
     activePrograms:      ActiveProgramT[]
     programSelector:     ProgramSelectorT
 }
@@ -84,8 +107,17 @@ const defaultSelector: ProgramSelectorT = {
     enabled: false, input: '', hysteresisUs: 50, ranges: [],
 }
 const defaultLightFx: LightFxConfigT = {
-    schemaVersion: 1, enabled: true, masterBrightnessPct: 100,
-    activePrograms: [], programSelector: { ...defaultSelector },
+    schemaVersion: 2,          // bump from 1: signals `channels[]` block present
+    enabled: true,
+    masterBrightnessPct: 100,
+    channels: [],
+    activePrograms: [],
+    programSelector: { ...defaultSelector },
+}
+
+/** Make a blank LightFx channel with sensible defaults. */
+export function defaultChannel(name: string = ''): LightFxChannelT {
+    return { name, port: null, defaultBrightnessPct: 100 }
 }
 
 // ─── Stores ───────────────────────────────────────────────────────────
@@ -121,12 +153,30 @@ function nameFromDevicePath(path: string): string {
 // lose data the operator put there out-of-band.
 
 function normaliseLightFx(c: any): Pick<LightFxConfigT,
-    'schemaVersion' | 'enabled' | 'masterBrightnessPct' | 'programSelector'> & { _paths: string[] } {
+    'schemaVersion' | 'enabled' | 'masterBrightnessPct' | 'channels' | 'programSelector'>
+    & { _paths: string[] } {
     return {
         schemaVersion:       c?.schemaVersion ?? 1,
         enabled:             c?.enabled ?? true,
         masterBrightnessPct: c?.masterBrightnessPct ?? 100,
         _paths:              Array.isArray(c?.programs) ? c.programs as string[] : [],
+        // channels[] is new (schemaVersion 2).  May be absent on legacy
+        // configs — loadLightFxConfig() auto-derives from the union of
+        // all active programs' track names in that case.
+        channels: Array.isArray(c?.channels)
+            ? (c.channels as any[]).map(ch => ({
+                  name: String(ch?.name ?? ''),
+                  port: ch?.port && typeof ch.port === 'object'
+                      ? {
+                            board: String(ch.port?.board ?? ''),
+                            guid:  String(ch.port?.guid  ?? ''),
+                            kind:  String(ch.port?.kind  ?? 'pwm'),
+                            idx:   Number(ch.port?.idx   ?? 0),
+                        } as PortRefT
+                      : null,
+                  defaultBrightnessPct: Number(ch?.defaultBrightnessPct ?? ch?.default_brightness_pct ?? 100),
+              }))
+            : [],
         programSelector: {
             enabled:      c?.programSelector?.enabled ?? false,
             input:        c?.programSelector?.input ?? '',
@@ -134,6 +184,38 @@ function normaliseLightFx(c: any): Pick<LightFxConfigT,
             ranges:       Array.isArray(c?.programSelector?.ranges) ? c.programSelector.ranges : [],
         },
     }
+}
+
+/** Auto-derive a channels[] list from the union of channel names
+ *  referenced by every active program's tracks.  Port is left null
+ *  (operator picks it in the Channels card); default brightness
+ *  becomes the maximum brightness seen across programs (so a track
+ *  that explicitly sets 80 doesn't get clobbered by a fresh 100
+ *  default if another program also at 100 was added later).
+ *
+ *  Order: in encounter order across (programs × tracks) — stable
+ *  alphabetical fallback for tracks that came in via parallel paths.
+ *  Called from loadLightFxConfig when the device's /lightfx.yaml
+ *  predates schemaVersion 2 (no channels[] block). */
+function autoDeriveChannels(activePrograms: ActiveProgramT[]): LightFxChannelT[] {
+    const seen = new Map<string, LightFxChannelT>()
+    for (const ap of activePrograms) {
+        for (const t of ap.program.tracks) {
+            if (!t.channel) continue
+            const existing = seen.get(t.channel)
+            const bright   = Number(t.brightnessPct ?? 100)
+            if (!existing) {
+                seen.set(t.channel, {
+                    name: t.channel,
+                    port: null,                     // operator-pick
+                    defaultBrightnessPct: bright,
+                })
+            } else if (bright > existing.defaultBrightnessPct) {
+                existing.defaultBrightnessPct = bright
+            }
+        }
+    }
+    return Array.from(seen.values())
 }
 
 /** Refresh the merged (factory + user) library catalog from Go. */
@@ -178,10 +260,20 @@ export async function loadLightFxConfig(): Promise<void> {
         }
     }
 
+    // Channels[]: device's /lightfx.yaml may not have it (schemaVersion
+    // 1, pre-2026-05-27).  Auto-derive from the union of all loaded
+    // programs' track channel names so the operator sees the channel
+    // set immediately — port is left blank for them to pick in the
+    // Channels card.
+    const channels = raw.channels.length > 0
+        ? raw.channels
+        : autoDeriveChannels(activePrograms)
+
     const cfg: LightFxConfigT = {
-        schemaVersion:       raw.schemaVersion,
+        schemaVersion:       Math.max(raw.schemaVersion, 2),  // we always emit v2+ now
         enabled:             raw.enabled,
         masterBrightnessPct: raw.masterBrightnessPct,
+        channels,
         programSelector:     raw.programSelector,
         activePrograms,
     }
@@ -214,7 +306,17 @@ export async function saveLightFxConfig(): Promise<void> {
         schemaVersion:       cfg.schemaVersion,
         enabled:             cfg.enabled,
         masterBrightnessPct: cfg.masterBrightnessPct,
-        // Programs[] gets rebuilt server-side from `active[].name`.
+        // channels[] — instance-owned channel pool (Phase 1, 2026-05-27).
+        // Each entry is the canonical binding "channel name → physical
+        // port + default brightness".  Programs reference channels by
+        // name; the firmware reads this block to resolve names without
+        // looking up labels in /hubfx.yaml ports[].
+        channels:            cfg.channels.map(ch => ({
+            name:                  ch.name,
+            port:                  ch.port,                          // null is OK — channel unassigned, silent
+            defaultBrightnessPct:  ch.defaultBrightnessPct,
+        })),
+        // Programs[] (file paths) gets rebuilt server-side from `active[].name`.
         programs:            [],
         programSelector:     cfg.programSelector,
     }
@@ -314,6 +416,146 @@ export function setActiveProgram(idx: number, program: ProgramT): void {
         if (!a[idx]) return c
         a[idx] = { ...a[idx], program }
         return { ...c, activePrograms: a }
+    })
+}
+
+// ─── Channel CRUD (instance pool) ────────────────────────────────────
+//
+// Channels are OWNED by the LightFx instance, not by individual
+// programs.  Mutating any channel (add / rename / port-swap / brightness)
+// ripples to every program automatically — the program editor renders
+// rows from `cfg.channels` and pulls per-program overrides from the
+// track that matches by name.
+//
+// Renaming a channel auto-renames every matching track in every
+// program so existing event sequences don't get orphaned.
+
+/** Append a fresh channel to the instance pool.  Initial name is
+ *  unique-suffixed if the operator's intended name collides. */
+export function addChannel(name: string = 'New channel'): void {
+    lightfxDraft.update(c => {
+        const taken = new Set(c.channels.map(x => x.name))
+        let unique  = name
+        for (let i = 2; taken.has(unique); ++i) unique = `${name} ${i}`
+        return { ...c, channels: [...c.channels, defaultChannel(unique)] }
+    })
+}
+
+/** Remove the channel at `idx` from the instance pool.  ALSO drops
+ *  every matching track from every active program — leaving orphan
+ *  tracks would make the program editor's row count ambiguous. */
+export function removeChannel(idx: number): void {
+    lightfxDraft.update(c => {
+        const ch = c.channels[idx]
+        if (!ch) return c
+        const droppedName = ch.name
+        return {
+            ...c,
+            channels: c.channels.filter((_, i) => i !== idx),
+            activePrograms: c.activePrograms.map(ap => ({
+                ...ap,
+                program: {
+                    ...ap.program,
+                    tracks: ap.program.tracks.filter(t => t.channel !== droppedName),
+                },
+            })),
+        }
+    })
+}
+
+/** In-place update of one channel field.  When `name` changes, every
+ *  active program's tracks that referenced the old name are
+ *  AUTO-RENAMED so the operator doesn't have to walk N programs to
+ *  fix references.  Use `setChannelPort` / `setChannelBrightness` as
+ *  thin wrappers when only one field changes. */
+export function updateChannel(idx: number, patch: Partial<LightFxChannelT>): void {
+    lightfxDraft.update(c => {
+        const ch = c.channels[idx]
+        if (!ch) return c
+        const updated = [...c.channels]
+        const oldName = ch.name
+        updated[idx] = { ...ch, ...patch }
+        const newName = updated[idx].name
+        const renamed = oldName !== newName
+        return {
+            ...c,
+            channels: updated,
+            activePrograms: renamed
+                ? c.activePrograms.map(ap => ({
+                    ...ap,
+                    program: {
+                        ...ap.program,
+                        tracks: ap.program.tracks.map(t =>
+                            t.channel === oldName ? { ...t, channel: newName } : t),
+                    },
+                }))
+                : c.activePrograms,
+        }
+    })
+}
+
+export function setChannelPort(idx: number, port: PortRefT | null): void {
+    updateChannel(idx, { port })
+}
+export function setChannelBrightness(idx: number, defaultBrightnessPct: number): void {
+    updateChannel(idx, { defaultBrightnessPct })
+}
+
+// ─── Per-channel program-track helpers ───────────────────────────────
+//
+// The Phase-1b program editor renders one row PER instance channel,
+// not per track.  These helpers translate the row's "active /
+// brightness override / events" state into the track[] array stored
+// inside the program.
+//
+// A channel is "active in program P" iff P.tracks has an entry with
+// matching channel name.  Toggling Active adds / removes that track.
+// The brightness OVERRIDE is the track's own brightnessPct — 0 means
+// "inherit instance default" (we store -1 internally to disambiguate
+// 0 % from "no override", but the UI exposes a blank field for unset).
+
+/** True if program has a track for the named channel. */
+export function programHasTrackFor(program: ProgramT, channelName: string): boolean {
+    return program.tracks.some(t => t.channel === channelName)
+}
+
+/** Return the track for `channelName` in `program`, or undefined. */
+export function trackFor(program: ProgramT, channelName: string): TrackT | undefined {
+    return program.tracks.find(t => t.channel === channelName)
+}
+
+/** Toggle whether `program` drives `channelName`.  When activating, a
+ *  blank track (single "on" event) is appended; when deactivating,
+ *  the matching track is removed.  No-op if state already matches. */
+export function setProgramChannelActive(activeIdx: number, channelName: string,
+                                        active: boolean): void {
+    lightfxDraft.update(c => {
+        const ap = c.activePrograms[activeIdx]
+        if (!ap) return c
+        const has = programHasTrackFor(ap.program, channelName)
+        if (has === active) return c
+        const tracks = active
+            ? [...ap.program.tracks, defaultTrack(channelName)]
+            : ap.program.tracks.filter(t => t.channel !== channelName)
+        const updated = [...c.activePrograms]
+        updated[activeIdx] = { ...ap, program: { ...ap.program, tracks } }
+        return { ...c, activePrograms: updated }
+    })
+}
+
+/** Patch the track for (program × channel).  No-op if the channel is
+ *  inactive in the program.  Used by per-row brightness / events
+ *  edits in the new program-editor layout. */
+export function patchProgramTrack(activeIdx: number, channelName: string,
+                                  patch: Partial<TrackT>): void {
+    lightfxDraft.update(c => {
+        const ap = c.activePrograms[activeIdx]
+        if (!ap) return c
+        const tracks = ap.program.tracks.map(t =>
+            t.channel === channelName ? { ...t, ...patch } : t)
+        const updated = [...c.activePrograms]
+        updated[activeIdx] = { ...ap, program: { ...ap.program, tracks } }
+        return { ...c, activePrograms: updated }
     })
 }
 

@@ -32,14 +32,19 @@
         setSelectorInput, setSelectorHysteresis,
         setSelectorRange, addSelectorRange, removeSelectorRange,
         selectorErrors, programErrors,
+        // Phase 1 (2026-05-27) — instance channel pool + per-program-track helpers
+        addChannel, removeChannel, updateChannel, setChannelPort, setChannelBrightness,
+        programHasTrackFor, trackFor, setProgramChannelActive, patchProgramTrack,
         LIGHT_PRESETS, PRESET_GROUP_ORDER,
         defaultTrack, defaultEvent,
-        type LightFxConfigT, type ProgramSelectorRangeT,
+        type LightFxConfigT, type LightFxChannelT, type ProgramSelectorRangeT,
         type PresetLibraryEntryT, type ActiveProgramT,
         type ProgramT, type TrackT, type ProgramEventT, type LightEventKindT,
     } from '../lightfx'
     import { deviceModel, liveChannels, liveChannelKey, RoleKind, formatPortRail } from '../devicemodel'
+    import type { PortRefT } from '../landing'
     import { landingDraft } from '../landing'
+    import { freePortPoolFiltered } from '../components/port_pool'
     import { PreviewLightChannel, StopLightChannel } from '../../../wailsjs/go/main/App'
     import ChannelBandCluster from '../components/ChannelBandCluster.svelte'
 
@@ -210,6 +215,108 @@
                 && (!p.name || !p.name.trim())) n++
         }
         return n
+    }
+
+    // ─── Phase 1 (2026-05-27): instance-level channel pool helpers ───
+    //
+    // The Channels card's port picker uses `freePortPoolFiltered` so
+    // each row only sees LED-animator ports not already claimed by
+    // sibling LightFx channels (and the row's own current port stays
+    // visible while editing).  Channel pool emptiness shows as a
+    // Rule 39 yellow warning at the section head.
+    //
+    // `portKeyOf` produces the dropdown <option value=> key matching
+    // a PortRefT we'll round-trip through string → object on change.
+
+    function portKeyOf(p: PortRefT | null | undefined): string {
+        if (!p) return ''
+        return `${p.guid}|${p.kind}|${p.idx}`
+    }
+    function portFromKey(key: string): PortRefT | null {
+        if (!key) return null
+        const [guid, kind, idxStr] = key.split('|')
+        return { board: '', guid, kind, idx: Number(idxStr) || 0 }
+    }
+    /** Ports available to LightFx channel row `idx`: every LedAnimator
+     *  output port EXCEPT those already bound to a SIBLING channel.
+     *  The row's own current port stays in the pool for editing. */
+    function portsForChannelRow(idx: number) {
+        const mine = cfg?.channels[idx]?.port
+        const sibling = new Set<string>()
+        if (cfg?.channels) {
+            for (let i = 0; i < cfg.channels.length; ++i) {
+                if (i === idx) continue
+                const p = cfg.channels[i]?.port
+                if (p) sibling.add(`${p.guid}|${p.kind}|${p.idx}`)
+            }
+        }
+        return freePortPoolFiltered(
+            $deviceModel.ports,
+            $deviceModel.claims,
+            'pwm',
+            RoleKind.LedAnimator,
+            (p) => {
+                const k = `${p.ref.guid}|${p.kindName}|${p.ref.index}`
+                if (sibling.has(k)) return false      // exclude sibling-claimed
+                if (mine && k === portKeyOf(mine)) return true   // keep own
+                return true                            // include unclaimed
+            },
+        )
+    }
+    /** Validation: channel pool has issues that should surface in red.
+     *  Duplicate names, missing ports (yellow not red — operator can
+     *  still apply), empty names (RED — won't apply). */
+    $: channelPoolErrors = computeChannelPoolErrors(cfg?.channels ?? [])
+    function computeChannelPoolErrors(chs: LightFxChannelT[]): { idx: number, msg: string }[] {
+        const out: { idx: number, msg: string }[] = []
+        const seen = new Map<string, number>()
+        for (let i = 0; i < chs.length; ++i) {
+            const ch = chs[i]
+            const name = (ch.name ?? '').trim()
+            if (!name) {
+                out.push({ idx: i, msg: 'name required' })
+                continue
+            }
+            const dupIdx = seen.get(name)
+            if (dupIdx !== undefined) {
+                out.push({ idx: i, msg: `duplicate of channel #${dupIdx + 1}` })
+            } else {
+                seen.set(name, i)
+            }
+        }
+        return out
+    }
+    function errMsgForChannel(idx: number): string {
+        return channelPoolErrors.find(e => e.idx === idx)?.msg ?? ''
+    }
+
+    /** Resolve a channel name to its index in this program's tracks[]
+     *  array (or -1 if the program doesn't drive that channel).
+     *  Used by the new channel-row editor so existing event-table
+     *  edit helpers (setEvent / removeEvent / addEvent) keep working
+     *  with their (ai, ti, ei) signatures — we just derive ti from
+     *  the channel name on the fly. */
+    function trackIdxForCh(ai: number, channelName: string): number {
+        const tracks = cfg?.activePrograms[ai]?.program.tracks
+        if (!tracks) return -1
+        return tracks.findIndex(t => t.channel === channelName)
+    }
+
+    /** "Ghost" tracks: in this program but referring to a channel
+     *  that is NOT in the instance pool.  Surfaced in the editor so
+     *  the operator can either promote the channel into the pool or
+     *  drop the track.  Without this, an out-of-band edit (or a
+     *  pool removal that didn't cascade for some reason) would
+     *  silently strand tracks. */
+    function ghostTracksFor(ai: number): { track: TrackT, idx: number }[] {
+        const slot = cfg?.activePrograms[ai]
+        if (!slot) return []
+        const names = new Set((cfg.channels ?? []).map(c => c.name))
+        const out: { track: TrackT, idx: number }[] = []
+        slot.program.tracks.forEach((t, idx) => {
+            if (!names.has(t.channel)) out.push({ track: t, idx })
+        })
+        return out
     }
     /** Returns the channel options available to track `ti` in active
      *  program `ai`: filters out names already used by SIBLING tracks
@@ -515,6 +622,143 @@
             <span class="unit">%</span>
         </div>
 
+        <!-- ─── Instance-level channel pool (Phase 1, 2026-05-27) ──── -->
+        <!-- Pick channels ONCE here; every active program drives the
+             same set.  Replaces the per-program channel dropdown
+             redundancy.  Each row: friendly name + physical LED port +
+             default brightness.  Empty pool = yellow warning (Rule 39)
+             since programs can't drive anything without channels. -->
+        <div class="section-head" class:section-warn={cfg.channels.length === 0 && availableChannels.length === 0}>
+            Channels
+            <span class="hint">instance-wide LED pool — programs share this set</span>
+            {#if cfg.channels.length === 0 && availableChannels.length === 0}
+                <span class="section-warn-tag">no LedAnimator ports labelled on IO tab</span>
+            {/if}
+            <div class="header-actions">
+                <button class="small" on:click={() => addChannel()}
+                        disabled={busy}
+                        title="Add a new LightFx channel.  Pick a port + give it a friendly name; every program will be able to drive it.">
+                    + Add channel
+                </button>
+            </div>
+        </div>
+
+        {#if cfg.channels.length === 0}
+            <div class="empty-state">
+                No channels yet.  Add one to bind a physical LED rail
+                (PWM port with role <em>led-animator</em> on the IO tab)
+                to a friendly name like “Red beacon”.  Every program in
+                this LightFx instance can then animate it.
+            </div>
+        {/if}
+
+        {#each cfg.channels as ch, ci (ci)}
+            {@const rowErr = errMsgForChannel(ci)}
+            {@const portOptions = portsForChannelRow(ci)}
+            {@const noPort = ch.port === null || ch.port === undefined}
+            <div class="form-row channel-pool-row" class:verify-error={!!rowErr} class:verify-warn={noPort && !rowErr}>
+                <span class="ap-idx">#{ci + 1}</span>
+                <input class="field-input wide" type="text"
+                       placeholder="Channel name (e.g. Red beacon)"
+                       bind:value={ch.name}
+                       on:change={() => updateChannel(ci, { name: ch.name })}
+                       disabled={busy}
+                       title="Friendly label shown in every program editor.  Programs reference this channel by name." />
+                <select class="field-input" disabled={busy}
+                        value={portKeyOf(ch.port)}
+                        on:change={(e) => setChannelPort(ci, portFromKey(selValue(e)))}
+                        title="Physical PWM output with role led-animator. Filter excludes ports already used by other channels in this LightFx instance.">
+                    <option value="">— unassigned —</option>
+                    {#each portOptions as p (p.ref.guid + ':' + p.ref.index)}
+                        {@const rail = formatPortRail(p.voltageMv)}
+                        <option value={portKeyOf({ board: '', guid: p.ref.guid, kind: p.kindName, idx: p.ref.index })}
+                                title={p.hardwareName}>
+                            {p.boardName ?? 'Hub'} · {p.hardwareName}{rail ? ` (${rail})` : ''}{p.name ? ` · ${p.name}` : ''}
+                        </option>
+                    {/each}
+                </select>
+                <input class="field-input narrow" type="number" min="0" max="100"
+                       bind:value={ch.defaultBrightnessPct}
+                       on:change={() => setChannelBrightness(ci, Math.max(0, Math.min(100, ch.defaultBrightnessPct | 0)))}
+                       disabled={busy}
+                       title="Default brightness for this channel.  Programs inherit unless they set an explicit per-program override." />
+                <span class="unit">%</span>
+                <button class="small danger" on:click={() => removeChannel(ci)}
+                        disabled={busy}
+                        title="Remove this channel.  Any program track referencing it will be DROPPED automatically.">
+                    ×
+                </button>
+                {#if rowErr}<span class="row-err">⚠ {rowErr}</span>{/if}
+                {#if noPort && !rowErr}<span class="row-warn">unassigned port — channel will be silent</span>{/if}
+            </div>
+        {/each}
+
+        <!-- ─── Program selector (Rule 38, instance-level RC input) ──
+             Promoted ABOVE "Active programs" 2026-05-26 (LightFx layout
+             reorder).  Rationale: this is the LightFx-instance's ONE
+             RC input — operator decides selector wiring before diving
+             into per-program editing.  Empty-state ("none — first
+             program always") handles the "no programs yet" case
+             gracefully so the order is safe even on a fresh config. -->
+        <div class="section-head">
+            Program selector
+            <span class="hint">drive program switching from an RC channel — one µs band per program</span>
+        </div>
+        <ChannelBandCluster
+            channelLabel="Selector channel"
+            emptyOption="— none (use first program always) —"
+            options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+            inputId={cfg.programSelector.input}
+            bands={buildSelectorBands(cfg.programSelector.ranges,
+                liveUsFor(cfg.programSelector.input)?.us ?? null,
+                liveUsFor(cfg.programSelector.input)?.valid ?? false)}
+            overlapIndices={detectRangeOverlaps(cfg.programSelector.ranges)}
+            liveUs={liveUsFor(cfg.programSelector.input)?.us ?? null}
+            liveValid={liveUsFor(cfg.programSelector.input)?.valid ?? false}
+            busy={busy}
+            onInputChange={(v) => setSelectorInput(v)} />
+
+        {#if cfg.programSelector.input}
+            <div class="form-row">
+                <span class="field-label">Hysteresis</span>
+                <input class="field-input narrow" type="number" min="0" max="500" step="5"
+                       value={cfg.programSelector.hysteresisUs}
+                       on:change={(e) => setSelectorHysteresis(numValue(e))} disabled={busy} />
+                <span class="unit">µs</span>
+                <span class="hint">prevents the selector flipping when the stick sits on a range boundary</span>
+            </div>
+            {#each cfg.programSelector.ranges as r, i (i)}
+                <div class="form-row range-row">
+                    <span class="rng-idx">#{i + 1}</span>
+                    <span class="field-label">µs band</span>
+                    <input class="field-input narrow" type="number" min="800" max="2200" step="10"
+                           value={r.fromUs}
+                           on:change={(e) => setSelectorRange(i, { fromUs: numValue(e) })} disabled={busy} />
+                    <span class="trigger-pm">–</span>
+                    <input class="field-input narrow" type="number" min="800" max="2200" step="10"
+                           value={r.toUs}
+                           on:change={(e) => setSelectorRange(i, { toUs: numValue(e) })} disabled={busy} />
+                    <span class="field-label">Program</span>
+                    <select class="field-input" value={r.program}
+                            on:change={(e) => setSelectorRange(i, { program: selValue(e) })} disabled={busy}>
+                        <option value="">— pick —</option>
+                        {#each activeNames as n}<option value={n}>{n}</option>{/each}
+                    </select>
+                    <button class="small danger btn-slot" on:click={() => removeSelectorRange(i)} disabled={busy}>× Remove</button>
+                </div>
+            {/each}
+            <div class="form-row">
+                <button class="small" on:click={onAddSelectorRange}
+                        disabled={busy || cfg.activePrograms.length === 0}>+ Add range</button>
+                <span class="hint">add one range per program; ranges MUST NOT overlap</span>
+            </div>
+            {#if selectorErrs.length > 0}
+                <ul class="sel-issues">
+                    {#each selectorErrs as msg}<li class="sel-issue err">⚠ {msg}</li>{/each}
+                </ul>
+            {/if}
+        {/if}
+
         <!-- ─── Active programs ─────────────────────────────────────── -->
         <div class="section-head" class:section-error={cfg.activePrograms.length === 0}>
             Active programs
@@ -578,175 +822,186 @@
                 </div>
 
                 {#if expanded[ai]}
-                    <!-- ─── Inline program editor ─────────────────── -->
+                    <!-- ─── Inline program editor (Phase 1b, 2026-05-27) ───
+                         Rows are auto-rendered from cfg.channels[] — the
+                         instance pool above.  No per-program channel
+                         dropdown: each program either drives a pool
+                         channel (Active toggle) or stays silent for it.
+                         Brightness defaults to the pool's channel value;
+                         operator overrides only when needed. -->
                     <div class="active-body">
-                        <!-- Tracks — each one references an LED channel by NAME -->
-                        <div class="subsection-head" class:section-warn={availableChannels.length === 0}>
-                            Tracks
-                            <span class="hint">each track plays an event list on a named LED channel; unlisted channels stay off</span>
-                            {#if availableChannels.length === 0}
+                        <div class="subsection-head" class:section-warn={cfg.channels.length === 0}>
+                            Channels in this program
+                            <span class="hint">tick to drive · brightness overrides channel default · events list per channel</span>
+                            {#if cfg.channels.length === 0}
                                 <span class="section-warn-tag"
-                                      title="No LedAnimator ports have an operator label.  Open the IO tab and give each LED port a friendly name (e.g. 'Red beacon'); those names become the channel handles every program references.">
-                                    no labelled LED channels — label LedAnimator ports on the IO tab
-                                </span>
-                            {:else if unlabelledLedCount > 0}
-                                <span class="section-warn-tag" title="More LedAnimator ports exist but have no name yet — label them on the IO tab to expose them here.">
-                                    {unlabelledLedCount} unlabelled LED port{unlabelledLedCount > 1 ? 's' : ''}
+                                      title="The LightFx instance has no channels in its pool yet. Add at least one channel in the Channels card above.">
+                                    no channels in pool — add one above
                                 </span>
                             {/if}
                         </div>
 
-                        {#if slot.program.tracks.length === 0}
-                            <div class="empty-state subtle">
-                                No tracks yet — click <strong>+ Add track</strong> to drive a
-                                named LED channel.  Channels are defined once on the IO tab
-                                (port → role → label); every program references the same names.
-                            </div>
-                        {/if}
-
-                        {#each slot.program.tracks as t, ti (ti)}
-                            {@const channelOpts = channelsForTrack(ai, ti, t.channel)}
-                            {@const channelMissing = !!t.channel && !availableChannels.some(c => c.name === t.channel)}
-                            <div class="channel-card" class:invalid={!t.channel || t.events.length === 0 || channelMissing}>
+                        {#each cfg.channels as ch, ci (ci)}
+                            {@const tIdx   = trackIdxForCh(ai, ch.name)}
+                            {@const t      = tIdx >= 0 ? slot.program.tracks[tIdx] : null}
+                            {@const active = t !== null}
+                            {@const noPort = ch.port === null}
+                            <div class="channel-card" class:dim={!active} class:verify-warn={active && noPort}>
                                 <div class="channel-head">
-                                    <span class="ch-idx">#{ti + 1}</span>
-                                    <select class="field-input wide"
-                                            value={t.channel}
-                                            on:change={(e) => setTrack(ai, ti, { channel: selValue(e) })}
-                                            disabled={availableChannels.length === 0}
-                                            title={availableChannels.length === 0
-                                                ? 'Label an LedAnimator port on the IO tab first.'
-                                                : 'Pick the named LED channel this track drives'}>
-                                        <option value="">— Pick LED channel —</option>
-                                        {#each channelOpts as opt}
-                                            <option value={opt.name} title={opt.portLabel}>{opt.name}</option>
-                                        {/each}
-                                        {#if channelMissing}
-                                            <option value={t.channel}>{t.channel} (not labelled on this device)</option>
-                                        {/if}
-                                    </select>
-                                    <span class="field-label">brightness</span>
-                                    <input class="field-input narrow" type="number" min="0" max="100"
-                                           value={t.brightnessPct}
-                                           on:change={(e) => setTrack(ai, ti, { brightnessPct: numValue(e) })} />
-                                    <span class="unit">%</span>
-                                    <label class="loop-toggle"
-                                           title="Phase-locked repeating pattern — the events list loops as a cycle (period = sum of all event durations).  Sibling tracks with the same period stay in lock-step.">
-                                        <input type="checkbox" checked={t.loop}
-                                               on:change={(e) => setTrack(ai, ti, { loop: checkedValue(e) })} />
-                                        loop
+                                    <span class="ch-idx">#{ci + 1}</span>
+                                    <label class="active-toggle"
+                                           title={active
+                                               ? 'Uncheck to mute this channel for this program (channel stays in pool, events for THIS program discarded).'
+                                               : 'Check to drive this channel with this program.  A blank events list is seeded — replace via the Preset dropdown or add events.'}>
+                                        <input type="checkbox" checked={active}
+                                               on:change={(e) => setProgramChannelActive(ai, ch.name, checkedValue(e))} />
+                                        active
                                     </label>
-                                    <select class="field-input preset-select"
-                                            on:change={(e) => onPickChannelPreset(ai, ti, e)}
-                                            title="Replace this track's events with a canonical pattern (FAA strobe, beacon, nav, …).">
-                                        <option value="">↺ Preset…</option>
-                                        {#each PRESET_GROUP_ORDER as g}
-                                            {@const grp = LIGHT_PRESETS.filter(p => p.group === g && !p.label.startsWith('(alias)'))}
-                                            {#if grp.length > 0}
-                                                <optgroup label={g}>
-                                                    {#each grp as preset}
-                                                        <option value={preset.id} title={preset.note}>{preset.label}</option>
-                                                    {/each}
-                                                </optgroup>
-                                            {/if}
-                                        {/each}
-                                    </select>
-                                    <div class="op-cluster ch-preview">
-                                        {#if playing[playKey(ai, ti)] !== undefined}
-                                            <button class="oc-btn oc-danger"
-                                                    on:click={() => stopTrack(ai, ti)} title="Stop this track preview">■</button>
-                                        {:else}
-                                            <button class="oc-btn oc-primary"
-                                                    on:click={() => playTrack(ai, ti)}
-                                                    disabled={!t.channel || t.events.length === 0 || channelMissing}
-                                                    title={!t.channel
-                                                        ? 'Pick a channel first'
-                                                        : channelMissing
-                                                            ? 'Channel not labelled on this device — fix on the IO tab'
+                                    <span class="ch-name" class:muted={!active}>{ch.name}</span>
+                                    {#if noPort && active}
+                                        <span class="row-warn" title="This channel has no physical port assigned in the Channels card. Program will play but nothing will light.">port unassigned</span>
+                                    {/if}
+                                    {#if active && t !== null}
+                                        <span class="field-label">brightness</span>
+                                        <input class="field-input narrow" type="number" min="0" max="100"
+                                               value={t.brightnessPct}
+                                               on:change={(e) => patchProgramTrack(ai, ch.name, { brightnessPct: Math.max(0, Math.min(100, numValue(e) | 0)) })}
+                                               title={`Override channel default (${ch.defaultBrightnessPct} %) for this program only.  Leave at the default to inherit.`} />
+                                        <span class="unit">%</span>
+                                        {#if t.brightnessPct === ch.defaultBrightnessPct}
+                                            <span class="hint inline">(default)</span>
+                                        {/if}
+                                        <label class="loop-toggle"
+                                               title="Phase-locked repeating pattern — the events list loops as a cycle (period = sum of all event durations).  Sibling tracks with the same period stay in lock-step.">
+                                            <input type="checkbox" checked={t.loop}
+                                                   on:change={(e) => patchProgramTrack(ai, ch.name, { loop: checkedValue(e) })} />
+                                            loop
+                                        </label>
+                                        <select class="field-input preset-select"
+                                                on:change={(e) => onPickChannelPreset(ai, tIdx, e)}
+                                                title="Replace this channel's events with a canonical pattern (FAA strobe, beacon, nav, …).">
+                                            <option value="">↺ Preset…</option>
+                                            {#each PRESET_GROUP_ORDER as g}
+                                                {@const grp = LIGHT_PRESETS.filter(p => p.group === g && !p.label.startsWith('(alias)'))}
+                                                {#if grp.length > 0}
+                                                    <optgroup label={g}>
+                                                        {#each grp as preset}
+                                                            <option value={preset.id} title={preset.note}>{preset.label}</option>
+                                                        {/each}
+                                                    </optgroup>
+                                                {/if}
+                                            {/each}
+                                        </select>
+                                        <div class="op-cluster ch-preview">
+                                            {#if playing[playKey(ai, tIdx)] !== undefined}
+                                                <button class="oc-btn oc-danger"
+                                                        on:click={() => stopTrack(ai, tIdx)} title="Stop this channel preview">■</button>
+                                            {:else}
+                                                <button class="oc-btn oc-primary"
+                                                        on:click={() => playTrack(ai, tIdx)}
+                                                        disabled={t.events.length === 0 || noPort}
+                                                        title={noPort
+                                                            ? 'Assign a port to this channel in the Channels card first'
                                                             : t.events.length === 0
                                                                 ? 'No events to play'
-                                                                : 'Preview this track — no save required'}>▶</button>
-                                        {/if}
-                                    </div>
-                                    <button class="small danger ch-remove" on:click={() => removeTrack(ai, ti)} title="Remove this track">×</button>
+                                                                : 'Preview this channel — no save required'}>▶</button>
+                                            {/if}
+                                        </div>
+                                    {/if}
                                 </div>
 
-                                <table class="events-table">
-                                    <thead>
-                                        <tr>
-                                            <th class="evt-idx">#</th>
-                                            <th>kind</th>
-                                            <th class="param">brightness %</th>
-                                            <th class="param">min %</th>
-                                            <th class="param">max %</th>
-                                            <th class="param">flash %</th>
-                                            <th class="param">cycle ms</th>
-                                            <th class="param">duration ms</th>
-                                            <th class="evt-rm"></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {#each t.events as ev, ei (ei)}
-                                            {@const used = FIELD_MAP[ev.kind] ?? []}
+                                {#if active && t !== null}
+                                    <table class="events-table">
+                                        <thead>
                                             <tr>
-                                                <td class="evt-idx">{ei + 1}</td>
-                                                <td>
-                                                    <select class="field-input compact"
-                                                            value={ev.kind}
-                                                            on:change={(e) => onPickEventKind(ai, ti, ei, selValue(e))}>
-                                                        {#each KIND_OPTIONS as k}<option value={k.id}>{k.label}</option>{/each}
-                                                    </select>
-                                                </td>
-                                                <td class="param" class:dim={!used.includes('brightnessPct')}>
-                                                    <input class="field-input compact num" type="number" min="0" max="100"
-                                                           value={ev.brightnessPct} disabled={!used.includes('brightnessPct')}
-                                                           on:change={(e) => setEvent(ai, ti, ei, { brightnessPct: numValue(e) })} />
-                                                </td>
-                                                <td class="param" class:dim={!used.includes('minPct')}>
-                                                    <input class="field-input compact num" type="number" min="0" max="100"
-                                                           value={ev.minPct} disabled={!used.includes('minPct')}
-                                                           on:change={(e) => setEvent(ai, ti, ei, { minPct: numValue(e) })} />
-                                                </td>
-                                                <td class="param" class:dim={!used.includes('maxPct')}>
-                                                    <input class="field-input compact num" type="number" min="0" max="100"
-                                                           value={ev.maxPct} disabled={!used.includes('maxPct')}
-                                                           on:change={(e) => setEvent(ai, ti, ei, { maxPct: numValue(e) })} />
-                                                </td>
-                                                <td class="param" class:dim={!used.includes('flashPct')}>
-                                                    <input class="field-input compact num" type="number" min="0" max="100"
-                                                           value={ev.flashPct} disabled={!used.includes('flashPct')}
-                                                           on:change={(e) => setEvent(ai, ti, ei, { flashPct: numValue(e) })} />
-                                                </td>
-                                                <td class="param" class:dim={!used.includes('cycleMs')}>
-                                                    <input class="field-input compact num" type="number" min="0" max="65535"
-                                                           value={ev.cycleMs} disabled={!used.includes('cycleMs')}
-                                                           on:change={(e) => setEvent(ai, ti, ei, { cycleMs: numValue(e) })} />
-                                                </td>
-                                                <td class="param" class:dim={!used.includes('durationMs')}>
-                                                    <input class="field-input compact num" type="number" min="0" max="65535"
-                                                           value={ev.durationMs} disabled={!used.includes('durationMs')}
-                                                           on:change={(e) => setEvent(ai, ti, ei, { durationMs: numValue(e) })} />
-                                                </td>
-                                                <td class="evt-rm">
-                                                    <button class="small danger" on:click={() => removeEvent(ai, ti, ei)} title="Remove this event">×</button>
-                                                </td>
+                                                <th class="evt-idx">#</th>
+                                                <th>kind</th>
+                                                <th class="param">brightness %</th>
+                                                <th class="param">min %</th>
+                                                <th class="param">max %</th>
+                                                <th class="param">flash %</th>
+                                                <th class="param">cycle ms</th>
+                                                <th class="param">duration ms</th>
+                                                <th class="evt-rm"></th>
                                             </tr>
-                                        {/each}
-                                    </tbody>
-                                </table>
-                                <div class="form-row">
-                                    <button class="small" on:click={() => addEvent(ai, ti)}>+ Add event</button>
-                                </div>
+                                        </thead>
+                                        <tbody>
+                                            {#each t.events as ev, ei (ei)}
+                                                {@const used = FIELD_MAP[ev.kind] ?? []}
+                                                <tr>
+                                                    <td class="evt-idx">{ei + 1}</td>
+                                                    <td>
+                                                        <select class="field-input compact"
+                                                                value={ev.kind}
+                                                                on:change={(e) => onPickEventKind(ai, tIdx, ei, selValue(e))}>
+                                                            {#each KIND_OPTIONS as k}<option value={k.id}>{k.label}</option>{/each}
+                                                        </select>
+                                                    </td>
+                                                    <td class="param" class:dim={!used.includes('brightnessPct')}>
+                                                        <input class="field-input compact num" type="number" min="0" max="100"
+                                                               value={ev.brightnessPct} disabled={!used.includes('brightnessPct')}
+                                                               on:change={(e) => setEvent(ai, tIdx, ei, { brightnessPct: numValue(e) })} />
+                                                    </td>
+                                                    <td class="param" class:dim={!used.includes('minPct')}>
+                                                        <input class="field-input compact num" type="number" min="0" max="100"
+                                                               value={ev.minPct} disabled={!used.includes('minPct')}
+                                                               on:change={(e) => setEvent(ai, tIdx, ei, { minPct: numValue(e) })} />
+                                                    </td>
+                                                    <td class="param" class:dim={!used.includes('maxPct')}>
+                                                        <input class="field-input compact num" type="number" min="0" max="100"
+                                                               value={ev.maxPct} disabled={!used.includes('maxPct')}
+                                                               on:change={(e) => setEvent(ai, tIdx, ei, { maxPct: numValue(e) })} />
+                                                    </td>
+                                                    <td class="param" class:dim={!used.includes('flashPct')}>
+                                                        <input class="field-input compact num" type="number" min="0" max="100"
+                                                               value={ev.flashPct} disabled={!used.includes('flashPct')}
+                                                               on:change={(e) => setEvent(ai, tIdx, ei, { flashPct: numValue(e) })} />
+                                                    </td>
+                                                    <td class="param" class:dim={!used.includes('cycleMs')}>
+                                                        <input class="field-input compact num" type="number" min="0" max="65535"
+                                                               value={ev.cycleMs} disabled={!used.includes('cycleMs')}
+                                                               on:change={(e) => setEvent(ai, tIdx, ei, { cycleMs: numValue(e) })} />
+                                                    </td>
+                                                    <td class="param" class:dim={!used.includes('durationMs')}>
+                                                        <input class="field-input compact num" type="number" min="0" max="65535"
+                                                               value={ev.durationMs} disabled={!used.includes('durationMs')}
+                                                               on:change={(e) => setEvent(ai, tIdx, ei, { durationMs: numValue(e) })} />
+                                                    </td>
+                                                    <td class="evt-rm">
+                                                        <button class="small danger" on:click={() => removeEvent(ai, tIdx, ei)} title="Remove this event">×</button>
+                                                    </td>
+                                                </tr>
+                                            {/each}
+                                        </tbody>
+                                    </table>
+                                    <div class="form-row">
+                                        <button class="small" on:click={() => addEvent(ai, tIdx)}>+ Add event</button>
+                                    </div>
+                                {/if}
                             </div>
                         {/each}
 
-                        <div class="form-row">
-                            <button class="small" on:click={() => addTrack(ai)}
-                                    disabled={availableChannels.length === 0}
-                                    title={availableChannels.length === 0
-                                        ? 'No labelled LED channels — go to the IO tab and label an LedAnimator port'
-                                        : 'Add a track driving a named LED channel'}>+ Add track</button>
-                        </div>
+                        <!-- Ghost tracks: program drives a channel that
+                             isn't in the pool.  Surface so the operator
+                             can either promote (add to pool) or drop. -->
+                        {#each ghostTracksFor(ai) as gt (gt.idx)}
+                            <div class="channel-card verify-warn ghost-track">
+                                <div class="channel-head">
+                                    <span class="ch-name">⚠ {gt.track.channel}</span>
+                                    <span class="row-warn">
+                                        track references a channel not in the LightFx pool
+                                    </span>
+                                    <button class="small" on:click={() => addChannel(gt.track.channel)}
+                                            title="Add this channel name to the instance pool (you'll need to pick a port in the Channels card).">
+                                        + Add to pool
+                                    </button>
+                                    <button class="small danger" on:click={() => removeTrack(ai, gt.idx)}
+                                            title="Drop this track from the program.">
+                                        × Drop track
+                                    </button>
+                                </div>
+                            </div>
+                        {/each}
 
                         <!-- Landing bindings -->
                         <div class="subsection-head">
@@ -852,65 +1107,9 @@
             </div>
         {/if}
 
-        <!-- ─── Program selector (Rule 38) ─────────────────────────── -->
-        <div class="section-head">
-            Program selector
-            <span class="hint">drive program switching from an RC channel — one µs band per program</span>
-        </div>
-        <ChannelBandCluster
-            channelLabel="Selector channel"
-            emptyOption="— none (use first program always) —"
-            options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
-            inputId={cfg.programSelector.input}
-            bands={buildSelectorBands(cfg.programSelector.ranges,
-                liveUsFor(cfg.programSelector.input)?.us ?? null,
-                liveUsFor(cfg.programSelector.input)?.valid ?? false)}
-            overlapIndices={detectRangeOverlaps(cfg.programSelector.ranges)}
-            liveUs={liveUsFor(cfg.programSelector.input)?.us ?? null}
-            liveValid={liveUsFor(cfg.programSelector.input)?.valid ?? false}
-            busy={busy}
-            onInputChange={(v) => setSelectorInput(v)} />
-
-        {#if cfg.programSelector.input}
-            <div class="form-row">
-                <span class="field-label">Hysteresis</span>
-                <input class="field-input narrow" type="number" min="0" max="500" step="5"
-                       value={cfg.programSelector.hysteresisUs}
-                       on:change={(e) => setSelectorHysteresis(numValue(e))} disabled={busy} />
-                <span class="unit">µs</span>
-                <span class="hint">prevents the selector flipping when the stick sits on a range boundary</span>
-            </div>
-            {#each cfg.programSelector.ranges as r, i (i)}
-                <div class="form-row range-row">
-                    <span class="rng-idx">#{i + 1}</span>
-                    <span class="field-label">µs band</span>
-                    <input class="field-input narrow" type="number" min="800" max="2200" step="10"
-                           value={r.fromUs}
-                           on:change={(e) => setSelectorRange(i, { fromUs: numValue(e) })} disabled={busy} />
-                    <span class="trigger-pm">–</span>
-                    <input class="field-input narrow" type="number" min="800" max="2200" step="10"
-                           value={r.toUs}
-                           on:change={(e) => setSelectorRange(i, { toUs: numValue(e) })} disabled={busy} />
-                    <span class="field-label">Program</span>
-                    <select class="field-input" value={r.program}
-                            on:change={(e) => setSelectorRange(i, { program: selValue(e) })} disabled={busy}>
-                        <option value="">— pick —</option>
-                        {#each activeNames as n}<option value={n}>{n}</option>{/each}
-                    </select>
-                    <button class="small danger btn-slot" on:click={() => removeSelectorRange(i)} disabled={busy}>× Remove</button>
-                </div>
-            {/each}
-            <div class="form-row">
-                <button class="small" on:click={onAddSelectorRange}
-                        disabled={busy || cfg.activePrograms.length === 0}>+ Add range</button>
-                <span class="hint">add one range per program; ranges MUST NOT overlap</span>
-            </div>
-            {#if selectorErrs.length > 0}
-                <ul class="sel-issues">
-                    {#each selectorErrs as msg}<li class="sel-issue err">⚠ {msg}</li>{/each}
-                </ul>
-            {/if}
-        {/if}
+        <!-- (Program selector moved above Active programs 2026-05-26
+             so the LightFx-instance's RC input sits next to the rest of
+             the instance-level config.) -->
     {/if}
 </div>
 
@@ -920,18 +1119,19 @@
     .header-actions button { height: 28px; box-sizing: border-box; }
 
     .section-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-bright); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 8px; }
-    .section-head .hint { font-size: 9px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-dim); font-style: italic; }
+    /* `.section-head .hint` reset lives in global style.css (Rule 50). */
     .section-head.section-error { color: var(--error); border-bottom-color: var(--error); }
     .section-err-tag { font-size: 9px; font-weight: 700; color: var(--error); padding: 1px 6px; border: 1px solid var(--error); border-radius: 3px; letter-spacing: 0.5px; text-transform: uppercase; }
     .subsection-head { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin: 10px 0 6px; padding-bottom: 3px; border-bottom: 1px dashed var(--border); display: flex; align-items: baseline; gap: 8px; }
-    .subsection-head .hint { font-size: 9px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-dim); font-style: italic; }
+    /* `.subsection-head .hint` reset lives in global style.css (Rule 50). */
     .subsection-head.section-warn { color: var(--warning); border-bottom-color: var(--warning); }
     .section-warn-tag { font-size: 9px; font-weight: 700; color: var(--warning); padding: 1px 6px; border: 1px solid var(--warning); border-radius: 3px; letter-spacing: 0.5px; text-transform: uppercase; }
 
+    /* `.unit`, `.hint` / `.hint.compact/warn/err`, `.help-text` live in
+       global style.css (Rule 50 typography).  `.field-label` keeps the
+       10 px local override — dense panel choice. */
     .field-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-dim); }
-    .unit        { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
     .trigger-pm  { margin: 0 4px; color: var(--text-dim); font-family: var(--font-mono); font-weight: 700; }
-    .hint        { font-size: 10px; color: var(--text-dim); font-style: italic; }
 
     /* ── Active-list row ── */
     .active-row { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 5px; margin-bottom: 8px; }

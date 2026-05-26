@@ -51,16 +51,39 @@ type ProgramSelectorDTO struct {
 	Ranges       []ProgramSelectorRangeDTO `yaml:"ranges,omitempty"         json:"ranges"`
 }
 
+// LightFxChannelDTO — instance-owned LED channel binding.  Lifted out
+// of per-program tracks 2026-05-27: instead of every program file
+// independently naming + picking ports, the LightFx instance declares
+// its channel set ONCE here.  Programs reference channels by Name;
+// the firmware (Phase 2 work) reads this block to resolve names to
+// physical output ports without falling back to /hubfx.yaml ports[].
+//
+// Port may be nil immediately after auto-derivation from pre-existing
+// programs (when /lightfx.yaml predates schema_version 2 and Studio
+// derived the channel list from program tracks but couldn't infer the
+// physical port).  Operator picks the port in the Studio Channels card;
+// until then the channel is silent.
+type LightFxChannelDTO struct {
+	Name                 string       `yaml:"name"                              json:"name"`
+	Port                 *PortRefDTO  `yaml:"port,omitempty"                    json:"port"`
+	DefaultBrightnessPct uint8        `yaml:"default_brightness_pct,omitempty"  json:"defaultBrightnessPct"`
+}
+
 // LightFxConfigDTO is the top-level /lightfx.yaml shape.  Programs
 // are FULL LittleFS paths (e.g. "/lightfx/programs/helicopter_off.yaml"),
 // not bare names, so the firmware can `fopen()` them directly.  Studio
 // derives the display name from the basename minus .yaml.
 type LightFxConfigDTO struct {
-	SchemaVersion       int                `yaml:"schema_version"          json:"schemaVersion"`
-	Enabled             bool               `yaml:"enabled"                 json:"enabled"`
-	MasterBrightnessPct uint8              `yaml:"master_brightness_pct"   json:"masterBrightnessPct"`
-	Programs            []string           `yaml:"programs"                json:"programs"`
-	ProgramSelector     ProgramSelectorDTO `yaml:"program_selector,omitempty" json:"programSelector"`
+	SchemaVersion       int                 `yaml:"schema_version"          json:"schemaVersion"`
+	Enabled             bool                `yaml:"enabled"                 json:"enabled"`
+	MasterBrightnessPct uint8               `yaml:"master_brightness_pct"   json:"masterBrightnessPct"`
+	// Channels[] — instance-owned LED channel pool (since v2).  Programs
+	// reference channels by name; firmware-side resolution prefers this
+	// list over /hubfx.yaml port labels.  Phase 1 (this commit) emits
+	// the block; firmware ignores unknown fields until Phase 2 wires it.
+	Channels            []LightFxChannelDTO `yaml:"channels,omitempty"      json:"channels"`
+	Programs            []string            `yaml:"programs"                json:"programs"`
+	ProgramSelector     ProgramSelectorDTO  `yaml:"program_selector,omitempty" json:"programSelector"`
 }
 
 // ProgramFileInfo — entry returned by ListAvailablePrograms so the
