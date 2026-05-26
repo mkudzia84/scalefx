@@ -318,20 +318,28 @@ struct RofItem {
     char     soundPath[64] = {};
 };
 
+// Phase 4 polish 2026-05-26: heater is open-loop (no temp sensor wired
+// on HubFX); element voltage scaling lives on the role layer (Rule 42);
+// heater activation channel added (Rule 43 named-channel gate); heater
+// mode set is {continuous, cycle} — cycle is gun-layer duty-cycle for
+// power conservation (no thermistor required).
 struct SmokeConfig {
     PortRef  heaterPort;
-    uint16_t heaterElementMv  = 0;   // element rated voltage (0=use port voltage)
-    uint8_t  heaterMode       = 0;   // 0=always_on, 1=bang_bang, 2=closed_loop
-    int16_t  heaterTargetCx10 = 1500;
-    uint8_t  heaterScalingMode = 0;  // 0=linear (V_e/V_p), 1=quadratic, 2=constant_duty
-    uint8_t  heaterConstantDutyPct = 100;
+    uint16_t heaterElementMv  = 6000;  // rated element voltage (default 6 V smoke cartridge)
+    uint8_t  heaterMode       = 0;     // 0=continuous, 1=cycle
+    uint16_t heaterCycleOnMs  = 5000;  // CYCLE: on-phase duration
+    uint16_t heaterCycleOffMs = 3000;  // CYCLE: off-phase duration
+    // Rule 43 activation gate — optional named-channel from /hubfx.yaml inputs[].
+    char     heaterActivationInput[kInputNameMax] = {};
+    uint16_t heaterActivationThresholdUs  = 1500;
+    uint16_t heaterActivationHysteresisUs = 25;
 
     PortRef  fanPort;
-    uint16_t fanElementMv     = 0;
-    uint8_t  fanMode          = 0;   // 0=off, 1=continuous, 2=puff_per_shot, 3=puff_on_fire_active
-    uint16_t fanPuffMs        = 200;
-    uint8_t  fanScalingMode   = 0;
-    uint8_t  fanConstantDutyPct = 100;
+    uint16_t fanElementMv        = 6000;  // rated motor voltage (default 6 V smoke fan)
+    uint8_t  fanMode             = 1;     // 0=continuous, 1=pulse  (disabled = unset fanPort)
+    uint16_t fanPulseDurationMs  = 100;   // PULSE: sinusoid envelope period
+                                          //   pct(t) = 50 + 50*sin(π*t/dur) over t∈[0,dur]
+                                          //   100 ms default matches 600 RPM firing period
 };
 
 struct AxisProfile {
@@ -422,16 +430,19 @@ guns:
     smoke:
       heater:
         port: { board: hub, kind: pwm, idx: 1 }
-        elementMv: 5000          # 5 V heater on the 8 V rail → 63% duty (linear)
-        mode: bang_bang
-        targetCx10: 1500
-        scaling: linear
+        elementMv: 6000          # 6 V heater on the 8 V rail → 75% duty (linear, role-applied)
+        mode: cycle              # continuous | cycle
+        cycleOnMs:  5000         # cycle: 5 s on
+        cycleOffMs: 3000         # cycle: 3 s off (≈ 63 % duty cycle, 8 s period)
+        activation:              # Rule 43 — optional RC gate
+          input: smoke_arm
+          thresholdUs:  1500
+          hysteresisUs: 25
       fan:
         port: { board: hub, kind: pwm, idx: 2 }
-        elementMv: 5000
-        mode: puff_per_shot
-        puffMs: 200
-        scaling: linear
+        elementMv: 6000
+        mode: pulse                 # continuous | pulse (sinusoidal envelope per shot)
+        pulseDurationMs: 100        # one sinusoid lasts this long (≈ firing period)
     yaw:
       enabled: true
       servoPort: { board: hub, kind: servo, idx: 0 }
@@ -499,30 +510,46 @@ different boards.
    - When armed + fire flag: schedule shots at `rofItems[i].rpm` (interval
      = 60000 / rpm ms). Each shot fires the muzzle flash, plays
      `rofItems[i].soundPath`, optionally pulses recoil + fan puff.
-   - **Voltage scaling** for heater/fan PWM duty:
-     ```cpp
-     uint8_t computeDutyPct(uint16_t elementMv, uint16_t portMv,
-                            uint8_t mode, uint8_t constantDuty) {
-         if (mode == 2 /*constant*/)  return constantDuty;
-         if (elementMv == 0 || portMv == 0) return 100;  // unknown → full
-         float ratio = float(elementMv) / float(portMv);
-         if (ratio >= 1.0f) return 100;
-         if (mode == 1 /*quadratic*/) ratio = ratio * ratio;
-         return uint8_t(ratio * 100.0f + 0.5f);
-     }
-     ```
-   - **Heater modes**:
-     - `always_on`: write `dutyPct` continuously while armed.
-     - `bang_bang`: when temp sensor present, drive at `dutyPct` until
-       `target + 5°C`, then 0 % until `target - 5°C`. When no sensor,
-       fall back to `always_on` with a warning logged.
-     - `closed_loop`: existing PID path (HeaterRole already implements
-       it dual-mode).
-   - **Fan modes**:
-     - `off`: never.
-     - `continuous`: while fire flag is active, run at `dutyPct`.
-     - `puff_per_shot`: pulse to `dutyPct` for `fanPuffMs` on each shot.
-     - `puff_on_fire_active`: pulse on rising edge of fire flag.
+   - **Voltage scaling** lives on the ROLE LAYER (Rule 42, Phase 4
+     polish 2026-05-26).  The gun service pushes `element_mv` to
+     `HeaterRole` / `DcMotorRole` via `HEATER_SET_ELEMENT` /
+     `MOTOR_SET_ELEMENT` after `claimPorts()`; the role internally
+     calls `sfx_core::scaleDuty(pct, portMaxDuty, portRailMv, element)`
+     when it commands the PWM port.  Gun code never sees voltages —
+     only intent (`commandHeater(on)`, `commandFanPct(100)`).
+   - **Heater behaviour** (open-loop — 2026-05-26):
+     HubFX has no temperature sensor wired to the smoke heater, so
+     the heater is open-loop with two modes set by `heaterMode`:
+     - `continuous` — drive at element-scaled duty whenever
+       `_smokeArmed && _heaterActive` (Rule 43 gate; unbound channel
+       ⇒ permanently allowed); OFF otherwise.
+     - `cycle` — gun-layer duty-cycle: while smoke is armed, drive
+       the heater for `heaterCycleOnMs`, then off for
+       `heaterCycleOffMs`, repeating.  Used for power conservation
+       or to limit cartridge temperature without a thermistor.  The
+       phase clock marches independently of the Rule 43 activation
+       gate (commandHeater() ANDs the gate at the wire boundary, so
+       a gated-off ON-phase produces no wire-out; the next phase
+       flip happens on schedule).
+     Voltage scaling against the port rail happens on the role layer
+     (`HeaterRole::tick()` → `scaleDuty()`).  Bang-bang (closed-loop
+     thermostat) is intentionally absent — the role implementation
+     still supports it, but the GunFx config layer doesn't expose it
+     until temperature sensor hardware lands.
+   - **Fan modes** (canonical 2-mode set):
+     - `continuous`: run at element-rated voltage while firing AND
+       smoke armed.
+     - `pulse`: sinusoidal envelope per shot — fan idles at **50 %
+       base** while firing+armed, then on every shot ramps to
+       **100 % peak** at mid-duration and back to 50 % along
+       `pct(t) = 50 + 50 × sin(π × t / fanPulseDurationMs)`.  Default
+       100 ms ≡ 600 RPM firing period, so the sinusoid completes
+       once per shot at default cadence.  Faster ROFs collapse
+       adjacent envelopes (each shot restarts the clock); motor
+       inertia smooths the resulting waveform.  Wire chatter is
+       rate-limited to ~50 Hz (`kFanUpdatePeriodMs = 20 ms`).
+     - "Fan disabled" is encoded by leaving `fanPort` empty — every
+       fan command early-returns on that.  No separate `off` mode.
 
 3. **Yaw/pitch axis** — each `AxisProfile` instantiates a
    `MotionProfile1D` that consumes the input µs and produces a target
@@ -639,11 +666,17 @@ full rebuild. Companion: `app/go/studio/frontend/src/lib/gunfx.ts`
 │ │ Servo [HubFX SRV1 (5V)                    ▾ ]                  ││
 │ │ Center [1500]µs · Jerk [200]µs · Hold [80]ms                   ││
 │ │                                                                 ││
-│ │ ── SMOKE ──────────────────────────────────────[⚠ no PWM free?]── ││
-│ │ HEATER  Port [HubFX CH4 (8V) ▾]  Element [5000]mV → 63% duty   ││
-│ │         Mode [bang_bang ▾]   Target [150.0]°C   Scaling [linear ▾]│
-│ │ FAN     Port [HubFX CH5 (8V) ▾]  Element [5000]mV → 63% duty   ││
-│ │         Mode [puff_per_shot ▾]   Puff [200]ms                   ││
+│ │ ── GUN SMOKE · sibling card ───[smoke armed][🔥 heating][💨 fan]──┐│
+│ │ Activation channel  [SBUS ch 7 · smoke_arm ▾]  Thr [1500]µs  Hyst 25│
+│ │ ┌─ HEATER ─────────────────┐  ┌─ FAN ─────────────────────────┐ ││
+│ │ │ Port [HubFX CH4 (8V) ▾]  │  │ Port [HubFX CH5 (8V) ▾]       │ ││
+│ │ │ Element [6000]mV         │  │ Element [6000]mV              │ ││
+│ │ │ Mode [cycle ▾]            │  │ Mode [pulse (sinusoidal) ▾]   │ ││
+│ │ │ On [5000]ms  (5.0 s)     │  │ Duration [100]ms (0.10 s)     │ ││
+│ │ │ Off [3000]ms (3.0 s)     │  │ envelope: 50% → 100% → 50%    │ ││
+│ │ │ average duty: 63%        │  └───────────────────────────────┘ ││
+│ │ └──────────────────────────┘                                     ││
+│ │ Header: [▶ Smoke ON][■ Smoke OFF]  ← simulate cluster              ││
 │ │                                                                 ││
 │ │ ── YAW (optional) ─────────────────────────[☑ Enabled]──────── ││
 │ │ ┌─ Channel-setup cluster (axis variant) ─────────────────────┐ ││

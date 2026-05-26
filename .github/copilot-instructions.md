@@ -2115,6 +2115,67 @@ Markup pattern (the `section-warn` + `section-warn-tag` classes are Rule 39 — 
 
 References: [LandingPanel.svelte](../app/go/studio/frontend/src/lib/tabs/LandingPanel.svelte) servo + LED pickers, [ProgramEditorDialog.svelte](../app/go/studio/frontend/src/lib/dialogs/ProgramEditorDialog.svelte) per-channel LED picker, [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) muzzle / smoke / yaw / pitch.
 
+### 50. Canonical Description / Hint Typography (Rule 34 extension)
+
+Studio's "description" text — every `<span class="hint">on whenever smoke is armed AND the activation channel is high</span>` next to a section header, every `<span class="unit">µs</span>` after a numeric input, every yellow "no PWM port free" non-blocking warning — uses **ONE font ladder + ONE colour ladder** defined in [`style.css`](../app/go/studio/frontend/src/style.css). Component `<style>` blocks MUST NOT redefine `.hint` / `.help` / `.note` / `.subtitle` locally (this is how `.hint` ended up 10 px in GunFxPanel + LightFxPanel and 11 px in the global `.field-hint` — Rule 34 means one design language).
+
+**The taxonomy:**
+
+| Class | Use when | Size · style · colour |
+|---|---|---|
+| `.hint` | Inline description next to a section header, field row, or op-cluster — explains what the section / field / control does. | 11 px italic `--text-dim` |
+| `.hint.compact` | Tighter 10 px variant for dense rows where vertical space is tight (e.g. inside a `.section-head` strip next to a title). | 10 px italic `--text-dim` |
+| `.hint.warn` | Non-blocking warning (Rule 39 yellow) — e.g. "no PWM port free, attach role on IO tab". | 11 px italic `--warning` |
+| `.hint.err` | Blocking error (Rule 35 red) — pair with `.verify-error` field border. | 11 px italic `--error` |
+| `.help-text` | BLOCK-level paragraph standing alone (no inline element next to it) — empty-state copy, in-section explainers. NOT italic, line-height 1.4, max-width ~70 ch. | 11 px regular `--text-dim` |
+| `.unit` | Suffix after numeric inputs (`%`, `µs`, `mV`, `ms`). Always immediately right of `.field-input.narrow`. | 10 px mono `--text-dim` |
+| `.field-label` | Form-row label preceding an input (already canonical in [`style.css`](../app/go/studio/frontend/src/style.css)). | 12 px UPPERCASE `--text-dim`, letter-spacing 0.3 px |
+| `.field-hint` | **Alias for `.hint`** — kept for back-compat with global rows that already use it; new code uses `.hint`. | (same as `.hint`) |
+
+**Headings + data entry — not "descriptions", separate ladder:**
+
+| Element | Look |
+|---|---|
+| `<h3>`/`.card-header h3` | 14 px weight 700 `--text-bright` (panel/card title) |
+| `<h4>`/`.card-header.inner h4` | 13 px weight 600 `--text-bright` (sub-card title) |
+| `.section-head` | 11 px UPPERCASE weight 700 `--text-bright` letter-spacing 0.6 px (section divider) |
+| `.subsection-head` | 10 px UPPERCASE weight 600 `--text-dim` letter-spacing 0.5 px (sub-section) |
+| `.field-input` | 13 px mono `--text` (data entry — bright because it's an interactive value) |
+| `.state-pill` / `.act-readout` | 10 px mono ALL-CAPS with semantic colour (live status) |
+
+**Colour ladder** (all from CSS variables — never hex):
+
+- `--text` (regular text) → `--text-bright` (emphasised headings + data entry values)
+- `--text-dim` (descriptions + labels + units) — never use a darker grey for "extra dim"; if it needs to fade further, the design is wrong
+- Semantic: `--success`, `--warning`, `--error`, `--accent` — use ONLY via the modifier classes (`.hint.warn`, `.hint.err`, `.section-warn-tag`, `.state-pill.fan`, etc.). Never inline a hex colour for these.
+
+**Quick visual map of a typical section:**
+
+```
+<h3>Card title</h3>                       ← --text-bright, 14 px weight 700
+<div class="section-head">SECTION         ← --text-bright, 11 px UPPERCASE weight 700
+    <span class="hint">explainer text     ← --text-dim,    11 px italic
+    </span>
+</div>
+<div class="subsection-head">Sub          ← --text-dim,    10 px UPPERCASE weight 600
+    <span class="hint compact">…</span>   ← --text-dim,    10 px italic (compact)
+</div>
+<div class="form-row">
+    <span class="field-label">Label</span> ← --text-dim,   12 px UPPERCASE
+    <input class="field-input narrow">     ← --text,       13 px mono
+    <span class="unit">µs</span>           ← --text-dim,   10 px mono
+    <span class="hint">trailing tip</span> ← --text-dim,   11 px italic
+</div>
+<div class="help-text">Block paragraph…   ← --text-dim,    11 px regular
+</div>
+```
+
+**If a description needs a SEMANTIC variant** (warning / error) reach for the modifier class (`.hint.warn`, `.hint.err`) — DO NOT invent a new colour or class. If the design genuinely needs a NEW semantic class (e.g. "info" cyan), add it to [`style.css`](../app/go/studio/frontend/src/style.css) under the description-typography block + back-fill the matrix above.
+
+**Component `<style>` blocks** that previously defined a local `.hint { font-size: 10px; … }` get those rules deleted; the global `.hint` takes over.
+
+Reference: [style.css description typography block](../app/go/studio/frontend/src/style.css) (search for "Description / hint typography"), [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) gun-smoke card subsection heads.
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host
