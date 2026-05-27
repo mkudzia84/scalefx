@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include <platform/sfx_platform.h>     // sfxPsramCalloc / sfxPsramFree
 #include <serial/roles.h>
 #include <serial/diag_log.h>
 
@@ -46,6 +47,15 @@ template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::L
 class LightControllerT {
 public:
     LightControllerT() = default;
+    ~LightControllerT() {
+        // Symmetric with the PSRAM alloc in configure().  Singletons
+        // never destruct on embedded, but a Studio/host-side unit test
+        // could; keep alloc/free paired so leak checkers stay quiet.
+        if (_programs) {
+            sfxPsramFree(_programs);
+            _programs = nullptr;
+        }
+    }
 
     void bind(TTopology* topo, TLandingService* ll) {
         _topo = topo;
@@ -56,6 +66,24 @@ public:
     /// out of scope.  Programs are matched by `idx` (their position in
     /// the array) on `LIGHTFX_PROGRAM_SELECT`.
     void configure(const Program* programs, uint8_t count) {
+        // Phase 4 polish (2026-05-27): the program table lives in PSRAM
+        // (ESP32) / heap (Pico) instead of the controller's BSS — each
+        // Program is ~2.7 KB so the kMaxPrograms × that ≈ 22 KB array
+        // was a sizable static DRAM consumer.  configure() is operator-
+        // driven (boot once + config reload) and selectProgram /
+        // claimPorts / setMasterBrightness walk it at human cadence,
+        // not audio rate — PSRAM latency is invisible here.  Lazy-alloc
+        // on first call; idempotent across reloads.
+        if (!_programs) {
+            _programs = static_cast<Program*>(
+                sfxPsramCalloc(kMaxPrograms, sizeof(Program)));
+            if (!_programs) {
+                SFX_LOG_ERROR("[lightfx] program table alloc failed (%u bytes) — programs disabled",
+                              (unsigned)(kMaxPrograms * sizeof(Program)));
+                _numPrograms = 0;
+                return;
+            }
+        }
         _numPrograms = 0;
         for (uint8_t i = 0; i < count && i < kMaxPrograms; ++i) {
             _programs[_numPrograms++] = programs[i];
@@ -138,8 +166,12 @@ private:
     TTopology*       _topo  = nullptr;
     TLandingService* _ll    = nullptr;
 
-    Program _programs[kMaxPrograms] = {};
-    uint8_t _numPrograms            = 0;
+    // Program table — PSRAM-allocated in configure(); access gated by
+    // `_numPrograms` (0 means alloc failed or never configured, in
+    // which case every method short-circuits via existing bounds
+    // checks).  Capacity is fixed at kMaxPrograms.
+    Program* _programs    = nullptr;
+    uint8_t  _numPrograms = 0;
 
     int8_t  _activeIdx            = -1;
     uint8_t _masterBrightnessPct  = 100;

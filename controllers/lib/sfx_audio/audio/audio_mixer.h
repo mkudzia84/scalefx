@@ -52,11 +52,24 @@
 //
 // ESP32-S3: 24000 frames/ch = 0.5 s at 48 kHz.  8 ch × 2 (L+R) × 24000
 //   × 4 bytes = 1.5 MB total in PSRAM (8 MB available).
-//   SD read batch = 16 KB (4 sectors) reduces SD access frequency.
+//   SD read batch = 32 KB allocated from DMA-cap INTERNAL SRAM (re-tried
+//   2026-05-27 after the multi-track stutter was reassessed as an SD-card
+//   side issue rather than a cache-coherency problem on the audio path).
+//   SDMMC peripheral DMAs straight into the buffer — no PSRAM bounce
+//   copy — lifting raw SD read throughput from ~1 MB/s to ~14 MB/s.
+//   The audio_mixer.ipp alloc path falls back to PSRAM with a WARN log
+//   if the DMA-cap pool is exhausted, so the slower-but-functional
+//   path is always available.  Per-channel WAV decode buffers stay in
+//   PSRAM (1.5 MB total — won't fit in internal SRAM).
 // Pico: Smaller buffers in SRAM heap.
 #if SFX_PLATFORM_ESP32
 constexpr int WAV_BUF_FRAMES       = 24000;     // decoded float frames per track (PSRAM, 0.5 s @ 48 kHz)
-constexpr int WAV_SD_READ_BYTES    = 16384;     // bytes per SD card read batch (PSRAM)
+constexpr int WAV_SD_READ_BYTES    = 32768;     // bytes per SD card read batch (DMA-cap SRAM)
+// Sizing rationale: 32 KB = 16384 source frames @ 16-bit mono = ~680 ms
+// of source audio per SD read.  A 50% refill (12000 source frames →
+// 24000 bytes) now completes in ONE SD read instead of two — halves
+// SD round-trips when two channels alternate refills (Phase 4 polish
+// 2026-05-27, addressing 2-track stutter).
 // Hard cap for `AudioPlaybackOptions::preloadIntoMemory`: 96 000 source
 // frames = 2 s @ 48 kHz stereo = 768 KB allocated from PSRAM per
 // preloaded channel.  At 8 MB PSRAM and at most ~4 hot looping samples
@@ -402,8 +415,16 @@ private:
         char filename[CHANNEL_FILENAME_MAX] = {};
         bool mute             = false;
         
-        // Queue for this channel
-        QueuedSound queue[QUEUE_SIZE_PER_CHANNEL];
+        // Queue for this channel — pointer to a PSRAM-allocated slot
+        // array of capacity QUEUE_SIZE_PER_CHANNEL.  Allocated in
+        // AudioMixer::begin(), freed in shutdown().  Each slot is ~150 B;
+        // 4 slots × 8 channels = ~5 KB the singleton no longer carries
+        // in BSS.  Touched only on playAsync / queueSound /
+        // checkAndPlayNextQueued / clearQueue — protocol-rate cadence,
+        // PSRAM latency invisible.  The CHANNEL ITSELF stays in DRAM
+        // (read every audio frame by produceFrame()); only this queue
+        // member is indirected.
+        QueuedSound* queue    = nullptr;
         int queueHead         = 0;
         int queueTail         = 0;
         QueueLoopBehavior pendingLoopBehavior = QueueLoopBehavior::StopImmediate;
@@ -493,8 +514,13 @@ private:
     // Command queue mutex (cross-core: Core 0 queues, producer task dequeues)
     SfxMutex _cmdMutex;
 
-    // Command queue (async play/stop/setVolume from Core 0 → producer task)
-    Command _cmdQueue[AUDIO_CMD_QUEUE_SIZE];
+    // Command queue (async play/stop/setVolume from Core 0 → producer task).
+    // PSRAM-allocated in begin() — capacity = AUDIO_CMD_QUEUE_SIZE; each
+    // Command is ~150 B so the table is ~2.4 KB the singleton no longer
+    // carries in BSS.  Control-rate (Core 0 protocol packets → mutex →
+    // producer drain); PSRAM latency invisible.  Indices stay in DRAM
+    // for cross-core atomic semantics (Rule 15).
+    Command* _cmdQueue = nullptr;
     std::atomic<int> _cmdQueueHead{0};       // Core 0 writes (mutex), producer reads
     std::atomic<int> _cmdQueueTail{0};       // Producer writes (mutex), Core 0 reads
 

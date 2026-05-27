@@ -14,8 +14,19 @@
 
 template<typename TPool>
 bool YamlParser<TPool>::allocatePools() {
-    _nodePool = new (std::nothrow) YamlNode[TPool::MAX_NODES]();
-    _stringPool = new (std::nothrow) char[TPool::STRING_POOL_SIZE]();
+    // Phase 4 polish (2026-05-27): pull the node + string pools from
+    // PSRAM (ESP32) / heap (Pico) explicitly instead of relying on
+    // `new[]` to land there by chance.  HubFX pool sizes are large
+    // (LargeYamlPool ≈ 26 KB, HubFxYamlPool ≈ 15 KB, LightFxProgramYamlPool
+    // ≈ 14 KB) and a malloc fallback into internal DRAM during boot
+    // fragments the DMA-cap pool — that was the failure mode that
+    // crashed audio I²S init on 2026-05-27.  YamlNode is trivially
+    // constructible (POD-like) and every default member init is zero
+    // (Scalar=0, nullptr=0), so calloc-zero matches default-init.
+    _nodePool = static_cast<YamlNode*>(
+        sfxPsramCalloc(TPool::MAX_NODES, sizeof(YamlNode)));
+    _stringPool = static_cast<char*>(
+        sfxPsramCalloc(TPool::STRING_POOL_SIZE, 1));
     if (!_nodePool || !_stringPool) {
         reset();
         snprintf(_error, sizeof(_error), "Pool allocation failed");
@@ -28,8 +39,11 @@ bool YamlParser<TPool>::allocatePools() {
 
 template<typename TPool>
 void YamlParser<TPool>::reset() {
-    delete[] _nodePool;
-    delete[] _stringPool;
+    // sfxPsramFree(nullptr) is a no-op (free(nullptr) is per the C
+    // spec; heap_caps_free matches), so the unconditional pair is safe
+    // whether allocatePools half-succeeded or never ran.
+    sfxPsramFree(_nodePool);
+    sfxPsramFree(_stringPool);
     _nodePool = nullptr;
     _stringPool = nullptr;
     _nodeCount = 0;
