@@ -59,10 +59,12 @@
  */
 
 #define FIRMWARE_VERSION "2.13.0-hubfx"
-#define BUILD_NUMBER     330
+#define BUILD_NUMBER     357
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <esp_heap_caps.h>     // memory-instrumentation helper (Phase 4 polish 2026-05-27)
+#include <esp_psram.h>
 
 #include <platform/sfx_platform.h>
 #include <serial/diag_log.h>
@@ -499,6 +501,49 @@ static void applyLightFxConfigCallback(const LightFxYamlConfig& cfg) {
         &storageReadFile<FlashModule>);
 }
 
+// ─── Memory-instrumentation helper (Phase 4 polish 2026-05-27) ──────
+//
+// Prints a single-line memory breakdown across the three pools that
+// matter for the audio + SD subsystems:
+//
+//   PSRAM (OPI octal, 80 MHz, 8 MB on HubFX) — bulk audio storage
+//     (decoded WAV float buffers, ring buffer).  ~95 % idle in
+//     practice; not the bottleneck.
+//   DRAM (internal SRAM, ~328 KB total) — task stacks, IDF baseline,
+//     and (since 2026-05-27) the audio mixer's `_sdReadBuf` 32 KB
+//     bounce buffer.  This is the scarce pool — log it so we catch
+//     regressions early.
+//   DMA-capable DRAM (subset of DRAM that can be a DMA target) —
+//     this is what the SDMMC driver actually consumes when reading
+//     into our internal-SRAM bounce.  Track separately because some
+//     internal SRAM is reserved IRAM (instruction-only).
+//
+// Tagged `[mem]` so an operator can grep boot logs in one shot.
+// Called from setup() and from a 30-second timer in loop().
+static void logMemoryHeapCaps(const char* tag) {
+    const size_t psramTotal     = esp_psram_get_size();
+    const size_t psramFree      = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    const size_t psramLargest   = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    const size_t dramTotal      = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    const size_t dramFree       = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t dramLargest    = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const size_t dramDmaFree    = heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    const size_t dramDmaLargest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
+    SFX_LOG_INFO(
+        "[mem] %s | "
+        "PSRAM %u/%u KB free (largest %u KB) | "
+        "DRAM %u/%u KB free (largest %u KB) | "
+        "DMA-cap %u KB free (largest %u KB)",
+        tag,
+        (unsigned)(psramFree / 1024),  (unsigned)(psramTotal / 1024),
+        (unsigned)(psramLargest / 1024),
+        (unsigned)(dramFree / 1024),   (unsigned)(dramTotal / 1024),
+        (unsigned)(dramLargest / 1024),
+        (unsigned)(dramDmaFree / 1024),
+        (unsigned)(dramDmaLargest / 1024));
+}
+
 void setup() {
     // I²C + PCA9685 + INA226 — must run before board.begin() so the
     // PWM port descriptors point at a live chip (begin() will call
@@ -689,6 +734,12 @@ void setup() {
 
     SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out + storage + audio + alerts + USB host + topology + input + landing + lightfx + gear + engine + gun",
                  FIRMWARE_VERSION, (unsigned)BUILD_NUMBER);
+
+    // Boot baseline (Phase 4 polish 2026-05-27).  Capture free SRAM /
+    // PSRAM / DMA-cap pools AFTER every policy + service has done its
+    // allocations so we see the steady-state headroom.  Periodic
+    // re-emission from loop() (every 30 s) flags drift.
+    logMemoryHeapCaps("boot baseline");
 }
 
 void loop() {
@@ -747,6 +798,18 @@ void loop() {
         board.policy<InputDispatcherService>(),
         kHubFx.data(),
         telemetryLastMs);
+
+    // Periodic memory snapshot (Phase 4 polish 2026-05-27).  Once per
+    // 30 s we re-emit the heap-caps breakdown; an operator can grep
+    // for `[mem]` and watch for SRAM creep over time (e.g. a slow
+    // leak in a service policy or audio source).  Cheap — three
+    // heap_caps queries.
+    static uint32_t lastMemLogMs = 0;
+    const uint32_t  nowMs = millis();
+    if (nowMs - lastMemLogMs >= 30000UL) {
+        lastMemLogMs = nowMs;
+        logMemoryHeapCaps("periodic");
+    }
 
     vTaskDelay(pdMS_TO_TICKS(1));
 }

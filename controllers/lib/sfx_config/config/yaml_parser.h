@@ -53,6 +53,7 @@
 #include <Arduino.h>
 #include <cstring>
 #include <cstdlib>
+#include <platform/sfx_platform.h>   // sfxPsramCalloc / sfxPsramFree
 
 // ============================================================================
 // Pool Configuration Presets

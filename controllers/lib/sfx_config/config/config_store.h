@@ -55,7 +55,9 @@
 #include <concepts>
 #include <cstring>
 #include <functional>
+#include <new>                          // placement-new for PSRAM-resident _data
 #include <type_traits>
+#include <platform/sfx_platform.h>      // sfxPsramMalloc / sfxPsramFree
 #include "yaml_parser.h"
 
 // ============================================================================
@@ -236,11 +238,13 @@ public:
      */
     void resetToDefaults();
 
-    /** @brief Get current config data (read-only) */
-    const Data& data() const { return _data; }
+    /** @brief Get current config data (read-only).
+     *  Lazy-allocates the PSRAM-resident storage on first access. */
+    const Data& data() const { ensureData(); return *_data; }
 
-    /** @brief Get mutable config data (for programmatic updates) */
-    Data& data() { return _data; }
+    /** @brief Get mutable config data (for programmatic updates).
+     *  Lazy-allocates the PSRAM-resident storage on first access. */
+    Data& data() { ensureData(); return *_data; }
 
     /** @brief Check if config was successfully loaded from file/string */
     bool isLoaded() const { return _loaded; }
@@ -257,21 +261,45 @@ public:
     /** @brief Default file path from schema */
     static const char* defaultPath() { return TSchema::defaultPath(); }
 
-    /** @brief Destructor — frees cached raw YAML */
-    ~ConfigStore() { freeRawYaml(); }
+    /** @brief Destructor — frees cached raw YAML + PSRAM-allocated _data */
+    ~ConfigStore() {
+        freeRawYaml();
+        if (_data) {
+            _data->~Data();
+            sfxPsramFree(_data);
+            _data = nullptr;
+        }
+    }
 
 private:
-    Data           _data{};             ///< Config data with default initializers
-    bool           _loaded    = false;
-    uint16_t       _fileSize  = 0;
+    /// Phase 4 polish (2026-05-27): _data lives in PSRAM (lazy-allocated
+    /// on first use via placement-new) instead of being a value member.
+    /// HubFxConfig + GunFxConfig + LandingConfig + AlertsConfig +
+    /// LightFxConfig combined ≈ 13-15 KB DRAM the singletons no longer
+    /// carry in BSS.  Read paths: apply translators (boot / config reload)
+    /// + status queries (protocol rate) — never on the audio path.
+    /// Placement-new (rather than calloc-zero) because some Data structs
+    /// have non-zero default initialisers (e.g. AudioPlaybackOptions
+    /// has loopCount=-1) that zero-fill would corrupt.
+    /// `mutable` so the const `data()` accessor can lazy-allocate.
+    mutable Data*  _data       = nullptr;
+    bool           _loaded     = false;
+    uint16_t       _fileSize   = 0;
     char           _lastError[128] = {};
-    FileReadFunc   _fileReader  = nullptr;
-    FileWriteFunc  _fileWriter  = nullptr;
+    FileReadFunc   _fileReader = nullptr;
+    FileWriteFunc  _fileWriter = nullptr;
     LoadedCallback _onLoaded;
 
-    // Raw YAML cache (for saveToFile)
+    // Raw YAML cache (for saveToFile) — PSRAM-allocated via sfxPsramMalloc.
     char*          _rawYaml    = nullptr;
     size_t         _rawYamlLen = 0;
+
+    /// Lazy-allocate _data in PSRAM + run the default constructor via
+    /// placement-new.  Returns true on success; false (with _data left
+    /// null) on PSRAM exhaustion — the caller short-circuits to an
+    /// error result.  Idempotent — re-running on an already-allocated
+    /// slot is a no-op.
+    bool ensureData() const;
 
     void storeRawYaml(const char* yaml, size_t len);
     void freeRawYaml();

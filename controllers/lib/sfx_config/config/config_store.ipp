@@ -8,6 +8,23 @@
 #define CONFIG_STORE_IPP
 
 // ============================================================================
+// PSRAM lazy-allocation of the Data slot
+// ============================================================================
+
+template<typename TSchema, typename TPool>
+bool ConfigStore<TSchema, TPool>::ensureData() const {
+    if (_data) return true;
+    void* mem = sfxPsramMalloc(sizeof(Data));
+    if (!mem) return false;
+    // Placement-new to invoke Data's default ctor — some schemas have
+    // non-zero default initialisers (loopCount=-1 in AudioPlaybackOptions,
+    // rpm=600 in RofItem, voltages=6000 in SmokeConfig, etc.) that
+    // calloc-zero would corrupt.
+    _data = new (mem) Data{};
+    return true;
+}
+
+// ============================================================================
 // Loading
 // ============================================================================
 
@@ -17,6 +34,14 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromString(const char* yaml, size_
     _lastError[0] = '\0';
     _loaded = false;
     _fileSize = 0;
+
+    // Allocate the PSRAM-resident data slot on first call.
+    if (!ensureData()) {
+        snprintf(_lastError, sizeof(_lastError),
+                 "PSRAM alloc failed (Data %u bytes)", (unsigned)sizeof(Data));
+        strncpy(result.error, _lastError, sizeof(result.error) - 1);
+        return result;
+    }
 
     if (!yaml || len == 0) {
         snprintf(_lastError, sizeof(_lastError), "Empty YAML input");
@@ -35,7 +60,7 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromString(const char* yaml, size_
 
     // Phase 2: Populate config struct from YAML tree
     resetToDefaults();
-    if (!TSchema::populate(_data, parser)) {
+    if (!TSchema::populate(*_data, parser)) {
         snprintf(_lastError, sizeof(_lastError), "Schema populate failed");
         strncpy(result.error, _lastError, sizeof(result.error) - 1);
         return result;
@@ -44,7 +69,7 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromString(const char* yaml, size_
 
     // Phase 3: Validate config against schema rules
     char validationError[128] = {};
-    if (!TSchema::validate(_data, validationError, sizeof(validationError))) {
+    if (!TSchema::validate(*_data, validationError, sizeof(validationError))) {
         snprintf(_lastError, sizeof(_lastError), "Validation: %s", validationError);
         strncpy(result.error, _lastError, sizeof(result.error) - 1);
         // Still mark as loaded — data is populated, just invalid
@@ -64,7 +89,7 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromString(const char* yaml, size_
 
     // Fire loaded callback
     if (_onLoaded) {
-        _onLoaded(_data);
+        _onLoaded(*_data);
     }
 
     return result;
@@ -83,11 +108,16 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromFile(const char* path) {
 
     const char* filePath = path ? path : TSchema::defaultPath();
 
-    // Allocate temporary read buffer
+    // Allocate temporary read buffer in PSRAM — 8 KB is a heavy
+    // transient that used to fall through `new[]` into whichever heap
+    // the allocator picked.  Explicit sfxPsramMalloc keeps the DMA-cap
+    // pool clean during boot config-load (same lesson as YAML pools
+    // in Phase 4 polish 2026-05-27).
     constexpr size_t MAX_CONFIG_SIZE = 8192;
-    char* buffer = new (std::nothrow) char[MAX_CONFIG_SIZE];
+    char* buffer = static_cast<char*>(sfxPsramMalloc(MAX_CONFIG_SIZE));
     if (!buffer) {
-        snprintf(_lastError, sizeof(_lastError), "Buffer allocation failed");
+        snprintf(_lastError, sizeof(_lastError), "Buffer allocation failed (%u bytes)",
+                 (unsigned)MAX_CONFIG_SIZE);
         strncpy(result.error, _lastError, sizeof(result.error) - 1);
         return result;
     }
@@ -97,13 +127,13 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromFile(const char* path) {
     if (bytesRead <= 0) {
         snprintf(_lastError, sizeof(_lastError), "File read failed: %s", filePath);
         strncpy(result.error, _lastError, sizeof(result.error) - 1);
-        delete[] buffer;
+        sfxPsramFree(buffer);
         return result;
     }
 
     // Parse the YAML content
     result = loadFromString(buffer, (size_t)bytesRead);
-    delete[] buffer;
+    sfxPsramFree(buffer);
     return result;
 }
 
@@ -113,7 +143,8 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromFile(const char* path) {
 
 template<typename TSchema, typename TPool>
 bool ConfigStore<TSchema, TPool>::validate(char* errBuf, size_t errBufSize) const {
-    return TSchema::validate(_data, errBuf, errBufSize);
+    if (!ensureData()) return false;
+    return TSchema::validate(*_data, errBuf, errBufSize);
 }
 
 // ============================================================================
@@ -122,7 +153,8 @@ bool ConfigStore<TSchema, TPool>::validate(char* errBuf, size_t errBufSize) cons
 
 template<typename TSchema, typename TPool>
 void ConfigStore<TSchema, TPool>::resetToDefaults() {
-    _data = Data{};
+    if (!ensureData()) return;
+    *_data = Data{};
 }
 
 // ============================================================================
@@ -170,7 +202,9 @@ ConfigResult ConfigStore<TSchema, TPool>::saveToFile(const char* path) {
 template<typename TSchema, typename TPool>
 void ConfigStore<TSchema, TPool>::storeRawYaml(const char* yaml, size_t len) {
     freeRawYaml();
-    _rawYaml = new (std::nothrow) char[len];
+    // PSRAM-explicit for the per-store YAML cache — held for the
+    // lifetime of the store, lazily reused by saveToFile().
+    _rawYaml = static_cast<char*>(sfxPsramMalloc(len));
     if (_rawYaml) {
         memcpy(_rawYaml, yaml, len);
         _rawYamlLen = len;
@@ -179,10 +213,8 @@ void ConfigStore<TSchema, TPool>::storeRawYaml(const char* yaml, size_t len) {
 
 template<typename TSchema, typename TPool>
 void ConfigStore<TSchema, TPool>::freeRawYaml() {
-    if (_rawYaml) {
-        delete[] _rawYaml;
-        _rawYaml = nullptr;
-    }
+    sfxPsramFree(_rawYaml);
+    _rawYaml = nullptr;
     _rawYamlLen = 0;
 }
 

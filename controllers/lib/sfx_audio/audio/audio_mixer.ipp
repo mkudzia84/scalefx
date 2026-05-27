@@ -18,6 +18,10 @@
 
 #include "audio_log.h"
 
+#if SFX_PLATFORM_ESP32
+#include <esp_heap_caps.h>     // heap_caps_malloc / MALLOC_CAP_DMA / MALLOC_CAP_INTERNAL
+#endif
+
 // ============================================================================
 //  CONSTANTS
 // ============================================================================
@@ -57,35 +61,99 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
         return false;
     }
 
-    // ---- Allocate SD read buffer from PSRAM ----
+    // ---- Allocate SD read buffer from DMA-cap internal SRAM ----
+    //
+    // Re-applying the direct-DMA-to-internal-SRAM path (originally built
+    // #345 2026-05-27, then rolled back at #353 after 2-track stutter).
+    // Per the user's reassessment, the stutter was most likely an SD
+    // card issue (random-read penalty / fragmentation / card transient),
+    // not the audio code path — so retry the fast path with the same
+    // 32 KB block.  MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL gives a
+    // DMA-coherent allocation; the SDMMC peripheral DMAs straight into
+    // it, no PSRAM bounce-buffer copy, lifting raw read throughput from
+    // ~1 MB/s → ~14 MB/s.
+    //
+    // If stutter recurs, the PSRAM fallback (below, fires when DMA-cap
+    // alloc fails) is the known-good ~1 MB/s path — flag goes through
+    // the WARN log so the regression is visible in the boot trace.
+    // Per-channel decode buffer (0.5 s headroom) absorbs the slow path
+    // without underrunning, so single-track always plays.
     if (!_sdReadBuf) {
+#if SFX_PLATFORM_ESP32
+        _sdReadBuf = static_cast<uint8_t*>(
+            heap_caps_malloc(WAV_SD_READ_BYTES,
+                             MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if (_sdReadBuf) {
+            MIXER_LOG("SD scratch: %d KB in DMA-cap SRAM (direct DMA; ~14 MB/s ceiling)",
+                      WAV_SD_READ_BYTES / 1024);
+        } else {
+            MIXER_WARN("SD scratch: DMA-cap SRAM exhausted (%u KB) — falling back to PSRAM (~1 MB/s)",
+                       (unsigned)(WAV_SD_READ_BYTES / 1024));
+            _sdReadBuf = static_cast<uint8_t*>(sfxPsramMalloc(WAV_SD_READ_BYTES));
+        }
+#else
         _sdReadBuf = static_cast<uint8_t*>(sfxPsramMalloc(WAV_SD_READ_BYTES));
+#endif
         if (!_sdReadBuf) {
             MIXER_ERROR("SD read buffer allocation failed (%d bytes)", WAV_SD_READ_BYTES);
             return false;
         }
     }
 
-    // ---- Allocate per-channel WAV decode buffers from PSRAM ----
+    // ---- Allocate per-channel WAV decode buffers + queue from PSRAM ----
+    // Per-channel `queue[QUEUE_SIZE_PER_CHANNEL]` lives in PSRAM (re-applied
+    // 2026-05-27 after the previous re-apply was rolled back on a stutter
+    // suspicion that turned out to be SD-card-side, not the queue).  Each
+    // slot ~150 B; 4 × 8 ch = ~5 KB the singleton no longer carries in BSS.
+    // Touched only on protocol-rate enqueue / dequeue — PSRAM latency
+    // invisible at that cadence.  Failure rollback mirrors wav.bufL/R.
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         _channels[i] = Channel{};
         _channelPlaying[i] = false;
         _channelRemainingSec[i] = 0.0f;
 
-        // Allocate L+R float buffers for WAV decode
+        // Allocate L+R float buffers for WAV decode + per-channel queue
         _channels[i].wav.bufL = static_cast<float*>(
             sfxPsramCalloc(WAV_BUF_FRAMES, sizeof(float)));
         _channels[i].wav.bufR = static_cast<float*>(
             sfxPsramCalloc(WAV_BUF_FRAMES, sizeof(float)));
+        _channels[i].queue = static_cast<QueuedSound*>(
+            sfxPsramCalloc(QUEUE_SIZE_PER_CHANNEL, sizeof(QueuedSound)));
 
-        if (!_channels[i].wav.bufL || !_channels[i].wav.bufR) {
-            MIXER_ERROR("WAV buffer alloc failed for ch %d", i);
+        if (!_channels[i].wav.bufL || !_channels[i].wav.bufR || !_channels[i].queue) {
+            MIXER_ERROR("WAV/queue alloc failed for ch %d", i);
             // Clean up already-allocated buffers
             for (int j = 0; j <= i; j++) {
                 sfxPsramFree(_channels[j].wav.bufL);
                 sfxPsramFree(_channels[j].wav.bufR);
+                sfxPsramFree(_channels[j].queue);
                 _channels[j].wav.bufL = nullptr;
                 _channels[j].wav.bufR = nullptr;
+                _channels[j].queue    = nullptr;
+            }
+            sfxPsramFree(_sdReadBuf);
+            _sdReadBuf = nullptr;
+            return false;
+        }
+    }
+
+    // ---- Allocate mixer-wide command queue from PSRAM ----
+    // 16 slots × ~150 B = ~2.4 KB.  Mutex-protected control surface
+    // (Core 0 enqueues, producer drains); not on the audio frame path.
+    if (!_cmdQueue) {
+        _cmdQueue = static_cast<Command*>(
+            sfxPsramCalloc(AUDIO_CMD_QUEUE_SIZE, sizeof(Command)));
+        if (!_cmdQueue) {
+            MIXER_ERROR("Command queue alloc failed (%d slots × %u B)",
+                        AUDIO_CMD_QUEUE_SIZE, (unsigned)sizeof(Command));
+            // Roll back per-channel buffers + SD scratch
+            for (int j = 0; j < AUDIO_MAX_CHANNELS; j++) {
+                sfxPsramFree(_channels[j].wav.bufL);
+                sfxPsramFree(_channels[j].wav.bufR);
+                sfxPsramFree(_channels[j].queue);
+                _channels[j].wav.bufL = nullptr;
+                _channels[j].wav.bufR = nullptr;
+                _channels[j].queue    = nullptr;
             }
             sfxPsramFree(_sdReadBuf);
             _sdReadBuf = nullptr;
@@ -108,7 +176,7 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
     _cmdQueueHead = 0;
     _cmdQueueTail = 0;
 
-    // Calculate total PSRAM consumed by audio subsystem
+    // Calculate total PSRAM consumed by audio subsystem.
     int wavBufTotal_KB = (AUDIO_MAX_CHANNELS * 2 * WAV_BUF_FRAMES * sizeof(float)) / 1024;
     int sdBuf_KB = WAV_SD_READ_BYTES / 1024;
     int ringBuf_KB = RING_BYTES / 1024;
@@ -178,17 +246,25 @@ void AudioMixer<TI2S, TCodec>::shutdown() {
 
     // ---- Free PSRAM audio buffers ----
     // Per-channel scratch buffers (the source instances were destroyed
-    // in stopAll() above, releasing their files / preload PSRAM).
+    // in stopAll() above, releasing their files / preload PSRAM) + the
+    // per-channel queue (PSRAM-resident, see begin() comment).
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         sfxPsramFree(_channels[i].wav.bufL);
         sfxPsramFree(_channels[i].wav.bufR);
+        sfxPsramFree(_channels[i].queue);
         _channels[i].wav.bufL = nullptr;
         _channels[i].wav.bufR = nullptr;
+        _channels[i].queue    = nullptr;
     }
 
-    // Free shared SD read buffer
+    // Free shared SD read buffer (DMA-cap SRAM or PSRAM fallback — sfxPsramFree
+    // wraps heap_caps_free which accepts allocations from any capability pool).
     sfxPsramFree(_sdReadBuf);
     _sdReadBuf = nullptr;
+
+    // Free mixer-wide command queue (PSRAM).
+    sfxPsramFree(_cmdQueue);
+    _cmdQueue = nullptr;
 
     // Free ring buffer
     ringBuf().shutdown();

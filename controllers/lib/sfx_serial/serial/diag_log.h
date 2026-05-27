@@ -122,12 +122,23 @@ public:
      * @param packetType Packet type override (default 0xFD = LOG_MESSAGE)
      */
     void begin(Stream* serial, uint8_t packetType = SFX_LOG_PACKET_TYPE) {
-        _serial.store(serial, std::memory_order_release);  // visible to both cores
+        // Phase 4 polish (2026-05-27): the ring lives in PSRAM (ESP32) /
+        // heap (Pico) instead of the singleton's BSS — keeps ~68 KB
+        // (512 × 136 B) out of DRAM on HubFX where the DMA-cap pool is
+        // already tight (audio I²S init wants a ~17 KB contiguous block).
+        // _serial gates every log entry point; allocate _ring BEFORE
+        // we store _serial so a PSRAM-exhaustion failure degrades to
+        // "logs silently dropped" instead of a null deref.
+        if (!_ring) {
+            _ring = static_cast<LogEntry*>(sfxPsramCalloc(RING_SIZE, sizeof(LogEntry)));
+            if (!_ring) return;   // alloc failed — leave _serial null
+        }
         _packetType = packetType;
         if (!_mutexInitialized.load(std::memory_order_relaxed)) {
             sfxMutexInit(_mutex);
             _mutexInitialized.store(true, std::memory_order_release);
         }
+        _serial.store(serial, std::memory_order_release);  // visible to both cores — last
     }
 
     /**
@@ -265,16 +276,23 @@ public:
 
 private:
     DiagLog() = default;
-    ~DiagLog() = default;
+    ~DiagLog() {
+        // Singleton dtor effectively never runs on embedded (no program
+        // exit), but keep alloc/free symmetric for hosted-side unit tests.
+        if (_ring) {
+            sfxPsramFree(_ring);
+            _ring = nullptr;
+        }
+    }
     DiagLog(const DiagLog&) = delete;
     DiagLog& operator=(const DiagLog&) = delete;
 
     // Ring buffer constants
     static constexpr size_t MAX_MSG_LEN = 128;    // max message text per entry
 #ifdef ESP32
-    static constexpr uint16_t RING_SIZE = 512;    // ESP32: larger history (free SRAM ≈ 300 KB)
+    static constexpr uint16_t RING_SIZE = 512;    // ESP32: ~68 KB ring in PSRAM
 #else
-    static constexpr uint16_t RING_SIZE = 128;    // Pico: conserve RAM
+    static constexpr uint16_t RING_SIZE = 128;    // Pico: ~17 KB ring in heap
 #endif
 
     // Ring buffer entry — pre-formatted message with metadata
@@ -285,7 +303,12 @@ private:
         char     message[MAX_MSG_LEN];    // null-terminated
     };
 
-    LogEntry _ring[RING_SIZE];
+    // Allocated in begin() via sfxPsramCalloc — PSRAM on ESP32, heap on
+    // Pico. Set-once after begin(); read by logv/ingest/sendHistory.
+    // The _serial atomic is the canonical "DiagLog is ready" gate and is
+    // stored AFTER _ring is non-null, so callers never see a non-null
+    // _serial paired with a null _ring (release-acquire pair).
+    LogEntry* _ring = nullptr;
     std::atomic<uint16_t> _head{0};       // next write position — Core 0/1 write (mutex), sendHistory reads (lock-free)
     std::atomic<uint16_t> _tail{0};       // oldest entry position — Core 0/1 write (mutex), sendHistory reads (lock-free)
     std::atomic<uint32_t> _overwritten{0}; // count of entries lost to rollover
