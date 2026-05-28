@@ -29,14 +29,25 @@
 // Header guard via __has_include in case esp-dsp isn't pulled into
 // the build (e.g. an older platformio.ini without REQUIRES).
 #if defined(__has_include)
-#  if __has_include(<dsps_mulc.h>)
+#  if __has_include(<dsps_mulc.h>) && __has_include(<dsps_add.h>)
 #    include <dsps_mulc.h>
+#    include <dsps_add.h>
 #    define SFX_HAS_ESP_DSP 1
 #  endif
 #endif
 #endif
 #ifndef SFX_HAS_ESP_DSP
 #  define SFX_HAS_ESP_DSP 0
+#endif
+
+// ── Kernel selection (Phase 5b experiment, 2026-05-28) ──────────────
+// SFX_AUDIO_KERNEL_FLOAT=1  → produce() routes to produceBlockFloat()
+//                            (float32 + dsps_*_f32_ae32 SIMD).
+// SFX_AUDIO_KERNEL_FLOAT=0  → produce() routes to produceBlock()
+//                            (int16 / Q15 + dsps_mulc_s16_ae32 SIMD).
+// Toggle to A/B the two kernels on the same firmware structure.
+#ifndef SFX_AUDIO_KERNEL_FLOAT
+#  define SFX_AUDIO_KERNEL_FLOAT 0
 #endif
 
 // ============================================================================
@@ -1328,6 +1339,176 @@ int AudioMixer<TI2S, TCodec>::produceBlock(int maxFrames) {
     return N;
 }
 
+// ============================================================================
+//  FLOAT-KERNEL BLOCK PRODUCER (Phase 5b experiment, 2026-05-28)
+// ============================================================================
+//
+// Parallel to `produceBlock()`.  Same block-mode architecture
+// (kBlockMax = 256 frames, per-block fade granularity, deferred
+// teardown), but the per-channel scale + accumulate run in float32
+// via esp-dsp's `dsps_mulc_f32_ae32` + `dsps_add_f32_ae32`.
+//
+// Trade-offs vs the int16 / Q15 kernel:
+//   + Simpler arithmetic — no Q15 conversion, no overflow management,
+//     no int32 widening accumulate.  Master volume + clamp + headroom
+//     are one float multiply + clamp each.
+//   + Pan + volume combine cleanly as a single float multiplier.
+//   − 2× memory bandwidth on the per-block scratch (4 B vs 2 B per
+//     sample → 8 KB per block-side scratch vs 4 KB).  Tight on the
+//     LX7 L1 cache.
+//   − int16→float conversion at the drain-read boundary (the drain
+//     buffer is still int16 so we don't need to also flip its
+//     storage).  One multiply + load per sample.
+//   − Float SIMD lanes are 4-wide vs int16's 8-wide on the Xtensa
+//     ext, so each SIMD instruction processes half as many lanes
+//     per cycle (compensated by simpler kernel body).
+//
+// The outcome of `produceBlockFloat` vs `produceBlock` on the same
+// gun-during-engine 2-channel trace decides the production kernel.
+
+template<typename TI2S, typename TCodec>
+int AudioMixer<TI2S, TCodec>::produceBlockFloat(int maxFrames) {
+#if !SFX_HAS_ESP_DSP
+    // No esp-dsp = no float SIMD; fall through to the int16 kernel.
+    return produceBlock(maxFrames);
+#else
+    constexpr int kBlockMax = 256;
+
+    const uint32_t freeSlots = ringBuf().availableWrite();
+    int N = maxFrames;
+    if (N > (int)freeSlots) N = (int)freeSlots;
+    if (N > kBlockMax)      N = kBlockMax;
+    if (N <= 0) return 0;
+
+    // Float scratch — 4 KB per side (vs 1 KB for int16).  Total
+    // stack: 4 × (mixL/mixR/trackL/trackR) × 4 B × 256 = 4 KB.
+    // Fits the 8 KB producer task stack with comfortable headroom.
+    float mixL[kBlockMax] = {};
+    float mixR[kBlockMax] = {};
+    float trackL[kBlockMax];
+    float trackR[kBlockMax];
+    bool hasAudio = false;
+
+    for (int i = 0; i < AUDIO_MAX_CHANNELS; ++i) {
+        Channel& ch = _channels[i];
+        WavState& ws = ch.wav;
+        if (!ws.active || ch.mute || ch.volume <= 0.0f) continue;
+
+        // Pull up to N samples, convert int16 → float [-1, +1] inline.
+        // Conversion: one int→float + one fmul per sample.  At 256
+        // samples × 2 ch × ~6 active channels worst case, that's
+        // ~3 k float conversions per block — small fraction of the
+        // mix kernel itself, but a real cost we're trading for
+        // simpler kernel math.
+        constexpr float kInt16ToFloat = 1.0f / 32768.0f;
+        int got = 0;
+        bool sourceDied = false;
+        for (int j = 0; j < N; ++j) {
+            int16_t l = 0, r = 0;
+            if (!getWavSample(ch, l, r)) {
+                sourceDied = true;
+                break;
+            }
+            trackL[j] = (float)l * kInt16ToFloat;
+            trackR[j] = (float)r * kInt16ToFloat;
+            got = j + 1;
+        }
+        if (sourceDied && got == 0) {
+            destroyAudioSource(ws.source);
+            ws.active = false;
+            _channelPlaying[i] = false;
+            _channelRemainingSec[i] = 0.0f;
+            checkAndPlayNextQueued(i);
+            continue;
+        }
+        if (got == 0) continue;
+        hasAudio = true;
+
+        // Arm tail fade-out (same logic as produceBlock).
+        if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
+            const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            const uint32_t framesLeft =
+                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
+            if (framesLeft <= ch.fadeOutTriggerFrames) {
+                ch.fading               = true;
+                ch.fadeVolume           = 1.0f;
+                ch.fadeStep             = ch.fadeOutStep;
+                ch.fadeOutTriggerFrames = 0;
+            }
+        }
+
+        // Per-block fade.
+        float effectiveVolume = ch.volume;
+        bool  fadeOutComplete = false;
+        if (ch.fading) {
+            effectiveVolume *= ch.fadeVolume;
+            ch.fadeVolume -= ch.fadeStep * (float)got;
+            if (ch.fadeStep > 0.0f && ch.fadeVolume <= 0.0f) {
+                ch.fadeVolume = 0.0f;
+                ch.fading = false;
+                fadeOutComplete = true;
+            } else if (ch.fadeStep < 0.0f && ch.fadeVolume >= 1.0f) {
+                ch.fadeVolume = 1.0f;
+                ch.fading = false;
+            }
+        }
+
+        // Combine vol + pan into a single float multiplier per side.
+        float volL, volR;
+        if (ch.outputChannels == AudioChannel::ALL) {
+            volL = effectiveVolume * ch.panL;
+            volR = effectiveVolume * ch.panR;
+        } else {
+            volL = (ch.outputChannels & AudioChannel::CH1) ? effectiveVolume : 0.0f;
+            volR = (ch.outputChannels & AudioChannel::CH2) ? effectiveVolume : 0.0f;
+        }
+
+        // ── Float SIMD hot kernel ──────────────────────────────────────
+        // dsps_mulc_f32_ae32: track[i] = track[i] * volX
+        // dsps_add_f32_ae32:  mix[i]   = track[i] + mix[i]
+        dsps_mulc_f32_ae32(trackL, trackL, got, volL, 1, 1);
+        dsps_mulc_f32_ae32(trackR, trackR, got, volR, 1, 1);
+        dsps_add_f32_ae32 (trackL, mixL,   mixL, got, 1, 1, 1);
+        dsps_add_f32_ae32 (trackR, mixR,   mixR, got, 1, 1, 1);
+
+        // Remaining-sec status.
+        if (ws.sampleRate_Hz > 0) {
+            const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            const uint32_t framesLeft =
+                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
+            _channelRemainingSec[i] = (float)framesLeft / (float)ws.sampleRate_Hz;
+        }
+
+        if (fadeOutComplete || sourceDied) {
+            destroyAudioSource(ws.source);
+            ws.active = false;
+            _channelPlaying[i] = false;
+            if (sourceDied) _channelRemainingSec[i] = 0.0f;
+            checkAndPlayNextQueued(i);
+        }
+    }
+
+    if (!hasAudio) return 0;
+
+    // Master volume + clamp + headroom + write to ring — float scalar
+    // loop.  Could use dsps_mulc_f32_ae32 for the master-vol step but
+    // the inline loop is simple enough that LX7 auto-vec handles it
+    // and we'd need a separate pass for the clamp + int conversion.
+    const float masterAndHeadroom = _masterVolume * (float)MAX_AMPLITUDE;
+    for (int j = 0; j < N; ++j) {
+        float L = mixL[j] * _masterVolume;
+        float R = mixR[j] * _masterVolume;
+        if (L >  1.0f) L =  1.0f; else if (L < -1.0f) L = -1.0f;
+        if (R >  1.0f) R =  1.0f; else if (R < -1.0f) R = -1.0f;
+        ringBuf().write((int16_t)(L * (float)MAX_AMPLITUDE),
+                        (int16_t)(R * (float)MAX_AMPLITUDE));
+    }
+    (void)masterAndHeadroom;  // reserved for the fused dsps variant
+
+    return N;
+#endif  // SFX_HAS_ESP_DSP
+}
+
 template<typename TI2S, typename TCodec>
 int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
     if (!_initialized) return 0;
@@ -1337,13 +1518,21 @@ int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
 
     // Produce frames into ring buffer FIRST — this is time-critical.
     // The ring is a small core-to-core FIFO (~85 ms) that must stay fed
-    // to prevent consumer underruns.  Block-mode (produceBlock) calls
-    // esp-dsp's SIMD kernel per channel; produceFrame() stays as the
-    // single-frame fallback (kept for tests + Pico builds without
-    // esp-dsp).
+    // to prevent consumer underruns.  Block-mode (produceBlock /
+    // produceBlockFloat) calls esp-dsp's SIMD kernel per channel;
+    // produceFrame() stays as the single-frame fallback (kept for
+    // tests + Pico builds without esp-dsp).
+    //
+    // SFX_AUDIO_KERNEL_FLOAT selects the A/B test variant — see the
+    // macro definition at the top of this file for the trade-off
+    // analysis.
     int produced = 0;
     while (produced < maxFrames) {
+#if SFX_AUDIO_KERNEL_FLOAT
+        const int got = produceBlockFloat(maxFrames - produced);
+#else
         const int got = produceBlock(maxFrames - produced);
+#endif
         if (got <= 0) break;
         produced += got;
     }

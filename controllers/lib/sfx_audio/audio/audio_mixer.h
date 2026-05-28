@@ -278,6 +278,19 @@ public:
     /// per-frame path remains for Pico + tests where esp-dsp isn't
     /// available.
     int produceBlock(int maxFrames = 256);
+
+    /// Float-kernel variant of `produceBlock()` — same block-mode
+    /// architecture but the per-channel scale + accumulate runs in
+    /// float32 via `dsps_mulc_f32_ae32` + `dsps_add_f32_ae32`.
+    /// Comparison experiment with `produceBlock()` (int16 / Q15):
+    /// trades 2× memory bandwidth (4 B vs 2 B per sample) + an
+    /// int16→float conversion at drain-read time, against simpler
+    /// per-sample math (no overflow management, native FPU on the
+    /// LX7).  Whichever wins on the same gun-during-engine 2-channel
+    /// trace becomes the production kernel.  Selected at compile time
+    /// via the `SFX_AUDIO_KERNEL_FLOAT` macro (see produce() body in
+    /// audio_mixer.ipp).
+    int produceBlockFloat(int maxFrames = 256);
     
     // Consumer (Core 1 task): ring buffer → I2S DMA
     void consume();
