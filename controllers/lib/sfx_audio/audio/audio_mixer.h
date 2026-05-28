@@ -6,15 +6,17 @@
  * loop/one-shot modes, L/R/stereo routing, and float mixing pipeline.
  * 
  * DUAL-CORE ARCHITECTURE (ESP32-S3):
- *   Core 1 — Producer Task: WAV decode + SD reads + float mixing → SPSC ring buffer
+ *   Core 1 — Producer Task: WAV decode + SD reads + int16 Q15 mixing → SPSC ring buffer
  *   Core 1 — Consumer Task: SPSC ring buffer → I2S DMA (higher priority)
  *   Core 0: Protocol handling only — uses *Async() API to queue commands
- * 
- * All audio math uses float, leveraging hardware FPU where available
- * (Cortex-M33 on RP2350, Xtensa DSP on ESP32-S3).
- * WAV samples are converted to float for mixing; int16 conversion happens
- * only at the final output stage. WAV files at non-native sample rates
- * are resampled via linear interpolation.
+ *
+ * Mix kernel runs in int16 / Q15 fixed-point (Phase 5,
+ * feature/mixer-int16-kernel — the source PCM is already int16 native,
+ * and the per-frame hot loop dominates producer cost at 2+ active
+ * channels).  Sources still emit float via IAudioSource::readFrames();
+ * the per-channel drain buffer is filled int16 once at refill time and
+ * the mixer reads int16 from then on.  Linear-interp resampling for
+ * non-native sample rates is done in Q15 fixed-point.
  * 
  * Uses SdCardModule singleton for SD card access (producer side only).
  * Audio files are opened directly via SdCardModule::instance().
@@ -47,40 +49,63 @@
 //  CONSTANTS (see audio_config.h for configuration)
 // ============================================================================
 
-// WAV pre-buffer sizes (float frames per channel)
-// These buffers provide the primary SD-stall resilience — each channel can
-// sustain playback for WAV_BUF_FRAMES / AUDIO_SAMPLE_RATE seconds without
-// any SD reads.  The mixed-audio ring buffer is a small core-to-core FIFO.
+// Per-channel decoded-PCM drain ring (int16 frames per channel — Q15
+// fixed-point).  Sized for the lock-free SPSC ring buffer pattern
+// introduced in `feature/audio-decode-prefetch` (Phase 6): the decoder
+// task on Core 0 fills these rings asynchronously; the producer task on
+// Core 1 only reads from them.  Cross-core synchronization is via
+// atomic readIdx / writeIdx pairs — no mutex on the wire-rate path.
 //
-// ESP32-S3: 24000 frames/ch = 0.5 s at 48 kHz.  8 ch × 2 (L+R) × 24000
-//   × 4 bytes = 1.5 MB total in PSRAM (8 MB available).
-//   SD read batch = 32 KB allocated from DMA-cap INTERNAL SRAM (re-tried
-//   2026-05-27 after the multi-track stutter was reassessed as an SD-card
-//   side issue rather than a cache-coherency problem on the audio path).
-//   SDMMC peripheral DMAs straight into the buffer — no PSRAM bounce
-//   copy — lifting raw SD read throughput from ~1 MB/s to ~14 MB/s.
-//   The audio_mixer.ipp alloc path falls back to PSRAM with a WARN log
-//   if the DMA-cap pool is exhausted, so the slower-but-functional
-//   path is always available.  Per-channel WAV decode buffers stay in
-//   PSRAM (1.5 MB total — won't fit in internal SRAM).
-// Pico: Smaller buffers in SRAM heap.
+// PSRAM budget summary (8 MB available on ESP32-S3-WROOM-1 N8R8):
+//   AssetCache  6144 KB ceiling (`kAssetCacheBudgetBytes`; actual ≈ 3 MB
+//               in typical configs — MP3 source bytes, not decoded PCM)
+//   Drain rings  512 KB (8 ch × 2 L/R × 16384 frames × 2 B; Phase 6,
+//               down from 768 KB at Phase 5 to free up 256 KB and align
+//               the size to a power of 2 for efficient ring masking)
+//   Mixer ring    16 KB  (4096 stereo frames; producer→consumer FIFO)
+//   Decoder pool ~60 KB  (Mp3DecoderPool slots, lazy alloc)
+//   Misc         ~80 KB  (per-ch queues, command queue, SD scratch
+//                         fallback, DiagLog ring)
+//   ─────────────────────
+//   Ceiling     ~6812 KB → ~1.4 MB headroom at full cache load.
+//
+// Sizing rationale for the drain ring (Phase 6, 2026-05-28):
+//   - Worst-case Core 0 preemption (Arduino loop + protocol burst + a
+//     long-running file upload chunk): ~80 ms.  At 48 kHz that's 3840
+//     frames drained per channel before the decoder task gets back.
+//   - One decode round-trip (~30 ms for an MP3 frame block on Core 0):
+//     adds another 1440 frames.
+//   - Required ring headroom: ~5300 frames (~110 ms).
+//   - Picking 16384 (341 ms) gives a 3× safety margin, is a power of 2
+//     for fast (mask-based) ring math, and trims 256 KB from the old
+//     24000-frame drain — that 256 KB stays free as PSRAM margin
+//     (could go to a larger AssetCache budget if/when needed).
+//
+// Power-of-2 invariant: code in audio_mixer.ipp assumes
+//   `(idx & (WAV_BUF_FRAMES - 1))` is valid mask-modulo, so this
+//   constant MUST stay power-of-2 on ESP32.
+//
+// Pico unchanged: 1024 frames in SRAM heap.
+//
+// SD read batch (`WAV_SD_READ_BYTES`): 32 KB in DMA-cap internal SRAM
+// (re-tried 2026-05-27 after the multi-track stutter was reassessed
+// as an SD-card-side issue rather than a cache-coherency problem on
+// the audio path).  SDMMC DMAs straight into the buffer — no PSRAM
+// bounce — lifting raw SD throughput from ~1 MB/s to ~14 MB/s.  The
+// audio_mixer.ipp alloc path falls back to PSRAM with a WARN log if
+// the DMA-cap pool is exhausted.
 #if SFX_PLATFORM_ESP32
-constexpr int WAV_BUF_FRAMES       = 24000;     // decoded float frames per track (PSRAM, 0.5 s @ 48 kHz)
+constexpr int WAV_BUF_FRAMES       = 16384;     // decoded int16 frames per track (PSRAM, 341 ms @ 48 kHz, PO2)
 constexpr int WAV_SD_READ_BYTES    = 32768;     // bytes per SD card read batch (DMA-cap SRAM)
-// Sizing rationale: 32 KB = 16384 source frames @ 16-bit mono = ~680 ms
-// of source audio per SD read.  A 50% refill (12000 source frames →
-// 24000 bytes) now completes in ONE SD read instead of two — halves
-// SD round-trips when two channels alternate refills (Phase 4 polish
-// 2026-05-27, addressing 2-track stutter).
 // Hard cap for `AudioPlaybackOptions::preloadIntoMemory`: 96 000 source
 // frames = 2 s @ 48 kHz stereo = 768 KB allocated from PSRAM per
 // preloaded channel.  At 8 MB PSRAM and at most ~4 hot looping samples
 // (gun A/B + alert + spare) the worst-case is ~3 MB additional — safe
-// margin over the existing 1.5 MB decode-buffer pool.  Files larger
-// than the cap fall back to streaming with a single warn log.
+// margin over the AssetCache + drain-ring pool.  Files larger than the
+// cap fall back to streaming with a single warn log.
 constexpr uint32_t WAV_MAX_PRELOAD_FRAMES = 96000;
 #else
-constexpr int WAV_BUF_FRAMES       = 1024;      // decoded float frames per track
+constexpr int WAV_BUF_FRAMES       = 1024;      // decoded int16 frames per track
 constexpr int WAV_SD_READ_BYTES    = 4096;      // bytes per SD card read batch
 // Pico's SRAM heap is far smaller — disable preload entirely (cap=0
 // makes every preloadIntoMemory request fall back to streaming).
@@ -264,6 +289,28 @@ public:
     // On ESP32: runs as dedicated FreeRTOS task on Core 1 via startProducerTask()
     // On Pico: call produce() from loop (single-core)
     int produce(int maxFrames = 256);
+
+    /// Block-mode producer (Phase 5 of feature/idf-component-build,
+    /// 2026-05-28).  Produces up to `maxFrames` (capped by `kBlockMax`
+    /// = 256 and by available ring-buffer space) using esp-dsp's
+    /// hand-tuned Xtensa LX7 SIMD for the per-channel scale step.
+    /// Replaces the per-frame `produceFrame()` on ESP32; the legacy
+    /// per-frame path remains for Pico + tests where esp-dsp isn't
+    /// available.
+    int produceBlock(int maxFrames = 256);
+
+    /// Float-kernel variant of `produceBlock()` — same block-mode
+    /// architecture but the per-channel scale + accumulate runs in
+    /// float32 via `dsps_mulc_f32_ae32` + `dsps_add_f32_ae32`.
+    /// Comparison experiment with `produceBlock()` (int16 / Q15):
+    /// trades 2× memory bandwidth (4 B vs 2 B per sample) + an
+    /// int16→float conversion at drain-read time, against simpler
+    /// per-sample math (no overflow management, native FPU on the
+    /// LX7).  Whichever wins on the same gun-during-engine 2-channel
+    /// trace becomes the production kernel.  Selected at compile time
+    /// via the `SFX_AUDIO_KERNEL_FLOAT` macro (see produce() body in
+    /// audio_mixer.ipp).
+    int produceBlockFloat(int maxFrames = 256);
     
     // Consumer (Core 1 task): ring buffer → I2S DMA
     void consume();
@@ -283,6 +330,26 @@ public:
     bool isProducerTaskRunning() const {
         return _producerRunning.load(std::memory_order_acquire);
     }
+
+    /// Phase 6 (feature/audio-decode-prefetch): start the decoder
+    /// worker task on Core 0.  Idempotent.  Must be called after
+    /// begin() so the per-channel rings exist.  Optional — without
+    /// it the legacy in-producer refill path (now removed) would
+    /// have decoded; with no decoder task the channels stay silent
+    /// after play().
+    bool startDecoderTask();
+    void stopDecoderTask();
+    bool isDecoderTaskRunning() const {
+        return _decoderRunning.load(std::memory_order_acquire);
+    }
+
+    /// Phase 7 polish: task handles for stack high-water-mark probes
+    /// (`uxTaskGetStackHighWaterMark`).  Returns nullptr when the task
+    /// isn't currently running.  Pico has no producer/decoder tasks —
+    /// always returns nullptr there.
+    TaskHandle_t producerHandle() const { return _producerTaskHandle; }
+    TaskHandle_t decoderHandle()  const { return _decoderTaskHandle; }
+    TaskHandle_t consumerHandle() const { return _consumerTaskHandle; }
 
     /**
      * @brief Store the consumer task handle for suspend/resume coordination.
@@ -364,18 +431,33 @@ private:
     static constexpr int CHANNEL_FILENAME_MAX = 64;
     static constexpr int QUEUE_SIZE_PER_CHANNEL = 4;  // Max queued sounds per channel
     
-    // Per-channel WAV-side state.  After the AudioSource refactor
-    // (Stage 2 backport, 2026-05-27), all file I/O lives in
-    // `IAudioSource` (audio_source.h) — this struct holds only
-    // mixer-side cached metadata, the resampler state, and a
-    // per-channel drain buffer that the source refills via
-    // `readFrames()`.  WavStreamSource reuses `bufL`/`bufR` as its
-    // own SD-decode scratch; WavPreloadSource serves from its own
-    // PSRAM storage and ignores the buffer.
+    // Per-channel WAV-side state.
+    //
+    // Phase 6 (feature/audio-decode-prefetch, 2026-05-28): the drain
+    // buffer is a lock-free SPSC ring shared between the decoder task
+    // on Core 0 (single writer; calls source->readFrames() + converts
+    // float→int16 + writes to bufL/R) and the producer task on Core 1
+    // (single reader; getWavSample drains samples for the mix kernel).
+    // Cross-core sync via the writeIdx/readIdx atomics with
+    // acquire-release ordering — no mutex on the wire-rate path.
+    //
+    // `WAV_BUF_FRAMES` is power-of-2, so wrap is a single AND with
+    // `(WAV_BUF_FRAMES - 1)` — no modulo division on the hot path.
+    //
+    // Lifecycle:
+    //   active=false → ring is dormant; decoder skips it
+    //   play()       → sets up source + format fields, RESETS the ring
+    //                  indices to 0, marks active=true, notifies decoder
+    //   decoder      → fills ring up to ~80% (kept low to avoid OOM if
+    //                  many channels active concurrently), loops
+    //   stop()/EOF   → clears active; decoder destroys source, leaves
+    //                  ring drained for the producer to flush
     struct WavState {
         // Active source — placement-new'd into Channel::sourceStorage
         // at play() time; destroyed via destroyAudioSource() on
-        // stop/EOF/fade-end.
+        // stop/EOF/fade-end.  Read by both tasks; writes are coordinated
+        // through the `active` flag + the decoder being the one that
+        // calls destructors.
         IAudioSource* source = nullptr;
 
         // Cached WAV format (set once at play() — immutable for the
@@ -390,20 +472,79 @@ private:
         int        loopCountInit  = 0;
 
         // Linear-interpolation resampler — output-rate accumulator.
+        // Producer-owned; not touched by the decoder.
         float      resampleRatio  = 1.0f;
         float      resampleFrac   = 0.0f;
 
-        // Per-channel float drain buffer.  PSRAM-allocated at
-        // AudioMixer::begin(), capacity = WAV_BUF_FRAMES.  Source
-        // refills via readFrames(); produceFrame() drains with interp.
-        float*     bufL           = nullptr;
-        float*     bufR           = nullptr;
-        int        bufLen         = 0;
-        int        bufPos         = 0;
+        // Per-channel int16 SPSC ring.  PSRAM-allocated at
+        // AudioMixer::begin(), capacity = WAV_BUF_FRAMES (power of 2).
+        // Decoder task on Core 0 writes (advances writeIdx); producer
+        // task on Core 1 reads (advances readIdx).
+        int16_t*   bufL           = nullptr;
+        int16_t*   bufR           = nullptr;
+
+        // SPSC indices.  Monotonic 32-bit counters; wrap implicit via
+        // the size-mask `WAV_BUF_FRAMES - 1`.  Acquire-release pairs
+        // guarantee that writes to bufL/R observed by the producer
+        // happen-before the matching writeIdx increment it sees.
+        //
+        // NB: WAV_BUF_FRAMES must stay power-of-2 for these helpers to
+        // be valid — static_assert lives in audio_mixer.ipp's begin().
+        std::atomic<uint32_t> writeIdx{0};   // decoder writes, producer reads (acquire)
+        std::atomic<uint32_t> readIdx{0};    // producer writes, decoder reads (acquire)
+
+        // ── SPSC ring helpers ────────────────────────────────────────
+        //
+        // Producer-side: `availableRead()` returns the number of
+        // freshly-decoded frames waiting to be mixed.  Acquire on
+        // writeIdx pairs with the decoder's release after it finishes
+        // writing the corresponding bufL/R cells.  readIdx is loaded
+        // relaxed because the producer is its sole writer.
+        //
+        // Decoder-side: `availableWrite()` returns the number of frame
+        // slots free to write into.  Mirror logic.
+
+        uint32_t availableRead() const {
+            return writeIdx.load(std::memory_order_acquire) -
+                   readIdx .load(std::memory_order_relaxed);
+        }
+        uint32_t availableWrite() const {
+            return (uint32_t)WAV_BUF_FRAMES - availableRead();
+        }
+        /// Producer-side advance — caller has read `n` frames starting
+        /// at `readIdx & mask`.
+        void commitRead(uint32_t n) {
+            readIdx.fetch_add(n, std::memory_order_release);
+        }
+        /// Decoder-side advance — caller has written `n` frames starting
+        /// at `writeIdx & mask`.
+        void commitWrite(uint32_t n) {
+            writeIdx.fetch_add(n, std::memory_order_release);
+        }
+        /// Drop everything (play() reset; stop()).  Must NOT be called
+        /// while the decoder might still be writing.
+        void ringReset() {
+            writeIdx.store(0, std::memory_order_relaxed);
+            readIdx .store(0, std::memory_order_relaxed);
+        }
 
         // Set true by play() once the source opens; cleared by
-        // stop()/EOF/fade-end.  Producer skips channels where active=false.
-        bool       active         = false;
+        // stop() / decoder-side EOF / fade-end.  Producer skips
+        // channels where active=false.  acquire on the producer
+        // side pairs with release on play().
+        std::atomic<bool> active{false};
+
+        // Hint to the decoder that this channel has just been
+        // (re)activated and needs an immediate refill.  Cleared by
+        // the decoder once first refill lands.  Cheap signal vs
+        // walking every channel's writeIdx==readIdx state.
+        std::atomic<bool> needsPrefill{false};
+
+        // Set by the decoder when source->readFrames() returns 0 AND
+        // source->isExhausted() is true.  Producer sees this when its
+        // own readIdx catches writeIdx — only THEN tears the channel
+        // down (so it drains the last samples before silencing).
+        std::atomic<bool> sourceExhausted{false};
     };
 
     struct Channel {
@@ -482,8 +623,8 @@ private:
 
     // ---- Internal Methods ----
     // Producer side (Core 1 task on ESP32, Core 0 on Pico)
-    bool refillDrainBuffer(Channel& ch);        // Pull frames from source into ch.wav.bufL/R
-    bool getWavSample(Channel& ch, float& outL, float& outR);   // Resampled frame
+    bool refillDrainBuffer(Channel& ch);        // Pull frames from source into ch.wav.bufL/R (int16 Q15)
+    bool getWavSample(Channel& ch, int16_t& outL, int16_t& outR);   // Resampled int16 frame
     bool produceFrame();                         // Mix one frame → ring buffer
     void updatePan(Channel& ch);                 // Recalculate panL/panR
 
@@ -492,7 +633,23 @@ private:
 
 #if SFX_PLATFORM_ESP32
     static void producerTaskFunc(void* param);   // FreeRTOS task entry point
+    static void decoderTaskFunc(void* param);    // Phase 6 — decode prefetch on Core 0
 #endif
+
+    /// Phase 6: kick the decoder task whenever a channel needs immediate
+    /// service (play() entry, etc.).  Cheap if the task isn't running
+    /// (Pico) — compiles to nothing.
+    void notifyDecoder();
+
+    /// Phase 7 polish (2026-05-28): on-demand 32 KB DMA-cap SD scratch.
+    /// Allocated by `acquireSdScratch()` at WavPreloadSource open time
+    /// (preloadIntoMemory=true path); freed by `releaseSdScratch()` when
+    /// that source destructs.  Refcount-protected so concurrent
+    /// preloads share one buffer.  Returns nullptr on alloc failure
+    /// — caller falls through to the streaming path.
+    uint8_t* acquireSdScratch();
+    void     releaseSdScratch();
+    size_t   sdScratchBytes() const { return WAV_SD_READ_BYTES; }
     
     // Command queue
     bool queueCommand(const Command& cmd);
@@ -520,9 +677,21 @@ private:
     uint8_t _i2sBclkPin  = 0;
     uint8_t _i2sLrclkPin = 0;
 
-    // SD read buffer (shared temp for all channels on producer side)
-    // Dynamically allocated from PSRAM in begin(), freed in shutdown().
-    uint8_t* _sdReadBuf = nullptr;
+    // SD scratch buffer for WavPreloadSource's initial in-PSRAM decode.
+    // Phase 7 polish (2026-05-28): allocated on demand by
+    // acquireSdScratch() instead of unconditionally at begin().  32 KB
+    // DMA-cap internal SRAM when available (~14 MB/s SDMMC throughput);
+    // falls back to PSRAM (~1 MB/s) when the DMA-cap pool is exhausted.
+    // Reference-counted across concurrent WavPreloadSource opens; freed
+    // when the last consumer calls releaseSdScratch().
+    //
+    // Most HubFX sessions never touch this — the AssetCache + Mp3PsramSource
+    // path doesn't use it.  GunFx is the current consumer (it sets
+    // preloadIntoMemory=true in its play options).
+    uint8_t* _sdReadBuf      = nullptr;
+    int      _sdScratchUsers = 0;
+    SfxMutex _sdScratchMutex;
+    bool     _sdScratchMutexInit = false;
 
     // Command queue mutex (cross-core: Core 0 queues, producer task dequeues)
     SfxMutex _cmdMutex;
@@ -556,28 +725,49 @@ private:
     int _producerCore = 1;
     int _producerPriority = configMAX_PRIORITIES - 2;
     int _producerStackSize = 8192;
+
+    // ── Decoder task (Phase 6, feature/audio-decode-prefetch) ────────
+    //
+    // Single FreeRTOS task pinned to Core 0 (priority just above the
+    // Arduino loop but below the protocol handler).  Wakes on
+    // notification (xTaskNotifyGive) from play() / stop() / its own
+    // 5 ms tick, walks every active channel, refills any ring whose
+    // availableWrite() exceeds a fill threshold.  Producer task on
+    // Core 1 NEVER calls decode; it only reads from the per-channel
+    // rings.
+    TaskHandle_t       _decoderTaskHandle = nullptr;
+    std::atomic<bool>  _decoderRunning{false};
+    std::atomic<bool>  _decoderExited{false};
+    int                _decoderCore       = 0;
+    int                _decoderPriority   = 5;        // > Arduino loop (1), < producer (configMAX-2)
+    int                _decoderStackSize  = 6144;     // libhelix scratch + per-batch float scratch
+    static constexpr uint32_t kDecoderTickMs = 5;
 #endif
 
-    // Stats (cross-core diagnostic counters)
-    std::atomic<uint32_t> _underruns{0};     // Core 1 consumer writes, Core 0 reads
-    std::atomic<uint32_t> _produceLoops{0};  // Producer task writes, Core 0 reads
-    std::atomic<uint32_t> _consumeLoops{0};  // Core 1 consumer writes, Core 0 reads
-    std::atomic<uint32_t> _consumeFrames{0}; // Core 1 consumer writes, Core 0 reads
+    // Stats (cross-core diagnostic counters).
+    //   _underruns / _consumeLoops / _consumeFrames are KEPT under every
+    //   build — they back AUDIO_STATUS_RESP fields read by Studio.
+    //   _produceLoops is pace-log-only.
+    std::atomic<uint32_t> _underruns{0};      // Core 1 consumer writes, Core 0 reads
+    std::atomic<uint32_t> _consumeLoops{0};   // Core 1 consumer writes, Core 0 reads
+    std::atomic<uint32_t> _consumeFrames{0};  // Core 1 consumer writes, Core 0 reads
 
-    // Playback pacing instrumentation (2026-05-27).  All written from
-    // the producer task on Core 1 (atomic add / cmpxchg), read + reset
-    // by the periodic logger.  Reset-on-log is "load + store(0)"
-    // (relaxed) — a stat update during the log races to zero is OK,
-    // we'd just miss one tick of data on a 1 Hz cadence.
+    // Pace-log telemetry (Phase 7 polish, gated by SFX_AUDIO_PACE_TELEMETRY
+    // in audio_config.h).  Saves ~50 bytes of DRAM atomics + the entire
+    // periodic-logger code block on release builds.  Producer-task logger
+    // in producerTaskFunc is wrapped in the same macro.  None of these
+    // fields are read by AUDIO_STATUS_RESP — purely informational.
+#if SFX_AUDIO_PACE_TELEMETRY
+    std::atomic<uint32_t> _produceLoops{0};           // Producer task writes, Core 0 reads
     std::atomic<uint8_t>  _ringMinFillPct{100};       // min observed since last log
     std::atomic<uint32_t> _maxSdReadUs{0};            // max refill latency since last log
     std::atomic<uint32_t> _slowSdReads{0};            // refills > 5 ms since last log
     std::atomic<uint32_t> _verySlowSdReads{0};        // refills > 20 ms since last log
     std::atomic<uint32_t> _channelStarves[AUDIO_MAX_CHANNELS]{};
-        // Per-channel synchronous-refill count — incremented when
-        // produceFrame's getWavSample hits an empty drain buffer and
-        // has to refill mid-mix (the round-robin top-up didn't keep
-        // up).  This is the canonical "uneven pacing" indicator.
+        // Per-channel drain-empty count — bumped by getWavSample when
+        // the SPSC ring's availableRead < 2.  Canonical "decoder
+        // falling behind" indicator surfaced in the pace log.
+#endif
 
     // Status (producer task writes, Core 0 reads for status queries)
     std::atomic<bool> _channelPlaying[AUDIO_MAX_CHANNELS]{};

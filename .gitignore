@@ -91,12 +91,26 @@ tools/ffmpeg/
 # MP3 encode workspace — local ffmpeg run area
 tools/mp3_workspace/
 
-# Arduino-as-IDF-component scratch (Items 1+4 deferred; pio regenerates these)
+# Arduino-as-IDF-component build artifacts.  Pioarduino regenerates the
+# whole set from platformio.ini + custom_sdkconfig on every `pio run` —
+# nothing here is hand-edited.  managed_components/ is the heavyweight
+# (~430 MB of IDF component sources pulled by the component manager).
+# Run `tools/setup-hubfx-idf-deps.ps1` to bootstrap a fresh clone.
 controllers/hubfx/esp32s3/.dummy/
+controllers/hubfx/esp32s3/managed_components/
+controllers/hubfx/esp32s3/sdkconfig
 controllers/hubfx/esp32s3/sdkconfig.defaults
+controllers/hubfx/esp32s3/sdkconfig.esp32s3
+controllers/hubfx/esp32s3/sdkconfig.esp32s3_debug
+controllers/hubfx/esp32s3/sdkconfig.esp32s3_release
+controllers/hubfx/esp32s3/dependencies.lock
 controllers/hubfx/esp32s3/CMakeLists.txt
+# Note: src/CMakeLists.txt IS tracked (we override the auto-generated
+# default to add esp-dsp as a component REQUIRES — Phase 5 of
+# feature/idf-component-build).
 
 # Local capture/scratch files
 subscribe_capture.txt
 subscribe_err.txt
 app/go/studio/frontend/sc-out.txt
+_bringup_backup/

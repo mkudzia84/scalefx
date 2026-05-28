@@ -85,11 +85,25 @@ struct InputListOf  <TBoard, std::void_t<decltype(TBoard::kInputPorts)>> {
 // BoardOf<TBoard, ExtraPolicies...>
 // ============================================================================
 
-template <typename TBoard, typename... ExtraPolicies>
-class BoardOf : public BoardServer<PortServicePolicy,
+/// @tparam TBoard         CRTP-style derived board type (provides
+///                        kName + the static kXxxPorts descriptor lists).
+/// @tparam TStream        Wire-protocol stream type (e.g. `sfx::NativeUartStream`
+///                        on ESP32 IDF-component path, `HardwareSerial`
+///                        on Pico).  Re-exported as `StreamType` for any
+///                        helper parameterised on `TBoard` alone.
+/// @tparam ExtraPolicies  User policies appended after the built-in
+///                        PortServicePolicy + RoleServicePolicy.
+template <typename TBoard, typename TStream, typename... ExtraPolicies>
+class BoardOf : public BoardServer<TStream,
+                                   PortServicePolicy,
                                    RoleServicePolicy,
                                    ExtraPolicies...> {
 public:
+    /// Stream type carrier-typedef — Rule 33.  Lets downstream helpers
+    /// recover the underlying stream type via `TBoard::StreamType`
+    /// without re-templating on TStream themselves.
+    using StreamType = TStream;
+
     // Registry max capacities — generous fixed bounds so the static
     // arrays are sized once for every board kind.  Actual occupancy is
     // tracked at runtime in `_numXxx` counters that `begin()` populates
@@ -103,7 +117,7 @@ public:
     static constexpr size_t kMaxHBridgePorts = 16;
     static constexpr size_t kMaxInputPorts   = 8;
 
-    using Base     = BoardServer<PortServicePolicy, RoleServicePolicy, ExtraPolicies...>;
+    using Base     = BoardServer<TStream, PortServicePolicy, RoleServicePolicy, ExtraPolicies...>;
     using Registry = PortRegistry<kMaxServoPorts, kMaxPwmPorts,
                                    kMaxHBridgePorts, kMaxInputPorts>;
 
@@ -116,7 +130,7 @@ public:
     /// Drive the full board lifecycle: bind static port descriptors to
     /// the registry, call each port's `begin()`, then delegate to
     /// `BoardServer::begin()` for Serial / DiagLog / policies.
-    void begin(const char* version, uint32_t buildNumber,
+    void begin(TStream& stream, const char* version, uint32_t buildNumber,
                int connectionPin = 13, int errorPin = 14) {
         auto* self = static_cast<TBoard*>(this);
 
@@ -162,7 +176,7 @@ public:
         this->_portRegistry = &_ports;
 
         // ── Delegate to BoardServer lifecycle wiring ──────────────────
-        Base::begin(TBoard::kName, version, buildNumber, connectionPin, errorPin);
+        Base::begin(stream, TBoard::kName, version, buildNumber, connectionPin, errorPin);
 
         // OR the port-kind presence bits (HAS_SERVO_PORTS, ...) into
         // the IDENTIFY capabilities word.  Derived from runtime counts

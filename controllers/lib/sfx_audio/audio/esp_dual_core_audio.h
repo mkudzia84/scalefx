@@ -206,9 +206,25 @@ private:
         // + USB + SDMMC ISR contention).  Producer on Core 1
         // cooperates naturally with the consumer (consumer blocks on
         // I²S DMA write → producer runs), keeping the ring fed.
+        //
+        // 6 KB stack restored 2026-05-28 after the upload regression
+        // was diagnosed and proven UNRELATED to producer stack size
+        // (commit 12d8c69).  Producer is suspended for the duration
+        // of every upload (`wireUploadExclusivity` → `suspendAudio`),
+        // so the upload code path can't even reach this task.
+        // Idle HWM measured 3.3 KB free out of 8 KB; trim to 6 KB
+        // leaves ~1.3 KB margin which matches what wave-2 verified
+        // before the (unrelated) revert.
         mixer.startProducerTask(/*core=*/1,
                                 /*priority=*/configMAX_PRIORITIES - 2,
-                                /*stackSize=*/8192);
+                                /*stackSize=*/6144);
+
+        // Phase 6 (feature/audio-decode-prefetch): start the decoder
+        // task on Core 0.  Owns all libhelix MP3 + SD reads so the
+        // producer task on Core 1 never blocks on decode.  Defaults
+        // (core=0, prio=5, stack=6 KB) are baked into the mixer; see
+        // audio_mixer.h.
+        mixer.startDecoderTask();
 
         while (true) {
             self->_loop1Count.fetch_add(1, std::memory_order_relaxed);

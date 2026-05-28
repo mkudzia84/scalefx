@@ -59,12 +59,20 @@
  */
 
 #define FIRMWARE_VERSION "2.13.0-hubfx"
-#define BUILD_NUMBER     451
+#define BUILD_NUMBER     506
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <esp_heap_caps.h>     // memory-instrumentation helper (Phase 4 polish 2026-05-27)
 #include <esp_psram.h>
+
+// Phase 5 of feature/idf-component-build (2026-05-28): pull esp-dsp's
+// hand-tuned Xtensa LX7 SIMD into the build link graph.  The header is
+// included so the symbol is referenced from setup() / the mixer at
+// link time; the REQUIRES in src/CMakeLists.txt declares the IDF-side
+// dependency.  Used by audio_mixer.ipp's produceBlock() (Phase 5).
+#include <dsps_mulc.h>
+#include <dsps_add.h>
 
 #include <platform/sfx_platform.h>
 #include <serial/diag_log.h>
@@ -303,6 +311,7 @@ using GunFxService =
 // PortServicePolicy + RoleServicePolicy.  User policies follow.
 
 class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
+                                             sfx::NativeUartStream,      // TStream (Rule 33)
                                              HubFxExpanderService,
                                              HubFxTopologyService,
                                              InputDispatcherService,
@@ -388,6 +397,15 @@ public:
 };
 
 HubFxBoard board;
+
+/// Wire-protocol UART (Phase 4 of feature/idf-component-build, 2026-05-28).
+/// Native ESP-IDF UART driver wrapped in a Stream-compatible class.
+/// brought up explicitly here so the BoardOf<…, NativeUartStream, …>
+/// hot path resolves UART read/write through TStream& direct calls
+/// (no Stream* vtable per byte at 6 Mbps).  Pre-installed before
+/// board.begin() so the wire is live the moment the protocol parser
+/// starts running.
+static sfx::NativeUartStream wireUart;
 
 // Dual-core audio bring-up helper.  Owns the atomic flags, the Core 1
 // consumer task, the producer task spawn, and the two-phase orchestration.
@@ -543,6 +561,25 @@ static void logMemoryHeapCaps(const char* tag) {
         (unsigned)(dramLargest / 1024),
         (unsigned)(dramDmaFree / 1024),
         (unsigned)(dramDmaLargest / 1024));
+
+    // Phase 7 polish: surface task-stack high-water marks so we know
+    // which stacks have headroom to reclaim.  uxTaskGetStackHighWaterMark
+    // returns the SMALLEST recorded free-bytes value across the task's
+    // lifetime — the closer to 0, the closer that task has come to
+    // overflowing.  Configured stack - HWM = peak usage; anything with
+    // > 2 KB headroom is a reclaim candidate (CONFIG_ARDUINO_LOOP_STACK,
+    // _producerStackSize, _decoderStackSize, the Core 1 audio task).
+    extern TaskHandle_t loopTaskHandle;
+    const auto reportStack = [](const char* name, TaskHandle_t h) {
+        if (!h) return;
+        const UBaseType_t hwm = uxTaskGetStackHighWaterMark(h);
+        SFX_LOG_INFO("[stack] %-14s hwm=%u B (smaller = closer to overflow)",
+                     name, (unsigned)hwm);
+    };
+    reportStack("loopTask",       loopTaskHandle);
+    reportStack("audio-producer", Mixer::instance().producerHandle());
+    reportStack("audio-decoder",  Mixer::instance().decoderHandle());
+    reportStack("audio-consumer", Mixer::instance().consumerHandle());
 }
 
 void setup() {
@@ -582,11 +619,29 @@ void setup() {
             [](void*) { applyHubFxConfigCallback(kHubFx.data()); }, nullptr);
     }
 
+    // Bring the wire-protocol UART up FIRST — board.begin() will read
+    // bytes off it the moment its policy pack initializes.  ESP32-S3
+    // default UART0 pins: TX=GPIO43, RX=GPIO44.
+    //
+    // 8 KB RX/TX rings — restored 2026-05-28 after the 512 KB upload
+    // crash was diagnosed and proven UNRELATED to UART buffer size
+    // (commit 12d8c69).  With stream uploads now using 16 KB segments
+    // gated by per-segment FILE_UPLOAD_PROGRESS ACK, the client never
+    // sends more than 16 KB without first waiting for our reply — and
+    // the bulk `NativeUartStream::readBytes` override drains the ring
+    // in microseconds, so it rarely holds more than a couple of KB at
+    // once.  8 KB = ~11 ms at 6 Mbps is comfortable headroom.  Bump
+    // back to 16384 if any future protocol path bursts > 8 KB without
+    // synchronous backpressure.
+    wireUart.begin(UART_NUM_0, /*rx*/44, /*tx*/43,
+                   sfx_core::BoardServerBase::BAUD_RATE,
+                   /*rxBuf*/8192, /*txBuf*/8192);
+
     // Policy pack lifecycle — Serial, DiagLog, indicator pins, port
     // registry binding, every policy's begin().  Master role, no
-    // upstream watchdog.  BoardOf<>::begin() takes (version, build, ...)
-    // because the prefix comes from `kName`.
-    board.begin(FIRMWARE_VERSION, BUILD_NUMBER,
+    // upstream watchdog.  BoardOf<>::begin() takes (stream, version,
+    // build, ledPin, errPin) because the prefix comes from `kName`.
+    board.begin(wireUart, FIRMWARE_VERSION, BUILD_NUMBER,
                 Gpio::LED_CONNECTION, Gpio::LED_ERROR);
     board.setConnectionTimeoutEnabled(false);
 
@@ -789,6 +844,20 @@ void loop() {
             board.process();
         }
         storage.checkUploadTimeout();
+        // Yield to IDLE0 each iteration so the Task Watchdog Timer
+        // doesn't panic.  The AudioAssetCache loader (Core 0, prio
+        // configMAX_PRIORITIES-3 = 22) blocks on `sd.lock()` for the
+        // duration of every upload; FreeRTOS's mutex priority
+        // inheritance then boosts this loop task (prio 1) to 22.
+        // Without the yield, IDLE0 (prio 0) is preempted indefinitely
+        // and TWDT (5 s, CONFIG_ESP_TASK_WDT_TIMEOUT_S) reboots the
+        // device — manifested as a hard reset at exactly the first
+        // STREAM_SEGMENT_SIZE boundary into a stream upload, found and
+        // verified on build 486 / 489 (2026-05-28).  vTaskDelay(1) at
+        // FREERTOS_HZ=1000 = 1 ms per pass, well inside the TWDT
+        // budget; throughput cost is sub-1 % vs the old 525 KB/s
+        // ceiling.
+        vTaskDelay(pdMS_TO_TICKS(1));
         return;
     }
 
