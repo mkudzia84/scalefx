@@ -136,7 +136,39 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
     // Touched only on protocol-rate enqueue / dequeue — PSRAM latency
     // invisible at that cadence.  Failure rollback mirrors wav.bufL/R.
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
-        _channels[i] = Channel{};
+        // Reset per-channel state field-by-field (can't do
+        // `_channels[i] = Channel{}` because WavState now holds
+        // atomics — std::atomic isn't move-assignable).
+        Channel& chReset = _channels[i];
+        chReset.wav.source = nullptr;
+        chReset.wav.sampleRate_Hz = 0;
+        chReset.wav.numChannels = 0;
+        chReset.wav.bitsPerSample = 0;
+        chReset.wav.totalFrames = 0;
+        chReset.wav.loopCountInit = 0;
+        chReset.wav.resampleRatio = 1.0f;
+        chReset.wav.resampleFrac  = 0.0f;
+        chReset.wav.ringReset();
+        chReset.wav.active.store(false, std::memory_order_relaxed);
+        chReset.wav.needsPrefill.store(false, std::memory_order_relaxed);
+        chReset.wav.sourceExhausted.store(false, std::memory_order_relaxed);
+        chReset.volume = 1.0f;
+        chReset.pan    = 0.0f;
+        chReset.panL   = 0.707f;
+        chReset.panR   = 0.707f;
+        chReset.outputChannels = AudioChannel::ALL;
+        chReset.filename[0] = '\0';
+        chReset.mute = false;
+        chReset.fading = false;
+        chReset.fadeVolume = 1.0f;
+        chReset.fadeStep   = 0.0f;
+        chReset.fadeOutTriggerFrames = 0;
+        chReset.fadeOutStep = 0.0f;
+        chReset.queueHead = 0;
+        chReset.queueTail = 0;
+        chReset.pendingLoopBehavior = QueueLoopBehavior::StopImmediate;
+        chReset.hasQueuedItem = false;
+
         _channelPlaying[i] = false;
         _channelRemainingSec[i] = 0.0f;
 
@@ -256,7 +288,9 @@ void AudioMixer<TI2S, TCodec>::shutdown() {
     if (!_initialized) return;
 
 #if SFX_PLATFORM_ESP32
-    // Stop producer task first (it accesses channels and SD)
+    // Phase 6: stop decoder task before producer so no new frames land
+    // mid-shutdown.  Producer next, then I²S last.
+    stopDecoderTask();
     stopProducerTask();
 #endif
 
@@ -346,11 +380,16 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
 
     // Tear down any source already attached.  Source destructor closes
     // its file or frees its preload PSRAM uniformly across kinds.
+    // (Phase 6: setting active=false BEFORE destroying the source
+    // makes any decoder-task observation of `active` race-safe — the
+    // decoder skips the channel on its next pass and won't try to
+    // call into a destroyed source.)
+    ws.active.store(false, std::memory_order_release);
     destroyAudioSource(ws.source);
-    ws.active        = false;
-    ws.bufLen        = 0;
-    ws.bufPos        = 0;
-    ws.resampleFrac  = 0.0f;
+    ws.ringReset();
+    ws.sourceExhausted.store(false, std::memory_order_relaxed);
+    ws.needsPrefill   .store(false, std::memory_order_relaxed);
+    ws.resampleFrac   = 0.0f;
 
     // ── Construct a concrete source ─────────────────────────────────
     // Preload first: short hot samples (gun, alert) get cached in
@@ -432,8 +471,7 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     // Configure resampler
     ws.resampleRatio = (float)ws.sampleRate_Hz / (float)AUDIO_SAMPLE_RATE;
     ws.resampleFrac  = 0.0f;
-    ws.bufLen        = 0;
-    ws.bufPos        = 0;
+    // Ring already reset above.
 
     // Apply loop options — source owns counter decay; we just cache
     // the initial value for getInitialLoopCount() status reads.
@@ -487,19 +525,19 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     strncpy(ch.filename, filename, CHANNEL_FILENAME_MAX - 1);
     ch.filename[CHANNEL_FILENAME_MAX - 1] = '\0';
 
-    // Pre-fill drain buffer — loop until either full OR refill makes
-    // no progress (EOF for non-looping files SHORTER than buffer).
-    while (ws.bufLen < WAV_BUF_FRAMES) {
-        int prevLen = ws.bufLen;
-        if (!refillDrainBuffer(ch)) break;
-        if (ws.bufLen == prevLen) break;
-    }
-    MIXER_LOG("Ch%d: Pre-filled WAV buffer %d/%d frames (%.0f ms)",
-             channel, ws.bufLen, WAV_BUF_FRAMES,
-             (float)ws.bufLen / AUDIO_SAMPLE_RATE * 1000.0f);
-
-    ws.active = true;
+    // Phase 6 (feature/audio-decode-prefetch): NO synchronous pre-fill.
+    // The decoder task on Core 0 will fill the ring as soon as it sees
+    // `needsPrefill=true` (typically within ~5 ms — its tick period).
+    // The producer task on Core 1 emits silence for the brief window
+    // until the first frames land; the alternative — blocking the
+    // producer for ~70 ms inside this play() call — was the root cause
+    // of the play-start under+ spike observed in build 472.  Imperceptible
+    // ~5 ms silence at sound-effect start vs guaranteed underrun on the
+    // currently-mixing channels is the right trade.
+    ws.needsPrefill.store(true,  std::memory_order_relaxed);
+    ws.active      .store(true,  std::memory_order_release);
     _channelPlaying[channel] = true;
+    notifyDecoder();
 
     const char* loopStr;
     char loopBuf[16];
@@ -600,15 +638,18 @@ void AudioMixer<TI2S, TCodec>::stopWithFadeMs(int channel, AudioStopMode mode,
 
     Channel& ch = _channels[channel];
     WavState& ws = ch.wav;
-    if (!ws.active) return;
+    if (!ws.active.load(std::memory_order_acquire)) return;
 
     switch (mode) {
         case AudioStopMode::Immediate:
-            // Source destructor closes file / frees preload PSRAM.
+            // Clear active first (release) so the decoder task sees
+            // the dead channel on its next pass and won't try to
+            // refill mid-destroy.
+            ws.active.store(false, std::memory_order_release);
             destroyAudioSource(ws.source);
-            ws.active = false;
-            ws.bufLen = 0;
-            ws.bufPos = 0;
+            ws.ringReset();
+            ws.sourceExhausted.store(false, std::memory_order_relaxed);
+            ws.needsPrefill   .store(false, std::memory_order_relaxed);
             _channelPlaying[channel] = false;
             MIXER_LOG("Ch%d: Stopped", channel);
             break;
@@ -887,77 +928,58 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
     WavState& ws = ch.wav;
     if (!ws.source) return false;
 
-    // Move remaining frames to front of buffer
-    int remaining = ws.bufLen - ws.bufPos;
-    if (remaining > 0 && ws.bufPos > 0) {
-        memmove(ws.bufL, ws.bufL + ws.bufPos, remaining * sizeof(int16_t));
-        memmove(ws.bufR, ws.bufR + ws.bufPos, remaining * sizeof(int16_t));
-    }
-    ws.bufPos = 0;
-    ws.bufLen = remaining;
+    // ── SPSC ring write side (Phase 6) ─────────────────────────────
+    // Called from the decoder task on Core 0.  Producer's readIdx
+    // load with acquire (in availableWrite) pairs with our release
+    // commitWrite at the end.  Writes go into the ring at
+    //   (writeIdx & mask)
+    // and may have to be split into two contiguous spans when the
+    // ring boundary falls inside the write region — fully handled
+    // inside the inner loop.
+    constexpr uint32_t kRingMask = (uint32_t)WAV_BUF_FRAMES - 1;
+    static_assert((WAV_BUF_FRAMES & (WAV_BUF_FRAMES - 1)) == 0,
+                  "WAV_BUF_FRAMES must be power of 2 for ring masking");
 
-    int space = WAV_BUF_FRAMES - remaining;
-    if (space <= 0) return true;
+    uint32_t space = ws.availableWrite();
+    if (space == 0) return true;
 
     // ── Per-call decode-cost cap ────────────────────────────────────
-    // Two competing constraints:
-    //   1. Refill must add ≥ what produce() drained per cycle or the
-    //      drain shrinks until silence is mixed in (per-channel
-    //      "starves" in the pace log).
-    //   2. Refill blocks the producer task; if it's too long, the ring
-    //      drains and underruns (under+ ticks in the pace log).
-    // Sweet spot is "refill more than one cycle's worth at a time so
-    // refill fires every-other-cycle instead of every cycle" — halves
-    // the average refill overhead vs the 4096-cap (cap == consume).
-    // With 8192 frames an MP3 refill is ~35-40 ms; the ring's ~85 ms
-    // headroom still absorbs that for two active MP3 channels.  PCM
-    // (.wav) sources refill instantly regardless.  The drain buffer
-    // is 24 K frames so 8 K never overruns.  2026-05-28 trace at
-    // @213077ms showed 4096-cap producer falling behind in the
-    // engine+gun case; 8192-cap restores the headroom.
-    constexpr int kMaxRefillFrames = 8192;
+    // Phase 6 the cap matters less because refill runs on Core 0 (no
+    // producer blocking), but bounding the loop keeps decoder-task
+    // wakeups responsive enough for Arduino loop + protocol to share
+    // Core 0 nicely.  4096 frames ≈ 85 ms of audio per refill — long
+    // enough to amortize libhelix per-frame overhead, short enough
+    // that the decoder task yields back to Core 0 promptly.
+    constexpr uint32_t kMaxRefillFrames = 4096;
     if (space > kMaxRefillFrames) space = kMaxRefillFrames;
 
-    // Pull from source into a small float scratch in 256-frame batches,
-    // converting each batch to int16 Q15 into the drain buffer's tail.
-    // The source interface still emits float in [-1, +1]; the int16
-    // store is the boundary that makes the hot mix path integer.  Time
-    // the WHOLE refill (incl. conversion) so the SD-stall telemetry
-    // still reports end-to-end latency.
-    //
-    // Stack scratch budget: 256 × 2 × 4 B = 2 KB; producer task stack
-    // is 8 KB so the headroom is comfortable.  Batch size trades
-    // per-call source overhead vs stack pressure — 256 is a few
-    // batches per typical refill window.
     constexpr int kRefillBatchFrames = 256;
     float scratchL[kRefillBatchFrames];
     float scratchR[kRefillBatchFrames];
 
-    const uint32_t t0 = micros();
+    const uint32_t t0       = micros();
+    const uint32_t startIdx = ws.writeIdx.load(std::memory_order_relaxed);
     uint32_t got = 0;
-    while ((int)got < space) {
-        const int batchCap =
-            (space - (int)got < kRefillBatchFrames) ? (space - (int)got)
-                                                    : kRefillBatchFrames;
-        const uint32_t n = ws.source->readFrames(scratchL, scratchR,
-                                                 (uint32_t)batchCap);
+    while (got < space) {
+        const uint32_t batchCap =
+            (space - got < (uint32_t)kRefillBatchFrames) ? (space - got)
+                                                         : (uint32_t)kRefillBatchFrames;
+        const uint32_t n = ws.source->readFrames(scratchL, scratchR, batchCap);
         if (n == 0) break;
-        int16_t* dstL = ws.bufL + ws.bufLen + (int)got;
-        int16_t* dstR = ws.bufR + ws.bufLen + (int)got;
+
+        // Scatter into the ring, handling the wrap point.  At most one
+        // wrap per batch (batchCap ≤ ring size).
         for (uint32_t k = 0; k < n; ++k) {
-            // Clamp + scale.  Source emits [-1, +1]; round-toward-zero
-            // truncation is fine here, this conversion is happening at
-            // refill cadence (batched), not per output sample.  Use
-            // 32767 not 32768 to avoid asymmetric saturation on +1.
             float fL = scratchL[k];
             float fR = scratchR[k];
             if (fL >  1.0f) fL =  1.0f; else if (fL < -1.0f) fL = -1.0f;
             if (fR >  1.0f) fR =  1.0f; else if (fR < -1.0f) fR = -1.0f;
-            dstL[k] = (int16_t)(fL * 32767.0f);
-            dstR[k] = (int16_t)(fR * 32767.0f);
+            const uint32_t pos = (startIdx + got + k) & kRingMask;
+            ws.bufL[pos] = (int16_t)(fL * 32767.0f);
+            ws.bufR[pos] = (int16_t)(fR * 32767.0f);
         }
         got += n;
-        if ((int)n < batchCap) break;   // short read → source paused / EOF
+        if (n < batchCap) break;   // short read → source paused / EOF
     }
     const uint32_t dtUs = micros() - t0;
 
@@ -970,58 +992,73 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
     if (dtUs > 5000u)  _slowSdReads.fetch_add(1, std::memory_order_relaxed);
     if (dtUs > 20000u) _verySlowSdReads.fetch_add(1, std::memory_order_relaxed);
 
-    ws.bufLen += (int)got;
-    // Return TRUE if we got data OR the source isn't permanently
-    // exhausted yet.  This distinguishes "real EOF" (source.isExhausted
-    // → destroy channel) from "transient buffering" (paged source
-    // waiting for the next page — drain what's already buffered, retry
-    // soon).  Before this fix, a single page-transition with the next
-    // page not-yet-ready would cause readFrames=0 → refill returns
-    // false → channel destroyed mid-track (the engine_start.wav
-    // truncation @ ~6.5 s on the build #370 test).
-    return ws.bufLen > 0 || !ws.source->isExhausted();
+    // Publish written frames to the producer with release.  After this
+    // commit the producer's availableRead() will see the new samples,
+    // and its acquire load of writeIdx pairs with this release.
+    if (got > 0) ws.commitWrite(got);
+
+    // Stamp source-exhausted state for the producer to observe AFTER
+    // draining the last samples (it checks sourceExhausted only when
+    // availableRead() == 0).  needsPrefill cleared so the decoder
+    // task doesn't re-poll this channel until something kicks it.
+    ws.needsPrefill.store(false, std::memory_order_relaxed);
+    const bool exhausted = ws.source && ws.source->isExhausted();
+    if (exhausted) ws.sourceExhausted.store(true, std::memory_order_release);
+
+    // Return TRUE if we got data OR the source is still transiently
+    // buffering (paged source waiting for the next page).  FALSE only
+    // for permanent exhaustion.
+    return got > 0 || !exhausted;
 }
 
 template<typename TI2S, typename TCodec>
 bool AudioMixer<TI2S, TCodec>::getWavSample(Channel& ch, int16_t& outL, int16_t& outR) {
     WavState& ws = ch.wav;
-    // Ensure 2 frames are available for linear interpolation; emit
-    // silence if not (the produce() loop's per-cycle top-up will refill
-    // the drain on the next pass).  The starve counter surfaces drain
-    // exhaustion in the per-second pace telemetry.
-    if (ws.bufPos + 1 >= ws.bufLen && ws.active) {
-        const intptr_t idx = &ch - _channels;
-        if (idx >= 0 && idx < AUDIO_MAX_CHANNELS) {
-            _channelStarves[idx].fetch_add(1, std::memory_order_relaxed);
+    constexpr uint32_t kRingMask = (uint32_t)WAV_BUF_FRAMES - 1;
+
+    // SPSC read side (Phase 6).  availableRead() does an acquire load
+    // of writeIdx that pairs with the decoder task's release on
+    // commitWrite; readIdx is loaded relaxed because the producer is
+    // its sole writer.
+    const uint32_t avail = ws.availableRead();
+    const bool     act   = ws.active.load(std::memory_order_acquire);
+    if (avail < 2 && act) {
+        // Drain ran below interp threshold.  Could be a transient
+        // (decoder just hasn't filled yet) or a real source EOF.
+        const intptr_t cidx = &ch - _channels;
+        if (cidx >= 0 && cidx < AUDIO_MAX_CHANNELS) {
+            _channelStarves[cidx].fetch_add(1, std::memory_order_relaxed);
         }
-        if (ws.source && ws.source->isExhausted()) {
+        // If the decoder marked the source done AND no samples remain,
+        // tell the caller to tear down the channel.
+        if (avail == 0 &&
+            ws.sourceExhausted.load(std::memory_order_acquire)) {
             outL = outR = 0;
-            return false;   // mixer destroys channel
+            return false;
         }
         outL = outR = 0;
         return true;        // transient drain; keep channel alive
     }
 
-    const int idx = ws.bufPos;
-    // Linear interpolation in Q15 fixed-point:
-    //   result16 = a + ((b - a) * fracQ15) >> 15
-    // resampleFrac stays float (≤ 1 mul per sample) — keeping it as a
-    // float-then-Q15-convert avoids a second integer fixed-point path
-    // for the resampler accumulator while the per-sample mix work is
-    // already integer.  When most files play at 48 kHz native, frac is
-    // always 0 and the interpolation collapses to a load.
-    const int32_t fracQ15 = (int32_t)(ws.resampleFrac * 32768.0f);
-    const int32_t aL = ws.bufL[idx];
-    const int32_t bL = ws.bufL[idx + 1];
-    const int32_t aR = ws.bufR[idx];
-    const int32_t bR = ws.bufR[idx + 1];
+    const uint32_t rIdx     = ws.readIdx.load(std::memory_order_relaxed);
+    const uint32_t pos0     = rIdx       & kRingMask;
+    const uint32_t pos1     = (rIdx + 1) & kRingMask;
+    const int32_t  fracQ15  = (int32_t)(ws.resampleFrac * 32768.0f);
+    const int32_t  aL = ws.bufL[pos0];
+    const int32_t  bL = ws.bufL[pos1];
+    const int32_t  aR = ws.bufR[pos0];
+    const int32_t  bR = ws.bufR[pos1];
     outL = (int16_t)(aL + (((bL - aL) * fracQ15) >> 15));
     outR = (int16_t)(aR + (((bR - aR) * fracQ15) >> 15));
 
-    // Advance resampler — unchanged, float frac → int advance.
+    // Advance resampler — float frac → int advance, then publish the
+    // commit to the decoder.  We never advance past `avail - 1` (the
+    // interp needs sample [rIdx+1] to be valid too); clamping here
+    // prevents a brief over-read at the drain boundary.
     ws.resampleFrac += ws.resampleRatio;
-    int advance = (int)ws.resampleFrac;
-    ws.bufPos       += advance;
+    uint32_t advance = (uint32_t)ws.resampleFrac;
+    if (advance > avail - 1) advance = avail - 1;
+    if (advance > 0) ws.commitRead(advance);
     ws.resampleFrac -= (float)advance;
     return true;
 }
@@ -1060,7 +1097,7 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
         // Get one resampled int16 stereo frame from the drain buffer.
         if (!getWavSample(ch, trackL16, trackR16)) {
             destroyAudioSource(ws.source);
-            ws.active = false;
+            ws.active.store(false, std::memory_order_release);
             _channelPlaying[i] = false;
             _channelRemainingSec[i] = 0.0f;
             checkAndPlayNextQueued(i);
@@ -1073,7 +1110,7 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
         if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
+                ws.totalFrames - srcRead + ws.availableRead();
             if (framesLeft <= ch.fadeOutTriggerFrames) {
                 ch.fading               = true;
                 ch.fadeVolume           = 1.0f;
@@ -1094,7 +1131,7 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
                 ch.fadeVolume = 0.0f;
                 ch.fading = false;
                 destroyAudioSource(ws.source);
-                ws.active = false;
+                ws.active.store(false, std::memory_order_release);
                 _channelPlaying[i] = false;
                 checkAndPlayNextQueued(i);
                 continue;
@@ -1134,7 +1171,7 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
         if (ws.sampleRate_Hz > 0) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
+                ws.totalFrames - srcRead + ws.availableRead();
             _channelRemainingSec[i] = (float)framesLeft / (float)ws.sampleRate_Hz;
         }
     }
@@ -1226,7 +1263,7 @@ int AudioMixer<TI2S, TCodec>::produceBlock(int maxFrames) {
         }
         if (sourceDied && got == 0) {
             destroyAudioSource(ws.source);
-            ws.active = false;
+            ws.active.store(false, std::memory_order_release);
             _channelPlaying[i] = false;
             _channelRemainingSec[i] = 0.0f;
             checkAndPlayNextQueued(i);
@@ -1240,7 +1277,7 @@ int AudioMixer<TI2S, TCodec>::produceBlock(int maxFrames) {
         if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
+                ws.totalFrames - srcRead + ws.availableRead();
             if (framesLeft <= ch.fadeOutTriggerFrames) {
                 ch.fading               = true;
                 ch.fadeVolume           = 1.0f;
@@ -1305,14 +1342,14 @@ int AudioMixer<TI2S, TCodec>::produceBlock(int maxFrames) {
         if (ws.sampleRate_Hz > 0) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
+                ws.totalFrames - srcRead + ws.availableRead();
             _channelRemainingSec[i] = (float)framesLeft / (float)ws.sampleRate_Hz;
         }
 
         // Deferred teardown for completed fade-outs / mid-block EOFs.
         if (fadeOutComplete || sourceDied) {
             destroyAudioSource(ws.source);
-            ws.active = false;
+            ws.active.store(false, std::memory_order_release);
             _channelPlaying[i] = false;
             if (sourceDied) _channelRemainingSec[i] = 0.0f;
             checkAndPlayNextQueued(i);
@@ -1415,7 +1452,7 @@ int AudioMixer<TI2S, TCodec>::produceBlockFloat(int maxFrames) {
         }
         if (sourceDied && got == 0) {
             destroyAudioSource(ws.source);
-            ws.active = false;
+            ws.active.store(false, std::memory_order_release);
             _channelPlaying[i] = false;
             _channelRemainingSec[i] = 0.0f;
             checkAndPlayNextQueued(i);
@@ -1428,7 +1465,7 @@ int AudioMixer<TI2S, TCodec>::produceBlockFloat(int maxFrames) {
         if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
+                ws.totalFrames - srcRead + ws.availableRead();
             if (framesLeft <= ch.fadeOutTriggerFrames) {
                 ch.fading               = true;
                 ch.fadeVolume           = 1.0f;
@@ -1475,13 +1512,13 @@ int AudioMixer<TI2S, TCodec>::produceBlockFloat(int maxFrames) {
         if (ws.sampleRate_Hz > 0) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
+                ws.totalFrames - srcRead + ws.availableRead();
             _channelRemainingSec[i] = (float)framesLeft / (float)ws.sampleRate_Hz;
         }
 
         if (fadeOutComplete || sourceDied) {
             destroyAudioSource(ws.source);
-            ws.active = false;
+            ws.active.store(false, std::memory_order_release);
             _channelPlaying[i] = false;
             if (sourceDied) _channelRemainingSec[i] = 0.0f;
             checkAndPlayNextQueued(i);
@@ -1537,27 +1574,12 @@ int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
         produced += got;
     }
 
-    // Top-up EVERY active channel whose drain buffer is below 50 %.
-    // (Was previously round-robin "one channel per call"; that left
-    // 2 + active channels behind the consume rate on MP3 sources —
-    // 2026-05-28 trace showed ch1 drain stuck at 6 % with persistent
-    // under+ ticks.)  With kMaxRefillFrames=2048 each call costs
-    // ~10 ms decode time for MP3; capping ≤3 active sources and ≤4 KB
-    // ring drain risk keeps producer-blocking under one ring tick.
-    //
-    // Skip channels whose source returned 0 bytes the previous attempt
-    // and isn't marked exhausted — these are the "phantom-active"
-    // failure mode (source forever silent but not finished); we
-    // count one starve per call and skip the decode work to avoid
-    // burning a refill slot on a dead source.
-    for (int i = 0; i < AUDIO_MAX_CHANNELS; ++i) {
-        Channel& ch = _channels[i];
-        if (!ch.wav.active) continue;
-        int available = ch.wav.bufLen - ch.wav.bufPos;
-        if (available < WAV_BUF_FRAMES / 2) {
-            refillDrainBuffer(ch);
-        }
-    }
+    // Phase 6 (feature/audio-decode-prefetch): the per-cycle refill
+    // loop is GONE.  refillDrainBuffer is owned by the decoder task
+    // on Core 0.  The producer here only mixes from the ring.
+    // If any channel runs low on data, the decoder task will see it
+    // on its next tick (5 ms typical) and refill — without ever
+    // blocking THIS task.
 
     return produced;
 }
@@ -1655,17 +1677,16 @@ template<typename TI2S, typename TCodec>
 int AudioMixer<TI2S, TCodec>::getWavBufferFillPercent(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
     const WavState& ws = _channels[channel].wav;
-    if (!ws.active || WAV_BUF_FRAMES == 0) return 0;
-    int available = ws.bufLen - ws.bufPos;
-    return (available * 100) / WAV_BUF_FRAMES;
+    if (!ws.active.load(std::memory_order_acquire) || WAV_BUF_FRAMES == 0) return 0;
+    return (int)((ws.availableRead() * 100u) / (uint32_t)WAV_BUF_FRAMES);
 }
 
 template<typename TI2S, typename TCodec>
 int AudioMixer<TI2S, TCodec>::getWavBufferFrames(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
     const WavState& ws = _channels[channel].wav;
-    if (!ws.active) return 0;
-    return ws.bufLen - ws.bufPos;
+    if (!ws.active.load(std::memory_order_acquire)) return 0;
+    return (int)ws.availableRead();
 }
 
 // ============================================================================
@@ -2005,17 +2026,136 @@ void AudioMixer<TI2S, TCodec>::stopProducerTask() {
     MIXER_LOG("Producer task stopped");
 }
 
+// ============================================================================
+//  DECODER TASK (Phase 6, feature/audio-decode-prefetch, 2026-05-28)
+// ============================================================================
+//
+// Owns the entire decode pipeline on Core 0.  Producer task on Core 1
+// only reads from the per-channel SPSC rings.  This is the structural
+// fix for the play-start under+ spike and the 5-channel sustained
+// stutter, both of which were rooted in synchronous libhelix decode
+// blocking the producer task for ~30-100 ms.
+//
+// Wake sources:
+//   - xTaskNotifyGive from notifyDecoder() (play() / stop() / restart)
+//   - kDecoderTickMs (5 ms) periodic timeout — catches channels whose
+//     rings are draining without a wake (steady-state mixing)
+//
+// Each pass walks AUDIO_MAX_CHANNELS and calls refillDrainBuffer for
+// any channel with availableWrite() >= kRefillThreshold (currently
+// half the ring).  refillDrainBuffer itself is now lock-free against
+// the producer — see audio_mixer.ipp line ~890 for the SPSC write
+// implementation.
+
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::notifyDecoder() {
+    if (_decoderTaskHandle) {
+        xTaskNotifyGive(_decoderTaskHandle);
+    }
+}
+
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::decoderTaskFunc(void* /*param*/) {
+    auto& mixer = AudioMixer::instance();
+    MIXER_LOG("Decoder task started on core %d (priority %d)",
+              xPortGetCoreID(), uxTaskPriorityGet(nullptr));
+
+    constexpr uint32_t kRefillThresholdFrames = (uint32_t)WAV_BUF_FRAMES / 2;
+
+    while (mixer._decoderRunning.load(std::memory_order_acquire)) {
+        // Wait for a wake or the periodic tick.  Tick = 5 ms keeps the
+        // worst-case latency on idle-but-active channels short.
+        ulTaskNotifyTake(/*clearOnExit*/ pdTRUE, pdMS_TO_TICKS(kDecoderTickMs));
+
+        for (int i = 0; i < AUDIO_MAX_CHANNELS; ++i) {
+            Channel& ch = mixer._channels[i];
+            WavState& ws = ch.wav;
+            // Producer-published `active` with acquire ordering; if the
+            // channel was just torn down the source pointer might be
+            // null mid-pass — the refillDrainBuffer guard catches that.
+            if (!ws.active.load(std::memory_order_acquire)) continue;
+            if (ws.sourceExhausted.load(std::memory_order_acquire)) continue;
+
+            const bool needs = ws.needsPrefill.load(std::memory_order_relaxed);
+            const bool hungry = ws.availableWrite() >= kRefillThresholdFrames;
+            if (needs || hungry) {
+                mixer.refillDrainBuffer(ch);
+            }
+        }
+    }
+
+    MIXER_LOG("Decoder task exiting");
+    mixer._decoderExited.store(true, std::memory_order_release);
+    vTaskSuspend(nullptr);
+}
+
+template<typename TI2S, typename TCodec>
+bool AudioMixer<TI2S, TCodec>::startDecoderTask() {
+    if (_decoderRunning.load(std::memory_order_acquire)) return true;
+    if (!_initialized.load(std::memory_order_acquire)) {
+        MIXER_ERROR("startDecoderTask() called before begin()");
+        return false;
+    }
+
+    _decoderExited .store(false, std::memory_order_release);
+    _decoderRunning.store(true,  std::memory_order_release);
+
+    BaseType_t result = xTaskCreatePinnedToCore(
+        decoderTaskFunc, "AudioDecoder",
+        _decoderStackSize, nullptr,
+        _decoderPriority, &_decoderTaskHandle,
+        _decoderCore
+    );
+    if (result != pdPASS) {
+        _decoderRunning.store(false, std::memory_order_release);
+        MIXER_ERROR("Failed to create decoder task (err=%d)", result);
+        return false;
+    }
+
+    MIXER_LOG("Decoder task created: core=%d priority=%d stack=%d",
+              _decoderCore, _decoderPriority, _decoderStackSize);
+    return true;
+}
+
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::stopDecoderTask() {
+    if (!_decoderRunning.load(std::memory_order_acquire)) return;
+
+    MIXER_LOG("Stopping decoder task...");
+    _decoderRunning.store(false, std::memory_order_release);
+    // Wake it so it sees the flag and exits.
+    if (_decoderTaskHandle) xTaskNotifyGive(_decoderTaskHandle);
+
+    TaskHandle_t handle = _decoderTaskHandle;
+    _decoderTaskHandle = nullptr;
+    if (handle) {
+        for (int i = 0; i < 40; ++i) {
+            if (_decoderExited.load(std::memory_order_acquire)) break;
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        if (!_decoderExited.load(std::memory_order_acquire)) {
+            MIXER_WARN("Decoder task did not exit cleanly after 200 ms — forcing delete");
+        }
+        vTaskDelete(handle);
+    }
+    MIXER_LOG("Decoder task stopped");
+}
+
 template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::suspendAudio() {
-    MIXER_LOG("Suspending audio (consumer + producer)...");
+    MIXER_LOG("Suspending audio (decoder + producer + consumer)...");
 
     // 1. Stop all playback immediately
     stopAll(AudioStopMode::Immediate);
 
-    // 2. Stop producer task (WAV decode + mixing on Core 1)
+    // 2. Stop decoder task on Core 0 (Phase 6 — must precede producer
+    //    so the producer doesn't see new frames mid-suspend).
+    stopDecoderTask();
+
+    // 3. Stop producer task (mixing on Core 1)
     stopProducerTask();
 
-    // 3. Suspend consumer task (I2S output on Core 1)
+    // 4. Suspend consumer task (I2S output on Core 1)
     if (_consumerTaskHandle) {
         vTaskSuspend(_consumerTaskHandle);
     }
@@ -2025,17 +2165,20 @@ void AudioMixer<TI2S, TCodec>::suspendAudio() {
 
 template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::resumeAudio() {
-    MIXER_LOG("Resuming audio (consumer + producer)...");
+    MIXER_LOG("Resuming audio (consumer + producer + decoder)...");
 
     // 1. Resume consumer task first (higher priority)
     if (_consumerTaskHandle) {
         vTaskResume(_consumerTaskHandle);
     }
 
-    // 2. Restart producer task with stored configuration
+    // 2. Restart producer task on Core 1
     startProducerTask(_producerCore, _producerPriority, _producerStackSize);
 
-    MIXER_LOG("Audio resumed — consumer + producer restarted");
+    // 3. Restart decoder task on Core 0 (Phase 6)
+    startDecoderTask();
+
+    MIXER_LOG("Audio resumed — consumer + producer + decoder restarted");
 }
 
 #endif // SFX_PLATFORM_ESP32

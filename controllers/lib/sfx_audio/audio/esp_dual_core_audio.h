@@ -210,6 +210,13 @@ private:
                                 /*priority=*/configMAX_PRIORITIES - 2,
                                 /*stackSize=*/8192);
 
+        // Phase 6 (feature/audio-decode-prefetch): start the decoder
+        // task on Core 0.  Owns all libhelix MP3 + SD reads so the
+        // producer task on Core 1 never blocks on decode.  Defaults
+        // (core=0, prio=5, stack=6 KB) are baked into the mixer; see
+        // audio_mixer.h.
+        mixer.startDecoderTask();
+
         while (true) {
             self->_loop1Count.fetch_add(1, std::memory_order_relaxed);
             mixer.consume();
