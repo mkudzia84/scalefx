@@ -1023,16 +1023,23 @@ bool AudioMixer<TI2S, TCodec>::getWavSample(Channel& ch, int16_t& outL, int16_t&
     const uint32_t avail = ws.availableRead();
     const bool     act   = ws.active.load(std::memory_order_acquire);
     if (avail < 2 && act) {
-        // Drain ran below interp threshold.  Could be a transient
-        // (decoder just hasn't filled yet) or a real source EOF.
+        // Drain ran below the linear-interp threshold (need 2 samples
+        // for one interpolated output).  Could be a transient (decoder
+        // hasn't filled yet) or a real source EOF.
         const intptr_t cidx = &ch - _channels;
         if (cidx >= 0 && cidx < AUDIO_MAX_CHANNELS) {
             _channelStarves[cidx].fetch_add(1, std::memory_order_relaxed);
         }
-        // If the decoder marked the source done AND no samples remain,
-        // tell the caller to tear down the channel.
-        if (avail == 0 &&
-            ws.sourceExhausted.load(std::memory_order_acquire)) {
+        // If the decoder marked the source done, tear down NOW even if
+        // there's 1 sample remaining — we can't interp from a single
+        // sample (no neighbor) and waiting for avail==0 stalls forever
+        // when resampleRatio < 1 (24 kHz→48 kHz upsamples advance 0
+        // frames every other output sample, so the avail-1 clamp on
+        // commitRead pins advance=0 once avail==1).  Verified 2026-05-28
+        // against the Phase 6 trace: ch0 init.mp3 (24 kHz mono) stuck
+        // active with empty drain for 1+ s after natural EOF.
+        if (ws.sourceExhausted.load(std::memory_order_acquire)) {
+            if (avail > 0) ws.commitRead(avail);  // drain the residue
             outL = outR = 0;
             return false;
         }
