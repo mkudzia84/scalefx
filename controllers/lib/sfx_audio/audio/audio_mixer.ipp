@@ -106,31 +106,17 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
     // the WARN log so the regression is visible in the boot trace.
     // Per-channel decode buffer (0.5 s headroom) absorbs the slow path
     // without underrunning, so single-track always plays.
-    // Phase 7 lazy _sdReadBuf REVERTED (2026-05-28) — second upload
-    // crash report after wave 2 stack revert points to wave 1 too.
-    // Restore eager allocation at begin() to match the long-known-good
-    // pre-Phase-7 behaviour while we investigate.
-    if (!_sdReadBuf) {
-#if SFX_PLATFORM_ESP32
-        _sdReadBuf = static_cast<uint8_t*>(
-            heap_caps_malloc(WAV_SD_READ_BYTES,
-                             MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-        if (_sdReadBuf) {
-            MIXER_LOG("SD scratch: %d KB in DMA-cap SRAM (eager)",
-                      WAV_SD_READ_BYTES / 1024);
-        } else {
-            MIXER_WARN("SD scratch: DMA-cap SRAM exhausted (%u KB) — falling back to PSRAM",
-                       (unsigned)(WAV_SD_READ_BYTES / 1024));
-            _sdReadBuf = static_cast<uint8_t*>(sfxPsramMalloc(WAV_SD_READ_BYTES));
-        }
-#else
-        _sdReadBuf = static_cast<uint8_t*>(sfxPsramMalloc(WAV_SD_READ_BYTES));
-#endif
-        if (!_sdReadBuf) {
-            MIXER_ERROR("SD read buffer allocation failed (%d bytes)", WAV_SD_READ_BYTES);
-            return false;
-        }
-    }
+    // Phase 7 wave 1 lazy `_sdReadBuf` — restored 2026-05-28 after the
+    // 512 KB upload crash was diagnosed and proven UNRELATED to this
+    // path (commit 12d8c69).  The 32 KB DMA-cap scratch is now
+    // allocated on the FIRST `play(preloadIntoMemory=true)` via
+    // `acquireSdScratch()`, refcounted across concurrent preloads, and
+    // freed back to the DMA-cap pool when the refcount drops to zero.
+    // No allocation happens here in begin().  Reclaims 32 KB DMA-cap
+    // SRAM for I²S DMA / SDMMC ISR whenever no preload is in flight.
+    // Only effects with `preloadIntoMemory=true` exercise this path
+    // (GunFx today); engine / alert / lightfx all stream from
+    // AudioAssetCache + Mp3PsramSource, never touching this buffer.
 
     // ---- Allocate per-channel WAV decode buffers + queue from PSRAM ----
     // Per-channel `queue[QUEUE_SIZE_PER_CHANNEL]` lives in PSRAM (re-applied
@@ -198,8 +184,7 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
                 _channels[j].wav.bufR = nullptr;
                 _channels[j].queue    = nullptr;
             }
-            sfxPsramFree(_sdReadBuf);
-            _sdReadBuf = nullptr;
+            // _sdReadBuf is lazy now — nothing allocated here to free.
             return false;
         }
     }
@@ -213,7 +198,8 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
         if (!_cmdQueue) {
             MIXER_ERROR("Command queue alloc failed (%d slots × %u B)",
                         AUDIO_CMD_QUEUE_SIZE, (unsigned)sizeof(Command));
-            // Roll back per-channel buffers + SD scratch
+            // Roll back per-channel buffers.  _sdReadBuf is lazy now —
+            // nothing allocated here to free.
             for (int j = 0; j < AUDIO_MAX_CHANNELS; j++) {
                 sfxPsramFree(_channels[j].wav.bufL);
                 sfxPsramFree(_channels[j].wav.bufR);
@@ -222,8 +208,6 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
                 _channels[j].wav.bufR = nullptr;
                 _channels[j].queue    = nullptr;
             }
-            sfxPsramFree(_sdReadBuf);
-            _sdReadBuf = nullptr;
             return false;
         }
     }
@@ -402,14 +386,23 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     // for oversize files / OOM headroom — caller falls through to
     // streaming.  Stage 4 will add WavPagedSource as a middle tier.
     if (options.preloadIntoMemory) {
-        auto* preload = new (ch.sourceStorage) WavPreloadSource();
-        if (preload->openAndPreload(filename, _sdReadBuf,
-                                    WAV_SD_READ_BYTES,
-                                    WAV_MAX_PRELOAD_FRAMES)) {
-            ws.source = preload;
-        } else {
-            preload->~WavPreloadSource();
-            // fall through to PSRAM-source path
+        // Phase 7 wave 1 lazy SD scratch — acquire 32 KB DMA-cap buffer
+        // for this preload, release it as soon as the read completes
+        // (data is in PSRAM by then, scratch goes back to DMA-cap pool).
+        // Refcount inside acquire/release keeps concurrent preloads
+        // sharing one allocation.  Null return = DMA-cap exhausted and
+        // PSRAM fallback also failed — fall through to PSRAM-source.
+        if (uint8_t* scratch = acquireSdScratch()) {
+            auto* preload = new (ch.sourceStorage) WavPreloadSource();
+            if (preload->openAndPreload(filename, scratch,
+                                        WAV_SD_READ_BYTES,
+                                        WAV_MAX_PRELOAD_FRAMES)) {
+                ws.source = preload;
+            } else {
+                preload->~WavPreloadSource();
+                // fall through to PSRAM-source path
+            }
+            releaseSdScratch();
         }
     }
     if (!ws.source) {
