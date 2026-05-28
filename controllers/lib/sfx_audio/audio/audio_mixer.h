@@ -6,15 +6,17 @@
  * loop/one-shot modes, L/R/stereo routing, and float mixing pipeline.
  * 
  * DUAL-CORE ARCHITECTURE (ESP32-S3):
- *   Core 1 — Producer Task: WAV decode + SD reads + float mixing → SPSC ring buffer
+ *   Core 1 — Producer Task: WAV decode + SD reads + int16 Q15 mixing → SPSC ring buffer
  *   Core 1 — Consumer Task: SPSC ring buffer → I2S DMA (higher priority)
  *   Core 0: Protocol handling only — uses *Async() API to queue commands
- * 
- * All audio math uses float, leveraging hardware FPU where available
- * (Cortex-M33 on RP2350, Xtensa DSP on ESP32-S3).
- * WAV samples are converted to float for mixing; int16 conversion happens
- * only at the final output stage. WAV files at non-native sample rates
- * are resampled via linear interpolation.
+ *
+ * Mix kernel runs in int16 / Q15 fixed-point (Phase 5,
+ * feature/mixer-int16-kernel — the source PCM is already int16 native,
+ * and the per-frame hot loop dominates producer cost at 2+ active
+ * channels).  Sources still emit float via IAudioSource::readFrames();
+ * the per-channel drain buffer is filled int16 once at refill time and
+ * the mixer reads int16 from then on.  Linear-interp resampling for
+ * non-native sample rates is done in Q15 fixed-point.
  * 
  * Uses SdCardModule singleton for SD card access (producer side only).
  * Audio files are opened directly via SdCardModule::instance().
@@ -47,13 +49,16 @@
 //  CONSTANTS (see audio_config.h for configuration)
 // ============================================================================
 
-// WAV pre-buffer sizes (float frames per channel)
+// WAV pre-buffer sizes (int16 frames per channel — Q15 fixed-point)
 // These buffers provide the primary SD-stall resilience — each channel can
 // sustain playback for WAV_BUF_FRAMES / AUDIO_SAMPLE_RATE seconds without
 // any SD reads.  The mixed-audio ring buffer is a small core-to-core FIFO.
 //
 // ESP32-S3: 24000 frames/ch = 0.5 s at 48 kHz.  8 ch × 2 (L+R) × 24000
-//   × 4 bytes = 1.5 MB total in PSRAM (8 MB available).
+//   × 2 bytes = 768 KB total in PSRAM (8 MB available — feature/mixer-
+//   int16-kernel halved this from 1.5 MB by dropping the float drain;
+//   WAV / MP3 sources are already int16 PCM internally, so float was
+//   wasted precision).
 //   SD read batch = 32 KB allocated from DMA-cap INTERNAL SRAM (re-tried
 //   2026-05-27 after the multi-track stutter was reassessed as an SD-card
 //   side issue rather than a cache-coherency problem on the audio path).
@@ -65,7 +70,7 @@
 //   PSRAM (1.5 MB total — won't fit in internal SRAM).
 // Pico: Smaller buffers in SRAM heap.
 #if SFX_PLATFORM_ESP32
-constexpr int WAV_BUF_FRAMES       = 24000;     // decoded float frames per track (PSRAM, 0.5 s @ 48 kHz)
+constexpr int WAV_BUF_FRAMES       = 24000;     // decoded int16 frames per track (PSRAM, 0.5 s @ 48 kHz)
 constexpr int WAV_SD_READ_BYTES    = 32768;     // bytes per SD card read batch (DMA-cap SRAM)
 // Sizing rationale: 32 KB = 16384 source frames @ 16-bit mono = ~680 ms
 // of source audio per SD read.  A 50% refill (12000 source frames →
@@ -80,7 +85,7 @@ constexpr int WAV_SD_READ_BYTES    = 32768;     // bytes per SD card read batch 
 // than the cap fall back to streaming with a single warn log.
 constexpr uint32_t WAV_MAX_PRELOAD_FRAMES = 96000;
 #else
-constexpr int WAV_BUF_FRAMES       = 1024;      // decoded float frames per track
+constexpr int WAV_BUF_FRAMES       = 1024;      // decoded int16 frames per track
 constexpr int WAV_SD_READ_BYTES    = 4096;      // bytes per SD card read batch
 // Pico's SRAM heap is far smaller — disable preload entirely (cap=0
 // makes every preloadIntoMemory request fall back to streaming).
@@ -369,9 +374,9 @@ private:
     // `IAudioSource` (audio_source.h) — this struct holds only
     // mixer-side cached metadata, the resampler state, and a
     // per-channel drain buffer that the source refills via
-    // `readFrames()`.  WavStreamSource reuses `bufL`/`bufR` as its
-    // own SD-decode scratch; WavPreloadSource serves from its own
-    // PSRAM storage and ignores the buffer.
+    // `readFrames()`.  Sources emit float in [-1, +1];
+    // refillDrainBuffer converts to int16 Q15 at fill time so the
+    // hot mix loop stays integer (Phase 5 — feature/mixer-int16-kernel).
     struct WavState {
         // Active source — placement-new'd into Channel::sourceStorage
         // at play() time; destroyed via destroyAudioSource() on
@@ -393,11 +398,15 @@ private:
         float      resampleRatio  = 1.0f;
         float      resampleFrac   = 0.0f;
 
-        // Per-channel float drain buffer.  PSRAM-allocated at
+        // Per-channel int16 drain buffer.  PSRAM-allocated at
         // AudioMixer::begin(), capacity = WAV_BUF_FRAMES.  Source
-        // refills via readFrames(); produceFrame() drains with interp.
-        float*     bufL           = nullptr;
-        float*     bufR           = nullptr;
+        // emits float in [-1, +1] via readFrames(); refillDrainBuffer
+        // converts to int16 at fill time.  produceFrame() drains with
+        // Q15 interp on the hot path.  Halved from float (Phase 5,
+        // feature/mixer-int16-kernel) — the source data is int16 PCM
+        // natively, so float was wasted precision.
+        int16_t*   bufL           = nullptr;
+        int16_t*   bufR           = nullptr;
         int        bufLen         = 0;
         int        bufPos         = 0;
 
@@ -482,8 +491,8 @@ private:
 
     // ---- Internal Methods ----
     // Producer side (Core 1 task on ESP32, Core 0 on Pico)
-    bool refillDrainBuffer(Channel& ch);        // Pull frames from source into ch.wav.bufL/R
-    bool getWavSample(Channel& ch, float& outL, float& outR);   // Resampled frame
+    bool refillDrainBuffer(Channel& ch);        // Pull frames from source into ch.wav.bufL/R (int16 Q15)
+    bool getWavSample(Channel& ch, int16_t& outL, int16_t& outR);   // Resampled int16 frame
     bool produceFrame();                         // Mix one frame → ring buffer
     void updatePan(Channel& ch);                 // Recalculate panL/panR
 

@@ -2,11 +2,16 @@
  * Audio Mixer - Implementation
  * 
  * SPSC Ring Buffer Architecture (ESP32-S3):
- *   Core 1 — Producer Task: WAV decode + SD reads + float mixing → ring buffer
+ *   Core 1 — Producer Task: WAV decode + SD reads + int16 Q15 mixing → ring buffer
  *   Core 1 — Consumer Task: ring buffer → I2S DMA (higher priority)
  *   Core 0: Protocol handling only — uses *Async() API to queue commands
- * 
- * All audio math uses float, leveraging hardware FPU where available.
+ *
+ * Mix kernel runs in int16 / Q15 fixed-point (Phase 5,
+ * feature/mixer-int16-kernel — the source PCM is already int16 native,
+ * and the per-frame hot loop dominated producer cost at 2+ active
+ * channels under the legacy float kernel).  Sources still emit float
+ * via IAudioSource::readFrames(); refillDrainBuffer converts to int16
+ * once at fill time so the hot path is pure integer.
  * File I/O uses SdCardModule singleton directly.
  *
  * The controller instantiates AudioMixer<ConcreteI2S, ConcreteCodec>.
@@ -112,11 +117,14 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
         _channelPlaying[i] = false;
         _channelRemainingSec[i] = 0.0f;
 
-        // Allocate L+R float buffers for WAV decode + per-channel queue
-        _channels[i].wav.bufL = static_cast<float*>(
-            sfxPsramCalloc(WAV_BUF_FRAMES, sizeof(float)));
-        _channels[i].wav.bufR = static_cast<float*>(
-            sfxPsramCalloc(WAV_BUF_FRAMES, sizeof(float)));
+        // Allocate L+R int16 drain buffers for WAV decode + per-channel queue.
+        // int16 (not float — Phase 5 mixer-int16-kernel) halves the PSRAM
+        // footprint from 1.5 MB to 768 KB across 8 channels and lets the
+        // hot mix loop run pure integer.
+        _channels[i].wav.bufL = static_cast<int16_t*>(
+            sfxPsramCalloc(WAV_BUF_FRAMES, sizeof(int16_t)));
+        _channels[i].wav.bufR = static_cast<int16_t*>(
+            sfxPsramCalloc(WAV_BUF_FRAMES, sizeof(int16_t)));
         _channels[i].queue = static_cast<QueuedSound*>(
             sfxPsramCalloc(QUEUE_SIZE_PER_CHANNEL, sizeof(QueuedSound)));
 
@@ -177,7 +185,7 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
     _cmdQueueTail = 0;
 
     // Calculate total PSRAM consumed by audio subsystem.
-    int wavBufTotal_KB = (AUDIO_MAX_CHANNELS * 2 * WAV_BUF_FRAMES * sizeof(float)) / 1024;
+    int wavBufTotal_KB = (AUDIO_MAX_CHANNELS * 2 * WAV_BUF_FRAMES * sizeof(int16_t)) / 1024;
     int sdBuf_KB = WAV_SD_READ_BYTES / 1024;
     int ringBuf_KB = RING_BYTES / 1024;
     int totalPsram_KB = wavBufTotal_KB + sdBuf_KB + ringBuf_KB;
@@ -859,8 +867,8 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
     // Move remaining frames to front of buffer
     int remaining = ws.bufLen - ws.bufPos;
     if (remaining > 0 && ws.bufPos > 0) {
-        memmove(ws.bufL, ws.bufL + ws.bufPos, remaining * sizeof(float));
-        memmove(ws.bufR, ws.bufR + ws.bufPos, remaining * sizeof(float));
+        memmove(ws.bufL, ws.bufL + ws.bufPos, remaining * sizeof(int16_t));
+        memmove(ws.bufR, ws.bufR + ws.bufPos, remaining * sizeof(int16_t));
     }
     ws.bufPos = 0;
     ws.bufLen = remaining;
@@ -887,14 +895,47 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
     constexpr int kMaxRefillFrames = 8192;
     if (space > kMaxRefillFrames) space = kMaxRefillFrames;
 
-    // Pull from source into the tail of the drain buffer — time the
-    // call to expose decode-side stalls.  Source handles loop wrap
-    // internally; we just see a stream of frames until it returns 0
-    // (exhausted).
+    // Pull from source into a small float scratch in 256-frame batches,
+    // converting each batch to int16 Q15 into the drain buffer's tail.
+    // The source interface still emits float in [-1, +1]; the int16
+    // store is the boundary that makes the hot mix path integer.  Time
+    // the WHOLE refill (incl. conversion) so the SD-stall telemetry
+    // still reports end-to-end latency.
+    //
+    // Stack scratch budget: 256 × 2 × 4 B = 2 KB; producer task stack
+    // is 8 KB so the headroom is comfortable.  Batch size trades
+    // per-call source overhead vs stack pressure — 256 is a few
+    // batches per typical refill window.
+    constexpr int kRefillBatchFrames = 256;
+    float scratchL[kRefillBatchFrames];
+    float scratchR[kRefillBatchFrames];
+
     const uint32_t t0 = micros();
-    const uint32_t got = ws.source->readFrames(ws.bufL + ws.bufLen,
-                                               ws.bufR + ws.bufLen,
-                                               (uint32_t)space);
+    uint32_t got = 0;
+    while ((int)got < space) {
+        const int batchCap =
+            (space - (int)got < kRefillBatchFrames) ? (space - (int)got)
+                                                    : kRefillBatchFrames;
+        const uint32_t n = ws.source->readFrames(scratchL, scratchR,
+                                                 (uint32_t)batchCap);
+        if (n == 0) break;
+        int16_t* dstL = ws.bufL + ws.bufLen + (int)got;
+        int16_t* dstR = ws.bufR + ws.bufLen + (int)got;
+        for (uint32_t k = 0; k < n; ++k) {
+            // Clamp + scale.  Source emits [-1, +1]; round-toward-zero
+            // truncation is fine here, this conversion is happening at
+            // refill cadence (batched), not per output sample.  Use
+            // 32767 not 32768 to avoid asymmetric saturation on +1.
+            float fL = scratchL[k];
+            float fR = scratchR[k];
+            if (fL >  1.0f) fL =  1.0f; else if (fL < -1.0f) fL = -1.0f;
+            if (fR >  1.0f) fR =  1.0f; else if (fR < -1.0f) fR = -1.0f;
+            dstL[k] = (int16_t)(fL * 32767.0f);
+            dstR[k] = (int16_t)(fR * 32767.0f);
+        }
+        got += n;
+        if ((int)n < batchCap) break;   // short read → source paused / EOF
+    }
     const uint32_t dtUs = micros() - t0;
 
     // Track max-since-last-log via lock-free CAS (relaxed — the
@@ -919,48 +960,42 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
 }
 
 template<typename TI2S, typename TCodec>
-bool AudioMixer<TI2S, TCodec>::getWavSample(Channel& ch, float& outL, float& outR) {
+bool AudioMixer<TI2S, TCodec>::getWavSample(Channel& ch, int16_t& outL, int16_t& outR) {
     WavState& ws = ch.wav;
-    // Ensure 2 frames are available for linear interpolation; refill
-    // from source if not.  Source-kind dispatch is behind ws.source.
-    //
-    // A synchronous refill here is the canonical "round-robin top-up
-    // didn't keep up" signal — the per-channel _channelStarves counter
-    // surfaces this in the per-second telemetry, identifying which
-    // channel needs more attention from the producer.
+    // Ensure 2 frames are available for linear interpolation; emit
+    // silence if not (the produce() loop's per-cycle top-up will refill
+    // the drain on the next pass).  The starve counter surfaces drain
+    // exhaustion in the per-second pace telemetry.
     if (ws.bufPos + 1 >= ws.bufLen && ws.active) {
-        // Drain ran empty.  Used to call refillDrainBuffer inline
-        // here, which blocked the producer 10-20 ms per MP3 decode
-        // and crashed the ring (2026-05-28).  Now the produce() loop
-        // refills EVERY active channel below 50 % at the end of each
-        // cycle, so reaching this branch means the producer is going
-        // faster than the decoder can keep up — emit silence for
-        // this single frame and let the next produce() top-up
-        // catch this channel back up.  Channel stays alive; per-
-        // channel `_channelStarves` counts these so they show up
-        // in the per-second pace telemetry.
         const intptr_t idx = &ch - _channels;
         if (idx >= 0 && idx < AUDIO_MAX_CHANNELS) {
             _channelStarves[idx].fetch_add(1, std::memory_order_relaxed);
         }
-        // Exhaustion check still has to happen — if the source is
-        // permanently done we want the channel destroyed, not
-        // perpetually silenced.
         if (ws.source && ws.source->isExhausted()) {
-            outL = outR = 0.0f;
+            outL = outR = 0;
             return false;   // mixer destroys channel
         }
-        outL = outR = 0.0f;
+        outL = outR = 0;
         return true;        // transient drain; keep channel alive
     }
 
-    const int   idx  = ws.bufPos;
-    const float frac = ws.resampleFrac;
+    const int idx = ws.bufPos;
+    // Linear interpolation in Q15 fixed-point:
+    //   result16 = a + ((b - a) * fracQ15) >> 15
+    // resampleFrac stays float (≤ 1 mul per sample) — keeping it as a
+    // float-then-Q15-convert avoids a second integer fixed-point path
+    // for the resampler accumulator while the per-sample mix work is
+    // already integer.  When most files play at 48 kHz native, frac is
+    // always 0 and the interpolation collapses to a load.
+    const int32_t fracQ15 = (int32_t)(ws.resampleFrac * 32768.0f);
+    const int32_t aL = ws.bufL[idx];
+    const int32_t bL = ws.bufL[idx + 1];
+    const int32_t aR = ws.bufR[idx];
+    const int32_t bR = ws.bufR[idx + 1];
+    outL = (int16_t)(aL + (((bL - aL) * fracQ15) >> 15));
+    outR = (int16_t)(aR + (((bR - aR) * fracQ15) >> 15));
 
-    outL = ws.bufL[idx] + (ws.bufL[idx + 1] - ws.bufL[idx]) * frac;
-    outR = ws.bufR[idx] + (ws.bufR[idx + 1] - ws.bufR[idx]) * frac;
-
-    // Advance resampler
+    // Advance resampler — unchanged, float frac → int advance.
     ws.resampleFrac += ws.resampleRatio;
     int advance = (int)ws.resampleFrac;
     ws.bufPos       += advance;
@@ -970,33 +1005,37 @@ bool AudioMixer<TI2S, TCodec>::getWavSample(Channel& ch, float& outL, float& out
 
 
 // ============================================================================
-//  FLOAT MIXING PIPELINE — PRODUCER (Core 1 task on ESP32, Core 0 on Pico)
+//  Q15 MIXING PIPELINE — PRODUCER (Core 1 task on ESP32, Core 0 on Pico)
 // ============================================================================
+//
+// All hot-path math is int16/int32 (Phase 5, feature/mixer-int16-kernel).
+// Per-channel sample × volume × pan runs as `(int32)sample × Q15_gain >> 15`
+// keeping each per-channel term within int16 range; accumulation across
+// channels uses int32 (headroom for 8 ch × ±32767 = ±262144 << INT32_MAX).
+// Master volume + output headroom apply once at frame end.  Sources stay
+// float at the interface but the drain buffer is int16 (refillDrainBuffer
+// quantizes at fill time); this branch's goal is to validate the int16
+// hot-loop hypothesis before touching IAudioSource itself.
 
 template<typename TI2S, typename TCodec>
 bool AudioMixer<TI2S, TCodec>::produceFrame() {
-    // Fill ring to capacity.  The ring is a small FIFO between cores (~85 ms),
-    // so filling it fully adds negligible latency.  SD resilience comes from
-    // the large per-channel WAV decode buffers (0.5 s each).
     if (ringBuf().isFull()) return false;
 
-    float mixL = 0.0f;
-    float mixR = 0.0f;
+    int32_t mixL = 0;
+    int32_t mixR = 0;
     bool hasAudio = false;
 
     for (int i = 0; i < AUDIO_MAX_CHANNELS; i++) {
         Channel& ch = _channels[i];
         WavState& ws = ch.wav;
-        
+
         if (!ws.active || ch.mute || ch.volume <= 0.0f) continue;
 
-        float trackL = 0.0f;
-        float trackR = 0.0f;
+        int16_t trackL16 = 0;
+        int16_t trackR16 = 0;
 
-        // Get one resampled stereo frame from the source's drain buffer.
-        if (!getWavSample(ch, trackL, trackR)) {
-            // End of playback — source destructor closes its file or
-            // frees its preload PSRAM uniformly across kinds.
+        // Get one resampled int16 stereo frame from the drain buffer.
+        if (!getWavSample(ch, trackL16, trackR16)) {
             destroyAudioSource(ws.source);
             ws.active = false;
             _channelPlaying[i] = false;
@@ -1005,9 +1044,9 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
             continue;
         }
 
-        // Arm the auto tail fade-out once playback-remaining (source
-        // frames not yet read + frames still buffered) drops below the
-        // threshold.
+        // Arm the auto tail fade-out once playback-remaining drops below
+        // threshold (same logic as the float kernel — float scalar work
+        // ≤ 1 op per channel per frame, not worth fixed-point-ifying).
         if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
             const uint32_t framesLeft =
@@ -1020,13 +1059,15 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
             }
         }
 
-        // Apply fade if active.  fadeStep > 0 = fade-OUT, < 0 = fade-IN.
+        // Fade ramp update — float arithmetic, one mul/add/cmp per
+        // channel per frame.  Cheaper than maintaining a Q15 ramp +
+        // converting back.  Combined effectiveVolume converted to Q15
+        // ONCE for the per-sample multiply below.
         float effectiveVolume = ch.volume;
         if (ch.fading) {
             effectiveVolume *= ch.fadeVolume;
             ch.fadeVolume -= ch.fadeStep;
             if (ch.fadeStep > 0.0f && ch.fadeVolume <= 0.0f) {
-                // Fade-out complete → stop the channel.
                 ch.fadeVolume = 0.0f;
                 ch.fading = false;
                 destroyAudioSource(ws.source);
@@ -1035,7 +1076,6 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
                 checkAndPlayNextQueued(i);
                 continue;
             } else if (ch.fadeStep < 0.0f && ch.fadeVolume >= 1.0f) {
-                // Fade-in complete → hold at full volume, keep playing.
                 ch.fadeVolume = 1.0f;
                 ch.fading = false;
             }
@@ -1043,27 +1083,31 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
 
         hasAudio = true;
 
-        // Apply track volume
-        trackL *= effectiveVolume;
-        trackR *= effectiveVolume;
+        // ── Q15 per-channel kernel ───────────────────────────────────
+        // sample(int16) × volQ15(int32 in [0, 32768]) >> 15 keeps the
+        // value within int16 range when vol ≤ 1.  Pan multiplies fold
+        // into the same shape (panL/R also Q15 ≤ 32768).  When pan +
+        // routing collapses to "ALL with vol only" the cost is one
+        // multiply per channel; with pan it's two.
+        const int32_t volQ15 = (int32_t)(effectiveVolume * 32768.0f);
+        int32_t L = ((int32_t)trackL16 * volQ15) >> 15;
+        int32_t R = ((int32_t)trackR16 * volQ15) >> 15;
 
-        // Apply output routing (bitmask: CH1=0x01, CH2=0x02)
         if (ch.outputChannels == AudioChannel::ALL) {
-            // Both channels: apply constant-power pan
-            trackL *= ch.panL;
-            trackR *= ch.panR;
+            const int32_t panLQ15 = (int32_t)(ch.panL * 32768.0f);
+            const int32_t panRQ15 = (int32_t)(ch.panR * 32768.0f);
+            L = (L * panLQ15) >> 15;
+            R = (R * panRQ15) >> 15;
         } else {
-            // Selective: zero disabled channels
-            if (!(ch.outputChannels & AudioChannel::CH1)) trackL = 0.0f;
-            if (!(ch.outputChannels & AudioChannel::CH2)) trackR = 0.0f;
+            if (!(ch.outputChannels & AudioChannel::CH1)) L = 0;
+            if (!(ch.outputChannels & AudioChannel::CH2)) R = 0;
         }
 
-        // Accumulate into stereo mix
-        mixL += trackL;
-        mixR += trackR;
+        mixL += L;
+        mixR += R;
 
-        // Update remaining time status (float seconds — avoids integer
-        // overflow for long files).  framesRead lives on the source now.
+        // Update remaining-time status — once per channel per frame, off
+        // the hot multiply path.
         if (ws.sampleRate_Hz > 0) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
             const uint32_t framesLeft =
@@ -1072,26 +1116,29 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
         }
     }
 
-    // Don't buffer silence — the consumer writes silence to I2S directly
-    // when the ring is empty. Skipping silence keeps the ring near-empty
-    // while idle, so new audio reaches the output within milliseconds.
+    // Skip silence — keeps the ring near-empty while idle so a fresh
+    // play() reaches output within milliseconds.
     if (!hasAudio) return false;
 
-    // Apply master volume
-    mixL *= _masterVolume;
-    mixR *= _masterVolume;
+    // Master volume in Q15.  master=1.0 → mvolQ15=32768 → mix unchanged.
+    const int32_t mvolQ15 = (int32_t)(_masterVolume * 32768.0f);
+    mixL = (mixL * mvolQ15) >> 15;
+    mixR = (mixR * mvolQ15) >> 15;
 
-    // Clamp to [-1.0, +1.0]
-    if (mixL >  1.0f) mixL =  1.0f;
-    if (mixL < -1.0f) mixL = -1.0f;
-    if (mixR >  1.0f) mixR =  1.0f;
-    if (mixR < -1.0f) mixR = -1.0f;
+    // Clamp to full int16 range — matches the legacy float code's
+    // saturation at ±1.0 before the output-gain step below.
+    if (mixL >  32767) mixL =  32767;
+    if (mixL < -32768) mixL = -32768;
+    if (mixR >  32767) mixR =  32767;
+    if (mixR < -32768) mixR = -32768;
 
-    // Convert to int16 for ring buffer
-    int16_t sampleL = (int16_t)(mixL * MAX_AMPLITUDE);
-    int16_t sampleR = (int16_t)(mixR * MAX_AMPLITUDE);
+    // Output headroom scaling — preserves the legacy `* MAX_AMPLITUDE`
+    // step (24000 / 32768 ≈ 0.732, −2.7 dB) so transients don't slam
+    // the DAC.  Final int16 written to the SPSC ring.
+    mixL = (mixL * MAX_AMPLITUDE) >> 15;
+    mixR = (mixR * MAX_AMPLITUDE) >> 15;
 
-    ringBuf().write(sampleL, sampleR);
+    ringBuf().write((int16_t)mixL, (int16_t)mixR);
     return true;
 }
 
