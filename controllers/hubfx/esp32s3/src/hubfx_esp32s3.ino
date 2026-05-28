@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.13.0-hubfx"
-#define BUILD_NUMBER     469
+#define BUILD_NUMBER     470
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -303,6 +303,7 @@ using GunFxService =
 // PortServicePolicy + RoleServicePolicy.  User policies follow.
 
 class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
+                                             sfx::NativeUartStream,      // TStream (Rule 33)
                                              HubFxExpanderService,
                                              HubFxTopologyService,
                                              InputDispatcherService,
@@ -388,6 +389,15 @@ public:
 };
 
 HubFxBoard board;
+
+/// Wire-protocol UART (Phase 4 of feature/idf-component-build, 2026-05-28).
+/// Native ESP-IDF UART driver wrapped in a Stream-compatible class.
+/// brought up explicitly here so the BoardOf<…, NativeUartStream, …>
+/// hot path resolves UART read/write through TStream& direct calls
+/// (no Stream* vtable per byte at 6 Mbps).  Pre-installed before
+/// board.begin() so the wire is live the moment the protocol parser
+/// starts running.
+static sfx::NativeUartStream wireUart;
 
 // Dual-core audio bring-up helper.  Owns the atomic flags, the Core 1
 // consumer task, the producer task spawn, and the two-phase orchestration.
@@ -582,11 +592,20 @@ void setup() {
             [](void*) { applyHubFxConfigCallback(kHubFx.data()); }, nullptr);
     }
 
+    // Bring the wire-protocol UART up FIRST — board.begin() will read
+    // bytes off it the moment its policy pack initializes.  ESP32-S3
+    // default UART0 pins: TX=GPIO43, RX=GPIO44.  16 KB RX/TX buffers
+    // absorb upload-burst headroom; windowed flow control on the
+    // protocol layer prevents overflow.
+    wireUart.begin(UART_NUM_0, /*rx*/44, /*tx*/43,
+                   sfx_core::BoardServerBase::BAUD_RATE,
+                   /*rxBuf*/16384, /*txBuf*/16384);
+
     // Policy pack lifecycle — Serial, DiagLog, indicator pins, port
     // registry binding, every policy's begin().  Master role, no
-    // upstream watchdog.  BoardOf<>::begin() takes (version, build, ...)
-    // because the prefix comes from `kName`.
-    board.begin(FIRMWARE_VERSION, BUILD_NUMBER,
+    // upstream watchdog.  BoardOf<>::begin() takes (stream, version,
+    // build, ledPin, errPin) because the prefix comes from `kName`.
+    board.begin(wireUart, FIRMWARE_VERSION, BUILD_NUMBER,
                 Gpio::LED_CONNECTION, Gpio::LED_ERROR);
     board.setConnectionTimeoutEnabled(false);
 

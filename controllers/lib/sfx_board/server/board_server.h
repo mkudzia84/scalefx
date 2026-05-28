@@ -245,8 +245,13 @@ public:
     bool    capturedAck()  const { return _capturedAck; }
     uint8_t capturedErr()  const { return _capturedErr; }
 
-    int sendRawPacket(uint8_t type, uint8_t tag,
-                      const uint8_t* payload, size_t len);
+    /// Wire the encoded packet out — virtual so the templated
+    /// `BoardServerBaseT<TStream>` can override with a direct-stream
+    /// implementation that bypasses Stream's vtable.  Base
+    /// implementation in board_server.cpp uses the legacy `_serial`
+    /// Stream* for non-template callers.
+    virtual int sendRawPacket(uint8_t type, uint8_t tag,
+                              const uint8_t* payload, size_t len);
 
     uint8_t currentTag() const { return _currentTag; }
     Stream* serial()     const { return _serial; }
@@ -254,8 +259,9 @@ public:
 protected:
     /// Pump available bytes through the COBS framer.  Each complete
     /// frame is decoded, CRC-checked, and routed to dispatchPacket().
-    /// Returns number of frames processed.
-    int readFrames();
+    /// Returns number of frames processed.  Virtual for the same
+    /// reason as sendRawPacket() above.
+    virtual int readFrames();
 
     /// Implemented by the template subclass — walk the policy tuple,
     /// first owner handles, NACK INVALID_COMMAND if nothing matched.
@@ -367,6 +373,102 @@ concept SystemServicePolicy = requires(T t, BoardServerBase* ctx,
 };
 
 // ============================================================================
+// BoardServerBaseT<TStream> — templated mid-tier base (Phase 4 of
+// feature/idf-component-build, 2026-05-28).
+// ============================================================================
+//
+// Inherits the type-erased `BoardServerBase` (so policies can keep their
+// `BoardServerBase*` ctx — no cascade through the policy framework) but
+// holds the concrete `TStream&` and OVERRIDES the wire-rate hot path
+// (`readFrames`, `sendRawPacket`) to call directly on the stream — no
+// vtable per byte.  Compiler devirtualizes these calls within
+// `BoardServer<TStream, ...UserPolicies>::process()` because the
+// concrete derived type is statically known at that call site.
+//
+// `TStream` is required to expose:
+//   - bool/int available()
+//   - int read()
+//   - size_t write(const uint8_t*, size_t)
+// i.e. anything that satisfies Arduino's `Stream` interface.  In
+// practice: `sfx::NativeUartStream` (ESP32 IDF-component path), Arduino's
+// `HardwareSerial`/`USBCDC` (Pico + ESP32 regular-Arduino path), or a
+// test stub that captures bytes.
+//
+template <typename TStream>
+class BoardServerBaseT : public BoardServerBase {
+public:
+    /// Re-exported so consumers parameterised on a `BoardServerBaseT<...>`
+    /// (or a `BoardServer<...>` further down) can recover the stream
+    /// type via `TBoard::StreamType` — Rule 33 carrier-typedef pattern.
+    using StreamType = TStream;
+
+    /// Set by `BoardServer<TStream, ...>::begin(TStream&, …)`.  Pointer
+    /// (not reference) so the default-constructed BoardServerBase
+    /// chain stays valid before begin() runs.
+    void setStream(TStream& stream) {
+        _stream  = &stream;
+        // Mirror into BoardServerBase::_serial so legacy Stream*
+        // consumers (DiagLog, StorageService::serial(), …) keep working
+        // without having to spell out TStream.  Requires TStream to
+        // inherit Arduino's Stream — every current platform's stream
+        // type already does.
+        _serial  = &stream;
+    }
+
+    TStream* nativeStream() const { return _stream; }
+
+    // ── Wire hot-path overrides ──────────────────────────────────────
+    //
+    // BoardServerBase's defaults use `_serial` via the Stream vtable
+    // (one indirect call per byte).  These overrides go straight through
+    // `_stream` — at 6 Mbps the per-byte cost difference is significant.
+
+    int sendRawPacket(uint8_t type, uint8_t tag,
+                      const uint8_t* payload, size_t len) override {
+        if (!_stream) return -1;
+        uint8_t buf[SfxWire::COBS_BUFFER_SIZE];
+        const size_t encoded = SfxWire::encodePacket(buf, type, tag, payload, len);
+        if (encoded == 0) return -1;
+        return static_cast<int>(_stream->write(buf, encoded));
+    }
+
+    int readFrames() override {
+        if (!_stream) return 0;
+        int frames = 0;
+        while (_stream->available()) {
+            const uint8_t b = static_cast<uint8_t>(_stream->read());
+            _lastActivityMs = millis();
+
+            if (b == SfxWire::FRAME_DELIMITER) {
+                if (_rxIndex == 0) continue;
+                uint8_t        decoded[SfxWire::MAX_PACKET_SIZE];
+                const size_t   decodedLen = SfxWire::cobsDecode(
+                    _rxBuffer, _rxIndex, decoded, sizeof(decoded));
+                _rxIndex = 0;
+                if (decodedLen < 5) continue;
+
+                uint8_t        type, tag;
+                const uint8_t* payload;
+                size_t         payloadLen;
+                if (SfxWire::parsePacket(decoded, decodedLen,
+                                         &type, &tag, &payload, &payloadLen)) {
+                    dispatchPacket(type, tag, payload, payloadLen);
+                    ++frames;
+                }
+            } else if (_rxIndex < RX_BUFFER_SIZE) {
+                _rxBuffer[_rxIndex++] = b;
+            } else {
+                _rxIndex = 0;
+            }
+        }
+        return frames;
+    }
+
+protected:
+    TStream* _stream = nullptr;
+};
+
+// ============================================================================
 // BoardServer<...UserPolicies>
 // ============================================================================
 
@@ -386,9 +488,15 @@ concept SystemServicePolicy = requires(T t, BoardServerBase* ctx,
  *   void setup() { board.begin("MyBoard", FIRMWARE_VERSION, BUILD_NUMBER); }
  *   void loop()  { board.process(); }
  */
-template <typename... UserPolicies>
-class BoardServer : public BoardServerBase {
+template <typename TStream, typename... UserPolicies>
+class BoardServer : public BoardServerBaseT<TStream> {
 public:
+    /// Stream type carrier-typedef — Rule 33.  Lets helpers parameterised
+    /// on `TBoard` alone (BoardOf<TBoard, …>, future Stream-aware
+    /// helpers) recover the underlying type via `TBoard::StreamType`
+    /// without an extra template argument.
+    using StreamType = TStream;
+
     /// Full policy pack — BoardServicePolicy + IndicatorServicePolicy
     /// are prepended automatically; user policies follow.
     using Policies = std::tuple<BoardServicePolicy,
@@ -463,13 +571,13 @@ public:
 
     // ── Lifecycle callbacks (delegate to BoardServicePolicy) ─────────
 
-    void onInit    (std::function<void(uint8_t mode, uint8_t flags)> cb) { _initCb     = std::move(cb); }
-    void onShutdown(std::function<void()>                            cb) { _shutdownCb = std::move(cb); }
+    void onInit    (std::function<void(uint8_t mode, uint8_t flags)> cb) { this->_initCb     = std::move(cb); }
+    void onShutdown(std::function<void()>                            cb) { this->_shutdownCb = std::move(cb); }
 
     /// Mark that valid config has been loaded from flash so that
     /// disconnect-from-master transitions to STANDALONE rather than IDLE.
     void markConfigLoaded() {
-        _configLoaded = true;
+        this->_configLoaded = true;
         if (core().boardState() == BoardState::IDLE) {
             core().setBoardState(BoardState::STANDALONE);
         }
@@ -489,35 +597,34 @@ public:
      * @param errorPin     GPIO for the error/warning indicator LED
      *                     (pass -1 to disable on boards without one).
      */
-    void begin(const char* prefix, const char* version, uint32_t buildNumber,
+    /// Caller-supplied stream binding (Phase 4 of feature/idf-component-build,
+    /// 2026-05-28).  The TStream instance lives in the sketch (typically
+    /// a global) and is brought up there with the right pins/baud BEFORE
+    /// `board.begin(stream, …)` is called.  Sketch pattern:
+    ///
+    ///   static sfx::NativeUartStream wireUart;
+    ///   void setup() {
+    ///       wireUart.begin(UART_NUM_0, 44, 43, 6000000, 16384, 16384);
+    ///       board.begin(wireUart, "HubFx", FIRMWARE_VERSION, BUILD_NUMBER);
+    ///   }
+    void begin(TStream& stream,
+               const char* prefix, const char* version, uint32_t buildNumber,
                int connectionPin = 13, int errorPin = 14) {
-        // Wire serial setup.  On ESP32-S3 under the IDF-component build
-        // (feature/idf-component-build) Arduino's HardwareSerial RX
-        // path is broken — TX works (boot text streams to the host)
-        // but Serial.read() returns -1 forever even when the host is
-        // writing.  Switch to a native ESP-IDF UART driver wrapped
-        // in a Stream-compatible class.  Under the regular
-        // framework=arduino path, plain Arduino Serial keeps working.
-        // (Step 2 of this branch will templatize BoardServer on
-        // TStream and remove the Stream* vtable from the hot path
-        // entirely — for now we keep Stream* for back-compat with
-        // every other consumer.)
-#if SFX_PLATFORM_ESP32
-        static sfx::NativeUartStream s_nativeUart;
-        // ESP32-S3 default UART0 pins: TX=GPIO43, RX=GPIO44.  Stock
-        // dev-board USB-UART bridges wire to these.
-        s_nativeUart.begin(UART_NUM_0, /*rx*/44, /*tx*/43,
-                           BAUD_RATE, /*rxBuf*/16384, /*txBuf*/16384);
-        _serial = &s_nativeUart;
-#else
-        Serial.begin(BAUD_RATE);
-        while (!Serial && millis() < 3000) SFX_DELAY_MS(10);
-        _serial = &Serial;
-#endif
-        _initialized = true;
+        // Wire the stream into both the templated hot-path slot AND the
+        // legacy Stream* slot in BoardServerBase (DiagLog, StorageService::
+        // serial(), … keep using Stream* until they too templatize).
+        this->setStream(stream);
 
-        buildDeviceName(prefix);
-        DiagLog::instance().begin(_serial);
+        // Block briefly until the stream reports ready (mainly relevant
+        // when TStream is Arduino's Serial / USBCDC where !stream means
+        // "USB host hasn't enumerated yet"; NativeUartStream is ready
+        // immediately after install).
+        while (!stream && millis() < 3000) SFX_DELAY_MS(10);
+
+        this->_initialized = true;
+
+        this->buildDeviceName(prefix);
+        DiagLog::instance().begin(this->_serial);
 
         // Install the type-erased policy lookup BEFORE walking the pack
         // so each policy's `begin(ctx)` can resolve siblings through
@@ -536,7 +643,7 @@ public:
 
         // Seed board info + advertised capabilities into BoardServicePolicy.
         auto& c = core();
-        c.setBoardInfo(_deviceName, version, SFX_PLATFORM_NAME,
+        c.setBoardInfo(this->_deviceName, version, SFX_PLATFORM_NAME,
                        SFX_CPU_MHZ(), SFX_FREE_HEAP(), buildNumber);
         c.setCapabilities(kCapabilityMask);
         // Initial runtime-enabled mask — walks every policy's `enabled()`
@@ -565,7 +672,7 @@ public:
     /// BoardServicePolicy.  Call after begin().  Tracked devices are
     /// added via `addExpectedI2CDevice(addr, device?)`.
     void enableI2CScan(TwoWire& wire) {
-        _i2cWire = &wire;
+        this->_i2cWire = &wire;
         core().onI2CScan([this]() -> I2CScanResult {
             return this->performI2CScan();
         });
@@ -577,9 +684,9 @@ public:
     ///   3. update activity/freeRam on BoardServicePolicy;
     ///   4. enforce the connection timeout watchdog.
     void process() {
-        int frames = readFrames();
+        int frames = this->readFrames();
         auto& c = core();
-        if (frames > 0 || lastActivityMs() > c.lastActivityMs()) {
+        if (frames > 0 || this->lastActivityMs() > c.lastActivityMs()) {
             c.updateActivity();
         }
         c.updateFreeRam(SFX_FREE_HEAP());
@@ -594,8 +701,8 @@ protected:
 
     void dispatchPacket(uint8_t type, uint8_t tag,
                         const uint8_t* payload, size_t len) override {
-        if (!_initialized || !_serial) return;
-        _currentTag = tag;
+        if (!this->_initialized || !this->_serial) return;
+        this->_currentTag = tag;
 
         CommandHandleResult result = CommandHandleResult::NotMyCommand;
         std::apply([&](auto&... pol) {
@@ -606,7 +713,7 @@ protected:
         }, _policies);
 
         if (result != CommandHandleResult::Handled) {
-            sendNack(SerialError::INVALID_COMMAND);
+            this->sendNack(SerialError::INVALID_COMMAND);
         }
     }
 
@@ -658,10 +765,10 @@ private:
         auto& ind = indicators();
 
         if (mode == InitMode::SLAVE) {
-            _timeoutEnabled = _timeoutEnabledByUser;
+            this->_timeoutEnabled = this->_timeoutEnabledByUser;
             c.setBoardState(BoardState::SLAVE);
         } else if (mode == InitMode::DIRECT) {
-            _timeoutEnabled = false;
+            this->_timeoutEnabled = false;
             c.setBoardState(BoardState::DIRECT);
         }
 
@@ -670,25 +777,25 @@ private:
                      (flags & InitFlags::VERBOSE) ? "on" : "off",
                      BoardState::getName(c.boardState()));
 
-        if (_initCb) _initCb(mode, flags);
+        if (this->_initCb) this->_initCb(mode, flags);
         ind.setConnected(true);
         ind.setWatchdogTriggered(false);
     }
 
     void doShutdown() {
-        if (_shutdownCb) _shutdownCb();
+        if (this->_shutdownCb) this->_shutdownCb();
         indicators().setConnected(false);
-        _timeoutEnabled = _timeoutEnabledByUser;
-        core().setBoardState(_configLoaded ? BoardState::STANDALONE : BoardState::IDLE);
+        this->_timeoutEnabled = this->_timeoutEnabledByUser;
+        core().setBoardState(this->_configLoaded ? BoardState::STANDALONE : BoardState::IDLE);
     }
 
     void checkConnectionTimeout() {
-        if (!_timeoutEnabled) return;
+        if (!this->_timeoutEnabled) return;
         auto& c   = core();
         auto& ind = indicators();
-        if (c.checkTimeout(CONNECTION_TIMEOUT_ms)) {
+        if (c.checkTimeout(BoardServerBase::CONNECTION_TIMEOUT_ms)) {
             if (!ind.isWatchdogTriggered()) {
-                SFX_LOG_WARN("Connection timeout (%lums inactivity)", CONNECTION_TIMEOUT_ms);
+                SFX_LOG_WARN("Connection timeout (%lums inactivity)", BoardServerBase::CONNECTION_TIMEOUT_ms);
                 doShutdown();
                 ind.setWatchdogTriggered(true);
             }
