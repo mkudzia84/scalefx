@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.13.0-hubfx"
-#define BUILD_NUMBER     486
+#define BUILD_NUMBER     499
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -841,6 +841,20 @@ void loop() {
             board.process();
         }
         storage.checkUploadTimeout();
+        // Yield to IDLE0 each iteration so the Task Watchdog Timer
+        // doesn't panic.  The AudioAssetCache loader (Core 0, prio
+        // configMAX_PRIORITIES-3 = 22) blocks on `sd.lock()` for the
+        // duration of every upload; FreeRTOS's mutex priority
+        // inheritance then boosts this loop task (prio 1) to 22.
+        // Without the yield, IDLE0 (prio 0) is preempted indefinitely
+        // and TWDT (5 s, CONFIG_ESP_TASK_WDT_TIMEOUT_S) reboots the
+        // device — manifested as a hard reset at exactly the first
+        // STREAM_SEGMENT_SIZE boundary into a stream upload, found and
+        // verified on build 486 / 489 (2026-05-28).  vTaskDelay(1) at
+        // FREERTOS_HZ=1000 = 1 ms per pass, well inside the TWDT
+        // budget; throughput cost is sub-1 % vs the old 525 KB/s
+        // ceiling.
+        vTaskDelay(pdMS_TO_TICKS(1));
         return;
     }
 

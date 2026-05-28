@@ -348,8 +348,24 @@ private:
     uint32_t _streamMaxGap_ms       = 0;        // Worst-case gap between calls
     uint32_t _streamIterCount       = 0;        // processStream() call count per segment
 
-    static constexpr uint32_t STREAM_SEGMENT_SIZE        = 524288;  // SD: 512 KB per segment
-    static constexpr uint32_t STREAM_SEGMENT_SIZE_FLASH  = 131072;  // flash: 128 KB per segment
+    // Segment sizes — these are the per-ACK windows on the wire.  The
+    // client blasts one segment then blocks on FILE_UPLOAD_PROGRESS
+    // before sending the next, so the segment size IS the back-pressure
+    // window.  Too big = SD spikes (cluster allocation, GC, FAT update)
+    // overflow the UART RX buffer; too small = ACK round-trips dominate.
+    //
+    // 2026-05-28 (build 495 diag): 64 KB segments still lost data to an
+    // occasional 100 ms SD spike — because the buffer is 32 KB, the
+    // 64 KB segment requires ONE buffer-full flush mid-segment, and
+    // THAT'S where the spike landed (client still blasting, UART RX
+    // overflowed).  Shrunk SD to 16 KB so segment-size ≤ buffer-size:
+    // every flush now happens at the segment boundary while the client
+    // is blocked on FILE_UPLOAD_PROGRESS, so a 100+ ms SD spike never
+    // coincides with active wire traffic.  Cost: 90 ACKs per 1.4 MB
+    // upload × ~5 ms = ~450 ms overhead, ~10 % throughput hit at
+    // 500 KB/s, but reliable to arbitrary file size.
+    static constexpr uint32_t STREAM_SEGMENT_SIZE        = 16384;   // SD: 16 KB per segment
+    static constexpr uint32_t STREAM_SEGMENT_SIZE_FLASH  = 16384;   // flash: 16 KB per segment
     static constexpr uint32_t STREAM_INACTIVITY_MS       = 5000;    // 5s timeout per segment
 
     /// Send segment ACK (FILE_UPLOAD_PROGRESS) after each stream segment.

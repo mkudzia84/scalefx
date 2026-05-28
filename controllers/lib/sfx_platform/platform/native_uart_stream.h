@@ -74,6 +74,17 @@ public:
     int read() override;
     int peek() override;
 
+    /// Bulk read — bypass Arduino's `Stream::readBytes` polyfill (which
+    /// calls `read()` N times = 1 IDF mutex round-trip per byte ≈
+    /// 150 ms for 16 KB at 6 Mbps).  This single call drains the UART
+    /// in one shot, ~µs for the same 16 KB.  Critical on the stream-
+    /// upload hot path where the loop iteration time dominates the
+    /// effective UART drain rate (build #491 diag, 2026-05-28).
+    size_t readBytes(uint8_t* buffer, size_t length);
+    size_t readBytes(char* buffer, size_t length) {
+        return readBytes(reinterpret_cast<uint8_t*>(buffer), length);
+    }
+
     // ── Print interface (write side) ─────────────────────────────────
     size_t write(uint8_t b) override;
     size_t write(const uint8_t* buf, size_t n) override;

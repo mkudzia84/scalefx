@@ -90,6 +90,32 @@ int NativeUartStream::peek() {
     return -1;
 }
 
+size_t NativeUartStream::readBytes(uint8_t* buffer, size_t length) {
+    if (!_installed || !buffer || length == 0) return 0;
+    size_t consumed = 0;
+
+    // Honour any pre-peeked byte first so the caller's stream is
+    // continuous (Stream::peek() may have stashed one byte that
+    // readBytes() must return as the very first byte).
+    if (_peeked >= 0) {
+        buffer[0] = (uint8_t)_peeked;
+        _peeked = -1;
+        consumed = 1;
+        if (consumed == length) return consumed;
+    }
+
+    // Bulk drain — zero ticks of timeout: take whatever the driver has
+    // queued right now and return.  The caller (processStream) has
+    // already done its own avail() check, so we never ask for more
+    // bytes than the ring buffer holds.
+    const int n = uart_read_bytes(_port,
+                                  buffer + consumed,
+                                  length - consumed,
+                                  0);
+    if (n > 0) consumed += (size_t)n;
+    return consumed;
+}
+
 size_t NativeUartStream::write(uint8_t b) {
     if (!_installed) return 0;
     return (size_t)uart_write_bytes(_port, (const char*)&b, 1);

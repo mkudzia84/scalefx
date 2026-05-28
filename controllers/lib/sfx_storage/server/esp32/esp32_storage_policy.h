@@ -91,8 +91,23 @@ private:
     StorageSharedState* _state = nullptr;
 
     // --- Buffer size constants ---
-    static constexpr size_t UPLOAD_FILL_BUF_SIZE     = 65536;   // 64 KB fill buffer (PSRAM)
-    static constexpr size_t UPLOAD_FILL_BUF_FALLBACK = 65536;   // 64 KB fill buffer (internal RAM)
+    //
+    // 2026-05-28 (build 489 diag): 64 KB PSRAM upload buffer caused stream-
+    // mode UART RX overflow at 750 KB/s.  Root cause: VFS-FAT can't DMA
+    // from PSRAM, so writes from a PSRAM source go through an internal
+    // bouncer at ~160 KB/s — far below the 750 KB/s incoming rate.  Per
+    // flush spike was 408 ms, during which UART (16 KB RX) overran and
+    // dropped hundreds of KB.  Sync mode (per-chunk ACK throttles client
+    // to ~80 KB/s) was unaffected because the bouncer kept up.
+    //
+    // Fix: 32 KB DMA-cap internal SRAM buffer.  At full SD speed (~14 MB/s)
+    // each flush takes ~2 ms; UART receives < 2 KB during that window —
+    // trivially absorbed by the 16 KB RX buffer.  Smaller buffer means
+    // 2x flush count per segment but each flush is 100x faster, net huge
+    // win.  PSRAM 64 KB fallback retained for boards / configs that don't
+    // have DMA-cap headroom.
+    static constexpr size_t UPLOAD_FILL_BUF_PRIMARY  = 32768;   // 32 KB DMA-cap SRAM — fast path
+    static constexpr size_t UPLOAD_FILL_BUF_FALLBACK = 65536;   // 64 KB PSRAM — slow but works
 
     // --- Per-upload write counters (plain uint32 — Core 0 only) ---
     uint32_t _bytesWritten  = 0;

@@ -50,22 +50,33 @@ uint8_t Esp32StoragePolicy::sdOpenWrite(const char* path, StorageFile& file, boo
 bool Esp32StoragePolicy::allocateUploadBuffers() {
     if (_state->uploadWriteBuf) return true;  // Already allocated
 
-    _state->uploadWriteBuf = (uint8_t*)heap_caps_malloc(UPLOAD_FILL_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    // Prefer DMA-cap internal SRAM — VFS-FAT can DMA directly, sustains
+    // ~14 MB/s SD write rate which keeps up with the 750 KB/s wire rate
+    // in stream mode.  Fall back to PSRAM only if DMA-cap is exhausted
+    // (boards with tight internal SRAM headroom); that path bouncers
+    // through internal SRAM at ~160 KB/s and is only viable for sync-mode
+    // uploads where the client is throttled per chunk.
+    _state->uploadWriteBuf = (uint8_t*)heap_caps_malloc(
+        UPLOAD_FILL_BUF_PRIMARY, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (_state->uploadWriteBuf) {
-        _state->uploadBufCapacity = UPLOAD_FILL_BUF_SIZE;
-        STORAGE_LOG("Allocated PSRAM fill buffer: %u KB (free PSRAM: %u KB)",
-                    (unsigned)(UPLOAD_FILL_BUF_SIZE / 1024),
-                    (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+        _state->uploadBufCapacity = UPLOAD_FILL_BUF_PRIMARY;
+        STORAGE_LOG("Upload fill buffer: %u KB DMA-cap SRAM (fast path; "
+                    "free DMA-cap: %u KB)",
+                    (unsigned)(UPLOAD_FILL_BUF_PRIMARY / 1024),
+                    (unsigned)(heap_caps_get_free_size(
+                        MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) / 1024));
     } else {
-        _state->uploadWriteBuf = (uint8_t*)malloc(UPLOAD_FILL_BUF_FALLBACK);
+        _state->uploadWriteBuf = (uint8_t*)heap_caps_malloc(
+            UPLOAD_FILL_BUF_FALLBACK, MALLOC_CAP_SPIRAM);
         if (!_state->uploadWriteBuf) {
-            STORAGE_LOG("Failed to allocate fill buffer (%u KB PSRAM, %u KB internal)",
-                        (unsigned)(UPLOAD_FILL_BUF_SIZE / 1024),
+            STORAGE_LOG("Failed to allocate fill buffer (%u KB DMA-cap, %u KB PSRAM)",
+                        (unsigned)(UPLOAD_FILL_BUF_PRIMARY / 1024),
                         (unsigned)(UPLOAD_FILL_BUF_FALLBACK / 1024));
             return false;
         }
         _state->uploadBufCapacity = UPLOAD_FILL_BUF_FALLBACK;
-        STORAGE_LOG("PSRAM unavailable — using internal RAM fill buffer: %u KB",
+        STORAGE_LOG("Upload fill buffer: %u KB PSRAM (SLOW PATH — DMA-cap "
+                    "exhausted; expect stream-mode UART overflow above ~200 KB/s)",
                     (unsigned)(UPLOAD_FILL_BUF_FALLBACK / 1024));
     }
 
