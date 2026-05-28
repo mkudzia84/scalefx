@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.13.0-hubfx"
-#define BUILD_NUMBER     499
+#define BUILD_NUMBER     504
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -623,16 +623,19 @@ void setup() {
     // bytes off it the moment its policy pack initializes.  ESP32-S3
     // default UART0 pins: TX=GPIO43, RX=GPIO44.
     //
-    // 16 KB RX/TX buffers absorb upload-burst headroom; windowed flow
-    // control on the protocol layer prevents overflow.
-    //
-    // Phase 7 wave 2 (2026-05-28) trimmed these to 8 KB; reverted same
-    // session along with the loopTask stack trim that caused upload-
-    // induced reboots.  Held at 16 KB while we investigate whether the
-    // UART change was a co-conspirator.
+    // 8 KB RX/TX rings — restored 2026-05-28 after the 512 KB upload
+    // crash was diagnosed and proven UNRELATED to UART buffer size
+    // (commit 12d8c69).  With stream uploads now using 16 KB segments
+    // gated by per-segment FILE_UPLOAD_PROGRESS ACK, the client never
+    // sends more than 16 KB without first waiting for our reply — and
+    // the bulk `NativeUartStream::readBytes` override drains the ring
+    // in microseconds, so it rarely holds more than a couple of KB at
+    // once.  8 KB = ~11 ms at 6 Mbps is comfortable headroom.  Bump
+    // back to 16384 if any future protocol path bursts > 8 KB without
+    // synchronous backpressure.
     wireUart.begin(UART_NUM_0, /*rx*/44, /*tx*/43,
                    sfx_core::BoardServerBase::BAUD_RATE,
-                   /*rxBuf*/16384, /*txBuf*/16384);
+                   /*rxBuf*/8192, /*txBuf*/8192);
 
     // Policy pack lifecycle — Serial, DiagLog, indicator pins, port
     // registry binding, every policy's begin().  Master role, no

@@ -206,14 +206,18 @@ private:
         // + USB + SDMMC ISR contention).  Producer on Core 1
         // cooperates naturally with the consumer (consumer blocks on
         // I²S DMA write → producer runs), keeping the ring fed.
-        // KEEP AT 8192 — the HWM-based trim to 6 KB (Phase 7 wave 2,
-        // 2026-05-28) was reverted same session because of the loopTask
-        // stack-overflow reboot under file upload.  Producer wasn't
-        // directly implicated but pre-emptively rolling back both trims
-        // until we have an under-upload HWM measurement.
+        //
+        // 6 KB stack restored 2026-05-28 after the upload regression
+        // was diagnosed and proven UNRELATED to producer stack size
+        // (commit 12d8c69).  Producer is suspended for the duration
+        // of every upload (`wireUploadExclusivity` → `suspendAudio`),
+        // so the upload code path can't even reach this task.
+        // Idle HWM measured 3.3 KB free out of 8 KB; trim to 6 KB
+        // leaves ~1.3 KB margin which matches what wave-2 verified
+        // before the (unrelated) revert.
         mixer.startProducerTask(/*core=*/1,
                                 /*priority=*/configMAX_PRIORITIES - 2,
-                                /*stackSize=*/8192);
+                                /*stackSize=*/6144);
 
         // Phase 6 (feature/audio-decode-prefetch): start the decoder
         // task on Core 0.  Owns all libhelix MP3 + SD reads so the
