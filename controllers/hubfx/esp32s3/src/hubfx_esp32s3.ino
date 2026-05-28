@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.13.0-hubfx"
-#define BUILD_NUMBER     481
+#define BUILD_NUMBER     484
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -623,16 +623,16 @@ void setup() {
     // bytes off it the moment its policy pack initializes.  ESP32-S3
     // default UART0 pins: TX=GPIO43, RX=GPIO44.
     //
-    // Phase 7 polish (2026-05-28): 8 KB RX/TX rings (was 16 KB).  Saves
-    // 16 KB of DMA-cap internal SRAM on the wire path.  8 KB ≈ 11 ms at
-    // 6 Mbps — comfortable for control/query/download workloads.  The
-    // windowed upload protocol's 32-chunk × 2 KB = 64 KB host burst
-    // exceeds this nominally, but per-chunk ACKs keep the host blocked
-    // when our ring nears full.  Bump back to 16384 if you ever see
-    // CRC mismatches / NACKs during sustained large uploads.
+    // 16 KB RX/TX buffers absorb upload-burst headroom; windowed flow
+    // control on the protocol layer prevents overflow.
+    //
+    // Phase 7 wave 2 (2026-05-28) trimmed these to 8 KB; reverted same
+    // session along with the loopTask stack trim that caused upload-
+    // induced reboots.  Held at 16 KB while we investigate whether the
+    // UART change was a co-conspirator.
     wireUart.begin(UART_NUM_0, /*rx*/44, /*tx*/43,
                    sfx_core::BoardServerBase::BAUD_RATE,
-                   /*rxBuf*/8192, /*txBuf*/8192);
+                   /*rxBuf*/16384, /*txBuf*/16384);
 
     // Policy pack lifecycle — Serial, DiagLog, indicator pins, port
     // registry binding, every policy's begin().  Master role, no
