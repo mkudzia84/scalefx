@@ -106,14 +106,31 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
     // the WARN log so the regression is visible in the boot trace.
     // Per-channel decode buffer (0.5 s headroom) absorbs the slow path
     // without underrunning, so single-track always plays.
-    // Phase 7 polish (2026-05-28): the 32 KB DMA-cap SD scratch is now
-    // allocated LAZILY by `acquireSdScratch()` at WavPreloadSource open
-    // time — most firmwares (HubFX since the PSRAM AssetCache +
-    // Mp3PsramSource pipeline replaced SD streaming) never use it
-    // unless a specific effect (GunFx) requests preloadIntoMemory.
-    //
-    // Saves 32 KB of DMA-cap internal SRAM on boards that never use
-    // the preload path; share-with-refcount on boards that do.
+    // Phase 7 lazy _sdReadBuf REVERTED (2026-05-28) — second upload
+    // crash report after wave 2 stack revert points to wave 1 too.
+    // Restore eager allocation at begin() to match the long-known-good
+    // pre-Phase-7 behaviour while we investigate.
+    if (!_sdReadBuf) {
+#if SFX_PLATFORM_ESP32
+        _sdReadBuf = static_cast<uint8_t*>(
+            heap_caps_malloc(WAV_SD_READ_BYTES,
+                             MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if (_sdReadBuf) {
+            MIXER_LOG("SD scratch: %d KB in DMA-cap SRAM (eager)",
+                      WAV_SD_READ_BYTES / 1024);
+        } else {
+            MIXER_WARN("SD scratch: DMA-cap SRAM exhausted (%u KB) — falling back to PSRAM",
+                       (unsigned)(WAV_SD_READ_BYTES / 1024));
+            _sdReadBuf = static_cast<uint8_t*>(sfxPsramMalloc(WAV_SD_READ_BYTES));
+        }
+#else
+        _sdReadBuf = static_cast<uint8_t*>(sfxPsramMalloc(WAV_SD_READ_BYTES));
+#endif
+        if (!_sdReadBuf) {
+            MIXER_ERROR("SD read buffer allocation failed (%d bytes)", WAV_SD_READ_BYTES);
+            return false;
+        }
+    }
 
     // ---- Allocate per-channel WAV decode buffers + queue from PSRAM ----
     // Per-channel `queue[QUEUE_SIZE_PER_CHANNEL]` lives in PSRAM (re-applied
@@ -181,6 +198,8 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
                 _channels[j].wav.bufR = nullptr;
                 _channels[j].queue    = nullptr;
             }
+            sfxPsramFree(_sdReadBuf);
+            _sdReadBuf = nullptr;
             return false;
         }
     }
@@ -203,6 +222,8 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
                 _channels[j].wav.bufR = nullptr;
                 _channels[j].queue    = nullptr;
             }
+            sfxPsramFree(_sdReadBuf);
+            _sdReadBuf = nullptr;
             return false;
         }
     }
@@ -305,14 +326,11 @@ void AudioMixer<TI2S, TCodec>::shutdown() {
         _channels[i].queue    = nullptr;
     }
 
-    // Free any in-flight SD scratch (refcount-tracked; usually 0 here
-    // after stopAll above tore down all sources).  sfxPsramFree wraps
-    // heap_caps_free which accepts allocations from any capability pool.
-    if (_sdReadBuf) {
-        sfxPsramFree(_sdReadBuf);
-        _sdReadBuf      = nullptr;
-        _sdScratchUsers = 0;
-    }
+    // Free shared SD read buffer (DMA-cap SRAM or PSRAM fallback —
+    // sfxPsramFree wraps heap_caps_free which accepts allocations from
+    // any capability pool).
+    sfxPsramFree(_sdReadBuf);
+    _sdReadBuf = nullptr;
 
     // Free mixer-wide command queue (PSRAM).
     sfxPsramFree(_cmdQueue);
@@ -384,24 +402,14 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     // for oversize files / OOM headroom — caller falls through to
     // streaming.  Stage 4 will add WavPagedSource as a middle tier.
     if (options.preloadIntoMemory) {
-        // Phase 7 polish: lazy SD scratch.  openAndPreload only needs
-        // the scratch during the decode-into-its-own-PSRAM step; once
-        // the call returns the buffer can be released regardless of
-        // success/failure.  acquireSdScratch() returns nullptr if DMA-
-        // cap SRAM AND PSRAM are both exhausted; we recover by falling
-        // through to the PSRAM-source path below.
-        uint8_t* scratch = acquireSdScratch();
-        if (scratch) {
-            auto* preload = new (ch.sourceStorage) WavPreloadSource();
-            const bool opened = preload->openAndPreload(
-                filename, scratch, WAV_SD_READ_BYTES, WAV_MAX_PRELOAD_FRAMES);
-            releaseSdScratch();   // scratch only needed during open
-            if (opened) {
-                ws.source = preload;
-            } else {
-                preload->~WavPreloadSource();
-                // fall through to PSRAM-source path
-            }
+        auto* preload = new (ch.sourceStorage) WavPreloadSource();
+        if (preload->openAndPreload(filename, _sdReadBuf,
+                                    WAV_SD_READ_BYTES,
+                                    WAV_MAX_PRELOAD_FRAMES)) {
+            ws.source = preload;
+        } else {
+            preload->~WavPreloadSource();
+            // fall through to PSRAM-source path
         }
     }
     if (!ws.source) {
@@ -2235,17 +2243,25 @@ template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::suspendAudio() {
     MIXER_LOG("Suspending audio (decoder + producer + consumer)...");
 
-    // 1. Stop all playback immediately
-    stopAll(AudioStopMode::Immediate);
+    // ORDER MATTERS — the decoder MUST stop before stopAll() runs, or
+    // the decoder's per-channel walk can race against stop()'s source
+    // destruction (decoder reads active=true → source destroyed by
+    // stop() → decoder calls source->readFrames on a destroyed
+    // pointer → crash → watchdog reboot).  Discovered 2026-05-28
+    // diagnosing the upload-induced reboot AFTER the Phase 7 stack /
+    // UART trims were already reverted — the SUSPEND ORDER itself was
+    // wrong since Phase 6 introduced the decoder task.
 
-    // 2. Stop decoder task on Core 0 (Phase 6 — must precede producer
-    //    so the producer doesn't see new frames mid-suspend).
+    // 1. Stop decoder task on Core 0 — no more refills in flight.
     stopDecoderTask();
 
-    // 3. Stop producer task (mixing on Core 1)
+    // 2. Stop producer task on Core 1 — no more reads from rings.
     stopProducerTask();
 
-    // 4. Suspend consumer task (I2S output on Core 1)
+    // 3. NOW safe to destroy sources / clear channel state.
+    stopAll(AudioStopMode::Immediate);
+
+    // 4. Suspend consumer task (I²S output on Core 1).
     if (_consumerTaskHandle) {
         vTaskSuspend(_consumerTaskHandle);
     }
