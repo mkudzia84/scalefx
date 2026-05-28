@@ -59,12 +59,20 @@
  */
 
 #define FIRMWARE_VERSION "2.13.0-hubfx"
-#define BUILD_NUMBER     470
+#define BUILD_NUMBER     471
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <esp_heap_caps.h>     // memory-instrumentation helper (Phase 4 polish 2026-05-27)
 #include <esp_psram.h>
+
+// Phase 5 of feature/idf-component-build (2026-05-28): pull esp-dsp's
+// hand-tuned Xtensa LX7 SIMD into the build link graph.  The header is
+// included so the symbol is referenced from setup() / the mixer at
+// link time; the REQUIRES in src/CMakeLists.txt declares the IDF-side
+// dependency.  Used by audio_mixer.ipp's produceBlock() (Phase 5).
+#include <dsps_mulc.h>
+#include <dsps_add.h>
 
 #include <platform/sfx_platform.h>
 #include <serial/diag_log.h>
