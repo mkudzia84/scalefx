@@ -86,3 +86,17 @@ regenerated-configs/
 
 # System files
 Thumbs.db
+tools/ffmpeg/
+
+# MP3 encode workspace — local ffmpeg run area
+tools/mp3_workspace/
+
+# Arduino-as-IDF-component scratch (Items 1+4 deferred; pio regenerates these)
+controllers/hubfx/esp32s3/.dummy/
+controllers/hubfx/esp32s3/sdkconfig.defaults
+controllers/hubfx/esp32s3/CMakeLists.txt
+
+# Local capture/scratch files
+subscribe_capture.txt
+subscribe_err.txt
+app/go/studio/frontend/sc-out.txt

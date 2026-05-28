@@ -42,9 +42,21 @@ public:
 
         // ESP-IDF 5.x: New I2S channel-based driver
         // Step 1: Create TX channel
+        //
+        // DMA descriptor sizing (Phase 4 polish 2026-05-27): 8 × 1024
+        // frames = 32 KB DMA ring buffer at 48 kHz stereo = ~170 ms
+        // total.  Doubled `dma_frame_num` from 512 → 1024 to halve the
+        // I²S DMA interrupt rate (94 → 47 ISRs/sec), reducing bus +
+        // ISR contention with the concurrent SDMMC DMA path on
+        // ESP32-S3 (SDMMC + I²S share the internal bus matrix; spike
+        // pattern documented in audio_mixer.ipp instrumentation).
+        // Bigger DMA chunks also mean the I²S consumer task blocks on
+        // `i2s_channel_write` for longer stretches at a time, giving
+        // the producer task on the same core more uninterrupted CPU
+        // runs.
         i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
         chan_cfg.dma_desc_num = 8;
-        chan_cfg.dma_frame_num = 512;     // 8 × 512 frames = DMA ring buffer
+        chan_cfg.dma_frame_num = 1024;    // 8 × 1024 frames = 32 KB DMA ring (~170 ms)
         chan_cfg.auto_clear_after_cb = true;  // Zero DMA buffers after TX — prevents last-buffer loop on underrun
 
         esp_err_t err = i2s_new_channel(&chan_cfg, &_txHandle, nullptr);

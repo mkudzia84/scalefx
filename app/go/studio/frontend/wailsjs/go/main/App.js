@@ -10,6 +10,10 @@ export function AttachRole(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['AttachRole'](arg1, arg2, arg3, arg4);
 }
 
+export function AudioPreloads() {
+  return window['go']['main']['App']['AudioPreloads']();
+}
+
 export function BuildAndFlash(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['BuildAndFlash'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -264,6 +268,10 @@ export function OpenTextFile(arg1) {
 
 export function PreviewLightChannel(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['PreviewLightChannel'](arg1, arg2, arg3, arg4);
+}
+
+export function QueryDeviceStatus() {
+  return window['go']['main']['App']['QueryDeviceStatus']();
 }
 
 export function RefreshDeviceModel() {

@@ -9,10 +9,10 @@ lightfx:
 alerts:
   enabled: true
   channel: 0
-  info:     { path: /sounds/sys/init.wav,             volume_pct: 70 }
-  warning:  { path: /sounds/sys/lightfx_detected.wav,  volume_pct: 80 }
-  error:    { path: /sounds/sys/lightfx_fw_error.wav,  volume_pct: 90 }
-  critical: { path: /sounds/sys/gunfx_fw_error.wav,    volume_pct: 100 }
+  info:     { path: /sounds/sys/init.mp3,             volume_pct: 70 }
+  warning:  { path: /sounds/sys/lightfx_detected.mp3,  volume_pct: 80 }
+  error:    { path: /sounds/sys/lightfx_fw_error.mp3,  volume_pct: 90 }
+  critical: { path: /sounds/sys/gunfx_fw_error.mp3,    volume_pct: 100 }
 
 enginefx:
   enabled: true

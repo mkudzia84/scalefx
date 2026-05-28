@@ -3,8 +3,8 @@
 <script lang="ts">
     import { connectionInfo, firmwareTargets, firmwareRunning, firmwareLogs, boardState, connectPopupOpen, availableReleases, showFlashProgress, flashResult } from '../stores'
     import type { FirmwareTarget, ReleaseInfo } from '../stores'
-    import { GetFirmwareTargets, GetReleases, FlashFromRelease, DeviceSystemInfo } from '../../../wailsjs/go/main/App'
-    import { onMount, tick } from 'svelte'
+    import { GetFirmwareTargets, GetReleases, FlashFromRelease, DeviceSystemInfo, AudioPreloads, QueryDeviceStatus } from '../../../wailsjs/go/main/App'
+    import { onMount, onDestroy, tick } from 'svelte'
 
     // ── Board capability + topology view (DeviceSystemInfo) ──────────
     // One-shot fetched after connect: decoded capability flags plus — on a
@@ -27,7 +27,83 @@
     // Refetch once per connect / disconnect / port change.
     $: {
         const k = $connectionInfo.connected ? $connectionInfo.port : ''
-        if (k !== lastInfoKey) { lastInfoKey = k; loadDeviceInfo() }
+        if (k !== lastInfoKey) {
+            lastInfoKey = k
+            loadDeviceInfo()
+            loadPreloads()
+            loadLiveStatus()
+            scheduleLiveStatus()
+        }
+    }
+
+    // ── Live memory poll ────────────────────────────────────────────
+    // STATUS broadcast already runs in the firmware at ~1 Hz, but we
+    // poll it from a timer here so the GUI numbers refresh even when
+    // verbose-status broadcasts aren't enabled (default).  Cheap —
+    // ~50 bytes wire round-trip.
+    let liveStatus: any = null
+    let liveStatusTimer: any = null
+
+    async function loadLiveStatus() {
+        if (!$connectionInfo.connected) { liveStatus = null; return }
+        try {
+            liveStatus = await QueryDeviceStatus()
+        } catch {
+            liveStatus = null
+        }
+    }
+    function scheduleLiveStatus() {
+        if (liveStatusTimer) clearInterval(liveStatusTimer)
+        if (!$connectionInfo.connected) return
+        liveStatusTimer = setInterval(loadLiveStatus, 2000)
+    }
+    onDestroy(() => { if (liveStatusTimer) clearInterval(liveStatusTimer) })
+
+    // ── Audio asset-preload snapshot ────────────────────────────────
+    // Mirrors `AudioAssetCache::logPreloadStatus()` — per-path
+    // residency + owner tags pushed by alerts/enginefx/gunfx config
+    // apply.  Refetched on connect + via the Refresh button; cheap
+    // (single wire query, ~50 bytes per entry).
+    let preloads: any = null
+    let preloadsErr = ''
+    let preloadsLoading = false
+
+    async function loadPreloads() {
+        if (!$connectionInfo.connected) { preloads = null; preloadsErr = ''; return }
+        preloadsLoading = true
+        try {
+            preloads = await AudioPreloads()
+            preloadsErr = ''
+        } catch (e: any) {
+            preloadsErr = e?.message || String(e)
+            preloads = null
+        } finally {
+            preloadsLoading = false
+        }
+    }
+
+    function fmtKB(bytes: number): string {
+        if (!bytes) return '0 KB'
+        return (bytes / 1024).toFixed(bytes < 102400 ? 1 : 0) + ' KB'
+    }
+    function fmtMB(bytes: number): string {
+        return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+    }
+    function preloadPct(e: any): number {
+        if (!e.totalBytes) return 0
+        return Math.min(100, Math.round((e.loadedBytes * 100) / e.totalBytes))
+    }
+    function statusClass(s: number): string {
+        switch (s) {
+            case 2: return 'preload-ready'
+            case 1: return 'preload-loading'
+            case 3: return 'preload-failed'
+            default: return ''
+        }
+    }
+    function statusLabel(s: number): string {
+        switch (s) { case 2: return 'ready'; case 1: return 'loading'; case 3: return 'failed' }
+        return '?'
     }
 
     // Find the cached battery reading for a board GUID (expanders only).
@@ -188,7 +264,11 @@
                 <tr><td class="label">Build</td><td>{$connectionInfo.build || '—'}</td></tr>
                 <tr><td class="label">Platform</td><td>{$connectionInfo.platform || '—'}</td></tr>
                 <tr><td class="label">CPU</td><td>{$connectionInfo.cpuMHz ? `${$connectionInfo.cpuMHz} MHz` : '—'}</td></tr>
-                <tr><td class="label">Free RAM</td><td>{$connectionInfo.freeRAM ? formatBytes($connectionInfo.freeRAM) : '—'}</td></tr>
+                <tr><td class="label">Free RAM (total)</td><td>{liveStatus?.freeRamBytes ? formatBytes(liveStatus.freeRamBytes) : ($connectionInfo.freeRAM ? formatBytes($connectionInfo.freeRAM) : '—')}</td></tr>
+                {#if liveStatus?.hasMemExtension}
+                    <tr><td class="label">Free DRAM</td><td>{formatBytes(liveStatus.freeDramBytes)} <span class="mem-hint">internal SRAM</span></td></tr>
+                    <tr><td class="label">Free PSRAM</td><td>{liveStatus.freePsramBytes ? formatBytes(liveStatus.freePsramBytes) : '—'} <span class="mem-hint">external octal RAM</span></td></tr>
+                {/if}
                 <tr><td class="label">Port</td><td class="mono">{$connectionInfo.port || '—'}</td></tr>
             </table>
         {:else}
@@ -243,6 +323,75 @@
                 {/if}
             </section>
         {/if}
+    {/if}
+
+    <!-- Audio asset preload cache (PSRAM residency view) -->
+    {#if $connectionInfo.connected}
+        <section class="info-section">
+            <div class="section-header">
+                <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg> Audio Asset Cache</h3>
+                <button class="btn-refresh" on:click={loadPreloads} disabled={preloadsLoading}>
+                    {preloadsLoading ? 'Querying...' : 'Refresh'}
+                </button>
+            </div>
+
+            {#if preloadsErr}
+                <p class="fetch-error">{preloadsErr}</p>
+            {:else if !preloads}
+                <p class="no-data">No data yet</p>
+            {:else if preloads.entries.length === 0}
+                <p class="no-data">Cache empty — no audio assets registered</p>
+            {:else}
+                <div class="preload-summary">
+                    <div class="preload-bar-track">
+                        <div class="preload-bar-fill" style="width: {Math.min(100, Math.round((preloads.residentBytes * 100) / (preloads.budgetBytes || 1)))}%"></div>
+                    </div>
+                    <div class="preload-summary-text">
+                        {fmtMB(preloads.residentBytes)} / {fmtMB(preloads.budgetBytes)}
+                        ·
+                        <span class="preload-ready">{preloads.ready} ready</span>
+                        {#if preloads.loading > 0} · <span class="preload-loading">{preloads.loading} loading</span>{/if}
+                        {#if preloads.failed > 0} · <span class="preload-failed">{preloads.failed} failed</span>{/if}
+                        · {preloads.pinned} pinned
+                    </div>
+                </div>
+                <table class="info-table preload-table">
+                    <thead>
+                        <tr>
+                            <th>Path</th>
+                            <th>Format</th>
+                            <th>Size</th>
+                            <th>Status</th>
+                            <th>Owners</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {#each preloads.entries as e}
+                            <tr>
+                                <td class="mono">{e.path}</td>
+                                <td>{e.formatName}</td>
+                                <td>{fmtKB(e.totalBytes)}</td>
+                                <td class={statusClass(e.status)}>
+                                    {statusLabel(e.status)}
+                                    {#if e.status === 1}
+                                        ({preloadPct(e)}%)
+                                    {/if}
+                                </td>
+                                <td>
+                                    {#if e.owners && e.owners.length}
+                                        {#each e.owners as o, i}
+                                            <span class="owner-chip">{o}</span>{#if i < e.owners.length - 1} {/if}
+                                        {/each}
+                                    {:else}
+                                        <span class="owner-lru">lru</span>
+                                    {/if}
+                                </td>
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            {/if}
+        </section>
     {/if}
 
     <!-- Available Releases -->
@@ -778,5 +927,67 @@
     .btn-flash:disabled {
         opacity: 0.4;
         cursor: not-allowed;
+    }
+
+    /* ── Audio asset cache table ─────────────────────────────────── */
+    .preload-summary {
+        margin: 6px 0 10px;
+    }
+    .preload-bar-track {
+        height: 6px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        overflow: hidden;
+        margin-bottom: 4px;
+    }
+    .preload-bar-fill {
+        height: 100%;
+        background: var(--accent);
+        transition: width 0.3s ease;
+    }
+    .preload-summary-text {
+        font-size: 11px;
+        color: var(--text-dim);
+    }
+    .preload-table {
+        font-size: 11px;
+    }
+    .preload-table th {
+        font-weight: 600;
+        text-align: left;
+        padding: 3px 8px;
+        color: var(--text-dim);
+        border-bottom: 1px solid var(--border);
+    }
+    .preload-table td {
+        padding: 2px 8px;
+    }
+    .preload-table td.mono {
+        font-family: var(--font-mono);
+    }
+    .preload-ready   { color: var(--success); }
+    .preload-loading { color: var(--warning); }
+    .preload-failed  { color: var(--error); font-weight: 600; }
+    .owner-chip {
+        display: inline-block;
+        padding: 1px 6px;
+        margin-right: 4px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        font-size: 10px;
+        color: var(--text);
+    }
+    .owner-lru {
+        font-style: italic;
+        color: var(--text-dim);
+    }
+
+    .mem-hint {
+        font-size: 10px;
+        color: var(--text-dim);
+        margin-left: 8px;
+        font-style: italic;
     }
 </style>

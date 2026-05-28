@@ -101,3 +101,21 @@ func (a *Audio) CodecStatus() (CodecState, error) {
 	}
 	return audio.DecodeCodecStatus(resp.Payload), nil
 }
+
+// PreloadState is the decoded AUDIO_PRELOAD_STATUS_RESP — header
+// counters + one entry per cached asset (path, format, bytes, owners).
+type PreloadState = audio.PreloadState
+
+// PreloadEntry is one cached-asset record inside PreloadState.
+type PreloadEntry = audio.PreloadEntry
+
+// PreloadStatus returns the AudioAssetCache snapshot.  Pure query —
+// safe to poll.  On Pico (no asset cache) returns an empty state +
+// the wire-level NOT_SUPPORTED error.
+func (a *Audio) PreloadStatus() (PreloadState, error) {
+	resp, err := a.c.sendForResp(audio.CmdPreloadStatusReq(), audio.AudioPreloadStatusResp)
+	if err != nil {
+		return PreloadState{}, err
+	}
+	return audio.DecodePreloadStatus(resp.Payload), nil
+}

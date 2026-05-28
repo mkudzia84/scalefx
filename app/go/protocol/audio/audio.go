@@ -22,11 +22,60 @@ const (
 	AudioFade       protocol.PacketType = 0xDD
 	AudioQueue      protocol.PacketType = 0xDE
 	AudioQueueClear protocol.PacketType = 0xDF
-	AudioStatusReq  protocol.PacketType = 0xE0
-	AudioStatusResp protocol.PacketType = 0xE1
-	CodecStatusReq  protocol.PacketType = 0xAA
-	CodecStatusResp protocol.PacketType = 0xAB
+	AudioStatusReq         protocol.PacketType = 0xE0
+	AudioStatusResp        protocol.PacketType = 0xE1
+	// 0xE2..0xE5 are claimed by GunFX manual override + verbose status —
+	// preload diag sits at 0xE6/0xE7 (next free past the gunfx block).
+	AudioPreloadStatusReq  protocol.PacketType = 0xE6
+	AudioPreloadStatusResp protocol.PacketType = 0xE7
+	CodecStatusReq         protocol.PacketType = 0xAA
+	CodecStatusResp        protocol.PacketType = 0xAB
 )
+
+// PreloadStatus mirrors AudioPreload::STATUS_* on the firmware side.
+type PreloadStatus byte
+
+const (
+	PreloadNotPresent PreloadStatus = 0
+	PreloadLoading    PreloadStatus = 1
+	PreloadReady      PreloadStatus = 2
+	PreloadFailed     PreloadStatus = 3
+)
+
+// String renders the human-readable label used in the CLI.
+func (s PreloadStatus) String() string {
+	switch s {
+	case PreloadNotPresent:
+		return "absent"
+	case PreloadLoading:
+		return "loading"
+	case PreloadReady:
+		return "ready"
+	case PreloadFailed:
+		return "failed"
+	}
+	return "?"
+}
+
+// AssetFormat mirrors AssetFormat on the firmware side.
+type AssetFormat byte
+
+const (
+	AssetUnknown AssetFormat = 0
+	AssetWav     AssetFormat = 1
+	AssetMp3     AssetFormat = 2
+)
+
+// String returns "wav" / "mp3" / "?".
+func (f AssetFormat) String() string {
+	switch f {
+	case AssetWav:
+		return "wav"
+	case AssetMp3:
+		return "mp3"
+	}
+	return "?"
+}
 
 // ─── Wire constants ───────────────────────────────────────────────────
 
@@ -131,6 +180,9 @@ func CmdStatusReq() []byte { return protocol.BuildPacket(AudioStatusReq, nil, 0)
 
 // CmdCodecStatusReq requests CODEC_STATUS_RESP.
 func CmdCodecStatusReq() []byte { return protocol.BuildPacket(CodecStatusReq, nil, 0) }
+
+// CmdPreloadStatusReq requests AUDIO_PRELOAD_STATUS_RESP.
+func CmdPreloadStatusReq() []byte { return protocol.BuildPacket(AudioPreloadStatusReq, nil, 0) }
 
 // ─── Decoded status types ────────────────────────────────────────────
 
@@ -348,6 +400,106 @@ func ValidatePath(p string) error {
 	return nil
 }
 
+// ─── Preload status ──────────────────────────────────────────────────
+
+// PreloadEntry is one record in AUDIO_PRELOAD_STATUS_RESP.
+type PreloadEntry struct {
+	Path        string        `json:"path"`
+	TotalBytes  uint32        `json:"totalBytes"`
+	LoadedBytes uint32        `json:"loadedBytes"`
+	Status      PreloadStatus `json:"status"`       // 0..3
+	StatusName  string        `json:"statusName"`   // "ready" / "loading" / …
+	Format      AssetFormat   `json:"format"`       // 1=wav 2=mp3
+	FormatName  string        `json:"formatName"`   // "wav" / "mp3"
+	Owners      []string      `json:"owners"`       // group names ("alerts", …)
+}
+
+// PercentLoaded returns LoadedBytes×100/TotalBytes, clamped to [0,100].
+func (e PreloadEntry) PercentLoaded() int {
+	if e.TotalBytes == 0 {
+		return 0
+	}
+	p := int(uint64(e.LoadedBytes) * 100 / uint64(e.TotalBytes))
+	if p > 100 {
+		return 100
+	}
+	return p
+}
+
+// PreloadState is the decoded AUDIO_PRELOAD_STATUS_RESP.
+type PreloadState struct {
+	ResidentBytes uint32         `json:"residentBytes"`
+	BudgetBytes   uint32         `json:"budgetBytes"`
+	Ready         uint16         `json:"ready"`
+	Loading       uint16         `json:"loading"`
+	Failed        uint16         `json:"failed"`
+	Pinned        uint16         `json:"pinned"`
+	Entries       []PreloadEntry `json:"entries"`
+	Raw           []byte         `json:"-"`
+}
+
+// DecodePreloadStatus parses the variable-length payload.  Header is
+// 16 bytes (4 u32 / u16 fields) then a list of per-path records.
+// Stops cleanly at any underflow — the firmware truncates if the COBS
+// frame would overflow, and the header counters always reflect the
+// TOTAL state (so the client can know whether records were truncated).
+func DecodePreloadStatus(p []byte) PreloadState {
+	s := PreloadState{Raw: append([]byte(nil), p...)}
+	if len(p) < 16 {
+		return s
+	}
+	s.ResidentBytes = binary.LittleEndian.Uint32(p[0:4])
+	s.BudgetBytes   = binary.LittleEndian.Uint32(p[4:8])
+	s.Ready         = binary.LittleEndian.Uint16(p[8:10])
+	s.Loading       = binary.LittleEndian.Uint16(p[10:12])
+	s.Failed        = binary.LittleEndian.Uint16(p[12:14])
+	s.Pinned        = binary.LittleEndian.Uint16(p[14:16])
+
+	pos := 16
+	for pos < len(p) {
+		// [pathLen:u8][path:N][totalBytes:u32][loadedBytes:u32]
+		// [status:u8][format:u8][ownerCount:u8][owners…]
+		if pos+1 > len(p) {
+			break
+		}
+		pathLen := int(p[pos])
+		pos++
+		if pos+pathLen+4+4+1+1+1 > len(p) {
+			break
+		}
+		entry := PreloadEntry{
+			Path:        string(p[pos : pos+pathLen]),
+		}
+		pos += pathLen
+		entry.TotalBytes = binary.LittleEndian.Uint32(p[pos:])
+		pos += 4
+		entry.LoadedBytes = binary.LittleEndian.Uint32(p[pos:])
+		pos += 4
+		entry.Status = PreloadStatus(p[pos])
+		entry.StatusName = entry.Status.String()
+		pos++
+		entry.Format = AssetFormat(p[pos])
+		entry.FormatName = entry.Format.String()
+		pos++
+		ownerCount := int(p[pos])
+		pos++
+		for i := 0; i < ownerCount; i++ {
+			if pos+1 > len(p) {
+				break
+			}
+			n := int(p[pos])
+			pos++
+			if pos+n > len(p) {
+				break
+			}
+			entry.Owners = append(entry.Owners, string(p[pos:pos+n]))
+			pos += n
+		}
+		s.Entries = append(s.Entries, entry)
+	}
+	return s
+}
+
 // ─── Name registration ───────────────────────────────────────────────
 
 func init() {
@@ -358,10 +510,12 @@ func init() {
 		AudioFade:       "AUDIO_FADE",
 		AudioQueue:      "AUDIO_QUEUE",
 		AudioQueueClear: "AUDIO_QUEUE_CLEAR",
-		AudioStatusReq:  "AUDIO_STATUS_REQ",
-		AudioStatusResp: "AUDIO_STATUS_RESP",
-		CodecStatusReq:  "CODEC_STATUS_REQ",
-		CodecStatusResp: "CODEC_STATUS_RESP",
+		AudioStatusReq:         "AUDIO_STATUS_REQ",
+		AudioStatusResp:        "AUDIO_STATUS_RESP",
+		AudioPreloadStatusReq:  "AUDIO_PRELOAD_STATUS_REQ",
+		AudioPreloadStatusResp: "AUDIO_PRELOAD_STATUS_RESP",
+		CodecStatusReq:         "CODEC_STATUS_REQ",
+		CodecStatusResp:        "CODEC_STATUS_RESP",
 	})
 
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{

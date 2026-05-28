@@ -9,6 +9,10 @@
 
 #include <serial/diag_log.h>
 
+#if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
+#include "../audio/audio_asset_cache.h"   // AudioAssetCache for AUDIO_PRELOAD_STATUS_REQ
+#endif
+
 #define AUDIO_SRV_LOG(fmt, ...) SFX_LOG_DEBUG("[AudioSrv] " fmt, ##__VA_ARGS__)
 
 // ============================================================================
@@ -39,6 +43,9 @@ CommandHandleResult AudioServicePolicy<TMixer>::handle(
             return CommandHandleResult::Handled;
         case AudioPacket::AUDIO_STATUS_REQ:
             handleStatusReq();
+            return CommandHandleResult::Handled;
+        case AudioPacket::AUDIO_PRELOAD_STATUS_REQ:
+            handlePreloadStatusReq();
             return CommandHandleResult::Handled;
         case AudioPacket::CODEC_STATUS_REQ:
             handleCodecStatusReq();
@@ -386,4 +393,93 @@ void AudioServicePolicy<TMixer>::handleCodecStatusReq() {
     }
 
     sendRawPacket(AudioPacket::CODEC_STATUS_RESP, currentTag(), buf, pos);
+}
+
+
+// ============================================================================
+// AUDIO_PRELOAD_STATUS_REQ (0xE2) → AUDIO_PRELOAD_STATUS_RESP (0xE3)
+//
+// Snapshot of the AudioAssetCache: header counts + one record per
+// populated entry.  Pure query — no mutation.  Payload layout
+// documented in serial/audio/audio_protocol.h.  Pico build (no asset
+// cache) NACKs with NOT_SUPPORTED so the client gets a clean error
+// rather than a silent timeout.
+// ============================================================================
+
+template <MixerLike TMixer>
+void AudioServicePolicy<TMixer>::handlePreloadStatusReq() {
+#if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
+    // Build the payload into a stack buffer.  Worst case sizing:
+    //   16 B header
+    // + kAssetCacheMaxEntries (64) × (1 + 160 path + 4 + 4 + 3 + 4×(1+24)) ≈ 64 × 276 = 17.6 KB
+    // …too big for a single COBS packet (512 B limit).  We send at most
+    // the first 16 entries in one packet — sufficient for every
+    // realistic hub config (alerts 5 + engine 3 + gun 2-8 = 10-16);
+    // headers report total counts so the client knows if any were
+    // truncated.  A future "paged" variant can add a request offset.
+
+    auto& cache = AudioAssetCache::instance();
+    const auto stats = cache.stats();
+
+    uint8_t buf[512];
+    size_t  pos = 0;
+
+    // Header (16 B fixed)
+    auto putU16 = [&](uint16_t v) { SfxWire::putU16LE(buf + pos, v); pos += 2; };
+    auto putU32 = [&](uint32_t v) { SfxWire::putU32LE(buf + pos, v); pos += 4; };
+    putU32(stats.residentBytes);
+    putU32((uint32_t)kAssetCacheBudgetBytes);
+    putU16((uint16_t)(stats.entries - stats.inFlightEntries - stats.failedEntries));   // ready
+    putU16((uint16_t)stats.inFlightEntries);
+    putU16((uint16_t)stats.failedEntries);
+    putU16((uint16_t)stats.pinnedEntries);
+
+    // Per-entry records — visitor callback writes into `buf` via captured
+    // pos.  Stop early if we'd overflow the COBS frame (~480 bytes safe).
+    struct Ctx {
+        uint8_t* buf;
+        size_t*  pos;
+        size_t   cap;
+    } ctx{buf, &pos, sizeof(buf) - 4};
+
+    cache.enumeratePreloads([](const AudioAssetCache::PreloadInfo& info,
+                               void* userData) -> bool {
+        auto* c = static_cast<Ctx*>(userData);
+        // Compute record size first so we can early-out if it won't fit.
+        const size_t pathLen = strnlen(info.path, kAssetPathMax);
+        size_t rec = 1 + pathLen + 4 + 4 + 1 + 1 + 1;
+        for (int i = 0; i < kMaxOwnersPerEntry; ++i) {
+            const char* n = info.ownerNames[i];
+            if (!n) continue;
+            rec += 1 + strlen(n);
+        }
+        if (*c->pos + rec > c->cap) return false;   // stop iteration
+
+        c->buf[(*c->pos)++] = (uint8_t)pathLen;
+        memcpy(c->buf + *c->pos, info.path, pathLen);
+        *c->pos += pathLen;
+        SfxWire::putU32LE(c->buf + *c->pos, info.totalBytes);  *c->pos += 4;
+        SfxWire::putU32LE(c->buf + *c->pos, info.loadedBytes); *c->pos += 4;
+        c->buf[(*c->pos)++] = (uint8_t)info.status;
+        c->buf[(*c->pos)++] = (uint8_t)info.format;
+
+        uint8_t ownerCount = 0;
+        const size_t ownerCountPos = (*c->pos)++;
+        for (int i = 0; i < kMaxOwnersPerEntry; ++i) {
+            const char* n = info.ownerNames[i];
+            if (!n) continue;
+            const uint8_t nameLen = (uint8_t)strlen(n);
+            c->buf[(*c->pos)++] = nameLen;
+            memcpy(c->buf + *c->pos, n, nameLen);
+            *c->pos += nameLen;
+            ++ownerCount;
+        }
+        c->buf[ownerCountPos] = ownerCount;
+        return true;
+    }, &ctx);
+
+    sendRawPacket(AudioPacket::AUDIO_PRELOAD_STATUS_RESP, currentTag(), buf, pos);
+#else
+    sendNack(SerialError::NOT_SUPPORTED);
+#endif
 }

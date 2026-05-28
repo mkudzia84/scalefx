@@ -30,9 +30,9 @@ toggle:
 
 # Sound files on LittleFS.
 sounds:
-  starting: "/sounds/KA50/engine_start.wav"
-  running:  "/sounds/KA50/engine_loop.wav"
-  stopping: "/sounds/KA50/engine_stop.wav"
+  starting: "/sounds/KA50/engine_start.mp3"
+  running:  "/sounds/KA50/engine_loop.mp3"
+  stopping: "/sounds/KA50/engine_stop.mp3"
 
   # KA-50 turbines spool up over ~60 s, spool down over ~25 s.  Used by
   # the cross-fade scheduler to start the running loop before the

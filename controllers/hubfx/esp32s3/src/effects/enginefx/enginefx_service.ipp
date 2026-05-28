@@ -73,31 +73,129 @@ void EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::update() {
 
 #if defined(SFX_HAS_AUDIO)
     auto& mixer = TMixer::instance();
-    const bool playing = mixer.isPlaying(_activeChannel);
+    const bool   playing       = mixer.isPlaying(_activeChannel);
+    const float  remainingSec  = mixer.remainingSec(_activeChannel);
+    const float  crossfadeSec  = _cfg.crossfadeMs / 1000.0f;
 #else
-    const bool playing = false;
+    const bool   playing       = false;
+    const float  remainingSec  = 0.0f;
+    const float  crossfadeSec  = 0.0f;
 #endif
 
     switch (_state) {
         case EngineState::Starting:
-            // Wait at least 200 ms to give playAsync time to actually
-            // start, then advance once the start sound has finished.
-            if (now - _stateEnteredMs >= 200 && !playing) {
-                _activeChannel = _cfg.channelB;
-                if (_cfg.runningPath[0] &&
-                    startAudio(_cfg.runningPath, _cfg.channelB, 0, /*loop=*/true)) {
-                    enterState(EngineState::Running);
-                } else {
-                    SFX_LOG_WARN("[engine] no running path — going Stopped");
-                    enterState(EngineState::Stopped);
+        case EngineState::Running: {
+            // ── Cross-fade scheduler ────────────────────────────────
+            // When the current track's natural-end is within the
+            // crossfade window AND we haven't already scheduled the
+            // swap, launch the next track on the OTHER mixer slot with
+            // a matching fade-in and fade out the current slot.  The
+            // exception is _cfg.crossfadeMs == 0 (legacy sequential
+            // play): wait for the track to actually finish, then start
+            // the next one with a hard cut.
+            const bool inCrossfadeWindow =
+                _cfg.crossfadeMs > 0
+                && playing
+                && remainingSec > 0.0f
+                && remainingSec <= crossfadeSec;
+
+            const bool fellOffEnd = !playing && (now - _stateEnteredMs >= 200);
+
+            if (inCrossfadeWindow && !_transitionScheduled) {
+                // Pick the next track per the state machine.  Pending
+                // stop wins over loop wrap so a forceStop during
+                // Starting/Running cleanly hands off to the stop sound.
+                const char* nextPath = nullptr;
+                uint8_t     nextState = _state;
+                if (_state == EngineState::Starting) {
+                    if (_pendingStop) {
+                        nextPath  = _cfg.stoppingPath;
+                        nextState = EngineState::Stopping;
+                        _pendingStop = false;
+                    } else if (_cfg.runningPath[0]) {
+                        nextPath  = _cfg.runningPath;
+                        nextState = EngineState::Running;
+                    }
+                } else /* Running */ {
+                    if (_pendingStop) {
+                        nextPath  = _cfg.stoppingPath;
+                        nextState = EngineState::Stopping;
+                        _pendingStop = false;
+                    } else if (_cfg.runningPath[0]) {
+                        // Loop wrap — re-launch the same path on the
+                        // other channel so the wrap glitch is masked.
+                        nextPath  = _cfg.runningPath;
+                        nextState = EngineState::Running;
+                    }
+                }
+                if (nextPath && nextPath[0]) {
+                    _transitionScheduled = true;
+                    transitionTo(nextPath, /*loop=*/false, nextState);
+                }
+            } else if (fellOffEnd) {
+                // Sequential-play path OR the cross-fade window
+                // somehow missed (very short track + slow tick).
+                // Fall through to the legacy "play next now" hard cut.
+                if (_state == EngineState::Starting) {
+                    if (_pendingStop) {
+                        _pendingStop = false;
+                        if (_cfg.stoppingPath[0] &&
+                            startAudio(_cfg.stoppingPath, _activeChannel,
+                                       _cfg.stoppingOffsetMs, /*loop=*/false,
+                                       /*fadeInMs=*/0,
+                                       /*fadeOutMs=*/_cfg.stopFadeOutMs)) {
+                            enterState(EngineState::Stopping);
+                        } else {
+                            enterState(EngineState::Stopped);
+                        }
+                    } else {
+                        _activeChannel = _cfg.channelB;
+                        if (_cfg.runningPath[0] &&
+                            startAudio(_cfg.runningPath, _activeChannel,
+                                       0, /*loop=*/false)) {
+                            enterState(EngineState::Running);
+                        } else {
+                            SFX_LOG_WARN("[engine] no running path — going Stopped");
+                            enterState(EngineState::Stopped);
+                        }
+                    }
+                } else /* Running */ {
+                    if (_pendingStop) {
+                        _pendingStop = false;
+                        if (_cfg.stoppingPath[0] &&
+                            startAudio(_cfg.stoppingPath, _activeChannel,
+                                       _cfg.stoppingOffsetMs, /*loop=*/false,
+                                       /*fadeInMs=*/0,
+                                       /*fadeOutMs=*/_cfg.stopFadeOutMs)) {
+                            enterState(EngineState::Stopping);
+                        } else {
+                            enterState(EngineState::Stopped);
+                        }
+                    } else if (_cfg.runningPath[0]) {
+                        // Loop wrap (sequential mode): just re-launch
+                        // on the same channel.
+                        startAudio(_cfg.runningPath, _activeChannel,
+                                   0, /*loop=*/false);
+                    } else {
+                        enterState(EngineState::Stopped);
+                    }
                 }
             }
             break;
-        case EngineState::Stopping:
-            if (now - _stateEnteredMs >= 200 && !playing) {
+        }
+
+        case EngineState::Stopping: {
+            // Stop sound is a one-shot; once it finishes (or the
+            // fade-out completes) we're done.  No cross-fade out of
+            // Stopping — that would just be silence overlapping
+            // silence.
+            const bool fellOffEnd = !playing && (now - _stateEnteredMs >= 200);
+            if (fellOffEnd) {
                 enterState(EngineState::Stopped);
             }
             break;
+        }
+
         default:
             break;
     }
@@ -142,9 +240,14 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStart() {
     if (_state == EngineState::Starting || _state == EngineState::Running) return true;
     if (_state == EngineState::Stopping) stopAudio(_activeChannel);
 
-    // Starting sound is OPTIONAL: when present we play it on channel A,
-    // then the tick() handler swaps to the running loop on channel B once
-    // it ends.  When absent we go straight to the running loop.
+    _pendingStop         = false;
+    _transitionScheduled = false;
+
+    // Starting sound is OPTIONAL: when present we play it on channel A
+    // as a ONE-SHOT, then the cross-fade scheduler in update() swaps
+    // to the running loop on channel B near the end.  Each subsequent
+    // loop iteration also alternates channels via cross-fade so the
+    // loop wrap glitch is masked.
     if (_cfg.startingPath[0]) {
         _activeChannel = _cfg.channelA;
         if (!startAudio(_cfg.startingPath, _cfg.channelA, _cfg.startingOffsetMs,
@@ -155,14 +258,16 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStart() {
         return true;
     }
 
-    // No starting sound → go to Running directly (skip the Starting phase).
+    // No starting sound → go to Running directly.  The first loop
+    // iteration plays as a one-shot on channel A; the cross-fade
+    // scheduler alternates from there.
     if (!_cfg.runningPath[0]) {
         SFX_LOG_WARN("[engine] start: no starting OR running path configured");
         return false;
     }
-    _activeChannel = _cfg.channelB;
-    if (!startAudio(_cfg.runningPath, _cfg.channelB, 0,
-                    /*loop=*/true, /*fadeInMs=*/_cfg.startFadeInMs)) {
+    _activeChannel = _cfg.channelA;
+    if (!startAudio(_cfg.runningPath, _activeChannel, 0,
+                    /*loop=*/false, /*fadeInMs=*/_cfg.startFadeInMs)) {
         return false;
     }
     enterState(EngineState::Running);
@@ -173,16 +278,70 @@ template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::e
 bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStop() {
     if (!_cfg.enabled) return false;
     if (_state == EngineState::Stopping || _state == EngineState::Stopped) return true;
+
+    // Cross-fade path: mark _pendingStop and let the scheduler in
+    // update() swap to the stop sound at the next crossfade window.
+    // For the operator's-finger UX (stop right now), still trigger an
+    // immediate transition if cross-fade is enabled — otherwise we'd
+    // wait up to one full loop iteration before hearing anything.
+    _pendingStop = true;
+    if (_cfg.crossfadeMs > 0 && _cfg.stoppingPath[0]) {
+        if (transitionTo(_cfg.stoppingPath, /*loop=*/false, EngineState::Stopping)) {
+            _pendingStop = false;
+            return true;
+        }
+    }
+
+    // Legacy path (crossfadeMs == 0, or transitionTo failed): hard cut.
     stopAudio(_activeChannel);
     if (_cfg.stoppingPath[0]) {
         _activeChannel = _cfg.channelA;
-        if (startAudio(_cfg.stoppingPath, _cfg.channelA, _cfg.stoppingOffsetMs,
+        if (startAudio(_cfg.stoppingPath, _activeChannel, _cfg.stoppingOffsetMs,
                        /*loop=*/false, /*fadeInMs=*/0, /*fadeOutMs=*/_cfg.stopFadeOutMs)) {
+            _pendingStop = false;
             enterState(EngineState::Stopping);
             return true;
         }
     }
+    _pendingStop = false;
     enterState(EngineState::Stopped);
+    return true;
+}
+
+template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
+bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::transitionTo(
+        const char* nextPath, bool loop, uint8_t nextState) {
+    if (!nextPath || !nextPath[0]) return false;
+    const uint8_t next = otherChannel();
+    const uint16_t cf  = _cfg.crossfadeMs;
+
+    // Launch the next track on the other channel with a matching
+    // fade-in.  If this is the stop sound, also apply the legacy
+    // stopFadeOutMs as a tail fade.
+    const bool isStop = (nextState == EngineState::Stopping);
+    if (!startAudio(nextPath, next,
+                    isStop ? _cfg.stoppingOffsetMs : 0u,
+                    /*loop=*/loop,
+                    /*fadeInMs=*/cf,
+                    /*fadeOutMs=*/isStop ? _cfg.stopFadeOutMs : 0u)) {
+        SFX_LOG_WARN("[engine] crossfade: failed to start %s on ch%u",
+                     nextPath, (unsigned)next);
+        return false;
+    }
+
+#if defined(SFX_HAS_AUDIO)
+    // Fade out the previously-active channel over the same window.
+    // Mixer destroys the source automatically when the fade completes.
+    TMixer::instance().stopAsyncWithFadeMs(_activeChannel, cf);
+#endif
+
+    SFX_LOG_INFO("[engine] crossfade %ums: ch%u (current) ⇋ ch%u (%s)",
+                 (unsigned)cf, (unsigned)_activeChannel,
+                 (unsigned)next, nextPath);
+
+    _activeChannel       = next;
+    _transitionScheduled = false;        // reset for the next cycle
+    enterState(nextState);
     return true;
 }
 
@@ -190,9 +349,18 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStop() {
 
 template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::effects::input::InputDispatcher TInputDispatcher>
 void EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::enterState(uint8_t newState) {
-    if (newState == _state) return;
-    _state = newState;
-    _stateEnteredMs = sfx_core::EffectClock::instance().nowMs();
+    if (newState == _state) {
+        // Even when the state label doesn't change (Running → Running
+        // on a loop wrap), the next cross-fade cycle is fresh — clear
+        // the in-flight guard so the scheduler fires again when the
+        // new track approaches its end.
+        _transitionScheduled = false;
+        _stateEnteredMs      = sfx_core::EffectClock::instance().nowMs();
+        return;
+    }
+    _state               = newState;
+    _stateEnteredMs      = sfx_core::EffectClock::instance().nowMs();
+    _transitionScheduled = false;
     SFX_LOG_INFO("[engine] → %s", EngineState::getName(newState));
     emitStateEvent(newState);
 }

@@ -2,15 +2,17 @@
  * alert_sound.h — `AlertSound` enum + filesystem-name helpers.
  *
  * Single source of truth for the named system-alert sounds.  Each
- * enum value names a WAV under `/sounds/sys/<snake_name>.wav` on SD.
- * Append-only (Rule 11) — never renumber.
+ * enum value names a file under `/sounds/sys/<snake_name>.mp3` on SD
+ * (post 2026-05-28 — the deployed sound library is MP3-encoded;
+ * `Mp3PsramSource` loads it into PSRAM at first play and decodes via
+ * libhelix).  Append-only (Rule 11) — never renumber.
  *
  * Master-side code references sounds by enum
  * (`alerts.play(AlertSound::Init)`), the YAML side references them by
  * snake-case name (`sound: init` in `/alerts.yaml`), and the alert
  * service resolves the path on the fly with `alertSoundPath()`.
  *
- * Missing files (enum value with no WAV on SD) log a boot WARN; the
+ * Missing files (enum value with no MP3 on SD) log a boot WARN; the
  * service's `play()` returns false rather than crashing.
  */
 
@@ -23,20 +25,20 @@
 namespace hubfx::effects::alerts {
 
 /// Catalog of well-known system-alert sounds.  File on SD is
-/// `/sounds/sys/<snake_name>.wav`.  Add new entries at the bottom —
+/// `/sounds/sys/<snake_name>.mp3`.  Add new entries at the bottom —
 /// **never renumber**.
 enum class AlertSound : uint8_t {
     None              = 0,     ///< sentinel: "no sound for this severity"
-    Init              = 1,     ///< /sounds/sys/init.wav — system started
-    Warning           = 2,     ///< /sounds/sys/warning.wav — generic warning
-    Error             = 3,     ///< /sounds/sys/error.wav — generic error
-    Critical          = 4,     ///< /sounds/sys/critical.wav — fatal-ish
-    LightFxDetected   = 5,     ///< /sounds/sys/lightfx_detected.wav
-    LightFxFwError    = 6,     ///< /sounds/sys/lightfx_fw_error.wav
-    GunFxFwError      = 7,     ///< /sounds/sys/gunfx_fw_error.wav
-    GearMoving        = 8,     ///< /sounds/sys/gear_moving.wav
-    BatteryLow        = 9,     ///< /sounds/sys/battery_low.wav
-    HubFxInitialized  = 10,    ///< /sounds/sys/hubfx_initialized.wav — spoken boot announcement
+    Init              = 1,     ///< /sounds/sys/init.mp3 — system started
+    Warning           = 2,     ///< /sounds/sys/warning.mp3 — generic warning
+    Error             = 3,     ///< /sounds/sys/error.mp3 — generic error
+    Critical          = 4,     ///< /sounds/sys/critical.mp3 — fatal-ish
+    LightFxDetected   = 5,     ///< /sounds/sys/lightfx_detected.mp3
+    LightFxFwError    = 6,     ///< /sounds/sys/lightfx_fw_error.mp3
+    GunFxFwError      = 7,     ///< /sounds/sys/gunfx_fw_error.mp3
+    GearMoving        = 8,     ///< /sounds/sys/gear_moving.mp3
+    BatteryLow        = 9,     ///< /sounds/sys/battery_low.mp3
+    HubFxInitialized  = 10,    ///< /sounds/sys/hubfx_initialized.mp3 — spoken boot announcement
     // ─── Append below this line ─────────────────────────────────────
 };
 
@@ -76,7 +78,7 @@ inline AlertSound alertSoundFromName(const char* name) {
     return AlertSound::None;
 }
 
-/// Full SD path: `/sounds/sys/<name>.wav`.  Filled into a per-enum
+/// Full SD path: `/sounds/sys/<name>.mp3`.  Filled into a per-enum
 /// static buffer so the returned `const char*` is stable for the
 /// caller's lifetime.  Empty path (`""`) for `AlertSound::None`.
 inline const char* alertSoundPath(AlertSound s) {
@@ -92,7 +94,7 @@ inline const char* alertSoundPath(AlertSound s) {
     const uint8_t  idx = static_cast<uint8_t>(s);
     if (idx == 0 || idx >= 16) return "";
     if (buf[idx][0] == '\0') {
-        std::snprintf(buf[idx], kBufLen, "/sounds/sys/%s.wav", alertSoundName(s));
+        std::snprintf(buf[idx], kBufLen, "/sounds/sys/%s.mp3", alertSoundName(s));
     }
     return buf[idx];
 }

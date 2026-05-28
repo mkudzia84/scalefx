@@ -8,7 +8,7 @@
  * mixer + codec drivers + the `AudioServicePolicy<TMixer>` that
  * dispatches the opcodes below live in `sfx_audio/`.
  *
- * Packet types: 0xDA..0xE1 (control / status) + 0xAA..0xAB (codec).
+ * Packet types: 0xDA..0xE1 (control / status) + 0xE6..0xE7 (preload diag) + 0xAA..0xAB (codec).
  * Error codes:  0x85, 0x89 inside the 0x80..0x8F generic-error band.
  *
  * NOTE (2026-05-22): control packets moved off 0x84..0x8B — that block
@@ -45,9 +45,49 @@ namespace AudioPacket {
     constexpr uint8_t AUDIO_STATUS_REQ  = 0xE0;
     constexpr uint8_t AUDIO_STATUS_RESP = 0xE1;
 
+    // Preload diag (0xE6..0xE7) — query of the AudioAssetCache state.
+    // No mutation; safe to poll.  Response format documented below.
+    // (0xE2..0xE5 are claimed by GunFX manual override + verbose
+    // status, hence the gap.)
+    constexpr uint8_t AUDIO_PRELOAD_STATUS_REQ  = 0xE6;
+    constexpr uint8_t AUDIO_PRELOAD_STATUS_RESP = 0xE7;
+
     // Codec hardware status (0xAA..0xAB — never collided, left in place)
     constexpr uint8_t CODEC_STATUS_REQ  = 0xAA;
     constexpr uint8_t CODEC_STATUS_RESP = 0xAB;
+}
+
+// ============================================================================
+// AUDIO_PRELOAD_STATUS_RESP payload layout
+// ============================================================================
+//
+//   Header (16 bytes):
+//     [residentBytes:u32LE]    sum of loadedBytes across all entries
+//     [budgetBytes:u32LE]      kAssetCacheBudgetBytes (config-time const)
+//     [ready:u16LE]            count of entries with loadedBytes==totalBytes
+//     [loading:u16LE]          count of entries currently being filled
+//     [failed:u16LE]           count of entries with a permanent load error
+//     [pinned:u16LE]           count of entries with at least one owner
+//
+//   Then one record per populated entry (variable):
+//     [pathLen:u8][path:str]
+//     [totalBytes:u32LE]
+//     [loadedBytes:u32LE]
+//     [status:u8]              0=NotPresent 1=Loading 2=Ready 3=Failed
+//     [format:u8]              0=Unknown 1=Wav 2=Mp3
+//     [ownerCount:u8]          0..kMaxOwnersPerEntry
+//     [ownerNames:repeated]    ownerCount × [nameLen:u8][name:str]
+//
+// The header's ready+loading+failed adds up to the entry-record count.
+namespace AudioPreload {
+    constexpr uint8_t STATUS_NOT_PRESENT = 0;
+    constexpr uint8_t STATUS_LOADING     = 1;
+    constexpr uint8_t STATUS_READY       = 2;
+    constexpr uint8_t STATUS_FAILED      = 3;
+
+    constexpr uint8_t FORMAT_UNKNOWN     = 0;
+    constexpr uint8_t FORMAT_WAV         = 1;
+    constexpr uint8_t FORMAT_MP3         = 2;
 }
 
 // ============================================================================

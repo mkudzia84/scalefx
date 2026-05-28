@@ -18,10 +18,10 @@ Multi-platform embedded effects: one **ESP32-S3 HubFX** master + up to N **Pico 
   - Ports `0x10–0x3F` · Roles `0x40–0x7F`
   - Expander `0x80–0x87` · Topology `0x88–0x8E`
   - Config `0x90–0x92` + `0xAC` · Storage `0x93–0xA3` + `0xA9` + `0xB0` · Codec `0xAA–0xAB`
-  - **Effects:** LandingLight `0xB1–0xB6` · LightFX `0xB7–0xBD` · GearControl `0xBE–0xC6` **+ `0xD7–0xD9`** · EngineFX `0xC7–0xCB` · GunFX `0xCC–0xD2` · Alerts `0xD3–0xD6`
-  - **Audio control `0xDA–0xE1`** · BatteryConfig `0xEE` · Board/Core lifecycle `0xEF–0xFF`
-  - Free: `0x00–0x0F`, `0x8F`, `0xA4–0xA8`, `0xAD–0xAF`, `0xE2–0xED`.
-  - Collision history (2026-05-22): (1) GEAR_RESET/CALIBRATE/CALIB_CANCEL `0xC7–0xC9` ate EngineFX START/STOP/STATUS → moved to `0xD7–0xD9`. (2) AudioPacket control `0x84–0x8B` overlapped Expander+Topology → moved to `0xDA–0xE1`. (3) BoardService claimed `0xEE–0xFF`, eating BatteryServicePolicy's `BATTERY_CONFIG 0xEE` → BoardService shrunk to `0xEF–0xFF`.
+  - **Effects:** LandingLight `0xB1–0xB6` · LightFX `0xB7–0xBD` · GearControl `0xBE–0xC6` **+ `0xD7–0xD9`** · EngineFX `0xC7–0xCB` · GunFX `0xCC–0xD2` **+ `0xE2–0xE5`** (manual override + verbose status) · Alerts `0xD3–0xD6`
+  - **Audio control `0xDA–0xE1`** · **Audio preload diag `0xE6–0xE7`** · BatteryConfig `0xEE` · Board/Core lifecycle `0xEF–0xFF`
+  - Free: `0x00–0x0F`, `0x8F`, `0xA4–0xA8`, `0xAD–0xAF`, `0xE8–0xED`.
+  - Collision history (2026-05-22): (1) GEAR_RESET/CALIBRATE/CALIB_CANCEL `0xC7–0xC9` ate EngineFX START/STOP/STATUS → moved to `0xD7–0xD9`. (2) AudioPacket control `0x84–0x8B` overlapped Expander+Topology → moved to `0xDA–0xE1`. (3) BoardService claimed `0xEE–0xFF`, eating BatteryServicePolicy's `BATTERY_CONFIG 0xEE` → BoardService shrunk to `0xEF–0xFF`. (4) 2026-05-28 — AUDIO_PRELOAD_STATUS_REQ/RESP initially placed at `0xE2–0xE3`, immediately collided with GunFX `GUN_MANUAL_SET` (also `0xE2`) which was claimed by the gunfx_service.h `ownsType` ahead of audio in the BoardOf<> pack; CLI saw `MISSING_PARAM` NACKs. Moved AUDIO_PRELOAD to `0xE6–0xE7` past the `0xE2–0xE5` gunfx block; "Free" range updated to skip those four. Lesson: GunFX silently grew into `0xE2..0xE5` with Phase-1 manual override / verbose-status packets but the "Effects" allocation in this index wasn't updated — verify by grep'ing the actual `ownsType` predicates, not just this doc.
 - **Error ranges (comprehensive allocation, 2026-05-23 sweep):**
   - `0x00–0x1F` Serial / generic (wire framing + param validation)
   - `0x20–0x2F` **PortError** (port-level infrastructure)

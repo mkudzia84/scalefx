@@ -40,6 +40,8 @@
 #include "audio_config.h"
 #include "audio_ring_buffer.h"
 #include "audio_source.h"
+#include "audio_psram_source.h"
+#include "audio_mp3_source.h"
 
 // ============================================================================
 //  CONSTANTS (see audio_config.h for configuration)
@@ -228,6 +230,7 @@ public:
     // ---- Playback Control ----
     bool play(int channel, const char* filename, const AudioPlaybackOptions& options = {});
     void stop(int channel, AudioStopMode mode = AudioStopMode::Immediate);
+    void stopWithFadeMs(int channel, AudioStopMode mode, uint16_t fadeMs);
     void stopAll(AudioStopMode mode = AudioStopMode::Immediate);
     void stopLooping(int channel);
     void stopLoopingAll();
@@ -331,6 +334,13 @@ public:
     // Async commands (thread-safe for dual-core)
     bool playAsync(int channel, const char* filename, const AudioPlaybackOptions& options = {});
     void stopAsync(int channel, AudioStopMode mode = AudioStopMode::Immediate);
+
+    /// Async fade-out with a custom duration.  Ramps the channel's
+    /// volume to 0 over `fadeMs` then destroys the source.  Used by
+    /// EngineFx's cross-fade transitions where the standard
+    /// AudioStopMode::Fade's hardcoded 50 ms is too short.  Effectively
+    /// `stopAsync(ch, Fade)` with a configurable ramp.
+    void stopAsyncWithFadeMs(int channel, uint16_t fadeMs);
     void setVolumeAsync(int channel, float volume);
     void setMasterVolumeAsync(float volume);
     bool queueSoundAsync(int channel, const char* filename, const AudioPlaybackOptions& options = {},
@@ -465,6 +475,9 @@ private:
         QueueLoopBehavior loopBehavior = QueueLoopBehavior::StopImmediate;
         float volume          = 1.0f;
         uint8_t outputChannels = AudioChannel::ALL;
+        /// Custom fade-out duration for AudioStopMode::Fade (used by
+        /// stopAsyncWithFadeMs).  0 = use the default FADE_DURATION_MS.
+        uint16_t fadeMs       = 0;
     };
 
     // ---- Internal Methods ----
@@ -550,6 +563,21 @@ private:
     std::atomic<uint32_t> _produceLoops{0};  // Producer task writes, Core 0 reads
     std::atomic<uint32_t> _consumeLoops{0};  // Core 1 consumer writes, Core 0 reads
     std::atomic<uint32_t> _consumeFrames{0}; // Core 1 consumer writes, Core 0 reads
+
+    // Playback pacing instrumentation (2026-05-27).  All written from
+    // the producer task on Core 1 (atomic add / cmpxchg), read + reset
+    // by the periodic logger.  Reset-on-log is "load + store(0)"
+    // (relaxed) — a stat update during the log races to zero is OK,
+    // we'd just miss one tick of data on a 1 Hz cadence.
+    std::atomic<uint8_t>  _ringMinFillPct{100};       // min observed since last log
+    std::atomic<uint32_t> _maxSdReadUs{0};            // max refill latency since last log
+    std::atomic<uint32_t> _slowSdReads{0};            // refills > 5 ms since last log
+    std::atomic<uint32_t> _verySlowSdReads{0};        // refills > 20 ms since last log
+    std::atomic<uint32_t> _channelStarves[AUDIO_MAX_CHANNELS]{};
+        // Per-channel synchronous-refill count — incremented when
+        // produceFrame's getWavSample hits an empty drain buffer and
+        // has to refill mid-mix (the round-robin top-up didn't keep
+        // up).  This is the canonical "uneven pacing" indicator.
 
     // Status (producer task writes, Core 0 reads for status queries)
     std::atomic<bool> _channelPlaying[AUDIO_MAX_CHANNELS]{};

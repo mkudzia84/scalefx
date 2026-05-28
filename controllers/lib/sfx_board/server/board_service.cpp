@@ -13,6 +13,7 @@
 #include <serial/core/core.h>      // CorePacket / CorePayload / SerialError
 #include <serial/diag_log.h>       // DiagLog (history send for DIAG_HISTORY)
 #include <serial/wire.h>           // SfxWire::TAG_ASYNC
+#include <platform/sfx_platform.h> // sfxDramFree_bytes, sfxPsramFree_bytes
 
 #include <Arduino.h>     // millis()
 #include <cstring>
@@ -173,7 +174,14 @@ void BoardServicePolicy::sendIdentify() {
 }
 
 void BoardServicePolicy::sendStatus() {
-    // 22-byte core header + variable-length module-callback data.
+    // 22-byte core header + variable-length module-callback data
+    // + 8-byte memory-extension trailer (freeDram + freePsram).  The
+    // trailer is appended AFTER the module data so existing decoders
+    // that read battery / gear / engine module-data at offset 22
+    // keep working.  New clients pick up the trailer from `len-8`
+    // (Rule 11 append-only; older firmware versions simply emit no
+    // trailer and clients see len < 22+8 → no extension).  See
+    // board_service.h for the wire layout.
     uint8_t payload[SfxWire::MAX_PAYLOAD_SIZE];
     size_t idx = 0;
     SfxWire::putU32LE(&payload[idx], _commandCounter);                idx += 4;
@@ -185,8 +193,16 @@ void BoardServicePolicy::sendStatus() {
     payload[idx++] = _boardState;
     payload[idx++] = _initFlags;
     if (_statusDataCallback) {
-        idx += _statusDataCallback(&payload[idx], sizeof(payload) - idx);
+        // Reserve 8 bytes at the tail so the module callback can't
+        // overrun the buffer past where the mem-extension trailer
+        // will land.
+        idx += _statusDataCallback(&payload[idx],
+                                   sizeof(payload) - idx - 8);
     }
+    // Memory extension trailer.  Both fields are present on every
+    // build — Pico boards return 0 for PSRAM (no external RAM).
+    SfxWire::putU32LE(&payload[idx], (uint32_t)sfxDramFree_bytes());  idx += 4;
+    SfxWire::putU32LE(&payload[idx], (uint32_t)sfxPsramFree_bytes()); idx += 4;
     sendRawPacket(CorePacket::STATUS, currentTag(), payload, idx);
 }
 

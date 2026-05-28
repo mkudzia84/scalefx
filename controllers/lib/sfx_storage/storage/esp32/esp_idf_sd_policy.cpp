@@ -67,6 +67,13 @@ bool EspIdfSdio4BitPolicy::mount(const Config& cfg) {
     // Slot pin assignment — 4-bit mode requires all D0..D3 in addition
     // to CLK + CMD.  GPIO matrix routing applies (HubFX rev uses
     // CLK=39, CMD=38, D0=40, D1=41, D2=42, D3=45 — JTAG-reuse pins).
+    //
+    // 1-bit mode was tested (build #364) as a mitigation for SDMMC↔I²S
+    // bus contention but made things WORSE: per-read time at 1-bit/40 MHz
+    // takes 4× longer at the data layer, so the producer blocks for
+    // longer.  Underrun rate went 30-47/sec → 49-63/sec; max spike
+    // 110 ms → 150 ms.  Keep 4-bit for now; investigate page_cache or
+    // ring-buffer enlargement as the actual fix.
     sdmmc_slot_config_t slot_cfg = SDMMC_SLOT_CONFIG_DEFAULT();
     slot_cfg.width = 4;
     slot_cfg.clk   = (gpio_num_t)cfg.clk;

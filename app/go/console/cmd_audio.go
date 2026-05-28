@@ -3,6 +3,7 @@ package console
 import (
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"scalefx/protocol/audio"
@@ -10,7 +11,7 @@ import (
 )
 
 func init() {
-	register(&command{Name: "play", Usage: "play <ch> <path> [vol] [output]", Help: "start playback on a mixer channel", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdPlay})
+	register(&command{Name: "play", Usage: "play <ch> <path> [vol] [output(1|2|all)] [loops(0=inf|N)]", Help: "start playback on a mixer channel", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdPlay})
 	register(&command{Name: "audio-stop", Usage: "audio-stop [ch|all]", Help: "stop one channel or all", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdAudioStop})
 	register(&command{Name: "volume", Usage: "volume <ch|master> <0-100>", Help: "set channel or master volume", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdVolume})
 	register(&command{Name: "fade", Usage: "fade <ch>", Help: "fade-stop a channel", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdFade})
@@ -18,6 +19,7 @@ func init() {
 	register(&command{Name: "queue-clear", Usage: "queue-clear <ch|all>", Help: "clear queue on a channel", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdQueueClear})
 	register(&command{Name: "audio-status", Usage: "audio-status", Help: "raw AUDIO_STATUS_RESP payload", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdAudioStatus})
 	register(&command{Name: "codec-status", Usage: "codec-status", Help: "raw CODEC_STATUS_RESP payload", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdCodecStatus})
+	register(&command{Name: "audio-preloads", Usage: "audio-preloads", Help: "PSRAM asset cache: per-path residency + owners", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdAudioPreloads})
 }
 
 func cmdPlay(a *App, args []string) error {
@@ -51,10 +53,27 @@ func cmdPlay(a *App, args []string) error {
 			return fmt.Errorf("output must be 1|2|all")
 		}
 	}
+	// Optional loop arg: "0" or "inf" = infinite loop, N>0 = play N times total.
+	// Maps to audio.PlayOptions.LoopMode + LoopCount on the wire.
+	loopTag := ""
+	if len(args) >= 5 {
+		if args[4] == "inf" || args[4] == "0" {
+			opt.LoopMode = audio.LoopInfinite
+			loopTag = "  loop=inf"
+		} else {
+			v, err := strconv.ParseUint(args[4], 0, 16)
+			if err != nil {
+				return fmt.Errorf("loops: %v", err)
+			}
+			opt.LoopMode = audio.LoopFinite
+			opt.LoopCount = uint16(v)
+			loopTag = fmt.Sprintf("  loop=%d", opt.LoopCount)
+		}
+	}
 	if err := a.c.Audio.Play(opt); err != nil {
 		return err
 	}
-	Ok("ch%d ▶ %s  vol=%d out=%s", ch, Quote(opt.Path), opt.Volume, outputName(opt.Output))
+	Ok("ch%d ▶ %s  vol=%d out=%s%s", ch, Quote(opt.Path), opt.Volume, outputName(opt.Output), loopTag)
 	return nil
 }
 
@@ -237,6 +256,64 @@ func cmdAudioStatus(a *App, _ []string) error {
 			cBold(c.Filename))
 	}
 	return nil
+}
+
+func cmdAudioPreloads(a *App, _ []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	s, err := a.c.Audio.PreloadStatus()
+	if err != nil {
+		return err
+	}
+	Hdr("asset preload cache")
+	KVf("budget", "%s / %s  (%d%%)",
+		humanBytes(uint64(s.ResidentBytes)),
+		humanBytes(uint64(s.BudgetBytes)),
+		percent(s.ResidentBytes, s.BudgetBytes))
+	KVf("entries", "%d  (ready=%d  loading=%d  failed=%d  pinned=%d)",
+		len(s.Entries), s.Ready, s.Loading, s.Failed, s.Pinned)
+	if len(s.Entries) == 0 {
+		KV("cache", cDim("(empty — no assets registered)"))
+		return nil
+	}
+	Hdr("entries")
+	for _, e := range s.Entries {
+		owners := strings.Join(e.Owners, ",")
+		if owners == "" {
+			owners = cDim("lru")
+		}
+		colour := cDim
+		switch e.Status {
+		case audio.PreloadReady:
+			colour = cGreen
+		case audio.PreloadLoading:
+			colour = cYellow
+		case audio.PreloadFailed:
+			colour = cRed
+		}
+		fmt.Fprintf(out, "  %s %s  %-40s  %s/%s  (%d%%)  [%s]\n",
+			colour(fmt.Sprintf("%-7s", e.StatusName)),
+			cDim(fmt.Sprintf("%-3s", e.FormatName)),
+			e.Path,
+			humanBytes(uint64(e.LoadedBytes)),
+			humanBytes(uint64(e.TotalBytes)),
+			e.PercentLoaded(),
+			owners)
+	}
+	return nil
+}
+
+// percent computes (num * 100 / den), clamped to [0,100].
+func percent(num, den uint32) int {
+	if den == 0 {
+		return 0
+	}
+	p := int(uint64(num) * 100 / uint64(den))
+	if p > 100 {
+		return 100
+	}
+	return p
 }
 
 func cmdCodecStatus(a *App, _ []string) error {

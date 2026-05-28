@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.13.0-hubfx"
-#define BUILD_NUMBER     357
+#define BUILD_NUMBER     451
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -82,6 +82,7 @@
 // Storage (LittleFS flash + SD_MMC 4-bit SDIO) — compiled in via
 // SFX_HAS_STORAGE + SFX_HAS_STORAGE_SERVER (platformio.ini build_flags).
 #include <storage/bring_up.h>
+#include <audio/audio_asset_cache.h>      // AudioAssetCache — PSRAM asset preloader
 #include <server/storage_service.h>
 
 // Audio (8-channel WAV mixer + I²S out + TAS5825P codec) — compiled
@@ -589,12 +590,30 @@ void setup() {
                 Gpio::LED_CONNECTION, Gpio::LED_ERROR);
     board.setConnectionTimeoutEnabled(false);
 
+    // AudioAssetCache: PSRAM-resident preloader for every WAV/MP3
+    // played through the mixer.  MUST run before the config chain
+    // below — each `applyXxxConfig` calls
+    // `AudioAssetCache::setPreloadsForOwner(...)` so the loader can
+    // begin pulling sound assets into PSRAM while the rest of setup
+    // continues.  No DMA-cap allocations here (loader fread()s
+    // directly into PSRAM via VFS-FAT's internal bouncer), so
+    // pre-audio-init ordering is safe.  Loader runs on Core 0 prio
+    // MAX-3.  Budget 6 MB; see audio_asset_cache.h.
+    if (!AudioAssetCache::instance().begin()) {
+        SFX_LOG_ERROR("[boot] AudioAssetCache::begin() failed — preload disabled");
+    } else {
+        SFX_LOG_INFO("[boot] AudioAssetCache::begin() OK");
+    }
+
     // ── Boot config chain — load each store from its canonical path;
     // on miss, apply schema defaults so a bare board boots functional.
     // Order matters: /hubfx.yaml first (audio + features + ports +
     // inputs name map) → effect sub-files (engine / landing / lightfx
     // consume the name map) → re-apply /hubfx.yaml so its master
     // `features:` matrix overrides each sub-file's local `enabled:`.
+    // Each apply also pushes its sound paths into the AssetCache via
+    // `setPreloadsForOwner` — the loader (Core 0 prio MAX-3) starts
+    // pulling them into PSRAM in the background while setup continues.
     kHubFx   .loadOrFallback();
     kAlerts  .loadOrFallback();
     kEngineFx.loadOrFallback();
@@ -719,9 +738,9 @@ void setup() {
                  (unsigned)board.policy<LightFxEffectService>().controller().numPrograms());
 
     // Boot announcement — audio is live (audio.begin() above ran through
-    // codec PLAY).  Plays /sounds/sys/init.wav on the Alert mixer channel
+    // codec PLAY).  Plays /sounds/sys/init.mp3 on the Alert mixer channel
     // via the named-cue API.  Best-effort: no-op when features.alerts is
-    // false or the WAV is missing on SD.
+    // false or the MP3 is missing on SD.
     board.policy<AlertService>().playSound(
         hubfx::effects::alerts::AlertSound::Init);
 
@@ -740,6 +759,13 @@ void setup() {
     // allocations so we see the steady-state headroom.  Periodic
     // re-emission from loop() (every 30 s) flags drift.
     logMemoryHeapCaps("boot baseline");
+
+    // Asset-cache preload snapshot (rule-of-least-surprise: the
+    // operator sees what's been queued for PSRAM residency before
+    // play() requests start arriving).  Per-path lines may show
+    // status=loading at this point — the loader keeps working in the
+    // background and finished-load events log themselves.
+    AudioAssetCache::instance().logPreloadStatus();
 }
 
 void loop() {

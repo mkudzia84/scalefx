@@ -338,17 +338,54 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
         }
     }
     if (!ws.source) {
-        auto* stream = new (ch.sourceStorage) WavStreamSource();
-        StreamScratch scratch{
-            /*sdReadBuf=*/     _sdReadBuf,
-            /*sdReadBufSize=*/ WAV_SD_READ_BYTES,
-        };
-        if (!stream->open(filename, scratch)) {
-            stream->~WavStreamSource();
-            _channelPlaying[channel].store(false, std::memory_order_release);
-            return false;
+#if SFX_PLATFORM_ESP32
+        // PSRAM-resident source via the AudioAssetCache (May 2026).
+        // The cache loads the file in the background; this source
+        // reads directly from PSRAM during playback so I²S↔SDMMC
+        // contention never affects the audio stream.  No fallback to
+        // SD streaming: an asset that doesn't fit (raw WAV > 6 MB
+        // budget) is refused at the source level so the operator
+        // re-encodes it to MP3 (12× smaller).
+        //
+        // Dispatch by extension:
+        //   *.wav → WavPsramSource (raw PCM, no decode cost)
+        //   *.mp3 → Mp3PsramSource (helix decode from PSRAM bytes,
+        //                            uses Mp3DecoderPool)
+        const size_t nameLen = strlen(filename);
+        const bool isMp3 = (nameLen >= 4) &&
+            (filename[nameLen-4] == '.') &&
+            ((filename[nameLen-3] == 'm') || (filename[nameLen-3] == 'M')) &&
+            ((filename[nameLen-2] == 'p') || (filename[nameLen-2] == 'P')) &&
+            (filename[nameLen-1] == '3');
+
+        if (isMp3) {
+            auto* mp3 = new (ch.sourceStorage) Mp3PsramSource();
+            if (mp3->open(filename)) {
+                ws.source = mp3;
+            } else {
+                mp3->~Mp3PsramSource();
+                MIXER_ERROR("Ch%d: MP3 open failed: %s", channel, filename);
+                _channelPlaying[channel].store(false, std::memory_order_release);
+                return false;
+            }
+        } else {
+            auto* psram = new (ch.sourceStorage) WavPsramSource();
+            if (psram->open(filename)) {
+                ws.source = psram;
+            } else {
+                psram->~WavPsramSource();
+                MIXER_ERROR("Ch%d: cannot play %s (oversized for PSRAM cache "
+                            "or load failed) — encode as MP3 to play larger files",
+                            channel, filename);
+                _channelPlaying[channel].store(false, std::memory_order_release);
+                return false;
+            }
         }
-        ws.source = stream;
+#endif
+    }
+    if (!ws.source) {
+        _channelPlaying[channel].store(false, std::memory_order_release);
+        return false;
     }
 
     // Cache format for fast status reads (immutable for this source).
@@ -521,6 +558,12 @@ uint32_t AudioMixer<TI2S, TCodec>::getTotalSamples(int channel) const {
 
 template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::stop(int channel, AudioStopMode mode) {
+    stopWithFadeMs(channel, mode, 0);
+}
+
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::stopWithFadeMs(int channel, AudioStopMode mode,
+                                              uint16_t fadeMs) {
     if (!_initialized) return;
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
 
@@ -542,8 +585,18 @@ void AudioMixer<TI2S, TCodec>::stop(int channel, AudioStopMode mode) {
         case AudioStopMode::Fade:
             ch.fading = true;
             ch.fadeVolume = 1.0f;
-            ch.fadeStep = FADE_STEP_PER_FRAME;
-            MIXER_LOG("Ch%d: Fading out", channel);
+            // Custom fade ramp — fadeMs > 0 means the EngineFx cross-
+            // fader (or another caller) supplied an explicit duration.
+            // Falls back to the project-default FADE_DURATION_MS (50 ms)
+            // for legacy `AudioStopMode::Fade` callers.
+            if (fadeMs > 0) {
+                ch.fadeStep = 1.0f /
+                    (((float)fadeMs * AUDIO_SAMPLE_RATE) / 1000.0f);
+                MIXER_LOG("Ch%d: Fading out over %u ms", channel, (unsigned)fadeMs);
+            } else {
+                ch.fadeStep = FADE_STEP_PER_FRAME;
+                MIXER_LOG("Ch%d: Fading out (default %d ms)", channel, FADE_DURATION_MS);
+            }
             break;
 
         case AudioStopMode::LoopEnd:
@@ -815,14 +868,54 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
     int space = WAV_BUF_FRAMES - remaining;
     if (space <= 0) return true;
 
-    // Pull from source into the tail of the drain buffer.  Source
-    // handles loop wrap internally; we just see a stream of frames
-    // until it returns 0 (exhausted).
+    // ── Per-call decode-cost cap ────────────────────────────────────
+    // Two competing constraints:
+    //   1. Refill must add ≥ what produce() drained per cycle or the
+    //      drain shrinks until silence is mixed in (per-channel
+    //      "starves" in the pace log).
+    //   2. Refill blocks the producer task; if it's too long, the ring
+    //      drains and underruns (under+ ticks in the pace log).
+    // Sweet spot is "refill more than one cycle's worth at a time so
+    // refill fires every-other-cycle instead of every cycle" — halves
+    // the average refill overhead vs the 4096-cap (cap == consume).
+    // With 8192 frames an MP3 refill is ~35-40 ms; the ring's ~85 ms
+    // headroom still absorbs that for two active MP3 channels.  PCM
+    // (.wav) sources refill instantly regardless.  The drain buffer
+    // is 24 K frames so 8 K never overruns.  2026-05-28 trace at
+    // @213077ms showed 4096-cap producer falling behind in the
+    // engine+gun case; 8192-cap restores the headroom.
+    constexpr int kMaxRefillFrames = 8192;
+    if (space > kMaxRefillFrames) space = kMaxRefillFrames;
+
+    // Pull from source into the tail of the drain buffer — time the
+    // call to expose decode-side stalls.  Source handles loop wrap
+    // internally; we just see a stream of frames until it returns 0
+    // (exhausted).
+    const uint32_t t0 = micros();
     const uint32_t got = ws.source->readFrames(ws.bufL + ws.bufLen,
                                                ws.bufR + ws.bufLen,
                                                (uint32_t)space);
+    const uint32_t dtUs = micros() - t0;
+
+    // Track max-since-last-log via lock-free CAS (relaxed — the
+    // periodic logger races safely; missing one tick is OK).
+    uint32_t prevMax = _maxSdReadUs.load(std::memory_order_relaxed);
+    while (dtUs > prevMax &&
+           !_maxSdReadUs.compare_exchange_weak(prevMax, dtUs,
+                                               std::memory_order_relaxed)) {}
+    if (dtUs > 5000u)  _slowSdReads.fetch_add(1, std::memory_order_relaxed);
+    if (dtUs > 20000u) _verySlowSdReads.fetch_add(1, std::memory_order_relaxed);
+
     ws.bufLen += (int)got;
-    return ws.bufLen > 0;
+    // Return TRUE if we got data OR the source isn't permanently
+    // exhausted yet.  This distinguishes "real EOF" (source.isExhausted
+    // → destroy channel) from "transient buffering" (paged source
+    // waiting for the next page — drain what's already buffered, retry
+    // soon).  Before this fix, a single page-transition with the next
+    // page not-yet-ready would cause readFrames=0 → refill returns
+    // false → channel destroyed mid-track (the engine_start.wav
+    // truncation @ ~6.5 s on the build #370 test).
+    return ws.bufLen > 0 || !ws.source->isExhausted();
 }
 
 template<typename TI2S, typename TCodec>
@@ -830,15 +923,35 @@ bool AudioMixer<TI2S, TCodec>::getWavSample(Channel& ch, float& outL, float& out
     WavState& ws = ch.wav;
     // Ensure 2 frames are available for linear interpolation; refill
     // from source if not.  Source-kind dispatch is behind ws.source.
-    while (ws.bufPos + 1 >= ws.bufLen) {
-        if (!refillDrainBuffer(ch)) {
-            outL = outR = 0.0f;
-            return false;
+    //
+    // A synchronous refill here is the canonical "round-robin top-up
+    // didn't keep up" signal — the per-channel _channelStarves counter
+    // surfaces this in the per-second telemetry, identifying which
+    // channel needs more attention from the producer.
+    if (ws.bufPos + 1 >= ws.bufLen && ws.active) {
+        // Drain ran empty.  Used to call refillDrainBuffer inline
+        // here, which blocked the producer 10-20 ms per MP3 decode
+        // and crashed the ring (2026-05-28).  Now the produce() loop
+        // refills EVERY active channel below 50 % at the end of each
+        // cycle, so reaching this branch means the producer is going
+        // faster than the decoder can keep up — emit silence for
+        // this single frame and let the next produce() top-up
+        // catch this channel back up.  Channel stays alive; per-
+        // channel `_channelStarves` counts these so they show up
+        // in the per-second pace telemetry.
+        const intptr_t idx = &ch - _channels;
+        if (idx >= 0 && idx < AUDIO_MAX_CHANNELS) {
+            _channelStarves[idx].fetch_add(1, std::memory_order_relaxed);
         }
-        if (ws.bufPos + 1 >= ws.bufLen) {
+        // Exhaustion check still has to happen — if the source is
+        // permanently done we want the channel destroyed, not
+        // perpetually silenced.
+        if (ws.source && ws.source->isExhausted()) {
             outL = outR = 0.0f;
-            return false;
+            return false;   // mixer destroys channel
         }
+        outL = outR = 0.0f;
+        return true;        // transient drain; keep channel alive
     }
 
     const int   idx  = ws.bufPos;
@@ -998,23 +1111,25 @@ int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
         produced++;
     }
 
-    // Proactively top-up ONE channel's drain buffer per call (round-
-    // robin).  This spreads SD I/O across loop iterations and avoids
-    // expensive refill blocking produce().  Only triggers when the
-    // buffer drops below 50% — at that point there is still ~250 ms
-    // of audio remaining, plenty of runway.
-    {
-        static int refillIdx = 0;
-        for (int attempt = 0; attempt < AUDIO_MAX_CHANNELS; attempt++) {
-            int idx = refillIdx % AUDIO_MAX_CHANNELS;
-            refillIdx++;
-            Channel& ch = _channels[idx];
-            if (!ch.wav.active) continue;
-            int available = ch.wav.bufLen - ch.wav.bufPos;
-            if (available < WAV_BUF_FRAMES / 2) {
-                refillDrainBuffer(ch);   // one source-side batch
-            }
-            break;  // one channel per call
+    // Top-up EVERY active channel whose drain buffer is below 50 %.
+    // (Was previously round-robin "one channel per call"; that left
+    // 2 + active channels behind the consume rate on MP3 sources —
+    // 2026-05-28 trace showed ch1 drain stuck at 6 % with persistent
+    // under+ ticks.)  With kMaxRefillFrames=2048 each call costs
+    // ~10 ms decode time for MP3; capping ≤3 active sources and ≤4 KB
+    // ring drain risk keeps producer-blocking under one ring tick.
+    //
+    // Skip channels whose source returned 0 bytes the previous attempt
+    // and isn't marked exhausted — these are the "phantom-active"
+    // failure mode (source forever silent but not finished); we
+    // count one starve per call and skip the decode work to avoid
+    // burning a refill slot on a dead source.
+    for (int i = 0; i < AUDIO_MAX_CHANNELS; ++i) {
+        Channel& ch = _channels[i];
+        if (!ch.wav.active) continue;
+        int available = ch.wav.bufLen - ch.wav.bufPos;
+        if (available < WAV_BUF_FRAMES / 2) {
+            refillDrainBuffer(ch);
         }
     }
 
@@ -1028,14 +1143,26 @@ int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
 template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::consumeAndOutput() {
     uint32_t avail = ringBuf().availableRead();
-    
+
+    // Track min fill % since last log — catches transient near-empty
+    // dips that didn't quite underrun.  Updated lock-free via CAS;
+    // relaxed ordering is fine (a sloppy reset/update race only
+    // misses one tick on a 1 Hz cadence).
+    {
+        const uint8_t pct = (uint8_t)((avail * 100u) / RING_FRAMES);
+        uint8_t prevMin = _ringMinFillPct.load(std::memory_order_relaxed);
+        while (pct < prevMin &&
+               !_ringMinFillPct.compare_exchange_weak(prevMin, pct,
+                                                     std::memory_order_relaxed)) {}
+    }
+
     static bool firstLog = true;
     if (firstLog) {
         MIXER_LOG("Consumer first call: avail=%u init=%d i2s=%d",
                   avail, (bool)_initialized, (bool)_i2sRunning);
         firstLog = false;
     }
-    
+
     if (avail > 0) {
         // Read frames from ring buffer and write to I2S backend.
         // i2s_write(portMAX_DELAY) blocks when DMA buffers are full,
@@ -1171,7 +1298,7 @@ void AudioMixer<TI2S, TCodec>::executeCommand(const Command& cmd) {
             break;
         }
         case CommandType::Stop:
-            stop(cmd.channelId, cmd.stopMode);
+            stopWithFadeMs(cmd.channelId, cmd.stopMode, cmd.fadeMs);
             break;
         case CommandType::StopAll:
             stopAll(cmd.stopMode);
@@ -1255,6 +1382,18 @@ void AudioMixer<TI2S, TCodec>::stopAsync(int channel, AudioStopMode mode) {
 }
 
 template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::stopAsyncWithFadeMs(int channel, uint16_t fadeMs) {
+    if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
+    Command cmd{};
+    cmd.type = CommandType::Stop;
+    cmd.channelId = channel;
+    cmd.stopMode = AudioStopMode::Fade;
+    cmd.fadeMs = fadeMs;
+    _channelPlaying[channel].store(false, std::memory_order_release);
+    queueCommand(cmd);
+}
+
+template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::setVolumeAsync(int channel, float vol) {
     Command cmd{};
     cmd.type = CommandType::SetVolume;
@@ -1303,6 +1442,9 @@ void AudioMixer<TI2S, TCodec>::producerTaskFunc(void* param) {
     MIXER_LOG("Producer task started on core %d (priority %d)",
               xPortGetCoreID(), uxTaskPriorityGet(nullptr));
 
+    uint32_t nextTelemetryMs = millis() + 1000;
+    uint32_t prevUnderruns   = mixer._underruns.load(std::memory_order_relaxed);
+
     while (mixer._producerRunning.load(std::memory_order_acquire)) {
         int produced = mixer.produce(RING_FRAMES);
 
@@ -1316,6 +1458,52 @@ void AudioMixer<TI2S, TCodec>::producerTaskFunc(void* param) {
         // If produced > 0, loop immediately.  The FreeRTOS scheduler will
         // preempt us when the higher-priority consumer task unblocks from
         // i2s_channel_write().
+
+        // ── Pacing telemetry (1 Hz, only when audio is playing) ─────
+        const uint32_t now = millis();
+        if (now >= nextTelemetryMs) {
+            nextTelemetryMs = now + 1000;
+
+            uint8_t activeMask = 0;
+            uint8_t activeCount = 0;
+            for (int i = 0; i < AUDIO_MAX_CHANNELS; ++i) {
+                if (mixer._channels[i].wav.active) {
+                    activeMask |= (1u << i);
+                    ++activeCount;
+                }
+            }
+            if (activeCount == 0) continue;
+
+            const uint32_t under  = mixer._underruns.load(std::memory_order_relaxed);
+            const uint32_t dUnder = under - prevUnderruns;
+            prevUnderruns         = under;
+
+            const uint8_t  minFill = mixer._ringMinFillPct.exchange(100, std::memory_order_relaxed);
+            const uint32_t maxRdUs = mixer._maxSdReadUs.exchange(0, std::memory_order_relaxed);
+            const uint32_t slow5   = mixer._slowSdReads.exchange(0, std::memory_order_relaxed);
+            const uint32_t slow20  = mixer._verySlowSdReads.exchange(0, std::memory_order_relaxed);
+
+            // Compose per-channel starve summary (only active channels)
+            char starveBuf[96];
+            int  off = 0;
+            for (int i = 0; i < AUDIO_MAX_CHANNELS; ++i) {
+                if (!(activeMask & (1u << i))) continue;
+                const uint32_t st = mixer._channelStarves[i].exchange(0, std::memory_order_relaxed);
+                const int     fillPct = mixer.getWavBufferFillPercent(i);
+                int n = snprintf(starveBuf + off, sizeof(starveBuf) - off,
+                                 " ch%d=%u/%d%%", i, (unsigned)st, fillPct);
+                if (n < 0 || off + n >= (int)sizeof(starveBuf)) break;
+                off += n;
+            }
+
+            SFX_LOG_INFO("[pace] active=%u ring-min=%u%% under+%u sd-max=%uus slow5/20=%u/%u starves:%s",
+                         (unsigned)activeCount,
+                         (unsigned)minFill,
+                         (unsigned)dUnder,
+                         (unsigned)maxRdUs,
+                         (unsigned)slow5, (unsigned)slow20,
+                         starveBuf);
+        }
     }
 
     MIXER_LOG("Producer task exiting");

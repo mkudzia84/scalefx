@@ -26,9 +26,9 @@
  *         rof:
  *           input: gun_rof              # NAMED channel from /hubfx.yaml inputs[]
  *           items:
- *             - { name: burst,  band: [900, 1200],  rpm: 120, sound: /sounds/gun/burst.wav }
- *             - { name: normal, band: [1200, 1600], rpm: 600, sound: /sounds/gun/fire.wav  }
- *             - { name: rapid,  band: [1600, 2000], rpm: 900, sound: /sounds/gun/rapid.wav }
+ *             - { name: burst,  band: [900, 1200],  rpm: 120, sound: /sounds/gun/burst.mp3 }
+ *             - { name: normal, band: [1200, 1600], rpm: 600, sound: /sounds/gun/fire.mp3  }
+ *             - { name: rapid,  band: [1600, 2000], rpm: 900, sound: /sounds/gun/rapid.mp3 }
  *         muzzle_flash:
  *           port: { kind: pwm, idx: 0 }
  *           duration_ms: 30

@@ -102,9 +102,12 @@ public:
     }
 
     bool ownsType(uint8_t type) const {
-        // Range covers the audio control block (0xDA..0xE1) plus the
-        // CODEC_STATUS_REQ/RESP pair (0xAA..0xAB) which lives elsewhere.
+        // Control block (0xDA..0xE1), preload diag (0xE6..0xE7 — past
+        // the GunFX manual-override gap), and codec status (0xAA..0xAB)
+        // which lives elsewhere.
         return (type >= AudioPacket::AUDIO_PLAY && type <= AudioPacket::AUDIO_STATUS_RESP)
+            || (type == AudioPacket::AUDIO_PRELOAD_STATUS_REQ)
+            || (type == AudioPacket::AUDIO_PRELOAD_STATUS_RESP)
             || (type == AudioPacket::CODEC_STATUS_REQ)
             || (type == AudioPacket::CODEC_STATUS_RESP);
     }
@@ -144,6 +147,7 @@ private:
     void handleQueueClear(const uint8_t* payload, size_t len);
     void handleStatusReq();
     void handleCodecStatusReq();
+    void handlePreloadStatusReq();
 };
 
 // ============================================================================

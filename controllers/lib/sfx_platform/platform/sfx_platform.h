@@ -300,6 +300,20 @@
         return heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     }
 
+    /** Free (unallocated) internal DRAM in bytes.
+     *  Excludes PSRAM (use sfxPsramFree_bytes for that).  Internal
+     *  DRAM is the scarce resource on ESP32-S3 (~210 KB available
+     *  after boot vs 8 MB PSRAM) so it's worth surfacing separately
+     *  in STATUS / diagnostics. */
+    inline size_t sfxDramFree_bytes() {
+        return heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+
+    /** Total installed internal DRAM in bytes. */
+    inline size_t sfxDramTotal() {
+        return heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+
 #else
     // No PSRAM on Pico — fall back to standard heap
     #define SFX_HAS_PSRAM       0
@@ -309,6 +323,11 @@
     inline void sfxPsramFree(void* ptr)                { free(ptr); }
     inline size_t sfxPsramTotal()                      { return 0; }
     inline size_t sfxPsramFree_bytes()                 { return 0; }
+
+    /** Pico has no PSRAM split — DRAM helpers return the standard
+     *  heap so callers don't need #ifdef'd dispatch. */
+    inline size_t sfxDramFree_bytes()                  { return SFX_FREE_HEAP(); }
+    inline size_t sfxDramTotal()                       { return 0; /* runtime total unknown on Pico */ }
 #endif
 
 // ============================================================================

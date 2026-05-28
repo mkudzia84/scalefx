@@ -7,6 +7,8 @@ export function ApplyDefaults():Promise<main.DeviceModelSnapshot>;
 
 export function AttachRole(arg1:string,arg2:number,arg3:number,arg4:number):Promise<main.DeviceModelSnapshot>;
 
+export function AudioPreloads():Promise<main.AudioPreloadStatus>;
+
 export function BuildAndFlash(arg1:string,arg2:string,arg3:boolean,arg4:boolean,arg5:boolean):Promise<void>;
 
 export function CandidatePorts(arg1:string,arg2:string):Promise<Array<devicemodel.Port>>;
@@ -134,6 +136,8 @@ export function MotorSetPct(arg1:number,arg2:number):Promise<void>;
 export function OpenTextFile(arg1:string):Promise<main.OpenedFile>;
 
 export function PreviewLightChannel(arg1:number,arg2:number,arg3:boolean,arg4:Array<main.LightEventInput>):Promise<void>;
+
+export function QueryDeviceStatus():Promise<main.DeviceStatus>;
 
 export function RefreshDeviceModel():Promise<main.DeviceModelSnapshot>;
 

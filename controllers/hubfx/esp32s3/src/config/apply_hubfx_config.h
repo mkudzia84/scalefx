@@ -37,6 +37,11 @@
 #include "lightfx_config.h"
 #include "lightfx_program_loader.h"
 #include "../effects/lightfx/led_program.h"
+#include "../effects/alerts/alert_sound.h"   // alertSoundPath()
+
+#if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
+#include <audio/audio_asset_cache.h>
+#endif
 
 namespace hubfx::config {
 
@@ -280,14 +285,47 @@ void applyLightFxConfig(TBoard& board, const LightFxYamlConfig& cfg,
 }
 
 /// Apply `/alerts.yaml` — full severity catalog → AlertService.
+/// Preloads every referenced sound into the AudioAssetCache via the
+/// owner-token API (owner = the AlertService instance).  On reload,
+/// paths that disappeared from the config get released; new paths get
+/// queued for background load.  See AudioAssetCache::setPreloadsForOwner.
 template <typename TBoard, typename TAlertService>
 void applyAlertsConfig(TBoard& board, const AlertsConfig& cfg) {
-    board.template policy<TAlertService>().configure(toAlertServiceConfig(cfg));
+    auto& svc = board.template policy<TAlertService>();
+    svc.configure(toAlertServiceConfig(cfg));
     board.recomputeEnabledCapabilities();
     SFX_LOG_INFO("[alerts-config] applied — enabled=%s  info=%s warning=%s error=%s critical=%s",
                  cfg.enabled ? "on" : "off",
                  cfg.info.soundName,    cfg.warning.soundName,
                  cfg.error.soundName,   cfg.critical.soundName);
+
+#if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
+    // Resolve each severity's snake_name → AlertSound → on-disk path
+    // (`/sounds/sys/<name>.mp3`).  Skip slots with no sound bound and
+    // any names that don't match an AlertSound enum.
+    using namespace hubfx::effects::alerts;
+    const AlertsConfig::Severity* slots[] = {
+        &cfg.info, &cfg.warning, &cfg.error, &cfg.critical,
+    };
+    const char* paths[8];
+    int n = 0;
+    for (const auto* s : slots) {
+        if (!s || !s->soundName[0]) continue;
+        const AlertSound id = alertSoundFromName(s->soundName);
+        if (id == AlertSound::None) continue;
+        const char* p = alertSoundPath(id);
+        if (p && p[0]) paths[n++] = p;
+    }
+    // Voltage alert lives in its own field with the same {soundName} shape.
+    if (cfg.voltageAlert.soundName[0]) {
+        const AlertSound id = alertSoundFromName(cfg.voltageAlert.soundName);
+        if (id != AlertSound::None) {
+            const char* p = alertSoundPath(id);
+            if (p && p[0]) paths[n++] = p;
+        }
+    }
+    AudioAssetCache::instance().setPreloadsForOwner(&svc, "alerts", paths, n);
+#endif
 }
 
 /// Apply `/enginefx.yaml` — full wiring + sound pack → EngineFxService.
@@ -297,8 +335,9 @@ void applyAlertsConfig(TBoard& board, const AlertsConfig& cfg) {
 template <typename TBoard, typename TEngineService>
 void applyEngineFxConfig(TBoard& board, const EngineFxYamlConfig& cfg,
                           const HubFxConfig& hub) {
+    auto& svc = board.template policy<TEngineService>();
     auto resolved = toEngineFxServiceConfig(cfg, hub);
-    board.template policy<TEngineService>().configure(resolved);
+    svc.configure(resolved);
     board.recomputeEnabledCapabilities();
     SFX_LOG_INFO("[enginefx-config] applied — enabled=%s type=%s "
                  "input='%s' (resolved {%s, %u} ch=%u thr=%uus)  "
@@ -311,6 +350,16 @@ void applyEngineFxConfig(TBoard& board, const EngineFxYamlConfig& cfg,
                  (unsigned)resolved.thresholdUs,
                  audioOutputMaskName(cfg.outputMask),
                  cfg.sounds.starting);
+
+#if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
+    // Preload the engine sound pack (start / loop / stop).
+    const char* paths[3];
+    int n = 0;
+    if (cfg.sounds.starting[0]) paths[n++] = cfg.sounds.starting;
+    if (cfg.sounds.running [0]) paths[n++] = cfg.sounds.running;
+    if (cfg.sounds.stopping[0]) paths[n++] = cfg.sounds.stopping;
+    AudioAssetCache::instance().setPreloadsForOwner(&svc, "enginefx", paths, n);
+#endif
 }
 
 /// Apply `/gunfx.yaml` — full per-gun spec table → GunFxService
@@ -368,6 +417,30 @@ void applyGunFxConfig(TBoard& board, const GunFxYamlConfig& cfg,
     board.recomputeEnabledCapabilities();
     SFX_LOG_INFO("[gunfx-config] applied — enabled=%s, %u gun(s)",
                  resolved.enabled ? "on" : "off", (unsigned)resolved.numGuns);
+
+#if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
+    // Preload every distinct per-shot sound across all guns × ROF bands.
+    // kMaxGuns × kMaxRofItems = 4 × 8 = 32 slots is the worst case; the
+    // table dedups by path so shared sounds (e.g. same WAV across two
+    // bands) only pin one entry.
+    using namespace hubfx::effects::gunfx;
+    const char* paths[kMaxGuns * kMaxRofItems];
+    int n = 0;
+    auto already = [&](const char* p) {
+        for (int i = 0; i < n; ++i) {
+            if (std::strcmp(paths[i], p) == 0) return true;
+        }
+        return false;
+    };
+    for (uint8_t gi = 0; gi < resolved.numGuns; ++gi) {
+        const auto& g = resolved.guns[gi];
+        for (uint8_t ri = 0; ri < g.numRofItems; ++ri) {
+            const char* p = g.rofItems[ri].soundPath;
+            if (p && p[0] && !already(p)) paths[n++] = p;
+        }
+    }
+    AudioAssetCache::instance().setPreloadsForOwner(&svc, "gunfx", paths, n);
+#endif
 }
 
 /// Apply `/landing.yaml` — landing-light def table → LandingLightService.

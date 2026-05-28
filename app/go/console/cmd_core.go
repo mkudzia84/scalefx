@@ -65,7 +65,11 @@ func cmdStatus(a *App, _ []string) error {
 	Hdr("status")
 	KVf("counter", "%d", s.Counter)
 	KV("uptime", humanDurationMs(s.UptimeMs))
-	KV("free RAM", humanBytes(uint64(s.FreeRAMBytes)))
+	KV("free RAM (total)", humanBytes(uint64(s.FreeRAMBytes)))
+	if s.HasMemExtension {
+		KV("free DRAM", humanBytes(uint64(s.FreeDramBytes)))
+		KV("free PSRAM", humanBytes(uint64(s.FreePsramBytes)))
+	}
 	KVf("last activity", "%s ago", humanDurationMs(s.LastActivityMs))
 	KVf("keepalives", "%d", s.KeepaliveCount)
 	KV("board state", Phase(s.BoardStateName))

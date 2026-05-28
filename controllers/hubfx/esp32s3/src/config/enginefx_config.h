@@ -18,9 +18,9 @@
  *     failsafe: force_low               # hold | force_low | force_high (RC loss)
  *   output: both                        # left | right | both — stereo routing
  *   sounds:
- *     starting: "/sounds/KA50/engine_start.wav"
- *     running:  "/sounds/KA50/engine_loop.wav"
- *     stopping: "/sounds/KA50/engine_stop.wav"
+ *     starting: "/sounds/KA50/engine_start.mp3"
+ *     running:  "/sounds/KA50/engine_loop.mp3"
+ *     stopping: "/sounds/KA50/engine_stop.mp3"
  *     transitions:
  *       starting_offset_ms: 60000
  *       stopping_offset_ms: 25000
@@ -106,6 +106,16 @@ struct EngineFxYamlConfig {
             uint32_t stoppingOffsetMs = 0;
             uint16_t startFadeInMs    = 0;
             uint16_t stopFadeOutMs    = 0;
+            /// Cross-fade window between start→loop, loop→stop, and
+            /// loop wraps.  The next track is launched on the OTHER
+            /// engine mixer slot `crossfade_ms` before the current
+            /// track ends, ramping in from 0 → 1 while the current
+            /// ramps 1 → 0 over the same window.  Eliminates the
+            /// per-transition audio gap caused by source teardown +
+            /// drain-buffer pre-fill.  0 = legacy sequential play
+            /// (hard cut between tracks).  Default 200 ms suits most
+            /// engine packs; bump to 400-500 ms for very slow turbines.
+            uint16_t crossfadeMs      = 200;
         } transitions;
     } sounds;
 };
@@ -140,7 +150,8 @@ inline const auto fields = schema<EngineFxYamlConfig>(
             prop<&Tr::startingOffsetMs>("starting_offset_ms", uint32_t(0)),
             prop<&Tr::stoppingOffsetMs>("stopping_offset_ms", uint32_t(0)),
             prop<&Tr::startFadeInMs>   ("start_fade_in_ms",   uint16_t(0)).range(0, 10000),
-            prop<&Tr::stopFadeOutMs>   ("stop_fade_out_ms",   uint16_t(0)).range(0, 10000)
+            prop<&Tr::stopFadeOutMs>   ("stop_fade_out_ms",   uint16_t(0)).range(0, 10000),
+            prop<&Tr::crossfadeMs>     ("crossfade_ms",       uint16_t(200)).range(0, 2000)
         )
     )
 );
@@ -187,6 +198,7 @@ toEngineFxServiceConfig(const EngineFxYamlConfig& y, const HubFxConfig& hub) {
     cfg.stoppingOffsetMs = y.sounds.transitions.stoppingOffsetMs;
     cfg.startFadeInMs    = y.sounds.transitions.startFadeInMs;
     cfg.stopFadeOutMs    = y.sounds.transitions.stopFadeOutMs;
+    cfg.crossfadeMs      = y.sounds.transitions.crossfadeMs;
 
     // Trigger params live in /enginefx.yaml — copy through.
     cfg.thresholdUs  = y.toggle.thresholdUs;

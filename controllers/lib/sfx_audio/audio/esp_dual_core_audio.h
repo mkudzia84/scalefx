@@ -198,6 +198,14 @@ private:
         SFX_LOG_INFO("Core 1: I²S running — codec can be activated");
         self->_i2sReady.store(true, std::memory_order_release);
 
+        // Producer stays on Core 1 (same core as I²S consumer).  An
+        // experiment moving it to Core 0 (2026-05-27, build #362) cut
+        // peak SD read latency (88-110 ms → 14-55 ms — same core as
+        // SDMMC ISR helps) BUT increased ring underruns 10× because
+        // the producer didn't get enough CPU time on Core 0 (loopTask
+        // + USB + SDMMC ISR contention).  Producer on Core 1
+        // cooperates naturally with the consumer (consumer blocks on
+        // I²S DMA write → producer runs), keeping the ring fed.
         mixer.startProducerTask(/*core=*/1,
                                 /*priority=*/configMAX_PRIORITIES - 2,
                                 /*stackSize=*/8192);

@@ -88,6 +88,16 @@ public:
     /// to kick off page-cache prefetch.  Returns true if work was done.
     virtual bool pump() { return false; }
 
+    /// True iff the source is permanently done — counted-loop
+    /// exhausted, one-shot EOF, or fatal read failure.  Used by the
+    /// mixer to distinguish "this source will never deliver more
+    /// frames" (destroy channel) from "this source is transiently
+    /// buffering" (paged source waiting for the next page — emit
+    /// silence this frame, try again next call).  Default true so
+    /// sources that don't override get the conservative behaviour
+    /// (any readFrames=0 treated as terminal).
+    virtual bool isExhausted() const { return true; }
+
     // ── Loop control ─────────────────────────────────────────────────
     virtual void setLoop(bool loop)        = 0;
     virtual void setLoopCount(int n)       = 0;
@@ -164,6 +174,8 @@ public:
 
     uint32_t readFrames(float* outL, float* outR, uint32_t maxFrames) override;
 
+    bool isExhausted() const override { return _exhausted; }
+
     void setLoop(bool loop) override        { _loop = loop; }
     void setLoopCount(int n) override       { _loopCount = n; _loopCountInit = n; }
     int  loopCount() const override         { return _loopCount; }
@@ -215,6 +227,8 @@ public:
     uint32_t readFrames(float* outL, float* outR, uint32_t maxFrames) override;
     bool     pump() override { return false; }
 
+    bool isExhausted() const override { return _exhausted; }
+
     void setLoop(bool loop) override        { _loop = loop; }
     void setLoopCount(int n) override       { _loopCount = n; _loopCountInit = n; }
     int  loopCount() const override         { return _loopCount; }
@@ -244,8 +258,9 @@ private:
 
 // Sized for the largest source instance.  WavStreamSource carries an
 // SdFile (fs::File on ESP32 = ~360 bytes including its internal shared
-// state).  512 gives ~150 B headroom for the future WavPagedSource
-// which adds two PageRef members.
+// state).  512 gives headroom for new sources (WavPsramSource +
+// AssetHandle ≈ 80 B; future Mp3PsramSource will reuse this storage
+// with a per-source PCM scratch ring).
 constexpr size_t kAudioSourceMaxSize = 512;
 constexpr size_t kAudioSourceAlign   = 8;
 
@@ -255,6 +270,11 @@ static_assert(sizeof(WavPreloadSource) <= kAudioSourceMaxSize,
               "Grow kAudioSourceMaxSize (WavPreloadSource)");
 static_assert(alignof(WavStreamSource)  <= kAudioSourceAlign, "alignment");
 static_assert(alignof(WavPreloadSource) <= kAudioSourceAlign, "alignment");
+
+// Static asserts for WavPsramSource + Mp3PsramSource live in their
+// own .cpp files (forward-declared above) to avoid a circular include
+// here (audio_psram_source.h / audio_mp3_source.h both depend on
+// IAudioSource declared in this file).
 
 /// Safe destructor that handles a nullptr.  Call this when tearing
 /// down a channel — it invokes the source's virtual dtor (closes

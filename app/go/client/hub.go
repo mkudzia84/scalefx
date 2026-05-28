@@ -193,19 +193,26 @@ func (h *Hub) StartKeepalive(interval time.Duration) {
 // StopKeepalive stops the background keepalive loop.
 func (h *Hub) StopKeepalive() { h.c.conn.StopKeepalive() }
 
-// Status is the decoded STATUS payload — the 22-byte core header plus
-// the raw module-data trailer (each module's policy renders its own
-// shape into it).
+// Status is the decoded STATUS payload — the 22-byte core header, the
+// module-data trailer (each policy renders its own shape into it),
+// then an optional 8-byte memory extension at the very end (firmware
+// builds that ship this field after 2026-05-28 — Rule 11 append-only).
 type Status struct {
 	Counter         uint32 `json:"counter"`
 	UptimeMs        uint32 `json:"uptimeMs"`
-	FreeRAMBytes    uint32 `json:"freeRamBytes"`
+	FreeRAMBytes    uint32 `json:"freeRamBytes"`     // total heap (DRAM+PSRAM)
 	LastActivityMs  uint32 `json:"lastActivityMs"`
 	KeepaliveCount  uint32 `json:"keepaliveCount"`
 	BoardState      byte   `json:"boardState"`
 	BoardStateName  string `json:"boardStateName"`
 	InitFlags       byte   `json:"initFlags"`
 	ModuleData      []byte `json:"-"`
+
+	// Memory-extension trailer (firmware ≥2026-05-28).
+	// `HasMemExtension` reports whether the trailer was present.
+	FreeDramBytes   uint32 `json:"freeDramBytes"`
+	FreePsramBytes  uint32 `json:"freePsramBytes"`
+	HasMemExtension bool   `json:"hasMemExtension"`
 }
 
 // Status requests + decodes the periodic STATUS packet.
@@ -409,9 +416,27 @@ func decodeStatus(p []byte) (Status, error) {
 		KeepaliveCount: binary.LittleEndian.Uint32(p[16:20]),
 		BoardState:     p[20],
 		InitFlags:      p[21],
-		ModuleData:     append([]byte(nil), p[core.StatusCoreHeaderSize:]...),
 	}
 	s.BoardStateName = core.BoardStateName(s.BoardState)
+
+	// Module data + optional 8-byte mem-extension trailer.  The
+	// trailer was added 2026-05-28; older firmware emits only the
+	// core header + module data with no trailer.  We trust the
+	// trailer is the LAST 8 bytes whenever the payload has at least
+	// 8 bytes beyond the core header.  Older firmware without a
+	// mem-ext-callback module data is not at risk because we never
+	// shipped a 8-byte fixed module-data section that would collide.
+	const memExtBytes = 8
+	tailStart := core.StatusCoreHeaderSize
+	tailEnd := len(p)
+	if len(p) >= core.StatusCoreHeaderSize+memExtBytes {
+		extOff := len(p) - memExtBytes
+		s.FreeDramBytes = binary.LittleEndian.Uint32(p[extOff : extOff+4])
+		s.FreePsramBytes = binary.LittleEndian.Uint32(p[extOff+4 : extOff+8])
+		s.HasMemExtension = true
+		tailEnd = extOff
+	}
+	s.ModuleData = append([]byte(nil), p[tailStart:tailEnd]...)
 	return s, nil
 }
 

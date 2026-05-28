@@ -9,7 +9,6 @@ import (
 	"scalefx/protocol/enginefx"
 	expp "scalefx/protocol/expanders"
 	"scalefx/protocol/gear"
-	"scalefx/protocol/gunfx"
 	"scalefx/protocol/landing"
 	"scalefx/protocol/storage"
 	"scalefx/protocol/topology"
@@ -74,10 +73,9 @@ func cmdSubscribe(a *App, _ []string) error {
 		fmt.Fprintf(out, "%s engine → %s\n",
 			cBlue("[ENG]"), Phase(enginefx.StateName(ev.State)))
 	})
-	a.c.Events.OnGunShot(func(ev gunfx.Shot) {
-		fmt.Fprintf(out, "%s gun[%d] %s\n",
-			cBlue("[GUN]"), ev.ID, cRed("shot fired"))
-	})
+	// gun-shot events are very high rate during sustained fire — skip the
+	// per-shot console line; subscribers that want them register their own
+	// observer on a.c.Events.OnGunShot.
 	Info("subscribing — events stream until disconnect")
 	return nil
 }

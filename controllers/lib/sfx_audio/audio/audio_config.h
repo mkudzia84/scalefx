@@ -85,12 +85,16 @@ struct I2SPinConfig {
 
 /**
  * Maximum Simultaneous Channels
- * 
- * More channels = higher CPU usage + more RAM
- * Recommended: 4-8 for most applications
+ *
+ * More channels = higher CPU usage + more RAM (per-channel decode
+ * buffer 96 KB × 2 in PSRAM + page-cache prefetch slots).  Reduced
+ * from 8 → 6 in Phase 4 polish (2026-05-27) to free PSRAM for the
+ * page_cache's larger pages and prefetch headroom.
+ *
+ * Recommended: 4-8.
  */
 #ifndef AUDIO_MAX_CHANNELS
-#define AUDIO_MAX_CHANNELS          8
+#define AUDIO_MAX_CHANNELS          6
 #endif
 
 /**

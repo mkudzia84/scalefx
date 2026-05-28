@@ -1,3 +1,34 @@
+export namespace audio {
+	
+	export class PreloadEntry {
+	    path: string;
+	    totalBytes: number;
+	    loadedBytes: number;
+	    status: number;
+	    statusName: string;
+	    format: number;
+	    formatName: string;
+	    owners: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PreloadEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.totalBytes = source["totalBytes"];
+	        this.loadedBytes = source["loadedBytes"];
+	        this.status = source["status"];
+	        this.statusName = source["statusName"];
+	        this.format = source["format"];
+	        this.formatName = source["formatName"];
+	        this.owners = source["owners"];
+	    }
+	}
+
+}
+
 export namespace devicemodel {
 	
 	export class ChannelFunctionDef {
@@ -673,6 +704,48 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class AudioPreloadStatus {
+	    residentBytes: number;
+	    budgetBytes: number;
+	    ready: number;
+	    loading: number;
+	    failed: number;
+	    pinned: number;
+	    entries: audio.PreloadEntry[];
+	
+	    static createFrom(source: any = {}) {
+	        return new AudioPreloadStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.residentBytes = source["residentBytes"];
+	        this.budgetBytes = source["budgetBytes"];
+	        this.ready = source["ready"];
+	        this.loading = source["loading"];
+	        this.failed = source["failed"];
+	        this.pinned = source["pinned"];
+	        this.entries = this.convertValues(source["entries"], audio.PreloadEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ConnectionInfo {
 	    connected: boolean;
 	    initialized: boolean;
@@ -802,6 +875,30 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class DeviceStatus {
+	    uptimeMs: number;
+	    freeRamBytes: number;
+	    freeDramBytes: number;
+	    freePsramBytes: number;
+	    hasMemExtension: boolean;
+	    keepaliveCount: number;
+	    boardStateName: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeviceStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.uptimeMs = source["uptimeMs"];
+	        this.freeRamBytes = source["freeRamBytes"];
+	        this.freeDramBytes = source["freeDramBytes"];
+	        this.freePsramBytes = source["freePsramBytes"];
+	        this.hasMemExtension = source["hasMemExtension"];
+	        this.keepaliveCount = source["keepaliveCount"];
+	        this.boardStateName = source["boardStateName"];
+	    }
 	}
 	export class DiagEvent {
 	    time: string;

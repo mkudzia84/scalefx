@@ -72,6 +72,16 @@ struct EngineFxConfig {
     /// Ramps the shutdown track full → 0 over its final this-many ms — a
     /// soft wind-down tail.  Symmetric with `startFadeInMs`.
     uint16_t stopFadeOutMs    = 0;
+
+    /// Cross-fade window between successive engine tracks (start→loop,
+    /// loop→loop wrap, loop→stop).  The "next" track launches on the
+    /// OTHER mixer slot (channelA ⇋ channelB) this many ms BEFORE the
+    /// current track's natural end, with fadeIn = crossfadeMs ramping
+    /// in from 0.  Simultaneously the current channel fades out over
+    /// the same window via stopAsyncWithFadeMs.  Masks the source-
+    /// teardown + drain pre-fill latency that causes the audible gap
+    /// on every transition.  0 = sequential play (legacy behaviour).
+    uint16_t crossfadeMs      = 200;
 };
 
 template <MixerLike                                   TMixer,
@@ -153,6 +163,20 @@ private:
                     bool loop, uint16_t fadeInMs = 0, uint16_t fadeOutMs = 0);
     void stopAudio (uint8_t channel);
 
+    /// Cross-fade transition: launch `nextPath` on the OTHER channel
+    /// (relative to `_activeChannel`) with fadeIn=crossfadeMs, then
+    /// fade out `_activeChannel` over the same window, swap
+    /// `_activeChannel`, and enter `nextState`.  Used at the end of
+    /// every engine track (start → running, running → running [loop
+    /// wrap], running → stopping).  When `_cfg.crossfadeMs == 0`,
+    /// falls back to the legacy sequential-play path (hard cut).
+    bool transitionTo(const char* nextPath, bool loop, uint8_t nextState);
+
+    /// `_activeChannel` swap helper.
+    uint8_t otherChannel() const {
+        return (_activeChannel == _cfg.channelA) ? _cfg.channelB : _cfg.channelA;
+    }
+
     /// Callback fired by the TriggerInput on edge changes.  Drives
     /// forceStart / forceStop based on the boolean value.
     static void onTriggerChange(void* ctx,
@@ -164,9 +188,17 @@ private:
 
     EngineFxConfig _cfg{};
     uint8_t        _state          = EngineState::Stopped;
-    uint8_t        _activeChannel  = 0;          ///< whichever channel currently has audio
+    uint8_t        _activeChannel  = 0;          ///< current primary mixer slot (channelA or channelB)
     uint32_t       _stateEnteredMs = 0;
     uint32_t       _lastSoundCheckMs = 0;
+    /// Set true by forceStop() while Starting/Running.  The cross-
+    /// fade scheduler swaps to the stoppingPath instead of the next
+    /// loop iteration on its next firing.
+    bool           _pendingStop    = false;
+    /// Guards re-entry of the cross-fade scheduler during the
+    /// crossfade window (we don't want to fire two `transitionTo`s
+    /// for the same approaching end).
+    bool           _transitionScheduled = false;
 
     // Throttle-toggle input plumbing.  When the user configured an
     // `rcInput` PortRef, the TriggerInput is registered with the

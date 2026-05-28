@@ -5,10 +5,12 @@ Tree:
 
 ```
 media/
-  sounds/                              # WAV assets — upload to /sounds/ on the board
-    sys/                               # system alert chimes (/sounds/sys/*.wav)
+  sounds/                              # MP3 assets — upload to /sounds/ on the board
+    sys/                               # system alert chimes (/sounds/sys/*.mp3)
     KA50/                              # KA-50 Kamov turbine
     2A42/                              # 2A42 30mm autocannon
+  sources/                             # archival ORIGINAL source material
+    wav/                               # source WAVs (encoder input — not deployed)
   presets/                             # YAML config templates — drop into LittleFS
     hubfx/                             # /hubfx.yaml (thin master: features + audio)
     alerts/                            # /alerts.yaml severity maps
@@ -109,38 +111,65 @@ The four programs are mutually exclusive — `light:program <name>` switches bet
 
 ## Sound assets
 
+All deployable sounds are **MP3** (128 kbps, original sample rate / channel
+count preserved).  HubFX firmware loads the bitstream into PSRAM once via
+[`AudioAssetCache`](../controllers/lib/sfx_audio/audio/audio_asset_cache.h)
+and decodes via libhelix-mp3
+([`Mp3PsramSource`](../controllers/lib/sfx_audio/audio/audio_mp3_source.h));
+no SD I/O during playback (one reason the 17 MB raw `engine_start.wav` is
+out — it fits as a 1.4 MB MP3, and even six concurrent sources stay
+within budget).  The original WAVs live under [`sources/wav/`](sources/wav/)
+and are kept as encoder input; they're not part of the on-device payload.
+
 ### `sounds/sys/` — alert chimes
 
 Firmware (see `alert_sound.h`) expects files at:
 
 ```
-/sounds/sys/init.wav            AlertSound::Init
-/sounds/sys/warning.wav         AlertSound::Warning
-/sounds/sys/error.wav           AlertSound::Error
-/sounds/sys/critical.wav        AlertSound::Critical
-/sounds/sys/lightfx_detected.wav
-/sounds/sys/lightfx_fw_error.wav
-/sounds/sys/gunfx_fw_error.wav
-/sounds/sys/gear_moving.wav
-/sounds/sys/battery_low.wav
+/sounds/sys/init.mp3            AlertSound::Init
+/sounds/sys/warning.mp3         AlertSound::Warning
+/sounds/sys/error.mp3           AlertSound::Error
+/sounds/sys/critical.mp3        AlertSound::Critical
+/sounds/sys/lightfx_detected.mp3
+/sounds/sys/lightfx_fw_error.mp3
+/sounds/sys/gunfx_fw_error.mp3
+/sounds/sys/gear_moving.mp3
+/sounds/sys/battery_low.mp3
 ```
 
-> Some legacy files in `media/sounds/sys/` (e.g. `gearctrl_detected.wav`, `lightfx_initialized.wav`) don't yet have an `AlertSound` enum entry — they're sample assets, not referenced by the firmware.  Add an enum entry + WAV pair to expose a new chime; missing paths log a one-line WARN and degrade to silent no-op.  See the [`AlertSound` enum](../controllers/hubfx/esp32s3/src/effects/alerts/alert_sound.h) for the canonical name table.
+> Some legacy files in `media/sounds/sys/` (e.g. `gearctrl_detected.mp3`, `lightfx_initialized.mp3`) don't yet have an `AlertSound` enum entry — they're sample assets, not referenced by the firmware.  Add an enum entry + MP3 pair to expose a new chime; missing paths log a one-line WARN and degrade to silent no-op.  See the [`AlertSound` enum](../controllers/hubfx/esp32s3/src/effects/alerts/alert_sound.h) for the canonical name table.
 
 ### `sounds/KA50/` — KA-50 Kamov twin-turbine
 
 | File | Role |
 | --- | --- |
-| `engine_start.wav` | Spool-up sample (~60 s). |
-| `engine_loop.wav` | Steady-running loop. |
-| `engine_stop.wav` | Spool-down sample (~25 s). |
+| `engine_start.mp3` | Spool-up sample (~91 s). |
+| `engine_loop.mp3` | Steady-running loop. |
+| `engine_stop.mp3` | Spool-down sample (~67 s). |
 
 ### `sounds/2A42/` — 2A42 30mm autocannon (KA-50, BMP-2, Mi-28)
 
 | File | Role |
 | --- | --- |
-| `gun_200rpm.wav` | Low rate of fire. |
-| `gun_550rpm.wav` | High rate of fire. |
+| `gun_200rpm.mp3` | Low rate of fire. |
+| `gun_550rpm.mp3` | High rate of fire. |
+
+### Re-encoding from `sources/wav/`
+
+Portable ffmpeg lives at [`tools/ffmpeg/ffmpeg.exe`](../tools/ffmpeg/) (gitignored).
+Re-encode the whole tree with:
+
+```bash
+for wav in media/sources/wav/*/*.wav; do
+    out="media/sounds/${wav#media/sources/wav/}"
+    out="${out%.wav}.mp3"
+    ./tools/ffmpeg/ffmpeg.exe -y -hide_banner -loglevel error \
+        -i "$wav" -codec:a libmp3lame -b:a 128k "$out"
+done
+```
+
+Studio's file picker uploads either `.wav` or `.mp3` to the SD card — the
+mixer dispatches by extension at `play()` time.
 
 ## How to deploy presets
 
