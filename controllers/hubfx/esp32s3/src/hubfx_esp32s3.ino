@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.13.0-hubfx"
-#define BUILD_NUMBER     479
+#define BUILD_NUMBER     481
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -561,6 +561,25 @@ static void logMemoryHeapCaps(const char* tag) {
         (unsigned)(dramLargest / 1024),
         (unsigned)(dramDmaFree / 1024),
         (unsigned)(dramDmaLargest / 1024));
+
+    // Phase 7 polish: surface task-stack high-water marks so we know
+    // which stacks have headroom to reclaim.  uxTaskGetStackHighWaterMark
+    // returns the SMALLEST recorded free-bytes value across the task's
+    // lifetime — the closer to 0, the closer that task has come to
+    // overflowing.  Configured stack - HWM = peak usage; anything with
+    // > 2 KB headroom is a reclaim candidate (CONFIG_ARDUINO_LOOP_STACK,
+    // _producerStackSize, _decoderStackSize, the Core 1 audio task).
+    extern TaskHandle_t loopTaskHandle;
+    const auto reportStack = [](const char* name, TaskHandle_t h) {
+        if (!h) return;
+        const UBaseType_t hwm = uxTaskGetStackHighWaterMark(h);
+        SFX_LOG_INFO("[stack] %-14s hwm=%u B (smaller = closer to overflow)",
+                     name, (unsigned)hwm);
+    };
+    reportStack("loopTask",       loopTaskHandle);
+    reportStack("audio-producer", Mixer::instance().producerHandle());
+    reportStack("audio-decoder",  Mixer::instance().decoderHandle());
+    reportStack("audio-consumer", Mixer::instance().consumerHandle());
 }
 
 void setup() {

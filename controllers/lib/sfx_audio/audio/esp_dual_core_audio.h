@@ -206,9 +206,12 @@ private:
         // + USB + SDMMC ISR contention).  Producer on Core 1
         // cooperates naturally with the consumer (consumer blocks on
         // I²S DMA write → producer runs), keeping the ring fed.
+        // Phase 7 polish (2026-05-28): producer stack 8K → 6K after
+        // HWM measurement (3335 B free, peak use ~4.7 KB; 1.3 KB
+        // margin retained for libhelix-free mix kernel + ring writes).
         mixer.startProducerTask(/*core=*/1,
                                 /*priority=*/configMAX_PRIORITIES - 2,
-                                /*stackSize=*/8192);
+                                /*stackSize=*/6144);
 
         // Phase 6 (feature/audio-decode-prefetch): start the decoder
         // task on Core 0.  Owns all libhelix MP3 + SD reads so the

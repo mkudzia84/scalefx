@@ -343,6 +343,14 @@ public:
         return _decoderRunning.load(std::memory_order_acquire);
     }
 
+    /// Phase 7 polish: task handles for stack high-water-mark probes
+    /// (`uxTaskGetStackHighWaterMark`).  Returns nullptr when the task
+    /// isn't currently running.  Pico has no producer/decoder tasks —
+    /// always returns nullptr there.
+    TaskHandle_t producerHandle() const { return _producerTaskHandle; }
+    TaskHandle_t decoderHandle()  const { return _decoderTaskHandle; }
+    TaskHandle_t consumerHandle() const { return _consumerTaskHandle; }
+
     /**
      * @brief Store the consumer task handle for suspend/resume coordination.
      *
