@@ -106,27 +106,14 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
     // the WARN log so the regression is visible in the boot trace.
     // Per-channel decode buffer (0.5 s headroom) absorbs the slow path
     // without underrunning, so single-track always plays.
-    if (!_sdReadBuf) {
-#if SFX_PLATFORM_ESP32
-        _sdReadBuf = static_cast<uint8_t*>(
-            heap_caps_malloc(WAV_SD_READ_BYTES,
-                             MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-        if (_sdReadBuf) {
-            MIXER_LOG("SD scratch: %d KB in DMA-cap SRAM (direct DMA; ~14 MB/s ceiling)",
-                      WAV_SD_READ_BYTES / 1024);
-        } else {
-            MIXER_WARN("SD scratch: DMA-cap SRAM exhausted (%u KB) — falling back to PSRAM (~1 MB/s)",
-                       (unsigned)(WAV_SD_READ_BYTES / 1024));
-            _sdReadBuf = static_cast<uint8_t*>(sfxPsramMalloc(WAV_SD_READ_BYTES));
-        }
-#else
-        _sdReadBuf = static_cast<uint8_t*>(sfxPsramMalloc(WAV_SD_READ_BYTES));
-#endif
-        if (!_sdReadBuf) {
-            MIXER_ERROR("SD read buffer allocation failed (%d bytes)", WAV_SD_READ_BYTES);
-            return false;
-        }
-    }
+    // Phase 7 polish (2026-05-28): the 32 KB DMA-cap SD scratch is now
+    // allocated LAZILY by `acquireSdScratch()` at WavPreloadSource open
+    // time — most firmwares (HubFX since the PSRAM AssetCache +
+    // Mp3PsramSource pipeline replaced SD streaming) never use it
+    // unless a specific effect (GunFx) requests preloadIntoMemory.
+    //
+    // Saves 32 KB of DMA-cap internal SRAM on boards that never use
+    // the preload path; share-with-refcount on boards that do.
 
     // ---- Allocate per-channel WAV decode buffers + queue from PSRAM ----
     // Per-channel `queue[QUEUE_SIZE_PER_CHANNEL]` lives in PSRAM (re-applied
@@ -194,8 +181,6 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
                 _channels[j].wav.bufR = nullptr;
                 _channels[j].queue    = nullptr;
             }
-            sfxPsramFree(_sdReadBuf);
-            _sdReadBuf = nullptr;
             return false;
         }
     }
@@ -218,8 +203,6 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
                 _channels[j].wav.bufR = nullptr;
                 _channels[j].queue    = nullptr;
             }
-            sfxPsramFree(_sdReadBuf);
-            _sdReadBuf = nullptr;
             return false;
         }
     }
@@ -322,10 +305,14 @@ void AudioMixer<TI2S, TCodec>::shutdown() {
         _channels[i].queue    = nullptr;
     }
 
-    // Free shared SD read buffer (DMA-cap SRAM or PSRAM fallback — sfxPsramFree
-    // wraps heap_caps_free which accepts allocations from any capability pool).
-    sfxPsramFree(_sdReadBuf);
-    _sdReadBuf = nullptr;
+    // Free any in-flight SD scratch (refcount-tracked; usually 0 here
+    // after stopAll above tore down all sources).  sfxPsramFree wraps
+    // heap_caps_free which accepts allocations from any capability pool.
+    if (_sdReadBuf) {
+        sfxPsramFree(_sdReadBuf);
+        _sdReadBuf      = nullptr;
+        _sdScratchUsers = 0;
+    }
 
     // Free mixer-wide command queue (PSRAM).
     sfxPsramFree(_cmdQueue);
@@ -397,14 +384,24 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     // for oversize files / OOM headroom — caller falls through to
     // streaming.  Stage 4 will add WavPagedSource as a middle tier.
     if (options.preloadIntoMemory) {
-        auto* preload = new (ch.sourceStorage) WavPreloadSource();
-        if (preload->openAndPreload(filename, _sdReadBuf,
-                                    WAV_SD_READ_BYTES,
-                                    WAV_MAX_PRELOAD_FRAMES)) {
-            ws.source = preload;
-        } else {
-            preload->~WavPreloadSource();
-            // fall through to streaming
+        // Phase 7 polish: lazy SD scratch.  openAndPreload only needs
+        // the scratch during the decode-into-its-own-PSRAM step; once
+        // the call returns the buffer can be released regardless of
+        // success/failure.  acquireSdScratch() returns nullptr if DMA-
+        // cap SRAM AND PSRAM are both exhausted; we recover by falling
+        // through to the PSRAM-source path below.
+        uint8_t* scratch = acquireSdScratch();
+        if (scratch) {
+            auto* preload = new (ch.sourceStorage) WavPreloadSource();
+            const bool opened = preload->openAndPreload(
+                filename, scratch, WAV_SD_READ_BYTES, WAV_MAX_PRELOAD_FRAMES);
+            releaseSdScratch();   // scratch only needed during open
+            if (opened) {
+                ws.source = preload;
+            } else {
+                preload->~WavPreloadSource();
+                // fall through to PSRAM-source path
+            }
         }
     }
     if (!ws.source) {
@@ -957,7 +954,9 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
     float scratchL[kRefillBatchFrames];
     float scratchR[kRefillBatchFrames];
 
-    const uint32_t t0       = micros();
+#if SFX_AUDIO_PACE_TELEMETRY
+    const uint32_t t0 = micros();
+#endif
     const uint32_t startIdx = ws.writeIdx.load(std::memory_order_relaxed);
     uint32_t got = 0;
     while (got < space) {
@@ -981,8 +980,8 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
         got += n;
         if (n < batchCap) break;   // short read → source paused / EOF
     }
+#if SFX_AUDIO_PACE_TELEMETRY
     const uint32_t dtUs = micros() - t0;
-
     // Track max-since-last-log via lock-free CAS (relaxed — the
     // periodic logger races safely; missing one tick is OK).
     uint32_t prevMax = _maxSdReadUs.load(std::memory_order_relaxed);
@@ -991,6 +990,7 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
                                                std::memory_order_relaxed)) {}
     if (dtUs > 5000u)  _slowSdReads.fetch_add(1, std::memory_order_relaxed);
     if (dtUs > 20000u) _verySlowSdReads.fetch_add(1, std::memory_order_relaxed);
+#endif
 
     // Publish written frames to the producer with release.  After this
     // commit the producer's availableRead() will see the new samples,
@@ -1026,10 +1026,12 @@ bool AudioMixer<TI2S, TCodec>::getWavSample(Channel& ch, int16_t& outL, int16_t&
         // Drain ran below the linear-interp threshold (need 2 samples
         // for one interpolated output).  Could be a transient (decoder
         // hasn't filled yet) or a real source EOF.
+#if SFX_AUDIO_PACE_TELEMETRY
         const intptr_t cidx = &ch - _channels;
         if (cidx >= 0 && cidx < AUDIO_MAX_CHANNELS) {
             _channelStarves[cidx].fetch_add(1, std::memory_order_relaxed);
         }
+#endif
         // If the decoder marked the source done, tear down NOW even if
         // there's 1 sample remaining — we can't interp from a single
         // sample (no neighbor) and waiting for avail==0 stalls forever
@@ -1599,6 +1601,7 @@ template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::consumeAndOutput() {
     uint32_t avail = ringBuf().availableRead();
 
+#if SFX_AUDIO_PACE_TELEMETRY
     // Track min fill % since last log — catches transient near-empty
     // dips that didn't quite underrun.  Updated lock-free via CAS;
     // relaxed ordering is fine (a sloppy reset/update race only
@@ -1610,6 +1613,7 @@ void AudioMixer<TI2S, TCodec>::consumeAndOutput() {
                !_ringMinFillPct.compare_exchange_weak(prevMin, pct,
                                                      std::memory_order_relaxed)) {}
     }
+#endif
 
     static bool firstLog = true;
     if (firstLog) {
@@ -1896,8 +1900,10 @@ void AudioMixer<TI2S, TCodec>::producerTaskFunc(void* param) {
     MIXER_LOG("Producer task started on core %d (priority %d)",
               xPortGetCoreID(), uxTaskPriorityGet(nullptr));
 
+#if SFX_AUDIO_PACE_TELEMETRY
     uint32_t nextTelemetryMs = millis() + 1000;
     uint32_t prevUnderruns   = mixer._underruns.load(std::memory_order_relaxed);
+#endif
 
     while (mixer._producerRunning.load(std::memory_order_acquire)) {
         int produced = mixer.produce(RING_FRAMES);
@@ -1913,6 +1919,7 @@ void AudioMixer<TI2S, TCodec>::producerTaskFunc(void* param) {
         // preempt us when the higher-priority consumer task unblocks from
         // i2s_channel_write().
 
+#if SFX_AUDIO_PACE_TELEMETRY
         // ── Pacing telemetry (1 Hz, only when audio is playing) ─────
         const uint32_t now = millis();
         if (now >= nextTelemetryMs) {
@@ -1958,6 +1965,7 @@ void AudioMixer<TI2S, TCodec>::producerTaskFunc(void* param) {
                          (unsigned)slow5, (unsigned)slow20,
                          starveBuf);
         }
+#endif  // SFX_AUDIO_PACE_TELEMETRY
     }
 
     MIXER_LOG("Producer task exiting");
@@ -2059,6 +2067,81 @@ void AudioMixer<TI2S, TCodec>::notifyDecoder() {
     if (_decoderTaskHandle) {
         xTaskNotifyGive(_decoderTaskHandle);
     }
+}
+
+// ── Lazy SD scratch (Phase 7 polish, 2026-05-28) ─────────────────────
+//
+// WavPreloadSource::openAndPreload calls `acquireSdScratch()` to get a
+// 32 KB DMA-cap SD read buffer, then releases it in the source's
+// destructor.  Refcount-protected so two preload opens running back
+// to back share the same buffer.  When the count drops to zero, the
+// buffer is freed and DMA-cap SRAM returned to the heap pool — keeping
+// it available for I²S DMA / SDMMC ISR when no preload is in flight.
+//
+// Concurrency: callers are the producer task (Core 1) servicing play()
+// commands.  The mutex is overkill for the current single-caller case
+// but futureproofs against play() being moved to another core.
+
+template<typename TI2S, typename TCodec>
+uint8_t* AudioMixer<TI2S, TCodec>::acquireSdScratch() {
+#if SFX_PLATFORM_ESP32
+    if (!_sdScratchMutexInit) {
+        sfxMutexInit(_sdScratchMutex);
+        _sdScratchMutexInit = true;
+    }
+    sfxMutexLock(_sdScratchMutex);
+    if (!_sdReadBuf) {
+        _sdReadBuf = static_cast<uint8_t*>(
+            heap_caps_malloc(WAV_SD_READ_BYTES,
+                             MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if (_sdReadBuf) {
+            MIXER_LOG("SD scratch: %d KB in DMA-cap SRAM (lazy; users=1)",
+                      WAV_SD_READ_BYTES / 1024);
+        } else {
+            MIXER_WARN("SD scratch: DMA-cap SRAM exhausted (%u KB) — falling back to PSRAM (~1 MB/s)",
+                       (unsigned)(WAV_SD_READ_BYTES / 1024));
+            _sdReadBuf = static_cast<uint8_t*>(sfxPsramMalloc(WAV_SD_READ_BYTES));
+        }
+        if (!_sdReadBuf) {
+            MIXER_ERROR("SD scratch alloc failed (%d bytes) — preload disabled this play",
+                        WAV_SD_READ_BYTES);
+            sfxMutexUnlock(_sdScratchMutex);
+            return nullptr;
+        }
+    }
+    ++_sdScratchUsers;
+    uint8_t* p = _sdReadBuf;
+    sfxMutexUnlock(_sdScratchMutex);
+    return p;
+#else
+    // Pico: keep simple — single eager PSRAM alloc on first call.
+    if (!_sdReadBuf) {
+        _sdReadBuf = static_cast<uint8_t*>(sfxPsramMalloc(WAV_SD_READ_BYTES));
+    }
+    if (_sdReadBuf) ++_sdScratchUsers;
+    return _sdReadBuf;
+#endif
+}
+
+template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::releaseSdScratch() {
+#if SFX_PLATFORM_ESP32
+    if (!_sdScratchMutexInit) return;   // never acquired → nothing to release
+    sfxMutexLock(_sdScratchMutex);
+    if (_sdScratchUsers > 0) --_sdScratchUsers;
+    if (_sdScratchUsers == 0 && _sdReadBuf) {
+        sfxPsramFree(_sdReadBuf);   // wraps heap_caps_free, accepts any pool
+        _sdReadBuf = nullptr;
+        MIXER_LOG("SD scratch: released %d KB", WAV_SD_READ_BYTES / 1024);
+    }
+    sfxMutexUnlock(_sdScratchMutex);
+#else
+    if (_sdScratchUsers > 0) --_sdScratchUsers;
+    if (_sdScratchUsers == 0 && _sdReadBuf) {
+        sfxPsramFree(_sdReadBuf);
+        _sdReadBuf = nullptr;
+    }
+#endif
 }
 
 template<typename TI2S, typename TCodec>

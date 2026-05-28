@@ -174,6 +174,39 @@ struct I2SPinConfig {
 #define AUDIO_DEBUG_CODEC_REGS      0
 #endif
 
+/**
+ * Mixer pace-log telemetry (Phase 7 polish, 2026-05-28).
+ *
+ * When set, the producer task emits a 1 Hz `[pace]` log line with the
+ * minimum ring fill %, max refill latency, slow-refill counts, and a
+ * per-channel starve summary.  The atomics + counters that back this
+ * live in the mixer singleton's DRAM BSS:
+ *   - _ringMinFillPct       1 B
+ *   - _maxSdReadUs          4 B
+ *   - _slowSdReads          4 B
+ *   - _verySlowSdReads      4 B
+ *   - _channelStarves[N]    N × 4 B
+ * plus the entire periodic-logger code block in producerTaskFunc
+ * (~120 lines, ~1 KB of flash IRAM via the format string).
+ *
+ * Defaults
+ *   `_debug` env       → 1 (pace log on)
+ *   `_release` env     → 0 (pace log compiled out, fields gone)
+ *
+ * Override per-firmware: `-DSFX_AUDIO_PACE_TELEMETRY=1` or =0.
+ * Always-on stats (used by AUDIO_STATUS_RESP):
+ *   _underruns, _consumeLoops, _consumeFrames — kept under all builds.
+ */
+#ifndef SFX_AUDIO_PACE_TELEMETRY
+#  if defined(DEBUG_ENABLED) && DEBUG_ENABLED
+#    define SFX_AUDIO_PACE_TELEMETRY 1
+#  elif defined(CORE_DEBUG_LEVEL) && CORE_DEBUG_LEVEL >= 3
+#    define SFX_AUDIO_PACE_TELEMETRY 1
+#  else
+#    define SFX_AUDIO_PACE_TELEMETRY 0
+#  endif
+#endif
+
 // ============================================================================
 //  COMPILE-TIME VALIDATION
 // ============================================================================

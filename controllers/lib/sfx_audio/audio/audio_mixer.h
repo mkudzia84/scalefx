@@ -632,6 +632,16 @@ private:
     /// service (play() entry, etc.).  Cheap if the task isn't running
     /// (Pico) — compiles to nothing.
     void notifyDecoder();
+
+    /// Phase 7 polish (2026-05-28): on-demand 32 KB DMA-cap SD scratch.
+    /// Allocated by `acquireSdScratch()` at WavPreloadSource open time
+    /// (preloadIntoMemory=true path); freed by `releaseSdScratch()` when
+    /// that source destructs.  Refcount-protected so concurrent
+    /// preloads share one buffer.  Returns nullptr on alloc failure
+    /// — caller falls through to the streaming path.
+    uint8_t* acquireSdScratch();
+    void     releaseSdScratch();
+    size_t   sdScratchBytes() const { return WAV_SD_READ_BYTES; }
     
     // Command queue
     bool queueCommand(const Command& cmd);
@@ -659,9 +669,21 @@ private:
     uint8_t _i2sBclkPin  = 0;
     uint8_t _i2sLrclkPin = 0;
 
-    // SD read buffer (shared temp for all channels on producer side)
-    // Dynamically allocated from PSRAM in begin(), freed in shutdown().
-    uint8_t* _sdReadBuf = nullptr;
+    // SD scratch buffer for WavPreloadSource's initial in-PSRAM decode.
+    // Phase 7 polish (2026-05-28): allocated on demand by
+    // acquireSdScratch() instead of unconditionally at begin().  32 KB
+    // DMA-cap internal SRAM when available (~14 MB/s SDMMC throughput);
+    // falls back to PSRAM (~1 MB/s) when the DMA-cap pool is exhausted.
+    // Reference-counted across concurrent WavPreloadSource opens; freed
+    // when the last consumer calls releaseSdScratch().
+    //
+    // Most HubFX sessions never touch this — the AssetCache + Mp3PsramSource
+    // path doesn't use it.  GunFx is the current consumer (it sets
+    // preloadIntoMemory=true in its play options).
+    uint8_t* _sdReadBuf      = nullptr;
+    int      _sdScratchUsers = 0;
+    SfxMutex _sdScratchMutex;
+    bool     _sdScratchMutexInit = false;
 
     // Command queue mutex (cross-core: Core 0 queues, producer task dequeues)
     SfxMutex _cmdMutex;
@@ -714,26 +736,30 @@ private:
     static constexpr uint32_t kDecoderTickMs = 5;
 #endif
 
-    // Stats (cross-core diagnostic counters)
-    std::atomic<uint32_t> _underruns{0};     // Core 1 consumer writes, Core 0 reads
-    std::atomic<uint32_t> _produceLoops{0};  // Producer task writes, Core 0 reads
-    std::atomic<uint32_t> _consumeLoops{0};  // Core 1 consumer writes, Core 0 reads
-    std::atomic<uint32_t> _consumeFrames{0}; // Core 1 consumer writes, Core 0 reads
+    // Stats (cross-core diagnostic counters).
+    //   _underruns / _consumeLoops / _consumeFrames are KEPT under every
+    //   build — they back AUDIO_STATUS_RESP fields read by Studio.
+    //   _produceLoops is pace-log-only.
+    std::atomic<uint32_t> _underruns{0};      // Core 1 consumer writes, Core 0 reads
+    std::atomic<uint32_t> _consumeLoops{0};   // Core 1 consumer writes, Core 0 reads
+    std::atomic<uint32_t> _consumeFrames{0};  // Core 1 consumer writes, Core 0 reads
 
-    // Playback pacing instrumentation (2026-05-27).  All written from
-    // the producer task on Core 1 (atomic add / cmpxchg), read + reset
-    // by the periodic logger.  Reset-on-log is "load + store(0)"
-    // (relaxed) — a stat update during the log races to zero is OK,
-    // we'd just miss one tick of data on a 1 Hz cadence.
+    // Pace-log telemetry (Phase 7 polish, gated by SFX_AUDIO_PACE_TELEMETRY
+    // in audio_config.h).  Saves ~50 bytes of DRAM atomics + the entire
+    // periodic-logger code block on release builds.  Producer-task logger
+    // in producerTaskFunc is wrapped in the same macro.  None of these
+    // fields are read by AUDIO_STATUS_RESP — purely informational.
+#if SFX_AUDIO_PACE_TELEMETRY
+    std::atomic<uint32_t> _produceLoops{0};           // Producer task writes, Core 0 reads
     std::atomic<uint8_t>  _ringMinFillPct{100};       // min observed since last log
     std::atomic<uint32_t> _maxSdReadUs{0};            // max refill latency since last log
     std::atomic<uint32_t> _slowSdReads{0};            // refills > 5 ms since last log
     std::atomic<uint32_t> _verySlowSdReads{0};        // refills > 20 ms since last log
     std::atomic<uint32_t> _channelStarves[AUDIO_MAX_CHANNELS]{};
-        // Per-channel synchronous-refill count — incremented when
-        // produceFrame's getWavSample hits an empty drain buffer and
-        // has to refill mid-mix (the round-robin top-up didn't keep
-        // up).  This is the canonical "uneven pacing" indicator.
+        // Per-channel drain-empty count — bumped by getWavSample when
+        // the SPSC ring's availableRead < 2.  Canonical "decoder
+        // falling behind" indicator surfaced in the pace log.
+#endif
 
     // Status (producer task writes, Core 0 reads for status queries)
     std::atomic<bool> _channelPlaying[AUDIO_MAX_CHANNELS]{};
