@@ -3,6 +3,30 @@
 Offline analysis utilities that don't belong inside a binary. Run from the
 repo root with `python tools/<script>.py`.
 
+## HubFX ESP32-S3 IDF-component dependency bootstrap
+
+`setup-hubfx-idf-deps.ps1` populates `controllers/hubfx/esp32s3/managed_components/`
+(~430 MB of ESP-IDF component sources — gitignored) on a fresh clone.
+PowerShell-only (IDF tools refuse MSYS/MinGW shells).
+
+```powershell
+# Idempotent — ensures everything is downloaded + builds firmware.
+.\tools\setup-hubfx-idf-deps.ps1
+
+# Wipe + redownload (validate fresh-clone scenarios, recover from
+# corrupted component cache).
+.\tools\setup-hubfx-idf-deps.ps1 -Clean
+
+# Download deps only, skip the link step.
+.\tools\setup-hubfx-idf-deps.ps1 -SkipBuild
+```
+
+First invocation: 15-30 min (one-time toolchain + component download).
+Subsequent runs from cache: 30-90 s.  Rationale + flag list in the
+script header comment.  Background: `controllers/hubfx/esp32s3/`
+switched to Arduino-as-IDF-component mode in `feature/idf-component-build`
+to unlock `custom_sdkconfig` flags and esp-dsp.
+
 ## Board overlay calibration
 
 Studio's "View Board" dialogs (e.g. [GearControlBoardDialog.svelte](../app/go/studio/frontend/src/lib/dialogs/GearControlBoardDialog.svelte))

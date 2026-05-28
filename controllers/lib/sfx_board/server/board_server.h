@@ -66,6 +66,9 @@
 #include <serial/wire.h>          // SfxWire (CRC-8 / COBS / encode / parse)
 #include <serial/diag_log.h>      // DiagLog (LOG_MESSAGE / DIAG_HISTORY)
 #include <platform/sfx_platform.h>  // SFX_PLATFORM_*, SFX_CPU_MHZ, SFX_FREE_HEAP, SFX_REBOOT, sfxGetBoardId
+#if SFX_PLATFORM_ESP32
+#include <platform/native_uart_stream.h>  // sfx::NativeUartStream — replaces Arduino's Serial under IDF-component
+#endif
 
 #include "board_service.h"
 #include <indicators/indicator_leds.h>
@@ -488,18 +491,33 @@ public:
      */
     void begin(const char* prefix, const char* version, uint32_t buildNumber,
                int connectionPin = 13, int errorPin = 14) {
-        // Serial setup
-#ifdef ESP32
-        Serial.setRxBufferSize(131072);
-#endif
+        // Wire serial setup.  On ESP32-S3 under the IDF-component build
+        // (feature/idf-component-build) Arduino's HardwareSerial RX
+        // path is broken — TX works (boot text streams to the host)
+        // but Serial.read() returns -1 forever even when the host is
+        // writing.  Switch to a native ESP-IDF UART driver wrapped
+        // in a Stream-compatible class.  Under the regular
+        // framework=arduino path, plain Arduino Serial keeps working.
+        // (Step 2 of this branch will templatize BoardServer on
+        // TStream and remove the Stream* vtable from the hot path
+        // entirely — for now we keep Stream* for back-compat with
+        // every other consumer.)
+#if SFX_PLATFORM_ESP32
+        static sfx::NativeUartStream s_nativeUart;
+        // ESP32-S3 default UART0 pins: TX=GPIO43, RX=GPIO44.  Stock
+        // dev-board USB-UART bridges wire to these.
+        s_nativeUart.begin(UART_NUM_0, /*rx*/44, /*tx*/43,
+                           BAUD_RATE, /*rxBuf*/16384, /*txBuf*/16384);
+        _serial = &s_nativeUart;
+#else
         Serial.begin(BAUD_RATE);
         while (!Serial && millis() < 3000) SFX_DELAY_MS(10);
-
-        _serial      = &Serial;
+        _serial = &Serial;
+#endif
         _initialized = true;
 
         buildDeviceName(prefix);
-        DiagLog::instance().begin(&Serial);
+        DiagLog::instance().begin(_serial);
 
         // Install the type-erased policy lookup BEFORE walking the pack
         // so each policy's `begin(ctx)` can resolve siblings through
