@@ -1,4 +1,4 @@
-module scalefx/tests/host/go_unit/protocol_test
+module scalefx/tests/host/go_unit/audio_protocol_test
 
 go 1.21
 
