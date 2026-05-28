@@ -25,6 +25,18 @@
 
 #if SFX_PLATFORM_ESP32
 #include <esp_heap_caps.h>     // heap_caps_malloc / MALLOC_CAP_DMA / MALLOC_CAP_INTERNAL
+// esp-dsp SIMD kernels (Phase 5 of feature/idf-component-build).
+// Header guard via __has_include in case esp-dsp isn't pulled into
+// the build (e.g. an older platformio.ini without REQUIRES).
+#if defined(__has_include)
+#  if __has_include(<dsps_mulc.h>)
+#    include <dsps_mulc.h>
+#    define SFX_HAS_ESP_DSP 1
+#  endif
+#endif
+#endif
+#ifndef SFX_HAS_ESP_DSP
+#  define SFX_HAS_ESP_DSP 0
 #endif
 
 // ============================================================================
@@ -1142,6 +1154,180 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
     return true;
 }
 
+// ============================================================================
+//  BLOCK-MODE PRODUCER (Phase 5, feature/idf-component-build, 2026-05-28)
+// ============================================================================
+//
+// produceBlock(N) — N frames per call.  The per-channel scale step
+// (sample × volQ15 → scaled int16) runs through esp-dsp's
+// `dsps_mulc_s16_ae32` (hand-tuned Xtensa LX7 assembly, ~3-5× faster
+// than scalar at typical block sizes).  Accumulation goes into a
+// stack-resident int32 mix buffer; the compiler auto-vectorises the
+// int16→int32 widen-add loop on LX7.
+//
+// Block size cap = 256 frames (5.3 ms @ 48 kHz):
+//   - Long enough to amortise dsps_mulc_s16_ae32's setup cost.
+//   - Short enough that per-block fade granularity stays imperceptible
+//     (10 steps in a 50 ms fade; threshold of audibility ≈ 50 steps).
+//   - Stack budget: 256 × 2 (L/R) × 4 (int32 mix) + 256 × 2 × 2 (int16
+//     track) = 3 KB, well under the 8 KB producer task stack.
+//
+// Falls back to a scalar Q15 path when esp-dsp isn't in the build
+// (SFX_HAS_ESP_DSP = 0) — same arithmetic, just no SIMD speedup.
+
+template<typename TI2S, typename TCodec>
+int AudioMixer<TI2S, TCodec>::produceBlock(int maxFrames) {
+    constexpr int kBlockMax = 256;
+
+    const uint32_t freeSlots = ringBuf().availableWrite();
+    int N = maxFrames;
+    if (N > (int)freeSlots) N = (int)freeSlots;
+    if (N > kBlockMax)      N = kBlockMax;
+    if (N <= 0) return 0;
+
+    // Stack scratch.  Zeroing mixL/mixR once costs ~2 KB of memsets per
+    // block — negligible vs the per-sample multiply work it saves.
+    int32_t mixL[kBlockMax] = {};
+    int32_t mixR[kBlockMax] = {};
+    int16_t trackL[kBlockMax];
+    int16_t trackR[kBlockMax];
+    bool hasAudio = false;
+
+    for (int i = 0; i < AUDIO_MAX_CHANNELS; ++i) {
+        Channel& ch = _channels[i];
+        WavState& ws = ch.wav;
+        if (!ws.active || ch.mute || ch.volume <= 0.0f) continue;
+
+        // Pull up to N resampled int16 samples from this channel's
+        // drain.  EOF mid-block terminates the channel but we still
+        // mix what we got into the block (no audible click).
+        int got = 0;
+        bool sourceDied = false;
+        for (int j = 0; j < N; ++j) {
+            int16_t l = 0, r = 0;
+            if (!getWavSample(ch, l, r)) {
+                sourceDied = true;
+                break;
+            }
+            trackL[j] = l;
+            trackR[j] = r;
+            got = j + 1;
+        }
+        if (sourceDied && got == 0) {
+            destroyAudioSource(ws.source);
+            ws.active = false;
+            _channelPlaying[i] = false;
+            _channelRemainingSec[i] = 0.0f;
+            checkAndPlayNextQueued(i);
+            continue;
+        }
+        if (got == 0) continue;
+        hasAudio = true;
+
+        // Arm tail fade-out — same logic as produceFrame, just at
+        // block cadence.
+        if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
+            const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            const uint32_t framesLeft =
+                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
+            if (framesLeft <= ch.fadeOutTriggerFrames) {
+                ch.fading               = true;
+                ch.fadeVolume           = 1.0f;
+                ch.fadeStep             = ch.fadeOutStep;
+                ch.fadeOutTriggerFrames = 0;
+            }
+        }
+
+        // Per-block fade — one volume value for the whole block.
+        // Advance ch.fadeVolume by `got` steps for the next block.
+        float effectiveVolume = ch.volume;
+        bool  fadeOutComplete = false;
+        if (ch.fading) {
+            effectiveVolume *= ch.fadeVolume;
+            ch.fadeVolume -= ch.fadeStep * (float)got;
+            if (ch.fadeStep > 0.0f && ch.fadeVolume <= 0.0f) {
+                ch.fadeVolume = 0.0f;
+                ch.fading = false;
+                fadeOutComplete = true;   // tear down AFTER mixing this block
+            } else if (ch.fadeStep < 0.0f && ch.fadeVolume >= 1.0f) {
+                ch.fadeVolume = 1.0f;
+                ch.fading = false;
+            }
+        }
+
+        // Apply vol + pan as a single Q15 multiply per side.  pan ×
+        // vol fits in Q15 because both are in [0, 1].
+        int16_t volLQ15, volRQ15;
+        bool muteL = false, muteR = false;
+        if (ch.outputChannels == AudioChannel::ALL) {
+            volLQ15 = (int16_t)(effectiveVolume * ch.panL * 32768.0f);
+            volRQ15 = (int16_t)(effectiveVolume * ch.panR * 32768.0f);
+        } else {
+            const int16_t volQ15 = (int16_t)(effectiveVolume * 32768.0f);
+            volLQ15 = (ch.outputChannels & AudioChannel::CH1) ? volQ15 : (muteL = true, int16_t{0});
+            volRQ15 = (ch.outputChannels & AudioChannel::CH2) ? volQ15 : (muteR = true, int16_t{0});
+        }
+
+        // ── Hot kernel ────────────────────────────────────────────────
+#if SFX_HAS_ESP_DSP
+        if (muteL) std::memset(trackL, 0, (size_t)got * sizeof(int16_t));
+        else       dsps_mulc_s16_ae32(trackL, trackL, got, volLQ15, 1, 1);
+        if (muteR) std::memset(trackR, 0, (size_t)got * sizeof(int16_t));
+        else       dsps_mulc_s16_ae32(trackR, trackR, got, volRQ15, 1, 1);
+#else
+        for (int j = 0; j < got; ++j) {
+            trackL[j] = (int16_t)(((int32_t)trackL[j] * (int32_t)volLQ15) >> 15);
+            trackR[j] = (int16_t)(((int32_t)trackR[j] * (int32_t)volRQ15) >> 15);
+        }
+#endif
+
+        // int16 → int32 widen + accumulate.  Compiler auto-vectorises
+        // this on LX7 — no esp-dsp variant is needed (and one doesn't
+        // exist for the s16→s32 mac shape).
+        for (int j = 0; j < got; ++j) {
+            mixL[j] += (int32_t)trackL[j];
+            mixR[j] += (int32_t)trackR[j];
+        }
+
+        // Remaining-sec status — once per channel per block, off the
+        // per-sample hot path.
+        if (ws.sampleRate_Hz > 0) {
+            const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            const uint32_t framesLeft =
+                ws.totalFrames - srcRead + (uint32_t)(ws.bufLen - ws.bufPos);
+            _channelRemainingSec[i] = (float)framesLeft / (float)ws.sampleRate_Hz;
+        }
+
+        // Deferred teardown for completed fade-outs / mid-block EOFs.
+        if (fadeOutComplete || sourceDied) {
+            destroyAudioSource(ws.source);
+            ws.active = false;
+            _channelPlaying[i] = false;
+            if (sourceDied) _channelRemainingSec[i] = 0.0f;
+            checkAndPlayNextQueued(i);
+        }
+    }
+
+    if (!hasAudio) return 0;
+
+    // Master volume in Q15, clamp to int16, headroom × MAX_AMPLITUDE,
+    // write to ring.  Per-sample loop — small enough that LX7 auto-vec
+    // handles it; esp-dsp doesn't have a s32→s16 saturating-scale op
+    // that fits this shape.
+    const int32_t mvolQ15 = (int32_t)(_masterVolume * 32768.0f);
+    for (int j = 0; j < N; ++j) {
+        int32_t L = (mixL[j] * mvolQ15) >> 15;
+        int32_t R = (mixR[j] * mvolQ15) >> 15;
+        if (L >  32767) L =  32767; else if (L < -32768) L = -32768;
+        if (R >  32767) R =  32767; else if (R < -32768) R = -32768;
+        L = (L * (int32_t)MAX_AMPLITUDE) >> 15;
+        R = (R * (int32_t)MAX_AMPLITUDE) >> 15;
+        ringBuf().write((int16_t)L, (int16_t)R);
+    }
+
+    return N;
+}
+
 template<typename TI2S, typename TCodec>
 int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
     if (!_initialized) return 0;
@@ -1151,11 +1337,15 @@ int AudioMixer<TI2S, TCodec>::produce(int maxFrames) {
 
     // Produce frames into ring buffer FIRST — this is time-critical.
     // The ring is a small core-to-core FIFO (~85 ms) that must stay fed
-    // to prevent consumer underruns.
+    // to prevent consumer underruns.  Block-mode (produceBlock) calls
+    // esp-dsp's SIMD kernel per channel; produceFrame() stays as the
+    // single-frame fallback (kept for tests + Pico builds without
+    // esp-dsp).
     int produced = 0;
-    for (int i = 0; i < maxFrames; i++) {
-        if (!produceFrame()) break;
-        produced++;
+    while (produced < maxFrames) {
+        const int got = produceBlock(maxFrames - produced);
+        if (got <= 0) break;
+        produced += got;
     }
 
     // Top-up EVERY active channel whose drain buffer is below 50 %.

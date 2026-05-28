@@ -269,6 +269,15 @@ public:
     // On ESP32: runs as dedicated FreeRTOS task on Core 1 via startProducerTask()
     // On Pico: call produce() from loop (single-core)
     int produce(int maxFrames = 256);
+
+    /// Block-mode producer (Phase 5 of feature/idf-component-build,
+    /// 2026-05-28).  Produces up to `maxFrames` (capped by `kBlockMax`
+    /// = 256 and by available ring-buffer space) using esp-dsp's
+    /// hand-tuned Xtensa LX7 SIMD for the per-channel scale step.
+    /// Replaces the per-frame `produceFrame()` on ESP32; the legacy
+    /// per-frame path remains for Pico + tests where esp-dsp isn't
+    /// available.
+    int produceBlock(int maxFrames = 256);
     
     // Consumer (Core 1 task): ring buffer → I2S DMA
     void consume();

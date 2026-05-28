@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.13.0-hubfx"
-#define BUILD_NUMBER     471
+#define BUILD_NUMBER     472
 
 #include <Arduino.h>
 #include <Wire.h>
