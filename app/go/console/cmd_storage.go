@@ -272,7 +272,7 @@ func cmdCat(a *App, args []string) error {
 		return fmt.Errorf("cat: %s: file is %s; use `download` for large files",
 			fs.path, humanBytes(uint64(info.Size)))
 	}
-	res, err := a.c.Storage.FileDownload(fs.path, 0)
+	res, err := a.c.Storage.FileDownloadFrom(fs.path, fs.target, 0)
 	if err != nil {
 		return err
 	}
@@ -521,12 +521,10 @@ func cmdDownload(a *App, args []string) error {
 	} else {
 		local = path.Base(remote)
 	}
-	_ = target // currently FileDownload doesn't switch target; SD is implicit
-
 	Info("downloading %s:%s  →  %s", targetName(target), cBold(remote), cBold(local))
 
 	start := time.Now()
-	res, err := a.c.Storage.FileDownload(remote, 0)
+	res, err := a.c.Storage.FileDownloadFrom(remote, target, 0)
 	if err != nil {
 		return err
 	}
