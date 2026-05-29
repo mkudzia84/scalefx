@@ -82,7 +82,51 @@ struct InputListOf  <TBoard, std::void_t<decltype(TBoard::kInputPorts)>> {
 };
 
 // ============================================================================
-// BoardOf<TBoard, ExtraPolicies...>
+// PortCapacity<NServo, NPwm, NHBridge, NInput> — registry-sizing tag
+// ============================================================================
+//
+// The PortRegistry holds one fixed-size array of bindings per port kind,
+// and each binding embeds a `std::variant<...Role>` whose size is the
+// largest role it can hold (motion-profile integrator for servos, SBUS/
+// Jeti frame buffers for inputs, LED-animator state for PWM).  At 80-200
+// bytes per slot, an over-generous cap is real DRAM .bss waste — sizing
+// to the board's actual hub-local hardware reclaimed ~17 KB on HubFX.
+//
+// A board declares its capacity inline as the `Caps` template argument of
+// `BoardOf<>` (right after `TStream`, before the policy pack), so the
+// port budget is visible at the board's declaration rather than hidden in
+// a separate specialisation block:
+//
+//   class MyBoard : public sfx_core::BoardOf<
+//       MyBoard, MyStream,
+//       sfx_core::PortCapacity</*servo*/12, /*pwm*/8, /*hbridge*/0, /*input*/1>,
+//       PolicyA, PolicyB, …> { … };
+//
+// Passing it as a template ARGUMENT (not a trait keyed on TBoard, and not
+// a member of TBoard) sidesteps the CRTP timing trap: the registry TYPE
+// is needed when `BoardOf<TBoard, …>` is instantiated as TBoard's base,
+// at which point TBoard is still incomplete — so `TBoard::kMaxXxx` would
+// be unreadable, but a template argument is available immediately.
+//
+// `DefaultPortCapacity` keeps the historical generous bounds for a board
+// that genuinely doesn't want to think about it.  A board addressing
+// expander ports does NOT need headroom here — remote ports live on the
+// expander's own registry (Topology forwards ROLE_ATTACH over CDC); this
+// cap covers HUB-LOCAL ports only.  Caps MUST be >= the board's declared
+// kXxxPorts counts or begin() silently clamps (drops trailing ports).
+template <size_t NServo, size_t NPwm, size_t NHBridge, size_t NInput>
+struct PortCapacity {
+    static constexpr size_t servo   = NServo;
+    static constexpr size_t pwm     = NPwm;
+    static constexpr size_t hbridge = NHBridge;
+    static constexpr size_t input   = NInput;
+};
+
+/// Historical generous bounds — use when a board hasn't been sized yet.
+using DefaultPortCapacity = PortCapacity<32, 32, 16, 8>;
+
+// ============================================================================
+// BoardOf<TBoard, TStream, Caps, ExtraPolicies...>
 // ============================================================================
 
 /// @tparam TBoard         CRTP-style derived board type (provides
@@ -91,9 +135,12 @@ struct InputListOf  <TBoard, std::void_t<decltype(TBoard::kInputPorts)>> {
 ///                        on ESP32 IDF-component path, `HardwareSerial`
 ///                        on Pico).  Re-exported as `StreamType` for any
 ///                        helper parameterised on `TBoard` alone.
+/// @tparam Caps           `PortCapacity<NServo,NPwm,NHBridge,NInput>` sizing
+///                        the per-kind registry binding arrays.  Use
+///                        `DefaultPortCapacity` for the historical bounds.
 /// @tparam ExtraPolicies  User policies appended after the built-in
 ///                        PortServicePolicy + RoleServicePolicy.
-template <typename TBoard, typename TStream, typename... ExtraPolicies>
+template <typename TBoard, typename TStream, typename Caps, typename... ExtraPolicies>
 class BoardOf : public BoardServer<TStream,
                                    PortServicePolicy,
                                    RoleServicePolicy,
@@ -104,18 +151,17 @@ public:
     /// without re-templating on TStream themselves.
     using StreamType = TStream;
 
-    // Registry max capacities — generous fixed bounds so the static
-    // arrays are sized once for every board kind.  Actual occupancy is
-    // tracked at runtime in `_numXxx` counters that `begin()` populates
-    // from `TBoard::kServoPorts` / `kPwmPorts` / `kHBridgePorts` /
-    // `kInputPorts`.  Setting these as constants (not derived from
-    // `TBoard`) sidesteps the CRTP timing trap: at base-class
-    // instantiation `TBoard` is incomplete, so any trait that pulls
-    // `decltype(TBoard::kXxxPorts)` would silently degenerate to empty.
-    static constexpr size_t kMaxServoPorts   = 32;
-    static constexpr size_t kMaxPwmPorts     = 32;
-    static constexpr size_t kMaxHBridgePorts = 16;
-    static constexpr size_t kMaxInputPorts   = 8;
+    // Registry max capacities — sourced from the `Caps` template argument
+    // (`PortCapacity<…>`).  Actual occupancy is tracked at runtime in the
+    // `_numXxx` counters that `begin()` populates from `TBoard::kServoPorts`
+    // / `kPwmPorts` / `kHBridgePorts` / `kInputPorts`.  A template argument
+    // (not a member of `TBoard`) sidesteps the CRTP timing trap: at
+    // base-class instantiation `TBoard` is incomplete, so `TBoard::kMaxXxx`
+    // would be unreadable, but `Caps` is available immediately.
+    static constexpr size_t kMaxServoPorts   = Caps::servo;
+    static constexpr size_t kMaxPwmPorts     = Caps::pwm;
+    static constexpr size_t kMaxHBridgePorts = Caps::hbridge;
+    static constexpr size_t kMaxInputPorts   = Caps::input;
 
     using Base     = BoardServer<TStream, PortServicePolicy, RoleServicePolicy, ExtraPolicies...>;
     using Registry = PortRegistry<kMaxServoPorts, kMaxPwmPorts,
