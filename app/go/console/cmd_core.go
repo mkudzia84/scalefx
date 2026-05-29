@@ -72,7 +72,11 @@ func cmdStatus(a *App, _ []string) error {
 	}
 	KVf("last activity", "%s ago", humanDurationMs(s.LastActivityMs))
 	KVf("keepalives", "%d", s.KeepaliveCount)
-	KV("board state", Phase(s.BoardStateName))
+	// Render the contextualised state name ("host-driven" / "hub-driven"
+	// / "standalone" / …) using the connection's cached capabilities.
+	// The raw enum name ("SLAVE") stays available via s.BoardStateName
+	// for log analysis when needed.
+	KV("board state", Phase(s.Display(a.boardCaps)))
 	KV("init flags", HexU32(uint32(s.InitFlags)))
 	if len(s.ModuleData) > 0 {
 		KV("module data", cDim(fmt.Sprintf("%d bytes (raw)", len(s.ModuleData))))

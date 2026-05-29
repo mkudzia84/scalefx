@@ -215,6 +215,17 @@ type Status struct {
 	HasMemExtension bool   `json:"hasMemExtension"`
 }
 
+// Display returns a human-friendly board-state label, contextualised by
+// the supplied capability bits.  See core.BoardStateDisplay for the
+// disambiguation logic — same SLAVE byte reads as "host-driven" on a
+// hub-capable board (HubFX) and "hub-driven" on an expander.
+//
+// Pass the board's Identity.Capabilities (from Identify or the
+// connection's cached identity).  Use BoardStateName for the raw enum.
+func (s Status) Display(caps uint32) string {
+	return core.BoardStateDisplay(s.BoardState, caps)
+}
+
 // Status requests + decodes the periodic STATUS packet.
 func (h *Hub) Status() (Status, error) {
 	resp, err := h.c.sendForResp(core.CmdStatusReq(), core.Status)
@@ -418,6 +429,10 @@ func decodeStatus(p []byte) (Status, error) {
 		InitFlags:      p[21],
 	}
 	s.BoardStateName = core.BoardStateName(s.BoardState)
+	// BoardStateDisplay is intentionally NOT populated here — it
+	// needs the board's capability bitmask from IDENTIFY, which the
+	// Status decoder doesn't see.  Callers that have an Identity in
+	// scope use Status.Display(caps) to get the contextualised label.
 
 	// Module data + optional 8-byte mem-extension trailer.  The
 	// trailer was added 2026-05-28; older firmware emits only the

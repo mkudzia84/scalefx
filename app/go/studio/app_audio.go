@@ -37,7 +37,15 @@ type DeviceStatus struct {
 	FreePsramBytes  uint32 `json:"freePsramBytes"`   // external octal PSRAM
 	HasMemExtension bool   `json:"hasMemExtension"`  // false on older firmware
 	KeepaliveCount  uint32 `json:"keepaliveCount"`
-	BoardStateName  string `json:"boardStateName"`
+	// BoardStateName is the raw enum constant ("IDLE" / "STANDALONE" /
+	// "SLAVE" / "DIRECT"), useful for log analysis.  BoardStateDisplay
+	// is the contextualised human-friendly label ("host-driven" /
+	// "hub-driven" / …) that resolves the SLAVE-on-hub-vs-expander
+	// ambiguity using the board's capability bits.  Studio's status
+	// strip renders BoardStateDisplay; tooltips can fall back to the
+	// raw BoardStateName when an operator hovers for detail.
+	BoardStateName    string `json:"boardStateName"`
+	BoardStateDisplay string `json:"boardStateDisplay"`
 }
 
 // QueryDeviceStatus issues the STATUS_REQ packet and returns the
@@ -62,6 +70,7 @@ func (a *App) QueryDeviceStatus() (DeviceStatus, error) {
 	out.HasMemExtension = s.HasMemExtension
 	out.KeepaliveCount = s.KeepaliveCount
 	out.BoardStateName = s.BoardStateName
+	out.BoardStateDisplay = s.Display(a.id.Capabilities)
 	return out, nil
 }
 
