@@ -9,6 +9,7 @@ import (
 	"scalefx/protocol/enginefx"
 	expp "scalefx/protocol/expanders"
 	"scalefx/protocol/gear"
+	"scalefx/protocol/gunfx"
 	"scalefx/protocol/landing"
 	"scalefx/protocol/storage"
 	"scalefx/protocol/topology"
@@ -72,6 +73,11 @@ func cmdSubscribe(a *App, _ []string) error {
 	a.c.Events.OnEngineState(func(ev enginefx.StateChange) {
 		fmt.Fprintf(out, "%s engine → %s\n",
 			cBlue("[ENG]"), Phase(enginefx.StateName(ev.State)))
+	})
+	a.c.Events.OnGunVerboseStatus(func(ev gunfx.VerboseStatus) {
+		fmt.Fprintf(out, "%s gun[%d] firing=%v smoke=%v fan=%v heaterPct=%d rof=%d trig=%dus\n",
+			cBlue("[GUNV]"), ev.ID, ev.Firing, ev.SmokeArmed, ev.SmokeFanRunning,
+			ev.HeaterDutyPct, ev.RofIndex, ev.TriggerUs)
 	})
 	// gun-shot events are very high rate during sustained fire — skip the
 	// per-shot console line; subscribers that want them register their own
