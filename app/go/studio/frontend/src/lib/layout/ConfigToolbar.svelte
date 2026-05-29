@@ -87,12 +87,12 @@
     </div>
 
     <div class="right">
-        <button class="small rc-toggle" class:on={rcRouting} class:off={!rcRouting}
+        <button class="small state-toggle" class:state-on={rcRouting}
                 on:click={toggleRouting} disabled={routingBusy}
                 title={rcRouting
                     ? 'RC inputs are driving effects. Click to take manual control (effects ignore RC, hold last state; live monitors keep working).'
                     : 'Manual override: effects ignore RC and hold last state — drive them from Studio. Click to hand control back to RC.'}>
-            {rcRouting ? '📡 RC: on' : '✋ Manual'}
+            {rcRouting ? '📡 RC routing' : '✋ Manual'}
         </button>
 
         {#if $errorLabels.length > 0}
@@ -145,19 +145,9 @@
         padding: 0 12px;
     }
 
-    /* RC-routing toggle — sits left of the sync flag.  Green when RC
-       drives effects, amber when manual override is engaged. */
-    .rc-toggle { font-weight: 600; }
-    .rc-toggle.on {
-        color: var(--success, #4ec9b0);
-        border-color: color-mix(in srgb, var(--success, #4ec9b0) 55%, var(--border));
-        background: color-mix(in srgb, var(--success, #4ec9b0) 10%, transparent);
-    }
-    .rc-toggle.off {
-        color: var(--warning);
-        border-color: color-mix(in srgb, var(--warning) 55%, var(--border));
-        background: color-mix(in srgb, var(--warning) 14%, transparent);
-    }
+    /* RC-routing toggle uses the shared button.state-toggle look (Rule
+       45) so it's identical to the per-effect on/off toggles — see
+       style.css.  No local skin. */
 
     /* Status flag is sized to match the toolbar buttons exactly — same
        28px height + box model — so the sync pill, RC toggle, and Apply

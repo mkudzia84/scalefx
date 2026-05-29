@@ -76,6 +76,12 @@
         busy = true; error = ''
         try { await engineStop() } catch (e) { error = String(e) } finally { busy = false }
     }
+    // Engine sound is "on" whenever it isn't fully stopped (starting /
+    // running / stopping all count as on).  Drives the single on/off
+    // toggle below — same single-button behaviour as the RC/manual
+    // toggle: click flips, ON→OFF always allowed (cutoff), OFF→ON gated.
+    $: engineOn = $engineStatus.stateName !== 'stopped'
+    function onEngineToggle() { engineOn ? onStop() : onStart() }
 
     // ── Channel driver (toggle.input) ─────────────────────────────────
     // Lists every channel whose function is mapped to something other than
@@ -187,19 +193,21 @@
             </button>
             {#if cfg?.enabled}
                 <span class="ctrl-sep" aria-hidden="true"></span>
-                <!-- Start / Stop as a single connected control
-                     (matches GunFx fire-cluster, Rule 35 follow-on
-                     2026-05-24).  Stop is always enabled — emergency
-                     cutoff sits next to the action that produced it
-                     so the operator doesn't have to scan for it. -->
-                <div class="op-cluster">
-                    <button class="oc-btn oc-primary" on:click={onStart}
-                            disabled={busy || $engineDirty || soundsHaveErrors}
-                            title={soundsHaveErrors ? 'Resolve validation errors first' : $engineDirty ? 'Apply unsaved changes before starting' : 'Start the engine'}>▶ Start</button>
-                    <button class="oc-btn oc-danger" on:click={onStop}
-                            disabled={busy}
-                            title="Stop the engine — always enabled (emergency cutoff)">■ Stop</button>
-                </div>
+                <!-- Engine sound as a single on/off toggle — same
+                     behaviour as the RC/manual toggle (Rule 48 single-
+                     toggle variant): one button, label = state, click
+                     flips.  ON→OFF is always enabled (emergency cutoff);
+                     OFF→ON gates on this effect's dirty/errors (Rule 35)
+                     so a stale config can't be started. -->
+                <button class="small state-toggle" class:state-on={engineOn}
+                        on:click={onEngineToggle}
+                        disabled={engineOn ? busy : (busy || $engineDirty || soundsHaveErrors)}
+                        title={engineOn ? 'Stop the engine sound (always available — emergency cutoff)'
+                             : soundsHaveErrors ? 'Resolve validation errors before starting'
+                             : $engineDirty ? 'Apply unsaved changes before starting'
+                             : 'Start the engine sound'}>
+                    {engineOn ? '▶ Engine ON' : '○ Engine off'}
+                </button>
             {/if}
         </div>
     </div>

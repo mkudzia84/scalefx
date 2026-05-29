@@ -601,12 +601,25 @@
                              switch.  Picker stays narrow (RC / #N);
                              full program name + rpm live in option
                              tooltips so the closed state is tight. -->
-                        <div class="op-cluster">
-                            <button class="oc-btn oc-primary"
-                                    on:click={() => gunStartFiringWithRof(gun.id, 0, pickRofForGun(gun))}
-                                    disabled={busy || $gunfxDirty || gun.rof.items.length === 0}
-                                    title={$gunfxDirty ? 'Apply changes before firing — tests the loaded firmware config' : 'Start auto-fire at the picked ROF (or RC-armed)'}>▶ Fire</button>
-                            <select class="oc-picker"
+                        <!-- Fire as a single on/off toggle — same single-
+                             button behaviour as the RC/manual toggle.
+                             ON→OFF (stop firing) is always enabled
+                             (emergency cutoff); OFF→ON gates on dirty /
+                             no-ROF (Rule 35).  The ROF picker stays beside
+                             it as the firing-rate modifier. -->
+                        <div class="fire-cluster">
+                            <button class="small state-toggle" class:state-on={st?.firing}
+                                    on:click={() => st?.firing
+                                        ? gunStopFiring(gun.id)
+                                        : gunStartFiringWithRof(gun.id, 0, pickRofForGun(gun))}
+                                    disabled={st?.firing ? busy : (busy || $gunfxDirty || gun.rof.items.length === 0)}
+                                    title={st?.firing ? 'Stop auto-fire (always available — emergency cutoff)'
+                                         : $gunfxDirty ? 'Apply changes before firing — tests the loaded firmware config'
+                                         : gun.rof.items.length === 0 ? 'Add a ROF item first'
+                                         : 'Start auto-fire at the picked ROF (or RC-armed)'}>
+                                {st?.firing ? '▶ Firing' : '○ Fire'}
+                            </button>
+                            <select class="field-input narrow"
                                     value={pickRofForGun(gun)}
                                     on:change={(e) => setRofPick(gun.id, Number(selValue(e)))}
                                     disabled={busy || gun.rof.items.length === 0}
@@ -616,10 +629,6 @@
                                     <option value={i} title="{item.name || `rof${i + 1}`} · {item.rpm} rpm">#{i + 1}</option>
                                 {/each}
                             </select>
-                            <button class="oc-btn oc-danger"
-                                    on:click={() => gunStopFiring(gun.id)}
-                                    disabled={busy}
-                                    title="Stop auto-fire — always enabled (emergency cutoff, no dirty gate)">■ Stop</button>
                         </div>
                         <!-- Smoke On/Off button removed 2026-05-26 — it
                              lives in the per-gun "Smoke generator" sibling
@@ -1050,27 +1059,21 @@
                                 } role attached
                             </span>
                         {/if}
-                        <!-- Simulate cluster moved into the header
-                             (mirrors gun-card pattern).  Stop sits to
-                             the right + always enabled (Rule 48 b). -->
-                        <div class="op-cluster">
-                            <button class="oc-btn oc-primary"
-                                    on:click={() => gunSmokeArm(gun.id, true)}
-                                    disabled={busy || $gunfxDirty || gun.smoke.heater.port.guid === ''}
-                                    title={$gunfxDirty
-                                        ? 'Apply changes before testing — runs the loaded firmware config'
-                                        : (gun.smoke.heater.port.guid === ''
-                                            ? 'Pick a heater port below first — there is nothing to drive yet'
-                                            : 'Arm smoke: drives heater at element-scaled duty.  Fan follows when trigger fires.')}>
-                                ▶ Smoke ON
-                            </button>
-                            <button class="oc-btn oc-danger"
-                                    on:click={() => gunSmokeArm(gun.id, false)}
-                                    disabled={busy}
-                                    title="Smoke OFF: cuts heater + fan immediately (safety button, always enabled — firmware re-sends OFF even if state was already off).">
-                                ■ Smoke OFF
-                            </button>
-                        </div>
+                        <!-- Smoke heater as a single on/off toggle — same
+                             single-button behaviour as the RC/manual
+                             toggle.  ON→OFF (cut heater + fan) is always
+                             enabled (emergency cutoff — firmware re-sends
+                             OFF even if already off); OFF→ON gates on
+                             dirty / no-heater-port (Rule 35). -->
+                        <button class="small state-toggle" class:state-on={armed}
+                                on:click={() => gunSmokeArm(gun.id, !armed)}
+                                disabled={armed ? busy : (busy || $gunfxDirty || gun.smoke.heater.port.guid === '')}
+                                title={armed ? 'Smoke off: cuts heater + fan immediately (always available — emergency cutoff)'
+                                     : $gunfxDirty ? 'Apply changes before testing — runs the loaded firmware config'
+                                     : gun.smoke.heater.port.guid === '' ? 'Pick a heater port below first — nothing to drive yet'
+                                     : 'Arm smoke: drives heater at element-scaled duty. Fan follows when trigger fires.'}>
+                            {armed ? '▶ Smoke ON' : '○ Smoke off'}
+                        </button>
                     </div>
                 </div>
 
@@ -1247,6 +1250,9 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
     .enable-toggle input { accent-color: var(--accent); }
     .header-actions { display: flex; align-items: center; gap: 8px; }
     .header-actions button { height: 28px; box-sizing: border-box; }
+    /* Fire on/off toggle + its ROF modifier picker, side by side. */
+    .fire-cluster { display: inline-flex; align-items: center; gap: 6px; }
+    .fire-cluster .field-input.narrow { height: 28px; box-sizing: border-box; }
 
     /* .op-cluster + .oc-btn / .oc-picker / .oc-danger live in global
        style.css so EnginePanel + future operational panels share the
