@@ -73,6 +73,19 @@ public:
     /// captured yet).  Useful for diagnostics.
     virtual int latestPulseUs() const = 0;
 
+    /// Multi-channel PPM read.  Drains the capture engine and writes up
+    /// to `maxCh` channel pulse-widths (µs) into `out`, returning the
+    /// channel count (0 = no valid frame / signal lost).  A PPM sum
+    /// signal yields N channels; a plain single-channel RC PWM yields 1.
+    /// Default: fall back to the single-channel `readPulseUs` so any
+    /// input driver that hasn't implemented framed capture still works.
+    virtual uint8_t readPpmChannels(uint16_t* out, uint8_t maxCh) {
+        uint16_t us = 0;
+        if (!out || maxCh < 1 || !readPulseUs(&us)) return 0;
+        out[0] = us;
+        return 1;
+    }
+
     // ── UART-mode access ─────────────────────────────────────────────
     /// Returns the underlying `Stream*` once a UART mode is active.
     /// Returns nullptr in any other mode.  Roles use this to feed

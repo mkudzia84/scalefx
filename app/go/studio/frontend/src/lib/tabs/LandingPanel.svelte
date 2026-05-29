@@ -257,6 +257,7 @@
 
     {#each (cfg?.lights ?? []) as light (light.id)}
         {@const phase        = phaseFor(light.id)}
+        {@const deployed     = phase?.phase === 2 || phase?.phase === 3}
         {@const issues       = landingItemErrors(cfg.lights, cfg.lights.findIndex(l => l.id === light.id))}
         {@const hasErrors    = issues.length > 0}
         {@const ownServoRefs = light.servos.map(s => s.port)}
@@ -272,16 +273,18 @@
                     {#if phase}
                         <span class="state-pill phase {phaseClass(phase.phase)}">{phase.name}</span>
                     {/if}
-                    <div class="op-cluster">
-                        <button class="oc-btn oc-primary"
-                                on:click={() => landingActivate(light.id)}
-                                disabled={busy || $landingDirty || hasErrors}
-                                title={$landingDirty ? 'Apply changes before activating — tests the loaded firmware config' : 'Deploy: servos → open, then LEDs on'}>▶ Activate</button>
-                        <button class="oc-btn oc-danger"
-                                on:click={() => landingDeactivate(light.id)}
-                                disabled={busy}
-                                title="Retract: LEDs off immediately, then servos → close.  Always enabled.">■ Deactivate</button>
-                    </div>
+                    <!-- Single on/off toggle (Rule 48): deploy ⇄ retract.
+                         ON→OFF (retract) always enabled — emergency
+                         cutoff; OFF→ON (deploy) gated on dirty/errors. -->
+                    <button class="small state-toggle" class:danger={deployed}
+                            on:click={() => deployed ? landingDeactivate(light.id) : landingActivate(light.id)}
+                            disabled={deployed ? busy : (busy || $landingDirty || hasErrors)}
+                            title={deployed ? 'Retract: LEDs off, then servos → close (always available)'
+                                 : $landingDirty ? 'Apply changes before deploying — tests the loaded firmware config'
+                                 : hasErrors ? 'Resolve validation errors first'
+                                 : 'Deploy: servos → open, then LEDs on'}>
+                        {deployed ? 'Retract' : 'Deploy'}
+                    </button>
                     <button class="small danger" on:click={() => removeLandingLight(light.id)} disabled={busy}>× Remove</button>
                 </div>
             </div>

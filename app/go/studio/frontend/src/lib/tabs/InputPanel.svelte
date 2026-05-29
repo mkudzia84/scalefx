@@ -8,6 +8,7 @@
         setChannelFunction, liveChannelKey, usToPct, boardDisplayNames,
         formatPortRail,
         type InputPortConfig, type ChannelFunctionDef, type PortRef,
+        type InputProtocolDef,
     } from '../devicemodel'
 
     let busy = false
@@ -50,11 +51,24 @@
 
     async function onProtocol(p: PortRef, proto: string) {
         busy = true; error = ''
-        try { await setInputProtocol(p, proto) } catch (e) { error = String(e) } finally { busy = false }
+        try {
+            await setInputProtocol(p, proto)
+            // Clamp the channel count down if the new protocol carries
+            // fewer channels than were declared (e.g. PPM 8 → a future
+            // 1-channel PWM mode).
+            const cfg = inputs.find(c => c.port.guid === p.guid && c.port.index === p.index)
+            const max = maxCh(proto)
+            if (cfg && cfg.channelCount > max) await setInputChannelCount(p, max)
+        } catch (e) { error = String(e) } finally { busy = false }
     }
     async function onCount(p: PortRef, n: number) {
         busy = true; error = ''
-        try { await setInputChannelCount(p, n) } catch (e) { error = String(e) } finally { busy = false }
+        const clamped = Math.max(1, Math.min(n, maxCh(protoOf(p))))
+        try { await setInputChannelCount(p, clamped) } catch (e) { error = String(e) } finally { busy = false }
+    }
+    // Current protocol id for a port (for clamping in onCount).
+    function protoOf(p: PortRef): string {
+        return inputs.find(c => c.port.guid === p.guid && c.port.index === p.index)?.protocol ?? ''
     }
     async function onFunction(p: PortRef, ch: number, fn: string) {
         busy = true; error = ''
@@ -70,6 +84,28 @@
         const m = $deviceModel.ports.find(x =>
             x.ref.guid === p.guid && x.ref.kind === p.kind && x.ref.index === p.index)
         return m?.hardwareName || `IN${p.index + 1}`
+    }
+    // The Port model row for this input ref (carries allowedRoles + voltage).
+    function portOf(p: PortRef) {
+        return $deviceModel.ports.find(x =>
+            x.ref.guid === p.guid && x.ref.kind === p.kind && x.ref.index === p.index)
+    }
+    // Rule 34: the protocol picker offers ONLY protocols whose backing
+    // role is in the port's allowedRoles — a PWM-pulse-only input shows
+    // just PPM, never SBUS/Jeti.  The currently-selected protocol is kept
+    // visible even if (somehow) outside the set, so editing never blanks
+    // the field.  On a board whose input allows all RC roles every
+    // protocol shows; the filter matters for narrower ports.
+    function protosFor(p: PortRef, current: string): InputProtocolDef[] {
+        const allowed = new Set((portOf(p)?.allowedRoles ?? []).map(r => r.kind))
+        return protocols.filter(pr => pr.roleKind === undefined
+            || allowed.size === 0 || allowed.has(pr.roleKind) || pr.id === current)
+    }
+    // Selected protocol's channel ceiling (PPM 8, SBUS/Jeti 16). The
+    // channel-count input binds its `max` to this so the operator can't
+    // declare more channels than the protocol carries.
+    function maxCh(protocolId: string): number {
+        return protocols.find(pr => pr.id === protocolId)?.maxChannels ?? 18
     }
     // Rail voltage for the port (from the model). "" when unknown.
     function rail(p: PortRef): string {
@@ -100,15 +136,18 @@
             <div class="form-row">
                 <span class="field-label">Protocol</span>
                 <select class="field-input" style="flex:0 0 150px" value={cfg.protocol} disabled={busy}
+                        title="Input decoding mode — limited to the roles this port can host"
                         on:change={(e) => onProtocol(cfg.port, selValue(e))}>
-                    {#each protocols as proto}
+                    {#each protosFor(cfg.port, cfg.protocol) as proto}
                         <option value={proto.id} disabled={!proto.implemented}>
                             {proto.label}{proto.implemented ? '' : ' (soon)'}
                         </option>
                     {/each}
                 </select>
                 <span class="field-label">Channels</span>
-                <input class="field-input narrow" type="number" min="1" max="18" value={cfg.channelCount} disabled={busy}
+                <input class="field-input narrow" type="number" min="1" max={maxCh(cfg.protocol)}
+                       value={cfg.channelCount} disabled={busy}
+                       title="Channels decoded from this input (max {maxCh(cfg.protocol)} for {cfg.protocol})"
                        on:change={(e) => onCount(cfg.port, numValue(e))} />
             </div>
 

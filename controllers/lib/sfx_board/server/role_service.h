@@ -159,7 +159,7 @@ private:
     void emitBiMotorEndstopResult (uint8_t portIdx, uint8_t outcome,
                                    uint16_t travel_ms, uint16_t peak_mA,
                                    uint8_t position);
-    void emitRcInValueBroadcast   (uint8_t portIdx, uint16_t us, bool valid);
+    void emitPpmFrameBroadcast    (uint8_t portIdx, const RcPwmInputRole& role);
     void emitSbusFrameBroadcast   (uint8_t portIdx, const SbusInputRole& role);
     void emitJetiExFrameBroadcast (uint8_t portIdx, const JetiExInputRole& role);
 

@@ -42,6 +42,7 @@
 #include "../effect_id.h"
 #include "../../topology/topology_service.h"      // TopologyService concept
 #include "trigger_input.h"
+#include "input_protocol.h"                        // InputRoutingPacket
 
 namespace hubfx::effects::input {
 
@@ -83,12 +84,24 @@ public:
 
     bool begin(sfx_core::BoardServerBase* ctx);
 
-    bool ownsType(uint8_t /*type*/) const { return false; }
-    CommandHandleResult handle(uint8_t /*type*/,
-                               const uint8_t* /*payload*/, size_t /*len*/) {
-        return CommandHandleResult::NotMyCommand;
+    bool ownsType(uint8_t type) const {
+        return type == InputRoutingPacket::INPUT_ROUTING_SET_ENABLED
+            || type == InputRoutingPacket::INPUT_ROUTING_GET_REQ;
     }
+    CommandHandleResult handle(uint8_t type,
+                               const uint8_t* payload, size_t len);
     void update() {}
+
+    // ── Global RC-routing gate ───────────────────────────────────────
+    //
+    // When false, onRoleEvent stops feeding subscribed TriggerInputs, so
+    // RC inputs no longer drive effects (effects hold their last state;
+    // the operator drives them from Studio).  The wire broadcast that
+    // monitors read is a separate fan-out and keeps flowing either way.
+    // Protocol-agnostic — the gate is after the per-protocol extractor,
+    // so it covers PPM / SBUS / Jeti EX uniformly.  Default on.
+    void setRoutingEnabled(bool en) { _routingEnabled = en; }
+    bool routingEnabled() const     { return _routingEnabled; }
 
     // ── Effects-facing API ───────────────────────────────────────────
 
@@ -131,6 +144,9 @@ private:
     static bool extractRcPwm  (const uint8_t* p, size_t len,
                                uint8_t channel,
                                uint16_t& outUs, bool& outValid);
+    static bool extractPpm    (const uint8_t* p, size_t len,
+                               uint8_t channel,
+                               uint16_t& outUs, bool& outValid);
     static bool extractSbus   (const uint8_t* p, size_t len,
                                uint8_t channel,
                                uint16_t& outUs, bool& outValid);
@@ -153,6 +169,7 @@ private:
 
     Binding _bindings[kMaxBindings] = {};
     uint8_t _numBindings            = 0;
+    bool    _routingEnabled         = true;   ///< RC → effect feed gate
 
     sfx_core::BoardServerBase* _ctx  = nullptr;
     TTopology*                 _topo = nullptr;

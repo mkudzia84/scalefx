@@ -34,9 +34,9 @@ type InputProtocolDef struct {
 
 // inputProtocols is the catalog the input panel renders.
 var inputProtocols = []InputProtocolDef{
-	{ID: InputPpm, Label: "PPM (pulse)", RoleKind: 0x02 /*RcPwmInput*/, Implemented: true, MaxChannels: 8},
+	{ID: InputPpm, Label: "PPM", RoleKind: 0x02 /*RcPwmInput*/, Implemented: true, MaxChannels: 24},
 	{ID: InputSbus, Label: "SBUS", RoleKind: 0x03 /*SbusInput*/, Implemented: false, MaxChannels: 16},
-	{ID: InputJetiEx, Label: "Jeti EX", RoleKind: 0x04 /*JetiExInput*/, Implemented: false, MaxChannels: 16},
+	{ID: InputJetiEx, Label: "Jeti EX", RoleKind: 0x04 /*JetiExInput*/, Implemented: false, MaxChannels: 24},
 }
 
 // InputProtocols returns the protocol catalog.
@@ -141,12 +141,19 @@ func NewInputPortConfig(p PortRef) InputPortConfig {
 }
 
 // SetChannelCount resizes the channel map, preserving existing assignments.
+// The upper bound is the active protocol's MaxChannels (PPM 24, SBUS 16,
+// Jeti EX 24) — single source of truth, so a protocol's ceiling lives in
+// one place (inputProtocols) and both the GUI input and this clamp follow it.
 func (c *InputPortConfig) SetChannelCount(n int) {
+	max := 24
+	if def, ok := ProtocolByID(c.Protocol); ok && def.MaxChannels > 0 {
+		max = def.MaxChannels
+	}
 	if n < 1 {
 		n = 1
 	}
-	if n > 18 {
-		n = 18
+	if n > max {
+		n = max
 	}
 	out := make([]ChannelMap, n)
 	for i := 0; i < n; i++ {

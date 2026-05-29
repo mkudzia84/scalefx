@@ -27,6 +27,7 @@
         gunVerboseSubscribe, installVerboseListener, uninstallVerboseListener,
         detectBandOverlaps,
         type GunT, type GunFxConfigT, type RofItemT, type PortRefT,
+        type GunVerboseStatusT, type GunStatusT,
     } from '../gunfx'
     import ServoWidget from '../components/ServoWidget.svelte'
     // SetPortProfile + markHubDirty now flow through ServoCalibrationDialog;
@@ -191,10 +192,22 @@
     // landed for this gun; fall back to the polled snapshot for the
     // first ~100 ms after panel mount before the verbose stream warms
     // up.  Returns a uniform shape so consumers don't have to branch.
-    function statusFor(id: number): { firing: boolean; smokeArmed: boolean } | undefined {
-        const v = $gunfxVerbose[id]
+    //
+    // The verbose + status maps are passed IN (not read off the `$store`
+    // inside the body) so the `{@const st = statusFor(id, $gunfxVerbose,
+    // $gunfxStatus)}` call site textually depends on both stores — Svelte
+    // only re-evaluates an {@const} when a variable it *references* changes,
+    // and a store read hidden inside the function body is invisible to that
+    // dependency analysis (the bug: header firing/smoke pills never
+    // refreshed on the 10 Hz broadcast).
+    function statusFor(
+        id: number,
+        verbose: Record<number, GunVerboseStatusT>,
+        status: GunStatusT[],
+    ): { firing: boolean; smokeArmed: boolean } | undefined {
+        const v = verbose[id]
         if (v) return { firing: v.firing, smokeArmed: v.smokeArmed }
-        const s = $gunfxStatus.find(x => x.id === id)
+        const s = status.find(x => x.id === id)
         return s ? { firing: s.firing, smokeArmed: s.smokeArmed } : undefined
     }
 
@@ -561,8 +574,14 @@
     {/if}
 
     {#if cfg?.enabled}
+        <!-- Two-column layout: each gun flows as [gun-core | smoke].
+             The {#each} renders exactly two sibling cards per gun
+             (.gun-card then .smoke-card; the {@const} between them emit
+             no DOM), so a 1fr/1fr grid auto-flows them into per-gun
+             rows.  Needs the full-width GunFX tab to breathe. -->
+        <div class="guns-grid">
         {#each cfg.guns as gun (gun.id)}
-            {@const st = statusFor(gun.id)}
+            {@const st = statusFor(gun.id, $gunfxVerbose, $gunfxStatus)}
             <!-- Role-filtered port-picker context — must live at
                  each-block scope because Svelte 3 requires {@const} as
                  a direct child of a control-flow block.  Used by the
@@ -595,12 +614,25 @@
                              switch.  Picker stays narrow (RC / #N);
                              full program name + rpm live in option
                              tooltips so the closed state is tight. -->
-                        <div class="op-cluster">
-                            <button class="oc-btn oc-primary"
-                                    on:click={() => gunStartFiringWithRof(gun.id, 0, pickRofForGun(gun))}
-                                    disabled={busy || $gunfxDirty || gun.rof.items.length === 0}
-                                    title={$gunfxDirty ? 'Apply changes before firing — tests the loaded firmware config' : 'Start auto-fire at the picked ROF (or RC-armed)'}>▶ Fire</button>
-                            <select class="oc-picker"
+                        <!-- Fire as a single on/off toggle — same single-
+                             button behaviour as the RC/manual toggle.
+                             ON→OFF (stop firing) is always enabled
+                             (emergency cutoff); OFF→ON gates on dirty /
+                             no-ROF (Rule 35).  The ROF picker stays beside
+                             it as the firing-rate modifier. -->
+                        <div class="fire-cluster">
+                            <button class="small state-toggle" class:danger={st?.firing}
+                                    on:click={() => st?.firing
+                                        ? gunStopFiring(gun.id)
+                                        : gunStartFiringWithRof(gun.id, 0, pickRofForGun(gun))}
+                                    disabled={st?.firing ? busy : (busy || $gunfxDirty || gun.rof.items.length === 0)}
+                                    title={st?.firing ? 'Stop auto-fire (always available — emergency cutoff)'
+                                         : $gunfxDirty ? 'Apply changes before firing — tests the loaded firmware config'
+                                         : gun.rof.items.length === 0 ? 'Add a ROF item first'
+                                         : 'Start auto-fire at the picked ROF (or RC-armed)'}>
+                                {st?.firing ? 'Fire Off' : 'Fire On'}
+                            </button>
+                            <select class="field-input narrow"
                                     value={pickRofForGun(gun)}
                                     on:change={(e) => setRofPick(gun.id, Number(selValue(e)))}
                                     disabled={busy || gun.rof.items.length === 0}
@@ -610,10 +642,6 @@
                                     <option value={i} title="{item.name || `rof${i + 1}`} · {item.rpm} rpm">#{i + 1}</option>
                                 {/each}
                             </select>
-                            <button class="oc-btn oc-danger"
-                                    on:click={() => gunStopFiring(gun.id)}
-                                    disabled={busy}
-                                    title="Stop auto-fire — always enabled (emergency cutoff, no dirty gate)">■ Stop</button>
                         </div>
                         <!-- Smoke On/Off button removed 2026-05-26 — it
                              lives in the per-gun "Smoke generator" sibling
@@ -997,7 +1025,7 @@
                  µs readout in the header refresh at the verbose-status
                  cadence (10 Hz). -->
             {@const verb         = $gunfxVerbose[gun.id]}
-            {@const armed        = verb?.smokeArmed ?? statusFor(gun.id)?.smokeArmed ?? false}
+            {@const armed        = verb?.smokeArmed ?? statusFor(gun.id, $gunfxVerbose, $gunfxStatus)?.smokeArmed ?? false}
             {@const heating      = (verb?.heaterDutyPct ?? 0) > 0}
             {@const gatedOff     = armed && !heating && gun.smoke.heater.activation.input !== ''}
             {@const fanRunning   = verb?.smokeFanRunning ?? false}
@@ -1044,27 +1072,21 @@
                                 } role attached
                             </span>
                         {/if}
-                        <!-- Simulate cluster moved into the header
-                             (mirrors gun-card pattern).  Stop sits to
-                             the right + always enabled (Rule 48 b). -->
-                        <div class="op-cluster">
-                            <button class="oc-btn oc-primary"
-                                    on:click={() => gunSmokeArm(gun.id, true)}
-                                    disabled={busy || $gunfxDirty || gun.smoke.heater.port.guid === ''}
-                                    title={$gunfxDirty
-                                        ? 'Apply changes before testing — runs the loaded firmware config'
-                                        : (gun.smoke.heater.port.guid === ''
-                                            ? 'Pick a heater port below first — there is nothing to drive yet'
-                                            : 'Arm smoke: drives heater at element-scaled duty.  Fan follows when trigger fires.')}>
-                                ▶ Smoke ON
-                            </button>
-                            <button class="oc-btn oc-danger"
-                                    on:click={() => gunSmokeArm(gun.id, false)}
-                                    disabled={busy}
-                                    title="Smoke OFF: cuts heater + fan immediately (safety button, always enabled — firmware re-sends OFF even if state was already off).">
-                                ■ Smoke OFF
-                            </button>
-                        </div>
+                        <!-- Smoke heater as a single on/off toggle — same
+                             single-button behaviour as the RC/manual
+                             toggle.  ON→OFF (cut heater + fan) is always
+                             enabled (emergency cutoff — firmware re-sends
+                             OFF even if already off); OFF→ON gates on
+                             dirty / no-heater-port (Rule 35). -->
+                        <button class="small state-toggle" class:danger={armed}
+                                on:click={() => gunSmokeArm(gun.id, !armed)}
+                                disabled={armed ? busy : (busy || $gunfxDirty || gun.smoke.heater.port.guid === '')}
+                                title={armed ? 'Heater off: cuts heater + fan immediately (always available — emergency cutoff)'
+                                     : $gunfxDirty ? 'Apply changes before testing — runs the loaded firmware config'
+                                     : gun.smoke.heater.port.guid === '' ? 'Pick a heater port below first — nothing to drive yet'
+                                     : 'Heater on: drives heater at element-scaled duty. Fan follows when trigger fires.'}>
+                            {armed ? 'Heater Off' : 'Heater On'}
+                        </button>
                     </div>
                 </div>
 
@@ -1228,6 +1250,7 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
                 </div>
             </div>
         {/each}
+        </div>
     {/if}
 
 </div>  <!-- /.card.gunfx-card -->
@@ -1240,11 +1263,29 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
     .enable-toggle input { accent-color: var(--accent); }
     .header-actions { display: flex; align-items: center; gap: 8px; }
     .header-actions button { height: 28px; box-sizing: border-box; }
+    /* Fire on/off toggle + its ROF modifier picker, side by side. */
+    .fire-cluster { display: inline-flex; align-items: center; gap: 6px; }
+    .fire-cluster .field-input.narrow { height: 28px; box-sizing: border-box; }
 
     /* .op-cluster + .oc-btn / .oc-picker / .oc-danger live in global
        style.css so EnginePanel + future operational panels share the
        same visual treatment.  Local overrides go below if any panel
        needs a tweak (none today). */
+
+    /* Per-gun two-column grid: col 1 = gun core (trigger/ROF/muzzle/
+       turret/recoil), col 2 = smoke (activation/heater/fan).  Each gun
+       is one grid row; align-items:start keeps the shorter smoke card
+       pinned to the top instead of stretching to the gun card's height. */
+    .guns-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 14px;
+        align-items: start;
+    }
+    /* Below ~900px the two columns would crush — stack to one. */
+    @media (max-width: 900px) {
+        .guns-grid { grid-template-columns: 1fr; }
+    }
 
     .gun-card { margin-bottom: 14px; }
     .card-header.inner { padding: 4px 0 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px; }

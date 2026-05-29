@@ -71,6 +71,8 @@ export function GetFirmwareTargets():Promise<Array<main.FirmwareTarget>>;
 
 export function GetFirmwareVersion(arg1:string):Promise<main.FirmwareVersionInfo>;
 
+export function GetInputRouting():Promise<boolean>;
+
 export function GetLandingConfig():Promise<main.LandingConfigDTO>;
 
 export function GetLightFxConfig():Promise<main.LightFxConfigDTO>;
@@ -166,6 +168,8 @@ export function SetEngineConfig(arg1:main.EngineConfig):Promise<void>;
 export function SetInputChannelCount(arg1:string,arg2:number,arg3:number,arg4:number):Promise<main.DeviceModelSnapshot>;
 
 export function SetInputProtocol(arg1:string,arg2:number,arg3:number,arg4:string):Promise<main.DeviceModelSnapshot>;
+
+export function SetInputRouting(arg1:boolean):Promise<void>;
 
 export function SetLandingConfig(arg1:main.LandingConfigDTO):Promise<void>;
 

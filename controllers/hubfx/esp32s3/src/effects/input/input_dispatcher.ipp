@@ -143,6 +143,24 @@ bool InputDispatcherServicePolicyT<TTopology>::extractJetiEx(
     return true;
 }
 
+// PPM_FRAME_BROADCAST: [portIdx:u8][count:u8][valid:u8][u16LE × count].
+// Same layout as Jeti EX — the pulse-capture role now emits a full
+// multi-channel frame so an effect can bind to any PPM channel by name.
+template <hubfx::topology::TopologyService TTopology>
+bool InputDispatcherServicePolicyT<TTopology>::extractPpm(
+        const uint8_t* p, size_t len, uint8_t channel,
+        uint16_t& outUs, bool& outValid) {
+    if (len < 3) return false;
+    const uint8_t count = p[1];
+    const bool    valid = p[2] != 0;
+    if (channel >= count) return false;
+    const size_t off = 3 + static_cast<size_t>(channel) * 2;
+    if (off + 2 > len) return false;
+    outUs    = SfxWire::getU16LE(&p[off]);
+    outValid = valid;
+    return true;
+}
+
 // ─── Dispatch ───────────────────────────────────────────────────────
 
 template <hubfx::topology::TopologyService TTopology>
@@ -157,8 +175,12 @@ void InputDispatcherServicePolicyT<TTopology>::onRoleEvent(
 
     switch (innerType) {
         case RolePacket::RCIN_VALUE_BROADCAST:
-            evtPortKind = PortKind::Input;     // RC PWM lives on an InputPort
+            evtPortKind = PortKind::Input;     // legacy single-channel RC PWM
             extract     = &extractRcPwm;
+            break;
+        case RolePacket::PPM_FRAME_BROADCAST:
+            evtPortKind = PortKind::Input;     // PPM multi-channel frame
+            extract     = &extractPpm;
             break;
         case RolePacket::SBUS_FRAME_BROADCAST:
             evtPortKind = PortKind::Input;
@@ -173,6 +195,13 @@ void InputDispatcherServicePolicyT<TTopology>::onRoleEvent(
     }
 
     if (len < 1) return;
+
+    // Global RC-routing gate (protocol-agnostic — we're past the
+    // per-protocol extractor selection).  When off, RC stops driving
+    // effects; the wire broadcast that monitors read already went out
+    // separately, so live channel bars keep updating.
+    if (!_routingEnabled) return;
+
     const uint8_t evtPortIdx = p[0];
 
     for (uint8_t i = 0; i < kMaxBindings; ++i) {
@@ -185,6 +214,31 @@ void InputDispatcherServicePolicyT<TTopology>::onRoleEvent(
         if (!extract(p, len, b.channel, us, v)) continue;
         b.input->feed(us, v);
     }
+}
+
+// ─── Routing-gate command handler ───────────────────────────────────
+
+template <hubfx::topology::TopologyService TTopology>
+CommandHandleResult InputDispatcherServicePolicyT<TTopology>::handle(
+        uint8_t type, const uint8_t* payload, size_t len) {
+    switch (type) {
+        case InputRoutingPacket::INPUT_ROUTING_SET_ENABLED: {
+            if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); break; }
+            _routingEnabled = (payload[0] != 0);
+            SFX_LOG_INFO("[input] RC routing %s", _routingEnabled ? "ENABLED" : "DISABLED (manual)");
+            _ctx->sendAck();
+            break;
+        }
+        case InputRoutingPacket::INPUT_ROUTING_GET_REQ: {
+            const uint8_t out = _routingEnabled ? 1 : 0;
+            _ctx->sendRawPacket(InputRoutingPacket::INPUT_ROUTING_RESP,
+                                _ctx->currentTag(), &out, 1);
+            break;
+        }
+        default:
+            return CommandHandleResult::NotMyCommand;
+    }
+    return CommandHandleResult::Handled;
 }
 
 template <hubfx::topology::TopologyService TTopology>

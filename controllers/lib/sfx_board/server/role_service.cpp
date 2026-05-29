@@ -318,8 +318,14 @@ bool RoleServicePolicy::attachRcPwmInput(InputBinding& b, uint8_t portIdx,
     if (!role.bind(b.port)) { b.role.emplace<std::monostate>(); return false; }
     // Optional config: [broadcastHz:u8]
     if (cfgLen >= 1) role.setBroadcastHz(cfg[0]);
-    role.onBroadcast([this, portIdx](uint16_t us, bool valid) {
-        emitRcInValueBroadcast(portIdx, us, valid);
+    role.onBroadcast([this, portIdx](uint8_t /*count*/, bool /*valid*/) {
+        // Rebuild the full PPM channel frame from the role each tick
+        // (mirrors the SBUS / Jeti pattern).
+        auto* binding = _reg->inputAt(portIdx);
+        if (!binding) return;
+        if (auto* r = std::get_if<RcPwmInputRole>(&binding->role)) {
+            emitPpmFrameBroadcast(portIdx, *r);
+        }
     });
     return true;
 }
@@ -1087,13 +1093,22 @@ void RoleServicePolicy::emitBiMotorEndstopResult(uint8_t portIdx, uint8_t outcom
     fireLocalAsync(RolePacket::BIMOTOR_ENDSTOP_RESULT, buf, sizeof buf);
 }
 
-void RoleServicePolicy::emitRcInValueBroadcast(uint8_t portIdx, uint16_t us, bool valid) {
-    uint8_t buf[4];
+void RoleServicePolicy::emitPpmFrameBroadcast(uint8_t portIdx, const RcPwmInputRole& role) {
+    // [portIdx:u8][count:u8][valid:u8][channels:u16LE × count] — same shape
+    // as the Jeti EX frame so the master's input dispatcher / Go decoder
+    // treat all framed inputs uniformly.  PPM carries up to 24 channels.
+    const uint8_t count = role.channelCount();
+    uint8_t buf[3 + RcPwmInputRole::kMaxChannels * 2];
     buf[0] = portIdx;
-    SfxWire::putU16LE(&buf[1], us);
-    buf[3] = valid ? 1 : 0;
-    _ctx->sendRawPacket(RolePacket::RCIN_VALUE_BROADCAST, SfxWire::TAG_ASYNC, buf, sizeof buf);
-    fireLocalAsync(RolePacket::RCIN_VALUE_BROADCAST, buf, sizeof buf);
+    buf[1] = count;
+    buf[2] = role.valid() ? 1 : 0;
+    size_t off = 3;
+    for (uint8_t i = 0; i < count && off + 2 <= sizeof buf; i++) {
+        SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
+        off += 2;
+    }
+    _ctx->sendRawPacket(RolePacket::PPM_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
+    fireLocalAsync(RolePacket::PPM_FRAME_BROADCAST, buf, off);
 }
 
 void RoleServicePolicy::emitSbusFrameBroadcast(uint8_t portIdx, const SbusInputRole& role) {

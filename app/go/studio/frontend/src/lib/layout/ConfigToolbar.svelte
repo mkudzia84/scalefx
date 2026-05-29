@@ -11,11 +11,43 @@
      The Diagram + Refresh buttons live here too so they're reachable
      from every tab, not just the IO tab. -->
 <script lang="ts">
+    import { onMount } from 'svelte'
     import { anyDirty, anyErrors, dirtyLabels, errorLabels, applyAll, refreshAll } from '../dirty-registry'
     import { showPcbOverlay } from '../stores'
     import { diag } from '../diag'
+    import { SetInputRouting, GetInputRouting } from '../../../wailsjs/go/main/App'
+    import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
     let busy = false
+
+    // Global RC→effect routing gate (mirrors the hub's InputDispatcher
+    // flag).  ON = RC sticks drive effects; OFF = effects ignore RC and
+    // hold last state, so the operator drives them from Studio.  Live
+    // channel monitors keep working either way.
+    let rcRouting = true
+    let routingBusy = false
+
+    async function syncRouting() {
+        try { rcRouting = await GetInputRouting() } catch { /* disconnected — keep optimistic */ }
+    }
+    async function toggleRouting() {
+        routingBusy = true
+        const next = !rcRouting
+        try {
+            await SetInputRouting(next)
+            rcRouting = next
+            diag.info('FE.CFG', `RC routing → ${next ? 'on' : 'off (manual)'}`)
+        } catch (e) {
+            diag.error('FE.CFG', 'RC routing toggle failed', { err: String(e) })
+        } finally { routingBusy = false }
+    }
+
+    onMount(() => {
+        syncRouting()
+        // Re-sync whenever a (re)connect republishes the device model.
+        const off = EventsOn('devicemodel:changed', () => syncRouting())
+        return off
+    })
 
     // Success / note messages route to the diag system (console + status
     // bar already mirror those).  Only Apply ERRORS render inline below
@@ -55,6 +87,14 @@
     </div>
 
     <div class="right">
+        <button class="small state-toggle" class:state-on={rcRouting}
+                on:click={toggleRouting} disabled={routingBusy}
+                title={rcRouting
+                    ? 'RC inputs are driving effects. Click to take manual control (effects ignore RC, hold last state; live monitors keep working).'
+                    : 'Manual override: effects ignore RC and hold last state — drive them from Studio. Click to hand control back to RC.'}>
+            {rcRouting ? '📡 RC routing' : '✋ Manual'}
+        </button>
+
         {#if $errorLabels.length > 0}
             <span class="status-flag err"
                   title="Resolve validation errors before Apply: {$errorLabels.join(', ')}">
@@ -105,10 +145,21 @@
         padding: 0 12px;
     }
 
+    /* RC-routing toggle uses the shared button.state-toggle look (Rule
+       45) so it's identical to the per-effect on/off toggles — see
+       style.css.  No local skin. */
+
+    /* Status flag is sized to match the toolbar buttons exactly — same
+       28px height + box model — so the sync pill, RC toggle, and Apply
+       read as one uniform control row. */
     .status-flag {
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        box-sizing: border-box;
         font-size: 11px;
         font-family: var(--font-mono);
-        padding: 4px 10px;
+        padding: 0 12px;
         border-radius: 4px;
         border: 1px solid var(--border);
         text-transform: lowercase;

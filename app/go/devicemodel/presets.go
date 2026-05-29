@@ -62,7 +62,7 @@ type ResolvedAssign struct {
 var presetCatalog = []Preset{
 	{
 		Name:        "Hub: shared landing switch",
-		Description: "Wire input IN_1 as an RC PWM switch that drives BOTH the landing lights and the landing gear (a single channel feeding two domains).",
+		Description: "Wire input IN_1 as a PPM switch channel that drives BOTH the landing lights and the landing gear (a single channel feeding two domains).",
 		Roles: []RoleAssign{
 			{Port: PresetPortRef{Board: "", Kind: ports.KindInput, Index: 0}, RoleKind: roles.KindRcPwmInput},
 		},

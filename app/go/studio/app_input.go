@@ -83,6 +83,36 @@ func (a *App) startInputBroadcasts() {
 	}
 }
 
+// ─── Global RC-routing gate ───────────────────────────────────────────
+
+// SetInputRouting toggles the master's global RC→effect routing gate.
+// enabled=true (default) = RC drives effects; false = effects ignore RC
+// and hold their last commanded state (drive them from Studio).  Live
+// channel monitors keep updating either way.  Bound to the ConfigToolbar
+// toggle next to the sync indicator.
+func (a *App) SetInputRouting(enabled bool) error {
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	a.diag.Info("INPUT", "SetInputRouting → %v", enabled)
+	if err := c.Input.SetRouting(enabled); err != nil {
+		a.diag.Error("INPUT", "SetInputRouting failed: %v", err)
+		return err
+	}
+	return nil
+}
+
+// GetInputRouting reads the current routing-gate state (called on connect
+// so the toggle reflects the device).
+func (a *App) GetInputRouting() (bool, error) {
+	c := a.snapshotClient()
+	if c == nil {
+		return false, fmt.Errorf("not connected")
+	}
+	return c.Input.GetRouting()
+}
+
 // ─── Config mutations ─────────────────────────────────────────────────
 
 func (a *App) inputCfg(guid string, kind, index byte) *devicemodel.InputPortConfig {
