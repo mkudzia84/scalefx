@@ -36,24 +36,33 @@ func requireConfig(t *testing.T) *client.Client {
 
 // Bare RELOAD re-applies every registered store (HubFX has 7).  Each
 // apply* callback runs synchronously — YAML parse + fan-out into the
-// effect services — so total latency can exceed the protocol-layer
-// default 5 s timeout on a board where the asset cache loader is also
-// running.  Live firmware on HubFX build 511 was observed timing out
-// reproducibly under both this test AND the canonical scalefx-cli
-// `config-reload`, so the failure mode is firmware-side, not
-// client-side.
+// effect services — and must complete within the protocol-layer 5 s
+// budget.  HubFX build 511 reproducibly TIMED OUT here (and rebooted
+// when /gunfx.yaml's apply was reached) because applyGunFxConfig
+// stack-copied a ~4 KB GunFxYamlConfig under the deeper board.process()
+// call chain, overflowing loopTask.  Build 530+ heap-allocates the
+// copy and bumps CONFIG_ARDUINO_LOOP_STACK_SIZE 12 K → 16 K; reload
+// completes in ~800 ms.
 //
-// What we actually want to check: the wire path didn't crash the
-// board.  If Reload returns an error we accept it, but a follow-up
-// STATUS request must succeed within the normal budget.
+// Locks in: the wire path returns success AND a follow-up STATUS
+// confirms the bus is alive AND uptime monotonically advanced (a
+// reboot would reset it to ≈ boot grace ~3-5 s).
 func TestConfigReloadDoesNotWedgeTheBus(t *testing.T) {
 	c := requireConfig(t)
-	err := c.Config.Reload()
-	t.Logf("Reload returned %v (timeout is acceptable on slow boards)", err)
-
-	// Liveness probe: bus still responsive?
-	if _, sErr := c.Hub.Status(); sErr != nil {
+	s0, sErr := c.Hub.Status()
+	if sErr != nil {
+		t.Fatalf("baseline Status: %v", sErr)
+	}
+	if err := c.Config.Reload(); err != nil {
+		t.Fatalf("Reload: %v — was the 4 KB stack-copy regression re-introduced?", err)
+	}
+	s1, sErr := c.Hub.Status()
+	if sErr != nil {
 		t.Fatalf("Status after Reload: %v — Reload wedged the bus", sErr)
+	}
+	if s1.UptimeMs <= s0.UptimeMs {
+		t.Errorf("uptime regressed across Reload: before=%d ms, after=%d ms — "+
+			"firmware rebooted mid-apply", s0.UptimeMs, s1.UptimeMs)
 	}
 }
 

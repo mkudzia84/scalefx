@@ -23,6 +23,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <memory>
 
 #include <platform/sfx_platform.h>   // sfxPsramMalloc / sfxPsramFree
 #include <serial/diag_log.h>
@@ -377,7 +378,40 @@ void applyGunFxConfig(TBoard& board, const GunFxYamlConfig& cfg,
                       const HubFxConfig& hub) {
     // Walk a mutable copy of the spec table so we can write resolved
     // port + channel fields without touching the parsed YAML.
-    auto resolved = cfg;
+    //
+    // PSRAM-allocate instead of stacking `auto resolved = cfg;` —
+    // GunFxYamlConfig is ~kMaxGuns * sizeof(GunSpec) ≈ 4 KB, and the
+    // CONFIG_RELOAD path runs UNDER board.process() (much deeper call
+    // stack than setup() does at boot), tipping loopTask past its 8 KB
+    // cap and triple-faulting the apply chain.  Boot's shallow call
+    // depth hides the issue; reload reproduces it every time on builds
+    // with smoke heater + fan + audio preloads configured.
+    //
+    // Use PSRAM (8 MB on HubFX) over DRAM heap (~111 KB free at boot
+    // baseline) — same lesson as the ConfigStore read buffer + YAML
+    // parser pools (Phase 4 polish 2026-05-27): keep the cramped
+    // DRAM/DMA-cap pool for the things that actually need it (DMA
+    // descriptors, ring buffers, BLE/Wi-Fi).  A bare `new` lands in
+    // DRAM by default; `sfxPsramMalloc` + placement-new + custom
+    // deleter is the canonical pattern (matches AudioAssetCache and
+    // YamlParser::allocatePools).  Pico falls back to malloc.
+    struct PsramDeleter {
+        void operator()(GunFxYamlConfig* p) const noexcept {
+            if (!p) return;
+            p->~GunFxYamlConfig();
+            sfxPsramFree(p);
+        }
+    };
+    auto* resolvedRaw = static_cast<GunFxYamlConfig*>(
+        sfxPsramMalloc(sizeof(GunFxYamlConfig)));
+    if (!resolvedRaw) {
+        SFX_LOG_ERROR("[gunfx-config] PSRAM alloc failed (%u B) — apply skipped",
+                      (unsigned)sizeof(GunFxYamlConfig));
+        return;
+    }
+    new (resolvedRaw) GunFxYamlConfig(cfg);
+    std::unique_ptr<GunFxYamlConfig, PsramDeleter> resolvedOwner(resolvedRaw);
+    auto& resolved = *resolvedOwner;
     auto resolveInput = [&hub](const char* name,
                                hubfx::effects::PortRef& port,
                                uint8_t& channel,
