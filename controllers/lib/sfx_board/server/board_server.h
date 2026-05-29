@@ -64,6 +64,7 @@
 
 #include <serial/core/core.h>     // CommandHandleResult, SerialError, CorePacket, CoreBoardInfo, I2CScanResult
 #include <serial/wire.h>          // SfxWire (CRC-8 / COBS / encode / parse)
+#include <serial/packet_reader.h> // sfx_serial::PacketReader (byte-stream → frame)
 #include <serial/diag_log.h>      // DiagLog (LOG_MESSAGE / DIAG_HISTORY)
 #include <platform/sfx_platform.h>  // SFX_PLATFORM_*, SFX_CPU_MHZ, SFX_FREE_HEAP, SFX_REBOOT, sfxGetBoardId
 #if SFX_PLATFORM_ESP32
@@ -286,8 +287,12 @@ protected:
     bool    _initialized = false;
     uint8_t _currentTag  = 0;
 
-    uint8_t       _rxBuffer[RX_BUFFER_SIZE] = {};
-    size_t        _rxIndex        = 0;
+    // COBS frame accumulator — owned by the base so both this class's
+    // readFrames() and the templated subclass's readFrames() override
+    // share one buffer.  See packet_reader.h for the state machine
+    // (pulled out 2026-05-29 so the same logic could be unit-tested
+    // on the host via tests/native/test_packet_reader.cpp).
+    sfx_serial::PacketReader _reader;
     unsigned long _lastActivityMs = 0;
 
     // ── Device identity ──────────────────────────────────────────────
@@ -438,14 +443,16 @@ public:
         while (_stream->available()) {
             const uint8_t b = static_cast<uint8_t>(_stream->read());
             _lastActivityMs = millis();
-
-            if (b == SfxWire::FRAME_DELIMITER) {
-                if (_rxIndex == 0) continue;
+            // See packet_reader.h.  The lambda runs once per complete
+            // frame and does the cobs-decode + parsePacket + dispatch
+            // dance the inline loop used to do.  PacketReader handles
+            // FRAME_DELIMITER detection, partial-frame buffering, and
+            // overflow recovery.
+            _reader.feedByte(b, [this, &frames](const uint8_t* frame, size_t frameLen) {
                 uint8_t        decoded[SfxWire::MAX_PACKET_SIZE];
                 const size_t   decodedLen = SfxWire::cobsDecode(
-                    _rxBuffer, _rxIndex, decoded, sizeof(decoded));
-                _rxIndex = 0;
-                if (decodedLen < 5) continue;
+                    frame, frameLen, decoded, sizeof(decoded));
+                if (decodedLen < 5) return;
 
                 uint8_t        type, tag;
                 const uint8_t* payload;
@@ -455,11 +462,7 @@ public:
                     dispatchPacket(type, tag, payload, payloadLen);
                     ++frames;
                 }
-            } else if (_rxIndex < RX_BUFFER_SIZE) {
-                _rxBuffer[_rxIndex++] = b;
-            } else {
-                _rxIndex = 0;
-            }
+            });
         }
         return frames;
     }

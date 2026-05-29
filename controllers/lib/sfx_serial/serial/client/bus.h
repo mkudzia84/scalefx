@@ -49,6 +49,7 @@
 #include <functional>
 
 #include "serial/core/core.h"
+#include "serial/packet_reader.h"   // byte-stream → frame accumulator
 
 // ============================================================================
 // Serial Bus Constants & Types
@@ -121,8 +122,12 @@ private:
     // Default peer max = Pico capacity (clients always talk to Pico servers)
     size_t _peerMaxPayload = SfxWire::PICO_MAX_PAYLOAD;
 
-    uint8_t _rxBuffer[SERIAL_BUS_RX_BUFFER_SIZE];
-    size_t _rxIndex = 0;
+    // COBS frame accumulator — was an inline `_rxBuffer[]` + `_rxIndex`
+    // loop on `process()` before the 2026-05-29 PacketReader extraction.
+    // Same wire behaviour; the only public-API change is that
+    // overflow-driven framing errors are now counted on `_reader`
+    // (see `stats()` accessor which sums both sources).
+    sfx_serial::PacketReaderT<SERIAL_BUS_RX_BUFFER_SIZE> _reader;
 
     PacketRxCallback _rxCallback;
     CoreStats _stats;
