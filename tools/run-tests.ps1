@@ -137,7 +137,7 @@ function Invoke-GoSuite { param($dir, [switch]$NoCache, [switch]$Integration)
     }
 }
 
-# ---- Stage 1: Go unit tests -------------------------------------------
+# ---- Stage 1a: Go unit tests ------------------------------------------
 
 Write-Title "Go unit tests"
 $unitSuites = Get-GoTestSuites "tests/host/go_unit"
@@ -146,6 +146,44 @@ if ($unitSuites.Count -eq 0) {
 } else {
     foreach ($d in $unitSuites) {
         Invoke-GoSuite $d
+    }
+}
+
+# ---- Stage 1b: Native C++ unit tests ----------------------------------
+
+Write-Title "Native C++ unit tests"
+$nativeBuild = Join-Path $repoRoot "tests/native/build.ps1"
+if (-not (Test-Path $nativeBuild)) {
+    Write-Host "  (tests/native/build.ps1 not present - skipping)" -ForegroundColor DarkYellow
+} else {
+    $start = Get-Date
+    # Invoke directly — .ps1 runs under whichever PowerShell host we're
+    # already in (5.1 / 7+), avoiding `pwsh` not-on-PATH issues on
+    # Windows boxes that only have the legacy 5.1 host.
+    $nativeOut = & $nativeBuild 2>&1
+    $exitCode = $LASTEXITCODE
+    $elapsed = (Get-Date) - $start
+    $detail = ("{0:N1}s" -f $elapsed.TotalSeconds)
+
+    # doctest summary line: "[doctest] test cases: N | N passed | N failed | N skipped"
+    $summary = $nativeOut | Select-String -Pattern "test cases:" | Select-Object -First 1
+    $detailExtra = ""
+    if ($summary -and $summary.Line -match "(\d+)\s+passed\s*\|\s*(\d+)\s+failed") {
+        $detailExtra = (" (" + $matches[1] + " cases)")
+    }
+
+    if ($exitCode -eq 0) {
+        Write-Pass "native/doctest" ($detail + $detailExtra)
+        $passed += "native/doctest"
+    } else {
+        Write-Fail "native/doctest" ($detail + $detailExtra)
+        $failures += "native/doctest"
+        if (-not $Loud) {
+            # Echo doctest failure block.
+            $nativeOut | Where-Object { $_ -match "ERROR|FAIL|Status: FAILURE|TEST CASE|BUILD FAILED" } |
+                Select-Object -First 30 |
+                ForEach-Object { Write-Host ("    | " + $_) -ForegroundColor DarkRed }
+        }
     }
 }
 
