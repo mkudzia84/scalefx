@@ -19,7 +19,6 @@ package upload_test
 
 import (
 	"crypto/md5"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +27,7 @@ import (
 	"time"
 
 	"scalefx/client"
-	"scalefx/firmware"
+	"scalefx/tests/host/ports"
 )
 
 // Test files we upload.  Picked because they exercise the size
@@ -96,81 +95,17 @@ func ensureRemoteDir(t *testing.T, c *client.Client, dir string, target byte) {
 	}
 }
 
-// sharedClient is opened once via TestMain and reused by every test.
-// Per-test connect/disconnect repeatedly was unreliable: each Close()
-// kicked the firmware's UPLOAD lifecycle (audio resume + asset-cache
-// loader catch-up) just as the next test's IDENTIFY arrived, producing
-// non-deterministic segment-ACK timeouts whose victim shifted between
-// runs.  One connection eliminates that churn.
-var (
-	sharedClient *client.Client
-	sharedID     client.Identity
-	sharedSkip   string // populated when no HW reachable
-)
-
-// TestMain sets up the single shared client for the whole package.
-// Honoured Rule 51's skip contract — populates sharedSkip on no-HW
-// and lets each test call requireSharedClient to t.Skip cleanly.
+// TestMain delegates to the shared TestMain helper in
+// tests/host/ports/ — see Rule 51 + Phase 5 commit body for why we
+// share one client across all tests instead of per-test connect.
 func TestMain(m *testing.M) {
-	// testing.Short() panics if called before flag.Parse(), and we want
-	// to honour -short up here so a CI without HW doesn't burn 5 s on
-	// the connect attempt.  Once flags are parsed both TestMain and
-	// per-test Skip() calls see the same flag state.
-	flag.Parse()
-	exit := func() int {
-		c, id, err := openSharedClient()
-		if err != nil {
-			sharedSkip = err.Error()
-			return m.Run()
-		}
-		sharedClient = c
-		sharedID = id
-		fmt.Printf("HubFX integration suite: %s v%s build %d (%s) on %s\n",
-			id.DeviceName, id.FirmwareVersion, id.BuildNumber,
-			id.Platform, sharedClient.PortName())
-		defer sharedClient.Close()
-		return m.Run()
-	}
-	os.Exit(exit())
+	os.Exit(ports.RunWithSharedClient(m, "upload_test"))
 }
 
-func openSharedClient() (*client.Client, client.Identity, error) {
-	if testing.Short() {
-		return nil, client.Identity{}, fmt.Errorf("-short skips integration tests")
-	}
-	port := os.Getenv("SCALEFX_HUBFX_PORT")
-	if port == "" {
-		// Defer to ports.OpenHubFX equivalent without a *testing.T.
-		// firmware.DetectESP32Port is what OpenHubFX wraps — call it
-		// directly here so TestMain can run before the first t.Skip.
-		detected, err := firmware.DetectESP32Port()
-		if err != nil || detected == "" {
-			return nil, client.Identity{}, fmt.Errorf("no HubFX detected: %v", err)
-		}
-		port = detected
-	}
-	c, id, err := client.Connect(port, client.Options{Timeout: 5 * time.Second})
-	if err != nil {
-		return nil, client.Identity{}, fmt.Errorf("connect %s: %w", port, err)
-	}
-	return c, id, nil
-}
-
-// requireSharedClient is the per-test entry point.  Replaces
-// `ports.OpenHubFX(t)` for tests in this package — same skip contract,
-// no per-test connect.
+// requireSharedClient is the per-test entry point.  Skips cleanly
+// when no HW is reachable (or -short was passed).
 func requireSharedClient(t *testing.T) *client.Client {
-	t.Helper()
-	if testing.Short() {
-		t.Skip("integration test; -short skips the whole tree")
-	}
-	if sharedSkip != "" {
-		t.Skipf("shared client unavailable: %s", sharedSkip)
-	}
-	if sharedClient == nil {
-		t.Skip("shared client unavailable (TestMain didn't open one)")
-	}
-	return sharedClient
+	return ports.RequireSharedClient(t)
 }
 
 // ─── Sync mode regression net ──────────────────────────────────────────
