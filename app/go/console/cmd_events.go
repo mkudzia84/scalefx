@@ -3,6 +3,7 @@ package console
 import (
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"scalefx/client"
 	"scalefx/protocol/core"
@@ -78,6 +79,26 @@ func cmdSubscribe(a *App, _ []string) error {
 		fmt.Fprintf(out, "%s gun[%d] firing=%v smoke=%v fan=%v heaterPct=%d rof=%d trig=%dus\n",
 			cBlue("[GUNV]"), ev.ID, ev.Firing, ev.SmokeArmed, ev.SmokeFanRunning,
 			ev.HeaterDutyPct, ev.RofIndex, ev.TriggerUs)
+	})
+	a.c.Events.OnInputValue(func(iv client.InputValue) {
+		var sb strings.Builder
+		for i, ch := range iv.Channels {
+			if i > 0 {
+				sb.WriteByte(' ')
+			}
+			if ch.Valid {
+				fmt.Fprintf(&sb, "%4d", ch.Us)
+			} else {
+				sb.WriteString("----")
+			}
+		}
+		g := iv.GUID
+		if g == "" {
+			g = "hub"
+		}
+		fmt.Fprintf(out, "%s %s port=%d proto=%s  %s  (%dch)\n",
+			cBlue("[RC]"), cMagenta(g), iv.PortIdx, cCyan(iv.Protocol),
+			sb.String(), len(iv.Channels))
 	})
 	// gun-shot events are very high rate during sustained fire — skip the
 	// per-shot console line; subscribers that want them register their own

@@ -201,12 +201,15 @@ public:
     uint32_t rxFrameCount() const { return _frameCount; }
     uint32_t rxErrorCount() const { return _errorCount; }
     uint32_t txResponseCount() const { return _txCount; }
+    /// Total bytes seen on the UART. Diagnoses wrong-baud (bytes climb but
+    /// frames/CRC stay at 0) vs no-wire (zero bytes) — see input_monitor rig.
+    uint32_t rxByteCount() const { return _rxByteCount; }
 
 private:
     Stream* _serial = nullptr;
 
     // ── Frame parser state ──────────────────────────────────────
-    enum ParseState : uint8_t { IDLE, READ_LENGTH, READ_BODY };
+    enum ParseState : uint8_t { IDLE, READ_TYPE, READ_LENGTH, READ_BODY };
     ParseState _parseState = IDLE;
     uint8_t    _frameBuf[JetiEx::MAX_FRAME_SIZE] = {};
     uint8_t    _frameIdx = 0;
@@ -241,6 +244,7 @@ private:
     uint32_t _frameCount = 0;
     uint32_t _errorCount = 0;
     uint32_t _txCount = 0;
+    uint32_t _rxByteCount = 0;
 
     // ── Internal methods ────────────────────────────────────────
     void processFrame();

@@ -123,15 +123,21 @@ struct ConfigParam {
 // ════════════════════════════════════════════════════════════════
 
 /**
- * @brief CRC-16/CCITT for EX Bus frame validation
- * Polynomial 0x1021, initial value 0x0000, no final XOR.
+ * @brief CRC-16 for Jeti EX Bus frame validation (RX + TX).
+ *
+ * REFLECTED CCITT: poly 0x8408 (bit-reversed 0x1021), init 0x0000, LSB-first,
+ * no final XOR.  This is the variant Jeti EX Bus actually uses — verified
+ * against live receiver frames on the input_monitor bench rig (2026-05-29,
+ * crcErr=0 over thousands of frames).  The earlier MSB-first 0x1021 form
+ * rejected every real frame (it was never tested on hardware).
  */
 inline uint16_t crc16_ccitt(const uint8_t* data, size_t len) {
     uint16_t crc = 0x0000;
     for (size_t i = 0; i < len; i++) {
-        crc ^= static_cast<uint16_t>(data[i]) << 8;
+        crc ^= data[i];
         for (int j = 0; j < 8; j++) {
-            crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+            crc = (crc & 0x0001) ? static_cast<uint16_t>((crc >> 1) ^ 0x8408)
+                                 : static_cast<uint16_t>(crc >> 1);
         }
     }
     return crc;

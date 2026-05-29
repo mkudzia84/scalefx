@@ -197,14 +197,14 @@ inline void GunUnit::armSmoke(bool armed) {
 
 // Composed driving-state predicate (Phase 4 polish 2026-05-26).  Used
 // by the verbose-status reporter so heaterDutyPct reflects the actual
-// wire-level drive, including HM_CYCLE OFF-phase + Rule 43 activation
-// gate.  Open-loop + HM_CYCLE both honour _heaterActive at the wire
-// boundary in commandHeater(); this helper just mirrors that logic
-// for status reporting without re-sending packets.
+// wire-level drive, including HM_CYCLE OFF-phase.  The smoke heater is a
+// single on/off (smokeArmed) — driven by the gun_smoke RC channel (which
+// arms it) or the Studio button.  The separate "activation" gate was removed
+// (2026-05-29): it was a redundant second gate on top of arm.
 inline bool GunUnit::heaterDriving() const {
-    if (!_smokeArmed || !_heaterActive) return false;
+    if (!_smokeArmed) return false;
     if (_spec.smoke.heaterMode == SmokeConfig::HM_CYCLE) return _heaterCyclePhase;
-    return true;     // HM_CONTINUOUS — driving any time smokeArmed + heaterActive
+    return true;     // HM_CONTINUOUS — driving any time smoke is armed/on
 }
 
 // ─── Per-tick orchestration ─────────────────────────────────────────
@@ -355,25 +355,9 @@ inline void GunUnit::onPitchInputUs(uint16_t pulseUs, bool valid) {
     _havePitchInput   = true;
 }
 
-inline void GunUnit::onHeaterActivationBoolean(bool active) {
-    if (active == _heaterActive) return;
-    _heaterActive = active;
-    // Only push wire traffic if a heater port + smoke is armed — empty
-    // configs and disarmed smoke don't need a SET_TARGET on every flick.
-    // The heater follows the AND of (_smokeArmed, _heaterActive, and
-    // HM_CYCLE phase): in HM_CYCLE we must respect the current
-    // ON/OFF phase, otherwise an activation rising edge during a
-    // cycle OFF-phase would force the heater on out-of-band.
-    if (_spec.smoke.heaterPort.portKind == 0) return;
-    const bool cycleOk = _spec.smoke.heaterMode != SmokeConfig::HM_CYCLE
-                         || _heaterCyclePhase;
-    if (_begin && _sendCtx) _begin(_sendCtx);
-    commandHeater(_smokeArmed && cycleOk);
-    if (_commit && _sendCtx) _commit(_sendCtx);
-    SFX_LOG_INFO("[gun] %u: heater activation %s (smoke=%s)",
-                 _spec.id, active ? "ON" : "off",
-                 _smokeArmed ? "armed" : "off");
-}
+// (onHeaterActivationBoolean removed 2026-05-29 — the separate activation
+//  gate is gone; the gun_smoke channel now arms the heater directly via
+//  GunUnit::armSmoke(), routed in gunfx_service's inputChange handler.)
 
 // ─── Manual override ────────────────────────────────────────────────
 
@@ -528,12 +512,9 @@ inline void GunUnit::commandHeater(bool on) {
     if (!_send) return;
     if (_spec.smoke.heaterPort.portKind == 0) return;
 
-    // Activation-gate AND (Rule 43 named-channel, Phase 4 polish
-    // 2026-05-26).  When the heater activation channel reads below its
-    // threshold the heater stays off regardless of smoke-arm state.
-    // Empty `heaterActivationInput` ⇒ `_heaterActive` is initialised
-    // to true and never changes ("always allowed").
-    const bool effective = on && _heaterActive;
+    // Single on/off: the heater follows smoke-arm only (the redundant
+    // activation gate was removed 2026-05-29).
+    const bool effective = on;
 
     // Open-loop on/off.  HubFX has no temperature sensor wired to the
     // smoke heater, so HEATER_SET_TARGET toggles between INT16_MIN

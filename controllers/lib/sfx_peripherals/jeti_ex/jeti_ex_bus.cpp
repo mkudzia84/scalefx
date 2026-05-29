@@ -2,7 +2,9 @@
  * JetiExBus — implementation
  *
  * EX Bus frame from receiver (master → device):
- *   [0x3E/0x3D] [totalLen] [pktId] [dataId] [subLen] [payload...] [crc16LE]
+ *   [0x3E/0x3D] [type 0x01/0x03] [totalLen] [pktId] [dataId] [subLen] [payload...] [crc16LE]
+ *   (byte 1 = packet type — was missing in the original layout, which broke
+ *    every frame; verified against live receiver frames 2026-05-29.)
  *
  * Our response (device → receiver):
  *   [0x3B] [totalLen] [pktId] [dataId] [subLen] [EX data...] [crc16LE]
@@ -42,6 +44,7 @@ void JetiExBus::end()
     _frameCount   = 0;
     _errorCount   = 0;
     _txCount      = 0;
+    _rxByteCount  = 0;
     _telemetryCounter = 0;
     _nextSensorDataIdx = 0;
     _nextSensorTextIdx = 0;
@@ -57,20 +60,32 @@ void JetiExBus::update()
 
     while (_serial->available()) {
         uint8_t b = static_cast<uint8_t>(_serial->read());
+        _rxByteCount++;
 
         switch (_parseState) {
         case IDLE:
             if (b == START_ADDR0 || b == START_ADDR1) {
                 _frameBuf[0] = b;
                 _frameIdx = 1;
-                _parseState = READ_LENGTH;
+                _parseState = READ_TYPE;
             }
             break;
 
-        case READ_LENGTH:
+        case READ_TYPE:
+            // Byte 1 = packet type: 0x01 (response-allowed) / 0x03 (data-only).
+            // This byte was missing from the original layout, which made
+            // READ_LENGTH read it (1 or 3) as the length and reject every
+            // frame.  Verified against live frames on the input_monitor rig.
             _frameBuf[1] = b;
-            _frameLen = b;
             _frameIdx = 2;
+            _parseState = READ_LENGTH;
+            break;
+
+        case READ_LENGTH:
+            // Byte 2 = total packet length (header + payload + CRC).
+            _frameBuf[2] = b;
+            _frameLen = b;
+            _frameIdx = 3;
             if (_frameLen < MIN_FRAME_SIZE || _frameLen > MAX_FRAME_SIZE) {
                 _errorCount++;
                 _parseState = IDLE;
@@ -111,8 +126,9 @@ void JetiExBus::processFrame()
     }
 
     _frameCount++;
-    uint8_t packetId = _frameBuf[2];
-    uint8_t dataId   = _frameBuf[3];
+    // Frame layout: [0]header [1]type [2]len [3]pktId [4]dataId [5]subLen [6..]data [crc16].
+    uint8_t packetId = _frameBuf[3];
+    uint8_t dataId   = _frameBuf[4];
 
     switch (dataId) {
     case DATA_CHANNEL:
@@ -132,21 +148,21 @@ void JetiExBus::processFrame()
 // ─── parseChannelData ──────────────────────────────────────────
 void JetiExBus::parseChannelData()
 {
-    if (_frameLen < 7) return; // need at least header + 1 channel + CRC
+    if (_frameLen < 10) return; // 6-byte header + ≥1 channel (2B) + 2B CRC
 
-    uint8_t subLen = _frameBuf[4];
+    uint8_t subLen = _frameBuf[5];          // data-block length (byte 5)
     uint8_t numCh  = subLen / 2;
     if (numCh > RxConfig::MAX_CHANNELS) numCh = RxConfig::MAX_CHANNELS;
 
-    // Verify we have enough bytes for all channels
-    if (5 + subLen > _frameLen - 2) {
+    // Verify we have enough bytes for all channels (data starts at byte 6).
+    if (6 + subLen > _frameLen - 2) {
         _errorCount++;
         return;
     }
 
     for (uint8_t i = 0; i < numCh; i++) {
-        uint16_t raw = _frameBuf[5 + i * 2]
-                     | (static_cast<uint16_t>(_frameBuf[6 + i * 2]) << 8);
+        uint16_t raw = _frameBuf[6 + i * 2]
+                     | (static_cast<uint16_t>(_frameBuf[7 + i * 2]) << 8);
         _channels_us[i] = JetiConfig::rawToUs(raw);
     }
 

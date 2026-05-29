@@ -104,19 +104,25 @@
         }
         return out
     }
-    function liveUsFor(fnId: string): { us: number; valid: boolean } | null {
-        if (!fnId) return null
-        for (const inp of $deviceModel.inputs) {
-            for (const c of inp.channels) {
-                if (c.function !== fnId) continue
-                const lc = $liveChannels[liveChannelKey(
-                    { guid: inp.port.guid, kind: 4, index: inp.port.index }, c.channel)]
-                if (!lc) return { us: 1500, valid: false }
-                return { us: lc.us, valid: lc.valid }
+    // Reactive closure rebuilt on every live-stream / device-model change so
+    // call sites re-evaluate per frame AND on reassignment (a plain function
+    // reading $liveChannels internally freezes — the gun-pill / input-bar trap).
+    function makeLiveUsFor(dm: typeof $deviceModel, lc: Record<string, { us: number; valid: boolean }>) {
+        return (fnId: string): { us: number; valid: boolean } | null => {
+            if (!fnId) return null
+            for (const inp of dm.inputs) {
+                for (const c of inp.channels) {
+                    if (c.function !== fnId) continue
+                    const v = lc[liveChannelKey(
+                        { guid: inp.port.guid, kind: 4, index: inp.port.index }, c.channel)]
+                    if (!v) return { us: 1500, valid: false }
+                    return { us: v.us, valid: v.valid }
+                }
             }
+            return null
         }
-        return null
     }
+    $: liveUsFor = makeLiveUsFor($deviceModel, $liveChannels)
 
     // ─── Selector bands (Rule 38) — driven by active program names. ──
     const BAND_PALETTE = ['#5b9dff', '#ffa05b', '#5bd28b', '#d65bd2']

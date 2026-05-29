@@ -80,6 +80,14 @@ uint32_t JetiExInputRole::txResponseCount() const {
 #endif
 }
 
+uint32_t JetiExInputRole::rxByteCount() const {
+#if SFX_PLATFORM_ESP32
+    return _decoder.rxByteCount();
+#else
+    return 0;
+#endif
+}
+
 void JetiExInputRole::setSensorInfo(uint16_t manufacturerId, uint16_t deviceId, const char* name) {
 #if SFX_PLATFORM_ESP32
     _decoder.setSensorInfo(manufacturerId, deviceId, name);

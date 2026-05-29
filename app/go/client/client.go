@@ -75,6 +75,11 @@ func OpenWith(portName string, opts Options) (*Client, error) {
 	if err := conn.Connect(); err != nil {
 		return nil, fmt.Errorf("open %s: %w", portName, err)
 	}
+	// Heartbeat so the board knows a host is listening: it gates its verbose
+	// async streams (input frames, gun verbose) on recent activity and goes
+	// quiet ~8 s after the keepalives stop (disconnect).  3 s interval keeps
+	// us comfortably inside that window.  Close()→conn.Close() stops it.
+	conn.StartKeepalive(3 * time.Second)
 	c := &Client{conn: conn}
 	c.Hub = &Hub{c: c}
 	c.Audio = &Audio{c: c}

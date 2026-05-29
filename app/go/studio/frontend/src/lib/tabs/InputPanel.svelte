@@ -75,8 +75,18 @@
         try { await setChannelFunction(p, ch, fn) } catch (e) { error = String(e) } finally { busy = false }
     }
 
-    function live(cfg: InputPortConfig, ch: number) {
-        return $liveChannels[liveChannelKey(cfg.port, ch)]
+    // Highest channel index seen live on this port (+1), i.e. how many
+    // channels the signal actually carries.  Takes the live store as a param
+    // so the {@const} that calls it re-evaluates when channels update.
+    function detectedCount(cfg: InputPortConfig, lc: Record<string, { us: number; valid: boolean }>): number {
+        const prefix = `${cfg.port.guid}|${cfg.port.index}|`
+        let max = 0
+        for (const k of Object.keys(lc)) {
+            if (!k.startsWith(prefix)) continue
+            const ch = parseInt(k.slice(prefix.length), 10)
+            if (!Number.isNaN(ch) && ch + 1 > max) max = ch + 1
+        }
+        return max
     }
 
     // Silkscreen label for the input port (from the model; fallback IN<n>).
@@ -125,6 +135,7 @@
     {#if inputs.length === 0}<div class="empty-state">No input ports on this system.</div>{/if}
 
     {#each inputs as cfg (cfg.port.guid + cfg.port.index)}
+        {@const det = detectedCount(cfg, $liveChannels)}
         <div class="card input-card">
             <div class="board-head">
                 <span class="board-name">{names[cfg.port.guid] ?? hw(cfg.port)} · {hw(cfg.port)}</span>
@@ -149,11 +160,22 @@
                        value={cfg.channelCount} disabled={busy}
                        title="Channels decoded from this input (max {maxCh(cfg.protocol)} for {cfg.protocol})"
                        on:change={(e) => onCount(cfg.port, numValue(e))} />
+                <button class="small" disabled={busy || det === 0}
+                        title={det === 0
+                            ? 'No live signal — enable the input / check wiring'
+                            : `Set channel count to ${det} (detected on the live ${cfg.protocol} signal)`}
+                        on:click={() => onCount(cfg.port, det)}>
+                    Autodetect{det > 0 ? ` (${det})` : ''}
+                </button>
             </div>
 
             <div class="channels">
                 {#each cfg.channels as ch (ch.channel)}
-                    {@const lv = live(cfg, ch.channel)}
+                    <!-- Read $liveChannels INLINE so this @const re-evaluates
+                         on every frame — a helper that reads the store
+                         internally is invisible to Svelte's reactivity and
+                         freezes the bar (same trap as the gun status pills). -->
+                    {@const lv = $liveChannels[liveChannelKey(cfg.port, ch.channel)]}
                     {@const signal = !!lv && lv.valid}
                     <div class="ch-block">
                         <div class="ch-top">

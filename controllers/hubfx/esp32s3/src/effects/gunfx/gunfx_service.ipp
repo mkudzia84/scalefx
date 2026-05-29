@@ -174,7 +174,7 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::subscribePerGunIn
         // subscribe; gun_unit's `_heaterActive` defaults to true so the
         // heater is permanently allowed in that case (legacy behaviour).
         if (s.smoke.heaterActivationPort.portKind != 0) {
-            _inputCtx[i][(uint8_t)TrigKind::HeaterAct] = { this, i, TrigKind::HeaterAct };
+            _inputCtx[i][(uint8_t)TrigKind::SmokeOnOff] = { this, i, TrigKind::SmokeOnOff };
             input::TriggerMapping m;
             m.kind         = input::TriggerKind::Boolean;
             m.thresholdUs  = s.smoke.heaterActivationThresholdUs;
@@ -183,10 +183,10 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::subscribePerGunIn
             // Far safer than `Hold` here — a fail-on heater could melt
             // the smoke cartridge if the operator's RC link drops.
             m.failsafe     = input::FailsafeBehaviour::ForceLow;
-            _triggers[i][(uint8_t)TrigKind::HeaterAct].configure(m,
+            _triggers[i][(uint8_t)TrigKind::SmokeOnOff].configure(m,
                 &GunFxServicePolicyT::inputChangeTrampoline,
-                static_cast<void*>(&_inputCtx[i][(uint8_t)TrigKind::HeaterAct]));
-            _dispatcher->subscribe(&_triggers[i][(uint8_t)TrigKind::HeaterAct],
+                static_cast<void*>(&_inputCtx[i][(uint8_t)TrigKind::SmokeOnOff]));
+            _dispatcher->subscribe(&_triggers[i][(uint8_t)TrigKind::SmokeOnOff],
                                    s.smoke.heaterActivationPort,
                                    s.smoke.heaterActivationChannel);
         }
@@ -396,6 +396,7 @@ template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::e
 void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::emitVerboseStatus(
         uint8_t unitIdx, uint32_t /*nowMs*/) {
     if (!_ctx) return;
+    if (!_ctx->hostVerboseActive()) return;  // no host listening — don't stream verbose
     const GunUnit& u = _units[unitIdx];
 
     // 26-byte fixed layout — matches DecodeVerboseStatus in
@@ -576,9 +577,11 @@ void GunFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::inputChangeTrampo
                 u.onPitchInputUs(v.us, v.valid);
             }
             break;
-        case TrigKind::HeaterAct:
+        case TrigKind::SmokeOnOff:
+            // The smoke channel (gun_smoke) is the single heat on/off — it
+            // ARMS the heater directly (was a separate "activation" gate).
             if (v.kind == input::TriggerKind::Boolean) {
-                u.onHeaterActivationBoolean(v.b);
+                u.armSmoke(v.b);
             }
             break;
         default: break;

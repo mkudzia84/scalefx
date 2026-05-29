@@ -317,7 +317,12 @@ bool RoleServicePolicy::attachRcPwmInput(InputBinding& b, uint8_t portIdx,
     auto& role = b.role.emplace<RcPwmInputRole>();
     if (!role.bind(b.port)) { b.role.emplace<std::monostate>(); return false; }
     // Optional config: [broadcastHz:u8]
-    if (cfgLen >= 1) role.setBroadcastHz(cfg[0]);
+    // Default 50 Hz so the InputDispatcher (and thus effects) get RC values
+    // from boot even with no host connected — field operation has no Studio.
+    // The WIRE broadcast is gated on a listening host (hostVerboseActive), so
+    // a non-zero default doesn't stream into a dead port; only the LOCAL
+    // dispatch runs.  A host can still override the rate via Set*BroadcastHz.
+    role.setBroadcastHz(cfgLen >= 1 ? cfg[0] : 50);
     role.onBroadcast([this, portIdx](uint8_t /*count*/, bool /*valid*/) {
         // Rebuild the full PPM channel frame from the role each tick
         // (mirrors the SBUS / Jeti pattern).
@@ -335,7 +340,12 @@ bool RoleServicePolicy::attachSbusInput(InputBinding& b, uint8_t portIdx,
     auto& role = b.role.emplace<SbusInputRole>();
     if (!role.bind(b.port)) { b.role.emplace<std::monostate>(); return false; }
     // Optional config: [broadcastHz:u8]
-    if (cfgLen >= 1) role.setBroadcastHz(cfg[0]);
+    // Default 50 Hz so the InputDispatcher (and thus effects) get RC values
+    // from boot even with no host connected — field operation has no Studio.
+    // The WIRE broadcast is gated on a listening host (hostVerboseActive), so
+    // a non-zero default doesn't stream into a dead port; only the LOCAL
+    // dispatch runs.  A host can still override the rate via Set*BroadcastHz.
+    role.setBroadcastHz(cfgLen >= 1 ? cfg[0] : 50);
     role.onBroadcast([this, portIdx](uint8_t /*ch*/, bool /*valid*/,
                                      bool /*failsafe*/, bool /*frameLost*/) {
         // The broadcast packet rebuilds the full channel payload —
@@ -362,7 +372,12 @@ bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
         else baud = (uint32_t)kbaud * 1000;
     }
     if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
-    if (cfgLen >= 1) role.setBroadcastHz(cfg[0]);
+    // Default 50 Hz so the InputDispatcher (and thus effects) get RC values
+    // from boot even with no host connected — field operation has no Studio.
+    // The WIRE broadcast is gated on a listening host (hostVerboseActive), so
+    // a non-zero default doesn't stream into a dead port; only the LOCAL
+    // dispatch runs.  A host can still override the rate via Set*BroadcastHz.
+    role.setBroadcastHz(cfgLen >= 1 ? cfg[0] : 50);
     role.onBroadcast([this, portIdx](uint8_t /*ch*/, bool /*valid*/,
                                      uint32_t /*rxFrames*/, uint32_t /*rxErrors*/) {
         auto* binding = _reg->inputAt(portIdx);
@@ -669,6 +684,9 @@ void RoleServicePolicy::handleJetiExSetBroadcastHz(const uint8_t* p, size_t len)
     auto* r = std::get_if<JetiExInputRole>(&b->role);
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
     r->setBroadcastHz(hz);
+#if SFX_INSTRUMENTATION
+    SFX_LOG_INFO("[jeti] setBroadcastHz idx=%u hz=%u", idx, hz);
+#endif
     _ctx->sendAck();
 }
 
@@ -1107,7 +1125,12 @@ void RoleServicePolicy::emitPpmFrameBroadcast(uint8_t portIdx, const RcPwmInputR
         SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
         off += 2;
     }
-    _ctx->sendRawPacket(RolePacket::PPM_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
+    // Wire broadcast = host live-view only; gate on a listening host so we
+    // don't stream into a dead port.  The LOCAL dispatch ALWAYS fires — it
+    // feeds the on-board InputDispatcher that drives effects, which must run
+    // standalone with no host connected.
+    if (_ctx && _ctx->hostVerboseActive())
+        _ctx->sendRawPacket(RolePacket::PPM_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::PPM_FRAME_BROADCAST, buf, off);
 }
 
@@ -1130,12 +1153,30 @@ void RoleServicePolicy::emitSbusFrameBroadcast(uint8_t portIdx, const SbusInputR
         SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
         off += 2;
     }
-    _ctx->sendRawPacket(RolePacket::SBUS_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
+    if (_ctx && _ctx->hostVerboseActive())  // wire = host only; local dispatch always
+        _ctx->sendRawPacket(RolePacket::SBUS_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::SBUS_FRAME_BROADCAST, buf, off);
 }
 
 void RoleServicePolicy::emitJetiExFrameBroadcast(uint8_t portIdx, const JetiExInputRole& role) {
     const uint8_t count = role.channelCount();
+#if SFX_INSTRUMENTATION
+    // Rate-limited health: confirms the emit fires AND surfaces decoder state
+    // (rxF climbing = frames passing CRC; rxE climbing = CRC fails; rxB
+    // climbing with rxF=0 = wrong baud/framing). Visible via `subscribe`.
+    {
+        static uint32_t lastLog = 0;
+        const uint32_t nowMs = millis();
+        if (nowMs - lastLog >= 1000) {
+            lastLog = nowMs;
+            SFX_LOG_INFO("[jeti] emit port=%u count=%u valid=%u rxF=%lu rxE=%lu rxB=%lu",
+                         portIdx, count, role.valid() ? 1 : 0,
+                         (unsigned long)role.rxFrameCount(),
+                         (unsigned long)role.rxErrorCount(),
+                         (unsigned long)role.rxByteCount());
+        }
+    }
+#endif
     // Jeti EX Bus carries up to 24 proportional channels per frame.
     uint8_t buf[3 + 24*2];
     buf[0] = portIdx;
@@ -1146,7 +1187,8 @@ void RoleServicePolicy::emitJetiExFrameBroadcast(uint8_t portIdx, const JetiExIn
         SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
         off += 2;
     }
-    _ctx->sendRawPacket(RolePacket::JETIEX_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
+    if (_ctx && _ctx->hostVerboseActive())  // wire = host only; local dispatch always
+        _ctx->sendRawPacket(RolePacket::JETIEX_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::JETIEX_FRAME_BROADCAST, buf, off);
 }
 

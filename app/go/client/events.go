@@ -292,5 +292,10 @@ func (e *Events) add(dst any, fn any) {
 		*d = append(*d, fn.(func(gunfx.VerboseStatus)))
 	case *[]func(*protocol.Response):
 		*d = append(*d, fn.(func(*protocol.Response)))
+	case *[]func(InputValue):
+		// Was missing — OnInputValue registrations silently no-op'd, so NO
+		// input live-value subscriber (CLI [RC] or Studio bars) ever fired,
+		// for any protocol, even though frames decoded fine.
+		*d = append(*d, fn.(func(InputValue)))
 	}
 }

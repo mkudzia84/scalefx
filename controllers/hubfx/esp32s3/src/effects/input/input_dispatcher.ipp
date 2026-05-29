@@ -196,13 +196,35 @@ void InputDispatcherServicePolicyT<TTopology>::onRoleEvent(
 
     if (len < 1) return;
 
+    const uint8_t evtPortIdx = p[0];
+
+#if SFX_INSTRUMENTATION
+    // Rate-limited dispatch health: confirms onRoleEvent fires (local path OK)
+    // and shows WHY effects may not move — routing off, no subscriptions, or
+    // source mismatch (binds>0 but match=0 = the bound PortRef's GUID/port
+    // doesn't match the frame's, e.g. hub-GUID vs "" trap).
+    {
+        static uint32_t lastLog = 0;
+        const uint32_t nowMs = millis();
+        if (nowMs - lastLog >= 1000) {
+            lastLog = nowMs;
+            uint8_t occ = 0, matched = 0;
+            for (uint8_t i = 0; i < kMaxBindings; ++i) {
+                if (!_bindings[i].occupied) continue;
+                occ++;
+                if (sourceMatches(_bindings[i].source, evtPortKind, evtPortIdx, guid)) matched++;
+            }
+            SFX_LOG_INFO("[disp] evt type=0x%02X port=%u routing=%d binds=%u match=%u",
+                         innerType, evtPortIdx, _routingEnabled ? 1 : 0, occ, matched);
+        }
+    }
+#endif
+
     // Global RC-routing gate (protocol-agnostic — we're past the
     // per-protocol extractor selection).  When off, RC stops driving
     // effects; the wire broadcast that monitors read already went out
     // separately, so live channel bars keep updating.
     if (!_routingEnabled) return;
-
-    const uint8_t evtPortIdx = p[0];
 
     for (uint8_t i = 0; i < kMaxBindings; ++i) {
         Binding& b = _bindings[i];

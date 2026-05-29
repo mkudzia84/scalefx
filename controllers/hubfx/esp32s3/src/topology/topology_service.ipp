@@ -651,9 +651,16 @@ void TopologyServicePolicyT<TExpander>::onLocalRoleAsyncTrampoline(
         void* ctx, uint8_t innerType, const uint8_t* p, size_t len) {
     auto* self = static_cast<TopologyServicePolicyT*>(ctx);
     if (!self) return;
+    // These are HUB-LOCAL role events (from the local RoleService's
+    // fireLocalAsync).  The internal routing convention addresses hub ports
+    // as local (empty GUID — PortRef::local), and that's how effects resolve
+    // their input PortRef (findInputByName → b->port = local).  Passing the
+    // hub GUID here made sourceMatches() see bindLocal != evtLocal and reject
+    // every binding (match=0), so RC never reached the effects.  Pass "" so
+    // local events match local bindings.
     for (uint8_t i = 0; i < self->_numRoleEventSubs; ++i) {
         const auto& s = self->_roleEventSubs[i];
-        if (s.fn) s.fn(s.ctx, self->_hubGuid, innerType, p, len);
+        if (s.fn) s.fn(s.ctx, "", innerType, p, len);
     }
     if (innerType == RolePacket::ROLE_DETACHED && len >= 2) {
         PortRef ref = PortRef::local(p[0], p[1]);

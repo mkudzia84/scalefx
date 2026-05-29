@@ -68,6 +68,7 @@ public:
     uint32_t rxFrameCount()    const;
     uint32_t rxErrorCount()    const;
     uint32_t txResponseCount() const;
+    uint32_t rxByteCount()     const;   ///< total UART bytes (wrong-baud diag)
 
     // ── Telemetry sensor registration ────────────────────────────────
     void setSensorInfo(uint16_t manufacturerId, uint16_t deviceId, const char* name);

@@ -147,12 +147,11 @@ private:
     // dispatcher subscriptions take a TriggerInput* + a void* ctx, so
     // the trampoline reads the ctx back to (svc, unitIdx, kind).
     //
-    // HeaterAct (Rule 43, Phase 4 polish 2026-05-26): named-channel
-    // dispatched as Boolean.  When ABOVE threshold the gun's heater is
-    // ALLOWED to drive (open-loop on at element-scaled duty); when
-    // BELOW, the gun forces HEATER_SET_TARGET(INT16_MIN) regardless
-    // of smoke-arm.
-    enum class TrigKind : uint8_t { Trigger=0, Rof=1, Yaw=2, Pitch=3, HeaterAct=4, _Count };
+    // SmokeOnOff (Rule 43 named-channel, dispatched as Boolean): the single
+    // smoke heat on/off.  ABOVE threshold → arms the heater; BELOW → disarms.
+    // (Replaced the old separate "activation" gate, 2026-05-29 — the heater is
+    // now a single on/off driven by this channel or the Studio button.)
+    enum class TrigKind : uint8_t { Trigger=0, Rof=1, Yaw=2, Pitch=3, SmokeOnOff=4, _Count };
     struct InputCtx {
         GunFxServicePolicyT* svc;
         uint8_t              unitIdx;

@@ -75,15 +75,19 @@ public:
     }
 
     bool configureJetiEx(uint32_t baud) override {
-        // Jeti EX Bus is half-duplex on ONE wire.  Bind both TX and RX
-        // to the same GPIO, then enable RS-485 mode so the ESP UART
-        // auto-flips driver direction when the application writes.
-        // Datasheet baud rates: 125 000 or 250 000.
+        // LISTEN-ONLY.  Jeti EX Bus is half-duplex on one wire, but to READ
+        // RC channel data we only need RX.  RX-only (tx=-1, normal UART mode)
+        // is the configuration verified on the input_monitor bench rig
+        // (thousands of bytes/s, clean CRC).  The earlier RS-485 half-duplex
+        // + shared-pin (tx=rx) setup received almost nothing — half-duplex
+        // holds the line for TX, so the inbound stream never reaches RX
+        // (instrumentation showed rxBytes stuck at ~1).  Telemetry talk-back
+        // (device->radio, EX telemetry / JetiBox — direction B) will need the
+        // half-duplex path restored with response-slot TX timing; that's a
+        // separate future feature.  Datasheet baud: 125 000 or 250 000.
         teardownActive();
         auto& s = uartSerial();
-        s.begin(baud, SERIAL_8N1, _pin, _pin);
-        uart_set_mode(static_cast<uart_port_t>(_uartNum),
-                      UART_MODE_RS485_HALF_DUPLEX);
+        s.begin(baud, SERIAL_8N1, _pin, /*tx=*/-1, /*invert=*/false);
         _mode = Mode::JETI_EX;
         return true;
     }

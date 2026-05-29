@@ -257,6 +257,20 @@ public:
     uint8_t currentTag() const { return _currentTag; }
     Stream* serial()     const { return _serial; }
 
+    // Verbose async streams (input-frame broadcasts, gun verbose status, …)
+    // only transmit while a host is actively listening — i.e. we've heard
+    // from it (ANY packet, including the KEEPALIVE heartbeat the client sends
+    // every few seconds) within this window.  When the host disconnects the
+    // keepalives stop, so the board quiesces instead of streaming 10 Hz into a
+    // dead port — that backlog is what otherwise buries the next IDENTIFY and
+    // makes reconnects slow.  Window > the client keepalive interval (~3 s)
+    // with margin, and < the 15 s connection-reset timeout.  Public so service
+    // policies can gate their broadcast emits via `_ctx`.
+    static constexpr unsigned long kVerboseIdleMs = 8000;
+    bool hostVerboseActive() const {
+        return _lastActivityMs != 0 && (millis() - _lastActivityMs) < kVerboseIdleMs;
+    }
+
 protected:
     /// Pump available bytes through the COBS framer.  Each complete
     /// frame is decoded, CRC-checked, and routed to dispatchPacket().

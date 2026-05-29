@@ -7,7 +7,7 @@
 // subscribe to.  No model logic lives here — claim/validate/preset all
 // round-trip to Go so there is exactly one source of truth.
 
-import { writable, derived } from 'svelte/store'
+import { writable, derived, get } from 'svelte/store'
 import {
     RefreshDeviceModel, DeviceModelSnapshot,
     ClaimPort, UnclaimPort, CandidatePorts,
@@ -375,6 +375,10 @@ export interface LiveChannel { us: number; valid: boolean }
 export const liveChannels = writable<Record<string, LiveChannel>>({})
 
 let inputBridged = false
+// Channel-count autodetect dedup: last count we auto-expanded a port to, so
+// we push SetInputChannelCount only when the detected width actually changes
+// (the stream fires at ~10 Hz — we must not command on every frame).
+const lastAutoCount: Record<string, number> = {}
 export function installInputValuesBridge() {
     if (inputBridged) return
     inputBridged = true
@@ -387,7 +391,33 @@ export function installInputValuesBridge() {
             }
             return next
         })
+        autoExpandChannels(v)
     })
+}
+
+// Full auto-expand (operator decision 2026-05-29): grow the declared channel
+// count to whatever the live stream actually carries, and let a row render
+// per detected channel.  The radio emits a fixed N-slot frame — including the
+// static padding channels (PPM/SBUS/Jeti all confirmed to pad to 16/24 on the
+// bench), so the operator sees every slot and names only the ones they use
+// (Rule 43).  Capped at the protocol ceiling; deduped per port.
+function autoExpandChannels(v: { guid: string; portIdx: number; channels: { channel: number }[] }) {
+    let detected = 0
+    for (const c of v.channels) if (c.channel + 1 > detected) detected = c.channel + 1
+    if (detected <= 0) return
+    const pkey = `${v.guid}|${v.portIdx}`
+    if (lastAutoCount[pkey] === detected) return
+    lastAutoCount[pkey] = detected
+
+    const dm = get(deviceModel)
+    const cfg = dm.inputs.find(c => c.port.guid === v.guid && c.port.index === v.portIdx)
+    if (!cfg) return
+    const proto = dm.inputProtocols.find(p => p.id === cfg.protocol)
+    const target = Math.min(detected, proto?.maxChannels ?? detected)
+    if (cfg.channelCount === target) return
+    // setInputChannelCount updates the model (rows appear), pushes to the hub,
+    // and marks /hubfx.yaml dirty so the detected width can be persisted.
+    setInputChannelCount(cfg.port, target).catch(() => {})
 }
 
 export function liveChannelKey(p: PortRef, channel: number): string {

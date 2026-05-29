@@ -182,13 +182,10 @@ public:
     /// Forwarded for yaw / pitch axis input channels (Raw µs).
     void onYawInputUs(uint16_t pulseUs, bool valid);
     void onPitchInputUs(uint16_t pulseUs, bool valid);
-    /// Forwarded by the service when the heater-activation channel
-    /// crosses its configured threshold (Rule 43 named-channel, Boolean
-    /// dispatch).  When active==false the heater is forced off
-    /// regardless of `_smokeArmed`; on the rising edge we re-issue
-    /// HEATER_SET_TARGET if smoke is still armed.  Unbound (no
-    /// activation channel configured) ⇒ permanently active.
-    void onHeaterActivationBoolean(bool active);
+    /// Retained only for the verbose-status wire byte [25] (Rule 11 — the
+    /// byte stays in the frame).  The separate activation gate was removed
+    /// 2026-05-29; `_heaterActive` is now permanently true (the gun_smoke
+    /// channel arms the heater directly via armSmoke()).
     bool heaterActive() const { return _heaterActive; }
 
     /// True when the heater is currently being driven on the wire.

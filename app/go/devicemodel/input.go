@@ -35,8 +35,8 @@ type InputProtocolDef struct {
 // inputProtocols is the catalog the input panel renders.
 var inputProtocols = []InputProtocolDef{
 	{ID: InputPpm, Label: "PPM", RoleKind: 0x02 /*RcPwmInput*/, Implemented: true, MaxChannels: 24},
-	{ID: InputSbus, Label: "SBUS", RoleKind: 0x03 /*SbusInput*/, Implemented: false, MaxChannels: 16},
-	{ID: InputJetiEx, Label: "Jeti EX", RoleKind: 0x04 /*JetiExInput*/, Implemented: false, MaxChannels: 24},
+	{ID: InputSbus, Label: "SBUS", RoleKind: 0x03 /*SbusInput*/, Implemented: true, MaxChannels: 16},
+	{ID: InputJetiEx, Label: "Jeti EX", RoleKind: 0x04 /*JetiExInput*/, Implemented: true, MaxChannels: 24},
 }
 
 // InputProtocols returns the protocol catalog.
@@ -50,6 +50,20 @@ func ProtocolByID(id InputProtocol) (InputProtocolDef, bool) {
 		}
 	}
 	return InputProtocolDef{}, false
+}
+
+// ProtocolByRoleKind maps an attached input-role kind (RcPwmInput / SbusInput
+// / JetiExInput) back to its protocol id.  The attached role IS the protocol,
+// so on connect the input panel derives the dropdown selection from the live
+// topology rather than the PPM default.  Returns ("", false) if the role kind
+// isn't an input role.
+func ProtocolByRoleKind(roleKind byte) (InputProtocol, bool) {
+	for _, p := range inputProtocols {
+		if p.RoleKind == roleKind {
+			return p.ID, true
+		}
+	}
+	return InputNone, false
 }
 
 // ─── Channel function catalog ─────────────────────────────────────────

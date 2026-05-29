@@ -373,6 +373,11 @@ func (a *App) SaveHubConfig() error {
 	}
 	a.diag.Info("CFG", "saved + reloaded /hubfx.yaml (%d inputs · %d hub ports · %d expanders)",
 		len(cfg.Inputs), len(cfg.Ports), len(cfg.Expanders))
+	// The firmware reload re-attaches every role from scratch, which resets
+	// each input role's broadcast rate to 0 — so the live RC bars in Studio
+	// would go dead after any save.  Re-arm the per-port input broadcasts so
+	// the firmware keeps streaming channel frames to us.
+	a.startInputBroadcasts()
 	return nil
 }
 

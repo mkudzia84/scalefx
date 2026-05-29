@@ -1,0 +1,9 @@
+# Input Monitor — minimal ESP32-S3 partition table (no LittleFS needed).
+# Board: ESP32-S3-WROOM-1 N8R8 (8MB flash, 8MB OPI PSRAM)
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x3F0000,
+littlefs,   data, spiffs,   0x400000, 0x3F0000,
+coredump,   data, coredump, 0x7F0000, 0x10000,

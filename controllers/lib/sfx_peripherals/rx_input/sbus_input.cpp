@@ -76,6 +76,17 @@ void SbusInput::parseFrame()
         return;
     }
 
+    // Validate the end byte: standard is 0x00, but receivers also emit
+    // 0x04/0x14/0x24/0x34 — the low nibble is always 0.  A non-zero low
+    // nibble means we are mis-framed; drop the frame and count it so the
+    // start-byte hunt resyncs.  (Verified on the input_monitor bench rig;
+    // timing-only resync is unreliable because the UART driver delivers RX
+    // in bursts, so micros() gaps between reads don't reflect wire timing.)
+    if ((_buf[SbusConfig::FRAME_SIZE - 1] & 0x0F) != 0x00) {
+        _errorCount++;
+        return;
+    }
+
     // Extract 16 × 11-bit channels from bytes 1–22 (176 bits, LSB-packed)
     const uint8_t* p = &_buf[1];
     for (uint8_t ch = 0; ch < SbusConfig::NUM_CHANNELS; ch++) {

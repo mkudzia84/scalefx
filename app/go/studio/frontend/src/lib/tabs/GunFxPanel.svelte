@@ -347,18 +347,26 @@
     // channel) carries it AND look up the live value the dispatcher is
     // streaming.  Returns null when the name isn't assigned to any
     // channel yet (operator hasn't configured the IO tab).
-    function liveUsFor(fnId: string): { us: number; valid: boolean } | null {
-        if (!fnId) return null
-        for (const inp of $deviceModel.inputs) {
-            for (const c of inp.channels) {
-                if (c.function !== fnId) continue
-                const lc = $liveChannels[liveChannelKey({ guid: inp.port.guid, kind: 4, index: inp.port.index }, c.channel)]
-                if (!lc) return { us: 1500, valid: false }
-                return { us: lc.us, valid: lc.valid }
+    // Reactive closure, rebuilt whenever the live stream OR the device model
+    // changes — so EVERY call site (cluster liveUs props, {@const}s, the live
+    // mirrors) re-evaluates on each ~10 Hz frame AND on channel reassignment.
+    // A plain function reading $liveChannels internally is invisible to
+    // Svelte's reactivity and freezes the value (the gun-pill / input-bar trap).
+    function makeLiveUsFor(dm: typeof $deviceModel, lc: Record<string, { us: number; valid: boolean }>) {
+        return (fnId: string): { us: number; valid: boolean } | null => {
+            if (!fnId) return null
+            for (const inp of dm.inputs) {
+                for (const c of inp.channels) {
+                    if (c.function !== fnId) continue
+                    const v = lc[liveChannelKey({ guid: inp.port.guid, kind: 4, index: inp.port.index }, c.channel)]
+                    if (!v) return { us: 1500, valid: false }
+                    return { us: v.us, valid: v.valid }
+                }
             }
+            return null
         }
-        return null
     }
+    $: liveUsFor = makeLiveUsFor($deviceModel, $liveChannels)
 
     // ── Multi-band ROF overlay (Phase 4b, Rule 38) ─────────────────────
     // Each ROF item declares [bandLoUs, bandHiUs]; on the live channel
@@ -1090,16 +1098,17 @@
                     </div>
                 </div>
 
-                <!-- 1. Activation channel (Rule 43 — RC gate). Same
-                     shared widget the engine on/off uses (Rule 36).
-                     Empty = "no gating, heater always allowed when
-                     smoke is armed". -->
-                <div class="subsection-head">Activation channel
-                    <span class="hint">RC gate — leave empty for "always allowed when smoke armed"</span>
+                <!-- 1. Smoke heat on/off channel (Rule 43, shared Rule 36
+                     widget).  This is the SINGLE smoke control: above
+                     threshold arms the heater, below disarms.  The fan
+                     auto-runs when the heater is on AND the gun is firing.
+                     Empty = control the heater with the button only. -->
+                <div class="subsection-head">Smoke heat on/off
+                    <span class="hint">Channel that turns the smoke heater on/off — leave empty to use the button only</span>
                 </div>
                 <ChannelToggleCluster
                     channelLabel="Channel"
-                    emptyOption="— none (always allowed) —"
+                    emptyOption="— none (button only) —"
                     options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
                     inputId={gun.smoke.heater.activation.input}
                     thresholdUs={gun.smoke.heater.activation.thresholdUs}
@@ -1107,7 +1116,7 @@
                     liveUs={liveUsFor(gun.smoke.heater.activation.input)?.us ?? null}
                     liveValid={liveUsFor(gun.smoke.heater.activation.input)?.valid ?? false}
                     busy={busy}
-                    actionVerb="Heats"
+                    actionVerb="Heat on"
                     onChange={(n) => {
                         setHeaterActivationField(gun.id, 'input', n.inputId)
                         setHeaterActivationField(gun.id, 'thresholdUs', n.thresholdUs)

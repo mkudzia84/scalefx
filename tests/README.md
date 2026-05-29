@@ -90,6 +90,7 @@ firmware. They deliberately bypass the ScaleFX protocol so a multimeter
 | `led_blink/`             | ESP32-S3  | Drives all 8 LED channels via the PCAL6416A I²C expander |
 | `noop_simple/`           | ESP32-S3  | Minimal no-op image; useful when bisecting framework issues |
 | `ppm_test/`              | ESP32-S3  | PPM signal decoder bench |
+| `input_monitor/`         | ESP32-S3  | IN_1 (GPIO5) RC-input rig — PWM / PPM / SBUS / Jeti EX Bus modes via `-DMONITOR_MODE` |
 | `hubfx_av_hwtest/`       | ESP32-S3  | HubFX audio + video (LED) combined bring-up |
 | `hubfx_i2c_scan/`        | ESP32-S3  | I²C bus scan + INA226 / PCA9685 / TAS5825x probe |
 | `hubfx_led_hwtest/`      | ESP32-S3  | HubFX 6-channel LED via AW9523B in LED-mode PWM (legacy rev) |

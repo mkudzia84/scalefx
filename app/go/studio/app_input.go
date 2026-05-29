@@ -21,10 +21,14 @@ import (
 	wailsRT "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// kInputBroadcastHz is the live-bar refresh cadence requested from the hub.
-// Kept modest so the async stream never competes with synchronous topology
-// queries on the same link.
-const kInputBroadcastHz = 10
+// kInputBroadcastHz is the channel cadence requested from the hub.  It drives
+// BOTH the live-bar refresh AND the on-board InputDispatcher that feeds the
+// effect triggers (the local dispatch fires off the same broadcast tick), so
+// it's set to 50 Hz to match the firmware's standalone default and keep RC
+// effect response snappy.  At 6 Mbps the ~2 KB/s async stream is negligible
+// against synchronous topology/status RPCs, and the verbose gate stops it
+// entirely when no host is listening.
+const kInputBroadcastHz = 50
 
 // ensureInputConfigs creates a default InputPortConfig for every input
 // port in the model that doesn't have one yet.  Caller holds dmMu.
@@ -36,9 +40,18 @@ func (a *App) ensureInputConfigs() {
 		if p.Direction != devicemodel.DirInput {
 			continue
 		}
-		if _, ok := a.inputs[p.Ref]; !ok {
-			cfg := devicemodel.NewInputPortConfig(p.Ref)
-			a.inputs[p.Ref] = &cfg
+		cfg, ok := a.inputs[p.Ref]
+		if !ok {
+			c := devicemodel.NewInputPortConfig(p.Ref)
+			a.inputs[p.Ref] = &c
+			cfg = &c
+		}
+		// The attached role IS the protocol — derive the dropdown selection
+		// from live topology so a board that booted with jeti-ex-input (from
+		// /hubfx.yaml) shows "Jeti EX", not the PPM default.  Only override
+		// when the port actually has an input role attached.
+		if proto, ok := devicemodel.ProtocolByRoleKind(p.RoleKind); ok && proto != devicemodel.InputNone {
+			cfg.Protocol = proto
 		}
 	}
 }
@@ -54,31 +67,69 @@ func (a *App) installInputStream() {
 		if a.ctx == nil {
 			return
 		}
+		// Hub-local frames decode with GUID "" (the wire has no GUID for the
+		// master's own port), but the device model — and the frontend's
+		// liveChannelKey / autoExpand / detectedCount — key off the hub's
+		// GUID.  Remap so the live bars actually find their values.
+		if v.GUID == "" {
+			a.mu.Lock()
+			v.GUID = a.id.GUID
+			a.mu.Unlock()
+		}
 		wailsRT.EventsEmit(a.ctx, "input:values", v)
 	})
 }
 
-// startInputBroadcasts asks the hub to stream RC values for every input
-// port that has an rc-pwm-input role attached.  Snapshots the client +
-// input ports under lock, then issues the wire commands lock-free.
+// startInputBroadcasts asks the hub to stream RC values for every hub-local
+// input port carrying an input role — PPM, SBUS, or Jeti EX.  Each protocol
+// has its own broadcast-enable packet, so we dispatch by role kind (a Jeti
+// role attached but left on the PPM enable would never stream).  Snapshots
+// the client + input ports under lock, then issues the wire commands
+// lock-free.
 func (a *App) startInputBroadcasts() {
 	c := a.snapshotClient()
 	if c == nil {
 		return
 	}
+	type inputBcast struct {
+		idx  byte
+		kind byte
+	}
+	// Hub-local input ports are tagged with the HUB's GUID (not ""), so a
+	// `GUID == ""` filter matches nothing — which is why Studio's live bars
+	// never armed.  Accept both the empty GUID and the hub's own GUID.
+	a.mu.Lock()
+	hubGUID := a.id.GUID
+	a.mu.Unlock()
 	a.dmMu.Lock()
-	var idxs []byte
+	var ins []inputBcast
 	if a.dm != nil {
 		for _, p := range a.dm.Ports {
-			if p.Ref.Kind == ports.KindInput && p.RoleKind == roles.KindRcPwmInput && p.Ref.GUID == "" {
-				idxs = append(idxs, p.Ref.Index)
+			if p.Ref.Kind != ports.KindInput {
+				continue
+			}
+			if p.Ref.GUID != "" && p.Ref.GUID != hubGUID {
+				continue // expander input — armed via its own path, not here
+			}
+			switch p.RoleKind {
+			case roles.KindRcPwmInput, roles.KindSbusInput, roles.KindJetiExInput:
+				ins = append(ins, inputBcast{idx: p.Ref.Index, kind: p.RoleKind})
 			}
 		}
 	}
 	a.dmMu.Unlock()
-	for _, idx := range idxs {
-		if err := c.Input.SetBroadcastHz(idx, kInputBroadcastHz); err != nil {
-			a.diag.Warn("INPUT", "set broadcast hz on input %d: %v", idx, err)
+	for _, in := range ins {
+		var err error
+		switch in.kind {
+		case roles.KindSbusInput:
+			err = c.Input.SetSbusBroadcastHz(in.idx, kInputBroadcastHz)
+		case roles.KindJetiExInput:
+			err = c.Input.SetJetiBroadcastHz(in.idx, kInputBroadcastHz)
+		default: // KindRcPwmInput
+			err = c.Input.SetBroadcastHz(in.idx, kInputBroadcastHz)
+		}
+		if err != nil {
+			a.diag.Warn("INPUT", "set broadcast hz on input %d (role %d): %v", in.idx, in.kind, err)
 		}
 	}
 }
