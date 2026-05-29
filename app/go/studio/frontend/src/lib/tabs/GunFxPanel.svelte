@@ -608,7 +608,7 @@
                              no-ROF (Rule 35).  The ROF picker stays beside
                              it as the firing-rate modifier. -->
                         <div class="fire-cluster">
-                            <button class="small state-toggle" class:state-on={st?.firing}
+                            <button class="small state-toggle" class:danger={st?.firing}
                                     on:click={() => st?.firing
                                         ? gunStopFiring(gun.id)
                                         : gunStartFiringWithRof(gun.id, 0, pickRofForGun(gun))}
@@ -617,7 +617,7 @@
                                          : $gunfxDirty ? 'Apply changes before firing — tests the loaded firmware config'
                                          : gun.rof.items.length === 0 ? 'Add a ROF item first'
                                          : 'Start auto-fire at the picked ROF (or RC-armed)'}>
-                                {st?.firing ? '▶ Firing' : '○ Fire'}
+                                {st?.firing ? '■ Fire Off' : '▶ Fire On'}
                             </button>
                             <select class="field-input narrow"
                                     value={pickRofForGun(gun)}
@@ -1065,14 +1065,14 @@
                              enabled (emergency cutoff — firmware re-sends
                              OFF even if already off); OFF→ON gates on
                              dirty / no-heater-port (Rule 35). -->
-                        <button class="small state-toggle" class:state-on={armed}
+                        <button class="small state-toggle" class:danger={armed}
                                 on:click={() => gunSmokeArm(gun.id, !armed)}
                                 disabled={armed ? busy : (busy || $gunfxDirty || gun.smoke.heater.port.guid === '')}
-                                title={armed ? 'Smoke off: cuts heater + fan immediately (always available — emergency cutoff)'
+                                title={armed ? 'Heater off: cuts heater + fan immediately (always available — emergency cutoff)'
                                      : $gunfxDirty ? 'Apply changes before testing — runs the loaded firmware config'
                                      : gun.smoke.heater.port.guid === '' ? 'Pick a heater port below first — nothing to drive yet'
-                                     : 'Arm smoke: drives heater at element-scaled duty. Fan follows when trigger fires.'}>
-                            {armed ? '▶ Smoke ON' : '○ Smoke off'}
+                                     : 'Heater on: drives heater at element-scaled duty. Fan follows when trigger fires.'}>
+                            {armed ? '■ Heater Off' : '▶ Heater On'}
                         </button>
                     </div>
                 </div>

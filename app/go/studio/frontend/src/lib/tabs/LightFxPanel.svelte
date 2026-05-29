@@ -797,13 +797,13 @@
                          OFF→ON (play) gated on having a playable channel.
                          Hub-local channels only (expander LEDs need a
                          Topology forward of LED_QUEUE_LOAD). -->
-                    <button class="small state-toggle row-action" class:state-on={isPlaying}
+                    <button class="small state-toggle row-action" class:danger={isPlaying}
                             on:click={() => isPlaying ? stopProgram(ai) : playProgram(ai)}
                             disabled={isPlaying ? false : !canPlay}
                             title={isPlaying ? 'Stop every channel in this program'
                                  : canPlay ? 'Preview: fires every channel that has a port + events. No upload, no Save needed.'
                                  : 'No playable channels — assign a port and at least one event first.'}>
-                        {isPlaying ? '▶ Playing' : '○ Preview'}
+                        {isPlaying ? '■ Stop' : '▶ Preview'}
                     </button>
                     <button class="small row-action {expanded[ai] ? 'state-toggle state-on' : ''}"
                             on:click={() => expanded = { ...expanded, [ai]: !expanded[ai] }}

@@ -199,14 +199,19 @@
                      flips.  ON→OFF is always enabled (emergency cutoff);
                      OFF→ON gates on this effect's dirty/errors (Rule 35)
                      so a stale config can't be started. -->
-                <button class="small state-toggle" class:state-on={engineOn}
+                <!-- Action toggle: label is what the click DOES (the
+                     status pill beside it shows the live state, so the
+                     button must not duplicate it).  Red when running =
+                     "click to stop".  ON→OFF always enabled (cutoff);
+                     OFF→ON gated (Rule 35/48). -->
+                <button class="small state-toggle" class:danger={engineOn}
                         on:click={onEngineToggle}
                         disabled={engineOn ? busy : (busy || $engineDirty || soundsHaveErrors)}
                         title={engineOn ? 'Stop the engine sound (always available — emergency cutoff)'
                              : soundsHaveErrors ? 'Resolve validation errors before starting'
                              : $engineDirty ? 'Apply unsaved changes before starting'
                              : 'Start the engine sound'}>
-                    {engineOn ? '▶ Engine ON' : '○ Engine off'}
+                    {engineOn ? '■ Engine Stop' : '▶ Engine Start'}
                 </button>
             {/if}
         </div>

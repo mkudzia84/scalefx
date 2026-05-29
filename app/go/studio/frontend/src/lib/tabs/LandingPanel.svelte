@@ -276,14 +276,14 @@
                     <!-- Single on/off toggle (Rule 48): deploy ⇄ retract.
                          ON→OFF (retract) always enabled — emergency
                          cutoff; OFF→ON (deploy) gated on dirty/errors. -->
-                    <button class="small state-toggle" class:state-on={deployed}
+                    <button class="small state-toggle" class:danger={deployed}
                             on:click={() => deployed ? landingDeactivate(light.id) : landingActivate(light.id)}
                             disabled={deployed ? busy : (busy || $landingDirty || hasErrors)}
                             title={deployed ? 'Retract: LEDs off, then servos → close (always available)'
                                  : $landingDirty ? 'Apply changes before deploying — tests the loaded firmware config'
                                  : hasErrors ? 'Resolve validation errors first'
                                  : 'Deploy: servos → open, then LEDs on'}>
-                        {deployed ? '▶ Deployed' : '○ Retracted'}
+                        {deployed ? '■ Retract' : '▶ Deploy'}
                     </button>
                     <button class="small danger" on:click={() => removeLandingLight(light.id)} disabled={busy}>× Remove</button>
                 </div>
