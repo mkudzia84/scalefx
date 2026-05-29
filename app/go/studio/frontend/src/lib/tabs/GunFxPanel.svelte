@@ -27,6 +27,7 @@
         gunVerboseSubscribe, installVerboseListener, uninstallVerboseListener,
         detectBandOverlaps,
         type GunT, type GunFxConfigT, type RofItemT, type PortRefT,
+        type GunVerboseStatusT, type GunStatusT,
     } from '../gunfx'
     import ServoWidget from '../components/ServoWidget.svelte'
     // SetPortProfile + markHubDirty now flow through ServoCalibrationDialog;
@@ -191,10 +192,22 @@
     // landed for this gun; fall back to the polled snapshot for the
     // first ~100 ms after panel mount before the verbose stream warms
     // up.  Returns a uniform shape so consumers don't have to branch.
-    function statusFor(id: number): { firing: boolean; smokeArmed: boolean } | undefined {
-        const v = $gunfxVerbose[id]
+    //
+    // The verbose + status maps are passed IN (not read off the `$store`
+    // inside the body) so the `{@const st = statusFor(id, $gunfxVerbose,
+    // $gunfxStatus)}` call site textually depends on both stores — Svelte
+    // only re-evaluates an {@const} when a variable it *references* changes,
+    // and a store read hidden inside the function body is invisible to that
+    // dependency analysis (the bug: header firing/smoke pills never
+    // refreshed on the 10 Hz broadcast).
+    function statusFor(
+        id: number,
+        verbose: Record<number, GunVerboseStatusT>,
+        status: GunStatusT[],
+    ): { firing: boolean; smokeArmed: boolean } | undefined {
+        const v = verbose[id]
         if (v) return { firing: v.firing, smokeArmed: v.smokeArmed }
-        const s = $gunfxStatus.find(x => x.id === id)
+        const s = status.find(x => x.id === id)
         return s ? { firing: s.firing, smokeArmed: s.smokeArmed } : undefined
     }
 
@@ -568,7 +581,7 @@
              rows.  Needs the full-width GunFX tab to breathe. -->
         <div class="guns-grid">
         {#each cfg.guns as gun (gun.id)}
-            {@const st = statusFor(gun.id)}
+            {@const st = statusFor(gun.id, $gunfxVerbose, $gunfxStatus)}
             <!-- Role-filtered port-picker context — must live at
                  each-block scope because Svelte 3 requires {@const} as
                  a direct child of a control-flow block.  Used by the
@@ -1012,7 +1025,7 @@
                  µs readout in the header refresh at the verbose-status
                  cadence (10 Hz). -->
             {@const verb         = $gunfxVerbose[gun.id]}
-            {@const armed        = verb?.smokeArmed ?? statusFor(gun.id)?.smokeArmed ?? false}
+            {@const armed        = verb?.smokeArmed ?? statusFor(gun.id, $gunfxVerbose, $gunfxStatus)?.smokeArmed ?? false}
             {@const heating      = (verb?.heaterDutyPct ?? 0) > 0}
             {@const gatedOff     = armed && !heating && gun.smoke.heater.activation.input !== ''}
             {@const fanRunning   = verb?.smokeFanRunning ?? false}
