@@ -131,7 +131,7 @@ func (e *Events) onAsync(resp *protocol.Response) {
 				}
 			}
 		}
-	case roles.RcinValueBroadcast, roles.SbusFrameBroadcast, roles.JetiExFrameBroadcast:
+	case roles.RcinValueBroadcast, roles.PpmFrameBroadcast, roles.SbusFrameBroadcast, roles.JetiExFrameBroadcast:
 		// Hub-local input frames arrive directly (guid "").
 		if iv, ok := decodeInputValue("", byte(resp.PacketType), resp.Payload); ok {
 			for _, fn := range e.snapshotInputValue() {

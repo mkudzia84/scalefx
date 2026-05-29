@@ -131,6 +131,9 @@ private:
     static bool extractRcPwm  (const uint8_t* p, size_t len,
                                uint8_t channel,
                                uint16_t& outUs, bool& outValid);
+    static bool extractPpm    (const uint8_t* p, size_t len,
+                               uint8_t channel,
+                               uint16_t& outUs, bool& outValid);
     static bool extractSbus   (const uint8_t* p, size_t len,
                                uint8_t channel,
                                uint16_t& outUs, bool& outValid);

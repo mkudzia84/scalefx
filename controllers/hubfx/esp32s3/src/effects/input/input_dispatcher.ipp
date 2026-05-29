@@ -143,6 +143,24 @@ bool InputDispatcherServicePolicyT<TTopology>::extractJetiEx(
     return true;
 }
 
+// PPM_FRAME_BROADCAST: [portIdx:u8][count:u8][valid:u8][u16LE × count].
+// Same layout as Jeti EX — the pulse-capture role now emits a full
+// multi-channel frame so an effect can bind to any PPM channel by name.
+template <hubfx::topology::TopologyService TTopology>
+bool InputDispatcherServicePolicyT<TTopology>::extractPpm(
+        const uint8_t* p, size_t len, uint8_t channel,
+        uint16_t& outUs, bool& outValid) {
+    if (len < 3) return false;
+    const uint8_t count = p[1];
+    const bool    valid = p[2] != 0;
+    if (channel >= count) return false;
+    const size_t off = 3 + static_cast<size_t>(channel) * 2;
+    if (off + 2 > len) return false;
+    outUs    = SfxWire::getU16LE(&p[off]);
+    outValid = valid;
+    return true;
+}
+
 // ─── Dispatch ───────────────────────────────────────────────────────
 
 template <hubfx::topology::TopologyService TTopology>
@@ -157,8 +175,12 @@ void InputDispatcherServicePolicyT<TTopology>::onRoleEvent(
 
     switch (innerType) {
         case RolePacket::RCIN_VALUE_BROADCAST:
-            evtPortKind = PortKind::Input;     // RC PWM lives on an InputPort
+            evtPortKind = PortKind::Input;     // legacy single-channel RC PWM
             extract     = &extractRcPwm;
+            break;
+        case RolePacket::PPM_FRAME_BROADCAST:
+            evtPortKind = PortKind::Input;     // PPM multi-channel frame
+            extract     = &extractPpm;
             break;
         case RolePacket::SBUS_FRAME_BROADCAST:
             evtPortKind = PortKind::Input;

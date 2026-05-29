@@ -99,11 +99,16 @@ const (
 	ServoGetProfileReq protocol.PacketType = 0x4E
 	ServoProfileResp   protocol.PacketType = 0x4F
 
-	// RC PWM input (0x50..0x57)
+	// RC PWM / PPM input (0x50..0x57).  The pulse-capture role decodes a
+	// PPM sum-signal (1..24 channels); single-channel RC PWM is a 1-ch
+	// frame.  RcinValueBroadcast (0x53) is the legacy single-channel
+	// async (still decoded for back-compat); PpmFrameBroadcast (0x54) is
+	// the multi-channel frame the role emits now.
 	RcinGetValueReq    protocol.PacketType = 0x50
 	RcinValueResp      protocol.PacketType = 0x51
 	RcinSetBroadcastHz protocol.PacketType = 0x52
 	RcinValueBroadcast protocol.PacketType = 0x53
+	PpmFrameBroadcast  protocol.PacketType = 0x54
 
 	// LED animator (0x58..0x5F)
 	LedQueueLoad      protocol.PacketType = 0x58

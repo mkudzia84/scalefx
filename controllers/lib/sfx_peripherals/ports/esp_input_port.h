@@ -34,7 +34,7 @@
 #include <cstdint>
 
 #include "input_port.h"
-#include <pwm/pwm_control.h>      // PwmInput (async edge-IRQ capture)
+#include <rx_input/ppm_input.h>   // PpmDecoder (RMT multi-channel PPM; 1-ch = single RC PWM)
 
 namespace sfx_peripherals {
 
@@ -54,8 +54,11 @@ public:
     // ── Mode-switch helpers ──────────────────────────────────────────
 
     bool configurePulseCapture() override {
+        // PULSE mode = PPM sum-signal capture via the RMT peripheral.
+        // A plain single-channel RC PWM decodes as a 1-channel frame
+        // (its ~18 ms inter-pulse gap exceeds the PPM sync threshold).
         teardownActive();
-        const bool ok = _capture.beginAsync(PwmInputType::Pwm, _pin);
+        const bool ok = _ppm.begin(_pin);
         _mode = ok ? Mode::PULSE : Mode::IDLE;
         return ok;
     }
@@ -118,13 +121,28 @@ public:
     // ── Pulse-mode read ──────────────────────────────────────────────
 
     bool readPulseUs(uint16_t* outUs) override {
-        if (_mode != Mode::PULSE || !_capture.isValid()) return false;
-        if (outUs) *outUs = (uint16_t)_capture.average();
+        if (_mode != Mode::PULSE) return false;
+        _ppm.update();                       // drain RMT queue
+        if (!_ppm.isValid()) return false;
+        if (outUs) *outUs = _ppm.channel_us(1);   // channel 1 (1-based)
         return true;
     }
 
     int latestPulseUs() const override {
-        return (_mode == Mode::PULSE) ? _capture.latest() : 0;
+        return (_mode == Mode::PULSE && _ppm.isValid()) ? (int)_ppm.channel_us(1) : 0;
+    }
+
+    // Multi-channel PPM frame read (the PULSE-mode path).  Drains the RMT
+    // queue, then copies up to `maxCh` decoded channel widths; returns the
+    // channel count (0 when not in PULSE mode or no valid frame).
+    uint8_t readPpmChannels(uint16_t* out, uint8_t maxCh) override {
+        if (_mode != Mode::PULSE || !out || maxCh < 1) return 0;
+        _ppm.update();                       // drain RMT queue
+        if (!_ppm.isValid()) return 0;
+        uint8_t n = _ppm.channelCount();
+        if (n > maxCh) n = maxCh;
+        for (uint8_t i = 0; i < n; i++) out[i] = _ppm.channel_us((uint8_t)(i + 1));
+        return n;
     }
 
     // ── UART-mode stream ────────────────────────────────────────────
@@ -146,7 +164,7 @@ private:
     void teardownActive() {
         switch (_mode) {
             case Mode::PULSE:
-                _capture.end();
+                _ppm.end();
                 break;
             case Mode::SBUS:
             case Mode::JETI_EX:
@@ -157,10 +175,10 @@ private:
         }
     }
 
-    int      _pin;
-    uint8_t  _uartNum;            ///< 1 or 2
-    PwmInput _capture;
-    Mode     _mode = Mode::IDLE;
+    int        _pin;
+    uint8_t    _uartNum;          ///< 1 or 2
+    PpmDecoder _ppm;              ///< RMT multi-channel PPM capture (PULSE mode)
+    Mode       _mode = Mode::IDLE;
 };
 
 }  // namespace sfx_peripherals

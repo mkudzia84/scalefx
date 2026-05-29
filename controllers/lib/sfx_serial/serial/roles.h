@@ -106,11 +106,14 @@ namespace RolePacket {
         ///< [portIdx:u8][minUs:u16LE][maxUs:u16LE][maxSpeed:u16LE][reversed:u8]
         ///< [centerUs:u16LE][maxAccel:u16LE][maxJerk:u16LE]
 
-    // ── RC PWM input role (0x50..0x57) ────────────────────────────────
-    constexpr uint8_t RCIN_GET_VALUE_REQ    = 0x50;  ///< [portIdx:u8] → RCIN_VALUE_RESP
-    constexpr uint8_t RCIN_VALUE_RESP       = 0x51;  ///< [portIdx:u8][us:u16LE][valid:u8]
+    // ── RC PWM / PPM input role (0x50..0x57) ──────────────────────────
+    // The pulse-capture role decodes a PPM sum-signal (1..24 channels on
+    // one wire); a plain single-channel RC PWM is just a 1-channel frame.
+    constexpr uint8_t RCIN_GET_VALUE_REQ    = 0x50;  ///< [portIdx:u8] → RCIN_VALUE_RESP (channel 1)
+    constexpr uint8_t RCIN_VALUE_RESP       = 0x51;  ///< [portIdx:u8][us:u16LE][valid:u8] (channel 1)
     constexpr uint8_t RCIN_SET_BROADCAST_HZ = 0x52;  ///< [portIdx:u8][hz:u8] → ACK (0 = off)
-    constexpr uint8_t RCIN_VALUE_BROADCAST  = 0x53;  ///< async TAG_ASYNC: [portIdx:u8][us:u16LE][valid:u8]
+    constexpr uint8_t RCIN_VALUE_BROADCAST  = 0x53;  ///< async TAG_ASYNC: [portIdx:u8][us:u16LE][valid:u8] (legacy single-channel; decoded for back-compat)
+    constexpr uint8_t PPM_FRAME_BROADCAST   = 0x54;  ///< async TAG_ASYNC: [portIdx:u8][count:u8][valid:u8][channels:u16LE × count]
 
     // ── LED animator role (0x58..0x5E) ────────────────────────────────
     constexpr uint8_t LED_QUEUE_LOAD        = 0x58;  ///< [portIdx:u8][count:u8] × event(N bytes) → ACK
