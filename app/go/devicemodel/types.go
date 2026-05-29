@@ -139,7 +139,10 @@ func RoleLabel(kind byte) string {
 	case roles.KindServoActuator:
 		return "Servo"
 	case roles.KindRcPwmInput:
-		return "RC PWM Input"
+		// Labelled "PPM" (not "RC PWM") — this role decodes a PPM/pulse
+		// stream (up to 8 channels on one wire).  The wire-name stays
+		// rc-pwm-input for back-compat; only the GUI label is PPM.
+		return "PPM Input"
 	case roles.KindSbusInput:
 		return "SBUS Input"
 	case roles.KindJetiExInput:
