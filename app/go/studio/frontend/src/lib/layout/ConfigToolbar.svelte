@@ -159,10 +159,17 @@
         background: color-mix(in srgb, var(--warning) 14%, transparent);
     }
 
+    /* Status flag is sized to match the toolbar buttons exactly — same
+       28px height + box model — so the sync pill, RC toggle, and Apply
+       read as one uniform control row. */
     .status-flag {
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        box-sizing: border-box;
         font-size: 11px;
         font-family: var(--font-mono);
-        padding: 4px 10px;
+        padding: 0 12px;
         border-radius: 4px;
         border: 1px solid var(--border);
         text-transform: lowercase;
