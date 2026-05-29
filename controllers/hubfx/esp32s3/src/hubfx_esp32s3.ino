@@ -58,8 +58,17 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.13.3-hubfx"
-#define BUILD_NUMBER     534
+#define FIRMWARE_VERSION "2.13.4-hubfx"
+#define BUILD_NUMBER     547
+
+// Developer-facing diagnostic emission gate (set in platformio.ini).
+// =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
+// footprint dump, live telemetry, and the preload-status dump; =0
+// (release) compiles them out.  Fallback keeps the file compilable
+// standalone.  Does NOT gate error logging or the hardware-fault probe.
+#ifndef SFX_INSTRUMENTATION
+#define SFX_INSTRUMENTATION 1
+#endif
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -310,8 +319,36 @@ using GunFxService =
 // BoardOf<> auto-prepends BoardServicePolicy + IndicatorServicePolicy +
 // PortServicePolicy + RoleServicePolicy.  User policies follow.
 
+// Hub-local port counts — THE single source of truth.  Feeds three
+// places that must agree: the backing C-arrays (pwm[]/in[]/servoOut[]),
+// the `kXxxPorts` descriptor lists (`*_array<…, N>`), and the
+// `PortRegistry` capacity (`PortCapacity<…>`, the Caps template arg of
+// BoardOf — see board_of.h).  Sizing the registry EXACTLY to these
+// reclaimed ~17 KB DRAM .bss vs the old generous 32/32/16/8 default.
+//
+// The registry covers HUB-LOCAL ports ONLY; expander ports (GearControl,
+// LightFX, …) live on each expander's own registry and are reached by
+// forwarding ROLE_ATTACH over CDC — adding expanders does NOT consume hub
+// slots.  HubFX hub-local hardware is fixed by the PCB: 11 servo headers
+// (IN_2..IN_12) + 8 PCA9685 PWM + 1 RC input (IN_1).  Bump a count here
+// (and the matching initializer list) when a board rev adds a header;
+// every dependent size follows automatically.  A count below the
+// initializer list is a compile error (too many initializers); a count
+// the descriptor exceeds would make begin() clamp — so keep them equal.
+namespace hubfx_caps {
+constexpr size_t servo   = 11;   // IN_2..IN_12 microservo headers
+constexpr size_t pwm     = 8;    // PCA9685 CH1..8 (+ per-rail INA226 sense)
+constexpr size_t hbridge = 0;    // no hub-local H-bridge on this rev
+constexpr size_t input   = 1;    // IN_1 (multi-modal; Rule 31 → ESP32 max 2)
+}  // namespace hubfx_caps
+
 class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
                                              sfx::NativeUartStream,      // TStream (Rule 33)
+                                             sfx_core::PortCapacity<     // registry sized from hubfx_caps
+                                                 hubfx_caps::servo,
+                                                 hubfx_caps::pwm,
+                                                 hubfx_caps::hbridge,
+                                                 hubfx_caps::input>,
                                              HubFxExpanderService,
                                              HubFxTopologyService,
                                              InputDispatcherService,
@@ -327,28 +364,28 @@ class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
 public:
     // ── Hardware drivers — declaration order matters (init order) ────
     PCA9685 pca;
-    INA226  ina[8];
+    INA226  ina[hubfx_caps::pwm];
 
-    sfx_peripherals::Pca9685PwmPort pwm[8] = {
+    sfx_peripherals::Pca9685PwmPort pwm[hubfx_caps::pwm] = {
         {pca, 0}, {pca, 1}, {pca, 2}, {pca, 3},
         {pca, 4}, {pca, 5}, {pca, 6}, {pca, 7},
     };
-    sfx_peripherals::Ina226VoltageSensor vSense[8] = {
+    sfx_peripherals::Ina226VoltageSensor vSense[hubfx_caps::pwm] = {
         {ina[0]}, {ina[1]}, {ina[2]}, {ina[3]},
         {ina[4]}, {ina[5]}, {ina[6]}, {ina[7]},
     };
-    sfx_peripherals::Ina226CurrentSensor iSense[8] = {
+    sfx_peripherals::Ina226CurrentSensor iSense[hubfx_caps::pwm] = {
         {ina[0]}, {ina[1]}, {ina[2]}, {ina[3]},
         {ina[4]}, {ina[5]}, {ina[6]}, {ina[7]},
     };
 
     // ── Input ports — IN_1 (multi-modal: PULSE / SBUS / JETI_EX) ─────
-    sfx_peripherals::EspInputPort in[1] = {
+    sfx_peripherals::EspInputPort in[hubfx_caps::input] = {
         {Gpio::IN_1, Uart::IN_1},
     };
 
     // ── Servo OUTPUT ports — IN_2..IN_12 as actuator headers ─────────
-    sfx_peripherals::MicroservoPort servoOut[11] = {
+    sfx_peripherals::MicroservoPort servoOut[hubfx_caps::servo] = {
         {Gpio::IN_2},  {Gpio::IN_3},  {Gpio::IN_4},
         {Gpio::IN_5},  {Gpio::IN_6},  {Gpio::IN_7},
         {Gpio::IN_8},  {Gpio::IN_9},  {Gpio::IN_10},
@@ -380,17 +417,17 @@ public:
     // elements (a 5 V smoke heater on the 8 V rail wants ~63 % duty).
 
     static constexpr auto kPwmPorts = sfx_core::ports::list(
-        sfx_core::ports::pwm_array<&HubFxBoard::pwm, 8>()
+        sfx_core::ports::pwm_array<&HubFxBoard::pwm, hubfx_caps::pwm>()
             .with_vSense_array<&HubFxBoard::vSense>()
             .with_iSense_array<&HubFxBoard::iSense>()
             .with_voltage_mV<8000>());
 
     static constexpr auto kInputPorts = sfx_core::ports::list(
-        sfx_core::ports::input_array<&HubFxBoard::in, 1>()
+        sfx_core::ports::input_array<&HubFxBoard::in, hubfx_caps::input>()
             .with_voltage_mV<3300>());
 
     static constexpr auto kServoPorts = sfx_core::ports::list(
-        sfx_core::ports::servo_array<&HubFxBoard::servoOut, 11>()
+        sfx_core::ports::servo_array<&HubFxBoard::servoOut, hubfx_caps::servo>()
             .with_voltage_mV<5000>());
 
     static constexpr const char* kName = "HubFx";
@@ -520,6 +557,7 @@ static void applyLightFxConfigCallback(const LightFxYamlConfig& cfg) {
         &storageReadFile<FlashModule>);
 }
 
+#if SFX_INSTRUMENTATION
 // ─── Memory-instrumentation helper (Phase 4 polish 2026-05-27) ──────
 //
 // Prints a single-line memory breakdown across the three pools that
@@ -581,6 +619,28 @@ static void logMemoryHeapCaps(const char* tag) {
     reportStack("audio-decoder",  Mixer::instance().decoderHandle());
     reportStack("audio-consumer", Mixer::instance().consumerHandle());
 }
+
+// One-shot ground-truth dump of the static DRAM footprint — the
+// `sizeof` of the single `board` global (every service policy is a
+// member of it, so this IS the .bss cost of the whole policy pack) plus
+// each config store's parsed-data struct (PSRAM-resident via
+// ConfigStore, logged for completeness).  Replaces estimate-driven
+// audits: grep `[footprint]` after a flash to see exactly what the
+// policy pack and config schemas weigh on THIS build.  Boot-only.
+static void logStaticFootprint() {
+    SFX_LOG_INFO("[footprint] board global (.bss policy pack) = %u B (%u KB)",
+                 (unsigned)sizeof(board), (unsigned)(sizeof(board) / 1024));
+    SFX_LOG_INFO("[footprint] config data structs (PSRAM): "
+                 "hubfx=%u alerts=%u enginefx=%u gunfx=%u landing=%u gear=%u lightfx=%u B",
+                 (unsigned)sizeof(HubFxConfig),
+                 (unsigned)sizeof(AlertsConfig),
+                 (unsigned)sizeof(EngineFxYamlConfig),
+                 (unsigned)sizeof(GunFxYamlConfig),
+                 (unsigned)sizeof(LandingConfig),
+                 (unsigned)sizeof(GearControlConfig),
+                 (unsigned)sizeof(LightFxYamlConfig));
+}
+#endif // SFX_INSTRUMENTATION
 
 void setup() {
     // I²C + PCA9685 + INA226 — must run before board.begin() so the
@@ -812,8 +872,12 @@ void setup() {
     // Boot baseline (Phase 4 polish 2026-05-27).  Capture free SRAM /
     // PSRAM / DMA-cap pools AFTER every policy + service has done its
     // allocations so we see the steady-state headroom.  Periodic
-    // re-emission from loop() (every 30 s) flags drift.
+    // re-emission from loop() (every 30 s) flags drift.  + ground-truth
+    // static-footprint dump so the .bss policy-pack cost is measured,
+    // not estimated.
+#if SFX_INSTRUMENTATION
     logMemoryHeapCaps("boot baseline");
+    logStaticFootprint();
 
     // Asset-cache preload snapshot (rule-of-least-surprise: the
     // operator sees what's been queued for PSRAM residency before
@@ -821,6 +885,7 @@ void setup() {
     // status=loading at this point — the loader keeps working in the
     // background and finished-load events log themselves.
     AudioAssetCache::instance().logPreloadStatus();
+#endif
 }
 
 void loop() {
@@ -884,6 +949,7 @@ void loop() {
         }
     }
 
+#if SFX_INSTRUMENTATION
     // Live-state telemetry — when /hubfx.yaml's `telemetry.inputs:` or
     // `telemetry.outputs:` is on, emit one aggregated snapshot line per
     // `interval_ms`.  No-op when both flags are off.
@@ -905,6 +971,7 @@ void loop() {
         lastMemLogMs = nowMs;
         logMemoryHeapCaps("periodic");
     }
+#endif // SFX_INSTRUMENTATION
 
     vTaskDelay(pdMS_TO_TICKS(1));
 }
