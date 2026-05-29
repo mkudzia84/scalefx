@@ -65,8 +65,23 @@
  */
 class ResultQueue {
 public:
-    /// Maximum number of concurrent async callbacks / stashed responses
-    static constexpr size_t MAX_PENDING = 64;
+    /// Maximum number of concurrent async callbacks / stashed responses.
+    /// Sizes BOTH `_asyncCallbacks[]` and `_stash[]`, and each StashEntry
+    /// embeds a full CommandResult (errorMessage[64]) — so this constant
+    /// is the dominant .bss cost of a ResultQueue (~72 B/stash slot +
+    /// ~32 B/async slot).  Every BusClient embeds one; on HubFX that's one
+    /// per expander LiveSlot.
+    ///
+    /// 16 matches kMaxQueuedPerSlot (the per-slot outbound-command queue
+    /// depth) — the hard upper bound on in-flight commands, since clients
+    /// drive the bus with blocking one-tag-at-a-time `sendQuery`.  stash()
+    /// / onTagResponse() degrade gracefully when full (drop / return
+    /// false — never corrupt), so this is a safe ceiling, not a hard
+    /// requirement.  Was 64 (2026-05-29 memory audit: ~5 KB/queue of pure
+    /// .bss waste on an embedded expander link that sends a handful of
+    /// concurrent tags).  A host-side client expecting deep async
+    /// pipelining can bump this.
+    static constexpr size_t MAX_PENDING = 16;
 
     /// Callback type for async one-shot tag responses
     using TagCallback = std::function<void(const CommandResult&)>;
