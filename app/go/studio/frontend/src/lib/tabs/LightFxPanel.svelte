@@ -790,26 +790,21 @@
                     {#if errs.length > 0}
                         <span class="row-err-tag" title={errs.join('\n')}>⚠ {errs.length} error{errs.length > 1 ? 's' : ''}</span>
                     {/if}
-                    <!-- Per-program preview cluster (Rule 48 .op-cluster).
-                         Stops every channel this program owns; doesn't
-                         touch the device's persisted programs[].  Hub-
-                         local channels only (same gap as per-channel
-                         preview — expander LEDs need a Topology forward
-                         of LED_QUEUE_LOAD). -->
-                    <div class="op-cluster row-preview">
-                        {#if isPlaying}
-                            <button class="oc-btn oc-danger row-action"
-                                    on:click={() => stopProgram(ai)}
-                                    title="Stop every channel in this program">■ Stop</button>
-                        {:else}
-                            <button class="oc-btn oc-primary row-action"
-                                    on:click={() => playProgram(ai)}
-                                    disabled={!canPlay}
-                                    title={canPlay
-                                        ? 'Preview: fires every channel that has a port + events.  No upload, no Save needed.'
-                                        : 'No playable channels — assign a port and at least one event first.'}>▶ Play</button>
-                        {/if}
-                    </div>
+                    <!-- Per-program preview as a single on/off toggle
+                         (Rule 48).  Previews every channel this program
+                         owns; doesn't touch the device's persisted
+                         programs[].  ON→OFF (stop) always enabled;
+                         OFF→ON (play) gated on having a playable channel.
+                         Hub-local channels only (expander LEDs need a
+                         Topology forward of LED_QUEUE_LOAD). -->
+                    <button class="small state-toggle row-action" class:state-on={isPlaying}
+                            on:click={() => isPlaying ? stopProgram(ai) : playProgram(ai)}
+                            disabled={isPlaying ? false : !canPlay}
+                            title={isPlaying ? 'Stop every channel in this program'
+                                 : canPlay ? 'Preview: fires every channel that has a port + events. No upload, no Save needed.'
+                                 : 'No playable channels — assign a port and at least one event first.'}>
+                        {isPlaying ? '▶ Playing' : '○ Preview'}
+                    </button>
                     <button class="small row-action {expanded[ai] ? 'state-toggle state-on' : ''}"
                             on:click={() => expanded = { ...expanded, [ai]: !expanded[ai] }}
                             title="Show / hide the channel + event editor for this program">
