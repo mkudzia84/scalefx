@@ -1,4 +1,4 @@
-module scalefx/tests/host/handler_test
+module scalefx/tests/host/go_unit/protocol_test
 
 go 1.21
 
@@ -10,4 +10,4 @@ require (
 	golang.org/x/sys v0.19.0 // indirect
 )
 
-replace scalefx => ../../../app/go
+replace scalefx => ../../../../app/go

@@ -1,4 +1,4 @@
-module scalefx/tests/host/usb_diag
+module scalefx/tests/host/ports
 
 go 1.21
 
