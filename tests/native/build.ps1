@@ -36,13 +36,18 @@ $LibSources = @(
 # has its OWN top-level dir, then a subdir mirroring the namespace path.
 # Tests #include "wire.h" (relative to its parent dir), so add each
 # leaf dir we test from.
+#
+# `stubs/` MUST come first so its Arduino.h and platform/sfx_platform.h
+# shadow the real ones (which #error out for non-MCU targets).
 $IncludeDirs = @(
+    "$here/stubs",
     "$here/lib/doctest",
     "$here/src",
     "$repoRoot/controllers/lib/sfx_serial/serial",
     "$repoRoot/controllers/lib/sfx_board/motion",
     "$repoRoot/controllers/lib/sfx_board/element",
-    "$repoRoot/controllers/lib/sfx_platform/platform"
+    "$repoRoot/controllers/lib/sfx_platform/platform",
+    "$repoRoot/controllers/lib/sfx_config/config"
 )
 
 # ---- Toolchain --------------------------------------------------------
