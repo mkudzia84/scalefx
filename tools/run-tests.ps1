@@ -59,7 +59,11 @@ function Write-SuiteSkip { param([string] $name, [string] $detail)
 # ---- Discovery --------------------------------------------------------
 
 function Get-GoTestSuites { param([string] $glob)
-    Get-ChildItem -Path $glob -Filter "go.mod" -Recurse -ErrorAction SilentlyContinue |
+    # Resolve to an absolute path so discovery is robust against cwd
+    # drift (Invoke-GoSuite Push/Pop, a test that fails mid-flight, etc.)
+    $absPath = Join-Path $repoRoot $glob
+    if (-not (Test-Path $absPath)) { return @() }
+    Get-ChildItem -Path $absPath -Filter "go.mod" -Recurse -ErrorAction SilentlyContinue |
         ForEach-Object { Split-Path -Parent $_.FullName }
 }
 
@@ -237,7 +241,7 @@ if ($Integration) {
 if ($Premerge) {
     Write-Title "Firmware builds"
     $start = Get-Date
-    $flasher = "app/go/scalefx-flash.exe"
+    $flasher = Join-Path $repoRoot "app/go/scalefx-flash.exe"
     if (-not (Test-Path $flasher)) {
         Write-Fail "hubfx-esp32s3" "scalefx-flash.exe missing - 'go build ./app/go/flash' first"
         $failures += "firmware: flasher missing"

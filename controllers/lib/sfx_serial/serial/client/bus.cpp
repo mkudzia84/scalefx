@@ -18,26 +18,26 @@
 
 bool SerialBus::begin(int deviceIndex) {
     if (_initialized) return true;
-    
+
     _deviceIndex = deviceIndex;
-    _rxIndex = 0;
+    _reader.reset();
     _stats = {};
     _initialized = true;
-    
+
     SFX_LOG_DEBUG("[SerialBus] Initialized for device %d", deviceIndex);
     return true;
 }
 
 void SerialBus::end() {
     if (!_initialized) return;
-    
+
     _initialized = false;
     SFX_LOG_DEBUG("[SerialBus] Deinitialized");
 }
 
 void SerialBus::setDevice(int deviceIndex) {
     _deviceIndex = deviceIndex;
-    _rxIndex = 0;
+    _reader.reset();
     SFX_LOG_DEBUG("[SerialBus] Device changed to %d", deviceIndex);
 }
 
@@ -71,34 +71,27 @@ int SerialBus::sendKeepalive() {
 
 int SerialBus::process() {
     if (!_initialized) return 0;
-    
+
+    // Keep the public stats() API consistent — the inline buffer-overflow
+    // counter that used to live on `_stats.framing_errors` is now owned
+    // by `_reader`.  Sync it back into the visible struct on every poll;
+    // the decode-too-short side of the same counter stays put in
+    // processFrame() (post-reader concern).
+    _stats.framing_errors = _reader.framingErrors();
+
     UsbHost& usb = UsbHost::instance();
-    int packetsProcessed = 0;
-    
     uint8_t readBuf[64];
     int n = usb.cdcRead(_deviceIndex, readBuf, sizeof(readBuf));
     if (n <= 0) return 0;
-    
-    for (int i = 0; i < n; i++) {
-        uint8_t byte = readBuf[i];
-        
-        if (byte == SfxWire::FRAME_DELIMITER) {
-            if (_rxIndex > 0) {
-                processFrame(_rxBuffer, _rxIndex);
-                packetsProcessed++;
-            }
-            _rxIndex = 0;
-        } else {
-            if (_rxIndex < SERIAL_BUS_RX_BUFFER_SIZE) {
-                _rxBuffer[_rxIndex++] = byte;
-            } else {
-                _rxIndex = 0;
-                _stats.framing_errors++;
-            }
-        }
-    }
-    
-    return packetsProcessed;
+
+    // PacketReader owns the byte→frame state machine + overflow recovery.
+    // processFrame() handles cobs-decode + parse + dispatch + per-frame
+    // diagnostic counters.  The overflow framing_error counter lives on
+    // `_reader` and is folded into stats() at read time.
+    return _reader.feedBytes(readBuf, static_cast<size_t>(n),
+        [this](const uint8_t* frame, size_t frameLen) {
+            processFrame(frame, frameLen);
+        });
 }
 
 void SerialBus::processFrame(const uint8_t* frame, size_t frameLen) {
@@ -159,6 +152,7 @@ bool SerialBus::isConnected() const {
 
 void SerialBus::resetStats() {
     _stats = {};
+    _reader.resetStats();   // zero the reader-side framing_errors too
 }
 
 #endif // !SCALEFX_SERVER

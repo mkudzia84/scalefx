@@ -63,31 +63,30 @@ int BoardServerBase::readFrames() {
 
     int frames = 0;
     while (_serial->available()) {
-        uint8_t b = _serial->read();
+        const uint8_t b = static_cast<uint8_t>(_serial->read());
         _lastActivityMs = millis();
+        // PacketReader owns the byte→frame state machine (FRAME_DELIMITER
+        // detection, partial-frame buffering, overflow recovery).  The
+        // lambda runs once per complete frame and does the COBS decode +
+        // parsePacket + dispatch the inline loop used to do.
+        if (_reader.feedByte(b, [this, &frames](const uint8_t* frame, size_t frameLen) {
+                uint8_t        decoded[SfxWire::MAX_PACKET_SIZE];
+                const size_t   decodedLen = SfxWire::cobsDecode(
+                    frame, frameLen, decoded, sizeof(decoded));
+                if (decodedLen < 5) return;   // type + tag + len(2) + crc
 
-        if (b == SfxWire::FRAME_DELIMITER) {
-            if (_rxIndex == 0) continue;
-            // Decode + parse + dispatch one frame.
-            uint8_t        decoded[SfxWire::MAX_PACKET_SIZE];
-            size_t         decodedLen = SfxWire::cobsDecode(
-                _rxBuffer, _rxIndex, decoded, sizeof(decoded));
-            _rxIndex = 0;
-            if (decodedLen < 5) continue;   // type + tag + len(2) + crc
-
-            uint8_t        type, tag;
-            const uint8_t* payload;
-            size_t         payloadLen;
-            if (SfxWire::parsePacket(decoded, decodedLen,
-                                     &type, &tag, &payload, &payloadLen)) {
-                dispatchPacket(type, tag, payload, payloadLen);
-                ++frames;
-            }
-        } else if (_rxIndex < RX_BUFFER_SIZE) {
-            _rxBuffer[_rxIndex++] = b;
-        } else {
-            // overflow — drop and resync on the next delimiter
-            _rxIndex = 0;
+                uint8_t        type, tag;
+                const uint8_t* payload;
+                size_t         payloadLen;
+                if (SfxWire::parsePacket(decoded, decodedLen,
+                                         &type, &tag, &payload, &payloadLen)) {
+                    dispatchPacket(type, tag, payload, payloadLen);
+                    ++frames;
+                }
+            })) {
+            // feedByte returned true → frame was emitted.  Counter
+            // already incremented inside the lambda above.  Nothing
+            // else to do.
         }
     }
     return frames;
