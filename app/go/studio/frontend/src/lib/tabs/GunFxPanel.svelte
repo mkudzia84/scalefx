@@ -561,6 +561,12 @@
     {/if}
 
     {#if cfg?.enabled}
+        <!-- Two-column layout: each gun flows as [gun-core | smoke].
+             The {#each} renders exactly two sibling cards per gun
+             (.gun-card then .smoke-card; the {@const} between them emit
+             no DOM), so a 1fr/1fr grid auto-flows them into per-gun
+             rows.  Needs the full-width GunFX tab to breathe. -->
+        <div class="guns-grid">
         {#each cfg.guns as gun (gun.id)}
             {@const st = statusFor(gun.id)}
             <!-- Role-filtered port-picker context — must live at
@@ -1228,6 +1234,7 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
                 </div>
             </div>
         {/each}
+        </div>
     {/if}
 
 </div>  <!-- /.card.gunfx-card -->
@@ -1245,6 +1252,21 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
        style.css so EnginePanel + future operational panels share the
        same visual treatment.  Local overrides go below if any panel
        needs a tweak (none today). */
+
+    /* Per-gun two-column grid: col 1 = gun core (trigger/ROF/muzzle/
+       turret/recoil), col 2 = smoke (activation/heater/fan).  Each gun
+       is one grid row; align-items:start keeps the shorter smoke card
+       pinned to the top instead of stretching to the gun card's height. */
+    .guns-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 14px;
+        align-items: start;
+    }
+    /* Below ~900px the two columns would crush — stack to one. */
+    @media (max-width: 900px) {
+        .guns-grid { grid-template-columns: 1fr; }
+    }
 
     .gun-card { margin-bottom: 14px; }
     .card-header.inner { padding: 4px 0 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px; }

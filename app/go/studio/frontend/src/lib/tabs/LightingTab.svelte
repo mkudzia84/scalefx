@@ -1,6 +1,6 @@
 <!-- ScaleFX Studio — Lighting tab.
-     Two-column layout matching EffectsTab: LightFx programs on the
-     left, landing-light groups on the right.  Both panels register
+     Two-column layout: LightFx programs on the left, landing-light
+     groups on the right.  Both panels register
      their own DirtySource (Rule 46) at App.svelte startup so the
      global ConfigToolbar gates Apply across the pair. -->
 <script lang="ts">

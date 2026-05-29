@@ -149,12 +149,13 @@ export const deviceModel = writable<DeviceModelSnapshotT>(empty)
 // (Ports & Roles, Inputs), then one tab per capability-available domain,
 // then Firmware.  TabBar and MainLayout both read this so they never drift.
 
-export type TabKind = 'io' | 'effects' | 'lighting' | 'domain' | 'firmware'
+export type TabKind = 'io' | 'engine' | 'gun' | 'lighting' | 'domain' | 'firmware'
 export interface StudioTab { key: string; label: string; kind: TabKind; domain?: Domain }
 
-// Domains that the Effects tab supersedes — they don't get their own
-// generic DomainTab; the Effects tab provides their config + runtime
-// control + claiming surface.
+// Engine + gun each get their own dedicated tab (EnginePanel / GunFxPanel)
+// instead of a generic DomainTab — these provide config + runtime control
+// + claiming.  Split out of the former combined "Effects" tab (2026-05-29)
+// so GunFX gets full width for its two-column gun-core | smoke layout.
 const SUPERSEDED_BY_EFFECTS  = new Set(['engine', 'gun'])
 // Domains the Lighting tab supersedes (2026-05-24): same pattern,
 // two-column tab with LightFx programs on the left + landing-light
@@ -172,10 +173,12 @@ export const studioTabs = derived(deviceModel, ($dm): StudioTab[] => {
         { key: 'io', label: 'Input & Ports', kind: 'io' },
     ]
     const domains = $dm.domains ?? []
-    const showEffects  = domains.some(d => SUPERSEDED_BY_EFFECTS.has(d.id))
     const showLighting = domains.some(d => SUPERSEDED_BY_LIGHTING.has(d.id))
-    if (showEffects) {
-        tabs.push({ key: 'effects',  label: 'Effects',  kind: 'effects'  })
+    if (domains.some(d => d.id === 'engine')) {
+        tabs.push({ key: 'engine', label: 'EngineFX', kind: 'engine' })
+    }
+    if (domains.some(d => d.id === 'gun')) {
+        tabs.push({ key: 'gun', label: 'GunFX', kind: 'gun' })
     }
     if (showLighting) {
         tabs.push({ key: 'lighting', label: 'Lighting', kind: 'lighting' })

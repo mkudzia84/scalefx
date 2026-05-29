@@ -7,7 +7,8 @@
     import ConsolePanel from '../dialogs/ConsoleDialog.svelte'
     import FirmwareTab from '../tabs/FirmwareTab.svelte'
     import IoTab from '../tabs/IoTab.svelte'
-    import EffectsTab from '../tabs/EffectsTab.svelte'
+    import EnginePanel from '../tabs/EnginePanel.svelte'
+    import GunFxPanel from '../tabs/GunFxPanel.svelte'
     import LightingTab from '../tabs/LightingTab.svelte'
     import DomainTab from '../tabs/DomainTab.svelte'
     import { showConsole, activeTab } from '../stores'
@@ -59,8 +60,10 @@
             <div class="tab-pane">
                 {#if current?.kind === 'io'}
                     <IoTab />
-                {:else if current?.kind === 'effects'}
-                    <EffectsTab />
+                {:else if current?.kind === 'engine'}
+                    <div class="tab-content"><EnginePanel /></div>
+                {:else if current?.kind === 'gun'}
+                    <div class="tab-content"><GunFxPanel /></div>
                 {:else if current?.kind === 'lighting'}
                     <LightingTab />
                 {:else if current?.kind === 'domain' && current.domain}
