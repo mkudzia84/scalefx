@@ -884,6 +884,7 @@ export namespace main {
 	    hasMemExtension: boolean;
 	    keepaliveCount: number;
 	    boardStateName: string;
+	    boardStateDisplay: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DeviceStatus(source);
@@ -898,6 +899,7 @@ export namespace main {
 	        this.hasMemExtension = source["hasMemExtension"];
 	        this.keepaliveCount = source["keepaliveCount"];
 	        this.boardStateName = source["boardStateName"];
+	        this.boardStateDisplay = source["boardStateDisplay"];
 	    }
 	}
 	export class DiagEvent {

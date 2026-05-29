@@ -59,7 +59,7 @@
  */
 
 #define FIRMWARE_VERSION "2.13.3-hubfx"
-#define BUILD_NUMBER     533
+#define BUILD_NUMBER     534
 
 #include <Arduino.h>
 #include <Wire.h>
