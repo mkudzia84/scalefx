@@ -326,6 +326,14 @@ export function SetInputChannelCount(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetInputChannelCount'](arg1, arg2, arg3, arg4);
 }
 
+export function SetInputRouting(arg1) {
+  return window['go']['main']['App']['SetInputRouting'](arg1);
+}
+
+export function GetInputRouting() {
+  return window['go']['main']['App']['GetInputRouting']();
+}
+
 export function SetInputProtocol(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetInputProtocol'](arg1, arg2, arg3, arg4);
 }

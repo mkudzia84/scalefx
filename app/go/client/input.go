@@ -1,6 +1,9 @@
 package client
 
 import (
+	"fmt"
+
+	"scalefx/protocol/input"
 	"scalefx/protocol/ports"
 	"scalefx/protocol/roles"
 )
@@ -41,6 +44,28 @@ func (in *Input) SetSbusBroadcastHz(portIdx, hz byte) error {
 }
 func (in *Input) SetJetiBroadcastHz(portIdx, hz byte) error {
 	return in.c.sendExpectACK(roles.CmdJetiExSetBroadcastHz(portIdx, hz))
+}
+
+// SetRouting toggles the master's global RC → effect routing gate.
+// enabled=true (default firmware state) = RC drives effects; false =
+// effects ignore RC and hold their last commanded state (the operator
+// drives them from Studio).  Live channel monitors keep updating either
+// way.  Protocol-agnostic — covers PPM / SBUS / Jeti EX in one switch.
+func (in *Input) SetRouting(enabled bool) error {
+	return in.c.sendExpectACK(input.CmdSetRouting(enabled))
+}
+
+// GetRouting reads the current routing-gate state from the hub.
+func (in *Input) GetRouting() (bool, error) {
+	resp, err := in.c.sendForResp(input.CmdGetRouting(), input.RoutingResp)
+	if err != nil {
+		return false, err
+	}
+	en, ok := input.DecodeRouting(resp.Payload)
+	if !ok {
+		return false, fmt.Errorf("routing resp: short payload (%d bytes)", len(resp.Payload))
+	}
+	return en, nil
 }
 
 // decodeInputValue turns an input broadcast (direct or unwrapped from a

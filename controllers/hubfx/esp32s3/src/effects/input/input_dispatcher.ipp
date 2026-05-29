@@ -195,6 +195,13 @@ void InputDispatcherServicePolicyT<TTopology>::onRoleEvent(
     }
 
     if (len < 1) return;
+
+    // Global RC-routing gate (protocol-agnostic — we're past the
+    // per-protocol extractor selection).  When off, RC stops driving
+    // effects; the wire broadcast that monitors read already went out
+    // separately, so live channel bars keep updating.
+    if (!_routingEnabled) return;
+
     const uint8_t evtPortIdx = p[0];
 
     for (uint8_t i = 0; i < kMaxBindings; ++i) {
@@ -207,6 +214,31 @@ void InputDispatcherServicePolicyT<TTopology>::onRoleEvent(
         if (!extract(p, len, b.channel, us, v)) continue;
         b.input->feed(us, v);
     }
+}
+
+// ─── Routing-gate command handler ───────────────────────────────────
+
+template <hubfx::topology::TopologyService TTopology>
+CommandHandleResult InputDispatcherServicePolicyT<TTopology>::handle(
+        uint8_t type, const uint8_t* payload, size_t len) {
+    switch (type) {
+        case InputRoutingPacket::INPUT_ROUTING_SET_ENABLED: {
+            if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); break; }
+            _routingEnabled = (payload[0] != 0);
+            SFX_LOG_INFO("[input] RC routing %s", _routingEnabled ? "ENABLED" : "DISABLED (manual)");
+            _ctx->sendAck();
+            break;
+        }
+        case InputRoutingPacket::INPUT_ROUTING_GET_REQ: {
+            const uint8_t out = _routingEnabled ? 1 : 0;
+            _ctx->sendRawPacket(InputRoutingPacket::INPUT_ROUTING_RESP,
+                                _ctx->currentTag(), &out, 1);
+            break;
+        }
+        default:
+            return CommandHandleResult::NotMyCommand;
+    }
+    return CommandHandleResult::Handled;
 }
 
 template <hubfx::topology::TopologyService TTopology>

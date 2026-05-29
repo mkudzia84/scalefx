@@ -58,8 +58,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.14.0-hubfx"
-#define BUILD_NUMBER     550
+#define FIRMWARE_VERSION "2.15.0-hubfx"
+#define BUILD_NUMBER     552
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-

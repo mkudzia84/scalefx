@@ -17,6 +17,7 @@ func init() {
 	register(&command{Name: "bootsel", Usage: "bootsel", Help: "enter bootloader (Pico only)", Category: catCore, RequiresConn: true, Run: cmdBootsel})
 	register(&command{Name: "keepalive", Usage: "keepalive", Help: "send one KEEPALIVE packet", Category: catCore, RequiresConn: true, Run: cmdKeepalive})
 	register(&command{Name: "i2c-scan", Usage: "i2c-scan", Help: "scan the I²C bus", Category: catCore, RequiresConn: true, Run: cmdI2CScan})
+	register(&command{Name: "rc-routing", Usage: "rc-routing [on|off]", Help: "global RC→effect routing gate (no arg = show)", Category: catCore, RequiresConn: true, Run: cmdRcRouting})
 }
 
 // ─── identify / status / capabilities ────────────────────────────────
@@ -161,6 +162,45 @@ func cmdBootsel(a *App, _ []string) error {
 		return err
 	}
 	return a.c.Hub.Bootsel()
+}
+
+// cmdRcRouting toggles or shows the master's global RC→effect routing
+// gate.  off = effects ignore RC and hold their last state (drive them
+// from Studio); live channel monitors keep working either way.
+func cmdRcRouting(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		en, err := a.c.Input.GetRouting()
+		if err != nil {
+			return err
+		}
+		Hdr("rc routing")
+		KV("state", Phase(rcRoutingLabel(en)))
+		return nil
+	}
+	var en bool
+	switch strings.ToLower(args[0]) {
+	case "on", "enable", "enabled", "1", "true":
+		en = true
+	case "off", "disable", "disabled", "0", "false":
+		en = false
+	default:
+		return fmt.Errorf("rc-routing arg must be on|off")
+	}
+	if err := a.c.Input.SetRouting(en); err != nil {
+		return err
+	}
+	Ok("rc routing → %s", cCyan(rcRoutingLabel(en)))
+	return nil
+}
+
+func rcRoutingLabel(en bool) string {
+	if en {
+		return "on (RC drives effects)"
+	}
+	return "off (manual — effects ignore RC)"
 }
 
 func cmdKeepalive(a *App, _ []string) error {

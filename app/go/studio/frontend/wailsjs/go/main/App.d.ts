@@ -165,6 +165,10 @@ export function SetEngineConfig(arg1:main.EngineConfig):Promise<void>;
 
 export function SetInputChannelCount(arg1:string,arg2:number,arg3:number,arg4:number):Promise<main.DeviceModelSnapshot>;
 
+export function SetInputRouting(arg1:boolean):Promise<void>;
+
+export function GetInputRouting():Promise<boolean>;
+
 export function SetInputProtocol(arg1:string,arg2:number,arg3:number,arg4:string):Promise<main.DeviceModelSnapshot>;
 
 export function SetLandingConfig(arg1:main.LandingConfigDTO):Promise<void>;
