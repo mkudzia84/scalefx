@@ -153,7 +153,11 @@ const (
 	BoardStateDirect     byte = 0x03
 )
 
-// BoardStateName returns a human-readable name for a board state.
+// BoardStateName returns the raw enum-constant name for a board state
+// byte.  Use this for logs / debug output where you want to see what
+// the firmware actually reported.  For human-readable display in CLI
+// status output or Studio's status bar, use BoardStateDisplay which
+// disambiguates the SLAVE byte by role.
 func BoardStateName(state byte) string {
 	switch state {
 	case BoardStateIdle:
@@ -166,6 +170,50 @@ func BoardStateName(state byte) string {
 		return "DIRECT"
 	default:
 		return fmt.Sprintf("0x%02X", state)
+	}
+}
+
+// BoardStateDisplay returns a human-readable label for the board's
+// current state, contextualised by the board's role capabilities.
+//
+// Background: the BoardState byte was originally a flat 4-state enum
+// (IDLE / STANDALONE / SLAVE / DIRECT).  SLAVE means "an upstream wire
+// peer is driving me" — but the byte alone doesn't say WHO that peer
+// is.  In context:
+//
+//   - On a hub-capable board (`CapExpanderBus` set, e.g. HubFX) the
+//     upstream peer is the PC host (CLI / Studio / scalefx-flash).
+//     We render this as "host-driven."
+//
+//   - On an expander (`CapExpanderBus` not set, e.g. GunFX / LightFX /
+//     GearControl) connected to its hub via USB CDC, the upstream peer
+//     IS the hub master.  We render this as "hub-driven."
+//
+//   - An expander plugged DIRECTLY into a PC (for config / flashing)
+//     also reports SLAVE, and from the firmware's POV the host IS just
+//     "the upstream peer" — but the wire-format byte doesn't carry
+//     that distinction.  We accept that ambiguity and label it
+//     "hub-driven" here; the operator knows from the cable what's
+//     really upstream.  A future protocol revision could split the
+//     state if a stronger guarantee is needed.
+//
+// Other states render verbatim ("idle" / "standalone" / "direct").
+// Unknown bytes fall back to BoardStateName's hex output.
+func BoardStateDisplay(state byte, caps uint32) string {
+	switch state {
+	case BoardStateIdle:
+		return "idle"
+	case BoardStateStandalone:
+		return "standalone"
+	case BoardStateSlave:
+		if HasCapability(caps, CapExpanderBus) {
+			return "host-driven"
+		}
+		return "hub-driven"
+	case BoardStateDirect:
+		return "direct"
+	default:
+		return BoardStateName(state)
 	}
 }
 

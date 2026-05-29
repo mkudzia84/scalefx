@@ -120,14 +120,19 @@ func TestStatusReturnsValid(t *testing.T) {
 	if s.FreeRAMBytes == 0 {
 		t.Error("FreeRAMBytes = 0 — heap query broken?")
 	}
-	// BoardState is one of IDLE / STANDALONE / SLAVE / DIRECT.  HubFX
-	// running with a host-attached CLI / Studio reports SLAVE — it's
-	// "slave to the host," not "slave board on the expander bus."
-	// Verified against the CLI's `status` command which also shows
-	// SLAVE.  The only state we genuinely don't want here is IDLE
-	// (means the wire layer never came up).
+	// BoardState raw byte is one of IDLE / STANDALONE / SLAVE / DIRECT.
+	// HubFX with the test harness attached reports SLAVE on the wire,
+	// but the contextual display label resolves it to "host-driven"
+	// because HubFX advertises CapExpanderBus.  That's the disambiguation
+	// the cmd_core CLI rendering uses too.
 	if s.BoardState == core.BoardStateIdle {
 		t.Errorf("BoardState = IDLE — wire layer didn't initialise?")
+	}
+	id := ports.SharedIdentity()
+	display := s.Display(id.Capabilities)
+	if display != "host-driven" {
+		t.Errorf("HubFX BoardState display = %q, want %q (with caps 0x%08X)",
+			display, "host-driven", id.Capabilities)
 	}
 	t.Logf("STATUS: uptime=%dms freeRAM=%dKB state=%d",
 		s.UptimeMs, s.FreeRAMBytes/1024, s.BoardState)

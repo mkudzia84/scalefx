@@ -193,6 +193,66 @@ func TestNoCapabilityBitCollisions(t *testing.T) {
 	}
 }
 
+// ─── BoardStateDisplay ──────────────────────────────────────────────────
+
+// BoardStateDisplay disambiguates the SLAVE byte by the board's role:
+// a hub-capable board (HubFX) renders as "host-driven" while a pure
+// expander (GunFx / LightFx / GearControl on the bus) renders as
+// "hub-driven."  The same wire byte → different human-friendly label.
+
+func TestBoardStateDisplay_NonSlaveStatesIgnoreCaps(t *testing.T) {
+	// Non-SLAVE states should produce the same label regardless of caps.
+	for _, tc := range []struct {
+		name  string
+		state byte
+		want  string
+	}{
+		{"idle", core.BoardStateIdle, "idle"},
+		{"standalone", core.BoardStateStandalone, "standalone"},
+		{"direct", core.BoardStateDirect, "direct"},
+	} {
+		got1 := core.BoardStateDisplay(tc.state, 0)
+		got2 := core.BoardStateDisplay(tc.state, core.CapExpanderBus)
+		if got1 != tc.want || got2 != tc.want {
+			t.Errorf("%s: caps-blind label drifted: 0caps=%q expanderBus=%q want %q",
+				tc.name, got1, got2, tc.want)
+		}
+	}
+}
+
+func TestBoardStateDisplay_SlaveOnHubCapableBoardIsHostDriven(t *testing.T) {
+	// HubFX advertises CapExpanderBus; when it reports SLAVE the
+	// upstream peer is the PC (CLI / Studio / scalefx-flash).
+	hubFxCaps := core.CapFlash | core.CapSd | core.CapAudio | core.CapExpanderBus
+	got := core.BoardStateDisplay(core.BoardStateSlave, hubFxCaps)
+	if got != "host-driven" {
+		t.Errorf("SLAVE on hub-capable board: got %q, want %q", got, "host-driven")
+	}
+}
+
+func TestBoardStateDisplay_SlaveOnExpanderIsHubDriven(t *testing.T) {
+	// Expanders (GunFX / LightFX / GearControl) don't advertise
+	// CapExpanderBus.  SLAVE on these boards means "the upstream hub
+	// master is driving me."  (Also fires for an expander plugged
+	// directly into a PC for flashing — the wire byte alone can't
+	// distinguish, but the operator knows from the cable.)
+	expanderCaps := core.CapFlash | core.CapGunFx
+	got := core.BoardStateDisplay(core.BoardStateSlave, expanderCaps)
+	if got != "hub-driven" {
+		t.Errorf("SLAVE on expander board: got %q, want %q", got, "hub-driven")
+	}
+}
+
+func TestBoardStateDisplay_UnknownStateFallsBackToHex(t *testing.T) {
+	// Any byte value the firmware hasn't defined yet must round-trip
+	// through BoardStateName's hex fallback so the display still shows
+	// SOMETHING informative.
+	got := core.BoardStateDisplay(0xAA, 0)
+	if got != "0xAA" {
+		t.Errorf("unknown state 0xAA: got %q, want %q", got, "0xAA")
+	}
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 func bitIdx(v uint32) int {
