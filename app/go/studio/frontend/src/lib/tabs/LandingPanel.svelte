@@ -283,7 +283,7 @@
                                  : $landingDirty ? 'Apply changes before deploying — tests the loaded firmware config'
                                  : hasErrors ? 'Resolve validation errors first'
                                  : 'Deploy: servos → open, then LEDs on'}>
-                        {deployed ? '■ Retract' : '▶ Deploy'}
+                        {deployed ? 'Retract' : 'Deploy'}
                     </button>
                     <button class="small danger" on:click={() => removeLandingLight(light.id)} disabled={busy}>× Remove</button>
                 </div>

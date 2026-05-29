@@ -617,7 +617,7 @@
                                          : $gunfxDirty ? 'Apply changes before firing — tests the loaded firmware config'
                                          : gun.rof.items.length === 0 ? 'Add a ROF item first'
                                          : 'Start auto-fire at the picked ROF (or RC-armed)'}>
-                                {st?.firing ? '■ Fire Off' : '▶ Fire On'}
+                                {st?.firing ? 'Fire Off' : 'Fire On'}
                             </button>
                             <select class="field-input narrow"
                                     value={pickRofForGun(gun)}
@@ -1072,7 +1072,7 @@
                                      : $gunfxDirty ? 'Apply changes before testing — runs the loaded firmware config'
                                      : gun.smoke.heater.port.guid === '' ? 'Pick a heater port below first — nothing to drive yet'
                                      : 'Heater on: drives heater at element-scaled duty. Fan follows when trigger fires.'}>
-                            {armed ? '■ Heater Off' : '▶ Heater On'}
+                            {armed ? 'Heater Off' : 'Heater On'}
                         </button>
                     </div>
                 </div>

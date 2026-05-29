@@ -211,7 +211,7 @@
                              : soundsHaveErrors ? 'Resolve validation errors before starting'
                              : $engineDirty ? 'Apply unsaved changes before starting'
                              : 'Start the engine sound'}>
-                    {engineOn ? '■ Engine Stop' : '▶ Engine Start'}
+                    {engineOn ? 'Engine Stop' : 'Engine Start'}
                 </button>
             {/if}
         </div>

@@ -803,7 +803,7 @@
                             title={isPlaying ? 'Stop every channel in this program'
                                  : canPlay ? 'Preview: fires every channel that has a port + events. No upload, no Save needed.'
                                  : 'No playable channels — assign a port and at least one event first.'}>
-                        {isPlaying ? '■ Stop' : '▶ Preview'}
+                        {isPlaying ? 'Stop' : 'Preview'}
                     </button>
                     <button class="small row-action {expanded[ai] ? 'state-toggle state-on' : ''}"
                             on:click={() => expanded = { ...expanded, [ai]: !expanded[ai] }}
