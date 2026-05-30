@@ -713,6 +713,21 @@ public:
         checkConnectionTimeout();
     }
 
+    /// Pump ONLY the bus — read + dispatch incoming COBS frames, update
+    /// activity — WITHOUT ticking the policies.  Used by the upload-exclusive
+    /// loop branch so a sync upload drains "only the storage server" (as the
+    /// loop intends): roles/effects don't tick, so no input/verbose broadcast
+    /// is emitted while a transfer owns the bus.  Stream uploads already bypass
+    /// this via processStream(); this closes the sync-upload path.
+    int pumpBus() {
+        int frames = this->readFrames();
+        auto& c = core();
+        if (frames > 0 || this->lastActivityMs() > c.lastActivityMs()) {
+            c.updateActivity();
+        }
+        return frames;
+    }
+
 protected:
     // ── BoardServerBase virtual hooks ────────────────────────────────
 

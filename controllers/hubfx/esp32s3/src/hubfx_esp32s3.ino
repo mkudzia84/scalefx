@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     622
+#define BUILD_NUMBER     627
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -920,7 +920,12 @@ void loop() {
         if (storage.isStreamActive()) {
             storage.processStream();
         } else {
-            board.process();
+            // Sync upload: drain ONLY the bus (read + dispatch the upload
+            // chunks).  pumpBus() skips the policy tick, so roles/effects don't
+            // run and no input/verbose broadcast is emitted while the transfer
+            // is exclusive — matches the "drain only the storage server" intent
+            // and stops broadcasts competing with the upload (Rule 28).
+            board.pumpBus();
         }
         storage.checkUploadTimeout();
         // Yield to IDLE0 each iteration so the Task Watchdog Timer
