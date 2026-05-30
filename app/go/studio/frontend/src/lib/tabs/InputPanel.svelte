@@ -6,7 +6,7 @@
     import {
         deviceModel, liveChannels, setInputProtocol, setInputChannelCount,
         setChannelFunction, liveChannelKey, usToPct, boardDisplayNames,
-        formatPortRail, syncJetiExpanderRemap,
+        formatPortRail, syncJetiExpanderRemap, RoleKind,
         type InputPortConfig, type ChannelFunctionDef, type PortRef,
         type InputProtocolDef,
     } from '../devicemodel'
@@ -112,8 +112,13 @@
     // protocol shows; the filter matters for narrower ports.
     function protosFor(p: PortRef, current: string): InputProtocolDef[] {
         const allowed = new Set((portOf(p)?.allowedRoles ?? []).map(r => r.kind))
-        return protocols.filter(pr => pr.roleKind === undefined
-            || allowed.size === 0 || allowed.has(pr.roleKind) || pr.id === current)
+        return protocols.filter(pr => {
+            if (pr.id === current) return true                  // always keep the current value
+            // Jeti EX Telemetry is the AUTO downstream role — assigned to IN_2
+            // when IN_1 is set to Jeti EX, never user-picked here.
+            if (pr.roleKind === RoleKind.JetiExTelemetry) return false
+            return pr.roleKind === undefined || allowed.size === 0 || allowed.has(pr.roleKind)
+        })
     }
     // Selected protocol's channel ceiling (PPM 8, SBUS/Jeti 16). The
     // channel-count input binds its `max` to this so the operator can't

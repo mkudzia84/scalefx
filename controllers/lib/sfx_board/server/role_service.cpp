@@ -223,9 +223,16 @@ void RoleServicePolicy::handleDetach(const uint8_t* p, size_t len) {
             if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
 #if SFX_PLATFORM_ESP32
             // The JetiExpander owns BOTH Jeti links; detaching the Rx (IN_1)
-            // role tears it down (which also releases the downstream port).
+            // role tears it down (end() releases both ports) AND clears the
+            // paired downstream telemetry marker so IN_2 reverts to no role.
             if (std::holds_alternative<JetiExInputRole>(b->role)) {
                 JetiEx::JetiExpander::instance().end();
+                for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
+                    if (i == portIdx) continue;
+                    auto* ob = _reg->inputAt(i);
+                    if (ob && std::holds_alternative<JetiExTelemetryRole>(ob->role))
+                        ob->role.emplace<std::monostate>();
+                }
             }
 #endif
             // Release the peripheral the previous role had claimed.
@@ -388,14 +395,28 @@ bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
     // we are master) if the board declares one.  The expander (a Core-0 task)
     // owns the UART I/O for both; the roles are thin handles, so they never
     // double-drive the UART.  Protocol-gated: only JetiEX attach starts it.
-    sfx_peripherals::InputPort* escPort = nullptr;
+    sfx_peripherals::InputPort* escPort   = nullptr;
+    InputBinding*               escBind   = nullptr;
+    uint8_t                     escIdx    = 0xFF;
     for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
         if (i == portIdx) continue;
         auto* ob = _reg->inputAt(i);
-        if (ob && ob->port) { escPort = ob->port; break; }
+        if (ob && ob->port) { escPort = ob->port; escBind = ob; escIdx = i; break; }
     }
     JetiEx::JetiExpander::instance().begin(b.port, escPort,
                                            /*usn=*/0xA400, /*lsn=*/0x0100, "HubFx", baud);
+
+    // Reflect the IN_1→IN_2 pairing in the registry: stamp the downstream port
+    // with the JetiExTelemetry role so topology (and thus the Studio diagram)
+    // shows IN_2 as the expander's telemetry link — regardless of whether the
+    // operator set IN_1 via Studio or /hubfx.yaml.  The expander owns the UART;
+    // this role is just the marker.  (Idempotent — skip if already telemetry.)
+    if (escBind && escIdx != 0xFF &&
+        !std::holds_alternative<JetiExTelemetryRole>(escBind->role)) {
+        auto& tr = escBind->role.emplace<JetiExTelemetryRole>();
+        tr.bind(escBind->port, baud);
+        tr.setPortIdx(escIdx);
+    }
 #endif
 
     // Default 50 Hz so the InputDispatcher (and thus effects) get RC values
