@@ -31,6 +31,7 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
 #include <driver/uart.h>          // uart_set_mode + UART_MODE_RS485_HALF_DUPLEX
+#include <soc/gpio_sig_map.h>     // U1TXD_OUT_IDX / U2TXD_OUT_IDX (half-duplex TX)
 #include <cstdint>
 
 #include "input_port.h"
@@ -75,20 +76,21 @@ public:
     }
 
     bool configureJetiEx(uint32_t baud) override {
-        // LISTEN-ONLY.  Jeti EX Bus is half-duplex on one wire, but to READ
-        // RC channel data we only need RX.  RX-only (tx=-1, normal UART mode)
-        // is the configuration verified on the input_monitor bench rig
-        // (thousands of bytes/s, clean CRC).  The earlier RS-485 half-duplex
-        // + shared-pin (tx=rx) setup received almost nothing — half-duplex
-        // holds the line for TX, so the inbound stream never reaches RX
-        // (instrumentation showed rxBytes stuck at ~1).  Telemetry talk-back
-        // (device->radio, EX telemetry / JetiBox — direction B) will need the
-        // half-duplex path restored with response-slot TX timing; that's a
-        // separate future feature.  Datasheet baud: 125 000 or 250 000.
+        // Half-duplex on ONE wire.  Begin with TX bound to the same pin,
+        // then detach TX via the GPIO matrix so we default to RX-only — the
+        // inbound stream reaches RX cleanly (verified on input_monitor /
+        // jeti_ex_telem bench rigs).  A response/poll slot calls txEnable()
+        // to attach TX for ~4 ms, then txDisable() back to RX.
+        //
+        // NOT `UART_MODE_RS485_HALF_DUPLEX`: that mode holds the line for TX
+        // and the inbound stream never reaches RX (rxBytes stuck at ~1).  The
+        // GPIO-matrix attach/detach is the method that actually works.
+        // Datasheet baud: 125 000 or 250 000.
         teardownActive();
         auto& s = uartSerial();
-        s.begin(baud, SERIAL_8N1, _pin, /*tx=*/-1, /*invert=*/false);
+        s.begin(baud, SERIAL_8N1, _pin, /*tx=*/_pin, /*invert=*/false);
         _mode = Mode::JETI_EX;
+        txDisable();                  // RX-only until a response/poll slot
         return true;
     }
 
@@ -160,9 +162,26 @@ public:
         }
     }
 
+    // ── Half-duplex TX control (JETI_EX) ─────────────────────────────
+    // Attach the UART TX signal onto the wire via the GPIO matrix for a
+    // response/poll slot; detach (pin → input pull-up) back to RX-only.
+    void txEnable() override {
+        if (_mode != Mode::JETI_EX) return;
+        pinMatrixOutAttach(_pin, txSignalIdx(), /*invert=*/false, /*oen_invert=*/false);
+    }
+    void txDisable() override {
+        pinMatrixOutDetach(_pin, /*invert=*/false, /*oen_invert=*/false);
+        pinMode(_pin, INPUT_PULLUP);
+    }
+
 private:
     HardwareSerial& uartSerial() {
         return (_uartNum == 1) ? Serial1 : Serial2;
+    }
+
+    /// UART TX peripheral-output signal index for the GPIO matrix.
+    uint32_t txSignalIdx() const {
+        return (_uartNum == 1) ? U1TXD_OUT_IDX : U2TXD_OUT_IDX;
     }
 
     void teardownActive() {

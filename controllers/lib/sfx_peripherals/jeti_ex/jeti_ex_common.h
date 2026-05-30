@@ -9,7 +9,15 @@
  *   - Jeti EX Telemetry Protocol (v1.00)
  *
  * EX Bus frame (from receiver):
- *   [start:u8][len:u8][pktId:u8][dataId:u8][subLen:u8][payload...][crc16LE]
+ *   [start:u8][type:u8][len:u8][pktId:u8][dataId:u8][subLen:u8][payload...][crc16LE]
+ *   (type = 0x01 response-allowed / 0x03 data-only)
+ *
+ * EX telemetry data block (in a slave response payload), per the in-repo spec
+ * docs/EX_Bus_protocol_v1.21_EN.pdf + verified on a real radio (2026-05-30):
+ *   [0x9F sep][type|len][USN16LE][LSN16LE][reserved][sensor entries...][crc8]
+ *   type bits 7-6: 0b01 (0x40)=data, 0b00=text, 0b10 (0x80)=alarm.  len counts
+ *   bytes from type|len through the last data byte (sep + crc8 excluded).
+ *   value bytes are little-endian; the HIGHEST byte carries sign|decimals|mag.
  *
  * Channel value encoding: 16-bit unsigned, units of 1/8 µs
  *   Center = 12000 → 1500 µs
@@ -25,6 +33,7 @@
 
 #include <Arduino.h>
 #include <cstdint>
+#include <cstring>
 
 namespace JetiEx {
 
@@ -47,8 +56,8 @@ constexpr uint8_t  MAX_FRAME_SIZE   = 48;
 /// Minimum valid frame size (start + len + pktId + dataId + subLen + crc×2)
 constexpr uint8_t  MIN_FRAME_SIZE   = 7;
 
-/// EX data separator byte (start of EX telemetry data within response)
-constexpr uint8_t  EX_SEPARATOR     = 0x7E;
+/// EX telemetry data separator byte (the spec's "0xNF"; NOT 0x7E)
+constexpr uint8_t  EX_SEPARATOR     = 0x9F;
 
 // ════════════════════════════════════════════════════════════════
 //  EX Telemetry sensor data types
@@ -184,32 +193,111 @@ inline uint8_t encodeSensorValue(uint8_t* buf, uint8_t id, ExDataType type,
 
     buf[0] = (id << 4) | static_cast<uint8_t>(type);
 
+    // Value bytes are little-endian: LOW byte(s) first, the HIGHEST byte last
+    // carries sign(bit7) | decimals(bits6-5) | 5 magnitude bits (bits4-0).
+    const uint8_t hi = static_cast<uint8_t>((sign << 7) | ((dp & 0x03) << 5));
+
     switch (type) {
     case ExDataType::Int6:
-        buf[1] = (sign << 7) | (dp << 5) | (mag & 0x1F);
+        buf[1] = hi | (mag & 0x1F);
         return 2;
 
     case ExDataType::Int14:
-        buf[1] = (sign << 7) | ((dp & 0x03) << 5) | ((mag >> 8) & 0x1F);
-        buf[2] = mag & 0xFF;
+        buf[1] = mag & 0xFF;
+        buf[2] = hi | ((mag >> 8) & 0x1F);
         return 3;
 
     case ExDataType::Int22:
-        buf[1] = (sign << 7) | ((dp & 0x03) << 5) | ((mag >> 16) & 0x1F);
+        buf[1] = mag & 0xFF;
         buf[2] = (mag >> 8) & 0xFF;
-        buf[3] = mag & 0xFF;
+        buf[3] = hi | ((mag >> 16) & 0x1F);
         return 4;
 
     case ExDataType::Int30:
-        buf[1] = (sign << 7) | ((dp & 0x03) << 5) | ((mag >> 24) & 0x1F);
-        buf[2] = (mag >> 16) & 0xFF;
-        buf[3] = (mag >> 8) & 0xFF;
-        buf[4] = mag & 0xFF;
+        buf[1] = mag & 0xFF;
+        buf[2] = (mag >> 8) & 0xFF;
+        buf[3] = (mag >> 16) & 0xFF;
+        buf[4] = hi | ((mag >> 24) & 0x1F);
         return 5;
 
     default:
         return 0; // GPS, DateTime not implemented yet
     }
+}
+
+/**
+ * @brief Decode one EX data value entry — inverse of encodeSensorValue().
+ *
+ * Reads `[id<<4 | type][value bytes]` from `buf` (`avail` bytes available).
+ * On success fills id/type/value/dp and sets `consumed` to the entry length.
+ * Returns false on truncation or an unsupported type (GPS/DateTime).
+ */
+inline bool decodeSensorValue(const uint8_t* buf, size_t avail,
+                              uint8_t& id, ExDataType& type, int32_t& value,
+                              uint8_t& dp, uint8_t& consumed)
+{
+    if (avail < 1) return false;
+    id   = buf[0] >> 4;
+    type = static_cast<ExDataType>(buf[0] & 0x0F);
+    const uint8_t vbytes = dataTypeSize(type);
+    if (vbytes == 0 || type == ExDataType::DateTime || type == ExDataType::Gps)
+        return false;                       // only Int6/14/22/30 supported here
+    if (avail < 1u + vbytes) return false;
+
+    // Little-endian value: buf[1..vbytes], buf[vbytes] (highest) holds the
+    // sign/decimals + top 5 magnitude bits; earlier bytes are lower magnitude.
+    const uint8_t  sign = buf[vbytes] >> 7;
+    dp = (buf[vbytes] >> 5) & 0x03;
+    uint32_t mag = buf[vbytes] & 0x1F;       // top value byte: 5 magnitude bits
+    for (uint8_t i = vbytes - 1; i >= 1; --i)
+        mag = (mag << 8) | buf[i];
+    value    = sign ? -static_cast<int32_t>(mag) : static_cast<int32_t>(mag);
+    consumed = static_cast<uint8_t>(1 + vbytes);
+    return true;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  EX telemetry block builders (the 0x9F frame inside a response)
+// ════════════════════════════════════════════════════════════════
+//
+// Both carry the device identity (USN/LSN) so a multi-device expander can
+// stamp each frame with the source device — the radio groups by (USN,LSN).
+// Layout: [0x9F sep][type|len][USN16LE][LSN16LE][reserved][body...][crc8].
+// `len` (low 6 bits of [1]) counts bytes [1..lastbody]; type bits 7-6:
+// 0b01 = data, 0b00 = text.  Returns the total block length (incl. crc8).
+
+/// Write the shared 7-byte head; caller fills [1] (type|len) + body, then crc8.
+inline uint8_t exBlockHead(uint8_t* buf, uint16_t usn, uint16_t lsn) {
+    buf[0] = EX_SEPARATOR;
+    buf[2] = usn & 0xFF;  buf[3] = (usn >> 8) & 0xFF;
+    buf[4] = lsn & 0xFF;  buf[5] = (lsn >> 8) & 0xFF;
+    buf[6] = 0x00;                       // reserved
+    return 7;
+}
+
+/// One-sensor DATA block.
+inline uint8_t buildExDataBlock(uint8_t* buf, uint16_t usn, uint16_t lsn,
+                                uint8_t id, ExDataType type, uint8_t dp, int32_t value) {
+    uint8_t pos = exBlockHead(buf, usn, lsn);
+    pos += encodeSensorValue(&buf[pos], id, type, value, dp);
+    buf[1] = 0x40 | (pos - 1);           // data (0b01) | len
+    buf[pos] = crc8_ex(&buf[1], pos - 1);
+    return (uint8_t)(pos + 1);
+}
+
+/// TEXT block — device name when id==0 (unit ignored), else a sensor label.
+inline uint8_t buildExTextBlock(uint8_t* buf, uint16_t usn, uint16_t lsn,
+                                uint8_t id, const char* label, const char* unit) {
+    uint8_t pos = exBlockHead(buf, usn, lsn);
+    buf[pos++] = id & 0x0F;
+    uint8_t llen = label ? (uint8_t)strlen(label) : 0; if (llen > 20) llen = 20;
+    uint8_t ulen = unit  ? (uint8_t)strlen(unit)  : 0; if (ulen > 7)  ulen = 7;
+    buf[pos++] = (uint8_t)((llen << 3) | (ulen & 0x07));
+    for (uint8_t i = 0; i < llen; ++i) buf[pos++] = (uint8_t)label[i];
+    for (uint8_t i = 0; i < ulen; ++i) buf[pos++] = (uint8_t)unit[i];
+    buf[1] = 0x00 | (pos - 1);           // text (0b00) | len
+    buf[pos] = crc8_ex(&buf[1], pos - 1);
+    return (uint8_t)(pos + 1);
 }
 
 } // namespace JetiEx
