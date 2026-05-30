@@ -88,5 +88,37 @@ Present (native both sides): `SFX_DELAY_MS/US`, `SfxMutex`, PSRAM
 - **P8 — Pico controllers.** First unblock the stale `.ino` vs `BoardOf<>`, then
   swap the Arduino-Pico branch of each abstraction for the native Pico SDK.
 
-## Executed-phase log
-(updated as commits land on this branch — see git log for the authoritative list.)
+## Executed-phase log (branch `arduino-removal`, hubfx green throughout)
+
+- **P1 (done):** removed 4 dead audio codecs/outputs (`pcm5102a`, `simple_i2s`,
+  `tas5825_m`, `pico_i2s_output`) — also the #1/#5 Arduino-coupling hotspots.
+- **P2 (done):** PROTOCOL.md stale-server-API banner.
+- **P4 (done, 4 commits):** native `SFX_MILLIS()`/`SFX_MICROS()` added to
+  `sfx_platform.h`; migrated **all** ESP32/shared + audio timing off Arduino
+  `millis()`/`micros()` (effect_clock, board server/bus, roles, peripherals,
+  serial client, storage, usb host, hubfx effects/expander, audio hot path);
+  `SFX_CPU_MHZ()` now native (`esp_clk_tree`). Only Pico-only ISR timing remains.
+- **P3 (BLOCKED — re-sequenced after P6/P7):** vestigial `<Arduino.h>` removal
+  cannot be build-verified while `sfx_platform.h` itself still
+  `#include <Arduino.h>` (every includer gets Arduino transitively). It must
+  follow the GPIO/I2C/servo/ISR abstractions so `sfx_platform.h` can drop the
+  include first. The classification of vestigial vs functional includers is
+  done (grep) and ready.
+
+### Remaining (high-leverage, higher-risk — do attended, build-verify each)
+- **P5 — I2C abstraction:** `SfxI2cBus` (ESP-IDF `i2c_master` / Pico
+  `hardware/i2c`) threaded through `I2CDevice`; migrate `pca9685`, `ina226`,
+  `tas5825_p_codec`, `hubfx_hw_probe.h` off `TwoWire`.
+- **P6 — GPIO/PWM/ADC:** make `native_gpio.h` actually native
+  (`driver/gpio`+`driver/ledc` / `hardware/gpio`+`hardware/pwm`+`hardware/adc`);
+  ports + `battery_monitor` follow. Then **drop `<Arduino.h>` from
+  `sfx_platform.h`** and run P3.
+- **P7 — servo + UART Stream + entry model:** LEDC/MCPWM servo; Stream-free wire
+  seam; `.ino setup/loop` → `app_main` + loop task; drop `framework = arduino`
+  + the `ESP32Servo`/Arduino-`SD` `lib_deps`.
+- **P8 — Pico controllers:** unblock the stale `.ino` vs `BoardOf<>` first, then
+  swap each abstraction's Arduino-Pico branch for the native Pico SDK (+ a
+  TinyUSB-CDC `Stream` adapter mirroring `NativeUartStream`).
+
+See [26-CODE-AND-DESIGN-IMPROVEMENTS.md](26-CODE-AND-DESIGN-IMPROVEMENTS.md) for
+the broader code/design catalogue surfaced by this analysis.
