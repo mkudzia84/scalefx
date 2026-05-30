@@ -388,8 +388,10 @@ bool RoleServicePolicy::attachSbusInput(InputBinding& b, uint8_t portIdx,
 bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
                                           const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<JetiExInputRole>();
-    // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8]
+    // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8][downstream:u8]
     //   baud encoded as kbaud (125 / 250); 0 = use default 125 000.
+    //   downstream (Rule 11 append, byte 3): bring up the IN_2 / ESC telemetry
+    //   monitor.  Default false — IN_2 stays passive (no UART drained).
     uint32_t baud = 125000;
     if (cfgLen >= 3) {
         const uint16_t kbaud = ((uint16_t)cfg[1] << 8) | cfg[2];
@@ -397,6 +399,7 @@ bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
         else if (kbaud == 125 || kbaud == 0) baud = 125000;
         else baud = (uint32_t)kbaud * 1000;
     }
+    const bool useDownstream = (cfgLen >= 4) && (cfg[3] != 0);
     if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
 
 #if SFX_PLATFORM_ESP32
@@ -414,7 +417,8 @@ bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
         if (ob && ob->port) { escPort = ob->port; escBind = ob; escIdx = i; break; }
     }
     JetiEx::JetiExpander::instance().begin(b.port, escPort,
-                                           /*usn=*/0xA400, /*lsn=*/0x0100, "HubFx", baud);
+                                           /*usn=*/0xA400, /*lsn=*/0x0100, "HubFx", baud,
+                                           /*useDownstream=*/useDownstream);
 
     // Reflect the IN_1→IN_2 pairing in the registry: stamp the downstream port
     // with the JetiExTelemetry role so topology (and thus the Studio diagram)

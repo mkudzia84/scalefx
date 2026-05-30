@@ -53,7 +53,7 @@ public:
     bool begin(sfx_peripherals::InputPort* rxPort,
                sfx_peripherals::InputPort* escPort,
                uint16_t hubUsn, uint16_t hubLsn, const char* hubName,
-               uint32_t baud = 125000) {
+               uint32_t baud = 125000, bool useDownstream = false) {
         if (_running) return true;                    // already running
         if (!rxPort) return false;
         _rxPort  = rxPort;
@@ -61,18 +61,19 @@ public:
         Stream* rxStream = rxPort->uartStream();
         if (!rxStream) return false;
 
-        // Downstream (ESC) link.  Kept CONFIGURED as the second Jeti port (RX-
-        // only monitor) so a downstream device plugged on IN_2 sits on a live,
-        // electrically-correct port — but with forwarding disabled (below) it
-        // never drives TX, so it can't crosstalk IN_1.  Optional: without it we
-        // still decode IN_1 channels, just with nothing to monitor/merge.
-        _escPort = escPort;
-        if (_escPort && _escPort->configureJetiEx(baud)) {
-            _escStream = _escPort->uartStream();
-            if (_escStream) _escMon.begin(_escStream);
-            else            _escPort = nullptr;
-        } else {
-            _escPort = nullptr;
+        // Downstream (ESC) link on IN_2.  Brought up ONLY when the operator
+        // opts in (`useDownstream`, from /hubfx.yaml's `downstream: true` on the
+        // JetiEX input port — default false, exposed in Studio).  When off,
+        // draining IN_2 would feed a JetiTelemetryHub that NOTHING reads (with
+        // forwarding/reply disabled), and on a floating / noisy IN_2 it is a
+        // main-loop STALL source (the unbounded-drain class of bug) — so we
+        // leave the port unconfigured + passive.  Channel RX on IN_1 is
+        // unaffected either way.
+        _escPort   = nullptr;
+        _escStream = nullptr;
+        if (useDownstream && escPort && escPort->configureJetiEx(baud)) {
+            _escStream = escPort->uartStream();
+            if (_escStream) { _escPort = escPort; _escMon.begin(_escStream); }
         }
 
         if (!_rxBus.begin(rxStream)) return false;
@@ -117,8 +118,11 @@ public:
         // a task only if telemetry (the ~4 ms reply slot) is re-enabled.
         _running     = true;
         _lastBuiltin = _lastExpire = 0;
-        SFX_LOG_INFO("[jexp] started in main loop (rx=IN_1, esc=IN_2, baud=%lu)",
-                     (unsigned long)baud);
+        const uint32_t now0 = millis();
+        _rxWatch.reset(now0);
+        _escWatch.reset(now0);
+        SFX_LOG_INFO("[jexp] started in main loop (rx=IN_1, esc=IN_2%s, baud=%lu)",
+                     _escPort ? "" : " off", (unsigned long)baud);
         return true;
     }
 
@@ -130,9 +134,14 @@ public:
         if (!_running) return;
         const uint32_t now = millis();
         // IN_2 first: drain the ESC's telemetry into the hub before IN_1
-        // re-parses the next echoed master frame.
-        _escMon.update(now);
-        _rxBus.update();            // IN_1: master frames → channels (+ reply hook)
+        // re-parses the next echoed master frame.  Only when the downstream
+        // link is in use (otherwise _escPort is null — see begin()).  Each
+        // link is gated by its noise watchdog (active-but-no-frames → off).
+        if (_escPort &&
+            _escWatch.shouldDrain(now, _escMon.rxByteCount(), _escMon.frameCount(), "IN_2"))
+            _escMon.update(now);
+        if (_rxWatch.shouldDrain(now, _rxBus.rxByteCount(), _rxBus.rxFrameCount(), "IN_1"))
+            _rxBus.update();        // IN_1: master frames → channels (+ reply hook)
 
         if (now - _lastBuiltin >= 1000 && _localDev != 0xFF) {
             _lastBuiltin = now;
@@ -201,10 +210,72 @@ public:
     uint8_t  deviceCount() const { return JetiTelemetryHub::instance().deviceCount(); }
     uint8_t  sensorCount() const { return JetiTelemetryHub::instance().activeSensorCount(); }
 
+    /// True while a link's drain is latched-off because the line is active but
+    /// produced ZERO valid frames (floating / wrong-baud noise).  Surfaced in
+    /// the role diagnostics so `diag` shows WHY channels went dead.
+    bool rxNoiseDisabled()  const { return _rxWatch.latched; }
+    bool escNoiseDisabled() const { return _escWatch.latched; }
+
 private:
     JetiExpander() = default;
     JetiExpander(const JetiExpander&) = delete;
     JetiExpander& operator=(const JetiExpander&) = delete;
+
+    // ── Noise watchdog ───────────────────────────────────────────────
+    // A Jeti link that is ACTIVE (bytes flowing) but yields NO CRC-valid frame
+    // is floating / wrong-baud / cross-talk noise, not a signal.  Draining it
+    // burns CPU on garbage and (pre bounded-drain) could stall the loop.  Once
+    // a link has streamed noise with zero valid frames for kNoiseSecsToDisable
+    // consecutive seconds, latch its drain OFF and log an error to diag; then
+    // self-heal by re-probing every kReprobeMs so a receiver powered on later
+    // recovers automatically (a real Rx yields valid frames within the probe
+    // window and the latch clears).
+    static constexpr uint32_t kNoiseBytesPerSec   = 1000;  // line "active" floor
+    static constexpr uint8_t  kNoiseSecsToDisable = 4;     // grace for Rx sync
+    static constexpr uint32_t kReprobeMs          = 15000; // self-heal cadence
+
+    struct NoiseWatch {
+        uint32_t lastMs = 0, baseBytes = 0, baseFrames = 0, latchedMs = 0;
+        uint8_t  noiseSecs = 0;
+        bool     latched   = false;
+
+        void reset(uint32_t now) {
+            lastMs = now; baseBytes = baseFrames = latchedMs = 0;
+            noiseSecs = 0; latched = false;
+        }
+        // Returns true if the link should be drained this pass.
+        bool shouldDrain(uint32_t now, uint32_t bytes, uint32_t frames,
+                         const char* label) {
+            if (latched) {
+                if (now - latchedMs < kReprobeMs) return false;   // stay disabled
+                latched = false; noiseSecs = 0;                   // re-probe window
+                lastMs = now; baseBytes = bytes; baseFrames = frames;
+                SFX_LOG_INFO("[jexp] %s: re-probing after noise-disable", label);
+                return true;
+            }
+            if (now - lastMs >= 1000) {
+                const uint32_t db = bytes - baseBytes;
+                const uint32_t df = frames - baseFrames;
+                lastMs = now; baseBytes = bytes; baseFrames = frames;
+                if (db >= kNoiseBytesPerSec && df == 0) {
+                    if (++noiseSecs >= kNoiseSecsToDisable) {
+                        latched = true; latchedMs = now; noiseSecs = 0;
+                        SFX_LOG_ERROR("[jexp] %s: %lu B/s noise, 0 valid frames for "
+                                      "%us — drain DISABLED (floating / wrong-baud "
+                                      "line); re-probe in %lus", label,
+                                      (unsigned long)db, (unsigned)kNoiseSecsToDisable,
+                                      (unsigned long)(kReprobeMs / 1000));
+                        return false;
+                    }
+                } else {
+                    noiseSecs = 0;   // valid frame seen, or line quiet
+                }
+            }
+            return true;
+        }
+    };
+    NoiseWatch _rxWatch;
+    NoiseWatch _escWatch;
 
     // Telemetry hook (runs during update()'s _rxBus.update()): build the next
     // multi-device frame from the hub (under lock), then half-duplex TX it.
