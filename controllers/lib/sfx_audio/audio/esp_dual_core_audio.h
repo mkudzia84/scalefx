@@ -207,17 +207,21 @@ private:
         // cooperates naturally with the consumer (consumer blocks on
         // I²S DMA write → producer runs), keeping the ring fed.
         //
-        // 6 KB stack restored 2026-05-28 after the upload regression
-        // was diagnosed and proven UNRELATED to producer stack size
-        // (commit 12d8c69).  Producer is suspended for the duration
-        // of every upload (`wireUploadExclusivity` → `suspendAudio`),
-        // so the upload code path can't even reach this task.
-        // Idle HWM measured 3.3 KB free out of 8 KB; trim to 6 KB
-        // leaves ~1.3 KB margin which matches what wave-2 verified
-        // before the (unrelated) revert.
+        // 8 KB stack.  It was trimmed to 6 KB on 2026-05-28 based on an
+        // IDLE high-water-mark (3.3 KB free out of 8 KB → "1.3 KB margin"),
+        // but that measurement UNDERCOUNTED the active path: during an engine
+        // start/stop CROSSFADE the producer mixes two channels with fades and
+        // the worst-case HWM drops to ~751 B free at 6 KB (bench log,
+        // 2026-05-31) — well below the intended margin and into overflow-risk
+        // territory.  Restored to 8 KB (≈2.8 KB free at the observed worst
+        // case); the extra 2 KB DRAM is trivial against ~114 KB free.
+        // (Producer is still suspended for every upload via
+        // `wireUploadExclusivity` → `suspendAudio`, so the upload path can't
+        // reach this task — the 6 KB revert was correctly proven unrelated to
+        // the upload regression; this is a separate active-playback finding.)
         mixer.startProducerTask(/*core=*/1,
                                 /*priority=*/configMAX_PRIORITIES - 2,
-                                /*stackSize=*/6144);
+                                /*stackSize=*/8192);
 
         // Phase 6 (feature/audio-decode-prefetch): start the decoder
         // task on Core 0.  Owns all libhelix MP3 + SD reads so the
