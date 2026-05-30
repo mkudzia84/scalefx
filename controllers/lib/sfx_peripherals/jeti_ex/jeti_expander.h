@@ -56,7 +56,7 @@ public:
                sfx_peripherals::InputPort* escPort,
                uint16_t hubUsn, uint16_t hubLsn, const char* hubName,
                uint32_t baud = 125000) {
-        if (_rxTask) return true;                     // already running
+        if (_task) return true;                       // already running
         if (!rxPort) return false;
         _rxPort  = rxPort;
         if (!rxPort->configureJetiEx(baud)) return false;
@@ -77,8 +77,12 @@ public:
         if (!_rxBus.begin(rxStream)) return false;
         _rxBus.setTxPort(rxPort);                     // half-duplex TX on IN_1 (reply)
         _rxBus.onTelemetryRequest([this](uint8_t pkt){ serveTelemetry(pkt); });
-        // No per-frame forward hook — the ESC is polled by its OWN task, on its
-        // own schedule (two independent tasks, no cross-task coordination).
+        // Forward-to-ESC is the second-UART TX that crosstalks GPIO6->GPIO5 and
+        // drops the RC channel RX — gated off (kForwardToEsc) until its timing /
+        // routing is fixed.  Telemetry RESPONSE on IN_1 stays on.
+        if (kForwardToEsc && _escPort) {
+            _rxBus.onRawFrame([this](const uint8_t* f, uint8_t l){ forwardToEsc(f, l); });
+        }
 
         // Register the HubFX-own device (local → never expires) + its built-in
         // sensors, so it shows on the radio even with no downstream ESC.
@@ -93,33 +97,22 @@ public:
         }
 
         _stop = false;
-        // TWO independent Core-0 tasks, no cross-task signaling: the Rx task
-        // (IN_1: channels + reply) at HIGHER priority than the ESC task (IN_2:
-        // monitor + independent poll).  TEST build — the ESC poll runs even with
-        // nothing attached, to measure whether splitting the tasks avoids the
-        // IN_2->IN_1 crosstalk dropouts.
-        BaseType_t ok = xTaskCreatePinnedToCore(
-            &JetiExpander::rxTaskEntry, "jetiRx", 4096, this,
-            /*priority=*/3, &_rxTask, /*core=*/0);
-        if (ok != pdPASS) { _rxTask = nullptr; return false; }
-        if (_escPort) {
-            ok = xTaskCreatePinnedToCore(
-                &JetiExpander::escTaskEntry, "jetiEsc", 4096, this,
-                /*priority=*/2, &_escTask, /*core=*/0);
-            if (ok != pdPASS) _escTask = nullptr;
-        }
-        SFX_LOG_INFO("[jexp] started: rxTask(IN_1)+escTask(IN_2)%s poll=%s baud=%lu",
-                     (_escTask ? "" : " [no-esc]"),
-                     (kForwardToEsc ? "on" : "off"), (unsigned long)baud);
+        const BaseType_t ok = xTaskCreatePinnedToCore(
+            &JetiExpander::taskEntry, "jetiExp", 4096, this,
+            /*priority=*/3,             // above loopTask (1)
+            &_task, /*core=*/0);        // Core 0 — audio owns Core 1
+        if (ok != pdPASS) { _task = nullptr; return false; }
+        SFX_LOG_INFO("[jexp] started on Core 0 (rx=IN_1, esc=IN_2, baud=%lu)",
+                     (unsigned long)baud);
         return true;
     }
 
     void end() {
-        if (_rxTask || _escTask) {
+        if (_task) {
             _stop = true;
-            // Let both loops observe _stop and self-delete; then forget them.
-            for (int i = 0; i < 50 && (_rxTask || _escTask); ++i) SFX_DELAY_MS(2);
-            _rxTask = _escTask = nullptr;
+            // Let the loop observe _stop and self-delete; then forget it.
+            for (int i = 0; i < 50 && _task; ++i) SFX_DELAY_MS(2);
+            _task = nullptr;
         }
         _rxBus.end();
         _escMon.end();
@@ -129,7 +122,7 @@ public:
         _escStream = nullptr;
     }
 
-    bool running() const { return _rxTask != nullptr; }
+    bool running() const { return _task != nullptr; }
 
     // ── HubFX-own telemetry (the local device) ───────────────────────
     void setLocalSensor(uint8_t id, const char* label, const char* unit,
@@ -176,15 +169,17 @@ private:
     JetiExpander(const JetiExpander&) = delete;
     JetiExpander& operator=(const JetiExpander&) = delete;
 
-    static void rxTaskEntry(void* arg)  { static_cast<JetiExpander*>(arg)->rxTaskLoop(); }
-    static void escTaskEntry(void* arg) { static_cast<JetiExpander*>(arg)->escTaskLoop(); }
+    static void taskEntry(void* arg) { static_cast<JetiExpander*>(arg)->taskLoop(); }
 
-    // IN_1 task: channels + telemetry reply (the reply hook fires inside update).
-    void rxTaskLoop() {
-        uint32_t lastBuiltin = 0, lastLog = 0;
+    void taskLoop() {
+        uint32_t lastExpire = 0, lastLog = 0, lastBuiltin = 0;
         for (;;) {
             if (_stop) break;
             const uint32_t now = millis();
+            // IN_2 first: drain the ESC's telemetry into the hub before IN_1
+            // forwards (and harmlessly re-parses) the next echoed master frame.
+            _escMon.update(now);
+            // IN_1: parse master frames → respond (hook) + forward (hook).
             _rxBus.update();
 
             if (now - lastBuiltin >= 1000 && _localDev != 0xFF) {
@@ -194,48 +189,29 @@ private:
                 hub.setSensor(_localDev, kUptimeId, ExDataType::Int22, 0,
                               (int32_t)(now / 1000), now);
             }
-#if SFX_INSTRUMENTATION
-            if (now - lastLog >= 1000) {
-                lastLog = now;
-                SFX_LOG_INFO("[jexp] rxF=%lu rxE=%lu tx=%lu | escF=%lu escE=%lu poll=%lu | dev=%u",
-                             (unsigned long)_rxBus.rxFrameCount(),
-                             (unsigned long)_rxBus.rxErrorCount(),
-                             (unsigned long)_rxBus.txResponseCount(),
-                             (unsigned long)_escMon.telemetryFrames(),
-                             (unsigned long)_escMon.errorCount(),
-                             (unsigned long)_pollCount,
-                             (unsigned)JetiTelemetryHub::instance().deviceCount());
-            }
-#else
-            (void)lastLog;
-#endif
-            vTaskDelay(1);
-        }
-        _rxTask = nullptr;
-        vTaskDelete(nullptr);
-    }
-
-    // IN_2 task: drain the ESC's telemetry into the hub + poll the ESC on its
-    // OWN schedule (no coordination with the Rx task).
-    void escTaskLoop() {
-        uint32_t lastPoll = 0, lastExpire = 0;
-        for (;;) {
-            if (_stop) break;
-            const uint32_t now = millis();
-            _escMon.update(now);
-            if (kForwardToEsc && now - lastPoll >= kEscPollIntervalMs) {
-                lastPoll = now;
-                sendEscPoll();
-            }
             if (now - lastExpire >= 1000) {
                 lastExpire = now;
                 auto& hub = JetiTelemetryHub::instance();
                 JetiTelemetryHub::ScopedLock lk(hub);
                 hub.expireStale(now, 2000);   // disconnected ESC drops out
             }
-            vTaskDelay(1);
+#if SFX_INSTRUMENTATION
+            if (now - lastLog >= 1000) {
+                lastLog = now;
+                SFX_LOG_INFO("[jexp] rxF=%lu rxE=%lu tx=%lu | escF=%lu escE=%lu | dev=%u",
+                             (unsigned long)_rxBus.rxFrameCount(),
+                             (unsigned long)_rxBus.rxErrorCount(),
+                             (unsigned long)_rxBus.txResponseCount(),
+                             (unsigned long)_escMon.telemetryFrames(),
+                             (unsigned long)_escMon.errorCount(),
+                             (unsigned)JetiTelemetryHub::instance().deviceCount());
+            }
+#else
+            (void)lastLog;
+#endif
+            vTaskDelay(1);                     // ~1 ms; yields Core 0 to the loop
         }
-        _escTask = nullptr;
+        _task = nullptr;
         vTaskDelete(nullptr);
     }
 
@@ -264,28 +240,26 @@ private:
         if (len) _rxBus.sendTelemetry(pktId, buf, len);
     }
 
-    // Poll the downstream ESC: emit a master TELEMETRY-REQUEST on IN_2 (half-
-    // duplex), generated locally (no copy of the Rx's frame — the ESC replies to
-    // any request).  Frame: [0x3D][0x01][len=8][pktId][0x3A][0x00][crc16LE].
-    // The ESC's reply lands on IN_2 and is decoded by _escMon on the next tick.
-    // NOTE: the reverse CONFIG-relay (ESC menu replies -> Rx) is NOT IMPLEMENTED.
-    void sendEscPoll() {
+    // Raw-frame hook: poll the downstream ESC by mirroring the Rx's TELEMETRY-
+    // REQUEST frames to it (half-duplex).  Rate-limited so the ESC is polled at
+    // ~kEscPollIntervalMs, NOT once per Rx frame: mirroring every frame blocks
+    // the task on flush() for ~3 ms each and starves IN_1's channel RX (signal
+    // loss).  Only 0x3A frames matter — channel frames don't make the ESC reply.
+    //
+    // NOTE: this forwards Rx->ESC only; the reverse CONFIG-relay (ESC config /
+    // menu replies -> Rx) is NOT IMPLEMENTED YET (deferred — proprietary format,
+    // synchronous-proxy timing).  The monitor extracts the ESC's 0x3A telemetry;
+    // its config/menu replies are dropped.
+    void forwardToEsc(const uint8_t* frame, uint8_t len) {
         if (!_escPort || !_escStream) return;
-        uint8_t f[8];
-        f[0] = START_ADDR1;          // 0x3D — master, response allowed
-        f[1] = 0x01;
-        f[2] = 8;                    // total length incl. header + CRC
-        f[3] = _escPktId++;
-        f[4] = DATA_TELEMETRY;       // 0x3A — telemetry request
-        f[5] = 0;                    // 0-length data block = request
-        const uint16_t c = crc16_ccitt(f, 6);
-        f[6] = (uint8_t)(c & 0xFF);
-        f[7] = (uint8_t)(c >> 8);
+        if (len < 6 || frame[4] != DATA_TELEMETRY) return;     // telemetry polls only
+        const uint32_t now = millis();
+        if (now - _lastFwdMs < kEscPollIntervalMs) return;     // rate-limit
+        _lastFwdMs = now;
         _escPort->txEnable();
-        _escStream->write(f, sizeof f);
+        _escStream->write(frame, len);
         _escStream->flush();
         _escPort->txDisable();
-        ++_pollCount;
     }
 
     // ── Multi-device rotation (cursors advanced under the hub lock) ───
@@ -338,17 +312,17 @@ private:
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
-    // TEST build: ESC poll ON, driven by its own IN_2 task (no coordination with
-    // the Rx task) — to measure whether two independent tasks avoid the IN_2->
-    // IN_1 crosstalk dropouts.  (Previously the per-frame forward crosstalked
-    // GPIO6->GPIO5 and dropped RC frames.)
-    static constexpr bool     kForwardToEsc      = true;
+    // The forward-to-ESC TX on IN_2 (GPIO6) couples onto the ADJACENT IN_1
+    // (GPIO5) channel RX and drops the RC signal — confirmed: the IN_1 reply is
+    // clean, the "second-UART piping" is what hurts.  Off until the IN_2 poll is
+    // timed into IN_1's silent window (or routed off the adjacent pin).  The
+    // IN_1 telemetry RESPONSE is unaffected and stays on.
+    static constexpr bool     kForwardToEsc      = false;
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
     static constexpr uint32_t kEscPollIntervalMs = 100;  // ESC poll rate (~10 Hz)
     static constexpr uint32_t kRespIntervalMs    = 50;   // Rx reply rate cap (~20 Hz)
+    uint32_t _lastFwdMs  = 0;            // last ESC-forward time (rate limit)
     uint32_t _lastRespMs = 0;            // last Rx-reply time (rate limit)
-    uint32_t _pollCount  = 0;            // ESC polls sent (diag)
-    uint8_t  _escPktId   = 0;            // ESC poll packet-id counter
     uint8_t  _localDev   = 0xFF;         // hub index of the HubFX-own device
 
     // Rotation cursors (data + text walk independently across the hub).
@@ -357,8 +331,7 @@ private:
     uint8_t  _textDev = 0;
     int16_t  _textSen = -1;               // -1 = device name, else sensor index
 
-    TaskHandle_t   _rxTask  = nullptr;   // IN_1 task (channels + reply)
-    TaskHandle_t   _escTask = nullptr;   // IN_2 task (monitor + poll)
+    TaskHandle_t   _task = nullptr;
     volatile bool  _stop = false;
 };
 
