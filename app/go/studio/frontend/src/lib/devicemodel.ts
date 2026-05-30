@@ -319,21 +319,6 @@ export async function attachRole(p: PortRef, roleKind: number): Promise<void> {
     markHubDirty()    // role attachment persists into /hubfx.yaml ports[]
 }
 
-/** Jeti EX expander auto-remap: when an input port becomes the Rx-facing
- *  JetiEX link, auto-assign the OTHER input port the downstream telemetry
- *  role — IN_1 = Rx, IN_2 = ESC (mirrors the firmware, which grabs the other
- *  input as the downstream link).  No-op for non-input ports / non-JetiEX.
- *  Both the protocol picker (InputPanel) and the role picker (PortControls)
- *  call this so either entry point remaps IN_1/IN_2 and the GUI updates. */
-export async function syncJetiExpanderRemap(self: PortRef, newRoleKind: number): Promise<void> {
-    if (self.kind !== PortKind.Input || newRoleKind !== RoleKind.JetiExInput) return
-    const other = get(deviceModel).ports.find(p =>
-        p.ref.kind === PortKind.Input &&
-        !(p.ref.guid === self.guid && p.ref.index === self.index))
-    if (other && other.roleKind !== RoleKind.JetiExTelemetry)
-        await attachRole(other.ref, RoleKind.JetiExTelemetry)
-}
-
 export async function detachRole(p: PortRef): Promise<void> {
     const snap = await DetachRole(p.guid, p.kind, p.index)
     deviceModel.set(normalize(snap))

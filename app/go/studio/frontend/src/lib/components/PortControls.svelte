@@ -3,8 +3,7 @@
      tag + name; every other port shows a role picker limited to the kinds
      it can host.  Uses shared design-system classes (Rule 34). -->
 <script lang="ts">
-    import { attachRole, detachRole, setPortName, RoleKind,
-             syncJetiExpanderRemap, type Port } from '../devicemodel'
+    import { attachRole, detachRole, setPortName, RoleKind, type Port } from '../devicemodel'
 
     export let port: Port
     let busy = false
@@ -17,9 +16,10 @@
     async function onRole(roleKind: number) {
         busy = true
         try {
+            // IN_2's Jeti telemetry role is inferred firmware-side and surfaced
+            // by AttachRole's topology re-read — no UI-side remap here.
             if (roleKind === RoleKind.None) await detachRole(port.ref)
             else await attachRole(port.ref, roleKind)
-            await syncJetiExpanderRemap(port.ref, roleKind)   // IN_1 JetiEX → IN_2 telemetry
         } finally { busy = false }
     }
     async function onName(name: string) {

@@ -6,7 +6,7 @@
     import {
         deviceModel, liveChannels, setInputProtocol, setInputChannelCount,
         setChannelFunction, liveChannelKey, usToPct, boardDisplayNames,
-        formatPortRail, syncJetiExpanderRemap, RoleKind,
+        formatPortRail, RoleKind,
         type InputPortConfig, type ChannelFunctionDef, type PortRef,
         type InputProtocolDef,
     } from '../devicemodel'
@@ -59,10 +59,9 @@
             const cfg = inputs.find(c => c.port.guid === p.guid && c.port.index === p.index)
             const max = maxCh(proto)
             if (cfg && cfg.channelCount > max) await setInputChannelCount(p, max)
-            // Jeti EX expander: picking Jeti EX here makes this the Rx link;
-            // auto-assign the other input the downstream telemetry role.
-            const rk = protocols.find(pr => pr.id === proto)?.roleKind
-            if (rk !== undefined) await syncJetiExpanderRemap(p, rk)
+            // IN_2's telemetry role is inferred by the firmware (the expander
+            // stamps it) and surfaced via the topology re-read in AttachRole —
+            // no UI-side remap needed; the returned snapshot already has it.
         } catch (e) { error = String(e) } finally { busy = false }
     }
     async function onCount(p: PortRef, n: number) {
