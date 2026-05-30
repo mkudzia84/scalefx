@@ -45,8 +45,22 @@ public:
 
     void reset() { _state = IDLE; _idx = 0; _len = 0; }
 
-    /// Drain everything available on a stream through the parser.
-    void drain(Stream* s) { while (s && s->available()) feed((uint8_t)s->read()); }
+    /// Max bytes consumed per drain() call.  A floating / noisy UART at 125 k
+    /// produces a CONTINUOUS byte stream (no inter-frame gaps), so an unbounded
+    /// `while(available())` never returns — it traps the caller (the expander's
+    /// main-loop tick) and stalls board.process(), timing out EVERY host command
+    /// (file.list / diag / audio-status).  Bound it: at ~11.4 kB/s line rate
+    /// even a 100 Hz main loop keeps up with a REAL bursty stream inside this
+    /// budget (leftover bytes wait for the next pass), while a noise storm is
+    /// capped instead of trapping the loop.
+    static constexpr uint16_t kMaxDrainBytesPerCall = 512;
+
+    /// Drain available bytes through the parser, bounded to kMaxDrainBytesPerCall
+    /// so a noisy/floating UART can't trap the caller in an unbounded read loop.
+    void drain(Stream* s) {
+        for (uint16_t n = 0; n < kMaxDrainBytesPerCall && s && s->available(); ++n)
+            feed((uint8_t)s->read());
+    }
 
     /// Feed a single byte.
     void feed(uint8_t b) {
