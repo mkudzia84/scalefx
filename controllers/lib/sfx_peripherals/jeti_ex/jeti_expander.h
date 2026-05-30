@@ -86,10 +86,8 @@ public:
             JetiTelemetryHub::ScopedLock lk(hub);
             _localDev = hub.upsertDevice(hubUsn, hubLsn, hubName, /*local=*/true, 0);
             if (_localDev != 0xFF) {
-                hub.setSensor(_localDev, kUptimeId,  ExDataType::Int22, 0, 0, 0);
-                hub.setLabel (_localDev, kUptimeId,  "Uptime", "s");
-                hub.setSensor(_localDev, kFreeRamId, ExDataType::Int22, 0, 0, 0);
-                hub.setLabel (_localDev, kFreeRamId, "FreeRAM", "kB");
+                hub.setSensor(_localDev, kUptimeId, ExDataType::Int22, 0, 0, 0);
+                hub.setLabel (_localDev, kUptimeId, "Uptime", "s");
             }
         }
 
@@ -183,10 +181,8 @@ private:
                 lastBuiltin = now;
                 auto& hub = JetiTelemetryHub::instance();
                 JetiTelemetryHub::ScopedLock lk(hub);
-                hub.setSensor(_localDev, kUptimeId,  ExDataType::Int22, 0,
+                hub.setSensor(_localDev, kUptimeId, ExDataType::Int22, 0,
                               (int32_t)(now / 1000), now);
-                hub.setSensor(_localDev, kFreeRamId, ExDataType::Int22, 0,
-                              (int32_t)(ESP.getFreeHeap() / 1024), now);
             }
             if (now - lastExpire >= 1000) {
                 lastExpire = now;
@@ -297,8 +293,7 @@ private:
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
-    static constexpr uint8_t kUptimeId  = 1;   // built-in HubFX-own sensors
-    static constexpr uint8_t kFreeRamId = 2;
+    static constexpr uint8_t kUptimeId  = 1;   // built-in HubFX-own sensor
     uint8_t  _localDev = 0xFF;            // hub index of the HubFX-own device
 
     // Rotation cursors (data + text walk independently across the hub).
