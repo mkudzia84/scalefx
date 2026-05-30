@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     584
+#define BUILD_NUMBER     585
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -93,7 +93,7 @@
 #include <ports/pwm_port.h>
 #include <ports/servo_port.h>
 #include <ports/esp_input_port.h>
-#include <jeti_ex/jeti_expander.h>   // HubFX-own Jeti telemetry (Version + rail V)
+#include <jeti_ex/jeti_expander.h>   // HubFX-own Jeti telemetry (Version)
 #include <pwm/pca9685.h>
 #include <power/ina226.h>
 #include <power/ina226_sensor.h>
@@ -212,9 +212,9 @@ namespace I2cAddr {
 // The current 8-monitor layout drove the clone-wedge issue (a counterfeit
 // INA at 0x40 corrupting the PCA9685 on the shared bus — see the CLAUDE.md
 // INA gotcha + instructions/18); two purpose-placed monitors remove the
-// per-channel cost and the shared-bus crowding.  The Jeti telemetry below
-// already filters to canonical chips, so it carries over unchanged (it will
-// just report the battery + codec rails instead of the min PWM rail).
+// per-channel cost and the shared-bus crowding.  Rail monitoring (undervoltage
+// alert + Jeti Voltage/Current telemetry) is DISABLED in loop() for now until
+// that hardware lands — see the note in loop().
 constexpr uint8_t kInaAddrs[8] = {
     0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4A, 0x4F,
 };
@@ -944,51 +944,27 @@ void loop() {
     storage.checkUploadTimeout();
     board.pollSense();
 
-    // Board-wide undervoltage detector — fires AlertSound::BatteryLow
-    // (configurable via /alerts.yaml's `voltage_alert:` block) when
-    // any healthy INA226-monitored rail dips below threshold for the
-    // configured sustain window.  Skips the clone @ 0x40 (channel 0)
-    // which `INA226::begin()` left undriven.  Cheap when nothing's
-    // wrong — the alert service short-circuits on `enabled=false` or
-    // observed > threshold.
-    // Lowest healthy rail voltage across canonical INA226s (clone @ 0x40 is
-    // non-canonical → skipped, as it reads garbage).  Drives the undervoltage
-    // alert AND the Jeti EX rail-voltage telemetry below.
-    uint16_t minRailMv = UINT16_MAX;
-    int32_t  totalMa   = 0;          // summed draw across the canonical channels
-    for (int i = 0; i < 8; ++i) {
-        if (!board.ina[i].isCanonical()) continue;
-        const float mv = board.vSense[i].voltage_mV();
-        if (mv > 0 && mv < (float)minRailMv) minRailMv = (uint16_t)mv;
-        totalMa += board.iSense[i].current_mA();
-    }
-    if (minRailMv != UINT16_MAX) {
-        board.policy<AlertService>().tickVoltage((uint32_t)millis(), minRailMv);
-    }
+    // INA226 rail monitoring REMOVED for now (2026-05-30) — the readings aren't
+    // trustworthy on this board rev (clone @ 0x40 + the crowded per-channel
+    // layout; a future rev drops to 2 INAs, battery + codec).  This also takes
+    // out the board-wide undervoltage AlertSound::BatteryLow detector and the
+    // Jeti rail Voltage/Current telemetry.  Restore from git history once the
+    // INA hardware is sorted (the canonical-only `isCanonical()` filter was the
+    // right pattern — see the AlertService::tickVoltage + Jeti push it fed).
 
-    // Jeti EX expander telemetry — push HubFX-own Version + rail Voltage when
-    // the expander is running (IN_1 = Jeti EX).  They join the HubFx device
-    // (alongside the expander's built-in Uptime/FreeRAM) served to the radio.
+    // Jeti EX expander telemetry — register HubFX-own Version when the expander
+    // is running (IN_1 = Jeti EX).  Joins the HubFx device (with the expander's
+    // built-in Uptime) served to the radio.
     {
         auto& jexp = JetiEx::JetiExpander::instance();
         if (jexp.running()) {
-            const uint32_t jnow = millis();
             static bool jetiSensorsReg = false;
             if (!jetiSensorsReg) {
                 jetiSensorsReg = true;
                 int maj = 0, mnr = 0;
                 sscanf(FIRMWARE_VERSION, "%d.%d", &maj, &mnr);   // "2.16.0-hubfx"
                 jexp.setLocalSensor(3, "Version", "", JetiEx::ExDataType::Int14, 2,
-                                    (int32_t)(maj * 100 + mnr), jnow);   // 216 → "2.16"
-                jexp.setLocalSensor(4, "Voltage", "V", JetiEx::ExDataType::Int14, 3, 0, jnow);
-                jexp.setLocalSensor(5, "Current", "A", JetiEx::ExDataType::Int22, 3, 0, jnow);
-            }
-            static uint32_t lastJetiVMs = 0;
-            if (jnow - lastJetiVMs >= 1000) {
-                lastJetiVMs = jnow;
-                if (minRailMv != UINT16_MAX)
-                    jexp.setLocalValue(4, (int32_t)minRailMv, jnow);  // mV, dp=3 → "8.000 V"
-                jexp.setLocalValue(5, totalMa, jnow);                 // mA, dp=3 → "1.234 A"
+                                    (int32_t)(maj * 100 + mnr), millis());   // 216 → "2.16"
             }
         }
     }
