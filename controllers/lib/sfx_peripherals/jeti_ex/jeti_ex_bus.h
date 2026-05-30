@@ -52,6 +52,7 @@
 #include "../rx_input/rx_common.h"
 #include <ports/input_port.h>     // half-duplex TX gate (expander responder)
 #include "jeti_ex_common.h"
+#include "jeti_ex_frame.h"        // shared EX Bus frame parser
 
 class JetiExBus {
 public:
@@ -244,12 +245,12 @@ public:
     //  Diagnostics
     // ════════════════════════════════════════════════════════════
 
-    uint32_t rxFrameCount() const { return _frameCount; }
-    uint32_t rxErrorCount() const { return _errorCount; }
+    uint32_t rxFrameCount() const { return _parser.frames(); }
+    uint32_t rxErrorCount() const { return _parser.errors(); }
     uint32_t txResponseCount() const { return _txCount; }
     /// Total bytes seen on the UART. Diagnoses wrong-baud (bytes climb but
     /// frames/CRC stay at 0) vs no-wire (zero bytes) — see input_monitor rig.
-    uint32_t rxByteCount() const { return _rxByteCount; }
+    uint32_t rxByteCount() const { return _parser.rxBytes(); }
 
 private:
     Stream* _serial = nullptr;
@@ -259,12 +260,8 @@ private:
     TelemetryRequestCallback    _onTelemetryRequest; ///< multi-device override
     RawFrameCallback            _onRawFrame;         ///< forward to ESC (expander)
 
-    // ── Frame parser state ──────────────────────────────────────
-    enum ParseState : uint8_t { IDLE, READ_TYPE, READ_LENGTH, READ_BODY };
-    ParseState _parseState = IDLE;
-    uint8_t    _frameBuf[JetiEx::MAX_FRAME_SIZE] = {};
-    uint8_t    _frameIdx = 0;
-    uint8_t    _frameLen = 0;
+    // ── Frame parser (shared state machine + CRC) ───────────────
+    JetiEx::JetiExFrameParser _parser;
 
     // ── Channel data ────────────────────────────────────────────
     uint16_t _channels_us[RxConfig::MAX_CHANNELS] = {};
@@ -292,14 +289,11 @@ private:
     ParamChangeCallback _paramChangeCb;
 
     // ── Stats ───────────────────────────────────────────────────
-    uint32_t _frameCount = 0;
-    uint32_t _errorCount = 0;
-    uint32_t _txCount = 0;
-    uint32_t _rxByteCount = 0;
+    uint32_t _txCount = 0;       // frame rx/err/byte counts live in _parser
 
     // ── Internal methods ────────────────────────────────────────
-    void processFrame();
-    void parseChannelData();
+    void processFrame(const uint8_t* frame, uint8_t len);
+    void parseChannelData(const uint8_t* frame, uint8_t len);
     void handleTelemetryRequest(uint8_t packetId);
     void sendTelemetryDataResponse(uint8_t packetId);
     void sendTelemetryTextResponse(uint8_t packetId);
