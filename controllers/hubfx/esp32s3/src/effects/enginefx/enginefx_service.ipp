@@ -258,12 +258,17 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStart() {
     if (_cfg.startingPath[0]) {
         _activeChannel = _cfg.channelA;
         const uint32_t startOffsetMs = warmStart ? _cfg.startingOffsetMs : 0;
-        SFX_LOG_INFO("[engine] forceStart %s — '%s' offset=%lums (cfg startingOffset=%lums)",
+        // Fade-in is for the COLD start only (silence → ignition).  A WARM
+        // re-engage seeks INTO an already-spun-up engine, so it must come in at
+        // full level — a fade there sounds like the engine fading up from
+        // nothing.  No offset (cold) → fade; offset (warm) → hard in.
+        const uint16_t fadeInMs = warmStart ? 0 : _cfg.startFadeInMs;
+        SFX_LOG_INFO("[engine] forceStart %s — '%s' offset=%lums fadeIn=%ums (cfg startingOffset=%lums)",
                      warmStart ? "WARM (from stopping)" : "COLD (from stopped)",
                      _cfg.startingPath, (unsigned long)startOffsetMs,
-                     (unsigned long)_cfg.startingOffsetMs);
+                     (unsigned)fadeInMs, (unsigned long)_cfg.startingOffsetMs);
         if (!startAudio(_cfg.startingPath, _cfg.channelA, startOffsetMs,
-                        /*loop=*/false, /*fadeInMs=*/_cfg.startFadeInMs)) {
+                        /*loop=*/false, /*fadeInMs=*/fadeInMs)) {
             return false;
         }
         enterState(EngineState::Starting);
