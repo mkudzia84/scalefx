@@ -213,8 +213,8 @@ public:
     /// True while a link's drain is latched-off because the line is active but
     /// produced ZERO valid frames (floating / wrong-baud noise).  Surfaced in
     /// the role diagnostics so `diag` shows WHY channels went dead.
-    bool rxNoiseDisabled()  const { return _rxWatch.latched; }
-    bool escNoiseDisabled() const { return _escWatch.latched; }
+    bool rxNoiseDisabled()  const { return _rxWatch.latched(); }
+    bool escNoiseDisabled() const { return _escWatch.latched(); }
 
 private:
     JetiExpander() = default;
@@ -227,31 +227,51 @@ private:
     // burns CPU on garbage and (pre bounded-drain) could stall the loop.  Once
     // a link has streamed noise with zero valid frames for kNoiseSecsToDisable
     // consecutive seconds, latch its drain OFF and log an error to diag; then
-    // self-heal by re-probing every kReprobeMs so a receiver powered on later
-    // recovers automatically (a real Rx yields valid frames within the probe
-    // window and the latch clears).
+    // self-heal: while disabled it re-probes every kReprobeMs by draining for a
+    // short kProbeWindowMs window — if valid frames return it re-enables, else
+    // it re-latches immediately (so a noisy line only drains ~kProbeWindowMs out
+    // of each kReprobeMs, not continuously).  Applies to BOTH links — IN_1 (the
+    // main Jeti RC input) and IN_2 (downstream).  1 s re-probe keeps control
+    // recovery snappy on the main input once the receiver comes up.
     static constexpr uint32_t kNoiseBytesPerSec   = 1000;  // line "active" floor
-    static constexpr uint8_t  kNoiseSecsToDisable = 4;     // grace for Rx sync
-    static constexpr uint32_t kReprobeMs          = 15000; // self-heal cadence
+    static constexpr uint8_t  kNoiseSecsToDisable = 3;     // grace for Rx sync/glitch
+    static constexpr uint32_t kReprobeMs          = 1000;  // disable/re-enable cadence
+    static constexpr uint32_t kProbeWindowMs      = 250;   // drain window per re-probe
 
     struct NoiseWatch {
-        uint32_t lastMs = 0, baseBytes = 0, baseFrames = 0, latchedMs = 0;
+        // Names avoid the Arduino ENABLED/DISABLED GPIO macros.
+        enum State : uint8_t { Active, Latched, Probing };
+        uint32_t lastMs = 0, baseBytes = 0, baseFrames = 0, stateMs = 0;
         uint8_t  noiseSecs = 0;
-        bool     latched   = false;
+        State    state = Active;
 
         void reset(uint32_t now) {
-            lastMs = now; baseBytes = baseFrames = latchedMs = 0;
-            noiseSecs = 0; latched = false;
+            lastMs = now; baseBytes = baseFrames = 0; stateMs = now;
+            noiseSecs = 0; state = Active;
         }
+        bool latched() const { return state != Active; }
+
         // Returns true if the link should be drained this pass.
         bool shouldDrain(uint32_t now, uint32_t bytes, uint32_t frames,
                          const char* label) {
-            if (latched) {
-                if (now - latchedMs < kReprobeMs) return false;   // stay disabled
-                latched = false; noiseSecs = 0;                   // re-probe window
-                lastMs = now; baseBytes = bytes; baseFrames = frames;
-                SFX_LOG_INFO("[jexp] %s: re-probing after noise-disable", label);
+            switch (state) {
+            case Latched:
+                if (now - stateMs < kReprobeMs) return false;   // wait to re-probe
+                state = Probing; stateMs = now; baseFrames = frames;
+                return true;                                    // drain the probe window
+            case Probing:
+                if (now - stateMs >= kProbeWindowMs) {
+                    if (frames - baseFrames > 0) {              // recovered
+                        state = Active; noiseSecs = 0;
+                        lastMs = now; baseBytes = bytes; baseFrames = frames;
+                        SFX_LOG_INFO("[jexp] %s: valid frames returned — drain re-enabled", label);
+                    } else {                                    // still noise
+                        state = Latched; stateMs = now;
+                        return false;
+                    }
+                }
                 return true;
+            default: break;   // Active
             }
             if (now - lastMs >= 1000) {
                 const uint32_t db = bytes - baseBytes;
@@ -259,10 +279,10 @@ private:
                 lastMs = now; baseBytes = bytes; baseFrames = frames;
                 if (db >= kNoiseBytesPerSec && df == 0) {
                     if (++noiseSecs >= kNoiseSecsToDisable) {
-                        latched = true; latchedMs = now; noiseSecs = 0;
+                        state = Latched; stateMs = now; noiseSecs = 0;
                         SFX_LOG_ERROR("[jexp] %s: %lu B/s noise, 0 valid frames for "
                                       "%us — drain DISABLED (floating / wrong-baud "
-                                      "line); re-probe in %lus", label,
+                                      "line); re-probing every %lus", label,
                                       (unsigned long)db, (unsigned)kNoiseSecsToDisable,
                                       (unsigned long)(kReprobeMs / 1000));
                         return false;
