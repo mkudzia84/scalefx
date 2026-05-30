@@ -103,6 +103,13 @@
         return $deviceModel.ports.find(x =>
             x.ref.guid === p.guid && x.ref.kind === p.kind && x.ref.index === p.index)
     }
+    // A Jeti EX Telemetry port is the downstream telemetry PASS-THRU (no RC
+    // channels) — auto-assigned to IN_2 while IN_1 runs Jeti EX.  It carries a
+    // downstream slave's (e.g. ESC) telemetry toward the Rx, so it renders as a
+    // compact pass-thru row, NOT a channel-input group with function mappings.
+    function isTelemetryPassthru(cfg: InputPortConfig): boolean {
+        return portOf(cfg.port)?.roleKind === RoleKind.JetiExTelemetry
+    }
     // Rule 34: the protocol picker offers ONLY protocols whose backing
     // role is in the port's allowedRoles — a PWM-pulse-only input shows
     // just PPM, never SBUS/Jeti.  The currently-selected protocol is kept
@@ -143,6 +150,20 @@
     {#if inputs.length === 0}<div class="empty-state">No input ports on this system.</div>{/if}
 
     {#each inputs as cfg (cfg.port.guid + cfg.port.index)}
+        {#if isTelemetryPassthru(cfg)}
+            <!-- Telemetry pass-thru (IN_2): a downstream EX-Bus telemetry input,
+                 NOT an RC channel source and NOT an output — no channel group. -->
+            <div class="card input-card passthru">
+                <div class="board-head">
+                    <span class="board-name">{names[cfg.port.guid] ?? hw(cfg.port)} · {hw(cfg.port)}</span>
+                    {#if rail(cfg.port)}
+                        <span class="rail-chip" title="Rail voltage declared by the board's port descriptor">{rail(cfg.port)}</span>
+                    {/if}
+                    <span class="passthru-tag">Jeti EX Telemetry · pass-thru</span>
+                </div>
+                <p class="hint">Downstream Jeti EX&nbsp;Bus telemetry input — relays a slave device's (e.g.&nbsp;ESC) telemetry toward the receiver. No RC channels to map; auto-assigned while IN_1 runs Jeti&nbsp;EX.</p>
+            </div>
+        {:else}
         {@const det = detectedCount(cfg, $liveChannels)}
         <div class="card input-card">
             <div class="board-head">
@@ -218,6 +239,7 @@
                 {/each}
             </div>
         </div>
+        {/if}
     {/each}
 </div>
 
@@ -225,6 +247,10 @@
     .banner { padding: 7px 10px; border-radius: 4px; margin-bottom: 10px; font-size: 12px; }
     .banner.err { background: rgba(255,80,80,0.12); border: 1px solid var(--error); color: var(--error); }
     .input-card { margin-bottom: 12px; }
+    /* Telemetry pass-thru: dimmer, no channel group — it's a downstream link. */
+    .input-card.passthru { border-left: 2px solid var(--accent); }
+    .input-card.passthru .board-head { margin-bottom: 6px; }
+    .passthru-tag { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--accent); padding: 1px 6px; border: 1px solid var(--accent); border-radius: 3px; }
     .board-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .board-name { font-size: 13px; font-weight: 600; color: var(--text-bright); }
     .rail-chip { font-family: var(--font-mono); font-size: 10px; color: var(--text); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; }

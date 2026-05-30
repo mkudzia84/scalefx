@@ -322,9 +322,11 @@ func (d Domain) Slot(key string) (Slot, bool) {
 
 // ─── Domain catalog ───────────────────────────────────────────────────
 
-// inputRoleKinds is the set of input role kinds any "trigger"/"switch"
-// slot accepts — a physical input port can carry RC PWM, SBUS, or Jeti.
-var inputRoleKinds = []byte{roles.KindRcPwmInput, roles.KindSbusInput, roles.KindJetiExInput, roles.KindJetiExTelemetry}
+// inputRoleKinds is the set of input role kinds any "trigger"/"switch" slot
+// accepts — a physical RC channel source: PWM, SBUS, or Jeti EX.  NOT
+// JetiExTelemetry: that's the downstream telemetry pass-thru (IN_2), carries no
+// RC channels, so it must never appear as a selectable trigger/channel source.
+var inputRoleKinds = []byte{roles.KindRcPwmInput, roles.KindSbusInput, roles.KindJetiExInput}
 
 // domainCatalog is the declarative source of truth for functional
 // domains.  Adding a domain (or slot) here is all the wiring a new
