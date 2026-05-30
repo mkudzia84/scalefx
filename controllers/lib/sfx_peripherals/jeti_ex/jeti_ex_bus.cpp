@@ -287,12 +287,15 @@ void JetiExBus::sendExBusResponse(uint8_t packetId, uint8_t dataId,
 
     if (_txPort) {
         // Half-duplex: attach TX onto the wire, send, wait for the shift
-        // register to empty, detach back to RX, then drain our own echo.
+        // register to empty, detach back to RX, then drain EXACTLY our own echo
+        // (totalLen bytes).  NOT a `while(available)` drain — that can swallow
+        // the master's next channel frame if it arrives right after the slot,
+        // causing RC signal loss.
         _txPort->txEnable();
         _serial->write(frame, totalLen);
         _serial->flush();
         _txPort->txDisable();
-        while (_serial->available()) _serial->read();
+        for (uint8_t i = 0; i < totalLen && _serial->available(); ++i) _serial->read();
     } else {
         _serial->write(frame, totalLen);
     }

@@ -226,17 +226,22 @@ private:
         if (len) _rxBus.sendTelemetry(pktId, buf, len);
     }
 
-    // Raw-frame hook: mirror an Rx master frame to the ESC (half-duplex).  No
-    // echo drain — the monitor harmlessly skips the echoed (non-telemetry)
-    // master frame and resyncs on the ESC's 0x3B response.
+    // Raw-frame hook: poll the downstream ESC by mirroring the Rx's TELEMETRY-
+    // REQUEST frames to it (half-duplex).  Rate-limited so the ESC is polled at
+    // ~kEscPollIntervalMs, NOT once per Rx frame: mirroring every frame blocks
+    // the task on flush() for ~3 ms each and starves IN_1's channel RX (signal
+    // loss).  Only 0x3A frames matter — channel frames don't make the ESC reply.
     //
-    // NOTE: this forwards the Rx's frames Rx->ESC, but the reverse CONFIG-relay
-    // (ESC config/menu responses -> Rx) is NOT IMPLEMENTED YET.  The monitor
-    // only extracts the ESC's telemetry (0x3A); its config/menu replies are
-    // dropped.  Two-way DeviceExplorer config (synchronous Rx<->ESC proxy in
-    // the response slot, proprietary packet format) is a deferred feature.
+    // NOTE: this forwards Rx->ESC only; the reverse CONFIG-relay (ESC config /
+    // menu replies -> Rx) is NOT IMPLEMENTED YET (deferred — proprietary format,
+    // synchronous-proxy timing).  The monitor extracts the ESC's 0x3A telemetry;
+    // its config/menu replies are dropped.
     void forwardToEsc(const uint8_t* frame, uint8_t len) {
         if (!_escPort || !_escStream) return;
+        if (len < 6 || frame[4] != DATA_TELEMETRY) return;     // telemetry polls only
+        const uint32_t now = millis();
+        if (now - _lastFwdMs < kEscPollIntervalMs) return;     // rate-limit
+        _lastFwdMs = now;
         _escPort->txEnable();
         _escStream->write(frame, len);
         _escStream->flush();
@@ -293,8 +298,10 @@ private:
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
-    static constexpr uint8_t kUptimeId  = 1;   // built-in HubFX-own sensor
-    uint8_t  _localDev = 0xFF;            // hub index of the HubFX-own device
+    static constexpr uint8_t  kUptimeId          = 1;   // built-in HubFX-own sensor
+    static constexpr uint32_t kEscPollIntervalMs = 50;  // ESC poll rate (~20 Hz)
+    uint32_t _lastFwdMs = 0;             // last ESC-forward time (rate limit)
+    uint8_t  _localDev  = 0xFF;          // hub index of the HubFX-own device
 
     // Rotation cursors (data + text walk independently across the hub).
     uint16_t _seq     = 0;
