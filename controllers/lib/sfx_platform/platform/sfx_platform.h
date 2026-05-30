@@ -62,18 +62,26 @@
 //  TIMING — Delays and Timestamps
 // ============================================================================
 //
-//  millis() is safe on ALL platforms (Rule 16) and not abstracted here.
-//  These macros replace platform-specific blocking delays.
+//  SFX_MILLIS()/SFX_MICROS() are the NATIVE monotonic-since-boot timestamps
+//  (no Arduino millis()/micros()) — numerically identical to the Arduino calls
+//  they replace, so they are a drop-in.  Use these instead of millis()/micros()
+//  in shared lib/ code (Rule 16 + arduino-removal).  These macros also replace
+//  platform-specific blocking delays.
 
 #if SFX_PLATFORM_PICO
     #include <pico/time.h>
     #define SFX_DELAY_MS(ms)        busy_wait_ms(ms)
     #define SFX_DELAY_US(us)        busy_wait_us_32(us)
+    #define SFX_MILLIS()            to_ms_since_boot(get_absolute_time())
+    #define SFX_MICROS()            time_us_32()
 #elif SFX_PLATFORM_ESP32
     #include <freertos/FreeRTOS.h>
     #include <freertos/task.h>
+    #include <esp_timer.h>
     #define SFX_DELAY_MS(ms)        vTaskDelay(pdMS_TO_TICKS(ms))
     #define SFX_DELAY_US(us)        esp_rom_delay_us(us)
+    #define SFX_MILLIS()            ((uint32_t)(esp_timer_get_time() / 1000))
+    #define SFX_MICROS()            ((uint32_t)esp_timer_get_time())
 #endif
 
 // ============================================================================

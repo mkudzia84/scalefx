@@ -64,7 +64,7 @@ int BoardServerBase::readFrames() {
     int frames = 0;
     while (_serial->available()) {
         const uint8_t b = static_cast<uint8_t>(_serial->read());
-        _lastActivityMs = millis();
+        _lastActivityMs = SFX_MILLIS();
         // PacketReader owns the byte→frame state machine (FRAME_DELIMITER
         // detection, partial-frame buffering, overflow recovery).  The
         // lambda runs once per complete frame and does the COBS decode +

@@ -217,7 +217,7 @@ void PwmInput::addSample(int value) {
         _sampleCount++;
     }
     _latestUs = value;
-    _lastUpdateUs = micros();
+    _lastUpdateUs = SFX_MICROS();
 }
 
 void PwmInput::checkCallbacks(int oldAvg, int newAvg) {
@@ -322,7 +322,7 @@ void SFX_IRAM_FUNC PwmInput::isrHandler(void* arg) {
 }
 
 void PwmInput::handleInterrupt() {
-    unsigned long now = micros();
+    unsigned long now = SFX_MICROS();
     
     if (digitalRead(_pin) == HIGH) {
         // Rising edge - start timing
@@ -393,5 +393,5 @@ unsigned long PwmInput::timeSinceUpdate() const {
     if (_lastUpdateUs == 0) {
         return ULONG_MAX;
     }
-    return micros() - _lastUpdateUs;
+    return SFX_MICROS() - _lastUpdateUs;
 }

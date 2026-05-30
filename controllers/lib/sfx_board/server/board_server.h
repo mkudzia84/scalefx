@@ -268,7 +268,7 @@ public:
     // policies can gate their broadcast emits via `_ctx`.
     static constexpr unsigned long kVerboseIdleMs = 8000;
     bool hostVerboseActive() const {
-        return _lastActivityMs != 0 && (millis() - _lastActivityMs) < kVerboseIdleMs;
+        return _lastActivityMs != 0 && (SFX_MILLIS() - _lastActivityMs) < kVerboseIdleMs;
     }
 
 protected:
@@ -292,7 +292,7 @@ protected:
 
     // Connection-state plumbing called from the template subclass.
     void   resetActivity()             { _lastActivityMs = 0; }
-    void   noteActivity()              { _lastActivityMs = millis(); }
+    void   noteActivity()              { _lastActivityMs = SFX_MILLIS(); }
     unsigned long lastActivityMs() const { return _lastActivityMs; }
 
 protected:
@@ -456,7 +456,7 @@ public:
         int frames = 0;
         while (_stream->available()) {
             const uint8_t b = static_cast<uint8_t>(_stream->read());
-            _lastActivityMs = millis();
+            _lastActivityMs = SFX_MILLIS();
             // See packet_reader.h.  The lambda runs once per complete
             // frame and does the cobs-decode + parsePacket + dispatch
             // dance the inline loop used to do.  PacketReader handles
@@ -636,7 +636,7 @@ public:
         // when TStream is Arduino's Serial / USBCDC where !stream means
         // "USB host hasn't enumerated yet"; NativeUartStream is ready
         // immediately after install).
-        while (!stream && millis() < 3000) SFX_DELAY_MS(10);
+        while (!stream && SFX_MILLIS() < 3000) SFX_DELAY_MS(10);
 
         this->_initialized = true;
 

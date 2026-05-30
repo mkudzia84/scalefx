@@ -94,7 +94,7 @@ public:
             for (uint8_t i = 0; i < count; i++) {
                 _channels_us[i] = temp[i];
             }
-            _lastFrameMs = millis();
+            _lastFrameMs = SFX_MILLIS();
         }
     }
 
@@ -118,7 +118,7 @@ public:
     /** @brief true if a valid frame was received within SIGNAL_TIMEOUT_MS */
     bool isValid() const {
         if (_lastFrameMs == 0 || _channelCount == 0) return false;
-        return (millis() - _lastFrameMs) < RxConfig::SIGNAL_TIMEOUT_MS;
+        return (SFX_MILLIS() - _lastFrameMs) < RxConfig::SIGNAL_TIMEOUT_MS;
     }
 
     /** @brief true if begin() succeeded */

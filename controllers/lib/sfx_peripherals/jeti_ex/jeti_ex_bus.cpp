@@ -130,7 +130,7 @@ void JetiExBus::parseChannelData(const uint8_t* frame, uint8_t len)
     }
 
     _channelCount  = numCh;
-    _lastChannelMs = millis();
+    _lastChannelMs = SFX_MILLIS();
 }
 
 // ─── handleTelemetryRequest ────────────────────────────────────
@@ -317,7 +317,7 @@ uint16_t JetiExBus::channel_us(uint8_t ch) const
 bool JetiExBus::isValid() const
 {
     if (_channelCount == 0 || _lastChannelMs == 0) return false;
-    return (millis() - _lastChannelMs) < RxConfig::SIGNAL_TIMEOUT_MS;
+    return (SFX_MILLIS() - _lastChannelMs) < RxConfig::SIGNAL_TIMEOUT_MS;
 }
 
 // ─── setSensorInfo ─────────────────────────────────────────────

@@ -46,7 +46,7 @@
  * Ingestion (HubFX relay):
  *   HubFX can ingest log messages from slave boards into the ring
  *   buffer using DiagLog::instance().ingest(level, message) — the
- *   message is re-timestamped with local millis().
+ *   message is re-timestamped with local SFX_MILLIS().
  */
 
 #ifndef SFX_DIAG_LOG_H
@@ -214,7 +214,7 @@ public:
      * @brief Ingest a pre-formatted log message into the ring buffer
      *
      * Used by HubFX to relay log messages from slave boards. The message
-     * is re-timestamped with local millis() and stored as-is (caller
+     * is re-timestamped with local SFX_MILLIS() and stored as-is (caller
      * should prepend source tag like "[GunFX] ").
      *
      * @param level Log level (DiagLevel::DEBUG..ERR)

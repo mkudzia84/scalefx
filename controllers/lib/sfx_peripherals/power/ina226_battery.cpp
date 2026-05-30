@@ -22,7 +22,7 @@ void Ina226Battery::begin(BatteryChemistry chemistry) {
 void Ina226Battery::update() {
     if (!_ina) return;
 
-    uint32_t now = millis();
+    uint32_t now = SFX_MILLIS();
     if (now - _lastRead_ms < _readInterval_ms) return;
     _lastRead_ms = now;
 

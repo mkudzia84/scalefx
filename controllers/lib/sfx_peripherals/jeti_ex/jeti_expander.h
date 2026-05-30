@@ -118,7 +118,7 @@ public:
         // a task only if telemetry (the ~4 ms reply slot) is re-enabled.
         _running     = true;
         _lastBuiltin = _lastExpire = 0;
-        const uint32_t now0 = millis();
+        const uint32_t now0 = SFX_MILLIS();
         _rxWatch.reset(now0);
         _escWatch.reset(now0);
         SFX_LOG_INFO("[jexp] started in main loop (rx=IN_1, esc=IN_2%s, baud=%lu)",
@@ -132,7 +132,7 @@ public:
     // sensors.  No-op until begin() / after end().
     void update() {
         if (!_running) return;
-        const uint32_t now = millis();
+        const uint32_t now = SFX_MILLIS();
         // IN_2 first: drain the ESC's telemetry into the hub before IN_1
         // re-parses the next echoed master frame.  Only when the downstream
         // link is in use (otherwise _escPort is null — see begin()).  ALWAYS
@@ -302,7 +302,7 @@ private:
         // and the odd late reply overruns the slot and corrupts a frame (RC
         // signal gaps).  The radio tolerates skipped polls (it just asks again);
         // telemetry still updates smoothly.
-        const uint32_t now = millis();
+        const uint32_t now = SFX_MILLIS();
         if (now - _lastRespMs < kRespIntervalMs) return;
         _lastRespMs = now;
 
@@ -332,7 +332,7 @@ private:
     void forwardToEsc(const uint8_t* frame, uint8_t len) {
         if (!_escPort || !_escStream) return;
         if (len < 6 || frame[4] != DATA_TELEMETRY) return;     // telemetry polls only
-        const uint32_t now = millis();
+        const uint32_t now = SFX_MILLIS();
         if (now - _lastFwdMs < kEscPollIntervalMs) return;     // rate-limit
         _lastFwdMs = now;
         _escPort->txEnable();

@@ -61,12 +61,12 @@ CommandResult ResultQueue::waitForTag(uint8_t tag, ProcessFunc processFunc) {
     _waitingTag.store(tag, std::memory_order_relaxed);
     _waitResolved.store(false, std::memory_order_relaxed);
 
-    unsigned long startMs = millis();
+    unsigned long startMs = SFX_MILLIS();
 
     while (!_waitResolved.load(std::memory_order_acquire)) {
         if (processFunc) processFunc();
 
-        if (millis() - startMs > _commandTimeout_ms) {
+        if (SFX_MILLIS() - startMs > _commandTimeout_ms) {
             _waitingTag.store(0, std::memory_order_relaxed);
             return CommandResult::Timeout();
         }

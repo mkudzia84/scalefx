@@ -41,7 +41,7 @@
 
 #include <cstdint>
 
-#include <Arduino.h>   // millis()
+#include <platform/sfx_platform.h>   // SFX_MILLIS() — native, no Arduino
 
 namespace sfx_core {
 
@@ -52,7 +52,7 @@ public:
     /// within the same `millis()` value are no-ops (idempotent within
     /// a tick), so a misordered call doesn't shift the clock mid-tick.
     void latch() {
-        const uint32_t t = millis();
+        const uint32_t t = SFX_MILLIS();
         if (t == _nowMs) return;
         _dtMs   = t - _nowMs;
         _nowMs  = t;

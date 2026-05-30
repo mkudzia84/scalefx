@@ -99,10 +99,10 @@ void Esp32StoragePolicy::freeUploadBuffers() {
 bool Esp32StoragePolicy::onUploadBufferFull() {
     if (_state->uploadWriteBufLen == 0) return true;
 
-    uint32_t t0 = millis();
+    uint32_t t0 = SFX_MILLIS();
     size_t toWrite = _state->uploadWriteBufLen;
     size_t written = _state->uploadFile.write(_state->uploadWriteBuf, toWrite);
-    uint32_t latency = millis() - t0;
+    uint32_t latency = SFX_MILLIS() - t0;
 
     if (written != toWrite) {
         STORAGE_LOG("SD write FAILED: wanted %u wrote %u (lat=%lums)",
