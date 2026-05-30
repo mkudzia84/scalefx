@@ -63,8 +63,11 @@ public:
         Stream* rxStream = rxPort->uartStream();
         if (!rxStream) return false;
 
-        // Downstream (ESC) link is optional — without it we still serve the
-        // HubFX-own device, just with nothing to forward/merge.
+        // Downstream (ESC) link.  Kept CONFIGURED as the second Jeti port (RX-
+        // only monitor) so a downstream device plugged on IN_2 sits on a live,
+        // electrically-correct port — but with forwarding disabled (below) it
+        // never drives TX, so it can't crosstalk IN_1.  Optional: without it we
+        // still decode IN_1 channels, just with nothing to monitor/merge.
         _escPort = escPort;
         if (_escPort && _escPort->configureJetiEx(baud)) {
             _escStream = _escPort->uartStream();
@@ -75,11 +78,22 @@ public:
         }
 
         if (!_rxBus.begin(rxStream)) return false;
-        _rxBus.setTxPort(rxPort);                     // half-duplex TX on IN_1 (reply)
-        _rxBus.onTelemetryRequest([this](uint8_t pkt){ serveTelemetry(pkt); });
-        // Forward-to-ESC is the second-UART TX that crosstalks GPIO6->GPIO5 and
-        // drops the RC channel RX — gated off (kForwardToEsc) until its timing /
-        // routing is fixed.  Telemetry RESPONSE on IN_1 stays on.
+        // TELEMETRY DISABLED pending the power/brownout fix (2026-05-30).  The
+        // ~3 ms half-duplex TX reply on the shared IN_1 line is electrically
+        // marginal while the engine/heater current spike sags the rail, which
+        // corrupts the channel RX (rxE floods, ----).  RX-only is immune (rxE=0),
+        // so we run pure channel RX with NO reply until the rail is stiffened
+        // (separate ESP32 supply / bulk cap / heater soft-start).  Flip
+        // kRespondToTelemetry back on once power is fixed.  See project memory
+        // "BROWNOUT x half-duplex-TX interaction".
+        if (kRespondToTelemetry) {
+            _rxBus.setTxPort(rxPort);                 // half-duplex TX on IN_1 (reply)
+            _rxBus.onTelemetryRequest([this](uint8_t pkt){ serveTelemetry(pkt); });
+        }
+        // Forward-to-ESC mirrors the Rx's polls out IN_2 — its second-UART TX
+        // crosstalks GPIO6->GPIO5 onto the IN_1 channel RX.  Gated off so IN_2
+        // stays a passive downstream port (no telemetry forwarding between the
+        // links for now).  Re-enable via the windowed-forward approach later.
         if (kForwardToEsc && _escPort) {
             _rxBus.onRawFrame([this](const uint8_t* f, uint8_t l){ forwardToEsc(f, l); });
         }
@@ -317,7 +331,11 @@ private:
     // clean, the "second-UART piping" is what hurts.  Off until the IN_2 poll is
     // timed into IN_1's silent window (or routed off the adjacent pin).  The
     // IN_1 telemetry RESPONSE is unaffected and stays on.
-    static constexpr bool     kForwardToEsc      = false;
+    static constexpr bool     kForwardToEsc       = false;
+    // Telemetry reply DISABLED pending the power/brownout fix — the half-duplex
+    // TX on the shared IN_1 line corrupts channel RX while engine/heater sag the
+    // rail.  RX-only is immune (rxE=0).  Flip to true once power is stiffened.
+    static constexpr bool     kRespondToTelemetry = false;
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
     static constexpr uint32_t kEscPollIntervalMs = 100;  // ESC poll rate (~10 Hz)
     static constexpr uint32_t kRespIntervalMs    = 50;   // Rx reply rate cap (~20 Hz)

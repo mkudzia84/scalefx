@@ -31,7 +31,9 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
 #include <driver/uart.h>          // uart_set_mode + UART_MODE_RS485_HALF_DUPLEX
-#include <soc/gpio_sig_map.h>     // U1TXD_OUT_IDX / U2TXD_OUT_IDX (half-duplex TX)
+#include <driver/gpio.h>          // gpio_set_direction (native half-duplex OE toggle)
+#include <esp_rom_gpio.h>         // esp_rom_gpio_connect_out_signal (matrix TX route)
+#include <soc/gpio_sig_map.h>     // U1TXD_OUT_IDX / U2TXD_OUT_IDX / SIG_GPIO_OUT_IDX
 #include <cstdint>
 
 #include "input_port.h"
@@ -76,21 +78,24 @@ public:
     }
 
     bool configureJetiEx(uint32_t baud) override {
-        // Half-duplex on ONE wire.  Begin with TX bound to the same pin,
-        // then detach TX via the GPIO matrix so we default to RX-only — the
-        // inbound stream reaches RX cleanly (verified on input_monitor /
-        // jeti_ex_telem bench rigs).  A response/poll slot calls txEnable()
-        // to attach TX for ~4 ms, then txDisable() back to RX.
+        // Half-duplex on ONE wire, RX-clean.  Begin RX-ONLY (tx=-1): the RX
+        // signal is routed from the pad via the GPIO matrix and the pin idles
+        // as a high-Z input — the config that read channels rock-solid on the
+        // full board (git 8a7fc47; bench-proven on input_monitor / jeti_ex_telem).
         //
-        // NOT `UART_MODE_RS485_HALF_DUPLEX`: that mode holds the line for TX
-        // and the inbound stream never reaches RX (rxBytes stuck at ~1).  The
-        // GPIO-matrix attach/detach is the method that actually works.
+        // The telemetry reply drives TX only for its ~4 ms slot via txEnable()/
+        // txDisable(), which flip ONLY the output-enable with native
+        // gpio_set_direction (NOT Arduino pinMode, which re-runs gpio_config and
+        // tears down the matrix RX input — that killed RX after one reply, and
+        // begin(rx=tx) leaves the pad configured for TX at rest which degraded RX).
+        //
+        // NOT `UART_MODE_RS485_HALF_DUPLEX`: that mode holds the line for TX and
+        // the inbound stream never reaches RX (rxBytes stuck at ~1).
         // Datasheet baud: 125 000 or 250 000.
         teardownActive();
         auto& s = uartSerial();
-        s.begin(baud, SERIAL_8N1, _pin, /*tx=*/_pin, /*invert=*/false);
+        s.begin(baud, SERIAL_8N1, _pin, /*tx=*/-1, /*invert=*/false);
         _mode = Mode::JETI_EX;
-        txDisable();                  // RX-only until a response/poll slot
         return true;
     }
 
@@ -163,15 +168,19 @@ public:
     }
 
     // ── Half-duplex TX control (JETI_EX) ─────────────────────────────
-    // Attach the UART TX signal onto the wire via the GPIO matrix for a
-    // response/poll slot; detach (pin → input pull-up) back to RX-only.
+    // Per-slot route: raise OE + route the UART TX onto the pad for the reply,
+    // then route the pad-out back to the GPIO simple-output and drop OE → high-Z
+    // RX.  gpio_set_direction touches only OE/IE so the matrix RX input (set by
+    // begin) is never disturbed (Arduino pinMode would tear it down → no signal).
     void txEnable() override {
         if (_mode != Mode::JETI_EX) return;
-        pinMatrixOutAttach(_pin, txSignalIdx(), /*invert=*/false, /*oen_invert=*/false);
+        gpio_set_direction((gpio_num_t)_pin, GPIO_MODE_INPUT_OUTPUT);  // drive + keep RX alive
+        esp_rom_gpio_connect_out_signal(_pin, txSignalIdx(), /*invert=*/false, /*oen_invert=*/false);
     }
     void txDisable() override {
-        pinMatrixOutDetach(_pin, /*invert=*/false, /*oen_invert=*/false);
-        pinMode(_pin, INPUT_PULLUP);
+        if (_mode != Mode::JETI_EX) return;
+        esp_rom_gpio_connect_out_signal(_pin, SIG_GPIO_OUT_IDX, /*invert=*/false, /*oen_invert=*/false);
+        gpio_set_direction((gpio_num_t)_pin, GPIO_MODE_INPUT);         // high-Z; matrix RX intact
     }
 
 private:
