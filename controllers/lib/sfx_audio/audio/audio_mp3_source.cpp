@@ -296,11 +296,55 @@ uint32_t Mp3PsramSource::readFrames(float* outL, float* outR,
     return delivered;
 }
 
-bool Mp3PsramSource::seekFrame(uint32_t /*frame*/) {
-    // Frame-accurate seek requires scanning the bitstream which is
-    // expensive.  Not needed for the current use cases (effects don't
-    // seek MP3 streams).  Return false rather than mis-position.
-    return false;
+bool Mp3PsramSource::seekFrame(uint32_t frame) {
+    // Proportional seek: map the target PCM frame to a byte offset in the
+    // bitstream (exact for CBR — e.g. the 128 kbps engine sounds — and a coarse
+    // estimate for VBR, which is fine for an effect seek), snap to the next MP3
+    // sync word, and reset the decoder context (seeking with a stale context
+    // decodes garbage).  Used by the engine startingOffset (warm re-start).
+    if (!_open) return false;
+
+    // Seek-to-start == loop rewind (decoder reset + first sync).
+    if (frame == 0) { rewindForLoop(); return _lease.isValid(); }
+
+    // Needs a usable frame estimate (open() derives it from bitrate × duration).
+    if (_totalFrames == 0 || _totalFrames == UINT32_MAX || frame >= _totalFrames)
+        return false;
+
+    const uint32_t base   = _bitPosLoopBase;
+    const uint32_t total  = _asset.totalBytes();
+    const uint32_t loaded = _asset.loadedBytes();
+    if (total <= base) return false;
+
+    // Byte offset proportional to frame position within the audio data
+    // (frame 0 maps to `base`, the first sync after any ID3v2 tag).
+    uint32_t est = base + (uint32_t)(((uint64_t)frame * (total - base)) / _totalFrames);
+    if (est >= loaded) {
+        // Target not resident yet (asset not fully preloaded).  Effect sounds
+        // are preloaded 100%, so this only trips on a streaming asset.
+        MP3_WARN("seek frame %u (~byte %u) past loaded %u — ignored",
+                 (unsigned)frame, (unsigned)est, (unsigned)loaded);
+        return false;
+    }
+
+    // Fresh decoder context (cheap — the pool reuses the slot).
+    _lease.reset();
+    _lease  = Mp3DecoderPool::instance().acquire();
+    _pcmBuf = _lease.isValid() ? _lease.pcmBuf() : nullptr;
+    if (!_lease.isValid()) return false;
+
+    _bitPos    = est;
+    _pcmLen    = 0;
+    _pcmPos    = 0;
+    _exhausted = false;
+    if (!findNextSync()) {        // snap to a real frame boundary
+        rewindForLoop();          // fall back to start rather than mis-position
+        return false;
+    }
+    _framesRead = frame;          // approximate playback position
+    MP3_LOG("seek -> frame %u (byte %u/%u)", (unsigned)frame,
+            (unsigned)_bitPos, (unsigned)total);
+    return true;
 }
 
 

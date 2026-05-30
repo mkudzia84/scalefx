@@ -516,11 +516,18 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
         uint32_t offsetFrames =
             (static_cast<uint32_t>(options.startOffsetMs) * ws.sampleRate_Hz) / 1000;
         if (offsetFrames < ws.totalFrames) {
-            ws.source->seekFrame(offsetFrames);
-            SFX_LOG_INFO("[mixer] ch%u seek %dms -> frame %lu/%lu (%.1fs file)",
-                         channel, options.startOffsetMs, (unsigned long)offsetFrames,
-                         (unsigned long)ws.totalFrames,
-                         ws.sampleRate_Hz ? (float)ws.totalFrames / ws.sampleRate_Hz : 0.0f);
+            if (ws.source->seekFrame(offsetFrames)) {
+                SFX_LOG_INFO("[mixer] ch%u seek %dms -> frame %lu/%lu (%.1fs file)",
+                             channel, options.startOffsetMs, (unsigned long)offsetFrames,
+                             (unsigned long)ws.totalFrames,
+                             ws.sampleRate_Hz ? (float)ws.totalFrames / ws.sampleRate_Hz : 0.0f);
+            } else {
+                // Source can't seek (or target not loaded) — playback starts at
+                // 0.  Previously this was silent: the mixer logged a successful
+                // seek even though Mp3PsramSource::seekFrame() was a stub.
+                SFX_LOG_WARN("[mixer] ch%u seek %dms FAILED (source can't seek / "
+                             "not loaded) — playing from 0", channel, options.startOffsetMs);
+            }
         } else {
             // Offset past end-of-file — the seek is SKIPPED and playback starts
             // at 0.  A large engine startingOffset on a short start sound lands
