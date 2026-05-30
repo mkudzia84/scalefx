@@ -97,7 +97,12 @@ void JetiExBus::processFrame(const uint8_t* frame, uint8_t len)
         break;
 
     case DATA_JETIBOX:
-        // JetiBox text menu — not implemented yet
+        // Rx-driven config (JetiBox / DeviceExplorer menu) — NOT IMPLEMENTED YET.
+        // Deferred two-way config: HubFX's own structured DeviceExplorer config
+        // is NDA-gated (needs a Jeti-signed device bin-file), and relaying the
+        // downstream device's config means a synchronous Rx<->ESC proxy inside
+        // the ~4 ms response slot for a proprietary packet format — a future
+        // feature that needs bench research first.
         break;
     }
 }

@@ -204,6 +204,12 @@ private:
     // Raw-frame hook: mirror an Rx master frame to the ESC (half-duplex).  No
     // echo drain — the monitor harmlessly skips the echoed (non-telemetry)
     // master frame and resyncs on the ESC's 0x3B response.
+    //
+    // NOTE: this forwards the Rx's frames Rx->ESC, but the reverse CONFIG-relay
+    // (ESC config/menu responses -> Rx) is NOT IMPLEMENTED YET.  The monitor
+    // only extracts the ESC's telemetry (0x3A); its config/menu replies are
+    // dropped.  Two-way DeviceExplorer config (synchronous Rx<->ESC proxy in
+    // the response slot, proprietary packet format) is a deferred feature.
     void forwardToEsc(const uint8_t* frame, uint8_t len) {
         if (!_escPort || !_escStream) return;
         _escPort->txEnable();
