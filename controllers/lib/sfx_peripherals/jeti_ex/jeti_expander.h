@@ -213,6 +213,15 @@ private:
     // Telemetry hook (runs in-task during _rxBus.update()): build the next
     // multi-device frame from the hub (under lock), then half-duplex TX it.
     void serveTelemetry(uint8_t pktId) {
+        // Rate-limit replies (~30 Hz).  Each reply is a half-duplex TX turnaround
+        // on IN_1; replying to EVERY poll leaves too little channel-RX headroom,
+        // and the odd late reply overruns the slot and corrupts a frame (RC
+        // signal gaps).  The radio tolerates skipped polls (it just asks again);
+        // telemetry still updates smoothly.
+        const uint32_t now = millis();
+        if (now - _lastRespMs < kRespIntervalMs) return;
+        _lastRespMs = now;
+
         auto& hub = JetiTelemetryHub::instance();
         uint8_t buf[40];
         uint8_t len = 0;
@@ -298,10 +307,12 @@ private:
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
-    static constexpr uint8_t  kUptimeId          = 1;   // built-in HubFX-own sensor
-    static constexpr uint32_t kEscPollIntervalMs = 50;  // ESC poll rate (~20 Hz)
-    uint32_t _lastFwdMs = 0;             // last ESC-forward time (rate limit)
-    uint8_t  _localDev  = 0xFF;          // hub index of the HubFX-own device
+    static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
+    static constexpr uint32_t kEscPollIntervalMs = 100;  // ESC poll rate (~10 Hz)
+    static constexpr uint32_t kRespIntervalMs    = 50;   // Rx reply rate cap (~20 Hz)
+    uint32_t _lastFwdMs  = 0;            // last ESC-forward time (rate limit)
+    uint32_t _lastRespMs = 0;            // last Rx-reply time (rate limit)
+    uint8_t  _localDev   = 0xFF;         // hub index of the HubFX-own device
 
     // Rotation cursors (data + text walk independently across the hub).
     uint16_t _seq     = 0;
