@@ -3,10 +3,10 @@
  * @brief Shared register definitions for the TI TAS5825 audio amplifier
  *        family — used by both the M-variant and P-variant drivers.
  *
- * Register addresses, bit patterns, and mode constants that exist on
- * BOTH chips with identical semantics live here. Variant-specific
- * registers / bits are defined in each variant's header
- * (tas5825_m_codec.h / tas5825_p_codec.h).
+ * Register addresses, bit patterns, and mode constants live here.
+ * Variant-specific registers / bits would be defined in each variant's
+ * header; only the P variant (tas5825_p_codec.h) is in use today — the
+ * M-variant driver was removed as dead code (arduino-removal branch).
  *
  * The two variants are pin-compatible (QFN-32, RHB package) and share
  * ~95% of the page-0/book-0 register map. The P silicon adds Class-H
