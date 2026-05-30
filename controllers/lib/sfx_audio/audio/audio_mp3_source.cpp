@@ -3,11 +3,12 @@
  */
 
 #include "audio_mp3_source.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
 
 #include <cstring>
-#include <Arduino.h>            // millis()
+#include <Arduino.h>            // SFX_MILLIS()
 #include <serial/diag_log.h>
 
 #include "libhelix-mp3/mp3dec.h"
@@ -57,9 +58,9 @@ bool Mp3PsramSource::open(const char* path) {
     // Block briefly on enough head bytes (~32 KB) to skip any leading
     // ID3v2 tag and decode the first frame for format extraction.
     constexpr uint32_t kHeaderHeadBytes = 32 * 1024;
-    const uint32_t waitStart = millis();
+    const uint32_t waitStart = SFX_MILLIS();
     while (!_asset.hasHead(kHeaderHeadBytes) && !_asset.isFailed()) {
-        if (millis() - waitStart > 2000) {
+        if (SFX_MILLIS() - waitStart > 2000) {
             MP3_ERROR("head-bytes wait timeout: %s (loaded=%u)",
                       path, (unsigned)_asset.loadedBytes());
             _asset.reset();

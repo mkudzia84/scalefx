@@ -10,11 +10,12 @@
  */
 
 #include "audio_psram_source.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
 
 #include <cstring>
-#include <Arduino.h>            // millis()
+#include <Arduino.h>            // SFX_MILLIS()
 #include <serial/diag_log.h>
 
 #define PSRAM_LOG(fmt, ...)   SFX_LOG_INFO ("[PsramSrc] " fmt, ##__VA_ARGS__)
@@ -89,9 +90,9 @@ bool WavPsramSource::open(const char* path) {
     // but data chunks can be preceded by 'LIST', 'JUNK', etc., so we
     // wait for a comfortable margin.
     constexpr uint32_t kHeaderHeadBytes = 4 * 1024;
-    const uint32_t waitStart = millis();
+    const uint32_t waitStart = SFX_MILLIS();
     while (!_asset.hasHead(kHeaderHeadBytes) && !_asset.isFailed()) {
-        if (millis() - waitStart > 2000) {
+        if (SFX_MILLIS() - waitStart > 2000) {
             PSRAM_ERROR("head-bytes wait timeout: %s (loaded=%u)",
                         path, (unsigned)_asset.loadedBytes());
             _asset.reset();
