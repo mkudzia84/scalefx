@@ -31,7 +31,7 @@ func cmdBuild(controller string, noClean bool) {
 
 // ─── flash (build + flash + verify) ───
 
-func cmdFlash(controller, port string, skipVerify, noClean bool) {
+func cmdFlash(controller, port string, skipVerify, noClean, noPrograms bool) {
 	ctrl, ok := resolveCtrl(controller)
 	if !ok {
 		return
@@ -44,12 +44,17 @@ func cmdFlash(controller, port string, skipVerify, noClean bool) {
 
 	if err := fw.Run(opts); err != nil {
 		printError("%s", err)
+		return
+	}
+	// Seed the on-device lightfx program catalogue (HubFX hosts LightFx).
+	if ctrl.Name == "hubfx" && !noPrograms {
+		deployLightFxPrograms(port)
 	}
 }
 
 // ─── upload (flash without build) ───
 
-func cmdUpload(controller, port string, skipVerify bool) {
+func cmdUpload(controller, port string, skipVerify, noPrograms bool) {
 	ctrl, ok := resolveCtrl(controller)
 	if !ok {
 		return
@@ -62,6 +67,10 @@ func cmdUpload(controller, port string, skipVerify bool) {
 
 	if err := fw.Run(opts); err != nil {
 		printError("%s", err)
+		return
+	}
+	if ctrl.Name == "hubfx" && !noPrograms {
+		deployLightFxPrograms(port)
 	}
 }
 

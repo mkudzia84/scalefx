@@ -59,20 +59,20 @@ func main() {
 	case "flash":
 		controller, flags := extractPositionalAndFlags(sub)
 		if controller == "" {
-			printError("Usage: scalefx-flash flash <controller> [--port PORT] [--skip-verify] [--no-clean]")
+			printError("Usage: scalefx-flash flash <controller> [--port PORT] [--skip-verify] [--no-clean] [--no-programs]")
 			return
 		}
 		port := argValue(flags, "--port")
-		cmdFlash(controller, port, hasArg(flags, "--skip-verify"), hasArg(flags, "--no-clean"))
+		cmdFlash(controller, port, hasArg(flags, "--skip-verify"), hasArg(flags, "--no-clean"), hasArg(flags, "--no-programs"))
 
 	case "upload":
 		controller, flags := extractPositionalAndFlags(sub)
 		if controller == "" {
-			printError("Usage: scalefx-flash upload <controller> [--port PORT] [--skip-verify]")
+			printError("Usage: scalefx-flash upload <controller> [--port PORT] [--skip-verify] [--no-programs]")
 			return
 		}
 		port := argValue(flags, "--port")
-		cmdUpload(controller, port, hasArg(flags, "--skip-verify"))
+		cmdUpload(controller, port, hasArg(flags, "--skip-verify"), hasArg(flags, "--no-programs"))
 
 	case "verify":
 		controller, flags := extractPositionalAndFlags(sub)
@@ -82,6 +82,11 @@ func main() {
 		}
 		port := argValue(flags, "--port")
 		cmdVerify(controller, port)
+
+	case "programs":
+		// Deploy the bundled lightfx programs to a HubFX WITHOUT reflashing.
+		_, flags := extractPositionalAndFlags(sub)
+		deployLightFxPrograms(argValue(flags, "--port"))
 
 	case "version":
 		controller, _ := extractPositionalAndFlags(sub)
@@ -159,6 +164,7 @@ func printUsage() {
 	fmt.Printf("  %-16s %s\n", "flash", "Build + flash + verify (full pipeline)")
 	fmt.Printf("  %-16s %s\n", "upload", "Flash without rebuilding")
 	fmt.Printf("  %-16s %s\n", "verify", "Verify device firmware version")
+	fmt.Printf("  %-16s %s\n", "programs", "Deploy bundled lightfx programs to a HubFX (no reflash)")
 	fmt.Printf("  %-16s %s\n", "version", "Show firmware version from source")
 	fmt.Printf("  %-16s %s\n", "controllers", "List available controller targets")
 	fmt.Printf("  %-16s %s\n", "ports", "List detected ScaleFX serial ports")
@@ -171,6 +177,7 @@ func printUsage() {
 	fmt.Printf("  %-16s %s\n", "--port PORT", "Serial port (default: auto-detect)")
 	fmt.Printf("  %-16s %s\n", "--skip-verify", "Skip post-flash device verification")
 	fmt.Printf("  %-16s %s\n", "--no-clean", "Incremental build (skip clean)")
+	fmt.Printf("  %-16s %s\n", "--no-programs", "Skip lightfx program deploy after a HubFX flash")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  scalefx-flash build gunfx")
