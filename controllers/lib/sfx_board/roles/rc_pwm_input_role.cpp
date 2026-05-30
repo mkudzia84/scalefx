@@ -25,9 +25,11 @@ bool RcPwmInputRole::read(uint16_t* outUs) const {
 }
 
 void RcPwmInputRole::setBroadcastHz(uint8_t hz) {
-    _broadcastHz = hz;
-    _broadcastInterval_ms = (hz == 0) ? 0 : (1000u / hz);
-    _lastBroadcastMs = 0;
+    // Host wire subscribe — gates ONLY the wire broadcast.  The local effect
+    // feed keeps ticking at _broadcastInterval_ms (the fixed firmware rate), so
+    // hz==0 silences the wire without starving effects.
+    _broadcastHz  = hz;
+    _wireEnabled  = (hz != 0);
 }
 
 void RcPwmInputRole::tick() {

@@ -39,9 +39,10 @@ uint32_t JetiExInputRole::rxByteCount()     const   { return 0; }
 #endif
 
 void JetiExInputRole::setBroadcastHz(uint8_t hz) {
+    // Host wire subscribe — gates ONLY the wire broadcast; the local effect
+    // feed keeps ticking at the fixed firmware rate.
     _broadcastHz = hz;
-    _broadcastInterval_ms = (hz == 0) ? 0 : (1000u / hz);
-    _lastBroadcastMs = 0;
+    _wireEnabled = (hz != 0);
 }
 
 void JetiExInputRole::tick() {

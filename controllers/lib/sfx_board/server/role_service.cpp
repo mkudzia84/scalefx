@@ -338,7 +338,12 @@ bool RoleServicePolicy::attachRcPwmInput(InputBinding& b, uint8_t portIdx,
     // The WIRE broadcast is gated on a listening host (hostVerboseActive), so
     // a non-zero default doesn't stream into a dead port; only the LOCAL
     // dispatch runs.  A host can still override the rate via Set*BroadcastHz.
-    role.setBroadcastHz(cfgLen >= 1 ? cfg[0] : 50);
+    // Wire broadcast stays OFF at attach (no host yet); the LOCAL effect feed
+    // runs at the role's fixed 50 Hz default so the model flies standalone.  A
+    // host subscribes to the wire via Set*BroadcastHz when it opens the live-
+    // channel view (the config byte no longer auto-enables the wire — that
+    // flooded a connected-but-not-viewing host).
+    (void)cfg; (void)cfgLen;
     role.onBroadcast([this, portIdx](uint8_t /*count*/, bool /*valid*/) {
         // Rebuild the full PPM channel frame from the role each tick
         // (mirrors the SBUS / Jeti pattern).
@@ -361,7 +366,12 @@ bool RoleServicePolicy::attachSbusInput(InputBinding& b, uint8_t portIdx,
     // The WIRE broadcast is gated on a listening host (hostVerboseActive), so
     // a non-zero default doesn't stream into a dead port; only the LOCAL
     // dispatch runs.  A host can still override the rate via Set*BroadcastHz.
-    role.setBroadcastHz(cfgLen >= 1 ? cfg[0] : 50);
+    // Wire broadcast stays OFF at attach (no host yet); the LOCAL effect feed
+    // runs at the role's fixed 50 Hz default so the model flies standalone.  A
+    // host subscribes to the wire via Set*BroadcastHz when it opens the live-
+    // channel view (the config byte no longer auto-enables the wire — that
+    // flooded a connected-but-not-viewing host).
+    (void)cfg; (void)cfgLen;
     role.onBroadcast([this, portIdx](uint8_t /*ch*/, bool /*valid*/,
                                      bool /*failsafe*/, bool /*frameLost*/) {
         // The broadcast packet rebuilds the full channel payload —
@@ -424,7 +434,12 @@ bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
     // The WIRE broadcast is gated on a listening host (hostVerboseActive), so
     // a non-zero default doesn't stream into a dead port; only the LOCAL
     // dispatch runs.  A host can still override the rate via Set*BroadcastHz.
-    role.setBroadcastHz(cfgLen >= 1 ? cfg[0] : 50);
+    // Wire broadcast stays OFF at attach (no host yet); the LOCAL effect feed
+    // runs at the role's fixed 50 Hz default so the model flies standalone.  A
+    // host subscribes to the wire via Set*BroadcastHz when it opens the live-
+    // channel view (the config byte no longer auto-enables the wire — that
+    // flooded a connected-but-not-viewing host).
+    (void)cfg; (void)cfgLen;
     role.onBroadcast([this, portIdx](uint8_t /*ch*/, bool /*valid*/,
                                      uint32_t /*rxFrames*/, uint32_t /*rxErrors*/) {
         auto* binding = _reg->inputAt(portIdx);
@@ -1194,7 +1209,7 @@ void RoleServicePolicy::emitPpmFrameBroadcast(uint8_t portIdx, const RcPwmInputR
     // don't stream into a dead port.  The LOCAL dispatch ALWAYS fires — it
     // feeds the on-board InputDispatcher that drives effects, which must run
     // standalone with no host connected.
-    if (_ctx && _ctx->hostVerboseActive())
+    if (_ctx && _ctx->hostVerboseActive() && role.wireEnabled())
         _ctx->sendRawPacket(RolePacket::PPM_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::PPM_FRAME_BROADCAST, buf, off);
 }
@@ -1218,7 +1233,7 @@ void RoleServicePolicy::emitSbusFrameBroadcast(uint8_t portIdx, const SbusInputR
         SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
         off += 2;
     }
-    if (_ctx && _ctx->hostVerboseActive())  // wire = host only; local dispatch always
+    if (_ctx && _ctx->hostVerboseActive() && role.wireEnabled())  // wire = host live-view; local always
         _ctx->sendRawPacket(RolePacket::SBUS_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::SBUS_FRAME_BROADCAST, buf, off);
 }
@@ -1235,7 +1250,7 @@ void RoleServicePolicy::emitJetiExFrameBroadcast(uint8_t portIdx, const JetiExIn
         SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
         off += 2;
     }
-    if (_ctx && _ctx->hostVerboseActive())  // wire = host only; local dispatch always
+    if (_ctx && _ctx->hostVerboseActive() && role.wireEnabled())  // wire = host live-view; local always
         _ctx->sendRawPacket(RolePacket::JETIEX_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::JETIEX_FRAME_BROADCAST, buf, off);
 }
