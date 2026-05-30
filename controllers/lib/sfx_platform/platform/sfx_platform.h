@@ -112,10 +112,18 @@
     #include <esp_system.h>
     #include <esp_mac.h>
     #include <esp_timer.h>
+    #include <esp_clk_tree.h>
 
     #define SFX_FREE_HEAP()         esp_get_free_heap_size()
     #define SFX_REBOOT()            esp_restart()
-    #define SFX_CPU_MHZ()           getCpuFrequencyMhz()  // Arduino-ESP32 API (portable across IDF versions)
+    // Native ESP-IDF CPU frequency (was Arduino getCpuFrequencyMhz()).
+    static inline uint32_t sfxCpuMhz() {
+        uint32_t hz = 0;
+        esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU,
+            ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &hz);
+        return hz / 1000000u;
+    }
+    #define SFX_CPU_MHZ()           sfxCpuMhz()
 
     // Board unique ID — MAC address on ESP32
     inline void sfxGetBoardId(char* out, size_t maxLen) {
