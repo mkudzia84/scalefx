@@ -752,9 +752,6 @@ void RoleServicePolicy::handleJetiExSetBroadcastHz(const uint8_t* p, size_t len)
     auto* r = std::get_if<JetiExInputRole>(&b->role);
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
     r->setBroadcastHz(hz);
-#if SFX_INSTRUMENTATION
-    SFX_LOG_INFO("[jeti] setBroadcastHz idx=%u hz=%u", idx, hz);
-#endif
     _ctx->sendAck();
 }
 
@@ -1228,23 +1225,6 @@ void RoleServicePolicy::emitSbusFrameBroadcast(uint8_t portIdx, const SbusInputR
 
 void RoleServicePolicy::emitJetiExFrameBroadcast(uint8_t portIdx, const JetiExInputRole& role) {
     const uint8_t count = role.channelCount();
-#if SFX_INSTRUMENTATION
-    // Rate-limited health: confirms the emit fires AND surfaces decoder state
-    // (rxF climbing = frames passing CRC; rxE climbing = CRC fails; rxB
-    // climbing with rxF=0 = wrong baud/framing). Visible via `subscribe`.
-    {
-        static uint32_t lastLog = 0;
-        const uint32_t nowMs = millis();
-        if (nowMs - lastLog >= 1000) {
-            lastLog = nowMs;
-            SFX_LOG_INFO("[jeti] emit port=%u count=%u valid=%u rxF=%lu rxE=%lu rxB=%lu",
-                         portIdx, count, role.valid() ? 1 : 0,
-                         (unsigned long)role.rxFrameCount(),
-                         (unsigned long)role.rxErrorCount(),
-                         (unsigned long)role.rxByteCount());
-        }
-    }
-#endif
     // Jeti EX Bus carries up to 24 proportional channels per frame.
     uint8_t buf[3 + 24*2];
     buf[0] = portIdx;

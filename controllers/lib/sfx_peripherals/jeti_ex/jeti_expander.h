@@ -116,7 +116,7 @@ public:
         // design and is naturally paused by the upload-exclusivity gate.  Revisit
         // a task only if telemetry (the ~4 ms reply slot) is re-enabled.
         _running     = true;
-        _lastBuiltin = _lastExpire = _lastLog = 0;
+        _lastBuiltin = _lastExpire = 0;
         SFX_LOG_INFO("[jexp] started in main loop (rx=IN_1, esc=IN_2, baud=%lu)",
                      (unsigned long)baud);
         return true;
@@ -147,18 +147,6 @@ public:
             JetiTelemetryHub::ScopedLock lk(hub);
             hub.expireStale(now, 2000);   // disconnected ESC drops out
         }
-#if SFX_INSTRUMENTATION
-        if (now - _lastLog >= 1000) {
-            _lastLog = now;
-            SFX_LOG_INFO("[jexp] rxF=%lu rxE=%lu tx=%lu | escF=%lu escE=%lu | dev=%u",
-                         (unsigned long)_rxBus.rxFrameCount(),
-                         (unsigned long)_rxBus.rxErrorCount(),
-                         (unsigned long)_rxBus.txResponseCount(),
-                         (unsigned long)_escMon.telemetryFrames(),
-                         (unsigned long)_escMon.errorCount(),
-                         (unsigned)JetiTelemetryHub::instance().deviceCount());
-        }
-#endif
     }
 
     void end() {
@@ -341,7 +329,6 @@ private:
     bool      _running     = false;     // begin() → true; update() gates on it
     uint32_t  _lastBuiltin = 0;         // 1 Hz uptime-sensor refresh (in update)
     uint32_t  _lastExpire  = 0;         // 1 Hz stale-device expiry (in update)
-    uint32_t  _lastLog     = 0;         // 1 Hz [jexp] instrumentation (in update)
 };
 
 }  // namespace JetiEx
