@@ -161,7 +161,7 @@ func (c *Connection) Connect() error {
 	c.tagWaiters = make(map[byte]chan *Response)
 	c.streamWaiters = make(map[byte]chan *Response)
 
-	// Wait for device to settle, drain boot output.
+	// Wait for device to settle, drain boot output (bounded — see drain()).
 	time.Sleep(500 * time.Millisecond)
 	c.drain()
 
@@ -514,8 +514,16 @@ func (c *Connection) drain() {
 	if c.port == nil {
 		return
 	}
+	// BOUNDED.  Discard immediately-available stale bytes (boot text, a stale
+	// broadcast backlog) but NEVER loop indefinitely: a board in its verbose
+	// window broadcasts live input frames continuously (~50 Hz), so it never
+	// goes quiet, and an unbounded drain would block the connect for the whole
+	// ~8 s window (the "tree/file.list times out in the GUI" bug).  Cap the
+	// total drain; the reader goroutine filters async broadcasts from command
+	// responses, so any leftover backlog is handled there, not here.
 	buf := make([]byte, 4096)
-	for {
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
 		n, err := c.port.Read(buf)
 		if n == 0 || err != nil {
 			break
