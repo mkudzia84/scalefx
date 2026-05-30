@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     580
+#define BUILD_NUMBER     582
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -93,6 +93,7 @@
 #include <ports/pwm_port.h>
 #include <ports/servo_port.h>
 #include <ports/esp_input_port.h>
+#include <jeti_ex/jeti_expander.h>   // HubFX-own Jeti telemetry (Version + rail V)
 #include <pwm/pca9685.h>
 #include <power/ina226.h>
 #include <power/ina226_sensor.h>
@@ -205,6 +206,15 @@ namespace I2cAddr {
 // Per-channel current/voltage monitor addresses — index maps directly to
 // PWM port index (CH1 = port 0, CH8 = port 7).  The 0x4A / 0x4F outliers
 // on ch7 / ch8 dodge the codec at 0x4C on the shared I²C bus.
+//
+// FUTURE BOARD REVISION (planned): drop the per-channel array down to just
+// TWO INA226s — one on the BATTERY rail and one on the CODEC (PVDD) supply.
+// The current 8-monitor layout drove the clone-wedge issue (a counterfeit
+// INA at 0x40 corrupting the PCA9685 on the shared bus — see the CLAUDE.md
+// INA gotcha + instructions/18); two purpose-placed monitors remove the
+// per-channel cost and the shared-bus crowding.  The Jeti telemetry below
+// already filters to canonical chips, so it carries over unchanged (it will
+// just report the battery + codec rails instead of the min PWM rail).
 constexpr uint8_t kInaAddrs[8] = {
     0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4A, 0x4F,
 };
@@ -941,15 +951,45 @@ void loop() {
     // which `INA226::begin()` left undriven.  Cheap when nothing's
     // wrong — the alert service short-circuits on `enabled=false` or
     // observed > threshold.
+    // Lowest healthy rail voltage across canonical INA226s (clone @ 0x40 is
+    // non-canonical → skipped, as it reads garbage).  Drives the undervoltage
+    // alert AND the Jeti EX rail-voltage telemetry below.
+    uint16_t minRailMv = UINT16_MAX;
+    int32_t  totalMa   = 0;          // summed draw across the canonical channels
+    for (int i = 0; i < 8; ++i) {
+        if (!board.ina[i].isCanonical()) continue;
+        const float mv = board.vSense[i].voltage_mV();
+        if (mv > 0 && mv < (float)minRailMv) minRailMv = (uint16_t)mv;
+        totalMa += board.iSense[i].current_mA();
+    }
+    if (minRailMv != UINT16_MAX) {
+        board.policy<AlertService>().tickVoltage((uint32_t)millis(), minRailMv);
+    }
+
+    // Jeti EX expander telemetry — push HubFX-own Version + rail Voltage when
+    // the expander is running (IN_1 = Jeti EX).  They join the HubFx device
+    // (alongside the expander's built-in Uptime/FreeRAM) served to the radio.
     {
-        uint16_t minMv = UINT16_MAX;
-        for (int i = 0; i < 8; ++i) {
-            if (!board.ina[i].isCanonical()) continue;
-            const float mv = board.vSense[i].voltage_mV();
-            if (mv > 0 && mv < (float)minMv) minMv = (uint16_t)mv;
-        }
-        if (minMv != UINT16_MAX) {
-            board.policy<AlertService>().tickVoltage((uint32_t)millis(), minMv);
+        auto& jexp = JetiEx::JetiExpander::instance();
+        if (jexp.running()) {
+            const uint32_t jnow = millis();
+            static bool jetiSensorsReg = false;
+            if (!jetiSensorsReg) {
+                jetiSensorsReg = true;
+                int maj = 0, mnr = 0;
+                sscanf(FIRMWARE_VERSION, "%d.%d", &maj, &mnr);   // "2.16.0-hubfx"
+                jexp.setLocalSensor(3, "Version", "", JetiEx::ExDataType::Int14, 2,
+                                    (int32_t)(maj * 100 + mnr), jnow);   // 216 → "2.16"
+                jexp.setLocalSensor(4, "Voltage", "V", JetiEx::ExDataType::Int14, 3, 0, jnow);
+                jexp.setLocalSensor(5, "Current", "A", JetiEx::ExDataType::Int22, 3, 0, jnow);
+            }
+            static uint32_t lastJetiVMs = 0;
+            if (jnow - lastJetiVMs >= 1000) {
+                lastJetiVMs = jnow;
+                if (minRailMv != UINT16_MAX)
+                    jexp.setLocalValue(4, (int32_t)minRailMv, jnow);  // mV, dp=3 → "8.000 V"
+                jexp.setLocalValue(5, totalMa, jnow);                 // mA, dp=3 → "1.234 A"
+            }
         }
     }
 
