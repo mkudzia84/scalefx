@@ -229,7 +229,17 @@ if ($Integration) {
         if ($integSuites.Count -eq 0) {
             Write-Host "  (no suites discovered under tests/host/go_integration/)" -ForegroundColor DarkYellow
         } else {
+            # Each suite is a separate process that opens its own connection to
+            # the HubFX.  The host link is a CH343 USB-UART: back-to-back port
+            # open/close cycles degrade the driver/link, so by the last suite a
+            # sustained transfer (the 1.4 MB stream-upload) can stall mid-flight
+            # even though the connect itself succeeds (the client now retries
+            # IDENTIFY).  A short settle between suites lets the link fully
+            # recover, so the gate reflects firmware health, not link wear.
+            $first = $true
             foreach ($d in $integSuites) {
+                if (-not $first) { Start-Sleep -Seconds 2 }
+                $first = $false
                 Invoke-GoSuite $d -NoCache -Integration
             }
         }
