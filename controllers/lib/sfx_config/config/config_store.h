@@ -94,6 +94,7 @@ struct ConfigResult {
     bool parsed      = false;   ///< YAML parsing succeeded
     bool populated   = false;   ///< Schema populate() succeeded
     bool validated   = false;   ///< Schema validate() succeeded
+    bool notFound    = false;   ///< File absent / unreadable (not a parse error)
     char error[128]  = {};      ///< Error description (empty if ok)
 
     operator bool() const { return ok; }
@@ -249,6 +250,12 @@ public:
     /** @brief Check if config was successfully loaded from file/string */
     bool isLoaded() const { return _loaded; }
 
+    /** @brief True when the last load found NO file and the store is running on
+     *  struct defaults (a functional, expected state for optional configs —
+     *  /alerts.yaml, /lightfx.yaml, … don't exist until the operator saves one).
+     *  Aggregate CONFIG_STATUS counts this as "OK", like boot's loadOrFallback. */
+    bool usingDefaults() const { return _usingDefaults; }
+
     /** @brief Size of last loaded YAML content in bytes */
     uint16_t fileSize() const { return _fileSize; }
 
@@ -284,6 +291,7 @@ private:
     /// `mutable` so the const `data()` accessor can lazy-allocate.
     mutable Data*  _data       = nullptr;
     bool           _loaded     = false;
+    bool           _usingDefaults = false;   ///< last load found no file → defaults
     uint16_t       _fileSize   = 0;
     char           _lastError[128] = {};
     FileReadFunc   _fileReader = nullptr;
