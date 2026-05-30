@@ -27,14 +27,14 @@ export const portKindName: Record<number, string> = {
 
 export const RoleKind = {
     None: 0x00, ServoActuator: 0x01, RcPwmInput: 0x02, SbusInput: 0x03,
-    JetiExInput: 0x04, LedAnimator: 0x10, DcMotor: 0x11, Heater: 0x12,
-    BiDcMotor: 0x20,
+    JetiExInput: 0x04, JetiExTelemetry: 0x05, LedAnimator: 0x10, DcMotor: 0x11,
+    Heater: 0x12, BiDcMotor: 0x20,
 } as const
 
 export const roleKindName: Record<number, string> = {
     0x00: 'none', 0x01: 'servo-actuator', 0x02: 'rc-pwm-input',
-    0x03: 'sbus-input', 0x04: 'jeti-ex-input', 0x10: 'led-animator',
-    0x11: 'dc-motor', 0x12: 'heater', 0x20: 'bi-dc-motor',
+    0x03: 'sbus-input', 0x04: 'jeti-ex-input', 0x05: 'jeti-ex-telemetry',
+    0x10: 'led-animator', 0x11: 'dc-motor', 0x12: 'heater', 0x20: 'bi-dc-motor',
 }
 
 // ─── DTOs (mirror devicemodel/*.go json tags) ─────────────────────────
@@ -317,6 +317,21 @@ export async function attachRole(p: PortRef, roleKind: number): Promise<void> {
     const snap = await AttachRole(p.guid, p.kind, p.index, roleKind)
     deviceModel.set(normalize(snap))
     markHubDirty()    // role attachment persists into /hubfx.yaml ports[]
+}
+
+/** Jeti EX expander auto-remap: when an input port becomes the Rx-facing
+ *  JetiEX link, auto-assign the OTHER input port the downstream telemetry
+ *  role — IN_1 = Rx, IN_2 = ESC (mirrors the firmware, which grabs the other
+ *  input as the downstream link).  No-op for non-input ports / non-JetiEX.
+ *  Both the protocol picker (InputPanel) and the role picker (PortControls)
+ *  call this so either entry point remaps IN_1/IN_2 and the GUI updates. */
+export async function syncJetiExpanderRemap(self: PortRef, newRoleKind: number): Promise<void> {
+    if (self.kind !== PortKind.Input || newRoleKind !== RoleKind.JetiExInput) return
+    const other = get(deviceModel).ports.find(p =>
+        p.ref.kind === PortKind.Input &&
+        !(p.ref.guid === self.guid && p.ref.index === self.index))
+    if (other && other.roleKind !== RoleKind.JetiExTelemetry)
+        await attachRole(other.ref, RoleKind.JetiExTelemetry)
 }
 
 export async function detachRole(p: PortRef): Promise<void> {
