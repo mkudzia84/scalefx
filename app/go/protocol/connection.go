@@ -97,9 +97,87 @@ type Connection struct {
 	readerStop chan struct{}
 	readerDone chan struct{}
 
+	// Async dispatch goroutine — async/unmatched packets are handed off here
+	// instead of being delivered INLINE in the reader.  A slow async consumer
+	// (Studio's Wails event emit at 50 Hz) must NEVER block the reader, or the
+	// serial buffer backs up and command responses time out.  The queue is
+	// bounded; async broadcasts (live channel view) are lossy, so on overflow
+	// we drop the frame and count it rather than block.
+	asyncQueue chan *Response
+	asyncStop  chan struct{}
+	asyncDone  chan struct{}
+
 	// Keepalive goroutine — mirrors C++ SerialBus::processKeepalive()
 	keepaliveStop chan struct{}
 	keepaliveDone chan struct{}
+
+	// ── Link instrumentation (atomic; snapshot via Stats()) ──────────
+	// Counts + timings to diagnose intermittent command timeouts under an
+	// async-broadcast flood.  The reader goroutine is the only writer of the
+	// RX counters; SendAndWait/* increment the timeout counter.  asyncCB
+	// timing reveals whether slow async consumers (Studio Wails emits) are
+	// stalling the reader and starving tagged-response delivery.
+	stat statCounters
+}
+
+type statCounters struct {
+	rxFrames     atomic.Uint64 // complete COBS frames parsed
+	rxTagged     atomic.Uint64 // tag!=0 delivered to a waiter
+	rxAsync      atomic.Uint64 // tag==0 → async callback
+	rxUnmatched  atomic.Uint64 // tag!=0 but no waiter (late/orphaned)
+	txPackets    atomic.Uint64 // packets sent (Send)
+	timeouts     atomic.Uint64 // SendAndWait/* deadline fired
+	asyncCBNanos atomic.Uint64 // cumulative ns spent in asyncCB (dispatcher goroutine)
+	asyncCBMax   atomic.Uint64 // worst single asyncCB ns
+	asyncDropped atomic.Uint64 // async frames dropped on queue overflow (slow consumer)
+	dispatchMax  atomic.Uint64 // worst single dispatchResponse ns (reader stall proxy)
+}
+
+// LinkStats is a point-in-time snapshot of the link instrumentation.
+type LinkStats struct {
+	RxFrames, RxTagged, RxAsync, RxUnmatched uint64
+	TxPackets, Timeouts, AsyncDropped        uint64
+	AsyncCBTotal, AsyncCBMax, DispatchMax    time.Duration
+}
+
+// Stats returns a snapshot of the link instrumentation counters.
+func (c *Connection) Stats() LinkStats {
+	return LinkStats{
+		RxFrames:     c.stat.rxFrames.Load(),
+		RxTagged:     c.stat.rxTagged.Load(),
+		RxAsync:      c.stat.rxAsync.Load(),
+		RxUnmatched:  c.stat.rxUnmatched.Load(),
+		TxPackets:    c.stat.txPackets.Load(),
+		Timeouts:     c.stat.timeouts.Load(),
+		AsyncDropped: c.stat.asyncDropped.Load(),
+		AsyncCBTotal: time.Duration(c.stat.asyncCBNanos.Load()),
+		AsyncCBMax:   time.Duration(c.stat.asyncCBMax.Load()),
+		DispatchMax:  time.Duration(c.stat.dispatchMax.Load()),
+	}
+}
+
+// ResetStats zeroes the instrumentation counters.
+func (c *Connection) ResetStats() {
+	c.stat.rxFrames.Store(0)
+	c.stat.rxTagged.Store(0)
+	c.stat.rxAsync.Store(0)
+	c.stat.rxUnmatched.Store(0)
+	c.stat.txPackets.Store(0)
+	c.stat.timeouts.Store(0)
+	c.stat.asyncDropped.Store(0)
+	c.stat.asyncCBNanos.Store(0)
+	c.stat.asyncCBMax.Store(0)
+	c.stat.dispatchMax.Store(0)
+}
+
+// storeMax atomically raises *a to v if v is larger.
+func storeMax(a *atomic.Uint64, v uint64) {
+	for {
+		cur := a.Load()
+		if v <= cur || a.CompareAndSwap(cur, v) {
+			return
+		}
+	}
 }
 
 // NewConnection creates a new connection instance.
@@ -161,7 +239,7 @@ func (c *Connection) Connect() error {
 	c.tagWaiters = make(map[byte]chan *Response)
 	c.streamWaiters = make(map[byte]chan *Response)
 
-	// Wait for device to settle, drain boot output.
+	// Wait for device to settle, drain boot output (bounded — see drain()).
 	time.Sleep(500 * time.Millisecond)
 	c.drain()
 
@@ -259,6 +337,7 @@ func (c *Connection) Send(data []byte) error {
 	_, err := c.port.Write(data)
 	if err == nil {
 		c.lastSendTime = time.Now()
+		c.stat.txPackets.Add(1)
 	}
 	return err
 }
@@ -323,6 +402,7 @@ func (c *Connection) SendAndWait(data []byte) (*Response, error) {
 		c.waiterMu.Lock()
 		delete(c.tagWaiters, tag)
 		c.waiterMu.Unlock()
+		c.stat.timeouts.Add(1)
 		return nil, fmt.Errorf("timeout waiting for response")
 	}
 }
@@ -375,6 +455,7 @@ func (c *Connection) SendExpectACKTimeout(data []byte, timeout time.Duration) (*
 				c.asyncCB(resp)
 			}
 		case <-deadline:
+			c.stat.timeouts.Add(1)
 			return nil, fmt.Errorf("timeout waiting for response")
 		}
 	}
@@ -447,6 +528,7 @@ func (c *Connection) SendAndReceiveStream(data []byte, timeout time.Duration) (*
 			}
 
 		case <-deadline:
+			c.stat.timeouts.Add(1)
 			return nil, fmt.Errorf("stream timeout")
 		}
 	}
@@ -514,8 +596,16 @@ func (c *Connection) drain() {
 	if c.port == nil {
 		return
 	}
+	// BOUNDED.  Discard immediately-available stale bytes (boot text, a stale
+	// broadcast backlog) but NEVER loop indefinitely: a board in its verbose
+	// window broadcasts live input frames continuously (~50 Hz), so it never
+	// goes quiet, and an unbounded drain would block the connect for the whole
+	// ~8 s window (the "tree/file.list times out in the GUI" bug).  Cap the
+	// total drain; the reader goroutine filters async broadcasts from command
+	// responses, so any leftover backlog is handled there, not here.
 	buf := make([]byte, 4096)
-	for {
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
 		n, err := c.port.Read(buf)
 		if n == 0 || err != nil {
 			break
@@ -538,6 +628,14 @@ func (c *Connection) Drain() {
 func (c *Connection) startReader() {
 	c.readerStop = make(chan struct{})
 	c.readerDone = make(chan struct{})
+
+	// Async dispatcher goroutine + its bounded handoff queue (256 ≈ 5 s of
+	// 50 Hz broadcast).  Started before the reader so the first frame has a
+	// consumer.  See dispatchResponse.
+	c.asyncQueue = make(chan *Response, 256)
+	c.asyncStop = make(chan struct{})
+	c.asyncDone = make(chan struct{})
+	go c.asyncDispatcher()
 
 	go func() {
 		defer close(c.readerDone)
@@ -587,11 +685,16 @@ func (c *Connection) startReader() {
 
 					ptype, tag, payload, ok := ParsePacket(packetData)
 					if ok {
+						c.stat.rxFrames.Add(1)
 						resp := &Response{
 							PacketType: ptype,
 							Tag:        tag,
 							Payload:    payload,
-							Raw:        rxBuf[:idx],
+							// packetData is a fresh per-packet copy; rxBuf is
+							// reused, so an async resp queued for later delivery
+							// must NOT alias rxBuf (would corrupt under the
+							// dispatcher goroutine).
+							Raw: packetData[:idx],
 						}
 						if c.verbose {
 							name := PacketTypeName(ptype)
@@ -631,6 +734,20 @@ func (c *Connection) stopReader() {
 	if c.readerDone != nil {
 		<-c.readerDone
 	}
+
+	// Stop the async dispatcher after the reader (which feeds its queue).
+	if c.asyncStop != nil {
+		select {
+		case <-c.asyncStop:
+		default:
+			close(c.asyncStop)
+		}
+		if c.asyncDone != nil {
+			<-c.asyncDone
+		}
+		c.asyncStop = nil
+		c.asyncDone = nil
+	}
 }
 
 // signalPortDead sets the portDead flag and fires the OnPortError callback once.
@@ -644,6 +761,9 @@ func (c *Connection) signalPortDead() {
 
 // dispatchResponse delivers a response to the correct consumer.
 func (c *Connection) dispatchResponse(resp *Response) {
+	dStart := time.Now()
+	defer func() { storeMax(&c.stat.dispatchMax, uint64(time.Since(dStart))) }()
+
 	if resp.Tag != TagAsync {
 		c.waiterMu.Lock()
 
@@ -651,6 +771,7 @@ func (c *Connection) dispatchResponse(resp *Response) {
 		sch, sok := c.streamWaiters[resp.Tag]
 		if sok {
 			c.waiterMu.Unlock()
+			c.stat.rxTagged.Add(1)
 			sch <- resp
 			return
 		}
@@ -660,25 +781,65 @@ func (c *Connection) dispatchResponse(resp *Response) {
 		if ok {
 			delete(c.tagWaiters, resp.Tag)
 			c.waiterMu.Unlock()
+			c.stat.rxTagged.Add(1)
 			ch <- resp
 			return
 		}
 
 		c.waiterMu.Unlock()
+		c.stat.rxUnmatched.Add(1) // tag set but no waiter (late / orphaned)
 	}
 
-	// Async or unmatched — check type-based filters first
+	// Async or unmatched — hand off to the dispatcher goroutine.  NON-BLOCKING:
+	// the reader must NEVER stall on a slow async consumer (Studio's Wails emit
+	// at 50 Hz), or the serial buffer backs up and command responses time out
+	// (proven: 0% timeouts at delay=0, 86% at delay=150ms, same flood).  Drop
+	// on overflow — async broadcasts (live channel view) are lossy.
+	c.stat.rxAsync.Add(1)
+	if c.asyncQueue != nil {
+		select {
+		case c.asyncQueue <- resp:
+		default:
+			c.stat.asyncDropped.Add(1)
+		}
+	}
+}
+
+// asyncDispatcher delivers async/unmatched packets to filters + the general
+// callback OFF the reader goroutine, so a slow consumer can't stall reads.
+func (c *Connection) asyncDispatcher() {
+	defer close(c.asyncDone)
+	for {
+		select {
+		case <-c.asyncStop:
+			return
+		case resp := <-c.asyncQueue:
+			c.deliverAsync(resp)
+		}
+	}
+}
+
+// deliverAsync routes one async packet to its type filter (if any) or the
+// general callback.  Runs in the dispatcher goroutine — slowness here costs
+// async latency / drops, never command-response timeouts.
+func (c *Connection) deliverAsync(resp *Response) {
 	c.waiterMu.Lock()
 	fch, fok := c.asyncFilters[resp.PacketType]
 	c.waiterMu.Unlock()
 	if fok {
-		fch <- resp
+		// Respect shutdown so a vanished filter consumer can't wedge Close.
+		select {
+		case fch <- resp:
+		case <-c.asyncStop:
+		}
 		return
 	}
-
-	// Otherwise deliver to general async callback
 	if c.asyncCB != nil {
+		cbStart := time.Now()
 		c.asyncCB(resp)
+		dur := uint64(time.Since(cbStart))
+		c.stat.asyncCBNanos.Add(dur)
+		storeMax(&c.stat.asyncCBMax, dur)
 	}
 }
 

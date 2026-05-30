@@ -238,6 +238,13 @@ template <MixerLike TMixer, hubfx::topology::TopologyService TTopology, hubfx::e
 bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStart() {
     if (!_cfg.enabled) return false;
     if (_state == EngineState::Starting || _state == EngineState::Running) return true;
+
+    // The starting offset is a WARM-start skip: re-engaging while the engine
+    // is still spooling down (Stopping) jumps INTO the starting sound by
+    // startingOffsetMs so we don't replay the full ignition.  A COLD start
+    // from a fully Stopped engine plays the starting sound from 0 (the whole
+    // ignition / spool-up).  Capture the prior state BEFORE we mutate it.
+    const bool warmStart = (_state == EngineState::Stopping);
     if (_state == EngineState::Stopping) stopAudio(_activeChannel);
 
     _pendingStop         = false;
@@ -250,8 +257,18 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStart() {
     // loop wrap glitch is masked.
     if (_cfg.startingPath[0]) {
         _activeChannel = _cfg.channelA;
-        if (!startAudio(_cfg.startingPath, _cfg.channelA, _cfg.startingOffsetMs,
-                        /*loop=*/false, /*fadeInMs=*/_cfg.startFadeInMs)) {
+        const uint32_t startOffsetMs = warmStart ? _cfg.startingOffsetMs : 0;
+        // Fade-in is for the COLD start only (silence → ignition).  A WARM
+        // re-engage seeks INTO an already-spun-up engine, so it must come in at
+        // full level — a fade there sounds like the engine fading up from
+        // nothing.  No offset (cold) → fade; offset (warm) → hard in.
+        const uint16_t fadeInMs = warmStart ? 0 : _cfg.startFadeInMs;
+        SFX_LOG_INFO("[engine] forceStart %s — '%s' offset=%lums fadeIn=%ums (cfg startingOffset=%lums)",
+                     warmStart ? "WARM (from stopping)" : "COLD (from stopped)",
+                     _cfg.startingPath, (unsigned long)startOffsetMs,
+                     (unsigned)fadeInMs, (unsigned long)_cfg.startingOffsetMs);
+        if (!startAudio(_cfg.startingPath, _cfg.channelA, startOffsetMs,
+                        /*loop=*/false, /*fadeInMs=*/fadeInMs)) {
             return false;
         }
         enterState(EngineState::Starting);

@@ -31,6 +31,9 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
 #include <driver/uart.h>          // uart_set_mode + UART_MODE_RS485_HALF_DUPLEX
+#include <driver/gpio.h>          // gpio_set_direction (native half-duplex OE toggle)
+#include <esp_rom_gpio.h>         // esp_rom_gpio_connect_out_signal (matrix TX route)
+#include <soc/gpio_sig_map.h>     // U1TXD_OUT_IDX / U2TXD_OUT_IDX / SIG_GPIO_OUT_IDX
 #include <cstdint>
 
 #include "input_port.h"
@@ -75,16 +78,20 @@ public:
     }
 
     bool configureJetiEx(uint32_t baud) override {
-        // LISTEN-ONLY.  Jeti EX Bus is half-duplex on one wire, but to READ
-        // RC channel data we only need RX.  RX-only (tx=-1, normal UART mode)
-        // is the configuration verified on the input_monitor bench rig
-        // (thousands of bytes/s, clean CRC).  The earlier RS-485 half-duplex
-        // + shared-pin (tx=rx) setup received almost nothing — half-duplex
-        // holds the line for TX, so the inbound stream never reaches RX
-        // (instrumentation showed rxBytes stuck at ~1).  Telemetry talk-back
-        // (device->radio, EX telemetry / JetiBox — direction B) will need the
-        // half-duplex path restored with response-slot TX timing; that's a
-        // separate future feature.  Datasheet baud: 125 000 or 250 000.
+        // Half-duplex on ONE wire, RX-clean.  Begin RX-ONLY (tx=-1): the RX
+        // signal is routed from the pad via the GPIO matrix and the pin idles
+        // as a high-Z input — the config that read channels rock-solid on the
+        // full board (git 8a7fc47; bench-proven on input_monitor / jeti_ex_telem).
+        //
+        // The telemetry reply drives TX only for its ~4 ms slot via txEnable()/
+        // txDisable(), which flip ONLY the output-enable with native
+        // gpio_set_direction (NOT Arduino pinMode, which re-runs gpio_config and
+        // tears down the matrix RX input — that killed RX after one reply, and
+        // begin(rx=tx) leaves the pad configured for TX at rest which degraded RX).
+        //
+        // NOT `UART_MODE_RS485_HALF_DUPLEX`: that mode holds the line for TX and
+        // the inbound stream never reaches RX (rxBytes stuck at ~1).
+        // Datasheet baud: 125 000 or 250 000.
         teardownActive();
         auto& s = uartSerial();
         s.begin(baud, SERIAL_8N1, _pin, /*tx=*/-1, /*invert=*/false);
@@ -160,9 +167,30 @@ public:
         }
     }
 
+    // ── Half-duplex TX control (JETI_EX) ─────────────────────────────
+    // Per-slot route: raise OE + route the UART TX onto the pad for the reply,
+    // then route the pad-out back to the GPIO simple-output and drop OE → high-Z
+    // RX.  gpio_set_direction touches only OE/IE so the matrix RX input (set by
+    // begin) is never disturbed (Arduino pinMode would tear it down → no signal).
+    void txEnable() override {
+        if (_mode != Mode::JETI_EX) return;
+        gpio_set_direction((gpio_num_t)_pin, GPIO_MODE_INPUT_OUTPUT);  // drive + keep RX alive
+        esp_rom_gpio_connect_out_signal(_pin, txSignalIdx(), /*invert=*/false, /*oen_invert=*/false);
+    }
+    void txDisable() override {
+        if (_mode != Mode::JETI_EX) return;
+        esp_rom_gpio_connect_out_signal(_pin, SIG_GPIO_OUT_IDX, /*invert=*/false, /*oen_invert=*/false);
+        gpio_set_direction((gpio_num_t)_pin, GPIO_MODE_INPUT);         // high-Z; matrix RX intact
+    }
+
 private:
     HardwareSerial& uartSerial() {
         return (_uartNum == 1) ? Serial1 : Serial2;
+    }
+
+    /// UART TX peripheral-output signal index for the GPIO matrix.
+    uint32_t txSignalIdx() const {
+        return (_uartNum == 1) ? U1TXD_OUT_IDX : U2TXD_OUT_IDX;
     }
 
     void teardownActive() {

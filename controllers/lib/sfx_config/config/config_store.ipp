@@ -33,6 +33,7 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromString(const char* yaml, size_
     ConfigResult result;
     _lastError[0] = '\0';
     _loaded = false;
+    _usingDefaults = false;   // a real string/file load is in progress
     _fileSize = 0;
 
     // Allocate the PSRAM-resident data slot on first call.
@@ -127,6 +128,9 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromFile(const char* path) {
     if (bytesRead <= 0) {
         snprintf(_lastError, sizeof(_lastError), "File read failed: %s", filePath);
         strncpy(result.error, _lastError, sizeof(result.error) - 1);
+        result.notFound = true;   // absent / unreadable — reload-all tolerates this
+        _loaded        = false;   // no file backing the store now
+        _usingDefaults = true;    // running on struct defaults (functional)
         sfxPsramFree(buffer);
         return result;
     }

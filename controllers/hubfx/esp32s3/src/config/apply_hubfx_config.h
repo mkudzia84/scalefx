@@ -165,6 +165,15 @@ uint8_t attachPortRolesForGuid(TTopology& topo, const HubFxConfig& cfg,
             SfxWire::putU16LE(&cfgBuf[9],  m.profile.maxAccelUsPerSec2);
             SfxWire::putU16LE(&cfgBuf[11], m.profile.maxJerkUsPerSec3);
             cfgLen = 13;
+        } else if (m.role == RoleKind::JetiExInput) {
+            // JetiEX attach config: [broadcastHz][baudHi][baudLo][downstream].
+            // 0,0,0 = no auto wire-broadcast + default 125000 baud (Rule 11
+            // append: byte 3 = downstream IN_2 telemetry-monitor enable).
+            cfgBuf[0] = 0;
+            cfgBuf[1] = 0;
+            cfgBuf[2] = 0;
+            cfgBuf[3] = m.jetiDownstream ? 1 : 0;
+            cfgLen = 4;
         }
         if (topo.attachRole(portRefOf(m), m.role, cfgLen ? cfgBuf : nullptr, cfgLen)) {
             ++attached;

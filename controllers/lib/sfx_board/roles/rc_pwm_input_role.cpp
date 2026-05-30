@@ -25,9 +25,7 @@ bool RcPwmInputRole::read(uint16_t* outUs) const {
 }
 
 void RcPwmInputRole::setBroadcastHz(uint8_t hz) {
-    _broadcastHz = hz;
-    _broadcastInterval_ms = (hz == 0) ? 0 : (1000u / hz);
-    _lastBroadcastMs = 0;
+    _bcast.subscribe(hz);   // host wire subscribe; local feed keeps ticking
 }
 
 void RcPwmInputRole::tick() {
@@ -43,12 +41,8 @@ void RcPwmInputRole::tick() {
         for (uint8_t i = 0; i < n; i++) _channels[i] = frame[i];
     }
 
-    if (_broadcastInterval_ms == 0 || !_onBroadcast) return;
-    const uint32_t now = millis();
-    if (now - _lastBroadcastMs >= _broadcastInterval_ms) {
-        _lastBroadcastMs = now;
-        _onBroadcast(_count, _valid);
-    }
+    // Local effect feed + (when subscribed) wire broadcast — same cadence.
+    if (_onBroadcast && _bcast.due(millis())) _onBroadcast(_count, _valid);
 }
 
 }  // namespace sfx_core

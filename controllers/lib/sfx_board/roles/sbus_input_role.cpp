@@ -107,9 +107,7 @@ uint32_t SbusInputRole::errorCount() const {
 }
 
 void SbusInputRole::setBroadcastHz(uint8_t hz) {
-    _broadcastHz = hz;
-    _broadcastInterval_ms = (hz == 0) ? 0 : (1000u / hz);
-    _lastBroadcastMs = 0;
+    _bcast.subscribe(hz);   // host wire subscribe; local feed keeps ticking
 }
 
 void SbusInputRole::tick() {
@@ -119,12 +117,9 @@ void SbusInputRole::tick() {
     _decoder.update();
 #endif
 
-    if (_broadcastInterval_ms == 0 || !_onBroadcast) return;
-    const uint32_t now = millis();
-    if (now - _lastBroadcastMs >= _broadcastInterval_ms) {
-        _lastBroadcastMs = now;
+    // Local effect feed + (when subscribed) wire broadcast — same cadence.
+    if (_onBroadcast && _bcast.due(millis()))
         _onBroadcast(channelCount(), valid(), failsafe(), frameLost());
-    }
 }
 
 }  // namespace sfx_core

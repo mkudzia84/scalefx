@@ -29,8 +29,9 @@
  *
  *   Ports declared on the HubFX PCB:
  *     - 8 × PWM    (PCA9685 channels with per-rail INA226 V/I sense)
- *     - 1 × Input  (IN_1, multi-modal PULSE / SBUS / JETI_EX)
- *     - 11 × Servo (IN_2..IN_12, output actuator headers)
+ *     - 2 × Input  (IN_1 UART1 multi-modal PULSE/SBUS/JETI_EX;
+ *                   IN_2 UART2 Jeti EX Bus telemetry monitor → Rx)
+ *     - 10 × Servo (IN_3..IN_12, output actuator headers)
  *
  *   Configuration sources (LittleFS) — /hubfx.yaml is the board master,
  *   every effect's details live in its own canonical sub-file:
@@ -59,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     568
+#define BUILD_NUMBER     673
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -92,6 +93,7 @@
 #include <ports/pwm_port.h>
 #include <ports/servo_port.h>
 #include <ports/esp_input_port.h>
+#include <jeti_ex/jeti_expander.h>   // HubFX-own Jeti telemetry (Version)
 #include <pwm/pca9685.h>
 #include <power/ina226.h>
 #include <power/ina226_sensor.h>
@@ -204,12 +206,22 @@ namespace I2cAddr {
 // Per-channel current/voltage monitor addresses — index maps directly to
 // PWM port index (CH1 = port 0, CH8 = port 7).  The 0x4A / 0x4F outliers
 // on ch7 / ch8 dodge the codec at 0x4C on the shared I²C bus.
+//
+// FUTURE BOARD REVISION (planned): drop the per-channel array down to just
+// TWO INA226s — one on the BATTERY rail and one on the CODEC (PVDD) supply.
+// The current 8-monitor layout drove the clone-wedge issue (a counterfeit
+// INA at 0x40 corrupting the PCA9685 on the shared bus — see the CLAUDE.md
+// INA gotcha + instructions/18); two purpose-placed monitors remove the
+// per-channel cost and the shared-bus crowding.  Rail monitoring (undervoltage
+// alert + Jeti Voltage/Current telemetry) is DISABLED in loop() for now until
+// that hardware lands — see the note in loop().
 constexpr uint8_t kInaAddrs[8] = {
     0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4A, 0x4F,
 };
 
 namespace Uart {
-    constexpr uint8_t IN_1 = 1;            // UART1 claimed by InputPort on IN_1
+    constexpr uint8_t IN_1 = 1;            // UART1 — main Jeti EX Bus input (Rx channel data + telemetry to Rx)
+    constexpr uint8_t IN_2 = 2;            // UART2 — Jeti EX Bus telemetry from a downstream slave (e.g. ESC): HubFX polls + collects, forwards over IN_1 to the Rx
 }
 
 namespace Sense {
@@ -336,10 +348,10 @@ using GunFxService =
 // initializer list is a compile error (too many initializers); a count
 // the descriptor exceeds would make begin() clamp — so keep them equal.
 namespace hubfx_caps {
-constexpr size_t servo   = 11;   // IN_2..IN_12 microservo headers
+constexpr size_t servo   = 10;   // IN_3..IN_12 microservo headers (IN_2 reassigned to UART2 input)
 constexpr size_t pwm     = 8;    // PCA9685 CH1..8 (+ per-rail INA226 sense)
 constexpr size_t hbridge = 0;    // no hub-local H-bridge on this rev
-constexpr size_t input   = 1;    // IN_1 (multi-modal; Rule 31 → ESP32 max 2)
+constexpr size_t input   = 2;    // IN_1 (UART1) + IN_2 (UART2) — Rule 31: ESP32-S3 max 2 inputs
 }  // namespace hubfx_caps
 
 class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
@@ -379,17 +391,19 @@ public:
         {ina[4]}, {ina[5]}, {ina[6]}, {ina[7]},
     };
 
-    // ── Input ports — IN_1 (multi-modal: PULSE / SBUS / JETI_EX) ─────
+    // ── Input ports — IN_1 (PULSE/SBUS/JETI_EX) + IN_2 (Jeti EX Bus
+    //    telemetry monitor on UART2) ───────────────────────────────────
     sfx_peripherals::EspInputPort in[hubfx_caps::input] = {
-        {Gpio::IN_1, Uart::IN_1},
+        {Gpio::IN_1, Uart::IN_1},   // index 0 — main RC channel + telemetry-to-Rx
+        {Gpio::IN_2, Uart::IN_2},   // index 1 — downstream EX Bus telemetry (e.g. ESC)
     };
 
-    // ── Servo OUTPUT ports — IN_2..IN_12 as actuator headers ─────────
+    // ── Servo OUTPUT ports — IN_3..IN_12 as actuator headers ─────────
     sfx_peripherals::MicroservoPort servoOut[hubfx_caps::servo] = {
-        {Gpio::IN_2},  {Gpio::IN_3},  {Gpio::IN_4},
-        {Gpio::IN_5},  {Gpio::IN_6},  {Gpio::IN_7},
-        {Gpio::IN_8},  {Gpio::IN_9},  {Gpio::IN_10},
-        {Gpio::IN_11}, {Gpio::IN_12},
+        {Gpio::IN_3},  {Gpio::IN_4},  {Gpio::IN_5},
+        {Gpio::IN_6},  {Gpio::IN_7},  {Gpio::IN_8},
+        {Gpio::IN_9},  {Gpio::IN_10}, {Gpio::IN_11},
+        {Gpio::IN_12},
     };
 
     // ── Hardware probe ───────────────────────────────────────────────
@@ -411,8 +425,8 @@ public:
     //
     // Rail voltages (Phase 0 of GunFX rollout, instructions/22):
     //   CH1..8       — 8 V buck output (drives heaters / fans / LED rings)
-    //   IN_1         — 3.3 V GPIO logic (RC PWM / SBUS / Jeti EX input)
-    //   IN_2..IN_12  — 5 V servo rail (microservo headers)
+    //   IN_1, IN_2   — 3.3 V GPIO logic (IN_1 RC PWM/SBUS/Jeti EX; IN_2 Jeti EX Bus telemetry)
+    //   IN_3..IN_12  — 5 V servo rail (microservo headers)
     // Effects use these to compute voltage-scaled PWM duty for sub-rail
     // elements (a 5 V smoke heater on the 8 V rail wants ~63 % duty).
 
@@ -906,7 +920,12 @@ void loop() {
         if (storage.isStreamActive()) {
             storage.processStream();
         } else {
-            board.process();
+            // Sync upload: drain ONLY the bus (read + dispatch the upload
+            // chunks).  pumpBus() skips the policy tick, so roles/effects don't
+            // run and no input/verbose broadcast is emitted while the transfer
+            // is exclusive — matches the "drain only the storage server" intent
+            // and stops broadcasts competing with the upload (Rule 28).
+            board.pumpBus();
         }
         storage.checkUploadTimeout();
         // Yield to IDLE0 each iteration so the Task Watchdog Timer
@@ -930,22 +949,28 @@ void loop() {
     storage.checkUploadTimeout();
     board.pollSense();
 
-    // Board-wide undervoltage detector — fires AlertSound::BatteryLow
-    // (configurable via /alerts.yaml's `voltage_alert:` block) when
-    // any healthy INA226-monitored rail dips below threshold for the
-    // configured sustain window.  Skips the clone @ 0x40 (channel 0)
-    // which `INA226::begin()` left undriven.  Cheap when nothing's
-    // wrong — the alert service short-circuits on `enabled=false` or
-    // observed > threshold.
+    // INA226 rail monitoring REMOVED for now (2026-05-30) — the readings aren't
+    // trustworthy on this board rev (clone @ 0x40 + the crowded per-channel
+    // layout; a future rev drops to 2 INAs, battery + codec).  This also takes
+    // out the board-wide undervoltage AlertSound::BatteryLow detector and the
+    // Jeti rail Voltage/Current telemetry.  Restore from git history once the
+    // INA hardware is sorted (the canonical-only `isCanonical()` filter was the
+    // right pattern — see the AlertService::tickVoltage + Jeti push it fed).
+
+    // Jeti EX expander telemetry — register HubFX-own Version when the expander
+    // is running (IN_1 = Jeti EX).  Joins the HubFx device (with the expander's
+    // built-in Uptime) served to the radio.
     {
-        uint16_t minMv = UINT16_MAX;
-        for (int i = 0; i < 8; ++i) {
-            if (!board.ina[i].isCanonical()) continue;
-            const float mv = board.vSense[i].voltage_mV();
-            if (mv > 0 && mv < (float)minMv) minMv = (uint16_t)mv;
-        }
-        if (minMv != UINT16_MAX) {
-            board.policy<AlertService>().tickVoltage((uint32_t)millis(), minMv);
+        auto& jexp = JetiEx::JetiExpander::instance();
+        if (jexp.running()) {
+            static bool jetiSensorsReg = false;
+            if (!jetiSensorsReg) {
+                jetiSensorsReg = true;
+                int maj = 0, mnr = 0;
+                sscanf(FIRMWARE_VERSION, "%d.%d", &maj, &mnr);   // "2.16.0-hubfx"
+                jexp.setLocalSensor(3, "Version", "", JetiEx::ExDataType::Int14, 2,
+                                    (int32_t)(maj * 100 + mnr), millis());   // 216 → "2.16"
+            }
         }
     }
 

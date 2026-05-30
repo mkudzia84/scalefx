@@ -365,6 +365,7 @@ void TopologyServicePolicyT<TExpander>::appendHubRoleBlock(
         if      (std::holds_alternative<RcPwmInputRole>(b->role))  rk = RoleKind::RcPwmInput;
         else if (std::holds_alternative<SbusInputRole>(b->role))   rk = RoleKind::SbusInput;
         else if (std::holds_alternative<JetiExInputRole>(b->role)) rk = RoleKind::JetiExInput;
+        else if (std::holds_alternative<JetiExTelemetryRole>(b->role)) rk = RoleKind::JetiExTelemetry;
         emit(PortKind::Input, i, rk);
     }
 
@@ -814,7 +815,8 @@ size_t TopologyServicePolicyT<TExpander>::portsByRole(
     }
     if (roleKind == RoleKind::RcPwmInput  ||
         roleKind == RoleKind::SbusInput   ||
-        roleKind == RoleKind::JetiExInput) {
+        roleKind == RoleKind::JetiExInput ||
+        roleKind == RoleKind::JetiExTelemetry) {
         for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
             auto* b = _reg->inputAt(i);
             if (!b || !b->hasRole()) continue;
@@ -825,6 +827,8 @@ size_t TopologyServicePolicyT<TExpander>::portsByRole(
                 m = std::holds_alternative<SbusInputRole>(b->role);
             else if (roleKind == RoleKind::JetiExInput)
                 m = std::holds_alternative<JetiExInputRole>(b->role);
+            else if (roleKind == RoleKind::JetiExTelemetry)
+                m = std::holds_alternative<JetiExTelemetryRole>(b->role);
             if (m) push("", PortKind::Input, i);
         }
     }

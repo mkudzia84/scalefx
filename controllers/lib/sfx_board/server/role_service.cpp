@@ -175,6 +175,7 @@ void RoleServicePolicy::handleAttach(const uint8_t* p, size_t len) {
                 case RoleKind::RcPwmInput:  ok = attachRcPwmInput (*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::SbusInput:   ok = attachSbusInput  (*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::JetiExInput: ok = attachJetiExInput(*b, portIdx, cfg, cfgLen); break;
+                case RoleKind::JetiExTelemetry: ok = attachJetiExTelemetry(*b, portIdx, cfg, cfgLen); break;
                 default: _ctx->sendNack(RoleError::ROLE_KIND_NOT_SUPPORTED); return;
             }
             break;
@@ -220,6 +221,20 @@ void RoleServicePolicy::handleDetach(const uint8_t* p, size_t len) {
         case PortKind::Input: {
             auto* b = _reg->inputAt(portIdx);
             if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+#if SFX_PLATFORM_ESP32
+            // The JetiExpander owns BOTH Jeti links; detaching the Rx (IN_1)
+            // role tears it down (end() releases both ports) AND clears the
+            // paired downstream telemetry marker so IN_2 reverts to no role.
+            if (std::holds_alternative<JetiExInputRole>(b->role)) {
+                JetiEx::JetiExpander::instance().end();
+                for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
+                    if (i == portIdx) continue;
+                    auto* ob = _reg->inputAt(i);
+                    if (ob && std::holds_alternative<JetiExTelemetryRole>(ob->role))
+                        ob->role.emplace<std::monostate>();
+                }
+            }
+#endif
             // Release the peripheral the previous role had claimed.
             if (b->port) b->port->disable();
             b->role.emplace<std::monostate>();
@@ -276,6 +291,7 @@ void RoleServicePolicy::handleList() {
         if      (std::holds_alternative<RcPwmInputRole>(b->role))  rk = RoleKind::RcPwmInput;
         else if (std::holds_alternative<SbusInputRole>(b->role))   rk = RoleKind::SbusInput;
         else if (std::holds_alternative<JetiExInputRole>(b->role)) rk = RoleKind::JetiExInput;
+        else if (std::holds_alternative<JetiExTelemetryRole>(b->role)) rk = RoleKind::JetiExTelemetry;
         appendIfAttached(PortKind::Input, i, rk);
     }
 
@@ -322,7 +338,12 @@ bool RoleServicePolicy::attachRcPwmInput(InputBinding& b, uint8_t portIdx,
     // The WIRE broadcast is gated on a listening host (hostVerboseActive), so
     // a non-zero default doesn't stream into a dead port; only the LOCAL
     // dispatch runs.  A host can still override the rate via Set*BroadcastHz.
-    role.setBroadcastHz(cfgLen >= 1 ? cfg[0] : 50);
+    // Wire broadcast stays OFF at attach (no host yet); the LOCAL effect feed
+    // runs at the role's fixed 50 Hz default so the model flies standalone.  A
+    // host subscribes to the wire via Set*BroadcastHz when it opens the live-
+    // channel view (the config byte no longer auto-enables the wire — that
+    // flooded a connected-but-not-viewing host).
+    (void)cfg; (void)cfgLen;
     role.onBroadcast([this, portIdx](uint8_t /*count*/, bool /*valid*/) {
         // Rebuild the full PPM channel frame from the role each tick
         // (mirrors the SBUS / Jeti pattern).
@@ -345,7 +366,12 @@ bool RoleServicePolicy::attachSbusInput(InputBinding& b, uint8_t portIdx,
     // The WIRE broadcast is gated on a listening host (hostVerboseActive), so
     // a non-zero default doesn't stream into a dead port; only the LOCAL
     // dispatch runs.  A host can still override the rate via Set*BroadcastHz.
-    role.setBroadcastHz(cfgLen >= 1 ? cfg[0] : 50);
+    // Wire broadcast stays OFF at attach (no host yet); the LOCAL effect feed
+    // runs at the role's fixed 50 Hz default so the model flies standalone.  A
+    // host subscribes to the wire via Set*BroadcastHz when it opens the live-
+    // channel view (the config byte no longer auto-enables the wire — that
+    // flooded a connected-but-not-viewing host).
+    (void)cfg; (void)cfgLen;
     role.onBroadcast([this, portIdx](uint8_t /*ch*/, bool /*valid*/,
                                      bool /*failsafe*/, bool /*frameLost*/) {
         // The broadcast packet rebuilds the full channel payload —
@@ -362,8 +388,10 @@ bool RoleServicePolicy::attachSbusInput(InputBinding& b, uint8_t portIdx,
 bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
                                           const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<JetiExInputRole>();
-    // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8]
+    // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8][downstream:u8]
     //   baud encoded as kbaud (125 / 250); 0 = use default 125 000.
+    //   downstream (Rule 11 append, byte 3): bring up the IN_2 / ESC telemetry
+    //   monitor.  Default false — IN_2 stays passive (no UART drained).
     uint32_t baud = 125000;
     if (cfgLen >= 3) {
         const uint16_t kbaud = ((uint16_t)cfg[1] << 8) | cfg[2];
@@ -371,13 +399,51 @@ bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
         else if (kbaud == 125 || kbaud == 0) baud = 125000;
         else baud = (uint32_t)kbaud * 1000;
     }
+    const bool useDownstream = (cfgLen >= 4) && (cfg[3] != 0);
     if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
+
+#if SFX_PLATFORM_ESP32
+    // Start the board-unique JetiExpander on BOTH Jeti links: this port (IN_1,
+    // Rx side, we are slave) + the other input port (IN_2, downstream ESC side,
+    // we are master) if the board declares one.  The expander (a Core-0 task)
+    // owns the UART I/O for both; the roles are thin handles, so they never
+    // double-drive the UART.  Protocol-gated: only JetiEX attach starts it.
+    sfx_peripherals::InputPort* escPort   = nullptr;
+    InputBinding*               escBind   = nullptr;
+    uint8_t                     escIdx    = 0xFF;
+    for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
+        if (i == portIdx) continue;
+        auto* ob = _reg->inputAt(i);
+        if (ob && ob->port) { escPort = ob->port; escBind = ob; escIdx = i; break; }
+    }
+    JetiEx::JetiExpander::instance().begin(b.port, escPort,
+                                           /*usn=*/0xA400, /*lsn=*/0x0100, "HubFx", baud,
+                                           /*useDownstream=*/useDownstream);
+
+    // Reflect the IN_1→IN_2 pairing in the registry: stamp the downstream port
+    // with the JetiExTelemetry role so topology (and thus the Studio diagram)
+    // shows IN_2 as the expander's telemetry link — regardless of whether the
+    // operator set IN_1 via Studio or /hubfx.yaml.  The expander owns the UART;
+    // this role is just the marker.  (Idempotent — skip if already telemetry.)
+    if (escBind && escIdx != 0xFF &&
+        !std::holds_alternative<JetiExTelemetryRole>(escBind->role)) {
+        auto& tr = escBind->role.emplace<JetiExTelemetryRole>();
+        tr.bind(escBind->port, baud);
+        tr.setPortIdx(escIdx);
+    }
+#endif
+
     // Default 50 Hz so the InputDispatcher (and thus effects) get RC values
     // from boot even with no host connected — field operation has no Studio.
     // The WIRE broadcast is gated on a listening host (hostVerboseActive), so
     // a non-zero default doesn't stream into a dead port; only the LOCAL
     // dispatch runs.  A host can still override the rate via Set*BroadcastHz.
-    role.setBroadcastHz(cfgLen >= 1 ? cfg[0] : 50);
+    // Wire broadcast stays OFF at attach (no host yet); the LOCAL effect feed
+    // runs at the role's fixed 50 Hz default so the model flies standalone.  A
+    // host subscribes to the wire via Set*BroadcastHz when it opens the live-
+    // channel view (the config byte no longer auto-enables the wire — that
+    // flooded a connected-but-not-viewing host).
+    (void)cfg; (void)cfgLen;
     role.onBroadcast([this, portIdx](uint8_t /*ch*/, bool /*valid*/,
                                      uint32_t /*rxFrames*/, uint32_t /*rxErrors*/) {
         auto* binding = _reg->inputAt(portIdx);
@@ -386,6 +452,27 @@ bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
             emitJetiExFrameBroadcast(portIdx, *r);
         }
     });
+    return true;
+}
+
+bool RoleServicePolicy::attachJetiExTelemetry(InputBinding& b, uint8_t portIdx,
+                                              const uint8_t* cfg, size_t cfgLen) {
+    auto& role = b.role.emplace<JetiExTelemetryRole>();
+    // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8] — same encoding
+    // as the Jeti EX input role; 0 = default 125 000.
+    uint32_t baud = 125000;
+    if (cfgLen >= 3) {
+        const uint16_t kbaud = ((uint16_t)cfg[1] << 8) | cfg[2];
+        if (kbaud == 250) baud = 250000;
+        else if (kbaud == 125 || kbaud == 0) baud = 125000;
+        else baud = (uint32_t)kbaud * 1000;
+    }
+    if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
+    role.setPortIdx(portIdx);   // for the SFX_INSTRUMENTATION [jtelem] diag log
+    // Monitor-only this phase: the role decodes downstream telemetry into the
+    // shared JetiTelemetryHub; the master channel's responder (phase 2) serves
+    // it to the Rx.  No wire broadcast — health is visible via the gated
+    // [jtelem] log on the diag stream.
     return true;
 }
 
@@ -684,9 +771,6 @@ void RoleServicePolicy::handleJetiExSetBroadcastHz(const uint8_t* p, size_t len)
     auto* r = std::get_if<JetiExInputRole>(&b->role);
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
     r->setBroadcastHz(hz);
-#if SFX_INSTRUMENTATION
-    SFX_LOG_INFO("[jeti] setBroadcastHz idx=%u hz=%u", idx, hz);
-#endif
     _ctx->sendAck();
 }
 
@@ -1129,7 +1213,7 @@ void RoleServicePolicy::emitPpmFrameBroadcast(uint8_t portIdx, const RcPwmInputR
     // don't stream into a dead port.  The LOCAL dispatch ALWAYS fires — it
     // feeds the on-board InputDispatcher that drives effects, which must run
     // standalone with no host connected.
-    if (_ctx && _ctx->hostVerboseActive())
+    if (_ctx && _ctx->hostVerboseActive() && role.wireEnabled())
         _ctx->sendRawPacket(RolePacket::PPM_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::PPM_FRAME_BROADCAST, buf, off);
 }
@@ -1153,30 +1237,13 @@ void RoleServicePolicy::emitSbusFrameBroadcast(uint8_t portIdx, const SbusInputR
         SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
         off += 2;
     }
-    if (_ctx && _ctx->hostVerboseActive())  // wire = host only; local dispatch always
+    if (_ctx && _ctx->hostVerboseActive() && role.wireEnabled())  // wire = host live-view; local always
         _ctx->sendRawPacket(RolePacket::SBUS_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::SBUS_FRAME_BROADCAST, buf, off);
 }
 
 void RoleServicePolicy::emitJetiExFrameBroadcast(uint8_t portIdx, const JetiExInputRole& role) {
     const uint8_t count = role.channelCount();
-#if SFX_INSTRUMENTATION
-    // Rate-limited health: confirms the emit fires AND surfaces decoder state
-    // (rxF climbing = frames passing CRC; rxE climbing = CRC fails; rxB
-    // climbing with rxF=0 = wrong baud/framing). Visible via `subscribe`.
-    {
-        static uint32_t lastLog = 0;
-        const uint32_t nowMs = millis();
-        if (nowMs - lastLog >= 1000) {
-            lastLog = nowMs;
-            SFX_LOG_INFO("[jeti] emit port=%u count=%u valid=%u rxF=%lu rxE=%lu rxB=%lu",
-                         portIdx, count, role.valid() ? 1 : 0,
-                         (unsigned long)role.rxFrameCount(),
-                         (unsigned long)role.rxErrorCount(),
-                         (unsigned long)role.rxByteCount());
-        }
-    }
-#endif
     // Jeti EX Bus carries up to 24 proportional channels per frame.
     uint8_t buf[3 + 24*2];
     buf[0] = portIdx;
@@ -1187,7 +1254,7 @@ void RoleServicePolicy::emitJetiExFrameBroadcast(uint8_t portIdx, const JetiExIn
         SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
         off += 2;
     }
-    if (_ctx && _ctx->hostVerboseActive())  // wire = host only; local dispatch always
+    if (_ctx && _ctx->hostVerboseActive() && role.wireEnabled())  // wire = host live-view; local always
         _ctx->sendRawPacket(RolePacket::JETIEX_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::JETIEX_FRAME_BROADCAST, buf, off);
 }

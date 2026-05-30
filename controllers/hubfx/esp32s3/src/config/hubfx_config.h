@@ -87,6 +87,12 @@ struct PortMapping {
 
     bool                       profileSet = false;
     sfx_core::ServoMotionProfile profile{};
+
+    /// JetiEX input only: bring up the downstream (IN_2 / ESC) telemetry
+    /// monitor.  Default false — IN_2 stays passive (no UART drained, no
+    /// stall risk on a floating line).  Set true once a downstream device is
+    /// wired to IN_2 and you want its telemetry decoded.  Exposed in Studio.
+    bool                       jetiDownstream = false;
 };
 
 /// One declared expander board.  `alias` is the friendly handle every
@@ -262,6 +268,8 @@ inline uint8_t hubfxRoleKindFromName(const char* name) {
         std::strcmp(name, "sbus-input")        == 0)      return RoleKind::SbusInput;
     if (std::strcmp(name, "jeti_ex_input")     == 0 ||
         std::strcmp(name, "jeti-ex-input")     == 0)      return RoleKind::JetiExInput;
+    if (std::strcmp(name, "jeti_ex_telemetry") == 0 ||
+        std::strcmp(name, "jeti-ex-telemetry") == 0)      return RoleKind::JetiExTelemetry;
     if (std::strcmp(name, "led_animator")      == 0 ||
         std::strcmp(name, "led-animator")      == 0)      return RoleKind::LedAnimator;
     if (std::strcmp(name, "dc_motor")          == 0 ||
@@ -345,6 +353,8 @@ struct HubFxConfigSchema {
                 if (lbl && lbl[0]) std::strncpy(m.label, lbl, sizeof(m.label) - 1);
                 // Rule 42 storage — servo motion profile per port.
                 parseServoProfile(item, m);
+                // JetiEX input: optional downstream (IN_2) telemetry monitor.
+                m.jetiDownstream = item->template childAs<bool>("downstream", false);
                 d.numPorts++;
             }
         }
@@ -399,6 +409,7 @@ struct HubFxConfigSchema {
                     std::memset(m.label, 0, sizeof(m.label));
                     if (lbl && lbl[0]) std::strncpy(m.label, lbl, sizeof(m.label) - 1);
                     parseServoProfile(item, m);   // Rule 42 storage
+                    m.jetiDownstream = item->template childAs<bool>("downstream", false);
                     d.numPorts++;
                 }
             }

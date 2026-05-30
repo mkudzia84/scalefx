@@ -62,6 +62,7 @@ struct IConfigStoreFacade {
     virtual ConfigResult saveToFile(const char* path)  = 0;
 
     virtual bool        isLoaded()    const = 0;
+    virtual bool        usingDefaults() const = 0;
     virtual uint16_t    fileSize()    const = 0;
     virtual const char* lastError()   const = 0;
     virtual bool        hasRawYaml()  const = 0;
@@ -79,6 +80,7 @@ public:
     ConfigResult saveToFile (const char* path) override { return _store->saveToFile(path); }
 
     bool        isLoaded()    const override { return _store->isLoaded(); }
+    bool        usingDefaults() const override { return _store->usingDefaults(); }
     uint16_t    fileSize()    const override { return _store->fileSize(); }
     const char* lastError()   const override { return _store->lastError(); }
     bool        hasRawYaml()  const override { return _store->hasRawYaml(); }
@@ -238,10 +240,19 @@ private:
             return;
         }
 
-        // No path → reload every registered store. First hard failure NACKs.
+        // No path → reload every registered store. A genuine parse/validate
+        // failure NACKs; an ABSENT file is tolerated (skipped) — boot does the
+        // same via loadOrFallback, and many optional configs (/alerts.yaml,
+        // /lightfx.yaml, /landing.yaml) legitimately don't exist until the
+        // operator saves one.  Aborting reload-all on the first missing file
+        // wedged a config-reload on any board lacking one of them.
         for (size_t i = 0; i < _count; ++i) {
             const char* p = _stores[i]->defaultPath();
             auto r = _stores[i]->loadFromFile(nullptr);
+            if (r.notFound) {
+                SFX_LOG_INFO("[Config] Reload-all: %s absent — keeping current/defaults", p);
+                continue;
+            }
             if (!r.ok && !(r.populated && !r.validated)) {
                 SFX_LOG_WARN("[Config] Reload-all failed at %s: %s", p, _stores[i]->lastError());
                 this->sendNack(ConfigError::CONFIG_FAILURE, _stores[i]->lastError());
@@ -292,7 +303,13 @@ private:
 
         for (size_t i = 0; i < _count; ++i) {
             const bool loaded = _stores[i]->isLoaded();
-            allLoaded &= loaded;
+            // A store running on defaults (its optional file is absent) counts
+            // as OK for the aggregate — the board booted fine, the config is
+            // just unset.  Matches boot's loadOrFallback + the reload-all
+            // tolerance.  Only a genuine load FAILURE leaves a store !loaded &&
+            // !usingDefaults, which drops allLoaded.
+            const bool ok = loaded || _stores[i]->usingDefaults();
+            allLoaded &= ok;
             total     += _stores[i]->fileSize();
             if (loaded && !_stores[i]->validate(scratch, sizeof(scratch))) {
                 allValid = false;

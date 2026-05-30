@@ -50,7 +50,9 @@
 #include <Arduino.h>
 #include <functional>
 #include "../rx_input/rx_common.h"
+#include <ports/input_port.h>     // half-duplex TX gate (expander responder)
 #include "jeti_ex_common.h"
+#include "jeti_ex_frame.h"        // shared EX Bus frame parser
 
 class JetiExBus {
 public:
@@ -169,6 +171,51 @@ public:
     void onParamChange(ParamChangeCallback cb) { _paramChangeCb = cb; }
 
     // ════════════════════════════════════════════════════════════
+    //  Expander integration (multi-device telemetry pass-through)
+    // ════════════════════════════════════════════════════════════
+
+    /**
+     * @brief Half-duplex TX gate for the shared single-wire bus.
+     *
+     * When set, sendExBusResponse() attaches the port's UART TX onto the wire
+     * (GPIO matrix) for the response, flushes, then detaches back to RX-only
+     * and drains the echo.  Null = write directly (separate RX/TX wiring or
+     * external gating).
+     */
+    void setTxPort(sfx_peripherals::InputPort* port) { _txPort = port; }
+
+    /**
+     * @brief Override the built-in single-device responder.
+     *
+     * When set, a telemetry request invokes this hook instead of the internal
+     * sensor-table responder — the JetiExpander serves MULTI-DEVICE from the
+     * shared JetiTelemetryHub through it (each device with its own USN/LSN so
+     * the radio shows them separately).  The handler builds an EX data block
+     * and calls sendTelemetry().
+     */
+    using TelemetryRequestCallback = std::function<void(uint8_t pktId)>;
+    void onTelemetryRequest(TelemetryRequestCallback cb) { _onTelemetryRequest = std::move(cb); }
+
+    /**
+     * @brief Observe every CRC-valid master frame (raw bytes).
+     *
+     * The expander forwards these out the downstream (ESC) port so the ESC
+     * sees the receiver's polling — "copy the input signal" — and replies with
+     * its own telemetry.  Fires after CRC validation, before dispatch.
+     */
+    using RawFrameCallback = std::function<void(const uint8_t* frame, uint8_t len)>;
+    void onRawFrame(RawFrameCallback cb) { _onRawFrame = std::move(cb); }
+
+    /**
+     * @brief Wrap a prebuilt EX data block ([0x9F sep]…[crc8]) in an EX Bus
+     *        response frame and transmit it (half-duplex).  Public so the
+     *        expander's telemetry hook can serve frames it builds itself.
+     */
+    void sendTelemetry(uint8_t pktId, const uint8_t* exData, uint8_t len) {
+        sendExBusResponse(pktId, JetiEx::DATA_TELEMETRY, exData, len);
+    }
+
+    // ════════════════════════════════════════════════════════════
     //  Diagnostics
     // ════════════════════════════════════════════════════════════
 
@@ -198,22 +245,23 @@ public:
     //  Diagnostics
     // ════════════════════════════════════════════════════════════
 
-    uint32_t rxFrameCount() const { return _frameCount; }
-    uint32_t rxErrorCount() const { return _errorCount; }
+    uint32_t rxFrameCount() const { return _parser.frames(); }
+    uint32_t rxErrorCount() const { return _parser.errors(); }
     uint32_t txResponseCount() const { return _txCount; }
     /// Total bytes seen on the UART. Diagnoses wrong-baud (bytes climb but
     /// frames/CRC stay at 0) vs no-wire (zero bytes) — see input_monitor rig.
-    uint32_t rxByteCount() const { return _rxByteCount; }
+    uint32_t rxByteCount() const { return _parser.rxBytes(); }
 
 private:
     Stream* _serial = nullptr;
 
-    // ── Frame parser state ──────────────────────────────────────
-    enum ParseState : uint8_t { IDLE, READ_TYPE, READ_LENGTH, READ_BODY };
-    ParseState _parseState = IDLE;
-    uint8_t    _frameBuf[JetiEx::MAX_FRAME_SIZE] = {};
-    uint8_t    _frameIdx = 0;
-    uint8_t    _frameLen = 0;
+    // ── Expander hooks ──────────────────────────────────────────
+    sfx_peripherals::InputPort* _txPort = nullptr;   ///< half-duplex TX gate
+    TelemetryRequestCallback    _onTelemetryRequest; ///< multi-device override
+    RawFrameCallback            _onRawFrame;         ///< forward to ESC (expander)
+
+    // ── Frame parser (shared state machine + CRC) ───────────────
+    JetiEx::JetiExFrameParser _parser;
 
     // ── Channel data ────────────────────────────────────────────
     uint16_t _channels_us[RxConfig::MAX_CHANNELS] = {};
@@ -241,14 +289,11 @@ private:
     ParamChangeCallback _paramChangeCb;
 
     // ── Stats ───────────────────────────────────────────────────
-    uint32_t _frameCount = 0;
-    uint32_t _errorCount = 0;
-    uint32_t _txCount = 0;
-    uint32_t _rxByteCount = 0;
+    uint32_t _txCount = 0;       // frame rx/err/byte counts live in _parser
 
     // ── Internal methods ────────────────────────────────────────
-    void processFrame();
-    void parseChannelData();
+    void processFrame(const uint8_t* frame, uint8_t len);
+    void parseChannelData(const uint8_t* frame, uint8_t len);
     void handleTelemetryRequest(uint8_t packetId);
     void sendTelemetryDataResponse(uint8_t packetId);
     void sendTelemetryTextResponse(uint8_t packetId);

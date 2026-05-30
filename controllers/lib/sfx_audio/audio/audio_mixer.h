@@ -534,6 +534,15 @@ private:
         // side pairs with release on play().
         std::atomic<bool> active{false};
 
+        // Set true by the decoder task while it is INSIDE refillDrainBuffer
+        // for this channel (dereferencing `source`).  A teardown
+        // (destroyChannelSourceSafe) clears `active`, then waits for this to
+        // go false before freeing the source — closes the rapid stop/start
+        // use-after-free where the decoder read a freed source mid-refill
+        // (LoadProhibited@0).  seq_cst handshake: decoder claims busy THEN
+        // re-checks active; teardown clears active THEN waits on busy.
+        std::atomic<bool> decoderBusy{false};
+
         // Hint to the decoder that this channel has just been
         // (re)activated and needs an immediate refill.  Cleared by
         // the decoder once first refill lands.  Cheap signal vs
@@ -622,6 +631,14 @@ private:
     };
 
     // ---- Internal Methods ----
+    // Tear down a channel's source SAFELY w.r.t. the decoder task: clear
+    // `active`, wait (bounded) for the decoder to leave refill for this
+    // channel, then run the source destructor.  Use this at EVERY teardown
+    // site instead of raw destroyAudioSource(ws.source) — it closes the rapid
+    // stop/start use-after-free (decoder reading a freed source mid-refill).
+    void destroyChannelSourceSafe(WavState& ws);
+    static constexpr uint32_t kSourceTeardownWaitMs = 50;  // bounded handshake spin
+
     // Producer side (Core 1 task on ESP32, Core 0 on Pico)
     bool refillDrainBuffer(Channel& ch);        // Pull frames from source into ch.wav.bufL/R (int16 Q15)
     bool getWavSample(Channel& ch, int16_t& outL, int16_t& outR);   // Resampled int16 frame

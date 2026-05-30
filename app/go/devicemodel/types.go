@@ -147,6 +147,8 @@ func RoleLabel(kind byte) string {
 		return "SBUS Input"
 	case roles.KindJetiExInput:
 		return "Jeti EX Input"
+	case roles.KindJetiExTelemetry:
+		return "Jeti EX Telemetry"
 	case roles.KindLedAnimator:
 		return "LED Animator"
 	case roles.KindDcMotor:
@@ -172,7 +174,7 @@ func allowedRoleKinds(kind byte) []byte {
 	case ports.KindHBridge:
 		return []byte{roles.KindBiDcMotor, roles.KindDcMotor}
 	case ports.KindInput:
-		return []byte{roles.KindRcPwmInput, roles.KindSbusInput, roles.KindJetiExInput}
+		return []byte{roles.KindRcPwmInput, roles.KindSbusInput, roles.KindJetiExInput, roles.KindJetiExTelemetry}
 	}
 	return nil
 }
@@ -320,8 +322,10 @@ func (d Domain) Slot(key string) (Slot, bool) {
 
 // ─── Domain catalog ───────────────────────────────────────────────────
 
-// inputRoleKinds is the set of input role kinds any "trigger"/"switch"
-// slot accepts — a physical input port can carry RC PWM, SBUS, or Jeti.
+// inputRoleKinds is the set of input role kinds any "trigger"/"switch" slot
+// accepts — a physical RC channel source: PWM, SBUS, or Jeti EX.  NOT
+// JetiExTelemetry: that's the downstream telemetry pass-thru (IN_2), carries no
+// RC channels, so it must never appear as a selectable trigger/channel source.
 var inputRoleKinds = []byte{roles.KindRcPwmInput, roles.KindSbusInput, roles.KindJetiExInput}
 
 // domainCatalog is the declarative source of truth for functional

@@ -95,6 +95,11 @@ public:
 
     void configure(const EngineFxConfig& cfg) {
         _cfg = cfg;
+        SFX_LOG_INFO("[engine] configure: enabled=%d startingOffset=%lums "
+                     "stoppingOffset=%lums start='%s'",
+                     _cfg.enabled ? 1 : 0,
+                     (unsigned long)_cfg.startingOffsetMs,
+                     (unsigned long)_cfg.stoppingOffsetMs, _cfg.startingPath);
         // begin() runs once at boot with the struct-default _cfg
         // (rcInput unset).  YAML config arrives later via this call;
         // re-bind the throttle TriggerInput so the new rcInput +

@@ -27,14 +27,14 @@ export const portKindName: Record<number, string> = {
 
 export const RoleKind = {
     None: 0x00, ServoActuator: 0x01, RcPwmInput: 0x02, SbusInput: 0x03,
-    JetiExInput: 0x04, LedAnimator: 0x10, DcMotor: 0x11, Heater: 0x12,
-    BiDcMotor: 0x20,
+    JetiExInput: 0x04, JetiExTelemetry: 0x05, LedAnimator: 0x10, DcMotor: 0x11,
+    Heater: 0x12, BiDcMotor: 0x20,
 } as const
 
 export const roleKindName: Record<number, string> = {
     0x00: 'none', 0x01: 'servo-actuator', 0x02: 'rc-pwm-input',
-    0x03: 'sbus-input', 0x04: 'jeti-ex-input', 0x10: 'led-animator',
-    0x11: 'dc-motor', 0x12: 'heater', 0x20: 'bi-dc-motor',
+    0x03: 'sbus-input', 0x04: 'jeti-ex-input', 0x05: 'jeti-ex-telemetry',
+    0x10: 'led-animator', 0x11: 'dc-motor', 0x12: 'heater', 0x20: 'bi-dc-motor',
 }
 
 // ─── DTOs (mirror devicemodel/*.go json tags) ─────────────────────────

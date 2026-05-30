@@ -23,6 +23,8 @@
 #include <ports/input_port.h>
 #include <rx_input/rx_common.h>   // RxConfig::MAX_CHANNELS / CENTER_US
 
+#include "input_broadcaster.h"
+
 namespace sfx_core {
 
 class RcPwmInputRole {
@@ -47,8 +49,13 @@ public:
     /// read).  Returns false if no valid frame yet (`outUs` untouched).
     bool read(uint16_t* outUs) const;
 
-    /// Broadcast rate in Hz.  0 disables.  Async packets fire from `tick()`.
+    /// Host subscribe/unsubscribe to the WIRE broadcast (live-channel view):
+    /// hz!=0 = subscribe, hz==0 = unsubscribe.  Does NOT affect the LOCAL
+    /// effect feed, which runs at a fixed firmware rate so the model flies with
+    /// no host attached.
     void setBroadcastHz(uint8_t hz);
+    /// True while a host has subscribed to the wire broadcast.
+    bool wireEnabled() const { return _bcast.wireEnabled(); }
 
     /// Channel 1 (back-compat) + validity.  `valid()` is false until the
     /// first frame lands or after signal loss.
@@ -75,10 +82,7 @@ private:
     uint16_t _channels[kMaxChannels] = {};
     uint8_t  _count                = 0;
     bool     _valid                = false;
-    uint8_t  _broadcastHz          = 0;     ///< 0 = disabled
-    uint32_t _broadcastInterval_ms = 0;
-    uint32_t _lastBroadcastMs      = 0;
-
+    InputBroadcaster  _bcast;        ///< shared cadence + wire-subscribe state
     BroadcastCallback _onBroadcast;
 };
 

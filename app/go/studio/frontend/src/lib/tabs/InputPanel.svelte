@@ -6,7 +6,7 @@
     import {
         deviceModel, liveChannels, setInputProtocol, setInputChannelCount,
         setChannelFunction, liveChannelKey, usToPct, boardDisplayNames,
-        formatPortRail,
+        formatPortRail, RoleKind,
         type InputPortConfig, type ChannelFunctionDef, type PortRef,
         type InputProtocolDef,
     } from '../devicemodel'
@@ -59,6 +59,9 @@
             const cfg = inputs.find(c => c.port.guid === p.guid && c.port.index === p.index)
             const max = maxCh(proto)
             if (cfg && cfg.channelCount > max) await setInputChannelCount(p, max)
+            // IN_2's telemetry role is inferred by the firmware (the expander
+            // stamps it) and surfaced via the topology re-read in AttachRole —
+            // no UI-side remap needed; the returned snapshot already has it.
         } catch (e) { error = String(e) } finally { busy = false }
     }
     async function onCount(p: PortRef, n: number) {
@@ -100,6 +103,13 @@
         return $deviceModel.ports.find(x =>
             x.ref.guid === p.guid && x.ref.kind === p.kind && x.ref.index === p.index)
     }
+    // A Jeti EX Telemetry port is the downstream telemetry PASS-THRU (no RC
+    // channels) — auto-assigned to IN_2 while IN_1 runs Jeti EX.  It carries a
+    // downstream slave's (e.g. ESC) telemetry toward the Rx, so it renders as a
+    // compact pass-thru row, NOT a channel-input group with function mappings.
+    function isTelemetryPassthru(cfg: InputPortConfig): boolean {
+        return portOf(cfg.port)?.roleKind === RoleKind.JetiExTelemetry
+    }
     // Rule 34: the protocol picker offers ONLY protocols whose backing
     // role is in the port's allowedRoles — a PWM-pulse-only input shows
     // just PPM, never SBUS/Jeti.  The currently-selected protocol is kept
@@ -108,8 +118,13 @@
     // protocol shows; the filter matters for narrower ports.
     function protosFor(p: PortRef, current: string): InputProtocolDef[] {
         const allowed = new Set((portOf(p)?.allowedRoles ?? []).map(r => r.kind))
-        return protocols.filter(pr => pr.roleKind === undefined
-            || allowed.size === 0 || allowed.has(pr.roleKind) || pr.id === current)
+        return protocols.filter(pr => {
+            if (pr.id === current) return true                  // always keep the current value
+            // Jeti EX Telemetry is the AUTO downstream role — assigned to IN_2
+            // when IN_1 is set to Jeti EX, never user-picked here.
+            if (pr.roleKind === RoleKind.JetiExTelemetry) return false
+            return pr.roleKind === undefined || allowed.size === 0 || allowed.has(pr.roleKind)
+        })
     }
     // Selected protocol's channel ceiling (PPM 8, SBUS/Jeti 16). The
     // channel-count input binds its `max` to this so the operator can't
@@ -135,6 +150,19 @@
     {#if inputs.length === 0}<div class="empty-state">No input ports on this system.</div>{/if}
 
     {#each inputs as cfg (cfg.port.guid + cfg.port.index)}
+        {#if isTelemetryPassthru(cfg)}
+            <!-- Telemetry pass-thru (IN_2): a downstream EX-Bus telemetry input,
+                 NOT an RC channel source and NOT an output — no channel group. -->
+            <div class="card input-card passthru">
+                <div class="board-head">
+                    <span class="board-name">{names[cfg.port.guid] ?? hw(cfg.port)} · {hw(cfg.port)}</span>
+                    {#if rail(cfg.port)}
+                        <span class="rail-chip" title="Rail voltage declared by the board's port descriptor">{rail(cfg.port)}</span>
+                    {/if}
+                    <span class="passthru-tag">Jeti EX Telemetry · pass-thru</span>
+                </div>
+            </div>
+        {:else}
         {@const det = detectedCount(cfg, $liveChannels)}
         <div class="card input-card">
             <div class="board-head">
@@ -210,6 +238,7 @@
                 {/each}
             </div>
         </div>
+        {/if}
     {/each}
 </div>
 
@@ -217,6 +246,10 @@
     .banner { padding: 7px 10px; border-radius: 4px; margin-bottom: 10px; font-size: 12px; }
     .banner.err { background: rgba(255,80,80,0.12); border: 1px solid var(--error); color: var(--error); }
     .input-card { margin-bottom: 12px; }
+    /* Telemetry pass-thru: dimmer, no channel group — it's a downstream link. */
+    .input-card.passthru { border-left: 2px solid var(--accent); }
+    .input-card.passthru .board-head { margin-bottom: 0; }
+    .passthru-tag { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--accent); padding: 1px 6px; border: 1px solid var(--accent); border-radius: 3px; }
     .board-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .board-name { font-size: 13px; font-weight: 600; color: var(--text-bright); }
     .rail-chip { font-family: var(--font-mono); font-size: 10px; color: var(--text); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; }

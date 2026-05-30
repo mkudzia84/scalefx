@@ -91,6 +91,15 @@ public:
     /// Returns nullptr in any other mode.  Roles use this to feed
     /// their decoder (SbusInput, JetiExBus, future CRSF, …).
     virtual Stream* uartStream() = 0;
+
+    // ── Half-duplex TX control (JETI_EX response / poll slot) ────────
+    /// For a single-wire half-duplex bus (Jeti EX): attach the UART TX
+    /// onto the shared wire (`txEnable`) for the response/poll window,
+    /// then detach back to RX-only (`txDisable`).  RX stays live; the
+    /// caller drains its own echo after `txDisable`.  No-op on ports
+    /// with no half-duplex TX path (default).
+    virtual void txEnable()  {}
+    virtual void txDisable() {}
 };
 
 }  // namespace sfx_peripherals

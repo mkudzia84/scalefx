@@ -377,7 +377,7 @@ func (a *App) SaveHubConfig() error {
 	// each input role's broadcast rate to 0 — so the live RC bars in Studio
 	// would go dead after any save.  Re-arm the per-port input broadcasts so
 	// the firmware keeps streaming channel frames to us.
-	a.startInputBroadcasts()
+	a.applyInputBroadcasts()
 	return nil
 }
 

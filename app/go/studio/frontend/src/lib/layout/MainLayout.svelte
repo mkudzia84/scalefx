@@ -11,8 +11,10 @@
     import GunFxPanel from '../tabs/GunFxPanel.svelte'
     import LightingTab from '../tabs/LightingTab.svelte'
     import DomainTab from '../tabs/DomainTab.svelte'
-    import { showConsole, activeTab } from '../stores'
+    import { showConsole, activeTab, connectionInfo } from '../stores'
     import { studioTabs } from '../devicemodel'
+    import { SetInputLiveView } from '../../../wailsjs/go/main/App'
+    import { diag } from '../diag'
 
     // The tab strip is derived from the device model (see devicemodel.ts):
     // two fixed setup tabs (Ports & Roles, Inputs), one tab per
@@ -20,6 +22,21 @@
     // renders whichever tab `activeTab` points at.
     $: tabs = $studioTabs
     $: current = tabs[Math.min($activeTab, tabs.length - 1)] ?? tabs[0]
+
+    // Subscribe-on-view: the hub's live-channel wire broadcast is OFF unless a
+    // tab that actually renders the colourful channel bars is on screen.  The
+    // firmware feeds its effect dispatcher locally regardless, so leaving the
+    // wire stream off when we're not viewing it costs nothing and stops a
+    // continuous 50 Hz flood on every host RPC.  Tabs that consume the stream:
+    // Inputs (io), Engine, Gun, Lighting — see app_input.go SetInputLiveView.
+    const LIVE_TAB_KINDS = new Set(['io', 'engine', 'gun', 'lighting'])
+    let liveApplied: boolean | null = null
+    $: wantLive = !!$connectionInfo.connected && LIVE_TAB_KINDS.has(current?.kind)
+    $: if (wantLive !== liveApplied) {
+        liveApplied = wantLive
+        SetInputLiveView(wantLive).catch((e) =>
+            diag.warn('FE.INPUT', 'SetInputLiveView failed', { want: wantLive, err: String(e) }))
+    }
 
     // --- Resizable console pane ---
     let consoleWidthPct = 40          // percentage of main-body width

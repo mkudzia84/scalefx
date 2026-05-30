@@ -117,7 +117,7 @@ func (a *App) RefreshDeviceModel() (DeviceModelSnapshot, error) {
 	// itself.  autoAttachServos re-emits the model when it changes roles.
 	go func() {
 		a.autoAttachServos()
-		a.startInputBroadcasts()
+		a.applyInputBroadcasts()
 	}()
 	return a.deviceModelSnapshot(), nil
 }
@@ -409,6 +409,18 @@ func (a *App) AttachRole(guid string, kind, index, roleKind byte) (DeviceModelSn
 		a.dm.SetRole(devicemodel.PortRef{GUID: guid, Kind: kind, Index: index}, roleKind)
 	}
 	a.dmMu.Unlock()
+
+	// Jeti EX input has a firmware side-effect: starting the expander stamps the
+	// OTHER input as its telemetry downstream (IN_1 = Rx ⟹ IN_2 = telemetry).
+	// Re-read the topology so that INFERRED role — and IN_2's derived protocol
+	// (ensureInputConfigs) — reflect the BOARD STATUS, rather than duplicating
+	// the inference in the UI.  Config drives IN_1; status surfaces IN_2.
+	// RefreshDeviceModel soft-fails to the current model on a transient timeout.
+	if roleKind == roles.KindJetiExInput {
+		snap, _ := a.RefreshDeviceModel()
+		a.emitDeviceModelChanged()
+		return snap, nil
+	}
 	a.emitDeviceModelChanged()
 	return a.deviceModelSnapshot(), nil
 }

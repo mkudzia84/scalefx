@@ -16,6 +16,8 @@
     async function onRole(roleKind: number) {
         busy = true
         try {
+            // IN_2's Jeti telemetry role is inferred firmware-side and surfaced
+            // by AttachRole's topology re-read — no UI-side remap here.
             if (roleKind === RoleKind.None) await detachRole(port.ref)
             else await attachRole(port.ref, roleKind)
         } finally { busy = false }

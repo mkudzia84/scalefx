@@ -6,11 +6,14 @@
  *   (byte 1 = packet type — was missing in the original layout, which broke
  *    every frame; verified against live receiver frames 2026-05-29.)
  *
- * Our response (device → receiver):
- *   [0x3B] [totalLen] [pktId] [dataId] [subLen] [EX data...] [crc16LE]
+ * Our response (device → receiver), per docs/EX_Bus_protocol_v1.21_EN.pdf:
+ *   [0x3B] [0x01] [totalLen] [pktId] [dataId] [subLen] [EX data...] [crc16LE]
+ *   (the 0x01 second header byte was missing before — radio rejected every
+ *    reply; the slave MUST echo the master's pktId.  Verified on a real radio.)
  *
  * EX telemetry data (within response payload):
- *   [0x7E sep] [typeLen] [mfr16LE] [dev16LE] [sensor values...] [crc8]
+ *   [0x9F sep] [type|len] [USN16LE] [LSN16LE] [reserved] [sensor entries...] [crc8]
+ *   type bits 7-6: 0b01=data, 0b00=text, 0b10=alarm.  Value bytes little-endian.
  */
 
 #include "jeti_ex_bus.h"
@@ -22,12 +25,33 @@
 
 using namespace JetiEx;
 
+namespace {
+// Lay down the shared 7-byte EX telemetry head:
+//   [0] 0x9F sep · [1] type|len (caller fills) · [2,3] USN · [4,5] LSN · [6] reserved
+// Returns the next write position (7).  USN+LSN must be identical across every
+// message from this device so the radio groups them into one sensor source.
+uint8_t writeExHead(uint8_t* b, uint16_t usn, uint16_t lsn) {
+    b[0] = EX_SEPARATOR;
+    // b[1] = type|len — filled by the caller after the body length is known.
+    b[2] = usn & 0xFF;  b[3] = (usn >> 8) & 0xFF;
+    b[4] = lsn & 0xFF;  b[5] = (lsn >> 8) & 0xFF;
+    b[6] = 0x00;        // reserved
+    return 7;
+}
+}  // namespace
+
 // ─── begin ─────────────────────────────────────────────────────
 bool JetiExBus::begin(Stream* serial)
 {
     if (!serial) return false;
     end();
     _serial = serial;
+    _parser.onFrame([this](const uint8_t* f, uint8_t l){ processFrame(f, l); });
+    // Rx-side: only frame MASTER headers (0x3E/0x3D).  A 0x3B on this wire is
+    // our own half-duplex echo — framing it would re-trigger a reply (feedback
+    // loop) and inflate RX errors.
+    _parser.setAcceptSlave(false);
+    _parser.reset();
     return true;
 }
 
@@ -35,16 +59,12 @@ bool JetiExBus::begin(Stream* serial)
 void JetiExBus::end()
 {
     _serial       = nullptr;
-    _parseState   = IDLE;
-    _frameIdx     = 0;
+    _parser.reset();
     _channelCount = 0;
     _lastChannelMs = 0;
     _sensorCount  = 0;
     _paramCount   = 0;
-    _frameCount   = 0;
-    _errorCount   = 0;
     _txCount      = 0;
-    _rxByteCount  = 0;
     _telemetryCounter = 0;
     _nextSensorDataIdx = 0;
     _nextSensorTextIdx = 0;
@@ -56,83 +76,24 @@ void JetiExBus::end()
 // ─── update ────────────────────────────────────────────────────
 void JetiExBus::update()
 {
-    if (!_serial) return;
-
-    while (_serial->available()) {
-        uint8_t b = static_cast<uint8_t>(_serial->read());
-        _rxByteCount++;
-
-        switch (_parseState) {
-        case IDLE:
-            if (b == START_ADDR0 || b == START_ADDR1) {
-                _frameBuf[0] = b;
-                _frameIdx = 1;
-                _parseState = READ_TYPE;
-            }
-            break;
-
-        case READ_TYPE:
-            // Byte 1 = packet type: 0x01 (response-allowed) / 0x03 (data-only).
-            // This byte was missing from the original layout, which made
-            // READ_LENGTH read it (1 or 3) as the length and reject every
-            // frame.  Verified against live frames on the input_monitor rig.
-            _frameBuf[1] = b;
-            _frameIdx = 2;
-            _parseState = READ_LENGTH;
-            break;
-
-        case READ_LENGTH:
-            // Byte 2 = total packet length (header + payload + CRC).
-            _frameBuf[2] = b;
-            _frameLen = b;
-            _frameIdx = 3;
-            if (_frameLen < MIN_FRAME_SIZE || _frameLen > MAX_FRAME_SIZE) {
-                _errorCount++;
-                _parseState = IDLE;
-            } else {
-                _parseState = READ_BODY;
-            }
-            break;
-
-        case READ_BODY:
-            if (_frameIdx < MAX_FRAME_SIZE) {
-                _frameBuf[_frameIdx] = b;
-            }
-            _frameIdx++;
-            if (_frameIdx >= _frameLen) {
-                processFrame();
-                _parseState = IDLE;
-            }
-            break;
-        }
-    }
+    _parser.drain(_serial);     // shared parser → processFrame() per CRC-valid frame
 }
 
 // ─── processFrame ──────────────────────────────────────────────
-void JetiExBus::processFrame()
+// Called by the parser with a complete, CRC-validated frame.
+void JetiExBus::processFrame(const uint8_t* frame, uint8_t len)
 {
-    if (_frameLen < MIN_FRAME_SIZE) {
-        _errorCount++;
-        return;
-    }
+    // Forward the raw, CRC-valid master frame to any observer (the expander
+    // mirrors it out to the downstream ESC so the ESC sees the Rx's polling).
+    if (_onRawFrame) _onRawFrame(frame, len);
 
-    // Validate CRC-16/CCITT over bytes 0..len-3
-    uint16_t rxCrc = _frameBuf[_frameLen - 2]
-                   | (static_cast<uint16_t>(_frameBuf[_frameLen - 1]) << 8);
-    uint16_t calcCrc = crc16_ccitt(_frameBuf, _frameLen - 2);
-    if (rxCrc != calcCrc) {
-        _errorCount++;
-        return;
-    }
-
-    _frameCount++;
     // Frame layout: [0]header [1]type [2]len [3]pktId [4]dataId [5]subLen [6..]data [crc16].
-    uint8_t packetId = _frameBuf[3];
-    uint8_t dataId   = _frameBuf[4];
+    uint8_t packetId = frame[3];
+    uint8_t dataId   = frame[4];
 
     switch (dataId) {
     case DATA_CHANNEL:
-        parseChannelData();
+        parseChannelData(frame, len);
         break;
 
     case DATA_TELEMETRY:
@@ -140,29 +101,31 @@ void JetiExBus::processFrame()
         break;
 
     case DATA_JETIBOX:
-        // JetiBox text menu — not implemented yet
+        // Rx-driven config (JetiBox / DeviceExplorer menu) — NOT IMPLEMENTED YET.
+        // Deferred two-way config: HubFX's own structured DeviceExplorer config
+        // is NDA-gated (needs a Jeti-signed device bin-file), and relaying the
+        // downstream device's config means a synchronous Rx<->ESC proxy inside
+        // the ~4 ms response slot for a proprietary packet format — a future
+        // feature that needs bench research first.
         break;
     }
 }
 
 // ─── parseChannelData ──────────────────────────────────────────
-void JetiExBus::parseChannelData()
+void JetiExBus::parseChannelData(const uint8_t* frame, uint8_t len)
 {
-    if (_frameLen < 10) return; // 6-byte header + ≥1 channel (2B) + 2B CRC
+    if (len < 10) return; // 6-byte header + ≥1 channel (2B) + 2B CRC
 
-    uint8_t subLen = _frameBuf[5];          // data-block length (byte 5)
+    uint8_t subLen = frame[5];              // data-block length (byte 5)
     uint8_t numCh  = subLen / 2;
     if (numCh > RxConfig::MAX_CHANNELS) numCh = RxConfig::MAX_CHANNELS;
 
     // Verify we have enough bytes for all channels (data starts at byte 6).
-    if (6 + subLen > _frameLen - 2) {
-        _errorCount++;
-        return;
-    }
+    if (6 + subLen > len - 2) return;
 
     for (uint8_t i = 0; i < numCh; i++) {
-        uint16_t raw = _frameBuf[6 + i * 2]
-                     | (static_cast<uint16_t>(_frameBuf[7 + i * 2]) << 8);
+        uint16_t raw = frame[6 + i * 2]
+                     | (static_cast<uint16_t>(frame[7 + i * 2]) << 8);
         _channels_us[i] = JetiConfig::rawToUs(raw);
     }
 
@@ -173,6 +136,10 @@ void JetiExBus::parseChannelData()
 // ─── handleTelemetryRequest ────────────────────────────────────
 void JetiExBus::handleTelemetryRequest(uint8_t packetId)
 {
+    // Expander override: serve multi-device from the shared hub instead of the
+    // built-in single-device table.  The hook builds + sends its own frames.
+    if (_onTelemetryRequest) { _onTelemetryRequest(packetId); return; }
+
     if (_sensorCount == 0 && !_deviceName) return;
 
     _telemetryCounter++;
@@ -216,34 +183,11 @@ void JetiExBus::sendTelemetryDataResponse(uint8_t packetId)
     const auto& sv = _sensorValues[_nextSensorDataIdx];
     _nextSensorDataIdx = (_nextSensorDataIdx + 1) % _sensorCount;
 
-    // Build EX data payload:
-    // [0x7E sep] [typeLen] [mfr16LE] [dev16LE] [encodedValue...] [crc8]
+    // Build EX data payload (shared builder; this device's USN/LSN).
     uint8_t exBuf[16];
-    uint8_t pos = 0;
-
-    exBuf[pos++] = EX_SEPARATOR;
-
-    // Type/length byte: bits 7-6 = 00 (data), bits 5-0 = data length (mfr+dev+value)
-    uint8_t typeLenPos = pos++;  // placeholder, fill after encoding value
-
-    exBuf[pos++] = _manufacturerId & 0xFF;
-    exBuf[pos++] = (_manufacturerId >> 8) & 0xFF;
-    exBuf[pos++] = _deviceId & 0xFF;
-    exBuf[pos++] = (_deviceId >> 8) & 0xFF;
-
-    // Encode sensor value
-    uint8_t valLen = encodeSensorValue(&exBuf[pos], sv.id, sv.type, sv.value, sv.decimals);
-    pos += valLen;
-
-    // Fill type/length byte: type=00 (data), length = 4 (IDs) + valLen
-    exBuf[typeLenPos] = 4 + valLen;  // data type (00 in upper bits)
-
-    // CRC-8 over bytes [typeLenPos..pos-1] (excludes separator, includes type/len through value)
-    exBuf[pos] = crc8_ex(&exBuf[typeLenPos], pos - typeLenPos);
-    pos++;
-
-    // Send as EX Bus response frame
-    sendExBusResponse(packetId, DATA_TELEMETRY, exBuf, pos);
+    uint8_t len = buildExDataBlock(exBuf, _manufacturerId, _deviceId,
+                                   sv.id, sv.type, sv.decimals, sv.value);
+    sendExBusResponse(packetId, DATA_TELEMETRY, exBuf, len);
 }
 
 // ─── sendTelemetryTextResponse ─────────────────────────────────
@@ -267,93 +211,22 @@ void JetiExBus::sendTelemetryTextResponse(uint8_t packetId)
     const auto& sv = _sensorValues[_nextSensorTextIdx];
     _nextSensorTextIdx = (_nextSensorTextIdx + 1) % _sensorCount;
 
-    // Build EX text payload:
-    // [0x7E sep] [typeLen] [mfr16LE] [dev16LE] [valueId] [descLen] [label...unit\0] [crc8]
+    // Build EX text payload (shared builder; this device's USN/LSN).
     uint8_t exBuf[40];
-    uint8_t pos = 0;
-
-    exBuf[pos++] = EX_SEPARATOR;
-    uint8_t typeLenPos = pos++;  // placeholder
-
-    exBuf[pos++] = _manufacturerId & 0xFF;
-    exBuf[pos++] = (_manufacturerId >> 8) & 0xFF;
-    exBuf[pos++] = _deviceId & 0xFF;
-    exBuf[pos++] = (_deviceId >> 8) & 0xFF;
-
-    // Value ID this text describes
-    exBuf[pos++] = sv.id;
-
-    // Description length (label + unit combined)
-    uint8_t descLenPos = pos++;
-    uint8_t textStart = pos;
-
-    // Label text
-    if (sv.label) {
-        size_t labelLen = strlen(sv.label);
-        if (labelLen > 20) labelLen = 20;
-        memcpy(&exBuf[pos], sv.label, labelLen);
-        pos += labelLen;
-    }
-
-    // Null separator between label and unit
-    exBuf[pos++] = 0;
-
-    // Unit text
-    if (sv.unit) {
-        size_t unitLen = strlen(sv.unit);
-        if (unitLen > 5) unitLen = 5;
-        memcpy(&exBuf[pos], sv.unit, unitLen);
-        pos += unitLen;
-    }
-
-    exBuf[descLenPos] = pos - textStart;
-
-    // Type/length byte: type=01 (text), length = 4 + text portion
-    exBuf[typeLenPos] = 0x40 | (pos - typeLenPos - 1);  // upper 2 bits = 01 (text)
-
-    // CRC-8
-    exBuf[pos] = crc8_ex(&exBuf[typeLenPos], pos - typeLenPos);
-    pos++;
-
-    sendExBusResponse(packetId, DATA_TELEMETRY, exBuf, pos);
+    uint8_t len = buildExTextBlock(exBuf, _manufacturerId, _deviceId,
+                                   sv.id, sv.label, sv.unit);
+    sendExBusResponse(packetId, DATA_TELEMETRY, exBuf, len);
 }
 // ─── sendDeviceNameText ──────────────────────────────────────────
 void JetiExBus::sendDeviceNameText(uint8_t packetId)
 {
     if (!_deviceName) return;
 
-    // EX text for ID 0 = device name (shown in transmitter device list)
-    // [0x7E sep][typeLen][mfr16LE][dev16LE][valueId=0][descLen][name\0][crc8]
+    // EX text for ID 0 = device name (shown in transmitter device list).
     uint8_t exBuf[40];
-    uint8_t pos = 0;
-
-    exBuf[pos++] = EX_SEPARATOR;
-    uint8_t typeLenPos = pos++;
-
-    exBuf[pos++] = _manufacturerId & 0xFF;
-    exBuf[pos++] = (_manufacturerId >> 8) & 0xFF;
-    exBuf[pos++] = _deviceId & 0xFF;
-    exBuf[pos++] = (_deviceId >> 8) & 0xFF;
-
-    exBuf[pos++] = 0;  // Value ID 0 = device name
-
-    uint8_t descLenPos = pos++;
-    uint8_t textStart = pos;
-
-    size_t nameLen = strlen(_deviceName);
-    if (nameLen > 20) nameLen = 20;
-    memcpy(&exBuf[pos], _deviceName, nameLen);
-    pos += nameLen;
-
-    exBuf[descLenPos] = pos - textStart;
-
-    // Type/length: bits 7-6 = 01 (text)
-    exBuf[typeLenPos] = 0x40 | (pos - typeLenPos - 1);
-
-    exBuf[pos] = crc8_ex(&exBuf[typeLenPos], pos - typeLenPos);
-    pos++;
-
-    sendExBusResponse(packetId, DATA_TELEMETRY, exBuf, pos);
+    uint8_t len = buildExTextBlock(exBuf, _manufacturerId, _deviceId,
+                                   /*id=*/0, _deviceName, /*unit=*/nullptr);
+    sendExBusResponse(packetId, DATA_TELEMETRY, exBuf, len);
 }
 
 // ─── sendAlarmResponse ───────────────────────────────────────────
@@ -362,17 +235,9 @@ void JetiExBus::sendAlarmResponse(uint8_t packetId)
     if (!_alarmMessage) return;
 
     // EX message/alarm (type bits 7-6 = 10):
-    // [0x7E sep][typeLen][mfr16LE][dev16LE][alarmChar][message...][crc8]
+    // [0x9F sep][type|len][USN16LE][LSN16LE][reserved][alarmChar][message...][crc8]
     uint8_t exBuf[32];
-    uint8_t pos = 0;
-
-    exBuf[pos++] = EX_SEPARATOR;
-    uint8_t typeLenPos = pos++;
-
-    exBuf[pos++] = _manufacturerId & 0xFF;
-    exBuf[pos++] = (_manufacturerId >> 8) & 0xFF;
-    exBuf[pos++] = _deviceId & 0xFF;
-    exBuf[pos++] = (_deviceId >> 8) & 0xFF;
+    uint8_t pos = writeExHead(exBuf, _manufacturerId, _deviceId);
 
     exBuf[pos++] = static_cast<uint8_t>(_alarmChar);
 
@@ -381,10 +246,8 @@ void JetiExBus::sendAlarmResponse(uint8_t packetId)
     memcpy(&exBuf[pos], _alarmMessage, msgLen);
     pos += msgLen;
 
-    // Type/length: bits 7-6 = 10 (message/alarm)
-    exBuf[typeLenPos] = 0x80 | (pos - typeLenPos - 1);
-
-    exBuf[pos] = crc8_ex(&exBuf[typeLenPos], pos - typeLenPos);
+    exBuf[1] = 0x80 | (pos - 1);   // type 0b10 (alarm) | len
+    exBuf[pos] = crc8_ex(&exBuf[1], pos - 1);
     pos++;
 
     sendExBusResponse(packetId, DATA_TELEMETRY, exBuf, pos);
@@ -407,17 +270,18 @@ void JetiExBus::sendExBusResponse(uint8_t packetId, uint8_t dataId,
 {
     if (!_serial) return;
 
-    // Frame: [0x3B] [totalLen] [pktId] [dataId] [subLen] [payload...] [crc16LE]
+    // Frame: [0x3B] [0x01] [totalLen] [pktId] [dataId] [subLen] [payload...] [crc16LE]
     uint8_t frame[56];
-    uint8_t totalLen = 5 + payloadLen + 2;  // header(5) + payload + CRC(2)
+    uint8_t totalLen = 6 + payloadLen + 2;  // header(6) + payload + CRC(2)
 
-    frame[0] = RESPONSE_HEADER;
-    frame[1] = totalLen;
-    frame[2] = packetId;
-    frame[3] = dataId;
-    frame[4] = payloadLen;
+    frame[0] = RESPONSE_HEADER;             // 0x3B
+    frame[1] = 0x01;                        // second header byte — was missing
+    frame[2] = totalLen;
+    frame[3] = packetId;                    // echo the master's packet ID
+    frame[4] = dataId;
+    frame[5] = payloadLen;
     if (payloadLen > 0) {
-        memcpy(&frame[5], payload, payloadLen);
+        memcpy(&frame[6], payload, payloadLen);
     }
 
     // CRC-16 over bytes 0 to totalLen-3
@@ -425,7 +289,20 @@ void JetiExBus::sendExBusResponse(uint8_t packetId, uint8_t dataId,
     frame[totalLen - 2] = crc & 0xFF;
     frame[totalLen - 1] = (crc >> 8) & 0xFF;
 
-    _serial->write(frame, totalLen);
+    if (_txPort) {
+        // Half-duplex: attach TX onto the wire, send, wait for the shift
+        // register to empty, detach back to RX, then drain EXACTLY our own echo
+        // (totalLen bytes).  NOT a `while(available)` drain — that can swallow
+        // the master's next channel frame if it arrives right after the slot,
+        // causing RC signal loss.
+        _txPort->txEnable();
+        _serial->write(frame, totalLen);
+        _serial->flush();
+        _txPort->txDisable();
+        for (uint8_t i = 0; i < totalLen && _serial->available(); ++i) _serial->read();
+    } else {
+        _serial->write(frame, totalLen);
+    }
     _txCount++;
 }
 

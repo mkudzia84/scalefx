@@ -330,6 +330,10 @@ export function SetInputChannelCount(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetInputChannelCount'](arg1, arg2, arg3, arg4);
 }
 
+export function SetInputLiveView(arg1) {
+  return window['go']['main']['App']['SetInputLiveView'](arg1);
+}
+
 export function SetInputProtocol(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetInputProtocol'](arg1, arg2, arg3, arg4);
 }

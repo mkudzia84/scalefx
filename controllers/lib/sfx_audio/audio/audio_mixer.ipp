@@ -374,7 +374,7 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     // decoder skips the channel on its next pass and won't try to
     // call into a destroyed source.)
     ws.active.store(false, std::memory_order_release);
-    destroyAudioSource(ws.source);
+    destroyChannelSourceSafe(ws);   // waits out the decoder, then frees
     ws.ringReset();
     ws.sourceExhausted.store(false, std::memory_order_relaxed);
     ws.needsPrefill   .store(false, std::memory_order_relaxed);
@@ -516,7 +516,27 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
         uint32_t offsetFrames =
             (static_cast<uint32_t>(options.startOffsetMs) * ws.sampleRate_Hz) / 1000;
         if (offsetFrames < ws.totalFrames) {
-            ws.source->seekFrame(offsetFrames);
+            if (ws.source->seekFrame(offsetFrames)) {
+                SFX_LOG_INFO("[mixer] ch%u seek %dms -> frame %lu/%lu (%.1fs file)",
+                             channel, options.startOffsetMs, (unsigned long)offsetFrames,
+                             (unsigned long)ws.totalFrames,
+                             ws.sampleRate_Hz ? (float)ws.totalFrames / ws.sampleRate_Hz : 0.0f);
+            } else {
+                // Source can't seek (or target not loaded) — playback starts at
+                // 0.  Previously this was silent: the mixer logged a successful
+                // seek even though Mp3PsramSource::seekFrame() was a stub.
+                SFX_LOG_WARN("[mixer] ch%u seek %dms FAILED (source can't seek / "
+                             "not loaded) — playing from 0", channel, options.startOffsetMs);
+            }
+        } else {
+            // Offset past end-of-file — the seek is SKIPPED and playback starts
+            // at 0.  A large engine startingOffset on a short start sound lands
+            // here (looks like "the offset does nothing").
+            SFX_LOG_WARN("[mixer] ch%u startOffset %dms EXCEEDS file length "
+                         "(%.1fs, %lu frames) — playing from 0",
+                         channel, options.startOffsetMs,
+                         ws.sampleRate_Hz ? (float)ws.totalFrames / ws.sampleRate_Hz : 0.0f,
+                         (unsigned long)ws.totalFrames);
         }
     }
 
@@ -644,7 +664,7 @@ void AudioMixer<TI2S, TCodec>::stopWithFadeMs(int channel, AudioStopMode mode,
             // the dead channel on its next pass and won't try to
             // refill mid-destroy.
             ws.active.store(false, std::memory_order_release);
-            destroyAudioSource(ws.source);
+            destroyChannelSourceSafe(ws);   // waits out the decoder, then frees
             ws.ringReset();
             ws.sourceExhausted.store(false, std::memory_order_relaxed);
             ws.needsPrefill   .store(false, std::memory_order_relaxed);
@@ -922,6 +942,26 @@ float AudioMixer<TI2S, TCodec>::remainingSec(int channel) const {
 // data, this function adapts to the I²S sample rate.
 
 template<typename TI2S, typename TCodec>
+void AudioMixer<TI2S, TCodec>::destroyChannelSourceSafe(WavState& ws) {
+    // Mark the channel dead FIRST (seq_cst pairs with the decoder claiming
+    // decoderBusy then re-checking active) ...
+    ws.active.store(false, std::memory_order_seq_cst);
+    // ... then wait (bounded) for the decoder to leave any in-flight refill on
+    // this channel before we run the destructor.  A refill decodes
+    // ≤ kMaxRefillFrames (~7 ms of MP3), so this spin is short in practice; the
+    // cap prevents a hang if the decoder task is wedged.  Runs on the producer
+    // / command task (NEVER the decoder), so it can't self-deadlock.
+    // seq_cst load pairs with the decoder's seq_cst active.store/busy.store so
+    // the active-store above can't reorder past this busy-load (Peterson-style
+    // mutual exclusion — acquire alone would allow the StoreLoad reorder).
+    for (uint32_t i = 0; i < kSourceTeardownWaitMs &&
+                         ws.decoderBusy.load(std::memory_order_seq_cst); ++i) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    if (ws.source) { ws.source->~IAudioSource(); ws.source = nullptr; }  // inlined dtor
+}
+
+template<typename TI2S, typename TCodec>
 bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
     WavState& ws = ch.wav;
     if (!ws.source) return false;
@@ -1106,7 +1146,7 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
 
         // Get one resampled int16 stereo frame from the drain buffer.
         if (!getWavSample(ch, trackL16, trackR16)) {
-            destroyAudioSource(ws.source);
+            destroyChannelSourceSafe(ws);   // waits out the decoder, then frees
             ws.active.store(false, std::memory_order_release);
             _channelPlaying[i] = false;
             _channelRemainingSec[i] = 0.0f;
@@ -1140,7 +1180,7 @@ bool AudioMixer<TI2S, TCodec>::produceFrame() {
             if (ch.fadeStep > 0.0f && ch.fadeVolume <= 0.0f) {
                 ch.fadeVolume = 0.0f;
                 ch.fading = false;
-                destroyAudioSource(ws.source);
+                destroyChannelSourceSafe(ws);   // waits out the decoder, then frees
                 ws.active.store(false, std::memory_order_release);
                 _channelPlaying[i] = false;
                 checkAndPlayNextQueued(i);
@@ -1272,7 +1312,7 @@ int AudioMixer<TI2S, TCodec>::produceBlock(int maxFrames) {
             got = j + 1;
         }
         if (sourceDied && got == 0) {
-            destroyAudioSource(ws.source);
+            destroyChannelSourceSafe(ws);   // waits out the decoder, then frees
             ws.active.store(false, std::memory_order_release);
             _channelPlaying[i] = false;
             _channelRemainingSec[i] = 0.0f;
@@ -1358,7 +1398,7 @@ int AudioMixer<TI2S, TCodec>::produceBlock(int maxFrames) {
 
         // Deferred teardown for completed fade-outs / mid-block EOFs.
         if (fadeOutComplete || sourceDied) {
-            destroyAudioSource(ws.source);
+            destroyChannelSourceSafe(ws);   // waits out the decoder, then frees
             ws.active.store(false, std::memory_order_release);
             _channelPlaying[i] = false;
             if (sourceDied) _channelRemainingSec[i] = 0.0f;
@@ -1461,7 +1501,7 @@ int AudioMixer<TI2S, TCodec>::produceBlockFloat(int maxFrames) {
             got = j + 1;
         }
         if (sourceDied && got == 0) {
-            destroyAudioSource(ws.source);
+            destroyChannelSourceSafe(ws);   // waits out the decoder, then frees
             ws.active.store(false, std::memory_order_release);
             _channelPlaying[i] = false;
             _channelRemainingSec[i] = 0.0f;
@@ -1527,7 +1567,7 @@ int AudioMixer<TI2S, TCodec>::produceBlockFloat(int maxFrames) {
         }
 
         if (fadeOutComplete || sourceDied) {
-            destroyAudioSource(ws.source);
+            destroyChannelSourceSafe(ws);   // waits out the decoder, then frees
             ws.active.store(false, std::memory_order_release);
             _channelPlaying[i] = false;
             if (sourceDied) _channelRemainingSec[i] = 0.0f;
@@ -2161,17 +2201,23 @@ void AudioMixer<TI2S, TCodec>::decoderTaskFunc(void* /*param*/) {
         for (int i = 0; i < AUDIO_MAX_CHANNELS; ++i) {
             Channel& ch = mixer._channels[i];
             WavState& ws = ch.wav;
-            // Producer-published `active` with acquire ordering; if the
-            // channel was just torn down the source pointer might be
-            // null mid-pass — the refillDrainBuffer guard catches that.
             if (!ws.active.load(std::memory_order_acquire)) continue;
             if (ws.sourceExhausted.load(std::memory_order_acquire)) continue;
 
-            const bool needs = ws.needsPrefill.load(std::memory_order_relaxed);
-            const bool hungry = ws.availableWrite() >= kRefillThresholdFrames;
-            if (needs || hungry) {
-                mixer.refillDrainBuffer(ch);
+            // Claim the channel so a concurrent teardown waits for us to leave
+            // refill before freeing `source`.  RE-CHECK active after the claim
+            // (seq_cst) — if a teardown cleared active just before we claimed,
+            // skip: it owns the source now.  This handshake fixes the
+            // rapid-toggle use-after-free in refillDrainBuffer (LoadProhibited@0).
+            ws.decoderBusy.store(true, std::memory_order_seq_cst);
+            if (ws.active.load(std::memory_order_seq_cst) && ws.source) {
+                const bool needs = ws.needsPrefill.load(std::memory_order_relaxed);
+                const bool hungry = ws.availableWrite() >= kRefillThresholdFrames;
+                if (needs || hungry) {
+                    mixer.refillDrainBuffer(ch);
+                }
             }
+            ws.decoderBusy.store(false, std::memory_order_release);
         }
     }
 

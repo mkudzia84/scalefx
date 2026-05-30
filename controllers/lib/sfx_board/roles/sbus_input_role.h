@@ -25,6 +25,8 @@
 #include <platform/sfx_platform.h>
 #include <ports/input_port.h>
 
+#include "input_broadcaster.h"
+
 #if SFX_PLATFORM_ESP32
 #  include <rx_input/sbus_input.h>
 #endif
@@ -68,8 +70,10 @@ public:
     /// Parse / sync errors since bind.
     uint32_t errorCount() const;
 
-    /// Broadcast rate in Hz.  0 disables.  Async fires from `tick()`.
+    /// Host subscribe/unsubscribe to the WIRE broadcast (hz!=0 / hz==0).  Does
+    /// NOT affect the LOCAL effect feed (fixed firmware rate, always on).
     void setBroadcastHz(uint8_t hz);
+    bool wireEnabled() const { return _bcast.wireEnabled(); }
 
     void onBroadcast(BroadcastCallback cb) { _onBroadcast = std::move(cb); }
 
@@ -82,10 +86,7 @@ private:
     SbusInput _decoder;
 #endif
 
-    uint8_t  _broadcastHz          = 0;
-    uint32_t _broadcastInterval_ms = 0;
-    uint32_t _lastBroadcastMs      = 0;
-
+    InputBroadcaster  _bcast;        ///< shared cadence + wire-subscribe state
     BroadcastCallback _onBroadcast;
 };
 

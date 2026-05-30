@@ -108,7 +108,21 @@ controller: "gunfx | lightfx | gearcontrol | hubfx | noop (required)"
 --no-build: "Skip build step (use existing firmware)"
 --no-clean: "Skip clean step (incremental build)"
 --skip-verify: "Skip post-flash verification"
+--no-programs: "Skip the post-flash lightfx program deploy (HubFX only)"
 ```
+
+**LightFX program deploy (HubFX).** After a successful `flash hubfx` / `upload
+hubfx`, the CLI connects over serial and uploads the bundled factory lightfx
+programs (`media/presets/lightfx/programs/*.yaml`) to `/lightfx/programs/` on the
+device's flash, so a freshly-flashed board comes up with the program catalogue
+available. Best-effort — a failure logs a warning, never fails the flash. Pass
+`--no-programs` to skip. Deploy them without reflashing with
+`scalefx-flash programs hubfx [--port PORT]`.
+
+**Crash coredump (HubFX).** `scalefx-flash coredump hubfx [--port PORT]` pulls
+the ESP32 crash coredump from flash and decodes it to a backtrace (esptool read
++ espcoredump + gdb). The firmware ELF must match the flashed build (pull before
+reflashing). See [24-COREDUMP-DEBUGGING.md](24-COREDUMP-DEBUGGING.md).
 
 ### Using PlatformIO Directly
 
