@@ -109,16 +109,52 @@ func OpenWith(portName string, opts Options) (*Client, error) {
 // usable for raw commands) so callers can decide whether to keep or drop
 // the connection — older boards that don't answer IDENTIFY still connect.
 func Connect(portName string, opts Options) (*Client, Identity, error) {
-	c, err := OpenWith(portName, opts)
-	if err != nil {
-		return nil, Identity{}, err
+	// Retry open+IDENTIFY (close/reopen + backoff) like the flash tool's
+	// 6-attempt verify.  The host link is a CH343 USB-UART: right after a port
+	// open the link is often not settled (and rapid open/close cycles degrade
+	// the driver), so a single IDENTIFY can time out even though the board is
+	// up.  A clean reopen + retry clears it.  This is the single connect path
+	// for the CLI, Studio, AND the integration-test harness, so the whole fleet
+	// gets reconnect resilience here.
+	const maxAttempts = 6
+	// Short per-attempt IDENTIFY window so retries are quick — a live board
+	// answers in ms; only a booting board needs the full budget, and 6 ×
+	// kAttemptTimeout still covers a ~5 s cold boot.  Restored to the caller's
+	// timeout once identified.
+	const kAttemptTimeout = 1500 * time.Millisecond
+	attemptOpts := opts
+	if attemptOpts.Timeout == 0 || attemptOpts.Timeout > kAttemptTimeout {
+		attemptOpts.Timeout = kAttemptTimeout
 	}
-	id, idErr := c.Hub.Identify()
-	if idErr != nil {
-		return c, Identity{}, idErr
+
+	var lastClient *Client
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		c, err := OpenWith(portName, attemptOpts)
+		if err != nil {
+			lastErr = err
+			time.Sleep(time.Duration(150+100*attempt) * time.Millisecond)
+			continue
+		}
+		id, idErr := c.Hub.Identify()
+		if idErr == nil {
+			if opts.Timeout > 0 {
+				c.conn.SetTimeout(opts.Timeout) // restore caller's working timeout
+			}
+			c.applyPeerPayload(id.Platform)
+			return c, id, nil
+		}
+		lastErr = idErr
+		if attempt < maxAttempts {
+			c.Close() // drop the flaky handle; reopen fresh next attempt
+			time.Sleep(time.Duration(150+100*attempt) * time.Millisecond)
+			continue
+		}
+		// Last attempt: keep the open client so an older board that never
+		// answers IDENTIFY stays usable for raw commands (the prior contract).
+		lastClient = c
 	}
-	c.applyPeerPayload(id.Platform)
-	return c, id, nil
+	return lastClient, Identity{}, lastErr
 }
 
 // applyPeerPayload sizes the storage facet's upload chunking from the
