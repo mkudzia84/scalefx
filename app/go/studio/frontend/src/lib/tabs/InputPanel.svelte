@@ -161,7 +161,6 @@
                     {/if}
                     <span class="passthru-tag">Jeti EX Telemetry · pass-thru</span>
                 </div>
-                <p class="hint">Downstream Jeti EX&nbsp;Bus telemetry input — relays a slave device's (e.g.&nbsp;ESC) telemetry toward the receiver. No RC channels to map; auto-assigned while IN_1 runs Jeti&nbsp;EX.</p>
             </div>
         {:else}
         {@const det = detectedCount(cfg, $liveChannels)}
@@ -249,7 +248,7 @@
     .input-card { margin-bottom: 12px; }
     /* Telemetry pass-thru: dimmer, no channel group — it's a downstream link. */
     .input-card.passthru { border-left: 2px solid var(--accent); }
-    .input-card.passthru .board-head { margin-bottom: 6px; }
+    .input-card.passthru .board-head { margin-bottom: 0; }
     .passthru-tag { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--accent); padding: 1px 6px; border: 1px solid var(--accent); border-radius: 3px; }
     .board-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .board-name { font-size: 13px; font-weight: 600; color: var(--text-bright); }
