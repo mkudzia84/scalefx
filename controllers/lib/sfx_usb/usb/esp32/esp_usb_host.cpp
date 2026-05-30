@@ -21,6 +21,7 @@
  */
 
 #include <usb/sfx_usb_host.h>
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #ifndef SCALEFX_SERVER
 #if SFX_PLATFORM_ESP32
@@ -374,7 +375,7 @@ void EspUsbHost::resetBus() {
         xTimerStop((TimerHandle_t)_recoveryTimer, 0);
     }
 
-    _lastResetTimestamp_ms = millis();
+    _lastResetTimestamp_ms = SFX_MILLIS();
     _state.stats.bus_resets++;
 
 #if ESP_USB_HAS_CDC_ACM
@@ -710,7 +711,7 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
             // RECOVERY_TIMEOUT_MS, power-cycle root port to recover disabled
             // hub ports. Skip if this disconnect was caused by our own bus reset.
             if (_autoRecovery && _recoveryTimer) {
-                uint32_t now = millis();
+                uint32_t now = SFX_MILLIS();
                 if (now - _lastResetTimestamp_ms > RESET_COOLDOWN_MS) {
                     SFX_LOG_INFO("[UsbHost] Starting recovery timer (%lums) for auto bus reset",
                                  (unsigned long)RECOVERY_TIMEOUT_MS);

@@ -27,6 +27,7 @@
 #define SFX_BOARD_SERVICE_H
 
 #include <cstdint>
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <cstddef>
 
 #include <serial/core/core.h>  // CorePacket / CoreError / CoreBoardInfo / I2CScanResult / callbacks
@@ -120,7 +121,7 @@ public:
 
     // ── Activity / keepalive ─────────────────────────────────────────
 
-    void          updateActivity() { _lastActivityMs = millis(); }
+    void          updateActivity() { _lastActivityMs = SFX_MILLIS(); }
     bool          checkTimeout(unsigned long timeoutMs);
     unsigned long lastActivityMs() const { return _lastActivityMs; }
     bool          isInitialized()  const { return _initReceived; }

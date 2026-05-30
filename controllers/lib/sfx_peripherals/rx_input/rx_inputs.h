@@ -57,6 +57,7 @@
 #define SFX_RX_INPUTS_H
 
 #include <Arduino.h>
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include "rx_common.h"
 
 template <typename TSource>
@@ -88,10 +89,10 @@ public:
     void update() {
         _source.update();
         if (_source.isValid()) {
-            _lastValid_ms = millis();
+            _lastValid_ms = SFX_MILLIS();
             _signalLost   = false;
         } else if (_lastValid_ms > 0 &&
-                   (millis() - _lastValid_ms) > RxConfig::SIGNAL_TIMEOUT_MS)
+                   (SFX_MILLIS() - _lastValid_ms) > RxConfig::SIGNAL_TIMEOUT_MS)
         {
             _signalLost = true;
         }
@@ -150,7 +151,7 @@ public:
      */
     uint32_t timeSinceValid_ms() const {
         if (_lastValid_ms == 0) return 0;
-        return millis() - _lastValid_ms;
+        return SFX_MILLIS() - _lastValid_ms;
     }
 
     // ════════════════════════════════════════════════════════════

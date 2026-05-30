@@ -5,6 +5,7 @@
  */
 
 #include "led_animator.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #include <cstring>
 #include <math.h>
@@ -35,7 +36,7 @@ bool LedAnimator::loadQueue(const Event* events, size_t count) {
 void LedAnimator::start() {
     if (_count == 0 || !_port) return;
     _cursor           = 0;
-    _eventStart_ms    = millis();
+    _eventStart_ms    = SFX_MILLIS();
     _playing          = true;
     _currentBrightPct = 0;
     const Event& e0   = _queue[0];
@@ -56,7 +57,7 @@ void LedAnimator::start() {
     SFX_LOG_DEBUG("[LedAnimator] start: kind=%u dur=%u cycle=%u bright=%u",
                   (unsigned)e0.kind, (unsigned)e0.durationMs,
                   (unsigned)e0.cycleMs, (unsigned)e0.brightnessPct);
-    tick(millis());   // emit an initial sample so the port goes live immediately
+    tick(SFX_MILLIS());   // emit an initial sample so the port goes live immediately
 }
 
 void LedAnimator::stop() {
@@ -215,7 +216,7 @@ void LedAnimator::advance() {
         if (_onDone) _onDone();
         return;
     }
-    _eventStart_ms = millis();
+    _eventStart_ms = SFX_MILLIS();
     const Event& next = _queue[_cursor];
     // Prime per-event state.
     switch (next.kind) {

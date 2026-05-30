@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     673
+#define BUILD_NUMBER     678
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -969,7 +969,7 @@ void loop() {
                 int maj = 0, mnr = 0;
                 sscanf(FIRMWARE_VERSION, "%d.%d", &maj, &mnr);   // "2.16.0-hubfx"
                 jexp.setLocalSensor(3, "Version", "", JetiEx::ExDataType::Int14, 2,
-                                    (int32_t)(maj * 100 + mnr), millis());   // 216 → "2.16"
+                                    (int32_t)(maj * 100 + mnr), SFX_MILLIS());   // 216 → "2.16"
             }
         }
     }
@@ -991,7 +991,7 @@ void loop() {
     // leak in a service policy or audio source).  Cheap — three
     // heap_caps queries.
     static uint32_t lastMemLogMs = 0;
-    const uint32_t  nowMs = millis();
+    const uint32_t  nowMs = SFX_MILLIS();
     if (nowMs - lastMemLogMs >= 30000UL) {
         lastMemLogMs = nowMs;
         logMemoryHeapCaps("periodic");

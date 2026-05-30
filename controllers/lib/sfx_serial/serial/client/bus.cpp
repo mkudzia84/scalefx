@@ -6,6 +6,7 @@
  */
 
 #include "bus.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include "serial/diag_log.h"
 
 #ifndef SCALEFX_SERVER
@@ -61,7 +62,7 @@ int SerialBus::sendPacket(uint8_t type, const uint8_t* payload, size_t len, uint
     }
     
     _stats.packets_sent++;
-    _lastSendMs = millis();  // Track time of successful send
+    _lastSendMs = SFX_MILLIS();  // Track time of successful send
     return 0;
 }
 
@@ -127,7 +128,7 @@ void SerialBus::processFrame(const uint8_t* frame, size_t frameLen) {
 
 void SerialBus::setKeepaliveInterval(unsigned long intervalMs) {
     _keepaliveIntervalMs = intervalMs;
-    _lastSendMs = millis();  // Reset send timer
+    _lastSendMs = SFX_MILLIS();  // Reset send timer
 }
 
 bool SerialBus::processKeepalive() {
@@ -135,7 +136,7 @@ bool SerialBus::processKeepalive() {
     
     // Only send keepalive if no other message was sent within the interval
     // This ensures at least one message (of any type) per interval
-    unsigned long now = millis();
+    unsigned long now = SFX_MILLIS();
     if (now - _lastSendMs >= _keepaliveIntervalMs) {
         sendKeepalive();
         return true;

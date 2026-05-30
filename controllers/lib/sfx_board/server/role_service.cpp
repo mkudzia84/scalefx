@@ -3,6 +3,7 @@
  */
 
 #include "role_service.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #include <cstring>
 #include <variant>
@@ -83,7 +84,7 @@ void RoleServicePolicy::update() {
     // SAME instant, so multi-channel light programs stay phase-locked
     // regardless of how long the per-channel I²C writes take or how
     // jittery the main loop is.  (See LedAnimator::tick.)
-    const uint32_t now = millis();
+    const uint32_t now = SFX_MILLIS();
 
     for (uint8_t i = 0; i < _reg->numServoPorts(); i++) {
         auto* b = _reg->servoAt(i);

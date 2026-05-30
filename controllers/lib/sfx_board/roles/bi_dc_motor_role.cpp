@@ -4,6 +4,7 @@
  */
 
 #include "bi_dc_motor_role.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #include <serial/roles.h>     // RolePacket::BiMotorSeekOutcome
 
@@ -84,7 +85,7 @@ void BiDcMotorRole::moveToEnd(Position targetEnd, int16_t signedDuty, uint16_t t
         return;
     }
 
-    const uint32_t now   = millis();
+    const uint32_t now   = SFX_MILLIS();
     _seekState      = SeekState::Seeking;
     _seekDuty       = signedDuty;
     _seekStartMs    = now;
@@ -115,7 +116,7 @@ void BiDcMotorRole::abortSeek() {
     if (_seekState == SeekState::Seeking) {
         _seekState = SeekState::Idle;
         if (_onEndstop) _onEndstop(BiMotorSeekOutcome::Aborted,
-                                   (uint16_t)(millis() - _seekStartMs),
+                                   (uint16_t)(SFX_MILLIS() - _seekStartMs),
                                    0, _position);
     }
 }
@@ -150,7 +151,7 @@ bool BiDcMotorRole::stepStallDetect(uint32_t now, uint16_t threshold_mA) {
 }
 
 void BiDcMotorRole::tick() {
-    const uint32_t now = millis();
+    const uint32_t now = SFX_MILLIS();
 
     // ── Endstop seek ──────────────────────────────────────────────────
     if (_seekState == SeekState::Seeking) {

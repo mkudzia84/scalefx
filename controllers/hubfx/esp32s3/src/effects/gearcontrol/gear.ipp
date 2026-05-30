@@ -6,10 +6,11 @@
 #define HUBFX_GEAR_IPP
 
 #include <Arduino.h>
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <serial/roles.h>
 #include <serial/wire.h>
 #include <serial/diag_log.h>
-#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
+#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw SFX_MILLIS()
 
 namespace hubfx::effects::gearctrl {
 

@@ -6,6 +6,7 @@
 #define HUBFX_INPUT_DISPATCHER_IPP
 
 #include <serial/wire.h>           // SfxWire::getU16LE
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 namespace hubfx::effects::input {
 
@@ -205,7 +206,7 @@ void InputDispatcherServicePolicyT<TTopology>::onRoleEvent(
     // doesn't match the frame's, e.g. hub-GUID vs "" trap).
     {
         static uint32_t lastLog = 0;
-        const uint32_t nowMs = millis();
+        const uint32_t nowMs = SFX_MILLIS();
         if (nowMs - lastLog >= 2000) {
             uint8_t occ = 0, matched = 0;
             for (uint8_t i = 0; i < kMaxBindings; ++i) {

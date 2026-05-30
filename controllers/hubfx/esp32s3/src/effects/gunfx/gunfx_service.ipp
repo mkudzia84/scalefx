@@ -7,8 +7,9 @@
 #define HUBFX_GUNFX_SERVICE_IPP
 
 #include <Arduino.h>
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <serial/wire.h>
-#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
+#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw SFX_MILLIS()
 
 #if defined(SFX_HAS_AUDIO)
 #include <audio/audio_mixer.h>

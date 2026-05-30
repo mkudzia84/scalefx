@@ -24,6 +24,7 @@
 #define STORAGE_SERVICE_IPP
 
 #include <serial/diag_log.h>
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #define STORAGE_LOG(fmt, ...) SFX_LOG_INFO("[Storage] " fmt, ##__VA_ARGS__)
 
@@ -563,7 +564,7 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
     _uploadBytesWritten = 0;
     _uploadExpectedSeq  = 0;
     _shared.uploadWriteBufLen  = 0;
-    _uploadLastActivity_ms = millis();
+    _uploadLastActivity_ms = SFX_MILLIS();
     _uploadMd5.begin();
 
     // Stream mode state
@@ -616,12 +617,12 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
         _streamActive = true;
 
         // Initialize stream diagnostics
-        _streamStartTime_ms    = millis();
-        _streamSegStartTime_ms = millis();
+        _streamStartTime_ms    = SFX_MILLIS();
+        _streamSegStartTime_ms = SFX_MILLIS();
         _streamEndTime_ms      = 0;
-        _streamLastLogTime_ms  = millis();
+        _streamLastLogTime_ms  = SFX_MILLIS();
         _streamLastLogBytes    = 0;
-        _streamLastCallTime_ms = millis();
+        _streamLastCallTime_ms = SFX_MILLIS();
         _streamMaxGap_ms       = 0;
         _streamIterCount       = 0;
 
@@ -689,7 +690,7 @@ void StorageServicePolicy<TPolicy>::handleUploadData(const uint8_t* payload, siz
     }
 
     // Update activity timestamp (for inactivity timeout)
-    _uploadLastActivity_ms = millis();
+    _uploadLastActivity_ms = SFX_MILLIS();
 
     // Would exceed expected file size?
     if (_uploadBytesWritten + dataLen > _uploadExpectedSize) {
@@ -742,7 +743,7 @@ void StorageServicePolicy<TPolicy>::handleUploadEnd() {
         return;
     }
 
-    uint32_t tEndReceived = millis();
+    uint32_t tEndReceived = SFX_MILLIS();
 
     // Log gap between stream completion and UPLOAD_END reception
     if (_uploadMode == StorageWire::UPLOAD_STREAM && _streamEndTime_ms > 0) {
@@ -765,17 +766,17 @@ void StorageServicePolicy<TPolicy>::handleUploadEnd() {
 
     // Platform hook for end-of-upload finalization (async writer drain on
     // policies that have one; no-op for the inline single-core path).
-    uint32_t t0 = millis();
+    uint32_t t0 = SFX_MILLIS();
     const char* errMsg = nullptr;
     if (!_policy.onChunkedEnd(errMsg)) {
         STORAGE_LOG("UPLOAD_END drain failed after %lums: %s",
-                    (unsigned long)(millis() - t0),
+                    (unsigned long)(SFX_MILLIS() - t0),
                     errMsg ? errMsg : "unknown");
         cleanupUpload(true);
         sendNack(StorageError::FILE_IO_ERROR, errMsg ? errMsg : "Async write failed");
         return;
     }
-    uint32_t t1 = millis();
+    uint32_t t1 = SFX_MILLIS();
 
     // Flush remaining write buffer to file (blocking — final partial block)
     if (_shared.uploadWriteBufLen > 0) {
@@ -785,19 +786,19 @@ void StorageServicePolicy<TPolicy>::handleUploadEnd() {
             return;
         }
     }
-    uint32_t t2 = millis();
+    uint32_t t2 = SFX_MILLIS();
 
     // Force data to storage media before closing
     _shared.uploadFile.flush();
     _shared.uploadFile.close();
     unlockStorage(_uploadTarget);
-    uint32_t t3 = millis();
+    uint32_t t3 = SFX_MILLIS();
 
     // Compute final MD5 digest
     _uploadMd5.calculate();
     uint8_t md5Bytes[16];
     _uploadMd5.getBytes(md5Bytes);
-    uint32_t t4 = millis();
+    uint32_t t4 = SFX_MILLIS();
 
     const char* modeStr = (_uploadMode == StorageWire::UPLOAD_STREAM) ? "stream" : "sync";
 
@@ -870,7 +871,7 @@ void StorageServicePolicy<TPolicy>::processStream() {
     if (!_streamActive || !_uploadActive) return;
 
     // Track loop gap — detect slow main loop iterations
-    uint32_t now = millis();
+    uint32_t now = SFX_MILLIS();
     uint32_t gap = now - _streamLastCallTime_ms;
     _streamLastCallTime_ms = now;
     if (gap > _streamMaxGap_ms) _streamMaxGap_ms = gap;
@@ -989,14 +990,14 @@ void StorageServicePolicy<TPolicy>::processStream() {
         _streamSegmentIndex++;
 
         // Reset per-segment diagnostics
-        _streamSegStartTime_ms = millis();
+        _streamSegStartTime_ms = SFX_MILLIS();
         _streamMaxGap_ms = 0;
         _streamIterCount = 0;
 
         if (_uploadBytesWritten >= _uploadExpectedSize) {
             // All data received - exit stream mode, wait for UPLOAD_END (COBS)
             _streamActive = false;
-            _streamEndTime_ms = millis();
+            _streamEndTime_ms = SFX_MILLIS();
             uint32_t totalElapsed_ms = _streamEndTime_ms - _streamStartTime_ms;
             uint32_t totalKBps = (totalElapsed_ms > 0)
                 ? (_uploadBytesWritten / totalElapsed_ms) : 0;
@@ -1088,7 +1089,7 @@ template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::checkUploadTimeout() {
     if (!_uploadActive) return;
 
-    uint32_t elapsed = millis() - _uploadLastActivity_ms;
+    uint32_t elapsed = SFX_MILLIS() - _uploadLastActivity_ms;
     uint32_t timeout = _streamActive ? STREAM_INACTIVITY_MS : UPLOAD_TIMEOUT_MS;
     if (elapsed >= timeout) {
         STORAGE_LOG("Upload inactivity timeout (%lums, limit=%lums) "
