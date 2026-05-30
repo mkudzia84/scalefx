@@ -97,6 +97,16 @@ type Connection struct {
 	readerStop chan struct{}
 	readerDone chan struct{}
 
+	// Async dispatch goroutine — async/unmatched packets are handed off here
+	// instead of being delivered INLINE in the reader.  A slow async consumer
+	// (Studio's Wails event emit at 50 Hz) must NEVER block the reader, or the
+	// serial buffer backs up and command responses time out.  The queue is
+	// bounded; async broadcasts (live channel view) are lossy, so on overflow
+	// we drop the frame and count it rather than block.
+	asyncQueue chan *Response
+	asyncStop  chan struct{}
+	asyncDone  chan struct{}
+
 	// Keepalive goroutine — mirrors C++ SerialBus::processKeepalive()
 	keepaliveStop chan struct{}
 	keepaliveDone chan struct{}
@@ -117,15 +127,16 @@ type statCounters struct {
 	rxUnmatched  atomic.Uint64 // tag!=0 but no waiter (late/orphaned)
 	txPackets    atomic.Uint64 // packets sent (Send)
 	timeouts     atomic.Uint64 // SendAndWait/* deadline fired
-	asyncCBNanos atomic.Uint64 // cumulative ns spent in asyncCB (reader goroutine)
+	asyncCBNanos atomic.Uint64 // cumulative ns spent in asyncCB (dispatcher goroutine)
 	asyncCBMax   atomic.Uint64 // worst single asyncCB ns
+	asyncDropped atomic.Uint64 // async frames dropped on queue overflow (slow consumer)
 	dispatchMax  atomic.Uint64 // worst single dispatchResponse ns (reader stall proxy)
 }
 
 // LinkStats is a point-in-time snapshot of the link instrumentation.
 type LinkStats struct {
 	RxFrames, RxTagged, RxAsync, RxUnmatched uint64
-	TxPackets, Timeouts                      uint64
+	TxPackets, Timeouts, AsyncDropped        uint64
 	AsyncCBTotal, AsyncCBMax, DispatchMax    time.Duration
 }
 
@@ -138,6 +149,7 @@ func (c *Connection) Stats() LinkStats {
 		RxUnmatched:  c.stat.rxUnmatched.Load(),
 		TxPackets:    c.stat.txPackets.Load(),
 		Timeouts:     c.stat.timeouts.Load(),
+		AsyncDropped: c.stat.asyncDropped.Load(),
 		AsyncCBTotal: time.Duration(c.stat.asyncCBNanos.Load()),
 		AsyncCBMax:   time.Duration(c.stat.asyncCBMax.Load()),
 		DispatchMax:  time.Duration(c.stat.dispatchMax.Load()),
@@ -152,6 +164,7 @@ func (c *Connection) ResetStats() {
 	c.stat.rxUnmatched.Store(0)
 	c.stat.txPackets.Store(0)
 	c.stat.timeouts.Store(0)
+	c.stat.asyncDropped.Store(0)
 	c.stat.asyncCBNanos.Store(0)
 	c.stat.asyncCBMax.Store(0)
 	c.stat.dispatchMax.Store(0)
@@ -616,6 +629,14 @@ func (c *Connection) startReader() {
 	c.readerStop = make(chan struct{})
 	c.readerDone = make(chan struct{})
 
+	// Async dispatcher goroutine + its bounded handoff queue (256 ≈ 5 s of
+	// 50 Hz broadcast).  Started before the reader so the first frame has a
+	// consumer.  See dispatchResponse.
+	c.asyncQueue = make(chan *Response, 256)
+	c.asyncStop = make(chan struct{})
+	c.asyncDone = make(chan struct{})
+	go c.asyncDispatcher()
+
 	go func() {
 		defer close(c.readerDone)
 
@@ -669,7 +690,11 @@ func (c *Connection) startReader() {
 							PacketType: ptype,
 							Tag:        tag,
 							Payload:    payload,
-							Raw:        rxBuf[:idx],
+							// packetData is a fresh per-packet copy; rxBuf is
+							// reused, so an async resp queued for later delivery
+							// must NOT alias rxBuf (would corrupt under the
+							// dispatcher goroutine).
+							Raw: packetData[:idx],
 						}
 						if c.verbose {
 							name := PacketTypeName(ptype)
@@ -708,6 +733,20 @@ func (c *Connection) stopReader() {
 	}
 	if c.readerDone != nil {
 		<-c.readerDone
+	}
+
+	// Stop the async dispatcher after the reader (which feeds its queue).
+	if c.asyncStop != nil {
+		select {
+		case <-c.asyncStop:
+		default:
+			close(c.asyncStop)
+		}
+		if c.asyncDone != nil {
+			<-c.asyncDone
+		}
+		c.asyncStop = nil
+		c.asyncDone = nil
 	}
 }
 
@@ -751,21 +790,51 @@ func (c *Connection) dispatchResponse(resp *Response) {
 		c.stat.rxUnmatched.Add(1) // tag set but no waiter (late / orphaned)
 	}
 
-	// Async or unmatched — check type-based filters first
+	// Async or unmatched — hand off to the dispatcher goroutine.  NON-BLOCKING:
+	// the reader must NEVER stall on a slow async consumer (Studio's Wails emit
+	// at 50 Hz), or the serial buffer backs up and command responses time out
+	// (proven: 0% timeouts at delay=0, 86% at delay=150ms, same flood).  Drop
+	// on overflow — async broadcasts (live channel view) are lossy.
+	c.stat.rxAsync.Add(1)
+	if c.asyncQueue != nil {
+		select {
+		case c.asyncQueue <- resp:
+		default:
+			c.stat.asyncDropped.Add(1)
+		}
+	}
+}
+
+// asyncDispatcher delivers async/unmatched packets to filters + the general
+// callback OFF the reader goroutine, so a slow consumer can't stall reads.
+func (c *Connection) asyncDispatcher() {
+	defer close(c.asyncDone)
+	for {
+		select {
+		case <-c.asyncStop:
+			return
+		case resp := <-c.asyncQueue:
+			c.deliverAsync(resp)
+		}
+	}
+}
+
+// deliverAsync routes one async packet to its type filter (if any) or the
+// general callback.  Runs in the dispatcher goroutine — slowness here costs
+// async latency / drops, never command-response timeouts.
+func (c *Connection) deliverAsync(resp *Response) {
 	c.waiterMu.Lock()
 	fch, fok := c.asyncFilters[resp.PacketType]
 	c.waiterMu.Unlock()
 	if fok {
-		c.stat.rxAsync.Add(1)
-		fch <- resp
+		// Respect shutdown so a vanished filter consumer can't wedge Close.
+		select {
+		case fch <- resp:
+		case <-c.asyncStop:
+		}
 		return
 	}
-
-	// Otherwise deliver to general async callback.  Timed because it runs
-	// INLINE in the reader goroutine — a slow consumer here stalls reads and
-	// starves tagged-response delivery (the intermittent-timeout root cause).
 	if c.asyncCB != nil {
-		c.stat.rxAsync.Add(1)
 		cbStart := time.Now()
 		c.asyncCB(resp)
 		dur := uint64(time.Since(cbStart))
