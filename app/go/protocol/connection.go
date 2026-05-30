@@ -100,6 +100,71 @@ type Connection struct {
 	// Keepalive goroutine — mirrors C++ SerialBus::processKeepalive()
 	keepaliveStop chan struct{}
 	keepaliveDone chan struct{}
+
+	// ── Link instrumentation (atomic; snapshot via Stats()) ──────────
+	// Counts + timings to diagnose intermittent command timeouts under an
+	// async-broadcast flood.  The reader goroutine is the only writer of the
+	// RX counters; SendAndWait/* increment the timeout counter.  asyncCB
+	// timing reveals whether slow async consumers (Studio Wails emits) are
+	// stalling the reader and starving tagged-response delivery.
+	stat statCounters
+}
+
+type statCounters struct {
+	rxFrames     atomic.Uint64 // complete COBS frames parsed
+	rxTagged     atomic.Uint64 // tag!=0 delivered to a waiter
+	rxAsync      atomic.Uint64 // tag==0 → async callback
+	rxUnmatched  atomic.Uint64 // tag!=0 but no waiter (late/orphaned)
+	txPackets    atomic.Uint64 // packets sent (Send)
+	timeouts     atomic.Uint64 // SendAndWait/* deadline fired
+	asyncCBNanos atomic.Uint64 // cumulative ns spent in asyncCB (reader goroutine)
+	asyncCBMax   atomic.Uint64 // worst single asyncCB ns
+	dispatchMax  atomic.Uint64 // worst single dispatchResponse ns (reader stall proxy)
+}
+
+// LinkStats is a point-in-time snapshot of the link instrumentation.
+type LinkStats struct {
+	RxFrames, RxTagged, RxAsync, RxUnmatched uint64
+	TxPackets, Timeouts                      uint64
+	AsyncCBTotal, AsyncCBMax, DispatchMax    time.Duration
+}
+
+// Stats returns a snapshot of the link instrumentation counters.
+func (c *Connection) Stats() LinkStats {
+	return LinkStats{
+		RxFrames:     c.stat.rxFrames.Load(),
+		RxTagged:     c.stat.rxTagged.Load(),
+		RxAsync:      c.stat.rxAsync.Load(),
+		RxUnmatched:  c.stat.rxUnmatched.Load(),
+		TxPackets:    c.stat.txPackets.Load(),
+		Timeouts:     c.stat.timeouts.Load(),
+		AsyncCBTotal: time.Duration(c.stat.asyncCBNanos.Load()),
+		AsyncCBMax:   time.Duration(c.stat.asyncCBMax.Load()),
+		DispatchMax:  time.Duration(c.stat.dispatchMax.Load()),
+	}
+}
+
+// ResetStats zeroes the instrumentation counters.
+func (c *Connection) ResetStats() {
+	c.stat.rxFrames.Store(0)
+	c.stat.rxTagged.Store(0)
+	c.stat.rxAsync.Store(0)
+	c.stat.rxUnmatched.Store(0)
+	c.stat.txPackets.Store(0)
+	c.stat.timeouts.Store(0)
+	c.stat.asyncCBNanos.Store(0)
+	c.stat.asyncCBMax.Store(0)
+	c.stat.dispatchMax.Store(0)
+}
+
+// storeMax atomically raises *a to v if v is larger.
+func storeMax(a *atomic.Uint64, v uint64) {
+	for {
+		cur := a.Load()
+		if v <= cur || a.CompareAndSwap(cur, v) {
+			return
+		}
+	}
 }
 
 // NewConnection creates a new connection instance.
@@ -259,6 +324,7 @@ func (c *Connection) Send(data []byte) error {
 	_, err := c.port.Write(data)
 	if err == nil {
 		c.lastSendTime = time.Now()
+		c.stat.txPackets.Add(1)
 	}
 	return err
 }
@@ -323,6 +389,7 @@ func (c *Connection) SendAndWait(data []byte) (*Response, error) {
 		c.waiterMu.Lock()
 		delete(c.tagWaiters, tag)
 		c.waiterMu.Unlock()
+		c.stat.timeouts.Add(1)
 		return nil, fmt.Errorf("timeout waiting for response")
 	}
 }
@@ -375,6 +442,7 @@ func (c *Connection) SendExpectACKTimeout(data []byte, timeout time.Duration) (*
 				c.asyncCB(resp)
 			}
 		case <-deadline:
+			c.stat.timeouts.Add(1)
 			return nil, fmt.Errorf("timeout waiting for response")
 		}
 	}
@@ -447,6 +515,7 @@ func (c *Connection) SendAndReceiveStream(data []byte, timeout time.Duration) (*
 			}
 
 		case <-deadline:
+			c.stat.timeouts.Add(1)
 			return nil, fmt.Errorf("stream timeout")
 		}
 	}
@@ -595,6 +664,7 @@ func (c *Connection) startReader() {
 
 					ptype, tag, payload, ok := ParsePacket(packetData)
 					if ok {
+						c.stat.rxFrames.Add(1)
 						resp := &Response{
 							PacketType: ptype,
 							Tag:        tag,
@@ -652,6 +722,9 @@ func (c *Connection) signalPortDead() {
 
 // dispatchResponse delivers a response to the correct consumer.
 func (c *Connection) dispatchResponse(resp *Response) {
+	dStart := time.Now()
+	defer func() { storeMax(&c.stat.dispatchMax, uint64(time.Since(dStart))) }()
+
 	if resp.Tag != TagAsync {
 		c.waiterMu.Lock()
 
@@ -659,6 +732,7 @@ func (c *Connection) dispatchResponse(resp *Response) {
 		sch, sok := c.streamWaiters[resp.Tag]
 		if sok {
 			c.waiterMu.Unlock()
+			c.stat.rxTagged.Add(1)
 			sch <- resp
 			return
 		}
@@ -668,11 +742,13 @@ func (c *Connection) dispatchResponse(resp *Response) {
 		if ok {
 			delete(c.tagWaiters, resp.Tag)
 			c.waiterMu.Unlock()
+			c.stat.rxTagged.Add(1)
 			ch <- resp
 			return
 		}
 
 		c.waiterMu.Unlock()
+		c.stat.rxUnmatched.Add(1) // tag set but no waiter (late / orphaned)
 	}
 
 	// Async or unmatched — check type-based filters first
@@ -680,13 +756,21 @@ func (c *Connection) dispatchResponse(resp *Response) {
 	fch, fok := c.asyncFilters[resp.PacketType]
 	c.waiterMu.Unlock()
 	if fok {
+		c.stat.rxAsync.Add(1)
 		fch <- resp
 		return
 	}
 
-	// Otherwise deliver to general async callback
+	// Otherwise deliver to general async callback.  Timed because it runs
+	// INLINE in the reader goroutine — a slow consumer here stalls reads and
+	// starves tagged-response delivery (the intermittent-timeout root cause).
 	if c.asyncCB != nil {
+		c.stat.rxAsync.Add(1)
+		cbStart := time.Now()
 		c.asyncCB(resp)
+		dur := uint64(time.Since(cbStart))
+		c.stat.asyncCBNanos.Add(dur)
+		storeMax(&c.stat.asyncCBMax, dur)
 	}
 }
 
