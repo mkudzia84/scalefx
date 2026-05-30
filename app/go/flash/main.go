@@ -88,6 +88,15 @@ func main() {
 		_, flags := extractPositionalAndFlags(sub)
 		deployLightFxPrograms(argValue(flags, "--port"))
 
+	case "coredump":
+		// Pull + decode the ESP32 crash coredump from flash (HubFX).
+		controller, flags := extractPositionalAndFlags(sub)
+		if controller == "" {
+			controller = "hubfx"
+		}
+		cmdCoredump(controller, argValue(flags, "--port"), argValue(flags, "--save"),
+			hasArg(flags, "--raw"))
+
 	case "version":
 		controller, _ := extractPositionalAndFlags(sub)
 		if controller == "" {
@@ -165,6 +174,7 @@ func printUsage() {
 	fmt.Printf("  %-16s %s\n", "upload", "Flash without rebuilding")
 	fmt.Printf("  %-16s %s\n", "verify", "Verify device firmware version")
 	fmt.Printf("  %-16s %s\n", "programs", "Deploy bundled lightfx programs to a HubFX (no reflash)")
+	fmt.Printf("  %-16s %s\n", "coredump", "Pull + decode the ESP32 crash backtrace from flash (HubFX)")
 	fmt.Printf("  %-16s %s\n", "version", "Show firmware version from source")
 	fmt.Printf("  %-16s %s\n", "controllers", "List available controller targets")
 	fmt.Printf("  %-16s %s\n", "ports", "List detected ScaleFX serial ports")

@@ -119,6 +119,11 @@ available. Best-effort — a failure logs a warning, never fails the flash. Pass
 `--no-programs` to skip. Deploy them without reflashing with
 `scalefx-flash programs hubfx [--port PORT]`.
 
+**Crash coredump (HubFX).** `scalefx-flash coredump hubfx [--port PORT]` pulls
+the ESP32 crash coredump from flash and decodes it to a backtrace (esptool read
++ espcoredump + gdb). The firmware ELF must match the flashed build (pull before
+reflashing). See [24-COREDUMP-DEBUGGING.md](24-COREDUMP-DEBUGGING.md).
+
 ### Using PlatformIO Directly
 
 ```bash
