@@ -75,9 +75,14 @@ public:
         }
 
         if (!_rxBus.begin(rxStream)) return false;
-        _rxBus.setTxPort(rxPort);                     // half-duplex TX on IN_1
+        _rxBus.setTxPort(rxPort);                     // half-duplex TX on IN_1 (reply)
         _rxBus.onTelemetryRequest([this](uint8_t pkt){ serveTelemetry(pkt); });
-        _rxBus.onRawFrame([this](const uint8_t* f, uint8_t l){ forwardToEsc(f, l); });
+        // Forward-to-ESC is the second-UART TX that crosstalks GPIO6->GPIO5 and
+        // drops the RC channel RX — gated off (kForwardToEsc) until its timing /
+        // routing is fixed.  Telemetry RESPONSE on IN_1 stays on.
+        if (kForwardToEsc && _escPort) {
+            _rxBus.onRawFrame([this](const uint8_t* f, uint8_t l){ forwardToEsc(f, l); });
+        }
 
         // Register the HubFX-own device (local → never expires) + its built-in
         // sensors, so it shows on the radio even with no downstream ESC.
@@ -307,6 +312,12 @@ private:
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
+    // The forward-to-ESC TX on IN_2 (GPIO6) couples onto the ADJACENT IN_1
+    // (GPIO5) channel RX and drops the RC signal — confirmed: the IN_1 reply is
+    // clean, the "second-UART piping" is what hurts.  Off until the IN_2 poll is
+    // timed into IN_1's silent window (or routed off the adjacent pin).  The
+    // IN_1 telemetry RESPONSE is unaffected and stays on.
+    static constexpr bool     kForwardToEsc      = false;
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
     static constexpr uint32_t kEscPollIntervalMs = 100;  // ESC poll rate (~10 Hz)
     static constexpr uint32_t kRespIntervalMs    = 50;   // Rx reply rate cap (~20 Hz)
