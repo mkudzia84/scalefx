@@ -19,6 +19,7 @@ const (
 	KindRcPwmInput    byte = 0x02
 	KindSbusInput     byte = 0x03
 	KindJetiExInput   byte = 0x04
+	KindJetiExTelemetry byte = 0x05
 	KindLedAnimator   byte = 0x10
 	KindDcMotor       byte = 0x11
 	KindHeater        byte = 0x12
@@ -39,6 +40,8 @@ func KindName(k byte) string {
 		return "sbus-input"
 	case KindJetiExInput:
 		return "jeti-ex-input"
+	case KindJetiExTelemetry:
+		return "jeti-ex-telemetry"
 	case KindLedAnimator:
 		return "led-animator"
 	case KindDcMotor:
@@ -66,6 +69,8 @@ func KindFromName(s string) (byte, bool) {
 		return KindSbusInput, true
 	case "jeti-ex-input", "jeti-ex", "jetiex":
 		return KindJetiExInput, true
+	case "jeti-ex-telemetry", "jeti-telemetry", "jetiex-telem":
+		return KindJetiExTelemetry, true
 	case "led-animator", "led":
 		return KindLedAnimator, true
 	case "dc-motor", "motor":

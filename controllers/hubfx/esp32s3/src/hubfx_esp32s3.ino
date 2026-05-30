@@ -29,8 +29,9 @@
  *
  *   Ports declared on the HubFX PCB:
  *     - 8 × PWM    (PCA9685 channels with per-rail INA226 V/I sense)
- *     - 1 × Input  (IN_1, multi-modal PULSE / SBUS / JETI_EX)
- *     - 11 × Servo (IN_2..IN_12, output actuator headers)
+ *     - 2 × Input  (IN_1 UART1 multi-modal PULSE/SBUS/JETI_EX;
+ *                   IN_2 UART2 Jeti EX Bus telemetry monitor → Rx)
+ *     - 10 × Servo (IN_3..IN_12, output actuator headers)
  *
  *   Configuration sources (LittleFS) — /hubfx.yaml is the board master,
  *   every effect's details live in its own canonical sub-file:
@@ -59,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     568
+#define BUILD_NUMBER     578
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -209,7 +210,8 @@ constexpr uint8_t kInaAddrs[8] = {
 };
 
 namespace Uart {
-    constexpr uint8_t IN_1 = 1;            // UART1 claimed by InputPort on IN_1
+    constexpr uint8_t IN_1 = 1;            // UART1 — main Jeti EX Bus input (Rx channel data + telemetry to Rx)
+    constexpr uint8_t IN_2 = 2;            // UART2 — Jeti EX Bus telemetry from a downstream slave (e.g. ESC): HubFX polls + collects, forwards over IN_1 to the Rx
 }
 
 namespace Sense {
@@ -336,10 +338,10 @@ using GunFxService =
 // initializer list is a compile error (too many initializers); a count
 // the descriptor exceeds would make begin() clamp — so keep them equal.
 namespace hubfx_caps {
-constexpr size_t servo   = 11;   // IN_2..IN_12 microservo headers
+constexpr size_t servo   = 10;   // IN_3..IN_12 microservo headers (IN_2 reassigned to UART2 input)
 constexpr size_t pwm     = 8;    // PCA9685 CH1..8 (+ per-rail INA226 sense)
 constexpr size_t hbridge = 0;    // no hub-local H-bridge on this rev
-constexpr size_t input   = 1;    // IN_1 (multi-modal; Rule 31 → ESP32 max 2)
+constexpr size_t input   = 2;    // IN_1 (UART1) + IN_2 (UART2) — Rule 31: ESP32-S3 max 2 inputs
 }  // namespace hubfx_caps
 
 class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
@@ -379,17 +381,19 @@ public:
         {ina[4]}, {ina[5]}, {ina[6]}, {ina[7]},
     };
 
-    // ── Input ports — IN_1 (multi-modal: PULSE / SBUS / JETI_EX) ─────
+    // ── Input ports — IN_1 (PULSE/SBUS/JETI_EX) + IN_2 (Jeti EX Bus
+    //    telemetry monitor on UART2) ───────────────────────────────────
     sfx_peripherals::EspInputPort in[hubfx_caps::input] = {
-        {Gpio::IN_1, Uart::IN_1},
+        {Gpio::IN_1, Uart::IN_1},   // index 0 — main RC channel + telemetry-to-Rx
+        {Gpio::IN_2, Uart::IN_2},   // index 1 — downstream EX Bus telemetry (e.g. ESC)
     };
 
-    // ── Servo OUTPUT ports — IN_2..IN_12 as actuator headers ─────────
+    // ── Servo OUTPUT ports — IN_3..IN_12 as actuator headers ─────────
     sfx_peripherals::MicroservoPort servoOut[hubfx_caps::servo] = {
-        {Gpio::IN_2},  {Gpio::IN_3},  {Gpio::IN_4},
-        {Gpio::IN_5},  {Gpio::IN_6},  {Gpio::IN_7},
-        {Gpio::IN_8},  {Gpio::IN_9},  {Gpio::IN_10},
-        {Gpio::IN_11}, {Gpio::IN_12},
+        {Gpio::IN_3},  {Gpio::IN_4},  {Gpio::IN_5},
+        {Gpio::IN_6},  {Gpio::IN_7},  {Gpio::IN_8},
+        {Gpio::IN_9},  {Gpio::IN_10}, {Gpio::IN_11},
+        {Gpio::IN_12},
     };
 
     // ── Hardware probe ───────────────────────────────────────────────
@@ -411,8 +415,8 @@ public:
     //
     // Rail voltages (Phase 0 of GunFX rollout, instructions/22):
     //   CH1..8       — 8 V buck output (drives heaters / fans / LED rings)
-    //   IN_1         — 3.3 V GPIO logic (RC PWM / SBUS / Jeti EX input)
-    //   IN_2..IN_12  — 5 V servo rail (microservo headers)
+    //   IN_1, IN_2   — 3.3 V GPIO logic (IN_1 RC PWM/SBUS/Jeti EX; IN_2 Jeti EX Bus telemetry)
+    //   IN_3..IN_12  — 5 V servo rail (microservo headers)
     // Effects use these to compute voltage-scaled PWM duty for sub-rail
     // elements (a 5 V smoke heater on the 8 V rail wants ~63 % duty).
 

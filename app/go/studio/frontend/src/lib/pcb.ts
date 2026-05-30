@@ -34,8 +34,10 @@ export interface BoardPcb {
 // ─── HubFX (769×969 top view) — measured centroids ────────────────────
 // Left edge   : CH1..CH8  → PCA9685 LED/PWM channels (pwm 0..7), x≈7.7%.
 // Right edge  : IN_12 (top) … IN_1 (bottom) header column, x≈94%.
-//               IN_2..IN_12 are servo ports 0..10 (SRV1..SRV11); IN_1 is
-//               the single input port.  So top→bottom = SRV11..SRV1, IN1.
+//               IN_3..IN_12 are servo ports 0..9 (SRV1..SRV10); IN_2 + IN_1
+//               are the two input ports (IN2 = Jeti EX Bus telemetry monitor
+//               on UART2, idx 1; IN1 = main RC/Jeti, idx 0).  So top→bottom =
+//               SRV10..SRV1, IN2, IN1.
 const hubMarkers: PortMarker[] = []
 {
     const chY = [11.1, 17.2, 23.3, 29.4, 35.5, 41.7, 47.8, 53.9] // CH1..CH8
@@ -45,10 +47,12 @@ const hubMarkers: PortMarker[] = []
     // grid than the silkscreen labels the detector caught — ~3% apart, not
     // ~6% — so the column is anchored at the top row and compacted.
     const rightY = [9.2, 12.25, 15.3, 18.35, 21.4, 24.45, 27.5, 30.55, 33.6, 36.65, 39.7, 42.75]
-    for (let i = 0; i < 11; i++) {
-        const servoIdx = 10 - i               // top row = SRV11 (IN_12) … = servo[10]
+    for (let i = 0; i < 10; i++) {
+        const servoIdx = 9 - i                // top row = SRV10 (IN_12) … = servo[9]
         hubMarkers.push({ kind: PortKind.Servo, index: servoIdx, label: `SRV${servoIdx + 1}`, x: 94, y: rightY[i] })
     }
+    // IN_2 (UART2 Jeti EX Bus telemetry monitor) then IN_1 (main channel).
+    hubMarkers.push({ kind: PortKind.Input, index: 1, label: 'IN2', x: 94, y: rightY[10] })
     hubMarkers.push({ kind: PortKind.Input, index: 0, label: 'IN1', x: 94, y: rightY[11] })
 }
 

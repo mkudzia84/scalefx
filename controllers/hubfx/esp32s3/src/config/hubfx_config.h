@@ -262,6 +262,8 @@ inline uint8_t hubfxRoleKindFromName(const char* name) {
         std::strcmp(name, "sbus-input")        == 0)      return RoleKind::SbusInput;
     if (std::strcmp(name, "jeti_ex_input")     == 0 ||
         std::strcmp(name, "jeti-ex-input")     == 0)      return RoleKind::JetiExInput;
+    if (std::strcmp(name, "jeti_ex_telemetry") == 0 ||
+        std::strcmp(name, "jeti-ex-telemetry") == 0)      return RoleKind::JetiExTelemetry;
     if (std::strcmp(name, "led_animator")      == 0 ||
         std::strcmp(name, "led-animator")      == 0)      return RoleKind::LedAnimator;
     if (std::strcmp(name, "dc_motor")          == 0 ||

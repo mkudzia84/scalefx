@@ -175,6 +175,7 @@ void RoleServicePolicy::handleAttach(const uint8_t* p, size_t len) {
                 case RoleKind::RcPwmInput:  ok = attachRcPwmInput (*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::SbusInput:   ok = attachSbusInput  (*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::JetiExInput: ok = attachJetiExInput(*b, portIdx, cfg, cfgLen); break;
+                case RoleKind::JetiExTelemetry: ok = attachJetiExTelemetry(*b, portIdx, cfg, cfgLen); break;
                 default: _ctx->sendNack(RoleError::ROLE_KIND_NOT_SUPPORTED); return;
             }
             break;
@@ -276,6 +277,7 @@ void RoleServicePolicy::handleList() {
         if      (std::holds_alternative<RcPwmInputRole>(b->role))  rk = RoleKind::RcPwmInput;
         else if (std::holds_alternative<SbusInputRole>(b->role))   rk = RoleKind::SbusInput;
         else if (std::holds_alternative<JetiExInputRole>(b->role)) rk = RoleKind::JetiExInput;
+        else if (std::holds_alternative<JetiExTelemetryRole>(b->role)) rk = RoleKind::JetiExTelemetry;
         appendIfAttached(PortKind::Input, i, rk);
     }
 
@@ -386,6 +388,27 @@ bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
             emitJetiExFrameBroadcast(portIdx, *r);
         }
     });
+    return true;
+}
+
+bool RoleServicePolicy::attachJetiExTelemetry(InputBinding& b, uint8_t portIdx,
+                                              const uint8_t* cfg, size_t cfgLen) {
+    auto& role = b.role.emplace<JetiExTelemetryRole>();
+    // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8] — same encoding
+    // as the Jeti EX input role; 0 = default 125 000.
+    uint32_t baud = 125000;
+    if (cfgLen >= 3) {
+        const uint16_t kbaud = ((uint16_t)cfg[1] << 8) | cfg[2];
+        if (kbaud == 250) baud = 250000;
+        else if (kbaud == 125 || kbaud == 0) baud = 125000;
+        else baud = (uint32_t)kbaud * 1000;
+    }
+    if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
+    role.setPortIdx(portIdx);   // for the SFX_INSTRUMENTATION [jtelem] diag log
+    // Monitor-only this phase: the role decodes downstream telemetry into the
+    // shared JetiTelemetryHub; the master channel's responder (phase 2) serves
+    // it to the Rx.  No wire broadcast — health is visible via the gated
+    // [jtelem] log on the diag stream.
     return true;
 }
 

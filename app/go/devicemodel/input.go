@@ -17,10 +17,11 @@ package devicemodel
 type InputProtocol string
 
 const (
-	InputNone   InputProtocol = "none"
-	InputPpm    InputProtocol = "ppm"
-	InputSbus   InputProtocol = "sbus"
-	InputJetiEx InputProtocol = "jeti-ex"
+	InputNone        InputProtocol = "none"
+	InputPpm         InputProtocol = "ppm"
+	InputSbus        InputProtocol = "sbus"
+	InputJetiEx      InputProtocol = "jeti-ex"
+	InputJetiExTelem InputProtocol = "jeti-ex-telemetry"
 )
 
 // InputProtocolDef describes a selectable protocol for the UI.
@@ -37,6 +38,9 @@ var inputProtocols = []InputProtocolDef{
 	{ID: InputPpm, Label: "PPM", RoleKind: 0x02 /*RcPwmInput*/, Implemented: true, MaxChannels: 24},
 	{ID: InputSbus, Label: "SBUS", RoleKind: 0x03 /*SbusInput*/, Implemented: true, MaxChannels: 16},
 	{ID: InputJetiEx, Label: "Jeti EX", RoleKind: 0x04 /*JetiExInput*/, Implemented: true, MaxChannels: 24},
+	// Telemetry monitor (no RC channels) — polls a downstream EX Bus slave
+	// (e.g. ESC) and forwards its telemetry over the main channel to the Rx.
+	{ID: InputJetiExTelem, Label: "Jeti EX Telemetry", RoleKind: 0x05 /*JetiExTelemetry*/, Implemented: true, MaxChannels: 0},
 }
 
 // InputProtocols returns the protocol catalog.

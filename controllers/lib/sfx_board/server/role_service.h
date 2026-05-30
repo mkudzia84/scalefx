@@ -144,6 +144,7 @@ private:
     bool attachRcPwmInput    (InputBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
     bool attachSbusInput     (InputBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
     bool attachJetiExInput   (InputBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
+    bool attachJetiExTelemetry(InputBinding& b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
     bool attachLedAnimator   (PwmBinding&    b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
     bool attachDcMotor       (PwmBinding&    b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
     bool attachHeater        (PwmBinding&    b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
