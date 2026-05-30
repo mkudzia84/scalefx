@@ -135,13 +135,29 @@ public:
         const uint32_t now = millis();
         // IN_2 first: drain the ESC's telemetry into the hub before IN_1
         // re-parses the next echoed master frame.  Only when the downstream
-        // link is in use (otherwise _escPort is null — see begin()).  Each
-        // link is gated by its noise watchdog (active-but-no-frames → off).
-        if (_escPort &&
-            _escWatch.shouldDrain(now, _escMon.rxByteCount(), _escMon.frameCount(), "IN_2"))
+        // link is in use (otherwise _escPort is null — see begin()).  ALWAYS
+        // drain (bounded) — the monitor only watches health, never gates.
+        if (_escPort) {
             _escMon.update(now);
-        if (_rxWatch.shouldDrain(now, _rxBus.rxByteCount(), _rxBus.rxFrameCount(), "IN_1"))
-            _rxBus.update();        // IN_1: master frames → channels (+ reply hook)
+            _escWatch.observe(now, _escMon.rxByteCount(), _escMon.frameCount(), "IN_2");
+        }
+        _rxBus.update();            // IN_1: master frames → channels (+ reply hook)
+        _rxWatch.observe(now, _rxBus.rxByteCount(), _rxBus.rxFrameCount(), "IN_1");
+
+#if SFX_INSTRUMENTATION
+        // Concise rx health (every 2 s): bytes = line active? frames = decoding?
+        // err = CRC failures (wrong baud / unhandled frame types / noise);
+        // ch/valid = channel decode state.  The "mark what is wrong" counters.
+        if (now - _lastRxLog >= 2000) {
+            _lastRxLog = now;
+            SFX_LOG_INFO("[jexp] IN_1 rxB=%lu rxF=%lu rxErr=%lu ch=%u valid=%d%s",
+                         (unsigned long)_rxBus.rxByteCount(),
+                         (unsigned long)_rxBus.rxFrameCount(),
+                         (unsigned long)_rxBus.rxErrorCount(),
+                         _rxBus.channelCount(), _rxBus.isValid() ? 1 : 0,
+                         _rxWatch.noisy() ? " NOISY" : "");
+        }
+#endif
 
         if (now - _lastBuiltin >= 1000 && _localDev != 0xFF) {
             _lastBuiltin = now;
@@ -210,92 +226,73 @@ public:
     uint8_t  deviceCount() const { return JetiTelemetryHub::instance().deviceCount(); }
     uint8_t  sensorCount() const { return JetiTelemetryHub::instance().activeSensorCount(); }
 
-    /// True while a link's drain is latched-off because the line is active but
-    /// produced ZERO valid frames (floating / wrong-baud noise).  Surfaced in
-    /// the role diagnostics so `diag` shows WHY channels went dead.
-    bool rxNoiseDisabled()  const { return _rxWatch.latched(); }
-    bool escNoiseDisabled() const { return _escWatch.latched(); }
+    /// True while a link is active (bytes flowing) but NOT decoding valid
+    /// frames — surfaced in diag so the operator sees WHY channels are dead
+    /// (noisy line / wrong baud / unhandled frame types).  The drain keeps
+    /// running regardless (we never give up on catching a real frame).
+    bool rxLinkNoisy()  const { return _rxWatch.noisy(); }
+    bool escLinkNoisy() const { return _escWatch.noisy(); }
+    uint32_t rxNoiseSecs() const { return _rxWatch.totalNoiseSecs; }
 
 private:
     JetiExpander() = default;
     JetiExpander(const JetiExpander&) = delete;
     JetiExpander& operator=(const JetiExpander&) = delete;
 
-    // ── Noise watchdog ───────────────────────────────────────────────
-    // A Jeti link that is ACTIVE (bytes flowing) but yields NO CRC-valid frame
-    // is floating / wrong-baud / cross-talk noise, not a signal.  Draining it
-    // burns CPU on garbage and (pre bounded-drain) could stall the loop.  Once
-    // a link has streamed noise with zero valid frames for kNoiseSecsToDisable
-    // consecutive seconds, latch its drain OFF and log an error to diag; then
-    // self-heal: while disabled it re-probes every kReprobeMs by draining for a
-    // short kProbeWindowMs window — if valid frames return it re-enables, else
-    // it re-latches immediately (so a noisy line only drains ~kProbeWindowMs out
-    // of each kReprobeMs, not continuously).  Applies to BOTH links — IN_1 (the
-    // main Jeti RC input) and IN_2 (downstream).  1 s re-probe keeps control
-    // recovery snappy on the main input once the receiver comes up.
-    static constexpr uint32_t kNoiseBytesPerSec   = 1000;  // line "active" floor
-    static constexpr uint8_t  kNoiseSecsToDisable = 3;     // grace for Rx sync/glitch
-    static constexpr uint32_t kReprobeMs          = 1000;  // disable/re-enable cadence
-    static constexpr uint32_t kProbeWindowMs      = 250;   // drain window per re-probe
+    // ── Link health monitor (NON-disabling) ──────────────────────────
+    // The bounded frame-parser drain (kMaxDrainBytesPerCall) is the safety net
+    // that stops a noisy/floating UART from EVER stalling the loop, so we always
+    // KEEP DRAINING — even a marginal / mixed line (channel frames interleaved
+    // with telemetry-request frames, or frame types this parser doesn't decode)
+    // must keep getting drained or we'd starve the real channel frames.  This
+    // monitor therefore never gates the drain; it only watches per-second
+    // health (bytes flowing? valid frames decoding?), counts noisy seconds for
+    // diag, and logs HEALTH TRANSITIONS (not per-second spam) so the operator
+    // can see WHY channels are dead (line silent vs noisy-but-no-valid-frames)
+    // without killing a real signal.  Earlier this DISABLED the drain after a
+    // few no-frame seconds, which starved a connected receiver whose stream had
+    // brief no-decode gaps — removed per that bench finding.
+    static constexpr uint32_t kNoiseBytesPerSec = 200;   // line "active" floor
 
-    struct NoiseWatch {
-        // Names avoid the Arduino ENABLED/DISABLED GPIO macros.
-        enum State : uint8_t { Active, Latched, Probing };
-        uint32_t lastMs = 0, baseBytes = 0, baseFrames = 0, stateMs = 0;
-        uint8_t  noiseSecs = 0;
-        State    state = Active;
+    struct LinkMonitor {
+        uint32_t lastMs = 0, baseBytes = 0, baseFrames = 0;
+        uint32_t noiseSecs = 0;       // consecutive sec: bytes flowing, 0 frames
+        uint32_t totalNoiseSecs = 0;  // cumulative (diag)
+        bool     healthy = false;     // valid frames decoded in the last window
+        bool     primed  = false;     // seen at least one window
 
         void reset(uint32_t now) {
-            lastMs = now; baseBytes = baseFrames = 0; stateMs = now;
-            noiseSecs = 0; state = Active;
+            lastMs = now; baseBytes = baseFrames = 0;
+            noiseSecs = totalNoiseSecs = 0; healthy = false; primed = false;
         }
-        bool latched() const { return state != Active; }
+        bool noisy() const { return primed && !healthy && noiseSecs > 0; }
 
-        // Returns true if the link should be drained this pass.
-        bool shouldDrain(uint32_t now, uint32_t bytes, uint32_t frames,
-                         const char* label) {
-            switch (state) {
-            case Latched:
-                if (now - stateMs < kReprobeMs) return false;   // wait to re-probe
-                state = Probing; stateMs = now; baseFrames = frames;
-                return true;                                    // drain the probe window
-            case Probing:
-                if (now - stateMs >= kProbeWindowMs) {
-                    if (frames - baseFrames > 0) {              // recovered
-                        state = Active; noiseSecs = 0;
-                        lastMs = now; baseBytes = bytes; baseFrames = frames;
-                        SFX_LOG_INFO("[jexp] %s: valid frames returned — drain re-enabled", label);
-                    } else {                                    // still noise
-                        state = Latched; stateMs = now;
-                        return false;
-                    }
-                }
-                return true;
-            default: break;   // Active
-            }
-            if (now - lastMs >= 1000) {
-                const uint32_t db = bytes - baseBytes;
-                const uint32_t df = frames - baseFrames;
-                lastMs = now; baseBytes = bytes; baseFrames = frames;
-                if (db >= kNoiseBytesPerSec && df == 0) {
-                    if (++noiseSecs >= kNoiseSecsToDisable) {
-                        state = Latched; stateMs = now; noiseSecs = 0;
-                        SFX_LOG_ERROR("[jexp] %s: %lu B/s noise, 0 valid frames for "
-                                      "%us — drain DISABLED (floating / wrong-baud "
-                                      "line); re-probing every %lus", label,
-                                      (unsigned long)db, (unsigned)kNoiseSecsToDisable,
-                                      (unsigned long)(kReprobeMs / 1000));
-                        return false;
-                    }
-                } else {
-                    noiseSecs = 0;   // valid frame seen, or line quiet
-                }
-            }
-            return true;
+        // Monitor only — NEVER stops the drain.  Updates health + logs the
+        // transitions healthy<->noisy.
+        void observe(uint32_t now, uint32_t bytes, uint32_t frames,
+                     const char* label) {
+            if (now - lastMs < 1000) return;
+            const uint32_t db = bytes - baseBytes;
+            const uint32_t df = frames - baseFrames;
+            lastMs = now; baseBytes = bytes; baseFrames = frames;
+            const bool was = healthy;
+            if (df > 0) {
+                healthy = true; noiseSecs = 0;
+            } else if (db >= kNoiseBytesPerSec) {
+                healthy = false; noiseSecs++; totalNoiseSecs++;
+            } // else: line quiet (no bytes) — leave healthy as-is, no spam
+            if (primed && was && !healthy)
+                SFX_LOG_WARN("[jexp] %s: %lu B/s but 0 valid frames — line NOISY "
+                             "(still draining to catch real frames)",
+                             label, (unsigned long)db);
+            else if (primed && !was && healthy)
+                SFX_LOG_INFO("[jexp] %s: valid frames decoding (%lu/s)",
+                             label, (unsigned long)df);
+            primed = true;
         }
     };
-    NoiseWatch _rxWatch;
-    NoiseWatch _escWatch;
+    LinkMonitor _rxWatch;
+    LinkMonitor _escWatch;
 
     // Telemetry hook (runs during update()'s _rxBus.update()): build the next
     // multi-device frame from the hub (under lock), then half-duplex TX it.
@@ -420,6 +417,9 @@ private:
     bool      _running     = false;     // begin() → true; update() gates on it
     uint32_t  _lastBuiltin = 0;         // 1 Hz uptime-sensor refresh (in update)
     uint32_t  _lastExpire  = 0;         // 1 Hz stale-device expiry (in update)
+#if SFX_INSTRUMENTATION
+    uint32_t  _lastRxLog   = 0;         // 2 s rx-health diag (in update)
+#endif
 };
 
 }  // namespace JetiEx
