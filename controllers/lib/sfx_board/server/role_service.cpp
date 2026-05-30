@@ -221,6 +221,13 @@ void RoleServicePolicy::handleDetach(const uint8_t* p, size_t len) {
         case PortKind::Input: {
             auto* b = _reg->inputAt(portIdx);
             if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+#if SFX_PLATFORM_ESP32
+            // The JetiExpander owns BOTH Jeti links; detaching the Rx (IN_1)
+            // role tears it down (which also releases the downstream port).
+            if (std::holds_alternative<JetiExInputRole>(b->role)) {
+                JetiEx::JetiExpander::instance().end();
+            }
+#endif
             // Release the peripheral the previous role had claimed.
             if (b->port) b->port->disable();
             b->role.emplace<std::monostate>();
@@ -374,6 +381,23 @@ bool RoleServicePolicy::attachJetiExInput(InputBinding& b, uint8_t portIdx,
         else baud = (uint32_t)kbaud * 1000;
     }
     if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
+
+#if SFX_PLATFORM_ESP32
+    // Start the board-unique JetiExpander on BOTH Jeti links: this port (IN_1,
+    // Rx side, we are slave) + the other input port (IN_2, downstream ESC side,
+    // we are master) if the board declares one.  The expander (a Core-0 task)
+    // owns the UART I/O for both; the roles are thin handles, so they never
+    // double-drive the UART.  Protocol-gated: only JetiEX attach starts it.
+    sfx_peripherals::InputPort* escPort = nullptr;
+    for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
+        if (i == portIdx) continue;
+        auto* ob = _reg->inputAt(i);
+        if (ob && ob->port) { escPort = ob->port; break; }
+    }
+    JetiEx::JetiExpander::instance().begin(b.port, escPort,
+                                           /*usn=*/0xA400, /*lsn=*/0x0100, "HubFx", baud);
+#endif
+
     // Default 50 Hz so the InputDispatcher (and thus effects) get RC values
     // from boot even with no host connected — field operation has no Studio.
     // The WIRE broadcast is gated on a listening host (hostVerboseActive), so

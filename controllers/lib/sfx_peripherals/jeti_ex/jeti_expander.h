@@ -57,24 +57,41 @@ public:
                uint16_t hubUsn, uint16_t hubLsn, const char* hubName,
                uint32_t baud = 125000) {
         if (_task) return true;                       // already running
-        if (!rxPort || !escPort) return false;
+        if (!rxPort) return false;
         _rxPort  = rxPort;
-        _escPort = escPort;
-        if (!rxPort->configureJetiEx(baud))  return false;
-        if (!escPort->configureJetiEx(baud)) return false;
+        if (!rxPort->configureJetiEx(baud)) return false;
         Stream* rxStream = rxPort->uartStream();
-        _escStream       = escPort->uartStream();
-        if (!rxStream || !_escStream) return false;
+        if (!rxStream) return false;
+
+        // Downstream (ESC) link is optional — without it we still serve the
+        // HubFX-own device, just with nothing to forward/merge.
+        _escPort = escPort;
+        if (_escPort && _escPort->configureJetiEx(baud)) {
+            _escStream = _escPort->uartStream();
+            if (_escStream) _escMon.begin(_escStream);
+            else            _escPort = nullptr;
+        } else {
+            _escPort = nullptr;
+        }
 
         if (!_rxBus.begin(rxStream)) return false;
         _rxBus.setTxPort(rxPort);                     // half-duplex TX on IN_1
         _rxBus.onTelemetryRequest([this](uint8_t pkt){ serveTelemetry(pkt); });
         _rxBus.onRawFrame([this](const uint8_t* f, uint8_t l){ forwardToEsc(f, l); });
-        _escMon.begin(_escStream);
 
-        // Register the HubFX-own device (local → never expires).
-        _localDev = JetiTelemetryHub::instance().upsertDevice(
-            hubUsn, hubLsn, hubName, /*local=*/true, /*nowMs=*/0);
+        // Register the HubFX-own device (local → never expires) + its built-in
+        // sensors, so it shows on the radio even with no downstream ESC.
+        {
+            auto& hub = JetiTelemetryHub::instance();
+            JetiTelemetryHub::ScopedLock lk(hub);
+            _localDev = hub.upsertDevice(hubUsn, hubLsn, hubName, /*local=*/true, 0);
+            if (_localDev != 0xFF) {
+                hub.setSensor(_localDev, kUptimeId,  ExDataType::Int22, 0, 0, 0);
+                hub.setLabel (_localDev, kUptimeId,  "Uptime", "s");
+                hub.setSensor(_localDev, kFreeRamId, ExDataType::Int22, 0, 0, 0);
+                hub.setLabel (_localDev, kFreeRamId, "FreeRAM", "kB");
+            }
+        }
 
         _stop = false;
         const BaseType_t ok = xTaskCreatePinnedToCore(
@@ -134,12 +151,15 @@ public:
     bool     valid()        const { return _rxBus.isValid(); }
 
     // ── Diagnostics ──────────────────────────────────────────────────
+    uint32_t rxBytes()   const { return _rxBus.rxByteCount(); }
     uint32_t rxFrames()  const { return _rxBus.rxFrameCount(); }
     uint32_t rxErrors()  const { return _rxBus.rxErrorCount(); }
     uint32_t txResp()    const { return _rxBus.txResponseCount(); }
+    uint32_t escBytes()  const { return _escMon.rxByteCount(); }
     uint32_t escFrames() const { return _escMon.telemetryFrames(); }
     uint32_t escErrors() const { return _escMon.errorCount(); }
     uint8_t  deviceCount() const { return JetiTelemetryHub::instance().deviceCount(); }
+    uint8_t  sensorCount() const { return JetiTelemetryHub::instance().activeSensorCount(); }
 
 private:
     JetiExpander() = default;
@@ -149,7 +169,7 @@ private:
     static void taskEntry(void* arg) { static_cast<JetiExpander*>(arg)->taskLoop(); }
 
     void taskLoop() {
-        uint32_t lastExpire = 0, lastLog = 0;
+        uint32_t lastExpire = 0, lastLog = 0, lastBuiltin = 0;
         for (;;) {
             if (_stop) break;
             const uint32_t now = millis();
@@ -159,6 +179,15 @@ private:
             // IN_1: parse master frames → respond (hook) + forward (hook).
             _rxBus.update();
 
+            if (now - lastBuiltin >= 1000 && _localDev != 0xFF) {
+                lastBuiltin = now;
+                auto& hub = JetiTelemetryHub::instance();
+                JetiTelemetryHub::ScopedLock lk(hub);
+                hub.setSensor(_localDev, kUptimeId,  ExDataType::Int22, 0,
+                              (int32_t)(now / 1000), now);
+                hub.setSensor(_localDev, kFreeRamId, ExDataType::Int22, 0,
+                              (int32_t)(ESP.getFreeHeap() / 1024), now);
+            }
             if (now - lastExpire >= 1000) {
                 lastExpire = now;
                 auto& hub = JetiTelemetryHub::instance();
@@ -268,6 +297,8 @@ private:
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
+    static constexpr uint8_t kUptimeId  = 1;   // built-in HubFX-own sensors
+    static constexpr uint8_t kFreeRamId = 2;
     uint8_t  _localDev = 0xFF;            // hub index of the HubFX-own device
 
     // Rotation cursors (data + text walk independently across the hub).
