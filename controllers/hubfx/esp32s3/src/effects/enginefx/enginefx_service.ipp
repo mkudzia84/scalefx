@@ -258,6 +258,10 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::forceStart() {
     if (_cfg.startingPath[0]) {
         _activeChannel = _cfg.channelA;
         const uint32_t startOffsetMs = warmStart ? _cfg.startingOffsetMs : 0;
+        SFX_LOG_INFO("[engine] forceStart %s — '%s' offset=%lums (cfg startingOffset=%lums)",
+                     warmStart ? "WARM (from stopping)" : "COLD (from stopped)",
+                     _cfg.startingPath, (unsigned long)startOffsetMs,
+                     (unsigned long)_cfg.startingOffsetMs);
         if (!startAudio(_cfg.startingPath, _cfg.channelA, startOffsetMs,
                         /*loop=*/false, /*fadeInMs=*/_cfg.startFadeInMs)) {
             return false;

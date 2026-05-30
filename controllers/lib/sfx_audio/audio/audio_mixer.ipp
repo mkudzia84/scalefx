@@ -517,6 +517,19 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
             (static_cast<uint32_t>(options.startOffsetMs) * ws.sampleRate_Hz) / 1000;
         if (offsetFrames < ws.totalFrames) {
             ws.source->seekFrame(offsetFrames);
+            SFX_LOG_INFO("[mixer] ch%u seek %dms -> frame %lu/%lu (%.1fs file)",
+                         channel, options.startOffsetMs, (unsigned long)offsetFrames,
+                         (unsigned long)ws.totalFrames,
+                         ws.sampleRate_Hz ? (float)ws.totalFrames / ws.sampleRate_Hz : 0.0f);
+        } else {
+            // Offset past end-of-file — the seek is SKIPPED and playback starts
+            // at 0.  A large engine startingOffset on a short start sound lands
+            // here (looks like "the offset does nothing").
+            SFX_LOG_WARN("[mixer] ch%u startOffset %dms EXCEEDS file length "
+                         "(%.1fs, %lu frames) — playing from 0",
+                         channel, options.startOffsetMs,
+                         ws.sampleRate_Hz ? (float)ws.totalFrames / ws.sampleRate_Hz : 0.0f,
+                         (unsigned long)ws.totalFrames);
         }
     }
 
