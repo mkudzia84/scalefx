@@ -2,8 +2,9 @@
  * JetiExTelemetryRole — downstream (ESC) Jeti EX Bus link (IN_2) marker.
  *
  * Thin marker.  The downstream link is owned and driven by the board-unique
- * JetiExpander (Core-0 task), which the IN_1 Jeti EX role's attach handler
- * starts with BOTH links — it configures IN_2, polls the downstream device,
+ * JetiExpander (main-loop, driven by the IN_1 Jeti EX role's tick), which the
+ * IN_1 attach handler starts with BOTH links — it configures IN_2, monitors the
+ * downstream device,
  * decodes its telemetry PASS-THROUGH into the shared JetiTelemetryHub, and the
  * Rx-facing responder serves it.  This role just validates the port and
  * delegates diagnostics to the expander.  ESP32-only at runtime.
@@ -41,7 +42,7 @@ public:
         return true;
     }
 
-    /// No I/O — the JetiExpander task owns the downstream link.
+    /// No I/O — the JetiExpander (driven by the IN_1 role tick) owns both links.
     void tick() {}
 
     void setPortIdx(uint8_t idx) { _portIdx = idx; }

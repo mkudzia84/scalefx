@@ -3,8 +3,9 @@
  *
  * Thin marker/handle.  The actual I/O — channel decode, the multi-device
  * telemetry response, and the downstream (ESC) forward — is owned by the
- * board-unique JetiExpander (a Core-0 task), which the attach handler starts
- * with BOTH links (IN_1 = Rx, IN_2 = downstream).  This role validates the
+ * board-unique JetiExpander, which the attach handler starts with BOTH links
+ * (IN_1 = Rx, IN_2 = downstream).  The expander's decode runs in the MAIN LOOP,
+ * driven by this role's tick() (no separate task).  This role validates the
  * port, carries the broadcast timer, and delegates channel + diagnostic reads
  * to the expander.  Effects read channels through `channel_us()` as for any
  * input role.  ESP32-only at runtime (the expander is ESP32-only).

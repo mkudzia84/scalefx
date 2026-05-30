@@ -1,6 +1,7 @@
 /*
  * JetiExInputRole implementation — a thin handle that delegates to the
- * board-unique JetiExpander (Core-0 task).  See the header.
+ * board-unique JetiExpander, whose decode it drives from tick() in the main
+ * loop (no separate task).  See the header.
  */
 
 #include "jeti_ex_input_role.h"
@@ -45,7 +46,12 @@ void JetiExInputRole::setBroadcastHz(uint8_t hz) {
 
 void JetiExInputRole::tick() {
     if (!_port) return;
-    // No UART I/O here — the JetiExpander task owns it.  Broadcast timer only.
+#if SFX_PLATFORM_ESP32
+    // Drive the expander's decode IN THE MAIN LOOP (cooperative) — it no longer
+    // runs on a prio-3 Core-0 task that preempted the storage/upload pipeline.
+    JetiEx::JetiExpander::instance().update();
+#endif
+    // Broadcast timer only.
     if (_broadcastInterval_ms == 0 || !_onBroadcast) return;
     const uint32_t now = millis();
     if (now - _lastBroadcastMs >= _broadcastInterval_ms) {

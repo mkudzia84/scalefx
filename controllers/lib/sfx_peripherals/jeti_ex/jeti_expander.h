@@ -30,8 +30,6 @@
 
 #include <Arduino.h>
 #include <cstdint>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
 #include <ports/input_port.h>
 #include <serial/diag_log.h>
@@ -56,7 +54,7 @@ public:
                sfx_peripherals::InputPort* escPort,
                uint16_t hubUsn, uint16_t hubLsn, const char* hubName,
                uint32_t baud = 125000) {
-        if (_task) return true;                       // already running
+        if (_running) return true;                    // already running
         if (!rxPort) return false;
         _rxPort  = rxPort;
         if (!rxPort->configureJetiEx(baud)) return false;
@@ -110,24 +108,61 @@ public:
             }
         }
 
-        _stop = false;
-        const BaseType_t ok = xTaskCreatePinnedToCore(
-            &JetiExpander::taskEntry, "jetiExp", 4096, this,
-            /*priority=*/3,             // above loopTask (1)
-            &_task, /*core=*/0);        // Core 0 — audio owns Core 1
-        if (ok != pdPASS) { _task = nullptr; return false; }
-        SFX_LOG_INFO("[jexp] started on Core 0 (rx=IN_1, esc=IN_2, baud=%lu)",
+        // Run in the MAIN LOOP, driven by JetiExInputRole::tick() → update() —
+        // NOT a separate task.  With telemetry disabled the only work is RC
+        // channel decode (not time-critical), and a prio-3 Core-0 task preempted
+        // the main loop and starved the storage/upload pipeline (file.list +
+        // segment-ACK timeouts).  Cooperative main-loop decode is the pre-refactor
+        // design and is naturally paused by the upload-exclusivity gate.  Revisit
+        // a task only if telemetry (the ~4 ms reply slot) is re-enabled.
+        _running     = true;
+        _lastBuiltin = _lastExpire = _lastLog = 0;
+        SFX_LOG_INFO("[jexp] started in main loop (rx=IN_1, esc=IN_2, baud=%lu)",
                      (unsigned long)baud);
         return true;
     }
 
-    void end() {
-        if (_task) {
-            _stop = true;
-            // Let the loop observe _stop and self-delete; then forget it.
-            for (int i = 0; i < 50 && _task; ++i) SFX_DELAY_MS(2);
-            _task = nullptr;
+    // Drive one decode pass — called every main-loop iteration from
+    // JetiExInputRole::tick().  Drains IN_2 (ESC monitor) then IN_1 (channels +,
+    // when telemetry is enabled, the reply hook), and refreshes built-in
+    // sensors.  No-op until begin() / after end().
+    void update() {
+        if (!_running) return;
+        const uint32_t now = millis();
+        // IN_2 first: drain the ESC's telemetry into the hub before IN_1
+        // re-parses the next echoed master frame.
+        _escMon.update(now);
+        _rxBus.update();            // IN_1: master frames → channels (+ reply hook)
+
+        if (now - _lastBuiltin >= 1000 && _localDev != 0xFF) {
+            _lastBuiltin = now;
+            auto& hub = JetiTelemetryHub::instance();
+            JetiTelemetryHub::ScopedLock lk(hub);
+            hub.setSensor(_localDev, kUptimeId, ExDataType::Int22, 0,
+                          (int32_t)(now / 1000), now);
         }
+        if (now - _lastExpire >= 1000) {
+            _lastExpire = now;
+            auto& hub = JetiTelemetryHub::instance();
+            JetiTelemetryHub::ScopedLock lk(hub);
+            hub.expireStale(now, 2000);   // disconnected ESC drops out
+        }
+#if SFX_INSTRUMENTATION
+        if (now - _lastLog >= 1000) {
+            _lastLog = now;
+            SFX_LOG_INFO("[jexp] rxF=%lu rxE=%lu tx=%lu | escF=%lu escE=%lu | dev=%u",
+                         (unsigned long)_rxBus.rxFrameCount(),
+                         (unsigned long)_rxBus.rxErrorCount(),
+                         (unsigned long)_rxBus.txResponseCount(),
+                         (unsigned long)_escMon.telemetryFrames(),
+                         (unsigned long)_escMon.errorCount(),
+                         (unsigned)JetiTelemetryHub::instance().deviceCount());
+        }
+#endif
+    }
+
+    void end() {
+        _running = false;             // update() becomes a no-op
         _rxBus.end();
         _escMon.end();
         if (_rxPort)  _rxPort->disable();
@@ -136,7 +171,7 @@ public:
         _escStream = nullptr;
     }
 
-    bool running() const { return _task != nullptr; }
+    bool running() const { return _running; }
 
     // ── HubFX-own telemetry (the local device) ───────────────────────
     void setLocalSensor(uint8_t id, const char* label, const char* unit,
@@ -183,53 +218,7 @@ private:
     JetiExpander(const JetiExpander&) = delete;
     JetiExpander& operator=(const JetiExpander&) = delete;
 
-    static void taskEntry(void* arg) { static_cast<JetiExpander*>(arg)->taskLoop(); }
-
-    void taskLoop() {
-        uint32_t lastExpire = 0, lastLog = 0, lastBuiltin = 0;
-        for (;;) {
-            if (_stop) break;
-            const uint32_t now = millis();
-            // IN_2 first: drain the ESC's telemetry into the hub before IN_1
-            // forwards (and harmlessly re-parses) the next echoed master frame.
-            _escMon.update(now);
-            // IN_1: parse master frames → respond (hook) + forward (hook).
-            _rxBus.update();
-
-            if (now - lastBuiltin >= 1000 && _localDev != 0xFF) {
-                lastBuiltin = now;
-                auto& hub = JetiTelemetryHub::instance();
-                JetiTelemetryHub::ScopedLock lk(hub);
-                hub.setSensor(_localDev, kUptimeId, ExDataType::Int22, 0,
-                              (int32_t)(now / 1000), now);
-            }
-            if (now - lastExpire >= 1000) {
-                lastExpire = now;
-                auto& hub = JetiTelemetryHub::instance();
-                JetiTelemetryHub::ScopedLock lk(hub);
-                hub.expireStale(now, 2000);   // disconnected ESC drops out
-            }
-#if SFX_INSTRUMENTATION
-            if (now - lastLog >= 1000) {
-                lastLog = now;
-                SFX_LOG_INFO("[jexp] rxF=%lu rxE=%lu tx=%lu | escF=%lu escE=%lu | dev=%u",
-                             (unsigned long)_rxBus.rxFrameCount(),
-                             (unsigned long)_rxBus.rxErrorCount(),
-                             (unsigned long)_rxBus.txResponseCount(),
-                             (unsigned long)_escMon.telemetryFrames(),
-                             (unsigned long)_escMon.errorCount(),
-                             (unsigned)JetiTelemetryHub::instance().deviceCount());
-            }
-#else
-            (void)lastLog;
-#endif
-            vTaskDelay(1);                     // ~1 ms; yields Core 0 to the loop
-        }
-        _task = nullptr;
-        vTaskDelete(nullptr);
-    }
-
-    // Telemetry hook (runs in-task during _rxBus.update()): build the next
+    // Telemetry hook (runs during update()'s _rxBus.update()): build the next
     // multi-device frame from the hub (under lock), then half-duplex TX it.
     void serveTelemetry(uint8_t pktId) {
         // Rate-limit replies (~30 Hz).  Each reply is a half-duplex TX turnaround
@@ -349,8 +338,10 @@ private:
     uint8_t  _textDev = 0;
     int16_t  _textSen = -1;               // -1 = device name, else sensor index
 
-    TaskHandle_t   _task = nullptr;
-    volatile bool  _stop = false;
+    bool      _running     = false;     // begin() → true; update() gates on it
+    uint32_t  _lastBuiltin = 0;         // 1 Hz uptime-sensor refresh (in update)
+    uint32_t  _lastExpire  = 0;         // 1 Hz stale-device expiry (in update)
+    uint32_t  _lastLog     = 0;         // 1 Hz [jexp] instrumentation (in update)
 };
 
 }  // namespace JetiEx
