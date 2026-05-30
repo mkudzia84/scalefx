@@ -7,9 +7,6 @@
 
 #if SFX_PLATFORM_ESP32
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>     // vTaskDelay — yield while waiting for TX-ring space
-
 namespace sfx {
 
 bool NativeUartStream::begin(uart_port_t port,
@@ -119,42 +116,13 @@ size_t NativeUartStream::readBytes(uint8_t* buffer, size_t length) {
     return consumed;
 }
 
-int NativeUartStream::availableForWrite() {
-    if (!_installed) return 0;
-    size_t freeBytes = 0;
-    if (uart_get_tx_buffer_free_size(_port, &freeBytes) != ESP_OK) return 0;
-    return (int)freeBytes;
-}
-
-bool NativeUartStream::waitTxSpace(size_t n) {
-    // Frame larger than the whole ring can never fit — caller must chunk; we
-    // refuse rather than spin to the deadline.  (Protocol frames are ≤ ~600 B,
-    // the ring is multiple KB, so this guards only against misuse.)
-    size_t freeBytes = 0;
-    if (uart_get_tx_buffer_free_size(_port, &freeBytes) != ESP_OK) return false;
-    if (freeBytes >= n) return true;                 // common case: fits now
-    // Ring is under pressure — poll briefly.  If the host is draining (6 Mbps),
-    // space frees within a tick or two; if it's gone, we hit the deadline and
-    // the caller drops the frame instead of wedging the loop.
-    for (uint32_t i = 0; i < kTxWriteDeadlineMs; ++i) {
-        vTaskDelay(1);                               // ~1 ms; lets the TX ISR drain
-        if (uart_get_tx_buffer_free_size(_port, &freeBytes) == ESP_OK &&
-            freeBytes >= n)
-            return true;
-    }
-    return false;
-}
-
 size_t NativeUartStream::write(uint8_t b) {
     if (!_installed) return 0;
-    if (!waitTxSpace(1)) return 0;                   // host not draining → drop
-    const int written = uart_write_bytes(_port, (const char*)&b, 1);
-    return (written < 0) ? 0 : (size_t)written;
+    return (size_t)uart_write_bytes(_port, (const char*)&b, 1);
 }
 
 size_t NativeUartStream::write(const uint8_t* buf, size_t n) {
     if (!_installed || !buf || n == 0) return 0;
-    if (!waitTxSpace(n)) return 0;                   // host not draining → drop whole frame
     const int written = uart_write_bytes(_port, (const char*)buf, n);
     return (written < 0) ? 0 : (size_t)written;
 }

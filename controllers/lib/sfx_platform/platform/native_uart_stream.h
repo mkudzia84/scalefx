@@ -86,21 +86,9 @@ public:
     }
 
     // ── Print interface (write side) ─────────────────────────────────
-    // Writes are BOUNDED-NON-BLOCKING: a frame goes out only if it fits in the
-    // TX ring within `kTxWriteDeadlineMs` (so a legitimately fast stream whose
-    // host IS draining still gets sent whole), otherwise the WHOLE frame is
-    // dropped.  A UART has no DTR, so when the host closes the port nothing
-    // drains the ring; a plain blocking `uart_write_bytes` would then wedge the
-    // main loop (and, across reconnects, brick the device until replug).
-    // Dropping a whole COBS frame is safe — the host re-syncs on the next
-    // delimiter; a PARTIAL frame would corrupt the stream, so we never write one.
     size_t write(uint8_t b) override;
     size_t write(const uint8_t* buf, size_t n) override;
     using Print::write;     // un-hide other write() overloads
-
-    /// Free space (bytes) in the TX ring right now — lets callers skip a write
-    /// that won't fit instead of blocking.  0 when the host isn't draining.
-    int availableForWrite() override;
 
     /// Wait for any buffered TX to flush over the wire.
     void flush() override;
@@ -113,16 +101,6 @@ public:
     bool        installed() const { return _installed; }
 
 private:
-    /// Block at most this long waiting for TX-ring space before dropping a
-    /// frame.  Long enough that a host draining at 6 Mbps never loses data to
-    /// transient ring pressure; short enough that a gone host can't stall the
-    /// main loop into a wedge.
-    static constexpr uint32_t kTxWriteDeadlineMs = 20;
-
-    /// True once the ring has room for `n` bytes (polling up to the deadline);
-    /// false if the host isn't draining and the frame should be dropped.
-    bool waitTxSpace(size_t n);
-
     uart_port_t _port      = UART_NUM_0;
     bool        _installed = false;
     int         _peeked    = -1;   ///< single-byte peek cache (-1 = empty)
