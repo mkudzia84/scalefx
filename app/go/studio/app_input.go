@@ -21,14 +21,28 @@ import (
 	wailsRT "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// kInputBroadcastHz is the channel cadence requested from the hub.  It drives
-// BOTH the live-bar refresh AND the on-board InputDispatcher that feeds the
-// effect triggers (the local dispatch fires off the same broadcast tick), so
-// it's set to 50 Hz to match the firmware's standalone default and keep RC
-// effect response snappy.  At 6 Mbps the ~2 KB/s async stream is negligible
-// against synchronous topology/status RPCs, and the verbose gate stops it
-// entirely when no host is listening.
+// kInputBroadcastHz is the channel cadence requested from the hub for the
+// host live-channel view (the colourful bars).  The firmware feeds its own
+// on-board InputDispatcher (effect triggers) at a fixed rate REGARDLESS of
+// this subscription — so the model flies with no host attached, and the wire
+// broadcast is purely a live-view convenience.  We therefore subscribe ONLY
+// while a tab that renders the bars is on screen (SetInputLiveView) and
+// unsubscribe (hz=0) otherwise, so a connected-but-not-viewing host doesn't
+// pay a continuous 50 Hz stream.  At 6 Mbps the ~2 KB/s stream is negligible,
+// but leaving it on permanently floods the host drain on every RPC.
 const kInputBroadcastHz = 50
+
+// liveHz returns the cadence to request given the current live-view state:
+// 50 Hz when a live-channel tab is on screen, 0 (unsubscribe) otherwise.
+// Caller must NOT hold a.mu.
+func (a *App) liveHz() uint8 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.liveView {
+		return kInputBroadcastHz
+	}
+	return 0
+}
 
 // ensureInputConfigs creates a default InputPortConfig for every input
 // port in the model that doesn't have one yet.  Caller holds dmMu.
@@ -80,13 +94,31 @@ func (a *App) installInputStream() {
 	})
 }
 
-// startInputBroadcasts asks the hub to stream RC values for every hub-local
-// input port carrying an input role — PPM, SBUS, or Jeti EX.  Each protocol
-// has its own broadcast-enable packet, so we dispatch by role kind (a Jeti
-// role attached but left on the PPM enable would never stream).  Snapshots
-// the client + input ports under lock, then issues the wire commands
-// lock-free.
-func (a *App) startInputBroadcasts() {
+// SetInputLiveView is the frontend's subscribe-on-view toggle: the active-tab
+// reactive calls it true when a tab that renders live channel bars (Input /
+// Engine / Gun / Lighting) is on screen, false otherwise.  It records the
+// desired state and (re)applies the wire subscription to every hub-local
+// input port.  Effects are unaffected — the firmware feeds them locally.
+func (a *App) SetInputLiveView(on bool) {
+	a.mu.Lock()
+	changed := a.liveView != on
+	a.liveView = on
+	a.mu.Unlock()
+	if changed {
+		a.diag.Info("INPUT", "live-view → %v (wire broadcast %s)", on,
+			map[bool]string{true: "subscribe", false: "unsubscribe"}[on])
+	}
+	a.applyInputBroadcasts()
+}
+
+// applyInputBroadcasts asks the hub to stream (or stop streaming) RC values
+// for every hub-local input port carrying an input role — PPM, SBUS, or Jeti
+// EX — at the cadence implied by the current live-view state (liveHz()).
+// Each protocol has its own broadcast-enable packet, so we dispatch by role
+// kind (a Jeti role left on the PPM enable would never stream).  Snapshots the
+// client + input ports under lock, then issues the wire commands lock-free.
+func (a *App) applyInputBroadcasts() {
+	hz := a.liveHz()
 	c := a.snapshotClient()
 	if c == nil {
 		return
@@ -122,11 +154,11 @@ func (a *App) startInputBroadcasts() {
 		var err error
 		switch in.kind {
 		case roles.KindSbusInput:
-			err = c.Input.SetSbusBroadcastHz(in.idx, kInputBroadcastHz)
+			err = c.Input.SetSbusBroadcastHz(in.idx, hz)
 		case roles.KindJetiExInput:
-			err = c.Input.SetJetiBroadcastHz(in.idx, kInputBroadcastHz)
+			err = c.Input.SetJetiBroadcastHz(in.idx, hz)
 		default: // KindRcPwmInput
-			err = c.Input.SetBroadcastHz(in.idx, kInputBroadcastHz)
+			err = c.Input.SetBroadcastHz(in.idx, hz)
 		}
 		if err != nil {
 			a.diag.Warn("INPUT", "set broadcast hz on input %d (role %d): %v", in.idx, in.kind, err)
@@ -203,7 +235,7 @@ func (a *App) SetInputProtocol(guid string, kind, index byte, protocol string) (
 		a.diag.Error("INPUT", "SetInputProtocol: AttachRole failed: %v", err)
 		return a.deviceModelSnapshot(), err
 	}
-	a.startInputBroadcasts()
+	a.applyInputBroadcasts()
 	a.emitDeviceModelChanged()
 	return a.deviceModelSnapshot(), nil
 }
@@ -292,7 +324,7 @@ func (a *App) ApplyDefaults() (DeviceModelSnapshot, []string, error) {
 			warnings = append(warnings, fmt.Sprintf("attach %s on %s: %v", as.RoleName, as.Port, err))
 		}
 	}
-	a.startInputBroadcasts()
+	a.applyInputBroadcasts()
 	a.diag.Info("INPUT", "applied defaults (%d roles, %d warnings)", len(assigns), len(warnings))
 	a.emitDeviceModelChanged()
 	return a.deviceModelSnapshot(), warnings, nil

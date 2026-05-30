@@ -121,6 +121,13 @@ type App struct {
 	hubFeatures  *yamlFeatures
 	hubTelemetry *yamlTelemetry
 
+	// Live-channel wire subscription state (Rule: wire broadcast is OFF
+	// unless a tab that renders live channel bars is on screen).  The
+	// firmware feeds effects locally regardless; this only gates the host
+	// live-view stream.  Set by SetInputLiveView from the frontend's
+	// active-tab reactive.  Guarded by mu.  See app_input.go.
+	liveView bool
+
 	// Heartbeat goroutine
 	stopHeartbeat chan<- struct{}
 }

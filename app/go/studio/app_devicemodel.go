@@ -117,7 +117,7 @@ func (a *App) RefreshDeviceModel() (DeviceModelSnapshot, error) {
 	// itself.  autoAttachServos re-emits the model when it changes roles.
 	go func() {
 		a.autoAttachServos()
-		a.startInputBroadcasts()
+		a.applyInputBroadcasts()
 	}()
 	return a.deviceModelSnapshot(), nil
 }
