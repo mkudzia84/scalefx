@@ -36,6 +36,13 @@ public:
     using FrameCallback = std::function<void(const uint8_t* frame, uint8_t len)>;
     void onFrame(FrameCallback cb) { _onFrame = std::move(cb); }
 
+    /// Accept the slave/response header 0x3B as a frame start.  TRUE for a
+    /// downstream MONITOR (it parses the ESC's 0x3B replies); FALSE for the
+    /// Rx-side responder — on that wire a 0x3B is ALWAYS our own half-duplex
+    /// echo, and framing it would re-trigger a reply (feedback loop / RX
+    /// corruption).  Master headers (0x3E/0x3D) are always accepted.
+    void setAcceptSlave(bool b) { _acceptSlave = b; }
+
     void reset() { _state = IDLE; _idx = 0; _len = 0; }
 
     /// Drain everything available on a stream through the parser.
@@ -46,7 +53,8 @@ public:
         _rxBytes++;
         switch (_state) {
         case IDLE:
-            if (b == START_ADDR0 || b == START_ADDR1 || b == RESPONSE_HEADER) {
+            if (b == START_ADDR0 || b == START_ADDR1 ||
+                (_acceptSlave && b == RESPONSE_HEADER)) {
                 _buf[0] = b; _idx = 1; _state = READ_TYPE;
             }
             break;
@@ -81,6 +89,7 @@ private:
 
     enum State : uint8_t { IDLE, READ_TYPE, READ_LENGTH, READ_BODY };
     State    _state = IDLE;
+    bool     _acceptSlave = true;        // monitor: yes; Rx responder: no
     uint8_t  _buf[MAX_FRAME_SIZE] = {};
     uint8_t  _idx = 0, _len = 0;
     FrameCallback _onFrame;

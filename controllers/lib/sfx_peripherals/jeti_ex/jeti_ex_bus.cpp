@@ -47,6 +47,10 @@ bool JetiExBus::begin(Stream* serial)
     end();
     _serial = serial;
     _parser.onFrame([this](const uint8_t* f, uint8_t l){ processFrame(f, l); });
+    // Rx-side: only frame MASTER headers (0x3E/0x3D).  A 0x3B on this wire is
+    // our own half-duplex echo — framing it would re-trigger a reply (feedback
+    // loop) and inflate RX errors.
+    _parser.setAcceptSlave(false);
     _parser.reset();
     return true;
 }
