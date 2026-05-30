@@ -160,18 +160,32 @@ bool Mp3PsramSource::findNextSync() {
 }
 
 bool Mp3PsramSource::decodeNextFrame() {
-    const uint32_t loaded = _asset.loadedBytes();
-    if (_bitPos >= loaded) {
-        // Loader behind us — wait for next call.
-        _pcmLen = 0;
-        _pcmPos = 0;
-        return false;
-    }
-    int avail = (int)(loaded - _bitPos);
-    unsigned char* ptr = const_cast<unsigned char*>(_asset.data() + _bitPos);
-    const int res = MP3Decode(static_cast<HMP3Decoder>(_lease.decoder()),
-                              &ptr, &avail, _pcmBuf, 0);
-    if (res != ERR_MP3_NONE) {
+    // Bounded retry on invalid headers — a naive seek (or stream noise) can
+    // land on a FALSE sync word (compressed audio is full of 0xFF bytes), and
+    // recursing per false sync overflowed the producer stack and crashed the
+    // firmware.  Skip-and-resync in a LOOP, capped, instead.
+    for (int attempts = 0; attempts < 128; ++attempts) {
+        const uint32_t loaded = _asset.loadedBytes();
+        if (_bitPos >= loaded) {
+            // Loader behind us — wait for next call.
+            _pcmLen = 0;
+            _pcmPos = 0;
+            return false;
+        }
+        int avail = (int)(loaded - _bitPos);
+        unsigned char* ptr = const_cast<unsigned char*>(_asset.data() + _bitPos);
+        const int res = MP3Decode(static_cast<HMP3Decoder>(_lease.decoder()),
+                                  &ptr, &avail, _pcmBuf, 0);
+        if (res == ERR_MP3_NONE) {
+            // ptr is advanced by helix; recompute _bitPos from the new ptr.
+            _bitPos = (uint32_t)(ptr - _asset.data());
+            MP3FrameInfo info;
+            MP3GetLastFrameInfo(static_cast<HMP3Decoder>(_lease.decoder()), &info);
+            // outputSamps counts INTERLEAVED samples (i.e. nChans × frames).
+            _pcmLen = info.outputSamps / (info.nChans ? info.nChans : 2);
+            _pcmPos = 0;
+            return _pcmLen > 0;
+        }
         if (res == ERR_MP3_INDATA_UNDERFLOW || res == ERR_MP3_MAINDATA_UNDERFLOW) {
             // Need more bytes; not fatal.  Caller retries.
             _pcmLen = 0;
@@ -179,22 +193,20 @@ bool Mp3PsramSource::decodeNextFrame() {
             return false;
         }
         if (res == ERR_MP3_INVALID_FRAMEHEADER) {
-            // Probably garbage in stream — skip one byte and retry sync.
+            // Garbage / false sync — skip one byte and resync (bounded loop).
             _bitPos++;
-            if (findNextSync()) return decodeNextFrame();
+            if (!findNextSync()) { _pcmLen = 0; _pcmPos = 0; return false; }
+            continue;
         }
         MP3_WARN("MP3Decode err=%d @ byte %u", res, (unsigned)_bitPos);
+        _pcmLen = 0;
+        _pcmPos = 0;
         return false;
     }
-    // ptr is advanced by helix; recompute _bitPos from the new ptr.
-    _bitPos = (uint32_t)(ptr - _asset.data());
-
-    MP3FrameInfo info;
-    MP3GetLastFrameInfo(static_cast<HMP3Decoder>(_lease.decoder()), &info);
-    // outputSamps counts INTERLEAVED samples (i.e. nChans × frames).
-    _pcmLen = info.outputSamps / (info.nChans ? info.nChans : 2);
+    MP3_WARN("decodeNextFrame: too many invalid headers @ byte %u", (unsigned)_bitPos);
+    _pcmLen = 0;
     _pcmPos = 0;
-    return _pcmLen > 0;
+    return false;
 }
 
 void Mp3PsramSource::rewindForLoop() {
@@ -297,17 +309,15 @@ uint32_t Mp3PsramSource::readFrames(float* outL, float* outR,
 }
 
 bool Mp3PsramSource::seekFrame(uint32_t frame) {
-    // Proportional seek: map the target PCM frame to a byte offset in the
-    // bitstream (exact for CBR — e.g. the 128 kbps engine sounds — and a coarse
-    // estimate for VBR, which is fine for an effect seek), snap to the next MP3
-    // sync word, and reset the decoder context (seeking with a stale context
-    // decodes garbage).  Used by the engine startingOffset (warm re-start).
+    // Hybrid seek: O(1) proportional byte jump to ~kPrimeFrames BEFORE the
+    // target (exact for CBR engine sounds, coarse for VBR), then a SHORT
+    // decode-walk to prime the bit reservoir and land accurately.  A full
+    // decode-walk from the start is correct but too slow (decoding 20 s of MP3
+    // ≈ 1.25 s of CPU); the proportional jump caps the decode to ~kPrimeFrames
+    // (~30 ms) regardless of distance.  decodeNextFrame()'s bounded resync loop
+    // makes a false-sync landing safe (the earlier crash was its recursion).
     if (!_open) return false;
-
-    // Seek-to-start == loop rewind (decoder reset + first sync).
     if (frame == 0) { rewindForLoop(); return _lease.isValid(); }
-
-    // Needs a usable frame estimate (open() derives it from bitrate × duration).
     if (_totalFrames == 0 || _totalFrames == UINT32_MAX || frame >= _totalFrames)
         return false;
 
@@ -316,34 +326,55 @@ bool Mp3PsramSource::seekFrame(uint32_t frame) {
     const uint32_t loaded = _asset.loadedBytes();
     if (total <= base) return false;
 
-    // Byte offset proportional to frame position within the audio data
-    // (frame 0 maps to `base`, the first sync after any ID3v2 tag).
-    uint32_t est = base + (uint32_t)(((uint64_t)frame * (total - base)) / _totalFrames);
-    if (est >= loaded) {
-        // Target not resident yet (asset not fully preloaded).  Effect sounds
-        // are preloaded 100%, so this only trips on a streaming asset.
-        MP3_WARN("seek frame %u (~byte %u) past loaded %u — ignored",
-                 (unsigned)frame, (unsigned)est, (unsigned)loaded);
-        return false;
-    }
+    // Decode ~16 MP3 frames (~0.37 s @48k) before the target to rebuild the
+    // reservoir so the target decodes cleanly.
+    const uint32_t kPrimeFrames = 1152u * 16u;
+    uint32_t coarse = (frame > kPrimeFrames) ? (frame - kPrimeFrames) : 0;
 
-    // Fresh decoder context (cheap — the pool reuses the slot).
+    // Fresh decoder context.
     _lease.reset();
     _lease  = Mp3DecoderPool::instance().acquire();
     _pcmBuf = _lease.isValid() ? _lease.pcmBuf() : nullptr;
     if (!_lease.isValid()) return false;
-
-    _bitPos    = est;
-    _pcmLen    = 0;
-    _pcmPos    = 0;
     _exhausted = false;
-    if (!findNextSync()) {        // snap to a real frame boundary
-        rewindForLoop();          // fall back to start rather than mis-position
-        return false;
+    _pcmLen = 0;
+    _pcmPos = 0;
+
+    if (coarse == 0) {
+        _bitPos = base;                    // prime from the very start
+    } else {
+        uint32_t est = base + (uint32_t)(((uint64_t)coarse * (total - base)) / _totalFrames);
+        if (est >= loaded) { _bitPos = base; coarse = 0; }   // not resident — walk from start
+        else {
+            _bitPos = est;
+            if (!findNextSync()) { _bitPos = base; coarse = 0; }
+        }
     }
-    _framesRead = frame;          // approximate playback position
-    MP3_LOG("seek -> frame %u (byte %u/%u)", (unsigned)frame,
-            (unsigned)_bitPos, (unsigned)total);
+    _framesRead = coarse;
+
+    // Short decode-walk up to the target.  On a cold/underflowing frame,
+    // decodeNextFrame() returns false WITHOUT advancing — skip a byte + resync
+    // so we make progress (guard-bounded; never stalls or crashes).
+    const uint32_t guardMax = (frame - coarse) / 256 + 96;
+    uint32_t guard = 0;
+    while (_framesRead < frame && guard++ < guardMax) {
+        if (_bitPos >= loaded) break;      // EOF / loader behind
+        if (!findNextSync())   break;
+        if (!decodeNextFrame()) {          // underflow/bad cold frame — skip ahead
+            _bitPos++;
+            continue;
+        }
+        const uint32_t got = (uint32_t)_pcmLen;
+        if (_framesRead + got <= frame) {
+            _framesRead += got;
+            _pcmPos = _pcmLen;             // discard the whole primed frame
+        } else {
+            _pcmPos = (int)(frame - _framesRead);  // partial — keep remainder
+            _framesRead = frame;
+        }
+    }
+    MP3_LOG("seek -> frame %u (byte %u, coarse %u)",
+            (unsigned)_framesRead, (unsigned)_bitPos, (unsigned)coarse);
     return true;
 }
 
