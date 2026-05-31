@@ -57,6 +57,24 @@ bool NativeUartStream::beginConfig(uart_port_t port,
         return false;
     }
 
+    // Flush the RX hardware FIFO to the driver ring promptly even when the
+    // sender pauses mid-stream.  available() reads uart_get_buffered_data_len(),
+    // which counts ONLY the driver ring — bytes still in the 128-byte HW FIFO
+    // are invisible until the ISR moves them, which it does on either a
+    // rx_full_threshold crossing OR a rx_timeout idle.  The stream-upload client
+    // blasts a 16 KB segment then waits for the ACK, so the segment's tail bytes
+    // (fewer than the threshold) sit in the FIFO with NO further bytes to cross
+    // the threshold; if the idle-timeout flush is too lax they never reach the
+    // ring, available() reports 0, the segment never completes, and the firmware
+    // aborts on the 5 s inactivity timer.  Observed: 86/121 MB uploads dying
+    // exactly 12 bytes short of a random segment boundary with the SD perfectly
+    // healthy (avg 4 ms / max ~98 ms writes), 2026-05-31.  A low full-threshold
+    // (also keeps the FIFO well clear of overrun during a blocking SD write) +
+    // a short symbol-period idle-timeout guarantee the tail reaches the ring
+    // within microseconds.  Best-effort: failures here are non-fatal.
+    uart_set_rx_full_threshold(_port, 64);
+    uart_set_rx_timeout(_port, 10);
+
     // SBUS inverts RXD; Jeti / wire do not.
     if (lineInverseMask) uart_set_line_inverse(_port, lineInverseMask);
     // Optional hardware RS-485 half-duplex (Jeti uses MANUAL matrix toggling

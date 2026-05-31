@@ -114,3 +114,7 @@ subscribe_capture.txt
 subscribe_err.txt
 app/go/studio/frontend/sc-out.txt
 _bringup_backup/
+
+# Local device backups (e.g. configs pulled off a board before a card swap /
+# reflash — see backups/flash-config-<date>/).  Operator-local, not source.
+backups/

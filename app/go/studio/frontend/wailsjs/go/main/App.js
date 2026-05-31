@@ -118,6 +118,10 @@ export function FsUploadBatch(arg1, arg2, arg3) {
   return window['go']['main']['App']['FsUploadBatch'](arg1, arg2, arg3);
 }
 
+export function FsUploadDiag() {
+  return window['go']['main']['App']['FsUploadDiag']();
+}
+
 export function FsUploadFromDisk(arg1, arg2, arg3) {
   return window['go']['main']['App']['FsUploadFromDisk'](arg1, arg2, arg3);
 }

@@ -2168,6 +2168,47 @@ export namespace ports {
 
 }
 
+export namespace storage {
+	
+	export class UploadDiag {
+	    bytesRecv: number;
+	    expectedSize: number;
+	    segIndex: number;
+	    segCount: number;
+	    fillPct: number;
+	    sdWriteCount: number;
+	    sdBytesWritten: number;
+	    sdMaxLatMs: number;
+	    sdTotalStallMs: number;
+	    maxLoopGapMs: number;
+	    uploadActive: boolean;
+	    streamActive: boolean;
+	    reason: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UploadDiag(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.bytesRecv = source["bytesRecv"];
+	        this.expectedSize = source["expectedSize"];
+	        this.segIndex = source["segIndex"];
+	        this.segCount = source["segCount"];
+	        this.fillPct = source["fillPct"];
+	        this.sdWriteCount = source["sdWriteCount"];
+	        this.sdBytesWritten = source["sdBytesWritten"];
+	        this.sdMaxLatMs = source["sdMaxLatMs"];
+	        this.sdTotalStallMs = source["sdTotalStallMs"];
+	        this.maxLoopGapMs = source["maxLoopGapMs"];
+	        this.uploadActive = source["uploadActive"];
+	        this.streamActive = source["streamActive"];
+	        this.reason = source["reason"];
+	    }
+	}
+
+}
+
 export namespace topology {
 	
 	export class BoardPorts {

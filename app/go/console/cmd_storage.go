@@ -57,6 +57,7 @@ func init() {
 
 	register(&command{Name: "upload", Usage: "upload [-m sync|stream] [-f] <local> [remote]", Help: "upload a local file (default mode = stream on ESP32)", Category: catStorage, RequiresConn: true, RequiresCap: core.CapFlash | core.CapSd, Run: cmdUpload})
 	register(&command{Name: "download", Usage: "download [-f] <remote> [local]", Help: "download a remote file", Category: catStorage, RequiresConn: true, RequiresCap: core.CapFlash | core.CapSd, Run: cmdDownload})
+	register(&command{Name: "upload-diag", Usage: "upload-diag", Help: "post-mortem of the last upload (SD write latencies, abort reason)", Category: catStorage, RequiresConn: true, RequiresCap: core.CapFlash | core.CapSd, Run: cmdUploadDiag})
 
 	aliasFor("dir", "ls")
 	aliasFor("put", "upload")
@@ -538,6 +539,33 @@ func cmdDownload(a *App, args []string) error {
 		humanDurationSec(elapsed),
 		cCyan(fmt.Sprintf("%.1f KB/s", rate)))
 	KV("md5", cDim(hex.EncodeToString(res.MD5[:])))
+	return nil
+}
+
+// cmdUploadDiag prints the firmware's post-mortem of the last (or active)
+// upload — SD write latencies, segment progress, abort reason. The SD write
+// stats are invisible during a stream (raw mode can't emit log packets), so
+// this is how you see WHY a large upload stalled or errored.
+func cmdUploadDiag(a *App, _ []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	d, err := a.c.Storage.UploadDiag()
+	if err != nil {
+		return err
+	}
+	Info("upload post-mortem")
+	KV("ended", client.UploadReasonName(d.Reason))
+	KV("progress", fmt.Sprintf("%d/%d bytes  seg %d/%d  ring fill %d%%",
+		d.BytesRecv, d.ExpectedSize, d.SegIndex, d.SegCount, d.FillPct))
+	KV("SD writes", fmt.Sprintf("%d writes  %d KB  avg %d ms  MAX %d ms  total I/O %d ms",
+		d.SdWriteCount, d.SdBytesWritten/1024, d.SdAvgLatMs(), d.SdMaxLatMs, d.SdTotalStallMs))
+	KV("max loop gap", fmt.Sprintf("%d ms", d.MaxLoopGapMs))
+	if d.SdMaxLatMs >= 1000 {
+		Warn("a single SD write took %.1fs — the card (or its wiring) is stalling; "+
+			"try another card / reformat / check SDIO signal integrity",
+			float64(d.SdMaxLatMs)/1000)
+	}
 	return nil
 }
 

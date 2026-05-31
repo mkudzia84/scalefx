@@ -152,6 +152,45 @@ it's the card, not the protocol. (The firmware no longer *self*-aborts on a slow
 but-healthy write — `processStream` re-stamps `_uploadLastActivity_ms` AFTER each
 flush so the inactivity timer measures client silence, not our own write latency.)
 
+### 7. UART RX FIFO must flush the segment tail (the real large-file bug)
+
+The stream-upload failures that *looked* like a slow SD card were actually a
+**UART RX FIFO flush** bug, proven by the diagnostics (§6): both cards wrote at
+avg 4 ms / max ~98 ms — healthy — yet large uploads aborted with the firmware
+**exactly 12 bytes short** of a random segment boundary.
+
+`NativeUartStream::available()` reads `uart_get_buffered_data_len()`, which counts
+ONLY the driver ring buffer. Bytes still in the 128-byte **hardware FIFO** are
+invisible until the driver ISR moves them across, and that ISR fires on either a
+`rx_full_threshold` crossing OR an `rx_timeout` (line-idle) event. The client
+blasts a 16 KB segment then **pauses for the segment ACK** — so the segment's
+tail bytes sit in the FIFO *below* the threshold with no further bytes to cross
+it; the only thing that can flush them is the idle-timeout. Relying on the IDF
+*default* timeout was marginal at 6 Mbps under streaming load: it flushed the
+tail *most* of the time (so it failed intermittently, at random offsets, not
+every segment). Small commands (IDENTIFY/status) always worked because they're
+followed by a long idle the default timeout always caught.
+
+Fix ([native_uart_stream.cpp](../controllers/lib/sfx_platform/platform/native_uart_stream.cpp)
+`beginConfig`, after `uart_param_config`):
+
+```cpp
+uart_set_rx_full_threshold(_port, 64);  // flush eagerly + stay clear of overrun
+uart_set_rx_timeout(_port, 10);         // flush the tail ~17 µs after line idle
+```
+
+`rx_timeout` handles the **not-full** case (the segment tail / any short packet);
+`rx_full_threshold` handles the bulk-streaming case and keeps the FIFO clear of
+its 128-byte overrun ceiling while the loop blocks in a synchronous SD write.
+Applies to every `NativeUartStream` — the wire UART and the RC SBUS/Jeti UARTs.
+
+**Aside — MD5 match ≠ persisted.** The upload MD5 is computed over the bytes
+*received off the wire*, NOT an SD readback. A failing/counterfeit card that ACKs
+writes but drops them (observed: `df` used-space never grew, the file didn't
+exist) still returns "✓ MD5 match". A true end-to-end verify needs a post-upload
+readback hash — not implemented today; treat MD5-match as "wire intact", not
+"on disk".
+
 ## Checklist for any new long/raw wire operation
 
 - Does it put the firmware in a non-COBS / exclusive mode? → hold the wire
