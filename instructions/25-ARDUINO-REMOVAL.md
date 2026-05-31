@@ -98,11 +98,12 @@ Present (native both sides): `SFX_DELAY_MS/US`, `SfxMutex`, PSRAM
   `millis()`/`micros()` (effect_clock, board server/bus, roles, peripherals,
   serial client, storage, usb host, hubfx effects/expander, audio hot path);
   `SFX_CPU_MHZ()` now native (`esp_clk_tree`). Only Pico-only ISR timing remains.
-- **P3 (BLOCKED — re-sequenced after P6/P7):** vestigial `<Arduino.h>` removal
-  cannot be build-verified while `sfx_platform.h` itself still
-  `#include <Arduino.h>` (every includer gets Arduino transitively). It must
-  follow the GPIO/I2C/servo/ISR abstractions so `sfx_platform.h` can drop the
-  include first. The classification of vestigial vs functional includers is
+- **P3 (BLOCKED — now gated only on the Stream/Print seam):** vestigial
+  `<Arduino.h>` removal cannot be build-verified while `sfx_platform.h` still
+  `#include <Arduino.h>` (every includer gets Arduino transitively). With I2C /
+  GPIO / servo / timing now native, the SOLE remaining reason `sfx_platform.h`
+  pulls Arduino is the `Stream`/`Print` base classes — so P3 unblocks the moment
+  the seam (below) lands. Vestigial-vs-functional includer classification is
   done (grep) and ready.
 
 - **P5 (done) — native RTTI-free I2C.** New `sfx_peripherals/i2c/`
@@ -114,25 +115,59 @@ Present (native both sides): `SFX_DELAY_MS/US`, `SfxMutex`, PSRAM
 - **P6 (done) — native RTTI-free GPIO/PWM.** `gpio/{esp,pico}_native_gpio.h`
   (`driver/gpio`+`driver/ledc` / `hardware/gpio`+`hardware/pwm`) behind a
   `using NativeGpio` selector in `native_gpio.h`. hubfx status/error LEDs route
-  through it → build-verified there. ⚠️ bench smoke-test pending (LED blink).
+  through it. ✅ **BENCH-VERIFIED** (LEDs blink).
+- **P7 (done) — native MCPWM servo.** `ports/esp_servo.h` (MCPWM, 2 groups ×
+  3 op × 2 gen = 12 outputs @ 50 Hz; per-servo comparator) + `sfx_servo.h`
+  selector; `MicroservoPort` holds `ServoDriver`. `ESP32Servo` dropped from
+  `lib_deps`; `sfx_platform.h` drops its `<ESP32Servo.h>` block. hubfx −2 KB.
+  ✅ **BENCH-VERIFIED** (servos centre + sweep on both groups, IN_3..IN_12).
+- **Port drivers (done).** `NativePwmPort`/`PwmDirHBridgePort` → NativeGpio
+  (was `pinMode`/`analogWrite`/`digitalWrite`). Concrete classes, build-verified
+  on hubfx (not on its hot path — PCA9685 + no H-bridge there).
+- **Dead code (done).** `pwm_control.{h,cpp}` deleted — legacy `PwmInput` RC
+  capture, not `#include`d anywhere; was the ONLY always-compiled `.cpp` still
+  using Arduino IO (`attachInterrupt`/`analogRead`/`pinMode`).
 
-### Remaining (high-leverage, higher-risk — do attended, BENCH-verify each)
-- **ADC:** `battery_monitor.h` `analogRead` → `esp_adc` / `hardware/adc`
+### P5 / P6 bench checklist — ✅ ALL CONFIRMED
+Codec audio (native I2C), INA226 reads, PCA9685 CH1–8, status LEDs, servos:
+all verified on hardware (build 687/689).
+
+### The remaining gate — `Stream`/`Print` seam + RC UART (then framework switch)
+With servo + GPIO + I2C + timing native and the dead Arduino-IO `.cpp` gone, the
+ESP32 build's Arduino coupling is reduced to **exactly two things**, both around
+the wire — and the console wire is ALREADY native (`NativeUartStream` via
+`board.begin(wireUart, …)`):
+
+1. **Arduino `Stream` / `Print` base classes** — `NativeUartStream : public
+   Stream`, and ~20 protocol files type their wire as `Stream*` / `Print&`
+   (BoardServer, DiagLog, packet_reader, storage_service, sbus_input,
+   jeti_ex_*, input_port). Dropping `<Arduino.h>` from `sfx_platform.h` means
+   replacing these with a project-owned `sfx::Stream` / `sfx::Print` abstract
+   interface (same 6-method surface: available/read/peek/readBytes/write/flush),
+   `NativeUartStream` implementing it directly, and a thin Arduino-`HardwareSerial`
+   adapter on the Pico side.
+2. **`HardwareSerial` / `Serial1` / `Serial2`** in `esp_input_port.h` (+ the
+   `sbus_input` / `jeti_ex` consumers that take a `Stream*`) — the RC SBUS / Jeti
+   EX UART. Migrate to native `driver/uart.h` wrapped as `sfx::Stream`.
+   **Bench-delicate**: the inverted-8E2 SBUS + half-duplex-via-GPIO-matrix Jeti
+   config was hard-won (see the comments in `esp_input_port.h`) and MUST be
+   re-validated with a live RC receiver, not changed blind.
+
+Only after (1)+(2) can `sfx_platform.h` drop `<Arduino.h>`, P3 (vestigial-include
+removal) becomes build-verifiable, the `.ino` `setup()/loop()` move to `app_main`
++ a loop task, and `framework = arduino` come off platformio.ini. This is a
+bounded (~20-file) but WIRE-CRITICAL refactor — a bug bricks the console — so it
+belongs in a focused session WITH the device + RC at the bench.
+
+- **ADC (deferred):** `battery_monitor.h` `analogRead` → `esp_adc`/`hardware/adc`
   (Pico-only in practice — hubfx battery is INA226/I2C — so not hubfx-verifiable).
-- **P7 — servo + interrupts + UART Stream + entry model:** servo
-  (`ESP32Servo` → LEDC/MCPWM — behaviour-critical pulse timing), GPIO interrupts
-  (`attachInterrupt` → gpio ISR), Stream-free wire seam; `.ino setup/loop` →
-  `app_main` + loop task. Only after servo + interrupts can **`sfx_platform.h`
-  drop `<Arduino.h>`** and P3 (vestigial-include removal) become build-verifiable.
-  Then drop `framework = arduino` + the `ESP32Servo`/Arduino-`SD` `lib_deps`.
 - **P8 — Pico controllers:** unblock the stale `.ino` vs `BoardOf<>` first, then
   swap each abstraction's Arduino-Pico branch for the native Pico SDK (+ a
-  TinyUSB-CDC `Stream` adapter mirroring `NativeUartStream`).
+  TinyUSB-CDC `sfx::Stream` adapter mirroring `NativeUartStream`).
 
-### Bench-verification checklist (P5/P6 are build-green, NOT bench-tested)
-Flash hubfx, then confirm: codec plays audio (TAS5825P over native I2C);
-`system-info` shows INA226 battery reads; PCA9685 drives CH1–8 PWM; status/error
-LEDs blink (NativeGpio). If any fail, suspect the native bus/pin `begin()` params
+### Legacy bench note (superseded — kept for history)
+Earlier P5/P6 were build-green-not-bench-tested; now confirmed. If a native
+bus/pin/servo path ever regresses, suspect the `begin()` params
 (`esp_i2c_bus.h` port/pins/freq, LEDC timer) — `coredump` first.
 
 See [26-CODE-AND-DESIGN-IMPROVEMENTS.md](26-CODE-AND-DESIGN-IMPROVEMENTS.md) for
