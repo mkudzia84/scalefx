@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     710
+#define BUILD_NUMBER     711
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -1008,4 +1008,24 @@ void loop() {
 #endif // SFX_INSTRUMENTATION
 
     vTaskDelay(pdMS_TO_TICKS(1));
+}
+
+// ============================================================================
+//  app_main — ESP-IDF native entry (replaces the Arduino setup/loop bridge).
+// ============================================================================
+//
+//  framework = espidf (no Arduino).  IDF calls app_main on the "main" task;
+//  we spawn a dedicated loop task that mirrors what Arduino-ESP32's loopTask
+//  used to do: setup() once, then loop() forever, pinned to Core 0
+//  (ARDUINO_RUNNING_CORE=0 → Core 1 belongs to the audio producer/consumer)
+//  with the 16 KB stack the deep config-reload path needs (was
+//  CONFIG_ARDUINO_LOOP_STACK_SIZE).  loop() already ends with vTaskDelay(1),
+//  so IDLE0 / TWDT stay fed.
+extern "C" void app_main(void) {
+    xTaskCreatePinnedToCore(
+        [](void*) {
+            setup();
+            for (;;) loop();
+        },
+        "loopTask", 16384, nullptr, 1, nullptr, /*core=*/0);
 }

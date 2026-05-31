@@ -1,0 +1,15 @@
+# ESP-IDF managed-component dependencies for the HubFX firmware.
+#
+# Under the old `framework = arduino` (Arduino-as-IDF-component) build these
+# were pulled transitively by the Arduino-ESP32 manifest.  Now that we run pure
+# `framework = espidf` we declare them ourselves so the IDF component manager
+# fetches + links them.
+#
+#   esp-dsp              Hand-tuned Xtensa LX7 SIMD for the int16 audio mix
+#                        kernel (audio_mixer.ipp produceBlock).
+#   esp-libhelix-mp3     Fixed-point Helix MP3 decoder (pure C) used by
+#                        Mp3PsramSource — replaces the arduino-libhelix wrapper.
+dependencies:
+  idf: ">=5.0"
+  espressif/esp-dsp: "*"
+  chmorgan/esp-libhelix-mp3: "*"
