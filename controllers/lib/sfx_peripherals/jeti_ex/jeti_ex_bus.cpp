@@ -41,7 +41,7 @@ uint8_t writeExHead(uint8_t* b, uint16_t usn, uint16_t lsn) {
 }  // namespace
 
 // ─── begin ─────────────────────────────────────────────────────
-bool JetiExBus::begin(Stream* serial)
+bool JetiExBus::begin(sfx::Stream* serial)
 {
     if (!serial) return false;
     end();

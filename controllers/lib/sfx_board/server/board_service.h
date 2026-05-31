@@ -32,7 +32,7 @@
 
 #include <serial/core/core.h>  // CorePacket / CoreError / CoreBoardInfo / I2CScanResult / callbacks
 
-class Stream;
+namespace sfx { class Stream; }
 
 namespace sfx_core {
 
@@ -172,8 +172,8 @@ protected:
     int     sendNack(uint8_t errorCode, const char* reason = nullptr);
     int     sendRawPacket(uint8_t type, uint8_t tag,
                           const uint8_t* payload = nullptr, size_t len = 0);
-    uint8_t currentTag() const;
-    Stream* serial() const;
+    uint8_t      currentTag() const;
+    sfx::Stream* serial() const;
 
 private:
     void sendInitReady();

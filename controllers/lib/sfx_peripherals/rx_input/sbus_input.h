@@ -5,7 +5,7 @@
  * Extracts 16 proportional channels (11-bit → µs) plus digital CH17/CH18
  * and failsafe/frame-lost flags.
  *
- * Uses Arduino Stream* — works on any platform.  The user is responsible
+ * Uses Arduino sfx::Stream* — works on any platform.  The user is responsible
  * for configuring the HardwareSerial with correct baud, parity, and
  * signal inversion before passing it to begin().
  *
@@ -32,7 +32,7 @@
 #include "platform/sfx_platform.h"
 #if SFX_PLATFORM_ESP32
 
-#include <Arduino.h>
+#include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h>)
 #include "rx_common.h"
 
 class SbusInput {
@@ -56,7 +56,7 @@ public:
      * @param serial  Pointer to a configured HardwareSerial (or any Stream)
      * @return true (always succeeds if serial is non-null)
      */
-    bool begin(Stream* serial);
+    bool begin(sfx::Stream* serial);
 
     /**
      * @brief Detach from the serial port (does NOT close the port)
@@ -116,7 +116,7 @@ public:
     uint32_t errorCount() const { return _errorCount; }
 
 private:
-    Stream*  _serial = nullptr;
+    sfx::Stream*  _serial = nullptr;
 
     // Frame buffer
     uint8_t  _buf[SbusConfig::FRAME_SIZE] = {};

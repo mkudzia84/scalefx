@@ -19,7 +19,7 @@ bool SbusInputRole::bind(sfx_peripherals::InputPort* port) {
     if (!port->configureSbus()) return false;
 
 #if SFX_PLATFORM_ESP32
-    Stream* s = port->uartStream();
+    sfx::Stream* s = port->uartStream();
     if (!s) {
         port->disable();
         return false;

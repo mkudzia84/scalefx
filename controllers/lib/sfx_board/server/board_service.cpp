@@ -36,7 +36,7 @@ int BoardServicePolicy::sendRawPacket(uint8_t type, uint8_t tag,
 }
 
 uint8_t BoardServicePolicy::currentTag() const { return _ctx->currentTag(); }
-Stream* BoardServicePolicy::serial()     const { return _ctx ? _ctx->serial() : nullptr; }
+sfx::Stream* BoardServicePolicy::serial() const { return _ctx ? _ctx->serial() : nullptr; }
 
 void BoardServicePolicy::setBoardInfo(const char* deviceName, const char* firmwareVersion,
                                       const char* platform, uint32_t cpuMHz, uint32_t freeRam,

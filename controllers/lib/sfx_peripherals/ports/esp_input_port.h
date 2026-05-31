@@ -37,6 +37,7 @@
 #include <cstdint>
 
 #include "input_port.h"
+#include <platform/arduino_stream_adapter.h>  // bridge Serial1/2 → sfx::Stream (RC UART)
 #include <rx_input/ppm_input.h>   // PpmDecoder (RMT multi-channel PPM; 1-ch = single RC PWM)
 
 namespace sfx_peripherals {
@@ -158,12 +159,14 @@ public:
 
     // ── UART-mode stream ────────────────────────────────────────────
 
-    Stream* uartStream() override {
+    sfx::Stream* uartStream() override {
         switch (_mode) {
             case Mode::SBUS:
             case Mode::JETI_EX:
-            case Mode::UART_RAW: return &uartSerial();
-            default:             return nullptr;
+            case Mode::UART_RAW:
+                _streamAdapter.bind(uartSerial());   // wrap Arduino Serial1/2
+                return &_streamAdapter;
+            default: return nullptr;
         }
     }
 
@@ -211,6 +214,7 @@ private:
     uint8_t    _uartNum;          ///< 1 or 2
     PpmDecoder _ppm;              ///< RMT multi-channel PPM capture (PULSE mode)
     Mode       _mode = Mode::IDLE;
+    sfx::ArduinoStreamAdapter _streamAdapter;  ///< Serial1/2 → sfx::Stream (UART modes)
 };
 
 }  // namespace sfx_peripherals

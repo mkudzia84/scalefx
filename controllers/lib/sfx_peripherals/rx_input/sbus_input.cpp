@@ -16,7 +16,7 @@
 #include <string.h>
 
 // ─── begin ─────────────────────────────────────────────────────
-bool SbusInput::begin(Stream* serial)
+bool SbusInput::begin(sfx::Stream* serial)
 {
     if (!serial) return false;
     end();

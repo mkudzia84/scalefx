@@ -22,7 +22,7 @@
 #include "platform/sfx_platform.h"
 #if SFX_PLATFORM_ESP32
 
-#include <Arduino.h>
+#include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h>)
 #include <cstdint>
 #include <functional>
 
@@ -57,7 +57,7 @@ public:
 
     /// Drain available bytes through the parser, bounded to kMaxDrainBytesPerCall
     /// so a noisy/floating UART can't trap the caller in an unbounded read loop.
-    void drain(Stream* s) {
+    void drain(sfx::Stream* s) {
         for (uint16_t n = 0; n < kMaxDrainBytesPerCall && s && s->available(); ++n)
             feed((uint8_t)s->read());
     }

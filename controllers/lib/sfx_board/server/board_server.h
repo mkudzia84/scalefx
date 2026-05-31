@@ -67,6 +67,7 @@
 #include <serial/packet_reader.h> // sfx_serial::PacketReader (byte-stream → frame)
 #include <serial/diag_log.h>      // DiagLog (LOG_MESSAGE / DIAG_HISTORY)
 #include <platform/sfx_platform.h>  // SFX_PLATFORM_*, SFX_CPU_MHZ, SFX_FREE_HEAP, SFX_REBOOT, sfxGetBoardId
+#include <platform/sfx_stream.h>    // sfx::Stream / sfx::Print — Arduino-free wire interface
 #if SFX_PLATFORM_ESP32
 #include <platform/native_uart_stream.h>  // sfx::NativeUartStream — replaces Arduino's Serial under IDF-component
 #endif
@@ -134,9 +135,9 @@ public:
 
     // ── Identity / introspection ─────────────────────────────────────
 
-    const char* deviceName() const { return _deviceName; }
-    Stream*     stream()     const { return _serial; }
-    bool        isInitialized() const { return _initialized; }
+    const char*  deviceName() const { return _deviceName; }
+    sfx::Stream* stream()     const { return _serial; }
+    bool         isInitialized() const { return _initialized; }
 
     // ── Watchdog / lifecycle flags ───────────────────────────────────
 
@@ -251,8 +252,8 @@ public:
     virtual int sendRawPacket(uint8_t type, uint8_t tag,
                               const uint8_t* payload, size_t len);
 
-    uint8_t currentTag() const { return _currentTag; }
-    Stream* serial()     const { return _serial; }
+    uint8_t      currentTag() const { return _currentTag; }
+    sfx::Stream* serial()     const { return _serial; }
 
     // Verbose async streams (input-frame broadcasts, gun verbose status, …)
     // only transmit while a host is actively listening — i.e. we've heard
@@ -294,9 +295,9 @@ protected:
 
 protected:
     // ── Stream / framing / tag ───────────────────────────────────────
-    Stream* _serial      = nullptr;
-    bool    _initialized = false;
-    uint8_t _currentTag  = 0;
+    sfx::Stream* _serial      = nullptr;
+    bool         _initialized = false;
+    uint8_t      _currentTag  = 0;
 
     // COBS frame accumulator — owned by the base so both this class's
     // readFrames() and the templated subclass's readFrames() override
@@ -400,13 +401,11 @@ concept SystemServicePolicy = requires(T t, BoardServerBase* ctx,
 // `BoardServer<TStream, ...UserPolicies>::process()` because the
 // concrete derived type is statically known at that call site.
 //
-// `TStream` is required to expose:
-//   - bool/int available()
-//   - int read()
-//   - size_t write(const uint8_t*, size_t)
-// i.e. anything that satisfies Arduino's `Stream` interface.  In
-// practice: `sfx::NativeUartStream` (ESP32 IDF-component path), Arduino's
-// `HardwareSerial`/`USBCDC` (Pico + ESP32 regular-Arduino path), or a
+// `TStream` must derive `sfx::Stream` (so `&_stream` mirrors into the
+// base `sfx::Stream* _serial` for non-template consumers) and expose the
+// hot-path methods available()/read()/write(buf,len).  In practice:
+// `sfx::NativeUartStream` (ESP32 native wire), `sfx::ArduinoStreamAdapter`
+// wrapping Arduino `HardwareSerial`/`USBCDC` (Pico wire + RC UART), or a
 // test stub that captures bytes.
 //
 template <typename TStream>
@@ -422,11 +421,10 @@ public:
     /// chain stays valid before begin() runs.
     void setStream(TStream& stream) {
         _stream  = &stream;
-        // Mirror into BoardServerBase::_serial so legacy Stream*
+        // Mirror into BoardServerBase::_serial so non-template sfx::Stream*
         // consumers (DiagLog, StorageService::serial(), …) keep working
-        // without having to spell out TStream.  Requires TStream to
-        // inherit Arduino's Stream — every current platform's stream
-        // type already does.
+        // without having to spell out TStream.  Requires TStream to derive
+        // sfx::Stream — every current platform's stream type does.
         _serial  = &stream;
     }
 

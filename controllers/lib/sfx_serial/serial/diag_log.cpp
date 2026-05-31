@@ -88,7 +88,7 @@ void DiagLog::ingest(uint8_t level, const char* message) {
 // ============================================================================
 
 void DiagLog::emitLive(const LogEntry& entry) {
-    Stream* serial = _serial.load(std::memory_order_acquire);
+    sfx::Stream* serial = _serial.load(std::memory_order_acquire);
     if (!serial) return;
 
     uint8_t payload[1 + 4 + MAX_MSG_LEN];
@@ -109,7 +109,7 @@ void DiagLog::emitLive(const LogEntry& entry) {
 // ============================================================================
 
 uint16_t DiagLog::sendHistory(uint16_t max) {
-    Stream* serial = _serial.load(std::memory_order_acquire);
+    sfx::Stream* serial = _serial.load(std::memory_order_acquire);
     if (!serial) return 0;
 
     // Snapshot indices — atomics provide acquire barrier, no mutex needed

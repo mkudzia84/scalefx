@@ -15,7 +15,7 @@
 #include "platform/sfx_platform.h"
 #if SFX_PLATFORM_ESP32
 
-#include <Arduino.h>
+#include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h>)
 #include <cstdint>
 
 #include "jeti_ex_common.h"
@@ -26,7 +26,7 @@ namespace JetiEx {
 
 class JetiExTelemetryMonitor {
 public:
-    bool begin(Stream* serial) {
+    bool begin(sfx::Stream* serial) {
         if (!serial) return false;
         end();
         _serial = serial;
@@ -108,7 +108,7 @@ private:
         }
     }
 
-    Stream*           _serial = nullptr;
+    sfx::Stream*           _serial = nullptr;
     JetiExFrameParser _parser;
     uint32_t          _now = 0;
     uint32_t          _telemFrames = 0, _sensors = 0, _decErrors = 0;

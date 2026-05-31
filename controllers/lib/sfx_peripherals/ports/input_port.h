@@ -20,7 +20,7 @@
 #ifndef SFX_INPUT_PORT_H
 #define SFX_INPUT_PORT_H
 
-#include <Arduino.h>
+#include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h> for Stream)
 #include <cstdint>
 
 namespace sfx_peripherals {
@@ -87,10 +87,10 @@ public:
     }
 
     // ── UART-mode access ─────────────────────────────────────────────
-    /// Returns the underlying `Stream*` once a UART mode is active.
+    /// Returns the underlying `sfx::Stream*` once a UART mode is active.
     /// Returns nullptr in any other mode.  Roles use this to feed
     /// their decoder (SbusInput, JetiExBus, future CRSF, …).
-    virtual Stream* uartStream() = 0;
+    virtual sfx::Stream* uartStream() = 0;
 
     // ── Half-duplex TX control (JETI_EX response / poll slot) ────────
     /// For a single-wire half-duplex bus (Jeti EX): attach the UART TX

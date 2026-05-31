@@ -28,7 +28,7 @@
 #include <platform/sfx_platform.h>
 #if SFX_PLATFORM_ESP32
 
-#include <Arduino.h>
+#include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h>)
 #include <cstdint>
 
 #include <ports/input_port.h>
@@ -58,7 +58,7 @@ public:
         if (!rxPort) return false;
         _rxPort  = rxPort;
         if (!rxPort->configureJetiEx(baud)) return false;
-        Stream* rxStream = rxPort->uartStream();
+        sfx::Stream* rxStream = rxPort->uartStream();
         if (!rxStream) return false;
 
         // Downstream (ESC) link on IN_2.  Brought up ONLY when the operator
@@ -387,7 +387,7 @@ private:
 
     sfx_peripherals::InputPort* _rxPort  = nullptr;   // IN_1, Rx side
     sfx_peripherals::InputPort* _escPort = nullptr;   // IN_2, ESC side
-    Stream*                     _escStream = nullptr;
+    sfx::Stream*                     _escStream = nullptr;
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
