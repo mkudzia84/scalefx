@@ -199,18 +199,16 @@ struct GunSpec {
     uint8_t   flashBrightness      = 100;
 
     // ── Recoil (TURRET BEHAVIOUR — no dedicated servo) ────────────────
-    // Phase 4 polish (2026-05-23): the dedicated recoil-servo port was
-    // removed.  Recoil is now a BEHAVIOUR layered on top of yaw/pitch
-    // — when a shot fires AND `recoilEnabled`, the gun kicks the
-    // existing turret axes by `recoilJerkUs` from their commanded
-    // position, holds for `recoilHoldMs`, then returns.  `recoilAxis`
-    // picks which axis (0 = pitch, 1 = yaw — pitch is the more natural
-    // recoil axis for a gun barrel).  The servo motion profile (slew
-    // limits) still lives on ServoActuatorRole.
-    bool      recoilEnabled        = true;          ///< apply on each shot when an axis is enabled
-    uint8_t   recoilAxis           = 0;             ///< 0 = pitch, 1 = yaw
-    uint16_t  recoilJerkUs         = 200;           ///< delta from commanded axis us on a shot
-    uint16_t  recoilHoldMs         = 80;            ///< time at jerk position before return
+    // The dedicated recoil-servo port was removed (Phase 4, 2026-05-23).
+    // 2026-06: recoil is now an INSTANT, RANDOM jerk applied to BOTH
+    // turret axes on each shot — each of yaw + pitch snaps (bypassing the
+    // motion profile) to its commanded position ± a random offset up to
+    // `recoilJerkUs`, holds `recoilHoldMs`, then snaps back.  The axis
+    // picker was dropped (both axes always kick).  Aiming still slews via
+    // ServoActuatorRole; only the recoil kick/return is instant.
+    bool      recoilEnabled        = true;          ///< apply on each shot when a turret axis is enabled
+    uint16_t  recoilJerkUs         = 200;           ///< MAX random |offset| from commanded µs on a shot
+    uint16_t  recoilHoldMs         = 80;            ///< time at the kicked position before snap-back
 
     // ── Smoke (heater + fan) ──────────────────────────────────────────
     SmokeConfig smoke;

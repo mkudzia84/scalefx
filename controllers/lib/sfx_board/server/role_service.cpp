@@ -22,6 +22,7 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
 
         // Servo actuator
         case RolePacket::SERVO_SET_TARGET:      handleServoSetTarget(p, len);       break;
+        case RolePacket::SERVO_SET_IMMEDIATE:   handleServoSetImmediate(p, len);    break;
         case RolePacket::SERVO_GET_STATUS_REQ:  handleServoGetStatusReq(p, len);    break;
         case RolePacket::SERVO_SET_PROFILE:     handleServoSetProfile(p, len);      break;
         case RolePacket::SERVO_GET_PROFILE_REQ: handleServoGetProfileReq(p, len);   break;
@@ -593,6 +594,22 @@ void RoleServicePolicy::handleServoSetTarget(const uint8_t* p, size_t len) {
     if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
     if (auto* r = std::get_if<ServoActuatorRole>(&b->role)) {
         r->setTarget(target);
+        _ctx->sendAck();
+    } else {
+        _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH);
+    }
+}
+
+void RoleServicePolicy::handleServoSetImmediate(const uint8_t* p, size_t len) {
+    // SNAP the servo to the target instantly (no profile slew). Same payload as
+    // SERVO_SET_TARGET; used by GunFx recoil for a sharp kick + snap-back.
+    if (len < 3) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t  idx    = p[0];
+    const uint16_t pos    = SfxWire::getU16LE(&p[1]);
+    auto* b = _reg->servoAt(idx);
+    if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+    if (auto* r = std::get_if<ServoActuatorRole>(&b->role)) {
+        r->setPositionImmediate(pos);
         _ctx->sendAck();
     } else {
         _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH);

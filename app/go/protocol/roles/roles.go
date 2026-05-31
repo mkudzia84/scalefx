@@ -94,6 +94,10 @@ const (
 	RoleAttached   protocol.PacketType = 0x44
 	RoleDetached   protocol.PacketType = 0x45
 
+	// Instant position snap (no profile slew) — same payload as ServoSetTarget.
+	// 0x46 (the 0x48..0x4F servo block is full). GunFx recoil uses it.
+	ServoSetImmediate protocol.PacketType = 0x46
+
 	// Servo actuator (0x48..0x4F)
 	ServoSetTarget     protocol.PacketType = 0x48
 	ServoGetStatusReq  protocol.PacketType = 0x49
@@ -345,6 +349,9 @@ func CmdRoleDetach(portKind, portIdx byte) []byte {
 
 func CmdRoleListReq() []byte { return protocol.BuildPacket(RoleListReq, nil, 0) }
 
+func CmdServoSetImmediate(portIdx byte, posUs uint16) []byte {
+	return protocol.BuildPacket(ServoSetImmediate, append([]byte{portIdx}, protocol.U16LE(posUs)...), 0)
+}
 func CmdServoSetTarget(portIdx byte, targetUs uint16) []byte {
 	return protocol.BuildPacket(ServoSetTarget, append([]byte{portIdx}, protocol.U16LE(targetUs)...), 0)
 }
@@ -878,6 +885,7 @@ func init() {
 		RoleListResp:         "ROLE_LIST_RESP",
 		RoleAttached:         "ROLE_ATTACHED",
 		RoleDetached:         "ROLE_DETACHED",
+		ServoSetImmediate:    "SERVO_SET_IMMEDIATE",
 		ServoSetTarget:       "SERVO_SET_TARGET",
 		ServoGetStatusReq:    "SERVO_GET_STATUS_REQ",
 		ServoStatusResp:      "SERVO_STATUS_RESP",

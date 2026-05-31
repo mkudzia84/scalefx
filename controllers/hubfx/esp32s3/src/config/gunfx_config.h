@@ -214,13 +214,12 @@ inline bool parseGunSpec(const YamlNode* gn, hubfx::effects::gunfx::GunSpec& g) 
         g.flashBrightness   = (uint8_t) mn->childAs<int32_t>("brightness",  100);
     }
 
-    // recoil: turret behaviour, no dedicated port (Phase 4 polish).
-    // `axis` is "pitch" (default) or "yaw" — short string matches the
-    // operator's mental model better than a 0/1 enum in the YAML.
+    // recoil: turret behaviour, no dedicated port.  Instant random jerk on
+    // BOTH axes (2026-06) — `jerk_us` is the max |offset|, `hold_ms` the dwell
+    // before snap-back.  The old `axis` picker was dropped (both axes kick);
+    // a legacy `axis:` key in an on-device YAML is simply ignored.
     if (const auto* rcn = gn->child("recoil")) {
         g.recoilEnabled = rcn->childAs<bool>("enabled", true);
-        const char* axisName = rcn->childAs<const char*>("axis", "pitch");
-        g.recoilAxis = (axisName && (axisName[0] == 'y' || axisName[0] == 'Y')) ? 1 : 0;
         g.recoilJerkUs = (uint16_t)rcn->childAs<int32_t>("jerk_us", g.recoilJerkUs);
         g.recoilHoldMs = (uint16_t)rcn->childAs<int32_t>("hold_ms", g.recoilHoldMs);
     }

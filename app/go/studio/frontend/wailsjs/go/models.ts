@@ -1313,7 +1313,6 @@ export namespace main {
 	}
 	export class RecoilConfigDTO {
 	    enabled: boolean;
-	    axis: string;
 	    jerkUs: number;
 	    holdMs: number;
 	
@@ -1324,7 +1323,6 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
-	        this.axis = source["axis"];
 	        this.jerkUs = source["jerkUs"];
 	        this.holdMs = source["holdMs"];
 	    }

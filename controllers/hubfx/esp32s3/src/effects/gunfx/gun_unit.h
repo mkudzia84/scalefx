@@ -213,9 +213,12 @@ private:
     void returnRecoil();
     void commandFlash();
     void commandRecoilJerk();
+    /// Snap one turret axis to commanded + a random ±jerk offset (instant).
+    void kickAxisRecoil(const GunAxis& axis, uint16_t& curTarget, uint16_t& savedUs);
     void commandHeater(bool on);
     void commandFanPct(uint8_t pct);
     void commandServoTargetUs(const PortRef& port, uint16_t us);
+    void commandServoImmediateUs(const PortRef& port, uint16_t us);
 
     /// Find the RofItem whose band contains `pulseUs`. Returns 0xFF
     /// when no band matches (out-of-band = no item armed).
@@ -249,12 +252,13 @@ private:
     uint32_t     _shotIntervalMs   = 0;     ///< 0 when not auto-firing
     uint32_t     _nextShotMs       = 0;
     uint32_t     _recoilReturnAtMs = 0;
-    /// While true, the recoil axis is HELD at the kicked position —
-    /// tickAxis() skips RC updates on that axis until recoil returns.
-    /// Phase 4 polish: recoil is a turret behaviour now, no dedicated
-    /// servo (see GunSpec::recoilEnabled / recoilAxis).
-    bool         _recoilActive     = false;
-    uint16_t     _recoilSavedUs    = 0;     ///< axis target before the jerk
+    /// While true, BOTH turret axes are HELD at their kicked positions —
+    /// tickAxis() skips RC updates until recoil returns.  Recoil is an
+    /// instant RANDOM jerk applied to both yaw + pitch on each shot (no
+    /// dedicated servo; see GunSpec::recoilEnabled / recoilJerkUs).
+    bool         _recoilActive       = false;
+    uint16_t     _yawRecoilSavedUs   = 0;   ///< yaw target before the jerk
+    uint16_t     _pitchRecoilSavedUs = 0;   ///< pitch target before the jerk
 
     // ROF arbitration state.
     uint8_t      _activeRofIndex   = 0xFF;

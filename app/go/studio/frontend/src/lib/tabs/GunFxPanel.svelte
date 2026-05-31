@@ -874,8 +874,9 @@
                      Either axis can be left disabled; recoil silently
                      no-ops when the chosen axis is disabled. -->
                 <div class="section-head">Turret control
-                    <span class="hint">yaw + pitch share one servo motion profile per axis (IO tab); recoil kicks the chosen axis on every shot</span>
+                    <span class="hint">yaw + pitch each own a servo motion profile (set via ⚙ Calibrate); recoil kicks both on every shot</span>
                 </div>
+                <div class="turret-axes-row">
                 {#each axisKeys as which (which)}
                     {@const axis = axisOf(gun, which)}
                     {@const axisWarn = axisNoFreePort(axis)}
@@ -952,10 +953,12 @@
                         {/if}
                     </div>
                 {/each}
+                </div>
 
-                <!-- Recoil sub-section — behaviour layered on top of
-                     yaw/pitch.  No dedicated servo port (Phase 4
-                     polish): jerk + hold + which axis to kick. -->
+                <!-- Recoil sub-section — sits UNDER the two axes (full
+                     width).  No dedicated servo, no axis picker: on each
+                     shot BOTH axes get an instant RANDOM jerk up to Jerk
+                     µs, hold, then snap back.  Hold is an advanced knob. -->
                 <div class="turret-recoil">
                     <div class="recoil-head">
                         <label class="enable-toggle inline">
@@ -963,28 +966,23 @@
                                    on:change={(e) => setRecoilField(gun.id, 'enabled', boolValue(e))} disabled={busy} />
                             <span class="axis-title">Recoil</span>
                         </label>
-                        <span class="hint">applied on each shot — kicks the chosen turret axis by Jerk for Hold ms, then returns</span>
+                        <span class="hint">instant random kick on both turret axes each shot (up to Jerk µs), then snaps back</span>
                     </div>
                     {#if gun.recoil.enabled}
                         <div class="form-row">
-                            <span class="field-label">Axis</span>
-                            <select class="field-input narrow" value={gun.recoil.axis}
-                                    on:change={(e) => setRecoilField(gun.id, 'axis', selValue(e))}
-                                    disabled={busy}
-                                    title="Which turret axis takes the recoil kick on each shot.">
-                                <option value="pitch">pitch</option>
-                                <option value="yaw">yaw</option>
-                            </select>
                             <span class="field-label">Jerk</span>
                             <input class="field-input narrow" type="number" min="0" max="500" step="10"
                                    value={gun.recoil.jerkUs}
-                                   on:change={(e) => setRecoilField(gun.id, 'jerkUs', numValue(e))} disabled={busy} />
+                                   on:change={(e) => setRecoilField(gun.id, 'jerkUs', numValue(e))} disabled={busy}
+                                   title="Maximum random recoil kick. Each shot, each axis snaps to commanded ± a random offset up to this." />
                             <span class="unit">µs</span>
-                            <span class="field-label">Hold</span>
+                            <span class="field-label adv">Hold</span>
                             <input class="field-input narrow" type="number" min="0" max="1000" step="10"
                                    value={gun.recoil.holdMs}
-                                   on:change={(e) => setRecoilField(gun.id, 'holdMs', numValue(e))} disabled={busy} />
+                                   on:change={(e) => setRecoilField(gun.id, 'holdMs', numValue(e))} disabled={busy}
+                                   title="Advanced: dwell at the kicked position before snapping back (ms)." />
                             <span class="unit">ms</span>
+                            <span class="hint compact">hold = advanced</span>
                         </div>
                     {/if}
                 </div>
@@ -1517,9 +1515,21 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
         padding: 8px 10px;
         margin: 6px 0;
     }
+    /* Yaw + pitch side-by-side (two equal columns); collapses to one
+       column on narrow panels so the form rows stay readable. */
+    .turret-axes-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+    }
+    .turret-axes-row > .turret-axis { margin: 6px 0 0; }
+    @media (max-width: 720px) {
+        .turret-axes-row { grid-template-columns: 1fr; }
+    }
     .turret-axis.axis-warn {
         border-color: color-mix(in srgb, var(--warning) 70%, var(--border));
     }
+    .field-label.adv { opacity: 0.7; }
     .axis-head,
     .recoil-head {
         display: flex; align-items: baseline; gap: 8px;

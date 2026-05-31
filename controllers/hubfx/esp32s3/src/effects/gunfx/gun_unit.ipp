@@ -17,6 +17,7 @@
 #define HUBFX_GUN_UNIT_IPP
 
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
+#include <esp_random.h>            // esp_random() — per-shot random recoil jerk
 #include <cmath>                   // sinf / M_PI for FN_PULSE sinusoidal envelope
 #include <serial/roles.h>
 #include <serial/wire.h>
@@ -234,21 +235,22 @@ inline void GunUnit::update(uint32_t nowMs, uint32_t dtMs) {
         // intervals.  See `tickFan()` for the scheduler.
     }
 
-    // Recoil return — restore the recoil axis to its pre-jerk target.
-    // tickAxis() will resume RC tracking on the next pass because
-    // _recoilActive is cleared here.
+    // Recoil return — snap BOTH axes back to their pre-jerk targets
+    // (instant, same as the kick).  tickAxis() resumes RC tracking on the
+    // next pass because _recoilActive is cleared here.
     if (_recoilReturnAtMs && (int32_t)(nowMs - _recoilReturnAtMs) >= 0) {
         _recoilReturnAtMs = 0;
         if (_recoilActive && _spec.recoilEnabled) {
-            const bool isYaw = (_spec.recoilAxis == 1);
-            const GunAxis& axis = isYaw ? _spec.yaw : _spec.pitch;
-            if (axis.enabled && axis.servoPort.portKind != 0) {
-                if (_begin && _sendCtx) _begin(_sendCtx);
-                commandServoTargetUs(axis.servoPort, _recoilSavedUs);
-                if (_commit && _sendCtx) _commit(_sendCtx);
-                uint16_t& curTarget = isYaw ? _yawTargetUs : _pitchTargetUs;
-                curTarget = _recoilSavedUs;
+            if (_begin && _sendCtx) _begin(_sendCtx);
+            if (_spec.yaw.enabled && _spec.yaw.servoPort.portKind != 0) {
+                commandServoImmediateUs(_spec.yaw.servoPort, _yawRecoilSavedUs);
+                _yawTargetUs = _yawRecoilSavedUs;
             }
+            if (_spec.pitch.enabled && _spec.pitch.servoPort.portKind != 0) {
+                commandServoImmediateUs(_spec.pitch.servoPort, _pitchRecoilSavedUs);
+                _pitchTargetUs = _pitchRecoilSavedUs;
+            }
+            if (_commit && _sendCtx) _commit(_sendCtx);
         }
         _recoilActive = false;
     }
@@ -282,11 +284,10 @@ inline void GunUnit::update(uint32_t nowMs, uint32_t dtMs) {
     // The gun just pushes a target each tick — the role's integrator
     // handles the slew.  `dtMs` is unused here now.
     (void)dtMs;
-    // Recoil suppresses RC tracking on the kicked axis only — the other
-    // axis continues to track normally so a yaw-recoil setup still lets
-    // the operator steer pitch during the hold.
-    const bool yawHeld   = _recoilActive && _spec.recoilEnabled && _spec.recoilAxis == 1;
-    const bool pitchHeld = _recoilActive && _spec.recoilEnabled && _spec.recoilAxis == 0;
+    // Recoil suppresses RC tracking on BOTH axes for the hold — both got
+    // kicked, so neither should be overwritten until the snap-back fires.
+    const bool yawHeld   = _recoilActive && _spec.recoilEnabled;
+    const bool pitchHeld = _recoilActive && _spec.recoilEnabled;
     if (_spec.yaw.enabled && !yawHeld) {
         tickAxis(_spec.yaw,
                  _haveYawInput ? _lastYawInputUs : _spec.yaw.neutralUs,
@@ -487,25 +488,38 @@ inline void GunUnit::commandFlash() {
           RolePacket::LED_START, start, sizeof(start));
 }
 
-// Recoil is now a TURRET BEHAVIOUR — there is no dedicated recoil
-// servo.  When fired, we add a jerk to whichever axis (yaw / pitch)
-// the spec nominates as the recoil axis, save the prior commanded µs,
-// and hold there until the return timer fires (see update()).
-// `_recoilActive` then suppresses RC updates on that axis until the
-// hold completes — otherwise the very next tick would overwrite the
-// kicked target with whatever the operator is feeding in.
+// Recoil is a TURRET BEHAVIOUR — no dedicated recoil servo.  On each
+// shot, both enabled turret axes (yaw + pitch) get an INSTANT, RANDOM
+// jerk: each axis snaps (bypassing the motion profile) to its commanded
+// position ± a random offset up to `recoilJerkUs`, holds for
+// `recoilHoldMs`, then snaps back (see update()'s return block).  The
+// per-axis random is independent, so the muzzle shakes rather than
+// sweeping.  `_recoilActive` suppresses RC tracking on both axes for the
+// hold so the next tick doesn't overwrite the kick.
+inline void GunUnit::kickAxisRecoil(const GunAxis& axis,
+                                    uint16_t& curTarget, uint16_t& savedUs) {
+    if (!axis.enabled || axis.servoPort.portKind == 0) return;
+    savedUs = curTarget;
+    const uint16_t jerk = _spec.recoilJerkUs;
+    int32_t delta = 0;
+    if (jerk > 0) {
+        // Uniform random in [-jerk, +jerk].
+        delta = (int32_t)(esp_random() % (2u * (uint32_t)jerk + 1u)) - (int32_t)jerk;
+    }
+    int32_t kicked = (int32_t)curTarget + delta;
+    if (kicked < 500)  kicked = 500;      // keep within a sane servo window
+    if (kicked > 2500) kicked = 2500;     // (the role clamps to its limits too)
+    commandServoImmediateUs(axis.servoPort, (uint16_t)kicked);   // INSTANT snap
+    curTarget = (uint16_t)kicked;
+}
+
 inline void GunUnit::commandRecoilJerk() {
     if (!_send) return;
     if (!_spec.recoilEnabled) return;
-    const bool isYaw = (_spec.recoilAxis == 1);
-    const GunAxis& axis = isYaw ? _spec.yaw : _spec.pitch;
-    if (!axis.enabled || axis.servoPort.portKind == 0) return;
-    uint16_t& curTarget = isYaw ? _yawTargetUs : _pitchTargetUs;
-    _recoilSavedUs = curTarget;
-    _recoilActive  = true;
-    const uint16_t kicked = (uint16_t)(curTarget + _spec.recoilJerkUs);
-    commandServoTargetUs(axis.servoPort, kicked);
-    curTarget = kicked;
+    if (!_spec.yaw.enabled && !_spec.pitch.enabled) return;
+    _recoilActive = true;
+    kickAxisRecoil(_spec.yaw,   _yawTargetUs,   _yawRecoilSavedUs);
+    kickAxisRecoil(_spec.pitch, _pitchTargetUs, _pitchRecoilSavedUs);
 }
 
 inline void GunUnit::commandHeater(bool on) {
@@ -556,6 +570,16 @@ inline void GunUnit::commandServoTargetUs(const PortRef& port, uint16_t us) {
     payload[0] = port.portIdx;
     SfxWire::putU16LE(&payload[1], us);
     _send(_sendCtx, port, RolePacket::SERVO_SET_TARGET, payload, sizeof(payload));
+}
+
+inline void GunUnit::commandServoImmediateUs(const PortRef& port, uint16_t us) {
+    if (!_send) return;
+    uint8_t payload[3];
+    payload[0] = port.portIdx;
+    SfxWire::putU16LE(&payload[1], us);
+    // SERVO_SET_IMMEDIATE snaps the servo (bypasses the motion profile) — the
+    // sharp recoil kick + snap-back, vs SERVO_SET_TARGET's smooth slew.
+    _send(_sendCtx, port, RolePacket::SERVO_SET_IMMEDIATE, payload, sizeof(payload));
 }
 
 // ─── Fan scheduling ─────────────────────────────────────────────────

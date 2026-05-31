@@ -90,6 +90,13 @@ namespace RolePacket {
         ///< Fired by the slave immediately after a successful
         ///< ROLE_DETACH (or after the keepalive watchdog clears state).
 
+    /// Instant position set — SNAPS the servo to `target_us` immediately,
+    /// bypassing the motion profile (no slew). Same payload as
+    /// SERVO_SET_TARGET; placed here because the 0x48..0x4F servo block is
+    /// full. Used by GunFx recoil to kick the turret sharply on a shot and
+    /// snap back. Calls ServoActuatorRole::setPositionImmediate().
+    constexpr uint8_t SERVO_SET_IMMEDIATE   = 0x46;  ///< [portIdx:u8][target_us:u16LE] → ACK
+
     // ── Servo actuator role (0x48..0x4F) ──────────────────────────────
     constexpr uint8_t SERVO_SET_TARGET      = 0x48;  ///< [portIdx:u8][target_us:u16LE] → ACK
     constexpr uint8_t SERVO_GET_STATUS_REQ  = 0x49;  ///< [portIdx:u8] → SERVO_STATUS_RESP
