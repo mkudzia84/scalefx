@@ -138,8 +138,10 @@
                          + profile summary) on its OWN full-width row so it's always
                          visible and never clipped by the dense port row.  Rule 44 —
                          same ServoWidget + SetPortProfile path as the feature panels.
-                         Hub-local only (the dialog jogs hub-local ports today). -->
-                    {#if isServo(p) && p.ref.guid === ''}
+                         Every servo (hub or expander) gets it — the dialog routes by
+                         the port's actual GUID (hub-local ports carry the hub GUID,
+                         NOT "" — that's only the wire-request sentinel). -->
+                    {#if isServo(p)}
                         <div class="servo-cal-row">
                             <span class="cal-label">calibrate</span>
                             <ServoWidget

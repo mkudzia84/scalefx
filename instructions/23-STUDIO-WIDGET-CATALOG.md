@@ -479,15 +479,17 @@ and persisting via the same `SetPortProfile` path (no duplicate data):
 - **Feature panels** (GunFx Turret section, future EngineFx servo
   binding) — tune the servo where you wire the feature.
 - **The IO tab** — `ServoWidget` renders on a full-width `.servo-cal-row`
-  directly under each hub-local servo port row in `PortRoleTab.svelte`
-  (always visible, no expander), so you can calibrate a servo at the port
-  even before it's bound to any effect.  It's a SUB-ROW, not inline on the
-  dense port row — the port row is a non-wrapping flex line that would clip
-  the widget off the right edge.  (Heater / DC-motor element scaling stays
-  under the `⚙ Tune` expander in `PortRoleConfig.svelte`; servos are NOT in
-  `hasRoleConfig`.  Hub-local ports carry GUID `""` — the wire's "this is
-  the hub" sentinel; the CLI's `[6D60]` label is derived from the device
-  name, not the GUID field.)  Added 2026-06-01.
+  directly under EVERY servo port row in `PortRoleTab.svelte` (always
+  visible, no expander, gated on `isServo(p)` only), so you can calibrate
+  a servo at the port even before it's bound to any effect.  It's a SUB-ROW,
+  not inline on the dense port row — the port row is a non-wrapping flex line
+  that would clip the widget off the right edge.  The dialog routes by the
+  port's actual `PortRef.guid`.  ⚠️ **GUID gotcha:** `Topology.PortList("")`
+  is a *request* sentinel (`"" → the hub`), but the RESPONSE carries each
+  board's REAL GUID, so `BuildModel` gives hub-local ports the hub's GUID
+  (e.g. `6D60`), NOT `""`.  Gating servo UI on `guid === ""` silently matches
+  nothing.  (The hub self-routes a topology forward addressed to its own
+  GUID, so live jog/push works for `6D60` too.)  Added 2026-06-01.
 
 > ⚠️ **Reactivity:** a panel that feeds `ServoWidget` via a helper like
 > `profileForPort(port)` MUST make that helper reactive on `$deviceModel`
