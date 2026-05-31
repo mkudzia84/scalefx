@@ -113,9 +113,17 @@ public:
     bool        installed() const { return _installed; }
 
 private:
+    // Concurrency invariant (Rule 15): the READ side (available/read/peek/
+    // readBytes, and the `_peeked` cache they share) is SINGLE-CONSUMER — only
+    // the Core-0 BoardServer framer calls it; do NOT add a second reader on
+    // another task/core without making `_peeked` atomic + CAS'd, or two readers
+    // will double-return / lose the peeked byte. The WRITE side (write/flush) is
+    // safe from ANY core: IDF's uart_write_bytes holds the per-port TX mutex, so
+    // each whole-frame write() is byte-atomic — that's what lets DiagLog emit
+    // from the Core-1 audio task without interleaving the protocol's frames.
     uart_port_t _port      = UART_NUM_0;
     bool        _installed = false;
-    int         _peeked    = -1;   ///< single-byte peek cache (-1 = empty)
+    int         _peeked    = -1;   ///< single-byte peek cache (-1 = empty); RX single-consumer
 };
 
 }  // namespace sfx

@@ -347,7 +347,7 @@ public:
     /// isn't currently running.  Pico has no producer/decoder tasks —
     /// always returns nullptr there.
     TaskHandle_t producerHandle() const { return _producerTaskHandle; }
-    TaskHandle_t decoderHandle()  const { return _decoderTaskHandle; }
+    TaskHandle_t decoderHandle()  const { return _decoderTaskHandle.load(std::memory_order_acquire); }
     TaskHandle_t consumerHandle() const { return _consumerTaskHandle; }
 
     /**
@@ -468,7 +468,13 @@ private:
 
         // Initial loop count snapshot — source's loopCount() decays
         // toward 0 as iterations complete, so we keep the request here.
-        int        loopCountInit  = 0;
+        // Cross-core (Rule 15): producer writes in play() (release); the Core-0
+        // protocol status path reads it (acquire) INSTEAD of dereferencing
+        // `source`, which the producer can destroy concurrently — the
+        // destroyChannelSourceSafe handshake guards only the decoder reader, not
+        // the status reader, so isLooping/getLoopCount/remainingSec touching
+        // `source` was a Core-0 use-after-free (2026-05-31).
+        std::atomic<int> loopCountInit{0};
 
         // Linear-interpolation resampler — output-rate accumulator.
         // Producer-owned; not touched by the decoder.
@@ -751,7 +757,11 @@ private:
     // availableWrite() exceeds a fill threshold.  Producer task on
     // Core 1 NEVER calls decode; it only reads from the per-channel
     // rings.
-    TaskHandle_t       _decoderTaskHandle = nullptr;
+    // Cross-core (Rule 15): the producer task (Core 1) reads this in
+    // notifyDecoder() while Core 0's stopDecoderTask() (upload suspendAudio)
+    // nulls + vTaskDeletes it.  Atomic + extract-to-local closes the
+    // check-then-notify TOCTOU (a stale read would notify a deleted task).
+    std::atomic<TaskHandle_t> _decoderTaskHandle{nullptr};
     std::atomic<bool>  _decoderRunning{false};
     std::atomic<bool>  _decoderExited{false};
     int                _decoderCore       = 0;

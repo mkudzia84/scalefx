@@ -137,7 +137,7 @@ bool AudioMixer<TI2S, TCodec>::begin(uint8_t i2s_data_pin, uint8_t i2s_bclk_pin,
         chReset.wav.numChannels = 0;
         chReset.wav.bitsPerSample = 0;
         chReset.wav.totalFrames = 0;
-        chReset.wav.loopCountInit = 0;
+        chReset.wav.loopCountInit.store(0, std::memory_order_relaxed);
         chReset.wav.resampleRatio = 1.0f;
         chReset.wav.resampleFrac  = 0.0f;
         chReset.wav.ringReset();
@@ -488,7 +488,7 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     }
     ws.source->setLoop(srcLoop);
     ws.source->setLoopCount(srcLoopCount);
-    ws.loopCountInit = srcLoopCount;
+    ws.loopCountInit.store(srcLoopCount, std::memory_order_release);
 
     ch.volume = std::clamp(options.volume, 0.0f, 1.0f);
     ch.outputChannels = options.outputChannels;
@@ -598,21 +598,27 @@ float AudioMixer<TI2S, TCodec>::getChannelVolume(int channel) const {
 template<typename TI2S, typename TCodec>
 bool AudioMixer<TI2S, TCodec>::isLooping(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return false;
-    auto* src = _channels[channel].wav.source;
-    return src ? src->loopCount() != 0 : false;
+    // Cross-core safe: never deref `source` (the producer may be destroying it).
+    // A channel is "looping" if it's playing AND was set up with a non-zero loop
+    // count.  Both are producer-published atomics.
+    return _channelPlaying[channel].load(std::memory_order_acquire) &&
+           _channels[channel].wav.loopCountInit.load(std::memory_order_acquire) != 0;
 }
 
 template<typename TI2S, typename TCodec>
 int AudioMixer<TI2S, TCodec>::getLoopCount(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
-    auto* src = _channels[channel].wav.source;
-    return src ? src->loopCount() : 0;
+    // Returns the CONFIGURED loop count (not the live-decaying remaining count) —
+    // diagnostic, and reading the published atomic avoids the Core-0 deref of a
+    // `source` the producer can free under us.
+    if (!_channelPlaying[channel].load(std::memory_order_acquire)) return 0;
+    return _channels[channel].wav.loopCountInit.load(std::memory_order_acquire);
 }
 
 template<typename TI2S, typename TCodec>
 int AudioMixer<TI2S, TCodec>::getInitialLoopCount(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return 0;
-    return _channels[channel].wav.loopCountInit;
+    return _channels[channel].wav.loopCountInit.load(std::memory_order_acquire);
 }
 
 template<typename TI2S, typename TCodec>
@@ -917,9 +923,10 @@ bool AudioMixer<TI2S, TCodec>::isAnyPlaying() const {
 template<typename TI2S, typename TCodec>
 float AudioMixer<TI2S, TCodec>::remainingSec(int channel) const {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return -1.0f;
-    if (!_channelPlaying[channel]) return -1.0f;
-    auto* src = _channels[channel].wav.source;
-    if (src && src->loopCount() != 0) return -1.0f;
+    if (!_channelPlaying[channel].load(std::memory_order_acquire)) return -1.0f;
+    // Looping channels have no finite remaining time.  Read the published loop
+    // count rather than dereferencing `source` (cross-core UAF, see isLooping).
+    if (_channels[channel].wav.loopCountInit.load(std::memory_order_acquire) != 0) return -1.0f;
     return _channelRemainingSec[channel];
 }
 
@@ -2107,9 +2114,10 @@ void AudioMixer<TI2S, TCodec>::stopProducerTask() {
 
 template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::notifyDecoder() {
-    if (_decoderTaskHandle) {
-        xTaskNotifyGive(_decoderTaskHandle);
-    }
+    // Extract-to-local (Rule 15): the handle can be nulled by stopDecoderTask()
+    // on Core 0 between a check and a use; load once and act on the snapshot.
+    auto h = _decoderTaskHandle.load(std::memory_order_acquire);
+    if (h) xTaskNotifyGive(h);
 }
 
 // ── Lazy SD scratch (Phase 7 polish, 2026-05-28) ─────────────────────
@@ -2239,10 +2247,11 @@ bool AudioMixer<TI2S, TCodec>::startDecoderTask() {
     _decoderExited .store(false, std::memory_order_release);
     _decoderRunning.store(true,  std::memory_order_release);
 
+    TaskHandle_t newHandle = nullptr;
     BaseType_t result = xTaskCreatePinnedToCore(
         decoderTaskFunc, "AudioDecoder",
         _decoderStackSize, nullptr,
-        _decoderPriority, &_decoderTaskHandle,
+        _decoderPriority, &newHandle,
         _decoderCore
     );
     if (result != pdPASS) {
@@ -2250,6 +2259,7 @@ bool AudioMixer<TI2S, TCodec>::startDecoderTask() {
         MIXER_ERROR("Failed to create decoder task (err=%d)", result);
         return false;
     }
+    _decoderTaskHandle.store(newHandle, std::memory_order_release);
 
     MIXER_LOG("Decoder task created: core=%d priority=%d stack=%d",
               _decoderCore, _decoderPriority, _decoderStackSize);
@@ -2262,11 +2272,11 @@ void AudioMixer<TI2S, TCodec>::stopDecoderTask() {
 
     MIXER_LOG("Stopping decoder task...");
     _decoderRunning.store(false, std::memory_order_release);
-    // Wake it so it sees the flag and exits.
-    if (_decoderTaskHandle) xTaskNotifyGive(_decoderTaskHandle);
-
-    TaskHandle_t handle = _decoderTaskHandle;
-    _decoderTaskHandle = nullptr;
+    // Wake it so it sees the flag and exits.  Null the published handle BEFORE
+    // the wait+delete so a concurrent notifyDecoder() on the producer can't pick
+    // it up again (it loads acquire and skips on null).
+    TaskHandle_t handle = _decoderTaskHandle.exchange(nullptr, std::memory_order_acq_rel);
+    if (handle) xTaskNotifyGive(handle);
     if (handle) {
         for (int i = 0; i < 40; ++i) {
             if (_decoderExited.load(std::memory_order_acquire)) break;

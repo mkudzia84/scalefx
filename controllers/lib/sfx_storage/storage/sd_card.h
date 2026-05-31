@@ -43,6 +43,7 @@
 #include <functional>
 #include <vector>
 #include <string>
+#include <atomic>    // std::atomic<bool> _initialized (cross-core SD_INIT vs audio read)
 #include <cstring>   // strlen / strncpy / strrchr / memcpy (was transitive via <Arduino.h>)
 
 #include "storage_types.h"
@@ -360,7 +361,13 @@ private:
     SdCardModuleT() { sfxMutexInit(_sdMutex); }
 
     TPolicy _policy;
-    bool _initialized = false;
+    // Cross-core (Rule 15): written by begin()/unmount() on Core 0 (SD_INIT),
+    // read by WavStreamSource::open() on the Core-1 audio task. atomic<bool> so
+    // the cross-core read has defined ordering (existing `if (!_initialized)`
+    // sites keep working via the implicit seq_cst load). This makes the flag
+    // read safe; it does NOT by itself make SD_INIT exclusive against an
+    // in-flight audio file handle — that larger fix is tracked separately.
+    std::atomic<bool> _initialized{false};
     SfxMutex _sdMutex;
     Config _config{};
 
