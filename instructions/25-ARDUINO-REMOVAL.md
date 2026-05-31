@@ -132,33 +132,41 @@ Present (native both sides): `SFX_DELAY_MS/US`, `SfxMutex`, PSRAM
 Codec audio (native I2C), INA226 reads, PCA9685 CH1–8, status LEDs, servos:
 all verified on hardware (build 687/689).
 
-### The remaining gate — `Stream`/`Print` seam + RC UART (then framework switch)
-With servo + GPIO + I2C + timing native and the dead Arduino-IO `.cpp` gone, the
-ESP32 build's Arduino coupling is reduced to **exactly two things**, both around
-the wire — and the console wire is ALREADY native (`NativeUartStream` via
-`board.begin(wireUart, …)`):
+- **`sfx::Stream`/`sfx::Print` seam (done) — drop Arduino `Stream`/`Print`.**
+  New `platform/sfx_stream.h` (6-method `available`/`read`/`peek`/`readBytes`/
+  `write`/`flush` + `operator bool`; no `print`/`printf` — the wire is binary
+  COBS). `NativeUartStream : public sfx::Stream`. Migrated every polymorphic
+  `Stream*`/`Print&` holder — BoardServerBase, DiagLog, board/storage service
+  `serial()`, `InputPort::uartStream()`, SbusInput, JetiExBus/frame/monitor/
+  expander, sbus_input_role. ✅ **BENCH-VERIFIED** (init/status + 4.5 MB upload
+  MD5-match). Exposed two latent upload bugs (see "Upload fallout" below).
+- **Native RC UART (done) — delete `ArduinoStreamAdapter`.** `NativeUartStream`
+  gained `beginConfig(uart_config_t, invertMask, rs485)`; `EspInputPort` drives
+  SBUS (100000 8E2 + `UART_SIGNAL_RXD_INV`), Jeti EX (8N1 + manual GPIO-matrix
+  half-duplex), raw — all off Arduino `HardwareSerial`. `uartStream()` returns a
+  native `sfx::Stream`. hubfx **−10 KB**. Wire verified; ⚠️ SBUS/Jeti *channel
+  decode* still needs an RC receiver on IN_1/IN_2.
+- **Vestigial `<Arduino.h>` swept (P3 partial, done).** `esp_rmt_ppm_policy.h`
+  (→ `esp_attr.h` for IRAM_ATTR), `rx_common.h`, `rx_inputs.h`, `jeti_ex_common.h`
+  off `<Arduino.h>` (used nothing from it post-seam).
 
-1. **Arduino `Stream` / `Print` base classes** — `NativeUartStream : public
-   Stream`, and ~20 protocol files type their wire as `Stream*` / `Print&`
-   (BoardServer, DiagLog, packet_reader, storage_service, sbus_input,
-   jeti_ex_*, input_port). Dropping `<Arduino.h>` from `sfx_platform.h` means
-   replacing these with a project-owned `sfx::Stream` / `sfx::Print` abstract
-   interface (same 6-method surface: available/read/peek/readBytes/write/flush),
-   `NativeUartStream` implementing it directly, and a thin Arduino-`HardwareSerial`
-   adapter on the Pico side.
-2. **`HardwareSerial` / `Serial1` / `Serial2`** in `esp_input_port.h` (+ the
-   `sbus_input` / `jeti_ex` consumers that take a `Stream*`) — the RC SBUS / Jeti
-   EX UART. Migrate to native `driver/uart.h` wrapped as `sfx::Stream`.
-   **Bench-delicate**: the inverted-8E2 SBUS + half-duplex-via-GPIO-matrix Jeti
-   config was hard-won (see the comments in `esp_input_port.h`) and MUST be
-   re-validated with a live RC receiver, not changed blind.
+### Upload fallout — fixed (2026-05-31), see [27-WIRE-ASYNC-AND-UPLOAD.md](27-WIRE-ASYNC-AND-UPLOAD.md)
+The seam routed the upload read through the bulk `NativeUartStream::readBytes`
+(the Arduino per-byte polyfill had masked an undersized RX ring) and the faster/
+segmented path surfaced two latent CLIENT bugs Studio hit (CLI never did):
+1. **8 KB RX ring < 16 KB segment** → overflow stall. Fixed: ring → **32 KB**.
+2. **KEEPALIVE injected mid-stream** → swallowed as file data. Fixed: keepalive
+   gated off during `streamActive` (Rule 54).
+3. **`FILE_UPLOAD_PROGRESS` on the lossy async queue** → dropped under the 50 Hz
+   live-view flood. Fixed: registered async filters delivered reliably (Rule 53).
+Wire-collision instrumentation (`SetStreamPhase` + `COLLIDE` trace) left in as a
+permanent guard.
 
-Only after (1)+(2) can `sfx_platform.h` drop `<Arduino.h>`, P3 (vestigial-include
-removal) becomes build-verifiable, the `.ino` `setup()/loop()` move to `app_main`
-+ a loop task, and `framework = arduino` come off platformio.ini. This is a
-bounded (~20-file) but WIRE-CRITICAL refactor — a bug bricks the console — so it
-belongs in a focused session WITH the device + RC at the bench.
-
+### Remaining
+- **Framework switch (final):** `.ino setup()/loop()` → `app_main` + loop task,
+  then drop `framework = arduino` + the Arduino-`SD` `lib_deps`. After this
+  `sfx_platform.h` can drop its own `<Arduino.h>` and the rest of the vestigial
+  includes go. WIRE/BOOT-CRITICAL — own focused session.
 - **ADC (deferred):** `battery_monitor.h` `analogRead` → `esp_adc`/`hardware/adc`
   (Pico-only in practice — hubfx battery is INA226/I2C — so not hubfx-verifiable).
 - **P8 — Pico controllers:** unblock the stale `.ino` vs `BoardOf<>` first, then

@@ -2176,6 +2176,83 @@ Studio's "description" text — every `<span class="hint">on whenever smoke is a
 
 Reference: [style.css description typography block](../app/go/studio/frontend/src/style.css) (search for "Description / hint typography"), [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) gun-smoke card subsection heads.
 
+### 53. Flow-Control Async ≠ Lossy Telemetry Async
+
+The single serial wire multiplexes command responses, async broadcasts, keepalives
+and raw upload data. The client async dispatcher
+([`Connection.dispatchResponse`](../app/go/protocol/connection.go)) **intentionally
+drops** async (`TAG_ASYNC`) packets when the shared 256-deep `asyncQueue` is full —
+the reader goroutine must NEVER block on a slow consumer (Studio's Wails emit at
+~50 Hz) or the serial buffer backs up and *command responses* time out (measured:
+0 % timeouts at delay = 0, 86 % at delay = 150 ms under the same flood). **Live-view
+channel broadcasts are lossy by design.**
+
+**BUT** any async packet with a **registered filter** (`RegisterAsyncFilter`) is an
+explicit *flow-control* consumer, NOT lossy telemetry. `FILE_UPLOAD_PROGRESS` (the
+per-segment ACK that gates the next 16 KB stream-upload segment) is `TAG_ASYNC` —
+routing it through the shared lossy queue let a 50 Hz live-view flood drop the
+critical ACK and hang the upload **with no wire collision** (the subtle second half
+of the 2026-05-31 Studio bug). `dispatchResponse` now delivers filtered async
+packets straight to their own buffered channel, bypassing the lossy queue (still
+NON-BLOCKING; the filter buffer is sized for its own cadence, not contended by
+broadcasts).
+
+**Rule:** never put an ACK / response / flow-control packet on the lossy broadcast
+path. If a consumer needs every packet, give it a `RegisterAsyncFilter`. Only the
+general broadcast callback (live channel view) stays lossy. See
+[instructions/27-WIRE-ASYNC-AND-UPLOAD.md](../instructions/27-WIRE-ASYNC-AND-UPLOAD.md).
+
+### 54. Raw Stream Uploads Hold the Wire Exclusively
+
+A `UploadStream` transfer puts the firmware in RAW byte-stream mode: `loop()` runs
+only `storage.processStream()` and `return`s — the COBS framer is bypassed, so ANY
+COBS packet the client writes mid-upload is swallowed as **file data** and corrupts
+it (corruption → segment never completes → 15 s ACK timeout → "stuck").
+
+The client MUST own the wire for the raw phase:
+- **Keepalive gated off** while `Connection.streamActive` is set — safe because the
+  wire is busy with segments (not idle) and the upload target (HubFX) runs with the
+  inactivity watchdog disabled. (The confirmed culprit: keepalive fired every 3 s
+  into the stream.)
+- **No concurrent commands** — a per-tab status poller (`setInterval`), telemetry
+  request, or `ls` refresh sent mid-upload corrupts it just the same.
+- `uploadStream` brackets the raw phase with `conn.SetStreamPhase(true/false)`;
+  `Send()` logs any COBS write during it as a `COLLIDE` trace + `collisions` counter,
+  surfaced in Studio as a loud `WIRE-COLLISION` warning naming the offending packet
+  (a clean upload = 0 collisions — this is how the keepalive was pinned, not guessed).
+- **Firmware RX ring ≥ one segment burst.** The client blasts a whole
+  `STREAM_SEGMENT_SIZE` (16 KB) before waiting for its ACK, so the UART RX ring must
+  hold it — HubFX uses **32 KB** (`wireUart.begin`). An 8 KB ring overflowed and
+  stalled once the `sfx::Stream` seam routed the read through the bulk
+  `NativeUartStream::readBytes` (the slow Arduino per-byte polyfill had masked it).
+
+**The CLI never trips any of this** (single-threaded, no live-view, no pollers, no
+idle gaps for keepalive) — **always validate wire/upload changes against Studio.**
+See [instructions/27-WIRE-ASYNC-AND-UPLOAD.md](../instructions/27-WIRE-ASYNC-AND-UPLOAD.md).
+
+### 55. Native Hardware Layer — No Arduino API in `controllers/lib/`
+
+Shared-library hardware access goes through native ESP-IDF / Pico-SDK abstractions,
+never the Arduino API:
+
+| Concern | Abstraction | Backend |
+|---|---|---|
+| I2C | `sfx_peripherals::SfxI2cBus` + CRTP `I2CDeviceT<>` (no vtable) | `driver/i2c` / `hardware/i2c` |
+| MCU GPIO + PWM | `NativeGpio` | `driver/gpio`+`driver/ledc` / `hardware/gpio`+`hardware/pwm` |
+| Servo | `EspServo` (MCPWM, 12 outputs) | `driver/mcpwm_prelude` (ESP32Servo dropped) |
+| RC + wire UART | `sfx::NativeUartStream` (+ `beginConfig` for SBUS 8E2-inv / Jeti 8N1) | `driver/uart` |
+| Wire byte stream | `sfx::Stream` / `sfx::Print` (NOT Arduino `Stream`/`Print`) | project-owned |
+| Timing | `SFX_MILLIS()` / `SFX_MICROS()` / `sfxCpuMhz()` | `esp_timer` / `esp_clk_tree` |
+
+Effects / roles / drivers NEVER call `pinMode` / `digitalWrite` / `analogWrite` /
+`Wire` / `Serial*` / `Servo` / `millis` / `attachInterrupt`. Each abstraction is an
+`{esp,pico}_*` pair behind a compile-time selector (`sfx_i2c.h`, `native_gpio.h`,
+`sfx_servo.h`) — a new driver adds the same split, gated by a `concept` + `requires`
+(Rule 18). `<Arduino.h>` is permitted ONLY at the framework boundary (the controller
+`.ino` entry while `framework = arduino` remains; the `app_main` entry switch is the
+final tracked step). Full map + executed log:
+[instructions/25-ARDUINO-REMOVAL.md](../instructions/25-ARDUINO-REMOVAL.md).
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host
