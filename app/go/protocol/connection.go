@@ -596,6 +596,14 @@ func (c *Connection) StartKeepalive(interval time.Duration) {
 				if c.portDead.Load() {
 					return
 				}
+				// Never inject a KEEPALIVE during a raw stream upload — the
+				// firmware is in byte-stream mode (no COBS dispatch), so the
+				// packet would be swallowed as file data and corrupt the upload.
+				// The wire is busy with segments anyway, and the upload target
+				// (HubFX) disables the inactivity watchdog, so skipping is safe.
+				if c.streamActive.Load() {
+					continue
+				}
 				c.writeMu.Lock()
 				idle := time.Since(c.lastSendTime)
 				c.writeMu.Unlock()
