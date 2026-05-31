@@ -23,11 +23,10 @@
 #ifndef SFX_PERIPHERAL_HBRIDGE_PORT_H
 #define SFX_PERIPHERAL_HBRIDGE_PORT_H
 
-#include <Arduino.h>
 #include <cstdint>
 #include <cstdlib>     // abs()
 
-#include "pwm_port.h"
+#include "pwm_port.h"   // also pulls <gpio/native_gpio.h> (NativeGpio)
 
 namespace sfx_peripherals {
 
@@ -83,8 +82,8 @@ public:
         // registered separately (e.g. PCA9685 channels declared in
         // kPwmPorts) — begin() just re-zeros them.  Essential for
         // native-GPIO PWM pins that are NOT separately registered (the
-        // common motor-driver case): without this their pinMode /
-        // analogWriteResolution never runs.
+        // common motor-driver case): without this their NativeGpio pin
+        // setup / first channel bind never runs.
         bool ok = true;
         if (_a) ok = _a->begin() && ok;
         if (_b) ok = _b->begin() && ok;
@@ -159,7 +158,7 @@ public:
 
     bool begin() override {
         if (_dirPin < 0) return false;
-        pinMode(_dirPin, OUTPUT);
+        NativeGpio::instance().setPinDirection(_dirPin, /*isInput=*/false);
         coast();
         return true;
     }
@@ -171,7 +170,7 @@ public:
         _signed = signedDuty;
         const bool forward = (signedDuty >= 0);
         const bool pinHigh = forward ^ _invertDir;
-        digitalWrite(_dirPin, pinHigh ? HIGH : LOW);
+        NativeGpio::instance().writePin(_dirPin, pinHigh);
         _pwm->setDuty((uint16_t)std::abs((int)signedDuty));
     }
 

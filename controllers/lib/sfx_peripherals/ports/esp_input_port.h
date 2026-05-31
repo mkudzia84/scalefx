@@ -2,7 +2,7 @@
  * esp_input_port.h — ESP32-S3 implementation of `InputPort`.
  *
  * Wraps one GPIO + one ESP32 UART peripheral.  Modes:
- *   - PULSE      : edge-IRQ pulse capture via `PwmInput::beginAsync`
+ *   - PULSE      : native RMT pulse capture via the RMT PpmDecoder (`_ppm`)
  *   - SBUS       : `HardwareSerial.begin(100000, SERIAL_8E2, RX, -1, invert=true)`
  *   - JETI_EX    : `HardwareSerial.begin(baud, SERIAL_8N1, RX, RX)` +
  *                  `uart_set_mode(UART_MODE_RS485_HALF_DUPLEX)` so the
