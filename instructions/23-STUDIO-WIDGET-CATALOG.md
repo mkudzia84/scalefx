@@ -47,7 +47,7 @@ panel can crib it.
 8. [Cross-board port picker](#8-cross-board-port-picker) — output ports with rail-voltage labels + operator-alias name (Rule 34, Rule 37)
 9. [File picker](#9-file-picker) — `pickFile({ targets })` parametrised by backend (Rule 34)
 10. [Dirty-flag indicator + draft store pattern](#10-dirty-flag-indicator) — `engineConfig` / `engineDraft` / `engineDirty` (per-effect) + signal-based `markHubDirty()` (hub IO)
-11. [Servo motion profile editor](#11-servo-motion-profile-editor) — lives on the port-role row, not the effect (Rule 42)
+11. [Servo widget + calibration dialog](#11-servo-widget--calibration-dialog) — compact row (REV toggle + ⚙ Calibrate popup), profile stored per-port (Rule 42 / 44)
 12. [Element scaling editor](#12-element-scaling-editor) — heater / DC-motor element voltage + scaling, on the port-role row (Rule 42)
 13. [Verbose-status event subscriber](#13-verbose-status-event-subscriber) — live ~10 Hz mirror (Phase 4 staple for manual-mode panels)
 14. [Add/remove list (ROF items, gun units, …)](#14-addremove-list) — operator-authored arrays in a draft store
@@ -55,6 +55,7 @@ panel can crib it.
 16. [Multi-band channel cluster](#16-multi-band-channel-cluster) — `ChannelBandCluster.svelte` for N-of-M selectors (Rule 38)
 17. [Operational action cluster](#17-operational-action-cluster) — `.op-cluster` split-button for primary-action + optional picker + Stop (Rule 48)
 18. [Modular config sources + global Apply](#18-modular-config-sources) — `DirtySource` + `ConfigToolbar` aggregate (Rule 46)
+19. [Servo I/O status widget](#19-servo-io-status-widget) — live signal-in bar + servo-out track (RED actual + YELLOW target lines), `ServoIoWidget.svelte` (Rule 42)
 
 ---
 
@@ -350,7 +351,7 @@ Reference rule: **Rule 43**. References:
 
 ## 8. Cross-board port picker
 
-**For OUTPUT ports** (muzzle flash LED, recoil servo, smoke heater) —
+**For OUTPUT ports** (muzzle flash LED, yaw/pitch servo, smoke heater) —
 those ARE per-effect wiring, so they DO live in the effect's YAML as
 `PortRef`. The picker iterates the unified port table across every
 connected board (`$deviceModel.ports`) and groups by board:
@@ -467,55 +468,63 @@ Full walkthrough:
 
 ---
 
-## 11. Servo motion profile editor
+## 11. Servo widget + calibration dialog
 
 **Rule 42 storage + Rule 44 editing surface:** the profile DATA lives
 in `/hubfx.yaml`'s `ports[]` block (canonical, per-port, because it's
 a property of the physical servo — min/max are mechanical end-stops,
-speed/accel match the servo's spec sheet).  The EDITOR is embedded
-**inline in the feature panel** (GunFx Turret section, future EngineFx
-servo binding, …) so operators tune the servo where they set the
-feature.  The IO tab's `PortRoleConfig.svelte` does **not** show this
-editor — that would create a duplicate authoring surface for the same
-data.
+speed/accel match the servo's spec sheet).  The EDITING surface is
+embedded **inline in the feature panel** (GunFx Turret section, future
+EngineFx servo binding, …) so operators tune the servo where they set
+the feature.  The IO tab's `PortRoleConfig.svelte` does **not** show
+the calibrate affordance — that would create a duplicate authoring
+surface for the same data.
 
-**Component:** [ServoProfileEditor.svelte](../app/go/studio/frontend/src/lib/components/ServoProfileEditor.svelte)
-— a reusable, sectioned editor (Limits / Direction / Motion Profile)
-with auto-fit grid layout (`repeat(auto-fill, minmax(110px, 1fr))`) so
-fields breathe at any panel width, plus a plain-English behaviour
-summary at the bottom.
+> The old inline `ServoProfileEditor.svelte` (a sectioned min/max/
+> speed/accel/jerk form) was **retired** (2026-05-24).  The feature row
+> now stays compact: a one-line [`ServoWidget.svelte`](../app/go/studio/frontend/src/lib/components/ServoWidget.svelte)
+> with a `↔ Reversed` toggle + a `⚙ Calibrate…` button that opens the
+> shared live-jog popup [`ServoCalibrationDialog.svelte`](../app/go/studio/frontend/src/lib/dialogs/ServoCalibrationDialog.svelte)
+> (Rule 28).  Saving in the popup persists via `SetPortProfile` — the
+> same wire path as before.
+
+**Component:** [ServoWidget.svelte](../app/go/studio/frontend/src/lib/components/ServoWidget.svelte)
+— compact form row; opens [ServoCalibrationDialog.svelte](../app/go/studio/frontend/src/lib/dialogs/ServoCalibrationDialog.svelte)
+(live jog + Limits / Direction / Motion Profile + debounced cfg push,
+Save/Cancel) on `⚙ Calibrate…`.
 
 ```svelte
-<ServoProfileEditor
-    profile={profileForPort(axis.servoPort)}    <!-- look up from $deviceModel.ports[i].profile -->
-    label="{which} motion profile"
-    on:change={(e) => schedulePushProfile(axis.servoPort, e.detail)} />
+<div class="form-row">
+    <span class="field-label">Motion profile</span>
+    <ServoWidget
+        port={axis.servoPort}
+        portLabel="{which} servo"
+        profile={profileForPort(axis.servoPort)}   <!-- $deviceModel.ports[i].profile -->
+        busy={busy} />
+</div>
 ```
 
 ```ts
-// Frontend helpers (one per panel):
+// Frontend helper (one per panel):
 function profileForPort(port: PortRefT): ProfileT {
     // walks $deviceModel.ports for a matching ref, returns the
     // attached profile or a fresh default
 }
-function schedulePushProfile(port: PortRefT, prof: ProfileT) {
-    // ~350 ms debounce → SetPortProfile(guid, kind, idx, prof)
-    // which updates Studio's overlay + live-pushes via ServoSetProfile
-    // + marks /hubfx.yaml dirty for the next SaveHubConfig
-}
+// ServoCalibrationDialog Save → SetPortProfile(guid, kind, idx, prof):
+// updates the overlay, live-pushes via Roles.ServoSetProfile, marks
+// /hubfx.yaml dirty for the next SaveHubConfig.
 ```
 
-Props:
+Props (ServoWidget):
+- `port` — `PortRefT` for the servo this row drives
+- `portLabel` — human label shown on the row + dialog header
 - `profile` — `ServoMotionProfileT` ({minUs, maxUs, centerUs, reversed,
-  maxSpeedUsPerSec, maxAccelUsPerSec2, maxJerkUsPerSec3}); pass by value,
-  not `bind:` (parent updates via the `change` event)
-- `disabled` — disables every input + button
-- `pushStatus` — surfaces a chip on the footer; omit to hide
-- `label` — optional section header; omit to skip
+  maxSpeedUsPerSec, maxAccelUsPerSec2, maxJerkUsPerSec3}); pass by value
+- `busy` — disables the toggle + Calibrate button
 
-The component is pure UI: it validates locally, fires `change` on
-every edit, and exposes a `Defaults` button.  The **parent owns the
-debounce + push timer** and the persisted draft.
+The dialog is pure UI: it validates locally, jogs live, debounce-pushes
+cfg, and only persists on Save.  The **parent owns the persisted draft**;
+the dialog talks to the firmware directly via `SetPortProfile`.
 
 **Persistence + apply path:**
 1. Studio's `portProfiles` overlay (keyed by `PortRef`) is populated on connect from `/hubfx.yaml`'s `ports[]` block (`LoadHubConfig`) and surfaced through `$deviceModel.ports[i].profile`.
@@ -535,7 +544,8 @@ Wire commands wrapped by Wails:
 
 Reference rules: **Rule 42** (storage) + **Rule 44** (editing surface).
 References:
-[ServoProfileEditor.svelte](../app/go/studio/frontend/src/lib/components/ServoProfileEditor.svelte),
+[ServoWidget.svelte](../app/go/studio/frontend/src/lib/components/ServoWidget.svelte),
+[ServoCalibrationDialog.svelte](../app/go/studio/frontend/src/lib/dialogs/ServoCalibrationDialog.svelte),
 [GunFxPanel.svelte Turret section](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte),
 [app_devicemodel.go `SetPortProfile`](../app/go/studio/app_devicemodel.go),
 [app_hubconfig.go `yamlPortBinding.Profile`](../app/go/studio/app_hubconfig.go),
@@ -932,6 +942,78 @@ Reference rule: **Rule 46**. References:
 [devicemodel.ts (markHubDirty)](../app/go/studio/frontend/src/lib/devicemodel.ts),
 [gunfx.ts (gunfxConfigSource)](../app/go/studio/frontend/src/lib/gunfx.ts),
 [effects.ts (engineConfigSource)](../app/go/studio/frontend/src/lib/effects.ts).
+
+---
+
+## 19. Servo I/O status widget
+
+A **read-only live monitor** for any servo driven from an RC channel —
+pairs the SIGNAL INPUT (RC µs) with the SERVO OUTPUT in one widget, like
+a calibration view that never stops updating.  Distinct from §11
+(ServoWidget = *editing* the profile): this one only *shows* live state.
+
+**Component:** [ServoIoWidget.svelte](../app/go/studio/frontend/src/lib/components/ServoIoWidget.svelte)
+— two stacked bars:
+- **Signal input** — RC value over the 1000–2000 µs range + neutral tick
+  + striped **NO SIGNAL** state (Rule 34).
+- **Servo output** — a track over a fixed 500–2500 µs envelope showing
+  the configured `[min,max]` travel as a band + centre tick, with **two
+  vertical lines**:
+  - **ACTUAL position → solid RED line** (`var(--error)`) — the live
+    `position()` = motion-profile output INCLUDING recoil kicks.
+  - **TARGET → dashed YELLOW line** (`var(--warning)`) — where the
+    profile is slewing to.
+  - a colour-key legend (`actual` / `target`) renders under the track so
+    the two are unambiguous even when they overlap at rest (servo idle,
+    pos == target).
+
+```svelte
+{@const sv = $servoStatus[servoStatusKey(axis.servoPort.guid, axis.servoPort.idx)]}
+<ServoIoWidget
+    hasInput={!!axis.input}  inputUs={liveAx?.us ?? null}  inputValid={liveAx?.valid ?? false}
+    neutralUs={axis.neutralUs}
+    hasServo={!!(axis.servoPort && axis.servoPort.kind)}
+    minUs={prof.minUs} maxUs={prof.maxUs} centerUs={prof.centerUs} reversed={prof.reversed}
+    servo={sv ?? null} />
+```
+
+Props: `hasInput`/`inputUs`/`inputValid`/`neutralUs` (signal bar);
+`hasServo`/`minUs`/`maxUs`/`centerUs`/`reversed` (output envelope);
+`servo` (`{posUs,targetUs,velUsPerS}` | null).  When `servo` is null it
+falls back to a dim **cmd-only** line at the commanded position (no
+telemetry yet).
+
+**Live telemetry plumbing (generic / port-keyed, Rule 42 + 53):**
+1. The firmware emits a batched `SERVO_MOTION_UPDATE` (0x4C) of EVERY
+   active servo at the host-requested rate (`SERVO_SET_BROADCAST_HZ`
+   0x47), gated on `hostVerboseActive` and naturally silent during
+   uploads (the upload-exclusive loop skips `RoleService::update`).
+2. Studio's [`servo_status.ts`](../app/go/studio/frontend/src/lib/servo_status.ts)
+   store is keyed `${guid}|servo|${idx}` — the SAME composite key a
+   consumer derives from its servo `PortRef`, so any panel reads its
+   servo by ref.
+3. **Subscribe-on-view:** the panel calls `setServoLiveView(true)` in
+   `onMount` (+ `false` on destroy); the Go side re-applies on reconnect
+   ([app_servo.go](../app/go/studio/app_servo.go)).
+4. The Go event hop is `OnServoMotion` → emit `servo:motion` (hub-local
+   GUID "" remapped to the hub GUID so keys match).
+
+> ⚠️ **Gotcha (the bug that motivated this widget, 2026-05-31):** the
+> client's `Events.add()` is a manual type switch over the observer slice
+> type — a new `OnXxx` event silently no-ops unless you add a
+> `case *[]func(XxxEvent):`.  `OnServoMotion` was missing it, so the
+> stream decoded fine but reached zero observers and the widget showed
+> only the cmd-only line.  When adding any live event, add the `case`.
+> See [protocol/connection.go](../app/go/protocol/connection.go) (Rule 53/56)
+> and `client/events.go`.
+
+Reference rule: **Rule 42** (telemetry is role-layer, decoupled from the
+effect).  References:
+[ServoIoWidget.svelte](../app/go/studio/frontend/src/lib/components/ServoIoWidget.svelte),
+[servo_status.ts](../app/go/studio/frontend/src/lib/servo_status.ts),
+[app_servo.go](../app/go/studio/app_servo.go),
+[GunFxPanel.svelte Turret section](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte),
+[role_service.cpp `emitServoBroadcast`](../controllers/lib/sfx_board/server/role_service.cpp).
 
 ---
 

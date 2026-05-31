@@ -378,11 +378,16 @@ struct GunDef {
     uint16_t  flashDurationMs   = 30;
     uint8_t   flashBrightness   = 100;
 
-    // Recoil (ServoActuator on a dedicated servo)
-    PortRef   recoilServoPort;
-    uint16_t  recoilCenterUs    = 1500;
-    uint16_t  recoilJerkUs      = 200;
-    uint16_t  recoilHoldMs      = 80;
+    // Recoil — TURRET BEHAVIOUR, no dedicated servo (2026-06).  On each
+    // shot every enabled turret axis (yaw + pitch) gets a role-level recoil
+    // impulse: a random ±offset up to recoilJerkUs added to its servo OUTPUT
+    // for recoilHoldMs, then the ServoActuatorRole de-jerks it.  The kick
+    // rides ON TOP of the aim (the motion profile keeps tracking RC), so it
+    // works moving or stationary — no snap-back, no RC suppression.  Wire:
+    // SERVO_RECOIL (0x46) [portIdx][offsetUs:i16][durationMs:u16].
+    bool      recoilEnabled     = true;
+    uint16_t  recoilJerkUs      = 200;   // MAX random |offset| added to output µs
+    uint16_t  recoilHoldMs      = 80;    // how long the offset rides before de-jerk
 
     // Smoke + fan
     SmokeConfig smoke;
@@ -423,11 +428,10 @@ guns:
       port: { board: hub, kind: pwm, idx: 0 }     # any LedAnimator-capable port
       durationMs: 30
       brightness: 100
-    recoil:
-      port: { board: gunfx-3c4d, kind: servo, idx: 0 }
-      centerUs: 1500
-      jerkUs:   200
-      holdMs:   80
+    recoil:                  # turret behaviour — NO dedicated servo port
+      enabled: true
+      jerkUs:  200           # max random ±offset added to yaw+pitch output on each shot
+      holdMs:  80            # how long the recoil offset rides before the role de-jerks
     smoke:
       heater:
         port: { board: hub, kind: pwm, idx: 1 }
@@ -475,7 +479,8 @@ guns:
         {Key: "trigger",      Label: "Fire trigger",    RoleKinds: inputRoleKinds,              Direction: DirInput,  Min: 0, Max: 1, Optional: true,  Shared: true},
         {Key: "rofSelector",  Label: "ROF selector",    RoleKinds: inputRoleKinds,              Direction: DirInput,  Min: 0, Max: 1, Optional: true,  Shared: true},
         {Key: "muzzleFlash",  Label: "Muzzle flash",    RoleKinds: []byte{roles.KindLedAnimator}, Direction: DirOutput, Min: 0, Max: 4, Optional: true},   // one per gun, up to 4 guns
-        {Key: "recoilServo",  Label: "Recoil servo",    RoleKinds: []byte{roles.KindServoActuator}, Direction: DirOutput, Min: 0, Max: 4, Optional: true},
+        // NOTE: no recoil-servo slot — recoil is a role-level impulse on the
+        // yaw/pitch servos (SERVO_RECOIL), not a dedicated actuator.
         {Key: "smokeHeater",  Label: "Smoke heater",    RoleKinds: []byte{roles.KindHeater, roles.KindDcMotor}, Direction: DirOutput, Min: 0, Max: 4, Optional: true},
         {Key: "smokeFan",     Label: "Smoke fan",       RoleKinds: []byte{roles.KindDcMotor},    Direction: DirOutput, Min: 0, Max: 4, Optional: true},
         {Key: "yawServo",     Label: "Yaw servo",       RoleKinds: []byte{roles.KindServoActuator}, Direction: DirOutput, Min: 0, Max: 4, Optional: true},
