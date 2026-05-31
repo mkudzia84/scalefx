@@ -342,6 +342,14 @@
         return null
     }
 
+    /** Map a µs value to 0–100% across a servo profile's [minUs, maxUs]
+     *  travel (for the servo-output bar). Clamped; safe when min==max. */
+    function outPct(us: number, p: { minUs: number; maxUs: number }): number {
+        const span = p.maxUs - p.minUs
+        if (span <= 0) return 0
+        return Math.max(0, Math.min(100, ((us - p.minUs) / span) * 100))
+    }
+
     // ── Live µs lookup from a named channel (Rule 43 + 36) ─────────────
     // For a function id like "gun_fire_mode", find which (input port,
     // channel) carries it AND look up the live value the dispatcher is
@@ -876,7 +884,6 @@
                 <div class="section-head">Turret control
                     <span class="hint">yaw + pitch each own a servo motion profile (set via ⚙ Calibrate); recoil kicks both on every shot</span>
                 </div>
-                <div class="turret-axes-row">
                 {#each axisKeys as which (which)}
                     {@const axis = axisOf(gun, which)}
                     {@const axisWarn = axisNoFreePort(axis)}
@@ -920,6 +927,7 @@
 
                             {#if axis.input}
                                 {@const liveAx = liveUsFor(axis.input)}
+                                <div class="io-label">Signal input</div>
                                 <div class="axis-bar" class:nosignal={!liveAx || !liveAx.valid}>
                                     <div class="axis-neutral" style="left:{usToPct(axis.neutralUs)}%" title="neutral {axis.neutralUs} µs"></div>
                                     {#if liveAx && liveAx.valid}
@@ -928,6 +936,25 @@
                                     {:else}
                                         <span class="axis-nosignal">NO SIGNAL</span>
                                     {/if}
+                                </div>
+                            {/if}
+
+                            <!-- Servo OUTPUT status — the commanded position
+                                 within the servo's calibrated travel (input
+                                 clamped to [min,max]).  Mirrors the calibration
+                                 dialog's position bar; pairs with the input bar
+                                 above.  Shown whenever a servo port is bound. -->
+                            {#if axis.servoPort && axis.servoPort.kind}
+                                {@const prof = profileForPort(axis.servoPort) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
+                                {@const liveAx = liveUsFor(axis.input)}
+                                {@const inUs = (axis.input && liveAx && liveAx.valid) ? liveAx.us : axis.neutralUs}
+                                {@const cmdUs = Math.min(prof.maxUs, Math.max(prof.minUs, inUs))}
+                                <div class="io-label">Servo output <span class="io-sub">{prof.minUs}–{prof.maxUs} µs travel{prof.reversed ? ' · ↔ rev' : ''}</span></div>
+                                <div class="servo-out-bar" title="Commanded servo position ({cmdUs} µs) within its [{prof.minUs}, {prof.maxUs}] travel">
+                                    <div class="servo-out-center" style="left:{outPct(prof.centerUs, prof)}%" title="center {prof.centerUs} µs"></div>
+                                    <div class="servo-out-fill" style="width:{outPct(cmdUs, prof)}%"></div>
+                                    <div class="servo-out-marker" style="left:{outPct(cmdUs, prof)}%"></div>
+                                    <span class="servo-out-readout">{cmdUs} µs</span>
                                 </div>
                             {/if}
 
@@ -953,7 +980,6 @@
                         {/if}
                     </div>
                 {/each}
-                </div>
 
                 <!-- Recoil sub-section — sits UNDER the two axes (full
                      width).  No dedicated servo, no axis picker: on each
@@ -1416,6 +1442,20 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
     .axis-readout { position: absolute; right: 6px; top: 0; line-height: 14px; font-family: var(--font-mono); font-size: 9px; color: var(--text-bright); text-shadow: 0 0 3px rgba(0,0,0,0.7); }
     .axis-nosignal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.5px; color: var(--text-dim); }
 
+    /* Signal-input / servo-output bar labels. */
+    .io-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-top: 4px; }
+    .io-label .io-sub { text-transform: none; letter-spacing: 0; font-family: var(--font-mono); opacity: 0.8; margin-left: 4px; }
+
+    /* Servo OUTPUT bar — distinct colour (amber→accent) from the green
+       input bar so input vs output read apart at a glance.  Marker +
+       fill show the commanded position within [min,max] travel; the
+       dashed tick is the calibrated centre. */
+    .servo-out-bar { position: relative; height: 14px; margin: 4px 0 6px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+    .servo-out-fill { height: 100%; background: linear-gradient(90deg, color-mix(in srgb, var(--warning) 70%, var(--accent)), var(--accent)); transition: width 0.08s linear; opacity: 0.55; }
+    .servo-out-marker { position: absolute; top: -1px; bottom: -1px; width: 2px; background: var(--accent); box-shadow: 0 0 4px var(--accent); transition: left 0.08s linear; pointer-events: none; }
+    .servo-out-center { position: absolute; top: -2px; bottom: -2px; width: 0; border-left: 1px dashed var(--text-dim); pointer-events: none; }
+    .servo-out-readout { position: absolute; right: 6px; top: 0; line-height: 14px; font-family: var(--font-mono); font-size: 9px; color: var(--text-bright); text-shadow: 0 0 3px rgba(0,0,0,0.7); }
+
     /* Smoke generator sibling card (Phase 4 polish 2026-05-26).
        Lives directly after each gun card via the {#each} block, so it
        inherits the standard `.card` chrome (border, background, padding).
@@ -1514,17 +1554,6 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
         border-radius: 4px;
         padding: 8px 10px;
         margin: 6px 0;
-    }
-    /* Yaw + pitch side-by-side (two equal columns); collapses to one
-       column on narrow panels so the form rows stay readable. */
-    .turret-axes-row {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px;
-    }
-    .turret-axes-row > .turret-axis { margin: 6px 0 0; }
-    @media (max-width: 720px) {
-        .turret-axes-row { grid-template-columns: 1fr; }
     }
     .turret-axis.axis-warn {
         border-color: color-mix(in srgb, var(--warning) 70%, var(--border));
