@@ -97,6 +97,8 @@ const (
 	// Instant position snap (no profile slew) — same payload as ServoSetTarget.
 	// 0x46 (the 0x48..0x4F servo block is full). GunFx recoil uses it.
 	ServoSetImmediate protocol.PacketType = 0x46
+	// Subscribe to the batched servo telemetry stream (ServoMotionUpdate). 0x47.
+	ServoSetBroadcastHz protocol.PacketType = 0x47
 
 	// Servo actuator (0x48..0x4F)
 	ServoSetTarget     protocol.PacketType = 0x48
@@ -262,6 +264,39 @@ func DecodeServoStatus(p []byte) (ServoStatus, error) {
 	}, nil
 }
 
+// ServoMotion is one entry in a batched SERVO_MOTION_UPDATE frame — the live
+// state of one servo port. Generic / port-keyed (Rule 42): any consumer.
+type ServoMotion struct {
+	PortIdx   byte   `json:"portIdx"`
+	PosUs     uint16 `json:"posUs"`
+	TargetUs  uint16 `json:"targetUs"`
+	VelUsPerS int16  `json:"velUsPerS"`
+}
+
+// DecodeServoMotionUpdate parses a batched SERVO_MOTION_UPDATE async payload:
+// [count:u8]{ [portIdx:u8][pos:u16][target:u16][vel:i16] } × count.
+func DecodeServoMotionUpdate(p []byte) ([]ServoMotion, error) {
+	if len(p) < 1 {
+		return nil, fmt.Errorf("servo motion: empty payload")
+	}
+	count := int(p[0])
+	if len(p) < 1+count*7 {
+		return nil, fmt.Errorf("servo motion: %d entries need %d bytes, got %d",
+			count, 1+count*7, len(p))
+	}
+	out := make([]ServoMotion, count)
+	for i := 0; i < count; i++ {
+		o := 1 + i*7
+		out[i] = ServoMotion{
+			PortIdx:   p[o],
+			PosUs:     binary.LittleEndian.Uint16(p[o+1 : o+3]),
+			TargetUs:  binary.LittleEndian.Uint16(p[o+3 : o+5]),
+			VelUsPerS: int16(binary.LittleEndian.Uint16(p[o+5 : o+7])),
+		}
+	}
+	return out, nil
+}
+
 // LedStatus decodes a LED_STATUS_RESP payload.
 type LedStatus struct {
 	Index       byte
@@ -351,6 +386,9 @@ func CmdRoleListReq() []byte { return protocol.BuildPacket(RoleListReq, nil, 0) 
 
 func CmdServoSetImmediate(portIdx byte, posUs uint16) []byte {
 	return protocol.BuildPacket(ServoSetImmediate, append([]byte{portIdx}, protocol.U16LE(posUs)...), 0)
+}
+func CmdServoSetBroadcastHz(hz byte) []byte {
+	return protocol.BuildPacket(ServoSetBroadcastHz, []byte{hz}, 0)
 }
 func CmdServoSetTarget(portIdx byte, targetUs uint16) []byte {
 	return protocol.BuildPacket(ServoSetTarget, append([]byte{portIdx}, protocol.U16LE(targetUs)...), 0)
@@ -886,6 +924,7 @@ func init() {
 		RoleAttached:         "ROLE_ATTACHED",
 		RoleDetached:         "ROLE_DETACHED",
 		ServoSetImmediate:    "SERVO_SET_IMMEDIATE",
+		ServoSetBroadcastHz:  "SERVO_SET_BROADCAST_HZ",
 		ServoSetTarget:       "SERVO_SET_TARGET",
 		ServoGetStatusReq:    "SERVO_GET_STATUS_REQ",
 		ServoStatusResp:      "SERVO_STATUS_RESP",

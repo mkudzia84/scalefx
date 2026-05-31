@@ -30,6 +30,7 @@
         type GunVerboseStatusT, type GunStatusT,
     } from '../gunfx'
     import ServoWidget from '../components/ServoWidget.svelte'
+    import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     // SetPortProfile + markHubDirty now flow through ServoCalibrationDialog;
     // GunFxPanel only READS the device-model profile to feed ServoWidget.
     import {
@@ -140,6 +141,10 @@
 
     onMount(() => {
         installVerboseListener()
+        // Generic servo telemetry (live output bars). Listener is a global Wails
+        // handler (cheap to keep); the wire stream is subscribed while mounted.
+        installServoStatusListener()
+        setServoLiveView(true).catch(() => {})
         loadGunFxConfig().catch(e => { error = String(e) })
         // One-shot refresh so the firing pill is populated immediately;
         // verbose broadcasts take over from there.
@@ -153,6 +158,7 @@
                 gunVerboseSubscribe(id, false).catch(() => {})
             }
             subscribedIds.clear()
+            setServoLiveView(false).catch(() => {})
             unsub()
         }
     })
@@ -161,6 +167,7 @@
             gunVerboseSubscribe(id, false).catch(() => {})
         }
         subscribedIds.clear()
+        setServoLiveView(false).catch(() => {})
         unsub()
     })
 
@@ -940,21 +947,22 @@
                             {/if}
 
                             <!-- Servo OUTPUT status — the LIVE servo position
-                                 (10 Hz from the gun verbose broadcast: shows
-                                 motion-profile slew + recoil kicks). Falls back
+                                 from the GENERIC servo telemetry stream (20 Hz,
+                                 port-keyed, decoupled from the gun): shows
+                                 motion-profile slew + recoil kicks. Falls back
                                  to the commanded position (input clamped to
-                                 travel) until the verbose stream warms up / when
-                                 not subscribed. A faint tick shows the target.
-                                 The broadcast is firmware-loop-gated, so it goes
+                                 travel) until the stream warms up / when not
+                                 subscribed. A faint tick shows the target. The
+                                 broadcast is firmware-loop-gated, so it goes
                                  quiet during an upload (no separate poller). -->
                             {#if axis.servoPort && axis.servoPort.kind}
                                 {@const prof = profileForPort(axis.servoPort) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
                                 {@const liveAx = liveUsFor(axis.input)}
                                 {@const inUs = (axis.input && liveAx && liveAx.valid) ? liveAx.us : axis.neutralUs}
                                 {@const cmdUs = Math.min(prof.maxUs, Math.max(prof.minUs, inUs))}
-                                {@const vb = $gunfxVerbose[gun.id]}
-                                {@const curUs = vb ? (which === 'yaw' ? vb.yawCurrentUs : vb.pitchCurrentUs) : 0}
-                                {@const tgtUs = vb ? (which === 'yaw' ? vb.yawTargetUs : vb.pitchTargetUs) : 0}
+                                {@const sv = $servoStatus[servoStatusKey(axis.servoPort.guid, axis.servoPort.idx)]}
+                                {@const curUs = sv ? sv.posUs : 0}
+                                {@const tgtUs = sv ? sv.targetUs : 0}
                                 {@const live = curUs > 0}
                                 {@const posUs = live ? curUs : cmdUs}
                                 <div class="io-label">Servo output <span class="io-sub">{prof.minUs}–{prof.maxUs} µs · {live ? 'live' : 'cmd'}{prof.reversed ? ' · ↔ rev' : ''}</span></div>

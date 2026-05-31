@@ -97,12 +97,25 @@ namespace RolePacket {
     /// snap back. Calls ServoActuatorRole::setPositionImmediate().
     constexpr uint8_t SERVO_SET_IMMEDIATE   = 0x46;  ///< [portIdx:u8][target_us:u16LE] → ACK
 
+    /// Subscribe to the batched servo telemetry stream (SERVO_MOTION_UPDATE).
+    /// GLOBAL (all servos), like RCIN_SET_BROADCAST_HZ is per-input. 0x47
+    /// (0x48..0x4F is full). hz=0 turns it off. Clamped to a sane max server-side.
+    constexpr uint8_t SERVO_SET_BROADCAST_HZ = 0x47;  ///< [hz:u8] → ACK (0 = off)
+
     // ── Servo actuator role (0x48..0x4F) ──────────────────────────────
     constexpr uint8_t SERVO_SET_TARGET      = 0x48;  ///< [portIdx:u8][target_us:u16LE] → ACK
     constexpr uint8_t SERVO_GET_STATUS_REQ  = 0x49;  ///< [portIdx:u8] → SERVO_STATUS_RESP
     constexpr uint8_t SERVO_STATUS_RESP     = 0x4A;  ///< [portIdx:u8][pos_us:u16LE][target_us:u16LE][vel:i16LE][flags:u8]
     constexpr uint8_t SERVO_TARGET_REACHED  = 0x4B;  ///< async TAG_ASYNC: [portIdx:u8][pos_us:u16LE]
-    constexpr uint8_t SERVO_MOTION_UPDATE   = 0x4C;  ///< async TAG_ASYNC: [portIdx:u8][pos_us:u16LE][target_us:u16LE][vel:i16LE]
+    /// Live servo telemetry — BATCHED snapshot of every active servo, emitted
+    /// periodically while subscribed (SERVO_SET_BROADCAST_HZ) and a host is
+    /// listening (hostVerboseActive).  Generic / port-keyed (Rule 42): any UI
+    /// domain that uses a servo consumes the same stream, independent of which
+    /// effect owns it.  Gated off during uploads (RoleService::update() doesn't
+    /// run while the loop is upload-exclusive).
+    constexpr uint8_t SERVO_MOTION_UPDATE   = 0x4C;
+        ///< async TAG_ASYNC: [count:u8]{ [portIdx:u8][pos_us:u16LE]
+        ///< [target_us:u16LE][vel:i16LE] } × count
     /// Live motion-profile retune (Phase 2.9.x — actuator mechanism on
     /// the role layer, Rule 42).  Same wire shape as the role-attach
     /// payload tail — operator sliders push without re-attaching the

@@ -30,6 +30,28 @@ type InputValue struct {
 	Channels []ChannelValue `json:"channels"`
 }
 
+// ServoMotionEvent is a decoded batched SERVO_MOTION_UPDATE frame — the live
+// state of every active servo on one board.  Generic / port-keyed (Rule 42):
+// any UI domain that uses a servo consumes this, independent of the effect.
+// GUID "" is the hub's own servos.  Flows through Events.OnServoMotion.
+type ServoMotionEvent struct {
+	GUID   string             `json:"guid"`
+	Servos []roles.ServoMotion `json:"servos"`
+}
+
+// decodeServoMotion turns a SERVO_MOTION_UPDATE payload (direct or topology-
+// unwrapped) into a ServoMotionEvent.  Returns false if it isn't one.
+func decodeServoMotion(guid string, innerType byte, p []byte) (ServoMotionEvent, bool) {
+	if innerType != byte(roles.ServoMotionUpdate) {
+		return ServoMotionEvent{}, false
+	}
+	servos, err := roles.DecodeServoMotionUpdate(p)
+	if err != nil {
+		return ServoMotionEvent{}, false
+	}
+	return ServoMotionEvent{GUID: guid, Servos: servos}, true
+}
+
 // SetBroadcastHz tells a hub-local input port to stream RC PWM values at
 // `hz` (0 stops the stream).  This is what makes the live channel bars
 // move — the "verbose signalling" the operator turns on while wiring.

@@ -97,6 +97,9 @@ private:
     void handleServoGetStatusReq (const uint8_t* p, size_t len);
     void handleServoSetProfile   (const uint8_t* p, size_t len);
     void handleServoGetProfileReq(const uint8_t* p, size_t len);
+    void handleServoSetBroadcastHz(const uint8_t* p, size_t len);
+    /// Emit the batched SERVO_MOTION_UPDATE snapshot (all active servos).
+    void emitServoBroadcast(uint32_t now);
 
     // ── RC PWM input ──────────────────────────────────────────────────
     void handleRcInGetValueReq    (const uint8_t* p, size_t len);
@@ -175,6 +178,14 @@ private:
     PortRegistryBase*   _reg = nullptr;
     LocalAsyncCallback  _localAsyncFn  = nullptr;
     void*               _localAsyncCtx = nullptr;
+
+    // Generic servo telemetry broadcast (SERVO_MOTION_UPDATE). Global rate set
+    // by the host via SERVO_SET_BROADCAST_HZ; 0 = off. Gated additionally on
+    // hostVerboseActive() at emit time. Naturally silent during uploads because
+    // update() isn't ticked while the loop is upload-exclusive.
+    uint8_t  _servoBroadcastHz     = 0;
+    uint32_t _servoBroadcastNextMs = 0;
+    static constexpr uint8_t kServoBroadcastMaxHz = 50;  // clamp host requests
 };
 
 }  // namespace sfx_core

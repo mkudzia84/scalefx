@@ -370,6 +370,10 @@ export function SetPortProfile(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetPortProfile'](arg1, arg2, arg3, arg4);
 }
 
+export function SetServoLiveView(arg1) {
+  return window['go']['main']['App']['SetServoLiveView'](arg1);
+}
+
 export function StopLightChannel(arg1) {
   return window['go']['main']['App']['StopLightChannel'](arg1);
 }

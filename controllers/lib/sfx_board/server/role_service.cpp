@@ -23,6 +23,7 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
         // Servo actuator
         case RolePacket::SERVO_SET_TARGET:      handleServoSetTarget(p, len);       break;
         case RolePacket::SERVO_SET_IMMEDIATE:   handleServoSetImmediate(p, len);    break;
+        case RolePacket::SERVO_SET_BROADCAST_HZ: handleServoSetBroadcastHz(p, len); break;
         case RolePacket::SERVO_GET_STATUS_REQ:  handleServoGetStatusReq(p, len);    break;
         case RolePacket::SERVO_SET_PROFILE:     handleServoSetProfile(p, len);      break;
         case RolePacket::SERVO_GET_PROFILE_REQ: handleServoGetProfileReq(p, len);   break;
@@ -126,6 +127,52 @@ void RoleServicePolicy::update() {
             }
         }, b->role);
     }
+
+    // Generic servo telemetry — one batched snapshot of every active servo at
+    // the host-requested rate, gated on a listening host.  Upload-safe: this
+    // whole update() is skipped while the loop is upload-exclusive.
+    if (_servoBroadcastHz > 0 && (int32_t)(now - _servoBroadcastNextMs) >= 0) {
+        _servoBroadcastNextMs = now + (uint32_t)(1000u / _servoBroadcastHz);
+        if (_ctx && _ctx->hostVerboseActive()) emitServoBroadcast(now);
+    }
+}
+
+void RoleServicePolicy::handleServoSetBroadcastHz(const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    uint8_t hz = p[0];
+    if (hz > kServoBroadcastMaxHz) hz = kServoBroadcastMaxHz;
+    _servoBroadcastHz     = hz;
+    _servoBroadcastNextMs = SFX_MILLIS();   // emit promptly on (re)subscribe
+    _ctx->sendAck();
+}
+
+void RoleServicePolicy::emitServoBroadcast(uint32_t now) {
+    (void)now;
+    if (!_reg) return;
+    // [count:u8]{ [portIdx:u8][pos:u16][target:u16][vel:i16] } × count.
+    // Buffer sized for the worst case (numServoPorts ≤ the board's servo count;
+    // HubFX has ≤ 10 → 1 + 10·7 = 71 B, well under the payload cap).
+    uint8_t buf[1 + 32 * 7];
+    size_t  off = 1;
+    uint8_t count = 0;
+    const uint8_t n = _reg->numServoPorts();
+    for (uint8_t i = 0; i < n && count < 32; i++) {
+        auto* b = _reg->servoAt(i);
+        if (!b || !b->occupied()) continue;
+        auto* r = std::get_if<ServoActuatorRole>(&b->role);
+        if (!r) continue;
+        if (off + 7 > sizeof buf) break;
+        buf[off++] = i;
+        SfxWire::putU16LE(&buf[off], r->position());          off += 2;
+        SfxWire::putU16LE(&buf[off], r->target());            off += 2;
+        SfxWire::putI16LE(&buf[off], r->velocity_us_per_s()); off += 2;
+        count++;
+    }
+    if (count == 0) return;            // nothing to report — stay off the wire
+    buf[0] = count;
+    if (_ctx) _ctx->sendRawPacket(RolePacket::SERVO_MOTION_UPDATE,
+                                  SfxWire::TAG_ASYNC, buf, off);
+    fireLocalAsync(RolePacket::SERVO_MOTION_UPDATE, buf, off);
 }
 
 // ── ROLE_ATTACH / ROLE_DETACH / ROLE_LIST ───────────────────────────

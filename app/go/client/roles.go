@@ -60,6 +60,13 @@ func (r *Roles) ServoSetTarget(portIdx byte, targetUs uint16) error {
 	return r.c.sendExpectACK(roles.CmdServoSetTarget(portIdx, targetUs))
 }
 
+// ServoSetBroadcastHz subscribes (global) to the batched servo telemetry
+// stream (SERVO_MOTION_UPDATE). hz=0 turns it off. Live positions then flow
+// through Events.OnServoMotion.
+func (r *Roles) ServoSetBroadcastHz(hz byte) error {
+	return r.c.sendExpectACK(roles.CmdServoSetBroadcastHz(hz))
+}
+
 // ─── DC motor element (voltage scaling) ──────────────────────────────
 
 // MotorSetElement updates the element rated voltage + scaling mode for

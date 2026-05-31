@@ -37,6 +37,7 @@ type Events struct {
 	onGunShot      []func(gunfx.Shot)
 	onGunVerbose   []func(gunfx.VerboseStatus)
 	onInputValue   []func(InputValue)
+	onServoMotion  []func(ServoMotionEvent)
 	onPacket       []func(*protocol.Response) // catch-all
 }
 
@@ -75,6 +76,7 @@ func (e *Events) OnEngineState(fn func(enginefx.StateChange))            { e.add
 func (e *Events) OnGunShot(fn func(gunfx.Shot))                          { e.add(&e.onGunShot, fn) }
 func (e *Events) OnGunVerboseStatus(fn func(gunfx.VerboseStatus))        { e.add(&e.onGunVerbose, fn) }
 func (e *Events) OnInputValue(fn func(InputValue))                       { e.add(&e.onInputValue, fn) }
+func (e *Events) OnServoMotion(fn func(ServoMotionEvent))                { e.add(&e.onServoMotion, fn) }
 func (e *Events) OnAny(fn func(*protocol.Response))                      { e.add(&e.onPacket, fn) }
 
 // ─── Dispatch ────────────────────────────────────────────────────────
@@ -130,12 +132,25 @@ func (e *Events) onAsync(resp *protocol.Response) {
 					fn(iv)
 				}
 			}
+			// Expander servo telemetry arrives wrapped too.
+			if sm, ok := decodeServoMotion(ev.GUID, byte(ev.InnerType), ev.InnerPayload); ok {
+				for _, fn := range e.snapshotServoMotion() {
+					fn(sm)
+				}
+			}
 		}
 	case roles.RcinValueBroadcast, roles.PpmFrameBroadcast, roles.SbusFrameBroadcast, roles.JetiExFrameBroadcast:
 		// Hub-local input frames arrive directly (guid "").
 		if iv, ok := decodeInputValue("", byte(resp.PacketType), resp.Payload); ok {
 			for _, fn := range e.snapshotInputValue() {
 				fn(iv)
+			}
+		}
+	case roles.ServoMotionUpdate:
+		// Hub-local servo telemetry arrives directly (guid "").
+		if sm, ok := decodeServoMotion("", byte(resp.PacketType), resp.Payload); ok {
+			for _, fn := range e.snapshotServoMotion() {
+				fn(sm)
 			}
 		}
 	case storage.FileUploadProgress:
@@ -220,6 +235,12 @@ func (e *Events) snapshotRole() []func(topology.RoleEvent) {
 	defer e.mu.RUnlock()
 	return append([]func(topology.RoleEvent){}, e.onRoleEvent...)
 }
+func (e *Events) snapshotServoMotion() []func(ServoMotionEvent) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]func(ServoMotionEvent){}, e.onServoMotion...)
+}
+
 func (e *Events) snapshotInputValue() []func(InputValue) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
