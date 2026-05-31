@@ -105,20 +105,35 @@ Present (native both sides): `SFX_DELAY_MS/US`, `SfxMutex`, PSRAM
   include first. The classification of vestigial vs functional includers is
   done (grep) and ready.
 
-### Remaining (high-leverage, higher-risk — do attended, build-verify each)
-- **P5 — I2C abstraction:** `SfxI2cBus` (ESP-IDF `i2c_master` / Pico
-  `hardware/i2c`) threaded through `I2CDevice`; migrate `pca9685`, `ina226`,
-  `tas5825_p_codec`, `hubfx_hw_probe.h` off `TwoWire`.
-- **P6 — GPIO/PWM/ADC:** make `native_gpio.h` actually native
-  (`driver/gpio`+`driver/ledc` / `hardware/gpio`+`hardware/pwm`+`hardware/adc`);
-  ports + `battery_monitor` follow. Then **drop `<Arduino.h>` from
-  `sfx_platform.h`** and run P3.
-- **P7 — servo + UART Stream + entry model:** LEDC/MCPWM servo; Stream-free wire
-  seam; `.ino setup/loop` → `app_main` + loop task; drop `framework = arduino`
-  + the `ESP32Servo`/Arduino-`SD` `lib_deps`.
+- **P5 (done) — native RTTI-free I2C.** New `sfx_peripherals/i2c/`
+  (`esp_i2c_bus.h` / `pico_i2c_bus.h` / `sfx_i2c.h` selector → `SfxI2cBus`).
+  `I2CDevice` → header-only CRTP `I2CDeviceT<Derived>` (no vtable; `i2c_device.cpp`
+  deleted). INA226 / PCA9685 / TAS5825P codec / board I2C-scan / boot probe all
+  off `TwoWire` onto a shared `hubI2cBus()` singleton. hubfx green, **−21 KB**
+  (Arduino Wire lib dropped). ⚠️ bench smoke-test pending (audio / INA / PCA).
+- **P6 (done) — native RTTI-free GPIO/PWM.** `gpio/{esp,pico}_native_gpio.h`
+  (`driver/gpio`+`driver/ledc` / `hardware/gpio`+`hardware/pwm`) behind a
+  `using NativeGpio` selector in `native_gpio.h`. hubfx status/error LEDs route
+  through it → build-verified there. ⚠️ bench smoke-test pending (LED blink).
+
+### Remaining (high-leverage, higher-risk — do attended, BENCH-verify each)
+- **ADC:** `battery_monitor.h` `analogRead` → `esp_adc` / `hardware/adc`
+  (Pico-only in practice — hubfx battery is INA226/I2C — so not hubfx-verifiable).
+- **P7 — servo + interrupts + UART Stream + entry model:** servo
+  (`ESP32Servo` → LEDC/MCPWM — behaviour-critical pulse timing), GPIO interrupts
+  (`attachInterrupt` → gpio ISR), Stream-free wire seam; `.ino setup/loop` →
+  `app_main` + loop task. Only after servo + interrupts can **`sfx_platform.h`
+  drop `<Arduino.h>`** and P3 (vestigial-include removal) become build-verifiable.
+  Then drop `framework = arduino` + the `ESP32Servo`/Arduino-`SD` `lib_deps`.
 - **P8 — Pico controllers:** unblock the stale `.ino` vs `BoardOf<>` first, then
   swap each abstraction's Arduino-Pico branch for the native Pico SDK (+ a
   TinyUSB-CDC `Stream` adapter mirroring `NativeUartStream`).
+
+### Bench-verification checklist (P5/P6 are build-green, NOT bench-tested)
+Flash hubfx, then confirm: codec plays audio (TAS5825P over native I2C);
+`system-info` shows INA226 battery reads; PCA9685 drives CH1–8 PWM; status/error
+LEDs blink (NativeGpio). If any fail, suspect the native bus/pin `begin()` params
+(`esp_i2c_bus.h` port/pins/freq, LEDC timer) — `coredump` first.
 
 See [26-CODE-AND-DESIGN-IMPROVEMENTS.md](26-CODE-AND-DESIGN-IMPROVEMENTS.md) for
 the broader code/design catalogue surfaced by this analysis.
