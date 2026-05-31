@@ -78,6 +78,7 @@ type Connection struct {
 	verbose  bool
 
 	writeMu      sync.Mutex // protects serial writes
+	tagMu        sync.Mutex // protects nextTag (concurrent senders: Studio apply + pollers)
 	nextTag      byte
 	lastSendTime time.Time // time of last packet sent (any type)
 
@@ -322,6 +323,14 @@ func (c *Connection) UnregisterAsyncFilter(ptype PacketType) {
 
 // NextTag returns the next correlation tag (1-255).
 func (c *Connection) NextTag() byte {
+	// Thread-safe: Studio drives the wire from several goroutines (a config-apply
+	// upload + status/telemetry pollers + Wails RPCs).  An unlocked read-modify-
+	// write here handed two concurrent commands the SAME correlation tag, so one
+	// command's ACK was delivered to the other's waiter and the loser timed out —
+	// the periodic "upload chunk @0 (seq=0): timeout" on Studio apply.  The CLI
+	// (single-threaded) never raced, which is why it never reproduced.
+	c.tagMu.Lock()
+	defer c.tagMu.Unlock()
 	tag := c.nextTag
 	c.nextTag++
 	if c.nextTag == 0 {
