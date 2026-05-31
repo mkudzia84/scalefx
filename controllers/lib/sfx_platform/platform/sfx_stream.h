@@ -4,7 +4,7 @@
  * `sfx::Stream` / `sfx::Print` are a minimal, Arduino-free re-implementation
  * of the two Arduino base classes the ScaleFX protocol layer used to lean on
  * (the wire to the host, DiagLog, the RC UART chain).  Keeping our own tiny
- * interface — instead of `#include <Arduino.h>` for `Stream`/`Print` — is what
+ * interface — instead of pulling Arduino for its `Stream`/`Print` — is what
  * lets the firmware drop the Arduino framework dependency on ESP32.
  *
  * Surface = exactly what the protocol consumers call (verified by grep): the

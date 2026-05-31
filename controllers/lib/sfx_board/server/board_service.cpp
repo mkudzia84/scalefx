@@ -15,7 +15,6 @@
 #include <serial/wire.h>           // SfxWire::TAG_ASYNC
 #include <platform/sfx_platform.h> // sfxDramFree_bytes, sfxPsramFree_bytes
 
-#include <Arduino.h>     // SFX_MILLIS()
 #include <cstring>
 
 namespace sfx_core {

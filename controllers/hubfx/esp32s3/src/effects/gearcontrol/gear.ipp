@@ -5,7 +5,6 @@
 #ifndef HUBFX_GEAR_IPP
 #define HUBFX_GEAR_IPP
 
-#include <Arduino.h>
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <serial/roles.h>
 #include <serial/wire.h>

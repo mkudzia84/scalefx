@@ -34,7 +34,6 @@
 #ifndef FLASH_H
 #define FLASH_H
 
-#include <Arduino.h>
 #include "platform/sfx_platform.h"
 #include <functional>
 

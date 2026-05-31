@@ -8,7 +8,6 @@
 
 #include "board_server.h"
 
-#include <Arduino.h>
 #include <cstdio>
 #include <cstring>
 

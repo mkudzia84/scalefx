@@ -32,7 +32,6 @@
 #ifndef SFX_LED_ANIMATOR_H
 #define SFX_LED_ANIMATOR_H
 
-#include <Arduino.h>
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <cstddef>
 #include <cstdint>

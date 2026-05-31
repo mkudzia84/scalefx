@@ -6,6 +6,7 @@
 
 #include "diag_log.h"
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
+#include <cstring>                   // strlen / memcpy (was transitive via <Arduino.h>)
 
 #if SFX_ENABLE_DIAG_LOG
 

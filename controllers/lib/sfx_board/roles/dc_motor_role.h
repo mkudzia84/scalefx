@@ -17,7 +17,6 @@
 #ifndef SFX_DC_MOTOR_ROLE_H
 #define SFX_DC_MOTOR_ROLE_H
 
-#include <Arduino.h>
 #include <cstdint>
 #include <functional>
 

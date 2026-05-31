@@ -51,7 +51,6 @@
 
 #if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
 
-#include <Arduino.h>
 #include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>

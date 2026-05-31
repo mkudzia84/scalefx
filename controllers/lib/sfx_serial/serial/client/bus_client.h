@@ -40,7 +40,6 @@
 #ifndef SERIAL_BUS_CLIENT_H
 #define SERIAL_BUS_CLIENT_H
 
-#include <Arduino.h>
 #include <functional>
 #include "serial/core/core.h"
 #include "bus.h"

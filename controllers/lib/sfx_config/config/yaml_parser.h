@@ -50,7 +50,6 @@
 #ifndef YAML_PARSER_H
 #define YAML_PARSER_H
 
-#include <Arduino.h>
 #include <cstring>
 #include <cstdlib>
 #include <platform/sfx_platform.h>   // sfxPsramCalloc / sfxPsramFree

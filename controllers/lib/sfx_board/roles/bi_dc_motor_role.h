@@ -54,7 +54,6 @@
 #ifndef SFX_BI_DC_MOTOR_ROLE_H
 #define SFX_BI_DC_MOTOR_ROLE_H
 
-#include <Arduino.h>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>

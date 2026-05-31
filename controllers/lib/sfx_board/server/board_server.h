@@ -53,7 +53,6 @@
 #ifndef SFX_BOARD_SERVER_H
 #define SFX_BOARD_SERVER_H
 
-#include <Arduino.h>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>

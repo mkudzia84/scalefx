@@ -51,7 +51,6 @@
 #ifndef CONFIG_STORE_H
 #define CONFIG_STORE_H
 
-#include <Arduino.h>
 #include <concepts>
 #include <cstring>
 #include <functional>

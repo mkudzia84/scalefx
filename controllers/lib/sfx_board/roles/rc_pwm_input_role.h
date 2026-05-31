@@ -16,7 +16,6 @@
 #ifndef SFX_RC_PWM_INPUT_ROLE_H
 #define SFX_RC_PWM_INPUT_ROLE_H
 
-#include <Arduino.h>
 #include <cstdint>
 #include <functional>
 

@@ -37,7 +37,6 @@
 #ifndef SFX_USB_REGISTRY_H
 #define SFX_USB_REGISTRY_H
 
-#include <Arduino.h>
 #include <stdint.h>
 #include <functional>
 

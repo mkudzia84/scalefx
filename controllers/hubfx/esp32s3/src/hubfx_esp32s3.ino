@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     695
+#define BUILD_NUMBER     707
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -71,7 +71,12 @@
 #define SFX_INSTRUMENTATION 1
 #endif
 
-#include <Arduino.h>
+// No <Arduino.h> — the sketch is native: setup()/loop() are the only Arduino
+// touch-point (the framework-arduino entry bridge calls them), and everything
+// else is ESP-IDF / FreeRTOS.  Dropping framework=arduino + moving to app_main
+// is the final tracked migration step (see 25-ARDUINO-REMOVAL.md).
+#include <freertos/FreeRTOS.h>     // vTaskDelay / pdMS_TO_TICKS
+#include <freertos/task.h>
 #include "hubfx_i2c.h"            // hubI2cBus() (native I2C bus)
 #include <esp_heap_caps.h>     // memory-instrumentation helper (Phase 4 polish 2026-05-27)
 #include <esp_psram.h>

@@ -21,7 +21,6 @@
 #ifndef SFX_PLATFORM_H
 #define SFX_PLATFORM_H
 
-#include <Arduino.h>
 #include <atomic>
 
 // ============================================================================
@@ -38,6 +37,15 @@
     #define SFX_PLATFORM_ESP32      1
 #else
     #error "Unsupported platform — add native API mappings for your target"
+#endif
+
+// Arduino is only pulled on the Pico path (it still rides the Arduino-Pico
+// framework, and the GPIO-ISR interrupt macro below maps to attachInterrupt).
+// On ESP32 the firmware is native (ESP-IDF) — I2C/GPIO/servo/UART/Stream/timing
+// all have native abstractions — so sfx_platform.h no longer leaks <Arduino.h>
+// transitively to every includer; each file declares its own real deps.
+#if SFX_PLATFORM_PICO
+#include <Arduino.h>
 #endif
 
 // ============================================================================
@@ -198,12 +206,12 @@
 //  Arduino-Pico: attachInterruptParam(pin, isr, mode, param)
 //  ESP32:        attachInterruptArg(pin, isr, arg, mode)  ← different arg order!
 
+//  Pico-only: the single user is pico_isr_ppm_policy (ESP32 captures PPM via
+//  the native RMT peripheral, no GPIO ISR). Gated to Pico so the macro body
+//  never names Arduino's attachInterrupt on the (native) ESP32 build.
 #if SFX_PLATFORM_PICO
     #define SFX_ATTACH_INTERRUPT_PARAM(pin, isr, mode, param) \
         attachInterruptParam(digitalPinToInterrupt(pin), isr, mode, param)
-#elif SFX_PLATFORM_ESP32
-    #define SFX_ATTACH_INTERRUPT_PARAM(pin, isr, mode, param) \
-        attachInterruptArg(digitalPinToInterrupt(pin), isr, param, mode)
 #endif
 
 // ============================================================================

@@ -16,7 +16,6 @@
 #ifndef HUBFX_GUN_UNIT_IPP
 #define HUBFX_GUN_UNIT_IPP
 
-#include <Arduino.h>
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <cmath>                   // sinf / M_PI for FN_PULSE sinusoidal envelope
 #include <serial/roles.h>

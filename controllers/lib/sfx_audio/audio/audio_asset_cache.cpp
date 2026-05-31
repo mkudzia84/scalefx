@@ -36,7 +36,6 @@
 #include <cstdio>
 #include <sys/stat.h>
 #include <esp_heap_caps.h>
-#include <Arduino.h>            // SFX_MILLIS()
 #include <serial/diag_log.h>
 #include "storage/sd_card.h"   // SdCardModule::lock()/unlock() — serializes
                                 // SD operations across all consumers (asset

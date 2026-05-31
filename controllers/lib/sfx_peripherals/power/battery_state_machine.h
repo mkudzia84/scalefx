@@ -15,7 +15,6 @@
 #ifndef BATTERY_STATE_MACHINE_H
 #define BATTERY_STATE_MACHINE_H
 
-#include <Arduino.h>
 #include <functional>
 #include "battery_types.h"  // BatteryChemistry / BatteryProfile / BatteryProfiles
 

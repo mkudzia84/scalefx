@@ -36,7 +36,6 @@
 #ifndef TAS5825_P_CODEC_H
 #define TAS5825_P_CODEC_H
 
-#include <Arduino.h>
 #include <i2c/sfx_i2c.h>
 #include "../audio/audio_config.h"
 #include "tas5825_regs.h"

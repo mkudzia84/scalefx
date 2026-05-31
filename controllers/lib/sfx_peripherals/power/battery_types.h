@@ -9,7 +9,6 @@
 #ifndef BATTERY_TYPES_H
 #define BATTERY_TYPES_H
 
-#include <Arduino.h>
 #include <cstring>
 
 /**

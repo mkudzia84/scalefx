@@ -278,8 +278,8 @@ bool SdCardModuleT<TPolicy>::removeDirectoryRecursive(const char* path, int dept
     if (depth >= MAX_TREE_DEPTH) return false;
 
     struct ChildEntry {
-        String name;
-        bool   isDir;
+        std::string name;
+        bool        isDir;
     };
     std::vector<ChildEntry> children;
 
@@ -296,7 +296,7 @@ bool SdCardModuleT<TPolicy>::removeDirectoryRecursive(const char* path, int dept
 
             char name[64];
             TPolicy::extractName(f, name, sizeof(name));
-            children.push_back({ String(name), TPolicy::isDirectory(f) });
+            children.push_back({ std::string(name), TPolicy::isDirectory(f) });
             TPolicy::closeFile(f);
             if (children.size() >= (size_t)MAX_TREE_ENTRIES) break;
         }

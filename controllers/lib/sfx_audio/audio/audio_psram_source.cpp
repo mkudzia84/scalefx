@@ -15,7 +15,6 @@
 #if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
 
 #include <cstring>
-#include <Arduino.h>            // SFX_MILLIS()
 #include <serial/diag_log.h>
 
 #define PSRAM_LOG(fmt, ...)   SFX_LOG_INFO ("[PsramSrc] " fmt, ##__VA_ARGS__)

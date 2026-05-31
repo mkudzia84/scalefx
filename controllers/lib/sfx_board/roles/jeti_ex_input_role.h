@@ -14,7 +14,6 @@
 #ifndef SFX_JETI_EX_INPUT_ROLE_H
 #define SFX_JETI_EX_INPUT_ROLE_H
 
-#include <Arduino.h>
 #include <cstdint>
 #include <functional>
 

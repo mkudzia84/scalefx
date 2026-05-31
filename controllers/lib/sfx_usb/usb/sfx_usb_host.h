@@ -34,9 +34,9 @@
 #ifndef SFX_USB_HOST_H
 #define SFX_USB_HOST_H
 
-#include <Arduino.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <cstring>          // strncpy (was transitive via <Arduino.h>)
 #include <functional>
 #include "platform/sfx_platform.h"
 

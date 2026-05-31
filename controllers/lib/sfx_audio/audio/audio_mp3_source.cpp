@@ -8,7 +8,6 @@
 #if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
 
 #include <cstring>
-#include <Arduino.h>            // SFX_MILLIS()
 #include <serial/diag_log.h>
 
 #include "libhelix-mp3/mp3dec.h"
