@@ -455,9 +455,23 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
         return;
     }
 
+    // Stale-upload recovery (hardening, 2026-05-31): the wire is single-master,
+    // so a fresh UPLOAD_BEGIN while one is already active means the previous
+    // client abandoned mid-transfer (timed-out chunk, dropped ACK, Studio crash)
+    // and has reconnected to retry.  Rejecting with UPLOAD_IN_PROGRESS used to
+    // wedge that retry until the inactivity timeout fired (formerly 30 s) — the
+    // device looked dead.  Instead, forcibly clean up the stale transfer (closes
+    // the file, frees buffers, unlocks storage, fires onUploadEnd) and honour the
+    // new BEGIN immediately.  cleanupUpload() is self-contained and resets all
+    // upload state to idle, so the open/lock below starts from a clean slate.
     if (_uploadActive) {
-        sendNack(StorageError::UPLOAD_IN_PROGRESS);
-        return;
+        STORAGE_LOG("UPLOAD_BEGIN while active — recovering stale upload "
+                    "%s:%s (rx=%lu/%lu, idle=%lums)",
+                    targetName(_uploadTarget), _uploadPath,
+                    (unsigned long)_uploadBytesWritten,
+                    (unsigned long)_uploadExpectedSize,
+                    (unsigned long)(SFX_MILLIS() - _uploadLastActivity_ms));
+        cleanupUpload(true);
     }
 
     uint32_t fileSize = SfxWire::getU32LE(payload);

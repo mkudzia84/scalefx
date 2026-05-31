@@ -254,6 +254,14 @@ func (s *Storage) FileUpload(local string, opt UploadOptions) (UploadResult, err
 		return UploadResult{}, fmt.Errorf("read %s: %w", local, err)
 	}
 
+	// Mark the upload phase for the whole transfer (both modes).  This stands the
+	// keepalive goroutine down and signals background pollers (UploadActive()) to
+	// hold off so nothing contends with the chunk/ACK loop on the shared wire.
+	// uploadStream additionally toggles SetStreamPhase around its raw-byte bursts
+	// for collision detection — this is the broader, mode-agnostic guard.
+	s.c.conn.SetUploadPhase(true)
+	defer s.c.conn.SetUploadPhase(false)
+
 	switch opt.Mode {
 	case UploadStream:
 		return s.uploadStream(data, opt)

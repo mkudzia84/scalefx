@@ -23,10 +23,16 @@ corrupting the upload and throwing off the byte count so the segment never
 completes → 15 s segment-ACK timeout → "stuck".
 
 The client MUST hold the wire exclusively for the raw phase:
-- **Keepalive is gated off** while `Connection.streamActive` is set
-  ([connection.go](../app/go/protocol/connection.go)). Safe: the wire is busy
-  with segments (not idle), and HubFX runs with the inactivity watchdog
-  disabled, so no keepalive is needed for the upload's duration.
+- **Keepalive is gated off** during ANY upload — `Connection.streamActive` (the
+  raw-byte burst) OR the broader `Connection.uploadActive`
+  ([connection.go](../app/go/protocol/connection.go)). `FileUpload` sets
+  `SetUploadPhase(true)` for the whole transfer (sync AND stream) and clears it on
+  return; the keepalive loop skips while either flag is set. Safe: the wire is
+  busy (segments or a chunk/ACK loop), and HubFX runs with the inactivity
+  watchdog disabled, so no keepalive is needed for the upload's duration. Sync
+  uploads were previously NOT gated — a 3 s keepalive could land between chunks
+  and contend on the half-duplex wire (hardening 2026-05-31). Background pollers
+  should likewise check `conn.UploadActive()` and skip while a transfer runs.
 - **No concurrent commands.** A per-tab status poller (`setInterval`), a
   telemetry request, an `ls` refresh — anything that calls `Send()` mid-upload
   corrupts it. `uploadStream` marks the phase via `conn.SetStreamPhase(true/false)`.
@@ -91,6 +97,34 @@ the other's waiter and the loser timed out (the periodic `upload chunk @0
 (seq=0): timeout` on Studio config-apply). The CLI never reproduced it
 (single-threaded). Fix: a `tagMu` mutex. Same reason the bugs above hid from the
 CLI: it sends one command at a time.
+
+### 5. Firmware must self-heal an abandoned upload (Rule 57)
+
+The wire is single-master and a sync upload is **exclusive** on HubFX — `loop()`
+drains only `pumpBus()` (or `processStream()`) while `isUploadActive()`, skipping
+`board.process()`. So a half-finished transfer the client walked away from (a
+timed-out chunk, a dropped ACK, a Studio crash) leaves the device upload-exclusive
+until something clears `_uploadActive`. Two recovery paths, both in
+[storage_service.ipp](../controllers/lib/sfx_storage/server/storage_service.ipp):
+
+- **Stale-upload reset on a fresh `UPLOAD_BEGIN` (primary).** A new `UPLOAD_BEGIN`
+  while one is already active means the previous client abandoned and reconnected
+  to retry. The handler used to NACK `UPLOAD_IN_PROGRESS` — which wedged the retry
+  until the inactivity timeout fired. It now `cleanupUpload(true)`s the stale
+  transfer (closes the file, frees buffers, unlocks storage, fires `onUploadEnd`)
+  and honours the new BEGIN immediately. The reconnecting client recovers on its
+  first retry, not after a timeout.
+- **Inactivity timeout (fallback, no reconnect).** `checkUploadTimeout()` runs
+  every upload-exclusive pass; `UPLOAD_TIMEOUT_MS` was lowered 30 s → **8 s** for
+  sync (stream stays 5 s) so a client that never comes back self-heals in seconds
+  rather than half a minute. 8 s is a generous ceiling for one missing chunk
+  (round-trip is dominated by the few-ms SD/flash write).
+
+Note `pumpBus()` still dispatches the FULL policy chain, so `IDENTIFY` / `connect`
+and any **different-target** command stay answered during a sync upload — the
+device is not actually dead, it just can't accept a **same-target** storage op
+(those NACK `UPLOAD_IN_PROGRESS` before touching the lock, so no deadlock). The
+30 s wedge was the perception bug the recovery paths above fix.
 
 ## Checklist for any new long/raw wire operation
 

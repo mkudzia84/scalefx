@@ -2282,6 +2282,35 @@ on the protocol package. Composes with Rule 53 (lossy-vs-reliable async) + Rule 
 (stream-upload exclusivity). Reference:
 [connection.go](../app/go/protocol/connection.go) `NextTag` / `tagMu`,
 [instructions/27-WIRE-ASYNC-AND-UPLOAD.md](../instructions/27-WIRE-ASYNC-AND-UPLOAD.md).
+Regression net: [tests/host/go_unit/protocol_test/concurrency_test.go](../tests/host/go_unit/protocol_test/concurrency_test.go).
+
+### 57. Uploads Self-Heal and Hold the Wire End-to-End
+
+An upload is **exclusive** on HubFX (`loop()` drains only the storage server while
+`isUploadActive()`), and the wire is single-master, so an abandoned transfer must
+not be able to wedge either side. Two halves:
+
+**Client (sync AND stream).** `FileUpload` sets `Connection.SetUploadPhase(true)`
+for the whole transfer and clears it on return. The keepalive loop stands down
+while `streamActive` OR `uploadActive` is set, and background pollers must check
+`conn.UploadActive()` and skip — a 3 s keepalive or status poll landing between
+sync chunks contends on the half-duplex wire. (Pre-2026-05-31 only the raw
+`streamActive` burst was gated; sync uploads were exposed.) `streamActive` stays
+the narrower raw-byte collision window; `uploadActive` is the mode-agnostic guard.
+
+**Firmware (self-heal).** A fresh `UPLOAD_BEGIN` while one is already active means
+the previous client abandoned and reconnected — `handleUploadBegin` now
+`cleanupUpload(true)`s the stale transfer and honours the new BEGIN immediately
+(it used to NACK `UPLOAD_IN_PROGRESS` and wedge the retry until the timeout). The
+no-reconnect fallback `checkUploadTimeout()` was lowered 30 s → **8 s** for sync
+(stream stays 5 s). `pumpBus()` keeps dispatching the full policy chain during a
+sync upload, so `IDENTIFY`/connect and different-target commands stay answered;
+same-target storage ops NACK before the lock (no deadlock; SD and flash hold
+**separate** locks). Reference:
+[storage_service.ipp](../controllers/lib/sfx_storage/server/storage_service.ipp)
+`handleUploadBegin` / `checkUploadTimeout`, `UPLOAD_TIMEOUT_MS` in
+[storage_service.h](../controllers/lib/sfx_storage/server/storage_service.h),
+[storage.go](../app/go/client/storage.go) `FileUpload`.
 
 ### Client-Server Topology
 ```

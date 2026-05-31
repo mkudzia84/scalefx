@@ -381,7 +381,14 @@ private:
     std::function<void()> _onUploadEnd;
     bool _uploadSuspended = false;  // Guard: ensures exactly one onUploadEnd per onUploadStart
 
-    static constexpr uint32_t UPLOAD_TIMEOUT_MS = 30000;
+    // Sync-upload inactivity timeout (hardening, 2026-05-31): lowered 30000 → 8000.
+    // A sync chunk's round-trip is dominated by the SD/flash write (a few ms) plus
+    // wire latency, so 8 s is a generous ceiling for one missing chunk while being
+    // far quicker to self-heal an abandoned transfer that never reconnects.  The
+    // primary recovery path is stale-upload reset on the next UPLOAD_BEGIN
+    // (handleUploadBegin) — this is the no-reconnect fallback so the device can't
+    // sit upload-exclusive for half a minute.
+    static constexpr uint32_t UPLOAD_TIMEOUT_MS = 8000;
     uint32_t _uploadLastActivity_ms = 0;
 
     static constexpr uint32_t MAX_UPLOAD_SIZE_FLASH = 2  * 1024 * 1024;

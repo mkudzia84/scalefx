@@ -98,6 +98,16 @@ type Connection struct {
 	// wireLogger ("COLLIDE") so a stray status poll / keepalive is visible.
 	streamActive atomic.Bool
 
+	// Upload phase: set true for the whole duration of ANY file upload (sync OR
+	// stream), from UPLOAD_BEGIN through UPLOAD_END/cancel.  Broader than
+	// streamActive (which marks only the raw-byte corruption window).  While set,
+	// the keepalive goroutine stands down and background pollers should hold back —
+	// even a sync upload is a tight request/ACK loop that shouldn't contend with a
+	// 3 s keepalive or a status poll on the shared half-duplex wire.  The firmware
+	// runs upload-exclusive (audio/effects suspended), so nothing else needs the
+	// wire until the transfer finishes.
+	uploadActive atomic.Bool
+
 	// Port-loss detection: set once when a persistent I/O error occurs
 	portDead    atomic.Bool
 	OnPortError func() // called once when port-loss is detected
@@ -223,6 +233,17 @@ func (c *Connection) SetVerbose(v bool) { c.verbose = v }
 // trace (it would be swallowed as upload data and corrupt the file).
 func (c *Connection) SetStreamPhase(active bool) { c.streamActive.Store(active) }
 
+// SetUploadPhase marks the start/end of ANY file upload (sync or stream).
+// While set, the keepalive goroutine stands down; background pollers should
+// check UploadActive() and skip their poll.  Broader than SetStreamPhase, which
+// covers only the raw-byte segment burst that corrupts on collision.
+func (c *Connection) SetUploadPhase(active bool) { c.uploadActive.Store(active) }
+
+// UploadActive reports whether a file upload (sync or stream) is in progress.
+// Background pollers (status, telemetry, ls refresh) should skip while true to
+// keep the shared wire clear for the transfer's request/ACK loop.
+func (c *Connection) UploadActive() bool { return c.uploadActive.Load() }
+
 // Collisions returns the number of COBS packets written while a stream-upload
 // phase was active (0 = clean; >0 means a background sender corrupted it).
 func (c *Connection) Collisions() uint64 { return c.stat.collisions.Load() }
@@ -276,10 +297,17 @@ func (c *Connection) IsConnected() bool {
 func (c *Connection) Close() {
 	c.StopKeepalive()
 	c.stopReader()
+	// Tear down the port under writeMu (hardening 2026-05-31): a Wails RPC
+	// goroutine may still be mid-Send when Studio disconnects.  Send holds writeMu
+	// across its c.port.Write, so taking it here serialises the Close against any
+	// in-flight write — without it, port.Close() could race a Write on the same
+	// fd.  (The reader is already joined by stopReader, so it can't touch c.port.)
+	c.writeMu.Lock()
 	if c.port != nil {
 		c.port.Close()
 		c.port = nil
 	}
+	c.writeMu.Unlock()
 	c.waiterMu.Lock()
 	c.tagWaiters = make(map[byte]chan *Response)
 	c.streamWaiters = make(map[byte]chan *Response)
@@ -605,12 +633,14 @@ func (c *Connection) StartKeepalive(interval time.Duration) {
 				if c.portDead.Load() {
 					return
 				}
-				// Never inject a KEEPALIVE during a raw stream upload — the
-				// firmware is in byte-stream mode (no COBS dispatch), so the
-				// packet would be swallowed as file data and corrupt the upload.
-				// The wire is busy with segments anyway, and the upload target
-				// (HubFX) disables the inactivity watchdog, so skipping is safe.
-				if c.streamActive.Load() {
+				// Never inject a KEEPALIVE during a file upload (sync OR stream).
+				// In stream mode the firmware is in byte-stream mode (no COBS
+				// dispatch) so the packet would corrupt the upload; in sync mode
+				// it needlessly contends with the chunk/ACK loop on the shared
+				// half-duplex wire.  Either way the wire is busy and the upload
+				// target (HubFX) disables the inactivity watchdog, so skipping is
+				// safe (hardening 2026-05-31: was streamActive-only).
+				if c.streamActive.Load() || c.uploadActive.Load() {
 					continue
 				}
 				c.writeMu.Lock()
