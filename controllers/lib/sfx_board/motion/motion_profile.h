@@ -80,9 +80,12 @@ struct ServoMotionProfile {
 
     /// True when at least one slew constraint is set; false means the
     /// integrator should just clamp + write through directly (no
-    /// per-tick smoothing needed).
+    /// per-tick smoothing needed).  Includes jerk: a jerk-only profile
+    /// (speed/accel left at 0 = uncapped) still wants the integrator to
+    /// run so the jerk-limited accel ramp shapes the motion — otherwise
+    /// setting only a jerk value is silently ignored (servo snaps).
     bool hasSlew() const {
-        return maxSpeedUsPerSec > 0 || maxAccelUsPerSec2 > 0;
+        return maxSpeedUsPerSec > 0 || maxAccelUsPerSec2 > 0 || maxJerkUsPerSec3 > 0;
     }
 };
 
