@@ -123,18 +123,7 @@
 
                         <span class="fanout" title="Functions using this port">{fanout(p)}</span>
 
-                        <!-- Servo ports: the calibrate affordance (⚙ Calibrate…
-                             + ↔ Reversed + profile summary) sits INLINE on the
-                             row — Rule 44, same ServoWidget + SetPortProfile path
-                             as the feature panels.  Hub-local only (the dialog
-                             jogs hub-local ports today). -->
-                        {#if isServo(p) && p.ref.guid === ''}
-                            <ServoWidget
-                                port={{ board: '', guid: p.ref.guid, kind: 'servo', idx: p.ref.index }}
-                                profile={p.profile ?? null}
-                                portLabel={`${p.boardName} · ${p.name || p.hardwareName}`}
-                                busy={busy} />
-                        {:else if hasRoleConfig(p)}
+                        {#if hasRoleConfig(p)}
                             <!-- Heater / DC-motor: element scaling under the
                                  ⚙ Tune expander (denser, less-used than calibrate). -->
                             <button class="small cfg-btn" class:open={(expandedTick, isExpanded(p))}
@@ -144,6 +133,22 @@
                             </button>
                         {/if}
                     </div>
+
+                    <!-- Servo ports: calibrate affordance (⚙ Calibrate… + ↔ Reversed
+                         + profile summary) on its OWN full-width row so it's always
+                         visible and never clipped by the dense port row.  Rule 44 —
+                         same ServoWidget + SetPortProfile path as the feature panels.
+                         Hub-local only (the dialog jogs hub-local ports today). -->
+                    {#if isServo(p) && p.ref.guid === ''}
+                        <div class="servo-cal-row">
+                            <span class="cal-label">calibrate</span>
+                            <ServoWidget
+                                port={{ board: '', guid: p.ref.guid, kind: 'servo', idx: p.ref.index }}
+                                profile={p.profile ?? null}
+                                portLabel={`${p.boardName} · ${p.name || p.hardwareName}`}
+                                busy={busy} />
+                        </div>
+                    {/if}
                     {#if (expandedTick, isExpanded(p)) && hasRoleConfig(p)}
                         {@const pk = portKindForConfig(p)}
                         {#if pk}
@@ -187,4 +192,10 @@
     .role-fixed { flex: 0 0 150px; font-size: 12px; color: var(--text-dim); padding: 4px 8px; border: 1px dashed var(--border); border-radius: 3px; text-align: center; }
     .name-input { flex: 1; min-width: 80px; font-family: var(--font-ui); }
     .fanout { flex: 1; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Servo calibrate sub-row — full width under the port row, indented to
+       align under the port name, so the ⚙ Calibrate… button is always visible
+       (the dense port row would clip it). */
+    .servo-cal-row { display: flex; align-items: center; gap: 8px; padding: 2px 0 4px 60px; flex-wrap: wrap; }
+    .cal-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); flex-shrink: 0; }
 </style>
