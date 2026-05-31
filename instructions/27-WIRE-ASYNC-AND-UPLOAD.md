@@ -195,6 +195,22 @@ exist) still returns "✓ MD5 match". A true end-to-end verify needs a post-uplo
 readback hash — not implemented today; treat MD5-match as "wire intact", not
 "on disk".
 
+### 8. USB-host callbacks run on preempting tasks — defer to the loop (Rule 56)
+
+The host side has the same shape as Rule 56's client side. The ESP-IDF CDC-ACM
+mount/unmount/RX callbacks fire on **higher-priority Core-0 USB tasks** (open
+prio 3, driver prio 5) that preempt the loop (prio 1) — so doing real work there
+(freeing the RX `StreamBuffer`, mutating the slot/`_live[]` tables, emitting wire
+packets) races the loop's `cdcRead`/`cdcWrite` and corrupts the COBS stream off a
+non-loop context. **The USB tasks must only flag + enqueue**; the loop drains the
+events and does all teardown on its single context. `EspUsbHost` queues
+mount/unmount `PendingEvent`s and `ExpanderService::update()` drains them via
+`processPendingEvents()`; `CdcSlot.open`/`pendingUnmount` are atomic, and
+`cdcDeviceCount` is atomic (added on the open task, read by the loop). The one
+thing kept on the disconnect callback is `cdc_acm_host_close` (the driver requires
+it there). This only reproduces with a physical expander hot-plugged on USB-OTG —
+the CLI/single-board paths never exercise it (same blind spot as Rules 54/56).
+
 ## Checklist for any new long/raw wire operation
 
 - Does it put the firmware in a non-COBS / exclusive mode? → hold the wire
