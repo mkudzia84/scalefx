@@ -89,15 +89,14 @@ type MuzzleFlashDTO struct {
 	Brightness uint8      `yaml:"brightness"       json:"brightness"`
 }
 
-// RecoilConfigDTO — turret behaviour, no dedicated servo (Phase 4
-// polish 2026-05-23).  Recoil layers on top of yaw/pitch: on each
-// shot the chosen `Axis` ("pitch" or "yaw") kicks by JerkUs from its
-// commanded position, holds for HoldMs, then returns.  Motion shape
-// (slew/accel) still lives on the axis's ServoActuatorRole.
+// RecoilConfigDTO — turret behaviour, no dedicated servo.  2026-06:
+// recoil is an INSTANT, RANDOM jerk on BOTH yaw + pitch on each shot —
+// each axis snaps to commanded ± a random offset up to JerkUs, holds
+// HoldMs, then snaps back.  The old `axis` picker was dropped (both axes
+// kick); aiming still slews via each axis's ServoActuatorRole.
 type RecoilConfigDTO struct {
 	Enabled bool   `yaml:"enabled"          json:"enabled"`
-	Axis    string `yaml:"axis"             json:"axis"`    // "pitch" | "yaw"
-	JerkUs  uint16 `yaml:"jerk_us"          json:"jerkUs"`
+	JerkUs  uint16 `yaml:"jerk_us"          json:"jerkUs"`   // max random |offset|
 	HoldMs  uint16 `yaml:"hold_ms"          json:"holdMs"`
 }
 

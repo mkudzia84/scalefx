@@ -80,9 +80,12 @@ struct ServoMotionProfile {
 
     /// True when at least one slew constraint is set; false means the
     /// integrator should just clamp + write through directly (no
-    /// per-tick smoothing needed).
+    /// per-tick smoothing needed).  Includes jerk: a jerk-only profile
+    /// (speed/accel left at 0 = uncapped) still wants the integrator to
+    /// run so the jerk-limited accel ramp shapes the motion — otherwise
+    /// setting only a jerk value is silently ignored (servo snaps).
     bool hasSlew() const {
-        return maxSpeedUsPerSec > 0 || maxAccelUsPerSec2 > 0;
+        return maxSpeedUsPerSec > 0 || maxAccelUsPerSec2 > 0 || maxJerkUsPerSec3 > 0;
     }
 };
 
@@ -97,7 +100,13 @@ public:
         _profile = p;
         if (_currentF < p.minUs) _currentF = p.minUs;
         if (_currentF > p.maxUs) _currentF = p.maxUs;
-        _targetUs = _profile.clamp(_targetUs);
+        // `_targetUs` is already in SERVO space (setTarget() applied any
+        // `inverted` reflection when it was stored). Re-clamp it to the new
+        // range WITHOUT reflecting — calling clamp() here would reflect a
+        // second time and flip the target to the opposite endpoint on every
+        // live retune (SERVO_SET_PROFILE). Clamp-only is idempotent.
+        if (_targetUs < p.minUs) _targetUs = p.minUs;
+        if (_targetUs > p.maxUs) _targetUs = p.maxUs;
     }
 
     /// Set the desired endpoint; clamped + (if `inverted`) reflected.
@@ -135,9 +144,18 @@ public:
 
         // Decel lookahead: brake distance = v² / (2·a).  When we're
         // closer than the brake distance, ramp velocity down so we land
-        // on target without overshoot.  Trapezoidal approximation —
-        // jerk-bounded S-curve is added below when maxJerk > 0.
-        const float brakeDist = (_velocity * _velocity) / (2.0f * maxA);
+        // on target without overshoot.
+        float brakeDist = (_velocity * _velocity) / (2.0f * maxA);
+        if (_profile.maxJerkUsPerSec3 > 0) {
+            // Jerk-limited stop needs MORE distance than the trapezoidal
+            // v²/2a: the deceleration itself has to ramp down (over ≈ a/j
+            // seconds), adding ≈ |v|·a/(2·j).  Without widening the lookahead
+            // the S-curve brakes too late and overshoots the target (then the
+            // endpoint clamp snaps it back — a visible twitch). This makes it
+            // start braking earlier so it arrives cleanly.
+            brakeDist += std::fabs(_velocity) * maxA
+                       / (2.0f * float(_profile.maxJerkUsPerSec3));
+        }
         float desiredV;
         if (absDist <= brakeDist) {
             // Brake — decelerate toward 0 to land on target.

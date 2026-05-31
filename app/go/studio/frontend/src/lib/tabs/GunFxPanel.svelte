@@ -30,11 +30,13 @@
         type GunVerboseStatusT, type GunStatusT,
     } from '../gunfx'
     import ServoWidget from '../components/ServoWidget.svelte'
+    import ServoIoWidget from '../components/ServoIoWidget.svelte'
+    import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     // SetPortProfile + markHubDirty now flow through ServoCalibrationDialog;
     // GunFxPanel only READS the device-model profile to feed ServoWidget.
     import {
         deviceModel, type Port, formatPortRail,
-        liveChannels, liveChannelKey, usToPct,
+        liveChannels, liveChannelKey,
         RoleKind, claimsForPort,
     } from '../devicemodel'
     import { effectClaims } from '../effect-claims'
@@ -140,6 +142,10 @@
 
     onMount(() => {
         installVerboseListener()
+        // Generic servo telemetry (live output bars). Listener is a global Wails
+        // handler (cheap to keep); the wire stream is subscribed while mounted.
+        installServoStatusListener()
+        setServoLiveView(true).catch(() => {})
         loadGunFxConfig().catch(e => { error = String(e) })
         // One-shot refresh so the firing pill is populated immediately;
         // verbose broadcasts take over from there.
@@ -153,6 +159,7 @@
                 gunVerboseSubscribe(id, false).catch(() => {})
             }
             subscribedIds.clear()
+            setServoLiveView(false).catch(() => {})
             unsub()
         }
     })
@@ -161,6 +168,7 @@
             gunVerboseSubscribe(id, false).catch(() => {})
         }
         subscribedIds.clear()
+        setServoLiveView(false).catch(() => {})
         unsub()
     })
 
@@ -341,6 +349,7 @@
         }
         return null
     }
+
 
     // ── Live µs lookup from a named channel (Rule 43 + 36) ─────────────
     // For a function id like "gun_fire_mode", find which (input port,
@@ -874,7 +883,7 @@
                      Either axis can be left disabled; recoil silently
                      no-ops when the chosen axis is disabled. -->
                 <div class="section-head">Turret control
-                    <span class="hint">yaw + pitch share one servo motion profile per axis (IO tab); recoil kicks the chosen axis on every shot</span>
+                    <span class="hint">yaw + pitch each own a servo motion profile (set via ⚙ Calibrate); recoil kicks both on every shot</span>
                 </div>
                 {#each axisKeys as which (which)}
                     {@const axis = axisOf(gun, which)}
@@ -917,17 +926,22 @@
                                 <span class="unit">µs</span>
                             </div>
 
-                            {#if axis.input}
+                            <!-- Live servo I/O — signal-in + servo-out (actual
+                                 position line + [min,max] travel band) in one
+                                 reusable widget.  Position comes from the generic
+                                 servo_status stream (20 Hz, upload-gated). -->
+                            {#if axis.input || (axis.servoPort && axis.servoPort.kind)}
+                                {@const prof = profileForPort(axis.servoPort) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
                                 {@const liveAx = liveUsFor(axis.input)}
-                                <div class="axis-bar" class:nosignal={!liveAx || !liveAx.valid}>
-                                    <div class="axis-neutral" style="left:{usToPct(axis.neutralUs)}%" title="neutral {axis.neutralUs} µs"></div>
-                                    {#if liveAx && liveAx.valid}
-                                        <div class="axis-fill" style="width:{usToPct(liveAx.us)}%"></div>
-                                        <span class="axis-readout">{liveAx.us} µs</span>
-                                    {:else}
-                                        <span class="axis-nosignal">NO SIGNAL</span>
-                                    {/if}
-                                </div>
+                                {@const sv = (axis.servoPort && axis.servoPort.kind) ? $servoStatus[servoStatusKey(axis.servoPort.guid, axis.servoPort.idx)] : undefined}
+                                <ServoIoWidget
+                                    hasInput={!!axis.input}
+                                    inputUs={liveAx?.us ?? null}
+                                    inputValid={liveAx?.valid ?? false}
+                                    neutralUs={axis.neutralUs}
+                                    hasServo={!!(axis.servoPort && axis.servoPort.kind)}
+                                    minUs={prof.minUs} maxUs={prof.maxUs} centerUs={prof.centerUs} reversed={prof.reversed}
+                                    servo={sv ?? null} />
                             {/if}
 
                             <!-- Rule 44: per-servo profile editing,
@@ -953,9 +967,11 @@
                     </div>
                 {/each}
 
-                <!-- Recoil sub-section — behaviour layered on top of
-                     yaw/pitch.  No dedicated servo port (Phase 4
-                     polish): jerk + hold + which axis to kick. -->
+                <!-- Recoil sub-section — sits UNDER the two axes (full
+                     width).  No dedicated servo, no axis picker: on each
+                     shot BOTH axes get a random kick up to Jerk µs added
+                     on top of the aim for Hold ms, then the role removes
+                     it ("de-jerk").  Hold is an advanced knob. -->
                 <div class="turret-recoil">
                     <div class="recoil-head">
                         <label class="enable-toggle inline">
@@ -963,28 +979,23 @@
                                    on:change={(e) => setRecoilField(gun.id, 'enabled', boolValue(e))} disabled={busy} />
                             <span class="axis-title">Recoil</span>
                         </label>
-                        <span class="hint">applied on each shot — kicks the chosen turret axis by Jerk for Hold ms, then returns</span>
+                        <span class="hint">random kick on both turret axes each shot (up to Jerk µs), layered on the aim, then de-jerked</span>
                     </div>
                     {#if gun.recoil.enabled}
                         <div class="form-row">
-                            <span class="field-label">Axis</span>
-                            <select class="field-input narrow" value={gun.recoil.axis}
-                                    on:change={(e) => setRecoilField(gun.id, 'axis', selValue(e))}
-                                    disabled={busy}
-                                    title="Which turret axis takes the recoil kick on each shot.">
-                                <option value="pitch">pitch</option>
-                                <option value="yaw">yaw</option>
-                            </select>
                             <span class="field-label">Jerk</span>
                             <input class="field-input narrow" type="number" min="0" max="500" step="10"
                                    value={gun.recoil.jerkUs}
-                                   on:change={(e) => setRecoilField(gun.id, 'jerkUs', numValue(e))} disabled={busy} />
+                                   on:change={(e) => setRecoilField(gun.id, 'jerkUs', numValue(e))} disabled={busy}
+                                   title="Maximum random recoil kick. Each shot, each axis gets a random ± offset up to this added to its output." />
                             <span class="unit">µs</span>
-                            <span class="field-label">Hold</span>
+                            <span class="field-label adv">Hold</span>
                             <input class="field-input narrow" type="number" min="0" max="1000" step="10"
                                    value={gun.recoil.holdMs}
-                                   on:change={(e) => setRecoilField(gun.id, 'holdMs', numValue(e))} disabled={busy} />
+                                   on:change={(e) => setRecoilField(gun.id, 'holdMs', numValue(e))} disabled={busy}
+                                   title="Advanced: how long the recoil offset rides on the aim before the role de-jerks it (ms)." />
                             <span class="unit">ms</span>
+                            <span class="hint compact">hold = advanced</span>
                         </div>
                     {/if}
                 </div>
@@ -1408,15 +1419,8 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
     .rof-nosignal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.5px; color: var(--text-dim); }
     .row-err { font-size: 11px; color: var(--error); margin: 3px 0 0 28px; font-family: var(--font-mono); }
 
-    /* Axis bar (Phase 4c) — live µs on a 1000..2000 µs scale.  Single
-       fill + a neutral marker; the configured min/max range overlay is
-       implicit (any port-role profile clamping is on the role side). */
-    .axis-bar { position: relative; height: 14px; margin: 4px 0 6px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
-    .axis-bar.nosignal { background: repeating-linear-gradient(45deg, var(--bg-raised), var(--bg-raised) 6px, transparent 6px, transparent 12px); }
-    .axis-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); transition: width 0.08s linear; }
-    .axis-neutral { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--text-dim); pointer-events: none; }
-    .axis-readout { position: absolute; right: 6px; top: 0; line-height: 14px; font-family: var(--font-mono); font-size: 9px; color: var(--text-bright); text-shadow: 0 0 3px rgba(0,0,0,0.7); }
-    .axis-nosignal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.5px; color: var(--text-dim); }
+    /* Live servo I/O (signal-in bar + servo-out line) moved to the reusable
+       ServoIoWidget component. */
 
     /* Smoke generator sibling card (Phase 4 polish 2026-05-26).
        Lives directly after each gun card via the {#each} block, so it
@@ -1520,6 +1524,7 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
     .turret-axis.axis-warn {
         border-color: color-mix(in srgb, var(--warning) 70%, var(--border));
     }
+    .field-label.adv { opacity: 0.7; }
     .axis-head,
     .recoil-head {
         display: flex; align-items: baseline; gap: 8px;

@@ -251,6 +251,8 @@ export function summariseProfile(p: ServoProfileT | null | undefined): string {
     if (!p) return 'no profile (role defaults)'
     const range = `${p.minUs}–${p.maxUs} µs`
     const speed = p.maxSpeedUsPerSec > 0 ? ` · ${p.maxSpeedUsPerSec} µs/s` : ' · unlimited'
+    const accel = p.maxAccelUsPerSec2 > 0 ? ` · a${p.maxAccelUsPerSec2}` : ''
+    const jerk  = p.maxJerkUsPerSec3  > 0 ? ` · j${p.maxJerkUsPerSec3}` : ''
     const rev   = p.reversed ? ' · ↔ rev' : ''
-    return range + speed + rev
+    return range + speed + accel + jerk + rev
 }

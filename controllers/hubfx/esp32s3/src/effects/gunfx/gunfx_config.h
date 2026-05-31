@@ -199,18 +199,17 @@ struct GunSpec {
     uint8_t   flashBrightness      = 100;
 
     // ── Recoil (TURRET BEHAVIOUR — no dedicated servo) ────────────────
-    // Phase 4 polish (2026-05-23): the dedicated recoil-servo port was
-    // removed.  Recoil is now a BEHAVIOUR layered on top of yaw/pitch
-    // — when a shot fires AND `recoilEnabled`, the gun kicks the
-    // existing turret axes by `recoilJerkUs` from their commanded
-    // position, holds for `recoilHoldMs`, then returns.  `recoilAxis`
-    // picks which axis (0 = pitch, 1 = yaw — pitch is the more natural
-    // recoil axis for a gun barrel).  The servo motion profile (slew
-    // limits) still lives on ServoActuatorRole.
-    bool      recoilEnabled        = true;          ///< apply on each shot when an axis is enabled
-    uint8_t   recoilAxis           = 0;             ///< 0 = pitch, 1 = yaw
-    uint16_t  recoilJerkUs         = 200;           ///< delta from commanded axis us on a shot
-    uint16_t  recoilHoldMs         = 80;            ///< time at jerk position before return
+    // The dedicated recoil-servo port was removed (Phase 4, 2026-05-23).
+    // 2026-06: recoil is a ROLE-LEVEL impulse applied to BOTH turret axes
+    // on each shot — each of yaw + pitch gets a random ±offset (up to
+    // `recoilJerkUs`) added to its servo OUTPUT for `recoilHoldMs`, then
+    // the ServoActuatorRole de-jerks it.  The impulse rides ON TOP of the
+    // aim (the motion profile keeps tracking RC underneath), so the kick
+    // works whether the turret is moving or stationary — no snap-back, no
+    // RC suppression.  The axis picker was dropped (both axes always kick).
+    bool      recoilEnabled        = true;          ///< apply on each shot when a turret axis is enabled
+    uint16_t  recoilJerkUs         = 200;           ///< MAX random |offset| added to output µs on a shot
+    uint16_t  recoilHoldMs         = 80;            ///< how long the offset rides before the role de-jerks
 
     // ── Smoke (heater + fan) ──────────────────────────────────────────
     SmokeConfig smoke;

@@ -128,6 +128,11 @@ type App struct {
 	// active-tab reactive.  Guarded by mu.  See app_input.go.
 	liveView bool
 
+	// Generic servo telemetry stream (SERVO_MOTION_UPDATE).  Set by
+	// SetServoLiveView from panels that show live servo position.  Guarded by
+	// mu.  See app_servo.go.
+	servoLiveView bool
+
 	// Heartbeat goroutine
 	stopHeartbeat chan<- struct{}
 }
@@ -426,6 +431,7 @@ func (a *App) openLocked(port string) error {
 	}
 	a.installAsyncDiag()
 	a.installInputStream()
+	a.installServoStream()
 	a.installEngineStream()
 	a.installGunFxStream()
 	a.installLandingStream()

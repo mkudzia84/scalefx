@@ -188,6 +188,8 @@ export function SetPortName(arg1:string,arg2:number,arg3:number,arg4:string):Pro
 
 export function SetPortProfile(arg1:string,arg2:number,arg3:number,arg4:main.ServoMotionProfileDTO):Promise<main.DeviceModelSnapshot>;
 
+export function SetServoLiveView(arg1:boolean):Promise<void>;
+
 export function StopLightChannel(arg1:number):Promise<void>;
 
 export function SyncLightFxToDevice(arg1:main.LightFxConfigDTO,arg2:Array<main.ActiveProgramDTO>):Promise<void>;

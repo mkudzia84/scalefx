@@ -56,15 +56,16 @@ export interface MuzzleFlashT {
     brightness: number
 }
 
-// Recoil — turret BEHAVIOUR, no dedicated servo (Phase 4 polish 2026-05-23).
-// On each shot the chosen `axis` (pitch or yaw) kicks by `jerkUs` from
-// its commanded position, holds for `holdMs`, then returns.  Servo
-// slew shape lives on the axis's ServoActuatorRole (Rule 42).
+// Recoil — turret BEHAVIOUR, no dedicated servo.  2026-06: a role-level
+// impulse applied to BOTH yaw + pitch on each shot — each axis gets a random
+// ±offset up to `jerkUs` added to its servo OUTPUT for `holdMs`, then the
+// ServoActuatorRole de-jerks it.  The kick rides ON TOP of the aim (the motion
+// profile keeps tracking RC underneath), so it works moving or stationary —
+// no snap-back, no RC suppression.  `holdMs` is an advanced dwell knob.
 export interface RecoilConfigT {
     enabled: boolean
-    axis: 'pitch' | 'yaw'
-    jerkUs: number
-    holdMs: number
+    jerkUs: number   // max random |offset| µs added to output
+    holdMs: number   // how long the offset rides before the role de-jerks (advanced)
 }
 
 // Rule 44 — mirrors ServoMotionProfileDTO; same field shape as the
@@ -203,7 +204,7 @@ export function defaultGun(id: number): GunT {
         // firmware skips driving them.  The operator picks a port in
         // the panel; until then NOTHING gets flashed / heated / etc.
         muzzleFlash: { port: { ...emptyPort }, durationMs: 30, brightness: 100 },
-        recoil: { enabled: true, axis: 'pitch', jerkUs: 200, holdMs: 80 },
+        recoil: { enabled: true, jerkUs: 200, holdMs: 80 },
         smoke: {
             heater: {
                 port: { ...emptyPort },
