@@ -1,7 +1,7 @@
 # ScaleFX — Claude Code Guide
 
 Authoritative rulebook: [.github/copilot-instructions.md](.github/copilot-instructions.md) (Rules 0–56; all GunFX Phase 4 rules landed; Rules 53–56 = wire-async / upload-exclusivity / native-hardware / thread-safe-wire from the 2026-05-31 Arduino-removal + Studio-upload work. **HubFX is pure ESP-IDF now — `framework = espidf`, zero Arduino.**).
-Detailed workflows: [instructions/](instructions/) — numbered guides (`01-ARCHITECTURE.md`, `03-PROTOCOL-EXTENSION.md`, `04-CHANGE-PROPAGATION.md`, `05-BUILD-AND-FLASH.md`, `14-ONBOARD-COPROCESSOR.md`, `15-GENERIC-EXPANDER-REFACTOR.md`, `16-EXPANDER-BOARD-DESIGN.md`, `17-SYSTEM-SERVICES.md`, `20-STUDIO-DEVICE-MODEL.md`, `21-STUDIO-ENGINEFX-PANEL.md`, `22-GUNFX-FEATURE-ROLLOUT.md`, `23-STUDIO-WIDGET-CATALOG.md`, `24-COREDUMP-DEBUGGING.md`, `25-ARDUINO-REMOVAL.md`, `27-WIRE-ASYNC-AND-UPLOAD.md`, …).
+Detailed workflows: [instructions/](instructions/) — numbered guides (`01-ARCHITECTURE.md`, `03-PROTOCOL-EXTENSION.md`, `04-CHANGE-PROPAGATION.md`, `05-BUILD-AND-FLASH.md`, `14-ONBOARD-COPROCESSOR.md`, `15-GENERIC-EXPANDER-REFACTOR.md`, `16-EXPANDER-BOARD-DESIGN.md`, `17-SYSTEM-SERVICES.md`, `20-STUDIO-DEVICE-MODEL.md`, `21-STUDIO-ENGINEFX-PANEL.md`, `22-GUNFX-FEATURE-ROLLOUT.md`, `23-STUDIO-WIDGET-CATALOG.md`, `24-COREDUMP-DEBUGGING.md`, `25-ARDUINO-REMOVAL.md`, `27-WIRE-ASYNC-AND-UPLOAD.md`, `28-IO-FLUSH-DEBUGGING.md`, …).
 
 Studio UI work: **start at [instructions/23-STUDIO-WIDGET-CATALOG.md](instructions/23-STUDIO-WIDGET-CATALOG.md)** — handbook of every reusable widget pattern with copy-pasteable snippets.
 

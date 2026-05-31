@@ -184,6 +184,10 @@ uart_set_rx_timeout(_port, 10);         // flush the tail ~17 µs after line idl
 its 128-byte overrun ceiling while the loop blocks in a synchronous SD write.
 Applies to every `NativeUartStream` — the wire UART and the RC SBUS/Jeti UARTs.
 
+This was the canonical "assumed the SD card, was actually the UART FIFO" trap —
+the general method for localizing I/O flush bugs (instead of guessing which layer
+is at fault) is [28 — Low-Level I/O Flush Debugging](28-IO-FLUSH-DEBUGGING.md).
+
 **Aside — MD5 match ≠ persisted.** The upload MD5 is computed over the bytes
 *received off the wire*, NOT an SD readback. A failing/counterfeit card that ACKs
 writes but drops them (observed: `df` used-space never grew, the file didn't
