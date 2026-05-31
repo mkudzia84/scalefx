@@ -53,7 +53,6 @@
 #ifndef SFX_BOARD_SERVER_H
 #define SFX_BOARD_SERVER_H
 
-#include <Arduino.h>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -67,16 +66,14 @@
 #include <serial/packet_reader.h> // sfx_serial::PacketReader (byte-stream → frame)
 #include <serial/diag_log.h>      // DiagLog (LOG_MESSAGE / DIAG_HISTORY)
 #include <platform/sfx_platform.h>  // SFX_PLATFORM_*, SFX_CPU_MHZ, SFX_FREE_HEAP, SFX_REBOOT, sfxGetBoardId
+#include <platform/sfx_stream.h>    // sfx::Stream / sfx::Print — Arduino-free wire interface
 #if SFX_PLATFORM_ESP32
 #include <platform/native_uart_stream.h>  // sfx::NativeUartStream — replaces Arduino's Serial under IDF-component
 #endif
 
 #include "board_service.h"
 #include <indicators/indicator_leds.h>
-
-// Forward declarations — avoid pulling sfx_peripherals headers from the API surface.
-class I2CDevice;
-class TwoWire;
+#include <i2c/sfx_i2c.h>          // sfx_peripherals::SfxI2cBus (native I2C, no Arduino)
 
 namespace sfx_core {
 
@@ -137,9 +134,9 @@ public:
 
     // ── Identity / introspection ─────────────────────────────────────
 
-    const char* deviceName() const { return _deviceName; }
-    Stream*     stream()     const { return _serial; }
-    bool        isInitialized() const { return _initialized; }
+    const char*  deviceName() const { return _deviceName; }
+    sfx::Stream* stream()     const { return _serial; }
+    bool         isInitialized() const { return _initialized; }
 
     // ── Watchdog / lifecycle flags ───────────────────────────────────
 
@@ -218,7 +215,7 @@ public:
     /// result with a found/identified flag.  Returns false (and logs a
     /// WARN) when the expected-devices table is full — bump
     /// `SFX_MAX_EXPECTED_I2C` in platformio.ini if you hit that.
-    bool addExpectedI2CDevice(uint8_t address, I2CDevice* device = nullptr);
+    bool addExpectedI2CDevice(uint8_t address);
 
     // ── Wire helpers (concrete, no virtual dispatch) ─────────────────
 
@@ -254,8 +251,8 @@ public:
     virtual int sendRawPacket(uint8_t type, uint8_t tag,
                               const uint8_t* payload, size_t len);
 
-    uint8_t currentTag() const { return _currentTag; }
-    Stream* serial()     const { return _serial; }
+    uint8_t      currentTag() const { return _currentTag; }
+    sfx::Stream* serial()     const { return _serial; }
 
     // Verbose async streams (input-frame broadcasts, gun verbose status, …)
     // only transmit while a host is actively listening — i.e. we've heard
@@ -268,7 +265,7 @@ public:
     // policies can gate their broadcast emits via `_ctx`.
     static constexpr unsigned long kVerboseIdleMs = 8000;
     bool hostVerboseActive() const {
-        return _lastActivityMs != 0 && (millis() - _lastActivityMs) < kVerboseIdleMs;
+        return _lastActivityMs != 0 && (SFX_MILLIS() - _lastActivityMs) < kVerboseIdleMs;
     }
 
 protected:
@@ -292,14 +289,14 @@ protected:
 
     // Connection-state plumbing called from the template subclass.
     void   resetActivity()             { _lastActivityMs = 0; }
-    void   noteActivity()              { _lastActivityMs = millis(); }
+    void   noteActivity()              { _lastActivityMs = SFX_MILLIS(); }
     unsigned long lastActivityMs() const { return _lastActivityMs; }
 
 protected:
     // ── Stream / framing / tag ───────────────────────────────────────
-    Stream* _serial      = nullptr;
-    bool    _initialized = false;
-    uint8_t _currentTag  = 0;
+    sfx::Stream* _serial      = nullptr;
+    bool         _initialized = false;
+    uint8_t      _currentTag  = 0;
 
     // COBS frame accumulator — owned by the base so both this class's
     // readFrames() and the templated subclass's readFrames() override
@@ -341,12 +338,11 @@ protected:
 
     // ── I²C scan registry ───────────────────────────────────────────
     struct ExpectedI2CDevice {
-        uint8_t    address = 0;
-        I2CDevice* device  = nullptr;
+        uint8_t address = 0;
     };
-    TwoWire*           _i2cWire = nullptr;
-    ExpectedI2CDevice  _expectedI2C[MAX_EXPECTED_I2C] = {};
-    uint8_t            _numExpectedI2C = 0;
+    sfx_peripherals::SfxI2cBus* _i2cBus = nullptr;
+    ExpectedI2CDevice           _expectedI2C[MAX_EXPECTED_I2C] = {};
+    uint8_t                     _numExpectedI2C = 0;
 };
 
 // ============================================================================
@@ -404,14 +400,12 @@ concept SystemServicePolicy = requires(T t, BoardServerBase* ctx,
 // `BoardServer<TStream, ...UserPolicies>::process()` because the
 // concrete derived type is statically known at that call site.
 //
-// `TStream` is required to expose:
-//   - bool/int available()
-//   - int read()
-//   - size_t write(const uint8_t*, size_t)
-// i.e. anything that satisfies Arduino's `Stream` interface.  In
-// practice: `sfx::NativeUartStream` (ESP32 IDF-component path), Arduino's
-// `HardwareSerial`/`USBCDC` (Pico + ESP32 regular-Arduino path), or a
-// test stub that captures bytes.
+// `TStream` must derive `sfx::Stream` (so `&_stream` mirrors into the
+// base `sfx::Stream* _serial` for non-template consumers) and expose the
+// hot-path methods available()/read()/write(buf,len).  In practice:
+// `sfx::NativeUartStream` (ESP32 native wire), or a test stub that captures
+// bytes.  (Pico's Arduino-Serial wire gets a thin sfx::Stream wrapper when
+// the Pico controllers are migrated — P8.)
 //
 template <typename TStream>
 class BoardServerBaseT : public BoardServerBase {
@@ -426,11 +420,10 @@ public:
     /// chain stays valid before begin() runs.
     void setStream(TStream& stream) {
         _stream  = &stream;
-        // Mirror into BoardServerBase::_serial so legacy Stream*
+        // Mirror into BoardServerBase::_serial so non-template sfx::Stream*
         // consumers (DiagLog, StorageService::serial(), …) keep working
-        // without having to spell out TStream.  Requires TStream to
-        // inherit Arduino's Stream — every current platform's stream
-        // type already does.
+        // without having to spell out TStream.  Requires TStream to derive
+        // sfx::Stream — every current platform's stream type does.
         _serial  = &stream;
     }
 
@@ -456,7 +449,7 @@ public:
         int frames = 0;
         while (_stream->available()) {
             const uint8_t b = static_cast<uint8_t>(_stream->read());
-            _lastActivityMs = millis();
+            _lastActivityMs = SFX_MILLIS();
             // See packet_reader.h.  The lambda runs once per complete
             // frame and does the cobs-decode + parsePacket + dispatch
             // dance the inline loop used to do.  PacketReader handles
@@ -636,7 +629,7 @@ public:
         // when TStream is Arduino's Serial / USBCDC where !stream means
         // "USB host hasn't enumerated yet"; NativeUartStream is ready
         // immediately after install).
-        while (!stream && millis() < 3000) SFX_DELAY_MS(10);
+        while (!stream && SFX_MILLIS() < 3000) SFX_DELAY_MS(10);
 
         this->_initialized = true;
 
@@ -685,11 +678,11 @@ public:
 #endif
     }
 
-    /// Bind a TwoWire bus and register the I²C-scan callback on
-    /// BoardServicePolicy.  Call after begin().  Tracked devices are
-    /// added via `addExpectedI2CDevice(addr, device?)`.
-    void enableI2CScan(TwoWire& wire) {
-        this->_i2cWire = &wire;
+    /// Bind a native I²C bus and register the I²C-scan callback on
+    /// BoardServicePolicy.  Call after begin().  Tracked addresses are
+    /// added via `addExpectedI2CDevice(addr)`.
+    void enableI2CScan(sfx_peripherals::SfxI2cBus& bus) {
+        this->_i2cBus = &bus;
         core().onI2CScan([this]() -> I2CScanResult {
             return this->performI2CScan();
         });

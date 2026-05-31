@@ -15,7 +15,6 @@
 #include <serial/wire.h>           // SfxWire::TAG_ASYNC
 #include <platform/sfx_platform.h> // sfxDramFree_bytes, sfxPsramFree_bytes
 
-#include <Arduino.h>     // millis()
 #include <cstring>
 
 namespace sfx_core {
@@ -36,7 +35,7 @@ int BoardServicePolicy::sendRawPacket(uint8_t type, uint8_t tag,
 }
 
 uint8_t BoardServicePolicy::currentTag() const { return _ctx->currentTag(); }
-Stream* BoardServicePolicy::serial()     const { return _ctx ? _ctx->serial() : nullptr; }
+sfx::Stream* BoardServicePolicy::serial() const { return _ctx ? _ctx->serial() : nullptr; }
 
 void BoardServicePolicy::setBoardInfo(const char* deviceName, const char* firmwareVersion,
                                       const char* platform, uint32_t cpuMHz, uint32_t freeRam,
@@ -62,7 +61,7 @@ void BoardServicePolicy::setBoardInfo(const char* deviceName, const char* firmwa
 
 CommandHandleResult BoardServicePolicy::handle(uint8_t type, const uint8_t* payload, size_t len) {
     _prevActivityMs = _lastActivityMs;
-    _lastActivityMs = millis();
+    _lastActivityMs = SFX_MILLIS();
     if (_commandCounter == UINT32_MAX) _commandCounter = 1;
     else                                _commandCounter++;
 
@@ -134,7 +133,7 @@ CommandHandleResult BoardServicePolicy::handle(uint8_t type, const uint8_t* payl
 
 bool BoardServicePolicy::checkTimeout(unsigned long timeoutMs) {
     if (timeoutMs == 0 || _lastActivityMs == 0) return false;
-    if (millis() - _lastActivityMs > timeoutMs) {
+    if (SFX_MILLIS() - _lastActivityMs > timeoutMs) {
         if (_initReceived) reset();
         return true;
     }
@@ -185,9 +184,9 @@ void BoardServicePolicy::sendStatus() {
     uint8_t payload[SfxWire::MAX_PAYLOAD_SIZE];
     size_t idx = 0;
     SfxWire::putU32LE(&payload[idx], _commandCounter);                idx += 4;
-    SfxWire::putU32LE(&payload[idx], millis());                        idx += 4;
+    SfxWire::putU32LE(&payload[idx], SFX_MILLIS());                        idx += 4;
     SfxWire::putU32LE(&payload[idx], _boardInfo.freeRamBytes);        idx += 4;
-    uint32_t sinceActivity = (_prevActivityMs > 0) ? (millis() - _prevActivityMs) : 0;
+    uint32_t sinceActivity = (_prevActivityMs > 0) ? (SFX_MILLIS() - _prevActivityMs) : 0;
     SfxWire::putU32LE(&payload[idx], sinceActivity);                  idx += 4;
     SfxWire::putU32LE(&payload[idx], _keepaliveCounter);              idx += 4;
     payload[idx++] = _boardState;
@@ -241,7 +240,7 @@ void BoardServicePolicy::sendStatusUpdate(uint8_t source, uint8_t updateType,
 void BoardServicePolicy::tickStatusBroadcast() {
     if (!isVerbose() || !_initReceived || _transferActive || !_statusDataCallback) return;
     if (_statusBroadcastInterval_ms == 0) return;
-    unsigned long now = millis();
+    unsigned long now = SFX_MILLIS();
     if (now - _lastStatusBroadcast_ms < _statusBroadcastInterval_ms) return;
     _lastStatusBroadcast_ms = now;
     uint8_t buf[SfxWire::MAX_PAYLOAD_SIZE - 2];

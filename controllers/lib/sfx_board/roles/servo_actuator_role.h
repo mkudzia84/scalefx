@@ -26,7 +26,6 @@
 #ifndef SFX_SERVO_ACTUATOR_ROLE_H
 #define SFX_SERVO_ACTUATOR_ROLE_H
 
-#include <Arduino.h>
 #include <cstdint>
 #include <functional>
 

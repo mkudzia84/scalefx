@@ -21,7 +21,6 @@
 #ifndef SFX_PLATFORM_H
 #define SFX_PLATFORM_H
 
-#include <Arduino.h>
 #include <atomic>
 
 // ============================================================================
@@ -38,6 +37,15 @@
     #define SFX_PLATFORM_ESP32      1
 #else
     #error "Unsupported platform — add native API mappings for your target"
+#endif
+
+// Arduino is only pulled on the Pico path (it still rides the Arduino-Pico
+// framework, and the GPIO-ISR interrupt macro below maps to attachInterrupt).
+// On ESP32 the firmware is native (ESP-IDF) — I2C/GPIO/servo/UART/Stream/timing
+// all have native abstractions — so sfx_platform.h no longer leaks <Arduino.h>
+// transitively to every includer; each file declares its own real deps.
+#if SFX_PLATFORM_PICO
+#include <Arduino.h>
 #endif
 
 // ============================================================================
@@ -62,18 +70,26 @@
 //  TIMING — Delays and Timestamps
 // ============================================================================
 //
-//  millis() is safe on ALL platforms (Rule 16) and not abstracted here.
-//  These macros replace platform-specific blocking delays.
+//  SFX_MILLIS()/SFX_MICROS() are the NATIVE monotonic-since-boot timestamps
+//  (no Arduino millis()/micros()) — numerically identical to the Arduino calls
+//  they replace, so they are a drop-in.  Use these instead of millis()/micros()
+//  in shared lib/ code (Rule 16 + arduino-removal).  These macros also replace
+//  platform-specific blocking delays.
 
 #if SFX_PLATFORM_PICO
     #include <pico/time.h>
     #define SFX_DELAY_MS(ms)        busy_wait_ms(ms)
     #define SFX_DELAY_US(us)        busy_wait_us_32(us)
+    #define SFX_MILLIS()            to_ms_since_boot(get_absolute_time())
+    #define SFX_MICROS()            time_us_32()
 #elif SFX_PLATFORM_ESP32
     #include <freertos/FreeRTOS.h>
     #include <freertos/task.h>
+    #include <esp_timer.h>
     #define SFX_DELAY_MS(ms)        vTaskDelay(pdMS_TO_TICKS(ms))
     #define SFX_DELAY_US(us)        esp_rom_delay_us(us)
+    #define SFX_MILLIS()            ((uint32_t)(esp_timer_get_time() / 1000))
+    #define SFX_MICROS()            ((uint32_t)esp_timer_get_time())
 #endif
 
 // ============================================================================
@@ -104,10 +120,18 @@
     #include <esp_system.h>
     #include <esp_mac.h>
     #include <esp_timer.h>
+    #include <esp_clk_tree.h>
 
     #define SFX_FREE_HEAP()         esp_get_free_heap_size()
     #define SFX_REBOOT()            esp_restart()
-    #define SFX_CPU_MHZ()           getCpuFrequencyMhz()  // Arduino-ESP32 API (portable across IDF versions)
+    // Native ESP-IDF CPU frequency (was Arduino getCpuFrequencyMhz()).
+    static inline uint32_t sfxCpuMhz() {
+        uint32_t hz = 0;
+        esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU,
+            ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &hz);
+        return hz / 1000000u;
+    }
+    #define SFX_CPU_MHZ()           sfxCpuMhz()
 
     // Board unique ID — MAC address on ESP32
     inline void sfxGetBoardId(char* out, size_t maxLen) {
@@ -168,21 +192,12 @@
 #endif
 
 // ============================================================================
-//  SERVO — Platform-Specific Include
+//  SERVO — see ports/sfx_servo.h
 // ============================================================================
 //
-//  Arduino-Pico uses <Servo.h> (PIO-based).
-//  ESP32 uses <ESP32Servo.h> (LEDC-based). API is compatible.
-
-#if SFX_PLATFORM_PICO
-    #include <Servo.h>
-#elif SFX_PLATFORM_ESP32
-    // ESP32Servo pulls in deprecated driver/mcpwm.h — suppress the warning
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wcpp"
-    #include <ESP32Servo.h>
-    #pragma GCC diagnostic pop
-#endif
+//  The servo backend (ESP32 MCPWM / Pico PIO) is selected in
+//  sfx_peripherals/ports/sfx_servo.h, NOT here — the platform header no longer
+//  pulls a servo library (ESP32Servo dropped in the Arduino-removal work).
 
 // ============================================================================
 //  INTERRUPT — Portable attachInterrupt with Parameter
@@ -191,12 +206,12 @@
 //  Arduino-Pico: attachInterruptParam(pin, isr, mode, param)
 //  ESP32:        attachInterruptArg(pin, isr, arg, mode)  ← different arg order!
 
+//  Pico-only: the single user is pico_isr_ppm_policy (ESP32 captures PPM via
+//  the native RMT peripheral, no GPIO ISR). Gated to Pico so the macro body
+//  never names Arduino's attachInterrupt on the (native) ESP32 build.
 #if SFX_PLATFORM_PICO
     #define SFX_ATTACH_INTERRUPT_PARAM(pin, isr, mode, param) \
         attachInterruptParam(digitalPinToInterrupt(pin), isr, mode, param)
-#elif SFX_PLATFORM_ESP32
-    #define SFX_ATTACH_INTERRUPT_PARAM(pin, isr, mode, param) \
-        attachInterruptArg(digitalPinToInterrupt(pin), isr, param, mode)
 #endif
 
 // ============================================================================

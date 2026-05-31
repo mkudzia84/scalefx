@@ -268,7 +268,7 @@ protected:
     uint8_t currentTag() const                                         { return _ctx->currentTag(); }
 
     // Raw serial access for the upload stream path.
-    Stream* serial() const { return _ctx ? _ctx->serial() : nullptr; }
+    sfx::Stream* serial() const { return _ctx ? _ctx->serial() : nullptr; }
 
     // ================================================================
     // Shared state (accessible to .ipp template methods)

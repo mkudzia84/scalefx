@@ -16,7 +16,7 @@
 #include <string.h>
 
 // ─── begin ─────────────────────────────────────────────────────
-bool SbusInput::begin(Stream* serial)
+bool SbusInput::begin(sfx::Stream* serial)
 {
     if (!serial) return false;
     end();
@@ -45,7 +45,7 @@ void SbusInput::update()
 
     while (_serial->available()) {
         uint8_t b = static_cast<uint8_t>(_serial->read());
-        uint32_t now_us = micros();
+        uint32_t now_us = SFX_MICROS();
 
         // Timing-based resync: gap > FRAME_GAP_US means start of new frame
         if (_bufIdx > 0 && (now_us - _lastByte_us) > SbusConfig::FRAME_GAP_US) {
@@ -81,7 +81,7 @@ void SbusInput::parseFrame()
     // nibble means we are mis-framed; drop the frame and count it so the
     // start-byte hunt resyncs.  (Verified on the input_monitor bench rig;
     // timing-only resync is unreliable because the UART driver delivers RX
-    // in bursts, so micros() gaps between reads don't reflect wire timing.)
+    // in bursts, so SFX_MICROS() gaps between reads don't reflect wire timing.)
     if ((_buf[SbusConfig::FRAME_SIZE - 1] & 0x0F) != 0x00) {
         _errorCount++;
         return;
@@ -107,7 +107,7 @@ void SbusInput::parseFrame()
     // Flags (byte 23)
     _flags = _buf[23];
 
-    _lastFrameMs = millis();
+    _lastFrameMs = SFX_MILLIS();
     _hasFrame    = true;
     _frameCount++;
 }
@@ -125,7 +125,7 @@ uint16_t SbusInput::channel_us(uint8_t ch) const
 bool SbusInput::isValid() const
 {
     if (!_hasFrame || _lastFrameMs == 0) return false;
-    return (millis() - _lastFrameMs) < RxConfig::SIGNAL_TIMEOUT_MS;
+    return (SFX_MILLIS() - _lastFrameMs) < RxConfig::SIGNAL_TIMEOUT_MS;
 }
 
 #endif // SFX_PLATFORM_ESP32

@@ -26,7 +26,6 @@
 #ifndef HUBFX_TOPOLOGY_SERVICE_H
 #define HUBFX_TOPOLOGY_SERVICE_H
 
-#include <Arduino.h>
 #include <concepts>
 #include <cstdint>
 #include <cstddef>

@@ -10,6 +10,7 @@
 #define HUBFX_EXPANDER_SERVICE_IPP
 
 #include <serial/ports.h>     // PortPacket / PortKind
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <serial/roles.h>     // RolePacket
 
 namespace hubfx::expanders {
@@ -142,7 +143,7 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::_onUsbMount(
         return;
     }
     e.identifying        = true;
-    slot->identifyDeadlineMs = millis() + kIdentifyTimeoutMs;
+    slot->identifyDeadlineMs = SFX_MILLIS() + kIdentifyTimeoutMs;
 }
 
 template <uint8_t MaxExpanders, uint8_t MaxKnownGuids>
@@ -157,7 +158,7 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::_onUsbUnmount(
     if (snapshot.spec.valid) {
         if (KnownGuid* k = acquireKnown(snapshot.spec.guid)) {
             k->connectedSlot = 0xFF;
-            k->lastSeenMs    = millis();
+            k->lastSeenMs    = SFX_MILLIS();
         }
     }
 
@@ -180,7 +181,7 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::_onUsbUnmount(
 
 template <uint8_t MaxExpanders, uint8_t MaxKnownGuids>
 void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::update() {
-    const uint32_t now = millis();
+    const uint32_t now = SFX_MILLIS();
     for (uint8_t i = 0; i < kMaxExpanders; ++i) {
         LiveSlot& s = _live[i];
         if (!s.entry.connected) continue;
@@ -295,7 +296,7 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::onIdentifyResponse(
         k->spec          = spec;
         k->kind          = s.entry.kind;
         k->connectedSlot = slotIdx;
-        k->lastSeenMs    = millis();
+        k->lastSeenMs    = SFX_MILLIS();
     }
 
     SFX_LOG_INFO("[Expander] IDENTIFIED %s guid=%s fw=%s caps=0x%08lx build=%lu%s",
@@ -677,7 +678,7 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::kickFetchPorts(
         return;
     }
     s.handshake          = Handshake::FetchingPorts;
-    s.handshakeDeadlineMs = millis() + kRosterRequestTimeoutMs;
+    s.handshakeDeadlineMs = SFX_MILLIS() + kRosterRequestTimeoutMs;
 }
 
 template <uint8_t MaxExpanders, uint8_t MaxKnownGuids>
@@ -698,7 +699,7 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::kickFetchRoles(
         return;
     }
     s.handshake          = Handshake::FetchingRoles;
-    s.handshakeDeadlineMs = millis() + kRosterRequestTimeoutMs;
+    s.handshakeDeadlineMs = SFX_MILLIS() + kRosterRequestTimeoutMs;
 }
 
 template <uint8_t MaxExpanders, uint8_t MaxKnownGuids>
@@ -776,7 +777,7 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::onRoleListResp(
 
     s.handshake          = Handshake::Ready;
     s.handshakeDeadlineMs = 0;
-    s.batteryPollDueMs   = millis();   // first battery poll ASAP after Ready
+    s.batteryPollDueMs   = SFX_MILLIS();   // first battery poll ASAP after Ready
 
     // Board is now accepting forwarded commands — let the master (re)apply
     // any configured role attachments for this GUID.  Fires AFTER the
@@ -800,7 +801,7 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::tickBatteryPoll(
     if (!s.entry.spec.valid) return;
     if (!(s.entry.spec.capabilities & CoreCapability::BATTERY)) return;
 
-    const uint32_t now = millis();
+    const uint32_t now = SFX_MILLIS();
 
     // Capture a landed response.
     if (s.batteryQueryInflight && s.batteryResp.len > 0) {

@@ -5,6 +5,8 @@
  */
 
 #include "diag_log.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
+#include <cstring>                   // strlen / memcpy (was transitive via <Arduino.h>)
 
 #if SFX_ENABLE_DIAG_LOG
 
@@ -23,7 +25,7 @@ void DiagLog::logv(uint8_t level, const char* fmt, va_list args) {
     // Write at _head position (load once under mutex)
     uint16_t curHead = _head.load(std::memory_order_relaxed);
     LogEntry& entry = _ring[curHead];
-    entry.timestamp_ms = millis();
+    entry.timestamp_ms = SFX_MILLIS();
     entry.level = level;
     int written = vsnprintf(entry.message, MAX_MSG_LEN, fmt, args);
     entry.len = (written < 0) ? 0 : ((size_t)written >= MAX_MSG_LEN ? MAX_MSG_LEN - 1 : (uint8_t)written);
@@ -58,7 +60,7 @@ void DiagLog::ingest(uint8_t level, const char* message) {
     // Write at _head position (load once under mutex)
     uint16_t curHead = _head.load(std::memory_order_relaxed);
     LogEntry& entry = _ring[curHead];
-    entry.timestamp_ms = millis();  // re-stamp with local time
+    entry.timestamp_ms = SFX_MILLIS();  // re-stamp with local time
     entry.level = level;
     size_t msgLen = strlen(message);
     if (msgLen >= MAX_MSG_LEN) msgLen = MAX_MSG_LEN - 1;
@@ -87,7 +89,7 @@ void DiagLog::ingest(uint8_t level, const char* message) {
 // ============================================================================
 
 void DiagLog::emitLive(const LogEntry& entry) {
-    Stream* serial = _serial.load(std::memory_order_acquire);
+    sfx::Stream* serial = _serial.load(std::memory_order_acquire);
     if (!serial) return;
 
     uint8_t payload[1 + 4 + MAX_MSG_LEN];
@@ -108,7 +110,7 @@ void DiagLog::emitLive(const LogEntry& entry) {
 // ============================================================================
 
 uint16_t DiagLog::sendHistory(uint16_t max) {
-    Stream* serial = _serial.load(std::memory_order_acquire);
+    sfx::Stream* serial = _serial.load(std::memory_order_acquire);
     if (!serial) return 0;
 
     // Snapshot indices — atomics provide acquire barrier, no mutex needed

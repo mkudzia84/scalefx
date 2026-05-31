@@ -46,7 +46,7 @@
  * Ingestion (HubFX relay):
  *   HubFX can ingest log messages from slave boards into the ring
  *   buffer using DiagLog::instance().ingest(level, message) — the
- *   message is re-timestamped with local millis().
+ *   message is re-timestamped with local SFX_MILLIS().
  */
 
 #ifndef SFX_DIAG_LOG_H
@@ -58,7 +58,7 @@
 #define SFX_ENABLE_DIAG_LOG 1
 #endif
 
-#include <Arduino.h>
+#include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h> for Stream)
 #include "wire.h"
 
 // Default packet type for log messages (CorePacket::LOG_MESSAGE = 0xFD).
@@ -121,7 +121,7 @@ public:
      * @param serial The Stream to write COBS-encoded log packets on
      * @param packetType Packet type override (default 0xFD = LOG_MESSAGE)
      */
-    void begin(Stream* serial, uint8_t packetType = SFX_LOG_PACKET_TYPE) {
+    void begin(sfx::Stream* serial, uint8_t packetType = SFX_LOG_PACKET_TYPE) {
         // Phase 4 polish (2026-05-27): the ring lives in PSRAM (ESP32) /
         // heap (Pico) instead of the singleton's BSS — keeps ~68 KB
         // (512 × 136 B) out of DRAM on HubFX where the DMA-cap pool is
@@ -214,7 +214,7 @@ public:
      * @brief Ingest a pre-formatted log message into the ring buffer
      *
      * Used by HubFX to relay log messages from slave boards. The message
-     * is re-timestamped with local millis() and stored as-is (caller
+     * is re-timestamped with local SFX_MILLIS() and stored as-is (caller
      * should prepend source tag like "[GunFX] ").
      *
      * @param level Log level (DiagLevel::DEBUG..ERR)
@@ -314,7 +314,7 @@ private:
     std::atomic<uint32_t> _overwritten{0}; // count of entries lost to rollover
 
     // Cross-core visibility: Core 0 writes in begin(), Core 1 reads in logv()
-    std::atomic<Stream*> _serial{nullptr};            // Core 0 writes, both cores read
+    std::atomic<sfx::Stream*> _serial{nullptr};       // Core 0 writes, both cores read
     uint8_t _packetType = SFX_LOG_PACKET_TYPE;
     std::atomic<uint8_t> _minLevel{DiagLevel::INFO};  // Core 0 writes (setMinLevel), both cores read (logv)
     // 0xFF = no live emission (default); set via `setWireMinLevel()` to
@@ -350,7 +350,7 @@ public:
         return inst;
     }
 
-    void begin(Stream*, uint8_t = SFX_LOG_PACKET_TYPE) {}
+    void begin(sfx::Stream*, uint8_t = SFX_LOG_PACKET_TYPE) {}
     void setMinLevel(uint8_t) {}
     uint8_t minLevel() const { return 0; }
     void setWireMinLevel(uint8_t) {}

@@ -9,8 +9,8 @@
  * This is a SEPARATE PERIPHERAL from rx_input — not just a ChannelSource.
  * For channel-only access through RxInputs<>, use JetiExChannelSource adapter.
  *
- * The class uses Arduino Stream* for UART I/O.  The caller configures the
- * HardwareSerial with the correct baud rate before calling begin().
+ * The class uses an `sfx::Stream*` for UART I/O.  The caller configures the
+ * UART with the correct baud rate before calling begin().
  *
  * Platform setup examples:
  *
@@ -47,7 +47,7 @@
 #include "platform/sfx_platform.h"
 #if SFX_PLATFORM_ESP32
 
-#include <Arduino.h>
+#include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h>)
 #include <functional>
 #include "../rx_input/rx_common.h"
 #include <ports/input_port.h>     // half-duplex TX gate (expander responder)
@@ -71,7 +71,7 @@ public:
      * @param serial  HardwareSerial configured at 125000 or 250000, 8N1
      * @return true if serial is non-null
      */
-    bool begin(Stream* serial);
+    bool begin(sfx::Stream* serial);
 
     /**
      * @brief Process incoming frames and send telemetry/config responses
@@ -253,7 +253,7 @@ public:
     uint32_t rxByteCount() const { return _parser.rxBytes(); }
 
 private:
-    Stream* _serial = nullptr;
+    sfx::Stream* _serial = nullptr;
 
     // ── Expander hooks ──────────────────────────────────────────
     sfx_peripherals::InputPort* _txPort = nullptr;   ///< half-duplex TX gate

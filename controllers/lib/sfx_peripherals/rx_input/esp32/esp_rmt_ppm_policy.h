@@ -17,7 +17,7 @@
 
 #if SFX_PLATFORM_ESP32
 
-#include <Arduino.h>
+#include <esp_attr.h>          // IRAM_ATTR (was <Arduino.h>)
 #include <driver/rmt_rx.h>
 #include "../rx_common.h"
 

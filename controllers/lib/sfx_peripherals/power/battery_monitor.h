@@ -45,12 +45,17 @@
 #ifndef BATTERY_MONITOR_H
 #define BATTERY_MONITOR_H
 
-#include <Arduino.h>
 #include <functional>
 
 #include "battery_types.h"          // BatteryChemistry / BatteryProfile / BatteryProfiles
 #include "battery_state_machine.h"  // BatteryStateMachine
 #include "platform/sfx_platform.h"  // SFX_VBUS_PIN
+#if SFX_PLATFORM_PICO
+// The AdcDivider battery path reads the cell voltage via Arduino analogRead /
+// pinMode — only used on Pico expanders (HubFX measures battery over INA226/I2C,
+// so this template is never instantiated on ESP32 and stays Arduino-free there).
+#include <Arduino.h>
+#endif
 
 // ============================================================================
 // AdcDividerBatteryT — battery sensor for ADC + resistor-divider hardware
@@ -106,7 +111,7 @@ public:
 
     // ─── Update ─────────────────────────────────────────────────────────────
     void update() {
-        uint32_t now = millis();
+        uint32_t now = SFX_MILLIS();
         if (now - _lastRead_ms < _readInterval_ms) return;
         _lastRead_ms = now;
 

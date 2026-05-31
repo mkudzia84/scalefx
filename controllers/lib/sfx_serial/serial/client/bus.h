@@ -43,7 +43,6 @@
 #ifndef SERIAL_BUS_H
 #define SERIAL_BUS_H
 
-#include <Arduino.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <functional>

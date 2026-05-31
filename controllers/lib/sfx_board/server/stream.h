@@ -34,7 +34,6 @@
 #ifndef SERIAL_STREAM_H
 #define SERIAL_STREAM_H
 
-#include <Arduino.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>

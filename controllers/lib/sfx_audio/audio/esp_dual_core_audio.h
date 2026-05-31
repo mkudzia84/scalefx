@@ -51,7 +51,6 @@
 
 #if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
 
-#include <Arduino.h>
 #include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -157,10 +156,10 @@ public:
     /// for boards that want to drive their codec activation manually
     /// instead of through `CodecAdapter::activate()`.
     bool awaitI2SReady(uint32_t timeout_ms) {
-        const uint32_t waitStart = millis();
+        const uint32_t waitStart = SFX_MILLIS();
         while (!_i2sReady.load(std::memory_order_acquire)) {
             vTaskDelay(pdMS_TO_TICKS(10));
-            if (millis() - waitStart > timeout_ms) {
+            if (SFX_MILLIS() - waitStart > timeout_ms) {
                 SFX_LOG_ERROR("Audio: timeout waiting for Core 1 I²S init");
                 return false;
             }

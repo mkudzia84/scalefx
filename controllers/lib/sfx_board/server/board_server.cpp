@@ -8,7 +8,6 @@
 
 #include "board_server.h"
 
-#include <Arduino.h>
 #include <cstdio>
 #include <cstring>
 
@@ -64,7 +63,7 @@ int BoardServerBase::readFrames() {
     int frames = 0;
     while (_serial->available()) {
         const uint8_t b = static_cast<uint8_t>(_serial->read());
-        _lastActivityMs = millis();
+        _lastActivityMs = SFX_MILLIS();
         // PacketReader owns the byte→frame state machine (FRAME_DELIMITER
         // detection, partial-frame buffering, overflow recovery).  The
         // lambda runs once per complete frame and does the COBS decode +
@@ -105,7 +104,7 @@ void BoardServerBase::buildDeviceName(const char* prefix) {
 
 // ── I²C scan registration ────────────────────────────────────────────
 
-bool BoardServerBase::addExpectedI2CDevice(uint8_t address, I2CDevice* device) {
+bool BoardServerBase::addExpectedI2CDevice(uint8_t address) {
     if (_numExpectedI2C >= MAX_EXPECTED_I2C) {
         SFX_LOG_WARN("[I2C] addExpectedI2CDevice(0x%02X): table full "
                      "(cap=%u). Bump SFX_MAX_EXPECTED_I2C in platformio.ini.",
@@ -113,25 +112,26 @@ bool BoardServerBase::addExpectedI2CDevice(uint8_t address, I2CDevice* device) {
         return false;
     }
     _expectedI2C[_numExpectedI2C].address = address;
-    _expectedI2C[_numExpectedI2C].device  = device;
     _numExpectedI2C++;
     return true;
 }
 
 I2CScanResult BoardServerBase::performI2CScan() {
     I2CScanResult result;
-    if (!_i2cWire) return result;
+    if (!_i2cBus) return result;
 
     result.numExpected = _numExpectedI2C;
     for (uint8_t i = 0; i < _numExpectedI2C; i++) {
         result.expected[i].address    = _expectedI2C[i].address;
-        result.expected[i].found      = I2CDevice::probe(*_i2cWire, _expectedI2C[i].address);
-        result.expected[i].identified = _expectedI2C[i].device != nullptr
-                                     && _expectedI2C[i].device->isAvailable();
+        result.expected[i].found      = _i2cBus->probe(_expectedI2C[i].address);
+        result.expected[i].identified = result.expected[i].found;
     }
 
+    // ACK-scan the 7-bit address space (native bus probe).
     uint8_t allAddrs[32];
-    uint8_t totalFound = I2CDevice::scan(*_i2cWire, 0x08, 0x77, allAddrs, 32);
+    uint8_t totalFound = 0;
+    for (uint16_t a = 0x08; a <= 0x77 && totalFound < 32; ++a)
+        if (_i2cBus->probe((uint8_t)a)) allAddrs[totalFound++] = (uint8_t)a;
 
     result.numExtra = 0;
     for (uint8_t j = 0; j < totalFound; j++) {

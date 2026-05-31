@@ -17,7 +17,6 @@
 #ifndef SFX_RX_COMMON_H
 #define SFX_RX_COMMON_H
 
-#include <Arduino.h>
 #include <cstdint>
 
 // ════════════════════════════════════════════════════════════════

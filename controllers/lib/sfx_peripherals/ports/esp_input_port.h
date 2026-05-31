@@ -2,7 +2,7 @@
  * esp_input_port.h — ESP32-S3 implementation of `InputPort`.
  *
  * Wraps one GPIO + one ESP32 UART peripheral.  Modes:
- *   - PULSE      : edge-IRQ pulse capture via `PwmInput::beginAsync`
+ *   - PULSE      : native RMT pulse capture via the RMT PpmDecoder (`_ppm`)
  *   - SBUS       : `HardwareSerial.begin(100000, SERIAL_8E2, RX, -1, invert=true)`
  *   - JETI_EX    : `HardwareSerial.begin(baud, SERIAL_8N1, RX, RX)` +
  *                  `uart_set_mode(UART_MODE_RS485_HALF_DUPLEX)` so the
@@ -28,15 +28,14 @@
 #  error "EspInputPort is ESP32-only.  Use a Pico-specific driver on RP2040/RP2350."
 #endif
 
-#include <Arduino.h>
-#include <HardwareSerial.h>
-#include <driver/uart.h>          // uart_set_mode + UART_MODE_RS485_HALF_DUPLEX
+#include <driver/uart.h>          // native UART config + UART_MODE_RS485_HALF_DUPLEX
 #include <driver/gpio.h>          // gpio_set_direction (native half-duplex OE toggle)
 #include <esp_rom_gpio.h>         // esp_rom_gpio_connect_out_signal (matrix TX route)
 #include <soc/gpio_sig_map.h>     // U1TXD_OUT_IDX / U2TXD_OUT_IDX / SIG_GPIO_OUT_IDX
 #include <cstdint>
 
 #include "input_port.h"
+#include <platform/native_uart_stream.h>  // sfx::NativeUartStream — native RC UART
 #include <rx_input/ppm_input.h>   // PpmDecoder (RMT multi-channel PPM; 1-ch = single RC PWM)
 
 namespace sfx_peripherals {
@@ -69,10 +68,17 @@ public:
     bool configureSbus() override {
         // SBUS: 100 000 baud, 8 data bits, EVEN parity, 2 stop bits,
         // **inverted UART idle** (high idle = logic 0).  ESP32 UART
-        // does invert in hardware.
+        // does the invert in hardware (UART_SIGNAL_RXD_INV).
         teardownActive();
-        auto& s = uartSerial();
-        s.begin(100000, SERIAL_8E2, _pin, /*tx=*/-1, /*invert=*/true);
+        uart_config_t cfg = {};
+        cfg.baud_rate  = 100000;
+        cfg.data_bits  = UART_DATA_8_BITS;
+        cfg.parity     = UART_PARITY_EVEN;
+        cfg.stop_bits  = UART_STOP_BITS_2;
+        cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
+        cfg.source_clk = UART_SCLK_DEFAULT;
+        _uart.beginConfig(uartPort(), _pin, /*tx=*/-1, cfg,
+                          UART_SIGNAL_RXD_INV, /*rs485=*/false, /*rxBuf=*/1024);
         _mode = Mode::SBUS;
         return true;
     }
@@ -93,25 +99,39 @@ public:
         // the inbound stream never reaches RX (rxBytes stuck at ~1).
         // Datasheet baud: 125 000 or 250 000.
         teardownActive();
-        auto& s = uartSerial();
-        s.begin(baud, SERIAL_8N1, _pin, /*tx=*/-1, /*invert=*/false);
+        uart_config_t cfg = {};
+        cfg.baud_rate  = (int)baud;
+        cfg.data_bits  = UART_DATA_8_BITS;
+        cfg.parity     = UART_PARITY_DISABLE;
+        cfg.stop_bits  = UART_STOP_BITS_1;
+        cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
+        cfg.source_clk = UART_SCLK_DEFAULT;
+        // tx=-1, NO rs485 mode — half-duplex TX is driven manually via the
+        // GPIO matrix in txEnable()/txDisable() (see the comment above).
+        _uart.beginConfig(uartPort(), _pin, /*tx=*/-1, cfg,
+                          /*invert=*/0, /*rs485=*/false, /*rxBuf=*/1024);
         _mode = Mode::JETI_EX;
         return true;
     }
 
     bool configureUartRaw(uint32_t baud,
-                          uint32_t serialConfig,
+                          uint32_t /*serialConfig*/,
                           bool     invert,
                           bool     halfDuplex) override {
+        // Raw passthrough for future CRSF / DSM roles (none wired yet).
+        // Framing defaults to 8N1; per-protocol parity/stop mapping lands
+        // when a raw-UART role actually ships.
         teardownActive();
-        auto& s = uartSerial();
-        if (halfDuplex) {
-            s.begin(baud, serialConfig, _pin, _pin, invert);
-            uart_set_mode(static_cast<uart_port_t>(_uartNum),
-                          UART_MODE_RS485_HALF_DUPLEX);
-        } else {
-            s.begin(baud, serialConfig, _pin, /*tx=*/-1, invert);
-        }
+        uart_config_t cfg = {};
+        cfg.baud_rate  = (int)baud;
+        cfg.data_bits  = UART_DATA_8_BITS;
+        cfg.parity     = UART_PARITY_DISABLE;
+        cfg.stop_bits  = UART_STOP_BITS_1;
+        cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
+        cfg.source_clk = UART_SCLK_DEFAULT;
+        const int txPin = halfDuplex ? _pin : -1;
+        _uart.beginConfig(uartPort(), _pin, txPin, cfg,
+                          invert ? UART_SIGNAL_RXD_INV : 0, halfDuplex, /*rxBuf=*/1024);
         _mode = Mode::UART_RAW;
         return true;
     }
@@ -158,11 +178,11 @@ public:
 
     // ── UART-mode stream ────────────────────────────────────────────
 
-    Stream* uartStream() override {
+    sfx::Stream* uartStream() override {
         switch (_mode) {
             case Mode::SBUS:
             case Mode::JETI_EX:
-            case Mode::UART_RAW: return &uartSerial();
+            case Mode::UART_RAW: return &_uart;   // native UART, IS an sfx::Stream
             default:             return nullptr;
         }
     }
@@ -184,8 +204,8 @@ public:
     }
 
 private:
-    HardwareSerial& uartSerial() {
-        return (_uartNum == 1) ? Serial1 : Serial2;
+    uart_port_t uartPort() const {
+        return (_uartNum == 1) ? UART_NUM_1 : UART_NUM_2;
     }
 
     /// UART TX peripheral-output signal index for the GPIO matrix.
@@ -201,16 +221,17 @@ private:
             case Mode::SBUS:
             case Mode::JETI_EX:
             case Mode::UART_RAW:
-                uartSerial().end();
+                _uart.end();
                 break;
             default: break;
         }
     }
 
-    int        _pin;
-    uint8_t    _uartNum;          ///< 1 or 2
-    PpmDecoder _ppm;              ///< RMT multi-channel PPM capture (PULSE mode)
-    Mode       _mode = Mode::IDLE;
+    int               _pin;
+    uint8_t           _uartNum;   ///< 1 or 2
+    PpmDecoder        _ppm;       ///< RMT multi-channel PPM capture (PULSE mode)
+    Mode              _mode = Mode::IDLE;
+    sfx::NativeUartStream _uart;  ///< native UART (SBUS/Jeti/raw modes)
 };
 
 }  // namespace sfx_peripherals

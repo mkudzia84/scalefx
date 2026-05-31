@@ -1,5 +1,14 @@
 # ScaleFX Serial Protocol
 
+> ⚠️ **STALE (pre-2026 server architecture).** This document describes the
+> retired `SfxServer` / `BusServer` / `CommandRouter` / `ICommandHandler` /
+> `addModuleHandler` shapes, which were deleted in the policy-based
+> `BoardServer<...UserPolicies>` refactor. The **wire format** below (COBS,
+> `[type][tag][len][payload][crc8]`, CRC-8 poly 0x07, little-endian) is still
+> accurate and authoritative. The **server-side API** sections are obsolete —
+> see [../../sfx_board/README.md](../../sfx_board/README.md), CLAUDE.md, and
+> `app/go/protocol/` (the Go mirror is the source of truth for packet types).
+
 ## Overview
 
 Serial communication protocol for ScaleFX controllers (HubFX, GunFX).

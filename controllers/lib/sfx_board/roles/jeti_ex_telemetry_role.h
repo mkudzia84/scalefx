@@ -13,7 +13,6 @@
 #ifndef SFX_JETI_EX_TELEMETRY_ROLE_H
 #define SFX_JETI_EX_TELEMETRY_ROLE_H
 
-#include <Arduino.h>
 #include <cstdint>
 
 #include <platform/sfx_platform.h>

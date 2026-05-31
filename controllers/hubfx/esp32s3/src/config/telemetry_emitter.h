@@ -29,6 +29,7 @@
 #define HUBFX_TELEMETRY_EMITTER_H
 
 #include <cstdint>
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <cstdio>
 #include <cstring>
 
@@ -132,7 +133,7 @@ inline void tickTelemetry(TBoard& board,
                           uint32_t& lastEmitMs) {
     const auto& t = cfg.telemetry;
     if (!t.inputs && !t.outputs) return;
-    const uint32_t now = millis();
+    const uint32_t now = SFX_MILLIS();
     if (now - lastEmitMs < t.intervalMs) return;
     lastEmitMs = now;
     if (t.inputs)  emitInputSnapshot(dispatcher, cfg);

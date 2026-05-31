@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     673
+#define BUILD_NUMBER     710
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -71,8 +71,13 @@
 #define SFX_INSTRUMENTATION 1
 #endif
 
-#include <Arduino.h>
-#include <Wire.h>
+// No <Arduino.h> — the sketch is native: setup()/loop() are the only Arduino
+// touch-point (the framework-arduino entry bridge calls them), and everything
+// else is ESP-IDF / FreeRTOS.  Dropping framework=arduino + moving to app_main
+// is the final tracked migration step (see 25-ARDUINO-REMOVAL.md).
+#include <freertos/FreeRTOS.h>     // vTaskDelay / pdMS_TO_TICKS
+#include <freertos/task.h>
+#include "hubfx_i2c.h"            // hubI2cBus() (native I2C bus)
 #include <esp_heap_caps.h>     // memory-instrumentation helper (Phase 4 polish 2026-05-27)
 #include <esp_psram.h>
 
@@ -697,19 +702,23 @@ void setup() {
     // bytes off it the moment its policy pack initializes.  ESP32-S3
     // default UART0 pins: TX=GPIO43, RX=GPIO44.
     //
-    // 8 KB RX/TX rings — restored 2026-05-28 after the 512 KB upload
-    // crash was diagnosed and proven UNRELATED to UART buffer size
-    // (commit 12d8c69).  With stream uploads now using 16 KB segments
-    // gated by per-segment FILE_UPLOAD_PROGRESS ACK, the client never
-    // sends more than 16 KB without first waiting for our reply — and
-    // the bulk `NativeUartStream::readBytes` override drains the ring
-    // in microseconds, so it rarely holds more than a couple of KB at
-    // once.  8 KB = ~11 ms at 6 Mbps is comfortable headroom.  Bump
-    // back to 16384 if any future protocol path bursts > 8 KB without
-    // synchronous backpressure.
+    // 32 KB RX ring — sized to hold a FULL 16 KB stream-upload segment
+    // burst with 2x margin.  The client blasts one whole 16 KB segment
+    // before waiting for its FILE_UPLOAD_PROGRESS ACK, so up to 16 KB
+    // can be in flight with no intra-segment backpressure; an 8 KB ring
+    // overflowed (and stalled the upload) whenever processStream lagged
+    // the 6 Mbps fill even briefly.  This regressed into view on
+    // 2026-05-31 when the Arduino-Stream→sfx::Stream seam finally routed
+    // the upload read through the bulk `NativeUartStream::readBytes`
+    // override (before, `serial()` handed back an Arduino `Stream*` and
+    // the slow per-byte `Stream::readBytes` polyfill was used — it
+    // block-drained the ring continuously, masking the undersized
+    // buffer).  DRAM for the extra 24 KB came free in the same Arduino-
+    // removal work (Wire −21 KB, ESP32Servo −2 KB).  TX stays 8 KB (our
+    // ACKs are tiny).
     wireUart.begin(UART_NUM_0, /*rx*/44, /*tx*/43,
                    sfx_core::BoardServerBase::BAUD_RATE,
-                   /*rxBuf*/8192, /*txBuf*/8192);
+                   /*rxBuf*/32768, /*txBuf*/8192);
 
     // Policy pack lifecycle — Serial, DiagLog, indicator pins, port
     // registry binding, every policy's begin().  Master role, no
@@ -795,7 +804,7 @@ void setup() {
 
     // I²C bus introspection — register the scan callback and mark every
     // chip physically wired on this PCB rev as "expected".
-    board.enableI2CScan(Wire);
+    board.enableI2CScan(hubI2cBus());
     board.addExpectedI2CDevice(I2cAddr::TAS5825P);
     board.addExpectedI2CDevice(I2cAddr::PCA9685);
     for (uint8_t k = 0; k < 8; ++k) {
@@ -969,7 +978,7 @@ void loop() {
                 int maj = 0, mnr = 0;
                 sscanf(FIRMWARE_VERSION, "%d.%d", &maj, &mnr);   // "2.16.0-hubfx"
                 jexp.setLocalSensor(3, "Version", "", JetiEx::ExDataType::Int14, 2,
-                                    (int32_t)(maj * 100 + mnr), millis());   // 216 → "2.16"
+                                    (int32_t)(maj * 100 + mnr), SFX_MILLIS());   // 216 → "2.16"
             }
         }
     }
@@ -991,7 +1000,7 @@ void loop() {
     // leak in a service policy or audio source).  Cheap — three
     // heap_caps queries.
     static uint32_t lastMemLogMs = 0;
-    const uint32_t  nowMs = millis();
+    const uint32_t  nowMs = SFX_MILLIS();
     if (nowMs - lastMemLogMs >= 30000UL) {
         lastMemLogMs = nowMs;
         logMemoryHeapCaps("periodic");

@@ -46,7 +46,6 @@
 #ifndef LED_CONTROL_H
 #define LED_CONTROL_H
 
-#include <Arduino.h>
 #include <type_traits>
 #include "../gpio/native_gpio.h"
 #include "../pwm/pwm_output.h"

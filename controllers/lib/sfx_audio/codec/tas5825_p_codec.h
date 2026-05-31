@@ -36,8 +36,7 @@
 #ifndef TAS5825_P_CODEC_H
 #define TAS5825_P_CODEC_H
 
-#include <Arduino.h>
-#include <Wire.h>
+#include <i2c/sfx_i2c.h>
 #include "../audio/audio_config.h"
 #include "tas5825_regs.h"
 
@@ -64,7 +63,7 @@ public:
     TAS5825PCodec& operator=(TAS5825PCodec&&)      = delete;
 
     // ─── Phase 1: pre-clock init ───────────────────────────────────────
-    bool begin(TwoWire& wire, int sda, int scl,
+    bool begin(sfx_peripherals::SfxI2cBus& wire, int sda, int scl,
                uint32_t sample_rate = AUDIO_SAMPLE_RATE,
                Supply supply        = Supply::V20);
 
@@ -164,7 +163,7 @@ public:
 private:
     TAS5825PCodec();
 
-    TwoWire* i2c_         = nullptr;
+    sfx_peripherals::SfxI2cBus* i2c_         = nullptr;
     int      sdaPin_      = -1;
     int      sclPin_      = -1;
     uint32_t sampleRate_  = 0;

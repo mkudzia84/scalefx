@@ -48,7 +48,6 @@
 #ifndef SERIAL_RESULT_QUEUE_H
 #define SERIAL_RESULT_QUEUE_H
 
-#include <Arduino.h>
 #include <atomic>
 #include <functional>
 #include "serial/core/core.h"

@@ -32,7 +32,6 @@
 #ifndef HUBFX_EXPANDER_PROTOCOL_H
 #define HUBFX_EXPANDER_PROTOCOL_H
 
-#include <Arduino.h>
 #include <cstdint>
 
 namespace hubfx::expanders {

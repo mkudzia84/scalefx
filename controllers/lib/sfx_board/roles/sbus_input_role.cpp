@@ -3,6 +3,7 @@
  */
 
 #include "sbus_input_role.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #include <serial/ports.h>   // InputPortFlags::SBUS
 
@@ -18,7 +19,7 @@ bool SbusInputRole::bind(sfx_peripherals::InputPort* port) {
     if (!port->configureSbus()) return false;
 
 #if SFX_PLATFORM_ESP32
-    Stream* s = port->uartStream();
+    sfx::Stream* s = port->uartStream();
     if (!s) {
         port->disable();
         return false;
@@ -118,7 +119,7 @@ void SbusInputRole::tick() {
 #endif
 
     // Local effect feed + (when subscribed) wire broadcast — same cadence.
-    if (_onBroadcast && _bcast.due(millis()))
+    if (_onBroadcast && _bcast.due(SFX_MILLIS()))
         _onBroadcast(channelCount(), valid(), failsafe(), frameLost());
 }
 

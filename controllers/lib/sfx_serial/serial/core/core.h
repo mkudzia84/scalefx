@@ -32,7 +32,6 @@
 #ifndef SERIAL_CORE_H
 #define SERIAL_CORE_H
 
-#include <Arduino.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <functional>

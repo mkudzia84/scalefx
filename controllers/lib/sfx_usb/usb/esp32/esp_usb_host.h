@@ -25,6 +25,8 @@
 
 #if SFX_PLATFORM_ESP32
 
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
+
 class EspUsbHost {
 public:
     // --- Platform factory singleton -----------------------------------------
@@ -191,7 +193,7 @@ private:
 
     // Bus recovery state
     void* _recoveryTimer = nullptr;      // TimerHandle_t for auto-recovery
-    uint32_t _lastResetTimestamp_ms = 0; // millis() of last bus reset
+    uint32_t _lastResetTimestamp_ms = 0; // SFX_MILLIS() of last bus reset
     bool _autoRecovery = true;           // Auto-recovery enabled by default
 
     /// Common CDC session open logic — shared by _processOpenRequest and reopenCdcDevice.

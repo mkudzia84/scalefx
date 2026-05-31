@@ -355,6 +355,13 @@ func (s *Storage) uploadStream(data []byte, opt UploadOptions) (UploadResult, er
 	s.c.conn.RegisterAsyncFilter(storage.FileUploadProgress, progressCh)
 	defer s.c.conn.UnregisterAsyncFilter(storage.FileUploadProgress)
 
+	// Raw-stream phase begins now (firmware is in stream mode after the BEGIN
+	// ACK).  Any COBS packet from another goroutine (status poll, keepalive)
+	// written from here until UPLOAD_END corrupts the file — SetStreamPhase
+	// makes Send() log such collisions.  Cleared before UPLOAD_END (COBS) and
+	// on every error path below.
+	s.c.conn.SetStreamPhase(true)
+
 	start := time.Now()
 	hash := md5.New()
 	hash.Write(data)
@@ -374,6 +381,7 @@ func (s *Storage) uploadStream(data []byte, opt UploadOptions) (UploadResult, er
 				step = writeChunk
 			}
 			if err := s.c.conn.SendRaw(data[segStart : segStart+step]); err != nil {
+				s.c.conn.SetStreamPhase(false)
 				_ = s.c.conn.Send(storage.CmdFileUploadCancel())
 				return UploadResult{BytesSent: sent, Mode: UploadStream},
 					fmt.Errorf("stream write @%d: %w", segStart, err)
@@ -395,11 +403,16 @@ func (s *Storage) uploadStream(data []byte, opt UploadOptions) (UploadResult, er
 				}
 			}
 		case <-time.After(15 * time.Second):
+			s.c.conn.SetStreamPhase(false)
 			_ = s.c.conn.Send(storage.CmdFileUploadCancel())
 			return UploadResult{BytesSent: sent, Mode: UploadStream},
 				fmt.Errorf("stream timeout waiting for segment ACK")
 		}
 	}
+
+	// Raw phase done — firmware is back in COBS mode; UPLOAD_END is a normal
+	// packet again.
+	s.c.conn.SetStreamPhase(false)
 
 	resp, err = s.c.conn.SendExpectACKTimeout(storage.CmdFileUploadEnd(), 60*time.Second)
 	if err != nil {

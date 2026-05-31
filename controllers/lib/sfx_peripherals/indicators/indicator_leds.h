@@ -40,7 +40,6 @@
 #ifndef INDICATOR_LEDS_H
 #define INDICATOR_LEDS_H
 
-#include <Arduino.h>
 #include <cstdint>
 #include <cstddef>
 

@@ -32,7 +32,7 @@
 #ifndef HUBFX_HW_PROBE_H
 #define HUBFX_HW_PROBE_H
 
-#include <Wire.h>
+#include "hubfx_i2c.h"             // hubI2cBus() (native I2C)
 #include <cstdint>
 
 #include <serial/diag_log.h>
@@ -98,16 +98,15 @@ public:
     /// output is deferred to `logStatus()` so it can land in the
     /// DiagLog ring instead of being dropped pre-Serial.
     void init() {
-        Wire.begin(_cfg.sda, _cfg.scl);
-        Wire.setClock(_cfg.i2cFreq);
+        hubI2cBus().begin(_cfg.sda, _cfg.scl, _cfg.i2cFreq);
 
         // General-call SWRST before any per-chip probe — recovers a
         // PCA whose address comparator latched out of normal state.
-        PCA9685::broadcastReset(Wire);
-        delay(2);
+        PCA9685::broadcastReset(hubI2cBus());
+        SFX_DELAY_MS(2);
 
         _state.pcaPreAck = pcaBusProbe(_cfg.pcaAddr);
-        _state.pcaBegun  = _pca.begin(Wire, _cfg.pcaAddr, _cfg.pwmFreqHz);
+        _state.pcaBegun  = _pca.begin(hubI2cBus(), _cfg.pcaAddr, _cfg.pwmFreqHz);
         if (_state.pcaBegun) {
             _state.pcaMode1    = pcaRead(_cfg.pcaAddr, 0x00);
             _state.pcaMode2    = pcaRead(_cfg.pcaAddr, 0x01);
@@ -127,12 +126,11 @@ public:
         // still capture the boot IDs so the log can identify clones.
         for (uint8_t k = 0; k < 8; ++k) {
             _state.ina[k].addr = _cfg.inaAddrs[k];
-            Wire.beginTransmission(_cfg.inaAddrs[k]);
-            _state.ina[k].wireAck = Wire.endTransmission();
+            _state.ina[k].wireAck = hubI2cBus().probe(_cfg.inaAddrs[k]) ? 0 : 2;
             if (_state.ina[k].wireAck != 0) continue;
 
             _state.ina[k].begun =
-                _inas[k].begin(Wire, _cfg.inaAddrs[k],
+                _inas[k].begin(hubI2cBus(), _cfg.inaAddrs[k],
                                _cfg.inaShuntOhms, _cfg.inaMaxAmps);
             _state.ina[k].mfgId     = _inas[k].bootMfgId();
             _state.ina[k].dieId     = _inas[k].bootDieId();
@@ -155,9 +153,9 @@ public:
             SFX_LOG_WARN("[PCA] post-init probe failed — chip wedged during "
                          "board.begin() port-init.  Running recovery: SWRST "
                          "→ re-init → re-push duties.");
-            PCA9685::broadcastReset(Wire);
-            delay(2);
-            const bool reinitOk = _pca.begin(Wire, _cfg.pcaAddr, _cfg.pwmFreqHz);
+            PCA9685::broadcastReset(hubI2cBus());
+            SFX_DELAY_MS(2);
+            const bool reinitOk = _pca.begin(hubI2cBus(), _cfg.pcaAddr, _cfg.pwmFreqHz);
             if (reinitOk) {
                 for (uint8_t k = 0; k < 8; ++k) {
                     _pwm[k].setDuty(_pwm[k].duty());
@@ -258,15 +256,11 @@ public:
 
 private:
     static bool pcaBusProbe(uint8_t addr) {
-        Wire.beginTransmission(addr);
-        return Wire.endTransmission() == 0;
+        return hubI2cBus().probe(addr);
     }
     static uint8_t pcaRead(uint8_t addr, uint8_t reg) {
-        Wire.beginTransmission(addr);
-        Wire.write(reg);
-        if (Wire.endTransmission(false) != 0) return 0xFF;
-        Wire.requestFrom((int)addr, 1);
-        return Wire.available() ? (uint8_t)Wire.read() : 0xFF;
+        uint8_t v = 0xFF;
+        return hubI2cBus().readReg(addr, reg, &v, 1) ? v : 0xFF;
     }
 
     PCA9685& _pca;

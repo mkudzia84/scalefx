@@ -17,7 +17,6 @@
 #ifndef SFX_HEATER_ROLE_H
 #define SFX_HEATER_ROLE_H
 
-#include <Arduino.h>
 #include <cstdint>
 
 #include <ports/pwm_port.h>

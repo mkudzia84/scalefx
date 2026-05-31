@@ -90,6 +90,13 @@ type Connection struct {
 	asyncCB    AsyncCallback
 	wireLogger WireLogger // optional per-packet trace; nil = legacy stdout printf path
 
+	// Stream-upload phase: set true while a raw stream-upload segment burst is
+	// in flight.  During this window the firmware reads RAW bytes (no COBS
+	// dispatch), so ANY other COBS packet written to the wire is swallowed as
+	// file data and corrupts the upload.  Send() logs such collisions via the
+	// wireLogger ("COLLIDE") so a stray status poll / keepalive is visible.
+	streamActive atomic.Bool
+
 	// Port-loss detection: set once when a persistent I/O error occurs
 	portDead    atomic.Bool
 	OnPortError func() // called once when port-loss is detected
@@ -131,6 +138,7 @@ type statCounters struct {
 	asyncCBMax   atomic.Uint64 // worst single asyncCB ns
 	asyncDropped atomic.Uint64 // async frames dropped on queue overflow (slow consumer)
 	dispatchMax  atomic.Uint64 // worst single dispatchResponse ns (reader stall proxy)
+	collisions   atomic.Uint64 // COBS packets written while a stream upload was active
 }
 
 // LinkStats is a point-in-time snapshot of the link instrumentation.
@@ -208,6 +216,15 @@ func (c *Connection) Verbose() bool { return c.verbose }
 
 // SetVerbose updates the verbose flag.
 func (c *Connection) SetVerbose(v bool) { c.verbose = v }
+
+// SetStreamPhase marks the start/end of a raw stream-upload segment burst.
+// While set, Send() logs any COBS packet written to the wire as a "COLLIDE"
+// trace (it would be swallowed as upload data and corrupt the file).
+func (c *Connection) SetStreamPhase(active bool) { c.streamActive.Store(active) }
+
+// Collisions returns the number of COBS packets written while a stream-upload
+// phase was active (0 = clean; >0 means a background sender corrupted it).
+func (c *Connection) Collisions() uint64 { return c.stat.collisions.Load() }
 
 // SetWireLogger installs a per-packet trace callback (TX + RX).  Pass
 // nil to fall back to the legacy stdout printf trace.  Calls are
@@ -321,6 +338,26 @@ func (c *Connection) Send(data []byte) error {
 
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+
+	// Wire-collision instrumentation: a COBS packet being written while a raw
+	// stream upload is mid-flight WILL corrupt the upload (the firmware reads
+	// these bytes as file data).  Log it loudly with the offending type — this
+	// is how a background status poll / keepalive that breaks Studio uploads
+	// surfaces.  Fires regardless of the verbose flag.
+	if c.streamActive.Load() {
+		ptype, tag, payload, ok := ParsePacket(data)
+		name := "UNKNOWN"
+		if ok {
+			name = PacketTypeName(ptype)
+		}
+		if c.wireLogger != nil {
+			c.wireLogger("COLLIDE", name, tag, len(payload))
+		} else {
+			fmt.Printf("  ⚠ WIRE COLLISION during stream upload: %s tag=%d [%d bytes]\n",
+				name, tag, len(payload))
+		}
+		c.stat.collisions.Add(1)
+	}
 
 	if c.verbose {
 		ptype, tag, payload, ok := ParsePacket(data)
@@ -559,6 +596,14 @@ func (c *Connection) StartKeepalive(interval time.Duration) {
 				if c.portDead.Load() {
 					return
 				}
+				// Never inject a KEEPALIVE during a raw stream upload — the
+				// firmware is in byte-stream mode (no COBS dispatch), so the
+				// packet would be swallowed as file data and corrupt the upload.
+				// The wire is busy with segments anyway, and the upload target
+				// (HubFX) disables the inactivity watchdog, so skipping is safe.
+				if c.streamActive.Load() {
+					continue
+				}
 				c.writeMu.Lock()
 				idle := time.Since(c.lastSendTime)
 				c.writeMu.Unlock()
@@ -790,12 +835,35 @@ func (c *Connection) dispatchResponse(resp *Response) {
 		c.stat.rxUnmatched.Add(1) // tag set but no waiter (late / orphaned)
 	}
 
-	// Async or unmatched — hand off to the dispatcher goroutine.  NON-BLOCKING:
-	// the reader must NEVER stall on a slow async consumer (Studio's Wails emit
-	// at 50 Hz), or the serial buffer backs up and command responses time out
-	// (proven: 0% timeouts at delay=0, 86% at delay=150ms, same flood).  Drop
-	// on overflow — async broadcasts (live channel view) are lossy.
 	c.stat.rxAsync.Add(1)
+
+	// Registered async FILTERS (e.g. FILE_UPLOAD_PROGRESS) are explicit
+	// flow-control consumers, NOT lossy telemetry — deliver them straight to
+	// their buffered channel instead of through the shared async queue.  A
+	// 50 Hz live-view broadcast flood otherwise fills that 256-deep queue and
+	// drops the critical segment-ACK, stalling stream uploads (the Studio
+	// >64 KB upload hang, 2026-05-31).  Still NON-BLOCKING — the reader must
+	// never stall — but the filter buffer is sized for its own cadence, not
+	// shared with broadcasts.
+	if resp.Tag == TagAsync {
+		c.waiterMu.Lock()
+		fch, fok := c.asyncFilters[resp.PacketType]
+		c.waiterMu.Unlock()
+		if fok {
+			select {
+			case fch <- resp:
+			default:
+				c.stat.asyncDropped.Add(1)
+			}
+			return
+		}
+	}
+
+	// Non-filtered async / unmatched → lossy broadcast queue + general
+	// callback.  NON-BLOCKING: the reader must NEVER stall on a slow async
+	// consumer (Studio's Wails emit at 50 Hz), or the serial buffer backs up
+	// and command responses time out (proven: 0% timeouts at delay=0, 86% at
+	// delay=150ms, same flood).  Drop on overflow — live channel view is lossy.
 	if c.asyncQueue != nil {
 		select {
 		case c.asyncQueue <- resp:

@@ -32,7 +32,7 @@
 #ifndef SFX_LED_ANIMATOR_H
 #define SFX_LED_ANIMATOR_H
 
-#include <Arduino.h>
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -109,7 +109,7 @@ public:
     /// Register the done callback. Fired once per queue completion.
     void onQueueDone(DoneCallback cb) { _onDone = std::move(cb); }
 
-    /// Tick — drive the state machine.  `now` is a SHARED millis()
+    /// Tick — drive the state machine.  `now` is a SHARED SFX_MILLIS()
     /// timestamp captured once per `RoleServicePolicy::update()` pass and
     /// passed to every channel, so all LedAnimators sample the exact same
     /// instant — same-period channels stay in perfect phase and nothing

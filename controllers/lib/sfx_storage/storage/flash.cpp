@@ -28,6 +28,7 @@
 
 #include "flash.h"
 #include <vector>
+#include <string>
 
 #if defined(ARDUINO_ARCH_ESP32)
     #include <esp_littlefs.h>
@@ -440,8 +441,8 @@ bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
     if (depth >= MAX_TREE_DEPTH) return false;
 
     struct ChildEntry {
-        String name;
-        bool   isDir;
+        std::string name;
+        bool        isDir;
     };
     std::vector<ChildEntry> children;
 
@@ -449,7 +450,7 @@ bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
     {
         Dir dir = LittleFS.openDir(path);
         while (dir.next()) {
-            children.push_back({ dir.fileName(), dir.isDirectory() });
+            children.push_back({ std::string(dir.fileName().c_str()), dir.isDirectory() });
             if (children.size() >= (size_t)MAX_TREE_ENTRIES) break;
         }
     }
@@ -462,7 +463,7 @@ bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
         }
         NativeFile f = dir.openNextFile();
         while (f) {
-            children.push_back({ String(f.name()), f.isDirectory() });
+            children.push_back({ std::string(f.name()), f.isDirectory() });
             f.close();
             if (children.size() >= (size_t)MAX_TREE_ENTRIES) break;
             f = dir.openNextFile();

@@ -39,10 +39,11 @@
 #ifndef SD_CARD_H
 #define SD_CARD_H
 
-#include <Arduino.h>
 #include "platform/sfx_platform.h"
 #include <functional>
 #include <vector>
+#include <string>
+#include <cstring>   // strlen / strncpy / strrchr / memcpy (was transitive via <Arduino.h>)
 
 #include "storage_types.h"
 

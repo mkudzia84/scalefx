@@ -325,6 +325,7 @@ func (a *App) FsUploadFromDisk(target, remotePath, localPath string) error {
 	wailsRT.EventsEmit(a.ctx, "fs:progress", map[string]any{
 		"phase": "uploading", "path": remotePath, "sent": 0, "total": size,
 	})
+	collBefore := a.c.Conn().Collisions()
 	res, err := a.c.Storage.FileUpload(localPath, client.UploadOptions{
 		Path:   remotePath,
 		Target: tb,
@@ -350,6 +351,10 @@ func (a *App) FsUploadFromDisk(target, remotePath, localPath string) error {
 		md5tag = " ✓ MD5 match"
 	}
 	a.echoOK("Uploaded %s (%d bytes, %.1f KB/s)%s", remotePath, res.BytesSent, res.SpeedKBs, md5tag)
+	if coll := a.c.Conn().Collisions() - collBefore; coll > 0 {
+		a.echoError("⚠ %d wire collision(s) during this upload — a background "+
+			"packet corrupted the stream (see WIRE-COLLISION warnings above)", coll)
+	}
 	return nil
 }
 

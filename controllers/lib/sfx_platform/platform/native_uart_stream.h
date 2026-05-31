@@ -45,7 +45,7 @@
 
 #if SFX_PLATFORM_ESP32
 
-#include <Arduino.h>          // brings in Stream + Print abstract bases
+#include "platform/sfx_stream.h"   // sfx::Stream / sfx::Print (Arduino-free)
 #include <driver/uart.h>
 #include <esp_err.h>
 #include <cstdint>
@@ -65,6 +65,19 @@ public:
                size_t rxBufBytes = 8192,
                size_t txBufBytes = 8192);
 
+    /// Full-control install: the caller supplies the `uart_config_t` (parity,
+    /// stop bits, baud) plus an optional line-inverse mask (e.g.
+    /// `UART_SIGNAL_RXD_INV` for SBUS) and an RS-485 half-duplex flag.  Used by
+    /// EspInputPort to drive an RC UART (SBUS 8E2-inverted / Jeti EX 8N1)
+    /// natively — replaces the old Arduino `HardwareSerial` + adapter.  begin()
+    /// above is the 8N1 shortcut that delegates here.
+    bool beginConfig(uart_port_t port, int rxPin, int txPin,
+                     const uart_config_t& cfg,
+                     uint32_t lineInverseMask = 0,
+                     bool     rs485HalfDuplex = false,
+                     size_t   rxBufBytes = 8192,
+                     size_t   txBufBytes = 256);
+
     /// Free the driver.  Rarely needed (the UART stays up across the
     /// whole runtime); provided for symmetry / hot-reload tests.
     void end();
@@ -80,7 +93,7 @@ public:
     /// in one shot, ~µs for the same 16 KB.  Critical on the stream-
     /// upload hot path where the loop iteration time dominates the
     /// effective UART drain rate (build #491 diag, 2026-05-28).
-    size_t readBytes(uint8_t* buffer, size_t length);
+    size_t readBytes(uint8_t* buffer, size_t length) override;
     size_t readBytes(char* buffer, size_t length) {
         return readBytes(reinterpret_cast<uint8_t*>(buffer), length);
     }
@@ -93,9 +106,8 @@ public:
     /// Wait for any buffered TX to flush over the wire.
     void flush() override;
 
-    /// Arduino-compatible `if (Serial)` truthiness — true while the
-    /// driver is installed.
-    explicit operator bool() const { return _installed; }
+    /// `if (Serial)` truthiness — true while the driver is installed.
+    explicit operator bool() const override { return _installed; }
 
     uart_port_t port() const { return _port; }
     bool        installed() const { return _installed; }

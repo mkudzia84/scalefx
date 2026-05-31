@@ -3,7 +3,7 @@
  *
  * On `bind()` the role switches the port into SBUS mode
  * (`InputPort::configureSbus()` — 100 000 baud, 8E2, inverted UART),
- * then attaches a `SbusInput` decoder to the port's UART `Stream*`.
+ * then attaches a `SbusInput` decoder to the port's UART `sfx::Stream*`.
  *
  * SBUS gives 16 proportional channels (11-bit, mapped to ~988..2012 µs)
  * plus digital ch17/ch18 and failsafe / frame-lost flags.  The role
@@ -18,7 +18,7 @@
 #ifndef SFX_SBUS_INPUT_ROLE_H
 #define SFX_SBUS_INPUT_ROLE_H
 
-#include <Arduino.h>
+#include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h>)
 #include <cstdint>
 #include <functional>
 

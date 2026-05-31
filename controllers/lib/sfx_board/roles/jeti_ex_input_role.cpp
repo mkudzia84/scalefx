@@ -5,6 +5,7 @@
  */
 
 #include "jeti_ex_input_role.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #include <serial/ports.h>   // InputPortFlags::JETI_EX
 
@@ -50,7 +51,7 @@ void JetiExInputRole::tick() {
     JetiEx::JetiExpander::instance().update();
 #endif
     // Local effect feed + (when subscribed) wire broadcast — same cadence.
-    if (_onBroadcast && _bcast.due(millis()))
+    if (_onBroadcast && _bcast.due(SFX_MILLIS()))
         _onBroadcast(channelCount(), valid(), rxFrameCount(), rxErrorCount());
 }
 

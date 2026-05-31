@@ -21,10 +21,10 @@
 #ifndef SFX_PERIPHERAL_PWM_PORT_H
 #define SFX_PERIPHERAL_PWM_PORT_H
 
-#include <Arduino.h>
 #include <cstdint>
 
-#include "pwm/pca9685.h"   // pre-existing chip driver
+#include <gpio/native_gpio.h>   // NativeGpio — native MCU PWM (P6)
+#include "pwm/pca9685.h"        // pre-existing chip driver
 
 namespace sfx_peripherals {
 
@@ -63,17 +63,18 @@ public:
 };
 
 // ============================================================================
-// NativePwmPort — MCU pin via Arduino analogWrite()
+// NativePwmPort — MCU pin via native PWM (NativeGpio: ESP32 LEDC / Pico PWM)
 // ============================================================================
 
 class NativePwmPort final : public PwmPort {
 public:
-    /// @param gpioPin       Arduino pin number.
+    /// @param gpioPin       GPIO number.
     /// @param inverted      If true, hardware is wired such that
     ///                      logic-high = off (e.g. P-channel MOSFET side
     ///                      driver).  The duty is inverted on write.
-    /// @param resolutionBits Native PWM resolution (default 8 = 0..255).
-    ///                      Platform-specific; passed to analogWriteResolution.
+    /// @param resolutionBits Role-facing duty resolution (default 8 = 0..255).
+    ///                      Reported via maxDuty(); the value is scaled to the
+    ///                      native 8-bit LEDC/PWM channel on write.
     explicit NativePwmPort(int gpioPin, bool inverted = false, uint8_t resolutionBits = 8)
         : _pin(gpioPin), _inverted(inverted), _resBits(resolutionBits) {
         _maxDuty = (resolutionBits >= 16) ? 0xFFFF : ((1u << resolutionBits) - 1u);
@@ -81,10 +82,7 @@ public:
 
     bool begin() override {
         if (_pin < 0) return false;
-        pinMode(_pin, OUTPUT);
-#ifdef analogWriteResolution
-        analogWriteResolution(_resBits);
-#endif
+        NativeGpio::instance().setPinDirection(_pin, /*isInput=*/false);
         setDuty(0);
         return true;
     }
@@ -94,7 +92,9 @@ public:
         if (duty > _maxDuty) duty = _maxDuty;
         _duty = duty;
         const uint16_t out = _inverted ? (uint16_t)(_maxDuty - duty) : duty;
-        analogWrite(_pin, out);
+        // Scale the role-facing duty into the native 8-bit PWM channel.
+        const uint8_t b = _maxDuty ? (uint8_t)(((uint32_t)out * 255u) / _maxDuty) : 0;
+        NativeGpio::instance().setLedBrightness(_pin, b);
     }
 
     uint16_t duty() const     override { return _duty; }

@@ -41,7 +41,7 @@ uint8_t writeExHead(uint8_t* b, uint16_t usn, uint16_t lsn) {
 }  // namespace
 
 // ─── begin ─────────────────────────────────────────────────────
-bool JetiExBus::begin(Stream* serial)
+bool JetiExBus::begin(sfx::Stream* serial)
 {
     if (!serial) return false;
     end();
@@ -130,7 +130,7 @@ void JetiExBus::parseChannelData(const uint8_t* frame, uint8_t len)
     }
 
     _channelCount  = numCh;
-    _lastChannelMs = millis();
+    _lastChannelMs = SFX_MILLIS();
 }
 
 // ─── handleTelemetryRequest ────────────────────────────────────
@@ -317,7 +317,7 @@ uint16_t JetiExBus::channel_us(uint8_t ch) const
 bool JetiExBus::isValid() const
 {
     if (_channelCount == 0 || _lastChannelMs == 0) return false;
-    return (millis() - _lastChannelMs) < RxConfig::SIGNAL_TIMEOUT_MS;
+    return (SFX_MILLIS() - _lastChannelMs) < RxConfig::SIGNAL_TIMEOUT_MS;
 }
 
 // ─── setSensorInfo ─────────────────────────────────────────────

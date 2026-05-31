@@ -28,6 +28,7 @@
  */
 
 #include "audio_asset_cache.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #if SFX_PLATFORM_ESP32
 
@@ -35,7 +36,6 @@
 #include <cstdio>
 #include <sys/stat.h>
 #include <esp_heap_caps.h>
-#include <Arduino.h>            // millis()
 #include <serial/diag_log.h>
 #include "storage/sd_card.h"   // SdCardModule::lock()/unlock() — serializes
                                 // SD operations across all consumers (asset
@@ -708,7 +708,7 @@ void AudioAssetCache::loaderTaskFunc(void* arg) {
             continue;
         }
 
-        const uint32_t t0 = millis();
+        const uint32_t t0 = SFX_MILLIS();
         // fread directly into PSRAM destination.  VFS-FAT bounces
         // through its own DMA-cap SRAM internally; we accept the
         // ~1 MB/s throughput penalty in exchange for not snatching
@@ -728,7 +728,7 @@ void AudioAssetCache::loaderTaskFunc(void* arg) {
         // Publish atomically so sources see the new bytes.
         target->loadedBytes.fetch_add((uint32_t)got, std::memory_order_release);
 
-        const uint32_t dt = millis() - t0;
+        const uint32_t dt = SFX_MILLIS() - t0;
         self->_totalLoadMs.fetch_add(dt, std::memory_order_relaxed);
         uint32_t prevMax = self->_maxLoadMs.load(std::memory_order_relaxed);
         while (dt > prevMax &&

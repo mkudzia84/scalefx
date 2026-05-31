@@ -16,12 +16,12 @@
 #ifndef HUBFX_GUN_UNIT_IPP
 #define HUBFX_GUN_UNIT_IPP
 
-#include <Arduino.h>
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <cmath>                   // sinf / M_PI for FN_PULSE sinusoidal envelope
 #include <serial/roles.h>
 #include <serial/wire.h>
 #include <serial/diag_log.h>
-#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
+#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw SFX_MILLIS()
 
 // Rate-limit the FN_PULSE sinusoidal MOTOR_SET_PCT updates.  At 20 ms
 // (50 Hz) we get ≈5 samples across a 100 ms sinusoid — plenty smooth

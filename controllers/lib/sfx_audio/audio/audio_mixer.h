@@ -32,7 +32,6 @@
 #ifndef AUDIO_MIXER_H
 #define AUDIO_MIXER_H
 
-#include <Arduino.h>
 #include <atomic>
 #include <concepts>
 #include "platform/sfx_platform.h"

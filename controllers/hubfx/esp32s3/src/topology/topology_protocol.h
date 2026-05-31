@@ -22,7 +22,6 @@
 #ifndef HUBFX_TOPOLOGY_PROTOCOL_H
 #define HUBFX_TOPOLOGY_PROTOCOL_H
 
-#include <Arduino.h>
 #include <cstdint>
 
 namespace hubfx::topology {

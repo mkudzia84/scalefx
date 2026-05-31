@@ -22,6 +22,7 @@
 #if defined(SFX_HAS_AUDIO)
 
 #include "audio_log.h"
+#include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #if SFX_PLATFORM_ESP32
 #include <esp_heap_caps.h>     // heap_caps_malloc / MALLOC_CAP_DMA / MALLOC_CAP_INTERNAL
@@ -996,7 +997,7 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
     float scratchR[kRefillBatchFrames];
 
 #if SFX_AUDIO_PACE_TELEMETRY
-    const uint32_t t0 = micros();
+    const uint32_t t0 = SFX_MICROS();
 #endif
     const uint32_t startIdx = ws.writeIdx.load(std::memory_order_relaxed);
     uint32_t got = 0;
@@ -1022,7 +1023,7 @@ bool AudioMixer<TI2S, TCodec>::refillDrainBuffer(Channel& ch) {
         if (n < batchCap) break;   // short read → source paused / EOF
     }
 #if SFX_AUDIO_PACE_TELEMETRY
-    const uint32_t dtUs = micros() - t0;
+    const uint32_t dtUs = SFX_MICROS() - t0;
     // Track max-since-last-log via lock-free CAS (relaxed — the
     // periodic logger races safely; missing one tick is OK).
     uint32_t prevMax = _maxSdReadUs.load(std::memory_order_relaxed);
@@ -1942,7 +1943,7 @@ void AudioMixer<TI2S, TCodec>::producerTaskFunc(void* param) {
               xPortGetCoreID(), uxTaskPriorityGet(nullptr));
 
 #if SFX_AUDIO_PACE_TELEMETRY
-    uint32_t nextTelemetryMs = millis() + 1000;
+    uint32_t nextTelemetryMs = SFX_MILLIS() + 1000;
     uint32_t prevUnderruns   = mixer._underruns.load(std::memory_order_relaxed);
 #endif
 
@@ -1962,7 +1963,7 @@ void AudioMixer<TI2S, TCodec>::producerTaskFunc(void* param) {
 
 #if SFX_AUDIO_PACE_TELEMETRY
         // ── Pacing telemetry (1 Hz, only when audio is playing) ─────
-        const uint32_t now = millis();
+        const uint32_t now = SFX_MILLIS();
         if (now >= nextTelemetryMs) {
             nextTelemetryMs = now + 1000;
 
