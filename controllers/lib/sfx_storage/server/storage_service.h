@@ -237,11 +237,12 @@ public:
     }
 
     bool ownsType(uint8_t type) const {
-        // Storage packet range: 0x93..0xA3 (SD + flash + file ops + upload)
-        // and 0xA9 (FILE_TREE) and 0xB0 (FILE_UPLOAD_PROGRESS async).
-        // 0xAA/0xAB belong to the audio codec — must NOT be claimed here
-        // or the dispatcher short-circuits before AudioService sees it.
-        return (type >= 0x93 && type <= 0xA3)
+        // Storage packet range: 0x93..0xA5 (SD + flash + file ops + upload +
+        // upload-diag 0xA4/0xA5) and 0xA9 (FILE_TREE) and 0xB0
+        // (FILE_UPLOAD_PROGRESS async).  0xAA/0xAB belong to the audio codec —
+        // must NOT be claimed here or the dispatcher short-circuits before
+        // AudioService sees it.
+        return (type >= 0x93 && type <= 0xA5)
             || type == 0xA9
             || type == 0xB0;
     }
@@ -299,6 +300,14 @@ private:
     void handleUploadData(const uint8_t* payload, size_t len);
     void handleUploadEnd();
     void handleUploadCancel();
+
+    /// Build + send FILE_UPLOAD_DIAG_RESP from the last/active upload snapshot.
+    void handleUploadDiagReq();
+
+    /// Freeze a diagnostics snapshot (SD writer stats + stream progress) so a
+    /// post-mortem FILE_UPLOAD_DIAG_REQ can report it after the wire is back in
+    /// COBS mode.  `reason` is a StorageWire::UploadEndReason.
+    void captureUploadDiag(uint8_t reason);
 
     /// Clean up upload state (close file, unlock storage, delete partial)
     void cleanupUpload(bool deletePartial);
@@ -393,6 +402,27 @@ private:
 
     static constexpr uint32_t MAX_UPLOAD_SIZE_FLASH = 2  * 1024 * 1024;
     static constexpr uint32_t MAX_UPLOAD_SIZE_SD    = 256 * 1024 * 1024;
+
+    // ── Upload diagnostics snapshot (FILE_UPLOAD_DIAG) ────────────────
+    // Frozen at every terminal point (complete / abort / cancel / stale-reset)
+    // BEFORE cleanupUpload() resets the policy's writer stats, so a client that
+    // saw a segment-ACK timeout can pull the real SD write latencies the stream
+    // phase could never report over the wire.  Survives until the next BEGIN.
+    struct UploadDiag {
+        uint32_t bytesRecv      = 0;
+        uint32_t expectedSize   = 0;
+        uint16_t segIndex       = 0;
+        uint16_t segCount       = 0;
+        uint8_t  fillPct        = 0;
+        uint32_t sdWriteCount   = 0;
+        uint32_t sdBytesWritten = 0;
+        uint32_t sdMaxLat_ms    = 0;   // worst single SD write — THE smoking gun
+        uint32_t sdTotalStall_ms= 0;
+        uint32_t maxLoopGap_ms  = 0;
+        uint8_t  flags          = 0;   // bit0=uploadActive bit1=streamActive
+        uint8_t  reason         = 0;   // StorageWire::UploadEndReason
+    };
+    UploadDiag _diag;
 };
 
 // ============================================================================

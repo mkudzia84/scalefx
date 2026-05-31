@@ -26,9 +26,48 @@ const (
 	FileUploadData      protocol.PacketType = 0xA1
 	FileUploadEnd       protocol.PacketType = 0xA2
 	FileUploadCancel    protocol.PacketType = 0xA3
+	FileUploadDiagReq   protocol.PacketType = 0xA4
+	FileUploadDiagResp  protocol.PacketType = 0xA5
 	FileTree            protocol.PacketType = 0xA9
 	FileUploadProgress  protocol.PacketType = 0xB0
 )
+
+// UploadEndReason mirrors StorageWire::UploadEndReason — why the last upload
+// ended (reported in FILE_UPLOAD_DIAG_RESP).
+const (
+	ReasonNone         = 0
+	ReasonActive       = 1
+	ReasonCompleted    = 2
+	ReasonInactivity   = 3
+	ReasonFlushFail    = 4
+	ReasonHealth       = 5
+	ReasonClientCancel = 6
+	ReasonStaleReset   = 7
+)
+
+// ReasonName renders an UploadEndReason for humans.
+func ReasonName(r uint8) string {
+	switch r {
+	case ReasonNone:
+		return "none (no upload since boot)"
+	case ReasonActive:
+		return "active (in progress)"
+	case ReasonCompleted:
+		return "completed OK"
+	case ReasonInactivity:
+		return "inactivity timeout (client went silent)"
+	case ReasonFlushFail:
+		return "SD/flash write failed"
+	case ReasonHealth:
+		return "policy health abort"
+	case ReasonClientCancel:
+		return "client cancel"
+	case ReasonStaleReset:
+		return "superseded by new upload"
+	default:
+		return fmt.Sprintf("unknown(%d)", r)
+	}
+}
 
 // ─── Wire enums ───────────────────────────────────────────────────────
 
@@ -172,6 +211,56 @@ func DecodeUploadProgress(p []byte) (UploadProgress, error) {
 	}, nil
 }
 
+// UploadDiag is the decoded FILE_UPLOAD_DIAG_RESP payload — the post-mortem of
+// the last (or active) upload. The SD write latencies (esp. SdMaxLatMs) are the
+// smoking gun for a stalled large-file upload that the stream phase could never
+// report over the wire.
+type UploadDiag struct {
+	BytesRecv      uint32 `json:"bytesRecv"`
+	ExpectedSize   uint32 `json:"expectedSize"`
+	SegIndex       uint16 `json:"segIndex"`
+	SegCount       uint16 `json:"segCount"`
+	FillPct        uint8  `json:"fillPct"`
+	SdWriteCount   uint32 `json:"sdWriteCount"`
+	SdBytesWritten uint32 `json:"sdBytesWritten"`
+	SdMaxLatMs     uint32 `json:"sdMaxLatMs"`     // worst single SD write
+	SdTotalStallMs uint32 `json:"sdTotalStallMs"` // cumulative SD write time
+	MaxLoopGapMs   uint32 `json:"maxLoopGapMs"`
+	UploadActive   bool   `json:"uploadActive"`
+	StreamActive   bool   `json:"streamActive"`
+	Reason         uint8  `json:"reason"`
+}
+
+// SdAvgLatMs is the mean SD write latency (0 if no writes recorded).
+func (d UploadDiag) SdAvgLatMs() uint32 {
+	if d.SdWriteCount == 0 {
+		return 0
+	}
+	return d.SdTotalStallMs / d.SdWriteCount
+}
+
+// DecodeUploadDiag parses FILE_UPLOAD_DIAG_RESP (35 bytes).
+func DecodeUploadDiag(p []byte) (UploadDiag, error) {
+	if len(p) < 35 {
+		return UploadDiag{}, fmt.Errorf("upload diag: expected 35 bytes, got %d", len(p))
+	}
+	return UploadDiag{
+		BytesRecv:      binary.LittleEndian.Uint32(p[0:4]),
+		ExpectedSize:   binary.LittleEndian.Uint32(p[4:8]),
+		SegIndex:       binary.LittleEndian.Uint16(p[8:10]),
+		SegCount:       binary.LittleEndian.Uint16(p[10:12]),
+		FillPct:        p[12],
+		SdWriteCount:   binary.LittleEndian.Uint32(p[13:17]),
+		SdBytesWritten: binary.LittleEndian.Uint32(p[17:21]),
+		SdMaxLatMs:     binary.LittleEndian.Uint32(p[21:25]),
+		SdTotalStallMs: binary.LittleEndian.Uint32(p[25:29]),
+		MaxLoopGapMs:   binary.LittleEndian.Uint32(p[29:33]),
+		UploadActive:   p[33]&0x01 != 0,
+		StreamActive:   p[33]&0x02 != 0,
+		Reason:         p[34],
+	}, nil
+}
+
 // ─── Command builders ────────────────────────────────────────────────
 
 func CmdSdInit(speedMHz byte) []byte {
@@ -267,6 +356,9 @@ func CmdFileUploadData(seq uint16, chunk []byte) []byte {
 }
 func CmdFileUploadEnd() []byte    { return protocol.BuildPacket(FileUploadEnd, nil, 0) }
 func CmdFileUploadCancel() []byte { return protocol.BuildPacket(FileUploadCancel, nil, 0) }
+func CmdFileUploadDiagReq() []byte {
+	return protocol.BuildPacket(FileUploadDiagReq, nil, 0)
+}
 
 // ─── Name registration ───────────────────────────────────────────────
 
@@ -286,6 +378,8 @@ func init() {
 		FileUploadData:     "FILE_UPLOAD_DATA",
 		FileUploadEnd:      "FILE_UPLOAD_END",
 		FileUploadCancel:   "FILE_UPLOAD_CANCEL",
+		FileUploadDiagReq:  "FILE_UPLOAD_DIAG_REQ",
+		FileUploadDiagResp: "FILE_UPLOAD_DIAG_RESP",
 		FileTree:           "FILE_TREE",
 		FileUploadProgress: "FILE_UPLOAD_PROGRESS",
 	})

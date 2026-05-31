@@ -101,6 +101,50 @@ func (s *Storage) FlashStatus() (FlashStatus, error) {
 	return storage.DecodeFlashStatus(resp.Payload)
 }
 
+// UploadDiag is the decoded post-mortem of the last/active upload.
+type UploadDiag = storage.UploadDiag
+
+// UploadReasonName renders an upload-end reason code (UploadDiag.Reason).
+func UploadReasonName(r uint8) string { return storage.ReasonName(r) }
+
+// UploadDiag pulls the firmware's diagnostics snapshot for the most recent (or
+// active) upload — SD write latencies, segment progress, abort reason. Safe to
+// call any time the wire is in COBS mode (i.e. NOT mid raw-stream); the stats
+// survive until the next upload begins, so it works right after a failure.
+func (s *Storage) UploadDiag() (UploadDiag, error) {
+	resp, err := s.c.sendForResp(storage.CmdFileUploadDiagReq(), storage.FileUploadDiagResp)
+	if err != nil {
+		return UploadDiag{}, err
+	}
+	return storage.DecodeUploadDiag(resp.Payload)
+}
+
+// uploadDiagSummary fetches the firmware upload post-mortem and renders a short
+// multi-line summary suitable for embedding in an error (so it surfaces in BOTH
+// the CLI and the Studio console, which echo the error verbatim).  Best-effort:
+// a brief settle wait lets the firmware finish an in-flight SD write + process
+// the cancel before it can answer the query.  Returns "" if unavailable.
+func (s *Storage) uploadDiagSummary() string {
+	time.Sleep(500 * time.Millisecond)
+	d, err := s.UploadDiag()
+	if err != nil {
+		return fmt.Sprintf("\n  (upload diagnostics unavailable: %v)", err)
+	}
+	out := "\n  ── upload diagnostics ──" +
+		fmt.Sprintf("\n    ended:     %s", storage.ReasonName(d.Reason)) +
+		fmt.Sprintf("\n    progress:  %d/%d bytes, seg %d/%d, ring fill %d%%",
+			d.BytesRecv, d.ExpectedSize, d.SegIndex, d.SegCount, d.FillPct) +
+		fmt.Sprintf("\n    SD writes: %d writes, %d KB, avg %d ms, MAX %d ms, total I/O %d ms",
+			d.SdWriteCount, d.SdBytesWritten/1024, d.SdAvgLatMs(), d.SdMaxLatMs, d.SdTotalStallMs) +
+		fmt.Sprintf("\n    max loop gap: %d ms", d.MaxLoopGapMs)
+	if d.SdMaxLatMs >= 1000 {
+		out += fmt.Sprintf("\n    ⚠ a single SD write took %.1fs — the card (or its wiring) "+
+			"is stalling; try another card / reformat / check SDIO signal integrity",
+			float64(d.SdMaxLatMs)/1000)
+	}
+	return out
+}
+
 // ─── File ops ────────────────────────────────────────────────────────
 
 // FileInfo returns metadata for the path (exists / dir / size).
@@ -402,19 +446,38 @@ func (s *Storage) uploadStream(data []byte, opt UploadOptions) (UploadResult, er
 		}
 		s.c.conn.FlushOutput()
 
+		// Segment-ACK deadline.  A single segment's firmware-side write can stall
+		// for several seconds when the SD card does internal GC / wear-levelling
+		// (more frequent tens of MB into a large file).  The firmware no longer
+		// self-aborts on a slow-but-healthy write (it re-stamps its inactivity
+		// timer after each flush), but the client must still wait long enough to
+		// cover a worst-case card stall — 15 s was too tight for an 86 MB upload
+		// (died at a random ~30 MB).  30 s gives margin; a slow segment logs a
+		// warning so a degrading card is visible before it fails outright.
+		segWait := time.Now()
 		select {
 		case ack := <-progressCh:
+			if waited := time.Since(segWait); waited > 5*time.Second && s.c.conn != nil {
+				fmt.Printf("  ⚠ slow upload segment: ACK took %.1fs at %d/%d bytes\n",
+					waited.Seconds(), sent, total)
+			}
 			if len(ack.Payload) >= 7 {
 				fill := int(ack.Payload[6])
 				if fill > 50 {
 					time.Sleep(time.Duration(fill-50) * 60 * time.Millisecond / 1)
 				}
 			}
-		case <-time.After(15 * time.Second):
+		case <-time.After(30 * time.Second):
 			s.c.conn.SetStreamPhase(false)
 			_ = s.c.conn.Send(storage.CmdFileUploadCancel())
+			// Embed the firmware's post-mortem in the error so the operator can
+			// SEE the cause (SD write latencies are invisible during the stream —
+			// raw mode can't emit log packets over the wire).  The error is echoed
+			// verbatim by both the CLI and the Studio console.
+			diag := s.uploadDiagSummary()
 			return UploadResult{BytesSent: sent, Mode: UploadStream},
-				fmt.Errorf("stream timeout waiting for segment ACK")
+				fmt.Errorf("stream timeout waiting for segment ACK (@%d/%d bytes, "+
+					"SD write stalled > 30s)%s", sent, total, diag)
 		}
 	}
 

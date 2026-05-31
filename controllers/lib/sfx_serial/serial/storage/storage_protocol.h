@@ -52,6 +52,21 @@ namespace StoragePacket {
     constexpr uint8_t FILE_UPLOAD_END     = 0xA2;
     constexpr uint8_t FILE_UPLOAD_CANCEL  = 0xA3;
 
+    // Upload diagnostics (0xA4/0xA5) — post-mortem of the last (or active)
+    // upload.  Query any time AFTER the raw-stream phase (the firmware is in
+    // COBS mode again) to see why a transfer stalled: SD write latencies, loop
+    // gap, segment progress, abort reason.  The stats survive cleanupUpload()
+    // until the next FILE_UPLOAD_BEGIN, so a client that hit a segment-ACK
+    // timeout can pull the smoking gun (e.g. a single 16 KB SD write that took
+    // 30 s on a flaky card) it could never see live (stream mode can't emit
+    // COBS log packets — they only reach the native USB-JTAG console).
+    constexpr uint8_t FILE_UPLOAD_DIAG_REQ  = 0xA4;  ///< [] → FILE_UPLOAD_DIAG_RESP
+    constexpr uint8_t FILE_UPLOAD_DIAG_RESP = 0xA5;
+    ///< [bytesRecv:u32LE][expectedSize:u32LE][segIndex:u16LE][segCount:u16LE]
+    ///< [fillPct:u8][sdWriteCount:u32LE][sdBytesWritten:u32LE][sdMaxLat_ms:u32LE]
+    ///< [sdTotalStall_ms:u32LE][maxLoopGap_ms:u32LE][flags:u8][abortReason:u8]
+    ///< (flags bit0=uploadActive bit1=streamActive) — 35 bytes
+
     // File tree (0xA9)
     constexpr uint8_t FILE_TREE           = 0xA9;  ///< [pathLen:u8][path:str][target:u8?] → STREAM
 
@@ -83,6 +98,21 @@ namespace StorageWire {
         constexpr uint8_t NONE    = 0x00;
         constexpr uint8_t PARENTS = 0x01;     ///< mkdir -p (idempotent)
     }
+
+    // Why the most-recent upload ended — reported in FILE_UPLOAD_DIAG_RESP's
+    // abortReason byte.  ACTIVE/COMPLETED are the healthy states; the rest tell
+    // a stalled-upload post-mortem apart (a >30 s SD write self-evident from
+    // sdMaxLat_ms; an INACTIVITY abort means the client genuinely went silent).
+    enum UploadEndReason : uint8_t {
+        REASON_NONE        = 0,  ///< no upload has run since boot
+        REASON_ACTIVE      = 1,  ///< an upload is in progress right now
+        REASON_COMPLETED   = 2,  ///< finished + MD5-verified OK
+        REASON_INACTIVITY  = 3,  ///< checkUploadTimeout() fired (client silent)
+        REASON_FLUSH_FAIL  = 4,  ///< SD/flash write returned short/error
+        REASON_HEALTH      = 5,  ///< policy health check aborted the stream
+        REASON_CLIENT_CANCEL = 6,///< FILE_UPLOAD_CANCEL received
+        REASON_STALE_RESET = 7,  ///< superseded by a fresh UPLOAD_BEGIN
+    };
 }
 
 // ============================================================================

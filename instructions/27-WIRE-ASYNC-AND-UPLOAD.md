@@ -126,6 +126,32 @@ device is not actually dead, it just can't accept a **same-target** storage op
 (those NACK `UPLOAD_IN_PROGRESS` before touching the lock, so no deadlock). The
 30 s wedge was the perception bug the recovery paths above fix.
 
+### 6. Stream-upload diagnostics are post-mortem, not live (Rule 57)
+
+During a raw-stream upload the firmware is in byte-stream mode and **cannot emit
+COBS log packets over the wire** — the rich per-segment `STORAGE_LOG` stats
+(`sd_rate`, `sd_maxlat`, loop gap, fill %) only reach the **native USB-Serial-JTAG
+console**, never the CH343/Studio wire. So when a large upload stalls, the
+operator on the wire sees only a bare "stream timeout" with no cause.
+
+`FILE_UPLOAD_DIAG_REQ/RESP` (`0xA4/0xA5`) closes that gap. The firmware freezes a
+diagnostics snapshot — bytes received, segment progress, ring fill, and the SD
+**writer stats (write count, bytes, avg/MAX latency, total I/O)** plus an
+`UploadEndReason` — at every terminal point (`captureUploadDiag()` in
+`handleUploadEnd` / `checkUploadTimeout` / cancel / flush-fail / health / stale-
+reset), BEFORE `cleanupUpload()` resets the policy's stats. The snapshot survives
+until the next `FILE_UPLOAD_BEGIN`, so the client queries it **after** the wire is
+back in COBS mode. `uploadStream`'s timeout path auto-fetches it and embeds a
+summary in the returned error (echoed by both the CLI and the Studio console);
+Studio also exposes `FsUploadDiag()` for on-demand queries.
+
+The smoking gun is `sdMaxLat_ms`: a single 16 KB SD write taking multiple seconds
+(GC / wear-levelling / a flaky card) is what blows the client's 30 s segment-ACK
+deadline — no firmware change makes that write acceptable, but the diag tells you
+it's the card, not the protocol. (The firmware no longer *self*-aborts on a slow-
+but-healthy write — `processStream` re-stamps `_uploadLastActivity_ms` AFTER each
+flush so the inactivity timer measures client silence, not our own write latency.)
+
 ## Checklist for any new long/raw wire operation
 
 - Does it put the firmware in a non-COBS / exclusive mode? → hold the wire

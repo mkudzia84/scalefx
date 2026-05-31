@@ -137,6 +137,38 @@ func (a *App) FsStorageStatus() (FsStorageStatus, error) {
 	return out, nil
 }
 
+// FsUploadDiag pulls the firmware's post-mortem of the last (or active) upload
+// and echoes it to the console — SD write latencies, segment progress, abort
+// reason.  Use it after a failed upload to see WHY a transfer stalled (the SD
+// write stats are invisible during a stream; raw mode can't emit log packets).
+func (a *App) FsUploadDiag() (client.UploadDiag, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.echoCommand("upload-diag")
+	if a.c == nil {
+		a.echoError("not connected")
+		return client.UploadDiag{}, fmt.Errorf("not connected")
+	}
+	d, err := a.c.Storage.UploadDiag()
+	if err != nil {
+		a.echoError("upload-diag failed: %v", err)
+		return client.UploadDiag{}, err
+	}
+	a.echoOutput(fmt.Sprintf("upload ended: %s", client.UploadReasonName(d.Reason)))
+	a.echoOutput(fmt.Sprintf("progress: %d/%d bytes, seg %d/%d, ring fill %d%%",
+		d.BytesRecv, d.ExpectedSize, d.SegIndex, d.SegCount, d.FillPct))
+	a.echoOutput(fmt.Sprintf("SD writes: %d writes, %d KB, avg %d ms, MAX %d ms, total I/O %d ms",
+		d.SdWriteCount, d.SdBytesWritten/1024, d.SdAvgLatMs(), d.SdMaxLatMs, d.SdTotalStallMs))
+	a.echoOutput(fmt.Sprintf("max loop gap: %d ms", d.MaxLoopGapMs))
+	if d.SdMaxLatMs >= 1000 {
+		a.echoError("a single SD write took %.1fs — the card (or its wiring) is stalling; "+
+			"try another card / reformat / check SDIO signal integrity",
+			float64(d.SdMaxLatMs)/1000)
+	}
+	return d, nil
+}
+
 // DeviceCapabilities returns the bitmask the board advertised in IDENTIFY.
 func (a *App) DeviceCapabilities() uint32 {
 	a.mu.Lock()

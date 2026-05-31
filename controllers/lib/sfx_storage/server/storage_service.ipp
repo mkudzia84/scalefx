@@ -92,6 +92,10 @@ CommandHandleResult StorageServicePolicy<TPolicy>::handle(
             handleUploadCancel();
             return CommandHandleResult::Handled;
 
+        case StoragePacket::FILE_UPLOAD_DIAG_REQ:
+            handleUploadDiagReq();
+            return CommandHandleResult::Handled;
+
         default:
             return CommandHandleResult::NotMyCommand;
     }
@@ -471,6 +475,7 @@ void StorageServicePolicy<TPolicy>::handleUploadBegin(const uint8_t* payload, si
                     (unsigned long)_uploadBytesWritten,
                     (unsigned long)_uploadExpectedSize,
                     (unsigned long)(SFX_MILLIS() - _uploadLastActivity_ms));
+        captureUploadDiag(StorageWire::REASON_STALE_RESET);
         cleanupUpload(true);
     }
 
@@ -837,6 +842,10 @@ void StorageServicePolicy<TPolicy>::handleUploadEnd() {
 
     _uploadActive = false;
     _streamActive = false;
+    // Snapshot the healthy-completion stats too, so a DIAG query right after a
+    // successful upload still shows the SD write profile (max latency, etc.)
+    // — captured before freeUploadBuffers()/the next BEGIN clears them.
+    captureUploadDiag(StorageWire::REASON_COMPLETED);
     _policy.freeUploadBuffers();
 
     // Resume resources suspended for the duration of the upload
@@ -869,6 +878,7 @@ void StorageServicePolicy<TPolicy>::handleUploadCancel() {
                 (unsigned long)_uploadBytesWritten,
                 (unsigned long)_uploadExpectedSize);
 
+    captureUploadDiag(StorageWire::REASON_CLIENT_CANCEL);
     cleanupUpload(true);
     sendAck();
 }
@@ -907,6 +917,7 @@ void StorageServicePolicy<TPolicy>::processStream() {
                     (unsigned long)_uploadBytesWritten,
                     (unsigned long)_uploadExpectedSize);
         _streamActive = false;
+        captureUploadDiag(StorageWire::REASON_HEALTH);
         // Drain incoming raw bytes so COBS parser doesn't see garbage
         while (serial()->available()) serial()->read();
         cleanupUpload(true);
@@ -950,10 +961,23 @@ void StorageServicePolicy<TPolicy>::processStream() {
                     (unsigned long)_uploadExpectedSize,
                     _policy.bufferFillPercent());
         _streamActive = false;
+        captureUploadDiag(StorageWire::REASON_FLUSH_FAIL);
         while (serial()->available()) serial()->read();
         cleanupUpload(true);
         return;
     }
+
+    // Hardening (2026-05-31): the inactivity timer measures *the client going
+    // silent*, NOT how long our own SD/flash flush took.  onUploadBufferFull()
+    // above is a SYNCHRONOUS write that can stall multiple seconds when the SD
+    // card does internal GC / wear-levelling (typically tens of MB into a large
+    // file).  Because _uploadLastActivity_ms was stamped at the TOP of this call
+    // (before the read+flush), a flush longer than STREAM_INACTIVITY_MS would
+    // make the very next checkUploadTimeout() abort our OWN healthy upload — the
+    // client, still streaming, then waits out its 15 s segment-ACK deadline and
+    // reports "stream timeout" (observed: 86 MB upload dying at a random ~30 MB).
+    // Re-stamp AFTER the flush so the timer only counts genuine client silence.
+    if (needFlush) _uploadLastActivity_ms = SFX_MILLIS();
 
     // Periodic progress logging (every ~2 seconds)
     if (now - _streamLastLogTime_ms >= 2000) {
@@ -1085,6 +1109,59 @@ void StorageServicePolicy<TPolicy>::cleanupUpload(bool deletePartial) {
     notifyTransferEnd();
 }
 
+// ============================================================================
+// Upload Diagnostics (FILE_UPLOAD_DIAG)
+// ============================================================================
+
+template <typename TPolicy>
+void StorageServicePolicy<TPolicy>::captureUploadDiag(uint8_t reason) {
+    // Snapshot stream progress + the policy's SD writer stats BEFORE
+    // cleanupUpload() runs (the next BEGIN's onUploadActivated() zeroes them).
+    // This is the only way a client that timed out waiting for a segment ACK
+    // can see the SD write latency that caused it — the stream phase can't emit
+    // COBS log packets over the wire.
+    auto ws = _policy.writerStats();
+    _diag.bytesRecv       = _uploadBytesWritten;
+    _diag.expectedSize    = _uploadExpectedSize;
+    _diag.segIndex        = _streamSegmentIndex;
+    _diag.segCount        = _streamSegmentCount;
+    _diag.fillPct         = _policy.bufferFillPercent();
+    _diag.sdWriteCount    = ws.writeCount;
+    _diag.sdBytesWritten  = ws.bytesWritten;
+    _diag.sdMaxLat_ms     = ws.maxWriteLatency_ms;
+    _diag.sdTotalStall_ms = ws.totalStallTime_ms;
+    _diag.maxLoopGap_ms   = _streamMaxGap_ms;
+    _diag.flags           = (_uploadActive ? 0x01 : 0x00)
+                          | (_streamActive ? 0x02 : 0x00);
+    _diag.reason          = reason;
+}
+
+template <typename TPolicy>
+void StorageServicePolicy<TPolicy>::handleUploadDiagReq() {
+    // If an upload is in progress (shouldn't normally be — the wire is in raw
+    // mode then, so this only reaches us between/around transfers), refresh the
+    // live numbers first so the snapshot is current.
+    if (_uploadActive) {
+        captureUploadDiag(StorageWire::REASON_ACTIVE);
+    }
+
+    uint8_t buf[35];
+    SfxWire::putU32LE(&buf[0],  _diag.bytesRecv);
+    SfxWire::putU32LE(&buf[4],  _diag.expectedSize);
+    SfxWire::putU16LE(&buf[8],  _diag.segIndex);
+    SfxWire::putU16LE(&buf[10], _diag.segCount);
+    buf[12] = _diag.fillPct;
+    SfxWire::putU32LE(&buf[13], _diag.sdWriteCount);
+    SfxWire::putU32LE(&buf[17], _diag.sdBytesWritten);
+    SfxWire::putU32LE(&buf[21], _diag.sdMaxLat_ms);
+    SfxWire::putU32LE(&buf[25], _diag.sdTotalStall_ms);
+    SfxWire::putU32LE(&buf[29], _diag.maxLoopGap_ms);
+    buf[33] = _diag.flags;
+    buf[34] = _diag.reason;
+
+    sendRawPacket(StoragePacket::FILE_UPLOAD_DIAG_RESP, currentTag(), buf, sizeof(buf));
+}
+
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::cancelActiveUpload() {
     if (_uploadActive) {
@@ -1117,6 +1194,7 @@ void StorageServicePolicy<TPolicy>::checkUploadTimeout() {
                     _streamActive ? "yes" : "no",
                     _streamSegmentIndex, _streamSegmentCount,
                     _policy.bufferFillPercent());
+        captureUploadDiag(StorageWire::REASON_INACTIVITY);
         cleanupUpload(true);
     }
 }
