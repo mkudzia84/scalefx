@@ -442,6 +442,16 @@ func (a *App) installWireLogger() {
 		return
 	}
 	a.c.Conn().SetWireLogger(func(dir, name string, tag byte, payloadLen int) {
+		if dir == "COLLIDE" {
+			// A COBS packet hit the wire mid-stream-upload — it corrupts the
+			// file.  Surface loudly with the offending packet so the culprit
+			// (status poll / keepalive / telemetry) is obvious.
+			a.diag.With(LvlWarn, "WIRE-COLLISION",
+				fmt.Sprintf("%s tag=%d [%d bytes] sent DURING stream upload (corrupts file)",
+					name, tag, payloadLen),
+				nil)
+			return
+		}
 		a.diag.With(LvlDebug, "WIRE",
 			fmt.Sprintf("%s %s tag=%d [%d bytes]", dir, name, tag, payloadLen),
 			nil)

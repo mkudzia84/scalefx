@@ -90,6 +90,13 @@ type Connection struct {
 	asyncCB    AsyncCallback
 	wireLogger WireLogger // optional per-packet trace; nil = legacy stdout printf path
 
+	// Stream-upload phase: set true while a raw stream-upload segment burst is
+	// in flight.  During this window the firmware reads RAW bytes (no COBS
+	// dispatch), so ANY other COBS packet written to the wire is swallowed as
+	// file data and corrupts the upload.  Send() logs such collisions via the
+	// wireLogger ("COLLIDE") so a stray status poll / keepalive is visible.
+	streamActive atomic.Bool
+
 	// Port-loss detection: set once when a persistent I/O error occurs
 	portDead    atomic.Bool
 	OnPortError func() // called once when port-loss is detected
@@ -131,6 +138,7 @@ type statCounters struct {
 	asyncCBMax   atomic.Uint64 // worst single asyncCB ns
 	asyncDropped atomic.Uint64 // async frames dropped on queue overflow (slow consumer)
 	dispatchMax  atomic.Uint64 // worst single dispatchResponse ns (reader stall proxy)
+	collisions   atomic.Uint64 // COBS packets written while a stream upload was active
 }
 
 // LinkStats is a point-in-time snapshot of the link instrumentation.
@@ -208,6 +216,15 @@ func (c *Connection) Verbose() bool { return c.verbose }
 
 // SetVerbose updates the verbose flag.
 func (c *Connection) SetVerbose(v bool) { c.verbose = v }
+
+// SetStreamPhase marks the start/end of a raw stream-upload segment burst.
+// While set, Send() logs any COBS packet written to the wire as a "COLLIDE"
+// trace (it would be swallowed as upload data and corrupt the file).
+func (c *Connection) SetStreamPhase(active bool) { c.streamActive.Store(active) }
+
+// Collisions returns the number of COBS packets written while a stream-upload
+// phase was active (0 = clean; >0 means a background sender corrupted it).
+func (c *Connection) Collisions() uint64 { return c.stat.collisions.Load() }
 
 // SetWireLogger installs a per-packet trace callback (TX + RX).  Pass
 // nil to fall back to the legacy stdout printf trace.  Calls are
@@ -321,6 +338,26 @@ func (c *Connection) Send(data []byte) error {
 
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+
+	// Wire-collision instrumentation: a COBS packet being written while a raw
+	// stream upload is mid-flight WILL corrupt the upload (the firmware reads
+	// these bytes as file data).  Log it loudly with the offending type — this
+	// is how a background status poll / keepalive that breaks Studio uploads
+	// surfaces.  Fires regardless of the verbose flag.
+	if c.streamActive.Load() {
+		ptype, tag, payload, ok := ParsePacket(data)
+		name := "UNKNOWN"
+		if ok {
+			name = PacketTypeName(ptype)
+		}
+		if c.wireLogger != nil {
+			c.wireLogger("COLLIDE", name, tag, len(payload))
+		} else {
+			fmt.Printf("  ⚠ WIRE COLLISION during stream upload: %s tag=%d [%d bytes]\n",
+				name, tag, len(payload))
+		}
+		c.stat.collisions.Add(1)
+	}
 
 	if c.verbose {
 		ptype, tag, payload, ok := ParsePacket(data)
