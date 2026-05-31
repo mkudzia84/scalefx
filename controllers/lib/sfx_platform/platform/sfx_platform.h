@@ -184,21 +184,12 @@
 #endif
 
 // ============================================================================
-//  SERVO — Platform-Specific Include
+//  SERVO — see ports/sfx_servo.h
 // ============================================================================
 //
-//  Arduino-Pico uses <Servo.h> (PIO-based).
-//  ESP32 uses <ESP32Servo.h> (LEDC-based). API is compatible.
-
-#if SFX_PLATFORM_PICO
-    #include <Servo.h>
-#elif SFX_PLATFORM_ESP32
-    // ESP32Servo pulls in deprecated driver/mcpwm.h — suppress the warning
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wcpp"
-    #include <ESP32Servo.h>
-    #pragma GCC diagnostic pop
-#endif
+//  The servo backend (ESP32 MCPWM / Pico PIO) is selected in
+//  sfx_peripherals/ports/sfx_servo.h, NOT here — the platform header no longer
+//  pulls a servo library (ESP32Servo dropped in the Arduino-removal work).
 
 // ============================================================================
 //  INTERRUPT — Portable attachInterrupt with Parameter

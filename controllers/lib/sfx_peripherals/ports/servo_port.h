@@ -9,9 +9,9 @@
  * `ServoActuatorRole` one layer above.
  *
  * Driver shipped here:
- *   - `MicroservoPort` — Arduino `Servo` library on one MCU pin
- *                        (Pico: PIO; ESP32: LEDC; both via sfx_platform's
- *                        cross-platform `Servo` include).
+ *   - `MicroservoPort` — native servo pulse train on one MCU pin via
+ *                        `ServoDriver` (ESP32: MCPWM; Pico: Arduino-Pico PIO),
+ *                        selected in sfx_servo.h.
  *
  * For pulse-stream inputs (RC PWM, PPM, SBUS, Jeti EX), use
  * `InputPort` from `input_port.h` instead.
@@ -20,10 +20,9 @@
 #ifndef SFX_PERIPHERAL_SERVO_PORT_H
 #define SFX_PERIPHERAL_SERVO_PORT_H
 
-#include <Arduino.h>
 #include <cstdint>
 
-#include <platform/sfx_platform.h>   // pulls in <Servo.h> or <ESP32Servo.h>
+#include "sfx_servo.h"   // sfx_peripherals::ServoDriver (MCPWM / PIO)
 
 namespace sfx_peripherals {
 
@@ -86,11 +85,11 @@ public:
     uint16_t maxMicroseconds() const override { return _maxUs; }
 
 private:
-    int      _pin;
-    uint16_t _minUs;
-    uint16_t _maxUs;
-    uint16_t _us;
-    Servo    _servo;
+    int          _pin;
+    uint16_t     _minUs;
+    uint16_t     _maxUs;
+    uint16_t     _us;
+    ServoDriver  _servo;
 };
 
 }  // namespace sfx_peripherals
