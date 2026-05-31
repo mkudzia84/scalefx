@@ -339,16 +339,25 @@
     // helper was retired when the dialog replaced ServoProfileEditor
     // (Rule 44 refresh, 2026-05-24).
     type ProfileT = { minUs: number; maxUs: number; centerUs: number; reversed: boolean; maxSpeedUsPerSec: number; maxAccelUsPerSec2: number; maxJerkUsPerSec3: number }
-    function profileForPort(port: PortRefT): ProfileT | null {
-        if (!port || !port.kind) return null
-        const k = `${port.guid}|${port.kind}|${port.idx}`
-        for (const p of $deviceModel.ports) {
-            if (`${p.ref.guid}|${p.kindName}|${p.ref.index}` === k && p.profile) {
-                return { ...p.profile }
+    // Reactive factory (same trap as makeLiveUsFor below): a plain function
+    // that reads `$deviceModel` INTERNALLY is invisible to Svelte, so
+    // `{profileForPort(...)}` would never re-evaluate after a Calibrate→Save
+    // updates the model — the summary + ServoIoWidget would freeze on the old
+    // profile. Rebuilding the closure whenever `$deviceModel` changes makes
+    // every call site re-run and pick up the saved profile.
+    function makeProfileForPort(dm: typeof $deviceModel) {
+        return (port: PortRefT): ProfileT | null => {
+            if (!port || !port.kind) return null
+            const k = `${port.guid}|${port.kind}|${port.idx}`
+            for (const p of dm.ports) {
+                if (`${p.ref.guid}|${p.kindName}|${p.ref.index}` === k && p.profile) {
+                    return { ...p.profile }
+                }
             }
+            return null
         }
-        return null
     }
+    $: profileForPort = makeProfileForPort($deviceModel)
 
 
     // ── Live µs lookup from a named channel (Rule 43 + 36) ─────────────

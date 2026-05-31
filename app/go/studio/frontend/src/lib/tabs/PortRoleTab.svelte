@@ -140,7 +140,10 @@
                                 portKind={pk}
                                 portIdx={p.ref.index}
                                 roleKind={p.roleKind}
-                                portRailMv={p.voltageMv} />
+                                portRailMv={p.voltageMv}
+                                portGuid={p.ref.guid}
+                                portLabel={`${p.boardName} · ${p.name || p.hardwareName}`}
+                                profile={p.profile ?? null} />
                         {/if}
                     {/if}
                 {/each}

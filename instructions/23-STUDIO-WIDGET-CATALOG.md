@@ -473,12 +473,22 @@ Full walkthrough:
 **Rule 42 storage + Rule 44 editing surface:** the profile DATA lives
 in `/hubfx.yaml`'s `ports[]` block (canonical, per-port, because it's
 a property of the physical servo — min/max are mechanical end-stops,
-speed/accel match the servo's spec sheet).  The EDITING surface is
-embedded **inline in the feature panel** (GunFx Turret section, future
-EngineFx servo binding, …) so operators tune the servo where they set
-the feature.  The IO tab's `PortRoleConfig.svelte` does **not** show
-the calibrate affordance — that would create a duplicate authoring
-surface for the same data.
+speed/accel match the servo's spec sheet).  The EDITING surface is the
+same shared `ServoWidget` in two places, both opening the same dialog
+and persisting via the same `SetPortProfile` path (no duplicate data):
+- **Feature panels** (GunFx Turret section, future EngineFx servo
+  binding) — tune the servo where you wire the feature.
+- **The IO tab** (`PortRoleConfig.svelte`, under each servo port's
+  `⚙ Tune` expander) — calibrate a servo at the port even before it's
+  bound to any effect.  Added 2026-06-01.
+
+> ⚠️ **Reactivity:** a panel that feeds `ServoWidget` via a helper like
+> `profileForPort(port)` MUST make that helper reactive on `$deviceModel`
+> (rebuild the closure in a `$:` block — the `makeLiveUsFor` pattern), or
+> the summary freezes on the pre-Save profile after a Calibrate→Save.
+> A plain function that reads `$deviceModel` *inside its body* is invisible
+> to Svelte. The IO tab is safe because it reads `p.profile` straight from
+> the `{#each $deviceModel.ports}` it already iterates.
 
 > The old inline `ServoProfileEditor.svelte` (a sectioned min/max/
 > speed/accel/jerk form) was **retired** (2026-05-24).  The feature row

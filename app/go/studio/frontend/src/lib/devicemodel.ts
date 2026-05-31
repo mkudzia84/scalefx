@@ -59,6 +59,14 @@ export interface Port {
     hardwareName: string
     allowedRoles: RoleOption[]
     name: string
+    /** Servo motion profile (Rule 42/44) — present only on servo ports
+     *  that have an authored profile in /hubfx.yaml.  Mirrors the Go
+     *  `devicemodel.ServoMotionProfile` json shape. Overlaid by the
+     *  backend from the studio's portProfiles map. */
+    profile?: {
+        minUs: number; maxUs: number; centerUs: number; reversed: boolean
+        maxSpeedUsPerSec: number; maxAccelUsPerSec2: number; maxJerkUsPerSec3: number
+    }
 }
 
 /** formatPortRail renders a port's voltageMv as a human label for

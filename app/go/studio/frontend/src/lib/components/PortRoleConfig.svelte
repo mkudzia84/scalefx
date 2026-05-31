@@ -1,14 +1,15 @@
 <!-- ScaleFX Studio — port-role inline config editor.
 
-     Rule 44 (supersedes Rule 42 for servos): servo motion profile is
-     now configured INLINE with the feature (GunFx panel embeds
-     ServoProfileEditor next to each axis binding).  This component is
-     therefore HEATER + DC-MOTOR ONLY — element voltage scaling stays
-     on the role layer because it's a hardware fact (the element's
-     rated mV), not a per-effect preference.
+     Servo motion profile: per Rule 44 the canonical store is per-port in
+     /hubfx.yaml, and the deep edit surface is the popup ServoCalibrationDialog.
+     The dialog is reachable BOTH from the feature panels (GunFx Turret) AND
+     here on the IO tab (operators calibrate a servo at the port even before
+     it's wired to an effect) — this branch renders the shared ServoWidget
+     (⚙ Calibrate… + ↔ Reversed), same component + wire path as the feature
+     panels (SetPortProfile → live push + /hubfx.yaml dirty).
 
-     Servo ports get an empty body (the IO tab still shows port + role
-     + name in PortRoleTab.svelte; the motion-profile editor moved).
+     Heater + DC-motor get element voltage scaling here (a hardware fact —
+     the element's rated mV — not a per-effect preference).
 
      Live tuning: every input is debounced ~350 ms and pushed via the
      role-layer live-tune commands (`MotorSetElement` / `HeaterSetElement`).
@@ -19,10 +20,13 @@
      through Topology in a future pass.
 
      Props:
-       portKind  — 'servo' | 'pwm' (servo just renders the empty hint)
+       portKind  — 'servo' | 'pwm'
        portIdx   — 0-based port index
        roleKind  — current attached role (drives which editor renders)
        portRailMv — Studio-side rail voltage (display only)
+       portGuid  — port's board GUID (hub-local ports carry the hub GUID)
+       portLabel — human header for the calibration popup
+       profile   — current servo motion profile from $deviceModel.ports[i].profile
 -->
 <script lang="ts">
     import { onMount } from 'svelte'
@@ -31,11 +35,16 @@
         HeaterGetElement, HeaterSetElement,
     } from '../../../wailsjs/go/main/App'
     import { RoleKind, formatPortRail } from '../devicemodel'
+    import ServoWidget from './ServoWidget.svelte'
+    import type { ServoProfileT } from '../servo_calibration'
 
     export let portKind: 'servo' | 'pwm'
     export let portIdx: number
     export let roleKind: number
     export let portRailMv: number = 0
+    export let portGuid: string = ''
+    export let portLabel: string = ''
+    export let profile: ServoProfileT | null = null
 
     type MotorEl = { elementMv: number; scaling: number; portRailMv: number }
     type HeaterEl = { elementMv: number; scaling: number; drivePct: number; hystCx10: number; portRailMv: number }
@@ -88,13 +97,16 @@
     {:else if error}
         <div class="err">⚠ {error}</div>
     {:else if portKind === 'servo' && kind === RoleKind.ServoActuator}
-        <!-- Rule 44 — servo motion profile moved to the feature panel
-             (GunFx Turret section, EngineFx servo binding, …).  Nothing
-             to configure here. -->
-        <div class="empty">
-            Servo motion profile (min / max / center / speed / accel / jerk)
-            is set on the <b>feature panel</b> that uses this servo — Rule 44.
+        <!-- Rule 44 — servo motion profile is per-port in /hubfx.yaml.
+             Calibrate it here OR on the feature panel; both open the same
+             ServoCalibrationDialog and persist via SetPortProfile. -->
+        <div class="servo-row">
+            <ServoWidget
+                port={{ board: '', guid: portGuid, kind: 'servo', idx: portIdx }}
+                profile={profile}
+                portLabel={portLabel || `Servo idx ${portIdx}`} />
         </div>
+        <div class="rule-pointer">Rule 44 — limits / speed / accel / jerk live in /hubfx.yaml; Calibrate jogs live + pushes to the role.</div>
 
     {:else if portKind === 'pwm' && kind === RoleKind.DcMotor}
         <div class="cfg-grid element-grid">
@@ -151,6 +163,7 @@
     .loading { font-style: italic; color: var(--text-dim); font-size: 11px; }
     .err { color: var(--error); font-size: 11px; padding: 4px 0; }
     .empty { font-style: italic; color: var(--text-dim); font-size: 11px; line-height: 1.5; }
+    .servo-row { display: flex; align-items: center; padding: 2px 0 4px; }
 
     .cfg-grid { display: grid; gap: 6px 12px; }
     .element-grid { grid-template-columns: repeat(3, 1fr); }
