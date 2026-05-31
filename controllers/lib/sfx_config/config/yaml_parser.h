@@ -52,6 +52,8 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <cstdint>                   // int32_t/uint32_t/uint8_t (was transitive via <Arduino.h>)
+#include <cstdio>                    // snprintf (was transitive via <Arduino.h>)
 #include <platform/sfx_platform.h>   // sfxPsramCalloc / sfxPsramFree
 
 // ============================================================================
