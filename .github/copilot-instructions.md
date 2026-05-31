@@ -162,34 +162,33 @@ float v = monitor.busVoltage_mV();     // unambiguous: millivolts
 float i = monitor.current_mA();        // unambiguous: milliamps
 ```
 
-### 6. SfxServer Pattern (Server Controllers)
+### 6. Server Pattern — `BoardServer<...UserPolicies>` (MANDATORY)
 
-All Pico server controllers use `SfxServer` to eliminate boilerplate:
+⚠️ The legacy `SfxServer` / `addModuleHandler()` / `BusServer` / `CommandRouter` /
+`ICommandHandler` shapes were **deleted** — do NOT reintroduce them from old
+examples. Every controller composes its subsystems as a variadic policy pack:
+
 ```cpp
-SfxServer server;
-XxxFxServer xxxfxServer;
+using MyBoard = sfx_core::BoardServer<
+    AudioServicePolicy<Mixer>, StorageServicePolicy<...>, /* …UserPolicies */>;
+MyBoard board;
 
 void setup() {
-    server.begin("XxxFX", FIRMWARE_VERSION, BUILD_NUMBER);
-    server.onInit([]()     { performSafeInit(); });
-    server.onShutdown([]() { performSafeShutdown(); });
-    
-    xxxfxServer.begin(&Serial, server.deviceName());
-    // ... register module callbacks ...
-    server.core().onStatusData([](uint8_t* buf, size_t max) -> size_t { ... });
-    
-    server.addModuleHandler(&xxxfxServer);
+    board.begin(stream, FIRMWARE_VERSION, BUILD_NUMBER, ledPin, errPin);
+    board.policy<StorageService>().bindXxx(...);   // deps that aren't compile-time
+    board.onInit([](mode, flags){ /* hardware activate */ });
+    board.onShutdown([](){ /* safe park */ });
 }
 
-void loop() {
-    server.loop();       // protocol, timeout, indicators
-    updateHardware();    // module-specific work
-    server.indicators().setErrorCondition(hasError);  // optional
-    busy_wait_ms(1);
-}
+void loop() { board.process(); }   // one line
 ```
 
-SfxServer handles: serial init, device naming, indicator LEDs, CoreCommandServer, CommandRouter, connection timeout, free RAM updates.
+`BoardServicePolicy` (lifecycle/INIT/STATUS) and `IndicatorServicePolicy` (status
+LEDs) are prepended automatically — never list them. Capability bits are the OR
+of every policy's `kCapabilityBits`. New protocol-exposed subsystems become new
+`*ServicePolicy` types satisfying the `sfx_core::SystemServicePolicy` concept —
+see **Rule 18**. Reference sketch:
+[controllers/hubfx/esp32s3/src/hubfx_esp32s3.cpp](../controllers/hubfx/esp32s3/src/hubfx_esp32s3.cpp).
 
 ### 7. Component Reuse (MANDATORY)
 

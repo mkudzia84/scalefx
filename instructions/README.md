@@ -424,6 +424,9 @@ Sync_Groups:
 | [08-AUDIOTOOLS.md](08-AUDIOTOOLS.md) | AudioTools library reference (3rd-party, HubFX audio engine) |
 | [09-CONSOLE-OUTPUT.md](09-CONSOLE-OUTPUT.md) | Console output schema for Go CLI |
 | [10-UPLOAD-PROTOCOL-REFACTOR.md](10-UPLOAD-PROTOCOL-REFACTOR.md) | Upload protocol modes (stream, windowed), flow control, ring buffer architecture |
+| [11-LANDING-LIGHT-GROUPS.md](11-LANDING-LIGHT-GROUPS.md) | Landing-light channel-mask group model (`LANDING_LIGHT_BIND` byte 2 = channelMask) |
+| [12-LIGHTFX-MODERNIZATION.md](12-LIGHTFX-MODERNIZATION.md) | LightFX refactor record — battery monitoring, per-board config YAML, UI redesign (landed 2026-05) |
+| [13-PASSTHROUGH-ROUTING.md](13-PASSTHROUGH-ROUTING.md) | Hub pass-through routing by packet-type range; board-prefix CLI disambiguation |
 | [14-ONBOARD-COPROCESSOR.md](14-ONBOARD-COPROCESSOR.md) | On-board UART-attached expander (ESP32-C3 PWM expander pattern, master-bridged flashing) |
 | [15-GENERIC-EXPANDER-REFACTOR.md](15-GENERIC-EXPANDER-REFACTOR.md) | Pivot to generic expander protocol — component collections (servo / PWM / LED), per-board migration plan |
 | [16-EXPANDER-BOARD-DESIGN.md](16-EXPANDER-BOARD-DESIGN.md) | Expander-board design contract — anatomy of a firmware, full core + expander protocol surface, persistence rules, migration recipe |
@@ -432,3 +435,10 @@ Sync_Groups:
 | [19-HUBFX-CONFIG-SCHEMA.md](19-HUBFX-CONFIG-SCHEMA.md) | `/hubfx.yaml` schema — expander aliases (alias→GUID + ports), effect sub-files reference ports by alias |
 | [20-STUDIO-DEVICE-MODEL.md](20-STUDIO-DEVICE-MODEL.md) | Studio's authoritative device model in Go (`devicemodel/`) — port/role/claim semantics, validation, presets |
 | [21-STUDIO-ENGINEFX-PANEL.md](21-STUDIO-ENGINEFX-PANEL.md) | **Reference design for Studio effect tabs** — panel anatomy, channel-setup cluster (bar with threshold marker + hysteresis band), sound rows, validation lattice, dirty-draft state. Cribbed from for any new operational effect tab. |
+| [22-GUNFX-FEATURE-ROLLOUT.md](22-GUNFX-FEATURE-ROLLOUT.md) | GunFX rollout record (LANDED 2026-05-23) — port voltage, effect clock, multi-band ROF, manual/puppet mode, verbose status, role-layer actuators. §0 architecture still authoritative. |
+| [23-STUDIO-WIDGET-CATALOG.md](23-STUDIO-WIDGET-CATALOG.md) | **Start here for Studio UI work** — handbook of every reusable widget pattern with copy-pasteable snippets |
+| [24-COREDUMP-DEBUGGING.md](24-COREDUMP-DEBUGGING.md) | Pull + decode an ESP32-S3 flash coredump (`scalefx-flash coredump hubfx`); the measure-don't-guess discipline for panics |
+| [25-ARDUINO-REMOVAL.md](25-ARDUINO-REMOVAL.md) | Record of the HubFX Arduino→pure-ESP-IDF migration (COMPLETE) — native abstraction map; reference for the future Pico-SDK migration (P8) |
+| [26-CODE-AND-DESIGN-IMPROVEMENTS.md](26-CODE-AND-DESIGN-IMPROVEMENTS.md) | Catalogue of code-quality observations from the arduino-removal audit; most items DONE, remainder are Pico-side follow-ups |
+| [27-WIRE-ASYNC-AND-UPLOAD.md](27-WIRE-ASYNC-AND-UPLOAD.md) | Wire multiplexing discipline (Rules 53–57) — lossy vs flow-control async, stream-upload exclusivity, thread-safe `Connection`, upload diagnostics, UART RX FIFO tuning |
+| [28-IO-FLUSH-DEBUGGING.md](28-IO-FLUSH-DEBUGGING.md) | Methodology for low-level I/O flush bugs — measure each buffer boundary, don't infer; sent ≠ delivered ≠ persisted |

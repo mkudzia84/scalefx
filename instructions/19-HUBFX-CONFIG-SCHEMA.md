@@ -316,16 +316,13 @@ A preset captures the *kind of weapon* — timing, recoil profile, sound
 binding — independent of which airframe it's bolted to. The
 airframe-specific part (port refs, audio channel) stays in `hubfx.yaml`.
 
-> **⚠ TODO — GunFx feature refactor.** The current `GunDef` struct in
-> `gunfx_service.h` mixes airframe-wiring fields (ports, audio_channel)
-> with behaviour fields (flash, recoil, smoke, sound).  The preset
-> pattern below requires splitting `GunDef` into two structs:
-> `GunWiring` (per-airframe, ~6 fields, stays in `hubfx.yaml`) and
-> `GunPreset` (per-weapon-type, ~10 fields, lives in
-> `/gunfx/presets/<Name>.yaml`).  Tracked in [99-HW-TODO.md] →
-> firmware-side: extract `GunPreset`, change
-> `GunFxServicePolicy::configure()` to take both, resolve presets in
-> `HubFxConfigSchema::loadGunPresets()` before applying.
+> **✓ Landed (GunFX Phase 2, 2026-05-23).** The `GunDef` split shipped —
+> `GunWiring` / `GunPreset` / `GunSpec` in
+> [effects/gunfx/gunfx_config.h](../controllers/hubfx/esp32s3/src/effects/gunfx/gunfx_config.h)
+> + `gun_unit.h`, resolved/applied in
+> [config/apply_hubfx_config.h](../controllers/hubfx/esp32s3/src/config/apply_hubfx_config.h).
+> Wiring (port refs, audio channel) stays in `hubfx.yaml`; behaviour lives in the
+> preset. The YAML below reflects the shipped shape.
 
 ```yaml
 # /gunfx/presets/M2Browning.yaml

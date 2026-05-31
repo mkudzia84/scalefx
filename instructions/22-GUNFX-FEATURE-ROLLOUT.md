@@ -1,9 +1,10 @@
-# 22 — GunFX Feature Rollout: Audit + Plan
+# 22 — GunFX Feature Rollout: Audit + Execution Log
 
-> **Status:** Plan, pending sign-off. Do NOT implement until the user
-> approves the phasing. Doc owner: this file is the working spec; once
-> phases land, the implementation notes for each phase get folded back
-> here as `## Phase N — Landed` sections.
+> **Status:** LANDED (2026-05-23). Phases 0–2.9 shipped (foundation + protocol +
+> firmware + roles); Phases 3–4 (Go API + Studio `GunFxPanel.svelte`) shipped too
+> — only the §8 polish items remain deferred. This file is now the **reference
+> record** of the build: §0 architecture is still authoritative, §1 the pre-build
+> audit, §7 the landed-status summary, §8 the open polish follow-ups.
 >
 > Companion to [21-STUDIO-ENGINEFX-PANEL.md](21-STUDIO-ENGINEFX-PANEL.md)
 > (panel-design reference) and Rules 34/35/36
@@ -997,8 +998,8 @@ it without firmware bumps.
 #### Phase 2.9 also resolved one open issue from §8:
 - ~~Issue #4 (`/gunfx.yaml` reload doesn't re-subscribe dispatcher inputs)~~ is unchanged — still a Phase 4 enhancement — but the related concern about the GunFx panel surfacing motion-profile fields is now moot: the profile lives on the port-role row instead. Phase 4 Studio surfaces it there.
 
-### Phase 3 onwards — Pending
-Phase 3 (Go API + Wails bindings refresh — Phase 1's stubs already cover most of it; Phase 3 polish picks up cleanup) and Phase 4 (Studio panel rebuild — Rules 38/39/41 land here) remain open.
+### Phase 3 / Phase 4 — Landed
+Phase 3 (Go API + Wails bindings — [app/go/client/gunfx.go](../app/go/client/gunfx.go), [app/go/protocol/gunfx/gunfx.go](../app/go/protocol/gunfx/gunfx.go)) and Phase 4 (Studio panel — [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte), the reference impl for Rules 38/39/41/45/47/48/49) shipped. The §8 items below are the remaining polish follow-ups.
 
 ---
 

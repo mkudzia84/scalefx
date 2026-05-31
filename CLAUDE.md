@@ -9,7 +9,7 @@ This file is a compact index for Claude. When a rule below conflicts with copilo
 
 ## System at a glance
 
-Multi-platform embedded effects: one **ESP32-S3 HubFX** master + up to N **Pico (RP2040)** expander boards (GunFX, LightFX, GearControl) over USB CDC at 6 Mbps. (Terminology note 2026-05-16: live code still uses `slave`/`SlaveType`/`BoardState::SLAVE`; the rename to `expander` lands atomically with the generic-expander refactor — see [instructions/15-GENERIC-EXPANDER-REFACTOR.md](instructions/15-GENERIC-EXPANDER-REFACTOR.md) and [instructions/17-SYSTEM-SERVICES.md](instructions/17-SYSTEM-SERVICES.md).)
+Multi-platform embedded effects: one **ESP32-S3 HubFX** master + up to N **Pico (RP2040)** expander boards (GunFX, LightFX, GearControl) over USB CDC at 6 Mbps. (Terminology: live code still uses `slave`/`SlaveType`/`BoardState::SLAVE`; the rename to `expander` is deferred backlog — grep the code, not the docs, for the current name.)
 
 - **Protocol:** Binary COBS, `[type:u8][tag:u8][len:u16LE][payload:0–512][crc8:u8]`, CRC-8 poly `0x07`, little-endian throughout.
 - **HubFX Pico (RP2350) is OBSOLETE** — [controllers/hubfx/pico/](controllers/hubfx/pico/) is frozen reference. All new HubFX work goes in [controllers/hubfx/esp32s3/](controllers/hubfx/esp32s3/). (Rule 17.)
@@ -21,7 +21,7 @@ Multi-platform embedded effects: one **ESP32-S3 HubFX** master + up to N **Pico 
   - **Effects:** LandingLight `0xB1–0xB6` · LightFX `0xB7–0xBD` · GearControl `0xBE–0xC6` **+ `0xD7–0xD9`** · EngineFX `0xC7–0xCB` · GunFX `0xCC–0xD2` **+ `0xE2–0xE5`** (manual override + verbose status) · Alerts `0xD3–0xD6`
   - **Audio control `0xDA–0xE1`** · **Audio preload diag `0xE6–0xE7`** · **Input routing `0xE8–0xEA`** (global RC→effect gate, InputDispatcher) · BatteryConfig `0xEE` · Board/Core lifecycle `0xEF–0xFF`
   - Free: `0x00–0x0F`, `0x8F`, `0xA6–0xA8`, `0xAD–0xAF`, `0xEB–0xED`.
-  - Collision history (2026-05-22): (1) GEAR_RESET/CALIBRATE/CALIB_CANCEL `0xC7–0xC9` ate EngineFX START/STOP/STATUS → moved to `0xD7–0xD9`. (2) AudioPacket control `0x84–0x8B` overlapped Expander+Topology → moved to `0xDA–0xE1`. (3) BoardService claimed `0xEE–0xFF`, eating BatteryServicePolicy's `BATTERY_CONFIG 0xEE` → BoardService shrunk to `0xEF–0xFF`. (4) 2026-05-28 — AUDIO_PRELOAD_STATUS_REQ/RESP initially placed at `0xE2–0xE3`, immediately collided with GunFX `GUN_MANUAL_SET` (also `0xE2`) which was claimed by the gunfx_service.h `ownsType` ahead of audio in the BoardOf<> pack; CLI saw `MISSING_PARAM` NACKs. Moved AUDIO_PRELOAD to `0xE6–0xE7` past the `0xE2–0xE5` gunfx block; "Free" range updated to skip those four. Lesson: GunFX silently grew into `0xE2..0xE5` with Phase-1 manual override / verbose-status packets but the "Effects" allocation in this index wasn't updated — verify by grep'ing the actual `ownsType` predicates, not just this doc.
+  - ⚠️ This index DRIFTS — before adding a packet, grep the actual `ownsType()` predicates in `controllers/hubfx/esp32s3/src/`, not just this map. Past collisions all came from the map lagging the code (e.g. GunFX silently grew into `0xE2–0xE5`, so a later AUDIO_PRELOAD placed there was swallowed by gunfx's earlier `ownsType` → `MISSING_PARAM` NACKs). Append at the next truly-free value; never into a neighbour's block.
 - **Error ranges (comprehensive allocation, 2026-05-23 sweep):**
   - `0x00–0x1F` Serial / generic (wire framing + param validation)
   - `0x20–0x2F` **PortError** (port-level infrastructure)
@@ -37,7 +37,7 @@ Multi-platform embedded effects: one **ESP32-S3 HubFX** master + up to N **Pico 
   - `0xB0–0xBF` **AudioError** (was 0x85, 0x89)
   - `0xC0–0xEF` Reserved (free for future effects)
   - `0xF0–0xFF` System (internal/comm errors)
-  - Collision history: pre-sweep state had GearError + EngineError both claiming byte 0xC6, surfacing as the wrong error name in Go's `errorNames` map (last init() won). The other namespaces (LightFX, LandingLight, GunFX, Alert, Storage, Audio) had no cross-collisions YET but squatted in packet-type bytes — same byte, different namespaces (wire-OK, human-confusing). The sweep consolidated all of them into spec ranges.
+  - Lesson: error codes collide silently in Go's `errorNames` map (last `init()` wins → wrong name shown), and squatting in packet-type bytes is wire-OK but human-confusing. Keep every error in its spec range above; one namespace per range.
 
 ## Layout
 

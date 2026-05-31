@@ -1,14 +1,22 @@
 # 25 — Arduino Framework Removal → Native ESP-IDF (HubFX) + Pico SDK (expanders)
 
-Branch: `arduino-removal`. Goal: drop the Arduino framework and run HubFX on
-native ESP-IDF and the Pico expanders (GearControl, LightFX) on the native
-Raspberry Pi Pico SDK. This is the roadmap + the executed-phase log.
+> **Status: HubFX side COMPLETE (merged to main 2026-05-31).** HubFX is now PURE
+> ESP-IDF — `framework = espidf`, `app_main` entry, zero Arduino (Rule 55). This
+> doc is the historical roadmap + executed-phase log; its native-abstraction map
+> is the reference for the still-pending **Pico-SDK** migration of the expanders
+> (P8). The "state of play" snapshot below describes the PRE-removal HubFX, kept
+> for context — the executed-phase log lower down is the final shape.
 
-## TL;DR state of play (analysis, 2026-05-31)
+Goal (as originally scoped): drop the Arduino framework and run HubFX on native
+ESP-IDF and the Pico expanders (GearControl, LightFX) on the native Raspberry Pi
+Pico SDK.
 
-- **HubFX/ESP32-S3 is already ~80 % IDF-native.** The PlatformIO build is the
-  pioarduino *Arduino-as-an-ESP-IDF-component* path (`framework = arduino` +
-  non-empty `custom_sdkconfig` → CMake/IDF underneath, ESP-IDF 5.5.4). Storage
+## TL;DR state of play (analysis, 2026-05-31 — PRE-removal snapshot, now historical)
+
+- **HubFX/ESP32-S3 was ~80 % IDF-native at analysis time** (since taken to 100 %).
+  The PlatformIO build was then the pioarduino *Arduino-as-an-ESP-IDF-component*
+  path (`framework = arduino` + non-empty `custom_sdkconfig` → CMake/IDF
+  underneath, ESP-IDF 5.5.4) — now pure `framework = espidf`. Storage
   (`esp_vfs_fat`/`esp_vfs_littlefs`), audio I2S (`i2s_std`), the 6 Mbps wire
   UART (`sfx::NativeUartStream` over `driver/uart`), memory instrumentation
   (`heap_caps_*`, `esp_psram_*`) and the partition table are **already native**.
