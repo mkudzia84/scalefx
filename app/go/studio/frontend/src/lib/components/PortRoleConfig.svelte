@@ -1,14 +1,10 @@
-<!-- ScaleFX Studio — port-role inline config editor.
+<!-- ScaleFX Studio — port-role inline config editor (⚙ Tune expander).
 
-     Rule 44 (supersedes Rule 42 for servos): servo motion profile is
-     now configured INLINE with the feature (GunFx panel embeds
-     ServoProfileEditor next to each axis binding).  This component is
-     therefore HEATER + DC-MOTOR ONLY — element voltage scaling stays
-     on the role layer because it's a hardware fact (the element's
-     rated mV), not a per-effect preference.
-
-     Servo ports get an empty body (the IO tab still shows port + role
-     + name in PortRoleTab.svelte; the motion-profile editor moved).
+     HEATER + DC-MOTOR ONLY: element voltage scaling lives on the role layer
+     because it's a hardware fact (the element's rated mV), not a per-effect
+     preference.  Servo motion profile is NOT here — its calibrate affordance
+     (ServoWidget → ServoCalibrationDialog) is rendered inline on the servo row
+     in PortRoleTab.svelte (Rule 44).
 
      Live tuning: every input is debounced ~350 ms and pushed via the
      role-layer live-tune commands (`MotorSetElement` / `HeaterSetElement`).
@@ -19,7 +15,7 @@
      through Topology in a future pass.
 
      Props:
-       portKind  — 'servo' | 'pwm' (servo just renders the empty hint)
+       portKind  — 'servo' | 'pwm'
        portIdx   — 0-based port index
        roleKind  — current attached role (drives which editor renders)
        portRailMv — Studio-side rail voltage (display only)
@@ -87,13 +83,12 @@
         <div class="loading">loading config from firmware…</div>
     {:else if error}
         <div class="err">⚠ {error}</div>
-    {:else if portKind === 'servo' && kind === RoleKind.ServoActuator}
-        <!-- Rule 44 — servo motion profile moved to the feature panel
-             (GunFx Turret section, EngineFx servo binding, …).  Nothing
-             to configure here. -->
+    {:else if portKind === 'servo'}
+        <!-- Rule 44 — servo motion profile is calibrated INLINE on the servo
+             row (ServoWidget in PortRoleTab), not here. -->
         <div class="empty">
-            Servo motion profile (min / max / center / speed / accel / jerk)
-            is set on the <b>feature panel</b> that uses this servo — Rule 44.
+            Servo calibration (limits / speed / accel / jerk) is the
+            <b>⚙ Calibrate…</b> button on the servo row above.
         </div>
 
     {:else if portKind === 'pwm' && kind === RoleKind.DcMotor}

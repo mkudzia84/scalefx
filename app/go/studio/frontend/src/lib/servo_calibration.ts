@@ -24,6 +24,7 @@
 
 import { writable, get, type Writable } from 'svelte/store'
 import { ServoSetTarget, SetPortProfile } from '../../wailsjs/go/main/App'
+import { markHubDirty } from './devicemodel'
 
 // ─── DTO mirrors ──────────────────────────────────────────────────────
 
@@ -134,9 +135,14 @@ export async function saveServoCalibration(): Promise<void> {
     if (!s) return
     openServoCalibration.update(x => x ? { ...x, busy: true, error: '' } : x)
     try {
-        // SetPortProfile already pushes live + marks dirty + updates
-        // the studio overlay in one call (Rule 42 storage path).
+        // SetPortProfile pushes live to the role + updates the studio
+        // overlay, but does NOT persist to /hubfx.yaml — that happens on
+        // Apply (SaveHubConfig).  Raise the hub-dirty flag so the global
+        // ConfigToolbar lights up and the operator can Apply (Rule 46).
+        // Without this the saved profile is live on the role but the
+        // toolbar reads "in sync" and the operator can't persist it.
         await SetPortProfile(s.guid, /*ServoKind=*/1, s.portIdx, s.draft as any)
+        markHubDirty()
         // Park at center so the saved limits are exercised on the next
         // operator-driven deploy/retract (no surprise mid-range hold).
         await ServoSetTarget(s.guid, s.portIdx, s.draft.centerUs)
@@ -225,6 +231,7 @@ export async function toggleReversed(
 ): Promise<ServoProfileT> {
     const next = { ...current, reversed: !current.reversed }
     await SetPortProfile(guid, /*ServoKind=*/1, portIdx, next as any)
+    markHubDirty()   // reversed persists into /hubfx.yaml ports[].profile (Rule 46)
     return next
 }
 

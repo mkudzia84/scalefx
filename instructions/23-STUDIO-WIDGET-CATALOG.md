@@ -473,12 +473,31 @@ Full walkthrough:
 **Rule 42 storage + Rule 44 editing surface:** the profile DATA lives
 in `/hubfx.yaml`'s `ports[]` block (canonical, per-port, because it's
 a property of the physical servo — min/max are mechanical end-stops,
-speed/accel match the servo's spec sheet).  The EDITING surface is
-embedded **inline in the feature panel** (GunFx Turret section, future
-EngineFx servo binding, …) so operators tune the servo where they set
-the feature.  The IO tab's `PortRoleConfig.svelte` does **not** show
-the calibrate affordance — that would create a duplicate authoring
-surface for the same data.
+speed/accel match the servo's spec sheet).  The EDITING surface is the
+same shared `ServoWidget` in two places, both opening the same dialog
+and persisting via the same `SetPortProfile` path (no duplicate data):
+- **Feature panels** (GunFx Turret section, future EngineFx servo
+  binding) — tune the servo where you wire the feature.
+- **The IO tab** — two compact buttons (`⚙ Calibrate…` + `Reset`) sit
+  inline on the RIGHT of every servo port row in `PortRoleTab.svelte`
+  (gated on `isServo(p)` only).  Calibrate opens the dialog; Reset writes
+  `defaultServoProfile()` via `SetPortProfile` + `markHubDirty` (Apply to
+  persist).  Not the full `ServoWidget` here — just the two actions, kept
+  narrow so they don't overflow the dense port row.  The dialog routes by
+  the port's actual `PortRef.guid`.  ⚠️ **GUID gotcha:** `Topology.PortList("")`
+  is a *request* sentinel (`"" → the hub`), but the RESPONSE carries each
+  board's REAL GUID, so `BuildModel` gives hub-local ports the hub's GUID
+  (e.g. `6D60`), NOT `""`.  Gating servo UI on `guid === ""` silently matches
+  nothing.  (The hub self-routes a topology forward addressed to its own
+  GUID, so live jog/push works for `6D60` too.)  Added 2026-06-01.
+
+> ⚠️ **Reactivity:** a panel that feeds `ServoWidget` via a helper like
+> `profileForPort(port)` MUST make that helper reactive on `$deviceModel`
+> (rebuild the closure in a `$:` block — the `makeLiveUsFor` pattern), or
+> the summary freezes on the pre-Save profile after a Calibrate→Save.
+> A plain function that reads `$deviceModel` *inside its body* is invisible
+> to Svelte. The IO tab is safe because it reads `p.profile` straight from
+> the `{#each $deviceModel.ports}` it already iterates.
 
 > The old inline `ServoProfileEditor.svelte` (a sectioned min/max/
 > speed/accel/jerk form) was **retired** (2026-05-24).  The feature row
