@@ -478,9 +478,12 @@ same shared `ServoWidget` in two places, both opening the same dialog
 and persisting via the same `SetPortProfile` path (no duplicate data):
 - **Feature panels** (GunFx Turret section, future EngineFx servo
   binding) — tune the servo where you wire the feature.
-- **The IO tab** (`PortRoleConfig.svelte`, under each servo port's
-  `⚙ Tune` expander) — calibrate a servo at the port even before it's
-  bound to any effect.  Added 2026-06-01.
+- **The IO tab** — `ServoWidget` renders INLINE on each hub-local servo
+  port row in `PortRoleTab.svelte` (visible, no expander), so you can
+  calibrate a servo at the port even before it's bound to any effect.
+  (Heater / DC-motor element scaling stays under the `⚙ Tune` expander
+  in `PortRoleConfig.svelte`; servos are NOT in `hasRoleConfig`.)
+  Added 2026-06-01.
 
 > ⚠️ **Reactivity:** a panel that feeds `ServoWidget` via a helper like
 > `profileForPort(port)` MUST make that helper reactive on `$deviceModel`

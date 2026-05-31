@@ -10,6 +10,7 @@
         formatPortRail, RoleKind, type Port, type PortRef,
     } from '../devicemodel'
     import PortRoleConfig from '../components/PortRoleConfig.svelte'
+    import ServoWidget from '../components/ServoWidget.svelte'
 
     // Per-port "show inline role-config editor" toggle.  Open one at a
     // time keeps the visual list tractable; a small map keyed by port
@@ -24,11 +25,12 @@
         else expanded.add(k)
         expandedTick++   // force Svelte reactivity
     }
-    // Roles that have an inline editor — only show the ⚙ button for these.
+    // Roles that have an inline ⚙ Tune editor (element scaling).  Servos are
+    // NOT here — their calibrate affordance is rendered inline on the row via
+    // ServoWidget, not behind the expander.
     function hasRoleConfig(p: Port): boolean {
         if (p.ref.guid !== '') return false  // hub-local only today
-        return p.roleKind === RoleKind.ServoActuator
-            || p.roleKind === RoleKind.DcMotor
+        return p.roleKind === RoleKind.DcMotor
             || p.roleKind === RoleKind.Heater
     }
     function portKindForConfig(p: Port): 'servo' | 'pwm' | null {
@@ -121,14 +123,23 @@
 
                         <span class="fanout" title="Functions using this port">{fanout(p)}</span>
 
-                        <!-- Rule 42: inline role-config editor (motion
-                             profile for servo, element scaling for
-                             heater / DC motor).  Only shown when the
-                             role has tunable mechanism. -->
-                        {#if hasRoleConfig(p)}
+                        <!-- Servo ports: the calibrate affordance (⚙ Calibrate…
+                             + ↔ Reversed + profile summary) sits INLINE on the
+                             row — Rule 44, same ServoWidget + SetPortProfile path
+                             as the feature panels.  Hub-local only (the dialog
+                             jogs hub-local ports today). -->
+                        {#if isServo(p) && p.ref.guid === ''}
+                            <ServoWidget
+                                port={{ board: '', guid: p.ref.guid, kind: 'servo', idx: p.ref.index }}
+                                profile={p.profile ?? null}
+                                portLabel={`${p.boardName} · ${p.name || p.hardwareName}`}
+                                busy={busy} />
+                        {:else if hasRoleConfig(p)}
+                            <!-- Heater / DC-motor: element scaling under the
+                                 ⚙ Tune expander (denser, less-used than calibrate). -->
                             <button class="small cfg-btn" class:open={(expandedTick, isExpanded(p))}
                                     on:click={() => toggleExpand(p)}
-                                    title="Tune motion profile / element scaling — live push, no re-attach">
+                                    title="Tune element scaling — live push, no re-attach">
                                 {(expandedTick, isExpanded(p)) ? '× Close' : '⚙ Tune'}
                             </button>
                         {/if}
@@ -140,10 +151,7 @@
                                 portKind={pk}
                                 portIdx={p.ref.index}
                                 roleKind={p.roleKind}
-                                portRailMv={p.voltageMv}
-                                portGuid={p.ref.guid}
-                                portLabel={`${p.boardName} · ${p.name || p.hardwareName}`}
-                                profile={p.profile ?? null} />
+                                portRailMv={p.voltageMv} />
                         {/if}
                     {/if}
                 {/each}
