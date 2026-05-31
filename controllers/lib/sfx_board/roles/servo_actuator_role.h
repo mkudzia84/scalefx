@@ -74,13 +74,21 @@ public:
     /// Target setters — INTENT layer.  The role's `tick()` integrates
     /// via `MotionProfile1D` and writes the resulting µs to the port.
     void setTarget(uint16_t target_us);
-    void setPositionImmediate(uint16_t pos_us);
+
+    /// Recoil impulse — add `offsetUs` to the output for `durationMs`, then
+    /// auto-remove ("de-jerk").  Rides ON TOP of the aim (the motion profile
+    /// keeps tracking its target underneath), so it works whether the servo is
+    /// moving or stationary and never fights the aim.  GunFx calls this once
+    /// per shot with a random ± offset.  Calling again restarts the window.
+    void applyRecoil(int16_t offsetUs, uint16_t durationMs);
 
     /// Endpoints honour the REV flag.
     uint16_t openEndpoint()  const { return _reversed ? _minUs : _maxUs; }
     uint16_t closeEndpoint() const { return _reversed ? _maxUs : _minUs; }
 
-    uint16_t position() const { return _mp.current(); }
+    // `position()` reports the ACTUAL output µs (aim + active recoil offset), so
+    // telemetry/UI show the kick; `target()` stays the aim the profile slews to.
+    uint16_t position() const { return _outUs; }
     uint16_t target()   const { return _mp.target(); }
     int16_t  velocity_us_per_s() const { return _velocity_us_per_s; }
     bool     atTarget() const { return _mp.atTarget(); }
@@ -106,6 +114,11 @@ private:
     int16_t            _velocity_us_per_s = 0;
     uint16_t           _lastPosUs         = 1500;  ///< for velocity diag
     bool               _wasAtTarget       = true;
+    uint16_t           _outUs             = 1500;  ///< last µs written (aim + recoil)
+
+    // Recoil impulse — additive offset applied to the output for a window.
+    int16_t            _recoilOffsetUs    = 0;     ///< 0 = inactive
+    uint32_t           _recoilUntilMs     = 0;     ///< EffectClock deadline
 
     TargetReachedCallback _onTargetReached;
 };

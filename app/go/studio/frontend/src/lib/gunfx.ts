@@ -56,15 +56,16 @@ export interface MuzzleFlashT {
     brightness: number
 }
 
-// Recoil — turret BEHAVIOUR, no dedicated servo.  2026-06: an INSTANT,
-// RANDOM jerk applied to BOTH yaw + pitch on each shot — each axis snaps
-// (bypassing its motion profile) to commanded ± a random offset up to
-// `jerkUs`, holds `holdMs`, then snaps back.  `jerkUs` is the max kick;
-// `holdMs` is an advanced dwell knob.  Aiming still slews via the role.
+// Recoil — turret BEHAVIOUR, no dedicated servo.  2026-06: a role-level
+// impulse applied to BOTH yaw + pitch on each shot — each axis gets a random
+// ±offset up to `jerkUs` added to its servo OUTPUT for `holdMs`, then the
+// ServoActuatorRole de-jerks it.  The kick rides ON TOP of the aim (the motion
+// profile keeps tracking RC underneath), so it works moving or stationary —
+// no snap-back, no RC suppression.  `holdMs` is an advanced dwell knob.
 export interface RecoilConfigT {
     enabled: boolean
-    jerkUs: number   // max random |offset| µs
-    holdMs: number   // dwell at the kicked position before snap-back (advanced)
+    jerkUs: number   // max random |offset| µs added to output
+    holdMs: number   // how long the offset rides before the role de-jerks (advanced)
 }
 
 // Rule 44 — mirrors ServoMotionProfileDTO; same field shape as the

@@ -22,7 +22,7 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
 
         // Servo actuator
         case RolePacket::SERVO_SET_TARGET:      handleServoSetTarget(p, len);       break;
-        case RolePacket::SERVO_SET_IMMEDIATE:   handleServoSetImmediate(p, len);    break;
+        case RolePacket::SERVO_RECOIL:          handleServoRecoil(p, len);          break;
         case RolePacket::SERVO_SET_BROADCAST_HZ: handleServoSetBroadcastHz(p, len); break;
         case RolePacket::SERVO_GET_STATUS_REQ:  handleServoGetStatusReq(p, len);    break;
         case RolePacket::SERVO_SET_PROFILE:     handleServoSetProfile(p, len);      break;
@@ -647,16 +647,20 @@ void RoleServicePolicy::handleServoSetTarget(const uint8_t* p, size_t len) {
     }
 }
 
-void RoleServicePolicy::handleServoSetImmediate(const uint8_t* p, size_t len) {
-    // SNAP the servo to the target instantly (no profile slew). Same payload as
-    // SERVO_SET_TARGET; used by GunFx recoil for a sharp kick + snap-back.
-    if (len < 3) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-    const uint8_t  idx    = p[0];
-    const uint16_t pos    = SfxWire::getU16LE(&p[1]);
+void RoleServicePolicy::handleServoRecoil(const uint8_t* p, size_t len) {
+    // Add a transient recoil offset on top of the aim for `durationMs`, then
+    // auto-remove ("de-jerk"). The motion profile keeps tracking its target
+    // underneath, so the kick works whether the servo is moving or stationary.
+    // GunFx calls this once per shot with a random ± offset.
+    // Payload: [portIdx:u8][offsetUs:i16LE][durationMs:u16LE]
+    if (len < 5) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t  idx        = p[0];
+    const int16_t  offsetUs   = SfxWire::getI16LE(&p[1]);
+    const uint16_t durationMs = SfxWire::getU16LE(&p[3]);
     auto* b = _reg->servoAt(idx);
     if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
     if (auto* r = std::get_if<ServoActuatorRole>(&b->role)) {
-        r->setPositionImmediate(pos);
+        r->applyRecoil(offsetUs, durationMs);
         _ctx->sendAck();
     } else {
         _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH);

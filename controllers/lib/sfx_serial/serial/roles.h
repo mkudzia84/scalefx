@@ -90,12 +90,14 @@ namespace RolePacket {
         ///< Fired by the slave immediately after a successful
         ///< ROLE_DETACH (or after the keepalive watchdog clears state).
 
-    /// Instant position set — SNAPS the servo to `target_us` immediately,
-    /// bypassing the motion profile (no slew). Same payload as
-    /// SERVO_SET_TARGET; placed here because the 0x48..0x4F servo block is
-    /// full. Used by GunFx recoil to kick the turret sharply on a shot and
-    /// snap back. Calls ServoActuatorRole::setPositionImmediate().
-    constexpr uint8_t SERVO_SET_IMMEDIATE   = 0x46;  ///< [portIdx:u8][target_us:u16LE] → ACK
+    /// Recoil impulse — adds a transient OFFSET to the servo's output for
+    /// `duration_ms`, ON TOP of whatever the motion profile is doing (aiming or
+    /// stationary), then auto-removes it ("de-jerks").  Applied at the role
+    /// level so it never fights the aim (unlike the old instant-snap, which
+    /// suppressed RC tracking).  GunFx fires one per shot with a random offset.
+    /// 0x46 (the 0x48..0x4F servo block is full). Calls
+    /// ServoActuatorRole::applyRecoil().
+    constexpr uint8_t SERVO_RECOIL          = 0x46;  ///< [portIdx:u8][offset_us:i16LE][duration_ms:u16LE] → ACK
 
     /// Subscribe to the batched servo telemetry stream (SERVO_MOTION_UPDATE).
     /// GLOBAL (all servos), like RCIN_SET_BROADCAST_HZ is per-input. 0x47

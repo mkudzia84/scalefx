@@ -16,8 +16,8 @@
  *
  *   Each shot does, atomically (one topology batch):
  *     - LED_QUEUE_LOAD + LED_START on the muzzle-flash port
- *     - SERVO_SET_TARGET on the recoil servo (jerk position, return
- *       scheduled `recoilHoldMs` later)
+ *     - SERVO_RECOIL on each enabled turret axis (a random ±offset added
+ *       to the servo output for `recoilHoldMs`, de-jerked by the role)
  *     - One fan pulse if `smoke.fanMode == FN_PUFF_PER_FIRE`
  *     - ShotEvent callback (audio + wire async)
  *
@@ -210,15 +210,16 @@ public:
 
 private:
     void doShot();
-    void returnRecoil();
     void commandFlash();
+    /// Fire a role-level recoil impulse on each enabled turret axis: a random
+    /// ±offset added to the servo OUTPUT for `recoilHoldMs`, then de-jerked by
+    /// the role.  Rides on top of the aim (no RC suppression, no snap-back).
     void commandRecoilJerk();
-    /// Snap one turret axis to commanded + a random ±jerk offset (instant).
-    void kickAxisRecoil(const GunAxis& axis, uint16_t& curTarget, uint16_t& savedUs);
+    /// Send SERVO_RECOIL to one axis' servo role (random offset + hold window).
+    void commandServoRecoil(const PortRef& port, int16_t offsetUs, uint16_t durationMs);
     void commandHeater(bool on);
     void commandFanPct(uint8_t pct);
     void commandServoTargetUs(const PortRef& port, uint16_t us);
-    void commandServoImmediateUs(const PortRef& port, uint16_t us);
 
     /// Find the RofItem whose band contains `pulseUs`. Returns 0xFF
     /// when no band matches (out-of-band = no item armed).
@@ -251,14 +252,10 @@ private:
     bool         _smokeArmed       = false;
     uint32_t     _shotIntervalMs   = 0;     ///< 0 when not auto-firing
     uint32_t     _nextShotMs       = 0;
-    uint32_t     _recoilReturnAtMs = 0;
-    /// While true, BOTH turret axes are HELD at their kicked positions —
-    /// tickAxis() skips RC updates until recoil returns.  Recoil is an
-    /// instant RANDOM jerk applied to both yaw + pitch on each shot (no
-    /// dedicated servo; see GunSpec::recoilEnabled / recoilJerkUs).
-    bool         _recoilActive       = false;
-    uint16_t     _yawRecoilSavedUs   = 0;   ///< yaw target before the jerk
-    uint16_t     _pitchRecoilSavedUs = 0;   ///< pitch target before the jerk
+    // Recoil is a role-level impulse: on each shot we send SERVO_RECOIL with a
+    // random ±offset to each enabled turret axis.  The ServoActuatorRole adds
+    // the offset on top of the aim for recoilHoldMs then removes it — the gun
+    // keeps no per-shot recoil state (no snap-back, no RC suppression).
 
     // ROF arbitration state.
     uint8_t      _activeRofIndex   = 0xFF;

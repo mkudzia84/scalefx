@@ -94,9 +94,11 @@ const (
 	RoleAttached   protocol.PacketType = 0x44
 	RoleDetached   protocol.PacketType = 0x45
 
-	// Instant position snap (no profile slew) — same payload as ServoSetTarget.
-	// 0x46 (the 0x48..0x4F servo block is full). GunFx recoil uses it.
-	ServoSetImmediate protocol.PacketType = 0x46
+	// Recoil impulse — adds a transient offset to the servo output for
+	// durationMs on top of the aim, then de-jerks (role level). 0x46 (the
+	// 0x48..0x4F servo block is full). GunFx fires one per shot.
+	// Payload: [portIdx:u8][offsetUs:i16LE][durationMs:u16LE]
+	ServoRecoil protocol.PacketType = 0x46
 	// Subscribe to the batched servo telemetry stream (ServoMotionUpdate). 0x47.
 	ServoSetBroadcastHz protocol.PacketType = 0x47
 
@@ -384,8 +386,11 @@ func CmdRoleDetach(portKind, portIdx byte) []byte {
 
 func CmdRoleListReq() []byte { return protocol.BuildPacket(RoleListReq, nil, 0) }
 
-func CmdServoSetImmediate(portIdx byte, posUs uint16) []byte {
-	return protocol.BuildPacket(ServoSetImmediate, append([]byte{portIdx}, protocol.U16LE(posUs)...), 0)
+func CmdServoRecoil(portIdx byte, offsetUs int16, durationMs uint16) []byte {
+	p := []byte{portIdx}
+	p = append(p, protocol.U16LE(uint16(offsetUs))...)
+	p = append(p, protocol.U16LE(durationMs)...)
+	return protocol.BuildPacket(ServoRecoil, p, 0)
 }
 func CmdServoSetBroadcastHz(hz byte) []byte {
 	return protocol.BuildPacket(ServoSetBroadcastHz, []byte{hz}, 0)
@@ -923,7 +928,7 @@ func init() {
 		RoleListResp:         "ROLE_LIST_RESP",
 		RoleAttached:         "ROLE_ATTACHED",
 		RoleDetached:         "ROLE_DETACHED",
-		ServoSetImmediate:    "SERVO_SET_IMMEDIATE",
+		ServoRecoil:          "SERVO_RECOIL",
 		ServoSetBroadcastHz:  "SERVO_SET_BROADCAST_HZ",
 		ServoSetTarget:       "SERVO_SET_TARGET",
 		ServoGetStatusReq:    "SERVO_GET_STATUS_REQ",

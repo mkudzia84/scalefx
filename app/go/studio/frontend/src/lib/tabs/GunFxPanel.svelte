@@ -969,8 +969,9 @@
 
                 <!-- Recoil sub-section — sits UNDER the two axes (full
                      width).  No dedicated servo, no axis picker: on each
-                     shot BOTH axes get an instant RANDOM jerk up to Jerk
-                     µs, hold, then snap back.  Hold is an advanced knob. -->
+                     shot BOTH axes get a random kick up to Jerk µs added
+                     on top of the aim for Hold ms, then the role removes
+                     it ("de-jerk").  Hold is an advanced knob. -->
                 <div class="turret-recoil">
                     <div class="recoil-head">
                         <label class="enable-toggle inline">
@@ -978,7 +979,7 @@
                                    on:change={(e) => setRecoilField(gun.id, 'enabled', boolValue(e))} disabled={busy} />
                             <span class="axis-title">Recoil</span>
                         </label>
-                        <span class="hint">instant random kick on both turret axes each shot (up to Jerk µs), then snaps back</span>
+                        <span class="hint">random kick on both turret axes each shot (up to Jerk µs), layered on the aim, then de-jerked</span>
                     </div>
                     {#if gun.recoil.enabled}
                         <div class="form-row">
@@ -986,13 +987,13 @@
                             <input class="field-input narrow" type="number" min="0" max="500" step="10"
                                    value={gun.recoil.jerkUs}
                                    on:change={(e) => setRecoilField(gun.id, 'jerkUs', numValue(e))} disabled={busy}
-                                   title="Maximum random recoil kick. Each shot, each axis snaps to commanded ± a random offset up to this." />
+                                   title="Maximum random recoil kick. Each shot, each axis gets a random ± offset up to this added to its output." />
                             <span class="unit">µs</span>
                             <span class="field-label adv">Hold</span>
                             <input class="field-input narrow" type="number" min="0" max="1000" step="10"
                                    value={gun.recoil.holdMs}
                                    on:change={(e) => setRecoilField(gun.id, 'holdMs', numValue(e))} disabled={busy}
-                                   title="Advanced: dwell at the kicked position before snapping back (ms)." />
+                                   title="Advanced: how long the recoil offset rides on the aim before the role de-jerks it (ms)." />
                             <span class="unit">ms</span>
                             <span class="hint compact">hold = advanced</span>
                         </div>

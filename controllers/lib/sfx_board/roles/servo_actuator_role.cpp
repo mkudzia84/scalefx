@@ -24,6 +24,7 @@ void ServoActuatorRole::initFromPort() {
     _mp.setProfile(_profile);
     _mp.snapTo(_profile.centerUs);
     _lastPosUs = _profile.centerUs;
+    _outUs     = _profile.centerUs;
 }
 
 void ServoActuatorRole::setLimits(uint16_t minUs, uint16_t maxUs) {
@@ -68,42 +69,51 @@ void ServoActuatorRole::setTarget(uint16_t target_us) {
     (void)prev;   // no per-edge bookkeeping needed
 }
 
-void ServoActuatorRole::setPositionImmediate(uint16_t pos_us) {
-    if (pos_us < _minUs) pos_us = _minUs;
-    if (pos_us > _maxUs) pos_us = _maxUs;
-    _mp.snapTo(pos_us);
-    _velocity_us_per_s = 0;
-    _lastPosUs   = pos_us;
-    _wasAtTarget = true;
-    if (_port) _port->writeMicroseconds(pos_us);
+void ServoActuatorRole::applyRecoil(int16_t offsetUs, uint16_t durationMs) {
+    // Start (or restart) a recoil window.  tick() adds the offset to the output
+    // on top of the aim and removes it when the deadline passes.
+    _recoilOffsetUs = offsetUs;
+    _recoilUntilMs  = EffectClock::instance().nowMs() + durationMs;
 }
 
 void ServoActuatorRole::tick() {
     if (!_port) return;
     const uint32_t dtMs = EffectClock::instance().dtMs();
 
-    const uint16_t before = _mp.current();
-    _mp.tick(dtMs);
-    const uint16_t after  = _mp.current();
+    const uint16_t before = _outUs;
+    _mp.tick(dtMs);                       // integrate the aim (slew/clamp/jerk)
+    const uint16_t base = _mp.current();
 
-    // Velocity diagnostic for status reporting — derived from position
-    // delta this tick, not from the integrator's internal float (which
-    // is fine but less robust against profile reshapes).
+    // De-jerk: drop the recoil offset once its window expires.
+    if (_recoilOffsetUs != 0 &&
+        (int32_t)(EffectClock::instance().nowMs() - _recoilUntilMs) >= 0) {
+        _recoilOffsetUs = 0;
+    }
+
+    // Output = aim + active recoil offset, clamped to the servo window.  The
+    // recoil rides ON TOP of the aim so it works moving or stationary.
+    int32_t out = (int32_t)base + (int32_t)_recoilOffsetUs;
+    if (out < (int32_t)_minUs) out = _minUs;
+    if (out > (int32_t)_maxUs) out = _maxUs;
+    const uint16_t finalUs = (uint16_t)out;
+
+    // Velocity diagnostic from the OUTPUT delta (so a recoil reads as motion).
     if (dtMs > 0) {
-        const int32_t deltaUs = (int32_t)after - (int32_t)_lastPosUs;
+        const int32_t deltaUs = (int32_t)finalUs - (int32_t)_lastPosUs;
         _velocity_us_per_s = (int16_t)((deltaUs * 1000) / (int32_t)dtMs);
-        _lastPosUs = after;
+        _lastPosUs = finalUs;
     }
 
-    if (after != before) {
-        _port->writeMicroseconds(after);
+    if (finalUs != before) {
+        _port->writeMicroseconds(finalUs);
     }
+    _outUs = finalUs;
 
+    // onTargetReached reflects the AIM settling (recoil is transient).
     if (_mp.atTarget()) {
-        _velocity_us_per_s = 0;
         if (!_wasAtTarget) {
             _wasAtTarget = true;
-            if (_onTargetReached) _onTargetReached(after);
+            if (_onTargetReached) _onTargetReached(finalUs);
         }
     }
 }

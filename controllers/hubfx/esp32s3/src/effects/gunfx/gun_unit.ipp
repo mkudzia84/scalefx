@@ -235,25 +235,10 @@ inline void GunUnit::update(uint32_t nowMs, uint32_t dtMs) {
         // intervals.  See `tickFan()` for the scheduler.
     }
 
-    // Recoil return — snap BOTH axes back to their pre-jerk targets
-    // (instant, same as the kick).  tickAxis() resumes RC tracking on the
-    // next pass because _recoilActive is cleared here.
-    if (_recoilReturnAtMs && (int32_t)(nowMs - _recoilReturnAtMs) >= 0) {
-        _recoilReturnAtMs = 0;
-        if (_recoilActive && _spec.recoilEnabled) {
-            if (_begin && _sendCtx) _begin(_sendCtx);
-            if (_spec.yaw.enabled && _spec.yaw.servoPort.portKind != 0) {
-                commandServoImmediateUs(_spec.yaw.servoPort, _yawRecoilSavedUs);
-                _yawTargetUs = _yawRecoilSavedUs;
-            }
-            if (_spec.pitch.enabled && _spec.pitch.servoPort.portKind != 0) {
-                commandServoImmediateUs(_spec.pitch.servoPort, _pitchRecoilSavedUs);
-                _pitchTargetUs = _pitchRecoilSavedUs;
-            }
-            if (_commit && _sendCtx) _commit(_sendCtx);
-        }
-        _recoilActive = false;
-    }
+    // Recoil is a role-level impulse now (SERVO_RECOIL fired in doShot()):
+    // the ServoActuatorRole adds the offset on top of the aim and removes it
+    // itself after recoilHoldMs.  The gun keeps no per-shot recoil state —
+    // both axes keep tracking RC the whole time.
 
     // HM_CYCLE — heater duty-cycle scheduler (Phase 4 polish 2026-05-26).
     // Gated on `_smokeArmed` so the cycle only runs when smoke is
@@ -284,17 +269,15 @@ inline void GunUnit::update(uint32_t nowMs, uint32_t dtMs) {
     // The gun just pushes a target each tick — the role's integrator
     // handles the slew.  `dtMs` is unused here now.
     (void)dtMs;
-    // Recoil suppresses RC tracking on BOTH axes for the hold — both got
-    // kicked, so neither should be overwritten until the snap-back fires.
-    const bool yawHeld   = _recoilActive && _spec.recoilEnabled;
-    const bool pitchHeld = _recoilActive && _spec.recoilEnabled;
-    if (_spec.yaw.enabled && !yawHeld) {
+    // Recoil rides on top of the aim at the role level, so the axes always
+    // track RC — no per-shot hold/suppression.
+    if (_spec.yaw.enabled) {
         tickAxis(_spec.yaw,
                  _haveYawInput ? _lastYawInputUs : _spec.yaw.neutralUs,
                  _manual.active && _manual.yawValid, _manual.yawUs,
                  _yawTargetUs);
     }
-    if (_spec.pitch.enabled && !pitchHeld) {
+    if (_spec.pitch.enabled) {
         tickAxis(_spec.pitch,
                  _havePitchInput ? _lastPitchInputUs : _spec.pitch.neutralUs,
                  _manual.active && _manual.pitchValid, _manual.pitchUs,
@@ -438,10 +421,6 @@ inline const RofItem* GunUnit::activeRof() const {
 inline void GunUnit::doShot() {
     commandFlash();
     commandRecoilJerk();
-    if (_spec.recoilHoldMs > 0) {
-        _recoilReturnAtMs = sfx_core::EffectClock::instance().nowMs()
-                          + _spec.recoilHoldMs;
-    }
     // FN_PULSE — restart the sinusoidal envelope clock on every shot.
     // tickFan() reads _fanPulseStartMs to compute the current sample
     // along the 50% → 100% → 50% curve.  Resetting here means
@@ -488,38 +467,31 @@ inline void GunUnit::commandFlash() {
           RolePacket::LED_START, start, sizeof(start));
 }
 
-// Recoil is a TURRET BEHAVIOUR — no dedicated recoil servo.  On each
-// shot, both enabled turret axes (yaw + pitch) get an INSTANT, RANDOM
-// jerk: each axis snaps (bypassing the motion profile) to its commanded
-// position ± a random offset up to `recoilJerkUs`, holds for
-// `recoilHoldMs`, then snaps back (see update()'s return block).  The
-// per-axis random is independent, so the muzzle shakes rather than
-// sweeping.  `_recoilActive` suppresses RC tracking on both axes for the
-// hold so the next tick doesn't overwrite the kick.
-inline void GunUnit::kickAxisRecoil(const GunAxis& axis,
-                                    uint16_t& curTarget, uint16_t& savedUs) {
-    if (!axis.enabled || axis.servoPort.portKind == 0) return;
-    savedUs = curTarget;
-    const uint16_t jerk = _spec.recoilJerkUs;
-    int32_t delta = 0;
-    if (jerk > 0) {
-        // Uniform random in [-jerk, +jerk].
-        delta = (int32_t)(esp_random() % (2u * (uint32_t)jerk + 1u)) - (int32_t)jerk;
-    }
-    int32_t kicked = (int32_t)curTarget + delta;
-    if (kicked < 500)  kicked = 500;      // keep within a sane servo window
-    if (kicked > 2500) kicked = 2500;     // (the role clamps to its limits too)
-    commandServoImmediateUs(axis.servoPort, (uint16_t)kicked);   // INSTANT snap
-    curTarget = (uint16_t)kicked;
-}
-
+// Recoil is a TURRET BEHAVIOUR — no dedicated recoil servo.  On each shot,
+// every enabled turret axis (yaw + pitch) gets a role-level recoil impulse: a
+// random ±offset (up to `recoilJerkUs`) added to the servo OUTPUT for
+// `recoilHoldMs`, then de-jerked by the ServoActuatorRole.  The impulse rides
+// ON TOP of the aim — the motion profile keeps tracking RC underneath — so the
+// muzzle shakes whether the turret is moving or stationary, with no snap-back
+// and no RC suppression.  The per-axis random is independent, so the muzzle
+// jitters rather than sweeping.
 inline void GunUnit::commandRecoilJerk() {
     if (!_send) return;
     if (!_spec.recoilEnabled) return;
-    if (!_spec.yaw.enabled && !_spec.pitch.enabled) return;
-    _recoilActive = true;
-    kickAxisRecoil(_spec.yaw,   _yawTargetUs,   _yawRecoilSavedUs);
-    kickAxisRecoil(_spec.pitch, _pitchTargetUs, _pitchRecoilSavedUs);
+    const uint16_t jerk = _spec.recoilJerkUs;
+    const uint16_t hold = _spec.recoilHoldMs ? _spec.recoilHoldMs : 80;
+    // Independent uniform random in [-jerk, +jerk] per axis.
+    auto randOffset = [jerk]() -> int16_t {
+        if (jerk == 0) return 0;
+        return (int16_t)((int32_t)(esp_random() % (2u * (uint32_t)jerk + 1u))
+                         - (int32_t)jerk);
+    };
+    if (_spec.yaw.enabled && _spec.yaw.servoPort.portKind != 0) {
+        commandServoRecoil(_spec.yaw.servoPort, randOffset(), hold);
+    }
+    if (_spec.pitch.enabled && _spec.pitch.servoPort.portKind != 0) {
+        commandServoRecoil(_spec.pitch.servoPort, randOffset(), hold);
+    }
 }
 
 inline void GunUnit::commandHeater(bool on) {
@@ -572,14 +544,17 @@ inline void GunUnit::commandServoTargetUs(const PortRef& port, uint16_t us) {
     _send(_sendCtx, port, RolePacket::SERVO_SET_TARGET, payload, sizeof(payload));
 }
 
-inline void GunUnit::commandServoImmediateUs(const PortRef& port, uint16_t us) {
+inline void GunUnit::commandServoRecoil(const PortRef& port, int16_t offsetUs,
+                                        uint16_t durationMs) {
     if (!_send) return;
-    uint8_t payload[3];
+    // SERVO_RECOIL adds a transient offset on top of the aim for durationMs at
+    // the role level, then de-jerks — the sharp recoil kick that doesn't fight
+    // RC tracking (vs SERVO_SET_TARGET's commanded-position slew).
+    uint8_t payload[5];
     payload[0] = port.portIdx;
-    SfxWire::putU16LE(&payload[1], us);
-    // SERVO_SET_IMMEDIATE snaps the servo (bypasses the motion profile) — the
-    // sharp recoil kick + snap-back, vs SERVO_SET_TARGET's smooth slew.
-    _send(_sendCtx, port, RolePacket::SERVO_SET_IMMEDIATE, payload, sizeof(payload));
+    SfxWire::putI16LE(&payload[1], offsetUs);
+    SfxWire::putU16LE(&payload[3], durationMs);
+    _send(_sendCtx, port, RolePacket::SERVO_RECOIL, payload, sizeof(payload));
 }
 
 // ─── Fan scheduling ─────────────────────────────────────────────────
