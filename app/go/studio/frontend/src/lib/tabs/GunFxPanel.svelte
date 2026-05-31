@@ -939,22 +939,33 @@
                                 </div>
                             {/if}
 
-                            <!-- Servo OUTPUT status — the commanded position
-                                 within the servo's calibrated travel (input
-                                 clamped to [min,max]).  Mirrors the calibration
-                                 dialog's position bar; pairs with the input bar
-                                 above.  Shown whenever a servo port is bound. -->
+                            <!-- Servo OUTPUT status — the LIVE servo position
+                                 (10 Hz from the gun verbose broadcast: shows
+                                 motion-profile slew + recoil kicks). Falls back
+                                 to the commanded position (input clamped to
+                                 travel) until the verbose stream warms up / when
+                                 not subscribed. A faint tick shows the target.
+                                 The broadcast is firmware-loop-gated, so it goes
+                                 quiet during an upload (no separate poller). -->
                             {#if axis.servoPort && axis.servoPort.kind}
                                 {@const prof = profileForPort(axis.servoPort) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
                                 {@const liveAx = liveUsFor(axis.input)}
                                 {@const inUs = (axis.input && liveAx && liveAx.valid) ? liveAx.us : axis.neutralUs}
                                 {@const cmdUs = Math.min(prof.maxUs, Math.max(prof.minUs, inUs))}
-                                <div class="io-label">Servo output <span class="io-sub">{prof.minUs}–{prof.maxUs} µs travel{prof.reversed ? ' · ↔ rev' : ''}</span></div>
-                                <div class="servo-out-bar" title="Commanded servo position ({cmdUs} µs) within its [{prof.minUs}, {prof.maxUs}] travel">
+                                {@const vb = $gunfxVerbose[gun.id]}
+                                {@const curUs = vb ? (which === 'yaw' ? vb.yawCurrentUs : vb.pitchCurrentUs) : 0}
+                                {@const tgtUs = vb ? (which === 'yaw' ? vb.yawTargetUs : vb.pitchTargetUs) : 0}
+                                {@const live = curUs > 0}
+                                {@const posUs = live ? curUs : cmdUs}
+                                <div class="io-label">Servo output <span class="io-sub">{prof.minUs}–{prof.maxUs} µs · {live ? 'live' : 'cmd'}{prof.reversed ? ' · ↔ rev' : ''}</span></div>
+                                <div class="servo-out-bar" class:cmd-only={!live} title="{live ? 'Live' : 'Commanded'} servo position ({posUs} µs) within its [{prof.minUs}, {prof.maxUs}] travel{live && tgtUs > 0 ? ` · target ${tgtUs} µs` : ''}">
                                     <div class="servo-out-center" style="left:{outPct(prof.centerUs, prof)}%" title="center {prof.centerUs} µs"></div>
-                                    <div class="servo-out-fill" style="width:{outPct(cmdUs, prof)}%"></div>
-                                    <div class="servo-out-marker" style="left:{outPct(cmdUs, prof)}%"></div>
-                                    <span class="servo-out-readout">{cmdUs} µs</span>
+                                    {#if live && tgtUs > 0}
+                                        <div class="servo-out-target" style="left:{outPct(tgtUs, prof)}%" title="target {tgtUs} µs"></div>
+                                    {/if}
+                                    <div class="servo-out-fill" style="width:{outPct(posUs, prof)}%"></div>
+                                    <div class="servo-out-marker" style="left:{outPct(posUs, prof)}%"></div>
+                                    <span class="servo-out-readout">{posUs} µs</span>
                                 </div>
                             {/if}
 
@@ -1454,7 +1465,13 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
     .servo-out-fill { height: 100%; background: linear-gradient(90deg, color-mix(in srgb, var(--warning) 70%, var(--accent)), var(--accent)); transition: width 0.08s linear; opacity: 0.55; }
     .servo-out-marker { position: absolute; top: -1px; bottom: -1px; width: 2px; background: var(--accent); box-shadow: 0 0 4px var(--accent); transition: left 0.08s linear; pointer-events: none; }
     .servo-out-center { position: absolute; top: -2px; bottom: -2px; width: 0; border-left: 1px dashed var(--text-dim); pointer-events: none; }
+    /* Ghost tick for the commanded TARGET (where the servo is slewing to) —
+       the gap between it and the live marker is the slew lag / recoil. */
+    .servo-out-target { position: absolute; top: 1px; bottom: 1px; width: 0; border-left: 1px dotted var(--warning); opacity: 0.8; pointer-events: none; }
     .servo-out-readout { position: absolute; right: 6px; top: 0; line-height: 14px; font-family: var(--font-mono); font-size: 9px; color: var(--text-bright); text-shadow: 0 0 3px rgba(0,0,0,0.7); }
+    /* Dimmed when showing the commanded fallback (verbose not yet streaming). */
+    .servo-out-bar.cmd-only .servo-out-fill { opacity: 0.3; }
+    .servo-out-bar.cmd-only .servo-out-marker { opacity: 0.5; }
 
     /* Smoke generator sibling card (Phase 4 polish 2026-05-26).
        Lives directly after each gun card via the {#each} block, so it
