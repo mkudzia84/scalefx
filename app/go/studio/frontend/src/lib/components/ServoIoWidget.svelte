@@ -37,7 +37,9 @@
     $: live  = !!servo && servo.posUs > 0
     $: inUs  = (hasInput && inputValid && inputUs != null) ? inputUs : neutralUs
     $: cmdUs = Math.min(maxUs, Math.max(minUs, inUs))
-    $: posUs = live ? servo!.posUs : cmdUs    // actual position; commanded fallback
+    $: posUs = live ? servo!.posUs : cmdUs       // actual position (solid line)
+    $: tgtUs = live ? servo!.targetUs : 0        // commanded target (dashed line)
+    $: showTgt = live && tgtUs > 0               // hide until telemetry streams
 </script>
 
 <div class="srv-io">
@@ -56,14 +58,17 @@
 
     {#if hasServo}
         <div class="io-label">{outputLabel}
-            <span class="io-sub">{posUs} µs{live ? '' : ' · cmd'}{reversed ? ' · ↔ rev' : ''}</span>
+            <span class="io-sub">{posUs} µs{showTgt && tgtUs !== posUs ? ` → ${tgtUs}` : ''}{live ? '' : ' · cmd'}{reversed ? ' · ↔ rev' : ''}</span>
         </div>
         <div class="servo-track" class:cmd-only={!live}
-             title="Servo at {posUs} µs · travel {minUs}–{maxUs} µs · centre {centerUs} µs">
+             title="Servo at {posUs} µs{showTgt ? ` → target ${tgtUs} µs` : ''} · travel {minUs}–{maxUs} µs · centre {centerUs} µs">
             <div class="servo-track-range"
                  style="left:{srvPct(minUs)}%; width:{Math.max(0.5, srvPct(maxUs) - srvPct(minUs))}%"></div>
             <div class="servo-track-center" style="left:{srvPct(centerUs)}%"></div>
-            <div class="servo-track-pos" style="left:{srvPct(posUs)}%"></div>
+            {#if showTgt}
+                <div class="servo-track-target" style="left:{srvPct(tgtUs)}%" title="target {tgtUs} µs"></div>
+            {/if}
+            <div class="servo-track-pos" style="left:{srvPct(posUs)}%" title="position {posUs} µs"></div>
         </div>
     {/if}
 </div>
@@ -85,7 +90,10 @@
     .servo-track { position: relative; height: 12px; margin: 3px 0 4px; }
     .servo-track::before { content: ''; position: absolute; left: 0; right: 0; top: 5px; height: 2px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 1px; }
     .servo-track-range { position: absolute; top: 3px; height: 6px; background: color-mix(in srgb, var(--accent) 18%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 2px; pointer-events: none; }
-    .servo-track-center { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--text-dim); pointer-events: none; }
+    .servo-track-center { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed color-mix(in srgb, var(--text-dim) 60%, transparent); pointer-events: none; }
+    /* TARGET — dashed amber line (where the servo is slewing to). */
+    .servo-track-target { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--warning); opacity: 0.9; transition: left 0.06s linear; pointer-events: none; }
+    /* CURRENT — bright solid accent line (the actual position). */
     .servo-track-pos { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: var(--accent); box-shadow: 0 0 5px var(--accent); border-radius: 1px; transition: left 0.06s linear; pointer-events: none; }
     .servo-track.cmd-only .servo-track-pos { background: var(--text-dim); box-shadow: none; opacity: 0.6; }
 </style>
