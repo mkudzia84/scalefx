@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     689
+#define BUILD_NUMBER     693
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -697,19 +697,23 @@ void setup() {
     // bytes off it the moment its policy pack initializes.  ESP32-S3
     // default UART0 pins: TX=GPIO43, RX=GPIO44.
     //
-    // 8 KB RX/TX rings — restored 2026-05-28 after the 512 KB upload
-    // crash was diagnosed and proven UNRELATED to UART buffer size
-    // (commit 12d8c69).  With stream uploads now using 16 KB segments
-    // gated by per-segment FILE_UPLOAD_PROGRESS ACK, the client never
-    // sends more than 16 KB without first waiting for our reply — and
-    // the bulk `NativeUartStream::readBytes` override drains the ring
-    // in microseconds, so it rarely holds more than a couple of KB at
-    // once.  8 KB = ~11 ms at 6 Mbps is comfortable headroom.  Bump
-    // back to 16384 if any future protocol path bursts > 8 KB without
-    // synchronous backpressure.
+    // 32 KB RX ring — sized to hold a FULL 16 KB stream-upload segment
+    // burst with 2x margin.  The client blasts one whole 16 KB segment
+    // before waiting for its FILE_UPLOAD_PROGRESS ACK, so up to 16 KB
+    // can be in flight with no intra-segment backpressure; an 8 KB ring
+    // overflowed (and stalled the upload) whenever processStream lagged
+    // the 6 Mbps fill even briefly.  This regressed into view on
+    // 2026-05-31 when the Arduino-Stream→sfx::Stream seam finally routed
+    // the upload read through the bulk `NativeUartStream::readBytes`
+    // override (before, `serial()` handed back an Arduino `Stream*` and
+    // the slow per-byte `Stream::readBytes` polyfill was used — it
+    // block-drained the ring continuously, masking the undersized
+    // buffer).  DRAM for the extra 24 KB came free in the same Arduino-
+    // removal work (Wire −21 KB, ESP32Servo −2 KB).  TX stays 8 KB (our
+    // ACKs are tiny).
     wireUart.begin(UART_NUM_0, /*rx*/44, /*tx*/43,
                    sfx_core::BoardServerBase::BAUD_RATE,
-                   /*rxBuf*/8192, /*txBuf*/8192);
+                   /*rxBuf*/32768, /*txBuf*/8192);
 
     // Policy pack lifecycle — Serial, DiagLog, indicator pins, port
     // registry binding, every policy's begin().  Master role, no
