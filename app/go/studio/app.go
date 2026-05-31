@@ -132,8 +132,6 @@ type App struct {
 	// SetServoLiveView from panels that show live servo position.  Guarded by
 	// mu.  See app_servo.go.
 	servoLiveView bool
-	// One-shot per-connect counter for the "stream live" diagnostic log.
-	servoDiagSeen int
 
 	// Heartbeat goroutine
 	stopHeartbeat chan<- struct{}

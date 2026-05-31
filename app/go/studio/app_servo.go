@@ -15,34 +15,27 @@ const kServoBroadcastHz uint8 = 20
 // forwards it to the frontend as the `servo:motion` event.  Generic / port-keyed
 // (Rule 42): any UI domain that uses a servo consumes the same stream.  Called
 // once per connect (fresh client → fresh subscriber list).
+//
+// IMPORTANT: the caller (openLocked) ALREADY HOLDS a.mu — this runs inside the
+// connect critical section.  Do NOT call a.mu.Lock() or any helper that does
+// (snapshotClient) here, and do NOT block on a wire round-trip: a.mu is
+// non-reentrant, so re-locking self-deadlocks the whole connect.  Read a.c /
+// a.servoLiveView directly and fire any wire command off the lock (a goroutine).
 func (a *App) installServoStream() {
 	if a.c == nil {
 		return
 	}
-	a.servoDiagSeen = 0
 	a.c.Events.OnServoMotion(func(ev client.ServoMotionEvent) {
 		if a.ctx == nil {
 			return
 		}
 		// Hub-local frames decode with GUID "" — remap to the hub's GUID so the
 		// frontend keys servo status by the same port ref it uses everywhere.
+		// (Runs in the async dispatcher, NOT under openLocked — locking is safe.)
 		if ev.GUID == "" {
 			a.mu.Lock()
 			ev.GUID = a.id.GUID
 			a.mu.Unlock()
-		}
-		// One-shot confirmation that the stream is flowing + what it carries
-		// (guid/idx must match the gun panel's servoPort key).  Throttled to the
-		// first frame per (re)connect so it doesn't flood at 20 Hz.
-		if a.servoDiagSeen < 1 {
-			a.servoDiagSeen++
-			if len(ev.Servos) > 0 {
-				s := ev.Servos[0]
-				a.diag.Info("SERVO", "stream live: guid=%q servos=%d first{idx=%d pos=%d tgt=%d}",
-					ev.GUID, len(ev.Servos), s.PortIdx, s.PosUs, s.TargetUs)
-			} else {
-				a.diag.Info("SERVO", "stream live: guid=%q servos=0 (no ServoActuator roles attached)", ev.GUID)
-			}
 		}
 		wailsRT.EventsEmit(a.ctx, "servo:motion", ev)
 	})
@@ -51,15 +44,15 @@ func (a *App) installServoStream() {
 	// its broadcast Hz to 0 on reboot/reconnect, and SetServoLiveView's
 	// changed-guard won't re-send (a.servoLiveView is still true from before).
 	// Without this, reconnecting — or having the panel already open before the
-	// connection came up — leaves the stream silent.
-	a.mu.Lock()
-	want := a.servoLiveView
-	a.mu.Unlock()
-	if want {
-		if c := a.snapshotClient(); c != nil {
+	// connection came up — leaves the stream silent.  Caller holds a.mu, so read
+	// the flag + client directly and send off-lock in a goroutine (Connection is
+	// thread-safe, Rule 56) so we never block the connect path on an ACK.
+	if a.servoLiveView {
+		c := a.c
+		go func() {
 			_ = c.Roles.ServoSetBroadcastHz(byte(kServoBroadcastHz))
-			a.diag.Info("SERVO", "re-subscribed live-view on connect (%d Hz)", kServoBroadcastHz)
-		}
+		}()
+		a.diag.Info("SERVO", "re-subscribing live-view on connect (%d Hz)", kServoBroadcastHz)
 	}
 }
 
