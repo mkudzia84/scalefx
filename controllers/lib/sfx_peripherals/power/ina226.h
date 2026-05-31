@@ -219,7 +219,7 @@ struct INA226Config {
 // INA226 Class
 // ============================================================================
 
-class INA226 : public I2CDevice {
+class INA226 : public sfx_peripherals::I2CDeviceT<INA226> {
 public:
     // LSB values per INA226 datasheet (TI SBOS547) §7.6
     static constexpr float SHUNT_V_LSB_uV = 2.5f;     // 2.5 µV per bit (§7.6.1)
@@ -243,7 +243,7 @@ public:
      * @param maxCurrent_A Maximum expected current in amps (for calibration)
      * @return true if device found and initialized
      */
-    bool begin(TwoWire& wire, uint8_t address = INA226Address::DEFAULT_ADDR,
+    bool begin(sfx_peripherals::SfxI2cBus& wire, uint8_t address = INA226Address::DEFAULT_ADDR,
                float shuntResistance_ohms = 0.1f, float maxCurrent_A = 3.2f);
 
     /**
@@ -252,7 +252,7 @@ public:
      * @param config Channel configuration (address, shunt, calibration, etc.)
      * @return true if device found and initialized
      */
-    bool begin(TwoWire& wire, const INA226Config& config);
+    bool begin(sfx_peripherals::SfxI2cBus& wire, const INA226Config& config);
 
     /**
      * @brief Scan I2C bus for all INA226 devices in the 0x40-0x4F range
@@ -261,13 +261,13 @@ public:
      * @param maxDevices Size of the output array
      * @return Number of INA226 devices found
      */
-    static uint8_t scan(TwoWire& wire, uint8_t* addresses, uint8_t maxDevices);
+    static uint8_t scan(sfx_peripherals::SfxI2cBus& wire, uint8_t* addresses, uint8_t maxDevices);
 
     /**
      * @brief Verify this device is an INA226 (checks MFG_ID and DIE_ID)
      * Called automatically by I2CDevice::begin()
      */
-    bool identify() override;
+    bool identify();
 
     /**
      * @brief Reset the device (software reset via CONFIG register)

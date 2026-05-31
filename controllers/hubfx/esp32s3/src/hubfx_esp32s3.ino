@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     678
+#define BUILD_NUMBER     682
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -72,7 +72,7 @@
 #endif
 
 #include <Arduino.h>
-#include <Wire.h>
+#include "hubfx_i2c.h"            // hubI2cBus() (native I2C bus)
 #include <esp_heap_caps.h>     // memory-instrumentation helper (Phase 4 polish 2026-05-27)
 #include <esp_psram.h>
 
@@ -795,7 +795,7 @@ void setup() {
 
     // I²C bus introspection — register the scan callback and mark every
     // chip physically wired on this PCB rev as "expected".
-    board.enableI2CScan(Wire);
+    board.enableI2CScan(hubI2cBus());
     board.addExpectedI2CDevice(I2cAddr::TAS5825P);
     board.addExpectedI2CDevice(I2cAddr::PCA9685);
     for (uint8_t k = 0; k < 8; ++k) {

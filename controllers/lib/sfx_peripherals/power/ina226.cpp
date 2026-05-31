@@ -11,14 +11,14 @@
 // Initialization
 // ============================================================================
 
-bool INA226::begin(TwoWire& wire, uint8_t address, float shuntResistance_ohms, float maxCurrent_A) {
+bool INA226::begin(sfx_peripherals::SfxI2cBus& wire, uint8_t address, float shuntResistance_ohms, float maxCurrent_A) {
     _shuntResistance_ohms = shuntResistance_ohms;
 
     // Bind the bus/address.  We do NOT route through `I2CDevice::begin()`
     // because we need to expose `bootMfgId`/`bootDieId`/`isCanonical`
     // even on chips we ultimately refuse to drive — diagnostics on
     // counterfeits is the whole point of carrying those fields.
-    _wire       = &wire;
+    _bus       = &wire;
     _address    = address;
     _errorCount = 0;
     _lastError  = I2CError::OK;
@@ -66,7 +66,7 @@ bool INA226::begin(TwoWire& wire, uint8_t address, float shuntResistance_ohms, f
     return true;
 }
 
-bool INA226::begin(TwoWire& wire, const INA226Config& config) {
+bool INA226::begin(sfx_peripherals::SfxI2cBus& wire, const INA226Config& config) {
     _channel = config.channel;
     if (!begin(wire, config.address, config.shuntResistance_ohms, config.maxCurrent_A)) {
         return false;
@@ -84,14 +84,14 @@ bool INA226::identify() {
     return true;
 }
 
-uint8_t INA226::scan(TwoWire& wire, uint8_t* addresses, uint8_t maxDevices) {
+uint8_t INA226::scan(sfx_peripherals::SfxI2cBus& wire, uint8_t* addresses, uint8_t maxDevices) {
     uint8_t found = 0;
     for (uint8_t addr = INA226Address::MIN; addr <= INA226Address::MAX && found < maxDevices; addr++) {
         if (!probe(wire, addr)) continue;
 
         // Verify identity using temporary instance with base class I/O
         INA226 temp;
-        temp._wire = &wire;
+        temp._bus = &wire;
         temp._address = addr;
         if (temp.identify()) {
             addresses[found++] = addr;

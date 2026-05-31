@@ -27,31 +27,30 @@ uint8_t PCA9685::computePrescale(uint16_t freqHz) {
     return (uint8_t)value;
 }
 
-bool PCA9685::broadcastReset(TwoWire& wire) {
+bool PCA9685::broadcastReset(sfx_peripherals::SfxI2cBus& wire) {
     // Address byte = 0x00 (general call), data byte = 0x06 (SWRST opcode).
     // Any PCA9685 on the bus with ALLCALL enabled (POR default) will reset.
-    wire.beginTransmission(PCA9685Address::GENERAL_CALL);
-    wire.write(PCA9685Reg::SWRST_BYTE);
-    return wire.endTransmission() == 0;
+    const uint8_t swrst = PCA9685Reg::SWRST_BYTE;
+    return wire.write(PCA9685Address::GENERAL_CALL, &swrst, 1);
 }
 
 // ============================================================================
 // Initialization
 // ============================================================================
 
-bool PCA9685::begin(TwoWire& wire, uint8_t address, uint16_t freqHz) {
+bool PCA9685::begin(sfx_peripherals::SfxI2cBus& wire, uint8_t address, uint16_t freqHz) {
     // The I2CDevice base class probes the address and calls identify().
-    if (!I2CDevice::begin(wire, address)) return false;
+    if (!attach(wire, address)) return false;
 
     // Step 1: broadcast SWRST. Belt-and-braces — also recovers a
     // chip that's silent at its address. Harmless on a healthy chip.
-    broadcastReset(*_wire);
-    delay(2);
+    broadcastReset(*_bus);
+    SFX_DELAY_MS(2);
 
     // Step 2: park in SLEEP (PRESCALE only writable while SLEEP=1).
     writeRegister8(PCA9685Reg::MODE1,
                    PCA9685Reg::MODE1_SLEEP | PCA9685Reg::MODE1_ALLCALL);
-    delay(1);
+    SFX_DELAY_MS(1);
 
     // Step 3: PRESCALE.
     const uint8_t prescaleValue = computePrescale(freqHz);
@@ -64,11 +63,11 @@ bool PCA9685::begin(TwoWire& wire, uint8_t address, uint16_t freqHz) {
     // Step 5: wake — clear SLEEP, enable AI for burst writes.
     writeRegister8(PCA9685Reg::MODE1,
                    PCA9685Reg::MODE1_AI | PCA9685Reg::MODE1_ALLCALL);
-    delayMicroseconds(500);   // §7.3.1.1 oscillator stabilisation
+    SFX_DELAY_US(500);   // §7.3.1.1 oscillator stabilisation
     writeRegister8(PCA9685Reg::MODE1,
                    PCA9685Reg::MODE1_AI | PCA9685Reg::MODE1_ALLCALL |
                    PCA9685Reg::MODE1_RESTART);
-    delay(1);
+    SFX_DELAY_MS(1);
 
     // Step 6: park ALL channels at OFF (FULL_OFF flag — safe because no
     // outputs are running yet, no transition glitch possible).
@@ -79,7 +78,7 @@ bool PCA9685::begin(TwoWire& wire, uint8_t address, uint16_t freqHz) {
 
 bool PCA9685::identify() {
     // PCA9685 has no chip-ID register, so we rely on the probe ACK that
-    // I2CDevice::begin() already did. Read MODE1 back to confirm we can
+    // attach() already did. Read MODE1 back to confirm we can
     // talk to the chip — any sensible value indicates a real device.
     bool ok = false;
     (void)readRegister8(PCA9685Reg::MODE1, &ok);
@@ -87,9 +86,9 @@ bool PCA9685::identify() {
 }
 
 void PCA9685::reset() {
-    if (!_available || !_wire) return;
-    broadcastReset(*_wire);
-    delay(2);
+    if (!_available || !_bus) return;
+    broadcastReset(*_bus);
+    SFX_DELAY_MS(2);
     _frequencyHz = 0;  // POR PRESCALE = 0x1E (~200 Hz), but caller should
                       // re-configure via setFrequency() rather than rely
                       // on the POR default.
@@ -113,10 +112,10 @@ uint16_t PCA9685::setFrequency(uint16_t freqHz) {
                                         PCA9685Reg::MODE1_ALLCALL);
 
     writeRegister8(PCA9685Reg::MODE1, mode1Keep | PCA9685Reg::MODE1_SLEEP);
-    delay(1);
+    SFX_DELAY_MS(1);
     writeRegister8(PCA9685Reg::PRESCALE, prescaleValue);
     writeRegister8(PCA9685Reg::MODE1, mode1Keep & ~PCA9685Reg::MODE1_SLEEP);
-    delayMicroseconds(500);
+    SFX_DELAY_US(500);
     writeRegister8(PCA9685Reg::MODE1,
                    (mode1Keep & ~PCA9685Reg::MODE1_SLEEP) | PCA9685Reg::MODE1_RESTART);
 
@@ -143,7 +142,7 @@ bool PCA9685::wake() {
                                 : (PCA9685Reg::MODE1_AI |
                                    PCA9685Reg::MODE1_ALLCALL);
     if (!writeRegister8(PCA9685Reg::MODE1, base)) return false;
-    delayMicroseconds(500);  // §7.3.1.1 oscillator stabilisation
+    SFX_DELAY_US(500);  // §7.3.1.1 oscillator stabilisation
     return writeRegister8(PCA9685Reg::MODE1, base | PCA9685Reg::MODE1_RESTART);
 }
 
@@ -154,18 +153,12 @@ bool PCA9685::wake() {
 bool PCA9685::writeBurst4(uint8_t firstReg,
                           uint8_t on_l, uint8_t on_h,
                           uint8_t off_l, uint8_t off_h) {
-    if (!_wire || !_available) return false;
+    if (!_bus || !_available) return false;
 
-    _wire->beginTransmission(_address);
-    _wire->write(firstReg);
-    _wire->write(on_l);
-    _wire->write(on_h);
-    _wire->write(off_l);
-    _wire->write(off_h);
-    const uint8_t err = _wire->endTransmission();
-    if (err != 0) {
+    const uint8_t data[4] = { on_l, on_h, off_l, off_h };
+    if (!_bus->writeReg(_address, firstReg, data, 4)) {
         _errorCount++;
-        _lastError = static_cast<I2CError>(err);
+        _lastError = I2CError::OTHER;
         return false;
     }
     return true;

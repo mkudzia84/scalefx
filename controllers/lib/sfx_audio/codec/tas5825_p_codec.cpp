@@ -49,7 +49,7 @@ TAS5825PCodec::TAS5825PCodec() = default;
 
 // ─── Phase 1: pre-clock init (P-permissive) ──────────────────────────────
 
-bool TAS5825PCodec::begin(TwoWire& wire, int sda, int scl,
+bool TAS5825PCodec::begin(sfx_peripherals::SfxI2cBus& wire, int sda, int scl,
                           uint32_t sample_rate, Supply supply) {
     bool needWireInit = (i2c_ != &wire || sdaPin_ != sda || sclPin_ != scl);
 
@@ -60,15 +60,8 @@ bool TAS5825PCodec::begin(TwoWire& wire, int sda, int scl,
     supply_    = supply;
 
     if (needWireInit) {
-#if SFX_PLATFORM_PICO
-        i2c_->setSDA(sdaPin_);
-        i2c_->setSCL(sclPin_);
-        i2c_->begin();
-#elif SFX_PLATFORM_ESP32
-        i2c_->begin(sdaPin_, sclPin_);
-#endif
+        i2c_->begin(sdaPin_, sclPin_, 100000);   // native bus bring-up (100 kHz)
     }
-    i2c_->setClock(100000);
 
     TAS5825_LOG("TAS5825P: probing @ 0x%02X (SDA=%d SCL=%d)...",
                 I2C_ADDR, sdaPin_, sclPin_);
@@ -77,8 +70,7 @@ bool TAS5825PCodec::begin(TwoWire& wire, int sda, int scl,
     constexpr int PROBE_DELAY_MS = 500;
     uint8_t probeResult = 0;
     for (int attempt = 0; attempt < PROBE_RETRIES; attempt++) {
-        i2c_->beginTransmission(I2C_ADDR);
-        probeResult = i2c_->endTransmission();
+        probeResult = i2c_->probe(I2C_ADDR) ? 0 : 2;
         if (probeResult == 0) break;
         if (attempt < PROBE_RETRIES - 1) SFX_DELAY_MS(PROBE_DELAY_MS);
     }
@@ -350,28 +342,19 @@ uint8_t TAS5825PCodec::getFaultRegister() {
 
 bool TAS5825PCodec::testI2CConnection() {
     if (!i2c_) return false;
-    i2c_->beginTransmission(I2C_ADDR);
-    return i2c_->endTransmission() == 0;
+    return i2c_->probe(I2C_ADDR);
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────
 
 bool TAS5825PCodec::writeRegister(uint8_t reg, uint8_t value) {
     if (!i2c_) return false;
-    i2c_->beginTransmission(I2C_ADDR);
-    i2c_->write(reg);
-    i2c_->write(value);
-    return i2c_->endTransmission() == 0;
+    return i2c_->writeReg(I2C_ADDR, reg, &value, 1);
 }
 
 bool TAS5825PCodec::readRegister(uint8_t reg, uint8_t* value) {
     if (!i2c_ || !value) return false;
-    i2c_->beginTransmission(I2C_ADDR);
-    i2c_->write(reg);
-    if (i2c_->endTransmission(false) != 0) return false;
-    if (i2c_->requestFrom((uint8_t)I2C_ADDR, (uint8_t)1) != 1) return false;
-    *value = i2c_->read();
-    return true;
+    return i2c_->readReg(I2C_ADDR, reg, value, 1);
 }
 
 bool TAS5825PCodec::selectBookPage(uint8_t book, uint8_t page) {

@@ -150,7 +150,7 @@ namespace PCA9685Reg {
 // PCA9685 class
 // ============================================================================
 
-class PCA9685 : public I2CDevice {
+class PCA9685 : public sfx_peripherals::I2CDeviceT<PCA9685> {
 public:
     /// Total channel count.
     static constexpr uint8_t NUM_PINS = 16;
@@ -187,7 +187,7 @@ public:
      * @param address  7-bit slave address (default `0x40`).
      * @param freqHz   Target PWM frequency, 24..1526 Hz (default 1526).
      */
-    bool begin(TwoWire& wire,
+    bool begin(sfx_peripherals::SfxI2cBus& wire,
                uint8_t  address = PCA9685Address::DEFAULT_ADDR,
                uint16_t freqHz  = DEFAULT_PWM_HZ);
 
@@ -202,11 +202,11 @@ public:
      * Static method — usable without an instance, e.g. for recovery at
      * boot before the driver has been constructed.
      */
-    static bool broadcastReset(TwoWire& wire);
+    static bool broadcastReset(sfx_peripherals::SfxI2cBus& wire);
 
     /// I2CDevice override — confirms the chip is alive at its address.
     /// PCA9685 has no chip-ID register, so this is just an ACK probe.
-    bool identify() override;
+    bool identify();
 
     /// Software reset of THIS device via the broadcast path.
     /// Cheaper than re-running begin() when you just want POR defaults.

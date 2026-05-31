@@ -73,10 +73,7 @@
 
 #include "board_service.h"
 #include <indicators/indicator_leds.h>
-
-// Forward declarations — avoid pulling sfx_peripherals headers from the API surface.
-class I2CDevice;
-class TwoWire;
+#include <i2c/sfx_i2c.h>          // sfx_peripherals::SfxI2cBus (native I2C, no Arduino)
 
 namespace sfx_core {
 
@@ -218,7 +215,7 @@ public:
     /// result with a found/identified flag.  Returns false (and logs a
     /// WARN) when the expected-devices table is full — bump
     /// `SFX_MAX_EXPECTED_I2C` in platformio.ini if you hit that.
-    bool addExpectedI2CDevice(uint8_t address, I2CDevice* device = nullptr);
+    bool addExpectedI2CDevice(uint8_t address);
 
     // ── Wire helpers (concrete, no virtual dispatch) ─────────────────
 
@@ -341,12 +338,11 @@ protected:
 
     // ── I²C scan registry ───────────────────────────────────────────
     struct ExpectedI2CDevice {
-        uint8_t    address = 0;
-        I2CDevice* device  = nullptr;
+        uint8_t address = 0;
     };
-    TwoWire*           _i2cWire = nullptr;
-    ExpectedI2CDevice  _expectedI2C[MAX_EXPECTED_I2C] = {};
-    uint8_t            _numExpectedI2C = 0;
+    sfx_peripherals::SfxI2cBus* _i2cBus = nullptr;
+    ExpectedI2CDevice           _expectedI2C[MAX_EXPECTED_I2C] = {};
+    uint8_t                     _numExpectedI2C = 0;
 };
 
 // ============================================================================
@@ -685,11 +681,11 @@ public:
 #endif
     }
 
-    /// Bind a TwoWire bus and register the I²C-scan callback on
-    /// BoardServicePolicy.  Call after begin().  Tracked devices are
-    /// added via `addExpectedI2CDevice(addr, device?)`.
-    void enableI2CScan(TwoWire& wire) {
-        this->_i2cWire = &wire;
+    /// Bind a native I²C bus and register the I²C-scan callback on
+    /// BoardServicePolicy.  Call after begin().  Tracked addresses are
+    /// added via `addExpectedI2CDevice(addr)`.
+    void enableI2CScan(sfx_peripherals::SfxI2cBus& bus) {
+        this->_i2cBus = &bus;
         core().onI2CScan([this]() -> I2CScanResult {
             return this->performI2CScan();
         });

@@ -23,8 +23,7 @@
 #ifndef HUBFX_AUDIO_CODEC_H
 #define HUBFX_AUDIO_CODEC_H
 
-#include <Wire.h>
-
+#include "../hubfx_i2c.h"                  // hubI2cBus() — shared native I2C bus
 #include <audio/audio_config.h>            // AUDIO_SAMPLE_RATE
 #include <audio/esp_dual_core_audio.h>     // CodecAdapter primary template
 #include <codec/tas5825_p_codec.h>         // TAS5825PCodec singleton
@@ -39,7 +38,7 @@ struct CodecAdapter<TAS5825PCodec> {
 
     static bool probe() {
         return TAS5825PCodec::instance().begin(
-            Wire,
+            hubI2cBus(),
             Gpio::I2C_SDA,
             Gpio::I2C_SCL,
             AUDIO_SAMPLE_RATE,
