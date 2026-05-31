@@ -143,6 +143,7 @@ bool WavStreamSource::open(const char* path, const StreamScratch& scratch) {
         MIXER_ERROR("Stream: invalid WAV: %s", path);
         return false;
     }
+    _openEpoch = sd.mountEpoch();   // captured under the lock — pairs with reads
     sd.unlock();
 
     _framesRead = 0;
@@ -154,6 +155,15 @@ bool WavStreamSource::open(const char* path, const StreamScratch& scratch) {
 uint32_t WavStreamSource::readFrames(float* outL, float* outR,
                                      uint32_t maxFrames) {
     if (!_open || _exhausted) return 0;
+
+    // SD remount guard (Rule 56): if SD_INIT remounted the card since we opened,
+    // `_file` points at a torn-down VFS volume — abort as EOF rather than read a
+    // recycled handle (use-after-unmount). Cheap atomic compare per call.
+    if (SdCardModule::instance().mountEpoch() != _openEpoch) {
+        _exhausted = true;
+        MIXER_WARN("Stream: SD remounted under open file — aborting playback");
+        return 0;
+    }
 
     const int bytesPerFrame = _numChannels * (_bitsPerSample / 8);
     uint32_t  delivered     = 0;

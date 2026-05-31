@@ -226,6 +226,11 @@ public:
     /// Get card type (only valid when initialized)
     SdCardType cardType();
 
+    /// Mount epoch — changes on every (un)mount. A consumer holding a FILE* open
+    /// across reads captures this at open() and aborts if it changes (the remount
+    /// invalidated its handle). See `_mountEpoch`.
+    uint32_t mountEpoch() const { return _mountEpoch.load(std::memory_order_acquire); }
+
     /**
      * @brief Unmount the SD card
      *
@@ -364,10 +369,15 @@ private:
     // Cross-core (Rule 15): written by begin()/unmount() on Core 0 (SD_INIT),
     // read by WavStreamSource::open() on the Core-1 audio task. atomic<bool> so
     // the cross-core read has defined ordering (existing `if (!_initialized)`
-    // sites keep working via the implicit seq_cst load). This makes the flag
-    // read safe; it does NOT by itself make SD_INIT exclusive against an
-    // in-flight audio file handle — that larger fix is tracked separately.
+    // sites keep working via the implicit seq_cst load).
     std::atomic<bool> _initialized{false};
+
+    // Mount epoch — bumped on every (un)mount. A long-lived consumer that holds
+    // an open FILE* across many reads (audio WavStreamSource, the asset loader)
+    // captures the epoch at open() and aborts the moment it changes, so a
+    // concurrent SD_INIT remount can't have it read through a stale/recycled VFS
+    // handle (use-after-unmount). Cross-core read on the audio task.
+    std::atomic<uint32_t> _mountEpoch{0};
     SfxMutex _sdMutex;
     Config _config{};
 

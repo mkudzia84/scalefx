@@ -36,6 +36,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <atomic>           // cdcDeviceCount: added on the USB open task, read on the loop
 #include <cstring>          // strncpy (was transitive via <Arduino.h>)
 #include <functional>
 #include "platform/sfx_platform.h"
@@ -178,7 +179,12 @@ struct UsbHostState {
 
     UsbPortConfig ports[USB_HOST_MAX_PORTS];
     CdcDeviceInfo cdcDevices[USB_HOST_MAX_CDC_DEVICES];
-    int cdcDeviceCount = 0;
+    // Cross-task (Rule 15): addCdcDevice() runs on the USB open task and bumps
+    // this AFTER fully writing cdcDevices[idx]; cdcRead/cdcWrite read it on the
+    // loop. atomic so the count++ publishes the entry (the seq_cst increment is a
+    // release). removeCdcDevice() now runs on the loop only (deferred via
+    // EspUsbHost::processPendingEvents), so its compaction can't race cdcRead.
+    std::atomic<int> cdcDeviceCount{0};
 
     UsbHostStats stats;
 

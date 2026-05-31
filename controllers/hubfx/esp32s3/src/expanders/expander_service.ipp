@@ -181,6 +181,14 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::_onUsbUnmount(
 
 template <uint8_t MaxExpanders, uint8_t MaxKnownGuids>
 void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::update() {
+    // Drain deferred USB mount/unmount events FIRST, on this (loop) task — the
+    // CDC driver/open tasks only flag + enqueue; here is where _onUsbMount/
+    // _onUsbUnmount actually run and disconnected slots get reclaimed, so the
+    // _live[] table + wire emits are never touched concurrently by a USB task
+    // (Rule 56). Processing before the poll loop means an unmount tears down its
+    // entry before we'd otherwise poll a dead BusClient below.
+    UsbHost::instance().processPendingEvents();
+
     const uint32_t now = SFX_MILLIS();
     for (uint8_t i = 0; i < kMaxExpanders; ++i) {
         LiveSlot& s = _live[i];

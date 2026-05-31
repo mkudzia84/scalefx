@@ -635,6 +635,7 @@ void AudioAssetCache::loaderTaskFunc(void* arg) {
     // same file to skip fopen/fclose per chunk).
     FILE*    cachedFp        = nullptr;
     char     cachedPath[kAssetPathMax] = {};
+    uint32_t cachedEpoch     = 0;   // SD mount epoch when cachedFp was opened
 
     while (self->_running.load(std::memory_order_acquire)) {
         // Wait for work.  100 ms timeout so we periodically check
@@ -680,6 +681,14 @@ void AudioAssetCache::loaderTaskFunc(void* arg) {
         SdCardModule& sd = SdCardModule::instance();
         sd.lock();
 
+        // SD remount guard (Rule 56): if SD_INIT remounted the card since we
+        // opened cachedFp, the handle points at a torn-down VFS volume — drop it
+        // so the block below re-opens against the live mount (fopen will fail
+        // gracefully → entry marked failed if the file isn't on the new card).
+        if (cachedFp && sd.mountEpoch() != cachedEpoch) {
+            fclose(cachedFp); cachedFp = nullptr; cachedPath[0] = '\0';
+        }
+
         // Re-open if file changed (or not yet opened).
         if (!cachedFp || strncmp(cachedPath, target->path, kAssetPathMax) != 0) {
             if (cachedFp) { fclose(cachedFp); cachedFp = nullptr; }
@@ -697,6 +706,7 @@ void AudioAssetCache::loaderTaskFunc(void* arg) {
             }
             strncpy(cachedPath, target->path, kAssetPathMax - 1);
             cachedPath[kAssetPathMax - 1] = '\0';
+            cachedEpoch = sd.mountEpoch();   // captured under the lock
         }
 
         if (fseek(cachedFp, (long)loaded, SEEK_SET) != 0) {

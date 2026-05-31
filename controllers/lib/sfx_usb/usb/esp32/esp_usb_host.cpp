@@ -187,7 +187,7 @@ void EspUsbHost::end() {
         if (_slots[i].rxStream) {
             vStreamBufferDelete((StreamBufferHandle_t)_slots[i].rxStream);
         }
-        _slots[i] = {};
+        _slots[i].reset();
     }
 
     // Uninstall CDC-ACM class driver (deregisters internal USB Host client)
@@ -298,7 +298,12 @@ bool EspUsbHost::init() {
     // Step 4: Create queue + task for deferred CDC-ACM opens
     // (new_dev_cb runs in USB context where cdc_acm_host_open is NOT safe)
     _openQueue = (void*)xQueueCreate(USB_HOST_MAX_CDC_DEVICES, sizeof(PendingOpen));
-    if (!_openQueue) {
+    // Deferred mount/unmount event queue drained by the loop (processPendingEvents).
+    // Sized 2x slots so a quick disconnect+reconnect burst can't drop an event.
+    if (_eventQueue == nullptr) {
+        _eventQueue = (void*)xQueueCreate(USB_HOST_MAX_CDC_DEVICES * 2, sizeof(PendingEvent));
+    }
+    if (!_openQueue || !_eventQueue) {
         SFX_LOG_ERROR("[UsbHost] Failed to create open queue");
         cdc_acm_host_uninstall();
         _driverInstalled = false;
@@ -435,7 +440,7 @@ void EspUsbHost::_handleNewDevice(void* usbDevHandle) {
     }
 
     SFX_LOG_INFO("[UsbHost] >>> New device callback fired (attempt #%lu, current CDC count=%d)",
-                 (unsigned long)_state.stats.enum_attempts, _state.cdcDeviceCount);
+                 (unsigned long)_state.stats.enum_attempts, _state.cdcDeviceCount.load());
 
     // Log slot availability for debugging re-connection issues
     int freeSlots = 0;
@@ -506,7 +511,7 @@ uint8_t EspUsbHost::_openCdcSession(uint16_t vid, uint16_t pid, uint32_t timeout
     StreamBufferHandle_t rxStream = xStreamBufferCreate(CDC_RX_BUFFER_SIZE, 1);
     if (!rxStream) {
         SFX_LOG_ERROR("[UsbHost] Failed to create RX stream buffer for slot %d", slotIdx);
-        _slots[slotIdx] = {};
+        _slots[slotIdx].reset();
         return 0;
     }
     _slots[slotIdx].rxStream = (void*)rxStream;
@@ -544,7 +549,7 @@ uint8_t EspUsbHost::_openCdcSession(uint16_t vid, uint16_t pid, uint32_t timeout
         SFX_LOG_WARN("[UsbHost] CDC open failed VID=%04X PID=%04X iface=1: %s",
                      vid, pid, esp_err_to_name(err));
         vStreamBufferDelete(rxStream);
-        _slots[slotIdx] = {};
+        _slots[slotIdx].reset();
         return 0;
     }
 
@@ -641,8 +646,11 @@ void EspUsbHost::_processOpenRequest(uint16_t vid, uint16_t pid) {
         return;
     }
 
-    // Fire mount callback (notifies CoreServer for IDENTIFY + registration)
-    if (_state.mountCallback) _state.mountCallback(devAddr, vid, pid);
+    // DEFER the mount callback to the loop (Rule 56): it does IDENTIFY + wire
+    // I/O + mutates the ExpanderService _live[] table; running it here on the
+    // open task would race the loop.  The slot is already fully set up, so the
+    // loop can fire mountCallback safely on its next processPendingEvents().
+    _queueEvent(PendingEvent{UsbEventType::Mount, devAddr, vid, pid, -1});
 }
 
 void EspUsbHost::_handleCdcData(int slotIdx, const uint8_t* data, size_t len) {
@@ -674,21 +682,24 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
     switch (eventType) {
         case CDC_ACM_HOST_DEVICE_DISCONNECTED: {
             CdcSlot& slot = _slots[slotIdx];
-            if (!slot.open) break;
+            if (!slot.open.load(std::memory_order_acquire)) break;
 
             uint8_t devAddr = slot.devAddr;
             SFX_LOG_INFO("[UsbHost] CDC device disconnected: slot=%d addr=%d", slotIdx, devAddr);
 
-            // Remove from shared device tracker
-            _state.removeCdcDevice(devAddr);
+            // Stop the wire FIRST (Rule 56): clearing `open` makes the loop's
+            // cdcRead/cdcWrite/cdcAvailable bail immediately, and marking
+            // pendingUnmount keeps _allocateSlot from re-handing this slot out
+            // before the loop reclaims its rxStream.  No further cdcDataCb fires
+            // after close (same driver task), so the loop is the only remaining
+            // toucher of rxStream.
+            slot.open.store(false, std::memory_order_release);
+            slot.pendingUnmount.store(true, std::memory_order_release);
 
-            // Close the CDC-ACM driver handle. This releases USB interfaces,
-            // cancels pending transfers, removes the pseudo-device from the
-            // driver's internal list, and calls usb_host_device_close().
-            // The CDC-ACM driver uses SLIST_FOREACH_SAFE in the DEV_GONE handler
-            // so calling close from this callback is explicitly safe (see v2.3.0).
-            // Without this, the stale device stays in cdc_devices_list and blocks
-            // re-enumeration when the same device reconnects (e.g. via USB hub).
+            // Close the CDC-ACM driver handle HERE — the driver requires close to
+            // run from this disconnect callback (SLIST_FOREACH_SAFE in the
+            // DEV_GONE handler, esp_cdc_acm v2.3.0); deferring it would leave the
+            // stale device in cdc_devices_list and block re-enumeration.
             if (slot.cdcHandle) {
                 SFX_LOG_DEBUG("[UsbHost] Closing CDC handle for slot=%d", slotIdx);
                 esp_err_t err = cdc_acm_host_close((cdc_acm_dev_hdl_t)slot.cdcHandle);
@@ -696,16 +707,14 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
                     SFX_LOG_WARN("[UsbHost] cdc_acm_host_close failed: %s (slot=%d)",
                                  esp_err_to_name(err), slotIdx);
                 }
+                slot.cdcHandle = nullptr;   // closed — don't let anything reuse it
             }
 
-            // Clean up local slot resources (stream buffer is ours, not the driver's)
-            if (slot.rxStream) {
-                vStreamBufferDelete((StreamBufferHandle_t)slot.rxStream);
-            }
-            slot = {};
-
-            // Fire unmount callback (notifies CoreServer)
-            if (_state.unmountCallback) _state.unmountCallback(devAddr);
+            // DEFER the rest to the loop: removeCdcDevice (compacts the shared
+            // table the loop reads), vStreamBufferDelete (raced by the loop's
+            // cdcRead), slot reset, and the unmount callback (wire I/O + _live[]
+            // mutation). processPendingEvents() does them on the loop context.
+            _queueEvent(PendingEvent{UsbEventType::Unmount, devAddr, 0, 0, slotIdx});
 
             // Start auto-recovery timer — if no new device connects within
             // RECOVERY_TIMEOUT_MS, power-cycle root port to recover disabled
@@ -739,6 +748,44 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
     }
 }
 
+void EspUsbHost::_queueEvent(const PendingEvent& ev) {
+    if (!_eventQueue) return;
+    // Non-blocking send from the USB driver/open task context.  If the queue is
+    // somehow full the loop is wedged anyway; drop + count rather than block a
+    // USB callback (it must return promptly).
+    if (xQueueSend((QueueHandle_t)_eventQueue, &ev, 0) != pdTRUE) {
+        _state.stats.hcd_errors++;
+        SFX_LOG_WARN("[UsbHost] event queue full — dropped %s for addr=%d",
+                     ev.type == UsbEventType::Mount ? "MOUNT" : "UNMOUNT", ev.devAddr);
+    }
+}
+
+void EspUsbHost::processPendingEvents() {
+    if (!_eventQueue) return;
+    PendingEvent ev;
+    // Drain everything queued since the last loop pass.  Runs ONLY here (loop
+    // task), so the callbacks + slot reclaim below never race cdcRead/cdcWrite.
+    while (xQueueReceive((QueueHandle_t)_eventQueue, &ev, 0) == pdTRUE) {
+        if (ev.type == UsbEventType::Mount) {
+            if (_state.mountCallback) _state.mountCallback(ev.devAddr, ev.vid, ev.pid);
+        } else {  // Unmount
+            // Fire the unmount callback FIRST so the ExpanderService tears down
+            // its BusClient/_live[] entry (and any wire emit) before we free the
+            // slot's RX buffer out from under a stale reference.
+            if (_state.unmountCallback) _state.unmountCallback(ev.devAddr);
+            _state.removeCdcDevice(ev.devAddr);
+            if (ev.slotIdx >= 0 && ev.slotIdx < USB_HOST_MAX_CDC_DEVICES) {
+                CdcSlot& slot = _slots[ev.slotIdx];
+                if (slot.rxStream) {
+                    vStreamBufferDelete((StreamBufferHandle_t)slot.rxStream);
+                    slot.rxStream = nullptr;
+                }
+                slot.reset();   // clears pendingUnmount → slot becomes allocatable
+            }
+        }
+    }
+}
+
 #else // !ESP_USB_HAS_CDC_ACM
 
 // Stub implementations when CDC-ACM component is not available
@@ -746,6 +793,8 @@ void EspUsbHost::_handleNewDevice(void*) {}
 void EspUsbHost::_handleCdcData(int, const uint8_t*, size_t) {}
 void EspUsbHost::_handleCdcEvent(int, int) {}
 uint8_t EspUsbHost::_openCdcSession(uint16_t, uint16_t, uint32_t) { return 0; }
+void EspUsbHost::_queueEvent(const PendingEvent&) {}
+void EspUsbHost::processPendingEvents() {}
 
 #endif // ESP_USB_HAS_CDC_ACM
 
@@ -843,7 +892,7 @@ void EspUsbHost::printStatus() const {
                  _state.taskRunning ? "Yes" : "No",
                  _driverInstalled ? "Yes" : "No");
     SFX_LOG_INFO("CDC devices: %d, Mounted: %lu, Unmounted: %lu",
-                 _state.cdcDeviceCount,
+                 _state.cdcDeviceCount.load(),
                  _state.stats.devices_mounted,
                  _state.stats.devices_unmounted);
     SFX_LOG_INFO("TX: %lu bytes, RX: %lu bytes",
@@ -891,7 +940,12 @@ int EspUsbHost::_findSlotByHandle(void* cdcHandle) const {
 
 int EspUsbHost::_allocateSlot() {
     for (int i = 0; i < USB_HOST_MAX_CDC_DEVICES; i++) {
-        if (!_slots[i].open) return i;
+        // Skip slots awaiting loop reclaim (disconnected but rxStream not yet
+        // freed) so a fresh mount can't stomp a buffer the loop is about to free.
+        if (!_slots[i].open.load(std::memory_order_acquire) &&
+            !_slots[i].pendingUnmount.load(std::memory_order_acquire)) {
+            return i;
+        }
     }
     return -1;
 }

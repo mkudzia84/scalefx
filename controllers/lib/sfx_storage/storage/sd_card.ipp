@@ -20,6 +20,8 @@ bool SdCardModuleT<TPolicy>::begin(const Config& cfg) {
 
     lock();
     bool ok = _policy.mount(cfg);
+    // New mount → new epoch, so any handle from a prior mount is detectably stale.
+    _mountEpoch.fetch_add(1, std::memory_order_release);
     unlock();
 
     _initialized = ok;
@@ -42,6 +44,9 @@ template <typename TPolicy>
 void SdCardModuleT<TPolicy>::unmount() {
     lock();
     _initialized = false;
+    // Bump BEFORE the actual unmount so a consumer that re-checks the epoch sees
+    // the change before the VFS volume is torn down under it.
+    _mountEpoch.fetch_add(1, std::memory_order_release);
     _policy.unmount();
     unlock();
 }

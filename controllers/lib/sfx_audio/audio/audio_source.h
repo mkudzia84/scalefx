@@ -188,6 +188,10 @@ private:
     SdFile        _file;
     StreamScratch _scratch{};
     bool          _open = false;
+    // SD mount epoch captured at open(). If a concurrent SD_INIT remounts the
+    // card (bumping the epoch), `_file` is invalid; readFrames() detects the
+    // mismatch and aborts rather than reading through a stale VFS handle.
+    uint32_t      _openEpoch = 0;
 
     uint32_t _sampleRate_Hz = 0;
     uint16_t _numChannels   = 0;

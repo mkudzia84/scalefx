@@ -26,6 +26,7 @@
 #if SFX_PLATFORM_ESP32
 
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
+#include <atomic>                    // CdcSlot::open/pendingUnmount (cross-task, Rule 15)
 
 class EspUsbHost {
 public:
@@ -85,6 +86,13 @@ public:
 
     /// Flush pending write data for a CDC device
     void cdcFlush(int devIndex);
+
+    /// Drain deferred mount/unmount events on the LOOP task.  MUST be called
+    /// from the main loop (e.g. ExpanderService::update()) — it fires the mount/
+    /// unmount callbacks and reclaims disconnected slots (free rxStream, reset)
+    /// on the single loop context, so the higher-priority USB driver/open tasks
+    /// never race the loop's cdcRead/cdcWrite or emit wire packets (Rule 56).
+    void processPendingEvents();
 
     // ========================================================================
     // Callbacks
@@ -177,14 +185,40 @@ private:
     /// Cooldown after a bus reset — ignore disconnects caused by the reset itself (ms)
     static constexpr uint32_t RESET_COOLDOWN_MS = 10000;
 
-    /// Per-CDC-device slot tracking (opaque handles avoid ESP-IDF includes)
+    /// Per-CDC-device slot tracking (opaque handles avoid ESP-IDF includes).
+    /// Concurrency (Rule 15 / 56): the CDC-ACM driver task (disconnect) and the
+    /// open task (mount) only FLAG state here; all teardown (free rxStream, reset
+    /// slot, fire mount/unmount callbacks, removeCdcDevice) is deferred to the
+    /// loop task via processPendingEvents().  `open` gates cdcRead/cdcWrite/RX so
+    /// it's atomic; `pendingUnmount` marks a slot disconnected-but-not-yet-
+    /// reclaimed so _allocateSlot won't hand it out before the loop frees it.
     struct CdcSlot {
         void* cdcHandle = nullptr;   // cdc_acm_dev_hdl_t (opaque)
         void* rxStream  = nullptr;   // StreamBufferHandle_t (opaque)
         uint8_t devAddr = 0;
-        bool open = false;
+        std::atomic<bool> open{false};
+        std::atomic<bool> pendingUnmount{false};
+        void reset() {
+            cdcHandle = nullptr; rxStream = nullptr; devAddr = 0;
+            pendingUnmount.store(false, std::memory_order_release);
+            open.store(false, std::memory_order_release);
+        }
     };
     CdcSlot _slots[USB_HOST_MAX_CDC_DEVICES] = {};
+
+    /// Deferred mount/unmount event — pushed by the USB tasks, drained by the
+    /// loop in processPendingEvents() so callbacks + slot teardown run on the
+    /// single loop context (never the higher-priority USB driver/open tasks).
+    enum class UsbEventType : uint8_t { Mount, Unmount };
+    struct PendingEvent {
+        UsbEventType type;
+        uint8_t  devAddr;
+        uint16_t vid;
+        uint16_t pid;
+        int      slotIdx;
+    };
+    void* _eventQueue = nullptr;     // QueueHandle_t for PendingEvent
+    void _queueEvent(const PendingEvent& ev);
 
     void* _daemonTaskHandle = nullptr;   // TaskHandle_t (opaque)
     void* _openTaskHandle = nullptr;     // TaskHandle_t for deferred CDC open
