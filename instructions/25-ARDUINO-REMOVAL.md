@@ -162,16 +162,52 @@ segmented path surfaced two latent CLIENT bugs Studio hit (CLI never did):
 Wire-collision instrumentation (`SetStreamPhase` + `COLLIDE` trace) left in as a
 permanent guard.
 
+- **Framework switch (DONE) — `framework = arduino` → `framework = espidf`.**
+  HubFX now builds + runs PURE ESP-IDF, **zero Arduino**. ✅ **HW-VALIDATED**
+  (build 714: boots, wire IDENTIFY, RC input, audio, uploads, ~5 MB PSRAM free).
+  - `src/hubfx_esp32s3.ino` → `.cpp`; `extern "C" void app_main()` spawns a
+    loopTask (`setup()` once → `for(;;) loop()`, Core 0, 16 KB stack) — exact
+    replica of Arduino-ESP32's loopTask. `loop()` already ends in `vTaskDelay(1)`
+    so IDLE0/TWDT stay fed. Our own `loopTaskHandle` for the `[stack]` probe.
+  - `platformio.ini`: `framework = espidf`; dropped `custom_sdkconfig`,
+    `board_build.arduino.*`, the `ARDUINO_*` flags, the Arduino `lib_deps`
+    (SPI/SD/arduino-libhelix). `sdkconfig.defaults` already carried the
+    boot-critical config (PSRAM OPI + `_BOOT_INIT`, USB-Serial-JTAG console,
+    8 MB QIO flash, 240 MHz, FreeRTOS HZ=1000, no BT/WiFi/LWIP).
+  - `src/idf_component.yml`: `espressif/esp-dsp`, `chmorgan/esp-libhelix-mp3`
+    (raw-C decoder — `#include "mp3dec.h"`), `joltwallet/littlefs`.
+  - `src/CMakeLists.txt`: firmware `src/` + `../../lib` compile as ONE IDF
+    component (a separate `lib_extra_dirs` component can't carry the IDF
+    `REQUIRES`) with all `REQUIRES` (driver/*, esp_psram, fatfs, vfs,
+    joltwallet__littlefs, usb, sdmmc, esp_cdc_acm include) + the 8 `sfx_*`
+    include roots. Pico-gated lib sources compile to empty TUs.
+  - Build-green fixes: ESP32 detection via `ESP_PLATFORM` (not
+    `ARDUINO_ARCH_ESP32`) in `sfx_platform.h` + the direct arch gates
+    (audio_config/esp_i2s_output/wire/flash); MD5 `MD5Builder` → native
+    `esp_rom_md5` (`sfx_storage/server/sfx_md5.h`); Arduino macros
+    `constrain`→`std::clamp`, `min`→`std::min`, `millis`→`SFX_MILLIS`.
+  - Tooling: flash CLI `findVersionSource` scans `*.cpp` (entry is now
+    `hubfx_esp32s3.cpp`); post-flash lightfx-program auto-deploy removed from
+    `flash`/`upload` (use `scalefx-flash programs <ctrl>`).
+
 ### Remaining
-- **Framework switch (final):** `.ino setup()/loop()` → `app_main` + loop task,
-  then drop `framework = arduino` + the Arduino-`SD` `lib_deps`. After this
-  `sfx_platform.h` can drop its own `<Arduino.h>` and the rest of the vestigial
-  includes go. WIRE/BOOT-CRITICAL — own focused session.
+- **Stale-upload recovery (firmware hardening):** an abandoned/timed-out upload
+  can leave the wire wedged until reset (`checkUploadTimeout` didn't bail out).
+  Surfaced once the NextTag race (below) was triggering upload timeouts.
 - **ADC (deferred):** `battery_monitor.h` `analogRead` → `esp_adc`/`hardware/adc`
   (Pico-only in practice — hubfx battery is INA226/I2C — so not hubfx-verifiable).
 - **P8 — Pico controllers:** unblock the stale `.ino` vs `BoardOf<>` first, then
   swap each abstraction's Arduino-Pico branch for the native Pico SDK (+ a
-  TinyUSB-CDC `sfx::Stream` adapter mirroring `NativeUartStream`).
+  TinyUSB-CDC `sfx::Stream` adapter mirroring `NativeUartStream`). Pico keeps
+  `framework = arduino` + the Pico-gated `<Arduino.h>` until then.
+
+### Client concurrency (fixed alongside) — Rule 56
+`Connection.NextTag()` was an unlocked read-modify-write on the correlation-tag
+counter. Studio drives the wire from several goroutines (config-apply upload +
+status/telemetry pollers + Wails RPCs); two concurrent commands could get the
+SAME tag → one command's ACK delivered to the other's waiter → periodic
+"upload chunk @0 (seq=0): timeout" on Studio apply. Fixed with a `tagMu` mutex.
+The CLI never reproduced (single-threaded). See Rule 56 + Rules 53/54.
 
 ### Legacy bench note (superseded — kept for history)
 Earlier P5/P6 were build-green-not-bench-tested; now confirmed. If a native

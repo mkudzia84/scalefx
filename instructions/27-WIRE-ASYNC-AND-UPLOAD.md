@@ -77,6 +77,21 @@ and nothing floods the async queue. Studio is the stress case (concurrent
 pollers + 50 Hz live-view + keepalive on the same wire) — always test wire
 changes against Studio, not just the CLI.
 
+### 4. Concurrent senders must not race on shared `Connection` state (Rule 56)
+
+Studio drives the wire from several goroutines at once — the config-apply upload,
+status/telemetry pollers, the keepalive loop, per-RPC Wails handlers. Every
+mutable `Connection` field needs a lock/atomic: `nextTag` (`tagMu`),
+`tagWaiters`/`streamWaiters`/`asyncFilters` (`waiterMu`), writes (`writeMu`),
+`streamActive`/`collisions` (atomics).
+
+The 2026-05-31 bug: `NextTag()` was an **unlocked** read-modify-write, so two
+concurrent commands got the SAME correlation tag → one command's ACK landed in
+the other's waiter and the loser timed out (the periodic `upload chunk @0
+(seq=0): timeout` on Studio config-apply). The CLI never reproduced it
+(single-threaded). Fix: a `tagMu` mutex. Same reason the bugs above hid from the
+CLI: it sends one command at a time.
+
 ## Checklist for any new long/raw wire operation
 
 - Does it put the firmware in a non-COBS / exclusive mode? → hold the wire
@@ -84,4 +99,6 @@ changes against Studio, not just the CLI.
 - Does it rely on an async packet for flow control? → give it a registered
   filter, never the lossy broadcast queue.
 - Does the client burst > the firmware RX ring? → size the ring to the burst.
+- Does more than one goroutine touch the `Connection`? → every shared field gets
+  a lock/atomic; `go test -race`; reproduce against Studio, not the CLI.
 - Add a collision/drop counter and surface it in Studio.
