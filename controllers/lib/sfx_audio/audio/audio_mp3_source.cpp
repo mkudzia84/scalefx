@@ -10,7 +10,7 @@
 #include <cstring>
 #include <serial/diag_log.h>
 
-#include "libhelix-mp3/mp3dec.h"
+#include "mp3dec.h"   // chmorgan/esp-libhelix-mp3 IDF component (pub/ is its include dir)
 
 #define MP3_LOG(fmt, ...)   SFX_LOG_INFO ("[Mp3Src] " fmt, ##__VA_ARGS__)
 #define MP3_WARN(fmt, ...)  SFX_LOG_WARN ("[Mp3Src] " fmt, ##__VA_ARGS__)

@@ -33,6 +33,7 @@
 #define HUBFX_HW_PROBE_H
 
 #include "hubfx_i2c.h"             // hubI2cBus() (native I2C)
+#include <platform/sfx_platform.h> // SFX_MILLIS / SFX_DELAY_MS
 #include <cstdint>
 
 #include <serial/diag_log.h>
@@ -248,7 +249,7 @@ public:
     /// ~12 ms read every 100 ms is invisible.  The PWM chip is event-driven;
     /// nothing to poll there.
     void pollSense() {
-        const uint32_t now = millis();
+        const uint32_t now = SFX_MILLIS();
         if (now - _lastSenseMs < kSenseIntervalMs) return;
         _lastSenseMs = now;
         for (uint8_t k = 0; k < 8; ++k) _inas[k].update();

@@ -30,7 +30,7 @@
 #include <vector>
 #include <string>
 
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
     #include <esp_littlefs.h>
     #include <sys/stat.h>
     #include <dirent.h>
@@ -43,7 +43,7 @@
 // ============================================================================
 // Constants (ESP32 only)
 // ============================================================================
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
 namespace {
 constexpr const char* kFlashBase      = "/littlefs";   ///< VFS mount path
 constexpr const char* kFlashPartition = "littlefs";    ///< partition label (matches partitions.csv)
@@ -75,7 +75,7 @@ FlashModule::FlashModule()
 
 bool FlashModule::begin() {
     lock();
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
     // esp_vfs_littlefs_register — registers LittleFS as a VFS at
     // `base_path` against the partition with the given label (must
     // match partitions.csv: `littlefs, data, spiffs, ...`).
@@ -131,7 +131,7 @@ uint8_t FlashModule::listDirectory(const char* path,
 
         if (!callback(entry)) break;
     }
-#elif defined(ARDUINO_ARCH_ESP32)
+#elif defined(ESP_PLATFORM)
     // ESP-IDF native: POSIX opendir/readdir/stat via NativeFile
     NativeFile dir = NativeFile::openDir(kFlashBase, path);
     if (dir && dir.isDirectory()) {
@@ -218,7 +218,7 @@ void FlashModule::listTreeRecursive(const char* path, int depth,
                               entryCount, limitHit);
         }
     }
-#elif defined(ARDUINO_ARCH_ESP32)
+#elif defined(ESP_PLATFORM)
     // ESP-IDF native: walk via NativeFile dir iteration
     NativeFile dir = NativeFile::openDir(kFlashBase, path);
     if (!dir || !dir.isDirectory()) {
@@ -273,7 +273,7 @@ uint8_t FlashModule::getFileInfo(const char* path, FileEntry& entry) {
 
     lock();
 
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
     char full[192];
     joinFlash(full, sizeof(full), path);
     struct stat st;
@@ -321,7 +321,7 @@ uint8_t FlashModule::getStorageInfo(FlashStorageInfo& info) {
     info.totalBytes  = (uint32_t)fsinfo.totalBytes;
     info.usedBytes   = (uint32_t)fsinfo.usedBytes;
     info.freeBytes   = (uint32_t)(fsinfo.totalBytes - fsinfo.usedBytes);
-#elif defined(ARDUINO_ARCH_ESP32)
+#elif defined(ESP_PLATFORM)
     size_t total = 0, used = 0;
     esp_err_t err = esp_littlefs_info(kFlashPartition, &total, &used);
     info.initialized = (err == ESP_OK);
@@ -344,7 +344,7 @@ uint8_t FlashModule::removeFile(const char* path) {
     if (!_initialized) return FlashError::NOT_INITIALIZED;
 
     lock();
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
     char full[192];
     joinFlash(full, sizeof(full), path);
     struct stat st;
@@ -367,7 +367,7 @@ uint8_t FlashModule::removeFile(const char* path) {
 bool FlashModule::removeFileNoLock(const char* path) {
     // Caller already holds _flashMutex (storage-server upload cancel).
     if (!_initialized) return false;
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
     char full[192];
     joinFlash(full, sizeof(full), path);
     return unlink(full) == 0;
@@ -381,7 +381,7 @@ uint8_t FlashModule::removeDirectory(const char* path, bool recursive) {
 
     lock();
 
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
     char full[192];
     joinFlash(full, sizeof(full), path);
     struct stat st;
@@ -402,7 +402,7 @@ uint8_t FlashModule::removeDirectory(const char* path, bool recursive) {
 
     if (!isDir) {
         // Not a directory — fall back to removeFile() semantics.
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
         char full2[192];
         joinFlash(full2, sizeof(full2), path);
         bool ok = (unlink(full2) == 0);
@@ -415,7 +415,7 @@ uint8_t FlashModule::removeDirectory(const char* path, bool recursive) {
 
     if (!recursive) {
         // Strict: only delete if empty.
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
         char full2[192];
         joinFlash(full2, sizeof(full2), path);
         bool ok = (rmdir(full2) == 0);
@@ -454,7 +454,7 @@ bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
             if (children.size() >= (size_t)MAX_TREE_ENTRIES) break;
         }
     }
-#elif defined(ARDUINO_ARCH_ESP32)
+#elif defined(ESP_PLATFORM)
     {
         NativeFile dir = NativeFile::openDir(kFlashBase, path);
         if (!dir || !dir.isDirectory()) {
@@ -481,7 +481,7 @@ bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
         if (c.isDir) {
             if (!removeDirectoryRecursive(fullPath, depth + 1)) return false;
         } else {
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
             char vfsFull[192];
             joinFlash(vfsFull, sizeof(vfsFull), fullPath);
             if (unlink(vfsFull) != 0) return false;
@@ -491,7 +491,7 @@ bool FlashModule::removeDirectoryRecursive(const char* path, int depth) {
         }
     }
 
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
     char vfsFull[192];
     joinFlash(vfsFull, sizeof(vfsFull), path);
     if (rmdir(vfsFull) == 0) return true;
@@ -513,7 +513,7 @@ uint8_t FlashModule::makeDirectory(const char* path, bool createParents) {
 
     auto checkExistingDir = [](const char* p) -> int {
         // 1 = exists as dir, 0 = exists as file, -1 = does not exist
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
         char full[192];
         joinFlash(full, sizeof(full), p);
         struct stat st;
@@ -529,7 +529,7 @@ uint8_t FlashModule::makeDirectory(const char* path, bool createParents) {
     };
 
     auto doMkdir = [](const char* p) -> bool {
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
         char full[192];
         joinFlash(full, sizeof(full), p);
         return mkdir(full, 0775) == 0;
@@ -580,7 +580,7 @@ uint8_t FlashModule::makeDirectory(const char* path, bool createParents) {
 uint8_t FlashModule::openRead(const char* path, StorageFile& file) {
     if (!_initialized) return FlashError::NOT_INITIALIZED;
 
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
     file = NativeFile::openReadFile(kFlashBase, path);
     if (!file) return FlashError::NOT_FOUND;
     if (file.isDirectory()) {
@@ -602,7 +602,7 @@ uint8_t FlashModule::openRead(const char* path, StorageFile& file) {
 uint8_t FlashModule::openWrite(const char* path, StorageFile& file, bool truncate) {
     if (!_initialized) return FlashError::NOT_INITIALIZED;
 
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
     file = NativeFile::openWriteFile(kFlashBase, path, truncate);
     if (!file) return FlashError::IO_ERROR;
     return FlashError::OK;

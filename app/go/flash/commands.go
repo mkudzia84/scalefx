@@ -31,7 +31,7 @@ func cmdBuild(controller string, noClean bool) {
 
 // ─── flash (build + flash + verify) ───
 
-func cmdFlash(controller, port string, skipVerify, noClean, noPrograms bool) {
+func cmdFlash(controller, port string, skipVerify, noClean bool) {
 	ctrl, ok := resolveCtrl(controller)
 	if !ok {
 		return
@@ -46,15 +46,13 @@ func cmdFlash(controller, port string, skipVerify, noClean, noPrograms bool) {
 		printError("%s", err)
 		return
 	}
-	// Seed the on-device lightfx program catalogue (HubFX hosts LightFx).
-	if ctrl.Name == "hubfx" && !noPrograms {
-		deployLightFxPrograms(port)
-	}
+	// NB: lightfx program seeding is NOT part of flash anymore — run it
+	// explicitly with `scalefx-flash programs <ctrl>` when wanted.
 }
 
 // ─── upload (flash without build) ───
 
-func cmdUpload(controller, port string, skipVerify, noPrograms bool) {
+func cmdUpload(controller, port string, skipVerify bool) {
 	ctrl, ok := resolveCtrl(controller)
 	if !ok {
 		return
@@ -69,9 +67,7 @@ func cmdUpload(controller, port string, skipVerify, noPrograms bool) {
 		printError("%s", err)
 		return
 	}
-	if ctrl.Name == "hubfx" && !noPrograms {
-		deployLightFxPrograms(port)
-	}
+	// lightfx program seeding removed from upload — use `scalefx-flash programs`.
 }
 
 // ─── verify ───

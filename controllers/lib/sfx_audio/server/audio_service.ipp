@@ -7,6 +7,7 @@
  * sfx_serial/serial/audio/audio_protocol.h (AudioPacket namespace).
  */
 
+#include <algorithm>                       // std::min (was Arduino min() macro)
 #include <serial/diag_log.h>
 
 #if SFX_PLATFORM_ESP32 && defined(SFX_HAS_AUDIO)
@@ -295,9 +296,9 @@ void AudioServicePolicy<TMixer>::handleStatusReq() {
     // Ring buffer stats (v3)
     buf[pos++] = (uint8_t)m.getRingFillPercent();
     SfxWire::putU16LE(&buf[pos],
-        (uint16_t)min(m.getRingAvailableRead(), (uint32_t)65535)); pos += 2;
+        (uint16_t)std::min(m.getRingAvailableRead(), (uint32_t)65535)); pos += 2;
     SfxWire::putU16LE(&buf[pos],
-        (uint16_t)min(m.getRingAvailableWrite(), (uint32_t)65535)); pos += 2;
+        (uint16_t)std::min(m.getRingAvailableWrite(), (uint32_t)65535)); pos += 2;
     SfxWire::putU32LE(&buf[pos], m.getUnderruns()); pos += 4;
     SfxWire::putU32LE(&buf[pos], m.getConsumeLoops()); pos += 4;
     SfxWire::putU32LE(&buf[pos], m.getConsumeFrames()); pos += 4;

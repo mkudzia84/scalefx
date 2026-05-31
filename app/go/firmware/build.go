@@ -16,7 +16,7 @@ import (
 // ─── Build Number Management ───
 
 // findVersionSource locates the source file containing BUILD_NUMBER.
-// Searches: version.h (src/, include/) then *.ino files in src/.
+// Searches: version.h (src/, include/) then *.ino / *.cpp sketches in src/.
 // Returns the absolute path to the file containing the define.
 func findVersionSource(root string, ctrl Controller) (string, error) {
 	ctrlDir := filepath.Join(root, "controllers", ctrl.SubDir)
@@ -25,11 +25,16 @@ func findVersionSource(root string, ctrl Controller) (string, error) {
 		filepath.Join(ctrlDir, "include", "version.h"),
 	}
 
-	// Add .ino files from src/
+	// Add top-level sketch sources from src/ — .ino (Arduino) or .cpp (the
+	// HubFX ESP-IDF entry is hubfx_esp32s3.cpp after the framework switch).
+	// The BUILD_NUMBER regex below picks the right one.
 	srcDir := filepath.Join(ctrlDir, "src")
 	entries, _ := os.ReadDir(srcDir)
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".ino") {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".ino") || strings.HasSuffix(e.Name(), ".cpp") {
 			candidates = append(candidates, filepath.Join(srcDir, e.Name()))
 		}
 	}

@@ -59,7 +59,7 @@
 #include <server/board_server.h>           // SystemServicePolicy + BoardServerBase
 #include <storage/flash.h>
 #include <storage/sd_card.h>
-#include <MD5Builder.h>
+#include "sfx_md5.h"                 // SfxMd5 — native MD5 (was Arduino MD5Builder)
 #include <platform/sfx_platform.h>
 #include <serial/diag_log.h>
 #include <concepts>
@@ -329,7 +329,7 @@ private:
     uint32_t _uploadExpectedSize = 0;
     uint32_t _uploadBytesWritten = 0;
     uint16_t _uploadExpectedSeq  = 0;
-    MD5Builder _uploadMd5;
+    sfx_storage::SfxMd5 _uploadMd5;
 
     // --- Stream upload state ---
     bool     _streamActive          = false;    // True while raw binary streaming

@@ -2248,10 +2248,40 @@ Effects / roles / drivers NEVER call `pinMode` / `digitalWrite` / `analogWrite` 
 `Wire` / `Serial*` / `Servo` / `millis` / `attachInterrupt`. Each abstraction is an
 `{esp,pico}_*` pair behind a compile-time selector (`sfx_i2c.h`, `native_gpio.h`,
 `sfx_servo.h`) — a new driver adds the same split, gated by a `concept` + `requires`
-(Rule 18). `<Arduino.h>` is permitted ONLY at the framework boundary (the controller
-`.ino` entry while `framework = arduino` remains; the `app_main` entry switch is the
-final tracked step). Full map + executed log:
+(Rule 18). **HubFX is now PURE ESP-IDF — `framework = espidf`, `app_main` entry in
+`hubfx_esp32s3.cpp` → loopTask, ZERO Arduino.** ESP32 platform detection is
+`ESP_PLATFORM` (NOT `ARDUINO_ARCH_ESP32` — undefined under pure espidf); MD5 is
+`esp_rom_md5` (`sfx_storage/server/sfx_md5.h`); managed deps (`espressif/esp-dsp`,
+`chmorgan/esp-libhelix-mp3` — raw-C `#include "mp3dec.h"`, `joltwallet/littlefs`)
+in `src/idf_component.yml`; the firmware `src/` + the shared `../../lib` compile as
+ONE IDF component (`src/CMakeLists.txt` declares all the IDF `REQUIRES` + the 8
+`sfx_*` include roots — a separate `lib_extra_dirs` component can't carry the
+REQUIRES). `<Arduino.h>` is permitted ONLY on the **Pico** path (`#if SFX_PLATFORM_PICO`
+— Arduino-Pico framework, P8). Full map + executed log:
 [instructions/25-ARDUINO-REMOVAL.md](../instructions/25-ARDUINO-REMOVAL.md).
+
+### 56. Thread-Safe Wire — Studio Drives the `Connection` From Many Goroutines
+
+The Go `protocol.Connection` is shared across several goroutines whenever Studio is
+the client: the config-apply upload goroutine, status / telemetry pollers, the
+keepalive loop, and per-RPC Wails handlers. **Every mutable Connection field MUST be
+guarded** — `nextTag` (`tagMu`), `tagWaiters` / `streamWaiters` / `asyncFilters`
+(`waiterMu`), serial writes (`writeMu`), `streamActive` / `collisions` (atomics).
+
+The canonical failure (2026-05-31): `NextTag()` did an UNLOCKED read-modify-write on
+the correlation-tag counter. Two concurrent commands got the SAME tag, so one
+command's ACK was delivered to the other's waiter and the loser timed out — the
+periodic `upload chunk @0 (seq=0): timeout waiting for response` on Studio config-apply
+(gunfx/hubfx/... save). It only ever happened under Studio; the **CLI is
+single-threaded** (one command at a time, no concurrent `NextTag`) so it never
+reproduced — *the same reason the Rule 53/54 wire bugs hid from the CLI.*
+
+**Rule:** any new shared `Connection` field gets a lock or atomic the moment you add
+it; race-test wire changes against **Studio**, not just the CLI; run `go test -race`
+on the protocol package. Composes with Rule 53 (lossy-vs-reliable async) + Rule 54
+(stream-upload exclusivity). Reference:
+[connection.go](../app/go/protocol/connection.go) `NextTag` / `tagMu`,
+[instructions/27-WIRE-ASYNC-AND-UPLOAD.md](../instructions/27-WIRE-ASYNC-AND-UPLOAD.md).
 
 ### Client-Server Topology
 ```

@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.16.0-hubfx"
-#define BUILD_NUMBER     710
+#define BUILD_NUMBER     715
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -594,6 +594,11 @@ static void applyLightFxConfigCallback(const LightFxYamlConfig& cfg) {
 //     into our internal-SRAM bounce.  Track separately because some
 //     internal SRAM is reserved IRAM (instruction-only).
 //
+// Handle of our loop task (app_main spawns it).  Replaces Arduino-ESP32's
+// global `loopTaskHandle` — the [stack] instrumentation reads its high-water
+// mark.  Set in app_main; nullptr until then.
+static TaskHandle_t loopTaskHandle = nullptr;
+
 // Tagged `[mem]` so an operator can grep boot logs in one shot.
 // Called from setup() and from a 30-second timer in loop().
 static void logMemoryHeapCaps(const char* tag) {
@@ -626,7 +631,6 @@ static void logMemoryHeapCaps(const char* tag) {
     // overflowing.  Configured stack - HWM = peak usage; anything with
     // > 2 KB headroom is a reclaim candidate (CONFIG_ARDUINO_LOOP_STACK,
     // _producerStackSize, _decoderStackSize, the Core 1 audio task).
-    extern TaskHandle_t loopTaskHandle;
     const auto reportStack = [](const char* name, TaskHandle_t h) {
         if (!h) return;
         const UBaseType_t hwm = uxTaskGetStackHighWaterMark(h);
@@ -1008,4 +1012,24 @@ void loop() {
 #endif // SFX_INSTRUMENTATION
 
     vTaskDelay(pdMS_TO_TICKS(1));
+}
+
+// ============================================================================
+//  app_main — ESP-IDF native entry (replaces the Arduino setup/loop bridge).
+// ============================================================================
+//
+//  framework = espidf (no Arduino).  IDF calls app_main on the "main" task;
+//  we spawn a dedicated loop task that mirrors what Arduino-ESP32's loopTask
+//  used to do: setup() once, then loop() forever, pinned to Core 0
+//  (ARDUINO_RUNNING_CORE=0 → Core 1 belongs to the audio producer/consumer)
+//  with the 16 KB stack the deep config-reload path needs (was
+//  CONFIG_ARDUINO_LOOP_STACK_SIZE).  loop() already ends with vTaskDelay(1),
+//  so IDLE0 / TWDT stay fed.
+extern "C" void app_main(void) {
+    xTaskCreatePinnedToCore(
+        [](void*) {
+            setup();
+            for (;;) loop();
+        },
+        "loopTask", 16384, nullptr, 1, &loopTaskHandle, /*core=*/0);
 }
