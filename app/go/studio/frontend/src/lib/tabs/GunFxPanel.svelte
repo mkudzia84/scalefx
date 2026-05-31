@@ -30,12 +30,13 @@
         type GunVerboseStatusT, type GunStatusT,
     } from '../gunfx'
     import ServoWidget from '../components/ServoWidget.svelte'
+    import ServoIoWidget from '../components/ServoIoWidget.svelte'
     import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     // SetPortProfile + markHubDirty now flow through ServoCalibrationDialog;
     // GunFxPanel only READS the device-model profile to feed ServoWidget.
     import {
         deviceModel, type Port, formatPortRail,
-        liveChannels, liveChannelKey, usToPct,
+        liveChannels, liveChannelKey,
         RoleKind, claimsForPort,
     } from '../devicemodel'
     import { effectClaims } from '../effect-claims'
@@ -349,16 +350,6 @@
         return null
     }
 
-    // Servo-output track envelope (µs) — a fixed physical-servo range so the
-    // configured [min,max] travel reads as a BAND inside it (like the
-    // calibration view's slider-range), and the live position is a line within.
-    const SRV_ENV_LO = 500
-    const SRV_ENV_HI = 2500
-    /** Map a servo µs to 0–100% across the fixed servo envelope. Clamped. */
-    function srvPct(us: number): number {
-        return Math.max(0, Math.min(100,
-            ((us - SRV_ENV_LO) / (SRV_ENV_HI - SRV_ENV_LO)) * 100))
-    }
 
     // ── Live µs lookup from a named channel (Rule 43 + 36) ─────────────
     // For a function id like "gun_fire_mode", find which (input port,
@@ -935,45 +926,22 @@
                                 <span class="unit">µs</span>
                             </div>
 
-                            {#if axis.input}
-                                {@const liveAx = liveUsFor(axis.input)}
-                                <div class="io-label">Signal input</div>
-                                <div class="axis-bar" class:nosignal={!liveAx || !liveAx.valid}>
-                                    <div class="axis-neutral" style="left:{usToPct(axis.neutralUs)}%" title="neutral {axis.neutralUs} µs"></div>
-                                    {#if liveAx && liveAx.valid}
-                                        <div class="axis-fill" style="width:{usToPct(liveAx.us)}%"></div>
-                                        <span class="axis-readout">{liveAx.us} µs</span>
-                                    {:else}
-                                        <span class="axis-nosignal">NO SIGNAL</span>
-                                    {/if}
-                                </div>
-                            {/if}
-
-                            <!-- Servo OUTPUT status — the LIVE servo position
-                                 from the GENERIC servo telemetry stream (20 Hz,
-                                 port-keyed, decoupled from the gun): shows
-                                 motion-profile slew + recoil kicks. Falls back
-                                 to the commanded position (input clamped to
-                                 travel) until the stream warms up / when not
-                                 subscribed. A faint tick shows the target. The
-                                 broadcast is firmware-loop-gated, so it goes
-                                 quiet during an upload (no separate poller). -->
-                            {#if axis.servoPort && axis.servoPort.kind}
+                            <!-- Live servo I/O — signal-in + servo-out (actual
+                                 position line + [min,max] travel band) in one
+                                 reusable widget.  Position comes from the generic
+                                 servo_status stream (20 Hz, upload-gated). -->
+                            {#if axis.input || (axis.servoPort && axis.servoPort.kind)}
                                 {@const prof = profileForPort(axis.servoPort) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
                                 {@const liveAx = liveUsFor(axis.input)}
-                                {@const inUs = (axis.input && liveAx && liveAx.valid) ? liveAx.us : axis.neutralUs}
-                                {@const cmdUs = Math.min(prof.maxUs, Math.max(prof.minUs, inUs))}
-                                {@const sv = $servoStatus[servoStatusKey(axis.servoPort.guid, axis.servoPort.idx)]}
-                                {@const live = !!sv && sv.posUs > 0}
-                                {@const posUs = live ? sv.posUs : cmdUs}
-                                <div class="io-label">Servo output
-                                    <span class="io-sub">{posUs} µs{live ? '' : ' · cmd'}{prof.reversed ? ' · ↔ rev' : ''}</span>
-                                </div>
-                                <div class="servo-track" class:cmd-only={!live} title="Servo at {posUs} µs · travel {prof.minUs}–{prof.maxUs} µs · centre {prof.centerUs} µs">
-                                    <div class="servo-track-range" style="left:{srvPct(prof.minUs)}%; width:{Math.max(0.5, srvPct(prof.maxUs) - srvPct(prof.minUs))}%" title="travel {prof.minUs}–{prof.maxUs} µs"></div>
-                                    <div class="servo-track-center" style="left:{srvPct(prof.centerUs)}%" title="centre {prof.centerUs} µs"></div>
-                                    <div class="servo-track-pos" style="left:{srvPct(posUs)}%" title="position {posUs} µs"></div>
-                                </div>
+                                {@const sv = (axis.servoPort && axis.servoPort.kind) ? $servoStatus[servoStatusKey(axis.servoPort.guid, axis.servoPort.idx)] : undefined}
+                                <ServoIoWidget
+                                    hasInput={!!axis.input}
+                                    inputUs={liveAx?.us ?? null}
+                                    inputValid={liveAx?.valid ?? false}
+                                    neutralUs={axis.neutralUs}
+                                    hasServo={!!(axis.servoPort && axis.servoPort.kind)}
+                                    minUs={prof.minUs} maxUs={prof.maxUs} centerUs={prof.centerUs} reversed={prof.reversed}
+                                    servo={sv ?? null} />
                             {/if}
 
                             <!-- Rule 44: per-servo profile editing,
@@ -1450,30 +1418,8 @@ pulse = sinusoidal envelope per shot — fan idles at 50 % base while firing+arm
     .rof-nosignal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.5px; color: var(--text-dim); }
     .row-err { font-size: 11px; color: var(--error); margin: 3px 0 0 28px; font-family: var(--font-mono); }
 
-    /* Axis bar (Phase 4c) — live µs on a 1000..2000 µs scale.  Single
-       fill + a neutral marker; the configured min/max range overlay is
-       implicit (any port-role profile clamping is on the role side). */
-    .axis-bar { position: relative; height: 14px; margin: 4px 0 6px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
-    .axis-bar.nosignal { background: repeating-linear-gradient(45deg, var(--bg-raised), var(--bg-raised) 6px, transparent 6px, transparent 12px); }
-    .axis-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); transition: width 0.08s linear; }
-    .axis-neutral { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--text-dim); pointer-events: none; }
-    .axis-readout { position: absolute; right: 6px; top: 0; line-height: 14px; font-family: var(--font-mono); font-size: 9px; color: var(--text-bright); text-shadow: 0 0 3px rgba(0,0,0,0.7); }
-    .axis-nosignal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.5px; color: var(--text-dim); }
-
-    /* Signal-input / servo-output bar labels. */
-    .io-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-top: 4px; }
-    .io-label .io-sub { text-transform: none; letter-spacing: 0; font-family: var(--font-mono); opacity: 0.8; margin-left: 4px; }
-
-    /* Servo OUTPUT — a thin track (NOT a fill bar): the configured [min,max]
-       travel is a band overlay (like the calibration slider-range), the centre
-       a dashed tick, and the LIVE position a bright vertical line.  cmd-only
-       (telemetry not streaming yet) dims the line to a neutral marker. */
-    .servo-track { position: relative; height: 12px; margin: 3px 0 6px; }
-    .servo-track::before { content: ''; position: absolute; left: 0; right: 0; top: 5px; height: 2px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 1px; }
-    .servo-track-range { position: absolute; top: 3px; height: 6px; background: color-mix(in srgb, var(--accent) 18%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 2px; pointer-events: none; }
-    .servo-track-center { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--text-dim); pointer-events: none; }
-    .servo-track-pos { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: var(--accent); box-shadow: 0 0 5px var(--accent); border-radius: 1px; transition: left 0.06s linear; pointer-events: none; }
-    .servo-track.cmd-only .servo-track-pos { background: var(--text-dim); box-shadow: none; opacity: 0.6; }
+    /* Live servo I/O (signal-in bar + servo-out line) moved to the reusable
+       ServoIoWidget component. */
 
     /* Smoke generator sibling card (Phase 4 polish 2026-05-26).
        Lives directly after each gun card via the {#each} block, so it
