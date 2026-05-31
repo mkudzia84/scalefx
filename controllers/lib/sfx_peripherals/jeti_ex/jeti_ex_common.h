@@ -31,7 +31,6 @@
 #include "platform/sfx_platform.h"
 #if SFX_PLATFORM_ESP32
 
-#include <Arduino.h>
 #include <cstdint>
 #include <cstring>
 

@@ -56,7 +56,7 @@
 #ifndef SFX_RX_INPUTS_H
 #define SFX_RX_INPUTS_H
 
-#include <Arduino.h>
+#include <cstdint>
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include "rx_common.h"
 
