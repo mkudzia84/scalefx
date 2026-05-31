@@ -478,13 +478,13 @@ same shared `ServoWidget` in two places, both opening the same dialog
 and persisting via the same `SetPortProfile` path (no duplicate data):
 - **Feature panels** (GunFx Turret section, future EngineFx servo
   binding) — tune the servo where you wire the feature.
-- **The IO tab** — `ServoWidget` renders on a full-width `.servo-cal-row`
-  directly under EVERY servo port row in `PortRoleTab.svelte` (always
-  visible, no expander, gated on `isServo(p)` only), so you can calibrate
-  a servo at the port even before it's bound to any effect.  It's a SUB-ROW,
-  not inline on the dense port row — the port row is a non-wrapping flex line
-  that would clip the widget off the right edge.  The dialog routes by the
-  port's actual `PortRef.guid`.  ⚠️ **GUID gotcha:** `Topology.PortList("")`
+- **The IO tab** — two compact buttons (`⚙ Calibrate…` + `Reset`) sit
+  inline on the RIGHT of every servo port row in `PortRoleTab.svelte`
+  (gated on `isServo(p)` only).  Calibrate opens the dialog; Reset writes
+  `defaultServoProfile()` via `SetPortProfile` + `markHubDirty` (Apply to
+  persist).  Not the full `ServoWidget` here — just the two actions, kept
+  narrow so they don't overflow the dense port row.  The dialog routes by
+  the port's actual `PortRef.guid`.  ⚠️ **GUID gotcha:** `Topology.PortList("")`
   is a *request* sentinel (`"" → the hub`), but the RESPONSE carries each
   board's REAL GUID, so `BuildModel` gives hub-local ports the hub's GUID
   (e.g. `6D60`), NOT `""`.  Gating servo UI on `guid === ""` silently matches
