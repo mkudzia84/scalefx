@@ -63,12 +63,12 @@ func dispatchInteractive(line string) {
 	case "flash":
 		controller, flags := extractPositionalAndFlags(args)
 		port := argValue(flags, "--port")
-		cmdFlash(controller, port, hasArg(flags, "--skip-verify"), hasArg(flags, "--no-clean"), hasArg(flags, "--no-programs"))
+		cmdFlash(controller, port, hasArg(flags, "--skip-verify"), hasArg(flags, "--no-clean"))
 
 	case "upload":
 		controller, flags := extractPositionalAndFlags(args)
 		port := argValue(flags, "--port")
-		cmdUpload(controller, port, hasArg(flags, "--skip-verify"), hasArg(flags, "--no-programs"))
+		cmdUpload(controller, port, hasArg(flags, "--skip-verify"))
 
 	case "verify":
 		controller, flags := extractPositionalAndFlags(args)
