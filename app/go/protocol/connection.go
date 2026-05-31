@@ -835,12 +835,35 @@ func (c *Connection) dispatchResponse(resp *Response) {
 		c.stat.rxUnmatched.Add(1) // tag set but no waiter (late / orphaned)
 	}
 
-	// Async or unmatched — hand off to the dispatcher goroutine.  NON-BLOCKING:
-	// the reader must NEVER stall on a slow async consumer (Studio's Wails emit
-	// at 50 Hz), or the serial buffer backs up and command responses time out
-	// (proven: 0% timeouts at delay=0, 86% at delay=150ms, same flood).  Drop
-	// on overflow — async broadcasts (live channel view) are lossy.
 	c.stat.rxAsync.Add(1)
+
+	// Registered async FILTERS (e.g. FILE_UPLOAD_PROGRESS) are explicit
+	// flow-control consumers, NOT lossy telemetry — deliver them straight to
+	// their buffered channel instead of through the shared async queue.  A
+	// 50 Hz live-view broadcast flood otherwise fills that 256-deep queue and
+	// drops the critical segment-ACK, stalling stream uploads (the Studio
+	// >64 KB upload hang, 2026-05-31).  Still NON-BLOCKING — the reader must
+	// never stall — but the filter buffer is sized for its own cadence, not
+	// shared with broadcasts.
+	if resp.Tag == TagAsync {
+		c.waiterMu.Lock()
+		fch, fok := c.asyncFilters[resp.PacketType]
+		c.waiterMu.Unlock()
+		if fok {
+			select {
+			case fch <- resp:
+			default:
+				c.stat.asyncDropped.Add(1)
+			}
+			return
+		}
+	}
+
+	// Non-filtered async / unmatched → lossy broadcast queue + general
+	// callback.  NON-BLOCKING: the reader must NEVER stall on a slow async
+	// consumer (Studio's Wails emit at 50 Hz), or the serial buffer backs up
+	// and command responses time out (proven: 0% timeouts at delay=0, 86% at
+	// delay=150ms, same flood).  Drop on overflow — live channel view is lossy.
 	if c.asyncQueue != nil {
 		select {
 		case c.asyncQueue <- resp:
