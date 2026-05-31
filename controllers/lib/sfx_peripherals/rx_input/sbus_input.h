@@ -5,8 +5,8 @@
  * Extracts 16 proportional channels (11-bit → µs) plus digital CH17/CH18
  * and failsafe/frame-lost flags.
  *
- * Uses Arduino sfx::Stream* — works on any platform.  The user is responsible
- * for configuring the HardwareSerial with correct baud, parity, and
+ * Uses an `sfx::Stream*` — works on any platform.  The caller is responsible
+ * for configuring the UART with correct baud, parity, and
  * signal inversion before passing it to begin().
  *
  * Platform setup examples:

@@ -404,9 +404,9 @@ concept SystemServicePolicy = requires(T t, BoardServerBase* ctx,
 // `TStream` must derive `sfx::Stream` (so `&_stream` mirrors into the
 // base `sfx::Stream* _serial` for non-template consumers) and expose the
 // hot-path methods available()/read()/write(buf,len).  In practice:
-// `sfx::NativeUartStream` (ESP32 native wire), `sfx::ArduinoStreamAdapter`
-// wrapping Arduino `HardwareSerial`/`USBCDC` (Pico wire + RC UART), or a
-// test stub that captures bytes.
+// `sfx::NativeUartStream` (ESP32 native wire), or a test stub that captures
+// bytes.  (Pico's Arduino-Serial wire gets a thin sfx::Stream wrapper when
+// the Pico controllers are migrated — P8.)
 //
 template <typename TStream>
 class BoardServerBaseT : public BoardServerBase {

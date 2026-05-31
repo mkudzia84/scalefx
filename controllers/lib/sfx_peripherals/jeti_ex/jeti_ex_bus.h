@@ -9,8 +9,8 @@
  * This is a SEPARATE PERIPHERAL from rx_input — not just a ChannelSource.
  * For channel-only access through RxInputs<>, use JetiExChannelSource adapter.
  *
- * The class uses Arduino sfx::Stream* for UART I/O.  The caller configures the
- * HardwareSerial with the correct baud rate before calling begin().
+ * The class uses an `sfx::Stream*` for UART I/O.  The caller configures the
+ * UART with the correct baud rate before calling begin().
  *
  * Platform setup examples:
  *

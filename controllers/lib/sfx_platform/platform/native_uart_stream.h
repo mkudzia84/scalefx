@@ -65,6 +65,19 @@ public:
                size_t rxBufBytes = 8192,
                size_t txBufBytes = 8192);
 
+    /// Full-control install: the caller supplies the `uart_config_t` (parity,
+    /// stop bits, baud) plus an optional line-inverse mask (e.g.
+    /// `UART_SIGNAL_RXD_INV` for SBUS) and an RS-485 half-duplex flag.  Used by
+    /// EspInputPort to drive an RC UART (SBUS 8E2-inverted / Jeti EX 8N1)
+    /// natively — replaces the old Arduino `HardwareSerial` + adapter.  begin()
+    /// above is the 8N1 shortcut that delegates here.
+    bool beginConfig(uart_port_t port, int rxPin, int txPin,
+                     const uart_config_t& cfg,
+                     uint32_t lineInverseMask = 0,
+                     bool     rs485HalfDuplex = false,
+                     size_t   rxBufBytes = 8192,
+                     size_t   txBufBytes = 256);
+
     /// Free the driver.  Rarely needed (the UART stays up across the
     /// whole runtime); provided for symmetry / hot-reload tests.
     void end();

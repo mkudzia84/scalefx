@@ -14,9 +14,6 @@ bool NativeUartStream::begin(uart_port_t port,
                              uint32_t baudRate,
                              size_t rxBufBytes,
                              size_t txBufBytes) {
-    if (_installed) return true;
-    _port = port;
-
     uart_config_t cfg = {};
     cfg.baud_rate  = (int)baudRate;
     cfg.data_bits  = UART_DATA_8_BITS;
@@ -24,6 +21,19 @@ bool NativeUartStream::begin(uart_port_t port,
     cfg.stop_bits  = UART_STOP_BITS_1;
     cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
     cfg.source_clk = UART_SCLK_DEFAULT;
+    return beginConfig(port, rxPin, txPin, cfg, /*invert=*/0,
+                       /*rs485=*/false, rxBufBytes, txBufBytes);
+}
+
+bool NativeUartStream::beginConfig(uart_port_t port,
+                                   int rxPin, int txPin,
+                                   const uart_config_t& cfg,
+                                   uint32_t lineInverseMask,
+                                   bool     rs485HalfDuplex,
+                                   size_t   rxBufBytes,
+                                   size_t   txBufBytes) {
+    if (_installed) return true;
+    _port = port;
 
     // Driver install first — sizes the RX / TX ring buffers in internal
     // SRAM (ISR-safe).  Pass 0 as the event-queue length; we poll, no
@@ -46,6 +56,12 @@ bool NativeUartStream::begin(uart_port_t port,
         uart_driver_delete(_port);
         return false;
     }
+
+    // SBUS inverts RXD; Jeti / wire do not.
+    if (lineInverseMask) uart_set_line_inverse(_port, lineInverseMask);
+    // Optional hardware RS-485 half-duplex (Jeti uses MANUAL matrix toggling
+    // via EspInputPort::txEnable/txDisable instead, so it passes false).
+    if (rs485HalfDuplex) uart_set_mode(_port, UART_MODE_RS485_HALF_DUPLEX);
 
     _installed = true;
     _peeked    = -1;

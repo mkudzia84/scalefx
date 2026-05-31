@@ -5,18 +5,16 @@
  * of the two Arduino base classes the ScaleFX protocol layer used to lean on
  * (the wire to the host, DiagLog, the RC UART chain).  Keeping our own tiny
  * interface — instead of `#include <Arduino.h>` for `Stream`/`Print` — is what
- * lets the firmware drop the Arduino framework dependency on ESP32 while the
- * exact same protocol code keeps compiling on Pico (there an
- * `ArduinoStreamAdapter` bridges Arduino's `HardwareSerial` to this interface).
+ * lets the firmware drop the Arduino framework dependency on ESP32.
  *
  * Surface = exactly what the protocol consumers call (verified by grep): the
  * write side (write byte / write buffer / flush) on `Print`, plus the read side
  * (available / read / peek / readBytes) and an `if (stream)` truthiness on
  * `Stream`.  No `print()` / `println()` / `printf()` — the wire is binary COBS.
  *
- * Concrete implementations:
- *   - sfx::NativeUartStream   (ESP32 native UART — native_uart_stream.h)
- *   - sfx::ArduinoStreamAdapter (wraps any Arduino ::Stream — arduino_stream_adapter.h)
+ * Concrete implementation: sfx::NativeUartStream (ESP32 native UART —
+ * native_uart_stream.h) is used for BOTH the host wire (UART0) and the RC
+ * UART (UART1/2 SBUS/Jeti, via EspInputPort).
  */
 
 #ifndef SFX_STREAM_H
