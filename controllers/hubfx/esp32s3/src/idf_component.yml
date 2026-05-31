@@ -13,3 +13,4 @@ dependencies:
   idf: ">=5.0"
   espressif/esp-dsp: "*"
   chmorgan/esp-libhelix-mp3: "*"
+  joltwallet/littlefs: "*"          # esp_littlefs (LittleFS-on-flash) — was via the Arduino umbrella

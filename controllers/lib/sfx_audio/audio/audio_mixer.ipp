@@ -22,6 +22,7 @@
 #if defined(SFX_HAS_AUDIO)
 
 #include "audio_log.h"
+#include <algorithm>                 // std::clamp (was Arduino constrain() macro)
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #if SFX_PLATFORM_ESP32
@@ -489,7 +490,7 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     ws.source->setLoopCount(srcLoopCount);
     ws.loopCountInit = srcLoopCount;
 
-    ch.volume = constrain(options.volume, 0.0f, 1.0f);
+    ch.volume = std::clamp(options.volume, 0.0f, 1.0f);
     ch.outputChannels = options.outputChannels;
     ch.fading = false;
     ch.fadeVolume = 1.0f;
@@ -875,12 +876,12 @@ void AudioMixer<TI2S, TCodec>::checkAndPlayNextQueued(int channel) {
 template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::setVolume(int channel, float vol) {
     if (channel < 0 || channel >= AUDIO_MAX_CHANNELS) return;
-    _channels[channel].volume = constrain(vol, 0.0f, 1.0f);
+    _channels[channel].volume = std::clamp(vol, 0.0f, 1.0f);
 }
 
 template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::setMasterVolume(float vol) {
-    _masterVolume = constrain(vol, 0.0f, 1.0f);
+    _masterVolume = std::clamp(vol, 0.0f, 1.0f);
 }
 
 template<typename TI2S, typename TCodec>

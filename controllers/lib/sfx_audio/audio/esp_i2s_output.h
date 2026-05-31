@@ -18,7 +18,7 @@
 #include "audio_ring_buffer.h"
 #include "audio_config.h"
 
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
 
 #include <driver/i2s_std.h>
 #include <driver/gpio.h>

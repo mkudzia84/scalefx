@@ -31,8 +31,11 @@
     // Covers both RP2040 and RP2350 (Arduino-Pico framework by Earle Philhower)
     #define SFX_PLATFORM_PICO       1
     #define SFX_PLATFORM_ESP32      0
-#elif defined(ARDUINO_ARCH_ESP32)
-    // ESP32-S3 (ESP-IDF Arduino framework)
+#elif defined(ARDUINO_ARCH_ESP32) || defined(ESP_PLATFORM)
+    // ESP32-S3 — `ESP_PLATFORM` is defined by ESP-IDF on BOTH the pure-espidf
+    // build AND the Arduino-ESP32 (IDF-component) build; `ARDUINO_ARCH_ESP32`
+    // only on the latter.  Checking ESP_PLATFORM is what lets the firmware run
+    // native espidf with no Arduino.
     #define SFX_PLATFORM_PICO       0
     #define SFX_PLATFORM_ESP32      1
 #else

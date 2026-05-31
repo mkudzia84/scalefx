@@ -11,9 +11,8 @@
 #include <serial/diag_log.h>
 
 // Pull helix's C API.  Header lives under libhelix-mp3/ in the
-// vendored library tree; PlatformIO adds it to the include path
-// automatically via the lib's library.properties.
-#include "libhelix-mp3/mp3dec.h"
+// chmorgan/esp-libhelix-mp3 IDF component (pub/ is its include dir).
+#include "mp3dec.h"
 
 #define MP3POOL_LOG(fmt, ...)   SFX_LOG_INFO ("[Mp3Pool] " fmt, ##__VA_ARGS__)
 #define MP3POOL_WARN(fmt, ...)  SFX_LOG_WARN ("[Mp3Pool] " fmt, ##__VA_ARGS__)

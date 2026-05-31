@@ -53,7 +53,7 @@
  */
 #if defined(ARDUINO_ARCH_RP2040)
     #define I2S_BITS_PER_CHANNEL    32
-#elif defined(ARDUINO_ARCH_ESP32)
+#elif defined(ESP_PLATFORM)
     #define I2S_BITS_PER_CHANNEL    AUDIO_BIT_DEPTH
 #else
     #define I2S_BITS_PER_CHANNEL    32
@@ -107,7 +107,7 @@ struct I2SPinConfig {
  * At 44.1kHz: 512 samples = 11.6ms latency
  */
 #ifndef AUDIO_MIX_BUFFER_SIZE
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
 #define AUDIO_MIX_BUFFER_SIZE       1024
 #else
 #define AUDIO_MIX_BUFFER_SIZE       512
@@ -123,7 +123,7 @@ struct I2SPinConfig {
  * Typical: 2048-8192 bytes
  */
 #ifndef AUDIO_STREAM_BUFFER_SIZE
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
 #define AUDIO_STREAM_BUFFER_SIZE    8192
 #else
 #define AUDIO_STREAM_BUFFER_SIZE    2048

@@ -30,10 +30,12 @@ idf_component_register(
         "${SFX_LIB}/sfx_storage"            # <storage/…>, <server/storage_service.h>
         "${SFX_LIB}/sfx_config"             # <config/…>, <server/multi_config_server.h>
         "${SFX_LIB}/sfx_usb"                # <usb/…>
+        "${SFX_LIB}/esp_cdc_acm/include"    # vendored USB CDC-ACM host driver (usb/cdc_acm_host.h)
     REQUIRES
         # Managed components (src/idf_component.yml).
         espressif__esp-dsp                  # Xtensa LX7 SIMD audio mix kernel
         chmorgan__esp-libhelix-mp3          # fixed-point Helix MP3 decoder
+        joltwallet__littlefs                # LittleFS on internal flash
         # IDF subsystems used directly by the firmware + shared lib.
         driver
         esp_driver_i2c
@@ -52,7 +54,6 @@ idf_component_register(
         soc
         fatfs
         vfs
-        esp_littlefs
         usb
         sdmmc
 )

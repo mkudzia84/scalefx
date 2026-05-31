@@ -55,7 +55,7 @@ constexpr size_t HEADER_SIZE = 4;          // type(1) + tag(1) + len(2)
 constexpr size_t PICO_MAX_PAYLOAD  = 512;   // RP2040/RP2350 capacity
 constexpr size_t ESP32_MAX_PAYLOAD = 2048;  // ESP32-S3 capacity
 
-#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP_PLATFORM)
 constexpr size_t MAX_PAYLOAD_SIZE = ESP32_MAX_PAYLOAD;
 #else
 constexpr size_t MAX_PAYLOAD_SIZE = PICO_MAX_PAYLOAD;
