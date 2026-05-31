@@ -318,5 +318,11 @@ func (e *Events) add(dst any, fn any) {
 		// input live-value subscriber (CLI [RC] or Studio bars) ever fired,
 		// for any protocol, even though frames decoded fine.
 		*d = append(*d, fn.(func(InputValue)))
+	case *[]func(ServoMotionEvent):
+		// Same trap as InputValue above — OnServoMotion silently no-op'd, so
+		// the Studio servo-output widget never got live position/target even
+		// though the firmware emits SERVO_MOTION_UPDATE at 20 Hz and it
+		// decodes cleanly.  (Found 2026-05-31 via the servo-output red line.)
+		*d = append(*d, fn.(func(ServoMotionEvent)))
 	}
 }
