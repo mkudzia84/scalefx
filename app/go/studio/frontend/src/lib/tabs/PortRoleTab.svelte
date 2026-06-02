@@ -204,12 +204,16 @@
     .rail-chip { font-family: var(--font-mono); font-size: 10px; color: var(--text); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; flex-shrink: 0; }
     .cfg-btn { flex-shrink: 0; min-width: 0; padding: 0 8px; font-size: 11px; }
     .cfg-btn.open { background: color-mix(in srgb, var(--accent) 25%, var(--bg-input)); border-color: var(--accent); }
-    /* Narrow icon-only servo buttons (settings + reset) — fixed 24px square so
-       they slot onto the row without widening it; the flex fanout absorbs them. */
-    .icon-btn { flex-shrink: 0; width: 24px; min-width: 24px; padding: 0; font-size: 13px; line-height: 1; text-align: center; }
+    /* Icon-only servo buttons (settings + reset) — a square whose side equals the
+       text-box height (26px), so they line up with the name input and don't widen
+       the row (flex-shrink:0; the fanout absorbs them). */
+    .icon-btn { flex-shrink: 0; width: 26px; height: 26px; min-width: 26px; padding: 0; box-sizing: border-box; font-size: 14px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
     .role-select { flex: 0 0 150px; }
     .role-fixed { flex: 0 0 150px; font-size: 12px; color: var(--text-dim); padding: 4px 8px; border: 1px dashed var(--border); border-radius: 3px; text-align: center; }
-    .name-input { flex: 1; min-width: 80px; font-family: var(--font-ui); }
-    .fanout { flex: 1; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Constant width — does NOT flex, so adding the trailing servo buttons can't
+       resize it (the fanout absorbs the difference instead).  Explicit height so
+       the square icon buttons can match it exactly. */
+    .name-input { flex: 0 0 160px; height: 26px; box-sizing: border-box; font-family: var(--font-ui); }
+    .fanout { flex: 1; min-width: 0; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 </style>
