@@ -47,6 +47,7 @@
     import { freePortPoolFiltered } from '../components/port_pool'
     import { PreviewLightChannel, StopLightChannel } from '../../../wailsjs/go/main/App'
     import ChannelBandCluster from '../components/ChannelBandCluster.svelte'
+    import LightTimelineTrack from '../components/LightTimelineTrack.svelte'
 
     let busy = false
     let error = ''
@@ -411,25 +412,8 @@
             i === bi ? { ...b, state: st } : b) }))
     }
 
-    // ─── Per-event field map (which params each kind reads) ──────────
-    const FIELD_MAP: Record<LightEventKindT, Array<keyof ProgramEventT>> = {
-        on:       ['brightnessPct', 'durationMs'],
-        off:      ['durationMs'],
-        flash:    ['cycleMs', 'brightnessPct', 'flashPct', 'durationMs'],
-        fade_in:  ['durationMs', 'brightnessPct'],
-        fade_out: ['durationMs', 'brightnessPct'],
-        fading:   ['cycleMs', 'minPct', 'maxPct', 'durationMs'],
-        beacon:   ['cycleMs', 'minPct', 'maxPct', 'flashPct', 'durationMs'],
-    }
-    const KIND_OPTIONS: { id: LightEventKindT; label: string }[] = [
-        { id: 'on',       label: 'On (steady)' },
-        { id: 'off',      label: 'Off (gap)' },
-        { id: 'flash',    label: 'Flash (square wave)' },
-        { id: 'fade_in',  label: 'Fade in' },
-        { id: 'fade_out', label: 'Fade out' },
-        { id: 'fading',   label: 'Fading (sinusoidal)' },
-        { id: 'beacon',   label: 'Beacon (peak with baseline)' },
-    ]
+    // Per-event editing (kind options + field map) moved into the shared
+    // LightTimelineTrack component — the panel just passes events + mutators.
 
     // ─── Per-track live preview (hub-local only for now) ─────────────
     // v2 model: tracks reference channels by NAME.  Resolution to a
@@ -576,9 +560,6 @@
      *  pulls the trimmed text out of the rename input.  Inline lambda
      *  in the template parses past the `as` cast as a JS comparison. */
     function strValue(e: Event): string { return (e.target as HTMLInputElement).value.trim() }
-    function onPickEventKind(ai: number, ci: number, ei: number, val: string) {
-        setEvent(ai, ci, ei, { kind: val as LightEventKindT })
-    }
     function onPickChannelPreset(ai: number, ci: number, e: Event) {
         const v = selValue(e); applyChannelPreset(ai, ci, v)
         ;(e.target as HTMLSelectElement).value = ''
@@ -912,72 +893,12 @@
                                 </div>
 
                                 {#if active && t !== null}
-                                    <table class="events-table">
-                                        <thead>
-                                            <tr>
-                                                <th class="evt-idx">#</th>
-                                                <th>kind</th>
-                                                <th class="param">brightness %</th>
-                                                <th class="param">min %</th>
-                                                <th class="param">max %</th>
-                                                <th class="param">flash %</th>
-                                                <th class="param">cycle ms</th>
-                                                <th class="param">duration ms</th>
-                                                <th class="evt-rm"></th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {#each t.events as ev, ei (ei)}
-                                                {@const used = FIELD_MAP[ev.kind] ?? []}
-                                                <tr>
-                                                    <td class="evt-idx">{ei + 1}</td>
-                                                    <td>
-                                                        <select class="field-input compact"
-                                                                value={ev.kind}
-                                                                on:change={(e) => onPickEventKind(ai, tIdx, ei, selValue(e))}>
-                                                            {#each KIND_OPTIONS as k}<option value={k.id}>{k.label}</option>{/each}
-                                                        </select>
-                                                    </td>
-                                                    <td class="param" class:dim={!used.includes('brightnessPct')}>
-                                                        <input class="field-input compact num" type="number" min="0" max="100"
-                                                               value={ev.brightnessPct} disabled={!used.includes('brightnessPct')}
-                                                               on:change={(e) => setEvent(ai, tIdx, ei, { brightnessPct: numValue(e) })} />
-                                                    </td>
-                                                    <td class="param" class:dim={!used.includes('minPct')}>
-                                                        <input class="field-input compact num" type="number" min="0" max="100"
-                                                               value={ev.minPct} disabled={!used.includes('minPct')}
-                                                               on:change={(e) => setEvent(ai, tIdx, ei, { minPct: numValue(e) })} />
-                                                    </td>
-                                                    <td class="param" class:dim={!used.includes('maxPct')}>
-                                                        <input class="field-input compact num" type="number" min="0" max="100"
-                                                               value={ev.maxPct} disabled={!used.includes('maxPct')}
-                                                               on:change={(e) => setEvent(ai, tIdx, ei, { maxPct: numValue(e) })} />
-                                                    </td>
-                                                    <td class="param" class:dim={!used.includes('flashPct')}>
-                                                        <input class="field-input compact num" type="number" min="0" max="100"
-                                                               value={ev.flashPct} disabled={!used.includes('flashPct')}
-                                                               on:change={(e) => setEvent(ai, tIdx, ei, { flashPct: numValue(e) })} />
-                                                    </td>
-                                                    <td class="param" class:dim={!used.includes('cycleMs')}>
-                                                        <input class="field-input compact num" type="number" min="0" max="65535"
-                                                               value={ev.cycleMs} disabled={!used.includes('cycleMs')}
-                                                               on:change={(e) => setEvent(ai, tIdx, ei, { cycleMs: numValue(e) })} />
-                                                    </td>
-                                                    <td class="param" class:dim={!used.includes('durationMs')}>
-                                                        <input class="field-input compact num" type="number" min="0" max="65535"
-                                                               value={ev.durationMs} disabled={!used.includes('durationMs')}
-                                                               on:change={(e) => setEvent(ai, tIdx, ei, { durationMs: numValue(e) })} />
-                                                    </td>
-                                                    <td class="evt-rm">
-                                                        <button class="small danger" on:click={() => removeEvent(ai, tIdx, ei)} title="Remove this event">×</button>
-                                                    </td>
-                                                </tr>
-                                            {/each}
-                                        </tbody>
-                                    </table>
-                                    <div class="form-row">
-                                        <button class="small" on:click={() => addEvent(ai, tIdx)}>+ Add event</button>
-                                    </div>
+                                    <LightTimelineTrack
+                                        events={t.events}
+                                        loop={t.loop}
+                                        onSet={(ei, patch) => setEvent(ai, tIdx, ei, patch)}
+                                        onAdd={() => addEvent(ai, tIdx)}
+                                        onRemove={(ei) => removeEvent(ai, tIdx, ei)} />
                                 {/if}
                             </div>
                         {/each}
@@ -1168,13 +1089,6 @@
     .loop-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-dim); }
     .loop-toggle input { margin: 0; }
 
-    .events-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 4px; }
-    .events-table th { text-align: left; font-weight: 600; font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-dim); padding: 2px 4px; border-bottom: 1px solid var(--border); }
-    .events-table td { padding: 2px 4px; }
-    .events-table .evt-idx { width: 22px; color: var(--text-dim); font-family: var(--font-mono); text-align: right; }
-    .events-table .evt-rm  { width: 28px; }
-    .events-table .param   { width: 70px; }
-    .events-table .param.dim input { opacity: 0.3; }
     :global(.field-input.compact)     { height: 22px; padding: 0 4px; font-size: 11px; }
     :global(.field-input.compact.num) { width: 60px; text-align: right; }
 
