@@ -58,7 +58,13 @@
     // Which active slots are EXPANDED for inline editing.  Closed by
     // default so the panel doesn't dump 5+ huge editors at once on
     // re-connect; operator clicks Edit on the rows they care about.
-    let expanded: Record<number, boolean> = {}
+    // Two-column layout (2026-06-02): the LEFT column lists programs + the RC
+    // selector; the RIGHT column edits the ONE selected program.  `selAi` is the
+    // selected active-program index (clamped when the list shrinks).  `poolOpen`
+    // toggles the compact LED-channel pool section.
+    let selAi = 0
+    let poolOpen = false
+    $: if (cfg && selAi >= cfg.activePrograms.length) selAi = Math.max(0, cfg.activePrograms.length - 1)
 
     // Save-As dialog inline state (we want a "modal-feel" name picker
     // without dragging a real dialog component back in).  When set,
@@ -541,16 +547,13 @@
     function pickTemplate(name: string) {
         addPresetToActive(name)
         addOpen = false
-        // Auto-expand the just-added slot so the operator sees the
-        // inline editor immediately (matches the + Blank button's behaviour).
-        const idx = (cfg?.activePrograms.length ?? 1) - 1
-        expanded = { ...expanded, [idx]: true }
+        // Select the just-added program so its editor shows on the right.
+        selAi = (cfg?.activePrograms.length ?? 1) - 1
     }
     function pickBlank() {
         addBlankActive()
         addOpen = false
-        const idx = (cfg?.activePrograms.length ?? 1) - 1
-        expanded = { ...expanded, [idx]: true }
+        selAi = (cfg?.activePrograms.length ?? 1) - 1
     }
 
     function selValue(e: Event): string { return (e.target as HTMLSelectElement).value }
@@ -598,6 +601,9 @@
     {#if error}<div class="banner err">{error}<button class="dismiss" on:click={() => error = ''}>✕</button></div>{/if}
 
     {#if cfg?.enabled}
+      <div class="lfx-cols">
+        <!-- ════ LEFT: programs + selector + LED-channel pool ════ -->
+        <div class="lfx-left">
         <!-- Master brightness -->
         <div class="form-row">
             <span class="field-label">Master brightness</span>
@@ -609,76 +615,58 @@
             <span class="unit">%</span>
         </div>
 
-        <!-- ─── Instance-level channel pool (Phase 1, 2026-05-27) ──── -->
-        <!-- Pick channels ONCE here; every active program drives the
-             same set.  Replaces the per-program channel dropdown
-             redundancy.  Each row: friendly name + physical LED port +
-             default brightness.  Empty pool = yellow warning (Rule 39)
-             since programs can't drive anything without channels. -->
-        <div class="section-head" class:section-warn={cfg.channels.length === 0 && availableChannels.length === 0}>
-            Channels
-            <span class="hint">instance-wide LED pool — programs share this set</span>
+        <!-- ─── LED channel pool (collapsible + compact, 2026-06-02) ───
+             Instance-wide LED set; every program drives this same pool.
+             Collapsed by default to save space — port pickers list only
+             UNCLAIMED led-animator ports (freePortPoolFiltered, Rule 49). -->
+        <div class="section-head pool-head" class:section-warn={cfg.channels.length === 0 && availableChannels.length === 0}>
+            <button class="pool-toggle" on:click={() => poolOpen = !poolOpen}
+                    title="The LED channels every program in this instance can drive.">
+                {poolOpen ? '▾' : '▸'} LED channels ({cfg.channels.length})
+            </button>
             {#if cfg.channels.length === 0 && availableChannels.length === 0}
-                <span class="section-warn-tag">no LedAnimator ports labelled on IO tab</span>
+                <span class="section-warn-tag">no LedAnimator ports on IO tab</span>
             {/if}
             <div class="header-actions">
-                <button class="small" on:click={() => addChannel()}
-                        disabled={busy}
-                        title="Add a new LightFx channel.  Pick a port + give it a friendly name; every program will be able to drive it.">
-                    + Add channel
-                </button>
+                <button class="small" on:click={() => { addChannel(); poolOpen = true }} disabled={busy}
+                        title="Add an LED channel (port + name); every program can drive it.">+ Add</button>
             </div>
         </div>
-
-        {#if cfg.channels.length === 0}
-            <div class="empty-state">
-                No channels yet.  Add one to bind a physical LED rail
-                (PWM port with role <em>led-animator</em> on the IO tab)
-                to a friendly name like “Red beacon”.  Every program in
-                this LightFx instance can then animate it.
-            </div>
+        {#if poolOpen}
+            {#if cfg.channels.length === 0}
+                <div class="empty-state subtle">No channels. Add one to bind an LED port (led-animator role) to a name like “Red beacon”.</div>
+            {/if}
+            {#each cfg.channels as ch, ci (ci)}
+                {@const rowErr = errMsgForChannel(ci)}
+                {@const portOptions = portsForChannelRow(ci)}
+                {@const noPort = ch.port === null || ch.port === undefined}
+                <div class="pool-row" class:verify-error={!!rowErr} class:verify-warn={noPort && !rowErr}>
+                    <input class="field-input pool-name" type="text" placeholder="name"
+                           bind:value={ch.name} on:change={() => updateChannel(ci, { name: ch.name })}
+                           disabled={busy} title="Channel name — programs reference it." />
+                    <select class="field-input pool-port" disabled={busy} value={portKeyOf(ch.port)}
+                            on:change={(e) => setChannelPort(ci, portFromKey(selValue(e)))}
+                            title="Unclaimed PWM port with role led-animator.">
+                        <option value="">— port —</option>
+                        {#each portOptions as p (p.ref.guid + ':' + p.ref.index)}
+                            {@const rail = formatPortRail(p.voltageMv)}
+                            <option value={portKeyOf({ board: '', guid: p.ref.guid, kind: p.kindName, idx: p.ref.index })} title={p.hardwareName}>
+                                {p.hardwareName}{rail ? ` (${rail})` : ''}{p.name ? ` · ${p.name}` : ''}
+                            </option>
+                        {/each}
+                    </select>
+                    <input class="field-input pool-bright" type="number" min="0" max="100"
+                           bind:value={ch.defaultBrightnessPct}
+                           on:change={() => setChannelBrightness(ci, Math.max(0, Math.min(100, ch.defaultBrightnessPct | 0)))}
+                           disabled={busy} title="Default brightness %" />
+                    <span class="unit">%</span>
+                    <button class="small danger pool-x" on:click={() => removeChannel(ci)} disabled={busy}
+                            title="Remove channel (drops it from all programs)">×</button>
+                    {#if rowErr}<span class="row-err">⚠ {rowErr}</span>{/if}
+                    {#if noPort && !rowErr}<span class="row-warn">no port</span>{/if}
+                </div>
+            {/each}
         {/if}
-
-        {#each cfg.channels as ch, ci (ci)}
-            {@const rowErr = errMsgForChannel(ci)}
-            {@const portOptions = portsForChannelRow(ci)}
-            {@const noPort = ch.port === null || ch.port === undefined}
-            <div class="form-row channel-pool-row" class:verify-error={!!rowErr} class:verify-warn={noPort && !rowErr}>
-                <span class="ap-idx">#{ci + 1}</span>
-                <input class="field-input wide" type="text"
-                       placeholder="Channel name (e.g. Red beacon)"
-                       bind:value={ch.name}
-                       on:change={() => updateChannel(ci, { name: ch.name })}
-                       disabled={busy}
-                       title="Friendly label shown in every program editor.  Programs reference this channel by name." />
-                <select class="field-input" disabled={busy}
-                        value={portKeyOf(ch.port)}
-                        on:change={(e) => setChannelPort(ci, portFromKey(selValue(e)))}
-                        title="Physical PWM output with role led-animator. Filter excludes ports already used by other channels in this LightFx instance.">
-                    <option value="">— unassigned —</option>
-                    {#each portOptions as p (p.ref.guid + ':' + p.ref.index)}
-                        {@const rail = formatPortRail(p.voltageMv)}
-                        <option value={portKeyOf({ board: '', guid: p.ref.guid, kind: p.kindName, idx: p.ref.index })}
-                                title={p.hardwareName}>
-                            {p.boardName ?? 'Hub'} · {p.hardwareName}{rail ? ` (${rail})` : ''}{p.name ? ` · ${p.name}` : ''}
-                        </option>
-                    {/each}
-                </select>
-                <input class="field-input narrow" type="number" min="0" max="100"
-                       bind:value={ch.defaultBrightnessPct}
-                       on:change={() => setChannelBrightness(ci, Math.max(0, Math.min(100, ch.defaultBrightnessPct | 0)))}
-                       disabled={busy}
-                       title="Default brightness for this channel.  Programs inherit unless they set an explicit per-program override." />
-                <span class="unit">%</span>
-                <button class="small danger" on:click={() => removeChannel(ci)}
-                        disabled={busy}
-                        title="Remove this channel.  Any program track referencing it will be DROPPED automatically.">
-                    ×
-                </button>
-                {#if rowErr}<span class="row-err">⚠ {rowErr}</span>{/if}
-                {#if noPort && !rowErr}<span class="row-warn">unassigned port — channel will be silent</span>{/if}
-            </div>
-        {/each}
 
         <!-- ─── Program selector (Rule 38, instance-level RC input) ──
              Promoted ABOVE "Active programs" 2026-05-26 (LightFx layout
@@ -746,72 +734,102 @@
             {/if}
         {/if}
 
-        <!-- ─── Active programs ─────────────────────────────────────── -->
+        <!-- ─── Programs (selectable list) ─────────────────────────── -->
         <div class="section-head" class:section-error={cfg.activePrograms.length === 0}>
-            Active programs
-            <span class="hint">picked + edited here; Apply syncs to /lightfx/programs/ and removes orphans</span>
-            {#if cfg.activePrograms.length === 0}<span class="section-err-tag">no programs — LightFx idle</span>{/if}
+            Programs
+            {#if cfg.activePrograms.length === 0}<span class="section-err-tag">none — LightFx idle</span>{/if}
         </div>
-
         {#if cfg.activePrograms.length === 0}
-            <div class="empty-state">
-                No programs yet — add one below.  Pick a built-in
-                <strong>Template</strong> as a starting point, or click
-                <strong>+ Blank</strong> to compose from scratch.  Edit
-                channels and events inline; Apply uploads everything in
-                this list to the device.
+            <div class="empty-state subtle">No programs. Add a Template or + Blank below, then edit it on the right.</div>
+        {/if}
+        <div class="prog-list">
+            {#each cfg.activePrograms as slot, ai (ai)}
+                {@const errs = programErrors(slot.program)}
+                {@const isPlaying = programIsPlaying(ai, playing)}
+                <div class="prog-row" class:sel={selAi === ai} class:invalid={errs.length > 0}>
+                    <button class="prog-pick" on:click={() => selAi = ai} title="Edit this program">
+                        <span class="ap-idx">#{ai + 1}</span>
+                        <span class="prog-name">{slot.name}</span>
+                        {#if isPlaying}<span class="prog-live" title="previewing">●</span>{/if}
+                        {#if errs.length > 0}<span class="prog-err" title={errs.join('\n')}>⚠{errs.length}</span>{/if}
+                    </button>
+                    <button class="small danger prog-x" on:click={() => removeActive(ai)} title="Remove program">×</button>
+                </div>
+            {/each}
+        </div>
+        <!-- add / templates / save-as -->
+        <div class="form-row add-row">
+            <button class="small {addOpen ? 'state-toggle state-on' : ''}" on:click={() => addOpen = !addOpen}>{addOpen ? '▾ Close' : '+ Template…'}</button>
+            <button class="small" on:click={pickBlank} title="Add an empty program">+ Blank</button>
+            <button class="small" on:click={() => refreshPresetLibrary()} title="Re-read templates from disk">↻</button>
+        </div>
+        {#if addOpen}
+            <div class="templates-grid">
+                {#each groupedTemplates as [cat, items]}
+                    <div class="tpl-group">
+                        <div class="tpl-group-head">{cat}</div>
+                        {#each items as entry}
+                            <div class="tpl-row">
+                                <button class="small tpl-pick" on:click={() => pickTemplate(entry.name)} title={entry.note}>+ {entry.name}</button>
+                                <span class="tpl-note">{entry.note.slice(0, 80)}</span>
+                                {#if entry.source === 'user'}
+                                    <button class="small danger tpl-del" on:click|stopPropagation={() => onDeleteTemplate(entry.name)} title="Delete this user template">×</button>
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                {/each}
+                {#if groupedTemplates.length === 0}
+                    <div class="empty-state subtle">Every template is already active — remove one or click + Blank.</div>
+                {/if}
             </div>
         {/if}
+        {#if saveAsFor !== null}
+            <div class="save-as-row">
+                <span class="field-label">Save as</span>
+                <input class="field-input wide" type="text" bind:value={saveAsName}
+                       on:keydown={(e) => { if (e.key === 'Enter') confirmSaveAs(); if (e.key === 'Escape') closeSaveAs() }} />
+                <button class="small primary" on:click={confirmSaveAs}>Save</button>
+                <button class="small" on:click={closeSaveAs}>Cancel</button>
+                {#if saveAsError}<span class="save-as-err">⚠ {saveAsError}</span>{/if}
+            </div>
+        {/if}
+        </div><!-- /.lfx-left -->
 
-        {#each cfg.activePrograms as slot, ai (ai)}
-            {@const errs       = programErrors(slot.program)}
-            {@const isPlaying  = programIsPlaying(ai, playing)}
-            {@const canPlay    = programHasPlayable(slot)}
-            <div class="active-row" class:invalid={errs.length > 0}>
-                <div class="active-head">
-                    <span class="ap-idx">#{ai + 1}</span>
-                    <input class="field-input ap-name" type="text"
-                           value={slot.name}
-                           on:change={(e) => renameActive(ai, strValue(e))}
-                           title="Rename — becomes /lightfx/programs/<name>.yaml on Apply" />
-                    {#if errs.length > 0}
-                        <span class="row-err-tag" title={errs.join('\n')}>⚠ {errs.length} error{errs.length > 1 ? 's' : ''}</span>
-                    {/if}
-                    <!-- Per-program preview as a single on/off toggle
-                         (Rule 48).  Previews every channel this program
-                         owns; doesn't touch the device's persisted
-                         programs[].  ON→OFF (stop) always enabled;
-                         OFF→ON (play) gated on having a playable channel.
-                         Hub-local channels only (expander LEDs need a
-                         Topology forward of LED_QUEUE_LOAD). -->
-                    <button class="small state-toggle row-action" class:danger={isPlaying}
-                            on:click={() => isPlaying ? stopProgram(ai) : playProgram(ai)}
-                            disabled={isPlaying ? false : !canPlay}
-                            title={isPlaying ? 'Stop every channel in this program'
-                                 : canPlay ? 'Preview: fires every channel that has a port + events. No upload, no Save needed.'
-                                 : 'No playable channels — assign a port and at least one event first.'}>
-                        {isPlaying ? 'Stop' : 'Preview'}
-                    </button>
-                    <button class="small row-action {expanded[ai] ? 'state-toggle state-on' : ''}"
-                            on:click={() => expanded = { ...expanded, [ai]: !expanded[ai] }}
-                            title="Show / hide the channel + event editor for this program">
-                        {expanded[ai] ? '▾ Hide' : '✎ Edit'}
-                    </button>
-                    <button class="small row-action" on:click={() => openSaveAs(ai)}
-                            title="Save the current draft as a new user template (so you can re-use it on other devices)">💾 Save As…</button>
-                    <button class="small danger row-action btn-slot" on:click={() => removeActive(ai)}
-                            title="Remove this program from the active list (template copy stays in the Templates menu)">× Remove</button>
-                </div>
+        <!-- ════ RIGHT: selected program editor ════ -->
+        <div class="lfx-right">
+        {#if cfg.activePrograms.length === 0}
+            <div class="empty-state">Add a program on the left to start editing its channels and events.</div>
+        {:else if cfg.activePrograms[selAi]}
+            {@const slot      = cfg.activePrograms[selAi]}
+            {@const ai        = selAi}
+            {@const errs      = programErrors(slot.program)}
+            {@const isPlaying = programIsPlaying(ai, playing)}
+            {@const canPlay   = programHasPlayable(slot)}
+            <div class="prog-editor-head">
+                <span class="ap-idx">#{ai + 1}</span>
+                <input class="field-input ap-name" type="text" value={slot.name}
+                       on:change={(e) => renameActive(ai, strValue(e))}
+                       title="Rename — becomes /lightfx/programs/<name>.yaml on Apply" />
+                {#if errs.length > 0}
+                    <span class="row-err-tag" title={errs.join('\n')}>⚠ {errs.length} error{errs.length > 1 ? 's' : ''}</span>
+                {/if}
+                <button class="small state-toggle row-action" class:danger={isPlaying}
+                        on:click={() => isPlaying ? stopProgram(ai) : playProgram(ai)}
+                        disabled={isPlaying ? false : !canPlay}
+                        title={isPlaying ? 'Stop every channel in this program'
+                             : canPlay ? 'Preview every channel that has a port + events. No upload needed.'
+                             : 'No playable channels — assign a port and at least one event first.'}>
+                    {isPlaying ? 'Stop' : 'Preview'}
+                </button>
+                <button class="small row-action" on:click={() => openSaveAs(ai)}
+                        title="Save this draft as a reusable user template">💾 Save As…</button>
+                <button class="small danger row-action" on:click={() => removeActive(ai)}
+                        title="Remove this program">× Remove</button>
+            </div>
 
-                {#if expanded[ai]}
-                    <!-- ─── Inline program editor (Phase 1b, 2026-05-27) ───
-                         Rows are auto-rendered from cfg.channels[] — the
-                         instance pool above.  No per-program channel
-                         dropdown: each program either drives a pool
-                         channel (Active toggle) or stays silent for it.
-                         Brightness defaults to the pool's channel value;
-                         operator overrides only when needed. -->
-                    <div class="active-body">
+            <!-- ─── Selected-program editor: per-channel timeline tracks ─── -->
+            <div class="active-body">
                         <div class="subsection-head" class:section-warn={cfg.channels.length === 0}>
                             Channels in this program
                             <span class="hint">tick to drive · brightness overrides channel default · events list per channel</span>
@@ -969,74 +987,52 @@
                                 {#each errs as msg}<li class="ch-issue err">⚠ {msg}</li>{/each}
                             </ul>
                         {/if}
-                    </div>
-                {/if}
-            </div>
-        {/each}
-
-        <!-- ─── Add-template picker ────────────────────────────────── -->
-        <div class="form-row add-row">
-            <button class="small {addOpen ? 'state-toggle state-on' : ''}"
-                    on:click={() => addOpen = !addOpen}>
-                {addOpen ? '▾ Close templates' : '+ Template…'}
-            </button>
-            <button class="small" on:click={pickBlank}
-                    title="Add an empty slot — assign ports and build events from scratch">+ Blank</button>
-            <button class="small" on:click={() => refreshPresetLibrary()}
-                    title="Re-read the templates catalog from disk (factory + user dir)">↻</button>
-        </div>
-
-        {#if addOpen}
-            <div class="templates-grid">
-                {#each groupedTemplates as [cat, items]}
-                    <div class="tpl-group">
-                        <div class="tpl-group-head">{cat}</div>
-                        {#each items as entry}
-                            <div class="tpl-row">
-                                <button class="small tpl-pick" on:click={() => pickTemplate(entry.name)}
-                                        title={entry.note}>
-                                    + {entry.name}
-                                </button>
-                                <span class="tpl-note">{entry.note.slice(0, 80)}</span>
-                                {#if entry.source === 'user'}
-                                    <button class="small danger tpl-del"
-                                            on:click|stopPropagation={() => onDeleteTemplate(entry.name)}
-                                            title="Delete this user template (does not affect active slots)">×</button>
-                                {/if}
-                            </div>
-                        {/each}
-                    </div>
-                {/each}
-                {#if groupedTemplates.length === 0}
-                    <div class="empty-state subtle">
-                        Every template is already in the active list — remove one
-                        or click <strong>+ Blank</strong> to add another slot.
-                    </div>
-                {/if}
-            </div>
+            </div><!-- /.active-body -->
         {/if}
-
-        <!-- ─── Save-As inline dialog ──────────────────────────────── -->
-        {#if saveAsFor !== null}
-            <div class="save-as-row">
-                <span class="field-label">Save as</span>
-                <input class="field-input wide" type="text" bind:value={saveAsName}
-                       on:keydown={(e) => { if (e.key === 'Enter') confirmSaveAs(); if (e.key === 'Escape') closeSaveAs() }}
-                       autofocus />
-                <button class="small primary" on:click={confirmSaveAs}>Save</button>
-                <button class="small" on:click={closeSaveAs}>Cancel</button>
-                {#if saveAsError}<span class="save-as-err">⚠ {saveAsError}</span>{/if}
-            </div>
-        {/if}
-
-        <!-- (Program selector moved above Active programs 2026-05-26
-             so the LightFx-instance's RC input sits next to the rest of
-             the instance-level config.) -->
+        </div><!-- /.lfx-right -->
+      </div><!-- /.lfx-cols -->
     {/if}
 </div>
 
 <style>
     .lightfx-card { margin-bottom: 14px; }
+
+    /* ── Two-column layout (2026-06-02): left = programs + selector + pool;
+          right = selected-program editor. ── */
+    .lfx-cols { display: flex; gap: 16px; align-items: flex-start; }
+    .lfx-left { flex: 0 0 340px; min-width: 0; }
+    .lfx-right { flex: 1; min-width: 0; border-left: 1px solid var(--border); padding-left: 16px; }
+
+    /* Programs list (left) */
+    .prog-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
+    .prog-row { display: flex; align-items: stretch; gap: 4px; }
+    .prog-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+                 text-align: left; padding: 4px 8px; font-size: 12px;
+                 background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+    .prog-pick:hover { border-color: var(--accent); }
+    .prog-row.sel .prog-pick { background: color-mix(in srgb, var(--accent) 18%, var(--bg-input)); border-color: var(--accent); }
+    .prog-row.invalid .prog-pick { border-left: 3px solid var(--error); }
+    .prog-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-bright); }
+    .prog-live { color: var(--success); font-size: 10px; }
+    .prog-err { color: var(--error); font-size: 10px; font-family: var(--font-mono); }
+    .prog-x { flex: 0 0 26px; width: 26px; padding: 0; }
+
+    /* Selected-program editor header (right) */
+    .prog-editor-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;
+                        padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    .prog-editor-head .ap-name { flex: 1; min-width: 140px; font-weight: 600; }
+
+    /* Collapsible compact LED-channel pool (left) */
+    .pool-head { cursor: default; }
+    .pool-toggle { background: none; border: none; padding: 0; font: inherit; color: var(--text-bright);
+                   text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700; font-size: 11px; cursor: pointer; }
+    .pool-toggle:hover { color: var(--accent); }
+    .pool-row { display: flex; align-items: center; gap: 4px; margin: 2px 0; }
+    .pool-row.verify-error { background: color-mix(in srgb, var(--error) 8%, transparent); }
+    .pool-name { flex: 1; min-width: 0; }
+    .pool-port { flex: 1.4; min-width: 0; }
+    .pool-bright { width: 52px; flex: 0 0 52px; }
+    .pool-x { width: 24px; flex: 0 0 24px; padding: 0; }
     .header-actions { display: flex; align-items: center; gap: 8px; }
     .header-actions button { height: 28px; box-sizing: border-box; }
 
