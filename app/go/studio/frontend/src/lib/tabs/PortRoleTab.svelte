@@ -5,33 +5,11 @@
      .field-input, button) so control heights line up. -->
 <script lang="ts">
     import {
-        deviceModel, attachRole, detachRole, markHubDirty,
+        deviceModel, attachRole, detachRole,
         setPortName, portKindName, boardDisplayNames, claimsForPort,
         formatPortRail, RoleKind, type Port, type PortRef,
     } from '../devicemodel'
     import PortRoleConfig from '../components/PortRoleConfig.svelte'
-    import { openServoCalibrationFor, defaultServoProfile } from '../servo_calibration'
-    import { SetPortProfile } from '../../../wailsjs/go/main/App'
-
-    // Servo calibrate / reset — inline on the servo row.  Both route by the
-    // port's real GUID (hub-local ports carry the hub GUID, e.g. 6D60; the hub
-    // self-routes a topology forward to its own GUID).  Reset writes the default
-    // profile + marks /hubfx.yaml dirty so Apply persists it (Rule 46).
-    function calibrateServo(p: Port): void {
-        const prof = p.profile ?? defaultServoProfile()
-        openServoCalibrationFor(
-            p.ref.guid, p.ref.index,
-            `${p.boardName} · ${p.name || p.hardwareName}`,
-            prof, prof.centerUs,
-        )
-    }
-    async function resetServo(p: Port): Promise<void> {
-        busy = true; error = ''
-        try {
-            await SetPortProfile(p.ref.guid, /*ServoKind=*/1, p.ref.index, defaultServoProfile() as any)
-            markHubDirty()
-        } catch (e) { error = String(e) } finally { busy = false }
-    }
 
     // Per-port "show inline role-config editor" toggle.  Open one at a
     // time keeps the visual list tractable; a small map keyed by port
@@ -144,21 +122,7 @@
 
                         <span class="fanout" title="Functions using this port">{fanout(p)}</span>
 
-                        <!-- Servo ports: Calibrate + Reset inline on the right.
-                             Routes by the port's real GUID (hub-local ports carry
-                             the hub GUID; the hub self-routes a forward to itself). -->
-                        {#if isServo(p)}
-                            <button class="small servo-btn" on:click={() => calibrateServo(p)}
-                                    disabled={busy}
-                                    title="Open the calibration popup — live jog, set limits, edit speed / accel / jerk.">
-                                ⚙ Calibrate…
-                            </button>
-                            <button class="small servo-btn" on:click={() => resetServo(p)}
-                                    disabled={busy}
-                                    title="Reset this servo's motion profile to defaults (normal direction, 1000–2000 µs). Apply to persist.">
-                                Reset
-                            </button>
-                        {:else if hasRoleConfig(p)}
+                        {#if hasRoleConfig(p)}
                             <!-- Heater / DC-motor: element scaling under the
                                  ⚙ Tune expander (denser, less-used than calibrate). -->
                             <button class="small cfg-btn" class:open={(expandedTick, isExpanded(p))}
@@ -213,6 +177,4 @@
     .name-input { flex: 1; min-width: 80px; font-family: var(--font-ui); }
     .fanout { flex: 1; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-    /* Servo Calibrate / Reset — compact, right-aligned, never shrink. */
-    .servo-btn { flex-shrink: 0; min-width: 0; padding: 0 8px; font-size: 11px; }
 </style>
