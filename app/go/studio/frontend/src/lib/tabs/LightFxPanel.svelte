@@ -831,13 +831,10 @@
             <!-- ─── Selected-program editor: per-channel timeline tracks ─── -->
             <div class="active-body">
                         <div class="subsection-head" class:section-warn={cfg.channels.length === 0}>
-                            Channels in this program
-                            <span class="hint">tick to drive · brightness overrides channel default · events list per channel</span>
+                            Channels
+                            <span class="hint">tick to drive · click a band to edit its event</span>
                             {#if cfg.channels.length === 0}
-                                <span class="section-warn-tag"
-                                      title="The LightFx instance has no channels in its pool yet. Add at least one channel in the Channels card above.">
-                                    no channels in pool — add one above
-                                </span>
+                                <span class="section-warn-tag" title="Add channels to the LED-channel pool (left column) first.">no channels in pool</span>
                             {/if}
                         </div>
 
@@ -848,65 +845,49 @@
                             {@const noPort = ch.port === null}
                             <div class="channel-card" class:dim={!active} class:verify-warn={active && noPort}>
                                 <div class="channel-head">
-                                    <span class="ch-idx">#{ci + 1}</span>
-                                    <label class="active-toggle"
-                                           title={active
-                                               ? 'Uncheck to mute this channel for this program (channel stays in pool, events for THIS program discarded).'
-                                               : 'Check to drive this channel with this program.  A blank events list is seeded — replace via the Preset dropdown or add events.'}>
+                                    <label class="ch-drive"
+                                           title={active ? 'Driving this channel — uncheck to mute it for this program.'
+                                                         : 'Check to drive this channel in this program.'}>
                                         <input type="checkbox" checked={active}
                                                on:change={(e) => setProgramChannelActive(ai, ch.name, checkedValue(e))} />
-                                        active
                                     </label>
                                     <span class="ch-name" class:muted={!active}>{ch.name}</span>
-                                    {#if noPort && active}
-                                        <span class="row-warn" title="This channel has no physical port assigned in the Channels card. Program will play but nothing will light.">port unassigned</span>
-                                    {/if}
+                                    {#if noPort && active}<span class="row-warn">no port</span>{/if}
                                     {#if active && t !== null}
-                                        <span class="field-label">brightness</span>
-                                        <input class="field-input narrow" type="number" min="0" max="100"
-                                               value={t.brightnessPct}
-                                               on:change={(e) => patchProgramTrack(ai, ch.name, { brightnessPct: Math.max(0, Math.min(100, numValue(e) | 0)) })}
-                                               title={`Override channel default (${ch.defaultBrightnessPct} %) for this program only.  Leave at the default to inherit.`} />
-                                        <span class="unit">%</span>
-                                        {#if t.brightnessPct === ch.defaultBrightnessPct}
-                                            <span class="hint inline">(default)</span>
-                                        {/if}
-                                        <label class="loop-toggle"
-                                               title="Phase-locked repeating pattern — the events list loops as a cycle (period = sum of all event durations).  Sibling tracks with the same period stay in lock-step.">
-                                            <input type="checkbox" checked={t.loop}
-                                                   on:change={(e) => patchProgramTrack(ai, ch.name, { loop: checkedValue(e) })} />
-                                            loop
-                                        </label>
-                                        <select class="field-input preset-select"
-                                                on:change={(e) => onPickChannelPreset(ai, tIdx, e)}
-                                                title="Replace this channel's events with a canonical pattern (FAA strobe, beacon, nav, …).">
-                                            <option value="">↺ Preset…</option>
-                                            {#each PRESET_GROUP_ORDER as g}
-                                                {@const grp = LIGHT_PRESETS.filter(p => p.group === g && !p.label.startsWith('(alias)'))}
-                                                {#if grp.length > 0}
-                                                    <optgroup label={g}>
-                                                        {#each grp as preset}
-                                                            <option value={preset.id} title={preset.note}>{preset.label}</option>
-                                                        {/each}
-                                                    </optgroup>
-                                                {/if}
-                                            {/each}
-                                        </select>
-                                        <div class="op-cluster ch-preview">
+                                        <span class="ch-controls">
+                                            <input class="field-input ch-bright" type="number" min="0" max="100"
+                                                   value={t.brightnessPct}
+                                                   on:change={(e) => patchProgramTrack(ai, ch.name, { brightnessPct: Math.max(0, Math.min(100, numValue(e) | 0)) })}
+                                                   title={`Brightness % for this program (channel default ${ch.defaultBrightnessPct}%)`} />
+                                            <span class="unit">%</span>
+                                            <label class="loop-toggle" title="Phase-locked repeating cycle (period = Σ event durations).">
+                                                <input type="checkbox" checked={t.loop}
+                                                       on:change={(e) => patchProgramTrack(ai, ch.name, { loop: checkedValue(e) })} />
+                                                loop
+                                            </label>
+                                            <select class="field-input preset-select"
+                                                    on:change={(e) => onPickChannelPreset(ai, tIdx, e)}
+                                                    title="Replace this channel's events with a canonical pattern.">
+                                                <option value="">↺ Preset…</option>
+                                                {#each PRESET_GROUP_ORDER as g}
+                                                    {@const grp = LIGHT_PRESETS.filter(p => p.group === g && !p.label.startsWith('(alias)'))}
+                                                    {#if grp.length > 0}
+                                                        <optgroup label={g}>
+                                                            {#each grp as preset}
+                                                                <option value={preset.id} title={preset.note}>{preset.label}</option>
+                                                            {/each}
+                                                        </optgroup>
+                                                    {/if}
+                                                {/each}
+                                            </select>
                                             {#if playing[playKey(ai, tIdx)] !== undefined}
-                                                <button class="oc-btn oc-danger"
-                                                        on:click={() => stopTrack(ai, tIdx)} title="Stop this channel preview">■</button>
+                                                <button class="small danger ch-play" on:click={() => stopTrack(ai, tIdx)} title="Stop preview">■</button>
                                             {:else}
-                                                <button class="oc-btn oc-primary"
-                                                        on:click={() => playTrack(ai, tIdx)}
+                                                <button class="small ch-play" on:click={() => playTrack(ai, tIdx)}
                                                         disabled={t.events.length === 0 || noPort}
-                                                        title={noPort
-                                                            ? 'Assign a port to this channel in the Channels card first'
-                                                            : t.events.length === 0
-                                                                ? 'No events to play'
-                                                                : 'Preview this channel — no save required'}>▶</button>
+                                                        title={noPort ? 'Assign a port first' : t.events.length === 0 ? 'No events' : 'Preview this channel'}>▶</button>
                                             {/if}
-                                        </div>
+                                        </span>
                                     {/if}
                                 </div>
 
@@ -1062,14 +1043,19 @@
     .active-body { padding: 4px 10px 10px; border-top: 1px dashed var(--border); }
 
     /* ── Channel card (was in ProgramEditorDialog) ── */
-    .channel-card { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin: 6px 0 8px; }
+    .channel-card { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; margin: 4px 0; }
     .channel-card.invalid { border-color: var(--error); background: rgba(255,80,80,0.04); }
-    .channel-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
-    .ch-idx { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--text); min-width: 28px; }
-    .ch-remove { width: 28px; padding: 0; }
-    .ch-preview { height: 24px; }
-    .ch-preview .oc-btn { font-size: 12px; padding: 0 8px; min-width: 28px; }
-    .ch-name { min-width: 140px; max-width: 220px; }
+    /* Dim, single-line rows for channels this program does NOT drive. */
+    .channel-card.dim { padding: 3px 7px; opacity: 0.6; }
+    .channel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .channel-card:not(.dim) .channel-head { margin-bottom: 5px; }
+    .ch-drive { display: inline-flex; align-items: center; }
+    .ch-drive input { margin: 0; }
+    .ch-name { flex: 0 1 auto; min-width: 90px; font-weight: 600; color: var(--text-bright); }
+    .ch-name.muted { font-weight: 400; color: var(--text-dim); }
+    .ch-controls { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+    .ch-bright { width: 52px; }
+    .ch-play { width: 26px; padding: 0; }
 
     /* Equal-width action buttons in the active-row header — Play,
        Edit, Save As, Remove all sit on the same baseline at the same
@@ -1081,8 +1067,8 @@
     .row-preview { height: 26px; }
     .row-preview .oc-btn { width: 88px; height: 26px; font-size: 11px; padding: 0 8px; box-sizing: border-box; }
     .row-action          { width: 88px; height: 26px; padding: 0; box-sizing: border-box; text-align: center; }
-    .preset-select { min-width: 160px; max-width: 240px; }
-    .loop-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-dim); }
+    .preset-select { width: 130px; }
+    .loop-toggle { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--text-dim); white-space: nowrap; }
     .loop-toggle input { margin: 0; }
 
     :global(.field-input.compact)     { height: 22px; padding: 0 4px; font-size: 11px; }
