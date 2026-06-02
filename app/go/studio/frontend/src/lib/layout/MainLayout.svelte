@@ -10,6 +10,7 @@
     import EnginePanel from '../tabs/EnginePanel.svelte'
     import GunFxPanel from '../tabs/GunFxPanel.svelte'
     import LightingTab from '../tabs/LightingTab.svelte'
+    import GearLandingTab from '../tabs/GearLandingTab.svelte'
     import DomainTab from '../tabs/DomainTab.svelte'
     import { showConsole, activeTab, connectionInfo } from '../stores'
     import { studioTabs } from '../devicemodel'
@@ -83,6 +84,10 @@
                     <div class="tab-content"><GunFxPanel /></div>
                 {:else if current?.kind === 'lighting'}
                     <LightingTab />
+                {:else if current?.kind === 'gear'}
+                    {#key current.key}
+                        <GearLandingTab domain={current.domain} />
+                    {/key}
                 {:else if current?.kind === 'domain' && current.domain}
                     {#key current.key}
                         <DomainTab domain={current.domain} />
