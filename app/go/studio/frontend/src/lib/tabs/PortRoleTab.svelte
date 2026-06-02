@@ -5,11 +5,33 @@
      .field-input, button) so control heights line up. -->
 <script lang="ts">
     import {
-        deviceModel, attachRole, detachRole,
+        deviceModel, attachRole, detachRole, markHubDirty,
         setPortName, portKindName, boardDisplayNames, claimsForPort,
         formatPortRail, RoleKind, type Port, type PortRef,
     } from '../devicemodel'
     import PortRoleConfig from '../components/PortRoleConfig.svelte'
+    import { openServoCalibrationFor, defaultServoProfile } from '../servo_calibration'
+    import { SetPortProfile } from '../../../wailsjs/go/main/App'
+
+    // Servo settings (calibrate) + reset — narrow icon buttons on the servo row.
+    // Both route by the port's real GUID (hub-local ports carry the hub GUID,
+    // e.g. 6D60; the hub self-routes a topology forward to itself).  Reset writes
+    // the default profile + marks /hubfx.yaml dirty so Apply persists it.
+    function calibrateServo(p: Port): void {
+        const prof = p.profile ?? defaultServoProfile()
+        openServoCalibrationFor(
+            p.ref.guid, p.ref.index,
+            `${p.boardName} · ${p.name || p.hardwareName}`,
+            prof, prof.centerUs,
+        )
+    }
+    async function resetServo(p: Port): Promise<void> {
+        busy = true; error = ''
+        try {
+            await SetPortProfile(p.ref.guid, /*ServoKind=*/1, p.ref.index, defaultServoProfile() as any)
+            markHubDirty()
+        } catch (e) { error = String(e) } finally { busy = false }
+    }
 
     // Per-port "show inline role-config editor" toggle.  Open one at a
     // time keeps the visual list tractable; a small map keyed by port
@@ -120,6 +142,18 @@
                                value={p.name} disabled={busy}
                                on:change={(e) => onName(p.ref, inputValue(e))} />
 
+                        {#if isServo(p)}
+                            <!-- Narrow icon buttons — settings (calibrate) + reset —
+                                 right next to the name box.  Routed by the port's
+                                 real GUID. -->
+                            <button class="small icon-btn" on:click={() => calibrateServo(p)}
+                                    disabled={busy}
+                                    title="Servo settings — open the calibration popup (live jog, limits, speed / accel / jerk).">⚙</button>
+                            <button class="small icon-btn" on:click={() => resetServo(p)}
+                                    disabled={busy}
+                                    title="Reset this servo's motion profile to defaults (normal, 1000–2000 µs). Apply to persist.">↺</button>
+                        {/if}
+
                         <span class="fanout" title="Functions using this port">{fanout(p)}</span>
 
                         {#if hasRoleConfig(p)}
@@ -172,9 +206,16 @@
     .rail-chip { font-family: var(--font-mono); font-size: 10px; color: var(--text); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; flex-shrink: 0; }
     .cfg-btn { flex-shrink: 0; min-width: 0; padding: 0 8px; font-size: 11px; }
     .cfg-btn.open { background: color-mix(in srgb, var(--accent) 25%, var(--bg-input)); border-color: var(--accent); }
+    /* Icon-only servo buttons (settings + reset) — a square whose side equals the
+       text-box height (26px), so they line up with the name input and don't widen
+       the row (flex-shrink:0; the fanout absorbs them). */
+    .icon-btn { flex-shrink: 0; width: 26px; height: 26px; min-width: 26px; padding: 0; box-sizing: border-box; font-size: 14px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
     .role-select { flex: 0 0 150px; }
     .role-fixed { flex: 0 0 150px; font-size: 12px; color: var(--text-dim); padding: 4px 8px; border: 1px dashed var(--border); border-radius: 3px; text-align: center; }
-    .name-input { flex: 1; min-width: 80px; font-family: var(--font-ui); }
-    .fanout { flex: 1; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Constant width — does NOT flex, so adding the trailing servo buttons can't
+       resize it (the fanout absorbs the difference instead).  Explicit height so
+       the square icon buttons can match it exactly. */
+    .name-input { flex: 0 0 160px; height: 26px; box-sizing: border-box; font-family: var(--font-ui); }
+    .fanout { flex: 1; min-width: 0; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 </style>
