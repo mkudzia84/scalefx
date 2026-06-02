@@ -142,19 +142,21 @@
                                value={p.name} disabled={busy}
                                on:change={(e) => onName(p.ref, inputValue(e))} />
 
-                        <span class="fanout" title="Functions using this port">{fanout(p)}</span>
-
                         {#if isServo(p)}
-                            <!-- Narrow icon buttons — settings (calibrate) + reset.
-                                 Icon-only so they don't disturb the existing element
-                                 widths.  Routed by the port's real GUID. -->
+                            <!-- Narrow icon buttons — settings (calibrate) + reset —
+                                 right next to the name box.  Routed by the port's
+                                 real GUID. -->
                             <button class="small icon-btn" on:click={() => calibrateServo(p)}
                                     disabled={busy}
                                     title="Servo settings — open the calibration popup (live jog, limits, speed / accel / jerk).">⚙</button>
                             <button class="small icon-btn" on:click={() => resetServo(p)}
                                     disabled={busy}
                                     title="Reset this servo's motion profile to defaults (normal, 1000–2000 µs). Apply to persist.">↺</button>
-                        {:else if hasRoleConfig(p)}
+                        {/if}
+
+                        <span class="fanout" title="Functions using this port">{fanout(p)}</span>
+
+                        {#if hasRoleConfig(p)}
                             <!-- Heater / DC-motor: element scaling under the
                                  ⚙ Tune expander (denser, less-used than calibrate). -->
                             <button class="small cfg-btn" class:open={(expandedTick, isExpanded(p))}
