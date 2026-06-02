@@ -97,7 +97,9 @@
         </select>
     </div>
 
-    {#if inputId && bands.length > 0}
+    <!-- Bar shows whenever there are bands — even before a channel is bound
+         (shows "no channel bound"), so the band layout is always visible. -->
+    {#if bands.length > 0}
         <div class="band-bar"
              class:nosignal={!liveValid}
              class:overlap-error={overlapIndices.length > 0}>

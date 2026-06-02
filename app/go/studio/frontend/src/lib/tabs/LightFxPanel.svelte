@@ -250,10 +250,14 @@
         const [guid, kind, idxStr] = key.split('|')
         return { board: '', guid, kind, idx: Number(idxStr) || 0 }
     }
-    /** Ports available to LightFx channel row `idx`: every LedAnimator
-     *  output port EXCEPT those already bound to a SIBLING channel.
-     *  The row's own current port stays in the pool for editing. */
-    function portsForChannelRow(idx: number) {
+    /** Ports available to LightFx channel row `idx`: every UNCLAIMED
+     *  LedAnimator output port EXCEPT those already bound to a SIBLING
+     *  channel.  The row's own current port stays in the pool for editing.
+     *  Takes `dm` explicitly so the template call re-runs when the device
+     *  model (claims) changes — reading $deviceModel inside the body would be
+     *  invisible to Svelte and the dropdown would go stale (the same trap as
+     *  GunFx makeProfileForPort). Matches the EngineFx/GunFx output pickers. */
+    function portsForChannelRow(idx: number, dm: typeof $deviceModel) {
         const mine = cfg?.channels[idx]?.port
         const sibling = new Set<string>()
         if (cfg?.channels) {
@@ -264,8 +268,8 @@
             }
         }
         return freePortPoolFiltered(
-            $deviceModel.ports,
-            $deviceModel.claims,
+            dm.ports,
+            dm.claims,
             'pwm',
             RoleKind.LedAnimator,
             (p) => {
@@ -544,15 +548,30 @@
 
     // ─── Add-template picker (collapsible) ───────────────────────────
     let addOpen = false
+    // Auto-seed one selector band per program (ROF-style): adding a program adds
+    // a non-overlapping band mapped to it; removeActive/renameActive already
+    // cascade range removal/rename. `cfg` updates synchronously via subscribe, so
+    // it reflects the just-added program here.  Handler-based (not reactive) to
+    // avoid false-dirty-on-load.
+    function addBandForLatestProgram() {
+        const names = cfg?.activePrograms.map(p => p.name) ?? []
+        const newName = names[names.length - 1]
+        if (!newName || cfg.programSelector.ranges.some(r => r.program === newName)) return
+        const sug = suggestNextRange(cfg.programSelector.ranges)
+        if (sug.trimIdx >= 0) setSelectorRange(sug.trimIdx, { toUs: sug.trimNewHi })
+        addSelectorRange({ fromUs: sug.from, toUs: sug.to, program: newName })
+    }
     function pickTemplate(name: string) {
         addPresetToActive(name)
         addOpen = false
+        addBandForLatestProgram()
         // Select the just-added program so its editor shows on the right.
         selAi = (cfg?.activePrograms.length ?? 1) - 1
     }
     function pickBlank() {
         addBlankActive()
         addOpen = false
+        addBandForLatestProgram()
         selAi = (cfg?.activePrograms.length ?? 1) - 1
     }
 
@@ -638,7 +657,7 @@
             {/if}
             {#each cfg.channels as ch, ci (ci)}
                 {@const rowErr = errMsgForChannel(ci)}
-                {@const portOptions = portsForChannelRow(ci)}
+                {@const portOptions = portsForChannelRow(ci, $deviceModel)}
                 {@const noPort = ch.port === null || ch.port === undefined}
                 <div class="pool-row" class:verify-error={!!rowErr} class:verify-warn={noPort && !rowErr}>
                     <input class="field-input pool-name" type="text" placeholder="name"
@@ -693,45 +712,37 @@
             busy={busy}
             onInputChange={(v) => setSelectorInput(v)} />
 
+        <!-- Bands auto-populate from the programs (one each, ROF-style); edit the
+             µs window per program.  Program is the band identity — no dropdown. -->
+        {#if cfg.programSelector.ranges.length > 0}
+            <div class="sel-bands">
+                {#each cfg.programSelector.ranges as r, i (i)}
+                    {@const overlap = detectRangeOverlaps(cfg.programSelector.ranges).includes(i)}
+                    <div class="sel-band-row" class:verify-error={overlap}>
+                        <span class="sel-band-name" title="Band for program “{r.program}”">{r.program}</span>
+                        <input class="field-input sel-us" type="number" min="800" max="2200" step="10"
+                               value={r.fromUs} on:change={(e) => setSelectorRange(i, { fromUs: numValue(e) })} disabled={busy} />
+                        <span class="trigger-pm">–</span>
+                        <input class="field-input sel-us" type="number" min="800" max="2200" step="10"
+                               value={r.toUs} on:change={(e) => setSelectorRange(i, { toUs: numValue(e) })} disabled={busy} />
+                        <span class="unit">µs</span>
+                    </div>
+                {/each}
+            </div>
+        {/if}
         {#if cfg.programSelector.input}
-            <div class="form-row">
+            <div class="form-row sel-hyst">
                 <span class="field-label">Hysteresis</span>
                 <input class="field-input narrow" type="number" min="0" max="500" step="5"
                        value={cfg.programSelector.hysteresisUs}
                        on:change={(e) => setSelectorHysteresis(numValue(e))} disabled={busy} />
                 <span class="unit">µs</span>
-                <span class="hint">prevents the selector flipping when the stick sits on a range boundary</span>
             </div>
-            {#each cfg.programSelector.ranges as r, i (i)}
-                <div class="form-row range-row">
-                    <span class="rng-idx">#{i + 1}</span>
-                    <span class="field-label">µs band</span>
-                    <input class="field-input narrow" type="number" min="800" max="2200" step="10"
-                           value={r.fromUs}
-                           on:change={(e) => setSelectorRange(i, { fromUs: numValue(e) })} disabled={busy} />
-                    <span class="trigger-pm">–</span>
-                    <input class="field-input narrow" type="number" min="800" max="2200" step="10"
-                           value={r.toUs}
-                           on:change={(e) => setSelectorRange(i, { toUs: numValue(e) })} disabled={busy} />
-                    <span class="field-label">Program</span>
-                    <select class="field-input" value={r.program}
-                            on:change={(e) => setSelectorRange(i, { program: selValue(e) })} disabled={busy}>
-                        <option value="">— pick —</option>
-                        {#each activeNames as n}<option value={n}>{n}</option>{/each}
-                    </select>
-                    <button class="small danger btn-slot" on:click={() => removeSelectorRange(i)} disabled={busy}>× Remove</button>
-                </div>
-            {/each}
-            <div class="form-row">
-                <button class="small" on:click={onAddSelectorRange}
-                        disabled={busy || cfg.activePrograms.length === 0}>+ Add range</button>
-                <span class="hint">add one range per program; ranges MUST NOT overlap</span>
-            </div>
-            {#if selectorErrs.length > 0}
-                <ul class="sel-issues">
-                    {#each selectorErrs as msg}<li class="sel-issue err">⚠ {msg}</li>{/each}
-                </ul>
-            {/if}
+        {/if}
+        {#if selectorErrs.length > 0}
+            <ul class="sel-issues">
+                {#each selectorErrs as msg}<li class="sel-issue err">⚠ {msg}</li>{/each}
+            </ul>
         {/if}
 
         <!-- ─── Programs (selectable list) ─────────────────────────── -->
@@ -981,7 +992,7 @@
     /* ── Two-column layout (2026-06-02): left = programs + selector + pool;
           right = selected-program editor. ── */
     .lfx-cols { display: flex; gap: 16px; align-items: flex-start; }
-    .lfx-left { flex: 0 0 340px; min-width: 0; }
+    .lfx-left { flex: 0 0 392px; min-width: 0; }
     .lfx-right { flex: 1; min-width: 0; border-left: 1px solid var(--border); padding-left: 16px; }
 
     /* Programs list (left) */
@@ -1008,12 +1019,24 @@
     .pool-toggle { background: none; border: none; padding: 0; font: inherit; color: var(--text-bright);
                    text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700; font-size: 11px; cursor: pointer; }
     .pool-toggle:hover { color: var(--accent); }
-    .pool-row { display: flex; align-items: center; gap: 4px; margin: 2px 0; }
+    /* Fixed-width, aligned columns so every pool row lines up. */
+    .pool-row { display: flex; align-items: center; gap: 5px; margin: 2px 0; }
     .pool-row.verify-error { background: color-mix(in srgb, var(--error) 8%, transparent); }
-    .pool-name { flex: 1; min-width: 0; }
-    .pool-port { flex: 1.4; min-width: 0; }
-    .pool-bright { width: 52px; flex: 0 0 52px; }
-    .pool-x { width: 24px; flex: 0 0 24px; padding: 0; }
+    .pool-name   { flex: 0 0 104px; min-width: 0; }
+    .pool-port   { flex: 0 0 150px; min-width: 0; }
+    .pool-bright { flex: 0 0 46px; width: 46px; text-align: right; }
+    .pool-row .unit { flex: 0 0 auto; }
+    .pool-x { flex: 0 0 24px; width: 24px; padding: 0; }
+    .pool-row .row-err, .pool-row .row-warn { flex-basis: 100%; }
+
+    /* Selector bands — one per program (auto), fixed-width aligned columns. */
+    .sel-bands { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; }
+    .sel-band-row { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+    .sel-band-row.verify-error { background: color-mix(in srgb, var(--error) 10%, transparent); }
+    .sel-band-name { flex: 0 0 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                     font-size: 12px; color: var(--text-bright); }
+    .sel-us { flex: 0 0 64px; width: 64px; text-align: right; }
+    .sel-hyst { margin-top: 4px; }
     .header-actions { display: flex; align-items: center; gap: 8px; }
     .header-actions button { height: 28px; box-sizing: border-box; }
 
