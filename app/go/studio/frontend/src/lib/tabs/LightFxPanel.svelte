@@ -545,32 +545,48 @@
         } catch (e) { error = String(e) }
     }
 
+    // Auto-populate one selector band per program (ROF-style), reactively — so
+    // EXISTING programs (loaded without ranges) get bands too, not just newly
+    // added ones.  removeActive/renameActive already cascade range removal/rename.
+    // The balanced-check makes this run once per program-SET change (no loop on
+    // band-value edits).  Note: a legacy config with programs-but-no-bands will
+    // gain bands on open and read as dirty until Apply — that's a real change.
+    $: reconcileSelectorBands(activeNames)
+    function reconcileSelectorBands(names: string[]) {
+        if (!cfg) return
+        const ranges = cfg.programSelector.ranges
+        const balanced = ranges.length === names.length
+            && names.every(n => ranges.filter(r => r.program === n).length === 1)
+        if (balanced) return
+        // Keep one range per still-active program (first wins), append a
+        // non-overlapping band for every program that doesn't have one yet.
+        const seen = new Set<string>()
+        const next: ProgramSelectorRangeT[] = []
+        for (const r of ranges) {
+            if (names.includes(r.program) && !seen.has(r.program)) { seen.add(r.program); next.push(r) }
+        }
+        for (const n of names) {
+            if (seen.has(n)) continue
+            const sug = suggestNextRange(next)
+            if (sug.trimIdx >= 0) next[sug.trimIdx] = { ...next[sug.trimIdx], toUs: sug.trimNewHi }
+            next.push({ fromUs: sug.from, toUs: sug.to, program: n })
+            seen.add(n)
+        }
+        lightfxDraft.update(d => ({ ...d, programSelector: { ...d.programSelector, ranges: next } }))
+    }
+
     // ─── Add-template picker (collapsible) ───────────────────────────
     let addOpen = false
-    // Auto-seed one selector band per program (ROF-style): adding a program adds
-    // a non-overlapping band mapped to it; removeActive/renameActive already
-    // cascade range removal/rename. `cfg` updates synchronously via subscribe, so
-    // it reflects the just-added program here.  Handler-based (not reactive) to
-    // avoid false-dirty-on-load.
-    function addBandForLatestProgram() {
-        const names = cfg?.activePrograms.map(p => p.name) ?? []
-        const newName = names[names.length - 1]
-        if (!newName || cfg.programSelector.ranges.some(r => r.program === newName)) return
-        const sug = suggestNextRange(cfg.programSelector.ranges)
-        if (sug.trimIdx >= 0) setSelectorRange(sug.trimIdx, { toUs: sug.trimNewHi })
-        addSelectorRange({ fromUs: sug.from, toUs: sug.to, program: newName })
-    }
     function pickTemplate(name: string) {
         addPresetToActive(name)
         addOpen = false
-        addBandForLatestProgram()
-        // Select the just-added program so its editor shows on the right.
+        // Select the just-added program so its editor shows on the right (the
+        // reactive reconcile above seeds its selector band).
         selAi = (cfg?.activePrograms.length ?? 1) - 1
     }
     function pickBlank() {
         addBlankActive()
         addOpen = false
-        addBandForLatestProgram()
         selAi = (cfg?.activePrograms.length ?? 1) - 1
     }
 
