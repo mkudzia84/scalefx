@@ -43,6 +43,7 @@
     } from '../lightfx'
     import { deviceModel, liveChannels, liveChannelKey, RoleKind, formatPortRail, claimsForPort, type Claim } from '../devicemodel'
     import { effectClaims } from '../effect-claims'
+    import { suggestNextBand } from '../range-suggest'
     import type { PortRefT } from '../landing'
     import { landingDraft } from '../landing'
     import { freePortPoolFiltered } from '../components/port_pool'
