@@ -56,6 +56,11 @@ public:
                  const LightFxYamlConfig& cfg,
                  const hubfx::effects::PortRef& source,
                  uint8_t channel) {
+        // Drop any prior subscription UP-FRONT so a re-install (CONFIG_RELOAD
+        // from Studio) or a disable actually detaches the old trigger — the
+        // typed `dispatcher` is available here, so we can unsubscribe cleanly.
+        if (dispatcher) dispatcher->unsubscribe(&_trigger);
+        _subscribed  = false;
         _dispatcher  = nullptr;
         _controllerPtr = nullptr;
         _selectFn    = nullptr;
@@ -63,9 +68,7 @@ public:
         _lastRangeIx = -1;
 
         if (!dispatcher || !controller || !cfg.programSelector.enabled) {
-            // Dormant — unsubscribe any prior binding.
-            if (_subscribed) _subscribed = false;
-            return;
+            return; // dormant
         }
 
         // Index each range's program against the loaded catalog so the
@@ -113,8 +116,7 @@ public:
         m.failsafe = FailsafeBehaviour::Hold;
         _trigger.configure(m, &LightFxProgramSelector::onChange, this);
 
-        // Unsubscribe + resubscribe — safe if not previously subscribed.
-        dispatcher->unsubscribe(&_trigger);
+        // Subscribe (any prior binding was already dropped at the top).
         if (dispatcher->subscribe(&_trigger, source, channel)) {
             _subscribed = true;
             SFX_LOG_INFO("[lightfx-selector] bound to {%s, %u} ch=%u  %u range(s), hyst=%uus",

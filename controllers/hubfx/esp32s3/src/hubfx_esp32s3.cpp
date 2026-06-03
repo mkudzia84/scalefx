@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.18.0-hubfx"
-#define BUILD_NUMBER     739
+#define BUILD_NUMBER     741
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -564,6 +564,33 @@ static void applyGearControlConfigCallback(const GearControlConfig& cfg) {
     hubfx::config::applyGearControlConfig<HubFxBoard, GearControlService>(board, cfg);
 }
 
+// RC program selector — file-scope so the config-reload callback can re-wire it
+// (it was previously installed only once at boot, so a selector configured in
+// Studio + Applied never took effect).  `g_lightFxBooted` gates the in-callback
+// re-install to AFTER boot — at boot the dedicated setup block does the first
+// install once the dispatcher is fully up.
+static hubfx::config::LightFxProgramSelector kLightFxSelector;
+static bool g_lightFxBooted = false;
+
+// (Re)bind the selector against a freshly-applied lightfx config.  MUST run
+// after applyLightFxConfig (which loads the programs the ranges resolve to).
+// Handles enable/disable + input-rebind cleanly (install() drops the old
+// subscription up-front).
+static void installLightFxSelector(const LightFxYamlConfig& lf) {
+    const auto* binding = lf.programSelector.enabled
+        ? findInputByName(kHubFx.data(), lf.programSelector.input) : nullptr;
+    if (lf.programSelector.enabled && !binding) {
+        SFX_LOG_WARN("[lightfx-selector] input '%s' not in /hubfx.yaml inputs[] — selector dormant",
+                     lf.programSelector.input);
+    }
+    kLightFxSelector.install(
+        &board.policy<InputDispatcherService>(),
+        &board.policy<LightFxEffectService>().controller(),
+        lf,
+        binding ? binding->port : hubfx::effects::PortRef{},
+        (binding && binding->channelId > 0) ? (uint8_t)(binding->channelId - 1) : 0);
+}
+
 static void applyLightFxConfigCallback(const LightFxYamlConfig& cfg) {
     hubfx::config::applyLightFxConfig<HubFxBoard, LightFxEffectService>(
         board, cfg,
@@ -574,6 +601,11 @@ static void applyLightFxConfigCallback(const LightFxYamlConfig& cfg) {
         kHubFx.data(),
         // Program-file reader for `/lightfx/programs/<n>.yaml`.
         &storageReadFile<FlashModule>);
+    // Re-wire the RC selector on every CONFIG_RELOAD (Studio Apply) so a newly
+    // configured selector actually drives program switching.  Skipped at boot
+    // (g_lightFxBooted == false) — the setup block installs it once the
+    // InputDispatcher is fully initialised.
+    if (g_lightFxBooted) installLightFxSelector(cfg);
 }
 
 #if SFX_INSTRUMENTATION
@@ -772,30 +804,12 @@ void setup() {
         board, kHubFx.data());
 
     // LightFx program selector — when /lightfx.yaml's `program_selector:`
-    // block is populated, wire a Raw-µs TriggerInput against the named
-    // input channel.  Hub config supplies the source port + channel id;
-    // lightfx config carries the range table.  Selector stays dormant
-    // (subscribe is skipped) if either side is empty / unresolved.
-    static hubfx::config::LightFxProgramSelector kLightFxSelector;
-    {
-        const auto& lf  = kLightFx.data();
-        const auto& hub = kHubFx.data();
-        if (lf.programSelector.enabled) {
-            const auto* binding =
-                ::findInputByName(hub, lf.programSelector.input);
-            if (binding) {
-                kLightFxSelector.install(
-                    &board.policy<InputDispatcherService>(),
-                    &board.policy<LightFxEffectService>().controller(),
-                    lf, binding->port,
-                    binding->channelId > 0 ? (uint8_t)(binding->channelId - 1) : 0);
-            } else {
-                SFX_LOG_WARN("[lightfx-selector] input '%s' not in /hubfx.yaml "
-                             "inputs[] — selector dormant",
-                             lf.programSelector.input);
-            }
-        }
-    }
+    // block is populated, wire a Raw-µs TriggerInput against the named input
+    // channel.  First install here (dispatcher fully up); the config-reload
+    // callback re-wires it on every Studio Apply (see installLightFxSelector +
+    // g_lightFxBooted above).
+    installLightFxSelector(kLightFx.data());
+    g_lightFxBooted = true;
 
     // Mirror every INFO+ entry to the wire as TAG_ASYNC LOG_MESSAGE so
     // `subscribe` sees the device tail live.  Bump to DEBUG when chasing
