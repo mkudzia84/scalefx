@@ -136,6 +136,17 @@
     // ─── Selector bands (Rule 38) — driven by active program names. ──
     const BAND_PALETTE = ['#5b9dff', '#ffa05b', '#5bd28b', '#d65bd2']
     $: activeNames = (cfg?.activePrograms ?? []).map(a => a.name)
+
+    // Human caption for a program: the preset library's caption (first YAML
+    // comment line) by name, else the id humanised ("helicopter_flight" →
+    // "Helicopter Flight").  Reactive factory so list/editor update when the
+    // library loads.
+    function humanize(name: string): string {
+        return name ? name.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : name
+    }
+    $: captionByName = new Map(($presetLibrary ?? [])
+        .filter(p => p.caption).map(p => [p.name, p.caption] as [string, string]))
+    $: captionFor = (name: string) => captionByName.get(name) || humanize(name)
     function buildSelectorBands(ranges: ProgramSelectorRangeT[], liveUs: number | null, liveValid: boolean) {
         return ranges.map((r, i) => ({
             loUs: r.fromUs, hiUs: r.toUs,
@@ -804,7 +815,7 @@
                 <div class="prog-row" class:sel={selAi === ai} class:invalid={errs.length > 0}>
                     <button class="prog-pick" on:click={() => selAi = ai} title="Edit this program">
                         <span class="ap-idx">#{ai + 1}</span>
-                        <span class="prog-name">{slot.name}</span>
+                        <span class="prog-name" title={slot.name}>{captionFor(slot.name)}</span>
                         {#if isPlaying}<span class="prog-live" title="previewing">●</span>{/if}
                         {#if errs.length > 0}<span class="prog-err" title={errs.join('\n')}>⚠{errs.length}</span>{/if}
                     </button>
@@ -864,9 +875,7 @@
             {@const canPlay   = programHasPlayable(slot)}
             <div class="prog-editor-head">
                 <span class="ap-idx">#{ai + 1}</span>
-                <input class="field-input ap-name" type="text" value={slot.name}
-                       on:change={(e) => renameActive(ai, strValue(e))}
-                       title="Rename — becomes /lightfx/programs/<name>.yaml on Apply" />
+                <span class="prog-caption" title={slot.name}>{captionFor(slot.name)}</span>
                 {#if errs.length > 0}
                     <span class="row-err-tag" title={errs.join('\n')}>⚠ {errs.length} error{errs.length > 1 ? 's' : ''}</span>
                 {/if}
@@ -882,6 +891,14 @@
                         title="Save this draft as a reusable user template">💾 Save As…</button>
                 <button class="small danger row-action" on:click={() => removeActive(ai)}
                         title="Remove this program">× Remove</button>
+            </div>
+            <!-- Program id (filename) — editable; the caption above is its label. -->
+            <div class="form-row prog-id-row">
+                <span class="field-label">id</span>
+                <input class="field-input ap-name" type="text" value={slot.name}
+                       on:change={(e) => renameActive(ai, strValue(e))}
+                       title="Filesystem id — becomes /lightfx/programs/<id>.yaml on Apply. Letters, digits, _ and - only." />
+                <span class="hint">becomes /lightfx/programs/&lt;id&gt;.yaml</span>
             </div>
 
             <!-- ─── Selected-program editor: per-channel timeline tracks ─── -->
@@ -1058,6 +1075,10 @@
     .prog-editor-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;
                         padding-bottom: 8px; border-bottom: 1px solid var(--border); }
     .prog-editor-head .ap-name { flex: 1; min-width: 140px; font-weight: 600; }
+    .prog-caption { flex: 1; min-width: 0; font-size: 14px; font-weight: 700; color: var(--text-bright);
+                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .prog-id-row { margin: -2px 0 8px; }
+    .prog-id-row .ap-name { flex: 0 0 200px; font-family: var(--font-mono); font-size: 11px; }
 
     /* Collapsible compact LED-channel pool (left) */
     .pool-head { cursor: default; }
@@ -1087,7 +1108,7 @@
     .sel-field { display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto; }
     .sel-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-dim); }
     .sel-band-inputs { display: flex; align-items: center; gap: 4px; }
-    .sel-band-inputs .field-input.narrow { width: 58px; }
+    .sel-band-inputs .field-input.narrow { width: 78px; }
     .sel-band-sep { color: var(--text-dim); }
     .sel-issues { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
     .sel-issue { font-size: 11px; font-style: italic; }
