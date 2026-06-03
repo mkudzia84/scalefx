@@ -14,6 +14,46 @@
 
 namespace sfx_core {
 
+namespace {
+
+// Cyclic, self-repeating event kinds — Flash / Fading / Beacon — derive
+// their brightness purely from the absolute clock (`now % cycle_ms`), so
+// every channel running the same cycle stays phase-locked regardless of
+// where it sits in a loop pattern.  Shared by BOTH tick paths: the
+// non-loop state machine AND the phase-locked loop sampler (which used to
+// omit these kinds, rendering a looping Fading/Flash/Beacon as a SOLID
+// `brightnessPct` — the breathing/strobe preset that never breathed).
+uint8_t cyclicSample(const LedAnimator::Event& e, uint32_t now) {
+    switch (e.kind) {
+        case LedAnimator::EV_FLASH: {
+            // Square wave: brightnessPct for flashPct% of cycle, else 0.
+            if (e.cycleMs == 0) return e.brightnessPct;     // degenerate ⇒ steady on
+            const uint32_t phase    = now % e.cycleMs;
+            const uint32_t highSpan  = ((uint32_t)e.cycleMs * (uint32_t)e.flashPct) / 100u;
+            return (phase < highSpan) ? e.brightnessPct : 0;
+        }
+        case LedAnimator::EV_FADING: {
+            // Sinusoid minPct..maxPct via (1 - cos(2π·t/T)) / 2.
+            if (e.cycleMs == 0) return e.maxPct;
+            const float    t    = (float)(now % e.cycleMs) / (float)e.cycleMs;
+            const float    norm = 0.5f * (1.0f - cosf(6.2831853f * t));
+            const int32_t  span = (int32_t)e.maxPct - (int32_t)e.minPct;
+            return (uint8_t)((int32_t)e.minPct + (int32_t)(norm * (float)span + 0.5f));
+        }
+        case LedAnimator::EV_BEACON: {
+            // At maxPct for flashPct% of cycle, else minPct.
+            if (e.cycleMs == 0) return e.maxPct;
+            const uint32_t phase    = now % e.cycleMs;
+            const uint32_t highSpan  = ((uint32_t)e.cycleMs * (uint32_t)e.flashPct) / 100u;
+            return (phase < highSpan) ? e.maxPct : e.minPct;
+        }
+        default:
+            return e.brightnessPct;
+    }
+}
+
+}  // namespace
+
 bool LedAnimator::loadQueue(const Event* events, size_t count) {
     if (count > MAX_EVENTS) return false;
     stop();
@@ -88,6 +128,12 @@ void LedAnimator::tick(uint32_t now) {
                     case EV_OFF:      b = 0; break;
                     case EV_FADE_IN:  b = (e.durationMs ? (uint8_t)((uint32_t)e.brightnessPct * local / e.durationMs) : e.brightnessPct); break;
                     case EV_FADE_OUT: b = (e.durationMs ? (uint8_t)((uint32_t)e.brightnessPct * (e.durationMs - local) / e.durationMs) : 0); break;
+                    // Cyclic kinds sample from the absolute clock (phase-locked),
+                    // NOT the loop segment — a looping Fading/Flash/Beacon must
+                    // animate, not freeze at brightnessPct.
+                    case EV_FLASH:
+                    case EV_FADING:
+                    case EV_BEACON:   b = cyclicSample(e, now); break;
                     case EV_ON:
                     default:          b = e.brightnessPct; break;   // On (and any non-fade) = solid
                 }
@@ -150,49 +196,13 @@ void LedAnimator::tick(uint32_t now) {
             }
             break;
         }
-        case EV_FLASH: {
-            // Square wave: HIGH at brightnessPct for flashPct% of cycle_ms,
-            // LOW (0) for the remainder. Repeats until durationMs elapses
-            // (0 = forever).
-            if (ev.cycleMs == 0) {
-                // Degenerate cycle — treat as steady on.
-                _currentBrightPct = ev.brightnessPct;
-            } else {
-                const uint32_t phase    = now % ev.cycleMs;   // shared clock — phase-locked across channels
-                const uint32_t highSpan = ((uint32_t)ev.cycleMs *
-                                            (uint32_t)ev.flashPct) / 100u;
-                _currentBrightPct = (phase < highSpan) ? ev.brightnessPct : 0;
-            }
-            writeOutputPct(_currentBrightPct);
-            if (ev.durationMs != 0 && dt >= ev.durationMs) advanceQueue = true;
-            break;
-        }
-        case EV_FADING: {
-            // Sinusoidal between minPct and maxPct, period cycleMs.
-            if (ev.cycleMs == 0) {
-                _currentBrightPct = ev.maxPct;
-            } else {
-                // sin(phase) → 0..1 via (1 - cos(2π·t/T)) / 2
-                const float    t    = (float)(now % ev.cycleMs) / (float)ev.cycleMs;   // shared clock
-                const float    norm = 0.5f * (1.0f - cosf(6.2831853f * t));
-                const int32_t  span = (int32_t)ev.maxPct - (int32_t)ev.minPct;
-                _currentBrightPct   =
-                    (uint8_t)((int32_t)ev.minPct + (int32_t)(norm * (float)span + 0.5f));
-            }
-            writeOutputPct(_currentBrightPct);
-            if (ev.durationMs != 0 && dt >= ev.durationMs) advanceQueue = true;
-            break;
-        }
+        case EV_FLASH:
+        case EV_FADING:
         case EV_BEACON: {
-            // At maxPct for flashPct% of cycleMs, else minPct.
-            if (ev.cycleMs == 0) {
-                _currentBrightPct = ev.maxPct;
-            } else {
-                const uint32_t phase    = now % ev.cycleMs;   // shared clock — phase-locked across channels
-                const uint32_t highSpan = ((uint32_t)ev.cycleMs *
-                                            (uint32_t)ev.flashPct) / 100u;
-                _currentBrightPct = (phase < highSpan) ? ev.maxPct : ev.minPct;
-            }
+            // Cyclic kinds — square wave / sinusoid / beacon.  Phase comes
+            // from the shared absolute clock (`now % cycle_ms`) so channels
+            // stay locked; `dt` only governs when the event hands off.
+            _currentBrightPct = cyclicSample(ev, now);
             writeOutputPct(_currentBrightPct);
             if (ev.durationMs != 0 && dt >= ev.durationMs) advanceQueue = true;
             break;
