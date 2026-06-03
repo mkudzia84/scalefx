@@ -162,6 +162,10 @@ export function GetLightFxProgramStructured(arg1) {
   return window['go']['main']['App']['GetLightFxProgramStructured'](arg1);
 }
 
+export function GetLightFxStatus() {
+  return window['go']['main']['App']['GetLightFxStatus']();
+}
+
 export function GetReleases(arg1) {
   return window['go']['main']['App']['GetReleases'](arg1);
 }
@@ -286,6 +290,10 @@ export function RefreshDeviceModel() {
   return window['go']['main']['App']['RefreshDeviceModel']();
 }
 
+export function ResetLightFxProgram() {
+  return window['go']['main']['App']['ResetLightFxProgram']();
+}
+
 export function SaveGunFxConfig(arg1) {
   return window['go']['main']['App']['SaveGunFxConfig'](arg1);
 }
@@ -300,6 +308,10 @@ export function SavePresetAs(arg1, arg2) {
 
 export function SaveTextFile(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveTextFile'](arg1, arg2, arg3);
+}
+
+export function SelectLightFxProgram(arg1) {
+  return window['go']['main']['App']['SelectLightFxProgram'](arg1);
 }
 
 export function SendCommand(arg1) {

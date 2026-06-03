@@ -84,6 +84,8 @@ export function GetLightFxProgram(arg1:string):Promise<string>;
 
 export function GetLightFxProgramStructured(arg1:string):Promise<main.ProgramDTO>;
 
+export function GetLightFxStatus():Promise<main.LightFxStatusDTO>;
+
 export function GetReleases(arg1:string):Promise<Array<main.ReleaseInfo>>;
 
 export function GetToolsStatus():Promise<main.ToolsStatus>;
@@ -146,6 +148,8 @@ export function QueryDeviceStatus():Promise<main.DeviceStatus>;
 
 export function RefreshDeviceModel():Promise<main.DeviceModelSnapshot>;
 
+export function ResetLightFxProgram():Promise<void>;
+
 export function SaveGunFxConfig(arg1:main.GunFxConfig):Promise<void>;
 
 export function SaveHubConfig():Promise<void>;
@@ -153,6 +157,8 @@ export function SaveHubConfig():Promise<void>;
 export function SavePresetAs(arg1:string,arg2:main.ProgramDTO):Promise<main.PresetLibraryEntry>;
 
 export function SaveTextFile(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function SelectLightFxProgram(arg1:string):Promise<void>;
 
 export function SendCommand(arg1:string):Promise<void>;
 

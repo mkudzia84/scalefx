@@ -515,6 +515,76 @@ func (a *App) StopLightChannel(portIdx uint8) error {
 	return nil
 }
 
+// LightFxStatusDTO — live LightFX program state on the hub.  ActiveIdx is -1
+// when no program is running.  ActiveName is the on-device program name (the
+// /lightfx/programs/<name>.yaml id) so Studio can highlight it in the list.
+type LightFxStatusDTO struct {
+	ActiveIdx           int    `json:"activeIdx"`
+	ActiveName          string `json:"activeName"`
+	MasterBrightnessPct int    `json:"masterBrightnessPct"`
+}
+
+// SelectLightFxProgram tells the firmware to PLAY the named program now (manual
+// selection).  The program must already be ON THE DEVICE — Apply first.  When
+// an RC selector is configured AND has a valid signal it drives the selection;
+// with no signal the selector is idle and this manual choice holds.  This is the
+// "in absence of RC, the select/preview button plays it" path.
+func (a *App) SelectLightFxProgram(name string) error {
+	defer a.diag.Around("SelectLightFxProgram", map[string]any{"name": name})()
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	progs, err := c.LightFx.Programs()
+	if err != nil {
+		return fmt.Errorf("list device programs: %w", err)
+	}
+	for _, p := range progs {
+		if p.Name == name {
+			a.diag.Info("LIGHTFX", "select program %q (device idx %d)", name, p.Index)
+			return c.LightFx.SelectProgram(p.Index)
+		}
+	}
+	return fmt.Errorf("program %q is not on the device — press Apply to upload it first", name)
+}
+
+// ResetLightFxProgram drops the active program (all claimed LEDs off).
+func (a *App) ResetLightFxProgram() error {
+	defer a.diag.Around("ResetLightFxProgram", nil)()
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return c.LightFx.ResetProgram()
+}
+
+// GetLightFxStatus returns the live active-program state (RC-driven or manual),
+// resolving the active index to its on-device name so Studio can highlight the
+// running program in the list.
+func (a *App) GetLightFxStatus() (LightFxStatusDTO, error) {
+	c := a.snapshotClient()
+	if c == nil {
+		return LightFxStatusDTO{ActiveIdx: -1}, fmt.Errorf("not connected")
+	}
+	st, err := c.LightFx.Status()
+	if err != nil {
+		return LightFxStatusDTO{ActiveIdx: -1}, err
+	}
+	out := LightFxStatusDTO{ActiveIdx: -1, MasterBrightnessPct: int(st.MasterBrightnessPct)}
+	if st.ActiveIdx != 0xFF {
+		out.ActiveIdx = int(st.ActiveIdx)
+		if progs, err := c.LightFx.Programs(); err == nil {
+			for _, p := range progs {
+				if p.Index == st.ActiveIdx {
+					out.ActiveName = p.Name
+					break
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
 // ListAvailablePrograms walks /lightfx/programs/ on flash and returns
 // every .yaml file with its full path + display name.  Lets the
 // Studio "add program" picker offer concrete choices instead of

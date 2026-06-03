@@ -47,7 +47,8 @@
     import type { PortRefT } from '../landing'
     import { landingDraft } from '../landing'
     import { freePortPoolFiltered } from '../components/port_pool'
-    import { PreviewLightChannel, StopLightChannel } from '../../../wailsjs/go/main/App'
+    import { PreviewLightChannel, StopLightChannel,
+             SelectLightFxProgram, ResetLightFxProgram, GetLightFxStatus } from '../../../wailsjs/go/main/App'
     import ChannelBandCluster from '../components/ChannelBandCluster.svelte'
     import LightTimelineTrack from '../components/LightTimelineTrack.svelte'
 
@@ -83,18 +84,48 @@
     let playing: Record<string, number> = {}
     function playKey(ai: number, ci: number): string { return `${ai}:${ci}` }
 
+    // Live active-program state from the hub (RC-driven OR manual select).  We
+    // poll LIGHTFX_STATUS at 1 Hz while the panel is open so the operator sees
+    // the radio switching programs on the board and can confirm a manual select.
+    let activeProgramName = ''
+    let statusTimer: ReturnType<typeof setInterval> | null = null
+    async function pollStatus() {
+        if (busy) return  // don't race an in-flight Apply / upload
+        try {
+            const st = await GetLightFxStatus()
+            activeProgramName = st?.activeName ?? ''
+        } catch { activeProgramName = '' }
+    }
+
     onMount(() => {
         loadLightFxConfig().catch(e => { error = String(e) })
         refreshPresetLibrary().catch(() => {})
+        pollStatus()
+        statusTimer = setInterval(pollStatus, 1000)
     })
     onDestroy(() => {
         unsubCfg()
+        if (statusTimer) clearInterval(statusTimer)
         // Stop any per-channel previews we kicked off.
         for (const k of Object.keys(playing)) {
             const portIdx = playing[k]
             if (portIdx !== undefined) StopLightChannel(portIdx).catch(() => {})
         }
     })
+
+    // ── Manual program play / stop ON THE DEVICE (the "no RC signal" path) ──
+    // Plays the real firmware program (must be Applied first); RC overrides
+    // when it has signal.  Distinct from the per-channel draft preview below.
+    async function playOnDevice(name: string) {
+        error = ''
+        try { await SelectLightFxProgram(name); await pollStatus() }
+        catch (e) { error = String(e) }
+    }
+    async function stopOnDevice() {
+        error = ''
+        try { await ResetLightFxProgram(); await pollStatus() }
+        catch (e) { error = String(e) }
+    }
 
     // ─── Named-channel options (Rule 43, for the selector picker) ────
     type ChanOpt = { fnId: string; label: string }
@@ -734,6 +765,19 @@
             Program selector
             <span class="hint">drive program switching from an RC channel — one µs band per program</span>
         </div>
+        <div class="sel-status">
+            on the board:
+            {#if activeProgramName}
+                <span class="sel-active">▶ {captionFor(activeProgramName)}</span>
+            {:else}
+                <span class="sel-none">— none —</span>
+            {/if}
+            {#if cfg.programSelector.input}
+                <span class="sel-src">{liveUsFor(cfg.programSelector.input)?.valid ? 'RC-driven' : 'no RC signal · manual'}</span>
+            {:else}
+                <span class="sel-src">manual (no selector channel)</span>
+            {/if}
+        </div>
         <ChannelBandCluster
             channelLabel="Selector channel"
             emptyOption="— none (use first program always) —"
@@ -816,7 +860,7 @@
                     <button class="prog-pick" on:click={() => selAi = ai} title="Edit this program">
                         <span class="ap-idx">#{ai + 1}</span>
                         <span class="prog-name" title={slot.name}>{captionFor(slot.name)}</span>
-                        {#if isPlaying}<span class="prog-live" title="previewing">●</span>{/if}
+                        {#if activeProgramName === slot.name}<span class="prog-live" title="playing on the board now (RC or manual)">▶</span>{/if}
                         {#if errs.length > 0}<span class="prog-err" title={errs.join('\n')}>⚠{errs.length}</span>{/if}
                     </button>
                     <button class="small danger prog-x" on:click={() => removeActive(ai)} title="Remove program">×</button>
@@ -879,13 +923,11 @@
                 {#if errs.length > 0}
                     <span class="row-err-tag" title={errs.join('\n')}>⚠ {errs.length} error{errs.length > 1 ? 's' : ''}</span>
                 {/if}
-                <button class="small state-toggle row-action" class:danger={isPlaying}
-                        on:click={() => isPlaying ? stopProgram(ai) : playProgram(ai)}
-                        disabled={isPlaying ? false : !canPlay}
-                        title={isPlaying ? 'Stop every channel in this program'
-                             : canPlay ? 'Preview every channel that has a port + events. No upload needed.'
-                             : 'No playable channels — assign a port and at least one event first.'}>
-                    {isPlaying ? 'Stop' : 'Preview'}
+                <button class="small state-toggle row-action" class:danger={activeProgramName === slot.name}
+                        on:click={() => activeProgramName === slot.name ? stopOnDevice() : playOnDevice(slot.name)}
+                        title={activeProgramName === slot.name ? 'Stop — drop the active program on the board (all LEDs off).'
+                             : 'Play this program on the board now. Apply first if it is not uploaded yet; the RC selector overrides this when the stick has signal.'}>
+                    {activeProgramName === slot.name ? '■ Stop' : '▶ Play'}
                 </button>
                 <button class="small row-action" on:click={() => openSaveAs(ai)}
                         title="Save this draft as a reusable user template">💾 Save As…</button>
@@ -1092,6 +1134,12 @@
     .pool-port   { flex: 0 0 180px; min-width: 0; }
     .pool-x { flex: 0 0 24px; width: 24px; padding: 0; }
     .pool-row .row-err, .pool-row .row-warn { flex-basis: 100%; }
+
+    /* Live active-program readout under the selector head. */
+    .sel-status { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-dim); margin: 0 0 6px; }
+    .sel-active { color: var(--success); font-weight: 600; }
+    .sel-none { font-style: italic; }
+    .sel-src { margin-left: auto; font-size: 10px; font-family: var(--font-mono); }
 
     /* Selector bands — one card per program, mirrors the GunFx ROF item:
        coloured left border + swatch match the band on the live bar above. */

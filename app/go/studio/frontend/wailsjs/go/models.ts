@@ -1904,6 +1904,22 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class LightFxStatusDTO {
+	    activeIdx: number;
+	    activeName: string;
+	    masterBrightnessPct: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LightFxStatusDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.activeIdx = source["activeIdx"];
+	        this.activeName = source["activeName"];
+	        this.masterBrightnessPct = source["masterBrightnessPct"];
+	    }
+	}
 	export class MotorElementDTO {
 	    elementMv: number;
 	    scaling: number;
@@ -1954,6 +1970,7 @@ export namespace main {
 	    name: string;
 	    source: string;
 	    category: string;
+	    caption: string;
 	    note: string;
 	    program: ProgramDTO;
 	
@@ -1966,6 +1983,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.source = source["source"];
 	        this.category = source["category"];
+	        this.caption = source["caption"];
 	        this.note = source["note"];
 	        this.program = this.convertValues(source["program"], ProgramDTO);
 	    }
