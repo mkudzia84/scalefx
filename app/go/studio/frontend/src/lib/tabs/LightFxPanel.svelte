@@ -571,10 +571,15 @@
         if (balanced && selInit) return
         selInit = true
         const n = names.length
+        // Equal contiguous bands tiling [SEL_LO, SEL_HI], with a 1 µs gap between
+        // adjacent bands (next band's low = prev band's high + 1) so they sit
+        // right next to each other without sharing a boundary µs (which would
+        // read as an overlap and leave a value ambiguous between two programs).
+        const bound = (k: number) => Math.round(SEL_LO + (SEL_HI - SEL_LO) * k / n)
         const next: ProgramSelectorRangeT[] = names.map((name, i) => ({
             program: name,
-            fromUs: Math.round(SEL_LO + (SEL_HI - SEL_LO) * i / n),
-            toUs:   Math.round(SEL_LO + (SEL_HI - SEL_LO) * (i + 1) / n),
+            fromUs: i === 0 ? bound(0) : bound(i) + 1,
+            toUs:   bound(i + 1),
         }))
         // No-op guard: don't dirty the draft if the bands are already this exact
         // equal tiling (re-opening an already-equalised config stays clean).

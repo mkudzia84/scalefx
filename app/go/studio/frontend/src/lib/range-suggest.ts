@@ -11,7 +11,8 @@
 // Conventions:
 //   - RC stick range is `[1000, 2000]` µs.  Other carriers can pass
 //     `bounds`.
-//   - GUARD is the buffer width between adjacent bands.  Default 50 µs.
+//   - GUARD is the buffer width between adjacent bands.  Default 1 µs —
+//     bands sit right next to each other but never share a boundary µs.
 //     Bands that already touch the carrier bound (1000 or 2000) do NOT
 //     get a guard on that side — wasting carrier travel for an
 //     edge-of-bar guard is silly.
@@ -41,9 +42,14 @@ export interface SuggestOpts {
 
 const DEFAULTS: SuggestOpts = {
     bounds:     [1000, 2000],
-    guardUs:    50,
+    // Bands sit RIGHT NEXT TO EACH OTHER with just a 1 µs guard between them
+    // (enough that adjacent bands never share a boundary µs / read as an
+    // overlap, but visually contiguous).  stepUs is 1 so that 1 µs gap survives
+    // rounding — a coarser step would round the gap away to 0 (touching) or
+    // blow it out to a step-sized gap.
+    guardUs:    1,
     minWidthUs: 100,
-    stepUs:     10,
+    stepUs:     1,
 }
 
 /** Pick the next band for an existing list, honouring guard gaps.
