@@ -78,9 +78,11 @@ type LightFxConfigDTO struct {
 	Enabled             bool                `yaml:"enabled"                 json:"enabled"`
 	MasterBrightnessPct uint8               `yaml:"master_brightness_pct"   json:"masterBrightnessPct"`
 	// Channels[] — instance-owned LED channel pool (since v2).  Programs
-	// reference channels by name; firmware-side resolution prefers this
-	// list over /hubfx.yaml port labels.  Phase 1 (this commit) emits
-	// the block; firmware ignores unknown fields until Phase 2 wires it.
+	// reference channels by name; the firmware resolves each program
+	// track's `channel:` against this list FIRST (lightfx_program_loader.h
+	// resolveLightFxChannelPooled), falling back to /hubfx.yaml LedAnimator
+	// labels only on a miss.  The hub's own GUID on a port collapses to
+	// hub-local (portRefFromNode) so the resolved port matches the role.
 	Channels            []LightFxChannelDTO `yaml:"channels,omitempty"      json:"channels"`
 	Programs            []string            `yaml:"programs"                json:"programs"`
 	ProgramSelector     ProgramSelectorDTO  `yaml:"program_selector,omitempty" json:"programSelector"`

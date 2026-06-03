@@ -100,6 +100,38 @@ Board addressing on a PortRef:
 against a module-level alias table seeded by `/hubfx.yaml`'s populate() — which
 loads first, so every effect sub-file parsed afterward sees the table.
 
+> **The hub's own GUID collapses to hub-local.** Studio stamps the hub's 4-hex
+> GUID (e.g. `guid: 6D60`) on ports it writes into effect sub-files (its device
+> model surfaces every port with its real GUID), but the topology/role-claim
+> tables key hub ports as **local** (`guid == ""`). `portRefFromNode` therefore
+> normalizes any PortRef addressed to the board's own GUID down to hub-local —
+> otherwise the ref resolves to a *remote* port that no locally-attached role
+> owns, and effect output silently goes nowhere. Expander GUIDs are never the
+> hub's own, so only a raw `guid:<hub>` is affected.
+
+## LightFx channel pool — `channels:` block in `/lightfx.yaml`
+
+`/lightfx.yaml` declares an **instance-owned LED channel pool** (`schema_version: 2`):
+each entry binds a channel `name` → physical `port` (+ optional
+`default_brightness_pct`). Every program file references LED channels **by name**
+(`tracks[].channel`), and the program loader resolves them against this pool FIRST
+(`resolveLightFxChannelPooled`), falling back to `/hubfx.yaml` LedAnimator port
+**labels** only on a miss. Define the channel once in Studio's *Channels* card;
+the picker offers it to every program.
+
+```yaml
+channels:
+  - name: Position lights
+    port: { guid: 6D60, kind: pwm, idx: 0 }   # guid == hub ⇒ collapsed to local
+    default_brightness_pct: 0
+```
+
+A pool entry that exists but has no port wired (`portKind == 0`) is a deliberate
+miss — the track skips rather than steering at port 0. Without this block parsed,
+v2 programs load **zero channels** (every track "channel not found"), so the
+program list is empty and any RC `program_selector` finds no usable ranges and
+goes dormant.
+
 ## Expander boards — `expanders:` block in `/hubfx.yaml`
 
 The single place a remote board is declared. Each entry names a board
