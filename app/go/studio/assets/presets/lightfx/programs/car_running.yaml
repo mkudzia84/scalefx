@@ -1,4 +1,4 @@
-# car_running — RC car / truck driving lights.
+# Vehicle — Running (driving lights)
 #
 # Headlights ON at full, tail lights at low intensity (running brightness).
 # No brake / turn-signal animation by default — add a per-track preset

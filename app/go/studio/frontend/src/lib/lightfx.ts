@@ -97,6 +97,7 @@ export interface PresetLibraryEntryT {
     name:     string
     source:   PresetSourceT
     category: string
+    caption:  string          // human-readable label (first YAML comment line)
     note:     string
     program:  ProgramT
 }

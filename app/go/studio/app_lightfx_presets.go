@@ -81,8 +81,27 @@ type PresetLibraryEntry struct {
 	Name     string       `json:"name"`
 	Source   PresetSource `json:"source"`
 	Category string       `json:"category"` // derived from the name prefix (aircraft, drone, car, …)
-	Note     string       `json:"note"`     // first comment line of the YAML, surfaced as a tooltip
+	Caption  string       `json:"caption"`  // first comment line — human-readable label for the picker
+	Note     string       `json:"note"`     // leading comment block, surfaced as a tooltip
 	Program  ProgramDTO   `json:"program"`
+}
+
+// extractCaption returns the FIRST top-of-file comment line (sans `# `) — the
+// human-readable label for the preset picker.  Convention: line 1 of each
+// program YAML is a short title like "Helicopter — Flight (rotors turning)".
+// Empty when the file has no leading comment.
+func extractCaption(yamlBytes []byte) string {
+	for _, line := range bytes.Split(yamlBytes, []byte("\n")) {
+		trim := strings.TrimSpace(string(line))
+		if trim == "" {
+			continue
+		}
+		if strings.HasPrefix(trim, "#") {
+			return strings.TrimSpace(strings.TrimPrefix(trim, "#"))
+		}
+		return "" // first non-blank line isn't a comment
+	}
+	return ""
 }
 
 // ─── User-data directory ─────────────────────────────────────────────
@@ -189,6 +208,7 @@ func (a *App) loadFactoryPresets() []PresetLibraryEntry {
 			Name:     name,
 			Source:   PresetSourceFactory,
 			Category: categoryForName(name),
+			Caption:  extractCaption(data),
 			Note:     extractNote(data),
 			Program:  prog,
 		})
@@ -233,6 +253,7 @@ func (a *App) loadUserPresets() []PresetLibraryEntry {
 			Name:     name,
 			Source:   PresetSourceUser,
 			Category: categoryForName(name),
+			Caption:  extractCaption(data),
 			Note:     extractNote(data),
 			Program:  prog,
 		})
@@ -327,6 +348,7 @@ func (a *App) SavePresetAs(name string, prog ProgramDTO) (PresetLibraryEntry, er
 		Name:     name,
 		Source:   PresetSourceUser,
 		Category: categoryForName(name),
+		Caption:  extractCaption(data),
 		Note:     extractNote(data),
 		Program:  prog,
 	}, nil

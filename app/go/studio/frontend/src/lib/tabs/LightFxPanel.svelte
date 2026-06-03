@@ -820,8 +820,9 @@
                         <div class="tpl-group-head">{cat}</div>
                         {#each items as entry}
                             <div class="tpl-row">
-                                <button class="small tpl-pick" on:click={() => pickTemplate(entry.name)} title={entry.note}>+ {entry.name}</button>
-                                <span class="tpl-note">{entry.note.slice(0, 80)}</span>
+                                <button class="small tpl-pick" on:click={() => pickTemplate(entry.name)}
+                                        title={`${entry.name}\n${entry.note}`}>+ {entry.caption || entry.name}</button>
+                                <span class="tpl-note">{(entry.note || '').slice(0, 80)}</span>
                                 {#if entry.source === 'user'}
                                     <button class="small danger tpl-del" on:click|stopPropagation={() => onDeleteTemplate(entry.name)} title="Delete this user template">×</button>
                                 {/if}

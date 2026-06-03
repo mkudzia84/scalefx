@@ -1,4 +1,4 @@
-# helicopter_off — All exterior LEDs dark.
+# Helicopter — Off (all dark)
 #
 # Selected by default (referenced first in /lightfx.yaml's `programs:`
 # list) so a powered-up helicopter sits dark on the ramp.  Anti-

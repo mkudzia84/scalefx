@@ -1,4 +1,4 @@
-# effect_breathing — Slow sinusoidal "breathing" effect.
+# Effect — Breathing (slow sinusoidal fade)
 #
 # Decorative / display preset — the assigned channel breathes (3 s
 # period, 20–100 % range).  Useful for cold-and-dark scale display

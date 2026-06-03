@@ -1,4 +1,4 @@
-# effect_disco — Chase pattern: each channel pulses 200 ms, offset
+# Effect — Disco (chase pattern)
 # from its neighbour so a "running light" walks across the channels.
 #
 # Period = N × 200 ms where N is the channel count.  This file
