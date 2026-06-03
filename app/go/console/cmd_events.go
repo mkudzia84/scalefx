@@ -81,6 +81,14 @@ func cmdSubscribe(a *App, _ []string) error {
 			ev.HeaterDutyPct, ev.RofIndex, ev.TriggerUs)
 	})
 	a.c.Events.OnInputValue(func(iv client.InputValue) {
+		// RC frames stream at the broadcast rate (Studio enables them on
+		// connect to drive the channel bars), so the per-frame [RC] line
+		// floods the console and buries everything else.  Gate it behind
+		// the explicit 'input-verbose on' toggle — same treatment as the
+		// gun-shot stream below.
+		if !a.inputVerbose {
+			return
+		}
 		var sb strings.Builder
 		for i, ch := range iv.Channels {
 			if i > 0 {

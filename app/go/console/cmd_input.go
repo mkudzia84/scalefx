@@ -72,6 +72,10 @@ func cmdInputVerbose(a *App, args []string) error {
 		Note("no input ports with an attached PPM/SBUS/Jeti role — attach one with role-attach")
 		return nil
 	}
+	// Gate the 'subscribe' [RC] printer: only stream per-frame channel lines
+	// once the operator explicitly asks for them (otherwise Studio's connect-
+	// time broadcast floods the console).
+	a.inputVerbose = on
 	if on {
 		Ok("input verbose %s on %d port(s) @ ~10 Hz", Phase("enabled"), n)
 		Note("  run 'subscribe' to see decoded channels ([RC] lines)")

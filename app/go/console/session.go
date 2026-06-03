@@ -30,6 +30,7 @@ type App struct {
 	boardEnabledCaps uint32          // runtime-enabled subset of boardCaps
 	target           byte            // active storage backend (TargetSD / TargetFlash)
 	cwd              map[byte]string // per-target current working directory
+	inputVerbose     bool            // 'input-verbose on' gate — when false, 'subscribe' suppresses the per-frame [RC] flood
 }
 
 // NewApp creates a session.  `baud` 0 = default wire baud; `verbose`
