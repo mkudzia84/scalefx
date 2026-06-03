@@ -706,20 +706,39 @@
             busy={busy}
             onInputChange={(v) => setSelectorInput(v)} />
 
-        <!-- Bands auto-populate from the programs (one each, ROF-style); edit the
-             µs window per program.  Program is the band identity — no dropdown. -->
+        <!-- Per-program band rows — same widget pattern as the GunFx ROF
+             selector: a colour swatch matching the band on the live bar above,
+             the program name, and its µs window.  Bands auto-populate one per
+             program (added on program-add). -->
         {#if cfg.programSelector.ranges.length > 0}
             <div class="sel-bands">
                 {#each cfg.programSelector.ranges as r, i (i)}
                     {@const overlap = detectRangeOverlaps(cfg.programSelector.ranges).includes(i)}
-                    <div class="sel-band-row" class:verify-error={overlap}>
-                        <span class="sel-band-name" title="Band for program “{r.program}”">{r.program}</span>
-                        <input class="field-input sel-us" type="number" min="800" max="2200" step="10"
-                               value={r.fromUs} on:change={(e) => setSelectorRange(i, { fromUs: numValue(e) })} disabled={busy} />
-                        <span class="trigger-pm">–</span>
-                        <input class="field-input sel-us" type="number" min="800" max="2200" step="10"
-                               value={r.toUs} on:change={(e) => setSelectorRange(i, { toUs: numValue(e) })} disabled={busy} />
-                        <span class="unit">µs</span>
+                    {@const inverted = r.fromUs > 0 && r.toUs > 0 && r.toUs <= r.fromUs}
+                    <div class="sel-item" class:invalid={overlap || inverted}
+                         style="--band-color: {BAND_PALETTE[i % BAND_PALETTE.length]}">
+                        <div class="sel-item-row">
+                            <span class="sel-idx-pill"><span class="sel-swatch"></span>#{i + 1}</span>
+                            <span class="sel-prog" title="Band for program “{r.program}”">{r.program}</span>
+                            <label class="sel-field">
+                                <span class="sel-label">Band µs</span>
+                                <div class="sel-band-inputs">
+                                    <input class="field-input narrow" type="number" min="0" max="2200" step="10"
+                                           value={r.fromUs} on:change={(e) => setSelectorRange(i, { fromUs: numValue(e) })}
+                                           disabled={busy} title="Band low µs" />
+                                    <span class="sel-band-sep">–</span>
+                                    <input class="field-input narrow" type="number" min="0" max="2200" step="10"
+                                           value={r.toUs} on:change={(e) => setSelectorRange(i, { toUs: numValue(e) })}
+                                           disabled={busy} title="Band high µs" />
+                                </div>
+                            </label>
+                        </div>
+                        {#if overlap || inverted}
+                            <ul class="sel-issues">
+                                {#if inverted}<li class="sel-issue err">⚠ Band high must be greater than low.</li>{/if}
+                                {#if overlap}<li class="sel-issue err">⚠ Band overlaps another program — the selector would arm two at once.</li>{/if}
+                            </ul>
+                        {/if}
                     </div>
                 {/each}
             </div>
@@ -1016,19 +1035,32 @@
     /* Fixed-width, aligned columns so every pool row lines up. */
     .pool-row { display: flex; align-items: center; gap: 5px; margin: 2px 0; }
     .pool-row.verify-error { background: color-mix(in srgb, var(--error) 8%, transparent); }
-    .pool-name   { flex: 0 0 130px; min-width: 0; }
-    .pool-port   { flex: 1 1 auto; min-width: 0; }
+    .pool-name   { flex: 0 0 120px; min-width: 0; }
+    .pool-port   { flex: 0 0 180px; min-width: 0; }
     .pool-x { flex: 0 0 24px; width: 24px; padding: 0; }
     .pool-row .row-err, .pool-row .row-warn { flex-basis: 100%; }
 
-    /* Selector bands — one per program (auto), fixed-width aligned columns. */
-    .sel-bands { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; }
-    .sel-band-row { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
-    .sel-band-row.verify-error { background: color-mix(in srgb, var(--error) 10%, transparent); }
-    .sel-band-name { flex: 0 0 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-                     font-size: 12px; color: var(--text-bright); }
-    .sel-us { flex: 0 0 64px; width: 64px; text-align: right; }
-    .sel-hyst { margin-top: 4px; }
+    /* Selector bands — one card per program, mirrors the GunFx ROF item:
+       coloured left border + swatch match the band on the live bar above. */
+    .sel-bands { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+    .sel-item { padding: 6px 8px; background: var(--bg-raised); border: 1px solid var(--border);
+                border-left: 3px solid var(--band-color, var(--accent)); border-radius: 4px; }
+    .sel-item.invalid { border-color: var(--error); border-left-color: var(--error); background: rgba(255,80,80,0.05); }
+    .sel-item-row { display: flex; align-items: flex-end; gap: 8px; }
+    .sel-idx-pill { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono);
+                    font-size: 11px; font-weight: 600; color: var(--text); flex-shrink: 0; padding-bottom: 3px; }
+    .sel-swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--band-color, var(--accent)); }
+    .sel-prog { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                font-size: 12px; font-weight: 600; color: var(--text-bright); padding-bottom: 3px; }
+    .sel-field { display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto; }
+    .sel-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-dim); }
+    .sel-band-inputs { display: flex; align-items: center; gap: 4px; }
+    .sel-band-inputs .field-input.narrow { width: 58px; }
+    .sel-band-sep { color: var(--text-dim); }
+    .sel-issues { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+    .sel-issue { font-size: 11px; font-style: italic; }
+    .sel-issue.err { color: var(--error); }
+    .sel-hyst { margin-top: 6px; }
     .header-actions { display: flex; align-items: center; gap: 8px; }
     .header-actions button { height: 28px; box-sizing: border-box; }
 
