@@ -552,27 +552,36 @@
     // The balanced-check makes this run once per program-SET change (no loop on
     // band-value edits).  Note: a legacy config with programs-but-no-bands will
     // gain bands on open and read as dirty until Apply — that's a real change.
+    // Default selector layout: ONE band per program, EQUAL width and CONTIGUOUS
+    // (no gaps) across the RC range, in program order — re-tiled whenever the
+    // program SET changes (add/remove/rename).  The balanced-check makes this run
+    // once per set change, not on band-value edits, so an operator's manual µs
+    // tweaks survive until the next add/remove (then it re-equalises by design).
+    const SEL_LO = 1000, SEL_HI = 2000
+    let selInit = false                       // re-equalise once after (re)load
     $: reconcileSelectorBands(activeNames)
     function reconcileSelectorBands(names: string[]) {
-        if (!cfg) return
+        if (!cfg || names.length === 0) return
         const ranges = cfg.programSelector.ranges
         const balanced = ranges.length === names.length
             && names.every(n => ranges.filter(r => r.program === n).length === 1)
-        if (balanced) return
-        // Keep one range per still-active program (first wins), append a
-        // non-overlapping band for every program that doesn't have one yet.
-        const seen = new Set<string>()
-        const next: ProgramSelectorRangeT[] = []
-        for (const r of ranges) {
-            if (names.includes(r.program) && !seen.has(r.program)) { seen.add(r.program); next.push(r) }
-        }
-        for (const n of names) {
-            if (seen.has(n)) continue
-            const sug = suggestNextRange(next)
-            if (sug.trimIdx >= 0) next[sug.trimIdx] = { ...next[sug.trimIdx], toUs: sug.trimNewHi }
-            next.push({ fromUs: sug.from, toUs: sug.to, program: n })
-            seen.add(n)
-        }
+        // Equalise on first load (so existing gappy/uneven bands become equal)
+        // AND whenever the program SET changes.  Once initialised + balanced,
+        // skip so an operator's manual µs edits survive until the next add/remove.
+        if (balanced && selInit) return
+        selInit = true
+        const n = names.length
+        const next: ProgramSelectorRangeT[] = names.map((name, i) => ({
+            program: name,
+            fromUs: Math.round(SEL_LO + (SEL_HI - SEL_LO) * i / n),
+            toUs:   Math.round(SEL_LO + (SEL_HI - SEL_LO) * (i + 1) / n),
+        }))
+        // No-op guard: don't dirty the draft if the bands are already this exact
+        // equal tiling (re-opening an already-equalised config stays clean).
+        const same = ranges.length === next.length
+            && next.every((r, i) => ranges[i] && ranges[i].program === r.program
+                && ranges[i].fromUs === r.fromUs && ranges[i].toUs === r.toUs)
+        if (same) return
         lightfxDraft.update(d => ({ ...d, programSelector: { ...d.programSelector, ranges: next } }))
     }
 
