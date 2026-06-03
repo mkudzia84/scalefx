@@ -20,12 +20,47 @@
 #include <cstring>
 
 #include <config/yaml_parser.h>
+#include <platform/sfx_platform.h>   // sfxGetBoardId (self-GUID normalization)
 #include <serial/diag_log.h>         // SFX_LOG_WARN
 #include <serial/ports.h>            // PortKind::*
 
 #include "../effects/effect_id.h"    // PortRef
 
 namespace hubfx::config {
+
+// ─── Self-GUID normalization ────────────────────────────────────────
+//
+// Hub-local ports are canonically `guid == ""` (the topology + role
+// claim tables key hub ports as local).  But Studio stamps the hub's
+// OWN 4-hex GUID on ports it writes into effect sub-files (e.g.
+// `/lightfx.yaml` channels carry `guid: 6D60`), because its device
+// model surfaces every port — local or remote — with its real GUID.
+// A PortRef addressed to the board's own GUID IS local, so collapse it
+// to "" here; otherwise the program's channel resolves to a REMOTE port
+// that no locally-attached LedAnimator role owns → silent no-output.
+// `board: <alias>` always resolves to an EXPANDER GUID (never the hub's
+// own), so only the raw `guid:` path can trip this.
+
+/// The hub's own 4-hex GUID (last 4 chars of `sfxGetBoardId`, matching
+/// `BoardServerBase::buildDeviceName`).  Cached on first use.
+inline const char* hubOwnGuid() {
+    static char g[5] = {};
+    if (!g[0]) {
+        char full[16] = {};
+        sfxGetBoardId(full, sizeof(full));
+        const size_t len = std::strlen(full);
+        const char* suffix = (len >= 4) ? &full[len - 4] : full;
+        std::strncpy(g, suffix, sizeof(g) - 1);
+    }
+    return g;
+}
+
+/// Collapse a PortRef addressed to the hub's own GUID down to hub-local.
+inline void normalizeSelfGuid(hubfx::effects::PortRef& r) {
+    if (r.guid[0] && std::strcmp(r.guid, hubOwnGuid()) == 0) {
+        r.guid[0] = '\0';
+    }
+}
 
 // ─── Board-alias table (cross-file `board: <alias>` resolution) ──────
 //
@@ -105,6 +140,7 @@ inline hubfx::effects::PortRef portRefFromNode(const YamlNode* node) {
         } else {
             SFX_LOG_WARN("[portref] unknown board alias '%s' — treating as hub-local", board);
         }
+        normalizeSelfGuid(r);
         return r;
     }
     const char* guid = node->template childAs<const char*>("guid", "");
@@ -112,6 +148,7 @@ inline hubfx::effects::PortRef portRefFromNode(const YamlNode* node) {
         std::strncpy(r.guid, guid, sizeof(r.guid) - 1);
         r.guid[sizeof(r.guid) - 1] = '\0';
     }
+    normalizeSelfGuid(r);
     return r;
 }
 

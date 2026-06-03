@@ -116,6 +116,7 @@ inline uint8_t loadLightFxProgramCatalog(const LightFxYamlConfig& cfg,
         kHubFxLoadedPrograms[loaded] = Program{};
         if (loadLightFxProgram<LightFxProgramYamlPool>(yamlBuf, (size_t)n, name,
                                                        hub,
+                                                       cfg.channels, cfg.numChannels,
                                                        kHubFxLoadedPrograms[loaded])) {
             SFX_LOG_INFO("[lightfx-program] loaded %s from %s (%d bytes, %u channels)",
                          name, path, n,

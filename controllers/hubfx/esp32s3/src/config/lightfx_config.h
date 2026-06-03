@@ -8,9 +8,20 @@
  *
  * YAML shape:
  *
- *   schema_version: 1
+ *   schema_version: 2
  *   enabled: true
  *   master_brightness_pct: 100
+ *
+ *   # Instance-owned LED channel pool: name → physical port + resting
+ *   # brightness.  Every program references channels BY NAME; the program
+ *   # loader resolves them against this list (falling back to /hubfx.yaml
+ *   # LedAnimator labels only on a miss).  The hub's own GUID is collapsed
+ *   # to hub-local so the resolved port matches the attached role.
+ *   channels:
+ *     - name: Position lights
+ *       port: { guid: 6D60, kind: pwm, idx: 0 }   # guid == hub ⇒ local
+ *       default_brightness_pct: 0
+ *
  *   programs:                              # explicit LittleFS paths
  *     - /lightfx/programs/helicopter_off.yaml
  *     - /lightfx/programs/helicopter_flight.yaml
@@ -43,11 +54,16 @@
 #include <config/yaml_schema.h>
 #include <serial/diag_log.h>
 
+#include "../effects/effect_id.h"   // PortRef
+#include "port_ref_yaml.h"          // portRefFromNode (+ self-GUID normalize)
+
 constexpr uint8_t  kMaxProgramRefs       = 8;
 constexpr size_t   kProgramPathMax       = 64;   ///< full LittleFS path, e.g. "/lightfx/programs/helicopter_off.yaml"
 constexpr uint8_t  kMaxSelectorRanges    = 8;
 constexpr size_t   kSelectorProgramMax   = 24;   ///< program name length (matches Program::name)
 constexpr size_t   kSelectorInputNameMax = 24;
+constexpr uint8_t  kMaxLightFxChannels   = 16;   ///< instance channel pool (matches kMaxChannelsPerProgram)
+constexpr size_t   kLightFxChannelNameMax = 24;  ///< channel name length (matches Studio + program track names)
 
 struct LightFxYamlPool {
     static constexpr size_t MAX_NODES        = 192;
@@ -74,14 +90,29 @@ struct ProgramSelector {
     uint8_t              numRanges    = 0;
 };
 
+/// One entry of the instance-owned LED channel pool.  The LightFx
+/// instance declares its channel set ONCE here (name → physical port +
+/// resting brightness); every program references channels BY NAME and
+/// the program loader resolves them against this pool (Rule 43 pattern,
+/// output side).  `port.portKind == 0` ⇒ the operator hasn't wired this
+/// channel yet (silent — programs referencing it skip the track).
+struct LightFxChannel {
+    char                    name[kLightFxChannelNameMax] = {};
+    hubfx::effects::PortRef port;                   ///< resolved hub-local / expander port
+    uint8_t                 defaultBrightnessPct   = 0;   ///< resting level when no program drives it
+};
+
 /// Parsed form of `/lightfx.yaml`.
 struct LightFxYamlConfig {
-    static constexpr uint8_t kSchemaVersion = 1;
+    static constexpr uint8_t kSchemaVersion = 2;
 
     bool    enabled              = true;
     uint8_t masterBrightnessPct  = 100;
     char    programPaths[kMaxProgramRefs][kProgramPathMax] = {};
     uint8_t numPrograms          = 0;
+
+    LightFxChannel channels[kMaxLightFxChannels] = {};
+    uint8_t        numChannels   = 0;
 
     ProgramSelector programSelector;
 };
@@ -109,6 +140,31 @@ struct LightFxConfigSchema {
         if (!lightfx_config_schema::fields.populate(d, p.root())) return false;
 
         const auto* root = p.root();
+
+        // `channels:` — instance-owned LED channel pool (name → port +
+        // resting brightness).  The program loader resolves each program
+        // track's `channel:` name against this list FIRST (falling back to
+        // /hubfx.yaml LedAnimator labels only on a miss).  Without this,
+        // every named track skips with "channel not found" and the program
+        // loads zero channels.  `portRefFromNode` collapses the hub's own
+        // GUID → hub-local so the resolved port matches the attached role.
+        d.numChannels = 0;
+        const auto* chans = root ? root->child("channels") : nullptr;
+        if (chans && chans->type == YamlNode::Sequence) {
+            const int n = chans->childCount();
+            for (int i = 0; i < n && d.numChannels < kMaxLightFxChannels; ++i) {
+                const auto* item = chans->childAt(i);
+                if (!item) continue;
+                const char* nm = item->template childAs<const char*>("name", "");
+                if (!nm || !nm[0]) continue;
+                LightFxChannel& ch = d.channels[d.numChannels];
+                std::strncpy(ch.name, nm, sizeof(ch.name) - 1);
+                ch.port = hubfx::config::portRefFromNode(item->child("port"));
+                ch.defaultBrightnessPct =
+                    (uint8_t)item->template childAs<int32_t>("default_brightness_pct", 0);
+                d.numChannels++;
+            }
+        }
 
         // `programs:` is a sequence of scalar paths — the DSL doesn't
         // support that, so walk it by hand.  Each entry is the FULL

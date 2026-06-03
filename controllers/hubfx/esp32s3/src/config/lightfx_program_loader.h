@@ -62,6 +62,7 @@
 #include "../effects/lightfx/light_event.h"     // LightEvent / LightEventKind
 #include "port_ref_yaml.h"                      // portRefFromNode
 #include "hubfx_config.h"                       // HubFxConfig, PortMapping
+#include "lightfx_config.h"                     // LightFxChannel (instance channel pool)
 
 namespace hubfx::config {
 
@@ -111,6 +112,29 @@ inline bool resolveLightFxChannel(const HubFxConfig& hub, const char* name,
     return false;
 }
 
+/// Resolve a v2 channel NAME, preferring the LightFx instance channel
+/// pool (`/lightfx.yaml` `channels:`) and falling back to /hubfx.yaml
+/// LedAnimator labels.  The pool is the canonical source (Studio's
+/// Channels card writes it); the /hubfx.yaml-label path is the legacy
+/// fallback for boards that label their LedAnimator ports directly.
+/// A pool entry that exists but has no port wired yet (`portKind == 0`)
+/// is a deliberate miss — the operator hasn't picked a port, so the
+/// track skips rather than silently steering at port 0.
+inline bool resolveLightFxChannelPooled(const LightFxChannel* pool, uint8_t poolCount,
+                                        const HubFxConfig* hub, const char* name,
+                                        hubfx::effects::PortRef& out) {
+    if (!name || !name[0]) return false;
+    if (pool) {
+        for (uint8_t i = 0; i < poolCount; ++i) {
+            if (std::strcmp(pool[i].name, name) != 0) continue;
+            if (pool[i].port.portKind == 0) return false;   // declared but unwired
+            out = pool[i].port;
+            return true;
+        }
+    }
+    return hub ? resolveLightFxChannel(*hub, name, out) : false;
+}
+
 /// Parse one event-list YAML node (the `events:` sequence on a channel
 /// or track) into `spec`.  Shared by v1 and v2 paths — the event shape
 /// is identical between the two schemas.  Returns the number of events
@@ -151,6 +175,7 @@ inline uint8_t parseLightFxEvents(const YamlNode* evNode,
 template <typename TPool>
 bool loadLightFxProgram(const char* yaml, size_t len, const char* programName,
                         const HubFxConfig* hub,
+                        const LightFxChannel* poolChannels, uint8_t poolCount,
                         hubfx::effects::lightfx::Program& out) {
     using namespace hubfx::effects::lightfx;
     using hubfx::effects::PortRef;
@@ -198,11 +223,12 @@ bool loadLightFxProgram(const char* yaml, size_t len, const char* programName,
             }
             LedChannelSpec& spec = out.channels[out.numChannels];
 
-            // Resolve name → PortRef via /hubfx.yaml LedAnimator ports.
-            // No match → operator hasn't wired this channel yet; skip
-            // the track but keep the rest of the program intact.
-            if (!hub || !resolveLightFxChannel(*hub, chanName, spec.addr)) {
-                SFX_LOG_WARN("[lightfx-program] %s: channel '%s' not found among LedAnimator ports in /hubfx.yaml — skipping track",
+            // Resolve name → PortRef via the LightFx channel pool
+            // (/lightfx.yaml channels[]) first, then /hubfx.yaml
+            // LedAnimator labels.  No match → operator hasn't wired this
+            // channel yet; skip the track but keep the rest intact.
+            if (!resolveLightFxChannelPooled(poolChannels, poolCount, hub, chanName, spec.addr)) {
+                SFX_LOG_WARN("[lightfx-program] %s: channel '%s' not wired (no /lightfx.yaml channel pool entry with a port, no /hubfx.yaml LedAnimator label) — skipping track",
                              programName, chanName);
                 continue;
             }
