@@ -117,7 +117,10 @@ const defaultLightFx: LightFxConfigT = {
 
 /** Make a blank LightFx channel with sensible defaults. */
 export function defaultChannel(name: string = ''): LightFxChannelT {
-    return { name, port: null, defaultBrightnessPct: 100 }
+    // Channels are OFF by default (0 %) — a program drives the brightness via
+    // its per-track brightness + events; an undriven channel stays dark.  The
+    // pool no longer exposes a per-channel default-brightness knob.
+    return { name, port: null, defaultBrightnessPct: 0 }
 }
 
 // ─── Stores ───────────────────────────────────────────────────────────

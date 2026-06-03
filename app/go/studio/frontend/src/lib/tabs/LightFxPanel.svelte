@@ -41,7 +41,8 @@
         type PresetLibraryEntryT, type ActiveProgramT,
         type ProgramT, type TrackT, type ProgramEventT, type LightEventKindT,
     } from '../lightfx'
-    import { deviceModel, liveChannels, liveChannelKey, RoleKind, formatPortRail } from '../devicemodel'
+    import { deviceModel, liveChannels, liveChannelKey, RoleKind, formatPortRail, claimsForPort, type Claim } from '../devicemodel'
+    import { effectClaims } from '../effect-claims'
     import type { PortRefT } from '../landing'
     import { landingDraft } from '../landing'
     import { freePortPoolFiltered } from '../components/port_pool'
@@ -250,35 +251,33 @@
         const [guid, kind, idxStr] = key.split('|')
         return { board: '', guid, kind, idx: Number(idxStr) || 0 }
     }
-    /** Ports available to LightFx channel row `idx`: every UNCLAIMED
-     *  LedAnimator output port EXCEPT those already bound to a SIBLING
-     *  channel.  The row's own current port stays in the pool for editing.
-     *  Takes `dm` explicitly so the template call re-runs when the device
-     *  model (claims) changes — reading $deviceModel inside the body would be
-     *  invisible to Svelte and the dropdown would go stale (the same trap as
-     *  GunFx makeProfileForPort). Matches the EngineFx/GunFx output pickers. */
-    function portsForChannelRow(idx: number, dm: typeof $deviceModel) {
+    /** Ports available to LightFx channel row `idx`: UNCLAIMED LedAnimator
+     *  output ports only.  Excludes ports bound to a SIBLING LightFx channel
+     *  (this draft) AND ports claimed by ANOTHER effect — uses `$effectClaims`,
+     *  the merged cross-effect view (GunFx muzzle, Landing LEDs/servos, …), same
+     *  as the EngineFx/GunFx pickers.  `$deviceModel.claims` alone misses
+     *  effect-draft assignments, which is why the picker showed every port.
+     *  `dm` + `claims` are params so the template call re-runs reactively. */
+    function portsForChannelRow(idx: number, dm: typeof $deviceModel, claims: Claim[]) {
         const mine = cfg?.channels[idx]?.port
+        const mineKey = mine ? portKeyOf(mine) : ''
         const sibling = new Set<string>()
         if (cfg?.channels) {
             for (let i = 0; i < cfg.channels.length; ++i) {
                 if (i === idx) continue
                 const p = cfg.channels[i]?.port
-                if (p) sibling.add(`${p.guid}|${p.kind}|${p.idx}`)
+                if (p) sibling.add(portKeyOf(p))
             }
         }
-        return freePortPoolFiltered(
-            dm.ports,
-            dm.claims,
-            'pwm',
-            RoleKind.LedAnimator,
-            (p) => {
-                const k = `${p.ref.guid}|${p.kindName}|${p.ref.index}`
-                if (sibling.has(k)) return false      // exclude sibling-claimed
-                if (mine && k === portKeyOf(mine)) return true   // keep own
-                return true                            // include unclaimed
-            },
-        )
+        return dm.ports.filter(p => {
+            if (p.kindName !== 'pwm' || p.direction !== 'output') return false
+            if (p.roleKind !== RoleKind.LedAnimator) return false
+            const k = `${p.ref.guid}|${p.kindName}|${p.ref.index}`
+            if (mineKey && k === mineKey) return true                 // keep the row's own pick
+            if (sibling.has(k)) return false                          // used by another LightFx channel
+            if (claimsForPort(claims, p.ref).filter(c => c.domain !== 'lightfx').length > 0) return false  // another effect
+            return true                                               // unclaimed → available
+        })
     }
     /** Validation: channel pool has issues that should surface in red.
      *  Duplicate names, missing ports (yellow not red — operator can
@@ -657,7 +656,7 @@
             {/if}
             {#each cfg.channels as ch, ci (ci)}
                 {@const rowErr = errMsgForChannel(ci)}
-                {@const portOptions = portsForChannelRow(ci, $deviceModel)}
+                {@const portOptions = portsForChannelRow(ci, $deviceModel, $effectClaims)}
                 {@const noPort = ch.port === null || ch.port === undefined}
                 <div class="pool-row" class:verify-error={!!rowErr} class:verify-warn={noPort && !rowErr}>
                     <input class="field-input pool-name" type="text" placeholder="name"
@@ -674,11 +673,6 @@
                             </option>
                         {/each}
                     </select>
-                    <input class="field-input pool-bright" type="number" min="0" max="100"
-                           bind:value={ch.defaultBrightnessPct}
-                           on:change={() => setChannelBrightness(ci, Math.max(0, Math.min(100, ch.defaultBrightnessPct | 0)))}
-                           disabled={busy} title="Default brightness %" />
-                    <span class="unit">%</span>
                     <button class="small danger pool-x" on:click={() => removeChannel(ci)} disabled={busy}
                             title="Remove channel (drops it from all programs)">×</button>
                     {#if rowErr}<span class="row-err">⚠ {rowErr}</span>{/if}
@@ -869,7 +863,7 @@
                                             <input class="field-input ch-bright" type="number" min="0" max="100"
                                                    value={t.brightnessPct}
                                                    on:change={(e) => patchProgramTrack(ai, ch.name, { brightnessPct: Math.max(0, Math.min(100, numValue(e) | 0)) })}
-                                                   title={`Brightness % for this program (channel default ${ch.defaultBrightnessPct}%)`} />
+                                                   title="Per-program brightness scale % for this channel (0 = off)" />
                                             <span class="unit">%</span>
                                             <label class="loop-toggle" title="Phase-locked repeating cycle (period = Σ event durations).">
                                                 <input type="checkbox" checked={t.loop}
@@ -1022,10 +1016,8 @@
     /* Fixed-width, aligned columns so every pool row lines up. */
     .pool-row { display: flex; align-items: center; gap: 5px; margin: 2px 0; }
     .pool-row.verify-error { background: color-mix(in srgb, var(--error) 8%, transparent); }
-    .pool-name   { flex: 0 0 104px; min-width: 0; }
-    .pool-port   { flex: 0 0 150px; min-width: 0; }
-    .pool-bright { flex: 0 0 46px; width: 46px; text-align: right; }
-    .pool-row .unit { flex: 0 0 auto; }
+    .pool-name   { flex: 0 0 130px; min-width: 0; }
+    .pool-port   { flex: 1 1 auto; min-width: 0; }
     .pool-x { flex: 0 0 24px; width: 24px; padding: 0; }
     .pool-row .row-err, .pool-row .row-warn { flex-basis: 100%; }
 

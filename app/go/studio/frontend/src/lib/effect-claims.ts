@@ -86,14 +86,15 @@ export const effectClaims: Readable<Claim[]> = derived(
             pushIfBound(out, domain, slot, p)
         }
 
-        // ── LightFx active programs ────────────────────────────────
-        // (No claims synthesized — v2 LightFx programs reference
-        // channels by NAME, not port.  The port assignment lives on
-        // /hubfx.yaml's ports[] block, which is already represented in
-        // $deviceModel.claims via the Domains tab and via every
-        // LedAnimator-roled port being a candidate.  Picker filtering
-        // on the LightFx panel uses the port-name set directly — no
-        // synthesized claim path needed.)
+        // ── LightFx channel pool (Phase 1, 2026-05-27) ─────────────
+        // Each named LED channel binds a physical led-animator port.
+        // Synthesize a claim per bound channel so OTHER effects' pickers
+        // (GunFx muzzle, Landing LEDs) exclude ports LightFx is using —
+        // bidirectional with LightFx's own picker, which filters out the
+        // `lightfx` domain and handles siblings via its draft.
+        for (const ch of $lfx?.channels ?? []) {
+            if (ch.port) add('lightfx', `channel / ${ch.name || '?'}`, ch.port)
+        }
 
         // ── GunFx per-gun outputs (muzzle / smoke heater + fan / turret) ──
         for (const g of $gfx?.guns ?? []) {
