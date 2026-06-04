@@ -165,15 +165,13 @@ export interface StudioTab { key: string; label: string; kind: TabKind; domain?:
 // + claiming.  Split out of the former combined "Effects" tab (2026-05-29)
 // so GunFX gets full width for its two-column gun-core | smoke layout.
 const SUPERSEDED_BY_EFFECTS  = new Set(['engine', 'gun'])
-// The Lighting tab is now LightFX-only (full width — the program editor needs
-// the room).  Landing-light groups moved to the Gear & Landing tab (2026-06-02)
-// since a landing group is mechanically a servo deploy + lights, same family as
-// gear control.
-const SUPERSEDED_BY_LIGHTING = new Set(['lighting'])
-// Gear & Landing tab supersedes gearcontrol + landing-lights.  `landing-lights`
-// is hub-advertised, so this tab appears even with no gearcontrol expander
-// (landing lights live on hub ports).
-const SUPERSEDED_BY_GEAR = new Set(['gearcontrol', 'landing-lights'])
+// The Lighting tab hosts LightFX (program editor) + the Landing-light groups
+// (2026-06-03 — a landing group is an LED searchlight on a deploy servo, same
+// LED-effects family).  `landing-lights` is hub-advertised, so the Lighting tab
+// shows on any hub even before a LightFX program exists.
+const SUPERSEDED_BY_LIGHTING = new Set(['lighting', 'landing-lights'])
+// Gear tab — gearcontrol expander only (no landing lights here anymore).
+const SUPERSEDED_BY_GEAR = new Set(['gearcontrol'])
 
 export const studioTabs = derived(deviceModel, ($dm): StudioTab[] => {
     // Order: Input & Ports → Effects → Lighting → other domain tabs →
@@ -197,7 +195,7 @@ export const studioTabs = derived(deviceModel, ($dm): StudioTab[] => {
         tabs.push({ key: 'lighting', label: 'Lighting', kind: 'lighting' })
     }
     if (showGear) {
-        tabs.push({ key: 'gear', label: 'Gear & Landing', kind: 'gear', domain: gearDomain })
+        tabs.push({ key: 'gear', label: 'Gear', kind: 'gear', domain: gearDomain })
     }
     for (const d of domains) {
         if (SUPERSEDED_BY_EFFECTS.has(d.id) || SUPERSEDED_BY_LIGHTING.has(d.id) || SUPERSEDED_BY_GEAR.has(d.id)) continue

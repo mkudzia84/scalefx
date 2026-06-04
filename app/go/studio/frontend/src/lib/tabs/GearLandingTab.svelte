@@ -1,12 +1,11 @@
-<!-- ScaleFX Studio — Gear & Landing tab.
-     Collocates GearControl (when a gearcontrol expander is present) with the
-     hub-hosted Landing-light groups (2026-06-02) — both are servo-deploy +
-     lights mechanisms.  Landing always shows (hub ports); the gear domain panel
-     only when a gearcontrol board is connected.  Both register their own
-     DirtySource (Rule 46) so the global ConfigToolbar gates Apply. -->
+<!-- ScaleFX Studio — Gear tab.
+     GearControl config for a connected gearcontrol expander.  (Landing-light
+     groups moved to the Lighting tab 2026-06-03 — a landing group is an LED
+     searchlight on a deploy servo, so it lives with the LED effects.)  The gear
+     domain registers its own DirtySource (Rule 46) so the global ConfigToolbar
+     gates Apply. -->
 <script lang="ts">
     import DomainTab from './DomainTab.svelte'
-    import LandingPanel from './LandingPanel.svelte'
     import type { Domain } from '../devicemodel'
 
     export let domain: Domain | undefined = undefined
@@ -19,9 +18,6 @@
                 <DomainTab {domain} />
             </div>
         {/if}
-        <div class="gl-section">
-            <LandingPanel />
-        </div>
     </div>
 </div>
 
