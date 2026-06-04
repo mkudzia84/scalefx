@@ -219,7 +219,7 @@ void InputDispatcherServicePolicyT<TTopology>::onRoleEvent(
             // spam (the "[disp] evt … binds=0 match=0" flood).
             if (occ > 0) {
                 lastLog = nowMs;
-                SFX_LOG_INFO("[disp] evt type=0x%02X port=%u routing=%d binds=%u match=%u",
+                SFX_LOG_DEBUG("[disp] evt type=0x%02X port=%u routing=%d binds=%u match=%u",
                              innerType, evtPortIdx, _routingEnabled ? 1 : 0, occ, matched);
             }
         }

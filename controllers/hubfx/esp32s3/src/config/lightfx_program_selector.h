@@ -26,7 +26,6 @@
 #include <cstdint>
 #include <cstring>
 
-#include <platform/sfx_platform.h>   // SFX_MILLIS() (throttled liveness trace)
 #include <serial/diag_log.h>
 
 #include "../effects/effect_id.h"
@@ -162,24 +161,6 @@ private:
                                 ? (uint16_t)(r.toUs + _hysteresisUs)   : r.toUs;
             if (us >= lo && us < hi) { hit = (int8_t)i; break; }
         }
-
-#if SFX_INSTRUMENTATION
-        // Throttled liveness trace — confirms feeds are arriving and shows
-        // WHERE the stick currently maps, even when the band doesn't change.
-        // (No band change = no select log, so without this a working-but-
-        // static selector looks identical to a dormant one.)  Logs the
-        // current µs + resolved band; band=-1 means the stick is OUTSIDE
-        // every configured range (selector can't pick a program there).
-        {
-            static uint32_t lastTrace = 0;
-            const uint32_t nowMs = SFX_MILLIS();
-            if (nowMs - lastTrace >= 1000) {
-                lastTrace = nowMs;
-                SFX_LOG_INFO("[lightfx-selector] live us=%u band=%d active=%d",
-                             (unsigned)us, (int)hit, (int)_lastRangeIx);
-            }
-        }
-#endif
 
         if (hit < 0 || hit == _lastRangeIx) return;
         _lastRangeIx = hit;

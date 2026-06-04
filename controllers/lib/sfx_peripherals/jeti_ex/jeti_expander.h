@@ -150,7 +150,7 @@ public:
         // ch/valid = channel decode state.  The "mark what is wrong" counters.
         if (now - _lastRxLog >= 2000) {
             _lastRxLog = now;
-            SFX_LOG_INFO("[jexp] IN_1 rxB=%lu rxF=%lu rxErr=%lu ch=%u valid=%d%s",
+            SFX_LOG_DEBUG("[jexp] IN_1 rxB=%lu rxF=%lu rxErr=%lu ch=%u valid=%d%s",
                          (unsigned long)_rxBus.rxByteCount(),
                          (unsigned long)_rxBus.rxFrameCount(),
                          (unsigned long)_rxBus.rxErrorCount(),
