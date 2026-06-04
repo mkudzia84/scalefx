@@ -1,12 +1,14 @@
-# Helicopter — Landing (approach, light deployed)
+# Helicopter — Landing (approach, light on)
 #
 # Same FAA-realistic anti-collision pattern as "Helicopter — Flight"
 # (steady position/tail; red beacon flash + white strobe double-flash at
-# ~50 fpm, 1200 ms shared period) PLUS the landing light deployed and on.
+# ~50 fpm, 1200 ms shared period) PLUS the landing light ON.
 #
-# The landing light is a LandingLightService entity (servo + bulb), NOT a
-# raw LightFx track — activating this program flips landing-light ID 0 ON
-# via `landing_bindings:` (servo deploys, then the bulb lights).
+# The landing light drives the "Landing light" LED channel directly (a
+# plain LedAnimator port on the IO tab) — no servo / LandingLightService
+# group required.  If your airframe deploys the landing light on a servo
+# instead, configure a LandingLightService group in /landing.yaml and add
+# a `landing_bindings: [{ id: <n>, state: "on" }]` block here.
 
 schema_version: 2
 
@@ -39,6 +41,9 @@ tracks:
       - { kind: "on",  brightness_pct: 100, duration_ms:  40 }
       - { kind: "off",                       duration_ms: 440 }
 
-# Landing light deploys + lights via the LandingLightService.
-landing_bindings:
-  - { id: 0, state: "on" }
+  # ── Landing light — ON (steady) on approach ──
+  - channel: "Landing light"
+    events:
+      - { kind: "on", brightness_pct: 100, duration_ms: 0 }
+
+landing_bindings: []
