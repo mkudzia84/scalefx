@@ -59,8 +59,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.19.2-hubfx"
-#define BUILD_NUMBER     758
+#define FIRMWARE_VERSION "2.20.0-hubfx"
+#define BUILD_NUMBER     763
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -155,6 +155,7 @@
 #include "config/gearcontrol_config.h"
 #include "config/lightfx_config.h"
 #include "config/lightfx_program_selector.h"
+#include "config/landing_activation.h"
 #include "config/apply_hubfx_config.h"
 #include "config/config_store_slot.h"
 #include "config/telemetry_emitter.h"
@@ -556,8 +557,29 @@ static void applyGunFxConfigCallback(const GunFxYamlConfig& cfg) {
         board, cfg, kHubFx.data());
 }
 
+// Boot gate shared by the input-driven drivers (RC program selector +
+// landing-activation): the InputDispatcher must be fully up before they
+// subscribe, so the config-reload callbacks re-install only AFTER the
+// setup() block does the first install (which flips this true).
+static bool g_lightFxBooted = false;
+
+// RC-channel auto-deploy driver — file-scope so the config-reload
+// callback re-wires it on every Studio Apply (mirrors kLightFxSelector).
+static hubfx::config::LandingActivationDriver kLandingActivation;
+
+static void installLandingActivation(const LandingConfig& cfg) {
+    kLandingActivation.install(
+        &board.policy<InputDispatcherService>(),
+        &board.policy<LandingLightService>(),
+        cfg,
+        kHubFx.data());
+}
+
 static void applyLandingConfigCallback(const LandingConfig& cfg) {
     hubfx::config::applyLandingConfig<HubFxBoard, LandingLightService>(board, cfg);
+    // Re-wire RC-channel auto-deploy on every CONFIG_RELOAD (Studio Apply).
+    // Skipped at boot — the setup block installs it once the dispatcher is up.
+    if (g_lightFxBooted) installLandingActivation(cfg);
 }
 
 static void applyGearControlConfigCallback(const GearControlConfig& cfg) {
@@ -566,11 +588,11 @@ static void applyGearControlConfigCallback(const GearControlConfig& cfg) {
 
 // RC program selector — file-scope so the config-reload callback can re-wire it
 // (it was previously installed only once at boot, so a selector configured in
-// Studio + Applied never took effect).  `g_lightFxBooted` gates the in-callback
-// re-install to AFTER boot — at boot the dedicated setup block does the first
-// install once the dispatcher is fully up.
+// Studio + Applied never took effect).  `g_lightFxBooted` (declared above with
+// the landing-activation driver) gates the in-callback re-install to AFTER boot
+// — at boot the dedicated setup block does the first install once the dispatcher
+// is fully up.
 static hubfx::config::LightFxProgramSelector kLightFxSelector;
-static bool g_lightFxBooted = false;
 
 // (Re)bind the selector against a freshly-applied lightfx config.  MUST run
 // after applyLightFxConfig (which loads the programs the ranges resolve to).
@@ -809,6 +831,11 @@ void setup() {
     // callback re-wires it on every Studio Apply (see installLightFxSelector +
     // g_lightFxBooted above).
     installLightFxSelector(kLightFx.data());
+    // Landing-light RC auto-deploy — for any /landing.yaml entry with an
+    // `activation:` channel, subscribe a Boolean trigger that deploys above
+    // the threshold and retracts below (fail-low on RC loss).  Re-wired on
+    // every Studio Apply by applyLandingConfigCallback.
+    installLandingActivation(kLanding.data());
     g_lightFxBooted = true;
 
     // Mirror every INFO+ entry to the wire as TAG_ASYNC LOG_MESSAGE so

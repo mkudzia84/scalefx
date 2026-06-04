@@ -64,6 +64,10 @@ struct LandingLightDef {
     uint16_t  openUs        = 1900;
     uint16_t  closeUs       = 1100;
     uint8_t   brightnessPct = 100;                   ///< LED brightness when deployed
+    /// Soft-start ramp for the LEDs once the servo is fully deployed:
+    /// 0 = hard on (legacy), >0 = fade in 0→brightness over this many ms
+    /// before holding steady (a [FadeIn, On] LedAnimator queue).
+    uint16_t  fadeInMs      = 0;
     EffectId  owner         = EffectId::LightFx;     ///< trigger-source owner
 };
 

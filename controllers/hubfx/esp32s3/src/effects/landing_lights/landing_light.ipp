@@ -130,15 +130,28 @@ inline void LandingLight::commandLedsOn() {
     using hubfx::effects::lightfx::LightEvent;
     using hubfx::effects::lightfx::serializeQueueLoad;
 
-    // Build a one-event "on, infinite duration" queue + scale via
-    // LED_SET_BRIGHTNESS.  The actual hold-bright behaviour is the
-    // LedAnimator role's job on the target board.
-    LightEvent ev = LightEvent::on(/*brightness=*/100, /*durationMs=*/0);
+    // Build the LED-on queue.  Brightness is scaled per-channel via
+    // LED_SET_BRIGHTNESS; the events ramp/hold at 100% and the role
+    // applies the brightness multiplier.
+    //   fadeInMs == 0 : single "on, hold forever" event (hard on).
+    //   fadeInMs  > 0 : [FadeIn over fadeInMs, On hold] — soft-start so
+    //                   the searchlight ramps up after the servo deploys
+    //                   instead of snapping on.
+    LightEvent evs[2];
+    uint8_t nEvents;
+    if (_def.fadeInMs > 0) {
+        evs[0]  = LightEvent::fadeIn(_def.fadeInMs, /*brightness=*/100);
+        evs[1]  = LightEvent::on(/*brightness=*/100, /*durationMs=*/0);
+        nEvents = 2;
+    } else {
+        evs[0]  = LightEvent::on(/*brightness=*/100, /*durationMs=*/0);
+        nEvents = 1;
+    }
     for (uint8_t i = 0; i < _def.numLeds; ++i) {
         const PortRef& led = _def.leds[i];
 
-        uint8_t queue[2 + 10];  // 1 event
-        size_t qlen = serializeQueueLoad(led.portIdx, &ev, 1,
+        uint8_t queue[2 + 10 * 2];  // up to 2 events
+        size_t qlen = serializeQueueLoad(led.portIdx, evs, nEvents,
                                          queue, sizeof(queue));
         if (qlen == 0) continue;
         if (!_send(_sendCtx, led, RolePacket::LED_QUEUE_LOAD, queue, qlen)) {

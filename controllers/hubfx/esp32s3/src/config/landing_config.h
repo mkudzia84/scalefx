@@ -19,6 +19,17 @@
  *         close_us: 1100
  *       leds:
  *         - { port: { kind: pwm, idx: 5 }, brightness_pct: 100 }
+ *       fade_in_ms: 400               # LED soft-start after servo deploys
+ *       activation:                   # OPTIONAL RC-channel auto-deploy
+ *         input: landing_deploy       # named channel from /hubfx.yaml inputs[]
+ *         threshold_us: 1500          # ≥ threshold ⇒ deploy, < ⇒ retract
+ *         hysteresis_us: 50
+ *
+ * `activation:` drives the light from an RC channel (resolved + wired by
+ * the sketch's LandingActivationDriver, mirroring the EngineFx toggle).
+ * Program-attach ("deploy while program X is active") is NOT in this
+ * block — Studio injects a `landing_bindings: [{id, state}]` into the
+ * target program YAML, so the existing program→landing path drives it.
  *
  * Direct YamlNode traversal (the declarative DSL doesn't compose
  * nested sequences — lights[].leds[] is a sequence inside a sequence).
@@ -45,14 +56,28 @@ struct LandingYamlPool {
     static constexpr size_t MAX_DEPTH        = 12;
 };
 
-/// Parsed form of `/landing.yaml`.  A plain wrapper around the
-/// firmware-side `LandingLightDef[]` so the apply path can hand the
-/// array straight to `LandingLightServicePolicy::configure()`.
+/// RC-channel auto-deploy binding for one landing light (parallel to
+/// `LandingConfig::lights[]`).  Empty `input` ⇒ no channel activation
+/// (the light is manual / program-driven).  Resolved to a PortRef +
+/// channel by the sketch's LandingActivationDriver at apply time
+/// (mirrors EngineFx's `toggle:` block).
+struct LandingActivation {
+    char     input[24]    = {};      ///< named channel from /hubfx.yaml inputs[]
+    uint16_t thresholdUs  = 1500;    ///< ≥ ⇒ deploy, < ⇒ retract
+    uint16_t hysteresisUs = 50;
+};
+
+/// Parsed form of `/landing.yaml`.  Wraps the firmware-side
+/// `LandingLightDef[]` (handed straight to
+/// `LandingLightServicePolicy::configure()`) plus a parallel
+/// `activations[]` the sketch's LandingActivationDriver consumes.
 struct LandingConfig {
     static constexpr uint8_t kSchemaVersion = 1;
 
     hubfx::effects::landing::LandingLightDef
         lights[hubfx::effects::landing::kMaxLandingLights] = {};
+    LandingActivation
+        activations[hubfx::effects::landing::kMaxLandingLights] = {};
     uint8_t numLights = 0;
 };
 
@@ -164,6 +189,21 @@ struct LandingConfigSchema {
                              (unsigned)i, (unsigned)def.id);
                 continue;
             }
+
+            // LED soft-start ramp (ms) applied after the servo deploys.
+            def.fadeInMs = (uint16_t)ll->template childAs<int32_t>("fade_in_ms", 0);
+
+            // Optional RC-channel auto-deploy binding (parallel array).
+            LandingActivation& act = d.activations[d.numLights];
+            act = LandingActivation{};
+            const auto* actNode = ll->child("activation");
+            if (actNode) {
+                const char* inp = actNode->template childAs<const char*>("input", "");
+                if (inp && inp[0]) std::strncpy(act.input, inp, sizeof(act.input) - 1);
+                act.thresholdUs  = (uint16_t)actNode->template childAs<int32_t>("threshold_us",  1500);
+                act.hysteresisUs = (uint16_t)actNode->template childAs<int32_t>("hysteresis_us",   50);
+            }
+
             d.numLights++;
         }
         return true;
