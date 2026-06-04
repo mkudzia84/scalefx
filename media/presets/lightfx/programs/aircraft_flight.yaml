@@ -3,14 +3,15 @@
 # FAA-realistic in-flight exterior lighting for a fixed-wing scale model:
 #   • Position/nav lights + tail are STEADY (14 CFR 91.209): red port +
 #     green starboard on "Position lights", white aft on "White tail".
-#   • Red anti-collision beacon flashes + white anti-collision strobe
-#     double-flashes, ~50 cycles/min — inside the FAA 40–100 fpm window
-#     (14 CFR 23.1401).  Strobe offset to mid-period (never coincides
-#     with the beacon).
+#   • Red anti-collision beacon flashes at ~50/min (1200 ms) + white
+#     anti-collision strobe double-flashes at ~60/min (1000 ms) — both
+#     inside the FAA 40–100 fpm window (14 CFR 23.1401, EASA CS-23,
+#     MIL-STD-3009).  Distinct rates, like real independent beacon/strobe
+#     systems, so they drift through each other instead of locking.
 #
-# Looping tracks share a 1200 ms period for phase-lock; steady tracks
-# use a single terminal `on`.  v2 schema — channel names match the
-# LedAnimator port labels on the IO tab.
+# Each looping track repeats on its OWN period; steady tracks use a single
+# terminal `on`.  v2 schema — channel names match the LedAnimator port
+# labels on the IO tab.
 
 schema_version: 2
 
@@ -33,14 +34,13 @@ tracks:
     events:
       - { kind: "on", brightness_pct: 100, duration_ms: 0 }
 
-  # ── White anti-collision strobe — double-flash, ~50/min, offset ──
+  # ── White anti-collision strobe — double-flash, ~60/min ──
   - channel: "White strobe"
     loop: true
     events:
-      - { kind: "off",                       duration_ms: 600 }
       - { kind: "on",  brightness_pct: 100, duration_ms:  40 }
       - { kind: "off",                       duration_ms:  80 }
       - { kind: "on",  brightness_pct: 100, duration_ms:  40 }
-      - { kind: "off",                       duration_ms: 440 }
+      - { kind: "off",                       duration_ms: 840 }   # → 1000 ms / 60 fpm
 
 landing_bindings: []
