@@ -1,4 +1,4 @@
-# aircraft_taxi — Ground-handling / pre-flight.
+# Aircraft — Taxi (ground, position lights only)
 #
 # 14 CFR § 91.209 minimum: position lights only.  No anti-collision yet
 # (props stationary or taxiing slowly).

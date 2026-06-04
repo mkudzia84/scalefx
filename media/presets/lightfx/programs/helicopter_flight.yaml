@@ -1,55 +1,51 @@
-# helicopter_flight — Full FAA-compliant flight lighting (Airbus-style).
+# Helicopter — Flight (rotors turning)
 #
-# Anti-collision pattern, all phase-locked to a shared 1000 ms period
-# (LedAnimator drives looping tracks off `now % period`, so every
-# track stays in lockstep):
+# FAA-realistic in-flight exterior lighting:
+#   • Position/nav lights + tail are STEADY (14 CFR 91.209 — position
+#     lights are continuous, never flashing): red port + green starboard
+#     paralleled on "Position lights", white aft on "White tail".
+#   • Red anti-collision BEACON flashes (rotating-style fade pulse) and
+#     the white anti-collision STROBE double-flashes — both at ~50 cycles
+#     per minute, well inside the FAA 40–100 fpm anti-collision window
+#     (14 CFR 27.1401 / 23.1401).  The strobe is offset to mid-period so
+#     it never coincides with the beacon.
+#   • Landing light off in cruise — switch to "Helicopter — Landing".
 #
-#   t=0..80ms    : SINGLE flash — red beacon + position lights + tail
-#                  pulse together (one short bright flash per second).
-#   t=500..560 + 640..700ms : DOUBLE flash — white anti-collision strobe
-#                  (two quick pulses), offset to mid-period so it NEVER
-#                  overlaps the single-flash group.
-#
-# `loop: true` on a track makes its events a repeating, phase-locked
-# pattern (period = sum of duration_ms).  Tracks that share the period
-# blink in perfect sync; offsets are just leading `off` segments.
-#
-# v2 schema — channel names match /hubfx.yaml port labels.  See
-# helicopter_off.yaml for the standard channel list.  Landing light
-# stays off in cruise — switch to `helicopter_landing` to deploy + light.
+# Looping tracks share a 1200 ms period (LedAnimator drives `now %
+# period`), so beacon + strobe stay phase-locked.  Steady tracks use a
+# single terminal `on` (no loop).  v2 schema — channel names match the
+# LedAnimator port labels on the IO tab (see helicopter_off.yaml).
 
 schema_version: 2
 
 tracks:
-  # ── Single-flash group: red beacon (fade pulse) + position lights + tail ──
+  # ── Red anti-collision beacon — rotating-style flash, ~50/min ──
   - channel: "Red beacon"
     loop: true
     events:
-      - { kind: fade_in,  brightness_pct: 100, duration_ms: 300 }
-      - { kind: fade_out, brightness_pct: 100, duration_ms: 300 }
-      - { kind: "off",                          duration_ms: 400 }   # → 1000 ms period
+      - { kind: fade_in,  brightness_pct: 100, duration_ms: 200 }
+      - { kind: fade_out, brightness_pct: 100, duration_ms: 200 }
+      - { kind: "off",                          duration_ms: 800 }   # → 1200 ms / 50 fpm
 
+  # ── Position / nav lights — STEADY (red port + green starboard) ──
   - channel: "Position lights"
-    loop: true
     events:
-      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
-      - { kind: "off",                       duration_ms: 920 }
+      - { kind: "on", brightness_pct: 100, duration_ms: 0 }
 
+  # ── White tail (aft position light) — STEADY ──
   - channel: "White tail"
-    loop: true
     events:
-      - { kind: "on",  brightness_pct: 100, duration_ms:  80 }
-      - { kind: "off",                       duration_ms: 920 }
+      - { kind: "on", brightness_pct: 100, duration_ms: 0 }
 
-  # ── Double-flash white anti-collision strobe (offset; non-overlap) ──
+  # ── White anti-collision strobe — crisp double-flash, ~50/min, offset ──
   - channel: "White strobe"
     loop: true
     events:
-      - { kind: "off",                       duration_ms: 500 }   # wait
-      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }   # flash 1
+      - { kind: "off",                       duration_ms: 600 }   # anti-phase to beacon
+      - { kind: "on",  brightness_pct: 100, duration_ms:  40 }   # flash 1
       - { kind: "off",                       duration_ms:  80 }
-      - { kind: "on",  brightness_pct: 100, duration_ms:  60 }   # flash 2
-      - { kind: "off",                       duration_ms: 300 }   # → 1000 ms period
+      - { kind: "on",  brightness_pct: 100, duration_ms:  40 }   # flash 2
+      - { kind: "off",                       duration_ms: 440 }   # → 1200 ms / 50 fpm
 
   - channel: "Landing light"
     events:

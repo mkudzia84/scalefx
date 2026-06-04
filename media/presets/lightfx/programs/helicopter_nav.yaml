@@ -1,4 +1,4 @@
-# helicopter_nav — Position lights only.
+# Helicopter — Nav lights (parked, steady position lights)
 #
 # FAA Part 91.209(a): position lights required from sunset to sunrise.
 # Use this program for static display / cold-and-dark + battery on, or

@@ -1,4 +1,4 @@
-# car_emergency — Police / fire / ambulance emergency strobe pattern.
+# Vehicle — Emergency (police / fire strobes)
 #
 # Alternating wig-wag: left bar pulses while right is off, then swap.
 # 100 ms half-period (= 10 Hz alternation, the typical "panic mode"

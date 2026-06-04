@@ -1,4 +1,4 @@
-# drone_default — Multirotor / quad / hex flight lighting.
+# Drone — Flight (multirotor orientation lights)
 #
 # Standard hobby-drone layout: front arms WHITE (heading reference),
 # rear arms RED (tail), plus an anti-collision strobe in the centre.
