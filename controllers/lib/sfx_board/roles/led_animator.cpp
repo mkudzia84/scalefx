@@ -116,7 +116,19 @@ void LedAnimator::tick(uint32_t now) {
     // patterns (single flash, double flash, mutually-offset pulses) are
     // just a sequence of timed On/Off (and fade) events.
     if (_loop) {
-        if (_loopPeriodMs == 0) { writeOutputPct(0); return; }
+        if (_loopPeriodMs == 0) {
+            // No segment durations sum > 0 — the classic case is a SINGLE
+            // run-forever cyclic event (`{ kind: fading/beacon/flash,
+            // cycle_ms: T }` with duration_ms 0) on a `loop: true` track,
+            // which Studio's beacon/strobe/breathing presets emit.  There's
+            // no time-windowed queue to walk, so render event[0] directly;
+            // cyclic kinds still animate on their own `cycle_ms`.  (Without
+            // this the whole looping channel renders DARK — the "breathing
+            // / sinusoidal beacon does nothing" bug.)
+            const Event& e = _queue[0];
+            writeOutputPct(e.kind == EV_OFF ? 0 : cyclicSample(e, now));
+            return;
+        }
         const uint32_t pos = now % _loopPeriodMs;
         uint32_t acc = 0;
         for (uint8_t i = 0; i < _count; ++i) {
