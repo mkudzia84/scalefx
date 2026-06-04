@@ -132,6 +132,44 @@ v2 programs load **zero channels** (every track "channel not found"), so the
 program list is empty and any RC `program_selector` finds no usable ranges and
 goes dormant.
 
+## Landing-light group — `lights[]` block in `/landing.yaml`
+
+A landing light couples one or more servos (deploy/stow the searchlight) with one
+or more LED bulbs. **Deploy order**: every servo drives to `open_us`, and once
+ALL report `SERVO_TARGET_REACHED` the bulbs come on — optionally ramped via
+`fade_in_ms` (a `[FadeIn, On]` LedAnimator queue; 0 = hard on). **Retract**: bulbs
+off immediately, then servos drive to `close_us`.
+
+```yaml
+lights:
+  - id: 0
+    name: searchlight
+    owner: landing-light            # who may setState(): lightfx|gunfx|gearcontrol|landing-light
+    servos:
+      - port: { kind: servo, idx: 0 }
+    open_us:  1900
+    close_us: 1100
+    leds:
+      - { port: { kind: pwm, idx: 5 }, brightness_pct: 80 }
+    fade_in_ms: 400                  # LED soft-start after the servo deploys
+    activation:                      # OPTIONAL RC-channel auto-deploy
+      input: landing_deploy          # named channel from /hubfx.yaml inputs[]
+      threshold_us: 1500             # ≥ ⇒ deploy, < ⇒ retract (fail-low on RC loss)
+      hysteresis_us: 50
+```
+
+**Three activation paths** (a group uses whichever the operator wires):
+- **Manual** — Studio Deploy/Retract or the wire `LL_SET_STATE`.
+- **RC channel** — the `activation:` block above. Resolved + wired by the sketch's
+  `LandingActivationDriver` (file-scope, re-installed on every CONFIG_RELOAD,
+  mirrors the LightFx program selector + the EngineFx toggle). The firmware keys
+  purely off a non-empty `activation.input`; Studio clears it for non-channel modes.
+- **Program-attach** — the *program's* `landing_bindings: [{id, state}]` (NOT a
+  `/landing.yaml` field). Studio's Landing panel "program" mode pushes `{id, on}`
+  into the chosen program (same data the program editor's landing-binding rows
+  edit), so the group deploys while that program is active and auto-retracts when
+  the operator switches away — the existing program→landing path.
+
 ## Expander boards — `expanders:` block in `/hubfx.yaml`
 
 The single place a remote board is declared. Each entry names a board

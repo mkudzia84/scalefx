@@ -41,9 +41,10 @@ tracks:
       - { kind: "on",  brightness_pct: 100, duration_ms:  40 }
       - { kind: "off",                       duration_ms: 840 }   # → 1000 ms / 60 fpm
 
-  # ── Landing light — ON (steady) on approach ──
-  - channel: "Landing light"
-    events:
-      - { kind: "on", brightness_pct: 100, duration_ms: 0 }
-
+# The landing light is no longer a raw LED track here — it's a LANDING
+# GROUP (servo-deployed searchlight + bulb with fade-in) defined in
+# /landing.yaml.  Attach the group to this program in the Landing panel
+# (or the program editor) and Studio injects the binding below, so the
+# group deploys (servo out → bulb fades on) while this program is active
+# and retracts (bulb off → servo in) when you switch away.
 landing_bindings: []
