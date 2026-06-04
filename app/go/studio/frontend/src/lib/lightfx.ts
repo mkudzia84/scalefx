@@ -875,11 +875,15 @@ export const LIGHT_PRESETS: LightPresetT[] = [
     },
     {
         id:    'aircraft_beacon_rotating',
-        label: 'Rotating beacon (wide sweep, ~46/min)',
-        note:  'Red rotating-beacon sweep, 1300 ms cycle, 30 % beam — broader sweep than the strict anti-col beacon.',
+        label: 'Rotating beacon (fade sweep, ~46/min)',
+        note:  'Red rotating-beacon sweep — 250 ms fade-in / 250 ms fade-out / 800 ms gap (1300 ms cycle, ~46/min).  Smooth mechanical-beacon ramp, not a hard flash.',
         group: 'Aircraft',
         loop:  true,
-        events: [ev({ kind: 'beacon', cycleMs: 1300, minPct: 0, maxPct: 100, flashPct: 30 })],
+        events: [
+            ev({ kind: 'fade_in',  brightnessPct: 100, durationMs: 250 }),
+            ev({ kind: 'fade_out', brightnessPct: 100, durationMs: 250 }),
+            ev({ kind: 'off',                          durationMs: 800 }),
+        ],
     },
     {
         id:    'aircraft_strobe_single',
@@ -1090,11 +1094,15 @@ export const LIGHT_PRESETS: LightPresetT[] = [
     },
     {
         id:    'fx_beacon_rotating',
-        label: 'Effect — sinusoidal rotating beacon (1 Hz)',
-        note:  'Sinusoidal fade between 5 % and 100 % over 1000 ms — mimics a mechanical rotating beacon.',
+        label: 'Effect — rotating beacon (fade sweep, 1 Hz)',
+        note:  'Rotating-beacon sweep — 200 ms fade-in / 200 ms fade-out / 600 ms gap (1000 ms cycle, ~60/min).  Mimics a mechanical rotating beacon ramping past.',
         group: 'Effects',
         loop:  true,
-        events: [ev({ kind: 'fading', cycleMs: 1000, minPct: 5, maxPct: 100 })],
+        events: [
+            ev({ kind: 'fade_in',  brightnessPct: 100, durationMs: 200 }),
+            ev({ kind: 'fade_out', brightnessPct: 100, durationMs: 200 }),
+            ev({ kind: 'off',                          durationMs: 600 }),
+        ],
     },
     {
         id:    'fx_breathing',
@@ -1156,11 +1164,15 @@ export const LIGHT_PRESETS: LightPresetT[] = [
     },
     {
         id:    'beacon_rotating',
-        label: '(alias) Rotating beacon (sinusoidal 1 Hz)',
-        note:  'Compatibility alias for the new fx_beacon_rotating preset.',
+        label: '(alias) Rotating beacon (fade sweep, 1 Hz)',
+        note:  'Compatibility alias for the fx_beacon_rotating preset (fade-in / fade-out / gap).',
         group: 'Effects',
         loop:  true,
-        events: [ev({ kind: 'fading', cycleMs: 1000, minPct: 5, maxPct: 100 })],
+        events: [
+            ev({ kind: 'fade_in',  brightnessPct: 100, durationMs: 200 }),
+            ev({ kind: 'fade_out', brightnessPct: 100, durationMs: 200 }),
+            ev({ kind: 'off',                          durationMs: 600 }),
+        ],
     },
     {
         id:    'beacon_short',
