@@ -69,6 +69,10 @@ type LandingLightDTO struct {
 	OpenUs        uint16                  `yaml:"open_us,omitempty"        json:"openUs"`
 	CloseUs       uint16                  `yaml:"close_us,omitempty"       json:"closeUs"`
 	Leds          []LandingLedDTO         `yaml:"leds"                     json:"leds"`
+	// FadeInMs ramps the LEDs 0→brightness over this many ms once the
+	// servo has fully deployed (0 = hard on).  Consumed by the firmware's
+	// LandingLight::commandLedsOn (a [FadeIn, On] LedAnimator queue).
+	FadeInMs      uint16                  `yaml:"fade_in_ms,omitempty"     json:"fadeInMs"`
 	Activation    LandingActivationSource `yaml:"activation,omitempty"     json:"activation"`
 }
 
@@ -139,6 +143,16 @@ func (a *App) SetLandingConfig(cfg LandingConfigDTO) error {
 	}
 	if cfg.SchemaVersion == 0 {
 		cfg.SchemaVersion = 1
+	}
+	// The firmware's RC auto-deploy driver keys purely off a non-empty
+	// `activation.input`.  Clear it for any mode that isn't input_channel
+	// so a "manual" / "program" group never accidentally channel-activates
+	// (the `mode` / `program` fields are Studio-only metadata — program
+	// attachment lives in the program YAML's `landing_bindings:`).
+	for i := range cfg.Lights {
+		if cfg.Lights[i].Activation.Mode != "input_channel" {
+			cfg.Lights[i].Activation.Input = ""
+		}
 	}
 	data, err := yaml.Marshal(&cfg)
 	if err != nil {

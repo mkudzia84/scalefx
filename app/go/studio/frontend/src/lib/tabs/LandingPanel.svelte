@@ -30,7 +30,7 @@
         claimsForPort, RoleKind,
     } from '../devicemodel'
     import { effectClaims } from '../effect-claims'
-    import { lightfxDraft } from '../lightfx'
+    import { lightfxDraft, setLandingGroupProgram } from '../lightfx'
     import ServoWidget from '../components/ServoWidget.svelte'
     import type { ServoProfileT } from '../servo_calibration'
 
@@ -162,15 +162,22 @@
         updateLandingLight(id, l => ({ ...l, owner: val as LandingLightT['owner'] }))
     }
     function setActivationMode(id: number, val: string) {
-        updateLandingLight(id, l => ({
-            ...l, activation: { ...l.activation, mode: val as LandingLightT['activation']['mode'] },
-        }))
+        const mode = val as LandingLightT['activation']['mode']
+        updateLandingLight(id, l => ({ ...l, activation: { ...l.activation, mode } }))
+        // Leaving "program" mode detaches this group's binding from every
+        // program; entering it re-pushes the current selection (if any).
+        const lt = cfg.lights.find(l => l.id === id)
+        setLandingGroupProgram(id, mode === 'program' ? (lt?.activation.program ?? '') : '')
     }
-    function setActivationWhen(id: number, val: string) {
-        updateLandingLight(id, l => ({
-            ...l, activation: { ...l.activation, whenProgram: val as 'active'|'inactive' },
-        }))
+    // Pick the program a group attaches to: persist on the group AND push
+    // the {id, on} binding into that program's landing_bindings (option-b
+    // program-attach — drives the firmware program→landing path).
+    function setActivationProgram(id: number, name: string) {
+        setActivation(id, 'program', name)
+        setLandingGroupProgram(id, name)
     }
+    // (whenProgram is fixed to "active" now — a group deploys while its
+    // program runs; the firmware path can't express "deploy when inactive".)
     function addServo(id: number, port: PortRefT) {
         updateLandingLight(id, l => ({ ...l, servos: [...l.servos, { port }] }))
     }
@@ -199,6 +206,9 @@
         updateLandingLight(id, l => ({
             ...l, leds: l.leds.map((e, i) => i === idx ? { ...e, brightnessPct: pct } : e),
         }))
+    }
+    function setFadeIn(id: number, ms: number) {
+        updateLandingLight(id, l => ({ ...l, fadeInMs: Math.max(0, Math.round(ms || 0)) }))
     }
     function setActivation<K extends keyof LandingLightT['activation']>(id: number, key: K, val: LandingLightT['activation'][K]) {
         updateLandingLight(id, l => ({ ...l, activation: { ...l.activation, [key]: val } }))
@@ -285,7 +295,7 @@
                                  : 'Deploy: servos → open, then LEDs on'}>
                         {deployed ? 'Retract' : 'Deploy'}
                     </button>
-                    <button class="small danger" on:click={() => removeLandingLight(light.id)} disabled={busy}>× Remove</button>
+                    <button class="small danger" on:click={() => { setLandingGroupProgram(light.id, ''); removeLandingLight(light.id) }} disabled={busy}>× Remove</button>
                 </div>
             </div>
 
@@ -434,6 +444,18 @@
                 </div>
             {/if}
 
+            <!-- LED soft-start ramp (after the servo deploys) -->
+            <div class="form-row">
+                <span class="field-label">Fade-in</span>
+                <input class="field-input narrow" type="number" min="0" max="10000" step="50"
+                       value={light.fadeInMs ?? 0}
+                       on:change={(ev) => setFadeIn(light.id, numValue(ev))}
+                       disabled={busy}
+                       title="LED soft-start: ramp 0→brightness over this many ms once the servo is fully deployed (0 = hard on)." />
+                <span class="unit">ms</span>
+                <span class="hint">ramps the bulbs up after the servo finishes deploying (0 = snap on)</span>
+            </div>
+
             <!-- Activation source -->
             <div class="section-head">
                 Activation
@@ -475,18 +497,14 @@
                 <div class="form-row">
                     <span class="field-label">Program</span>
                     <select class="field-input wide" value={light.activation.program}
-                            on:change={(e) => setActivation(light.id, 'program', selValue(e))}
+                            on:change={(e) => setActivationProgram(light.id, selValue(e))}
                             disabled={busy}>
                         <option value="">— pick a program from the left column —</option>
                         {#each programNames as n}<option value={n}>{n}</option>{/each}
                     </select>
-                    <span class="field-label">When</span>
-                    <select class="field-input narrow" value={light.activation.whenProgram}
-                            on:change={(e) => setActivationWhen(light.id, selValue(e))}
-                            disabled={busy}>
-                        <option value="active">active (deploy when running)</option>
-                        <option value="inactive">inactive (deploy when off)</option>
-                    </select>
+                </div>
+                <div class="form-row">
+                    <span class="hint">deploys while this program is active, retracts when you switch away (writes a <code>landing_bindings</code> entry into the program — also editable in the Lighting program editor)</span>
                 </div>
             {/if}
 

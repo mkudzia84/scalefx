@@ -58,6 +58,7 @@ export interface LandingLightT {
     openUs:     number
     closeUs:    number
     leds:       LandingLedT[]
+    fadeInMs:   number               // LED soft-start after servo deploys (0 = hard on)
     activation: LandingActivationT
 }
 
@@ -91,6 +92,7 @@ export function defaultLandingLight(id: number): LandingLightT {
         id, name: `landing${id}`, owner: 'landing-light',
         servos: [], openUs: 1900, closeUs: 1100,
         leds: [],
+        fadeInMs: 400,
         activation: { ...defaultActivation },
     }
 }

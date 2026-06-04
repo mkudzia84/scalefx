@@ -445,6 +445,29 @@ export function addChannel(name: string = 'New channel'): void {
     })
 }
 
+/** Attach a landing-light GROUP to a LightFx program (option-b
+ *  program-attach).  Drives the firmware program→landing path: the named
+ *  program's `landing_bindings:` gains `{id: groupId, state: "on"}` so the
+ *  group deploys while that program is active and auto-retracts when the
+ *  operator switches away.  This group's binding is removed from EVERY
+ *  other program first (a group attaches to at most one program), and
+ *  passing `programName === ''` detaches it entirely.  Called from the
+ *  Landing panel's activation dropdown — a one-shot mutation per user
+ *  action (no reactive loop), and the program editor's per-program
+ *  landing-binding rows stay in sync because both edit this same draft. */
+export function setLandingGroupProgram(groupId: number, programName: string): void {
+    lightfxDraft.update(c => ({
+        ...c,
+        activePrograms: c.activePrograms.map(ap => {
+            const kept = ap.program.landingBindings.filter(b => b.id !== groupId)
+            const landingBindings = (programName && ap.name === programName)
+                ? [...kept, { id: groupId, state: 'on' as const }]
+                : kept
+            return { ...ap, program: { ...ap.program, landingBindings } }
+        }),
+    }))
+}
+
 /** Remove the channel at `idx` from the instance pool.  ALSO drops
  *  every matching track from every active program — leaving orphan
  *  tracks would make the program editor's row count ambiguous. */
