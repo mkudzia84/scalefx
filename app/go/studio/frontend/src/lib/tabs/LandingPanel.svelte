@@ -26,7 +26,7 @@
         type PortRefT,
     } from '../landing'
     import {
-        deviceModel, type Port, formatPortRail,
+        deviceModel, type Port, type Claim, formatPortRail,
         claimsForPort, RoleKind,
     } from '../devicemodel'
     import { effectClaims } from '../effect-claims'
@@ -118,40 +118,36 @@
     //     domain claims + synthesized claims from every effect draft,
     //     see lib/effect-claims.ts) so GunFx muzzle / LightFx program
     //     channels / sibling landing groups are all visible here. ───
-    function isClaimedByOther(p: Port, exceptRefs: PortRefT[]): boolean {
-        const claims = claimsForPort($effectClaims, p.ref)
-        if (claims.length === 0) return false
-        // Exempt this group's own claims (so editing keeps the picker stable).
-        for (const c of claims) {
-            const sameAsException = exceptRefs.some(r =>
+    // NOTE: every pool helper takes `claims` / `ports` / `lights` as explicit
+    // arguments rather than reading the stores inside the body.  The callers
+    // pass `$effectClaims` / `$deviceModel.ports` / `cfg.lights` in the
+    // `{@const}` block, so Svelte SEES those reactive deps in the expression
+    // and recomputes the pool when they change — removing a servo/LED (which
+    // mutates the draft → $effectClaims) or disabling another effect updates
+    // the dropdowns immediately.  (Reading the stores inside the functions made
+    // the @const blind to them, so the pool went stale — the "removed LED still
+    // shows no ports" bug.)
+    function isClaimedByOther(claims: Claim[], p: Port, exceptRefs: PortRefT[]): boolean {
+        const cs = claimsForPort(claims, p.ref)
+        if (cs.length === 0) return false
+        for (const c of cs) {
+            const exempt = exceptRefs.some(r =>
                 r.guid === c.port.guid && r.idx === c.port.index)
-            if (!sameAsException) return true
+            if (!exempt) return true
         }
         return false
-    }
-    function freeServos(currentRefs: PortRefT[]): Port[] {
-        return $deviceModel.ports.filter(p =>
-            p.kindName === 'servo' && p.direction === 'output'
-            && p.roleKind === RoleKind.ServoActuator
-            && !isClaimedByOther(p, currentRefs))
-    }
-    function freeLeds(currentRefs: PortRefT[]): Port[] {
-        return $deviceModel.ports.filter(p =>
-            p.kindName === 'pwm' && p.direction === 'output'
-            && p.roleKind === RoleKind.LedAnimator
-            && !isClaimedByOther(p, currentRefs))
     }
 
     const refKey = (guid: string, idx: number) => `${guid}#${idx}`
 
-    // Every servo / LED ref already used across ALL landing groups (this
-    // group + siblings).  A landing draft's picks aren't synthesized into
-    // $effectClaims, so we exclude them explicitly here — otherwise an
-    // already-assigned port still reads as "unclaimed" and lingers in the
+    // Every servo / LED ref already used across ALL landing groups (this group
+    // + siblings).  A landing draft's picks aren't synthesized into the
+    // `landing` claims with enough granularity to self-exclude, so we exclude
+    // them explicitly here — otherwise an already-assigned port lingers in the
     // Add dropdown.
-    function usedRefs(which: 'servos'|'leds'): Set<string> {
+    function usedRefs(lights: LandingLightT[], which: 'servos'|'leds'): Set<string> {
         const out = new Set<string>()
-        for (const l of cfg.lights) {
+        for (const l of lights) {
             const list = which === 'servos' ? l.servos : l.leds
             for (const e of list) out.add(refKey(e.port.guid, e.port.idx))
         }
@@ -161,14 +157,22 @@
     // Ports with `role` attached, not claimed by ANOTHER effect, and not used
     // by ANY landing group — EXCEPT the editing row's own `keep` pick, which is
     // forced in so its picker stays stable.  `keep = null` ⇒ the "+ Add" pool.
-    function availPorts(kindName: 'servo'|'pwm', role: number,
-                        used: Set<string>, keep: PortRefT | null): Port[] {
-        return $deviceModel.ports.filter(p => {
+    function availPorts(ports: Port[], claims: Claim[], kindName: 'servo'|'pwm',
+                        role: number, used: Set<string>, keep: PortRefT | null): Port[] {
+        return ports.filter(p => {
             if (p.kindName !== kindName || p.direction !== 'output' || p.roleKind !== role) return false
             if (keep && keep.guid === p.ref.guid && keep.idx === p.ref.index) return true
-            if (isClaimedByOther(p, [])) return false
+            if (isClaimedByOther(claims, p, [])) return false
             return !used.has(refKey(p.ref.guid, p.ref.index))
         })
+    }
+
+    // Device has ZERO ports of this role free (not claimed by another effect) —
+    // drives the section-warn chip ("attach the role on the IO tab").
+    function roleAvail(ports: Port[], claims: Claim[], kindName: 'servo'|'pwm', role: number): Port[] {
+        return ports.filter(p =>
+            p.kindName === kindName && p.direction === 'output'
+            && p.roleKind === role && !isClaimedByOther(claims, p, []))
     }
 
     // ─── Mutators (per-group) ────────────────────────────────────────
@@ -284,12 +288,12 @@
         {@const deployed     = phase?.phase === 2 || phase?.phase === 3}
         {@const issues       = landingItemErrors(cfg.lights, cfg.lights.findIndex(l => l.id === light.id))}
         {@const hasErrors    = issues.length > 0}
-        {@const usedServos   = usedRefs('servos')}
-        {@const usedLeds     = usedRefs('leds')}
-        {@const servoAddPool = availPorts('servo', RoleKind.ServoActuator, usedServos, null)}
-        {@const ledAddPool   = availPorts('pwm',   RoleKind.LedAnimator,   usedLeds,   null)}
-        {@const noFreeServos = freeServos([]).length === 0}
-        {@const noFreeLeds   = freeLeds([]).length === 0}
+        {@const usedServos   = usedRefs(cfg.lights, 'servos')}
+        {@const usedLeds     = usedRefs(cfg.lights, 'leds')}
+        {@const servoAddPool = availPorts($deviceModel.ports, $effectClaims, 'servo', RoleKind.ServoActuator, usedServos, null)}
+        {@const ledAddPool   = availPorts($deviceModel.ports, $effectClaims, 'pwm',   RoleKind.LedAnimator,   usedLeds,   null)}
+        {@const noFreeServos = roleAvail($deviceModel.ports, $effectClaims, 'servo', RoleKind.ServoActuator).length === 0}
+        {@const noFreeLeds   = roleAvail($deviceModel.ports, $effectClaims, 'pwm',   RoleKind.LedAnimator).length === 0}
         <div class="card group-card" class:invalid={hasErrors}>
             <div class="card-header inner">
                 <h4>{light.name || 'Landing group'}</h4>
@@ -358,7 +362,7 @@
                             on:change={(e) => setServoPort(light.id, i, parsePortOption(selValue(e), 'servo'))}
                             disabled={busy}>
                         <option value="">— pick a free servo port —</option>
-                        {#each availPorts('servo', RoleKind.ServoActuator, usedServos, s.port) as p}
+                        {#each availPorts($deviceModel.ports, $effectClaims, 'servo', RoleKind.ServoActuator, usedServos, s.port) as p}
                             <option value={refOptKey(p)}>{refOptLabel(p)}</option>
                         {/each}
                     </select>
@@ -420,7 +424,7 @@
                             on:change={(ev) => setLedPort(light.id, i, parsePortOption(selValue(ev), 'pwm'))}
                             disabled={busy}>
                         <option value="">— pick a free PWM port —</option>
-                        {#each availPorts('pwm', RoleKind.LedAnimator, usedLeds, e.port) as p}
+                        {#each availPorts($deviceModel.ports, $effectClaims, 'pwm', RoleKind.LedAnimator, usedLeds, e.port) as p}
                             <option value={refOptKey(p)}>{refOptLabel(p)}</option>
                         {/each}
                     </select>

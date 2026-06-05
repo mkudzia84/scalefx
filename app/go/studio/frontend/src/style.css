@@ -547,6 +547,7 @@ select.field-input { cursor: pointer; }
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    white-space: nowrap;   /* keep "× Remove" on one line inside narrow slots */
 }
 
 .field-hint {
