@@ -241,7 +241,6 @@
     }
 
     // ─── Live phase pill ─────────────────────────────────────────────
-    function phaseFor(id: number) { return $landingPhases[id] }
     function phaseClass(p: number | undefined): string {
         switch (p) {
             case 1: return 'phase-retracted'
@@ -315,7 +314,7 @@
     {/if}
 
     {#each (cfg?.lights ?? []) as light (light.id)}
-        {@const phase        = phaseFor(light.id)}
+        {@const phase        = $landingPhases[light.id]}
         {@const deployed     = phase?.phase === 2 || phase?.phase === 3}
         {@const issues       = landingItemErrors(cfg.lights, cfg.lights.findIndex(l => l.id === light.id))}
         {@const hasErrors    = issues.length > 0}
