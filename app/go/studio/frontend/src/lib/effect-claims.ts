@@ -86,24 +86,34 @@ export const effectClaims: Readable<Claim[]> = derived(
             pushIfBound(out, domain, slot, p)
         }
 
+        // A DISABLED effect releases its ports back to the unclaimed pool
+        // (the firmware doesn't attach its roles when disabled, so a sibling
+        // effect is free to grab them).  Each effect's whole claim block is
+        // gated on its top-level `enabled` flag — toggle an effect off and its
+        // servos/LEDs reappear in every other picker on the next tick.
+
         // ── LightFx channel pool (Phase 1, 2026-05-27) ─────────────
         // Each named LED channel binds a physical led-animator port.
         // Synthesize a claim per bound channel so OTHER effects' pickers
         // (GunFx muzzle, Landing LEDs) exclude ports LightFx is using —
         // bidirectional with LightFx's own picker, which filters out the
         // `lightfx` domain and handles siblings via its draft.
-        for (const ch of $lfx?.channels ?? []) {
-            if (ch.port) add('lightfx', `channel / ${ch.name || '?'}`, ch.port)
+        if ($lfx?.enabled) {
+            for (const ch of $lfx.channels ?? []) {
+                if (ch.port) add('lightfx', `channel / ${ch.name || '?'}`, ch.port)
+            }
         }
 
         // ── GunFx per-gun outputs (muzzle / smoke heater + fan / turret) ──
-        for (const g of $gfx?.guns ?? []) {
-            const label = g.name && g.name.trim() ? g.name : `gun${g.id}`
-            add('gunfx', `${label} / muzzle`,       g.muzzleFlash.port)
-            add('gunfx', `${label} / smoke heater`, g.smoke.heater.port)
-            add('gunfx', `${label} / smoke fan`,    g.smoke.fan.port)
-            if (g.yaw.enabled)   add('gunfx', `${label} / yaw servo`,   g.yaw.servoPort)
-            if (g.pitch.enabled) add('gunfx', `${label} / pitch servo`, g.pitch.servoPort)
+        if ($gfx?.enabled) {
+            for (const g of $gfx.guns ?? []) {
+                const label = g.name && g.name.trim() ? g.name : `gun${g.id}`
+                add('gunfx', `${label} / muzzle`,       g.muzzleFlash.port)
+                add('gunfx', `${label} / smoke heater`, g.smoke.heater.port)
+                add('gunfx', `${label} / smoke fan`,    g.smoke.fan.port)
+                if (g.yaw.enabled)   add('gunfx', `${label} / yaw servo`,   g.yaw.servoPort)
+                if (g.pitch.enabled) add('gunfx', `${label} / pitch servo`, g.pitch.servoPort)
+            }
         }
 
         // ── Landing per-light servos + LEDs ────────────────────────
