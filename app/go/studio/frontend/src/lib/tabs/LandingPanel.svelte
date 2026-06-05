@@ -65,13 +65,21 @@
     let cfg: LandingConfigT
     const unsub = landingDraft.subscribe(c => { cfg = c })
 
+    // The firmware emits LL_PHASE_EVENT on every phase change, but that's a
+    // TAG_ASYNC packet on the LOSSY async queue (Rule 53) — the ~50 Hz RC
+    // live-view broadcasts can overflow it and drop a phase event, leaving the
+    // pill stale.  So in addition to the event stream we POLL LL_STATUS on a
+    // slow timer: it returns the current phase of every group, so the state
+    // self-heals within one tick even if an event was dropped.
+    let statusTimer: ReturnType<typeof setInterval> | undefined
     onMount(() => {
         installLandingPhaseListener()
         loadLandingConfig().catch(e => { error = String(e) })
         refreshLandingStatus().catch(() => {})
+        statusTimer = setInterval(() => { refreshLandingStatus().catch(() => {}) }, 1500)
         return () => unsub()
     })
-    onDestroy(() => unsub())
+    onDestroy(() => { unsub(); if (statusTimer) clearInterval(statusTimer) })
 
     function mark(): void { landingDraft.set(cfg) }
 
@@ -328,7 +336,7 @@
                          ON→OFF (retract) always enabled — emergency
                          cutoff; OFF→ON (deploy) gated on dirty/errors. -->
                     <button class="small state-toggle" class:danger={deployed}
-                            on:click={() => deployed ? landingDeactivate(light.id) : landingActivate(light.id)}
+                            on:click={async () => { (deployed ? await landingDeactivate(light.id) : await landingActivate(light.id)); refreshLandingStatus().catch(() => {}) }}
                             disabled={deployed ? busy : (busy || $landingDirty || hasErrors)}
                             title={deployed ? 'Retract: LEDs off, then servos → close (always available)'
                                  : $landingDirty ? 'Apply changes before deploying — tests the loaded firmware config'
@@ -388,16 +396,13 @@
             </div>
             <div class="form-row">
                 <span class="field-label">Deploy direction</span>
-                <select class="field-input wide"
-                        value={light.openUs >= light.closeUs ? 'max' : 'min'}
-                        on:change={(e) => setDirection(light.id, selValue(e) === 'max')}
-                        disabled={busy}>
-                    <option value="max">Deploy to the servo's MAX end (retract to MIN)</option>
-                    <option value="min">Deploy to the servo's MIN end (retract to MAX)</option>
-                </select>
-            </div>
-            <div class="form-row">
-                <span class="hint">on deploy the servo drives to its calibrated {light.openUs >= light.closeUs ? 'MAX' : 'MIN'} endpoint, on retract to the other — set the actual travel with <b>⚙ Calibrate</b> below.</span>
+                <button class="small state-toggle"
+                        on:click={() => setDirection(light.id, !(light.openUs >= light.closeUs))}
+                        disabled={busy}
+                        title="Which calibrated servo end is the DEPLOYED position. Click to flip; retract goes to the other end.">
+                    {light.openUs >= light.closeUs ? '⇧ Deploy → MAX end' : '⇩ Deploy → MIN end'}
+                </button>
+                <span class="hint">deploy drives the servo to its calibrated {light.openUs >= light.closeUs ? 'MAX' : 'MIN'} endpoint, retract to the other — set the travel with <b>⚙ Calibrate</b> below.</span>
             </div>
             {#each light.servos as s, i (i)}
                 <div class="form-row">
