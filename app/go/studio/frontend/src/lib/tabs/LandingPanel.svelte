@@ -322,10 +322,13 @@
             <div class="card-header inner">
                 <h4>{light.name || 'Landing group'}</h4>
                 <div class="header-actions">
-                    <!-- Phase pill lives in the status-row below (not duplicated here).
-                         Single on/off toggle (Rule 48): deploy ⇄ retract.
-                         ON→OFF (retract) always enabled — emergency
-                         cutoff; OFF→ON (deploy) gated on dirty/errors. -->
+                    <!-- Live deploy state sits right next to the manual
+                         Deploy/Retract toggle (Rule 48): the pill shows what the
+                         firmware reports, the button is the action.  Pill defaults
+                         to Retracted before the first LL_PHASE_EVENT. -->
+                    <span class="state-pill phase {phaseClass(phase?.phase ?? 1)}">{phase?.name ?? 'Retracted'}</span>
+                    <!-- ON→OFF (retract) always enabled — emergency cutoff;
+                         OFF→ON (deploy) gated on dirty/errors. -->
                     <button class="small state-toggle" class:danger={deployed}
                             on:click={async () => { (deployed ? await landingDeactivate(light.id) : await landingActivate(light.id)); refreshLandingStatus().catch(() => {}) }}
                             disabled={deployed ? busy : (busy || $landingDirty || hasErrors)}
@@ -339,22 +342,13 @@
                 </div>
             </div>
 
-            <!-- Live status (EngineFx / GunFx-style) — always shows the group's
-                 deploy phase + a one-line wiring summary so the operator reads
-                 the current state at a glance.  Phase comes from the firmware's
-                 LL_PHASE_EVENT stream (seeded on mount via LandingStatus); before
-                 the first event it reads Retracted. -->
-            <div class="status-row">
-                <div class="status">
-                    <span class="status-label">State</span>
-                    <span class="state-pill phase {phaseClass(phase?.phase ?? 1)}">{phase?.name ?? 'Retracted'}</span>
-                </div>
-                <span class="status-meta">
-                    {light.servos.length} servo{light.servos.length === 1 ? '' : 's'}
-                    · {light.leds.length} LED{light.leds.length === 1 ? '' : 's'}
-                    · {light.fadeInMs > 0 ? `${light.fadeInMs} ms fade-in` : 'hard on'}
-                    · {activationLabel(light.activation)}
-                </span>
+            <!-- One-line wiring summary (the live deploy state is the pill in the
+                 card header, next to Deploy/Retract). -->
+            <div class="group-summary">
+                {light.servos.length} servo{light.servos.length === 1 ? '' : 's'}
+                · {light.leds.length} LED{light.leds.length === 1 ? '' : 's'}
+                · {light.fadeInMs > 0 ? `${light.fadeInMs} ms fade-in` : 'hard on'}
+                · {activationLabel(light.activation)}
             </div>
 
             <!-- Identity — just a friendly name.  The wire `id` and the
@@ -589,7 +583,7 @@
     .state-pill.phase.phase-deployed   { color: var(--success); border-color: var(--success); background: rgba(100,200,120,0.12); }
     .state-pill.phase.phase-retracting { color: var(--warning); border-color: var(--warning); }
     .state-pill.phase.phase-unknown    { color: var(--text-dim); }
-    .status-meta { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); text-align: right; }
+    .group-summary { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); margin: 2px 0 10px; }
 
     .field-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-dim); }
     .unit        { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
