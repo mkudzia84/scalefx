@@ -27,10 +27,11 @@
     } from '../landing'
     import {
         deviceModel, type Port, type Claim, formatPortRail,
-        claimsForPort, RoleKind,
+        claimsForPort, RoleKind, liveChannels, liveChannelKey,
     } from '../devicemodel'
     import { effectClaims } from '../effect-claims'
     import { lightfxDraft, setLandingGroupProgram } from '../lightfx'
+    import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
     import ServoWidget from '../components/ServoWidget.svelte'
     import type { ServoProfileT } from '../servo_calibration'
 
@@ -85,7 +86,7 @@
 
     // ─── Named-channel option list (Rule 43) ─────────────────────────
     // Reused for the activation-source "input channel" picker.
-    type ChanOpt = { fnId: string; label: string }
+    type ChanOpt = { fnId: string; label: string; portGuid: string; portIdx: number; channel: number }
     $: chanOpts = collectChannelOpts($deviceModel)
     function collectChannelOpts(_dm: typeof $deviceModel): ChanOpt[] {
         const fns = new Map($deviceModel.channelFunctions.map(f => [f.id, f.label] as const))
@@ -96,6 +97,7 @@
                 out.push({
                     fnId: c.function,
                     label: `CH${c.channel + 1} · ${fns.get(c.function) ?? c.function}`,
+                    portGuid: inp.port.guid, portIdx: inp.port.index, channel: c.channel,
                 })
             }
         }
@@ -173,14 +175,6 @@
             if (isClaimedByOther(claims, p, [])) return false
             return !used.has(refKey(p.ref.guid, p.ref.index))
         })
-    }
-
-    // Device has ZERO ports of this role free (not claimed by another effect) —
-    // drives the section-warn chip ("attach the role on the IO tab").
-    function roleAvail(ports: Port[], claims: Claim[], kindName: 'servo'|'pwm', role: number): Port[] {
-        return ports.filter(p =>
-            p.kindName === kindName && p.direction === 'output'
-            && p.roleKind === role && !isClaimedByOther(claims, p, []))
     }
 
     // ─── Mutators (per-group) ────────────────────────────────────────
@@ -322,16 +316,14 @@
         {@const usedLeds     = usedRefs(cfg.lights, 'leds')}
         {@const servoAddPool = availPorts($deviceModel.ports, $effectClaims, 'servo', RoleKind.ServoActuator, usedServos, null)}
         {@const ledAddPool   = availPorts($deviceModel.ports, $effectClaims, 'pwm',   RoleKind.LedAnimator,   usedLeds,   null)}
-        {@const noFreeServos = roleAvail($deviceModel.ports, $effectClaims, 'servo', RoleKind.ServoActuator).length === 0}
-        {@const noFreeLeds   = roleAvail($deviceModel.ports, $effectClaims, 'pwm',   RoleKind.LedAnimator).length === 0}
+        {@const chosenChan   = chanOpts.find(o => o.fnId === light.activation.input)}
+        {@const liveUs       = chosenChan ? $liveChannels[liveChannelKey({guid: chosenChan.portGuid, kind: 4, index: chosenChan.portIdx}, chosenChan.channel)] : null}
         <div class="card group-card" class:invalid={hasErrors}>
             <div class="card-header inner">
                 <h4>{light.name || 'Landing group'}</h4>
                 <div class="header-actions">
-                    {#if phase}
-                        <span class="state-pill phase {phaseClass(phase.phase)}">{phase.name}</span>
-                    {/if}
-                    <!-- Single on/off toggle (Rule 48): deploy ⇄ retract.
+                    <!-- Phase pill lives in the status-row below (not duplicated here).
+                         Single on/off toggle (Rule 48): deploy ⇄ retract.
                          ON→OFF (retract) always enabled — emergency
                          cutoff; OFF→ON (deploy) gated on dirty/errors. -->
                     <button class="small state-toggle" class:danger={deployed}
@@ -384,14 +376,10 @@
                  servos with ServoActuator role attached + unclaimed
                  anywhere on the device — the operator needs to attach
                  the role on the IO tab before this group can fire. -->
-            <div class="section-head" class:section-warn={noFreeServos}>
+            <div class="section-head">
                 Servos
                 <span class="hint">all move together; LEDs come on only once EVERY servo reaches its open position</span>
-                {#if noFreeServos}
-                    <span class="section-warn-tag" title="No free servo ports with the ServoActuator role attached.  Open the IO tab and attach ServoActuator to a servo port (or unclaim one from another effect).">
-                        no free servos — attach ServoActuator on the IO tab
-                    </span>
-                {/if}
+                <!-- "no free servos" warning is on the + Add row below, not duplicated here. -->
             </div>
             <div class="form-row">
                 <span class="field-label">Deploy direction</span>
@@ -452,18 +440,13 @@
                  when the DEVICE has zero free LED-Animator ports
                  anywhere (Rule 49 — operator needs to attach the role
                  on the IO tab). -->
-            <div class="section-head"
-                 class:section-error={light.leds.length === 0}
-                 class:section-warn={light.leds.length > 0 && noFreeLeds}>
+            <div class="section-head" class:section-error={light.leds.length === 0}>
                 LEDs
                 <span class="hint">brightness is per-LED; the firmware uses the FIRST LED's brightness for the group state</span>
                 {#if light.leds.length === 0}
                     <span class="section-err-tag">no LEDs — group will not deploy</span>
-                {:else if noFreeLeds}
-                    <span class="section-warn-tag" title="No free PWM ports with the LedAnimator role attached.  Open the IO tab and attach LedAnimator to add more LEDs to this group.">
-                        no free LEDs — attach LedAnimator on the IO tab
-                    </span>
                 {/if}
+                <!-- "no free LEDs" warning is on the + Add row below, not duplicated here. -->
             </div>
             {#each light.leds as e, i (i)}
                 <div class="form-row">
@@ -527,27 +510,32 @@
                 </select>
             </div>
             {#if light.activation.mode === 'input_channel'}
-                <div class="form-row">
-                    <span class="field-label">Channel</span>
-                    <select class="field-input wide" value={light.activation.input}
-                            on:change={(e) => setActivation(light.id, 'input', selValue(e))}
-                            disabled={busy}>
-                        <option value="">— pick a named channel —</option>
-                        {#each chanOpts as o}<option value={o.fnId}>{o.label}</option>{/each}
-                    </select>
-                </div>
-                <div class="form-row">
-                    <span class="field-label">Deploy when channel ≥</span>
-                    <input class="field-input narrow" type="number" min="800" max="2200" step="10"
-                           value={light.activation.thresholdUs}
-                           on:change={(e) => setActivation(light.id, 'thresholdUs', numValue(e))} disabled={busy} />
-                    <span class="unit">µs</span>
-                    <span class="trigger-pm">±</span>
-                    <input class="field-input narrow" type="number" min="0" max="500" step="5"
-                           value={light.activation.hysteresisUs}
-                           on:change={(e) => setActivation(light.id, 'hysteresisUs', numValue(e))} disabled={busy} />
-                    <span class="unit">µs hysteresis</span>
-                </div>
+                <!-- Rule 36: an RC-channel-gated action uses the shared
+                     ChannelToggleCluster (live channel bar + threshold mark +
+                     hysteresis band + NO-SIGNAL state) — same widget EngineFx
+                     uses for its on/off gate. -->
+                <ChannelToggleCluster
+                    channelLabel="Deploy channel"
+                    emptyOption="— pick a named channel —"
+                    options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+                    inputId={light.activation.input}
+                    thresholdUs={light.activation.thresholdUs}
+                    hysteresisUs={light.activation.hysteresisUs}
+                    liveUs={liveUs?.us ?? null}
+                    liveValid={liveUs?.valid ?? false}
+                    busy={busy}
+                    actionVerb="Deploys"
+                    onChange={(n) => {
+                        updateLandingLight(light.id, l => ({
+                            ...l,
+                            activation: {
+                                ...l.activation,
+                                input: n.inputId,
+                                thresholdUs: n.thresholdUs,
+                                hysteresisUs: n.hysteresisUs,
+                            },
+                        }))
+                    }} />
             {:else if light.activation.mode === 'program'}
                 <div class="form-row">
                     <span class="field-label">Program</span>
@@ -605,7 +593,6 @@
 
     .field-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-dim); }
     .unit        { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
-    .trigger-pm  { margin: 0 4px; color: var(--text-dim); font-family: var(--font-mono); font-weight: 700; }
 
     .grp-issues { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
     .grp-issue { font-size: 11px; line-height: 1.35; padding-left: 4px; }

@@ -534,14 +534,17 @@ button.state-toggle.state-on:hover {
 select.field-input { cursor: pointer; }
 
 /* ─── Rule 34: aligned-row control height ──────────────────────────────
-   A button that shares a row with inputs/selects (a `.form-row` or
-   `.form-grid` cell) is pinned to the SAME `--control-h` as those controls
-   and vertically centres its label, so "× Remove" / "+ Add" / "⚙ Calibrate"
-   line up flush with the `.field-input` next to them instead of sitting tall
-   (base button) or short (.small).  Buttons OUTSIDE control rows (card-header
-   actions, toolbars, dialogs) keep their natural size. */
+   Every button that shares a control/action row — a `.form-row` / `.form-grid`
+   cell, a card-header `.header-actions` cluster, or a `.status-row` — is pinned
+   to the SAME `--control-h` as the inputs/selects/pills around it and vertically
+   centres its label.  So "× Remove" / "+ Add" / "⚙ Calibrate" / "Deploy" all
+   line up flush instead of sitting tall (base button) or short (.small), and a
+   panel's header buttons match its form-row buttons.  Buttons in free-form
+   content (dialogs, toolbars) keep their natural size. */
 .form-row button,
-.form-grid button {
+.form-grid button,
+.header-actions button,
+.status-row button {
     height: var(--control-h);
     box-sizing: border-box;
     display: inline-flex;
