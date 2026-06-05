@@ -158,9 +158,6 @@
     function setField<K extends keyof LandingLightT>(id: number, key: K, val: LandingLightT[K]) {
         updateLandingLight(id, l => ({ ...l, [key]: val }))
     }
-    function setOwner(id: number, val: string) {
-        updateLandingLight(id, l => ({ ...l, owner: val as LandingLightT['owner'] }))
-    }
     function setActivationMode(id: number, val: string) {
         const mode = val as LandingLightT['activation']['mode']
         updateLandingLight(id, l => ({ ...l, activation: { ...l.activation, mode } }))
@@ -278,7 +275,7 @@
         {@const noFreeLeds   = freeLeds([]).length === 0}
         <div class="card group-card" class:invalid={hasErrors}>
             <div class="card-header inner">
-                <h4>#{light.id} {light.name ? '· ' + light.name : ''}</h4>
+                <h4>{light.name || 'Landing group'}</h4>
                 <div class="header-actions">
                     {#if phase}
                         <span class="state-pill phase {phaseClass(phase.phase)}">{phase.name}</span>
@@ -299,29 +296,18 @@
                 </div>
             </div>
 
-            <!-- Identity -->
+            <!-- Identity — just a friendly name.  The wire `id` and the
+                 `owner` (which effect family may drive the group) are auto-
+                 assigned under the hood: id from the next free slot, owner
+                 derived from the activation mode at save (program ⇒ lightfx so
+                 the program's landing_bindings can drive it; otherwise
+                 landing-light).  Neither is operator-facing. -->
             <div class="form-row">
-                <span class="field-label">ID</span>
-                <input class="field-input narrow" type="number" min="0" max="255"
-                       value={light.id}
-                       on:change={(e) => setField(light.id, 'id', numValue(e))}
-                       disabled={busy} title="Stable wire id — must be unique across groups." />
                 <span class="field-label">Name</span>
-                <input class="field-input" type="text" maxlength="15"
+                <input class="field-input wide" type="text" maxlength="15"
                        value={light.name}
                        on:input={(e) => setField(light.id, 'name', inputValue(e))}
-                       disabled={busy} placeholder="e.g. nose, main, wing" />
-                <span class="field-label">Owner</span>
-                <select class="field-input narrow"
-                        value={light.owner}
-                        on:change={(e) => setOwner(light.id, selValue(e))}
-                        disabled={busy}
-                        title="Which effect family is allowed to drive this group (via the wire). Studio + CLI bypass the check.">
-                    <option value="landing-light">landing-light</option>
-                    <option value="lightfx">lightfx</option>
-                    <option value="gunfx">gunfx</option>
-                    <option value="gearcontrol">gearcontrol</option>
-                </select>
+                       disabled={busy} placeholder="e.g. nose, main, wing searchlight" />
             </div>
 
             <!-- Servo bank (pool computed at @const block above).
@@ -379,13 +365,13 @@
                     <select class="field-input wide"
                             on:change={(e) => onPickServo(light.id, e)}
                             disabled={busy || servoPool.length === 0}>
-                        <option value="">+ Add servo…</option>
+                        <option value="">{servoPool.length === 0 ? '— no free servo ports —' : '+ Add servo…'}</option>
                         {#each servoPool as p}
                             <option value={refOptKey(p)}>{refOptLabel(p)}</option>
                         {/each}
                     </select>
                     {#if servoPool.length === 0}
-                        <span class="hint">No free servo ports with the ServoActuator role attached — open the IO tab to attach one.</span>
+                        <span class="hint warn">No free servo ports with the ServoActuator role — attach one on the IO tab (or free one from another effect) to add a servo.</span>
                     {/if}
                 </div>
             {/if}
@@ -433,13 +419,13 @@
                     <select class="field-input wide"
                             on:change={(e) => onPickLed(light.id, e)}
                             disabled={busy || ledPool.length === 0}>
-                        <option value="">+ Add LED…</option>
+                        <option value="">{ledPool.length === 0 ? '— no free LED ports —' : '+ Add LED…'}</option>
                         {#each ledPool as p}
                             <option value={refOptKey(p)}>{refOptLabel(p)}</option>
                         {/each}
                     </select>
                     {#if ledPool.length === 0}
-                        <span class="hint">No free PWM ports with the LedAnimator role attached — open the IO tab to attach one.</span>
+                        <span class="hint warn">No free PWM ports with the LedAnimator role — attach one on the IO tab (or free one from another effect) to add an LED.</span>
                     {/if}
                 </div>
             {/if}

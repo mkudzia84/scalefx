@@ -144,14 +144,26 @@ func (a *App) SetLandingConfig(cfg LandingConfigDTO) error {
 	if cfg.SchemaVersion == 0 {
 		cfg.SchemaVersion = 1
 	}
-	// The firmware's RC auto-deploy driver keys purely off a non-empty
-	// `activation.input`.  Clear it for any mode that isn't input_channel
-	// so a "manual" / "program" group never accidentally channel-activates
-	// (the `mode` / `program` fields are Studio-only metadata — program
-	// attachment lives in the program YAML's `landing_bindings:`).
 	for i := range cfg.Lights {
+		// The firmware's RC auto-deploy driver keys purely off a non-empty
+		// `activation.input`.  Clear it for any mode that isn't input_channel
+		// so a "manual" / "program" group never accidentally channel-activates
+		// (the `mode` / `program` fields are Studio-only metadata — program
+		// attachment lives in the program YAML's `landing_bindings:`).
 		if cfg.Lights[i].Activation.Mode != "input_channel" {
 			cfg.Lights[i].Activation.Input = ""
+		}
+		// Owner is an under-the-hood handle derived from the activation mode:
+		// the firmware's setState() rejects callers whose EffectId != owner.
+		// Program-attached groups are driven by the LightFx controller
+		// (caller=LightFx) so they MUST be owned by lightfx; channel /
+		// manual groups are driven by the LandingActivationDriver / the wire
+		// (caller=LandingLight). Studio no longer exposes the field — derive
+		// it here so it always matches and the group actually deploys.
+		if cfg.Lights[i].Activation.Mode == "program" {
+			cfg.Lights[i].Owner = "lightfx"
+		} else {
+			cfg.Lights[i].Owner = "landing-light"
 		}
 	}
 	data, err := yaml.Marshal(&cfg)
