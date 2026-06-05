@@ -21,6 +21,10 @@
     --info: #75beff;
     --font-ui: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: "Cascadia Code", "Consolas", "Courier New", monospace;
+    /* Canonical control height — inputs, selects, and any button sharing a
+       row with them are all this tall so a control row reads as one line
+       (Rule 34 design rule).  Change here to retune every aligned row. */
+    --control-h: 28px;
     --shadow: rgba(0, 0, 0, 0.4);
     --scrollbar-thumb: #555;
     --scrollbar-thumb-hover: #666;
@@ -511,6 +515,8 @@ button.state-toggle.state-on:hover {
     font-size: 13px;
     padding: 4px 8px;
     width: 100%;
+    height: var(--control-h);
+    box-sizing: border-box;
 }
 
 .field-input:focus {
@@ -526,6 +532,22 @@ button.state-toggle.state-on:hover {
 }
 
 select.field-input { cursor: pointer; }
+
+/* ─── Rule 34: aligned-row control height ──────────────────────────────
+   A button that shares a row with inputs/selects (a `.form-row` or
+   `.form-grid` cell) is pinned to the SAME `--control-h` as those controls
+   and vertically centres its label, so "× Remove" / "+ Add" / "⚙ Calibrate"
+   line up flush with the `.field-input` next to them instead of sitting tall
+   (base button) or short (.small).  Buttons OUTSIDE control rows (card-header
+   actions, toolbars, dialogs) keep their natural size. */
+.form-row button,
+.form-grid button {
+    height: var(--control-h);
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
 
 .field-hint {
     font-size: 11px;

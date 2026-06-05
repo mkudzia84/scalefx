@@ -1454,7 +1454,8 @@ ScaleFX Studio has ONE design language defined in [style.css](app/go/studio/fron
 **The vocabulary (use these, don't redefine):**
 
 - **Buttons:** the bare `button` element (already styled); `button.primary` for the confirming action; `.small` / `.tiny` size modifiers; `.action-btn` (icon+label), `.danger`. Never set `padding`/`background`/`border` on a button in a component — pick a modifier.
-- **Inputs & selects:** `.field-input` (+ `.narrow` / `.wide`). All text inputs, number inputs, and `<select>`s carry it so they share one height. A row of mixed buttons + selects gets `height: 28px; box-sizing: border-box` on the group so they line up exactly.
+- **Inputs & selects:** `.field-input` (+ `.narrow` / `.wide`). All text inputs, number inputs, and `<select>`s carry it so they share one height (`--control-h`, 28 px).
+- **Aligned-row control height (design rule):** every control AND every button that shares a row with one is `--control-h` tall, so a control row reads as a single flush line. `.field-input` is pinned to `--control-h` globally; any `<button>` inside a `.form-row` / `.form-grid` is auto-pinned to `--control-h` + vertically centred by the shared stylesheet — so `× Remove` / `+ Add` / `⚙ Calibrate` never sit taller (base button) or shorter (`.small`) than the input beside them. Buttons OUTSIDE control rows (card-header actions, toolbars) keep their natural size. Retune all aligned rows by changing the one `--control-h` token; never hand-set a button height in a component to match a control.
 - **Cards:** `.card` + `.card-header` (with `<h3>` uppercase title, optional inline `svg`) + `.header-actions`.
 - **Forms:** `.form-row` (label + controls inline), `.form-field` / `.form-grid.cols-2|3` (stacked), `.field-label`, `.field-hint`.
 - **State:** `.state-badge`, `.empty-state`, `.banner` (err/note).
