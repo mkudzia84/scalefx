@@ -157,7 +157,7 @@ export const deviceModel = writable<DeviceModelSnapshotT>(empty)
 // (Ports & Roles, Inputs), then one tab per capability-available domain,
 // then Firmware.  TabBar and MainLayout both read this so they never drift.
 
-export type TabKind = 'io' | 'engine' | 'gun' | 'lighting' | 'landing' | 'gear' | 'domain' | 'firmware'
+export type TabKind = 'io' | 'engine' | 'gun' | 'lighting' | 'gear' | 'domain' | 'firmware'
 export interface StudioTab { key: string; label: string; kind: TabKind; domain?: Domain }
 
 // Engine + gun each get their own dedicated tab (EnginePanel / GunFxPanel)
@@ -165,12 +165,12 @@ export interface StudioTab { key: string; label: string; kind: TabKind; domain?:
 // + claiming.  Split out of the former combined "Effects" tab (2026-05-29)
 // so GunFX gets full width for its two-column gun-core | smoke layout.
 const SUPERSEDED_BY_EFFECTS  = new Set(['engine', 'gun'])
-// The Lighting tab is LightFX-only (full width — the program editor needs the
-// room).  Landing-light groups get their OWN tab (2026-06-05) — a landing group
-// is a servo-deployed LED searchlight, related to but distinct from the LED
-// program editor.  `landing-lights` is hub-advertised → its tab always shows.
-const SUPERSEDED_BY_LIGHTING = new Set(['lighting'])
-const SUPERSEDED_BY_LANDING  = new Set(['landing-lights'])
+// The Lighting tab hosts both LED surfaces as sub-tabs (2026-06-05): the LightFX
+// program editor AND the Landing-light groups (a landing group is a servo-
+// deployed LED searchlight that attaches to a program via landing_bindings).
+// Both `lighting` and `landing-lights` are hub-advertised → the tab always shows;
+// neither gets its own generic domain tab.
+const SUPERSEDED_BY_LIGHTING = new Set(['lighting', 'landing-lights'])
 // Gear tab — gearcontrol expander only.
 const SUPERSEDED_BY_GEAR = new Set(['gearcontrol'])
 
@@ -184,7 +184,6 @@ export const studioTabs = derived(deviceModel, ($dm): StudioTab[] => {
     ]
     const domains = $dm.domains ?? []
     const showLighting = domains.some(d => SUPERSEDED_BY_LIGHTING.has(d.id))
-    const showLanding = domains.some(d => SUPERSEDED_BY_LANDING.has(d.id))
     const gearDomain = domains.find(d => d.id === 'gearcontrol')
     const showGear = domains.some(d => SUPERSEDED_BY_GEAR.has(d.id))
     if (domains.some(d => d.id === 'engine')) {
@@ -196,15 +195,12 @@ export const studioTabs = derived(deviceModel, ($dm): StudioTab[] => {
     if (showLighting) {
         tabs.push({ key: 'lighting', label: 'Lighting', kind: 'lighting' })
     }
-    if (showLanding) {
-        tabs.push({ key: 'landing', label: 'Landing', kind: 'landing' })
-    }
     if (showGear) {
         tabs.push({ key: 'gear', label: 'Gear', kind: 'gear', domain: gearDomain })
     }
     for (const d of domains) {
         if (SUPERSEDED_BY_EFFECTS.has(d.id) || SUPERSEDED_BY_LIGHTING.has(d.id)
-            || SUPERSEDED_BY_LANDING.has(d.id) || SUPERSEDED_BY_GEAR.has(d.id)) continue
+            || SUPERSEDED_BY_GEAR.has(d.id)) continue
         tabs.push({ key: 'dom:' + d.id, label: d.label, kind: 'domain', domain: d })
     }
     tabs.push({ key: 'firmware', label: 'Firmware', kind: 'firmware' })
