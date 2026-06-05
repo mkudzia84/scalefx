@@ -89,8 +89,11 @@ const defaultLanding: LandingConfigT = { schemaVersion: 1, lights: [] }
 
 export function defaultLandingLight(id: number): LandingLightT {
     return {
+        // open/close are extreme sentinels — the servo role clamps them to its
+        // own calibrated min/max, so "deploy" always lands on the real endpoint
+        // (open ≥ close ⇒ deploy-at-max; toggled in the panel's Deploy direction).
         id, name: `landing${id}`, owner: 'landing-light',
-        servos: [], openUs: 1900, closeUs: 1100,
+        servos: [], openUs: 2500, closeUs: 500,
         leds: [],
         fadeInMs: 400,
         activation: { ...defaultActivation },

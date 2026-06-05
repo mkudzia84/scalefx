@@ -243,6 +243,29 @@
             default: return 'phase-unknown'
         }
     }
+    // One-line wiring summary for the status row.
+    function activationLabel(a: LandingLightT['activation']): string {
+        if (a.mode === 'input_channel') return a.input ? `RC · ${a.input}` : 'RC channel (unset)'
+        if (a.mode === 'program')       return a.program ? `program · ${a.program}` : 'program (unset)'
+        return 'manual'
+    }
+
+    // Deploy direction.  Instead of typing open/close µs, the operator picks
+    // which calibrated servo END is the DEPLOYED position; we write extreme
+    // sentinels that the servo role CLAMPS to its own calibrated min/max
+    // (servo_actuator_role setTarget clamps to [minUs,maxUs]).  So deploy
+    // always lands on the real endpoint — robust to recalibration and correct
+    // per-servo even when a group's servos have different ranges.  Direction is
+    // derived from which sentinel is larger (open ≥ close ⇒ deploy-at-max).
+    const SERVO_MAX_SENTINEL = 2500   // ≥ any calibrated maxUs (port ceiling)
+    const SERVO_MIN_SENTINEL = 500    // ≤ any calibrated minUs (port floor)
+    function setDirection(id: number, openAtMax: boolean) {
+        updateLandingLight(id, l => ({
+            ...l,
+            openUs:  openAtMax ? SERVO_MAX_SENTINEL : SERVO_MIN_SENTINEL,
+            closeUs: openAtMax ? SERVO_MIN_SENTINEL : SERVO_MAX_SENTINEL,
+        }))
+    }
 
     // ─── Program picker (for activation.mode === 'program') ─────────
     // Reads the OTHER column's draft so the operator's in-flight
@@ -317,6 +340,24 @@
                 </div>
             </div>
 
+            <!-- Live status (EngineFx / GunFx-style) — always shows the group's
+                 deploy phase + a one-line wiring summary so the operator reads
+                 the current state at a glance.  Phase comes from the firmware's
+                 LL_PHASE_EVENT stream (seeded on mount via LandingStatus); before
+                 the first event it reads Retracted. -->
+            <div class="status-row">
+                <div class="status">
+                    <span class="status-label">State</span>
+                    <span class="state-pill phase {phaseClass(phase?.phase ?? 1)}">{phase?.name ?? 'Retracted'}</span>
+                </div>
+                <span class="status-meta">
+                    {light.servos.length} servo{light.servos.length === 1 ? '' : 's'}
+                    · {light.leds.length} LED{light.leds.length === 1 ? '' : 's'}
+                    · {light.fadeInMs > 0 ? `${light.fadeInMs} ms fade-in` : 'hard on'}
+                    · {activationLabel(light.activation)}
+                </span>
+            </div>
+
             <!-- Identity — just a friendly name.  The wire `id` and the
                  `owner` (which effect family may drive the group) are auto-
                  assigned under the hood: id from the next free slot, owner
@@ -346,14 +387,17 @@
                 {/if}
             </div>
             <div class="form-row">
-                <span class="field-label">Open µs</span>
-                <input class="field-input narrow" type="number" min="800" max="2200" step="10"
-                       value={light.openUs}
-                       on:change={(e) => setField(light.id, 'openUs', numValue(e))} disabled={busy} />
-                <span class="field-label">Close µs</span>
-                <input class="field-input narrow" type="number" min="800" max="2200" step="10"
-                       value={light.closeUs}
-                       on:change={(e) => setField(light.id, 'closeUs', numValue(e))} disabled={busy} />
+                <span class="field-label">Deploy direction</span>
+                <select class="field-input wide"
+                        value={light.openUs >= light.closeUs ? 'max' : 'min'}
+                        on:change={(e) => setDirection(light.id, selValue(e) === 'max')}
+                        disabled={busy}>
+                    <option value="max">Deploy to the servo's MAX end (retract to MIN)</option>
+                    <option value="min">Deploy to the servo's MIN end (retract to MAX)</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <span class="hint">on deploy the servo drives to its calibrated {light.openUs >= light.closeUs ? 'MAX' : 'MIN'} endpoint, on retract to the other — set the actual travel with <b>⚙ Calibrate</b> below.</span>
             </div>
             {#each light.servos as s, i (i)}
                 <div class="form-row">
@@ -553,6 +597,7 @@
     .state-pill.phase.phase-deployed   { color: var(--success); border-color: var(--success); background: rgba(100,200,120,0.12); }
     .state-pill.phase.phase-retracting { color: var(--warning); border-color: var(--warning); }
     .state-pill.phase.phase-unknown    { color: var(--text-dim); }
+    .status-meta { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); text-align: right; }
 
     .field-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-dim); }
     .unit        { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
