@@ -142,16 +142,33 @@
             && !isClaimedByOther(p, currentRefs))
     }
 
-    // Refs across SIBLING groups so picker doesn't offer a port
-    // another group already grabbed (mutual exclusion).
-    function otherGroupsRefs(currentId: number, which: 'servos'|'leds'): PortRefT[] {
-        const out: PortRefT[] = []
+    const refKey = (guid: string, idx: number) => `${guid}#${idx}`
+
+    // Every servo / LED ref already used across ALL landing groups (this
+    // group + siblings).  A landing draft's picks aren't synthesized into
+    // $effectClaims, so we exclude them explicitly here — otherwise an
+    // already-assigned port still reads as "unclaimed" and lingers in the
+    // Add dropdown.
+    function usedRefs(which: 'servos'|'leds'): Set<string> {
+        const out = new Set<string>()
         for (const l of cfg.lights) {
-            if (l.id === currentId) continue
             const list = which === 'servos' ? l.servos : l.leds
-            for (const e of list) out.push(e.port)
+            for (const e of list) out.add(refKey(e.port.guid, e.port.idx))
         }
         return out
+    }
+
+    // Ports with `role` attached, not claimed by ANOTHER effect, and not used
+    // by ANY landing group — EXCEPT the editing row's own `keep` pick, which is
+    // forced in so its picker stays stable.  `keep = null` ⇒ the "+ Add" pool.
+    function availPorts(kindName: 'servo'|'pwm', role: number,
+                        used: Set<string>, keep: PortRefT | null): Port[] {
+        return $deviceModel.ports.filter(p => {
+            if (p.kindName !== kindName || p.direction !== 'output' || p.roleKind !== role) return false
+            if (keep && keep.guid === p.ref.guid && keep.idx === p.ref.index) return true
+            if (isClaimedByOther(p, [])) return false
+            return !used.has(refKey(p.ref.guid, p.ref.index))
+        })
     }
 
     // ─── Mutators (per-group) ────────────────────────────────────────
@@ -267,10 +284,10 @@
         {@const deployed     = phase?.phase === 2 || phase?.phase === 3}
         {@const issues       = landingItemErrors(cfg.lights, cfg.lights.findIndex(l => l.id === light.id))}
         {@const hasErrors    = issues.length > 0}
-        {@const ownServoRefs = light.servos.map(s => s.port)}
-        {@const servoPool    = freeServos([...ownServoRefs, ...otherGroupsRefs(light.id, 'servos')])}
-        {@const ownLedRefs   = light.leds.map(l => l.port)}
-        {@const ledPool      = freeLeds([...ownLedRefs, ...otherGroupsRefs(light.id, 'leds')])}
+        {@const usedServos   = usedRefs('servos')}
+        {@const usedLeds     = usedRefs('leds')}
+        {@const servoAddPool = availPorts('servo', RoleKind.ServoActuator, usedServos, null)}
+        {@const ledAddPool   = availPorts('pwm',   RoleKind.LedAnimator,   usedLeds,   null)}
         {@const noFreeServos = freeServos([]).length === 0}
         {@const noFreeLeds   = freeLeds([]).length === 0}
         <div class="card group-card" class:invalid={hasErrors}>
@@ -341,7 +358,7 @@
                             on:change={(e) => setServoPort(light.id, i, parsePortOption(selValue(e), 'servo'))}
                             disabled={busy}>
                         <option value="">— pick a free servo port —</option>
-                        {#each servoPool.concat($deviceModel.ports.filter(p => p.kindName === 'servo' && portRefToKey({board:'',guid:p.ref.guid,kind:p.kindName,idx:p.ref.index}) === portRefToKey(s.port) && !servoPool.some(q => portRefToKey({board:'',guid:q.ref.guid,kind:q.kindName,idx:q.ref.index}) === portRefToKey(s.port)))) as p}
+                        {#each availPorts('servo', RoleKind.ServoActuator, usedServos, s.port) as p}
                             <option value={refOptKey(p)}>{refOptLabel(p)}</option>
                         {/each}
                     </select>
@@ -364,14 +381,14 @@
                 <div class="form-row">
                     <select class="field-input wide"
                             on:change={(e) => onPickServo(light.id, e)}
-                            disabled={busy || servoPool.length === 0}>
-                        <option value="">{servoPool.length === 0 ? '— no free servo ports —' : '+ Add servo…'}</option>
-                        {#each servoPool as p}
+                            disabled={busy || servoAddPool.length === 0}>
+                        <option value="">{servoAddPool.length === 0 ? '— no free servo ports —' : '+ Add servo…'}</option>
+                        {#each servoAddPool as p}
                             <option value={refOptKey(p)}>{refOptLabel(p)}</option>
                         {/each}
                     </select>
-                    {#if servoPool.length === 0}
-                        <span class="hint warn">No free servo ports with the ServoActuator role — attach one on the IO tab (or free one from another effect) to add a servo.</span>
+                    {#if servoAddPool.length === 0}
+                        <span class="hint warn">No free servo ports — attach a ServoActuator on the IO tab, or free one from another group/effect, to add a servo.</span>
                     {/if}
                 </div>
             {/if}
@@ -403,7 +420,7 @@
                             on:change={(ev) => setLedPort(light.id, i, parsePortOption(selValue(ev), 'pwm'))}
                             disabled={busy}>
                         <option value="">— pick a free PWM port —</option>
-                        {#each ledPool.concat($deviceModel.ports.filter(p => p.kindName === 'pwm' && portRefToKey({board:'',guid:p.ref.guid,kind:p.kindName,idx:p.ref.index}) === portRefToKey(e.port) && !ledPool.some(q => portRefToKey({board:'',guid:q.ref.guid,kind:q.kindName,idx:q.ref.index}) === portRefToKey(e.port)))) as p}
+                        {#each availPorts('pwm', RoleKind.LedAnimator, usedLeds, e.port) as p}
                             <option value={refOptKey(p)}>{refOptLabel(p)}</option>
                         {/each}
                     </select>
@@ -418,14 +435,14 @@
                 <div class="form-row">
                     <select class="field-input wide"
                             on:change={(e) => onPickLed(light.id, e)}
-                            disabled={busy || ledPool.length === 0}>
-                        <option value="">{ledPool.length === 0 ? '— no free LED ports —' : '+ Add LED…'}</option>
-                        {#each ledPool as p}
+                            disabled={busy || ledAddPool.length === 0}>
+                        <option value="">{ledAddPool.length === 0 ? '— no free LED ports —' : '+ Add LED…'}</option>
+                        {#each ledAddPool as p}
                             <option value={refOptKey(p)}>{refOptLabel(p)}</option>
                         {/each}
                     </select>
-                    {#if ledPool.length === 0}
-                        <span class="hint warn">No free PWM ports with the LedAnimator role — attach one on the IO tab (or free one from another effect) to add an LED.</span>
+                    {#if ledAddPool.length === 0}
+                        <span class="hint warn">No free PWM ports — attach a LedAnimator on the IO tab, or free one from another group/effect, to add an LED.</span>
                     {/if}
                 </div>
             {/if}
