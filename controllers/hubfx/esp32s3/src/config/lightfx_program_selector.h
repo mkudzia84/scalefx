@@ -148,18 +148,35 @@ private:
     }
 
     void process(uint16_t us) {
-        // Find the range containing `us`, with hysteresis around the
-        // currently-active range's boundaries.
+        if (_numRanges == 0) return;
+
+        // Clamp the input to the configured band coverage FIRST.  RC channels
+        // routinely run wider than the nominal 1000–2000 (≈988..2012 stock,
+        // wider with endpoint/travel trim), so a stick at full throw lands AT
+        // or ABOVE the top band's `to_us` (e.g. 2000) — without clamping it
+        // falls into no-man's-land above the top range and the top program
+        // (helicopter_landing) never selects.  Same at the bottom.
+        uint16_t coverLo = 0xFFFF, coverHi = 0;
+        for (uint8_t i = 0; i < _numRanges; ++i) {
+            if (_ranges[i].fromUs < coverLo) coverLo = _ranges[i].fromUs;
+            if (_ranges[i].toUs   > coverHi) coverHi = _ranges[i].toUs;
+        }
+        if (us < coverLo) us = coverLo;
+        if (us > coverHi) us = coverHi;
+
+        // Find the range containing `us`, with hysteresis around the active
+        // range's boundaries.  Upper bound is INCLUSIVE (`<= hi`) so the exact
+        // `to_us` (stick at full 2000) AND the 1 µs guard gap between adjacent
+        // bands (1333/1334, 1667/1668) both resolve instead of dropping into a
+        // dead µs.
         int8_t hit = -1;
         for (uint8_t i = 0; i < _numRanges; ++i) {
             const auto& r = _ranges[i];
-            // Active range gets a hysteresis band — exit only after the
-            // input moves `hysteresisUs` outside its boundaries.
             const uint16_t lo = (i == _lastRangeIx && r.fromUs > _hysteresisUs)
                                 ? (uint16_t)(r.fromUs - _hysteresisUs) : r.fromUs;
             const uint16_t hi = (i == _lastRangeIx)
                                 ? (uint16_t)(r.toUs + _hysteresisUs)   : r.toUs;
-            if (us >= lo && us < hi) { hit = (int8_t)i; break; }
+            if (us >= lo && us <= hi) { hit = (int8_t)i; break; }
         }
 
         if (hit < 0 || hit == _lastRangeIx) return;
