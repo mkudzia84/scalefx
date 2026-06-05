@@ -304,6 +304,8 @@ bool loadLightFxProgram(const char* yaml, size_t len, const char* programName,
             b.id    = (uint8_t)item->template childAs<int32_t>("id", 0);
             const char* state = item->template childAs<const char*>("state", "off");
             b.state = (state && std::strcmp(state, "on") == 0) ? 1 : 0;
+            SFX_LOG_INFO("[lightfx-program] %s: landing_binding id=%u state=%s",
+                         programName, (unsigned)b.id, b.state ? "on" : "off");
             out.numLandings++;
         }
     }

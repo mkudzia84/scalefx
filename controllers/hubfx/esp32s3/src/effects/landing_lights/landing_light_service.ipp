@@ -91,14 +91,20 @@ bool LandingLightServicePolicyT<TTopology>::setState(uint8_t id,
                                                      EffectId caller) {
     LandingLight* ll = findById(id);
     if (!ll) {
-        SFX_LOG_WARN("[ll-svc] setState: unknown id %u", id);
+        SFX_LOG_WARN("[ll-svc] setState: unknown id %u (caller=%s) — no such group in /landing.yaml",
+                     id, effectIdName(caller));
         return false;
     }
     if (ll->owner() != caller) {
-        SFX_LOG_WARN("[ll-svc] setState %u: caller %s doesn't own this LL (owner=%s)",
+        SFX_LOG_WARN("[ll-svc] setState %u: REJECTED — caller %s != owner %s "
+                     "(program-attach needs owner=lightfx; re-Apply the landing config)",
                      id, effectIdName(caller), effectIdName(ll->owner()));
         return false;
     }
+    SFX_LOG_INFO("[ll-svc] setState id=%u → %s by %s (owner ok, %u servos %u leds)",
+                 id, state == LandingLightState::On ? "DEPLOY" : "RETRACT",
+                 effectIdName(caller),
+                 (unsigned)ll->def().numServos, (unsigned)ll->def().numLeds);
     ll->setState(state);
     return true;
 }

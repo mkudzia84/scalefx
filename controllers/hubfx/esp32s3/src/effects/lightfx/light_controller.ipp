@@ -46,6 +46,8 @@ bool LightControllerT<TTopology, TLandingService>::selectProgram(uint8_t idx) {
         const Program& old = _programs[_activeIdx];
         for (uint8_t i = 0; i < old.numLandings; ++i) {
             if (!programHasLanding(neu, old.landings[i].id)) {
+                SFX_LOG_INFO("[lightfx-landing] program switch: retracting landing id=%u (not in new program)",
+                             (unsigned)old.landings[i].id);
                 if (_ll) _ll->setState(old.landings[i].id,
                                        hubfx::effects::landing::LandingLightState::Off,
                                        EffectId::LightFx);
@@ -201,8 +203,19 @@ void LightControllerT<TTopology, TLandingService>::stopChannel(
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void LightControllerT<TTopology, TLandingService>::applyLandings(
         const LandingLightBinding* defs, uint8_t n) {
+    // Program→landing diag: shows whether the controller is even bound to a
+    // LandingLightService (_ll) and how many landing_bindings the active
+    // program carries.  `ll=NULL` ⇒ LightFx was constructed without the
+    // landing service (binding bug); `bindings=0` ⇒ the program YAML has no
+    // landing_bindings (Studio didn't inject one).  See [ll-svc] for the
+    // owner-check result of each setState.
+    SFX_LOG_INFO("[lightfx-landing] applyLandings: ll=%s bindings=%u",
+                 _ll ? "ok" : "NULL", (unsigned)n);
     if (!_ll) return;
     for (uint8_t i = 0; i < n; ++i) {
+        SFX_LOG_INFO("[lightfx-landing]   binding[%u]: id=%u state=%s → setState(LightFx)",
+                     (unsigned)i, (unsigned)defs[i].id,
+                     defs[i].state == hubfx::effects::landing::LandingLightState::On ? "ON" : "OFF");
         _ll->setState(defs[i].id, defs[i].state, EffectId::LightFx);
     }
 }
