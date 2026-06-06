@@ -191,6 +191,45 @@ if (-not (Test-Path $nativeBuild)) {
     }
 }
 
+# ---- Stage 1c: Frontend unit tests (Vitest) ---------------------------
+#
+# Pure-logic Svelte/TS tests (port-ref keys, free-port pool, device-model
+# canonicalisation) — no hardware, no GUI.  Catches the recurring Studio
+# logic-bug class (the GUID-redesign dropdown regression, reactivity traps).
+
+Write-Title "Frontend unit tests (Vitest)"
+$feDir = Join-Path $repoRoot "app/go/studio/frontend"
+if (-not (Test-Path (Join-Path $feDir "node_modules/vitest"))) {
+    Write-SuiteSkip "studio/frontend vitest" "node_modules/vitest absent (run 'npm install' in app/go/studio/frontend)"
+} else {
+    $start = Get-Date
+    Push-Location $feDir
+    # cmd /c avoids PowerShell 5.1 wrapping npm's stderr as NativeCommandError;
+    # $LASTEXITCODE is the reliable pass/fail signal.
+    $feOut = cmd /c "npm run test 2>&1"
+    $exitCode = $LASTEXITCODE
+    Pop-Location
+    $elapsed = (Get-Date) - $start
+    $detail = ("{0:N1}s" -f $elapsed.TotalSeconds)
+    $summary = $feOut | Select-String -Pattern "Tests\s+\d+\s+passed" | Select-Object -First 1
+    $detailExtra = ""
+    if ($summary -and $summary.Line -match "(\d+)\s+passed") {
+        $detailExtra = (" (" + $matches[1] + " tests)")
+    }
+    if ($exitCode -eq 0) {
+        Write-Pass "studio/frontend vitest" ($detail + $detailExtra)
+        $passed += "studio/frontend vitest"
+    } else {
+        Write-Fail "studio/frontend vitest" $detail
+        $failures += "studio/frontend vitest"
+        if (-not $Loud) {
+            $feOut | Where-Object { $_ -match "FAIL|AssertionError|Error:|✗|×|expected" } |
+                Select-Object -First 30 |
+                ForEach-Object { Write-Host ("    | " + $_) -ForegroundColor DarkRed }
+        }
+    }
+}
+
 # ---- Stage 2: Go integration tests ------------------------------------
 
 if ($Integration) {

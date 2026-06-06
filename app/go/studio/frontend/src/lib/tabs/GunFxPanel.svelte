@@ -31,6 +31,7 @@
     } from '../gunfx'
     import ServoWidget from '../components/ServoWidget.svelte'
     import ServoIoWidget from '../components/ServoIoWidget.svelte'
+    import { portRefToKey, parsePortKey } from '../components/port_keys'
     import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     // SetPortProfile + markHubDirty now flow through ServoCalibrationDialog;
     // GunFxPanel only READS the device-model profile to feed ServoWidget.
@@ -188,11 +189,10 @@
     function portsOfKind(kindName: 'servo'|'pwm'|'hbridge'|'input', direction: 'output'|'input'): Port[] {
         return $deviceModel.ports.filter(p => p.kindName === kindName && p.direction === direction)
     }
-    function portRefKey(r: PortRefT): string {
-        // Hub-local is the canonical EMPTY guid (instructions/31): require `kind`,
-        // not a non-empty guid (the old `r.guid &&` guard blanked every hub port).
-        return r.kind && r.idx !== undefined ? `${r.guid}|${r.kind}|${r.idx}` : ''
-    }
+    // Key builders come from the shared, unit-tested port_keys module
+    // (port_keys.test.ts) so the value/option keys can't drift — the
+    // `r.guid &&` guard that blanked hub ports lived here.
+    const portRefKey = portRefToKey
     function portToRef(p: Port): PortRefT {
         return { board: '', guid: p.ref.guid, kind: p.kindName, idx: p.ref.index }
     }
@@ -313,20 +313,8 @@
         const head  = alias ? `${alias} (${hw})` : hw
         return `${p.boardName ?? 'Hub'} · ${head}${rail ? ` · ${rail}` : ''}`
     }
-    function parsePortOption(key: string, kindName: PortRefT['kind']): PortRefT {
-        if (!key) return { board: '', guid: '', kind: kindName, idx: 0 }
-        const [guid, kind, idxStr] = key.split('|')
-        return { board: '', guid, kind, idx: Number(idxStr) }
-    }
-    // Build the dropdown's selected-value key from a stored PortRefT so
-    // we don't have to inline `as any` casts inside Svelte attribute
-    // expressions (the parser chokes on those).  Returns "" when the
-    // port-ref is empty / unset.
-    function portRefToKey(r: PortRefT): string {
-        // Hub-local = canonical empty guid (instructions/31): require `kind` only.
-        if (!r || !r.kind) return ''
-        return `${r.guid}|${r.kind}|${r.idx}`
-    }
+    const parsePortOption = (key: string, kindName: PortRefT['kind']) =>
+        parsePortKey(key, kindName) as PortRefT
 
     // Manual / puppet helpers removed (Phase 4 polish 2026-05-23) —
     // the per-gun test row in the card header (Fire / Auto / Stop /

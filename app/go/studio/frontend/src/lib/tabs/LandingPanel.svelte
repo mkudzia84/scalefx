@@ -34,6 +34,7 @@
     import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
     import ServoWidget from '../components/ServoWidget.svelte'
     import ServoIoWidget from '../components/ServoIoWidget.svelte'
+    import { portRefToKey, modelPortKey, parsePortKey } from '../components/port_keys'
     import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     import type { ServoProfileT } from '../servo_calibration'
 
@@ -123,24 +124,17 @@
     }
 
     // ─── Port picker helpers (mirrors GunFxPanel pattern, Rule 34) ──
-    function refOptKey(p: Port): string { return `${p.ref.guid}|${p.kindName}|${p.ref.index}` }
+    // The `guid|kind|idx` key builders live in the shared, unit-tested
+    // port_keys module (aliased to the historical names so call sites are
+    // unchanged) — see port_keys.test.ts. refOptLabel is panel-specific.
+    const refOptKey = modelPortKey
+    const parsePortOption = (key: string, kindName: PortRefT['kind']) =>
+        parsePortKey(key, kindName) as PortRefT
     function refOptLabel(p: Port): string {
         const rail  = formatPortRail(p.voltageMv)
         const alias = p.name && p.name.trim()
         const head  = alias ? `${alias} (${p.hardwareName})` : p.hardwareName
         return `${p.boardName ?? 'Hub'} · ${head}${rail ? ` · ${rail}` : ''}`
-    }
-    function portRefToKey(r: PortRefT): string {
-        // Hub-local is the canonical EMPTY guid (instructions/31) — only `kind`
-        // is required, NOT a non-empty guid (the old `!r.guid` guard dropped
-        // every hub port → the <select> showed blank for loaded configs).
-        if (!r || !r.kind) return ''
-        return `${r.guid}|${r.kind}|${r.idx}`
-    }
-    function parsePortOption(key: string, kindName: PortRefT['kind']): PortRefT {
-        if (!key) return { board: '', guid: '', kind: kindName, idx: 0 }
-        const [guid, kind, idxStr] = key.split('|')
-        return { board: '', guid, kind, idx: Number(idxStr) }
     }
 
     // ─── Unclaimed pool — only show ports that BOTH have the right
