@@ -23,9 +23,11 @@ import (
 
 	"scalefx/client"
 	"scalefx/protocol/core"
+	"scalefx/protocol/roles"
 )
 
 func init() {
+	register(&command{Name: "servo-profiles", Usage: "servo-profiles", Help: "dump the LIVE motion profile of every attached hub servo (one row each) — the fast way to spot a stale/clamped calibration", Category: catTopology, RequiresConn: true, Run: cmdServoProfilesAll})
 	register(&command{Name: "servo-profile-get", Usage: "servo-profile-get <portIdx>", Help: "read the motion profile of a servo on the hub (Phase 2.9.x)", Category: catTopology, RequiresConn: true, Run: cmdServoProfileGet})
 	register(&command{Name: "servo-profile-set", Usage: "servo-profile-set <portIdx> <key=val> ...", Help: "push a servo motion profile (min/max/center/max_speed/max_accel/max_jerk/reversed)", Category: catTopology, RequiresConn: true, Run: cmdServoProfileSet})
 	register(&command{Name: "motor-element-get", Usage: "motor-element-get <portIdx>", Help: "read DC motor element scaling config", Category: catTopology, RequiresConn: true, Run: cmdMotorElementGet})
@@ -150,6 +152,49 @@ func cmdServoProfileGet(a *App, args []string) error {
 	fmt.Fprintf(out, "  %s %d µs/s²\n", cDim("max accel:  "), p.MaxAccelUsPerSec2)
 	fmt.Fprintf(out, "  %s %d µs/s³  %s\n", cDim("max jerk:   "), p.MaxJerkUsPerSec3,
 		cDim(map[bool]string{true: "(S-curve)", false: "(trapezoidal)"}[p.MaxJerkUsPerSec3 > 0]))
+	return nil
+}
+
+// cmdServoProfilesAll dumps the live motion profile of EVERY attached hub
+// servo, one compact row each.  This is the fast way to spot a stale /
+// clamped calibration (e.g. a profile whose max is narrower than the
+// operator set) — one command instead of probing each port by index.
+func cmdServoProfilesAll(a *App, _ []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	boards, err := a.c.Topology.RoleList("") // "" = hub-local
+	if err != nil {
+		return err
+	}
+	Hdr("hub servo motion profiles (live)")
+	n := 0
+	for _, rb := range boards {
+		for _, r := range rb.Roles {
+			if r.RoleKind != roles.KindServoActuator {
+				continue
+			}
+			n++
+			p, perr := a.c.Roles.ServoGetProfile(r.PortIdx)
+			if perr != nil {
+				fmt.Fprintf(out, "  %s  %s\n",
+					cBold(fmt.Sprintf("servo[%d]", r.PortIdx)), cRed("read failed: "+perr.Error()))
+				continue
+			}
+			rev := ""
+			if p.Reversed {
+				rev = "  " + cYellow("REV")
+			}
+			fmt.Fprintf(out, "  %s  %s…%s µs  center %s  speed %d  accel %d%s\n",
+				cBold(fmt.Sprintf("servo[%d]", r.PortIdx)),
+				cCyan(fmt.Sprintf("%d", p.MinUs)), cCyan(fmt.Sprintf("%d", p.MaxUs)),
+				cCyan(fmt.Sprintf("%d", p.CenterUs)),
+				p.MaxSpeedUsPerSec, p.MaxAccelUsPerSec2, rev)
+		}
+	}
+	if n == 0 {
+		Note("  (no servo-actuator roles attached on the hub)")
+	}
 	return nil
 }
 

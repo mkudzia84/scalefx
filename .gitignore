@@ -82,7 +82,10 @@ tools/esptool/
 
 # Generated / workspace-local artifacts
 regenerated-configs/
-.claude/
+# .claude/ holds local state (settings, scheduled-task locks) — ignore it,
+# but TRACK the shared skill definitions so the team gets them.
+.claude/*
+!.claude/skills/
 
 # System files
 Thumbs.db

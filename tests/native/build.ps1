@@ -104,8 +104,20 @@ if ($Loud) {
 }
 
 $runStart = Get-Date
-& $exe 2>&1 | Tee-Object -Variable runOut
-$runExit = $LASTEXITCODE
+# Run with the COMPILER's bin dir first on PATH so the exe loads the SAME
+# MinGW runtime DLLs (libstdc++-6 / libgcc_s_seh-1 / libwinpthread-1) it was
+# linked against. Without this, a different libstdc++ found earlier on PATH
+# triggers STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139) — the exe builds fine but
+# crashes at load. (2026-06-06: this masked an otherwise-green native suite.)
+$cxxBin = Split-Path $cxx.Source -Parent
+$savedPath = $env:PATH
+$env:PATH = $cxxBin + [IO.Path]::PathSeparator + $env:PATH
+try {
+    & $exe 2>&1 | Tee-Object -Variable runOut
+    $runExit = $LASTEXITCODE
+} finally {
+    $env:PATH = $savedPath
+}
 $runElapsed = ((Get-Date) - $runStart).TotalSeconds
 
 if ($runExit -eq 0) {
