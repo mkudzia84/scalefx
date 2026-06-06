@@ -40,7 +40,6 @@ func init() {
 	register(&command{Name: "bimotor-seek", Usage: "bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]", Help: "position-agnostic seek — drive a BiDcMotor at signedDuty until stall/endstop or timeout", Category: catTopology, RequiresConn: true, Run: cmdBiMotorSeek})
 	register(&command{Name: "bimotor-status", Usage: "bimotor-status <portIdx>", Help: "verbose BiDcMotor status: duty, voltage, current, stalled, position (A/B), guard mode", Category: catTopology, RequiresConn: true, Run: cmdBiMotorStatus})
 	register(&command{Name: "bimotor-guard", Usage: "bimotor-guard <portIdx> <live|fixed> [ratioX|thresholdMa] [windowMs] [ceilingMa]", Help: "retune the stall guard: live (trailing-min ratio, e.g. 'live 2.5') or fixed (mA). ceilingMa = absolute over-current backstop for live mode (0=off). Watch the seek trace.", Category: catTopology, RequiresConn: true, Run: cmdBiMotorGuard})
-	register(&command{Name: "bimotor-probe", Usage: "bimotor-probe <portIdx> <probePct|off> [windowMs=250] [dropPct=70]", Help: "dual-stage soft-start: probe at probePct%% of seek duty to classify free-vs-already-at-stop before full power. 'off' disables. e.g. 'bimotor-probe 0 35'", Category: catTopology, RequiresConn: true, Run: cmdBiMotorProbe})
 
 	// Direct role lifecycle — attach / inspect / detach a role on the
 	// CONNECTED board with NO hub (the GUID-addressed `role-attach` goes
@@ -624,53 +623,6 @@ func cmdBiMotorGuard(a *App, args []string) error {
 		return fmt.Errorf("mode must be live|fixed")
 	}
 	Note("  watch the seek trace ([bimotor] …) in the log during the next move")
-	return nil
-}
-
-func cmdBiMotorProbe(a *App, args []string) error {
-	if err := a.requireClient(); err != nil {
-		return err
-	}
-	if len(args) < 2 {
-		return fmt.Errorf("usage: bimotor-probe <portIdx> <probePct|off> [windowMs=250] [dropPct=70]")
-	}
-	idx, err := parseU8(args[0])
-	if err != nil {
-		return err
-	}
-	var probePct uint8
-	if strings.ToLower(args[1]) != "off" {
-		v, e := strconv.Atoi(args[1])
-		if e != nil || v < 0 || v > 100 {
-			return fmt.Errorf("probePct: want 0..100 or 'off'")
-		}
-		probePct = uint8(v)
-	}
-	window := uint16(250)
-	if len(args) >= 3 {
-		w, e := strconv.Atoi(args[2])
-		if e != nil {
-			return fmt.Errorf("windowMs: %w", e)
-		}
-		window = uint16(w)
-	}
-	drop := uint8(70)
-	if len(args) >= 4 {
-		d, e := strconv.Atoi(args[3])
-		if e != nil {
-			return fmt.Errorf("dropPct: %w", e)
-		}
-		drop = uint8(d)
-	}
-	if err := a.c.Roles.BiMotorSetProbe(idx, probePct, window, drop); err != nil {
-		return err
-	}
-	if probePct == 0 {
-		Ok("bimotor[%d] probe %s — seek drives full power immediately", idx, cCyan("OFF"))
-	} else {
-		Ok("bimotor[%d] probe = %d%% of seek duty, window %d ms, free if I<%d%% of peak", idx, probePct, window, drop)
-		Note("  watch the [bimotor] PROBE trace in the log on the next move")
-	}
 	return nil
 }
 

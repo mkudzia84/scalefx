@@ -240,14 +240,6 @@ func (r *Roles) BiMotorSetSigned(portIdx byte, signed int16) error {
 	return r.c.sendExpectACK(roles.CmdBiMotorSetSigned(portIdx, signed))
 }
 
-// BiMotorSetProbe configures the dual-stage soft-start probe — before a seek
-// applies full power, drive at probePct% of the seek duty and classify
-// free-vs-already-at-stop from the current curve.  probePct 0 disables the
-// probe.  Orthogonal to the stall guard.
-func (r *Roles) BiMotorSetProbe(portIdx, probePct byte, windowMs uint16, dropPct byte) error {
-	return r.c.sendExpectACK(roles.CmdBiMotorSetProbe(portIdx, probePct, windowMs, dropPct))
-}
-
 // BiMotorGetStatus reads the verbose live status (duty, voltage, current,
 // stalled, position, guard mode).
 func (r *Roles) BiMotorGetStatus(portIdx byte) (roles.BiMotorStatus, error) {

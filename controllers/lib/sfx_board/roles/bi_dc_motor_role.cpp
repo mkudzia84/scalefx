@@ -61,12 +61,6 @@ void BiDcMotorRole::setStallWindowMs(uint16_t window_ms) {
     if (window_ms != 0) _stallWindow_ms = window_ms;
 }
 
-void BiDcMotorRole::setProbe(uint8_t probePct, uint16_t windowMs, uint8_t dropPct) {
-    _probePct      = probePct;                              // 0 = disabled
-    _probeWindowMs = (windowMs != 0) ? windowMs : 250;
-    _probeDropPct  = (dropPct  != 0) ? dropPct  : 70;
-}
-
 void BiDcMotorRole::clearStall() {
     _stalled             = false;
     _overcurrentStartMs  = 0;
@@ -117,26 +111,8 @@ void BiDcMotorRole::moveToEnd(Position targetEnd, int16_t signedDuty, uint16_t t
     _runMin_mA           = 0xFFFF;
 
     _lastSeekLogMs       = now;
-    _fullSeekDuty        = signedDuty;
-
-    // Dual-stage soft-start: when a probe is configured AND we can sense
-    // current, drive a low-power probe FIRST to classify free-vs-already-at-
-    // stop before committing full power.  Otherwise go straight to full power.
-    if (_probePct > 0 && _iSense) {
-        _seekState     = SeekState::Probing;
-        _probePeak_mA  = 0;
-        int16_t probeDuty = (int16_t)((int32_t)signedDuty * _probePct / 100);
-        if (probeDuty == 0) probeDuty = (signedDuty > 0) ? 1 : -1;   // ensure motion attempt
-        _commandedSigned = probeDuty;
-        if (_port) _port->setSigned(probeDuty);
-        SFX_LOG_INFO("[bimotor] PROBE start: end=%u probeDuty=%d (%u%% of %d) window=%ums drop<%u%%  — classify free vs already-at-stop  (V=%dmV)",
-                     (unsigned)targetEnd, (int)probeDuty, (unsigned)_probePct, (int)signedDuty,
-                     (unsigned)_probeWindowMs, (unsigned)_probeDropPct, (int)voltage_mV());
-        return;
-    }
-
-    _seekState       = SeekState::Seeking;
-    _commandedSigned = signedDuty;
+    _seekState           = SeekState::Seeking;
+    _commandedSigned     = signedDuty;
     if (_port) _port->setSigned(signedDuty);   // drive directly (not via setSigned → no abort)
 
     SFX_LOG_INFO("[bimotor] SEEK start: end=%u duty=%d timeout=%ums  guard=%s thr=%umA win=%ums%s  (I now=%dmA V=%dmV)",
@@ -145,27 +121,6 @@ void BiDcMotorRole::moveToEnd(Position targetEnd, int16_t signedDuty, uint16_t t
                  (unsigned)_stallThreshold_mA, (unsigned)_stallWindow_ms,
                  _iSense ? "" : "  [!! NO CURRENT SENSOR — can only time out]",
                  (int)current_mA(), (int)voltage_mV());
-}
-
-// Probing → Seeking: commit full power and reset the per-stroke stall state so
-// LiveRatio re-baselines the running current at FULL power (the probe baseline
-// was at low power and would mis-scale the trip threshold).  Keeps the original
-// _seekDeadlineMs (absolute) so the overall timeout budget is unchanged.
-void BiDcMotorRole::beginRunPhase(uint32_t now) {
-    _seekState           = SeekState::Seeking;
-    _seekStartMs         = now;       // fresh — LiveRatio inrush/baseline from full-power start
-    _lastSeekLogMs       = now;
-    _runAccum_mA         = 0;
-    _runCount            = 0;
-    _runMean_mA          = 0;
-    _runMin_mA           = 0xFFFF;
-    _overcurrentStartMs  = 0;
-    _peakDuringWindow_mA = 0;
-    _commandedSigned     = _fullSeekDuty;
-    if (_port) _port->setSigned(_fullSeekDuty);
-    SFX_LOG_INFO("[bimotor] SEEK start (post-probe): duty=%d  guard=%s thr=%umA win=%ums",
-                 (int)_fullSeekDuty, _guardMode == GuardMode::LiveRatio ? "live-ratio" : "fixed",
-                 (unsigned)_stallThreshold_mA, (unsigned)_stallWindow_ms);
 }
 
 void BiDcMotorRole::abortSeek() {
@@ -219,56 +174,6 @@ bool BiDcMotorRole::stepStallDetect(uint32_t now, uint16_t threshold_mA) {
 
 void BiDcMotorRole::tick() {
     const uint32_t now = SFX_MILLIS();
-
-    // ── Soft-start probe (classify free vs already-at-stop) ────────────
-    if (_seekState == SeekState::Probing) {
-        const uint32_t elapsed = now - _seekStartMs;
-        const uint16_t i = _iSense ? (uint16_t)std::abs((int)_iSense->current_mA()) : 0;
-        if (i > _probePeak_mA) _probePeak_mA = i;
-
-        if (now - _lastSeekLogMs >= 150) {
-            _lastSeekLogMs = now;
-            SFX_LOG_INFO("[bimotor] probing t=%ums I=%umA peak=%umA V=%dmV",
-                         (unsigned)elapsed, (unsigned)i, (unsigned)_probePeak_mA, (int)voltage_mV());
-        }
-
-        // Let the probe current rise first, then look for the back-EMF decay
-        // that means the rotor spun up (= mechanism free to move).
-        constexpr uint16_t kProbeSettleMs   = 60;
-        constexpr uint16_t kProbeNoiseFloor = 30;   // mA — ignore tiny baselines
-        if (elapsed >= kProbeSettleMs && _probePeak_mA >= kProbeNoiseFloor) {
-            const uint16_t dropThr = (uint16_t)((uint32_t)_probePeak_mA * _probeDropPct / 100);
-            if (i < dropThr) {
-                SFX_LOG_INFO("[bimotor] PROBE → FREE: I=%umA fell below %u%% of peak %umA (spun up) → applying full power",
-                             (unsigned)i, (unsigned)_probeDropPct, (unsigned)_probePeak_mA);
-                beginRunPhase(now);
-                return;
-            }
-        }
-        // No decay through the window → locked rotor = already hard at this end.
-        if (elapsed >= _probeWindowMs) {
-            if (_port) _port->brake();
-            _commandedSigned = 0;
-            _stalled         = true;
-            _seekState       = SeekState::Reached;
-            if (_targetEnd != Position::Unknown) _position = _targetEnd;
-            SFX_LOG_INFO("[bimotor] PROBE → AT-STOP: no decay (I=%umA held near peak %umA) → already at end %u; full power NOT applied",
-                         (unsigned)i, (unsigned)_probePeak_mA, (unsigned)_position);
-            if (_onEndstop) _onEndstop(BiMotorSeekOutcome::Reached, (uint16_t)elapsed,
-                                       _probePeak_mA, _position);
-            return;
-        }
-        // Overall timeout still applies during the probe.
-        if (_seekDeadlineMs != 0 && (int32_t)(now - _seekDeadlineMs) >= 0) {
-            if (_port) _port->brake();
-            _commandedSigned = 0;
-            _seekState       = SeekState::TimedOut;
-            _position        = Position::Unknown;
-            SFX_LOG_INFO("[bimotor] TIMEOUT during probe after %ums", (unsigned)elapsed);
-            if (_onEndstop) _onEndstop(BiMotorSeekOutcome::Timeout, (uint16_t)elapsed, 0, _position);
-        }
-        return;
-    }
 
     // ── Endstop seek ──────────────────────────────────────────────────
     if (_seekState == SeekState::Seeking) {

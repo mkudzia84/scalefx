@@ -81,20 +81,14 @@ stop. Two modes (live-retune via `BIMOTOR_SET_GUARD` / CLI `bimotor-guard`):
   (comparator I-TRIP + inrush RC filter) — we add the adaptive trailing-min floor
   on top of their absolute backstop.
 
-**Dual-stage soft-start probe (pre-phase, optional)** — before a seek commits
-full power, drive a LOW-power probe toward the target and classify the start
-state from the current curve (`BIMOTOR_SET_PROBE` / CLI `bimotor-probe`):
-- current **decays** below `dropPct%` of its probe peak → rotor spun up =
-  mechanism FREE → ramp to full power and run the seek;
-- current **holds high** through the window → locked rotor = already hard against
-  this end → brake WITHOUT slamming full power, report Reached.
-
-This protects an unknown mechanism from a full-power grind into an already-engaged
-end-stop. Current-only (no encoder); probing toward the target disambiguates
-"already there". Stiff gearboxes may need higher probe power (raise probePct).
-`probePct 0` disables the probe (default in firmware; the Studio diag tab enables
-it at 35% for bench bring-up). Both phases stream a verbose `[bimotor]` trace to
-the console (the firmware enables wire log emission at boot).
+A low-power **soft-start probe** (classify free-vs-already-at-stop before
+committing full power) was prototyped and **removed**: current-only at low power
+can't reliably tell "free" from "stuck" (stiction reads as "at stop" and refuses
+to move a free mechanism; an engaged stop can read as free), and the absolute
+**ceiling** already prevents grinding into a stop — so it was redundant *and*
+faulty. Genuine soft-start, if ever needed, belongs as a ramp-up duty profile (or
+with a position sensor), not a current classifier. The seek streams a verbose
+`[bimotor]` trace to the console (the firmware enables wire log emission at boot).
 
 ## Endstop seek (autonomous, on-board)
 

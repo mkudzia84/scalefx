@@ -192,12 +192,6 @@ const (
 	//              d = maxTravel_ms (0 = no failsafe)
 	BiMotorSetGuard protocol.PacketType = 0x77
 
-	// BiMotorSetProbe — dual-stage soft-start probe (uses the free 0x56
-	// slot).  Orthogonal to the stall guard (both apply); probePct 0
-	// disables the probe so the seek drives at full power immediately.
-	// Wire: [portIdx][probePct:u8][window_ms:u16][dropPct:u8]
-	BiMotorSetProbe protocol.PacketType = 0x56
-
 	// SBUS input (0x78..0x7B)
 	SbusGetFrameReq    protocol.PacketType = 0x78
 	SbusFrameResp      protocol.PacketType = 0x79
@@ -799,17 +793,6 @@ func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, 
 	return protocol.BuildPacket(BiMotorSetGuard, payload, 0)
 }
 
-// CmdBiMotorSetProbe builds a BIMOTOR_SET_PROBE packet (0x56) — the dual-stage
-// soft-start probe.  probePct 0 disables the probe.
-func CmdBiMotorSetProbe(portIdx, probePct byte, windowMs uint16, dropPct byte) []byte {
-	payload := make([]byte, 5)
-	payload[0] = portIdx
-	payload[1] = probePct
-	binary.LittleEndian.PutUint16(payload[2:4], windowMs)
-	payload[4] = dropPct
-	return protocol.BuildPacket(BiMotorSetProbe, payload, 0)
-}
-
 // BiMotorSeekOutcome mirrors the firmware enum (Reached=0, Timeout=1,
 // Aborted=2).  Surfaced via BIMOTOR_ENDSTOP_RESULT.
 type BiMotorSeekOutcome uint8
@@ -1006,7 +989,6 @@ func init() {
 		BiMotorEndstopResult: "BIMOTOR_ENDSTOP_RESULT",
 		BiMotorMoveToEnd:     "BIMOTOR_MOVE_TO_END",
 		BiMotorSetGuard:      "BIMOTOR_SET_GUARD",
-		BiMotorSetProbe:      "BIMOTOR_SET_PROBE",
 		HeaterSetTarget:      "HEATER_SET_TARGET",
 		HeaterGetStatusReq:   "HEATER_GET_STATUS_REQ",
 		HeaterStatusResp:     "HEATER_STATUS_RESP",

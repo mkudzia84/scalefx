@@ -40,8 +40,6 @@ export function DiagBiMotorJog(arg1:number,arg2:number):Promise<void>;
 
 export function DiagBiMotorMoveEnd(arg1:number,arg2:string,arg3:number,arg4:number):Promise<main.DiagEndstopResult>;
 
-export function DiagBiMotorProbe(arg1:number,arg2:number,arg3:number,arg4:number):Promise<void>;
-
 export function DiagBiMotorSeek(arg1:number,arg2:number,arg3:number):Promise<main.DiagEndstopResult>;
 
 export function DiagBiMotorStatus(arg1:number):Promise<main.DiagBiMotorStatus>;
