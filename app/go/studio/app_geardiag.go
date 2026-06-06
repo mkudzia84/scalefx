@@ -216,13 +216,13 @@ func (a *App) DiagBiMotorGuardFixed(portIdx, thresholdMa, windowMs int) error {
 // DiagBiMotorGuardLiveRatio retunes the stall guard to LiveRatio mode — averages
 // running current per stroke, then trips on a ratio spike.  Recommended for a
 // motor whose stall current isn't known and varies with battery voltage.
-func (a *App) DiagBiMotorGuardLiveRatio(portIdx, ratioX100, runSampleMs, inrushBlankMs, windowMs, maxTravelMs int) error {
+func (a *App) DiagBiMotorGuardLiveRatio(portIdx, ratioX100, runSampleMs, inrushBlankMs, windowMs, maxTravelMs, absMaxMa int) error {
 	c := a.snapshotClient()
 	if c == nil {
 		return fmt.Errorf("not connected")
 	}
 	return c.Roles.BiMotorSetGuardLiveRatio(uint16(portIdx), uint16(ratioX100),
-		uint16(runSampleMs), uint16(inrushBlankMs), uint16(windowMs), uint16(maxTravelMs))
+		uint16(runSampleMs), uint16(inrushBlankMs), uint16(windowMs), uint16(maxTravelMs), uint16(absMaxMa))
 }
 
 // DiagBiMotorProbe configures the dual-stage soft-start probe (probePct 0 =

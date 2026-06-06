@@ -1148,6 +1148,9 @@ void RoleServicePolicy::handleBiMotorSetGuard(const uint8_t* p, size_t len) {
         _ctx->sendNack(RoleError::ROLE_CONFIG_INVALID);
         return;
     }
+    // Rule 11 append: optional absolute over-current ceiling at [12:14]
+    // (LiveRatio backstop; 0 = none).  Old clients omit it.
+    if (len >= 14) r->setAbsoluteCeiling(SfxWire::getU16LE(&p[12]));
     _ctx->sendAck();
 }
 

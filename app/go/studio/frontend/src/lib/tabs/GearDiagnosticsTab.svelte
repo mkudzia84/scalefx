@@ -62,7 +62,7 @@
             // (auto-baseline + ratio spike) so "go to endstop" works out of box.
             if (aRoleKind === KIND_BIMOTOR) {
                 guardMode[aPortIdx] = 'live'
-                try { await DiagBiMotorGuardLiveRatio(aPortIdx, 250, 200, 150, 80, 0) } catch (e) { fail(e) }
+                try { await DiagBiMotorGuardLiveRatio(aPortIdx, 250, 200, 150, 80, 0, 0) } catch (e) { fail(e) }
                 // Soft-start probe ON by default for an unknown mechanism: probe
                 // at 35% before committing full power into a possibly-engaged stop.
                 probeOn[aPortIdx] = true
@@ -95,6 +95,7 @@
     let gSample: Record<number, number> = {}       // ms baseline window (200)
     let gWindow: Record<number, number> = {}       // ms sustained confirm (80)
     let gThreshold: Record<number, number> = {}    // mA (Fixed), default 1000
+    let gCeiling: Record<number, number> = {}      // mA absolute backstop (LiveRatio), 0 = off
     const gv = (rec: Record<number, number>, idx: number, def: number) => rec[idx] ?? def
 
     async function applyGuard(idx: number) {
@@ -102,7 +103,8 @@
         try {
             if ((guardMode[idx] ?? 'live') === 'live') {
                 await DiagBiMotorGuardLiveRatio(idx, Math.round(gv(gRatio, idx, 2.5) * 100),
-                    Math.round(gv(gSample, idx, 200)), 150, Math.round(gv(gWindow, idx, 80)), 0)
+                    Math.round(gv(gSample, idx, 200)), 150, Math.round(gv(gWindow, idx, 80)), 0,
+                    Math.round(gv(gCeiling, idx, 0)))
             } else {
                 await DiagBiMotorGuardFixed(idx, Math.round(gv(gThreshold, idx, 1000)), Math.round(gv(gWindow, idx, 80)))
             }
@@ -261,6 +263,9 @@
                                 <label class="lbl">Sample
                                     <span class="inp-unit"><input class="field-input tiny" type="number" min="50" max="1000" step="50" bind:value={gSample[idx]} placeholder="200" /><span class="unit">ms</span></span>
                                 </label>
+                                <label class="lbl" title="Absolute over-current backstop — trip if current exceeds this regardless of the ratio (catches a stop the adaptive baseline missed). Set ~80% of the stall peak you see in the trace. 0 = off.">Ceiling
+                                    <span class="inp-unit"><input class="field-input tiny" type="number" min="0" max="9000" step="50" bind:value={gCeiling[idx]} placeholder="0=off" /><span class="unit">mA</span></span>
+                                </label>
                             {:else}
                                 <label class="lbl">Threshold
                                     <span class="inp-unit"><input class="field-input narrow" type="number" min="50" max="9000" step="50" bind:value={gThreshold[idx]} placeholder="1000" /><span class="unit">mA</span></span>
@@ -271,7 +276,7 @@
                             </label>
                             <button class="tbtn" on:click={() => applyGuard(idx)} title="Push this stall-guard config to the role (live, no re-attach)"><span class="ic">✓</span> Apply guard</button>
                         </div>
-                        <p class="hint compact">LiveRatio averages running current per stroke, then trips when it spikes ≥ ratio× — no fixed threshold, battery-independent. Watch the <b>seek trace</b> in the Console (Ctrl+`) for baseline + trip values.</p>
+                        <p class="hint compact">LiveRatio tracks the <b>trailing-minimum</b> running current (the free-running floor — a high break-away / loaded start can't poison it) and trips at ratio× that floor. <b>Ceiling</b> is an absolute over-current backstop: trips regardless of the ratio (catches a stop the adaptive baseline missed — set ~80% of the stall peak in the trace). Watch <b>floor</b>/<b>thr</b> in the Console (Ctrl+`).</p>
 
                         <!-- dual-stage soft-start probe -->
                         <div class="guard">

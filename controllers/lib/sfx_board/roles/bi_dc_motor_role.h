@@ -113,10 +113,18 @@ public:
     /// Switches the guard mode to Fixed.
     void setStallGuard(uint16_t threshold_mA, uint16_t window_ms);
 
-    /// Live-ratio stall guard — auto-baselines running current per
-    /// stroke and trips when `|I| >= baseline × (ratio_x100 / 100)`
-    /// sustained for `window_ms`.  Voltage-independent.  Switches the
-    /// guard mode to LiveRatio.
+    /// Absolute over-current ceiling (the references' I-TRIP backstop) — in
+    /// LiveRatio mode, ALSO trip when `|I| >= ceiling_mA` sustained, regardless
+    /// of the adaptive ratio.  Catches the "ran into the stop but the baseline
+    /// was poisoned high so the ratio never tripped" case.  0 = no ceiling.
+    void setAbsoluteCeiling(uint16_t ceiling_mA) { _absMax_mA = ceiling_mA; }
+    uint16_t absoluteCeiling() const { return _absMax_mA; }
+
+    /// Live-ratio stall guard — tracks the TRAILING-MINIMUM running current
+    /// (the free-running floor, robust to a high break-away / loaded start that
+    /// would poison a fixed-window average) and trips when `|I| >= floor ×
+    /// (ratio_x100 / 100)` sustained for `window_ms`.  Voltage-independent.
+    /// Switches the guard mode to LiveRatio.
     ///   `ratio_x100`       e.g. 250 = 2.5× running (typical).  0 = use
     ///                      a sensible default (250).
     ///   `runSample_ms`     length of the baseline-sampling window after
@@ -252,10 +260,13 @@ private:
     int16_t   _fullSeekDuty   = 0;        ///< remembered full-power duty for the run phase
     uint16_t  _probePeak_mA   = 0;        ///< peak |I| seen during the probe
 
-    // LiveRatio per-stroke baseline accumulator.
-    uint32_t  _runAccum_mA    = 0;
-    uint32_t  _runCount       = 0;
-    uint16_t  _runMean_mA     = 0;        ///< 0 = not yet computed for this stroke
+    // LiveRatio baseline — trailing minimum of |I| (the free-running floor).
+    // _runMean_mA doubles as the "armed" sentinel: 0 = still warming up.
+    uint32_t  _runAccum_mA    = 0;        ///< (legacy, unused — kept for ABI calm)
+    uint32_t  _runCount       = 0;        ///< (legacy, unused)
+    uint16_t  _runMean_mA     = 0;        ///< live floor once armed; 0 = warming up
+    uint16_t  _runMin_mA      = 0xFFFF;   ///< trailing minimum of |I| this stroke
+    uint16_t  _absMax_mA      = 0;        ///< absolute over-current ceiling (0 = off)
 
     // Position state machine (Strategy A).
     Position  _position       = Position::Unknown;

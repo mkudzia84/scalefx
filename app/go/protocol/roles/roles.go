@@ -784,8 +784,10 @@ func CmdBiMotorGetStatus(portIdx byte) []byte {
 // CmdBiMotorSetGuard builds a BIMOTOR_SET_GUARD packet (0x77) — live
 // retune of the stall-detection mode + parameters without re-attach.
 // `windowMs == 0` leaves the existing window unchanged.
-func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, d uint16) []byte {
-	payload := make([]byte, 12)
+// absMaxMa is the optional absolute over-current ceiling (LiveRatio backstop;
+// 0 = none) appended per Rule 11.
+func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, d, absMaxMa uint16) []byte {
+	payload := make([]byte, 14)
 	payload[0] = portIdx
 	payload[1] = byte(mode)
 	binary.LittleEndian.PutUint16(payload[2:4],  windowMs)
@@ -793,6 +795,7 @@ func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, 
 	binary.LittleEndian.PutUint16(payload[6:8],  b)
 	binary.LittleEndian.PutUint16(payload[8:10], c)
 	binary.LittleEndian.PutUint16(payload[10:12], d)
+	binary.LittleEndian.PutUint16(payload[12:14], absMaxMa)
 	return protocol.BuildPacket(BiMotorSetGuard, payload, 0)
 }
 

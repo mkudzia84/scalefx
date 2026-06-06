@@ -39,7 +39,7 @@ func init() {
 	register(&command{Name: "bimotor-move-end", Usage: "bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]", Help: "drive a BiDcMotor (gear/door) to logical endstop A or B (A=+duty, B=-duty); outcome arrives async (subscribe)", Category: catTopology, RequiresConn: true, Run: cmdBiMotorMoveEnd})
 	register(&command{Name: "bimotor-seek", Usage: "bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]", Help: "position-agnostic seek — drive a BiDcMotor at signedDuty until stall/endstop or timeout", Category: catTopology, RequiresConn: true, Run: cmdBiMotorSeek})
 	register(&command{Name: "bimotor-status", Usage: "bimotor-status <portIdx>", Help: "verbose BiDcMotor status: duty, voltage, current, stalled, position (A/B), guard mode", Category: catTopology, RequiresConn: true, Run: cmdBiMotorStatus})
-	register(&command{Name: "bimotor-guard", Usage: "bimotor-guard <portIdx> <live|fixed> [ratioX|thresholdMa] [windowMs]", Help: "retune the stall guard: live (auto-baseline ratio, recommended — e.g. 'live 2.5') or fixed (mA threshold). Watch the seek trace in the log.", Category: catTopology, RequiresConn: true, Run: cmdBiMotorGuard})
+	register(&command{Name: "bimotor-guard", Usage: "bimotor-guard <portIdx> <live|fixed> [ratioX|thresholdMa] [windowMs] [ceilingMa]", Help: "retune the stall guard: live (trailing-min ratio, e.g. 'live 2.5') or fixed (mA). ceilingMa = absolute over-current backstop for live mode (0=off). Watch the seek trace.", Category: catTopology, RequiresConn: true, Run: cmdBiMotorGuard})
 	register(&command{Name: "bimotor-probe", Usage: "bimotor-probe <portIdx> <probePct|off> [windowMs=250] [dropPct=70]", Help: "dual-stage soft-start: probe at probePct%% of seek duty to classify free-vs-already-at-stop before full power. 'off' disables. e.g. 'bimotor-probe 0 35'", Category: catTopology, RequiresConn: true, Run: cmdBiMotorProbe})
 
 	// Direct role lifecycle — attach / inspect / detach a role on the
@@ -595,10 +595,20 @@ func cmdBiMotorGuard(a *App, args []string) error {
 				return fmt.Errorf("ratio: %w", err)
 			}
 		}
-		if err := a.c.Roles.BiMotorSetGuardLiveRatio(uint16(idx), uint16(ratioX*100), 200, 150, window, 0); err != nil {
+		ceiling := 0
+		if len(args) >= 5 {
+			if ceiling, err = strconv.Atoi(args[4]); err != nil {
+				return fmt.Errorf("ceilingMa: %w", err)
+			}
+		}
+		if err := a.c.Roles.BiMotorSetGuardLiveRatio(uint16(idx), uint16(ratioX*100), 200, 150, window, 0, uint16(ceiling)); err != nil {
 			return err
 		}
-		Ok("bimotor[%d] guard = %s (%.2f× baseline, confirm %d ms)", idx, cCyan("live-ratio"), ratioX, window)
+		if ceiling > 0 {
+			Ok("bimotor[%d] guard = %s (%.2f× trailing-min, confirm %d ms, ceiling %d mA)", idx, cCyan("live-ratio"), ratioX, window, ceiling)
+		} else {
+			Ok("bimotor[%d] guard = %s (%.2f× trailing-min, confirm %d ms, no ceiling)", idx, cCyan("live-ratio"), ratioX, window)
+		}
 	case "fixed":
 		thr := 1000
 		if len(args) >= 3 {

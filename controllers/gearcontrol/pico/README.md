@@ -61,12 +61,25 @@ INA226 measuring both motor current AND bus voltage). Two orthogonal mechanisms:
 
 **Stall guard (run-phase endstop detection)** — how the seek decides it hit the
 stop. Two modes (live-retune via `BIMOTOR_SET_GUARD` / CLI `bimotor-guard`):
-- **LiveRatio (recommended default):** averages the running current per stroke
-  (after inrush blanking), then trips when `|I| ≥ baseline × ratio` (e.g. 2.5×).
-  No per-motor threshold, battery-voltage independent. The right choice when the
-  stall current is unknown / varies — a Fixed mA threshold set too high (the old
-  2000 mA default) simply never trips on a motor that stalls at a few hundred mA.
+- **LiveRatio (recommended default):** tracks the **trailing-minimum** running
+  current per stroke (after inrush blanking) — the free-running floor — and trips
+  when `|I| ≥ floor × ratio` (e.g. 2.5×). The trailing-min (not a fixed-window
+  average) is robust to a high **break-away / loaded start** that would otherwise
+  poison the baseline: starting against a stop, or moving away from one, no longer
+  mis-sets the threshold. No per-motor threshold, battery-voltage independent.
+  Pairs with an optional **absolute ceiling** (`ceiling_mA`, the references'
+  I-TRIP backstop): trip when `|I| ≥ ceiling` regardless of the ratio — catches a
+  stop the adaptive baseline missed (e.g. driven into a stop it started against,
+  where the floor itself is the stall current). Set ~80% of the stall peak shown
+  in the trace; 0 = off.
 - **Fixed:** trip on `|I| ≥ threshold_mA` sustained. Only when you know the value.
+
+  The trace shows `floor=… thr=…` live (and `armed: floor=… ceiling=…`) so you can
+  read the right ratio / ceiling straight off a couple of strokes. Cross-ref: this
+  current-sense approach mirrors ESPHome's `current_based` cover (absolute
+  thresholds + `start_sensing_delay`) and the DRV8251A hardware stall circuit
+  (comparator I-TRIP + inrush RC filter) — we add the adaptive trailing-min floor
+  on top of their absolute backstop.
 
 **Dual-stage soft-start probe (pre-phase, optional)** — before a seek commits
 full power, drive a LOW-power probe toward the target and classify the start
