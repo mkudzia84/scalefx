@@ -25,7 +25,9 @@
         <span class="status-text">{statusText}</span>
     </div>
     <div class="status-right">
-        {#if ci.connected}
+        <!-- Config flag mirrors the global ConfigToolbar — HubFX-only (an
+             expander has no config sources; see MainLayout). -->
+        {#if ci.connected && ci.controllerType === 'hubfx'}
             {#if $errorLabels.length > 0}
                 <span class="cfg-flag err"
                       title="Resolve validation errors: {$errorLabels.join(', ')}">

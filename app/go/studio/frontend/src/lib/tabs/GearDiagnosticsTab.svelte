@@ -249,9 +249,9 @@
                         <!-- stall guard (how the seek decides it hit the endstop) -->
                         <div class="guard">
                             <label class="lbl">Stall guard
-                                <select class="field-input narrow" bind:value={guardMode[idx]}>
-                                    <option value="live">LiveRatio (auto)</option>
-                                    <option value="fixed">Fixed (mA)</option>
+                                <select class="field-input guard-mode" bind:value={guardMode[idx]}>
+                                    <option value="live">LiveRatio (auto baseline)</option>
+                                    <option value="fixed">Fixed (mA threshold)</option>
                                 </select>
                             </label>
                             {#if (guardMode[idx] ?? 'live') === 'live'}
@@ -392,6 +392,7 @@
 
     .attach-row, .params, .guard { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
     .guard { padding: 6px 8px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; }
+    .field-input.guard-mode { min-width: 180px; }
     .inp-unit { display: inline-flex; align-items: center; gap: 3px; }
     .field-input.tiny { width: 52px; }
     .unit { font-size: 10px; font-family: var(--font-mono, monospace); color: var(--text-dim); }
