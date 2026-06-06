@@ -1665,6 +1665,7 @@ export namespace main {
 	    openUs: number;
 	    closeUs: number;
 	    leds: LandingLedDTO[];
+	    fadeInMs: number;
 	    activation: LandingActivationSource;
 	
 	    static createFrom(source: any = {}) {
@@ -1680,6 +1681,7 @@ export namespace main {
 	        this.openUs = source["openUs"];
 	        this.closeUs = source["closeUs"];
 	        this.leds = this.convertValues(source["leds"], LandingLedDTO);
+	        this.fadeInMs = source["fadeInMs"];
 	        this.activation = this.convertValues(source["activation"], LandingActivationSource);
 	    }
 	
