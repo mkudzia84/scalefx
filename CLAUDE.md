@@ -35,9 +35,10 @@ Multi-platform embedded effects: one **ESP32-S3 HubFX** master + up to N **Pico 
   - `0x90–0x9F` **AlertError** (was 0xD1-0xD3)
   - `0xA0–0xAF` **StorageError** (was 0x86, 0x8A-0x8F — was squatting in storage packet bytes)
   - `0xB0–0xBF` **AudioError** (was 0x85, 0x89)
-  - `0xC0–0xEF` Reserved (free for future effects)
+  - `0xC0–0xC7` **TopologyError** (infrastructure — was 0x90–0x96, collided with AlertError; moved 2026-06-06)
+  - `0xC8–0xEF` Reserved (free for future effects)
   - `0xF0–0xFF` System (internal/comm errors)
-  - Lesson: error codes collide silently in Go's `errorNames` map (last `init()` wins → wrong name shown), and squatting in packet-type bytes is wire-OK but human-confusing. Keep every error in its spec range above; one namespace per range.
+  - Lesson: error codes collide silently in Go's `errorNames` map (last `init()` wins → wrong name shown), and squatting in packet-type bytes is wire-OK but human-confusing. Keep every error in its spec range above; one namespace per range. **Guarded:** [tests/host/go_unit/error_collisions_test](tests/host/go_unit/error_collisions_test) asserts no two modules register the same error code under different names — it's in the pre-merge gate.
 
 ## Layout
 

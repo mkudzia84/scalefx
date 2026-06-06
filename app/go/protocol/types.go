@@ -20,6 +20,21 @@ func (e ErrorCode) String() string { return ErrorName(e) }
 var packetNames = map[PacketType]string{}
 var errorNames = map[ErrorCode]string{}
 
+// ErrorNameCollision records a single error code registered under two
+// different names by two different modules' init() — the silent
+// "last init() wins → wrong name shown" hazard (one namespace per spec
+// range; see CLAUDE.md error ranges).  Detected by CheckErrorNameCollisions,
+// asserted empty by tests/host/go_unit/error_collisions_test.
+type ErrorNameCollision struct {
+	Code  ErrorCode
+	Names []string // distinct display names registered for this code
+}
+
+// errorNameVariants tracks every DISTINCT name a code has been registered
+// under (in registration order), so a collision is visible even though the
+// flat errorNames map only keeps the last writer.
+var errorNameVariants = map[ErrorCode][]string{}
+
 // RegisterPacketNames adds packet type display names to the global registry.
 func RegisterPacketNames(m map[PacketType]string) {
 	for k, v := range m {
@@ -31,7 +46,31 @@ func RegisterPacketNames(m map[PacketType]string) {
 func RegisterErrorNames(m map[ErrorCode]string) {
 	for k, v := range m {
 		errorNames[k] = v
+		seen := false
+		for _, existing := range errorNameVariants[k] {
+			if existing == v {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			errorNameVariants[k] = append(errorNameVariants[k], v)
+		}
 	}
+}
+
+// CheckErrorNameCollisions returns every error code that two or more modules
+// registered under DIFFERENT names — i.e. a numeric collision across the
+// per-module error ranges.  Empty slice = clean.  Call after all protocol
+// sub-packages' init() have run (import them first).
+func CheckErrorNameCollisions() []ErrorNameCollision {
+	var out []ErrorNameCollision
+	for code, names := range errorNameVariants {
+		if len(names) > 1 {
+			out = append(out, ErrorNameCollision{Code: code, Names: names})
+		}
+	}
+	return out
 }
 
 // PacketTypeName returns a human-readable name for a packet type.

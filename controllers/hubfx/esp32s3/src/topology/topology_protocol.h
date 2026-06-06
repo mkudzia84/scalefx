@@ -102,17 +102,24 @@ namespace TopologyPacket {
 }
 
 // ============================================================================
-// Topology-layer error codes (0x90..0x97 within the SerialError space)
+// Topology-layer error codes (0xC0..0xC6 within the SerialError space)
+// ----------------------------------------------------------------------------
+// MOVED 2026-06-06 from 0x90..0x96, which COLLIDED with AlertError (0x90..0x9F)
+// — the Go errorNames map is global + last-init-wins, so a topology NACK showed
+// up as "ALERT_DISABLED" etc. Topology is infrastructure with no gap below 0xC0,
+// so it carves the bottom of the Reserved block (error codes are a namespace
+// SEPARATE from packet types; 0xC0 here is unrelated to packet 0xC0). Guarded by
+// tests/host/go_unit/error_collisions_test.
 // ============================================================================
 
 namespace TopologyError {
-    constexpr uint8_t UNKNOWN_GUID        = 0x90;  ///< GUID never seen this session
-    constexpr uint8_t PENDING_GUID        = 0x91;  ///< GUID known but currently disconnected
-    constexpr uint8_t PORT_NOT_FOUND      = 0x92;  ///< (kind, idx) out of range on target board
-    constexpr uint8_t ROLE_NOT_SUPPORTED  = 0x93;  ///< target board rejected the role kind
-    constexpr uint8_t FORWARD_FAILED      = 0x94;  ///< CDC send / response timed out
-    constexpr uint8_t GUID_COLLISION      = 0x95;  ///< target is in a GUID collision (Rule 32)
-    constexpr uint8_t HANDSHAKE_PENDING   = 0x96;  ///< expander still finishing post-IDENTIFY roster harvest
+    constexpr uint8_t UNKNOWN_GUID        = 0xC0;  ///< GUID never seen this session
+    constexpr uint8_t PENDING_GUID        = 0xC1;  ///< GUID known but currently disconnected
+    constexpr uint8_t PORT_NOT_FOUND      = 0xC2;  ///< (kind, idx) out of range on target board
+    constexpr uint8_t ROLE_NOT_SUPPORTED  = 0xC3;  ///< target board rejected the role kind
+    constexpr uint8_t FORWARD_FAILED      = 0xC4;  ///< CDC send / response timed out
+    constexpr uint8_t GUID_COLLISION      = 0xC5;  ///< target is in a GUID collision (Rule 32)
+    constexpr uint8_t HANDSHAKE_PENDING   = 0xC6;  ///< expander still finishing post-IDENTIFY roster harvest
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {

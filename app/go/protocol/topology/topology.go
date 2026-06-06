@@ -31,16 +31,21 @@ const (
 	TopologyRoleForward  protocol.PacketType = 0x8F
 )
 
-// ─── Error codes (0x90..0x96) ─────────────────────────────────────────
+// ─── Error codes (0xC0..0xC6) ─────────────────────────────────────────
+// MOVED 2026-06-06 from 0x90..0x96 — collided with AlertError (0x90..0x9F) in
+// the global last-init-wins errorNames map. Topology is infrastructure with no
+// gap below 0xC0, so it carves the bottom of the Reserved error block (error
+// codes are a SEPARATE namespace from packet types). Mirrors firmware
+// TopologyError in topology_protocol.h. Guarded by error_collisions_test.
 
 const (
-	ErrUnknownGuid       protocol.ErrorCode = 0x90
-	ErrPendingGuid       protocol.ErrorCode = 0x91
-	ErrPortNotFound      protocol.ErrorCode = 0x92
-	ErrRoleNotSupported  protocol.ErrorCode = 0x93
-	ErrForwardFailed     protocol.ErrorCode = 0x94
-	ErrGuidCollision     protocol.ErrorCode = 0x95
-	ErrHandshakePending  protocol.ErrorCode = 0x96
+	ErrUnknownGuid       protocol.ErrorCode = 0xC0
+	ErrPendingGuid       protocol.ErrorCode = 0xC1
+	ErrPortNotFound      protocol.ErrorCode = 0xC2
+	ErrRoleNotSupported  protocol.ErrorCode = 0xC3
+	ErrForwardFailed     protocol.ErrorCode = 0xC4
+	ErrGuidCollision     protocol.ErrorCode = 0xC5
+	ErrHandshakePending  protocol.ErrorCode = 0xC6
 )
 
 // ─── Decoded data types ───────────────────────────────────────────────
