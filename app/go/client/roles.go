@@ -157,3 +157,32 @@ func (r *Roles) HeaterGetElement(portIdx byte) (HeaterElement, error) {
 	_, e, err := roles.DecodeHeaterElement(resp.Payload)
 	return e, err
 }
+
+// ─── Bi-directional DC motor (BiDcMotor role) ─────────────────────────
+//
+// Drives a gear/door motor to a logical endstop (A/B) with stall-detected
+// seek, and reads back verbose status. The role lives on a GearControl
+// expander; these wrap the protocol/roles BiMotor commands (Strategy A).
+
+// BiMotorMoveToEnd drives the motor toward logical end `pos` (A/B) at
+// `signedDuty` (sign = direction), aborting after `timeoutMs`. ACK is
+// immediate; the seek OUTCOME arrives async as BIMOTOR_ENDSTOP_RESULT.
+func (r *Roles) BiMotorMoveToEnd(portIdx byte, pos roles.BiMotorPosition, signedDuty int16, timeoutMs uint16) error {
+	return r.c.sendExpectACK(roles.CmdBiMotorMoveToEnd(portIdx, pos, signedDuty, timeoutMs))
+}
+
+// BiMotorSeekEndstop is the position-agnostic seek (drives at signedDuty
+// until a stall/endstop or timeout); doesn't label which end was reached.
+func (r *Roles) BiMotorSeekEndstop(portIdx byte, signedDuty int16, timeoutMs uint16) error {
+	return r.c.sendExpectACK(roles.CmdBiMotorSeekEndstop(portIdx, signedDuty, timeoutMs))
+}
+
+// BiMotorGetStatus reads the verbose live status (duty, voltage, current,
+// stalled, position, guard mode).
+func (r *Roles) BiMotorGetStatus(portIdx byte) (roles.BiMotorStatus, error) {
+	resp, err := r.c.sendForResp(roles.CmdBiMotorGetStatus(portIdx), roles.BiMotorStatusResp)
+	if err != nil {
+		return roles.BiMotorStatus{}, err
+	}
+	return roles.DecodeBiMotorStatus(resp.Payload)
+}

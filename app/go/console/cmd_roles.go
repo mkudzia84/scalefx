@@ -34,6 +34,9 @@ func init() {
 	register(&command{Name: "motor-element-set", Usage: "motor-element-set <portIdx> <key=val> ...", Help: "push DC motor element_mv / scaling (passthrough|linear|quadratic)", Category: catTopology, RequiresConn: true, Run: cmdMotorElementSet})
 	register(&command{Name: "heater-element-get", Usage: "heater-element-get <portIdx>", Help: "read heater element scaling + drive percent + hysteresis", Category: catTopology, RequiresConn: true, Run: cmdHeaterElementGet})
 	register(&command{Name: "heater-element-set", Usage: "heater-element-set <portIdx> <key=val> ...", Help: "push heater element_mv / scaling / drive_pct / hyst_cx10", Category: catTopology, RequiresConn: true, Run: cmdHeaterElementSet})
+	register(&command{Name: "bimotor-move-end", Usage: "bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]", Help: "drive a BiDcMotor (gear/door) to logical endstop A or B (A=+duty, B=-duty); outcome arrives async (subscribe)", Category: catTopology, RequiresConn: true, Run: cmdBiMotorMoveEnd})
+	register(&command{Name: "bimotor-seek", Usage: "bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]", Help: "position-agnostic seek — drive a BiDcMotor at signedDuty until stall/endstop or timeout", Category: catTopology, RequiresConn: true, Run: cmdBiMotorSeek})
+	register(&command{Name: "bimotor-status", Usage: "bimotor-status <portIdx>", Help: "verbose BiDcMotor status: duty, voltage, current, stalled, position (A/B), guard mode", Category: catTopology, RequiresConn: true, Run: cmdBiMotorStatus})
 	_ = core.CapTopology // keep the import live; commands are role-layer, gating handled at attach time
 }
 
@@ -371,4 +374,125 @@ func cmdHeaterElementSet(a *App, args []string) error {
 	}
 	Ok("heater[%d] element updated", idx)
 	return cmdHeaterElementGet(a, args[:1])
+}
+
+// ─── Bi-directional DC motor (gear/door — BiDcMotor role) ────────────
+//
+// Drive a gear/door motor to its logical endstops (A/B) with stall-detected
+// seek + read verbose status. The role lives on a GearControl expander; the
+// outcome of a move/seek arrives async as BIMOTOR_ENDSTOP_RESULT (`subscribe`).
+
+func cmdBiMotorMoveEnd(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) < 2 {
+		return fmt.Errorf("usage: bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]")
+	}
+	idx, err := parseU8(args[0])
+	if err != nil {
+		return err
+	}
+	duty := 600
+	if len(args) >= 3 {
+		if duty, err = strconv.Atoi(args[2]); err != nil {
+			return fmt.Errorf("duty: %w", err)
+		}
+	}
+	if duty < 0 {
+		duty = -duty
+	}
+	timeoutMs := uint16(5000)
+	if len(args) >= 4 {
+		t, e := strconv.Atoi(args[3])
+		if e != nil {
+			return fmt.Errorf("timeoutMs: %w", e)
+		}
+		timeoutMs = uint16(t)
+	}
+	// A = positive drive, B = negative drive (the role records which end it
+	// reached). Use bimotor-seek for an explicit signed duty.
+	var pos roles.BiMotorPosition
+	var signed int16
+	switch strings.ToLower(args[1]) {
+	case "a":
+		pos, signed = roles.BiMotorPosA, int16(duty)
+	case "b":
+		pos, signed = roles.BiMotorPosB, int16(-duty)
+	default:
+		return fmt.Errorf("end must be 'a' or 'b'")
+	}
+	if err := a.c.Roles.BiMotorMoveToEnd(idx, pos, signed, timeoutMs); err != nil {
+		return err
+	}
+	Ok("bimotor[%d] → end %s  (duty %d, timeout %d ms)", idx, strings.ToUpper(args[1]), signed, timeoutMs)
+	Note("  outcome (reached/timeout/aborted) arrives async — run `subscribe` to watch BIMOTOR_ENDSTOP_RESULT")
+	return nil
+}
+
+func cmdBiMotorSeek(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) < 2 {
+		return fmt.Errorf("usage: bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]")
+	}
+	idx, err := parseU8(args[0])
+	if err != nil {
+		return err
+	}
+	d, err := strconv.Atoi(args[1])
+	if err != nil {
+		return fmt.Errorf("signedDuty: %w", err)
+	}
+	timeoutMs := uint16(5000)
+	if len(args) >= 3 {
+		t, e := strconv.Atoi(args[2])
+		if e != nil {
+			return fmt.Errorf("timeoutMs: %w", e)
+		}
+		timeoutMs = uint16(t)
+	}
+	if err := a.c.Roles.BiMotorSeekEndstop(idx, int16(d), timeoutMs); err != nil {
+		return err
+	}
+	Ok("bimotor[%d] seek  (duty %d, timeout %d ms)", idx, d, timeoutMs)
+	Note("  outcome arrives async — run `subscribe`")
+	return nil
+}
+
+func cmdBiMotorStatus(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) != 1 {
+		return fmt.Errorf("usage: bimotor-status <portIdx>")
+	}
+	idx, err := parseU8(args[0])
+	if err != nil {
+		return err
+	}
+	st, err := a.c.Roles.BiMotorGetStatus(idx)
+	if err != nil {
+		return err
+	}
+	Hdr(fmt.Sprintf("bimotor[%d] status", idx))
+	fmt.Fprintf(out, "  %s %s\n", cDim("duty:    "), cCyan(fmt.Sprintf("%d", st.SignedDuty)))
+	fmt.Fprintf(out, "  %s %s mV\n", cDim("voltage: "), cCyan(fmt.Sprintf("%d", st.VoltageMv)))
+	fmt.Fprintf(out, "  %s %s mA\n", cDim("current: "), cCyan(fmt.Sprintf("%d", st.CurrentMa)))
+	fmt.Fprintf(out, "  %s %s\n", cDim("stalled: "), Bool(st.Stalled))
+	fmt.Fprintf(out, "  %s %s\n", cDim("position:"), biMotorPosName(st.Position))
+	fmt.Fprintf(out, "  %s %s\n", cDim("guard:   "), cDim(st.GuardMode.String()))
+	return nil
+}
+
+func biMotorPosName(p roles.BiMotorPosition) string {
+	switch p {
+	case roles.BiMotorPosA:
+		return cGreen("A")
+	case roles.BiMotorPosB:
+		return cGreen("B")
+	default:
+		return cDim("unknown")
+	}
 }

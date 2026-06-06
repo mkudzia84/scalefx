@@ -68,6 +68,24 @@ aborts an in-progress seek.  The hub's gear FSM maps results: deploy/
 retract → deployed/retracted (or ERROR on timeout); calibration sweeps
 retract→deploy→home, one seek per leg.
 
+### Role-layer CLI (bring-up — below the gear FSM)
+
+For bench bring-up of a BiDcMotor *without* the gear effect, the CLI exposes
+the role primitives directly (port index is the role's port, not a gear id):
+
+- `bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]` — drive to
+  logical endstop **A** (`+duty`) or **B** (`-duty`); ACK is immediate, the
+  outcome (`reached/timeout/aborted`) arrives async (`subscribe` to watch
+  `BIMOTOR_ENDSTOP_RESULT`).
+- `bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]` — position-agnostic
+  seek (explicit signed duty); doesn't label which end was reached.
+- `bimotor-status <portIdx>` — verbose status: duty, voltage_mV, current_mA,
+  stalled, position (A/B), guard mode.
+
+These map to `protocol/roles` `CmdBiMotorMoveToEnd` / `CmdBiMotorSeekEndstop` /
+`CmdBiMotorGetStatus` via `client.Roles.BiMotor*`. The gear `gear-*` commands
+above are the effect-layer surface that orchestrates these per leg.
+
 ## Wire surface (hub-side `GearControlService`)
 
 The board itself only speaks the generic-expander port/role surface
