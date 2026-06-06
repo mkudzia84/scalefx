@@ -75,20 +75,20 @@ public:
     /// via `MotionProfile1D` and writes the resulting µs to the port.
     void setTarget(uint16_t target_us);
 
-    /// INPUT-mapping setter — map a normalised RC pulse from the standard
-    /// `[kRcMinUs, kRcMaxUs]` window proportionally onto the LIVE calibrated
-    /// `[minUs, maxUs]`, then drive there (same clamp + REV reflection as
-    /// `setTarget`).  Callers that only know a "stick position" — GunFx
-    /// yaw/pitch RC passthrough (full-throw input → full calibrated throw),
-    /// landing deploy (`kRcMaxUs`→open end) / retract (`kRcMinUs`→close end)
-    /// — hit the servo's exact endpoints without knowing its limits, and a
-    /// later live re-calibration is honoured automatically because the role
-    /// owns the limits (Rule 42).  Inputs outside the window saturate.
-    void setInput(uint16_t rcUs);
+    /// NORMALISED-position setter — INTENT layer (Rule 42).  `pos` is a
+    /// fraction in `[0, kPosNormFull]` (0 = calibrated MIN-µs end,
+    /// `kPosNormFull` = MAX-µs end) mapped LINEARLY onto the LIVE calibrated
+    /// `[minUs, maxUs]`, then driven via `setTarget` (so REV reflection +
+    /// motion shaping apply once, exactly as for a direct target).  Callers
+    /// express "where in the travel" without knowing the limits — GunFx
+    /// yaw/pitch (RC pulse → fraction), landing deploy (`kPosNormFull` → open
+    /// end) / retract (`0` → close end) — and a later live re-calibration is
+    /// honoured automatically because the role owns the limits.  Out-of-range
+    /// `pos` saturates at the ends.
+    void setNormalizedTarget(uint16_t pos);
 
-    /// Standard RC pulse window mapped by `setInput()`.
-    static constexpr uint16_t kRcMinUs = 1000;
-    static constexpr uint16_t kRcMaxUs = 2000;
+    /// Full-scale value for `setNormalizedTarget()` (mirrors RolePacket::kPosNormFull).
+    static constexpr uint16_t kPosNormFull = 10000;
 
     /// Recoil impulse — add `offsetUs` to the output for `durationMs`, then
     /// auto-remove ("de-jerk").  Rides ON TOP of the aim (the motion profile

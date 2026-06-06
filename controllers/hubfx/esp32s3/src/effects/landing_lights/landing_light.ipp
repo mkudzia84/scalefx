@@ -36,7 +36,7 @@ inline void LandingLight::deploy() {
     // together so the servos start moving in lock-step.
     if (_begin && _sendCtx) _begin(_sendCtx);
     enterPhase(LandingLightPhase::Deploying);
-    commandAllServos(deployInputUs());
+    commandAllServos(deployPosNorm());
     if (_commit && _sendCtx) _commit(_sendCtx);
     // Edge case: zero servos configured (LEDs-only landing light) —
     // the arrival mask is already 0, allServosMask() is 0, so we're
@@ -67,7 +67,7 @@ inline void LandingLight::retract() {
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandLedsOff();
     enterPhase(LandingLightPhase::Retracting);
-    commandAllServos(retractInputUs());
+    commandAllServos(retractPosNorm());
     if (_commit && _sendCtx) _commit(_sendCtx);
     // LEDs-only edge case mirror — no servos to wait on, go straight
     // to RETRACTED so the operator's UI doesn't show a stuck phase.
@@ -111,19 +111,19 @@ inline void LandingLight::enterPhase(uint8_t newPhase) {
     if (_phase) _phase(_phaseCtx, _def.id, newPhase);
 }
 
-inline void LandingLight::commandAllServos(uint16_t inputUs) {
+inline void LandingLight::commandAllServos(uint16_t posNorm) {
     if (!_send) return;
-    // SERVO_SET_INPUT_US — the role maps this RC pulse onto its LIVE
-    // calibrated [min,max], so deploy/retract always reach the exact
-    // endpoint and follow re-calibration (see deployInputUs/retractInputUs).
+    // SERVO_SET_POS_NORM — the role maps this normalised fraction onto its
+    // LIVE calibrated [min,max], so deploy/retract always reach the exact
+    // endpoint and follow re-calibration (see deployPosNorm/retractPosNorm).
     for (uint8_t i = 0; i < _def.numServos; ++i) {
         const PortRef& s = _def.servos[i];
         uint8_t payload[3];
         payload[0] = s.portIdx;
-        SfxWire::putU16LE(&payload[1], inputUs);
+        SfxWire::putU16LE(&payload[1], posNorm);
         if (!_send(_sendCtx, s,
-                   RolePacket::SERVO_SET_INPUT_US, payload, sizeof(payload))) {
-            SFX_LOG_WARN("[ll] %u: servo[%u] SET_INPUT failed", _def.id, (unsigned)i);
+                   RolePacket::SERVO_SET_POS_NORM, payload, sizeof(payload))) {
+            SFX_LOG_WARN("[ll] %u: servo[%u] SET_POS_NORM failed", _def.id, (unsigned)i);
         }
     }
 }

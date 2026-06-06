@@ -22,7 +22,7 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
 
         // Servo actuator
         case RolePacket::SERVO_SET_TARGET:      handleServoSetTarget(p, len);       break;
-        case RolePacket::SERVO_SET_INPUT_US:    handleServoSetInput(p, len);        break;
+        case RolePacket::SERVO_SET_POS_NORM:    handleServoSetPosNorm(p, len);      break;
         case RolePacket::SERVO_RECOIL:          handleServoRecoil(p, len);          break;
         case RolePacket::SERVO_SET_BROADCAST_HZ: handleServoSetBroadcastHz(p, len); break;
         case RolePacket::SERVO_GET_STATUS_REQ:  handleServoGetStatusReq(p, len);    break;
@@ -648,14 +648,14 @@ void RoleServicePolicy::handleServoSetTarget(const uint8_t* p, size_t len) {
     }
 }
 
-void RoleServicePolicy::handleServoSetInput(const uint8_t* p, size_t len) {
+void RoleServicePolicy::handleServoSetPosNorm(const uint8_t* p, size_t len) {
     if (len < 3) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-    const uint8_t  idx   = p[0];
-    const uint16_t rcUs  = SfxWire::getU16LE(&p[1]);
+    const uint8_t  idx = p[0];
+    const uint16_t pos = SfxWire::getU16LE(&p[1]);
     auto* b = _reg->servoAt(idx);
     if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
     if (auto* r = std::get_if<ServoActuatorRole>(&b->role)) {
-        r->setInput(rcUs);   // maps RC [1000,2000] → live calibrated [min,max]
+        r->setNormalizedTarget(pos);   // 0..kPosNormFull → live calibrated [min,max]
         _ctx->sendAck();
     } else {
         _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH);

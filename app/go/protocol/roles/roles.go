@@ -123,11 +123,12 @@ const (
 	RcinValueBroadcast protocol.PacketType = 0x53
 	PpmFrameBroadcast  protocol.PacketType = 0x54
 
-	// Servo actuator overflow (0x48..0x4F is full).  Maps a normalised RC
-	// pulse [1000,2000] proportionally onto the servo's LIVE calibrated
-	// [min,max] (honours REV).  GunFx yaw/pitch passthrough + landing
-	// deploy(2000)/retract(1000) use it to hit the calibrated endpoints.
-	ServoSetInputUs protocol.PacketType = 0x55
+	// Servo actuator overflow (0x48..0x4F is full).  Normalised INTENT
+	// position: a fraction [0, PosNormFull] (0 = calibrated MIN-µs end,
+	// PosNormFull = MAX-µs end) the role maps onto its LIVE calibrated
+	// [min,max] (honours REV).  GunFx yaw/pitch (RC pulse → fraction) +
+	// landing deploy(full)/retract(0) use it to hit the calibrated endpoints.
+	ServoSetPosNorm protocol.PacketType = 0x55
 
 	// LED animator (0x58..0x5F)
 	LedQueueLoad      protocol.PacketType = 0x58
@@ -405,11 +406,15 @@ func CmdServoSetTarget(portIdx byte, targetUs uint16) []byte {
 	return protocol.BuildPacket(ServoSetTarget, append([]byte{portIdx}, protocol.U16LE(targetUs)...), 0)
 }
 
-// CmdServoSetInputUs — drive a servo via the role's RC-input mapping: rcUs
-// in [1000,2000] maps proportionally onto the servo's live calibrated
-// [min,max] (honours REV).  Inputs outside the window saturate at the ends.
-func CmdServoSetInputUs(portIdx byte, rcUs uint16) []byte {
-	return protocol.BuildPacket(ServoSetInputUs, append([]byte{portIdx}, protocol.U16LE(rcUs)...), 0)
+// PosNormFull is the full-scale value for CmdServoSetPosNorm (0 = calibrated
+// MIN-µs end, PosNormFull = MAX-µs end).  Mirrors RolePacket::kPosNormFull.
+const PosNormFull uint16 = 10000
+
+// CmdServoSetPosNorm — drive a servo via the role's normalised-position
+// mapping: pos in [0, PosNormFull] maps linearly onto the servo's live
+// calibrated [min,max] (honours REV).  Out-of-range saturates at the ends.
+func CmdServoSetPosNorm(portIdx byte, pos uint16) []byte {
+	return protocol.BuildPacket(ServoSetPosNorm, append([]byte{portIdx}, protocol.U16LE(pos)...), 0)
 }
 func CmdServoGetStatus(portIdx byte) []byte {
 	return protocol.BuildPacket(ServoGetStatusReq, []byte{portIdx}, 0)

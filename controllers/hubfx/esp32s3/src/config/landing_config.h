@@ -28,10 +28,10 @@
  * NOTE (2026-06-06): `open_us` / `close_us` encode only the DEPLOY
  * DIRECTION (which mechanical end is "deployed"), NOT the literal target.
  * `LandingLight::deploy()` / `retract()` drive each servo via
- * `SERVO_SET_INPUT_US` (a full-throw RC pulse — 2000 open / 1000 close) that
- * the ROLE maps onto its own LIVE calibrated [min,max] (Rule 42/44), so the
- * servo always travels the full calibrated throw regardless of the stored µs
- * AND follows a later re-calibration automatically.  `open_us >= close_us` ⇒
+ * `SERVO_SET_POS_NORM` (a normalised fraction — full = open end / 0 = close
+ * end) that the ROLE maps onto its own LIVE calibrated [min,max] (Rule 42/44),
+ * so the servo always travels the full calibrated throw regardless of the
+ * stored µs AND follows a later re-calibration automatically.  `open_us >= close_us` ⇒
  * deploy drives to the calibrated MAX end (else the MIN end).  The travel
  * limits live in the servo's `/hubfx.yaml` ports[].profile, never here.
  *

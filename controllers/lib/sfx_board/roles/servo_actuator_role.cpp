@@ -69,20 +69,18 @@ void ServoActuatorRole::setTarget(uint16_t target_us) {
     (void)prev;   // no per-edge bookkeeping needed
 }
 
-void ServoActuatorRole::setInput(uint16_t rcUs) {
-    // Saturate to the RC window, then linearly map onto the CURRENT
-    // calibrated [_minUs, _maxUs] (live — so a re-calibration is picked up
-    // on the next input).  Hand the mapped position to setTarget() so it
-    // gets the identical clamp + inverted reflection a direct target does
-    // (no double-reflection: the proportional position is in SERVO space
-    // pre-reflection, exactly like a setTarget() argument).
-    uint16_t in = rcUs;
-    if (in < kRcMinUs) in = kRcMinUs;
-    if (in > kRcMaxUs) in = kRcMaxUs;
-    const uint16_t pos = static_cast<uint16_t>(
-        _minUs + static_cast<uint32_t>(_maxUs - _minUs) * (in - kRcMinUs)
-                     / (kRcMaxUs - kRcMinUs));
-    setTarget(pos);
+void ServoActuatorRole::setNormalizedTarget(uint16_t pos) {
+    // Saturate the fraction, then map it LINEARLY onto the CURRENT calibrated
+    // [_minUs, _maxUs] (live — so a re-calibration is picked up on the next
+    // command).  Hand the mapped µs to setTarget() so it gets the identical
+    // clamp + inverted reflection a direct target does (no double-reflection:
+    // the position is in SERVO space pre-reflection, exactly like a setTarget()
+    // argument — kept linear, NOT piecewise-through-centre, so the reflection
+    // stays correct under REV).
+    if (pos > kPosNormFull) pos = kPosNormFull;
+    const uint16_t us = static_cast<uint16_t>(
+        _minUs + static_cast<uint32_t>(_maxUs - _minUs) * pos / kPosNormFull);
+    setTarget(us);
 }
 
 void ServoActuatorRole::applyRecoil(int16_t offsetUs, uint16_t durationMs) {

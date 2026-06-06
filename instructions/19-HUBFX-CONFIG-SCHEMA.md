@@ -142,15 +142,21 @@ off immediately, then servos drive to their **stowed end**.
 
 > **`open_us` / `close_us` are DIRECTION ONLY** (since 2026-06-06). They no longer
 > set the literal target µs — `LandingLight::deploy()`/`retract()` drive each servo
-> via `SERVO_SET_INPUT_US` (0x55): a full-throw RC pulse (2000 = open end, 1000 =
-> close end) that the **role maps onto its own LIVE calibrated `[min,max]`** (Rule
-> 42/44). So the servo always travels the full calibrated throw even if these still
-> hold a mid-range value, **and a later re-calibration is honoured automatically**
-> (the role re-maps on the next deploy/retract — no re-save needed). `open_us >=
-> close_us` ⇒ deploy → calibrated **MAX**-µs end (else the **MIN**-µs end). Physical
-> wiring direction is the servo's own **REV** flag (orthogonal). The travel limits
-> live in the servo's `/hubfx.yaml` `ports[].profile`, never here. Studio's "Deploy
-> direction" toggle just flips these two so the operator never types µs.
+> via `SERVO_SET_POS_NORM` (0x55): a normalised fraction `[0, 10000]` (full = open
+> end, 0 = close end) that the **role maps linearly onto its own LIVE calibrated
+> `[min,max]`** (Rule 42/44). So the servo always travels the full calibrated throw
+> even if these still hold a mid-range value, **and a later re-calibration is
+> honoured automatically** (the role re-maps on the next deploy/retract — no re-save
+> needed). `open_us >= close_us` ⇒ deploy → calibrated **MAX**-µs end (else the
+> **MIN**-µs end). Physical wiring direction is the servo's own **REV** flag
+> (orthogonal). The travel limits live in the servo's `/hubfx.yaml` `ports[].profile`,
+> never here. Studio's "Deploy direction" toggle just flips these two so the operator
+> never types µs.
+>
+> `SERVO_SET_POS_NORM` is the general **INTENT-layer position verb** (Rule 42): any
+> effect that wants "drive this servo to a fraction of its travel" sends it and the
+> role owns the limits + REV. GunFx yaw/pitch use the same command (RC pulse →
+> fraction) for proportional turret tracking.
 
 ```yaml
 lights:

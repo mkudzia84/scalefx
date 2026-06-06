@@ -34,6 +34,7 @@
 
 #include <cstdint>
 
+#include <serial/roles.h>          // RolePacket::kPosNormFull (normalised-pos full scale)
 #include "../effect_id.h"
 #include "landing_light_protocol.h"
 
@@ -132,24 +133,24 @@ public:
 
 private:
     void enterPhase(uint8_t newPhase);
-    void commandAllServos(uint16_t inputUs);   ///< RC pulse → role maps to calibrated endpoint
+    void commandAllServos(uint16_t posNorm);   ///< normalised pos → role maps to calibrated endpoint
     void commandLedsOn();
     void commandLedsOff();
 
     /// Deploy / retract drive each servo to its CALIBRATED endpoint via the
-    /// role's RC-input mapping (`SERVO_SET_INPUT_US`): a full-throw RC pulse
-    /// maps onto the servo's LIVE calibrated [min,max] (Rule 42/44 — the role
-    /// owns calibration), so the servo always lands exactly on the calibrated
-    /// end AND a later re-calibration is picked up automatically (the role
-    /// re-maps on the next command).  `openUs`/`closeUs` encode only DIRECTION
-    /// (which mechanical end is "deployed") — their literal µs is ignored for
-    /// travel, so a landing.yaml that still stores a mid-range 1900/1100 still
-    /// reaches the full throw.  Physical wiring direction is the servo's own
-    /// REV flag (orthogonal — set in calibration).
-    static constexpr uint16_t kInputOpenEnd  = 2000;  ///< full-throw → role's calibrated MAX-µs end
-    static constexpr uint16_t kInputCloseEnd = 1000;  ///< full-throw → role's calibrated MIN-µs end
-    uint16_t deployInputUs()  const { return _def.openUs >= _def.closeUs ? kInputOpenEnd  : kInputCloseEnd; }
-    uint16_t retractInputUs() const { return _def.openUs >= _def.closeUs ? kInputCloseEnd : kInputOpenEnd;  }
+    /// role's normalised-position command (`SERVO_SET_POS_NORM`): a full / zero
+    /// fraction maps onto the servo's LIVE calibrated [min,max] (Rule 42/44 —
+    /// the role owns calibration), so the servo always lands exactly on the
+    /// calibrated end AND a later re-calibration is picked up automatically (the
+    /// role re-maps on the next command).  `openUs`/`closeUs` encode only
+    /// DIRECTION (which mechanical end is "deployed") — their literal µs is
+    /// ignored for travel, so a landing.yaml that still stores a mid-range
+    /// 1900/1100 still reaches the full throw.  Physical wiring direction is the
+    /// servo's own REV flag (orthogonal — set in calibration).
+    static constexpr uint16_t kPosOpenEnd  = RolePacket::kPosNormFull;      ///< → role's calibrated MAX-µs end
+    static constexpr uint16_t kPosCloseEnd = 0;                              ///< → role's calibrated MIN-µs end
+    uint16_t deployPosNorm()  const { return _def.openUs >= _def.closeUs ? kPosOpenEnd  : kPosCloseEnd; }
+    uint16_t retractPosNorm() const { return _def.openUs >= _def.closeUs ? kPosCloseEnd : kPosOpenEnd;  }
     /// All-arrived mask = (1 << numServos) - 1.  Computed once per
     /// deploy/retract to avoid recomputing on every event.
     uint8_t allServosMask() const {

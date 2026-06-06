@@ -141,13 +141,16 @@ namespace RolePacket {
 
     // ── Servo actuator role (overflow — 0x48..0x4F is full) ───────────
     // Servo-role command that didn't fit the 0x48..0x4F block (cf. SERVO_RECOIL
-    // @0x46 / SERVO_SET_BROADCAST_HZ @0x47).  Maps a normalised RC pulse
-    // [1000,2000] µs proportionally onto the servo's LIVE calibrated
-    // [minUs,maxUs] window (honours REV).  Used for GunFx yaw/pitch RC
-    // passthrough (full-throw input → full calibrated throw) and landing
-    // deploy(2000)/retract(1000) (→ exact open/close endpoints).  See
-    // ServoActuatorRole::setInput().
-    constexpr uint8_t SERVO_SET_INPUT_US    = 0x55;  ///< [portIdx:u8][rcUs:u16LE] → ACK
+    // @0x46 / SERVO_SET_BROADCAST_HZ @0x47).  INTENT-layer "normalised position"
+    // (Rule 42): a fraction in [0, kPosNormFull] (0 = calibrated MIN-µs end,
+    // kPosNormFull = MAX-µs end) that the ROLE maps linearly onto its LIVE
+    // calibrated [minUs,maxUs] and reflects for REV.  Decoupled from any input
+    // unit — effects express "where in the travel" and the role owns the limits,
+    // so a re-calibration is honoured on the next command with no plumbing.
+    // GunFx yaw/pitch convert their RC pulse → fraction; landing sends full
+    // (open end) / zero (close end).  See ServoActuatorRole::setNormalizedTarget().
+    constexpr uint8_t SERVO_SET_POS_NORM    = 0x55;  ///< [portIdx:u8][pos:u16LE 0..10000] → ACK
+    constexpr uint16_t kPosNormFull         = 10000; ///< pos == kPosNormFull → calibrated MAX end
 
     // ── LED animator role (0x58..0x5E) ────────────────────────────────
     constexpr uint8_t LED_QUEUE_LOAD        = 0x58;  ///< [portIdx:u8][count:u8] × event(N bytes) → ACK

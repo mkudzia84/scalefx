@@ -21,9 +21,9 @@
  *     - One fan pulse if `smoke.fanMode == FN_PUFF_PER_FIRE`
  *     - ShotEvent callback (audio + wire async)
  *
- *   Yaw + pitch run as one-line passthroughs: read input channel →
- *   `SERVO_SET_INPUT_US` to the axis's servo port, where the role maps the
- *   RC pulse [1000,2000] proportionally onto the servo's calibrated
+ *   Yaw + pitch run as one-line passthroughs: read input channel → convert
+ *   the RC pulse to a normalised fraction → `SERVO_SET_POS_NORM` to the
+ *   axis's servo port, where the role maps it onto the servo's calibrated
  *   [min,max] (full input throw → full calibrated throw).  Motion shaping
  *   (clamp / speed / accel / jerk) lives on the `ServoActuatorRole` attached
  *   to the port — set once in `/hubfx.yaml`'s `ports[]` block, never
@@ -222,11 +222,11 @@ private:
     void commandHeater(bool on);
     void commandFanPct(uint8_t pct);
     void commandServoTargetUs(const PortRef& port, uint16_t us);
-    /// Send SERVO_SET_INPUT_US — the axis servo's role maps this RC pulse
-    /// proportionally onto its calibrated [min,max] (Rule 42).  Used for the
-    /// yaw/pitch passthrough so a full-throw input drives the full calibrated
-    /// throw instead of saturating at the limits.
-    void commandServoInputUs(const PortRef& port, uint16_t rcUs);
+    /// Send SERVO_SET_POS_NORM — convert an RC pulse to a normalised fraction
+    /// and let the axis servo's role map it onto its LIVE calibrated [min,max]
+    /// (Rule 42).  Used for the yaw/pitch passthrough so a full-throw input
+    /// drives the full calibrated throw instead of saturating at the limits.
+    void commandServoPosNorm(const PortRef& port, uint16_t rcUs);
 
     /// Find the RofItem whose band contains `pulseUs`. Returns 0xFF
     /// when no band matches (out-of-band = no item armed).
