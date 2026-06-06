@@ -15,8 +15,21 @@ reinvent (see §7 archive map).
 > door legs (`DoorSequencer`); all 4 coord modes (`independent`/`door_sync`/
 > `full_sync`/`sequenced`) + the multi-gear barrier coordinator ship; `GEAR_ALL`
 > drives every channel; `GEAR_STATUS_RESP` + `GEAR_PHASE_EVENT` carry the
-> trailing `subPhase` (Rule 11). **Remaining (this plan):** the Studio Gear
-> panel (§3) + the motor-calibration popup (§3.4) — phases 4–5.
+> trailing `subPhase` (Rule 11).
+>
+> **Studio panel landed 2026-06-07:** `GearPanel.svelte` + `gear.ts`
+> (`gearConfigSource`, Rule 46) + `app_gear.go` (LoadGearConfig/SaveGearConfig v2
+> YAML; GearDeploy/Retract/Stop/All/Reset/Status; `gear:phase` live stream). Tab
+> gated on hubfx + gearcontrol domain. Multi-channel editor: motor picker (R49) +
+> ≤2 door servos (ServoWidget+calib) + door-pairing/close-policy radios + coord
+> selector + fleet & per-channel Deploy/Retract action-toggles + live phase·
+> subphase pill. wails build + vitest green.
+>
+> **Remaining:** (a) **hardware bench validation** of the full sequence on a wired
+> hub + expander + motor + servos; (b) the **hub-forwarded motor manual-jog** popup
+> (§3.4 — needs a `GEAR_MANUAL_HOLD` packet so the gear yields the motor + Studio
+> bindings wrapping topology `sendRoleCommand` for BiMotor move/seek/guard). The
+> Motor modal currently does deploy/retract bench-test + duty/timeout only.
 
 > Scope note: the gear MOTOR lives on a GearControl **expander** (BiDcMotor role
 > on an H-bridge); the door SERVOS are ServoActuator roles (expander or hub). All
