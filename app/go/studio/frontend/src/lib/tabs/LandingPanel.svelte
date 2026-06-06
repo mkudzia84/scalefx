@@ -33,21 +33,32 @@
     import { lightfxDraft, setLandingGroupProgram } from '../lightfx'
     import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
     import ServoWidget from '../components/ServoWidget.svelte'
+    import ServoIoWidget from '../components/ServoIoWidget.svelte'
+    import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     import type { ServoProfileT } from '../servo_calibration'
 
-    /** Read the device-model profile for `(guid, idx)` so the
-     *  ServoWidget can show its summary + pre-seed the calibration
-     *  dialog with the current values.  Returns null when the port
-     *  has no profile yet (role defaults). */
-    function profileFor(port: PortRefT | null | undefined): ServoProfileT | null {
-        if (!port || !port.kind) return null
-        for (const p of $deviceModel.ports) {
-            if (p.ref.guid === port.guid && p.kindName === port.kind && p.ref.index === port.idx) {
-                return (p.profile as any) ?? null
+    /** Read the device-model profile for `(guid, idx)` so ServoWidget /
+     *  ServoIoWidget show the summary + the calibration dialog pre-seeds the
+     *  current values.  REACTIVE FACTORY (Rule 44 + the Svelte store trap):
+     *  a plain function that reads `$deviceModel` inside is invisible to Svelte,
+     *  so `profile={profileFor(...)}` froze on first render and never picked up
+     *  a Calibrate→Save device-model update — the "calibration doesn't work on
+     *  the landing tab" bug.  Rebuilding the closure whenever `$deviceModel`
+     *  changes makes every call site re-run.  (GunFxPanel uses the identical
+     *  pattern.) */
+    function makeProfileForPort(dm: typeof $deviceModel) {
+        return (port: PortRefT | null | undefined): ServoProfileT | null => {
+            if (!port || !port.kind) return null
+            for (const p of dm.ports) {
+                if (p.ref.guid === port.guid && p.kindName === port.kind
+                    && p.ref.index === port.idx && p.profile) {
+                    return { ...p.profile } as ServoProfileT
+                }
             }
+            return null
         }
-        return null
     }
+    $: profileForPort = makeProfileForPort($deviceModel)
     /** Compact label for the calibration dialog header — same shape
      *  the port-picker shows (alias-aware). */
     function labelFor(port: PortRefT | null | undefined): string {
@@ -78,9 +89,16 @@
         loadLandingConfig().catch(e => { error = String(e) })
         refreshLandingStatus().catch(() => {})
         statusTimer = setInterval(() => { refreshLandingStatus().catch(() => {}) }, 1500)
+        // Live servo-position stream (20 Hz) for the ServoIoWidget output bars.
+        installServoStatusListener()
+        setServoLiveView(true).catch(() => {})
         return () => unsub()
     })
-    onDestroy(() => { unsub(); if (statusTimer) clearInterval(statusTimer) })
+    onDestroy(() => {
+        unsub()
+        if (statusTimer) clearInterval(statusTimer)
+        setServoLiveView(false).catch(() => {})
+    })
 
     function mark(): void { landingDraft.set(cfg) }
 
@@ -398,6 +416,23 @@
                     </select>
                     <button class="small danger btn-slot" on:click={() => removeServo(light.id, i)} disabled={busy}>× Remove</button>
                 </div>
+                {#if s.port && s.port.kind}
+                    {@const prof = profileForPort(s.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
+                    {@const sv   = $servoStatus[servoStatusKey(s.port.guid, s.port.idx)]}
+                    <!-- Live servo output bar (same ServoIoWidget GunFx yaw/pitch
+                         uses; input side hidden — a landing servo is deploy/retract
+                         driven, not RC-axis driven).  Position from the 20 Hz
+                         servo_status stream enabled in onMount. -->
+                    <div class="form-row servo-widget-row">
+                        <span class="field-label"></span>
+                        <ServoIoWidget
+                            hasInput={false}
+                            hasServo={true}
+                            outputLabel="Servo output"
+                            minUs={prof.minUs} maxUs={prof.maxUs} centerUs={prof.centerUs} reversed={prof.reversed}
+                            servo={sv ?? null} />
+                    </div>
+                {/if}
                 <!-- Per-servo profile widget (Rule 44 + new popup pattern):
                      compact summary + reversed toggle + Calibrate button.
                      Profile data flows through the device model (server-
@@ -407,7 +442,7 @@
                     <ServoWidget
                         port={s.port}
                         portLabel={labelFor(s.port)}
-                        profile={profileFor(s.port)}
+                        profile={profileForPort(s.port)}
                         busy={busy} />
                 </div>
             {/each}

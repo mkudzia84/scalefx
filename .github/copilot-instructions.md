@@ -1844,7 +1844,36 @@ The IO tab's `PortRoleConfig.svelte` does **not** show a servo motion-profile ed
 
 **When two features use the same servo:** still impossible (port claim is exclusive). One profile per servo, one feature using it; no conflict.
 
-References: [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) Turret section, [ServoProfileEditor.svelte](../app/go/studio/frontend/src/lib/components/ServoProfileEditor.svelte), [hubfx_config.h `populate()`](../controllers/hubfx/esp32s3/src/config/hubfx_config.h) profile parser, [role_service.cpp `attachServoActuator`](../controllers/lib/sfx_board/server/role_service.cpp).
+**Live servo-output bar — every feature panel that drives a servo MUST render `ServoIoWidget` per servo (Rule 44 extension, 2026-06-03).** The same widget GunFx uses for yaw/pitch — a live bar fed by the 20 Hz `servo_status` stream — appears on EVERY servo-driving panel (GunFx turret, LandingFx servos, any future servo effect), so the operator sees the actual commanded position move, not just the calibrated limits. Boilerplate per panel:
+
+```svelte
+// imports
+import ServoIoWidget from '../components/ServoIoWidget.svelte'
+import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
+// onMount:  installServoStatusListener(); setServoLiveView(true).catch(() => {})
+// onDestroy: setServoLiveView(false).catch(() => {})
+
+{@const prof = profileForPort(s.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
+{@const sv   = $servoStatus[servoStatusKey(s.port.guid, s.port.idx)]}
+<ServoIoWidget hasInput={hasRcAxis} inputUs={liveUs} inputValid={liveValid}
+               hasServo={true} minUs={prof.minUs} maxUs={prof.maxUs} centerUs={prof.centerUs}
+               reversed={prof.reversed} servo={sv ?? null} />
+```
+
+An RC-axis-driven servo (GunFx yaw/pitch) sets `hasInput={true}` + feeds `inputUs`/`inputValid` from `$liveChannels`; a deploy/retract servo (LandingFx) sets `hasInput={false}` (output-only bar, no input row).
+
+**Device-model lookups MUST go through a REACTIVE FACTORY, never a plain function (Svelte store trap).** A helper that reads `$deviceModel` *inside its body* is invisible to Svelte's dependency tracker — `{@const x = profileFor(port)}` will NOT re-run when the model updates, so the widget freezes at its first value (this was the "calibration works on GunFx but not LandingFx" bug, 2026-06-03 — GunFx used the factory, Landing used a plain fn). Always:
+
+```svelte
+function makeProfileForPort(dm) {
+    return (port) => { /* walks dm.ports */ }
+}
+$: profileForPort = makeProfileForPort($deviceModel)   // ← re-derives the closure when $deviceModel changes
+```
+
+The same trap applies to ANY store-derived helper in a Studio panel (port pools, phase pills, claim checks) — pass the store value as an explicit argument or wrap it in a `$:`-derived factory; never close over a `$store` inside a function the template calls as `{@const}`.
+
+References: [GunFxPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GunFxPanel.svelte) Turret section (`makeProfileForPort` + `ServoIoWidget`), [LandingPanel.svelte](../app/go/studio/frontend/src/lib/tabs/LandingPanel.svelte) servo rows, [ServoIoWidget.svelte](../app/go/studio/frontend/src/lib/components/ServoIoWidget.svelte), [ServoProfileEditor.svelte](../app/go/studio/frontend/src/lib/components/ServoProfileEditor.svelte), [hubfx_config.h `populate()`](../controllers/hubfx/esp32s3/src/config/hubfx_config.h) profile parser, [role_service.cpp `attachServoActuator`](../controllers/lib/sfx_board/server/role_service.cpp).
 
 ### 45. Effect-Panel Header Cluster: [Enable-Button] [Apply] [dirty-flag] (no scattered toggles)
 
