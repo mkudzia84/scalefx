@@ -143,12 +143,12 @@ func cmdServoProfileGet(a *App, args []string) error {
 		return err
 	}
 	Hdr(fmt.Sprintf("servo[%d] motion profile", idx))
-	fmt.Fprintf(out, "  range:       %d … %d µs\n", p.MinUs, p.MaxUs)
-	fmt.Fprintf(out, "  center:      %d µs\n", p.CenterUs)
-	fmt.Fprintf(out, "  reversed:    %v\n", p.Reversed)
-	fmt.Fprintf(out, "  max speed:   %d µs/s\n", p.MaxSpeedUsPerSec)
-	fmt.Fprintf(out, "  max accel:   %d µs/s²\n", p.MaxAccelUsPerSec2)
-	fmt.Fprintf(out, "  max jerk:    %d µs/s³  %s\n", p.MaxJerkUsPerSec3,
+	fmt.Fprintf(out, "  %s %s … %s µs\n", cDim("range:      "), cCyan(fmt.Sprintf("%d", p.MinUs)), cCyan(fmt.Sprintf("%d", p.MaxUs)))
+	fmt.Fprintf(out, "  %s %s µs\n", cDim("center:     "), cCyan(fmt.Sprintf("%d", p.CenterUs)))
+	fmt.Fprintf(out, "  %s %s\n", cDim("reversed:   "), Bool(p.Reversed))
+	fmt.Fprintf(out, "  %s %d µs/s\n", cDim("max speed:  "), p.MaxSpeedUsPerSec)
+	fmt.Fprintf(out, "  %s %d µs/s²\n", cDim("max accel:  "), p.MaxAccelUsPerSec2)
+	fmt.Fprintf(out, "  %s %d µs/s³  %s\n", cDim("max jerk:   "), p.MaxJerkUsPerSec3,
 		cDim(map[bool]string{true: "(S-curve)", false: "(trapezoidal)"}[p.MaxJerkUsPerSec3 > 0]))
 	return nil
 }
@@ -219,11 +219,11 @@ func cmdMotorElementGet(a *App, args []string) error {
 		return err
 	}
 	Hdr(fmt.Sprintf("motor[%d] element", idx))
-	fmt.Fprintf(out, "  element:  %d mV  (scaling=%s)\n", e.ElementMv, scalingName(e.Scaling))
-	fmt.Fprintf(out, "  port rail: %d mV  %s\n", e.PortRailMv, cDim("(read-only, from port descriptor)"))
+	fmt.Fprintf(out, "  %s %s mV  %s\n", cDim("element:  "), cCyan(fmt.Sprintf("%d", e.ElementMv)), cDim("(scaling="+scalingName(e.Scaling)+")"))
+	fmt.Fprintf(out, "  %s %s mV  %s\n", cDim("port rail:"), cCyan(fmt.Sprintf("%d", e.PortRailMv)), cDim("(read-only, from port descriptor)"))
 	if e.ElementMv > 0 && e.PortRailMv > 0 && e.ElementMv < e.PortRailMv {
 		ratio := float64(e.ElementMv) / float64(e.PortRailMv)
-		fmt.Fprintf(out, "  duty cap: %.0f%% %s\n", ratio*100,
+		fmt.Fprintf(out, "  %s %s %s\n", cDim("duty cap: "), cYellow(fmt.Sprintf("%.0f%%", ratio*100)),
 			cDim(fmt.Sprintf("(at 100%% intent, scaling=%s)", scalingName(e.Scaling))))
 	}
 	return nil
