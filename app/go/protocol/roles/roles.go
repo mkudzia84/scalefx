@@ -130,6 +130,12 @@ const (
 	// landing deploy(full)/retract(0) use it to hit the calibrated endpoints.
 	ServoSetPosNorm protocol.PacketType = 0x55
 
+	// async TAG_ASYNC: [portIdx:u8].  Monitored servo motion-complete signal
+	// (rising edge of atTarget() after a commanded move) — the gear
+	// undercarriage door legs wait on it (instructions/29 decision #1).
+	// Distinct from ServoTargetReached (0x4B, carries pos_us telemetry).
+	ServoMotionDone protocol.PacketType = 0x56
+
 	// LED animator (0x58..0x5F)
 	LedQueueLoad      protocol.PacketType = 0x58
 	LedStart          protocol.PacketType = 0x59
@@ -956,6 +962,7 @@ func init() {
 		ServoStatusResp:      "SERVO_STATUS_RESP",
 		ServoTargetReached:   "SERVO_TARGET_REACHED",
 		ServoMotionUpdate:    "SERVO_MOTION_UPDATE",
+		ServoMotionDone:      "SERVO_MOTION_DONE",
 		ServoSetProfile:      "SERVO_SET_PROFILE",
 		ServoGetProfileReq:   "SERVO_GET_PROFILE_REQ",
 		ServoProfileResp:     "SERVO_PROFILE_RESP",

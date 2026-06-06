@@ -160,6 +160,7 @@ private:
     void emitRoleDetached         (uint8_t portKind, uint8_t portIdx);
     void emitLedQueueDone         (uint8_t portIdx);
     void emitServoTargetReached   (uint8_t portIdx, uint16_t pos_us);
+    void emitServoMotionDone      (uint8_t portIdx);
     void emitMotorStallEvent      (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
     void emitBiMotorStallEvent    (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
     void emitBiMotorEndstopResult (uint8_t portIdx, uint8_t outcome,

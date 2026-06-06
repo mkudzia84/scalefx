@@ -18,9 +18,9 @@ Multi-platform embedded effects: one **ESP32-S3 HubFX** master + up to N **Pico 
   - Ports `0x10–0x3F` · Roles `0x40–0x7F`
   - Expander `0x80–0x87` · Topology `0x88–0x8E`
   - Config `0x90–0x92` + `0xAC` · Storage `0x93–0xA5` + `0xA9` + `0xB0` (upload-diag `0xA4/0xA5`) · Codec `0xAA–0xAB`
-  - **Effects:** LandingLight `0xB1–0xB6` · LightFX `0xB7–0xBD` · GearControl `0xBE–0xC6` **+ `0xD7–0xD9`** · EngineFX `0xC7–0xCB` · GunFX `0xCC–0xD2` **+ `0xE2–0xE5`** (manual override + verbose status) · Alerts `0xD3–0xD6`
+  - **Effects:** LandingLight `0xB1–0xB6` · LightFX `0xB7–0xBD` · GearControl `0xBE–0xC6` **+ `0xD7`** (GEAR_RESET; `0xD8/0xD9` freed — GEAR_CALIBRATE/CALIB_CANCEL removed per instructions/29 §6a #3) · EngineFX `0xC7–0xCB` · GunFX `0xCC–0xD2` **+ `0xE2–0xE5`** (manual override + verbose status) · Alerts `0xD3–0xD6`
   - **Audio control `0xDA–0xE1`** · **Audio preload diag `0xE6–0xE7`** · **Input routing `0xE8–0xEA`** (global RC→effect gate, InputDispatcher) · BatteryConfig `0xEE` · Board/Core lifecycle `0xEF–0xFF`
-  - Free: `0x00–0x0F`, `0x8F`, `0xA6–0xA8`, `0xAD–0xAF`, `0xEB–0xED`.
+  - Free: `0x00–0x0F`, `0x8F`, `0xA6–0xA8`, `0xAD–0xAF`, `0xD8–0xD9` (ex-GearCalibrate), `0xEB–0xED`.
   - ⚠️ This index DRIFTS — before adding a packet, grep the actual `ownsType()` predicates in `controllers/hubfx/esp32s3/src/`, not just this map. Past collisions all came from the map lagging the code (e.g. GunFX silently grew into `0xE2–0xE5`, so a later AUDIO_PRELOAD placed there was swallowed by gunfx's earlier `ownsType` → `MISSING_PARAM` NACKs). Append at the next truly-free value; never into a neighbour's block.
 - **Error ranges (comprehensive allocation, 2026-05-23 sweep):**
   - `0x00–0x1F` Serial / generic (wire framing + param validation)

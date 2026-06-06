@@ -366,6 +366,11 @@ bool RoleServicePolicy::attachServoActuator(ServoBinding& b, uint8_t portIdx,
     role.setReversed(prof.inverted);
     role.setProfile(prof);
     role.onTargetReached([this, portIdx](uint16_t pos) { emitServoTargetReached(portIdx, pos); });
+    // SERVO_MOTION_DONE — monitored completion for gear door sequencing
+    // (instructions/29 decision #1).  Same rising edge as TARGET_REACHED;
+    // a separate, lighter [portIdx] async the hub gear service routes to
+    // the right Gear's DoorSequencer.
+    role.onMotionDone([this, portIdx]() { emitServoMotionDone(portIdx); });
     SFX_LOG_INFO("[servo] attach idx=%u  min=%u max=%u rev=%u  (cfgLen=%u)",
                  (unsigned)portIdx, (unsigned)role.profile().minUs,
                  (unsigned)role.profile().maxUs, (unsigned)prof.inverted, (unsigned)cfgLen);
@@ -1242,6 +1247,12 @@ void RoleServicePolicy::emitServoTargetReached(uint8_t portIdx, uint16_t pos_us)
     SfxWire::putU16LE(&buf[1], pos_us);
     _ctx->sendRawPacket(RolePacket::SERVO_TARGET_REACHED, SfxWire::TAG_ASYNC, buf, sizeof buf);
     fireLocalAsync(RolePacket::SERVO_TARGET_REACHED, buf, sizeof buf);
+}
+
+void RoleServicePolicy::emitServoMotionDone(uint8_t portIdx) {
+    uint8_t buf[1] = { portIdx };
+    _ctx->sendRawPacket(RolePacket::SERVO_MOTION_DONE, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    fireLocalAsync(RolePacket::SERVO_MOTION_DONE, buf, sizeof buf);
 }
 
 void RoleServicePolicy::emitMotorStallEvent(uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms) {

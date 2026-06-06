@@ -131,11 +131,15 @@ void ServoActuatorRole::tick() {
     }
     _outUs = finalUs;
 
-    // onTargetReached reflects the AIM settling (recoil is transient).
+    // onTargetReached / onMotionDone reflect the AIM settling (recoil is
+    // transient).  Both fire ONCE on the rising edge of atTarget() after a
+    // commanded move; `_wasAtTarget` starts true so the initial idle state
+    // never fires (a target command clears it in setTarget()).
     if (_mp.atTarget()) {
         if (!_wasAtTarget) {
             _wasAtTarget = true;
             if (_onTargetReached) _onTargetReached(finalUs);
+            if (_onMotionDone)    _onMotionDone();
         }
     }
 }

@@ -152,6 +152,15 @@ namespace RolePacket {
     constexpr uint8_t SERVO_SET_POS_NORM    = 0x55;  ///< [portIdx:u8][pos:u16LE 0..10000] → ACK
     constexpr uint16_t kPosNormFull         = 10000; ///< pos == kPosNormFull → calibrated MAX end
 
+    /// async TAG_ASYNC: [portIdx:u8].  Fired on the RISING edge of the servo
+    /// role's `atTarget()` after a commanded move (motion complete) — the
+    /// MONITORED door-sequencing completion signal (gear undercarriage door
+    /// legs wait on it, never a timer; instructions/29 decision #1).  Distinct
+    /// from SERVO_TARGET_REACHED (0x4B, carries pos_us telemetry): this is the
+    /// lightweight per-door done event the gear DoorSequencer consumes.  0x56
+    /// (0x48..0x4F servo block is full; 0x57 stays free).
+    constexpr uint8_t SERVO_MOTION_DONE     = 0x56;  ///< async TAG_ASYNC: [portIdx:u8]
+
     // ── LED animator role (0x58..0x5E) ────────────────────────────────
     constexpr uint8_t LED_QUEUE_LOAD        = 0x58;  ///< [portIdx:u8][count:u8] × event(N bytes) → ACK
     constexpr uint8_t LED_START             = 0x59;  ///< [portIdx:u8] → ACK
@@ -258,7 +267,7 @@ namespace RolePacket {
         ///< window_ms is the sustained-over-threshold filter, shared by
         ///< both modes (0 = leave unchanged).
         ///< [12:14] optional absolute over-current ceiling_mA (Rule 11; 0 = off).
-    // (0x56/0x57 free.)
+    // (0x56 = SERVO_MOTION_DONE; 0x57 free.)
 
     // ── SBUS input role (0x78..0x7B) ──────────────────────────────────
     constexpr uint8_t SBUS_GET_FRAME_REQ      = 0x78;  ///< [portIdx:u8] → SBUS_FRAME_RESP

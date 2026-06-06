@@ -42,6 +42,7 @@ bool GearControlServicePolicyT<TTopology, TLandingService>::begin(
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::applyDefs() {
     if (!_topo) return;   // begin() hasn't bound topology yet
+    _seqActive = 0xFF;
     for (uint8_t i = 0; i < _numDefs; ++i) {
         _gears[i].configure(_defs[i],
                             &GearControlServicePolicyT::sendRoleCmdTrampoline,
@@ -50,6 +51,7 @@ void GearControlServicePolicyT<TTopology, TLandingService>::applyDefs() {
                             &GearControlServicePolicyT::commitBatchTrampoline,
                             &GearControlServicePolicyT::phaseEventTrampoline,
                             static_cast<void*>(this));
+        applySyncFlags(_gears[i]);
     }
     claimPorts();
 }
@@ -73,6 +75,71 @@ void GearControlServicePolicyT<TTopology, TLandingService>::update() {
     for (uint8_t i = 0; i < _numDefs; ++i) {
         _gears[i].update(now);
     }
+    releaseBarriersIfReady();
+}
+
+// ─── Multi-gear coordinator ─────────────────────────────────────────
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::applySyncFlags(Gear& g) const {
+    switch (_coordMode) {
+        case CoordMode::DoorSync:  g.setSyncBarriers(/*doors=*/true,  /*motor=*/false); break;
+        case CoordMode::FullSync:  g.setSyncBarriers(/*doors=*/true,  /*motor=*/true);  break;
+        case CoordMode::Independent:
+        case CoordMode::Sequenced:
+        default:                   g.setSyncBarriers(/*doors=*/false, /*motor=*/false); break;
+    }
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::releaseBarriersIfReady() {
+    // DoorSync / FullSync: advance every mid-cycle gear past a barrier once
+    // ALL mid-cycle gears sit at that same barrier (port of the archive's
+    // releaseSyncBarriersIfReady).  Independent/Sequenced have no barriers.
+    if (_coordMode == CoordMode::DoorSync || _coordMode == CoordMode::FullSync) {
+        bool anyCycling   = false;
+        bool allAtDoors   = true;
+        bool allAtMotor   = true;
+        for (uint8_t i = 0; i < _numDefs; ++i) {
+            if (!_gears[i].isCycling()) continue;
+            anyCycling = true;
+            if (!_gears[i].isWaitingDoorsOpenBarrier()) allAtDoors = false;
+            if (!_gears[i].isWaitingMotorDoneBarrier()) allAtMotor = false;
+        }
+        if (anyCycling && allAtDoors) {
+            if (_topo) _topo->beginBatch();
+            for (uint8_t i = 0; i < _numDefs; ++i)
+                if (_gears[i].isCycling()) _gears[i].advanceBarrier();
+            if (_topo) _topo->commitBatch();
+        }
+        if (anyCycling && allAtMotor) {
+            if (_topo) _topo->beginBatch();
+            for (uint8_t i = 0; i < _numDefs; ++i)
+                if (_gears[i].isCycling()) _gears[i].advanceBarrier();
+            if (_topo) _topo->commitBatch();
+        }
+        return;
+    }
+
+    // Sequenced: when the active gear settles, kick the next one.
+    if (_coordMode == CoordMode::Sequenced && _seqActive != 0xFF) {
+        if (_seqActive < _numDefs && !_gears[_seqActive].isCycling()) {
+            sequencedKick();
+        }
+    }
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::sequencedKick() {
+    // Advance to the next gear after the current one finished its full cycle.
+    uint8_t next = (_seqActive == 0xFF) ? 0 : (uint8_t)(_seqActive + 1);
+    if (next >= _numDefs) { _seqActive = 0xFF; return; }   // chain done
+    _seqActive = next;
+    applySyncFlags(_gears[next]);   // (no barriers in Sequenced, but keep it explicit)
+    if (_topo) _topo->beginBatch();
+    if (_seqDeploying) _gears[next].deploy();
+    else               _gears[next].retract();
+    if (_topo) _topo->commitBatch();
 }
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
@@ -96,8 +163,6 @@ CommandHandleResult GearControlServicePolicyT<TTopology, TLandingService>::handl
         case GearPacket::GEAR_STATUS_REQ: handleStatusReq();             return CommandHandleResult::Handled;
         case GearPacket::GEAR_LIST_REQ:   handleListReq();               return CommandHandleResult::Handled;
         case GearPacket::GEAR_RESET:      handleReset(payload, len);     return CommandHandleResult::Handled;
-        case GearPacket::GEAR_CALIBRATE:  handleCalibrate(payload, len); return CommandHandleResult::Handled;
-        case GearPacket::GEAR_CALIB_CANCEL: handleCalibCancel(payload, len); return CommandHandleResult::Handled;
         default:                          return CommandHandleResult::NotMyCommand;
     }
 }
@@ -112,6 +177,9 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleDeploy(
         _ctx->sendNack(GearError::IN_ERROR_STATE);
         return;
     }
+    // Per-gear deploy is independent of cross-channel sync (bench testing) —
+    // run without barriers regardless of the global coord mode.
+    g->setSyncBarriers(false, false);
     g->deploy();
     _ctx->sendAck();
 }
@@ -126,6 +194,7 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleRetract(
         _ctx->sendNack(GearError::IN_ERROR_STATE);
         return;
     }
+    g->setSyncBarriers(false, false);   // per-gear command is independent
     g->retract();
     _ctx->sendAck();
 }
@@ -137,30 +206,6 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleReset(
     Gear* g = findById(p[0]);
     if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
     g->clearError();          // no-op if not in ERROR
-    _ctx->sendAck();
-}
-
-template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
-void GearControlServicePolicyT<TTopology, TLandingService>::handleCalibrate(
-        const uint8_t* p, size_t len) {
-    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-    Gear* g = findById(p[0]);
-    if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
-    if (g->phase() == GearPhase::Error) {
-        _ctx->sendNack(GearError::IN_ERROR_STATE);
-        return;
-    }
-    g->calibrate();
-    _ctx->sendAck();
-}
-
-template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
-void GearControlServicePolicyT<TTopology, TLandingService>::handleCalibCancel(
-        const uint8_t* p, size_t len) {
-    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-    Gear* g = findById(p[0]);
-    if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
-    g->calibrateCancel();     // no-op if not calibrating
     _ctx->sendAck();
 }
 
@@ -179,16 +224,40 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleAll(
         const uint8_t* p, size_t len) {
     if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
     const uint8_t action = p[0];
-    // One outer batch: every per-gear command falls into the same
-    // wire burst so all gears start moving simultaneously.
+
+    // STOP is universal — halt every gear + reset the sequenced chain.
+    if (action == GearAllAction::Stop) {
+        if (_topo) _topo->beginBatch();
+        for (uint8_t i = 0; i < _numDefs; ++i) _gears[i].stop();
+        if (_topo) _topo->commitBatch();
+        _seqActive = 0xFF;
+        _ctx->sendAck();
+        return;
+    }
+
+    const bool deploying = (action == GearAllAction::Deploy);
+    if (action != GearAllAction::Deploy && action != GearAllAction::Retract) {
+        _ctx->sendNack(SerialError::INVALID_PARAM);
+        return;
+    }
+
+    // Sequenced: kick only gear[0]; releaseBarriersIfReady() chains the rest.
+    if (_coordMode == CoordMode::Sequenced) {
+        _seqDeploying = deploying;
+        _seqActive    = 0xFF;        // sequencedKick() advances to 0
+        sequencedKick();
+        _ctx->sendAck();
+        return;
+    }
+
+    // Independent / DoorSync / FullSync: start every gear in one wire burst.
+    // Sync flags inserted per coord mode so the coordinator can hold the
+    // barriers; Independent leaves them off (today's behaviour).
     if (_topo) _topo->beginBatch();
     for (uint8_t i = 0; i < _numDefs; ++i) {
-        switch (action) {
-            case GearAllAction::Deploy:  _gears[i].deploy();  break;
-            case GearAllAction::Retract: _gears[i].retract(); break;
-            case GearAllAction::Stop:    _gears[i].stop();    break;
-            default: /* ignore */        break;
-        }
+        applySyncFlags(_gears[i]);
+        if (deploying) _gears[i].deploy();
+        else           _gears[i].retract();
     }
     if (_topo) _topo->commitBatch();
     _ctx->sendAck();
@@ -196,12 +265,14 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleAll(
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::handleStatusReq() {
-    uint8_t buf[1 + kMaxGears * 2];
+    // Rule 11 append: per-entry [id][phase][subPhase] — old clients read 2.
+    uint8_t buf[1 + kMaxGears * 3];
     buf[0] = _numDefs;
     size_t off = 1;
     for (uint8_t i = 0; i < _numDefs; ++i) {
         buf[off++] = _gears[i].id();
         buf[off++] = _gears[i].phase();
+        buf[off++] = _gears[i].subPhase();
     }
     _ctx->sendRawPacket(GearPacket::GEAR_STATUS_RESP,
                         _ctx->currentTag(), buf, off);
@@ -232,25 +303,43 @@ template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::L
 void GearControlServicePolicyT<TTopology, TLandingService>::onRoleEvent(
         const char* guid, uint8_t innerType,
         const uint8_t* p, size_t len) {
-    // Gear motion uses the BiDcMotor endstop seek, so the relevant async
-    // is BIMOTOR_ENDSTOP_RESULT ([portIdx][outcome][travel:u16][peak:u16]).
-    // (Plain BIMOTOR_STALL_EVENT only fires for non-seek drive, which the
-    // gear never uses — ignored here.)
-    if (innerType != RolePacket::BIMOTOR_ENDSTOP_RESULT) return;
-    if (len < 2) return;
-    const uint8_t portIdx = p[0];
-    const uint8_t outcome = p[1];
-    const bool    guidEmpty = !guid || guid[0] == 0;
+    const bool guidEmpty = !guid || guid[0] == 0;
+    auto guidMatches = [&](const PortRef& ref) -> bool {
+        return (ref.guid[0] == 0 && guidEmpty) ||
+               (ref.guid[0] != 0 && guid && std::strcmp(ref.guid, guid) == 0);
+    };
 
-    for (uint8_t i = 0; i < _numDefs; ++i) {
-        const PortRef& m = _defs[i].motor;
-        if (m.portIdx != portIdx) continue;
-        const bool sameGuid =
-            (m.guid[0] == 0 && guidEmpty) ||
-            (m.guid[0] != 0 && guid && std::strcmp(m.guid, guid) == 0);
-        if (sameGuid) {
-            _gears[i].onEndstopResult(outcome);
+    // ── Motor leg completion ──────────────────────────────────────────
+    // Gear motion uses the BiDcMotor endstop seek, so the motor-leg async is
+    // BIMOTOR_ENDSTOP_RESULT ([portIdx][outcome][travel:u16][peak:u16]).
+    if (innerType == RolePacket::BIMOTOR_ENDSTOP_RESULT) {
+        if (len < 2) return;
+        const uint8_t portIdx = p[0];
+        const uint8_t outcome = p[1];
+        for (uint8_t i = 0; i < _numDefs; ++i) {
+            if (_defs[i].motor.portIdx == portIdx && guidMatches(_defs[i].motor)) {
+                _gears[i].onEndstopResult(outcome);
+            }
         }
+        return;
+    }
+
+    // ── Door leg completion ───────────────────────────────────────────
+    // Door servos report SERVO_MOTION_DONE ([portIdx]) on the rising edge of
+    // their motion profile reaching target (monitored, decision #1).  Route
+    // to the gear whose door PortRef matches (board GUID + portIdx).
+    if (innerType == RolePacket::SERVO_MOTION_DONE) {
+        if (len < 1) return;
+        const uint8_t portIdx = p[0];
+        for (uint8_t i = 0; i < _numDefs; ++i) {
+            for (uint8_t d = 0; d < _defs[i].numDoors; ++d) {
+                const PortRef& s = _defs[i].doors[d].servo;
+                if (s.portIdx == portIdx && guidMatches(s)) {
+                    _gears[i].onServoMotionDone(portIdx);
+                }
+            }
+        }
+        return;
     }
 }
 
@@ -274,9 +363,10 @@ void GearControlServicePolicyT<TTopology, TLandingService>::forwardToLandings(
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::emitPhaseEvent(
-        uint8_t id, uint8_t phase) {
+        uint8_t id, uint8_t phase, uint8_t subPhase) {
     if (!_ctx) return;
-    const uint8_t payload[2] = { id, phase };
+    // Rule 11 append: [id][phase][subPhase] — old clients read the first 2.
+    const uint8_t payload[3] = { id, phase, subPhase };
     _ctx->sendRawPacket(GearPacket::GEAR_PHASE_EVENT,
                         SfxWire::TAG_ASYNC, payload, sizeof(payload));
     if (phase == GearPhase::Deployed || phase == GearPhase::Retracted) {
@@ -305,9 +395,9 @@ void GearControlServicePolicyT<TTopology, TLandingService>::commitBatchTrampolin
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::phaseEventTrampoline(
-        void* ctx, uint8_t id, uint8_t newPhase) {
+        void* ctx, uint8_t id, uint8_t newPhase, uint8_t newSubPhase) {
     auto* self = static_cast<GearControlServicePolicyT*>(ctx);
-    if (self) self->emitPhaseEvent(id, newPhase);
+    if (self) self->emitPhaseEvent(id, newPhase, newSubPhase);
 }
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>

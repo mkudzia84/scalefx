@@ -494,11 +494,13 @@ void applyLandingConfig(TBoard& board, const LandingConfig& cfg) {
 template <typename TBoard, typename TGearService>
 void applyGearControlConfig(TBoard& board, const GearControlConfig& cfg) {
     auto& svc = board.template policy<TGearService>();
-    svc.configure(cfg.gears, cfg.numGears);
+    // Door servo roles are attached via /hubfx.yaml's ports block (ServoActuator);
+    // the gear addresses them by PortRef.  Pass the gear table + coord mode through.
+    svc.configure(cfg.gears, cfg.numGears, cfg.coordMode);
     svc.setEnabled(cfg.enabled);
     board.recomputeEnabledCapabilities();
-    SFX_LOG_INFO("[gearcontrol-config] applied — enabled=%s, %u gear(s) configured",
-                 cfg.enabled ? "on" : "off", (unsigned)cfg.numGears);
+    SFX_LOG_INFO("[gearcontrol-config] applied — enabled=%s, coord=%u, %u gear(s) configured",
+                 cfg.enabled ? "on" : "off", (unsigned)cfg.coordMode, (unsigned)cfg.numGears);
 }
 
 }  // namespace hubfx::config
