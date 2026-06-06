@@ -218,24 +218,17 @@ void TopologyServicePolicyT<TExpander>::appendHubPortBlock(
         uint8_t* buf, size_t& off, size_t cap) {
     using namespace sfx_core;
 
-    // GUID (hub's deviceName suffix)
-    char guid[5] = {0};
+    // GUID is EMPTY for the hub's own block (canonical hub-local address —
+    // "" everywhere, see instructions/31). The hub used to emit its own
+    // deviceName-suffix GUID here, which leaked a third "is this the hub"
+    // form into the Go device model + forced hubLocal()/lookupProfile()
+    // dual-form workarounds. The hub's identity GUID is still carried in
+    // `deviceName` below for display; it is NEVER a port address.
     const char* name = _ctx->deviceName();
-    if (name) {
-        const char* dash = std::strrchr(name, '-');
-        if (dash && dash[1]) {
-            size_t n = std::strlen(dash + 1);
-            if (n > 4) n = 4;
-            std::memcpy(guid, dash + 1, n);
-            guid[n] = 0;
-        }
-    }
-    const uint8_t glen = (uint8_t)std::strlen(guid);
-    if (off + 1 + glen > cap) return;
-    buf[off++] = glen;
-    std::memcpy(&buf[off], guid, glen); off += glen;
+    if (off + 1 > cap) return;
+    buf[off++] = 0;                                   // glen = 0 → hub-local
 
-    // deviceName
+    // deviceName (identity / display — e.g. "HubFX-6D60")
     const uint8_t nlen = name ? (uint8_t)std::strlen(name) : 0;
     if (off + 1 + nlen > cap) return;
     buf[off++] = nlen;
@@ -305,22 +298,10 @@ void TopologyServicePolicyT<TExpander>::appendHubRoleBlock(
         uint8_t* buf, size_t& off, size_t cap) {
     using namespace sfx_core;
 
-    // GUID
-    char guid[5] = {0};
-    const char* name = _ctx->deviceName();
-    if (name) {
-        const char* dash = std::strrchr(name, '-');
-        if (dash && dash[1]) {
-            size_t n = std::strlen(dash + 1);
-            if (n > 4) n = 4;
-            std::memcpy(guid, dash + 1, n);
-            guid[n] = 0;
-        }
-    }
-    const uint8_t glen = (uint8_t)std::strlen(guid);
-    if (off + 1 + glen + 1 > cap) return;
-    buf[off++] = glen;
-    std::memcpy(&buf[off], guid, glen); off += glen;
+    // GUID is EMPTY for the hub's own block (canonical hub-local address;
+    // see appendHubPortBlock + instructions/31).
+    if (off + 1 + 1 > cap) return;
+    buf[off++] = 0;                                   // glen = 0 → hub-local
 
     // Reserve roleCount byte; fill after walking the registry.
     const size_t cntOff = off++;

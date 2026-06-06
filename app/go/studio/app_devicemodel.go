@@ -107,7 +107,7 @@ func (a *App) RefreshDeviceModel() (DeviceModelSnapshot, error) {
 	if a.dm != nil {
 		prevClaims = a.dm.Claims
 	}
-	a.dm = devicemodel.BuildModel(boardPorts, boardRoles)
+	a.dm = devicemodel.BuildModel(boardPorts, boardRoles, a.id.GUID)
 	a.dm.Claims = prevClaims
 	a.ensureInputConfigs()
 	a.dmMu.Unlock()
@@ -295,34 +295,22 @@ func (a *App) SetPortName(guid string, kind, index byte, name string) DeviceMode
 	return a.deviceModelSnapshot()
 }
 
-// hubLocal reports whether `guid` addresses a hub-local port — the empty
-// sentinel OR the hub's OWN GUID.  BuildModel stamps hub ports with the real
-// hub GUID, but the role layer (c.Roles.*) + /hubfx.yaml treat hub-local as ""
-// — so a hub servo whose ref carries the hub GUID must still go down the direct
-// role path, NOT the expander TOPOLOGY_ROLE_FORWARD path.
+// hubLocal reports whether `guid` addresses a hub-local port. Hub-local is
+// canonically the EMPTY GUID end-to-end (instructions/31): BuildModel folds the
+// hub's own identity GUID → "", the role layer + /hubfx.yaml already use "", and
+// the wire emits "" for the hub's own blocks. So this is a plain empty check —
+// the device model never carries the hub's own GUID as a port address. A
+// non-empty guid is always a remote expander → TOPOLOGY_ROLE_FORWARD path.
 func (a *App) hubLocal(guid string) bool {
-	return guid == "" || (a.id.GUID != "" && guid == a.id.GUID)
+	return guid == ""
 }
 
-// lookupProfile reads the portProfiles overlay for `ref`, trying BOTH hub-local
-// GUID forms (the hub's own GUID ⇄ "") so a profile keyed under one form is
-// found regardless of how the caller spelled the ref.  Caller holds a.dmMu.
+// lookupProfile reads the portProfiles overlay for `ref`. Single canonical key
+// now that hub-local is "" everywhere (the old dual-form fallback retired with
+// the instructions/31 redesign).  Caller holds a.dmMu.
 func (a *App) lookupProfile(ref devicemodel.PortRef) (ServoMotionProfileDTO, bool) {
-	if p, ok := a.portProfiles[ref]; ok {
-		return p, true
-	}
-	if a.hubLocal(ref.GUID) {
-		alt := ref
-		if ref.GUID == "" {
-			alt.GUID = a.id.GUID
-		} else {
-			alt.GUID = ""
-		}
-		if p, ok := a.portProfiles[alt]; ok {
-			return p, true
-		}
-	}
-	return ServoMotionProfileDTO{}, false
+	p, ok := a.portProfiles[ref]
+	return p, ok
 }
 
 // SetPortProfile assigns a servo motion profile to a port (Rule 42

@@ -25,9 +25,51 @@ func sampleTopology() ([]topology.BoardPorts, []topology.BoardRoles) {
 	return bp, nil
 }
 
+// TestBuildModelFoldsHubGuid guards the instructions/31 invariant: a board
+// block that arrives carrying the hub's OWN identity GUID (older firmware, or a
+// stray persisted ref) must be folded to the canonical EMPTY hub-local GUID —
+// the device model never addresses the hub by its own GUID. Also checks the
+// folded ref still matches its attached role, and that a real expander GUID is
+// left untouched.
+func TestBuildModelFoldsHubGuid(t *testing.T) {
+	const hubGUID = "6D60"
+	bp := []topology.BoardPorts{
+		{GUID: hubGUID, DeviceName: "HubFX-6D60", Ports: ports.PortList{
+			Servos: []ports.PortDescriptor{{Index: 0}, {Index: 1}},
+		}},
+		{GUID: "3C4D", DeviceName: "LightFx-3C4D", Ports: ports.PortList{
+			Pwms: []ports.PortDescriptor{{Index: 0}},
+		}},
+	}
+	br := []topology.BoardRoles{
+		{GUID: hubGUID, Roles: []roles.RoleListEntry{
+			{PortKind: ports.KindServo, PortIdx: 0, RoleKind: roles.KindServoActuator},
+		}},
+	}
+	m := BuildModel(bp, br, hubGUID)
+	for _, p := range m.Ports {
+		if p.Ref.GUID == hubGUID {
+			t.Errorf("port %+v carries the hub's own GUID %q — must be canonical \"\"", p.Ref, hubGUID)
+		}
+	}
+	// The hub servo role must have matched onto the FOLDED "" ref (the roleAt
+	// index must canonicalise too, else the role is lost).
+	sv, ok := m.Port(PortRef{GUID: "", Kind: ports.KindServo, Index: 0})
+	if !ok {
+		t.Fatal("hub servo not found under canonical empty GUID")
+	}
+	if sv.RoleKind != roles.KindServoActuator {
+		t.Errorf("hub servo role = %d, want ServoActuator (role folded onto wrong key?)", sv.RoleKind)
+	}
+	// A real expander GUID is preserved.
+	if _, ok := m.Port(PortRef{GUID: "3C4D", Kind: ports.KindPwm, Index: 0}); !ok {
+		t.Error("expander pwm should keep its real GUID")
+	}
+}
+
 func TestBuildModelDerivesDirectionAndCaps(t *testing.T) {
 	bp, br := sampleTopology()
-	m := BuildModel(bp, br)
+	m := BuildModel(bp, br, "")
 	if len(m.Ports) != 6 {
 		t.Fatalf("expected 6 ports, got %d", len(m.Ports))
 	}
@@ -48,7 +90,7 @@ func TestBuildModelDerivesDirectionAndCaps(t *testing.T) {
 
 func TestCandidatesFilterByRoleKind(t *testing.T) {
 	bp, br := sampleTopology()
-	m := BuildModel(bp, br)
+	m := BuildModel(bp, br, "")
 	// No roles attached yet → leds slot (needs led-animator) has no
 	// candidates among the pwm ports.
 	if got := m.Candidates(DomainLandingLights, "leds"); len(got) != 0 {
@@ -64,7 +106,7 @@ func TestCandidatesFilterByRoleKind(t *testing.T) {
 
 func TestInputSharedAcrossDomains(t *testing.T) {
 	bp, br := sampleTopology()
-	m := BuildModel(bp, br)
+	m := BuildModel(bp, br, "")
 	m.SetRole(PortRef{GUID: "", Kind: ports.KindInput, Index: 0}, roles.KindRcPwmInput)
 	in := PortRef{GUID: "", Kind: ports.KindInput, Index: 0}
 
@@ -85,7 +127,7 @@ func TestInputSharedAcrossDomains(t *testing.T) {
 
 func TestOutputExclusive(t *testing.T) {
 	bp, br := sampleTopology()
-	m := BuildModel(bp, br)
+	m := BuildModel(bp, br, "")
 	led := PortRef{GUID: "3C4D", Kind: ports.KindPwm, Index: 0}
 	m.SetRole(led, roles.KindLedAnimator)
 
@@ -101,7 +143,7 @@ func TestOutputExclusive(t *testing.T) {
 
 func TestRoleMismatchRejected(t *testing.T) {
 	bp, br := sampleTopology()
-	m := BuildModel(bp, br)
+	m := BuildModel(bp, br, "")
 	servo := PortRef{GUID: "", Kind: ports.KindServo, Index: 0}
 	m.SetRole(servo, roles.KindServoActuator)
 	// landing-lights "leds" slot wants led-animator, not servo-actuator.
@@ -112,7 +154,7 @@ func TestRoleMismatchRejected(t *testing.T) {
 
 func TestValidateWarnsOnUnattachedAndUnderfilled(t *testing.T) {
 	bp, br := sampleTopology()
-	m := BuildModel(bp, br)
+	m := BuildModel(bp, br, "")
 	led := PortRef{GUID: "3C4D", Kind: ports.KindPwm, Index: 0}
 	// Claim WITHOUT attaching a role: checkClaim rejects it (role
 	// mismatch), so inject directly to exercise Validate's warn path.
@@ -127,7 +169,7 @@ func TestValidateWarnsOnUnattachedAndUnderfilled(t *testing.T) {
 
 func TestApplyPreset(t *testing.T) {
 	bp, br := sampleTopology()
-	m := BuildModel(bp, br)
+	m := BuildModel(bp, br, "")
 	p, ok := PresetByName("LightFX: 4-channel landing lights")
 	if !ok {
 		t.Fatal("preset not found")
@@ -158,7 +200,7 @@ func TestApplyPresetSkipsMissingBoard(t *testing.T) {
 			Inputs: []ports.PortDescriptor{{Index: 0, Flags: ports.InputFlagPulse}},
 		}},
 	}
-	m := BuildModel(bp, nil)
+	m := BuildModel(bp, nil, "")
 	p, _ := PresetByName("LightFX: 4-channel landing lights")
 	assigns, warnings, err := m.ApplyPreset(p)
 	if err != nil {

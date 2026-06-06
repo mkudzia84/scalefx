@@ -81,15 +81,10 @@ func (a *App) installInputStream() {
 		if a.ctx == nil {
 			return
 		}
-		// Hub-local frames decode with GUID "" (the wire has no GUID for the
-		// master's own port), but the device model — and the frontend's
-		// liveChannelKey / autoExpand / detectedCount — key off the hub's
-		// GUID.  Remap so the live bars actually find their values.
-		if v.GUID == "" {
-			a.mu.Lock()
-			v.GUID = a.id.GUID
-			a.mu.Unlock()
-		}
+		// Hub-local frames decode with GUID "" — now the canonical hub-local
+		// form the device model + frontend (liveChannelKey / autoExpand /
+		// detectedCount) key by (instructions/31), so no remap is needed: ""
+		// already matches the port refs everywhere.
 		wailsRT.EventsEmit(a.ctx, "input:values", v)
 	})
 }
@@ -127,12 +122,8 @@ func (a *App) applyInputBroadcasts() {
 		idx  byte
 		kind byte
 	}
-	// Hub-local input ports are tagged with the HUB's GUID (not ""), so a
-	// `GUID == ""` filter matches nothing — which is why Studio's live bars
-	// never armed.  Accept both the empty GUID and the hub's own GUID.
-	a.mu.Lock()
-	hubGUID := a.id.GUID
-	a.mu.Unlock()
+	// Hub-local input ports are the canonical empty GUID in the device model
+	// (instructions/31), so an empty-GUID filter is exactly right now.
 	a.dmMu.Lock()
 	var ins []inputBcast
 	if a.dm != nil {
@@ -140,7 +131,7 @@ func (a *App) applyInputBroadcasts() {
 			if p.Ref.Kind != ports.KindInput {
 				continue
 			}
-			if p.Ref.GUID != "" && p.Ref.GUID != hubGUID {
+			if p.Ref.GUID != "" {
 				continue // expander input — armed via its own path, not here
 			}
 			switch p.RoleKind {

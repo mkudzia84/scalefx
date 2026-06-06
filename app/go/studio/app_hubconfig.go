@@ -140,9 +140,11 @@ func (a *App) LoadHubConfig() error {
 		return fmt.Errorf("parse /hubfx.yaml: %w", err)
 	}
 
-	a.mu.Lock()
-	hubGUID := a.id.GUID
-	a.mu.Unlock()
+	// Hub-local ports/inputs/profiles are keyed by the CANONICAL empty GUID
+	// (instructions/31) — the same form the device model + SetPortProfile use,
+	// so a loaded /hubfx.yaml profile overlays the right port. (Expander ports
+	// below key by their real GUID.)
+	const hubGUID = ""
 
 	a.dmMu.Lock()
 	// Capture the top-level non-overlay blocks (audio / features /
@@ -239,9 +241,10 @@ func (a *App) SaveHubConfig() error {
 		return fmt.Errorf("not connected")
 	}
 
-	a.mu.Lock()
-	hubGUID := a.id.GUID
-	a.mu.Unlock()
+	// Hub-local ports are the canonical empty GUID in the device model
+	// (instructions/31); the input-default check + the ports[]-vs-expanders[]
+	// split below compare against it.
+	const hubGUID = ""
 
 	cfg := hubYamlConfig{SchemaVersion: 1}
 	// Round-trip the top-level blocks we don't have a UI for yet.
@@ -337,7 +340,7 @@ func (a *App) SaveHubConfig() error {
 				dp := devicemodel.ServoMotionProfile(prof)
 				pb.Profile = &dp
 			}
-			if p.Ref.GUID == hubGUID || p.Ref.GUID == "" {
+			if p.Ref.GUID == "" { // canonical hub-local → ports[]; else expanders[]
 				cfg.Ports = append(cfg.Ports, pb)
 			} else {
 				expGroups[p.Ref.GUID] = append(expGroups[p.Ref.GUID], pb)

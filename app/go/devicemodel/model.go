@@ -29,17 +29,32 @@ type Model struct {
 // comes from Topology.PortList(""), `boardRoles` from RoleList("").
 // Attached roles are matched onto ports by (guid, kind, index); ports
 // with no matching role come back free (roles.KindNone).
-func BuildModel(boardPorts []topology.BoardPorts, boardRoles []topology.BoardRoles) *Model {
+//
+// `hubGUID` is the master's OWN identity GUID (from INIT_READY). Hub-local
+// is canonically the EMPTY guid (instructions/31): newer firmware already
+// emits "" for its own port/role blocks, but a board GUID equal to `hubGUID`
+// (older firmware, or a stray persisted ref) is folded to "" here so the
+// model carries exactly ONE hub-local form. Nothing downstream — keys,
+// routing, the Wails DTO — ever sees the hub's GUID as a port address.
+func BuildModel(boardPorts []topology.BoardPorts, boardRoles []topology.BoardRoles, hubGUID string) *Model {
+	// Fold the hub's own identity GUID → "" (the canonical hub-local form).
+	canon := func(guid string) string {
+		if hubGUID != "" && guid == hubGUID {
+			return ""
+		}
+		return guid
+	}
 	// Index attached roles by port for O(1) lookup.
 	roleAt := map[PortRef]byte{}
 	for _, b := range boardRoles {
 		for _, r := range b.Roles {
-			roleAt[PortRef{GUID: b.GUID, Kind: r.PortKind, Index: r.PortIdx}] = r.RoleKind
+			roleAt[PortRef{GUID: canon(b.GUID), Kind: r.PortKind, Index: r.PortIdx}] = r.RoleKind
 		}
 	}
 
 	m := &Model{}
 	add := func(guid, name string, kind byte, ds []ports.PortDescriptor) {
+		guid = canon(guid)
 		for _, d := range ds {
 			ref := PortRef{GUID: guid, Kind: kind, Index: d.Index}
 			rk := roleAt[ref] // zero value == KindNone == free

@@ -29,14 +29,9 @@ func (a *App) installServoStream() {
 		if a.ctx == nil {
 			return
 		}
-		// Hub-local frames decode with GUID "" — remap to the hub's GUID so the
-		// frontend keys servo status by the same port ref it uses everywhere.
-		// (Runs in the async dispatcher, NOT under openLocked — locking is safe.)
-		if ev.GUID == "" {
-			a.mu.Lock()
-			ev.GUID = a.id.GUID
-			a.mu.Unlock()
-		}
+		// Hub-local frames decode with GUID "" — which is now the canonical
+		// hub-local form the device model + frontend key by (instructions/31),
+		// so the old remap to the hub's own GUID is gone: "" already matches.
 		wailsRT.EventsEmit(a.ctx, "servo:motion", ev)
 	})
 
