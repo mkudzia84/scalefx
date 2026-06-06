@@ -1316,6 +1316,145 @@ export namespace main {
 	        this.sdBusMode = source["sdBusMode"];
 	    }
 	}
+	export class GearDoorDTO {
+	    port: PortRefDTO;
+	    open: number;
+	    close: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new GearDoorDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = this.convertValues(source["port"], PortRefDTO);
+	        this.open = source["open"];
+	        this.close = source["close"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class GearChannelDTO {
+	    id: number;
+	    name: string;
+	    motor: PortRefDTO;
+	    deployDuty: number;
+	    retractDuty: number;
+	    timeoutMs: number;
+	    doors: GearDoorDTO[];
+	    doorMode: string;
+	    doorDelayMs: number;
+	    closePolicy: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GearChannelDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.motor = this.convertValues(source["motor"], PortRefDTO);
+	        this.deployDuty = source["deployDuty"];
+	        this.retractDuty = source["retractDuty"];
+	        this.timeoutMs = source["timeoutMs"];
+	        this.doors = this.convertValues(source["doors"], GearDoorDTO);
+	        this.doorMode = source["doorMode"];
+	        this.doorDelayMs = source["doorDelayMs"];
+	        this.closePolicy = source["closePolicy"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class GearConfig {
+	    schemaVersion: number;
+	    enabled: boolean;
+	    coord: string;
+	    gears: GearChannelDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GearConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schemaVersion = source["schemaVersion"];
+	        this.enabled = source["enabled"];
+	        this.coord = source["coord"];
+	        this.gears = this.convertValues(source["gears"], GearChannelDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class GearStatusEntry {
+	    id: number;
+	    phase: number;
+	    phaseName: string;
+	    subPhase: number;
+	    subPhaseName: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GearStatusEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.phase = source["phase"];
+	        this.phaseName = source["phaseName"];
+	        this.subPhase = source["subPhase"];
+	        this.subPhaseName = source["subPhaseName"];
+	    }
+	}
 	export class GunAxisDTO {
 	    enabled: boolean;
 	    servoPort: PortRefDTO;

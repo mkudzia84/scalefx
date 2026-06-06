@@ -94,6 +94,18 @@ export function FsUploadDiag():Promise<storage.UploadDiag>;
 
 export function FsUploadFromDisk(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function GearAll(arg1:number):Promise<void>;
+
+export function GearDeploy(arg1:number):Promise<void>;
+
+export function GearReset(arg1:number):Promise<void>;
+
+export function GearRetract(arg1:number):Promise<void>;
+
+export function GearStatus():Promise<Array<main.GearStatusEntry>>;
+
+export function GearStop(arg1:number):Promise<void>;
+
 export function GetConnectionInfo():Promise<main.ConnectionInfo>;
 
 export function GetEngineConfig():Promise<main.EngineConfig>;
@@ -156,6 +168,8 @@ export function ListPorts():Promise<Array<main.PortInfo>>;
 
 export function ListPresetLibrary():Promise<Array<main.PresetLibraryEntry>>;
 
+export function LoadGearConfig():Promise<main.GearConfig>;
+
 export function LoadGunFxConfig():Promise<main.GunFxConfig>;
 
 export function LoadHubConfig():Promise<void>;
@@ -177,6 +191,8 @@ export function QueryDeviceStatus():Promise<main.DeviceStatus>;
 export function RefreshDeviceModel():Promise<main.DeviceModelSnapshot>;
 
 export function ResetLightFxProgram():Promise<void>;
+
+export function SaveGearConfig(arg1:main.GearConfig):Promise<void>;
 
 export function SaveGunFxConfig(arg1:main.GunFxConfig):Promise<void>;
 

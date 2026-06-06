@@ -182,6 +182,30 @@ export function FsUploadFromDisk(arg1, arg2, arg3) {
   return window['go']['main']['App']['FsUploadFromDisk'](arg1, arg2, arg3);
 }
 
+export function GearAll(arg1) {
+  return window['go']['main']['App']['GearAll'](arg1);
+}
+
+export function GearDeploy(arg1) {
+  return window['go']['main']['App']['GearDeploy'](arg1);
+}
+
+export function GearReset(arg1) {
+  return window['go']['main']['App']['GearReset'](arg1);
+}
+
+export function GearRetract(arg1) {
+  return window['go']['main']['App']['GearRetract'](arg1);
+}
+
+export function GearStatus() {
+  return window['go']['main']['App']['GearStatus']();
+}
+
+export function GearStop(arg1) {
+  return window['go']['main']['App']['GearStop'](arg1);
+}
+
 export function GetConnectionInfo() {
   return window['go']['main']['App']['GetConnectionInfo']();
 }
@@ -306,6 +330,10 @@ export function ListPresetLibrary() {
   return window['go']['main']['App']['ListPresetLibrary']();
 }
 
+export function LoadGearConfig() {
+  return window['go']['main']['App']['LoadGearConfig']();
+}
+
 export function LoadGunFxConfig() {
   return window['go']['main']['App']['LoadGunFxConfig']();
 }
@@ -348,6 +376,10 @@ export function RefreshDeviceModel() {
 
 export function ResetLightFxProgram() {
   return window['go']['main']['App']['ResetLightFxProgram']();
+}
+
+export function SaveGearConfig(arg1) {
+  return window['go']['main']['App']['SaveGearConfig'](arg1);
 }
 
 export function SaveGunFxConfig(arg1) {

@@ -32,6 +32,7 @@
     import { gunfxConfigSource, loadGunFxConfig } from './lib/gunfx'
     import { lightfxConfigSource, loadLightFxConfig } from './lib/lightfx'
     import { landingConfigSource, loadLandingConfig } from './lib/landing'
+    import { gearConfigSource, loadGearConfig } from './lib/gear'
     import { registerDirtySource } from './lib/dirty-registry'
 
     onMount(async () => {
@@ -59,6 +60,7 @@
         registerDirtySource(gunfxConfigSource)
         registerDirtySource(lightfxConfigSource)
         registerDirtySource(landingConfigSource)
+        registerDirtySource(gearConfigSource)
 
         // Console output events from backend (always active, even when panel hidden)
         EventsOn('console:output', (msg: { type: string; content: string }) => {
@@ -120,6 +122,9 @@
                     try { await loadLandingConfig() } catch (e) {
                         diag.warn('FE.CFG', 'landing config load failed', { err: String(e) })
                     }
+                    try { await loadGearConfig() } catch (e) {
+                        diag.warn('FE.CFG', 'gear config load failed', { err: String(e) })
+                    }
                 }
             } else if (wasConnected && $boardState !== 'flashing') {
                 // Unexpected disconnect (not flashing) — show connect popup
@@ -146,6 +151,7 @@
                     try { await loadGunFxConfig() } catch { /* ignore */ }
                     try { await loadLightFxConfig() } catch { /* ignore */ }
                     try { await loadLandingConfig() } catch { /* ignore */ }
+                    try { await loadGearConfig() } catch { /* ignore */ }
                 }
             }
         } catch (_) {
