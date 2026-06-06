@@ -20,7 +20,77 @@ Form 1 is the convention **almost everywhere**. Form 2 leaks in through exactly 
 - **Responses are asymmetric with requests.** Requests/async use `""` for hub-local; LIST responses use the hub's real GUID. The hub *knows* it's describing its own ports — it has no reason to emit a GUID a client must then collapse back.
 - **Go decode does not normalize.** [`DecodePortListResp`](../app/go/protocol/topology/topology.go) returns `BoardPorts{GUID: g}` verbatim; `BuildModel` keys ports by it. The hub-GUID is now a *port-addressing* value, when it should only ever have been *board-identity / display* metadata.
 
-## The pattern: one canonical address, GUID is identity-not-address
+---
+
+# Recommended: an architecture-level redesign (type the address; separate identity from routing)
+
+The fix below ("canonicalise `""`") removes the *symptom* but keeps the *shape* that caused it: the address is a **stringly-typed board id with an in-band magic sentinel**, and "is this local?" is re-derived by string comparison at every call site. A representation you must remember to normalise *will* be used un-normalised (the servo bug is the proof). The redesign makes the ambiguity **unrepresentable** and gives the master's specialness a real home.
+
+Three moves, each fixing one architectural smell:
+
+### 1. Address ports by a typed `BoardRef`, not a raw guid + sentinel
+The local-vs-remote distinction is a *tag*, not a string value. Model it as a tiny sum type with two constructors — the master (`Self`) and a discovered expander (`Expander(guid)`):
+
+```cpp
+// firmware
+struct BoardRef {
+    enum class Kind : uint8_t { Self, Expander };
+    Kind kind = Kind::Self;
+    Guid guid{};                       // meaningful only when kind==Expander
+    static BoardRef self()             { return {Kind::Self, {}}; }
+    static BoardRef expander(Guid g)   { return {Kind::Expander, g}; }
+    bool isLocal() const               { return kind == Kind::Self; }
+};
+struct PortRef { BoardRef board; uint8_t portKind; uint8_t portIdx; };
+```
+```go
+// Go — comparable, so it works as a map key
+type BoardRef struct { expander bool; guid string } // guid "" unless expander
+func Local() BoardRef            { return BoardRef{} }
+func Expander(g string) BoardRef { return BoardRef{true, g} }
+func (b BoardRef) IsLocal() bool { return !b.expander }
+type PortRef struct { Board BoardRef; Kind, Index byte }
+```
+`isLocal()` is now a field read, not a `strcmp` against a session-derived self-GUID. There is no empty-string-means-hub convention to forget — `Self` and `Expander("")` are different things (and the latter is invalid by construction).
+
+### 2. One codec at the wire boundary — the ONLY place self/empty/hub-GUID are reconciled
+The wire still needs bytes; the empty-vs-hub-GUID question collapses into a single encode/decode pair that everything funnels through:
+
+```
+encode(BoardRef): Self → [0];  Expander(g) → [len][g]
+decode(bytes, selfGuid): [0] → Self;  [g]==selfGuid → Self;  else → Expander(g)
+```
+This subsumes BOTH staged steps below (the hub *may* keep emitting its GUID — `decode` folds it to `Self`; or emit `[0]` — either decodes identically). No app-layer code, Go or firmware, ever sees a hub-GUID-as-address again; `BuildModel`, async decoders, and config all call `decode` and get a `Self` board. `lookupProfile` dual-form, the `app_servo.go` remap, `hubLocal`, and `normalizeSelfGuid` **all delete** — they were re-implementing this codec at 8 sites.
+
+### 3. The TopologyService is the sole router; callers never branch on local/remote
+Resolving a `BoardRef` to a transport is the *router's* job, decided once, not at every handler:
+
+```cpp
+Result TopologyService::send(const PortRef& ref, uint8_t inner, const uint8_t* p, size_t n) {
+    if (ref.board.isLocal()) return _roleSvc.handle(inner, p, n);      // local fast-path
+    auto* slot = _expanders.resolve(ref.board.guid);                  // identity → live USB slot
+    return slot ? slot->forward(inner, p, n) : Nack(TopologyError::UNKNOWN_GUID);
+}
+```
+Effects and Studio say "send to this `PortRef`"; they never see `isLocalTarget`/`Roles.* vs Topology.*On` again. Dynamic discovery stays clean: you address by **stable identity** (the GUID, survives USB-port changes / reconnects), and the router maps identity → whichever live slot currently holds it — exactly the indirection a "master + hot-plugged nodes" topology wants.
+
+### 4. Identity is metadata on the node, not the address
+A board *node* carries identity separately from its address: `{ ref: BoardRef, identity: { guid, deviceName, version, caps } }`. The hub node is `ref = Self` with `identity.guid = "6D60"` — the UI shows `identity.guid`, persistence/reconnect key off it, but nothing *addresses* the hub by it. This is the clean split the current design lacks (GUID doing double duty as address + identity).
+
+### Why this over "the hub is just another node, addressed by its GUID" (uniform, no sentinel)
+That alternative (drop `Self`, give the hub a normal GUID everywhere, router fast-paths `guid==selfGuid`) is elegantly uniform but a worse fit here: the master is *genuinely* special — it is the router, always present, the topology root, and the zero-cost local path. A typed `Self` variant names that specialness explicitly instead of rediscovering it with a `guid==selfGuid` compare in the hot path, and it avoids rewriting the firmware's pervasive internal `PortRef::local` / effect-binding convention to carry a GUID. Uniformity that erases a real distinction isn't simpler — it just moves the special case into the router's comparison.
+
+### Migration (incremental, ships in slices — no big-bang)
+1. **Go first, behind the wire.** Introduce `BoardRef` + the `decode` codec; change `BuildModel`/async decoders to produce `Self`. Delete the four Go workarounds. Zero firmware change, zero wire change. (This is strictly better than — and replaces — "Step A" below.)
+2. **Firmware address type.** Replace `PortRef.guid[5]` with `BoardRef`; route everything through `TopologyService::send`. `isLocalTarget` → `ref.board.isLocal()`; `normalizeSelfGuid` → the codec.
+3. **Optional wire tidy.** Have the hub emit `[0]` for its own blocks (the codec already accepts both, so this is cosmetic once 1–2 land).
+4. **Guard test** (mirrors the error-collision test): build a model from a PORT_LIST_RESP whose hub block carries the hub GUID; assert every `Port.Board.IsLocal()` and that no `Port.Board.guid == hubIdentityGUID`; assert `send`-routing returns local for `Self`, forward for `Expander`.
+
+The "canonicalise `""`" steps below are the **fallback** if the type change is deferred — they keep the stringly-typed `PortRef` but at least funnel normalisation to one boundary. Prefer the typed redesign; it deletes the same workarounds *and* prevents the next consumer from reintroducing them.
+
+---
+
+## Fallback (no type change): one canonical string form, GUID is identity-not-address
 
 **Rule:** `PortRef.guid == "" ⟺ hub-local`; a non-empty guid is **always** a remote expander GUID. The hub's own GUID is NEVER a valid `PortRef.guid` — it is board *identity* (shown in the UI, sourced from `INIT_READY` / `a.id.GUID` / `deviceName`), not a port address. Routing is then a single, trivial predicate everywhere:
 
