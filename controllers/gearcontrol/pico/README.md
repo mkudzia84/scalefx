@@ -119,6 +119,14 @@ These map to `protocol/roles` (`CmdRoleAttach`/`CmdRoleDetach`/`CmdRoleListReq` 
 `CmdBiMotor*` + `CmdServo*`) via `client.Roles.*`.  The `gear-*` commands above
 are the effect-layer surface a hub uses to orchestrate the same primitives.
 
+**GUI equivalent:** in ScaleFX Studio, connecting a gearcontrol expander on its
+own shows a **Diagnostics** tab (gated to `controllerType === 'gearcontrol'`)
+that wraps the same role-layer surface — attach/detach, a servo travel slider,
+gear-motor seek/endstop buttons, and live stall-current — plus a raw-command box.
+Backed by the `App.Diag*` Wails bindings (`app/go/studio/app_geardiag.go`).
+HubFX-only config/topology auto-loads are skipped for an expander (it has no
+config of its own; the hub holds it in `/hubfx.yaml`'s `expanders:` block).
+
 ## Wire surface (hub-side `GearControlService`)
 
 The board itself only speaks the generic-expander port/role surface

@@ -60,7 +60,12 @@ func (i Identity) Kind() BoardKind {
 		return BoardLightFX
 	case strings.HasPrefix(i.DeviceName, "GunFx"):
 		return BoardGunFX
-	case strings.HasPrefix(i.DeviceName, "GearControl"):
+	// Firmware emits the short prefix "GearCtrl" (kName in gearcontrol_pico.ino),
+	// e.g. "GearCtrl-3225" — accept both that and the long form so the device
+	// resolves to 'gearcontrol' instead of BoardUnknown (which left Studio
+	// treating it as a hub and running HubFX-only config/topology loaders).
+	case strings.HasPrefix(i.DeviceName, "GearControl"),
+		strings.HasPrefix(i.DeviceName, "GearCtrl"):
 		return BoardGearControl
 	}
 	return BoardUnknown

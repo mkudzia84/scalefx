@@ -902,6 +902,32 @@ export namespace main {
 	        this.boardStateDisplay = source["boardStateDisplay"];
 	    }
 	}
+	export class DiagBiMotorStatus {
+	    index: number;
+	    signedDuty: number;
+	    voltageMv: number;
+	    currentMa: number;
+	    stalled: boolean;
+	    position: number;
+	    positionName: string;
+	    guardMode: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagBiMotorStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.index = source["index"];
+	        this.signedDuty = source["signedDuty"];
+	        this.voltageMv = source["voltageMv"];
+	        this.currentMa = source["currentMa"];
+	        this.stalled = source["stalled"];
+	        this.position = source["position"];
+	        this.positionName = source["positionName"];
+	        this.guardMode = source["guardMode"];
+	    }
+	}
 	export class DiagEvent {
 	    time: string;
 	    level: string;
@@ -920,6 +946,52 @@ export namespace main {
 	        this.tag = source["tag"];
 	        this.message = source["message"];
 	        this.fields = source["fields"];
+	    }
+	}
+	export class DiagRole {
+	    portKind: number;
+	    portIdx: number;
+	    roleKind: number;
+	    portKindName: string;
+	    roleKindName: string;
+	    flags: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagRole(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.portKind = source["portKind"];
+	        this.portIdx = source["portIdx"];
+	        this.roleKind = source["roleKind"];
+	        this.portKindName = source["portKindName"];
+	        this.roleKindName = source["roleKindName"];
+	        this.flags = source["flags"];
+	    }
+	}
+	export class DiagServoProfile {
+	    minUs: number;
+	    maxUs: number;
+	    centerUs: number;
+	    reversed: boolean;
+	    maxSpeed: number;
+	    maxAccel: number;
+	    maxJerk: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagServoProfile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.minUs = source["minUs"];
+	        this.maxUs = source["maxUs"];
+	        this.centerUs = source["centerUs"];
+	        this.reversed = source["reversed"];
+	        this.maxSpeed = source["maxSpeed"];
+	        this.maxAccel = source["maxAccel"];
+	        this.maxJerk = source["maxJerk"];
 	    }
 	}
 	export class EngineTransitions {

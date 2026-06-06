@@ -158,7 +158,7 @@ export const deviceModel = writable<DeviceModelSnapshotT>(empty)
 // (Ports & Roles, Inputs), then one tab per capability-available domain,
 // then Firmware.  TabBar and MainLayout both read this so they never drift.
 
-export type TabKind = 'io' | 'engine' | 'gun' | 'lighting' | 'gear' | 'domain' | 'firmware'
+export type TabKind = 'io' | 'engine' | 'gun' | 'lighting' | 'gear' | 'domain' | 'firmware' | 'gear-diagnostics'
 export interface StudioTab { key: string; label: string; kind: TabKind; domain?: Domain }
 
 // Engine + gun each get their own dedicated tab (EnginePanel / GunFxPanel)
@@ -179,13 +179,20 @@ export const studioTabs = derived([deviceModel, connectionInfo], ([$dm, $conn]):
     const firmwareTab: StudioTab = { key: 'firmware', label: 'Firmware', kind: 'firmware' }
     // Tab gating by connected board: the full effect/config/IO surface is
     // HubFX-only (the master owns every effect + the port/role model). When a
-    // NON-HubFX board (an expander — gearcontrol etc.) is connected on its own,
-    // only the Firmware tab is meaningful (flash / version), so show just that.
+    // NON-HubFX board (an expander) is connected on its own, it gets only its
+    // own surfaces — a board-specific Diagnostics tab (low-level role attach /
+    // drive / inspect) where one exists, plus Firmware (flash / version). The
+    // Input & Ports tab and every effect tab stay HubFX-only.
     // Pre-connect (controllerType unset) keeps the full capability-gated set so
     // the operator can review surfaces before plugging in a hub.
     const ct = $conn.controllerType
     if ($conn.connected && ct && ct !== 'hubfx') {
-        return [firmwareTab]
+        const tabs: StudioTab[] = []
+        if (ct === 'gearcontrol') {
+            tabs.push({ key: 'gear-diag', label: 'Diagnostics', kind: 'gear-diagnostics' })
+        }
+        tabs.push(firmwareTab)
+        return tabs
     }
     // Order: Input & Ports → Effects → Lighting → other domain tabs →
     // Firmware.  Effects + Lighting both sit near the front so the

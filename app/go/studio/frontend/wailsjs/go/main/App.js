@@ -54,12 +54,48 @@ export function DeviceSystemInfo() {
   return window['go']['main']['App']['DeviceSystemInfo']();
 }
 
+export function DiagBiMotorMoveEnd(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['DiagBiMotorMoveEnd'](arg1, arg2, arg3, arg4);
+}
+
+export function DiagBiMotorSeek(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DiagBiMotorSeek'](arg1, arg2, arg3);
+}
+
+export function DiagBiMotorStatus(arg1) {
+  return window['go']['main']['App']['DiagBiMotorStatus'](arg1);
+}
+
 export function DiagDebugEnabled() {
   return window['go']['main']['App']['DiagDebugEnabled']();
 }
 
+export function DiagInit() {
+  return window['go']['main']['App']['DiagInit']();
+}
+
 export function DiagLogPath() {
   return window['go']['main']['App']['DiagLogPath']();
+}
+
+export function DiagRoleAttach(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DiagRoleAttach'](arg1, arg2, arg3);
+}
+
+export function DiagRoleDetach(arg1, arg2) {
+  return window['go']['main']['App']['DiagRoleDetach'](arg1, arg2);
+}
+
+export function DiagRoleList() {
+  return window['go']['main']['App']['DiagRoleList']();
+}
+
+export function DiagServoProfileGet(arg1) {
+  return window['go']['main']['App']['DiagServoProfileGet'](arg1);
+}
+
+export function DiagServoSetTarget(arg1, arg2) {
+  return window['go']['main']['App']['DiagServoSetTarget'](arg1, arg2);
 }
 
 export function DiagSnapshot() {

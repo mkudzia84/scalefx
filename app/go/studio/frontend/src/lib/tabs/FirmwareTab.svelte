@@ -13,6 +13,12 @@
     let deviceInfoErr = ''
     let lastInfoKey = ''
 
+    // Audio asset cache is meaningful only on a board that advertises AUDIO
+    // (the HubFX master). An expander (gearcontrol) has no audio — its
+    // AudioPreloads() comes back with entries=null, so gate the section off
+    // rather than rendering an empty cache (and crashing on entries.length).
+    $: hasAudio = !!deviceInfo?.capabilityNames?.includes?.('AUDIO')
+
     async function loadDeviceInfo() {
         if (!$connectionInfo.connected) { deviceInfo = null; deviceInfoErr = ''; return }
         try {
@@ -325,8 +331,8 @@
         {/if}
     {/if}
 
-    <!-- Audio asset preload cache (PSRAM residency view) -->
-    {#if $connectionInfo.connected}
+    <!-- Audio asset preload cache (PSRAM residency view) — AUDIO boards only -->
+    {#if $connectionInfo.connected && hasAudio}
         <section class="info-section">
             <div class="section-header">
                 <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg> Audio Asset Cache</h3>
@@ -339,7 +345,7 @@
                 <p class="fetch-error">{preloadsErr}</p>
             {:else if !preloads}
                 <p class="no-data">No data yet</p>
-            {:else if preloads.entries.length === 0}
+            {:else if !preloads.entries?.length}
                 <p class="no-data">Cache empty — no audio assets registered</p>
             {:else}
                 <div class="preload-summary">

@@ -13,9 +13,16 @@ function setDomains(ids: string[]) {
 }
 
 describe('studioTabs gating by connected board', () => {
-    it('a connected NON-HubFX board (gearcontrol) shows ONLY the Firmware tab', () => {
+    it('a connected gearcontrol expander shows ONLY its Diagnostics + Firmware tabs', () => {
         setDomains(['gearcontrol']) // even with capability domains present…
         setConn(true, 'gearcontrol')
+        const keys = get(studioTabs).map(t => t.key)
+        expect(keys).toEqual(['gear-diag', 'firmware'])
+        expect(keys).not.toContain('io') // Input & Ports is HubFX-only
+    })
+
+    it('a connected non-gearcontrol expander shows ONLY the Firmware tab', () => {
+        setConn(true, 'lightfx')
         const keys = get(studioTabs).map(t => t.key)
         expect(keys).toEqual(['firmware'])
     })

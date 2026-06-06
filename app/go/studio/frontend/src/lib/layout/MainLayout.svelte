@@ -11,6 +11,7 @@
     import GunFxPanel from '../tabs/GunFxPanel.svelte'
     import LightingTab from '../tabs/LightingTab.svelte'
     import GearLandingTab from '../tabs/GearLandingTab.svelte'
+    import GearDiagnosticsTab from '../tabs/GearDiagnosticsTab.svelte'
     import DomainTab from '../tabs/DomainTab.svelte'
     import { showConsole, activeTab, connectionInfo } from '../stores'
     import { studioTabs } from '../devicemodel'
@@ -92,6 +93,8 @@
                     {#key current.key}
                         <DomainTab domain={current.domain} />
                     {/key}
+                {:else if current?.kind === 'gear-diagnostics'}
+                    <div class="tab-content"><GearDiagnosticsTab /></div>
                 {:else}
                     <FirmwareTab />
                 {/if}

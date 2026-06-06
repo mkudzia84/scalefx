@@ -30,9 +30,27 @@ export function DeviceModelSnapshot():Promise<main.DeviceModelSnapshot>;
 
 export function DeviceSystemInfo():Promise<main.DeviceInfo>;
 
+export function DiagBiMotorMoveEnd(arg1:number,arg2:string,arg3:number,arg4:number):Promise<void>;
+
+export function DiagBiMotorSeek(arg1:number,arg2:number,arg3:number):Promise<void>;
+
+export function DiagBiMotorStatus(arg1:number):Promise<main.DiagBiMotorStatus>;
+
 export function DiagDebugEnabled():Promise<boolean>;
 
+export function DiagInit():Promise<void>;
+
 export function DiagLogPath():Promise<string>;
+
+export function DiagRoleAttach(arg1:number,arg2:number,arg3:number):Promise<void>;
+
+export function DiagRoleDetach(arg1:number,arg2:number):Promise<void>;
+
+export function DiagRoleList():Promise<Array<main.DiagRole>>;
+
+export function DiagServoProfileGet(arg1:number):Promise<main.DiagServoProfile>;
+
+export function DiagServoSetTarget(arg1:number,arg2:number):Promise<void>;
 
 export function DiagSnapshot():Promise<Array<main.DiagEvent>>;
 
