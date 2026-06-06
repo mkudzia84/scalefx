@@ -17,12 +17,14 @@ package console
 // one field; everything else is pulled from a fresh GET first).
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"scalefx/client"
 	"scalefx/protocol/core"
+	"scalefx/protocol/ports"
 	"scalefx/protocol/roles"
 )
 
@@ -37,7 +39,110 @@ func init() {
 	register(&command{Name: "bimotor-move-end", Usage: "bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]", Help: "drive a BiDcMotor (gear/door) to logical endstop A or B (A=+duty, B=-duty); outcome arrives async (subscribe)", Category: catTopology, RequiresConn: true, Run: cmdBiMotorMoveEnd})
 	register(&command{Name: "bimotor-seek", Usage: "bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]", Help: "position-agnostic seek — drive a BiDcMotor at signedDuty until stall/endstop or timeout", Category: catTopology, RequiresConn: true, Run: cmdBiMotorSeek})
 	register(&command{Name: "bimotor-status", Usage: "bimotor-status <portIdx>", Help: "verbose BiDcMotor status: duty, voltage, current, stalled, position (A/B), guard mode", Category: catTopology, RequiresConn: true, Run: cmdBiMotorStatus})
-	_ = core.CapTopology // keep the import live; commands are role-layer, gating handled at attach time
+
+	// Direct role lifecycle — attach / inspect / detach a role on the
+	// CONNECTED board with NO hub (the GUID-addressed `role-attach` goes
+	// through the hub's Topology service).  This is the low-level path for
+	// bench-testing an expander's roles straight from the CLI.
+	register(&command{Name: "role-list-local", Usage: "role-list-local", Help: "list roles attached on the connected board (direct role layer, no hub)", Category: catTopology, RequiresConn: true, RequiresCap: core.CapRoles, Run: cmdRoleListLocal})
+	register(&command{Name: "role-attach-local", Usage: "role-attach-local <portKind> <portIdx> <roleKind> [hexcfg]", Help: "attach a role DIRECTLY on the connected board (no hub/GUID) — portKind=servo|pwm|hbridge|input, roleKind=servo|bi-dc-motor|dc-motor|heater|led-animator", Category: catTopology, RequiresConn: true, RequiresCap: core.CapRoles, Run: cmdRoleAttachLocal})
+	register(&command{Name: "role-detach-local", Usage: "role-detach-local <portKind> <portIdx>", Help: "detach the role on (portKind, portIdx) on the connected board (direct role layer)", Category: catTopology, RequiresConn: true, RequiresCap: core.CapRoles, Run: cmdRoleDetachLocal})
+}
+
+// ─── Direct role lifecycle (bench-test an expander, no hub) ──────────
+//
+// parsePortKind lives in helpers.go (servo|pwm|hbridge|input + byte fallback).
+
+func parseRoleKind(s string) (byte, error) {
+	if k, ok := roles.KindFromName(strings.ToLower(s)); ok {
+		return k, nil
+	}
+	v, err := strconv.ParseUint(s, 0, 8)
+	if err != nil {
+		return 0, fmt.Errorf("role kind: want servo|bi-dc-motor|dc-motor|heater|led-animator or a byte, got %q", s)
+	}
+	return byte(v), nil
+}
+
+func cmdRoleListLocal(a *App, _ []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	entries, err := a.c.Roles.List()
+	if err != nil {
+		return err
+	}
+	Hdr(fmt.Sprintf("attached roles (%d)", len(entries)))
+	if len(entries) == 0 {
+		Note("  none — attach one with role-attach-local <portKind> <portIdx> <roleKind>")
+		return nil
+	}
+	for _, e := range entries {
+		fmt.Fprintf(out, "  %s %s → %s  %s\n",
+			cDim(fmt.Sprintf("%-7s", ports.KindName(e.PortKind))),
+			cCyan(fmt.Sprintf("[%d]", e.PortIdx)),
+			cGreen(roles.KindName(e.RoleKind)),
+			cDim(fmt.Sprintf("flags=0x%02X", e.Flags)))
+	}
+	return nil
+}
+
+func cmdRoleAttachLocal(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) < 3 {
+		return fmt.Errorf("usage: role-attach-local <portKind> <portIdx> <roleKind> [hexcfg]")
+	}
+	pk, err := parsePortKind(args[0])
+	if err != nil {
+		return err
+	}
+	pi, err := parseU8(args[1])
+	if err != nil {
+		return err
+	}
+	rk, err := parseRoleKind(args[2])
+	if err != nil {
+		return err
+	}
+	var cfg []byte
+	if len(args) >= 4 {
+		cfg, err = hex.DecodeString(strings.TrimPrefix(args[3], "0x"))
+		if err != nil {
+			return fmt.Errorf("hexcfg: %w", err)
+		}
+	}
+	if err := a.c.Roles.Attach(pk, pi, rk, cfg); err != nil {
+		return err
+	}
+	Ok("attached %s → %s[%d]", cCyan(roles.KindName(rk)), ports.KindName(pk), pi)
+	if len(cfg) > 0 {
+		Note("  cfg: %d bytes", len(cfg))
+	}
+	return nil
+}
+
+func cmdRoleDetachLocal(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) != 2 {
+		return fmt.Errorf("usage: role-detach-local <portKind> <portIdx>")
+	}
+	pk, err := parsePortKind(args[0])
+	if err != nil {
+		return err
+	}
+	pi, err := parseU8(args[1])
+	if err != nil {
+		return err
+	}
+	if err := a.c.Roles.Detach(pk, pi); err != nil {
+		return err
+	}
+	Ok("detached %s[%d]", ports.KindName(pk), pi)
+	return nil
 }
 
 // ─── parsing helpers ────────────────────────────────────────────────

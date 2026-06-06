@@ -68,23 +68,56 @@ aborts an in-progress seek.  The hub's gear FSM maps results: deploy/
 retract → deployed/retracted (or ERROR on timeout); calibration sweeps
 retract→deploy→home, one seek per leg.
 
-### Role-layer CLI (bring-up — below the gear FSM)
+### Role-layer CLI (bench-test an expander — no hub)
 
-For bench bring-up of a BiDcMotor *without* the gear effect, the CLI exposes
-the role primitives directly (port index is the role's port, not a gear id):
+When a GearControl (or any generic expander) is plugged STRAIGHT into the PC —
+no HubFX in the loop — the CLI / Studio Console can attach, drive, and inspect
+its roles directly over the wire.  This is how you bring up the board and prove
+a servo or gear motor works before wiring it into a hub config.  These talk the
+expander's own **role layer** (`ROLE_ATTACH/DETACH/LIST_REQ`, no GUID) — distinct
+from the GUID-addressed `role-attach <guid> …` which routes through a hub's
+Topology service and is rejected on a board that only advertises `PORTS|ROLES`.
 
-- `bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]` — drive to
-  logical endstop **A** (`+duty`) or **B** (`-duty`); ACK is immediate, the
-  outcome (`reached/timeout/aborted`) arrives async (`subscribe` to watch
-  `BIMOTOR_ENDSTOP_RESULT`).
+Lifecycle (gated on the `ROLES` capability):
+
+- `init` — activate the expander (mode=slave).  *(A directly-connected
+  expander needs INIT; the hub auto-inits its own.)*
+- `role-list-local` — list roles currently attached on the connected board.
+- `role-attach-local <portKind> <portIdx> <roleKind> [hexcfg]` — bind a role.
+  `portKind` = `servo|pwm|hbridge|input`; `roleKind` = `servo|bi-dc-motor|
+  dc-motor|heater|led-animator` (or a raw byte).
+- `role-detach-local <portKind> <portIdx>` — unbind.
+
+Drive / inspect once attached (port index is the role's port, not a gear id):
+
+- `bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]` — drive a
+  BiDcMotor to logical endstop **A** (`+duty`) or **B** (`-duty`); ACK is
+  immediate, the outcome (`reached/timeout/aborted`) arrives async (`subscribe`
+  to watch `BIMOTOR_ENDSTOP_RESULT`).
 - `bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]` — position-agnostic
   seek (explicit signed duty); doesn't label which end was reached.
-- `bimotor-status <portIdx>` — verbose status: duty, voltage_mV, current_mA,
-  stalled, position (A/B), guard mode.
+- `bimotor-status <portIdx>` — verbose: duty, voltage_mV, current_mA, stalled,
+  position (A/B), guard mode.
+- `servo-profile-get <portIdx>` / `servo-profile-set <portIdx> <key=val>…` —
+  read / live-push a ServoActuator's motion profile (`min_us`, `max_us`,
+  `center_us`, `max_speed`, `max_accel`, `max_jerk`, `reversed`).
 
-These map to `protocol/roles` `CmdBiMotorMoveToEnd` / `CmdBiMotorSeekEndstop` /
-`CmdBiMotorGetStatus` via `client.Roles.BiMotor*`. The gear `gear-*` commands
-above are the effect-layer surface that orchestrates these per leg.
+Worked example (a gear motor on H-bridge 0, a door servo on servo 0):
+
+```
+init
+role-attach-local hbridge 0 bi-dc-motor
+role-attach-local servo   0 servo-actuator
+role-list-local                       # → both rows
+bimotor-seek 0 600 1200               # drive toward an endstop
+bimotor-status 0                      # current / stall / position
+servo-profile-set 0 max_us=1800 max_speed=600
+role-detach-local hbridge 0
+```
+
+These map to `protocol/roles` (`CmdRoleAttach`/`CmdRoleDetach`/`CmdRoleListReq` +
+`CmdBiMotor*` + `CmdServo*`) via `client.Roles.*`.  The `gear-*` commands above
+are the effect-layer surface a hub uses to orchestrate the same primitives.
 
 ## Wire surface (hub-side `GearControlService`)
 

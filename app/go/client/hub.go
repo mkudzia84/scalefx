@@ -158,7 +158,13 @@ func (h *Hub) Init() error {
 
 // InitMode sends INIT with explicit (mode, flags).
 func (h *Hub) InitMode(mode, flags byte) error {
-	return h.c.sendExpectACK(core.CmdInitMode(mode, flags))
+	// INIT replies with a typed INIT_READY (the identify payload), NOT a
+	// generic ACK — so wait for that packet type, not sendExpectACK (which
+	// only returns on ACK/NACK and would time out forwarding INIT_READY to
+	// the async handler). Manifests against a directly-connected expander
+	// INIT'd from the CLI; the hub auto-inits so it never hit this path.
+	_, err := h.c.sendForResp(core.CmdInitMode(mode, flags), core.InitReady)
+	return err
 }
 
 // Shutdown sends SHUTDOWN.  The board stays connected but releases its

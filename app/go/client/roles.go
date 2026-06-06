@@ -35,6 +35,40 @@ const (
 // Roles is the role-layer live-tune facet.
 type Roles struct{ c *Client }
 
+// RoleListEntry re-export so callers don't import the protocol package.
+type RoleListEntry = roles.RoleListEntry
+
+// ─── Role lifecycle (direct role layer — no GUID, no topology hop) ────
+//
+// Attach / detach / list a role on the CONNECTED board's RoleServicePolicy
+// directly (ROLE_ATTACH 0x40 / ROLE_DETACH 0x41 / ROLE_LIST_REQ 0x42).
+// This is the LOW-LEVEL bench-testing path: drive an expander's role layer
+// straight from the CLI with NO hub present.  The production path is the
+// hub's GUID-addressed `Topology.AttachRole` (which forwards over CDC) —
+// use that when a master owns the expander.  ROLE_ATTACH/DETACH ACK then
+// emit an async ROLE_ATTACHED/DETACHED event; ROLE_LIST_REQ replies with a
+// typed ROLE_LIST_RESP.
+
+// Attach binds a role to (portKind, portIdx) on the connected board.  cfg
+// is the role's optional attach-config blob (nil = role defaults).
+func (r *Roles) Attach(portKind, portIdx, roleKind byte, cfg []byte) error {
+	return r.c.sendExpectACK(roles.CmdRoleAttach(portKind, portIdx, roleKind, cfg))
+}
+
+// Detach removes whatever role is bound to (portKind, portIdx).
+func (r *Roles) Detach(portKind, portIdx byte) error {
+	return r.c.sendExpectACK(roles.CmdRoleDetach(portKind, portIdx))
+}
+
+// List reads the roles currently attached on the connected board.
+func (r *Roles) List() ([]RoleListEntry, error) {
+	resp, err := r.c.sendForResp(roles.CmdRoleListReq(), roles.RoleListResp)
+	if err != nil {
+		return nil, err
+	}
+	return roles.DecodeRoleListPayload(resp.Payload)
+}
+
 // ─── Servo motion profile ────────────────────────────────────────────
 
 // ServoSetProfile pushes a new motion profile (clamp + speed + accel +
