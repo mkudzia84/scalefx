@@ -911,6 +911,7 @@ export namespace main {
 	    position: number;
 	    positionName: string;
 	    guardMode: number;
+	    guardName: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DiagBiMotorStatus(source);
@@ -926,8 +927,64 @@ export namespace main {
 	        this.position = source["position"];
 	        this.positionName = source["positionName"];
 	        this.guardMode = source["guardMode"];
+	        this.guardName = source["guardName"];
 	    }
 	}
+	export class DiagEndstopResult {
+	    outcome: number;
+	    outcomeName: string;
+	    travelMs: number;
+	    peakMa: number;
+	    position: number;
+	    positionName: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagEndstopResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.outcome = source["outcome"];
+	        this.outcomeName = source["outcomeName"];
+	        this.travelMs = source["travelMs"];
+	        this.peakMa = source["peakMa"];
+	        this.position = source["position"];
+	        this.positionName = source["positionName"];
+	    }
+	}
+	export class DiagCalibration {
+	    legA: DiagEndstopResult;
+	    legB: DiagEndstopResult;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagCalibration(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.legA = this.convertValues(source["legA"], DiagEndstopResult);
+	        this.legB = this.convertValues(source["legB"], DiagEndstopResult);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class DiagEvent {
 	    time: string;
 	    level: string;

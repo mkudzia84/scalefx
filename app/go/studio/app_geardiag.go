@@ -4,13 +4,21 @@ package main
 // methods backing the GearDiagnosticsTab.  They drive the CONNECTED board's
 // role layer DIRECTLY (ROLE_ATTACH/DETACH/LIST + per-role drive/inspect), no
 // hub / GUID hop — the same low-level surface the CLI exposes as
-// role-attach-local / bimotor-* / servo-profile-*.  Used to bring up and
+// role-attach-local / bimotor-* / servo-* commands.  Used to bring up and
 // bench-test an expander (servo travel, gear-motor seek, stall current)
 // before a master owns it.  Gated in the UI to controllerType === 'gearcontrol'.
+//
+// The move/seek/calibrate calls BLOCK until the motor reports its outcome
+// (BIMOTOR_ENDSTOP_RESULT async, awaited via a per-call async filter) so the
+// frontend gets a rich result — reached/timeout/aborted + travel time + peak
+// current — straight from `await`, with no event-stream plumbing.
 
 import (
 	"fmt"
+	"time"
 
+	"scalefx/client"
+	"scalefx/protocol"
 	"scalefx/protocol/ports"
 	"scalefx/protocol/roles"
 )
@@ -35,17 +43,36 @@ type DiagBiMotorStatus struct {
 	Position   byte   `json:"position"`
 	PositionNm string `json:"positionName"`
 	GuardMode  byte   `json:"guardMode"`
+	GuardNm    string `json:"guardName"`
+}
+
+// DiagEndstopResult is the awaited outcome of a move/seek (reached/timeout/
+// aborted + travel time + peak current).
+type DiagEndstopResult struct {
+	Outcome     byte   `json:"outcome"`
+	OutcomeName string `json:"outcomeName"`
+	TravelMs    uint16 `json:"travelMs"`
+	PeakMa      uint16 `json:"peakMa"`
+	Position    byte   `json:"position"`
+	PositionNm  string `json:"positionName"`
+}
+
+// DiagCalibration is a two-leg sweep (drive to A, then to B) — travel time
+// + peak current for each leg.  Leg B's travel is the full A→B stroke.
+type DiagCalibration struct {
+	LegA DiagEndstopResult `json:"legA"`
+	LegB DiagEndstopResult `json:"legB"`
 }
 
 // DiagServoProfile mirrors the servo motion profile for the frontend.
 type DiagServoProfile struct {
-	MinUs       uint16 `json:"minUs"`
-	MaxUs       uint16 `json:"maxUs"`
-	CenterUs    uint16 `json:"centerUs"`
-	Reversed    bool   `json:"reversed"`
-	MaxSpeed    uint16 `json:"maxSpeed"`
-	MaxAccel    uint16 `json:"maxAccel"`
-	MaxJerk     uint16 `json:"maxJerk"`
+	MinUs    uint16 `json:"minUs"`
+	MaxUs    uint16 `json:"maxUs"`
+	CenterUs uint16 `json:"centerUs"`
+	Reversed bool   `json:"reversed"`
+	MaxSpeed uint16 `json:"maxSpeed"`
+	MaxAccel uint16 `json:"maxAccel"`
+	MaxJerk  uint16 `json:"maxJerk"`
 }
 
 // DiagInit activates the connected expander (INIT, slave mode).  A directly-
@@ -117,40 +144,82 @@ func (a *App) DiagBiMotorStatus(portIdx int) (DiagBiMotorStatus, error) {
 		CurrentMa:  st.CurrentMa,
 		Stalled:    st.Stalled,
 		Position:   byte(st.Position),
-		PositionNm: biMotorPosName(st.Position),
+		PositionNm: st.Position.String(),
 		GuardMode:  byte(st.GuardMode),
+		GuardNm:    st.GuardMode.String(),
 	}, nil
 }
 
-// DiagBiMotorSeek drives the BiDcMotor at signedDuty until stall/timeout.
-func (a *App) DiagBiMotorSeek(portIdx, signedDuty, timeoutMs int) error {
+// DiagBiMotorMoveEnd drives to logical end "a" (+duty) or "b" (-duty) and
+// BLOCKS until the endstop result lands (or timeout).
+func (a *App) DiagBiMotorMoveEnd(portIdx int, end string, duty, timeoutMs int) (DiagEndstopResult, error) {
 	c := a.snapshotClient()
 	if c == nil {
-		return fmt.Errorf("not connected")
+		return DiagEndstopResult{}, fmt.Errorf("not connected")
 	}
-	return c.Roles.BiMotorSeekEndstop(byte(portIdx), int16(signedDuty), uint16(timeoutMs))
+	pos, signed, err := endToSigned(end, duty)
+	if err != nil {
+		return DiagEndstopResult{}, err
+	}
+	return a.awaitEndstop(c, byte(portIdx), timeoutMs, func() error {
+		return c.Roles.BiMotorMoveToEnd(byte(portIdx), pos, signed, uint16(timeoutMs))
+	})
 }
 
-// DiagBiMotorMoveEnd drives to logical end "a" (+duty) or "b" (-duty).
-func (a *App) DiagBiMotorMoveEnd(portIdx int, end string, duty, timeoutMs int) error {
+// DiagBiMotorSeek drives at signedDuty until a stall/endstop or timeout and
+// BLOCKS for the result (position-agnostic — doesn't label which end).
+func (a *App) DiagBiMotorSeek(portIdx, signedDuty, timeoutMs int) (DiagEndstopResult, error) {
+	c := a.snapshotClient()
+	if c == nil {
+		return DiagEndstopResult{}, fmt.Errorf("not connected")
+	}
+	return a.awaitEndstop(c, byte(portIdx), timeoutMs, func() error {
+		return c.Roles.BiMotorSeekEndstop(byte(portIdx), int16(signedDuty), uint16(timeoutMs))
+	})
+}
+
+// DiagBiMotorCalibrate sweeps to end A then end B (each with its own timeout),
+// returning travel time + peak current per leg.  Leg B's travel is the full
+// A→B stroke — the calibration datum.
+func (a *App) DiagBiMotorCalibrate(portIdx, duty, timeoutMs int) (DiagCalibration, error) {
+	c := a.snapshotClient()
+	if c == nil {
+		return DiagCalibration{}, fmt.Errorf("not connected")
+	}
+	posA, sigA, _ := endToSigned("a", duty)
+	legA, err := a.awaitEndstop(c, byte(portIdx), timeoutMs, func() error {
+		return c.Roles.BiMotorMoveToEnd(byte(portIdx), posA, sigA, uint16(timeoutMs))
+	})
+	if err != nil {
+		return DiagCalibration{}, fmt.Errorf("leg A: %w", err)
+	}
+	posB, sigB, _ := endToSigned("b", duty)
+	legB, err := a.awaitEndstop(c, byte(portIdx), timeoutMs, func() error {
+		return c.Roles.BiMotorMoveToEnd(byte(portIdx), posB, sigB, uint16(timeoutMs))
+	})
+	if err != nil {
+		return DiagCalibration{}, fmt.Errorf("leg B: %w", err)
+	}
+	return DiagCalibration{LegA: legA, LegB: legB}, nil
+}
+
+// DiagBiMotorStop hard-brakes the motor (aborts an in-flight seek).
+func (a *App) DiagBiMotorStop(portIdx int) error {
 	c := a.snapshotClient()
 	if c == nil {
 		return fmt.Errorf("not connected")
 	}
-	if duty < 0 {
-		duty = -duty
+	return c.Roles.BiMotorBrake(byte(portIdx))
+}
+
+// DiagBiMotorJog drives the motor at a raw signed duty (NO stall guard) for
+// manual jogging; 0 brakes.
+func (a *App) DiagBiMotorJog(portIdx, signed int) error {
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
 	}
-	var pos roles.BiMotorPosition
-	var signed int16
-	switch end {
-	case "a", "A":
-		pos, signed = roles.BiMotorPosA, int16(duty)
-	case "b", "B":
-		pos, signed = roles.BiMotorPosB, int16(-duty)
-	default:
-		return fmt.Errorf("end must be 'a' or 'b'")
-	}
-	return c.Roles.BiMotorMoveToEnd(byte(portIdx), pos, signed, uint16(timeoutMs))
+	return c.Roles.BiMotorSetSigned(byte(portIdx), int16(signed))
 }
 
 // DiagServoProfileGet reads servo[portIdx]'s motion profile.
@@ -183,13 +252,56 @@ func (a *App) DiagServoSetTarget(portIdx, us int) error {
 	return c.Roles.ServoSetTarget(byte(portIdx), uint16(us))
 }
 
-// biMotorPosName mirrors the CLI helper (A/B/unknown).
-func biMotorPosName(p roles.BiMotorPosition) string {
-	switch p {
-	case roles.BiMotorPosA:
-		return "A"
-	case roles.BiMotorPosB:
-		return "B"
+// ─── helpers ─────────────────────────────────────────────────────────
+
+// endToSigned maps a logical end ("a"/"b") + magnitude to (position, signed
+// duty): A = +duty, B = −duty.
+func endToSigned(end string, duty int) (roles.BiMotorPosition, int16, error) {
+	if duty < 0 {
+		duty = -duty
 	}
-	return "unknown"
+	switch end {
+	case "a", "A":
+		return roles.BiMotorPosA, int16(duty), nil
+	case "b", "B":
+		return roles.BiMotorPosB, int16(-duty), nil
+	}
+	return roles.BiMotorPosUnknown, 0, fmt.Errorf("end must be 'a' or 'b'")
+}
+
+// awaitEndstop registers a one-shot async filter for BIMOTOR_ENDSTOP_RESULT,
+// fires the move (send), and blocks until the matching motor's result lands
+// or the deadline (move timeout + slack) elapses.
+func (a *App) awaitEndstop(c *client.Client, portIdx byte, timeoutMs int, send func() error) (DiagEndstopResult, error) {
+	conn := c.Conn()
+	if conn == nil {
+		return DiagEndstopResult{}, fmt.Errorf("not connected")
+	}
+	ch := make(chan *protocol.Response, 4)
+	conn.RegisterAsyncFilter(roles.BiMotorEndstopResult, ch)
+	defer conn.UnregisterAsyncFilter(roles.BiMotorEndstopResult)
+
+	if err := send(); err != nil {
+		return DiagEndstopResult{}, err
+	}
+	deadline := time.After(time.Duration(timeoutMs+3000) * time.Millisecond)
+	for {
+		select {
+		case resp := <-ch:
+			ev, err := roles.DecodeBiMotorEndstopEvent(resp.Payload)
+			if err != nil || ev.Index != portIdx {
+				continue // not our motor / malformed — keep waiting
+			}
+			return DiagEndstopResult{
+				Outcome:     byte(ev.Outcome),
+				OutcomeName: ev.Outcome.String(),
+				TravelMs:    ev.TravelMs,
+				PeakMa:      ev.PeakMa,
+				Position:    byte(ev.Position),
+				PositionNm:  ev.Position.String(),
+			}, nil
+		case <-deadline:
+			return DiagEndstopResult{}, fmt.Errorf("no endstop result within %d ms", timeoutMs+3000)
+		}
+	}
 }

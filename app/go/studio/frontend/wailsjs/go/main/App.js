@@ -54,6 +54,14 @@ export function DeviceSystemInfo() {
   return window['go']['main']['App']['DeviceSystemInfo']();
 }
 
+export function DiagBiMotorCalibrate(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DiagBiMotorCalibrate'](arg1, arg2, arg3);
+}
+
+export function DiagBiMotorJog(arg1, arg2) {
+  return window['go']['main']['App']['DiagBiMotorJog'](arg1, arg2);
+}
+
 export function DiagBiMotorMoveEnd(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['DiagBiMotorMoveEnd'](arg1, arg2, arg3, arg4);
 }
@@ -64,6 +72,10 @@ export function DiagBiMotorSeek(arg1, arg2, arg3) {
 
 export function DiagBiMotorStatus(arg1) {
   return window['go']['main']['App']['DiagBiMotorStatus'](arg1);
+}
+
+export function DiagBiMotorStop(arg1) {
+  return window['go']['main']['App']['DiagBiMotorStop'](arg1);
 }
 
 export function DiagDebugEnabled() {

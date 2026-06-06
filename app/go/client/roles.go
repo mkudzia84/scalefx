@@ -211,6 +211,17 @@ func (r *Roles) BiMotorSeekEndstop(portIdx byte, signedDuty int16, timeoutMs uin
 	return r.c.sendExpectACK(roles.CmdBiMotorSeekEndstop(portIdx, signedDuty, timeoutMs))
 }
 
+// BiMotorBrake hard-stops the motor (active brake — both leads low).
+func (r *Roles) BiMotorBrake(portIdx byte) error {
+	return r.c.sendExpectACK(roles.CmdBiMotorBrake(portIdx))
+}
+
+// BiMotorSetSigned drives the motor at a raw signed duty with NO stall
+// guard — for manual jogging.  Sign = direction; 0 = coast-to-brake.
+func (r *Roles) BiMotorSetSigned(portIdx byte, signed int16) error {
+	return r.c.sendExpectACK(roles.CmdBiMotorSetSigned(portIdx, signed))
+}
+
 // BiMotorGetStatus reads the verbose live status (duty, voltage, current,
 // stalled, position, guard mode).
 func (r *Roles) BiMotorGetStatus(portIdx byte) (roles.BiMotorStatus, error) {
