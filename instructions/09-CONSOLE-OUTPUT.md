@@ -470,3 +470,15 @@ For storage sizes (SD, Flash, file sizes), use human-readable formatting:
 | < 1 MB | `{n/1024:.1f} KB` | `45.3 KB` |
 | < 1 GB | `{n/1048576:.1f} MB` | `234.7 MB` |
 | >= 1 GB | `{n/1073741824:.2f} GB` | `3.72 GB` |
+
+---
+
+## Colour convention (CLI)
+
+All ANSI colouring lives in `app/go/console/term.go` (honours `SetColor(false)` / non-TTY). Use the shared helpers — never inline `\033[` codes in a command file:
+
+- **Semantic line prefixes:** `Ok()` (green `✓`), `Err()` (red `✗`), `Warn()` (yellow `⚠`), `Info()` (cyan `ℹ`), `Note()` (dim), `Hdr()` (bold cyan title), `KV()` / `KVf()` (dim `key : value`).
+- **Value colourizers:** `Phase(name)` — green for live/ok (`running/on/deployed/active/armed/firing`), yellow for transitions (`starting/stopping/deploying/retracting/warning`), red for `error/critical/fault`, dim for idle (`off/stopped/retracted/idle/unconfigured`); `Bool(v)` — green `yes` / dim `no`; `HexU32(v)` — dim `0x…`; `ProgressBar(...)` for uploads.
+- **Palette for ad-hoc fields:** cyan = a notable numeric/identifier value (µs, mV, GUID, port), yellow = a derived/warning figure (duty-cap %), dim = labels/units/read-only annotations, magenta = GUIDs in the event stream; the live `subscribe` stream uses blue `[LL]/[GEAR]/[ENG]/[GUNV]` tags + `[LOG E/W/I/D]` severity tags.
+
+The live `subscribe` instrumentation stream ([cmd_events.go](../app/go/console/cmd_events.go)) and the `servo-profile-get` dump are the reference. When adding a new instrument/status command, colourize the **state words** with `Phase()` and the **key values** in cyan so a glance separates "what is it doing" from "what are the numbers" — don't ship a wall of mono-colour text.

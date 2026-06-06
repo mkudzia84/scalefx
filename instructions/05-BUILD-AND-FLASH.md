@@ -7,15 +7,17 @@
 ## Quick Commands
 
 ```yaml
-# Flash CLI (recommended)
-Flash_CLI_Build: "scalefx-flash build gunfx --no-clean"
-Flash_CLI_Flash: "scalefx-flash flash gunfx --port COM3"
-Flash_CLI_Release: "scalefx-flash release-flash gunfx --port COM3"
+# Flash CLI (recommended). Active controllers: hubfx (ESP32-S3 master),
+# gearcontrol (Pico), noop / noop-esp (bring-up). The standalone gunfx/lightfx
+# Pico controllers were removed 2026-06-06 — those effects live on the HubFX now.
+Flash_CLI_Build: "scalefx-flash build hubfx --no-clean"
+Flash_CLI_Flash: "scalefx-flash flash hubfx --port COM15"
+Flash_CLI_Release: "scalefx-flash release-flash hubfx --port COM15"
 Flash_CLI_Tools: "scalefx-flash tools status"
 Flash_CLI_Download: "scalefx-flash tools download"
 
-# Build all controllers
-Build_All: "scalefx-flash build gunfx --no-clean && scalefx-flash build lightfx --no-clean && ..."
+# Build every active controller (VS Code task: "Build All Controllers")
+Build_All: "scalefx-flash build gearcontrol --no-clean && scalefx-flash build hubfx --no-clean && ..."
 ```
 
 ---
