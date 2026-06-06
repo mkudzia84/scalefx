@@ -51,10 +51,18 @@ void ServoActuatorRole::setMaxVelocity_us_per_s(uint16_t v) {
 }
 
 void ServoActuatorRole::rebuildProfileLimits() {
-    // Calibration limits overlay the profile's min/max — role-level
-    // limits are narrower than port-level limits.
-    if (_profile.minUs < _minUs) _profile.minUs = _minUs;
-    if (_profile.maxUs > _maxUs) _profile.maxUs = _maxUs;
+    // The role's calibration limits (_minUs/_maxUs — already hw-clamped by
+    // setLimits) ARE the motion-profile's travel window: ASSIGN them, don't
+    // one-directionally clamp.  The old code only pulled the profile INWARD
+    // (min up / max down), so WIDENING the calibration — raising _maxUs —
+    // left _profile.maxUs stuck at its prior narrower value and the
+    // integrator kept clamping every target to the stale max.  A
+    // re-calibration to a wider range was silently ignored: landing
+    // deploy/retract (and any setTarget) never reached the new endpoint
+    // (e.g. Studio max 1620 → role stuck at a prior 1587).  See the
+    // 2026-06-06 diag trace.
+    _profile.minUs = _minUs;
+    _profile.maxUs = _maxUs;
     if (_profile.centerUs < _profile.minUs) _profile.centerUs = _profile.minUs;
     if (_profile.centerUs > _profile.maxUs) _profile.centerUs = _profile.maxUs;
     _mp.setProfile(_profile);
