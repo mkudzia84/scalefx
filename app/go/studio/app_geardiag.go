@@ -203,6 +203,28 @@ func (a *App) DiagBiMotorCalibrate(portIdx, duty, timeoutMs int) (DiagCalibratio
 	return DiagCalibration{LegA: legA, LegB: legB}, nil
 }
 
+// DiagBiMotorGuardFixed retunes the stall guard to Fixed mode (|I| >= threshold
+// sustained for window).  Use when you know the motor's stall current.
+func (a *App) DiagBiMotorGuardFixed(portIdx, thresholdMa, windowMs int) error {
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return c.Roles.BiMotorSetGuardFixed(uint16(portIdx), uint16(thresholdMa), uint16(windowMs))
+}
+
+// DiagBiMotorGuardLiveRatio retunes the stall guard to LiveRatio mode — averages
+// running current per stroke, then trips on a ratio spike.  Recommended for a
+// motor whose stall current isn't known and varies with battery voltage.
+func (a *App) DiagBiMotorGuardLiveRatio(portIdx, ratioX100, runSampleMs, inrushBlankMs, windowMs, maxTravelMs int) error {
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return c.Roles.BiMotorSetGuardLiveRatio(uint16(portIdx), uint16(ratioX100),
+		uint16(runSampleMs), uint16(inrushBlankMs), uint16(windowMs), uint16(maxTravelMs))
+}
+
 // DiagBiMotorStop hard-brakes the motor (aborts an in-flight seek).
 func (a *App) DiagBiMotorStop(portIdx int) error {
 	c := a.snapshotClient()

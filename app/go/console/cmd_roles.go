@@ -39,6 +39,7 @@ func init() {
 	register(&command{Name: "bimotor-move-end", Usage: "bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]", Help: "drive a BiDcMotor (gear/door) to logical endstop A or B (A=+duty, B=-duty); outcome arrives async (subscribe)", Category: catTopology, RequiresConn: true, Run: cmdBiMotorMoveEnd})
 	register(&command{Name: "bimotor-seek", Usage: "bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]", Help: "position-agnostic seek — drive a BiDcMotor at signedDuty until stall/endstop or timeout", Category: catTopology, RequiresConn: true, Run: cmdBiMotorSeek})
 	register(&command{Name: "bimotor-status", Usage: "bimotor-status <portIdx>", Help: "verbose BiDcMotor status: duty, voltage, current, stalled, position (A/B), guard mode", Category: catTopology, RequiresConn: true, Run: cmdBiMotorStatus})
+	register(&command{Name: "bimotor-guard", Usage: "bimotor-guard <portIdx> <live|fixed> [ratioX|thresholdMa] [windowMs]", Help: "retune the stall guard: live (auto-baseline ratio, recommended — e.g. 'live 2.5') or fixed (mA threshold). Watch the seek trace in the log.", Category: catTopology, RequiresConn: true, Run: cmdBiMotorGuard})
 
 	// Direct role lifecycle — attach / inspect / detach a role on the
 	// CONNECTED board with NO hub (the GUID-addressed `role-attach` goes
@@ -563,6 +564,55 @@ func cmdBiMotorSeek(a *App, args []string) error {
 	}
 	Ok("bimotor[%d] seek  (duty %d, timeout %d ms)", idx, d, timeoutMs)
 	Note("  outcome arrives async — run `subscribe`")
+	return nil
+}
+
+func cmdBiMotorGuard(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) < 2 {
+		return fmt.Errorf("usage: bimotor-guard <portIdx> <live|fixed> [ratioX|thresholdMa] [windowMs]")
+	}
+	idx, err := parseU8(args[0])
+	if err != nil {
+		return err
+	}
+	window := uint16(80)
+	if len(args) >= 4 {
+		w, e := strconv.Atoi(args[3])
+		if e != nil {
+			return fmt.Errorf("windowMs: %w", e)
+		}
+		window = uint16(w)
+	}
+	switch strings.ToLower(args[1]) {
+	case "live", "live-ratio", "ratio":
+		ratioX := 2.5
+		if len(args) >= 3 {
+			if ratioX, err = strconv.ParseFloat(args[2], 64); err != nil {
+				return fmt.Errorf("ratio: %w", err)
+			}
+		}
+		if err := a.c.Roles.BiMotorSetGuardLiveRatio(uint16(idx), uint16(ratioX*100), 200, 150, window, 0); err != nil {
+			return err
+		}
+		Ok("bimotor[%d] guard = %s (%.2f× baseline, confirm %d ms)", idx, cCyan("live-ratio"), ratioX, window)
+	case "fixed":
+		thr := 1000
+		if len(args) >= 3 {
+			if thr, err = strconv.Atoi(args[2]); err != nil {
+				return fmt.Errorf("thresholdMa: %w", err)
+			}
+		}
+		if err := a.c.Roles.BiMotorSetGuardFixed(uint16(idx), uint16(thr), window); err != nil {
+			return err
+		}
+		Ok("bimotor[%d] guard = %s (%d mA, confirm %d ms)", idx, cCyan("fixed"), thr, window)
+	default:
+		return fmt.Errorf("mode must be live|fixed")
+	}
+	Note("  watch the seek trace ([bimotor] …) in the log during the next move")
 	return nil
 }
 

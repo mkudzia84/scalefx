@@ -15,6 +15,7 @@
         DiagInit, DiagRoleList, DiagRoleAttach, DiagRoleDetach,
         DiagBiMotorStatus, DiagBiMotorMoveEnd, DiagBiMotorCalibrate,
         DiagBiMotorStop, DiagBiMotorJog,
+        DiagBiMotorGuardLiveRatio, DiagBiMotorGuardFixed,
         DiagServoProfileGet, DiagServoSetTarget, SendCommand,
     } from '../../../wailsjs/go/main/App'
     import { diag } from '../diag'
@@ -54,8 +55,17 @@
     }
     async function attach() {
         busyGlobal = true
-        try { await DiagRoleAttach(aPortKind, aPortIdx, aRoleKind); await refresh() }
-        catch (e) { fail(e) } finally { busyGlobal = false }
+        try {
+            await DiagRoleAttach(aPortKind, aPortIdx, aRoleKind)
+            // A fresh BiDcMotor defaults to Fixed 2000 mA — too high for most
+            // gear motors, so the seek never trips. Default it to LiveRatio
+            // (auto-baseline + ratio spike) so "go to endstop" works out of box.
+            if (aRoleKind === KIND_BIMOTOR) {
+                guardMode[aPortIdx] = 'live'
+                try { await DiagBiMotorGuardLiveRatio(aPortIdx, 250, 200, 150, 80, 0) } catch (e) { fail(e) }
+            }
+            await refresh()
+        } catch (e) { fail(e) } finally { busyGlobal = false }
     }
     async function detach(pk: number, pi: number) {
         busyGlobal = true
@@ -72,6 +82,28 @@
 
     function tmo(idx: number) { return Math.round((timeoutS[idx] ?? 20) * 1000) }
     function dut(idx: number) { return Math.round(duty[idx] ?? 600) }
+
+    // Stall-guard config (keyed by port idx). LiveRatio is the recommended
+    // default — it averages running current per stroke then trips on a spike,
+    // so it needs no per-motor threshold and is battery-voltage independent.
+    let guardMode: Record<number, string> = {}   // 'live' | 'fixed'
+    let gRatio: Record<number, number> = {}        // × (LiveRatio), default 2.5
+    let gSample: Record<number, number> = {}       // ms baseline window (200)
+    let gWindow: Record<number, number> = {}       // ms sustained confirm (80)
+    let gThreshold: Record<number, number> = {}    // mA (Fixed), default 1000
+    const gv = (rec: Record<number, number>, idx: number, def: number) => rec[idx] ?? def
+
+    async function applyGuard(idx: number) {
+        err = ''
+        try {
+            if ((guardMode[idx] ?? 'live') === 'live') {
+                await DiagBiMotorGuardLiveRatio(idx, Math.round(gv(gRatio, idx, 2.5) * 100),
+                    Math.round(gv(gSample, idx, 200)), 150, Math.round(gv(gWindow, idx, 80)), 0)
+            } else {
+                await DiagBiMotorGuardFixed(idx, Math.round(gv(gThreshold, idx, 1000)), Math.round(gv(gWindow, idx, 80)))
+            }
+        } catch (e) { fail(e) } finally { bimRefresh(idx) }
+    }
 
     async function bimRefresh(idx: number) {
         try { bim[idx] = await DiagBiMotorStatus(idx); bim = bim } catch { /* transient */ }
@@ -197,6 +229,33 @@
                             </label>
                         </div>
 
+                        <!-- stall guard (how the seek decides it hit the endstop) -->
+                        <div class="guard">
+                            <label class="lbl">Stall guard
+                                <select class="field-input narrow" bind:value={guardMode[idx]}>
+                                    <option value="live">LiveRatio (auto)</option>
+                                    <option value="fixed">Fixed (mA)</option>
+                                </select>
+                            </label>
+                            {#if (guardMode[idx] ?? 'live') === 'live'}
+                                <label class="lbl">Ratio
+                                    <span class="inp-unit"><input class="field-input tiny" type="number" min="1.2" max="6" step="0.1" bind:value={gRatio[idx]} placeholder="2.5" /><span class="unit">×</span></span>
+                                </label>
+                                <label class="lbl">Sample
+                                    <span class="inp-unit"><input class="field-input tiny" type="number" min="50" max="1000" step="50" bind:value={gSample[idx]} placeholder="200" /><span class="unit">ms</span></span>
+                                </label>
+                            {:else}
+                                <label class="lbl">Threshold
+                                    <span class="inp-unit"><input class="field-input narrow" type="number" min="50" max="9000" step="50" bind:value={gThreshold[idx]} placeholder="1000" /><span class="unit">mA</span></span>
+                                </label>
+                            {/if}
+                            <label class="lbl">Confirm
+                                <span class="inp-unit"><input class="field-input tiny" type="number" min="20" max="500" step="10" bind:value={gWindow[idx]} placeholder="80" /><span class="unit">ms</span></span>
+                            </label>
+                            <button class="tbtn" on:click={() => applyGuard(idx)} title="Push this stall-guard config to the role (live, no re-attach)"><span class="ic">✓</span> Apply guard</button>
+                        </div>
+                        <p class="hint compact">LiveRatio averages running current per stroke, then trips when it spikes ≥ ratio× — no fixed threshold, battery-independent. Watch the <b>seek trace</b> in the Console (Ctrl+`) for baseline + trip values.</p>
+
                         <!-- primary drive toolbar -->
                         <div class="toolbar">
                             <button class="tbtn wide accent" on:click={() => calibrate(idx)} disabled={!!moving} title="Sweep to end A then end B, measuring travel time + peak current each leg">
@@ -297,7 +356,8 @@
     .tbtn.wide { min-width: 120px; }
     .tbtn.jog { min-width: 44px; font-size: 15px; }
 
-    .attach-row, .params { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
+    .attach-row, .params, .guard { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
+    .guard { padding: 6px 8px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; }
     .inp-unit { display: inline-flex; align-items: center; gap: 3px; }
     .field-input.tiny { width: 52px; }
     .unit { font-size: 10px; font-family: var(--font-mono, monospace); color: var(--text-dim); }

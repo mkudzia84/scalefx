@@ -217,6 +217,7 @@ private:
     uint32_t  _seekStartMs    = 0;
     uint32_t  _seekDeadlineMs = 0;        ///< 0 = no per-seek timeout
     Position  _targetEnd      = Position::Unknown;
+    uint32_t  _lastSeekLogMs  = 0;        ///< throttle for verbose seek-progress logs
 
     // LiveRatio per-stroke baseline accumulator.
     uint32_t  _runAccum_mA    = 0;

@@ -58,6 +58,14 @@ export function DiagBiMotorCalibrate(arg1, arg2, arg3) {
   return window['go']['main']['App']['DiagBiMotorCalibrate'](arg1, arg2, arg3);
 }
 
+export function DiagBiMotorGuardFixed(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DiagBiMotorGuardFixed'](arg1, arg2, arg3);
+}
+
+export function DiagBiMotorGuardLiveRatio(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['DiagBiMotorGuardLiveRatio'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
 export function DiagBiMotorJog(arg1, arg2) {
   return window['go']['main']['App']['DiagBiMotorJog'](arg1, arg2);
 }

@@ -61,7 +61,7 @@
 #include <power/ina226_sensor.h>
 
 #define FIRMWARE_VERSION "1.0.0"
-#define BUILD_NUMBER     8
+#define BUILD_NUMBER     11
 
 // ════════════════════════════════════════════════════════════════════════
 //  Board pin / address map (cross-ref: instructions/schematics/gearcontrol.tel)
@@ -202,7 +202,12 @@ public:
     // takes the bus by reference and is bus-type-agnostic via SfxI2cBus.
     sfx_peripherals::SfxI2cBus i2cBus;
     INA226 ina[3];
+    // Each INA226 measures BOTH motor current (stall detection) AND bus voltage
+    // — wire both so the BiDcMotor role reports real current_mA + voltage_mV.
     sfx_peripherals::Ina226CurrentSensor iSense[3] = {
+        {ina[0]}, {ina[1]}, {ina[2]},
+    };
+    sfx_peripherals::Ina226VoltageSensor vSense[3] = {
         {ina[0]}, {ina[1]}, {ina[2]},
     };
 
@@ -228,7 +233,8 @@ public:
 
     static constexpr auto kHBridgePorts = sfx_core::ports::list(
         sfx_core::ports::hbridge_array<&GearControlBoard::motor, 3>()
-            .with_iSense_array<&GearControlBoard::iSense>());
+            .with_iSense_array<&GearControlBoard::iSense>()
+            .with_vSense_array<&GearControlBoard::vSense>());
 
     static constexpr const char* kName = "GearCtrl";
 };
@@ -252,6 +258,10 @@ void setup() {
 
     // Local status-LED driver — direction indicators per H-bridge.
     statusLeds.begin(Gpio::STATUS_CW, Gpio::STATUS_CCW);
+
+    // Stream INFO+ log lines live on the wire so the CLI / Studio console see
+    // the seek/stall trace (default is ring-buffer only, no wire emission).
+    DiagLog::instance().setWireMinLevel(DiagLevel::INFO);
 
     SFX_LOG_INFO("GearCtrl expander v%s build %u — 7 servo / 3 hbridge + local status LEDs",
                  FIRMWARE_VERSION, (unsigned)BUILD_NUMBER);

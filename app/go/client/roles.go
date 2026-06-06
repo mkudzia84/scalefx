@@ -216,6 +216,23 @@ func (r *Roles) BiMotorBrake(portIdx byte) error {
 	return r.c.sendExpectACK(roles.CmdBiMotorBrake(portIdx))
 }
 
+// BiMotorSetGuardFixed retunes the stall guard to Fixed mode — trip when
+// |I| ≥ thresholdMa sustained for windowMs.
+func (r *Roles) BiMotorSetGuardFixed(portIdx, thresholdMa, windowMs uint16) error {
+	return r.c.sendExpectACK(roles.CmdBiMotorSetGuard(byte(portIdx),
+		roles.BiMotorGuardFixed, windowMs, thresholdMa, 0, 0, 0))
+}
+
+// BiMotorSetGuardLiveRatio retunes the stall guard to LiveRatio mode — the
+// role averages running current per stroke (after inrushBlankMs) for
+// runSampleMs, then trips when |I| ≥ baseline × (ratioX100/100) sustained for
+// windowMs.  Voltage-independent; no stored calibration (re-measures every
+// stroke).  maxTravelMs is an absolute failsafe (0 = use the seek timeout).
+func (r *Roles) BiMotorSetGuardLiveRatio(portIdx, ratioX100, runSampleMs, inrushBlankMs, windowMs, maxTravelMs uint16) error {
+	return r.c.sendExpectACK(roles.CmdBiMotorSetGuard(byte(portIdx),
+		roles.BiMotorGuardLiveRatio, windowMs, ratioX100, runSampleMs, inrushBlankMs, maxTravelMs))
+}
+
 // BiMotorSetSigned drives the motor at a raw signed duty with NO stall
 // guard — for manual jogging.  Sign = direction; 0 = coast-to-brake.
 func (r *Roles) BiMotorSetSigned(portIdx byte, signed int16) error {

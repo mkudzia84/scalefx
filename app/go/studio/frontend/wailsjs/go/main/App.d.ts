@@ -32,6 +32,10 @@ export function DeviceSystemInfo():Promise<main.DeviceInfo>;
 
 export function DiagBiMotorCalibrate(arg1:number,arg2:number,arg3:number):Promise<main.DiagCalibration>;
 
+export function DiagBiMotorGuardFixed(arg1:number,arg2:number,arg3:number):Promise<void>;
+
+export function DiagBiMotorGuardLiveRatio(arg1:number,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number):Promise<void>;
+
 export function DiagBiMotorJog(arg1:number,arg2:number):Promise<void>;
 
 export function DiagBiMotorMoveEnd(arg1:number,arg2:string,arg3:number,arg4:number):Promise<main.DiagEndstopResult>;
