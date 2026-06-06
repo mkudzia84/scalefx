@@ -369,12 +369,17 @@ bool RoleServicePolicy::attachServoActuator(ServoBinding& b, uint8_t portIdx,
     }
     ServoMotionProfile prof = role.profile();   // start from current (initFromPort)
     if (cfgLen >= 6) prof.maxSpeedUsPerSec = SfxWire::getU16LE(&cfg[4]);
-    if (cfgLen >= 7) role.setReversed(cfg[6] != 0);
+    bool rev = false;
+    if (cfgLen >= 7) { rev = cfg[6] != 0; role.setReversed(rev); }
+    prof.inverted = rev;                          // keep motion-profile reflection in lock-step with REV (was missing → REV ignored on attach)
     if (cfgLen >= 9)  prof.centerUs          = SfxWire::getU16LE(&cfg[7]);
     if (cfgLen >= 11) prof.maxAccelUsPerSec2 = SfxWire::getU16LE(&cfg[9]);
     if (cfgLen >= 13) prof.maxJerkUsPerSec3  = SfxWire::getU16LE(&cfg[11]);
     role.setProfile(prof);
     role.onTargetReached([this, portIdx](uint16_t pos) { emitServoTargetReached(portIdx, pos); });
+    SFX_LOG_INFO("[servo] attach idx=%u  min=%u max=%u rev=%u  (cfgLen=%u)",
+                 (unsigned)portIdx, (unsigned)role.profile().minUs,
+                 (unsigned)role.profile().maxUs, (unsigned)rev, (unsigned)cfgLen);
     return true;
 }
 
@@ -656,6 +661,13 @@ void RoleServicePolicy::handleServoSetPosNorm(const uint8_t* p, size_t len) {
     if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
     if (auto* r = std::get_if<ServoActuatorRole>(&b->role)) {
         r->setNormalizedTarget(pos);   // 0..kPosNormFull → live calibrated [min,max]
+        // Log only the endpoint commands (landing deploy/retract) — gunfx
+        // streams intermediate positions and would flood the diag.
+        if (pos == 0 || pos == RolePacket::kPosNormFull) {
+            SFX_LOG_INFO("[servo] pos_norm idx=%u  pos=%u  → target=%u  (min=%u max=%u)",
+                         (unsigned)idx, (unsigned)pos, (unsigned)r->target(),
+                         (unsigned)r->profile().minUs, (unsigned)r->profile().maxUs);
+        }
         _ctx->sendAck();
     } else {
         _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH);
@@ -728,6 +740,9 @@ void RoleServicePolicy::handleServoSetProfile(const uint8_t* p, size_t len) {
     prof.maxAccelUsPerSec2 = maxAccel;
     prof.maxJerkUsPerSec3  = maxJerk;
     r->setProfile(prof);
+    SFX_LOG_INFO("[servo] setprofile idx=%u  min=%u max=%u rev=%u  (live calibrate)",
+                 (unsigned)idx, (unsigned)r->profile().minUs,
+                 (unsigned)r->profile().maxUs, (unsigned)reversed);
     _ctx->sendAck();
 }
 
