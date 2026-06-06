@@ -4,6 +4,7 @@
     import { afterUpdate } from 'svelte'
     import { consoleMessages, connectionInfo, showConsole } from '../stores'
     import { SendCommand } from '../../../wailsjs/go/main/App'
+    import { colourize } from './console_colour'
 
     let inputValue = ''
     let outputEl: HTMLDivElement
@@ -120,7 +121,9 @@
                         <span class="output-text">{@html msg.content}</span>
                     {:else}
                         <span class="msg-icon">{@html icon(msg.type)}</span>
-                        <span class="msg-text">{@html msg.content}</span>
+                        <!-- Plain diag/log text → colourise (tags/values/phases);
+                             pre-built HTML (diag chips) is left untouched. -->
+                        <span class="msg-text">{@html msg.content.includes('<') ? msg.content : colourize(msg.content)}</span>
                     {/if}
                 </div>
             {/each}
