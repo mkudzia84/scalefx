@@ -45,21 +45,23 @@
  */
 
 #include <Arduino.h>
-#include <Wire.h>
+#include <type_traits>
 #include <variant>
 
 #include <platform/sfx_platform.h>
+#include <platform/pico_serial_stream.h>   // USB-CDC Serial → sfx::Stream wire adapter
 #include <serial/diag_log.h>
 #include <server/board_of.h>
 
 #include <ports/servo_port.h>
 #include <ports/pwm_port.h>
 #include <ports/hbridge_port.h>
+#include <i2c/sfx_i2c.h>                    // sfx_peripherals::SfxI2cBus (= PicoI2cBus)
 #include <power/ina226.h>
 #include <power/ina226_sensor.h>
 
 #define FIRMWARE_VERSION "1.0.0"
-#define BUILD_NUMBER     6
+#define BUILD_NUMBER     8
 
 // ════════════════════════════════════════════════════════════════════════
 //  Board pin / address map (cross-ref: instructions/schematics/gearcontrol.tel)
@@ -160,11 +162,20 @@ private:
 
 // ── Board class ──────────────────────────────────────────────────────
 //
-// BoardOf<> auto-prepends BoardServicePolicy + IndicatorServicePolicy +
-// PortServicePolicy + RoleServicePolicy.  A thin expander needs no
-// user policies — the hub drives everything through the role surface.
+// BoardOf<TBoard, TStream, Caps, …> auto-prepends BoardServicePolicy +
+// IndicatorServicePolicy + PortServicePolicy + RoleServicePolicy.  A thin
+// expander needs no user policies — the hub drives everything through the
+// role surface.  TStream is the USB-CDC `Serial` wrapped as an sfx::Stream
+// (Rule 55 — the Pico wire adapter); Caps sizes the port registry EXACTLY
+// to this board's hub-local hardware (7 servo / 0 pwm / 3 hbridge / 0 input).
 
-class GearControlBoard : public sfx_core::BoardOf<GearControlBoard> {
+/// USB-CDC wire type — `Serial`'s concrete class wrapped as sfx::Stream.
+using GearWireStream = sfx::PicoSerialStream<std::remove_reference_t<decltype(Serial)>>;
+
+class GearControlBoard : public sfx_core::BoardOf<GearControlBoard,
+                                                  GearWireStream,
+                                                  sfx_core::PortCapacity</*servo*/7, /*pwm*/0,
+                                                                          /*hbridge*/3, /*input*/0>> {
 public:
     // ── Servo OUTPUT ports — door + yaw headers (SERVO1-7) ───────────
     sfx_peripherals::MicroservoPort servoOut[7] = {
@@ -187,6 +198,9 @@ public:
     };
 
     // ── Per-motor current monitors (stall detection) ─────────────────
+    // Native Pico-SDK I²C bus (Rule 55 — no Arduino Wire); the INA226 driver
+    // takes the bus by reference and is bus-type-agnostic via SfxI2cBus.
+    sfx_peripherals::SfxI2cBus i2cBus;
     INA226 ina[3];
     sfx_peripherals::Ina226CurrentSensor iSense[3] = {
         {ina[0]}, {ina[1]}, {ina[2]},
@@ -195,12 +209,9 @@ public:
     /// I²C + INA226 bring-up — runs BEFORE board.begin() so the H-bridge
     /// current sensors are live when the registry walks port begin().
     void initHardware() {
-        Wire.setSDA(Gpio::I2C_SDA);
-        Wire.setSCL(Gpio::I2C_SCL);
-        Wire.begin();
-        Wire.setClock(400000);
+        i2cBus.begin(Gpio::I2C_SDA, Gpio::I2C_SCL, 400000);
         for (uint8_t k = 0; k < 3; ++k) {
-            ina[k].begin(Wire, I2cAddr::INA226[k], Sense::SHUNT_OHMS, Sense::MAX_AMPS);
+            ina[k].begin(i2cBus, I2cAddr::INA226[k], Sense::SHUNT_OHMS, Sense::MAX_AMPS);
         }
     }
 
@@ -223,15 +234,20 @@ public:
 };
 
 GearControlBoard board;
-GearStatusLeds   statusLeds;   // local H-bridge → status-LED driver
+GearWireStream   wireStream{Serial};   // USB-CDC wire to the hub (sfx::Stream adapter)
+GearStatusLeds   statusLeds;           // local H-bridge → status-LED driver
 
 void setup() {
+    // Bring the USB-CDC wire up first — baud is ignored over USB, but this
+    // brings the endpoint up before the framer starts reading it.
+    Serial.begin(115200);
+
     // I²C + INA226 bring-up before the registry begins each port.
     board.initHardware();
 
-    // Policy pack lifecycle — Serial / DiagLog / indicator pins / port
+    // Policy pack lifecycle — wire / DiagLog / indicator pins / port
     // registry binding / every policy's begin() / IDENTIFY capabilities.
-    board.begin(FIRMWARE_VERSION, BUILD_NUMBER,
+    board.begin(wireStream, FIRMWARE_VERSION, BUILD_NUMBER,
                 Gpio::LED_CONNECTION, Gpio::LED_ERROR);
 
     // Local status-LED driver — direction indicators per H-bridge.
