@@ -15,7 +15,7 @@
         DiagInit, DiagRoleList, DiagRoleAttach, DiagRoleDetach,
         DiagBiMotorStatus, DiagBiMotorMoveEnd, DiagBiMotorCalibrate,
         DiagBiMotorStop, DiagBiMotorJog,
-        DiagBiMotorGuardLiveRatio, DiagBiMotorGuardFixed,
+        DiagBiMotorGuardLiveRatio, DiagBiMotorGuardFixed, DiagBiMotorProbe,
         DiagServoProfileGet, DiagServoSetTarget, SendCommand,
     } from '../../../wailsjs/go/main/App'
     import { diag } from '../diag'
@@ -63,6 +63,10 @@
             if (aRoleKind === KIND_BIMOTOR) {
                 guardMode[aPortIdx] = 'live'
                 try { await DiagBiMotorGuardLiveRatio(aPortIdx, 250, 200, 150, 80, 0) } catch (e) { fail(e) }
+                // Soft-start probe ON by default for an unknown mechanism: probe
+                // at 35% before committing full power into a possibly-engaged stop.
+                probeOn[aPortIdx] = true
+                try { await DiagBiMotorProbe(aPortIdx, 35, 300, 70) } catch (e) { fail(e) }
             }
             await refresh()
         } catch (e) { fail(e) } finally { busyGlobal = false }
@@ -103,6 +107,19 @@
                 await DiagBiMotorGuardFixed(idx, Math.round(gv(gThreshold, idx, 1000)), Math.round(gv(gWindow, idx, 80)))
             }
         } catch (e) { fail(e) } finally { bimRefresh(idx) }
+    }
+
+    // Dual-stage soft-start probe (orthogonal to the guard). Probe at a low %
+    // of seek duty first, classify free vs already-at-stop, only then full power.
+    let probeOn: Record<number, boolean> = {}
+    let probePct: Record<number, number> = {}   // % of seek duty (default 35)
+    let probeWin: Record<number, number> = {}    // ms classification window (300)
+    async function applyProbe(idx: number) {
+        err = ''
+        try {
+            await DiagBiMotorProbe(idx, probeOn[idx] ? Math.round(gv(probePct, idx, 35)) : 0,
+                Math.round(gv(probeWin, idx, 300)), 70)
+        } catch (e) { fail(e) }
     }
 
     async function bimRefresh(idx: number) {
@@ -255,6 +272,23 @@
                             <button class="tbtn" on:click={() => applyGuard(idx)} title="Push this stall-guard config to the role (live, no re-attach)"><span class="ic">✓</span> Apply guard</button>
                         </div>
                         <p class="hint compact">LiveRatio averages running current per stroke, then trips when it spikes ≥ ratio× — no fixed threshold, battery-independent. Watch the <b>seek trace</b> in the Console (Ctrl+`) for baseline + trip values.</p>
+
+                        <!-- dual-stage soft-start probe -->
+                        <div class="guard">
+                            <button class="tbtn" class:accent={probeOn[idx]} on:click={() => { probeOn[idx] = !probeOn[idx]; applyProbe(idx) }} title="Soft-start: probe at low power first to classify free vs already-at-stop before committing full power">
+                                <span class="ic">{probeOn[idx] ? '✓' : '○'}</span> Soft-start probe
+                            </button>
+                            {#if probeOn[idx]}
+                                <label class="lbl">Probe power
+                                    <span class="inp-unit"><input class="field-input tiny" type="number" min="10" max="80" step="5" bind:value={probePct[idx]} placeholder="35" /><span class="unit">%</span></span>
+                                </label>
+                                <label class="lbl">Window
+                                    <span class="inp-unit"><input class="field-input tiny" type="number" min="100" max="1000" step="50" bind:value={probeWin[idx]} placeholder="300" /><span class="unit">ms</span></span>
+                                </label>
+                                <button class="tbtn" on:click={() => applyProbe(idx)} title="Push probe config to the role"><span class="ic">✓</span> Apply probe</button>
+                            {/if}
+                        </div>
+                        <p class="hint compact">Drives at probe power toward the target first: if the current <b>decays</b> (rotor spun up) the mechanism is free → full power; if it <b>holds high</b> it's already at the stop → brake without slamming full power. Stiff gearboxes may need higher probe power. See the <b>PROBE</b> trace.</p>
 
                         <!-- primary drive toolbar -->
                         <div class="toolbar">

@@ -54,6 +54,35 @@ Both are detected on-board, so the error indication is local — no hub
 push needed.  Position ("deployed/retracted") shows as the last-direction
 LED held solid; an active move blinks the matching direction LED.
 
+## Endstop detection — stall guard + dual-stage soft-start
+
+A BiDcMotor finds its endstops by **current sensing** (each H-bridge has an
+INA226 measuring both motor current AND bus voltage). Two orthogonal mechanisms:
+
+**Stall guard (run-phase endstop detection)** — how the seek decides it hit the
+stop. Two modes (live-retune via `BIMOTOR_SET_GUARD` / CLI `bimotor-guard`):
+- **LiveRatio (recommended default):** averages the running current per stroke
+  (after inrush blanking), then trips when `|I| ≥ baseline × ratio` (e.g. 2.5×).
+  No per-motor threshold, battery-voltage independent. The right choice when the
+  stall current is unknown / varies — a Fixed mA threshold set too high (the old
+  2000 mA default) simply never trips on a motor that stalls at a few hundred mA.
+- **Fixed:** trip on `|I| ≥ threshold_mA` sustained. Only when you know the value.
+
+**Dual-stage soft-start probe (pre-phase, optional)** — before a seek commits
+full power, drive a LOW-power probe toward the target and classify the start
+state from the current curve (`BIMOTOR_SET_PROBE` / CLI `bimotor-probe`):
+- current **decays** below `dropPct%` of its probe peak → rotor spun up =
+  mechanism FREE → ramp to full power and run the seek;
+- current **holds high** through the window → locked rotor = already hard against
+  this end → brake WITHOUT slamming full power, report Reached.
+
+This protects an unknown mechanism from a full-power grind into an already-engaged
+end-stop. Current-only (no encoder); probing toward the target disambiguates
+"already there". Stiff gearboxes may need higher probe power (raise probePct).
+`probePct 0` disables the probe (default in firmware; the Studio diag tab enables
+it at 35% for bench bring-up). Both phases stream a verbose `[bimotor]` trace to
+the console (the firmware enables wire log emission at boot).
+
 ## Endstop seek (autonomous, on-board)
 
 Gear motion uses the BiDcMotor role's `BIMOTOR_SEEK_ENDSTOP` primitive:

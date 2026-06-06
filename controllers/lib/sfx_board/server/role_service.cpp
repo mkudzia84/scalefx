@@ -59,6 +59,7 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
         // slots at the top of LED + Heater ranges (range exhausted).
         case RolePacket::BIMOTOR_MOVE_TO_END:   handleBiMotorMoveToEnd(p, len);     break;
         case RolePacket::BIMOTOR_SET_GUARD:     handleBiMotorSetGuard(p, len);      break;
+        case RolePacket::BIMOTOR_SET_PROBE:     handleBiMotorSetProbe(p, len);      break;
 
         // Heater
         case RolePacket::HEATER_SET_TARGET:     handleHeaterSetTarget(p, len);      break;
@@ -1147,6 +1148,21 @@ void RoleServicePolicy::handleBiMotorSetGuard(const uint8_t* p, size_t len) {
         _ctx->sendNack(RoleError::ROLE_CONFIG_INVALID);
         return;
     }
+    _ctx->sendAck();
+}
+
+// Live retune of the dual-stage soft-start probe (orthogonal to the stall
+// guard).  probePct 0 disables the probe — the seek drives at full power.
+void RoleServicePolicy::handleBiMotorSetProbe(const uint8_t* p, size_t len) {
+    if (len < 5) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    auto* b = _reg->hbridgeAt(p[0]);
+    if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+    auto* r = std::get_if<BiDcMotorRole>(&b->role);
+    if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
+    const uint8_t  probePct  = p[1];
+    const uint16_t window_ms = SfxWire::getU16LE(&p[2]);
+    const uint8_t  dropPct   = p[4];
+    r->setProbe(probePct, window_ms, dropPct);
     _ctx->sendAck();
 }
 

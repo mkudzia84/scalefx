@@ -137,6 +137,7 @@ private:
     void handleBiMotorSeekEndstop (const uint8_t* p, size_t len);
     void handleBiMotorMoveToEnd   (const uint8_t* p, size_t len);   // 0x5F (Strategy A)
     void handleBiMotorSetGuard    (const uint8_t* p, size_t len);   // 0x77 (live retune)
+    void handleBiMotorSetProbe    (const uint8_t* p, size_t len);   // 0x56 (soft-start probe)
 
     // ── Heater ────────────────────────────────────────────────────────
     void handleHeaterSetTarget   (const uint8_t* p, size_t len);

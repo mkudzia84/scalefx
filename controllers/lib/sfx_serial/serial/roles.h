@@ -258,6 +258,16 @@ namespace RolePacket {
         ///< window_ms is the sustained-over-threshold filter, shared by
         ///< both modes (0 = leave unchanged).
 
+    // ── BiDc motor dual-stage soft-start probe (uses the free 0x56 slot) ──
+    // Before a seek applies full power it can drive a LOW-power probe first to
+    // classify free-vs-already-at-stop (DC-motor end-stop spec).  Orthogonal to
+    // the stall guard above — both apply.  probePct 0 = probe disabled.
+    constexpr uint8_t BIMOTOR_SET_PROBE       = 0x56;
+        ///< [portIdx:u8][probePct:u8][window_ms:u16LE][dropPct:u8] → ACK
+        ///<   probePct = probe drive as % of seek duty (0 = disable probe)
+        ///<   window_ms = classification window (0 → default 250)
+        ///<   dropPct  = "free" if I falls below dropPct% of probe peak (0 → 70)
+
     // ── SBUS input role (0x78..0x7B) ──────────────────────────────────
     constexpr uint8_t SBUS_GET_FRAME_REQ      = 0x78;  ///< [portIdx:u8] → SBUS_FRAME_RESP
     constexpr uint8_t SBUS_FRAME_RESP         = 0x79;

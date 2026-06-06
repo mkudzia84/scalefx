@@ -225,6 +225,18 @@ func (a *App) DiagBiMotorGuardLiveRatio(portIdx, ratioX100, runSampleMs, inrushB
 		uint16(runSampleMs), uint16(inrushBlankMs), uint16(windowMs), uint16(maxTravelMs))
 }
 
+// DiagBiMotorProbe configures the dual-stage soft-start probe (probePct 0 =
+// disabled).  Before a seek applies full power, the role drives at probePct%
+// of the seek duty and classifies free-vs-already-at-stop from the current
+// curve — avoids slamming full power into a mechanism already at its end.
+func (a *App) DiagBiMotorProbe(portIdx, probePct, windowMs, dropPct int) error {
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return c.Roles.BiMotorSetProbe(byte(portIdx), byte(probePct), uint16(windowMs), byte(dropPct))
+}
+
 // DiagBiMotorStop hard-brakes the motor (aborts an in-flight seek).
 func (a *App) DiagBiMotorStop(portIdx int) error {
 	c := a.snapshotClient()

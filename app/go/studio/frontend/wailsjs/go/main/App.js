@@ -74,6 +74,10 @@ export function DiagBiMotorMoveEnd(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['DiagBiMotorMoveEnd'](arg1, arg2, arg3, arg4);
 }
 
+export function DiagBiMotorProbe(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['DiagBiMotorProbe'](arg1, arg2, arg3, arg4);
+}
+
 export function DiagBiMotorSeek(arg1, arg2, arg3) {
   return window['go']['main']['App']['DiagBiMotorSeek'](arg1, arg2, arg3);
 }

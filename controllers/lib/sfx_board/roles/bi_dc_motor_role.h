@@ -67,10 +67,12 @@ class BiDcMotorRole {
 public:
     using StallCallback = std::function<void(uint16_t peak_mA, uint16_t duration_ms)>;
 
-    /// Endstop-seek lifecycle.  Idle = not seeking; Seeking = driving;
-    /// Reached = endstop stall hit (then braked); TimedOut = latched
-    /// fault, no stall within the timeout (then braked) until clearStall().
-    enum class SeekState : uint8_t { Idle = 0, Seeking = 1, Reached = 2, TimedOut = 3 };
+    /// Endstop-seek lifecycle.  Idle = not seeking; Probing = low-power
+    /// soft-start classifying free-vs-already-at-stop; Seeking = driving at
+    /// full power; Reached = endstop stall hit (then braked); TimedOut =
+    /// latched fault, no stall within the timeout (then braked) until
+    /// clearStall().  Values are stable (append-only).
+    enum class SeekState : uint8_t { Idle = 0, Seeking = 1, Reached = 2, TimedOut = 3, Probing = 4 };
 
     /// Stall detection strategy — see header comment.
     enum class GuardMode : uint8_t { Fixed = 0, LiveRatio = 1 };
@@ -137,6 +139,23 @@ public:
     /// it via setStallGuard).  0 → leave unchanged.
     void setStallWindowMs(uint16_t window_ms);
 
+    /// Dual-stage soft-start probe (DC-motor end-stop spec).  Before a
+    /// seek applies full power, the role first drives at `probePct`% of the
+    /// seek duty toward the target and watches the current for ~`windowMs`:
+    ///   - current DECAYS to < `dropPct`% of its probe peak  → the mechanism
+    ///     spun up (back-EMF) = FREE → ramp to full power + run the seek;
+    ///   - current HOLDS near its peak through the window     → locked rotor =
+    ///     already hard against this end (or jammed) → brake WITHOUT applying
+    ///     full power, report Reached for the target end.
+    /// Current-only (no encoder); probing TOWARD the target disambiguates the
+    /// "already there" case.  `probePct == 0` DISABLES the probe (default) —
+    /// the seek drives at full power immediately (legacy behaviour).
+    ///   `probePct`   probe drive as % of seek duty (e.g. 35).  0 = off.
+    ///   `windowMs`   classification window (0 → default 250 ms).
+    ///   `dropPct`    motion threshold: free if I < dropPct% of peak
+    ///                (0 → default 70).
+    void setProbe(uint8_t probePct, uint16_t windowMs, uint8_t dropPct);
+
     void clearStall();
 
     /// Drive `signedDuty` until the stall guard fires or `timeout_ms`
@@ -162,6 +181,9 @@ public:
     SeekState seekState()   const { return _seekState; }
     GuardMode guardMode()   const { return _guardMode; }
     Position  position()    const { return _position; }
+    uint8_t   probePct()    const { return _probePct; }
+    uint16_t  probeWindowMs() const { return _probeWindowMs; }
+    uint8_t   probeDropPct() const { return _probeDropPct; }
     uint16_t  ratio_x100()  const { return _ratio_x100; }
     uint16_t  runSampleMs() const { return _runSample_ms; }
     uint16_t  inrushBlankMs() const { return _inrushBlank_ms; }
@@ -184,6 +206,10 @@ private:
     /// Abort an in-progress seek (no result event) — called by the
     /// public setSigned/brake/coast so an explicit command cancels a seek.
     void abortSeek();
+
+    /// Transition Probing → Seeking: drive the full seek duty and reset the
+    /// per-stroke stall-detection state so LiveRatio re-baselines at full power.
+    void beginRunPhase(uint32_t now);
 
     /// Common path for "trip = stall confirmed → brake + report" with a
     /// dynamically computed threshold.  Returns true if the seek was
@@ -218,6 +244,13 @@ private:
     uint32_t  _seekDeadlineMs = 0;        ///< 0 = no per-seek timeout
     Position  _targetEnd      = Position::Unknown;
     uint32_t  _lastSeekLogMs  = 0;        ///< throttle for verbose seek-progress logs
+
+    // Dual-stage soft-start probe (see setProbe).  probePct 0 = disabled.
+    uint8_t   _probePct       = 0;        ///< probe drive as % of seek duty (0 = no probe)
+    uint16_t  _probeWindowMs  = 250;      ///< classification window
+    uint8_t   _probeDropPct   = 70;       ///< free if I < dropPct% of probe peak
+    int16_t   _fullSeekDuty   = 0;        ///< remembered full-power duty for the run phase
+    uint16_t  _probePeak_mA   = 0;        ///< peak |I| seen during the probe
 
     // LiveRatio per-stroke baseline accumulator.
     uint32_t  _runAccum_mA    = 0;
