@@ -4,6 +4,7 @@
 
 #include "role_service.h"
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
+#include <motion/servo_profile_wire.h>  // the one servo-profile wire codec
 
 #include <cstring>
 #include <variant>
@@ -354,32 +355,20 @@ void RoleServicePolicy::handleList() {
 bool RoleServicePolicy::attachServoActuator(ServoBinding& b, uint8_t portIdx,
                                             const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<ServoActuatorRole>(b.port);
-    // Rule 42 storage + Rule 44 editing-surface: the per-port profile
-    // travels with the role-attach payload from /hubfx.yaml's ports[]
-    // block.  Append-only (Rule 11):
-    //   [minUs:u16LE][maxUs:u16LE]                          — calibration limits
-    //   [maxSpeedUsPerSec:u16LE]                            — slew limit
-    //   [reversed:u8]                                       — REV flag
-    //   [centerUs:u16LE]                                    — neutral / failsafe
-    //   [maxAccelUsPerSec2:u16LE][maxJerkUsPerSec3:u16LE]   — trapezoidal / S-curve
-    if (cfgLen >= 4) {
-        const uint16_t mn = SfxWire::getU16LE(&cfg[0]);
-        const uint16_t mx = SfxWire::getU16LE(&cfg[2]);
-        role.setLimits(mn, mx);
-    }
-    ServoMotionProfile prof = role.profile();   // start from current (initFromPort)
-    if (cfgLen >= 6) prof.maxSpeedUsPerSec = SfxWire::getU16LE(&cfg[4]);
-    bool rev = false;
-    if (cfgLen >= 7) { rev = cfg[6] != 0; role.setReversed(rev); }
-    prof.inverted = rev;                          // keep motion-profile reflection in lock-step with REV (was missing → REV ignored on attach)
-    if (cfgLen >= 9)  prof.centerUs          = SfxWire::getU16LE(&cfg[7]);
-    if (cfgLen >= 11) prof.maxAccelUsPerSec2 = SfxWire::getU16LE(&cfg[9]);
-    if (cfgLen >= 13) prof.maxJerkUsPerSec3  = SfxWire::getU16LE(&cfg[11]);
+    // Rule 42 storage + Rule 44 editing-surface: the per-port profile travels
+    // with the role-attach payload from /hubfx.yaml's ports[] block, decoded by
+    // the ONE ServoProfileWire codec shared with the pack site + SERVO_SET_PROFILE
+    // (Rule 11 append-only). Seed from the role's port-default profile, overlay
+    // the wire fields, then push limits + REV + profile in lock-step.
+    ServoMotionProfile prof = role.profile();          // initFromPort defaults
+    ServoProfileWire::unpack(cfg, cfgLen, prof);
+    role.setLimits(prof.minUs, prof.maxUs);
+    role.setReversed(prof.inverted);
     role.setProfile(prof);
     role.onTargetReached([this, portIdx](uint16_t pos) { emitServoTargetReached(portIdx, pos); });
     SFX_LOG_INFO("[servo] attach idx=%u  min=%u max=%u rev=%u  (cfgLen=%u)",
                  (unsigned)portIdx, (unsigned)role.profile().minUs,
-                 (unsigned)role.profile().maxUs, (unsigned)rev, (unsigned)cfgLen);
+                 (unsigned)role.profile().maxUs, (unsigned)prof.inverted, (unsigned)cfgLen);
     return true;
 }
 
@@ -723,26 +712,17 @@ void RoleServicePolicy::handleServoSetProfile(const uint8_t* p, size_t len) {
     auto* r = std::get_if<ServoActuatorRole>(&b->role);
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
 
-    const uint16_t minUs       = SfxWire::getU16LE(&p[1]);
-    const uint16_t maxUs       = SfxWire::getU16LE(&p[3]);
-    const uint16_t maxSpeed    = SfxWire::getU16LE(&p[5]);
-    const bool     reversed    = p[7] != 0;
-    const uint16_t centerUs    = SfxWire::getU16LE(&p[8]);
-    const uint16_t maxAccel    = SfxWire::getU16LE(&p[10]);
-    const uint16_t maxJerk     = SfxWire::getU16LE(&p[12]);
-
-    r->setLimits(minUs, maxUs);
-    r->setReversed(reversed);
-    ServoMotionProfile prof = r->profile();   // start from current (limits already applied above)
-    prof.inverted          = reversed;        // keep the motion-profile reflection in lock-step with REV
-    prof.maxSpeedUsPerSec  = maxSpeed;
-    prof.centerUs          = centerUs;
-    prof.maxAccelUsPerSec2 = maxAccel;
-    prof.maxJerkUsPerSec3  = maxJerk;
+    // Same ServoProfileWire codec as the role-attach path (profile body starts
+    // at p[1], after the portIdx). Seed from the live profile, overlay the wire
+    // fields, push limits + REV + profile in lock-step.
+    ServoMotionProfile prof = r->profile();
+    ServoProfileWire::unpack(&p[1], len - 1, prof);
+    r->setLimits(prof.minUs, prof.maxUs);
+    r->setReversed(prof.inverted);
     r->setProfile(prof);
     SFX_LOG_INFO("[servo] setprofile idx=%u  min=%u max=%u rev=%u  (live calibrate)",
                  (unsigned)idx, (unsigned)r->profile().minUs,
-                 (unsigned)r->profile().maxUs, (unsigned)reversed);
+                 (unsigned)r->profile().maxUs, (unsigned)prof.inverted);
     _ctx->sendAck();
 }
 

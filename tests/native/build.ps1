@@ -43,6 +43,7 @@ $IncludeDirs = @(
     "$here/stubs",
     "$here/lib/doctest",
     "$here/src",
+    "$repoRoot/controllers/lib/sfx_serial",
     "$repoRoot/controllers/lib/sfx_serial/serial",
     "$repoRoot/controllers/lib/sfx_board/motion",
     "$repoRoot/controllers/lib/sfx_board/element",

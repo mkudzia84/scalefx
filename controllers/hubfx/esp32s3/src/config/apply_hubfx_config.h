@@ -28,6 +28,7 @@
 #include <platform/sfx_platform.h>   // sfxPsramMalloc / sfxPsramFree
 #include <serial/diag_log.h>
 #include <serial/core/core.h>        // SfxWire::putU16LE for the servo profile cfg payload
+#include <motion/servo_profile_wire.h>  // ServoProfileWire::pack — the one servo-profile codec
 
 #include "hubfx_config.h"
 #include "alerts_config.h"
@@ -153,19 +154,12 @@ uint8_t attachPortRolesForGuid(TTopology& topo, const HubFxConfig& cfg,
         // Rule 42 storage + Rule 44 editing-surface: when the port has
         // a servo profile attached (set by Studio's GunFx panel into
         // /hubfx.yaml), serialise it into the role-attach payload so
-        // `RoleServicePolicy::attachServoActuator` applies it directly.
-        // Layout matches the cfg parser in role_service.cpp.
-        uint8_t cfgBuf[13];
+        // `RoleServicePolicy::attachServoActuator` applies it directly via the
+        // SAME ServoProfileWire codec (one layout, can't drift — see header).
+        uint8_t cfgBuf[sfx_core::ServoProfileWire::kSize];  // 13; widest cfg payload here
         uint8_t cfgLen = 0;
         if (m.profileSet && m.role == RoleKind::ServoActuator) {
-            SfxWire::putU16LE(&cfgBuf[0],  m.profile.minUs);
-            SfxWire::putU16LE(&cfgBuf[2],  m.profile.maxUs);
-            SfxWire::putU16LE(&cfgBuf[4],  m.profile.maxSpeedUsPerSec);
-            cfgBuf[6]                    = m.profile.inverted ? 1 : 0;
-            SfxWire::putU16LE(&cfgBuf[7],  m.profile.centerUs);
-            SfxWire::putU16LE(&cfgBuf[9],  m.profile.maxAccelUsPerSec2);
-            SfxWire::putU16LE(&cfgBuf[11], m.profile.maxJerkUsPerSec3);
-            cfgLen = 13;
+            cfgLen = (uint8_t)sfx_core::ServoProfileWire::pack(cfgBuf, m.profile);
         } else if (m.role == RoleKind::JetiExInput) {
             // JetiEX attach config: [broadcastHz][baudHi][baudLo][downstream].
             // 0,0,0 = no auto wire-broadcast + default 125000 baud (Rule 11
