@@ -255,8 +255,27 @@ func (a *App) LoadGunFxConfig() (GunFxConfig, error) {
 	if cfg.SchemaVersion == 0 {
 		cfg.SchemaVersion = 1
 	}
-	a.diag.Info("GUNFX", "LoadGunFxConfig: ok — enabled=%v guns=%d bytes=%d",
-		cfg.Enabled, len(cfg.Guns), len(res.Data))
+	// Canonicalise hub-identity port-ref GUIDs → "" (instructions/31) so the
+	// output-port dropdowns resolve against the canonical device model.
+	folds := 0
+	foldRef := func(label string, p *PortRefDTO) {
+		if c, was := a.canonGuid(p.Guid); was {
+			a.diag.Info("GUNFX", "[gap] %s ref guid=%q kind=%q idx=%d → canon \"\" (hub=%q)",
+				label, p.Guid, p.Kind, p.Idx, a.id.GUID)
+			p.Guid = c
+			folds++
+		}
+	}
+	for i := range cfg.Guns {
+		g := &cfg.Guns[i]
+		foldRef(fmt.Sprintf("gun[%d].muzzle", i), &g.MuzzleFlash.Port)
+		foldRef(fmt.Sprintf("gun[%d].smoke.heater", i), &g.Smoke.Heater.Port)
+		foldRef(fmt.Sprintf("gun[%d].smoke.fan", i), &g.Smoke.Fan.Port)
+		foldRef(fmt.Sprintf("gun[%d].yaw.servo", i), &g.Yaw.ServoPort)
+		foldRef(fmt.Sprintf("gun[%d].pitch.servo", i), &g.Pitch.ServoPort)
+	}
+	a.diag.Info("GUNFX", "LoadGunFxConfig: ok — enabled=%v guns=%d bytes=%d; folded %d hub-identity port ref(s) → \"\" (hub=%q)",
+		cfg.Enabled, len(cfg.Guns), len(res.Data), folds, a.id.GUID)
 	return cfg, nil
 }
 

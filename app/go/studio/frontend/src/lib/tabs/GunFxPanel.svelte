@@ -189,7 +189,9 @@
         return $deviceModel.ports.filter(p => p.kindName === kindName && p.direction === direction)
     }
     function portRefKey(r: PortRefT): string {
-        return r.guid && r.kind && r.idx !== undefined ? `${r.guid}|${r.kind}|${r.idx}` : ''
+        // Hub-local is the canonical EMPTY guid (instructions/31): require `kind`,
+        // not a non-empty guid (the old `r.guid &&` guard blanked every hub port).
+        return r.kind && r.idx !== undefined ? `${r.guid}|${r.kind}|${r.idx}` : ''
     }
     function portToRef(p: Port): PortRefT {
         return { board: '', guid: p.ref.guid, kind: p.kindName, idx: p.ref.index }
@@ -321,7 +323,8 @@
     // expressions (the parser chokes on those).  Returns "" when the
     // port-ref is empty / unset.
     function portRefToKey(r: PortRefT): string {
-        if (!r || !r.guid || !r.kind) return ''
+        // Hub-local = canonical empty guid (instructions/31): require `kind` only.
+        if (!r || !r.kind) return ''
         return `${r.guid}|${r.kind}|${r.idx}`
     }
 

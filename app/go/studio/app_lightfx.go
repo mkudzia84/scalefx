@@ -131,8 +131,23 @@ func (a *App) GetLightFxConfig() (LightFxConfigDTO, error) {
 	if cfg.Programs == nil {
 		cfg.Programs = []string{}
 	}
-	a.diag.Info("LIGHTFX", "loaded /lightfx.yaml: %d program(s), selector=%v",
-		len(cfg.Programs), cfg.ProgramSelector.Enabled)
+	// Canonicalise hub-identity channel-port GUIDs → "" (instructions/31) so the
+	// channel-pool dropdowns resolve against the canonical device model.
+	folds := 0
+	for i := range cfg.Channels {
+		p := cfg.Channels[i].Port
+		if p == nil {
+			continue
+		}
+		if c, was := a.canonGuid(p.Guid); was {
+			a.diag.Info("LIGHTFX", "[gap] channel[%d] ref guid=%q kind=%q idx=%d → canon \"\" (hub=%q)",
+				i, p.Guid, p.Kind, p.Idx, a.id.GUID)
+			p.Guid = c
+			folds++
+		}
+	}
+	a.diag.Info("LIGHTFX", "loaded /lightfx.yaml: %d program(s), selector=%v; folded %d hub-identity port ref(s) → \"\" (hub=%q)",
+		len(cfg.Programs), cfg.ProgramSelector.Enabled, folds, a.id.GUID)
 	return cfg, nil
 }
 

@@ -305,6 +305,18 @@ func (a *App) hubLocal(guid string) bool {
 	return guid == ""
 }
 
+// canonGuid folds the hub's OWN identity GUID → "" (the canonical hub-local
+// form, instructions/31). Effect configs saved before the GUID redesign carry
+// the hub GUID in their port refs (e.g. `guid: 6D60`); fold it on load so the
+// refs match the canonical device model and the port dropdowns resolve. A real
+// expander GUID passes through unchanged. Returns (canonical, wasFolded).
+func (a *App) canonGuid(guid string) (string, bool) {
+	if a.id.GUID != "" && guid == a.id.GUID {
+		return "", guid != ""
+	}
+	return guid, false
+}
+
 // lookupProfile reads the portProfiles overlay for `ref`. Single canonical key
 // now that hub-local is "" everywhere (the old dual-form fallback retired with
 // the instructions/31 redesign).  Caller holds a.dmMu.

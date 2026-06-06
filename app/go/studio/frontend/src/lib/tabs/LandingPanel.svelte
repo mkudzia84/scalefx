@@ -131,7 +131,10 @@
         return `${p.boardName ?? 'Hub'} · ${head}${rail ? ` · ${rail}` : ''}`
     }
     function portRefToKey(r: PortRefT): string {
-        if (!r || !r.guid || !r.kind) return ''
+        // Hub-local is the canonical EMPTY guid (instructions/31) — only `kind`
+        // is required, NOT a non-empty guid (the old `!r.guid` guard dropped
+        // every hub port → the <select> showed blank for loaded configs).
+        if (!r || !r.kind) return ''
         return `${r.guid}|${r.kind}|${r.idx}`
     }
     function parsePortOption(key: string, kindName: PortRefT['kind']): PortRefT {

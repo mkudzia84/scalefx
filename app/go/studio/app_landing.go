@@ -128,7 +128,33 @@ func (a *App) GetLandingConfig() (LandingConfigDTO, error) {
 	if cfg.Lights == nil {
 		cfg.Lights = []LandingLightDTO{}
 	}
-	a.diag.Info("LANDING", "loaded /landing.yaml: %d light(s)", len(cfg.Lights))
+	// Canonicalise hub-identity port-ref GUIDs → "" so the dropdowns resolve
+	// against the canonical device model (instructions/31). Instrumented: logs
+	// per-ref so we can SEE which refs were stale on load (the "dropdowns don't
+	// populate when loading from config" gap).
+	folds := 0
+	for i := range cfg.Lights {
+		for j := range cfg.Lights[i].Servos {
+			p := &cfg.Lights[i].Servos[j].Port
+			if c, was := a.canonGuid(p.Guid); was {
+				a.diag.Info("LANDING", "[gap] light[%d] servo[%d] ref guid=%q kind=%q idx=%d → canon \"\" (hub=%q)",
+					i, j, p.Guid, p.Kind, p.Idx, a.id.GUID)
+				p.Guid = c
+				folds++
+			}
+		}
+		for j := range cfg.Lights[i].Leds {
+			p := &cfg.Lights[i].Leds[j].Port
+			if c, was := a.canonGuid(p.Guid); was {
+				a.diag.Info("LANDING", "[gap] light[%d] led[%d] ref guid=%q kind=%q idx=%d → canon \"\" (hub=%q)",
+					i, j, p.Guid, p.Kind, p.Idx, a.id.GUID)
+				p.Guid = c
+				folds++
+			}
+		}
+	}
+	a.diag.Info("LANDING", "loaded /landing.yaml: %d light(s); folded %d hub-identity port ref(s) → \"\" (hub=%q)",
+		len(cfg.Lights), folds, a.id.GUID)
 	return cfg, nil
 }
 
