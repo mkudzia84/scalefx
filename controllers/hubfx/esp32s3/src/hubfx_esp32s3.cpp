@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.21.2-hubfx"
-#define BUILD_NUMBER     775
+#define BUILD_NUMBER     776
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
