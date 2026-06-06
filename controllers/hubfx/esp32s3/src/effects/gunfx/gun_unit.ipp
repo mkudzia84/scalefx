@@ -32,6 +32,7 @@ static constexpr uint32_t kFanUpdatePeriodMs = 20;
 
 #include "../audio_layout.h"      // HubFxLayout — named audio-channel slots
 #include "../lightfx/light_event.h"
+#include "../role_command.h"      // rolecmd::u16 / u8 — shared payload builders
 
 namespace hubfx::effects::gunfx {
 
@@ -516,11 +517,8 @@ inline void GunUnit::commandHeater(bool on) {
     // the same INT16_MIN / non-sentinel pair.  The role doesn't need
     // to know it's being cycled.
     const int16_t target = effective ? int16_t(1) : INT16_MIN;
-    uint8_t payload[3];
-    payload[0] = _spec.smoke.heaterPort.portIdx;
-    SfxWire::putU16LE(&payload[1], static_cast<uint16_t>(target));
-    _send(_sendCtx, _spec.smoke.heaterPort,
-          RolePacket::HEATER_SET_TARGET, payload, sizeof(payload));
+    rolecmd::u16(_send, _sendCtx, _spec.smoke.heaterPort,
+                 RolePacket::HEATER_SET_TARGET, static_cast<uint16_t>(target));
 }
 
 inline void GunUnit::commandFanPct(uint8_t pct) {
@@ -531,17 +529,11 @@ inline void GunUnit::commandFanPct(uint8_t pct) {
     // port rail voltage + element rated voltage + scaling mode
     // configured at attach time.  Gun says "drive at N %"; the role
     // turns it into the right port-native duty.
-    const uint8_t payload[2] = { _spec.smoke.fanPort.portIdx, pct };
-    _send(_sendCtx, _spec.smoke.fanPort,
-          RolePacket::MOTOR_SET_PCT, payload, sizeof(payload));
+    rolecmd::u8(_send, _sendCtx, _spec.smoke.fanPort, RolePacket::MOTOR_SET_PCT, pct);
 }
 
 inline void GunUnit::commandServoTargetUs(const PortRef& port, uint16_t us) {
-    if (!_send) return;
-    uint8_t payload[3];
-    payload[0] = port.portIdx;
-    SfxWire::putU16LE(&payload[1], us);
-    _send(_sendCtx, port, RolePacket::SERVO_SET_TARGET, payload, sizeof(payload));
+    rolecmd::u16(_send, _sendCtx, port, RolePacket::SERVO_SET_TARGET, us);
 }
 
 inline void GunUnit::commandServoPosNorm(const PortRef& port, uint16_t rcUs) {
@@ -555,10 +547,7 @@ inline void GunUnit::commandServoPosNorm(const PortRef& port, uint16_t rcUs) {
     const uint16_t pos = static_cast<uint16_t>(
         static_cast<uint32_t>(in - kRcMinUs) * RolePacket::kPosNormFull
             / (kRcMaxUs - kRcMinUs));
-    uint8_t payload[3];
-    payload[0] = port.portIdx;
-    SfxWire::putU16LE(&payload[1], pos);
-    _send(_sendCtx, port, RolePacket::SERVO_SET_POS_NORM, payload, sizeof(payload));
+    rolecmd::u16(_send, _sendCtx, port, RolePacket::SERVO_SET_POS_NORM, pos);
 }
 
 inline void GunUnit::commandServoRecoil(const PortRef& port, int16_t offsetUs,

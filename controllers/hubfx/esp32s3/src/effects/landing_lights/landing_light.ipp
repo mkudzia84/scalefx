@@ -12,6 +12,7 @@
 #include <serial/roles.h>
 #include <serial/wire.h>      // SfxWire::putU16LE
 #include <serial/diag_log.h>
+#include "../role_command.h"      // rolecmd::u16 / u8 / none — shared payload builders
 
 #include "../lightfx/light_event.h"
 
@@ -118,11 +119,7 @@ inline void LandingLight::commandAllServos(uint16_t posNorm) {
     // endpoint and follow re-calibration (see deployPosNorm/retractPosNorm).
     for (uint8_t i = 0; i < _def.numServos; ++i) {
         const PortRef& s = _def.servos[i];
-        uint8_t payload[3];
-        payload[0] = s.portIdx;
-        SfxWire::putU16LE(&payload[1], posNorm);
-        if (!_send(_sendCtx, s,
-                   RolePacket::SERVO_SET_POS_NORM, payload, sizeof(payload))) {
+        if (!rolecmd::u16(_send, _sendCtx, s, RolePacket::SERVO_SET_POS_NORM, posNorm)) {
             SFX_LOG_WARN("[ll] %u: servo[%u] SET_POS_NORM failed", _def.id, (unsigned)i);
         }
     }
@@ -163,11 +160,8 @@ inline void LandingLight::commandLedsOn() {
                          (unsigned)led.portIdx);
             continue;
         }
-        const uint8_t bright[2] = { led.portIdx, _def.brightnessPct };
-        _send(_sendCtx, led, RolePacket::LED_SET_BRIGHTNESS,
-              bright, sizeof(bright));
-        const uint8_t start[1] = { led.portIdx };
-        _send(_sendCtx, led, RolePacket::LED_START, start, sizeof(start));
+        rolecmd::u8(_send, _sendCtx, led, RolePacket::LED_SET_BRIGHTNESS, _def.brightnessPct);
+        rolecmd::none(_send, _sendCtx, led, RolePacket::LED_START);
     }
 }
 
@@ -175,11 +169,8 @@ inline void LandingLight::commandLedsOff() {
     if (!_send) return;
     for (uint8_t i = 0; i < _def.numLeds; ++i) {
         const PortRef& led = _def.leds[i];
-        const uint8_t stop[1]   = { led.portIdx };
-        const uint8_t bright[2] = { led.portIdx, 0 };
-        _send(_sendCtx, led, RolePacket::LED_STOP, stop, sizeof(stop));
-        _send(_sendCtx, led, RolePacket::LED_SET_BRIGHTNESS,
-              bright, sizeof(bright));
+        rolecmd::none(_send, _sendCtx, led, RolePacket::LED_STOP);
+        rolecmd::u8(_send, _sendCtx, led, RolePacket::LED_SET_BRIGHTNESS, 0);
     }
 }
 
