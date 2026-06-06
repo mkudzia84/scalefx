@@ -139,6 +139,16 @@ namespace RolePacket {
     constexpr uint8_t RCIN_VALUE_BROADCAST  = 0x53;  ///< async TAG_ASYNC: [portIdx:u8][us:u16LE][valid:u8] (legacy single-channel; decoded for back-compat)
     constexpr uint8_t PPM_FRAME_BROADCAST   = 0x54;  ///< async TAG_ASYNC: [portIdx:u8][count:u8][valid:u8][channels:u16LE × count]
 
+    // ── Servo actuator role (overflow — 0x48..0x4F is full) ───────────
+    // Servo-role command that didn't fit the 0x48..0x4F block (cf. SERVO_RECOIL
+    // @0x46 / SERVO_SET_BROADCAST_HZ @0x47).  Maps a normalised RC pulse
+    // [1000,2000] µs proportionally onto the servo's LIVE calibrated
+    // [minUs,maxUs] window (honours REV).  Used for GunFx yaw/pitch RC
+    // passthrough (full-throw input → full calibrated throw) and landing
+    // deploy(2000)/retract(1000) (→ exact open/close endpoints).  See
+    // ServoActuatorRole::setInput().
+    constexpr uint8_t SERVO_SET_INPUT_US    = 0x55;  ///< [portIdx:u8][rcUs:u16LE] → ACK
+
     // ── LED animator role (0x58..0x5E) ────────────────────────────────
     constexpr uint8_t LED_QUEUE_LOAD        = 0x58;  ///< [portIdx:u8][count:u8] × event(N bytes) → ACK
     constexpr uint8_t LED_START             = 0x59;  ///< [portIdx:u8] → ACK

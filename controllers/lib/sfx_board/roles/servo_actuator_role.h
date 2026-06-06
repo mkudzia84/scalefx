@@ -75,6 +75,21 @@ public:
     /// via `MotionProfile1D` and writes the resulting µs to the port.
     void setTarget(uint16_t target_us);
 
+    /// INPUT-mapping setter — map a normalised RC pulse from the standard
+    /// `[kRcMinUs, kRcMaxUs]` window proportionally onto the LIVE calibrated
+    /// `[minUs, maxUs]`, then drive there (same clamp + REV reflection as
+    /// `setTarget`).  Callers that only know a "stick position" — GunFx
+    /// yaw/pitch RC passthrough (full-throw input → full calibrated throw),
+    /// landing deploy (`kRcMaxUs`→open end) / retract (`kRcMinUs`→close end)
+    /// — hit the servo's exact endpoints without knowing its limits, and a
+    /// later live re-calibration is honoured automatically because the role
+    /// owns the limits (Rule 42).  Inputs outside the window saturate.
+    void setInput(uint16_t rcUs);
+
+    /// Standard RC pulse window mapped by `setInput()`.
+    static constexpr uint16_t kRcMinUs = 1000;
+    static constexpr uint16_t kRcMaxUs = 2000;
+
     /// Recoil impulse — add `offsetUs` to the output for `durationMs`, then
     /// auto-remove ("de-jerk").  Rides ON TOP of the aim (the motion profile
     /// keeps tracking its target underneath), so it works whether the servo is

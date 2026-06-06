@@ -613,7 +613,9 @@
 
     /* Phase pill — colour matches the live state so the operator can
        glance at a card and know whether it's commanded mid-motion. */
-    .state-pill.phase { font-family: var(--font-mono); font-size: 10px; padding: 2px 8px; border-radius: 3px; background: var(--bg-input); border: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.4px; }
+    /* Match the 28 px row-button height so the pill aligns with Deploy/Retract
+       + Remove in the header-actions row (Rule 34 control-height). */
+    .state-pill.phase { height: 28px; display: inline-flex; align-items: center; box-sizing: border-box; font-family: var(--font-mono); font-size: 10px; padding: 0 8px; border-radius: 3px; background: var(--bg-input); border: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.4px; }
     .state-pill.phase.phase-retracted  { color: var(--text-dim); }
     .state-pill.phase.phase-deploying  { color: var(--warning); border-color: var(--warning); }
     .state-pill.phase.phase-deployed   { color: var(--success); border-color: var(--success); background: rgba(100,200,120,0.12); }

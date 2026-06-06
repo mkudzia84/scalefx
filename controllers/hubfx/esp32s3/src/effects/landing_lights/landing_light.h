@@ -132,24 +132,24 @@ public:
 
 private:
     void enterPhase(uint8_t newPhase);
-    void commandAllServos(uint16_t targetUs);
+    void commandAllServos(uint16_t inputUs);   ///< RC pulse → role maps to calibrated endpoint
     void commandLedsOn();
     void commandLedsOff();
 
-    /// Deploy / retract drive each servo to its CALIBRATED endpoint, not
-    /// the stored `openUs`/`closeUs` literal.  The ServoActuator role
-    /// clamps an out-of-range target to its own profile min/max (Rule
-    /// 42/44 — the role owns calibration), so we send a sentinel beyond
-    /// any port limit and let the role land exactly on the calibrated
-    /// end.  `openUs`/`closeUs` therefore encode only DIRECTION (which
-    /// mechanical end is "deployed"); their literal value is ignored for
-    /// travel, so a landing.yaml that still stores a mid-range 1900/1100
-    /// (written before this became direction-only) reaches the full
-    /// calibrated throw instead of stopping short.
-    static constexpr uint16_t kEndpointHiSentinel = 2500;  ///< ≥ any port max → role clamps to calibrated max
-    static constexpr uint16_t kEndpointLoSentinel = 500;   ///< ≤ any port min → role clamps to calibrated min
-    uint16_t deployTargetUs()  const { return _def.openUs >= _def.closeUs ? kEndpointHiSentinel : kEndpointLoSentinel; }
-    uint16_t retractTargetUs() const { return _def.openUs >= _def.closeUs ? kEndpointLoSentinel : kEndpointHiSentinel; }
+    /// Deploy / retract drive each servo to its CALIBRATED endpoint via the
+    /// role's RC-input mapping (`SERVO_SET_INPUT_US`): a full-throw RC pulse
+    /// maps onto the servo's LIVE calibrated [min,max] (Rule 42/44 — the role
+    /// owns calibration), so the servo always lands exactly on the calibrated
+    /// end AND a later re-calibration is picked up automatically (the role
+    /// re-maps on the next command).  `openUs`/`closeUs` encode only DIRECTION
+    /// (which mechanical end is "deployed") — their literal µs is ignored for
+    /// travel, so a landing.yaml that still stores a mid-range 1900/1100 still
+    /// reaches the full throw.  Physical wiring direction is the servo's own
+    /// REV flag (orthogonal — set in calibration).
+    static constexpr uint16_t kInputOpenEnd  = 2000;  ///< full-throw → role's calibrated MAX-µs end
+    static constexpr uint16_t kInputCloseEnd = 1000;  ///< full-throw → role's calibrated MIN-µs end
+    uint16_t deployInputUs()  const { return _def.openUs >= _def.closeUs ? kInputOpenEnd  : kInputCloseEnd; }
+    uint16_t retractInputUs() const { return _def.openUs >= _def.closeUs ? kInputCloseEnd : kInputOpenEnd;  }
     /// All-arrived mask = (1 << numServos) - 1.  Computed once per
     /// deploy/retract to avoid recomputing on every event.
     uint8_t allServosMask() const {

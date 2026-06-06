@@ -22,9 +22,11 @@
  *     - ShotEvent callback (audio + wire async)
  *
  *   Yaw + pitch run as one-line passthroughs: read input channel →
- *   `SERVO_SET_TARGET` to the axis's servo port.  Motion shaping (clamp /
- *   speed / accel / jerk) lives on the `ServoActuatorRole` attached to
- *   the port — set once in `/hubfx.yaml`'s `ports[]` block, never
+ *   `SERVO_SET_INPUT_US` to the axis's servo port, where the role maps the
+ *   RC pulse [1000,2000] proportionally onto the servo's calibrated
+ *   [min,max] (full input throw → full calibrated throw).  Motion shaping
+ *   (clamp / speed / accel / jerk) lives on the `ServoActuatorRole` attached
+ *   to the port — set once in `/hubfx.yaml`'s `ports[]` block, never
  *   integrated here (Rule 42 — actuator mechanism on the role layer).
  *
  *   Manual override: when `_manual.active`, RC channel reads are
@@ -220,6 +222,11 @@ private:
     void commandHeater(bool on);
     void commandFanPct(uint8_t pct);
     void commandServoTargetUs(const PortRef& port, uint16_t us);
+    /// Send SERVO_SET_INPUT_US — the axis servo's role maps this RC pulse
+    /// proportionally onto its calibrated [min,max] (Rule 42).  Used for the
+    /// yaw/pitch passthrough so a full-throw input drives the full calibrated
+    /// throw instead of saturating at the limits.
+    void commandServoInputUs(const PortRef& port, uint16_t rcUs);
 
     /// Find the RofItem whose band contains `pulseUs`. Returns 0xFF
     /// when no band matches (out-of-band = no item armed).

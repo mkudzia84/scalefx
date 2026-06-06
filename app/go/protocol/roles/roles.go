@@ -123,6 +123,12 @@ const (
 	RcinValueBroadcast protocol.PacketType = 0x53
 	PpmFrameBroadcast  protocol.PacketType = 0x54
 
+	// Servo actuator overflow (0x48..0x4F is full).  Maps a normalised RC
+	// pulse [1000,2000] proportionally onto the servo's LIVE calibrated
+	// [min,max] (honours REV).  GunFx yaw/pitch passthrough + landing
+	// deploy(2000)/retract(1000) use it to hit the calibrated endpoints.
+	ServoSetInputUs protocol.PacketType = 0x55
+
 	// LED animator (0x58..0x5F)
 	LedQueueLoad      protocol.PacketType = 0x58
 	LedStart          protocol.PacketType = 0x59
@@ -397,6 +403,13 @@ func CmdServoSetBroadcastHz(hz byte) []byte {
 }
 func CmdServoSetTarget(portIdx byte, targetUs uint16) []byte {
 	return protocol.BuildPacket(ServoSetTarget, append([]byte{portIdx}, protocol.U16LE(targetUs)...), 0)
+}
+
+// CmdServoSetInputUs — drive a servo via the role's RC-input mapping: rcUs
+// in [1000,2000] maps proportionally onto the servo's live calibrated
+// [min,max] (honours REV).  Inputs outside the window saturate at the ends.
+func CmdServoSetInputUs(portIdx byte, rcUs uint16) []byte {
+	return protocol.BuildPacket(ServoSetInputUs, append([]byte{portIdx}, protocol.U16LE(rcUs)...), 0)
 }
 func CmdServoGetStatus(portIdx byte) []byte {
 	return protocol.BuildPacket(ServoGetStatusReq, []byte{portIdx}, 0)

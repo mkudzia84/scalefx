@@ -93,6 +93,7 @@ private:
 
     // ── Servo actuator ────────────────────────────────────────────────
     void handleServoSetTarget    (const uint8_t* p, size_t len);
+    void handleServoSetInput     (const uint8_t* p, size_t len);
     void handleServoRecoil       (const uint8_t* p, size_t len);
     void handleServoGetStatusReq (const uint8_t* p, size_t len);
     void handleServoSetProfile   (const uint8_t* p, size_t len);

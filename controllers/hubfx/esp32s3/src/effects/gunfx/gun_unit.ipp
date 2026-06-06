@@ -544,6 +544,14 @@ inline void GunUnit::commandServoTargetUs(const PortRef& port, uint16_t us) {
     _send(_sendCtx, port, RolePacket::SERVO_SET_TARGET, payload, sizeof(payload));
 }
 
+inline void GunUnit::commandServoInputUs(const PortRef& port, uint16_t rcUs) {
+    if (!_send) return;
+    uint8_t payload[3];
+    payload[0] = port.portIdx;
+    SfxWire::putU16LE(&payload[1], rcUs);
+    _send(_sendCtx, port, RolePacket::SERVO_SET_INPUT_US, payload, sizeof(payload));
+}
+
 inline void GunUnit::commandServoRecoil(const PortRef& port, int16_t offsetUs,
                                         uint16_t durationMs) {
     if (!_send) return;
@@ -710,7 +718,10 @@ inline void GunUnit::tickAxis(const GunAxis& axis,
     lastCommandedRef = target;
 
     if (_begin && _sendCtx) _begin(_sendCtx);
-    commandServoTargetUs(axis.servoPort, target);
+    // RC stick position (1000..2000 µs) → the role maps it proportionally
+    // onto the servo's calibrated [min,max], so full input throw drives the
+    // full calibrated throw (Rule 42 — the role owns the limits).
+    commandServoInputUs(axis.servoPort, target);
     if (_commit && _sendCtx) _commit(_sendCtx);
 }
 

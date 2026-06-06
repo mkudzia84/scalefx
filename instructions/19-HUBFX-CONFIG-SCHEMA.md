@@ -141,13 +141,16 @@ once ALL report `SERVO_TARGET_REACHED` the bulbs come on — optionally ramped v
 off immediately, then servos drive to their **stowed end**.
 
 > **`open_us` / `close_us` are DIRECTION ONLY** (since 2026-06-06). They no longer
-> set the literal target µs — `LandingLight::deploy()`/`retract()` command each
-> servo's role to its own **calibrated** endpoint (the role clamps an out-of-range
-> sentinel to its profile min/max — Rule 42/44), so the servo always travels the
-> full calibrated throw even if these still hold a mid-range value. `open_us >=
-> close_us` ⇒ deploy → calibrated **MAX** end (else the **MIN** end). The travel
-> limits live in the servo's `/hubfx.yaml` `ports[].profile`, never here. Studio's
-> "Deploy direction" toggle just flips these two so the operator never types µs.
+> set the literal target µs — `LandingLight::deploy()`/`retract()` drive each servo
+> via `SERVO_SET_INPUT_US` (0x55): a full-throw RC pulse (2000 = open end, 1000 =
+> close end) that the **role maps onto its own LIVE calibrated `[min,max]`** (Rule
+> 42/44). So the servo always travels the full calibrated throw even if these still
+> hold a mid-range value, **and a later re-calibration is honoured automatically**
+> (the role re-maps on the next deploy/retract — no re-save needed). `open_us >=
+> close_us` ⇒ deploy → calibrated **MAX**-µs end (else the **MIN**-µs end). Physical
+> wiring direction is the servo's own **REV** flag (orthogonal). The travel limits
+> live in the servo's `/hubfx.yaml` `ports[].profile`, never here. Studio's "Deploy
+> direction" toggle just flips these two so the operator never types µs.
 
 ```yaml
 lights:
