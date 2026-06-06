@@ -36,7 +36,7 @@ inline void LandingLight::deploy() {
     // together so the servos start moving in lock-step.
     if (_begin && _sendCtx) _begin(_sendCtx);
     enterPhase(LandingLightPhase::Deploying);
-    commandAllServos(_def.openUs);
+    commandAllServos(deployTargetUs());
     if (_commit && _sendCtx) _commit(_sendCtx);
     // Edge case: zero servos configured (LEDs-only landing light) —
     // the arrival mask is already 0, allServosMask() is 0, so we're
@@ -67,7 +67,7 @@ inline void LandingLight::retract() {
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandLedsOff();
     enterPhase(LandingLightPhase::Retracting);
-    commandAllServos(_def.closeUs);
+    commandAllServos(retractTargetUs());
     if (_commit && _sendCtx) _commit(_sendCtx);
     // LEDs-only edge case mirror — no servos to wait on, go straight
     // to RETRACTED so the operator's UI doesn't show a stuck phase.

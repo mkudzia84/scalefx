@@ -135,10 +135,19 @@ goes dormant.
 ## Landing-light group — `lights[]` block in `/landing.yaml`
 
 A landing light couples one or more servos (deploy/stow the searchlight) with one
-or more LED bulbs. **Deploy order**: every servo drives to `open_us`, and once
-ALL report `SERVO_TARGET_REACHED` the bulbs come on — optionally ramped via
+or more LED bulbs. **Deploy order**: every servo drives to its **deployed end**, and
+once ALL report `SERVO_TARGET_REACHED` the bulbs come on — optionally ramped via
 `fade_in_ms` (a `[FadeIn, On]` LedAnimator queue; 0 = hard on). **Retract**: bulbs
-off immediately, then servos drive to `close_us`.
+off immediately, then servos drive to their **stowed end**.
+
+> **`open_us` / `close_us` are DIRECTION ONLY** (since 2026-06-06). They no longer
+> set the literal target µs — `LandingLight::deploy()`/`retract()` command each
+> servo's role to its own **calibrated** endpoint (the role clamps an out-of-range
+> sentinel to its profile min/max — Rule 42/44), so the servo always travels the
+> full calibrated throw even if these still hold a mid-range value. `open_us >=
+> close_us` ⇒ deploy → calibrated **MAX** end (else the **MIN** end). The travel
+> limits live in the servo's `/hubfx.yaml` `ports[].profile`, never here. Studio's
+> "Deploy direction" toggle just flips these two so the operator never types µs.
 
 ```yaml
 lights:

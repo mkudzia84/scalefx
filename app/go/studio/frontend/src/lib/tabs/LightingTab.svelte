@@ -1,7 +1,7 @@
 <!-- ScaleFX Studio — Lighting tab.
      A segmented sub-tab switcher over the two LED surfaces (2026-06-05):
        • Light Programs — the LightFX program editor (full-width left/right split)
-       • Landing Lights — servo-deployed LED searchlight groups
+       • Retractable Lights — servo-deployed LED searchlight groups
      Landing lights live under Lighting because they're an LED effect (the servo
      is just the deploy mechanism) and they attach to a Light program via
      landing_bindings.  Only the active sub-surface is mounted (matches the
@@ -27,7 +27,7 @@
         </button>
         <button class="sub-item" class:active={sub === 'landing'} on:click={() => sub = 'landing'}>
             <span class="sub-icon">{@html svg(ICON_BULB)}</span>
-            <span>Landing Lights</span>
+            <span>Retractable Lights</span>
         </button>
     </div>
     <div class="lighting-scroll">

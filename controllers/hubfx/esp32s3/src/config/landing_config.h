@@ -15,7 +15,7 @@
  *       owner: lightfx                  # lightfx | gunfx | gearcontrol | landing-light
  *       servo:
  *         port: { kind: servo, idx: 0 }
- *         open_us:  1900
+ *         open_us:  1900                # DIRECTION ONLY (see note below)
  *         close_us: 1100
  *       leds:
  *         - { port: { kind: pwm, idx: 5 }, brightness_pct: 100 }
@@ -24,6 +24,15 @@
  *         input: landing_deploy       # named channel from /hubfx.yaml inputs[]
  *         threshold_us: 1500          # ≥ threshold ⇒ deploy, < ⇒ retract
  *         hysteresis_us: 50
+ *
+ * NOTE (2026-06-06): `open_us` / `close_us` encode only the DEPLOY
+ * DIRECTION (which mechanical end is "deployed"), NOT the literal target.
+ * `LandingLight::deploy()` / `retract()` command each servo's ROLE to its
+ * own calibrated endpoint via an out-of-range sentinel (the role clamps to
+ * its profile min/max — Rule 42/44), so the servo always travels the full
+ * calibrated throw regardless of the stored µs.  `open_us >= close_us` ⇒
+ * deploy drives to the calibrated MAX end (else the MIN end).  The travel
+ * limits live in the servo's `/hubfx.yaml` ports[].profile, never here.
  *
  * `activation:` drives the light from an RC channel (resolved + wired by
  * the sketch's LandingActivationDriver, mirroring the EngineFx toggle).

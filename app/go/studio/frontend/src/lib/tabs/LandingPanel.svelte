@@ -309,7 +309,7 @@
 
 <div class="card landing-card">
     <div class="card-header">
-        <h3>Landing Lights</h3>
+        <h3>Retractable Lights</h3>
         <div class="header-actions">
             <button class="small" on:click={() => addLandingLight()} disabled={busy}>+ Add group</button>
         </div>
@@ -422,13 +422,14 @@
                     <!-- Live servo output bar (same ServoIoWidget GunFx yaw/pitch
                          uses; input side hidden — a landing servo is deploy/retract
                          driven, not RC-axis driven).  Position from the 20 Hz
-                         servo_status stream enabled in onMount. -->
-                    <div class="form-row servo-widget-row">
-                        <span class="field-label"></span>
+                         servo_status stream enabled in onMount.  Spans the full
+                         card width (no label gutter) so the travel bar is as wide
+                         as possible. -->
+                    <div class="io-widget-row">
                         <ServoIoWidget
                             hasInput={false}
                             hasServo={true}
-                            outputLabel="Servo output"
+                            outputLabel="Servo #{i + 1} output"
                             minUs={prof.minUs} maxUs={prof.maxUs} centerUs={prof.centerUs} reversed={prof.reversed}
                             servo={sv ?? null} />
                     </div>
@@ -621,6 +622,10 @@
     .group-summary { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); margin: 2px 0 10px; }
 
     .field-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-dim); }
+    /* Full-bleed servo output bar — no label gutter so the travel bar is
+       as wide as the card (wider than the indented form-row widgets). */
+    .io-widget-row { display: block; margin: 2px 0 4px; }
+    .io-widget-row :global(.srv-io) { width: 100%; }
     .unit        { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
 
     .grp-issues { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }

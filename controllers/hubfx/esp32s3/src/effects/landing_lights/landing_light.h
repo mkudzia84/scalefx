@@ -135,6 +135,21 @@ private:
     void commandAllServos(uint16_t targetUs);
     void commandLedsOn();
     void commandLedsOff();
+
+    /// Deploy / retract drive each servo to its CALIBRATED endpoint, not
+    /// the stored `openUs`/`closeUs` literal.  The ServoActuator role
+    /// clamps an out-of-range target to its own profile min/max (Rule
+    /// 42/44 — the role owns calibration), so we send a sentinel beyond
+    /// any port limit and let the role land exactly on the calibrated
+    /// end.  `openUs`/`closeUs` therefore encode only DIRECTION (which
+    /// mechanical end is "deployed"); their literal value is ignored for
+    /// travel, so a landing.yaml that still stores a mid-range 1900/1100
+    /// (written before this became direction-only) reaches the full
+    /// calibrated throw instead of stopping short.
+    static constexpr uint16_t kEndpointHiSentinel = 2500;  ///< ≥ any port max → role clamps to calibrated max
+    static constexpr uint16_t kEndpointLoSentinel = 500;   ///< ≤ any port min → role clamps to calibrated min
+    uint16_t deployTargetUs()  const { return _def.openUs >= _def.closeUs ? kEndpointHiSentinel : kEndpointLoSentinel; }
+    uint16_t retractTargetUs() const { return _def.openUs >= _def.closeUs ? kEndpointLoSentinel : kEndpointHiSentinel; }
     /// All-arrived mask = (1 << numServos) - 1.  Computed once per
     /// deploy/retract to avoid recomputing on every event.
     uint8_t allServosMask() const {

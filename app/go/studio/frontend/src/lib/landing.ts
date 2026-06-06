@@ -244,7 +244,7 @@ export function uninstallLandingPhaseListener(): void {
 
 export const landingConfigSource: DirtySource = {
     id:        'landing',
-    label:     'Landing Lights',
+    label:     'Retractable Lights',
     isDirty:   landingDirty,
     hasErrors: landingHasErrors,
     apply:     saveLandingConfig,
