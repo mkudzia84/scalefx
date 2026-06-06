@@ -8,6 +8,7 @@
 // round-trip to Go so there is exactly one source of truth.
 
 import { writable, derived, get } from 'svelte/store'
+import { connectionInfo } from './stores'
 import {
     RefreshDeviceModel, DeviceModelSnapshot,
     ClaimPort, UnclaimPort, CandidatePorts,
@@ -174,7 +175,18 @@ const SUPERSEDED_BY_LIGHTING = new Set(['lighting', 'landing-lights'])
 // Gear tab — gearcontrol expander only.
 const SUPERSEDED_BY_GEAR = new Set(['gearcontrol'])
 
-export const studioTabs = derived(deviceModel, ($dm): StudioTab[] => {
+export const studioTabs = derived([deviceModel, connectionInfo], ([$dm, $conn]): StudioTab[] => {
+    const firmwareTab: StudioTab = { key: 'firmware', label: 'Firmware', kind: 'firmware' }
+    // Tab gating by connected board: the full effect/config/IO surface is
+    // HubFX-only (the master owns every effect + the port/role model). When a
+    // NON-HubFX board (an expander — gearcontrol etc.) is connected on its own,
+    // only the Firmware tab is meaningful (flash / version), so show just that.
+    // Pre-connect (controllerType unset) keeps the full capability-gated set so
+    // the operator can review surfaces before plugging in a hub.
+    const ct = $conn.controllerType
+    if ($conn.connected && ct && ct !== 'hubfx') {
+        return [firmwareTab]
+    }
     // Order: Input & Ports → Effects → Lighting → other domain tabs →
     // Firmware.  Effects + Lighting both sit near the front so the
     // operator's most common edit surfaces (engine / gun config,
@@ -203,7 +215,7 @@ export const studioTabs = derived(deviceModel, ($dm): StudioTab[] => {
             || SUPERSEDED_BY_GEAR.has(d.id)) continue
         tabs.push({ key: 'dom:' + d.id, label: d.label, kind: 'domain', domain: d })
     }
-    tabs.push({ key: 'firmware', label: 'Firmware', kind: 'firmware' })
+    tabs.push(firmwareTab)
     return tabs
 })
 
