@@ -64,12 +64,13 @@ export const openServoCalibration: Writable<OpenServoCalT | null> = writable(nul
 // ─── Lifecycle ────────────────────────────────────────────────────────
 
 /** Hard-coded "calibration-safe" envelope — what we widen the live
- *  profile to so jogging covers the full physical range during
- *  calibration.  300–2700 µs is well outside any commercial servo's
- *  end-stops but within the PWM driver's safe duty range.  Fast slew
- *  so each jog click feels instant. */
+ *  profile to so jogging covers the working range during calibration.
+ *  800–2200 µs brackets the normal 1000–2000 RC band with end-stop-trim
+ *  headroom, while staying clear of the far mechanical extremes.  Fast
+ *  slew so each jog click feels instant.  (Keep in lock-step with the
+ *  dialog's SLIDER_MIN/MAX.) */
 const CAL_ENVELOPE: ServoProfileT = {
-    minUs: 300, maxUs: 2700, centerUs: 1500,
+    minUs: 800, maxUs: 2200, centerUs: 1500,
     reversed: false,                          // direction matters for the operator's mental model — keep their setting
     maxSpeedUsPerSec: 4000, maxAccelUsPerSec2: 8000, maxJerkUsPerSec3: 0,
 }

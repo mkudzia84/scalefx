@@ -318,7 +318,12 @@ func (a *App) SaveHubConfig() error {
 			if p.RoleKind != roles.KindNone {
 				role = roles.KindName(p.RoleKind)
 			}
-			prof, hasProf := a.portProfiles[p.Ref]
+			// lookupProfile tries both hub-local GUID forms (hub GUID ⇄ "")
+			// so a profile saved via the calibration dialog (keyed under the
+			// device-model GUID) persists even though /hubfx.yaml ports[] are
+			// hub-local ("").  Without this, calibrated settings silently never
+			// reached the YAML.
+			prof, hasProf := a.lookupProfile(p.Ref)
 			if name == "" && role == "" && !hasProf {
 				continue
 			}

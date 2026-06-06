@@ -62,11 +62,12 @@
     // 10 / 1 to nail the precise limit.
     const JOG_BUTTONS = [-100, -50, -10, -1, +1, +10, +50, +100] as const
 
-    // Slider scale — 300–2700 covers the full calibration envelope so
-    // dragging it can hit any physically-safe position.  Step = 1 µs
-    // (operator can also type into the numeric inputs for exact values).
-    const SLIDER_MIN = 300
-    const SLIDER_MAX = 2700
+    // Slider scale — 800–2200 brackets the normal 1000–2000 RC band with a
+    // little headroom for end-stop trim, without letting the operator jog the
+    // servo into the far mechanical extremes.  Step = 1 µs (operator can also
+    // type into the numeric inputs for exact values).
+    const SLIDER_MIN = 800
+    const SLIDER_MAX = 2200
 
     // Visual % for the slider underlay markers (draft min/max bars).
     function pct(us: number): number {

@@ -196,7 +196,13 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 				// GunFx panel).  Only set for servo ports that have
 				// an authored profile.
 				if snap.Ports[i].KindName == "servo" {
-					if prof, ok := a.portProfiles[snap.Ports[i].Ref]; ok {
+					// Hub-local ports are inconsistent: BuildModel keys them by
+					// the hub's own GUID, but /hubfx.yaml ports[] are hub-local
+					// ("") and SetPortProfile writes under whatever the picker
+					// passed.  Look up under the port's ref AND both hub-local
+					// forms so a pre-authored profile actually overlays (the
+					// "calibration dialog opens with defaults" bug).
+					if prof, ok := a.lookupProfile(snap.Ports[i].Ref); ok {
 						p := devicemodel.ServoMotionProfile(prof)
 						snap.Ports[i].Profile = &p
 					}
@@ -289,6 +295,36 @@ func (a *App) SetPortName(guid string, kind, index byte, name string) DeviceMode
 	return a.deviceModelSnapshot()
 }
 
+// hubLocal reports whether `guid` addresses a hub-local port — the empty
+// sentinel OR the hub's OWN GUID.  BuildModel stamps hub ports with the real
+// hub GUID, but the role layer (c.Roles.*) + /hubfx.yaml treat hub-local as ""
+// — so a hub servo whose ref carries the hub GUID must still go down the direct
+// role path, NOT the expander TOPOLOGY_ROLE_FORWARD path.
+func (a *App) hubLocal(guid string) bool {
+	return guid == "" || (a.id.GUID != "" && guid == a.id.GUID)
+}
+
+// lookupProfile reads the portProfiles overlay for `ref`, trying BOTH hub-local
+// GUID forms (the hub's own GUID ⇄ "") so a profile keyed under one form is
+// found regardless of how the caller spelled the ref.  Caller holds a.dmMu.
+func (a *App) lookupProfile(ref devicemodel.PortRef) (ServoMotionProfileDTO, bool) {
+	if p, ok := a.portProfiles[ref]; ok {
+		return p, true
+	}
+	if a.hubLocal(ref.GUID) {
+		alt := ref
+		if ref.GUID == "" {
+			alt.GUID = a.id.GUID
+		} else {
+			alt.GUID = ""
+		}
+		if p, ok := a.portProfiles[alt]; ok {
+			return p, true
+		}
+	}
+	return ServoMotionProfileDTO{}, false
+}
+
 // SetPortProfile assigns a servo motion profile to a port (Rule 42
 // storage + Rule 44 editing surface).  Feature panels call this from
 // their inline `ServoProfileEditor.on:change` to:
@@ -328,7 +364,7 @@ func (a *App) SetPortProfile(guid string, kind, index byte, profile ServoMotionP
 			MaxAccelUsPerSec2: profile.MaxAccelUsPerSec2,
 			MaxJerkUsPerSec3:  profile.MaxJerkUsPerSec3,
 		}
-		if guid == "" {
+		if a.hubLocal(guid) {
 			_ = c.Roles.ServoSetProfile(index, p)
 		} else {
 			_ = c.Topology.ServoSetProfileOn(guid, index, p)
@@ -358,7 +394,7 @@ func (a *App) ServoSetTarget(guid string, index uint8, targetUs uint16) error {
 		return fmt.Errorf("not connected")
 	}
 	var err error
-	if guid == "" {
+	if a.hubLocal(guid) {
 		err = c.Roles.ServoSetTarget(index, targetUs)
 	} else {
 		err = c.Topology.ServoSetTargetOn(guid, index, targetUs)
