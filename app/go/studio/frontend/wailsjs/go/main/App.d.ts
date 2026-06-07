@@ -150,9 +150,9 @@ export function GunStopFiring(arg1:number):Promise<void>;
 
 export function GunVerboseSubscribe(arg1:number,arg2:number):Promise<void>;
 
-export function HeaterGetElement(arg1:number):Promise<main.HeaterElementDTO>;
+export function HeaterGetElement(arg1:string,arg2:number):Promise<main.HeaterElementDTO>;
 
-export function HeaterSetElement(arg1:number,arg2:main.HeaterElementDTO):Promise<void>;
+export function HeaterSetElement(arg1:string,arg2:number,arg3:main.HeaterElementDTO):Promise<void>;
 
 export function LandingActivate(arg1:number):Promise<void>;
 
@@ -176,11 +176,11 @@ export function LoadHubConfig():Promise<void>;
 
 export function LogFrontend(arg1:string,arg2:string,arg3:string,arg4:Record<string, any>):Promise<void>;
 
-export function MotorGetElement(arg1:number):Promise<main.MotorElementDTO>;
+export function MotorGetElement(arg1:string,arg2:number):Promise<main.MotorElementDTO>;
 
-export function MotorSetElement(arg1:number,arg2:main.MotorElementDTO):Promise<void>;
+export function MotorSetElement(arg1:string,arg2:number,arg3:main.MotorElementDTO):Promise<void>;
 
-export function MotorSetPct(arg1:number,arg2:number):Promise<void>;
+export function MotorSetPct(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function OpenTextFile(arg1:string):Promise<main.OpenedFile>;
 

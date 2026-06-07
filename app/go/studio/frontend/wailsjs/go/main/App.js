@@ -294,12 +294,12 @@ export function GunVerboseSubscribe(arg1, arg2) {
   return window['go']['main']['App']['GunVerboseSubscribe'](arg1, arg2);
 }
 
-export function HeaterGetElement(arg1) {
-  return window['go']['main']['App']['HeaterGetElement'](arg1);
+export function HeaterGetElement(arg1, arg2) {
+  return window['go']['main']['App']['HeaterGetElement'](arg1, arg2);
 }
 
-export function HeaterSetElement(arg1, arg2) {
-  return window['go']['main']['App']['HeaterSetElement'](arg1, arg2);
+export function HeaterSetElement(arg1, arg2, arg3) {
+  return window['go']['main']['App']['HeaterSetElement'](arg1, arg2, arg3);
 }
 
 export function LandingActivate(arg1) {
@@ -346,16 +346,16 @@ export function LogFrontend(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['LogFrontend'](arg1, arg2, arg3, arg4);
 }
 
-export function MotorGetElement(arg1) {
-  return window['go']['main']['App']['MotorGetElement'](arg1);
+export function MotorGetElement(arg1, arg2) {
+  return window['go']['main']['App']['MotorGetElement'](arg1, arg2);
 }
 
-export function MotorSetElement(arg1, arg2) {
-  return window['go']['main']['App']['MotorSetElement'](arg1, arg2);
+export function MotorSetElement(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MotorSetElement'](arg1, arg2, arg3);
 }
 
-export function MotorSetPct(arg1, arg2) {
-  return window['go']['main']['App']['MotorSetPct'](arg1, arg2);
+export function MotorSetPct(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MotorSetPct'](arg1, arg2, arg3);
 }
 
 export function OpenTextFile(arg1) {

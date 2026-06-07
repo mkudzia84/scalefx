@@ -51,7 +51,9 @@
     // NOT here — their calibrate affordance is rendered inline on the row via
     // ServoWidget, not behind the expander.
     function hasRoleConfig(p: Port): boolean {
-        if (p.ref.guid !== '') return false  // hub-local only today
+        // Hub-local AND expander ports (Rule 58 — element tune routes by GUID).
+        // Offline ghost ports have no live role to tune, so gate those out.
+        if (p.offline) return false
         return p.roleKind === RoleKind.DcMotor
             || p.roleKind === RoleKind.Heater
     }
@@ -204,7 +206,8 @@
                                 portKind={pk}
                                 portIdx={p.ref.index}
                                 roleKind={p.roleKind}
-                                portRailMv={p.voltageMv} />
+                                portRailMv={p.voltageMv}
+                                guid={p.ref.guid} />
                         {/if}
                     {/if}
                 {/each}
