@@ -1,7 +1,0 @@
-# ESP-IDF managed-component dependencies — USB Host Device Detector.
-#
-# USB Host is covered by IDF's built-in `usb` component + the VENDORED
-# esp_cdc_acm driver compiled into this component (see CMakeLists.txt).  No
-# managed audio/storage deps — this is a USB-host-only probe.
-dependencies:
-  idf: ">=5.0"

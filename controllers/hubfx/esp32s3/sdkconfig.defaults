@@ -2154,7 +2154,7 @@ CONFIG_ESP_MINIMAL_SHARED_STACK_SIZE=2048
 # Console DISABLED so the USB-OTG host (ExpanderService) can own the ESP32-S3's
 # single internal USB PHY (GPIO19/20).  USB-Serial-JTAG console shares that PHY,
 # so enabling it starves the host → plugged expanders never enumerate (proven
-# 2026-06-07 with tests/hw/usbhost_detect: console-on-UART detects the Pico,
+# 2026-06-07 with a minimal USB-host probe: console-on-UART detects the device,
 # console-on-USB-Serial-JTAG does not).  UART0 is the 6 Mbps COBS wire (can't put
 # a text console there), so the console is NONE.  Operational logs still flow on
 # the DiagLog wire (COBS over UART0, independent of the IDF console); panics land
