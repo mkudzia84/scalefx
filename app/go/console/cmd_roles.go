@@ -29,16 +29,19 @@ import (
 )
 
 func init() {
+	// Role drive/query commands — all GUID-transparent (append `guid=XXXX` to
+	// target an expander; default/`hub` = the hub itself).  Phase B.
 	register(&command{Name: "servo-profiles", Usage: "servo-profiles", Help: "dump the LIVE motion profile of every attached hub servo (one row each) — the fast way to spot a stale/clamped calibration", Category: catTopology, RequiresConn: true, Run: cmdServoProfilesAll})
-	register(&command{Name: "servo-profile-get", Usage: "servo-profile-get <portIdx>", Help: "read the motion profile of a servo on the hub (Phase 2.9.x)", Category: catTopology, RequiresConn: true, Run: cmdServoProfileGet})
+	register(&command{Name: "servo-set", Usage: "servo-set <portIdx> <targetUs> [guid=XXXX]", Help: "drive a servo to targetUs (intent — the role's motion profile shapes the slew); guid=XXXX targets an expander", Category: catTopology, RequiresConn: true, Run: cmdServoSet})
+	register(&command{Name: "servo-profile-get", Usage: "servo-profile-get <portIdx> [guid=XXXX]", Help: "read the motion profile of a servo (hub or, with guid=XXXX, an expander)", Category: catTopology, RequiresConn: true, Run: cmdServoProfileGet})
 	register(&command{Name: "servo-profile-set", Usage: "servo-profile-set <portIdx> <key=val> ...", Help: "push a servo motion profile (min/max/center/max_speed/max_accel/max_jerk/reversed)", Category: catTopology, RequiresConn: true, Run: cmdServoProfileSet})
 	register(&command{Name: "motor-element-get", Usage: "motor-element-get <portIdx>", Help: "read DC motor element scaling config", Category: catTopology, RequiresConn: true, Run: cmdMotorElementGet})
 	register(&command{Name: "motor-element-set", Usage: "motor-element-set <portIdx> <key=val> ...", Help: "push DC motor element_mv / scaling (passthrough|linear|quadratic)", Category: catTopology, RequiresConn: true, Run: cmdMotorElementSet})
 	register(&command{Name: "heater-element-get", Usage: "heater-element-get <portIdx>", Help: "read heater element scaling + drive percent + hysteresis", Category: catTopology, RequiresConn: true, Run: cmdHeaterElementGet})
 	register(&command{Name: "heater-element-set", Usage: "heater-element-set <portIdx> <key=val> ...", Help: "push heater element_mv / scaling / drive_pct / hyst_cx10", Category: catTopology, RequiresConn: true, Run: cmdHeaterElementSet})
-	register(&command{Name: "bimotor-move-end", Usage: "bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]", Help: "drive a BiDcMotor (gear/door) to logical endstop A or B (A=+duty, B=-duty); outcome arrives async (subscribe)", Category: catTopology, RequiresConn: true, Run: cmdBiMotorMoveEnd})
-	register(&command{Name: "bimotor-seek", Usage: "bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]", Help: "position-agnostic seek — drive a BiDcMotor at signedDuty until stall/endstop or timeout", Category: catTopology, RequiresConn: true, Run: cmdBiMotorSeek})
-	register(&command{Name: "bimotor-status", Usage: "bimotor-status <portIdx>", Help: "verbose BiDcMotor status: duty, voltage, current, stalled, position (A/B), guard mode", Category: catTopology, RequiresConn: true, Run: cmdBiMotorStatus})
+	register(&command{Name: "bimotor-move-end", Usage: "bimotor-move-end <portIdx> <a|b> [duty] [timeoutMs] [guid=XXXX]", Help: "drive a BiDcMotor (gear/door) to logical endstop A or B (A=+duty, B=-duty); outcome arrives async (subscribe). guid=XXXX targets an expander", Category: catTopology, RequiresConn: true, Run: cmdBiMotorMoveEnd})
+	register(&command{Name: "bimotor-seek", Usage: "bimotor-seek <portIdx> <signedDuty> [timeoutMs] [guid=XXXX]", Help: "position-agnostic seek — drive a BiDcMotor at signedDuty until stall/endstop or timeout. guid=XXXX targets an expander", Category: catTopology, RequiresConn: true, Run: cmdBiMotorSeek})
+	register(&command{Name: "bimotor-status", Usage: "bimotor-status <portIdx> [guid=XXXX]", Help: "verbose BiDcMotor status: duty, voltage, current, stalled, position (A/B), guard mode. guid=XXXX targets an expander", Category: catTopology, RequiresConn: true, Run: cmdBiMotorStatus})
 	register(&command{Name: "bimotor-guard", Usage: "bimotor-guard <portIdx> <live|fixed> [ratioX|thresholdMa] [windowMs] [ceilingMa]", Help: "retune the stall guard: live (trailing-min ratio, e.g. 'live 2.5') or fixed (mA). ceilingMa = absolute over-current backstop for live mode (0=off). Watch the seek trace.", Category: catTopology, RequiresConn: true, Run: cmdBiMotorGuard})
 
 	// Direct role lifecycle — attach / inspect / detach a role on the
@@ -63,6 +66,48 @@ func parseRoleKind(s string) (byte, error) {
 		return 0, fmt.Errorf("role kind: want servo|bi-dc-motor|dc-motor|heater|led-animator or a byte, got %q", s)
 	}
 	return byte(v), nil
+}
+
+// roleAt returns a GUID-transparent RoleTarget for an optional trailing `guid`
+// arg ("" or "hub" → the hub itself; any 4-hex GUID → that expander, routed
+// through the hub).  This is what lets the role drive/query commands below work
+// IDENTICALLY against hub-local and expander roles (Phase B — transparent
+// expander roles).  Generic: every role inherits it, no per-command transport.
+func (a *App) roleAt(guid string) *client.RoleTarget {
+	if strings.EqualFold(guid, "hub") {
+		guid = ""
+	}
+	return a.c.Role(guid)
+}
+
+// guidTag renders " on <guid>" for an expander target (or "" for the hub) —
+// appended to command headers so the operator sees which board answered.
+func guidTag(guid string) string {
+	if guid == "" || strings.EqualFold(guid, "hub") {
+		return ""
+	}
+	return " on " + guid
+}
+
+// extractGuid pulls an optional `guid=XXXX` (or bare `hub`) token out of args,
+// returning the GUID ("" = hub) + the remaining positional args.  A keyword
+// (not positional) so it never collides with a command's numeric args — a GUID
+// like "3225" is indistinguishable from a duty value.  Every role drive/query
+// command runs args through this, so targeting an expander is uniform.
+func extractGuid(args []string) (string, []string) {
+	guid := ""
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(strings.ToLower(a), "guid=") {
+			guid = a[len("guid="):]
+			continue
+		}
+		rest = append(rest, a)
+	}
+	if strings.EqualFold(guid, "hub") {
+		guid = ""
+	}
+	return guid, rest
 }
 
 func cmdRoleListLocal(a *App, _ []string) error {
@@ -238,22 +283,48 @@ func scalingName(s client.ElementScaling) string {
 
 // ─── Servo profile ──────────────────────────────────────────────────
 
-func cmdServoProfileGet(a *App, args []string) error {
+// cmdServoSet drives a servo to a target position — GUID-transparent, so it's
+// the simplest end-to-end test that a drive command propagates hub→expander.
+func cmdServoSet(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
-	if len(args) != 1 {
-		return fmt.Errorf("usage: servo-profile-get <portIdx>")
+	guid, args := extractGuid(args)
+	if len(args) != 2 {
+		return fmt.Errorf("usage: servo-set <portIdx> <targetUs> [guid=XXXX]")
 	}
 	idx, err := parseU8(args[0])
 	if err != nil {
 		return err
 	}
-	p, err := a.c.Roles.ServoGetProfile(idx)
+	us, err := strconv.ParseUint(args[1], 10, 16)
+	if err != nil {
+		return fmt.Errorf("targetUs: %w", err)
+	}
+	if err := a.roleAt(guid).ServoSetTarget(idx, uint16(us)); err != nil {
+		return err
+	}
+	Ok("servo[%d]%s → %d µs", idx, guidTag(guid), us)
+	return nil
+}
+
+func cmdServoProfileGet(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	guid, args := extractGuid(args)
+	if len(args) != 1 {
+		return fmt.Errorf("usage: servo-profile-get <portIdx> [guid=XXXX]")
+	}
+	idx, err := parseU8(args[0])
 	if err != nil {
 		return err
 	}
-	Hdr(fmt.Sprintf("servo[%d] motion profile", idx))
+	p, err := a.roleAt(guid).ServoGetProfile(idx)
+	if err != nil {
+		return err
+	}
+	Hdr(fmt.Sprintf("servo[%d] motion profile%s", idx, guidTag(guid)))
 	fmt.Fprintf(out, "  %s %s … %s µs\n", cDim("range:      "), cCyan(fmt.Sprintf("%d", p.MinUs)), cCyan(fmt.Sprintf("%d", p.MaxUs)))
 	fmt.Fprintf(out, "  %s %s µs\n", cDim("center:     "), cCyan(fmt.Sprintf("%d", p.CenterUs)))
 	fmt.Fprintf(out, "  %s %s\n", cDim("reversed:   "), Bool(p.Reversed))
@@ -492,8 +563,9 @@ func cmdBiMotorMoveEnd(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
+	guid, args := extractGuid(args)
 	if len(args) < 2 {
-		return fmt.Errorf("usage: bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]")
+		return fmt.Errorf("usage: bimotor-move-end <portIdx> <a|b> [duty] [timeoutMs] [guid=XXXX]")
 	}
 	idx, err := parseU8(args[0])
 	if err != nil {
@@ -528,10 +600,10 @@ func cmdBiMotorMoveEnd(a *App, args []string) error {
 	default:
 		return fmt.Errorf("end must be 'a' or 'b'")
 	}
-	if err := a.c.Roles.BiMotorMoveToEnd(idx, pos, signed, timeoutMs); err != nil {
+	if err := a.roleAt(guid).BiMotorMoveToEnd(idx, pos, signed, timeoutMs); err != nil {
 		return err
 	}
-	Ok("bimotor[%d] → end %s  (duty %d, timeout %d ms)", idx, strings.ToUpper(args[1]), signed, timeoutMs)
+	Ok("bimotor[%d]%s → end %s  (duty %d, timeout %d ms)", idx, guidTag(guid), strings.ToUpper(args[1]), signed, timeoutMs)
 	Note("  outcome (reached/timeout/aborted) arrives async — run `subscribe` to watch BIMOTOR_ENDSTOP_RESULT")
 	return nil
 }
@@ -540,8 +612,9 @@ func cmdBiMotorSeek(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
+	guid, args := extractGuid(args)
 	if len(args) < 2 {
-		return fmt.Errorf("usage: bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]")
+		return fmt.Errorf("usage: bimotor-seek <portIdx> <signedDuty> [timeoutMs] [guid=XXXX]")
 	}
 	idx, err := parseU8(args[0])
 	if err != nil {
@@ -559,10 +632,10 @@ func cmdBiMotorSeek(a *App, args []string) error {
 		}
 		timeoutMs = uint16(t)
 	}
-	if err := a.c.Roles.BiMotorSeekEndstop(idx, int16(d), timeoutMs); err != nil {
+	if err := a.roleAt(guid).BiMotorSeekEndstop(idx, int16(d), timeoutMs); err != nil {
 		return err
 	}
-	Ok("bimotor[%d] seek  (duty %d, timeout %d ms)", idx, d, timeoutMs)
+	Ok("bimotor[%d]%s seek  (duty %d, timeout %d ms)", idx, guidTag(guid), d, timeoutMs)
 	Note("  outcome arrives async — run `subscribe`")
 	return nil
 }
@@ -630,18 +703,19 @@ func cmdBiMotorStatus(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
+	guid, args := extractGuid(args)
 	if len(args) != 1 {
-		return fmt.Errorf("usage: bimotor-status <portIdx>")
+		return fmt.Errorf("usage: bimotor-status <portIdx> [guid=XXXX]")
 	}
 	idx, err := parseU8(args[0])
 	if err != nil {
 		return err
 	}
-	st, err := a.c.Roles.BiMotorGetStatus(idx)
+	st, err := a.roleAt(guid).BiMotorGetStatus(idx)
 	if err != nil {
 		return err
 	}
-	Hdr(fmt.Sprintf("bimotor[%d] status", idx))
+	Hdr(fmt.Sprintf("bimotor[%d] status%s", idx, guidTag(guid)))
 	fmt.Fprintf(out, "  %s %s\n", cDim("duty:    "), cCyan(fmt.Sprintf("%d", st.SignedDuty)))
 	fmt.Fprintf(out, "  %s %s mV\n", cDim("voltage: "), cCyan(fmt.Sprintf("%d", st.VoltageMv)))
 	fmt.Fprintf(out, "  %s %s mA\n", cDim("current: "), cCyan(fmt.Sprintf("%d", st.CurrentMa)))

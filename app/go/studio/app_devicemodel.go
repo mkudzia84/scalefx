@@ -378,11 +378,10 @@ func (a *App) SetPortProfile(guid string, kind, index byte, profile ServoMotionP
 			MaxAccelUsPerSec2: profile.MaxAccelUsPerSec2,
 			MaxJerkUsPerSec3:  profile.MaxJerkUsPerSec3,
 		}
-		if a.hubLocal(guid) {
-			_ = c.Roles.ServoSetProfile(index, p)
-		} else {
-			_ = c.Topology.ServoSetProfileOn(guid, index, p)
-		}
+		// One transparent role path (Phase B): RoleTarget routes hub-local vs
+		// forward (canonGuid folds a stray hub-GUID → "" so it skips the envelope).
+		cg, _ := a.canonGuid(guid)
+		_ = c.Role(cg).ServoSetProfile(index, p)
 	}
 	a.emitDeviceModelChanged()
 	return a.deviceModelSnapshot()
@@ -407,12 +406,9 @@ func (a *App) ServoSetTarget(guid string, index uint8, targetUs uint16) error {
 	if c == nil {
 		return fmt.Errorf("not connected")
 	}
-	var err error
-	if a.hubLocal(guid) {
-		err = c.Roles.ServoSetTarget(index, targetUs)
-	} else {
-		err = c.Topology.ServoSetTargetOn(guid, index, targetUs)
-	}
+	// Transparent role path (Phase B) — RoleTarget routes hub-local vs forward.
+	cg, _ := a.canonGuid(guid)
+	err := c.Role(cg).ServoSetTarget(index, targetUs)
 	if err != nil {
 		return fmt.Errorf("servo set_target %s/%d → %d µs: %w",
 			guidOrHub(guid), index, targetUs, err)

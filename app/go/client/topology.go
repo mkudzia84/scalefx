@@ -89,29 +89,10 @@ func (t *Topology) QueryRole(guid string, reqType byte, req []byte) (byte, []byt
 	return respType, payload, nil
 }
 
-// ─── Cross-board typed wrappers (servo) ─────────────────────────────
-//
-// Sugar over SendRoleCommand for the common live-tune calls.  Studio's
-// calibration dialog routes through these when `guid != ""`; hub-local
-// callers (the `c.Roles.Servo*` shortcuts) save a wire round-trip by
-// dispatching directly via the role-layer ACK path.
-
-// ServoSetTargetOn routes a SERVO_SET_TARGET to (guid, portIdx).
-// `guid == ""` works too but the direct `c.Roles.ServoSetTarget` path
-// is cheaper for hub-local — prefer this only when you need
-// guid-agnostic dispatch (e.g. cross-board calibration dialog).
-func (t *Topology) ServoSetTargetOn(guid string, portIdx byte, targetUs uint16) error {
-	inner := []byte{portIdx, byte(targetUs), byte(targetUs >> 8)}
-	return t.SendRoleCommand(guid, byte(roles.ServoSetTarget), inner)
-}
-
-// ServoSetProfileOn routes a SERVO_SET_PROFILE to (guid, portIdx).
-// Same envelope convention as ServoSetTargetOn — pair them in the
-// calibration dialog so a Save and a final-jog hit the same expander.
-func (t *Topology) ServoSetProfileOn(guid string, portIdx byte, p roles.ServoMotionProfile) error {
-	inner := append([]byte{portIdx}, roles.EncodeServoProfileBody(p)...)
-	return t.SendRoleCommand(guid, byte(roles.ServoSetProfile), inner)
-}
+// (The per-servo cross-board wrappers ServoSetTargetOn/ServoSetProfileOn were
+// removed 2026-06-07 — RoleTarget (`c.Role(guid).ServoSetTarget/SetProfile`) is
+// the single GUID-transparent path now, so the duplicate forward-only sugar is
+// gone.  SendRoleCommand + QueryRole remain as the generic primitives.)
 
 // FlattenRoles returns every attached role across every board, with
 // the source GUID denormalized into each entry so callers can iterate
