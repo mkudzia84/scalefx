@@ -216,6 +216,15 @@ public:
     /// Detach the role at `addr`.  Auto-releases any claim held on it.
     bool detachRole(const PortRef& addr);
 
+    /// Push a board's FULL role set to a remote expander in ONE packet
+    /// (ROLE_BULK_ATTACH) — the declarative bringup path used by
+    /// ExpanderService::onReady.  `block` is `[count][entries…]` built by
+    /// `buildRoleBlockForGuid`.  On ACK, the hub's cached role roster for the
+    /// board is updated from the block (so topo-roles / Studio reflect the
+    /// applied config — the old per-port forward never did this).  A count==0
+    /// block is a no-op success (unconfigured board).  Returns true on ACK.
+    bool applyRoleConfig(const char* guid, const uint8_t* block, size_t len);
+
     /// Enumerate every (board, port) currently bound to `roleKind`.
     /// Writes up to `maxOut` entries into `out`; returns the actual
     /// count.  Walks the hub-local registry + every live expander's

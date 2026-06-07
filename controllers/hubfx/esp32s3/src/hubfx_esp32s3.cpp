@@ -59,8 +59,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.22.1-hubfx"
-#define BUILD_NUMBER     807
+#define FIRMWARE_VERSION "2.23.0-hubfx"
+#define BUILD_NUMBER     809
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -897,11 +897,26 @@ void setup() {
     // port — the config is GUID-addressed, not slot-addressed.
     exp.onReady([](const hubfx::expanders::ExpanderEntry& e) {
         auto& topo = board.policy<HubFxTopologyService>();
-        const uint8_t n = hubfx::config::attachPortRolesForGuid(
-            topo, kHubFx.data(), e.spec.guid);
-        if (n) {
-            SFX_LOG_INFO("[hubfx-config] applied %u configured role(s) to %s on connect",
-                         (unsigned)n, e.spec.guid);
+        // Declarative bringup (the standard expander pattern): push the board's
+        // FULL /hubfx.yaml role set in ONE ROLE_BULK_ATTACH packet.  Atomic (no
+        // racy per-port forwards) and updates the hub's cached roster, so
+        // topo-roles / Studio reflect the applied config immediately on every
+        // (re)connect.  An EMPTY block — a board with no configured roles (a
+        // fresh / unconfigured expander) — is simply skipped; it comes up bare.
+        uint8_t block[512];
+        const size_t blockLen = hubfx::config::buildRoleBlockForGuid(
+            kHubFx.data(), e.spec.guid, block, sizeof(block));
+        const uint8_t roleCount = (blockLen >= 1) ? block[0] : 0;
+        if (roleCount > 0) {
+            if (topo.applyRoleConfig(e.spec.guid, block, blockLen)) {
+                SFX_LOG_INFO("[hubfx-config] pushed %u role(s) to %s on connect",
+                             (unsigned)roleCount, e.spec.guid);
+            } else {
+                SFX_LOG_WARN("[hubfx-config] role-config push to %s FAILED", e.spec.guid);
+            }
+        } else {
+            SFX_LOG_INFO("[hubfx-config] %s: no configured roles — unconfigured bringup",
+                         e.spec.guid);
         }
         // Audible "<board> ready" chime — fires HERE, i.e. only once the
         // expander is fully up (IDENTIFY decoded → ports enumerated → roles

@@ -136,6 +136,58 @@ inline hubfx::effects::PortRef portRefOf(const PortMapping& m) {
                      : hubfx::effects::PortRef::local(m.kind, m.idx);
 }
 
+/// Serialise a port mapping's role-attach config payload into `cfgBuf`
+/// (>= ServoProfileWire::kSize bytes) and return its length.  The ONE place
+/// that knows which roles carry config: a servo profile (Rule 42) or the
+/// JetiEX attach flags.  Shared by the per-port attach path AND the bulk
+/// block builder so the two can never drift.
+inline uint8_t packRoleCfg(const PortMapping& m, uint8_t* cfgBuf) {
+    if (m.profileSet && m.role == RoleKind::ServoActuator) {
+        return (uint8_t)sfx_core::ServoProfileWire::pack(cfgBuf, m.profile);
+    }
+    if (m.role == RoleKind::JetiExInput) {
+        // [broadcastHz][baudHi][baudLo][downstream] — 0,0,0 = no auto-broadcast
+        // + default 125000 baud; byte 3 = IN_2 telemetry-monitor enable.
+        cfgBuf[0] = 0; cfgBuf[1] = 0; cfgBuf[2] = 0;
+        cfgBuf[3] = m.jetiDownstream ? 1 : 0;
+        return 4;
+    }
+    return 0;
+}
+
+/// Serialise the role config for one expander `guid` into a ROLE_BULK_ATTACH
+/// payload: `[count:u8] × [portKind][portIdx][roleKind][cfgLen][cfg]`.  Returns
+/// the byte length written (always >= 1).  count==0 (just the length byte) is
+/// VALID — a board with no /hubfx.yaml roles (a fresh/unconfigured expander)
+/// produces an empty block, and the caller simply skips the push.  This is the
+/// DECLARATIVE bringup path that replaces N per-port forwards.
+inline size_t buildRoleBlockForGuid(const HubFxConfig& cfg, const char* guid,
+                                    uint8_t* out, size_t maxLen) {
+    if (maxLen < 1 || !guid || !guid[0]) { if (maxLen) out[0] = 0; return maxLen ? 1 : 0; }
+    size_t  off   = 1;   // out[0] = count, written at the end
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < cfg.numPorts; ++i) {
+        const auto& m = cfg.ports[i];
+        if (m.role == RoleKind::None || m.guid[0] == 0) continue;
+        if (std::strncmp(m.guid, guid, sizeof(m.guid)) != 0) continue;
+        uint8_t cfgBuf[sfx_core::ServoProfileWire::kSize];
+        const uint8_t cfgLen = packRoleCfg(m, cfgBuf);
+        if (off + 4 + cfgLen > maxLen) {
+            SFX_LOG_WARN("[hubfx-config] role block for %s overflow at %u entries",
+                         guid, (unsigned)count);
+            break;
+        }
+        out[off++] = m.kind;
+        out[off++] = m.idx;
+        out[off++] = m.role;
+        out[off++] = cfgLen;
+        for (uint8_t b = 0; b < cfgLen; ++b) out[off++] = cfgBuf[b];
+        ++count;
+    }
+    out[0] = count;
+    return off;
+}
+
 /// Attach roles for every `ports[]` entry whose GUID matches `guid`
 /// (pass "" for the hub-local subset).  Returns the count attached.
 /// Idempotent — re-attaching the same role is a no-op on topology, so
@@ -151,25 +203,10 @@ uint8_t attachPortRolesForGuid(TTopology& topo, const HubFxConfig& cfg,
         const bool isHub = (m.guid[0] == 0);
         if (wantHub != isHub) continue;
         if (!wantHub && std::strncmp(m.guid, guid, sizeof(m.guid)) != 0) continue;
-        // Rule 42 storage + Rule 44 editing-surface: when the port has
-        // a servo profile attached (set by Studio's GunFx panel into
-        // /hubfx.yaml), serialise it into the role-attach payload so
-        // `RoleServicePolicy::attachServoActuator` applies it directly via the
-        // SAME ServoProfileWire codec (one layout, can't drift — see header).
+        // Servo profile (Rule 42) / JetiEX flags serialised by the shared
+        // packRoleCfg — same codec the bulk block uses, so they can't drift.
         uint8_t cfgBuf[sfx_core::ServoProfileWire::kSize];  // 13; widest cfg payload here
-        uint8_t cfgLen = 0;
-        if (m.profileSet && m.role == RoleKind::ServoActuator) {
-            cfgLen = (uint8_t)sfx_core::ServoProfileWire::pack(cfgBuf, m.profile);
-        } else if (m.role == RoleKind::JetiExInput) {
-            // JetiEX attach config: [broadcastHz][baudHi][baudLo][downstream].
-            // 0,0,0 = no auto wire-broadcast + default 125000 baud (Rule 11
-            // append: byte 3 = downstream IN_2 telemetry-monitor enable).
-            cfgBuf[0] = 0;
-            cfgBuf[1] = 0;
-            cfgBuf[2] = 0;
-            cfgBuf[3] = m.jetiDownstream ? 1 : 0;
-            cfgLen = 4;
-        }
+        const uint8_t cfgLen = packRoleCfg(m, cfgBuf);
         if (topo.attachRole(portRefOf(m), m.role, cfgLen ? cfgBuf : nullptr, cfgLen)) {
             ++attached;
             SFX_LOG_INFO("[hubfx-config] %s:{%s, %u} → %s%s%s",
@@ -196,12 +233,14 @@ uint8_t attachPortRolesForGuid(TTopology& topo, const HubFxConfig& cfg,
 }
 
 /// Attach every `ports[]` entry's RoleKind to its PortRef (hub-local AND
-/// any currently-mounted expander port).  Expander ports whose board is
-/// offline are skipped here and (re)attached from the ExpanderService
-/// connect callback via `attachPortRolesForGuid`.  If the table is empty
-/// (no `/hubfx.yaml`, or `ports:` block missing), fall back to attaching
-/// `LedAnimator` on every hub-local PWM port — the common "out of the
-/// box" HubFX configuration.  Idempotent.
+/// HUB-LOCAL ports only.  Expander roles are NOT attached here — they're
+/// pushed declaratively to each board at connect via the ROLE_BULK_ATTACH
+/// bringup path (ExpanderService onReady → applyRoleConfig), so the bolt-on
+/// per-expander loop that used to live here is gone (it forwarded N single
+/// attaches that raced on reconnect AND never updated the hub's roster).
+/// If the table is empty (no `/hubfx.yaml`, or `ports:` missing), fall back to
+/// attaching `LedAnimator` on every hub-local PWM port — the common "out of
+/// the box" HubFX configuration.  Idempotent.
 template <typename TBoard, typename TTopology>
 void applyPortRoles(TBoard& board, const HubFxConfig& cfg) {
     using hubfx::effects::PortRef;
@@ -221,15 +260,10 @@ void applyPortRoles(TBoard& board, const HubFxConfig& cfg) {
         return;
     }
 
-    // Hub-local first (always succeeds), then each declared expander
-    // (succeeds only for boards already mounted; the rest defer).
-    uint8_t attached = attachPortRolesForGuid(topo, cfg, "");
-    for (uint8_t e = 0; e < cfg.numExpanders; ++e) {
-        attached += attachPortRolesForGuid(topo, cfg, cfg.expanders[e].guid);
-    }
-    SFX_LOG_INFO("[hubfx-config] ports: %u/%u attached (%u expander board(s) declared)",
-                 (unsigned)attached, (unsigned)cfg.numPorts,
-                 (unsigned)cfg.numExpanders);
+    const uint8_t attached = attachPortRolesForGuid(topo, cfg, "");  // hub-local ""
+    SFX_LOG_INFO("[hubfx-config] hub-local ports: %u attached (%u expander board(s) "
+                 "declared — pushed at connect)",
+                 (unsigned)attached, (unsigned)cfg.numExpanders);
 }
 
 /// Apply `/hubfx.yaml` — flip every service's `setEnabled()` to match

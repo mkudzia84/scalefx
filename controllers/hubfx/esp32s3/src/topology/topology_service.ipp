@@ -747,6 +747,60 @@ bool TopologyServicePolicyT<TExpander>::detachRole(const PortRef& addr) {
 }
 
 template <hubfx::expanders::ExpanderService TExpander>
+bool TopologyServicePolicyT<TExpander>::applyRoleConfig(
+        const char* guid, const uint8_t* block, size_t len) {
+    if (!guid || !guid[0] || !block || len < 1) return false;
+    const uint8_t count = block[0];
+    if (count == 0) return true;   // unconfigured board — nothing to push
+
+    const int slotIdx = slotIdxByGuid(guid);
+    if (slotIdx < 0) return false;
+    auto* slot = _exp->liveSlot((uint8_t)slotIdx);
+    if (!slot || slot->entry.spec.collision ||
+        slot->handshake != TExpander::Handshake::Ready) {
+        return false;
+    }
+
+    const CommandResult rc = forwardToExpander((uint8_t)slotIdx,
+                                               RolePacket::ROLE_BULK_ATTACH, block, len);
+    if (!rc.success) {
+        SFX_LOG_WARN("[topology] bulk role-config to %s failed err=0x%02X",
+                     guid, rc.errorCode);
+        return false;
+    }
+
+    // Update the cached roster from the block we just applied — the expander
+    // ACKed, so its roles now match the config.  The old per-port forward
+    // (sendRoleCommand) NEVER did this, so topo-roles / Studio kept showing the
+    // board's own boot defaults (e.g. 7 servos auto-attached, 0 hbridge) even
+    // though the roles were applied.  This is the stale-roster fix.
+    size_t  off     = 1;
+    uint8_t updated = 0;
+    for (uint8_t i = 0; i < count && off + 4 <= len; ++i) {
+        const uint8_t pk = block[off], pi = block[off + 1], rk = block[off + 2],
+                      cl = block[off + 3];
+        off += (size_t)4 + cl;
+        if (off > len) break;
+        bool replaced = false;
+        for (uint8_t j = 0; j < slot->numRoles; ++j) {
+            if (slot->roles[j].portKind == pk && slot->roles[j].portIdx == pi) {
+                slot->roles[j].roleKind = rk;
+                slot->roles[j].flags    = 0;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced && slot->numRoles < TExpander::kMaxRolesPerExpander) {
+            slot->roles[slot->numRoles++] = { pk, pi, rk, 0 };
+        }
+        ++updated;
+    }
+    SFX_LOG_INFO("[topology] bulk role-config to %s: %u role(s) applied + cached",
+                 guid, (unsigned)updated);
+    return true;
+}
+
+template <hubfx::expanders::ExpanderService TExpander>
 size_t TopologyServicePolicyT<TExpander>::portsByRole(
         uint8_t roleKind, PortRef* out, size_t maxOut) const {
     if (!_reg || !_exp) return 0;

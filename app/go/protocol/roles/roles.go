@@ -93,6 +93,10 @@ const (
 	RoleListResp   protocol.PacketType = 0x43
 	RoleAttached   protocol.PacketType = 0x44
 	RoleDetached   protocol.PacketType = 0x45
+	// RoleBulkAttach pushes a board's FULL role set in one packet (the
+	// declarative expander-bringup path; hub→expander only — Studio never
+	// sends it). [count:u8] × [portKind][portIdx][roleKind][cfgLen][cfg].
+	RoleBulkAttach protocol.PacketType = 0x57
 
 	// Recoil impulse — adds a transient offset to the servo output for
 	// durationMs on top of the aim, then de-jerks (role level). 0x46 (the
