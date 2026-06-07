@@ -1561,14 +1561,21 @@ Every output port descriptor (`ports::pwm_array<>`, `ports::servo_array<>`, `por
 
 All effect-layer code (`controllers/hubfx/esp32s3/src/effects/**`, future GunFx ROF scheduler, fan puffing, heater bang-bang, yaw/pitch motion profiles, the existing EngineFx state machine, GearControl backstop arming, landing-light animator …) MUST read time from `sfx_core::EffectClock::instance()` — never raw `millis()` / `micros()`.
 
-**Wiring (mandatory in every controller's `loop()`):**
+**Wiring:** `BoardServer::process()` latches the clock AUTOMATICALLY (once per
+pass, before ticking the policies), so every board — hub AND every expander —
+gets it for free. A sketch only needs an explicit `latch()` if it reads the
+clock BEFORE `process()`:
 ```cpp
 void loop() {
-    sfx_core::EffectClock::instance().latch();   // ONCE per pass, BEFORE board.process()
-    board.process();
+    sfx_core::EffectClock::instance().latch();   // OPTIONAL — only if you read the clock pre-process()
+    board.process();                             // latches automatically before policy ticks
     // ...
 }
 ```
+This was a footgun before the framework did it: the GearControl sketch never
+latched, so its servos' `MotionProfile1D` saw `dtMs()==0` and never slewed
+(frozen position, 2026-06-08). Moving the latch into the shared `process()`
+fixed it for all boards and removed the per-sketch requirement.
 
 **Usage (in any effect tick):**
 ```cpp

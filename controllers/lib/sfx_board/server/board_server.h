@@ -72,6 +72,7 @@
 #endif
 
 #include "board_service.h"
+#include "effect_clock.h"      // sfx_core::EffectClock — latched once per process()
 #include <indicators/indicator_leds.h>
 #include <i2c/sfx_i2c.h>          // sfx_peripherals::SfxI2cBus (native I2C, no Arduino)
 
@@ -739,6 +740,14 @@ public:
             c.updateActivity();
         }
         c.updateFreeRam(SFX_FREE_HEAP());
+
+        // Latch the EffectClock ONCE per pass, BEFORE ticking the policies, so
+        // every role/effect this pass sees the same nowMs() + a consistent
+        // dtMs() (Rule 40).  Done HERE in the shared framework — not per-sketch
+        // — so a board can't forget it: the GearControl did, and its servos'
+        // MotionProfile1D got dtMs()==0 and never slewed (frozen pos, 2026-06).
+        // Idempotent within a tick, so a sketch that ALSO latches is harmless.
+        sfx_core::EffectClock::instance().latch();
 
         std::apply([](auto&... p) { (p.update(), ...); }, _policies);
 
