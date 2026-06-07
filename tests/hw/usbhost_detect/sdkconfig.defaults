@@ -1,0 +1,59 @@
+# sdkconfig.defaults — USB Host Device Detector (ESP32-S3)
+#
+# Hand-written MINIMAL defaults (NOT a full generated sdkconfig).  IDF merges
+# these over its own per-chip defaults to produce the build's sdkconfig.
+#
+# The ONE thing this probe exists to prove: the console is on UART (the CH343 →
+# COMxx), NOT on USB-Serial-JTAG — so it does not contend with the USB-OTG
+# internal PHY (GPIO19/20) the host needs.  (The hub's sdkconfig sets
+# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y, which is the suspected root cause.)
+
+# --- Target ------------------------------------------------------------------
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- Console: UART ONLY, USB-Serial-JTAG fully OFF ---------------------------
+# Primary console = UART0 (TXD0/RXD0 → CH343 → COMxx), plain text @115200.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+# Explicitly DISABLE USB-Serial-JTAG as both primary and secondary console so
+# the ROM/IDF never grabs the internal USB PHY out from under USB-OTG host.
+# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set
+# CONFIG_ESP_CONSOLE_USB_CDC is not set
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set
+
+# --- USB-OTG Host ------------------------------------------------------------
+CONFIG_USB_OTG_SUPPORTED=y
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=256
+CONFIG_USB_HOST_HW_BUFFER_BIAS_PERIODIC_OUT=y
+CONFIG_USB_HOST_DEBOUNCE_DELAY_MS=250
+CONFIG_USB_HOST_RESET_HOLD_MS=30
+CONFIG_USB_HOST_RESET_RECOVERY_MS=30
+CONFIG_USB_HOST_SET_ADDR_RECOVERY_MS=10
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=y
+
+# --- Flash (8 MB QIO @80 MHz) ------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# --- Partition table ---------------------------------------------------------
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- PSRAM (8 MB OPI @80 MHz) — matches the WROOM-1 N8R8 silicon -------------
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# --- CPU / RTOS --------------------------------------------------------------
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# --- Trim radios we don't use ------------------------------------------------
+# CONFIG_BT_ENABLED is not set

@@ -45,6 +45,14 @@ bool ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::begin(
         _usbReady = false;
         return true;   // policy itself is fine, just no expanders will be seen
     }
+    // begin() only STORES the port config; init() actually runs
+    // usb_host_install() + starts the daemon / CDC-ACM / open tasks.  Without
+    // it the host is "configured" but never installed → no device ever mounts.
+    if (!usb.init()) {
+        SFX_LOG_WARN("[Expander] USB host init() failed — OTG port not installed");
+        _usbReady = false;
+        return true;
+    }
 
     _usbReady = true;
     SFX_LOG_INFO("[Expander] USB host up (%s), %u slots, %u known-GUID cache",

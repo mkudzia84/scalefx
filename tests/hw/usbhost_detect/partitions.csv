@@ -1,0 +1,10 @@
+# USB Host Device Detector — minimal app-only partition table (ESP32-S3, 8 MB).
+#
+# No storage / coredump partitions needed for this probe — just NVS + OTA-data
+# (the bootloader expects an otadata when the app subtype is ota_0) + a single
+# 2 MB factory/app partition (the firmware is tiny — USB host + printf only).
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x200000,
