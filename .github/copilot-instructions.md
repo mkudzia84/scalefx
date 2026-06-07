@@ -2343,6 +2343,70 @@ same-target storage ops NACK before the lock (no deadlock; SD and flash hold
 [storage_service.h](../controllers/lib/sfx_storage/server/storage_service.h),
 [storage.go](../app/go/client/storage.go) `FileUpload`.
 
+### 58. Transparent Expander Roles — Opaque, PortRef-Addressed Transport
+
+An expander's roles (servo, bi-dc-motor, LED, heater, DC-motor, **and any future
+board's roles**) MUST behave **identically to hub-local roles** for the operator
+(CLI + Studio): drive, query status, receive telemetry — all routed through the
+hub by GUID. The whole stack is built so a **new role or board plugs in via its
+PACKET CODEC ONLY** — never per-role transport, forwarding, event, or UI-routing
+code. The hub never gets a per-role `switch`.
+
+**The addressing primitive** is `PortRef{guid, kind, idx}`: `guid == ""` → the
+hub itself; any other GUID → that expander. `TopologyService::isLocalTarget`
+also folds the hub's OWN identity GUID → local, so either form lands right.
+
+**Four generic, role-AGNOSTIC wire primitives** (the hub forwards the inner role
+packet as opaque bytes — it does NOT decode it):
+- **Command** — `TOPOLOGY_ROLE_FORWARD` (0x8F): fire-and-forget, ACK/NACK.
+- **Query** — `TOPOLOGY_ROLE_QUERY` → `TOPOLOGY_ROLE_RESPONSE` (0xA6/0xA7): a role
+  `*_GET_*_REQ` routed local (server **capture mode** snapshots the typed RESP —
+  `BoardServerBase::captureRawIfNeeded`) or remote (`forwardQuery` →
+  `BusClient::sendQueryAnyBlocking`, "any typed reply"), re-wrapped with the GUID.
+- **Telemetry** — `TOPOLOGY_ROLE_EVENT` (0x8E): the expander's async role events
+  re-emitted upward with their source GUID.
+- **Bringup config** — `ROLE_BULK_ATTACH` (0x57): the full role set pushed
+  declaratively at connect (the standard expander pattern — see the role
+  re-attach bullet in CLAUDE.md).
+
+**Go side mirrors the same opacity:**
+- `client.RoleTarget` (`c.Role(guid)`) routes EVERY drive/query transparently
+  (local vs forward) and reuses the existing `roles.CmdXxx` builders +
+  `DecodeXxx` decoders via `protocol.ParsePacket` — so adding a role's
+  transparent path is a one-line wrapper. There is exactly ONE role-I/O path;
+  the old duplicate `Topology.ServoSetTargetOn`/etc. were removed.
+- Role telemetry is GENERIC: `Events.OnRole(innerType, fn(guid, payload))` + the
+  catch-all `OnRoleEvent` carry EVERY role's DISCRETE events (stall, endstop,
+  reached, done, attached/detached), hub-local OR expander, decoded by the
+  matching `roles.DecodeXxx`. High-rate STREAMS (RC frames, servo-motion) keep
+  their dedicated typed subscriptions (`OnInputValue`/`OnServoMotion`) and are
+  kept OUT of the catch-all so it stays readable. **Event subscription is
+  trap-proof:** `subscribe[T]` / `snapshot[T]` are Go-generic — the old
+  hand-maintained type-switch `add()` silently dropped new events twice
+  (`InputValue`, `ServoMotion`); a new typed event or role can no longer no-op.
+
+**Smart routing:** the expander telemetry re-emit (`onExpanderAsync`) is gated on
+`hostVerboseActive()` — no PC attached → the hub does NOT flood the wire, but the
+master-internal C++ fan-out stays UNGATED so on-hub effects always consume
+expander telemetry locally.
+
+**CLI convention:** every role drive/query command takes a trailing `guid=XXXX`
+keyword (never positional — a GUID like `3225` is indistinguishable from a duty
+value); default/`hub` = the hub. e.g. `servo-set 0 1600 guid=3225`,
+`bimotor-status 0 guid=3225`.
+
+**Rule:** to expose a role through this stack, add its packet codec
+(`protocol/roles` + the firmware role handler) and a one-line `RoleTarget`
+wrapper — nothing else. NEVER add a per-role case to the hub's TopologyService,
+to the forward/query/event transport, or to the Go event type-switch. Input
+ports are HubFX-only (no expander input). References:
+[topology_service.ipp](../controllers/hubfx/esp32s3/src/topology/topology_service.ipp)
+(`handleRoleForward`/`handleRoleQuery`/`onExpanderAsync`),
+[roletarget.go](../app/go/client/roletarget.go),
+[events.go](../app/go/client/events.go) (`subscribe`/`OnRole`/`dispatchRole`),
+[board_server.h](../controllers/lib/sfx_board/server/board_server.h)
+(`captureRawIfNeeded`).
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host
