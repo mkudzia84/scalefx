@@ -82,7 +82,7 @@
 <div class="backdrop" on:click|self={close} on:keydown={(e) => { if (e.key === 'Escape') close() }} role="presentation">
     <div class="panel">
         <div class="panel-head">
-            <h2>Diagram{activeTab ? ` — ${activeTab.name}` : ''}</h2>
+            <h2>Diagram{activeTab ? ` — ${activeTab.name}` : ''}{activeTab && activeTab.guid ? ` · ${activeTab.guid}` : ''}</h2>
             <button class="small" on:click={close}>✕ Close</button>
         </div>
 
@@ -94,6 +94,7 @@
                             on:click={() => { activeGuid = t.guid; selKey = '' }}
                             title={t.online ? t.name : `${t.name} — configured but not connected`}>
                         {t.name}
+                        {#if t.guid}<span class="tab-guid" title="Board GUID">{t.guid}</span>{/if}
                         {#if !t.online}<span class="tab-badge">offline</span>{/if}
                     </button>
                 {/each}
@@ -163,7 +164,9 @@
 
 <style>
     .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; z-index: 200; }
-    .panel { background: var(--bg-base); border: 1px solid var(--border); border-radius: 10px; max-width: 96vw; max-height: 94vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px var(--shadow); }
+    /* FIXED size so switching to a board with different schematic dimensions
+       doesn't resize the popup — the image scales to fit + centres inside. */
+    .panel { background: var(--bg-base); border: 1px solid var(--border); border-radius: 10px; width: min(1180px, 95vw); height: min(860px, 93vh); display: flex; flex-direction: column; box-shadow: 0 8px 32px var(--shadow); }
     .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
     .panel-head h2 { font-size: 16px; color: var(--text-bright); }
 
@@ -173,6 +176,7 @@
     .board-tab:hover { color: var(--text); background: var(--bg-raised); }
     .board-tab.active { color: var(--text-bright); background: var(--bg-base); border-color: var(--border); position: relative; top: 1px; }
     .board-tab.offline { color: var(--warning); }
+    .tab-guid { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); padding: 1px 5px; border-radius: 3px; background: var(--bg-raised); }
     .tab-badge { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; padding: 1px 5px; border-radius: 3px; background: color-mix(in srgb, var(--warning) 22%, transparent); border: 1px solid var(--warning); color: var(--warning); }
 
     .banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; font-size: 12px; flex-shrink: 0; }
@@ -182,9 +186,13 @@
 
     .panel-body { flex: 1; overflow: auto; padding: 16px; display: flex; align-items: center; justify-content: center; min-height: 0; }
 
-    .board-wrap { position: relative; display: inline-block; }
+    /* The wrap shrink-wraps the scaled image so markers (positioned in %) stay
+       aligned; the image is capped to a CONSTANT box (derived from the fixed
+       panel minus chrome) so every tab's schematic centres inside the same
+       footprint regardless of its native aspect ratio. */
+    .board-wrap { position: relative; display: inline-block; flex-shrink: 0; }
     .board-wrap.dim .board-img { opacity: 0.72; filter: saturate(0.7); }
-    .board-img { display: block; max-width: calc(96vw - 32px); max-height: calc(94vh - 150px); width: auto; height: auto; border-radius: 6px; }
+    .board-img { display: block; max-width: min(1130px, calc(95vw - 50px)); max-height: calc(min(860px, 93vh) - 200px); width: auto; height: auto; border-radius: 6px; }
 
     /* Unassigned = red, assigned = vibrant blue (both pop against the green PCB). */
     .marker { position: absolute; transform: translate(-50%, -50%); font-family: var(--font-mono); font-size: 13px; font-weight: 700; line-height: 1; padding: 4px 8px; border-radius: 4px; border: 2px solid #ff4d44; background: rgba(224,40,32,0.88); color: #fff; cursor: pointer; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.5); transition: transform 0.08s, background 0.1s; }

@@ -26,6 +26,7 @@ import (
 	"scalefx/console"
 	"scalefx/devicemodel"
 	"scalefx/protocol"
+	expp "scalefx/protocol/expanders"
 
 	wailsRT "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -130,6 +131,13 @@ type App struct {
 	// deviceModelSnapshot (ghost ports) + SaveHubConfig (preservation),
 	// pruned by RemoveExpanderConfig.  Guarded by dmMu.
 	hubExpanders map[string]*yamlExpanderEntry
+
+	// Debounce timer for expander-event-driven model refreshes.  A live
+	// connect/disconnect fires a burst of expander events (connect →
+	// identified → ready); this coalesces them into ONE topology refresh a
+	// short settle after the LAST event (so the hub has finished its
+	// handshake + role-attach).  Guarded by a.mu.
+	dmRefreshTimer *time.Timer
 
 	// Live-channel wire subscription state (Rule: wire broadcast is OFF
 	// unless a tab that renders live channel bars is on screen).  The
@@ -447,8 +455,47 @@ func (a *App) openLocked(port string) error {
 	a.installGunFxStream()
 	a.installLandingStream()
 	a.installGearStream()
+	a.installExpanderStream()
 	a.installWireLogger()
 	return nil
+}
+
+// installExpanderStream refreshes the device model whenever an expander board
+// mounts or unmounts over USB, so the Ports & Roles list + Diagram update LIVE
+// (a connect brings the board's ports in; a disconnect turns them into offline
+// ghost ports) without the operator hitting Refresh.  Events arrive on the
+// async reader goroutine and come in bursts during enumeration, so the actual
+// topology re-read is debounced (scheduleModelRefresh).
+func (a *App) installExpanderStream() {
+	if a.c == nil {
+		return
+	}
+	a.c.Events.OnExpanderConnected(func(e expp.ConnectedEvent) {
+		a.diag.Info("DM", "expander connected (addr=%d) — refreshing model", e.USBAddr)
+		// Generous settle: the hub still has to IDENTIFY, fetch the roster,
+		// and attach configured roles before PortList/RoleList reflect them.
+		a.scheduleModelRefresh(900 * time.Millisecond)
+	})
+	a.c.Events.OnExpanderDisconnected(func(e expp.DisconnectedEvent) {
+		a.diag.Info("DM", "expander disconnected (guid=%s) — refreshing model", e.GUID)
+		a.scheduleModelRefresh(400 * time.Millisecond)
+	})
+}
+
+// scheduleModelRefresh (re)arms the debounce timer so RefreshDeviceModel runs
+// once, `delay` after the most recent call.  Safe to call from the async
+// reader goroutine.
+func (a *App) scheduleModelRefresh(delay time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.dmRefreshTimer != nil {
+		a.dmRefreshTimer.Stop()
+	}
+	a.dmRefreshTimer = time.AfterFunc(delay, func() {
+		if _, err := a.RefreshDeviceModel(); err != nil {
+			a.diag.Warn("DM", "expander-event model refresh failed: %v", err)
+		}
+	})
 }
 
 // installWireLogger pipes the protocol layer's per-packet TX/RX trace

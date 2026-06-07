@@ -122,6 +122,7 @@
         <div class="card board-card" class:offline={b.offline}>
             <div class="board-head">
                 <span class="board-name">{names[b.guid] ?? b.name}</span>
+                {#if b.guid}<span class="board-guid" title="Board GUID — distinguishes two boards of the same type">{b.guid}</span>{/if}
                 {#if b.offline}
                     <span class="offline-badge" title="Configured in /hubfx.yaml but not connected">offline</span>
                     <button class="small danger remove-btn" on:click={() => removeBoard(b.guid)} disabled={busy}
@@ -227,6 +228,7 @@
     .board-card.offline .port-id, .board-card.offline .board-name { color: var(--text-dim); }
     .board-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
     .board-name { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+    .board-guid { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); padding: 1px 6px; border-radius: 3px; background: var(--bg-raised); }
     .offline-badge { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; padding: 1px 6px; border-radius: 3px; background: color-mix(in srgb, var(--warning) 22%, transparent); border: 1px solid var(--warning); color: var(--warning); }
     .remove-btn { margin-left: auto; }
     .offline-warn { font-size: 11px; font-style: italic; color: var(--warning); margin: -2px 0 8px; }
