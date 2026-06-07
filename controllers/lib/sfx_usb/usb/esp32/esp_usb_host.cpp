@@ -380,8 +380,8 @@ bool EspUsbHost::init() {
         SFX_LOG_WARN("[UsbHost] Failed to create recovery timer — auto-recovery disabled");
     }
 
-    SFX_LOG_INFO("[UsbHost] HW USB-OTG ready (CDC-ACM driver + open task installed, recovery=%s)",
-                 (_recoveryTimer && _autoRecovery) ? "on" : "off");
+    SFX_LOG_INFO("[UsbHost] HW USB-OTG ready (CDC-ACM driver + worker task installed, recovery=%s)",
+                 _recoveryTimer ? "on" : "off");
     return true;
 #endif // ESP_USB_HAS_CDC_ACM
 }
@@ -452,16 +452,6 @@ void EspUsbHost::resetBus() {
 
     SFX_LOG_INFO("[UsbHost] Root port re-powered — hub and devices will re-enumerate");
 #endif
-}
-
-void EspUsbHost::setAutoRecovery(bool enabled) {
-    _autoRecovery = enabled;
-    SFX_LOG_INFO("[UsbHost] Auto-recovery %s", enabled ? "enabled" : "disabled");
-
-    // If disabling, cancel any pending recovery timer
-    if (!enabled && _recoveryTimer) {
-        xTimerStop((TimerHandle_t)_recoveryTimer, 0);
-    }
 }
 
 // ============================================================================
@@ -764,7 +754,7 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
             // Start auto-recovery timer — if no new device connects within
             // RECOVERY_TIMEOUT_MS, power-cycle root port to recover disabled
             // hub ports. Skip if this disconnect was caused by our own bus reset.
-            if (_autoRecovery && _recoveryTimer) {
+            if (_recoveryTimer) {
                 uint32_t now = SFX_MILLIS();
                 if (now - _lastResetTimestamp_ms > RESET_COOLDOWN_MS) {
                     SFX_LOG_INFO("[UsbHost] Starting recovery timer (%lums) for auto bus reset",

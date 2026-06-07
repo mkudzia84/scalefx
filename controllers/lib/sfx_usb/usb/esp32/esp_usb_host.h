@@ -124,16 +124,11 @@ public:
     /// Power-cycle root port to force re-enumeration of hub and all downstream
     /// devices. This disconnects everything momentarily then re-enumerates.
     /// Safe to call from any task context (uses vTaskDelay internally).
+    /// Auto-recovery is always armed when the recovery timer was created: if a
+    /// device disconnects and nothing reconnects within RECOVERY_TIMEOUT_MS, the
+    /// bus is power-cycled (on the worker task) to recover a hub port the
+    /// ESP-IDF ext_port driver disabled after a failed reset.
     void resetBus();
-
-    /// Enable/disable automatic bus recovery after disconnect.
-    /// When enabled (default), if a device disconnects and no new device
-    /// connects within RECOVERY_TIMEOUT_MS, the bus is automatically
-    /// power-cycled to recover disabled hub ports.
-    void setAutoRecovery(bool enabled);
-
-    /// Check if auto-recovery is enabled
-    bool autoRecoveryEnabled() const { return _autoRecovery; }
 
     // ========================================================================
     // Status
@@ -239,9 +234,8 @@ private:
     uint8_t _nextDevAddr = 1;            // Sequential device address counter
 
     // Bus recovery state
-    void* _recoveryTimer = nullptr;      // TimerHandle_t for auto-recovery
+    void* _recoveryTimer = nullptr;      // TimerHandle_t (null = recovery off)
     uint32_t _lastResetTimestamp_ms = 0; // SFX_MILLIS() of last bus reset
-    bool _autoRecovery = true;           // Auto-recovery enabled by default
 
     /// Common CDC session open logic — shared by _processOpenRequest and reopenCdcDevice.
     /// Returns assigned devAddr on success, 0 on failure.
