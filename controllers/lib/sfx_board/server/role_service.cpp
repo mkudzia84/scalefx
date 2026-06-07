@@ -3,6 +3,7 @@
  */
 
 #include "role_service.h"
+#include "effect_clock.h"            // sfx_core::EffectClock — shared synchronised clock
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <motion/servo_profile_wire.h>  // the one servo-profile wire codec
 
@@ -87,9 +88,12 @@ void RoleServicePolicy::update() {
 
     // One shared clock for the whole pass — every LedAnimator samples the
     // SAME instant, so multi-channel light programs stay phase-locked
-    // regardless of how long the per-channel I²C writes take or how
-    // jittery the main loop is.  (See LedAnimator::tick.)
-    const uint32_t now = SFX_MILLIS();
+    // regardless of how long the per-channel I²C writes take or how jittery the
+    // main loop is.  Sourced from the EffectClock (latched once per process()
+    // pass) — NOT raw SFX_MILLIS() — so LED animation is synchronised with
+    // every OTHER effect/role on the same clock (servo motion, engine, etc.),
+    // not just phase-locked among LEDs.  (See LedAnimator::tick.)
+    const uint32_t now = sfx_core::EffectClock::instance().nowMs();
 
     for (uint8_t i = 0; i < _reg->numServoPorts(); i++) {
         auto* b = _reg->servoAt(i);
