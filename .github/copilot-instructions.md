@@ -1559,7 +1559,7 @@ Every output port descriptor (`ports::pwm_array<>`, `ports::servo_array<>`, `por
 
 ### 40. Global Effect Clock — no raw millis() in the effect layer
 
-All effect-layer code (`controllers/hubfx/esp32s3/src/effects/**`, future GunFx ROF scheduler, fan puffing, heater bang-bang, yaw/pitch motion profiles, the existing EngineFx state machine, GearControl backstop arming, landing-light animator …) MUST read time from `sfx_core::EffectClock::instance()` — never raw `millis()` / `micros()`.
+All effect-layer code — both EFFECTS (`controllers/hubfx/esp32s3/src/effects/**`: GunFx ROF / fan puffing, EngineFx state machine, GearControl sequencing, landing-light animator …) and ROLES (`controllers/lib/sfx_board/roles/**`: ServoActuator `MotionProfile1D`, DcMotor stall window, LedAnimator, Heater bang-bang) — MUST read time from `sfx_core::EffectClock::instance()`, never raw `millis()` / `micros()`. Roles run on EVERY board, so this is what lets an expander's servo slew and its LEDs animate at all.
 
 **Wiring:** `BoardServer::process()` latches the clock AUTOMATICALLY (once per
 pass, before ticking the policies), so every board — hub AND every expander —
@@ -1584,13 +1584,17 @@ const uint32_t now = sfx_core::EffectClock::instance().nowMs();
 const uint32_t dt  = sfx_core::EffectClock::instance().dtMs();   // delta since previous latch
 ```
 
-**Why:** a single main-loop pass runs EngineFx, GunFx, GearControl, landing-light animator, and potentially a smoke-fan puff scheduler. If each calls `millis()` independently, their notion of "now" drifts by microseconds — a ROF scheduler can fire a second shot before a fan puff has logged the first, motion profiles double-integrate when one reads time before and another after `vTaskDelay`, etc. Latching once at the top of the loop guarantees lockstep behaviour: every effect that ticks within the pass sees the same `nowMs()` and a consistent `dtMs()` for delta-time math (motion-profile `pos += vel * dt`, fade ramps, etc.).
+**Why — two distinct uses, one shared clock:**
+- **Local motion / state tracking** — `dtMs()` integration (servo `MotionProfile1D` `pos += vel*dt`, ROF, fan-puff, heater bang-bang, fade ramps) and `nowMs()` deadlines (DC-motor stall window, recoil de-jerk). Per-board, per-role.
+- **Cross-effect SYNCHRONISATION** — `nowMs()` as a shared phase reference so independent effects stay in lock-step. **LEDs are the canonical case:** `RoleServicePolicy::update()` samples `EffectClock::instance().nowMs()` ONCE and passes the same value to every `LedAnimator::tick(now)`, so multi-channel light programs are phase-locked to each other AND to every other effect on the clock (a strobe synced to an engine beat, landing lights synced to a servo deploy). Using raw `millis()` here — as LEDs did before 2026-06-08 — phase-locks LEDs only among themselves and lets them drift relative to everything else.
 
-**Scope:** EFFECT LAYER ONLY. Drivers, the bus, the keepalive, the upload state machine, codec init, sense pollers — these all keep using raw `millis()` (their cadence is independent of the effect tick). Adding a clock latch to them adds no value and creates a coupling we don't want.
+If each effect/role called `millis()` independently their "now" drifts by microseconds — a ROF scheduler fires before a fan puff logs, motion profiles double-integrate across a `vTaskDelay`, LED channels skew. Latching once per pass guarantees lockstep: every effect/role ticking in the pass sees the same `nowMs()` and a consistent `dtMs()`.
+
+**Scope:** EFFECT LAYER (effects + roles). Raw `millis()` stays for INFRASTRUCTURE whose cadence is independent of the effect tick — drivers, the bus, the keepalive, the upload state machine, codec init, sense pollers — **and** for a role's purely-LOCAL timing with no synchronisation need: `BiDcMotorRole`'s seek/stall deadlines are per-motor local tracking on raw `SFX_MILLIS()` and intentionally stay there (no cross-effect phase to hold). The line is: if it integrates motion, or needs to stay in phase with other effects, it's on the EffectClock; if it's an independent local timeout/cadence, raw `millis()` is fine.
 
 **Singleton:** `sfx_core::EffectClock` is a function-local-static thread-safe singleton (C++11+); access only via `EffectClock::instance()`. Header: [controllers/lib/sfx_board/server/effect_clock.h](../controllers/lib/sfx_board/server/effect_clock.h). Idempotent within a tick — extra `latch()` calls when `millis()` hasn't advanced are no-ops, so a misordered call doesn't shift the clock mid-tick.
 
-Phase 0.5 of the GunFX rollout introduced the clock + retrofitted 11 call sites in `effects/`. New effects start from this rule; any future `millis()` call in `effects/**` is a Rule 40 violation. Full rollout context: [22-GUNFX-FEATURE-ROLLOUT.md § Phase 0.5](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
+Phase 0.5 of the GunFX rollout introduced the clock + retrofitted 11 call sites in `effects/`; 2026-06-08 brought the latch into `BoardServer::process()` (fixing frozen expander servos) and moved the LED shared clock onto it (synchronisation). New effects/roles start from this rule; a `millis()` call in `effects/**` or in a `roles/**` tick that integrates motion or needs phase-sync is a Rule 40 violation (a role's independent local timeout — e.g. BiDcMotor seek — is the documented exception). Full rollout context: [22-GUNFX-FEATURE-ROLLOUT.md § Phase 0.5](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
 
 ### 42. Actuator Mechanism Lives on the Role, Not the Effect
 
