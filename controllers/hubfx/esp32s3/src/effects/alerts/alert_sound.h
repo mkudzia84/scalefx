@@ -39,6 +39,7 @@ enum class AlertSound : uint8_t {
     GearMoving        = 8,     ///< /sounds/sys/gear_moving.mp3
     BatteryLow        = 9,     ///< /sounds/sys/battery_low.mp3
     HubFxInitialized  = 10,    ///< /sounds/sys/hubfx_initialized.mp3 — spoken boot announcement
+    GearControlInitialized = 11, ///< /sounds/sys/gearcontrol_initialized.mp3 — played when a GearControl expander reaches Ready (ports enumerated + roles attached)
     // ─── Append below this line ─────────────────────────────────────
 };
 
@@ -56,6 +57,7 @@ inline const char* alertSoundName(AlertSound s) {
         case AlertSound::GearMoving:      return "gear_moving";
         case AlertSound::BatteryLow:      return "battery_low";
         case AlertSound::HubFxInitialized: return "hubfx_initialized";
+        case AlertSound::GearControlInitialized: return "gearcontrol_initialized";
     }
     return "";
 }
@@ -75,6 +77,7 @@ inline AlertSound alertSoundFromName(const char* name) {
     if (std::strcmp(name, "gear_moving")      == 0) return AlertSound::GearMoving;
     if (std::strcmp(name, "battery_low")      == 0) return AlertSound::BatteryLow;
     if (std::strcmp(name, "hubfx_initialized") == 0) return AlertSound::HubFxInitialized;
+    if (std::strcmp(name, "gearcontrol_initialized") == 0) return AlertSound::GearControlInitialized;
     return AlertSound::None;
 }
 

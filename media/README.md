@@ -135,6 +135,8 @@ Firmware (see `alert_sound.h`) expects files at:
 /sounds/sys/gunfx_fw_error.mp3
 /sounds/sys/gear_moving.mp3
 /sounds/sys/battery_low.mp3
+/sounds/sys/hubfx_initialized.mp3
+/sounds/sys/gearcontrol_initialized.mp3   AlertSound::GearControlInitialized — played when a GearControl expander reaches Ready
 ```
 
 > Some legacy files in `media/sounds/sys/` (e.g. `gearctrl_detected.mp3`, `lightfx_initialized.mp3`) don't yet have an `AlertSound` enum entry — they're sample assets, not referenced by the firmware.  Add an enum entry + MP3 pair to expose a new chime; missing paths log a one-line WARN and degrade to silent no-op.  See the [`AlertSound` enum](../controllers/hubfx/esp32s3/src/effects/alerts/alert_sound.h) for the canonical name table.

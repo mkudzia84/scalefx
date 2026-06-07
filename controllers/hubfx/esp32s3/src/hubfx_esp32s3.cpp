@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.22.0-hubfx"
-#define BUILD_NUMBER     789
+#define BUILD_NUMBER     790
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -901,6 +901,14 @@ void setup() {
         if (n) {
             SFX_LOG_INFO("[hubfx-config] applied %u configured role(s) to %s on connect",
                          (unsigned)n, e.spec.guid);
+        }
+        // Audible "<board> ready" chime — fires HERE, i.e. only once the
+        // expander is fully up (IDENTIFY decoded → ports enumerated → roles
+        // enumerated → Handshake::Ready) AND its /hubfx.yaml roles have just
+        // been (re)attached above.  GearControl gets its own sound.
+        if (e.kind == hubfx::expanders::ExpanderKind::GearControl) {
+            board.policy<AlertService>().playSound(
+                hubfx::effects::alerts::AlertSound::GearControlInitialized);
         }
     });
     exp.onDisconnect([](const hubfx::expanders::ExpanderEntry& e) {
