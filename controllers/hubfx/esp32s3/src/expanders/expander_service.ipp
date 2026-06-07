@@ -56,19 +56,16 @@ bool ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::begin(
 
     _usbReady = true;
 
-    // Disable USB auto-recovery (2026-06-07): on every disconnect the host arms a
-    // 5 s recovery timer whose callback runs resetBus() — usb_host_lib_set_root_port_power
-    // (false→delay→true) PLUS a blocking vTaskDelay(500ms) — ON THE FREERTOS TIMER-
-    // SERVICE TASK (3120 B stack).  On a live unplug→replug that path either (a)
-    // overflows the tiny timer-task stack with deep HCD calls → DoubleException
-    // (unsaveable coredump — matches the observed "PANIC, no dump"), or (b) fires
-    // mid-replug and yanks root-port power out from under the device being
-    // enumerated.  For a hub⟷expander direct cable the device ALWAYS re-enumerates
-    // on its own when replugged, so the power-cycle recovery has no value here and
-    // only fights the operator.  Off = no recovery timer ever arms.
-    usb.setAutoRecovery(false);
-
-    SFX_LOG_INFO("[Expander] USB host up (%s), %u slots, %u known-GUID cache, auto-recovery OFF",
+    // USB auto-recovery stays ON (the EspUsbHost default).  The HubFX carries a
+    // USB hub chip with downstream expander ports, and the ESP-IDF ext_port
+    // driver disables a downstream port after a single failed reset with no
+    // retry — the recovery timer's root-port power-cycle is how that wedged port
+    // comes back.  The live-replug crash it used to cause was NOT the recovery
+    // itself but WHERE it ran: resetBus() (deep HCD power-cycle + 500 ms block)
+    // executed on the 3120 B timer-service task and overflowed it.  Fixed by
+    // deferring resetBus() to the `usb_worker` task (8 KB) via requestBusReset()
+    // — see recoveryTimerCb in esp_usb_host.cpp.  So we keep the feature.
+    SFX_LOG_INFO("[Expander] USB host up (%s), %u slots, %u known-GUID cache",
                  usb.backendName(),
                  (unsigned)kMaxExpanders,
                  (unsigned)kMaxKnownGuids);
