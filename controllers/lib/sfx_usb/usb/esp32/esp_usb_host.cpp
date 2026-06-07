@@ -263,10 +263,16 @@ bool EspUsbHost::init() {
     }
 
     // Step 2: Start daemon task (processes HCD events: connect, disconnect, transfers)
+    // NOTE: the IDF Host-Library enumeration driver (control transfers, config +
+    // string descriptor parsing) runs ENTIRELY on this task's stack inside
+    // usb_host_lib_handle_events().  4096 B overflowed during live hot-plug
+    // enumeration → DoubleException (0x42) with a smashed SP (the daemon stack
+    // can't even save exception state).  8192 B carries enumeration + our logging
+    // with margin; high-water can be checked via printStatus().
     BaseType_t ret = xTaskCreatePinnedToCore(
         usbHostDaemonTask,
         "usb_daemon",
-        4096,                     // Stack size (bytes)
+        8192,                     // Stack size (bytes) — enumeration runs here
         nullptr,                  // No parameters
         2,                        // Low-ish priority — event routing only
         (TaskHandle_t*)&_daemonTaskHandle,
@@ -280,7 +286,10 @@ bool EspUsbHost::init() {
 
     // Step 3: Install CDC-ACM class driver (handles CDC enumeration + data)
     const cdc_acm_host_driver_config_t driver_config = {
-        .driver_task_stack_size = 4096,
+        // Runs new_dev_cb (descriptor peek) on connect + cdc_acm_host_close() on
+        // disconnect — both on this task.  Bumped 4096→6144 alongside the daemon
+        // stack fix for live hot-plug stability.
+        .driver_task_stack_size = 6144,
         .driver_task_priority = 5,
         .xCoreID = 0,                     // Core 0 (same as protocol handler)
         .new_dev_cb = cdcNewDeviceCb,      // Notified when any USB device connects
@@ -316,7 +325,7 @@ bool EspUsbHost::init() {
     ret = xTaskCreatePinnedToCore(
         usbHostOpenTask,
         "usb_open",
-        4096,                     // Stack size (bytes)
+        6144,                     // Stack size (bytes) — runs cdc_acm_host_open()
         nullptr,                  // No parameters
         3,                        // Between daemon (2) and CDC driver (5)
         (TaskHandle_t*)&_openTaskHandle,
