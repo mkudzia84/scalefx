@@ -118,7 +118,17 @@ public:
     CommandHandleResult handle(uint8_t type,
                                const uint8_t* payload, size_t len);
 
-    void update() {}
+    void update() {
+        // Drain the deferred-chime queue: once the alert channel frees up,
+        // play the next queued cue.  Lets "expander ready" sounds QUEUE behind
+        // the boot announcement instead of cutting it off (playSoundQueued).
+        if (_queueCount > 0 && _cfg.enabled && !isPlaying()) {
+            const AlertSound s = _queue[_queueHead];
+            _queueHead = (uint8_t)((_queueHead + 1) % kQueueLen);
+            --_queueCount;
+            playSound(s);
+        }
+    }
 
     const char* getErrorMessage(uint8_t code) const {
         return AlertError::getMessage(code);
@@ -147,6 +157,20 @@ public:
         const char* path = alertSoundPath(s);
         if (!path || !path[0]) return false;
         return playCustom(path, outputMask, volume);
+    }
+
+    /// Like `playSound`, but if the alert channel is BUSY (or cues are already
+    /// queued) the sound is QUEUED to play once the channel frees, instead of
+    /// interrupting the current playback.  Used for expander "ready" chimes
+    /// (e.g. gearcontrol_initialized) so they don't clip the boot announcement.
+    /// Drained in update().  Returns false if disabled / None / queue full.
+    bool playSoundQueued(AlertSound s) {
+        if (!_cfg.enabled || s == AlertSound::None) return false;
+        if (_queueCount == 0 && !isPlaying()) return playSound(s);
+        if (_queueCount >= kQueueLen) return false;
+        _queue[(uint8_t)((_queueHead + _queueCount) % kQueueLen)] = s;
+        ++_queueCount;
+        return true;
     }
 
     /// Stop whatever's playing on the alert channel.
@@ -182,6 +206,13 @@ private:
     sfx_core::BoardServerBase* _ctx          = nullptr;
     AlertServiceConfig         _cfg{};
     uint8_t                    _lastSeverity = 0xFF;
+
+    // Deferred-chime queue (playSoundQueued → drained in update() when the
+    // alert channel frees).  Small ring; full → drop.
+    static constexpr uint8_t   kQueueLen   = 4;
+    AlertSound                 _queue[kQueueLen] = {};
+    uint8_t                    _queueHead  = 0;
+    uint8_t                    _queueCount = 0;
 
     // ── Undervoltage state machine ──────────────────────────────────
     uint32_t _belowSinceMs       = 0;       ///< first ms below threshold (0 = not below)

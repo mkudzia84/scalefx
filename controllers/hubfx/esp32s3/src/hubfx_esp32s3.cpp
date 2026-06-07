@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.22.0-hubfx"
-#define BUILD_NUMBER     794
+#define BUILD_NUMBER     795
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -907,7 +907,10 @@ void setup() {
         // enumerated → Handshake::Ready) AND its /hubfx.yaml roles have just
         // been (re)attached above.  GearControl gets its own sound.
         if (e.kind == hubfx::expanders::ExpanderKind::GearControl) {
-            board.policy<AlertService>().playSound(
+            // QUEUE behind whatever's on the alert channel (e.g. the boot
+            // announcement) so the chime doesn't clip it — drained by
+            // AlertService::update() once the channel frees.
+            board.policy<AlertService>().playSoundQueued(
                 hubfx::effects::alerts::AlertSound::GearControlInitialized);
         }
     });
