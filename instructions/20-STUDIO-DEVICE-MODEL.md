@@ -107,6 +107,42 @@ landing-lights and the landing-gear domains. The model enforces this.
 - **Operator name** (`Port.Name`) is overlay state in the studio backend
   (`portNames`, survives topology refresh), set via `SetPortName`.
 
+## Multi-board grouping, the Diagram, and OFFLINE (abandoned) boards
+
+The model is a **flat port list**; the UI groups it by `Port.ref.guid`. Every
+distinct GUID is its own board card (`PortRoleTab.groupByBoard`) and its own
+**Diagram tab** (`PcbOverlayDialog` — hub tab first, then one per board). Two
+expanders of the same kind but different GUID therefore get two cards + two
+tabs; `boardDisplayNames` indexes them (`GearControl #1`, `#2`). Board kind is
+derived from the device name by `devicemodel.BoardKindFromName` (Go) /
+`boardKindOf` (TS) — these MUST stay in lock-step (the firmware prefix
+`GearCtrl` ≠ the kind `gearcontrol`, so it's a prefix/alias map, not equality).
+
+**Diagram overlay** (`pcb.ts` + `PcbOverlayDialog.svelte`): each board kind has
+a `BoardPcb { image, markers, info }`. Marker `(x%, y%)` come from MEASUREMENT,
+not eyeballing — `tools/analyze_<board>.go` colour-masks the connector
+silkscreen/housings and prints centroids (HubFX: white+magenta; GearControl:
+magenta H-bridge terminals + yellow servo-pin clusters). Re-run if a render is
+regenerated. A board kind with no `BoardPcb` shows a "no image" state.
+
+**Abandoned boards (configured-but-disconnected expanders).** The live model is
+topology-only, so a board declared in `/hubfx.yaml`'s `expanders:` block but not
+plugged in would vanish — AND the old `SaveHubConfig` rebuilt purely from live
+ports, silently **dropping** its config on the next Apply (data loss). Now:
+
+- `LoadHubConfig` RETAINS the parsed `expanders:` block in `a.hubExpanders`
+  (keyed by GUID), with a `type:` field (board kind, stamped on Save; inferred
+  from an H-bridge port when absent, for back-compat).
+- `deviceModelSnapshot` appends **offline ghost ports** (`devicemodel.OfflinePort`,
+  `Port.Offline=true`) for every retained GUID not in the live model, plus a
+  `SevWarn` issue (non-blocking — doesn't gate Apply).
+- `SaveHubConfig` **preserves** every abandoned entry verbatim (no more drops).
+- The UI renders offline boards as dimmed cards / tabs with an OFFLINE badge +
+  warning; their roles/names are read-only (no wire to push to). The explicit
+  **Remove from config** action calls `RemoveExpanderConfig(guid)` → drops the
+  retained entry + overlays + marks dirty → Apply rewrites `/hubfx.yaml` without
+  it. Offline ports never enter the Inputs tab (appended after that loop).
+
 ## Design system — see Rule 34
 
 All Studio UI composes the shared classes in `style.css` (`button`,

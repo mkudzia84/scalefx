@@ -8,6 +8,7 @@
 // prints centroids; re-run it if a render is regenerated.
 
 import hubfxTop from '../assets/pcb/hubfx_top.png'
+import gearcontrolTop from '../assets/pcb/gearcontrol_top.png'
 import { PortKind } from './devicemodel'
 
 export interface PortMarker {
@@ -62,8 +63,29 @@ const hubInfo: InfoMarker[] = [
     { label: 'SPK R', x: 84.7, y: 3.4, title: 'Speaker output — right (TAS5825P)' },
 ]
 
+// ─── GearControl (699×344 top view) — measured centroids ──────────────
+// tools/analyze_gearcontrol.go: magenta mask → the 3 H-bridge screw
+// terminals (J6/J10/J11, deliberately pink-highlighted in the render);
+// yellow-pin mask → the 7 servo headers (even ~4.3% pitch on the right).
+//   HB1..HB3 : x = 16.2 / 30.3 / 44.3 %, y = 69.5 %
+//   SRV1..7  : x = 53.8 … 79.4 % (4.3% pitch), y = 72.5 %
+// The board's own IN header (top) is NOT a hub-addressable port — the
+// expander exposes only 7 servo + 3 hbridge to the master — so it's an
+// informational marker, not a port.
+const gearMarkers: PortMarker[] = []
+{
+    const hbX = [16.2, 30.3, 44.3]
+    hbX.forEach((x, i) => gearMarkers.push({ kind: PortKind.HBridge, index: i, label: `HB${i + 1}`, x, y: 69.5 }))
+    const srvX = [53.8, 58.1, 62.4, 66.7, 70.9, 75.1, 79.4]
+    srvX.forEach((x, i) => gearMarkers.push({ kind: PortKind.Servo, index: i, label: `SRV${i + 1}`, x, y: 72.5 }))
+}
+const gearInfo: InfoMarker[] = [
+    { label: 'IN', x: 40.5, y: 11.5, title: 'RC input header (board-local — not driven by the hub)' },
+]
+
 export const boardPcb: Record<string, BoardPcb> = {
     hubfx: { image: hubfxTop, markers: hubMarkers, info: hubInfo },
+    gearcontrol: { image: gearcontrolTop, markers: gearMarkers, info: gearInfo },
 }
 
 export function pcbFor(boardKind: string): BoardPcb | undefined {

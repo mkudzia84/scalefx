@@ -216,7 +216,9 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 			snap.Issues = iss
 		}
 	}
-	// Input configs are ordered by port for stable rendering.
+	// Input configs are ordered by port for stable rendering.  (Runs before
+	// offline ghost ports are appended so a disconnected board's input ports
+	// never enter the Inputs tab.)
 	for _, p := range snap.Ports {
 		if p.Direction != devicemodel.DirInput {
 			continue
@@ -225,6 +227,10 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 			snap.Inputs = append(snap.Inputs, *cfg)
 		}
 	}
+	// Offline ghost ports: expanders configured in /hubfx.yaml but not
+	// connected.  Surfaced (with a warning) so their config is visible +
+	// removable instead of silently lost.
+	a.appendOfflinePorts(&snap)
 	return snap
 }
 

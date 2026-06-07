@@ -319,6 +319,7 @@ export namespace devicemodel {
 	    allowedRoles: RoleOption[];
 	    name: string;
 	    profile?: ServoMotionProfile;
+	    offline?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Port(source);
@@ -339,6 +340,7 @@ export namespace devicemodel {
 	        this.allowedRoles = this.convertValues(source["allowedRoles"], RoleOption);
 	        this.name = source["name"];
 	        this.profile = this.convertValues(source["profile"], ServoMotionProfile);
+	        this.offline = source["offline"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

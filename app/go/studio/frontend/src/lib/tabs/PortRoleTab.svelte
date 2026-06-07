@@ -7,7 +7,8 @@
     import {
         deviceModel, attachRole, detachRole, markHubDirty,
         setPortName, portKindName, boardDisplayNames, claimsForPort,
-        formatPortRail, RoleKind, type Port, type PortRef,
+        formatPortRail, removeAbandonedBoard, RoleKind,
+        type Port, type PortRef,
     } from '../devicemodel'
     import PortRoleConfig from '../components/PortRoleConfig.svelte'
     import { openServoCalibrationFor, defaultServoProfile } from '../servo_calibration'
@@ -85,15 +86,24 @@
 
     // Output ports only — input ports are configured in the left column
     // (InputPanel), so they're excluded here to avoid duplicating them.
+    // Offline boards (configured-but-disconnected expanders) come through as
+    // ghost ports flagged `offline`; they render as dimmed cards with a
+    // warning + remove action.
     $: boards = groupByBoard($deviceModel.ports.filter(p => p.direction === 'output'))
-    function groupByBoard(ports: Port[]): { guid: string; name: string; ports: Port[] }[] {
-        const by = new Map<string, { guid: string; name: string; ports: Port[] }>()
+    interface BoardGroup { guid: string; name: string; ports: Port[]; offline: boolean }
+    function groupByBoard(ports: Port[]): BoardGroup[] {
+        const by = new Map<string, BoardGroup>()
         for (const p of ports) {
-            const g = by.get(p.ref.guid) ?? { guid: p.ref.guid, name: p.boardName, ports: [] }
+            const g = by.get(p.ref.guid) ?? { guid: p.ref.guid, name: p.boardName, ports: [], offline: !!p.offline }
             g.ports.push(p)
             by.set(p.ref.guid, g)
         }
         return [...by.values()]
+    }
+
+    async function removeBoard(guid: string): Promise<void> {
+        busy = true; error = ''
+        try { await removeAbandonedBoard(guid) } catch (e) { error = String(e) } finally { busy = false }
     }
 
     function isServo(p: Port): boolean { return p.kindName === 'servo' }
@@ -109,10 +119,22 @@
     {#if boards.length === 0}<div class="empty-state">No output ports on the connected boards.</div>{/if}
 
     {#each boards as b (b.guid)}
-        <div class="card board-card">
+        <div class="card board-card" class:offline={b.offline}>
             <div class="board-head">
                 <span class="board-name">{names[b.guid] ?? b.name}</span>
+                {#if b.offline}
+                    <span class="offline-badge" title="Configured in /hubfx.yaml but not connected">offline</span>
+                    <button class="small danger remove-btn" on:click={() => removeBoard(b.guid)} disabled={busy}
+                            title="Delete this board's entry from /hubfx.yaml (ports, roles, names). Apply to persist.">
+                        🗑 Remove from config
+                    </button>
+                {/if}
             </div>
+            {#if b.offline}
+                <div class="offline-warn">
+                    Configured but not connected — ports below are shown from the saved config. Reconnect the board to edit roles, or remove it.
+                </div>
+            {/if}
             <div class="port-list">
                 {#each b.ports as p (p.kindName + p.ref.index)}
                     <div class="port-row">
@@ -123,40 +145,47 @@
                             <span class="rail-chip" title="Rail voltage declared by the board's port descriptor">{formatPortRail(p.voltageMv)}</span>
                         {/if}
 
-                        {#if isServo(p)}
-                            <span class="role-fixed" title="Servo ports can only host a servo actuator">Servo</span>
+                        {#if b.offline}
+                            <!-- Offline board: role + name are read-only (no wire to
+                                 push to until the board reconnects). -->
+                            <span class="role-fixed" title="Saved role (board offline)">{p.roleName === 'none' ? '— none —' : p.roleName}</span>
+                            <span class="name-ro" title="Saved name (board offline)">{p.name || '—'}</span>
                         {:else}
-                            <select class="field-input role-select"
-                                    value={p.roleKind}
-                                    on:change={(e) => onRole(p.ref, Number(selValue(e)))}
-                                    disabled={busy}
-                                    title="Role this port performs">
-                                <option value={RoleKind.None}>— none —</option>
-                                {#each p.allowedRoles as r}
-                                    <option value={r.kind}>{r.label}</option>
-                                {/each}
-                            </select>
-                        {/if}
+                            {#if isServo(p)}
+                                <span class="role-fixed" title="Servo ports can only host a servo actuator">Servo</span>
+                            {:else}
+                                <select class="field-input role-select"
+                                        value={p.roleKind}
+                                        on:change={(e) => onRole(p.ref, Number(selValue(e)))}
+                                        disabled={busy}
+                                        title="Role this port performs">
+                                    <option value={RoleKind.None}>— none —</option>
+                                    {#each p.allowedRoles as r}
+                                        <option value={r.kind}>{r.label}</option>
+                                    {/each}
+                                </select>
+                            {/if}
 
-                        <input class="field-input name-input" type="text" placeholder="name…"
-                               value={p.name} disabled={busy}
-                               on:change={(e) => onName(p.ref, inputValue(e))} />
+                            <input class="field-input name-input" type="text" placeholder="name…"
+                                   value={p.name} disabled={busy}
+                                   on:change={(e) => onName(p.ref, inputValue(e))} />
 
-                        {#if isServo(p)}
-                            <!-- Narrow icon buttons — settings (calibrate) + reset —
-                                 right next to the name box.  Routed by the port's
-                                 real GUID. -->
-                            <button class="small icon-btn" on:click={() => calibrateServo(p)}
-                                    disabled={busy}
-                                    title="Servo settings — open the calibration popup (live jog, limits, speed / accel / jerk).">⚙</button>
-                            <button class="small icon-btn" on:click={() => resetServo(p)}
-                                    disabled={busy}
-                                    title="Reset this servo's motion profile to defaults (normal, 1000–2000 µs). Apply to persist.">↺</button>
+                            {#if isServo(p)}
+                                <!-- Narrow icon buttons — settings (calibrate) + reset —
+                                     right next to the name box.  Routed by the port's
+                                     real GUID. -->
+                                <button class="small icon-btn" on:click={() => calibrateServo(p)}
+                                        disabled={busy}
+                                        title="Servo settings — open the calibration popup (live jog, limits, speed / accel / jerk).">⚙</button>
+                                <button class="small icon-btn" on:click={() => resetServo(p)}
+                                        disabled={busy}
+                                        title="Reset this servo's motion profile to defaults (normal, 1000–2000 µs). Apply to persist.">↺</button>
+                            {/if}
                         {/if}
 
                         <span class="fanout" title="Functions using this port">{fanout(p)}</span>
 
-                        {#if hasRoleConfig(p)}
+                        {#if !b.offline && hasRoleConfig(p)}
                             <!-- Heater / DC-motor: element scaling under the
                                  ⚙ Tune expander (denser, less-used than calibrate). -->
                             <button class="small cfg-btn" class:open={(expandedTick, isExpanded(p))}
@@ -193,8 +222,16 @@
     .header-actions .field-input { height: 28px; width: 116px; box-sizing: border-box; padding: 0 6px; }
 
     .board-card { margin-bottom: 12px; }
+    /* Offline (configured-but-disconnected) board — dimmed + warning-tinted border. */
+    .board-card.offline { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); opacity: 0.92; }
+    .board-card.offline .port-id, .board-card.offline .board-name { color: var(--text-dim); }
     .board-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
     .board-name { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+    .offline-badge { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; padding: 1px 6px; border-radius: 3px; background: color-mix(in srgb, var(--warning) 22%, transparent); border: 1px solid var(--warning); color: var(--warning); }
+    .remove-btn { margin-left: auto; }
+    .offline-warn { font-size: 11px; font-style: italic; color: var(--warning); margin: -2px 0 8px; }
+    /* Read-only role/name on offline rows — match the name-input footprint. */
+    .name-ro { flex: 0 0 160px; font-family: var(--font-ui); font-size: 12px; color: var(--text-dim); padding: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .port-list { display: flex; flex-direction: column; gap: 4px; }
     .port-row { display: flex; align-items: center; gap: 8px; }

@@ -190,6 +190,8 @@ export function QueryDeviceStatus():Promise<main.DeviceStatus>;
 
 export function RefreshDeviceModel():Promise<main.DeviceModelSnapshot>;
 
+export function RemoveExpanderConfig(arg1:string):Promise<main.DeviceModelSnapshot>;
+
 export function ResetLightFxProgram():Promise<void>;
 
 export function SaveGearConfig(arg1:main.GearConfig):Promise<void>;

@@ -14,7 +14,7 @@ import {
     ClaimPort, UnclaimPort, CandidatePorts,
     AttachRole, DetachRole, SetPortName,
     SetInputProtocol, SetInputChannelCount, SetChannelFunction, ApplyDefaults,
-    LoadHubConfig, SaveHubConfig,
+    LoadHubConfig, SaveHubConfig, RemoveExpanderConfig,
 } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 
@@ -68,6 +68,11 @@ export interface Port {
         minUs: number; maxUs: number; centerUs: number; reversed: boolean
         maxSpeedUsPerSec: number; maxAccelUsPerSec2: number; maxJerkUsPerSec3: number
     }
+    /** offline = a "ghost" port reconstructed from /hubfx.yaml for an
+     *  expander board that's configured but NOT currently connected. The UI
+     *  dims it, warns, and offers removal; its role can't be edited until the
+     *  board reconnects. Live ports omit this (undefined ⇒ online). */
+    offline?: boolean
 }
 
 /** formatPortRail renders a port's voltageMv as a human label for
@@ -366,6 +371,15 @@ export async function setPortName(p: PortRef, name: string): Promise<void> {
     markHubDirty()    // name persists into /hubfx.yaml ports[].label
 }
 
+/** removeAbandonedBoard drops a configured-but-disconnected expander's entry
+ *  (ports/roles/names/profiles) from the in-memory config. The change is
+ *  marked dirty so the global toolbar's Apply persists it to /hubfx.yaml. */
+export async function removeAbandonedBoard(guid: string): Promise<void> {
+    const snap = await RemoveExpanderConfig(guid)
+    deviceModel.set(normalize(snap))
+    markHubDirty()    // removal persists on next Apply (rewrites /hubfx.yaml)
+}
+
 // (Removed 2026-05-23) applyPreset → will be reintroduced as a Setup
 // Wizard surface; the underlying devicemodel.Presets() catalog is still
 // in the Go package, just no longer exposed through Wails.
@@ -487,10 +501,18 @@ const KIND_LABEL: Record<string, string> = {
     gearcontrol: 'GearControl', noop: 'NoOp',
 }
 
+// Device-name prefixes that don't equal the kind string (the firmware uses
+// "GearCtrl" but the kind is "gearcontrol").  Mirrors Go
+// devicemodel.BoardKindFromName — keep the two in lock-step.
+const KIND_ALIAS: Record<string, string> = { gearctrl: 'gearcontrol' }
+
 export function boardKindOf(name: string): string {
     const n = (name || '').toLowerCase()
     for (const k of Object.keys(KIND_LABEL)) {
         if (n.startsWith(k)) return k
+    }
+    for (const [prefix, k] of Object.entries(KIND_ALIAS)) {
+        if (n.startsWith(prefix)) return k
     }
     return ''
 }

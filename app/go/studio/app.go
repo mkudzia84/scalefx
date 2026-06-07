@@ -121,6 +121,16 @@ type App struct {
 	hubFeatures  *yamlFeatures
 	hubTelemetry *yamlTelemetry
 
+	// Retained expander config from /hubfx.yaml's `expanders:` block —
+	// keyed by GUID.  This is what lets a configured-but-DISCONNECTED
+	// expander still show in Studio (as offline "ghost" ports) and survive
+	// a Save (the old SaveHubConfig rebuilt purely from live ports and
+	// silently DROPPED any board that wasn't currently plugged in — a
+	// data-loss bug).  Populated on LoadHubConfig, consulted by
+	// deviceModelSnapshot (ghost ports) + SaveHubConfig (preservation),
+	// pruned by RemoveExpanderConfig.  Guarded by dmMu.
+	hubExpanders map[string]*yamlExpanderEntry
+
 	// Live-channel wire subscription state (Rule: wire broadcast is OFF
 	// unless a tab that renders live channel bars is on screen).  The
 	// firmware feeds effects locally regardless; this only gates the host
@@ -143,6 +153,7 @@ func NewApp() *App {
 		inputs:       map[devicemodel.PortRef]*devicemodel.InputPortConfig{},
 		portNames:    map[devicemodel.PortRef]string{},
 		portProfiles: map[devicemodel.PortRef]ServoMotionProfileDTO{},
+		hubExpanders: map[string]*yamlExpanderEntry{},
 	}
 }
 

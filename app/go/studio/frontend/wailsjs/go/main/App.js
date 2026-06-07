@@ -374,6 +374,10 @@ export function RefreshDeviceModel() {
   return window['go']['main']['App']['RefreshDeviceModel']();
 }
 
+export function RemoveExpanderConfig(arg1) {
+  return window['go']['main']['App']['RemoveExpanderConfig'](arg1);
+}
+
 export function ResetLightFxProgram() {
   return window['go']['main']['App']['ResetLightFxProgram']();
 }

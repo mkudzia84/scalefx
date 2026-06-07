@@ -63,7 +63,29 @@ type yamlPortBinding struct {
 type yamlExpanderEntry struct {
 	Alias string            `yaml:"alias"`
 	GUID  string            `yaml:"guid"`
+	// Type is the board kind ("gearcontrol", "lightfx", …).  Stamped on
+	// Save from the connected board's kind so a later OFFLINE load knows
+	// which schematic to show + how to name the ghost board.  Optional for
+	// back-compat: an older file without it is inferred from its ports.
+	Type  string            `yaml:"type,omitempty"`
 	Ports []yamlPortBinding `yaml:"ports,omitempty"`
+}
+
+// expanderKind returns the board kind for a saved expander entry: the
+// explicit `type:` if present, else inferred from its port kinds (an
+// H-bridge ⇒ gearcontrol — the only board that declares them today).
+// Empty when it can't be determined (the UI then shows a generic card,
+// no schematic).
+func (e *yamlExpanderEntry) expanderKind() string {
+	if e.Type != "" {
+		return e.Type
+	}
+	for _, p := range e.Ports {
+		if p.Kind == "hbridge" {
+			return "gearcontrol"
+		}
+	}
+	return ""
 }
 
 // yamlAudio / yamlFeatures / yamlTelemetry mirror the same-named blocks
@@ -203,10 +225,17 @@ func (a *App) LoadHubConfig() error {
 	}
 
 	// ── expanders[].ports[] → per-expander port labels + profiles. ─
-	for _, exp := range cfg.Expanders {
+	// Also RETAIN the whole expander block keyed by GUID: this is what lets
+	// a configured-but-disconnected board still surface (offline ghost
+	// ports) and survive a Save (Rule: never silently drop config).
+	a.hubExpanders = map[string]*yamlExpanderEntry{}
+	for i := range cfg.Expanders {
+		exp := &cfg.Expanders[i]
 		if exp.GUID == "" {
 			continue
 		}
+		cp := *exp
+		a.hubExpanders[exp.GUID] = &cp
 		for _, pb := range exp.Ports {
 			kind, ok := kindFromYamlKindName(pb.Kind)
 			if !ok {
@@ -302,8 +331,8 @@ func (a *App) SaveHubConfig() error {
 	// ports[] and expanders[].ports[] — every port that has a name or an
 	// attached role.  Hub ports go in ports[]; expander ports group under
 	// their GUID in expanders[].
-	type pbKey struct{ guid string }
 	expGroups := map[string][]yamlPortBinding{}
+	expBoardName := map[string]string{} // guid → live BoardName (for Type stamping)
 	if a.dm != nil {
 		dmPorts := append([]devicemodel.Port(nil), a.dm.Ports...)
 		sort.Slice(dmPorts, func(i, j int) bool {
@@ -344,14 +373,33 @@ func (a *App) SaveHubConfig() error {
 				cfg.Ports = append(cfg.Ports, pb)
 			} else {
 				expGroups[p.Ref.GUID] = append(expGroups[p.Ref.GUID], pb)
+				expBoardName[p.Ref.GUID] = p.BoardName
 			}
 		}
 	}
+	// Build expanders[] while still under the lock — both live groups (with
+	// their board-kind stamped into `type:`) AND retained ABANDONED boards
+	// (configured but disconnected) so a Save never silently drops a board's
+	// config.  Carrying the previously-loaded entry verbatim preserves its
+	// type, alias, ports, roles + profiles.
+	live := a.liveGUIDs()
+	for guid, pbs := range expGroups {
+		cfg.Expanders = append(cfg.Expanders, yamlExpanderEntry{
+			GUID:  guid,
+			Alias: a.expanderAlias(guid),
+			Type:  devicemodel.BoardKindFromName(expBoardName[guid]),
+			Ports: pbs,
+		})
+	}
+	for guid, e := range a.hubExpanders {
+		if guid == "" || live[guid] {
+			continue // live boards already emitted above
+		}
+		cp := *e // preserve type / alias / ports / roles / profiles verbatim
+		cfg.Expanders = append(cfg.Expanders, cp)
+	}
 	a.dmMu.Unlock()
 
-	for guid, pbs := range expGroups {
-		cfg.Expanders = append(cfg.Expanders, yamlExpanderEntry{GUID: guid, Ports: pbs})
-	}
 	sort.Slice(cfg.Expanders, func(i, j int) bool { return cfg.Expanders[i].GUID < cfg.Expanders[j].GUID })
 
 	// Serialise + upload via temp file (Storage.FileUpload reads from disk).

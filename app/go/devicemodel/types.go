@@ -26,11 +26,33 @@ package devicemodel
 
 import (
 	"fmt"
+	"strings"
 
 	"scalefx/protocol/core"
 	"scalefx/protocol/ports"
 	"scalefx/protocol/roles"
 )
+
+// BoardKindFromName maps a board's device name (e.g. "GearCtrl-3225",
+// "HubFx-6D60") to its canonical kind ("gearcontrol", "hubfx", …).  The
+// device-name PREFIX differs from the kind for GearControl (firmware prefix
+// "GearCtrl" vs kind "gearcontrol"), so prefix-matching the kind string isn't
+// enough — this is the single source of truth both Go and the Studio
+// frontend (boardKindOf) follow.  Returns "" when unrecognised.
+func BoardKindFromName(name string) string {
+	n := strings.ToLower(name)
+	switch {
+	case strings.HasPrefix(n, "hubfx"):
+		return "hubfx"
+	case strings.HasPrefix(n, "lightfx"):
+		return "lightfx"
+	case strings.HasPrefix(n, "gunfx"):
+		return "gunfx"
+	case strings.HasPrefix(n, "gearctrl"), strings.HasPrefix(n, "gearcontrol"):
+		return "gearcontrol"
+	}
+	return ""
+}
 
 // ─── Port identity & direction ────────────────────────────────────────
 
@@ -109,6 +131,37 @@ type Port struct {
 	// has been loaded / authored.  Frontend feature panels read this to
 	// populate the inline ServoProfileEditor.
 	Profile *ServoMotionProfile `json:"profile,omitempty"`
+
+	// Offline marks a "ghost" port reconstructed from /hubfx.yaml for an
+	// expander board that is configured but NOT currently connected over
+	// USB.  Live ports leave this false (the zero value), so no existing
+	// construction site needs to change.  The UI dims offline boards, shows
+	// a warning, and offers a "remove from config" action; their roles can't
+	// be edited (no wire to push to) until the board reconnects.
+	Offline bool `json:"offline,omitempty"`
+}
+
+// OfflinePort builds a "ghost" Port for a configured-but-disconnected
+// expander, reconstructed from its /hubfx.yaml entry.  `roleKind` is the
+// saved role (roles.KindNone if none); `boardName` should carry the board
+// kind as a prefix (e.g. "gearcontrol-3225") so boardKindOf / display-name
+// derivation work.  Direction + allowed roles + hardware label come from the
+// port kind, exactly as BuildModel derives them for live ports.
+func OfflinePort(guid string, kind, index, roleKind byte, boardName, name string, profile *ServoMotionProfile) Port {
+	return Port{
+		Ref:          PortRef{GUID: guid, Kind: kind, Index: index},
+		BoardName:    boardName,
+		KindName:     ports.KindName(kind),
+		Direction:    KindDirection(kind),
+		Caps:         []string{},
+		RoleKind:     roleKind,
+		RoleName:     roles.KindName(roleKind),
+		HardwareName: HardwareLabel(kind, index),
+		AllowedRoles: AllowedRoleOptions(kind),
+		Name:         name,
+		Profile:      profile,
+		Offline:      true,
+	}
 }
 
 // ServoMotionProfile mirrors `sfx_core::ServoMotionProfile` field-for-
