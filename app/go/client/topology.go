@@ -70,6 +70,25 @@ func (t *Topology) SendRoleCommand(guid string, innerType byte, inner []byte) er
 	return t.c.sendExpectACK(topology.CmdRoleForward(guid, innerType, inner))
 }
 
+// QueryRole forwards a role *_GET_*_REQ to a board by GUID and returns the
+// typed RESP — the request-response sibling of SendRoleCommand (which relays
+// only ACK/NACK).  `reqType` is the role query opcode (e.g.
+// roles.BiMotorGetStatusReq); `req` is its payload (e.g. `[portIdx]`).  Returns
+// (respType, respPayload).  Role-agnostic: the hub captures whatever typed RESP
+// the role emits — local (capture mode) or remote (forwarded to the expander) —
+// so any present/future role query works without per-role wire plumbing.
+func (t *Topology) QueryRole(guid string, reqType byte, req []byte) (byte, []byte, error) {
+	resp, err := t.c.sendForResp(topology.CmdRoleQuery(guid, reqType, req), topology.TopologyRoleResponse)
+	if err != nil {
+		return 0, nil, err
+	}
+	_, respType, payload, derr := topology.DecodeRoleResponse(resp.Payload)
+	if derr != nil {
+		return 0, nil, derr
+	}
+	return respType, payload, nil
+}
+
 // ─── Cross-board typed wrappers (servo) ─────────────────────────────
 //
 // Sugar over SendRoleCommand for the common live-tune calls.  Studio's

@@ -20,6 +20,7 @@ namespace sfx_core {
 
 int BoardServerBase::sendRawPacket(uint8_t type, uint8_t tag,
                                    const uint8_t* payload, size_t len) {
+    if (captureRawIfNeeded(type, tag, payload, len)) return 0;
     if (!_serial) return -1;
     uint8_t buf[SfxWire::COBS_BUFFER_SIZE];
     size_t  encoded = SfxWire::encodePacket(buf, type, tag, payload, len);

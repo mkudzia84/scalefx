@@ -29,6 +29,14 @@ const (
 	// without needing a dedicated wire packet per role command.
 	// Envelope: [guidLen:u8][guid:str][innerType:u8][innerLen:u16LE][inner:N]
 	TopologyRoleForward  protocol.PacketType = 0x8F
+	// TopologyRoleQuery / Response (2026-06-07) — generic request-response
+	// sibling of RoleForward (which relays only ACK/NACK).  Wraps a role
+	// *_GET_*_REQ; the hub routes local/remote, captures the typed RESP, and
+	// replies with TopologyRoleResponse (same envelope, respType/respPayload).
+	// Role-agnostic — works for any present/future role query.
+	// (0x88..0x8F topology block is full; 0xA6/0xA7 are documented-free.)
+	TopologyRoleQuery    protocol.PacketType = 0xA6
+	TopologyRoleResponse protocol.PacketType = 0xA7
 )
 
 // ─── Error codes (0xC0..0xC6) ─────────────────────────────────────────
@@ -216,6 +224,36 @@ func CmdRoleForward(guid string, innerType byte, inner []byte) []byte {
 	return protocol.BuildPacket(TopologyRoleForward, payload, 0)
 }
 
+// CmdRoleQuery wraps a role *_GET_*_REQ for GUID-routed request-response.
+// Same envelope as CmdRoleForward; the reply is a TopologyRoleResponse.
+func CmdRoleQuery(guid string, reqType byte, req []byte) []byte {
+	payload := guidPrefix(guid)
+	payload = append(payload, reqType)
+	payload = append(payload, byte(len(req)), byte(len(req)>>8))
+	payload = append(payload, req...)
+	return protocol.BuildPacket(TopologyRoleQuery, payload, 0)
+}
+
+// DecodeRoleResponse unwraps a TopologyRoleResponse:
+// [guidLen][guid][respType][respLen:u16LE][resp] → (guid, respType, respPayload).
+func DecodeRoleResponse(p []byte) (guid string, respType byte, resp []byte, err error) {
+	guid, off, err := readLenStr(p, 0, "guid")
+	if err != nil {
+		return "", 0, nil, err
+	}
+	if off+3 > len(p) {
+		return "", 0, nil, fmt.Errorf("topology: role-response truncated header")
+	}
+	respType = p[off]
+	off++
+	rlen := int(p[off]) | int(p[off+1])<<8
+	off += 2
+	if off+rlen > len(p) {
+		return "", 0, nil, fmt.Errorf("topology: role-response truncated payload")
+	}
+	return guid, respType, p[off : off+rlen], nil
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 func readLenStr(p []byte, off int, label string) (string, int, error) {
@@ -290,6 +328,8 @@ func init() {
 		TopologyRoleDetach:   "TOPOLOGY_ROLE_DETACH",
 		TopologyRoleEvent:    "TOPOLOGY_ROLE_EVENT",
 		TopologyRoleForward:  "TOPOLOGY_ROLE_FORWARD",
+		TopologyRoleQuery:    "TOPOLOGY_ROLE_QUERY",
+		TopologyRoleResponse: "TOPOLOGY_ROLE_RESPONSE",
 	})
 
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{

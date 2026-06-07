@@ -30,6 +30,9 @@ CommandHandleResult TopologyServicePolicyT<TExpander>::handle(
         case TopologyPacket::TOPOLOGY_ROLE_FORWARD:
             handleRoleForward(payload, len);
             return CommandHandleResult::Handled;
+        case TopologyPacket::TOPOLOGY_ROLE_QUERY:
+            handleRoleQuery(payload, len);
+            return CommandHandleResult::Handled;
         default:
             return CommandHandleResult::NotMyCommand;
     }
@@ -82,6 +85,90 @@ void TopologyServicePolicyT<TExpander>::handleRoleForward(
         // board forward failed; check the hub diag log for details".
         _ctx->sendNack(TopologyError::FORWARD_FAILED);
     }
+}
+
+// ─── TOPOLOGY_ROLE_QUERY — generic request-response router ─────────────
+// Envelope: [guidLen][guid][reqType][reqLen:u16LE][req].  Routes the inner
+// *_GET_*_REQ to a GUID (local capture or remote forward), re-wraps the typed
+// RESP as TOPOLOGY_ROLE_RESPONSE.  Role-agnostic — the inner packet is opaque,
+// so any present/future role query works with zero changes here.
+template <hubfx::expanders::ExpanderService TExpander>
+void TopologyServicePolicyT<TExpander>::handleRoleQuery(
+        const uint8_t* p, size_t len) {
+    char guid[5] = {}; size_t off = 0;
+    if (!readGuidPrefix(p, len, guid, off)) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    if (off + 1 + 2 > len) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t  reqType = p[off++];
+    const uint16_t reqLen  = (uint16_t)p[off] | ((uint16_t)p[off + 1] << 8); off += 2;
+    if (off + reqLen > len) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t* req = reqLen ? &p[off] : nullptr;
+
+    uint8_t respType = 0;
+    uint8_t respBuf[sfx_core::BoardServerBase::kCaptureRespMax];
+    size_t  respLen = 0;
+    if (!queryRole(guid, reqType, req, reqLen, respType, respBuf, sizeof respBuf, respLen)) {
+        _ctx->sendNack(TopologyError::FORWARD_FAILED);
+        return;
+    }
+    // Re-wrap: [guidLen][guid][respType][respLen:u16LE][resp]
+    uint8_t out[1 + 5 + 1 + 2 + sfx_core::BoardServerBase::kCaptureRespMax];
+    size_t  o = 0;
+    const uint8_t glen = (uint8_t)std::strlen(guid);
+    out[o++] = glen; std::memcpy(&out[o], guid, glen); o += glen;
+    out[o++] = respType;
+    out[o++] = (uint8_t)(respLen & 0xFF);
+    out[o++] = (uint8_t)((respLen >> 8) & 0xFF);
+    if (respLen) { std::memcpy(&out[o], respBuf, respLen); o += respLen; }
+    _ctx->sendRawPacket(TopologyPacket::TOPOLOGY_ROLE_RESPONSE, _ctx->currentTag(), out, o);
+}
+
+template <hubfx::expanders::ExpanderService TExpander>
+bool TopologyServicePolicyT<TExpander>::queryRole(
+        const char* guid, uint8_t reqType, const uint8_t* req, size_t reqLen,
+        uint8_t& respType, uint8_t* respBuf, size_t respMax, size_t& respLen) {
+    if (isLocalTarget(guid)) {
+        // Local: run the role handler in capture mode; its typed RESP is
+        // snapshotted (captureRawIfNeeded) instead of hitting the wire.
+        _ctx->beginCapture();
+        _roleSvc->handle(reqType, req, reqLen);
+        const bool got = _ctx->capturedResp();
+        if (got) {
+            respType = _ctx->capturedRespType();
+            respLen  = _ctx->capturedRespLen();
+            if (respLen > respMax) respLen = respMax;
+            std::memcpy(respBuf, _ctx->capturedRespData(), respLen);
+        }
+        _ctx->endCapture();
+        return got;
+    }
+    const int slotIdx = slotIdxByGuid(guid);
+    if (slotIdx < 0) return false;
+    auto* slot = _exp->liveSlot((uint8_t)slotIdx);
+    if (!slot || slot->entry.spec.collision ||
+        slot->handshake != TExpander::Handshake::Ready) {
+        return false;
+    }
+    return forwardQuery((uint8_t)slotIdx, reqType, req, reqLen,
+                        respType, respBuf, respMax, respLen);
+}
+
+template <hubfx::expanders::ExpanderService TExpander>
+bool TopologyServicePolicyT<TExpander>::forwardQuery(
+        uint8_t slotIdx, uint8_t reqType, const uint8_t* req, size_t reqLen,
+        uint8_t& respType, uint8_t* respBuf, size_t respMax, size_t& respLen) {
+    auto* slot = _exp->liveSlot(slotIdx);
+    if (!slot) return false;
+    SerialPacket resp;
+    const CommandResult rc =
+        slot->client.sendQueryAnyBlocking(reqType, req, reqLen, resp);
+    if (!rc.success || resp.type == 0 || resp.payload == nullptr) {
+        SFX_LOG_DEBUG("[topology] forwardQuery 0x%02X slot %u failed", reqType, slotIdx);
+        return false;
+    }
+    respType = resp.type;
+    respLen  = (resp.len > respMax) ? respMax : resp.len;
+    std::memcpy(respBuf, resp.payload, respLen);
+    return true;
 }
 
 // ─── GUID prefix helpers ────────────────────────────────────────────────
@@ -610,8 +697,14 @@ void TopologyServicePolicyT<TExpander>::onExpanderAsync(
     if (copy) std::memcpy(&buf[off], p, copy);
     off += copy;
 
-    _ctx->sendRawPacket(TopologyPacket::TOPOLOGY_ROLE_EVENT,
-                        SfxWire::TAG_ASYNC, buf, off);
+    // Smart routing: only re-emit expander telemetry to the PC wire when a
+    // host is actually listening (keepalive-active).  With no PC attached we
+    // don't flood a dead port — but the master-internal fan-out below STILL
+    // runs, so on-hub effects keep consuming expander telemetry locally.
+    if (_ctx->hostVerboseActive()) {
+        _ctx->sendRawPacket(TopologyPacket::TOPOLOGY_ROLE_EVENT,
+                            SfxWire::TAG_ASYNC, buf, off);
+    }
 
     // Fan-out to master-internal subscribers with the unwrapped
     // payload + source GUID.

@@ -238,10 +238,38 @@ public:
     // `beginCapture()` / `endCapture()`.  The next sendAck()/sendNack()
     // is intercepted into local state instead of going to the serial
     // port.  Single-slot — nesting is unsupported.
-    void    beginCapture() { _captureNext = true;  _capturedAck = false; _capturedErr = 0; }
-    void    endCapture()   { _captureNext = false; _capturedAck = false; _capturedErr = 0; }
+    void    beginCapture() { _captureNext = true;  _capturedAck = false; _capturedErr = 0;
+                             _capturedRespValid = false; _capturedRespType = 0; _capturedRespLen = 0; }
+    void    endCapture()   { _captureNext = false; _capturedAck = false; _capturedErr = 0;
+                             _capturedRespValid = false; }
     bool    capturedAck()  const { return _capturedAck; }
     uint8_t capturedErr()  const { return _capturedErr; }
+    /// True when the captured handler emitted a typed RESP packet (a query).
+    bool           capturedResp()     const { return _capturedRespValid; }
+    uint8_t        capturedRespType() const { return _capturedRespType; }
+    const uint8_t* capturedRespData() const { return _capturedResp; }
+    size_t         capturedRespLen()  const { return _capturedRespLen; }
+    /// Max bytes a captured RESP can hold — public so routing layers can size
+    /// their re-wrap buffers to match.  Covers every role RESP today.
+    static constexpr size_t kCaptureRespMax = 96;
+
+    /// In capture mode, snapshot a typed RESP (a query handler's response)
+    /// instead of wiring it out, so a routing layer (TopologyService's
+    /// generic role-query forward) can re-wrap it for the PC.  Returns true
+    /// if captured (the caller must NOT emit).  ACK/NACK are captured earlier
+    /// by sendAck/sendNack; async telemetry (TAG_ASYNC) is NEVER captured — it
+    /// still streams.  Called at the top of every sendRawPacket override.
+    bool captureRawIfNeeded(uint8_t type, uint8_t tag,
+                            const uint8_t* payload, size_t len) {
+        if (!_captureNext || tag == SfxWire::TAG_ASYNC) return false;
+        _capturedRespType  = type;
+        _capturedRespLen   = (uint16_t)(len > kCaptureRespMax ? kCaptureRespMax : len);
+        if (payload && _capturedRespLen) std::memcpy(_capturedResp, payload, _capturedRespLen);
+        _capturedRespValid = true;
+        _capturedAck       = true;   // a RESP implies the command succeeded
+        _captureNext       = false;
+        return true;
+    }
 
     /// Wire the encoded packet out — virtual so the templated
     /// `BoardServerBaseT<TStream>` can override with a direct-stream
@@ -335,6 +363,16 @@ protected:
     bool    _captureNext  = false;
     bool    _capturedAck  = false;
     uint8_t _capturedErr  = 0;
+    // Typed-RESP capture: a query handler (e.g. SERVO_GET_STATUS_REQ →
+    // SERVO_STATUS_RESP) emits its response via sendRawPacket with the
+    // request tag.  In capture mode we snapshot that payload (instead of
+    // wiring it out) so a routing layer — TopologyService's generic
+    // role-query forward — can re-wrap it for the PC.  Status packets are
+    // small; kCaptureRespMax (public, above) covers every role RESP today.
+    bool     _capturedRespValid = false;
+    uint8_t  _capturedRespType  = 0;
+    uint16_t _capturedRespLen   = 0;
+    uint8_t  _capturedResp[kCaptureRespMax];
 
     // ── I²C scan registry ───────────────────────────────────────────
     struct ExpectedI2CDevice {
@@ -437,6 +475,7 @@ public:
 
     int sendRawPacket(uint8_t type, uint8_t tag,
                       const uint8_t* payload, size_t len) override {
+        if (this->captureRawIfNeeded(type, tag, payload, len)) return 0;
         if (!_stream) return -1;
         uint8_t buf[SfxWire::COBS_BUFFER_SIZE];
         const size_t encoded = SfxWire::encodePacket(buf, type, tag, payload, len);
