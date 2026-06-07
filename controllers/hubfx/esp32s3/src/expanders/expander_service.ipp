@@ -55,7 +55,20 @@ bool ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::begin(
     }
 
     _usbReady = true;
-    SFX_LOG_INFO("[Expander] USB host up (%s), %u slots, %u known-GUID cache",
+
+    // Disable USB auto-recovery (2026-06-07): on every disconnect the host arms a
+    // 5 s recovery timer whose callback runs resetBus() — usb_host_lib_set_root_port_power
+    // (false→delay→true) PLUS a blocking vTaskDelay(500ms) — ON THE FREERTOS TIMER-
+    // SERVICE TASK (3120 B stack).  On a live unplug→replug that path either (a)
+    // overflows the tiny timer-task stack with deep HCD calls → DoubleException
+    // (unsaveable coredump — matches the observed "PANIC, no dump"), or (b) fires
+    // mid-replug and yanks root-port power out from under the device being
+    // enumerated.  For a hub⟷expander direct cable the device ALWAYS re-enumerates
+    // on its own when replugged, so the power-cycle recovery has no value here and
+    // only fights the operator.  Off = no recovery timer ever arms.
+    usb.setAutoRecovery(false);
+
+    SFX_LOG_INFO("[Expander] USB host up (%s), %u slots, %u known-GUID cache, auto-recovery OFF",
                  usb.backendName(),
                  (unsigned)kMaxExpanders,
                  (unsigned)kMaxKnownGuids);

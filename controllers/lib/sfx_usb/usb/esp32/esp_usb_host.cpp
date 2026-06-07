@@ -58,6 +58,17 @@ static const char* TAG = "EspUsbHost";
  * RECOVERY_TIMEOUT_MS after a disconnect. Triggers a root port power cycle
  * to recover disabled hub ports (the ESP-IDF ext_port driver disables ports
  * after a single failed reset attempt with no retry).
+ *
+ * ⚠ HAZARD (2026-06-07): this runs on the FreeRTOS timer-SERVICE task, whose
+ * stack is only CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH (3120 B on HubFX).
+ * resetBus() makes deep USB-HCD calls AND blocks 500 ms (vTaskDelay) — both
+ * illegal-in-spirit on the timer task: the deep frame overflowed the 3120 B
+ * stack → DoubleException (unsaveable coredump), and on a live unplug→replug
+ * it could fire mid-enumeration and yank root-port power.  HubFX disables
+ * auto-recovery (ExpanderService::begin → setAutoRecovery(false)) so this
+ * never arms.  If you re-enable it on ANY board, FIRST move resetBus() off
+ * the timer task: have this callback only signal (queue an event / set a
+ * flag) and run the actual power-cycle on the loop task (8 KB+ stack).
  */
 static void recoveryTimerCb(TimerHandle_t timer) {
     SFX_LOG_WARN("[UsbHost] Recovery timeout — no reconnect detected, resetting bus");

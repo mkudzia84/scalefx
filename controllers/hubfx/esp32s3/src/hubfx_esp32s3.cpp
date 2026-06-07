@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.22.1-hubfx"
-#define BUILD_NUMBER     797
+#define BUILD_NUMBER     801
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -80,6 +80,7 @@
 #include "hubfx_i2c.h"            // hubI2cBus() (native I2C bus)
 #include <esp_heap_caps.h>     // memory-instrumentation helper (Phase 4 polish 2026-05-27)
 #include <esp_psram.h>
+#include <esp_system.h>        // esp_reset_reason() — boot-time reset diagnosis
 
 // Phase 5 of feature/idf-component-build (2026-05-28): pull esp-dsp's
 // hand-tuned Xtensa LX7 SIMD into the build link graph.  The header is
@@ -944,6 +945,34 @@ void setup() {
     // task + I²C mutex.
     SFX_LOG_INFO("[boot] loopTask running on Core %d (audio is on Core 1)",
                  (int)xPortGetCoreID());
+
+    // Reset-reason post-mortem (console is NONE — this rides the DiagLog wire).
+    // The tell for the live-USB-replug restart: PANIC → a firmware crash wrote a
+    // coredump (decode it); BROWNOUT → 3V3/VBUS sagged on the replug inrush (an
+    // ELECTRICAL fault, NOT firmware — no coredump); INT_WDT/TASK_WDT → a task
+    // hung the scheduler.  Logged at WARN so it surfaces even at INFO wire gate.
+    {
+        const esp_reset_reason_t rr = esp_reset_reason();
+        const char* name = "OTHER";
+        switch (rr) {
+            case ESP_RST_POWERON:  name = "POWERON (normal cold boot)";       break;
+            case ESP_RST_SW:       name = "SW (esp_restart)";                 break;
+            case ESP_RST_PANIC:    name = "PANIC (firmware crash → coredump)"; break;
+            case ESP_RST_INT_WDT:  name = "INT_WDT (interrupt watchdog)";     break;
+            case ESP_RST_TASK_WDT: name = "TASK_WDT (task watchdog)";         break;
+            case ESP_RST_WDT:      name = "WDT (other watchdog)";             break;
+            case ESP_RST_BROWNOUT: name = "BROWNOUT (3V3/VBUS sag — ELECTRICAL, no coredump)"; break;
+            case ESP_RST_DEEPSLEEP:name = "DEEPSLEEP";                        break;
+            case ESP_RST_USB:      name = "USB (peripheral reset)";           break;
+            default: break;
+        }
+        if (rr == ESP_RST_BROWNOUT || rr == ESP_RST_PANIC ||
+            rr == ESP_RST_INT_WDT  || rr == ESP_RST_TASK_WDT) {
+            SFX_LOG_WARN("[boot] *** last reset: %s (code=%d) ***", name, (int)rr);
+        } else {
+            SFX_LOG_INFO("[boot] last reset: %s (code=%d)", name, (int)rr);
+        }
+    }
 
     SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out + storage + audio + alerts + USB host + topology + input + landing + lightfx + gear + engine + gun",
                  FIRMWARE_VERSION, (unsigned)BUILD_NUMBER);
