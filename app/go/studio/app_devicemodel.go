@@ -112,9 +112,17 @@ func (a *App) RefreshDeviceModel() (DeviceModelSnapshot, error) {
 	a.ensureInputConfigs()
 	a.dmMu.Unlock()
 
+	// Emit the rebuilt model NOW.  Callers that use the return value (the
+	// frontend Refresh binding) don't need this, but EVENT-driven callers (the
+	// expander connect/disconnect timer) discard the return — without an
+	// explicit emit a disconnect would rebuild the model but never reach the
+	// UI (autoAttachServos only emits when it actually attaches a servo, which
+	// a disconnect never does, so the offline ghost ports never appeared).
+	a.emitDeviceModelChanged()
+
 	// Side-effects (servo auto-attach, input broadcast start) run in the
 	// background so a slow attach can't block or time-out the refresh
-	// itself.  autoAttachServos re-emits the model when it changes roles.
+	// itself.  autoAttachServos re-emits the model again if it changes roles.
 	go func() {
 		a.autoAttachServos()
 		a.applyInputBroadcasts()
