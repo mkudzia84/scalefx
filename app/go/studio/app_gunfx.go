@@ -42,9 +42,10 @@ type PortRefDTO struct {
 
 // ServoMotionProfileDTO mirrors `sfx_core::ServoMotionProfile` field-
 // for-field.  Rule 44 carries this inline on each GunAxis (and any
-// future per-feature servo binding).  Field names match the live-tune
-// ServoProfileDTO in app_roles.go so the same ServoProfileEditor
-// component binds to both.
+// future per-feature servo binding).  It is ALSO the device-model
+// profile DTO (`SetPortProfile` in app_devicemodel.go), so one
+// ServoProfileEditor component binds the persisted-with-feature profile
+// and the live-tune push to the same shape.
 type ServoMotionProfileDTO struct {
 	MinUs             uint16 `yaml:"min_us"               json:"minUs"`
 	MaxUs             uint16 `yaml:"max_us"               json:"maxUs"`

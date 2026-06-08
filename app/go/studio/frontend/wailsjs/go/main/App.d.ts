@@ -208,10 +208,6 @@ export function SelectLightFxProgram(arg1:string):Promise<void>;
 
 export function SendCommand(arg1:string):Promise<void>;
 
-export function ServoGetProfile(arg1:number):Promise<main.ServoProfileDTO>;
-
-export function ServoSetProfile(arg1:number,arg2:main.ServoProfileDTO):Promise<void>;
-
 export function ServoSetTarget(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function SetChannelFunction(arg1:string,arg2:number,arg3:number,arg4:number,arg5:string):Promise<main.DeviceModelSnapshot>;

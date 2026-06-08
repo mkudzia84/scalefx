@@ -392,10 +392,9 @@ func (a *App) SetPortProfile(guid string, kind, index byte, profile ServoMotionP
 // applies its motion profile to the slew).  Used by the calibration
 // dialog's +/- jog buttons.
 //
-// Cross-board (2026-05-24): when `guid != ""` we route through the
-// new TOPOLOGY_ROLE_FORWARD envelope (0x8F) so the hub forwards to
-// the named expander.  Hub-local stays on the direct
-// `c.Roles.ServoSetTarget` path (cheaper — no extra envelope).
+// Routing is GUID-transparent via `c.Role(guid)` (RoleTarget): `guid == ""`
+// sends the role packet straight to the hub; any other GUID wraps it in the
+// TOPOLOGY_ROLE_FORWARD envelope (0x8F) so the hub forwards to that expander.
 //
 // Does NOT touch the studio overlay or mark dirty — jogging is a
 // transient command, not a config change.

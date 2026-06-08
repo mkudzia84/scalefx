@@ -2385,7 +2385,13 @@ packet as opaque bytes — it does NOT decode it):
   (local vs forward) and reuses the existing `roles.CmdXxx` builders +
   `DecodeXxx` decoders via `protocol.ParsePacket` — so adding a role's
   transparent path is a one-line wrapper. There is exactly ONE role-I/O path;
-  the old duplicate `Topology.ServoSetTargetOn`/etc. were removed.
+  the old duplicate `Topology.ServoSetTargetOn`/etc. AND the hub-only
+  `c.Roles.ServoSetProfile`/`MotorSetElement`/`BiMotorMoveToEnd`/… drive+query
+  methods were removed. **`c.Roles` is now LIFECYCLE-ONLY** (`Attach`/`Detach`/
+  `List` — the GUID-less bench path on the directly-connected board) plus the
+  shared struct re-exports; every read/write of live role state goes through
+  `c.Role(guid)`. Do NOT add a new drive/query method to `c.Roles` — it belongs
+  on `RoleTarget`.
 - Role telemetry is GENERIC: `Events.OnRole(innerType, fn(guid, payload))` + the
   catch-all `OnRoleEvent` carry EVERY role's DISCRETE events (stall, endstop,
   reached, done, attached/detached), hub-local OR expander, decoded by the

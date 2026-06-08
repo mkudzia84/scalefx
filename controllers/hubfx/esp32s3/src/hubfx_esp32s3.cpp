@@ -60,7 +60,7 @@
  */
 
 #define FIRMWARE_VERSION "2.23.0-hubfx"
-#define BUILD_NUMBER     816
+#define BUILD_NUMBER     821
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -1012,12 +1012,13 @@ void setup() {
 }
 
 void loop() {
-    // Rule 40 (instructions/22 §0.5): latch the effect clock ONCE per
-    // loop pass, BEFORE any effect ticks. Every effect that reads
-    // `EffectClock::instance().nowMs()` this pass sees the same value
-    // — keeps ROF scheduler / fan puff / motion profile / heater bang-
-    // bang / EngineFx state machine in lockstep.
-    sfx_core::EffectClock::instance().latch();
+    // Rule 40 (instructions/22 §0.5): the effect clock is latched ONCE per
+    // pass by the framework inside `board.process()`, BEFORE any policy/effect
+    // ticks — so every effect reading `EffectClock::instance().nowMs()` this
+    // pass sees the same value (ROF scheduler / fan puff / motion profile /
+    // heater bang-bang / EngineFx state machine stay in lockstep).  No manual
+    // latch here: the upload-exclusive path below returns without ticking
+    // effects, so a clock that only advances when `process()` runs is correct.
 
     // Upload is exclusive on HubFX (Rule 28).  While a file upload is
     // in progress, drain only the storage server — audio is suspended

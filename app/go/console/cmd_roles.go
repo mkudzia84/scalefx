@@ -339,15 +339,16 @@ func cmdServoProfileGet(a *App, args []string) error {
 // servo, one compact row each.  This is the fast way to spot a stale /
 // clamped calibration (e.g. a profile whose max is narrower than the
 // operator set) — one command instead of probing each port by index.
-func cmdServoProfilesAll(a *App, _ []string) error {
+func cmdServoProfilesAll(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
-	boards, err := a.c.Topology.RoleList("") // "" = hub-local
+	guid, _ := extractGuid(args)
+	boards, err := a.c.Topology.RoleList(guid)
 	if err != nil {
 		return err
 	}
-	Hdr("hub servo motion profiles (live)")
+	Hdr(fmt.Sprintf("servo motion profiles%s (live)", guidTag(guid)))
 	n := 0
 	for _, rb := range boards {
 		for _, r := range rb.Roles {
@@ -355,7 +356,7 @@ func cmdServoProfilesAll(a *App, _ []string) error {
 				continue
 			}
 			n++
-			p, perr := a.c.Roles.ServoGetProfile(r.PortIdx)
+			p, perr := a.roleAt(guid).ServoGetProfile(r.PortIdx)
 			if perr != nil {
 				fmt.Fprintf(out, "  %s  %s\n",
 					cBold(fmt.Sprintf("servo[%d]", r.PortIdx)), cRed("read failed: "+perr.Error()))
@@ -373,7 +374,7 @@ func cmdServoProfilesAll(a *App, _ []string) error {
 		}
 	}
 	if n == 0 {
-		Note("  (no servo-actuator roles attached on the hub)")
+		Note("  (no servo-actuator roles attached%s)", guidTag(guid))
 	}
 	return nil
 }
@@ -382,8 +383,9 @@ func cmdServoProfileSet(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
+	guid, args := extractGuid(args)
 	if len(args) < 2 {
-		return fmt.Errorf("usage: servo-profile-set <portIdx> <key=val> ...")
+		return fmt.Errorf("usage: servo-profile-set <portIdx> <key=val> ... [guid=XXXX]")
 	}
 	idx, err := parseU8(args[0])
 	if err != nil {
@@ -394,7 +396,7 @@ func cmdServoProfileSet(a *App, args []string) error {
 		return err
 	}
 	// Read-modify-write so partial updates only touch the named fields.
-	p, err := a.c.Roles.ServoGetProfile(idx)
+	p, err := a.roleAt(guid).ServoGetProfile(idx)
 	if err != nil {
 		return fmt.Errorf("read current profile: %w", err)
 	}
@@ -419,11 +421,15 @@ func cmdServoProfileSet(a *App, args []string) error {
 	if p.MaxJerkUsPerSec3, err = u16From(kv, "max_jerk", p.MaxJerkUsPerSec3); err != nil {
 		return err
 	}
-	if err := a.c.Roles.ServoSetProfile(idx, p); err != nil {
+	if err := a.roleAt(guid).ServoSetProfile(idx, p); err != nil {
 		return err
 	}
-	Ok("servo[%d] profile updated", idx)
-	return cmdServoProfileGet(a, args[:1])
+	Ok("servo[%d]%s profile updated", idx, guidTag(guid))
+	reArgs := []string{args[0]}
+	if guid != "" {
+		reArgs = append(reArgs, "guid="+guid)
+	}
+	return cmdServoProfileGet(a, reArgs)
 }
 
 // ─── Motor element ──────────────────────────────────────────────────
@@ -432,18 +438,19 @@ func cmdMotorElementGet(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
+	guid, args := extractGuid(args)
 	if len(args) != 1 {
-		return fmt.Errorf("usage: motor-element-get <portIdx>")
+		return fmt.Errorf("usage: motor-element-get <portIdx> [guid=XXXX]")
 	}
 	idx, err := parseU8(args[0])
 	if err != nil {
 		return err
 	}
-	e, err := a.c.Roles.MotorGetElement(idx)
+	e, err := a.roleAt(guid).MotorGetElement(idx)
 	if err != nil {
 		return err
 	}
-	Hdr(fmt.Sprintf("motor[%d] element", idx))
+	Hdr(fmt.Sprintf("motor[%d]%s element", idx, guidTag(guid)))
 	fmt.Fprintf(out, "  %s %s mV  %s\n", cDim("element:  "), cCyan(fmt.Sprintf("%d", e.ElementMv)), cDim("(scaling="+scalingName(e.Scaling)+")"))
 	fmt.Fprintf(out, "  %s %s mV  %s\n", cDim("port rail:"), cCyan(fmt.Sprintf("%d", e.PortRailMv)), cDim("(read-only, from port descriptor)"))
 	if e.ElementMv > 0 && e.PortRailMv > 0 && e.ElementMv < e.PortRailMv {
@@ -458,8 +465,9 @@ func cmdMotorElementSet(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
+	guid, args := extractGuid(args)
 	if len(args) < 2 {
-		return fmt.Errorf("usage: motor-element-set <portIdx> <element_mv=...> <scaling=...>")
+		return fmt.Errorf("usage: motor-element-set <portIdx> <element_mv=...> <scaling=...> [guid=XXXX]")
 	}
 	idx, err := parseU8(args[0])
 	if err != nil {
@@ -469,7 +477,7 @@ func cmdMotorElementSet(a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	e, err := a.c.Roles.MotorGetElement(idx)
+	e, err := a.roleAt(guid).MotorGetElement(idx)
 	if err != nil {
 		return fmt.Errorf("read current element: %w", err)
 	}
@@ -481,11 +489,15 @@ func cmdMotorElementSet(a *App, args []string) error {
 			return err
 		}
 	}
-	if err := a.c.Roles.MotorSetElement(idx, e); err != nil {
+	if err := a.roleAt(guid).MotorSetElement(idx, e); err != nil {
 		return err
 	}
-	Ok("motor[%d] element updated", idx)
-	return cmdMotorElementGet(a, args[:1])
+	Ok("motor[%d]%s element updated", idx, guidTag(guid))
+	reArgs := []string{args[0]}
+	if guid != "" {
+		reArgs = append(reArgs, "guid="+guid)
+	}
+	return cmdMotorElementGet(a, reArgs)
 }
 
 // ─── Heater element ─────────────────────────────────────────────────
@@ -494,18 +506,19 @@ func cmdHeaterElementGet(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
+	guid, args := extractGuid(args)
 	if len(args) != 1 {
-		return fmt.Errorf("usage: heater-element-get <portIdx>")
+		return fmt.Errorf("usage: heater-element-get <portIdx> [guid=XXXX]")
 	}
 	idx, err := parseU8(args[0])
 	if err != nil {
 		return err
 	}
-	e, err := a.c.Roles.HeaterGetElement(idx)
+	e, err := a.roleAt(guid).HeaterGetElement(idx)
 	if err != nil {
 		return err
 	}
-	Hdr(fmt.Sprintf("heater[%d] element", idx))
+	Hdr(fmt.Sprintf("heater[%d]%s element", idx, guidTag(guid)))
 	fmt.Fprintf(out, "  element:   %d mV  (scaling=%s)\n", e.ElementMv, scalingName(e.Scaling))
 	fmt.Fprintf(out, "  drive pct: %d %% %s\n", e.DrivePct, cDim("(of element rated voltage)"))
 	fmt.Fprintf(out, "  hyst:      %d cx10  (%.1f °C)\n", e.HystCx10, float64(e.HystCx10)/10.0)
@@ -517,8 +530,9 @@ func cmdHeaterElementSet(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
+	guid, args := extractGuid(args)
 	if len(args) < 2 {
-		return fmt.Errorf("usage: heater-element-set <portIdx> <key=val> ...")
+		return fmt.Errorf("usage: heater-element-set <portIdx> <key=val> ... [guid=XXXX]")
 	}
 	idx, err := parseU8(args[0])
 	if err != nil {
@@ -528,7 +542,7 @@ func cmdHeaterElementSet(a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	e, err := a.c.Roles.HeaterGetElement(idx)
+	e, err := a.roleAt(guid).HeaterGetElement(idx)
 	if err != nil {
 		return fmt.Errorf("read current element: %w", err)
 	}
@@ -546,11 +560,15 @@ func cmdHeaterElementSet(a *App, args []string) error {
 	if e.HystCx10, err = i16From(kv, "hyst_cx10", e.HystCx10); err != nil {
 		return err
 	}
-	if err := a.c.Roles.HeaterSetElement(idx, e); err != nil {
+	if err := a.roleAt(guid).HeaterSetElement(idx, e); err != nil {
 		return err
 	}
-	Ok("heater[%d] element updated", idx)
-	return cmdHeaterElementGet(a, args[:1])
+	Ok("heater[%d]%s element updated", idx, guidTag(guid))
+	reArgs := []string{args[0]}
+	if guid != "" {
+		reArgs = append(reArgs, "guid="+guid)
+	}
+	return cmdHeaterElementGet(a, reArgs)
 }
 
 // ─── Bi-directional DC motor (gear/door — BiDcMotor role) ────────────
@@ -644,8 +662,9 @@ func cmdBiMotorGuard(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
 	}
+	guid, args := extractGuid(args)
 	if len(args) < 2 {
-		return fmt.Errorf("usage: bimotor-guard <portIdx> <live|fixed> [ratioX|thresholdMa] [windowMs]")
+		return fmt.Errorf("usage: bimotor-guard <portIdx> <live|fixed> [ratioX|thresholdMa] [windowMs] [guid=XXXX]")
 	}
 	idx, err := parseU8(args[0])
 	if err != nil {
@@ -673,13 +692,13 @@ func cmdBiMotorGuard(a *App, args []string) error {
 				return fmt.Errorf("ceilingMa: %w", err)
 			}
 		}
-		if err := a.c.Roles.BiMotorSetGuardLiveRatio(uint16(idx), uint16(ratioX*100), 200, 150, window, 0, uint16(ceiling)); err != nil {
+		if err := a.roleAt(guid).BiMotorSetGuardLiveRatio(uint16(idx), uint16(ratioX*100), 200, 150, window, 0, uint16(ceiling)); err != nil {
 			return err
 		}
 		if ceiling > 0 {
-			Ok("bimotor[%d] guard = %s (%.2f× trailing-min, confirm %d ms, ceiling %d mA)", idx, cCyan("live-ratio"), ratioX, window, ceiling)
+			Ok("bimotor[%d]%s guard = %s (%.2f× trailing-min, confirm %d ms, ceiling %d mA)", idx, guidTag(guid), cCyan("live-ratio"), ratioX, window, ceiling)
 		} else {
-			Ok("bimotor[%d] guard = %s (%.2f× trailing-min, confirm %d ms, no ceiling)", idx, cCyan("live-ratio"), ratioX, window)
+			Ok("bimotor[%d]%s guard = %s (%.2f× trailing-min, confirm %d ms, no ceiling)", idx, guidTag(guid), cCyan("live-ratio"), ratioX, window)
 		}
 	case "fixed":
 		thr := 1000
@@ -688,10 +707,10 @@ func cmdBiMotorGuard(a *App, args []string) error {
 				return fmt.Errorf("thresholdMa: %w", err)
 			}
 		}
-		if err := a.c.Roles.BiMotorSetGuardFixed(uint16(idx), uint16(thr), window); err != nil {
+		if err := a.roleAt(guid).BiMotorSetGuardFixed(uint16(idx), uint16(thr), window); err != nil {
 			return err
 		}
-		Ok("bimotor[%d] guard = %s (%d mA, confirm %d ms)", idx, cCyan("fixed"), thr, window)
+		Ok("bimotor[%d]%s guard = %s (%d mA, confirm %d ms)", idx, guidTag(guid), cCyan("fixed"), thr, window)
 	default:
 		return fmt.Errorf("mode must be live|fixed")
 	}

@@ -68,10 +68,10 @@ export interface RecoilConfigT {
     holdMs: number   // how long the offset rides before the role de-jerks (advanced)
 }
 
-// Rule 44 — mirrors ServoMotionProfileDTO; same field shape as the
-// live-tune ServoProfileDTO in app_roles.go so one ServoProfileEditor
-// binds to both the inline-with-feature profile (persisted in
-// /gunfx.yaml) and the live-tune wire commands.
+// Rule 44 — mirrors ServoMotionProfileDTO (app_gunfx.go); the same field
+// shape is pushed live via SetPortProfile, so one ServoProfileEditor binds
+// to both the inline-with-feature profile (persisted in /gunfx.yaml) and
+// the live-tune wire commands.
 export interface ServoMotionProfileT {
     minUs: number
     maxUs: number

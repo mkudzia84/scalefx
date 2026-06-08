@@ -15,19 +15,11 @@ import (
 	"scalefx/client"
 )
 
-// DTO mirrors — match `client.ServoProfile` / `client.MotorElement` /
-// `client.HeaterElement` field-for-field.  Wails generates TS
-// interfaces from these for the frontend.
-
-type ServoProfileDTO struct {
-	MinUs             uint16 `json:"minUs"`
-	MaxUs             uint16 `json:"maxUs"`
-	MaxSpeedUsPerSec  uint16 `json:"maxSpeedUsPerSec"`
-	Reversed          bool   `json:"reversed"`
-	CenterUs          uint16 `json:"centerUs"`
-	MaxAccelUsPerSec2 uint16 `json:"maxAccelUsPerSec2"`
-	MaxJerkUsPerSec3  uint16 `json:"maxJerkUsPerSec3"`
-}
+// DTO mirrors — match `client.MotorElement` / `client.HeaterElement`
+// field-for-field.  Wails generates TS interfaces from these for the
+// frontend.  (Servo motion profile has its own DTO on the device-model
+// path — `ServoMotionProfileDTO` in app_gunfx.go, pushed via
+// `SetPortProfile` — so there is no servo DTO here.)
 
 type MotorElementDTO struct {
 	ElementMv  uint16 `json:"elementMv"`
@@ -43,27 +35,10 @@ type HeaterElementDTO struct {
 	PortRailMv uint16 `json:"portRailMv"`
 }
 
-// ─── Servo profile ───────────────────────────────────────────────────
-
-func (a *App) ServoGetProfile(portIdx uint8) (ServoProfileDTO, error) {
-	c := a.snapshotClient()
-	if c == nil {
-		return ServoProfileDTO{}, fmt.Errorf("not connected")
-	}
-	p, err := c.Roles.ServoGetProfile(portIdx)
-	if err != nil {
-		return ServoProfileDTO{}, err
-	}
-	return ServoProfileDTO(p), nil
-}
-
-func (a *App) ServoSetProfile(portIdx uint8, p ServoProfileDTO) error {
-	c := a.snapshotClient()
-	if c == nil {
-		return fmt.Errorf("not connected")
-	}
-	return c.Roles.ServoSetProfile(portIdx, client.ServoProfile(p))
-}
+// Servo motion profile read/write lives on the GUID-aware device-model
+// path (`GetPortProfile` / `SetPortProfile` in app_devicemodel.go); the
+// old hub-only `ServoGetProfile`/`ServoSetProfile` bindings + their DTO
+// were removed with the RoleTarget migration.
 
 // ─── DC motor element ────────────────────────────────────────────────
 

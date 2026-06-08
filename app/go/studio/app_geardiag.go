@@ -133,7 +133,7 @@ func (a *App) DiagBiMotorStatus(portIdx int) (DiagBiMotorStatus, error) {
 	if c == nil {
 		return DiagBiMotorStatus{}, fmt.Errorf("not connected")
 	}
-	st, err := c.Roles.BiMotorGetStatus(byte(portIdx))
+	st, err := c.Role("").BiMotorGetStatus(byte(portIdx))
 	if err != nil {
 		return DiagBiMotorStatus{}, err
 	}
@@ -162,7 +162,7 @@ func (a *App) DiagBiMotorMoveEnd(portIdx int, end string, duty, timeoutMs int) (
 		return DiagEndstopResult{}, err
 	}
 	return a.awaitEndstop(c, byte(portIdx), timeoutMs, func() error {
-		return c.Roles.BiMotorMoveToEnd(byte(portIdx), pos, signed, uint16(timeoutMs))
+		return c.Role("").BiMotorMoveToEnd(byte(portIdx), pos, signed, uint16(timeoutMs))
 	})
 }
 
@@ -174,7 +174,7 @@ func (a *App) DiagBiMotorSeek(portIdx, signedDuty, timeoutMs int) (DiagEndstopRe
 		return DiagEndstopResult{}, fmt.Errorf("not connected")
 	}
 	return a.awaitEndstop(c, byte(portIdx), timeoutMs, func() error {
-		return c.Roles.BiMotorSeekEndstop(byte(portIdx), int16(signedDuty), uint16(timeoutMs))
+		return c.Role("").BiMotorSeekEndstop(byte(portIdx), int16(signedDuty), uint16(timeoutMs))
 	})
 }
 
@@ -188,14 +188,14 @@ func (a *App) DiagBiMotorCalibrate(portIdx, duty, timeoutMs int) (DiagCalibratio
 	}
 	posA, sigA, _ := endToSigned("a", duty)
 	legA, err := a.awaitEndstop(c, byte(portIdx), timeoutMs, func() error {
-		return c.Roles.BiMotorMoveToEnd(byte(portIdx), posA, sigA, uint16(timeoutMs))
+		return c.Role("").BiMotorMoveToEnd(byte(portIdx), posA, sigA, uint16(timeoutMs))
 	})
 	if err != nil {
 		return DiagCalibration{}, fmt.Errorf("leg A: %w", err)
 	}
 	posB, sigB, _ := endToSigned("b", duty)
 	legB, err := a.awaitEndstop(c, byte(portIdx), timeoutMs, func() error {
-		return c.Roles.BiMotorMoveToEnd(byte(portIdx), posB, sigB, uint16(timeoutMs))
+		return c.Role("").BiMotorMoveToEnd(byte(portIdx), posB, sigB, uint16(timeoutMs))
 	})
 	if err != nil {
 		return DiagCalibration{}, fmt.Errorf("leg B: %w", err)
@@ -210,7 +210,7 @@ func (a *App) DiagBiMotorGuardFixed(portIdx, thresholdMa, windowMs int) error {
 	if c == nil {
 		return fmt.Errorf("not connected")
 	}
-	return c.Roles.BiMotorSetGuardFixed(uint16(portIdx), uint16(thresholdMa), uint16(windowMs))
+	return c.Role("").BiMotorSetGuardFixed(uint16(portIdx), uint16(thresholdMa), uint16(windowMs))
 }
 
 // DiagBiMotorGuardLiveRatio retunes the stall guard to LiveRatio mode — averages
@@ -221,7 +221,7 @@ func (a *App) DiagBiMotorGuardLiveRatio(portIdx, ratioX100, runSampleMs, inrushB
 	if c == nil {
 		return fmt.Errorf("not connected")
 	}
-	return c.Roles.BiMotorSetGuardLiveRatio(uint16(portIdx), uint16(ratioX100),
+	return c.Role("").BiMotorSetGuardLiveRatio(uint16(portIdx), uint16(ratioX100),
 		uint16(runSampleMs), uint16(inrushBlankMs), uint16(windowMs), uint16(maxTravelMs), uint16(absMaxMa))
 }
 
@@ -231,7 +231,7 @@ func (a *App) DiagBiMotorStop(portIdx int) error {
 	if c == nil {
 		return fmt.Errorf("not connected")
 	}
-	return c.Roles.BiMotorBrake(byte(portIdx))
+	return c.Role("").BiMotorBrake(byte(portIdx))
 }
 
 // DiagBiMotorJog drives the motor at a raw signed duty (NO stall guard) for
@@ -241,7 +241,7 @@ func (a *App) DiagBiMotorJog(portIdx, signed int) error {
 	if c == nil {
 		return fmt.Errorf("not connected")
 	}
-	return c.Roles.BiMotorSetSigned(byte(portIdx), int16(signed))
+	return c.Role("").BiMotorSetSigned(byte(portIdx), int16(signed))
 }
 
 // DiagServoProfileGet reads servo[portIdx]'s motion profile.
@@ -250,7 +250,7 @@ func (a *App) DiagServoProfileGet(portIdx int) (DiagServoProfile, error) {
 	if c == nil {
 		return DiagServoProfile{}, fmt.Errorf("not connected")
 	}
-	p, err := c.Roles.ServoGetProfile(byte(portIdx))
+	p, err := c.Role("").ServoGetProfile(byte(portIdx))
 	if err != nil {
 		return DiagServoProfile{}, err
 	}
@@ -271,7 +271,7 @@ func (a *App) DiagServoSetTarget(portIdx, us int) error {
 	if c == nil {
 		return fmt.Errorf("not connected")
 	}
-	return c.Roles.ServoSetTarget(byte(portIdx), uint16(us))
+	return c.Role("").ServoSetTarget(byte(portIdx), uint16(us))
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────

@@ -229,7 +229,7 @@ func toolServoProfiles(port string) (string, error) {
 				continue
 			}
 			e := entry{PortIdx: r.PortIdx}
-			if p, perr := c.Roles.ServoGetProfile(r.PortIdx); perr != nil {
+			if p, perr := c.Role("").ServoGetProfile(r.PortIdx); perr != nil {
 				e.Err = perr.Error()
 			} else {
 				e.Profile = p

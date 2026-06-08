@@ -2354,30 +2354,6 @@ export namespace main {
 	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];
 	    }
 	}
-	export class ServoProfileDTO {
-	    minUs: number;
-	    maxUs: number;
-	    maxSpeedUsPerSec: number;
-	    reversed: boolean;
-	    centerUs: number;
-	    maxAccelUsPerSec2: number;
-	    maxJerkUsPerSec3: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new ServoProfileDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.minUs = source["minUs"];
-	        this.maxUs = source["maxUs"];
-	        this.maxSpeedUsPerSec = source["maxSpeedUsPerSec"];
-	        this.reversed = source["reversed"];
-	        this.centerUs = source["centerUs"];
-	        this.maxAccelUsPerSec2 = source["maxAccelUsPerSec2"];
-	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];
-	    }
-	}
 	
 	export class ToolsStatus {
 	    esptoolInstalled: boolean;
