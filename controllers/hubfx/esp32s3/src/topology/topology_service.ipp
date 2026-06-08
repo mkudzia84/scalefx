@@ -394,48 +394,17 @@ void TopologyServicePolicyT<TExpander>::appendHubRoleBlock(
     const size_t cntOff = off++;
     uint8_t cnt = 0;
 
-    auto emit = [&](uint8_t portKind, uint8_t idx, uint8_t roleKind) {
+    // One walk; the role-type → RoleKind mapping lives in role_registry.h
+    // (forEachAttachedRole), shared with RoleServicePolicy. Rule 58 — the hub
+    // no longer hand-rolls a per-role-kind ladder here.
+    forEachAttachedRole(*_reg, [&](uint8_t portKind, uint8_t idx, uint8_t roleKind) {
         if (off + 4 > cap) return;
         buf[off++] = portKind;
         buf[off++] = idx;
         buf[off++] = roleKind;
         buf[off++] = 0;            // flags reserved
         ++cnt;
-    };
-
-    for (uint8_t i = 0; i < _reg->numServoPorts(); ++i) {
-        auto* b = _reg->servoAt(i);
-        if (!b || !b->hasRole()) continue;
-        uint8_t rk = RoleKind::None;
-        if (std::holds_alternative<ServoActuatorRole>(b->role)) rk = RoleKind::ServoActuator;
-        emit(PortKind::Servo, i, rk);
-    }
-    for (uint8_t i = 0; i < _reg->numPwmPorts(); ++i) {
-        auto* b = _reg->pwmAt(i);
-        if (!b || !b->hasRole()) continue;
-        uint8_t rk = RoleKind::None;
-        if      (std::holds_alternative<LedAnimator>(b->role)) rk = RoleKind::LedAnimator;
-        else if (std::holds_alternative<DcMotorRole>(b->role)) rk = RoleKind::DcMotor;
-        else if (std::holds_alternative<HeaterRole>(b->role))  rk = RoleKind::Heater;
-        emit(PortKind::Pwm, i, rk);
-    }
-    for (uint8_t i = 0; i < _reg->numHBridgePorts(); ++i) {
-        auto* b = _reg->hbridgeAt(i);
-        if (!b || !b->hasRole()) continue;
-        uint8_t rk = RoleKind::None;
-        if (std::holds_alternative<BiDcMotorRole>(b->role)) rk = RoleKind::BiDcMotor;
-        emit(PortKind::HBridge, i, rk);
-    }
-    for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
-        auto* b = _reg->inputAt(i);
-        if (!b || !b->hasRole()) continue;
-        uint8_t rk = RoleKind::None;
-        if      (std::holds_alternative<RcPwmInputRole>(b->role))  rk = RoleKind::RcPwmInput;
-        else if (std::holds_alternative<SbusInputRole>(b->role))   rk = RoleKind::SbusInput;
-        else if (std::holds_alternative<JetiExInputRole>(b->role)) rk = RoleKind::JetiExInput;
-        else if (std::holds_alternative<JetiExTelemetryRole>(b->role)) rk = RoleKind::JetiExTelemetry;
-        emit(PortKind::Input, i, rk);
-    }
+    });
 
     buf[cntOff] = cnt;
 }
@@ -905,61 +874,11 @@ size_t TopologyServicePolicyT<TExpander>::portsByRole(
         ++n;
     };
 
-    // ── Hub-local ──
+    // ── Hub-local ── one filtered walk; role-kind map lives in role_registry.h.
     using namespace sfx_core;
-    if (roleKind == RoleKind::ServoActuator) {
-        for (uint8_t i = 0; i < _reg->numServoPorts(); ++i) {
-            auto* b = _reg->servoAt(i);
-            if (b && b->hasRole() &&
-                std::holds_alternative<ServoActuatorRole>(b->role)) {
-                push("", PortKind::Servo, i);
-            }
-        }
-    }
-    if (roleKind == RoleKind::LedAnimator ||
-        roleKind == RoleKind::DcMotor     ||
-        roleKind == RoleKind::Heater) {
-        for (uint8_t i = 0; i < _reg->numPwmPorts(); ++i) {
-            auto* b = _reg->pwmAt(i);
-            if (!b || !b->hasRole()) continue;
-            bool m = false;
-            if (roleKind == RoleKind::LedAnimator)
-                m = std::holds_alternative<LedAnimator>(b->role);
-            else if (roleKind == RoleKind::DcMotor)
-                m = std::holds_alternative<DcMotorRole>(b->role);
-            else if (roleKind == RoleKind::Heater)
-                m = std::holds_alternative<HeaterRole>(b->role);
-            if (m) push("", PortKind::Pwm, i);
-        }
-    }
-    if (roleKind == RoleKind::BiDcMotor) {
-        for (uint8_t i = 0; i < _reg->numHBridgePorts(); ++i) {
-            auto* b = _reg->hbridgeAt(i);
-            if (b && b->hasRole() &&
-                std::holds_alternative<BiDcMotorRole>(b->role)) {
-                push("", PortKind::HBridge, i);
-            }
-        }
-    }
-    if (roleKind == RoleKind::RcPwmInput  ||
-        roleKind == RoleKind::SbusInput   ||
-        roleKind == RoleKind::JetiExInput ||
-        roleKind == RoleKind::JetiExTelemetry) {
-        for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
-            auto* b = _reg->inputAt(i);
-            if (!b || !b->hasRole()) continue;
-            bool m = false;
-            if (roleKind == RoleKind::RcPwmInput)
-                m = std::holds_alternative<RcPwmInputRole>(b->role);
-            else if (roleKind == RoleKind::SbusInput)
-                m = std::holds_alternative<SbusInputRole>(b->role);
-            else if (roleKind == RoleKind::JetiExInput)
-                m = std::holds_alternative<JetiExInputRole>(b->role);
-            else if (roleKind == RoleKind::JetiExTelemetry)
-                m = std::holds_alternative<JetiExTelemetryRole>(b->role);
-            if (m) push("", PortKind::Input, i);
-        }
-    }
+    forEachAttachedRole(*_reg, [&](uint8_t pk, uint8_t pi, uint8_t rk) {
+        if (rk == roleKind) push("", pk, pi);
+    });
 
     // ── Every live expander's cached role roster ──
     for (uint8_t s = 0; s < TExpander::kMaxExpanders && n < maxOut; ++s) {

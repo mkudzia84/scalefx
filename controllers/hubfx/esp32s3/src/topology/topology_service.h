@@ -38,6 +38,7 @@
 #include <serial/roles.h>              // RolePacket / RoleKind / RoleError
 #include <server/board_server.h>       // sfx_core::BoardServerBase
 #include <server/port_registry.h>      // PortRegistryBase + binding structs
+#include <server/role_registry.h>      // roleKindOf / forEachAttachedRole — shared role-kind map
 #include <server/role_service.h>       // sfx_core::RoleServicePolicy
 
 #include "topology_protocol.h"

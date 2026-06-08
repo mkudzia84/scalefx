@@ -3,6 +3,7 @@
  */
 
 #include "role_service.h"
+#include "role_registry.h"           // roleKindOf / forEachAttachedRole — single role-kind map
 #include "effect_clock.h"            // sfx_core::EffectClock — shared synchronised clock
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <motion/servo_profile_wire.h>  // the one servo-profile wire codec
@@ -344,48 +345,16 @@ void RoleServicePolicy::handleList() {
     size_t  off = 1;
     uint8_t count = 0;
 
-    auto appendIfAttached = [&](uint8_t portKind, uint8_t portIdx, uint8_t roleKind) {
+    // One walk; the role-type → RoleKind mapping lives in role_registry.h
+    // (forEachAttachedRole), not hand-rolled here. Rule 58.
+    forEachAttachedRole(*_reg, [&](uint8_t portKind, uint8_t portIdx, uint8_t roleKind) {
         if (off + 4 > sizeof buf) return;
         buf[off++] = portKind;
         buf[off++] = portIdx;
         buf[off++] = roleKind;
         buf[off++] = 0;             // flags reserved
         count++;
-    };
-
-    for (uint8_t i = 0; i < _reg->numServoPorts(); i++) {
-        auto* b = _reg->servoAt(i);
-        if (!b || !b->hasRole()) continue;
-        uint8_t rk = RoleKind::None;
-        if (std::holds_alternative<ServoActuatorRole>(b->role)) rk = RoleKind::ServoActuator;
-        appendIfAttached(PortKind::Servo, i, rk);
-    }
-    for (uint8_t i = 0; i < _reg->numPwmPorts(); i++) {
-        auto* b = _reg->pwmAt(i);
-        if (!b || !b->hasRole()) continue;
-        uint8_t rk = RoleKind::None;
-        if      (std::holds_alternative<LedAnimator>(b->role)) rk = RoleKind::LedAnimator;
-        else if (std::holds_alternative<DcMotorRole>(b->role)) rk = RoleKind::DcMotor;
-        else if (std::holds_alternative<HeaterRole>(b->role))  rk = RoleKind::Heater;
-        appendIfAttached(PortKind::Pwm, i, rk);
-    }
-    for (uint8_t i = 0; i < _reg->numHBridgePorts(); i++) {
-        auto* b = _reg->hbridgeAt(i);
-        if (!b || !b->hasRole()) continue;
-        uint8_t rk = RoleKind::None;
-        if (std::holds_alternative<BiDcMotorRole>(b->role)) rk = RoleKind::BiDcMotor;
-        appendIfAttached(PortKind::HBridge, i, rk);
-    }
-    for (uint8_t i = 0; i < _reg->numInputPorts(); i++) {
-        auto* b = _reg->inputAt(i);
-        if (!b || !b->hasRole()) continue;
-        uint8_t rk = RoleKind::None;
-        if      (std::holds_alternative<RcPwmInputRole>(b->role))  rk = RoleKind::RcPwmInput;
-        else if (std::holds_alternative<SbusInputRole>(b->role))   rk = RoleKind::SbusInput;
-        else if (std::holds_alternative<JetiExInputRole>(b->role)) rk = RoleKind::JetiExInput;
-        else if (std::holds_alternative<JetiExTelemetryRole>(b->role)) rk = RoleKind::JetiExTelemetry;
-        appendIfAttached(PortKind::Input, i, rk);
-    }
+    });
 
     buf[0] = count;
     _ctx->sendRawPacket(RolePacket::ROLE_LIST_RESP, _ctx->currentTag(), buf, off);

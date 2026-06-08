@@ -2412,17 +2412,32 @@ keyword (never positional — a GUID like `3225` is indistinguishable from a dut
 value); default/`hub` = the hub. e.g. `servo-set 0 1600 guid=3225`,
 `bimotor-status 0 guid=3225`.
 
+**Role enumeration defers to ONE map (no per-kind ladder, 2026-06-08).** The
+role-class ⇄ `RoleKind` correspondence and the "walk every attached role" loop
+live ONCE in [role_registry.h](../controllers/lib/sfx_board/server/role_registry.h)
+(`roleKindFor<T>()` / `roleKindOf(variant)` / `forEachAttachedRole(reg, fn)`).
+`RoleServicePolicy::handleList`, `TopologyService::appendHubRoleBlock`, and
+`TopologyService::portsByRole` all call `forEachAttachedRole` instead of
+hand-rolling a `std::holds_alternative<>` ladder — they had drifted into three
+copies of the same per-kind switch (the enumeration form of the leak this rule
+forbids). Adding a role kind is now ONE `else if constexpr` line in
+`roleKindFor<>()`; every enumerator picks it up. Compile-time `if constexpr`,
+no RTTI, no virtual.
+
 **Rule:** to expose a role through this stack, add its packet codec
-(`protocol/roles` + the firmware role handler) and a one-line `RoleTarget`
-wrapper — nothing else. NEVER add a per-role case to the hub's TopologyService,
-to the forward/query/event transport, or to the Go event type-switch. Input
-ports are HubFX-only (no expander input). References:
+(`protocol/roles` + the firmware role handler), one line in `roleKindFor<>()`,
+and a one-line `RoleTarget` wrapper — nothing else. NEVER add a per-role case to
+the hub's TopologyService, to the forward/query/event transport, the role
+enumeration, or the Go event type-switch. Input ports are HubFX-only (no
+expander input). References:
 [topology_service.ipp](../controllers/hubfx/esp32s3/src/topology/topology_service.ipp)
 (`handleRoleForward`/`handleRoleQuery`/`onExpanderAsync`),
 [roletarget.go](../app/go/client/roletarget.go),
 [events.go](../app/go/client/events.go) (`subscribe`/`OnRole`/`dispatchRole`),
 [board_server.h](../controllers/lib/sfx_board/server/board_server.h)
-(`captureRawIfNeeded`).
+(`captureRawIfNeeded`),
+[role_registry.h](../controllers/lib/sfx_board/server/role_registry.h)
+(`forEachAttachedRole` — single role-kind enumeration map).
 
 ### Client-Server Topology
 ```
