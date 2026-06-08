@@ -175,6 +175,72 @@ struct QueuedSound {
 };
 
 // ============================================================================
+//  SoundQueue — per-channel bounded FIFO of QueuedSound.
+//
+// A real component AudioMixer's Channel composes, instead of the four raw
+// fields (queue / queueHead / queueTail / hasQueuedItem) + six AudioMixer
+// methods that used to hand-roll the circular bookkeeping.  Storage is
+// PSRAM-backed and provided by the mixer via init() (it batches every
+// channel's allocation + error handling and owns the lifetime, exactly like
+// the wav drain buffers); the queue owns only the indices + the FIFO logic.
+// Protocol-task cadence only (playAsync / queueSound / checkAndPlayNext) —
+// no cross-core concern.
+// ============================================================================
+class SoundQueue {
+public:
+    /// Bind the PSRAM-backed slot array (mixer-owned) and reset to empty.
+    void init(QueuedSound* storage, int capacity) {
+        _items = storage;
+        _cap   = capacity;
+        clear();
+    }
+    /// The bound storage — for the mixer's alloc null-check + free.
+    QueuedSound* storage() const { return _items; }
+
+    bool full()    const { return _items && ((_head + 1) % _cap) == _tail; }
+    bool empty()   const { return _tail == _head; }
+    bool hasItem() const { return _hasItem; }
+    int  size()    const {
+        if (!_items) return 0;
+        int n = _head - _tail;
+        if (n < 0) n += _cap;
+        return n;
+    }
+
+    /// Copy `in` into the next slot (marked valid).  false if full / unbound.
+    bool push(const QueuedSound& in) {
+        if (!_items) return false;
+        int nextHead = (_head + 1) % _cap;
+        if (nextHead == _tail) return false;   // full
+        _items[_head] = in;
+        _items[_head].valid = true;
+        _head = nextHead;
+        _hasItem = true;
+        return true;
+    }
+    /// Pop the oldest into `out`.  false if empty; otherwise returns out.valid.
+    bool pop(QueuedSound& out) {
+        if (!_items || _tail == _head) { _hasItem = false; return false; }
+        out = _items[_tail];
+        _items[_tail].valid = false;
+        _tail = (_tail + 1) % _cap;
+        _hasItem = (_tail != _head);
+        return out.valid;
+    }
+    /// Drop everything (indices + per-slot valid flags).
+    void clear() {
+        _head = _tail = 0;
+        _hasItem = false;
+        if (_items) for (int i = 0; i < _cap; ++i) _items[i].valid = false;
+    }
+
+private:
+    QueuedSound* _items = nullptr;
+    int  _cap = 0, _head = 0, _tail = 0;
+    bool _hasItem = false;
+};
+
+// ============================================================================
 //  MixerLike concept
 // ============================================================================
 //
@@ -287,30 +353,32 @@ public:
     // Producer: WAV decode + SD reads + mixing → ring buffer
     // On ESP32: runs as dedicated FreeRTOS task on Core 1 via startProducerTask()
     // On Pico: call produce() from loop (single-core)
+    // produce() is the producer entry: drains the command queue, then hands
+    // the mixing loop to _kernel.  Called from the producer task (consume /
+    // process) on ESP32, or from loop() on Pico.
     int produce(int maxFrames = 256);
 
-    /// Block-mode producer (Phase 5 of feature/idf-component-build,
-    /// 2026-05-28).  Produces up to `maxFrames` (capped by `kBlockMax`
-    /// = 256 and by available ring-buffer space) using esp-dsp's
-    /// hand-tuned Xtensa LX7 SIMD for the per-channel scale step.
-    /// Replaces the per-frame `produceFrame()` on ESP32; the legacy
-    /// per-frame path remains for Pico + tests where esp-dsp isn't
-    /// available.
-    int produceBlock(int maxFrames = 256);
+    // ── MixKernel — the mixing strategy, split out of AudioMixer ──────────
+    // Produces mixed frames from a mixer's channels into the output ring.
+    // It's a SEPARATE class with the mixing responsibility, distinct from the
+    // mixer's lifecycle / control / IO.  It takes the AudioMixer by reference
+    // (not a stored back-pointer): mixing genuinely needs the channel array
+    // PLUS the EOF orchestration hooks (the _channelPlaying/_channelRemainingSec
+    // status + checkAndPlayNextQueued), which are mixer concerns interleaved
+    // in the per-channel loop — so the collaboration is explicit in the
+    // signature rather than hidden in `this`.  Nested only so it can name the
+    // private Channel/WavState types.  int16-vs-float kernel is chosen at
+    // COMPILE TIME inside produceLoop via `if constexpr` — the old
+    // SFX_AUDIO_KERNEL_FLOAT `#if` is gone from the dispatch.
+    class MixKernel {
+    public:
+        int  produceLoop      (AudioMixer& m, int maxFrames);   // while-loop over the block kernel
+        bool produceFrame     (AudioMixer& m);                  // single-frame fallback (Pico / tests)
+        int  produceBlock     (AudioMixer& m, int maxFrames);   // int16 / Q15 + esp-dsp SIMD
+        int  produceBlockFloat(AudioMixer& m, int maxFrames);   // float32 + esp-dsp SIMD
+    };
+    MixKernel _kernel;
 
-    /// Float-kernel variant of `produceBlock()` — same block-mode
-    /// architecture but the per-channel scale + accumulate runs in
-    /// float32 via `dsps_mulc_f32_ae32` + `dsps_add_f32_ae32`.
-    /// Comparison experiment with `produceBlock()` (int16 / Q15):
-    /// trades 2× memory bandwidth (4 B vs 2 B per sample) + an
-    /// int16→float conversion at drain-read time, against simpler
-    /// per-sample math (no overflow management, native FPU on the
-    /// LX7).  Whichever wins on the same gun-during-engine 2-channel
-    /// trace becomes the production kernel.  Selected at compile time
-    /// via the `SFX_AUDIO_KERNEL_FLOAT` macro (see produce() body in
-    /// audio_mixer.ipp).
-    int produceBlockFloat(int maxFrames = 256);
-    
     // Consumer (Core 1 task): ring buffer → I2S DMA
     void consume();
     
@@ -336,18 +404,19 @@ public:
     /// it the legacy in-producer refill path (now removed) would
     /// have decoded; with no decoder task the channels stay silent
     /// after play().
-    bool startDecoderTask();
-    void stopDecoderTask();
-    bool isDecoderTaskRunning() const {
-        return _decoderRunning.load(std::memory_order_acquire);
-    }
+    // Public API unchanged — thin delegators to the DecoderWorker that now
+    // owns the Core-0 decode task (lifecycle + the decoderBusy seq_cst
+    // handshake).  Kept so callers (incl. EspDualCoreAudio) don't change.
+    bool startDecoderTask()             { return _decoder.start(*this); }
+    void stopDecoderTask()              { _decoder.stop(); }
+    bool isDecoderTaskRunning() const   { return _decoder.isRunning(); }
 
     /// Phase 7 polish: task handles for stack high-water-mark probes
     /// (`uxTaskGetStackHighWaterMark`).  Returns nullptr when the task
     /// isn't currently running.  Pico has no producer/decoder tasks —
     /// always returns nullptr there.
     TaskHandle_t producerHandle() const { return _producerTaskHandle; }
-    TaskHandle_t decoderHandle()  const { return _decoderTaskHandle.load(std::memory_order_acquire); }
+    TaskHandle_t decoderHandle()  const { return _decoder.handle(); }
     TaskHandle_t consumerHandle() const { return _consumerTaskHandle; }
 
     /**
@@ -559,6 +628,25 @@ private:
         // own readIdx catches writeIdx — only THEN tears the channel
         // down (so it drains the last samples before silencing).
         std::atomic<bool> sourceExhausted{false};
+
+        // Per-ring drain-empty count — bumped by readSample() when the ring
+        // ran below the linear-interp threshold (decoder couldn't keep up).
+        // Lives here (was the mixer's _channelStarves[]) so the ring owns its
+        // own decode-health stat.  PACE-telemetry only; relaxed.
+        std::atomic<uint32_t> starves{0};
+
+        // Bounded spin (ms) destroySafe() waits for the decoder to leave an
+        // in-flight refill before freeing `source` (seq_cst handshake).
+        static constexpr uint32_t kTeardownWaitMs = 50;
+
+        // ── Ring behaviour (own this ring's read + safe teardown) ────────
+        // readSample(): producer-side resampled int16 read (advances readIdx
+        //   with release).  destroySafe(): the seq_cst teardown that waits out
+        //   the decoder then runs the source dtor.  Defined in
+        //   audio_mixer_decode.ipp.  This is the WavDecoderRing component —
+        //   behaviour now lives ON the ring, not as free functions on the mixer.
+        bool readSample(int16_t& outL, int16_t& outR);
+        void destroySafe();
     };
 
     struct Channel {
@@ -589,11 +677,8 @@ private:
         // PSRAM latency invisible.  The CHANNEL ITSELF stays in DRAM
         // (read every audio frame by produceFrame()); only this queue
         // member is indirected.
-        QueuedSound* queue    = nullptr;
-        int queueHead         = 0;
-        int queueTail         = 0;
+        SoundQueue soundQueue;                 // per-channel FIFO (real component)
         QueueLoopBehavior pendingLoopBehavior = QueueLoopBehavior::StopImmediate;
-        bool hasQueuedItem    = false;
 
         // Fade state
         bool fading           = false;
@@ -636,18 +721,14 @@ private:
     };
 
     // ---- Internal Methods ----
-    // Tear down a channel's source SAFELY w.r.t. the decoder task: clear
-    // `active`, wait (bounded) for the decoder to leave refill for this
-    // channel, then run the source destructor.  Use this at EVERY teardown
-    // site instead of raw destroyAudioSource(ws.source) — it closes the rapid
-    // stop/start use-after-free (decoder reading a freed source mid-refill).
-    void destroyChannelSourceSafe(WavState& ws);
-    static constexpr uint32_t kSourceTeardownWaitMs = 50;  // bounded handshake spin
+    // Channel teardown + per-sample read now live ON the ring (WavState::
+    // destroySafe / readSample) — call ws.destroySafe() at every teardown
+    // site and ch.wav.readSample() in the mix kernel.
 
     // Producer side (Core 1 task on ESP32, Core 0 on Pico)
     bool refillDrainBuffer(Channel& ch);        // Pull frames from source into ch.wav.bufL/R (int16 Q15)
-    bool getWavSample(Channel& ch, int16_t& outL, int16_t& outR);   // Resampled int16 frame
-    bool produceFrame();                         // Mix one frame → ring buffer
+    // produceFrame / produceBlock(Float) / the produce loop moved to the
+    // nested MixKernel class (declared above).
     void updatePan(Channel& ch);                 // Recalculate panL/panR
 
     // Consumer side (Core 1 task)
@@ -655,13 +736,13 @@ private:
 
 #if SFX_PLATFORM_ESP32
     static void producerTaskFunc(void* param);   // FreeRTOS task entry point
-    static void decoderTaskFunc(void* param);    // Phase 6 — decode prefetch on Core 0
+    // (decoderTaskFunc moved into DecoderWorker::taskFunc)
 #endif
 
     /// Phase 6: kick the decoder task whenever a channel needs immediate
     /// service (play() entry, etc.).  Cheap if the task isn't running
-    /// (Pico) — compiles to nothing.
-    void notifyDecoder();
+    /// (Pico) — compiles to nothing.  Thin delegator to the DecoderWorker.
+    void notifyDecoder() { _decoder.notify(); }
 
     /// Phase 7 polish (2026-05-28): on-demand 32 KB DMA-cap SD scratch.
     /// Allocated by `acquireSdScratch()` at WavPreloadSource open time
@@ -757,17 +838,36 @@ private:
     // availableWrite() exceeds a fill threshold.  Producer task on
     // Core 1 NEVER calls decode; it only reads from the per-channel
     // rings.
-    // Cross-core (Rule 15): the producer task (Core 1) reads this in
-    // notifyDecoder() while Core 0's stopDecoderTask() (upload suspendAudio)
-    // nulls + vTaskDeletes it.  Atomic + extract-to-local closes the
-    // check-then-notify TOCTOU (a stale read would notify a deleted task).
-    std::atomic<TaskHandle_t> _decoderTaskHandle{nullptr};
-    std::atomic<bool>  _decoderRunning{false};
-    std::atomic<bool>  _decoderExited{false};
-    int                _decoderCore       = 0;
-    int                _decoderPriority   = 5;        // > Arduino loop (1), < producer (configMAX-2)
-    int                _decoderStackSize  = 6144;     // libhelix scratch + per-batch float scratch
-    static constexpr uint32_t kDecoderTickMs = 5;
+    // ── DecoderWorker — the Core-0 decode-prefetch task, split out ───────
+    // Owns the FreeRTOS decoder task's lifecycle (create / notify / stop) +
+    // its state.  On its 5 ms tick (or a notify from play/stop) taskFunc
+    // walks the mixer's active channels and refills any hungry ring, guarding
+    // each refill with the decoderBusy seq_cst handshake that closes the
+    // rapid-toggle use-after-free (LoadProhibited@0).  taskFunc reaches the
+    // mixer via AudioMixer::instance() (singleton); the producer task (Core 1)
+    // NEVER decodes.  Method bodies are in audio_mixer_tasks.ipp.
+    class DecoderWorker {
+    public:
+        bool start(AudioMixer& m);   // create the task (idempotent)
+        void stop();                 // signal + bounded wait + delete
+        void notify();               // xTaskNotifyGive (extract-to-local TOCTOU guard)
+        bool         isRunning() const { return _decoderRunning.load(std::memory_order_acquire); }
+        TaskHandle_t handle()    const { return _decoderTaskHandle.load(std::memory_order_acquire); }
+
+        // Cross-core (Rule 15): producer (Core 1) reads the handle in notify()
+        // while Core 0's stop() nulls + vTaskDeletes it; atomic + extract-to-
+        // local closes the check-then-notify TOCTOU.
+        std::atomic<TaskHandle_t> _decoderTaskHandle{nullptr};
+        std::atomic<bool>  _decoderRunning{false};
+        std::atomic<bool>  _decoderExited{false};
+        int                _decoderCore      = 0;
+        int                _decoderPriority  = 5;     // > Arduino loop (1), < producer (configMAX-2)
+        int                _decoderStackSize = 6144;  // libhelix scratch + per-batch float scratch
+        static constexpr uint32_t kDecoderTickMs = 5;
+    private:
+        static void taskFunc(void* param);   // FreeRTOS entry; mixer via instance()
+    };
+    DecoderWorker _decoder;
 #endif
 
     // Stats (cross-core diagnostic counters).
@@ -789,10 +889,8 @@ private:
     std::atomic<uint32_t> _maxSdReadUs{0};            // max refill latency since last log
     std::atomic<uint32_t> _slowSdReads{0};            // refills > 5 ms since last log
     std::atomic<uint32_t> _verySlowSdReads{0};        // refills > 20 ms since last log
-    std::atomic<uint32_t> _channelStarves[AUDIO_MAX_CHANNELS]{};
-        // Per-channel drain-empty count — bumped by getWavSample when
-        // the SPSC ring's availableRead < 2.  Canonical "decoder
-        // falling behind" indicator surfaced in the pace log.
+    // (per-channel drain-empty count moved to WavState::starves — the ring
+    //  owns its own decode-health stat.)
 #endif
 
     // Status (producer task writes, Core 0 reads for status queries)
@@ -800,7 +898,12 @@ private:
     std::atomic<float> _channelRemainingSec[AUDIO_MAX_CHANNELS]{};
 };
 
-// Template implementation (must be visible at point of instantiation)
-#include "audio_mixer.ipp"
+// Template implementation — ONE FILE PER CLASS.  audio_mixer.ipp MUST be first:
+// it carries the shared preamble (macros / constants / ringBuf()) the others
+// rely on in the same translation unit.
+#include "audio_mixer.ipp"            // AudioMixer  — lifecycle, control, I/O, async, produce, refill, tasks
+#include "audio_mixer_wavstate.ipp"   // WavState    — the SPSC decode ring (read + seq_cst teardown)
+#include "audio_mixer_mixkernel.ipp"  // MixKernel   — the Q15/float mixing kernel
+#include "audio_mixer_decoder.ipp"    // DecoderWorker — the Core-0 decode-prefetch task (ESP32)
 
 #endif // AUDIO_MIXER_H
