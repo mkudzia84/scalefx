@@ -1,28 +1,23 @@
 /*
  * RoleServicePolicy — system-service policy for the role layer.
  *
- * Handles the 0x40..0x7F generic-expander slice:
- *   - 0x40..0x47  attach / detach / enumeration
- *   - 0x48..0x4F  servo actuator role commands
- *   - 0x50..0x57  RC PWM input role commands (single-channel pulse on InputPort)
- *   - 0x58..0x5F  LED animator role commands
- *   - 0x60..0x67  DC motor role commands
- *   - 0x68..0x6F  Bi-directional DC motor role commands
- *   - 0x70..0x77  Heater role commands
- *   - 0x78..0x7B  SBUS input role commands
- *   - 0x7C..0x7F  Jeti EX input role commands
+ * The policy is the role layer's DISPATCH + LIFECYCLE core.  It owns:
+ *   - the 0x40..0x7F packet router (handle)
+ *   - the per-loop role tick (update)
+ *   - attach / detach / list / bulk-attach (the registry-mutation surface)
+ *   - the shared dependencies (registry, board context) + the sub-objects
  *
- * The policy holds a `PortRegistryBase*` bound by `BoardOf<TBoard>`
- * before `begin()`.  Per-port role storage lives inside the registry's
- * `std::variant` slots — ROLE_ATTACH emplaces, ROLE_DETACH replaces
- * with `std::monostate`.
+ * Per-family command/query handling is delegated to one focused handler class
+ * per role family (servo / led / dc-motor / bi-motor / heater / input), each
+ * bound to the same registry + context + event emitter.  Async telemetry-out
+ * is owned by RoleEventEmitter.  The policy holds these by value and wires
+ * them in begin(); the wire surface (kCapabilityBits / begin / ownsType /
+ * handle / update / setLocalAsyncListener / bindRegistry) is unchanged.
  *
- * Per-tick `update()` walks every port binding and dispatches
- * `tick()` to whichever role variant is currently active.  Async
- * events from roles (LED queue done, motor stall, servo target reached,
- * RC input broadcast) route through the policy's callback installation
- * at attach time — each role gets a small lambda that emits the right
- * packet via `_ctx`.
+ * The policy holds a `PortRegistryBase*` bound by `BoardOf<TBoard>` before
+ * `begin()`.  Per-port role storage lives inside the registry's
+ * `std::variant` slots — ROLE_ATTACH emplaces, ROLE_DETACH replaces with
+ * `std::monostate`.
  */
 
 #ifndef SFX_ROLE_SERVICE_H
@@ -38,6 +33,13 @@
 
 #include "board_server.h"
 #include "port_registry.h"
+#include "role_event_emitter.h"
+#include "role_servo_handler.h"
+#include "role_led_handler.h"
+#include "role_motor_handler.h"
+#include "role_bimotor_handler.h"
+#include "role_heater_handler.h"
+#include "role_input_handler.h"
 
 namespace sfx_core {
 
@@ -55,7 +57,17 @@ public:
 
     bool begin(BoardServerBase* ctx) {
         _ctx = ctx;
-        return _ctx != nullptr;
+        if (!_ctx) return false;
+        // Wire the sub-objects to the shared dependencies once the context
+        // is known (the registry is bound earlier by BoardOf<>).
+        _emit.bind(_ctx);
+        _servo.bind  (_reg, _ctx, &_emit);
+        _led.bind    (_reg, _ctx, &_emit);
+        _motor.bind  (_reg, _ctx, &_emit);
+        _bimotor.bind(_reg, _ctx, &_emit);
+        _heater.bind (_reg, _ctx, &_emit);
+        _input.bind  (_reg, _ctx, &_emit);
+        return true;
     }
 
     bool ownsType(uint8_t type) const {
@@ -72,127 +84,37 @@ public:
     }
 
     /// Master-internal hook fired ALONGSIDE the wire packet whenever a
-    /// role emits an async event (SERVO_TARGET_REACHED, LED_QUEUE_DONE,
-    /// ROLE_ATTACHED/DETACHED, stall events, RC/SBUS/Jeti broadcasts).
-    /// Used by `TopologyServicePolicy` so effects can subscribe to
-    /// hub-local role events the same way they subscribe to remote
-    /// ones — without parsing the COBS output buffer.  Single slot —
-    /// only TopologyService should install it.
-    using LocalAsyncCallback = void (*)(void* ctx, uint8_t innerType,
-                                        const uint8_t* payload, size_t len);
+    /// role emits an async event.  Used by `TopologyServicePolicy` so
+    /// effects subscribe to hub-local role events the same way they
+    /// subscribe to remote ones.  Single slot — only TopologyService
+    /// installs it.  Forwarded to the RoleEventEmitter.
+    using LocalAsyncCallback = RoleEventEmitter::LocalAsyncCallback;
     void setLocalAsyncListener(LocalAsyncCallback fn, void* ctx) {
-        _localAsyncFn  = fn;
-        _localAsyncCtx = ctx;
+        _emit.setListener(fn, ctx);
     }
 
 private:
-    // ── Attach / detach / list ────────────────────────────────────────
+    // ── Attach / detach / list (registry-mutation router) ─────────────
     void handleAttach     (const uint8_t* p, size_t len);
     void handleBulkAttach (const uint8_t* p, size_t len);  ///< declarative full-set apply (ROLE_BULK_ATTACH)
     void handleDetach     (const uint8_t* p, size_t len);
     void handleList       ();
     /// Apply one role WITHOUT touching the wire; returns 0 (ok) or a wire
-    /// error code.  Shared by handleAttach + handleBulkAttach.
+    /// error code.  Routes to the right family handler's attach().  Shared
+    /// by handleAttach + handleBulkAttach.
     uint8_t applyAttach(uint8_t portKind, uint8_t portIdx, uint8_t roleKind,
                         const uint8_t* cfg, uint8_t cfgLen);
 
-    // ── Servo actuator ────────────────────────────────────────────────
-    void handleServoSetTarget    (const uint8_t* p, size_t len);
-    void handleServoSetPosNorm   (const uint8_t* p, size_t len);
-    void handleServoRecoil       (const uint8_t* p, size_t len);
-    void handleServoGetStatusReq (const uint8_t* p, size_t len);
-    void handleServoSetProfile   (const uint8_t* p, size_t len);
-    void handleServoGetProfileReq(const uint8_t* p, size_t len);
-    void handleServoSetBroadcastHz(const uint8_t* p, size_t len);
-    /// Emit the batched SERVO_MOTION_UPDATE snapshot (all active servos).
-    void emitServoBroadcast(uint32_t now);
+    BoardServerBase*  _ctx = nullptr;
+    PortRegistryBase* _reg = nullptr;
 
-    // ── RC PWM input ──────────────────────────────────────────────────
-    void handleRcInGetValueReq    (const uint8_t* p, size_t len);
-    void handleRcInSetBroadcastHz (const uint8_t* p, size_t len);
-
-    // ── SBUS input ────────────────────────────────────────────────────
-    void handleSbusGetFrameReq    (const uint8_t* p, size_t len);
-    void handleSbusSetBroadcastHz (const uint8_t* p, size_t len);
-
-    // ── Jeti EX input ─────────────────────────────────────────────────
-    void handleJetiExGetFrameReq    (const uint8_t* p, size_t len);
-    void handleJetiExSetBroadcastHz (const uint8_t* p, size_t len);
-
-    // ── LED animator ──────────────────────────────────────────────────
-    void handleLedQueueLoad     (const uint8_t* p, size_t len);
-    void handleLedStart         (const uint8_t* p, size_t len);
-    void handleLedStop          (const uint8_t* p, size_t len);
-    void handleLedSetBrightness (const uint8_t* p, size_t len);
-    void handleLedGetStatusReq  (const uint8_t* p, size_t len);
-
-    // ── DC motor (uni-directional) ────────────────────────────────────
-    void handleMotorSetDuty     (const uint8_t* p, size_t len);
-    void handleMotorBrake       (const uint8_t* p, size_t len);
-    void handleMotorGetStatusReq(const uint8_t* p, size_t len);
-    void handleMotorSetElement  (const uint8_t* p, size_t len);
-    void handleMotorGetElementReq(const uint8_t* p, size_t len);
-    void handleMotorSetPct      (const uint8_t* p, size_t len);
-
-    // ── Bi-directional motor ──────────────────────────────────────────
-    void handleBiMotorSetSigned   (const uint8_t* p, size_t len);
-    void handleBiMotorBrake       (const uint8_t* p, size_t len);
-    void handleBiMotorCoast       (const uint8_t* p, size_t len);
-    void handleBiMotorGetStatus   (const uint8_t* p, size_t len);
-    void handleBiMotorSeekEndstop (const uint8_t* p, size_t len);
-    void handleBiMotorMoveToEnd   (const uint8_t* p, size_t len);   // 0x5F (Strategy A)
-    void handleBiMotorSetGuard    (const uint8_t* p, size_t len);   // 0x77 (live retune)
-
-    // ── Heater ────────────────────────────────────────────────────────
-    void handleHeaterSetTarget   (const uint8_t* p, size_t len);
-    void handleHeaterGetStatus   (const uint8_t* p, size_t len);
-    void handleHeaterSetElement  (const uint8_t* p, size_t len);
-    void handleHeaterGetElementReq(const uint8_t* p, size_t len);
-
-    // ── Role emplacement helpers (build role from binding + config bytes) ──
-    bool attachServoActuator (ServoBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
-    bool attachRcPwmInput    (InputBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
-    bool attachSbusInput     (InputBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
-    bool attachJetiExInput   (InputBinding&  b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
-    bool attachJetiExTelemetry(InputBinding& b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
-    bool attachLedAnimator   (PwmBinding&    b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
-    bool attachDcMotor       (PwmBinding&    b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
-    bool attachHeater        (PwmBinding&    b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
-    bool attachBiDcMotor     (HBridgeBinding& b, uint8_t portIdx, const uint8_t* cfg, size_t cfgLen);
-
-    // ── Async event emitters ─────────────────────────────────────────
-    void emitRoleAttached         (uint8_t portKind, uint8_t portIdx, uint8_t roleKind);
-    void emitRoleDetached         (uint8_t portKind, uint8_t portIdx);
-    void emitLedQueueDone         (uint8_t portIdx);
-    void emitServoTargetReached   (uint8_t portIdx, uint16_t pos_us);
-    void emitServoMotionDone      (uint8_t portIdx);
-    void emitMotorStallEvent      (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
-    void emitBiMotorStallEvent    (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
-    void emitBiMotorEndstopResult (uint8_t portIdx, uint8_t outcome,
-                                   uint16_t travel_ms, uint16_t peak_mA,
-                                   uint8_t position);
-    void emitPpmFrameBroadcast    (uint8_t portIdx, const RcPwmInputRole& role);
-    void emitSbusFrameBroadcast   (uint8_t portIdx, const SbusInputRole& role);
-    void emitJetiExFrameBroadcast (uint8_t portIdx, const JetiExInputRole& role);
-
-    /// Forwarded by every `emit*()` helper so master-internal
-    /// listeners can react without parsing the wire stream.
-    void fireLocalAsync(uint8_t innerType, const uint8_t* p, size_t len) {
-        if (_localAsyncFn) _localAsyncFn(_localAsyncCtx, innerType, p, len);
-    }
-
-    BoardServerBase*    _ctx = nullptr;
-    PortRegistryBase*   _reg = nullptr;
-    LocalAsyncCallback  _localAsyncFn  = nullptr;
-    void*               _localAsyncCtx = nullptr;
-
-    // Generic servo telemetry broadcast (SERVO_MOTION_UPDATE). Global rate set
-    // by the host via SERVO_SET_BROADCAST_HZ; 0 = off. Gated additionally on
-    // hostVerboseActive() at emit time. Naturally silent during uploads because
-    // update() isn't ticked while the loop is upload-exclusive.
-    uint8_t  _servoBroadcastHz     = 0;
-    uint32_t _servoBroadcastNextMs = 0;
-    static constexpr uint8_t kServoBroadcastMaxHz = 50;  // clamp host requests
+    RoleEventEmitter   _emit;
+    ServoRoleHandler   _servo;
+    LedRoleHandler     _led;
+    DcMotorRoleHandler _motor;
+    BiMotorRoleHandler _bimotor;
+    HeaterRoleHandler  _heater;
+    InputRoleHandler   _input;
 };
 
 }  // namespace sfx_core

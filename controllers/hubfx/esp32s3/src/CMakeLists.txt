@@ -11,6 +11,11 @@
 
 set(SFX_LIB "${CMAKE_SOURCE_DIR}/../../lib")
 
+# NOTE: GLOB_RECURSE is evaluated at configure time and is NOT re-run when new
+# files appear (CONFIGURE_DEPENDS can't be used here — IDF runs this file in
+# script mode during its requirements pass, which rejects it).  After ADDING or
+# REMOVING a src/ or lib/ .cpp file, do a clean build (or `idf.py reconfigure`)
+# so the glob is re-evaluated; `--no-clean` incremental builds keep the stale list.
 file(GLOB_RECURSE app_sources
     ${CMAKE_SOURCE_DIR}/src/*.cpp
     ${CMAKE_SOURCE_DIR}/src/*.c
