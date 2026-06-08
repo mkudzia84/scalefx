@@ -11,14 +11,15 @@
      In-flight target / position state is preserved (the role re-applies
      the new shape without re-attaching).
 
-     Limit to hub-local ports for now — cross-board live-tune goes
-     through Topology in a future pass.
+     Works on hub-local AND expander ports (Rule 58): the element bindings take
+     a leading `guid` and route transparently via RoleTarget.
 
      Props:
        portKind  — 'servo' | 'pwm'
        portIdx   — 0-based port index
        roleKind  — current attached role (drives which editor renders)
        portRailMv — Studio-side rail voltage (display only)
+       guid      — board GUID ("" = hub; else an expander, routed via the hub)
 -->
 <script lang="ts">
     import { onMount } from 'svelte'
@@ -32,6 +33,9 @@
     export let portIdx: number
     export let roleKind: number
     export let portRailMv: number = 0
+    /** Board GUID this port lives on ("" = hub). Routes element tune to a hub
+     *  port or — transparently via the hub — an expander's role (Rule 58). */
+    export let guid: string = ''
 
     type MotorEl = { elementMv: number; scaling: number; portRailMv: number }
     type HeaterEl = { elementMv: number; scaling: number; drivePct: number; hystCx10: number; portRailMv: number }
@@ -49,9 +53,9 @@
     onMount(async () => {
         try {
             if (portKind === 'pwm' && kind === RoleKind.DcMotor) {
-                motor = await MotorGetElement(portIdx) as MotorEl
+                motor = await MotorGetElement(guid, portIdx) as MotorEl
             } else if (portKind === 'pwm' && kind === RoleKind.Heater) {
-                heater = await HeaterGetElement(portIdx) as HeaterEl
+                heater = await HeaterGetElement(guid, portIdx) as HeaterEl
             }
             loaded = true
         } catch (e) {
@@ -64,7 +68,7 @@
         pendingTimer = setTimeout(async () => {
             pendingTimer = null
             busy = true; error = ''
-            try { await MotorSetElement(portIdx, motor) } catch (e) { error = String(e) } finally { busy = false }
+            try { await MotorSetElement(guid, portIdx, motor) } catch (e) { error = String(e) } finally { busy = false }
         }, 350)
     }
     function scheduleSetHeater() {
@@ -72,7 +76,7 @@
         pendingTimer = setTimeout(async () => {
             pendingTimer = null
             busy = true; error = ''
-            try { await HeaterSetElement(portIdx, heater) } catch (e) { error = String(e) } finally { busy = false }
+            try { await HeaterSetElement(guid, portIdx, heater) } catch (e) { error = String(e) } finally { busy = false }
         }, 350)
     }
 

@@ -32,6 +32,7 @@
     import { gunfxConfigSource, loadGunFxConfig } from './lib/gunfx'
     import { lightfxConfigSource, loadLightFxConfig } from './lib/lightfx'
     import { landingConfigSource, loadLandingConfig } from './lib/landing'
+    import { gearConfigSource, loadGearConfig } from './lib/gear'
     import { registerDirtySource } from './lib/dirty-registry'
 
     onMount(async () => {
@@ -59,6 +60,7 @@
         registerDirtySource(gunfxConfigSource)
         registerDirtySource(lightfxConfigSource)
         registerDirtySource(landingConfigSource)
+        registerDirtySource(gearConfigSource)
 
         // Console output events from backend (always active, even when panel hidden)
         EventsOn('console:output', (msg: { type: string; content: string }) => {
@@ -95,30 +97,34 @@
             if (info.connected) {
                 $boardState = 'connected'
                 $connectPopupOpen = false
-                // Pull the topology (ports + roles) so the setup +
-                // functional tabs populate.  Capability-gated domain tabs
-                // appear once the model reports the hub's capabilities.
-                try { await refreshDeviceModel() } catch (e) {
-                    diag.warn('FE.DM', 'device-model refresh failed', { err: String(e) })
-                }
-                // Hydrate operator state from on-device YAML so the GUI
-                // mirrors what's actually running on the hub: /hubfx.yaml
-                // (input channel names + port names) and /enginefx.yaml
-                // (Engine panel form).
-                try { await hydrateFromHubYaml() } catch (e) {
-                    diag.warn('FE.CFG', 'hub config load failed', { err: String(e) })
-                }
-                try { await loadEngineConfig() } catch (e) {
-                    diag.warn('FE.CFG', 'engine config load failed', { err: String(e) })
-                }
-                try { await loadGunFxConfig() } catch (e) {
-                    diag.warn('FE.CFG', 'gunfx config load failed', { err: String(e) })
-                }
-                try { await loadLightFxConfig() } catch (e) {
-                    diag.warn('FE.CFG', 'lightfx config load failed', { err: String(e) })
-                }
-                try { await loadLandingConfig() } catch (e) {
-                    diag.warn('FE.CFG', 'landing config load failed', { err: String(e) })
+                // Topology + every on-device YAML are HubFX-ONLY: the master
+                // owns the port/role model and holds all effect config (incl.
+                // the gearcontrol expander's config in /hubfx.yaml's expanders
+                // block).  An expander board carries no config of its own, so
+                // probing it for /hubfx.yaml /enginefx.yaml /gunfx.yaml … only
+                // produces a flurry of INVALID_COMMAND NACKs.  Skip them.
+                if (info.controllerType === 'hubfx') {
+                    try { await refreshDeviceModel() } catch (e) {
+                        diag.warn('FE.DM', 'device-model refresh failed', { err: String(e) })
+                    }
+                    try { await hydrateFromHubYaml() } catch (e) {
+                        diag.warn('FE.CFG', 'hub config load failed', { err: String(e) })
+                    }
+                    try { await loadEngineConfig() } catch (e) {
+                        diag.warn('FE.CFG', 'engine config load failed', { err: String(e) })
+                    }
+                    try { await loadGunFxConfig() } catch (e) {
+                        diag.warn('FE.CFG', 'gunfx config load failed', { err: String(e) })
+                    }
+                    try { await loadLightFxConfig() } catch (e) {
+                        diag.warn('FE.CFG', 'lightfx config load failed', { err: String(e) })
+                    }
+                    try { await loadLandingConfig() } catch (e) {
+                        diag.warn('FE.CFG', 'landing config load failed', { err: String(e) })
+                    }
+                    try { await loadGearConfig() } catch (e) {
+                        diag.warn('FE.CFG', 'gear config load failed', { err: String(e) })
+                    }
                 }
             } else if (wasConnected && $boardState !== 'flashing') {
                 // Unexpected disconnect (not flashing) — show connect popup
@@ -137,12 +143,16 @@
             if (info.connected) {
                 $boardState = 'connected'
                 $connectPopupOpen = false
-                try { await refreshDeviceModel() } catch { /* ignore */ }
-                try { await hydrateFromHubYaml() } catch { /* ignore */ }
-                try { await loadEngineConfig() } catch { /* ignore */ }
-                try { await loadGunFxConfig() } catch { /* ignore */ }
-                try { await loadLightFxConfig() } catch { /* ignore */ }
-                try { await loadLandingConfig() } catch { /* ignore */ }
+                // HubFX-only (see the connection:changed handler above).
+                if (info.controllerType === 'hubfx') {
+                    try { await refreshDeviceModel() } catch { /* ignore */ }
+                    try { await hydrateFromHubYaml() } catch { /* ignore */ }
+                    try { await loadEngineConfig() } catch { /* ignore */ }
+                    try { await loadGunFxConfig() } catch { /* ignore */ }
+                    try { await loadLightFxConfig() } catch { /* ignore */ }
+                    try { await loadLandingConfig() } catch { /* ignore */ }
+                    try { await loadGearConfig() } catch { /* ignore */ }
+                }
             }
         } catch (_) {
             // app still starting

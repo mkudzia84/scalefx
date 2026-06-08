@@ -87,9 +87,14 @@ public:
 
 private:
     // ── Attach / detach / list ────────────────────────────────────────
-    void handleAttach (const uint8_t* p, size_t len);
-    void handleDetach (const uint8_t* p, size_t len);
-    void handleList   ();
+    void handleAttach     (const uint8_t* p, size_t len);
+    void handleBulkAttach (const uint8_t* p, size_t len);  ///< declarative full-set apply (ROLE_BULK_ATTACH)
+    void handleDetach     (const uint8_t* p, size_t len);
+    void handleList       ();
+    /// Apply one role WITHOUT touching the wire; returns 0 (ok) or a wire
+    /// error code.  Shared by handleAttach + handleBulkAttach.
+    uint8_t applyAttach(uint8_t portKind, uint8_t portIdx, uint8_t roleKind,
+                        const uint8_t* cfg, uint8_t cfgLen);
 
     // ── Servo actuator ────────────────────────────────────────────────
     void handleServoSetTarget    (const uint8_t* p, size_t len);
@@ -160,6 +165,7 @@ private:
     void emitRoleDetached         (uint8_t portKind, uint8_t portIdx);
     void emitLedQueueDone         (uint8_t portIdx);
     void emitServoTargetReached   (uint8_t portIdx, uint16_t pos_us);
+    void emitServoMotionDone      (uint8_t portIdx);
     void emitMotorStallEvent      (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
     void emitBiMotorStallEvent    (uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms);
     void emitBiMotorEndstopResult (uint8_t portIdx, uint8_t outcome,

@@ -45,8 +45,26 @@ bool ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::begin(
         _usbReady = false;
         return true;   // policy itself is fine, just no expanders will be seen
     }
+    // begin() only STORES the port config; init() actually runs
+    // usb_host_install() + starts the daemon / CDC-ACM / open tasks.  Without
+    // it the host is "configured" but never installed → no device ever mounts.
+    if (!usb.init()) {
+        SFX_LOG_WARN("[Expander] USB host init() failed — OTG port not installed");
+        _usbReady = false;
+        return true;
+    }
 
     _usbReady = true;
+
+    // USB auto-recovery stays ON (the EspUsbHost default).  The HubFX carries a
+    // USB hub chip with downstream expander ports, and the ESP-IDF ext_port
+    // driver disables a downstream port after a single failed reset with no
+    // retry — the recovery timer's root-port power-cycle is how that wedged port
+    // comes back.  The live-replug crash it used to cause was NOT the recovery
+    // itself but WHERE it ran: resetBus() (deep HCD power-cycle + 500 ms block)
+    // executed on the 3120 B timer-service task and overflowed it.  Fixed by
+    // deferring resetBus() to the `usb_worker` task (8 KB) via requestBusReset()
+    // — see recoveryTimerCb in esp_usb_host.cpp.  So we keep the feature.
     SFX_LOG_INFO("[Expander] USB host up (%s), %u slots, %u known-GUID cache",
                  usb.backendName(),
                  (unsigned)kMaxExpanders,

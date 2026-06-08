@@ -55,13 +55,8 @@ func (g *Gear) All(action byte) error { return g.c.sendExpectACK(gear.CmdAll(act
 
 // Reset clears gear `id`'s error state (ERROR → Retracted) so it
 // accepts deploy/retract again.  No-op if not in error.
+//
+// Gear-level calibration was removed (instructions/29 decision #3) —
+// endstop calibration now lives entirely on the BiDcMotor role's
+// LiveRatio + ceiling guard (tune it via the motor role's BIMOTOR_SET_GUARD).
 func (g *Gear) Reset(id byte) error { return g.c.sendExpectACK(gear.CmdReset(id)) }
-
-// Calibrate runs gear `id`'s stall-endpoint sweep (retract stop →
-// deploy stop → home).  Each leg is confirmed by a motor stall; a leg
-// that never stalls within the travel timeout faults the gear
-// (GEAR_NO_STALL_DETECTED).  Status LEDs blink during calibration.
-func (g *Gear) Calibrate(id byte) error { return g.c.sendExpectACK(gear.CmdCalibrate(id)) }
-
-// CalibrateCancel aborts an in-progress calibration → Retracted.
-func (g *Gear) CalibrateCancel(id byte) error { return g.c.sendExpectACK(gear.CmdCalibCancel(id)) }

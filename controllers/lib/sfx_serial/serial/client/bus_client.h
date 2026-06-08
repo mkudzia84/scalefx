@@ -191,6 +191,18 @@ public:
                             uint8_t respType,
                             SerialPacket& out);
 
+    /**
+     * Send `reqType` and BLOCK until ANY typed (non-ACK) reply with the
+     * matching tag arrives (or timeout) — used by the hub's generic role-query
+     * forward, where the RESP type depends on the request (SERVO_STATUS_RESP,
+     * BIMOTOR_STATUS_RESP, …) and isn't known up-front.  Always blocks
+     * (pumps process()) regardless of `setBlockingMode`, like a forwarded
+     * command.  `out` aliases an internal buffer valid until the next process().
+     */
+    CommandResult sendQueryAnyBlocking(uint8_t reqType,
+                                       const uint8_t* payload, size_t len,
+                                       SerialPacket& out);
+
     // ========================================================================
     // Configuration
     // ========================================================================

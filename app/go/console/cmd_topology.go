@@ -3,9 +3,11 @@ package console
 import (
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"scalefx/client"
+	"scalefx/protocol"
 	"scalefx/protocol/core"
 	expp "scalefx/protocol/expanders"
 	"scalefx/protocol/ports"
@@ -19,6 +21,41 @@ func init() {
 	register(&command{Name: "topo-roles", Usage: "topo-roles [guid]", Help: "list roles for board (default: all)", Category: catTopology, RequiresConn: true, RequiresCap: core.CapTopology | core.CapExpanderBus, Run: cmdTopoRoles})
 	register(&command{Name: "role-attach", Usage: "role-attach <guid> <portKind> <portIdx> <roleKind> [hex-cfg]", Help: "bind a role to (portKind, portIdx) on a board", Category: catTopology, RequiresConn: true, RequiresCap: core.CapTopology | core.CapExpanderBus, Run: cmdRoleAttach})
 	register(&command{Name: "role-detach", Usage: "role-detach <guid> <portKind> <portIdx>", Help: "detach the role on (portKind, portIdx)", Category: catTopology, RequiresConn: true, RequiresCap: core.CapTopology | core.CapExpanderBus, Run: cmdRoleDetach})
+	register(&command{Name: "topo-query", Usage: "topo-query <guid|hub> <reqTypeHex> [payloadHex]", Help: "generic GUID-routed role QUERY (request→typed RESP) — e.g. `topo-query 3225 49 00` = SERVO_GET_STATUS_REQ on servo 0", Category: catTopology, RequiresConn: true, RequiresCap: core.CapTopology | core.CapExpanderBus, Run: cmdTopoQuery})
+}
+
+// cmdTopoQuery exercises the generic role-query forward (TOPOLOGY_ROLE_QUERY):
+// wraps a role *_GET_*_REQ for a GUID, prints the typed RESP the hub captured
+// (local or forwarded to the expander).  Role-agnostic test harness.
+func cmdTopoQuery(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) < 2 {
+		return fmt.Errorf("usage: topo-query <guid|hub> <reqTypeHex> [payloadHex]")
+	}
+	guid := args[0]
+	if strings.EqualFold(guid, "hub") {
+		guid = ""
+	}
+	rt, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(args[1]), "0x"), 16, 8)
+	if err != nil {
+		return fmt.Errorf("bad reqType hex %q: %v", args[1], err)
+	}
+	var payload []byte
+	if len(args) >= 3 {
+		payload, err = hex.DecodeString(strings.TrimPrefix(strings.ToLower(args[2]), "0x"))
+		if err != nil {
+			return fmt.Errorf("bad payload hex %q: %v", args[2], err)
+		}
+	}
+	respType, resp, err := a.c.Topology.QueryRole(guid, byte(rt), payload)
+	if err != nil {
+		return err
+	}
+	Info("resp type=0x%02X (%s)  payload[%d]=%s", respType,
+		protocol.PacketTypeName(protocol.PacketType(respType)), len(resp), hex.EncodeToString(resp))
+	return nil
 }
 
 // ─── Expanders ───────────────────────────────────────────────────────

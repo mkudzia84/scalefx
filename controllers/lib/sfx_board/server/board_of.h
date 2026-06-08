@@ -131,10 +131,13 @@ using DefaultPortCapacity = PortCapacity<32, 32, 16, 8>;
 
 /// @tparam TBoard         CRTP-style derived board type (provides
 ///                        kName + the static kXxxPorts descriptor lists).
-/// @tparam TStream        Wire-protocol stream type (e.g. `sfx::NativeUartStream`
-///                        on ESP32 IDF-component path, `HardwareSerial`
-///                        on Pico).  Re-exported as `StreamType` for any
-///                        helper parameterised on `TBoard` alone.
+/// @tparam TStream        Wire-protocol stream type — MUST derive `sfx::Stream`
+///                        (BoardServerBaseT mirrors it into the base
+///                        `sfx::Stream* _serial`).  `sfx::NativeUartStream` on
+///                        the ESP32 IDF-component path; `sfx::PicoSerialStream<…>`
+///                        (the USB-CDC `Serial` adapter, platform/pico_serial_stream.h)
+///                        on Pico.  Re-exported as `StreamType` for any helper
+///                        parameterised on `TBoard` alone.
 /// @tparam Caps           `PortCapacity<NServo,NPwm,NHBridge,NInput>` sizing
 ///                        the per-kind registry binding arrays.  Use
 ///                        `DefaultPortCapacity` for the historical bounds.

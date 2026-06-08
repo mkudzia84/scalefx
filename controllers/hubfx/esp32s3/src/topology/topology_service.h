@@ -177,8 +177,9 @@ public:
             || type == TopologyPacket::TOPOLOGY_ROLE_LIST_REQ
             || type == TopologyPacket::TOPOLOGY_ROLE_ATTACH
             || type == TopologyPacket::TOPOLOGY_ROLE_DETACH
-            || type == TopologyPacket::TOPOLOGY_ROLE_FORWARD;
-        // _RESP / _EVENT are outbound only — never received.
+            || type == TopologyPacket::TOPOLOGY_ROLE_FORWARD
+            || type == TopologyPacket::TOPOLOGY_ROLE_QUERY;
+        // _RESP / _EVENT / _RESPONSE are outbound only — never received.
     }
 
     CommandHandleResult handle(uint8_t type, const uint8_t* payload, size_t len);
@@ -215,6 +216,15 @@ public:
 
     /// Detach the role at `addr`.  Auto-releases any claim held on it.
     bool detachRole(const PortRef& addr);
+
+    /// Push a board's FULL role set to a remote expander in ONE packet
+    /// (ROLE_BULK_ATTACH) — the declarative bringup path used by
+    /// ExpanderService::onReady.  `block` is `[count][entries…]` built by
+    /// `buildRoleBlockForGuid`.  On ACK, the hub's cached role roster for the
+    /// board is updated from the block (so topo-roles / Studio reflect the
+    /// applied config — the old per-port forward never did this).  A count==0
+    /// block is a no-op success (unconfigured board).  Returns true on ACK.
+    bool applyRoleConfig(const char* guid, const uint8_t* block, size_t len);
 
     /// Enumerate every (board, port) currently bound to `roleKind`.
     /// Writes up to `maxOut` entries into `out`; returns the actual
@@ -298,6 +308,16 @@ private:
     void handleRoleAttach (const uint8_t* p, size_t len);
     void handleRoleDetach (const uint8_t* p, size_t len);
     void handleRoleForward(const uint8_t* p, size_t len);   // Rule 11 ext 2026-05-24
+    void handleRoleQuery  (const uint8_t* p, size_t len);   // generic request-response forward
+
+    /// Dispatch a role QUERY (request→typed-RESP) to a GUID — local (capture
+    /// the RESP) or remote (forwardQuery the expander).  Role-agnostic.  Fills
+    /// respType + respBuf[0..respLen) on success.  Returns false on any failure.
+    bool queryRole(const char* guid, uint8_t reqType, const uint8_t* req, size_t reqLen,
+                   uint8_t& respType, uint8_t* respBuf, size_t respMax, size_t& respLen);
+    /// Remote half of queryRole — forwards to the expander + captures its RESP.
+    bool forwardQuery(uint8_t slotIdx, uint8_t reqType, const uint8_t* req, size_t reqLen,
+                      uint8_t& respType, uint8_t* respBuf, size_t respMax, size_t& respLen);
 
     // Async event re-emit ----------------------------------------------
     void onExpanderAsync(uint8_t slotIdx, uint8_t type,

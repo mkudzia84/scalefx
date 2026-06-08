@@ -9,6 +9,8 @@
 #ifndef BATTERY_TYPES_H
 #define BATTERY_TYPES_H
 
+#include <cstdint>   // uint8_t / uint16_t — NOT transitively present on the Pico
+                     // toolchain (ESP-IDF pulled it in, so HubFX hid this break)
 #include <cstring>
 
 /**

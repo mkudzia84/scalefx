@@ -38,6 +38,13 @@ namespace sfx_core {
 class ServoActuatorRole {
 public:
     using TargetReachedCallback = std::function<void(uint16_t pos_us)>;
+    /// Fired on the RISING edge of `atTarget()` after a commanded move
+    /// (door-sequencing completion signal — SERVO_MOTION_DONE).  Distinct
+    /// from `onTargetReached` (both fire on the same edge but are separate
+    /// subscriptions): the RoleService wires this to emit SERVO_MOTION_DONE
+    /// for gear door legs while `onTargetReached` stays the SERVO_TARGET_
+    /// REACHED telemetry hook.  Never fires from the initial idle state.
+    using MotionDoneCallback = std::function<void()>;
 
     ServoActuatorRole() = default;
     explicit ServoActuatorRole(sfx_peripherals::ServoPort* port) : _port(port) {
@@ -109,6 +116,7 @@ public:
     bool     atTarget() const { return _mp.atTarget(); }
 
     void onTargetReached(TargetReachedCallback cb) { _onTargetReached = std::move(cb); }
+    void onMotionDone(MotionDoneCallback cb)        { _onMotionDone    = std::move(cb); }
 
     /// Tick — call from `update()`.  Integrates the motion profile and
     /// writes the resulting µs to the port.
@@ -136,6 +144,7 @@ private:
     uint32_t           _recoilUntilMs     = 0;     ///< EffectClock deadline
 
     TargetReachedCallback _onTargetReached;
+    MotionDoneCallback    _onMotionDone;
 };
 
 }  // namespace sfx_core

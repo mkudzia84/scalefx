@@ -99,6 +99,20 @@ namespace TopologyPacket {
     /// SET_TARGET + SET_PROFILE without needing a dedicated wire packet
     /// per role command.  Added 2026-05-24.
     constexpr uint8_t TOPOLOGY_ROLE_FORWARD    = 0x8F;
+
+    /// Generic role-QUERY pass-through (the request-response sibling of
+    /// TOPOLOGY_ROLE_FORWARD, which only relays ACK/NACK).  Studio/CLI wraps a
+    /// role *_GET_*_REQ (SERVO_GET_STATUS_REQ, BIMOTOR_GET_STATUS_REQ, …) with a
+    /// target GUID; the hub dispatches local (capture-mode, snapshotting the
+    /// typed RESP) or remote (forwardQuery → expander, capturing its RESP), then
+    /// replies with TOPOLOGY_ROLE_RESPONSE.  Role-agnostic: the hub never
+    /// decodes the inner packet, so any present/future role query works.
+    /// Envelope:  [guidLen:u8][guid:str][reqType:u8][reqLen:u16LE][req:N]
+    /// (0x88..0x8F topology block is full; 0xA6/0xA7 are documented-free.)
+    constexpr uint8_t TOPOLOGY_ROLE_QUERY      = 0xA6;
+    /// Reply to TOPOLOGY_ROLE_QUERY (hub→PC, correlated by the request tag).
+    /// Envelope:  [guidLen:u8][guid:str][respType:u8][respLen:u16LE][resp:N]
+    constexpr uint8_t TOPOLOGY_ROLE_RESPONSE   = 0xA7;
 }
 
 // ============================================================================

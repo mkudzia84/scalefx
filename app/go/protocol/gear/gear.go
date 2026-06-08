@@ -22,11 +22,11 @@ const (
 	PhaseEvent  protocol.PacketType = 0xC4
 	ListReq     protocol.PacketType = 0xC5
 	ListResp    protocol.PacketType = 0xC6
-	// 0xC7..0xC9 belong to EngineFX (Start/Stop/StatusReq); these live at
-	// 0xD7..0xD9 to avoid the collision.
-	Reset       protocol.PacketType = 0xD7
-	Calibrate   protocol.PacketType = 0xD8
-	CalibCancel protocol.PacketType = 0xD9
+	// 0xC7..0xC9 belong to EngineFX (Start/Stop/StatusReq); reset lives at
+	// 0xD7 to avoid the collision.  0xD8/0xD9 (GEAR_CALIBRATE /
+	// GEAR_CALIB_CANCEL) were REMOVED (instructions/29 decision #3 — endstop
+	// calibration now lives on the BiDcMotor role) and are FREE.
+	Reset protocol.PacketType = 0xD7
 )
 
 // ─── GEAR_ALL action codes ───────────────────────────────────────────
@@ -59,7 +59,7 @@ const (
 	PhaseDeployed     byte = 3
 	PhaseRetracting   byte = 4
 	PhaseError        byte = 5
-	PhaseCalibrating  byte = 6
+	// 6 was PhaseCalibrating — REMOVED (instructions/29 decision #3).
 )
 
 func PhaseName(p byte) string {
@@ -76,27 +76,56 @@ func PhaseName(p byte) string {
 		return "retracting"
 	case PhaseError:
 		return "ERROR"
-	case PhaseCalibrating:
-		return "calibrating"
 	default:
 		return fmt.Sprintf("0x%02X?", p)
 	}
 }
 
 // PhaseSummary collapses the phase into the host's high-level status
-// view: idle (settled), moving, calibrating, or error.
+// view: idle (settled), moving, or error.
 func PhaseSummary(p byte) string {
 	switch p {
 	case PhaseRetracted, PhaseDeployed:
 		return "idle"
 	case PhaseDeploying, PhaseRetracting:
 		return "moving"
-	case PhaseCalibrating:
-		return "calibrating"
 	case PhaseError:
 		return "error"
 	default:
 		return "unknown"
+	}
+}
+
+// ─── Sub-phase ───────────────────────────────────────────────────────
+// The door-bracket op-queue position inside a deploy/retract cycle
+// (instructions/29 decision #5).  Trailing byte of GEAR_STATUS_RESP +
+// GEAR_PHASE_EVENT (Rule 11 append — old clients read the first 2 bytes).
+
+const (
+	SubPhaseIdle         byte = 0
+	SubPhaseDoorsOpening byte = 1
+	SubPhaseDoorsOpen    byte = 2
+	SubPhaseMotorRunning byte = 3
+	SubPhaseMotorDone    byte = 4
+	SubPhaseDoorsClosing byte = 5
+)
+
+func SubPhaseName(s byte) string {
+	switch s {
+	case SubPhaseIdle:
+		return "idle"
+	case SubPhaseDoorsOpening:
+		return "doors-opening"
+	case SubPhaseDoorsOpen:
+		return "doors-open"
+	case SubPhaseMotorRunning:
+		return "motor-running"
+	case SubPhaseMotorDone:
+		return "motor-done"
+	case SubPhaseDoorsClosing:
+		return "doors-closing"
+	default:
+		return fmt.Sprintf("0x%02X?", s)
 	}
 }
 
@@ -111,7 +140,7 @@ const (
 	ErrMotorUnavailable protocol.ErrorCode = 0x62
 	ErrInErrorState     protocol.ErrorCode = 0x63
 	ErrTimeout          protocol.ErrorCode = 0x64
-	ErrNoStallDetected  protocol.ErrorCode = 0x65
+	// 0x65 was ErrNoStallDetected (calibration) — REMOVED with calibration.
 )
 
 // ─── Decoded types ───────────────────────────────────────────────────
@@ -122,16 +151,20 @@ type Gear struct {
 	Name string `json:"name"`
 }
 
-// GearStatus is one entry in GEAR_STATUS_RESP.
+// GearStatus is one entry in GEAR_STATUS_RESP.  SubPhase is the Rule 11
+// trailing byte (0 = SubPhaseIdle for pre-v2 peers that omit it).
 type GearStatus struct {
-	ID    byte `json:"id"`
-	Phase byte `json:"phase"`
+	ID       byte `json:"id"`
+	Phase    byte `json:"phase"`
+	SubPhase byte `json:"subPhase"`
 }
 
-// PhaseChange is the decoded GEAR_PHASE_EVENT async payload.
+// PhaseChange is the decoded GEAR_PHASE_EVENT async payload.  SubPhase is
+// the Rule 11 trailing byte (0 when a pre-v2 peer omits it).
 type PhaseChange struct {
-	ID    byte `json:"id"`
-	Phase byte `json:"phase"`
+	ID       byte `json:"id"`
+	Phase    byte `json:"phase"`
+	SubPhase byte `json:"subPhase"`
 }
 
 // ─── Decoders ────────────────────────────────────────────────────────
@@ -164,29 +197,53 @@ func DecodeList(p []byte) ([]Gear, error) {
 
 // DecodeStatus parses GEAR_STATUS_RESP:
 //
-//	[count:u8] per-entry: [id:u8][phase:u8]
+//	[count:u8] per-entry: [id:u8][phase:u8][subPhase:u8]
+//
+// Rule 11: entries grew from 2 to 3 bytes (trailing subPhase).  The entry
+// stride is derived from the payload so a pre-v2 firmware (2-byte entries,
+// no subPhase) still decodes (subPhase defaults to 0 / idle).
 func DecodeStatus(p []byte) ([]GearStatus, error) {
 	if len(p) < 1 {
 		return nil, fmt.Errorf("gear status: empty")
 	}
 	count := int(p[0])
-	if 1+2*count > len(p) {
+	if count == 0 {
+		return nil, nil
+	}
+	body := len(p) - 1
+	stride := 2
+	if body >= 3*count {
+		stride = 3 // v2 — trailing subPhase present
+	}
+	if body < stride*count {
 		return nil, fmt.Errorf("gear status: truncated (need %d)", count)
 	}
 	out := make([]GearStatus, count)
 	for i := 0; i < count; i++ {
-		off := 1 + 2*i
-		out[i] = GearStatus{ID: p[off], Phase: p[off+1]}
+		off := 1 + stride*i
+		gs := GearStatus{ID: p[off], Phase: p[off+1]}
+		if stride == 3 {
+			gs.SubPhase = p[off+2]
+		}
+		out[i] = gs
 	}
 	return out, nil
 }
 
-// DecodePhaseEvent parses a GEAR_PHASE_EVENT async payload.
+// DecodePhaseEvent parses a GEAR_PHASE_EVENT async payload:
+//
+//	[id:u8][phase:u8][subPhase:u8]
+//
+// Rule 11: the trailing subPhase is optional (0 when a pre-v2 peer omits it).
 func DecodePhaseEvent(p []byte) (PhaseChange, error) {
 	if len(p) < 2 {
 		return PhaseChange{}, fmt.Errorf("gear phase event: need 2 bytes, got %d", len(p))
 	}
-	return PhaseChange{ID: p[0], Phase: p[1]}, nil
+	pc := PhaseChange{ID: p[0], Phase: p[1]}
+	if len(p) >= 3 {
+		pc.SubPhase = p[2]
+	}
+	return pc, nil
 }
 
 // ─── Command builders ────────────────────────────────────────────────
@@ -198,8 +255,6 @@ func CmdAll(action byte) []byte     { return protocol.BuildPacket(All, []byte{ac
 func CmdStatusReq() []byte          { return protocol.BuildPacket(StatusReq, nil, 0) }
 func CmdListReq() []byte            { return protocol.BuildPacket(ListReq, nil, 0) }
 func CmdReset(id byte) []byte       { return protocol.BuildPacket(Reset, []byte{id}, 0) }
-func CmdCalibrate(id byte) []byte   { return protocol.BuildPacket(Calibrate, []byte{id}, 0) }
-func CmdCalibCancel(id byte) []byte { return protocol.BuildPacket(CalibCancel, []byte{id}, 0) }
 
 // ─── Name registration ───────────────────────────────────────────────
 
@@ -212,11 +267,9 @@ func init() {
 		StatusReq:   "GEAR_STATUS_REQ",
 		StatusResp:  "GEAR_STATUS_RESP",
 		PhaseEvent:  "GEAR_PHASE_EVENT",
-		ListReq:     "GEAR_LIST_REQ",
-		ListResp:    "GEAR_LIST_RESP",
-		Reset:       "GEAR_RESET",
-		Calibrate:   "GEAR_CALIBRATE",
-		CalibCancel: "GEAR_CALIB_CANCEL",
+		ListReq:    "GEAR_LIST_REQ",
+		ListResp:   "GEAR_LIST_RESP",
+		Reset:      "GEAR_RESET",
 	})
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{
 		ErrUnknownID:        "GEAR_UNKNOWN_ID",
@@ -224,6 +277,5 @@ func init() {
 		ErrMotorUnavailable: "GEAR_MOTOR_UNAVAILABLE",
 		ErrInErrorState:     "GEAR_IN_ERROR_STATE",
 		ErrTimeout:          "GEAR_TIMEOUT",
-		ErrNoStallDetected:  "GEAR_NO_STALL_DETECTED",
 	})
 }

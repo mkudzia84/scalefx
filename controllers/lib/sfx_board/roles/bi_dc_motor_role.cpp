@@ -7,6 +7,7 @@
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
 
 #include <serial/roles.h>     // RolePacket::BiMotorSeekOutcome
+#include <serial/diag_log.h>  // SFX_LOG_INFO — verbose seek-stage trace to the console
 
 namespace sfx_core {
 
@@ -107,14 +108,26 @@ void BiDcMotorRole::moveToEnd(Position targetEnd, int16_t signedDuty, uint16_t t
     _runAccum_mA         = 0;
     _runCount            = 0;
     _runMean_mA          = 0;
+    _runMin_mA           = 0xFFFF;
 
+    _lastSeekLogMs       = now;
+    _seekState           = SeekState::Seeking;
     _commandedSigned     = signedDuty;
     if (_port) _port->setSigned(signedDuty);   // drive directly (not via setSigned → no abort)
+
+    SFX_LOG_INFO("[bimotor] SEEK start: end=%u duty=%d timeout=%ums  guard=%s thr=%umA win=%ums%s  (I now=%dmA V=%dmV)",
+                 (unsigned)targetEnd, (int)signedDuty, (unsigned)timeout_ms,
+                 _guardMode == GuardMode::LiveRatio ? "live-ratio" : "fixed",
+                 (unsigned)_stallThreshold_mA, (unsigned)_stallWindow_ms,
+                 _iSense ? "" : "  [!! NO CURRENT SENSOR — can only time out]",
+                 (int)current_mA(), (int)voltage_mV());
 }
 
 void BiDcMotorRole::abortSeek() {
     if (_seekState == SeekState::Seeking) {
         _seekState = SeekState::Idle;
+        SFX_LOG_INFO("[bimotor] seek ABORTED at %ums (explicit drive/brake/coast)",
+                     (unsigned)(SFX_MILLIS() - _seekStartMs));
         if (_onEndstop) _onEndstop(BiMotorSeekOutcome::Aborted,
                                    (uint16_t)(SFX_MILLIS() - _seekStartMs),
                                    0, _position);
@@ -128,6 +141,8 @@ bool BiDcMotorRole::stepStallDetect(uint32_t now, uint16_t threshold_mA) {
         if (_overcurrentStartMs == 0) {
             _overcurrentStartMs  = now;
             _peakDuringWindow_mA = i_mag;
+            SFX_LOG_INFO("[bimotor] over-threshold: I=%umA >= thr=%umA — confirming over %ums",
+                         (unsigned)i_mag, (unsigned)threshold_mA, (unsigned)_stallWindow_ms);
         } else {
             if (i_mag > _peakDuringWindow_mA) _peakDuringWindow_mA = i_mag;
             if (now - _overcurrentStartMs >= _stallWindow_ms) {
@@ -137,6 +152,9 @@ bool BiDcMotorRole::stepStallDetect(uint32_t now, uint16_t threshold_mA) {
                 _stalled         = true;
                 _seekState       = SeekState::Reached;
                 if (_targetEnd != Position::Unknown) _position = _targetEnd;
+                SFX_LOG_INFO("[bimotor] STALL confirmed → endstop: peak=%umA over %ums  travel=%ums  pos=%u",
+                             (unsigned)_peakDuringWindow_mA, (unsigned)_stallWindow_ms,
+                             (unsigned)(now - _seekStartMs), (unsigned)_position);
                 if (_onEndstop) _onEndstop(BiMotorSeekOutcome::Reached,
                                            (uint16_t)(now - _seekStartMs),
                                            _peakDuringWindow_mA, _position);
@@ -144,6 +162,10 @@ bool BiDcMotorRole::stepStallDetect(uint32_t now, uint16_t threshold_mA) {
             }
         }
     } else {
+        if (_overcurrentStartMs != 0) {
+            SFX_LOG_INFO("[bimotor] over-threshold cleared (I=%umA < thr=%umA) — not a stall",
+                         (unsigned)i_mag, (unsigned)threshold_mA);
+        }
         _overcurrentStartMs  = 0;
         _peakDuringWindow_mA = 0;
     }
@@ -155,32 +177,62 @@ void BiDcMotorRole::tick() {
 
     // ── Endstop seek ──────────────────────────────────────────────────
     if (_seekState == SeekState::Seeking) {
+        // Throttled progress trace (~300 ms) so the operator sees the
+        // current track vs. the live trip threshold while the motor runs.
+        if (now - _lastSeekLogMs >= 300) {
+            _lastSeekLogMs = now;
+            const uint32_t elapsed = now - _seekStartMs;
+            const int curI = _iSense ? _iSense->current_mA() : 0;
+            if (_guardMode == GuardMode::LiveRatio) {
+                const char* phase = (elapsed < _inrushBlank_ms)                       ? "inrush-blank"
+                                  : (elapsed < (uint32_t)_inrushBlank_ms + _runSample_ms) ? "warmup"
+                                                                                          : "watching";
+                uint16_t thr = _runMean_mA
+                    ? (uint16_t)((uint32_t)_runMean_mA * _ratio_x100 / 100) : 0;
+                if (_absMax_mA && (thr == 0 || _absMax_mA < thr)) thr = _absMax_mA;
+                const uint16_t floor = (_runMin_mA == 0xFFFF) ? 0 : _runMin_mA;
+                SFX_LOG_INFO("[bimotor] seeking t=%ums I=%dmA  floor=%umA thr=%umA (%s)  V=%dmV",
+                             (unsigned)elapsed, curI, (unsigned)floor, (unsigned)thr, phase, (int)voltage_mV());
+            } else {
+                SFX_LOG_INFO("[bimotor] seeking t=%ums I=%dmA  thr=%umA (fixed)  V=%dmV",
+                             (unsigned)elapsed, curI, (unsigned)_stallThreshold_mA, (int)voltage_mV());
+            }
+        }
         if (_iSense) {
             if (_guardMode == GuardMode::LiveRatio) {
                 const uint32_t elapsed = now - _seekStartMs;
+                const uint16_t i_mag   = (uint16_t)std::abs((int)_iSense->current_mA());
 
-                // Phase 1: inrush blanking — accumulate nothing, detect
-                // nothing (the start-from-rest current spike looks
-                // identical to a true stall).
+                // Phase 1: inrush blanking — ignore the start-from-rest spike.
                 if (elapsed < _inrushBlank_ms) {
                     // fall through to deadline check
-                } else if (elapsed < (uint32_t)_inrushBlank_ms + _runSample_ms) {
-                    // Phase 2: sample baseline running current for THIS stroke.
-                    _runAccum_mA += (uint32_t)std::abs((int)_iSense->current_mA());
-                    _runCount    += 1;
                 } else {
-                    // Phase 3: detect.  Compute baseline once on first entry.
-                    if (_runMean_mA == 0) {
-                        _runMean_mA = (_runCount > 0)
-                                          ? (uint16_t)(_runAccum_mA / _runCount)
-                                          : 0;
-                        // Noise floor so a tiny baseline doesn't yield a
-                        // tiny threshold that trips on brush noise.
-                        if (_runMean_mA < 50) _runMean_mA = 50;
+                    // Track the TRAILING MINIMUM = the free-running floor for
+                    // THIS stroke.  Unlike a fixed-window average, a high
+                    // break-away / loaded start can't poison it: the floor only
+                    // follows the current DOWN as the motor reaches free-run.
+                    if (i_mag < _runMin_mA) _runMin_mA = i_mag;
+
+                    // Warm up briefly so the floor settles before we arm.
+                    if (elapsed >= (uint32_t)_inrushBlank_ms + _runSample_ms) {
+                        uint16_t base = (_runMin_mA < 50) ? 50 : _runMin_mA;
+                        // Adaptive ratio trip…
+                        uint16_t thr = (uint16_t)((uint32_t)base * _ratio_x100 / 100);
+                        // …OR the absolute ceiling (references' I-TRIP backstop):
+                        // trip on min(ratioThr, ceiling) so a poisoned-high floor
+                        // can't hide a real stall.
+                        if (_absMax_mA && _absMax_mA < thr) thr = _absMax_mA;
+
+                        if (_runMean_mA == 0) {
+                            SFX_LOG_INFO("[bimotor] armed: floor=%umA (trailing min) ratio=%u/100× → ratio-thr=%umA%s%u; floor adapts down as it runs",
+                                         (unsigned)base, (unsigned)_ratio_x100,
+                                         (unsigned)((uint32_t)base * _ratio_x100 / 100),
+                                         _absMax_mA ? "  ceiling=" : "  (no ceiling)=",
+                                         (unsigned)_absMax_mA);
+                        }
+                        _runMean_mA = base;   // live floor for the trace
+                        if (stepStallDetect(now, thr)) return;
                     }
-                    const uint16_t thr =
-                        (uint16_t)((uint32_t)_runMean_mA * _ratio_x100 / 100);
-                    if (stepStallDetect(now, thr)) return;
                 }
             } else if (_stallThreshold_mA != 0) {
                 // Fixed mode — original behaviour.
@@ -192,6 +244,9 @@ void BiDcMotorRole::tick() {
             if (_port) _port->brake();
             _commandedSigned = 0;
             _seekState       = SeekState::TimedOut;
+            SFX_LOG_INFO("[bimotor] TIMEOUT after %ums — no stall detected, braked (fault latched). "
+                         "Last I=%dmA; lower the ratio/threshold if the motor did reach the stop.",
+                         (unsigned)(now - _seekStartMs), (int)current_mA());
             // Position becomes Unknown on timeout — we lost track of
             // where the motor actually is (the move didn't complete).
             _position        = Position::Unknown;

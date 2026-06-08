@@ -110,6 +110,32 @@ CommandResult BusClient::sendQuery(uint8_t reqType,
     return _lastCommandResult;
 }
 
+CommandResult BusClient::sendQueryAnyBlocking(uint8_t reqType,
+                                              const uint8_t* payload, size_t len,
+                                              SerialPacket& out) {
+    out = SerialPacket{};
+    if (!isConnected()) {
+        _lastCommandResult = CommandResult::NotConnected();
+        return _lastCommandResult;
+    }
+    uint8_t tag = _resultQueue.nextTag();
+    _pendingQueryType = 0;          // 0 = match any typed (non-ACK) reply
+    _pendingQueryTag  = tag;
+    _pendingQueryOut  = &out;
+    int sent = sendPacket(reqType, payload, len, tag);
+    if (sent < 0) {
+        _pendingQueryType = 0; _pendingQueryOut = nullptr;
+        _lastCommandResult = CommandResult::SendFailed();
+        return _lastCommandResult;
+    }
+    // Always block + pump (the expander client runs non-blocking for the
+    // main-loop model; a forwarded query must complete synchronously here).
+    _lastCommandResult = _resultQueue.waitForTag(tag, [this]() { SerialBus::process(); });
+    _pendingQueryType = 0;
+    _pendingQueryOut  = nullptr;
+    return _lastCommandResult;
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -199,9 +225,12 @@ void BusClient::handlePacket(uint8_t type, uint8_t tag, const uint8_t* payload, 
                 memcpy(_lastResponsePayload, payload, _lastResponseLen);
             }
             // Typed-query capture: if a query is pending and this packet
-            // matches type+tag, fill the caller's SerialPacket and resolve
-            // the tag as Ack — caller's blocking waitForTag returns.
-            if (_pendingQueryType != 0 && type == _pendingQueryType && tag == _pendingQueryTag) {
+            // matches tag (and type, unless the query wants ANY typed reply —
+            // _pendingQueryType == 0, used by the hub's generic role-query
+            // forward where the RESP type depends on the request), fill the
+            // caller's SerialPacket and resolve the tag as Ack.
+            if (_pendingQueryOut != nullptr && tag == _pendingQueryTag &&
+                (_pendingQueryType == 0 || type == _pendingQueryType)) {
                 _pendingQueryOut->type    = type;
                 _pendingQueryOut->tag     = tag;
                 _pendingQueryOut->payload = _lastResponsePayload;

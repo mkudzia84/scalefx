@@ -54,12 +54,68 @@ export function DeviceSystemInfo() {
   return window['go']['main']['App']['DeviceSystemInfo']();
 }
 
+export function DiagBiMotorCalibrate(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DiagBiMotorCalibrate'](arg1, arg2, arg3);
+}
+
+export function DiagBiMotorGuardFixed(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DiagBiMotorGuardFixed'](arg1, arg2, arg3);
+}
+
+export function DiagBiMotorGuardLiveRatio(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['DiagBiMotorGuardLiveRatio'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function DiagBiMotorJog(arg1, arg2) {
+  return window['go']['main']['App']['DiagBiMotorJog'](arg1, arg2);
+}
+
+export function DiagBiMotorMoveEnd(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['DiagBiMotorMoveEnd'](arg1, arg2, arg3, arg4);
+}
+
+export function DiagBiMotorSeek(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DiagBiMotorSeek'](arg1, arg2, arg3);
+}
+
+export function DiagBiMotorStatus(arg1) {
+  return window['go']['main']['App']['DiagBiMotorStatus'](arg1);
+}
+
+export function DiagBiMotorStop(arg1) {
+  return window['go']['main']['App']['DiagBiMotorStop'](arg1);
+}
+
 export function DiagDebugEnabled() {
   return window['go']['main']['App']['DiagDebugEnabled']();
 }
 
+export function DiagInit() {
+  return window['go']['main']['App']['DiagInit']();
+}
+
 export function DiagLogPath() {
   return window['go']['main']['App']['DiagLogPath']();
+}
+
+export function DiagRoleAttach(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DiagRoleAttach'](arg1, arg2, arg3);
+}
+
+export function DiagRoleDetach(arg1, arg2) {
+  return window['go']['main']['App']['DiagRoleDetach'](arg1, arg2);
+}
+
+export function DiagRoleList() {
+  return window['go']['main']['App']['DiagRoleList']();
+}
+
+export function DiagServoProfileGet(arg1) {
+  return window['go']['main']['App']['DiagServoProfileGet'](arg1);
+}
+
+export function DiagServoSetTarget(arg1, arg2) {
+  return window['go']['main']['App']['DiagServoSetTarget'](arg1, arg2);
 }
 
 export function DiagSnapshot() {
@@ -124,6 +180,30 @@ export function FsUploadDiag() {
 
 export function FsUploadFromDisk(arg1, arg2, arg3) {
   return window['go']['main']['App']['FsUploadFromDisk'](arg1, arg2, arg3);
+}
+
+export function GearAll(arg1) {
+  return window['go']['main']['App']['GearAll'](arg1);
+}
+
+export function GearDeploy(arg1) {
+  return window['go']['main']['App']['GearDeploy'](arg1);
+}
+
+export function GearReset(arg1) {
+  return window['go']['main']['App']['GearReset'](arg1);
+}
+
+export function GearRetract(arg1) {
+  return window['go']['main']['App']['GearRetract'](arg1);
+}
+
+export function GearStatus() {
+  return window['go']['main']['App']['GearStatus']();
+}
+
+export function GearStop(arg1) {
+  return window['go']['main']['App']['GearStop'](arg1);
 }
 
 export function GetConnectionInfo() {
@@ -214,12 +294,12 @@ export function GunVerboseSubscribe(arg1, arg2) {
   return window['go']['main']['App']['GunVerboseSubscribe'](arg1, arg2);
 }
 
-export function HeaterGetElement(arg1) {
-  return window['go']['main']['App']['HeaterGetElement'](arg1);
+export function HeaterGetElement(arg1, arg2) {
+  return window['go']['main']['App']['HeaterGetElement'](arg1, arg2);
 }
 
-export function HeaterSetElement(arg1, arg2) {
-  return window['go']['main']['App']['HeaterSetElement'](arg1, arg2);
+export function HeaterSetElement(arg1, arg2, arg3) {
+  return window['go']['main']['App']['HeaterSetElement'](arg1, arg2, arg3);
 }
 
 export function LandingActivate(arg1) {
@@ -250,6 +330,10 @@ export function ListPresetLibrary() {
   return window['go']['main']['App']['ListPresetLibrary']();
 }
 
+export function LoadGearConfig() {
+  return window['go']['main']['App']['LoadGearConfig']();
+}
+
 export function LoadGunFxConfig() {
   return window['go']['main']['App']['LoadGunFxConfig']();
 }
@@ -262,16 +346,16 @@ export function LogFrontend(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['LogFrontend'](arg1, arg2, arg3, arg4);
 }
 
-export function MotorGetElement(arg1) {
-  return window['go']['main']['App']['MotorGetElement'](arg1);
+export function MotorGetElement(arg1, arg2) {
+  return window['go']['main']['App']['MotorGetElement'](arg1, arg2);
 }
 
-export function MotorSetElement(arg1, arg2) {
-  return window['go']['main']['App']['MotorSetElement'](arg1, arg2);
+export function MotorSetElement(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MotorSetElement'](arg1, arg2, arg3);
 }
 
-export function MotorSetPct(arg1, arg2) {
-  return window['go']['main']['App']['MotorSetPct'](arg1, arg2);
+export function MotorSetPct(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MotorSetPct'](arg1, arg2, arg3);
 }
 
 export function OpenTextFile(arg1) {
@@ -290,8 +374,16 @@ export function RefreshDeviceModel() {
   return window['go']['main']['App']['RefreshDeviceModel']();
 }
 
+export function RemoveExpanderConfig(arg1) {
+  return window['go']['main']['App']['RemoveExpanderConfig'](arg1);
+}
+
 export function ResetLightFxProgram() {
   return window['go']['main']['App']['ResetLightFxProgram']();
+}
+
+export function SaveGearConfig(arg1) {
+  return window['go']['main']['App']['SaveGearConfig'](arg1);
 }
 
 export function SaveGunFxConfig(arg1) {
@@ -316,14 +408,6 @@ export function SelectLightFxProgram(arg1) {
 
 export function SendCommand(arg1) {
   return window['go']['main']['App']['SendCommand'](arg1);
-}
-
-export function ServoGetProfile(arg1) {
-  return window['go']['main']['App']['ServoGetProfile'](arg1);
-}
-
-export function ServoSetProfile(arg1, arg2) {
-  return window['go']['main']['App']['ServoSetProfile'](arg1, arg2);
 }
 
 export function ServoSetTarget(arg1, arg2, arg3) {

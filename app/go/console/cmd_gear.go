@@ -17,8 +17,6 @@ func init() {
 	register(&command{Name: "gear-stop", Usage: "gear-stop <id>", Help: "halt motion (motor brake)", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearStop})
 	register(&command{Name: "gear-all", Usage: "gear-all <stop|deploy|retract>", Help: "apply action to every configured gear", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearAll})
 	register(&command{Name: "gear-reset", Usage: "gear-reset <id>", Help: "clear a gear's error state (ERROR → retracted)", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearReset})
-	register(&command{Name: "gear-calibrate", Usage: "gear-calibrate <id>", Help: "run stall-endpoint calibration sweep", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearCalibrate})
-	register(&command{Name: "gear-calib-cancel", Usage: "gear-calib-cancel <id>", Help: "abort an in-progress calibration", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearCalibCancel})
 }
 
 func cmdGearList(a *App, _ []string) error {
@@ -55,10 +53,11 @@ func cmdGearStatus(a *App, _ []string) error {
 	}
 	Hdr("Gear")
 	for _, e := range st {
-		fmt.Fprintf(out, "  %s  %-12s (%s)\n",
+		fmt.Fprintf(out, "  %s  %-12s (%s)  %s\n",
 			cBold(cMagenta(fmt.Sprintf("[%2d]", e.ID))),
 			Phase(gear.PhaseName(e.Phase)),
-			gear.PhaseSummary(e.Phase))
+			gear.PhaseSummary(e.Phase),
+			gear.SubPhaseName(e.SubPhase))
 	}
 	return nil
 }
@@ -132,42 +131,6 @@ func cmdGearReset(a *App, args []string) error {
 		return err
 	}
 	Ok("gear[%d] error cleared → retracted", id)
-	return nil
-}
-
-func cmdGearCalibrate(a *App, args []string) error {
-	if err := a.requireClient(); err != nil {
-		return err
-	}
-	if len(args) != 1 {
-		return fmt.Errorf("usage: gear-calibrate <id>")
-	}
-	id, err := parseU8(args[0])
-	if err != nil {
-		return err
-	}
-	if err := a.c.Gear.Calibrate(id); err != nil {
-		return err
-	}
-	Ok("gear[%d] %s (retract→deploy→home; watch gear-status)", id, Phase("calibrating"))
-	return nil
-}
-
-func cmdGearCalibCancel(a *App, args []string) error {
-	if err := a.requireClient(); err != nil {
-		return err
-	}
-	if len(args) != 1 {
-		return fmt.Errorf("usage: gear-calib-cancel <id>")
-	}
-	id, err := parseU8(args[0])
-	if err != nil {
-		return err
-	}
-	if err := a.c.Gear.CalibrateCancel(id); err != nil {
-		return err
-	}
-	Ok("gear[%d] calibration cancelled", id)
 	return nil
 }
 

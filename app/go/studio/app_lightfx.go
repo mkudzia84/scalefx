@@ -504,13 +504,13 @@ func (a *App) PreviewLightChannel(
 	if loop {
 		wire[0].Flags |= roles.LightEventFlagsLoop
 	}
-	if err := c.Roles.LedQueueLoad(portIdx, wire); err != nil {
+	if err := c.Role("").LedQueueLoad(portIdx, wire); err != nil {
 		return fmt.Errorf("queue load: %w", err)
 	}
-	if err := c.Roles.LedSetBrightness(portIdx, brightnessPct); err != nil {
+	if err := c.Role("").LedSetBrightness(portIdx, brightnessPct); err != nil {
 		return fmt.Errorf("set brightness: %w", err)
 	}
-	if err := c.Roles.LedStart(portIdx); err != nil {
+	if err := c.Role("").LedStart(portIdx); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
 	a.diag.Info("LIGHTFX", "PreviewLightChannel port=%d events=%d loop=%v ok", portIdx, len(events), loop)
@@ -526,7 +526,7 @@ func (a *App) StopLightChannel(portIdx uint8) error {
 	if c == nil {
 		return fmt.Errorf("not connected")
 	}
-	if err := c.Roles.LedStop(portIdx); err != nil {
+	if err := c.Role("").LedStop(portIdx); err != nil {
 		return fmt.Errorf("stop: %w", err)
 	}
 	return nil

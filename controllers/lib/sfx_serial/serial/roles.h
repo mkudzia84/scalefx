@@ -89,6 +89,14 @@ namespace RolePacket {
         ///< async TAG_ASYNC: [portKind:u8][portIdx:u8]
         ///< Fired by the slave immediately after a successful
         ///< ROLE_DETACH (or after the keepalive watchdog clears state).
+    constexpr uint8_t ROLE_BULK_ATTACH = 0x57;  // (0x40..0x46 cluster full; 0x57 was the reserved free byte)
+        ///< [count:u8] × [portKind:u8][portIdx:u8][roleKind:u8][cfgLen:u8][cfg:cfgLen]
+        ///< → single ACK for the whole batch.  The DECLARATIVE expander-bringup
+        ///< push: the hub sends a board its FULL /hubfx.yaml role set in one
+        ///< packet at connect (replaces N racy single ROLE_ATTACH forwards).
+        ///< Each entry emits ROLE_ATTACHED so the master roster updates; an
+        ///< EMPTY block (count=0) is valid — an unconfigured board just gets no
+        ///< roles.  Per-entry failures are logged on the slave, not NACKed.
 
     /// Recoil impulse — adds a transient OFFSET to the servo's output for
     /// `duration_ms`, ON TOP of whatever the motion profile is doing (aiming or
@@ -151,6 +159,15 @@ namespace RolePacket {
     // (open end) / zero (close end).  See ServoActuatorRole::setNormalizedTarget().
     constexpr uint8_t SERVO_SET_POS_NORM    = 0x55;  ///< [portIdx:u8][pos:u16LE 0..10000] → ACK
     constexpr uint16_t kPosNormFull         = 10000; ///< pos == kPosNormFull → calibrated MAX end
+
+    /// async TAG_ASYNC: [portIdx:u8].  Fired on the RISING edge of the servo
+    /// role's `atTarget()` after a commanded move (motion complete) — the
+    /// MONITORED door-sequencing completion signal (gear undercarriage door
+    /// legs wait on it, never a timer; instructions/29 decision #1).  Distinct
+    /// from SERVO_TARGET_REACHED (0x4B, carries pos_us telemetry): this is the
+    /// lightweight per-door done event the gear DoorSequencer consumes.  0x56
+    /// (0x48..0x4F servo block is full; 0x57 = ROLE_BULK_ATTACH).
+    constexpr uint8_t SERVO_MOTION_DONE     = 0x56;  ///< async TAG_ASYNC: [portIdx:u8]
 
     // ── LED animator role (0x58..0x5E) ────────────────────────────────
     constexpr uint8_t LED_QUEUE_LOAD        = 0x58;  ///< [portIdx:u8][count:u8] × event(N bytes) → ACK
@@ -257,6 +274,8 @@ namespace RolePacket {
         ///<              d = maxTravel_ms (failsafe; 0 = use per-seek timeout)
         ///< window_ms is the sustained-over-threshold filter, shared by
         ///< both modes (0 = leave unchanged).
+        ///< [12:14] optional absolute over-current ceiling_mA (Rule 11; 0 = off).
+    // (0x56 = SERVO_MOTION_DONE; 0x57 = ROLE_BULK_ATTACH.)
 
     // ── SBUS input role (0x78..0x7B) ──────────────────────────────────
     constexpr uint8_t SBUS_GET_FRAME_REQ      = 0x78;  ///< [portIdx:u8] → SBUS_FRAME_RESP

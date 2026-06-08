@@ -124,16 +124,11 @@ public:
     /// Power-cycle root port to force re-enumeration of hub and all downstream
     /// devices. This disconnects everything momentarily then re-enumerates.
     /// Safe to call from any task context (uses vTaskDelay internally).
+    /// Auto-recovery is always armed when the recovery timer was created: if a
+    /// device disconnects and nothing reconnects within RECOVERY_TIMEOUT_MS, the
+    /// bus is power-cycled (on the worker task) to recover a hub port the
+    /// ESP-IDF ext_port driver disabled after a failed reset.
     void resetBus();
-
-    /// Enable/disable automatic bus recovery after disconnect.
-    /// When enabled (default), if a device disconnects and no new device
-    /// connects within RECOVERY_TIMEOUT_MS, the bus is automatically
-    /// power-cycled to recover disabled hub ports.
-    void setAutoRecovery(bool enabled);
-
-    /// Check if auto-recovery is enabled
-    bool autoRecoveryEnabled() const { return _autoRecovery; }
 
     // ========================================================================
     // Status
@@ -147,20 +142,33 @@ public:
     // --- Internal callback bridge (not part of public API) ------------------
     // Called from static C callbacks in esp_usb_host.cpp.
 
-    /// Pending device open request (queued from new_dev_cb, processed in open task)
-    struct PendingOpen {
-        uint16_t vid;
-        uint16_t pid;
+    /// Deferred USB work item, processed on the worker task (`usb_worker`) off
+    /// the USB-callback and timer-service contexts.  Two jobs share the queue:
+    ///   - OpenCdc:  cdc_acm_host_open() (queued from new_dev_cb — open is unsafe
+    ///               in USB-callback context).
+    ///   - BusReset: resetBus() root-port power-cycle (queued from the recovery
+    ///               timer — the deep HCD calls + 500 ms block must NOT run on the
+    ///               3120 B timer-service task; see requestBusReset()).
+    struct PendingWork {
+        enum class Kind : uint8_t { OpenCdc, BusReset };
+        Kind     kind = Kind::OpenCdc;
+        uint16_t vid  = 0;
+        uint16_t pid  = 0;
     };
 
-    /// Queue handle for deferred CDC opens (accessible to open task)
-    void* _openQueue = nullptr;          // QueueHandle_t for PendingOpen
+    /// Queue handle for deferred USB work (accessible to the worker task)
+    void* _workQueue = nullptr;          // QueueHandle_t for PendingWork
 
     /// Called from new_dev_cb — only peeks descriptors, queues open request
     void _handleNewDevice(void* usbDevHandle);
 
-    /// Called from open task — performs the actual CDC-ACM open (outside USB context)
+    /// Called from worker task — performs the actual CDC-ACM open (outside USB context)
     void _processOpenRequest(uint16_t vid, uint16_t pid);
+
+    /// Queue a deferred bus reset onto the worker task.  Safe to call from the
+    /// timer-service task (the recovery timer) — the heavy resetBus() then runs
+    /// on `usb_worker` (8 KB stack) instead of the 3120 B timer task.
+    void requestBusReset();
 
     void _handleCdcData(int slotIdx, const uint8_t* data, size_t len);
     void _handleCdcEvent(int slotIdx, int eventType);
@@ -221,14 +229,13 @@ private:
     void _queueEvent(const PendingEvent& ev);
 
     void* _daemonTaskHandle = nullptr;   // TaskHandle_t (opaque)
-    void* _openTaskHandle = nullptr;     // TaskHandle_t for deferred CDC open
+    void* _workTaskHandle = nullptr;     // TaskHandle_t for deferred USB work (open + bus reset)
     bool _driverInstalled = false;
     uint8_t _nextDevAddr = 1;            // Sequential device address counter
 
     // Bus recovery state
-    void* _recoveryTimer = nullptr;      // TimerHandle_t for auto-recovery
+    void* _recoveryTimer = nullptr;      // TimerHandle_t (null = recovery off)
     uint32_t _lastResetTimestamp_ms = 0; // SFX_MILLIS() of last bus reset
-    bool _autoRecovery = true;           // Auto-recovery enabled by default
 
     /// Common CDC session open logic — shared by _processOpenRequest and reopenCdcDevice.
     /// Returns assigned devAddr on success, 0 on failure.

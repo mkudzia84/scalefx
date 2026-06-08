@@ -57,11 +57,20 @@ static const char* TAG = "EspUsbHost";
  * FreeRTOS timer callback — fires when no device reconnects within
  * RECOVERY_TIMEOUT_MS after a disconnect. Triggers a root port power cycle
  * to recover disabled hub ports (the ESP-IDF ext_port driver disables ports
- * after a single failed reset attempt with no retry).
+ * after a single failed reset attempt with no retry — a real concern on the
+ * HubFX, which has a USB hub chip with downstream expander ports).
+ *
+ * This runs on the FreeRTOS timer-SERVICE task (CONFIG_FREERTOS_TIMER_TASK_
+ * STACK_DEPTH = 3120 B on HubFX), which is tiny.  TWO things must NOT happen on
+ * it: (1) resetBus()'s deep USB-HCD power-cycle — deferred to `usb_worker` via
+ * requestBusReset(); and (2) ANY DiagLog/UART logging — the DiagLog→emitLive→
+ * uart_write_bytes→ringbuffer path is ~2 KB deep and on its own overflowed this
+ * stack (DebugException via the end-of-stack watchpoint, 2026-06-07).  So this
+ * callback is UART-FREE: a single shallow, non-blocking queue-send.  The
+ * human-visible "bus reset" log comes from resetBus() on the worker task.
  */
 static void recoveryTimerCb(TimerHandle_t timer) {
-    SFX_LOG_WARN("[UsbHost] Recovery timeout — no reconnect detected, resetting bus");
-    EspUsbHost::instance().resetBus();
+    EspUsbHost::instance().requestBusReset();
 }
 
 /**
@@ -107,18 +116,28 @@ static void cdcNewDeviceCb(usb_device_handle_t usb_dev) {
 }
 
 /**
- * Deferred CDC-ACM open task — waits for PendingOpen requests from
- * the new_dev_cb and performs cdc_acm_host_open() outside USB context.
+ * Deferred USB worker task — drains PendingWork items that must run OFF the
+ * USB-callback context (cdc_acm_host_open) or OFF the tiny timer-service task
+ * (resetBus root-port power-cycle).  Both are deep/blocking and get their own
+ * adequately-sized stack here.
  */
-static void usbHostOpenTask(void* arg) {
-    SFX_LOG_INFO("[UsbHost] CDC open task started");
-    EspUsbHost::PendingOpen req;
+static void usbHostWorkerTask(void* arg) {
+    SFX_LOG_INFO("[UsbHost] Worker task started");
+    EspUsbHost::PendingWork req;
     while (true) {
-        // Block until a new device needs opening
-        if (xQueueReceive((QueueHandle_t)EspUsbHost::instance()._openQueue,
+        // Block until there's work (a device to open or a bus reset to run)
+        if (xQueueReceive((QueueHandle_t)EspUsbHost::instance()._workQueue,
                           &req, portMAX_DELAY) == pdTRUE) {
-            SFX_LOG_INFO("[UsbHost] Open task: processing VID=%04X PID=%04X", req.vid, req.pid);
-            EspUsbHost::instance()._processOpenRequest(req.vid, req.pid);
+            switch (req.kind) {
+                case EspUsbHost::PendingWork::Kind::OpenCdc:
+                    SFX_LOG_INFO("[UsbHost] Worker: opening VID=%04X PID=%04X", req.vid, req.pid);
+                    EspUsbHost::instance()._processOpenRequest(req.vid, req.pid);
+                    break;
+                case EspUsbHost::PendingWork::Kind::BusReset:
+                    SFX_LOG_INFO("[UsbHost] Worker: running deferred bus reset");
+                    EspUsbHost::instance().resetBus();
+                    break;
+            }
         }
     }
 }
@@ -196,14 +215,14 @@ void EspUsbHost::end() {
         _driverInstalled = false;
     }
 
-    // Stop open task and delete queue
-    if (_openTaskHandle) {
-        vTaskDelete((TaskHandle_t)_openTaskHandle);
-        _openTaskHandle = nullptr;
+    // Stop worker task and delete queue
+    if (_workTaskHandle) {
+        vTaskDelete((TaskHandle_t)_workTaskHandle);
+        _workTaskHandle = nullptr;
     }
-    if (_openQueue) {
-        vQueueDelete((QueueHandle_t)_openQueue);
-        _openQueue = nullptr;
+    if (_workQueue) {
+        vQueueDelete((QueueHandle_t)_workQueue);
+        _workQueue = nullptr;
     }
 
     // Stop daemon task
@@ -263,10 +282,16 @@ bool EspUsbHost::init() {
     }
 
     // Step 2: Start daemon task (processes HCD events: connect, disconnect, transfers)
+    // NOTE: the IDF Host-Library enumeration driver (control transfers, config +
+    // string descriptor parsing) runs ENTIRELY on this task's stack inside
+    // usb_host_lib_handle_events().  4096 B overflowed during live hot-plug
+    // enumeration → DoubleException (0x42) with a smashed SP (the daemon stack
+    // can't even save exception state).  8192 B carries enumeration + our logging
+    // with margin; high-water can be checked via printStatus().
     BaseType_t ret = xTaskCreatePinnedToCore(
         usbHostDaemonTask,
         "usb_daemon",
-        4096,                     // Stack size (bytes)
+        8192,                     // Stack size (bytes) — enumeration runs here
         nullptr,                  // No parameters
         2,                        // Low-ish priority — event routing only
         (TaskHandle_t*)&_daemonTaskHandle,
@@ -280,7 +305,10 @@ bool EspUsbHost::init() {
 
     // Step 3: Install CDC-ACM class driver (handles CDC enumeration + data)
     const cdc_acm_host_driver_config_t driver_config = {
-        .driver_task_stack_size = 4096,
+        // Runs new_dev_cb (descriptor peek) on connect + cdc_acm_host_close() on
+        // disconnect — both on this task.  Bumped 4096→6144 alongside the daemon
+        // stack fix for live hot-plug stability.
+        .driver_task_stack_size = 6144,
         .driver_task_priority = 5,
         .xCoreID = 0,                     // Core 0 (same as protocol handler)
         .new_dev_cb = cdcNewDeviceCb,      // Notified when any USB device connects
@@ -295,16 +323,19 @@ bool EspUsbHost::init() {
     }
     _driverInstalled = true;
 
-    // Step 4: Create queue + task for deferred CDC-ACM opens
-    // (new_dev_cb runs in USB context where cdc_acm_host_open is NOT safe)
-    _openQueue = (void*)xQueueCreate(USB_HOST_MAX_CDC_DEVICES, sizeof(PendingOpen));
+    // Step 4: Create queue + task for deferred USB work (CDC-ACM opens +
+    // bus resets — new_dev_cb runs in USB context where cdc_acm_host_open is
+    // NOT safe; the recovery timer runs on the tiny timer-service task where
+    // resetBus is NOT safe).  +1 slot so a bus-reset request always fits even
+    // when both CDC open slots are queued.
+    _workQueue = (void*)xQueueCreate(USB_HOST_MAX_CDC_DEVICES + 1, sizeof(PendingWork));
     // Deferred mount/unmount event queue drained by the loop (processPendingEvents).
     // Sized 2x slots so a quick disconnect+reconnect burst can't drop an event.
     if (_eventQueue == nullptr) {
         _eventQueue = (void*)xQueueCreate(USB_HOST_MAX_CDC_DEVICES * 2, sizeof(PendingEvent));
     }
-    if (!_openQueue || !_eventQueue) {
-        SFX_LOG_ERROR("[UsbHost] Failed to create open queue");
+    if (!_workQueue || !_eventQueue) {
+        SFX_LOG_ERROR("[UsbHost] Failed to create work queue");
         cdc_acm_host_uninstall();
         _driverInstalled = false;
         vTaskDelete((TaskHandle_t)_daemonTaskHandle);
@@ -314,18 +345,19 @@ bool EspUsbHost::init() {
     }
 
     ret = xTaskCreatePinnedToCore(
-        usbHostOpenTask,
-        "usb_open",
-        4096,                     // Stack size (bytes)
+        usbHostWorkerTask,
+        "usb_worker",
+        8192,                     // Stack size (bytes) — runs cdc_acm_host_open()
+                                  // AND resetBus()'s deep HCD root-port power-cycle
         nullptr,                  // No parameters
         3,                        // Between daemon (2) and CDC driver (5)
-        (TaskHandle_t*)&_openTaskHandle,
+        (TaskHandle_t*)&_workTaskHandle,
         0                         // Pin to Core 0 (same as protocol handler)
     );
     if (ret != pdPASS) {
-        SFX_LOG_ERROR("[UsbHost] Failed to create open task");
-        vQueueDelete((QueueHandle_t)_openQueue);
-        _openQueue = nullptr;
+        SFX_LOG_ERROR("[UsbHost] Failed to create worker task");
+        vQueueDelete((QueueHandle_t)_workQueue);
+        _workQueue = nullptr;
         cdc_acm_host_uninstall();
         _driverInstalled = false;
         vTaskDelete((TaskHandle_t)_daemonTaskHandle);
@@ -348,8 +380,8 @@ bool EspUsbHost::init() {
         SFX_LOG_WARN("[UsbHost] Failed to create recovery timer — auto-recovery disabled");
     }
 
-    SFX_LOG_INFO("[UsbHost] HW USB-OTG ready (CDC-ACM driver + open task installed, recovery=%s)",
-                 (_recoveryTimer && _autoRecovery) ? "on" : "off");
+    SFX_LOG_INFO("[UsbHost] HW USB-OTG ready (CDC-ACM driver + worker task installed, recovery=%s)",
+                 _recoveryTimer ? "on" : "off");
     return true;
 #endif // ESP_USB_HAS_CDC_ACM
 }
@@ -366,6 +398,19 @@ void EspUsbHost::process() {
 // ============================================================================
 // Bus Recovery
 // ============================================================================
+
+void EspUsbHost::requestBusReset() {
+    // Called from the FreeRTOS timer-service task (recovery timer) — MUST stay
+    // shallow and UART-free: no DiagLog (its UART write path is ~2 KB deep and
+    // overflows the 3120 B timer stack).  Just a non-blocking queue-send; the
+    // heavy resetBus() then runs on usb_worker (8 KB).  Drops are counted, not
+    // logged, so this path never touches the wire.
+    if (!_workQueue) return;
+    PendingWork req = { PendingWork::Kind::BusReset, 0, 0 };
+    if (xQueueSend((QueueHandle_t)_workQueue, &req, 0) != pdTRUE) {
+        _state.stats.hcd_errors++;   // queue full — drop silently (NO log here)
+    }
+}
 
 void EspUsbHost::resetBus() {
     if (!_state.taskRunning) {
@@ -407,16 +452,6 @@ void EspUsbHost::resetBus() {
 
     SFX_LOG_INFO("[UsbHost] Root port re-powered — hub and devices will re-enumerate");
 #endif
-}
-
-void EspUsbHost::setAutoRecovery(bool enabled) {
-    _autoRecovery = enabled;
-    SFX_LOG_INFO("[UsbHost] Auto-recovery %s", enabled ? "enabled" : "disabled");
-
-    // If disabling, cancel any pending recovery timer
-    if (!enabled && _recoveryTimer) {
-        xTimerStop((TimerHandle_t)_recoveryTimer, 0);
-    }
 }
 
 // ============================================================================
@@ -473,16 +508,16 @@ void EspUsbHost::_handleNewDevice(void* usbDevHandle) {
                  devName ? " — " : "", devName ? devName : "");
 
     // Queue the open request — cdc_acm_host_open() CANNOT be called from USB context
-    if (_openQueue) {
-        PendingOpen req = { vid, pid };
-        if (xQueueSend((QueueHandle_t)_openQueue, &req, 0) != pdTRUE) {
-            SFX_LOG_ERROR("[UsbHost] Open queue full — dropping device VID=%04X PID=%04X", vid, pid);
+    if (_workQueue) {
+        PendingWork req = { PendingWork::Kind::OpenCdc, vid, pid };
+        if (xQueueSend((QueueHandle_t)_workQueue, &req, 0) != pdTRUE) {
+            SFX_LOG_ERROR("[UsbHost] Work queue full — dropping device VID=%04X PID=%04X", vid, pid);
             _state.stats.enum_failures++;
         } else {
             SFX_LOG_INFO("[UsbHost] Queued open request for VID=%04X PID=%04X", vid, pid);
         }
     } else {
-        SFX_LOG_ERROR("[UsbHost] Open queue not created — cannot open device");
+        SFX_LOG_ERROR("[UsbHost] Work queue not created — cannot open device");
         _state.stats.enum_failures++;
     }
 }
@@ -719,7 +754,7 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
             // Start auto-recovery timer — if no new device connects within
             // RECOVERY_TIMEOUT_MS, power-cycle root port to recover disabled
             // hub ports. Skip if this disconnect was caused by our own bus reset.
-            if (_autoRecovery && _recoveryTimer) {
+            if (_recoveryTimer) {
                 uint32_t now = SFX_MILLIS();
                 if (now - _lastResetTimestamp_ms > RESET_COOLDOWN_MS) {
                     SFX_LOG_INFO("[UsbHost] Starting recovery timer (%lums) for auto bus reset",

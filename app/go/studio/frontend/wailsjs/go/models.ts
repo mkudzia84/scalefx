@@ -319,6 +319,7 @@ export namespace devicemodel {
 	    allowedRoles: RoleOption[];
 	    name: string;
 	    profile?: ServoMotionProfile;
+	    offline?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Port(source);
@@ -339,6 +340,7 @@ export namespace devicemodel {
 	        this.allowedRoles = this.convertValues(source["allowedRoles"], RoleOption);
 	        this.name = source["name"];
 	        this.profile = this.convertValues(source["profile"], ServoMotionProfile);
+	        this.offline = source["offline"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -902,6 +904,89 @@ export namespace main {
 	        this.boardStateDisplay = source["boardStateDisplay"];
 	    }
 	}
+	export class DiagBiMotorStatus {
+	    index: number;
+	    signedDuty: number;
+	    voltageMv: number;
+	    currentMa: number;
+	    stalled: boolean;
+	    position: number;
+	    positionName: string;
+	    guardMode: number;
+	    guardName: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagBiMotorStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.index = source["index"];
+	        this.signedDuty = source["signedDuty"];
+	        this.voltageMv = source["voltageMv"];
+	        this.currentMa = source["currentMa"];
+	        this.stalled = source["stalled"];
+	        this.position = source["position"];
+	        this.positionName = source["positionName"];
+	        this.guardMode = source["guardMode"];
+	        this.guardName = source["guardName"];
+	    }
+	}
+	export class DiagEndstopResult {
+	    outcome: number;
+	    outcomeName: string;
+	    travelMs: number;
+	    peakMa: number;
+	    position: number;
+	    positionName: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagEndstopResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.outcome = source["outcome"];
+	        this.outcomeName = source["outcomeName"];
+	        this.travelMs = source["travelMs"];
+	        this.peakMa = source["peakMa"];
+	        this.position = source["position"];
+	        this.positionName = source["positionName"];
+	    }
+	}
+	export class DiagCalibration {
+	    legA: DiagEndstopResult;
+	    legB: DiagEndstopResult;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagCalibration(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.legA = this.convertValues(source["legA"], DiagEndstopResult);
+	        this.legB = this.convertValues(source["legB"], DiagEndstopResult);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class DiagEvent {
 	    time: string;
 	    level: string;
@@ -920,6 +1005,52 @@ export namespace main {
 	        this.tag = source["tag"];
 	        this.message = source["message"];
 	        this.fields = source["fields"];
+	    }
+	}
+	export class DiagRole {
+	    portKind: number;
+	    portIdx: number;
+	    roleKind: number;
+	    portKindName: string;
+	    roleKindName: string;
+	    flags: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagRole(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.portKind = source["portKind"];
+	        this.portIdx = source["portIdx"];
+	        this.roleKind = source["roleKind"];
+	        this.portKindName = source["portKindName"];
+	        this.roleKindName = source["roleKindName"];
+	        this.flags = source["flags"];
+	    }
+	}
+	export class DiagServoProfile {
+	    minUs: number;
+	    maxUs: number;
+	    centerUs: number;
+	    reversed: boolean;
+	    maxSpeed: number;
+	    maxAccel: number;
+	    maxJerk: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiagServoProfile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.minUs = source["minUs"];
+	        this.maxUs = source["maxUs"];
+	        this.centerUs = source["centerUs"];
+	        this.reversed = source["reversed"];
+	        this.maxSpeed = source["maxSpeed"];
+	        this.maxAccel = source["maxAccel"];
+	        this.maxJerk = source["maxJerk"];
 	    }
 	}
 	export class EngineTransitions {
@@ -1185,6 +1316,145 @@ export namespace main {
 	        this.sdFreeMB = source["sdFreeMB"];
 	        this.sdCardType = source["sdCardType"];
 	        this.sdBusMode = source["sdBusMode"];
+	    }
+	}
+	export class GearDoorDTO {
+	    port: PortRefDTO;
+	    open: number;
+	    close: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new GearDoorDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = this.convertValues(source["port"], PortRefDTO);
+	        this.open = source["open"];
+	        this.close = source["close"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class GearChannelDTO {
+	    id: number;
+	    name: string;
+	    motor: PortRefDTO;
+	    deployDuty: number;
+	    retractDuty: number;
+	    timeoutMs: number;
+	    doors: GearDoorDTO[];
+	    doorMode: string;
+	    doorDelayMs: number;
+	    closePolicy: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GearChannelDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.motor = this.convertValues(source["motor"], PortRefDTO);
+	        this.deployDuty = source["deployDuty"];
+	        this.retractDuty = source["retractDuty"];
+	        this.timeoutMs = source["timeoutMs"];
+	        this.doors = this.convertValues(source["doors"], GearDoorDTO);
+	        this.doorMode = source["doorMode"];
+	        this.doorDelayMs = source["doorDelayMs"];
+	        this.closePolicy = source["closePolicy"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class GearConfig {
+	    schemaVersion: number;
+	    enabled: boolean;
+	    coord: string;
+	    gears: GearChannelDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GearConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schemaVersion = source["schemaVersion"];
+	        this.enabled = source["enabled"];
+	        this.coord = source["coord"];
+	        this.gears = this.convertValues(source["gears"], GearChannelDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class GearStatusEntry {
+	    id: number;
+	    phase: number;
+	    phaseName: string;
+	    subPhase: number;
+	    subPhaseName: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GearStatusEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.phase = source["phase"];
+	        this.phaseName = source["phaseName"];
+	        this.subPhase = source["subPhase"];
+	        this.subPhaseName = source["subPhaseName"];
 	    }
 	}
 	export class GunAxisDTO {
@@ -2080,30 +2350,6 @@ export namespace main {
 	        this.centerUs = source["centerUs"];
 	        this.reversed = source["reversed"];
 	        this.maxSpeedUsPerSec = source["maxSpeedUsPerSec"];
-	        this.maxAccelUsPerSec2 = source["maxAccelUsPerSec2"];
-	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];
-	    }
-	}
-	export class ServoProfileDTO {
-	    minUs: number;
-	    maxUs: number;
-	    maxSpeedUsPerSec: number;
-	    reversed: boolean;
-	    centerUs: number;
-	    maxAccelUsPerSec2: number;
-	    maxJerkUsPerSec3: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new ServoProfileDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.minUs = source["minUs"];
-	        this.maxUs = source["maxUs"];
-	        this.maxSpeedUsPerSec = source["maxSpeedUsPerSec"];
-	        this.reversed = source["reversed"];
-	        this.centerUs = source["centerUs"];
 	        this.maxAccelUsPerSec2 = source["maxAccelUsPerSec2"];
 	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];
 	    }

@@ -1559,16 +1559,23 @@ Every output port descriptor (`ports::pwm_array<>`, `ports::servo_array<>`, `por
 
 ### 40. Global Effect Clock — no raw millis() in the effect layer
 
-All effect-layer code (`controllers/hubfx/esp32s3/src/effects/**`, future GunFx ROF scheduler, fan puffing, heater bang-bang, yaw/pitch motion profiles, the existing EngineFx state machine, GearControl backstop arming, landing-light animator …) MUST read time from `sfx_core::EffectClock::instance()` — never raw `millis()` / `micros()`.
+All effect-layer code — both EFFECTS (`controllers/hubfx/esp32s3/src/effects/**`: GunFx ROF / fan puffing, EngineFx state machine, GearControl sequencing, landing-light animator …) and ROLES (`controllers/lib/sfx_board/roles/**`: ServoActuator `MotionProfile1D`, DcMotor stall window, LedAnimator, Heater bang-bang) — MUST read time from `sfx_core::EffectClock::instance()`, never raw `millis()` / `micros()`. Roles run on EVERY board, so this is what lets an expander's servo slew and its LEDs animate at all.
 
-**Wiring (mandatory in every controller's `loop()`):**
+**Wiring:** `BoardServer::process()` latches the clock AUTOMATICALLY (once per
+pass, before ticking the policies), so every board — hub AND every expander —
+gets it for free. A sketch only needs an explicit `latch()` if it reads the
+clock BEFORE `process()`:
 ```cpp
 void loop() {
-    sfx_core::EffectClock::instance().latch();   // ONCE per pass, BEFORE board.process()
-    board.process();
+    sfx_core::EffectClock::instance().latch();   // OPTIONAL — only if you read the clock pre-process()
+    board.process();                             // latches automatically before policy ticks
     // ...
 }
 ```
+This was a footgun before the framework did it: the GearControl sketch never
+latched, so its servos' `MotionProfile1D` saw `dtMs()==0` and never slewed
+(frozen position, 2026-06-08). Moving the latch into the shared `process()`
+fixed it for all boards and removed the per-sketch requirement.
 
 **Usage (in any effect tick):**
 ```cpp
@@ -1577,13 +1584,17 @@ const uint32_t now = sfx_core::EffectClock::instance().nowMs();
 const uint32_t dt  = sfx_core::EffectClock::instance().dtMs();   // delta since previous latch
 ```
 
-**Why:** a single main-loop pass runs EngineFx, GunFx, GearControl, landing-light animator, and potentially a smoke-fan puff scheduler. If each calls `millis()` independently, their notion of "now" drifts by microseconds — a ROF scheduler can fire a second shot before a fan puff has logged the first, motion profiles double-integrate when one reads time before and another after `vTaskDelay`, etc. Latching once at the top of the loop guarantees lockstep behaviour: every effect that ticks within the pass sees the same `nowMs()` and a consistent `dtMs()` for delta-time math (motion-profile `pos += vel * dt`, fade ramps, etc.).
+**Why — two distinct uses, one shared clock:**
+- **Local motion / state tracking** — `dtMs()` integration (servo `MotionProfile1D` `pos += vel*dt`, ROF, fan-puff, heater bang-bang, fade ramps) and `nowMs()` deadlines (DC-motor stall window, recoil de-jerk). Per-board, per-role.
+- **Cross-effect SYNCHRONISATION** — `nowMs()` as a shared phase reference so independent effects stay in lock-step. **LEDs are the canonical case:** `RoleServicePolicy::update()` samples `EffectClock::instance().nowMs()` ONCE and passes the same value to every `LedAnimator::tick(now)`, so multi-channel light programs are phase-locked to each other AND to every other effect on the clock (a strobe synced to an engine beat, landing lights synced to a servo deploy). Using raw `millis()` here — as LEDs did before 2026-06-08 — phase-locks LEDs only among themselves and lets them drift relative to everything else.
 
-**Scope:** EFFECT LAYER ONLY. Drivers, the bus, the keepalive, the upload state machine, codec init, sense pollers — these all keep using raw `millis()` (their cadence is independent of the effect tick). Adding a clock latch to them adds no value and creates a coupling we don't want.
+If each effect/role called `millis()` independently their "now" drifts by microseconds — a ROF scheduler fires before a fan puff logs, motion profiles double-integrate across a `vTaskDelay`, LED channels skew. Latching once per pass guarantees lockstep: every effect/role ticking in the pass sees the same `nowMs()` and a consistent `dtMs()`.
+
+**Scope:** EFFECT LAYER (effects + roles). Raw `millis()` stays for INFRASTRUCTURE whose cadence is independent of the effect tick — drivers, the bus, the keepalive, the upload state machine, codec init, sense pollers — **and** for a role's purely-LOCAL timing with no synchronisation need: `BiDcMotorRole`'s seek/stall deadlines are per-motor local tracking on raw `SFX_MILLIS()` and intentionally stay there (no cross-effect phase to hold). The line is: if it integrates motion, or needs to stay in phase with other effects, it's on the EffectClock; if it's an independent local timeout/cadence, raw `millis()` is fine.
 
 **Singleton:** `sfx_core::EffectClock` is a function-local-static thread-safe singleton (C++11+); access only via `EffectClock::instance()`. Header: [controllers/lib/sfx_board/server/effect_clock.h](../controllers/lib/sfx_board/server/effect_clock.h). Idempotent within a tick — extra `latch()` calls when `millis()` hasn't advanced are no-ops, so a misordered call doesn't shift the clock mid-tick.
 
-Phase 0.5 of the GunFX rollout introduced the clock + retrofitted 11 call sites in `effects/`. New effects start from this rule; any future `millis()` call in `effects/**` is a Rule 40 violation. Full rollout context: [22-GUNFX-FEATURE-ROLLOUT.md § Phase 0.5](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
+Phase 0.5 of the GunFX rollout introduced the clock + retrofitted 11 call sites in `effects/`; 2026-06-08 brought the latch into `BoardServer::process()` (fixing frozen expander servos) and moved the LED shared clock onto it (synchronisation). New effects/roles start from this rule; a `millis()` call in `effects/**` or in a `roles/**` tick that integrates motion or needs phase-sync is a Rule 40 violation (a role's independent local timeout — e.g. BiDcMotor seek — is the documented exception). Full rollout context: [22-GUNFX-FEATURE-ROLLOUT.md § Phase 0.5](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
 
 ### 42. Actuator Mechanism Lives on the Role, Not the Effect
 
@@ -2342,6 +2353,76 @@ same-target storage ops NACK before the lock (no deadlock; SD and flash hold
 `handleUploadBegin` / `checkUploadTimeout`, `UPLOAD_TIMEOUT_MS` in
 [storage_service.h](../controllers/lib/sfx_storage/server/storage_service.h),
 [storage.go](../app/go/client/storage.go) `FileUpload`.
+
+### 58. Transparent Expander Roles — Opaque, PortRef-Addressed Transport
+
+An expander's roles (servo, bi-dc-motor, LED, heater, DC-motor, **and any future
+board's roles**) MUST behave **identically to hub-local roles** for the operator
+(CLI + Studio): drive, query status, receive telemetry — all routed through the
+hub by GUID. The whole stack is built so a **new role or board plugs in via its
+PACKET CODEC ONLY** — never per-role transport, forwarding, event, or UI-routing
+code. The hub never gets a per-role `switch`.
+
+**The addressing primitive** is `PortRef{guid, kind, idx}`: `guid == ""` → the
+hub itself; any other GUID → that expander. `TopologyService::isLocalTarget`
+also folds the hub's OWN identity GUID → local, so either form lands right.
+
+**Four generic, role-AGNOSTIC wire primitives** (the hub forwards the inner role
+packet as opaque bytes — it does NOT decode it):
+- **Command** — `TOPOLOGY_ROLE_FORWARD` (0x8F): fire-and-forget, ACK/NACK.
+- **Query** — `TOPOLOGY_ROLE_QUERY` → `TOPOLOGY_ROLE_RESPONSE` (0xA6/0xA7): a role
+  `*_GET_*_REQ` routed local (server **capture mode** snapshots the typed RESP —
+  `BoardServerBase::captureRawIfNeeded`) or remote (`forwardQuery` →
+  `BusClient::sendQueryAnyBlocking`, "any typed reply"), re-wrapped with the GUID.
+- **Telemetry** — `TOPOLOGY_ROLE_EVENT` (0x8E): the expander's async role events
+  re-emitted upward with their source GUID.
+- **Bringup config** — `ROLE_BULK_ATTACH` (0x57): the full role set pushed
+  declaratively at connect (the standard expander pattern — see the role
+  re-attach bullet in CLAUDE.md).
+
+**Go side mirrors the same opacity:**
+- `client.RoleTarget` (`c.Role(guid)`) routes EVERY drive/query transparently
+  (local vs forward) and reuses the existing `roles.CmdXxx` builders +
+  `DecodeXxx` decoders via `protocol.ParsePacket` — so adding a role's
+  transparent path is a one-line wrapper. There is exactly ONE role-I/O path;
+  the old duplicate `Topology.ServoSetTargetOn`/etc. AND the hub-only
+  `c.Roles.ServoSetProfile`/`MotorSetElement`/`BiMotorMoveToEnd`/… drive+query
+  methods were removed. **`c.Roles` is now LIFECYCLE-ONLY** (`Attach`/`Detach`/
+  `List` — the GUID-less bench path on the directly-connected board) plus the
+  shared struct re-exports; every read/write of live role state goes through
+  `c.Role(guid)`. Do NOT add a new drive/query method to `c.Roles` — it belongs
+  on `RoleTarget`.
+- Role telemetry is GENERIC: `Events.OnRole(innerType, fn(guid, payload))` + the
+  catch-all `OnRoleEvent` carry EVERY role's DISCRETE events (stall, endstop,
+  reached, done, attached/detached), hub-local OR expander, decoded by the
+  matching `roles.DecodeXxx`. High-rate STREAMS (RC frames, servo-motion) keep
+  their dedicated typed subscriptions (`OnInputValue`/`OnServoMotion`) and are
+  kept OUT of the catch-all so it stays readable. **Event subscription is
+  trap-proof:** `subscribe[T]` / `snapshot[T]` are Go-generic — the old
+  hand-maintained type-switch `add()` silently dropped new events twice
+  (`InputValue`, `ServoMotion`); a new typed event or role can no longer no-op.
+
+**Smart routing:** the expander telemetry re-emit (`onExpanderAsync`) is gated on
+`hostVerboseActive()` — no PC attached → the hub does NOT flood the wire, but the
+master-internal C++ fan-out stays UNGATED so on-hub effects always consume
+expander telemetry locally.
+
+**CLI convention:** every role drive/query command takes a trailing `guid=XXXX`
+keyword (never positional — a GUID like `3225` is indistinguishable from a duty
+value); default/`hub` = the hub. e.g. `servo-set 0 1600 guid=3225`,
+`bimotor-status 0 guid=3225`.
+
+**Rule:** to expose a role through this stack, add its packet codec
+(`protocol/roles` + the firmware role handler) and a one-line `RoleTarget`
+wrapper — nothing else. NEVER add a per-role case to the hub's TopologyService,
+to the forward/query/event transport, or to the Go event type-switch. Input
+ports are HubFX-only (no expander input). References:
+[topology_service.ipp](../controllers/hubfx/esp32s3/src/topology/topology_service.ipp)
+(`handleRoleForward`/`handleRoleQuery`/`onExpanderAsync`),
+[roletarget.go](../app/go/client/roletarget.go),
+[events.go](../app/go/client/events.go) (`subscribe`/`OnRole`/`dispatchRole`),
+[board_server.h](../controllers/lib/sfx_board/server/board_server.h)
+(`captureRawIfNeeded`).
 
 ### Client-Server Topology
 ```

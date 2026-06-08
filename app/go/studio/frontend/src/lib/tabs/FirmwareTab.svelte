@@ -4,6 +4,7 @@
     import { connectionInfo, firmwareTargets, firmwareRunning, firmwareLogs, boardState, connectPopupOpen, availableReleases, showFlashProgress, flashResult } from '../stores'
     import type { FirmwareTarget, ReleaseInfo } from '../stores'
     import { GetFirmwareTargets, GetReleases, FlashFromRelease, DeviceSystemInfo, AudioPreloads, QueryDeviceStatus } from '../../../wailsjs/go/main/App'
+    import { boardKindOf } from '../devicemodel'
     import { onMount, onDestroy, tick } from 'svelte'
 
     // ── Board capability + topology view (DeviceSystemInfo) ──────────
@@ -12,6 +13,12 @@
     let deviceInfo: any = null
     let deviceInfoErr = ''
     let lastInfoKey = ''
+
+    // Audio asset cache is meaningful only on a board that advertises AUDIO
+    // (the HubFX master). An expander (gearcontrol) has no audio — its
+    // AudioPreloads() comes back with entries=null, so gate the section off
+    // rather than rendering an empty cache (and crashing on entries.length).
+    $: hasAudio = !!deviceInfo?.capabilityNames?.includes?.('AUDIO')
 
     async function loadDeviceInfo() {
         if (!$connectionInfo.connected) { deviceInfo = null; deviceInfoErr = ''; return }
@@ -228,6 +235,81 @@
         return map
     }
 
+    // ── Per-board firmware status (hub + every connected expander) ──────
+    //
+    // Firmware versions on the wire carry a controller suffix
+    // ("2.22.1-hubfx"); GitHub release versions don't ("2.22.1").  normVer
+    // strips the suffix so the naive numeric compareVersions doesn't choke
+    // on "1-hubfx" → NaN (which silently misreported "newer on device").
+    function normVer(v: string): string {
+        return (v || '').split('-')[0].replace(/^v/, '')
+    }
+
+    type FwStatus = 'current' | 'update' | 'newer' | 'unknown'
+    interface BoardFw {
+        name: string; guid: string; controller: string
+        version: string; build: number | string
+        latest: string; latestTag: string; prerelease: boolean
+        status: FwStatus; isHub: boolean
+    }
+
+    function fwStatusOf(version: string, latest: string): FwStatus {
+        if (!latest || !version) return 'unknown'
+        const c = compareVersions(normVer(latest), normVer(version))
+        return c > 0 ? 'update' : c === 0 ? 'current' : 'newer'
+    }
+
+    // The connected hub + each identified expander, joined to the latest
+    // release for that board kind.  Drives the "Board Firmware" overview.
+    $: boardFwList = buildBoardFwList($connectionInfo, deviceInfo, releasesByController)
+    function buildBoardFwList(conn: any, info: any, latestMap: Map<string, ReleaseInfo>): BoardFw[] {
+        const out: BoardFw[] = []
+        const mk = (name: string, guid: string, controller: string, version: string, build: number | string, isHub: boolean): BoardFw => {
+            const rel = latestMap.get(controller)
+            return {
+                name: name || controller || '—', guid, controller,
+                version: version || '?', build: (build ?? '?'),
+                latest: rel?.version ?? '', latestTag: rel?.tag ?? '', prerelease: rel?.prerelease ?? false,
+                status: fwStatusOf(version, rel?.version ?? ''), isHub,
+            }
+        }
+        if (conn?.connected) {
+            const hubGuid = info?.system?.hub?.guid ?? ''
+            out.push(mk(conn.controllerName, hubGuid, conn.controllerType || '', conn.firmwareVersion, conn.build, true))
+        }
+        const exps = info?.system?.expanders ?? []
+        for (const e of exps) {
+            if (!e?.identified) continue
+            const controller = boardKindOf(e.kindName || e.deviceName || '')
+            out.push(mk(e.deviceName || e.kindName || controller, e.guid || '', controller, e.firmwareVersion, e.buildNumber, false))
+        }
+        return out
+    }
+    // Boards that are behind their latest release — the headline "issue".
+    $: outdatedBoards = boardFwList.filter(b => b.status === 'update')
+
+    // Firmware status for one board GUID (joins ports↔system) — used to
+    // annotate the System Topology rows.  "" guid ⇒ the hub.
+    function fwForGuid(guid: string): BoardFw | undefined {
+        if (guid) return boardFwList.find(b => b.guid === guid)
+        return boardFwList.find(b => b.isHub) // empty guid in the topology list = hub
+    }
+    function fwBadgeLabel(s: FwStatus): string {
+        switch (s) {
+            case 'current': return 'up to date'
+            case 'update':  return 'update available'
+            case 'newer':   return 'dev build'
+            default:        return 'no release info'
+        }
+    }
+
+    // "Update" affordance: pre-select this board's controller + latest
+    // release in the flash controls below (then the operator hits Flash).
+    function selectForFlash(b: BoardFw): void {
+        if (!b.controller) return
+        selectedController = b.controller
+    }
+
     async function startFlash() {
         if (!selectedRelease || $firmwareRunning) return
         boardState.set('flashing')
@@ -276,6 +358,62 @@
         {/if}
     </section>
 
+    <!-- Board Firmware — per-board version + up-to-date status (hub + every
+         connected expander), checked against the latest GitHub release for
+         each board kind.  This is the at-a-glance "is anything out of date?". -->
+    {#if $connectionInfo.connected && boardFwList.length}
+        <section class="info-section">
+            <div class="section-header">
+                <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg> Board Firmware</h3>
+                <button class="btn-refresh" on:click={() => { loadDeviceInfo(); fetchAllReleases() }} disabled={fetchingReleases}>
+                    {fetchingReleases ? 'Checking…' : 'Refresh'}
+                </button>
+            </div>
+
+            {#if outdatedBoards.length}
+                <div class="fw-issues">
+                    <strong>{outdatedBoards.length} board{outdatedBoards.length > 1 ? 's' : ''}</strong>
+                    {outdatedBoards.length > 1 ? 'have' : 'has'} a newer release available:
+                    {outdatedBoards.map(b => `${b.name} (v${normVer(b.version)} → v${b.latest})`).join(', ')}.
+                </div>
+            {/if}
+
+            <table class="info-table fw-table">
+                <thead>
+                    <tr><th>Board</th><th>GUID</th><th>Version</th><th>Build</th><th>Latest</th><th>Status</th><th></th></tr>
+                </thead>
+                <tbody>
+                    {#each boardFwList as b (b.isHub ? 'hub' : b.guid)}
+                        <tr class:fw-stale={b.status === 'update'}>
+                            <td>
+                                {b.name}
+                                {#if b.isHub}<span class="role-tag">hub</span>{:else}<span class="role-tag exp">expander</span>{/if}
+                            </td>
+                            <td class="mono text-dim">{b.guid || '—'}</td>
+                            <td class="mono">v{normVer(b.version)}</td>
+                            <td class="mono text-dim">{b.build}</td>
+                            <td class="mono">{b.latest ? `v${b.latest}${b.prerelease ? ' (pre)' : ''}` : '—'}</td>
+                            <td>
+                                <span class="badge badge-{b.status}">{fwBadgeLabel(b.status)}</span>
+                            </td>
+                            <td>
+                                {#if b.status === 'update'}
+                                    {#if b.isHub}
+                                        <button class="btn-update small" on:click={() => selectForFlash(b)}
+                                                title="Select {b.controller} + its latest release in the flash controls below">⚡ Update…</button>
+                                    {:else}
+                                        <span class="text-dim small" title="An expander is flashed by connecting it directly to this PC, not through the hub">flash directly</span>
+                                    {/if}
+                                {/if}
+                            </td>
+                        </tr>
+                    {/each}
+                </tbody>
+            </table>
+            {#if fetchError}<p class="fetch-error">Release check failed: {fetchError}</p>{/if}
+        </section>
+    {/if}
+
     <!-- Board Capabilities (from IDENTIFY) -->
     {#if $connectionInfo.connected}
         <section class="info-section">
@@ -303,10 +441,15 @@
                 {#if deviceInfo.ports?.length}
                     {#each deviceInfo.ports as board}
                         {@const bat = batteryFor(board.guid)}
+                        {@const fw = fwForGuid(board.guid)}
                         <div class="board-block">
                             <div class="board-head">
                                 <span class="board-name">{board.deviceName || board.guid || 'hub'}</span>
                                 <span class="mono text-dim">[{board.guid || 'hub'}]</span>
+                                {#if fw}
+                                    <span class="fw-chip mono" title="Firmware version (build {fw.build})">v{normVer(fw.version)}</span>
+                                    <span class="badge badge-{fw.status}" title={fw.latest ? `latest release v${fw.latest}` : 'no GitHub release for this board kind'}>{fwBadgeLabel(fw.status)}</span>
+                                {/if}
                                 {#if bat}<span class="batt-pill" class:warn={bat.flags & 0x03}>{fmtBattery(bat)}</span>{/if}
                             </div>
                             <div class="port-rows">
@@ -325,8 +468,8 @@
         {/if}
     {/if}
 
-    <!-- Audio asset preload cache (PSRAM residency view) -->
-    {#if $connectionInfo.connected}
+    <!-- Audio asset preload cache (PSRAM residency view) — AUDIO boards only -->
+    {#if $connectionInfo.connected && hasAudio}
         <section class="info-section">
             <div class="section-header">
                 <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg> Audio Asset Cache</h3>
@@ -339,7 +482,7 @@
                 <p class="fetch-error">{preloadsErr}</p>
             {:else if !preloads}
                 <p class="no-data">No data yet</p>
-            {:else if preloads.entries.length === 0}
+            {:else if !preloads.entries?.length}
                 <p class="no-data">Cache empty — no audio assets registered</p>
             {:else}
                 <div class="preload-summary">
@@ -685,6 +828,23 @@
         background: var(--badge-older-bg);
         color: var(--badge-older-fg);
     }
+
+    /* Board-firmware status palette (overview + topology rows). */
+    .badge-update  { background: var(--badge-update-bg); color: var(--badge-update-fg); }
+    .badge-current { background: var(--badge-current-bg); color: var(--badge-current-fg); }
+    .badge-newer   { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+    .badge-unknown { background: var(--bg-raised); color: var(--text-dim); }
+
+    /* Board Firmware overview */
+    .fw-issues { background: color-mix(in srgb, var(--warning) 12%, transparent); border: 1px solid var(--warning); color: var(--text); border-radius: 4px; padding: 7px 10px; font-size: 12px; margin-bottom: 10px; }
+    .fw-table th, .fw-table td { vertical-align: middle; }
+    .fw-table tr.fw-stale td { background: color-mix(in srgb, var(--warning) 7%, transparent); }
+    .role-tag { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; padding: 1px 5px; border-radius: 3px; margin-left: 6px; background: var(--bg-raised); color: var(--text-dim); border: 1px solid var(--border); }
+    .role-tag.exp { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+    .fw-chip { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--bg-raised); color: var(--text); border: 1px solid var(--border); }
+    .btn-update { background: var(--badge-update-bg); color: var(--badge-update-fg); border: 1px solid var(--warning); border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px; font-weight: 600; }
+    .btn-update:hover { filter: brightness(1.1); }
+    .small { font-size: 11px; }
 
     .text-dim {
         color: var(--text-dim);

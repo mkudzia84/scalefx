@@ -3,6 +3,7 @@
  */
 
 #include "role_service.h"
+#include "effect_clock.h"            // sfx_core::EffectClock — shared synchronised clock
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <motion/servo_profile_wire.h>  // the one servo-profile wire codec
 
@@ -18,6 +19,7 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
 
     switch (type) {
         case RolePacket::ROLE_ATTACH:           handleAttach(p, len);              break;
+        case RolePacket::ROLE_BULK_ATTACH:      handleBulkAttach(p, len);           break;
         case RolePacket::ROLE_DETACH:           handleDetach(p, len);              break;
         case RolePacket::ROLE_LIST_REQ:         handleList();                       break;
 
@@ -86,9 +88,12 @@ void RoleServicePolicy::update() {
 
     // One shared clock for the whole pass — every LedAnimator samples the
     // SAME instant, so multi-channel light programs stay phase-locked
-    // regardless of how long the per-channel I²C writes take or how
-    // jittery the main loop is.  (See LedAnimator::tick.)
-    const uint32_t now = SFX_MILLIS();
+    // regardless of how long the per-channel I²C writes take or how jittery the
+    // main loop is.  Sourced from the EffectClock (latched once per process()
+    // pass) — NOT raw SFX_MILLIS() — so LED animation is synchronised with
+    // every OTHER effect/role on the same clock (servo motion, engine, etc.),
+    // not just phase-locked among LEDs.  (See LedAnimator::tick.)
+    const uint32_t now = sfx_core::EffectClock::instance().nowMs();
 
     for (uint8_t i = 0; i < _reg->numServoPorts(); i++) {
         auto* b = _reg->servoAt(i);
@@ -179,67 +184,103 @@ void RoleServicePolicy::emitServoBroadcast(uint32_t now) {
 
 // ── ROLE_ATTACH / ROLE_DETACH / ROLE_LIST ───────────────────────────
 
-void RoleServicePolicy::handleAttach(const uint8_t* p, size_t len) {
-    if (len < 4) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-    const uint8_t portKind  = p[0];
-    const uint8_t portIdx   = p[1];
-    const uint8_t roleKind  = p[2];
-    const uint8_t cfgLen    = p[3];
-    if (len < (size_t)4 + cfgLen) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-    const uint8_t* cfg = &p[4];
-
+// applyAttach attaches ONE role without touching the wire (no ACK/NACK).
+// Returns 0 on success (and emits ROLE_ATTACHED), else the wire error code.
+// Shared by handleAttach (single, ACKs the result) and handleBulkAttach (many,
+// one ACK for the batch) so the per-kind dispatch lives in exactly one place.
+uint8_t RoleServicePolicy::applyAttach(uint8_t portKind, uint8_t portIdx,
+                                       uint8_t roleKind, const uint8_t* cfg,
+                                       uint8_t cfgLen) {
     bool ok = false;
     switch (portKind) {
         case PortKind::Servo: {
             auto* b = _reg->servoAt(portIdx);
-            if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+            if (!b || !b->occupied()) return PortError::PORT_NOT_FOUND;
             switch (roleKind) {
                 case RoleKind::ServoActuator: ok = attachServoActuator(*b, portIdx, cfg, cfgLen); break;
-                default: _ctx->sendNack(RoleError::ROLE_KIND_NOT_SUPPORTED); return;
+                default: return RoleError::ROLE_KIND_NOT_SUPPORTED;
             }
             break;
         }
         case PortKind::Pwm: {
             auto* b = _reg->pwmAt(portIdx);
-            if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+            if (!b || !b->occupied()) return PortError::PORT_NOT_FOUND;
             switch (roleKind) {
                 case RoleKind::LedAnimator: ok = attachLedAnimator(*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::DcMotor:     ok = attachDcMotor    (*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::Heater:      ok = attachHeater     (*b, portIdx, cfg, cfgLen); break;
-                default: _ctx->sendNack(RoleError::ROLE_KIND_NOT_SUPPORTED); return;
+                default: return RoleError::ROLE_KIND_NOT_SUPPORTED;
             }
             break;
         }
         case PortKind::HBridge: {
             auto* b = _reg->hbridgeAt(portIdx);
-            if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+            if (!b || !b->occupied()) return PortError::PORT_NOT_FOUND;
             switch (roleKind) {
                 case RoleKind::BiDcMotor: ok = attachBiDcMotor(*b, portIdx, cfg, cfgLen); break;
-                default: _ctx->sendNack(RoleError::ROLE_KIND_NOT_SUPPORTED); return;
+                default: return RoleError::ROLE_KIND_NOT_SUPPORTED;
             }
             break;
         }
         case PortKind::Input: {
             auto* b = _reg->inputAt(portIdx);
-            if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
+            if (!b || !b->occupied()) return PortError::PORT_NOT_FOUND;
             switch (roleKind) {
                 case RoleKind::RcPwmInput:  ok = attachRcPwmInput (*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::SbusInput:   ok = attachSbusInput  (*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::JetiExInput: ok = attachJetiExInput(*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::JetiExTelemetry: ok = attachJetiExTelemetry(*b, portIdx, cfg, cfgLen); break;
-                default: _ctx->sendNack(RoleError::ROLE_KIND_NOT_SUPPORTED); return;
+                default: return RoleError::ROLE_KIND_NOT_SUPPORTED;
             }
             break;
         }
-        default: _ctx->sendNack(PortError::PORT_NOT_FOUND); return;
+        default: return PortError::PORT_NOT_FOUND;
     }
+    if (!ok) return RoleError::ROLE_CONFIG_INVALID;
+    emitRoleAttached(portKind, portIdx, roleKind);
+    return 0;
+}
 
-    if (ok) {
-        _ctx->sendAck();
-        emitRoleAttached(portKind, portIdx, roleKind);
-    } else {
-        _ctx->sendNack(RoleError::ROLE_CONFIG_INVALID);
+void RoleServicePolicy::handleAttach(const uint8_t* p, size_t len) {
+    if (len < 4) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t cfgLen = p[3];
+    if (len < (size_t)4 + cfgLen) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t err = applyAttach(p[0], p[1], p[2], &p[4], cfgLen);
+    if (err == 0) _ctx->sendAck();
+    else          _ctx->sendNack(err);
+}
+
+// handleBulkAttach applies a FULL role set in one packet — the declarative
+// expander-bringup path (the hub pushes the board's whole /hubfx.yaml role
+// config at connect instead of N racy single attaches).  Payload:
+//   [count:u8] { [portKind][portIdx][roleKind][cfgLen][cfg:cfgLen] } × count
+// Each entry applies via applyAttach (emitting ROLE_ATTACHED so the hub roster
+// updates).  ONE ACK for the batch — partial per-entry failures are logged but
+// don't fail bringup (a missing/incompatible port shouldn't wedge the board).
+void RoleServicePolicy::handleBulkAttach(const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t count = p[0];
+    size_t off = 1;
+    uint8_t applied = 0, failed = 0;
+    for (uint8_t i = 0; i < count; ++i) {
+        if (off + 4 > len) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+        const uint8_t portKind = p[off], portIdx = p[off + 1],
+                      roleKind = p[off + 2], cfgLen = p[off + 3];
+        off += 4;
+        if (off + cfgLen > len) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+        const uint8_t err = applyAttach(portKind, portIdx, roleKind, &p[off], cfgLen);
+        off += cfgLen;
+        if (err == 0) ++applied;
+        else {
+            ++failed;
+            SFX_LOG_WARN("[role] bulk attach #%u {kind=%u idx=%u}->%u err=0x%02X",
+                         (unsigned)i, (unsigned)portKind, (unsigned)portIdx,
+                         (unsigned)roleKind, (unsigned)err);
+        }
     }
+    _ctx->sendAck();
+    SFX_LOG_INFO("[role] bulk role-config applied: %u ok, %u failed",
+                 (unsigned)applied, (unsigned)failed);
 }
 
 void RoleServicePolicy::handleDetach(const uint8_t* p, size_t len) {
@@ -366,6 +407,11 @@ bool RoleServicePolicy::attachServoActuator(ServoBinding& b, uint8_t portIdx,
     role.setReversed(prof.inverted);
     role.setProfile(prof);
     role.onTargetReached([this, portIdx](uint16_t pos) { emitServoTargetReached(portIdx, pos); });
+    // SERVO_MOTION_DONE — monitored completion for gear door sequencing
+    // (instructions/29 decision #1).  Same rising edge as TARGET_REACHED;
+    // a separate, lighter [portIdx] async the hub gear service routes to
+    // the right Gear's DoorSequencer.
+    role.onMotionDone([this, portIdx]() { emitServoMotionDone(portIdx); });
     SFX_LOG_INFO("[servo] attach idx=%u  min=%u max=%u rev=%u  (cfgLen=%u)",
                  (unsigned)portIdx, (unsigned)role.profile().minUs,
                  (unsigned)role.profile().maxUs, (unsigned)prof.inverted, (unsigned)cfgLen);
@@ -1147,6 +1193,9 @@ void RoleServicePolicy::handleBiMotorSetGuard(const uint8_t* p, size_t len) {
         _ctx->sendNack(RoleError::ROLE_CONFIG_INVALID);
         return;
     }
+    // Rule 11 append: optional absolute over-current ceiling at [12:14]
+    // (LiveRatio backstop; 0 = none).  Old clients omit it.
+    if (len >= 14) r->setAbsoluteCeiling(SfxWire::getU16LE(&p[12]));
     _ctx->sendAck();
 }
 
@@ -1239,6 +1288,12 @@ void RoleServicePolicy::emitServoTargetReached(uint8_t portIdx, uint16_t pos_us)
     SfxWire::putU16LE(&buf[1], pos_us);
     _ctx->sendRawPacket(RolePacket::SERVO_TARGET_REACHED, SfxWire::TAG_ASYNC, buf, sizeof buf);
     fireLocalAsync(RolePacket::SERVO_TARGET_REACHED, buf, sizeof buf);
+}
+
+void RoleServicePolicy::emitServoMotionDone(uint8_t portIdx) {
+    uint8_t buf[1] = { portIdx };
+    _ctx->sendRawPacket(RolePacket::SERVO_MOTION_DONE, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    fireLocalAsync(RolePacket::SERVO_MOTION_DONE, buf, sizeof buf);
 }
 
 void RoleServicePolicy::emitMotorStallEvent(uint8_t portIdx, uint16_t peak_mA, uint16_t duration_ms) {

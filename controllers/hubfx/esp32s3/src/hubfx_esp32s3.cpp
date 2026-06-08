@@ -59,8 +59,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.22.0-hubfx"
-#define BUILD_NUMBER     787
+#define FIRMWARE_VERSION "2.23.0-hubfx"
+#define BUILD_NUMBER     821
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -80,6 +80,7 @@
 #include "hubfx_i2c.h"            // hubI2cBus() (native I2C bus)
 #include <esp_heap_caps.h>     // memory-instrumentation helper (Phase 4 polish 2026-05-27)
 #include <esp_psram.h>
+#include <esp_system.h>        // esp_reset_reason() — boot-time reset diagnosis
 
 // Phase 5 of feature/idf-component-build (2026-05-28): pull esp-dsp's
 // hand-tuned Xtensa LX7 SIMD into the build link graph.  The header is
@@ -896,11 +897,37 @@ void setup() {
     // port — the config is GUID-addressed, not slot-addressed.
     exp.onReady([](const hubfx::expanders::ExpanderEntry& e) {
         auto& topo = board.policy<HubFxTopologyService>();
-        const uint8_t n = hubfx::config::attachPortRolesForGuid(
-            topo, kHubFx.data(), e.spec.guid);
-        if (n) {
-            SFX_LOG_INFO("[hubfx-config] applied %u configured role(s) to %s on connect",
-                         (unsigned)n, e.spec.guid);
+        // Declarative bringup (the standard expander pattern): push the board's
+        // FULL /hubfx.yaml role set in ONE ROLE_BULK_ATTACH packet.  Atomic (no
+        // racy per-port forwards) and updates the hub's cached roster, so
+        // topo-roles / Studio reflect the applied config immediately on every
+        // (re)connect.  An EMPTY block — a board with no configured roles (a
+        // fresh / unconfigured expander) — is simply skipped; it comes up bare.
+        uint8_t block[512];
+        const size_t blockLen = hubfx::config::buildRoleBlockForGuid(
+            kHubFx.data(), e.spec.guid, block, sizeof(block));
+        const uint8_t roleCount = (blockLen >= 1) ? block[0] : 0;
+        if (roleCount > 0) {
+            if (topo.applyRoleConfig(e.spec.guid, block, blockLen)) {
+                SFX_LOG_INFO("[hubfx-config] pushed %u role(s) to %s on connect",
+                             (unsigned)roleCount, e.spec.guid);
+            } else {
+                SFX_LOG_WARN("[hubfx-config] role-config push to %s FAILED", e.spec.guid);
+            }
+        } else {
+            SFX_LOG_INFO("[hubfx-config] %s: no configured roles — unconfigured bringup",
+                         e.spec.guid);
+        }
+        // Audible "<board> ready" chime — fires HERE, i.e. only once the
+        // expander is fully up (IDENTIFY decoded → ports enumerated → roles
+        // enumerated → Handshake::Ready) AND its /hubfx.yaml roles have just
+        // been (re)attached above.  GearControl gets its own sound.
+        if (e.kind == hubfx::expanders::ExpanderKind::GearControl) {
+            // QUEUE behind whatever's on the alert channel (e.g. the boot
+            // announcement) so the chime doesn't clip it — drained by
+            // AlertService::update() once the channel frees.
+            board.policy<AlertService>().playSoundQueued(
+                hubfx::effects::alerts::AlertSound::GearControlInitialized);
         }
     });
     exp.onDisconnect([](const hubfx::expanders::ExpanderEntry& e) {
@@ -934,6 +961,34 @@ void setup() {
     SFX_LOG_INFO("[boot] loopTask running on Core %d (audio is on Core 1)",
                  (int)xPortGetCoreID());
 
+    // Reset-reason post-mortem (console is NONE — this rides the DiagLog wire).
+    // The tell for the live-USB-replug restart: PANIC → a firmware crash wrote a
+    // coredump (decode it); BROWNOUT → 3V3/VBUS sagged on the replug inrush (an
+    // ELECTRICAL fault, NOT firmware — no coredump); INT_WDT/TASK_WDT → a task
+    // hung the scheduler.  Logged at WARN so it surfaces even at INFO wire gate.
+    {
+        const esp_reset_reason_t rr = esp_reset_reason();
+        const char* name = "OTHER";
+        switch (rr) {
+            case ESP_RST_POWERON:  name = "POWERON (normal cold boot)";       break;
+            case ESP_RST_SW:       name = "SW (esp_restart)";                 break;
+            case ESP_RST_PANIC:    name = "PANIC (firmware crash → coredump)"; break;
+            case ESP_RST_INT_WDT:  name = "INT_WDT (interrupt watchdog)";     break;
+            case ESP_RST_TASK_WDT: name = "TASK_WDT (task watchdog)";         break;
+            case ESP_RST_WDT:      name = "WDT (other watchdog)";             break;
+            case ESP_RST_BROWNOUT: name = "BROWNOUT (3V3/VBUS sag — ELECTRICAL, no coredump)"; break;
+            case ESP_RST_DEEPSLEEP:name = "DEEPSLEEP";                        break;
+            case ESP_RST_USB:      name = "USB (peripheral reset)";           break;
+            default: break;
+        }
+        if (rr == ESP_RST_BROWNOUT || rr == ESP_RST_PANIC ||
+            rr == ESP_RST_INT_WDT  || rr == ESP_RST_TASK_WDT) {
+            SFX_LOG_WARN("[boot] *** last reset: %s (code=%d) ***", name, (int)rr);
+        } else {
+            SFX_LOG_INFO("[boot] last reset: %s (code=%d)", name, (int)rr);
+        }
+    }
+
     SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out + storage + audio + alerts + USB host + topology + input + landing + lightfx + gear + engine + gun",
                  FIRMWARE_VERSION, (unsigned)BUILD_NUMBER);
 
@@ -957,12 +1012,13 @@ void setup() {
 }
 
 void loop() {
-    // Rule 40 (instructions/22 §0.5): latch the effect clock ONCE per
-    // loop pass, BEFORE any effect ticks. Every effect that reads
-    // `EffectClock::instance().nowMs()` this pass sees the same value
-    // — keeps ROF scheduler / fan puff / motion profile / heater bang-
-    // bang / EngineFx state machine in lockstep.
-    sfx_core::EffectClock::instance().latch();
+    // Rule 40 (instructions/22 §0.5): the effect clock is latched ONCE per
+    // pass by the framework inside `board.process()`, BEFORE any policy/effect
+    // ticks — so every effect reading `EffectClock::instance().nowMs()` this
+    // pass sees the same value (ROF scheduler / fan puff / motion profile /
+    // heater bang-bang / EngineFx state machine stay in lockstep).  No manual
+    // latch here: the upload-exclusive path below returns without ticking
+    // effects, so a clock that only advances when `process()` runs is correct.
 
     // Upload is exclusive on HubFX (Rule 28).  While a file upload is
     // in progress, drain only the storage server — audio is suspended

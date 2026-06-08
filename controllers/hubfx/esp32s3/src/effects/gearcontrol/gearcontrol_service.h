@@ -42,11 +42,12 @@ public:
 
     GearControlServicePolicyT() = default;
 
-    void configure(const GearDef* defs, uint8_t count) {
+    void configure(const GearDef* defs, uint8_t count, uint8_t coordMode = CoordMode::Independent) {
         _numDefs = 0;
         for (uint8_t i = 0; i < count && i < kMaxGears; ++i) {
             _defs[_numDefs++] = defs[i];
         }
+        _coordMode = coordMode;
         applyDefs();   // (re)bind gear FSMs + claim motor ports if topology is up
     }
 
@@ -65,9 +66,7 @@ public:
             || type == GearPacket::GEAR_ALL
             || type == GearPacket::GEAR_STATUS_REQ
             || type == GearPacket::GEAR_LIST_REQ
-            || type == GearPacket::GEAR_RESET
-            || type == GearPacket::GEAR_CALIBRATE
-            || type == GearPacket::GEAR_CALIB_CANCEL;
+            || type == GearPacket::GEAR_RESET;
     }
 
     CommandHandleResult handle(uint8_t type,
@@ -100,18 +99,29 @@ private:
     void handleStatusReq  ();
     void handleListReq    ();
     void handleReset      (const uint8_t* p, size_t len);
-    void handleCalibrate  (const uint8_t* p, size_t len);
-    void handleCalibCancel(const uint8_t* p, size_t len);
 
     void onRoleEvent(const char* guid, uint8_t innerType,
                      const uint8_t* p, size_t len);
+
+    /// Multi-gear coordinator (instructions/29 decision #2): release the
+    /// sync barriers when all mid-cycle gears sit at the same barrier, and
+    /// drive the Sequenced one-gear-at-a-time chain.  Called from update().
+    void releaseBarriersIfReady();
+
+    /// Per-cycle sync flags for a gear, derived from `_coordMode`.
+    void applySyncFlags(Gear& g) const;
+
+    /// Sequenced mode: index of the gear currently running its full cycle
+    /// (0xFF = none).  Advanced as each gear settles.
+    void sequencedKick();
 
     static bool sendRoleCmdTrampoline(void* ctx, const PortRef& addr,
                                       uint8_t innerType,
                                       const uint8_t* p, size_t len);
     static void beginBatchTrampoline (void* ctx);
     static void commitBatchTrampoline(void* ctx);
-    static void phaseEventTrampoline (void* ctx, uint8_t id, uint8_t newPhase);
+    static void phaseEventTrampoline (void* ctx, uint8_t id,
+                                      uint8_t newPhase, uint8_t newSubPhase);
     static void roleEventTrampoline  (void* ctx, const char* guid,
                                       uint8_t innerType,
                                       const uint8_t* p, size_t len);
@@ -120,7 +130,7 @@ private:
     // matching state to every gear-bound landing light.
     void forwardToLandings(uint8_t newPhase);
 
-    void emitPhaseEvent(uint8_t id, uint8_t phase);
+    void emitPhaseEvent(uint8_t id, uint8_t phase, uint8_t subPhase);
 
     sfx_core::BoardServerBase* _ctx     = nullptr;
     TTopology*                 _topo    = nullptr;
@@ -130,6 +140,9 @@ private:
     Gear    _gears[kMaxGears]     = {};
     uint8_t _numDefs              = 0;
     bool    _enabled              = true;     // runtime enable flag (config-driven)
+    uint8_t _coordMode            = CoordMode::Independent;
+    uint8_t _seqActive            = 0xFF;     // Sequenced: gear index mid-cycle
+    bool    _seqDeploying         = false;    // Sequenced: direction of the chain
 };
 
 }  // namespace hubfx::effects::gearctrl

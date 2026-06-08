@@ -112,9 +112,17 @@ func (a *App) RefreshDeviceModel() (DeviceModelSnapshot, error) {
 	a.ensureInputConfigs()
 	a.dmMu.Unlock()
 
+	// Emit the rebuilt model NOW.  Callers that use the return value (the
+	// frontend Refresh binding) don't need this, but EVENT-driven callers (the
+	// expander connect/disconnect timer) discard the return — without an
+	// explicit emit a disconnect would rebuild the model but never reach the
+	// UI (autoAttachServos only emits when it actually attaches a servo, which
+	// a disconnect never does, so the offline ghost ports never appeared).
+	a.emitDeviceModelChanged()
+
 	// Side-effects (servo auto-attach, input broadcast start) run in the
 	// background so a slow attach can't block or time-out the refresh
-	// itself.  autoAttachServos re-emits the model when it changes roles.
+	// itself.  autoAttachServos re-emits the model again if it changes roles.
 	go func() {
 		a.autoAttachServos()
 		a.applyInputBroadcasts()
@@ -216,7 +224,9 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 			snap.Issues = iss
 		}
 	}
-	// Input configs are ordered by port for stable rendering.
+	// Input configs are ordered by port for stable rendering.  (Runs before
+	// offline ghost ports are appended so a disconnected board's input ports
+	// never enter the Inputs tab.)
 	for _, p := range snap.Ports {
 		if p.Direction != devicemodel.DirInput {
 			continue
@@ -225,6 +235,10 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 			snap.Inputs = append(snap.Inputs, *cfg)
 		}
 	}
+	// Offline ghost ports: expanders configured in /hubfx.yaml but not
+	// connected.  Surfaced (with a warning) so their config is visible +
+	// removable instead of silently lost.
+	a.appendOfflinePorts(&snap)
 	return snap
 }
 
@@ -364,11 +378,10 @@ func (a *App) SetPortProfile(guid string, kind, index byte, profile ServoMotionP
 			MaxAccelUsPerSec2: profile.MaxAccelUsPerSec2,
 			MaxJerkUsPerSec3:  profile.MaxJerkUsPerSec3,
 		}
-		if a.hubLocal(guid) {
-			_ = c.Roles.ServoSetProfile(index, p)
-		} else {
-			_ = c.Topology.ServoSetProfileOn(guid, index, p)
-		}
+		// One transparent role path (Phase B): RoleTarget routes hub-local vs
+		// forward (canonGuid folds a stray hub-GUID → "" so it skips the envelope).
+		cg, _ := a.canonGuid(guid)
+		_ = c.Role(cg).ServoSetProfile(index, p)
 	}
 	a.emitDeviceModelChanged()
 	return a.deviceModelSnapshot()
@@ -379,10 +392,9 @@ func (a *App) SetPortProfile(guid string, kind, index byte, profile ServoMotionP
 // applies its motion profile to the slew).  Used by the calibration
 // dialog's +/- jog buttons.
 //
-// Cross-board (2026-05-24): when `guid != ""` we route through the
-// new TOPOLOGY_ROLE_FORWARD envelope (0x8F) so the hub forwards to
-// the named expander.  Hub-local stays on the direct
-// `c.Roles.ServoSetTarget` path (cheaper — no extra envelope).
+// Routing is GUID-transparent via `c.Role(guid)` (RoleTarget): `guid == ""`
+// sends the role packet straight to the hub; any other GUID wraps it in the
+// TOPOLOGY_ROLE_FORWARD envelope (0x8F) so the hub forwards to that expander.
 //
 // Does NOT touch the studio overlay or mark dirty — jogging is a
 // transient command, not a config change.
@@ -393,12 +405,9 @@ func (a *App) ServoSetTarget(guid string, index uint8, targetUs uint16) error {
 	if c == nil {
 		return fmt.Errorf("not connected")
 	}
-	var err error
-	if a.hubLocal(guid) {
-		err = c.Roles.ServoSetTarget(index, targetUs)
-	} else {
-		err = c.Topology.ServoSetTargetOn(guid, index, targetUs)
-	}
+	// Transparent role path (Phase B) — RoleTarget routes hub-local vs forward.
+	cg, _ := a.canonGuid(guid)
+	err := c.Role(cg).ServoSetTarget(index, targetUs)
 	if err != nil {
 		return fmt.Errorf("servo set_target %s/%d → %d µs: %w",
 			guidOrHub(guid), index, targetUs, err)

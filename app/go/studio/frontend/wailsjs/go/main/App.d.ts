@@ -30,9 +30,37 @@ export function DeviceModelSnapshot():Promise<main.DeviceModelSnapshot>;
 
 export function DeviceSystemInfo():Promise<main.DeviceInfo>;
 
+export function DiagBiMotorCalibrate(arg1:number,arg2:number,arg3:number):Promise<main.DiagCalibration>;
+
+export function DiagBiMotorGuardFixed(arg1:number,arg2:number,arg3:number):Promise<void>;
+
+export function DiagBiMotorGuardLiveRatio(arg1:number,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number,arg7:number):Promise<void>;
+
+export function DiagBiMotorJog(arg1:number,arg2:number):Promise<void>;
+
+export function DiagBiMotorMoveEnd(arg1:number,arg2:string,arg3:number,arg4:number):Promise<main.DiagEndstopResult>;
+
+export function DiagBiMotorSeek(arg1:number,arg2:number,arg3:number):Promise<main.DiagEndstopResult>;
+
+export function DiagBiMotorStatus(arg1:number):Promise<main.DiagBiMotorStatus>;
+
+export function DiagBiMotorStop(arg1:number):Promise<void>;
+
 export function DiagDebugEnabled():Promise<boolean>;
 
+export function DiagInit():Promise<void>;
+
 export function DiagLogPath():Promise<string>;
+
+export function DiagRoleAttach(arg1:number,arg2:number,arg3:number):Promise<void>;
+
+export function DiagRoleDetach(arg1:number,arg2:number):Promise<void>;
+
+export function DiagRoleList():Promise<Array<main.DiagRole>>;
+
+export function DiagServoProfileGet(arg1:number):Promise<main.DiagServoProfile>;
+
+export function DiagServoSetTarget(arg1:number,arg2:number):Promise<void>;
 
 export function DiagSnapshot():Promise<Array<main.DiagEvent>>;
 
@@ -65,6 +93,18 @@ export function FsUploadBatch(arg1:string,arg2:string,arg3:Array<string>):Promis
 export function FsUploadDiag():Promise<storage.UploadDiag>;
 
 export function FsUploadFromDisk(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function GearAll(arg1:number):Promise<void>;
+
+export function GearDeploy(arg1:number):Promise<void>;
+
+export function GearReset(arg1:number):Promise<void>;
+
+export function GearRetract(arg1:number):Promise<void>;
+
+export function GearStatus():Promise<Array<main.GearStatusEntry>>;
+
+export function GearStop(arg1:number):Promise<void>;
 
 export function GetConnectionInfo():Promise<main.ConnectionInfo>;
 
@@ -110,9 +150,9 @@ export function GunStopFiring(arg1:number):Promise<void>;
 
 export function GunVerboseSubscribe(arg1:number,arg2:number):Promise<void>;
 
-export function HeaterGetElement(arg1:number):Promise<main.HeaterElementDTO>;
+export function HeaterGetElement(arg1:string,arg2:number):Promise<main.HeaterElementDTO>;
 
-export function HeaterSetElement(arg1:number,arg2:main.HeaterElementDTO):Promise<void>;
+export function HeaterSetElement(arg1:string,arg2:number,arg3:main.HeaterElementDTO):Promise<void>;
 
 export function LandingActivate(arg1:number):Promise<void>;
 
@@ -128,17 +168,19 @@ export function ListPorts():Promise<Array<main.PortInfo>>;
 
 export function ListPresetLibrary():Promise<Array<main.PresetLibraryEntry>>;
 
+export function LoadGearConfig():Promise<main.GearConfig>;
+
 export function LoadGunFxConfig():Promise<main.GunFxConfig>;
 
 export function LoadHubConfig():Promise<void>;
 
 export function LogFrontend(arg1:string,arg2:string,arg3:string,arg4:Record<string, any>):Promise<void>;
 
-export function MotorGetElement(arg1:number):Promise<main.MotorElementDTO>;
+export function MotorGetElement(arg1:string,arg2:number):Promise<main.MotorElementDTO>;
 
-export function MotorSetElement(arg1:number,arg2:main.MotorElementDTO):Promise<void>;
+export function MotorSetElement(arg1:string,arg2:number,arg3:main.MotorElementDTO):Promise<void>;
 
-export function MotorSetPct(arg1:number,arg2:number):Promise<void>;
+export function MotorSetPct(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function OpenTextFile(arg1:string):Promise<main.OpenedFile>;
 
@@ -148,7 +190,11 @@ export function QueryDeviceStatus():Promise<main.DeviceStatus>;
 
 export function RefreshDeviceModel():Promise<main.DeviceModelSnapshot>;
 
+export function RemoveExpanderConfig(arg1:string):Promise<main.DeviceModelSnapshot>;
+
 export function ResetLightFxProgram():Promise<void>;
+
+export function SaveGearConfig(arg1:main.GearConfig):Promise<void>;
 
 export function SaveGunFxConfig(arg1:main.GunFxConfig):Promise<void>;
 
@@ -161,10 +207,6 @@ export function SaveTextFile(arg1:string,arg2:string,arg3:string):Promise<string
 export function SelectLightFxProgram(arg1:string):Promise<void>;
 
 export function SendCommand(arg1:string):Promise<void>;
-
-export function ServoGetProfile(arg1:number):Promise<main.ServoProfileDTO>;
-
-export function ServoSetProfile(arg1:number,arg2:main.ServoProfileDTO):Promise<void>;
 
 export function ServoSetTarget(arg1:string,arg2:number,arg3:number):Promise<void>;
 

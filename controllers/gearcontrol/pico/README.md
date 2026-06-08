@@ -54,6 +54,42 @@ Both are detected on-board, so the error indication is local — no hub
 push needed.  Position ("deployed/retracted") shows as the last-direction
 LED held solid; an active move blinks the matching direction LED.
 
+## Endstop detection — stall guard + dual-stage soft-start
+
+A BiDcMotor finds its endstops by **current sensing** (each H-bridge has an
+INA226 measuring both motor current AND bus voltage). Two orthogonal mechanisms:
+
+**Stall guard (run-phase endstop detection)** — how the seek decides it hit the
+stop. Two modes (live-retune via `BIMOTOR_SET_GUARD` / CLI `bimotor-guard`):
+- **LiveRatio (recommended default):** tracks the **trailing-minimum** running
+  current per stroke (after inrush blanking) — the free-running floor — and trips
+  when `|I| ≥ floor × ratio` (e.g. 2.5×). The trailing-min (not a fixed-window
+  average) is robust to a high **break-away / loaded start** that would otherwise
+  poison the baseline: starting against a stop, or moving away from one, no longer
+  mis-sets the threshold. No per-motor threshold, battery-voltage independent.
+  Pairs with an optional **absolute ceiling** (`ceiling_mA`, the references'
+  I-TRIP backstop): trip when `|I| ≥ ceiling` regardless of the ratio — catches a
+  stop the adaptive baseline missed (e.g. driven into a stop it started against,
+  where the floor itself is the stall current). Set ~80% of the stall peak shown
+  in the trace; 0 = off.
+- **Fixed:** trip on `|I| ≥ threshold_mA` sustained. Only when you know the value.
+
+  The trace shows `floor=… thr=…` live (and `armed: floor=… ceiling=…`) so you can
+  read the right ratio / ceiling straight off a couple of strokes. Cross-ref: this
+  current-sense approach mirrors ESPHome's `current_based` cover (absolute
+  thresholds + `start_sensing_delay`) and the DRV8251A hardware stall circuit
+  (comparator I-TRIP + inrush RC filter) — we add the adaptive trailing-min floor
+  on top of their absolute backstop.
+
+A low-power **soft-start probe** (classify free-vs-already-at-stop before
+committing full power) was prototyped and **removed**: current-only at low power
+can't reliably tell "free" from "stuck" (stiction reads as "at stop" and refuses
+to move a free mechanism; an engaged stop can read as free), and the absolute
+**ceiling** already prevents grinding into a stop — so it was redundant *and*
+faulty. Genuine soft-start, if ever needed, belongs as a ramp-up duty profile (or
+with a position sensor), not a current classifier. The seek streams a verbose
+`[bimotor]` trace to the console (the firmware enables wire log emission at boot).
+
 ## Endstop seek (autonomous, on-board)
 
 Gear motion uses the BiDcMotor role's `BIMOTOR_SEEK_ENDSTOP` primitive:
@@ -67,6 +103,65 @@ blink); `timeout_ms == 0` means no timeout.  Any brake/coast/set-signed
 aborts an in-progress seek.  The hub's gear FSM maps results: deploy/
 retract → deployed/retracted (or ERROR on timeout); calibration sweeps
 retract→deploy→home, one seek per leg.
+
+### Role-layer CLI (bench-test an expander — no hub)
+
+When a GearControl (or any generic expander) is plugged STRAIGHT into the PC —
+no HubFX in the loop — the CLI / Studio Console can attach, drive, and inspect
+its roles directly over the wire.  This is how you bring up the board and prove
+a servo or gear motor works before wiring it into a hub config.  These talk the
+expander's own **role layer** (`ROLE_ATTACH/DETACH/LIST_REQ`, no GUID) — distinct
+from the GUID-addressed `role-attach <guid> …` which routes through a hub's
+Topology service and is rejected on a board that only advertises `PORTS|ROLES`.
+
+Lifecycle (gated on the `ROLES` capability):
+
+- `init` — activate the expander (mode=slave).  *(A directly-connected
+  expander needs INIT; the hub auto-inits its own.)*
+- `role-list-local` — list roles currently attached on the connected board.
+- `role-attach-local <portKind> <portIdx> <roleKind> [hexcfg]` — bind a role.
+  `portKind` = `servo|pwm|hbridge|input`; `roleKind` = `servo|bi-dc-motor|
+  dc-motor|heater|led-animator` (or a raw byte).
+- `role-detach-local <portKind> <portIdx>` — unbind.
+
+Drive / inspect once attached (port index is the role's port, not a gear id):
+
+- `bimotor-move-end <portIdx> <a|b> [duty=600] [timeoutMs=5000]` — drive a
+  BiDcMotor to logical endstop **A** (`+duty`) or **B** (`-duty`); ACK is
+  immediate, the outcome (`reached/timeout/aborted`) arrives async (`subscribe`
+  to watch `BIMOTOR_ENDSTOP_RESULT`).
+- `bimotor-seek <portIdx> <signedDuty> [timeoutMs=5000]` — position-agnostic
+  seek (explicit signed duty); doesn't label which end was reached.
+- `bimotor-status <portIdx>` — verbose: duty, voltage_mV, current_mA, stalled,
+  position (A/B), guard mode.
+- `servo-profile-get <portIdx>` / `servo-profile-set <portIdx> <key=val>…` —
+  read / live-push a ServoActuator's motion profile (`min_us`, `max_us`,
+  `center_us`, `max_speed`, `max_accel`, `max_jerk`, `reversed`).
+
+Worked example (a gear motor on H-bridge 0, a door servo on servo 0):
+
+```
+init
+role-attach-local hbridge 0 bi-dc-motor
+role-attach-local servo   0 servo-actuator
+role-list-local                       # → both rows
+bimotor-seek 0 600 1200               # drive toward an endstop
+bimotor-status 0                      # current / stall / position
+servo-profile-set 0 max_us=1800 max_speed=600
+role-detach-local hbridge 0
+```
+
+These map to `protocol/roles` (`CmdRoleAttach`/`CmdRoleDetach`/`CmdRoleListReq` +
+`CmdBiMotor*` + `CmdServo*`) via `client.Roles.*`.  The `gear-*` commands above
+are the effect-layer surface a hub uses to orchestrate the same primitives.
+
+**GUI equivalent:** in ScaleFX Studio, connecting a gearcontrol expander on its
+own shows a **Diagnostics** tab (gated to `controllerType === 'gearcontrol'`)
+that wraps the same role-layer surface — attach/detach, a servo travel slider,
+gear-motor seek/endstop buttons, and live stall-current — plus a raw-command box.
+Backed by the `App.Diag*` Wails bindings (`app/go/studio/app_geardiag.go`).
+HubFX-only config/topology auto-loads are skipped for an expander (it has no
+config of its own; the hub holds it in `/hubfx.yaml`'s `expanders:` block).
 
 ## Wire surface (hub-side `GearControlService`)
 

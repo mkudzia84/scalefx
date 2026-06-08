@@ -11,6 +11,7 @@
     import GunFxPanel from '../tabs/GunFxPanel.svelte'
     import LightingTab from '../tabs/LightingTab.svelte'
     import GearLandingTab from '../tabs/GearLandingTab.svelte'
+    import GearDiagnosticsTab from '../tabs/GearDiagnosticsTab.svelte'
     import DomainTab from '../tabs/DomainTab.svelte'
     import { showConsole, activeTab, connectionInfo } from '../stores'
     import { studioTabs } from '../devicemodel'
@@ -71,7 +72,13 @@
 
 <div class="main-layout">
     <TabBar />
-    <ConfigToolbar />
+    <!-- Config Apply/dirty/validation is HubFX-only: every DirtySource is a
+         /hubfx.yaml or effect config the master owns. An expander has no config,
+         so hide the toolbar (otherwise an unloaded engine/gun source validates
+         empty state as an error — "resolve errors: enginefx"). -->
+    {#if $connectionInfo.controllerType === 'hubfx'}
+        <ConfigToolbar />
+    {/if}
 
     <div class="main-body" bind:this={mainBodyEl} class:resizing={dragging}>
         <div class="main-content">
@@ -92,6 +99,8 @@
                     {#key current.key}
                         <DomainTab domain={current.domain} />
                     {/key}
+                {:else if current?.kind === 'gear-diagnostics'}
+                    <div class="tab-content"><GearDiagnosticsTab /></div>
                 {:else}
                     <FirmwareTab />
                 {/if}

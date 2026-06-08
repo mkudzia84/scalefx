@@ -1,11 +1,11 @@
 <!-- ScaleFX Studio — Gear tab.
-     GearControl config for a connected gearcontrol expander.  (Landing-light
-     groups moved to the Lighting tab 2026-06-03 — a landing group is an LED
-     searchlight on a deploy servo, so it lives with the LED effects.)  The gear
-     domain registers its own DirtySource (Rule 46) so the global ConfigToolbar
-     gates Apply. -->
+     The Gear / Undercarriage panel (GearPanel) edits /gearcontrol.yaml for
+     the hub's GearControl effect: per-channel gear motor + door servos +
+     coordination.  (Landing-light groups moved to the Lighting tab
+     2026-06-03.)  The gear domain registers its own DirtySource (Rule 46)
+     so the global ConfigToolbar gates Apply; this tab is a pure view. -->
 <script lang="ts">
-    import DomainTab from './DomainTab.svelte'
+    import GearPanel from './GearPanel.svelte'
     import type { Domain } from '../devicemodel'
 
     export let domain: Domain | undefined = undefined
@@ -13,11 +13,9 @@
 
 <div class="gl">
     <div class="gl-scroll">
-        {#if domain}
-            <div class="gl-section">
-                <DomainTab {domain} />
-            </div>
-        {/if}
+        <div class="gl-section">
+            <GearPanel />
+        </div>
     </div>
 </div>
 

@@ -93,6 +93,10 @@ const (
 	RoleListResp   protocol.PacketType = 0x43
 	RoleAttached   protocol.PacketType = 0x44
 	RoleDetached   protocol.PacketType = 0x45
+	// RoleBulkAttach pushes a board's FULL role set in one packet (the
+	// declarative expander-bringup path; hub→expander only — Studio never
+	// sends it). [count:u8] × [portKind][portIdx][roleKind][cfgLen][cfg].
+	RoleBulkAttach protocol.PacketType = 0x57
 
 	// Recoil impulse — adds a transient offset to the servo output for
 	// durationMs on top of the aim, then de-jerks (role level). 0x46 (the
@@ -129,6 +133,12 @@ const (
 	// [min,max] (honours REV).  GunFx yaw/pitch (RC pulse → fraction) +
 	// landing deploy(full)/retract(0) use it to hit the calibrated endpoints.
 	ServoSetPosNorm protocol.PacketType = 0x55
+
+	// async TAG_ASYNC: [portIdx:u8].  Monitored servo motion-complete signal
+	// (rising edge of atTarget() after a commanded move) — the gear
+	// undercarriage door legs wait on it (instructions/29 decision #1).
+	// Distinct from ServoTargetReached (0x4B, carries pos_us telemetry).
+	ServoMotionDone protocol.PacketType = 0x56
 
 	// LED animator (0x58..0x5F)
 	LedQueueLoad      protocol.PacketType = 0x58
@@ -778,8 +788,10 @@ func CmdBiMotorGetStatus(portIdx byte) []byte {
 // CmdBiMotorSetGuard builds a BIMOTOR_SET_GUARD packet (0x77) — live
 // retune of the stall-detection mode + parameters without re-attach.
 // `windowMs == 0` leaves the existing window unchanged.
-func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, d uint16) []byte {
-	payload := make([]byte, 12)
+// absMaxMa is the optional absolute over-current ceiling (LiveRatio backstop;
+// 0 = none) appended per Rule 11.
+func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, d, absMaxMa uint16) []byte {
+	payload := make([]byte, 14)
 	payload[0] = portIdx
 	payload[1] = byte(mode)
 	binary.LittleEndian.PutUint16(payload[2:4],  windowMs)
@@ -787,6 +799,7 @@ func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, 
 	binary.LittleEndian.PutUint16(payload[6:8],  b)
 	binary.LittleEndian.PutUint16(payload[8:10], c)
 	binary.LittleEndian.PutUint16(payload[10:12], d)
+	binary.LittleEndian.PutUint16(payload[12:14], absMaxMa)
 	return protocol.BuildPacket(BiMotorSetGuard, payload, 0)
 }
 
@@ -953,6 +966,7 @@ func init() {
 		ServoStatusResp:      "SERVO_STATUS_RESP",
 		ServoTargetReached:   "SERVO_TARGET_REACHED",
 		ServoMotionUpdate:    "SERVO_MOTION_UPDATE",
+		ServoMotionDone:      "SERVO_MOTION_DONE",
 		ServoSetProfile:      "SERVO_SET_PROFILE",
 		ServoGetProfileReq:   "SERVO_GET_PROFILE_REQ",
 		ServoProfileResp:     "SERVO_PROFILE_RESP",

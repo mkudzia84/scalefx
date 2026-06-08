@@ -44,11 +44,43 @@ func (a *App) installServoStream() {
 	// thread-safe, Rule 56) so we never block the connect path on an ACK.
 	if a.servoLiveView {
 		c := a.c
-		go func() {
-			_ = c.Roles.ServoSetBroadcastHz(byte(kServoBroadcastHz))
-		}()
+		go a.applyServoBroadcast(c, byte(kServoBroadcastHz))
 		a.diag.Info("SERVO", "re-subscribing live-view on connect (%d Hz)", kServoBroadcastHz)
 	}
+}
+
+// applyServoBroadcast enables/disables the servo telemetry stream on the hub AND
+// every connected expander (Rule 58 — transparent: an expander servo's live
+// position must reach Studio just like a hub servo's).  Forwarded per-GUID via
+// RoleTarget; the expander then emits SERVO_MOTION_UPDATE async → hub re-emit →
+// OnServoMotion (guid-tagged) → servo:motion event.  Runs off-lock.
+func (a *App) applyServoBroadcast(c *client.Client, hz byte) {
+	if c == nil {
+		return
+	}
+	_ = c.Role("").ServoSetBroadcastHz(hz) // hub
+	for _, guid := range a.connectedExpanderGUIDs() {
+		_ = c.Role(guid).ServoSetBroadcastHz(hz)
+	}
+}
+
+// connectedExpanderGUIDs returns the distinct non-hub board GUIDs in the live
+// device model (the connected expanders).
+func (a *App) connectedExpanderGUIDs() []string {
+	a.dmMu.Lock()
+	defer a.dmMu.Unlock()
+	if a.dm == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range a.dm.Ports {
+		if p.Ref.GUID != "" && !seen[p.Ref.GUID] {
+			seen[p.Ref.GUID] = true
+			out = append(out, p.Ref.GUID)
+		}
+	}
+	return out
 }
 
 // SetServoLiveView is the frontend's subscribe-on-view toggle for live servo
@@ -75,6 +107,6 @@ func (a *App) SetServoLiveView(on bool) {
 	if on {
 		hz = kServoBroadcastHz
 	}
-	_ = c.Roles.ServoSetBroadcastHz(byte(hz))
+	a.applyServoBroadcast(c, byte(hz)) // hub + every connected expander (Rule 58)
 	a.diag.Info("SERVO", "live-view → %v (broadcast %d Hz)", on, hz)
 }
