@@ -39,7 +39,9 @@
 #include "role_motor_handler.h"
 #include "role_bimotor_handler.h"
 #include "role_heater_handler.h"
-#include "role_input_handler.h"
+#include "role_rcpwm_input_handler.h"
+#include "role_sbus_input_handler.h"
+#include "role_jeti_input_handler.h"
 
 namespace sfx_core {
 
@@ -66,7 +68,9 @@ public:
         _motor.bind  (_reg, _ctx, &_emit);
         _bimotor.bind(_reg, _ctx, &_emit);
         _heater.bind (_reg, _ctx, &_emit);
-        _input.bind  (_reg, _ctx, &_emit);
+        _rcpwm.bind  (_reg, _ctx, &_emit);
+        _sbus.bind   (_reg, _ctx, &_emit);
+        _jeti.bind   (_reg, _ctx, &_emit);
         return true;
     }
 
@@ -114,7 +118,9 @@ private:
     DcMotorRoleHandler _motor;
     BiMotorRoleHandler _bimotor;
     HeaterRoleHandler  _heater;
-    InputRoleHandler   _input;
+    RcPwmInputHandler  _rcpwm;
+    SbusInputHandler   _sbus;
+    JetiInputHandler   _jeti;
 };
 
 }  // namespace sfx_core

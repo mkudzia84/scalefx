@@ -40,8 +40,8 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
         case RolePacket::SERVO_GET_PROFILE_REQ: _servo.handleGetProfileReq(p, len); break;
 
         // RC PWM input
-        case RolePacket::RCIN_GET_VALUE_REQ:    _input.handleRcInGetValueReq(p, len);    break;
-        case RolePacket::RCIN_SET_BROADCAST_HZ: _input.handleRcInSetBroadcastHz(p, len); break;
+        case RolePacket::RCIN_GET_VALUE_REQ:    _rcpwm.handleGetValueReq(p, len);    break;
+        case RolePacket::RCIN_SET_BROADCAST_HZ: _rcpwm.handleSetBroadcastHz(p, len); break;
 
         // LED animator
         case RolePacket::LED_QUEUE_LOAD:        _led.handleQueueLoad(p, len);       break;
@@ -76,12 +76,12 @@ CommandHandleResult RoleServicePolicy::handle(uint8_t type, const uint8_t* p, si
         case RolePacket::HEATER_GET_ELEMENT_REQ:_heater.handleGetElementReq(p, len);break;
 
         // SBUS input
-        case RolePacket::SBUS_GET_FRAME_REQ:    _input.handleSbusGetFrameReq(p, len);    break;
-        case RolePacket::SBUS_SET_BROADCAST_HZ: _input.handleSbusSetBroadcastHz(p, len); break;
+        case RolePacket::SBUS_GET_FRAME_REQ:    _sbus.handleGetFrameReq(p, len);    break;
+        case RolePacket::SBUS_SET_BROADCAST_HZ: _sbus.handleSetBroadcastHz(p, len); break;
 
         // Jeti EX input
-        case RolePacket::JETIEX_GET_FRAME_REQ:    _input.handleJetiExGetFrameReq(p, len);    break;
-        case RolePacket::JETIEX_SET_BROADCAST_HZ: _input.handleJetiExSetBroadcastHz(p, len); break;
+        case RolePacket::JETIEX_GET_FRAME_REQ:    _jeti.handleGetFrameReq(p, len);    break;
+        case RolePacket::JETIEX_SET_BROADCAST_HZ: _jeti.handleSetBroadcastHz(p, len); break;
 
         default:                                return CommandHandleResult::NotMyCommand;
     }
@@ -194,10 +194,10 @@ uint8_t RoleServicePolicy::applyAttach(uint8_t portKind, uint8_t portIdx,
             auto* b = _reg->inputAt(portIdx);
             if (!b || !b->occupied()) return PortError::PORT_NOT_FOUND;
             switch (roleKind) {
-                case RoleKind::RcPwmInput:  ok = _input.attachRcPwm (*b, portIdx, cfg, cfgLen); break;
-                case RoleKind::SbusInput:   ok = _input.attachSbus  (*b, portIdx, cfg, cfgLen); break;
-                case RoleKind::JetiExInput: ok = _input.attachJetiEx(*b, portIdx, cfg, cfgLen); break;
-                case RoleKind::JetiExTelemetry: ok = _input.attachJetiExTelemetry(*b, portIdx, cfg, cfgLen); break;
+                case RoleKind::RcPwmInput:  ok = _rcpwm.attach(*b, portIdx, cfg, cfgLen); break;
+                case RoleKind::SbusInput:   ok = _sbus.attach (*b, portIdx, cfg, cfgLen); break;
+                case RoleKind::JetiExInput: ok = _jeti.attachInput(*b, portIdx, cfg, cfgLen); break;
+                case RoleKind::JetiExTelemetry: ok = _jeti.attachTelemetry(*b, portIdx, cfg, cfgLen); break;
                 default: return RoleError::ROLE_KIND_NOT_SUPPORTED;
             }
             break;
