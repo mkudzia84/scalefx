@@ -11,7 +11,19 @@
  *
  * The correct policy is auto-included at the bottom of this header based on
  * SFX_PLATFORM_ESP32, and the fully-specialized type is aliased as
- * `StorageServer` for transparent consumer usage.
+ * `StorageService` for transparent consumer usage.
+ *
+ * Responsibility split (one cohesive unit per file):
+ *   - StorageServicePolicy (this file + storage_service.ipp) — the filesystem
+ *     query/mutation handlers (sd/flash status, list, tree, delete, mkdir,
+ *     info, download), the packet dispatch, the SystemServicePolicy surface,
+ *     and the SHARED storage helpers (lock/ready/transfer-notify) that BOTH
+ *     halves use.
+ *   - UploadEngine<TPolicy> (storage_upload_engine.h/.ipp) — the exclusive
+ *     upload state machine (sync + batch protocols, flow control, MD5,
+ *     self-heal, diagnostics).  Reaches the shared helpers + platform policy
+ *     + shared buffers through a back-reference to this policy.
+ *   - sfx_storage::* (storage_path_util.h) — stateless path / error helpers.
  *
  * Design rationale (compile-time dispatch via policy composition):
  *   - Only ONE StorageServer exists per binary — the platform is known at
@@ -65,6 +77,8 @@
 #include <concepts>
 #include <functional>
 
+#include "storage_path_util.h"       // sfx_storage::targetName / mapStorageError / isValidPath / extractPathAndTarget
+
 
 // ============================================================================
 // Shared state between the server template and the platform policy.
@@ -72,7 +86,7 @@
 // Contains the buffers, file handles, and flags that both the protocol
 // handlers (in .ipp) and the platform hooks (policy) need to access.
 // Protocol-only state (upload path, MD5, sequence tracking) stays private
-// on StorageServerT.
+// on the UploadEngine.
 // ============================================================================
 
 struct StorageSharedState {
@@ -126,6 +140,21 @@ concept StoragePolicy = requires(T t, StorageSharedState* state, const char*& er
     { t.bufferFillPercent() }               -> std::convertible_to<uint8_t>;
 };
 
+
+// The UploadEngine references StorageServicePolicy (back-pointer for the shared
+// helpers); forward-declare so its header can take the reference, then pull it
+// in before this class holds one by value.
+template <typename TPolicy> class StorageServicePolicy;
+
+#include "storage_upload_engine.h"
+
+
+// STORAGE_LOG is hoisted here (not defined inside a single .ipp) so BOTH split
+// implementation units — storage_service.ipp AND storage_upload_engine.ipp —
+// see the same macro.  #undef'd after the .ipp includes below.
+#define STORAGE_LOG(fmt, ...) SFX_LOG_INFO("[Storage] " fmt, ##__VA_ARGS__)
+
+
 template <typename TPolicy>
 class StorageServicePolicy {
     // Concept enforced via static_assert rather than a class-level requires
@@ -137,6 +166,11 @@ class StorageServicePolicy {
                   "free/onUploadBufferFull/checkAsyncWriterHealth/"
                   "onUploadActivated/onChunkedEnd/onChunkedCleanup/"
                   "bufferFillPercent per the concept.");
+
+    // UploadEngine drives the upload data plane through this policy's shared
+    // helpers + platform policy + shared buffers.
+    friend class UploadEngine<TPolicy>;
+
 public:
     /// FLASH and SD capability bits — the policy advertises both because
     /// (a) flash backing is always present on supported platforms, and
@@ -144,10 +178,10 @@ public:
     /// runtime-mount check belongs in the storage descriptors per doc 17 §5.
     static constexpr uint32_t kCapabilityBits = CoreCapability::FLASH | CoreCapability::SD;
 
-    StorageServicePolicy() { _policy.init(&_shared); }
+    StorageServicePolicy() : _upload(*this) { _policy.init(&_shared); }
 
     /// Cancel any active upload (called on SHUTDOWN to clean up state)
-    void cancelActiveUpload();
+    void cancelActiveUpload() { _upload.cancelActiveUpload(); }
 
     /**
      * @brief Check for upload inactivity timeout
@@ -156,15 +190,15 @@ public:
      * upload packet has arrived for UPLOAD_TIMEOUT_MS, the upload
      * is automatically cancelled and the partial file deleted.
      */
-    void checkUploadTimeout();
+    void checkUploadTimeout() { _upload.checkUploadTimeout(); }
 
     /// True while a file upload is in progress (any mode).
-    bool isUploadActive() const { return _uploadActive; }
+    bool isUploadActive() const { return _upload.isActive(); }
 
     /// True while a raw binary stream upload is active.
     /// When true, the main loop should call processStream() instead of
     /// server.loop() — COBS parsing is bypassed, serial data is read raw.
-    bool isStreamActive() const { return _streamActive; }
+    bool isStreamActive() const { return _upload.isStreamActive(); }
 
     /**
      * @brief Process raw binary stream (batch-mode) data during an upload.
@@ -179,7 +213,7 @@ public:
      *
      * MUST only be called when isStreamActive() returns true.
      */
-    void processStream();
+    void processStream() { _upload.processStream(); }
 
     /// Access the platform policy.
     TPolicy& policy() { return _policy; }
@@ -218,7 +252,7 @@ public:
      * to suspend competing resources (audio tasks, engine, USB host
      * poll, etc.) so the upload runs exclusively on the main loop.
      */
-    void onUploadStart(std::function<void()> cb) { _onUploadStart = std::move(cb); }
+    void onUploadStart(std::function<void()> cb) { _upload.onUploadStart(std::move(cb)); }
 
     /**
      * @brief Register callback invoked when ANY upload ends or is cancelled.
@@ -227,7 +261,7 @@ public:
      * or error). Guaranteed to fire exactly once per onUploadStart.
      * Use to resume resources suspended in onUploadStart.
      */
-    void onUploadEnd(std::function<void()> cb) { _onUploadEnd = std::move(cb); }
+    void onUploadEnd(std::function<void()> cb) { _upload.onUploadEnd(std::move(cb)); }
 
     // ── SystemServicePolicy surface ───────────────────────────────────
 
@@ -272,7 +306,7 @@ protected:
     sfx::Stream* serial() const { return _ctx ? _ctx->serial() : nullptr; }
 
     // ================================================================
-    // Shared state (accessible to .ipp template methods)
+    // Shared state (accessible to .ipp template methods + UploadEngine)
     // ================================================================
     StorageSharedState _shared;
 
@@ -284,7 +318,7 @@ private:
     // ================================================================
     TPolicy _policy;
 
-    // --- Command handlers ---
+    // --- Filesystem query / mutation handlers ---
     void handleSdInit(const uint8_t* payload, size_t len);
     void handleSdStatus();
     void handleFlashStatus();
@@ -295,140 +329,33 @@ private:
     void handleFileInfo(const uint8_t* payload, size_t len);
     void handleFileDownload(const uint8_t* payload, size_t len);
 
-    // --- Upload handlers ---
-    void handleUploadBegin(const uint8_t* payload, size_t len);
-    void handleUploadData(const uint8_t* payload, size_t len);
-    void handleUploadEnd();
-    void handleUploadCancel();
-
-    /// Build + send FILE_UPLOAD_DIAG_RESP from the last/active upload snapshot.
-    void handleUploadDiagReq();
-
-    /// Freeze a diagnostics snapshot (SD writer stats + stream progress) so a
-    /// post-mortem FILE_UPLOAD_DIAG_REQ can report it after the wire is back in
-    /// COBS mode.  `reason` is a StorageWire::UploadEndReason.
-    void captureUploadDiag(uint8_t reason);
-
-    /// Clean up upload state (close file, unlock storage, delete partial)
-    void cleanupUpload(bool deletePartial);
-
     /// Notify transfer started (fires callback, guards against double-start)
     void notifyTransferStart();
 
     /// Notify transfer ended (fires callback, guards against double-end)
     void notifyTransferEnd();
 
-    // --- Storage helpers ---
+    // --- Storage helpers (shared by file-ops + UploadEngine) ---
     bool checkStorageReady(StorageWire::StorageTarget target);
     void lockStorage(StorageWire::StorageTarget target);
     void unlockStorage(StorageWire::StorageTarget target);
-    static const char* targetName(StorageWire::StorageTarget target);
-    uint8_t mapStorageError(uint8_t err);
-    uint8_t extractPathAndTarget(const uint8_t* payload, size_t len,
-                                  char* path, size_t pathBufSize,
-                                  StorageWire::StorageTarget& target,
-                                  uint8_t* flagsOut = nullptr);
-    static bool isValidPath(const char* path);
-
-    // --- Upload state (protocol-only, policies never touch these) ---
-    bool     _uploadActive       = false;
-    StorageWire::StorageTarget _uploadTarget = StorageWire::TARGET_SD;
-    StorageWire::UploadMode    _uploadMode   = StorageWire::UPLOAD_SYNC;
-    char     _uploadPath[128]    = {};
-    uint32_t _uploadExpectedSize = 0;
-    uint32_t _uploadBytesWritten = 0;
-    uint16_t _uploadExpectedSeq  = 0;
-    sfx_storage::SfxMd5 _uploadMd5;
-
-    // --- Stream upload state ---
-    bool     _streamActive          = false;    // True while raw binary streaming
-    uint32_t _streamSegmentSize     = 0;        // Bytes per segment (set in handleUploadBegin)
-    uint16_t _streamSegmentIndex    = 0;        // Current segment number (0-based)
-    uint32_t _streamSegBytesRemaining = 0;      // Bytes left in current segment
-    uint16_t _streamSegmentCount    = 0;        // Total segment count (for logging)
-
-    // --- Stream diagnostics ---
-    uint32_t _streamStartTime_ms    = 0;        // Stream mode activation time
-    uint32_t _streamSegStartTime_ms = 0;        // Current segment start time
-    uint32_t _streamEndTime_ms      = 0;        // Stream mode deactivation time
-    uint32_t _streamLastLogTime_ms  = 0;        // Last periodic progress log
-    uint32_t _streamLastLogBytes    = 0;        // Bytes at last periodic log
-    uint32_t _streamLastCallTime_ms = 0;        // Last processStream() call time
-    uint32_t _streamMaxGap_ms       = 0;        // Worst-case gap between calls
-    uint32_t _streamIterCount       = 0;        // processStream() call count per segment
-
-    // Segment sizes — these are the per-ACK windows on the wire.  The
-    // client blasts one segment then blocks on FILE_UPLOAD_PROGRESS
-    // before sending the next, so the segment size IS the back-pressure
-    // window.  Too big = SD spikes (cluster allocation, GC, FAT update)
-    // overflow the UART RX buffer; too small = ACK round-trips dominate.
-    //
-    // 2026-05-28 (build 495 diag): 64 KB segments still lost data to an
-    // occasional 100 ms SD spike — because the buffer is 32 KB, the
-    // 64 KB segment requires ONE buffer-full flush mid-segment, and
-    // THAT'S where the spike landed (client still blasting, UART RX
-    // overflowed).  Shrunk SD to 16 KB so segment-size ≤ buffer-size:
-    // every flush now happens at the segment boundary while the client
-    // is blocked on FILE_UPLOAD_PROGRESS, so a 100+ ms SD spike never
-    // coincides with active wire traffic.  Cost: 90 ACKs per 1.4 MB
-    // upload × ~5 ms = ~450 ms overhead, ~10 % throughput hit at
-    // 500 KB/s, but reliable to arbitrary file size.
-    static constexpr uint32_t STREAM_SEGMENT_SIZE        = 16384;   // SD: 16 KB per segment
-    static constexpr uint32_t STREAM_SEGMENT_SIZE_FLASH  = 16384;   // flash: 16 KB per segment
-    static constexpr uint32_t STREAM_INACTIVITY_MS       = 5000;    // 5s timeout per segment
-
-    /// Send segment ACK (FILE_UPLOAD_PROGRESS) after each stream segment.
-    void sendStreamSegmentAck();
 
     // --- Transfer lifecycle callbacks (serial exclusivity) ---
     std::function<void()> _onTransferStart;
     std::function<void()> _onTransferEnd;
     bool _transferNotified = false;  // Guard: ensures exactly one onTransferEnd per onTransferStart
 
-    // --- Upload lifecycle callbacks (exclusive-upload resource mgmt) ---
-    std::function<void()> _onUploadStart;
-    std::function<void()> _onUploadEnd;
-    bool _uploadSuspended = false;  // Guard: ensures exactly one onUploadEnd per onUploadStart
-
-    // Sync-upload inactivity timeout (hardening, 2026-05-31): lowered 30000 → 8000.
-    // A sync chunk's round-trip is dominated by the SD/flash write (a few ms) plus
-    // wire latency, so 8 s is a generous ceiling for one missing chunk while being
-    // far quicker to self-heal an abandoned transfer that never reconnects.  The
-    // primary recovery path is stale-upload reset on the next UPLOAD_BEGIN
-    // (handleUploadBegin) — this is the no-reconnect fallback so the device can't
-    // sit upload-exclusive for half a minute.
-    static constexpr uint32_t UPLOAD_TIMEOUT_MS = 8000;
-    uint32_t _uploadLastActivity_ms = 0;
-
-    static constexpr uint32_t MAX_UPLOAD_SIZE_FLASH = 2  * 1024 * 1024;
-    static constexpr uint32_t MAX_UPLOAD_SIZE_SD    = 256 * 1024 * 1024;
-
-    // ── Upload diagnostics snapshot (FILE_UPLOAD_DIAG) ────────────────
-    // Frozen at every terminal point (complete / abort / cancel / stale-reset)
-    // BEFORE cleanupUpload() resets the policy's writer stats, so a client that
-    // saw a segment-ACK timeout can pull the real SD write latencies the stream
-    // phase could never report over the wire.  Survives until the next BEGIN.
-    struct UploadDiag {
-        uint32_t bytesRecv      = 0;
-        uint32_t expectedSize   = 0;
-        uint16_t segIndex       = 0;
-        uint16_t segCount       = 0;
-        uint8_t  fillPct        = 0;
-        uint32_t sdWriteCount   = 0;
-        uint32_t sdBytesWritten = 0;
-        uint32_t sdMaxLat_ms    = 0;   // worst single SD write — THE smoking gun
-        uint32_t sdTotalStall_ms= 0;
-        uint32_t maxLoopGap_ms  = 0;
-        uint8_t  flags          = 0;   // bit0=uploadActive bit1=streamActive
-        uint8_t  reason         = 0;   // StorageWire::UploadEndReason
-    };
-    UploadDiag _diag;
+    // --- The exclusive upload state machine ---
+    UploadEngine<TPolicy> _upload;
 };
 
 // ============================================================================
 // Template implementation
 // ============================================================================
-#include "storage_service.ipp"
+#include "storage_upload_engine.ipp"   // UploadEngine<TPolicy> methods (policy now complete)
+#include "storage_service.ipp"         // file-ops + dispatch + status + helpers
+
+#undef STORAGE_LOG
 
 // ============================================================================
 // Platform-specific policy (auto-selected by build target).
