@@ -51,6 +51,12 @@ func init() {
 	register(&command{Name: "role-list-local", Usage: "role-list-local", Help: "list roles attached on the connected board (direct role layer, no hub)", Category: catTopology, RequiresConn: true, RequiresCap: core.CapRoles, Run: cmdRoleListLocal})
 	register(&command{Name: "role-attach-local", Usage: "role-attach-local <portKind> <portIdx> <roleKind> [hexcfg]", Help: "attach a role DIRECTLY on the connected board (no hub/GUID) — portKind=servo|pwm|hbridge|input, roleKind=servo|bi-dc-motor|dc-motor|heater|led-animator", Category: catTopology, RequiresConn: true, RequiresCap: core.CapRoles, Run: cmdRoleAttachLocal})
 	register(&command{Name: "role-detach-local", Usage: "role-detach-local <portKind> <portIdx>", Help: "detach the role on (portKind, portIdx) on the connected board (direct role layer)", Category: catTopology, RequiresConn: true, RequiresCap: core.CapRoles, Run: cmdRoleDetachLocal})
+
+	// LED animator drive — light an attached LedAnimator channel directly.
+	// GUID-transparent (append `guid=XXXX` to target an expander).
+	register(&command{Name: "led-on", Usage: "led-on <portIdx> [pct] [guid=XXXX]", Help: "light an LedAnimator channel SOLID at pct% (default 100; queues a constant EV_ON + starts). guid=XXXX targets an expander", Category: catTopology, RequiresConn: true, RequiresCap: core.CapRoles, Run: cmdLedOn})
+	register(&command{Name: "led-off", Usage: "led-off <portIdx> [guid=XXXX]", Help: "stop an LedAnimator channel (output low)", Category: catTopology, RequiresConn: true, RequiresCap: core.CapRoles, Run: cmdLedOff})
+	register(&command{Name: "led-brightness", Usage: "led-brightness <portIdx> <pct> [guid=XXXX]", Help: "set the master brightness (0..100) of an LedAnimator channel without changing its program", Category: catTopology, RequiresConn: true, RequiresCap: core.CapRoles, Run: cmdLedBrightness})
 }
 
 // ─── Direct role lifecycle (bench-test an expander, no hub) ──────────
@@ -188,6 +194,86 @@ func cmdRoleDetachLocal(a *App, args []string) error {
 		return err
 	}
 	Ok("detached %s[%d]", ports.KindName(pk), pi)
+	return nil
+}
+
+// ─── LED animator drive ─────────────────────────────────────────────
+
+// cmdLedOn lights a channel SOLID: it loads a single constant EV_ON event
+// (durationMs=0 holds forever) then starts the animator.  The port must
+// already have an led-animator role attached (role-attach-local pwm <idx>
+// led-animator).
+func cmdLedOn(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	guid, args := extractGuid(args)
+	if len(args) < 1 {
+		return fmt.Errorf("usage: led-on <portIdx> [pct] [guid=XXXX]")
+	}
+	idx, err := parseU8(args[0])
+	if err != nil {
+		return err
+	}
+	pct := byte(100)
+	if len(args) >= 2 {
+		if pct, err = parseU8(args[1]); err != nil {
+			return err
+		}
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	ev := []client.LedEvent{{Kind: roles.LightEventOn, BrightnessPct: pct}} // DurationMs 0 = holds forever
+	if err := a.roleAt(guid).LedQueueLoad(idx, ev); err != nil {
+		return err
+	}
+	if err := a.roleAt(guid).LedStart(idx); err != nil {
+		return err
+	}
+	Ok("led[%d]%s on @ %d%%", idx, guidTag(guid), pct)
+	return nil
+}
+
+func cmdLedOff(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	guid, args := extractGuid(args)
+	if len(args) < 1 {
+		return fmt.Errorf("usage: led-off <portIdx> [guid=XXXX]")
+	}
+	idx, err := parseU8(args[0])
+	if err != nil {
+		return err
+	}
+	if err := a.roleAt(guid).LedStop(idx); err != nil {
+		return err
+	}
+	Ok("led[%d]%s off", idx, guidTag(guid))
+	return nil
+}
+
+func cmdLedBrightness(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	guid, args := extractGuid(args)
+	if len(args) < 2 {
+		return fmt.Errorf("usage: led-brightness <portIdx> <pct> [guid=XXXX]")
+	}
+	idx, err := parseU8(args[0])
+	if err != nil {
+		return err
+	}
+	pct, err := parseU8(args[1])
+	if err != nil {
+		return err
+	}
+	if err := a.roleAt(guid).LedSetBrightness(idx, pct); err != nil {
+		return err
+	}
+	Ok("led[%d]%s brightness %d%%", idx, guidTag(guid), pct)
 	return nil
 }
 
