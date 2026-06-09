@@ -28,6 +28,11 @@ uint32_t JetiExInputRole::rxFrameCount()    const           { return JEXP().rxFr
 uint32_t JetiExInputRole::rxErrorCount()    const           { return JEXP().rxErrors(); }
 uint32_t JetiExInputRole::txResponseCount() const           { return JEXP().txResp(); }
 uint32_t JetiExInputRole::rxByteCount()     const           { return JEXP().rxBytes(); }
+uint32_t JetiExInputRole::pollsSeen()       const           { return JEXP().pollsSeen(); }
+uint32_t JetiExInputRole::echoShort()       const           { return JEXP().echoShort(); }
+uint32_t JetiExInputRole::maxTxDurUs()      const           { return JEXP().maxTxDurUs(); }
+uint32_t JetiExInputRole::slotOverruns()    const           { return JEXP().slotOverruns(); }
+bool     JetiExInputRole::responding()      const           { return JEXP().responding(); }
 #  undef JEXP
 #else
 uint16_t JetiExInputRole::channel_us(uint8_t) const { return 1500; }
@@ -37,6 +42,11 @@ uint32_t JetiExInputRole::rxFrameCount()    const   { return 0; }
 uint32_t JetiExInputRole::rxErrorCount()    const   { return 0; }
 uint32_t JetiExInputRole::txResponseCount() const   { return 0; }
 uint32_t JetiExInputRole::rxByteCount()     const   { return 0; }
+uint32_t JetiExInputRole::pollsSeen()       const   { return 0; }
+uint32_t JetiExInputRole::echoShort()       const   { return 0; }
+uint32_t JetiExInputRole::maxTxDurUs()      const   { return 0; }
+uint32_t JetiExInputRole::slotOverruns()    const   { return 0; }
+bool     JetiExInputRole::responding()      const   { return false; }
 #endif
 
 void JetiExInputRole::setBroadcastHz(uint8_t hz) {

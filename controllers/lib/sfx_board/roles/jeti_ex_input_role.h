@@ -52,6 +52,12 @@ public:
     uint32_t rxErrorCount()    const;
     uint32_t txResponseCount() const;
     uint32_t rxByteCount()     const;
+    // Two-way (half-duplex reply) instrumentation — see jeti_ex_bus.
+    uint32_t pollsSeen()       const;   ///< 0x3A telemetry polls observed
+    uint32_t echoShort()       const;   ///< TX self-echo not fully drained (parser-desync risk)
+    uint32_t maxTxDurUs()      const;   ///< worst half-duplex TX bracket (slot-fit)
+    uint32_t slotOverruns()    const;   ///< TX bracket > ~4 ms reply slot
+    bool     responding()      const;   ///< two-way reply enabled on this role
 
     /// Host subscribe/unsubscribe to the WIRE broadcast (hz!=0 / hz==0).  Does
     /// NOT affect the LOCAL effect feed (fixed firmware rate, always on).

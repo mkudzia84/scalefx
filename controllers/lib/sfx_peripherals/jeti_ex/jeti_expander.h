@@ -53,7 +53,8 @@ public:
     bool begin(sfx_peripherals::InputPort* rxPort,
                sfx_peripherals::InputPort* escPort,
                uint16_t hubUsn, uint16_t hubLsn, const char* hubName,
-               uint32_t baud = 125000, bool useDownstream = false) {
+               uint32_t baud = 125000, bool useDownstream = false,
+               bool respondTelemetry = false) {
         if (_running) return true;                    // already running
         if (!rxPort) return false;
         _rxPort  = rxPort;
@@ -77,15 +78,16 @@ public:
         }
 
         if (!_rxBus.begin(rxStream)) return false;
-        // TELEMETRY DISABLED pending the power/brownout fix (2026-05-30).  The
-        // ~3 ms half-duplex TX reply on the shared IN_1 line is electrically
-        // marginal while the engine/heater current spike sags the rail, which
-        // corrupts the channel RX (rxE floods, ----).  RX-only is immune (rxE=0),
-        // so we run pure channel RX with NO reply until the rail is stiffened
-        // (separate ESP32 supply / bulk cap / heater soft-start).  Flip
-        // kRespondToTelemetry back on once power is fixed.  See project memory
-        // "BROWNOUT x half-duplex-TX interaction".
-        if (kRespondToTelemetry) {
+        _respond = respondTelemetry;
+        // Two-way telemetry (half-duplex reply) — RUNTIME-gated via _respond.
+        // History: disabled 2026-05-30 because the ~3 ms TX reply on the shared
+        // IN_1 line sagged the rail under engine/heater load → corrupted channel
+        // RX (rxErr flood, ----).  The single-wire line now carries a 10 kΩ
+        // pull-up (spec topology) to hold the idle level; this branch re-enables
+        // the reply for bench validation, watched by the [jexp] TX instrumentation
+        // (echoShort / slotOverruns / rxErr).  Default OFF (listen-only) when the
+        // attach config doesn't request it.
+        if (_respond) {
             _rxBus.setTxPort(rxPort);                 // half-duplex TX on IN_1 (reply)
             _rxBus.onTelemetryRequest([this](uint8_t pkt){ serveTelemetry(pkt); });
         }
@@ -157,6 +159,17 @@ public:
                          _rxBus.channelCount(), _rxBus.isValid() ? 1 : 0,
                          _rxWatch.noisy() ? " NOISY" : "");
         }
+        // Two-way reply health (every 2 s, only while responding): polls vs resp
+        // = reply coverage; echoShort + slotOver = TX/RX-turnaround issues;
+        // lastUs/maxUs = did the reply fit the ~4 ms slot.  Cross-check rxErr
+        // above — if it climbs as resp climbs, the TX reply is corrupting RX.
+        if (_respond && now - _lastTxLog >= 2000) {
+            _lastTxLog = now;
+            SFX_LOG_DEBUG("[jexp] TX polls=%lu resp=%lu echoShort=%lu slotOver=%lu lastUs=%lu maxUs=%lu",
+                         (unsigned long)_rxBus.pollsSeen(), (unsigned long)_rxBus.txResponseCount(),
+                         (unsigned long)_rxBus.echoShort(), (unsigned long)_rxBus.slotOverruns(),
+                         (unsigned long)_rxBus.lastTxDurUs(), (unsigned long)_rxBus.maxTxDurUs());
+        }
 #endif
 
         if (now - _lastBuiltin >= 1000 && _localDev != 0xFF) {
@@ -220,6 +233,12 @@ public:
     uint32_t rxFrames()  const { return _rxBus.rxFrameCount(); }
     uint32_t rxErrors()  const { return _rxBus.rxErrorCount(); }
     uint32_t txResp()    const { return _rxBus.txResponseCount(); }
+    // Two-way (half-duplex reply) instrumentation.
+    bool     responding()   const { return _respond; }
+    uint32_t pollsSeen()    const { return _rxBus.pollsSeen(); }
+    uint32_t echoShort()    const { return _rxBus.echoShort(); }
+    uint32_t maxTxDurUs()   const { return _rxBus.maxTxDurUs(); }
+    uint32_t slotOverruns() const { return _rxBus.slotOverruns(); }
     uint32_t escBytes()  const { return _escMon.rxByteCount(); }
     uint32_t escFrames() const { return _escMon.telemetryFrames(); }
     uint32_t escErrors() const { return _escMon.errorCount(); }
@@ -397,15 +416,15 @@ private:
     // timed into IN_1's silent window (or routed off the adjacent pin).  The
     // IN_1 telemetry RESPONSE is unaffected and stays on.
     static constexpr bool     kForwardToEsc       = false;
-    // Telemetry reply DISABLED pending the power/brownout fix — the half-duplex
-    // TX on the shared IN_1 line corrupts channel RX while engine/heater sag the
-    // rail.  RX-only is immune (rxE=0).  Flip to true once power is stiffened.
-    static constexpr bool     kRespondToTelemetry = false;
+    // Two-way telemetry reply is now RUNTIME-gated via `_respond` (set from the
+    // attach config — see begin()'s respondTelemetry param), not a compile flag.
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
     static constexpr uint32_t kEscPollIntervalMs = 100;  // ESC poll rate (~10 Hz)
     static constexpr uint32_t kRespIntervalMs    = 50;   // Rx reply rate cap (~20 Hz)
     uint32_t _lastFwdMs  = 0;            // last ESC-forward time (rate limit)
     uint32_t _lastRespMs = 0;            // last Rx-reply time (rate limit)
+    bool     _respond    = false;        // two-way telemetry reply enabled (runtime, from attach cfg)
+    uint32_t _lastTxLog  = 0;            // last [jexp] TX instrumentation log time
     uint8_t  _localDev   = 0xFF;         // hub index of the HubFX-own device
 
     // Rotation cursors (data + text walk independently across the hub).

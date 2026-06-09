@@ -252,6 +252,15 @@ public:
     /// frames/CRC stay at 0) vs no-wire (zero bytes) — see input_monitor rig.
     uint32_t rxByteCount() const { return _parser.rxBytes(); }
 
+    // Two-way (half-duplex reply) instrumentation — verify TX/RX switching drops
+    // + issues on the shared single-wire line.  Surfaced via the [jexp] TX diag
+    // line + the JETIEX_FRAME_RESP tail.
+    uint32_t pollsSeen()    const { return _pollsSeen; }    ///< 0x3A telemetry polls observed
+    uint32_t echoShort()    const { return _echoShort; }    ///< TX self-echo not fully drained → parser-desync risk
+    uint32_t lastTxDurUs()  const { return _lastTxDurUs; }  ///< last half-duplex TX bracket (µs)
+    uint32_t maxTxDurUs()   const { return _maxTxDurUs; }   ///< worst TX bracket (slot-overrun watch)
+    uint32_t slotOverruns() const { return _slotOverruns; } ///< TX bracket > the ~4 ms EX Bus reply slot
+
 private:
     sfx::Stream* _serial = nullptr;
 
@@ -290,6 +299,13 @@ private:
 
     // ── Stats ───────────────────────────────────────────────────
     uint32_t _txCount = 0;       // frame rx/err/byte counts live in _parser
+    // Half-duplex reply instrumentation (two-way telemetry).
+    uint32_t _pollsSeen    = 0;  // 0x3A telemetry polls observed (reply ratio = _txCount/_pollsSeen)
+    uint32_t _echoShort    = 0;  // self-echo drain got < totalLen → leftover echo desyncs the parser
+    uint32_t _lastTxDurUs  = 0;  // last TX bracket duration (txEnable→post-drain)
+    uint32_t _maxTxDurUs   = 0;  // worst TX bracket — did the reply fit the slot?
+    uint32_t _slotOverruns = 0;  // TX bracket exceeded the ~4 ms reply slot (likely corrupted a frame)
+    static constexpr uint32_t kSlotBudgetUs = 3800;  // EX Bus reply slot (~4 ms) with margin
 
     // ── Internal methods ────────────────────────────────────────
     void processFrame(const uint8_t* frame, uint8_t len);

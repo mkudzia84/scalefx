@@ -136,6 +136,7 @@ void JetiExBus::parseChannelData(const uint8_t* frame, uint8_t len)
 // ─── handleTelemetryRequest ────────────────────────────────────
 void JetiExBus::handleTelemetryRequest(uint8_t packetId)
 {
+    _pollsSeen++;   // every 0x3A poll (whether or not we end up replying)
     // Expander override: serve multi-device from the shared hub instead of the
     // built-in single-device table.  The hook builds + sends its own frames.
     if (_onTelemetryRequest) { _onTelemetryRequest(packetId); return; }
@@ -295,11 +296,22 @@ void JetiExBus::sendExBusResponse(uint8_t packetId, uint8_t dataId,
         // (totalLen bytes).  NOT a `while(available)` drain — that can swallow
         // the master's next channel frame if it arrives right after the slot,
         // causing RC signal loss.
+        const uint32_t t0 = SFX_MICROS();   // TX-bracket timing (slot-fit watch)
         _txPort->txEnable();
         _serial->write(frame, totalLen);
-        _serial->flush();
+        _serial->flush();                   // wait for shift register empty
         _txPort->txDisable();
-        for (uint8_t i = 0; i < totalLen && _serial->available(); ++i) _serial->read();
+        // Drain our own echo (TX↔RX tied on the single wire).  Count an
+        // incomplete drain: if fewer than totalLen bytes were available, the
+        // echo is still arriving and its tail will desync the frame parser
+        // (shows up as rxErr) — the prime TX/RX-turnaround "issue" signal.
+        uint8_t drained = 0;
+        for (uint8_t i = 0; i < totalLen && _serial->available(); ++i) { _serial->read(); ++drained; }
+        if (drained < totalLen) _echoShort++;
+        const uint32_t dur = SFX_MICROS() - t0;
+        _lastTxDurUs = dur;
+        if (dur > _maxTxDurUs)    _maxTxDurUs = dur;
+        if (dur > kSlotBudgetUs)  _slotOverruns++;
     } else {
         _serial->write(frame, totalLen);
     }
