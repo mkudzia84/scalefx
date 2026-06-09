@@ -32,20 +32,18 @@ type Controller struct {
 
 // Controllers is the registry of known controller targets.
 var Controllers = map[string]Controller{
-	"noop":        {Name: "noop", SubDir: "noop/pico", PIOEnv: "pico", FwExt: "uf2", Platform: PlatformPico},
-	"noop-esp":    {Name: "noop-esp", SubDir: "noop/esp32s3", PIOEnv: "esp32s3", FwExt: "bin", Platform: PlatformESP32},
-	// gunfx + lightfx standalone Pico expander controllers were removed
-	// (2026-06-06 cleanup) — the GunFx / LightFx effects now live only on the
-	// HubFX master (controllers/hubfx/esp32s3/src/effects/). gearcontrol/pico
-	// remains the sole standalone expander reference until the generic-expander
-	// refactor replaces it.
+	// gunfx standalone Pico controller was removed (2026-06-06 cleanup) — the
+	// GunFx effects now live only on the HubFX master
+	// (controllers/hubfx/esp32s3/src/effects/).  lightfx + gearcontrol are
+	// thin generic-expander boards (ports + roles; the hub drives them).
+	"lightfx":     {Name: "lightfx", SubDir: "lightfx/pico", PIOEnv: "pico", FwExt: "uf2", Platform: PlatformPico},
 	"gearcontrol": {Name: "gearcontrol", SubDir: "gearcontrol/pico", PIOEnv: "pico", FwExt: "uf2", Platform: PlatformPico},
 	"hubfx":       {Name: "hubfx", SubDir: "hubfx/esp32s3", PIOEnv: "esp32s3", FwExt: "bin", Platform: PlatformESP32},
 }
 
 // ControllerNames returns sorted controller names.
 func ControllerNames() []string {
-	return []string{"noop", "noop-esp", "gearcontrol", "hubfx"}
+	return []string{"lightfx", "gearcontrol", "hubfx"}
 }
 
 // IsESP32 returns true if the controller uses esptool flashing.

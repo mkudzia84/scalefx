@@ -8,7 +8,7 @@ description: Build, flash, version-bump, and crash-debug ScaleFX firmware (HubFX
 The tool is `app/go/scalefx-flash.exe` (build it first if missing: `cd app/go && go build -o scalefx-flash.exe ./flash/`). Run from the repo root.
 
 ## Controllers
-Active targets: `hubfx` (ESP32-S3, the master — 99% of work), `gearcontrol` (Pico), `noop` / `noop-esp` (bring-up). The standalone `gunfx`/`lightfx` Pico controllers were removed (2026-06-06) — those effects now live only on the HubFX. `controllers` lists current targets.
+Active targets: `hubfx` (ESP32-S3, the master — 99% of work), `lightfx` + `gearcontrol` (Pico generic expanders). The standalone `gunfx` Pico controller was removed (2026-06-06) — those effects now live only on the HubFX. `controllers` lists current targets.
 
 ## Core commands
 ```bash

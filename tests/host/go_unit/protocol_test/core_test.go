@@ -190,7 +190,6 @@ func TestDetectControllerType(t *testing.T) {
 		{"LightFX", "LightFX-C3D4", core.CtrlLightFX},
 		{"GearControl", "GearControl-E5F6", core.CtrlGearControl},
 		{"HubFX", "HubFX-0102", core.CtrlHubFX},
-		{"NoOp", "NoOp-ABCD", core.CtrlNoOp},
 		{"Unknown", "FooBar-1234", ""},
 	}
 	for _, tt := range tests {

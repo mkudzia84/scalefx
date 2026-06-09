@@ -103,7 +103,6 @@ Controllers:
   lightfx: { path: "controllers/lightfx/pico/", range: "0x40-0x5F" }
   gearcontrol: { path: "controllers/gearcontrol/pico/", range: "0x60-0x7F" }
   hubfx: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xAF", platform: "ESP32-S3" }
-  noop: { path: "controllers/noop/pico/", range: "CORE_ONLY" }
 ```
 
 ---

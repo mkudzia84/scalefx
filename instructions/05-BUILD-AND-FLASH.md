@@ -8,8 +8,8 @@
 
 ```yaml
 # Flash CLI (recommended). Active controllers: hubfx (ESP32-S3 master),
-# gearcontrol (Pico), noop / noop-esp (bring-up). The standalone gunfx/lightfx
-# Pico controllers were removed 2026-06-06 — those effects live on the HubFX now.
+# lightfx + gearcontrol (Pico generic expanders). The standalone gunfx Pico
+# controller was removed 2026-06-06 — those effects live on the HubFX now.
 Flash_CLI_Build: "scalefx-flash build hubfx --no-clean"
 Flash_CLI_Flash: "scalefx-flash flash hubfx --port COM15"
 Flash_CLI_Release: "scalefx-flash release-flash hubfx --port COM15"
@@ -98,14 +98,14 @@ PATH_Refresh:
 
 ```bash
 # Build and flash a controller
-scalefx-flash flash gunfx
+scalefx-flash flash hubfx
 scalefx-flash flash lightfx --port COM10
-scalefx-flash flash noop --no-clean
+scalefx-flash flash gearcontrol --no-clean
 ```
 
 **Options:**
 ```yaml
-controller: "gunfx | lightfx | gearcontrol | hubfx | noop (required)"
+controller: "lightfx | gearcontrol | hubfx (required)"
 --port PORT: "Specify serial port (default: auto-detect)"
 --no-build: "Skip build step (use existing firmware)"
 --no-clean: "Skip clean step (incremental build)"
@@ -205,8 +205,6 @@ gunfx: "controllers/gunfx/pico/"
 lightfx: "controllers/lightfx/pico/"
 gearcontrol: "controllers/gearcontrol/pico/"
 hubfx: "controllers/hubfx/esp32s3/"         # ESP32-S3, uses standalone esptool
-noop: "controllers/noop/pico/"
-noop-esp: "controllers/noop/esp32s3/"        # ESP32-S3 NoOp variant
 ```
 
 ### Expected Output

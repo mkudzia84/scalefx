@@ -109,7 +109,6 @@ var boardKindPrefixes = map[string]string{
 	"lightfx":     "LightFx",
 	"gunfx":       "GunFx",
 	"gearcontrol": "GearControl",
-	"noop":        "NoOp",
 }
 
 // resolveBoard maps a BoardSel to a concrete GUID against the model.

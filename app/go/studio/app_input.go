@@ -333,8 +333,6 @@ func boardKindFromName(name string) string {
 		return "gunfx"
 	case hasPrefixFold(name, "GearControl"):
 		return "gearcontrol"
-	case hasPrefixFold(name, "NoOp"):
-		return "noop"
 	}
 	return ""
 }

@@ -60,7 +60,6 @@ var controllerLabels = map[string]string{
 	"lightfx":     "LightFX",
 	"gunfx":       "GunFX",
 	"gearcontrol": "GearControl",
-	"noop":        "NoOp",
 }
 
 func controllerLabel(kind string) string {

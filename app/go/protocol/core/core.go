@@ -122,7 +122,6 @@ const (
 	CtrlGunFX       = "gunfx"
 	CtrlHubFX       = "hubfx"
 	CtrlLightFX     = "lightfx"
-	CtrlNoOp        = "noop"
 )
 
 // ─── Init Mode — mirrors InitMode namespace in core.h ───
@@ -395,7 +394,6 @@ func DetectControllerType(name string) string {
 		{"GunFX", CtrlGunFX},
 		{"HubFX", CtrlHubFX},
 		{"LightFX", CtrlLightFX},
-		{"NoOp", CtrlNoOp},
 	} {
 		if strings.HasPrefix(name, entry.prefix) {
 			return entry.ctype
