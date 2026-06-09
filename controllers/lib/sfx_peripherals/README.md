@@ -12,7 +12,7 @@ indicator LEDs.
 ```
 sfx_peripherals/
 ├── gpio/                        Native MCU GPIO
-│   └── native_gpio.h            MCU pin wrapper (digital + PWM via analogWrite)
+│   └── native_gpio.h            MCU pin wrapper (digital + PWM — Pico: analogWrite / ESP32: LEDC-native)
 │
 ├── pwm/                         PWM-output abstraction + chip drivers
 │   ├── pwm_output.h             PwmOutput concept (single duck-typed surface)
@@ -28,7 +28,7 @@ sfx_peripherals/
 │   └── client/led_client.h/.cpp LedProtocolClient (command builders + response parsing)
 │
 ├── indicators/
-│   └── indicator_leds.h         Connection/error LED state machine (used by SfxServer)
+│   └── indicator_leds.h         IndicatorServicePolicy — connection/error LED state machine (auto-prepended by BoardServer/BoardOf)
 │
 ├── servo/                       Servo output with motion profiling
 ├── motor/                       DC motor topologies + stall detection
@@ -65,7 +65,7 @@ the duty value physically means.
 
 | Provider     | Header                | HAS_HW_PWM | Notes                                                        |
 |--------------|-----------------------|------------|--------------------------------------------------------------|
-| `NativeGpio` | `gpio/native_gpio.h`  | `true`     | MCU pin via `analogWrite` / LEDC. Singleton `instance()`. Also exposes `readPin()` for input. |
+| `NativeGpio` | `gpio/native_gpio.h`  | `true`     | MCU pin — Pico: `analogWrite`; ESP32: LEDC-native. Singleton `instance()`. Also exposes `readPin()` for input. |
 | `PCA9685`    | `pwm/pca9685.h`       | `true`     | NXP 16-channel 12-bit I²C PWM, 24-1526 Hz, push-pull / open-drain. Extends `I2CDevice`. |
 
 Both backends additionally expose `static constexpr uint8_t NUM_PINS`
@@ -108,7 +108,7 @@ Two-layer architecture — LED controllers bind directly to GPIO providers:
          │
 ┌─────────────────────────────────────────────────────────────────┐
 │  PwmOutput Backend Layer                                         │
-│  NativeGpio    → analogWrite / digitalWrite (MCU pins)           │
+│  NativeGpio    → MCU pins (Pico: analogWrite / ESP32: LEDC)      │
 │  PCA9685       → I²C burst write (16-ch 12-bit PWM)              │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -197,7 +197,7 @@ seq.update();
 
 ### `NativeGpio` (gpio/native_gpio.h)
 
-MCU GPIO wrapper. Singleton via `NativeGpio::instance()`. Uses `analogWrite()` for PWM (Arduino-Pico hardware PWM on RP2040/RP2350, LEDC on ESP32-S3). Every MCU pin is available; `isAvailable()` always returns `true`. Exposes `readPin()` for input — not part of `PwmOutput` but available on this backend.
+MCU GPIO wrapper. Singleton via `NativeGpio::instance()`. PWM is platform-native — `analogWrite()` (Arduino-Pico hardware PWM) on RP2040/RP2350, native LEDC (`driver/ledc`) on ESP32-S3. Every MCU pin is available; `isAvailable()` always returns `true`. Exposes `readPin()` for input — not part of `PwmOutput` but available on this backend.
 
 ### `PCA9685` (pwm/pca9685.h)
 

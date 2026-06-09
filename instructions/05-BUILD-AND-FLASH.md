@@ -1,5 +1,8 @@
 # Build and Flash Guide
 
+> **Status:** how-to / workflow &middot; **Read when:** compiling firmware or flashing a controller (hubfx / lightfx / gearcontrol)
+> **TL;DR:** use `scalefx-flash build|flash <controller>` (Pico via BOOTSEL+UF2, ESP32-S3 via standalone esptool from `tools download`); BUILD_NUMBER auto-increments, trust the INIT_READY buildNum.
+
 > **ACTION DOCUMENT:** How to compile firmware and deploy to hardware.
 
 ---

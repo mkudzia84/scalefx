@@ -10,7 +10,7 @@ attach roles and drive them.  All gear / door sequencing, stall-based
 endpoint detection, calibration, status LEDs, and error handling live in
 the hub's `GearControlServicePolicy` — **not on this board**.  (This
 replaced ~4 000 lines of on-board sequencer code; see
-[instructions/15-GENERIC-EXPANDER-REFACTOR.md](../../../instructions/15-GENERIC-EXPANDER-REFACTOR.md).)
+[instructions/16-EXPANDER-BOARD-DESIGN.md](../../../instructions/16-EXPANDER-BOARD-DESIGN.md).)
 
 **Hardware:** Raspberry Pi Pico (RP2040), earlephilhower core
 **Protocol:** Binary COBS / CRC-8 over USB CDC (6 Mbps)
@@ -176,27 +176,18 @@ The board itself only speaks the generic-expander port/role surface
 | `GEAR_ALL` 0xC1 | `[action]` | stop/deploy/retract all |
 | `GEAR_STATUS_REQ` 0xC2 | — | → phase per gear (idle/moving/calibrating/error) |
 | `GEAR_LIST_REQ` 0xC5 | — | → configured gears |
-| `GEAR_RESET` 0xC7 | `[id]` | clear ERROR → retracted |
-| `GEAR_CALIBRATE` 0xC8 | `[id]` | stall-endpoint sweep (retract→deploy→home) |
-| `GEAR_CALIB_CANCEL` 0xC9 | `[id]` | abort calibration |
+| `GEAR_RESET` 0xD7 | `[id]` | clear ERROR → retracted |
 
-Phases: `unconfigured, retracted, deploying, deployed, retracting, error,
-calibrating`.  Errors: `MOTOR_UNAVAILABLE, IN_ERROR_STATE, TIMEOUT,
-NO_STALL_DETECTED`.
+Phases: `unconfigured, retracted, deploying, deployed, retracting, error`.
+Errors: `MOTOR_UNAVAILABLE, IN_ERROR_STATE, TIMEOUT, NO_STALL_DETECTED`.
 
 CLI: `gear-list`, `gear-status`, `gear-deploy <id>`, `gear-retract <id>`,
-`gear-stop <id>`, `gear-all <…>`, `gear-reset <id>`,
-`gear-calibrate <id>`, `gear-calib-cancel <id>`.
+`gear-stop <id>`, `gear-all <…>`, `gear-reset <id>`.
 
-## Calibration
-
-`GEAR_CALIBRATE` runs a stall-confirmed endpoint sweep on the hub: drive
-to the retract stop, then the deploy stop, then home — each leg ends on a
-`MOTOR_STALL_EVENT` from the board's INA226.  A leg that never stalls
-within the gear's travel timeout faults the gear (`NO_STALL_DETECTED`).
-Status LEDs blink at 150 ms throughout.  (The legacy current-threshold
-profiling — drag headroom, baseline current — is deferred; it needs
-continuous current streaming the BiDcMotor role doesn't emit yet.)
+> Endpoint detection is per-stroke autonomous stall guard (see *Endstop
+> detection* above) — there is no separate calibration command. The old
+> `GEAR_CALIBRATE` (0xC8) / `GEAR_CALIB_CANCEL` (0xC9) packets were removed
+> (instructions/29 §6a); 0xD8/0xD9 are now free.
 
 ## Build / flash
 

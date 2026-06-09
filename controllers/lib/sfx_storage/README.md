@@ -15,6 +15,9 @@ Thread-safe storage singletons for SD card and onboard flash. Both modules share
 | `esp32/esp_idf_sd_policy.h` / `.cpp` | **(ESP32)** `EspIdfSdio4BitPolicy` — mounts SD via `esp_vfs_fat_sdmmc_mount` |
 | `pico/pico_sd_policy.h` | **(Pico)** `PicoSpiSdPolicy` — SdFat over SPI |
 | `bring_up.h` | One-liner `bringUpStorage(sdCfg)` for controller `setup()` |
+| `server/storage_service.h` / `.ipp` | `StorageServicePolicy<TPolicy>` — the `SystemServicePolicy` dispatching the file-system + upload wire surface; composed into `BoardServer<...>` |
+| `server/storage_upload_engine.h` / `.ipp` | `UploadEngine<TPolicy>` — windowed + batch raw-stream upload state machine (fill buffer, CRC, SD write), used by `StorageServicePolicy` |
+| `server/storage_path_util.h` | Path-normalisation helpers shared by the service + upload engine |
 
 ## Architecture
 
@@ -292,10 +295,10 @@ The audio mixer's SD-specific handle is `SdFile` (= `SdCardModule::FileHandle`),
 |------------|----------|--------|
 | `sfx_platform` | All | `sfx_platform.h` (SfxMutex, platform macros) |
 | `sfx_serial` | All | `diag_log.h` (logging) |
-| `Arduino` | All | base types (only) |
+| `<Arduino.h>` | Pico only | base types (ESP32 is pure ESP-IDF) |
 | `SdFat` | Pico only | SD card backend. Excluded on ESP32 via `lib_ignore`. |
-| `<esp_vfs_fat.h>` + `<driver/sdmmc_host.h>` + `<sdmmc_cmd.h>` | ESP32 only | Bundled with Arduino-ESP32 framework — no `lib_deps` change needed |
-| `<esp_littlefs.h>` | ESP32 only | Bundled with Arduino-ESP32 framework (`libjoltwallet__littlefs.a`) |
+| `<esp_vfs_fat.h>` + `<driver/sdmmc_host.h>` + `<sdmmc_cmd.h>` | ESP32 only | ESP-IDF framework component (HubFX is pure `framework = espidf`) |
+| `<esp_littlefs.h>` | ESP32 only | Managed dep `joltwallet/littlefs` via `src/idf_component.yml` (processed under espidf) |
 | `<LittleFS.h>` | Pico only | Arduino LittleFS wrapper |
 
 **No dependency on:** sfx_audio, sfx_usb, sfx_peripherals, sfx_server.

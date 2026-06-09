@@ -1,24 +1,25 @@
 # Expander Board Design Guide
 
+> **Status:** hardware spec &middot; **Read when:** building a new Pico expander board or studying the two shipping ones (LightFX / GearControl)
+> **TL;DR:** an expander is a thin port + role host — a `BoardOf<…>` class with static port descriptors (servo/pwm/hbridge/input) and a two-line `loop()`; it owns no high-level behaviour and has no board-specific wire protocol, the hub attaches + drives roles by opaque `PortRef` (Rule 58).
+>
 > **Audience:** firmware engineers building a NEW expander board, or
 > studying the two shipping ones (LightFX / GearControl) to add a third.
 >
-> **Status: 2026-06-09.** Rewritten onto the current **Ports / Roles**
-> model. The old `ExpanderServer<TServos, TPwms, TLeds>` + the three
-> "collections" (`ServoCollection` / `PwmCollection` / `LedCollection`) +
-> the `ExpanderPacket 0x01..0x7F` range + `addModuleHandler()` are all
-> GONE — replaced by `BoardOf<...>` + static port descriptors +
-> `RoleServicePolicy`. An expander is now a thin board running the SAME
-> `RoleServicePolicy` every board runs; the hub drives its roles
-> transparently by opaque `PortRef` ([Rule 58](../.github/copilot-instructions.md)).
+> **Model: current Ports / Roles (2026-06-09 rewrite).** The old
+> `ExpanderServer<TServos, TPwms, TLeds>` + the three "collections"
+> (`ServoCollection` / `PwmCollection` / `LedCollection`) + the
+> `ExpanderPacket 0x01..0x7F` range + `addModuleHandler()` are all GONE —
+> replaced by `BoardOf<...>` + static port descriptors + `RoleServicePolicy`.
+> An expander is now a thin board running the SAME `RoleServicePolicy` every
+> board runs; the hub drives its roles transparently by opaque `PortRef`
+> ([Rule 58](../.github/copilot-instructions.md)).
 >
 > **Companion docs:**
-> [`17-SYSTEM-SERVICES.md`](17-SYSTEM-SERVICES.md) (the policy framework, RFC
-> history), [`31-GUID-PORT-ROUTING.md`](31-GUID-PORT-ROUTING.md) (how the hub
-> addresses a remote port), [`32-ARCHITECTURE-DIAGRAMS.md`](32-ARCHITECTURE-DIAGRAMS.md)
-> §3 (port/role data-flow diagrams), and [`01-ARCHITECTURE.md`](01-ARCHITECTURE.md)
-> (the wider system). [`15-GENERIC-EXPANDER-REFACTOR.md`](15-GENERIC-EXPANDER-REFACTOR.md)
-> is the historical planning doc for this pivot.
+> [`01-ARCHITECTURE.md`](01-ARCHITECTURE.md) (the wider system + the policy
+> framework / `SystemServicePolicy` — see also [`02-NEW-CONTROLLER.md`](02-NEW-CONTROLLER.md)),
+> and [`32-ARCHITECTURE-DIAGRAMS.md`](32-ARCHITECTURE-DIAGRAMS.md) §3–4 (how the
+> hub addresses a remote port + the port/role data-flow diagrams).
 >
 > **Worked examples (read these alongside the guide):**
 > [`controllers/lightfx/pico/src/lightfx_pico.ino`](../controllers/lightfx/pico/src/lightfx_pico.ino)
@@ -596,8 +597,8 @@ scalefx-flash flash lightfx --port COM10
   native port classes (`MicroservoPort`, `NativePwmPort`, `DualPwmHBridgePort`, `InputPort`).
 - [`app/go/client/roletarget.go`](../app/go/client/roletarget.go) — the Go
   `RoleTarget` (one role-I/O path).
-- [`17-SYSTEM-SERVICES.md`](17-SYSTEM-SERVICES.md) — the policy framework + RFC history.
-- [`31-GUID-PORT-ROUTING.md`](31-GUID-PORT-ROUTING.md) — how the hub addresses a remote port.
-- [`32-ARCHITECTURE-DIAGRAMS.md`](32-ARCHITECTURE-DIAGRAMS.md) §3–4 — port/role data-flow diagrams.
-- [`15-GENERIC-EXPANDER-REFACTOR.md`](15-GENERIC-EXPANDER-REFACTOR.md) — the pivot's historical planning doc.
-- [`01-ARCHITECTURE.md`](01-ARCHITECTURE.md) — system-wide context.
+- [`01-ARCHITECTURE.md`](01-ARCHITECTURE.md) — system-wide context + the policy
+  framework (`SystemServicePolicy`); [`02-NEW-CONTROLLER.md`](02-NEW-CONTROLLER.md)
+  — the new-board / new-policy walkthrough.
+- [`32-ARCHITECTURE-DIAGRAMS.md`](32-ARCHITECTURE-DIAGRAMS.md) §3–4 — how the hub
+  addresses a remote port + port/role data-flow diagrams.

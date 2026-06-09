@@ -1,5 +1,7 @@
 # 32 — Architecture Diagrams
 
+> **Status:** active reference &middot; **Read when:** you need a visual map of storage / audio / ports-roles-topology / effects data flow. &middot; **TL;DR:** Mermaid diagrams of the four core subsystems reflecting the post-decomposition `BoardServer<...>` codebase and Rule 58 transparent expander roles.
+
 Visual reference for the four core subsystems. Diagrams are Mermaid (GitHub /
 VS Code render them inline). They reflect the post-decomposition codebase
 (2026-06-09): `BoardServer<...UserPolicies>` framework, the decomposed
@@ -279,6 +281,6 @@ and an expander-hosted servo — only `PortRef.guid` differs.
 These are **docs-as-code** (Rule 0). When a decomposition or data-flow changes,
 update the matching diagram in the same commit. Each subsystem's deep doc links
 here: storage → [27-WIRE-ASYNC-AND-UPLOAD.md](27-WIRE-ASYNC-AND-UPLOAD.md) ·
-audio → [25-ARDUINO-REMOVAL.md](25-ARDUINO-REMOVAL.md) + [sfx_audio/README](../controllers/lib/sfx_audio/README.md) ·
-ports/roles/topology → [15-GENERIC-EXPANDER-REFACTOR.md](15-GENERIC-EXPANDER-REFACTOR.md) + [16-EXPANDER-BOARD-DESIGN.md](16-EXPANDER-BOARD-DESIGN.md) + [31-GUID-PORT-ROUTING.md](31-GUID-PORT-ROUTING.md) ·
-effects → [22-GUNFX-FEATURE-ROLLOUT.md](22-GUNFX-FEATURE-ROLLOUT.md) + [21-STUDIO-ENGINEFX-PANEL.md](21-STUDIO-ENGINEFX-PANEL.md).
+audio → [sfx_audio/README](../controllers/lib/sfx_audio/README.md) ·
+ports/roles/topology → [16-EXPANDER-BOARD-DESIGN.md](16-EXPANDER-BOARD-DESIGN.md) + [sfx_board/README](../controllers/lib/sfx_board/README.md) ·
+effects → [21-STUDIO-ENGINEFX-PANEL.md](21-STUDIO-ENGINEFX-PANEL.md).

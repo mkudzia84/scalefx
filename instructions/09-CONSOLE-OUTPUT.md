@@ -1,5 +1,8 @@
 # Console Output Schema
 
+> **Status:** active reference &middot; **Read when:** writing or matching a CLI status/parser output, or decoding a status payload byte layout
+> **TL;DR:** the canonical wire-byte layouts + formatted output for every status/response packet (core, GunFX, LightFX, GearControl, HubFX, audio, storage), plus the shared size-formatting and ANSI-colour conventions.
+
 > **Reference document for Go CLI output format.** Go is the canonical reference.
 > All platforms MUST produce equivalent output for the same wire data.
 

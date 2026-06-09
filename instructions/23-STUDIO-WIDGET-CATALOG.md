@@ -1,5 +1,8 @@
 # 23 — Studio Widget Catalog
 
+> **Status:** active reference &middot; **Read when:** building any Studio tab/panel and you need the closest existing reusable widget pattern.
+> **TL;DR:** A practical handbook of every reusable Studio UI widget with copy-pasteable markup snippets — start here, copy the closest widget, deviate only where a design rule allows.
+
 > One-stop reference for every reusable Studio UI pattern. When building
 > a new tab or panel, **start here** — find the closest pre-existing
 > widget, copy the markup, and only deviate when the design rule

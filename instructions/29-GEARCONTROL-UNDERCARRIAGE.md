@@ -1,5 +1,8 @@
 # 29 — GearControl: retractable-undercarriage door sequencing
 
+> **Status:** how-to / workflow &middot; **Read when:** working on GearControl door servo sequencing, multi-channel gear coordination, or the Studio Gear tab.
+> **TL;DR:** Adds door-servo sequencing + multi-channel coordination + the Studio Gear tab on top of the shipped motor-only gear FSM; §6a decisions #1–5 are landed in firmware (build #788) with `SERVO_MOTION_DONE` as the door-completion signal and `/gearcontrol.yaml` v2 carrying the coord/door config.
+
 Plan for the full retractable-landing-gear feature on the **HubFX master** +
 its **ScaleFX Studio** panel. The motor-only gear FSM already ships; this adds
 **door servo sequencing**, **multi-channel coordination**, and the **Studio Gear

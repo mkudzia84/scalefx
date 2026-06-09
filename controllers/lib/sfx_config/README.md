@@ -9,9 +9,8 @@
 3. **YamlNode** — Tree node with `as<T>()`, `child()`, `childAs<T>()` member access
 4. **YamlSchema** — Declarative schema DSL (`sfx::prop`, `sfx::group`, `sfx::seq`)
 5. **ConfigStore** — Templatized config manager with schema-driven loading and validation
-6. **ConfigServerT** — BusServer handler for single-store CONFIG_RELOAD / CONFIG_STATUS protocol commands (slaves)
-7. **MultiConfigServer** — Path-routed BusServer handler for hubs that own multiple per-domain YAML files
-8. **ConfigClient** — BusClient for sending config commands
+6. **ConfigServicePolicy** — Path-routed `SystemServicePolicy` (in `server/multi_config_server.h`) that handles CONFIG_RELOAD / CONFIG_SAVE / CONFIG_STATUS for one or more per-domain YAML stores; composed into `BoardServer<...>`
+7. **ConfigClient** — BusClient for sending config commands
 
 The config format is **defined per board** via a Schema type — the library itself is generic.
 
@@ -33,8 +32,9 @@ YamlSchema (optional)      ─── sfx::schema / group / prop / seq
 ConfigStore<TSchema>       ─── TSchema::populate() maps tree → C++ struct
     │                          TSchema::validate() checks constraints
     ▼
-ConfigServerT<TStore>      ─── BusServer handler (CONFIG_RELOAD/GET protocol)
-    │
+ConfigServicePolicy        ─── SystemServicePolicy (CONFIG_RELOAD/SAVE/STATUS),
+    │                          path-routed across one or more ConfigStores,
+    │                          composed into BoardServer<...>
     ▼
 ConfigClient               ─── BusClient for sending config commands
 ```
@@ -280,85 +280,46 @@ struct HubFxConfigSchema {
 };
 ```
 
-### 3. Wire It Up in Firmware (single-store / slave pattern)
+### 3. Wire It Up in Firmware (`ConfigServicePolicy`, Rule 26)
+
+`ConfigServicePolicy` is a `SystemServicePolicy` — add it to the board's
+`BoardServer<...>` (or `BoardOf<...>`) pack and it handles the CONFIG_*
+wire surface automatically. Each YAML file is owned by its own
+`ConfigStore<TSchema>` with its own `defaultPath()` and its own typed
+apply callback; the policy routes wire packets to the right store by
+matching the path payload. A single store and many stores use the same
+policy — just wire one or more.
 
 ```cpp
 #include <config/config_store.h>
-#include <server/config_server.h>
-#include <storage/sd_card.h>
+#include <server/multi_config_server.h>      // ConfigServicePolicy
+#include <storage/storage_config_bridge.h>   // wireConfigStore<FlashModule>
 
-// Type aliases
-using MyConfigStore  = ConfigStore<HubFxConfigSchema>;
-using MyConfigServer = ConfigServerT<MyConfigStore>;
+using HubFxBoard = sfx_core::BoardServer<
+    /* ...other policies... */,
+    ConfigServicePolicy>;
 
-MyConfigServer configServer;
+HubFxBoard board;
 
-// File reader bridge
-int readFromSd(const char* path, char* buf, size_t maxLen) {
-    auto& sd = SdCardModule::instance();
-    return sd.readFile(path, (uint8_t*)buf, maxLen);
-}
-
-void setup() {
-    // ... SD init ...
-
-    configServer.store().setFileReader(readFromSd);
-    configServer.loadConfig();  // Loads the schema's defaultPath() — e.g. /hubfx.yaml
-
-    // Access parsed config
-    auto& cfg = configServer.store().data();
-    if (cfg.engineFx.enabled) {
-        // ... start engine with cfg.engineFx.type ...
-    }
-
-    // Register as protocol handler
-    server.addModuleHandler(&configServer);
-}
-```
-
-### 3b. Multi-Store Wiring (hub pattern, Rule 26)
-
-Hubs split configuration across one YAML file per domain — Studio writes the
-slave-board configs (`enginefx.yaml`, `gunfx.yaml`, `lightfx.yaml`) to hub
-flash alongside the hub's own `hubfx.yaml`. Each file is owned by its own
-`ConfigStore<TSchema>` with its own `defaultPath()` and its own typed
-`onLoaded()` callback. `MultiConfigServer` routes the wire packets to the
-right store by matching the path payload.
-
-```cpp
-#include <server/multi_config_server.h>
-#include <storage/storage_config_bridge.h>
-
-static HubFxSettingsStore hubConfig;       // /hubfx.yaml   (codec, input mappings, …)
-static EngineConfigStore  engineConfig;    // /enginefx.yaml
-static GunFxConfigStore   gunConfig;       // /gunfx.yaml
-static LightFxConfigStore lightConfig;     // /lightfx.yaml
-
-static ConfigStoreFacadeT<HubFxSettingsStore> hubFacade    (hubConfig);
-static ConfigStoreFacadeT<EngineConfigStore>  engineFacade (engineConfig);
-static ConfigStoreFacadeT<GunFxConfigStore>   gunFacade    (gunConfig);
-static ConfigStoreFacadeT<LightFxConfigStore> lightFacade  (lightConfig);
-
-MultiConfigServer configServer;
+// One ConfigStoreSlot per YAML file (store + facade + apply callback).
+static ConfigStoreSlot<HubFxConfigSchema,    HubFxYamlPool>    kHubFx;     // /hubfx.yaml
+static ConfigStoreSlot<EngineFxConfigSchema, EngineFxYamlPool> kEngineFx;  // /enginefx.yaml
+static ConfigStoreSlot<LightFxConfigSchema,  LightFxYamlPool>  kLightFx;   // /lightfx.yaml
 
 void setup() {
-    wireConfigStore<FlashModule>(hubConfig);
-    wireConfigStore<FlashModule>(engineConfig);
-    wireConfigStore<FlashModule>(gunConfig);
-    wireConfigStore<FlashModule>(lightConfig);
+    board.begin("HubFx", FIRMWARE_VERSION, BUILD_NUMBER);
 
-    hubConfig.onLoaded   ([](const HubFxSettings& c)     { /* apply */ });
-    engineConfig.onLoaded([](const EngineConfig& c)      { /* apply */ });
-    gunConfig.onLoaded   ([](const GunFxHubConfig& c)    { /* apply */ });
-    lightConfig.onLoaded ([](const LightProgramConfig& c){ /* apply */ });
+    auto& cfgPolicy = board.policy<ConfigServicePolicy>();
+    kHubFx   .wire(cfgPolicy, [](const HubFxConfig& c)    { /* apply */ });
+    kEngineFx.wire(cfgPolicy, [](const EngineFxYamlConfig& c) { /* apply */ });
+    kLightFx .wire(cfgPolicy, [](const LightFxYamlConfig& c)  { /* apply */ });
 
-    configServer.addStore(hubFacade);
-    configServer.addStore(engineFacade);
-    configServer.addStore(gunFacade);
-    configServer.addStore(lightFacade);
-    configServer.loadAll();         // initial load of every YAML
-    server.addModuleHandler(&configServer);
+    kHubFx.loadOrFallback();    // initial load (schema defaults on miss)
+    kEngineFx.loadOrFallback();
+    kLightFx.loadOrFallback();
 }
+
+void loop() { board.process(); }   // CONFIG_RELOAD / SAVE / STATUS handled by the policy
 ```
 
 Wire-protocol semantics:
@@ -383,7 +344,7 @@ Wire-protocol semantics:
 | Scalars: floats | ✓ | `3.14`, `-0.5` |
 | Scalars: booleans | ✓ | `true/false`, `yes/no`, `on/off` |
 | Comments | ✓ | `# comment`, `key: val  # inline` |
-| Flow collections | ✗ | `{a: 1}`, `[1, 2]` |
+| Flow collections (input) | ✓ | `{a: 1}`, `[1, 2]` — accepted on parse (see below); never emitted |
 | Multi-line scalars | ✗ | `\|`, `>` |
 | Anchors/aliases | ✗ | `&ref`, `*ref` |
 | Tags | ✗ | `!!int`, `!!str` |
@@ -479,8 +440,7 @@ sfx_config/
 │   ├── config_store.h     — ConfigStore<TSchema, TPool> header
 │   └── config_store.ipp   — ConfigStore template implementation
 ├── server/
-│   ├── config_server.h    — ConfigServerT<TConfigStore> header
-│   └── config_server.ipp  — ConfigServerT template implementation
+│   └── multi_config_server.h — ConfigServicePolicy (path-routed SystemServicePolicy)
 └── client/
     ├── config_client.h    — ConfigClient header
     └── config_client.cpp  — ConfigClient implementation
@@ -489,4 +449,5 @@ sfx_config/
 ## Dependencies
 
 - `sfx_platform` — DiagLog, SFX_LOG macros
-- `sfx_serial` — BusServer, BusClient, CoreProtocol, HubFxPacket, HubFxError
+- `sfx_serial` — BusClient, CoreProtocol, ConfigPacket, ConfigError
+- `sfx_board` — `BoardServerBase` / `SystemServicePolicy` (ConfigServicePolicy composes into `BoardServer<...>`)

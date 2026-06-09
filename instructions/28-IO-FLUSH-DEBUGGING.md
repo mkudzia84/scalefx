@@ -1,5 +1,8 @@
 # 28 — Low-Level I/O Flush Debugging (Make No Assumptions)
 
+> **Status:** debugging gotcha &middot; **Read when:** data "isn't arriving", stalls partway, or "uploaded OK but isn't there" — any cross-buffer I/O failure.
+> **TL;DR:** Every byte crosses several buffers (UART FIFO, rings, SD); at each boundary it can be stuck (un-flushed) or dropped (overrun / ACK-then-discard) — localize the failing boundary empirically by instrumenting each layer, never infer from a symptom one layer away.
+
 When data "isn't arriving", "stalls partway", or "uploaded OK but isn't there",
 the instinct is to blame the obvious peripheral — the SD card, the cable, the
 host. **Resist it.** Every byte on this system crosses *several* buffers between
@@ -156,5 +159,5 @@ a persistence check; verify the final layer independently.
   `FILE_UPLOAD_DIAG`, and the FIFO fix in context.
 - [24 — Coredump Debugging](24-COREDUMP-DEBUGGING.md) — decode a panic instead of
   guessing (same "measure, don't infer" discipline for crashes).
-- [10 — Upload Protocol Refactor](10-UPLOAD-PROTOCOL-REFACTOR.md) — the storage
+- [27 — Wire Async & Upload](27-WIRE-ASYNC-AND-UPLOAD.md) — the storage upload
   pipeline whose buffers §"Every boundary" maps.

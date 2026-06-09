@@ -166,7 +166,7 @@ Native hardware USB-OTG implementation using ESP-IDF's USB Host Library and the 
 ### Requirements
 
 - **ESP32-S3:** Hardware USB-OTG peripheral (fixed GPIO19 D-, GPIO20 D+)
-- **CDC-ACM component:** Vendored as `controllers/lib/esp_cdc_acm/` (PlatformIO library). PlatformIO Arduino does NOT process `idf_component.yml`, so the component was cloned from `github.com/espressif/esp-usb` (v2.3.0) and added as a proper PlatformIO library with `library.json`.
+- **CDC-ACM component:** HubFX is pure ESP-IDF (`framework = espidf`), which DOES process `src/idf_component.yml` — managed deps are resolved by the IDF component manager. (The vendored `controllers/lib/esp_cdc_acm/` copy, cloned from `github.com/espressif/esp-usb` v2.3.0, dates from the earlier Arduino-framework build where `idf_component.yml` was ignored; on the espidf build the managed dep is the canonical source.)
 - **`cdc_on_boot` disabled:** USB-OTG shared between device/host mode, must be in host mode
 - **Serial debug:** Via UART0 (USB-UART bridge), NOT USB CDC
 
@@ -176,8 +176,10 @@ Native hardware USB-OTG implementation using ESP-IDF's USB Host Library and the 
 |--------|--------|
 | USB stack | ESP-IDF USB Host Library (`usb/usb_host.h`) |
 | CDC driver | `usb/cdc_acm_host.h` — handles enumeration + data |
-| Daemon task | FreeRTOS task running `usb_host_lib_handle_events()` (Core 0, priority 2) |
-| CDC driver task | Internal to CDC-ACM component (Core 0, priority 5) |
+| Daemon task | FreeRTOS task running `usb_host_lib_handle_events()` (Core 0, priority 2). Stack **8192 B** — the IDF Host-Library enumeration driver runs entirely on this stack; 4096 B overflowed on the first live connect (DoubleException). |
+| CDC driver task | Internal to CDC-ACM component (Core 0, priority 5). Stack 6144 B. |
+| Deferred-work task | `usb_worker` (8192 B) — runs `cdc_acm_host_open()` and the deep `resetBus()` HCD power-cycle off the timer task. |
+| Auto-recovery | A disconnect arms a 5 s recovery timer; `recoveryTimerCb` does only a shallow non-blocking `requestBusReset()` (queues `PendingWork{BusReset}` to `usb_worker`) — NO `resetBus()` and NO DiagLog/UART logging on the 3120 B timer-service task (both overflow it). 2026-06-07 rework. |
 | Line coding | 1 Mbps, 8N1, DTR+RTS asserted |
 | RX path | CDC data callback → FreeRTOS `StreamBuffer` (4 KB per device) → `cdcRead()` |
 | TX path | `cdc_acm_host_data_tx_blocking()` with 100 ms timeout |
@@ -277,7 +279,7 @@ There is exactly one slave per `SlaveType` (the registry is keyed per type), so 
 | Dependency | Reason |
 |------------|--------|
 | `sfx_platform` | `sfx_platform.h` (platform macros), `diag_log.h` (logging) |
-| `Arduino` | `<Arduino.h>` (base types) |
+| `<Arduino.h>` | Pico backend only (base types; ESP32 backend is pure ESP-IDF) |
 | TinyUSB | Pico backend: PIO-USB host stack |
 | `esp_cdc_acm` | ESP32 backend: vendored CDC-ACM class driver (v2.3.0 from `espressif/esp-usb`) |
 | ESP-IDF USB Host | ESP32 backend: `usb_host.h` (framework-provided) |

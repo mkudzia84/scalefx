@@ -1,5 +1,8 @@
 # HubFX INA226 Clone Wedges the PCA9685
 
+> **Status:** debugging gotcha &middot; **Read when:** the PCA9685 LED driver goes silent at boot, or an I²C chip wedges another chip on the shared bus.
+> **TL;DR:** A counterfeit INA226 @ 0x40 corrupts the PCA9685 @ 0x70 when written to; `INA226::begin()` now refuses any chip failing the canonical TI MFG/DIE ID check, so it never writes to a clone.
+
 Investigation log + fix for the bring-up issue where the PCA9685 LED driver
 @ I²C `0x70` on HubFX would consistently go silent during `board.begin()` and
 only come back via a general-call SWRST + re-init. Landed 2026-05-20 in

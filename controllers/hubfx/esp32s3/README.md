@@ -1,47 +1,67 @@
-# HubFX ESP32-S3 — Empty Entry Point
+# HubFX ESP32-S3 — Master Controller
 
-Fresh restart of the HubFX firmware on top of the consolidated board
-framework. One firmware-level object — `sfx_core::BoardServer<...UserPolicies>`
-from [sfx_board](../../lib/sfx_board/) — composes the lifecycle service,
-the indicator-LED runtime, and every user policy into a single
-`board.process()` loop.
+HubFX is the ScaleFX master, built on the consolidated board framework. The
+firmware is **pure ESP-IDF** (`framework = espidf`, no Arduino — `app_main`
+spawns the loop task in [`hubfx_esp32s3.cpp`](src/hubfx_esp32s3.cpp)). One
+firmware-level object — `HubFxBoard : sfx_core::BoardOf<...>` from
+[sfx_board](../../lib/sfx_board/) — composes the lifecycle service, the
+indicator-LED runtime, the hub-local port + role services, and every effect
+/ subsystem policy into a single `board.process()` loop.
 
-The previous implementation is archived at
-[controllers/archive/hubfx-esp32s3/](../../archive/hubfx-esp32s3/) as
-reference. Hardware reference: [PINOUT.md](PINOUT.md).
+Architecture diagrams (composition / dispatch / role transport):
+[instructions/32-ARCHITECTURE-DIAGRAMS.md](../../../instructions/32-ARCHITECTURE-DIAGRAMS.md).
+Hardware reference: [PINOUT.md](PINOUT.md).
 
 ## Subsystem status
+
+Every HubFX subsystem is composed into the `BoardOf<...>` pack and working:
 
 | Subsystem | Status |
 | --------- | ------ |
 | Core protocol (`BoardServicePolicy`: INIT / STATUS / KEEPALIVE / IDENTIFY / I2C_SCAN / DIAG_HISTORY) | wired |
 | Indicator LEDs (`IndicatorServicePolicy`) | wired (onboard GPIO48 only) |
 | DiagLog over UART | wired |
-| Audio mixer + I²S output | not migrated |
-| Storage (LittleFS + SD) | not migrated |
-| Config store (YAML) | not migrated |
-| USB Host (generic-expander routing) | not migrated |
-| Engine FX | not migrated |
-| Local LED runtime | not migrated |
-| Battery monitoring | not migrated |
-| RC inputs (PWM / PPM / SBUS / Jeti EX) | not migrated |
+| Hub-local ports + roles (`PortServicePolicy` / `RoleServicePolicy`) | wired |
+| Audio mixer + I²S output (`AudioService`, TAS5825P, dual-core) | wired |
+| Storage — LittleFS flash + SD_MMC 4-bit SDIO (`StorageService`) | wired |
+| Config stores — seven YAML stores (`ConfigServicePolicy`) | wired |
+| USB Host — expander enumeration + IDENTIFY (`HubFxExpanderService`) | wired |
+| Topology — GUID-addressed port/role surface (`HubFxTopologyService`) | wired |
+| Engine FX (`EngineFxService`) | wired |
+| LightFX LED program runtime (`LightFxEffectService`) | wired |
+| Landing lights (`LandingLightService`) | wired |
+| GearControl gear state machines (`GearControlService`) | wired |
+| GunFX trigger / smoke / recoil (`GunFxService`) | wired |
+| System alerts / chimes (`AlertService`) | wired |
+| RC inputs — PPM / SBUS / Jeti EX fanout (`InputDispatcherService`) | wired |
 
-As HubFX-specific subsystems land in `src/`, the corresponding policies
-get added to the `BoardServer<...>` template parameters in
-[`hubfx_esp32s3.ino`](src/hubfx_esp32s3.ino):
+The board is declared in [`hubfx_esp32s3.cpp`](src/hubfx_esp32s3.cpp) as a
+`BoardOf<>` subclass — `BoardOf<TBoard, TStream, Caps, ...ExtraPolicies>`
+takes the concrete board type, the wire stream, the hub-local port capacity,
+then the effect/subsystem policy pack:
 
 ```cpp
-using HubFxBoard = sfx_core::BoardServer<
-    AudioServicePolicy<Mixer>,
-    StorageServicePolicy<Esp32StoragePolicy>,
-    BatteryServicePolicy<Ina226Battery>,
-    UsbHostServicePolicy,
-    EngineServicePolicy,
-    ConfigServicePolicy>;
+class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
+                                            sfx::NativeUartStream,         // TStream (Rule 33)
+                                            sfx_core::PortCapacity<10,8,0,2>,
+                                            HubFxExpanderService,
+                                            HubFxTopologyService,
+                                            InputDispatcherService,
+                                            LandingLightService,
+                                            LightFxEffectService,
+                                            GearControlService,
+                                            EngineFxService,
+                                            GunFxService,
+                                            StorageService,
+                                            AudioService,
+                                            AlertService,
+                                            ConfigServicePolicy> { ... };
 ```
 
-`BoardServicePolicy` and `IndicatorServicePolicy` are prepended
-automatically — they're not part of the user-policy pack.
+`BoardServicePolicy` + `IndicatorServicePolicy` + `PortServicePolicy` +
+`RoleServicePolicy` are prepended automatically by `BoardOf<>` — they're not
+part of the user-policy pack. Every policy satisfies the
+`sfx_core::SystemServicePolicy` concept.
 
 ## Build
 

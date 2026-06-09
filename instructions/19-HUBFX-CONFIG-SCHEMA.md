@@ -1,5 +1,8 @@
 # HubFX Config Schema + ConfigService — Plan
 
+> **Status:** protocol spec &middot; **Read when:** editing `/hubfx.yaml`, the `HubFxConfig` struct, or how effect services get configured at load.
+> **TL;DR:** Defines the HubFX config filesystem layout, the `HubFxConfig` schema, and the `HubFxConfigServicePolicy` that parses the YAML and wires every effect/input/topology service.
+
 Spec for the HubFX configuration filesystem, the matching `HubFxConfig`
 struct, and the `HubFxConfigServicePolicy` that loads it and wires every
 effect service. Drafted 2026-05-20, revised against the policy stack:

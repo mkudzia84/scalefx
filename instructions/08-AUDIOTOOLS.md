@@ -1,5 +1,8 @@
 # AudioTools Library Reference — ScaleFX Audio Engine
 
+> **Status:** debugging gotcha &middot; **Read when:** working on the AudioTools pipeline or hitting silent/garbled audio
+> **TL;DR:** keep the whole pipeline in `int16_t` — `InputMixer<float>` truncates samples to silence (hardcoded `Vector<int>` accumulator), `SineWaveGenerator<float>` defaults to a ~3e38 amplitude, and the RP2040 I2S driver sends raw bytes with no float conversion.
+
 > **Scope:** This document covers the [pschatzmann/arduino-audio-tools](https://github.com/pschatzmann/arduino-audio-tools) library as used in the ScaleFX audio test application on RP2350 (Pico 2) with Waveshare Pico-Audio (PCM5101A DAC) and SD card.
 
 ## Table of Contents

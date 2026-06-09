@@ -1,5 +1,8 @@
 # System Architecture
 
+> **Status:** active reference &middot; **Read when:** you need to understand how the wire protocol, board framework, dispatch, or response model works before touching firmware or the Go mirror
+> **TL;DR:** one ESP32-S3 HubFX master runs every effect; thin Pico expanders expose ports the hub attaches roles to; the wire is binary COBS + CRC-8 dispatched first-owner-wins across `*ServicePolicy` classes composed by `BoardServer<...UserPolicies>`.
+>
 > **REFERENCE DOCUMENT:** Read this to understand how the system works before making changes.
 >
 > **See also: [32-ARCHITECTURE-DIAGRAMS.md](32-ARCHITECTURE-DIAGRAMS.md)** — Mermaid diagrams of the four core subsystems (storage / audio / ports-roles-topology / effects→ports) on the current `BoardServer<...UserPolicies>` codebase. Read it alongside this doc.

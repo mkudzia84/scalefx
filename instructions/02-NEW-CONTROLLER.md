@@ -1,5 +1,8 @@
 # Creating a New Controller / Service Policy
 
+> **Status:** how-to / workflow &middot; **Read when:** adding a new Pico expander board or a new hub `*ServicePolicy` subsystem
+> **TL;DR:** a new expander is a `BoardOf<…>` board class + static port descriptors + a thin sketch (Part A); a new hub subsystem is a `SystemServicePolicy` composed into the hub's `BoardServer<…>` pack + its Go mirror (Part B).
+
 > **ACTION DOCUMENT:** How to add a new board (Pico expander) or a new protocol-exposed subsystem (`*ServicePolicy`) to an existing board.
 
 There are two distinct "new things" you might be creating. Pick the right one:

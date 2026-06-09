@@ -1,5 +1,8 @@
 # Change Propagation Checklist
 
+> **Status:** active reference &middot; **Read when:** verifying every file is updated after a protocol/command change
+> **TL;DR:** the protocol lives in two synchronized halves (firmware policy + Go mirror); this doc is the per-change-type matrix of which files to touch, with `cd app/go && go build ./...` as the primary sync check.
+
 > **REFERENCE DOCUMENT:** Use this to verify all affected files are updated after any change.
 
 The protocol lives in two synchronized halves: the firmware policy (`controllers/hubfx/esp32s3/src/effects/<mod>/` for effects, `controllers/lib/sfx_board/` for roles/infra) and the Go mirror (`app/go/protocol/<mod>/<mod>.go` — the **source of truth**). Never change one side alone (Rules 1, 2, 19).

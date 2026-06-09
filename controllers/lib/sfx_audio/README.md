@@ -12,7 +12,10 @@ sfx_audio/
 │   ├── audio_config.h      # Compile-time constants (sample rate, buffer sizes, pin defaults)
 │   ├── audio_log.h         # Audio-specific logging macros (MIXER_LOG, TAS5825_LOG)
 │   ├── audio_mixer.h       # AudioMixer<TI2S, TCodec> template declaration
-│   ├── audio_mixer.ipp     # AudioMixer template implementation (included by .h)
+│   ├── audio_mixer.ipp     # AudioMixer template impl — top-level orchestration (included by .h)
+│   ├── audio_mixer_wavstate.ipp   # WavState — per-channel decode/playback state (split out)
+│   ├── audio_mixer_mixkernel.ipp  # MixKernel — the float mix + routing kernel (split out)
+│   ├── audio_mixer_decoder.ipp    # DecoderWorker — Core-0 SD→float decode worker (split out)
 │   ├── audio_ring_buffer.h # Lock-free SPSC ring buffer (StereoFrame, producer → consumer)
 │   ├── esp_i2s_output.h    # ESP-IDF v5.x I2S standard-mode driver (ESP32-S3)
 │   ├── pico_i2s_output.h   # Arduino-Pico PIO I2S driver (RP2040/RP2350)
@@ -27,6 +30,13 @@ sfx_audio/
 ```
 
 ## Architecture
+
+The mixer is decomposed into four single-responsibility pieces (Rule 33):
+`AudioMixer` (orchestration, `audio_mixer.ipp`) owns `WavState`
+(per-channel state, `audio_mixer_wavstate.ipp`), `MixKernel` (the float
+mix + routing kernel, `audio_mixer_mixkernel.ipp`), and `DecoderWorker`
+(the Core-0 SD→float decode worker, `audio_mixer_decoder.ipp`). Audio
+pipeline diagram: [instructions/32-ARCHITECTURE-DIAGRAMS.md](../../../instructions/32-ARCHITECTURE-DIAGRAMS.md) §2.
 
 ### Template Mixer — Zero-Cost Abstraction
 
@@ -274,4 +284,4 @@ build_flags =
 
 - **sfx_platform** — Cross-platform abstraction (`SfxMutex`, `SFX_DELAY_MS`, `SFX_PSRAM_ALLOC`, etc.)
 - **sfx_storage** — SD card access via `SdCardModule` singleton (thread-safe open/read/close)
-- **SdFat** (Pico) / **SD.h** (ESP32) — transitive via sfx_storage
+- **SdFat** (Pico) / **ESP-IDF VFS-FAT** (ESP32, POSIX `NativeFile`) — transitive via sfx_storage

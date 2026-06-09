@@ -1,5 +1,8 @@
 # 27 — Wire Async Discipline & Stream-Upload Exclusivity
 
+> **Status:** debugging gotcha &middot; **Read when:** touching the shared serial wire — uploads, async/telemetry multiplexing, keepalive, or a Studio-only upload stall.
+> **TL;DR:** The single half-duplex UART carries commands, ACKs, async telemetry, and raw upload bytes; lossy telemetry async must never starve flow-control ACKs, and a raw stream upload must own the wire exclusively (Rules 53–54).
+
 Hard-won rules from the 2026-05-31 Studio stream-upload investigation. Two
 stacked client-side bugs made Studio uploads of files > 64 KB hang while the CLI
 worked — both rooted in how the shared serial wire is multiplexed. Codified as

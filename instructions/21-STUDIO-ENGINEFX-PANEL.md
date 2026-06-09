@@ -1,5 +1,8 @@
 # 21 — Studio EngineFX Panel: Reference Design for Effect Tabs
 
+> **Status:** how-to / workflow &middot; **Read when:** building or modifying any operational Studio effect tab (config + live state + hardware test).
+> **TL;DR:** EngineFX is the canonical reference implementation of the Studio design language for operational effect panels; copy its patterns (channel cluster, validation gating, status row) for GunFX / LightFX / future effects.
+
 > **Read this before building a new Studio effect tab.** EngineFX is the
 > canonical implementation of the Studio design language for *operational*
 > effect panels — panels that bind firmware config, surface live state, and

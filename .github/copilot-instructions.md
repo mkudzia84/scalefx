@@ -1321,7 +1321,7 @@ scalefx> servo 1 1500
 - Help output shows the canonical form so muscle memory is built correctly from the first session.
 - Studio's Console panel echoes the same prefixed form (it just passes typed input through `SendCommand` → `Engine.Dispatch`).
 
-**Implementation:** `CmdGroup.Prefix` field ([engine/types.go](app/go/engine/types.go)); `FlatCommands` keys entries as `<prefix>:<name>` and stamps the prefix into `CmdEntry.Usage`; `Dispatch` and `CmdHelp` fall through to `suggestPrefixed(name)` when a bare board command is typed. Studio typed APIs (`LightFxApi.*`, `GearControlApi.*`, `GunFxApi.*`, `HubFxApi.*`) are unaffected — only text dispatch carries the prefix. See [13-PASSTHROUGH-ROUTING.md §4.4](../instructions/13-PASSTHROUGH-ROUTING.md).
+**Implementation:** `CmdGroup.Prefix` field ([engine/types.go](app/go/engine/types.go)); `FlatCommands` keys entries as `<prefix>:<name>` and stamps the prefix into `CmdEntry.Usage`; `Dispatch` and `CmdHelp` fall through to `suggestPrefixed(name)` when a bare board command is typed. Studio typed APIs (`LightFxApi.*`, `GearControlApi.*`, `GunFxApi.*`, `HubFxApi.*`) are unaffected — only text dispatch carries the prefix. See Rule 30 (board-prefix).
 
 ### 31. Port Direction Is Fixed; Input Count ≤ UART Peripherals
 
@@ -1555,8 +1555,7 @@ Every output port descriptor (`ports::pwm_array<>`, `ports::servo_array<>`, `por
 
 **Cap token:** `portCaps()` appends `"VOLTAGE_8V"` / `"VOLTAGE_3V3"` to the `Caps` list when `voltageMv > 0` (uppercase, dot replaced with `V` for fractional volts so the token round-trips into CSS / log filters). Informational only — doesn't gate `Candidates()` filtering.
 
-**Adding voltage to a new board:** in the descriptor list, chain `.with_voltage_mV<N>()` after any `.with_*_array(...)` calls. Defaults to 0 when omitted (safe). Reference: [hubfx_esp32s3.ino kPwmPorts](../controllers/hubfx/esp32s3/src/hubfx_esp32s3.ino) shows the three-array case (CH1..8 = 8000, IN_2..12 servos = 5000, IN_1 input = 3300). Full Phase-0 rollout in [22-GUNFX-FEATURE-ROLLOUT.md § Phase 0](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
-
+**Adding voltage to a new board:** in the descriptor list, chain `.with_voltage_mV<N>()` after any `.with_*_array(...)` calls. Defaults to 0 when omitted (safe). Reference: [hubfx_esp32s3.ino kPwmPorts](../controllers/hubfx/esp32s3/src/hubfx_esp32s3.ino) shows the three-array case (CH1..8 = 8000, IN_2..12 servos = 5000, IN_1 input = 3300).
 ### 40. Global Effect Clock — no raw millis() in the effect layer
 
 All effect-layer code — both EFFECTS (`controllers/hubfx/esp32s3/src/effects/**`: GunFx ROF / fan puffing, EngineFx state machine, GearControl sequencing, landing-light animator …) and ROLES (`controllers/lib/sfx_board/roles/**`: ServoActuator `MotionProfile1D`, DcMotor stall window, LedAnimator, Heater bang-bang) — MUST read time from `sfx_core::EffectClock::instance()`, never raw `millis()` / `micros()`. Roles run on EVERY board, so this is what lets an expander's servo slew and its LEDs animate at all.
@@ -1594,7 +1593,7 @@ If each effect/role called `millis()` independently their "now" drifts by micros
 
 **Singleton:** `sfx_core::EffectClock` is a function-local-static thread-safe singleton (C++11+); access only via `EffectClock::instance()`. Header: [controllers/lib/sfx_board/server/effect_clock.h](../controllers/lib/sfx_board/server/effect_clock.h). Idempotent within a tick — extra `latch()` calls when `millis()` hasn't advanced are no-ops, so a misordered call doesn't shift the clock mid-tick.
 
-Phase 0.5 of the GunFX rollout introduced the clock + retrofitted 11 call sites in `effects/`; 2026-06-08 brought the latch into `BoardServer::process()` (fixing frozen expander servos) and moved the LED shared clock onto it (synchronisation). New effects/roles start from this rule; a `millis()` call in `effects/**` or in a `roles/**` tick that integrates motion or needs phase-sync is a Rule 40 violation (a role's independent local timeout — e.g. BiDcMotor seek — is the documented exception). Full rollout context: [22-GUNFX-FEATURE-ROLLOUT.md § Phase 0.5](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
+Phase 0.5 of the GunFX rollout introduced the clock + retrofitted 11 call sites in `effects/`; 2026-06-08 brought the latch into `BoardServer::process()` (fixing frozen expander servos) and moved the LED shared clock onto it (synchronisation). New effects/roles start from this rule; a `millis()` call in `effects/**` or in a `roles/**` tick that integrates motion or needs phase-sync is a Rule 40 violation (a role's independent local timeout — e.g. BiDcMotor seek — is the documented exception).
 
 ### 42. Actuator Mechanism Lives on the Role, Not the Effect
 
@@ -1657,7 +1656,7 @@ Effect configs (`/gunfx.yaml`, `/enginefx.yaml`, …) reference the port + carry
 - Compute raw duty values or run a motion-profile integrator in the effect tick. Call `role.setPct(pct)`, `role.setTarget(us)`, `role.setDuty(raw)` (raw-bypass for advanced cases).
 - Read `binding.voltageMv` or `port->minMicroseconds()` from inside an effect. Hardware bounds are a role-internal detail.
 
-**When adding a new actuator mechanism (e.g. a stepper-motor microstepping profile, a closed-loop PID for a brushed motor):** put the fields next to the port pointer in the role class, add `setConfig(...)`, and call the math helper whenever you write to the hardware. Operators set the mechanism where they set the role (the port-role attachment), not where they set the effect that uses it. Full Phase-2 context: [22-GUNFX-FEATURE-ROLLOUT.md § Phase 2](../instructions/22-GUNFX-FEATURE-ROLLOUT.md).
+**When adding a new actuator mechanism (e.g. a stepper-motor microstepping profile, a closed-loop PID for a brushed motor):** put the fields next to the port pointer in the role class, add `setConfig(...)`, and call the math helper whenever you write to the hardware. Operators set the mechanism where they set the role (the port-role attachment), not where they set the effect that uses it.
 
 ### 38. Multi-Band Channel Overlay (Rule 36 extension for discrete selectors)
 
@@ -2299,8 +2298,8 @@ in `src/idf_component.yml`; the firmware `src/` + the shared `../../lib` compile
 ONE IDF component (`src/CMakeLists.txt` declares all the IDF `REQUIRES` + the 8
 `sfx_*` include roots — a separate `lib_extra_dirs` component can't carry the
 REQUIRES). `<Arduino.h>` is permitted ONLY on the **Pico** path (`#if SFX_PLATFORM_PICO`
-— Arduino-Pico framework, P8). Full map + executed log:
-[instructions/25-ARDUINO-REMOVAL.md](../instructions/25-ARDUINO-REMOVAL.md).
+— Arduino-Pico framework, P8). Native-abstraction map per subsystem:
+[instructions/32-ARCHITECTURE-DIAGRAMS.md](../instructions/32-ARCHITECTURE-DIAGRAMS.md) §2.
 
 ### 56. Thread-Safe Wire — Studio Drives the `Connection` From Many Goroutines
 

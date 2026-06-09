@@ -1,5 +1,8 @@
 # 20 — Studio Device Model & Tab Re-architecture
 
+> **Status:** active reference &middot; **Read when:** working on Studio's data model, port/role claim semantics, or any board tab's relationship to the Go-side model.
+> **TL;DR:** Studio's authoritative device model lives in Go (`app/go/devicemodel/`); the Svelte frontend only renders it and edits via Wails bindings — all validation/claim/preset logic resolves in Go so there is one source of truth.
+
 > Full GUI tour (tabs, Diagram, input panel, recipes): **[app/go/studio/README.md](../app/go/studio/README.md)**. This file covers the model architecture + rules.
 
 ScaleFX Studio's GUI is built around an **authoritative device model** that

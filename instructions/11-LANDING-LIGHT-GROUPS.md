@@ -1,5 +1,8 @@
 # Landing Light Groups — Design Document
 
+> **Status:** protocol spec &middot; **Read when:** working on landing-light groups, the `LANDING_LIGHT_BIND` packet, or the group/program YAML model
+> **TL;DR:** landing lights are named groups (one optional servo + ≥0 LED channels, per-program `on`/`off`/`gear` policy); `LANDING_LIGHT_BIND` (0x52) byte 2 changed from a single channel ID to a channel bitmask in v0.9.0 (breaking).
+
 > **Scope:** Studio UI, C++ config schema, LandingLight firmware, LightFX protocol, Go CLI.
 
 ---

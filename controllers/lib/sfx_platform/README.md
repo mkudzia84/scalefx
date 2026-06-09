@@ -23,7 +23,7 @@ controller firmware directly.
 | Macro                 | When defined | Platform |
 |-----------------------|--------------|----------|
 | `SFX_PLATFORM_PICO`   | `ARDUINO_ARCH_RP2040` | RP2040 + RP2350 (Arduino-Pico) |
-| `SFX_PLATFORM_ESP32`  | `ARDUINO_ARCH_ESP32`  | ESP32-S3 (ESP-IDF + Arduino) |
+| `SFX_PLATFORM_ESP32`  | `ESP_PLATFORM` (or `ARDUINO_ARCH_ESP32`) | ESP32-S3 (pure ESP-IDF — HubFX is `framework = espidf`, no Arduino) |
 
 ## Abstractions
 
@@ -37,7 +37,7 @@ controller firmware directly.
 | **Board ID** | `pico_get_unique_board_id` | `esp_efuse_mac_get_default` | `sfxGetBoardId(out, max)` |
 | **Bootloader** | `rp2040.rebootToBootloader()` | n/a (NACK NOT_SUPPORTED) | `sfxRebootToBootloader()` |
 | **Mutex** | `mutex_t` | `SemaphoreHandle_t` | `SfxMutex` + `sfxMutexInit/Lock/Unlock` |
-| **Servo** | `<Servo.h>` (PIO) | `<ESP32Servo.h>` (LEDC) | auto-selected include |
+| **Servo** | `<Servo.h>` (PIO) | native MCPWM `EspServo` (ESP32Servo dropped) | platform-selected driver |
 | **Interrupt (arg)** | `attachInterruptParam` | `attachInterruptArg` | `SFX_ATTACH_INTERRUPT_PARAM` |
 | **DMA buffer attr** | no-op | `DMA_ATTR` | `SFX_DMA_BUFFER` |
 | **IRAM function** | no-op | `IRAM_ATTR` | `SFX_IRAM_FUNC` |
@@ -62,17 +62,20 @@ producer-consumer queue beats locking.
   SDK directly when it's clearer than the abstraction.
 - **New abstractions** go in `sfx_platform.h` — don't scatter `#ifdef`
   blocks across other files.
-- **`millis()`** is safe everywhere (Arduino covers both platforms) and
-  is therefore not wrapped.
+- **Timestamps** use `SFX_MILLIS()` / `SFX_MICROS()` — native monotonic
+  since-boot wrappers (`to_ms_since_boot`/`time_us_32` on Pico,
+  `esp_timer_get_time()` on ESP32). Arduino `millis()` / `micros()` are
+  Pico-only (HubFX is pure ESP-IDF, no Arduino), so shared `controllers/lib/`
+  code MUST use the `SFX_*` macros, never bare `millis()`.
 
 ## Dependencies
 
 ```
 sfx_platform
-├── Arduino.h (framework)
-├── <atomic>  (std::atomic for cross-core indices)
+├── <Arduino.h>  (Pico only — Arduino-Pico framework; HubFX/ESP32 is pure ESP-IDF)
+├── <atomic>     (std::atomic for cross-core indices)
 ├── Pico SDK headers (pico/time.h, pico/mutex.h, …) on Pico
-└── ESP-IDF headers (freertos/*, esp_system.h, …) on ESP32-S3
+└── ESP-IDF headers (freertos/*, esp_system.h, esp_timer.h, …) on ESP32-S3
 ```
 
 Zero `sfx_*` dependencies — this is the root of the lib tree.

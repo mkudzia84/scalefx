@@ -1,5 +1,8 @@
 # CLI Update Guide
 
+> **Status:** how-to / workflow &middot; **Read when:** adding a command or a whole domain to the `scalefx-cli` console
+> **TL;DR:** the CLI is `console/` (self-registering `cmd_<mod>.go` files) on top of `client/` (typed API) on top of `protocol/` (wire mirror) — add a `register(&command{…})` in `init()` + a `cmd*` func that calls `a.c.<Mod>.<Method>`; there is no string-command engine.
+
 > **ACTION DOCUMENT:** How to add commands to the Go interactive CLI (`scalefx-cli`).
 
 > **Run the CLI / drive a board:** use the **scalefx-cli skill** — it knows the connect/subscribe/role-drive flows. This doc is about *adding* commands.

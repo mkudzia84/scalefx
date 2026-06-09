@@ -1,5 +1,8 @@
 # Hardware + Feature TODO
 
+> **Status:** hardware spec &middot; **Read when:** planning hardware bring-up or picking up a backlog feature.
+> **TL;DR:** running backlog of hardware + firmware feature work (not-yet-done); check here before assuming a feature exists.
+
 ## Firmware feature refactors
 
 1. **GunFx — split `GunDef` into `GunWiring` + `GunPreset`** to support

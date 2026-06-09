@@ -1,5 +1,8 @@
 # 24 — Crash Debugging with ESP32 Coredumps
 
+> **Status:** debugging gotcha &middot; **Read when:** the HubFX firmware panics / reboots and you need the crashed task's backtrace.
+> **TL;DR:** A HubFX panic writes an ELF coredump to flash; pull + decode it with `scalefx-flash coredump hubfx` (the ELF must match the FLASHED build, so pull BEFORE reflashing) — the flash coredump is the panic-debug path since the console is NONE.
+
 When the HubFX firmware panics (Guru Meditation / `LoadProhibited` / stack
 overflow / TWDT), it doesn't just reboot silently: ESP-IDF writes a full **ELF
 coredump** to a dedicated flash partition. That coredump has the crashed task's

@@ -1,5 +1,8 @@
 # Protocol Extension Guide
 
+> **Status:** how-to / workflow &middot; **Read when:** adding a packet/command to an existing subsystem
+> **TL;DR:** a command lives in one `*ServicePolicy`'s `handle()` and is mirrored down the Go stack (`protocol/<mod>.go` → `client/<mod>.go` → `console/cmd_<mod>.go`); claim a free dispatch byte, pick a response category, then `go build ./...` is the sync check.
+
 > **ACTION DOCUMENT:** Step-by-step guide for adding a command to an existing hub effect / subsystem.
 
 A command lives in exactly one `*ServicePolicy`'s `handle()` on the firmware side and is mirrored down the Go stack. The wire format is owned by `app/go/protocol/<mod>/<mod>.go` (the **source of truth** for the master protocol).

@@ -2,12 +2,19 @@
 
 Single library housing both ends of "what makes a ScaleFX board firmware":
 
-- **`server/`** — the variadic-policy composer (`BoardServer<...>`) and
-  every framework piece a controller plugs into it: lifecycle service,
-  COBS frame loop, indicator-LED runtime, generic-expander component
-  runtime, chunked-stream writer, board-identifier persistence.
-- **`client/`** — the master-side typed client (`CoreClient`) for talking
-  to a slave running `ComponentServicePolicy`.
+- **`server/`** — the variadic-policy composer (`BoardServer<...>` /
+  `BoardOf<...>`) and every framework piece a controller plugs into it:
+  lifecycle service, COBS frame loop, indicator-LED runtime, hub-local
+  **port** registry + service, the **role** dispatch service + per-family
+  role handlers, the effect clock, chunked-stream writer.
+- **`roles/`** — the role layer: per-port actuator / input role classes
+  (`ServoActuatorRole`, `LedAnimator`, `DcMotorRole`, `BiDcMotorRole`,
+  `HeaterRole`, and the RC-PWM / SBUS / Jeti EX input roles).
+- **`motion/`** + **`element/`** — actuator mechanism math (servo motion
+  profile, element voltage scaling) owned by the roles (Rule 42).
+
+> Composition / dispatch / role-transport diagrams:
+> [instructions/32-ARCHITECTURE-DIAGRAMS.md](../../../instructions/32-ARCHITECTURE-DIAGRAMS.md) §3.
 
 ## Files
 
@@ -15,40 +22,69 @@ Single library housing both ends of "what makes a ScaleFX board firmware":
 
 | File | Purpose |
 |------|---------|
-| `board_server.{h,cpp}` | `BoardServerBase` (Stream / framer / wire helpers / device name / I²C scan / lifecycle hooks) + `BoardServer<...UserPolicies>` (variadic composer + `process()` loop + dispatch + capabilities). |
-| `board_service.{h,cpp}` | `BoardServicePolicy` — INIT / SHUTDOWN / REBOOT / BOOTSEL / KEEPALIVE / STATUS / STATUS_REQ / IDENTIFY / I2C_SCAN / DIAG_HISTORY / STATUS_UPDATE (0xEE..0xFF). Always present in `BoardServer<>`. |
-| `component_service.{h,ipp}` | `ComponentServicePolicy<TServos, TPwms, TLedsDed, TLedsBor, TBattery>` — the generic-expander runtime (dispatches the 0x10..0x7F `ComponentPacket` range, emits async events: SERVO_TARGET_REACHED, LED_QUEUE_DONE, PWM_STALL, BATTERY_ALERT, …). |
-| `board_identifier.h` | Runtime-assigned, flash-persisted slave identifier (UTF-8, max 32 bytes, `/board.yaml`). |
-| `stream.{h,cpp}` | `StreamWriter` — chunked data streaming over COBS with CRC-16/CCITT (`STREAM_BEGIN` / `STREAM_DATA` / `STREAM_END` at 0xA4–0xA6). |
+| `board_server.{h,cpp}` | `BoardServerBase` (Stream / framer / wire helpers / device name / I²C scan / lifecycle hooks / effect-clock latch) + `BoardServer<...UserPolicies>` (variadic composer + `process()` loop + dispatch + capabilities). |
+| `board_of.h` | `BoardOf<TBoard, TStream, Caps, ...ExtraPolicies>` — CRTP composer that auto-prepends `BoardServicePolicy` + `IndicatorServicePolicy` + `PortServicePolicy` + `RoleServicePolicy`, sizes the hub-local `PortRegistry` from `Caps`, and binds the wire `TStream` for vtable-free per-byte I/O (Rule 33). HubFX uses this form. |
+| `board_service.{h,cpp}` | `BoardServicePolicy` — INIT / SHUTDOWN / REBOOT / BOOTSEL / KEEPALIVE / STATUS / STATUS_REQ / IDENTIFY / I2C_SCAN / DIAG_HISTORY / STATUS_UPDATE (0xEE..0xFF). Always present. |
+| `effect_clock.h` | `EffectClock` singleton — latched once per `process()` pass; every effect/role reads time from it (Rule 40). |
+| `stream.{h,cpp}` | `StreamWriter` — chunked data streaming over COBS with CRC-16/CCITT. |
 
-### client/
+#### Ports (hub-local port enumeration + binding)
 
 | File | Purpose |
 |------|---------|
-| `core_client.{h,cpp}` | `CoreClient` — typed `CommandResult` master-side API for ComponentServicePolicy slaves. Observer chains for async events. |
+| `port_service.{h,cpp}` | `PortServicePolicy` — enumerates hub-local ports (PORT_LIST_REQ, voltage/role metadata). Auto-prepended by `BoardOf<>`. |
+| `port_registry.h` | `PortRegistry` — the fixed-capacity per-board port table (sized by `PortCapacity<...>`). |
+| `port_bindings.h` / `port_descriptor.h` | Compile-time port descriptor lists (`pwm_array<>` / `servo_array<>` / `input_array<>` / `hbridge_array<>`) + runtime binding records. |
+
+#### Roles (per-port actuator / input dispatch)
+
+| File | Purpose |
+|------|---------|
+| `role_service.{h,cpp}` | `RoleServicePolicy` — ROLE_ATTACH / DETACH / LIST + drive/query dispatch; auto-prepended by `BoardOf<>`. Defers per-family handling to the handlers below. |
+| `role_registry.h` | THE single role-kind ⇄ `RoleKind` map (`roleKindFor<T>()` / `forEachAttachedRole`) — Rule 58 (no per-role `switch` anywhere else). |
+| `role_event_emitter.{h,cpp}` | Emits role telemetry as GUID-tagged async events. |
+| `role_servo_handler.*` / `role_led_handler.*` / `role_motor_handler.*` / `role_bimotor_handler.*` / `role_heater_handler.*` | Per-family role command handlers. |
+| `role_rcpwm_input_handler.*` / `role_sbus_input_handler.*` / `role_jeti_input_handler.*` | Per-protocol RC input role handlers. |
+
+### roles/
+
+The role classes themselves (the actuator-mechanism layer, Rule 42):
+`servo_actuator_role`, `led_animator`, `dc_motor_role`, `bi_dc_motor_role`,
+`heater_role`, `rc_pwm_input_role`, `sbus_input_role`, `jeti_ex_input_role`
+(+ `jeti_ex_telemetry_role`, `input_broadcaster`). Mechanism math lives in
+`motion/motion_profile.h` (servo trapezoidal/S-curve) and
+`element/element_scaling.h` (sub-rail voltage duty scaling).
+
+> **Legacy:** `ComponentServicePolicy<...>` / `ComponentPacket` (the old
+> generic-expander runtime over 0x10..0x7F) and the master-side `CoreClient`
+> are superseded by the Port + Role services above and the GUID-addressed
+> Topology transport (Rule 58). The runtime-assigned `/board.yaml`
+> `BoardIdentifier` is retired — per-board aliases now live in the hub's
+> `/hubfx.yaml` `expanders:` block.
 
 ## Composition model
 
-A firmware instantiates **one** `BoardServer<...UserPolicies>`. Two
-mandatory policies (`BoardServicePolicy` for lifecycle, `IndicatorServicePolicy`
-for status LEDs) are prepended automatically; everything else is user-supplied:
+A firmware instantiates **one** board composer. The flat form
+`BoardServer<...UserPolicies>` prepends two mandatory policies
+(`BoardServicePolicy` lifecycle, `IndicatorServicePolicy` status LEDs); the
+richer `BoardOf<TBoard, TStream, Caps, ...>` form (used by HubFX) additionally
+prepends `PortServicePolicy` + `RoleServicePolicy` and sizes the hub-local
+port registry from `Caps`. Everything else is user-supplied:
 
 ```cpp
-using HubFxBoard = sfx_core::BoardServer<
-    AudioServicePolicy<Mixer>,
-    StorageServicePolicy<Esp32StoragePolicy>,
-    BatteryServicePolicy<Ina226Battery>,
-    UsbHostServicePolicy,
-    EngineServicePolicy,
-    ConfigServicePolicy>;
+class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
+                                            sfx::NativeUartStream,        // wire stream (Rule 33)
+                                            sfx_core::PortCapacity<10,8,0,2>,
+                                            StorageService,
+                                            AudioService,
+                                            ConfigServicePolicy> { /* drivers, ports */ };
 
 HubFxBoard board;
 
 void setup() {
-    board.begin("HubFx", FIRMWARE_VERSION, BUILD_NUMBER);
+    board.begin(wireUart, FIRMWARE_VERSION, BUILD_NUMBER, ledPin, errPin);
     board.setConnectionTimeoutEnabled(false);              // master: no watchdog
-    board.policy<BatteryServicePolicy<Ina226Battery>>().bindBattery(...);
-    board.enableI2CScan(Wire);
+    board.enableI2CScan(hubI2cBus());
 }
 
 void loop() {
@@ -120,9 +156,9 @@ framework via INIT/SHUTDOWN/timeout.
 Optional. Register expected devices then bind the wire:
 
 ```cpp
-INA226 batteryMonitor(Wire, 0x40);
-board.addExpectedI2CDevice(0x40, &batteryMonitor);
-board.enableI2CScan(Wire);   // wires the I2C_SCAN (0xFB) callback into BoardServicePolicy
+board.addExpectedI2CDevice(0x40);
+board.enableI2CScan(bus);   // wires the I2C_SCAN (0xFB) callback into BoardServicePolicy
+                            // `bus` is the native SfxI2cBus (e.g. hubI2cBus())
 ```
 
 The scan probes 0x08..0x77 and reports expected vs. extra devices.
@@ -140,7 +176,6 @@ The scan probes 0x08..0x77 and reports expected vs. extra devices.
 
 | Dependency | Reason |
 |------------|--------|
-| `sfx_platform` | `sfx_platform.h` (SfxMutex / SFX_DELAY_MS / SFX_FREE_HEAP / SFX_REBOOT / sfxGetBoardId) |
-| `sfx_serial` | wire primitives, `CorePacket` / `SerialError` / `CommandResult`, `BusClient` (for `core_client.cpp`), generic-expander wire format (`components/`) |
-| `sfx_peripherals` | `LedControl` (indicator LEDs), `I2CDevice` (I²C scan), `ComponentKind` collection types pulled by `ComponentServicePolicy` |
-| `sfx_config` | `ConfigStore` for `BoardIdentifier` flash persistence |
+| `sfx_platform` | `sfx_platform.h` (SfxMutex / SFX_DELAY_MS / SFX_FREE_HEAP / SFX_REBOOT / `SFX_MILLIS` / sfxGetBoardId) |
+| `sfx_serial` | wire primitives, `CorePacket` / `SerialError` / `CommandResult`, `BusClient` |
+| `sfx_peripherals` | `LedControl` (indicator LEDs), native `SfxI2cBus` / `I2CDevice` (I²C scan), PWM / servo backends the port roles drive |
