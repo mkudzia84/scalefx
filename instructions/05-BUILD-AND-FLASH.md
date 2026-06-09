@@ -129,16 +129,16 @@ reflashing). See [24-COREDUMP-DEBUGGING.md](24-COREDUMP-DEBUGGING.md).
 ### Using PlatformIO Directly
 
 ```bash
-pio run -e pico -d controllers/gunfx/pico
+pio run -e pico -d controllers/lightfx/pico
 ```
 
-**Output:** `controllers/gunfx/pico/.pio/build/pico/firmware.uf2`
+**Output:** `controllers/lightfx/pico/.pio/build/pico/firmware.uf2`
 
 ### Clean Build
 
 ```bash
-pio run -t clean -d controllers/gunfx/pico
-pio run -e pico -d controllers/gunfx/pico
+pio run -t clean -d controllers/lightfx/pico
+pio run -e pico -d controllers/lightfx/pico
 ```
 
 ---
@@ -150,14 +150,14 @@ pio run -e pico -d controllers/gunfx/pico
 The Flash CLI (`scalefx-flash`) handles the complete build-and-flash workflow using the binary COBS protocol.
 
 ```bash
-# Build and flash GunFX
-scalefx-flash flash gunfx
+# Build and flash LightFX
+scalefx-flash flash lightfx
 
 # Flash on specific port
-scalefx-flash flash gunfx --port COM10
+scalefx-flash flash lightfx --port COM10
 
 # Flash without rebuilding
-scalefx-flash flash lightfx --no-build
+scalefx-flash flash gearcontrol --no-build
 ```
 
 **Process:**
@@ -191,7 +191,7 @@ Steps:
 
 ```bash
 # Only works when device is already in BOOTSEL mode
-pio run -t upload -d controllers/gunfx/pico
+pio run -t upload -d controllers/lightfx/pico
 ```
 
 ---
@@ -201,7 +201,6 @@ pio run -t upload -d controllers/gunfx/pico
 ### Supported Controllers
 
 ```yaml
-gunfx: "controllers/gunfx/pico/"
 lightfx: "controllers/lightfx/pico/"
 gearcontrol: "controllers/gearcontrol/pico/"
 hubfx: "controllers/hubfx/esp32s3/"         # ESP32-S3, uses standalone esptool
@@ -212,7 +211,7 @@ hubfx: "controllers/hubfx/esp32s3/"         # ESP32-S3, uses standalone esptool
 ```
 ╔══════════════════════════════════════════╗
 ║        ScaleFX Build & Flash             ║
-║        Controller: gunfx                 ║
+║        Controller: lightfx               ║
 ╚══════════════════════════════════════════╝
 
 ▶ Building firmware...
@@ -222,7 +221,7 @@ hubfx: "controllers/hubfx/esp32s3/"         # ESP32-S3, uses standalone esptool
   ✓ Found: COM5 (Raspberry Pi Pico)
 
 ▶ Connecting to device...
-  ✓ Connected to GunFX v0.3.0
+  ✓ Connected to LightFX v0.3.0
 
 ▶ Entering BOOTSEL mode...
   ✓ BOOTSEL command sent

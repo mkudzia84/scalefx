@@ -46,15 +46,19 @@ Task: "Design or audit an expander board firmware (post-pivot)"
   → Covers: expander protocol surface (component collections, async events, status broadcast)
   → Covers: persistence rules (only /board.yaml + /.system/board.guid — no general file-system on expanders)
 
+Task: "Understand the system end-to-end (storage / audio / ports-roles-topology / effects→ports)"
+  → Read: 32-ARCHITECTURE-DIAGRAMS.md   ← Mermaid diagrams of the four core subsystems
+  → Then: 01-ARCHITECTURE.md (the prose reference)
+
 Task: "Compose a board's system services (storage / audio / battery / config / USB host / expander bus)"
   → Read: 17-SYSTEM-SERVICES.md
-  → Covers: CoreCommandServer<...ServicePolicies> composition, deterministic UUIDv5 board GUID,
+  → Covers: BoardServer<...ServicePolicies> composition, deterministic board GUID,
             per-port GUIDs, storage backends as variadic policy, IDENTIFY payload extension
 
 Task: "Work on HubFX"
-  → Target: controllers/hubfx/esp32s3/ (HubFX Pico is OBSOLETE)
+  → Target: controllers/hubfx/esp32s3/  (ESP32-S3, PURE ESP-IDF — no Arduino; HubFX Pico is OBSOLETE)
   → Reference: controllers/hubfx/pico/ (frozen, consult for patterns only)
-  → Read: 01-ARCHITECTURE.md
+  → Read: 01-ARCHITECTURE.md + 32-ARCHITECTURE-DIAGRAMS.md
 
 Task: "Build a new Studio effect-tab panel (operational — RC-channel-gated, sounds, Apply+Start)"
   → Read FIRST: 23-STUDIO-WIDGET-CATALOG.md   ← handbook of every reusable Studio widget pattern
@@ -83,26 +87,31 @@ Protocol:
   packet_structure: "[type:u8][tag:u8][len:u16LE][payload:0-512][crc8:u8]"
   endianness: "little-endian"
 
-Packet_Ranges:
-  Expander_Identity: "0x01-0x0F" # COMPONENT_LIST, IDENT_*, EXPANDER_STATUS_BROADCAST/RATE
-  Expander_Servo:    "0x10-0x2F" # servo control + async target-reached
-  Expander_PWM:      "0x30-0x4F" # PWM control + mode mutability + sensing query
-  Expander_LED:      "0x50-0x7F" # LED control + event-sequence runtime + async program-done
-  HubFX:             "0x80-0xAF"
-  Streaming:         "0xA4-0xA6"
-  Available:         "0xB0-0xEE"
-  Core:              "0xEF-0xFF"
-# Hard cutover 2026-05-06: per-board ranges (0x01-0x2F GunFX,
-# 0x40-0x5F LightFX, 0x60-0x7F GearControl) RETIRED — boards migrate
-# in one PR each with no compatibility window.  The 0x01-0x7F space
-# is now the single generic-expander range.  See
-# instructions/15-GENERIC-EXPANDER-REFACTOR.md.
+Dispatch_Map:
+  note: |
+    NO per-board packet ranges. The hub owns one conflict-validated map; each
+    *ServicePolicy claims its bytes via ownsType() and dispatch STOPS at the
+    first owner. AUTHORITATIVE allocation + drift warning: CLAUDE.md /
+    .github/copilot-instructions.md → "HubFX master dispatch map". Highlights:
+  Ports:    "0x10-0x3F"
+  Roles:    "0x40-0x7F"
+  Expander: "0x80-0x87"
+  Topology: "0x88-0x8F + 0xA6-0xA7"   # role forward/query/event/bulk-attach (Rule 58)
+  Storage:  "0x93-0xA5 + 0xA9 + 0xB0"
+  Audio:    "0xDA-0xE1"
+  Effects:  "LandingLight 0xB1-0xB6 · LightFX 0xB7-0xBD · GearControl 0xBE-0xC6 ·
+             EngineFX 0xC7-0xCB · GunFX 0xCC-0xD2 + 0xE2-0xE5 · Alerts 0xD3-0xD6"
+  Core:     "0xEF-0xFF"
 
 Controllers:
-  gunfx: { path: "controllers/gunfx/pico/", range: "0x01-0x2F" }
-  lightfx: { path: "controllers/lightfx/pico/", range: "0x40-0x5F" }
-  gearcontrol: { path: "controllers/gearcontrol/pico/", range: "0x60-0x7F" }
-  hubfx: { path: "controllers/hubfx/esp32s3/", range: "0x80-0xAF", platform: "ESP32-S3" }
+  hubfx:       { path: "controllers/hubfx/esp32s3/", platform: "ESP32-S3, PURE ESP-IDF (no Arduino)",
+                 role: "master — runs every effect" }
+  lightfx:     { path: "controllers/lightfx/pico/", platform: "RP2040",
+                 role: "thin port+role expander (8 PWM / 3 servo + ADC battery)" }
+  gearcontrol: { path: "controllers/gearcontrol/pico/", platform: "RP2040",
+                 role: "thin port+role expander (7 servo / 3 H-bridge + INA226 stall)" }
+# REMOVED: standalone gunfx (effects live on the hub), noop / noop-esp.
+# controllers/gunfx/pico/ and controllers/noop/ do NOT exist.
 ```
 
 ---
@@ -158,164 +167,125 @@ Config_Library:
       purpose: "Lightweight YAML subset parser (maps, sequences, scalars) with templatized node pool"
       modify_when: "Adding YAML parsing features or fixing parser edge cases"
     - name: "config/config_store.h/.ipp"
-      purpose: "Templatized config manager — schema-driven loading, validation, defaults"
+      purpose: "ConfigStore<TSchema> — schema-driven YAML load / validation / defaults"
       modify_when: "Changing config load/save lifecycle or adding config infrastructure"
-    - name: "server/config_server.h/.ipp"
-      purpose: "BusServer handler for CONFIG_RELOAD / CONFIG_STATUS protocol commands"
-      modify_when: "Adding new config-related protocol commands"
-    - name: "client/config_client.h/.cpp"
-      purpose: "BusClient for sending CONFIG_RELOAD / CONFIG_STATUS commands"
-      modify_when: "Adding new config client methods"
+    - name: "server/multi_config_server.h"
+      purpose: "Multi-store path-routed config server backing the ConfigServicePolicy (CONFIG_RELOAD / SAVE / STATUS)"
+      modify_when: "Adding new config protocol commands"
 
-Serial_Library:
+Wire_Library:
   root: "controllers/lib/sfx_serial/serial/"
   files:
     - name: "serial.h"
       purpose: "Umbrella header (include this)"
     - name: "core/core.h"
-      purpose: "CoreProtocol (COBS/CRC/endian), SerialError, CommandResult, ICommandHandler, CommandRouter, SFX_* macros"
-      modify_when: "Adding generic error codes, handler macros, or modifying core protocol"
-    - name: "core/core.cpp"
-      purpose: "CoreProtocol implementations, CorePayload encode/decode"
-      modify_when: "Rarely — protocol-level changes only"
-    - name: "core/bus_server.h"
-      purpose: "BusServer base class + CoreCommandServer"
-      modify_when: "Rarely — base class for all server handlers"
-    - name: "core/bus_server.cpp"
-      purpose: "BusServer + CoreCommandServer implementations"
-      modify_when: "Rarely"
-    - name: "client/bus_client.h"
-      purpose: "BusClient base class (extends SerialBus)"
-      modify_when: "Rarely — base class for all client controllers"
-    - name: "client/bus_client.cpp"
-      purpose: "BusClient implementation"
-      modify_when: "Rarely"
+      purpose: "CommandHandleResult, SerialError, CorePacket, SFX_REQUIRE_LEN / SFX_VALIDATE macros"
+      modify_when: "Adding generic error codes, handler macros, or core protocol"
+    - name: "wire.h / wire.cpp"
+      purpose: "SfxWire — CRC-8 / COBS / endian helpers (getU16LE/putU16LE)"
+      modify_when: "Changing wire format or encoding utilities"
+    - name: "packet_reader.h"
+      purpose: "PacketReader — byte-stream → framed packet"
+      modify_when: "Never (stable)"
+    - name: "diag_log.h / .cpp"
+      purpose: "DiagLog singleton — LOG_MESSAGE / DIAG_HISTORY over the wire"
+      modify_when: "Changing log format / ring buffer"
     - name: "client/bus.h"
-      purpose: "SerialBus (client-only, COBS over USB CDC)"
-      modify_when: "Never (stable transport layer)"
+      purpose: "SerialBus — client-side COBS transport (master USB-host side)"
+      modify_when: "Never (stable transport)"
     - name: "client/result_queue.h"
       purpose: "ResultQueue — tag-correlated command/response matching"
       modify_when: "Never (stable infrastructure)"
-    - name: "core/stream.h"
-      purpose: "StreamProtocol (0xA4-0xA6) + StreamWriter — chunked data streaming with CRC-16"
-      modify_when: "Adding new streaming features or changing chunk format"
-    - name: "core/stream.cpp"
-      purpose: "StreamWriter + CRC-16/CCITT implementations"
-      modify_when: "Rarely — streaming infrastructure"
-    - name: "gunfx/gunfx.h"
-      purpose: "GunFxServer, GunFxClient, GunFxPacket, GunFxError, GunFxSpec"
-      modify_when: "Adding GunFX commands or error codes"
-    - name: "lightfx/lightfx.h"
-      purpose: "LightFxServer, LightFxClient, LightFxPacket, LightFxError"
-      modify_when: "Adding LightFX commands or error codes"
-    - name: "gearcontrol/gearcontrol.h"
-      purpose: "GearControlServer, GearControlClient, GearControlPacket, GearControlError"
-      modify_when: "Adding GearControl commands or error codes"
-    - name: "hubfx/hubfx.h"
-      purpose: "HubFxAudioServer/Client, HubFxStorageServer/Client, HubFxPacket, HubFxError (NOT auto-included by serial.h)"
-      modify_when: "Adding HubFX audio, storage, or file commands"
 
-Controllers:
-  pattern: "controllers/{name}/pico/"
+Board_Framework:
+  root: "controllers/lib/sfx_board/server/"
+  files:
+    - name: "board_server.h"
+      purpose: "BoardServer<TStream, ...UserPolicies> — the single board composer"
+      modify_when: "Rarely — the framework core"
+    - name: "board_of.h"
+      purpose: "BoardOf<TBoard, TStream, PortCapacity<…>, …> — port-aware expander shorthand"
+      modify_when: "Adding a port kind or board-wiring behaviour"
+    - name: "board_service.h"
+      purpose: "BoardServicePolicy — INIT / STATUS / IDENTIFY / KEEPALIVE lifecycle (auto-prepended)"
+      modify_when: "Changing the core lifecycle or STATUS layout"
+    - name: "port_service.h / role_service.h"
+      purpose: "PortServicePolicy (port registry) + RoleServicePolicy (attach + drive roles)"
+      modify_when: "Adding a role kind or port behaviour"
+    - name: "role_registry.h"
+      purpose: "roleKindFor<>() / forEachAttachedRole — the ONE role enumeration map (Rule 58)"
+      modify_when: "Exposing a new role (one line here)"
+    - name: "effect_clock.h"
+      purpose: "EffectClock singleton — latched once per process() (Rule 40)"
+      modify_when: "Never"
+
+Hub_Effects:
+  root: "controllers/hubfx/esp32s3/src/effects/<mod>/"
+  files:
+    - name: "<mod>_protocol.h"
+      purpose: "Packet types + error codes for the effect"
+      modify_when: "Adding commands / error codes"
+    - name: "<mod>_service.h / .ipp"
+      purpose: "The effect's *ServicePolicy (ownsType / handle / update)"
+      modify_when: "Adding command handling or effect logic"
+
+Pico_Boards:
+  pattern: "controllers/{lightfx,gearcontrol}/pico/"
   files:
     - name: "src/{name}_pico.ino"
-      purpose: "Main firmware file"
+      purpose: "Thin board sketch — board class via BoardOf<…> + setup/loop"
     - name: "platformio.ini"
-      purpose: "Build configuration"
+      purpose: "Build configuration (Arduino-Pico)"
     - name: "README.md"
-      purpose: "Protocol documentation"
+      purpose: "Pinout + exposed ports"
 ```
 ```yaml
-Go_CLI:
+Go_stack:
   root: "app/go/"
+  note: |
+    Layering: protocol/<mod> (wire mirror, SOURCE OF TRUTH) → client/<mod> (typed API)
+    + client/roletarget.go (transparent role I/O) → console/cmd_<mod>.go (CLI).
+    The string-command "engine" + engine/handlers/<mod>/{types,format,handler,parsers}.go
+    and app/go/api/ are REMOVED (archived 2026-05-28). Do NOT reference them.
   packages:
     protocol:
       - name: "wire.go"
-        purpose: "CRC-8/CRC-16, COBS encode/decode, packet build/parse"
-      - name: "types.go"
-        purpose: "PacketType, ErrorCode types, name registry"
-      - name: "stream.go"
-        purpose: "Stream protocol (chunked data, CRC-16)"
+        purpose: "CRC-8/16, COBS, BuildPacket / ParsePacket, endian helpers"
       - name: "connection.go"
-        purpose: "Serial connection, tag-correlated send/receive, stream waiters"
+        purpose: "Serial connection, tag-correlated send/recv, async filters (Rules 53,56)"
       - name: "core/core.go"
-        purpose: "Core packet types, error codes (mirrors core/core.h)"
-        modify_when: "Adding core packet types or error codes"
-      - name: "gunfx/gunfx.go"
-        purpose: "GunFX packet types, error codes, commands (mirrors gunfx.h)"
-        modify_when: "Adding GunFX packet types, errors, or commands"
-      - name: "lightfx/lightfx.go"
-        purpose: "LightFX packet types, error codes, commands (mirrors lightfx.h)"
-        modify_when: "Adding LightFX packet types, errors, or commands"
-      - name: "gearcontrol/gearcontrol.go"
-        purpose: "GearControl packet types, error codes, commands (mirrors gearcontrol.h)"
-        modify_when: "Adding GearControl packet types, errors, or commands"
-      - name: "hubfx/hubfx.go"
-        purpose: "HubFX packet types, error codes, commands (mirrors hubfx.h)"
-        modify_when: "Adding HubFX packet types, errors, or commands"
-    api:
-      - name: "result.go"
-        purpose: "ApiResult types"
+        purpose: "Core packet types, error codes, capability flags, controller-type strings"
+        modify_when: "Adding core packet types, error codes, or capability bits"
+      - name: "<mod>/<mod>.go"
+        purpose: "Per-module wire mirror — packet consts, CmdXxx, DecodeXxx, errors"
+        modify_when: "Adding/changing ANY packet, command, or error (source of truth)"
+      - name: "roles/*.go"
+        purpose: "Role codecs (opaque-forwarded by the hub, Rule 58)"
+        modify_when: "Exposing a new role"
+    client:
       - name: "client.go"
-        purpose: "apiClient base (wraps protocol.Connection)"
-      - name: "core.go"
-        purpose: "CoreApi (init, status, reboot, identify)"
-      - name: "gunfx.go"
-        purpose: "GunFxApi (trigger, servo, smoke)"
-      - name: "lightfx.go"
-        purpose: "LightFxApi (LED, sequences, servo, landing lights)"
-      - name: "gearcontrol.go"
-        purpose: "GearControlApi (gear, servo, yaw, calibration)"
-      - name: "hubfx.go"
-        purpose: "HubFxApi (slaves, audio, engine, storage, USB)"
-      - name: "files.go"
-        purpose: "FileApi (SD/flash file operations)"
-    engine:
-      - name: "engine.go"
-        purpose: "Core Engine struct (connection, API, dispatch, listener)"
-      - name: "types.go"
-        purpose: "CmdEntry, CmdGroup, InitReadyInfo, ControllerColors"
-      - name: "output.go"
-        purpose: "Output interface + ANSI terminal implementation"
-      - name: "helpers.go"
-        purpose: "Shared utilities (Atoi, ParseBool, ServoSet, ServoConfig)"
-      - name: "parsers.go"
-        purpose: "Common response parsers"
-      - name: "parsers_core.go"
-        purpose: "Core response parsers (INIT_READY, STATUS header)"
-    engine_handlers:
-      - name: "handlers/handlers.go"
-        purpose: "RegisterDefaults() — registers all built-in groups"
-      - name: "handlers/core/handler.go"
-        purpose: "Core commands (connect, init, status, reboot, etc.)"
-        modify_when: "Modifying core commands"
-      - name: "handlers/gunfx/handler.go"
-        purpose: "GunFX commands (trigger, servo, smoke)"
-        modify_when: "Adding GunFX CLI commands"
-      - name: "handlers/lightfx/handler.go"
-        purpose: "LightFX commands (LED, sequences, servo, landing lights)"
-        modify_when: "Adding LightFX CLI commands"
-      - name: "handlers/lightfx/parsers.go"
-        purpose: "LightFX response parsers"
-      - name: "handlers/gearcontrol/handler.go"
-        purpose: "GearControl commands (gear, servo, yaw, calibration)"
-        modify_when: "Adding GearControl CLI commands"
-      - name: "handlers/gearcontrol/parsers.go"
-        purpose: "GearControl response parsers"
-      - name: "handlers/hubfx/handler.go"
-        purpose: "HubFX commands (slaves, audio, engine, storage, USB)"
-        modify_when: "Adding HubFX CLI commands"
-      - name: "handlers/hubfx/parsers.go"
-        purpose: "HubFX response parsers"
-      - name: "handlers/hubfx/format.go"
-        purpose: "HubFX output formatting"
-      - name: "handlers/firmware/handler.go"
-        purpose: "Firmware release commands"
-    cli:
-      - name: "main.go"
-        purpose: "Entry point, flag parsing"
-      - name: "cli.go"
-        purpose: "Terminal readline loop, delegates to engine"
+        purpose: "Client — owns protocol.Connection + every typed sub-API"
+      - name: "<mod>.go"
+        purpose: "Typed API (Gun, Gear, Landing, Audio, Storage, Topology, Config, …)"
+        modify_when: "Adding a typed command method"
+      - name: "roletarget.go"
+        purpose: "RoleTarget — c.Role(guid) GUID-transparent role drive/query (Rule 58)"
+      - name: "events.go"
+        purpose: "Async telemetry stream (OnRole / OnXxx subscriptions)"
+    console:
+      - name: "registry.go"
+        purpose: "Central command table + categories (register() / lookup())"
+      - name: "session.go"
+        purpose: "App struct (holds *client.Client), REPL, requireClient()"
+      - name: "helpers.go / term.go"
+        purpose: "Arg parsers (parseU8, parseOnOff, …) + output helpers (Ok, Note, Hdr, …)"
+      - name: "cmd_<mod>.go"
+        purpose: "ONE file per wire-domain; self-registers its commands in init()"
+        modify_when: "Adding a CLI command (see 07-CLI-UPDATES.md)"
+  entrypoints:
+    - "cli/    — scalefx-cli.exe"
+    - "flash/  — scalefx-flash.exe"
+    - "studio/ — Wails v2 GUI (Svelte frontend/)"
 ```
 
 ---
@@ -324,85 +294,65 @@ Go_CLI:
 
 ### When Adding a Command
 
+Full worked example: [03-PROTOCOL-EXTENSION.md](03-PROTOCOL-EXTENSION.md). `<mod>` = effect/subsystem (gunfx, gear, landing, audio, …).
+
 ```
-START: Need to add command to controller
+START: Need to add a command to a hub effect / subsystem
 
-Q1: Is packet type constant defined?
-├─ NO → Add to xxxfx/xxxfx.h in correct namespace (e.g., GunFxPacket in gunfx/gunfx.h)
-└─ YES → Continue
+Q1: Claim a packet byte
+└─ Add the const in effects/<mod>/<mod>_protocol.h at the next FREE byte.
+   Validate vs the dispatch map in CLAUDE.md AND grep the real ownsType()
+   predicates (the map drifts — first-owner-wins means a collision is swallowed).
 
-Q2: What response category? (See 03-PROTOCOL-EXTENSION.md § Response Category Decision)
-├─ INSTANT → Server uses SFX_DISPATCH, client gets auto-ACK
-├─ QUERY   → Server sends data response, client resolves tag in onModulePacket()
-└─ LONG-RUNNING → Server sends immediate ACK, client monitors via STATUS/async
+Q2: New error code?
+└─ Add it in the module's error block (CLAUDE.md error ranges) + getMessage(),
+   and mirror it same-valued in protocol/<mod>/<mod>.go (error_collisions_test guards this).
 
-Q3: Are new error codes needed?
-├─ YES → Add to xxxfx/xxxfx.h in module error namespace (e.g., GunFxError)
-│        Add to app/go/protocol/xxxfx/xxxfx.go
-└─ NO → Continue
+Q3: Firmware handling
+└─ Add the byte to ownsType(); add the case to handle() (SFX_REQUIRE_LEN /
+   SFX_VALIDATE → do work → return Ack()/Nack(), OR send a typed RESP + return Handled).
+   Response category? INSTANT = Ack/Nack · QUERY = typed RESP · LONG-RUNNING = Ack then
+   finish across update() ticks (completion via STATUS / async event).
 
-Q4: Is callback type defined in xxxfx/xxxfx.h?
-├─ NO → Add callback typedef
-│        Add registration method: void onXxx(Callback cb)
-│        Add private member: Callback _onXxx
-│        Add case in handleModulePacket() switch using SFX_* macros
-└─ YES → Continue
+Q4: Go source of truth
+└─ protocol/<mod>/<mod>.go: packet const (same value) + CmdXxx builder (+ DecodeXxx if query).
 
-Q5: Is client method defined in xxxfx/xxxfx.h?
-├─ NO → Add method returning CommandResult (NEVER bool)
-│        IF QUERY: add response type + onModulePacket() tag resolution
-│        IF LONG-RUNNING: document completion signal
-└─ YES → Continue
+Q5: Typed API
+└─ client/<mod>.go: a method wrapping sendExpectACK (instant) or sendForResp (query).
 
-Q6: Is command implemented in firmware?
-├─ NO → Add callback implementation in xxxfx_pico.ino
-│        Register callback in setup()
-└─ YES → Continue
+Q6: CLI
+└─ console/cmd_<mod>.go: register(&command{…}) in init() + a cmd* func calling the typed API.
 
-Q7: Is Go CLI updated?
-├─ NO → Add to app/go/protocol/xxxfx/xxxfx.go, api/xxxfx.go, engine/handlers/xxxfx/handler.go
-│        - Add packet constant + register in init()
-│        - Add typed API method
-│        - Add CLI command + register
-└─ YES → Continue
-
-Q8: Is documentation updated?
-├─ NO → Update controllers/xxxfx/pico/README.md
-└─ YES → DONE
+Q7: Docs + build
+└─ Update the CLAUDE.md dispatch map. Then:
+   scalefx-flash build hubfx --no-clean  &&  cd app/go && go build ./...
 ```
 
 ---
 
 ## Mandatory File Sync Points
 
-**CRITICAL:** These file pairs must stay in sync:
+**CRITICAL:** every wire change touches both halves. The Go side is the source of truth for the master protocol; `cd app/go && go build ./...` is the sync check.
 
 ```yaml
 Sync_Groups:
-  - name: "Packet Constants"
-    primary: "lib/sfx_serial/serial/core/core.h"
-    mirrors:
-      - "app/go/protocol/core/core.go"
-    rule: "Same values, same names"
+  - name: "Packet Constants + Command Builders"
+    firmware: "effects/<mod>/<mod>_protocol.h  (or lib/sfx_board/ for roles/infra)"
+    go_mirror:
+      - "app/go/protocol/<mod>/<mod>.go (packet const + CmdXxx + DecodeXxx)"
+    rule: "Same values; every command exposed via client/<mod>.go + console/cmd_<mod>.go"
 
-  - name: "Error Codes (Generic)"
-    primary: "lib/sfx_serial/serial/core/core.h (SerialError namespace)"
-    mirrors:
-      - "app/go/protocol/core/core.go (error constants + name map)"
-    rule: "Same values, same names"
+  - name: "Error Codes"
+    firmware: "<mod>_protocol.h error block (per CLAUDE.md ranges) + getMessage()"
+    go_mirror:
+      - "app/go/protocol/<mod>/<mod>.go (same value + name map)"
+    rule: "Same values; one namespace per range (error_collisions_test in the pre-merge gate)"
 
-  - name: "Error Codes (Module)"
-    primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h (XxxError namespace)"
-    mirrors:
-      - "app/go/protocol/xxxfx/xxxfx.go (error constants + name map)"
-    rule: "Same values, same names"
-
-  - name: "Command Interface"
-    primary: "lib/sfx_serial/serial/xxxfx/xxxfx.h"
-    mirrors:
-      - "app/go/protocol/xxxfx/xxxfx.go"
-      - "app/go/engine/handlers/xxxfx/handler.go"
-    rule: "All commands must be exposed in Go CLI"
+  - name: "Capabilities"
+    firmware: "policy kCapabilityBits → IDENTIFY caps word"
+    go_mirror:
+      - "app/go/protocol/core/core.go (CapXxx + HasCapability)"
+    rule: "Used to gate CLI commands (RequiresCap) + Studio probes"
 ```
 
 > **All development rules, patterns, and checklists are in `.github/copilot-instructions.md`** (auto-loaded by VS Code Copilot).
@@ -429,7 +379,7 @@ Sync_Groups:
 | [14-ONBOARD-COPROCESSOR.md](14-ONBOARD-COPROCESSOR.md) | On-board UART-attached expander (ESP32-C3 PWM expander pattern, master-bridged flashing) |
 | [15-GENERIC-EXPANDER-REFACTOR.md](15-GENERIC-EXPANDER-REFACTOR.md) | Pivot to generic expander protocol — component collections (servo / PWM / LED), per-board migration plan |
 | [16-EXPANDER-BOARD-DESIGN.md](16-EXPANDER-BOARD-DESIGN.md) | Expander-board design contract — anatomy of a firmware, full core + expander protocol surface, persistence rules, migration recipe |
-| [17-SYSTEM-SERVICES.md](17-SYSTEM-SERVICES.md) | `CoreCommandServer<...ServicePolicies>` composition, deterministic board GUID (UUIDv5), per-port GUIDs, storage backends as policy |
+| [17-SYSTEM-SERVICES.md](17-SYSTEM-SERVICES.md) | `BoardServer<...ServicePolicies>` composition, deterministic board GUID, per-port GUIDs, storage backends as policy |
 | [18-HUBFX-INA-CLONE-WEDGE.md](18-HUBFX-INA-CLONE-WEDGE.md) | Investigation: counterfeit INA226 @ 0x40 corrupts PCA9685 @ 0x70 on writes; gate on canonical IDs |
 | [19-HUBFX-CONFIG-SCHEMA.md](19-HUBFX-CONFIG-SCHEMA.md) | `/hubfx.yaml` schema — expander aliases (alias→GUID + ports), effect sub-files reference ports by alias |
 | [20-STUDIO-DEVICE-MODEL.md](20-STUDIO-DEVICE-MODEL.md) | Studio's authoritative device model in Go (`devicemodel/`) — port/role/claim semantics, validation, presets |
@@ -441,3 +391,4 @@ Sync_Groups:
 | [26-CODE-AND-DESIGN-IMPROVEMENTS.md](26-CODE-AND-DESIGN-IMPROVEMENTS.md) | Catalogue of code-quality observations from the arduino-removal audit; most items DONE, remainder are Pico-side follow-ups |
 | [27-WIRE-ASYNC-AND-UPLOAD.md](27-WIRE-ASYNC-AND-UPLOAD.md) | Wire multiplexing discipline (Rules 53–57) — lossy vs flow-control async, stream-upload exclusivity, thread-safe `Connection`, upload diagnostics, UART RX FIFO tuning |
 | [28-IO-FLUSH-DEBUGGING.md](28-IO-FLUSH-DEBUGGING.md) | Methodology for low-level I/O flush bugs — measure each buffer boundary, don't infer; sent ≠ delivered ≠ persisted |
+| [32-ARCHITECTURE-DIAGRAMS.md](32-ARCHITECTURE-DIAGRAMS.md) | **Mermaid diagrams of the four core subsystems** (storage / audio / ports-roles-topology / effects→ports) on the current `BoardServer<...UserPolicies>` codebase — read alongside 01-ARCHITECTURE.md |

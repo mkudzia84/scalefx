@@ -2,16 +2,19 @@
 
 Shared C++ libraries for ScaleFX microcontroller firmware.
 
+> System-wide composition / dispatch / role-transport diagrams live in
+> [instructions/32-ARCHITECTURE-DIAGRAMS.md](../../instructions/32-ARCHITECTURE-DIAGRAMS.md).
+
 ## Libraries
 
 | Library | Purpose | Direct deps |
 |---------|---------|-------------|
-| [sfx_platform](sfx_platform/) | OS/SDK abstraction (`SfxMutex`, `SFX_DELAY_MS`, `SFX_FREE_HEAP`, …) + SPSC ring | Arduino |
+| [sfx_platform](sfx_platform/) | OS/SDK abstraction (`SfxMutex`, `SFX_DELAY_MS`, `SFX_FREE_HEAP`, …) + SPSC ring | ESP-IDF (ESP32) / Arduino (Pico) |
 | [sfx_serial](sfx_serial/) | Wire protocol (CRC-8, COBS), DiagLog, client side (`SerialBus`/`BusClient`/`ResultQueue`), generic-expander wire (`ComponentPacket`) | sfx_platform |
 | [sfx_peripherals](sfx_peripherals/) | LED, servo, PWM, I²C, INA226, battery, indicator-LED + battery service policies | sfx_platform, sfx_serial, sfx_config |
-| [sfx_board](sfx_board/) | Board-side framework — `BoardServer<...UserPolicies>` composer + `BoardServicePolicy` + `ComponentServicePolicy` + `StreamWriter`, plus master-side `CoreClient` | sfx_platform, sfx_serial, sfx_peripherals, sfx_config |
+| [sfx_board](sfx_board/) | Board-side framework — `BoardServer<...>` / `BoardOf<...>` composer + `BoardServicePolicy` + hub-local `PortServicePolicy` / `RoleServicePolicy` (+ role classes & handlers) + `StreamWriter` | sfx_platform, sfx_serial, sfx_peripherals, sfx_config |
 | [sfx_audio](sfx_audio/) | 8-channel WAV mixer, I²S output, codec drivers + `AudioServicePolicy` | sfx_platform, sfx_serial, sfx_storage, sfx_board |
-| [sfx_storage](sfx_storage/) | SD card (SdFat / SD_MMC) + LittleFS flash singletons + `StorageServicePolicy` | sfx_platform, sfx_serial, sfx_board |
+| [sfx_storage](sfx_storage/) | SD card (SdFat on Pico / ESP-IDF VFS-FAT on ESP32) + LittleFS flash singletons + `StorageServicePolicy` | sfx_platform, sfx_serial, sfx_board |
 | [sfx_config](sfx_config/) | YAML parser + templatised `ConfigStore` + `ConfigServicePolicy` | sfx_platform, sfx_serial, sfx_board |
 | [sfx_usb](sfx_usb/) | USB Host abstraction (Pico TinyUSB / ESP32 USB-OTG CDC-ACM) | sfx_platform |
 | [esp_cdc_acm](esp_cdc_acm/) | ESP-IDF CDC-ACM host driver wrapper | sfx_platform |
@@ -47,15 +50,16 @@ sfx_usb / esp_cdc_acm               (depend only on sfx_platform)
 | `serial/components/components.h` | sfx_serial | Generic-expander wire protocol (`ComponentPacket`) |
 | `client/bus_client.h` | sfx_serial | `BusClient` — master-side typed command/query API |
 | `server/board_server.h` | sfx_board | `BoardServer<...UserPolicies>` + `BoardServerBase` |
+| `server/board_of.h` | sfx_board | `BoardOf<TBoard, TStream, Caps, ...>` — composer that auto-adds Port + Role services (HubFX form) |
 | `server/board_service.h` | sfx_board | `BoardServicePolicy` (lifecycle / IDENTIFY / STATUS / I2C_SCAN) |
-| `server/component_service.h` | sfx_board | `ComponentServicePolicy` (generic-expander runtime) |
+| `server/port_service.h` | sfx_board | `PortServicePolicy` (hub-local port enumeration) |
+| `server/role_service.h` | sfx_board | `RoleServicePolicy` (per-port role attach / drive / query dispatch) |
 | `server/stream.h` | sfx_board | `StreamWriter` (chunked + CRC-16) |
-| `client/core_client.h` | sfx_board | `CoreClient` — master-side typed client for component-server slaves |
 | `audio/audio_mixer.h` | sfx_audio | 8-channel WAV mixer |
-| `server/audio_server.h` | sfx_audio | `AudioServicePolicy<TMixer>` |
+| `server/audio_service.h` | sfx_audio | `AudioServicePolicy<TMixer>` |
 | `storage/sd_card.h` | sfx_storage | SD card singleton |
 | `storage/flash.h` | sfx_storage | LittleFS flash singleton |
-| `server/storage_server.h` | sfx_storage | `StorageServicePolicy<TPolicy>` |
+| `server/storage_service.h` | sfx_storage | `StorageServicePolicy<TPolicy>` (+ `storage_upload_engine.h` `UploadEngine<TPolicy>`, `storage_path_util.h`) |
 | `config/yaml_parser.h` | sfx_config | Lightweight YAML subset parser |
 | `config/config_store.h` | sfx_config | Templatised schema-driven config manager |
 | `server/multi_config_server.h` | sfx_config | `ConfigServicePolicy` (path-routed multi-store) |

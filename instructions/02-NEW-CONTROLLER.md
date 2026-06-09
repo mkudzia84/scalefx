@@ -1,436 +1,172 @@
-# Creating a New Controller
+# Creating a New Controller / Service Policy
 
-> **ACTION DOCUMENT:** Step-by-step guide for creating a new server controller.
+> **ACTION DOCUMENT:** How to add a new board (Pico expander) or a new protocol-exposed subsystem (`*ServicePolicy`) to an existing board.
+
+There are two distinct "new things" you might be creating. Pick the right one:
+
+| Goal | What you build | Read |
+|------|----------------|------|
+| A new **physical expander board** (Pico) that exposes ports the hub drives | A board class via `BoardOf<…>` + a thin `*_pico.ino` sketch | This doc, § "New expander board" |
+| A new **effect / subsystem on the hub** (gun, gear, landing, audio, …) | A `*ServicePolicy` satisfying `SystemServicePolicy`, composed into the hub's `BoardServer<…>` | This doc, § "New service policy" + [03-PROTOCOL-EXTENSION.md](03-PROTOCOL-EXTENSION.md) |
+
+> **There are no more standalone effect boards.** GunFX / LightFX effect logic lives on the hub. A Pico board is a *thin port + role expander* — it exposes hardware and lets the hub attach roles. Live examples: [`controllers/lightfx/pico/src/lightfx_pico.ino`](../controllers/lightfx/pico/src/lightfx_pico.ino), [`controllers/gearcontrol/pico/src/gearcontrol_pico.ino`](../controllers/gearcontrol/pico/src/gearcontrol_pico.ino).
 
 ---
 
-## Prerequisites
+## Framework Overview
 
-```yaml
-Required:
-  - PlatformIO CLI installed
-  - Go toolchain (for CLI)
-  - Unused packet type range (see below)
+Every board is composed from `sfx_core::BoardServer<TStream, ...UserPolicies>` (`controllers/lib/sfx_board/server/board_server.h`). Each protocol-exposed subsystem is a `*ServicePolicy` satisfying the `sfx_core::SystemServicePolicy` concept:
 
-Choose_Packet_Range:
-  Available:
-    - "0x80-0x9F"  # Recommended for next controller
-    - "0xA0-0xBF"
-    - "0xC0-0xDF"
-    - "0xE0-0xEE"
-  Used:
-    - "0x01-0x2F"  # GunFX
-    - "0x40-0x5F"  # LightFX
-    - "0x60-0x7F"  # GearControl
-  Reserved:
-    - "0x30-0x3F"  # Future use
-    - "0xF0-0xFF"  # Core system (0xEF = STATUS_UPDATE)
+```cpp
+struct MyServicePolicy {
+    static constexpr uint32_t kCapabilityBits = CoreCapability::SOMETHING;  // OR'd into IDENTIFY caps
+    bool begin(sfx_core::BoardServerBase* ctx);
+    bool ownsType(uint8_t type) const;                        // claim packet bytes
+    sfx_core::CommandHandleResult handle(uint8_t type, const uint8_t* p, size_t len);
+    void update();                                            // ticked from loop()
+};
+```
+
+`BoardServer` reads COBS frames, verifies CRC-8, and offers each packet to every policy's `ownsType()` — **first owner wins, no per-board ranges**. `BoardServicePolicy` (INIT/STATUS/IDENTIFY lifecycle) and `IndicatorServicePolicy` (status LEDs) are **prepended automatically** — never list them.
+
+For boards with physical ports, declare via `sfx_core::BoardOf<TBoard, TStream, PortCapacity<NServo,NPwm,NHBridge,NInput>, ...ExtraPolicies>` (`board_of.h`), which additionally auto-prepends `PortServicePolicy` + `RoleServicePolicy`:
+
+```
+BoardServicePolicy → IndicatorServicePolicy → PortServicePolicy → RoleServicePolicy → …ExtraPolicies…
 ```
 
 ---
 
-## Architecture Overview
+# Part A — New expander board (Pico)
 
-Every Pico server controller follows the same architecture:
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  SfxServer  (common boilerplate — serial, indicators, etc.) │
-│  ┌────────────────────────┐  ┌─────────────────────────────┐ │
-│  │ CoreCommandServer      │  │ NewFxServer                 │ │
-│  │ (extends BusServer)    │  │ (extends BusServer)         │ │
-│  │ handles: 0xF0-0xFF     │  │ handles: 0x80-0x9F          │ │
-│  └────────────────────────┘  └─────────────────────────────┘ │
-│                 ↑ priority 1             ↑ priority 2        │
-│  ┌──────────────┴────────────────────────┴──────────────────┐│
-│  │                  CommandRouter                            ││
-│  │         Chain of Responsibility dispatch                  ││
-│  └───────────────────────────────────────────────────────────┘│
-└──────────────────────────────────────────────────────────────┘
-```
-
-**Key classes:**
-- **SfxServer** — Common boilerplate (serial, device name, indicators, CoreCommandServer, CommandRouter, connection timeout)
-- **BusServer** — Base class for all server command handlers (ACK/NACK helpers, packet range routing)
-- **CoreCommandServer** — Handles INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE, STATUS_REQ, I2C_SCAN (extends BusServer)
-- **NewFxServer** — Your module-specific handler (extends BusServer)
-
-**What SfxServer handles automatically:**
-- USB serial init (6Mbps baud, 3s wait)
-- Unique device name from Pico board ID (e.g., "NewFX-A1B2")
-- Indicator LEDs on GP13/GP14 via nested `SfxServer::IndicatorLedManager`
-- CoreCommandServer with board info and INIT/SHUTDOWN/REBOOT/BOOTSEL callbacks
-- CommandRouter with automatic handler priority (core first, then module)
-- Connection timeout / watchdog detection (15s)
-- Free RAM updates in STATUS response
-- I2C bus scan infrastructure (optional)
-
----
-
-## Step 1: Create Directory Structure
+## Step 1: Directory structure
 
 ```bash
 mkdir -p controllers/newfx/pico/src
 ```
 
-**Result:**
 ```
 controllers/newfx/pico/
-├── src/
-│   └── newfx_pico.ino
+├── src/newfx_pico.ino
 ├── platformio.ini
 └── README.md
 ```
 
----
+## Step 2: platformio.ini
 
-## Step 2: Create platformio.ini
+Copy [`controllers/lightfx/pico/platformio.ini`](../controllers/lightfx/pico/platformio.ini) — Arduino-Pico framework, `monitor_speed = 6000000`, and the `lib_deps` pointing at the `sfx_*` library roots. The board sketch is the ONLY Arduino-using layer (Rule 55); shared `lib/` code stays Arduino-free.
 
-**File:** `controllers/newfx/pico/platformio.ini`
+## Step 3: The board class + sketch
 
-```ini
-; PlatformIO configuration for NewFX Pico
+A board lists its drivers as members and its ports as static `kServoPorts` / `kPwmPorts` / `kHBridgePorts` / `kInputPorts` descriptor tuples. `BoardOf<>` derives the registry size, binds the descriptors, and wires every policy. `PortCapacity<>` sizes the registry **exactly** to the board's hardware (over-generous caps waste DRAM — each slot embeds a role `std::variant`).
 
-[env:pico]
-platform = https://github.com/maxgerhardt/platform-raspberrypi.git
-board = pico
-framework = arduino
-board_build.core = earlephilhower
-
-monitor_speed = 6000000
-
-build_flags =
-    -DUSE_TINYUSB=0
-    -DSCALEFX_SERVER
-
-lib_deps =
-    ${common.lib_deps}
-
-[common]
-lib_deps =
-    ../../lib/sfx_serial
-    ../../lib/sfx_server
-    ../../lib/sfx_platform
-    ; Add other component libs as needed:
-    ; ../../lib/led_control
-    ; ../../lib/srv_control
-    ; ../../lib/pwm_control
-```
-
-**Note:** `SCALEFX_SERVER` macro excludes USB Host / client-side code from the build.
-
----
-
-## Step 3: Create Server Handler
-
-**File:** `controllers/lib/sfx_serial/serial/newfx/newfx.h` (NEW FILE)
-
-This single header contains everything for the new module: packet types, error codes, validation constants, data types, and server class.
+This is the live LightFX shape (a USB-CDC wire stream + an ExtraPolicy battery monitor):
 
 ```cpp
-/*
- * Serial NewFX Protocol - Binary Protocol Client/Server
- *
- * Binary COBS protocol client/server for NewFX controller.
- *   - NewFxServer: For NewFX Pico (receives commands, extends BusServer)
- *   - NewFxClient: For HubFX (sends commands, extends BusClient)
- *
- * Packet Types (0x80-0x9F range):
- *   COMMAND_1 (0x80) - [param1:u16LE][param2:u8] Description
- *   COMMAND_2 (0x81) - [id:u8] Description
- */
-
-#ifndef SERIAL_NEWFX_H
-#define SERIAL_NEWFX_H
-
 #include <Arduino.h>
-#include <functional>
-#include "serial/client/bus_client.h"
-#include "serial/core/bus_server.h"
+#include <type_traits>
+#include <platform/sfx_platform.h>
+#include <platform/pico_serial_stream.h>   // USB-CDC Serial → sfx::Stream adapter (Rule 55)
+#include <serial/diag_log.h>
+#include <server/board_of.h>
+#include <ports/pwm_port.h>
+#include <ports/servo_port.h>
+#include <power/battery_monitor.h>          // AdcDividerBatteryT
+#include <power/battery_server.h>           // BatteryServicePolicy
 
-// ============================================================================
-// NewFX Packet Types (0x80-0x9F range)
-// ============================================================================
+#define FIRMWARE_VERSION "1.0.0"
+#define BUILD_NUMBER     1
 
-namespace NewFxPacket {
-    constexpr uint8_t COMMAND_1 = 0x80;  // [param1:u16LE][param2:u8]
-    constexpr uint8_t COMMAND_2 = 0x81;  // [id:u8]
-}
+namespace Gpio { constexpr int LED_CONNECTION = 24, LED_ERROR = 25, VSENSE = 29; }
 
-// ============================================================================
-// NewFX Error Codes (use your assigned error range)
-// ============================================================================
+using NewWireStream     = sfx::PicoSerialStream<std::remove_reference_t<decltype(Serial)>>;
+using NewFxBattery      = AdcDividerBatteryT<6180>;                 // ADC + ÷6.18 divider
+using NewFxBatteryService = BatteryServicePolicy<NewFxBattery>;
 
-namespace NewFxError {
-    using namespace SerialError;  // Import generic error codes
-
-    constexpr uint8_t INVALID_PARAM_1 = 0x70;
-    constexpr uint8_t INVALID_PARAM_2 = 0x71;
-
-    inline const char* getMessage(uint8_t code) {
-        switch (code) {
-            case INVALID_PARAM_1: return "Invalid param1";
-            case INVALID_PARAM_2: return "Invalid param2";
-            default: return SerialError::getMessage(code);
-        }
-    }
-}
-
-// ============================================================================
-// NewFX Validation Constants
-// ============================================================================
-
-namespace NewFxSpec {
-    constexpr uint8_t MAX_ID = 4;
-
-    inline bool isValidId(uint8_t id)     { return id >= 1 && id <= MAX_ID; }
-    inline bool isValidParam1(uint16_t v) { return v <= 10000; }
-}
-
-// ============================================================================
-// NewFxServer — Command handler (extends BusServer)
-// ============================================================================
-
-class NewFxServer : public BusServer {
+class NewFxBoard : public sfx_core::BoardOf<NewFxBoard,
+                                            NewWireStream,
+                                            sfx_core::PortCapacity</*servo*/3, /*pwm*/8,
+                                                                    /*hbridge*/0, /*input*/0>,
+                                            NewFxBatteryService> {     // ← ExtraPolicy
 public:
-    // Callback types
-    using Command1Callback = std::function<uint8_t(uint16_t param1, uint8_t param2)>;
-    using Command2Callback = std::function<uint8_t(uint8_t id)>;
+    sfx_peripherals::NativePwmPort  led[8]      = {{0},{1},{2},{3},{4},{5},{6},{7}};
+    sfx_peripherals::MicroservoPort servoOut[3] = {{8},{9},{10}};
+    NewFxBattery                    battery;
 
-    // Callback registration
-    void onCommand1(Command1Callback cb) { _onCommand1 = cb; }
-    void onCommand2(Command2Callback cb) { _onCommand2 = cb; }
+    static constexpr auto kPwmPorts   = sfx_core::ports::list(
+        sfx_core::ports::pwm_array<&NewFxBoard::led, 8>());
+    static constexpr auto kServoPorts = sfx_core::ports::list(
+        sfx_core::ports::servo_array<&NewFxBoard::servoOut, 3>());
 
-    const char* handlerName() const override { return "NewFxServer"; }
-
-protected:
-    CommandHandleResult handleModulePacket(uint8_t type, const uint8_t* payload, size_t len) override {
-        switch (type) {
-            case NewFxPacket::COMMAND_1: {
-                SFX_REQUIRE_LEN(3);
-                uint16_t p1 = CoreProtocol::getU16LE(payload);
-                uint8_t p2 = payload[2];
-                SFX_VALIDATE(NewFxSpec::isValidParam1(p1), NewFxError::INVALID_PARAM_1);
-                SFX_DISPATCH(_onCommand1, p1, p2);
-            }
-            case NewFxPacket::COMMAND_2: {
-                SFX_REQUIRE_LEN(1);
-                uint8_t id = payload[0];
-                SFX_VALIDATE(NewFxSpec::isValidId(id), NewFxError::INVALID_PARAM_2);
-                SFX_DISPATCH(_onCommand2, id);
-            }
-            default:
-                return CommandHandleResult::NotMyCommand;
-        }
-    }
-
-    const char* getModuleErrorMessage(uint8_t code) override {
-        return NewFxError::getMessage(code);
-    }
-
-    uint8_t moduleRangeLow() const override  { return 0x80; }
-    uint8_t moduleRangeHigh() const override { return 0x9F; }
-
-private:
-    Command1Callback _onCommand1;
-    Command2Callback _onCommand2;
+    static constexpr const char* kName = "NewFx";
 };
 
-#endif // SERIAL_NEWFX_H
-```
-
-**Key design points:**
-- Server extends `BusServer` (not `ICommandHandler` directly)
-- Override `handleModulePacket()` — BusServer's `tryProcess()` handles range checking
-- Override `moduleRangeLow()`/`moduleRangeHigh()` for automatic packet routing
-- Override `getModuleErrorMessage()` for NACK error text lookup
-- Error codes, packet types, and validation all live in the same header
-- Use `CoreProtocol::getU16LE()` / `CoreProtocol::putU16LE()` for endian-safe reads/writes
-
----
-
-## Step 4: Update Umbrella Header
-
-**File:** `controllers/lib/sfx_serial/serial/serial.h`
-
-**ACTION:** Add include:
-
-```cpp
-// NewFX binary implementation
-#include "newfx/newfx.h"
-```
-
----
-
-## Step 5: Create Main Firmware
-
-**File:** `controllers/newfx/pico/src/newfx_pico.ino`
-
-This is the canonical pattern used by all controllers. Study LightFX and GearControl for real examples.
-
-```cpp
-/**
- * NewFX Pico Controller v0.1.0
- *
- * Server controller for [description].
- *
- * Hardware: Raspberry Pi Pico (RP2040) + earlephilhower/arduino-pico core
- * Protocol: Binary COBS with CRC-8
- *
- * Architecture (Chain of Responsibility):
- *   - SfxServer: Common server boilerplate (serial, indicators, core protocol)
- *   - NewFxServer: Handles module-specific commands
- *   - CommandRouter: Routes packets to handlers in priority order
- */
-
-#include <Arduino.h>
-#include <serial/serial.h>
-#include <sfx_server.h>
-
-#define FIRMWARE_VERSION "0.1.0"
-#define BUILD_NUMBER 1
-
-// ============================================================================
-//  GLOBAL INSTANCES
-// ============================================================================
-
-SfxServer server;
-NewFxServer newfxServer;
-
-// ============================================================================
-//  CONNECTION MANAGEMENT
-// ============================================================================
-
-void performSafeShutdown() {
-    // Put ALL hardware into safe state
-}
-
-void performSafeInit() {
-    performSafeShutdown();
-}
-
-// ============================================================================
-//  SETUP
-// ============================================================================
+NewFxBoard    board;
+NewWireStream wireStream{Serial};
 
 void setup() {
-    // 1. Initialize SfxServer
-    server.begin("NewFX", FIRMWARE_VERSION, BUILD_NUMBER);
-    server.onInit([]() { performSafeInit(); });
-    server.onShutdown([]() { performSafeShutdown(); });
+    Serial.begin(115200);                                   // baud ignored over USB CDC
 
-    // 2. Initialize hardware
-    // ...
+    // Bind external dependencies BEFORE board.begin() so the policy's
+    // begin() sees them (and the capability bit is live).
+    board.battery.begin(Gpio::VSENSE);
+    board.policy<NewFxBatteryService>().bindBattery(board.battery);
 
-    // 3. Initialize module server and register callbacks
-    newfxServer.begin(&Serial);
-    newfxServer.onCommand1([](uint16_t p1, uint8_t p2) -> uint8_t {
-        return SerialError::OK;
-    });
-    newfxServer.onCommand2([](uint8_t id) -> uint8_t {
-        return SerialError::OK;
-    });
+    // Wire / DiagLog / indicator pins / port registry / every policy begin()
+    // / IDENTIFY capabilities — one call.
+    board.begin(wireStream, FIRMWARE_VERSION, BUILD_NUMBER,
+                Gpio::LED_CONNECTION, Gpio::LED_ERROR);
 
-    // 4. Register STATUS data callback
-    server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
-        return 0;  // Module-specific status bytes
-    });
+    // Optional: append module data to the periodic STATUS broadcast.
+    board.core().onStatusData(appendBatteryStatus);
 
-    // 5. Optional: I2C scan
-    // server.enableI2CScan(Wire);
-
-    // 6. Finalize router
-    server.addModuleHandler(&newfxServer);
+    DiagLog::instance().setWireMinLevel(DiagLevel::INFO);   // stream boot/attach trace
 }
-
-// ============================================================================
-//  MAIN LOOP
-// ============================================================================
 
 void loop() {
-    server.loop();
-    // updateHardware();
-    // server.indicators().setErrorCondition(hasError);
-    delay(1);
+    board.process();        // frame read + dispatch + EffectClock latch + policy update()
+    board.battery.update();
+    busy_wait_ms(1);
 }
 ```
 
-### setup() Pattern (6 mandatory steps)
+> **Roles are NOT attached in the sketch.** `RoleServicePolicy` (auto via `BoardOf`) accepts `ROLE_ATTACH` / `ROLE_BULK_ATTACH` from the hub at runtime and emplaces the `LedAnimator` / `ServoActuator` / `BiDcMotor` variants. Port direction is fixed at declaration (Rule 31).
 
-| Step | What | Example |
-|------|------|---------|
-| 1 | `server.begin()` + callbacks | `server.begin("NewFX", VER, BUILD); server.onInit(...); server.onShutdown(...);` |
-| 2 | Hardware init | I2C, GPIO, servo pins, LED pins |
-| 3 | Module server + callbacks | `newfxServer.begin(&Serial); newfxServer.onCommand1(...);` |
-| 4 | STATUS data callback | `server.core().onStatusData([](buf, max) -> size_t { ... });` |
-| 5 | I2C scan (optional) | `server.enableI2CScan(Wire); server.addExpectedI2CDevice(...);` |
-| 6 | Finalize router | `server.addModuleHandler(&newfxServer);` |
+### setup() sequence (the canonical order)
 
-### loop() Pattern
+| Step | What |
+|------|------|
+| 1 | `Serial.begin()` — bring the USB-CDC endpoint up before the framer reads it |
+| 2 | Hardware init that must precede policy `begin()` (sensors, I²C) + `board.policy<P>().bindXxx(...)` for policies needing external deps |
+| 3 | `board.begin(wireStream, ver, build, connPin, errPin)` — wires everything |
+| 4 | `board.core().onStatusData(cb)` (optional module STATUS tail) |
+| 5 | `DiagLog::instance().setWireMinLevel(...)` (optional log streaming) |
 
-| Step | What | Notes |
-|------|------|-------|
-| 1 | `server.loop()` | Protocol, timeout, indicators — always first |
-| 2 | Hardware updates | Sequences, servos, sensors, state machines |
-| 3 | Error conditions | `server.indicators().setErrorCondition(...)` / `.setWarningCondition(...)` |
-| 4 | `delay(1)` | Yield CPU time |
+`loop()` is `board.process()` + any per-frame driver updates + a 1ms yield.
 
----
+## Step 4: Capabilities & detection
 
-## Step 6: Add Go CLI Support
+The board's IDENTIFY capability word is the OR of every policy's `kCapabilityBits` plus the port-presence bits `BoardOf` adds. The Go side detects the controller from the IDENTIFY/INIT name; surface a controller-type constant in `app/go/protocol/core/core.go` and (if the board has CLI-visible commands) gate them via `RequiresCap` in `app/go/console/`.
 
-### 6.1: Add Packet Constants
+## Step 5: README
 
-**File:** `app/go/protocol/newfx/newfx.go`
-
-```go
-package newfx
-
-// NewFX packet types (0x80-0x9F)
-const (
-    Command1 = 0x80
-    Command2 = 0x81
-)
-
-// NewFX error codes
-const (
-    ErrInvalidParam1 = 0x70
-    ErrInvalidParam2 = 0x71
-)
-```
-
-Also add to `PacketTypeName()` switch and error name maps in the appropriate files.
-
-### 6.2: Add Command Builders
-
-**File:** `app/go/protocol/newfx/newfx.go`
-
-```go
-func Command1(param1 uint16, param2 uint8) []byte {
-    payload := make([]byte, 3)
-    binary.LittleEndian.PutUint16(payload[0:], param1)
-    payload[2] = param2
-    return payload
-}
-```
-
-### 6.3: Add CLI Handler
-
-**File:** `app/go/engine/handlers/newfx/handler.go`
-
-Create handler functions and register commands in the command list.
-
-### 6.4: Add Response Parsers
-
-**File:** `app/go/engine/handlers/newfx/parsers.go`
-
-Add response parsers for any query commands.
+Create `controllers/newfx/pico/README.md` documenting the pinout, the ports exposed, and which roles the hub attaches.
 
 ---
 
-## Step 7: Create README
+# Part B — New service policy (hub subsystem)
 
-**File:** `controllers/newfx/pico/README.md`
+To add an effect/subsystem on the hub:
+
+1. **Define the policy.** Create `controllers/hubfx/esp32s3/src/effects/<name>/<name>_service.h` (effect) or a `lib/` policy. Implement the `SystemServicePolicy` surface; claim your packet bytes in `ownsType()` against the dispatch map in `CLAUDE.md` (append at the next truly-free value — grep the real `ownsType()` predicates first, the map drifts).
+
+2. **Define the wire surface.** Packet types + error codes go in a `<name>_protocol.h` next to the policy. Mirror them in `app/go/protocol/<name>/<name>.go` (the **source of truth** for the master protocol — the firmware header is no longer mirrored anywhere else).
+
+3. **Compose it.** Add the policy type to the hub's `BoardServer<…>` pack (`controllers/hubfx/esp32s3/src/hubfx_esp32s3.cpp`). Bind external deps in `setup()` via `board.policy<MyPolicy>().bindXxx(...)`.
+
+4. **Go side.** Add a typed wrapper in `app/go/client/<name>.go` (`sendExpectACK` / `sendForResp`) and a self-registering CLI command file `app/go/console/cmd_<name>.go` (see [07-CLI-UPDATES.md](07-CLI-UPDATES.md)).
+
+Full worked example: [03-PROTOCOL-EXTENSION.md](03-PROTOCOL-EXTENSION.md).
 
 ---
 
@@ -439,52 +175,32 @@ Add response parsers for any query commands.
 ```yaml
 After_Completion:
   Build:
-    - [ ] "pio run" succeeds in controllers/newfx/pico/
-    - [ ] All other controllers still build (gunfx, lightfx, gearcontrol, noop)
-    - [ ] "cd app/go && go build ./cli/" succeeds
-
+    - [ ] "scalefx-flash build newfx --no-clean" succeeds (new Pico board)
+    - [ ] "scalefx-flash build hubfx --no-clean" succeeds (new hub policy)
+    - [ ] All existing controllers still build (lightfx, gearcontrol, hubfx)
+    - [ ] "cd app/go && go build ./..." succeeds (protocol mirror sync check)
   Runtime:
-    - [ ] CLI shows newfx.* commands after connecting
-    - [ ] INIT returns INIT_READY with correct device name
-    - [ ] STATUS returns module data
-    - [ ] GP13 blinks→solid on INIT, GP14 blinks on error
-
+    - [ ] CLI/Studio detects the board on connect (IDENTIFY name → controller type)
+    - [ ] IDENTIFY advertises the expected capability bits
+    - [ ] Hub attaches roles to the new board's ports (topo-roles / Studio IO tab)
   Documentation:
-    - [ ] README.md created with protocol table
-    - [ ] AGENTS.md updated with new packet range
+    - [ ] README.md created (board) or dispatch map updated in CLAUDE.md (policy)
 ```
 
 ---
 
-## Real-World Examples
+## Component Libraries (`controllers/lib/`)
 
-| Controller | Complexity | Key Patterns |
-|-----------|------------|--------------|
-| **NoOp** | Minimal | Core-only + inline ICommandHandler for servo |
-| **GunFX** | Medium | Firing state machine, smoke config, servo jerk |
-| **LightFX** | Medium | 8 LED channels with sequence engine, landing lights |
-| **GearControl** | Complex | I2C (INA226), motor H-bridge, calibration, battery monitor |
-
-### Component Libraries (`controllers/lib/`)
-
-**Always check here before writing hardware-specific code.** Libraries are split by domain:
+**Always check here before writing hardware-specific code** (Rule 7). New I2C drivers extend `I2CDeviceT<>`; new hardware adds a native `{esp,pico}_*` pair (Rule 55). Highlights:
 
 | Component | Header | Purpose |
 |-----------|--------|---------|
-| SfxServer | `sfx_server.h` | Server boilerplate (REQUIRED) |
-| LedControlT\<TGpio\> | `led_control.h` | Single-channel LED (on/off, PWM, events). `LedControl` = NativeGpio alias |
-| LedManager\<N, TGpio\> | `led_manager.h` | Multi-channel LED manager with sequences. Default TGpio = NativeGpio |
-| ExpanderBamT\<T\> | `bam_led_drv.h` | Software BAM for GPIO-only I2C expanders. IS a GPIO provider |
-| NativeGpio | `native_gpio.h` | MCU GPIO wrapper (singleton). HW PWM via analogWrite |
-| AW9523B | `aw9523b.h` | I2C GPIO expander with 256-step HW LED PWM |
-| PCAL6416A | `pcal6416a.h` | I2C GPIO expander (GPIO only, use with ExpanderBamT for PWM) |
-| LedEventSeq | `led_event_seq.h` | Looping LED animation sequences |
-| ILedEvent | `led_events.h` | Built-in animations (LedOn, LedOff, LedFlashing, etc.) |
-| ServoControl | `srv_control.h` | Servo with trapezoidal motion profiling |
-| PwmControl | `pwm_control.h` | RC PWM input with averaging and callbacks |
-| INA226 | `ina226.h` | TI INA226 power/current/voltage monitor (I2C) |
-| I2CDevice | `i2c_device.h` | Base class for I2C peripherals |
-| AdcDividerBatteryT&lt;MultiplierMilli&gt; | `battery_monitor.h` | ADC battery voltage (templated divider) with low-voltage alerts |
-| Ina226Battery | `ina226_battery.h` | INA226-based battery voltage policy (HubFX) |
-| BatteryServerT&lt;TBattery&gt; | `battery_server.h` | Generic core-range BATTERY_CONFIG (0xEE) handler — board picks the policy |
-| SfxServer::IndicatorLedManager | `server/sfx_server.h` (nested class) | Connection/error LED state machine |
+| `BoardServer<…>` | `server/board_server.h` | The board composer (REQUIRED) |
+| `BoardOf<…>` | `server/board_of.h` | Port-aware board shorthand |
+| `PortServicePolicy` / `RoleServicePolicy` | `server/port_service.h` / `role_service.h` | Port registry + role attach/drive |
+| `NativePwmPort` / `MicroservoPort` / `HBridgePort` | `ports/*.h` | Output port kinds |
+| `AdcDividerBatteryT<Multiplier>` | `power/battery_monitor.h` | ADC battery voltage (templated divider) |
+| `BatteryServicePolicy<TBattery>` | `power/battery_server.h` | BATTERY_CONFIG (0xEE) handler |
+| `INA226` / `I2CDeviceT<>` | `i2c/*.h`, `power/ina226.h` | I²C current/voltage monitor + base |
+| `EffectClock` | `server/effect_clock.h` | Latched effect-layer clock (Rule 40) |
+| `DiagLog` | `serial/diag_log.h` | Diagnostic logging over the wire |

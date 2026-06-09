@@ -1,8 +1,29 @@
 # HubFX Pass-Through Routing — Auto-route by Packet Type Range
 
+> **⚠ Status (2026-06-09): the type-range routing core below is SUPERSEDED.**
+> The `SlaveServer` / `forwardToSlave` packet-type-range router and the typed
+> per-board `*Client` forwarding are GONE. Routing is now **transparent
+> expander roles (Rule 58)**: the hub addresses any expander's roles by an
+> opaque `PortRef{guid, kind, idx}` over role-agnostic transport
+> (`TOPOLOGY_ROLE_FORWARD` 0x8F command, `ROLE_QUERY`/`RESPONSE` 0xA6/0xA7,
+> `ROLE_EVENT` 0x8E telemetry, `ROLE_BULK_ATTACH` 0x57 bringup) driven by the
+> hub's `TopologyService`. Go drives it through `client.RoleTarget`
+> (`client.Role(guid)`) — one role-I/O path, no typed forwarding clients, no
+> `SLAVE_ENUM` discovery. See
+> [31-GUID-PORT-ROUTING.md](31-GUID-PORT-ROUTING.md) and
+> [32-ARCHITECTURE-DIAGRAMS.md](32-ARCHITECTURE-DIAGRAMS.md) §3–4.
+>
+> **What survives:** the **§4.4 mandatory board-prefix CLI disambiguation**
+> (Rule 30) is still valid — though the CLI commands are now **flat
+> hyphenated** (`gear-reset`, `gun-fire`, `light-servo`, `hub-slaves`), NOT
+> the colon form (`gear:reset`) shown in the §4.4 examples below.
+>
+> The §1–3 + §5–6 sections are kept as a historical record of the retired
+> type-range scheme.
+>
 > **Scope:** HubFX ESP32-S3 firmware, `serial/hubfx/hubfx.h`, Go SDK, Studio.
 >
-> **Design (current).** The hub is a transparent type-range router. Any
+> **Design (retired).** The hub is a transparent type-range router. Any
 > inbound packet whose type falls in a slave range is forwarded verbatim to
 > the matching attached slave; the slave's response is forwarded back upstream
 > verbatim with the original correlation tag. No envelope wrapping, no slot

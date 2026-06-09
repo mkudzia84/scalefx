@@ -1,34 +1,43 @@
 # System Architecture
 
 > **REFERENCE DOCUMENT:** Read this to understand how the system works before making changes.
+>
+> **See also: [32-ARCHITECTURE-DIAGRAMS.md](32-ARCHITECTURE-DIAGRAMS.md)** — Mermaid diagrams of the four core subsystems (storage / audio / ports-roles-topology / effects→ports) on the current `BoardServer<...UserPolicies>` codebase. Read it alongside this doc.
 
 ---
 
 ## System Topology
 
+One **ESP32-S3 HubFX master** (pure ESP-IDF, no Arduino) runs every effect. Up to N **Pico (RP2040) expander boards** (LightFX, GearControl, …) attach over USB CDC at 6 Mbps. Expanders are *thin*: they only expose physical **ports** and let the hub attach **roles** and drive them — all effect logic (gun firing, gear sequencing, LED programs, landing lights, audio, engine) lives in the hub's effect `*ServicePolicy` classes under `controllers/hubfx/esp32s3/src/effects/`.
+
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              HubFX (Client)                              │
-│                          RP2040 with USB Host                            │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐   │
-│  │ GunFxClient      │  │ LightFxClient    │  │ GearControlClient    │   │
-│  │ (extends         │  │ (extends         │  │ (extends             │   │
-│  │  BusClient)      │  │  BusClient)      │  │  BusClient)          │   │
-│  └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────────┘   │
-└───────────┼─────────────────────┼─────────────────────┼─────────────────┘
-            │ USB                 │ USB                 │ USB
-            ▼                     ▼                     ▼
-┌───────────────────┐  ┌───────────────────┐  ┌────────────────────────┐
-│ GunFX Pico        │  │ LightFX Pico      │  │ GearControl Pico       │
-│ (Server)          │  │ (Server)          │  │ (Server)               │
-│ SfxServer +      │  │ SfxServer +      │  │ SfxServer +           │
-│ GunFxServer       │  │ LightFxServer     │  │ GearControlServer      │
-│ - Muzzle flash    │  │ - 8 LED channels  │  │ - 3 landing gears      │
-│ - Smoke heater    │  │ - LED sequences   │  │ - INA226 current mon   │
-│ - 3 servos        │  │ - 3 servos        │  │ - Battery monitor      │
-│                   │  │ - Landing lights  │  │ - Yaw servo            │
-└───────────────────┘  └───────────────────┘  └────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                       HubFX master (ESP32-S3, pure ESP-IDF)               │
+│                                                                          │
+│   BoardServer< BoardServicePolicy, IndicatorServicePolicy,               │
+│                PortServicePolicy, RoleServicePolicy,                      │
+│                StorageServicePolicy<Esp32StoragePolicy>,                  │
+│                AudioServicePolicy<Mixer>, EngineServicePolicy,            │
+│                GunFxServicePolicy, LandingLightServicePolicy,             │
+│                GearControlServicePolicy, … , TopologyServicePolicy >      │
+│                                                                          │
+│   • all effect logic runs here       • USB-HOST enumerates expanders     │
+│   • TopologyService forwards role drive/query/telemetry to expanders     │
+└───────────────┬──────────────────────────────────┬───────────────────────┘
+        USB CDC │                          USB CDC │
+                ▼                                  ▼
+┌──────────────────────────────┐   ┌──────────────────────────────────────┐
+│ LightFX Pico (thin expander) │   │ GearControl Pico (thin expander)     │
+│ BoardOf<…, PortCapacity<…>>  │   │ BoardOf<…, PortCapacity<…>>          │
+│  • 8 PWM ports (LED chans)   │   │  • 7 servo ports (door + yaw)        │
+│  • 3 servo ports             │   │  • 3 H-bridge ports (gear motors,    │
+│  • ADC battery sensor        │   │    each w/ INA226 stall sensor)      │
+│  exposes ports → hub attaches│   │  exposes ports → hub attaches        │
+│  LedAnimator / ServoActuator │   │  ServoActuator / BiDcMotor roles     │
+└──────────────────────────────┘   └──────────────────────────────────────┘
 ```
+
+> **Terminology:** live code still says `slave`/`SlaveType`/`BoardState::SLAVE`; the rename to `expander` is deferred backlog. Grep the code for the current name.
 
 ---
 
@@ -98,133 +107,91 @@ Core_Packets:  # 0xEF-0xFF - All controllers
   LOG_MESSAGE: { type: 0xFD, direction: "S→C", payload: "[level:u8][millis:u32LE][message:str]", notes: "async, unsolicited" }
   IDENTIFY:    { type: 0xFE, direction: "C→S", payload: "none", response: "IDENTIFY (0xFE) with INIT_READY payload format, no state change" }
   DIAG_HISTORY: { type: 0xFF, direction: "C→S", payload: "none", response: "ACK + buffered LOG_MESSAGE packets" }
-
-GunFX_Packets:  # 0x01-0x2F
-  TRIGGER_ON:      { type: 0x01, payload: "[rpm:u16LE]" }
-  TRIGGER_OFF:     { type: 0x02, payload: "[fan_delay_ms:u16LE]" }
-  SRV_SET:         { type: 0x10, payload: "[id:u8][pulse_us:u16LE]" }
-  SRV_SETTINGS:    { type: 0x11, payload: "[id:u8][min:u16LE][max:u16LE][speed:u16LE][accel:u16LE][decel:u16LE]" }
-  SRV_RECOIL_JERK: { type: 0x12, payload: "[id:u8][jerk_us:u16LE][variance_us:u16LE]" }
-  SMOKE_HEAT:      { type: 0x20, payload: "[on:u8]" }
-  SMOKE_SETTINGS:  { type: 0x21, payload: "[pulsing:u8][speed:u8][high:u8][low:u8][pulse_ms:u16LE][spindown_ms:u16LE]" }
-
-LightFX_Packets:  # 0x40-0x5F
-  LED_SET:           { type: 0x40, payload: "[ch:u8][brightness:u8]" }
-  LED_OFF:           { type: 0x41, payload: "[ch:u8] (0=all)" }
-  LED_SEQ_CLEAR:     { type: 0x42, payload: "[ch:u8]" }
-  LED_SEQ_ADD:       { type: 0x43, payload: "[ch:u8][event_type:u8][params...]" }
-  LED_SEQ_START:     { type: 0x44, payload: "[ch:u8]" }
-  LED_SEQ_STOP:      { type: 0x45, payload: "[ch:u8]" }
-  LED_SEQ_RESTART:   { type: 0x46, payload: "[ch:u8]" }
-  LED_SEQ_STATUS:    { type: 0x47, payload: "[ch:u8]" }
-  LED_STATUS:        { type: 0x48, payload: "none" }
-  LED_SEQ_QUEUE:     { type: 0x49, payload: "[ch:u8]" }
-  SERVO_SET:         { type: 0x50, payload: "[id:u8][pulse:i16LE]" }
-  SERVO_SETTINGS:    { type: 0x51, payload: "[id:u8][min:u16LE][max:u16LE][speed:u16LE][accel:u16LE][decel:u16LE]" }
-  LANDING_LIGHT_BIND:    { type: 0x52, payload: "[slot:u8][servoId:u8][ledCh:u8][deployUs:u16LE][retractUs:u16LE][brightness:u8]" }
-  LANDING_LIGHT_UNBIND:  { type: 0x53, payload: "[slot:u8] (0=all)" }
-  LANDING_LIGHT_DEPLOY:  { type: 0x54, payload: "[slot:u8] (0=all)" }
-  LANDING_LIGHT_RETRACT: { type: 0x55, payload: "[slot:u8] (0=all)" }
-  LED_MASTER_BRIGHTNESS: { type: 0x56, payload: "[pct:u8]" }
-  POWER_STATUS:      { type: 0x58, payload: "none" }
-  POWER_CONFIG:      { type: 0x59, payload: "[shunt_mohm:u16LE][max_current_ma:u16LE]" }
-
-GearControl_Packets:  # 0x60-0x7F
-  GEAR_DEPLOY:       { type: 0x60, payload: "[gear_id:u8]" }
-  GEAR_RETRACT:      { type: 0x61, payload: "[gear_id:u8]" }
-  GEAR_STOP:         { type: 0x62, payload: "[gear_id:u8]" }
-  GEAR_ALL:          { type: 0x63, payload: "[action:u8] (0=retract,1=deploy,2=stop)" }
-  SERVO_SET:         { type: 0x64, payload: "[id:u8][pulse_us:u16LE]" }
-  SRV_SETTINGS:      { type: 0x65, payload: "[id:u8][min:u16LE][max:u16LE][speed:u16LE][accel:u16LE][decel:u16LE]" }
-  GEAR_CONFIG:       { type: 0x66, payload: "[gear_id:u8][flags:u8][stall_mA:u16LE][timeout_ms:u16LE]" }
-  DOOR_CONFIG:       { type: 0x67, payload: "[gear_id:u8][open0:u16LE][close0:u16LE][open1:u16LE][close1:u16LE]" }
-  YAW_CONFIG:        { type: 0x68, payload: "[gear_id:u8][neutral:u16LE][min:u16LE][max:u16LE]" }
-  YAW_INPUT:         { type: 0x69, payload: "[position_us:u16LE]" }
-  GEAR_CALIBRATE:    { type: 0x6A, payload: "[gear_id:u8][timeout_s:u8]" }
-  GEAR_CALIB_STATUS: { type: 0x6B, payload: "[gear_id:u8][phase:u8][current:u16LE][peak:u16LE][stall:u16LE][finished:u8][errorReason:u8]" }
-  GEAR_CALIB_CANCEL: { type: 0x6C, payload: "[gear_id:u8]" }
-  BATTERY_AUTO_DEPLOY:{ type: 0x6D, payload: "[enabled:u8]" }  # GearControl-only; sensor config is core BATTERY_CONFIG (0xEE)
-  DOOR_MODE:         { type: 0x6E, payload: "[gear_id:u8][mode:u8][delay_ms:u16LE]" }
 ```
+
+### Effect / port / role / topology packets
+
+There are **no per-board packet ranges** any more. The hub owns the whole map: each effect / subsystem `*ServicePolicy` claims its own packet bytes via `ownsType()`, dispatch stops at the first policy that owns the byte (so two policies must never claim the same byte). The authoritative, conflict-validated allocation lives in **`CLAUDE.md` / `.github/copilot-instructions.md` → "HubFX master dispatch map"** — before adding a packet, grep the actual `ownsType()` predicates in `controllers/hubfx/esp32s3/src/`, never trust a static table here. Highlights:
+
+```yaml
+Ports:        0x10-0x3F          # PortServicePolicy
+Roles:        0x40-0x7F          # RoleServicePolicy (per-role codecs)
+Expander:     0x80-0x87          # ExpanderServicePolicy
+Topology:     0x88-0x8F + 0xA6-0xA7   # TopologyServicePolicy — role forward/query/event/bulk-attach
+Storage:      0x93-0xA5 + 0xA9 + 0xB0
+Audio:        0xDA-0xE1
+Effects:      LandingLight 0xB1-0xB6 · LightFX 0xB7-0xBD · GearControl 0xBE-0xC6
+              EngineFX 0xC7-0xCB · GunFX 0xCC-0xD2 + 0xE2-0xE5 · Alerts 0xD3-0xD6
+```
+
+A *standalone Pico expander's own* packets (its own ports/roles surface) are a separate concern from what the hub dispatches — see [16-EXPANDER-BOARD-DESIGN.md](16-EXPANDER-BOARD-DESIGN.md).
 
 ---
 
-## Class Hierarchy
+## Server Framework — `BoardServer<...UserPolicies>`
 
-### Server Side (Pico Controllers)
+Every board (hub master AND Pico expander) is composed from **one** variadic class: `sfx_core::BoardServer<TStream, ...UserPolicies>` (`controllers/lib/sfx_board/server/board_server.h`). It owns the wire stream, the COBS frame reader, the policy tuple, the ACK/NACK wire helpers, the device-name + I²C-scan helpers, the connection-timeout watchdog, and the lifecycle callbacks. The legacy `SfxServer` / `BusServer` / `CoreCommandServer` / `CommandRouter` / `ICommandHandler` / per-board `*Server` / `*Client` shapes are **deleted** — anything still referencing them is stale.
 
-```
-ICommandHandler (interface)
-  │ tryProcess(type, payload, len) → CommandHandleResult
-  │ handlerName() → const char*
-  │
-  └── BusServer (base class — ACK/NACK helpers, range routing)
-        │ begin(Stream*) / end()
-        │ sendAck() / sendNack() / sendError() / sendRawPacket()
-        │
-        ├── CoreCommandServer (0xF0-0xFF)
-        │     INIT, SHUTDOWN, REBOOT, BOOTSEL, KEEPALIVE, STATUS_REQ, I2C_SCAN
-        │     onStatusData(callback) — module status append
-        │     updateFreeRam(n) — for STATUS response
-        │
-        ├── GunFxServer (0x01-0x2F)
-        │     onTriggerOn(), onTriggerOff(), onServoSet(), onServoSettings()
-        │     onSmokeHeat(), onSmokeSettings()
-        │
-        ├── LightFxServer (0x40-0x5F)
-        │     onLedSet(), onLedOff(), onLedSeq*(), onServoSet(), onServoSettings()
-        │     onLandingLight*(), onLedMasterBrightness()
-        │
-        └── GearControlServer (0x60-0x7F)
-              onGearDeploy(), onGearRetract(), onGearStop(), onGearAll()
-              onServoSet(), onServoSettings(), onGearConfig(), onDoorConfig()
-              onYawConfig(), onYawInput(), onGearCalibrate(), onBatteryConfig()
-              onDoorMode()
+### SystemServicePolicy — the unit of composition
+
+Every protocol-exposed subsystem is a `*ServicePolicy` satisfying the `sfx_core::SystemServicePolicy` concept:
+
+```cpp
+struct MyServicePolicy {
+    static constexpr uint32_t kCapabilityBits = CoreCapability::SOMETHING;  // OR'd into IDENTIFY caps
+    bool begin(sfx_core::BoardServerBase* ctx);          // cache context, init state
+    bool ownsType(uint8_t type) const;                   // claim a packet-type byte
+    sfx_core::CommandHandleResult handle(uint8_t type,   // handle a claimed packet
+                                         const uint8_t* payload, size_t len);
+    void update();                                       // ticked from loop()
+};
 ```
 
-### Client Side (HubFX)
+### Dispatch — first-owner-wins
+
+`BoardServerBase` reads COBS frames off the wire, verifies CRC-8, extracts `[type, tag, payload, len]`, then offers each packet to **every** policy's `ownsType()` in pack order. The **first** policy whose `ownsType()` returns true gets `handle()` — there is no per-board packet-range routing. Because dispatch STOPS at the first owner, **no two policies may claim the same byte** (see the dispatch map in `CLAUDE.md`).
 
 ```
-SerialBus (low-level COBS framing over USB CDC)
-  │ begin(deviceIndex) / process()  — uses UsbHost::instance()
-  │ sendPacket(type, payload, len, tag)
-  │
-  └── BusClient (base — INIT handshake, tag queue, ACK/NACK handling)
-        │ sendCommand(type, payload, len) → CommandResult
-        │ sendInit() / onReady() / onError()
-        │ resultQueue() → ResultQueue&
-        │
-        ├── GunFxClient
-        │     triggerOn(rpm), triggerOff(delay), setServoPosition(), ...
-        │     All methods return CommandResult
-        │
-        ├── LightFxClient
-        │     ledSet(), ledOff(), ledSeqAdd(), servoSet(), requestStatus(), ...
-        │     All methods return CommandResult
-        │
-        └── GearControlClient
-              gearDeploy(), gearRetract(), gearAll(), servoSet(), requestStatus(), ...
-              All methods return CommandResult
+                       BoardServer composition (pack order)
+┌─────────────────────────────────────────────────────────────────────┐
+│ BoardServicePolicy   (auto)  — INIT/SHUTDOWN/REBOOT/BOOTSEL/KEEPALIVE │
+│                                STATUS, IDENTIFY, DIAG_HISTORY, I2C    │
+│                                onStatusData(cb) — module status append│
+│ IndicatorServicePolicy (auto)— connection / error LEDs               │
+│ PortServicePolicy    (BoardOf)— physical port registry (0x10–0x3F)   │
+│ RoleServicePolicy    (BoardOf)— attach + drive roles (0x40–0x7F)     │
+│ …UserPolicies…               — Storage / Audio / Engine / GunFx /    │
+│                                Landing / Gear / Topology / Config …   │
+└─────────────────────────────────────────────────────────────────────┘
+   board.core()        → BoardServicePolicy&     (lifecycle / status / INIT)
+   board.indicators()  → IndicatorServicePolicy& (connection / error LEDs)
+   board.policy<P>()   → P&                       (any policy in the pack)
 ```
 
-### Server Infrastructure (SfxServer)
+`BoardServicePolicy` (lifecycle) and `IndicatorServicePolicy` (status LEDs) are **prepended automatically** by `BoardServer` — never list them in `UserPolicies`.
+
+### BoardOf<> — the expander shorthand
+
+Most boards (every Pico expander, and the hub) are declared via `sfx_core::BoardOf<TBoard, TStream, PortCapacity<NServo,NPwm,NHBridge,NInput>, ...ExtraPolicies>` (`board_of.h`), a CRTP base that turns a board's static `kServoPorts` / `kPwmPorts` / `kHBridgePorts` / `kInputPorts` descriptor tuples into a wired `BoardServer<...>`. `BoardOf` auto-prepends, in order:
 
 ```
-SfxServer  (composes everything for Pico server controllers)
-  │
-  ├── CommandRouter (Chain of Responsibility dispatcher)
-  │     addHandler(ICommandHandler*) — ordered priority
-  │     poll() — read serial, COBS decode, CRC verify, route
-  │
-  ├── CoreCommandServer (first handler — always registered)
-  │     INIT/SHUTDOWN/REBOOT/BOOTSEL/KEEPALIVE/STATUS
-  │
-  ├── IndicatorLedManager (nested class: GP13 connection, GP14 error)
-  │     setErrorCondition() / setWarningCondition()
-  │     update() — called automatically by server.loop()
-  │
-  └── Device name (e.g., "GunFX-A1B2" from Pico board ID)
+BoardServicePolicy → IndicatorServicePolicy → PortServicePolicy → RoleServicePolicy → …ExtraPolicies…
 ```
+
+`PortCapacity<…>` sizes the per-kind port registry binding arrays exactly (over-generous caps waste DRAM — each slot embeds a role `std::variant`). See [02-NEW-CONTROLLER.md](02-NEW-CONTROLLER.md) for the full walkthrough and the live LightFX / GearControl sketches.
+
+### Roles & transparent expander dispatch (Rule 58)
+
+A board's physical ports carry **roles** (`ServoActuator`, `LedAnimator`, `Heater`, `DcMotor`, `BiDcMotor`, …) attached at runtime by `RoleServicePolicy`. The hub drives, queries, and receives telemetry from an **expander's** roles *transparently* via `TopologyServicePolicy` — the role packet travels as **opaque bytes** addressed by `PortRef{guid, kind, idx}` (`guid==""` → hub-local) over four role-agnostic wire primitives:
+
+| Primitive | Type | Purpose |
+|-----------|------|---------|
+| `TOPOLOGY_ROLE_FORWARD` | `0x8F` | command (ACK/NACK) |
+| `TOPOLOGY_ROLE_QUERY` / `RESPONSE` | `0xA6` / `0xA7` | request-response query |
+| `TOPOLOGY_ROLE_EVENT` | `0x8E` | GUID-tagged async telemetry |
+| `ROLE_BULK_ATTACH` | `0x57` | declarative full role set at connect |
+
+The hub never decodes the inner role packet. To expose a new role: add its codec (`protocol/roles` + a firmware role handler) + one line in `role_registry.h`'s `roleKindFor<>()` + a one-line `RoleTarget` wrapper on the Go side — **no per-role transport, forward, event, or hub `switch`.** See [32-ARCHITECTURE-DIAGRAMS.md](32-ARCHITECTURE-DIAGRAMS.md) § ports-roles-topology and `controllers/lib/sfx_board/server/role_registry.h`.
 
 ### Singletons (Board-Unique Resources)
 
@@ -237,13 +204,13 @@ DiagLog::instance()          — Board-wide diagnostic logging (lib/sfx_platform
   │ Compile-time strippable via SFX_ENABLE_DIAG_LOG=0
   │ Accessed via SFX_LOG_INFO/WARN/ERROR/DEBUG macros
   │
-SdCardModule::instance()     — Single SPI SD card (hubfx/pico/storage/)
-  │ Thread-safe SPI access via pico mutex
-  │ Used by: StorageServer, ConfigReader, AudioMixer
+SdCardModule::instance()     — Single SD card (lib/sfx_storage/)
+  │ Thread-safe access (ESP32: VFS-FAT mutex; Pico: pico mutex)
+  │ Used by: StorageServicePolicy, ConfigStore, AudioMixer
   │
-FlashModule::instance()      — Single onboard LittleFS flash (hubfx/pico/storage/)
-  │ Thread-safe access via pico mutex
-  │ Used by: ConfigReader
+FlashModule::instance()      — Single onboard LittleFS flash (lib/sfx_storage/)
+  │ Thread-safe access
+  │ Used by: StorageServicePolicy, ConfigStore
   │
 AudioMixer::instance()       — Single I2S audio output (lib/sfx_audio/audio/)
   │ Runs on Core 1, thread-safe buffer access
@@ -268,11 +235,11 @@ private:
 
 **Qualifying criteria:** single hardware resource per board, single logical registry, or board-wide service used from multiple modules/cores.
 
-**NOT singletons:** Protocol handlers (`*Server`), per-slave clients (`*Client`), per-channel hardware (`ServoControl[]`, `LedControl[]`), effect modules (`EngineFX`, `MuzzleFlash`).
+**NOT singletons:** service policies (`*ServicePolicy`), per-channel hardware (servo / LED / PWM port arrays), effect units (`GunUnit`, `LandingGroup`).
 
 ### StatusDataCallback
 
-Modules provide board-specific STATUS data via a callback registered on `CoreCommandServer`:
+Modules provide board-specific STATUS data via a callback registered on `BoardServicePolicy` (`board.core()`):
 
 ```cpp
 using StatusDataCallback = std::function<size_t(uint8_t* buffer, size_t maxLen)>;
@@ -281,9 +248,9 @@ using StatusDataCallback = std::function<size_t(uint8_t* buffer, size_t maxLen)>
 // Core header: [counter:u32LE][uptime:u32LE][freeRam:u32LE][lastActivity_ms:u32LE]
 //              [keepaliveCount:u32LE][boardState:u8][initFlags:u8]
 
-server.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
+board.core().onStatusData([](uint8_t* buf, size_t maxLen) -> size_t {
     buf[0] = myFlag;
-    CoreProtocol::putU16LE(&buf[1], myValue);
+    SfxWire::putU16LE(&buf[1], myValue);
     return 3;  // bytes written
 });
 ```
@@ -321,392 +288,176 @@ CLI                                    Controller
 ### Key Points
 
 - **IDENTIFY (0xFE)** returns the same payload as INIT_READY (name, version, platform, build) but does NOT trigger init callbacks or state changes
-- **HubFX (autonomous hub)**: auto-initializes on boot (codec, audio, engine, slaves); INIT from CLI would cause full re-initialization — only IDENTIFY is needed
-- **Slave controllers** (GunFX, LightFX, GearControl, NoOp): require INIT to activate hardware; CLI sends IDENTIFY first to detect type, then INIT to start
+- **HubFX (autonomous hub)**: auto-initializes on boot (codec, audio, engine, expanders); INIT from CLI would cause full re-initialization — only IDENTIFY is needed
+- **Expander controllers** (LightFX, GearControl): require INIT to activate hardware; CLI sends IDENTIFY first to detect type, then INIT to start
 - **Legacy fallback**: if IDENTIFY fails (NACK or timeout), CLI falls back to INIT which works on all firmware versions
 
 ### Implementation
 
-- **Firmware**: `CoreCommandServer::sendIdentify()` in `bus_server.cpp` — same payload as `sendInitReady()` but with IDENTIFY packet type
-- **Go CLI**: `identifyAndInit()` in `app/go/engine/handlers/` — called on connect and reconnect
-- **Protocol**: Documented in `PROTOCOL.md` § IDENTIFY Command
+- **Firmware**: `BoardServicePolicy::sendIdentify()` — same payload as `sendInitReady()` but with the IDENTIFY packet type and no state change
+- **Go**: the connect path in `app/go/client/` (`Client.Connect` / `cmd_core.go` in `app/go/console/`) sends IDENTIFY, decodes the board name → controller type, then conditionally INITs
 
 ---
 
-## Client Response Handling Design
+## Response Handling Design
 
-### Tag Correlation (ResultQueue)
+### Tag Correlation
 
-Every command sent by `BusClient::sendCommand()` is assigned a unique correlation tag (1-255, wrapping). The server echoes this tag in its response (ACK, NACK, or data response), allowing the client to match responses to requests even when multiple commands are in flight.
+Every command the Go side sends gets a unique correlation tag (1-255, wrapping; `0` = `TAG_ASYNC`). The board echoes the tag on its response (ACK, NACK, or typed data response) so concurrent in-flight commands resolve to the right waiter. The tag plumbing lives in `app/go/protocol/connection.go` (`Connection.NextTag` / tag waiters — all lock-guarded, Rule 56); the firmware echoes the request tag from `BoardServerBase`.
 
-```
-Client                                  Server
-  │                                       │
-  │  sendCommand(LED_SET, tag=0x07)       │
-  │──────────────────────────────────────>│
-  │                                       │ (processes command)
-  │              ACK (tag=0x07)           │
-  │<──────────────────────────────────────│
-  │  ResultQueue resolves tag 0x07 → Ack  │
-```
+On the Go side, a typed `client` method wraps each command (`app/go/client/<mod>.go`):
 
-**Blocking mode** (default): `sendCommand()` spins calling `process()` until the matching tag arrives or timeout. Returns `CommandResult`.
-
-**Non-blocking mode**: `sendCommand()` returns immediately with `CommandResult::Ack()` (optimistic). Use `ResultQueue::onTagResponse()` for async notification.
+- **Instant** → `c.sendExpectACK(pkt)` — blocks for ACK/NACK.
+- **Query** → `c.sendForResp(pkt, respType)` — blocks for the typed RESP packet (which doubles as the ACK).
+- **Async telemetry** → not a command result at all; delivered via the events stream (`app/go/client/events.go`).
 
 ### Three Response Categories
 
-Every command falls into one of three categories based on how the server responds:
+Every command falls into one of three categories based on how the firmware responds. The category is decided in the owning policy's `handle()`:
 
-#### 1. Direct ACK/NACK — Instant Commands
+#### 1. Instant — Direct ACK/NACK
 
-Server sends `ACK` (success) or `NACK(errorCode)` via `SFX_DISPATCH`. The operation completes before the ACK is sent. `BusClient::handlePacket()` resolves the tag automatically.
-
-```cpp
-// Server side (xxxfx/xxxfx.h — handleModulePacket)
-case XxxPacket::LED_SET: {
-    SFX_REQUIRE_LEN(2);
-    SFX_DISPATCH(_ledSetCallback, channel, brightness);  // ACK sent by macro
-}
-
-// Client side — tag resolved automatically by BusClient::handlePacket()
-CommandResult result = client.ledSet(1, 128);  // Blocks for ACK
-```
-
-#### 2. Data Response — Query Commands
-
-Server sends a typed response packet (e.g., `LED_STATUS_RESP`) instead of a plain `ACK`. The client's `onModulePacket()` override must treat this data response as an **implicit ACK** and resolve the tag manually.
+The policy fully processes the command and returns `CommandHandleResult::Ack()` / `Nack(err)` (or uses an `SFX_DISPATCH`-style helper). Go side blocks via `sendExpectACK`.
 
 ```cpp
-// Server side — sends data response using stored tag
-case LightFxPacket::LED_SEQ_STATUS:
-    _ledSeqStatusCallback(channel, status);
-    sendSeqStatus(status);  // Sends LED_SEQ_STATUS_RESP with current tag
-    return CommandHandleResult::Handled;  // No SFX_DISPATCH (handled manually)
-
-// Client side — onModulePacket resolves tag as implicit ACK
-void LightFxClient::onModulePacket(uint8_t type, uint8_t tag, ...) {
-    case LightFxPacket::LED_SEQ_STATUS_RESP:
-        // Parse response data, fire callback
-        if (_seqStatusCallback) _seqStatusCallback(status);
-        // Treat as implicit ACK — resolve tag for blocking callers
-        if (tag != CoreProtocol::TAG_ASYNC) {
-            _lastCommandResult = CommandResult::Ack();
-            _resultQueue.resolve(tag, _lastCommandResult);
-        }
-        break;
-}
-```
-
-**CRITICAL:** Without the `_resultQueue.resolve()` call, any blocking `sendCommand()` waiting for this tag would time out.
-
-#### 3. Long-Running Commands — Deferred Completion
-
-Server sends immediate `ACK` (command accepted) but the physical operation takes seconds. The client receives the ACK quickly, but completion is signaled later via STATUS polling or async data packets.
-
-```cpp
-// Server side — SFX_DISPATCH sends ACK immediately
-case GearControlPacket::GEAR_DEPLOY: {
+// Firmware — owning policy handle()
+case GunPacket::GUN_FIRE_ONCE: {
     SFX_REQUIRE_LEN(1);
-    SFX_DISPATCH(_gearDeployCallback, gearId);  // ACK = "accepted"
-    // Physical deploy takes 5-30 seconds...
+    handleFireOnce(payload, len);
+    return CommandHandleResult::Ack();
 }
-
-// Client side — ACK means "started", poll STATUS for GearState::DEPLOYED
-CommandResult result = client.gearDeploy(0);  // Returns quickly (ACK)
-// Monitor via: client.onStatus(cb) or client.requestStatus()
 ```
-
-**Special case — GEAR_CALIBRATE:** The server stores the calibrate request's tag and echoes it on every `GEAR_CALIB_STATUS` packet. When `finished==true`, the client resolves the tag, allowing blocking callers to wait for the full calibration to complete:
-
-```cpp
-// Server stores tag: _calibTag = _currentTag in handleModulePacket()
-// Server echoes tag: sendCalibStatus() uses _calibTag
-// Client resolves tag when calibration finishes:
-if (cs.finished && tag != CoreProtocol::TAG_ASYNC) {
-    _resultQueue.resolve(tag, isError ? Nack(...) : Ack());
+```go
+// Go — client/gunfx.go
+func (g *Gun) FireOnce(id byte) error {
+    return g.c.sendExpectACK(gunfx.CmdFireOnce(id))
 }
 ```
 
-### onModulePacket() Contract
+#### 2. Query — Typed Data Response
 
-Every `BusClient` subclass MUST override `onModulePacket()` and follow these rules:
-
-1. **Parse the data** from the payload
-2. **Fire any registered callbacks** with the parsed data
-3. **Resolve the tag** via `_resultQueue.resolve(tag, result)` if `tag != TAG_ASYNC`
-4. For ongoing operations (like calibration), resolve only on the **final** packet (`finished == true`)
+The policy emits a typed RESP packet (echoing the request tag) instead of a plain ACK; that response IS the implicit ACK. Go side blocks via `sendForResp`.
 
 ```cpp
-// Template for handling a data response packet:
-case XxxPacket::RESPONSE_TYPE:
-    if (len >= expectedLen) {
-        // 1. Parse data
-        // 2. Fire callback
-        if (_myCallback) _myCallback(data);
-    }
-    // 3. Resolve tag (implicit ACK)
-    if (tag != CoreProtocol::TAG_ASYNC) {
-        _lastCommandResult = CommandResult::Ack();
-        _resultQueue.resolve(tag, _lastCommandResult);
-    }
-    break;
+// Firmware — handle() sends a typed RESP with the current tag
+case GunPacket::GUN_STATUS_REQ:
+    handleStatusReq();                  // builds + sends GUN_STATUS_RESP
+    return CommandHandleResult::Handled;
+```
+```go
+// Go — client decodes the RESP payload
+resp, err := g.c.sendForResp(gunfx.CmdStatusReq(), gunfx.StatusResp)
 ```
 
----
+#### 3. Long-Running — ACK then monitor
 
-## Operations Classification
-
-Commands are classified by response timing. This affects client design and blocking behavior.
-
-### Instant Commands (ACK = complete)
-
-Server processes the command fully and returns ACK before the response. Safe to block.
-
-```yaml
-GunFX:
-  - TRIGGER_ON           # Starts firing loop (immediate state change)
-  - TRIGGER_OFF          # Stops firing
-  - SRV_SET              # Sets servo target (profiling runs async, but command is accepted)
-  - SRV_SETTINGS         # Configuration only
-  - SRV_RECOIL_JERK      # Configuration only
-  - SMOKE_HEAT           # Enable/disable heater (GPIO toggle)
-  - SMOKE_SETTINGS       # Configuration only
-
-LightFX:
-  - LED_SET              # Set LED brightness (GPIO/PWM)
-  - LED_OFF              # Turn off LED(s)
-  - LED_MASTER_BRIGHTNESS # Set master brightness percentage
-  - LED_SEQ_CLEAR        # Clear sequence queue
-  - LED_SEQ_ADD          # Add event to queue
-  - LED_SEQ_START        # Start sequence playback
-  - LED_SEQ_STOP         # Stop sequence playback
-  - LED_SEQ_RESTART      # Restart sequence from beginning
-  - SERVO_SET            # Sets servo target (profiling runs async)
-  - SERVO_SETTINGS       # Configuration only
-  - LANDING_LIGHT_BIND   # Configuration only
-  - LANDING_LIGHT_UNBIND # Configuration only
-
-GearControl:
-  - SERVO_SET            # Sets servo target
-  - SRV_SETTINGS         # Configuration only
-  - GEAR_CONFIG          # Configuration only
-  - DOOR_CONFIG          # Configuration only
-  - YAW_CONFIG           # Configuration only
-  - BATTERY_AUTO_DEPLOY  # GearControl safety toggle (sensor config is core 0xEE)
-  - DOOR_MODE            # Configuration only
-  - YAW_INPUT            # Direct servo mapping
-  - GEAR_STOP            # Emergency stop (immediate motor cutoff)
-  - GEAR_CALIB_CANCEL    # Cancels running calibration
-```
-
-### Query Commands (data response = implicit ACK)
-
-Server responds with a typed data packet instead of plain ACK. Client resolves tag in `onModulePacket()`.
-
-```yaml
-Core:
-  - STATUS_REQ → STATUS (0xF4)            # Core + module status data
-  - I2C_SCAN → I2C_SCAN_RESULT (0xFC)     # Device discovery results
-
-LightFX:
-  - LED_SEQ_STATUS → LED_SEQ_STATUS_RESP (0x5A)   # Per-channel sequence info
-  - LED_STATUS → LED_STATUS_RESP (0x5B)            # All channel status
-  - LED_SEQ_QUEUE → LED_SEQ_QUEUE_RESP (0x5D)      # Queue contents
-
-GearControl:
-  - STATUS_REQ → STATUS (0xF4)             # Gear states, motor current, battery
-```
-
-### Long-Running Commands (ACK = accepted, monitor for completion)
-
-Server sends immediate ACK but the physical operation takes seconds. Client uses STATUS polling or async callbacks to detect completion.
-
-```yaml
-LightFX:
-  - LANDING_LIGHT_DEPLOY    # Servo motion 1-3 seconds
-  - LANDING_LIGHT_RETRACT   # Servo motion 1-3 seconds
-  # Completion: poll STATUS for servo position arriving at target
-
-GearControl:
-  - GEAR_DEPLOY             # Open doors → run motor → optionally close doors (5-30s)
-  - GEAR_RETRACT            # Open doors → run motor → close doors (5-30s)
-  - GEAR_ALL                # All 3 gears simultaneously (5-30s)
-  # Completion: poll STATUS for GearState::DEPLOYED or GearState::RETRACTED
-
-  - GEAR_CALIBRATE          # Multi-phase motor calibration (10-60s)
-  # Completion: GEAR_CALIB_STATUS packets with finished=true resolve the tag
-  # Server echoes the original request tag on all CALIB_STATUS packets
-```
-
----
-
-## Handler Registration Pattern
-
-All Pico server controllers use `SfxServer` which handles handler registration order automatically:
-
-```cpp
-SfxServer server;
-GunFxServer gunfxServer;
-
-void setup() {
-    server.begin("GunFX", FIRMWARE_VERSION, BUILD_NUMBER);
-    server.onInit([]()     { performSafeInit(); });
-    server.onShutdown([]() { performSafeShutdown(); });
-
-    gunfxServer.begin(&Serial);
-    gunfxServer.onTriggerOn([](uint16_t rpm) -> uint8_t { ... });
-
-    server.core().onStatusData([](uint8_t* buf, size_t max) -> size_t { ... });
-    server.addModuleHandler(&gunfxServer);  // Core auto-registered first
-}
-
-void loop() {
-    server.loop();       // Protocol, timeout, indicators
-    updateHardware();    // Module-specific
-    delay(1);
-}
-```
-
-For core-only controllers (no module commands):
-```cpp
-server.addModuleHandler(nullptr);  // Core protocol only (e.g., NoOp)
-```
+The policy ACKs immediately ("accepted") and the physical operation runs across many `update()` ticks; completion arrives via the STATUS broadcast or an async event packet (consumed through the Go events stream). Gear deploy / landing-light deploy / auto-fire are long-running.
 
 ---
 
 ## Indicator LED Standard
 
-All Pico server controllers use identical indicator LED behavior on GP13/GP14, managed automatically by SfxServer via its nested `IndicatorLedManager` class.
+`IndicatorServicePolicy` (auto-prepended by `BoardServer` / `BoardOf`) drives two indicator LEDs whose pins are passed to `board.begin(stream, ver, build, connectionPin, errorPin)` (Pico expanders use their own GPIO, e.g. LightFX GP24/GP25). Set error/warning state from any policy or the sketch via `board.indicators().setErrorCondition(...)` / `.setWarningCondition(...)`; `update()` is ticked automatically by `board.process()`.
 
 ```yaml
-LED_0_Connection:
-  pin: GP13
-  waiting_for_init: "Blink every 500ms"
-  connected: "Solid ON"
-  connection_lost: "OFF"
-
-LED_1_Error:
-  pin: GP14
-  normal: "OFF"
-  error: "Blink every 200ms (setErrorCondition)"
+Connection_LED:
+  waiting_for_init: "Blink ~500ms"
+  connected:        "Solid ON"
+  connection_lost:  "OFF"
+Error_LED:
+  normal:  "OFF"
+  error:   "Blink fast (setErrorCondition)"
   warning: "Blink slow (setWarningCondition)"
 ```
 
-### State Transitions
-
-```
-Power On → initialized=false, watchdog=false → LED 0 blinks, LED 1 off
-   │
-   ▼ INIT received
-Connected → initialized=true, watchdog=false → LED 0 solid, LED 1 off
-   │
-   ▼ Keepalive timeout (15s)
-Lost → initialized=false, watchdog=true → LED 0 off, LED 1 off
-   │
-   ▼ INIT received again
-Connected → (cycle repeats)
-```
-
 ---
 
-## Server Handler Macros (SFX_*)
+## Handler Macros (SFX_*)
 
-Server `handleModulePacket()` switch cases use macros from `core/core.h`:
+A policy's `handle()` switch uses macros from `serial/core/core.h` for length-checking and validation:
 
 ```cpp
-SFX_REQUIRE_LEN(n)                    // NACK MISSING_PARAMETER if len < n
-SFX_VALIDATE(cond, err)               // NACK err if !cond
-SFX_DISPATCH(callback, args...)       // Call callback, ACK/NACK on result
-SFX_HANDLE_CHANNEL_CMD(v, err, cb)    // Validate + dispatch single-param cmd
+SFX_REQUIRE_LEN(n)         // return Nack(MISSING_PARAMETER) if len < n
+SFX_VALIDATE(cond, err)    // return Nack(err) if !cond
 
-// Example:
-case GunFxPacket::SRV_SET: {
-    SFX_REQUIRE_LEN(3);
-    uint8_t id = payload[0];
-    uint16_t pulse = CoreProtocol::getU16LE(payload + 1);
-    SFX_VALIDATE(GunFxSpec::isValidServoId(id), GunFxError::SERVO_INVALID_ID);
-    SFX_VALIDATE(GunFxSpec::isValidServoPulse(pulse), GunFxError::SERVO_PULSE_RANGE);
-    SFX_DISPATCH(_onServoSet, id, pulse);
+CommandHandleResult MyServicePolicy::handle(uint8_t type, const uint8_t* payload, size_t len) {
+    switch (type) {
+        case MyPacket::SET_THING: {
+            SFX_REQUIRE_LEN(3);
+            uint8_t  id  = payload[0];
+            uint16_t val = SfxWire::getU16LE(payload + 1);
+            SFX_VALIDATE(id < kMaxThings, MyError::INVALID_ID);
+            applyThing(id, val);
+            return CommandHandleResult::Ack();
+        }
+        default:
+            return CommandHandleResult::NotMyCommand;
+    }
 }
 ```
 
-### Validation Namespaces
-
-Each module defines a `Spec` namespace with constants and inline validators:
-- **GunFxSpec** — servo IDs 1-3, pulse 500-2500µs, RPM 1-3000
-- **LightFxSpec** — LED channels 1-8, servo IDs 1-3, sequence limits
-- **GearControlSpec** — gear IDs 0-2, servo IDs 0-7, stall current, door modes
-
 ---
 
-## Data Flow (Server)
+## Data Flow (Firmware dispatch)
 
 ```
-                    USB Serial
+                    Wire stream (UART0 / USB CDC)
                         │
                         ▼
 ┌───────────────────────────────────────────────────────────────┐
-│                  CommandRouter.poll()                          │
+│              BoardServerBase (inside board.process())          │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │ 1. Read bytes until 0x00 delimiter                      │  │
-│  │ 2. COBS decode                                          │  │
-│  │ 3. Verify CRC-8                                         │  │
-│  │ 4. Extract type, tag, payload, len                      │  │
+│  │ 1. PacketReader: read bytes until 0x00 delimiter         │  │
+│  │ 2. COBS decode                                           │  │
+│  │ 3. Verify CRC-8                                          │  │
+│  │ 4. Extract type, tag, payload, len                       │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                         │                                      │
 │                         ▼                                      │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │ For each handler in priority order:                      │  │
-│  │   result = handler.tryProcess(type, payload, len)        │  │
-│  │   if result == Handled: break                            │  │
-│  │   if result == NotMyCommand: try next handler            │  │
+│  │ For each policy in pack order (BoardServicePolicy first):│  │
+│  │   if policy.ownsType(type):                              │  │
+│  │       result = policy.handle(type, payload, len)         │  │
+│  │       send ACK / NACK / (typed RESP already sent); STOP  │  │
+│  │ No policy owns it → NACK INVALID_COMMAND                 │  │
 │  └─────────────────────────────────────────────────────────┘  │
-│                         │                                      │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │ BusServer.tryProcess():                                  │  │
-│  │   1. Check if type is in moduleRangeLow..moduleRangeHigh │  │
-│  │   2. If yes: delegate to handleModulePacket()            │  │
-│  │   3. If no:  return NotMyCommand                         │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                         │                                      │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │ handleModulePacket():                                    │  │
-│  │   - Parse payload with SFX_REQUIRE_LEN                   │  │
-│  │   - Validate with SFX_VALIDATE                           │  │
-│  │   - Dispatch via SFX_DISPATCH → callback → ACK/NACK     │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│                                                                │
+│  Then: EffectClock::latch() + every policy.update()           │
 └───────────────────────────────────────────────────────────────┘
 ```
 
+> **First-owner-wins:** dispatch stops at the first policy whose `ownsType()` returns true. Two policies claiming the same byte is a silent bug — the later policy never runs. Validate every new packet against the dispatch map in `CLAUDE.md` and grep the real `ownsType()` predicates.
+
 ---
 
-## Serial Library File Structure
+## Serial / Board Library File Structure
 
 ```yaml
-Serial_Library:
+Wire_Protocol:
   root: "controllers/lib/sfx_serial/serial/"
   files:
-    serial.h:             "Umbrella header — include this for everything"
-    core/core.h:        "CoreProtocol (COBS/CRC/endian), SerialError, CommandResult,
-                           ICommandHandler, CommandRouter, SFX_* macros, callback typedefs"
-    core/core.cpp:      "CoreProtocol implementations, CorePayload encode/decode"
-    core/bus_server.h:  "BusServer base class + CoreCommandServer"
-    core/bus_server.cpp: "BusServer + CoreCommandServer implementations"
-    client/bus_client.h:  "BusClient base class (extends SerialBus)"
-    client/bus_client.cpp: "BusClient implementation"
-    client/bus.h:         "SerialBus (client-only, COBS over USB CDC)"
-    client/bus.cpp:       "SerialBus implementation (guarded by #ifndef SCALEFX_SERVER)"
-    client/usb_host.h:    "UsbHost (client-only, PIO-USB manager)"
-    client/result_queue.h: "ResultQueue — tag-correlated command/response matching"
-    client/result_queue.cpp: "ResultQueue implementation"
-    gunfx/gunfx.h:       "GunFxServer + GunFxClient + GunFxPacket + GunFxError + GunFxSpec"
-    gunfx/gunfx.cpp:     "GunFxClient implementation"
-    lightfx/lightfx.h:     "LightFxServer + LightFxClient + LightFxPacket + LightFxError"
-    lightfx/lightfx.cpp:   "LightFxClient implementation"
-    gearcontrol/gearcontrol.h: "GearControlServer + GearControlClient + GearControlPacket + GearControlError"
-    gearcontrol/gearcontrol.cpp: "GearControlClient implementation"
+    serial.h:             "Umbrella header"
+    core/core.h:          "CommandHandleResult, SerialError, CorePacket, SFX_* macros"
+    core/core.cpp:        "Core payload encode/decode"
+    wire.h / wire.cpp:    "SfxWire — CRC-8 / COBS / endian helpers (getU16LE/putU16LE)"
+    packet_reader.h:      "PacketReader — byte-stream → framed packet"
+    diag_log.h/.cpp:      "DiagLog singleton — LOG_MESSAGE / DIAG_HISTORY over the wire"
+    client/bus.h:         "SerialBus — client-side COBS transport (master USB-host side)"
+    client/result_queue.h:"ResultQueue — tag-correlated command/response matching"
+
+Board_Framework:
+  root: "controllers/lib/sfx_board/server/"
+  files:
+    board_server.h:       "BoardServer<TStream, ...UserPolicies> — the composer"
+    board_of.h:           "BoardOf<TBoard, TStream, PortCapacity<…>, …> — expander shorthand"
+    board_service.h:      "BoardServicePolicy — INIT/STATUS/IDENTIFY lifecycle (auto)"
+    port_service.h:       "PortServicePolicy — physical port registry (auto via BoardOf)"
+    role_service.h:       "RoleServicePolicy — attach + drive roles (auto via BoardOf)"
+    role_registry.h:      "roleKindFor<>() / forEachAttachedRole — the ONE role enumeration map"
+    effect_clock.h:       "EffectClock singleton — latched once per process()"
 ```
+
+Effect `*ServicePolicy` classes live with their effect under `controllers/hubfx/esp32s3/src/effects/<effect>/` (e.g. `gunfx/gunfx_service.h`, `landing_lights/`, `gearcontrol/`). Roles live in `controllers/lib/sfx_board/roles/`.
 
 ---
 
@@ -738,20 +489,8 @@ Error_Ranges:
       - { code: 0x14, name: "PARAM_TOO_LONG" }
 
   - range: "0x20-0x4F"
-    namespace: "GunFxError"
-    defined_in: "gunfx/gunfx.h"
-
-  - range: "0x50-0x5F"
-    namespace: "LightFxError"
-    defined_in: "lightfx/lightfx.h"
-
-  - range: "0x60-0x6F"
-    namespace: "GearControlError"
-    defined_in: "gearcontrol/gearcontrol.h"
-
-  - range: "0x70-0x8F"
-    namespace: "Reserved"
-    description: "Future controller modules"
+    namespace: "Per-module error blocks (PortError 0x20, GunError 0x30, RoleError 0x40)"
+    note: "Full comprehensive allocation lives in CLAUDE.md → Error ranges"
 
   - range: "0xF0-0xFF"
     namespace: "SerialError (System)"
@@ -764,6 +503,8 @@ Error_Ranges:
       - { code: 0xF5, name: "FRAMING_ERROR" }
 ```
 
+> The full per-module error-code allocation (one namespace per range, collision-guarded by `tests/host/go_unit/error_collisions_test`) is in **`CLAUDE.md` → "Error ranges"**. Each module's errors live with that module (effect under `effects/<x>/`, role/infra under `lib/`), with a same-valued Go mirror.
+
 ---
 
 ## Key Implementation Rules
@@ -771,23 +512,21 @@ Error_Ranges:
 ```yaml
 DO:
   - Use little-endian for ALL multi-byte values
-  - Use CoreProtocol::getU16LE() / putU16LE() for endian-safe reads/writes
-  - Return 0 (SerialError::OK) from callbacks on success
-  - Return specific error codes on failure
-  - Use SfxServer for all Pico server controllers
-  - Extend BusServer for module server handlers
-  - Extend BusClient for module client controllers
-  - Use SFX_* macros in handleModulePacket() for ACK/NACK handling
+  - Use SfxWire::getU16LE() / putU16LE() for endian-safe reads/writes
+  - Return CommandHandleResult::Ack() / Nack(err) from a policy handle()
+  - Compose subsystems as *ServicePolicy (SystemServicePolicy concept) in BoardServer<...>
+  - Declare expander boards via BoardOf<TBoard, TStream, PortCapacity<…>, …>
+  - Use SFX_REQUIRE_LEN / SFX_VALIDATE in handle() for length + range checks
   - Include unit suffixes on all physical measurements (_mV, _mA, _us, _ms)
-  - Put packet types, error codes, and validation in xxxfx/xxxfx.h (single file per module)
+  - Mirror every packet/error in app/go/protocol/<mod>/<mod>.go (source of truth)
   - Implement board-unique resources as singletons (::instance(), private ctor, deleted copy/move)
   - Access singletons directly — never via pointer injection or extern globals
 
 DONT:
-  - Don't use blocking delays in callbacks (>10ms)
+  - Don't use blocking delays in effect/role code (read EffectClock, not millis(), Rule 40)
   - Don't allocate memory in interrupt context
   - Don't assume packet payload is null-terminated
-  - Don't hardcode magic numbers (use constants in Spec namespace)
-  - Don't create separate error.h files — errors belong in xxxfx/xxxfx.h
-  - Don't bypass SfxServer for server controllers
+  - Don't claim a packet byte two policies already own (first-owner-wins)
+  - Don't reference deleted shapes: SfxServer / BusServer / BusClient / CommandRouter /
+    ICommandHandler / CoreCommandServer / *Server / *Client / handleModulePacket / onModulePacket
 ```

@@ -200,7 +200,7 @@ With window size 32 (~64KB per window), WINDOWED mode adds only **16 round-trips
 | Buffer type | 1MB PSRAM ring buffer | 512KB x 2 double-buffer (existing) |
 | Writer task | Per-upload stream writer (Core 0) | Persistent chunked writer (Core 1, existing) |
 | Synchronization | Ring buffer + atomics + semaphore | Simple semaphore swap (existing) |
-| Serial parsing | Raw bytes in `processStreamData()` | COBS via `CommandRouter` (standard path) |
+| Serial parsing | Raw bytes in `processStreamData()` | COBS via `BoardServer` dispatch (standard path) |
 | Main loop | Special `isStreamReceiving()` branch | Normal `server.loop()` |
 | CRC integrity | None per-chunk (MD5 at end only) | CRC-16 per chunk (existing) |
 

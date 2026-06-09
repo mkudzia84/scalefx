@@ -1,5 +1,20 @@
 # Generic Expander Refactor — Pivot to Component Collections
 
+> **Status (2026-06-09):** historical planning record. The pivot LANDED, but
+> in a **different final shape** than the "three collections" /
+> `ExpanderServer<TServos, TPwms, TLeds>` design sketched below. What
+> actually shipped is the **Ports/Roles system**: an expander declares static
+> ports via `BoardOf<...>` + `PortServicePolicy`, and roles (servo, LED,
+> heater, BiDcMotor, …) attach at runtime into a `PortRegistry` `std::variant`
+> slot via `RoleServicePolicy` (`ROLE_ATTACH` / `ROLE_BULK_ATTACH`). The hub
+> drives them transparently by opaque `PortRef{guid, kind, idx}` (Rule 58) —
+> there is no `ExpanderServer`, no `ServoCollection`/`PwmCollection`/
+> `LedCollection`, and no `ExpanderPacket 0x01..0x7F` range. For the current
+> "build a new expander" contract see
+> [16-EXPANDER-BOARD-DESIGN.md](16-EXPANDER-BOARD-DESIGN.md); for the data-flow
+> diagrams see [32-ARCHITECTURE-DIAGRAMS.md](32-ARCHITECTURE-DIAGRAMS.md) §3.
+> The narrative below is kept for history.
+>
 > **STATUS: planning + library skeleton landed 2026-05-06.** Per-board
 > migration is staged across multiple sessions (one board at a time)
 > with the test harness as the verification surface — no expander is

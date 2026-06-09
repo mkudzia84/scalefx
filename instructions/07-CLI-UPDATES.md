@@ -1,554 +1,152 @@
-﻿# CLI Update Guide
+# CLI Update Guide
 
-> **ACTION DOCUMENT:** How to add commands and controllers to the Go interactive CLI.
+> **ACTION DOCUMENT:** How to add commands to the Go interactive CLI (`scalefx-cli`).
+
+> **Run the CLI / drive a board:** use the **scalefx-cli skill** — it knows the connect/subscribe/role-drive flows. This doc is about *adding* commands.
 
 ---
 
 ## CLI Architecture
 
-The CLI uses a modular handler architecture. Each controller has its own handler package under `engine/handlers/`. The engine owns the connection, API client, command dispatch, and listener lifecycle. Both the CLI and GUI console embed the `Engine` struct to share behavior.
-
-### Engine Architecture
+The CLI is `app/go/console/` on top of `app/go/client/` (the typed API) on top of `app/go/protocol/` (the wire mirror). There is **no string-command "engine"** — the old `app/go/engine/` + `engine/handlers/<mod>/{handler,parsers,types,format}.go` stack was archived 2026-05-28. Do not reference it.
 
 ```
-engine/
-├── engine.go          - Core Engine struct (connection, API, dispatch, listener)
-├── types.go           - CmdEntry, CmdGroup, InitReadyInfo, ControllerColors
-├── output.go          - Output interface + ANSI terminal implementation
-├── helpers.go         - Shared utilities (Atoi, ParseBool, ServoSet, ServoConfig, RequireArgs)
-├── parsers.go         - Common response parsers (shared across handlers)
-├── parsers_core.go    - Core response parsers (INIT_READY, STATUS header, I2C, LOG)
-└── handlers/
-    ├── handlers.go       - RegisterDefaults() — registers all built-in groups
-    ├── core/handler.go   - Core commands (connect, init, status, reboot, etc.)
-    ├── gunfx/handler.go  - GunFX commands (trigger, servo, smoke)
-    ├── lightfx/
-    │   ├── handler.go    - LightFX commands (LED, sequences, servo, landing lights)
-    │   └── parsers.go    - LightFX response parsers
-    ├── gearcontrol/
-    │   ├── handler.go    - GearControl commands (gear, servo, yaw, calibration)
-    │   └── parsers.go    - GearControl response parsers
-    ├── hubfx/
-    │   ├── handler.go    - HubFX commands (slaves, audio, engine, storage, USB)
-    │   ├── parsers.go    - HubFX response parsers
-    │   └── format.go     - HubFX output formatting
-    └── firmware/handler.go - Firmware commands (releases, flash)
+app/go/
+├── protocol/<mod>/<mod>.go   - wire mirror: packet consts, CmdXxx builders, DecodeXxx (source of truth)
+├── client/
+│   ├── client.go             - Client: owns protocol.Connection + every typed sub-API
+│   ├── <mod>.go              - typed API (Gun, Gear, Landing, Audio, Storage, Topology, …)
+│   ├── roletarget.go         - RoleTarget: GUID-transparent role drive/query (Rule 58)
+│   └── events.go             - async telemetry stream (OnRole / OnXxx)
+└── console/
+    ├── registry.go           - central command table + categories (register() / lookup())
+    ├── session.go            - App struct (holds *client.Client as a.c), REPL, requireClient()
+    ├── helpers.go            - arg parsers (parseU8, parseOnOff, parseKeyVals, …)
+    ├── term.go               - output helpers (Ok, Note, Hdr, Phase, colour helpers)
+    └── cmd_<mod>.go          - ONE file per wire-domain; self-registers its commands in init()
 ```
 
-### Key Types
+### The registry — self-registration, no master switch
+
+Each `cmd_<mod>.go` owns one wire-domain and registers its commands in its own `init()`. `registry.go` collects them into a global table (it panics on duplicate names so init ordering is loud).
 
 ```go
-// CmdEntry defines a single CLI command.
-type CmdEntry struct {
-    Handler     func(args []string)
-    Usage       string
-    Description string
-    RequireInit bool
+// console/registry.go
+type command struct {
+    Name         string
+    Usage        string
+    Help         string
+    Run          func(a *App, args []string) error
+    Category     category
+    RequiresConn bool   // command hidden until connected
+    RequiresCap  uint32 // bitmask of CoreCapability bits; shown only if the board advertises one
 }
-
-// CmdGroup defines a group of related commands (one per controller type).
-type CmdGroup struct {
-    Name       string
-    Controller string // empty = universal
-    Prefix     string // empty = bare names; non-empty = "<prefix>:<cmd>"
-    Color      Color
-    Commands   map[string]CmdEntry
-}
+func register(c *command) { /* adds to the global map; panics on duplicate */ }
 ```
 
-### Command-name prefixing (Rule 30)
+`RequiresCap` gates a command's visibility in `help` on the connected board's capability mask (a UX layer — the wire dispatch still NACKs cleanly if invoked anyway). `RequiresConn: false` = Session commands available pre-connect.
 
-Every board group MUST set `Prefix`:
+### Capability detection
 
-| Group       | `Controller`    | `Prefix` | Example invocation |
-|-------------|-----------------|----------|--------------------|
-| LightFX     | `CtrlLightFX`   | `light`  | `light:servo 1 1500` |
-| GearControl | `CtrlGearControl` | `gear` | `gear:reset all` |
-| GunFX       | `CtrlGunFX`     | `gun`    | `gun:trigger on 600` |
-| HubFX       | `CtrlHubFX`     | `hub`    | `hub:slaves` |
-| Core / Firmware / Storage / Config | `""` | `""` (universal) | `connect`, `init`, `file.list`, `config.save` |
+On connect, the client sends IDENTIFY (no state change), decodes the board name + capability word, and INITs expanders. `help` then shows only the commands whose `RequiresCap` bit the board advertises; compiled-but-disabled features appear in a separate "currently disabled" section (`disabledCommands`).
 
-The CLI dispatcher rejects bare board names (`servo`, `reset`, `enable`, …) on
-both direct AND hub connections, surfacing the prefixed candidates as a hint:
+---
 
-```
-scalefx> servo 1 1500
-✗ Command 'servo' requires a board prefix. Did you mean: gear:servo, gun:servo, light:servo
-```
+## Adding a Command to an Existing Domain
 
-Help output (`help`, `help <cmd>`) and group listings render the prefix
-inline so muscle memory points at the canonical form. Studio's Console
-panel echoes the same canonical form whenever a command is typed or
-mirrored from a GUI action.
-
-The prefix is purely a CLI surface convention — wire format is unchanged
-(packets still carry their bare type byte). On a hub, a prefixed slave
-command (e.g. `light:servo`) flows through the same auto-routing pipeline
-described in [13-PASSTHROUGH-ROUTING.md](13-PASSTHROUGH-ROUTING.md).
-
-### Dynamic Detection
-
-Controller type is detected via IDENTIFY on connect:
-
-```yaml
-trigger: "IDENTIFY response on connect (or INIT_READY fallback)"
-location: "engine/handlers/core/handler.go"
-flow:
-  - "1. Send IDENTIFY (0xFE) — no state change on device"
-  - "2. Parse board name, detect controller type"
-  - "3. HubFX (autonomous hub): mark initialized, skip INIT"
-  - "4. Slave controllers: send INIT to activate hardware"
-  - "5. Legacy boards (no IDENTIFY): fall back to INIT"
-result: "Controller-specific handler commands appear in help"
-```
-
-### Registration Pattern
-
-All handlers register themselves via a `Register(eng *engine.Engine)` function:
+Edit the matching `console/cmd_<mod>.go`. Two parts: a `register(...)` line in `init()`, and a `cmd*` func that calls the typed `client` API.
 
 ```go
-// In handlers/handlers.go — called by both CLI and GUI:
-func RegisterDefaults(eng *engine.Engine) {
-    core.Register(eng)
-    gunfx.Register(eng)
-    gearcontrol.Register(eng)
-    lightfx.Register(eng)
-    hubfx.Register(eng)
+// console/cmd_gun.go
+func init() {
+    // …existing registrations…
+    register(&command{
+        Name:         "gun-ammo",
+        Usage:        "gun-ammo <id> <count>",
+        Help:         "set ammo count (0-9999)",
+        Category:     catGun,
+        RequiresConn: true,
+        RequiresCap:  core.CapGunFx,
+        Run:          cmdGunAmmo,
+    })
 }
 
-// Each handler's Register():
-func Register(eng *engine.Engine) {
-    h := &Handler{E: eng}
-    eng.RegisterStatusParser(pcore.CtrlGunFX, h.parseGunFXStatus)
-    eng.RegisterAsyncHandler(gfxp.PktSomeAsync, h.handleSomeAsync)
-    eng.AddGroup(h.commands())
+func cmdGunAmmo(a *App, args []string) error {
+    if err := a.requireClient(); err != nil {   // guards "not connected"
+        return err
+    }
+    if len(args) != 2 {
+        return fmt.Errorf("usage: gun-ammo <id> <count>")
+    }
+    id, err := parseU8(args[0])
+    if err != nil {
+        return err
+    }
+    count, err := strconv.ParseUint(args[1], 0, 16)
+    if err != nil {
+        return fmt.Errorf("count: %w", err)
+    }
+    if err := a.c.Gun.SetAmmo(id, uint16(count)); err != nil {  // typed API call
+        return err
+    }
+    Ok("gun[%d] ammo = %d", id, count)
+    return nil
 }
+```
+
+The typed `SetAmmo` lives in `client/gunfx.go` and wraps `sendExpectACK` / `sendForResp` (see [03-PROTOCOL-EXTENSION.md](03-PROTOCOL-EXTENSION.md) steps 3–4). A CLI command NEVER builds packets directly — it goes through `a.c.<SubApi>.<Method>`.
+
+### Query command (returns decoded data)
+
+```go
+func cmdGunStatus(a *App, _ []string) error {
+    if err := a.requireClient(); err != nil {
+        return err
+    }
+    st, err := a.c.Gun.Status()   // client decodes the typed RESP for you
+    if err != nil {
+        return err
+    }
+    Hdr("Guns")
+    for _, g := range st {
+        fmt.Fprintf(out, "  [%d] firing=%v smoke=%v\n", g.ID, g.Firing, g.SmokeArmed)
+    }
+    return nil
+}
+```
+
+### Output helpers (`term.go`)
+
+```go
+Ok("done: %d", n)        // success line (green)
+Note("(nothing to show)")// dim aside
+Hdr("Section")           // section header
+Phase("firing")          // coloured state token
+cRed(...) / cMagenta(...)// inline colour
+// errors are returned from the cmd func; the REPL prints them.
 ```
 
 ---
 
-## File Locations
-
-```yaml
-Engine:
-  "engine/engine.go": "Core Engine struct (connection, API, dispatch, listener lifecycle)"
-  "engine/types.go": "CmdEntry, CmdGroup, InitReadyInfo, controller type constants"
-  "engine/output.go": "Output interface, ANSI color helpers"
-  "engine/helpers.go": "Shared utilities (Atoi, ParseBool, OnOff, ServoSet, ServoConfig)"
-  "engine/parsers.go": "Common response parsers"
-  "engine/parsers_core.go": "Core response parsers (INIT_READY, STATUS header)"
-
-Handlers:
-  "engine/handlers/handlers.go": "RegisterDefaults() — registers all built-in groups"
-  "engine/handlers/core/handler.go": "Core and protocol commands (15 commands)"
-  "engine/handlers/gunfx/handler.go": "GunFX controller commands + status parser"
-  "engine/handlers/lightfx/handler.go": "LightFX controller commands"
-  "engine/handlers/lightfx/parsers.go": "LightFX response parsers"
-  "engine/handlers/gearcontrol/handler.go": "GearControl controller commands"
-  "engine/handlers/gearcontrol/parsers.go": "GearControl response parsers"
-  "engine/handlers/hubfx/handler.go": "HubFX hub commands (audio, engine, storage, USB)"
-  "engine/handlers/hubfx/parsers.go": "HubFX response parsers"
-  "engine/handlers/hubfx/format.go": "HubFX output formatting helpers"
-  "engine/handlers/firmware/handler.go": "Firmware release commands"
-
-Protocol:
-  "protocol/core/core.go": "Core packet type constants, error codes, controller type strings"
-  "protocol/gunfx/gunfx.go": "GunFX packet constants, error codes, command builders"
-  "protocol/lightfx/lightfx.go": "LightFX packet constants, error codes, command builders"
-  "protocol/gearcontrol/gearcontrol.go": "GearControl packet constants, error codes, command builders"
-  "protocol/hubfx/hubfx.go": "HubFX packet constants, error codes, command builders"
-
-API:
-  "api/client.go": "API client that wraps protocol.Connection"
-  "api/gunfx.go": "GunFxApi (typed command methods)"
-  "api/lightfx.go": "LightFxApi (typed command methods)"
-  "api/gearcontrol.go": "GearControlApi (typed command methods)"
-  "api/hubfx.go": "HubFxApi (typed command methods)"
-```
-
----
-
-## Adding Command to Existing Controller
-
-### Step 1: Add API Method
-
-**FILE:** `api/gunfx.go` (or `lightfx.go`, `gearcontrol.go`, `hubfx.go`)
-
-```go
-// NewCommand sends the new command with the given parameters.
-func (g *GunFxApi) NewCommand(param1 uint8, param2 uint16) api.ApiResult {
-    return g.send(gfxp.PktNewCommand, gunfx.NewCommand(param1, param2))
-}
-```
-
-### Step 2: Add Protocol Command Builder
-
-**FILE:** `protocol/gunfx/gunfx.go`
-
-```go
-// NewCommand builds the NEW_COMMAND payload.
-func NewCommand(param1 uint8, param2 uint16) []byte {
-    buf := make([]byte, 3)
-    buf[0] = param1
-    binary.LittleEndian.PutUint16(buf[1:], param2)
-    return buf
-}
-```
-
-### Step 3: Add Packet Type Constant
-
-**FILE:** `protocol/gunfx/gunfx.go`
-
-```go
-const PktNewCommand protocol.PacketType = 0x0F  // [param1:u8][param2:u16LE]
-```
-
-### Step 4: Add Handler Command
-
-**FILE:** `engine/handlers/gunfx/handler.go`
-
-Add to the `commands()` map:
-
-```go
-func (h *Handler) commands() *engine.CmdGroup {
-    return &engine.CmdGroup{
-        Name:       "GunFX",
-        Controller: pcore.CtrlGunFX,
-        Color:      engine.ColorRed,
-        Commands: map[string]engine.CmdEntry{
-            // ...existing commands...
-            "newcmd": {h.cmdNewCmd, "newcmd <param1> [param2]", "Execute new command", true},
-        },
-    }
-}
-```
-
-Add the handler method:
-
-```go
-func (h *Handler) cmdNewCmd(args []string) {
-    if !h.E.RequireArgs(args, 1, "newcmd <param1> [param2]") {
-        return
-    }
-    param1 := engine.Atoi(args[0])
-    param2 := 0
-    if len(args) > 1 {
-        param2 = engine.Atoi(args[1])
-    }
-    if param1 < 0 || param1 > 100 {
-        h.E.Out.Error("param1 must be 0-100")
-        return
-    }
-    h.E.Ack(h.E.API.GunFx.NewCommand(byte(param1), uint16(param2)),
-        fmt.Sprintf("New command: param1=%d, param2=%d", param1, param2))
-}
-```
-
-### Step 5: Add Response Parser (if query command)
-
-**FILE:** `engine/handlers/gunfx/handler.go` (or create `parsers.go` if not present)
-
-```go
-func (h *Handler) parseNewCmdResponse(payload []byte) {
-    if len(payload) < 4 {
-        h.E.Out.Error("Short response")
-        return
-    }
-    value := binary.LittleEndian.Uint16(payload[0:2])
-    h.E.Out.Data("Value", "%d", value)
-}
-```
-
----
-
-## Adding New Controller Type
-
-### Step 1: Create Protocol Package
-
-**CREATE:** `protocol/newfx/newfx.go`
-
-```go
-package newfx
-
-import "scalefx/protocol"
-
-// Packet type constants (must match C++ NewFxPacket namespace).
-const (
-    PktCommand1 protocol.PacketType = 0xB0
-    PktCommand2 protocol.PacketType = 0xB1
-)
-```
-
-**ADD to:** `protocol/newfx/newfx.go`
-
-```go
-package newfx
-
-import "encoding/binary"
-
-func Command1(param uint8) []byte {
-    return []byte{param}
-}
-
-func Command2(id uint8, value uint16) []byte {
-    buf := make([]byte, 3)
-    buf[0] = id
-    binary.LittleEndian.PutUint16(buf[1:], value)
-    return buf
-}
-```
-
-### Step 2: Add Controller Type Constant
-
-**FILE:** `protocol/core/core.go`
-
-```go
-const CtrlNewFX = "newfx"
-```
-
-### Step 3: Create API Client
-
-**CREATE:** `api/newfx.go`
-
-```go
-package api
-
-import (
-    "scalefx/protocol/newfx"
-)
-
-type NewFxApi struct{ apiClient }
-
-func (n *NewFxApi) Command1(param uint8) ApiResult {
-    return n.send(newfx.PktCommand1, newfx.Command1(param))
-}
-
-func (n *NewFxApi) Command2(id uint8, value uint16) ApiResult {
-    return n.send(newfx.PktCommand2, newfx.Command2(id, value))
-}
-```
-
-Add to `api/client.go`:
-
-```go
-type Client struct {
-    // ...existing fields...
-    NewFx *NewFxApi
-}
-```
-
-### Step 4: Create Handler Package
-
-**CREATE:** `engine/handlers/newfx/handler.go`
-
-```go
-package newfx
-
-import (
-    "fmt"
-    "scalefx/engine"
-    pcore "scalefx/protocol/core"
-)
-
-type Handler struct {
-    E *engine.Engine
-}
-
-func Register(eng *engine.Engine) {
-    h := &Handler{E: eng}
-    eng.RegisterStatusParser(pcore.CtrlNewFX, h.parseNewFXStatus)
-    eng.AddGroup(h.commands())
-}
-
-func (h *Handler) commands() *engine.CmdGroup {
-    return &engine.CmdGroup{
-        Name:       "NewFX",
-        Controller: pcore.CtrlNewFX,
-        Color:      engine.ColorYellow,
-        Commands: map[string]engine.CmdEntry{
-            "newcmd1": {h.cmdCommand1, "newcmd1 <param>", "Execute command 1", true},
-            "newcmd2": {h.cmdCommand2, "newcmd2 <id> <value>", "Execute command 2", true},
-        },
-    }
-}
-
-func (h *Handler) cmdCommand1(args []string) {
-    if !h.E.RequireArgs(args, 1, "newcmd1 <param>") {
-        return
-    }
-    param := engine.Atoi(args[0])
-    h.E.Ack(h.E.API.NewFx.Command1(byte(param)),
-        fmt.Sprintf("Command 1: param=%d", param))
-}
-
-func (h *Handler) cmdCommand2(args []string) {
-    if !h.E.RequireArgs(args, 2, "newcmd2 <id> <value>") {
-        return
-    }
-    id, value := engine.Atoi(args[0]), engine.Atoi(args[1])
-    h.E.Ack(h.E.API.NewFx.Command2(byte(id), uint16(value)),
-        fmt.Sprintf("Command 2: id=%d, value=%d", id, value))
-}
-
-func (h *Handler) parseNewFXStatus(data []byte) {
-    h.E.Out.Header("NewFX")
-    // ...parse fields from data...
-}
-```
-
-### Step 5: Register Handler
-
-**FILE:** `engine/handlers/handlers.go`
-
-```go
-import "scalefx/engine/handlers/newfx"
-
-func RegisterDefaults(eng *engine.Engine) {
-    core.Register(eng)
-    gunfx.Register(eng)
-    gearcontrol.Register(eng)
-    lightfx.Register(eng)
-    hubfx.Register(eng)
-    newfx.Register(eng)  // ADD
-}
-```
-
-### Step 6: Add Controller Detection
-
-**FILE:** `engine/handlers/core/handler.go`
-
-In the controller detection logic, add:
-
-```go
-case "newfx":
-    eng.ControllerType = pcore.CtrlNewFX
-```
-
-### Step 7: Update Controller Maps
-
-**FILE:** `engine/types.go`
-
-```go
-var ControllerColors = map[string]Color{
-    // ...existing...
-    core.CtrlNewFX: ColorYellow,
-}
-
-var ControllerLabels = map[string]string{
-    // ...existing...
-    core.CtrlNewFX: "NewFX",
-}
-```
-
----
-
-## Handler Method Patterns
-
-### ACK-based Command (most common)
-
-```go
-func (h *Handler) cmdFeature(args []string) {
-    if !h.E.RequireArgs(args, 1, "feature <value>") {
-        return
-    }
-    value := engine.Atoi(args[0])
-    if value < 0 || value > 255 {
-        h.E.Out.Error("Value must be 0-255")
-        return
-    }
-    h.E.Ack(h.E.API.XxxFx.Feature(byte(value)),
-        fmt.Sprintf("Feature set to %d", value))
-}
-```
-
-### Subcommand Pattern
-
-```go
-func (h *Handler) cmdSmoke(args []string) {
-    if !h.E.RequireArgs(args, 2, "smoke heat on|off") {
-        return
-    }
-    if strings.ToLower(args[0]) != "heat" {
-        h.E.Out.Error("Usage: smoke heat on|off")
-        return
-    }
-    on := engine.ParseBool(args[1])
-    h.E.Ack(h.E.API.GunFx.SmokeHeat(on),
-        fmt.Sprintf("Smoke heater %s", engine.OnOff(on)))
-}
-```
-
-### Query Command (returns data)
-
-```go
-func (h *Handler) cmdQuery(args []string) {
-    res := h.E.API.XxxFx.QuerySomething()
-    if !res.OK() {
-        h.E.Out.Error("Query failed: %s", res.Error)
-        return
-    }
-    data := res.Payload
-    if len(data) < 4 {
-        h.E.Out.Error("Short response")
-        return
-    }
-    value := binary.LittleEndian.Uint16(data[0:2])
-    h.E.Out.Data("Value", "%d", value)
-}
-```
-
----
-
-## Output Methods
-
-```go
-// Success message (green)
-h.E.Out.OK("Operation completed")
-
-// Error message (red)
-h.E.Out.Error("Something went wrong: %v", err)
-
-// Info message (cyan)
-h.E.Out.Info("Informational message")
-
-// Warning message (yellow)
-h.E.Out.Warn("Warning message")
-
-// Labeled data value
-h.E.Out.Data("Label", "value %d", n)
-
-// Section header
-h.E.Out.Header("Section Title")
-
-// Raw formatted output
-h.E.Out.Printf("  Custom output: %d\n", value)
-
-// ACK helper (sends command, prints OK or NACK error)
-h.E.Ack(apiResult, "Success message")
-```
+## Adding a New Domain
+
+1. **Wire mirror** — `app/go/protocol/<mod>/<mod>.go`: packet constants + `CmdXxx` builders + `DecodeXxx` (mirrors the firmware protocol header, the source of truth).
+2. **Capability + controller type** — add a `Cap<Mod>` bit and/or `Ctrl<Mod>` constant to `app/go/protocol/core/core.go` if the domain is gated.
+3. **Typed API** — `app/go/client/<mod>.go`: a struct with a `*Client` back-ref + methods wrapping `sendExpectACK` / `sendForResp`. Wire it into `client.go`'s `Client` struct so `a.c.<Mod>` resolves.
+4. **CLI file** — `app/go/console/cmd_<mod>.go`: register commands in `init()` + the `cmd*` funcs. Add a `category` constant to `registry.go` if the domain needs its own help section.
+5. **Roles** (Rule 58) — if you're exposing an expander role rather than a hub effect, you usually don't add a new client sub-API: drive it through `a.c.Role(guid).<RoleVerb>` (`client/roletarget.go`). Adding the transparent path for a new role is a one-line `RoleTarget` wrapper + a role codec in `protocol/roles/`.
 
 ---
 
 ## Verification
 
 ```bash
-# Build check
-cd app/go && go build ./cli/
+cd app/go && go build ./...        # compiles console + client + protocol — the sync check
 
-# Run CLI
-app/go/scalefx-cli.exe -p COM5
-
-# Test commands (direct)
-> connect
-> init
-> help                    # Verify new commands appear
-> trigger on 100          # Test GunFX command (when connected to GunFX)
-
-# Test commands (hub slave routing — type-range auto-routing)
-> connect                 # Connect to HubFX
-> init
-> trigger on 100              # GunFX command, auto-routed by packet-type range
-> deploy all                  # GearControl command, auto-routed by packet-type range
+app/go/scalefx-cli.exe -p COM5     # or use the scalefx-cli skill
+# > connect
+# > help                           # new command appears (if the board advertises RequiresCap)
+# > gun-ammo 0 500
 ```
 
 ---
@@ -557,26 +155,18 @@ app/go/scalefx-cli.exe -p COM5
 
 ```yaml
 Adding_Command:
-  - "[ ] Packet type constant added to protocol/xxxfx/xxxfx.go"
-  - "[ ] Command builder added to protocol/xxxfx/xxxfx.go"
-  - "[ ] API method added to api/xxxfx.go"
-  - "[ ] CmdEntry added to handler commands() map"
-  - "[ ] Handler method implemented with RequireArgs + validation"
-  - "[ ] Response parser added (if query command)"
-  - "[ ] Async handler registered (if async response)"
-  - "[ ] go build ./cli/ passes"
-  - "[ ] Command appears in 'help'"
-  - "[ ] Command executes correctly"
+  - "[ ] protocol/<mod>/<mod>.go: packet const + CmdXxx (+ DecodeXxx if query)"
+  - "[ ] client/<mod>.go: typed method (sendExpectACK / sendForResp)"
+  - "[ ] console/cmd_<mod>.go: register(&command{…}) in init() + cmd* func"
+  - "[ ] cmd* func: requireClient → parse args → call a.c.<Mod>.<Method> → Ok(...)"
+  - "[ ] RequiresCap set if the domain is capability-gated"
+  - "[ ] cd app/go && go build ./... passes"
+  - "[ ] Command appears in 'help' and runs"
 
-Adding_Controller:
-  - "[ ] Protocol package created: protocol/newfx/"
-  - "[ ] Controller type constant added to protocol/core/core.go"
-  - "[ ] API client created: api/newfx.go"
-  - "[ ] Handler package created: engine/handlers/newfx/"
-  - "[ ] Handler registered in engine/handlers/handlers.go"
-  - "[ ] Controller detection added to handlers/core/handler.go"
-  - "[ ] Controller maps updated in engine/types.go"
-  - "[ ] Status parser registered"
-  - "[ ] go build ./cli/ passes"
-  - "[ ] Commands appear after init with controller"
+Adding_Domain:
+  - "[ ] protocol/<mod>/<mod>.go created"
+  - "[ ] Cap<Mod> / Ctrl<Mod> in protocol/core/core.go (if gated)"
+  - "[ ] client/<mod>.go typed API + wired into client.go Client struct"
+  - "[ ] console/cmd_<mod>.go created; category constant in registry.go if needed"
+  - "[ ] cd app/go && go build ./... passes"
 ```

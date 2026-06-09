@@ -1,5 +1,11 @@
 # 22 — GunFX Feature Rollout: Audit + Execution Log
 
+> **Status (2026-06-09):** historical record of the GunFX rollout. The §0
+> architecture is still authoritative; the Go-side path tails were rehomed
+> (`api/gunfx.go` → `app/go/client/gunfx.go`; `engine/handlers/gunfx/` →
+> `app/go/console/cmd_gun.go`) and CLI commands are now flat hyphenated
+> (`gun-fire`, `gun-trigger`), no `gun:` colon prefix.
+>
 > **Status:** LANDED (2026-05-23). Phases 0–2.9 shipped (foundation + protocol +
 > firmware + roles); Phases 3–4 (Go API + Studio `GunFxPanel.svelte`) shipped too
 > — only the §8 polish items remain deferred. This file is now the **reference
@@ -598,18 +604,17 @@ different boards.
    0xE2–0xE5, builder funcs (`CmdManualSet`, `CmdManualRelease`,
    `CmdVerboseStatusReq`), decoder for `DecodeVerboseStatus`.
 
-2. **`app/go/api/gunfx.go`** — extend `GunFxApi` with:
+2. **`app/go/client/gunfx.go`** — extend the GunFX client with:
    - `ManualSet(id uint8, state GunManualState) CommandResult`
    - `ManualRelease(id uint8) CommandResult`
    - `VerboseStatusSubscribe(id uint8, enable bool) CommandResult`
    - Async event handler for VERBOSE_STATUS — routes to a per-id
      observer registered by Studio.
 
-3. **`app/go/engine/handlers/gunfx/`** — `types.go` gets
-   `VerboseStatus` struct (mirrors firmware), `Decode...`. `handler.go`
-   gains `verbose-status`, `manual`, `manual-release` CLI commands
-   under the `gun:` prefix (Rule 30). `format.go` renders verbose
-   status to the CLI.
+3. **`app/go/console/cmd_gun.go`** — decodes `VerboseStatus` (mirrors
+   firmware) and registers the `gun-verbose-status`, `gun-manual`,
+   `gun-manual-release` CLI commands (Rule 30, flat hyphenated form) +
+   renders verbose status to the CLI.
 
 4. **`app/go/studio/app_gunfx.go` (NEW)** — Wails bindings:
    ```go

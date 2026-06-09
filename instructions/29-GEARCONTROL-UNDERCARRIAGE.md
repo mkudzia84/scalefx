@@ -188,11 +188,12 @@ When `coordMode == sync`: after ticking every gear, run `releaseSyncBarriersIfRe
   0x5F`, `SEEK_ENDSTOP 0x6E`, `SET_GUARD 0x77`, `GET_STATUS 0x6B`) forwarded by the
   Topology service to the motor's GUID'd port — no new packets.
 
-### 2.6 Go mirror (`app/go/protocol/gear/gear.go` + `engine/handlers/gear/`)
+### 2.6 Go mirror (`app/go/protocol/gear/gear.go` + `app/go/console/cmd_gear.go` + `app/go/client/gear.go`)
 Add the `doorPhase` to `DecodeStatus`, the `MANUAL_HOLD/RELEASE` builders, and the
-GUID'd BiMotor-forward helpers (`client.Topology.SendRoleCommand`). Update the gear
-handler + parsers (Rule 19/20 three-file split). CLI: `gear:door-*`? (optional —
-the Studio tab is the primary surface; CLI can stay at the existing `gear:*`).
+GUID'd BiMotor-forward helpers (drive via `client.Role(guid)` — the `RoleTarget`
+transport, Rule 58). Update the gear client + CLI command file (`engine/handlers/gear/`
+is archived). CLI: `gear-door-*`? (optional — the Studio tab is the primary surface;
+CLI can stay at the existing flat-hyphenated `gear-*` commands).
 
 ### 2.7 Apply translator (`apply_hubfx_config.h`)
 `applyGearControlConfig` already attaches the motor role; extend to (a) attach the

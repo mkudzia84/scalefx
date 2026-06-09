@@ -1,5 +1,15 @@
 # LightFX Modernization (v0.10 → v0.12)
 
+> **Status (2026-06-09):** historical record of the now-retired *standalone*
+> LightFX firmware + its dedicated Go stack. The `LightFxClient`,
+> `api/lightfx.go`, the `serial/lightfx` protocol header, and
+> `engine/handlers/lightfx/` are all gone. The LightFX board was resurrected
+> 2026-06-09 as a **thin generic expander** (`controllers/lightfx/pico`, 8
+> PWM→LedAnimator + 3 servo→ServoActuator + battery) driven entirely through
+> roles — the hub addresses its ports by opaque `PortRef` (Rule 58), there is
+> no LightFX-specific wire protocol or client anymore. The narrative below
+> describes the OLD domain-specific firmware; it is kept for history.
+>
 > **Scope:** LightFX firmware (Pico/RP2040), `serial/lightfx` protocol header, Go SDK
 > + handlers, Studio LightFX tab + board-layout dialog, per-board YAML config, board
 > image analyzer.
