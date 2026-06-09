@@ -134,6 +134,15 @@ public:
     // sensors.  No-op until begin() / after end().
     void update() {
         if (!_running) return;
+        // Main-loop lag (µs since the previous update()): the worst-case AGE of a
+        // poll parsed in this drain — it could have arrived the instant the last
+        // drain ended and waited the whole interval.  serveTelemetry() uses it as
+        // the timeliness gate: a stale poll's ~2 ms reply would overrun the
+        // master's ~4 ms window and collide with its next channel frame.
+        const uint32_t nowUs = SFX_MICROS();
+        _loopLagUs = (_lastUpdateUs == 0) ? 0 : (nowUs - _lastUpdateUs);
+        if (_loopLagUs > _maxLoopLagUs) _maxLoopLagUs = _loopLagUs;
+        _lastUpdateUs = nowUs;
         const uint32_t now = SFX_MILLIS();
         // IN_2 first: drain the ESC's telemetry into the hub before IN_1
         // re-parses the next echoed master frame.  Only when the downstream
@@ -152,7 +161,7 @@ public:
         // ch/valid = channel decode state.  The "mark what is wrong" counters.
         if (now - _lastRxLog >= 2000) {
             _lastRxLog = now;
-            SFX_LOG_DEBUG("[jexp] IN_1 rxB=%lu rxF=%lu rxErr=%lu ch=%u valid=%d%s",
+            SFX_LOG_INFO("[jexp] IN_1 rxB=%lu rxF=%lu rxErr=%lu ch=%u valid=%d%s",
                          (unsigned long)_rxBus.rxByteCount(),
                          (unsigned long)_rxBus.rxFrameCount(),
                          (unsigned long)_rxBus.rxErrorCount(),
@@ -165,10 +174,13 @@ public:
         // above — if it climbs as resp climbs, the TX reply is corrupting RX.
         if (_respond && now - _lastTxLog >= 2000) {
             _lastTxLog = now;
-            SFX_LOG_DEBUG("[jexp] TX polls=%lu resp=%lu echoShort=%lu slotOver=%lu lastUs=%lu maxUs=%lu",
+            SFX_LOG_INFO("[jexp] TX polls=%lu resp=%lu lateSkip=%lu echoShort=%lu slotOver=%lu lastUs=%lu maxUs=%lu loopLagUs=%lu maxLoopLagUs=%lu",
                          (unsigned long)_rxBus.pollsSeen(), (unsigned long)_rxBus.txResponseCount(),
+                         (unsigned long)_lateSkip,
                          (unsigned long)_rxBus.echoShort(), (unsigned long)_rxBus.slotOverruns(),
-                         (unsigned long)_rxBus.lastTxDurUs(), (unsigned long)_rxBus.maxTxDurUs());
+                         (unsigned long)_rxBus.lastTxDurUs(), (unsigned long)_rxBus.maxTxDurUs(),
+                         (unsigned long)_loopLagUs, (unsigned long)_maxLoopLagUs);
+            _maxLoopLagUs = 0;   // reset the 2 s window peak
         }
 #endif
 
@@ -239,6 +251,9 @@ public:
     uint32_t echoShort()    const { return _rxBus.echoShort(); }
     uint32_t maxTxDurUs()   const { return _rxBus.maxTxDurUs(); }
     uint32_t slotOverruns() const { return _rxBus.slotOverruns(); }
+    uint32_t lateSkip()     const { return _lateSkip; }      // replies gated (loop behind)
+    uint32_t loopLagUs()    const { return _loopLagUs; }     // last main-loop interval
+    uint32_t maxLoopLagUs() const { return _maxLoopLagUs; }  // worst main-loop interval
     uint32_t escBytes()  const { return _escMon.rxByteCount(); }
     uint32_t escFrames() const { return _escMon.telemetryFrames(); }
     uint32_t escErrors() const { return _escMon.errorCount(); }
@@ -323,6 +338,19 @@ private:
         // telemetry still updates smoothly.
         const uint32_t now = SFX_MILLIS();
         if (now - _lastRespMs < kRespIntervalMs) return;
+
+        // TIMELINESS GATE (the real fix for the gun-trigger RX drop).  The Jeti
+        // master reserves a ~4 ms window after a poll-with-break and tolerates a
+        // SKIPPED reply (it just re-polls — non-answer is spec-legal: it also
+        // sends no-break polls where no answer is expected).  Our reply is a
+        // ~2 ms half-duplex TX, so it only fits if it STARTS promptly.  When the
+        // cooperative main loop hitches (gun trigger / ROF-change handler runs on
+        // it), this drain falls behind and the poll we just parsed is already
+        // stale — TXing now would overrun into the master's next channel frame
+        // and corrupt the RC stream (the symptom).  So if the loop lag exceeds
+        // the slack (window − reply), DROP this reply.  Channel decode (the
+        // priority) is untouched; telemetry just updates a beat later.
+        if (_loopLagUs > kReplyLagBudgetUs) { _lateSkip++; return; }
         _lastRespMs = now;
 
         auto& hub = JetiTelemetryHub::instance();
@@ -421,11 +449,24 @@ private:
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
     static constexpr uint32_t kEscPollIntervalMs = 100;  // ESC poll rate (~10 Hz)
     static constexpr uint32_t kRespIntervalMs    = 50;   // Rx reply rate cap (~20 Hz)
+    // Timeliness-gate slack = master window (~4 ms) − our reply (~2 ms).  If the
+    // main loop lagged more than this since the last drain, the parsed poll is
+    // too stale to answer in-window — skip (see serveTelemetry()).  Generous at
+    // first; watch `lateSkip` vs channel `valid` during a gun event and tighten.
+    static constexpr uint32_t kReplyLagBudgetUs  = 1500;
     uint32_t _lastFwdMs  = 0;            // last ESC-forward time (rate limit)
     uint32_t _lastRespMs = 0;            // last Rx-reply time (rate limit)
     bool     _respond    = false;        // two-way telemetry reply enabled (runtime, from attach cfg)
     uint32_t _lastTxLog  = 0;            // last [jexp] TX instrumentation log time
     uint8_t  _localDev   = 0xFF;         // hub index of the HubFX-own device
+
+    // Timeliness-gate state (Core: main loop).  _loopLagUs = µs since the prior
+    // update(); _maxLoopLagUs = worst seen (diag); _lateSkip = replies dropped
+    // because the loop was behind (the gate firing — the gun-event signature).
+    uint32_t _lastUpdateUs = 0;
+    uint32_t _loopLagUs    = 0;
+    uint32_t _maxLoopLagUs = 0;
+    uint32_t _lateSkip     = 0;
 
     // Rotation cursors (data + text walk independently across the hub).
     uint16_t _seq     = 0;

@@ -301,10 +301,13 @@ void JetiExBus::sendExBusResponse(uint8_t packetId, uint8_t dataId,
         _serial->write(frame, totalLen);
         _serial->flush();                   // wait for shift register empty
         _txPort->txDisable();
-        // Drain our own echo (TX↔RX tied on the single wire).  Count an
-        // incomplete drain: if fewer than totalLen bytes were available, the
-        // echo is still arriving and its tail will desync the frame parser
-        // (shows up as rxErr) — the prime TX/RX-turnaround "issue" signal.
+        // Drain our own echo (TX↔RX tied on the single wire), bounded to our own
+        // totalLen bytes so we never swallow the master's next channel frame.  We
+        // do NOT spin-wait for the last in-flight echo byte: that adds main-loop
+        // blocking — the exact thing that starves the cooperative channel drain
+        // and overruns the reply window (the real fault, fixed by the timeliness
+        // gate in JetiExpander::serveTelemetry).  echoShort just counts the
+        // straggler; it is benign next to the late-reply collision.
         uint8_t drained = 0;
         for (uint8_t i = 0; i < totalLen && _serial->available(); ++i) { _serial->read(); ++drained; }
         if (drained < totalLen) _echoShort++;
