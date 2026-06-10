@@ -35,13 +35,21 @@ void RoleEventEmitter::emitServoTargetReached(uint8_t portIdx, uint16_t pos_us) 
     uint8_t buf[3];
     buf[0] = portIdx;
     SfxWire::putU16LE(&buf[1], pos_us);
-    _ctx->sendRawPacket(RolePacket::SERVO_TARGET_REACHED, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    // Wire = host live-view only (Rule 53): a continuously-tracking servo (gun
+    // yaw/pitch) reaches "target" many times/sec and floods the wire + diag log.
+    // Gate it on a listening host.  The LOCAL dispatch ALWAYS fires — the landing-
+    // light service depends on it to know a servo finished deploying/retracting.
+    if (_ctx && _ctx->hostVerboseActive())
+        _ctx->sendRawPacket(RolePacket::SERVO_TARGET_REACHED, SfxWire::TAG_ASYNC, buf, sizeof buf);
     fireLocalAsync(RolePacket::SERVO_TARGET_REACHED, buf, sizeof buf);
 }
 
 void RoleEventEmitter::emitServoMotionDone(uint8_t portIdx) {
     uint8_t buf[1] = { portIdx };
-    _ctx->sendRawPacket(RolePacket::SERVO_MOTION_DONE, SfxWire::TAG_ASYNC, buf, sizeof buf);
+    // Wire = host live-view only (Rule 53); the LOCAL dispatch ALWAYS fires — the
+    // gear door-sequencer chains the next door on this event.
+    if (_ctx && _ctx->hostVerboseActive())
+        _ctx->sendRawPacket(RolePacket::SERVO_MOTION_DONE, SfxWire::TAG_ASYNC, buf, sizeof buf);
     fireLocalAsync(RolePacket::SERVO_MOTION_DONE, buf, sizeof buf);
 }
 

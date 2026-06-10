@@ -32,6 +32,7 @@
 #include <freertos/FreeRTOS.h>     // dedicated IN_1 servicing task
 #include <freertos/task.h>
 #include <cstdint>
+#include <cstring>                 // memcpy (ESC poll-template capture)
 #include <functional>
 
 #include <ports/input_port.h>
@@ -94,12 +95,15 @@ public:
             _rxBus.setTxPort(rxPort);                 // half-duplex TX on IN_1 (reply)
             _rxBus.onTelemetryRequest([this](uint8_t pkt){ serveTelemetry(pkt); });
         }
-        // Forward-to-ESC mirrors the Rx's polls out IN_2 — its second-UART TX
-        // crosstalks GPIO6->GPIO5 onto the IN_1 channel RX.  Gated off so IN_2
-        // stays a passive downstream port (no telemetry forwarding between the
-        // links for now).  Re-enable via the windowed-forward approach later.
-        if (kForwardToEsc && _escPort) {
-            _rxBus.onRawFrame([this](const uint8_t* f, uint8_t l){ forwardToEsc(f, l); });
+        // Phase 2 — downstream ESC master link (IN_2).  We do NOT mirror every
+        // Rx frame out IN_2 (its TX crosstalks GPIO6->GPIO5 onto the IN_1 channel
+        // RX and dropped the signal).  Instead we CAPTURE the Rx's latest
+        // telemetry-request frame as a poll template and replay it on IN_2 ONLY
+        // inside IN_1's guaranteed-quiet post-reply window (maybePollEsc, called
+        // from serveTelemetry), at the autodetect cadence.  Capturing is harmless
+        // (no TX) so it's always armed when the downstream link is up.
+        if (_escPort) {
+            _rxBus.onRawFrame([this](const uint8_t* f, uint8_t l){ captureEscPoll(f, l); });
         }
 
         // Register the HubFX-own device (local → never expires) + its built-in
@@ -186,6 +190,7 @@ public:
         if (_escPort) {
             _escMon.update(now);
             _escWatch.observe(now, _escMon.rxByteCount(), _escMon.frameCount(), "IN_2");
+            updateEscPresence(now);   // promote/demote ESC + adjust poll cadence
         }
         _rxBus.update();            // IN_1: master frames → channels (+ reply hook)
         _rxWatch.observe(now, _rxBus.rxByteCount(), _rxBus.rxFrameCount(), "IN_1");
@@ -216,6 +221,19 @@ public:
                          (unsigned long)_rxBus.lastTxDurUs(), (unsigned long)_rxBus.maxTxDurUs(),
                          (unsigned long)_loopLagUs, (unsigned long)_maxLoopLagUs);
             _maxLoopLagUs = 0;   // reset the 2 s window peak
+        }
+        // Downstream ESC (IN_2) autodetect health (every 2 s, only when the
+        // downstream link is up): present = autodetect state; polls = IN_2 master
+        // polls issued (windowed into IN_1's quiet slot); replies = ESC telemetry
+        // frames decoded; rxErr climbing with no replies ⇒ wrong baud / crosstalk.
+        if (_escPort && now - _lastEscLog >= 2000) {
+            _lastEscLog = now;
+            SFX_LOG_INFO("[jexp] IN_2 ESC present=%d polls=%lu replies=%lu sensors=%lu rxB=%lu rxErr=%lu",
+                         _escPresent ? 1 : 0, (unsigned long)_escPolls,
+                         (unsigned long)_escMon.telemetryFrames(),
+                         (unsigned long)_escMon.sensorUpdates(),
+                         (unsigned long)_escMon.rxByteCount(),
+                         (unsigned long)_escMon.errorCount());
         }
 #endif
 
@@ -442,28 +460,67 @@ private:
             if (!len)            len = buildText(hub, buf);      // fallback
         }
         if (len) _rxBus.sendTelemetry(pktId, buf, len);
+
+        // IN_1 is now in its guaranteed-quiet slot: the master released the line
+        // for ~4 ms and our reply consumed only ~2 ms.  This is the ONLY safe
+        // window to TX on IN_2 — its TX crosstalks the adjacent IN_1 RX, so it
+        // must land while IN_1 is idle or it corrupts a channel frame.
+        maybePollEsc(now);
     }
 
-    // Raw-frame hook: poll the downstream ESC by mirroring the Rx's TELEMETRY-
-    // REQUEST frames to it (half-duplex).  Rate-limited so the ESC is polled at
-    // ~kEscPollIntervalMs, NOT once per Rx frame: mirroring every frame blocks
-    // the task on flush() for ~3 ms each and starves IN_1's channel RX (signal
-    // loss).  Only 0x3A frames matter — channel frames don't make the ESC reply.
-    //
-    // NOTE: this forwards Rx->ESC only; the reverse CONFIG-relay (ESC config /
-    // menu replies -> Rx) is NOT IMPLEMENTED YET (deferred — proprietary format,
-    // synchronous-proxy timing).  The monitor extracts the ESC's 0x3A telemetry;
-    // its config/menu replies are dropped.
-    void forwardToEsc(const uint8_t* frame, uint8_t len) {
-        if (!_escPort || !_escStream) return;
-        if (len < 6 || frame[4] != DATA_TELEMETRY) return;     // telemetry polls only
-        const uint32_t now = SFX_MILLIS();
-        if (now - _lastFwdMs < kEscPollIntervalMs) return;     // rate-limit
-        _lastFwdMs = now;
+    // ── Downstream ESC master link (IN_2) — Phase 2 ──────────────────
+    // Capture the Rx's latest TELEMETRY-REQUEST (0x3A) frame as the poll template
+    // to replay at the ESC.  We replay a RECENT real master poll (its packetId is
+    // fresh from the Rx stream) rather than synthesise one — the ESC, a slave on
+    // its bus, replies to any valid telemetry request; the hub decodes whatever
+    // comes back via _escMon.  Capture is pure copy (no TX) — always safe.
+    void captureEscPoll(const uint8_t* frame, uint8_t len) {
+        if (!_escPort || len < 6 || len > sizeof(_escPoll)) return;
+        if (frame[4] != DATA_TELEMETRY) return;                // telemetry polls only
+        memcpy(_escPoll, frame, len);
+        _escPollLen = len;
+    }
+
+    // Poll the ESC on IN_2 — CALLED ONLY from serveTelemetry, i.e. inside IN_1's
+    // quiet reply slot.  The IN_2 TX (~1 ms) crosstalks the adjacent IN_1 RX, so
+    // it MUST land here or it corrupts a channel frame (why plain mirroring was
+    // disabled).  Cadence is the autodetect interval: fast when the ESC answers,
+    // slow probe when absent.  The reply is decoded by _escMon in update().
+    void maybePollEsc(uint32_t now) {
+        if (!_escPort || !_escStream || _escPollLen == 0) return;
+        if (now - _escLastPollMs < _escPollIntervalMs) return;
+        _escLastPollMs = now;
+        _escPolls++;
         _escPort->txEnable();
-        _escStream->write(frame, len);
-        _escStream->flush();
+        _escStream->write(_escPoll, _escPollLen);
+        _escStream->flush();                                   // ~1 ms — fits the slot
         _escPort->txDisable();
+    }
+
+    // ESC presence autodetect — called each task pass from update().  PRESENT
+    // (fast poll) the moment _escMon decodes a fresh telemetry reply; ABSENT
+    // (slow probe) after kEscAbsentMs of silence.  The hub's expireStale drops
+    // the device from the radio set on demotion.  Handles hot-plug both ways:
+    // a freshly-plugged ESC is caught by the slow probe; an unplugged one ages
+    // out.  No config change needed — `downstream:` only enables the link.
+    void updateEscPresence(uint32_t now) {
+        if (!_escPort) return;
+        const uint32_t frames = _escMon.telemetryFrames();
+        if (frames != _escLastReplyFrames) {                   // a reply arrived
+            _escLastReplyFrames = frames;
+            _escLastReplyMs = now;
+            if (!_escPresent) {
+                _escPresent = true;
+                _escPollIntervalMs = kEscActivePollMs;
+                SFX_LOG_INFO("[jexp] IN_2 ESC present — telemetry replying (poll %lums)",
+                             (unsigned long)kEscActivePollMs);
+            }
+        } else if (_escPresent && now - _escLastReplyMs > kEscAbsentMs) {
+            _escPresent = false;
+            _escPollIntervalMs = kEscProbePollMs;
+            SFX_LOG_INFO("[jexp] IN_2 ESC absent — back to %lums probe",
+                         (unsigned long)kEscProbePollMs);
+        }
     }
 
     // ── Multi-device rotation (cursors advanced under the hub lock) ───
@@ -516,24 +573,34 @@ private:
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
-    // The forward-to-ESC TX on IN_2 (GPIO6) couples onto the ADJACENT IN_1
-    // (GPIO5) channel RX and drops the RC signal — confirmed: the IN_1 reply is
-    // clean, the "second-UART piping" is what hurts.  Off until the IN_2 poll is
-    // timed into IN_1's silent window (or routed off the adjacent pin).  The
-    // IN_1 telemetry RESPONSE is unaffected and stays on.
-    static constexpr bool     kForwardToEsc       = false;
-    // Two-way telemetry reply is now RUNTIME-gated via `_respond` (set from the
+    // Two-way telemetry reply is RUNTIME-gated via `_respond` (set from the
     // attach config — see begin()'s respondTelemetry param), not a compile flag.
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
-    static constexpr uint32_t kEscPollIntervalMs = 100;  // ESC poll rate (~10 Hz)
     static constexpr uint32_t kRespIntervalMs    = 50;   // Rx reply rate cap (~20 Hz)
+    // Downstream ESC (IN_2) active master poll + autodetect (Phase 2).  The poll
+    // TX is crosstalk-windowed into IN_1's quiet slot (maybePollEsc), so the rate
+    // is bounded by the IN_1 reply cadence too.  PROBE while no ESC answers (slow,
+    // just enough to catch a hot-plug); ACTIVE once it replies; demote after
+    // kEscAbsentMs of silence.
+    static constexpr uint32_t kEscProbePollMs    = 200;  // no ESC: hot-plug probe
+    static constexpr uint32_t kEscActivePollMs   = 75;   // ESC replying: fresh telemetry
+    static constexpr uint32_t kEscAbsentMs       = 600;  // silence → demote to probe
     // Timeliness-gate slack = master window (~4 ms) − our reply (~2 ms).  If the
     // main loop lagged more than this since the last drain, the parsed poll is
     // too stale to answer in-window — skip (see serveTelemetry()).  Generous at
     // first; watch `lateSkip` vs channel `valid` during a gun event and tighten.
     static constexpr uint32_t kReplyLagBudgetUs  = 1500;
-    uint32_t _lastFwdMs  = 0;            // last ESC-forward time (rate limit)
     uint32_t _lastRespMs = 0;            // last Rx-reply time (rate limit)
+
+    // Downstream ESC (IN_2) master-poll + autodetect state (Phase 2).
+    uint8_t  _escPoll[16]        = {};   // captured Rx telemetry-request (poll template)
+    uint8_t  _escPollLen         = 0;
+    uint32_t _escLastPollMs      = 0;
+    uint32_t _escPollIntervalMs  = kEscProbePollMs;   // start in probe until a reply
+    uint32_t _escLastReplyFrames = 0;
+    uint32_t _escLastReplyMs     = 0;
+    bool     _escPresent         = false;
+    uint32_t _escPolls           = 0;    // diag — IN_2 polls issued
     bool     _respond    = false;        // two-way telemetry reply enabled (runtime, from attach cfg)
     uint32_t _lastTxLog  = 0;            // last [jexp] TX instrumentation log time
     uint8_t  _localDev   = 0xFF;         // hub index of the HubFX-own device
@@ -562,6 +629,7 @@ private:
     uint32_t  _lastExpire  = 0;         // 1 Hz stale-device expiry (in update)
 #if SFX_INSTRUMENTATION
     uint32_t  _lastRxLog   = 0;         // 2 s rx-health diag (in update)
+    uint32_t  _lastEscLog  = 0;         // 2 s IN_2 ESC autodetect diag (in update)
 #endif
 };
 

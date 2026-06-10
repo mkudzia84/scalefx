@@ -296,25 +296,26 @@ void JetiExBus::sendExBusResponse(uint8_t packetId, uint8_t dataId,
         // (totalLen bytes).  NOT a `while(available)` drain — that can swallow
         // the master's next channel frame if it arrives right after the slot,
         // causing RC signal loss.
-        const uint32_t t0 = SFX_MICROS();   // TX-bracket timing (slot-fit watch)
+        const uint32_t t0 = SFX_MICROS();   // SLOT bracket = the reply only
         _txPort->txEnable();
         _serial->write(frame, totalLen);
         _serial->flush();                   // wait for shift register empty
         _txPort->txDisable();
-        // Drain our own echo (TX↔RX tied on the single wire), bounded to our own
-        // totalLen bytes so we never swallow the master's next channel frame.  We
-        // do NOT spin-wait for the last in-flight echo byte: that adds main-loop
-        // blocking — the exact thing that starves the cooperative channel drain
-        // and overruns the reply window (the real fault, fixed by the timeliness
-        // gate in JetiExpander::serveTelemetry).  echoShort just counts the
-        // straggler; it is benign next to the late-reply collision.
-        uint8_t drained = 0;
-        for (uint8_t i = 0; i < totalLen && _serial->available(); ++i) { _serial->read(); ++drained; }
-        if (drained < totalLen) _echoShort++;
-        const uint32_t dur = SFX_MICROS() - t0;
-        _lastTxDurUs = dur;
-        if (dur > _maxTxDurUs)    _maxTxDurUs = dur;
+        const uint32_t dur = SFX_MICROS() - t0;   // measured BEFORE the echo drop
+        _lastTxDurUs = dur;                       // so maxUs/slotOver track the
+        if (dur > _maxTxDurUs)    _maxTxDurUs = dur;   // reply, not the cleanup
         if (dur > kSlotBudgetUs)  _slotOverruns++;
+
+        // Drop our own TX self-echo (TX↔RX tied on the single wire) in one shot —
+        // ring + the in-flight FIFO tail the old byte-bounded drain always left
+        // behind (echoShort≈100%, a benign straggler that nicked the next frame's
+        // CRC).  Safe here: a prompt reply (timeliness-gated) leaves the master
+        // silent for ~2 ms more, so only our echo is in RX.  Instant (no yield),
+        // so it doesn't eat into the IN_2 poll window that serveTelemetry runs
+        // next.  echoShort now just tallies "the tail was still in flight".
+        const bool hadTail = ((uint16_t)_serial->available() < totalLen);
+        _serial->flushRx();
+        if (hadTail) _echoShort++;
     } else {
         _serial->write(frame, totalLen);
     }

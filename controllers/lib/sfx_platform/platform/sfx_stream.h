@@ -75,6 +75,12 @@ public:
         return readBytes(reinterpret_cast<uint8_t*>(buffer), length);
     }
 
+    /// Discard everything currently in the RX buffer (driver ring + HW FIFO).
+    /// Default no-op; the native UART overrides with uart_flush_input.  Used by
+    /// the half-duplex Jeti responder to drop its own TX self-echo in one shot
+    /// (incl. the in-flight FIFO tail) during the master's silent reply slot.
+    virtual void flushRx() {}
+
     /// `if (stream)` truthiness — true while the underlying transport is live.
     virtual explicit operator bool() const { return true; }
 };
