@@ -213,6 +213,11 @@ public:
 private:
     void doShot();
     void commandFlash();
+    /// Start (or, on a mid-burst ROF change, SWITCH) the sustained-fire looping
+    /// WAV for the currently-armed ROF on this gun's audio channel.  The shot
+    /// sound is a per-RPM baked loop, so the sample must follow the ROF — not
+    /// just the LED cadence.  Called from startFiring() and onRofSelectorUs().
+    void startShotLoop();
     /// Fire a role-level recoil impulse on each enabled turret axis: a random
     /// ±offset added to the servo OUTPUT for `recoilHoldMs`, then de-jerked by
     /// the role.  Rides on top of the aim (no RC suppression, no snap-back).

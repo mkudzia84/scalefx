@@ -114,21 +114,26 @@ inline void GunUnit::startFiring(uint16_t rpmOverride, uint8_t rofOverride) {
     // and let it play continuously until stopFiring() stops the channel.
     // Auto-fire ticks below (doAutoFireShot) still broadcast GUN_SHOT_EVENT
     // for the Studio mirror but DO NOT touch audio.
-    if (_audio && _audioCtx) {
-        const RofItem* item = activeRof();
-        const char* sound = (item && item->soundPath[0]) ? item->soundPath : nullptr;
-        const uint8_t mask = (item && item->outputMask) ? item->outputMask : 0x03;
-        const uint8_t channel = (_spec.id & 1)
-            ? audio::HubFxLayout::GunB
-            : audio::HubFxLayout::GunA;
-        if (sound) {
-            _audio(_audioCtx, sound, channel, mask, /*loop=*/true);
-        }
-    }
+    startShotLoop();
 
     SFX_LOG_INFO("[gun] %u: auto-fire @%u ms / shot (rof=%u)",
                  _spec.id, (unsigned)_shotIntervalMs,
                  (unsigned)_activeRofIndex);
+}
+
+inline void GunUnit::startShotLoop() {
+    if (!_audio || !_audioCtx) return;
+    const RofItem* item = activeRof();
+    const char* sound = (item && item->soundPath[0]) ? item->soundPath : nullptr;
+    if (!sound) return;
+    const uint8_t mask = (item && item->outputMask) ? item->outputMask : 0x03;
+    const uint8_t channel = (_spec.id & 1)
+        ? audio::HubFxLayout::GunB
+        : audio::HubFxLayout::GunA;
+    // PLAY on the gun channel starts the loop, OR switches it to a new sample
+    // when the ROF changed mid-burst (the mixer's PLAY stops the current file
+    // and plays the new one on the same channel).
+    _audio(_audioCtx, sound, channel, mask, /*loop=*/true);
 }
 
 inline void GunUnit::stopFiring() {
@@ -324,6 +329,11 @@ inline void GunUnit::onRofSelectorUs(uint16_t pulseUs, bool valid) {
         const RofItem* item = activeRof();
         const uint16_t rpm = item ? item->rpm : 0;
         _shotIntervalMs = (rpm > 0) ? (60000u / rpm) : _shotIntervalMs;
+        // BUGFIX (2026-06-10): the LED muzzle cadence above isn't enough — the
+        // shot sound is a per-RPM baked loop, so a mid-burst ROF change must
+        // also switch the looping WAV to the new item's sample.  Only on a real
+        // change (we early-returned on same idx), so it never stutters.
+        startShotLoop();
     }
     SFX_LOG_INFO("[gun] %u: ROF → %u (selector=%u µs)",
                  _spec.id, (unsigned)idx, (unsigned)pulseUs);
