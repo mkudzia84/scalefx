@@ -337,13 +337,19 @@ private:
         _task = nullptr;
         vTaskDelete(nullptr);
     }
-    // Core 0 (NOT core 1 — audio real-time).  Priority above loopTask(1) +
-    // usb_daemon(2)/usb_worker(3) so a poll is serviced promptly, below the
-    // audio-decoder/CDC(5) so it never disturbs them; safe because the task
-    // mostly sleeps/yields.  6 KB stack covers the reply build + the 2 s
-    // [jexp] DiagLog line (the hot path itself never logs).
+    // Core 0 (NOT core 1 — audio real-time).  Priority ABOVE the audio-decoder
+    // + CDC driver (both prio 5 on Core 0): the half-duplex reply must release
+    // the line (txDisable) the instant the ~2 ms TX completes, or the master's
+    // next channel frame collides with our still-driven line → lost tracking.
+    // At prio 4 a mid-reply decoder preempt stretched the bracket to 17-29 ms
+    // (bench 2026-06-10, build 845) and dropped the signal during engine-sound
+    // MP3 churn.  At prio 6 the task resumes immediately after flush() yields and
+    // runs txDisable before the master frame arrives.  Safe: the task sleeps 1 ms
+    // between passes and yields through flush(), so it steals only microseconds
+    // from the decoder (which has ring headroom).  6 KB stack covers the reply
+    // build + the 2 s [jexp] DiagLog line (the hot path itself never logs).
     static constexpr uint32_t   kTaskStackBytes = 6144;
-    static constexpr UBaseType_t kTaskPrio       = 4;
+    static constexpr UBaseType_t kTaskPrio       = 6;
 
     // ── Link health monitor (NON-disabling) ──────────────────────────
     // The bounded frame-parser drain (kMaxDrainBytesPerCall) is the safety net
