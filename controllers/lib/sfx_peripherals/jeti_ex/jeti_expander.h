@@ -29,7 +29,10 @@
 #if SFX_PLATFORM_ESP32
 
 #include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h>)
+#include <freertos/FreeRTOS.h>     // dedicated IN_1 servicing task
+#include <freertos/task.h>
 #include <cstdint>
+#include <functional>
 
 #include <ports/input_port.h>
 #include <serial/diag_log.h>
@@ -123,15 +126,47 @@ public:
         const uint32_t now0 = SFX_MILLIS();
         _rxWatch.reset(now0);
         _escWatch.reset(now0);
-        SFX_LOG_INFO("[jexp] started in main loop (rx=IN_1, esc=IN_2%s, baud=%lu)",
+
+        // Telemetry reply is time-critical: the master reserves a ~4 ms slot and
+        // our reply is ~2 ms, so it must START within ~1.3 ms of the poll.  The
+        // cooperative main loop runs 3–35 ms under effect load — far too slow to
+        // ever answer in-window (measured resp=1 / lateSkip≈100%).  So when
+        // RESPONDING, OWN IN_1 on a dedicated Core-0 task that services it every
+        // ~1 ms.  Core 1 is reserved for audio real-time (moving work there spiked
+        // underruns 10×); Core 0 has the headroom.  The task SLEEPS 1 tick (1 ms @
+        // 1000 Hz) each pass so it yields Core 0 to loopTask/storage, and it is
+        // GATED OFF during uploads — the two things the prior prio-3 spin-task
+        // lacked when it starved the upload pipeline (2026-05-30).  Listen-only
+        // (no reply) is not time-critical → keep the cheap main-loop decode.
+        if (_respond) {
+            _taskRunning = true;
+            if (xTaskCreatePinnedToCore(&JetiExpander::taskTrampoline, "jeti_in1",
+                                        kTaskStackBytes, this, kTaskPrio,
+                                        &_task, /*core=*/0) != pdPASS) {
+                _task = nullptr;
+                _taskRunning = false;
+                SFX_LOG_WARN("[jexp] IN_1 task spawn FAILED — main-loop decode fallback");
+            } else {
+                SFX_LOG_INFO("[jexp] IN_1 task started (Core 0 prio %u, %u B stack)",
+                             (unsigned)kTaskPrio, (unsigned)kTaskStackBytes);
+            }
+        }
+        SFX_LOG_INFO("[jexp] started (rx=IN_1%s, esc=IN_2%s, baud=%lu)",
+                     _task ? " task" : " loop",
                      _escPort ? "" : " off", (unsigned long)baud);
         return true;
     }
 
-    // Drive one decode pass — called every main-loop iteration from
-    // JetiExInputRole::tick().  Drains IN_2 (ESC monitor) then IN_1 (channels +,
-    // when telemetry is enabled, the reply hook), and refreshes built-in
-    // sensors.  No-op until begin() / after end().
+    // Main-loop entry (from JetiExInputRole::tick()).  Runs the cooperative
+    // decode ONLY when the dedicated IN_1 task is NOT running — i.e. listen-only
+    // mode.  When responding, the task owns the UART and this is a no-op so the
+    // two never double-drive the port.
+    void tickMainLoop() { if (!_task) update(); }
+
+    // Drive one decode pass — called every ~1 ms by the IN_1 task (responding)
+    // or every main-loop iteration via tickMainLoop() (listen-only).  Drains
+    // IN_2 (ESC monitor) then IN_1 (channels +, when telemetry is enabled, the
+    // reply hook), and refreshes built-in sensors.  No-op until begin()/end().
     void update() {
         if (!_running) return;
         // Main-loop lag (µs since the previous update()): the worst-case AGE of a
@@ -199,8 +234,18 @@ public:
         }
     }
 
+    /// Pause the IN_1 task's UART servicing while this predicate is true
+    /// (Rule 28 upload exclusivity).  The prior Core-0 Jeti task starved the
+    /// upload pipeline precisely because it had no such gate; the sketch wires
+    /// this to the storage policy's isUploadActive().
+    void setUploadGate(std::function<bool()> fn) { _uploadGate = std::move(fn); }
+
     void end() {
-        _running = false;             // update() becomes a no-op
+        _running = false;             // task loop + update() become no-ops
+        if (_task) {                  // wait for the task to exit before teardown
+            for (int i = 0; i < 200 && _taskRunning; ++i) vTaskDelay(pdMS_TO_TICKS(1));
+            _task = nullptr;
+        }
         _rxBus.end();
         _escMon.end();
         if (_rxPort)  _rxPort->disable();
@@ -272,6 +317,33 @@ private:
     JetiExpander() = default;
     JetiExpander(const JetiExpander&) = delete;
     JetiExpander& operator=(const JetiExpander&) = delete;
+
+    // ── Dedicated IN_1 servicing task (Core 0) ───────────────────────
+    static void taskTrampoline(void* arg) {
+        static_cast<JetiExpander*>(arg)->taskLoop();
+    }
+    void taskLoop() {
+        while (_running) {
+            // Upload exclusivity (Rule 28): skip ALL UART servicing while an
+            // upload holds the pipeline, so we never steal Core-0 cycles from
+            // the SD writer (the 2026-05-30 starvation).  The 1-tick sleep
+            // yields Core 0 to loopTask/storage between passes — the half-duplex
+            // reply's flush() also yields (uart_wait_tx_done blocks), so the
+            // task's real CPU burn is microseconds despite the high priority.
+            if (!(_uploadGate && _uploadGate())) update();
+            vTaskDelay(pdMS_TO_TICKS(1));   // 1 ms @ 1000 Hz tick
+        }
+        _taskRunning = false;
+        _task = nullptr;
+        vTaskDelete(nullptr);
+    }
+    // Core 0 (NOT core 1 — audio real-time).  Priority above loopTask(1) +
+    // usb_daemon(2)/usb_worker(3) so a poll is serviced promptly, below the
+    // audio-decoder/CDC(5) so it never disturbs them; safe because the task
+    // mostly sleeps/yields.  6 KB stack covers the reply build + the 2 s
+    // [jexp] DiagLog line (the hot path itself never logs).
+    static constexpr uint32_t   kTaskStackBytes = 6144;
+    static constexpr UBaseType_t kTaskPrio       = 4;
 
     // ── Link health monitor (NON-disabling) ──────────────────────────
     // The bounded frame-parser drain (kMaxDrainBytesPerCall) is the safety net
@@ -467,6 +539,11 @@ private:
     uint32_t _loopLagUs    = 0;
     uint32_t _maxLoopLagUs = 0;
     uint32_t _lateSkip     = 0;
+
+    // Dedicated IN_1 task (responding mode) — see taskLoop()/begin().
+    TaskHandle_t          _task        = nullptr;   // null ⇒ cooperative main-loop decode
+    volatile bool         _taskRunning = false;     // shutdown handshake (end() waits on it)
+    std::function<bool()> _uploadGate;              // true ⇒ pause UART servicing (Rule 28)
 
     // Rotation cursors (data + text walk independently across the hub).
     uint16_t _seq     = 0;

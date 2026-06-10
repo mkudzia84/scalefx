@@ -56,9 +56,11 @@ void JetiExInputRole::setBroadcastHz(uint8_t hz) {
 void JetiExInputRole::tick() {
     if (!_port) return;
 #if SFX_PLATFORM_ESP32
-    // Drive the expander's decode IN THE MAIN LOOP (cooperative) — it no longer
-    // runs on a prio-3 Core-0 task that preempted the storage/upload pipeline.
-    JetiEx::JetiExpander::instance().update();
+    // Drive the expander's cooperative decode — but ONLY when it is NOT running
+    // its dedicated IN_1 task (responding mode owns the UART on a Core-0 task so
+    // the ~4 ms telemetry slot is met regardless of main-loop lag).  tickMainLoop
+    // is a no-op while the task is up, so the two never double-drive the port.
+    JetiEx::JetiExpander::instance().tickMainLoop();
 #endif
     // Local effect feed + (when subscribed) wire broadcast — same cadence.
     if (_onBroadcast && _bcast.due(SFX_MILLIS()))
