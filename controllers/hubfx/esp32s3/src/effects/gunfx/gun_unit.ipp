@@ -452,8 +452,13 @@ inline void GunUnit::commandFlash() {
 
     using hubfx::effects::lightfx::LightEvent;
     using hubfx::effects::lightfx::serializeQueueLoad;
+    namespace LEF = hubfx::effects::lightfx::LightEventFlags;
 
     LightEvent ev = LightEvent::on(_spec.flashBrightness, _spec.flashDurationMs);
+    // Fire-and-forget: the muzzle blink completes ~10×/s at auto-fire and the
+    // per-shot LED_QUEUE_DONE has no consumer — flag it so the animator stays
+    // silent (otherwise it floods the wire + diag log during a burst).
+    ev.flags |= LEF::NoDone;
     uint8_t queue[2 + 10];
     size_t qlen = serializeQueueLoad(_spec.muzzleFlashPort.portIdx, &ev, 1,
                                      queue, sizeof(queue));

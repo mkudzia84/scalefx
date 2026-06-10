@@ -65,6 +65,14 @@ namespace LightEventFlags {
     /// channel (the animator reads event[0]).  Without it, the queue
     /// plays once and the terminal event holds (the original behaviour).
     inline constexpr uint8_t Loop = 0x01;
+
+    /// FIRE-AND-FORGET: suppress the `LED_QUEUE_DONE` async event when this
+    /// queue runs to the end.  For high-rate effect-internal blinks (the gun
+    /// muzzle flash fires one finite On event per shot — 10+/s at auto-fire),
+    /// the per-completion DONE event has no consumer and just floods the wire +
+    /// diag log.  Set on event[0]; genuine user PROGRAMS leave it clear so a
+    /// host still learns when a one-shot sequence finishes.
+    inline constexpr uint8_t NoDone = 0x02;
 }
 
 /// Wire size of one serialized event record.  Asserted at compile time.
