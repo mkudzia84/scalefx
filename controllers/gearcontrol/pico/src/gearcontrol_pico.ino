@@ -61,7 +61,7 @@
 #include <power/ina226_sensor.h>
 
 #define FIRMWARE_VERSION "1.0.0"
-#define BUILD_NUMBER     27
+#define BUILD_NUMBER     28
 
 // ════════════════════════════════════════════════════════════════════════
 //  Board pin / address map (cross-ref: instructions/schematics/gearcontrol.tel)
