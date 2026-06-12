@@ -58,7 +58,7 @@ func dispatchInteractive(line string) {
 	switch cmd {
 	case "build":
 		controller, flags := extractPositionalAndFlags(args)
-		cmdBuild(controller, hasArg(flags, "--no-clean"))
+		cmdBuild(controller, hasArg(flags, "--no-clean"), hasArg(flags, "--no-bump"))
 
 	case "flash":
 		controller, flags := extractPositionalAndFlags(args)
@@ -131,7 +131,7 @@ func dispatchInteractive(line string) {
 
 func printInteractiveHelp() {
 	fmt.Println("  Commands:")
-	fmt.Printf("    %-42s %s\n", colorize(cyan, "build <controller> [--no-clean]"), "Build firmware")
+	fmt.Printf("    %-42s %s\n", colorize(cyan, "build <controller> [--no-clean] [--no-bump]"), "Build firmware")
 	fmt.Printf("    %-42s %s\n", colorize(cyan, "flash <controller> [flags]"), "Build + flash + verify")
 	fmt.Printf("    %-42s %s\n", colorize(cyan, "upload <controller> [flags]"), "Flash without rebuilding")
 	fmt.Printf("    %-42s %s\n", colorize(cyan, "verify <controller> [--port PORT]"), "Verify device firmware")
@@ -145,10 +145,11 @@ func printInteractiveHelp() {
 	fmt.Printf("    %-42s %s\n", colorize(cyan, "help"), "Show this help")
 	fmt.Printf("    %-42s %s\n", colorize(cyan, "quit"), "Exit")
 	fmt.Println()
-	fmt.Printf("  Flags: %s, %s, %s\n",
+	fmt.Printf("  Flags: %s, %s, %s, %s\n",
 		colorize(gray, "--port PORT"),
 		colorize(gray, "--skip-verify"),
-		colorize(gray, "--no-clean"))
+		colorize(gray, "--no-clean"),
+		colorize(gray, "--no-bump"))
 	fmt.Println()
 }
 

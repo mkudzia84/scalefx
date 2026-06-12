@@ -13,6 +13,7 @@ Active targets: `hubfx` (ESP32-S3, the master — 99% of work), `lightfx` + `gea
 ## Core commands
 ```bash
 app/go/scalefx-flash.exe build  hubfx --no-clean          # compile only (use --no-clean for fast incremental)
+app/go/scalefx-flash.exe build  hubfx --no-clean --no-bump # VERIFICATION build — BUILD_NUMBER untouched (test gate / CI)
 app/go/scalefx-flash.exe flash  hubfx --no-clean --port COM15   # build + flash + verify
 app/go/scalefx-flash.exe upload hubfx --port COM15         # flash WITHOUT rebuilding (reuse last .bin)
 app/go/scalefx-flash.exe verify --port COM15              # read back firmware version/build
@@ -24,7 +25,7 @@ app/go/scalefx-flash.exe ports                            # list detected ScaleF
 
 ## Version & build number (Rules 9 / 10)
 `FIRMWARE_VERSION` + `BUILD_NUMBER` live near the top of `controllers/hubfx/esp32s3/src/hubfx_esp32s3.cpp`.
-- `BUILD_NUMBER` **auto-increments on every build** (a build hook bumps it) — don't hand-edit it; it'll show as a dirty one-line diff after a build, commit it as `chore(hubfx): bump build number`.
+- `BUILD_NUMBER` **auto-increments on every build** (a build hook bumps it) — don't hand-edit it; it'll show as a dirty one-line diff after a build, commit it as `chore(hubfx): bump build number`. **Exception:** a compile-check that deploys nothing (test gate, CI, "does it build?") should pass `--no-bump` so the source stays untouched — the pre-merge gate does this automatically.
 - Bump `FIRMWARE_VERSION` **proactively** by the change class: **MAJOR** = wire-breaking, **MINOR** = additive (new packet/field, append-only per Rule 11), **PATCH** = logic/bugfix only. Trust the `INIT_READY` buildNum over the source `#define` after a flash.
 
 ## After a protocol change

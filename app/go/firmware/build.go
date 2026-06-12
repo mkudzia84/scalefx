@@ -145,10 +145,24 @@ func Build(opts *Options, ctrl Controller) (*BuildInfo, error) {
 		return nil, fmt.Errorf("controller directory not found: %s", ctrlPath)
 	}
 
-	// Increment build number
-	newBuild, err := IncrementBuildNumber(opts, ctrl)
-	if err != nil {
-		return nil, err
+	// Increment build number — unless this is a verification build (NoBump,
+	// used by the test gate / CI): a compile check with no source change must
+	// not mutate the source, or every gate run dirties the tree with a
+	// BUILD_NUMBER-only diff.  Deploy paths (flash) keep the auto-bump.
+	var newBuild int
+	if opts.NoBump {
+		_, cur, err := ExtractVersion(opts, ctrl)
+		if err != nil {
+			return nil, err
+		}
+		newBuild = cur
+		opts.info("Verification build — BUILD_NUMBER stays at %d", newBuild)
+	} else {
+		var err error
+		newBuild, err = IncrementBuildNumber(opts, ctrl)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Build PlatformIO command
