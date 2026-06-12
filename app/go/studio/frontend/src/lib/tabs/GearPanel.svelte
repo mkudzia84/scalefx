@@ -21,7 +21,7 @@
     import {
         gearDraft, gearDirty, gearHasErrors, gearPhases,
         loadGearConfig, refreshGearStatus,
-        addGearChannel, removeGearChannel, setGearEnabled, setGearCoord,
+        addGearChannel, removeGearChannel, moveGearChannel, setGearEnabled, setGearCoord,
         updateGearChannel, addGearDoor, removeGearDoor,
         updateGearInput, updateGearSounds,
         gearItemErrors, installGearPhaseListener,
@@ -38,8 +38,10 @@
     import { pickFile } from '../filepicker'
     import { freePortPool } from '../components/port_pool'
     import ServoWidget from '../components/ServoWidget.svelte'
+    import ServoIoWidget from '../components/ServoIoWidget.svelte'
     import SoundRow from '../components/SoundRow.svelte'
     import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
+    import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     import type { ServoProfileT } from '../servo_calibration'
 
     let busy = false
@@ -57,6 +59,11 @@
     let statusTimer: ReturnType<typeof setInterval> | undefined
     onMount(() => {
         installGearPhaseListener()
+        // Live door-servo positions (Rule 42/53): the generic servo-status
+        // stream feeds each door's ServoIoWidget so the operator SEES the
+        // door move during a deploy test.  Same wiring as the GunFx turret.
+        installServoStatusListener()
+        setServoLiveView(true).catch(() => {})
         loadGearConfig().catch(e => { error = String(e) })
         refreshGearStatus().catch(() => {})
         statusTimer = setInterval(() => { refreshGearStatus().catch(() => {}) }, 1500)
@@ -64,7 +71,7 @@
     onDestroy(() => {
         unsub()
         if (statusTimer) clearInterval(statusTimer)
-        if (motorModalGear !== null) closeMotorModal()
+        setServoLiveView(false).catch(() => {})
     })
 
     $: dirty     = $gearDirty
@@ -284,14 +291,11 @@
             : ({ ...g, doors: [...g.doors, { port, open: 10000, close: 0 }] }))
     }
 
-    // ─── Motor modal (deploy/retract test + duty/timeout config) ──────
-    // Full hub-forwarded manual jog is a documented TODO (instructions/29
-    // §3.4) — this modal stays at deploy/retract bench-test + the
-    // duty/timeout config knobs; no role-forwarding bindings invented.
-    let motorModalGear: number | null = null
-    function openMotorModal(id: number) { motorModalGear = id }
-    function closeMotorModal() { motorModalGear = null }
-    $: modalChannel = motorModalGear === null ? null : cfg?.gears.find(g => g.id === motorModalGear) ?? null
+    // (The old "⚙ Motor…" modal was retired in the 2026-06-11 redesign —
+    // duty/timeout now live INLINE in the Motor section, and the bench-test
+    // Deploy/Retract/Stop moved to the per-channel header op-cluster, the
+    // GunFx pattern.  Full hub-forwarded manual jog stays a documented TODO,
+    // instructions/29 §3.4.)
 
     async function safe(fn: () => Promise<void>) {
         busy = true; error = ''
@@ -427,9 +431,13 @@
         {@const doorPoolEmpty= doorAddPool.length === 0 && gch.doors.length === 0}
         {@const deployed     = isDeployed(gch.id)}
         {@const errored      = isErrored(gch.id)}
+        {@const order = cfg.gears.findIndex(g => g.id === gch.id)}
         <div class="card group-card" class:invalid={chanErrors}>
             <div class="card-header inner">
-                <h4>{gch.name || 'Gear channel'}</h4>
+                <h4>
+                    {#if cfg.coord === 'sequenced'}<span class="seq-badge" title="Sequenced order — this channel runs {order + 1}{['st','nd','rd'][order] ?? 'th'} (cards run top-to-bottom).">#{order + 1}</span>{/if}
+                    {gch.name || 'Gear channel'}
+                </h4>
                 <div class="header-actions">
                     <span class="state-pill phase {phaseClass($gearPhases[gch.id]?.phase ?? 1)}">{pillText(gch.id)}</span>
                     {#if errored}
@@ -438,8 +446,9 @@
                             ⟳ Reset
                         </button>
                     {/if}
-                    <!-- Rule 48 action-toggle: ON→OFF (retract) always allowed;
-                         OFF→ON (deploy) gated on dirty/errors. -->
+                    <!-- Per-channel op-cluster (Rule 48, GunFx pattern):
+                         deploy/retract action-toggle + a mid-motion Stop.
+                         ON→OFF (retract) always allowed; OFF→ON gated. -->
                     <button class="small state-toggle" class:danger={deployed}
                             on:click={() => safe(() => (deployed ? gearRetract(gch.id) : gearDeploy(gch.id)))}
                             disabled={deployed ? busy : (busy || dirty || chanErrors || !cfg?.enabled)}
@@ -450,6 +459,16 @@
                                  : 'Deploy: open doors → run motor down → close doors'}>
                         {deployed ? '■ Retract' : '▶ Deploy'}
                     </button>
+                    <button class="small" on:click={() => safe(() => gearStop(gch.id))} disabled={busy}
+                            title="Brake the motor mid-motion (does not clear an error — use Reset).">Stop</button>
+                    <!-- Order matters: sequenced coordination runs cards
+                         top-to-bottom (gear[0] first on deploy). -->
+                    <button class="small btn-slot" on:click={() => moveGearChannel(gch.id, -1)}
+                            disabled={busy || order === 0}
+                            title="Move up — in sequenced coordination this channel cycles earlier.">↑</button>
+                    <button class="small btn-slot" on:click={() => moveGearChannel(gch.id, 1)}
+                            disabled={busy || order === cfg.gears.length - 1}
+                            title="Move down — in sequenced coordination this channel cycles later.">↓</button>
                     <button class="small danger" on:click={() => removeGearChannel(gch.id)} disabled={busy}>× Remove</button>
                 </div>
             </div>
@@ -479,15 +498,42 @@
                         <option value={modelPortKey(p)}>{refOptLabel(p)}</option>
                     {/each}
                 </select>
-                <button class="small" on:click={() => openMotorModal(gch.id)}
-                        disabled={busy || !gch.motor.kind}
-                        title="Bench-test deploy/retract + set the motor duty + travel timeout.">
-                    ⚙ Motor…
-                </button>
             </div>
             {#if motorPoolEmpty}
                 <div class="form-row"><span class="field-label"></span>
                     <span class="hint warn">No H-bridge has a BiDcMotor role attached — attach one on the IO tab, then pick it here.</span>
+                </div>
+            {/if}
+            {#if gch.motor.kind}
+                <!-- Inline drive parameters (was the "⚙ Motor…" modal —
+                     config belongs on the panel; modals are for live-tune
+                     dialogs only).  Signed duty: deploy is normally +,
+                     retract −; swap signs if the leg runs backwards. -->
+                <div class="form-grid cols-3">
+                    <div class="form-field">
+                        <span class="field-label">Deploy duty</span>
+                        <input class="field-input narrow" type="number" min="-32767" max="32767" step="1000"
+                               value={gch.deployDuty}
+                               on:change={(e) => setField(gch.id, 'deployDuty', Math.round(numValue(e)))}
+                               disabled={busy} title="Signed H-bridge duty for 'going down' (-32767..32767)." />
+                    </div>
+                    <div class="form-field">
+                        <span class="field-label">Retract duty</span>
+                        <input class="field-input narrow" type="number" min="-32767" max="32767" step="1000"
+                               value={gch.retractDuty}
+                               on:change={(e) => setField(gch.id, 'retractDuty', Math.round(numValue(e)))}
+                               disabled={busy} title="Signed H-bridge duty for 'going up' (-32767..32767)." />
+                    </div>
+                    <div class="form-field">
+                        <span class="field-label">Travel timeout (ms)</span>
+                        <input class="field-input narrow" type="number" min="0" max="60000" step="500"
+                               value={gch.timeoutMs}
+                               on:change={(e) => setField(gch.id, 'timeoutMs', Math.max(0, Math.round(numValue(e))))}
+                               disabled={busy} title="Full-travel watchdog (ms) — the endstop seek aborts to ERROR after this. 0 = seek until stall." />
+                    </div>
+                </div>
+                <div class="form-row"><span class="field-label"></span>
+                    <span class="hint">the motor seeks to the endstop (stall-detected on the expander); endstop calibration lives on the BiDcMotor role — tune it on the IO tab.</span>
                 </div>
             {/if}
 
@@ -534,6 +580,25 @@
                         profile={profileForPort(d.port)}
                         busy={busy} />
                 </div>
+                <!-- Live door mirror (Rule 42/53, the GunFx turret pattern):
+                     position + target from the 20 Hz servo-status stream, so
+                     the operator SEES the door travel during a deploy test.
+                     Doors have no RC input — servo side only. -->
+                {#if d.port && d.port.kind}
+                    {@const dProf = profileForPort(d.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
+                    {@const dSv = $servoStatus[servoStatusKey(d.port.guid, d.port.idx)]}
+                    <div class="form-row servo-widget-row">
+                        <span class="field-label"></span>
+                        <ServoIoWidget
+                            hasInput={false}
+                            inputUs={null}
+                            inputValid={false}
+                            neutralUs={1500}
+                            hasServo={true}
+                            minUs={dProf.minUs} maxUs={dProf.maxUs} centerUs={dProf.centerUs} reversed={dProf.reversed}
+                            servo={dSv ?? null} />
+                    </div>
+                {/if}
             {/each}
             {#if gch.doors.length < 2}
                 <div class="form-row">
@@ -613,67 +678,6 @@
     {/each}
 </div>
 
-<!-- Motor modal — deploy/retract bench test + duty/timeout config. -->
-{#if modalChannel}
-    <div class="modal-backdrop" on:click={closeMotorModal} role="presentation">
-        <div class="modal" on:click|stopPropagation role="dialog" aria-modal="true">
-            <div class="modal-head">
-                <h4>Motor · {modalChannel.name || `gear ${modalChannel.id}`}</h4>
-                <button class="small" on:click={closeMotorModal}>✕ Close</button>
-            </div>
-            <div class="modal-body">
-                <div class="form-row">
-                    <span class="field-label">Live phase</span>
-                    <span class="state-pill phase {phaseClass($gearPhases[modalChannel.id]?.phase ?? 1)}">{pillText(modalChannel.id)}</span>
-                </div>
-                <div class="form-row">
-                    <span class="field-label">Bench test</span>
-                    <button class="small state-toggle" on:click={() => safe(() => gearDeploy(modalChannel.id))}
-                            disabled={busy || dirty || hasErrors}
-                            title={dirty ? 'Apply first — tests the loaded config' : 'Deploy this channel'}>
-                        ▶ Deploy
-                    </button>
-                    <button class="small state-toggle danger" on:click={() => safe(() => gearRetract(modalChannel.id))}
-                            disabled={busy} title="Retract this channel (always available)">
-                        ■ Retract
-                    </button>
-                    <button class="small" on:click={() => safe(() => gearStop(modalChannel.id))} disabled={busy}
-                            title="Brake the motor mid-motion.">Stop</button>
-                </div>
-                <div class="form-row">
-                    <span class="field-label">Deploy duty</span>
-                    <input class="field-input narrow" type="number" min="-32767" max="32767" step="1000"
-                           value={modalChannel.deployDuty}
-                           on:change={(e) => setField(modalChannel.id, 'deployDuty', Math.round(numValue(e)))}
-                           disabled={busy} title="Signed H-bridge duty for 'going down' (-32767..32767)." />
-                    <span class="hint compact">signed duty for the deploy (down) direction</span>
-                </div>
-                <div class="form-row">
-                    <span class="field-label">Retract duty</span>
-                    <input class="field-input narrow" type="number" min="-32767" max="32767" step="1000"
-                           value={modalChannel.retractDuty}
-                           on:change={(e) => setField(modalChannel.id, 'retractDuty', Math.round(numValue(e)))}
-                           disabled={busy} title="Signed H-bridge duty for 'going up' (-32767..32767)." />
-                    <span class="hint compact">signed duty for the retract (up) direction</span>
-                </div>
-                <div class="form-row">
-                    <span class="field-label">Travel timeout</span>
-                    <input class="field-input narrow" type="number" min="0" max="60000" step="500"
-                           value={modalChannel.timeoutMs}
-                           on:change={(e) => setField(modalChannel.id, 'timeoutMs', Math.max(0, Math.round(numValue(e))))}
-                           disabled={busy} title="Full-travel watchdog (ms) — the seek aborts to ERROR after this. 0 = none." />
-                    <span class="unit">ms</span>
-                </div>
-                <p class="help-text">
-                    Endstop calibration (LiveRatio + ceiling guard) lives on the BiDcMotor role, not here —
-                    tune it on the IO tab.  Full hub-forwarded manual jog is a planned follow-up.
-                </p>
-                {#if error}<div class="banner err">{error}</div>{/if}
-            </div>
-        </div>
-    </div>
-{/if}
-
 <style>
     .gear-card { margin-bottom: 14px; }
     .header-actions { display: flex; align-items: center; gap: 8px; }
@@ -686,6 +690,7 @@
     .group-card.invalid { border-color: var(--error); background: rgba(255,80,80,0.05); }
     .card-header.inner { padding: 4px 0 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px; }
     .card-header.inner h4 { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+    .seq-badge { font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: var(--accent); border: 1px solid var(--accent); border-radius: 3px; padding: 1px 5px; margin-right: 6px; vertical-align: 1px; }
 
     .section-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-bright); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
     .section-head .hint { font-weight: 400; text-transform: none; letter-spacing: 0; }

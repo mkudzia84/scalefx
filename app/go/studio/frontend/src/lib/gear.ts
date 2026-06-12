@@ -379,6 +379,21 @@ export function removeGearChannel(id: number): void {
     gearDraft.update(c => ({ ...c, gears: c.gears.filter(g => g.id !== id) }))
 }
 
+/** Move a channel up/down the list.  ORDER IS FUNCTIONAL: the firmware's
+ *  `sequenced` coordination runs the full cycle channel-by-channel in
+ *  array order (gear[0] first on deploy), so the card order IS the
+ *  sequence order. */
+export function moveGearChannel(id: number, dir: -1 | 1): void {
+    gearDraft.update(c => {
+        const i = c.gears.findIndex(g => g.id === id)
+        const j = i + dir
+        if (i < 0 || j < 0 || j >= c.gears.length) return c
+        const gears = [...c.gears]
+        ;[gears[i], gears[j]] = [gears[j], gears[i]]
+        return { ...c, gears }
+    })
+}
+
 export function setGearEnabled(on: boolean): void {
     gearDraft.update(c => {
         if (!on) return { ...c, enabled: false }
