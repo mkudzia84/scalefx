@@ -276,7 +276,16 @@ close → RELEASE + re-claim. Extract the Diagnostics BiMotor logic into a share
 ```yaml
 schema_version: 2
 enabled: true
-coord: sync            # independent | sync
+coord: sync            # independent | door_sync | full_sync | sequenced
+input:                 # OPTIONAL (2026-06-11) — one RC up/down channel drives ALL gears
+  name: gear_updown    # named channel from /hubfx.yaml inputs[] (Rule 43)
+  threshold_us: 1500
+  hysteresis_us: 50
+  invert: false        # false: above threshold = RETRACT (gear up)
+sounds:                # OPTIONAL (2026-06-11) — transit loops on HubFxLayout::Gear (slot 5)
+  deploy:  /sounds/gear/deploy.wav    # looped while any gear deploys; empty = silent
+  retract: /sounds/gear/retract.wav
+  output_mask: 3       # 1 = left, 2 = right, 3 = both
 gears:
   - id: 0
     name: nose
@@ -293,6 +302,17 @@ gears:
 ```
 Door `reversed` is NOT here — it lives on the servo's profile in `/hubfx.yaml`
 `ports[]` (Rule 44).
+
+`input:` is wired by the standalone `GearActivationDriver`
+(`config/gear_activation.h`, the gear twin of `LandingActivationDriver`) so the
+service keeps its two template params; it fires the same
+`GearControlService::commandAll()` the wire `GEAR_ALL` takes, honouring the
+coord mode.  Failsafe is firmware-fixed to the DEPLOY side (RC loss lowers the
+gear).  `sounds:` plays through an `AudioCmdFn` trampoline the sketch binds
+(`bindAudio`, GunFx pattern): the matching WAV loops on the dedicated `Gear`
+mixer channel while any gear is mid-transit and stops when the set settles
+(a Sequenced chain counts as still-moving across the inter-gear handoff).
+Both blocks are append-only optional — a pre-2026-06 v2 file parses unchanged.
 
 ## 5. Phasing / PR sequence
 1. **Firmware sequencing** — port `door_sequencer` + `gear_sequencer`, extend

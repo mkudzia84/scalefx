@@ -51,10 +51,31 @@ export interface GearChannelT {
     closePolicy: ClosePolicy
 }
 
+/** OPTIONAL one-channel RC up/down binding (Rule 43 named channel from
+ *  /hubfx.yaml inputs[]).  Above the threshold = retract (gear up);
+ *  invert flips.  Empty name = manual-only.  Failsafe is firmware-fixed
+ *  to the DEPLOY side (gear down on RC loss). */
+export interface GearInputT {
+    name: string
+    thresholdUs: number
+    hysteresisUs: number
+    invert: boolean
+}
+
+/** OPTIONAL transit sounds — the matching WAV loops on the dedicated
+ *  Gear mixer channel while any gear moves in that direction. */
+export interface GearSoundsT {
+    deploy: string
+    retract: string
+    outputMask: number     // 1=L 2=R 3=both (speaker_routing.ts masks)
+}
+
 export interface GearConfigT {
     schemaVersion: number
     enabled: boolean
     coord: CoordMode
+    input: GearInputT
+    sounds: GearSoundsT
     gears: GearChannelT[]
 }
 
@@ -98,8 +119,15 @@ export function defaultGearChannel(id: number): GearChannelT {
     }
 }
 
+export const defaultGearInput = (): GearInputT =>
+    ({ name: '', thresholdUs: 1500, hysteresisUs: 50, invert: false })
+
+export const defaultGearSounds = (): GearSoundsT =>
+    ({ deploy: '', retract: '', outputMask: 3 })
+
 export const emptyGearConfig = (): GearConfigT => ({
-    schemaVersion: 2, enabled: false, coord: 'independent', gears: [],
+    schemaVersion: 2, enabled: false, coord: 'independent',
+    input: defaultGearInput(), sounds: defaultGearSounds(), gears: [],
 })
 
 // ─── Stores ───────────────────────────────────────────────────────────
@@ -194,6 +222,19 @@ export function gearItemErrors(
     return out
 }
 
+/** Effect-level (non-channel) validation problems: the optional sound
+ *  paths must be absolute on-device paths when set. */
+export function gearEffectErrors(cfg: GearConfigT): string[] {
+    const out: string[] = []
+    const checkPath = (label: string, p: string) => {
+        if (p && !p.startsWith('/'))
+            out.push(`${label} sound path must be absolute (start with /).`)
+    }
+    checkPath('Deploy',  cfg.sounds?.deploy ?? '')
+    checkPath('Retract', cfg.sounds?.retract ?? '')
+    return out
+}
+
 /** Aggregate validation — true when the effect is enabled AND any
  *  channel has at least one error.  Feeds the dirty-registry so the
  *  global Apply is shaded out until resolved (Rule 35 + 45).  Subscribes
@@ -202,6 +243,7 @@ export const gearHasErrors: Readable<boolean> = derived(
     [gearDraft, deviceModel],
     ([$draft, $dm]) => {
         if (!$draft || !$draft.enabled) return false
+        if (gearEffectErrors($draft).length > 0) return true
         return $draft.gears.some((_, i) =>
             gearItemErrors($draft.gears, i, $dm.ports, $dm.claims).length > 0)
     },
@@ -238,6 +280,18 @@ function normaliseGearConfig(c: GearConfigT | null): GearConfigT {
     out.schemaVersion = out.schemaVersion ?? 2
     out.enabled       = !!out.enabled
     out.coord         = (out.coord ?? 'independent') as CoordMode
+    out.input = {
+        name:         out.input?.name ?? '',
+        thresholdUs:  out.input?.thresholdUs || 1500,
+        hysteresisUs: out.input?.hysteresisUs || 50,
+        invert:       !!out.input?.invert,
+    }
+    out.sounds = {
+        deploy:     out.sounds?.deploy ?? '',
+        retract:    out.sounds?.retract ?? '',
+        outputMask: (out.sounds?.outputMask && out.sounds.outputMask <= 3)
+                    ? out.sounds.outputMask : 3,
+    }
     out.gears         = (out.gears ?? []).map(g => ({
         id:          g.id ?? 0,
         name:        g.name ?? '',
@@ -338,6 +392,14 @@ export function setGearEnabled(on: boolean): void {
 
 export function setGearCoord(coord: CoordMode): void {
     gearDraft.update(c => ({ ...c, coord }))
+}
+
+export function updateGearInput(mutate: (i: GearInputT) => GearInputT): void {
+    gearDraft.update(c => ({ ...c, input: mutate(c.input ?? defaultGearInput()) }))
+}
+
+export function updateGearSounds(mutate: (s: GearSoundsT) => GearSoundsT): void {
+    gearDraft.update(c => ({ ...c, sounds: mutate(c.sounds ?? defaultGearSounds()) }))
 }
 
 export function updateGearChannel(id: number, mutate: (g: GearChannelT) => GearChannelT): void {

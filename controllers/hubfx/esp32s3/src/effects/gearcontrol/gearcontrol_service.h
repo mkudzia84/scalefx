@@ -55,6 +55,41 @@ public:
     void setEnabled(bool v) { _enabled = v; }
     bool enabled() const    { return _enabled; }
 
+    // ── Transit sounds (optional) ────────────────────────────────────
+    /// Audio command hook — same shape as GunFx's AudioCmdFn so the sketch
+    /// wires one trampoline into the board mixer.  `soundPath == nullptr`
+    /// stops the channel.  Injected (not a TMixer template param) so the
+    /// service keeps its two-parameter signature.
+    using AudioCmdFn = void (*)(void* ctx, const char* soundPath,
+                                uint8_t audioChannel, uint8_t outputMask,
+                                bool loop);
+
+    /// Wire the mixer trampoline + the board's Gear audio channel
+    /// (HubFxLayout::Gear — passed in so this header stays board-agnostic).
+    void bindAudio(AudioCmdFn fn, void* ctx, uint8_t audioChannel) {
+        _audio        = fn;
+        _audioCtx     = ctx;
+        _audioChannel = audioChannel;
+    }
+
+    /// Per-direction transit-loop paths (empty/null = silent) + stereo mask.
+    /// Called from the /gearcontrol.yaml apply on every CONFIG_RELOAD.
+    void setSounds(const char* deploySound, const char* retractSound,
+                   uint8_t outputMask) {
+        std::memset(_deploySound,  0, sizeof(_deploySound));
+        std::memset(_retractSound, 0, sizeof(_retractSound));
+        if (deploySound  && deploySound[0])
+            std::strncpy(_deploySound,  deploySound,  sizeof(_deploySound)  - 1);
+        if (retractSound && retractSound[0])
+            std::strncpy(_retractSound, retractSound, sizeof(_retractSound) - 1);
+        _soundMask = (outputMask >= 1 && outputMask <= 3) ? outputMask : 0x03;
+    }
+
+    /// Fleet command — the same path GEAR_ALL takes on the wire (action:
+    /// 0 = stop, 1 = deploy, 2 = retract), exposed for the RC-channel
+    /// GearActivationDriver.  Honours the coord mode (incl. Sequenced).
+    void commandAll(uint8_t action);
+
     // ── SystemServicePolicy surface ──────────────────────────────────
 
     bool begin(sfx_core::BoardServerBase* ctx);
@@ -132,6 +167,12 @@ private:
 
     void emitPhaseEvent(uint8_t id, uint8_t phase, uint8_t subPhase);
 
+    /// Transit-sound edge detector (called each update()): start the
+    /// direction-matched loop when ANY gear begins moving, stop it when the
+    /// whole set settles (and no Sequenced chain is still pending — the
+    /// inter-gear handoff gap must not stutter the loop).
+    void updateTransitSound();
+
     sfx_core::BoardServerBase* _ctx     = nullptr;
     TTopology*                 _topo    = nullptr;
     TLandingService*           _landing = nullptr;
@@ -143,6 +184,16 @@ private:
     uint8_t _coordMode            = CoordMode::Independent;
     uint8_t _seqActive            = 0xFF;     // Sequenced: gear index mid-cycle
     bool    _seqDeploying         = false;    // Sequenced: direction of the chain
+
+    // Transit sounds (optional — silent when no paths configured).
+    AudioCmdFn _audio        = nullptr;       // sketch-wired mixer trampoline
+    void*      _audioCtx     = nullptr;
+    uint8_t    _audioChannel = 0;             // HubFxLayout::Gear (sketch-supplied)
+    char       _deploySound[64]  = {};
+    char       _retractSound[64] = {};
+    uint8_t    _soundMask        = 0x03;
+    bool       _soundActive      = false;     // a transit loop is playing
+    bool       _soundDeploying   = false;     // direction of the active loop
 };
 
 }  // namespace hubfx::effects::gearctrl

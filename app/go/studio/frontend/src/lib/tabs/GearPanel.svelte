@@ -23,6 +23,7 @@
         loadGearConfig, refreshGearStatus,
         addGearChannel, removeGearChannel, setGearEnabled, setGearCoord,
         updateGearChannel, addGearDoor, removeGearDoor,
+        updateGearInput, updateGearSounds,
         gearItemErrors, installGearPhaseListener,
         gearDeploy, gearRetract, gearStop, gearReset, gearAll,
         GearAllDeploy, GearAllRetract,
@@ -30,10 +31,15 @@
         type PortRefT,
     } from '../gear'
     import {
-        deviceModel, type Port, formatPortRail, RoleKind,
+        deviceModel, liveChannels, liveChannelKey,
+        type Port, formatPortRail, RoleKind,
     } from '../devicemodel'
+    import { checkFiles } from '../effects'
+    import { pickFile } from '../filepicker'
     import { freePortPool } from '../components/port_pool'
     import ServoWidget from '../components/ServoWidget.svelte'
+    import SoundRow from '../components/SoundRow.svelte'
+    import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
     import type { ServoProfileT } from '../servo_calibration'
 
     let busy = false
@@ -145,6 +151,72 @@
         return `Servo ${port.idx}`
     }
 
+    // ─── RC up/down channel (Rule 36 cluster + Rule 43 named inputs) ──
+    // Same option source as EnginePanel's driver channel: every named
+    // (non-unassigned) channel from /hubfx.yaml inputs[].
+    type ChanOpt = { fnId: string; label: string; portGuid: string; portIdx: number; channel: number }
+    $: chanOpts = collectChannels($deviceModel)
+    function collectChannels(_dm: typeof $deviceModel): ChanOpt[] {
+        const fns = new Map($deviceModel.channelFunctions.map(f => [f.id, f.label] as const))
+        const out: ChanOpt[] = []
+        for (const inp of $deviceModel.inputs) {
+            for (const c of inp.channels) {
+                if (c.function === 'unassigned') continue
+                out.push({
+                    fnId: c.function,
+                    label: `CH${c.channel + 1} · ${fns.get(c.function) ?? c.function}`,
+                    portGuid: inp.port.guid, portIdx: inp.port.index, channel: c.channel,
+                })
+            }
+        }
+        return out
+    }
+    $: chosenChan = chanOpts.find(o => o.fnId === cfg?.input?.name)
+    $: liveUs = chosenChan ? $liveChannels[liveChannelKey({ guid: chosenChan.portGuid, kind: 4, index: chosenChan.portIdx }, chosenChan.channel)] : null
+
+    // ─── Transit sounds (Rule 47 SoundRow ×2, both OPTIONAL) ─────────
+    // Existence-validated on SD with the engine panel's debounce pattern;
+    // an empty path is valid (that direction simply plays nothing).
+    let soundErrors: { deploy: string; retract: string } = { deploy: '', retract: '' }
+    let validateTimer: ReturnType<typeof setTimeout> | null = null
+    function scheduleValidate() {
+        if (validateTimer) clearTimeout(validateTimer)
+        validateTimer = setTimeout(() => { validateTimer = null; void validateSounds() }, 350)
+    }
+    async function validateSounds() {
+        const next = { deploy: '', retract: '' }
+        const s = cfg?.sounds
+        if (s) {
+            for (const k of ['deploy', 'retract'] as const) {
+                const p = s[k]
+                if (p && !p.startsWith('/')) next[k] = 'path must be absolute (start with /)'
+            }
+            const probe = [s.deploy, s.retract].filter(p => !!p && p.startsWith('/'))
+            if (probe.length > 0) {
+                const exists = await checkFiles(probe)
+                for (const k of ['deploy', 'retract'] as const) {
+                    const p = s[k]
+                    if (p && p.startsWith('/') && !exists[p]) next[k] = `file not found on SD: ${p}`
+                }
+            }
+        }
+        soundErrors = next
+    }
+    $: void scheduleValidateOn(cfg?.sounds?.deploy, cfg?.sounds?.retract)
+    function scheduleValidateOn(..._: unknown[]) { if (cfg) scheduleValidate() }
+    $: soundsHaveErrors = !!(soundErrors.deploy || soundErrors.retract)
+
+    // (typed `string` because Svelte's {#each} loop alias is un-narrowed —
+    // the only call sites pass 'deploy' | 'retract')
+    async function browseSound(field: string) {
+        const p = await pickFile({ targets: 'sd' })
+        if (p != null) { updateGearSounds(s => ({ ...s, [field]: p })); scheduleValidate() }
+    }
+    function clearSound(field: string) {
+        updateGearSounds(s => ({ ...s, [field]: '' }))
+        soundErrors = { ...soundErrors, [field]: '' }
+    }
+
     // ─── Coordination ────────────────────────────────────────────────
     const coordOptions: { id: CoordMode; label: string; hint: string }[] = [
         { id: 'independent', label: 'Independent', hint: 'each channel deploys/retracts on its own — no cross-channel sync.' },
@@ -254,6 +326,65 @@
         </select>
     </div>
     <div class="form-row"><span class="field-label"></span><span class="hint">{coordHint}</span></div>
+
+    {#if cfg?.enabled}
+        <!-- RC up/down channel (Rule 36 shared cluster + Rule 43 named
+             inputs).  One switch drives the WHOLE undercarriage: above the
+             threshold retracts (gear up), below deploys; Invert flips.
+             Firmware failsafe always deploys on RC loss. -->
+        <ChannelToggleCluster
+            channelLabel="Up/down channel"
+            emptyOption="— manual only —"
+            options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+            inputId={cfg.input.name}
+            thresholdUs={cfg.input.thresholdUs}
+            hysteresisUs={cfg.input.hysteresisUs}
+            liveUs={liveUs?.us ?? null}
+            liveValid={liveUs?.valid ?? false}
+            busy={busy}
+            actionVerb={cfg.input.invert ? 'Deploys' : 'Retracts'}
+            onChange={(n) => updateGearInput(i => ({
+                ...i, name: n.inputId,
+                thresholdUs: n.thresholdUs, hysteresisUs: n.hysteresisUs,
+            }))} />
+        {#if cfg.input.name}
+            <div class="form-row">
+                <span class="field-label">Direction</span>
+                <button class="small state-toggle" class:state-on={cfg.input.invert}
+                        on:click={() => updateGearInput(i => ({ ...i, invert: !i.invert }))}
+                        disabled={busy}
+                        title={cfg.input.invert
+                            ? 'Inverted: above the threshold DEPLOYS (gear down). Click for normal.'
+                            : 'Normal: above the threshold RETRACTS (gear up). Click to invert.'}>
+                    {cfg.input.invert ? '↑ high = deploy' : '↑ high = retract'}
+                </button>
+                <span class="hint">RC-loss failsafe always lowers the gear, whichever direction you pick.</span>
+            </div>
+        {/if}
+
+        <!-- Transit sounds (Rule 47).  Both OPTIONAL — the matching WAV
+             loops on the dedicated Gear mixer channel while any channel is
+             moving in that direction, and stops when the set settles.  The
+             speaker button cycles ONE shared stereo mask (gear plays one
+             transit sound at a time, like the engine). -->
+        <div class="section-head" class:section-error={soundsHaveErrors}>
+            Transit sounds {#if soundsHaveErrors}<span class="section-err-tag">missing files</span>{/if}
+        </div>
+        {#each ['deploy', 'retract'] as f}
+            <SoundRow
+                label={f}
+                placeholder={'/sounds/…  (optional)'}
+                value={cfg.sounds[f]}
+                outputMask={cfg.sounds.outputMask}
+                busy={busy}
+                required={false}
+                error={soundErrors[f]}
+                onPathChange={(v) => { updateGearSounds(s => ({ ...s, [f]: v })); scheduleValidate() }}
+                onMaskChange={(m) => updateGearSounds(s => ({ ...s, outputMask: m }))}
+                onBrowse={() => browseSound(f)}
+                onClear={() => clearSound(f)} />
+        {/each}
+    {/if}
 
     <!-- Fleet trigger (decision #4) — one Deploy-all / Retract-all action.
          ON→OFF (retract) always available (emergency); OFF→ON gated. -->

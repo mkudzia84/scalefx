@@ -1400,10 +1400,46 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class GearSoundsDTO {
+	    deploy: string;
+	    retract: string;
+	    outputMask: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new GearSoundsDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deploy = source["deploy"];
+	        this.retract = source["retract"];
+	        this.outputMask = source["outputMask"];
+	    }
+	}
+	export class GearInputDTO {
+	    name: string;
+	    thresholdUs: number;
+	    hysteresisUs: number;
+	    invert: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new GearInputDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.thresholdUs = source["thresholdUs"];
+	        this.hysteresisUs = source["hysteresisUs"];
+	        this.invert = source["invert"];
+	    }
+	}
 	export class GearConfig {
 	    schemaVersion: number;
 	    enabled: boolean;
 	    coord: string;
+	    input: GearInputDTO;
+	    sounds: GearSoundsDTO;
 	    gears: GearChannelDTO[];
 	
 	    static createFrom(source: any = {}) {
@@ -1415,6 +1451,8 @@ export namespace main {
 	        this.schemaVersion = source["schemaVersion"];
 	        this.enabled = source["enabled"];
 	        this.coord = source["coord"];
+	        this.input = this.convertValues(source["input"], GearInputDTO);
+	        this.sounds = this.convertValues(source["sounds"], GearSoundsDTO);
 	        this.gears = this.convertValues(source["gears"], GearChannelDTO);
 	    }
 	
@@ -1436,6 +1474,8 @@ export namespace main {
 		    return a;
 		}
 	}
+	
+	
 	
 	export class GearStatusEntry {
 	    id: number;

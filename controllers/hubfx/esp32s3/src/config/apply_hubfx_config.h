@@ -531,10 +531,17 @@ void applyGearControlConfig(TBoard& board, const GearControlConfig& cfg) {
     // Door servo roles are attached via /hubfx.yaml's ports block (ServoActuator);
     // the gear addresses them by PortRef.  Pass the gear table + coord mode through.
     svc.configure(cfg.gears, cfg.numGears, cfg.coordMode);
+    svc.setSounds(cfg.sounds.deploy, cfg.sounds.retract, cfg.sounds.outputMask);
     svc.setEnabled(cfg.enabled);
+    // The RC up/down channel (cfg.activation) is wired by the sketch's
+    // GearActivationDriver re-install, not here — the driver owns the
+    // dispatcher subscription (same split as the landing-activation driver).
     board.recomputeEnabledCapabilities();
-    SFX_LOG_INFO("[gearcontrol-config] applied — enabled=%s, coord=%u, %u gear(s) configured",
-                 cfg.enabled ? "on" : "off", (unsigned)cfg.coordMode, (unsigned)cfg.numGears);
+    SFX_LOG_INFO("[gearcontrol-config] applied — enabled=%s, coord=%u, %u gear(s), input=%s, sounds=%s/%s",
+                 cfg.enabled ? "on" : "off", (unsigned)cfg.coordMode, (unsigned)cfg.numGears,
+                 cfg.activation.input[0] ? cfg.activation.input : "(manual)",
+                 cfg.sounds.deploy[0]  ? "set" : "-",
+                 cfg.sounds.retract[0] ? "set" : "-");
 }
 
 }  // namespace hubfx::config
