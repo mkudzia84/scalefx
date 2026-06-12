@@ -2473,18 +2473,22 @@ How a complex effect panel arranges itself — derived from the patterns the
 mature tabs (GunFx `.guns-grid`, Engine status row, Lighting segmented
 switcher) already converged on, now binding:
 
-- **60.1 Two-column unit cards.** A per-unit card (strut, gun, light group)
-  that carries both *physical bindings* and *behaviour config* lays out as a
-  two-column grid (the global `.two-col` + `.col`): **LEFT = ports** — pickers
-  plus their calibration/setup affordances (ServoWidget, element config);
-  **RIGHT = behaviour** — sequencing, timing, policies.  Collapse to one
-  column below ~900 px; `align-items: start` so the shorter column doesn't
-  stretch.  (Reference: GunFx gun-core/smoke split.)
+- **60.1 Two-column unit cards split by SUBSYSTEM.** A per-unit card (strut,
+  gun, light group) with two functional halves lays out as a two-column grid
+  (the global `.two-col` + `.col`), **one subsystem per column** — everything
+  about a subsystem (its port pickers, calibration/setup affordances AND its
+  behaviour/sequencing config) stays together in its column.  Gun: core LEFT,
+  smoke RIGHT.  Gear: strut motor LEFT; doors (servo selection + open/close +
+  calibration + sequencing) RIGHT.  Never split one subsystem's ports from
+  its behaviour across columns.  Collapse to one column below ~900 px;
+  `align-items: start`.
 - **60.2 Live-telemetry widgets span full width.**  Channel bars
   (ChannelToggleCluster/ChannelBandCluster), ServoIoWidget mirrors, verbose
   status views — anything animated by live data — renders as a FULL-WIDTH row
   above/below the column grid, never squeezed into a half column.  Live bars
-  are only readable at width; columns are for forms.
+  are only readable at width; columns are for forms.  Implementation note: a
+  bare widget inside a `.form-row` only takes content width — wrap it in a
+  grow container (`flex: 1 1 auto; min-width: 0`, see GearPanel `.live-row`).
 - **60.3 Segmented toggles for mode choices.**  A mutually-exclusive mode
   choice with ≤ 4 options renders as ONE joined segmented control (the global
   `.seg-select`, the selector twin of `.op-cluster`; exactly one `.seg.on`).
@@ -2503,7 +2507,21 @@ switcher) already converged on, now binding:
   never one full form-row per number.
 - **60.7 Section-head hierarchy.**  Inside a column, section heads use the
   dashed `.sub` variant; solid-underline heads are reserved for panel-level
-  sections.
+  sections.  Inside a `.sub-frame` the head is the frame's `.frame-head`.
+- **60.8 Background hierarchy — exactly three levels.**  1. panel card =
+  `.card` (`--bg-surface`); 2. unit card = nested `.card` (same chrome,
+  `.card-header.inner`); 3. subsystem = the global `.sub-frame`
+  (`--bg-raised` + hairline border + `.frame-head`; `frame-warn`/`frame-error`
+  variants tint the border).  Promoted from GunFx's `.smoke-frame`.  Never
+  invent a fourth background level and never put `--bg-raised` on a unit card
+  — mismatched group backgrounds across tabs read as a different app.
+- **60.4 enforcement note.**  `freePortPool` must be fed **`$effectClaims`**
+  (lib/effect-claims.ts — hard claims + soft claims synthesized from EVERY
+  effect's draft, own domain filtered at the call site), NOT the vestigial
+  `$deviceModel.claims` (only the retired Domains UI + presets ever wrote
+  those — feeding them alone shows every port as free, the gear-door bug,
+  2026-06-13).  A new effect with port bindings MUST add its contribution
+  block to `effectClaims` in the same PR.
 
 Reference implementation: the Gear tab's strut cards
 ([GearPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GearPanel.svelte)).

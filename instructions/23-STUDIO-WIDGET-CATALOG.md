@@ -60,6 +60,7 @@ panel can crib it.
 18. [Modular config sources + global Apply](#18-modular-config-sources) — `DirtySource` + `ConfigToolbar` aggregate (Rule 46)
 19. [Servo I/O status widget](#19-servo-io-status-widget) — live signal-in bar + servo-out track (RED actual + YELLOW target lines), `ServoIoWidget.svelte` (Rule 42)
 20. [Segmented mode selector](#20-segmented-mode-selector) — `.seg-select` joined toggle for ≤4-option mode choices; radios retired (Rule 60.3)
+21. [Subsystem frame](#21-subsystem-frame) — `.sub-frame` (--bg-raised + frame-head), level 3 of the background hierarchy (Rule 60.8)
 
 ---
 
@@ -1080,6 +1081,30 @@ in their own `form-row`, shown only when the relevant segment is active.
 Give every segment a verb-led `title=` (Rule 24).  Reference: the Gear
 tab's door sequencing + coordination selector
 ([GearPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GearPanel.svelte)).
+
+---
+
+## 21. Subsystem frame
+
+Level **3** of the background hierarchy (Rule 60.8): panel `.card` →
+unit `.card` (nested, `.card-header.inner`) → **`.sub-frame`** — the only
+place `--bg-raised` appears.  One frame per subsystem, usually one per
+column of the unit card's `.two-col` split (Rule 60.1).
+
+```svelte
+<div class="sub-frame" class:frame-warn={poolEmpty}>
+    <div class="frame-head">
+        Gear motor
+        {#if poolEmpty}<span class="section-warn-tag">no BiDcMotor port</span>{/if}
+    </div>
+    …form rows…
+</div>
+```
+
+**Required classes** (global, `style.css`): `.sub-frame`, `.frame-head`,
+`.frame-warn` / `.frame-error` (border tints).  Promoted from GunFx's
+`.smoke-frame`.  Never nest a `.sub-frame` inside another, and never put
+`--bg-raised` on a unit card.
 
 ---
 
