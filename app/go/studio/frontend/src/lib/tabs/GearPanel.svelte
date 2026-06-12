@@ -1,20 +1,29 @@
-<!-- GearPanel — Gear / Undercarriage editor (Gear tab, instructions/29
-     §3).  Each channel binds one gear motor (BiDcMotor on an H-bridge)
-     + ≤2 door servos (ServoActuator) and the door-pairing / close
-     policy.  Deploy / Retract brackets the motor seek with door legs on
-     the firmware side; this panel is a pure VIEW on the gear domain's
-     stores (Rule 46) — it registers nothing, validates nothing, applies
-     nothing.
+<!-- GearPanel — Gear / Undercarriage editor (Gear tab), regenerated from
+     scratch 2026-06-11.
+
+     STRUCTURE (always fully visible — the enable flag gates OPERATION, not
+     configuration: an operator authoring a model on the bench sees every
+     section from the first open, instead of a bare header):
+
+       Status row     enable toggle · live summary pills · fleet Deploy/Retract
+       1 · Control    coordination mode + the one RC up/down channel (Rule 36)
+       2 · Sounds     deploy / retract transit loops (Rule 47)
+       3 · Struts     one card per undercarriage leg: motor (port + drive
+                      params inline), door servos (ports, positions,
+                      calibration + live mirror), door sequencing + close
+                      policy, per-strut bench ops, sequenced ordering
 
      Cross-references:
        - Card / form-row / button-cluster      → Rule 34
-       - Description typography                 → Rule 50
+       - Typography (.hint/.unit/.help-text)   → Rule 50
        - Validation surfacing                  → Rule 35 (red) / Rule 39 (yellow)
        - Output-port pickers (role-filtered)   → Rule 49 (freePortPool)
        - Enable button                         → Rule 45
-       - Deploy/Retract + Deploy-all toggle    → Rule 48 (action-toggle)
-       - Servo widgets                         → ServoWidget + ServoCalibrationDialog
-       - Modular dirty source                  → Rule 46 (gearConfigSource)
+       - Action toggles / op-cluster           → Rule 48
+       - RC channel cluster                    → Rule 36 (ChannelToggleCluster)
+       - Sound rows                            → Rule 47 (SoundRow)
+       - Servo calibration + live mirror       → Rule 42/44 (ServoWidget/IoWidget)
+       - Modular dirty source                  → Rule 46 (gearConfigSource in gear.ts)
 -->
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte'
@@ -22,7 +31,7 @@
         gearDraft, gearDirty, gearHasErrors, gearPhases,
         loadGearConfig, refreshGearStatus,
         addGearChannel, removeGearChannel, moveGearChannel, setGearEnabled, setGearCoord,
-        updateGearChannel, addGearDoor, removeGearDoor,
+        updateGearChannel, removeGearDoor,
         updateGearInput, updateGearSounds,
         gearItemErrors, installGearPhaseListener,
         gearDeploy, gearRetract, gearStop, gearReset, gearAll,
@@ -50,18 +59,14 @@
     let cfg: GearConfigT
     const unsub = gearDraft.subscribe(c => { cfg = c })
 
-    // The firmware emits GEAR_PHASE_EVENT on every phase / sub-phase
-    // change, but that's a TAG_ASYNC packet on the LOSSY async queue
-    // (Rule 53) — a ~50 Hz RC live-view flood can overflow it and drop an
-    // event, leaving the pill stale.  So we also POLL GEAR_STATUS on a
-    // slow timer; it returns the current phase+subphase of every channel,
-    // self-healing within one tick even after a dropped event.
+    // GEAR_PHASE_EVENT rides the LOSSY async queue (Rule 53) — a dropped
+    // event would freeze a pill, so a slow GEAR_STATUS poll self-heals it.
     let statusTimer: ReturnType<typeof setInterval> | undefined
     onMount(() => {
         installGearPhaseListener()
-        // Live door-servo positions (Rule 42/53): the generic servo-status
-        // stream feeds each door's ServoIoWidget so the operator SEES the
-        // door move during a deploy test.  Same wiring as the GunFx turret.
+        // Live door-servo positions (Rule 42/53): the generic 20 Hz servo-
+        // status stream feeds each door's ServoIoWidget so the operator SEES
+        // the door travel during a deploy test (GunFx turret pattern).
         installServoStatusListener()
         setServoLiveView(true).catch(() => {})
         loadGearConfig().catch(e => { error = String(e) })
@@ -76,6 +81,19 @@
 
     $: dirty     = $gearDirty
     $: hasErrors = $gearHasErrors
+    $: enabled   = !!cfg?.enabled
+
+    // ─── Live fleet summary (status row) ─────────────────────────────
+    $: strutCount = cfg?.gears.length ?? 0
+    $: anyMoving  = (cfg?.gears ?? []).some(g => {
+        const p = $gearPhases[g.id]?.phase
+        return p === 2 || p === 4          // deploying / retracting
+    })
+    $: anyErrored = (cfg?.gears ?? []).some(g => $gearPhases[g.id]?.phase === 5)
+    $: allDeployed  = strutCount > 0 && (cfg?.gears ?? []).every(g => ($gearPhases[g.id]?.phase ?? 1) === 3)
+    $: allRetracted = strutCount > 0 && (cfg?.gears ?? []).every(g => ($gearPhases[g.id]?.phase ?? 1) === 1)
+    $: fleetText = anyErrored ? 'ERROR' : anyMoving ? 'moving' :
+                   allDeployed ? 'deployed' : allRetracted ? 'retracted' : 'mixed'
 
     // ─── Port-picker helpers (Rule 34 / 49) ──────────────────────────
     function portRefToKey(p: PortRefT): string {
@@ -96,10 +114,8 @@
         return `${p.boardName ?? 'Hub'} · ${head}${rail ? ` · ${rail}` : ''}`
     }
 
-    /** Every motor/door ref used across ALL channels (so a port picked by
-     *  a sibling channel/row doesn't linger as "free").  `keep` is the
-     *  editing row's own pick — always forced into its own pool so the
-     *  picker stays stable. */
+    /** Refs used across ALL struts so a port picked by a sibling doesn't
+     *  linger as "free"; `keep` (the row's own pick) stays in its pool. */
     function usedMotorRefs(gears: GearChannelT[]): Set<string> {
         const out = new Set<string>()
         for (const g of gears) if (g.motor && g.motor.kind) out.add(`${g.motor.guid}#${g.motor.idx}`)
@@ -111,9 +127,6 @@
             out.add(`${d.port.guid}#${d.port.idx}`)
         return out
     }
-
-    /** Pool for the motor picker: hbridge ports with BiDcMotor role,
-     *  unclaimed, not used by another channel (except this row's `keep`). */
     function motorPool(ports: Port[], claims: any[], used: Set<string>, keep: PortRefT | null): Port[] {
         const exempt = keep && keep.kind ? [{ guid: keep.guid, kind: keep.kind, idx: keep.idx }] : []
         return freePortPool(ports, claims, 'hbridge', RoleKind.BiDcMotor, exempt)
@@ -122,7 +135,6 @@
                 return !used.has(`${p.ref.guid}#${p.ref.index}`)
             })
     }
-    /** Pool for a door servo picker: servo ports with ServoActuator role. */
     function doorPool(ports: Port[], claims: any[], used: Set<string>, keep: PortRefT | null): Port[] {
         const exempt = keep && keep.kind ? [{ guid: keep.guid, kind: keep.kind, idx: keep.idx }] : []
         return freePortPool(ports, claims, 'servo', RoleKind.ServoActuator, exempt)
@@ -132,9 +144,8 @@
             })
     }
 
-    // Servo profile lookup for the door ServoWidget (Rule 44).  Reactive
-    // factory so the closure re-runs whenever $deviceModel changes (the
-    // landing-panel "calibration froze on first render" trap).
+    // Servo profile lookup (Rule 44) — reactive factory so the closure
+    // re-runs whenever $deviceModel changes (the landing-panel trap).
     function makeProfileForPort(dm: typeof $deviceModel) {
         return (port: PortRefT | null | undefined): ServoProfileT | null => {
             if (!port || !port.kind) return null
@@ -158,9 +169,7 @@
         return `Servo ${port.idx}`
     }
 
-    // ─── RC up/down channel (Rule 36 cluster + Rule 43 named inputs) ──
-    // Same option source as EnginePanel's driver channel: every named
-    // (non-unassigned) channel from /hubfx.yaml inputs[].
+    // ─── RC up/down channel (Rule 36 + Rule 43 named inputs) ─────────
     type ChanOpt = { fnId: string; label: string; portGuid: string; portIdx: number; channel: number }
     $: chanOpts = collectChannels($deviceModel)
     function collectChannels(_dm: typeof $deviceModel): ChanOpt[] {
@@ -181,9 +190,7 @@
     $: chosenChan = chanOpts.find(o => o.fnId === cfg?.input?.name)
     $: liveUs = chosenChan ? $liveChannels[liveChannelKey({ guid: chosenChan.portGuid, kind: 4, index: chosenChan.portIdx }, chosenChan.channel)] : null
 
-    // ─── Transit sounds (Rule 47 SoundRow ×2, both OPTIONAL) ─────────
-    // Existence-validated on SD with the engine panel's debounce pattern;
-    // an empty path is valid (that direction simply plays nothing).
+    // ─── Transit-sound validation (Rule 47, both OPTIONAL) ───────────
     let soundErrors: { deploy: string; retract: string } = { deploy: '', retract: '' }
     let validateTimer: ReturnType<typeof setTimeout> | null = null
     function scheduleValidate() {
@@ -213,8 +220,8 @@
     function scheduleValidateOn(..._: unknown[]) { if (cfg) scheduleValidate() }
     $: soundsHaveErrors = !!(soundErrors.deploy || soundErrors.retract)
 
-    // (typed `string` because Svelte's {#each} loop alias is un-narrowed —
-    // the only call sites pass 'deploy' | 'retract')
+    // (typed `string` — Svelte's {#each} alias is un-narrowed; callers
+    // only pass 'deploy' | 'retract')
     async function browseSound(field: string) {
         const p = await pickFile({ targets: 'sd' })
         if (p != null) { updateGearSounds(s => ({ ...s, [field]: p })); scheduleValidate() }
@@ -226,10 +233,10 @@
 
     // ─── Coordination ────────────────────────────────────────────────
     const coordOptions: { id: CoordMode; label: string; hint: string }[] = [
-        { id: 'independent', label: 'Independent', hint: 'each channel deploys/retracts on its own — no cross-channel sync.' },
-        { id: 'door_sync',   label: 'Door-sync',   hint: 'all channels open their doors together, then run motors independently.' },
-        { id: 'full_sync',   label: 'Full-sync',   hint: 'all channels move in lockstep: doors open together, motors run together, doors close together.' },
-        { id: 'sequenced',   label: 'Sequenced',   hint: 'one channel runs its full cycle, then the next — front-to-rear order.' },
+        { id: 'independent', label: 'Independent', hint: 'each strut deploys/retracts on its own — no cross-strut sync.' },
+        { id: 'door_sync',   label: 'Door-sync',   hint: 'all struts open their doors together, then run motors independently.' },
+        { id: 'full_sync',   label: 'Full-sync',   hint: 'all struts move in lockstep: doors open together, motors run together, doors close together.' },
+        { id: 'sequenced',   label: 'Sequenced',   hint: 'one strut runs its full cycle, then the next — card order, top to bottom (reorder with ↑/↓).' },
     ]
     $: coordHint = coordOptions.find(o => o.id === cfg?.coord)?.hint ?? ''
 
@@ -250,8 +257,6 @@
         const sub = (ph.subPhase && ph.subPhase !== 0) ? ` · ${ph.subPhaseName}` : ''
         return `${ph.phaseName}${sub}`
     }
-    /** A channel is "deployed-ish" (the Deploy/Retract toggle shows
-     *  Retract) when its phase is Deploying(2) or Deployed(3). */
     function isDeployed(id: number): boolean {
         const ph = $gearPhases[id]?.phase
         return ph === 2 || ph === 3
@@ -291,12 +296,6 @@
             : ({ ...g, doors: [...g.doors, { port, open: 10000, close: 0 }] }))
     }
 
-    // (The old "⚙ Motor…" modal was retired in the 2026-06-11 redesign —
-    // duty/timeout now live INLINE in the Motor section, and the bench-test
-    // Deploy/Retract/Stop moved to the per-channel header op-cluster, the
-    // GunFx pattern.  Full hub-forwarded manual jog stays a documented TODO,
-    // instructions/29 §3.4.)
-
     async function safe(fn: () => Promise<void>) {
         busy = true; error = ''
         try { await fn() } catch (e) { error = String(e) } finally { busy = false }
@@ -308,20 +307,62 @@
     <div class="card-header">
         <h3>Gear / Undercarriage</h3>
         <div class="header-actions">
-            <!-- Enable is a deliberate ACTION (Rule 45), not a checkbox. -->
-            <button class="small state-toggle" class:state-on={cfg?.enabled}
-                    on:click={() => setGearEnabled(!cfg?.enabled)} disabled={busy}
-                    title={cfg?.enabled ? 'Effect enabled — Apply pushes it; firmware attaches the motor + door roles.'
-                                        : 'Effect disabled — channels exist but nothing deploys.'}>
-                {cfg?.enabled ? '✓ Enabled' : '▶ Disabled'}
+            <!-- Enable is a deliberate ACTION (Rule 45).  It gates OPERATION
+                 (deploy/retract + the RC channel firing); configuration below
+                 stays editable either way so a bench setup can be authored
+                 before the first enable. -->
+            <button class="small state-toggle" class:state-on={enabled}
+                    on:click={() => setGearEnabled(!enabled)} disabled={busy}
+                    title={enabled ? 'Effect enabled — Apply pushes it; firmware attaches the motor + door roles.'
+                                   : 'Effect disabled — configuration is kept but nothing deploys. Click to enable.'}>
+                {enabled ? '✓ Enabled' : '▶ Disabled'}
             </button>
-            <button class="small" on:click={() => addGearChannel()} disabled={busy}>+ Add channel</button>
+            <button class="small" on:click={() => addGearChannel()} disabled={busy}
+                    title="Add an undercarriage strut (nose, main left, main right, …) — each binds one gear motor + up to two door servos.">
+                + Add strut
+            </button>
         </div>
     </div>
 
     {#if error}<div class="banner err">{error}</div>{/if}
 
-    <!-- Coordination -->
+    <!-- Status row (Engine pattern): live fleet summary + the ONE global
+         deploy/retract trigger.  ON→OFF (retract) always available
+         (emergency); OFF→ON gated on clean config (Rule 35/48). -->
+    <div class="status-row">
+        <div class="status">
+            <span class="status-label">Fleet</span>
+            <span class="state-pill phase {anyErrored ? 'phase-error' : anyMoving ? 'phase-deploying' : allDeployed ? 'phase-deployed' : 'phase-retracted'}">
+                {strutCount === 0 ? 'no struts' : fleetText}
+            </span>
+            {#if strutCount > 0}<span class="hint compact">{strutCount} strut{strutCount === 1 ? '' : 's'} · {cfg?.coord?.replace('_', '-')}</span>{/if}
+            {#if !enabled}<span class="hint compact warn">disabled — configuration only</span>{/if}
+        </div>
+        <div class="controls">
+            <button class="small state-toggle"
+                    on:click={() => safe(() => gearAll(GearAllDeploy))}
+                    disabled={busy || dirty || hasErrors || !enabled || strutCount === 0}
+                    title={dirty ? 'Apply changes first — fleet deploy runs the LOADED firmware config'
+                         : hasErrors ? 'Resolve validation errors first'
+                         : !enabled ? 'Enable the effect first'
+                         : strutCount === 0 ? 'Add a strut first'
+                         : 'Deploy every strut (GEAR_ALL deploy)'}>
+                ▶ Deploy all
+            </button>
+            <button class="small state-toggle danger"
+                    on:click={() => safe(() => gearAll(GearAllRetract))}
+                    disabled={busy || strutCount === 0}
+                    title="Retract every strut (GEAR_ALL retract) — always available (emergency cutoff)">
+                ■ Retract all
+            </button>
+        </div>
+    </div>
+
+    <!-- ═══ 1 · Control ════════════════════════════════════════════════ -->
+    <div class="section-head">
+        Control
+        <span class="hint">how the whole set is commanded — coordination across struts + the one RC up/down channel.</span>
+    </div>
     <div class="form-row">
         <span class="field-label">Coordination</span>
         <select class="field-input wide" value={cfg?.coord}
@@ -331,92 +372,81 @@
     </div>
     <div class="form-row"><span class="field-label"></span><span class="hint">{coordHint}</span></div>
 
-    {#if cfg?.enabled}
-        <!-- RC up/down channel (Rule 36 shared cluster + Rule 43 named
-             inputs).  One switch drives the WHOLE undercarriage: above the
-             threshold retracts (gear up), below deploys; Invert flips.
-             Firmware failsafe always deploys on RC loss. -->
-        <ChannelToggleCluster
-            channelLabel="Up/down channel"
-            emptyOption="— manual only —"
-            options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
-            inputId={cfg.input.name}
-            thresholdUs={cfg.input.thresholdUs}
-            hysteresisUs={cfg.input.hysteresisUs}
-            liveUs={liveUs?.us ?? null}
-            liveValid={liveUs?.valid ?? false}
-            busy={busy}
-            actionVerb={cfg.input.invert ? 'Deploys' : 'Retracts'}
-            onChange={(n) => updateGearInput(i => ({
-                ...i, name: n.inputId,
-                thresholdUs: n.thresholdUs, hysteresisUs: n.hysteresisUs,
-            }))} />
-        {#if cfg.input.name}
-            <div class="form-row">
-                <span class="field-label">Direction</span>
-                <button class="small state-toggle" class:state-on={cfg.input.invert}
-                        on:click={() => updateGearInput(i => ({ ...i, invert: !i.invert }))}
-                        disabled={busy}
-                        title={cfg.input.invert
-                            ? 'Inverted: above the threshold DEPLOYS (gear down). Click for normal.'
-                            : 'Normal: above the threshold RETRACTS (gear up). Click to invert.'}>
-                    {cfg.input.invert ? '↑ high = deploy' : '↑ high = retract'}
-                </button>
-                <span class="hint">RC-loss failsafe always lowers the gear, whichever direction you pick.</span>
-            </div>
-        {/if}
-
-        <!-- Transit sounds (Rule 47).  Both OPTIONAL — the matching WAV
-             loops on the dedicated Gear mixer channel while any channel is
-             moving in that direction, and stops when the set settles.  The
-             speaker button cycles ONE shared stereo mask (gear plays one
-             transit sound at a time, like the engine). -->
-        <div class="section-head" class:section-error={soundsHaveErrors}>
-            Transit sounds {#if soundsHaveErrors}<span class="section-err-tag">missing files</span>{/if}
+    <!-- RC up/down channel (Rule 36 cluster + Rule 43 named inputs).  One
+         switch drives the WHOLE undercarriage: above the threshold retracts
+         (gear up), below deploys; Invert flips.  Firmware failsafe always
+         deploys on RC loss. -->
+    <ChannelToggleCluster
+        channelLabel="Up/down channel"
+        emptyOption="— manual only —"
+        options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+        inputId={cfg?.input?.name ?? ''}
+        thresholdUs={cfg?.input?.thresholdUs ?? 1500}
+        hysteresisUs={cfg?.input?.hysteresisUs ?? 50}
+        liveUs={liveUs?.us ?? null}
+        liveValid={liveUs?.valid ?? false}
+        busy={busy}
+        actionVerb={cfg?.input?.invert ? 'Deploys' : 'Retracts'}
+        onChange={(n) => updateGearInput(i => ({
+            ...i, name: n.inputId,
+            thresholdUs: n.thresholdUs, hysteresisUs: n.hysteresisUs,
+        }))} />
+    {#if cfg?.input?.name}
+        <div class="form-row">
+            <span class="field-label">Direction</span>
+            <button class="small state-toggle" class:state-on={cfg.input.invert}
+                    on:click={() => updateGearInput(i => ({ ...i, invert: !i.invert }))}
+                    disabled={busy}
+                    title={cfg.input.invert
+                        ? 'Inverted: above the threshold DEPLOYS (gear down). Click for normal.'
+                        : 'Normal: above the threshold RETRACTS (gear up). Click to invert.'}>
+                {cfg.input.invert ? '↑ high = deploy' : '↑ high = retract'}
+            </button>
+            <span class="hint">RC-loss failsafe always lowers the gear, whichever direction you pick.</span>
         </div>
-        {#each ['deploy', 'retract'] as f}
-            <SoundRow
-                label={f}
-                placeholder={'/sounds/…  (optional)'}
-                value={cfg.sounds[f]}
-                outputMask={cfg.sounds.outputMask}
-                busy={busy}
-                required={false}
-                error={soundErrors[f]}
-                onPathChange={(v) => { updateGearSounds(s => ({ ...s, [f]: v })); scheduleValidate() }}
-                onMaskChange={(m) => updateGearSounds(s => ({ ...s, outputMask: m }))}
-                onBrowse={() => browseSound(f)}
-                onClear={() => clearSound(f)} />
-        {/each}
+    {:else if chanOpts.length === 0}
+        <div class="form-row"><span class="field-label"></span>
+            <span class="hint warn">No named input channels — name one in /hubfx.yaml's inputs (IO tab) to drive the gear from the radio.</span>
+        </div>
     {/if}
 
-    <!-- Fleet trigger (decision #4) — one Deploy-all / Retract-all action.
-         ON→OFF (retract) always available (emergency); OFF→ON gated. -->
-    <div class="form-row fleet-row">
-        <span class="field-label">All channels</span>
-        <button class="small state-toggle"
-                on:click={() => safe(() => gearAll(GearAllDeploy))}
-                disabled={busy || dirty || hasErrors || !cfg?.enabled}
-                title={dirty ? 'Apply changes first — fleet deploy runs the LOADED firmware config'
-                     : hasErrors ? 'Resolve validation errors first'
-                     : !cfg?.enabled ? 'Enable the effect first'
-                     : 'Deploy every channel (GEAR_ALL deploy)'}>
-            ▶ Deploy all
-        </button>
-        <button class="small state-toggle danger"
-                on:click={() => safe(() => gearAll(GearAllRetract))}
-                disabled={busy}
-                title="Retract every channel (GEAR_ALL retract) — always available (emergency cutoff)">
-            ■ Retract all
-        </button>
-        <span class="hint">the one global trigger drives every channel; per-channel buttons below are for bench testing.</span>
+    <!-- ═══ 2 · Transit sounds ═════════════════════════════════════════ -->
+    <div class="section-head" class:section-error={soundsHaveErrors}>
+        Transit sounds
+        <span class="hint">optional — the matching WAV loops on the dedicated Gear audio channel while any strut is moving, and stops when the set settles.</span>
+        {#if soundsHaveErrors}<span class="section-err-tag">missing files</span>{/if}
+    </div>
+    {#each ['deploy', 'retract'] as f}
+        <SoundRow
+            label={f}
+            placeholder={'/sounds/…  (optional)'}
+            value={cfg?.sounds?.[f] ?? ''}
+            outputMask={cfg?.sounds?.outputMask ?? 3}
+            busy={busy}
+            required={false}
+            error={soundErrors[f]}
+            onPathChange={(v) => { updateGearSounds(s => ({ ...s, [f]: v })); scheduleValidate() }}
+            onMaskChange={(m) => updateGearSounds(s => ({ ...s, outputMask: m }))}
+            onBrowse={() => browseSound(f)}
+            onClear={() => clearSound(f)} />
+    {/each}
+
+    <!-- ═══ 3 · Struts ═════════════════════════════════════════════════ -->
+    <div class="section-head">
+        Struts
+        <span class="hint">one card per undercarriage leg — gear motor, door servos and their sequencing.</span>
     </div>
 
     {#if cfg && cfg.gears.length === 0}
         <div class="empty-state">
-            No undercarriage channels yet — click <strong>+ Add channel</strong> to author the first one.
-            Each channel binds a gear motor (BiDcMotor H-bridge) and up to two door servos; deploy opens
-            the doors, runs the motor to the endstop, then closes the doors per your policy.
+            <p><strong>No struts yet.</strong></p>
+            <p>
+                Each strut binds a <strong>gear motor</strong> (an H-bridge port with a BiDcMotor role —
+                attach one on the IO tab) and up to two <strong>door servos</strong>.  A deploy opens the
+                doors, runs the motor to the endstop, then closes the doors per your policy; typical
+                models add three: nose, main left, main right.
+            </p>
+            <button class="small" on:click={() => addGearChannel()} disabled={busy}>+ Add the first strut</button>
         </div>
     {/if}
 
@@ -431,12 +461,12 @@
         {@const doorPoolEmpty= doorAddPool.length === 0 && gch.doors.length === 0}
         {@const deployed     = isDeployed(gch.id)}
         {@const errored      = isErrored(gch.id)}
-        {@const order = cfg.gears.findIndex(g => g.id === gch.id)}
+        {@const order        = cfg.gears.findIndex(g => g.id === gch.id)}
         <div class="card group-card" class:invalid={chanErrors}>
             <div class="card-header inner">
                 <h4>
-                    {#if cfg.coord === 'sequenced'}<span class="seq-badge" title="Sequenced order — this channel runs {order + 1}{['st','nd','rd'][order] ?? 'th'} (cards run top-to-bottom).">#{order + 1}</span>{/if}
-                    {gch.name || 'Gear channel'}
+                    {#if cfg.coord === 'sequenced'}<span class="seq-badge" title="Sequenced order — cards run top-to-bottom; this strut cycles in slot {order + 1}.">#{order + 1}</span>{/if}
+                    {gch.name || `Strut ${order + 1}`}
                 </h4>
                 <div class="header-actions">
                     <span class="state-pill phase {phaseClass($gearPhases[gch.id]?.phase ?? 1)}">{pillText(gch.id)}</span>
@@ -446,29 +476,26 @@
                             ⟳ Reset
                         </button>
                     {/if}
-                    <!-- Per-channel op-cluster (Rule 48, GunFx pattern):
-                         deploy/retract action-toggle + a mid-motion Stop.
-                         ON→OFF (retract) always allowed; OFF→ON gated. -->
+                    <!-- Per-strut op-cluster (Rule 48): bench-test this leg
+                         alone.  ON→OFF (retract) always allowed; OFF→ON gated. -->
                     <button class="small state-toggle" class:danger={deployed}
                             on:click={() => safe(() => (deployed ? gearRetract(gch.id) : gearDeploy(gch.id)))}
-                            disabled={deployed ? busy : (busy || dirty || chanErrors || !cfg?.enabled)}
+                            disabled={deployed ? busy : (busy || dirty || chanErrors || !enabled)}
                             title={deployed ? 'Retract: open doors → run motor up → close doors (always available)'
                                  : dirty ? 'Apply changes before deploying — tests the loaded firmware config'
                                  : chanErrors ? 'Resolve validation errors first'
-                                 : !cfg?.enabled ? 'Enable the effect first'
+                                 : !enabled ? 'Enable the effect first'
                                  : 'Deploy: open doors → run motor down → close doors'}>
                         {deployed ? '■ Retract' : '▶ Deploy'}
                     </button>
                     <button class="small" on:click={() => safe(() => gearStop(gch.id))} disabled={busy}
                             title="Brake the motor mid-motion (does not clear an error — use Reset).">Stop</button>
-                    <!-- Order matters: sequenced coordination runs cards
-                         top-to-bottom (gear[0] first on deploy). -->
                     <button class="small btn-slot" on:click={() => moveGearChannel(gch.id, -1)}
                             disabled={busy || order === 0}
-                            title="Move up — in sequenced coordination this channel cycles earlier.">↑</button>
+                            title="Move up — in sequenced coordination this strut cycles earlier.">↑</button>
                     <button class="small btn-slot" on:click={() => moveGearChannel(gch.id, 1)}
                             disabled={busy || order === cfg.gears.length - 1}
-                            title="Move down — in sequenced coordination this channel cycles later.">↓</button>
+                            title="Move down — in sequenced coordination this strut cycles later.">↓</button>
                     <button class="small danger" on:click={() => removeGearChannel(gch.id)} disabled={busy}>× Remove</button>
                 </div>
             </div>
@@ -483,13 +510,13 @@
             </div>
 
             <!-- Gear motor (Rule 49 role-filtered pool + Rule 39 yellow warn) -->
-            <div class="section-head" class:section-warn={motorPoolEmpty}>
+            <div class="section-head sub" class:section-warn={motorPoolEmpty}>
                 Gear motor
-                <span class="hint">an H-bridge port with a BiDcMotor role — drives the leg up/down to the endstop.</span>
+                <span class="hint">an H-bridge port with a BiDcMotor role — drives the leg to the endstop (stall-detected on the expander).</span>
                 {#if motorPoolEmpty}<span class="section-warn-tag">no BiDcMotor port</span>{/if}
             </div>
             <div class="form-row">
-                <span class="field-label">Motor</span>
+                <span class="field-label">Port</span>
                 <select class="field-input wide" value={portRefToKey(gch.motor)}
                         on:change={(e) => onPickMotor(gch.id, e)}
                         disabled={busy || motorPoolEmpty}>
@@ -505,10 +532,10 @@
                 </div>
             {/if}
             {#if gch.motor.kind}
-                <!-- Inline drive parameters (was the "⚙ Motor…" modal —
-                     config belongs on the panel; modals are for live-tune
-                     dialogs only).  Signed duty: deploy is normally +,
-                     retract −; swap signs if the leg runs backwards. -->
+                <!-- Drive parameters, inline (config belongs on the panel;
+                     modals are for live-tune dialogs only).  Signed duty:
+                     deploy is normally +, retract −; swap signs if the leg
+                     runs backwards. -->
                 <div class="form-grid cols-3">
                     <div class="form-field">
                         <span class="field-label">Deploy duty</span>
@@ -533,14 +560,14 @@
                     </div>
                 </div>
                 <div class="form-row"><span class="field-label"></span>
-                    <span class="hint">the motor seeks to the endstop (stall-detected on the expander); endstop calibration lives on the BiDcMotor role — tune it on the IO tab.</span>
+                    <span class="hint">endstop calibration (LiveRatio + ceiling guard) lives on the BiDcMotor role — tune it on the IO tab.</span>
                 </div>
             {/if}
 
             <!-- Doors (Rule 49 servo pool) -->
-            <div class="section-head" class:section-warn={doorPoolEmpty}>
+            <div class="section-head sub" class:section-warn={doorPoolEmpty}>
                 Doors (≤2)
-                <span class="hint">door servos open before the motor runs and close after, per the pairing + close policy below.</span>
+                <span class="hint">door servos open before the motor runs and close after, per the sequencing below.</span>
                 {#if doorPoolEmpty}<span class="section-warn-tag">no ServoActuator port</span>{/if}
             </div>
             {#each gch.doors as d, i (i)}
@@ -557,13 +584,15 @@
                     </select>
                     <button class="small danger btn-slot" on:click={() => removeGearDoor(gch.id, i)} disabled={busy}>× Remove</button>
                 </div>
-                <!-- Normalized open/close positions (servo-intent rule). -->
+                <!-- Normalized open/close positions (servo-intent rule —
+                     0 = calibrated min end, 10000 = max end; the role's
+                     calibration + REV flag do the µs mapping). -->
                 <div class="form-row sub">
                     <span class="field-label">Open / Close</span>
                     <input class="field-input narrow" type="number" min="0" max="10000" step="100"
                            value={d.open}
                            on:change={(e) => setDoorNorm(gch.id, i, 'open', numValue(e))}
-                           disabled={busy} title="Normalized OPEN position [0..10000] — 0 = calibrated min end, 10000 = max end." />
+                           disabled={busy} title="Normalized OPEN position [0..10000]." />
                     <span class="unit">open</span>
                     <input class="field-input narrow" type="number" min="0" max="10000" step="100"
                            value={d.close}
@@ -571,7 +600,7 @@
                            disabled={busy} title="Normalized CLOSED position [0..10000]." />
                     <span class="unit">close</span>
                 </div>
-                <!-- Per-servo calibration widget (Rule 44 + reversed toggle). -->
+                <!-- Per-servo calibration (Rule 44: ↔ Reversed + ⚙ Calibrate…) -->
                 <div class="form-row servo-widget-row">
                     <span class="field-label"></span>
                     <ServoWidget
@@ -580,10 +609,9 @@
                         profile={profileForPort(d.port)}
                         busy={busy} />
                 </div>
-                <!-- Live door mirror (Rule 42/53, the GunFx turret pattern):
-                     position + target from the 20 Hz servo-status stream, so
-                     the operator SEES the door travel during a deploy test.
-                     Doors have no RC input — servo side only. -->
+                <!-- Live door mirror (Rule 42/53): position + target from the
+                     20 Hz servo-status stream — watch the door travel during
+                     a deploy test.  Servo side only (doors have no RC input). -->
                 {#if d.port && d.port.kind}
                     {@const dProf = profileForPort(d.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
                     {@const dSv = $servoStatus[servoStatusKey(d.port.guid, d.port.idx)]}
@@ -602,6 +630,7 @@
             {/each}
             {#if gch.doors.length < 2}
                 <div class="form-row">
+                    <span class="field-label"></span>
                     <select class="field-input wide" on:change={(e) => onPickDoor(gch.id, e)}
                             disabled={busy || doorAddPool.length === 0}>
                         <option value="">{doorAddPool.length === 0 ? '— no free servo ports —' : '+ Add door…'}</option>
@@ -609,25 +638,26 @@
                             <option value={modelPortKey(p)}>{refOptLabel(p)}</option>
                         {/each}
                     </select>
-                    {#if doorAddPool.length === 0}
-                        <span class="hint warn">No free servo ports — attach a ServoActuator on the IO tab to add a door.</span>
+                    {#if doorAddPool.length === 0 && gch.doors.length === 0}
+                        <span class="hint">no doors is fine — the motor leg runs bare; attach ServoActuators on the IO tab to add doors.</span>
                     {/if}
                 </div>
             {/if}
 
-            <!-- Door pairing (maps onto openMode) -->
+            <!-- Door sequencing (maps onto openMode + closePolicy) -->
             {#if gch.doors.length >= 1}
-                <div class="section-head">
-                    Door pairing
-                    <span class="hint">how the two doors open: together, staggered by a delay, or one fully then the other.</span>
+                <div class="section-head sub">
+                    Door sequencing
+                    <span class="hint">how the doors open (the motor waits for them) and which close again once the gear is down.</span>
                 </div>
                 <div class="form-row radio-row">
-                    <label class="radio"><input type="radio" name="dm{gch.id}" value="sequence"
-                        checked={gch.doorMode === 'sequence'}
-                        on:change={() => setField(gch.id, 'doorMode', 'sequence')} disabled={busy} /> Sequence (one then the other)</label>
+                    <span class="field-label">Opening</span>
+                    <label class="radio"><input type="radio" name="dm{gch.id}" value="sync"
+                        checked={gch.doorMode === 'sync'}
+                        on:change={() => setField(gch.id, 'doorMode', 'sync')} disabled={busy} /> Both together</label>
                     <label class="radio"><input type="radio" name="dm{gch.id}" value="delay"
                         checked={gch.doorMode === 'delay'}
-                        on:change={() => setField(gch.id, 'doorMode', 'delay')} disabled={busy} /> Delay</label>
+                        on:change={() => setField(gch.id, 'doorMode', 'delay')} disabled={busy} /> Staggered delay</label>
                     {#if gch.doorMode === 'delay'}
                         <input class="field-input narrow" type="number" min="0" max="10000" step="50"
                                value={gch.doorDelayMs}
@@ -635,22 +665,17 @@
                                disabled={busy} title="Delay before door 2 starts opening (ms)." />
                         <span class="unit">ms</span>
                     {/if}
-                    <label class="radio"><input type="radio" name="dm{gch.id}" value="sync"
-                        checked={gch.doorMode === 'sync'}
-                        on:change={() => setField(gch.id, 'doorMode', 'sync')} disabled={busy} /> Both together</label>
+                    <label class="radio"><input type="radio" name="dm{gch.id}" value="sequence"
+                        checked={gch.doorMode === 'sequence'}
+                        on:change={() => setField(gch.id, 'doorMode', 'sequence')} disabled={busy} /> One fully, then the other</label>
                 </div>
                 {#if gch.doorMode === 'delay' && (!gch.doorDelayMs || gch.doorDelayMs <= 0)}
                     <div class="form-row"><span class="field-label"></span>
                         <span class="hint err">Delay mode needs a positive delay — set door 2's stagger above.</span>
                     </div>
                 {/if}
-
-                <!-- Post-deploy close policy (maps onto closePolicy) -->
-                <div class="section-head">
-                    After deploy
-                    <span class="hint">which doors close once the gear is down (retract re-opens whatever was closed).</span>
-                </div>
                 <div class="form-row radio-row">
+                    <span class="field-label">After deploy</span>
                     <label class="radio"><input type="radio" name="cp{gch.id}" value="both"
                         checked={gch.closePolicy === 'both'}
                         on:change={() => setField(gch.id, 'closePolicy', 'both')} disabled={busy} /> Both close</label>
@@ -660,6 +685,7 @@
                     <label class="radio"><input type="radio" name="cp{gch.id}" value="none"
                         checked={gch.closePolicy === 'none'}
                         on:change={() => setField(gch.id, 'closePolicy', 'none')} disabled={busy} /> None close</label>
+                    <span class="hint compact">retract re-stows whatever was opened.</span>
                 </div>
                 {#if gch.closePolicy === 'first' && gch.doors.length < 2}
                     <div class="form-row"><span class="field-label"></span>
@@ -668,7 +694,7 @@
                 {/if}
             {/if}
 
-            <!-- Per-channel issues -->
+            <!-- Per-strut issues (Rule 35 red list) -->
             {#if issues.length > 0}
                 <ul class="grp-issues">
                     {#each issues as msg}<li class="grp-issue err">⚠ {msg}</li>{/each}
@@ -683,8 +709,12 @@
     .header-actions { display: flex; align-items: center; gap: 8px; }
     .header-actions button { height: 28px; box-sizing: border-box; }
 
-    .fleet-row { gap: 8px; }
-    .fleet-row button { height: 28px; box-sizing: border-box; }
+    /* Status row (Engine pattern) */
+    .status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; flex-wrap: wrap; }
+    .status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .status-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-dim); }
+    .controls { display: flex; align-items: center; gap: 8px; }
+    .controls button { height: 28px; box-sizing: border-box; }
 
     .group-card { margin: 6px 0 12px; padding: 8px 10px; background: var(--bg-raised); border-radius: 5px; }
     .group-card.invalid { border-color: var(--error); background: rgba(255,80,80,0.05); }
@@ -693,9 +723,12 @@
     .seq-badge { font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: var(--accent); border: 1px solid var(--accent); border-radius: 3px; padding: 1px 5px; margin-right: 6px; vertical-align: 1px; }
 
     .section-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-bright); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .section-head.sub { font-size: 10px; margin-top: 12px; border-bottom-style: dashed; }
     .section-head .hint { font-weight: 400; text-transform: none; letter-spacing: 0; }
     .section-head.section-warn { color: var(--warning); border-bottom-color: var(--warning); }
+    .section-head.section-error { color: var(--error); border-bottom-color: var(--error); }
     .section-warn-tag { font-size: 9px; font-weight: 700; color: var(--warning); padding: 1px 6px; border: 1px solid var(--warning); border-radius: 3px; letter-spacing: 0.5px; text-transform: uppercase; }
+    .section-err-tag { font-size: 9px; font-weight: 700; color: var(--error); padding: 1px 6px; border: 1px solid var(--error); border-radius: 3px; letter-spacing: 0.5px; text-transform: uppercase; }
 
     .state-pill.phase { height: 28px; display: inline-flex; align-items: center; box-sizing: border-box; font-family: var(--font-mono); font-size: 10px; padding: 0 8px; border-radius: 3px; background: var(--bg-input); border: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.4px; }
     .state-pill.phase.phase-retracted  { color: var(--text-dim); }
@@ -705,20 +738,26 @@
     .state-pill.phase.phase-error      { color: var(--error); border-color: var(--error); background: rgba(255,80,80,0.12); }
     .state-pill.phase.phase-unknown    { color: var(--text-dim); }
 
-    .field-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-dim); }
-    .form-row.sub { padding-left: 0; }
-    .radio-row { gap: 14px; flex-wrap: wrap; }
-    .radio { font-size: 11px; color: var(--text); display: inline-flex; align-items: center; gap: 4px; }
+    .form-row.sub { margin-left: 0; }
+    .form-row.radio-row { gap: 12px; flex-wrap: wrap; }
+    .radio { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text); cursor: pointer; }
+    .radio input { cursor: pointer; }
 
-    .grp-issues { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-    .grp-issue { font-size: 11px; line-height: 1.35; padding-left: 4px; }
-    .grp-issue.err { color: var(--error); }
+    .servo-widget-row { margin-top: 2px; }
 
-    /* Motor modal */
-    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
-    .modal { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; width: 460px; max-width: 90vw; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
-    .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border); }
-    .modal-head h4 { font-size: 13px; font-weight: 600; color: var(--text-bright); }
-    .modal-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
-    .modal-body .form-row { align-items: center; gap: 8px; }
+    .form-grid.cols-3 { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 8px 12px; margin: 6px 0; }
+    .form-field { display: flex; flex-direction: column; gap: 3px; }
+    .form-field .field-label { font-size: 11px; color: var(--text-dim); }
+
+    .hint.compact { font-size: 10px; }
+    .hint.warn { color: var(--warning); }
+    .hint.err { color: var(--error); }
+
+    .empty-state { padding: 14px; border: 1px dashed var(--border); border-radius: 5px; color: var(--text-dim); font-size: 12px; margin: 8px 0; }
+    .empty-state p { margin: 0 0 8px; }
+
+    .grp-issues { margin: 10px 0 2px; padding-left: 4px; list-style: none; }
+    .grp-issue.err { color: var(--error); font-size: 11px; padding: 2px 0; }
+
+    .btn-slot { min-width: 28px; }
 </style>
