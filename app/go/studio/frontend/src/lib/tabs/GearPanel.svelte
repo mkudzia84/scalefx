@@ -271,7 +271,6 @@
     function numValue(e: Event): number { return Number((e.target as HTMLInputElement).value) }
     function resetSelect(e: Event) { (e.target as HTMLSelectElement).value = '' }
 
-    function onCoord(e: Event) { setGearCoord(selValue(e) as CoordMode) }
     function setField<K extends keyof GearChannelT>(id: number, key: K, val: GearChannelT[K]) {
         updateGearChannel(id, g => ({ ...g, [key]: val }))
     }
@@ -363,12 +362,16 @@
         Control
         <span class="hint">how the whole set is commanded — coordination across struts + the one RC up/down channel.</span>
     </div>
+    <!-- Mode choice ≤4 options → segmented toggle (Rule 60.3). -->
     <div class="form-row">
         <span class="field-label">Coordination</span>
-        <select class="field-input wide" value={cfg?.coord}
-                on:change={onCoord} disabled={busy}>
-            {#each coordOptions as o}<option value={o.id}>{o.label}</option>{/each}
-        </select>
+        <div class="seg-select">
+            {#each coordOptions as o}
+                <button class="seg" class:on={cfg?.coord === o.id}
+                        on:click={() => setGearCoord(o.id)} disabled={busy}
+                        title={o.hint}>{o.label}</button>
+            {/each}
+        </div>
     </div>
     <div class="form-row"><span class="field-label"></span><span class="hint">{coordHint}</span></div>
 
@@ -509,114 +512,201 @@
                        disabled={busy} placeholder="e.g. nose, main-left, main-right" />
             </div>
 
-            <!-- Gear motor (Rule 49 role-filtered pool + Rule 39 yellow warn) -->
-            <div class="section-head sub" class:section-warn={motorPoolEmpty}>
-                Gear motor
-                <span class="hint">an H-bridge port with a BiDcMotor role — drives the leg to the endstop (stall-detected on the expander).</span>
-                {#if motorPoolEmpty}<span class="section-warn-tag">no BiDcMotor port</span>{/if}
-            </div>
-            <div class="form-row">
-                <span class="field-label">Port</span>
-                <select class="field-input wide" value={portRefToKey(gch.motor)}
-                        on:change={(e) => onPickMotor(gch.id, e)}
-                        disabled={busy || motorPoolEmpty}>
-                    <option value="">{motorPoolEmpty ? '— no free BiDcMotor port —' : '— pick a gear motor —'}</option>
-                    {#each motorOpts as p}
-                        <option value={modelPortKey(p)}>{refOptLabel(p)}</option>
-                    {/each}
-                </select>
-            </div>
-            {#if motorPoolEmpty}
-                <div class="form-row"><span class="field-label"></span>
-                    <span class="hint warn">No H-bridge has a BiDcMotor role attached — attach one on the IO tab, then pick it here.</span>
-                </div>
-            {/if}
-            {#if gch.motor.kind}
-                <!-- Drive parameters, inline (config belongs on the panel;
-                     modals are for live-tune dialogs only).  Signed duty:
-                     deploy is normally +, retract −; swap signs if the leg
-                     runs backwards. -->
-                <div class="form-grid cols-3">
-                    <div class="form-field">
-                        <span class="field-label">Deploy duty</span>
-                        <input class="field-input narrow" type="number" min="-32767" max="32767" step="1000"
-                               value={gch.deployDuty}
-                               on:change={(e) => setField(gch.id, 'deployDuty', Math.round(numValue(e)))}
-                               disabled={busy} title="Signed H-bridge duty for 'going down' (-32767..32767)." />
+            <!-- Two-column strut layout (Rule 60.1): LEFT = physical ports +
+                 their calibration/setup, RIGHT = behaviour (door sequencing).
+                 Live-telemetry widgets stay OUT of the columns (Rule 60.2 —
+                 full-width rows below the grid). -->
+            <div class="two-col strut-cols">
+                <div class="col">
+                    <!-- Gear motor (Rule 49 pool + Rule 39 yellow warn) -->
+                    <div class="section-head sub" class:section-warn={motorPoolEmpty}>
+                        Gear motor
+                        {#if motorPoolEmpty}<span class="section-warn-tag">no BiDcMotor port</span>{/if}
                     </div>
-                    <div class="form-field">
-                        <span class="field-label">Retract duty</span>
-                        <input class="field-input narrow" type="number" min="-32767" max="32767" step="1000"
-                               value={gch.retractDuty}
-                               on:change={(e) => setField(gch.id, 'retractDuty', Math.round(numValue(e)))}
-                               disabled={busy} title="Signed H-bridge duty for 'going up' (-32767..32767)." />
+                    <div class="form-row">
+                        <span class="field-label">Port</span>
+                        <select class="field-input wide" value={portRefToKey(gch.motor)}
+                                on:change={(e) => onPickMotor(gch.id, e)}
+                                disabled={busy || motorPoolEmpty}>
+                            <option value="">{motorPoolEmpty ? '— no free BiDcMotor port —' : '— pick a gear motor —'}</option>
+                            {#each motorOpts as p}
+                                <option value={modelPortKey(p)}>{refOptLabel(p)}</option>
+                            {/each}
+                        </select>
                     </div>
-                    <div class="form-field">
-                        <span class="field-label">Travel timeout (ms)</span>
-                        <input class="field-input narrow" type="number" min="0" max="60000" step="500"
-                               value={gch.timeoutMs}
-                               on:change={(e) => setField(gch.id, 'timeoutMs', Math.max(0, Math.round(numValue(e))))}
-                               disabled={busy} title="Full-travel watchdog (ms) — the endstop seek aborts to ERROR after this. 0 = seek until stall." />
-                    </div>
-                </div>
-                <div class="form-row"><span class="field-label"></span>
-                    <span class="hint">endstop calibration (LiveRatio + ceiling guard) lives on the BiDcMotor role — tune it on the IO tab.</span>
-                </div>
-            {/if}
+                    {#if motorPoolEmpty}
+                        <div class="form-row"><span class="field-label"></span>
+                            <span class="hint warn">No H-bridge has a BiDcMotor role attached — attach one on the IO tab, then pick it here.</span>
+                        </div>
+                    {/if}
+                    {#if gch.motor.kind}
+                        <!-- Drive parameters (Rule 60.6 grid).  Signed duty:
+                             deploy normally +, retract −. -->
+                        <div class="form-grid cols-2">
+                            <div class="form-field">
+                                <span class="field-label">Deploy duty</span>
+                                <input class="field-input narrow" type="number" min="-32767" max="32767" step="1000"
+                                       value={gch.deployDuty}
+                                       on:change={(e) => setField(gch.id, 'deployDuty', Math.round(numValue(e)))}
+                                       disabled={busy} title="Signed H-bridge duty for 'going down' (-32767..32767)." />
+                            </div>
+                            <div class="form-field">
+                                <span class="field-label">Retract duty</span>
+                                <input class="field-input narrow" type="number" min="-32767" max="32767" step="1000"
+                                       value={gch.retractDuty}
+                                       on:change={(e) => setField(gch.id, 'retractDuty', Math.round(numValue(e)))}
+                                       disabled={busy} title="Signed H-bridge duty for 'going up' (-32767..32767)." />
+                            </div>
+                            <div class="form-field">
+                                <span class="field-label">Travel timeout (ms)</span>
+                                <input class="field-input narrow" type="number" min="0" max="60000" step="500"
+                                       value={gch.timeoutMs}
+                                       on:change={(e) => setField(gch.id, 'timeoutMs', Math.max(0, Math.round(numValue(e))))}
+                                       disabled={busy} title="Full-travel watchdog (ms) — the endstop seek aborts to ERROR after this. 0 = seek until stall." />
+                            </div>
+                        </div>
+                        <div class="form-row"><span class="field-label"></span>
+                            <span class="hint">endstop calibration lives on the BiDcMotor role — tune it on the IO tab.</span>
+                        </div>
+                    {/if}
 
-            <!-- Doors (Rule 49 servo pool) -->
-            <div class="section-head sub" class:section-warn={doorPoolEmpty}>
-                Doors (≤2)
-                <span class="hint">door servos open before the motor runs and close after, per the sequencing below.</span>
-                {#if doorPoolEmpty}<span class="section-warn-tag">no ServoActuator port</span>{/if}
+                    <!-- Doors (Rule 49 + 60.4: unclaimed-only, sibling-used
+                         excluded, own pick exempt) -->
+                    <div class="section-head sub" class:section-warn={doorPoolEmpty}>
+                        Doors (≤2)
+                        {#if doorPoolEmpty}<span class="section-warn-tag">no ServoActuator port</span>{/if}
+                    </div>
+                    {#each gch.doors as d, i (i)}
+                        {@const dPool = doorPool($deviceModel.ports, $deviceModel.claims, usedDoors, d.port)}
+                        <div class="form-row">
+                            <span class="field-label">Door {i + 1}</span>
+                            <select class="field-input wide" value={portRefToKey(d.port)}
+                                    on:change={(e) => setDoorPort(gch.id, i, parsePortKey(selValue(e), 'servo'))}
+                                    disabled={busy}>
+                                <option value="">— pick a free servo port —</option>
+                                {#each dPool as p}
+                                    <option value={modelPortKey(p)}>{refOptLabel(p)}</option>
+                                {/each}
+                            </select>
+                            <button class="small danger btn-slot" on:click={() => removeGearDoor(gch.id, i)} disabled={busy}>× Remove</button>
+                        </div>
+                        <!-- Normalized positions (servo-intent: 0 = calibrated
+                             min end, 10000 = max; the role maps to µs). -->
+                        <div class="form-row sub">
+                            <span class="field-label">Open / Close</span>
+                            <input class="field-input narrow" type="number" min="0" max="10000" step="100"
+                                   value={d.open}
+                                   on:change={(e) => setDoorNorm(gch.id, i, 'open', numValue(e))}
+                                   disabled={busy} title="Normalized OPEN position [0..10000]." />
+                            <span class="unit">open</span>
+                            <input class="field-input narrow" type="number" min="0" max="10000" step="100"
+                                   value={d.close}
+                                   on:change={(e) => setDoorNorm(gch.id, i, 'close', numValue(e))}
+                                   disabled={busy} title="Normalized CLOSED position [0..10000]." />
+                            <span class="unit">close</span>
+                        </div>
+                        <!-- Calibration/setup (Rule 44 — ↔ Reversed + ⚙ Calibrate…) -->
+                        <div class="form-row servo-widget-row">
+                            <span class="field-label"></span>
+                            <ServoWidget
+                                port={d.port}
+                                portLabel={labelForPort(d.port)}
+                                profile={profileForPort(d.port)}
+                                busy={busy} />
+                        </div>
+                    {/each}
+                    {#if gch.doors.length < 2}
+                        <div class="form-row">
+                            <span class="field-label"></span>
+                            <select class="field-input wide" on:change={(e) => onPickDoor(gch.id, e)}
+                                    disabled={busy || doorAddPool.length === 0}>
+                                <option value="">{doorAddPool.length === 0 ? '— no free servo ports —' : '+ Add door…'}</option>
+                                {#each doorAddPool as p}
+                                    <option value={modelPortKey(p)}>{refOptLabel(p)}</option>
+                                {/each}
+                            </select>
+                        </div>
+                        {#if doorAddPool.length === 0 && gch.doors.length === 0}
+                            <div class="form-row"><span class="field-label"></span>
+                                <span class="hint">no doors is fine — the leg runs bare; attach ServoActuators on the IO tab to add doors.</span>
+                            </div>
+                        {/if}
+                    {/if}
+                </div>
+
+                <div class="col">
+                    <!-- Door sequencing (RIGHT column, Rule 60.1).  Mode
+                         choices are segmented toggles (Rule 60.3). -->
+                    <div class="section-head sub">Door sequencing</div>
+                    {#if gch.doors.length === 0}
+                        <div class="form-row">
+                            <span class="hint">add a door on the left to configure its opening sequence and close policy.</span>
+                        </div>
+                    {:else}
+                        <div class="form-row">
+                            <span class="field-label">Opening</span>
+                            <div class="seg-select">
+                                <button class="seg" class:on={gch.doorMode === 'sync'}
+                                        on:click={() => setField(gch.id, 'doorMode', 'sync')} disabled={busy}
+                                        title="Both doors start opening together.">Together</button>
+                                <button class="seg" class:on={gch.doorMode === 'delay'}
+                                        on:click={() => setField(gch.id, 'doorMode', 'delay')} disabled={busy}
+                                        title="Door 1 opens, door 2 follows after a fixed delay.">Staggered</button>
+                                <button class="seg" class:on={gch.doorMode === 'sequence'}
+                                        on:click={() => setField(gch.id, 'doorMode', 'sequence')} disabled={busy}
+                                        title="Door 1 opens fully (motion-done monitored), then door 2 starts.">One, then other</button>
+                            </div>
+                        </div>
+                        {#if gch.doorMode === 'delay'}
+                            <div class="form-row">
+                                <span class="field-label">Stagger</span>
+                                <input class="field-input narrow" type="number" min="0" max="10000" step="50"
+                                       value={gch.doorDelayMs}
+                                       on:change={(e) => setField(gch.id, 'doorDelayMs', Math.max(0, Math.round(numValue(e))))}
+                                       disabled={busy} title="Delay before door 2 starts opening (ms)." />
+                                <span class="unit">ms</span>
+                            </div>
+                            {#if !gch.doorDelayMs || gch.doorDelayMs <= 0}
+                                <div class="form-row"><span class="field-label"></span>
+                                    <span class="hint err">Staggered mode needs a positive delay.</span>
+                                </div>
+                            {/if}
+                        {/if}
+                        <div class="form-row">
+                            <span class="field-label">After deploy</span>
+                            <div class="seg-select">
+                                <button class="seg" class:on={gch.closePolicy === 'both'}
+                                        on:click={() => setField(gch.id, 'closePolicy', 'both')} disabled={busy}
+                                        title="Both doors close again once the gear is down.">Both close</button>
+                                <button class="seg" class:on={gch.closePolicy === 'first'}
+                                        on:click={() => setField(gch.id, 'closePolicy', 'first')} disabled={busy}
+                                        title="Door 1 closes; door 2 stays open around the leg.">One closes</button>
+                                <button class="seg" class:on={gch.closePolicy === 'none'}
+                                        on:click={() => setField(gch.id, 'closePolicy', 'none')} disabled={busy}
+                                        title="Both doors stay open while the gear is down.">None close</button>
+                            </div>
+                        </div>
+                        <div class="form-row"><span class="field-label"></span>
+                            <span class="hint">the motor waits for the doors to finish opening; retract re-stows whatever was opened.</span>
+                        </div>
+                        {#if gch.closePolicy === 'first' && gch.doors.length < 2}
+                            <div class="form-row"><span class="field-label"></span>
+                                <span class="hint err">"One closes" needs 2 doors — add a second door or pick a different policy.</span>
+                            </div>
+                        {/if}
+                    {/if}
+                </div>
             </div>
+
+            <!-- Live door mirrors — FULL WIDTH (Rule 60.2): position + target
+                 from the 20 Hz servo-status stream, one bar per door, so the
+                 operator watches the doors travel during a deploy test. -->
             {#each gch.doors as d, i (i)}
-                {@const dPool = doorPool($deviceModel.ports, $deviceModel.claims, usedDoors, d.port)}
-                <div class="form-row">
-                    <span class="field-label">Door {i + 1}</span>
-                    <select class="field-input wide" value={portRefToKey(d.port)}
-                            on:change={(e) => setDoorPort(gch.id, i, parsePortKey(selValue(e), 'servo'))}
-                            disabled={busy}>
-                        <option value="">— pick a free servo port —</option>
-                        {#each dPool as p}
-                            <option value={modelPortKey(p)}>{refOptLabel(p)}</option>
-                        {/each}
-                    </select>
-                    <button class="small danger btn-slot" on:click={() => removeGearDoor(gch.id, i)} disabled={busy}>× Remove</button>
-                </div>
-                <!-- Normalized open/close positions (servo-intent rule —
-                     0 = calibrated min end, 10000 = max end; the role's
-                     calibration + REV flag do the µs mapping). -->
-                <div class="form-row sub">
-                    <span class="field-label">Open / Close</span>
-                    <input class="field-input narrow" type="number" min="0" max="10000" step="100"
-                           value={d.open}
-                           on:change={(e) => setDoorNorm(gch.id, i, 'open', numValue(e))}
-                           disabled={busy} title="Normalized OPEN position [0..10000]." />
-                    <span class="unit">open</span>
-                    <input class="field-input narrow" type="number" min="0" max="10000" step="100"
-                           value={d.close}
-                           on:change={(e) => setDoorNorm(gch.id, i, 'close', numValue(e))}
-                           disabled={busy} title="Normalized CLOSED position [0..10000]." />
-                    <span class="unit">close</span>
-                </div>
-                <!-- Per-servo calibration (Rule 44: ↔ Reversed + ⚙ Calibrate…) -->
-                <div class="form-row servo-widget-row">
-                    <span class="field-label"></span>
-                    <ServoWidget
-                        port={d.port}
-                        portLabel={labelForPort(d.port)}
-                        profile={profileForPort(d.port)}
-                        busy={busy} />
-                </div>
-                <!-- Live door mirror (Rule 42/53): position + target from the
-                     20 Hz servo-status stream — watch the door travel during
-                     a deploy test.  Servo side only (doors have no RC input). -->
                 {#if d.port && d.port.kind}
                     {@const dProf = profileForPort(d.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
                     {@const dSv = $servoStatus[servoStatusKey(d.port.guid, d.port.idx)]}
                     <div class="form-row servo-widget-row">
-                        <span class="field-label"></span>
+                        <span class="field-label">Door {i + 1} live</span>
                         <ServoIoWidget
                             hasInput={false}
                             inputUs={null}
@@ -628,71 +718,6 @@
                     </div>
                 {/if}
             {/each}
-            {#if gch.doors.length < 2}
-                <div class="form-row">
-                    <span class="field-label"></span>
-                    <select class="field-input wide" on:change={(e) => onPickDoor(gch.id, e)}
-                            disabled={busy || doorAddPool.length === 0}>
-                        <option value="">{doorAddPool.length === 0 ? '— no free servo ports —' : '+ Add door…'}</option>
-                        {#each doorAddPool as p}
-                            <option value={modelPortKey(p)}>{refOptLabel(p)}</option>
-                        {/each}
-                    </select>
-                    {#if doorAddPool.length === 0 && gch.doors.length === 0}
-                        <span class="hint">no doors is fine — the motor leg runs bare; attach ServoActuators on the IO tab to add doors.</span>
-                    {/if}
-                </div>
-            {/if}
-
-            <!-- Door sequencing (maps onto openMode + closePolicy) -->
-            {#if gch.doors.length >= 1}
-                <div class="section-head sub">
-                    Door sequencing
-                    <span class="hint">how the doors open (the motor waits for them) and which close again once the gear is down.</span>
-                </div>
-                <div class="form-row radio-row">
-                    <span class="field-label">Opening</span>
-                    <label class="radio"><input type="radio" name="dm{gch.id}" value="sync"
-                        checked={gch.doorMode === 'sync'}
-                        on:change={() => setField(gch.id, 'doorMode', 'sync')} disabled={busy} /> Both together</label>
-                    <label class="radio"><input type="radio" name="dm{gch.id}" value="delay"
-                        checked={gch.doorMode === 'delay'}
-                        on:change={() => setField(gch.id, 'doorMode', 'delay')} disabled={busy} /> Staggered delay</label>
-                    {#if gch.doorMode === 'delay'}
-                        <input class="field-input narrow" type="number" min="0" max="10000" step="50"
-                               value={gch.doorDelayMs}
-                               on:change={(e) => setField(gch.id, 'doorDelayMs', Math.max(0, Math.round(numValue(e))))}
-                               disabled={busy} title="Delay before door 2 starts opening (ms)." />
-                        <span class="unit">ms</span>
-                    {/if}
-                    <label class="radio"><input type="radio" name="dm{gch.id}" value="sequence"
-                        checked={gch.doorMode === 'sequence'}
-                        on:change={() => setField(gch.id, 'doorMode', 'sequence')} disabled={busy} /> One fully, then the other</label>
-                </div>
-                {#if gch.doorMode === 'delay' && (!gch.doorDelayMs || gch.doorDelayMs <= 0)}
-                    <div class="form-row"><span class="field-label"></span>
-                        <span class="hint err">Delay mode needs a positive delay — set door 2's stagger above.</span>
-                    </div>
-                {/if}
-                <div class="form-row radio-row">
-                    <span class="field-label">After deploy</span>
-                    <label class="radio"><input type="radio" name="cp{gch.id}" value="both"
-                        checked={gch.closePolicy === 'both'}
-                        on:change={() => setField(gch.id, 'closePolicy', 'both')} disabled={busy} /> Both close</label>
-                    <label class="radio"><input type="radio" name="cp{gch.id}" value="first"
-                        checked={gch.closePolicy === 'first'}
-                        on:change={() => setField(gch.id, 'closePolicy', 'first')} disabled={busy} /> One closes</label>
-                    <label class="radio"><input type="radio" name="cp{gch.id}" value="none"
-                        checked={gch.closePolicy === 'none'}
-                        on:change={() => setField(gch.id, 'closePolicy', 'none')} disabled={busy} /> None close</label>
-                    <span class="hint compact">retract re-stows whatever was opened.</span>
-                </div>
-                {#if gch.closePolicy === 'first' && gch.doors.length < 2}
-                    <div class="form-row"><span class="field-label"></span>
-                        <span class="hint err">"One closes" needs 2 doors — add a second door or pick a different policy.</span>
-                    </div>
-                {/if}
-            {/if}
 
             <!-- Per-strut issues (Rule 35 red list) -->
             {#if issues.length > 0}
@@ -739,13 +764,16 @@
     .state-pill.phase.phase-unknown    { color: var(--text-dim); }
 
     .form-row.sub { margin-left: 0; }
-    .form-row.radio-row { gap: 12px; flex-wrap: wrap; }
-    .radio { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text); cursor: pointer; }
-    .radio input { cursor: pointer; }
 
     .servo-widget-row { margin-top: 2px; }
 
-    .form-grid.cols-3 { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 8px 12px; margin: 6px 0; }
+    /* Rule 60.1 — the strut's port/behaviour split rides the global
+       .two-col grid; collapse to one column when the panel gets narrow. */
+    .strut-cols { gap: 4px 18px; margin-top: 2px; }
+    @media (max-width: 900px) {
+        .strut-cols { grid-template-columns: 1fr; }
+    }
+
     .form-field { display: flex; flex-direction: column; gap: 3px; }
     .form-field .field-label { font-size: 11px; color: var(--text-dim); }
 

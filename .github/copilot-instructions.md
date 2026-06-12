@@ -2467,6 +2467,47 @@ half-working generic UI HIDES routing bugs; a loud placeholder SURFACES them.
   indistinguishable from an unimplemented one in review — only the click test
   catches it.
 
+### 60. Studio Panel Layout Grammar (approved 2026-06-13)
+
+How a complex effect panel arranges itself — derived from the patterns the
+mature tabs (GunFx `.guns-grid`, Engine status row, Lighting segmented
+switcher) already converged on, now binding:
+
+- **60.1 Two-column unit cards.** A per-unit card (strut, gun, light group)
+  that carries both *physical bindings* and *behaviour config* lays out as a
+  two-column grid (the global `.two-col` + `.col`): **LEFT = ports** — pickers
+  plus their calibration/setup affordances (ServoWidget, element config);
+  **RIGHT = behaviour** — sequencing, timing, policies.  Collapse to one
+  column below ~900 px; `align-items: start` so the shorter column doesn't
+  stretch.  (Reference: GunFx gun-core/smoke split.)
+- **60.2 Live-telemetry widgets span full width.**  Channel bars
+  (ChannelToggleCluster/ChannelBandCluster), ServoIoWidget mirrors, verbose
+  status views — anything animated by live data — renders as a FULL-WIDTH row
+  above/below the column grid, never squeezed into a half column.  Live bars
+  are only readable at width; columns are for forms.
+- **60.3 Segmented toggles for mode choices.**  A mutually-exclusive mode
+  choice with ≤ 4 options renders as ONE joined segmented control (the global
+  `.seg-select`, the selector twin of `.op-cluster`; exactly one `.seg.on`).
+  Radio rows in panels are RETIRED; dropdowns are for > 4 options or dynamic
+  lists (port/channel pickers).
+- **60.4 Unclaimed-only pools, sibling-aware.**  Extends Rule 49: a port
+  picker's pool is role-filtered AND minus ports claimed by other effects AND
+  minus ports already used by any sibling row in the SAME panel; the row's own
+  current pick stays via `exempt`.
+- **60.5 Ops in the header, config in the body.**  Operational actions
+  (deploy/stop/reset/reorder, the Rule 48 toggles) live in the unit card's
+  header op-cluster; configuration never mixes into the header, ops never
+  sink into the form body.
+- **60.6 Parameter packs use grids.**  ≥ 2 related numeric fields (duties,
+  timeouts, offsets) pack into `.form-grid cols-2/3` inside their column —
+  never one full form-row per number.
+- **60.7 Section-head hierarchy.**  Inside a column, section heads use the
+  dashed `.sub` variant; solid-underline heads are reserved for panel-level
+  sections.
+
+Reference implementation: the Gear tab's strut cards
+([GearPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GearPanel.svelte)).
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host

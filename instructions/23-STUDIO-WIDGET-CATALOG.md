@@ -59,6 +59,7 @@ panel can crib it.
 17. [Operational action cluster](#17-operational-action-cluster) — `.op-cluster` split-button for primary-action + optional picker + Stop (Rule 48)
 18. [Modular config sources + global Apply](#18-modular-config-sources) — `DirtySource` + `ConfigToolbar` aggregate (Rule 46)
 19. [Servo I/O status widget](#19-servo-io-status-widget) — live signal-in bar + servo-out track (RED actual + YELLOW target lines), `ServoIoWidget.svelte` (Rule 42)
+20. [Segmented mode selector](#20-segmented-mode-selector) — `.seg-select` joined toggle for ≤4-option mode choices; radios retired (Rule 60.3)
 
 ---
 
@@ -1044,6 +1045,41 @@ catalog is a working handbook; rules are the spec.
 If you build a NEW pattern that's reusable, you owe future-you a
 catalog entry. Add it before the panel ships, even if the entry is
 just "see X.svelte for the implementation, formalise next time."
+
+---
+
+## 20. Segmented mode selector
+
+A mutually-exclusive MODE choice with **≤ 4 options** renders as one joined
+segmented control — the selector twin of `.op-cluster` (same chrome: single
+outer border, seam dividers, 28 px height).  Exactly one segment carries
+`.on` (accent tint).  **Radio rows in panels are retired** (Rule 60.3);
+dropdowns are for > 4 options or dynamic lists.
+
+```svelte
+<div class="form-row">
+    <span class="field-label">Opening</span>
+    <div class="seg-select">
+        <button class="seg" class:on={mode === 'sync'}
+                on:click={() => setMode('sync')} disabled={busy}
+                title="Both doors start opening together.">Together</button>
+        <button class="seg" class:on={mode === 'delay'}
+                on:click={() => setMode('delay')} disabled={busy}
+                title="Door 1 opens, door 2 follows after a delay.">Staggered</button>
+        <button class="seg" class:on={mode === 'sequence'}
+                on:click={() => setMode('sequence')} disabled={busy}
+                title="Door 1 fully, then door 2.">One, then other</button>
+    </div>
+</div>
+```
+
+**Required classes** (global, `style.css`): `.seg-select` (wrapper),
+`.seg` (segment button), `.seg.on` (active — accent background, default
+cursor).  Mode-dependent extra fields (e.g. the stagger ms input) follow
+in their own `form-row`, shown only when the relevant segment is active.
+Give every segment a verb-led `title=` (Rule 24).  Reference: the Gear
+tab's door sequencing + coordination selector
+([GearPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GearPanel.svelte)).
 
 ---
 
