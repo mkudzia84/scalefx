@@ -2438,6 +2438,35 @@ expander input). References:
 [role_registry.h](../controllers/lib/sfx_board/server/role_registry.h)
 (`forEachAttachedRole` — single role-kind enumeration map).
 
+### 59. Every Studio Tab Routes to a Dedicated Panel — Verify the Hookup End-to-End
+
+A Studio tab MUST render a purpose-built panel; there is NO generic fallback UI.
+The generic slot-editor `DomainTab` was DELETED (2026-06-13) after it silently
+swallowed a mis-routed domain for days: the backend domain id was
+`landing-gear` but the tab router matched `gearcontrol`, so the purpose-built
+GearPanel was unreachable and the operator saw a bare auto-generated
+"Gear units"/"Gear switch" slot view that looked like (a bad) feature. A
+half-working generic UI HIDES routing bugs; a loud placeholder SURFACES them.
+
+- A domain the router can't place renders
+  [NotImplementedTab.svelte](../app/go/studio/frontend/src/lib/tabs/NotImplementedTab.svelte)
+  — a deliberate "Not implemented" card naming the domain id and pointing at
+  the missing hookup. Never resurrect a generic editable fallback.
+- **When adding a domain or panel, verify the WHOLE routing chain by id, not
+  by assumption:** the Go `domainCatalog` `Domain.ID`
+  ([types.go](../app/go/devicemodel/types.go)) → the matching set/find in
+  `studioTabs` ([devicemodel.ts](../app/go/studio/frontend/src/lib/devicemodel.ts))
+  → the `kind` case in
+  [MainLayout.svelte](../app/go/studio/frontend/src/lib/layout/MainLayout.svelte)
+  → the dedicated panel component. The ids are STRINGS across a Go/TS
+  boundary — nothing fails at compile time when they drift.
+- **Acceptance check for any new/renamed tab:** run Studio against a board (or
+  the dev server), click the tab, and confirm the DEDICATED panel renders —
+  seeing the NotImplemented placeholder (or no tab at all) means the chain is
+  broken at one of the three links above. A panel that was never reachable is
+  indistinguishable from an unimplemented one in review — only the click test
+  catches it.
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host

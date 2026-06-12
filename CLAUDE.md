@@ -1,6 +1,6 @@
 # ScaleFX — Claude Code Guide
 
-Authoritative rulebook: [.github/copilot-instructions.md](.github/copilot-instructions.md) (Rules 0–58; all GunFX Phase 4 rules landed; Rules 53–56 = wire-async / upload-exclusivity / native-hardware / thread-safe-wire; Rule 57 = upload self-heal; Rule 58 = transparent expander roles (opaque PortRef-addressed transport — drive/query/telemetry of any role on any board behaves hub-local). **HubFX is pure ESP-IDF now — `framework = espidf`, zero Arduino.**).
+Authoritative rulebook: [.github/copilot-instructions.md](.github/copilot-instructions.md) (Rules 0–59; all GunFX Phase 4 rules landed; Rules 53–56 = wire-async / upload-exclusivity / native-hardware / thread-safe-wire; Rule 57 = upload self-heal; Rule 58 = transparent expander roles (opaque PortRef-addressed transport — drive/query/telemetry of any role on any board behaves hub-local); Rule 59 = every Studio tab routes to a DEDICATED panel (no generic fallback — un-hooked domains render NotImplementedTab; verify the id chain domainCatalog → studioTabs → MainLayout by clicking the tab). **HubFX is pure ESP-IDF now — `framework = espidf`, zero Arduino.**).
 Detailed workflows: [instructions/](instructions/) — grouped index in [instructions/README.md](instructions/README.md); start at [32-ARCHITECTURE-DIAGRAMS.md](instructions/32-ARCHITECTURE-DIAGRAMS.md) for the visual system map.
 
 Studio UI work: **start at [instructions/23-STUDIO-WIDGET-CATALOG.md](instructions/23-STUDIO-WIDGET-CATALOG.md)** — handbook of every reusable widget pattern with copy-pasteable snippets.
@@ -93,7 +93,7 @@ After any C++ protocol change: `cd app/go && go build ./cli/` — compiling the 
 
 ## Rules (condensed)
 
-Authoritative rules with full rationale + examples: [.github/copilot-instructions.md](.github/copilot-instructions.md) (Rules 0–58). Below is the compact index — **same rule numbers**, one line each. When this conflicts with copilot-instructions.md, that file wins. Architecture overview: [32-ARCHITECTURE-DIAGRAMS.md](instructions/32-ARCHITECTURE-DIAGRAMS.md).
+Authoritative rules with full rationale + examples: [.github/copilot-instructions.md](.github/copilot-instructions.md) (Rules 0–59). Below is the compact index — **same rule numbers**, one line each. When this conflicts with copilot-instructions.md, that file wins. Architecture overview: [32-ARCHITECTURE-DIAGRAMS.md](instructions/32-ARCHITECTURE-DIAGRAMS.md).
 
 **Protocol & wire**
 - **1** Protocol mirror — every packet/error/command in `serial/<mod>/<mod>.h` has a twin in `app/go/protocol/<mod>/<mod>.go`. Never change one side alone.
@@ -158,6 +158,7 @@ Authoritative rules with full rationale + examples: [.github/copilot-instruction
 - **48** Binary operational on/off is ONE action-toggle whose label is the ACTION (`▶ Engine Start` ⇄ `■ Engine Stop`), `.danger` when live; ON→OFF always allowed (emergency cutoff), OFF→ON keeps the Rule 35 gate.
 - **49** Output-port pickers filter by `roleKind == required` AND unclaimed (keep current pick via `isExempt`); empty pool → Rule 39 yellow. Use the shared `freePortPool` helper. (Input ports use Rule 43.)
 - **50** ONE typography ladder: shared `.hint`/`.hint.warn`/`.hint.err`/`.help-text`/`.unit` classes in `style.css`; never redefine locally, never inline a hex (CSS vars only).
+- **59** Every Studio tab routes to a DEDICATED panel — the generic DomainTab is DELETED; un-hooked domains render `NotImplementedTab` (loud placeholder, never a half-UI). New/renamed tab = verify the STRING id chain (Go `domainCatalog` → `studioTabs` → `MainLayout` case → panel) by clicking the tab; ids cross the Go/TS boundary and never fail at compile time.
 
 **Process & tests**
 - **0** Docs are code — update README / instructions / copilot-instructions.md in the same commit as the code.
