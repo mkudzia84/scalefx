@@ -4,7 +4,7 @@ package main
 // Standalone firmware build & flash tool.
 //
 // Usage (argument mode):
-//   scalefx-flash build <controller> [--no-clean]
+//   scalefx-flash build <controller> [--no-clean] [--no-bump]
 //   scalefx-flash flash <controller> [--port PORT] [--skip-verify] [--no-clean]
 //   scalefx-flash upload <controller> [--port PORT] [--skip-verify]
 //   scalefx-flash verify <controller> [--port PORT]
@@ -51,10 +51,10 @@ func main() {
 	case "build":
 		controller, flags := extractPositionalAndFlags(sub)
 		if controller == "" {
-			printError("Usage: scalefx-flash build <controller> [--no-clean]")
+			printError("Usage: scalefx-flash build <controller> [--no-clean] [--no-bump]")
 			return
 		}
-		cmdBuild(controller, hasArg(flags, "--no-clean"))
+		cmdBuild(controller, hasArg(flags, "--no-clean"), hasArg(flags, "--no-bump"))
 
 	case "flash":
 		controller, flags := extractPositionalAndFlags(sub)
@@ -187,6 +187,7 @@ func printUsage() {
 	fmt.Printf("  %-16s %s\n", "--port PORT", "Serial port (default: auto-detect)")
 	fmt.Printf("  %-16s %s\n", "--skip-verify", "Skip post-flash device verification")
 	fmt.Printf("  %-16s %s\n", "--no-clean", "Incremental build (skip clean)")
+	fmt.Printf("  %-16s %s\n", "--no-bump", "Verification build: keep BUILD_NUMBER unchanged (test gate / CI)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  scalefx-flash build gunfx")

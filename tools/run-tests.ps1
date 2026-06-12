@@ -14,7 +14,8 @@
 #                 auto-detect).  ~25 s with HW.
 #
 #   -Premerge     The strict gate.  Adds the firmware build
-#                 (scalefx-flash build hubfx).  REQUIRES a reachable
+#                 (scalefx-flash build hubfx --no-bump — a verification
+#                 build that does NOT touch BUILD_NUMBER).  REQUIRES a reachable
 #                 HubFX and a working IDF toolchain.  ~70 s.  Run this
 #                 before merging to main (Rule 52).
 #
@@ -295,7 +296,10 @@ if ($Premerge) {
         Write-Fail "hubfx-esp32s3" "scalefx-flash.exe missing - 'go build ./app/go/flash' first"
         $failures += "firmware: flasher missing"
     } else {
-        $output = & $flasher build hubfx --no-clean 2>&1
+        # --no-bump: the gate is a VERIFICATION build — it must not mutate the
+        # source (a BUILD_NUMBER-only diff on every gate run dirties the tree
+        # mid-merge).  Deploy flashes keep the auto-bump.
+        $output = & $flasher build hubfx --no-clean --no-bump 2>&1
         $exitCode = $LASTEXITCODE
         $elapsed = (Get-Date) - $start
         $detail = ("{0:N1}s" -f $elapsed.TotalSeconds)

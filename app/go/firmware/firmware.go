@@ -98,6 +98,7 @@ type Options struct {
 	Port       string // serial port (empty = auto-detect)
 	NoBuild    bool   // skip build step
 	NoClean    bool   // skip clean (incremental build)
+	NoBump     bool   // verification build: do NOT increment BUILD_NUMBER (test gate / CI)
 	SkipVerify bool   // skip post-flash verification
 	Timeout    int    // BOOTSEL wait timeout in seconds (default 15)
 	OnEvent    EventCallback

@@ -106,6 +106,9 @@ public:
     /// Wait for any buffered TX to flush over the wire.
     void flush() override;
 
+    /// Discard the entire RX buffer (driver ring + HW FIFO) — uart_flush_input.
+    void flushRx() override;
+
     /// `if (Serial)` truthiness — true while the driver is installed.
     explicit operator bool() const override { return _installed; }
 

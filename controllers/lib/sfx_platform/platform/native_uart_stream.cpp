@@ -166,6 +166,12 @@ void NativeUartStream::flush() {
     uart_wait_tx_done(_port, portMAX_DELAY);
 }
 
+void NativeUartStream::flushRx() {
+    if (!_installed) return;
+    _peeked = -1;                 // drop the cached peek byte too
+    uart_flush_input(_port);      // clears the driver RX ring + HW FIFO
+}
+
 }  // namespace sfx
 
 #endif  // SFX_PLATFORM_ESP32

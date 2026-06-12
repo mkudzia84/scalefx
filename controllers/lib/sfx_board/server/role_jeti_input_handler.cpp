@@ -22,10 +22,14 @@ namespace sfx_core {
 bool JetiInputHandler::attachInput(InputBinding& b, uint8_t portIdx,
                                    const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<JetiExInputRole>();
-    // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8][downstream:u8]
+    // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8][downstream:u8][respond:u8]
     //   baud encoded as kbaud (125 / 250); 0 = use default 125 000.
-    //   downstream (Rule 11 append, byte 3): bring up the IN_2 / ESC telemetry
-    //   monitor.  Default false — IN_2 stays passive (no UART drained).
+    //   downstream (Rule 11, byte 3): bring up the IN_2 / ESC telemetry monitor.
+    //   respond  (Rule 11, byte 4): enable TWO-WAY telemetry (half-duplex reply).
+    //     On THIS tx/rx-switching test branch it DEFAULTS ON when the byte is
+    //     absent, so the stock /hubfx.yaml config exercises the reply; set byte
+    //     4 = 0 to force listen-only.  (The single-wire line now carries the
+    //     10 kΩ pull-up; the [jexp] TX instrumentation watches for drops.)
     uint32_t baud = 125000;
     if (cfgLen >= 3) {
         const uint16_t kbaud = ((uint16_t)cfg[1] << 8) | cfg[2];
@@ -34,6 +38,7 @@ bool JetiInputHandler::attachInput(InputBinding& b, uint8_t portIdx,
         else baud = (uint32_t)kbaud * 1000;
     }
     const bool useDownstream = (cfgLen >= 4) && (cfg[3] != 0);
+    const bool respond       = (cfgLen >= 5) ? (cfg[4] != 0) : true;   // test branch: default ON
     if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
 
 #if SFX_PLATFORM_ESP32
@@ -52,7 +57,8 @@ bool JetiInputHandler::attachInput(InputBinding& b, uint8_t portIdx,
     }
     JetiEx::JetiExpander::instance().begin(b.port, escPort,
                                            /*usn=*/0xA400, /*lsn=*/0x0100, "HubFx", baud,
-                                           /*useDownstream=*/useDownstream);
+                                           /*useDownstream=*/useDownstream,
+                                           /*respondTelemetry=*/respond);
 
     // Reflect the IN_1→IN_2 pairing in the registry: stamp the downstream port
     // with the JetiExTelemetry role so topology (and thus the Studio diagram)
@@ -119,17 +125,29 @@ void JetiInputHandler::handleGetFrameReq(const uint8_t* p, size_t len) {
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
 
     const uint8_t count = r->channelCount();
-    uint8_t out[1 + 1 + 1 + 4 + 4 + 16*2];
+    // [idx][count][valid][rxFrames:4][rxErrors:4][channels:u16×count]
+    //   + TWO-WAY tail (Rule 11 append, after the channels so old clients ignore
+    //     it): [txResp:4][pollsSeen:4][echoShort:4][slotOverruns:4][maxTxDurUs:2]
+    //     [responding:1]
+    uint8_t out[3 + 4 + 4 + 24*2 + 4 + 4 + 4 + 4 + 2 + 1];
     size_t off = 0;
     out[off++] = idx;
     out[off++] = count;
     out[off++] = r->valid() ? 1 : 0;
     SfxWire::putU32LE(&out[off], r->rxFrameCount()); off += 4;
     SfxWire::putU32LE(&out[off], r->rxErrorCount()); off += 4;
-    for (uint8_t i = 0; i < count && off + 2 <= sizeof out; i++) {
+    const uint8_t nch = count > 24 ? 24 : count;   // Jeti EX ≤ 24 ch
+    for (uint8_t i = 0; i < nch; i++) {
         SfxWire::putU16LE(&out[off], r->channel_us((uint8_t)(i + 1)));
         off += 2;
     }
+    // Two-way (half-duplex reply) instrumentation tail.
+    SfxWire::putU32LE(&out[off], r->txResponseCount());     off += 4;
+    SfxWire::putU32LE(&out[off], r->pollsSeen());           off += 4;
+    SfxWire::putU32LE(&out[off], r->echoShort());           off += 4;
+    SfxWire::putU32LE(&out[off], r->slotOverruns());        off += 4;
+    SfxWire::putU16LE(&out[off], (uint16_t)r->maxTxDurUs()); off += 2;
+    out[off++] = r->responding() ? 1 : 0;
     _ctx->sendRawPacket(RolePacket::JETIEX_FRAME_RESP, _ctx->currentTag(), out, off);
 }
 

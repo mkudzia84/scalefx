@@ -12,7 +12,7 @@ import (
 
 // ─── build ───
 
-func cmdBuild(controller string, noClean bool) {
+func cmdBuild(controller string, noClean, noBump bool) {
 	ctrl, ok := resolveCtrl(controller)
 	if !ok {
 		return
@@ -20,6 +20,7 @@ func cmdBuild(controller string, noClean bool) {
 
 	opts := makeOpts(ctrl.Name)
 	opts.NoClean = noClean
+	opts.NoBump = noBump
 
 	bi, err := fw.Build(opts, ctrl)
 	if err != nil {

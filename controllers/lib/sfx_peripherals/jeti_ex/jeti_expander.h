@@ -29,7 +29,11 @@
 #if SFX_PLATFORM_ESP32
 
 #include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h>)
+#include <freertos/FreeRTOS.h>     // dedicated IN_1 servicing task
+#include <freertos/task.h>
 #include <cstdint>
+#include <cstring>                 // memcpy (ESC poll-template capture)
+#include <functional>
 
 #include <ports/input_port.h>
 #include <serial/diag_log.h>
@@ -53,7 +57,8 @@ public:
     bool begin(sfx_peripherals::InputPort* rxPort,
                sfx_peripherals::InputPort* escPort,
                uint16_t hubUsn, uint16_t hubLsn, const char* hubName,
-               uint32_t baud = 125000, bool useDownstream = false) {
+               uint32_t baud = 125000, bool useDownstream = false,
+               bool respondTelemetry = false) {
         if (_running) return true;                    // already running
         if (!rxPort) return false;
         _rxPort  = rxPort;
@@ -77,24 +82,28 @@ public:
         }
 
         if (!_rxBus.begin(rxStream)) return false;
-        // TELEMETRY DISABLED pending the power/brownout fix (2026-05-30).  The
-        // ~3 ms half-duplex TX reply on the shared IN_1 line is electrically
-        // marginal while the engine/heater current spike sags the rail, which
-        // corrupts the channel RX (rxE floods, ----).  RX-only is immune (rxE=0),
-        // so we run pure channel RX with NO reply until the rail is stiffened
-        // (separate ESP32 supply / bulk cap / heater soft-start).  Flip
-        // kRespondToTelemetry back on once power is fixed.  See project memory
-        // "BROWNOUT x half-duplex-TX interaction".
-        if (kRespondToTelemetry) {
+        _respond = respondTelemetry;
+        // Two-way telemetry (half-duplex reply) — RUNTIME-gated via _respond.
+        // History: disabled 2026-05-30 because the ~3 ms TX reply on the shared
+        // IN_1 line sagged the rail under engine/heater load → corrupted channel
+        // RX (rxErr flood, ----).  The single-wire line now carries a 10 kΩ
+        // pull-up (spec topology) to hold the idle level; this branch re-enables
+        // the reply for bench validation, watched by the [jexp] TX instrumentation
+        // (echoShort / slotOverruns / rxErr).  Default OFF (listen-only) when the
+        // attach config doesn't request it.
+        if (_respond) {
             _rxBus.setTxPort(rxPort);                 // half-duplex TX on IN_1 (reply)
             _rxBus.onTelemetryRequest([this](uint8_t pkt){ serveTelemetry(pkt); });
         }
-        // Forward-to-ESC mirrors the Rx's polls out IN_2 — its second-UART TX
-        // crosstalks GPIO6->GPIO5 onto the IN_1 channel RX.  Gated off so IN_2
-        // stays a passive downstream port (no telemetry forwarding between the
-        // links for now).  Re-enable via the windowed-forward approach later.
-        if (kForwardToEsc && _escPort) {
-            _rxBus.onRawFrame([this](const uint8_t* f, uint8_t l){ forwardToEsc(f, l); });
+        // Phase 2 — downstream ESC master link (IN_2).  We do NOT mirror every
+        // Rx frame out IN_2 (its TX crosstalks GPIO6->GPIO5 onto the IN_1 channel
+        // RX and dropped the signal).  Instead we CAPTURE the Rx's latest
+        // telemetry-request frame as a poll template and replay it on IN_2 ONLY
+        // inside IN_1's guaranteed-quiet post-reply window (maybePollEsc, called
+        // from serveTelemetry), at the autodetect cadence.  Capturing is harmless
+        // (no TX) so it's always armed when the downstream link is up.
+        if (_escPort) {
+            _rxBus.onRawFrame([this](const uint8_t* f, uint8_t l){ captureEscPoll(f, l); });
         }
 
         // Register the HubFX-own device (local → never expires) + its built-in
@@ -121,17 +130,58 @@ public:
         const uint32_t now0 = SFX_MILLIS();
         _rxWatch.reset(now0);
         _escWatch.reset(now0);
-        SFX_LOG_INFO("[jexp] started in main loop (rx=IN_1, esc=IN_2%s, baud=%lu)",
+
+        // Telemetry reply is time-critical: the master reserves a ~4 ms slot and
+        // our reply is ~2 ms, so it must START within ~1.3 ms of the poll.  The
+        // cooperative main loop runs 3–35 ms under effect load — far too slow to
+        // ever answer in-window (measured resp=1 / lateSkip≈100%).  So when
+        // RESPONDING, OWN IN_1 on a dedicated Core-0 task that services it every
+        // ~1 ms.  Core 1 is reserved for audio real-time (moving work there spiked
+        // underruns 10×); Core 0 has the headroom.  The task SLEEPS 1 tick (1 ms @
+        // 1000 Hz) each pass so it yields Core 0 to loopTask/storage, and it is
+        // GATED OFF during uploads — the two things the prior prio-3 spin-task
+        // lacked when it starved the upload pipeline (2026-05-30).  Listen-only
+        // (no reply) is not time-critical → keep the cheap main-loop decode.
+        if (_respond) {
+            _taskRunning = true;
+            if (xTaskCreatePinnedToCore(&JetiExpander::taskTrampoline, "jeti_in1",
+                                        kTaskStackBytes, this, kTaskPrio,
+                                        &_task, /*core=*/0) != pdPASS) {
+                _task = nullptr;
+                _taskRunning = false;
+                SFX_LOG_WARN("[jexp] IN_1 task spawn FAILED — main-loop decode fallback");
+            } else {
+                SFX_LOG_INFO("[jexp] IN_1 task started (Core 0 prio %u, %u B stack)",
+                             (unsigned)kTaskPrio, (unsigned)kTaskStackBytes);
+            }
+        }
+        SFX_LOG_INFO("[jexp] started (rx=IN_1%s, esc=IN_2%s, baud=%lu)",
+                     _task ? " task" : " loop",
                      _escPort ? "" : " off", (unsigned long)baud);
         return true;
     }
 
-    // Drive one decode pass — called every main-loop iteration from
-    // JetiExInputRole::tick().  Drains IN_2 (ESC monitor) then IN_1 (channels +,
-    // when telemetry is enabled, the reply hook), and refreshes built-in
-    // sensors.  No-op until begin() / after end().
+    // Main-loop entry (from JetiExInputRole::tick()).  Runs the cooperative
+    // decode ONLY when the dedicated IN_1 task is NOT running — i.e. listen-only
+    // mode.  When responding, the task owns the UART and this is a no-op so the
+    // two never double-drive the port.
+    void tickMainLoop() { if (!_task) update(); }
+
+    // Drive one decode pass — called every ~1 ms by the IN_1 task (responding)
+    // or every main-loop iteration via tickMainLoop() (listen-only).  Drains
+    // IN_2 (ESC monitor) then IN_1 (channels +, when telemetry is enabled, the
+    // reply hook), and refreshes built-in sensors.  No-op until begin()/end().
     void update() {
         if (!_running) return;
+        // Main-loop lag (µs since the previous update()): the worst-case AGE of a
+        // poll parsed in this drain — it could have arrived the instant the last
+        // drain ended and waited the whole interval.  serveTelemetry() uses it as
+        // the timeliness gate: a stale poll's ~2 ms reply would overrun the
+        // master's ~4 ms window and collide with its next channel frame.
+        const uint32_t nowUs = SFX_MICROS();
+        _loopLagUs = (_lastUpdateUs == 0) ? 0 : (nowUs - _lastUpdateUs);
+        if (_loopLagUs > _maxLoopLagUs) _maxLoopLagUs = _loopLagUs;
+        _lastUpdateUs = nowUs;
         const uint32_t now = SFX_MILLIS();
         // IN_2 first: drain the ESC's telemetry into the hub before IN_1
         // re-parses the next echoed master frame.  Only when the downstream
@@ -140,6 +190,7 @@ public:
         if (_escPort) {
             _escMon.update(now);
             _escWatch.observe(now, _escMon.rxByteCount(), _escMon.frameCount(), "IN_2");
+            updateEscPresence(now);   // promote/demote ESC + adjust poll cadence
         }
         _rxBus.update();            // IN_1: master frames → channels (+ reply hook)
         _rxWatch.observe(now, _rxBus.rxByteCount(), _rxBus.rxFrameCount(), "IN_1");
@@ -150,12 +201,39 @@ public:
         // ch/valid = channel decode state.  The "mark what is wrong" counters.
         if (now - _lastRxLog >= 2000) {
             _lastRxLog = now;
-            SFX_LOG_DEBUG("[jexp] IN_1 rxB=%lu rxF=%lu rxErr=%lu ch=%u valid=%d%s",
+            SFX_LOG_INFO("[jexp] IN_1 rxB=%lu rxF=%lu rxErr=%lu ch=%u valid=%d%s",
                          (unsigned long)_rxBus.rxByteCount(),
                          (unsigned long)_rxBus.rxFrameCount(),
                          (unsigned long)_rxBus.rxErrorCount(),
                          _rxBus.channelCount(), _rxBus.isValid() ? 1 : 0,
                          _rxWatch.noisy() ? " NOISY" : "");
+        }
+        // Two-way reply health (every 2 s, only while responding): polls vs resp
+        // = reply coverage; echoShort + slotOver = TX/RX-turnaround issues;
+        // lastUs/maxUs = did the reply fit the ~4 ms slot.  Cross-check rxErr
+        // above — if it climbs as resp climbs, the TX reply is corrupting RX.
+        if (_respond && now - _lastTxLog >= 2000) {
+            _lastTxLog = now;
+            SFX_LOG_INFO("[jexp] TX polls=%lu resp=%lu lateSkip=%lu echoShort=%lu slotOver=%lu lastUs=%lu maxUs=%lu loopLagUs=%lu maxLoopLagUs=%lu",
+                         (unsigned long)_rxBus.pollsSeen(), (unsigned long)_rxBus.txResponseCount(),
+                         (unsigned long)_lateSkip,
+                         (unsigned long)_rxBus.echoShort(), (unsigned long)_rxBus.slotOverruns(),
+                         (unsigned long)_rxBus.lastTxDurUs(), (unsigned long)_rxBus.maxTxDurUs(),
+                         (unsigned long)_loopLagUs, (unsigned long)_maxLoopLagUs);
+            _maxLoopLagUs = 0;   // reset the 2 s window peak
+        }
+        // Downstream ESC (IN_2) autodetect health (every 2 s, only when the
+        // downstream link is up): present = autodetect state; polls = IN_2 master
+        // polls issued (windowed into IN_1's quiet slot); replies = ESC telemetry
+        // frames decoded; rxErr climbing with no replies ⇒ wrong baud / crosstalk.
+        if (_escPort && now - _lastEscLog >= 2000) {
+            _lastEscLog = now;
+            SFX_LOG_INFO("[jexp] IN_2 ESC present=%d polls=%lu replies=%lu sensors=%lu rxB=%lu rxErr=%lu",
+                         _escPresent ? 1 : 0, (unsigned long)_escPolls,
+                         (unsigned long)_escMon.telemetryFrames(),
+                         (unsigned long)_escMon.sensorUpdates(),
+                         (unsigned long)_escMon.rxByteCount(),
+                         (unsigned long)_escMon.errorCount());
         }
 #endif
 
@@ -174,8 +252,18 @@ public:
         }
     }
 
+    /// Pause the IN_1 task's UART servicing while this predicate is true
+    /// (Rule 28 upload exclusivity).  The prior Core-0 Jeti task starved the
+    /// upload pipeline precisely because it had no such gate; the sketch wires
+    /// this to the storage policy's isUploadActive().
+    void setUploadGate(std::function<bool()> fn) { _uploadGate = std::move(fn); }
+
     void end() {
-        _running = false;             // update() becomes a no-op
+        _running = false;             // task loop + update() become no-ops
+        if (_task) {                  // wait for the task to exit before teardown
+            for (int i = 0; i < 200 && _taskRunning; ++i) vTaskDelay(pdMS_TO_TICKS(1));
+            _task = nullptr;
+        }
         _rxBus.end();
         _escMon.end();
         if (_rxPort)  _rxPort->disable();
@@ -220,6 +308,15 @@ public:
     uint32_t rxFrames()  const { return _rxBus.rxFrameCount(); }
     uint32_t rxErrors()  const { return _rxBus.rxErrorCount(); }
     uint32_t txResp()    const { return _rxBus.txResponseCount(); }
+    // Two-way (half-duplex reply) instrumentation.
+    bool     responding()   const { return _respond; }
+    uint32_t pollsSeen()    const { return _rxBus.pollsSeen(); }
+    uint32_t echoShort()    const { return _rxBus.echoShort(); }
+    uint32_t maxTxDurUs()   const { return _rxBus.maxTxDurUs(); }
+    uint32_t slotOverruns() const { return _rxBus.slotOverruns(); }
+    uint32_t lateSkip()     const { return _lateSkip; }      // replies gated (loop behind)
+    uint32_t loopLagUs()    const { return _loopLagUs; }     // last main-loop interval
+    uint32_t maxLoopLagUs() const { return _maxLoopLagUs; }  // worst main-loop interval
     uint32_t escBytes()  const { return _escMon.rxByteCount(); }
     uint32_t escFrames() const { return _escMon.telemetryFrames(); }
     uint32_t escErrors() const { return _escMon.errorCount(); }
@@ -238,6 +335,39 @@ private:
     JetiExpander() = default;
     JetiExpander(const JetiExpander&) = delete;
     JetiExpander& operator=(const JetiExpander&) = delete;
+
+    // ── Dedicated IN_1 servicing task (Core 0) ───────────────────────
+    static void taskTrampoline(void* arg) {
+        static_cast<JetiExpander*>(arg)->taskLoop();
+    }
+    void taskLoop() {
+        while (_running) {
+            // Upload exclusivity (Rule 28): skip ALL UART servicing while an
+            // upload holds the pipeline, so we never steal Core-0 cycles from
+            // the SD writer (the 2026-05-30 starvation).  The 1-tick sleep
+            // yields Core 0 to loopTask/storage between passes — the half-duplex
+            // reply's flush() also yields (uart_wait_tx_done blocks), so the
+            // task's real CPU burn is microseconds despite the high priority.
+            if (!(_uploadGate && _uploadGate())) update();
+            vTaskDelay(pdMS_TO_TICKS(1));   // 1 ms @ 1000 Hz tick
+        }
+        _taskRunning = false;
+        _task = nullptr;
+        vTaskDelete(nullptr);
+    }
+    // Core 0 (NOT core 1 — audio real-time).  Priority ABOVE the audio-decoder
+    // + CDC driver (both prio 5 on Core 0): the half-duplex reply must release
+    // the line (txDisable) the instant the ~2 ms TX completes, or the master's
+    // next channel frame collides with our still-driven line → lost tracking.
+    // At prio 4 a mid-reply decoder preempt stretched the bracket to 17-29 ms
+    // (bench 2026-06-10, build 845) and dropped the signal during engine-sound
+    // MP3 churn.  At prio 6 the task resumes immediately after flush() yields and
+    // runs txDisable before the master frame arrives.  Safe: the task sleeps 1 ms
+    // between passes and yields through flush(), so it steals only microseconds
+    // from the decoder (which has ring headroom).  6 KB stack covers the reply
+    // build + the 2 s [jexp] DiagLog line (the hot path itself never logs).
+    static constexpr uint32_t   kTaskStackBytes = 6144;
+    static constexpr UBaseType_t kTaskPrio       = 6;
 
     // ── Link health monitor (NON-disabling) ──────────────────────────
     // The bounded frame-parser drain (kMaxDrainBytesPerCall) is the safety net
@@ -304,6 +434,19 @@ private:
         // telemetry still updates smoothly.
         const uint32_t now = SFX_MILLIS();
         if (now - _lastRespMs < kRespIntervalMs) return;
+
+        // TIMELINESS GATE (the real fix for the gun-trigger RX drop).  The Jeti
+        // master reserves a ~4 ms window after a poll-with-break and tolerates a
+        // SKIPPED reply (it just re-polls — non-answer is spec-legal: it also
+        // sends no-break polls where no answer is expected).  Our reply is a
+        // ~2 ms half-duplex TX, so it only fits if it STARTS promptly.  When the
+        // cooperative main loop hitches (gun trigger / ROF-change handler runs on
+        // it), this drain falls behind and the poll we just parsed is already
+        // stale — TXing now would overrun into the master's next channel frame
+        // and corrupt the RC stream (the symptom).  So if the loop lag exceeds
+        // the slack (window − reply), DROP this reply.  Channel decode (the
+        // priority) is untouched; telemetry just updates a beat later.
+        if (_loopLagUs > kReplyLagBudgetUs) { _lateSkip++; return; }
         _lastRespMs = now;
 
         auto& hub = JetiTelemetryHub::instance();
@@ -317,28 +460,67 @@ private:
             if (!len)            len = buildText(hub, buf);      // fallback
         }
         if (len) _rxBus.sendTelemetry(pktId, buf, len);
+
+        // IN_1 is now in its guaranteed-quiet slot: the master released the line
+        // for ~4 ms and our reply consumed only ~2 ms.  This is the ONLY safe
+        // window to TX on IN_2 — its TX crosstalks the adjacent IN_1 RX, so it
+        // must land while IN_1 is idle or it corrupts a channel frame.
+        maybePollEsc(now);
     }
 
-    // Raw-frame hook: poll the downstream ESC by mirroring the Rx's TELEMETRY-
-    // REQUEST frames to it (half-duplex).  Rate-limited so the ESC is polled at
-    // ~kEscPollIntervalMs, NOT once per Rx frame: mirroring every frame blocks
-    // the task on flush() for ~3 ms each and starves IN_1's channel RX (signal
-    // loss).  Only 0x3A frames matter — channel frames don't make the ESC reply.
-    //
-    // NOTE: this forwards Rx->ESC only; the reverse CONFIG-relay (ESC config /
-    // menu replies -> Rx) is NOT IMPLEMENTED YET (deferred — proprietary format,
-    // synchronous-proxy timing).  The monitor extracts the ESC's 0x3A telemetry;
-    // its config/menu replies are dropped.
-    void forwardToEsc(const uint8_t* frame, uint8_t len) {
-        if (!_escPort || !_escStream) return;
-        if (len < 6 || frame[4] != DATA_TELEMETRY) return;     // telemetry polls only
-        const uint32_t now = SFX_MILLIS();
-        if (now - _lastFwdMs < kEscPollIntervalMs) return;     // rate-limit
-        _lastFwdMs = now;
+    // ── Downstream ESC master link (IN_2) — Phase 2 ──────────────────
+    // Capture the Rx's latest TELEMETRY-REQUEST (0x3A) frame as the poll template
+    // to replay at the ESC.  We replay a RECENT real master poll (its packetId is
+    // fresh from the Rx stream) rather than synthesise one — the ESC, a slave on
+    // its bus, replies to any valid telemetry request; the hub decodes whatever
+    // comes back via _escMon.  Capture is pure copy (no TX) — always safe.
+    void captureEscPoll(const uint8_t* frame, uint8_t len) {
+        if (!_escPort || len < 6 || len > sizeof(_escPoll)) return;
+        if (frame[4] != DATA_TELEMETRY) return;                // telemetry polls only
+        memcpy(_escPoll, frame, len);
+        _escPollLen = len;
+    }
+
+    // Poll the ESC on IN_2 — CALLED ONLY from serveTelemetry, i.e. inside IN_1's
+    // quiet reply slot.  The IN_2 TX (~1 ms) crosstalks the adjacent IN_1 RX, so
+    // it MUST land here or it corrupts a channel frame (why plain mirroring was
+    // disabled).  Cadence is the autodetect interval: fast when the ESC answers,
+    // slow probe when absent.  The reply is decoded by _escMon in update().
+    void maybePollEsc(uint32_t now) {
+        if (!_escPort || !_escStream || _escPollLen == 0) return;
+        if (now - _escLastPollMs < _escPollIntervalMs) return;
+        _escLastPollMs = now;
+        _escPolls++;
         _escPort->txEnable();
-        _escStream->write(frame, len);
-        _escStream->flush();
+        _escStream->write(_escPoll, _escPollLen);
+        _escStream->flush();                                   // ~1 ms — fits the slot
         _escPort->txDisable();
+    }
+
+    // ESC presence autodetect — called each task pass from update().  PRESENT
+    // (fast poll) the moment _escMon decodes a fresh telemetry reply; ABSENT
+    // (slow probe) after kEscAbsentMs of silence.  The hub's expireStale drops
+    // the device from the radio set on demotion.  Handles hot-plug both ways:
+    // a freshly-plugged ESC is caught by the slow probe; an unplugged one ages
+    // out.  No config change needed — `downstream:` only enables the link.
+    void updateEscPresence(uint32_t now) {
+        if (!_escPort) return;
+        const uint32_t frames = _escMon.telemetryFrames();
+        if (frames != _escLastReplyFrames) {                   // a reply arrived
+            _escLastReplyFrames = frames;
+            _escLastReplyMs = now;
+            if (!_escPresent) {
+                _escPresent = true;
+                _escPollIntervalMs = kEscActivePollMs;
+                SFX_LOG_INFO("[jexp] IN_2 ESC present — telemetry replying (poll %lums)",
+                             (unsigned long)kEscActivePollMs);
+            }
+        } else if (_escPresent && now - _escLastReplyMs > kEscAbsentMs) {
+            _escPresent = false;
+            _escPollIntervalMs = kEscProbePollMs;
+            SFX_LOG_INFO("[jexp] IN_2 ESC absent — back to %lums probe",
+                         (unsigned long)kEscProbePollMs);
+        }
     }
 
     // ── Multi-device rotation (cursors advanced under the hub lock) ───
@@ -391,22 +573,50 @@ private:
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
-    // The forward-to-ESC TX on IN_2 (GPIO6) couples onto the ADJACENT IN_1
-    // (GPIO5) channel RX and drops the RC signal — confirmed: the IN_1 reply is
-    // clean, the "second-UART piping" is what hurts.  Off until the IN_2 poll is
-    // timed into IN_1's silent window (or routed off the adjacent pin).  The
-    // IN_1 telemetry RESPONSE is unaffected and stays on.
-    static constexpr bool     kForwardToEsc       = false;
-    // Telemetry reply DISABLED pending the power/brownout fix — the half-duplex
-    // TX on the shared IN_1 line corrupts channel RX while engine/heater sag the
-    // rail.  RX-only is immune (rxE=0).  Flip to true once power is stiffened.
-    static constexpr bool     kRespondToTelemetry = false;
+    // Two-way telemetry reply is RUNTIME-gated via `_respond` (set from the
+    // attach config — see begin()'s respondTelemetry param), not a compile flag.
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
-    static constexpr uint32_t kEscPollIntervalMs = 100;  // ESC poll rate (~10 Hz)
     static constexpr uint32_t kRespIntervalMs    = 50;   // Rx reply rate cap (~20 Hz)
-    uint32_t _lastFwdMs  = 0;            // last ESC-forward time (rate limit)
+    // Downstream ESC (IN_2) active master poll + autodetect (Phase 2).  The poll
+    // TX is crosstalk-windowed into IN_1's quiet slot (maybePollEsc), so the rate
+    // is bounded by the IN_1 reply cadence too.  PROBE while no ESC answers (slow,
+    // just enough to catch a hot-plug); ACTIVE once it replies; demote after
+    // kEscAbsentMs of silence.
+    static constexpr uint32_t kEscProbePollMs    = 200;  // no ESC: hot-plug probe
+    static constexpr uint32_t kEscActivePollMs   = 75;   // ESC replying: fresh telemetry
+    static constexpr uint32_t kEscAbsentMs       = 600;  // silence → demote to probe
+    // Timeliness-gate slack = master window (~4 ms) − our reply (~2 ms).  If the
+    // main loop lagged more than this since the last drain, the parsed poll is
+    // too stale to answer in-window — skip (see serveTelemetry()).  Generous at
+    // first; watch `lateSkip` vs channel `valid` during a gun event and tighten.
+    static constexpr uint32_t kReplyLagBudgetUs  = 1500;
     uint32_t _lastRespMs = 0;            // last Rx-reply time (rate limit)
+
+    // Downstream ESC (IN_2) master-poll + autodetect state (Phase 2).
+    uint8_t  _escPoll[16]        = {};   // captured Rx telemetry-request (poll template)
+    uint8_t  _escPollLen         = 0;
+    uint32_t _escLastPollMs      = 0;
+    uint32_t _escPollIntervalMs  = kEscProbePollMs;   // start in probe until a reply
+    uint32_t _escLastReplyFrames = 0;
+    uint32_t _escLastReplyMs     = 0;
+    bool     _escPresent         = false;
+    uint32_t _escPolls           = 0;    // diag — IN_2 polls issued
+    bool     _respond    = false;        // two-way telemetry reply enabled (runtime, from attach cfg)
+    uint32_t _lastTxLog  = 0;            // last [jexp] TX instrumentation log time
     uint8_t  _localDev   = 0xFF;         // hub index of the HubFX-own device
+
+    // Timeliness-gate state (Core: main loop).  _loopLagUs = µs since the prior
+    // update(); _maxLoopLagUs = worst seen (diag); _lateSkip = replies dropped
+    // because the loop was behind (the gate firing — the gun-event signature).
+    uint32_t _lastUpdateUs = 0;
+    uint32_t _loopLagUs    = 0;
+    uint32_t _maxLoopLagUs = 0;
+    uint32_t _lateSkip     = 0;
+
+    // Dedicated IN_1 task (responding mode) — see taskLoop()/begin().
+    TaskHandle_t          _task        = nullptr;   // null ⇒ cooperative main-loop decode
+    volatile bool         _taskRunning = false;     // shutdown handshake (end() waits on it)
+    std::function<bool()> _uploadGate;              // true ⇒ pause UART servicing (Rule 28)
 
     // Rotation cursors (data + text walk independently across the hub).
     uint16_t _seq     = 0;
@@ -419,6 +629,7 @@ private:
     uint32_t  _lastExpire  = 0;         // 1 Hz stale-device expiry (in update)
 #if SFX_INSTRUMENTATION
     uint32_t  _lastRxLog   = 0;         // 2 s rx-health diag (in update)
+    uint32_t  _lastEscLog  = 0;         // 2 s IN_2 ESC autodetect diag (in update)
 #endif
 };
 

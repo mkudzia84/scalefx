@@ -136,6 +136,7 @@ void JetiExBus::parseChannelData(const uint8_t* frame, uint8_t len)
 // ─── handleTelemetryRequest ────────────────────────────────────
 void JetiExBus::handleTelemetryRequest(uint8_t packetId)
 {
+    _pollsSeen++;   // every 0x3A poll (whether or not we end up replying)
     // Expander override: serve multi-device from the shared hub instead of the
     // built-in single-device table.  The hook builds + sends its own frames.
     if (_onTelemetryRequest) { _onTelemetryRequest(packetId); return; }
@@ -295,11 +296,26 @@ void JetiExBus::sendExBusResponse(uint8_t packetId, uint8_t dataId,
         // (totalLen bytes).  NOT a `while(available)` drain — that can swallow
         // the master's next channel frame if it arrives right after the slot,
         // causing RC signal loss.
+        const uint32_t t0 = SFX_MICROS();   // SLOT bracket = the reply only
         _txPort->txEnable();
         _serial->write(frame, totalLen);
-        _serial->flush();
+        _serial->flush();                   // wait for shift register empty
         _txPort->txDisable();
-        for (uint8_t i = 0; i < totalLen && _serial->available(); ++i) _serial->read();
+        const uint32_t dur = SFX_MICROS() - t0;   // measured BEFORE the echo drop
+        _lastTxDurUs = dur;                       // so maxUs/slotOver track the
+        if (dur > _maxTxDurUs)    _maxTxDurUs = dur;   // reply, not the cleanup
+        if (dur > kSlotBudgetUs)  _slotOverruns++;
+
+        // Drop our own TX self-echo (TX↔RX tied on the single wire) in one shot —
+        // ring + the in-flight FIFO tail the old byte-bounded drain always left
+        // behind (echoShort≈100%, a benign straggler that nicked the next frame's
+        // CRC).  Safe here: a prompt reply (timeliness-gated) leaves the master
+        // silent for ~2 ms more, so only our echo is in RX.  Instant (no yield),
+        // so it doesn't eat into the IN_2 poll window that serveTelemetry runs
+        // next.  echoShort now just tallies "the tail was still in flight".
+        const bool hadTail = ((uint16_t)_serial->available() < totalLen);
+        _serial->flushRx();
+        if (hadTail) _echoShort++;
     } else {
         _serial->write(frame, totalLen);
     }

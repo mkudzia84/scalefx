@@ -64,6 +64,7 @@ bool LedAnimator::loadQueue(const Event* events, size_t count) {
     // Phase-locked loop pattern? (flag carried on event[0]).  Precompute
     // the cycle period = Σ duration_ms so tick() can index by now % period.
     _loop = (count > 0) && (_queue[0].flags & FLAG_LOOP);
+    _suppressDone = (count > 0) && (_queue[0].flags & FLAG_NO_DONE);
     _loopPeriodMs = 0;
     if (_loop) {
         for (uint8_t i = 0; i < _count; ++i) _loopPeriodMs += _queue[i].durationMs;
@@ -235,7 +236,7 @@ void LedAnimator::advance() {
         _currentBrightPct = 0;
         writeOutputPct(0);
         SFX_LOG_DEBUG("[LedAnimator] queue done (%u events played)", (unsigned)_count);
-        if (_onDone) _onDone();
+        if (_onDone && !_suppressDone) _onDone();   // fire-and-forget blinks stay silent
         return;
     }
     _eventStart_ms = SFX_MILLIS();

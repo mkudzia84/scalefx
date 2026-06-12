@@ -133,6 +133,11 @@ private:
     /// Loop flag bit in `Event::flags` (event[0]) — phase-locked looping
     /// pattern.  Mirrors hubfx::effects::lightfx::LightEventFlags::Loop.
     static constexpr uint8_t FLAG_LOOP = 0x01;
+    /// Fire-and-forget bit (event[0]) — suppress LED_QUEUE_DONE on completion.
+    /// Mirrors hubfx::effects::lightfx::LightEventFlags::NoDone.  Set by
+    /// high-rate effect blinks (gun muzzle flash) whose per-shot completion
+    /// event would just flood the wire + diag log.
+    static constexpr uint8_t FLAG_NO_DONE = 0x02;
 
     Event    _queue[MAX_EVENTS] {};
     uint8_t  _count            = 0;
@@ -145,6 +150,7 @@ private:
     // `now % _loopPeriodMs` — so all looping channels stay phase-aligned.
     bool     _loop             = false;
     uint32_t _loopPeriodMs     = 0;
+    bool     _suppressDone     = false;   ///< event[0] had FLAG_NO_DONE (fire-and-forget)
 
     // Active-event state machine
     uint32_t _eventStart_ms     = 0;

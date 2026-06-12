@@ -59,8 +59,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.23.0-hubfx"
-#define BUILD_NUMBER     833
+#define FIRMWARE_VERSION "2.27.1-hubfx"
+#define BUILD_NUMBER     854
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -870,6 +870,12 @@ void setup() {
     // start, resume on end.  Without this, raw-stream uploads starve
     // the audio task and you hear glitches mid-transfer.
     wireUploadExclusivity<Mixer>(board.policy<StorageService>());
+
+    // Same Rule-28 exclusivity for the Jeti IN_1 telemetry task: pause its
+    // Core-0 UART servicing while an upload holds the pipeline, so it can't
+    // steal cycles from the SD writer (the prior Jeti task's starvation mode).
+    JetiEx::JetiExpander::instance().setUploadGate(
+        [&board]() { return board.policy<StorageService>().isUploadActive(); });
 
     // Alert chimes — configuration is driven by `/alerts.yaml`
     // (severity → AlertSound + volume).  Initial config landed via

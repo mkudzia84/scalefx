@@ -20,7 +20,7 @@ VS Code task equivalents: `Test: Run Suite (Default | Integration | Premerge)`.
 1. every `tests/host/go_unit/*` suite passes,
 2. every `tests/host/go_integration/*` suite passes against the connected HubFX (`SCALEFX_HUBFX_PORT` env var, or CH343 `1A86:55D3` auto-detect),
 3. native C++ doctest (`tests/native/`, `[env:native]`),
-4. `scalefx-flash build hubfx --no-clean` succeeds.
+4. `scalefx-flash build hubfx --no-clean --no-bump` succeeds — a VERIFICATION build: `--no-bump` keeps `BUILD_NUMBER` untouched so a gate run never dirties the tree (deploy flashes still auto-bump).
 
 Missing hardware fails `-Premerge` fast — you must be at the HW dev machine to merge to `main`. **Close/disconnect Studio first** so the integration tests can open the serial port.
 
