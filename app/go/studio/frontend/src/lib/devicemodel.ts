@@ -177,8 +177,13 @@ const SUPERSEDED_BY_EFFECTS  = new Set(['engine', 'gun'])
 // Both `lighting` and `landing-lights` are hub-advertised → the tab always shows;
 // neither gets its own generic domain tab.
 const SUPERSEDED_BY_LIGHTING = new Set(['lighting', 'landing-lights'])
-// Gear tab — gearcontrol expander only.
-const SUPERSEDED_BY_GEAR = new Set(['gearcontrol'])
+// Gear tab — the backend domain catalog names the undercarriage domain
+// `landing-gear` (Domain.ID in app/go/devicemodel/types.go); `gearcontrol`
+// is kept for compat.  BOTH route to the dedicated Gear tab (GearPanel) —
+// without this set matching the real id, the domain fell through to the
+// GENERIC DomainTab (the bare "Gear units"/"Gear switch" slot view) and the
+// purpose-built panel was unreachable (found 2026-06-13).
+const SUPERSEDED_BY_GEAR = new Set(['gearcontrol', 'landing-gear'])
 
 export const studioTabs = derived([deviceModel, connectionInfo], ([$dm, $conn]): StudioTab[] => {
     const firmwareTab: StudioTab = { key: 'firmware', label: 'Firmware', kind: 'firmware' }
@@ -208,8 +213,8 @@ export const studioTabs = derived([deviceModel, connectionInfo], ([$dm, $conn]):
     ]
     const domains = $dm.domains ?? []
     const showLighting = domains.some(d => SUPERSEDED_BY_LIGHTING.has(d.id))
-    const gearDomain = domains.find(d => d.id === 'gearcontrol')
-    const showGear = domains.some(d => SUPERSEDED_BY_GEAR.has(d.id))
+    const gearDomain = domains.find(d => SUPERSEDED_BY_GEAR.has(d.id))
+    const showGear = !!gearDomain
     if (domains.some(d => d.id === 'engine')) {
         tabs.push({ key: 'engine', label: 'EngineFX', kind: 'engine' })
     }
