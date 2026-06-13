@@ -55,11 +55,13 @@
             list here as the board gains them.
         </p>
     {:else}
+        <!-- One sub-frame per device (Rule 60.8 grammar — same frame as the
+             gear strut cards / other panels). -->
         <div class="dev-grid">
             {#each snap.devices as d (d.usn + ':' + d.lsn)}
-                <div class="dev" class:inactive={!d.active}>
-                    <div class="dev-head">
-                        <span class="dev-name">{d.name || '(unnamed)'}</span>
+                <div class="sub-frame dev" class:inactive={!d.active}>
+                    <div class="frame-head">
+                        {d.name || '(unnamed)'}
                         <span class="dev-tag" class:local={d.local}>{d.local ? 'hub-local' : 'downstream'}</span>
                         {#if !d.active}<span class="dev-tag stale">stale</span>{/if}
                     </div>
@@ -92,11 +94,11 @@
 
     .empty { color: var(--text-dim); font-size: 12px; padding: 8px 2px; }
 
-    .dev-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
-    .dev { border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px; background: var(--bg-input); }
+    /* Devices laid out in the standard responsive group grid; each is a global
+       .sub-frame (Rule 60.8) so it matches the frame view used elsewhere. */
+    .dev-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
     .dev.inactive { opacity: 0.55; }
-    .dev-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px dashed var(--border); }
-    .dev-name { font-weight: 600; color: var(--text-bright); font-size: 13px; }
+    .dev .frame-head { display: flex; align-items: baseline; gap: 8px; }
     .dev-tag { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; }
     .dev-tag.local { color: var(--accent); border-color: var(--accent); }
     .dev-tag.stale { color: var(--warning); border-color: var(--warning); }
