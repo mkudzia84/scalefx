@@ -23,6 +23,7 @@
        - RC channel cluster                    → Rule 36 (ChannelToggleCluster)
        - Sound rows                            → Rule 47 (SoundRow)
        - Servo calibration + live mirror       → Rule 42/44 (ServoWidget/IoWidget)
+       - Motor calibration + live mA readout   → Rule 42/44 (MotorWidget + MotorCalibrationDialog)
        - Modular dirty source                  → Rule 46 (gearConfigSource in gear.ts)
 -->
 <script lang="ts">
@@ -30,7 +31,7 @@
     import {
         gearDraft, gearDirty, gearHasErrors, gearPhases,
         loadGearConfig, refreshGearStatus,
-        addGearChannel, removeGearChannel, moveGearChannel, setGearEnabled, setGearCoord,
+        addGearChannel, seedDefaultGearStruts, removeGearChannel, moveGearChannel, setGearEnabled, setGearCoord,
         updateGearChannel, removeGearDoor,
         updateGearInput, updateGearSounds,
         gearItemErrors, installGearPhaseListener,
@@ -51,10 +52,13 @@
     import { validateSoundFiles } from '../sound_validation'
     import ServoWidget from '../components/ServoWidget.svelte'
     import ServoIoWidget from '../components/ServoIoWidget.svelte'
+    import MotorWidget from '../components/MotorWidget.svelte'
     import SoundRow from '../components/SoundRow.svelte'
     import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
     import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     import { makeProfileForPort } from '../servo_calibration'
+    import { motorStatus, motorStatusKey, pollMotors } from '../motor_status'
+    import { openMotorCalibrationFor } from '../motor_calibration'
 
     let busy = false
     let error = ''
@@ -74,7 +78,14 @@
         setServoLiveView(true).catch(() => {})
         loadGearConfig().catch(e => { error = String(e) })
         refreshGearStatus().catch(() => {})
-        statusTimer = setInterval(() => { refreshGearStatus().catch(() => {}) }, 1500)
+        pollConfiguredMotors()
+        // One timer drives BOTH the phase-status self-heal (Rule 53) AND the
+        // gear-motor live readout (current mA / duty / stall) — there's no
+        // motor broadcast, so the panel polls each configured motor here.
+        statusTimer = setInterval(() => {
+            refreshGearStatus().catch(() => {})
+            pollConfiguredMotors()
+        }, 1500)
     })
     onDestroy(() => {
         unsub()
@@ -259,6 +270,35 @@
         try { await fn() } catch (e) { error = String(e) } finally { busy = false }
         refreshGearStatus().catch(() => {})
     }
+
+    // ─── Gear-motor live status + calibration (Rule 42/44) ───────────
+    // Poll every configured motor's BiDcMotor status (current mA / duty /
+    // position / stall) into the shared motorStatus store; the per-strut
+    // MotorWidget reads its sample by guid|idx.
+    function pollConfiguredMotors() {
+        const refs = (cfg?.gears ?? [])
+            .map(g => g.motor)
+            .filter(m => m && m.kind === 'hbridge')
+            .map(m => ({ guid: m.guid, idx: m.idx, kind: m.kind }))
+        if (refs.length) pollMotors(refs).catch(() => {})
+    }
+
+    /** Open the motor calibration popup for a strut; Save there commits the
+     *  working duty + suggested travel timeout back into the channel draft. */
+    function openMotorCal(gch: GearChannelT) {
+        if (!gch.motor || !gch.motor.kind) return
+        openMotorCalibrationFor({
+            guid: gch.motor.guid,
+            portIdx: gch.motor.idx,
+            label: labelForPort(gch.motor) || `Motor idx ${gch.motor.idx}`,
+            deployDuty: gch.deployDuty,
+            retractDuty: gch.retractDuty,
+            timeoutMs: gch.timeoutMs,
+            onCommit: ({ deployDuty, retractDuty, timeoutMs }) => {
+                updateGearChannel(gch.id, g => ({ ...g, deployDuty, retractDuty, timeoutMs }))
+            },
+        }).catch(e => { error = String(e) })
+    }
 </script>
 
 <div class="card gear-card">
@@ -408,7 +448,14 @@
                 doors, runs the motor to the endstop, then closes the doors per your policy; typical
                 models add three: nose, main left, main right.
             </p>
-            <button class="small" on:click={() => addGearChannel()} disabled={busy}>+ Add the first strut</button>
+            <div class="empty-actions">
+                <button class="small primary" on:click={() => seedDefaultGearStruts()} disabled={busy}
+                        title="Seed the canonical undercarriage: Main Left, Main Right, Front/Back.">
+                    + Add default struts
+                </button>
+                <button class="small" on:click={() => addGearChannel()} disabled={busy}
+                        title="Add a single blank strut instead.">+ Add one strut</button>
+            </div>
         </div>
     {/if}
 
@@ -525,8 +572,19 @@
                                            disabled={busy} title="Full-travel watchdog (ms) — the endstop seek aborts to ERROR after this. 0 = seek until stall." />
                                 </div>
                             </div>
-                            <div class="form-row">
-                                <span class="hint">endstop calibration lives on the BiDcMotor role — tune it on the IO tab.</span>
+                            <!-- Motor summary + Calibrate popup + LIVE readout
+                                 (current mA / duty / position / stall) — Rule 44
+                                 popup pattern, Rule 60.2 per-element live strip. -->
+                            {@const mLive = $motorStatus[motorStatusKey(gch.motor.guid, gch.motor.idx)] ?? null}
+                            <div class="form-row motor-widget-row">
+                                <MotorWidget
+                                    hasMotor={true}
+                                    deployDuty={gch.deployDuty}
+                                    retractDuty={gch.retractDuty}
+                                    timeoutMs={gch.timeoutMs}
+                                    live={mLive}
+                                    busy={busy}
+                                    onCalibrate={() => openMotorCal(gch)} />
                             </div>
                         {/if}
                     </div>
@@ -722,6 +780,10 @@
     .form-row.sub { margin-left: 0; }
 
     .servo-widget-row { margin-top: 2px; }
+    /* Motor summary + Calibrate button + live readout — the widget grows to
+       the column so the live strip isn't squeezed (Rule 60.2). */
+    .motor-widget-row { margin-top: 6px; }
+    .motor-widget-row :global(.motor-widget) { flex: 1 1 auto; min-width: 0; }
 
     /* Rule 60.2 — full-width live-telemetry row: the widget container
        GROWS to the card width (a plain form-row child only takes content
@@ -746,6 +808,7 @@
 
     .empty-state { padding: 14px; border: 1px dashed var(--border); border-radius: 5px; color: var(--text-dim); font-size: 12px; margin: 8px 0; }
     .empty-state p { margin: 0 0 8px; }
+    .empty-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
     .grp-issues { margin: 10px 0 2px; padding-left: 4px; list-style: none; }
     .grp-issue.err { color: var(--error); font-size: 11px; padding: 2px 0; }

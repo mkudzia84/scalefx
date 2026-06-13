@@ -93,6 +93,20 @@ export function GearAll(arg1:number):Promise<void>;
 
 export function GearDeploy(arg1:number):Promise<void>;
 
+export function GearMotorCalibrate(arg1:string,arg2:number,arg3:number,arg4:number):Promise<main.DiagCalibration>;
+
+export function GearMotorGuardFixed(arg1:string,arg2:number,arg3:number,arg4:number):Promise<void>;
+
+export function GearMotorGuardLiveRatio(arg1:string,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number,arg7:number,arg8:number):Promise<void>;
+
+export function GearMotorJog(arg1:string,arg2:number,arg3:number):Promise<void>;
+
+export function GearMotorMoveEnd(arg1:string,arg2:number,arg3:string,arg4:number,arg5:number):Promise<main.DiagEndstopResult>;
+
+export function GearMotorStatus(arg1:string,arg2:number):Promise<main.DiagBiMotorStatus>;
+
+export function GearMotorStop(arg1:string,arg2:number):Promise<void>;
+
 export function GearReset(arg1:number):Promise<void>;
 
 export function GearRetract(arg1:number):Promise<void>;

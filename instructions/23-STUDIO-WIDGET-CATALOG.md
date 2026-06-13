@@ -1108,7 +1108,43 @@ column of the unit card's `.two-col` split (Rule 60.1).
 
 ---
 
-## 22. Shared panel helpers (don't re-inline)
+## 22. Motor calibration widget + dialog (H-bridge / BiDcMotor)
+
+The gear-motor analogue of the servo Calibrate pattern (entry 19 / Rule 44):
+a compact widget on the unit card opens a live-drive popup, and a per-element
+live strip surfaces the motor's **current mA** "hooked into status".
+
+- **`MotorWidget.svelte`** ([src/lib/components/MotorWidget.svelte](../app/go/studio/frontend/src/lib/components/MotorWidget.svelte)) —
+  `[deploy/retract duty · timeout summary]  [⚙ Calibrate motor…]` + a live
+  readout strip `live: <I> mA · duty <d> · <pos> · <stall>`.  Props: `hasMotor`,
+  `deployDuty`, `retractDuty`, `timeoutMs`, `live: MotorLive | null`, `busy`,
+  `onCalibrate`.  Mirrors `ServoWidget` but a gear motor has no position
+  feedback, so the headline is the stall **current**, not a position bar.
+- **`MotorCalibrationDialog.svelte`** ([src/lib/dialogs/MotorCalibrationDialog.svelte](../app/go/studio/frontend/src/lib/dialogs/MotorCalibrationDialog.svelte)) —
+  modal opened via `openMotorCalibrationFor(...)` ([motor_calibration.ts](../app/go/studio/frontend/src/lib/motor_calibration.ts)),
+  mounted once in `App.svelte`.  Three sections: **Live status** (current mA
+  front + emphasised, polled ~2 Hz while open), **Drive** (seek duty + timeout →
+  Calibrate A→B sweep / To End A·B / Stop / hold-jog, each awaiting the
+  BIMOTOR_ENDSTOP_RESULT travel-time + peak current), **Stall guard** (LiveRatio
+  vs Fixed, live push).  `Save to strut` writes the working duty (deploy +,
+  retract −) + suggested travel timeout (full-stroke × 1.5) back into the gear
+  channel draft via the `onCommit` callback (persisted on Apply); the stall
+  guard is a LIVE push only (not a YAML field today).
+- **`motor_status.ts`** ([src/lib/motor_status.ts](../app/go/studio/frontend/src/lib/motor_status.ts)) —
+  live store keyed `${guid}|hbridge|${idx}`; there is NO motor broadcast (unlike
+  the servo stream), so the panel POLLS `GearMotorStatus` per configured motor
+  on its status timer (`pollMotors`) and the dialog polls faster while open.
+- **Backend** — `app_gearmotor.go` exposes GUID-aware `GearMotor*` Wails methods
+  (status / calibrate / moveEnd / jog / stop / guardFixed / guardLiveRatio) that
+  route via `c.Role(guid)` so a motor on an expander behaves hub-local
+  (Rule 58); they reuse the `Diag*` result structs + `awaitEndstop` from
+  `app_geardiag.go`.
+
+Reference panel: **GearPanel** strut motor card.
+
+---
+
+## 23. Shared panel helpers (don't re-inline)
 
 Every effect panel needs the same four boilerplate helpers; each lives in
 ONE module and is unit-tested.  **Import them — never re-inline** (the

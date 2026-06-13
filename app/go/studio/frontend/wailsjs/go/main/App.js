@@ -182,6 +182,34 @@ export function GearDeploy(arg1) {
   return window['go']['main']['App']['GearDeploy'](arg1);
 }
 
+export function GearMotorCalibrate(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GearMotorCalibrate'](arg1, arg2, arg3, arg4);
+}
+
+export function GearMotorGuardFixed(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GearMotorGuardFixed'](arg1, arg2, arg3, arg4);
+}
+
+export function GearMotorGuardLiveRatio(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['GearMotorGuardLiveRatio'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+}
+
+export function GearMotorJog(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GearMotorJog'](arg1, arg2, arg3);
+}
+
+export function GearMotorMoveEnd(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['GearMotorMoveEnd'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function GearMotorStatus(arg1, arg2) {
+  return window['go']['main']['App']['GearMotorStatus'](arg1, arg2);
+}
+
+export function GearMotorStop(arg1, arg2) {
+  return window['go']['main']['App']['GearMotorStop'](arg1, arg2);
+}
+
 export function GearReset(arg1) {
   return window['go']['main']['App']['GearReset'](arg1);
 }

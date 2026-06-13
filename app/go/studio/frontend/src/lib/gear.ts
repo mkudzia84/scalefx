@@ -119,6 +119,17 @@ export function defaultGearChannel(id: number): GearChannelT {
     }
 }
 
+/** The canonical undercarriage layout — two mains + one nose/tail leg.  Seeded
+ *  when the effect is first enabled (and by the empty-state button) so a fresh
+ *  gear effect comes up as the typical 3-strut retract set instead of a single
+ *  generic strut.  Names match how a modeller thinks about the legs; ports are
+ *  still unassigned (operator picks an H-bridge per leg on the IO tab). */
+export const DEFAULT_STRUT_NAMES = ['Main Left', 'Main Right', 'Front/Back'] as const
+
+export function defaultGearStruts(): GearChannelT[] {
+    return DEFAULT_STRUT_NAMES.map((name, i) => ({ ...defaultGearChannel(i), name }))
+}
+
 export const defaultGearInput = (): GearInputT =>
     ({ name: '', thresholdUs: 1500, hysteresisUs: 50, invert: false })
 
@@ -363,8 +374,18 @@ export function addGearChannel(): void {
         const used = new Set(c.gears.map(g => g.id))
         let id = 0
         while (used.has(id) && id < 255) id++
-        return { ...c, gears: [...c.gears, defaultGearChannel(id)] }
+        // Suggest the next canonical leg name (Main Left / Main Right /
+        // Front-Back) while any remain unused; fall back to a generic name.
+        const taken = new Set(c.gears.map(g => g.name))
+        const name = DEFAULT_STRUT_NAMES.find(n => !taken.has(n)) ?? `gear${id}`
+        return { ...c, gears: [...c.gears, { ...defaultGearChannel(id), name }] }
     })
+}
+
+/** Replace the (empty) strut list with the canonical 3-strut undercarriage —
+ *  the empty-state "add default struts" action. */
+export function seedDefaultGearStruts(): void {
+    gearDraft.update(c => c.gears.length === 0 ? { ...c, gears: defaultGearStruts() } : c)
 }
 
 export function removeGearChannel(id: number): void {
@@ -389,10 +410,10 @@ export function moveGearChannel(id: number, dir: -1 | 1): void {
 export function setGearEnabled(on: boolean): void {
     gearDraft.update(c => {
         if (!on) return { ...c, enabled: false }
-        // Auto-seed one channel on enable so a freshly-enabled effect has
-        // something to configure (an enabled effect with zero channels is
-        // inert, not an error).
-        const gears = c.gears.length === 0 ? [defaultGearChannel(0)] : c.gears
+        // Auto-seed the canonical 3-strut undercarriage on enable (Main Left /
+        // Main Right / Front-Back) so a freshly-enabled effect comes up as the
+        // typical retract set instead of a single generic strut.
+        const gears = c.gears.length === 0 ? defaultGearStruts() : c.gears
         return { ...c, enabled: true, gears }
     })
 }

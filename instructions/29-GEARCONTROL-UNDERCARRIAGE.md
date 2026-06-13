@@ -28,11 +28,26 @@ reinvent (see §7 archive map).
 > selector + fleet & per-channel Deploy/Retract action-toggles + live phase·
 > subphase pill. wails build + vitest green.
 >
-> **Remaining:** (a) **hardware bench validation** of the full sequence on a wired
-> hub + expander + motor + servos; (b) the **hub-forwarded motor manual-jog** popup
-> (§3.4 — needs a `GEAR_MANUAL_HOLD` packet so the gear yields the motor + Studio
-> bindings wrapping topology `sendRoleCommand` for BiMotor move/seek/guard). The
-> Motor modal currently does deploy/retract bench-test + duty/timeout only.
+> **Motor calibration popup landed 2026-06-13:** `MotorCalibrationDialog.svelte`
+> + `MotorWidget.svelte` + `motor_calibration.ts` / `motor_status.ts` +
+> `app_gearmotor.go` (GUID-aware `GearMotor*` Wails methods routing via
+> `c.Role(guid)`, Rule 58 — reuse the `Diag*` structs + `awaitEndstop`). The
+> strut motor card now shows a **live current-mA / duty / position / stall**
+> readout (polled per configured motor on the status timer) + a **⚙ Calibrate
+> motor…** button → modal with live status, A→B calibrate sweep (travel-time +
+> peak current), To-End-A/B, hold-jog, and LiveRatio/Fixed **stall-guard**
+> tuning. `Save to strut` commits the working duty (deploy +, retract −) +
+> suggested travel timeout (full-stroke × 1.5) into the channel draft. NO new
+> wire packets — it drives the EXISTING BiDcMotor role packets directly (no
+> `GEAR_MANUAL_HOLD` needed: the operator calibrates while the strut is idle, so
+> the FSM isn't driving the motor). Stall-guard is a LIVE push (not yet a YAML
+> field). wails build + vitest + svelte-check (no new errors) green.
+>
+> **Remaining:** (a) **hardware bench validation** of the full sequence + the
+> calibration sweep on a wired hub + expander + motor + servos; (b) persist the
+> stall-guard config to `/hubfx.yaml ports[]` (today it's re-applied per session);
+> (c) a `GEAR_MANUAL_HOLD` interlock IF calibration is ever wanted while the FSM
+> is mid-cycle (not needed for the idle-strut bench flow today).
 
 > Scope note: the gear MOTOR lives on a GearControl **expander** (BiDcMotor role
 > on an H-bridge); the door SERVOS are ServoActuator roles (expander or hub). All
