@@ -41,18 +41,20 @@
     } from '../gear'
     import {
         deviceModel, liveChannels, liveChannelKey,
-        type Port, formatPortRail, RoleKind,
+        type Port, RoleKind,
     } from '../devicemodel'
-    import { checkFiles } from '../effects'
     import { effectClaims } from '../effect-claims'
     import { pickFile } from '../filepicker'
     import { freePortPool } from '../components/port_pool'
+    import { portRefToKey, modelPortKey, parsePortKey as parsePortKeyRaw, refOptLabel } from '../components/port_keys'
+    import { collectChannelOptions } from '../channels'
+    import { validateSoundFiles } from '../sound_validation'
     import ServoWidget from '../components/ServoWidget.svelte'
     import ServoIoWidget from '../components/ServoIoWidget.svelte'
     import SoundRow from '../components/SoundRow.svelte'
     import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
     import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
-    import type { ServoProfileT } from '../servo_calibration'
+    import { makeProfileForPort } from '../servo_calibration'
 
     let busy = false
     let error = ''
@@ -96,24 +98,11 @@
     $: fleetText = anyErrored ? 'ERROR' : anyMoving ? 'moving' :
                    allDeployed ? 'deployed' : allRetracted ? 'retracted' : 'mixed'
 
-    // ─── Port-picker helpers (Rule 34 / 49) ──────────────────────────
-    function portRefToKey(p: PortRefT): string {
-        if (!p || !p.kind) return ''
-        return `${p.guid}|${p.kind}|${p.idx}`
-    }
-    function modelPortKey(p: Port): string {
-        return `${p.ref.guid}|${p.kindName}|${p.ref.index}`
-    }
-    function parsePortKey(key: string, kind: string): PortRefT {
-        const [guid, , idxStr] = key.split('|')
-        return { board: '', guid, kind, idx: Number(idxStr) }
-    }
-    function refOptLabel(p: Port): string {
-        const rail  = formatPortRail(p.voltageMv)
-        const alias = p.name && p.name.trim()
-        const head  = alias ? `${alias} (${p.hardwareName})` : p.hardwareName
-        return `${p.boardName ?? 'Hub'} · ${head}${rail ? ` · ${rail}` : ''}`
-    }
+    // Port-picker helpers (Rule 34/49) — portRefToKey/modelPortKey/refOptLabel
+    // come straight from port_keys.  parsePortKey there returns PortRefLike
+    // (board optional); gear's PortRefT requires board, so adapt at this one
+    // boundary with a cast (the GunFx pattern).
+    const parsePortKey = (key: string, kind: string): PortRefT => parsePortKeyRaw(key, kind) as PortRefT
 
     // Cross-effect exclusion (Rule 60.4): the MERGED claim list — hard claims
     // + soft claims synthesized from every effect's draft (GunFx turret/smoke,
@@ -153,20 +142,8 @@
             })
     }
 
-    // Servo profile lookup (Rule 44) — reactive factory so the closure
-    // re-runs whenever $deviceModel changes (the landing-panel trap).
-    function makeProfileForPort(dm: typeof $deviceModel) {
-        return (port: PortRefT | null | undefined): ServoProfileT | null => {
-            if (!port || !port.kind) return null
-            for (const p of dm.ports) {
-                if (p.ref.guid === port.guid && p.kindName === port.kind
-                    && p.ref.index === port.idx && p.profile) {
-                    return { ...p.profile } as ServoProfileT
-                }
-            }
-            return null
-        }
-    }
+    // Servo profile lookup (Rule 44) — shared reactive factory (re-runs on
+    // every $deviceModel change; the landing-panel "froze on first render" trap).
     $: profileForPort = makeProfileForPort($deviceModel)
     function labelForPort(port: PortRefT | null | undefined): string {
         if (!port || !port.kind) return ''
@@ -179,23 +156,7 @@
     }
 
     // ─── RC up/down channel (Rule 36 + Rule 43 named inputs) ─────────
-    type ChanOpt = { fnId: string; label: string; portGuid: string; portIdx: number; channel: number }
-    $: chanOpts = collectChannels($deviceModel)
-    function collectChannels(_dm: typeof $deviceModel): ChanOpt[] {
-        const fns = new Map($deviceModel.channelFunctions.map(f => [f.id, f.label] as const))
-        const out: ChanOpt[] = []
-        for (const inp of $deviceModel.inputs) {
-            for (const c of inp.channels) {
-                if (c.function === 'unassigned') continue
-                out.push({
-                    fnId: c.function,
-                    label: `CH${c.channel + 1} · ${fns.get(c.function) ?? c.function}`,
-                    portGuid: inp.port.guid, portIdx: inp.port.index, channel: c.channel,
-                })
-            }
-        }
-        return out
-    }
+    $: chanOpts = collectChannelOptions($deviceModel)
     $: chosenChan = chanOpts.find(o => o.fnId === cfg?.input?.name)
     $: liveUs = chosenChan ? $liveChannels[liveChannelKey({ guid: chosenChan.portGuid, kind: 4, index: chosenChan.portIdx }, chosenChan.channel)] : null
 
@@ -207,23 +168,12 @@
         validateTimer = setTimeout(() => { validateTimer = null; void validateSounds() }, 350)
     }
     async function validateSounds() {
-        const next = { deploy: '', retract: '' }
         const s = cfg?.sounds
-        if (s) {
-            for (const k of ['deploy', 'retract'] as const) {
-                const p = s[k]
-                if (p && !p.startsWith('/')) next[k] = 'path must be absolute (start with /)'
-            }
-            const probe = [s.deploy, s.retract].filter(p => !!p && p.startsWith('/'))
-            if (probe.length > 0) {
-                const exists = await checkFiles(probe)
-                for (const k of ['deploy', 'retract'] as const) {
-                    const p = s[k]
-                    if (p && p.startsWith('/') && !exists[p]) next[k] = `file not found on SD: ${p}`
-                }
-            }
-        }
-        soundErrors = next
+        const errs = await validateSoundFiles([
+            { key: 'deploy',  path: s?.deploy  ?? '' },   // both optional
+            { key: 'retract', path: s?.retract ?? '' },
+        ])
+        soundErrors = { deploy: errs.deploy ?? '', retract: errs.retract ?? '' }
     }
     $: void scheduleValidateOn(cfg?.sounds?.deploy, cfg?.sounds?.retract)
     function scheduleValidateOn(..._: unknown[]) { if (cfg) scheduleValidate() }

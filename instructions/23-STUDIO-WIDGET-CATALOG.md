@@ -1108,6 +1108,35 @@ column of the unit card's `.two-col` split (Rule 60.1).
 
 ---
 
+## 22. Shared panel helpers (don't re-inline)
+
+Every effect panel needs the same four boilerplate helpers; each lives in
+ONE module and is unit-tested.  **Import them — never re-inline** (the
+copies drift, which is how the hub-local-port and frozen-profile bugs
+started).  Hoisted 2026-06-13.
+
+- **Port-key + option label** — [`components/port_keys.ts`](../app/go/studio/frontend/src/lib/components/port_keys.ts):
+  `portRefToKey` (value side) / `modelPortKey` (option side) — keep the
+  stored PortRef and the `<option value>` in lock-step; `parsePortKey`
+  (key → ref); `refOptLabel(p)` — alias-aware `Board · alias (silkscreen)
+  · rail` picker label.  Tested in `port_keys.test.ts`.
+- **Reactive servo-profile factory** — [`servo_calibration.ts`](../app/go/studio/frontend/src/lib/servo_calibration.ts)
+  `makeProfileForPort($deviceModel)`: returns a closure rebuilt on every
+  `$deviceModel` change so a Calibrate→Save isn't frozen on the old
+  profile (Rule 44 + the Svelte store-read trap).  Bind via
+  `$: profileForPort = makeProfileForPort($deviceModel)`.
+- **Named-RC-channel options** — [`channels.ts`](../app/go/studio/frontend/src/lib/channels.ts)
+  `collectChannelOptions($deviceModel)`: one option per ASSIGNED channel
+  (Rule 43); superset shape — minimal-shape consumers (Gun/LightFx) read
+  only `{fnId,label}`, live-µs consumers (Engine/Gear/Landing) use
+  `portGuid/portIdx/channel`.
+- **Sound-path validation** — [`sound_validation.ts`](../app/go/studio/frontend/src/lib/sound_validation.ts)
+  `validateSoundFiles(entries)`: absolute-path + required-set + batched
+  SD-existence check, returns a `{ key → errorText }` map.  Panels keep
+  only their tiny per-panel debounce wrapper.
+
+---
+
 ## Reference panels (canonical implementations)
 
 - **EnginePanel** — [src/lib/tabs/EnginePanel.svelte](../app/go/studio/frontend/src/lib/tabs/EnginePanel.svelte) — most complete; channel cluster, validation, sound rows, button alignment, dirty-draft pattern.

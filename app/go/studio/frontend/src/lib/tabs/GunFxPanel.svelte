@@ -31,12 +31,14 @@
     } from '../gunfx'
     import ServoWidget from '../components/ServoWidget.svelte'
     import ServoIoWidget from '../components/ServoIoWidget.svelte'
-    import { portRefToKey, parsePortKey } from '../components/port_keys'
+    import { portRefToKey, modelPortKey, parsePortKey, refOptLabel } from '../components/port_keys'
+    import { collectChannelOptions } from '../channels'
+    import { makeProfileForPort } from '../servo_calibration'
     import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     // SetPortProfile + markHubDirty now flow through ServoCalibrationDialog;
     // GunFxPanel only READS the device-model profile to feed ServoWidget.
     import {
-        deviceModel, type Port, formatPortRail,
+        deviceModel, type Port,
         liveChannels, liveChannelKey,
         RoleKind, claimsForPort,
     } from '../devicemodel'
@@ -59,24 +61,9 @@
     // `channelFunctions` is the catalog of well-known channel function
     // IDs (engine_toggle, gun_trigger, gun_rof, …) plus operator-added
     // custom names; `$deviceModel.inputs[*].channels[*].function` is
-    // the actual assignment.  Items with `function == 'unassigned'` are
-    // hidden from the picker (no name to refer to).
-    type ChanOpt = { fnId: string; label: string }
-    $: chanOpts = collectChannelOpts($deviceModel)
-    function collectChannelOpts(_dm: typeof $deviceModel): ChanOpt[] {
-        const fns = new Map($deviceModel.channelFunctions.map(f => [f.id, f.label] as const))
-        const out: ChanOpt[] = []
-        for (const inp of $deviceModel.inputs) {
-            for (const c of inp.channels) {
-                if (c.function === 'unassigned') continue
-                out.push({
-                    fnId: c.function,
-                    label: `CH${c.channel + 1} · ${fns.get(c.function) ?? c.function}`,
-                })
-            }
-        }
-        return out
-    }
+    // the actual assignment.  Shared collector (channels.ts); GunFx only reads
+    // .fnId/.label (the port fields are ignored here).
+    $: chanOpts = collectChannelOptions($deviceModel)
 
     let busy = false
     let error = ''
@@ -294,25 +281,9 @@
     function numValue(e: Event): number { return Number((e.target as HTMLInputElement).value) }
     function boolValue(e: Event): boolean { return (e.target as HTMLInputElement).checked }
 
-    // Render a port-ref's option key (matches the value emitted by the
-    // dropdown so Svelte's reactive `value` binding lines up).
-    function refOptValue(p: Port): string {
-        return `${p.ref.guid}|${p.kindName}|${p.ref.index}`
-    }
-    function refOptLabel(p: Port): string {
-        // Show the operator-assigned alias (IO tab "name" field) FIRST
-        // when set — that's the label the operator actually thinks in.
-        // Falls back to the silkscreen "hardwareName" (CH3, IN1, …)
-        // when no alias is configured.  Reactive on $deviceModel so
-        // renaming a port on the IO tab propagates through every
-        // picker (muzzle flash, recoil servo, smoke heater, …)
-        // without the operator having to reload the GunFx tab.
-        const rail  = formatPortRail(p.voltageMv)
-        const alias = p.name && p.name.trim()
-        const hw    = p.hardwareName
-        const head  = alias ? `${alias} (${hw})` : hw
-        return `${p.boardName ?? 'Hub'} · ${head}${rail ? ` · ${rail}` : ''}`
-    }
+    // Port option key + label come from the shared port_keys helpers
+    // (refOptValue is modelPortKey under the panel's historical name).
+    const refOptValue = modelPortKey
     const parsePortOption = (key: string, kindName: PortRefT['kind']) =>
         parsePortKey(key, kindName) as PortRefT
 
@@ -329,25 +300,8 @@
     // markHubDirty internally.  The Phase-1 inline schedulePushProfile
     // helper was retired when the dialog replaced ServoProfileEditor
     // (Rule 44 refresh, 2026-05-24).
-    type ProfileT = { minUs: number; maxUs: number; centerUs: number; reversed: boolean; maxSpeedUsPerSec: number; maxAccelUsPerSec2: number; maxJerkUsPerSec3: number }
-    // Reactive factory (same trap as makeLiveUsFor below): a plain function
-    // that reads `$deviceModel` INTERNALLY is invisible to Svelte, so
-    // `{profileForPort(...)}` would never re-evaluate after a Calibrate→Save
-    // updates the model — the summary + ServoIoWidget would freeze on the old
-    // profile. Rebuilding the closure whenever `$deviceModel` changes makes
-    // every call site re-run and pick up the saved profile.
-    function makeProfileForPort(dm: typeof $deviceModel) {
-        return (port: PortRefT): ProfileT | null => {
-            if (!port || !port.kind) return null
-            const k = `${port.guid}|${port.kind}|${port.idx}`
-            for (const p of dm.ports) {
-                if (`${p.ref.guid}|${p.kindName}|${p.ref.index}` === k && p.profile) {
-                    return { ...p.profile }
-                }
-            }
-            return null
-        }
-    }
+    // Shared reactive servo-profile factory (rebuilds on $deviceModel change
+    // so a Calibrate→Save isn't frozen on the old profile).
     $: profileForPort = makeProfileForPort($deviceModel)
 
 

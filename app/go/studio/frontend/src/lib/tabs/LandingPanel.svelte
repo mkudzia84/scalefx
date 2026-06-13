@@ -26,7 +26,7 @@
         type PortRefT,
     } from '../landing'
     import {
-        deviceModel, type Port, type Claim, formatPortRail,
+        deviceModel, type Port, type Claim,
         claimsForPort, RoleKind, liveChannels, liveChannelKey,
     } from '../devicemodel'
     import { effectClaims } from '../effect-claims'
@@ -34,31 +34,13 @@
     import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
     import ServoWidget from '../components/ServoWidget.svelte'
     import ServoIoWidget from '../components/ServoIoWidget.svelte'
-    import { portRefToKey, modelPortKey, parsePortKey } from '../components/port_keys'
+    import { portRefToKey, modelPortKey, parsePortKey, refOptLabel } from '../components/port_keys'
     import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
-    import type { ServoProfileT } from '../servo_calibration'
+    import { collectChannelOptions } from '../channels'
+    import { makeProfileForPort } from '../servo_calibration'
 
-    /** Read the device-model profile for `(guid, idx)` so ServoWidget /
-     *  ServoIoWidget show the summary + the calibration dialog pre-seeds the
-     *  current values.  REACTIVE FACTORY (Rule 44 + the Svelte store trap):
-     *  a plain function that reads `$deviceModel` inside is invisible to Svelte,
-     *  so `profile={profileFor(...)}` froze on first render and never picked up
-     *  a Calibrate→Save device-model update — the "calibration doesn't work on
-     *  the landing tab" bug.  Rebuilding the closure whenever `$deviceModel`
-     *  changes makes every call site re-run.  (GunFxPanel uses the identical
-     *  pattern.) */
-    function makeProfileForPort(dm: typeof $deviceModel) {
-        return (port: PortRefT | null | undefined): ServoProfileT | null => {
-            if (!port || !port.kind) return null
-            for (const p of dm.ports) {
-                if (p.ref.guid === port.guid && p.kindName === port.kind
-                    && p.ref.index === port.idx && p.profile) {
-                    return { ...p.profile } as ServoProfileT
-                }
-            }
-            return null
-        }
-    }
+    // Shared reactive servo-profile factory (servo_calibration.ts) — rebuilds
+    // on $deviceModel change so a Calibrate→Save isn't frozen on the old value.
     $: profileForPort = makeProfileForPort($deviceModel)
     /** Compact label for the calibration dialog header — same shape
      *  the port-picker shows (alias-aware). */
@@ -105,37 +87,15 @@
 
     // ─── Named-channel option list (Rule 43) ─────────────────────────
     // Reused for the activation-source "input channel" picker.
-    type ChanOpt = { fnId: string; label: string; portGuid: string; portIdx: number; channel: number }
-    $: chanOpts = collectChannelOpts($deviceModel)
-    function collectChannelOpts(_dm: typeof $deviceModel): ChanOpt[] {
-        const fns = new Map($deviceModel.channelFunctions.map(f => [f.id, f.label] as const))
-        const out: ChanOpt[] = []
-        for (const inp of $deviceModel.inputs) {
-            for (const c of inp.channels) {
-                if (c.function === 'unassigned') continue
-                out.push({
-                    fnId: c.function,
-                    label: `CH${c.channel + 1} · ${fns.get(c.function) ?? c.function}`,
-                    portGuid: inp.port.guid, portIdx: inp.port.index, channel: c.channel,
-                })
-            }
-        }
-        return out
-    }
+    $: chanOpts = collectChannelOptions($deviceModel)
 
     // ─── Port picker helpers (mirrors GunFxPanel pattern, Rule 34) ──
-    // The `guid|kind|idx` key builders live in the shared, unit-tested
-    // port_keys module (aliased to the historical names so call sites are
-    // unchanged) — see port_keys.test.ts. refOptLabel is panel-specific.
+    // The `guid|kind|idx` key builders + the alias-aware refOptLabel live in
+    // the shared, unit-tested port_keys module (aliased to the historical
+    // names so call sites are unchanged) — see port_keys.test.ts.
     const refOptKey = modelPortKey
     const parsePortOption = (key: string, kindName: PortRefT['kind']) =>
         parsePortKey(key, kindName) as PortRefT
-    function refOptLabel(p: Port): string {
-        const rail  = formatPortRail(p.voltageMv)
-        const alias = p.name && p.name.trim()
-        const head  = alias ? `${alias} (${p.hardwareName})` : p.hardwareName
-        return `${p.boardName ?? 'Hub'} · ${head}${rail ? ` · ${rail}` : ''}`
-    }
 
     // ─── Unclaimed pool — only show ports that BOTH have the right
     //     role attached AND aren't claimed by some other effect /
