@@ -83,7 +83,7 @@
 </div>
 
 <style>
-    .telem-card { margin: 10px 0 4px; }
+    .telem-card { margin: 0; }
     .header-actions { display: flex; align-items: center; gap: 8px; }
     .rate { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
     .rate.stale { opacity: 0.55; }

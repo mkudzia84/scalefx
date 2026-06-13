@@ -66,7 +66,7 @@
     .col       { min-width: 0; }
     .left  { flex: 0 0 46%; }
     .right { flex: 1; }
-    /* Telemetry sub-tab: a single standard-width group, padded like the other
-       single-column panels rather than full-bleed. */
-    .io-telemetry { padding: 12px; max-width: 1100px; }
+    /* Telemetry sub-tab: full-width group with standard tab margins (matches
+       the Lighting scroll / other tab panels). */
+    .io-telemetry { padding: 12px; }
 </style>
