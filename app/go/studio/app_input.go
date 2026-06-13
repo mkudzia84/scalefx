@@ -15,6 +15,7 @@ import (
 
 	"scalefx/client"
 	"scalefx/devicemodel"
+	"scalefx/protocol/input"
 	"scalefx/protocol/ports"
 	"scalefx/protocol/roles"
 
@@ -185,6 +186,17 @@ func (a *App) GetInputRouting() (bool, error) {
 		return false, fmt.Errorf("not connected")
 	}
 	return c.Input.GetRouting()
+}
+
+// GetTelemetry snapshots the master's live telemetry collection (item 4) —
+// hub-local sensors + actively-polled input devices (e.g. an ESC on IN_2) +
+// the publish-rate stats.  Polled by the IO tab's telemetry panel.
+func (a *App) GetTelemetry() (input.TelemetrySnapshot, error) {
+	c := a.snapshotClient()
+	if c == nil {
+		return input.TelemetrySnapshot{}, fmt.Errorf("not connected")
+	}
+	return c.Input.GetTelemetry()
 }
 
 // ─── Config mutations ─────────────────────────────────────────────────

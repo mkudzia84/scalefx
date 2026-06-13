@@ -506,6 +506,112 @@ export namespace expanders {
 
 }
 
+export namespace input {
+	
+	export class TelemetrySensor {
+	    id: number;
+	    type: number;
+	    decimals: number;
+	    active: boolean;
+	    value: number;
+	    label: string;
+	    unit: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TelemetrySensor(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.type = source["type"];
+	        this.decimals = source["decimals"];
+	        this.active = source["active"];
+	        this.value = source["value"];
+	        this.label = source["label"];
+	        this.unit = source["unit"];
+	    }
+	}
+	export class TelemetryDevice {
+	    usn: number;
+	    lsn: number;
+	    local: boolean;
+	    active: boolean;
+	    name: string;
+	    sensors: TelemetrySensor[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TelemetryDevice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.usn = source["usn"];
+	        this.lsn = source["lsn"];
+	        this.local = source["local"];
+	        this.active = source["active"];
+	        this.name = source["name"];
+	        this.sensors = this.convertValues(source["sensors"], TelemetrySensor);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class TelemetrySnapshot {
+	    pubIntervalMs: number;
+	    respHzX10: number;
+	    activeSensors: number;
+	    devices: TelemetryDevice[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TelemetrySnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.pubIntervalMs = source["pubIntervalMs"];
+	        this.respHzX10 = source["respHzX10"];
+	        this.activeSensors = source["activeSensors"];
+	        this.devices = this.convertValues(source["devices"], TelemetryDevice);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace main {
 	
 	export class ProgramLandingBindingDTO {
@@ -1438,6 +1544,7 @@ export namespace main {
 	    schemaVersion: number;
 	    enabled: boolean;
 	    coord: string;
+	    deployOnConnectionLoss: boolean;
 	    input: GearInputDTO;
 	    sounds: GearSoundsDTO;
 	    gears: GearChannelDTO[];
@@ -1451,6 +1558,7 @@ export namespace main {
 	        this.schemaVersion = source["schemaVersion"];
 	        this.enabled = source["enabled"];
 	        this.coord = source["coord"];
+	        this.deployOnConnectionLoss = source["deployOnConnectionLoss"];
 	        this.input = this.convertValues(source["input"], GearInputDTO);
 	        this.sounds = this.convertValues(source["sounds"], GearSoundsDTO);
 	        this.gears = this.convertValues(source["gears"], GearChannelDTO);

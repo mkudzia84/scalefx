@@ -42,7 +42,8 @@
 #include "../effect_id.h"
 #include "../../topology/topology_service.h"      // TopologyService concept
 #include "trigger_input.h"
-#include "input_protocol.h"                        // InputRoutingPacket
+#include "input_protocol.h"                        // InputRoutingPacket + TelemetryPacket
+#include <jeti_ex/jeti_telemetry_hub.h>            // the telemetry collection (item 4)
 
 namespace hubfx::effects::input {
 
@@ -86,11 +87,33 @@ public:
 
     bool ownsType(uint8_t type) const {
         return type == InputRoutingPacket::INPUT_ROUTING_SET_ENABLED
-            || type == InputRoutingPacket::INPUT_ROUTING_GET_REQ;
+            || type == InputRoutingPacket::INPUT_ROUTING_GET_REQ
+            || type == TelemetryPacket::TELEMETRY_GET_REQ
+            || type == ConnectionPacket::CONNECTION_GET_REQ
+            || type == ConnectionPacket::CONNECTION_SET_CFG;
     }
     CommandHandleResult handle(uint8_t type,
                                const uint8_t* payload, size_t len);
-    void update() {}
+    /// Per-pass: drive the generic connection-loss state machine (item 5).
+    void update();
+
+    // ── Connection-loss (item 5) ─────────────────────────────────────
+    //
+    // In-firmware subscription for effects (e.g. GearControl) that want to
+    // react to an input link dropping.  `state`: 0 = up/recovered, 1 = lost
+    // (signal gone, holding + brownout), 2 = down (loss confirmed past the
+    // configurable interval — the actionable signal).  Single subscriber is
+    // enough for now (gear); add a small list if more effects need it.
+    using ConnectionCallback = void (*)(void* ctx, const char* guid,
+                                        uint8_t portKind, uint8_t portIdx,
+                                        uint8_t state);
+    void onConnectionLoss(ConnectionCallback cb, void* ctx) {
+        _connCb = cb; _connCtx = ctx;
+    }
+    /// Global link-loss interval (ms): silence beyond this → DOWN signal.
+    /// 0 disables loss signalling entirely.  Default 1000.
+    void setLinkLossMs(uint16_t ms) { _linkLossMs = ms; }
+    uint16_t linkLossMs() const     { return _linkLossMs; }
 
     // ── Global RC-routing gate ───────────────────────────────────────
     //
@@ -160,6 +183,22 @@ private:
                               uint8_t evtPortKind, uint8_t evtPortIdx,
                               const char* evtGuid);
 
+    // Serialize the telemetry collection (JetiTelemetryHub) into `buf` for
+    // TELEMETRY_RESP — bounded to `cap`, truncating devices/sensors that don't
+    // fit.  Returns bytes written.  (item 4)
+    size_t buildTelemetrySnapshot(uint8_t* buf, size_t cap) const;
+
+    // Target publish interval (ms) for the collection — mirrors
+    // JetiExpander::replyIntervalMs() (each metric ~10 Hz, clamped) so the read
+    // path stays decoupled from the Core-0 expander header.
+    static uint16_t targetPubIntervalMs(uint8_t activeSensors) {
+        const uint32_t n  = activeSensors ? activeSensors : 1u;
+        uint32_t iv = 1000u / (n * 10u);           // kPerValueHz = 10
+        if (iv < 25u)  iv = 25u;                    // kMinReplyIntervalMs
+        if (iv > 200u) iv = 200u;                   // kMaxReplyIntervalMs
+        return (uint16_t)iv;
+    }
+
     struct Binding {
         TriggerInput* input   = nullptr;
         PortRef       source;
@@ -170,6 +209,31 @@ private:
     Binding _bindings[kMaxBindings] = {};
     uint8_t _numBindings            = 0;
     bool    _routingEnabled         = true;   ///< RC → effect feed gate
+
+    // ── Connection-loss tracking (item 5) ─────────────────────────────
+    // One slot per input source we've seen frames from.  ESP32-S3 hosts ≤2
+    // input ports; remote-board inputs are rare → 4 slots is ample.
+    static constexpr uint8_t kMaxLinks    = 4;
+    static constexpr uint32_t kDetectMs   = 300;  ///< silence → LOST (hold + brownout + reset)
+    struct Link {
+        char     guid[9]   = {};      ///< "" = hub-local
+        uint8_t  portKind  = 0;
+        uint8_t  portIdx   = 0;
+        uint32_t lastMs    = 0;       ///< last frame (SFX_MILLIS)
+        uint16_t brownouts = 0;
+        uint8_t  state     = 0;       ///< 0 up, 1 lost, 2 down
+        bool     occupied  = false;
+    };
+    Link     _links[kMaxLinks] = {};
+    uint16_t _linkLossMs       = 1000;     ///< DOWN threshold (configurable)
+    ConnectionCallback _connCb  = nullptr;
+    void*              _connCtx = nullptr;
+
+    /// Find-or-add a link slot for (guid, portKind, portIdx); stamps lastMs and
+    /// fires a recovery event if it was lost/down.  Called on every frame.
+    void touchLink(const char* guid, uint8_t portKind, uint8_t portIdx, uint32_t nowMs);
+    /// Fire the in-firmware callback + async CONNECTION_EVENT for one link.
+    void fireConnection(const Link& l);
 
     sfx_core::BoardServerBase* _ctx  = nullptr;
     TTopology*                 _topo = nullptr;

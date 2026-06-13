@@ -533,6 +533,7 @@ void applyGearControlConfig(TBoard& board, const GearControlConfig& cfg) {
     svc.configure(cfg.gears, cfg.numGears, cfg.coordMode);
     svc.setSounds(cfg.sounds.deploy, cfg.sounds.retract, cfg.sounds.outputMask);
     svc.setEnabled(cfg.enabled);
+    svc.setDeployOnConnectionLoss(cfg.deployOnConnectionLoss);  // item 6
     // The RC up/down channel (cfg.activation) is wired by the sketch's
     // GearActivationDriver re-install, not here — the driver owns the
     // dispatcher subscription (same split as the landing-activation driver).

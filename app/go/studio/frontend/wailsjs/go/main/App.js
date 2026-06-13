@@ -270,6 +270,10 @@ export function GetReleases(arg1) {
   return window['go']['main']['App']['GetReleases'](arg1);
 }
 
+export function GetTelemetry() {
+  return window['go']['main']['App']['GetTelemetry']();
+}
+
 export function GetToolsStatus() {
   return window['go']['main']['App']['GetToolsStatus']();
 }

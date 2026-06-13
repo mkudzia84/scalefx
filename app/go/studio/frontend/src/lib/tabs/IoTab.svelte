@@ -6,6 +6,7 @@
 <script lang="ts">
     import InputPanel from './InputPanel.svelte'
     import PortRoleTab from './PortRoleTab.svelte'
+    import TelemetryPanel from '../components/TelemetryPanel.svelte'
 </script>
 
 <div class="io">
@@ -14,6 +15,9 @@
             <div class="col left"><InputPanel /></div>
             <div class="col right"><PortRoleTab /></div>
         </div>
+        <!-- Live telemetry collection (item 4) — full-width below the
+             columns (Rule 60.2): hub-local + polled input-device sensors. -->
+        <TelemetryPanel />
     </div>
 </div>
 
