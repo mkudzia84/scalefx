@@ -121,3 +121,118 @@ Bench (build 859, HubFx-6DA4): `telemetry` shows HubFx Uptime/Version @ 20 Hz;
 `links` shows `hub port=0 up brownouts=0`. The loss→deploy path is wired; confirm
 it on the bench by unplugging the Jeti with the gear enabled + the toggle on
 (watch `[link] CONNECTION DOWN` → `[gear-svc] … EMERGENCY DEPLOY`).
+
+---
+
+## 5. Architecture: decoupling the IN_2 ESC monitor (DESIGN — not built)
+
+> **Status:** design only (2026-06-13).  Today the IN_2 ESC telemetry monitor is
+> wired ONLY when IN_1 is `jeti-ex-input`: `JetiExpander::begin()` (started from
+> the IN_1 attach) owns both links, and `JetiExTelemetryRole` is a pure marker
+> (`tick()` is empty).  So with **SBUS/PPM on IN_1 the ESC reads nothing**.  This
+> section is the plan to support a STANDALONE IN_2 monitor — collection-only (no
+> radio path; SBUS/PPM are one-way), expressed in the policy/concept/template
+> grammar (Rule 6/18).  **Deferred by decision; do NOT implement yet.**
+
+### Why it's coupled today (the three blockers)
+
+1. **Destination** — ESC telemetry → radio is Jeti-only (the responder replies to
+   the radio's polls).  SBUS/PPM carry no telemetry back, so a standalone monitor
+   feeds ONLY the `JetiTelemetryHub` (Studio collection / effects / Rule-5
+   connection-loss) — never the pilot's radio.  *Non-goal:* radio relay on non-Jeti.
+2. **Poll template** — we poll the ESC by replaying a REAL Jeti telemetry-request
+   captured from IN_1 (`captureEscPoll`).  No Jeti on IN_1 ⇒ nothing to capture ⇒
+   must SYNTHESIZE the poll.
+3. **Crosstalk** — IN_2's poll TX couples onto IN_1 RX (adjacent GPIO).  Paired,
+   we window it into IN_1's guaranteed-quiet Jeti reply slot; standalone there's
+   no signalled slot, so the poll must land in IN_1's inter-frame GAP.
+
+### Target shape — two compile-time policies behind one monitor
+
+Extract the ESC guts out of `JetiExpander` into a reusable, board-unique
+`EscTelemetryMonitorT<TPoll, TWindow>` parameterised on two concepts; the
+JetiExpander and a new standalone ServicePolicy each instantiate it with their
+own policy models.  Shared sink stays `JetiTelemetryHub` (singleton, unchanged).
+
+```cpp
+// What frame to send the ESC to elicit a reply.
+template <typename T> concept EscPollSource = requires(T& s, uint8_t* out, size_t cap) {
+    { s.nextPoll(out, cap) } -> std::convertible_to<size_t>;   // writes a Jeti telemetry-request; 0 = none yet
+};
+// When it is crosstalk-safe to TX on IN_2 (vs IN_1 RX).
+template <typename T> concept TxWindow = requires(T& w, uint32_t nowUs) {
+    { w.canTxNow(nowUs) } -> std::convertible_to<bool>;
+};
+
+template <EscPollSource TPoll, TxWindow TWindow>
+class EscTelemetryMonitorT {           // board-unique; owns InputPort* + decoder + presence machine
+    void tick(uint32_t now) {
+        _decoder.update(now);                       // bounded drain → JetiTelemetryHub (reuse JetiExTelemetryMonitor)
+        updatePresence(now);                        // probe 200ms ⇄ active 75ms (reuse current FSM)
+        if (now - _lastPollMs < _pollIntervalMs) return;
+        if (!_window.canTxNow(SFX_MICROS())) return;        // crosstalk guard
+        uint8_t f[16]; const size_t n = _poll.nextPoll(f, sizeof f);
+        if (n) { _escPort->txEnable(); _stream->write(f,n); _stream->flush(); _escPort->txDisable(); _lastPollMs = now; }
+    }
+};
+```
+
+**Policy models:**
+
+| Concept | Paired (IN_1 = Jeti) | Standalone (IN_1 = SBUS/PPM/none) |
+|---|---|---|
+| `EscPollSource` | `CapturedRxPoll` — the `captureEscPoll` template (today's path) | `SynthesizedJetiPoll` — builds a minimal valid telemetry-request with a rotating packetId |
+| `TxWindow` | `JetiReplySlotWindow` — true only in the post-reply quiet slot (today's `maybePollEsc`-from-`serveTelemetry`) | `InputGapWindowPolicy<TDispatcher>` — true when IN_1's last-frame age sits in the safe gap; reads the InputDispatcher's per-source `lastMs` (the Rule-5 `touchLink` timestamps — already there). `FreeWindow` when IN_1 has no input role. |
+
+So: paired = `EscTelemetryMonitorT<CapturedRxPoll, JetiReplySlotWindow>` (owned by
+`JetiExpander`, ticked from `serveTelemetry`); standalone =
+`EscTelemetryMonitorT<SynthesizedJetiPoll, InputGapWindowPolicy<TDispatcher>>`.
+
+### Where standalone plugs in — a ServicePolicy, runtime-gated
+
+```cpp
+template <hubfx::effects::input::InputDispatcher TDispatcher>
+class EscTelemetryServicePolicyT {                   // composed into BoardOf<…> after the dispatcher
+    static constexpr uint32_t kCapabilityBits = 0;   // internal plumbing; reads ride the existing TELEMETRY_GET_REQ
+    bool begin(BoardServerBase* ctx);                // resolve TDispatcher (for InputGapWindowPolicy)
+    bool ownsType(uint8_t) const { return false; }   // no wire surface of its own
+    void update() {
+        if (JetiEx::JetiExpander::instance().drivesEsc()) return;   // paired wins — never double-drive IN_2
+        if (!_standaloneActive) return;                              // only a lone jeti-ex-telemetry role, no jeti-ex-input
+        _monitor.tick(SFX_MILLIS());
+    }
+};
+```
+
+- **Ownership / no-double-drive:** ONE driver of IN_2 at a time.  The standalone
+  policy yields whenever the responder owns it (`JetiExpander::drivesEsc()` — a
+  new accessor reflecting `_escPort != nullptr && respondingOnIn1`).  `_standaloneActive`
+  is set at attach (`attachTelemetry`) when a `jeti-ex-telemetry` role is bound
+  AND no `jeti-ex-input` is present; cleared if a `jeti-ex-input` later attaches
+  (the expander takes over).  Concept `requires` gates the whole policy out on
+  non-ESP32 / boards with <2 input ports (Rule 31).
+- **Concept reuse:** `InputDispatcher` concept already exists (input_dispatcher.h)
+  — `InputGapWindowPolicy<TDispatcher>` just needs a `lastFrameMs(PortRef)` reader
+  on it (one accessor over the Rule-5 `_links` table).
+
+### Migration (keep the proven path intact)
+
+1. **Refactor-only:** lift the ESC bits from `JetiExpander` into
+   `EscTelemetryMonitorT<CapturedRxPoll, JetiReplySlotWindow>`; the expander holds
+   that instantiation and ticks it from `serveTelemetry`.  Behaviour-identical —
+   bench-diff `[jexp] IN_2 ESC` stats before/after.
+2. **Add** `SynthesizedJetiPoll` + `InputGapWindowPolicy` + `EscTelemetryServicePolicyT`,
+   compose it into the hub's `BoardOf<…>` pack, wire `_standaloneActive` in
+   `attachTelemetry`.
+3. **Bench** the standalone path with SBUS on IN_1 + the ESC on IN_2: validate the
+   synthesized poll elicits replies and the gap-window TX doesn't raise IN_1
+   `rxErr` (SBUS frame-loss).
+
+### Open questions
+
+- **PPM windowing** is twitchier than SBUS (no CRC, pulse train) — ship SBUS-gap
+  first; PPM may need a wider guard or a hard "no standalone ESC on PPM" gate.
+- **Poll cadence vs SBUS frame period** (~14 ms) — one ESC poll per SBUS gap caps
+  the ESC refresh at ~50–70 Hz; fine (ESCs update ~10 Hz).
+- **Crosstalk reality** must be measured on the bench (the windowing math is a
+  model); keep the `[jexp] IN_2` + IN_1 `rxErr` instrumentation as the gate.
