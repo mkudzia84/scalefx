@@ -2530,6 +2530,36 @@ switcher) already converged on, now binding:
 Reference implementation: the Gear tab's strut cards
 ([GearPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GearPanel.svelte)).
 
+### 61. Studio Sub-tabs Use the Shared `.sub-bar` Underline Pattern (approved 2026-06-13)
+
+When a single top-level Studio tab hosts **sibling surfaces** the operator
+switches between (Lighting → Programs / Retractable; Input & Ports → Port
+Configuration / Telemetry), use the shared **`.sub-bar` / `.sub-item`** underline
+bar in [style.css](../app/go/studio/frontend/src/style.css) — NEVER re-implement
+it locally, and NEVER use a `.seg-select` pill for it (Rule 60.3: segmented
+toggles are for a SETTING choice with ≤4 options; **sub-tabs SWITCH THE VIEW** —
+different visual grammar, different meaning).
+
+- **Markup.** A `.sub-bar` row of `.sub-item` buttons, each an SVG icon
+  (`.sub-icon`, 14 px, `currentColor`) + a text label; the active one gets
+  `class:active` (accent bottom-border + bright text).  Copy the shape from
+  [LightingTab.svelte](../app/go/studio/frontend/src/lib/tabs/LightingTab.svelte) /
+  [IoTab.svelte](../app/go/studio/frontend/src/lib/tabs/IoTab.svelte).
+- **Mount only the active surface** (`{#if sub === …}`) — one live-view at a
+  time, matching the top-level tab behaviour (no hidden panels polling).
+- **Conditional sub-tabs are fine** — a surface that only applies in some
+  configs (Telemetry shows only when a `jeti-ex-input` role is attached) is
+  rendered conditionally; the default surface is always first.
+- **CSS lives ONCE, globally.**  `.sub-bar` / `.sub-item` / `.sub-icon` are in
+  `style.css` (Rule 34); a tab's local `<style>` does layout only
+  (`.lighting`/`.io` flex column + the scroll area).  Don't copy the bar CSS
+  into a component.
+- **DirtySource still per-surface** (Rule 46): each sub-surface registers its
+  own DirtySource at App.svelte startup so the global ConfigToolbar gates Apply
+  regardless of which sub-tab is showing.
+
+Reference: [LightingTab.svelte](../app/go/studio/frontend/src/lib/tabs/LightingTab.svelte).
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host

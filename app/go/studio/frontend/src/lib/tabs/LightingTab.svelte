@@ -40,12 +40,8 @@
 </div>
 
 <style>
+    /* .sub-bar / .sub-item / .sub-icon are the shared global sub-tab pattern
+       (Rule 61) in style.css — do not redefine locally. */
     .lighting { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-    .sub-bar { display: flex; align-items: stretch; gap: 2px; background: var(--bg-surface); border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 8px; }
-    .sub-item { display: flex; align-items: center; gap: 6px; padding: 6px 14px; border: none; border-bottom: 2px solid transparent; background: transparent; color: var(--text-dim); cursor: pointer; font-family: var(--font-ui); font-size: 12px; white-space: nowrap; transition: color 0.15s, border-color 0.15s; }
-    .sub-item:hover { color: var(--text); }
-    .sub-item.active { color: var(--text-bright); border-bottom-color: var(--accent); }
-    .sub-icon { display: flex; align-items: center; opacity: 0.7; }
-    .sub-item.active .sub-icon { opacity: 1; }
     .lighting-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 </style>

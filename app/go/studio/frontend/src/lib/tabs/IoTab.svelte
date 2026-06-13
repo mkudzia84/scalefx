@@ -1,13 +1,15 @@
 <!-- ScaleFX Studio — Input & Ports tab.
-     Sub-tabs (Rule 60.3 segmented selector):
+     Sub-tab bar (Rule 61 — the shared .sub-bar / .sub-item underline pattern,
+     same as LightingTab):
        • Port Configuration (default) — Inputs (left) + Output ports & roles
          (right), the two-column setup view.
-       • Telemetry — the live telemetry collection, shown ONLY when telemetry
+       • Telemetry — the live telemetry collection, present ONLY when telemetry
          emission is configured (an input carries the jeti-ex-input role, i.e.
          the IN_1 responder; future telemetry protocols add their role kind to
          `hasTelemetry`).
-     Pure view component — Rule 46: hubConfigSource is pre-registered by
-     App.svelte; the global ConfigToolbar owns Apply / Diagram / Refresh. -->
+     Only the active surface is mounted (one live-view at a time).  Pure view —
+     Rule 46: hubConfigSource is pre-registered by App.svelte; the global
+     ConfigToolbar owns Apply / Diagram / Refresh. -->
 <script lang="ts">
     import InputPanel from './InputPanel.svelte'
     import PortRoleTab from './PortRoleTab.svelte'
@@ -25,19 +27,25 @@
     // If telemetry stops being configured while it's the active sub-tab (role
     // detached), fall back to Port Configuration.
     $: if (!hasTelemetry && sub === 'telemetry') sub = 'ports'
+
+    const ICON_PORTS = '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/>'
+    const ICON_TELEM = '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'
+    const svg = (b: string) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${b}</svg>`
 </script>
 
 <div class="io">
-    {#if hasTelemetry}
-        <div class="io-subtabs">
-            <div class="seg-select">
-                <button class="seg" class:on={sub === 'ports'}
-                        on:click={() => (sub = 'ports')}>Port Configuration</button>
-                <button class="seg" class:on={sub === 'telemetry'}
-                        on:click={() => (sub = 'telemetry')}>Telemetry</button>
-            </div>
-        </div>
-    {/if}
+    <div class="sub-bar">
+        <button class="sub-item" class:active={sub === 'ports'} on:click={() => (sub = 'ports')}>
+            <span class="sub-icon">{@html svg(ICON_PORTS)}</span>
+            <span>Port Configuration</span>
+        </button>
+        {#if hasTelemetry}
+            <button class="sub-item" class:active={sub === 'telemetry'} on:click={() => (sub = 'telemetry')}>
+                <span class="sub-icon">{@html svg(ICON_TELEM)}</span>
+                <span>Telemetry</span>
+            </button>
+        {/if}
+    </div>
 
     <div class="io-scroll">
         {#if sub === 'ports'}
@@ -53,13 +61,12 @@
 
 <style>
     .io { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-    .io-subtabs { padding: 10px 12px 0; flex: 0 0 auto; }
     .io-scroll { flex: 1; min-height: 0; overflow: auto; }
     .io-cols   { display: flex; min-height: 100%; }
     .col       { min-width: 0; }
     .left  { flex: 0 0 46%; }
     .right { flex: 1; }
     /* Telemetry sub-tab: a single standard-width group, padded like the other
-       single-column panels (Engine/Gun) rather than full-bleed. */
-    .io-telemetry { padding: 10px 12px; max-width: 1100px; }
+       single-column panels rather than full-bleed. */
+    .io-telemetry { padding: 12px; max-width: 1100px; }
 </style>
