@@ -3,6 +3,7 @@
      function assignment with a live value bar fed by the hub's RC
      broadcast stream. -->
 <script lang="ts">
+    import { onMount, onDestroy } from 'svelte'
     import {
         deviceModel, liveChannels, setInputProtocol, setInputChannelCount,
         setChannelFunction, liveChannelKey, usToPct, boardDisplayNames,
@@ -10,6 +11,14 @@
         type InputPortConfig, type ChannelFunctionDef, type PortRef,
         type InputProtocolDef,
     } from '../devicemodel'
+    import { escTelemetryActive, startTelemetryPolling, stopTelemetryPolling } from '../telemetry'
+
+    // Poll the telemetry collection while this panel is up so the IN_2
+    // jeti-ex-telemetry pass-thru row can show whether the downstream ESC is
+    // actually replying (active / no signal).  Ref-counted + shared with the
+    // Telemetry sub-tab.
+    onMount(() => startTelemetryPolling())
+    onDestroy(() => stopTelemetryPolling())
 
     let busy = false
     let error = ''
@@ -159,6 +168,14 @@
                     {#if rail(cfg.port)}
                         <span class="rail-chip" title="Rail voltage declared by the board's port descriptor">{rail(cfg.port)}</span>
                     {/if}
+                    <!-- Live downstream-link health: a non-local device replying
+                         in the telemetry collection = the ESC on IN_2 is active. -->
+                    <span class="esc-chip" class:active={$escTelemetryActive}
+                          title={$escTelemetryActive
+                              ? 'A downstream device (e.g. ESC) is replying on this telemetry link.'
+                              : 'No downstream telemetry — nothing replying on IN_2 (check the ESC / wiring).'}>
+                        {$escTelemetryActive ? '● active' : '○ no signal'}
+                    </span>
                     <span class="passthru-tag">Jeti EX Telemetry · pass-thru</span>
                 </div>
             </div>
@@ -249,7 +266,11 @@
     /* Telemetry pass-thru: dimmer, no channel group — it's a downstream link. */
     .input-card.passthru { border-left: 2px solid var(--accent); }
     .input-card.passthru .board-head { margin-bottom: 0; }
-    .passthru-tag { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--accent); padding: 1px 6px; border: 1px solid var(--accent); border-radius: 3px; }
+    .passthru-tag { margin-left: 6px; font-family: var(--font-mono); font-size: 10px; color: var(--accent); padding: 1px 6px; border: 1px solid var(--accent); border-radius: 3px; }
+    /* Live downstream-link chip — dim "no signal" by default, green when an ESC
+       is replying.  margin-left:auto groups it + the pass-thru tag at the right. */
+    .esc-chip { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; }
+    .esc-chip.active { color: var(--success); border-color: var(--success); background: rgba(100,200,120,0.12); }
     .board-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .board-name { font-size: 13px; font-weight: 600; color: var(--text-bright); }
     .rail-chip { font-family: var(--font-mono); font-size: 10px; color: var(--text); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; }

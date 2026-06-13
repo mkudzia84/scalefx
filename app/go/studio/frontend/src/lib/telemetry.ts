@@ -3,7 +3,7 @@
 // POLLS GetTelemetry on a slow timer while it's mounted; the panel reads this
 // store.  Mirrors protocol/input.TelemetrySnapshot.
 
-import { writable } from 'svelte/store'
+import { writable, derived } from 'svelte/store'
 import { GetTelemetry } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 
@@ -35,6 +35,28 @@ export interface TelemetrySnapshot {
 }
 
 export const telemetry = writable<TelemetrySnapshot | null>(null)
+
+/** Downstream (ESC) telemetry is live when the collection holds an ACTIVE
+ *  non-local device — i.e. an ESC on IN_2 is replying.  Drives the IN_2
+ *  jeti-ex-telemetry port's active / no-signal indicator. */
+export const escTelemetryActive = derived(telemetry, $t =>
+    !!$t && $t.devices.some(d => !d.local && d.active))
+
+// Shared, ref-counted poller so multiple views (the Telemetry sub-tab + the
+// IN_2 port indicator) drive ONE 1 Hz GetTelemetry loop, not several.
+let pollRefs = 0
+let pollTimer: ReturnType<typeof setInterval> | undefined
+export function startTelemetryPolling(): void {
+    pollRefs++
+    if (!pollTimer) {
+        pollTelemetry()
+        pollTimer = setInterval(() => pollTelemetry(), 1000)
+    }
+}
+export function stopTelemetryPolling(): void {
+    pollRefs = Math.max(0, pollRefs - 1)
+    if (pollRefs === 0 && pollTimer) { clearInterval(pollTimer); pollTimer = undefined }
+}
 
 /** Poll the collection once, merging into the store. Swallows transient wire
  *  errors (a poll racing a reconnect) — the next tick self-heals. */

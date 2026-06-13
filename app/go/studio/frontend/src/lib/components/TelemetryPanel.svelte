@@ -6,16 +6,14 @@
      the hubfx board gains sensors. -->
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte'
-    import { telemetry, pollTelemetry, fmtSensorValue,
+    import { telemetry, fmtSensorValue, startTelemetryPolling, stopTelemetryPolling,
              linkStates, installConnectionListener, LINK_STATE_NAMES } from '../telemetry'
 
-    let timer: ReturnType<typeof setInterval> | undefined
     onMount(() => {
         installConnectionListener()
-        pollTelemetry()
-        timer = setInterval(() => pollTelemetry(), 1000)
+        startTelemetryPolling()
     })
-    onDestroy(() => { if (timer) clearInterval(timer) })
+    onDestroy(() => stopTelemetryPolling())
 
     $: snap = $telemetry
     $: stale = !snap || (Date.now() - snap.ts) > 3000
