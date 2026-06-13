@@ -45,8 +45,21 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromString(const char* yaml, size_
     }
 
     if (!yaml || len == 0) {
-        snprintf(_lastError, sizeof(_lastError), "Empty YAML input");
+        // Empty input = "use schema defaults", NOT an error.  A 0-byte file
+        // (interrupted upload, operator-cleared config) is a valid request to
+        // fall back — reset to defaults AND fire the loaded callback so a
+        // RELOAD of a now-empty file actually re-applies defaults to the live
+        // board instead of leaving stale runtime config (or silently no-op'ing
+        // the apply).  Flagged notFound so reload-all tolerates it and boot's
+        // loadOrFallback skips a redundant second apply.
+        resetToDefaults();
+        _loaded        = false;
+        _usingDefaults = true;
+        _fileSize      = 0;
+        snprintf(_lastError, sizeof(_lastError), "Empty YAML input — using defaults");
         strncpy(result.error, _lastError, sizeof(result.error) - 1);
+        result.notFound = true;
+        if (_onLoaded) _onLoaded(*_data);
         return result;
     }
 
@@ -126,12 +139,20 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromFile(const char* path) {
     // Read file
     int bytesRead = _fileReader(filePath, buffer, MAX_CONFIG_SIZE);
     if (bytesRead <= 0) {
+        // Absent, unreadable, OR 0-byte — all mean "no usable config": reset
+        // to schema defaults and fire the loaded callback so a RELOAD that
+        // finds the file gone/empty re-applies defaults to the live board
+        // (same contract as the empty-string path in loadFromString).  Without
+        // the reset, a reload here would leave stale runtime config behind.
+        resetToDefaults();
         snprintf(_lastError, sizeof(_lastError), "File read failed: %s", filePath);
         strncpy(result.error, _lastError, sizeof(result.error) - 1);
         result.notFound = true;   // absent / unreadable — reload-all tolerates this
         _loaded        = false;   // no file backing the store now
         _usingDefaults = true;    // running on struct defaults (functional)
+        _fileSize      = 0;
         sfxPsramFree(buffer);
+        if (_onLoaded && _data) _onLoaded(*_data);
         return result;
     }
 

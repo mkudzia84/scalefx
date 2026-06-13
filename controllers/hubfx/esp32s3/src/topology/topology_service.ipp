@@ -380,6 +380,31 @@ void TopologyServicePolicyT<TExpander>::appendHubPortBlock(
              });
 }
 
+// ─── Bulk hub-local role teardown (config-reload re-apply) ─────────────
+template <hubfx::expanders::ExpanderService TExpander>
+uint8_t TopologyServicePolicyT<TExpander>::detachAllHubRoles() {
+    using namespace sfx_core;
+    uint8_t detached = 0;
+    // Walk every kind in the registry and detach each OCCUPIED hub-local
+    // binding (same registry-walk shape as appendHubPortBlock above). The
+    // per-kind index `i` IS the PortRef::local idx. detachRole auto-releases
+    // any claim on the port, so the fresh /hubfx.yaml ports[] block can
+    // re-attach onto a clean layout (no "already bound" no-op).
+    auto detachKind = [&](uint8_t (PortRegistryBase::*counter)() const,
+                          auto fetchAt, uint8_t kind) {
+        const uint8_t n = (_reg->*counter)();
+        for (uint8_t i = 0; i < n; ++i) {
+            auto* b = (_reg->*fetchAt)(i);
+            if (b && b->occupied() && detachRole(PortRef::local(kind, i))) ++detached;
+        }
+    };
+    detachKind(&PortRegistryBase::numServoPorts,   &PortRegistryBase::servoAt,   PortKind::Servo);
+    detachKind(&PortRegistryBase::numPwmPorts,     &PortRegistryBase::pwmAt,     PortKind::Pwm);
+    detachKind(&PortRegistryBase::numHBridgePorts, &PortRegistryBase::hbridgeAt, PortKind::HBridge);
+    detachKind(&PortRegistryBase::numInputPorts,   &PortRegistryBase::inputAt,   PortKind::Input);
+    return detached;
+}
+
 template <hubfx::expanders::ExpanderService TExpander>
 void TopologyServicePolicyT<TExpander>::appendHubRoleBlock(
         uint8_t* buf, size_t& off, size_t cap) {

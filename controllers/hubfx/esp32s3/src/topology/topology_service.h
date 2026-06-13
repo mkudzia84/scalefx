@@ -218,6 +218,13 @@ public:
     /// Detach the role at `addr`.  Auto-releases any claim held on it.
     bool detachRole(const PortRef& addr);
 
+    /// Detach EVERY currently-attached hub-local role (walks the port
+    /// registry, detaches each occupied servo/pwm/hbridge/input port).  Used
+    /// by the config-reload re-apply: clear the live port/role layout so the
+    /// fresh /hubfx.yaml `ports:` block can be re-attached, making a Studio
+    /// Apply change roles WITHOUT a reboot.  Returns the count detached.
+    uint8_t detachAllHubRoles();
+
     /// Push a board's FULL role set to a remote expander in ONE packet
     /// (ROLE_BULK_ATTACH) — the declarative bringup path used by
     /// ExpanderService::onReady.  `block` is `[count][entries…]` built by

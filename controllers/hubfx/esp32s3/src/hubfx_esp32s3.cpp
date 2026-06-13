@@ -59,8 +59,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.28.0-hubfx"
-#define BUILD_NUMBER     877
+#define FIRMWARE_VERSION "2.29.0-hubfx"
+#define BUILD_NUMBER     879
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -502,7 +502,20 @@ static hubfx::config::ConfigStoreSlot<LandingConfigSchema,  LandingYamlPool>  kL
 static hubfx::config::ConfigStoreSlot<GearControlConfigSchema, GearControlYamlPool> kGearCtrl;
 static hubfx::config::ConfigStoreSlot<LightFxConfigSchema,  LightFxYamlPool>  kLightFx;
 
-static void applyHubFxConfigCallback(const HubFxConfig& cfg) {
+// Boot-complete marker — flipped true at the end of setup().  Two uses:
+//   1) the input-driven drivers (RC program selector + landing/gear
+//      activation) re-install on a config-reload ONLY after setup() did the
+//      first install (the dispatcher must be fully up before they subscribe);
+//   2) applyHubFxConfigCallback gates its post-boot role detach+reattach on
+//      it — at boot the canonical applyPortRoles (line ~842) owns attachment;
+//      only POST-boot reloads rebuild the live port/role layout.
+static bool g_lightFxBooted = false;
+
+// Re-assert ONLY the board-level master state (codec supply + the `features:`
+// enable matrix that overrides each sub-file's local `enabled:`).  Does NOT
+// touch the port/role layout — split out so the reload-complete hook can run
+// it LAST without re-detaching roles the effect stores just re-claimed.
+static void reassertHubFxFeatures(const HubFxConfig& cfg) {
     // Codec PVDD voltage — board-specific, written before audio bring-up.
     // /hubfx.yaml carries this because the codec is a board-level chip,
     // not an effect's concern.  `audio.begin()` later in setup() reads
@@ -534,6 +547,27 @@ static void applyHubFxConfigCallback(const HubFxConfig& cfg) {
                                      GunFxService>(board, cfg);
 }
 
+// /hubfx.yaml store apply callback — fires on the initial load AND on every
+// CONFIG_RELOAD.  Re-asserts the master features, then (POST-boot only)
+// rebuilds the port/role layout from the fresh config so a Studio "Apply" of
+// a changed `ports:` block takes effect WITHOUT a reboot.  The detach clears
+// the live roles (releasing claims); applyPortRoles re-attaches per the new
+// config; the effect stores' own reload callbacks then re-claim their ports.
+// This runs FIRST in the reload loop (kHubFx is wired first), so the layout
+// is rebuilt before any effect store re-claims.  Gated on g_lightFxBooted:
+// at boot the canonical applyPortRoles at line ~842 owns attachment.
+static void applyHubFxConfigCallback(const HubFxConfig& cfg) {
+    reassertHubFxFeatures(cfg);
+    if (g_lightFxBooted) {
+        const uint8_t n =
+            board.policy<HubFxTopologyService>().detachAllHubRoles();
+        SFX_LOG_INFO("[config] reload: detached %u hub role(s), re-attaching "
+                     "from /hubfx.yaml", (unsigned)n);
+        hubfx::config::applyPortRoles<HubFxBoard, HubFxTopologyService>(
+            board, cfg);
+    }
+}
+
 static void applyAlertsConfigCallback(const AlertsConfig& cfg) {
     hubfx::config::applyAlertsConfig<HubFxBoard, AlertService>(board, cfg);
 }
@@ -559,11 +593,8 @@ static void applyGunFxConfigCallback(const GunFxYamlConfig& cfg) {
         board, cfg, kHubFx.data());
 }
 
-// Boot gate shared by the input-driven drivers (RC program selector +
-// landing-activation): the InputDispatcher must be fully up before they
-// subscribe, so the config-reload callbacks re-install only AFTER the
-// setup() block does the first install (which flips this true).
-static bool g_lightFxBooted = false;
+// (g_lightFxBooted is defined near applyHubFxConfigCallback above — it gates
+// both these input-driver re-installs and the reload role re-attach.)
 
 // RC-channel auto-deploy driver — file-scope so the config-reload
 // callback re-wires it on every Studio Apply (mirrors kLightFxSelector).
@@ -769,8 +800,13 @@ void setup() {
         // mirrors the boot-time re-apply below.  Without this, a reload of
         // (say) /gearcontrol.yaml would re-enable gears via its local
         // `enabled: true` even when features.gears is false.
+        // Features-only re-assert (NOT the full callback) — the kHubFx store
+        // callback already rebuilt the port/role layout FIRST in the reload
+        // loop; re-running the full callback here (LAST, after the effect
+        // stores re-claimed) would detach + re-attach again and drop those
+        // claims.  This pass only re-stamps the master `features:` matrix.
         cfgPolicy.setReloadCompleteHook(
-            [](void*) { applyHubFxConfigCallback(kHubFx.data()); }, nullptr);
+            [](void*) { reassertHubFxFeatures(kHubFx.data()); }, nullptr);
     }
 
     // Bring the wire-protocol UART up FIRST — board.begin() will read
@@ -834,7 +870,8 @@ void setup() {
     kLanding .loadOrFallback();
     kGearCtrl.loadOrFallback();
     kLightFx .loadOrFallback();
-    applyHubFxConfigCallback(kHubFx.data());     // re-apply master enables
+    reassertHubFxFeatures(kHubFx.data());        // re-apply master enables
+                                                 // (roles attached just below)
 
     // Port → role attachment is driven by `/hubfx.yaml`'s `ports:` block.
     // Empty table (no file / no block) falls back to the legacy default

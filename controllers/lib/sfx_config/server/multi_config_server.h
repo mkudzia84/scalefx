@@ -229,8 +229,13 @@ private:
                 return;
             }
             auto r = s->loadFromFile(nullptr);  // facade always uses its own defaultPath
-            if (r.ok || (r.populated && !r.validated)) {
-                SFX_LOG_INFO("[Config] Reloaded: %s (%u bytes)", pathBuf, s->fileSize());
+            // notFound (absent / empty / 0-byte) is tolerated: the store reset
+            // to defaults AND fired its apply callback, so the live board is
+            // already consistent — ACK rather than NACK a "Studio cleared the
+            // file" Apply.  Only a genuine parse/validate failure NACKs.
+            if (r.ok || r.notFound || (r.populated && !r.validated)) {
+                SFX_LOG_INFO("[Config] Reloaded: %s (%u bytes%s)", pathBuf,
+                             s->fileSize(), r.notFound ? ", absent → defaults" : "");
                 firePostReload();   // re-assert cross-store invariants (master matrix)
                 this->sendAck();
             } else {

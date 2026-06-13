@@ -147,9 +147,21 @@ func (s *Storage) uploadDiagSummary() string {
 
 // ─── File ops ────────────────────────────────────────────────────────
 
-// FileInfo returns metadata for the path (exists / dir / size).
+// FileInfo returns metadata for the path (exists / dir / size).  NOTE: the
+// firmware defaults this query to SD — for a flash path (config files), use
+// FileInfoOn(path, TargetFlash) or it reads as absent.
 func (s *Storage) FileInfo(path string) (FileInfoResult, error) {
 	resp, err := s.c.sendForResp(storage.CmdFileInfo(path), storage.FileInfoResp)
+	if err != nil {
+		return FileInfoResult{}, err
+	}
+	return storage.DecodeFileInfo(resp.Payload)
+}
+
+// FileInfoOn returns metadata for the path on an EXPLICIT backend
+// (TargetSD / TargetFlash).  Use this for config files (they live on flash).
+func (s *Storage) FileInfoOn(path string, target byte) (FileInfoResult, error) {
+	resp, err := s.c.sendForResp(storage.CmdFileInfoTarget(path, target), storage.FileInfoResp)
 	if err != nil {
 		return FileInfoResult{}, err
 	}

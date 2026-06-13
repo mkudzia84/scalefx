@@ -47,8 +47,12 @@ func cmdFlash(controller, port string, skipVerify, noClean bool) {
 		printError("%s", err)
 		return
 	}
-	// NB: lightfx program seeding is NOT part of flash anymore — run it
-	// explicitly with `scalefx-flash programs <ctrl>` when wanted.
+	// Initial-flash convenience: seed a sensible default /hubfx.yaml when the
+	// board has none, so a brand-new board comes up with a config the operator
+	// can open + edit in Studio.  Skips any config already on the device, so a
+	// reflash of a configured board is untouched.  Best-effort (never fails the
+	// flash).  (lightfx program seeding stays manual: `scalefx-flash programs`.)
+	seedDefaultConfigs(ctrl.Name, port)
 }
 
 // ─── upload (flash without build) ───

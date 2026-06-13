@@ -300,6 +300,14 @@ func CmdFileInfo(path string) []byte {
 	payload := append([]byte{byte(len(pb))}, pb...)
 	return protocol.BuildPacket(FileInfo, payload, 0)
 }
+
+// CmdFileInfoTarget queries a path on an EXPLICIT backend.  The firmware's
+// FILE_INFO handler defaults to SD when no target byte follows the path
+// (CmdFileInfo's form), so config files on flash (/hubfx.yaml, …) MUST use
+// this form or they read as "absent".  Append-only over CmdFileInfo (Rule 11).
+func CmdFileInfoTarget(path string, target byte) []byte {
+	return protocol.BuildPacket(FileInfo, pathPayload(path, target), 0)
+}
 func CmdFileDownload(path string) []byte {
 	pb := []byte(path)
 	payload := append([]byte{byte(len(pb))}, pb...)

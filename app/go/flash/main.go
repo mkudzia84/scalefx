@@ -88,6 +88,16 @@ func main() {
 		_, flags := extractPositionalAndFlags(sub)
 		deployLightFxPrograms(argValue(flags, "--port"))
 
+	case "seed-config":
+		// Seed the bundled default /hubfx.yaml onto a board that has none,
+		// WITHOUT reflashing (e.g. after manually wiping the config fs).
+		// Defaults to hubfx; preserves any config already present.
+		controller, flags := extractPositionalAndFlags(sub)
+		if controller == "" {
+			controller = "hubfx"
+		}
+		seedDefaultConfigs(controller, argValue(flags, "--port"))
+
 	case "coredump":
 		// Pull + decode the ESP32 crash coredump from flash (HubFX).
 		controller, flags := extractPositionalAndFlags(sub)

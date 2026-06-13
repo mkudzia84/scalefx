@@ -78,11 +78,15 @@ public:
     /// apply callback with the struct-default data so a bare board
     /// still boots functional.
     void loadOrFallback() {
-        if (!_store.loadFromFile(nullptr).ok) {
-            SFX_LOG_WARN("[config] %s not loaded — applying schema defaults",
-                         TSchema::defaultPath());
-            if (_applyFn) _applyFn(_store.data());
-        }
+        const auto r = _store.loadFromFile(nullptr);
+        if (r.ok) return;
+        SFX_LOG_WARN("[config] %s not loaded — applying schema defaults",
+                     TSchema::defaultPath());
+        // The store's absent/empty-file path (loadFromFile / loadFromString)
+        // now self-fires the loaded callback after resetToDefaults, so skip a
+        // redundant second apply for `notFound`.  A parse / validate failure
+        // does NOT self-fire — fall back to defaults explicitly there.
+        if (!r.notFound && _applyFn) _applyFn(_store.data());
     }
 
 private:
