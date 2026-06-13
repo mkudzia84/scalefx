@@ -2560,6 +2560,18 @@ different visual grammar, different meaning).
 
 Reference: [LightingTab.svelte](../app/go/studio/frontend/src/lib/tabs/LightingTab.svelte).
 
+### 62. Studio Tabs Use a Standard 12 px Content Margin (approved 2026-06-13)
+
+Every top-level Studio tab's scrollable content area pads **12 px on all sides**
+— one consistent margin so tabs read as a set, not a patchwork.  Holds whether
+the tab uses the global `.tab-content` wrapper (Engine / Gun / Input / PortRole)
+or a self-managed scroll (`.lighting-scroll`, `.gl-scroll`, `.io-telemetry`, a
+panel root).  Don't introduce a different outer padding (the old 20 px 24 px /
+24 px one-offs are retired), and don't double-pad — a component wrapped in
+`.tab-content` must NOT also pad its own root (GearDiagnostics: outer padding
+comes from `.tab-content`, the root sets only `max-width`).  `max-width` content
+caps are fine and separate from the margin.
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host
