@@ -323,6 +323,18 @@ public:
     uint8_t  deviceCount() const { return JetiTelemetryHub::instance().deviceCount(); }
     uint8_t  sensorCount() const { return JetiTelemetryHub::instance().activeSensorCount(); }
 
+    /// Current publish interval (ms) — scaled so each of the N active metric
+    /// types refreshes at ~kPerValueHz: interval = 1000 / (N·perValueHz), clamped
+    /// to [kMinReplyIntervalMs, kMaxReplyIntervalMs].  Recomputed per poll so it
+    /// tracks the collection growing/shrinking (ESC hot-plug, local metrics).
+    uint32_t replyIntervalMs() const {
+        const uint32_t n = sensorCount() ? sensorCount() : 1u;
+        uint32_t iv = 1000u / (n * kPerValueHz);
+        if (iv < kMinReplyIntervalMs) iv = kMinReplyIntervalMs;
+        if (iv > kMaxReplyIntervalMs) iv = kMaxReplyIntervalMs;
+        return iv;
+    }
+
     /// True while a link is active (bytes flowing) but NOT decoding valid
     /// frames — surfaced in diag so the operator sees WHY channels are dead
     /// (noisy line / wrong baud / unhandled frame types).  The drain keeps
@@ -433,7 +445,7 @@ private:
         // signal gaps).  The radio tolerates skipped polls (it just asks again);
         // telemetry still updates smoothly.
         const uint32_t now = SFX_MILLIS();
-        if (now - _lastRespMs < kRespIntervalMs) return;
+        if (now - _lastRespMs < replyIntervalMs()) return;
 
         // TIMELINESS GATE (the real fix for the gun-trigger RX drop).  The Jeti
         // master reserves a ~4 ms window after a poll-with-break and tolerates a
@@ -576,7 +588,17 @@ private:
     // Two-way telemetry reply is RUNTIME-gated via `_respond` (set from the
     // attach config — see begin()'s respondTelemetry param), not a compile flag.
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
-    static constexpr uint32_t kRespIntervalMs    = 50;   // Rx reply rate cap (~20 Hz)
+    // Publish rate limiter.  Each reply carries ONE value (round-robin over the
+    // collection), so to refresh every metric TYPE at ~kPerValueHz the emit rate
+    // must scale with the active-sensor count N: interval = 1000 / (N·perValueHz),
+    // clamped.  The radio consumes ~10 Hz/value (faster is invisible), so 10 Hz is
+    // the per-value target.  The MIN interval is the channel-decode guard (don't
+    // answer faster than ~40 Hz or the half-duplex reply eats RC headroom); past
+    // ~4 metrics each value degrades gracefully below 10 Hz.  The MAX keeps the
+    // link warm (≥5 Hz emit) so the Rx never flags "sensor absent" when N is tiny.
+    static constexpr uint32_t kPerValueHz        = 10;   // per-metric-type refresh target
+    static constexpr uint32_t kMinReplyIntervalMs = 25;  // ≤40 Hz emit (channel-decode guard)
+    static constexpr uint32_t kMaxReplyIntervalMs = 200; // ≥5 Hz emit (keep the link warm)
     // Downstream ESC (IN_2) active master poll + autodetect (Phase 2).  The poll
     // TX is crosstalk-windowed into IN_1's quiet slot (maybePollEsc), so the rate
     // is bounded by the IN_1 reply cadence too.  PROBE while no ESC answers (slow,
