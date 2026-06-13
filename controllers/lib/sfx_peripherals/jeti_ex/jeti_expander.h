@@ -516,14 +516,15 @@ private:
         _escPort->txDisable();
     }
 
-    // UART reset/reconnect on prolonged IN_1 loss — the "try to reset/reconnect"
-    // half of the connection-loss policy.  The InputDispatcher does the generic
-    // detection + DOWN signal off the broadcast; THIS recovers a wedged half-
-    // duplex UART driver that the host can't reach (e.g. the matrix OE stuck
-    // after a brownout) by re-initialising the port.  Fires once per
-    // kRxResetSecs while the link stays dead (no valid frames); a healthy window
-    // clears deadSecs and re-arms.  No-op on a healthy link (deadSecs == 0), so
-    // it never disturbs a working bus.  Records a brownout for diag.
+    // Prolonged IN_1 loss — count the brownout for diag.  ⚠ The actual UART
+    // reset/reconnect is DISABLED: re-initialising the port (`configureJetiEx`)
+    // from inside the Core-0 IN_1 task that's actively draining that same UART
+    // crashed the board (DoubleException, no coredump) the moment IN_1 went dead
+    // (Jeti unplugged) — 2026-06-13.  The generic InputDispatcher detection +
+    // DOWN signal already cover "the link is gone"; a SAFE re-init must happen
+    // OFF this task (queue the request to a worker, or re-begin only when the
+    // task is parked) — TODO before re-enabling.  Detection-only for now: a
+    // plain unplug recovers on replug regardless.
     void maybeResetRx(uint32_t /*now*/) {
         if (!_rxPort || !_running) return;
         const uint32_t dead = _rxWatch.deadSecs;
@@ -531,9 +532,9 @@ private:
         if (dead == _lastRxResetAtDead) return;          // once per second-crossing
         _lastRxResetAtDead = dead;
         ++_rxBrownouts;
-        SFX_LOG_WARN("[jexp] IN_1 dead %lus → UART reset/reconnect (brownout #%u)",
+        SFX_LOG_WARN("[jexp] IN_1 dead %lus (brownout #%u) — holding outputs",
                      (unsigned long)dead, (unsigned)_rxBrownouts);
-        _rxPort->configureJetiEx(_baud);                 // re-init the half-duplex UART
+        // _rxPort->configureJetiEx(_baud);  // DISABLED — see note above (crashes from this task)
     }
 
     // ESC presence autodetect — called each task pass from update().  PRESENT
