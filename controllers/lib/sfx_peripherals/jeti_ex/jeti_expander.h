@@ -474,8 +474,11 @@ private:
         {
             JetiTelemetryHub::ScopedLock lk(hub);
             _seq++;
-            if ((_seq % 5) == 0) len = buildText(hub, buf);     // names + labels
-            else                 len = buildData(hub, buf);     // values
+            // Text (device names + sensor labels) every 8th reply — labels
+            // rarely change, so spend the rest on packed value frames (max
+            // throughput; the radio caches labels once seen).
+            if ((_seq % 8) == 0) len = buildText(hub, buf);     // names + labels
+            else                 len = buildData(hub, buf);     // packed values
             if (!len)            len = buildText(hub, buf);      // fallback
         }
         if (len) _rxBus.sendTelemetry(pktId, buf, len);
@@ -564,25 +567,48 @@ private:
     }
 
     // ── Multi-device rotation (cursors advanced under the hub lock) ───
+    // Pack SEVERAL active sensor values from ONE device into a single EX data
+    // frame (the radio groups by USN/LSN, so a frame stays single-device — the
+    // ESC sends its own sensors this same way).  Multiplies telemetry
+    // throughput per answered slot WITHOUT raising the emit rate (keeps the
+    // ~40 Hz channel-decode guard), so each metric refreshes ~kMaxValuesPerFrame×
+    // faster and the radio stops browning out.  Round-robin: pack from _dataSen
+    // forward within the current device; when its sensors are exhausted, advance
+    // to the next device so no device is starved.
     uint8_t buildData(JetiTelemetryHub& hub, uint8_t* buf) {
-        uint8_t devN = hub.deviceCount();
+        const uint8_t devN = hub.deviceCount();
         if (!devN) return 0;
-        const uint16_t maxSlots = (uint16_t)devN * JetiTelemetryHub::kMaxSensorsPerDevice;
-        for (uint16_t i = 0; i < maxSlots; ++i) {
-            const auto* d = hub.device(_dataDev);
-            bool hit = (d && d->active && _dataSen < d->sensorCount &&
-                        d->sensors[_dataSen].active);
-            uint8_t dev = _dataDev, sen = _dataSen;
-            // advance
-            const uint8_t cnt = d ? d->sensorCount : 0;
-            if (++_dataSen >= cnt) { _dataSen = 0; _dataDev = (uint8_t)((_dataDev + 1) % devN); }
-            if (hit) {
-                const auto& s = d->sensors[sen];
-                return buildExDataBlock(buf, d->usn, d->lsn, s.id, s.type, s.decimals, s.value);
-            }
-            (void)dev;
+        // Find a device with ≥1 active sensor (bounded scan; skip empty/inactive).
+        const JetiTelemetryHub::Device* d = nullptr;
+        for (uint8_t t = 0; t < devN; ++t) {
+            const auto* cand = hub.device(_dataDev);
+            bool any = false;
+            if (cand && cand->active)
+                for (uint8_t j = 0; j < cand->sensorCount; ++j)
+                    if (cand->sensors[j].active) { any = true; break; }
+            if (any) { d = cand; break; }
+            _dataDev = (uint8_t)((_dataDev + 1) % devN);
+            _dataSen = 0;
         }
-        return 0;
+        if (!d) return 0;
+        if (_dataSen >= d->sensorCount) _dataSen = 0;
+
+        // Head, then pack up to kMaxValuesPerFrame active sensors (buffer-guarded
+        // — buf is 40 B; each value ≤5 B + 1 B crc).
+        uint8_t pos = exBlockHead(buf, d->usn, d->lsn);
+        uint8_t packed = 0;
+        while (packed < kMaxValuesPerFrame && _dataSen < d->sensorCount && pos + 5 <= 38) {
+            const auto& s = d->sensors[_dataSen++];
+            if (!s.active) continue;
+            pos += encodeSensorValue(&buf[pos], s.id, s.type, s.value, s.decimals);
+            ++packed;
+        }
+        // Exhausted this device's list → next device next time (fair rotation).
+        if (_dataSen >= d->sensorCount) { _dataSen = 0; _dataDev = (uint8_t)((_dataDev + 1) % devN); }
+        if (packed == 0) return 0;
+        buf[1] = 0x40 | (uint8_t)(pos - 1);          // data (0b01) | len
+        buf[pos] = crc8_ex(&buf[1], (uint8_t)(pos - 1));
+        return (uint8_t)(pos + 1);
     }
 
     uint8_t buildText(JetiTelemetryHub& hub, uint8_t* buf) {
@@ -630,6 +656,12 @@ private:
     static constexpr uint32_t kPerValueHz        = 10;   // per-metric-type refresh target
     static constexpr uint32_t kMinReplyIntervalMs = 25;  // ≤40 Hz emit (channel-decode guard)
     static constexpr uint32_t kMaxReplyIntervalMs = 200; // ≥5 Hz emit (keep the link warm)
+    // Values PACKED per EX data frame (same device).  Each answered slot then
+    // carries several metrics instead of one, so per-value refresh scales ~Nx
+    // without raising the emit rate (no channel-decode risk).  4 → a ≤28-byte
+    // frame (~2.5–3 ms reply, fits the master's ~4 ms slot); raise only if
+    // `slotOver` stays 0 and `maxUs` has headroom.
+    static constexpr uint8_t  kMaxValuesPerFrame = 4;
     // Downstream ESC (IN_2) active master poll + autodetect (Phase 2).  The poll
     // TX is crosstalk-windowed into IN_1's quiet slot (maybePollEsc), so the rate
     // is bounded by the IN_1 reply cadence too.  PROBE while no ESC answers (slow,
