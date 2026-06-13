@@ -1030,8 +1030,9 @@
                         {#if gun.smoke.heater.activation.input}
                             {@const us = actLive?.us ?? null}
                             {@const ok = actLive?.valid && us !== null && us >= gun.smoke.heater.activation.thresholdUs}
+                            {@const actTitle = `Activation channel '${gun.smoke.heater.activation.input}' live µs vs threshold ${gun.smoke.heater.activation.thresholdUs}µs`}
                             <span class="act-readout" class:above={ok} class:below={!ok}
-                                  title="Activation channel `{gun.smoke.heater.activation.input}` live µs vs threshold {gun.smoke.heater.activation.thresholdUs}µs">
+                                  title={actTitle}>
                                 ACT: {us === null ? '—' : `${us}µs`} {ok ? '✓' : '✗'}
                             </span>
                         {/if}

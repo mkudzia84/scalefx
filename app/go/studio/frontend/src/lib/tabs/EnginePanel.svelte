@@ -92,14 +92,20 @@
     $: chosenChan = chanOpts.find(o => o.fnId === cfg?.toggle.input)
     $: liveUs = chosenChan ? $liveChannels[liveChannelKey({guid: chosenChan.portGuid, kind: 4, index: chosenChan.portIdx}, chosenChan.channel)] : null
 
-    async function browsePath(field: 'starting' | 'running' | 'stopping') {
+    // The three sound slots — a typed tuple so the {#each} alias narrows to
+    // the union (a bare array literal yields `string`, which then can't index
+    // cfg.sounds / call the typed handlers — the 2 baseline type errors).
+    const SOUND_FIELDS = ['starting', 'running', 'stopping'] as const
+    type SoundField = typeof SOUND_FIELDS[number]
+
+    async function browsePath(field: SoundField) {
         // Sounds always live on SD — open the picker constrained to that
         // backend so the Flash tab is hidden and the dialog opens at /sd:/.
         const p = await pickFile({ targets: 'sd' })
         if (p != null) { cfg.sounds[field] = p; mark(); scheduleValidate() }
     }
 
-    function clearSound(field: 'starting' | 'stopping') {
+    function clearSound(field: SoundField) {
         cfg.sounds[field] = ''
         mark()
         // Clearing always validates immediately — no path = valid for optional fields.
@@ -243,7 +249,7 @@
         <div class="section-head" class:section-error={soundsHaveErrors}>
             Sounds {#if soundsHaveErrors}<span class="section-err-tag">missing files</span>{/if}
         </div>
-        {#each ['starting', 'running', 'stopping'] as f}
+        {#each SOUND_FIELDS as f}
             {@const err = soundErrors[f]}
             {@const optional = f !== 'running'}
             <SoundRow
