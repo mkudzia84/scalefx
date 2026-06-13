@@ -194,7 +194,7 @@ private:
     static uint16_t targetPubIntervalMs(uint8_t activeSensors) {
         const uint32_t n  = activeSensors ? activeSensors : 1u;
         uint32_t iv = 1000u / (n * 10u);           // kPerValueHz = 10
-        if (iv < 25u)  iv = 25u;                    // kMinReplyIntervalMs
+        if (iv < 12u)  iv = 12u;                    // kMinReplyIntervalMs (mirror)
         if (iv > 200u) iv = 200u;                   // kMaxReplyIntervalMs
         return (uint16_t)iv;
     }

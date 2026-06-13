@@ -57,7 +57,7 @@ public:
     bool begin(sfx_peripherals::InputPort* rxPort,
                sfx_peripherals::InputPort* escPort,
                uint16_t hubUsn, uint16_t hubLsn, const char* hubName,
-               uint32_t baud = 125000, bool useDownstream = false,
+               uint32_t baud = 125000,
                bool respondTelemetry = false) {
         if (_running) return true;                    // already running
         if (!rxPort) return false;
@@ -67,17 +67,18 @@ public:
         sfx::Stream* rxStream = rxPort->uartStream();
         if (!rxStream) return false;
 
-        // Downstream (ESC) link on IN_2.  Brought up ONLY when the operator
-        // opts in (`useDownstream`, from /hubfx.yaml's `downstream: true` on the
-        // JetiEX input port — default false, exposed in Studio).  When off,
-        // draining IN_2 would feed a JetiTelemetryHub that NOTHING reads (with
-        // forwarding/reply disabled), and on a floating / noisy IN_2 it is a
-        // main-loop STALL source (the unbounded-drain class of bug) — so we
-        // leave the port unconfigured + passive.  Channel RX on IN_1 is
-        // unaffected either way.
+        // Downstream (ESC) link on IN_2 — AUTODETECT, no config flag (was the
+        // opt-in `downstream:`).  We always configure IN_2 and let the presence
+        // machine decide if a device is there: it SLOW-probes (200 ms) only by
+        // replaying a captured REAL Rx poll (maybePollEsc fires nothing until
+        // IN_1 has captured one — i.e. only while the radio is actually driving
+        // IN_1), and the monitor drain is BOUNDED, so a disconnected/floating
+        // IN_2 (held idle by its pull-up) just reads "absent" — no stall, no
+        // crosstalk floods.  A device that replies is promoted to ACTIVE and
+        // shows on the radio automatically.  Channel RX on IN_1 is unaffected.
         _escPort   = nullptr;
         _escStream = nullptr;
-        if (useDownstream && escPort && escPort->configureJetiEx(baud)) {
+        if (escPort && escPort->configureJetiEx(baud)) {
             _escStream = escPort->uartStream();
             if (_escStream) { _escPort = escPort; _escMon.begin(_escStream); }
         }

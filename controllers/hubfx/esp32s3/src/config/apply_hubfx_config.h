@@ -147,9 +147,10 @@ inline uint8_t packRoleCfg(const PortMapping& m, uint8_t* cfgBuf) {
     }
     if (m.role == RoleKind::JetiExInput) {
         // [broadcastHz][baudHi][baudLo][downstream] — 0,0,0 = no auto-broadcast
-        // + default 125000 baud; byte 3 = IN_2 telemetry-monitor enable.
+        // + default 125000 baud; byte 3 is RESERVED (the IN_2 telemetry monitor
+        // is autodetect now — the attach handler ignores this byte).
         cfgBuf[0] = 0; cfgBuf[1] = 0; cfgBuf[2] = 0;
-        cfgBuf[3] = m.jetiDownstream ? 1 : 0;
+        cfgBuf[3] = 0;
         return 4;
     }
     return 0;
