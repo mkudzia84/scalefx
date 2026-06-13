@@ -8,6 +8,7 @@
 #include <platform/sfx_platform.h>   // SFX_MILLIS()
 #include <serial/wire.h>
 #include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw SFX_MILLIS()
+#include "../input/input_dispatcher.h"   // item 6 — connection-loss subscription
 
 namespace hubfx::effects::gearctrl {
 
@@ -35,8 +36,45 @@ bool GearControlServicePolicyT<TTopology, TLandingService>::begin(
     applyDefs();
     _topo->onRoleEvent(&GearControlServicePolicyT::roleEventTrampoline,
                        static_cast<void*>(this));
+
+    // Item 6: subscribe to the InputDispatcher's connection-loss signal so an
+    // input link dropping can emergency-deploy the gear.  The dispatcher is
+    // templated on the SAME TTopology, so we can resolve it from the pack with
+    // no extra template param.  Optional — if it isn't in the pack, the opt-in
+    // is simply inert.
+    auto* disp = ctx->template findPolicy<
+        hubfx::effects::input::InputDispatcherServicePolicyT<TTopology>>();
+    if (disp) {
+        disp->onConnectionLoss(&GearControlServicePolicyT::connLossTrampoline,
+                               static_cast<void*>(this));
+    } else {
+        SFX_LOG_WARN("[gear-svc] InputDispatcher not found — connection-loss deploy unavailable");
+    }
+
     SFX_LOG_INFO("[gear-svc] ready (%u gears)", (unsigned)_numDefs);
     return true;
+}
+
+// ─── Connection-loss → emergency deploy (item 6) ────────────────────
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::connLossTrampoline(
+        void* ctx, const char* guid, uint8_t pk, uint8_t pi, uint8_t state) {
+    auto* self = static_cast<GearControlServicePolicyT*>(ctx);
+    if (self) self->onConnectionLoss(guid, pk, pi, state);
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::onConnectionLoss(
+        const char* guid, uint8_t /*portKind*/, uint8_t portIdx, uint8_t state) {
+    if (state == 0) { _connLossLatched = false; return; }   // recovered — re-arm
+    if (!_enabled || !_deployOnConnLoss) return;
+    if (state != 2) return;                                  // act only on confirmed DOWN
+    if (_connLossLatched) return;                            // one deploy per loss
+    _connLossLatched = true;
+    SFX_LOG_ERROR("[gear-svc] input link %s port=%u DOWN → EMERGENCY DEPLOY",
+                  (guid && guid[0]) ? guid : "hub", portIdx);
+    commandAll(/*deploy=*/1);
 }
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>

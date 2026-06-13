@@ -24,12 +24,11 @@ bool JetiInputHandler::attachInput(InputBinding& b, uint8_t portIdx,
     auto& role = b.role.emplace<JetiExInputRole>();
     // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8][downstream:u8][respond:u8]
     //   baud encoded as kbaud (125 / 250); 0 = use default 125 000.
-    //   downstream (Rule 11, byte 3): bring up the IN_2 / ESC telemetry monitor.
+    //   downstream (byte 3): RESERVED / ignored — the IN_2 ESC monitor is now
+    //     AUTODETECT (always on; the presence machine handles whether a device
+    //     is there).  Kept in the layout for wire compat so byte 4 stays put.
     //   respond  (Rule 11, byte 4): enable TWO-WAY telemetry (half-duplex reply).
-    //     On THIS tx/rx-switching test branch it DEFAULTS ON when the byte is
-    //     absent, so the stock /hubfx.yaml config exercises the reply; set byte
-    //     4 = 0 to force listen-only.  (The single-wire line now carries the
-    //     10 kΩ pull-up; the [jexp] TX instrumentation watches for drops.)
+    //     DEFAULTS ON when the byte is absent; set byte 4 = 0 to force listen-only.
     uint32_t baud = 125000;
     if (cfgLen >= 3) {
         const uint16_t kbaud = ((uint16_t)cfg[1] << 8) | cfg[2];
@@ -37,8 +36,7 @@ bool JetiInputHandler::attachInput(InputBinding& b, uint8_t portIdx,
         else if (kbaud == 125 || kbaud == 0) baud = 125000;
         else baud = (uint32_t)kbaud * 1000;
     }
-    const bool useDownstream = (cfgLen >= 4) && (cfg[3] != 0);
-    const bool respond       = (cfgLen >= 5) ? (cfg[4] != 0) : true;   // test branch: default ON
+    const bool respond = (cfgLen >= 5) ? (cfg[4] != 0) : true;   // default ON
     if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
 
 #if SFX_PLATFORM_ESP32
@@ -57,7 +55,6 @@ bool JetiInputHandler::attachInput(InputBinding& b, uint8_t portIdx,
     }
     JetiEx::JetiExpander::instance().begin(b.port, escPort,
                                            /*usn=*/0xA400, /*lsn=*/0x0100, "HubFx", baud,
-                                           /*useDownstream=*/useDownstream,
                                            /*respondTelemetry=*/respond);
 
     // Reflect the IN_1→IN_2 pairing in the registry: stamp the downstream port

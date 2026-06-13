@@ -31,7 +31,7 @@
     import {
         gearDraft, gearDirty, gearHasErrors, gearPhases,
         loadGearConfig, refreshGearStatus,
-        addGearChannel, seedDefaultGearStruts, removeGearChannel, moveGearChannel, setGearEnabled, setGearCoord,
+        addGearChannel, seedDefaultGearStruts, removeGearChannel, moveGearChannel, setGearEnabled, setGearCoord, setGearDeployOnConnLoss,
         updateGearChannel, removeGearDoor,
         updateGearInput, updateGearSounds,
         gearItemErrors, installGearPhaseListener,
@@ -373,6 +373,19 @@
         </div>
     </div>
     <div class="form-row"><span class="field-label"></span><span class="hint">{coordHint}</span></div>
+
+    <!-- item 6: emergency deploy on input connection loss -->
+    <div class="form-row">
+        <span class="field-label">On signal loss</span>
+        <button class="small state-toggle" class:state-on={cfg?.deployOnConnectionLoss}
+                on:click={() => setGearDeployOnConnLoss(!cfg?.deployOnConnectionLoss)} disabled={busy}
+                title={cfg?.deployOnConnectionLoss
+                    ? 'Enabled: if an input LINK drops (e.g. the Jeti UART dies, not just the gear channel), the gear emergency-deploys. Click to disable.'
+                    : 'Disabled: input link loss does not auto-deploy. Click to enable emergency deploy on connection loss.'}>
+            {cfg?.deployOnConnectionLoss ? '✓ Emergency deploy' : '○ Ignore link loss'}
+        </button>
+        <span class="hint">deploys the whole set if the input link (UART) drops — distinct from the per-channel RC-loss failsafe.</span>
+    </div>
 
     <!-- RC up/down channel (Rule 36 cluster + Rule 43 named inputs).  One
          switch drives the WHOLE undercarriage: above the threshold retracts

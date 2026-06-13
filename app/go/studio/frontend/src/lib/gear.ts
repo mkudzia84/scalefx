@@ -74,6 +74,8 @@ export interface GearConfigT {
     schemaVersion: number
     enabled: boolean
     coord: CoordMode
+    /** item 6: emergency-deploy the gear when an input link drops. */
+    deployOnConnectionLoss: boolean
     input: GearInputT
     sounds: GearSoundsT
     gears: GearChannelT[]
@@ -138,6 +140,7 @@ export const defaultGearSounds = (): GearSoundsT =>
 
 export const emptyGearConfig = (): GearConfigT => ({
     schemaVersion: 2, enabled: false, coord: 'independent',
+    deployOnConnectionLoss: false,
     input: defaultGearInput(), sounds: defaultGearSounds(), gears: [],
 })
 
@@ -283,6 +286,7 @@ function normaliseGearConfig(c: GearConfigT | null): GearConfigT {
     out.schemaVersion = out.schemaVersion ?? 2
     out.enabled       = !!out.enabled
     out.coord         = (out.coord ?? 'independent') as CoordMode
+    out.deployOnConnectionLoss = !!out.deployOnConnectionLoss
     out.input = {
         name:         out.input?.name ?? '',
         thresholdUs:  out.input?.thresholdUs || 1500,
@@ -420,6 +424,11 @@ export function setGearEnabled(on: boolean): void {
 
 export function setGearCoord(coord: CoordMode): void {
     gearDraft.update(c => ({ ...c, coord }))
+}
+
+/** item 6: toggle emergency-deploy-on-input-connection-loss. */
+export function setGearDeployOnConnLoss(on: boolean): void {
+    gearDraft.update(c => ({ ...c, deployOnConnectionLoss: on }))
 }
 
 export function updateGearInput(mutate: (i: GearInputT) => GearInputT): void {

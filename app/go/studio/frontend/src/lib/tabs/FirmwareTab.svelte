@@ -696,7 +696,7 @@
 
 <style>
     .firmware-tab {
-        padding: 24px;
+        padding: 12px;   /* Rule 62 — standard tab margin */
         max-width: 760px;
     }
 

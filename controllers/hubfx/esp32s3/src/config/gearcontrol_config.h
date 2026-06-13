@@ -100,6 +100,7 @@ struct GearControlConfig {
     bool enabled = true;
     uint8_t coordMode =
         hubfx::effects::gearctrl::CoordMode::Independent;  ///< cross-channel coordination
+    bool deployOnConnectionLoss = false;  ///< item 6: emergency-deploy on input link loss
     GearActivation activation = {};   ///< RC up/down channel (optional)
     GearSounds     sounds     = {};   ///< transit sounds (optional)
     hubfx::effects::gearctrl::GearDef
@@ -120,6 +121,8 @@ struct GearControlConfigSchema {
         d.numGears = 0;
         const auto* root = p.root();
         d.enabled = root ? root->template childAs<bool>("enabled", true) : true;
+        d.deployOnConnectionLoss = root
+            ? root->template childAs<bool>("deploy_on_connection_loss", false) : false;
 
         // Cross-channel coordination (v2): independent | door_sync | full_sync | sequenced.
         d.coordMode = CoordMode::Independent;

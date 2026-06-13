@@ -298,8 +298,12 @@ button.state-toggle.state-on:hover {
     height: 100%;
 }
 
+/* Standard tab content margin (Rule 62): every top-level tab's scrollable
+   content area pads 12px on all sides — keep tabs visually flush.  Whether the
+   tab uses .tab-content (Engine/Gun/Input/PortRole) or a self-managed scroll
+   (.lighting-scroll / .gl-scroll / .io-telemetry), the outer padding is 12px. */
 .tab-content {
-    padding: 20px 24px;
+    padding: 12px;
     overflow-y: auto;
     height: 100%;
 }
@@ -326,6 +330,35 @@ button.state-toggle.state-on:hover {
     padding: 14px 16px;
     min-height: 0;
 }
+
+/* ─── Sub-tab bar (Rule 61) ───
+   In-tab navigation between sibling surfaces of one top-level tab — the
+   underline-style bar, NOT a .seg-select pill (segmented toggles are for a
+   SETTING choice; sub-tabs SWITCH THE VIEW).  Each sub-item is an SVG icon +
+   label; the active one carries the accent bottom-border.  Mount only the
+   active surface (one live-view at a time).  Markup:
+     <div class="sub-bar">
+       <button class="sub-item" class:active={…}>
+         <span class="sub-icon">{@html svg(…)}</span><span>Label</span>
+       </button> …
+     </div>
+   Used by: LightingTab (Programs / Retractable), IoTab (Ports / Telemetry). */
+.sub-bar {
+    display: flex; align-items: stretch; gap: 2px;
+    background: var(--bg-surface); border-bottom: 1px solid var(--border);
+    flex-shrink: 0; padding: 0 8px;
+}
+.sub-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border: none; border-bottom: 2px solid transparent;
+    background: transparent; color: var(--text-dim); cursor: pointer;
+    font-family: var(--font-ui); font-size: 12px; white-space: nowrap;
+    transition: color 0.15s, border-color 0.15s;
+}
+.sub-item:hover { color: var(--text); }
+.sub-item.active { color: var(--text-bright); border-bottom-color: var(--accent); }
+.sub-icon { display: flex; align-items: center; opacity: 0.7; }
+.sub-item.active .sub-icon { opacity: 1; }
 
 /* ─── Mode Toggle ─── */
 

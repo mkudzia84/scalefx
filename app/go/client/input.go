@@ -90,6 +90,42 @@ func (in *Input) GetRouting() (bool, error) {
 	return en, nil
 }
 
+// GetTelemetry snapshots the master's live telemetry collection (item 4) —
+// the hub-local sensors + every actively-polled input device (e.g. an ESC on
+// IN_2), plus the current publish-rate stats.
+func (in *Input) GetTelemetry() (input.TelemetrySnapshot, error) {
+	resp, err := in.c.sendForResp(input.CmdGetTelemetry(), input.TelemetryResp)
+	if err != nil {
+		return input.TelemetrySnapshot{}, err
+	}
+	snap, ok := input.DecodeTelemetry(resp.Payload)
+	if !ok {
+		return input.TelemetrySnapshot{}, fmt.Errorf("telemetry resp: malformed payload (%d bytes)", len(resp.Payload))
+	}
+	return snap, nil
+}
+
+// GetConnection reads the generic input connection-loss status (item 5) —
+// every tracked input source's link state, brownout count and current silence.
+func (in *Input) GetConnection() (input.ConnectionStatus, error) {
+	resp, err := in.c.sendForResp(input.CmdGetConnection(), input.ConnectionResp)
+	if err != nil {
+		return input.ConnectionStatus{}, err
+	}
+	st, ok := input.DecodeConnectionResp(resp.Payload)
+	if !ok {
+		return input.ConnectionStatus{}, fmt.Errorf("connection resp: malformed payload (%d bytes)", len(resp.Payload))
+	}
+	return st, nil
+}
+
+// SetLinkLossMs sets the global link-loss interval (item 5): an input source
+// silent longer than this is signalled DOWN (effects holding meanwhile).
+// 0 disables loss signalling.
+func (in *Input) SetLinkLossMs(ms uint16) error {
+	return in.c.sendExpectACK(input.CmdSetLinkLoss(ms))
+}
+
 // decodeInputValue turns an input broadcast (direct or unwrapped from a
 // topology role event) into an InputValue.  `innerType` is the role
 // packet type; `p` its payload.  Returns false for non-input packets.

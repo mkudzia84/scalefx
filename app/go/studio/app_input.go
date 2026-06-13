@@ -15,6 +15,7 @@ import (
 
 	"scalefx/client"
 	"scalefx/devicemodel"
+	"scalefx/protocol/input"
 	"scalefx/protocol/ports"
 	"scalefx/protocol/roles"
 
@@ -86,6 +87,13 @@ func (a *App) installInputStream() {
 		// detectedCount) key by (instructions/31), so no remap is needed: ""
 		// already matches the port refs everywhere.
 		wailsRT.EventsEmit(a.ctx, "input:values", v)
+	})
+	// Generic connection-loss state changes (item 5) → the IO-tab link indicator.
+	a.c.Events.OnConnectionEvent(func(ev input.ConnectionEventT) {
+		if a.ctx == nil {
+			return
+		}
+		wailsRT.EventsEmit(a.ctx, "input:connection", ev)
 	})
 }
 
@@ -185,6 +193,17 @@ func (a *App) GetInputRouting() (bool, error) {
 		return false, fmt.Errorf("not connected")
 	}
 	return c.Input.GetRouting()
+}
+
+// GetTelemetry snapshots the master's live telemetry collection (item 4) —
+// hub-local sensors + actively-polled input devices (e.g. an ESC on IN_2) +
+// the publish-rate stats.  Polled by the IO tab's telemetry panel.
+func (a *App) GetTelemetry() (input.TelemetrySnapshot, error) {
+	c := a.snapshotClient()
+	if c == nil {
+		return input.TelemetrySnapshot{}, fmt.Errorf("not connected")
+	}
+	return c.Input.GetTelemetry()
 }
 
 // ─── Config mutations ─────────────────────────────────────────────────

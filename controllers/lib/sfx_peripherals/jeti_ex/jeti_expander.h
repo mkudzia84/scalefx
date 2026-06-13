@@ -57,26 +57,28 @@ public:
     bool begin(sfx_peripherals::InputPort* rxPort,
                sfx_peripherals::InputPort* escPort,
                uint16_t hubUsn, uint16_t hubLsn, const char* hubName,
-               uint32_t baud = 125000, bool useDownstream = false,
+               uint32_t baud = 125000,
                bool respondTelemetry = false) {
         if (_running) return true;                    // already running
         if (!rxPort) return false;
         _rxPort  = rxPort;
+        _baud    = baud;                              // kept for UART re-init on loss
         if (!rxPort->configureJetiEx(baud)) return false;
         sfx::Stream* rxStream = rxPort->uartStream();
         if (!rxStream) return false;
 
-        // Downstream (ESC) link on IN_2.  Brought up ONLY when the operator
-        // opts in (`useDownstream`, from /hubfx.yaml's `downstream: true` on the
-        // JetiEX input port — default false, exposed in Studio).  When off,
-        // draining IN_2 would feed a JetiTelemetryHub that NOTHING reads (with
-        // forwarding/reply disabled), and on a floating / noisy IN_2 it is a
-        // main-loop STALL source (the unbounded-drain class of bug) — so we
-        // leave the port unconfigured + passive.  Channel RX on IN_1 is
-        // unaffected either way.
+        // Downstream (ESC) link on IN_2 — AUTODETECT, no config flag (was the
+        // opt-in `downstream:`).  We always configure IN_2 and let the presence
+        // machine decide if a device is there: it SLOW-probes (200 ms) only by
+        // replaying a captured REAL Rx poll (maybePollEsc fires nothing until
+        // IN_1 has captured one — i.e. only while the radio is actually driving
+        // IN_1), and the monitor drain is BOUNDED, so a disconnected/floating
+        // IN_2 (held idle by its pull-up) just reads "absent" — no stall, no
+        // crosstalk floods.  A device that replies is promoted to ACTIVE and
+        // shows on the radio automatically.  Channel RX on IN_1 is unaffected.
         _escPort   = nullptr;
         _escStream = nullptr;
-        if (useDownstream && escPort && escPort->configureJetiEx(baud)) {
+        if (escPort && escPort->configureJetiEx(baud)) {
             _escStream = escPort->uartStream();
             if (_escStream) { _escPort = escPort; _escMon.begin(_escStream); }
         }
@@ -194,6 +196,7 @@ public:
         }
         _rxBus.update();            // IN_1: master frames → channels (+ reply hook)
         _rxWatch.observe(now, _rxBus.rxByteCount(), _rxBus.rxFrameCount(), "IN_1");
+        maybeResetRx(now);          // UART reset/reconnect on prolonged IN_1 loss
 
 #if SFX_INSTRUMENTATION
         // Concise rx health (every 2 s): bytes = line active? frames = decoding?
@@ -323,12 +326,25 @@ public:
     uint8_t  deviceCount() const { return JetiTelemetryHub::instance().deviceCount(); }
     uint8_t  sensorCount() const { return JetiTelemetryHub::instance().activeSensorCount(); }
 
+    /// Current publish interval (ms) — scaled so each of the N active metric
+    /// types refreshes at ~kPerValueHz: interval = 1000 / (N·perValueHz), clamped
+    /// to [kMinReplyIntervalMs, kMaxReplyIntervalMs].  Recomputed per poll so it
+    /// tracks the collection growing/shrinking (ESC hot-plug, local metrics).
+    uint32_t replyIntervalMs() const {
+        const uint32_t n = sensorCount() ? sensorCount() : 1u;
+        uint32_t iv = 1000u / (n * kPerValueHz);
+        if (iv < kMinReplyIntervalMs) iv = kMinReplyIntervalMs;
+        if (iv > kMaxReplyIntervalMs) iv = kMaxReplyIntervalMs;
+        return iv;
+    }
+
     /// True while a link is active (bytes flowing) but NOT decoding valid
     /// frames — surfaced in diag so the operator sees WHY channels are dead
     /// (noisy line / wrong baud / unhandled frame types).  The drain keeps
     /// running regardless (we never give up on catching a real frame).
     bool rxLinkNoisy()  const { return _rxWatch.noisy(); }
     bool escLinkNoisy() const { return _escWatch.noisy(); }
+    uint32_t rxBrownouts() const { return _rxBrownouts; }   // IN_1 UART resets (diag)
     uint32_t rxNoiseSecs() const { return _rxWatch.totalNoiseSecs; }
 
 private:
@@ -388,12 +404,13 @@ private:
         uint32_t lastMs = 0, baseBytes = 0, baseFrames = 0;
         uint32_t noiseSecs = 0;       // consecutive sec: bytes flowing, 0 frames
         uint32_t totalNoiseSecs = 0;  // cumulative (diag)
+        uint32_t deadSecs = 0;        // consecutive sec with NO valid frames (quiet OR noisy)
         bool     healthy = false;     // valid frames decoded in the last window
         bool     primed  = false;     // seen at least one window
 
         void reset(uint32_t now) {
             lastMs = now; baseBytes = baseFrames = 0;
-            noiseSecs = totalNoiseSecs = 0; healthy = false; primed = false;
+            noiseSecs = totalNoiseSecs = deadSecs = 0; healthy = false; primed = false;
         }
         bool noisy() const { return primed && !healthy && noiseSecs > 0; }
 
@@ -411,6 +428,9 @@ private:
             } else if (db >= kNoiseBytesPerSec) {
                 healthy = false; noiseSecs++; totalNoiseSecs++;
             } // else: line quiet (no bytes) — leave healthy as-is, no spam
+            // Time since last VALID frame (quiet OR noisy) — drives the UART
+            // reset/reconnect recovery in the expander (maybeResetRx).
+            deadSecs = (df > 0) ? 0 : (deadSecs + 1);
             if (primed && was && !healthy)
                 SFX_LOG_WARN("[jexp] %s: %lu B/s but 0 valid frames — line NOISY "
                              "(still draining to catch real frames)",
@@ -433,7 +453,7 @@ private:
         // signal gaps).  The radio tolerates skipped polls (it just asks again);
         // telemetry still updates smoothly.
         const uint32_t now = SFX_MILLIS();
-        if (now - _lastRespMs < kRespIntervalMs) return;
+        if (now - _lastRespMs < replyIntervalMs()) return;
 
         // TIMELINESS GATE (the real fix for the gun-trigger RX drop).  The Jeti
         // master reserves a ~4 ms window after a poll-with-break and tolerates a
@@ -455,8 +475,11 @@ private:
         {
             JetiTelemetryHub::ScopedLock lk(hub);
             _seq++;
-            if ((_seq % 5) == 0) len = buildText(hub, buf);     // names + labels
-            else                 len = buildData(hub, buf);     // values
+            // Text (device names + sensor labels) every 8th reply — labels
+            // rarely change, so spend the rest on packed value frames (max
+            // throughput; the radio caches labels once seen).
+            if ((_seq % 8) == 0) len = buildText(hub, buf);     // names + labels
+            else                 len = buildData(hub, buf);     // packed values
             if (!len)            len = buildText(hub, buf);      // fallback
         }
         if (len) _rxBus.sendTelemetry(pktId, buf, len);
@@ -497,6 +520,27 @@ private:
         _escPort->txDisable();
     }
 
+    // Prolonged IN_1 loss — count the brownout for diag.  ⚠ The actual UART
+    // reset/reconnect is DISABLED: re-initialising the port (`configureJetiEx`)
+    // from inside the Core-0 IN_1 task that's actively draining that same UART
+    // crashed the board (DoubleException, no coredump) the moment IN_1 went dead
+    // (Jeti unplugged) — 2026-06-13.  The generic InputDispatcher detection +
+    // DOWN signal already cover "the link is gone"; a SAFE re-init must happen
+    // OFF this task (queue the request to a worker, or re-begin only when the
+    // task is parked) — TODO before re-enabling.  Detection-only for now: a
+    // plain unplug recovers on replug regardless.
+    void maybeResetRx(uint32_t /*now*/) {
+        if (!_rxPort || !_running) return;
+        const uint32_t dead = _rxWatch.deadSecs;
+        if (dead == 0 || (dead % kRxResetSecs) != 0) return;
+        if (dead == _lastRxResetAtDead) return;          // once per second-crossing
+        _lastRxResetAtDead = dead;
+        ++_rxBrownouts;
+        SFX_LOG_WARN("[jexp] IN_1 dead %lus (brownout #%u) — holding outputs",
+                     (unsigned long)dead, (unsigned)_rxBrownouts);
+        // _rxPort->configureJetiEx(_baud);  // DISABLED — see note above (crashes from this task)
+    }
+
     // ESC presence autodetect — called each task pass from update().  PRESENT
     // (fast poll) the moment _escMon decodes a fresh telemetry reply; ABSENT
     // (slow probe) after kEscAbsentMs of silence.  The hub's expireStale drops
@@ -524,25 +568,48 @@ private:
     }
 
     // ── Multi-device rotation (cursors advanced under the hub lock) ───
+    // Pack SEVERAL active sensor values from ONE device into a single EX data
+    // frame (the radio groups by USN/LSN, so a frame stays single-device — the
+    // ESC sends its own sensors this same way).  Multiplies telemetry
+    // throughput per answered slot WITHOUT raising the emit rate (keeps the
+    // ~40 Hz channel-decode guard), so each metric refreshes ~kMaxValuesPerFrame×
+    // faster and the radio stops browning out.  Round-robin: pack from _dataSen
+    // forward within the current device; when its sensors are exhausted, advance
+    // to the next device so no device is starved.
     uint8_t buildData(JetiTelemetryHub& hub, uint8_t* buf) {
-        uint8_t devN = hub.deviceCount();
+        const uint8_t devN = hub.deviceCount();
         if (!devN) return 0;
-        const uint16_t maxSlots = (uint16_t)devN * JetiTelemetryHub::kMaxSensorsPerDevice;
-        for (uint16_t i = 0; i < maxSlots; ++i) {
-            const auto* d = hub.device(_dataDev);
-            bool hit = (d && d->active && _dataSen < d->sensorCount &&
-                        d->sensors[_dataSen].active);
-            uint8_t dev = _dataDev, sen = _dataSen;
-            // advance
-            const uint8_t cnt = d ? d->sensorCount : 0;
-            if (++_dataSen >= cnt) { _dataSen = 0; _dataDev = (uint8_t)((_dataDev + 1) % devN); }
-            if (hit) {
-                const auto& s = d->sensors[sen];
-                return buildExDataBlock(buf, d->usn, d->lsn, s.id, s.type, s.decimals, s.value);
-            }
-            (void)dev;
+        // Find a device with ≥1 active sensor (bounded scan; skip empty/inactive).
+        const JetiTelemetryHub::Device* d = nullptr;
+        for (uint8_t t = 0; t < devN; ++t) {
+            const auto* cand = hub.device(_dataDev);
+            bool any = false;
+            if (cand && cand->active)
+                for (uint8_t j = 0; j < cand->sensorCount; ++j)
+                    if (cand->sensors[j].active) { any = true; break; }
+            if (any) { d = cand; break; }
+            _dataDev = (uint8_t)((_dataDev + 1) % devN);
+            _dataSen = 0;
         }
-        return 0;
+        if (!d) return 0;
+        if (_dataSen >= d->sensorCount) _dataSen = 0;
+
+        // Head, then pack up to kMaxValuesPerFrame active sensors (buffer-guarded
+        // — buf is 40 B; each value ≤5 B + 1 B crc).
+        uint8_t pos = exBlockHead(buf, d->usn, d->lsn);
+        uint8_t packed = 0;
+        while (packed < kMaxValuesPerFrame && _dataSen < d->sensorCount && pos + 5 <= 38) {
+            const auto& s = d->sensors[_dataSen++];
+            if (!s.active) continue;
+            pos += encodeSensorValue(&buf[pos], s.id, s.type, s.value, s.decimals);
+            ++packed;
+        }
+        // Exhausted this device's list → next device next time (fair rotation).
+        if (_dataSen >= d->sensorCount) { _dataSen = 0; _dataDev = (uint8_t)((_dataDev + 1) % devN); }
+        if (packed == 0) return 0;
+        buf[1] = 0x40 | (uint8_t)(pos - 1);          // data (0b01) | len
+        buf[pos] = crc8_ex(&buf[1], (uint8_t)(pos - 1));
+        return (uint8_t)(pos + 1);
     }
 
     uint8_t buildText(JetiTelemetryHub& hub, uint8_t* buf) {
@@ -570,13 +637,39 @@ private:
     sfx_peripherals::InputPort* _rxPort  = nullptr;   // IN_1, Rx side
     sfx_peripherals::InputPort* _escPort = nullptr;   // IN_2, ESC side
     sfx::Stream*                     _escStream = nullptr;
+    uint32_t _baud             = 125000;   // IN_1 baud — kept for UART re-init on loss
+    uint32_t _rxBrownouts      = 0;        // IN_1 UART resets performed (diag)
+    uint32_t _lastRxResetAtDead = 0;       // deadSecs at the last reset (one per crossing)
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
     // Two-way telemetry reply is RUNTIME-gated via `_respond` (set from the
     // attach config — see begin()'s respondTelemetry param), not a compile flag.
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
-    static constexpr uint32_t kRespIntervalMs    = 50;   // Rx reply rate cap (~20 Hz)
+    // Publish rate limiter.  Each reply carries ONE value (round-robin over the
+    // collection), so to refresh every metric TYPE at ~kPerValueHz the emit rate
+    // must scale with the active-sensor count N: interval = 1000 / (N·perValueHz),
+    // clamped.  The radio consumes ~10 Hz/value (faster is invisible), so 10 Hz is
+    // the per-value target.  The MIN interval is the channel-decode guard (don't
+    // answer faster than ~40 Hz or the half-duplex reply eats RC headroom); past
+    // ~4 metrics each value degrades gracefully below 10 Hz.  The MAX keeps the
+    // link warm (≥5 Hz emit) so the Rx never flags "sensor absent" when N is tiny.
+    static constexpr uint32_t kPerValueHz        = 10;   // per-metric-type refresh target
+    // Emit floor — the RX polls a telemetry slot every ~12 ms (~81 Hz).  Answer
+    // essentially EVERY slot so the radio's telemetry-presence watchdog never
+    // sees a gap (the "connection drops + reappears" brownout with many
+    // sensors).  Was 25 ms (~40 Hz = ~1-in-2 slots), which this radio flagged as
+    // unstable.  The timeliness gate still drops a reply when the loop lags, and
+    // slotOver/rxErr stay watched — back off toward 16–20 ms if channel decode
+    // (IN_1 rxErr/valid) ever degrades under the higher TX duty.
+    static constexpr uint32_t kMinReplyIntervalMs = 12;  // ~answer every RX slot (~81 Hz)
+    static constexpr uint32_t kMaxReplyIntervalMs = 200; // ≥5 Hz emit (keep the link warm)
+    // Values PACKED per EX data frame (same device).  Each answered slot then
+    // carries several metrics instead of one, so per-value refresh scales ~Nx
+    // without raising the emit rate (no channel-decode risk).  4 → a ≤28-byte
+    // frame (~2.5–3 ms reply, fits the master's ~4 ms slot); raise only if
+    // `slotOver` stays 0 and `maxUs` has headroom.
+    static constexpr uint8_t  kMaxValuesPerFrame = 4;
     // Downstream ESC (IN_2) active master poll + autodetect (Phase 2).  The poll
     // TX is crosstalk-windowed into IN_1's quiet slot (maybePollEsc), so the rate
     // is bounded by the IN_1 reply cadence too.  PROBE while no ESC answers (slow,
@@ -585,6 +678,7 @@ private:
     static constexpr uint32_t kEscProbePollMs    = 200;  // no ESC: hot-plug probe
     static constexpr uint32_t kEscActivePollMs   = 75;   // ESC replying: fresh telemetry
     static constexpr uint32_t kEscAbsentMs       = 600;  // silence → demote to probe
+    static constexpr uint32_t kRxResetSecs       = 3;    // IN_1 dead this long → UART re-init (retry cadence)
     // Timeliness-gate slack = master window (~4 ms) − our reply (~2 ms).  If the
     // main loop lagged more than this since the last drain, the parsed poll is
     // too stale to answer in-window — skip (see serveTelemetry()).  Generous at

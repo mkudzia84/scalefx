@@ -88,11 +88,9 @@ struct PortMapping {
     bool                       profileSet = false;
     sfx_core::ServoMotionProfile profile{};
 
-    /// JetiEX input only: bring up the downstream (IN_2 / ESC) telemetry
-    /// monitor.  Default false — IN_2 stays passive (no UART drained, no
-    /// stall risk on a floating line).  Set true once a downstream device is
-    /// wired to IN_2 and you want its telemetry decoded.  Exposed in Studio.
-    bool                       jetiDownstream = false;
+    // (The former `jetiDownstream` flag is gone — the IN_2 / ESC telemetry
+    //  monitor is AUTODETECT now: always wired, the presence machine decides if
+    //  a device is there.  See role_jeti_input_handler.cpp.)
 };
 
 /// One declared expander board.  `alias` is the friendly handle every
@@ -353,8 +351,6 @@ struct HubFxConfigSchema {
                 if (lbl && lbl[0]) std::strncpy(m.label, lbl, sizeof(m.label) - 1);
                 // Rule 42 storage — servo motion profile per port.
                 parseServoProfile(item, m);
-                // JetiEX input: optional downstream (IN_2) telemetry monitor.
-                m.jetiDownstream = item->template childAs<bool>("downstream", false);
                 d.numPorts++;
             }
         }
@@ -409,7 +405,6 @@ struct HubFxConfigSchema {
                     std::memset(m.label, 0, sizeof(m.label));
                     if (lbl && lbl[0]) std::strncpy(m.label, lbl, sizeof(m.label) - 1);
                     parseServoProfile(item, m);   // Rule 42 storage
-                    m.jetiDownstream = item->template childAs<bool>("downstream", false);
                     d.numPorts++;
                 }
             }

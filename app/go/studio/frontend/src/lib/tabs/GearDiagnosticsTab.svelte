@@ -341,7 +341,9 @@
 </div>
 
 <style>
-    .gear-diag { padding: 12px; max-width: 940px; }
+    /* Outer padding comes from the .tab-content wrapper (Rule 62, 12px) — only
+       the content max-width is set here. */
+    .gear-diag { max-width: 940px; }
     .lbl { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-dim); }
 
     /* Toolbar buttons — one icon+label style, fixed metrics so rows align */

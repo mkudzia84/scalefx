@@ -81,9 +81,12 @@ type GearConfig struct {
 	SchemaVersion int              `yaml:"schema_version"    json:"schemaVersion"`
 	Enabled       bool             `yaml:"enabled"           json:"enabled"`
 	Coord         string           `yaml:"coord"             json:"coord"` // independent | door_sync | full_sync | sequenced
-	Input         GearInputDTO     `yaml:"input,omitempty"   json:"input"`
-	Sounds        GearSoundsDTO    `yaml:"sounds,omitempty"  json:"sounds"`
-	Gears         []GearChannelDTO `yaml:"gears"             json:"gears"`
+	// item 6: emergency-deploy the gear when an input link drops (the
+	// InputDispatcher's CONNECTION DOWN signal).
+	DeployOnConnectionLoss bool             `yaml:"deploy_on_connection_loss,omitempty" json:"deployOnConnectionLoss"`
+	Input                  GearInputDTO     `yaml:"input,omitempty"   json:"input"`
+	Sounds                 GearSoundsDTO    `yaml:"sounds,omitempty"  json:"sounds"`
+	Gears                  []GearChannelDTO `yaml:"gears"             json:"gears"`
 }
 
 // GearStatusEntry is one row of GearStatus() — the live per-channel

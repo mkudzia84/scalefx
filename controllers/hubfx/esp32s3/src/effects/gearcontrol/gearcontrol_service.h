@@ -55,6 +55,14 @@ public:
     void setEnabled(bool v) { _enabled = v; }
     bool enabled() const    { return _enabled; }
 
+    /// Opt-in (item 6): when an input link drops (the InputDispatcher's
+    /// CONNECTION DOWN signal), emergency-deploy the whole undercarriage.
+    /// Distinct from the per-channel RC-loss failsafe — this fires on the
+    /// whole input LINK dying (e.g. the Jeti UART), not just the gear
+    /// up/down channel.  Set from /gearcontrol.yaml on every reload.
+    void setDeployOnConnectionLoss(bool v) { _deployOnConnLoss = v; }
+    bool deployOnConnectionLoss() const    { return _deployOnConnLoss; }
+
     // ── Transit sounds (optional) ────────────────────────────────────
     /// Audio command hook — same shape as GunFx's AudioCmdFn so the sketch
     /// wires one trampoline into the board mixer.  `soundPath == nullptr`
@@ -138,6 +146,15 @@ private:
     void onRoleEvent(const char* guid, uint8_t innerType,
                      const uint8_t* p, size_t len);
 
+    // Connection-loss subscriber (item 6) — registered on the InputDispatcher
+    // in begin().  `state` 2 = DOWN (the actionable loss); fires an emergency
+    // deploy when `_deployOnConnLoss` is set.
+    void onConnectionLoss(const char* guid, uint8_t portKind,
+                          uint8_t portIdx, uint8_t state);
+    static void connLossTrampoline(void* ctx, const char* guid,
+                                   uint8_t portKind, uint8_t portIdx,
+                                   uint8_t state);
+
     /// Multi-gear coordinator (instructions/29 decision #2): release the
     /// sync barriers when all mid-cycle gears sit at the same barrier, and
     /// drive the Sequenced one-gear-at-a-time chain.  Called from update().
@@ -184,6 +201,8 @@ private:
     uint8_t _coordMode            = CoordMode::Independent;
     uint8_t _seqActive            = 0xFF;     // Sequenced: gear index mid-cycle
     bool    _seqDeploying         = false;    // Sequenced: direction of the chain
+    bool    _deployOnConnLoss     = false;    // item 6: emergency deploy on input link loss
+    bool    _connLossLatched      = false;    // one deploy per loss (cleared on recovery)
 
     // Transit sounds (optional — silent when no paths configured).
     AudioCmdFn _audio        = nullptr;       // sketch-wired mixer trampoline
