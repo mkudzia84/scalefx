@@ -88,6 +88,13 @@ func (a *App) installInputStream() {
 		// already matches the port refs everywhere.
 		wailsRT.EventsEmit(a.ctx, "input:values", v)
 	})
+	// Generic connection-loss state changes (item 5) → the IO-tab link indicator.
+	a.c.Events.OnConnectionEvent(func(ev input.ConnectionEventT) {
+		if a.ctx == nil {
+			return
+		}
+		wailsRT.EventsEmit(a.ctx, "input:connection", ev)
+	})
 }
 
 // SetInputLiveView is the frontend's subscribe-on-view toggle: the active-tab

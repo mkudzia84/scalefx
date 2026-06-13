@@ -62,6 +62,7 @@ public:
         if (_running) return true;                    // already running
         if (!rxPort) return false;
         _rxPort  = rxPort;
+        _baud    = baud;                              // kept for UART re-init on loss
         if (!rxPort->configureJetiEx(baud)) return false;
         sfx::Stream* rxStream = rxPort->uartStream();
         if (!rxStream) return false;
@@ -194,6 +195,7 @@ public:
         }
         _rxBus.update();            // IN_1: master frames → channels (+ reply hook)
         _rxWatch.observe(now, _rxBus.rxByteCount(), _rxBus.rxFrameCount(), "IN_1");
+        maybeResetRx(now);          // UART reset/reconnect on prolonged IN_1 loss
 
 #if SFX_INSTRUMENTATION
         // Concise rx health (every 2 s): bytes = line active? frames = decoding?
@@ -341,6 +343,7 @@ public:
     /// running regardless (we never give up on catching a real frame).
     bool rxLinkNoisy()  const { return _rxWatch.noisy(); }
     bool escLinkNoisy() const { return _escWatch.noisy(); }
+    uint32_t rxBrownouts() const { return _rxBrownouts; }   // IN_1 UART resets (diag)
     uint32_t rxNoiseSecs() const { return _rxWatch.totalNoiseSecs; }
 
 private:
@@ -400,12 +403,13 @@ private:
         uint32_t lastMs = 0, baseBytes = 0, baseFrames = 0;
         uint32_t noiseSecs = 0;       // consecutive sec: bytes flowing, 0 frames
         uint32_t totalNoiseSecs = 0;  // cumulative (diag)
+        uint32_t deadSecs = 0;        // consecutive sec with NO valid frames (quiet OR noisy)
         bool     healthy = false;     // valid frames decoded in the last window
         bool     primed  = false;     // seen at least one window
 
         void reset(uint32_t now) {
             lastMs = now; baseBytes = baseFrames = 0;
-            noiseSecs = totalNoiseSecs = 0; healthy = false; primed = false;
+            noiseSecs = totalNoiseSecs = deadSecs = 0; healthy = false; primed = false;
         }
         bool noisy() const { return primed && !healthy && noiseSecs > 0; }
 
@@ -423,6 +427,9 @@ private:
             } else if (db >= kNoiseBytesPerSec) {
                 healthy = false; noiseSecs++; totalNoiseSecs++;
             } // else: line quiet (no bytes) — leave healthy as-is, no spam
+            // Time since last VALID frame (quiet OR noisy) — drives the UART
+            // reset/reconnect recovery in the expander (maybeResetRx).
+            deadSecs = (df > 0) ? 0 : (deadSecs + 1);
             if (primed && was && !healthy)
                 SFX_LOG_WARN("[jexp] %s: %lu B/s but 0 valid frames — line NOISY "
                              "(still draining to catch real frames)",
@@ -509,6 +516,26 @@ private:
         _escPort->txDisable();
     }
 
+    // UART reset/reconnect on prolonged IN_1 loss — the "try to reset/reconnect"
+    // half of the connection-loss policy.  The InputDispatcher does the generic
+    // detection + DOWN signal off the broadcast; THIS recovers a wedged half-
+    // duplex UART driver that the host can't reach (e.g. the matrix OE stuck
+    // after a brownout) by re-initialising the port.  Fires once per
+    // kRxResetSecs while the link stays dead (no valid frames); a healthy window
+    // clears deadSecs and re-arms.  No-op on a healthy link (deadSecs == 0), so
+    // it never disturbs a working bus.  Records a brownout for diag.
+    void maybeResetRx(uint32_t /*now*/) {
+        if (!_rxPort || !_running) return;
+        const uint32_t dead = _rxWatch.deadSecs;
+        if (dead == 0 || (dead % kRxResetSecs) != 0) return;
+        if (dead == _lastRxResetAtDead) return;          // once per second-crossing
+        _lastRxResetAtDead = dead;
+        ++_rxBrownouts;
+        SFX_LOG_WARN("[jexp] IN_1 dead %lus → UART reset/reconnect (brownout #%u)",
+                     (unsigned long)dead, (unsigned)_rxBrownouts);
+        _rxPort->configureJetiEx(_baud);                 // re-init the half-duplex UART
+    }
+
     // ESC presence autodetect — called each task pass from update().  PRESENT
     // (fast poll) the moment _escMon decodes a fresh telemetry reply; ABSENT
     // (slow probe) after kEscAbsentMs of silence.  The hub's expireStale drops
@@ -582,6 +609,9 @@ private:
     sfx_peripherals::InputPort* _rxPort  = nullptr;   // IN_1, Rx side
     sfx_peripherals::InputPort* _escPort = nullptr;   // IN_2, ESC side
     sfx::Stream*                     _escStream = nullptr;
+    uint32_t _baud             = 125000;   // IN_1 baud — kept for UART re-init on loss
+    uint32_t _rxBrownouts      = 0;        // IN_1 UART resets performed (diag)
+    uint32_t _lastRxResetAtDead = 0;       // deadSecs at the last reset (one per crossing)
     JetiExBus                   _rxBus;
     JetiExTelemetryMonitor      _escMon;
 
@@ -607,6 +637,7 @@ private:
     static constexpr uint32_t kEscProbePollMs    = 200;  // no ESC: hot-plug probe
     static constexpr uint32_t kEscActivePollMs   = 75;   // ESC replying: fresh telemetry
     static constexpr uint32_t kEscAbsentMs       = 600;  // silence → demote to probe
+    static constexpr uint32_t kRxResetSecs       = 3;    // IN_1 dead this long → UART re-init (retry cadence)
     // Timeliness-gate slack = master window (~4 ms) − our reply (~2 ms).  If the
     // main loop lagged more than this since the last drain, the parsed poll is
     // too stale to answer in-window — skip (see serveTelemetry()).  Generous at

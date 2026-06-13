@@ -9,6 +9,7 @@ import (
 	expp "scalefx/protocol/expanders"
 	"scalefx/protocol/gear"
 	"scalefx/protocol/gunfx"
+	"scalefx/protocol/input"
 	"scalefx/protocol/landing"
 	"scalefx/protocol/roles"
 	"scalefx/protocol/storage"
@@ -44,6 +45,7 @@ type Events struct {
 	onGunVerbose   []func(gunfx.VerboseStatus)
 	onInputValue   []func(InputValue)
 	onServoMotion  []func(ServoMotionEvent)
+	onConnEvent    []func(input.ConnectionEventT) // generic input connection-loss (item 5)
 	onPacket       []func(*protocol.Response) // catch-all
 
 	// Generic per-inner-type role-event registry (Rule 57): handlers keyed by
@@ -108,6 +110,7 @@ func (e *Events) OnGunShot(fn func(gunfx.Shot))                          { subsc
 func (e *Events) OnGunVerboseStatus(fn func(gunfx.VerboseStatus))        { subscribe(e, &e.onGunVerbose, fn) }
 func (e *Events) OnInputValue(fn func(InputValue))                       { subscribe(e, &e.onInputValue, fn) }
 func (e *Events) OnServoMotion(fn func(ServoMotionEvent))                { subscribe(e, &e.onServoMotion, fn) }
+func (e *Events) OnConnectionEvent(fn func(input.ConnectionEventT))      { subscribe(e, &e.onConnEvent, fn) }
 func (e *Events) OnAny(fn func(*protocol.Response))                      { subscribe(e, &e.onPacket, fn) }
 
 // OnRole registers a handler for ONE role async packet type (Rule 57) — any
@@ -235,6 +238,13 @@ func (e *Events) onAsync(resp *protocol.Response) {
 		if sm, ok := decodeServoMotion("", byte(resp.PacketType), resp.Payload); ok {
 			for _, fn := range snapshot(e, e.onServoMotion) {
 				fn(sm)
+			}
+		}
+	case input.ConnectionEvent:
+		// Generic input connection-loss state change (item 5).
+		if ev, ok := input.DecodeConnectionEvent(resp.Payload); ok {
+			for _, fn := range snapshot(e, e.onConnEvent) {
+				fn(ev)
 			}
 		}
 	case storage.FileUploadProgress:

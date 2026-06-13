@@ -6,10 +6,12 @@
      the hubfx board gains sensors. -->
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte'
-    import { telemetry, pollTelemetry, fmtSensorValue } from '../telemetry'
+    import { telemetry, pollTelemetry, fmtSensorValue,
+             linkStates, installConnectionListener, LINK_STATE_NAMES } from '../telemetry'
 
     let timer: ReturnType<typeof setInterval> | undefined
     onMount(() => {
+        installConnectionListener()
         pollTelemetry()
         timer = setInterval(() => pollTelemetry(), 1000)
     })
@@ -17,12 +19,25 @@
 
     $: snap = $telemetry
     $: stale = !snap || (Date.now() - snap.ts) > 3000
+
+    // Worst current link state across all tracked input sources (item 5):
+    // 0 up · 1 signal lost · 2 DOWN.  Surfaced as a chip so the operator sees
+    // a Jeti/SBUS/PPM link drop (and the gear emergency-deploy trigger) live.
+    $: links = Object.values($linkStates)
+    $: worstLink = links.reduce((w, l) => Math.max(w, l.state), 0)
+    $: anyBrownouts = links.reduce((n, l) => n + (l.brownouts ?? 0), 0)
 </script>
 
 <div class="card telem-card">
     <div class="card-header">
         <h3>Telemetry collection</h3>
         <div class="header-actions">
+            {#if links.length > 0}
+                <span class="link-chip" class:lost={worstLink === 1} class:down={worstLink === 2}
+                      title="Input link health (item 5) — {links.length} source(s), {anyBrownouts} brownout(s). DOWN triggers any subscribed emergency reaction (e.g. gear deploy).">
+                    link: {LINK_STATE_NAMES[worstLink]}{anyBrownouts ? ` · ${anyBrownouts} brownout${anyBrownouts === 1 ? '' : 's'}` : ''}
+                </span>
+            {/if}
             {#if snap}
                 <span class="rate" class:stale title="Per-value target ~10 Hz; emit rate scales with sensor count.">
                     publish {(snap.respHzX10 / 10).toFixed(1)} Hz · {snap.pubIntervalMs} ms · {snap.activeSensors} active
@@ -70,6 +85,10 @@
     .header-actions { display: flex; align-items: center; gap: 8px; }
     .rate { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
     .rate.stale { opacity: 0.55; }
+
+    .link-chip { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--success); border: 1px solid var(--success); border-radius: 3px; padding: 1px 6px; }
+    .link-chip.lost { color: var(--warning); border-color: var(--warning); }
+    .link-chip.down { color: var(--error); border-color: var(--error); background: rgba(255,80,80,0.12); }
 
     .empty { color: var(--text-dim); font-size: 12px; padding: 8px 2px; }
 

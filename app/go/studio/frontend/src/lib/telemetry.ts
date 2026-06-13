@@ -5,6 +5,7 @@
 
 import { writable } from 'svelte/store'
 import { GetTelemetry } from '../../wailsjs/go/main/App'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 
 export interface TelemetrySensor {
     id: number
@@ -50,4 +51,31 @@ export async function pollTelemetry(): Promise<void> {
 export function fmtSensorValue(s: TelemetrySensor): string {
     if (!s.decimals) return String(s.value)
     return (s.value / Math.pow(10, s.decimals)).toFixed(s.decimals)
+}
+
+// ─── Generic input connection-loss (item 5) ─────────────────────────
+
+export interface ConnectionEvent {
+    portKind: number
+    portIdx: number
+    guid: string        // "" = hub-local
+    state: number       // 0 up, 1 lost, 2 down
+    brownouts: number
+}
+
+/** Latest connection state per input source, keyed `guid|portKind|portIdx`.
+ *  Fed by the firmware's async CONNECTION_EVENT (loss / recovery). */
+export const linkStates = writable<Record<string, ConnectionEvent>>({})
+
+export const LINK_STATE_NAMES = ['up', 'signal lost', 'DOWN'] as const
+
+let connCancel: (() => void) | null = null
+/** Idempotent — install the `input:connection` listener once. */
+export function installConnectionListener(): void {
+    if (connCancel) return
+    connCancel = EventsOn('input:connection', (ev: ConnectionEvent) => {
+        if (!ev) return
+        const key = `${ev.guid}|${ev.portKind}|${ev.portIdx}`
+        linkStates.update(m => ({ ...m, [key]: ev }))
+    })
 }
