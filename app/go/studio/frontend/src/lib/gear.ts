@@ -20,7 +20,7 @@ import {
     GearDeploy, GearRetract, GearStop, GearAll, GearReset,
 } from '../../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
-import { deviceModel, RoleKind, claimsForPort, type Port } from './devicemodel'
+import { deviceModel, RoleKind, type Port } from './devicemodel'
 
 // ─── DTO mirrors (must match app_gear.go DTO names) ───────────────────
 
@@ -152,19 +152,19 @@ export const gearPhases = writable<Record<number, GearPhaseT>>({})
 // PURE helpers take the device-model ports explicitly so they're unit-
 // testable without a live store (the derived `gearHasErrors` wires them
 // to `$deviceModel`).  A channel has errors when:
-//   - the motor port doesn't resolve to a BiDcMotor role in the model,
-//     OR is claimed by another effect (cross-file wiring check);
-//   - a door servo doesn't resolve to a ServoActuator role / is claimed;
+//   - the motor port doesn't resolve to a BiDcMotor role in the model;
+//   - a door servo doesn't resolve to a ServoActuator role;
 //   - door_mode === 'delay' but doorDelayMs <= 0;
-//   - close_policy === 'first' but fewer than 2 doors (nothing to keep
-//     open).
+//   - close_policy === 'first' but fewer than 2 doors (nothing to keep open).
+//
+// Cross-effect port CONFLICTS are NOT validated here (matching GunFx): the
+// picker POOL is fed $effectClaims (merged hard + draft claims) in the panel,
+// so a port another effect uses can't be picked.  Keeping validation role-only
+// also keeps `gearHasErrors` free of an effect-claims → gear circular import.
 
-/** Does port `ref` resolve to a port in `ports` with `requiredRole`
- *  attached AND not claimed by some OTHER effect (claims minus this
- *  channel's own refs, passed via `ownRefs`)? */
+/** Does port `ref` resolve to a port in `ports` with `requiredRole` attached? */
 function portResolvesTo(
     ports: readonly Port[],
-    claims: readonly { domain: string; slot: string; port: { guid: string; kind: number; index: number } }[],
     ref: PortRefT,
     requiredRole: number,
     kindName: 'servo' | 'hbridge',
@@ -173,24 +173,16 @@ function portResolvesTo(
     const p = ports.find(p =>
         p.ref.guid === ref.guid && p.kindName === kindName && p.ref.index === ref.idx)
     if (!p) return false
-    if (p.roleKind !== requiredRole) return false
-    // Claimed by another effect → not resolvable here.  A claim whose
-    // domain IS the gear effect is exempt (once applied, the gear domain
-    // claims its own motor + door ports — that's not a conflict).
-    const cs = claimsForPort(claims as any, p.ref)
-    for (const c of cs) {
-        if (c.domain !== 'gear' && c.domain !== 'gearcontrol') return false
-    }
-    return true
+    return p.roleKind === requiredRole
 }
 
 /** Returns the human-readable validation problems for gear channel
- *  `idx`.  `ports` / `claims` come from the device model. */
+ *  `idx`.  `ports` come from the device model.  Cross-effect port conflicts
+ *  are guarded by the picker POOL ($effectClaims), not here (see header). */
 export function gearItemErrors(
     gears: GearChannelT[],
     idx: number,
     ports: readonly Port[],
-    claims: readonly { domain: string; slot: string; port: { guid: string; kind: number; index: number } }[] = [],
 ): string[] {
     const g = gears[idx]
     const out: string[] = []
@@ -199,16 +191,16 @@ export function gearItemErrors(
     // Motor — required, must be a BiDcMotor.
     if (!g.motor || !g.motor.kind) {
         out.push('No gear motor assigned — the channel can\'t deploy.')
-    } else if (!portResolvesTo(ports, claims, g.motor, RoleKind.BiDcMotor, 'hbridge')) {
-        out.push('Gear motor port has no BiDcMotor role attached (or is claimed by another effect).')
+    } else if (!portResolvesTo(ports, g.motor, RoleKind.BiDcMotor, 'hbridge')) {
+        out.push('Gear motor port has no BiDcMotor role attached.')
     }
 
     // Doors — each must resolve to a ServoActuator.
     g.doors.forEach((d, di) => {
         if (!d.port || !d.port.kind) {
             out.push(`Door ${di + 1}: no servo port picked.`)
-        } else if (!portResolvesTo(ports, claims, d.port, RoleKind.ServoActuator, 'servo')) {
-            out.push(`Door ${di + 1}: servo port has no ServoActuator role attached (or is claimed elsewhere).`)
+        } else if (!portResolvesTo(ports, d.port, RoleKind.ServoActuator, 'servo')) {
+            out.push(`Door ${di + 1}: servo port has no ServoActuator role attached.`)
         }
     })
 
@@ -245,7 +237,7 @@ export const gearHasErrors: Readable<boolean> = derived(
         if (!$draft || !$draft.enabled) return false
         if (gearEffectErrors($draft).length > 0) return true
         return $draft.gears.some((_, i) =>
-            gearItemErrors($draft.gears, i, $dm.ports, $dm.claims).length > 0)
+            gearItemErrors($draft.gears, i, $dm.ports).length > 0)
     },
 )
 

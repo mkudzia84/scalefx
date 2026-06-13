@@ -242,54 +242,10 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 	return snap
 }
 
-// ─── Claim editing ────────────────────────────────────────────────────
-
-// ClaimPort claims a port for a domain slot.  Returns the post-mutation
-// snapshot (with fresh validation issues) or an error if the claim is
-// illegal.
-func (a *App) ClaimPort(domain, slot, guid string, kind, index byte) (DeviceModelSnapshot, error) {
-	defer a.diag.Around("ClaimPort",
-		map[string]any{"domain": domain, "slot": slot, "guid": guid, "kind": kind, "idx": index})()
-	a.diag.Info("DM", "ClaimPort %s/%s ← %s/%s%d",
-		domain, slot, guidOrHub(guid), ports.KindName(kind), index)
-	a.dmMu.Lock()
-	if a.dm == nil {
-		a.dmMu.Unlock()
-		a.diag.Error("DM", "ClaimPort: device model not loaded")
-		return DeviceModelSnapshot{}, fmt.Errorf("device model not loaded")
-	}
-	err := a.dm.Claim(devicemodel.Claim{
-		Domain: devicemodel.DomainID(domain),
-		Slot:   slot,
-		Port:   devicemodel.PortRef{GUID: guid, Kind: kind, Index: index},
-	})
-	a.dmMu.Unlock()
-	if err != nil {
-		a.diag.Error("DM", "ClaimPort failed: %v", err)
-		return a.deviceModelSnapshot(), err
-	}
-	a.emitDeviceModelChanged()
-	return a.deviceModelSnapshot(), nil
-}
-
-// UnclaimPort removes a claim.
-func (a *App) UnclaimPort(domain, slot, guid string, kind, index byte) DeviceModelSnapshot {
-	defer a.diag.Around("UnclaimPort",
-		map[string]any{"domain": domain, "slot": slot, "guid": guid, "kind": kind, "idx": index})()
-	a.diag.Info("DM", "UnclaimPort %s/%s ← %s/%s%d",
-		domain, slot, guidOrHub(guid), ports.KindName(kind), index)
-	a.dmMu.Lock()
-	if a.dm != nil {
-		a.dm.Unclaim(devicemodel.Claim{
-			Domain: devicemodel.DomainID(domain),
-			Slot:   slot,
-			Port:   devicemodel.PortRef{GUID: guid, Kind: kind, Index: index},
-		})
-	}
-	a.dmMu.Unlock()
-	a.emitDeviceModelChanged()
-	return a.deviceModelSnapshot()
-}
+// (ClaimPort / UnclaimPort / CandidatePorts — the interactive domain-slot
+// claim API — were REMOVED 2026-06-13 with the generic Domains tab, their only
+// caller.  Hard claims are now written ONLY by ApplyPreset; role detach still
+// releases claims via DetachRole → Model.Unclaim/ClaimsForPort, which stay.)
 
 // SetPortName assigns an operator-friendly name to a port (overlay state).
 func (a *App) SetPortName(guid string, kind, index byte, name string) DeviceModelSnapshot {
@@ -415,19 +371,8 @@ func (a *App) ServoSetTarget(guid string, index uint8, targetUs uint16) error {
 	return nil
 }
 
-// CandidatePorts returns the ports a domain may select for a slot — the
-// data behind each functional tab's port picker.
-func (a *App) CandidatePorts(domain, slot string) []devicemodel.Port {
-	a.dmMu.Lock()
-	defer a.dmMu.Unlock()
-	if a.dm == nil {
-		return []devicemodel.Port{}
-	}
-	if c := a.dm.Candidates(devicemodel.DomainID(domain), slot); c != nil {
-		return c
-	}
-	return []devicemodel.Port{}
-}
+// (CandidatePorts removed 2026-06-13 — picker pools are computed frontend-side
+// from freePortPool + effectClaims; the live candidate query is gone.)
 
 // ─── Role attach / detach (wire) ──────────────────────────────────────
 

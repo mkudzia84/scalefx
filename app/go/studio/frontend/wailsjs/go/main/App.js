@@ -18,16 +18,8 @@ export function BuildAndFlash(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['BuildAndFlash'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function CandidatePorts(arg1, arg2) {
-  return window['go']['main']['App']['CandidatePorts'](arg1, arg2);
-}
-
 export function CheckFiles(arg1) {
   return window['go']['main']['App']['CheckFiles'](arg1);
-}
-
-export function ClaimPort(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['ClaimPort'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function Connect(arg1) {
@@ -476,10 +468,6 @@ export function StopLightChannel(arg1) {
 
 export function SyncLightFxToDevice(arg1, arg2) {
   return window['go']['main']['App']['SyncLightFxToDevice'](arg1, arg2);
-}
-
-export function UnclaimPort(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['UnclaimPort'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function UploadConfig(arg1) {

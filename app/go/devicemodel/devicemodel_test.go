@@ -88,21 +88,6 @@ func TestBuildModelDerivesDirectionAndCaps(t *testing.T) {
 	}
 }
 
-func TestCandidatesFilterByRoleKind(t *testing.T) {
-	bp, br := sampleTopology()
-	m := BuildModel(bp, br, "")
-	// No roles attached yet → leds slot (needs led-animator) has no
-	// candidates among the pwm ports.
-	if got := m.Candidates(DomainLandingLights, "leds"); len(got) != 0 {
-		t.Fatalf("expected 0 led candidates before attach, got %d", len(got))
-	}
-	// Attach led-animator to two pwm ports.
-	m.SetRole(PortRef{GUID: "3C4D", Kind: ports.KindPwm, Index: 0}, roles.KindLedAnimator)
-	m.SetRole(PortRef{GUID: "3C4D", Kind: ports.KindPwm, Index: 1}, roles.KindLedAnimator)
-	if got := m.Candidates(DomainLandingLights, "leds"); len(got) != 2 {
-		t.Fatalf("expected 2 led candidates after attach, got %d", len(got))
-	}
-}
 
 func TestInputSharedAcrossDomains(t *testing.T) {
 	bp, br := sampleTopology()
@@ -184,8 +169,14 @@ func TestApplyPreset(t *testing.T) {
 	if len(assigns) != 4 {
 		t.Fatalf("expected 4 role assigns, got %d", len(assigns))
 	}
-	if got := m.ClaimsForDomain(DomainLandingLights); len(got) != 4 {
-		t.Fatalf("expected 4 landing-light claims, got %d", len(got))
+	landingClaims := 0
+	for _, c := range m.Claims {
+		if c.Domain == DomainLandingLights {
+			landingClaims++
+		}
+	}
+	if landingClaims != 4 {
+		t.Fatalf("expected 4 landing-light claims, got %d", landingClaims)
 	}
 	if issues := m.Validate(); HasErrors(issues) {
 		t.Errorf("preset result should validate clean, got %v", issues)

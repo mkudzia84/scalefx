@@ -13,6 +13,7 @@
         deviceModel, refresh, boardKindOf, boardDisplayNames,
         claimsForPort, formatPortRail, removeAbandonedBoard, type Port,
     } from '../devicemodel'
+    import { effectClaims } from '../effect-claims'
     import { pcbFor, type PortMarker } from '../pcb'
     import PortControls from '../components/PortControls.svelte'
 
@@ -66,7 +67,10 @@
         return boardPorts.find(p => p.ref.kind === m.kind && p.ref.index === m.index)
     }
     function functions(p: Port): string {
-        return claimsForPort($deviceModel.claims, p.ref).map(c => `${c.domain}/${c.slot}`).join(', ')
+        // $effectClaims (merged hard + effect-draft soft claims), not the bare
+        // $deviceModel.claims which only holds ApplyPreset's hard claims —
+        // without the merge a port used by an effect read as "unclaimed".
+        return claimsForPort($effectClaims, p.ref).map(c => `${c.domain}/${c.slot}`).join(', ')
     }
     async function removeBoard() {
         if (!activeTab) return

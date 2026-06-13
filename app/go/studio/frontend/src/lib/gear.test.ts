@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { gearItemErrors, defaultGearChannel, defaultGearDoor, type GearChannelT } from './gear'
-import { RoleKind, type Port, type Claim } from './devicemodel'
+import { RoleKind, type Port } from './devicemodel'
 
 // Minimal Port factory — gearItemErrors only reads ref/kindName/roleKind.
 function mkPort(guid: string, kindName: string, kind: number, idx: number, roleKind: number): Port {
@@ -21,17 +21,20 @@ function validChannel(): GearChannelT {
     return g
 }
 
+// gearItemErrors validates ROLE RESOLUTION only — cross-effect port conflicts
+// are guarded by the picker pool ($effectClaims), not validation, so there is
+// no longer a "claimed by another effect" assertion here.
 describe('gearItemErrors', () => {
     it('reports no errors for a valid motor-only channel', () => {
         const g = validChannel()
         const ports = [motorPort(0)]
-        expect(gearItemErrors([g], 0, ports, [])).toEqual([])
+        expect(gearItemErrors([g], 0, ports)).toEqual([])
     })
 
     it('errors when the motor port is unset', () => {
-        const g = defaultGearChannel(0) // motor kind is 'hbridge' but… idx 0 with no model port
+        const g = defaultGearChannel(0)
         g.motor = { board: '', guid: '', kind: '', idx: 0 } // truly unset
-        const errs = gearItemErrors([g], 0, [], [])
+        const errs = gearItemErrors([g], 0, [])
         expect(errs.some(e => /No gear motor assigned/.test(e))).toBe(true)
     })
 
@@ -39,18 +42,8 @@ describe('gearItemErrors', () => {
         const g = validChannel()
         // Port exists but is the wrong role (DcMotor, not BiDcMotor).
         const ports = [motorPort(0, RoleKind.DcMotor)]
-        const errs = gearItemErrors([g], 0, ports, [])
+        const errs = gearItemErrors([g], 0, ports)
         expect(errs.some(e => /no BiDcMotor role/.test(e))).toBe(true)
-    })
-
-    it('errors when the motor is claimed by another effect', () => {
-        const g = validChannel()
-        const ports = [motorPort(0)]
-        const claims: Claim[] = [
-            { domain: 'somethingelse', slot: 'x', port: { guid: '', kind: 0x40, index: 0 } },
-        ]
-        const errs = gearItemErrors([g], 0, ports, claims)
-        expect(errs.some(e => /claimed by another effect/.test(e))).toBe(true)
     })
 
     it('errors when a door servo has no ServoActuator role', () => {
@@ -58,7 +51,7 @@ describe('gearItemErrors', () => {
         g.doors = [{ port: { board: '', guid: '', kind: 'servo', idx: 0 }, open: 10000, close: 0 }]
         // servo port present but as LedAnimator → wrong role.
         const ports = [motorPort(0), servoPort(0, RoleKind.LedAnimator)]
-        const errs = gearItemErrors([g], 0, ports, [])
+        const errs = gearItemErrors([g], 0, ports)
         expect(errs.some(e => /no ServoActuator role/.test(e))).toBe(true)
     })
 
@@ -66,7 +59,7 @@ describe('gearItemErrors', () => {
         const g = validChannel()
         g.doors = [{ port: { board: '', guid: '', kind: 'servo', idx: 0 }, open: 10000, close: 0 }]
         const ports = [motorPort(0), servoPort(0)]
-        expect(gearItemErrors([g], 0, ports, [])).toEqual([])
+        expect(gearItemErrors([g], 0, ports)).toEqual([])
     })
 
     it('errors for delay door mode with zero delay', () => {
@@ -78,7 +71,7 @@ describe('gearItemErrors', () => {
         g.doorMode = 'delay'
         g.doorDelayMs = 0
         const ports = [motorPort(0), servoPort(0), servoPort(1)]
-        const errs = gearItemErrors([g], 0, ports, [])
+        const errs = gearItemErrors([g], 0, ports)
         expect(errs.some(e => /delay is 0 ms/.test(e))).toBe(true)
     })
 
@@ -91,7 +84,7 @@ describe('gearItemErrors', () => {
         g.doorMode = 'delay'
         g.doorDelayMs = 500
         const ports = [motorPort(0), servoPort(0), servoPort(1)]
-        expect(gearItemErrors([g], 0, ports, [])).toEqual([])
+        expect(gearItemErrors([g], 0, ports)).toEqual([])
     })
 
     it('errors for close_policy=first with fewer than 2 doors', () => {
@@ -99,19 +92,8 @@ describe('gearItemErrors', () => {
         g.doors = [{ port: { board: '', guid: '', kind: 'servo', idx: 0 }, open: 10000, close: 0 }]
         g.closePolicy = 'first'
         const ports = [motorPort(0), servoPort(0)]
-        const errs = gearItemErrors([g], 0, ports, [])
+        const errs = gearItemErrors([g], 0, ports)
         expect(errs.some(e => /needs 2 doors/.test(e))).toBe(true)
-    })
-
-    it('exempts the channel\'s OWN claim (gear domain claiming its own port)', () => {
-        const g = validChannel()
-        const ports = [motorPort(0)]
-        // The gear domain itself claims the motor — that must NOT count as
-        // "claimed elsewhere".
-        const claims: Claim[] = [
-            { domain: 'gear', slot: 'motor', port: { guid: '', kind: 0x40, index: 0 } },
-        ]
-        expect(gearItemErrors([g], 0, ports, claims)).toEqual([])
     })
 
     it('uses defaultGearDoor for sane open/close defaults', () => {

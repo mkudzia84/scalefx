@@ -10,6 +10,7 @@
         formatPortRail, removeAbandonedBoard, RoleKind,
         type Port, type PortRef,
     } from '../devicemodel'
+    import { effectClaims } from '../effect-claims'
     import PortRoleConfig from '../components/PortRoleConfig.svelte'
     import { openServoCalibrationFor, defaultServoProfile } from '../servo_calibration'
     import { SetPortProfile } from '../../../wailsjs/go/main/App'
@@ -110,7 +111,9 @@
 
     function isServo(p: Port): boolean { return p.kindName === 'servo' }
     function fanout(p: Port): string {
-        return claimsForPort($deviceModel.claims, p.ref).map(c => `${c.domain}/${c.slot}`).join(', ')
+        // $effectClaims (merged), not bare $deviceModel.claims — so a port an
+        // effect uses shows its owner instead of reading "unclaimed".
+        return claimsForPort($effectClaims, p.ref).map(c => `${c.domain}/${c.slot}`).join(', ')
     }
 </script>
 
