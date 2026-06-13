@@ -463,7 +463,7 @@
     {/if}
 
     {#each (cfg?.gears ?? []) as gch (gch.id)}
-        {@const issues       = gearItemErrors(cfg.gears, cfg.gears.findIndex(g => g.id === gch.id), $deviceModel.ports, $effectClaims)}
+        {@const issues       = gearItemErrors(cfg.gears, cfg.gears.findIndex(g => g.id === gch.id), $deviceModel.ports)}
         {@const chanErrors   = issues.length > 0}
         {@const usedMotors   = usedMotorRefs(cfg.gears)}
         {@const usedDoors    = usedDoorRefs(cfg.gears)}
@@ -625,6 +625,27 @@
                                     profile={profileForPort(d.port)}
                                     busy={busy} />
                             </div>
+                            <!-- Live signal mirror — IN the door column, with the
+                                 door it belongs to (Rule 60.2: a PER-ELEMENT live
+                                 widget stays with its element; full-width is for
+                                 panel/unit-level bars).  Grows to the column. -->
+                            {#if d.port && d.port.kind}
+                                {@const dProf = profileForPort(d.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
+                                {@const dSv = $servoStatus[servoStatusKey(d.port.guid, d.port.idx)]}
+                                <div class="form-row live-row">
+                                    <span class="field-label">Live</span>
+                                    <div class="live-widget">
+                                        <ServoIoWidget
+                                            hasInput={false}
+                                            inputUs={null}
+                                            inputValid={false}
+                                            neutralUs={1500}
+                                            hasServo={true}
+                                            minUs={dProf.minUs} maxUs={dProf.maxUs} centerUs={dProf.centerUs} reversed={dProf.reversed}
+                                            servo={dSv ?? null} />
+                                    </div>
+                                </div>
+                            {/if}
                         {/each}
                         {#if gch.doors.length < 2}
                             <div class="form-row">
@@ -700,28 +721,6 @@
                     </div>
                 </div>
             </div>
-
-            <!-- Live door mirrors — FULL WIDTH (Rule 60.2): position + target
-                 from the 20 Hz servo-status stream, one bar per door. -->
-            {#each gch.doors as d, i (i)}
-                {#if d.port && d.port.kind}
-                    {@const dProf = profileForPort(d.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
-                    {@const dSv = $servoStatus[servoStatusKey(d.port.guid, d.port.idx)]}
-                    <div class="live-row">
-                        <span class="field-label">Door {i + 1} live</span>
-                        <div class="live-widget">
-                            <ServoIoWidget
-                                hasInput={false}
-                                inputUs={null}
-                                inputValid={false}
-                                neutralUs={1500}
-                                hasServo={true}
-                                minUs={dProf.minUs} maxUs={dProf.maxUs} centerUs={dProf.centerUs} reversed={dProf.reversed}
-                                servo={dSv ?? null} />
-                        </div>
-                    </div>
-                {/if}
-            {/each}
 
             <!-- Per-strut issues (Rule 35 red list) -->
             {#if issues.length > 0}

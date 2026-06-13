@@ -2482,13 +2482,17 @@ switcher) already converged on, now binding:
   calibration + sequencing) RIGHT.  Never split one subsystem's ports from
   its behaviour across columns.  Collapse to one column below ~900 px;
   `align-items: start`.
-- **60.2 Live-telemetry widgets span full width.**  Channel bars
+- **60.2 Live-telemetry widgets GROW to their container.**  Channel bars
   (ChannelToggleCluster/ChannelBandCluster), ServoIoWidget mirrors, verbose
-  status views — anything animated by live data — renders as a FULL-WIDTH row
-  above/below the column grid, never squeezed into a half column.  Live bars
-  are only readable at width; columns are for forms.  Implementation note: a
-  bare widget inside a `.form-row` only takes content width — wrap it in a
-  grow container (`flex: 1 1 auto; min-width: 0`, see GearPanel `.live-row`).
+  status — anything animated by live data — must fill the available width, not
+  shrink to content.  **Panel/unit-level** live widgets (RC channel clusters,
+  fleet status) go full-width above/below the column grid.  A **per-element**
+  live mirror (one door's servo position, one axis's I/O) stays WITH its
+  element — in its subsystem column, directly under the element it mirrors —
+  so it reads as part of that element's context, not an orphaned bar.  Either
+  way it must GROW: a bare widget in a `.form-row` only takes content width —
+  wrap it in a grow container (`flex: 1 1 auto; min-width: 0`, see GearPanel
+  `.live-row` / `.live-widget`).
 - **60.3 Segmented toggles for mode choices.**  A mutually-exclusive mode
   choice with ≤ 4 options renders as ONE joined segmented control (the global
   `.seg-select`, the selector twin of `.op-cluster`; exactly one `.seg.on`).
