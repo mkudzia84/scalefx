@@ -654,7 +654,14 @@ private:
     // ~4 metrics each value degrades gracefully below 10 Hz.  The MAX keeps the
     // link warm (≥5 Hz emit) so the Rx never flags "sensor absent" when N is tiny.
     static constexpr uint32_t kPerValueHz        = 10;   // per-metric-type refresh target
-    static constexpr uint32_t kMinReplyIntervalMs = 25;  // ≤40 Hz emit (channel-decode guard)
+    // Emit floor — the RX polls a telemetry slot every ~12 ms (~81 Hz).  Answer
+    // essentially EVERY slot so the radio's telemetry-presence watchdog never
+    // sees a gap (the "connection drops + reappears" brownout with many
+    // sensors).  Was 25 ms (~40 Hz = ~1-in-2 slots), which this radio flagged as
+    // unstable.  The timeliness gate still drops a reply when the loop lags, and
+    // slotOver/rxErr stay watched — back off toward 16–20 ms if channel decode
+    // (IN_1 rxErr/valid) ever degrades under the higher TX duty.
+    static constexpr uint32_t kMinReplyIntervalMs = 12;  // ~answer every RX slot (~81 Hz)
     static constexpr uint32_t kMaxReplyIntervalMs = 200; // ≥5 Hz emit (keep the link warm)
     // Values PACKED per EX data frame (same device).  Each answered slot then
     // carries several metrics instead of one, so per-value refresh scales ~Nx
