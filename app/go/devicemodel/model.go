@@ -144,17 +144,6 @@ func (m *Model) ClaimsForPort(ref PortRef) []Claim {
 	return out
 }
 
-// ClaimsForDomain returns the claims belonging to a domain.
-func (m *Model) ClaimsForDomain(id DomainID) []Claim {
-	var out []Claim
-	for _, c := range m.Claims {
-		if c.Domain == id {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 // claimsForSlot counts/collects claims in a specific (domain, slot).
 func (m *Model) claimsForSlot(id DomainID, slot string) []Claim {
 	var out []Claim
@@ -166,45 +155,10 @@ func (m *Model) claimsForSlot(id DomainID, slot string) []Claim {
 	return out
 }
 
-// ─── Candidate query ──────────────────────────────────────────────────
-
-// Candidates returns the ports a domain may legally select for a slot:
-// right direction, role kind satisfies the slot, and — for OUTPUT slots —
-// not already claimed by another domain.  INPUT slots include ports
-// already claimed elsewhere (they're shareable) as long as they're not
-// already in THIS slot.  This is the data each functional tab's port
-// picker is built from.
-func (m *Model) Candidates(id DomainID, slot string) []Port {
-	dom, ok := DomainByID(id)
-	if !ok {
-		return nil
-	}
-	s, ok := dom.Slot(slot)
-	if !ok {
-		return nil
-	}
-	already := map[PortRef]bool{}
-	for _, c := range m.claimsForSlot(id, slot) {
-		already[c.Port] = true
-	}
-	var out []Port
-	for _, p := range m.Ports {
-		if p.Direction != s.Direction {
-			continue
-		}
-		if !s.accepts(p.RoleKind) {
-			continue
-		}
-		if already[p.Ref] {
-			continue
-		}
-		if s.Direction == DirOutput && m.outputClaimedElsewhere(p.Ref, id, slot) {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
-}
+// (Candidates() — the per-slot picker query — was removed 2026-06-13 with the
+// generic Domains tab; picker pools are now computed frontend-side from
+// freePortPool + effectClaims.  claimsForSlot + outputClaimedElsewhere below
+// stay alive via validate.go's exclusivity check.)
 
 // outputClaimedElsewhere reports whether an output port is already claimed
 // by any claim other than the given (domain, slot).

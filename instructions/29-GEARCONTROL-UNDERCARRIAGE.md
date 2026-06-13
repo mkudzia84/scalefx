@@ -28,11 +28,26 @@ reinvent (see §7 archive map).
 > selector + fleet & per-channel Deploy/Retract action-toggles + live phase·
 > subphase pill. wails build + vitest green.
 >
-> **Remaining:** (a) **hardware bench validation** of the full sequence on a wired
-> hub + expander + motor + servos; (b) the **hub-forwarded motor manual-jog** popup
-> (§3.4 — needs a `GEAR_MANUAL_HOLD` packet so the gear yields the motor + Studio
-> bindings wrapping topology `sendRoleCommand` for BiMotor move/seek/guard). The
-> Motor modal currently does deploy/retract bench-test + duty/timeout only.
+> **Motor calibration popup landed 2026-06-13:** `MotorCalibrationDialog.svelte`
+> + `MotorWidget.svelte` + `motor_calibration.ts` / `motor_status.ts` +
+> `app_gearmotor.go` (GUID-aware `GearMotor*` Wails methods routing via
+> `c.Role(guid)`, Rule 58 — reuse the `Diag*` structs + `awaitEndstop`). The
+> strut motor card now shows a **live current-mA / duty / position / stall**
+> readout (polled per configured motor on the status timer) + a **⚙ Calibrate
+> motor…** button → modal with live status, A→B calibrate sweep (travel-time +
+> peak current), To-End-A/B, hold-jog, and LiveRatio/Fixed **stall-guard**
+> tuning. `Save to strut` commits the working duty (deploy +, retract −) +
+> suggested travel timeout (full-stroke × 1.5) into the channel draft. NO new
+> wire packets — it drives the EXISTING BiDcMotor role packets directly (no
+> `GEAR_MANUAL_HOLD` needed: the operator calibrates while the strut is idle, so
+> the FSM isn't driving the motor). Stall-guard is a LIVE push (not yet a YAML
+> field). wails build + vitest + svelte-check (no new errors) green.
+>
+> **Remaining:** (a) **hardware bench validation** of the full sequence + the
+> calibration sweep on a wired hub + expander + motor + servos; (b) persist the
+> stall-guard config to `/hubfx.yaml ports[]` (today it's re-applied per session);
+> (c) a `GEAR_MANUAL_HOLD` interlock IF calibration is ever wanted while the FSM
+> is mid-cycle (not needed for the idle-strut bench flow today).
 
 > Scope note: the gear MOTOR lives on a GearControl **expander** (BiDcMotor role
 > on an H-bridge); the door SERVOS are ServoActuator roles (expander or hub). All
@@ -276,7 +291,16 @@ close → RELEASE + re-claim. Extract the Diagnostics BiMotor logic into a share
 ```yaml
 schema_version: 2
 enabled: true
-coord: sync            # independent | sync
+coord: sync            # independent | door_sync | full_sync | sequenced
+input:                 # OPTIONAL (2026-06-11) — one RC up/down channel drives ALL gears
+  name: gear_updown    # named channel from /hubfx.yaml inputs[] (Rule 43)
+  threshold_us: 1500
+  hysteresis_us: 50
+  invert: false        # false: above threshold = RETRACT (gear up)
+sounds:                # OPTIONAL (2026-06-11) — transit loops on HubFxLayout::Gear (slot 5)
+  deploy:  /sounds/gear/deploy.wav    # looped while any gear deploys; empty = silent
+  retract: /sounds/gear/retract.wav
+  output_mask: 3       # 1 = left, 2 = right, 3 = both
 gears:
   - id: 0
     name: nose
@@ -293,6 +317,17 @@ gears:
 ```
 Door `reversed` is NOT here — it lives on the servo's profile in `/hubfx.yaml`
 `ports[]` (Rule 44).
+
+`input:` is wired by the standalone `GearActivationDriver`
+(`config/gear_activation.h`, the gear twin of `LandingActivationDriver`) so the
+service keeps its two template params; it fires the same
+`GearControlService::commandAll()` the wire `GEAR_ALL` takes, honouring the
+coord mode.  Failsafe is firmware-fixed to the DEPLOY side (RC loss lowers the
+gear).  `sounds:` plays through an `AudioCmdFn` trampoline the sketch binds
+(`bindAudio`, GunFx pattern): the matching WAV loops on the dedicated `Gear`
+mixer channel while any gear is mid-transit and stops when the set settles
+(a Sequenced chain counts as still-moving across the inter-gear handoff).
+Both blocks are append-only optional — a pre-2026-06 v2 file parses unchanged.
 
 ## 5. Phasing / PR sequence
 1. **Firmware sequencing** — port `door_sequencer` + `gear_sequencer`, extend

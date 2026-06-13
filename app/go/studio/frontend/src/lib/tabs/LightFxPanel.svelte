@@ -44,6 +44,7 @@
     import { deviceModel, liveChannels, liveChannelKey, RoleKind, formatPortRail, claimsForPort, type Claim } from '../devicemodel'
     import { effectClaims } from '../effect-claims'
     import { suggestNextBand } from '../range-suggest'
+    import { collectChannelOptions } from '../channels'
     import type { PortRefT } from '../landing'
     import { landingDraft } from '../landing'
     import { freePortPoolFiltered } from '../components/port_pool'
@@ -128,22 +129,8 @@
     }
 
     // ─── Named-channel options (Rule 43, for the selector picker) ────
-    type ChanOpt = { fnId: string; label: string }
-    $: chanOpts = collectChannelOpts($deviceModel)
-    function collectChannelOpts(_dm: typeof $deviceModel): ChanOpt[] {
-        const fns = new Map($deviceModel.channelFunctions.map(f => [f.id, f.label] as const))
-        const out: ChanOpt[] = []
-        for (const inp of $deviceModel.inputs) {
-            for (const c of inp.channels) {
-                if (c.function === 'unassigned') continue
-                out.push({
-                    fnId: c.function,
-                    label: `CH${c.channel + 1} · ${fns.get(c.function) ?? c.function}`,
-                })
-            }
-        }
-        return out
-    }
+    // Shared collector (channels.ts); the selector only reads {fnId,label}.
+    $: chanOpts = collectChannelOptions($deviceModel)
     // Reactive closure rebuilt on every live-stream / device-model change so
     // call sites re-evaluate per frame AND on reassignment (a plain function
     // reading $liveChannels internally freezes — the gun-pill / input-bar trap).

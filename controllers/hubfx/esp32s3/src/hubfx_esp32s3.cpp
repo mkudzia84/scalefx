@@ -59,8 +59,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.27.1-hubfx"
-#define BUILD_NUMBER     854
+#define FIRMWARE_VERSION "2.28.0-hubfx"
+#define BUILD_NUMBER     857
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -157,6 +157,7 @@
 #include "config/lightfx_config.h"
 #include "config/lightfx_program_selector.h"
 #include "config/landing_activation.h"
+#include "config/gear_activation.h"
 #include "config/apply_hubfx_config.h"
 #include "config/config_store_slot.h"
 #include "config/telemetry_emitter.h"
@@ -583,8 +584,23 @@ static void applyLandingConfigCallback(const LandingConfig& cfg) {
     if (g_lightFxBooted) installLandingActivation(cfg);
 }
 
+// RC-channel undercarriage up/down driver — file-scope so the config-reload
+// callback re-wires it on every Studio Apply (mirrors kLandingActivation).
+static hubfx::config::GearActivationDriver kGearActivation;
+
+static void installGearActivation(const GearControlConfig& cfg) {
+    kGearActivation.install(
+        &board.policy<InputDispatcherService>(),
+        &board.policy<GearControlService>(),
+        cfg,
+        kHubFx.data());
+}
+
 static void applyGearControlConfigCallback(const GearControlConfig& cfg) {
     hubfx::config::applyGearControlConfig<HubFxBoard, GearControlService>(board, cfg);
+    // Re-wire the RC up/down channel on every CONFIG_RELOAD (Studio Apply).
+    // Skipped at boot — the setup block installs it once the dispatcher is up.
+    if (g_lightFxBooted) installGearActivation(cfg);
 }
 
 // RC program selector — file-scope so the config-reload callback can re-wire it
@@ -837,6 +853,11 @@ void setup() {
     // the threshold and retracts below (fail-low on RC loss).  Re-wired on
     // every Studio Apply by applyLandingConfigCallback.
     installLandingActivation(kLanding.data());
+    // Undercarriage RC up/down — when /gearcontrol.yaml's `input:` block
+    // names a channel, subscribe a Boolean trigger that retracts above the
+    // threshold and deploys below (failsafe = deploy on RC loss).  Re-wired
+    // on every Studio Apply by applyGearControlConfigCallback.
+    installGearActivation(kGearCtrl.data());
     g_lightFxBooted = true;
 
     // Mirror every INFO+ entry to the wire as TAG_ASYNC LOG_MESSAGE so
@@ -870,6 +891,32 @@ void setup() {
     // start, resume on end.  Without this, raw-stream uploads starve
     // the audio task and you hear glitches mid-transfer.
     wireUploadExclusivity<Mixer>(board.policy<StorageService>());
+
+    // GearControl transit sounds — wire the service's audio hook into the
+    // board mixer on the dedicated Gear channel.  Same playAsync semantics
+    // as GunFx's onAudioCmd (preload-into-memory: transit loops are short
+    // and wrap hot; SD seeks mid-loop stutter against the engine track).
+    board.policy<GearControlService>().bindAudio(
+        [](void*, const char* soundPath, uint8_t audioChannel,
+           uint8_t outputMask, bool loop) {
+            if (!soundPath) {
+                Mixer::instance().stopAsync((int)audioChannel,
+                                            AudioStopMode::Immediate);
+                return;
+            }
+            if (!soundPath[0]) return;
+            AudioPlaybackOptions opts;
+            opts.volume         = 1.0f;
+            opts.outputChannels = outputMask;
+            if (loop) {
+                opts.loop      = true;
+                opts.loopCount = LOOP_INFINITE;
+            }
+            opts.preloadIntoMemory = true;
+            Mixer::instance().playAsync(audioChannel, soundPath, opts);
+        },
+        nullptr,
+        hubfx::effects::audio::HubFxLayout::Gear);
 
     // Same Rule-28 exclusivity for the Jeti IN_1 telemetry task: pause its
     // Core-0 UART servicing while an upload holds the pipeline, so it can't

@@ -24,7 +24,8 @@
 
 import { writable, get, type Writable } from 'svelte/store'
 import { ServoSetTarget, SetPortProfile } from '../../wailsjs/go/main/App'
-import { markHubDirty } from './devicemodel'
+import { markHubDirty, type Port } from './devicemodel'
+import type { PortRefLike } from './components/port_keys'
 
 // ─── DTO mirrors ──────────────────────────────────────────────────────
 
@@ -43,6 +44,25 @@ export function defaultServoProfile(): ServoProfileT {
         minUs: 1000, maxUs: 2000, centerUs: 1500,
         reversed: false,
         maxSpeedUsPerSec: 800, maxAccelUsPerSec2: 1600, maxJerkUsPerSec3: 0,
+    }
+}
+
+/** REACTIVE FACTORY for a port→profile lookup.  Pass the current device
+ *  model (`$deviceModel`) so Svelte rebuilds the closure on every model
+ *  change — calling it directly in `$:` froze calibration on first render
+ *  (the landing-panel trap).  Returns a fresh copy of the port's servo
+ *  profile, or null if the ref is unset / has no profile.  Was copy-pasted
+ *  into Gear/GunFx/Landing — hoisted 2026-06-13. */
+export function makeProfileForPort(dm: { ports: readonly Port[] }) {
+    return (port: PortRefLike | null | undefined): ServoProfileT | null => {
+        if (!port || !port.kind) return null
+        for (const p of dm.ports) {
+            if (p.ref.guid === port.guid && p.kindName === port.kind
+                && p.ref.index === port.idx && p.profile) {
+                return { ...p.profile } as ServoProfileT
+            }
+        }
+        return null
     }
 }
 

@@ -59,6 +59,8 @@ panel can crib it.
 17. [Operational action cluster](#17-operational-action-cluster) — `.op-cluster` split-button for primary-action + optional picker + Stop (Rule 48)
 18. [Modular config sources + global Apply](#18-modular-config-sources) — `DirtySource` + `ConfigToolbar` aggregate (Rule 46)
 19. [Servo I/O status widget](#19-servo-io-status-widget) — live signal-in bar + servo-out track (RED actual + YELLOW target lines), `ServoIoWidget.svelte` (Rule 42)
+20. [Segmented mode selector](#20-segmented-mode-selector) — `.seg-select` joined toggle for ≤4-option mode choices; radios retired (Rule 60.3)
+21. [Subsystem frame](#21-subsystem-frame) — `.sub-frame` (--bg-raised + frame-head), level 3 of the background hierarchy (Rule 60.8)
 
 ---
 
@@ -1044,6 +1046,130 @@ catalog is a working handbook; rules are the spec.
 If you build a NEW pattern that's reusable, you owe future-you a
 catalog entry. Add it before the panel ships, even if the entry is
 just "see X.svelte for the implementation, formalise next time."
+
+---
+
+## 20. Segmented mode selector
+
+A mutually-exclusive MODE choice with **≤ 4 options** renders as one joined
+segmented control — the selector twin of `.op-cluster` (same chrome: single
+outer border, seam dividers, 28 px height).  Exactly one segment carries
+`.on` (accent tint).  **Radio rows in panels are retired** (Rule 60.3);
+dropdowns are for > 4 options or dynamic lists.
+
+```svelte
+<div class="form-row">
+    <span class="field-label">Opening</span>
+    <div class="seg-select">
+        <button class="seg" class:on={mode === 'sync'}
+                on:click={() => setMode('sync')} disabled={busy}
+                title="Both doors start opening together.">Together</button>
+        <button class="seg" class:on={mode === 'delay'}
+                on:click={() => setMode('delay')} disabled={busy}
+                title="Door 1 opens, door 2 follows after a delay.">Staggered</button>
+        <button class="seg" class:on={mode === 'sequence'}
+                on:click={() => setMode('sequence')} disabled={busy}
+                title="Door 1 fully, then door 2.">One, then other</button>
+    </div>
+</div>
+```
+
+**Required classes** (global, `style.css`): `.seg-select` (wrapper),
+`.seg` (segment button), `.seg.on` (active — accent background, default
+cursor).  Mode-dependent extra fields (e.g. the stagger ms input) follow
+in their own `form-row`, shown only when the relevant segment is active.
+Give every segment a verb-led `title=` (Rule 24).  Reference: the Gear
+tab's door sequencing + coordination selector
+([GearPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GearPanel.svelte)).
+
+---
+
+## 21. Subsystem frame
+
+Level **3** of the background hierarchy (Rule 60.8): panel `.card` →
+unit `.card` (nested, `.card-header.inner`) → **`.sub-frame`** — the only
+place `--bg-raised` appears.  One frame per subsystem, usually one per
+column of the unit card's `.two-col` split (Rule 60.1).
+
+```svelte
+<div class="sub-frame" class:frame-warn={poolEmpty}>
+    <div class="frame-head">
+        Gear motor
+        {#if poolEmpty}<span class="section-warn-tag">no BiDcMotor port</span>{/if}
+    </div>
+    …form rows…
+</div>
+```
+
+**Required classes** (global, `style.css`): `.sub-frame`, `.frame-head`,
+`.frame-warn` / `.frame-error` (border tints).  Promoted from GunFx's
+`.smoke-frame`.  Never nest a `.sub-frame` inside another, and never put
+`--bg-raised` on a unit card.
+
+---
+
+## 22. Motor calibration widget + dialog (H-bridge / BiDcMotor)
+
+The gear-motor analogue of the servo Calibrate pattern (entry 19 / Rule 44):
+a compact widget on the unit card opens a live-drive popup, and a per-element
+live strip surfaces the motor's **current mA** "hooked into status".
+
+- **`MotorWidget.svelte`** ([src/lib/components/MotorWidget.svelte](../app/go/studio/frontend/src/lib/components/MotorWidget.svelte)) —
+  `[deploy/retract duty · timeout summary]  [⚙ Calibrate motor…]` + a live
+  readout strip `live: <I> mA · duty <d> · <pos> · <stall>`.  Props: `hasMotor`,
+  `deployDuty`, `retractDuty`, `timeoutMs`, `live: MotorLive | null`, `busy`,
+  `onCalibrate`.  Mirrors `ServoWidget` but a gear motor has no position
+  feedback, so the headline is the stall **current**, not a position bar.
+- **`MotorCalibrationDialog.svelte`** ([src/lib/dialogs/MotorCalibrationDialog.svelte](../app/go/studio/frontend/src/lib/dialogs/MotorCalibrationDialog.svelte)) —
+  modal opened via `openMotorCalibrationFor(...)` ([motor_calibration.ts](../app/go/studio/frontend/src/lib/motor_calibration.ts)),
+  mounted once in `App.svelte`.  Three sections: **Live status** (current mA
+  front + emphasised, polled ~2 Hz while open), **Drive** (seek duty + timeout →
+  Calibrate A→B sweep / To End A·B / Stop / hold-jog, each awaiting the
+  BIMOTOR_ENDSTOP_RESULT travel-time + peak current), **Stall guard** (LiveRatio
+  vs Fixed, live push).  `Save to strut` writes the working duty (deploy +,
+  retract −) + suggested travel timeout (full-stroke × 1.5) back into the gear
+  channel draft via the `onCommit` callback (persisted on Apply); the stall
+  guard is a LIVE push only (not a YAML field today).
+- **`motor_status.ts`** ([src/lib/motor_status.ts](../app/go/studio/frontend/src/lib/motor_status.ts)) —
+  live store keyed `${guid}|hbridge|${idx}`; there is NO motor broadcast (unlike
+  the servo stream), so the panel POLLS `GearMotorStatus` per configured motor
+  on its status timer (`pollMotors`) and the dialog polls faster while open.
+- **Backend** — `app_gearmotor.go` exposes GUID-aware `GearMotor*` Wails methods
+  (status / calibrate / moveEnd / jog / stop / guardFixed / guardLiveRatio) that
+  route via `c.Role(guid)` so a motor on an expander behaves hub-local
+  (Rule 58); they reuse the `Diag*` result structs + `awaitEndstop` from
+  `app_geardiag.go`.
+
+Reference panel: **GearPanel** strut motor card.
+
+---
+
+## 23. Shared panel helpers (don't re-inline)
+
+Every effect panel needs the same four boilerplate helpers; each lives in
+ONE module and is unit-tested.  **Import them — never re-inline** (the
+copies drift, which is how the hub-local-port and frozen-profile bugs
+started).  Hoisted 2026-06-13.
+
+- **Port-key + option label** — [`components/port_keys.ts`](../app/go/studio/frontend/src/lib/components/port_keys.ts):
+  `portRefToKey` (value side) / `modelPortKey` (option side) — keep the
+  stored PortRef and the `<option value>` in lock-step; `parsePortKey`
+  (key → ref); `refOptLabel(p)` — alias-aware `Board · alias (silkscreen)
+  · rail` picker label.  Tested in `port_keys.test.ts`.
+- **Reactive servo-profile factory** — [`servo_calibration.ts`](../app/go/studio/frontend/src/lib/servo_calibration.ts)
+  `makeProfileForPort($deviceModel)`: returns a closure rebuilt on every
+  `$deviceModel` change so a Calibrate→Save isn't frozen on the old
+  profile (Rule 44 + the Svelte store-read trap).  Bind via
+  `$: profileForPort = makeProfileForPort($deviceModel)`.
+- **Named-RC-channel options** — [`channels.ts`](../app/go/studio/frontend/src/lib/channels.ts)
+  `collectChannelOptions($deviceModel)`: one option per ASSIGNED channel
+  (Rule 43); superset shape — minimal-shape consumers (Gun/LightFx) read
+  only `{fnId,label}`, live-µs consumers (Engine/Gear/Landing) use
+  `portGuid/portIdx/channel`.
+- **Sound-path validation** — [`sound_validation.ts`](../app/go/studio/frontend/src/lib/sound_validation.ts)
+  `validateSoundFiles(entries)`: absolute-path + required-set + batched
+  SD-existence check, returns a `{ key → errorText }` map.  Panels keep
+  only their tiny per-panel debounce wrapper.
 
 ---
 

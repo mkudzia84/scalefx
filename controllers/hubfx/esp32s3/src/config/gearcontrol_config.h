@@ -18,6 +18,15 @@
  *   schema_version: 2
  *   enabled: true
  *   coord: independent           # independent | door_sync | full_sync | sequenced
+ *   input:                       # OPTIONAL — one RC up/down channel drives ALL gears
+ *     name: gear_updown          # named channel from /hubfx.yaml inputs[] (Rule 43)
+ *     threshold_us: 1500         # Boolean threshold
+ *     hysteresis_us: 50
+ *     invert: false              # false: above threshold = RETRACT (gear up)
+ *   sounds:                      # OPTIONAL — transit sounds on the Gear mixer channel
+ *     deploy:  /sounds/gear/deploy.wav    # looped while any gear is deploying
+ *     retract: /sounds/gear/retract.wav   # looped while any gear is retracting
+ *     output_mask: 3             # 1 = left, 2 = right, 3 = both
  *   gears:
  *     - id: 0
  *       name: nose
@@ -36,6 +45,9 @@
  * "GearCtrl-AB12" → "AB12"); omit it for a hub-local port.  Direct
  * YamlNode traversal (the declarative DSL doesn't compose the gears
  * sequence with the nested motor map).
+ *
+ * `input:` and `sounds:` are append-only optional blocks (Rule 11 spirit) —
+ * a v2 file without them parses identically to before.
  */
 
 #ifndef HUBFX_GEARCONTROL_CONFIG_H
@@ -59,6 +71,26 @@ struct GearControlYamlPool {
     static constexpr size_t MAX_DEPTH        = 12;
 };
 
+/// OPTIONAL one-channel RC activation: the named up/down channel that
+/// commands ALL gears (resolved against /hubfx.yaml inputs[] by the
+/// GearActivationDriver — Rule 43; the service never sees the name).
+struct GearActivation {
+    char     input[24]    = {};     ///< named channel; empty = manual only
+    uint16_t thresholdUs  = 1500;   ///< Boolean threshold
+    uint16_t hysteresisUs = 50;
+    bool     invert       = false;  ///< false: above threshold = RETRACT (up)
+};
+
+/// OPTIONAL transit sounds, played on the dedicated Gear mixer channel:
+/// the matching loop starts when any gear begins moving and stops when
+/// the whole set settles.  Empty path = silent (no audio for that
+/// direction).
+struct GearSounds {
+    char    deploy[64]  = {};       ///< looped while deploying (gear going down)
+    char    retract[64] = {};       ///< looped while retracting (gear going up)
+    uint8_t outputMask  = 0x03;     ///< 1 = left, 2 = right, 3 = both
+};
+
 /// Parsed form of `/gearcontrol.yaml` — a thin wrapper around the
 /// firmware-side `GearDef[]` so apply can hand the array straight to
 /// `GearControlServicePolicy::configure()`.
@@ -68,6 +100,8 @@ struct GearControlConfig {
     bool enabled = true;
     uint8_t coordMode =
         hubfx::effects::gearctrl::CoordMode::Independent;  ///< cross-channel coordination
+    GearActivation activation = {};   ///< RC up/down channel (optional)
+    GearSounds     sounds     = {};   ///< transit sounds (optional)
     hubfx::effects::gearctrl::GearDef
         gears[hubfx::effects::gearctrl::kMaxGears] = {};
     uint8_t numGears = 0;
@@ -97,6 +131,27 @@ struct GearControlConfigSchema {
                 else if (std::strcmp(coord, "sequenced") == 0) d.coordMode = CoordMode::Sequenced;
                 else                                           d.coordMode = CoordMode::Independent;
             }
+        }
+
+        // ── OPTIONAL `input:` block — one RC up/down channel for all gears.
+        d.activation = GearActivation{};
+        if (const auto* inNode = root ? root->child("input") : nullptr) {
+            const char* nm = inNode->template childAs<const char*>("name", "");
+            if (nm && nm[0]) std::strncpy(d.activation.input, nm, sizeof(d.activation.input) - 1);
+            d.activation.thresholdUs  = (uint16_t)inNode->template childAs<int32_t>("threshold_us", 1500);
+            d.activation.hysteresisUs = (uint16_t)inNode->template childAs<int32_t>("hysteresis_us", 50);
+            d.activation.invert       = inNode->template childAs<bool>("invert", false);
+        }
+
+        // ── OPTIONAL `sounds:` block — transit loops on the Gear channel.
+        d.sounds = GearSounds{};
+        if (const auto* sNode = root ? root->child("sounds") : nullptr) {
+            const char* dep = sNode->template childAs<const char*>("deploy", "");
+            const char* ret = sNode->template childAs<const char*>("retract", "");
+            if (dep && dep[0]) std::strncpy(d.sounds.deploy,  dep, sizeof(d.sounds.deploy)  - 1);
+            if (ret && ret[0]) std::strncpy(d.sounds.retract, ret, sizeof(d.sounds.retract) - 1);
+            d.sounds.outputMask = (uint8_t)sNode->template childAs<int32_t>("output_mask", 3);
+            if (d.sounds.outputMask == 0 || d.sounds.outputMask > 3) d.sounds.outputMask = 3;
         }
 
         const auto* gearsNode = root ? root->child("gears") : nullptr;

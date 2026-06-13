@@ -18,16 +18,8 @@ export function BuildAndFlash(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['BuildAndFlash'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function CandidatePorts(arg1, arg2) {
-  return window['go']['main']['App']['CandidatePorts'](arg1, arg2);
-}
-
 export function CheckFiles(arg1) {
   return window['go']['main']['App']['CheckFiles'](arg1);
-}
-
-export function ClaimPort(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['ClaimPort'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function Connect(arg1) {
@@ -188,6 +180,34 @@ export function GearAll(arg1) {
 
 export function GearDeploy(arg1) {
   return window['go']['main']['App']['GearDeploy'](arg1);
+}
+
+export function GearMotorCalibrate(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GearMotorCalibrate'](arg1, arg2, arg3, arg4);
+}
+
+export function GearMotorGuardFixed(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GearMotorGuardFixed'](arg1, arg2, arg3, arg4);
+}
+
+export function GearMotorGuardLiveRatio(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['GearMotorGuardLiveRatio'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+}
+
+export function GearMotorJog(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GearMotorJog'](arg1, arg2, arg3);
+}
+
+export function GearMotorMoveEnd(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['GearMotorMoveEnd'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function GearMotorStatus(arg1, arg2) {
+  return window['go']['main']['App']['GearMotorStatus'](arg1, arg2);
+}
+
+export function GearMotorStop(arg1, arg2) {
+  return window['go']['main']['App']['GearMotorStop'](arg1, arg2);
 }
 
 export function GearReset(arg1) {
@@ -476,10 +496,6 @@ export function StopLightChannel(arg1) {
 
 export function SyncLightFxToDevice(arg1, arg2) {
   return window['go']['main']['App']['SyncLightFxToDevice'](arg1, arg2);
-}
-
-export function UnclaimPort(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['UnclaimPort'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function UploadConfig(arg1) {

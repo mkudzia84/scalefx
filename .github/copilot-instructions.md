@@ -2438,6 +2438,98 @@ expander input). References:
 [role_registry.h](../controllers/lib/sfx_board/server/role_registry.h)
 (`forEachAttachedRole` — single role-kind enumeration map).
 
+### 59. Every Studio Tab Routes to a Dedicated Panel — Verify the Hookup End-to-End
+
+A Studio tab MUST render a purpose-built panel; there is NO generic fallback UI.
+The generic slot-editor `DomainTab` was DELETED (2026-06-13) after it silently
+swallowed a mis-routed domain for days: the backend domain id was
+`landing-gear` but the tab router matched `gearcontrol`, so the purpose-built
+GearPanel was unreachable and the operator saw a bare auto-generated
+"Gear units"/"Gear switch" slot view that looked like (a bad) feature. A
+half-working generic UI HIDES routing bugs; a loud placeholder SURFACES them.
+
+- A domain the router can't place renders
+  [NotImplementedTab.svelte](../app/go/studio/frontend/src/lib/tabs/NotImplementedTab.svelte)
+  — a deliberate "Not implemented" card naming the domain id and pointing at
+  the missing hookup. Never resurrect a generic editable fallback.
+- **When adding a domain or panel, verify the WHOLE routing chain by id, not
+  by assumption:** the Go `domainCatalog` `Domain.ID`
+  ([types.go](../app/go/devicemodel/types.go)) → the matching set/find in
+  `studioTabs` ([devicemodel.ts](../app/go/studio/frontend/src/lib/devicemodel.ts))
+  → the `kind` case in
+  [MainLayout.svelte](../app/go/studio/frontend/src/lib/layout/MainLayout.svelte)
+  → the dedicated panel component. The ids are STRINGS across a Go/TS
+  boundary — nothing fails at compile time when they drift.
+- **Acceptance check for any new/renamed tab:** run Studio against a board (or
+  the dev server), click the tab, and confirm the DEDICATED panel renders —
+  seeing the NotImplemented placeholder (or no tab at all) means the chain is
+  broken at one of the three links above. A panel that was never reachable is
+  indistinguishable from an unimplemented one in review — only the click test
+  catches it.
+
+### 60. Studio Panel Layout Grammar (approved 2026-06-13)
+
+How a complex effect panel arranges itself — derived from the patterns the
+mature tabs (GunFx `.guns-grid`, Engine status row, Lighting segmented
+switcher) already converged on, now binding:
+
+- **60.1 Two-column unit cards split by SUBSYSTEM.** A per-unit card (strut,
+  gun, light group) with two functional halves lays out as a two-column grid
+  (the global `.two-col` + `.col`), **one subsystem per column** — everything
+  about a subsystem (its port pickers, calibration/setup affordances AND its
+  behaviour/sequencing config) stays together in its column.  Gun: core LEFT,
+  smoke RIGHT.  Gear: strut motor LEFT; doors (servo selection + open/close +
+  calibration + sequencing) RIGHT.  Never split one subsystem's ports from
+  its behaviour across columns.  Collapse to one column below ~900 px;
+  `align-items: start`.
+- **60.2 Live-telemetry widgets GROW to their container.**  Channel bars
+  (ChannelToggleCluster/ChannelBandCluster), ServoIoWidget mirrors, verbose
+  status — anything animated by live data — must fill the available width, not
+  shrink to content.  **Panel/unit-level** live widgets (RC channel clusters,
+  fleet status) go full-width above/below the column grid.  A **per-element**
+  live mirror (one door's servo position, one axis's I/O) stays WITH its
+  element — in its subsystem column, directly under the element it mirrors —
+  so it reads as part of that element's context, not an orphaned bar.  Either
+  way it must GROW: a bare widget in a `.form-row` only takes content width —
+  wrap it in a grow container (`flex: 1 1 auto; min-width: 0`, see GearPanel
+  `.live-row` / `.live-widget`).
+- **60.3 Segmented toggles for mode choices.**  A mutually-exclusive mode
+  choice with ≤ 4 options renders as ONE joined segmented control (the global
+  `.seg-select`, the selector twin of `.op-cluster`; exactly one `.seg.on`).
+  Radio rows in panels are RETIRED; dropdowns are for > 4 options or dynamic
+  lists (port/channel pickers).
+- **60.4 Unclaimed-only pools, sibling-aware.**  Extends Rule 49: a port
+  picker's pool is role-filtered AND minus ports claimed by other effects AND
+  minus ports already used by any sibling row in the SAME panel; the row's own
+  current pick stays via `exempt`.
+- **60.5 Ops in the header, config in the body.**  Operational actions
+  (deploy/stop/reset/reorder, the Rule 48 toggles) live in the unit card's
+  header op-cluster; configuration never mixes into the header, ops never
+  sink into the form body.
+- **60.6 Parameter packs use grids.**  ≥ 2 related numeric fields (duties,
+  timeouts, offsets) pack into `.form-grid cols-2/3` inside their column —
+  never one full form-row per number.
+- **60.7 Section-head hierarchy.**  Inside a column, section heads use the
+  dashed `.sub` variant; solid-underline heads are reserved for panel-level
+  sections.  Inside a `.sub-frame` the head is the frame's `.frame-head`.
+- **60.8 Background hierarchy — exactly three levels.**  1. panel card =
+  `.card` (`--bg-surface`); 2. unit card = nested `.card` (same chrome,
+  `.card-header.inner`); 3. subsystem = the global `.sub-frame`
+  (`--bg-raised` + hairline border + `.frame-head`; `frame-warn`/`frame-error`
+  variants tint the border).  Promoted from GunFx's `.smoke-frame`.  Never
+  invent a fourth background level and never put `--bg-raised` on a unit card
+  — mismatched group backgrounds across tabs read as a different app.
+- **60.4 enforcement note.**  `freePortPool` must be fed **`$effectClaims`**
+  (lib/effect-claims.ts — hard claims + soft claims synthesized from EVERY
+  effect's draft, own domain filtered at the call site), NOT the vestigial
+  `$deviceModel.claims` (only the retired Domains UI + presets ever wrote
+  those — feeding them alone shows every port as free, the gear-door bug,
+  2026-06-13).  A new effect with port bindings MUST add its contribution
+  block to `effectClaims` in the same PR.
+
+Reference implementation: the Gear tab's strut cards
+([GearPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GearPanel.svelte)).
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host

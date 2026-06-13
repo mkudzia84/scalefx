@@ -8,12 +8,14 @@
     import {
         engineDraft, engineDirty, engineStatus,
         loadEngineConfig, applyEngineConfig,
-        engineStart, engineStop, refreshEngineStatus, checkFiles,
+        engineStart, engineStop, refreshEngineStatus,
         ENGINE_TYPES, OUTPUT_MODES,
         type EngineConfigT,
     } from '../effects'
     import { deviceModel, liveChannels, liveChannelKey, usToPct } from '../devicemodel'
     import { pickFile } from '../filepicker'
+    import { collectChannelOptions } from '../channels'
+    import { validateSoundFiles } from '../sound_validation'
     import SoundRow from '../components/SoundRow.svelte'
     import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
 
@@ -86,34 +88,24 @@
     // ── Channel driver (toggle.input) ─────────────────────────────────
     // Lists every channel whose function is mapped to something other than
     // "unassigned" — operators can name an input channel and bind it here.
-    type ChanOpt = { fnId: string; label: string; portGuid: string; portIdx: number; channel: number }
-    $: chanOpts = collectChannels($deviceModel)
-    function collectChannels(_dm: typeof $deviceModel): ChanOpt[] {
-        const fns = new Map($deviceModel.channelFunctions.map(f => [f.id, f.label] as const))
-        const out: ChanOpt[] = []
-        for (const inp of $deviceModel.inputs) {
-            for (const c of inp.channels) {
-                if (c.function === 'unassigned') continue
-                out.push({
-                    fnId: c.function,
-                    label: `CH${c.channel + 1} · ${fns.get(c.function) ?? c.function}`,
-                    portGuid: inp.port.guid, portIdx: inp.port.index, channel: c.channel,
-                })
-            }
-        }
-        return out
-    }
+    $: chanOpts = collectChannelOptions($deviceModel)
     $: chosenChan = chanOpts.find(o => o.fnId === cfg?.toggle.input)
     $: liveUs = chosenChan ? $liveChannels[liveChannelKey({guid: chosenChan.portGuid, kind: 4, index: chosenChan.portIdx}, chosenChan.channel)] : null
 
-    async function browsePath(field: 'starting' | 'running' | 'stopping') {
+    // The three sound slots — a typed tuple so the {#each} alias narrows to
+    // the union (a bare array literal yields `string`, which then can't index
+    // cfg.sounds / call the typed handlers — the 2 baseline type errors).
+    const SOUND_FIELDS = ['starting', 'running', 'stopping'] as const
+    type SoundField = typeof SOUND_FIELDS[number]
+
+    async function browsePath(field: SoundField) {
         // Sounds always live on SD — open the picker constrained to that
         // backend so the Flash tab is hidden and the dialog opens at /sd:/.
         const p = await pickFile({ targets: 'sd' })
         if (p != null) { cfg.sounds[field] = p; mark(); scheduleValidate() }
     }
 
-    function clearSound(field: 'starting' | 'stopping') {
+    function clearSound(field: SoundField) {
         cfg.sounds[field] = ''
         mark()
         // Clearing always validates immediately — no path = valid for optional fields.
@@ -132,19 +124,17 @@
         validateTimer = setTimeout(() => { validateTimer = null; void validateSounds() }, 350)
     }
     async function validateSounds() {
-        const next = { starting: '', running: '', stopping: '' }
-        // Required: running must have a path.
-        if (!cfg.sounds.running) next.running = 'required — pick a looping sound'
-        const probe = [cfg.sounds.starting, cfg.sounds.running, cfg.sounds.stopping].filter(p => !!p)
-        if (probe.length > 0) {
-            const exists = await checkFiles(probe)
-            for (const k of ['starting','running','stopping'] as const) {
-                const p = cfg.sounds[k]
-                if (!p) continue
-                if (!exists[p]) next[k] = `file not found on SD: ${p}`
-            }
+        // running is REQUIRED (looping sound); starting / stopping optional.
+        const errs = await validateSoundFiles([
+            { key: 'starting', path: cfg.sounds.starting ?? '' },
+            { key: 'running',  path: cfg.sounds.running  ?? '', required: true },
+            { key: 'stopping', path: cfg.sounds.stopping ?? '' },
+        ])
+        soundErrors = {
+            starting: errs.starting ?? '',
+            running:  errs.running  ?? '',
+            stopping: errs.stopping ?? '',
         }
-        soundErrors = next
     }
 
     // Re-validate on first paint and whenever the draft swaps in a new path.
@@ -259,7 +249,7 @@
         <div class="section-head" class:section-error={soundsHaveErrors}>
             Sounds {#if soundsHaveErrors}<span class="section-err-tag">missing files</span>{/if}
         </div>
-        {#each ['starting', 'running', 'stopping'] as f}
+        {#each SOUND_FIELDS as f}
             {@const err = soundErrors[f]}
             {@const optional = f !== 'running'}
             <SoundRow

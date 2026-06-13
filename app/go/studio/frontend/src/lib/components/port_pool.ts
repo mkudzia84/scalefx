@@ -25,7 +25,10 @@ import { claimsForPort } from './../devicemodel'
 
 /** Build the pool for one picker call.
  *  @param ports        every port from $deviceModel.ports
- *  @param claims       every claim from $deviceModel.claims
+ *  @param claims       the MERGED claim list ($effectClaims) — hard claims
+ *                       (ApplyPreset) + soft claims synthesized from every
+ *                       effect's draft.  NOT bare $deviceModel.claims, which
+ *                       holds only the hard half (the "all servos free" bug).
  *  @param kindName     'pwm' | 'servo' | 'hbridge' | 'input'
  *  @param requiredRole the role kind byte (devicemodel.RoleKind.*)
  *  @param exempt       port refs already picked by THIS row — keep them

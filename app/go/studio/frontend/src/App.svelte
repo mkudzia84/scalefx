@@ -9,6 +9,7 @@
     import FileManagerDialog from './lib/dialogs/FileManagerDialog.svelte'
     import PcbOverlayDialog from './lib/dialogs/PcbOverlayDialog.svelte'
     import ServoCalibrationDialog from './lib/dialogs/ServoCalibrationDialog.svelte'
+    import MotorCalibrationDialog from './lib/dialogs/MotorCalibrationDialog.svelte'
     import MainLayout from './lib/layout/MainLayout.svelte'
     import {
         boardState, connectPopupOpen, showAboutDialog, showConsole,
@@ -205,6 +206,10 @@
      `openServoCalibrationFor(...)`.  Replaces the inline
      ServoProfileEditor so feature rows stay compact. -->
 <ServoCalibrationDialog />
+
+<!-- Gear-motor (H-bridge) calibration popup — opened from the GearPanel
+     strut motor card via `openMotorCalibrationFor(...)`. -->
+<MotorCalibrationDialog />
 
 <style>
     .app-layout {

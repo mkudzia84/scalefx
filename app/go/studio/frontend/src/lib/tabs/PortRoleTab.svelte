@@ -10,6 +10,7 @@
         formatPortRail, removeAbandonedBoard, RoleKind,
         type Port, type PortRef,
     } from '../devicemodel'
+    import { effectClaims } from '../effect-claims'
     import PortRoleConfig from '../components/PortRoleConfig.svelte'
     import { openServoCalibrationFor, defaultServoProfile } from '../servo_calibration'
     import { SetPortProfile } from '../../../wailsjs/go/main/App'
@@ -40,7 +41,11 @@
     const expanded = new Set<string>()
     let expandedTick = 0
     function portKey(p: Port): string { return `${p.ref.guid}|${p.ref.kind}|${p.ref.index}` }
-    function isExpanded(p: Port): boolean { return expanded.has(portKey(p)) }
+    // `_tick` is the reactivity trigger only — the template passes `expandedTick`
+    // so Svelte re-runs this when toggleExpand bumps it (the Set itself isn't
+    // tracked).  The value is intentionally unused (was a `(tick, …)` comma
+    // operator, which svelte-check flags as an unused expression).
+    function isExpanded(p: Port, _tick: number = expandedTick): boolean { return expanded.has(portKey(p)) }
     function toggleExpand(p: Port): void {
         const k = portKey(p)
         if (expanded.has(k)) expanded.delete(k)
@@ -110,7 +115,9 @@
 
     function isServo(p: Port): boolean { return p.kindName === 'servo' }
     function fanout(p: Port): string {
-        return claimsForPort($deviceModel.claims, p.ref).map(c => `${c.domain}/${c.slot}`).join(', ')
+        // $effectClaims (merged), not bare $deviceModel.claims — so a port an
+        // effect uses shows its owner instead of reading "unclaimed".
+        return claimsForPort($effectClaims, p.ref).map(c => `${c.domain}/${c.slot}`).join(', ')
     }
 </script>
 
@@ -191,15 +198,15 @@
                         {#if !b.offline && hasRoleConfig(p)}
                             <!-- Heater / DC-motor: element scaling under the
                                  ⚙ Tune expander (denser, less-used than calibrate). -->
-                            <button class="small cfg-btn" class:open={(expandedTick, isExpanded(p))}
+                            <button class="small cfg-btn" class:open={isExpanded(p, expandedTick)}
                                     on:click={() => toggleExpand(p)}
                                     title="Tune element scaling — live push, no re-attach">
-                                {(expandedTick, isExpanded(p)) ? '× Close' : '⚙ Tune'}
+                                {isExpanded(p, expandedTick) ? '× Close' : '⚙ Tune'}
                             </button>
                         {/if}
                     </div>
 
-                    {#if (expandedTick, isExpanded(p)) && hasRoleConfig(p)}
+                    {#if isExpanded(p, expandedTick) && hasRoleConfig(p)}
                         {@const pk = portKindForConfig(p)}
                         {#if pk}
                             <PortRoleConfig

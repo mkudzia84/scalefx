@@ -29,7 +29,7 @@
 <script lang="ts">
     import { usToPct } from '../devicemodel'
 
-    export interface BandItem {
+    interface BandItem {
         loUs:  number       // 0 = unbounded low
         hiUs:  number       // 0 = unbounded high
         name:  string       // shown inside the band

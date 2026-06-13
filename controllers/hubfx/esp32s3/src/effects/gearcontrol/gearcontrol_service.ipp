@@ -76,6 +76,50 @@ void GearControlServicePolicyT<TTopology, TLandingService>::update() {
         _gears[i].update(now);
     }
     releaseBarriersIfReady();
+    updateTransitSound();
+}
+
+// ─── Transit sounds ─────────────────────────────────────────────────
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::updateTransitSound() {
+    if (!_audio) return;   // sketch never wired the mixer (no SFX_HAS_AUDIO)
+
+    // Direction = the phase of any mid-transit gear (a mixed-direction set
+    // keeps the loop of whichever direction we saw first — sane for the
+    // realistic single-direction fleet command).
+    bool anyMoving = false, deploying = false;
+    for (uint8_t i = 0; i < _numDefs; ++i) {
+        const uint8_t ph = _gears[i].phase();
+        if (ph == GearPhase::Deploying)  { anyMoving = true; deploying = true;  break; }
+        if (ph == GearPhase::Retracting) { anyMoving = true; deploying = false; break; }
+    }
+    // A Sequenced chain counts as "still moving" between gears — the
+    // inter-gear handoff gap must not stop/restart the loop.
+    const bool chainPending = (_coordMode == CoordMode::Sequenced && _seqActive != 0xFF);
+
+    if (anyMoving && !_soundActive) {
+        const char* path = deploying ? _deploySound : _retractSound;
+        if (path[0]) {
+            _audio(_audioCtx, path, _audioChannel, _soundMask, /*loop=*/true);
+            _soundActive    = true;
+            _soundDeploying = deploying;
+        }
+    } else if (_soundActive && anyMoving && deploying != _soundDeploying) {
+        // Direction flipped mid-set (operator reversed the command): switch
+        // the loop to the matching sample (PLAY replaces on the channel).
+        const char* path = deploying ? _deploySound : _retractSound;
+        if (path[0]) {
+            _audio(_audioCtx, path, _audioChannel, _soundMask, /*loop=*/true);
+            _soundDeploying = deploying;
+        } else {
+            _audio(_audioCtx, nullptr, _audioChannel, 0, false);
+            _soundActive = false;
+        }
+    } else if (_soundActive && !anyMoving && !chainPending) {
+        _audio(_audioCtx, nullptr, _audioChannel, 0, false);   // settled — stop
+        _soundActive = false;
+    }
 }
 
 // ─── Multi-gear coordinator ─────────────────────────────────────────
@@ -220,33 +264,24 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleStop(
 }
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
-void GearControlServicePolicyT<TTopology, TLandingService>::handleAll(
-        const uint8_t* p, size_t len) {
-    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
-    const uint8_t action = p[0];
-
+void GearControlServicePolicyT<TTopology, TLandingService>::commandAll(
+        uint8_t action) {
     // STOP is universal — halt every gear + reset the sequenced chain.
     if (action == GearAllAction::Stop) {
         if (_topo) _topo->beginBatch();
         for (uint8_t i = 0; i < _numDefs; ++i) _gears[i].stop();
         if (_topo) _topo->commitBatch();
         _seqActive = 0xFF;
-        _ctx->sendAck();
         return;
     }
 
     const bool deploying = (action == GearAllAction::Deploy);
-    if (action != GearAllAction::Deploy && action != GearAllAction::Retract) {
-        _ctx->sendNack(SerialError::INVALID_PARAM);
-        return;
-    }
 
     // Sequenced: kick only gear[0]; releaseBarriersIfReady() chains the rest.
     if (_coordMode == CoordMode::Sequenced) {
         _seqDeploying = deploying;
         _seqActive    = 0xFF;        // sequencedKick() advances to 0
         sequencedKick();
-        _ctx->sendAck();
         return;
     }
 
@@ -260,6 +295,19 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleAll(
         else           _gears[i].retract();
     }
     if (_topo) _topo->commitBatch();
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::handleAll(
+        const uint8_t* p, size_t len) {
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const uint8_t action = p[0];
+    if (action != GearAllAction::Stop && action != GearAllAction::Deploy &&
+        action != GearAllAction::Retract) {
+        _ctx->sendNack(SerialError::INVALID_PARAM);
+        return;
+    }
+    commandAll(action);
     _ctx->sendAck();
 }
 

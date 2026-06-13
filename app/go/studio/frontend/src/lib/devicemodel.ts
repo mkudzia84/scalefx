@@ -11,7 +11,6 @@ import { writable, derived, get } from 'svelte/store'
 import { connectionInfo } from './stores'
 import {
     RefreshDeviceModel, DeviceModelSnapshot,
-    ClaimPort, UnclaimPort, CandidatePorts,
     AttachRole, DetachRole, SetPortName,
     SetInputProtocol, SetInputChannelCount, SetChannelFunction, ApplyDefaults,
     LoadHubConfig, SaveHubConfig, RemoveExpanderConfig,
@@ -177,8 +176,13 @@ const SUPERSEDED_BY_EFFECTS  = new Set(['engine', 'gun'])
 // Both `lighting` and `landing-lights` are hub-advertised → the tab always shows;
 // neither gets its own generic domain tab.
 const SUPERSEDED_BY_LIGHTING = new Set(['lighting', 'landing-lights'])
-// Gear tab — gearcontrol expander only.
-const SUPERSEDED_BY_GEAR = new Set(['gearcontrol'])
+// Gear tab — the backend domain catalog names the undercarriage domain
+// `landing-gear` (Domain.ID in app/go/devicemodel/types.go); `gearcontrol`
+// is kept for compat.  BOTH route to the dedicated Gear tab (GearPanel) —
+// without this set matching the real id, the domain fell through to the
+// GENERIC DomainTab (the bare "Gear units"/"Gear switch" slot view) and the
+// purpose-built panel was unreachable (found 2026-06-13).
+const SUPERSEDED_BY_GEAR = new Set(['gearcontrol', 'landing-gear'])
 
 export const studioTabs = derived([deviceModel, connectionInfo], ([$dm, $conn]): StudioTab[] => {
     const firmwareTab: StudioTab = { key: 'firmware', label: 'Firmware', kind: 'firmware' }
@@ -208,8 +212,8 @@ export const studioTabs = derived([deviceModel, connectionInfo], ([$dm, $conn]):
     ]
     const domains = $dm.domains ?? []
     const showLighting = domains.some(d => SUPERSEDED_BY_LIGHTING.has(d.id))
-    const gearDomain = domains.find(d => d.id === 'gearcontrol')
-    const showGear = domains.some(d => SUPERSEDED_BY_GEAR.has(d.id))
+    const gearDomain = domains.find(d => SUPERSEDED_BY_GEAR.has(d.id))
+    const showGear = !!gearDomain
     if (domains.some(d => d.id === 'engine')) {
         tabs.push({ key: 'engine', label: 'EngineFX', kind: 'engine' })
     }
@@ -338,20 +342,12 @@ export function reset() {
 }
 
 // ─── Mutations (round-trip to Go, store updated from the returned snap) ─
-
-export async function claim(domain: string, slot: string, p: PortRef): Promise<void> {
-    const snap = await ClaimPort(domain, slot, p.guid, p.kind, p.index)
-    deviceModel.set(normalize(snap))
-}
-
-export async function unclaim(domain: string, slot: string, p: PortRef): Promise<void> {
-    const snap = await UnclaimPort(domain, slot, p.guid, p.kind, p.index)
-    deviceModel.set(normalize(snap))
-}
-
-export async function candidates(domain: string, slot: string): Promise<Port[]> {
-    return (await CandidatePorts(domain, slot)) as Port[]
-}
+//
+// The interactive claim/unclaim/candidate API (claim()/unclaim()/candidates()
+// → App.ClaimPort/UnclaimPort/CandidatePorts) was REMOVED 2026-06-13 with the
+// generic Domains tab (the only UI that called it).  Hard claims are now
+// written ONLY by ApplyPreset (the Inputs tab) and surface via the snapshot;
+// effect ownership flows through `effectClaims` (effect-claims.ts).
 
 export async function attachRole(p: PortRef, roleKind: number): Promise<void> {
     const snap = await AttachRole(p.guid, p.kind, p.index, roleKind)

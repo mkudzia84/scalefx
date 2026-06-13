@@ -29,6 +29,7 @@ import { deviceModel, type Claim, type PortRef, PortKind, portRefKey } from './d
 import { lightfxDraft } from './lightfx'
 import { gunfxDraft } from './gunfx'
 import { landingDraft } from './landing'
+import { gearDraft } from './gear'
 
 /** A wire-format PortRefT from any effect store — narrow shape that all
  *  three effects share (we don't depend on the per-effect symbol so we
@@ -70,8 +71,8 @@ function pushIfBound(out: Claim[], domain: string, slot: string, p: EffectPortRe
  *  changes, so the operator's edits are visible in sibling pickers
  *  on the next render tick (no manual refresh). */
 export const effectClaims: Readable<Claim[]> = derived(
-    [deviceModel, lightfxDraft, gunfxDraft, landingDraft],
-    ([$dm, $lfx, $gfx, $lnd]) => {
+    [deviceModel, lightfxDraft, gunfxDraft, landingDraft, gearDraft],
+    ([$dm, $lfx, $gfx, $lnd, $gear]) => {
         const out: Claim[] = [...$dm.claims]
         const seen = new Set(out.map(c => `${c.domain}|${c.slot}|${portRefKey(c.port)}`))
         const add = (domain: string, slot: string, p: EffectPortRef) => {
@@ -124,6 +125,20 @@ export const effectClaims: Readable<Claim[]> = derived(
             }
             for (let i = 0; i < (l.leds ?? []).length; i++) {
                 add('landing', `${label} / led${i + 1}`, l.leds[i].port)
+            }
+        }
+
+        // ── Gear per-strut motor + door servos (2026-06-13) ────────
+        // Without this block the gear's H-bridges + door servos stayed
+        // selectable in every sibling effect's picker (and vice versa —
+        // GearPanel filters against this same merged list).
+        if ($gear?.enabled) {
+            for (const g of $gear.gears ?? []) {
+                const label = g.name && g.name.trim() ? g.name : `strut${g.id}`
+                add('gear', `${label} / motor`, g.motor)
+                for (let i = 0; i < (g.doors ?? []).length; i++) {
+                    add('gear', `${label} / door${i + 1}`, g.doors[i].port)
+                }
             }
         }
 

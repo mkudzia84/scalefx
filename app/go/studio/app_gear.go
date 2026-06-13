@@ -55,12 +55,35 @@ type GearChannelDTO struct {
 	ClosePolicy string        `yaml:"close_policy"             json:"closePolicy"`  // both | first | none
 }
 
-// GearConfig mirrors /gearcontrol.yaml (schema v2).
+// GearInputDTO — the OPTIONAL one-channel RC up/down binding (`input:`
+// block).  Name is a NAMED channel from /hubfx.yaml inputs[] (Rule 43);
+// above the threshold = retract (gear up), Invert flips.  Empty name =
+// manual-only (Studio / CLI).
+type GearInputDTO struct {
+	Name         string `yaml:"name,omitempty"          json:"name"`
+	ThresholdUs  uint16 `yaml:"threshold_us,omitempty"  json:"thresholdUs"`
+	HysteresisUs uint16 `yaml:"hysteresis_us,omitempty" json:"hysteresisUs"`
+	Invert       bool   `yaml:"invert,omitempty"        json:"invert"`
+}
+
+// GearSoundsDTO — the OPTIONAL transit sounds (`sounds:` block).  The
+// matching WAV loops on the dedicated Gear mixer channel while any gear
+// is moving in that direction; empty path = silent.
+type GearSoundsDTO struct {
+	Deploy     string `yaml:"deploy,omitempty"      json:"deploy"`
+	Retract    string `yaml:"retract,omitempty"     json:"retract"`
+	OutputMask uint8  `yaml:"output_mask,omitempty" json:"outputMask"` // 1=L 2=R 3=both
+}
+
+// GearConfig mirrors /gearcontrol.yaml (schema v2 + the append-only
+// optional `input:` / `sounds:` blocks, 2026-06-11).
 type GearConfig struct {
-	SchemaVersion int              `yaml:"schema_version" json:"schemaVersion"`
-	Enabled       bool             `yaml:"enabled"        json:"enabled"`
-	Coord         string           `yaml:"coord"          json:"coord"` // independent | door_sync | full_sync | sequenced
-	Gears         []GearChannelDTO `yaml:"gears"          json:"gears"`
+	SchemaVersion int              `yaml:"schema_version"    json:"schemaVersion"`
+	Enabled       bool             `yaml:"enabled"           json:"enabled"`
+	Coord         string           `yaml:"coord"             json:"coord"` // independent | door_sync | full_sync | sequenced
+	Input         GearInputDTO     `yaml:"input,omitempty"   json:"input"`
+	Sounds        GearSoundsDTO    `yaml:"sounds,omitempty"  json:"sounds"`
+	Gears         []GearChannelDTO `yaml:"gears"             json:"gears"`
 }
 
 // GearStatusEntry is one row of GearStatus() — the live per-channel
@@ -87,6 +110,8 @@ func defaultGearConfig() GearConfig {
 		SchemaVersion: 2,
 		Enabled:       false,
 		Coord:         "independent",
+		Input:         GearInputDTO{ThresholdUs: 1500, HysteresisUs: 50},
+		Sounds:        GearSoundsDTO{OutputMask: 3},
 		Gears:         []GearChannelDTO{},
 	}
 }
@@ -127,6 +152,17 @@ func (a *App) LoadGearConfig() (GearConfig, error) {
 	}
 	if cfg.Gears == nil {
 		cfg.Gears = []GearChannelDTO{}
+	}
+	// Normalise the optional input/sounds blocks so the panel always sees
+	// sensible values (a pre-2026-06 file has neither block).
+	if cfg.Input.ThresholdUs == 0 {
+		cfg.Input.ThresholdUs = 1500
+	}
+	if cfg.Input.HysteresisUs == 0 {
+		cfg.Input.HysteresisUs = 50
+	}
+	if cfg.Sounds.OutputMask == 0 || cfg.Sounds.OutputMask > 3 {
+		cfg.Sounds.OutputMask = 3
 	}
 	// Canonicalise hub-identity port-ref GUIDs → "" (instructions/31) so the
 	// output-port dropdowns resolve against the canonical device model.
