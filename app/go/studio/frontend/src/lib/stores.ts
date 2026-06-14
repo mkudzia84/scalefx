@@ -67,6 +67,9 @@ export const connectPopupOpen = writable(true) // shown on startup
 export const showAboutDialog = writable(false)
 export const showViewSettings = writable(false)
 export const showConsole = writable(false)
+/** Assistant chat dock — shares the right dock with the console (mutually
+ *  exclusive; see MainLayout). */
+export const showAssistant = writable(false)
 export const showFileManager = writable(false)
 /** PCB schematic overlay dialog (port/role mapping on the board photo) */
 export const showPcbOverlay = writable(false)
