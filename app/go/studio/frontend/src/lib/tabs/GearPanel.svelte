@@ -283,7 +283,7 @@
     //       4 strut-done · 5 doors-closing · 6 doors-closed.
     type StageState = 'done' | 'active' | 'pending' | 'idle'
     interface LifeStage { label: string; state: StageState }
-    function lifecycle(ph: GearPhaseT | undefined): { dir: string; stages: LifeStage[]; caption: string } {
+    function lifecycle(ph: GearPhaseT | undefined, hasDoors: boolean): { dir: string; stages: LifeStage[]; caption: string } {
         const sub = ph?.subPhase ?? 0
         const p   = ph?.phase ?? 6
         const dir = p === 2 ? 'lowering' : p === 4 ? 'raising'
@@ -297,11 +297,17 @@
             if (activeAt.includes(sub)) return 'active'
             return r > afterDone ? 'done' : 'pending'
         }
-        const stages: LifeStage[] = [
-            { label: 'Doors',  state: seg(2, [1]) },        // doors-opening active; done once open
-            { label: 'Strut',  state: seg(4, [3]) },        // strut-moving active; done once strut-done
-            { label: 'Doors',  state: seg(6, [5]) },        // doors-closing active; done once closed
-        ]
+        // A doorless strut has no door legs — show just the strut stage so the
+        // strip doesn't imply doors that aren't configured.
+        const stages: LifeStage[] = hasDoors
+            ? [
+                { label: 'Doors',  state: seg(2, [1]) },    // doors-opening active; done once open
+                { label: 'Strut',  state: seg(4, [3]) },    // strut-moving active; done once strut-done
+                { label: 'Doors',  state: seg(6, [5]) },    // doors-closing active; done once closed
+              ]
+            : [
+                { label: 'Strut',  state: seg(4, [3]) },
+              ]
         const caption = isMoving(p)
             ? (ph?.subPhaseName ?? '')
             : (p === 5 ? (ph?.errReasonTag ? `error — ${ph.errReasonTag}` : 'error')
@@ -559,7 +565,7 @@
                 {@const errored    = ph === 5}
                 {@const gated      = busy || dirty || chanErrors}
                 {@const acts       = strutActions(gch.id, ph)}
-                {@const life       = lifecycle(phT)}
+                {@const life       = lifecycle(phT, gch.doors.length > 0)}
                 {@const order      = cfg.gears.findIndex(g => g.id === gch.id)}
                 {@const doors      = doorStatus(gch, phT)}
                 <div class="sctl-row" class:invalid={chanErrors}>
