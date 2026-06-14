@@ -238,7 +238,6 @@
     $: if (cfg && (cfg.coord === 'door_sync' || cfg.coord === 'sequenced')) {
         setGearCoord(cfg.coord === 'sequenced' ? 'independent' : 'full_sync')
     }
-    $: coordHint = coordOptions.find(o => o.id === cfg?.coord)?.hint ?? ''
 
     // ─── Live phase pill ─────────────────────────────────────────────
     function phaseClass(p: number | undefined): string {
@@ -526,14 +525,31 @@
     {/if}
 
   {#if enabled}
+    <!-- gear-top-stack: the Input/Sounds split + the Undercarriage Control
+         group, reordered so Control sits BELOW the split (CSS order — Control
+         stays first in the DOM for tab order). -->
+    <div class="gear-top-stack">
     <!-- ═══ CONTROL — the command surface: a fleet row + ONE row per strut,
          each showing live state (lifecycle strip) and that strut's controls.
          Runs the LOADED config (Apply edits first); the config cards below are
          editing-only. ═══ -->
     {#if strutCount > 0}
-        <div class="section-head">
-            Undercarriage Control
-            <span class="hint">live state + manual control — fleet and per-strut. Runs the LOADED config, so Apply edits first. The RC channel below drives the same up/down.</span>
+      <div class="ctl-section">
+        <div class="section-head ctl-head">
+            <span class="ctl-title">Undercarriage Control</span>
+            <span class="hint">live state + manual control — fleet and per-strut. Runs the LOADED config, so Apply edits first.</span>
+            <!-- Cross-strut sync mode moved into the header (Rule 60 — ops/mode
+                 in the section header). -->
+            <div class="ctl-sync" title="Cross-strut coordination">
+                <span class="ctl-sync-label">Sync</span>
+                <div class="seg-select">
+                    {#each coordOptions as o}
+                        <button class="seg" class:on={cfg?.coord === o.id}
+                                on:click={() => setGearCoord(o.id)} disabled={busy}
+                                title={o.hint}>{o.label}</button>
+                    {/each}
+                </div>
+            </div>
         </div>
         <div class="ctl-frame">
             <!-- Fleet row -->
@@ -607,11 +623,13 @@
                 </div>
             {/each}
         </div>
+      </div><!-- /ctl-section -->
     {/if}
 
     <!-- ═══ Top split: LEFT = Input group (RC up/down channel + signal-loss
-         failsafe) · RIGHT = strut sync + transit sounds.  The struts span the
-         FULL width below (Rule 60.1 two-column; collapses when narrow). ═══ -->
+         failsafe) · RIGHT = transit sounds.  The Undercarriage Control group
+         (with the sync toggle in its header) follows BELOW, full width
+         (Rule 60.1 two-column; collapses when narrow). ═══ -->
     <div class="two-col gear-top-cols">
       <div class="col">
         <!-- ═══ Input (LEFT) — framed group: (2) channel on top,
@@ -665,24 +683,8 @@
       </div><!-- /col — Input (left) -->
 
       <div class="col">
-        <!-- ═══ (4) Transition sounds (RIGHT) — framed group ═══ -->
-        <!-- Strut Synchronization — top of the right column. -->
-        <div class="section-head">Strut Synchronization</div>
-        <div class="sub-frame">
-            <!-- Mode choice ≤4 options → segmented toggle (Rule 60.3). -->
-            <div class="form-row">
-                <div class="seg-select">
-                    {#each coordOptions as o}
-                        <button class="seg" class:on={cfg?.coord === o.id}
-                                on:click={() => setGearCoord(o.id)} disabled={busy}
-                                title={o.hint}>{o.label}</button>
-                    {/each}
-                </div>
-            </div>
-            <div class="form-row"><span class="hint">{coordHint}</span></div>
-        </div>
-
-        <!-- (4) Transition sounds — framed group, below Strut Sync. -->
+        <!-- ═══ Transition sounds (RIGHT) — framed group (strut-sync moved to
+             the Undercarriage Control header). ═══ -->
         <div class="section-head" class:section-error={soundsHaveErrors}>
             Transition sounds
             <span class="hint">optional — the matching WAV loops on the dedicated Gear audio channel while any strut is moving, and stops when the set settles.</span>
@@ -704,8 +706,9 @@
                     onClear={() => clearSound(f)} />
             {/each}
         </div>
-      </div><!-- /col — Strut sync + Transition sounds (right) -->
+      </div><!-- /col — Transition sounds (right) -->
     </div><!-- /two-col gear-top-cols -->
+    </div><!-- /gear-top-stack -->
 
     <!-- ═══ Landing struts — FULL width, spanning both columns above ═══ -->
     <div class="section-head">
@@ -1070,6 +1073,17 @@
     .lifecycle.held .life-caption    { color: var(--warning); font-style: normal; }
 
     /* ── Control section (top): fleet row + one row per strut ─────────── */
+    /* Reorder: Input/Sounds split on top, Undercarriage Control below. */
+    .gear-top-stack { display: flex; flex-direction: column; }
+    .gear-top-stack > .two-col   { order: 1; }
+    .gear-top-stack > .ctl-section { order: 2; }
+
+    /* Undercarriage Control header carries the sync mode toggle on the right. */
+    .ctl-head { align-items: center; }
+    .ctl-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-bright); }
+    .ctl-sync { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+    .ctl-sync-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); font-weight: 600; }
+
     .ctl-frame { border: 1px solid var(--border); border-radius: 5px;
                  background: var(--bg-raised); padding: 4px; margin: 0 0 8px;
                  display: flex; flex-direction: column; gap: 4px; }
